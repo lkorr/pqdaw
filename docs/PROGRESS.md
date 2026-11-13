@@ -578,3 +578,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: statuses re-read only when freezeGeneration moves; 10 Hz poll only while a render is unfinished.
 - Notes: Q256. REVIEW entry. freeze_service doesn't bump the generation on progress (the bar reads per-track status directly; not exercised against the real service).
 
+## 2026-11-13 · DY.2 merged · main
+- Did: merged task/DY.2-sidechain (83c1a0cc): a cross-track cable into a signal input lowers as W::Sidechain (every channel, latency-compensated through the bus plan; units not merged); into a param / _add stays Modulation. A non-MIDI track's own signal can feed another track's block. Project patch draws Sidechain wires as modulation edges. BindingKind::Input; doc ops cableSources / crossTrackWiresInto / setCableSource; panel element `cablesource`.
+- Verified (worker): pq_tests_document DY.2 2/2, pq_tests_playback DY.2 (Kick latency 480 → Bass: aligned exactly, outputLatency 480), pq_tests_views pass (picker by real dispatch); -Affected 41/45: 3 re-run passes (playback_s3 timing, library watcher, window selftest SegFault), pq_tests_ui failing on main since FZ.3 (theme token count) — fixed by the orchestrator (test counts + track.frozen).
+- Perf: no new runtime code (the PDC ring); the element recomputes text only on snapshot change.
+- Notes: Q257. Master not offered as a sidechain source.
+

@@ -833,7 +833,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## DY: Compressor, Limiter, MIDI files (plan: docs/plans/DY.md; user 2026-11-12 / 2026-11-13, SPEC §15 "finishing a song"; Reverb excluded by the user 2026-11-13)
 - [x] **DY.1 Dynamics atoms: follow, window, latency time input** *(merged; Q255: window op as a number 0 max / 1 min / 2 mean, zero history; latency time folded into frames by optimise(); ship (indicative) follow 1.9 ns/sample, window max 0.5–0.8, mean 1.8)* (plan §DY.1).
-- [ ] **DY.2 Sidechain routing: compensated cross-track input cables + cablesource picker** (plan §DY.2).
+- [x] **DY.2 Sidechain routing: compensated cross-track input cables + cablesource picker** *(merged 83c1a0cc; Q257: a MIDI track's Pre FX = its instrument output, None sets On to 0; units are not merged — compensated through the bus plan; a cross-track cable into a signal input now carries every channel)* (plan §DY.2).
 - [ ] **DY.3 Transfer display (StaticTransfer) and gain-reduction meter** 👁 (plan §DY.3).
 - [ ] **DY.4 Compressor module** 👁 (plan §DY.4). After DY.1–DY.3.
 - [ ] **DY.5 truepeak atom** (plan §DY.5). After DY.1.

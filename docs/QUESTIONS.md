@@ -1273,7 +1273,7 @@ one), else appends "(track menu: Unfreeze Track)" —, (f) for now (the clip vie
 view's band of a frozen track are not veiled; apply refuses, the status line offers Unfreeze). Flatten is shown
 disabled in both menus until FZ.4. Reversible: `ViewContext::setTracksFrozen` / `setStatus`, one veil class.
 
-## Q?-DY.2-a · what "Pre FX" is on a MIDI track, and what "None" does to the sidechain's On
+## Q257 · 2026-11-13 · DY.2 · what "Pre FX" is on a MIDI track, and what "None" does to the sidechain's On
 Context: DY.2's `cablesource` picker offers per other track "Pre FX" (the plan: Wire::noteSource + kMainPort, the
 track's own signal) and "Post FX" (the block feeding its mixer), and sets an optional "On" value block when a source is
 picked. A MIDI track's own signal is its NOTES (a notes cable), not audio, so a sidechain from it would hear nothing.
