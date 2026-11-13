@@ -699,12 +699,27 @@ void PreferencesWindow::buildRecordTab(Widget& body) {
     p.recordOffsetMs = static_cast<float>(v);
     ctx_->setViewPrefs(p);
   };
+  section(page, "saving-section", "Saving");  // AS.1
+  {
+    auto& a = row(page, "autosave", "Autosave");
+    autosave_ = &a.add<Toggle>("toggle", "On");
+    autosave_->setWidth(Length::fixed(84));
+    autosave_->setInfo("Autosave", "Keeps a copy of the edited song in pqdaw's own folder (never in the project) 10 s "
+                                   "after the last change, at least once a minute while editing, for recovery if pqdaw "
+                                   "does not close properly. Saving removes it.");
+    autosave_->onToggle = [this](bool on) {
+      ViewPrefs p = ctx_->viewPrefs();
+      p.autosave = on;
+      ctx_->setViewPrefs(p);
+    };
+  }
   updateRecord();
 }
 
 void PreferencesWindow::updateRecord() {
   if (!ctx_ || !recordOffset_) return;
   if (!recordOffset_->inGesture()) recordOffset_->setValue(ctx_->viewPrefs().recordOffsetMs);
+  if (autosave_) autosave_->setOn(ctx_->viewPrefs().autosave);
 }
 
 // ---- T6.4: the MIDI tab ----------------------------------------------------------------------------------------------

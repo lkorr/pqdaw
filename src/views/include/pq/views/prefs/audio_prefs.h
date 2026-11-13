@@ -61,6 +61,10 @@
 //
 //   │ Record  │ Recording                                                        │
 //   │         │   Record Latency Offset     [0.00 ms]                            │
+//   │         │ Saving                                                           │
+//   │         │   Autosave                  [On]                                 │
+//
+// AS.1: Saving → Autosave is ViewPrefs::autosave (pq/app/autosave.h).
 //
 // Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
 // (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
@@ -336,6 +340,7 @@ public:
   ui::Dropdown* defaultWarpChooser() const noexcept { return defaultWarp_; }
   // T6.7b: the Record tab's offset box (ms; null without a context).
   ui::DragBox* recordOffsetBox() const noexcept { return recordOffset_; }
+  ui::Toggle* autosaveToggle() const noexcept { return autosave_; }  // AS.1
   // The selected row of the Places list (-1 none).
   int32_t selectedFolder() const noexcept;
   void selectFolder(int32_t row);
@@ -388,6 +393,7 @@ private:
   ui::Label* recordTab_ = nullptr;  // T6.7b
   ui::Widget* recordPage_ = nullptr;
   ui::DragBox* recordOffset_ = nullptr;
+  ui::Toggle* autosave_ = nullptr;  // AS.1
   ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

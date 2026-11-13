@@ -183,6 +183,7 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   // T6.7b: Preferences → Record.
   if (const auto f = it->find("recordOffsetMs"); f != it->end() && f->is_number())
     prefs.recordOffsetMs = std::clamp(f->get<float>(), -views::ViewPrefs::kMaxRecordOffsetMs, views::ViewPrefs::kMaxRecordOffsetMs);
+  if (const auto f = it->find("autosave"); f != it->end() && f->is_boolean()) prefs.autosave = f->get<bool>();  // AS.1
   return prefs;
 }
 
@@ -196,6 +197,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["autoWarpLongSamples"] = prefs.autoWarpLongSamples;  // T6.8
   v["defaultWarpMode"] = kWarpNames[static_cast<size_t>(prefs.defaultWarpMode)];
   v["recordOffsetMs"] = prefs.recordOffsetMs;  // T6.7b
+  v["autosave"] = prefs.autosave;              // AS.1
   return saveSection(path, "views", std::move(v));
 }
 

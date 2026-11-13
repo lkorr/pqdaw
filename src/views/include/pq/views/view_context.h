@@ -174,6 +174,9 @@ struct ViewPrefs {
   // latency (engine::Recorder::setManualOffset, in frames at the engine's rate): positive = recorded audio moves earlier.
   float recordOffsetMs = 0.0f;
   static constexpr float kMaxRecordOffsetMs = 100.0f;
+  // AS.1 (Preferences → Record → Saving): the edited document is autosaved into this run's Unsaved session folder
+  // (pq/app/autosave.h); off: nothing is written and an existing autosave is deleted.
+  bool autosave = true;
   bool operator==(const ViewPrefs&) const = default;
 };
 
@@ -272,6 +275,8 @@ public:
   // The document differs from the last saved/loaded one (pointer comparison: undoing back to it is clean again), or
   // view state that the project file keeps (folds, track and lane heights, lane visibility) changed since.
   bool dirty() const noexcept { return store_.current() != saved_ || viewStateDirty_; }
+  // AS.1: the snapshot last saved or loaded (the autosave compares the current one with it: equal = nothing to keep).
+  const doc::Snapshot& savedSnapshot() const noexcept { return saved_; }
   // Views call this after changing the store's ViewState (it is saved with the project but not undoable, so the
   // snapshot comparison cannot see it: T3.x-fix-edit, M3 review L19).
   void viewStateChanged();

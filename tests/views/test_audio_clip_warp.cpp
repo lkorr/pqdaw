@@ -405,6 +405,27 @@ TEST_CASE("T6.7b: the Record preferences tab sets ViewPrefs::recordOffsetMs (typ
   CHECK(f.ctx.viewPrefs().recordOffsetMs == doctest::Approx(100.0f));
 }
 
+TEST_CASE("AS.1: the Record tab's Autosave switch sets ViewPrefs::autosave (on by default)") {
+  Fixture f;
+  FakeAudioPrefsPort port = FakeAudioPrefsPort::studio();
+  PreferencesWindow* w = openPreferences(f.shell->overlay(), port, &f.ctx);
+  REQUIRE(w != nullptr);
+  f.d.tree().layoutNow();
+  Widget* tab = w->find("body/tabs/record");
+  REQUIRE(tab != nullptr);
+  f.d.click(mid(tab->rect()));
+  f.d.tree().layoutNow();
+  Toggle* t = w->autosaveToggle();
+  REQUIRE(t != nullptr);
+  CHECK(f.ctx.viewPrefs().autosave);
+  CHECK(t->on());
+  f.d.click(mid(t->rect()));
+  CHECK_FALSE(f.ctx.viewPrefs().autosave);
+  CHECK_FALSE(t->on());
+  f.d.click(mid(t->rect()));
+  CHECK(f.ctx.viewPrefs().autosave);
+}
+
 namespace {
 
 void checkGolden(const char* scene) {

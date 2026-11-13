@@ -1168,3 +1168,10 @@ found; constants in one place each):
    −90 dB while it moves (exact at rest), as every delay atom with a moving time. Option: an integer + fraction head in
    `delayTap` (a change to every delay kernel).
 Status: open.
+
+## Q?-AS.1-a · Where the Autosave switch lives; what triggers a write
+Context: AS.1 needs an on/off preference (ViewPrefs::autosave, on by default) and the plan's trigger is "snapshot differs".
+Options: (a) a "Saving" section under Preferences → Record; (b) a new File tab (moves every preferences golden).
+(c) also autosave view-state-only changes (folds, lane heights). Choice: (a), and view-state-only edits do not trigger a
+write (the next document change writes them along). Reversible: moving the row is one function; (c) is one more compare.
+Status: open.

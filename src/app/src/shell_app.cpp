@@ -41,7 +41,8 @@ namespace {
 enum : int32_t {
   kDialogResult = 1, kIdleStart = 2, kIdleEnd = 3, kAudioChanged = 4, kRunOnUi = 5, kOsDrag = 6, kBugScript = 7,
   kSignalWake = 8,  // KB.3: ProjectLink::setSignalNotify (any thread) → ViewContext::signalWaking
-  kMidiNotes = 9    // TU.2b: ProjectLink::setMidiNoteNotify (the MIDI callback) → ProjectLink::drainMidiNotes
+  kMidiNotes = 9,   // TU.2b: ProjectLink::setMidiNoteNotify (the MIDI callback) → ProjectLink::drainMidiNotes
+  kAutosave = 10    // AS.1: the autosave policy's wake timer
 };
 
 // File dialogs run their callback on another thread on some platforms: results are posted to the UI thread as a
@@ -257,6 +258,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
     (void)views::offerRecordingRecovery(*app->shell_);  // M6 review L13: takes an earlier (crashed) run left behind
+    // AS.1: the autosave goes into this run's session folder (the parent of the untitled recordings folders).
+    if (const std::string first = app->link_->unsavedRecordDir(); !first.empty()) {
+      const std::filesystem::path session = std::filesystem::path(std::u8string(first.begin(), first.end())).parent_path();
+      app->autosave_ = std::make_unique<Autosaver>(session / std::filesystem::path(kAutosaveFolderName), session);
+    }
     if (auto* patch = views::findProjectPatch(*app->shell_)) {  // T4.13: wire readouts and the CPU cost labels
       patch->setMeterSource(app->link_.get());
       patch->setCostSource(app->link_.get());
@@ -402,6 +408,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
 }
 
 ShellApp::~ShellApp() {
+  // AS.1: a clean quit (confirmQuit let it go ahead, or nothing differs from the saved file) deletes the autosave; any
+  // other exit keeps what was written (the pending write still runs) for the recovery at the next start.
+  if (autosave_ && ctx_ && (quitConfirmed_ || ctx_->doc() == ctx_->savedSnapshot())) autosave_->close();
+  autosave_.reset();
   drop_.reset();  // T5.7: no OLE callback reaches a half-destroyed shell
   tree_.setDragOutHandler(nullptr);  // T5.12
   cleanDragOutFolder();
@@ -544,6 +554,10 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
       case kMidiNotes:
         if (link_) link_->drainMidiNotes();
         break;
+      case kAutosave:
+        autosaveTimer_ = false;
+        pollAutosave();
+        break;
       case kAudioChanged:
         if (audio_) audio_->poll();
         syncPreviewRate();
@@ -643,6 +657,7 @@ bool ShellApp::handleEvent(const SDL_Event& e, bool /*consumedByTree*/) {
       // Closing the last window queues both events for one click: answer them once.
       if (e.common.timestamp <= quitAskedAt_) return !quitAnswer_;
       quitAnswer_ = ctx_->confirmQuit([this] { pushUser(SDL_EVENT_QUIT, 0); });
+      quitConfirmed_ = quitConfirmed_ || quitAnswer_;
       quitAskedAt_ = SDL_GetTicksNS();
       return !quitAnswer_;
     }
@@ -718,8 +733,20 @@ void ShellApp::drainOsDrags() {
   }
 }
 
+// AS.1: the autosave policy (pq/app/autosave.h). Idle: a few pointer compares. When it waits for a deadline that no
+// frame may reach (the window idles), one one-shot timer wakes it.
+void ShellApp::pollAutosave() {
+  if (!autosave_) return;
+  const double wait = autosave_->tick(*ctx_, static_cast<double>(SDL_GetTicksNS()) * 1e-9);
+  if (wait >= 0.0 && !autosaveTimer_) {
+    autosaveTimer_ = true;
+    startTimer(userEvent_, kAutosave, wait + 0.05);
+  }
+}
+
 void ShellApp::onFramePresented() {
   ++frames_;
+  pollAutosave();
   // TMM.5: voices that started while no face animated (an audition, a note while stopped) wake the faces.
   if (faceView_ != nullptr && faceVoices_->anyFresh()) {
     faceView_->wakeFaces();

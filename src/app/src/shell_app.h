@@ -5,7 +5,8 @@
 // (commands.cpp) treats the shell like any widget tree and calls three hooks:
 //   handleEvent(e, consumed)  after the tree saw an SDL event: dialog results, quit confirmation, SDL text input on/off
 //                             with text focus; returns true when the loop must not act on the event itself
-//   onFramePresented()        after each presented frame: first-frame timing log, the --idle-check measurement
+//   onFramePresented()        after each presented frame: first-frame timing log, the --idle-check measurement, the
+//                             autosave policy (AS.1: pq/app/autosave.h; a one-shot timer wakes it when no frame comes)
 //   exitCode(rc)              the process exit code (the idle check's verdict)
 
 #include <SDL3/SDL.h>
@@ -14,6 +15,7 @@
 #include <memory>
 #include <string>
 
+#include "pq/app/autosave.h"
 #include "pq/app/bug_reporter.h"
 #include "pq/app/face_voices.h"
 #include "pq/app/cli.h"
@@ -110,6 +112,11 @@ private:
   bool dropPosted_ = false;
   uint64_t quitAskedAt_ = 0;  // SDL ticks (ns) when the user was last asked about unsaved changes on quit
   bool quitAnswer_ = true;
+  bool quitConfirmed_ = false;  // AS.1: confirmQuit let a quit go ahead (a clean quit deletes the autosave)
+  // AS.1: the autosave of this run's session folder (null without the playback link: no session folder).
+  std::unique_ptr<Autosaver> autosave_;
+  bool autosaveTimer_ = false;  // its wake timer is armed
+  void pollAutosave();
 
   // First frame + --idle-check.
   uint32_t frames_ = 0;

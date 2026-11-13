@@ -17,6 +17,7 @@ pq_add_module(pq_app
     src/project_link_input.cpp
     src/project_link_record.cpp
     src/recording.cpp
+    src/autosave.cpp
     src/midi_capture.cpp
     src/midi_input.cpp
     src/face_voices.cpp
