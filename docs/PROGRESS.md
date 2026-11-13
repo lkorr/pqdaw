@@ -502,3 +502,13 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: first post-rebase -Affected -Slow found ~45 failures from an over-broad unfed-group rule (fed series groups counted unfed: planned wires name the input `x`); fixed; then pq_tests_document / playback (4 shards) / views / dsp / meta default tier pass, noise slow cases dsp 16/16 meta 7/7. After the orchestrator's rebase onto DT.2 (atom-list conflicts, both kept): pq_tests_dsp default tier pass. No second -Affected -Slow (user: don't rerun 30-minute compiles).
 - Perf (ship, pre-fix build, ns/sample 1 lane / ns per 8-voice frame; plain noise 0.19 / 1.4): white 0.34 / 1.47, 10 Hz hold 0.21 / 0.63, glide 3.8 / 4.0, pink 4.9 / 8.1, gaussian 1.6 / 7.0, sync 6.1 / 6.5. Not in bench/RESULTS.md.
 - Notes: Q244 (blue/violet: scale not fold, the user's choice), Q245 (On note: one pattern for all notes), Q246 (unfed free groups). Goldens new: module-noise-panel, module-noise-panel-sync-trace.
+
+## 2026-11-12 · TX.ports-always merged · main
+- Did: merged task/TX.ports-always (cb295833): cause — the Envelope was placed inside the opened "Basic Synth" group, where blocks kept edge pins (GU.5b) and a panel block draws no jacks, so an unwired one showed none. Now every closed block's main ports orbit wherever it sits (value knobs too); a port over a capsule takes the press; symbol leads outside the body are pressable.
+- Verified (worker): pq_tests_views 689/689 after rebase; new real-dispatch tests (Tab-place Envelope in the group + cable drags both ways; 237-placement catalog sweep). 32 goldens re-recorded (orbiting ports in opened groups).
+- Perf: orbit solve now also for blocks in opened groups (same per-block cost).
+
+## 2026-11-12 · TX.lane-drop merged · main
+- Did: merged task/TX.lane-drop (2a44f3a7): FileDrop generalised over EditSurface (dropSpotAt / dropInsert); ProjectCanvas forwards dragOver / drop / leave to it; ghosts drawn by ProjectPatchView::paintLaneDrop. Same rules as the arrangement (sample_drop.h).
+- Verified (worker): pq_tests_views default tier pass; 4 new real drag-dispatch tests; arrangement drop tests unchanged. Orchestrator: pq_tests_views on the merged main (both branches touch canvas.cpp).
+- Notes: browser device drops onto the patch canvas are not handled (none today).
