@@ -159,6 +159,19 @@
 // the session's last tick) into their lanes, in the same undo step. recordingTick() is report_'s tick while the engine
 // records (the song position hand-made changes are written at: what the engine plays now).
 //
+// ---- Frozen tracks (FZ.2; pq/app/freeze_service.h, project_link_audio.cpp; docs/plans/RB.md D2, D3) -----------------
+// With LinkConfig::freeze the link owns a FreezeService. Every change that can move a frozen track's render key (a Reset,
+// a structural change, any change while a track is frozen: tempo, tunings, an upstream knob) syncs it on the UI thread
+// (the cheap check makes an unrelated edit cost a document compare per frozen track); renders run on its thread and
+// their results come back through the UI poster (or collectIdle / waitForFreeze). Each frozen track's newest render is
+// a one-clip audio sequence (warp Off, its file's rate, no edge declick: song sample k = file frame k) in a clip slot
+// of its own (the event-slot allocator, keyed apart from the track's own clip slot), published with the audio image;
+// a file still loading leaves the slot's previous render in place. LowerOptions::frozenSlotOf names the slot only while
+// the CURRENT key's render is in the published image (frozenReady_), so a missing, stale or failed render plays live;
+// a change of that set republishes the wire states (doc::wireStates with frozenSlotOf) and asks for one structural
+// compile. Unfreezing (or deleting) a track keeps its last render in its slot until a compile begun after it has
+// published (no gap while the live circuit compiles), then frees the slot; the cache file stays. A Reset drops every
+// slot at once. A sample-rate change re-keys every render (they play live until re-rendered).
 // ---- Capture MIDI (T6.9; project_link_input.cpp, pq/app/midi_capture.h) ----------------------------------------------
 // Every MIDI track the live routes listen with gets an engine::CaptureRing (kCaptureNotes notes, allocated here the
 // first time the track listens, kept while the track exists; a Reset drops them all) in its LiveTrackDesc: the engine
@@ -201,6 +214,7 @@
 #include "pq/engine/engine.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
+#include "pq/app/freeze_service.h"
 #include "pq/app/recording.h"
 #include "pq/media/sample_pool.h"
 #include "pq/meta/table_builder.h"
@@ -262,6 +276,12 @@ struct LinkConfig {
   std::string unsavedDir;
   media::PoolConfig pool;            // the sample pool (its reclaimer is the link's)
   double clipLookaheadSeconds = 0.5; // a streamed clip claims its stream this long before it starts
+  // FZ.2 ("Frozen tracks" in the file comment): the link renders its frozen tracks (a FreezeService) and plays them from
+  // those renders. The app's playback link only: the private links of exports and renders play every track live.
+  bool freeze = false;
+  // FZ.2: the tracks whose own contribution is exported as bus "<id>:own" (doc::LowerOptions::captureOwn; the freeze
+  // render's private link, makeOfflineLink). Empty: none.
+  std::vector<doc::TrackId> captureOwn;
 };
 
 // T1b.5 counters (written by the JIT worker; jitStats() returns a consistent copy).
@@ -609,6 +629,23 @@ public:
   // compiler blamed on it — or "" when it is not. Any thread.
   std::string wireError(doc::WireId w) const;
 
+  // ---- FZ.2: frozen tracks (see "Frozen tracks" in the file comment) ----
+  // What the track header shows (FZ.3): None (not frozen, or no freeze service), Rendering (queued / running, with
+  // progress; also while a finished file loads), Ready (its render plays), Failed (plays live; `error`). Any thread.
+  FreezeStatus freezeStatus(doc::TrackId track) const;
+  // Bumps whenever any track's freeze status may have changed (renders queued, progress, results). Any thread.
+  uint64_t freezeGeneration() const noexcept { return freeze_ ? freeze_->generation() : 0; }
+  // The render track `track` plays now (Ready), or nullopt: FZ.4's flatten takes this file. UI thread.
+  std::optional<FreezeService::Render> frozenRender(doc::TrackId track) const;
+  // The clip slot the track plays its render from (what frozenSlotOf gives the lowering), or kNoSlot (live). Any thread.
+  uint32_t frozenSlot(doc::TrackId track) const;
+  // UI thread: waits until no render is queued or running (at most the timeout), takes the results, waits for their
+  // samples and runs the compile that follows (flush). False on timeout. Tests, tools.
+  bool waitForFreeze(double timeoutSeconds = 120.0);
+  FreezeService* freezeService() noexcept { return freeze_.get(); }  // null without LinkConfig::freeze
+  // The last compile's lowering (tests, tools). Takes the compile lock.
+  std::shared_ptr<const doc::LoweredProject> lastLowering();
+
 private:
   struct TuningTableEntry {
     doc::TuningId id;
@@ -660,6 +697,12 @@ private:
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
   void reportWires(const doc::Project& p);  // UI thread (T4.7): a newly delayed or refused wire, in the status line
+  // FZ.2 (project_link_audio.cpp). UI thread.
+  bool syncFreeze(bool reset);       // the service follows current_; true: renders changed (publishAudio)
+  void takeFreezeResults();          // finished renders → publishAudio
+  std::string freezeCacheDir();      // the project's folder, or the untitled document's
+  void requestCompile();             // a structural compile of current_ (debounced like an edit)
+  void releaseFrozenSlot(uint32_t track);  // mutex_ held
   // T4.7: the program's bus meters for consumer `who` (0: track meters, 1: modulation taps): one program read of
   // every metered bus, merged into both consumers' pending levels; `out` gets this consumer's since its last read.
   void readLevels(int who, std::span<const uint32_t> buses, std::span<engine::BusLevel> out);
@@ -986,6 +1029,22 @@ private:
   uint64_t levelsSerial_ = 0;
   double lastLevelRead_ = 0.0;
   std::vector<doc::WireState> wireStates_;  // T4.7 (UI thread)
+  // FZ.2 ("Frozen tracks" in the file comment). Declared after everything its notify reaches; destroyed first.
+  std::unique_ptr<FreezeService> freeze_;
+  static constexpr uint32_t kFrozenSlotKey = 0x80000000u;  // trackSlots_ key of track id t's render: t | this
+  std::unordered_map<uint32_t, uint32_t> frozenReady_;    // track id → slot | kFrozenMonoBit: frozenSlotOf (mutex_)
+  static constexpr uint32_t kFrozenMonoBit = 0x40000000u;  // the render has one channel (LowerOptions::frozenMono)
+  struct FrozenPub {  // a render in the published audio image (UI thread)
+    FreezeService::Render render;
+    media::SampleRef ref;  // null: still loading
+    uint32_t slot = 0;
+    uint64_t retireAfter = 0;  // retiring: freed once a compile begun after this one (compileStarts_) has published
+  };
+  std::unordered_map<uint32_t, FrozenPub> frozenPub_;  // by track id
+  std::vector<FrozenPub> retiring_;
+  std::vector<uint64_t> frozenKey_;  // (slot, clip, sample) of the published frozen clips
+  std::atomic<uint64_t> compileStarts_{0}, compiledFrom_{0};  // compiles begun; the one whose publish ran last
+  std::vector<uint32_t> frozenDevices_;  // compile path: the blocks of the frozen tracks it lowers from renders (sorted)
   mutable std::mutex cutMutex_;  // WI.2: cut_, cutTouched_, cutReset_, cutPosted_
   CutSet cut_;
   std::vector<uint32_t> cutTouched_;  // tracks and wires a structural edit touched since the running compile began

@@ -413,10 +413,103 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
     next.emplace(t.id.value, std::move(e));
   });
   audioCache_ = std::move(next);
+  // FZ.2 ("Frozen tracks" in project_link.h): each frozen track's newest render, one clip in a slot of its own; and the
+  // renders of tracks unfrozen since, until a compile begun after that has published.
+  std::unordered_map<uint32_t, uint32_t> ready;  // track id → slot: the current render is in this image
+  std::vector<uint64_t> fkey;
+  if (freeze_ != nullptr || !retiring_.empty()) {
+    if (freeze_ != nullptr)
+      for (const std::string& gone : freeze_->takeSuperseded()) {  // a retiring render keeps its SampleRef itself
+        std::lock_guard lock(loadMutex_);
+        loaded_.erase(gone);
+      }
+    std::unordered_map<uint32_t, FrozenPub> pubs;
+    std::vector<FreezeService::Render> renders;
+    if (freeze_ != nullptr) renders = freeze_->renders();
+    for (const FreezeService::Render& r : renders) {
+      const uint32_t slot = slotForTrack(doc::TrackId{r.track.value | kFrozenSlotKey});
+      if (slot == kNone) continue;
+      FrozenPub f;
+      f.render = r;
+      f.slot = slot;
+      {
+        std::lock_guard lock(loadMutex_);
+        const auto l = loaded_.find(r.path);
+        if (l != loaded_.end() && l->second.done) f.ref = l->second.ref;
+      }
+      if (f.ref == nullptr) {
+        requestLoad(r.path);  // (a no-op while it loads)
+        const auto old = frozenPub_.find(r.track.value);  // the slot's previous render plays meanwhile (not current)
+        if (old != frozenPub_.end() && old->second.ref != nullptr && old->second.render.path != r.path) {
+          f = old->second;
+          f.render.current = false;
+        }
+      }
+      std::erase_if(retiring_, [&](const FrozenPub& x) { return x.render.track == r.track; });
+      pubs.emplace(r.track.value, std::move(f));
+    }
+    const uint64_t started = compileStarts_.load(std::memory_order_acquire);
+    for (auto& [id, f] : frozenPub_)
+      if (pubs.count(id) == 0) {
+        f.retireAfter = started;  // a compile begun after this one no longer plays the render
+        retiring_.push_back(std::move(f));
+      }
+    frozenPub_ = std::move(pubs);
+    const uint64_t published = compiledFrom_.load(std::memory_order_acquire);
+    {
+      std::lock_guard lock(mutex_);
+      std::erase_if(retiring_, [&](const FrozenPub& r) {
+        if (published <= r.retireAfter) return false;
+        releaseFrozenSlot(r.render.track.value);
+        return true;
+      });
+    }
+    const TempoMap& tempo = p.timeline->tempoMap;
+    auto add = [&](const FrozenPub& f) {
+      if (f.ref == nullptr) return;
+      engine::AudioClipDesc c;
+      c.id = f.render.clipId;
+      c.sample = static_cast<uint32_t>(samples.size());
+      c.start = 0;
+      c.length = std::max<Ticks>(1, tempo.firstTickAtOrAfterSample(static_cast<SampleTime>(f.render.frames), cfg_.sampleRate));
+      c.warp = engine::ClipWarp::Off;
+      c.speed = static_cast<double>(f.render.rate);
+      c.declick = false;  // song sample k is file frame k
+      fkey.insert(fkey.end(), {f.slot, f.render.clipId, static_cast<uint64_t>(c.length)});
+      engine::ClipSample cs;
+      cs.pooled = f.ref;
+      samplesKey.push_back(f.ref.get());
+      samples.push_back(std::move(cs));
+      if (slots.size() <= f.slot) slots.resize(f.slot + 1);
+      slots[f.slot].id = f.render.track.value;
+      slots[f.slot].clips.assign(1, std::move(c));
+    };
+    for (const auto& [id, f] : frozenPub_) {
+      add(f);
+      if (f.ref != nullptr && f.render.current) ready.emplace(id, f.slot | (f.render.channels == 1 ? kFrozenMonoBit : 0u));
+    }
+    for (const FrozenPub& r : retiring_) add(r);
+  }
+  // FZ.2: the frozen tracks that play their render now: a change compiles (and the wire states follow).
+  auto frozenReady = [&] {
+    bool changed = false;
+    {
+      std::lock_guard lock(mutex_);
+      changed = ready != frozenReady_;
+      if (changed) frozenReady_ = std::move(ready);
+    }
+    if (!changed) return;
+    reportWires(p);
+    requestCompile();
+  };
   std::sort(key.begin(), key.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
-  if (!force && sameKey(key, audioKey_) && samplesKey == audioSamplesKey_) return;  // nothing an audio track plays changed
+  if (!force && sameKey(key, audioKey_) && samplesKey == audioSamplesKey_ && fkey == frozenKey_) {
+    frozenReady();
+    return;  // nothing an audio track plays changed
+  }
   audioKey_ = std::move(key);
   audioSamplesKey_ = std::move(samplesKey);
+  frozenKey_ = std::move(fkey);
   engine::AudioBuildOptions bo;
   bo.sampleRate = cfg_.sampleRate;
   bo.edgeDeclick = cfg_.edgeDeclick;
@@ -452,6 +545,80 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
   prefetchedAt_ = INT64_MIN;  // the streams the next locate prefetches belong to this image
   ++stats_.audioPublishes;
   engine_->wake();
+  frozenReady();
+}
+
+// ---- FZ.2: frozen tracks ("Frozen tracks" in project_link.h) ---------------------------------------------------------
+
+std::string ProjectLink::freezeCacheDir() {
+  std::string dir = ctx_ != nullptr ? ctx_->projectDir() : cfg_.projectDir;
+  if (dir.empty()) dir = unsavedDir_.empty() ? freshUnsavedDir() : unsavedDir_;  // untitled: its own folder
+  return dir;
+}
+
+bool ProjectLink::syncFreeze(bool reset) {
+  if (freeze_ == nullptr || !current_) return false;
+  const std::string pdir = ctx_ != nullptr ? ctx_->projectDir() : cfg_.projectDir;
+  return freeze_->sync(current_, freezeCacheDir(), pdir, reset);
+}
+
+void ProjectLink::takeFreezeResults() {
+  if (freeze_ != nullptr && freeze_->takeResults() && current_) publishAudio(*current_);
+}
+
+void ProjectLink::requestCompile() {
+  if (!current_) return;
+  {
+    std::lock_guard lock(mutex_);
+    pending_ = true;
+    pendingSnap_ = current_;
+    pendingSerial_ = ctx_ != nullptr ? ctx_->docSerial() : 0;
+    pendingSince_ = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+  }
+  cv_.notify_all();
+}
+
+void ProjectLink::releaseFrozenSlot(uint32_t track) {  // mutex_ held
+  const auto it = trackSlots_.find(track | kFrozenSlotKey);
+  if (it == trackSlots_.end()) return;
+  freeSlots_.push_back(it->second);
+  trackSlots_.erase(it);
+}
+
+FreezeStatus ProjectLink::freezeStatus(doc::TrackId track) const {
+  if (freeze_ == nullptr) return {};
+  FreezeStatus s = freeze_->status(track);
+  if (s.state == FreezeState::Ready && frozenSlot(track) == kNoSlot) {  // its file still loads / compiles in
+    s.state = FreezeState::Rendering;
+    s.progress = 1.0f;
+  }
+  return s;
+}
+
+std::optional<FreezeService::Render> ProjectLink::frozenRender(doc::TrackId track) const {
+  const auto it = frozenPub_.find(track.value);
+  if (it == frozenPub_.end() || !it->second.render.current || frozenSlot(track) == kNoSlot) return std::nullopt;
+  return it->second.render;
+}
+
+uint32_t ProjectLink::frozenSlot(doc::TrackId track) const {
+  std::lock_guard lock(mutex_);
+  const auto it = frozenReady_.find(track.value);
+  return it != frozenReady_.end() ? it->second & ~kFrozenMonoBit : kNoSlot;
+}
+
+bool ProjectLink::waitForFreeze(double timeoutSeconds) {
+  if (freeze_ == nullptr) return true;
+  const bool idle = freeze_->waitIdle(timeoutSeconds);
+  takeFreezeResults();
+  (void)waitForSamples(timeoutSeconds);  // the loads -> publishAudio -> the compile they ask for
+  flush();
+  return idle;
+}
+
+std::shared_ptr<const doc::LoweredProject> ProjectLink::lastLowering() {
+  std::lock_guard lock(compileMutex_);
+  return lowered_;
 }
 
 void ProjectLink::prefetchAt(Ticks tick) {

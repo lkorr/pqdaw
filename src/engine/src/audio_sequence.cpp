@@ -136,7 +136,7 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
   const double sr = options.sampleRate;
   img->sliceFade_ = static_cast<uint32_t>(std::max<long>(1, std::lround(0.002 * sr)));
   img->declick_ = options.edgeDeclick ? static_cast<uint32_t>(std::lround(std::max(options.declickSeconds, 0.0) * sr)) : 0u;
-  const SampleTime D = img->declick_;
+  const SampleTime declick = img->declick_;
   img->samples_ = std::move(samples);
   img->slotFirst_.reserve(slots.size() + 1);
   std::set<uint32_t> qs;  // resampler stretches the clips can need
@@ -145,6 +145,7 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
     const size_t first = img->clips_.size();
     for (size_t i = 0; i < tr.clips.size(); ++i) {
       const AudioClipDesc& d = tr.clips[i];
+      const SampleTime D = d.declick ? declick : 0;  // FZ.2: a clip without edge declicks
       if (d.length <= 0) return audioError("clip " + std::to_string(d.id) + ": length must be positive");
       if (d.warp == ClipWarp::Off && !(d.speed > 0.0)) return audioError("clip " + std::to_string(d.id) + ": speed must be positive");
       if (d.warp != ClipWarp::Off) {

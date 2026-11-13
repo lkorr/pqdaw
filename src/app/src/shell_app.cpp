@@ -186,6 +186,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     const double t0 = msSinceMainEntry();
     LinkConfig lc;
     lc.sampleRate = audio.sampleRate;
+    lc.freeze = true;  // FZ.2: frozen tracks play their renders
     // T3.17-fix3 (M3 review M16): chance rolls differently every session (and every playback, every loop repeat).
     lc.chanceSeed = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count()) ^
                     reinterpret_cast<uintptr_t>(app.get());

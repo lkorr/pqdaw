@@ -87,6 +87,10 @@ std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& r
     std::error_code wec;
     for (fs::recursive_directory_iterator w(s.dir, fs::directory_options::none, wec), wend; !wec && w != wend;
          w.increment(wec)) {
+      if (w->is_directory(wec) && w->path().filename() == "cache") {  // FZ.2: frozen-track renders are not takes
+        w.disable_recursion_pending();
+        continue;
+      }
       if (!w->is_regular_file(wec)) continue;
       std::string ext = w->path().extension().string();
       for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));

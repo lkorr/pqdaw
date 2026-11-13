@@ -654,6 +654,16 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
     for (const doc::SampleRef& r : doc::samplesOf(*store_.current()))
       if (doc::isAbsoluteSamplePath(r.path) && pathInside(r.path, unsaved_.root, false)) savedUnsavedRefs_.push_back(r.path);
   const bool renamed = projectDir_ != dirUtf8;
+  if (renamed) {  // FZ.2: the frozen tracks' renders come along (cache/freeze; an untitled project's from its folder)
+    namespace fs = std::filesystem;
+    const std::string& from = projectDir_.empty() ? unsavedRecordingDir_ : projectDir_;
+    std::error_code ec;
+    if (!from.empty() && fs::is_directory(u8Path(from) / "cache" / "freeze", ec)) {
+      fs::create_directories(u8Path(dirUtf8) / "cache" / "freeze", ec);
+      fs::copy(u8Path(from) / "cache" / "freeze", u8Path(dirUtf8) / "cache" / "freeze",
+               fs::copy_options::recursive | fs::copy_options::skip_existing, ec);  // a miss only re-renders
+    }
+  }
   projectDir_ = std::string(dirUtf8);
   saved_ = store_.current();
   viewStateDirty_ = false;

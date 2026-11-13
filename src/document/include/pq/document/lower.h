@@ -224,6 +224,9 @@ struct LowerOptions {
   // FZ.1 ("Frozen tracks" below): the clip slot holding frozen track `id`'s render (the engine's audio sequence the app's
   // freeze service publishes, FZ.2; stable across lowerings). kNone or unset: no render yet — the track is lowered live.
   std::function<uint32_t(TrackId)> frozenSlotOf;
+  // FZ.2: whether frozen track `id`'s render has ONE channel (its own sum was mono): its contribution is the clip
+  // player's channel 0, so the mixer sees the width it saw live (a mono signal pans as mono). Unset: two channels.
+  std::function<bool(TrackId)> frozenMono;
   // FZ.1: the tracks whose OWN mixer contribution is exported as `export own` (the freeze render's capture point; such a
   // track is lowered live, frozen or not). Set only by the freeze render's private link, never in playback. Unset: none.
   std::function<bool(TrackId)> captureOwn;
@@ -592,6 +595,11 @@ struct LoweredProject {
 // their own patches (a wire to a port an edit removed is Invalid).
 std::vector<WireState> wireStates(const Project& project, const graph::PatchLibrary& library);
 std::vector<WireState> wireStates(const Project& project, const DeviceLibrary& devices);
+// FZ.2: the same as lower() with LowerOptions::frozenSlotOf gives them: the frozen tracks with a slot lowered from their
+// render (lower.h "Frozen tracks": their own mixer cables and the cables of blocks not lowered are Inactive). The playback
+// link reports these (ProjectLink::wireStates). Unset or no frozen track with a slot: the plain answer.
+std::vector<WireState> wireStates(const Project& project, const DeviceLibrary& devices,
+                                  const std::function<uint32_t(TrackId)>& frozenSlotOf);
 
 // ---- Control curves (GU.1; docs/plans/GU.md "Curves"; model.h ControlCurve; pq/dsp/curve.h) ------------------------
 // The curve a param's declaration gives: its range ([lo..hi]; none: [min(0, default), max(1, default)]), its @curve
@@ -646,7 +654,8 @@ const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_
 // ---- Frozen tracks (FZ.1; docs/plans/RB.md D2; model.h "Frozen tracks") --------------------------------------------
 // A frozen MIDI or audio track whose render is ready (LowerOptions::frozenSlotOf gives a slot; it is active, and not a
 // captureOwn track) is lowered from the project with its circuit replaced by the render:
-//   mixer     x = clipPlayer(slot) + Σ the cables from OTHER tracks into its mixer (in id order, as before); its own
+//   mixer     x = clipPlayer(slot) (its channel 0 when LowerOptions::frozenMono says the render is mono) + Σ the
+//             cables from OTHER tracks into its mixer (in id order, as before); its own
 //             contribution — the main path's end and every cable into its mixer from its own blocks or source — is the
 //             render, so those cables are not lowered (not doubled). Then its mixer as every track's (volume, pan,
 //             sends, mute, routing: live). PDC follows from the graph.
@@ -664,6 +673,7 @@ const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_
 // without frozen tracks costs one walk over its tracks when frozenSlotOf is set, nothing when it is not.
 // CAPTURE (captureOwn): the mixer sums the track's own contribution first and exports it as `export own` (NodeId
 // fixed), then adds the cables from other tracks; without captureOwn the sum keeps its id order (the playback IR).
+// FZ.2: the export is a bus of the graph (ProjectGraph::taps, "<id>:own"), which the freeze render captures.
 struct FrozenKeep {
   std::vector<DeviceId> blocks;  // the track's blocks that keep running (list order)
   bool source = false;           // its own source (notes, clips, input) still feeds another track

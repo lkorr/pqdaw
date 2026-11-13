@@ -166,6 +166,9 @@ struct AudioClipDesc {
   float fadeInCurve = 0.0f, fadeOutCurve = 0.0f;
   Ticks crossfadeIn = 0;           // with the previous clip of the slot (adjacent: it ends at `start`)
   Ticks cutEnd = 0;                // > 0: the clip stops sounding here (the next clip's start); content laws keep `length`
+  // FZ.2: false: no edge declick at either end (AudioBuildOptions::edgeDeclick), only the clip's own fades. A frozen
+  // track's render starts at song sample 0 with whatever sounded there, and must play exactly as rendered.
+  bool declick = true;
 };
 
 struct AudioTrackDesc {

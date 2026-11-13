@@ -85,7 +85,7 @@ uint64_t removeUnsavedFolder(const std::filesystem::path& target, const std::fil
 // the takes in it.
 struct StaleUnsavedSession {
   std::filesystem::path dir;                // <root>/<pid>-<unix time>
-  std::vector<std::filesystem::path> wavs;  // every .wav under it, sorted
+  std::vector<std::filesystem::path> wavs;  // every .wav under it (not under a `cache` folder: FZ.2's renders), sorted
   uint64_t bytes = 0;                       // their total size
   int64_t started = 0;                      // the session's start (unix seconds, from its name)
   // AS.2: its autosave (<dir>/autosave/project.pqd with a readable autosave.json) when autosaveSupersedesOrigin.

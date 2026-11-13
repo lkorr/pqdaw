@@ -61,10 +61,11 @@ inline constexpr double kTailQuietSeconds = 1.0;
 // A private link for offline renders of `snapshot` at `rate` (8 kHz … 768 kHz): compiled on the calling thread, no
 // idle gate, the JIT on and waited for (error when it does not finish within a minute; `jit` false: interpreter images
 // only — tests, where the JIT's compile time dominates a short render). `projectDir` resolves project-relative sample
-// paths; `chanceSeed` as LinkConfig.
+// paths; `chanceSeed` as LinkConfig. FZ.2: `captureOwn` (LinkConfig::captureOwn): tracks lowered live whose own
+// contribution is the bus "<id>:own" (the freeze render's capture point).
 Result<std::unique_ptr<ProjectLink>> makeOfflineLink(const doc::Snapshot& snapshot, double rate,
                                                      const std::string& projectDir, uint64_t chanceSeed = 0,
-                                                     bool jit = true);
+                                                     bool jit = true, std::vector<doc::TrackId> captureOwn = {});
 
 struct PassTarget {
   uint32_t bus = engine::kNoBus;  // a bus of the link's layout (e.g. trackOutBus(id)); kNoBus: the master output

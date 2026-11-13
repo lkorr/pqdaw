@@ -196,7 +196,8 @@ struct Ditherer {
 // ---- The core -----------------------------------------------------------------------------------------------------
 
 Result<std::unique_ptr<ProjectLink>> makeOfflineLink(const doc::Snapshot& snapshot, double rate,
-                                                     const std::string& projectDir, uint64_t chanceSeed, bool jit) {
+                                                     const std::string& projectDir, uint64_t chanceSeed, bool jit,
+                                                     std::vector<doc::TrackId> captureOwn) {
   if (!snapshot) return bad("no document");
   if (!(rate >= 8000.0 && rate <= 768000.0)) return bad("sample rate outside 8 kHz … 768 kHz");
   LinkConfig cfg;
@@ -206,6 +207,7 @@ Result<std::unique_ptr<ProjectLink>> makeOfflineLink(const doc::Snapshot& snapsh
   cfg.jit = jit;
   cfg.chanceSeed = chanceSeed;
   cfg.projectDir = projectDir;
+  cfg.captureOwn = std::move(captureOwn);  // FZ.2
   auto link = ProjectLink::create(cfg, snapshot);
   if (!link) return link.error();
   if (jit && !(*link)->waitForJit()) return Error{ErrorCode::Overflow, "export: the JIT compile did not finish in time", {}};

@@ -432,6 +432,24 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   publishSequences(*current_);
   publishLiveRoutes(*current_, true);  // T6.4
   (void)freshUnsavedDir();  // M6 review C1: the first untitled document's folder
+  if (cfg_.freeze) {  // FZ.2: the frozen tracks' renders (cache hits are published below; misses render)
+    FreezeService::Options fo;
+    fo.rate = cfg_.sampleRate;
+    fo.jit = cfg_.jit;
+    fo.chanceSeed = cfg_.chanceSeed;
+    fo.notify = [this] {  // the render thread: the results go to the UI thread (or collectIdle / waitForFreeze)
+      std::function<void(std::function<void()>)> post;
+      {
+        std::lock_guard lock(loadMutex_);
+        post = post_;
+      }
+      if (post) post([alive = std::weak_ptr<int>(alive_), this] {
+        if (alive.lock()) takeFreezeResults();
+      });
+    };
+    freeze_ = std::make_unique<FreezeService>(std::move(fo));
+    (void)syncFreeze(true);
+  }
   recording_ = std::make_unique<RecordingService>();  // T6.7 (its own writer thread: M6 review M9)
   recording_->bind(engine_.get());
   syncRecordInputs(*current_, true);
@@ -547,6 +565,7 @@ Status ProjectLink::setSampleRate(double rate) {
     meterBus_.clear();  // the new program's layout is published by compileNow
     tapBus_.clear();
     ++layoutSerial_;
+    frozenReady_.clear();  // FZ.2: every render is at the old rate (re-keyed below: live until re-rendered)
     // TMM.2: a frame table's levels depend on the rate: every slot gets the default at the new one (TMM.5's builder
     // rebuilds the instances' own tables).
     for (MetaSlot& m : metaSlots_) {
@@ -554,6 +573,10 @@ Status ProjectLink::setSampleRate(double rate) {
       m.wanted = 0;  // TMM.5: rebuilt at the new rate by the compile below
       m.recent.clear();
     }
+  }
+  if (freeze_) {
+    freeze_->setRate(rate);
+    (void)syncFreeze(false);
   }
   meters_.clear();
   written_.assign(written_.size(), std::numeric_limits<float>::quiet_NaN());
@@ -582,6 +605,7 @@ Status ProjectLink::setSampleRate(double rate) {
 
 ProjectLink::~ProjectLink() {
   detach();
+  freeze_.reset();  // FZ.2: renders cancelled, its thread joined (it posts to the UI thread only)
   {
     std::lock_guard lock(mutex_);
     quit_ = true;
@@ -604,6 +628,8 @@ ProjectLink::~ProjectLink() {
   engine_.reset();
   audioCache_.clear();
   loaded_.clear();
+  frozenPub_.clear();  // FZ.2: their samples, before the pool
+  retiring_.clear();
   sampleReclaimer_.collect();
   pool_.reset();
 }
@@ -1025,7 +1051,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     auto live = [&](uint32_t id) { return std::binary_search(alive.begin(), alive.end(), id); };
     std::lock_guard lock(mutex_);
     for (auto it = trackSlots_.begin(); it != trackSlots_.end();)
-      if (!live(it->first)) {
+      if ((it->first & kFrozenSlotKey) == 0 && !live(it->first)) {  // FZ.2: render slots are freed by their own path
         freeSlots_.push_back(it->second);
         it = trackSlots_.erase(it);
       } else {
@@ -1058,6 +1084,22 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       }
     }
   }
+  // FZ.2: the frozen tracks' render keys (a frozen track appears only through a structural change; while one is frozen
+  // any change may move its key: tempo, tunings, what feeds it). A Reset drops every render slot at once.
+  bool frozenChanged = false;
+  if (freeze_ && (reset || structural || !freeze_->empty())) {
+    if (reset) {
+      std::lock_guard lock(mutex_);
+      for (const auto& [id, pub] : frozenPub_) releaseFrozenSlot(id);
+      for (const FrozenPub& r : retiring_) releaseFrozenSlot(r.render.track.value);
+      frozenReady_.clear();
+    }
+    if (reset) {
+      frozenPub_.clear();
+      retiring_.clear();
+    }
+    frozenChanged = syncFreeze(reset) || reset;
+  }
   // Tables before the sequences resolve in their definitions. A param change can need a new table too (a region
   // hint moved with the generator: T2.6-fix2), which then is a compile like a structural change.
   bool newTables = false;
@@ -1075,6 +1117,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
       });
   if (deviceParamsOnly) {
     applyDeviceParams(p, c.params);
+    if (frozenChanged) publishAudio(p);  // FZ.2: an upstream knob made a render stale
     return;
   }
   bool sendsChanged = false;
@@ -1125,7 +1168,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
     syncRecordInputs(p, reset);
   // T5.4: audio clips (edits are runtime data, never a compile); a tuning param can move a Steps transpose, a tempo
   // edit the clips' samples. Published only when something an audio track plays changed.
-  if (reset || compile || relocated || c.has(doc::kChangeSequence) || c.has(doc::kChangeTimeline) ||
+  if (reset || compile || relocated || frozenChanged || c.has(doc::kChangeSequence) || c.has(doc::kChangeTimeline) ||
       (c.has(doc::kChangeParam) && !c.tunings.empty())) {
     if (reset || relocated) ++resolution_;
     publishAudio(p);
@@ -1163,7 +1206,20 @@ void ProjectLink::reportMissingDevices(const doc::Project& p) {
 }
 
 void ProjectLink::reportWires(const doc::Project& p) {
-  wireStates_ = doc::wireStates(p, *devices_);
+  {  // FZ.2: the frozen tracks that play their render (their own cables and their unlowered blocks' are Inactive)
+    std::unordered_map<uint32_t, uint32_t> frozen;
+    {
+      std::lock_guard lock(mutex_);
+      frozen = frozenReady_;
+    }
+    if (frozen.empty())
+      wireStates_ = doc::wireStates(p, *devices_);
+    else
+      wireStates_ = doc::wireStates(p, *devices_, [&](doc::TrackId t) {
+        const auto it = frozen.find(t.value);
+        return it != frozen.end() ? it->second & ~kFrozenMonoBit : graph::kNone;
+      });
+  }
   std::vector<doc::WireId> flagged;
   const doc::WireState* first = nullptr;
   uint32_t delayed = 0, refused = 0, invalid = 0;
@@ -1361,6 +1417,13 @@ void ProjectLink::collectIdle() {
   lastCollect_ = now;
   collect();
   takeLoadedSamples();  // T5.4: loads finished without a UI poster
+  takeFreezeResults();  // FZ.2: likewise renders; and retiring renders whose compile has published
+  if (!retiring_.empty() && current_)
+    for (const FrozenPub& r : retiring_)
+      if (compiledFrom_.load(std::memory_order_acquire) > r.retireAfter) {
+        publishAudio(*current_);
+        break;
+      }
   reportDisk();
 }
 
@@ -1562,7 +1625,8 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
   // what it reads through keepAlive.
   std::sort(metaTouched_.begin(), metaTouched_.end());
   for (auto it = metaIds_.begin(); it != metaIds_.end();) {
-    if (std::binary_search(metaTouched_.begin(), metaTouched_.end(), it->second)) {
+    if (std::binary_search(metaTouched_.begin(), metaTouched_.end(), it->second) ||
+        std::binary_search(frozenDevices_.begin(), frozenDevices_.end(), std::get<0>(it->first))) {  // FZ.2: kept
       ++it;
       continue;
     }
@@ -1621,7 +1685,8 @@ void ProjectLink::syncCurveSlots(const std::vector<doc::CurveSite>& sites) {  //
   }
   std::sort(curveTouched_.begin(), curveTouched_.end());
   for (auto it = curveIds_.begin(); it != curveIds_.end();) {
-    if (std::binary_search(curveTouched_.begin(), curveTouched_.end(), it->second)) {
+    if (std::binary_search(curveTouched_.begin(), curveTouched_.end(), it->second) ||
+        std::binary_search(frozenDevices_.begin(), frozenDevices_.end(), it->first.first)) {  // FZ.2: kept while frozen
       ++it;
       continue;
     }
@@ -1915,6 +1980,39 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   }
   lo.metaSlotOf = [this](doc::DeviceId d, std::string_view path, uint32_t index) { return metaSlotFor(d, path, index); };
   lo.curveSlotOf = [this](doc::DeviceId d, std::string_view param) { return curveSlotFor(d, param); };
+  // FZ.2: the frozen tracks whose current render is in the published audio image play it (one clip player); the freeze
+  // render's private link exports its tracks' own contribution.
+  const uint64_t compileStart = compileStarts_.fetch_add(1, std::memory_order_acq_rel) + 1;
+  {
+    std::unordered_map<uint32_t, uint32_t> frozen;
+    {
+      std::lock_guard lock(mutex_);
+      frozen = frozenReady_;
+    }
+    // Their blocks keep their meta and curve slot ids while they are not lowered (syncMetaSlots / syncCurveSlots), so
+    // unfreezing lowers the very IR of before (its JIT images are cache hits).
+    frozenDevices_.clear();
+    doc::forEachTrack(*s, [&](const doc::Track& t, const doc::Track*) {
+      if (frozen.count(t.id.value) != 0)
+        for (const doc::DevicePtr& d : t.devices) frozenDevices_.push_back(d->id.value);
+    });
+    std::sort(frozenDevices_.begin(), frozenDevices_.end());
+    if (!frozen.empty()) {
+      auto shared = std::make_shared<const std::unordered_map<uint32_t, uint32_t>>(std::move(frozen));
+      lo.frozenSlotOf = [shared](doc::TrackId t) {
+        const auto it = shared->find(t.value);
+        return it != shared->end() ? it->second & ~kFrozenMonoBit : graph::kNone;
+      };
+      lo.frozenMono = [shared](doc::TrackId t) {
+        const auto it = shared->find(t.value);
+        return it != shared->end() && (it->second & kFrozenMonoBit) != 0;
+      };
+    }
+  }
+  if (!cfg_.captureOwn.empty())
+    lo.captureOwn = [this](doc::TrackId t) {
+      return std::find(cfg_.captureOwn.begin(), cfg_.captureOwn.end(), t) != cfg_.captureOwn.end();
+    };
   auto fail = [&](const Error& e) {
     ++stats_.compileErrors;
     setError(e.message);
@@ -2121,6 +2219,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   stats_.unitCompiles += compiledUnits;
   lowered_ = shared;
   endJob.ok = true;
+  compiledFrom_.store(compileStart, std::memory_order_release);  // FZ.2: retiring renders may go
   {  // WI.2: keep this compile's cuts unless an edit since it began touched their tracks (that edit's compile re-tries)
     std::string status;
     CutSet post;
