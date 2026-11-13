@@ -1,4 +1,5 @@
-// Memory atoms (SPEC §7.2): z1, delay lines (linear / cubic Hermite / allpass reads), sample&hold, latch.
+// Memory atoms (SPEC §7.2): z1, delay lines (linear / cubic Hermite / allpass reads; delay_fade's gliding and
+// crossfading read heads), sample&hold, latch.
 // Semantics are documented in pq/dsp/atoms.h.
 
 #include <cstring>
@@ -53,10 +54,11 @@ struct Z1Write {
 enum class Interp { Linear, Cubic, Allpass };
 
 // Minimum delay per read type: every tap must be at least one sample old (so `x` is a delayed input and a
-// feedback loop through a delay line is legal): linear ≥ 1, cubic ≥ 2 (its newest tap is one sample newer than
-// the interpolated pair), allpass ≥ 1.5 (fraction kept in [0.5, 1.5) with the newest tap ≥ 1 sample old).
+// feedback loop through a delay line is legal): linear ≥ 1, cubic ≥ 1 (DT.2: in [1, 2) it reads linearly between
+// the taps 1 and 2 samples old, since its 4-point read's newest tap is one sample newer than the interpolated pair;
+// at 2 both give x[n − 2]), allpass ≥ 1.5 (fraction kept in [0.5, 1.5) with the newest tap ≥ 1 sample old).
 template <Interp K>
-constexpr float kMinDelay = K == Interp::Linear ? 1.0f : K == Interp::Cubic ? 2.0f : 1.5f;
+constexpr float kMinDelay = K == Interp::Allpass ? 1.5f : 1.0f;
 
 // Ring-buffer offsets: frame `pos` (wrapped by mask) of this lane. The ring is frame-major with L lanes.
 template <class S>
@@ -100,11 +102,13 @@ inline typename S::F delayTap(const float* ring, typename S::I pos, typename S::
     const auto x1 = tap(S::addi(n, one));
     return S::fma(fr, S::sub(x1, x0), x0);
   } else if constexpr (K == Interp::Cubic) {
+    // Below 2 samples (n = 1) xm1 is the frame being produced (written by the atom, stale for a split read): its
+    // Hermite result is discarded for the linear read between x0 and x1 (one compare and a blend per sample).
     const auto xm1 = tap(S::subi(n, one));
     const auto x0 = tap(n);
     const auto x1 = tap(S::addi(n, one));
     const auto x2 = tap(S::addi(n, S::seti(2)));
-    return hermite<S>(xm1, x0, x1, x2, fr);
+    return S::select(S::lt(d, S::set(2.0f)), S::fma(fr, S::sub(x1, x0), x0), hermite<S>(xm1, x0, x1, x2, fr));
   } else {
     // First-order allpass y = c·(x0 − y1) + x1, c = (1 − Δ)/(1 + Δ), with Δ kept in [0.5, 1.5): if fr < 0.5,
     // borrow one sample from the integer part.
@@ -221,6 +225,160 @@ struct Delay {
   }
 };
 
+// ---- delay_fade (DT.2): a cubic delay line whose read head never jumps ------------------------------------------
+// Semantics in pq/dsp/atoms.h. Per lane: a step of the time glides the head there over G frames (G = the fade length
+// for a param-rate time, 1 for an audio-rate one) when that keeps the pitch within an octave (a glide of Δ samples
+// over G frames reads at rate 1 − Δ/G: −G ≤ Δ ≤ G/2); a larger step crossfades a second head (frozen at the old
+// time) out and the main head, at the new time, in (equal power, `fade` frames). A step that arrives during a fade
+// and cannot glide waits for the fade's end.
+//
+// Cost: at rest (every lane's head at its time, no fade) one compare per lane and block, then the plain cubic delay
+// kernel (Delay<Cubic>) with the heads as a Spl time; an audio-rate time whose every per-sample step stays inside
+// the octave bound is the plain kernel after one vector pass over the time. Only while a head glides or fades does a
+// per-frame loop run, and the second read only while a fade runs.
+
+// sin(π/2 · p) on [0, 1] (the equal-power gain): an odd polynomial fitted with f(0) = 0 and f(1) = 1 exact, max error
+// 7e-7 (cos(π/2 · p) = f(1 − p)).
+template <class S>
+inline typename S::F fadeGain(typename S::F p) noexcept {  // RT-safe
+  const auto p2 = S::mul(p, p);
+  auto r = S::fma(p2, S::set(-0.004322588169388242f), S::set(0.07941835328081738f));
+  r = S::fma(p2, r, S::set(-0.6458860910721176f));
+  r = S::fma(p2, r, S::set(1.5707903259606883f));
+  return S::mul(p, r);
+}
+
+// The read kernels' clamp (delayTap): [1, maxDelay], NaN → 1.
+template <class S>
+inline typename S::F clampFadeDelay(typename S::F v, float maxDelay) noexcept {  // RT-safe
+  return S::min(S::max(v, S::set(kMinDelay<Interp::Cubic>)), S::set(maxDelay));
+}
+
+// Inputs: atom (x, time, fade); read (time, fade). `fade` (frames) is Spl.
+template <bool kWrite>
+struct DelayFade {
+  static constexpr uint32_t kSpec = kWrite ? 2 : 1;
+  template <class S, uint32_t SM>
+  static void run(const KernelArgs& a) noexcept {  // RT-safe
+    using F = typename S::F;
+    using Plain = Delay<Interp::Cubic, true, kWrite>;
+    constexpr uint32_t L = S::kW;
+    constexpr uint32_t kT = kWrite ? 1 : 0;  // input index of the time
+    constexpr bool kSplT = splBit(SM, kT);
+    auto& st = *static_cast<DelayState*>(a.state);
+    if (st.lanes != L || a.frames == 0) {  // the other lane count's state (Plain writes zeros), or nothing to do
+      Plain::template run<S, SM>(a);
+      return;
+    }
+    const float maxD = st.maxDelay;
+    const F zero = S::zero(), one = S::set(1.0f);
+    const In<S, kSplT> time(a.in[kT]);
+    // The fade's length in whole frames, at least 1 (NaN → 1).
+    const F fadeLen = S::floor(S::min(S::max(S::load(a.in[kT + 1]), one), S::set(16777216.0f)));
+    const F glideLen = kSplT ? fadeLen : one;
+    F tgt = S::load(st.fdTarget), end = S::load(st.fdEnd), inc = S::load(st.fdInc), rem = S::load(st.fdRem);
+    F old = S::load(st.fdOld), frem = S::load(st.fdFadeRem), flen = S::load(st.fdFadeLen);
+    // A lane's first frame: its head starts at its time.
+    const F first = clampFadeDelay<S>(time.at(0), maxD);
+    const F fresh = S::eq(S::load(st.fdStarted), zero);
+    if (S::any(fresh)) {
+      tgt = S::select(fresh, first, tgt);
+      end = S::select(fresh, first, end);
+      S::store(st.fdStarted, S::select(fresh, one, S::load(st.fdStarted)));
+    }
+    auto storeHeads = [&]() noexcept {
+      S::store(st.fdTarget, tgt), S::store(st.fdEnd, end), S::store(st.fdInc, inc), S::store(st.fdRem, rem);
+      S::store(st.fdOld, old), S::store(st.fdFadeRem, frem), S::store(st.fdFadeLen, flen);
+    };
+    // At rest: every lane's head at its time and no fade.
+    const F rest = S::band(S::band(S::eq(rem, zero), S::eq(frem, zero)), S::eq(end, tgt));
+    if (!S::any(S::bnot(rest))) {
+      if constexpr (kSplT) {
+        if (!S::any(S::ne(first, tgt))) {  // the time did not move: the plain read at the heads
+          alignas(32) float heads[8];
+          S::store(heads, end);
+          const float* ins[3] = {a.in[0], a.in[1], kWrite ? a.in[2] : nullptr};
+          ins[kT] = heads;
+          KernelArgs b = a;
+          b.in = ins;
+          Plain::template run<S, SM>(b);
+          storeHeads();
+          return;
+        }
+      } else {  // audio rate: the plain read when every step stays inside the octave bound (a glide of one frame)
+        F prev = tgt, bad = zero;
+        for (uint32_t f = 0; f < a.frames; ++f) {
+          const F v = clampFadeDelay<S>(time.at(f), maxD);
+          const F d = S::sub(v, prev);
+          bad = S::bor(bad, S::bor(S::gt(d, S::set(0.5f)), S::lt(d, S::set(-1.0f))));
+          prev = v;
+        }
+        if (!S::any(bad)) {
+          Plain::template run<S, SM>(a);
+          tgt = end = prev;
+          storeHeads();
+          return;
+        }
+      }
+    }
+    // Moving: per frame (as Delay's general path; an 8-lane ring honours every lane's age).
+    float* ring = st.ring();
+    uint32_t w = st.writePos;
+    const auto mask = S::seti(static_cast<int32_t>(st.mask));
+    const auto lane = S::laneIndex();
+    const auto rix = [mask, lane](typename S::I p) noexcept { return ringIndex<S>(p, mask, lane); };
+    typename S::I start{};
+    if constexpr (L == 8) start = S::loadi(reinterpret_cast<const int32_t*>(st.start));
+    F unusedY1 = zero;
+    auto read = [&](F d, typename S::I pos) noexcept {
+      if constexpr (L == 8) return delayTap<S, Interp::Cubic, true>(ring, pos, d, maxD, rix, unusedY1, S::subi(pos, start));
+      else return delayTap<S, Interp::Cubic>(ring, pos, d, maxD, rix, unusedY1);
+    };
+    const F halfGlide = S::mul(glideLen, S::set(0.5f)), negGlide = S::neg(glideLen);
+    float* out = a.out[0];
+    for (uint32_t f = 0; f < a.frames; ++f, ++w) {
+      if constexpr (kWrite) {
+        const In<S, splBit(SM, 0)> x(a.in[0]);
+        S::store(ring + static_cast<size_t>(w & st.mask) * L, x.at(f));
+      }
+      const F v = clampFadeDelay<S>(time.at(f), maxD);
+      const F changed = S::ne(v, tgt);
+      tgt = v;
+      const F fadeIdle = S::eq(frem, zero);
+      // A new time, or one that waited for a fade to end.
+      const F want = S::band(S::ne(end, tgt), S::bor(changed, fadeIdle));
+      if (S::any(want)) {
+        const F cur = S::fnma(inc, rem, end);  // the head's last position
+        const F delta = S::sub(tgt, cur);
+        const F glide = S::band(want, S::band(S::le(delta, halfGlide), S::ge(delta, negGlide)));
+        const F fade = S::andnot(glide, S::band(want, fadeIdle));
+        end = S::select(S::bor(glide, fade), tgt, end);
+        inc = S::select(glide, S::div(delta, glideLen), S::andnot(fade, inc));
+        rem = S::select(glide, glideLen, S::andnot(fade, rem));
+        old = S::select(fade, cur, old);
+        frem = S::select(fade, fadeLen, frem);
+        flen = S::select(fade, fadeLen, flen);
+      }
+      rem = S::max(S::sub(rem, one), zero);
+      const auto pos = S::seti(static_cast<int32_t>(w));
+      F y = read(S::fnma(inc, rem, end), pos);
+      const F fading = S::gt(frem, zero);
+      if (S::any(fading)) {
+        frem = S::max(S::sub(frem, one), zero);
+        const F p = S::div(S::sub(flen, frem), S::max(flen, one));  // 1/len … 1
+        const F yo = read(old, pos);
+        y = S::select(fading, S::fma(fadeGain<S>(p), y, S::mul(fadeGain<S>(S::sub(one, p)), yo)), y);
+      }
+      S::store(out + static_cast<size_t>(f) * L, y);
+    }
+    if constexpr (kWrite) {
+      st.writePos = w;
+      if constexpr (L == 8) clampStart(st);
+    }
+    storeHeads();
+  }
+};
+
 struct SampleHold {
   static constexpr uint32_t kSpec = 2;  // x, trig
   template <class S, uint32_t SM>
@@ -273,6 +431,8 @@ KernelFn findMemoryKernel(Atom a, uint32_t lanes, uint32_t m) noexcept {
     case Atom::DelayReadCubic: return pick<Delay<Interp::Cubic, true, false>>(lanes, m);
     case Atom::DelayReadAllpass: return pick<Delay<Interp::Allpass, true, false>>(lanes, m);
     case Atom::DelayWrite: return pick<Delay<Interp::Linear, false, true>>(lanes, m);
+    case Atom::DelayFade: return pick<DelayFade<true>>(lanes, m);
+    case Atom::DelayReadFade: return pick<DelayFade<false>>(lanes, m);
     case Atom::SampleHold: return pick<SampleHold>(lanes, m);
     case Atom::Latch: return pick<Latch>(lanes, m);
     default: return nullptr;

@@ -58,15 +58,30 @@
 // Memory:
 //   z1 (x)                            x delayed by one sample (initially StateInit::z1Init, default 0)
 //   delay / delay_cubic / delay_allpass (x, delay)  delay in SAMPLES (the compiler multiplies a time in
-//                                     seconds by sr), fractional, clamped to [1, max] linear, [2, max] cubic
-//                                     (4-point Hermite), [1.5, max] allpass (first-order allpass, fractional
-//                                     part kept in [0.5, 1.5) by moving one sample into the integer part);
+//                                     seconds by sr), fractional, clamped to [1, max] linear, [1, max] cubic
+//                                     (4-point Hermite from 2 samples; in [1, 2) linear between the taps 1 and 2
+//                                     samples old, continuous at 2), [1.5, max] allpass (first-order allpass,
+//                                     fractional part kept in [0.5, 1.5) by moving one sample into the integer part);
 //                                     NaN → the minimum. Every tap is ≥ 1 sample old, so x is a DELAYED input
 //                                     (a feedback loop through a delay line is legal). max =
 //                                     StateInit::maxDelayFrames.
+//   delay_fade (x, delay, fade)       (DT.2) delay_cubic's line and read (the same clamp and taps) whose read head
+//                                     never jumps. `fade` in FRAMES (the compiler multiplies seconds by sr; Spl; whole,
+//                                     ≥ 1, NaN → 1). Per lane the head starts at the delay; a later change of the
+//                                     (clamped) delay to t, from where the head is (h), with G = fade frames for a
+//                                     Spl delay and 1 for a Blk one:
+//                                       −G ≤ t − h ≤ G/2  the head glides linearly to t over G frames (restarted from
+//                                                     where it is by a later change): a pitch within one octave
+//                                       otherwise      a CROSSFADE: a second head stays at h and fades out while the
+//                                                     main one, at t, fades in, equal power (sin / cos) over `fade`
+//                                                     frames; a change that cannot glide during a fade waits for its
+//                                                     end (then glides or fades from where the head is).
+//                                     At rest it is delay_cubic at the head (bit for bit); the second read runs only
+//                                     during a fade. Split read: delay_fade:read (delay, fade) → out with delay:write.
 //   Split kernels for feedback loops scheduled per sample (same state block as the atom; not atoms):
 //     z1:read () → out, z1:write (x): read emits the stored value, write stores x (last frame).
-//     delay:read / delay_cubic:read / delay_allpass:read (delay) → out, and delay:write (x).
+//     delay:read / delay_cubic:read / delay_allpass:read (delay) → out, delay_fade:read (delay, fade) → out, and
+//     delay:write (x).
 //     Per sample: read at the start, write at the end; read(frames = k) requires delay ≥ k (it reads frames
 //     not yet written otherwise — memory-safe, but stale). Reading then writing frame by frame produces
 //     exactly the atom's output (tested bit-for-bit).
@@ -256,6 +271,8 @@ enum class Atom : uint16_t {
   Curve,
   // EQ.1: the state-variable filter cascade (see "Filters" above)
   Svf,
+  // DT.2: the delay line whose read head glides or crossfades (see "Memory" above), and its split read
+  DelayFade, DelayReadFade,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
@@ -335,7 +352,7 @@ enum class LaneState : uint8_t {
   None,       // stateless (or not declared: a stateful atom must never return this)
   PerLane,    // bytes [0, perLaneBytes) are per-lane [8] arrays; the rest is shared by the group's lanes (phasor's
               // incScale/halfSr, noise's counter; noise's per-lane seeds are constant from StateInit, so 0 bytes)
-  DelayLine,  // DelayState: shared header, apY1[8] per lane, start[8] + the ring handled by the VoiceEngine in O(1)
+  DelayLine,  // DelayState: shared header, [8] arrays per lane (delay_fade heads, apY1), start[8] + the ring (VoiceEngine, O(1))
   Whole,      // every word of the entry (whatever its size: svf, sized by its sections) is per lane; the values the
               // group shares are replicated in each lane
 };

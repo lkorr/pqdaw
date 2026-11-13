@@ -50,10 +50,12 @@ const float kTrueMask = dsp::boolMask(true);
 
 // DelayState word offsets (pq/dsp/atom_state.h).
 constexpr uint32_t kDlWritePos = offsetof(dsp::DelayState, writePos) / 4;
+constexpr uint32_t kDlLane = offsetof(dsp::DelayState, fdTarget) / 4;  // the first per-lane [8] array (DT.2)
 constexpr uint32_t kDlApY1 = offsetof(dsp::DelayState, apY1) / 4;
 constexpr uint32_t kDlStart = offsetof(dsp::DelayState, start) / 4;
 constexpr uint32_t kDlRing = sizeof(dsp::DelayState) / 4;
-static_assert(kDlApY1 + 8 == kDlStart && kDlStart + 8 == kDlRing);
+// [kDlLane, kDlStart): per-lane [8] float arrays (delay_fade's heads, apY1), reset and moved per lane.
+static_assert(kDlLane + 64 == kDlApY1 && kDlApY1 + 8 == kDlStart && kDlStart + 8 == kDlRing);
 
 }  // namespace
 
@@ -181,14 +183,15 @@ Result<std::unique_ptr<VoiceBinding>> VoiceEngine::makeBinding(ProgramImage* ima
       const dsp::LaneStateInfo lane = dsp::laneStateInfo(atom);
       if (lane.kind == dsp::LaneState::None) return bad("voice state of an atom without a lane layout (laneStateInfo)");
       if (lane.kind == dsp::LaneState::DelayLine) {
-        // Header shared; apY1[8] reset per lane; the ring is reset in O(1) through start[lane] (resetLaneState)
-        // and moved re-aligned to the destination group's write position (moveLane).
+        // Header shared; the per-lane arrays (delay_fade's heads, apY1) reset per lane; the ring is reset in O(1)
+        // through start[lane] (resetLaneState) and moved re-aligned to the destination group's write position
+        // (moveLane).
         const uint32_t* h = B.stateTemplate.data() + e.offset / 4;
         const float maxDelay = std::bit_cast<float>(h[4]);
         if (h[3] != 8 || h[0] == 0 || (h[0] & (h[0] - 1)) != 0 || e.size < kDlRing * 4 + h[0] * 32 ||
             !(maxDelay >= 0.0f) || maxDelay + 2.0f > static_cast<float>(h[0]))
           return bad("unexpected voice delay-line state layout");
-        addSpan(B.resetSpans, {e.offset / 4 + kDlApY1, 8});
+        addSpan(B.resetSpans, {e.offset / 4 + kDlLane, kDlStart - kDlLane});
         B.delays.push_back({e.offset / 4, h[0], static_cast<uint32_t>(maxDelay) + 2u});
         continue;
       }
@@ -910,10 +913,10 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
       for (const VoiceBinding::Span& sp : bd->sideSpans)
         for (uint32_t w = sp.firstWord; w < sp.firstWord + sp.numWords; w += 8) sd[w + lb] = ss[w + la];
     }
-    for (const VoiceBinding::DelaySpan& d : bd->delays) {  // DelayState: header, apY1[8], start[8], ring[capacity][8]
+    for (const VoiceBinding::DelaySpan& d : bd->delays) {  // DelayState: header, [8] arrays, start[8], ring[capacity][8]
       const uint32_t* s = src + d.firstWord;
       uint32_t* t = dst + d.firstWord;
-      t[kDlApY1 + lb] = s[kDlApY1 + la];
+      for (uint32_t w = kDlLane; w < kDlStart; w += 8) t[w + lb] = s[w + la];
       // Only the frames a read can still reach: the last min(history, reach) written ones, re-aligned to the
       // destination's write position; older ones read 0 through start (as they did in the source).
       const uint32_t sw = s[kDlWritePos], tw = t[kDlWritePos], mask = d.capacity - 1;

@@ -98,6 +98,8 @@ constexpr PortSpec pPulse[] = {{"period", kR, true, 0.0f}};
 
 constexpr PortSpec pZ1[] = {{"x", kAny, false, 0.0f, true}, {"init", kRConst, true, 0.0f}};
 constexpr PortSpec pDelay[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}};
+// DT.2: delay_fade's `fade` (seconds, param rate: read once per block) after the delay line's three.
+constexpr PortSpec pDelayFade[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}, {"fade", kRParamBound, true, 0.03f}};
 // T6.2: a pure delay of `frames` samples (at the node's rate) that REPORTS its latency (plugin-delay compensation).
 constexpr PortSpec pLatency[] = {{"x", kR, false, 0.0f, true}, {"frames", kRConst}};
 constexpr PortSpec pSampleHold[] = {{"x", kR}, {"trig", kB}};
@@ -251,15 +253,19 @@ const AtomSignature kAtoms[] = {
     {"curve", C::Shaping, pCurve, pOutR, 0, kMath, 0, {}, "a control's curve: knob position → value (its slot's data)"},
 
     // Memory. delay*: time in seconds (the compiler multiplies by sr; the kernels take samples), max (const,
-    // seconds) sizes the buffer. The read is clamped to at least 1 (linear), 2 (cubic) or 1.5 (allpass) samples,
-    // so every interpolation tap is ≥ 1 sample old: that is what makes x a delayed input (Q14).
+    // seconds) sizes the buffer. The read is clamped to at least 1 (linear, cubic: linear below 2) or 1.5 (allpass)
+    // samples, so every interpolation tap is ≥ 1 sample old: that is what makes x a delayed input (Q14).
     {"z1", C::Memory, pZ1, pOutAny, sizeof(dsp::Z1State), kStateful, 0, {}, "one-sample delay (starts at init)", rules::z1},
     {"delay", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
      "delay line, linear read (≥ 1 sample)", rules::delayLinear},
     {"delay_allpass", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
      "delay line, allpass-interpolated read (≥ 1.5 samples)", rules::delayAllpass},
     {"delay_cubic", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, cubic read (≥ 2 samples)", rules::delayCubic},
+     "delay line, cubic read (≥ 1 sample; linear below 2)", rules::delayCubic},
+    // DT.2: delay_cubic whose read head glides (within an octave of pitch) or crossfades over `fade` seconds when
+    // the time changes (pq/dsp/atoms.h "delay_fade"); at rest exactly delay_cubic, so its response is that.
+    {"delay_fade", C::Memory, pDelayFade, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
+     "delay line, cubic read whose head glides or crossfades (fade seconds) when the time jumps", rules::delayCubic},
     // T6.2: the delay line's kernel (linear read at a constant time: exact at whole samples), and the frames are
     // reported as the path's latency (pq/graph/latency.h). optimise() makes it a wire below half a sample.
     {"latency", C::Memory, pLatency, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},

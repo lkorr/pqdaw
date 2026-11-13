@@ -110,12 +110,16 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // EQ.1 (kernels_svf.cpp): x, cutoff, q, gain Blk or Spl (a template specialisation each); mode, stages, prewarp
     // consts. EQ.1b: the state's size is the header; stateBytes() adds the sections (StateInit::svfSections).
     {"svf", 7, 1, false, false, 0, 0, kB0 | kB1 | kB2 | kB3, kB4 | kB5 | kB6, kSvfHeaderBytes, Resource::None, false},
+    // DT.2 (kernels_memory.cpp DelayFade): x, delay Blk or Spl; fade a Spl (frames). Its split read: delay, fade.
+    {"delay_fade", 3, 1, false, false, 0, 0, kB0 | kB1, kB2, sizeof(DelayState), Resource::None, false},
+    {"delay_fade:read", 2, 1, false, false, 0, 0, kB0, kB1, sizeof(DelayState), Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
   switch (a) {
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
-    case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite:
+    case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: case Atom::DelayFade:
+    case Atom::DelayReadFade:
       return true;
     default:
       return false;
@@ -227,7 +231,9 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
     case Atom::DelayReadAllpass:
-    case Atom::DelayWrite: return {LaneState::DelayLine, 0};
+    case Atom::DelayWrite:
+    case Atom::DelayFade:
+    case Atom::DelayReadFade: return {LaneState::DelayLine, 0};
     default: return {};
   }
 }
@@ -279,11 +285,13 @@ SilenceInfo silenceInfo(Atom a) noexcept {  // RT-safe
     case Atom::DelayCubic:
     case Atom::DelayAllpass:
     case Atom::DelayWrite:
+    case Atom::DelayFade:
     case Atom::Svf: return {R::Memory, i0, 0};  // svf: x; its state decays (hasDecayState)
     case Atom::Z1Read:
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
-    case Atom::DelayReadAllpass: return {R::Memory, 0, 0};  // the history its write half stores
+    case Atom::DelayReadAllpass:
+    case Atom::DelayReadFade: return {R::Memory, 0, 0};  // the history its write half stores
     case Atom::Gain: return {R::Smoother, i0, i1 | i2};
     case Atom::GainAdd: return {R::Smoother, i0 | i1, i2 | i3};
     default: return {};
@@ -348,6 +356,8 @@ uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept {  // RT-safe
     case Atom::ClockDiv: no |= kB1; break;            // n
     case Atom::Pulse: no |= kB0; break;               // the period (a count of samples)
     case Atom::Timer: no |= kB1; break;               // the duration (a count of samples)
+    case Atom::DelayFade: no |= kB1; break;           // DT.2: the delay (its head glides / crossfades itself)
+    case Atom::DelayReadFade: no |= kB0; break;
     // tuning_hz: none. Its inputs are pitch identities (degree, equave, the tuning node) and the tuning's values, which
     // automation already drives per sample (TuningTableView::live) and whose region crossings fall on exact samples.
     case Atom::TuningHz: return 0;
@@ -393,7 +403,9 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
     case Atom::DelayReadAllpass:
-    case Atom::DelayWrite: {
+    case Atom::DelayWrite:
+    case Atom::DelayFade:
+    case Atom::DelayReadFade: {
       auto& s = *static_cast<DelayState*>(state);
       s.lanes = ringLanes(init);
       const uint32_t maxDelay = clampMaxDelay(init.maxDelayFrames, s.lanes);

@@ -68,7 +68,7 @@ TEST_CASE("delay tap: note values 1/96 … 3/2 ascending, named as reduced whole
   CHECK(noteValueSeconds(99, 120.0) == noteValueSeconds(20, 120.0));  // clamped index
 }
 
-TEST_CASE("delay tap: the group — roles, In → delay_cubic (max 5 s) → Out, the tempo slider bound to Time, Sync, Mode") {
+TEST_CASE("delay tap: the group — roles, In → delay_fade (max 5 s, fade 30 ms) → Out, the tempo slider bound to Time, Sync, Mode") {
   IdSource ids;
   DelayTapRoles r;
   const BlockSet set = delayTapBlocks(ids, {}, &r);
@@ -86,7 +86,9 @@ TEST_CASE("delay tap: the group — roles, In → delay_cubic (max 5 s) → Out,
   }
   REQUIRE(time != nullptr);
   REQUIRE(delay != nullptr);
-  CHECK(delay->patch == std::string(kAtomDevicePrefix) + "delay_cubic");
+  CHECK(delay->patch == std::string(kAtomDevicePrefix) + "delay_fade");
+  REQUIRE(delay->setting("fade") != nullptr);
+  CHECK(delay->setting("fade")->value == kDelayTapFadeSeconds);
   REQUIRE(delay->setting("max") != nullptr);
   CHECK(delay->setting("max")->value == kDelayTapMaxSeconds);
   CHECK(*time->curve(kValueParam) == delayTimeCurve());

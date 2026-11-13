@@ -1525,8 +1525,9 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* 
   const Sig synced = k.op("min", "≤ 5 s", {{"a", k.op("div", "· 60 / bpm", {{"a", k.op("mul", "beats · 60", {{"a", beats}, {"b", k.k(60.0)}})}, {"b", bpm}})},
                                            {"b", k.k(kDelayTapMaxSeconds)}});
   const Sig seconds = k.op("lerp", "ms / sync", {{"a", time}, {"b", synced}, {"t", mode}});
-  r.delay = k.block("delay_cubic", "delay", {{"x", k.in()}, {"time", seconds}});
+  r.delay = k.block("delay_fade", "delay", {{"x", k.in()}, {"time", seconds}});
   k.setting(r.delay, "max", kDelayTapMaxSeconds);
+  k.setting(r.delay, "fade", kDelayTapFadeSeconds);
   k.out(Sig{r.delay, "out"});
   // The panel: the plate and one tempo slider (its tempo markings above, the readout, the ms / ♪ and magnet buttons below).
   Panel p;

@@ -49,7 +49,9 @@ float coefficient(Atom atom, uint32_t i, const pq::dsp::KernelInfo& info, std::m
     case Atom::DelayAllpass:
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
-    case Atom::DelayReadAllpass: return std::uniform_real_distribution<float>(1.0f, 40.0f)(rng);  // delay time
+    case Atom::DelayReadAllpass:
+    case Atom::DelayFade:
+    case Atom::DelayReadFade: return std::uniform_real_distribution<float>(1.0f, 40.0f)(rng);  // delay time (fade frames)
     case Atom::Svf:  // cutoff, q, gain, mode, stages, prewarp: a filter that decays in well under a second
       switch (i) {
         case 1: return std::uniform_real_distribution<float>(200.0f, 5000.0f)(rng);
@@ -174,6 +176,7 @@ TEST_CASE("dsp silence: every declaration holds for its kernel (T1.x-silence)") 
                                 : atom == Atom::Z1Read ? Atom::Z1
                                 : atom == Atom::DelayReadLinear ? Atom::DelayLinear
                                 : atom == Atom::DelayReadCubic ? Atom::DelayCubic
+                                : atom == Atom::DelayReadFade ? Atom::DelayFade
                                                                : Atom::DelayAllpass;
             const pq::dsp::KernelInfo& winfo = pq::dsp::kernelInfo(writer);
             const Kernel w{writer, lanes, winfo.splRequired, winfo.numIn, winfo.numOut};

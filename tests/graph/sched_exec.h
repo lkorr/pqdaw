@@ -91,7 +91,8 @@ public:
       dsp::StateInit init;
       init.sampleRate = sr_;
       init.lanes = 1;
-      if (k == dsp::Atom::DelayLinear || k == dsp::Atom::DelayCubic || k == dsp::Atom::DelayAllpass) {
+      if (k == dsp::Atom::DelayLinear || k == dsp::Atom::DelayCubic || k == dsp::Atom::DelayAllpass ||
+          k == dsp::Atom::DelayFade) {
         const WireIndex w = adj_.driver[p_.flatInput(v, 2)];
         const NodeIndex d = p_.wire(w).from.node;
         const Constant& c = p_.constant(d);
@@ -122,7 +123,7 @@ private:
     const KernelMapping& m = kernelMapping(nd.atom);
     return m.lowering == Lowering::Kernel &&
            (m.kernel == dsp::Atom::Z1 || m.kernel == dsp::Atom::DelayLinear || m.kernel == dsp::Atom::DelayCubic ||
-            m.kernel == dsp::Atom::DelayAllpass);
+            m.kernel == dsp::Atom::DelayAllpass || m.kernel == dsp::Atom::DelayFade);
   }
   void order() {
     const uint32_t n = p_.nodeCount();
@@ -205,6 +206,7 @@ private:
       k = k == dsp::Atom::Z1 ? dsp::Atom::Z1Read
           : k == dsp::Atom::DelayLinear ? dsp::Atom::DelayReadLinear
           : k == dsp::Atom::DelayCubic  ? dsp::Atom::DelayReadCubic
+          : k == dsp::Atom::DelayFade   ? dsp::Atom::DelayReadFade
                                         : dsp::Atom::DelayReadAllpass;
       for (size_t j = 0; j < regs.size(); ++j)
         if (regs[j] != 0) ip.push_back(&ins[j]);

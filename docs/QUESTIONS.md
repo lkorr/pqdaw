@@ -1086,6 +1086,7 @@ Context: docs/plans/DT.md; `pq/document/modules.h` "the Delay Tap", `src/views/s
    no recompile per sync step, glided. Cost: both the time and the sync path run per block in which an input changes
    (a few param-rate ops).
 4. **Minimum delay 2 samples** (the cubic read's floor; the plan says ≥ 1). Option: `delay` (linear) below 2 samples.
+   DT.2: superseded — 1 sample (`delay_cubic` reads linearly in [1, 2)); item 2's glide is `delay_fade`'s own head.
 5. **Gravity zones shrink between dense markings**: 6 device px per side, but at most 40 % of the gap to the next
    marking (at 120 BPM the 21 markings sit in the middle of a 148-px slider, where 6-px zones would cover all of it and
    the knob could never stop between 1/2T and 1/4.). Option: plain 6 px, or straight values only.

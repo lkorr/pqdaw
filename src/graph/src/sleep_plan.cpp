@@ -38,7 +38,8 @@ bool isZero(float v) noexcept { return (std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu
 bool isDelayAtom(Atom a) noexcept {
   switch (a) {
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
-    case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: return true;
+    case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: case Atom::DelayFade:
+    case Atom::DelayReadFade: return true;
     default: return false;
   }
 }

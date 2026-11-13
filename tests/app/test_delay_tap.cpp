@@ -4,7 +4,10 @@
 //     (−1/16, 9/16, 9/16, −1/16); stereo in, stereo out (each channel delayed alike)
 //   - sync mode: 1/8 at 120 BPM = 0.25 s, at 90 BPM = 1/3 s (the transport's tempo per block)
 //   - a feedback loop (Out → VCA × 0.5 → back into In, summed with the impulse) decays 1, 0.5, 0.25 at D, 2D, 3D
-//   - a time change while a 1 kHz sine plays glides (the param ramp): no step in the output, and the new delay is reached
+//   - a time change while a 1 kHz sine plays glides (delay_fade's head, 30 ms): no step in the output, one sine
+//     throughout (no crossfade), and the new delay is reached
+// DT.2: Time at 0 is 1 sample (an impulse, a loop through a VCA at 1 sample); a mode switch and a sync step crossfade:
+// their click energy is the ideal equal-power crossfade's, against the old 20 ms param ramp's (measured).
 // Each case is a group on an audio track: a source (atoms) → the Delay Tap (nested, as the node menu pastes it) → Out.
 #include <doctest/doctest.h>
 
@@ -12,6 +15,8 @@
 #include <cmath>
 #include <ostream>
 #include <memory>
+#include <numbers>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -374,8 +379,16 @@ TEST_CASE("delay tap: a time change while a sine plays glides — no step, and t
   for (size_t i = at; i < L.size(); ++i) change = std::max(change, static_cast<double>(std::fabs(L[i] - L[i - 1])));
   MESSAGE("max |Δ| steady " << steady << ", across the change " << change);
   CHECK(steady == doctest::Approx(2.0 * std::sin(3.14159265358979 * 1000.0 / kRate)).epsilon(0.01));
-  // A glide over 20 ms of 10.3 ms reads ≈ 1.5× faster meanwhile: the steps grow by that, never to a jump.
+  // A glide of 10.3 ms over 30 ms reads at ≈ 0.66× meanwhile (a lower pitch): the steps shrink, never a jump.
   CHECK(change < 2.0 * steady);
+  // One sine throughout (a glide, not a crossfade: two 1 kHz sines 10.3 periods apart would sum to ≈ 0.83 midway):
+  // every 2 ms window of the glide still peaks at 1.
+  for (size_t w = at; w + 96 <= at + 1440; w += 96) {
+    double peak = 0.0;
+    for (size_t i = w; i < w + 96; ++i) peak = std::max(peak, static_cast<double>(std::fabs(L[i])));
+    CAPTURE(w - at);
+    CHECK(peak > 0.98);
+  }
   // Meanwhile (5 … 15 ms into it) it is neither the old delay nor the new one: a glide, not a step.
   auto delayed = [](size_t n, double d) { return std::sin(2.0 * 3.14159265358979 * 1000.0 * (static_cast<double>(n) - d) / kRate); };
   double offOld = 0.0, offNew = 0.0;
@@ -391,8 +404,8 @@ TEST_CASE("delay tap: a time change while a sine plays glides — no step, and t
   // (the phasor's first sample is the path's base offset: measured as 0 by baseIndex in the other cases)
   CHECK(std::fabs(L[n] - want) < 0.02);
   // A sync step and a mode switch (to 1/32. = 93.75 ms at 120 BPM): param writes, no recompile (Sync and Mode reach
-  // no choice: they are runtime params); the delay glides there (−16.55 ms over the 20 ms ramp: reading ≈ 1.8× as
-  // fast meanwhile), the line goes on.
+  // no choice: they are runtime params); the delay glides there (−16.55 ms over 30 ms: reading ≈ 1.55× as fast
+  // meanwhile, inside the octave bound), the line goes on.
   const uint64_t compiles = (p.link->flush(), p.link->stats().compiles);
   s.set(s.role(DelayRole::Sync), 6.0);
   s.set(s.role(DelayRole::Mode), 1.0);
@@ -409,4 +422,186 @@ TEST_CASE("delay tap: a time change while a sine plays glides — no step, and t
   const size_t m = L.size() - 10;
   CHECK(std::fabs(L[m] - delayed(m, 0.09375 * kRate)) < 0.02);
   s.store.unsubscribe(sub);
+}
+
+// ---- DT.2: the 1-sample floor, click-free jumps -------------------------------------------------------------------
+
+namespace {
+
+// The click measure: the energy of the third difference x[n] − 3x[n−1] + 3x[n−2] − x[n−3] (a high-pass of 18 dB / oct:
+// a 220 Hz sine passes at 2.4e-5 of its amplitude, a step or a kink in full) over [from, to).
+double clickEnergy(const std::vector<float>& x, size_t from, size_t to) {
+  double e = 0.0;
+  for (size_t n = std::max<size_t>(from, 3); n < to && n < x.size(); ++n) {
+    const double d = static_cast<double>(x[n]) - 3.0 * x[n - 1] + 3.0 * x[n - 2] - static_cast<double>(x[n - 3]);
+    e += d * d;
+  }
+  return e;
+}
+double maxStep(const std::vector<float>& x, size_t from, size_t to) {
+  double m = 0.0;
+  for (size_t n = std::max<size_t>(from, 1); n < to && n < x.size(); ++n)
+    m = std::max(m, static_cast<double>(std::fabs(x[n] - x[n - 1])));
+  return m;
+}
+
+constexpr double kSineHz = 220.0;
+double sineAt(double n, double delaySamples) {
+  return std::sin(2.0 * std::numbers::pi * kSineHz * (n - delaySamples) / kRate);
+}
+// The ideal: the sine delayed by `from` before frame `at`, by `to` after `at + fade`, and between the two read heads'
+// equal-power crossfade (as delay_fade: the first frame of the fade at p = 1/fade).
+std::vector<float> idealCrossfade(size_t n, size_t at, double from, double to, size_t fade) {
+  std::vector<float> y(n);
+  for (size_t i = 0; i < n; ++i) {
+    const double t = static_cast<double>(i);
+    if (i < at) y[i] = static_cast<float>(sineAt(t, from));
+    else if (i >= at + fade) y[i] = static_cast<float>(sineAt(t, to));
+    else {
+      const double p = static_cast<double>(i - at + 1) / static_cast<double>(fade);
+      y[i] = static_cast<float>(std::sin(std::numbers::pi / 2 * p) * sineAt(t, to) + std::cos(std::numbers::pi / 2 * p) * sineAt(t, from));
+    }
+  }
+  return y;
+}
+
+// A 220 Hz sine into `make`'s delay, played 0.6 s, then `change` (a document edit), then 0.3 s more. Returns the left
+// channel and the frame where the change takes effect (the first block after the flush).
+template <class Make, class Change>
+std::pair<std::vector<float>, size_t> switchRender(Make make, Change change) {
+  Song s;
+  IdSource ids;
+  Circuit c(ids);
+  const DeviceId ph = c.atom("phasor"), sine = c.atom("sine");
+  c.wire(c.konst(kSineHz), kValueOutput, ph, "hz");
+  c.wire(ph, "out", sine, "phase");
+  make(c, sine);
+  s.place(c.set);
+  s.tempo(120.0);
+  Player p(s.store.current());
+  [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { p.link->onDocumentChange(e); });
+  std::vector<float> L, R;
+  p.run(450, L, R);  // 0.6 s
+  const uint64_t compiles = (p.link->flush(), p.link->stats().compiles);
+  change(s);
+  p.link->flush();
+  CHECK(p.link->stats().compiles == compiles);  // a param write, no recompile
+  const size_t at = L.size();
+  p.run(225, L, R);
+  s.store.unsubscribe(sub);
+  return {std::move(L), at};
+}
+
+}  // namespace
+
+TEST_CASE("delay tap: the minimum is 1 sample — Time at 0 delays an impulse by 1; a loop at 1 sample through a VCA") {
+  const size_t b0 = baseIndex();
+  {
+    Song s;
+    IdSource ids;
+    Circuit c(ids);
+    c.out(c.delayTap(c.impulse()), kMainPort);
+    s.place(c.set);
+    s.set(s.role(DelayRole::Time), 0.0);
+    const Rendered r = render(s, 80);
+    CHECK(r.L[b0] == 0.0f);
+    CHECK(r.L[b0 + 1] == 1.0f);
+    CHECK(r.L[b0 + 2] == 0.0f);
+  }
+  {  // Out → VCA × 0.5 → In (+ the impulse): 1, 0.5, 0.25, … one sample apart (the loop runs per sample)
+    Song s;
+    IdSource ids;
+    Circuit c(ids);
+    const DeviceId imp = c.impulse(), sum = c.atom("add");
+    c.wire(imp, "out", sum, "a");
+    const DeviceId tap = c.delayTap(sum);
+    VcaOptions vo;
+    vo.inGroup = c.group;
+    vo.value = dsp::curvePosition(vcaCurve(), 0.5, 0.5);
+    VcaRoles vr;
+    c.take(vcaBlocks(ids, vo, &vr));
+    c.wire(tap, kMainPort, vr.group, kMainPort);
+    c.wire(vr.group, kMainPort, sum, "b");
+    c.out(tap, kMainPort);
+    s.place(c.set);
+    s.set(s.role(DelayRole::Time), 0.0);
+    const Rendered r = render(s, 80);
+    CHECK(r.L[b0] == 0.0f);
+    for (int k = 1; k <= 8; ++k) {
+      CAPTURE(k);
+      CHECK(r.L[b0 + static_cast<size_t>(k)] == doctest::Approx(std::ldexp(1.0, 1 - k)).epsilon(1e-4));
+    }
+  }
+}
+
+TEST_CASE("delay tap: a mode switch and a sync step while a sine plays crossfade — no click, unlike the old 20 ms ramp") {
+  // 375 ms (Time) and 1/4 = 500 ms (Sync at 120 BPM): ms → ♪ moves the delay by 6000 samples. The old behaviour, for
+  // the measure: delay_cubic whose time (a value block) the scheduler's param ramp glides there in 20 ms (the read
+  // head running backwards at 5.25×: the click the user heard).
+  constexpr size_t kFade = static_cast<size_t>(kDelayTapFadeSeconds * kRate);
+  const double d375 = 0.375 * kRate, d500 = 0.5 * kRate;
+  DelayTapOptions o;
+  o.time = dsp::curvePosition(delayTimeCurve(), dsp::curveOutput(delayTimeCurve(), 0.375), 0.0);
+  o.sync = kNoteValueQuarter;
+  auto tap = [&](Circuit& c, DeviceId sine) { c.out(c.delayTap(sine, "out", o), kMainPort); };
+  const auto [modeL, modeAt] = switchRender(tap, [](Song& s) { s.set(s.role(DelayRole::Mode), 1.0); });
+  // A sync step: 1/4 → 3/16 (a dotted eighth, index 12, 375 ms) in sync mode.
+  DelayTapOptions os = o;
+  os.mode = 1;
+  auto tapSync = [&](Circuit& c, DeviceId sine) { c.out(c.delayTap(sine, "out", os), kMainPort); };
+  const auto [syncL, syncAt] = switchRender(tapSync, [](Song& s) { s.set(s.role(DelayRole::Sync), 12.0); });
+  // The old path: delay_cubic with its time a value block (0 … 5 s), 375 → 500 ms.
+  auto ramp = [&](Circuit& c, DeviceId sine) {
+    const DeviceId d = c.atom("delay_cubic"), v = c.ids.device();
+    auto dev = std::make_shared<Device>(*makeDevice(v, std::string(kValueDevice), DeviceKind::AudioEffect));
+    dev->name = "time";
+    dev->group = c.group;
+    dev->params = {DeviceValue{std::string(kValueParam), 0.375 / 5.0}};
+    dev->curves = {ControlCurve{std::string(kValueParam), dsp::curvePreset(dsp::CurvePreset::Linear, 0.0, 5.0)}};
+    c.set.devices.push_back(std::move(dev));
+    for (DevicePtr& x : c.set.devices)
+      if (x->id == d) {
+        auto y = std::make_shared<Device>(*x);
+        y->settings.push_back(DeviceValue{"max", 5.0});
+        x = std::move(y);
+      }
+    c.wire(sine, "out", d, "x");
+    c.wire(v, kValueOutput, d, "time");
+    c.out(d, "out");
+  };
+  const auto [rampL, rampAt] = switchRender(ramp, [](Song& s) {
+    DeviceId time;  // (pasting gave the blocks fresh ids: found by name)
+    forEachDevice(*s.store.current(), [&](const Device& d, const Track&) {
+      if (d.patch == kValueDevice && d.name == "time") time = d.id;
+    });
+    REQUIRE(time.valid());
+    s.set(time, 0.5);
+  });
+
+  const std::vector<float> idealMode = idealCrossfade(modeL.size(), modeAt, d375, d500, kFade);
+  const std::vector<float> idealSync = idealCrossfade(syncL.size(), syncAt, d500, d375, kFade);
+  // Before the switch every render is the sine at its delay (the measure's floor).
+  CHECK(std::fabs(modeL[modeAt - 5] - idealMode[modeAt - 5]) < 2e-4f);
+  CHECK(std::fabs(syncL[syncAt - 5] - idealSync[syncAt - 5]) < 2e-4f);
+  // After the fade: the new delay.
+  CHECK(std::fabs(modeL[modeAt + kFade + 100] - idealMode[modeAt + kFade + 100]) < 2e-4f);
+  CHECK(std::fabs(syncL[syncAt + kFade + 100] - idealSync[syncAt + kFade + 100]) < 2e-4f);
+  // Over the switch (10 ms before … 60 ms after): the click energy, against the ideal crossfade and the old ramp.
+  const size_t w0 = 480, w1 = 2880;
+  const double eMode = clickEnergy(modeL, modeAt - w0, modeAt + w1), eModeIdeal = clickEnergy(idealMode, modeAt - w0, modeAt + w1);
+  const double eSync = clickEnergy(syncL, syncAt - w0, syncAt + w1), eSyncIdeal = clickEnergy(idealSync, syncAt - w0, syncAt + w1);
+  const double eRamp = clickEnergy(rampL, rampAt - w0, rampAt + w1);
+  const double sMode = maxStep(modeL, modeAt - w0, modeAt + w1), sModeIdeal = maxStep(idealMode, modeAt - w0, modeAt + w1);
+  const double sSync = maxStep(syncL, syncAt - w0, syncAt + w1), sSyncIdeal = maxStep(idealSync, syncAt - w0, syncAt + w1);
+  const double sRamp = maxStep(rampL, rampAt - w0, rampAt + w1);
+  MESSAGE("click energy (3rd difference²): mode switch " << eMode << " (ideal crossfade " << eModeIdeal << "), sync step "
+          << eSync << " (ideal " << eSyncIdeal << "), old 20 ms ramp " << eRamp);
+  MESSAGE("max |Δ|: mode switch " << sMode << " (ideal " << sModeIdeal << "), sync step " << sSync << " (ideal " << sSyncIdeal
+          << "), old ramp " << sRamp);
+  CHECK(eMode < 1.5 * eModeIdeal);
+  CHECK(eSync < 1.5 * eSyncIdeal);
+  CHECK(eRamp > 1000.0 * eMode);
+  CHECK(sMode < 1.02 * sModeIdeal + 1e-4);
+  CHECK(sSync < 1.02 * sSyncIdeal + 1e-4);
+  CHECK(sRamp > 3.0 * sMode);
 }

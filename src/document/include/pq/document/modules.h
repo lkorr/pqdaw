@@ -262,7 +262,7 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o = {});
 Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 
 // ---- DT.1: the Delay Tap (docs/plans/DT.md, SPEC §15 2026-11-12 "a delay tap meta module") ----------------------
-// A group In → delay_cubic → Out: the input delayed, nothing else (feedback is a wire from its Out back into its In
+// A group In → delay_fade → Out: the input delayed, nothing else (feedback is a wire from its Out back into its In
 // through something that scales: a VCA). Stereo when the input is. Its value blocks (found by role, kDelayRoleSetting):
 //   Time   the knob position x through the curve 62.5 ms · (e^(k·x) − 1), k = 2·ln 9 (Exp0: one Exp segment of bend
 //          ln 81): 0 at 0, 500 ms at 0.5, 5 s at 1, in SECONDS (dsp::CurveUnit::Seconds: it reads "375 ms" / "1.25 s";
@@ -270,18 +270,20 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 //   Sync   a stepped index into noteValues() (ascending duration); seconds = beats · 60 / transport.bpm (the block's
 //          tempo), at most 5 s
 //   Mode   0 = Time (ms), 1 = Sync (♪); stepped, automatable
-// The delay = lerp(Time, Sync seconds, Mode) → delay_cubic's time (max 5 s: its ring sized and allocated off-thread by
-// the scheduler; per-voice lanes inside instrument groups). The read is ≥ 2 samples (the cubic read's minimum). The
+// The delay = lerp(Time, Sync seconds, Mode) → delay_fade's time (max 5 s: its ring sized and allocated off-thread by
+// the scheduler; per-voice lanes inside instrument groups). The read is ≥ 1 sample (DT.2: linear in [1, 2)). The
 // note value's beats are arithmetic on the index, and Mode a lerp, not muxes: a stepped block reaching a mux index
 // would lower as a literal choice (lower.h "Structural value blocks"), so a sync step or a mode switch would recompile
-// the unit (the delay line is carried by the swap, but the time jumps: a crossfade instead of a glide, and a compile
-// per step of a sync drag). As written all three are runtime params, and every param-rate
-// move of the delay (automation, a drag, a sync step, a mode switch, the tempo) glides through the scheduler's param
-// ramp (TX.smooth: linear over 20 ms from where it is); an audio-rate wire into Time is not smoothed.
+// the unit (and a compile per step of a sync drag). As written all three are runtime params. DT.2: delay_fade moves
+// its read head itself (its time is not param-ramped): a change it can glide within an octave of pitch over
+// kDelayTapFadeSeconds (automation, drags, tempo drift) glides; a larger one (a mode switch, a sync step, a click that
+// jumps the slider) crossfades the old and the new time, equal power over the same 30 ms (pq/dsp/atoms.h
+// "delay_fade"). An audio-rate wire into Time is followed sample by sample (a step beyond the octave bound fades).
 // Its panel: one `temposlider` element (the reusable tempo-marked slider, pq/views/panel) bound to Time, Sync and Mode.
 enum class DelayRole : uint8_t { None = 0, Time, Sync, Mode };
 inline constexpr std::string_view kDelayRoleSetting = "delayRole";
 inline constexpr double kDelayTapMaxSeconds = 5.0;
+inline constexpr double kDelayTapFadeSeconds = 0.030;  // DT.2: delay_fade's glide / crossfade
 // A sync note value: its duration in beats (a quarter = 1 beat; in ticks beats · pq::kPpq), its label (DT.3: the reduced
 // fraction of a whole note: "1/4", "3/16" for a dotted eighth, "1/6" for a quarter triplet) and its kind.
 enum class NoteValueKind : uint8_t { Straight, Dotted, Triplet };

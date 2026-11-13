@@ -22,6 +22,8 @@ constexpr ArgMap kPulse[] = {{U::InputSeconds, 0}};                             
 constexpr ArgMap kTimer[] = {{U::Input, 0}, {U::InputSeconds, 1}};                      // trig, dur
 constexpr ArgMap kZ1[] = {{U::Input, 0}, {U::InitZ1, 0}};                               // x, init
 constexpr ArgMap kDelay[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0}};  // x, time, max
+constexpr ArgMap kDelayFade[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0},   // x, time, max,
+                                 {U::InputSeconds, 2}};                                               // fade (DT.2)
 constexpr ArgMap kLatency[] = {{U::Input, 0}, {U::Input, 1}};                          // x, frames (samples)
 constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};                      // phase, table
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table
@@ -61,6 +63,7 @@ constexpr Special kSpecial[] = {
     {"delay", kDelay},
     {"delay_cubic", kDelay},
     {"delay_allpass", kDelay},
+    {"delay_fade", kDelayFade},
     {"latency", kLatency},
     {"wavetable", kWavetable},
     {"shaper", kShaper},
