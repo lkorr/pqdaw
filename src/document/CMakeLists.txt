@@ -47,6 +47,7 @@ pq_add_module(pq_doc
     src/group_response.cpp
     src/pitch_resolve.cpp
     src/input_map.cpp
+    src/midi_file.cpp  # MF.1: Standard MIDI File reader / writer, note resolution
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.
   # pq_graph: project → graph lowering (lower.h, T3.17).
