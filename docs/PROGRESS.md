@@ -491,3 +491,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: merged task/DT.3-delay-face (cbf32457): body-drag moves the Delay Tap (tempo slider and generic slider took presses on their whole rect; now only groove/buttons); general horizontal stretch (Face::stretchX, edge drag in the patch canvas, undoable); whole-note fraction names; tempo_marks.h ranks n/d marks by simplicity, shown by screen-px room (stretch and zoom), gravity only to shown ticks.
 - Verified (worker): pq_tests_views 685/685; -Affected 23/24 then pq_tests_document fixed (old label test) and passing. Goldens: delay-tap panel/sync re-recorded, -stretched new.
 - Notes: Q243. Not done: edge stretch in the Device view's PanelHost.
+
+## 2026-11-12 · DT.2 merged · main
+- Did: merged task/DT.2-delay-sound (9f2be478): delay_cubic minimum 1 sample (linear read in [1,2), Hermite from 2); new delay_fade atom (glide within ±1 octave, larger jumps crossfade a second head at the old time, 30 ms equal power); the Delay Tap uses it, Time 0 = 1 sample. DelayState 96 → 352 B.
+- Verified (worker): pq_tests_dsp default tier pass (test_delay_fade 8 cases), pq_tests_playback delay tap 6/6; click metric mode switch 1.48e-6 = ideal crossfade vs old ramp 0.1125. -Affected -Slow and benches stopped/skipped at the user's request; compiled after merge by the release pqdaw build.
+- Perf: delay_cubic before 1.257 ns/sample (release, 1 lane); after not measured (+1 compare/fma/blend); delay_fade at rest = one compare per block.

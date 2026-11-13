@@ -807,7 +807,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## NZ: Noise module (user 2026-11-12, SPEC §15 "a noise module"; plan: docs/plans/NZ.md)
 - [ ] **NZ.1 Noise module: one output, Rate (0.01 Hz … SR) / Sync / Note / clock input, Smooth, Colour on the drawn sequence, Distribution, Density, Steps, Range, Seed, Restart, Voices** 👁 (docs/plans/NZ.md "NZ.1")
-- [ ] **DT.2 Delay tap sound: 1-sample minimum (linear read below 2 samples), click-free ms ↔ beats / sync jumps (crossfaded read heads)** (user 2026-11-12; docs/plans/DT.md "DT.2")
+- [x] **DT.2 Delay tap sound: 1-sample minimum (linear read below 2 samples), click-free ms ↔ beats / sync jumps (crossfaded read heads)** *(merged 9f2be478; delay_cubic floor 1 (linear in [1,2)); new delay_fade atom: glide within ±1 oct, else 30 ms equal-power crossfade of two heads; full -Affected -Slow and benches skipped at the user's request)* (user 2026-11-12; docs/plans/DT.md "DT.2")
 - [x] **DT.3 Delay tap face: drag anywhere to move, horizontal stretch, fraction names (1/12, 3/16), more markings (5s, 7s …) by simplicity and screen space** 👁 *(merged cbf32457; Q243: per-family tick spacing, dotted beats triplet on collision; edge-stretch only in the patch canvas, not the Device view)* (user 2026-11-12; docs/plans/DT.md "DT.3")
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
