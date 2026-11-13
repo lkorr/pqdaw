@@ -21,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 16> kModules = {{
+constexpr std::array<ModuleInfo, 17> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -75,6 +75,11 @@ constexpr std::array<ModuleInfo, 16> kModules = {{
      "Noise and random modulation in one: a value drawn per step at a rate (its top: every sample, plain noise), on the "
      "song's grid, per note or by a clock into its In; coloured (brown, pink, white, blue, violet: a random walk when "
      "slow), sparse (density), stepped, glided (smooth), in a range. On play it repeats every playback."},
+    // DY.4: dynamics (docs/plans/DY.md).
+    {ModuleKind::Compressor, "compressor", "Compressor",
+     "Peak, RMS or downward-expanding gain reduction with a soft knee, attack / release (log or linear envelope, auto "
+     "release), lookahead, makeup and dry/wet; its sidechain is a cable from any track (Pre or Post FX) through an EQ "
+     "band and a gain. The gain reduction is an output you can cable anywhere."},
 }};
 
 struct Builder {
@@ -316,7 +321,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Operator:
     case ModuleKind::EqBand:
     case ModuleKind::Eq:
-    case ModuleKind::DelayTap: break;
+    case ModuleKind::DelayTap:
+    case ModuleKind::Compressor: break;
   }
   return {};
 }
@@ -453,7 +459,8 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::Operator:
     case ModuleKind::EqBand:
     case ModuleKind::Eq:
-    case ModuleKind::DelayTap: break;
+    case ModuleKind::DelayTap:
+    case ModuleKind::Compressor: break;
   }
   return p;
 }
@@ -613,6 +620,7 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::EqBand) return eqBandBlocks(ids);
   if (k == ModuleKind::Eq) return eqBlocks(ids);
   if (k == ModuleKind::DelayTap) return delayTapBlocks(ids);
+  if (k == ModuleKind::Compressor) return compressorBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 
@@ -1600,6 +1608,207 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* 
   p.elements.push_back(std::move(s));
   if (roles != nullptr) *roles = r;
   return k.finish(groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Delay Tap") : o.name, o.active, std::move(p)));
+}
+
+// ---- DY.4: the Compressor (modules.h "the Compressor"; docs/plans/DY.md "DY.4") ------------------------------------
+
+namespace {
+
+// Lookahead: 0 / 1 / 10 ms at the positions 0, ½, 1 (a chip per value), in seconds. Stepped (1 ms), so the block feeds
+// latency's const `time` as a literal (lower.h "Structural value blocks": constFeeds).
+dsp::Curve lookaheadCurve() {
+  dsp::Curve c = linear(0.0, 0.010, dsp::CurveUnit::Seconds);
+  c.segments = 2;
+  c.points[0] = {0.0, 0.0};
+  c.points[1] = {0.5, 0.1};
+  c.points[2] = {1.0, 1.0};
+  c.shapes[0] = c.shapes[1] = dsp::CurveSegment{};
+  c.step = 0.001;
+  c.preset = dsp::CurvePreset::Custom;
+  return c;
+}
+
+// A child group `name` of the Kit's current group (its members built by `body` while it is the Kit's group).
+template <class F>
+DeviceId childGroup(Kit& k, IdSource& ids, const char* name, F&& body) {
+  const DeviceId g = ids.device();
+  auto d = std::make_shared<Device>(*makeGroup(g));
+  d->name = name;
+  d->group = k.b.group;
+  k.b.set.devices.push_back(std::move(d));
+  const DeviceId outer = k.b.group;
+  k.b.group = g;
+  body(g);
+  k.b.group = outer;
+  return g;
+}
+
+PanelElement styled(PanelElement e, std::initializer_list<StyleField> fields) {
+  for (const StyleField& f : fields) e.setField(f);
+  return e;
+}
+
+}  // namespace
+
+BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  const std::string y(kValueOutput);
+  auto mul = [&](const Sig& a, const Sig& b, std::string n) { return k.op("mul", std::move(n), {{"a", a}, {"b", b}}); };
+  auto sub = [&](const Sig& a, const Sig& b, std::string n) { return k.op("sub", std::move(n), {{"a", a}, {"b", b}}); };
+  auto max = [&](const Sig& a, const Sig& b, std::string n) { return k.op("max", std::move(n), {{"a", a}, {"b", b}}); };
+  auto mux = [&](const Sig& index, const Sig& in0, const Sig& in1, std::string n) {
+    return k.op("mux", std::move(n), {{"index", index}, {"in0", in0}, {"in1", in1}});
+  };
+  // The controls (the panel's labels are the blocks' names; the Gain Computer's own are inside it).
+  const Sig attack = k.val("Attack", octave(0.00001, 1.0, dsp::CurveUnit::Seconds), 0.002);
+  const Sig release = k.val("Release", octave(0.001, 3.0, dsp::CurveUnit::Seconds), 0.05);
+  const Sig autoRelease = k.val("Auto", stepped(2), 0.0);
+  const Sig makeup = k.val("Makeup", detent(linear(-24.0, 24.0, dsp::CurveUnit::Db), 0.0), 0.0);
+  const Sig dryWet = k.val("Dry/Wet", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
+  const Sig mode = k.val("Mode", stepped(3), 0.0);          // Peak | RMS | Expand
+  const Sig envelope = k.val("Envelope", stepped(2), 0.0);  // Log | Lin
+  const Sig lookahead = k.val("Lookahead", lookaheadCurve(), 0.0);
+  const Sig scOn = k.val("Sidechain", stepped(2), 0.0);
+  const Sig scMix = k.val("Mix", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
+  const Sig listen = k.val("Listen", stepped(2), 0.0);
+  // The sidechain: In (a cable from another track) → [EQ Band, chosen by EQ On] → smoothed Gain → Out.
+  Sig eqOn, eqFreq, scGain;
+  const DeviceId sc = childGroup(k, ids, "Sidechain", [&](DeviceId g) {
+    eqOn = k.val("EQ On", stepped(2), 0.0);
+    scGain = k.val("Gain", detent(gainDb(-24.0, 24.0), 0.0), 0.0);
+    EqBandOptions bo;
+    bo.inGroup = g;
+    bo.name = "EQ";
+    bo.type = 1;  // Low Cut
+    bo.freqHz = 100.0;
+    BlockSet band = eqBandBlocks(ids, bo);
+    const BandInfo bi = bandOfSet(band);
+    eqFreq = Sig{bi.frequency, y};
+    for (DevicePtr& d : band.devices) k.b.set.devices.push_back(std::move(d));
+    for (Wire& w : band.wires) k.b.set.wires.push_back(std::move(w));
+    k.b.wire(g, kGroupInPort, bi.group, kMainPort);
+    const Sig eqd = mux(eqOn, k.in(), Sig{bi.group, std::string(kMainPort)}, "EQ?");
+    const DeviceId gd = k.block("gain", "x gain", {{"x", eqd}, {"g", scGain}});
+    k.setting(gd, "start", 1.0);
+    k.out(Sig{gd, "out"});
+  });
+  // The detector's signal: In, or with Sidechain on lerp(In, SC, Mix) (a literal mux: off, nothing of it is computed).
+  const Sig in = k.in();
+  const Sig mixed = k.op("lerp", "In / SC", {{"a", in}, {"b", Sig{sc, std::string(kMainPort)}}, {"t", scMix}});
+  const Sig det = mux(scOn, in, mixed, "sidechain?");
+  const DeviceId chL = k.block("channel", "L", {{"x", det}}), chR = k.block("channel", "R", {{"x", det}});
+  k.setting(chL, "index", 0.0);
+  k.setting(chR, "index", 1.0);
+  const Sig L{chL, "out"}, R{chR, "out"};
+  // The level (linked): Peak max(|L|, |R|); RMS sqrt(5 ms mean of max(L², R²)); Expand detects peaks.
+  const Sig peak = max(k.op("abs", "|L|", {{"x", L}}), k.op("abs", "|R|", {{"x", R}}), "peak");
+  const DeviceId win = k.block("window", "5 ms mean", {{"x", max(mul(L, L, "L^2"), mul(R, R, "R^2"), "max(L^2, R^2)")}});
+  k.setting(win, "time", kCompressorRmsSeconds);
+  k.setting(win, "op", 2.0);
+  const Sig rms = k.op("sqrt", "rms", {{"x", Sig{win, "out"}}});
+  const std::array<Sig, 3> levels = {peak, rms, peak};
+  const Sig level = k.choose(mode, levels, "level");
+  // The follower: follow(x, Attack, Release), or with Auto max(follow(x, a, rel/4), follow(x, a, rel·4) − 3 dB) (of
+  // reduction on GR; × 10^(−3/20) on a linear level). Muxes on the literal Auto: one path computed.
+  const Sig relFast = mul(release, k.k(0.25), "release / 4"), relSlow = mul(release, k.k(4.0), "release x 4");
+  auto follower = [&](const Sig& x, bool linearLevel, const std::string& name) {
+    auto follow = [&](const Sig& rel, const std::string& n) {
+      return k.op("follow", n, {{"x", x}, {"attack", attack}, {"release", rel}});
+    };
+    const Sig plain = follow(release, name);
+    const Sig fast = follow(relFast, name + " fast"), slow = follow(relSlow, name + " slow");
+    const Sig held = linearLevel ? mul(slow, k.k(std::pow(10.0, -kCompressorAutoOffsetDb / 20.0)), "slow - 3 dB")
+                                 : sub(slow, k.k(kCompressorAutoOffsetDb), "slow - 3 dB");
+    return mux(autoRelease, plain, max(fast, held, name + " auto"), name + " auto?");
+  };
+  // Envelope Lin: the follower on the linear level before the computer.
+  const Sig levelEnv = mux(envelope, level, follower(level, true, "level env"), "lin?");
+  const Sig db = k.op("fast_gain_to_db", "level dB", {{"gain", max(levelEnv, k.k(1e-6), ">= -120 dB")}});
+  // The Gain Computer (memoryless: In = level dB, Out = reduction dB ≥ 0; the transfer display draws it).
+  Sig threshold, ratio, knee;
+  const DeviceId gc = childGroup(k, ids, "Gain Computer", [&](DeviceId) {
+    threshold = k.val("Threshold", linear(-60.0, 0.0, dsp::CurveUnit::Db), -20.0);
+    ratio = k.val("Ratio", octave(1.0, 100.0), 4.0);
+    knee = k.val("Knee", linear(0.0, 24.0, dsp::CurveUnit::Db), 6.0);
+    const Sig x = k.in();
+    const Sig expand = sub(mode, k.k(1.0), "expand = mode - 1");  // > 0 only for Expand (a literal: the muxes fold)
+    const Sig s = mux(expand, sub(x, threshold, "over = x - T"), sub(threshold, x, "under = T - x"), "s");
+    const Sig halfW = mul(knee, k.k(0.5), "W / 2");
+    const Sig kn = k.op("clip", "k = clip(s + W/2, 0, W)",
+                        {{"x", k.op("add", "s + W/2", {{"a", s}, {"b", halfW}})}, {"lo", k.k(0.0)}, {"hi", knee}});
+    const Sig inv2W = k.op("div", "1 / 2W", {{"a", k.k(0.5)}, {"b", max(knee, k.k(1e-3), "max(W, 1e-3)")}});
+    const Sig beyond = max(k.k(0.0), sub(s, halfW, "s - W/2"), "max(0, s - W/2)");
+    const Sig body = k.op("muladd", "k^2 / 2W + max(0, s - W/2)", {{"a", mul(kn, kn, "k^2")}, {"b", inv2W}, {"c", beyond}});
+    const Sig slope = mux(expand, sub(k.k(1.0), k.op("div", "1 / R", {{"a", k.k(1.0)}, {"b", ratio}}), "1 - 1/R"),
+                          sub(ratio, k.k(1.0), "R - 1"), "slope");
+    const Sig gr = mul(slope, body, "reduction");
+    k.out(mux(expand, gr, k.op("min", "<= 70 dB", {{"a", gr}, {"b", k.k(kCompressorExpandCapDb)}}), "expand cap?"));
+  });
+  k.b.wire(db.dev, db.port, gc, kMainPort);
+  const Sig computed{gc, std::string(kMainPort)};
+  // Envelope Log: the follower on the reduction. GR (≥ 0) is the meter's, the jack's and the gain's.
+  const Sig grEnv = mux(envelope, follower(computed, false, "GR env"), computed, "log?");
+  const Sig gr = max(grEnv, k.k(0.0), "GR");
+  // out = latency(In, 0, Lookahead) · gain_add(1, g − 1, Dry/Wet), g = 10^((Makeup − GR) / 20); Listen: the detector's In.
+  const DeviceId lat = k.block("latency", "lookahead", {{"x", in}, {"time", lookahead}});
+  k.setting(lat, "frames", 0.0);
+  const Sig g = k.op("fast_db_to_gain", "gain", {{"db", sub(makeup, gr, "makeup - GR")}});
+  const DeviceId mix = k.block("gain_add", "dry/wet", {{"acc", k.k(1.0)}, {"x", sub(g, k.k(1.0), "g - 1")}, {"g", dryWet}});
+  k.setting(mix, "start", 1.0);
+  const Sig out = mul(Sig{lat, "out"}, Sig{mix, "out"}, "x gain");
+  k.out(mux(listen, out, det, "listen?"));
+  // The panel: the curve, the meter and the GR jack; the knobs; the chips; the sidechain section.
+  Panel p;
+  p.width = 520.0f;
+  p.height = 182.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  p.elements.push_back(styled(element(2, "transfer", 8, 8, 132, 132, signalBinding(gc, std::string(kGroupInPort))),
+                              {styleText("units", "db"), styleText("output", "reduction"), styleNumber("min", -60.0),
+                               styleNumber("max", 6.0), styleNumber("dot", 1.0)}));
+  p.elements.push_back(styled(element(3, "meter", 144, 8, 16, 132, signalBinding(gr.dev, gr.port)),
+                              {styleText("mode", "reduction"), styleNumber("range", 24.0)}));
+  p.elements.push_back(element(4, "modsource", 142, 146, 20, 28, signalBinding(gr.dev, gr.port)));
+  constexpr float kCol = 54.0f, kX0 = 168.0f;
+  p.elements.push_back(control(5, "knob", kX0, 8, 52, 58, threshold));
+  p.elements.push_back(control(6, "knob", kX0 + kCol, 8, 52, 58, ratio));
+  p.elements.push_back(control(7, "knob", kX0 + 2 * kCol, 8, 52, 58, knee));
+  p.elements.push_back(control(8, "knob", kX0 + 3 * kCol, 8, 52, 58, makeup));
+  p.elements.push_back(control(9, "knob", kX0, 70, 52, 58, attack));
+  p.elements.push_back(control(10, "knob", kX0 + kCol, 70, 52, 58, release));
+  p.elements.push_back(button(control(11, "toggle", kX0 + 2 * kCol + 4, 90, 44, 18, autoRelease), "Auto"));
+  p.elements.push_back(control(12, "knob", kX0 + 3 * kCol, 70, 52, 58, dryWet));
+  auto chips = [&](uint32_t id, float x, float yy, float w, const Sig& v, const char* label, const char* items) {
+    PanelElement c = caption(id, x, yy, w, 10, label);
+    c.setField(styleNumber("size", 7.5));
+    p.elements.push_back(std::move(c));
+    PanelElement t = control(id + 1, "tabs", x, yy + 12, w, 16, v);
+    t.setField(styleText("items", items));
+    p.elements.push_back(std::move(t));
+  };
+  chips(13, 8, 146, 130, lookahead, "Lookahead", "0 ms|1 ms|10 ms");
+  chips(15, kX0, 146, 120, mode, "Mode", "Peak|RMS|Expand");
+  chips(17, kX0 + 126, 146, 84, envelope, "Envelope", "Log|Lin");
+  // The sidechain section (its own backdrop).
+  constexpr float kScX = 392.0f;
+  PanelElement back = element(19, "shape", kScX - 4, 4, 124, p.height - 8, {});
+  back.bindings.clear();
+  back.setField(styleText("fill", "track"));
+  back.setField(styleText("stroke", "none"));
+  back.setField(styleNumber("opacity", 0.35));
+  back.setField(styleNumber("radius", 5.0));
+  p.elements.push_back(std::move(back));
+  p.elements.push_back(caption(20, kScX + 2, 8, 64, 14, "Sidechain"));
+  p.elements.push_back(button(control(21, "toggle", kScX + 72, 6, 40, 18, scOn), "On"));
+  PanelElement source = element(22, "cablesource", kScX, 28, 116, 30, inputBinding(sc));
+  source.bindings.push_back(controlBinding(scOn.dev, std::string(kValueParam)));
+  p.elements.push_back(std::move(source));
+  p.elements.push_back(control(23, "knob", kScX + 4, 62, 52, 58, scGain));
+  p.elements.push_back(control(24, "knob", kScX + 60, 62, 52, 58, scMix));
+  p.elements.push_back(button(control(25, "toggle", kScX, 128, 40, 18, eqOn), "EQ"));
+  p.elements.push_back(control(26, "number", kScX + 44, 128, 72, 18, eqFreq));
+  p.elements.push_back(button(control(27, "toggle", kScX, 152, 116, 18, listen), "Listen"));
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Compressor") : o.name, o.active, std::move(p)));
 }
 
 }  // namespace pq::doc

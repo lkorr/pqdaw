@@ -43,7 +43,8 @@ enum class ModuleKind : uint8_t {
   Utility, Saturator, Lfo, Operator,  // GU.10: the stock devices
   EqBand, Eq,                         // EQ.3
   DelayTap,                           // DT.1
-  Noise                               // NZ.1
+  Noise,                              // NZ.1
+  Compressor                          // DY.4
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -324,6 +325,39 @@ struct DelayTapOptions {
   bool active = true;
 };
 BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o = {}, DelayTapRoles* roles = nullptr);
+
+// ---- DY.4: the Compressor (docs/plans/DY.md "DY.4"; SPEC §8 Compressor, sidechain) -------------------------------------
+// A group of atom and value blocks (no native engine), stereo, everything block-wise (the only recursion is inside the
+// `follow` kernel):
+//   detector  det = mux(Sidechain, In, lerp(In, SC, SC Mix)) — SC is the child group "Sidechain" (its In is where a cable
+//             from another track lands: a compensated sidechain, lower.h "Sidechains"; inside: an EQ Band child group
+//             (Low Cut 100 Hz) chosen by "EQ On" (off), then a smoothed Gain); Sidechain is set to 1 by the cablesource
+//             picker when a source is picked (0 at None)
+//   level     Peak: max(|L|, |R|) (linked); RMS: sqrt(window(max(L², R²), 5 ms, mean)); Mode 0 Peak, 1 RMS, 2 Expand (peak)
+//   envelope  Env Log (default): dB = fast_gain_to_db(max(level, 1e-6)) → Gain Computer → follow(GR, Attack, Release);
+//             Env Lin: follow(level, Attack, Release) → dB → Gain Computer. Auto release (Auto 1): the follower is
+//             max(follow(·, a, rel / 4), follow(·, a, rel · 4) − 3 dB) — on GR (Log: minus 3 dB of reduction) or on the
+//             level (Lin: × 10^(−3/20)): a short transient recovers at rel / 4, a long stretch of compression lets go of
+//             its last 3 dB at rel · 4
+//   computer  the child group "Gain Computer" (memoryless: In = level dB, Out = reduction dB ≥ 0; its own value blocks
+//             Threshold, Ratio, Knee): s = over = x − T (Compress) or under = T − x (Expand), k = clip(s + W/2, 0, W),
+//             body = k² / (2·max(W, 1e-3)) + max(0, s − W/2); Compress GR = (1 − 1/R)·body; Expand (downward, slope R
+//             below T) GR = min((R − 1)·body, 70 dB). The `transfer` element draws it (units db, output reduction)
+//   output    GR = max(env, 0) (the block "GR": the meter's and the jack's signal, a cable source like any output);
+//             g = fast_db_to_gain(Makeup − GR); out = latency(In, 0, Lookahead) · gain_add(1, g − 1, Dry/Wet) (the dry /
+//             wet a smoothed mono gain on the delayed input: dry + w·(wet − dry) with wet = dry·g, one stereo multiply);
+//             Listen 1: Out = det (what the detector hears)
+// Stepped switches (Mode, Envelope, Auto, Sidechain, EQ On, Listen) lower as literals (lower.h "Structural value
+// blocks"): a change recompiles and only the chosen path is computed. Lookahead (0 / 1 / 10 ms: a stepped curve in
+// seconds, its positions 0, ½, 1) feeds latency's const `time` (constFeeds): the delay and the reported latency are
+// round(la · sr) samples (PDC follows; a change recompiles). Value blocks are found by name (Device::name).
+// Panel: the transfer display, the reduction meter and the GR jack; knobs Threshold, Ratio, Attack, Release, Knee,
+// Makeup, Dry/Wet; Auto; chips Mode, Envelope, Lookahead; the Sidechain section (cablesource, Gain, Mix, EQ On +
+// Frequency, Listen).
+inline constexpr double kCompressorRmsSeconds = 0.005;
+inline constexpr double kCompressorExpandCapDb = 70.0;
+inline constexpr double kCompressorAutoOffsetDb = 3.0;
+BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o = {});
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

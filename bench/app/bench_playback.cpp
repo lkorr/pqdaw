@@ -28,6 +28,9 @@
 // TX.group-oversample: eq oversample/<n>x — a held chord → Utility → a 4-band EQ at oversample n (stereo), JIT, ns/block;
 // eq oversample/none the same track without the EQ (the EQ's cost is the difference); instrument oversample/<n>x — the
 // track without the EQ, its instrument group (3 voices) at n (the region per voice).
+// DY.4: compressor/<case> — the same held chord → Utility → a Compressor (module:compressor; no EQ), JIT, ns/block:
+// "peak" its defaults (Peak, Log envelope), "rms auto lookahead" RMS + Auto release + 10 ms lookahead. The compressor's
+// cost = row − eq oversample/none; ÷ 64 = ns per stereo sample.
 // Release / ship build. Usage: pq_bench_playback [runner options]
 #include <chrono>
 #include <cmath>
@@ -382,7 +385,9 @@ struct EqRig {
   std::unique_ptr<app::ProjectLink> link;
   std::vector<float> l = std::vector<float>(kBlock), r = std::vector<float>(kBlock);
   int64_t time = 0;
-  EqRig(int exponent, int instrument = 0) {  // exponent −1: no EQ; instrument: the instrument group's oversampling
+  // exponent −1: no EQ; instrument: the instrument group's oversampling; compressor (DY.4) −1: none, 0: its defaults,
+  // 1: RMS, Auto, 10 ms lookahead.
+  EqRig(int exponent, int instrument = 0, int compressor = -1) {
     IdSource& ids = store.ids();
     auto run = [&](const ops::EditResult& e) {
       if (!e.ok() || !store.dispatch(e->command).ok()) std::exit(5);
@@ -397,6 +402,19 @@ struct EqRig {
     if (exponent >= 0) {
       const DeviceId eq = run(ops::addDevice(*store.current(), ids, id, "module:eq", DeviceKind::AudioEffect)).devices.at(0);
       if (exponent > 0) (void)run(ops::setDeviceSetting(*store.current(), eq, std::string(kGroupOversample), exponent));
+    }
+    if (compressor >= 0) {
+      const DeviceId comp = run(ops::addDevice(*store.current(), ids, id, "module:compressor", DeviceKind::AudioEffect)).devices.at(0);
+      auto position = [&](const char* name, double pos) {
+        for (const Device* d : groupMembersDeep(findTrackPtr(*store.current(), id)->devices, comp))
+          if (d->name == name && isValueDevice(*d) && !store.dispatch(SetDeviceParam{d->id, std::string(kValueParam), pos}).ok())
+            std::exit(7);
+      };
+      if (compressor == 1) {
+        position("Mode", 0.5);       // RMS
+        position("Auto", 1.0);
+        position("Lookahead", 1.0);  // 10 ms
+      }
     }
     Batch b{"bench", {}};
     NoteClip c;
@@ -514,6 +532,16 @@ int main(int argc, char** argv) {
       EqRig rig(e);
       const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
       std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
+    });
+  }
+  // DY.4: a Compressor after the Utility (no EQ): its defaults, and RMS + Auto + 10 ms lookahead.
+  for (const int mode : {0, 1}) {
+    const std::string name = mode == 0 ? std::string("compressor/peak jit") : std::string("compressor/rms auto lookahead jit");
+    runner.add(name, [mode, name](bench::Context& c) {
+      EqRig rig(-1, 0, mode);
+      const bench::Stats s = c.measure([&] { rig.block(); }, 1, "ns/block");
+      std::printf("  %s: %.2f %% of a core (median)
+", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });
   }
   // TX.group-oversample: the instrument group (3 held voices, its region per voice) at 1× … 4× (no EQ).
