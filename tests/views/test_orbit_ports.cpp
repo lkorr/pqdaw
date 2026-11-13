@@ -257,9 +257,9 @@ TEST_CASE("orbit ports: every block's main ports orbit its outline toward their 
   uint32_t blocks = 0, single = 0;
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
-    // GU.5b: a block inside an opened group (a circuit), an atom block's symbol and a value block's knob keep their pins.
-    if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || hiddenInClosed(pp, i) || n.capsule != kNone ||
-        n.symbol || n.valueKnob) {
+    // GU.5b: an atom block's symbol keeps its leads. TX.ports-always: a block inside an opened group and a value block's
+    // knob orbit like the rest (tests/views/test_node_menu.cpp "TX.ports-always").
+    if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || hiddenInClosed(pp, i) || n.symbol) {
       CHECK_FALSE(n.orbitIn.on);
       CHECK_FALSE(n.orbitOut.on);
       continue;

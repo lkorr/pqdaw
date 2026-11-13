@@ -876,7 +876,12 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       // TX.groups: a group's capsule — double-click its title strip to close it; a press on its frame selects the group
       // (an opened capsule is no scene node) and drags or nudges it as a block. A closed group opens only from its menu
       // (Open Group): a double-click on it does nothing, so a module is not opened by accident.
-      if (node != kNone && pp.nodes[node].group) {
+      // TX.ports-always: a port over the capsule (the main ports of a block inside it orbit its outline, off the block) is
+      // the port's.
+      bool portOverCapsule = false;
+      if (node != kNone && pp.nodes[node].group && pp.nodes[node].groupOpen)
+        if (const PinHit pin = pinAt(e.pos); pin.valid() && pin.node != node) portOverCapsule = true;
+      if (node != kNone && pp.nodes[node].group && !portOverCapsule) {
         const Node& n = pp.nodes[node];
         const doc::DeviceId g = n.device;
         if (e.clickCount >= 2 && n.groupOpen) {

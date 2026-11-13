@@ -1819,3 +1819,232 @@ TEST_CASE("node menu (GU.10): the stock presets spawn as their group presets —
   REQUIRE(u.ctx.undo());
   CHECK(u.device(made) == nullptr);
 }
+
+// ---- TX.ports-always (bug report 2026-11-12_21-24-59: "a placed envelope doesnt have an input or output node … make sure
+// that literally everything has a clean, clickable and interactable input/output node") -----------------------------------
+// The cause: a closed block inside an OPENED group (the user placed the Envelope with the pointer over the instrument
+// group's capsule) kept its main ports on its edges instead of orbiting, and a block drawn as a panel or a group's panel
+// draws no jacks: nothing showed its ports until a cable's plug sat there. Now every closed block's main ports orbit,
+// wherever it sits; only an atom block's circuit symbol keeps its leads (stubs the canvas draws).
+
+namespace {
+
+// A world point inside the opened instrument group's capsule, clear of its blocks, pins and cables.
+graph::Point2 insideCapsule(const Ui& u) {
+  const uint32_t c = u.node(u.synth);
+  const Node& cap = u.pp().nodes[c];
+  REQUIRE(cap.group);
+  REQUIRE(cap.groupOpen);
+  for (float y = cap.y + metrics::kCapsuleTitle + 16.0f; y < cap.y + cap.h - 24.0f; y += 8.0f)
+    for (float x = cap.x + 24.0f; x < cap.x + cap.w - 24.0f; x += 8.0f) {
+      const Vec2 p = u.dev({x, y});
+      if (u.view().canvas().nodeAt(p) == c && !u.view().canvas().pinAt(p).valid() && u.view().canvas().edgeAt(p) == kNone)
+        return {x, y};
+    }
+  FAIL("no empty point in the capsule");
+  return {};
+}
+
+// Block `id`'s main input / output (as its document signature says it has them): in the scene, drawn (an orbiting port
+// the canvas paints, or a lead stub: a symbol's, an opened group's In / Out terminal's), hit there by the canvas (hover)
+// and by the press's pin test (the view centred on it first: hit tests are of what is on screen).
+void checkMainPorts(Ui& u, doc::DeviceId id, std::string_view whatV) {
+  const std::string what(whatV);
+  const uint32_t i = u.node(id);
+  const doc::MainPorts mp = u.view().mainPorts(id);
+  for (const bool input : {true, false}) {
+    if ((input ? mp.in : mp.out).empty()) continue;
+    const std::string side = what + (input ? " in" : " out");
+    // A closed block: its own main port. An opened group (a capsule, no block): its In terminal's output, its Out
+    // terminal's input (where cables reach its inside).
+    uint32_t at = i;
+    int32_t k = -1;
+    bool pinInput = input;
+    const Node& n = u.pp().nodes[i];
+    if (n.group && n.groupOpen) {
+      for (uint32_t t = 0; t < u.pp().nodes.size(); ++t) {
+        const Node& m = u.pp().nodes[t];
+        if (m.kind != NodeKind::Terminal || m.device != id || (input ? m.outputs.empty() : m.inputs.empty())) continue;
+        at = t;
+        k = 0;
+        pinInput = !input;
+      }
+    } else {
+      k = input ? n.mainIn : (n.outputs.empty() ? -1 : 0);
+    }
+    REQUIRE_MESSAGE(k >= 0, side << ": no port");
+    const uint32_t p = u.view().canvas().scenePin(at, static_cast<uint32_t>(k), pinInput);
+    REQUIRE_MESSAGE(p != kNone, side << ": no scene pin");
+    const circuit::ScenePin& pin = (*u.view().canvas().scene()).pins[p];
+    CHECK_MESSAGE(pin.visible, side << ": invisible");
+    CHECK_MESSAGE((pin.orbit || pin.stub > 0.0f), side << ": nothing draws it");
+    if (pin.orbit) CHECK_MESSAGE((pinInput ? u.pp().nodes[at].orbitIn.on : u.pp().nodes[at].orbitOut.on), side);
+    const graph::Point2 w = u.view().canvas().portWorld(at, static_cast<uint32_t>(k), pinInput);
+    {
+      CircuitCanvas::View v = u.view().canvas().view();
+      const ui::IRect r = u.view().canvas().rect();
+      const float s = u.view().canvas().deviceScale();
+      v.x = w.x - static_cast<float>(r.w) * 0.5f / s;
+      v.y = w.y - static_cast<float>(r.h) * 0.5f / s;
+      u.view().canvas().setView(v);
+    }
+    const Vec2 dv = u.dev(w);
+    const circuit::CanvasHit h = u.view().canvas().hitTest(dv);
+    CHECK_MESSAGE((h.kind == circuit::CanvasHit::Kind::Pin && h.index == p),
+                  side << ": not hit (kind " << static_cast<int>(h.kind) << " index " << h.index << ", pin " << p << ")");
+    const ProjectCanvas::PinHit ph = u.view().canvas().pinAt(dv);
+    CHECK_MESSAGE((ph.node == at && ph.port == static_cast<uint32_t>(k) && ph.input == pinInput), side << ": not pressable");
+    // A real press there (window → canvas): an output starts a cable, an orbiting input slides; Esc cancels.
+    if (!pinInput || pin.orbit) {
+      u.d.move(dv);
+      u.d.down(dv);
+      CHECK_MESSAGE(u.view().canvas().drag() == (pinInput ? ProjectCanvas::Drag::Port : ProjectCanvas::Drag::Wire),
+                    side << ": a press there is not the port's (drag " << static_cast<int>(u.view().canvas().drag()) << ")");
+      u.d.press("Escape");
+      u.d.up(dv);
+    }
+  }
+}
+
+// A real cable drag (window → canvas): pressed on `from`, out along `dir` (off its block's edge), onto `to`, released.
+void dragCable(Ui& u, Vec2 from, Vec2 dir, Vec2 to) {
+  u.d.move(from);
+  u.d.down(from);
+  for (int k = 1; k <= 4; ++k) u.d.move({from.x + dir.x * 12.0f * static_cast<float>(k), from.y + dir.y * 12.0f * static_cast<float>(k)});
+  CHECK(u.view().canvas().drag() == ProjectCanvas::Drag::Wire);
+  for (int k = 1; k <= 8; ++k) {
+    const float t = static_cast<float>(k) / 8.0f;
+    const Vec2 a{from.x + dir.x * 48.0f, from.y + dir.y * 48.0f};
+    u.d.move({a.x + (to.x - a.x) * t, a.y + (to.y - a.y) * t});
+  }
+  u.d.up(to);
+  u.d.step();
+  u.view().sync();
+}
+
+}  // namespace
+
+TEST_CASE("node menu (TX.ports-always): an Envelope placed in an opened group with Tab shows its ports; cables out of "
+          "and into it — real dispatch") {
+  Ui u;
+  // As the user did: the pointer over the instrument group's capsule, Tab, "enve", Enter.
+  const graph::Point2 at = insideCapsule(u);
+  const size_t h0 = u.history();
+  u.d.move(u.dev(at));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  u.d.type("enve");
+  REQUIRE(u.menu() != nullptr);
+  REQUIRE(u.menu()->highlightedEntry() != nullptr);
+  CHECK(u.menu()->highlightedEntry()->key == "module:envelope");
+  u.d.press("Return");
+  u.d.step();
+  u.view().sync();
+  REQUIRE(u.history() == h0 + 1);
+  // The new module: the newest group directly inside the opened instrument group, as in the report.
+  doc::DeviceId env;
+  for (const doc::DevicePtr& d : u.track(u.keys).devices)
+    if (doc::isGroupDevice(*d) && d->group == u.synth && d->id.value > env.value) env = d->id;
+  REQUIRE(u.device(env) != nullptr);
+  CHECK(u.device(env)->name == "Envelope");
+  {
+    const Node& n = u.pp().nodes[u.node(env)];
+    CHECK(n.capsule == u.node(u.synth));
+    CHECK(n.groupPanel);  // closed: its panel
+    CHECK(n.orbitIn.on);
+    CHECK(n.orbitOut.on);
+  }
+  checkMainPorts(u, env, "Envelope");
+  u.fit();
+  // Hovering its output port rings it (the canvas's hover is that pin).
+  const uint32_t ei = u.node(env);
+  const uint32_t outPin = u.view().canvas().scenePin(ei, 0, false);
+  u.d.move(u.dev(u.view().canvas().portWorld(ei, 0, false)));
+  u.d.step();
+  CHECK(u.view().canvas().hovered().kind == circuit::CanvasHit::Kind::Pin);
+  CHECK(u.view().canvas().hovered().index == outPin);
+
+  // A target with a free main input: a VCA module placed at the top level.
+  u.d.move(u.dev(u.emptyWorld()));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  u.pick("vca", "VCA");
+  const doc::DeviceId vca = u.newest();
+  REQUIRE(vca != env);
+  checkMainPorts(u, vca, "VCA");
+  u.fit();
+  const std::string envIn = u.view().mainPorts(env).in, envOut = u.view().mainPorts(env).out;
+  const std::string vcaIn = u.view().mainPorts(vca).in, lfoOut = u.view().mainPorts(u.lfo).out;
+
+  // The Envelope's output → the VCA's input: one wire, one undo step.
+  auto portDev = [&](doc::DeviceId d, bool input) {
+    const uint32_t i = u.node(d);
+    const Node& n = u.pp().nodes[i];
+    const Vec2 p = u.dev(u.view().canvas().portWorld(i, input ? static_cast<uint32_t>(n.mainIn) : 0u, input));
+    REQUIRE(u.view().canvas().rect().contains(p));
+    return p;
+  };
+  auto outward = [&](doc::DeviceId d, Vec2 p) {  // off the block's outline, from its centre through the port
+    const Node& n = u.pp().nodes[u.node(d)];
+    const Vec2 c = u.dev(n.outline.centre());
+    const float len = std::max(1e-3f, std::hypot(p.x - c.x, p.y - c.y));
+    return Vec2{(p.x - c.x) / len, (p.y - c.y) / len};
+  };
+  size_t h1 = u.history();
+  {
+    const Vec2 from = portDev(env, false);
+    dragCable(u, from, outward(env, from), portDev(vca, true));
+  }
+  CHECK(u.history() == h1 + 1);
+  CHECK(u.wired(env, envOut, vca, vcaIn));
+  // Another block's output (the free LFO module's) → the Envelope's input: one wire, one undo step.
+  h1 = u.history();
+  {
+    const Vec2 from = portDev(u.lfo, false);
+    dragCable(u, from, outward(u.lfo, from), portDev(env, true));
+  }
+  CHECK(u.history() == h1 + 1);
+  CHECK(u.wired(u.lfo, lfoOut, env, envIn));
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // Both undo, one step each.
+  REQUIRE(u.ctx.undo());
+  CHECK_FALSE(u.wired(u.lfo, lfoOut, env, envIn));
+  CHECK(u.wired(env, envOut, vca, vcaIn));
+  REQUIRE(u.ctx.undo());
+  CHECK_FALSE(u.wired(env, envOut, vca, vcaIn));
+}
+
+TEST_CASE("node menu (TX.ports-always): every catalog entry placed unwired — top level and in an opened group — shows its "
+          "main ports, hit where drawn") {
+  Ui u;
+  const std::shared_ptr<const NodeCatalog> cat = nodeCatalog(NodeCatalog::Scope::Project, u.ctx);
+  REQUIRE(cat != nullptr);
+  REQUIRE(cat->entries.size() > 20);
+  // (Found again for each placement: a spawn pushes the blocks it lands on apart, view state that its undo keeps.)
+  size_t placed = 0, refused = 0;
+  for (const NodeEntry& e : cat->entries) {
+    for (const bool inside : {false, true}) {
+      u.fit();
+      const graph::Point2 at = inside ? insideCapsule(u) : u.emptyWorld();
+      const doc::Snapshot before = u.ctx.doc();
+      const doc::DeviceId d = u.view().spawnNode(ProjectPatchView::choiceOf(e), at);
+      if (!d.valid()) {  // only an instrument may be refused (inside the instrument group)
+        CHECK_MESSAGE(e.instrument, e.key << " refused: " << u.ctx.status());
+        MESSAGE(e.key << std::string(inside ? " refused in the group: " : " refused: ") << u.ctx.status());
+        ++refused;
+        continue;
+      }
+      u.view().sync();
+      ++placed;
+      const doc::Device* dv = u.device(d);
+      REQUIRE(dv != nullptr);
+      CHECK_MESSAGE((dv->group == u.synth) == inside, e.key << std::string(inside ? " not placed in the group, but in " : " placed in group ") << dv->group.value);
+      // A module closes to its panel once placed (the first time the view sees it).
+      if (doc::isGroupDevice(*dv) && dv->hasPanel()) CHECK_FALSE_MESSAGE(u.view().groupOpen(d), e.key);
+      checkMainPorts(u, d, e.key);
+      REQUIRE(u.ctx.undo());
+      REQUIRE(u.ctx.doc() == before);
+    }
+  }
+  MESSAGE(placed << " placed, " << refused << " refused, of " << cat->entries.size() << " entries");
+  CHECK(placed + refused == 2 * cat->entries.size());  // (an instrument may be refused inside another instrument)
+  CHECK(placed > refused);
+}
