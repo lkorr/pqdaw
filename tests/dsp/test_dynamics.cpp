@@ -228,6 +228,14 @@ TEST_CASE("window: max / min / mean = brute force for L 1, 7, 64, 1153; same bit
   const std::vector<float> y2 = r.run({pattern(2.0f)}, 6);
   CHECK(y2[3] == 0.0f);  // the last NaN-zero (frame 2) is still in the window of frames 2 … 6
   CHECK(y2[4] == 2.0f);
+  for (uint32_t lanes : {1u, 8u}) {  // the mean of a param-rate x: 2 entering a zero history of 4
+    StateInit mi;
+    mi.windowFrames = 4;
+    mi.windowOp = 2;
+    Rig m(Atom::Window, lanes, mi);
+    const std::vector<float> ym = m.run({pattern(2.0f)}, 6);
+    for (uint32_t f = 0; f < 6; ++f) CHECK(ym[static_cast<size_t>(f) * lanes] == std::min(2.0f, 0.5f * static_cast<float>(f + 1)));
+  }
 }
 
 TEST_CASE("window: a voice lane reset or moved from another group's phase goes on as its own window") {

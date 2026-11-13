@@ -236,22 +236,43 @@ void extremum1(WindowState& st, const float* x, float* out, uint32_t frames) noe
   _mm_store_ss(st.prefix, p1);
 }
 
+// Per chunk of ≤ 64 frames: the differences x − old in double 4 frames at a time (and the ring written), the running
+// sum alone on the dependency chain (one add per frame), then the outputs 4 at a time. Every value is the per-frame
+// definition's (the 8-lane kernel's per lane), only the work is regrouped.
 template <bool kSplX>
 void mean1(WindowState& st, const float* x, float* out, uint32_t frames) noexcept {  // RT-safe
+  constexpr uint32_t kChunk = 64;
+  alignas(32) double d[kChunk];
   const uint32_t len = st.length[0];
   float* v = st.values();
   uint32_t pos = st.pos[0] < len ? st.pos[0] : 0u;
   double sum = sumOf(st, 0);
   const double inv = 1.0 / static_cast<double>(len);
-  const float xs = kSplX ? _mm_cvtss_f32(clean<simd::S1>(_mm_load_ss(x))) : 0.0f;
+  const __m256d inv4 = _mm256_set1_pd(inv);
+  const __m128 xs = kSplX ? clean<simd::S1>(_mm_set1_ps(*x)) : _mm_setzero_ps();
   uint32_t f = 0;
   while (f < frames) {
     const uint32_t run = frames - f < len - pos ? frames - f : len - pos;
-    for (uint32_t k = 0; k < run; ++k) {
-      const float xv = kSplX ? xs : _mm_cvtss_f32(clean<simd::S1>(_mm_load_ss(x + f + k)));
-      sum += static_cast<double>(xv) - static_cast<double>(v[pos + k]);
-      v[pos + k] = xv;
-      out[f + k] = static_cast<float>(sum * inv);
+    for (uint32_t c = 0; c < run; c += kChunk) {
+      const uint32_t n = run - c < kChunk ? run - c : kChunk;
+      float* vp = v + pos + c;
+      const float* xp = x + f + c;
+      float* op = out + f + c;
+      uint32_t k = 0;
+      for (; k + 4 <= n; k += 4) {
+        const __m128 xv = kSplX ? xs : clean<simd::S1>(_mm_loadu_ps(xp + k));
+        const __m128 old = _mm_loadu_ps(vp + k);
+        _mm_storeu_ps(vp + k, xv);
+        _mm256_store_pd(d + k, _mm256_sub_pd(_mm256_cvtps_pd(xv), _mm256_cvtps_pd(old)));
+      }
+      for (; k < n; ++k) {
+        const float xv = _mm_cvtss_f32(kSplX ? xs : clean<simd::S1>(_mm_load_ss(xp + k)));
+        d[k] = static_cast<double>(xv) - static_cast<double>(vp[k]);
+        vp[k] = xv;
+      }
+      for (k = 0; k < n; ++k) d[k] = sum += d[k];
+      for (k = 0; k + 4 <= n; k += 4) _mm_storeu_ps(op + k, _mm256_cvtpd_ps(_mm256_mul_pd(_mm256_load_pd(d + k), inv4)));
+      for (; k < n; ++k) op[k] = static_cast<float>(d[k] * inv);
     }
     pos += run;
     f += run;
