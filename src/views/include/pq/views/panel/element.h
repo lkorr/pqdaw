@@ -125,6 +125,10 @@ public:
   // A position SHOWN instead of the stored one (an automated control follows its envelope at the playhead while the
   // transport plays); nullopt: the stored one again. Returns whether it changed.
   virtual bool showPosition(const doc::Binding& /*b*/, std::optional<double> /*position*/) { return false; }
+  // DT.1: the project's tempo where the playhead is (while playing; else at the start marker), in BPM — what a tempo
+  // slider's note markings are placed by. Cheap (one tempo-map lookup). 120 without a document.
+  virtual double tempoBpm() const { return 120.0; }
+  virtual bool transportPlaying() const { return false; }  // DT.1: whether the transport plays (cheap)
   // ---- EQ.3: a STRUCTURAL EDIT an element asks for (the EQ's band ops: doc::ops::addBand, setEqMode …) ----
   // `build` makes it from the document as it is now and the store's id source; the target dispatches it through its
   // host's history (one undo step). False — with a notice saying why — when the builder refuses (its message: "A chain
@@ -238,6 +242,10 @@ public:
   // the element shows changed); whether the element still moves.
   virtual bool pollVoices(PanelTarget& /*t*/) { return false; }
   virtual bool animating() const noexcept { return false; }
+  // DT.1: Face::frameTick / ticking for one element (a tempo slider: the playhead's tempo compared; ticking while the
+  // transport plays).
+  virtual bool frameTick(PanelTarget& /*t*/) { return false; }
+  virtual bool ticking() const noexcept { return false; }
   virtual VoiceTapReader* voiceReader(PanelTarget& /*t*/) const { return nullptr; }
   // GU.5b: the face-local rects (element-local) its live layer changes while voices sound (default: its rect).
   virtual void liveRects(std::vector<ui::Rect>& out) const { out.push_back({0.0f, 0.0f, desc_.w, desc_.h}); }

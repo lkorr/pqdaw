@@ -56,6 +56,8 @@ public:
   const ui::ModulationRing* modulation(const doc::Binding& b) const override { return t_.modulation(b); }
   bool setModulation(const doc::Binding& b, const ui::ModulationRing& r) override { return t_.setModulation(b, r); }
   bool showPosition(const doc::Binding& b, std::optional<double> p) override { return t_.showPosition(b, p); }
+  double tempoBpm() const override { return t_.tempoBpm(); }
+  bool transportPlaying() const override { return t_.transportPlaying(); }
   // EQ.4b: an embedded EQ's displays draw its curves and its band ops edit (they showed "no curve" and did nothing).
   bool run(const EditBuilder& build) override { return t_.run(build); }
   GroupResponses* responses() override { return t_.responses(); }
@@ -195,6 +197,8 @@ public:
   }
   bool pollVoices(PanelTarget& /*t*/) override { return face_ != nullptr && face_->pollVoices(); }
   bool animating() const noexcept override { return face_ != nullptr && face_->animating(); }
+  bool frameTick(PanelTarget& /*t*/) override { return face_ != nullptr && face_->frameTick(); }
+  bool ticking() const noexcept override { return face_ != nullptr && face_->ticking(); }
   VoiceTapReader* voiceReader(PanelTarget& /*t*/) const override { return face_ != nullptr ? face_->voices() : nullptr; }
 
 private:
