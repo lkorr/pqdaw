@@ -614,3 +614,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: 100k notes (⅔ bent) build ≈ 40 ms, dispatch 0.7 ms (check).
 - Notes: Q263. test_file_drop's "refused MIDI" case now expects a broken .mid to report "could not import" (behaviour change, not weakened).
 
+## 2026-11-13 · DY.5 merged · main
+- Did: merged task/DY.5-truepeak (dda5378e): `truepeak(x)` atom (BS.1770-4 Annex 2 4× polyphase, 48 taps; fixed group delay 6, reports no latency); AVX2 kernel computing all 4 phases in one pass from mirrored sums / differences (38 vector ops per 8 samples).
+- Verified (worker): pq_tests_dsp / graph / jit (1 lane == 8 lanes, block-size independent, impulse lag 6, 400 sines vs 16× reference −0.0016 … +0.222 dB, interp == JIT, RtScope); -Affected -Slow 76/77 → pq_tests_views alias fuzzy-match fixed, re-run pass; ship link OK.
+- Perf: ship L1 0.750 ns/sample, L8 4.46 ns/frame, load 13 % (baseline rows).
+- Notes: Q264 (the plan's ±0.2 dB is one-sided in practice).
+

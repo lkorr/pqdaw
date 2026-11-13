@@ -837,7 +837,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **DY.2 Sidechain routing: compensated cross-track input cables + cablesource picker** *(merged 83c1a0cc; Q257: a MIDI track's Pre FX = its instrument output, None sets On to 0; units are not merged — compensated through the bus plan; a cross-track cable into a signal input now carries every channel)* (plan §DY.2).
 - [x] **DY.3 Transfer display (StaticTransfer) and gain-reduction meter** 👁 *(merged ecda848a; Q259: the live dot reads the group's own In; graph::ControlEval shared by LinearResponse and StaticTransfer; doc::GroupEvaluator base)* (plan §DY.3).
 - [x] **DY.4 Compressor module** 👁 *(merged a0ed45b2; Q261: Expand = downward below threshold; Q262: EQ On is a value-block switch, defaults −20 dB / 4:1 / knee 6 / 2 ms / 50 ms; ≈ 4–5 ns per stereo sample at defaults (ship, indicative); listed under Meta Modules)* (plan §DY.4).
-- [ ] **DY.5 truepeak atom** (plan §DY.5). After DY.1.
+- [x] **DY.5 truepeak atom** *(merged dda5378e; Q264: standard BS.1770 coefficients over-read ≤ 0.222 dB near sr/4, under-read ≤ 0.2 dB; ship 0.75 ns/sample L1, 0.56 ns per voice-sample L8)* (plan §DY.5).
 - [ ] **DY.6 Limiter module** 👁 (plan §DY.6). After DY.1, DY.3, DY.5.
 - [x] **MF.1 Standard MIDI File reader / writer** *(merged 4f0603ab; Q260; 10 MB file parses in ≈ 21 ms (check), resolveNotes ≈ 155 ms)* (plan §MF.1).
 - [x] **MF.2 MIDI import** *(merged 481a1604; Q263: bent / MTS keys = absolute 12-TET pitch + cents; unmapped .kbm keys kept at 12-TET; clips not looped; MIDI first in a mixed drop)* (plan §MF.2).

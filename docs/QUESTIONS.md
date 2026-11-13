@@ -1369,7 +1369,7 @@ counted in the status line; (3a), as a recorded clip with `loop` off; (4a), one 
 coalescing key); (5a). All in src/document/src/midi_import.cpp (importMidi) except (4) (arrangement/file_drop.cpp commit).
 Status: open.
 
-## Q?-DY.5-a · truepeak: the plan's ±0.2 dB against the BS.1770 filter's own ripple
+## Q264 · 2026-11-13 · DY.5 · truepeak: the plan's ±0.2 dB against the BS.1770 filter's own ripple
 Context: DY.5 asks for `truepeak` to be the BS.1770-4 Annex 2 estimator AND within 0.2 dB of a 16× reference on sines
 at 0.24–0.49·sr. The standard's phases 1 and 2 have +0.2 dB of passband gain near sr/4 (−0.24 dB at DC), so with the
 standard's coefficients it OVER-reads by up to 0.222 dB at 0.24–0.265·sr (about 1 in 12 random cases above 0.2); it
