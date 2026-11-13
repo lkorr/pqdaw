@@ -590,3 +590,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: renders off the UI thread, below-normal, one job at a time; renderClips loads only clips sounding in the range.
 - Notes: Q258 → FZ.x-fix (flatten drops kept-running blocks; 2 ms edge fade on render clips). Ctrl+J over MIDI + audio = two undo steps.
 
+## 2026-11-13 · DY.3 merged · main
+- Did: merged task/DY.3-transfer (ecda848a): graph::ControlEval factored out of LinearResponse; graph::StaticTransfer (stateful path → Unavailable); doc::GroupEvaluator base for GroupResponse and the new GroupTransfer; panel element `transfer` (units db, output value | reduction, live dot from the group's In) and meter `mode: reduction` (range 12/24/48); panel::SignalWindow shared signal reads.
+- Verified (worker): pq_tests_graph static transfer 3/3, pq_tests_document group transfer 3/3, pq_tests_views DY.3 4/4 (goldens transfer-saturator / transfer-reduction new); -Affected 45/45.
+- Perf: Hard Curve 8 ops × 128 points ≈ 37 µs per evaluate (check build), only when a value the curve reads changes.
+- Notes: Q259. REVIEW entry.
+

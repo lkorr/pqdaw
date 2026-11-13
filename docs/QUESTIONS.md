@@ -1305,7 +1305,7 @@ warp Off (exact; they no longer follow tempo changes, as recorded takes). Ctrl+J
 range makes two undo steps (the MIDI one at once, the audio one when its render lands). Reversible: `regionClip` /
 `renderRegions` (declick), `flattenTrack`'s removal loop, `bounceToNewTrack`'s mixer copy, `runJob`'s folders.
 
-## Q?-DY.3-a · the transfer display's live dot: the group's own In, not a second binding
+## Q259 · 2026-11-13 · DY.3 · the transfer display's live dot: the group's own In, not a second binding
 Context: the plan's `transfer` element has a dot "at the live input level (Signal binding)". The group is named by a
 binding too. Options: (a) one Signal binding on the group's In (`input`): it names the group and its tap is the level;
 (b) slot 0 names the group (on its `y`, like `response`), slot 1 an optional Signal for the level (any port).
