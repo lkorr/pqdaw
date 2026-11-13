@@ -39,3 +39,37 @@ per-sample cost should be the delay line plus the smoother.
 the 5 s clamp; delayed impulse lands at the right sample (integer and fractional), stereo; a feedback loop through a VCA
 (0.5) decays as expected; time automation glides without a step; an `RtScope` allocation test; the face's drag with
 gravity and with the magnet off through real window events (memory: UI tests via real dispatch); a face golden.
+
+## DT.2 Delay tap sound: 1-sample minimum, click-free jumps (user 2026-11-12)
+- **1-sample floor for `delay_cubic`** (src/dsp/src/kernels_memory.cpp:55–59): in [1, 2) samples read linearly
+  (taps 1 and 2 samples old, so every tap stays ≥ 1 sample old and feedback loops stay legal); ≥ 2 the cubic read as
+  now. At exactly 2 both give x[n−2], so the change is continuous. Per sample one compare + select (SIMD blend); bench.
+  The Delay Tap's own clamp / docs (Q242 item 4) follow to 1.
+- **No click on a jump.** The click is the 20 ms linear ramp sweeping the read head across a large jump (375 → 500 ms
+  in 20 ms ≈ 6× speed). Continuous moves (drags, automation, wires, tempo drift) keep gliding; a DISCONTINUOUS change
+  of the target (mode switch, a sync step, a click that jumps the slider) instead **crossfades two read heads** (old
+  time → new time, ~30 ms, equal power), like Live's Delay "Fade" mode. Decide the jump test (e.g. a target change
+  larger than the ramp can glide without a pitch beyond ±1 octave) and where it lives (a dedicated kernel or atoms in
+  the group); the second read runs only during a fade (CPU rule). Expressible as atoms or one new atom; prefer the
+  general mechanism other delays will reuse.
+- Tests: impulse at 1, 1.5, 2 samples; a feedback loop at 1 sample through a VCA; mode switch and sync step with a
+  sounding sine: no sample-to-sample step above what a 30 ms crossfade of two sines allows (measure the click: high-
+  pass energy around the switch vs. a plain crossfade reference); continuous automation still glides (pitch, no fade).
+
+## DT.3 Delay tap face: move anywhere, stretch, fraction names, more markings (user 2026-11-12) 👁
+- **Move**: a press-drag anywhere on the face that is not the slider knob/track or a button moves the block, as for
+  other modules (find why it doesn't: likely the tempo slider's hit area covers the face, or GroupPanelFace swallowing
+  pointer-down). Check the other panel faces don't share the bug; fix it generally if they do.
+- **Horizontal stretch**: drag the face's left or right edge (↔ cursor on hover) to widen it; height unchanged; stored
+  per instance (like S-resize's scale), undoable; the slider fills the width. Make it a face capability others can opt
+  into (a face declares it stretches horizontally), not a delay-tap special case.
+- **Names**: every marking is a reduced fraction of a whole note: 1/4, 1/12 (not 1/8T), 3/16 (not 1/8.), 1/7, 2/7 …
+  Sync readout the same.
+- **Markings by simplicity and space**: candidates n/d with d ∈ {1,2,4,8,16,32,64}·{1,3,5,7}, small n, within 0–5 s at
+  the tempo. Order by simplicity (powers of two with n = 1; then 3s (dotted, triplets); then 5s, 7s; then other
+  numerators). Show a tick when it is ≥ ~4 screen px from every shown simpler tick, a label when its text clears the
+  shown labels — in SCREEN pixels, so stretching or zooming the circuit both reveal more. Gravity pulls only to shown
+  ticks. The sync lane's list stays the 21 values (renamed) unless the plan section on this is clearly wrong.
+- Tests through real events: drag on the face body moves the block; edge-drag stretches and undo restores; at a wide
+  stretch 1/7 is labelled and gravity snaps to it, at default width it is hidden and does not pull; goldens default +
+  stretched.
