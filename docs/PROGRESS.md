@@ -572,3 +572,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf (ship, indicative, FZ.3 building): follow 1.88–2.29 ns/sample L1, 1.77–8.4 ns/frame L8; window max 0.53–0.78 / 1.7–2.7; mean 1.8 / 3.9–5.9; rows in bench/RESULTS.md.
 - Notes: Q255.
 
+## 2026-11-13 · FZ.3 merged · main
+- Did: merged task/FZ.3-freeze-ui (3ec5aac2): Freeze / Unfreeze Track in the track and clip-area menus (group → members; disarms in the same step; Flatten shown disabled until FZ.4); header snowflake + render progress / failure; arm disabled; icy clips that refuse drags with an explanation; device lanes greyed; Device view veil with "running" pills on kept blocks; status line "Frozen: unfreeze to edit" [Unfreeze]; wiring.cpp uses the frozen-slot wire states; theme token track.frozen.
+- Verified (worker): pq_tests_views default tier pass (5 new real-dispatch tests, goldens tracks-frozen / device-frozen new), pq_tests_app pass, after rebase.
+- Perf: statuses re-read only when freezeGeneration moves; 10 Hz poll only while a render is unfinished.
+- Notes: Q256. REVIEW entry. freeze_service doesn't bump the generation on progress (the bar reads per-track status directly; not exercised against the real service).
+

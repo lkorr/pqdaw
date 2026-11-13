@@ -1261,7 +1261,7 @@ Choice: (a) and (c): one atom, like svf's `mode`; zero history is what a delay l
 input clean-up and initState's zero values; op names would be a parser feature.
 Status: open.
 
-## Q?-FZ.3-a · Freeze UI: what Freeze does to arm, where Unfreeze is offered, what is veiled
+## Q256 · 2026-11-13 · FZ.3 · Freeze UI: what Freeze does to arm, where Unfreeze is offered, what is veiled
 Context: the plan asks for Freeze / Unfreeze in the menus, a disabled arm, an "Unfreeze" offer on a refused edit, and
 frozen devices / lanes not offered for edits; it does not say what happens to a track armed when frozen, nor which
 editors besides the arrangement and the Device view stop offering edits.

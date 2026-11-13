@@ -828,7 +828,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **FZ.1 Frozen tracks in the document and the lowering** *(merged 86136237; Q252: cables from other tracks are outside input (allowed; the freeze key must cover them); one content check at the end of apply)* (plan §FZ.1).
 - [x] **FZ.2 Freeze service (cache/freeze renders)** *(merged b99478da; Q254: key = rate + tempo / tunings / pruned render-document hashes, files `<id>-<key>.wav`; frozen vs live bit-exact)* (plan §FZ.2).
 - [ ] **EX.x-fix-settle A fresh link's first ~26 ms depend on history** (found by EX.1 / FZ.2, Q251): an automated param's smoother starts from its default instead of the automation's value at the render start, so a fresh offline link's first pass (export, freeze render) ramps for ~26 ms. Settle every smoother to its start value before the first block of an offline render (and on locate?), then let EX.1's stems-with-FX use one link again if that removes the solo-pass bleed.
-- [ ] **FZ.3 Freeze UI** 👁 (plan §FZ.3). After FZ.1.
+- [x] **FZ.3 Freeze UI** 👁 *(merged 3ec5aac2; Q256: Freeze disarms in the same step; status line [Unfreeze]; piano roll / take lanes / circuit band not veiled (edits refused there))* (plan §FZ.3).
 - [ ] **FZ.4 Flatten, bounce to new track, consolidate audio** (plan §FZ.4). After FZ.2.
 
 ## DY: Compressor, Limiter, MIDI files (plan: docs/plans/DY.md; user 2026-11-12 / 2026-11-13, SPEC §15 "finishing a song"; Reverb excluded by the user 2026-11-13)
