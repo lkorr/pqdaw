@@ -1212,7 +1212,8 @@ the document with that track soloed, the previous link alive until the new one c
 images' code). Choice: (c): exact (each solo pass equals the captured bus that carries it, ≤ −120 dB), no engine API;
 cost one interpreter compile per track (~50 ms on the fixture) and the JIT's, mostly cache hits. Reversible: runExport's
 pass loop is the only place.
-Status: open.
+Status: superseded by EX.x-fix-settle (Q?-EX.x-fix-settle-a): the bleed was a smoother falling asleep mid-ramp in the
+settle; fixed, every pass on one link equals its first bit for bit, and runExport is back to one link (D7).
 
 ## Q252 · 2026-11-13 · FZ.1 · What a frozen track's "own wires" are; what the guard lets through from outside
 Context: D4 refuses edits of a frozen track's devices, clips, notes and device lanes. Cables are the circuit too
@@ -1304,6 +1305,8 @@ lets Ctrl+Z play the cached render again without a render (the cache stays delet
 warp Off (exact; they no longer follow tempo changes, as recorded takes). Ctrl+J with both MIDI and audio tracks in a
 range makes two undo steps (the MIDI one at once, the audio one when its render lands). Reversible: `regionClip` /
 `renderRegions` (declick), `flattenTrack`'s removal loop, `bounceToNewTrack`'s mixer copy, `runJob`'s folders.
+Status: (a) and (c) reversed by FZ.x-fix (Q?-FZ.x-fix-a): render clips have no edge declick; Flatten keeps the blocks
+that feed another track.
 
 ## Q259 · 2026-11-13 · DY.3 · the transfer display's live dot: the group's own In, not a second binding
 Context: the plan's `transfer` element has a dot "at the live input level (Signal binding)". The group is named by a
@@ -1408,4 +1411,40 @@ clip rarely acts. Defaults like Live's Limiter: Gain 0 dB (−12 … +24), Ceili
 Auto on, Lookahead 3 ms, Stereo, True Peak off. Also: the plan's det = latency(|x|, 6) beside out = latency(x, 6, la) is one
 frame short for its proof (a window of L includes its own frame), so the detector runs 7 frames behind (truepeak + 1);
 the latency stays L + 6. Reversible: limiterBlocks (modules.cpp).
+Status: open.
+
+## Q?-FZ.x-fix-a · Flatten with blocks that still feed another track; what a render clip's "no edge fade" means
+Context: Q258 chose (c) (kept-live blocks removed) and (a) (render clips keep the 2 ms edge declick); FZ.x-fix reverses
+both. Keeping the blocks frozenKeep keeps cannot keep what they need when that is the track's OWN notes / audio (a
+notes cable from its source into another track, a kept instrument group played by its notes): a flattened track has
+neither. The per-clip flag needs a rule for edits that copy a clip.
+Options: refused source feeds: (a) refuse Flatten while its own notes / audio play another track (status line names
+it, before any render) / (b) flatten anyway and drop those cables (the other track changes, the bug being fixed) /
+(c) keep the note clips on an audio track (not a valid document). Flag: (d) every copy keeps `noEdgeFade` (split,
+trim, duplicate, paste) / (e) edits clear it on the pieces.
+Choice: (a), (d). (a) keeps every other track unchanged or refuses; (d) is what a split needs (the two pieces of a
+render played back to back are seamless; with a declick at the cut they dipped), and a piece the user moves into sound
+starts hard, as the render clip itself does. SetTrackKind now allows blocks its source does not play (so kept blocks
+survive MIDI → audio). Bounce to New Track still deactivates its source (FZ.4, Q258 (g)): a block of the source that
+feeds another track stops then — not in this task's scope. Reversible: `flattenKeep` / `flattenable`
+(edit_render.cpp), `regionClip`'s flag.
+Status: open.
+
+## Q?-EX.x-fix-settle-a · Which pass was wrong, and what settling now guarantees
+Context: the task assumed a fresh link's first pass ramps because its smoothers start from defaults. Measured on the
+playback fixture (Grp's volume automated from −18 dB at tick 0): the FIRST pass is right (Grp at −18 dB from frame 0);
+every later pass faded from 0 dB (the previous pass's end) for ~1650 frames. Cause: in the settle, the locate's
+automation value starts a 20 ms param ramp; Grp's input is silent, so its sleep segment fell asleep after one block
+(params unchanged, the gain's residual 0 while it followed the ramp) with the gain's target mid-ramp, and only the
+next sound woke it. A second cause showed on edited links: work that arrives during the settle (a compile deferred
+until the engine ran, a lowering a finished sample load asks for) was published by the pass's own flush, so a new
+unit's gains faded in from silence at the pass start.
+Options: (a) a settle that resets every smoother's state to its input (needs the Control region's values: an image API
+per backend) / (b) the host's sleep rule: a stage in param-ramp mode counts as a param change for its segments (they
+fall asleep at the target), plus settleOffline taking and settling late work / (c) keep the second-pass workaround.
+Choice: (b): one compare per segment per block, ~20 ms more awake after a param change, nothing at rest; it also
+fixes the live case (a stopped locate or a knob move on a silent track no longer leaves a stale gain that fades at the
+next sound). Every pass on a link now equals its first bit for bit (tests: automated volume twice; Lead then Mos
+soloed == Mos soloed on a fresh link), so EX.1's stems with return / master FX run on one link again (no compile per
+track). Reversible: `ImageHost::decideSleep`'s first line, `settleOffline`'s loop, runExport's pass loop.
 Status: open.
