@@ -129,6 +129,7 @@ KernelFn findRampKernel(Atom a, uint32_t lanes) noexcept;  // TX.smooth: param_r
 KernelFn findSignalTapKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // TX.spectrum (kernels_signal_tap.cpp)
 KernelFn findCurveKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // GU.1 (kernels_curve.cpp)
 KernelFn findSvfKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;    // EQ.1 (kernels_svf.cpp)
+KernelFn findNoiseStepKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // NZ.1 (kernels_noise_step.cpp)
 // EQ.1b: an svf state's states (every lane) all ≤ eps / set to 0 (dsp::decayStateSmall / decayStateFlush). RT-safe.
 bool svfStateSmall(const void* state, float eps) noexcept;
 bool svfStateFlush(void* state) noexcept;  // true: a word was not 0 yet

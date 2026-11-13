@@ -56,6 +56,15 @@ constexpr PortSpec pSine[] = {{"phase", kR}};
 // The kernel picks the mipmap from the phase increment (T1.6), so wavetable has no `hz` input.
 constexpr PortSpec pWavetable[] = {{"phase", kR}, {"table", kRConst, true, 0.0f}};
 constexpr PortSpec pNoise[] = {{"seed", kRConst, true, 0.0f}};
+// NZ.1 (pq/dsp/atoms.h "Generators"): the noise module's stepped random source. rate in Hz (≥ sr, the default: every
+// frame), trig / reset rising edges, a sync grid of `grid` beats on `beat`, smooth 0 … 1, colour dB/oct, density Hz (the
+// default: continuous), steps (0: off), seed; dist 0 uniform / 1 gaussian and lanes 1 seeded apart / 0 one stream (consts).
+constexpr PortSpec pNoiseStep[] = {{"rate", kR, true, 1.0e9f},    {"trig", kB, true, 0.0f},
+                                   {"beat", kR, true, 0.0f},      {"grid", kR, true, 0.0f},
+                                   {"reset", kB, true, 0.0f},     {"smooth", kR, true, 0.0f},
+                                   {"colour", kR, true, 0.0f},    {"density", kR, true, 100000.0f},
+                                   {"steps", kR, true, 0.0f},     {"seed", kR, true, 0.0f},
+                                   {"dist", kRConst, true, 0.0f}, {"lanes", kRConst, true, 1.0f}};
 // TMM.2: a live frame table (the slot `table`, a resource id the link owns) read at a frame position in [0, 1];
 // voice_tap samples x into the voice tap `slot` for a meta module's face (a sink: no outputs).
 constexpr PortSpec pWavetablePos[] = {{"phase", kR}, {"position", kR, true, 0.0f}, {"table", kRConst, true, 0.0f}};
@@ -204,6 +213,8 @@ const AtomSignature kAtoms[] = {
     {"wavetable_shape", C::Shaping, pWavetableShape, pOutR, sizeof(dsp::WavetableShapeState), kStateful | kBroadcast, 0,
      {}, "live frame table as a transfer curve of x in -1..1 (clamped), antiderivative anti-aliased"},
     {"noise", C::Generator, pNoise, pOutRAudio, sizeof(dsp::NoiseState), kStateful, 0, {}, "white noise in −1..1 (uint32 generator state)"},
+    {"noise_step", C::Generator, pNoiseStep, pOutRAudio, sizeof(dsp::NoiseStepState), kStateful, 0, {},
+     "a random value per step (rate, trig, sync grid), coloured, folded, sparse, quantised, glided: the Noise module"},
 
     // Math (exact). Operators: + − * / % unary − map to add sub mul div mod neg.
     {"add", C::Math, pAB, pOutR, 0, kMathC, 0, {}, "a + b", rules::add},

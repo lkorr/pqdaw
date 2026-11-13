@@ -29,6 +29,7 @@ void addOversampleBenches(pq::bench::Runner& runner);  // bench_oversample.cpp (
 void addWaveLiveBenches(pq::bench::Runner& runner);    // bench_wave_live.cpp (TMM.8)
 void addCurveBenches(pq::bench::Runner& runner);       // bench_curve.cpp (GU.1)
 void addSvfBenches(pq::bench::Runner& runner);         // bench_svf.cpp (EQ.1)
+void addNoiseBenches(pq::bench::Runner& runner);       // bench_noise.cpp (NZ.1)
 void printOversampleTable();
 
 namespace {
@@ -220,7 +221,8 @@ int main(int argc, char** argv) {
                            res == pq::dsp::Resource::VoiceTap || res == pq::dsp::Resource::Curve;
     const bool converter = ai >= static_cast<uint32_t>(Atom::OversampleUp) && ai <= static_cast<uint32_t>(Atom::OversampleAny);
     // EQ.1: svf needs its consts as patterns and per-mode / stage rows (bench_svf.cpp).
-    if (!noFixture && !converter && a != Atom::Svf) add(a, 0, "");
+    // NZ.1: noise_step needs its consts and a configuration per row (bench_noise.cpp).
+    if (!noFixture && !converter && a != Atom::Svf && a != Atom::NoiseStep) add(a, 0, "");
   }
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).
   for (Atom a : {Atom::Add, Atom::Mul, Atom::Div, Atom::Gt, Atom::CentsToHzFast}) add(a, 0b10, " (blk,spl)");
@@ -251,6 +253,7 @@ int main(int argc, char** argv) {
   addWaveLiveBenches(runner);
   addCurveBenches(runner);
   addSvfBenches(runner);
+  addNoiseBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   printOversampleTable();
   if (code != 0 || rows.empty()) return code;

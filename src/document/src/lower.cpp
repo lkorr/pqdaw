@@ -1784,6 +1784,26 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       if (m.count[1 + pick] == 1) muxPicked.emplace(mux, m.at[1 + pick]);
     }
   }
+  // NZ.1 (lower.h "Groups"): a group whose main input nothing reaches — no wire into it, or only wires from the In of a
+  // group that is itself unfed — carries no signal at its In: a wire from that In into a native engine's input is
+  // inactive, so the input reads its own default (a free Noise module's clock: unwired; a free Envelope module's `in`:
+  // 1, the envelope itself), as a free engine's inputs do. Memoised per group (nesting depth bounded).
+  std::unordered_map<uint32_t, bool> unfedMemo;
+  std::function<bool(DeviceId, uint32_t)> unfedGroup = [&](DeviceId g, uint32_t depth) -> bool {
+    if (const auto it = unfedMemo.find(g.value); it != unfedMemo.end()) return it->second;
+    bool unfed = depth < 64;
+    for (const Wire& w : wires) {
+      if (!unfed) break;
+      if (w.toMixer() || w.to != g || w.param != kMainPort) continue;
+      const auto at = w.fromNoteSource() ? where.end() : where.find(w.from.value);
+      const LDev* src = at == where.end() ? nullptr : &devs[at->second.first][at->second.second];
+      const bool fromUnfedIn = src != nullptr && isGroupDevice(*src->device) && w.port == kGroupInPort &&
+                               unfedGroup(w.from, depth + 1);
+      if (!fromUnfedIn) unfed = false;
+    }
+    unfedMemo.emplace(g.value, unfed);
+    return unfed;
+  };
   for (const Wire* wp0 : order) {
     if (!muxPicked.empty() && !wp0->fromNoteSource() && wp0->port == "out" && muxPicked.count(wp0->from.value) != 0) {
       Wire f = *wp0;
@@ -2012,6 +2032,11 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
           wp.states.push_back(st);
           continue;
         }
+      } else if (lw.input && !dd.bypass && isMetaDevice(*dd.device) && isGroupDevice(*sd.device) &&
+                 unfedGroup(w.from, 0)) {
+        st.status = WireStatus::Inactive;  // NZ.1: nothing reaches the group's In (above)
+        wp.states.push_back(st);
+        continue;
       }
     }
     // EQ.3 (lower.h "Structural value blocks"): a stepped or constant value block's wire into an atom block's `real const`

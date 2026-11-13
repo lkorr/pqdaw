@@ -9,6 +9,7 @@
 // All states are 32-byte aligned (one __m256 per field). Bool fields hold masks (0 / 0xFFFFFFFF as float).
 // States are trivially copyable; initState() (atoms.h) writes the documented initial values.
 
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
@@ -271,6 +272,42 @@ struct alignas(32) SvfState {
 // The header: what stateBytes() adds sections to (kernelInfo(svf).stateSize).
 inline constexpr uint32_t kSvfHeaderBytes = static_cast<uint32_t>(sizeof(SvfState) - sizeof(SvfState::sec));
 static_assert(kSvfHeaderBytes % 32 == 0 && kSvfHeaderBytes == 25 * 32);
+// noise_step (NZ.1, kernels_noise_step.cpp): everything up to `counter` is [8] arrays reset per voice lane (a note-on
+// restarts the lane: a first value is drawn at its next frame); `counter` (frames this block has run), `base` (the
+// node's seed) and `group` (its voice group's mix) are the group's. A draw at frame t hashes key + (t − origin): the
+// stream position is the frame, so the shared counter is the only clock and a lane's restart only moves its origin.
+struct alignas(32) NoiseStepState {
+  uint32_t phase[8];     // rate phase, 2^32 = one step
+  uint32_t origin[8];    // the counter at the lane's last restart
+  uint32_t lastStep[8];  // the counter at its last step
+  uint32_t seed[8];      // mixSeed(node seed, lane): constant (initState and the lane reset write the same)
+  float hasLast[8];      // mask: lastStep is valid (a period can be measured)
+  float started[8];      // mask: the lane has drawn its first value
+  float prevTrig[8];     // masks: trig / reset on the previous frame
+  float prevReset[8];
+  float prevCell[8];     // floor(beat / grid) on the previous frame (NaN: none)
+  float from[8];         // the glide: from → to, u ∈ [0, 1] advancing du per frame
+  float to[8];
+  float u[8];
+  float du[8];
+  float out[8];          // the last output
+  float w[5][8];         // the colour cascade's history: w[k] = section k's previous input (w[4]: the last output)
+  float colourKey[8];    // the colour the coefficients below are for (NaN: none yet)
+  float z[4][8];         // its zeros (kNoiseColourPoles are fixed)
+  float gain[8];
+  float white[8];        // mask: colour 0, the identity
+  float keyTag[8];       // the seed (and lanes const) the keys below are for (kNoiseStepNoKey: none yet)
+  uint32_t keys[8];      // the draw keys
+  float rateKey[8];      // the rate the increment below is for (kNoiseStepNoKey: none yet)
+  uint32_t inc[8];       // round(rate · 2^32 / sr)
+  uint32_t counter;
+  uint32_t base;
+  uint32_t group;
+  float sampleRate;
+  uint32_t pad_[4];
+};
+static_assert(offsetof(NoiseStepState, counter) == 30 * 32 && sizeof(NoiseStepState) == 31 * 32);
+inline constexpr uint32_t kNoiseStepNoKey = 0x7FBADBADu;  // a NaN no input carries: a cache entry not made yet
 static_assert(sizeof(OversampleState) == 26 * 32);
 static_assert(sizeof(OversamplePhaseState) == 64);
 static_assert(sizeof(Z1State) == 32);

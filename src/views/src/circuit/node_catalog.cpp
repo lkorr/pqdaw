@@ -89,6 +89,7 @@ std::string_view atomAliases(std::string_view name) noexcept {
       {"ne", "!= not equal"}, {"and", "&& logic"}, {"or", "|| logic"}, {"xor", "^^ logic"}, {"not", "! logic invert"},
       {"tanh", "saturate soft clip"}, {"clip", "clamp limit hard clip"}, {"z1", "delay one sample unit"},
       {"phasor", "ramp saw oscillator"}, {"sine_hz", "oscillator sine"}, {"noise", "white random"},
+      {"noise_step", "random sample hold drift brown pink coloured noise"},
       {"select", "? ternary switch"}, {"lerp", "mix crossfade interpolate"}, {"samplehold", "s&h sample hold"},
   };
   for (const auto& [n, a] : kAliases)

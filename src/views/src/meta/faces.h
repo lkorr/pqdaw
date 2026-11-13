@@ -16,6 +16,9 @@ std::unique_ptr<MetaFace> makeEnvelopeFace(const meta::Type& t);   // TMM.11
 std::unique_ptr<MetaFace> makeSpectrumFace(const meta::Type& t);   // TX.spectrum
 std::unique_ptr<MetaFace> makeScopeFace(const meta::Type& t);      // TX.scope
 std::unique_ptr<MetaFace> makeSpectrogramFace(const meta::Type& t);  // TX.spectrogram
+std::unique_ptr<MetaFace> makeNoiseFace(const meta::Type& t);        // NZ.1
+// NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
+ui::Rgba noiseColourTint(double colour) noexcept;
 
 // TX.spectrogram (tests): the Spectrogram face's picture as its last poll / paint left it. False: not a Spectrogram face.
 struct GramShown {

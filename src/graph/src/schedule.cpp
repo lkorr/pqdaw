@@ -1674,7 +1674,7 @@ private:
           }
         }
         if (m.kernel == dsp::Atom::Svf) init.svfSections = svfSectionsOf(n);  // EQ.1b: the state its consts need
-        if (m.kernel == dsp::Atom::Noise)
+        if (m.kernel == dsp::Atom::Noise || m.kernel == dsp::Atom::NoiseStep)  // NZ.1: noise_step has no seed const
           init.seed = static_cast<uint32_t>(mix64(tp_->stateKey[n] ^ mix64(ch))) +
                       static_cast<uint32_t>(static_cast<int64_t>(seed));
         if (m.kernel == dsp::Atom::Z1)

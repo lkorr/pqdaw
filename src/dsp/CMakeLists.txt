@@ -26,6 +26,8 @@ pq_add_module(pq_dsp
     src/kernels_curve.cpp
     src/kernels_svf.cpp
     src/svf_design.cpp
+    src/kernels_noise_step.cpp
+    src/noise_step.cpp
     src/curve.cpp
     src/fft_mixed.cpp
     src/warp.cpp

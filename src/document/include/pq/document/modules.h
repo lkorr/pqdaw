@@ -42,7 +42,8 @@ enum class ModuleKind : uint8_t {
   PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram, WavetableSynth,
   Utility, Saturator, Lfo, Operator,  // GU.10: the stock devices
   EqBand, Eq,                         // EQ.3
-  DelayTap                            // DT.1
+  DelayTap,                           // DT.1
+  Noise                               // NZ.1
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -106,6 +107,11 @@ dsp::Curve vcaCurve(double min = -20000.0, double max = 20000.0, double zone = 0
 //                generic slider
 //   analysers    "scope" / "spectrum" / "spectrogram" filling the panel, bound to the engine's data (the display
 //                state: saved, undoable); the engine's own tap feeds them
+//   Noise        NZ.1 (docs/plans/NZ.md): "noise" (the trace of the output, the voices' dots, the colour's slope line)
+//                bound to the engine's data; generic knobs Rate (shown in Rate clock) or a Sync menu (Sync clock: the
+//                note values, kNoiseSyncItems), Smooth, Colour, Density, Steps, Min, Max, Seed; tabs (chips) bound to
+//                the settings Clock (Rate | Sync | Note), Distribution (Uniform | Gauss), Restart (Play | Free | Note),
+//                Voices (Voice | Shared). Its In is the engine's clock input (wired: a clock that overrides the setting)
 // The engine is the one block inside; the elements' rects are the old face's (the views' rich kinds show the same
 // sections of it). A Wavetable module at an instrument group's In hears the note's frequency, not its phase (a nested
 // group's main input reads the note's Hz: GU.4): put a Phase Accumulator before it (QUESTIONS Q?-GU.7-a).

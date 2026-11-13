@@ -133,6 +133,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace; load conversion
     app/test_wavetable_synth.cpp  # GU.8: the Wavetable Synth spawned at the notes; a chord plays, interpreter == JIT
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
+    app/test_noise_module.cpp  # NZ.1: the Noise module in a project (white unwired, Sync grid, On play vs Free, the display tap)
     app/test_stock_presets.cpp  # GU.10: the stock devices and the default instrument as group presets (renders vs the retired patches, interp == JIT)
     app/test_group_oversample.cpp  # TX.group-oversample: oversampled groups (linear == 1x spectrum, tanh aliasing, nesting, per voice, response == impulse, the setting)
     app/test_delay_tap.cpp  # DT.1: the Delay Tap renders (impulse at the time, half samples, stereo, sync at the tempo, a VCA feedback loop, a glide)
@@ -423,6 +424,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_wave_live.cpp  # TMM.8: wavetable_live / wavetable_shape (baked agreement, the alias proof, ADAA)
     dsp/test_curve.cpp  # GU.1: control curves (presets vs the old knob laws, the inverse, the curve atom vs evalCurve)
     dsp/test_svf.cpp  # EQ.1: the svf atom (impulse response == svfResponse, lanes, matched vs analog, stability, splits)
+    dsp/test_noise_step.cpp  # NZ.1: noise_step (timing, sync, draws, colour design and reference, shaping, lanes, splits)
     support/alias_meter.h  # TMM.1: the reusable alias meter (listed so tests/support maps to its users)
   DEPS pq_dsp)
 
@@ -437,6 +439,7 @@ pq_add_test(pq_tests_meta PERF  # TMM.13-fix1 M2: the preview rate of a drag (wa
     meta/test_spectrum.cpp  # TX.spectrum: the Spectrum module (expansion, the tap, pass-through bit for bit on both backends)
     meta/test_oscilloscope.cpp  # TX.scope: the Oscilloscope module (expansion, the tap, data, pass-through bit for bit on both backends)
     meta/test_spectrogram_module.cpp  # TX.spectrogram: the Spectrogram module (expansion, the tap, data, pass-through bit for bit on both backends)
+    meta/test_noise.cpp  # NZ.1: the Noise engine (expansion, settings, interpreter == JIT, clock, sync, voices, range)
   DEPS pq_meta pq_pqc)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

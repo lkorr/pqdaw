@@ -54,7 +54,7 @@ pq_add_bench(pq_bench_scala_ji SOURCES tuning/bench_scala_ji.cpp DEPS pq_tuning)
 pq_add_bench(pq_bench_ui SOURCES ui/bench_ui.cpp DEPS pq_ui pq_ui_scenes)
 pq_add_bench(pq_bench_graph SOURCES graph/bench_patch.cpp DEPS pq_graph)
 pq_add_bench(pq_bench_audio_io SOURCES engine/bench_audio_io.cpp DEPS pq_engine)
-pq_add_bench(pq_bench_dsp SOURCES dsp/bench_atoms.cpp dsp/bench_resample.cpp dsp/bench_frame_table.cpp dsp/bench_oversample.cpp dsp/bench_wave_live.cpp dsp/bench_curve.cpp dsp/bench_svf.cpp dsp/bench_warp.cpp DEPS pq_dsp pq_engine)  # T6.3: warp/* plays clips through pq_engine's ClipPlayer
+pq_add_bench(pq_bench_dsp SOURCES dsp/bench_atoms.cpp dsp/bench_resample.cpp dsp/bench_frame_table.cpp dsp/bench_oversample.cpp dsp/bench_wave_live.cpp dsp/bench_curve.cpp dsp/bench_svf.cpp dsp/bench_noise.cpp dsp/bench_warp.cpp DEPS pq_dsp pq_engine)  # T6.3: warp/* plays clips through pq_engine's ClipPlayer
 pq_add_bench(pq_bench_text_lines SOURCES ui/bench_text_lines.cpp DEPS pq_ui pq_ui_scenes)
 pq_add_bench(pq_bench_parse SOURCES graph/bench_parse.cpp DEPS pq_graph)
 pq_add_bench(pq_bench_document SOURCES document/bench_document.cpp DEPS pq_doc)

@@ -33,6 +33,8 @@ graph::ParamDecl paramDecl(const ParamSpec& s) {
   if (s.wraps) d.attrs.push_back(graph::Attr{"wrap", {}});
   // TMM.18: a signed value — wires may take it below the knob range, to −max(|min|, |max|) (doc lowering, the Add law).
   if (s.signedValue) d.attrs.push_back(graph::Attr{"signed", {}});
+  // NZ.1: whole values (the curve steps by 1).
+  if (s.steps > 1) d.attrs.push_back(graph::Attr{"steps", {graph::AttrArg{{}, graph::AttrValue::num(static_cast<double>(s.steps))}}});
   switch (s.curve) {  // GU.1: the declared curve's preset (graph::declaredCurve reads it back)
     case dsp::CurvePreset::Octave:
       d.attrs.push_back(graph::Attr{"curve", {graph::AttrArg{{}, graph::AttrValue::ident("exp")}}});
@@ -220,6 +222,8 @@ Result<Expansion> expand(const Type& type, const ExpandContext& ctx, std::string
                       : b.take(p.addConst(graph::Constant::boolean(false)), kDefaultIdBase + static_cast<uint32_t>(i));
     } else if (in.def == InputDefault::One) {  // TMM.11
       def = b.take(p.addConst(graph::Constant::real(1.0)), kDefaultIdBase + static_cast<uint32_t>(i));
+    } else if (in.def == InputDefault::Unwired) {  // NZ.1
+      def = b.take(p.addConst(graph::Constant::real(kUnwiredInput)), kDefaultIdBase + static_cast<uint32_t>(i));
     } else
       def = b.take(p.addConst(graph::Constant::real(-0.0)), kDefaultIdBase + static_cast<uint32_t>(i));
     // TX.patching: a wired input of a chain form is an `in` too (of any poly: a global wire into a voice expansion).

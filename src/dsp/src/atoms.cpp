@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #include "kernels_common.h"
 
@@ -113,6 +114,10 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // DT.2 (kernels_memory.cpp DelayFade): x, delay Blk or Spl; fade a Spl (frames). Its split read: delay, fade.
     {"delay_fade", 3, 1, false, false, 0, 0, kB0 | kB1, kB2, sizeof(DelayState), Resource::None, false},
     {"delay_fade:read", 2, 1, false, false, 0, 0, kB0, kB1, sizeof(DelayState), Resource::None, false},
+    // NZ.1 (kernels_noise_step.cpp): rate, trig, beat, grid, reset, smooth, colour, density, steps, seed any rate (read at
+    // run time from KernelArgs::splMask: one function per lane count); dist, lanes consts.
+    {"noise_step", 12, 1, false, false, kB1 | kB4, 0, 0x3FFu, (1u << 10) | (1u << 11), sizeof(NoiseStepState),
+     Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -178,6 +183,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findSignalTapKernel(a, lanes, spec)) return f;
   if (KernelFn f = findCurveKernel(a, lanes, spec)) return f;
   if (KernelFn f = findSvfKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findNoiseStepKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -222,6 +228,9 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::ParamRamp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(ParamRampState, active))};
     // EQ.1 / EQ.1b: [8] arrays only, its size set by its sections (shared values replicated per lane).
     case Atom::Svf: return {LaneState::Whole, 0};
+    // NZ.1: [8] arrays up to the counter (seeds included: the lane reset writes the same values); counter, base and
+    // group are the block's.
+    case Atom::NoiseStep: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(NoiseStepState, counter))};
     case Atom::OversampleUp:
     case Atom::OversampleDown:
     case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
@@ -358,6 +367,8 @@ uint32_t rampableInputs(Atom a, uint32_t numIn) noexcept {  // RT-safe
     case Atom::Timer: no |= kB1; break;               // the duration (a count of samples)
     case Atom::DelayFade: no |= kB1; break;           // DT.2: the delay (its head glides / crossfades itself)
     case Atom::DelayReadFade: no |= kB0; break;
+    // noise_step: the sync grid (a note value), colour (a design: recomputed when it changes), steps (a count), seed.
+    case Atom::NoiseStep: no |= kB3 | kB6 | (1u << 8) | (1u << 9); break;
     // tuning_hz: none. Its inputs are pitch identities (degree, equave, the tuning node) and the tuning's values, which
     // automation already drives per sample (TuningTableView::live) and whose region crossings fall on exact samples.
     case Atom::TuningHz: return 0;
@@ -432,6 +443,25 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     case Atom::WavetableShape: {
       auto& s = *static_cast<WavetableShapeState*>(state);
       s.group = init.voiceGroup;
+      s.sampleRate = static_cast<float>(init.sampleRate);
+      break;
+    }
+    case Atom::NoiseStep: {
+      auto& s = *static_cast<NoiseStepState*>(state);
+      const float nan = std::numeric_limits<float>::quiet_NaN();
+      for (uint32_t l = 0; l < 8; ++l) {
+        s.seed[l] = mixSeed(init.seed, l);
+        s.prevCell[l] = nan;
+        s.colourKey[l] = nan;  // designed at the first call
+        s.white[l] = boolMask(true);
+        s.gain[l] = 1.0f;
+        s.u[l] = 1.0f;
+        s.du[l] = 2.0f;
+        s.keyTag[l] = std::bit_cast<float>(kNoiseStepNoKey);
+        s.rateKey[l] = std::bit_cast<float>(kNoiseStepNoKey);
+      }
+      s.base = mixSeed(init.seed, 0x51ED27u);
+      s.group = init.voiceGroup * 0x9E3779B9u;  // voice groups apart (0: one instance)
       s.sampleRate = static_cast<float>(init.sampleRate);
       break;
     }

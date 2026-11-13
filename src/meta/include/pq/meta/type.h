@@ -54,6 +54,9 @@ struct ParamSpec {
   // it down to −max(|min|, |max|) (an `@signed` attribute on the expansion's param; its curve is mirrored below 0:
   // dsp::CurveMode::Signed). (GU.4: the Phase Accumulator preset's Frequency value block carries such a curve.)
   bool signedValue = false;
+  // NZ.1: n ≥ 2 whole values min … min + n − 1 (`@steps(n)`: the knob's curve steps by 1; a count or a choice the body
+  // reads as a param, so moving it is no recompile). 0: continuous.
+  uint32_t steps = 0;
 };
 // GU.1: the param's declared curve — graph::declaredCurve of the expansion's declaration of it (the same curve the
 // document lowering reads), and the value at a knob position / the position of a value through it.
@@ -76,7 +79,11 @@ enum class InputDefault : uint8_t {
   One,        // TMM.11: 1.0 (a multiplier: the Envelope's `in` unwired, out = the envelope; the optimiser removes x·1)
   VoiceGate,  // TMM.11: voice.gate when the module runs per voice (ExpandContext::voice), else false (a Bool input):
               // the gate of the voice the module belongs to (QUESTIONS Q?-TMM.10-fix1-a item 3)
+  Unwired,    // NZ.1: kUnwiredInput, a value no signal takes: the body tells "nothing is wired" by a compare
+              // (x > kUnwiredInput / 2) that the optimiser folds when the input is left at its default (the Noise
+              // module's clock: wired, it overrides the clock setting)
 };
+inline constexpr double kUnwiredInput = -1.0e30;
 // TMM.10-fix1: what an input means — how the note source feeds it when it is a chain device's chain input
 // (Form::ChainNotes).
 enum class Reads : uint8_t {

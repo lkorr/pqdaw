@@ -14,13 +14,14 @@
 #include <vector>
 
 #include "pq/document/panel.h"
+#include "pq/meta/noise.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 15> kModules = {{
+constexpr std::array<ModuleInfo, 16> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -69,6 +70,11 @@ constexpr std::array<ModuleInfo, 15> kModules = {{
     {ModuleKind::DelayTap, "delay_tap", "Delay Tap",
      "Delays its input by a time (0 … 5 s, free in ms or synced to a note value at the tempo), nothing else: no dry, no "
      "feedback. Feed its output back into its input through a VCA for echoes."},
+    // NZ.1: every kind of randomness (docs/plans/NZ.md).
+    {ModuleKind::Noise, "noise", "Noise",
+     "Noise and random modulation in one: a value drawn per step at a rate (its top: every sample, plain noise), on the "
+     "song's grid, per note or by a clock into its In; coloured (brown, pink, white, blue, violet: a random walk when "
+     "slow), sparse (density), stepped, glided (smooth), in a range. On play it repeats every playback."},
 }};
 
 struct Builder {
@@ -300,6 +306,7 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Oscilloscope: return "oscilloscope";
     case ModuleKind::Spectrum: return "spectrum";
     case ModuleKind::Spectrogram: return "spectrogram";
+    case ModuleKind::Noise: return "noise";
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
     case ModuleKind::WavetableSynth:
@@ -386,6 +393,55 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
       p.height = k == ModuleKind::Oscilloscope ? 160.0f : k == ModuleKind::Spectrum ? 150.0f : 170.0f;
       p.elements.push_back(plate(p.width, p.height, 10.0));
       p.elements.push_back(rich(2, kind, 0, 0, p.width, p.height));
+      break;
+    }
+    case ModuleKind::Noise: {  // NZ.1: 236 × 248 — the display, the clock / distribution chips, eight knobs, the
+                               // restart / voices chips (pq/document/modules.h "Noise")
+      p.width = 236.0f;
+      p.height = 248.0f;
+      p.elements.push_back(plate(p.width, p.height, 10.0));
+      p.elements.push_back(rich(2, "noise", 8, 8, 220, 44));
+      auto caption = [&](uint32_t id, float x, float y, float w, const char* text) {
+        PanelElement e = element(id, "label", x, y, w, 10, {});
+        e.bindings.clear();
+        e.setField(styleText("text", text));
+        e.setField(styleText("align", "left"));
+        p.elements.push_back(std::move(e));
+      };
+      auto chips = [&](uint32_t id, float x, float y, float w, const char* setting, const char* items) {
+        PanelElement e = element(id, "tabs", x, y, w, 16, settingBinding(engine, setting));
+        e.setField(styleText("items", items));
+        p.elements.push_back(std::move(e));
+      };
+      auto knob = [&](uint32_t id, float x, float y, const char* param) {
+        p.elements.push_back(element(id, "knob", x, y, 52, 58, controlBinding(engine, param)));
+      };
+      caption(3, 8, 56, 112, "Clock");
+      chips(4, 8, 68, 112, "clock", "Rate|Sync|Note");
+      caption(5, 124, 56, 104, "Distribution");
+      chips(6, 124, 68, 104, "dist", "Uniform|Gauss");
+      PanelElement rate = element(7, "knob", 8, 90, 52, 58, controlBinding(engine, "rate"));
+      rate.when = Visibility{4, {0.0}};  // Rate clock
+      p.elements.push_back(std::move(rate));
+      PanelElement sync = element(8, "menu", 8, 112, 52, 18, controlBinding(engine, "sync"));  // Sync clock: a note value
+      sync.setField(styleText("items", meta::kNoiseSyncItems));
+      sync.when = Visibility{4, {1.0}};
+      p.elements.push_back(std::move(sync));
+      caption(20, 8, 98, 52, "Sync");  // above the menu, where the Rate knob's name is
+      p.elements.back().setField(styleText("align", "centre"));
+      p.elements.back().setField(styleNumber("size", 7.5));  // a knob's name's size
+      p.elements.back().when = Visibility{4, {1.0}};
+      knob(9, 64, 90, "smooth");
+      knob(10, 120, 90, "colour");
+      knob(11, 176, 90, "density");
+      knob(12, 8, 150, "steps");
+      knob(13, 64, 150, "min");
+      knob(14, 120, 150, "max");
+      knob(15, 176, 150, "seed");
+      caption(16, 8, 212, 120, "Restart");
+      chips(17, 8, 224, 120, "restart", "Play|Free|Note");
+      caption(18, 132, 212, 96, "Voices");
+      chips(19, 132, 224, 96, "voices", "Voice|Shared");
       break;
     }
     case ModuleKind::PhaseAccumulator:

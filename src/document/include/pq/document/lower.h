@@ -400,6 +400,10 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // same graph as the series with the chain's links as wires: tests/app/test_groups.cpp renders both bit for bit
 // (interpreter and JIT). A wide signal (or one whose width only inference knows: the In terminal) into a meta module's
 // input arrives as its mid (l + r) / 2, as the chain gives it (effectCall); on a mono signal that is the signal itself.
+// NZ.1: an UNFED group — no wire into its main input, or only wires from the In of a group that is itself unfed —
+// carries nothing at its In: a wire from that In into a native engine's input is Inactive (planWires), so the input
+// reads its own default as a free engine's inputs do (a free Noise module's clock is unwired; a free Envelope module's
+// `in` reads 1, the envelope itself). Into any other block such a wire still delivers the In's zero.
 // TX.groups-fix1 (SPEC §15 2026-11-01 "notes are a signal"; QUESTIONS Q?-TX.groups-fix1-a): the In terminal carries what
 // reaches the group's place — its chain stage (meta.h chainStages: a group passes Notes / Voices on as Voices) picks
 // what it plays (Callees::groupCallee):
