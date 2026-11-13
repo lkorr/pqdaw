@@ -195,6 +195,7 @@ private:
             const std::string& projectDir, bool fresh);
   void queue(Entry& e, doc::TrackId id, const std::string& projectDir, double delay);
   void dropJob(Entry& e);
+  bool fileInUse(const std::string& path) const;  // a track's file (never deleted)
   void workerMain();
   void bump() noexcept { gen_.fetch_add(1, std::memory_order_acq_rel); }
 

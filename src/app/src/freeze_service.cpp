@@ -408,6 +408,12 @@ FreezeService::~FreezeService() {
   if (worker_.joinable()) worker_.join();
 }
 
+bool FreezeService::fileInUse(const std::string& path) const {  // mutex_ held
+  for (const auto& [id, e] : entries_)
+    if (e.file && e.file->path == path) return true;
+  return false;
+}
+
 void FreezeService::dropJob(Entry& e) {  // mutex_ held
   if (!e.job) return;
   e.job->cancel.store(true, std::memory_order_relaxed);
@@ -524,7 +530,7 @@ bool FreezeService::takeResults() {
     for (const std::shared_ptr<Job>& job : done) {
       const auto it = entries_.find(job->track.value);
       if (it == entries_.end() || it->second.job != job) {  // superseded while it rendered: its file is litter
-        if (job->ok) removeQuietly(u8path(job->path));
+        if (job->ok && !fileInUse(job->path)) removeQuietly(u8path(job->path));
         continue;
       }
       Entry& e = it->second;
@@ -653,23 +659,25 @@ void FreezeService::workerMain() {
     Result<OwnRender> r = ec ? Result<OwnRender>(freezeError("cannot create " + u8str(job->dir) + ": " + ec.message()))
                              : renderTrackOwn(rq);
     bool deliver = false;
-    if (r && !r->cancelled) {
-      if (Status s = writeCacheMeta(job->dir, job->track, job->plan.key, wav, *r); !s) {
-        removeQuietly(wav);
-        r = s.error();
-      }
-    }
     {
-      std::lock_guard lock(mutex_);
+      std::lock_guard lock(mutex_);  // (the .json is written under it: a sync's cache lookup sees both files or neither)
       running_.reset();
       job->done = true;
+      if (r && !r->cancelled && job->cancel.load(std::memory_order_relaxed)) {  // finished after its cancel: superseded
+        if (!fileInUse(u8str(wav))) removeQuietly(wav);
+        r->cancelled = true;
+      }
+      if (r && !r->cancelled)
+        if (Status st = writeCacheMeta(job->dir, job->track, job->plan.key, wav, *r); !st) {
+          if (!fileInUse(u8str(wav))) removeQuietly(wav);
+          r = st.error();
+        }
       if (!r) {
         job->error = r.error().message;
         ++stats_.failed;
         deliver = true;
-      } else if (r->cancelled || job->cancel.load(std::memory_order_relaxed)) {
+      } else if (r->cancelled) {
         ++stats_.cancelled;
-        if (!r->cancelled) removeQuietly(wav);  // finished after its cancel: superseded
       } else {
         job->ok = true;
         job->path = u8str(wav);
