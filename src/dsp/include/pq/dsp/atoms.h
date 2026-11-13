@@ -65,11 +65,16 @@
 //                                     NaN → the minimum. Every tap is ≥ 1 sample old, so x is a DELAYED input
 //                                     (a feedback loop through a delay line is legal). max =
 //                                     StateInit::maxDelayFrames.
-//   delay_fade (x, delay, fade)       (DT.2) delay_cubic's line and read (the same clamp and taps) whose read head
-//                                     never jumps. `fade` in FRAMES (the compiler multiplies seconds by sr; Spl; whole,
-//                                     ≥ 1, NaN → 1). Per lane the head starts at the delay; a later change of the
-//                                     (clamped) delay to t, from where the head is (h), with G = fade frames for a
-//                                     Spl delay and 1 for a Blk one:
+//   delay_fade (x, delay, fade, crossfade)  (DT.2) delay_cubic's line and read (the same clamp and taps) whose read
+//                                     head never jumps. `fade` in FRAMES (the compiler multiplies seconds by sr; Spl;
+//                                     whole, ≥ 1, NaN → 1). `crossfade` (DT.4; Spl, per lane): < 0.5 REPITCH: a change
+//                                     to t glides the head from where it is (with its velocity, clamped to the
+//                                     monotone range) along a cubic Hermite arriving at t at rest, over
+//                                     N = ⌊clamp(|Δ|·(Δ > 0 ? 2 : 1/2), G, ⌊fade·100/3⌋)⌋ frames (Δ = t − h: the
+//                                     read rate stays within 1/4 … 4 unless the cap shortens it); never a fade.
+//                                     ≥ 0.5 (and NaN) CROSSFADE, DT.2's rule. Per lane the head starts at the delay;
+//                                     in Crossfade a later change of the (clamped) delay to t, from where the head is
+//                                     (h), with G = fade frames for a Spl delay and 1 for a Blk one:
 //                                       −G ≤ t − h ≤ G/2  the head glides linearly to t over G frames (restarted from
 //                                                     where it is by a later change): a pitch within one octave
 //                                       otherwise      a CROSSFADE: a second head stays at h and fades out while the
@@ -77,10 +82,10 @@
 //                                                     frames; a change that cannot glide during a fade waits for its
 //                                                     end (then glides or fades from where the head is).
 //                                     At rest it is delay_cubic at the head (bit for bit); the second read runs only
-//                                     during a fade. Split read: delay_fade:read (delay, fade) → out with delay:write.
+//                                     during a fade. Split read: delay_fade:read (delay, fade, crossfade) → out with delay:write.
 //   Split kernels for feedback loops scheduled per sample (same state block as the atom; not atoms):
 //     z1:read () → out, z1:write (x): read emits the stored value, write stores x (last frame).
-//     delay:read / delay_cubic:read / delay_allpass:read (delay) → out, delay_fade:read (delay, fade) → out, and
+//     delay:read / delay_cubic:read / delay_allpass:read (delay) → out, delay_fade:read (delay, fade, crossfade) → out, and
 //     delay:write (x).
 //     Per sample: read at the start, write at the end; read(frames = k) requires delay ≥ k (it reads frames
 //     not yet written otherwise — memory-safe, but stale). Reading then writing frame by frame produces

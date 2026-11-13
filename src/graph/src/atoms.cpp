@@ -107,8 +107,10 @@ constexpr PortSpec pPulse[] = {{"period", kR, true, 0.0f}};
 
 constexpr PortSpec pZ1[] = {{"x", kAny, false, 0.0f, true}, {"init", kRConst, true, 0.0f}};
 constexpr PortSpec pDelay[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}};
-// DT.2: delay_fade's `fade` (seconds, param rate: read once per block) after the delay line's three.
-constexpr PortSpec pDelayFade[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}, {"fade", kRParamBound, true, 0.03f}};
+// DT.2: delay_fade's `fade` (seconds, param rate: read once per block) after the delay line's three; DT.4: `crossfade`
+// (param rate; 0 = Repitch: every change glides the head, ≥ 0.5 = DT.2's glide-or-crossfade).
+constexpr PortSpec pDelayFade[] = {{"x", kR, false, 0.0f, true}, {"time", kR}, {"max", kRConst}, {"fade", kRParamBound, true, 0.03f},
+                                   {"crossfade", kRParamBound, true, 0.0f}};
 // T6.2: a pure delay of `frames` samples (at the node's rate) that REPORTS its latency (plugin-delay compensation).
 constexpr PortSpec pLatency[] = {{"x", kR, false, 0.0f, true}, {"frames", kRConst}};
 constexpr PortSpec pSampleHold[] = {{"x", kR}, {"trig", kB}};
@@ -274,9 +276,11 @@ const AtomSignature kAtoms[] = {
     {"delay_cubic", C::Memory, pDelay, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
      "delay line, cubic read (≥ 1 sample; linear below 2)", rules::delayCubic},
     // DT.2: delay_cubic whose read head glides (within an octave of pitch) or crossfades over `fade` seconds when
-    // the time changes (pq/dsp/atoms.h "delay_fade"); at rest exactly delay_cubic, so its response is that.
+    // the time changes; DT.4: with `crossfade` 0 (Repitch) every change glides, a tape bend (pq/dsp/atoms.h
+    // "delay_fade"); at rest exactly delay_cubic, so its response is that.
     {"delay_fade", C::Memory, pDelayFade, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},
-     "delay line, cubic read whose head glides or crossfades (fade seconds) when the time jumps", rules::delayCubic},
+     "delay line, cubic read whose head glides (repitch) or crossfades (crossfade ≥ 0.5, fade seconds) when the time jumps",
+     rules::delayCubic},
     // T6.2: the delay line's kernel (linear read at a constant time: exact at whole samples), and the frames are
     // reported as the path's latency (pq/graph/latency.h). optimise() makes it a wire below half a sample.
     {"latency", C::Memory, pLatency, pOutR, kDelayState, kStateful | kVariableState | kBroadcast, 0, {},

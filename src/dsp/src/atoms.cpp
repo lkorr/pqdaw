@@ -111,9 +111,10 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // EQ.1 (kernels_svf.cpp): x, cutoff, q, gain Blk or Spl (a template specialisation each); mode, stages, prewarp
     // consts. EQ.1b: the state's size is the header; stateBytes() adds the sections (StateInit::svfSections).
     {"svf", 7, 1, false, false, 0, 0, kB0 | kB1 | kB2 | kB3, kB4 | kB5 | kB6, kSvfHeaderBytes, Resource::None, false},
-    // DT.2 (kernels_memory.cpp DelayFade): x, delay Blk or Spl; fade a Spl (frames). Its split read: delay, fade.
-    {"delay_fade", 3, 1, false, false, 0, 0, kB0 | kB1, kB2, sizeof(DelayState), Resource::None, false},
-    {"delay_fade:read", 2, 1, false, false, 0, 0, kB0, kB1, sizeof(DelayState), Resource::None, false},
+    // DT.2 (kernels_memory.cpp DelayFade): x, delay Blk or Spl; fade a Spl (frames); DT.4 crossfade a Spl (< 0.5:
+    // Repitch). Its split read: delay, fade, crossfade.
+    {"delay_fade", 4, 1, false, false, 0, 0, kB0 | kB1, kB2 | kB3, sizeof(DelayState), Resource::None, false},
+    {"delay_fade:read", 3, 1, false, false, 0, 0, kB0, kB1 | kB2, sizeof(DelayState), Resource::None, false},
     // NZ.1 (kernels_noise_step.cpp): rate, trig, beat, grid, reset, smooth, colour, density, steps, seed any rate (read at
     // run time from KernelArgs::splMask: one function per lane count); dist, lanes consts.
     {"noise_step", 12, 1, false, false, kB1 | kB4, 0, 0x3FFu, (1u << 10) | (1u << 11), sizeof(NoiseStepState),
