@@ -1112,7 +1112,7 @@ reversible found):
    their width, those right of a stretching element move with its end.
 Status: open.
 
-## Q?-NZ.1-a · Fold vs colour: the slope at positive colours and the RMS of coloured uniform noise
+## Q244 · 2026-11-12 · NZ.1 · Fold vs colour: the slope at positive colours and the RMS of coloured uniform noise
 Context (measured, tests/dsp/test_noise_step.cpp, tools/fit/noise_colour.py): the colour filter itself meets the plan
 (±0.418 dB of the slope over 20 Hz … 20 kHz at 48 kHz, unit power gain within 0.105 dB), but the plan's step 3 folds
 its output into [−1, 1]. Coloured noise is near-Gaussian at the drawn RMS (uniform: σ 0.577), so the fold acts on ~8 % of
@@ -1133,14 +1133,14 @@ can never leave [−1, 1] and no fold runs: the slope is the design's exactly (t
 −4.85 at +3, −3.83 at +6 dB/oct; Gaussian a further −1.25 dB (the bound is continuous from 0: no jump sweeping through
 white, the drop is over the first ~1 dB/oct).
 
-## Q?-NZ.1-b · On note with Per voice: every note the same pattern, chord notes included
+## Q245 · 2026-11-12 · NZ.1 · On note with Per voice: every note the same pattern, chord notes included
 Context: the plan says On note resets "at each note-on: every note plays the same pattern". With Per voice the lanes
 are seeded apart; resetting each lane to its own seed would give each voice slot its own pattern (a note's pattern
 then depends on which lane it got). Options: (a) On note keys every lane with the node's seed alone (`noise_step`
 lanes 0): every note, chord notes too, plays one pattern; (b) keep lane seeds (patterns differ by voice slot, not by
 note). Choice: (a), the plan's words (reversible: the `lanes` const in pq/meta/noise.cpp).
 
-## Q?-NZ.1-c · A free module's In: unfed groups leave a native engine's input at its default
+## Q246 · 2026-11-12 · NZ.1 · A free module's In: unfed groups leave a native engine's input at its default
 Context: a module group's In terminal is wired to its engine's chain input; with nothing reaching the group the In
 gave the engine zero, which for the Noise module's clock means "wired" (the clock overrides the clock setting and
 nothing would ever step). The lowering now makes such a wire Inactive when nothing reaches the group (no wire into its
