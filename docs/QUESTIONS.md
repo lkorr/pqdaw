@@ -1096,3 +1096,17 @@ Context: docs/plans/DT.md; `pq/document/modules.h` "the Delay Tap", `src/views/s
    when the playhead's tempo changed (tests/views/test_delay_tap_face.cpp: no paint at a steady tempo, one when the
    playhead crosses a tempo point).
 Status: open (user: 2, 5).
+
+## Q?-DT.3-a · 2026-11-12 · DT.3 · The Delay Tap face: tick spacing by tier, dotted before triplets, the left edge's undo
+Context: docs/plans/DT.md "DT.3", `pq/views/panel/tempo_marks.h`, `ProjectCanvas::stretchEdgeAt`. Choices (each the most
+reversible found):
+1. **The spacing a tick needs grows with its family**: 3 logical px for powers of two and threes, 6 for fives, 8 for
+   sevens, 10 for other numerators (the plan: ~4 for all). With 4 px for all, the default slider dropped every triplet
+   (each sits ~3.5 px from a dotted value) yet showed 2/7, 4/7, 3/20 in the gaps they left. Option: one value.
+2. **Dotted before triplets** within the threes (3/16 is shown over 1/6 when they collide). Option: triplets first.
+3. **The stretch is undoable, the left edge's move is not**: the width is the group's document panel (one undo step);
+   the block's position is its nudge (view state, never undoable, as every block move). Undoing a left-edge stretch
+   narrows the face from its right side (its left edge stays where the drag left it). Option: make nudges undoable.
+4. **A plate spanning the whole panel widens with it** (the Delay Tap's background); other non-stretching elements keep
+   their width, those right of a stretching element move with its end.
+Status: open.

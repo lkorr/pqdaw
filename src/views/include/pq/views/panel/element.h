@@ -158,6 +158,7 @@ struct ElementEnv {
   PanelTarget* target = nullptr;
   bool hovered = false;
   bool focused = false;  // holds the face's key focus
+  float uiScale = 1.0f;  // DT.3: device px per logical px (the painter's scale / uiScale: logical px per panel unit)
 };
 
 // One style field of a kind (registry schema).
@@ -208,7 +209,12 @@ public:
   virtual uint64_t liveKey(const PanelTarget& t) const;
 
   // ---- interaction ----
-  virtual bool hit(ui::Vec2 local) const noexcept;  // default: inside the rect
+  // Where a press is the element's (default: its whole rect). DT.3: an element whose rect holds more than its control
+  // (labels, readouts, markings) hits only the control, so a press on the rest moves the block (GroupPanelFace kFrame).
+  virtual bool hit(ui::Vec2 local) const noexcept;
+  // DT.3: > 0: the element WIDENS with its panel (GroupPanelFace::stretchX / stretchTo: a drag of the block's edge), at
+  // least this wide; 0 (default): its width is fixed.
+  virtual float stretchMinWidth() const noexcept { return 0.0f; }
   virtual bool interactive() const noexcept { return false; }
   virtual bool onPointer(const FacePointer& /*e*/, PanelTarget& /*t*/) { return false; }
   virtual bool dragging() const noexcept { return false; }

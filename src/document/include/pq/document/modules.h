@@ -282,8 +282,8 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 enum class DelayRole : uint8_t { None = 0, Time, Sync, Mode };
 inline constexpr std::string_view kDelayRoleSetting = "delayRole";
 inline constexpr double kDelayTapMaxSeconds = 5.0;
-// A sync note value: its duration in beats (a quarter = 1 beat; in ticks beats · pq::kPpq), its label ("1/4", "1/8.",
-// "1/4T") and its kind.
+// A sync note value: its duration in beats (a quarter = 1 beat; in ticks beats · pq::kPpq), its label (DT.3: the reduced
+// fraction of a whole note: "1/4", "3/16" for a dotted eighth, "1/6" for a quarter triplet) and its kind.
 enum class NoteValueKind : uint8_t { Straight, Dotted, Triplet };
 struct NoteValue {
   double beats = 1.0;

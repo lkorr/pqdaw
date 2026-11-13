@@ -760,6 +760,28 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       markDirty();
       return true;
     }
+  // DT.3: a press on the left / right edge of a block whose face stretches drags that edge (before the face's controls).
+  bool stretchLeft = false;
+  if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && !(e.mods & ui::mod::kAlt))
+    if (const uint32_t node = stretchEdgeAt(e.pos, &stretchLeft); node != kNone) {
+      const bool left = stretchLeft;
+      const Node& n = pp.nodes[node];
+      const Face* f = stretchFace(node);
+      if (tree()) tree()->setFocus(this);
+      drag_ = Drag::Stretch;
+      stretchDevice_ = n.device;
+      stretchLeft_ = left;
+      stretchW0_ = f->worldSize().x;
+      stretchK_ = std::max(n.scale, 1e-3f);
+      stretchRight_ = n.x + n.w;
+      const auto& nudges = v.context().store().view().patchNudges;
+      const auto it = nudges.find(n.device.value);
+      stretchNudge0_ = it == nudges.end() ? 0.0f : it->second.dx;
+      (void)v.context().store().beginGesture("Stretch Module");
+      press_ = last_ = e.pos;
+      markDirty();
+      return true;
+    }
   // TX.node-menu: a cable held after a Ctrl-release: a click wires the next target (Ctrl+click keeps it), a right click
   // or a click on nothing drops it.
   if (sticky_ && e.type == ui::PointerType::Down) {
@@ -1078,6 +1100,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           markDirty();
           break;
         }
+        case Drag::Stretch:  // DT.3
+          stretchDrag(e.pos);
+          markDirty();
+          break;
         case Drag::MaybeMoveDevice:
           if (std::max(std::fabs(e.pos.x - press_.x), std::fabs(e.pos.y - press_.y)) >= drag::kClickSlop * us) {
             v.landPush();  // TX.block-drag: a push still gliding lands first (the drag moves blocks where they are)
@@ -1234,6 +1260,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::MoveMixer: finishMixerMove(e.pos); break;  // TX.mixer-look
         case Drag::MaybeMoveMixer: break;                      // a click on the mixer's frame: nothing
         case Drag::Resize: (void)v.settleOverlaps(); break;  // applied while dragging; TX.block-drag: then the rule
+        case Drag::Stretch:  // DT.3: applied while dragging: one undo step, then the overlap rule as for a resize
+          endStretch(true);
+          (void)v.settleOverlaps();
+          break;
         case Drag::Lane:
         case Drag::LaneSize:  // TL.1: laneEdgePointer's
         case Drag::Tap:
@@ -1319,6 +1349,61 @@ uint32_t ProjectCanvas::resizableAt(Vec2 pos) const {
   return n.kind == NodeKind::Device && !n.expanded ? node : kNone;
 }
 
+// ---- DT.3: horizontal stretch ---------------------------------------------------------------------------------------
+
+Face* ProjectCanvas::stretchFace(uint32_t node) const {
+  const ProjectPatchView& v = view_;
+  const uint32_t sn = node < v.scene().sceneNode.size() ? v.scene().sceneNode[node] : kNone;
+  return sn != kNone ? panelOn(sn) : nullptr;
+}
+
+uint32_t ProjectCanvas::stretchEdgeAt(Vec2 pos, bool* left) const {
+  if (!scene() || panning() || pinAt(pos).valid()) return kNone;
+  const uint32_t node = nodeAt(pos);
+  if (node == kNone) return kNone;
+  const Node& n = view_.patch().nodes[node];
+  if (n.kind != NodeKind::Device || !n.groupPanel || n.groupOpen || n.expanded) return kNone;
+  const Face* f = stretchFace(node);
+  if (f == nullptr || !f->stretchX()) return kNone;
+  // kStretchEdgePx inside the edge, but at most 6 face units (a slider's end stays its own when zoomed out).
+  const float us = tree() ? tree()->scale() : 1.0f;
+  const float zone = std::min(kStretchEdgePx * us / std::max(deviceScale(), 1e-6f), 6.0f * n.scale);
+  const float x = toWorld(pos).x;
+  const bool l = x - n.x <= zone, r = n.x + n.w - x <= zone;
+  if (!l && !r) return kNone;
+  if (left != nullptr) *left = l && !(r && n.x + n.w - x < x - n.x);
+  return node;
+}
+
+void ProjectCanvas::stretchDrag(Vec2 pos) {
+  ProjectPatchView& v = view_;
+  uint32_t node = v.patch().nodeOf(stretchDevice_);
+  Face* f = node != kNone ? stretchFace(node) : nullptr;
+  if (f == nullptr) return;
+  const float dx = (pos.x - press_.x) / std::max(deviceScale(), 1e-6f) / stretchK_;
+  if (!f->stretchTo(stretchW0_ + (stretchLeft_ ? -dx : dx)) || !stretchLeft_) return;  // (f may be gone: a new size)
+  // The left edge: the right one stays where it was at the press (the block moves left as it widens).
+  node = v.patch().nodeOf(stretchDevice_);
+  if (node == kNone) return;
+  const Node& n = v.patch().nodes[node];
+  v.nudge(stretchDevice_.value, stretchRight_ - n.w - n.x, 0.0f);
+}
+
+void ProjectCanvas::endStretch(bool commit) {
+  ProjectPatchView& v = view_;
+  doc::DocumentStore& st = v.context().store();
+  if (st.inGesture()) (void)(commit ? st.commitGesture() : st.cancelGesture());
+  if (!commit && stretchLeft_) {  // back where it was
+    const auto& nudges = st.view().patchNudges;
+    const auto it = nudges.find(stretchDevice_.value);
+    const float now = it == nudges.end() ? 0.0f : it->second.dx;
+    v.nudge(stretchDevice_.value, stretchNudge0_ - now, 0.0f);
+  }
+  drag_ = Drag::None;
+  stretchDevice_ = {};
+  markDirty();
+}
+
 ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
   if (faceDragging()) return faceCursor(pos);  // TMM.4
   // TX.resize: S held over a block (what a press would do) and the resize drag itself.
@@ -1342,6 +1427,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::LaneSize: return ui::Cursor::ResizeNS;  // TL.1
     case Drag::Tap: return ui::Cursor::ResizeEW;
     case Drag::LaneRuler: return ui::Cursor::ResizeNS;  // TL.4: a drag zooms (sideways: scrolls), as the ruler's
+    case Drag::Stretch: return ui::Cursor::ResizeEW;  // DT.3
     case Drag::None: break;
   }
   // TL.1: over a lane's edges (what a press there grabs).
@@ -1361,6 +1447,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
 
 ui::Cursor ProjectCanvas::pressCursor(Vec2 pos) const {
   // The order of onPointer's left press (Alt and the middle button pan: the canvas's).
+  if (stretchEdgeAt(pos) != kNone) return ui::Cursor::ResizeEW;  // DT.3: a stretching face's edge
   if (const ui::Cursor c = faceCursor(pos); c != ui::Cursor::Inherit) return c;  // TMM.4: a face's control
   const ProjectPatch& pp = view_.patch();
   const uint32_t node = nodeAt(pos);
@@ -2093,6 +2180,7 @@ void ProjectCanvas::onCaptureLost() {
   if (sticky_) return;  // TX.node-menu: a held cable has no capture (no button is down)
   if (drag_ == Drag::Wire || drag_ == Drag::BackWire) clearLooseCable();  // TX.node-menu-fix1
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit (as the arrangement's lanes: no partial edit)
+  if (drag_ == Drag::Stretch) endStretch(false);  // DT.3: back to the width at the press
   if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: the cable back where it left the lane
   if (drag_ == Drag::LaneSize && laneTrack_.valid()) restoreLaneSize();
   if (drag_ == Drag::LaneRuler && view_.laneRuler() != nullptr) cancelLaneRuler(*view_.laneRuler());  // TL.4
@@ -2113,6 +2201,7 @@ void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Splice) endSplice(false, last_);  // TX.node-menu
   sticky_ = false;
   if (drag_ == Drag::Lane) view_.laneAbort();  // TX.lane-edit
+  if (drag_ == Drag::Stretch) endStretch(false);  // DT.3: Esc: back to the width at the press
   if (drag_ == Drag::Tap) view_.endTapDrag(false);  // TL.1: Esc: the cable back where it left the lane
   if (drag_ == Drag::LaneSize && laneTrack_.valid()) restoreLaneSize();
   if (drag_ == Drag::LaneRuler && view_.laneRuler() != nullptr) cancelLaneRuler(*view_.laneRuler());  // TL.4
@@ -2464,6 +2553,10 @@ ui::InfoText ProjectCanvas::info() const {
             "make room. S + double-click (or Reset Size in its menu) gives it its own size. On an opened group's frame: the "
             "group and everything in it. Esc cancels the drag."};
   }
+  if (drag_ == Drag::Stretch || (drag_ == Drag::None && stretchEdgeAt(pointer_) != kNone))  // DT.3
+    return {"Stretch module",
+            "Drag the edge to widen the module (its height stays): a longer slider, more markings and labels. One undo step; "
+            "Esc cancels the drag."};
   if (ui::InfoText t; faceInfo(t)) return t;  // TMM.4
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) {

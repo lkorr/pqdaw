@@ -246,7 +246,7 @@ public:
   // dropped, ProjectPatchView::placeMixer); its controls are its face's (MixerFace: the canvas's face routing).
   enum class Drag : uint8_t {
     None, Wire, MaybeMoveDevice, MoveDevice, Nudge, MaybeMoveMixer, MoveMixer, Resize, Lane, BackWire, MaybeSplice, Splice, Port,
-    LaneSize, Tap, LaneRuler
+    LaneSize, Tap, LaneRuler, Stretch
   };
   Drag drag() const noexcept { return drag_; }
   // TX.lane-edit: the last press was in a lane (the arrangement's edit chords act there: laneKey).
@@ -276,6 +276,13 @@ public:
   bool resizeHeld() const noexcept;
   uint32_t resizableAt(ui::Vec2 pos) const;
   static constexpr ui::Key kResizeKey = 's';
+  // DT.3: HORIZONTAL STRETCH — a press within kStretchEdgePx logical px inside the left or right edge of a block whose face
+  // stretches (Face::stretchX: a group's panel with a stretching element) drags that edge: the face's width follows
+  // (Face::stretchTo, one store gesture: one undo step; Esc: back), its height stays; dragging the left edge keeps the
+  // right one where it was (the block's nudge follows; view state, as every move). The block that edge belongs to
+  // (kNone: none; `left`: which edge). A port on the edge is hit first.
+  static constexpr float kStretchEdgePx = 5.0f;
+  uint32_t stretchEdgeAt(ui::Vec2 pos, bool* left = nullptr) const;
   // TX.node-menu: W held (no text field focused): a left press on a param pin or a face's / panel's control starts a
   // backwards cable out of that param.
   static constexpr ui::Key kBackWireKey = 'w';
@@ -378,6 +385,14 @@ private:
   doc::DeviceId resizeDevice_;
   doc::TrackId resizeTrack_;  // TL.4: a mixer face resized (its track; resizeDevice_ invalid)
   float resizeK0_ = 1.0f, resizeW0_ = 0.0f, resizeH0_ = 0.0f;
+  // DT.3: the block whose edge is dragged, which edge, its face's width, its scale, its right edge (world) and its nudge
+  // at the press.
+  doc::DeviceId stretchDevice_;
+  bool stretchLeft_ = false;
+  float stretchW0_ = 0.0f, stretchK_ = 1.0f, stretchRight_ = 0.0f, stretchNudge0_ = 0.0f;
+  Face* stretchFace(uint32_t node) const;
+  void stretchDrag(ui::Vec2 pos);
+  void endStretch(bool commit);
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
   bool gesture_ = false;
   bool outside_ = false;           // TX.free-rack: a block drag is out of the canvas (the host shows where it lands)

@@ -12,6 +12,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
 #include "pq/ui/theme.h"
 #include "pq/views/view_context.h"
@@ -173,6 +174,7 @@ void GroupPanelFace::paintPopup(ui::FacePainter& p, const FaceEnv& env) {
   ElementEnv ee;
   ee.theme = env.theme;
   ee.target = target_.get();
+  ee.uiScale = env.uiScale;
   const float sc = p.transform().scale;
   const Vec2 o0 = p.transform().origin;
   for (size_t i = 0; i < elements_.size(); ++i) {
@@ -356,6 +358,7 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   ElementEnv ee;
   ee.theme = &th;
   ee.target = target_.get();
+  ee.uiScale = env.uiScale;
   for (size_t i = 0; i < elements_.size(); ++i) {
     if (!shownNow(i, memo)) continue;
     Element& e = *elements_[i];
@@ -670,6 +673,55 @@ bool GroupPanelFace::setHoveredPart(int32_t part) noexcept {
   if (part == hovered_) return false;
   hovered_ = part;
   return true;
+}
+
+// ---- DT.3: horizontal stretch ---------------------------------------------------------------------------------------
+
+std::optional<Face::StretchRange> GroupPanelFace::stretchX() const {
+  if (!panel_ || elements_.size() != panel_->elements.size()) return std::nullopt;
+  float slack = -1.0f;  // how far the panel can narrow: the least any stretching element can give
+  for (const std::unique_ptr<Element>& e : elements_)
+    if (const float mw = e->stretchMinWidth(); mw > 0.0f) slack = slack < 0.0f ? std::max(0.0f, e->desc().w - mw) : std::min(slack, std::max(0.0f, e->desc().w - mw));
+  if (slack < 0.0f) return std::nullopt;
+  const float w = panel_->width;
+  return StretchRange{std::max(1.0f, w - slack), std::max(w, kMaxStretchWidth)};
+}
+
+bool GroupPanelFace::stretchTo(float width) {
+  (void)sync();
+  const std::optional<StretchRange> r = stretchX();
+  if (!r || !owner_.valid() || !std::isfinite(width)) return false;
+  const float to = std::round(std::clamp(width, r->min, r->max));
+  const float d = to - panel_->width;
+  if (d == 0.0f) return false;
+  // The rule: every stretching element widens by the change, and so does one spanning the whole panel (a plate behind
+  // the rest); an element whose left edge is at or right of a stretching element's right edge moves right by it (a
+  // button row beside a slider keeps its place at the slider's end); the panel holds them all.
+  auto p = std::make_shared<doc::Panel>(*panel_);
+  std::vector<float> ends;
+  for (size_t i = 0; i < elements_.size(); ++i)
+    if (elements_[i]->stretchMinWidth() > 0.0f) ends.push_back(p->elements[i].x + p->elements[i].w);
+  for (size_t i = 0; i < elements_.size(); ++i) {
+    doc::PanelElement& e = p->elements[i];
+    if (elements_[i]->stretchMinWidth() > 0.0f) {
+      e.w = std::max(elements_[i]->stretchMinWidth(), e.w + d);
+      continue;
+    }
+    if (e.x <= 0.5f && e.x + e.w >= panel_->width - 0.5f) {
+      e.w = std::max(1.0f, e.w + d);
+      continue;
+    }
+    for (const float end : ends)
+      if (e.x >= end - 0.5f) {
+        e.x = std::max(0.0f, e.x + d);
+        break;
+      }
+  }
+  p->width = to;
+  for (const doc::PanelElement& e : p->elements) p->width = std::max(p->width, e.x + e.w);
+  const doc::DeviceId g = owner_;
+  doc::PanelPtr next = std::move(p);
+  return target_->run([g, next](const doc::Project& pr, doc::IdSource&) { return doc::ops::setGroupPanel(pr, g, next); });
 }
 
 // ---- sources --------------------------------------------------------------------------------------------------------

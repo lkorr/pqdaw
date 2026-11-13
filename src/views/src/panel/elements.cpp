@@ -631,6 +631,13 @@ public:
   }
   bool onKey(const ui::KeyEvent& e, PanelTarget& t) override { return valueKey(e, t); }
   ui::Cursor cursor() const noexcept override { return geom().vertical ? ui::Cursor::ResizeNS : ui::Cursor::ResizeEW; }
+  // DT.3: the groove and a little round it (its handle); its label and readout are the block's (a press there moves it),
+  // as a knob's.
+  bool hit(Vec2 l) const noexcept override {
+    const G g = geom();
+    constexpr float kPad = 6.0f;
+    return l.x >= g.groove.x0 - kPad && l.x <= g.groove.x1 + kPad && l.y >= g.groove.y0 - kPad && l.y <= g.groove.y1 + kPad;
+  }
   std::optional<ControlAnchor> anchor() const override {
     const G g = geom();
     return ControlAnchor{{(g.groove.x0 + g.groove.x1) * 0.5f, (g.groove.y0 + g.groove.y1) * 0.5f}, 0.0f, desc_.w * 0.5f};

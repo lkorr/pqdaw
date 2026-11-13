@@ -6,13 +6,21 @@
 //     where the pointer says; Shift (fine) ignores gravity too
 //   - the ms / ♪ switch sets Mode (one step); in sync mode a drag steps the Sync index to the marking nearest the pointer
 //   - the markings follow the tempo (90 BPM moves 1/4 to 667 ms)
-// Goldens: module-delay-tap-panel (time mode on 1/4) and module-delay-tap-sync (sync mode, 1/8.), 2x.
+// DT.3 (docs/plans/DT.md "DT.3"):
+//   - the markings are whole-note fractions (1/12, 3/16), shown by simplicity and screen room (tempo_marks.h)
+//   - a press-drag on the face's body (readout, markings) moves the block; the groove stays the knob's
+//   - an edge drag stretches the face (one undo step, Esc restores; the left edge keeps the right one in place); wide,
+//     1/7 is shown and pulls the knob; at the default width it does not
+// Goldens: module-delay-tap-panel (time mode on 1/4), module-delay-tap-sync (sync mode, 3/16) and
+// module-delay-tap-stretched (640 wide, on 1/7), 2x.
 #include <doctest/doctest.h>
 
 #include <cmath>
 #include <memory>
 #include <ostream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "../ui/golden_check.h"
 #include "pq/document/devices.h"
@@ -23,6 +31,7 @@
 #include "pq/views/fake_transport.h"
 #include "pq/views/panel/element.h"
 #include "pq/views/panel/group_panel_face.h"
+#include "pq/views/panel/tempo_marks.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "views_test_util.h"
@@ -149,11 +158,18 @@ struct DelayUi {
 
 double placeOf(double seconds) { return dsp::curvePosition(doc::delayTimeCurve(), seconds, 0.5); }
 
-Image panelImage(const doc::DelayTapOptions& o) {
+// `width` > 0: the face stretched to it first (GroupPanelFace::stretchTo, the edge drag's edit).
+Image panelImage(const doc::DelayTapOptions& o, float width = 0.0f) {
   FakeTransport port;
   ViewContext ctx{port};
   ctx.setDeviceLibrary(&devLib());
   const doc::DelayTapRoles r = buildDelayTap(ctx.store(), o);
+  if (width > 0.0f) {
+    panel::GroupPanelFace f(panel::docPanelSource(ctx, r.group), panel::makeDocPanelTarget(ctx, r.group, {}));
+    f.setOwner(r.group);
+    REQUIRE(f.stretchX().has_value());
+    REQUIRE(f.stretchTo(width));
+  }
   const doc::Panel* p = doc::findDevice(*ctx.doc(), r.group).device->panel.get();
   REQUIRE(p != nullptr);
   const float scale = 2.0f;
@@ -178,7 +194,7 @@ TEST_CASE("render: module-delay-tap-panel and module-delay-tap-sync (DT.1: the t
   checkImage("module-delay-tap-panel", panelImage({}));
   doc::DelayTapOptions sync;
   sync.mode = 1;
-  sync.sync = 12;  // 1/8.
+  sync.sync = 12;  // 3/16
   checkImage("module-delay-tap-sync", panelImage(sync));
 }
 
@@ -186,17 +202,17 @@ TEST_CASE("delay tap face: gravity — a drag near a marking lands on it, past t
           "recompile — real dispatch") {
   DelayUi u;
   REQUIRE(u.position(u.r.time) == doctest::Approx(0.5));  // 500 ms = 1/4 at 120 BPM
-  const double halfT = placeOf(2.0 / 3.0);                 // 1/2T: 667 ms
+  const double halfT = placeOf(2.0 / 3.0);                 // 1/3 (a half triplet): 667 ms
   const size_t h0 = u.history();
-  // +7 units: the pointer at 0.5473, 1/2T's marking (0.5591) within 6 px: it sticks there.
+  // +7 units: the pointer at 0.5473, 1/3's marking (0.5591) within 6 px: it sticks there.
   u.dragTime(7.0f);
   CHECK(u.position(u.r.time) == doctest::Approx(halfT).epsilon(1e-12));
   CHECK(u.seconds() == doctest::Approx(2.0 / 3.0).epsilon(1e-9));
   CHECK(u.history() == h0 + 1);
   CHECK(u.structural == 0);
-  // Within one drag: near 1/4. (750 ms, x 96.4) it sticks, 3 units past it still, then at 4.5 past it — between 1/4.'s
-  // zone and 1/2's (x 105.4; zones 40 % of the 9-unit gap there) — it is the pointer's. (1/2T at 92.7 is 3.6 units
-  // below 1/4.: their zones there are 1.5 units each.)
+  // Within one drag: near 3/8 (750 ms, x 96.4) it sticks, 3 units past it still, then at 4.5 past it — between 3/8's
+  // zone and 1/2's (x 105.4; zones 40 % of the 9-unit gap there) — it is the pointer's. (1/3 at 92.7 is 3.6 units
+  // below 3/8: their zones there are 1.5 units each.)
   const double dotted = placeOf(0.75);
   {
     const float x0 = grooveX(u.position(u.r.time));
@@ -248,7 +264,7 @@ TEST_CASE("delay tap face: the ms / note switch sets Mode; in sync mode a drag s
   CHECK(u.position(u.r.mode) == 1.0);
   CHECK(u.history() == h0 + 1);
   CHECK(u.structural == 0);  // (Mode and Sync reach no choice: runtime params, never a recompile)
-  // Sync is 1/4 (index 13): the knob sits at 1/4's marking (0.5). A drag to 1/4.'s marking picks it (index 15).
+  // Sync is 1/4 (index 13): the knob sits at 1/4's marking (0.5). A drag to 3/8's marking picks it (index 15).
   CHECK(u.position(u.r.sync) == doctest::Approx(13.0 / 20.0));
   const float from = grooveX(0.5), to = grooveX(placeOf(0.75)) + 1.0f;
   u.d.drag(u.at({from, kGy}), u.at({to, kGy}), 6);
@@ -289,10 +305,160 @@ TEST_CASE("delay tap face: while the transport plays the markings follow the tem
   const uint64_t after = canvas.stats().paints;
   u.d.advance(0.3);
   CHECK(canvas.stats().paints == after);  // steady again
-  // The markings are at 90 BPM now: from 500 ms (1/8. there) +7 units lands on 1/4 = 667 ms.
+  // The markings are at 90 BPM now: from 500 ms (3/16 there) +7 units lands on 1/4 = 667 ms.
   u.dragTime(7.0f);
   CHECK(u.seconds() == doctest::Approx(2.0 / 3.0).epsilon(1e-9));
   u.ctx.stopButton();
   u.d.advance(0.2);
   CHECK_FALSE(canvas.animatingFaces());  // stopped: no poll
+}
+
+// ---- DT.3 -----------------------------------------------------------------------------------------------------------
+
+namespace {
+
+const panel::TempoMark* markOf(const std::vector<panel::TempoMark>& m, std::string_view label) {
+  for (const panel::TempoMark& k : m)
+    if (k.label == label) return &k;
+  return nullptr;
+}
+// The markings at 120 BPM for a delay tap face `w` wide at `ppu` logical px per unit (tempo_slider.cpp's layout).
+std::vector<panel::TempoMark> marksAt(float w, float ppu = 1.0f) {
+  std::vector<panel::TempoMark> m = panel::tempoMarkCandidates(doc::delayTimeCurve(), 120.0);
+  (void)panel::layoutTempoMarks(m, kX0, w - 10.0f, w, ppu);
+  return m;
+}
+
+}  // namespace
+
+TEST_CASE("delay tap face: the markings are whole-note fractions, shown by simplicity and room on screen (DT.3)") {
+  // The sync list's names.
+  const auto v = doc::noteValues();
+  CHECK(v[8].label == "1/12");   // was 1/8T
+  CHECK(v[12].label == "3/16");  // was 1/8.
+  CHECK(v[3].label == "3/128");  // was 1/64.
+  // Default width: the straight values labelled, dotted and triplets as ticks, no fives or sevens.
+  const auto def = marksAt(168.0f);
+  REQUIRE(markOf(def, "1/4") != nullptr);
+  CHECK(markOf(def, "1/4")->labelled);
+  CHECK(markOf(def, "3/16")->shown);
+  CHECK(markOf(def, "1/6")->shown);
+  CHECK_FALSE(markOf(def, "1/7")->shown);
+  CHECK_FALSE(markOf(def, "1/5")->shown);
+  // Wider (a stretched face) or closer (the circuit zoomed in 4×): the sevens appear; wide enough, 1/7 is labelled.
+  const auto wide = marksAt(800.0f);
+  CHECK(markOf(wide, "1/7")->shown);
+  CHECK(markOf(wide, "1/7")->labelled);
+  CHECK(markOf(wide, "2/7")->shown);
+  CHECK(markOf(marksAt(168.0f, 4.0f), "1/7")->shown);
+  // Simplicity order: powers of two, then dotted, triplets, fives, sevens, other numerators.
+  CHECK(wide.front().label == "1/1");
+  CHECK(markOf(wide, "3/16")->tier == 1);
+  CHECK(markOf(wide, "1/12")->tier == 1);
+  CHECK(markOf(wide, "1/20")->tier == 2);
+  CHECK(markOf(wide, "2/7")->tier == 3);
+  CHECK(markOf(wide, "5/16")->tier == 4);
+}
+
+TEST_CASE("delay tap face: a press-drag on the face's body moves the block; on the slider it moves the knob (DT.3) — "
+          "real dispatch") {
+  DelayUi u;
+  const float x0 = u.node(u.r.group).x, y0 = u.node(u.r.group).y;
+  const double t0 = u.position(u.r.time);
+  // The readout (below the groove, left) and the markings (above it) are the block's.
+  u.d.drag(u.at({30.0f, 44.0f}), u.at({90.0f, 74.0f}), 6);
+  u.d.step();
+  CHECK(u.node(u.r.group).x == doctest::Approx(x0 + 60.0f).epsilon(0.02));
+  CHECK(u.node(u.r.group).y == doctest::Approx(y0 + 30.0f).epsilon(0.02));
+  CHECK(u.position(u.r.time) == t0);
+  const float x1 = u.node(u.r.group).x;
+  u.d.drag(u.at({60.0f, 8.0f}), u.at({20.0f, 8.0f}), 6);
+  u.d.step();
+  CHECK(u.node(u.r.group).x == doctest::Approx(x1 - 40.0f).epsilon(0.02));
+  CHECK(u.position(u.r.time) == t0);
+  // The groove is the knob's.
+  const float x2 = u.node(u.r.group).x;
+  u.dragTime(30.0f);
+  CHECK(u.node(u.r.group).x == x2);
+  CHECK(u.position(u.r.time) != t0);
+}
+
+TEST_CASE("delay tap face: an edge drag stretches it (one undo step); at a wide stretch 1/7 pulls the knob, at the "
+          "default width it does not (DT.3) — real dispatch") {
+  DelayUi u;
+  auto width = [&] { return u.dev(u.r.group).panel->width; };
+  auto slider = [&] { return u.dev(u.r.group).panel->elements.at(1).w; };  // (0: the plate)
+  auto plate = [&] { return u.dev(u.r.group).panel->elements.at(0).w; };
+  REQUIRE(width() == 168.0f);
+  REQUIRE(slider() == 168.0f);
+  const float right0 = u.node(u.r.group).x + u.node(u.r.group).w;
+  // At the default width a drag that ends on 1/7's place (2/7 s) is the pointer's: 1/7 is not shown.
+  const double seventh = placeOf(2.0 / 7.0);
+  u.dragTime(static_cast<float>((seventh - 0.5) * (kX1 - kX0)));
+  CHECK(u.position(u.r.time) == doctest::Approx(seventh).epsilon(1e-3));
+  CHECK(u.position(u.r.time) != doctest::Approx(seventh).epsilon(1e-9));
+  REQUIRE(u.ctx.undo());
+  // Hover on the right edge: the ↔ cursor; a drag there widens the face to 800 (its height stays).
+  const size_t h0 = u.history();
+  u.d.move(u.at({166.5f, 12.0f}));
+  u.d.step();
+  CHECK(u.view().canvas().cursorAt(u.at({166.5f, 12.0f})) == Cursor::ResizeEW);
+  u.d.drag(u.at({166.5f, 12.0f}), u.at({166.5f + 632.0f, 12.0f}), 8);
+  u.d.step();
+  CHECK(width() == 800.0f);
+  CHECK(slider() == 800.0f);
+  CHECK(plate() == 800.0f);  // the plate spans the panel: it widens with it
+  CHECK(u.dev(u.r.group).panel->height == 64.0f);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.structural == 0);
+  CHECK(u.node(u.r.group).w == doctest::Approx(800.0f));
+  // The knob at 0.5, a drag to 2 units past 1/7's marking lands on it (gravity: 6 px).
+  const float x1w = 800.0f - 10.0f;
+  auto grooveW = [&](double p) { return kX0 + (x1w - kX0) * static_cast<float>(p); };
+  {
+    const float x = grooveW(u.position(u.r.time));
+    u.d.drag(u.at({x, kGy}), u.at({grooveW(seventh) + 2.0f, kGy}), 8);
+    u.d.step();
+  }
+  CHECK(u.seconds() == doctest::Approx(2.0 / 7.0).epsilon(1e-9));
+  REQUIRE(u.ctx.undo());  // the drag
+  // Undo the stretch: the default width again.
+  REQUIRE(u.ctx.undo());
+  CHECK(width() == 168.0f);
+  CHECK(slider() == 168.0f);
+  // The left edge: the face widens leftwards, its right edge stays; Esc mid-drag puts everything back. (The view moved
+  // so the widened face stays on the canvas.)
+  {
+    circuit::CircuitCanvas::View cv = u.view().canvas().view();
+    cv.x -= 300.0;
+    u.view().canvas().setView(cv);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  u.d.drag(u.at({1.5f, 12.0f}), u.at({1.5f - 100.0f, 12.0f}), 6);
+  u.d.step();
+  CHECK(width() == 268.0f);
+  CHECK(std::fabs(u.node(u.r.group).x + u.node(u.r.group).w - right0) <= 1.0f);  // (a nudge is whole units)
+  const size_t h1 = u.history();
+  u.d.down(u.at({1.5f, 12.0f}));
+  u.d.move(u.at({-60.0f, 12.0f}));
+  u.d.step();
+  CHECK(width() > 268.0f);
+  u.d.keyDown(key::kEscape);
+  u.d.keyUp(key::kEscape);
+  u.d.up(u.at({-60.0f, 12.0f}));
+  u.d.step();
+  CHECK(width() == 268.0f);
+  CHECK(u.history() == h1);
+  CHECK(std::fabs(u.node(u.r.group).x + u.node(u.r.group).w - right0) <= 1.0f);  // (a nudge is whole units)
+  // Never narrower than the slider's own width.
+  u.d.drag(u.at({1.5f, 12.0f}), u.at({1.5f + 400.0f, 12.0f}), 6);
+  u.d.step();
+  CHECK(width() == 168.0f);
+}
+
+TEST_CASE("render: module-delay-tap-stretched (DT.3: the face stretched to 640, more markings labelled, 2x)") {
+  doc::DelayTapOptions o;
+  o.time = placeOf(2.0 / 7.0);  // on 1/7
+  checkImage("module-delay-tap-stretched", panelImage(o, 640.0f));
 }

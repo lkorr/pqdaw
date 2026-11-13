@@ -1351,3 +1351,17 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
   button (right) turns sticking off. The ms / ♪ switch picks sync: the same slider then steps through the note values
   (the readout says "1/8.  375 ms"), following the tempo. Both lanes and the switch are automatable; changes glide
   (20 ms), no clicks. Is the magnet glyph readable, and is the sticking strength right? (Q242 5)
+
+## 2026-11-12 · DT.3 · Delay Tap face: move, stretch, fraction names, more markings 👁
+Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-recorded), `-stretched.png` (new, 640 wide).
+- **Move**: press-drag anywhere on the face except the slider's groove and the two buttons moves the module (the
+  slider used to take the whole face). Plain panel sliders likewise take only their groove now (their label and readout
+  move the block, as a knob's already did).
+- **Stretch**: hover the module's left or right edge (↔ cursor) and drag: it widens (height stays), the slider fills it,
+  the buttons stay at its right end. One undo step; Esc while dragging puts it back. Any panel face can opt in.
+- **Names**: every marking and the sync readout is a whole-note fraction: 1/12 (was 1/8T), 3/16 (was 1/8.), 1/6, 3/8 …
+- **Markings**: by simplicity and screen room: powers of two, then dotted / triplets, then fives, sevens, other
+  numerators. At the default size you see the straight, dotted and triplet ticks; stretch it or zoom the circuit in and
+  1/5, 1/7, 2/7, 3/7, 5/16 … appear and get labels. Gravity only pulls to markings you can see.
+- Look at: is the default size's tick density right (a few close triplets near 0 are hidden)? Is 2/1 labelled at the
+  right end too busy? Is the left-edge drag pleasant (the right edge stays put)? (Q?-DT.3-a)
