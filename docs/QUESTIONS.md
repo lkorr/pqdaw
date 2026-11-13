@@ -1176,7 +1176,7 @@ Options: (a) a "Saving" section under Preferences → Record; (b) a new File tab
 write (the next document change writes them along). Reversible: moving the row is one function; (c) is one more compare.
 Status: open.
 
-## Q249 · 2026-11-13 · AS.2 · 2026-11-13 · AS.2 · Takes an untitled autosave does not reference; an outdated autosave's folder
+## Q249 · 2026-11-13 · AS.2 · Takes an untitled autosave does not reference; an outdated autosave's folder
 Context: a crashed untitled session can hold takes recorded after its last autosave (or removed from the document);
 and a titled session's autosave that is older than its origin's project.pqd is not offered (plan), so it never gets a
 Discard button. Options: (a) place unreferenced takes on a "Recovered" track (as L13's Open as Project) / leave them
