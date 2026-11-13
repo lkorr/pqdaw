@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "pq/compile/compile.h"
+#include "pq/dsp/fft.h"
 #include "pq/engine/offline_render.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
@@ -235,6 +236,46 @@ TEST_CASE("noise: Sync steps on the song's grid; Note draws per note-on; Per voi
       CHECK((std::abs(s - 0.1) < 0.01 || std::abs(s - 0.2) < 0.01 || s > 0.44));
     }
     fs::remove(f);
+  }
+}
+
+TEST_CASE("noise: blue and violet through the module keep their slope and stay in range (Q?-NZ.1-a: scaled, not folded)") {
+  // The module's whole path (the expansion, its Range at −1 … 1) at Rate's top, 2^20 samples; a Welch power spectrum
+  // (4096-point Hann, 50 % overlap) summed in third-octave bands 100 Hz … 16 kHz: each band's level minus the target
+  // slope within ±1 dB of their mean (the design's ±0.42 dB plus the estimate's scatter).
+  constexpr uint32_t kN = 4096;
+  pq::dsp::RealFft fft(kN);
+  std::vector<float> win(kN), seg(kN), pw(kN / 2 + 1);
+  for (uint32_t i = 0; i < kN; ++i) win[i] = static_cast<float>(0.5 - 0.5 * std::cos(2.0 * 3.141592653589793 * i / kN));
+  for (const double colour : {3.0, 6.0}) {
+    CAPTURE(colour);
+    const fs::path f = writeTemp("blue.pqp", globalCall("nz(colour: " + std::to_string(colour) + ")"));
+    const std::vector<float> y = render(f, (1 << 20) / 48000.0);
+    fs::remove(f);
+    float peak = 0.0f;
+    for (float v : y) peak = std::max(peak, std::fabs(v));
+    CHECK(peak <= 1.0f);
+    CHECK(peak > 0.3f);
+    std::vector<double> psd(kN / 2 + 1, 0.0);
+    uint32_t segs = 0;
+    for (size_t at = 0; at + kN <= y.size(); at += kN / 2, ++segs) {
+      for (uint32_t i = 0; i < kN; ++i) seg[i] = y[at + i] * win[i];
+      fft.power(seg.data(), pw.data());
+      for (uint32_t k = 0; k <= kN / 2; ++k) psd[k] += pw[k];
+    }
+    REQUIRE(segs > 100);
+    std::vector<double> dev;
+    for (double lo = 100.0; lo * std::cbrt(2.0) <= 16000.0; lo *= std::cbrt(2.0)) {
+      const double hi = lo * std::cbrt(2.0), binHz = 48000.0 / kN;
+      double sum = 0.0;
+      uint32_t bins = 0;
+      for (auto k = static_cast<uint32_t>(std::ceil(lo / binHz)); k * binHz < hi; ++k) sum += psd[k], ++bins;
+      REQUIRE(bins > 0);
+      dev.push_back(10.0 * std::log10(sum / bins) - colour * std::log2(std::sqrt(lo * hi)));
+    }
+    const auto [mn, mx] = std::minmax_element(dev.begin(), dev.end());
+    MESSAGE("colour " << colour << ": slope deviation ±" << (*mx - *mn) / 2.0 << " dB over " << dev.size() << " bands");
+    CHECK((*mx - *mn) / 2.0 < 1.0);
   }
 }
 

@@ -86,6 +86,15 @@ inline typename S::F foldOf(typename S::F v) noexcept {  // noiseFold, lane-wise
   return S::select(S::gt(S::abs(v), S::set(1.0f)), r, v);
 }
 
+// After the cascade: lanes of a colour > 0 (pos) are bounded by their scale already (the clip only absorbs rounding);
+// the others are folded (pq/dsp/noise_step.h, Q?-NZ.1-a).
+template <class S>
+inline typename S::F rangeOf(typename S::F v, typename S::F pos, bool anyPos) noexcept {
+  const auto f = foldOf<S>(v);
+  if (!anyPos) return f;
+  return S::select(pos, S::min(S::max(v, S::set(-1.0f)), S::set(1.0f)), f);
+}
+
 // The sync cell floor(beat / grid), nudged up by 2^-21 of its size: beat and grid are floats, so a grid line that falls
 // exactly on a frame (a triplet's, at most tempos) can come out a rounding below its integer; the nudge (above the
 // quotient's worst rounding, 1.5 · 2^-23) puts it on its frame.
@@ -143,8 +152,8 @@ struct Kernel {
   struct Call {
     I key, inc;
     F every, rateOn, periodRate;
-    F z[4], gain, white, gaussM;
-    bool allWhite = true, anyGauss = false, allGauss = false, mayFold = false;
+    F z[4], gain, white, gaussM, pos;  // gain: the cascade's input scale (a colour > 0: its bound, a Gaussian's too)
+    bool allWhite = true, anyGauss = false, allGauss = false, mayFold = false, anyPos = false;
     bool densOff = true, stepsOff = true, smoothOff = true;
   };
 
@@ -213,13 +222,17 @@ struct Kernel {
         if (std::bit_cast<uint32_t>(v[l]) == std::bit_cast<uint32_t>(key[l])) continue;
         const NoiseColourDesign d = noiseColourDesign(v[l]);
         for (uint32_t k = 0; k < 4; ++k) st.z[k][l] = d.z[k];
-        st.gain[l] = d.gain;
+        st.gain[l] = d.gain * d.bound;  // colours > 0: the output stays in [−1, 1] (bound 1 otherwise)
+        st.pos[l] = boolMask(!d.white && v[l] > 0.0f);
         st.white[l] = boolMask(d.white);
         st.colourKey[l] = v[l];
       }
     }
     for (uint32_t k = 0; k < 4; ++k) c.z[k] = S::load(st.z[k]);
-    c.gain = S::load(st.gain), c.white = S::load(st.white);
+    c.white = S::load(st.white), c.pos = S::load(st.pos);
+    c.anyPos = S::any(c.pos);
+    // A Gaussian lane of a colour > 0 is scaled by 1 / its draw's bound as well.
+    c.gain = S::mul(S::load(st.gain), S::select(S::band(c.pos, c.gaussM), S::set(1.0f / kNoiseGaussBound), S::set(1.0f)));
     c.allWhite = !S::any(S::bnot(c.white));
   }
 
@@ -256,7 +269,8 @@ struct Kernel {
     const F p0 = S::set(kNoiseColourPoles[0]), p1 = S::set(kNoiseColourPoles[1]), p2 = S::set(kNoiseColourPoles[2]),
             p3 = S::set(kNoiseColourPoles[3]);
     bool allWhite = C.allWhite, mayFold = C.mayFold;
-    F z0 = C.z[0], z1 = C.z[1], z2 = C.z[2], z3 = C.z[3], gain = C.gain, white = C.white;
+    F z0 = C.z[0], z1 = C.z[1], z2 = C.z[2], z3 = C.z[3], gain = C.gain, white = C.white, pos = C.pos;
+    bool anyPos = C.anyPos;
 
     // One step on lanes `m` at frame f (counter t): draw, colour, fold, density, steps, the glide's start.
     auto step = [&](F m, uint32_t f, uint32_t t) {
@@ -264,7 +278,8 @@ struct Kernel {
       if (!colour.spl()) {
         colourFor(colour.at(f));
         allWhite = c.allWhite, mayFold = !allWhite || C.anyGauss;
-        z0 = c.z[0], z1 = c.z[1], z2 = c.z[2], z3 = c.z[3], gain = c.gain, white = c.white;
+        z0 = c.z[0], z1 = c.z[1], z2 = c.z[2], z3 = c.z[3], gain = c.gain, white = c.white, pos = c.pos;
+        anyPos = c.anyPos;
       }
       const I tv = S::seti(static_cast<int32_t>(t));
       const I n = S::subi(tv, rOrigin);
@@ -280,7 +295,7 @@ struct Kernel {
         w3 = S::select(mc, y2, w3), w4 = S::select(mc, y3, w4);
         v = S::select(white, v, y3);
       }
-      if (mayFold) v = foldOf<S>(v);
+      if (mayFold) v = rangeOf<S>(v, pos, anyPos);
       // The lane's period: its rate's, else measured since its previous step (unknown before one).
       const F known = S::bor(rateOn, rHasLast);
       const F period = S::select(rateOn, periodRate, S::toFloat(S::subi(tv, rLastStep)));
@@ -430,7 +445,8 @@ struct Kernel {
       const uint32_t salt = static_cast<uint32_t>(_mm_cvtsi128_si32(c.key)) ^ kGaussSalt;
       const uint32_t gbase = salt - static_cast<uint32_t>(_mm_cvtsi128_si32(rOrigin)) + t0;
       const bool gauss = c.anyGauss;  // one lane: all or none
-      const __m128 z0 = c.z[0], z1 = c.z[1], z2 = c.z[2], z3 = c.z[3], g = c.gain;
+      const __m128 z0 = c.z[0], z1 = c.z[1], z2 = c.z[2], z3 = c.z[3], g = c.gain, pos1 = c.pos;
+      const bool posOn = c.anyPos;
       const __m128 q0 = _mm_set1_ps(kNoiseColourPoles[0]), q1 = _mm_set1_ps(kNoiseColourPoles[1]),
                    q2 = _mm_set1_ps(kNoiseColourPoles[2]), q3 = _mm_set1_ps(kNoiseColourPoles[3]);
       auto run8 = [&](uint32_t i, uint32_t count) {
@@ -448,7 +464,7 @@ struct Kernel {
             const __m128 y2 = S1::fma(q2, w3, S1::fnma(z2, w2, y1));
             const __m128 y3 = S1::fma(q3, w4, S1::fnma(z3, w3, y2));
             w0 = xs, w1 = y0, w2 = y1, w3 = y2, w4 = y3;
-            S1::store(out + i + k, foldOf<S1>(y3));  // (coloured: the fold always applies)
+            S1::store(out + i + k, rangeOf<S1>(y3, pos1, posOn));  // (coloured: fold or clip always)
           }
           return;
         }
@@ -466,6 +482,8 @@ struct Kernel {
       if (i < n) run8(i, n - i);
     } else {
       const F mc = S::bnot(c.white), white = c.white, gain = c.gain, z0 = c.z[0], z1 = c.z[1], z2 = c.z[2], z3 = c.z[3];
+      const F posM = c.pos;
+      const bool posOn = c.anyPos;
       const F gm = c.gaussM;
       const I key = c.key;
       const bool anyG = c.anyGauss, allG = c.allGauss;
@@ -485,7 +503,7 @@ struct Kernel {
           w3 = S::select(mc, y2, w3), w4 = S::select(mc, y3, w4);
           v = S::select(white, v, y3);
         }
-        if (fold) v = foldOf<S>(v);
+        if (fold) v = rangeOf<S>(v, posM, posOn);
         S::store(o + static_cast<size_t>(f) * 8, v);
       }
     }

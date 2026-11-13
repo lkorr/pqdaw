@@ -1125,6 +1125,13 @@ exceed ±1 by up to ~3σ, outside the Range); (c) normalise coloured noise to a 
 never acts (exact slope, in range, but a level drop of up to −9 dB sweeping away from white); (d) a monotone map to
 uniform (erf) instead of the fold (in range, constant RMS, the slope only approximately kept, no walk reflection).
 Choice: (a), the plan's order (reversible: one select in the kernel's step).
+Resolution: user 2026-11-12 — scale, don't fold, for positive colours: colours −6 … 0 keep the reflection fold; above 0
+the cascade's input is scaled by a per-colour bound, 1 / Σ|h| of the unit-power design (a sixth table column,
+tools/fit/noise_colour.py, lowered 2.8 % for the interpolated designs) and 1 / 1.1547 for Gaussian draws, so the output
+can never leave [−1, 1] and no fold runs: the slope is the design's exactly (through the module, measured: +3 ±0.44 dB,
++6 ±0.37 dB over 100 Hz … 16 kHz). Cost in level against white (uniform draws): −5.3 dB at +1, −5.8 at +1.5 (the most),
+−4.85 at +3, −3.83 at +6 dB/oct; Gaussian a further −1.25 dB (the bound is continuous from 0: no jump sweeping through
+white, the drop is over the first ~1 dB/oct).
 
 ## Q?-NZ.1-b · On note with Per voice: every note the same pattern, chord notes included
 Context: the plan says On note resets "at each note-on: every note plays the same pattern". With Per voice the lanes
@@ -1137,7 +1144,8 @@ note). Choice: (a), the plan's words (reversible: the `lanes` const in pq/meta/n
 Context: a module group's In terminal is wired to its engine's chain input; with nothing reaching the group the In
 gave the engine zero, which for the Noise module's clock means "wired" (the clock overrides the clock setting and
 nothing would ever step). The lowering now makes such a wire Inactive when nothing reaches the group (no wire into its
-main input, or only from an unfed group's In), so the input reads its own default — for every native engine: a free
+main input, or only from an unfed group's In — and only for a FREE group: off its track's path and not an instrument
+group, which the path or its notes feed whether or not a wire names its main input), so the input reads its own default — for every native engine: a free
 Envelope module now outputs its envelope (`in` default 1) where it gave silence. Options: (a) that rule (one place,
 pq/document/lower.h "Groups"); (b) a Noise-only rule (a clock "seen" latch at run time); (c) no In → clock wire in the
 Noise module (the user wires the engine's clock inside). Choice: (a): it is what "unwired" means for every engine, and

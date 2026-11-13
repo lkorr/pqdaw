@@ -113,7 +113,9 @@
 //                                     |x| ≤ 1.155 (dist 1); key = hash(lane seed ^ voice group) (lanes 1) or the
 //                                     node's seed for every lane (lanes 0), mixed with round(seed). Then per step:
 //                                     colour (dB/oct, −6 … 6: the tilt cascade of noise_step.h on the drawn sequence;
-//                                     0: none), fold into [−1, 1] by reflection, density (Hz: the step keeps its value
+//                                     0: none), fold into [−1, 1] by reflection (colours > 0: none — the cascade's
+//                                     input is scaled by the design's bound, so it never leaves [−1, 1]: noise_step.h),
+//                                     density (Hz: the step keeps its value
 //                                     with probability density · period / sr, else outputs exactly 0; ≥ 100 kHz:
 //                                     always), steps (round(steps) = N ≥ 2: N levels across [−1, 1]; 1: 0; ≤ 0: off),
 //                                     then a glide from the current output over smooth · period frames (smooth 0 … 1,

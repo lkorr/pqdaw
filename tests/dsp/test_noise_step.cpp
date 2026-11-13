@@ -4,8 +4,9 @@
 //              stream (the same values again)
 //   draw       the white stream is the documented hash; uniform / gaussian moments and histograms
 //   colour     the design's response within ±0.5 dB of the slope over 20 Hz … 20 kHz at 48 kHz for every colour, unit
-//              power gain; the kernel equals a double reference of draw → cascade → fold; RMS across colours; brown
-//              at a slow rate is a continuous walk inside [−1, 1]
+//              power gain; the kernel equals a double reference of draw → cascade → fold (colours ≤ 0) or scale
+//              (colours > 0: never outside [−1, 1], Q?-NZ.1-a); RMS across colours; brown at a slow rate is a
+//              continuous walk inside [−1, 1]
 //   shaping    density's keep rate, Steps' levels, Smooth 0 exact holds, Smooth > 0 continuous and monotone, reaching
 //              the value exactly
 //   lanes      seeded apart (and voice groups apart) or one stream; a lane reset draws at once and continues the stream
@@ -303,8 +304,8 @@ TEST_CASE("noise_step: the colour design is within ±0.5 dB of its slope with un
   }
 }
 
-TEST_CASE("noise_step: the kernel is draw → colour cascade → fold (a double reference)") {
-  for (const float c : {-6.0f, -3.0f, -0.6f, 2.0f, 6.0f}) {
+TEST_CASE("noise_step: the kernel is draw → colour cascade → fold or scale (a double reference)") {
+  for (const float c : {-6.0f, -3.0f, -0.6f, 0.3f, 2.0f, 6.0f}) {
     for (const float dist : {0.0f, 1.0f}) {
       INFO("colour " << c << " dist " << dist);
       const uint32_t n = 20000;
@@ -326,13 +327,21 @@ TEST_CASE("noise_step: the kernel is draw → colour cascade → fold (a double 
           const int32_t s = static_cast<int32_t>((h0 >> 16) + (h0 & 0xFFFF) + (h1 >> 16) + (h1 & 0xFFFF)) - 131070;
           v = s * static_cast<double>(kNoiseGaussScale);
         }
-        double x = v * d.gain;
+        // colours > 0: the input scaled by the bound (and a Gaussian's by its draw's bound): never outside [−1, 1]
+        const double scale = c > 0.0f ? d.bound * (dist == 0.0f ? 1.0 : 1.0 / kNoiseGaussBound) : 1.0;
+        double x = v * static_cast<double>(static_cast<float>(d.gain * d.bound) / d.bound) * scale;
         for (uint32_t s = 0; s < 4; ++s) {
           const double yy = x - d.z[s] * w[s] + kNoiseColourPoles[s] * w[s + 1];
           w[s] = x;
           x = yy;
         }
         w[4] = x;
+        if (c > 0.0f) {
+          REQUIRE(std::abs(x) <= 1.0);  // the bound holds for the exact cascade
+          REQUIRE(std::abs(y[t]) <= 1.0f);
+          worst = std::max(worst, std::abs(x - y[t]));
+          continue;
+        }
         const double want = noiseFold(static_cast<float>(x));
         // near a fold edge the float cascade may sit on the other side: compare the unfolded value there
         if (std::abs(std::abs(x) - 1.0) > 1e-3) worst = std::max(worst, std::abs(want - y[t]));
@@ -344,8 +353,9 @@ TEST_CASE("noise_step: the kernel is draw → colour cascade → fold (a double 
 
 TEST_CASE("noise_step: RMS across colours; brown at a slow rate is a continuous walk inside the range" *
           doctest::test_suite("slow")) {
-  // Gaussian: the fold almost never acts, the RMS is the draw's at every colour. Uniform: the coloured sequence is
-  // near-Gaussian at σ 0.577 and the fold takes up to 1.1 dB of it (QUESTIONS Q?-NZ.1-a).
+  // Colours ≤ 0 — Gaussian: the fold almost never acts, the RMS is the draw's; uniform: the coloured sequence is
+  // near-Gaussian at σ 0.577 and the fold takes up to 1.1 dB of it. Colours > 0: no fold; the RMS is the draw's times
+  // the bound (and 1 / 1.1547 for Gaussian draws): exactly as designed (QUESTIONS Q?-NZ.1-a).
   for (const float dist : {1.0f, 0.0f}) {
     double rms0 = 0;
     for (const float c : {0.0f, -6.0f, -3.0f, -1.0f, 1.0f, 3.0f, 6.0f}) {
@@ -361,8 +371,14 @@ TEST_CASE("noise_step: RMS across colours; brown at a slow rate is a continuous 
       if (c == 0.0f) rms0 = rms;
       const double db = 20.0 * std::log10(rms / rms0);
       MESSAGE("dist " << dist << " colour " << c << ": " << db << " dB");
-      if (dist == 1.0f) CHECK(std::abs(db) < 0.3);
-      else CHECK((db < 0.3 && db > -1.4));
+      if (c > 0.0f) {
+        const double want = 20.0 * std::log10(noiseColourDesign(c).bound * (dist == 1.0f ? 1.0 / kNoiseGaussBound : 1.0));
+        CHECK(std::abs(db - want) < 0.15);
+      } else if (dist == 1.0f) {
+        CHECK(std::abs(db) < 0.3);
+      } else {
+        CHECK((db < 0.3 && db > -1.4));
+      }
     }
   }
   Rig r(1, 1 << 20);

@@ -9,7 +9,11 @@ colour: chosen by a joint minimax over colours ±1.5 … ±6 dB/oct) and per-col
 0.25 dB/oct grid, continued from c = 0 where z = p: white is the identity). At run time the zeros and the gain are
 interpolated linearly between grid rows (pq/dsp/noise_step.h). This script prints the C++ table and checks:
   - the slope error of every interpolated design (481 colours) on 1200 log-spaced frequencies,
-  - the gain error of the interpolated gain against the exact unit-power gain of the interpolated zeros.
+  - the gain error of the interpolated gain against the exact unit-power gain of the interpolated zeros;
+and, for the colours above 0 (Q?-NZ.1-a: no fold there, the output scaled so that it can never leave [−1, 1]), the
+BOUND column: 1 / Σ|h| of the unit-power design (h its impulse response), interpolated like the rest and lowered by the
+worst ratio found over 241 interpolated designs, so |y| ≤ bound · Σ|h| · max|x| ≤ 1 for a draw in [−1, 1]. Colours ≤ 0:
+1 (they are folded).
 
 Run: python tools/fit/noise_colour.py > table.txt   (numpy + scipy; ~2 min)
 """
@@ -79,6 +83,17 @@ def power_gain(p, z):
     return c0 * c0 + 2 * c0 * r.sum() + sum(r[j] * r[k] / (1 - p[j] * p[k]) for j in range(n) for k in range(n))
 
 
+def l1_norm(p, z, g, n=400000):
+    """Σ |h[n]| of g · Π (1 − z_k w)/(1 − p_k w) (its impulse response decays below 1e-12 well within n)."""
+    from scipy.signal import lfilter
+    b, a = np.array([1.0]), np.array([1.0])
+    for k in range(len(p)):
+        b, a = np.convolve(b, [1.0, -z[k]]), np.convolve(a, [1.0, -p[k]])
+    imp = np.zeros(n)
+    imp[0] = g
+    return float(np.abs(lfilter(b, a, imp)).sum())
+
+
 def main():
     p = joint_poles()
     colours = np.arange(-6, 6 + 1e-9, STEP)
@@ -97,6 +112,15 @@ def main():
     pf = np.array(p, dtype=np.float32).astype(np.float64)
     G = np.array([1.0 / np.sqrt(power_gain(pf, Z[i])) for i in range(len(colours))])
     G[i0] = 1.0
+    B = np.array([1.0 if colours[i] <= 0 else 1.0 / l1_norm(pf, Z[i], G[i]) for i in range(len(colours))])
+    worst_ratio = 1.0
+    for c in np.linspace(0, 6, 241)[1:]:
+        x = (c + 6) / STEP
+        i = min(int(np.floor(x)), len(colours) - 2)
+        fr = x - i
+        z, g, bnd = Z[i] * (1 - fr) + Z[i + 1] * fr, G[i] * (1 - fr) + G[i + 1] * fr, B[i] * (1 - fr) + B[i + 1] * fr
+        worst_ratio = max(worst_ratio, l1_norm(pf, z, g) * bnd)
+    B[colours > 0] *= (1.0 - 1e-5) / worst_ratio
     # checks on the float32 coefficients the kernel uses
     ff = np.geomspace(20, 20000, 1200) / FS
     worst_slope = worst_gain = 0.0
@@ -114,10 +138,12 @@ def main():
     print(f'// every colour (481 interpolated designs); interpolated gain within {worst_gain:.3f} dB of unit power.')
     print('inline constexpr float kNoiseColourPoles[4] = {' + ', '.join(f'{v:.9g}f' for v in pf) + '};')
     print(f'inline constexpr uint32_t kNoiseColourRows = {len(colours)};  // colour −6 … +6 dB/oct in {STEP} steps')
-    print('// per row: zeros z0 … z3, then the unit-power gain')
-    print('inline constexpr float kNoiseColourTable[kNoiseColourRows][5] = {')
+    print(f'// Bound (colours > 0): interpolated designs reach at most {worst_ratio:.6f} of 1 / bound (the column lowered by it);')
+    print(f'// the scaled output\'s RMS at +3 / +6 dB/oct: {20 * np.log10(B[colours == 3.0][0]):.2f} / {20 * np.log10(B[-1]):.2f} dB.')
+    print('// per row: zeros z0 … z3, the unit-power gain, the bound')
+    print('inline constexpr float kNoiseColourTable[kNoiseColourRows][6] = {')
     for i, c in enumerate(colours):
-        vals = ', '.join(f'{v:.9g}f' for v in list(Z[i]) + [G[i]])
+        vals = ', '.join(f'{v:.9g}f' for v in list(Z[i]) + [G[i], B[i]])
         print(f'    {{{vals}}},  // {c:+.2f}')
     print('};')
 

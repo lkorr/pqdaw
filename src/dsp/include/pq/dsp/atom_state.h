@@ -296,6 +296,7 @@ struct alignas(32) NoiseStepState {
   float z[4][8];         // its zeros (kNoiseColourPoles are fixed)
   float gain[8];
   float white[8];        // mask: colour 0, the identity
+  float pos[8];          // mask: colour > 0 (scaled, not folded: Q?-NZ.1-a)
   float keyTag[8];       // the seed (and lanes const) the keys below are for (kNoiseStepNoKey: none yet)
   uint32_t keys[8];      // the draw keys
   float rateKey[8];      // the rate the increment below is for (kNoiseStepNoKey: none yet)
@@ -306,7 +307,7 @@ struct alignas(32) NoiseStepState {
   float sampleRate;
   uint32_t pad_[4];
 };
-static_assert(offsetof(NoiseStepState, counter) == 30 * 32 && sizeof(NoiseStepState) == 31 * 32);
+static_assert(offsetof(NoiseStepState, counter) == 31 * 32 && sizeof(NoiseStepState) == 32 * 32);
 inline constexpr uint32_t kNoiseStepNoKey = 0x7FBADBADu;  // a NaN no input carries: a cache entry not made yet
 static_assert(sizeof(OversampleState) == 26 * 32);
 static_assert(sizeof(OversamplePhaseState) == 64);

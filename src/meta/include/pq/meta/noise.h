@@ -10,7 +10,7 @@
 //   params   rate     0.01 Hz … 48 kHz (octave curve); the top is a new value every frame (plain noise) at any sr
 //            sync     0 … 26 (stepped): the Sync grid, kNoiseSyncItems (1/64T … 4/1D: triplet, straight, dotted per value)
 //            smooth   0 … 1: glide over smooth · the step period (0: stepped)
-//            colour   −6 … +6 dB/oct (0 white)
+//            colour   −6 … +6 dB/oct (0 white; above 0 scaled into [−1, 1], not folded: quieter, pq/dsp/noise_step.h)
 //            density  0.1 Hz … 100 kHz (octave); the top is continuous
 //            steps    0 … 64 (stepped; 0 off, N levels across the range)
 //            min, max −1 … 1, default −1 / 1: out = lerp(min, max, (v + 1) / 2) (wires add in units)
