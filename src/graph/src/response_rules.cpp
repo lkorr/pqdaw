@@ -157,10 +157,15 @@ ResponseKind latency(ResponseArgs& a) noexcept {
 
 ResponseKind delayCubic(ResponseArgs& a) noexcept {
   float d = 0.0f;
-  if (!delaySamples(a, 2.0f, d)) return ResponseKind::Unavailable;
+  if (!delaySamples(a, 1.0f, d)) return ResponseKind::Unavailable;
   const float fl = std::floor(d);
   if (fl < 1.0f) return ResponseKind::Unavailable;  // a max below the minimum delay
   const double t = d - fl;
+  a.dependsOnOmega = true;
+  if (d < 2.0f) {  // DT.2: linear between x[−1] and x[−2] below 2 samples
+    g(a, 0, 0) = a.z * ((1.0 - t) + t * a.z);
+    return ResponseKind::Exact;
+  }
   // Catmull-Rom between x0 = x[−n] (t = 0) and x1 = x[−n−1]; xm1 = x[−n+1], x2 = x[−n−2] (kernels_memory.cpp hermite).
   const double t2 = t * t, t3 = t2 * t;
   const double wm1 = 0.5 * (-t3 + 2.0 * t2 - t), w0 = 0.5 * (3.0 * t3 - 5.0 * t2 + 2.0);

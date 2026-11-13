@@ -113,7 +113,7 @@ struct PendingState {
 
 bool isSplittable(dsp::Atom k) noexcept {
   return k == dsp::Atom::Z1 || k == dsp::Atom::DelayLinear || k == dsp::Atom::DelayCubic ||
-         k == dsp::Atom::DelayAllpass;
+         k == dsp::Atom::DelayAllpass || k == dsp::Atom::DelayFade;
 }
 
 dsp::Atom readKernel(dsp::Atom k) noexcept {
@@ -121,6 +121,7 @@ dsp::Atom readKernel(dsp::Atom k) noexcept {
     case dsp::Atom::Z1: return dsp::Atom::Z1Read;
     case dsp::Atom::DelayLinear: return dsp::Atom::DelayReadLinear;
     case dsp::Atom::DelayCubic: return dsp::Atom::DelayReadCubic;
+    case dsp::Atom::DelayFade: return dsp::Atom::DelayReadFade;
     default: return dsp::Atom::DelayReadAllpass;
   }
 }
@@ -983,8 +984,9 @@ private:
 
   // Frames per loop iteration: 1 with any split z1 or a solve; else the smallest guaranteed tap age of the split
   // delay lines, evaluated exactly as the read kernel does in float32 (pq/dsp kernels_memory.cpp delayTap:
-  // d = min(max(time, minimum), max frames); linear newest tap = ⌊d⌋, cubic ⌊d⌋ − 1, allpass ⌊d⌋ − 1 when the
-  // fraction is below 0.5, else ⌊d⌋).
+  // d = min(max(time, minimum), max frames); linear newest tap = ⌊d⌋, cubic ⌊d⌋ − 1 from 2 samples and ⌊d⌋ = 1
+  // below (its linear read), allpass ⌊d⌋ − 1 when the fraction is below 0.5, else ⌊d⌋). delay_fade reads as cubic,
+  // with every head between values its time took (a glide) or at one (a fade's old head): the same bound.
   uint32_t subBlockOf(uint32_t c) const {
     uint32_t sub = kMaxSubBlock;
     for (NodeIndex m : members(c)) {
@@ -996,13 +998,14 @@ private:
       const WireIndex tw = adj_.driver[P().flatInput(m, 1)];
       float lb = -std::numeric_limits<float>::infinity();
       if (tw != kNone) lb = lowerBound(P().wire(tw).from.node, 0);
-      const float minD = k == dsp::Atom::DelayLinear ? 1.0f : k == dsp::Atom::DelayCubic ? 2.0f : 1.5f;
+      const bool cubic = k == dsp::Atom::DelayCubic || k == dsp::Atom::DelayFade;
+      const float minD = k == dsp::Atom::DelayAllpass ? 1.5f : 1.0f;
       float d = std::isfinite(lb) ? std::max(lb, minD) : minD;
       d = std::min(d, static_cast<float>(maxDelayFramesOf(m)));
       const float fl = std::floor(d);
       const float age = k == dsp::Atom::DelayLinear ? fl
-                        : k == dsp::Atom::DelayCubic ? fl - 1.0f
-                                                     : (d - fl < 0.5f ? fl - 1.0f : fl);
+                        : cubic                     ? (fl >= 2.0f ? fl - 1.0f : fl)
+                                                    : (d - fl < 0.5f ? fl - 1.0f : fl);
       const uint32_t a = !(age >= 1.0f) ? 1u : age > static_cast<float>(kMaxSubBlock) ? kMaxSubBlock
                                                                                       : static_cast<uint32_t>(age);
       sub = std::min(sub, a);
@@ -1655,7 +1658,7 @@ private:
         init.sampleRate = opt_.sampleRate * factor_[n];  // TMM.6: an oversample region's rate
         init.lanes = lanes;
         if (m.kernel == dsp::Atom::DelayLinear || m.kernel == dsp::Atom::DelayCubic ||
-            m.kernel == dsp::Atom::DelayAllpass) {
+            m.kernel == dsp::Atom::DelayAllpass || m.kernel == dsp::Atom::DelayFade) {
           init.maxDelayFrames = maxDelayFramesOf(n);
           // A delay ring is at most dsp::kMaxDelayRingBytes (M1 review H3: a larger `max` overflowed the state
           // size and the kernel wrote out of bounds). Rejected here, never clamped silently.

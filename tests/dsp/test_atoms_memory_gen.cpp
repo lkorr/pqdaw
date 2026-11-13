@@ -43,7 +43,7 @@ RefFn delayRef(int kind, double maxDelay) {
     std::vector<double> h;
     auto at = [&](int64_t n) { return n >= 0 ? h[static_cast<size_t>(n)] : 0.0; };
     double y1 = 0;
-    const double dMin = kind == 0 ? 1.0 : kind == 1 ? 2.0 : 1.5;
+    const double dMin = kind == 2 ? 1.5 : 1.0;  // DT.2: cubic ≥ 1 (linear below 2)
     for (size_t t = 0; t < in[0].size(); ++t) {
       h.push_back(in[0][t]);
       const int64_t n = static_cast<int64_t>(t);
@@ -54,7 +54,8 @@ RefFn delayRef(int kind, double maxDelay) {
       if (kind == 0) {
         out[0][t] = at(n - i) + f * (at(n - i - 1) - at(n - i));
       } else if (kind == 1) {
-        out[0][t] = hermiteRef(at(n - i + 1), at(n - i), at(n - i - 1), at(n - i - 2), f);
+        out[0][t] = d < 2.0 ? at(n - 1) + f * (at(n - 2) - at(n - 1))
+                            : hermiteRef(at(n - i + 1), at(n - i), at(n - i - 1), at(n - i - 2), f);
       } else {
         if (f < 0.5) {
           f += 1.0;

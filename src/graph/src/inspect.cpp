@@ -68,6 +68,7 @@ float opCostWeight(const Schedule& s, uint32_t op) noexcept {
     case Atom::Svf: return 8.0f;              // EQ.1: one section at param rate (≈ 2 ns/sample); more stages cost more
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
     case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: case Atom::SineHz:
+    case Atom::DelayFade: case Atom::DelayReadFade:
     case Atom::Wavetable: case Atom::SampleReadLinear: case Atom::SampleReadCubic: case Atom::SamplePosLinear:
     case Atom::SamplePosCubic: return 10.0f;
     default: return 1.0f;

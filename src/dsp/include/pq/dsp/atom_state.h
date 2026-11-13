@@ -188,6 +188,17 @@ struct alignas(32) DelayState {
   uint32_t lanes;     // 1 or 8: the ring layout this state was initialised for
   float maxDelay;     // largest accepted delay in samples (inputs are clamped)
   float pad_[3];
+  // delay_fade's read heads (DT.2, kernels_memory.cpp DelayFade), per lane, in samples / frames; unused by the other
+  // delay lines. The main head is fdEnd − fdInc·fdRem (gliding to fdEnd while fdRem > 0); while fdFadeRem > 0 a
+  // second head at fdOld fades out (equal power over fdFadeLen frames). fdStarted is 0 until the lane's first frame.
+  float fdTarget[8];   // the last time read (clamped)
+  float fdEnd[8];      // where the main head glides to (= fdTarget at rest)
+  float fdInc[8];      // glide step per frame
+  float fdRem[8];      // glide frames left
+  float fdOld[8];      // the fading head's delay
+  float fdFadeRem[8];  // fade frames left (0: one head)
+  float fdFadeLen[8];  // the running fade's length
+  float fdStarted[8];
   float apY1[8];      // allpass interpolator: previous output per lane
   // 8-lane rings only (voice delay lines, T1.8-fix1): per lane, the ring frame (in writePos's wrapping count) from
   // which the lane's history is valid. A tap older than it reads 0, as if the lane's ring had been zeroed when
@@ -275,7 +286,7 @@ static_assert(sizeof(TimerState) == 64);
 static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
-static_assert(sizeof(DelayState) == 96);
+static_assert(sizeof(DelayState) == 352);
 static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);

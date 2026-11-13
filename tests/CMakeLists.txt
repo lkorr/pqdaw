@@ -401,6 +401,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_atoms_math_logic.cpp
     dsp/test_warp_kernels.cpp  # T6.3: the warp kernels (Hann OLA, anchored ramps, best lag, jitter)
     dsp/test_atoms_memory_gen.cpp
+    dsp/test_delay_fade.cpp  # DT.2: delay_cubic from 1 sample; delay_fade glides within an octave, crossfades beyond
     dsp/test_phasor_drift.cpp
     dsp/test_tables.cpp
     dsp/test_dsp_rt.cpp

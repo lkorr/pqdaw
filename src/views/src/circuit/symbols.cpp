@@ -59,6 +59,7 @@ Classified classifyAtom(std::string_view name, uint32_t requiredInputs) {
       {"z1", Symbol::Delay, Glyph::UnitDelay, {}},    {"delay", Symbol::Delay, Glyph::DelayLine, {}},
       {"delay_allpass", Symbol::Delay, Glyph::DelayLine, "allpass"},
       {"delay_cubic", Symbol::Delay, Glyph::DelayLine, "cubic"},
+      {"delay_fade", Symbol::Delay, Glyph::DelayLine, "fade"},
       {"phasor", Symbol::Oscillator, Glyph::Saw, {}}, {"sine", Symbol::Oscillator, Glyph::Sine, {}},
       {"sine_hz", Symbol::Oscillator, Glyph::Sine, {}},
       {"wavetable", Symbol::Oscillator, Glyph::Table, {}},

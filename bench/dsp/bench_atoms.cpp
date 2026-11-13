@@ -83,6 +83,10 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
       return i == 1 ? 10.0f + 40.0f * r : r;
     case Atom::DelayReadLinear: case Atom::DelayReadCubic: case Atom::DelayReadAllpass:
       return 10.0f + 40.0f * r;
+    // DT.2: delay_fade (x, delay, fade) / its read (delay, fade); fade 64 frames. A Blk delay jumping per sample is the
+    // worst case (a fade every frame, both heads read); " (spl delay)" is the common case, at rest.
+    case Atom::DelayFade: return i == 1 ? 10.0f + 40.0f * r : i == 2 ? 64.0f : r;
+    case Atom::DelayReadFade: return i == 0 ? 10.0f + 40.0f * r : 64.0f;
     case Atom::Phasor: case Atom::SineHz:
       return 100.0f + 1000.0f * r;
     case Atom::Wavetable:
@@ -226,6 +230,8 @@ int main(int argc, char** argv) {
   add(Atom::SineHz, 0b10, " (blk hz, spl reset)");
   add(Atom::SineHz, 0b11, " (spl hz, spl reset)");
   add(Atom::DelayLinear, 0b10, " (spl delay)");
+  add(Atom::DelayCubic, 0b10, " (spl delay)");
+  add(Atom::DelayFade, 0b10, " (spl delay, at rest)");
   add(Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)");
   runner.add("atom/wavetable (steady 1 kHz)", [&fx, &rows](pq::bench::Context& c) {
     gWavetableInc = 1000.0f / 48000.0f;

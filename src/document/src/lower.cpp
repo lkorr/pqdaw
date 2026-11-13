@@ -1333,7 +1333,7 @@ bool splitsLoops(graph::AtomId atom) noexcept {
   const graph::KernelMapping& m = graph::kernelMapping(atom);
   if (m.lowering != graph::Lowering::Kernel) return false;
   return m.kernel == dsp::Atom::Z1 || m.kernel == dsp::Atom::DelayLinear || m.kernel == dsp::Atom::DelayCubic ||
-         m.kernel == dsp::Atom::DelayAllpass;
+         m.kernel == dsp::Atom::DelayAllpass || m.kernel == dsp::Atom::DelayFade;
 }
 
 // For a patch: which inputs of its signature (its `in`s then its `param`s, subcircuitSignature order) each of its

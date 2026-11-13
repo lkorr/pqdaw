@@ -120,7 +120,7 @@ TEST_CASE("kernel map: every dsp kernel except the split feedback kernels, block
   // TX.smooth: param_ramp is inserted by schedule() (pq/graph/schedule.h "Param ramps"), never written in a patch.
   const std::set<dsp::Atom> internal = {dsp::Atom::Const,           dsp::Atom::Z1Read,          dsp::Atom::Z1Write,
                                         dsp::Atom::DelayReadLinear, dsp::Atom::DelayReadCubic, dsp::Atom::DelayReadAllpass,
-                                        dsp::Atom::DelayWrite,      dsp::Atom::ParamRamp};
+                                        dsp::Atom::DelayWrite,      dsp::Atom::ParamRamp,       dsp::Atom::DelayReadFade};
   for (uint32_t k = 0; k < dsp::kAtomCount; ++k) {
     const auto a = static_cast<dsp::Atom>(k);
     CAPTURE(dsp::kernelInfo(a).name);
