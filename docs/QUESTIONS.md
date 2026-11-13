@@ -1330,3 +1330,26 @@ Choice: (a), (c), (f), (g) — each one function in src/document/src/midi_file.c
 `noteOn`). Format 2 keeps per-track state. MF.3 decides (i) or (j); the reader honours either (RPN 0 on a member sets
 its zone's range).
 Status: open.
+
+## Q?-DY.4-a · the Compressor's Expand law and its 3-way Mode
+Context: the plan says "Expand: mirror below threshold (downward), capped at 70 dB" and lists Mode chips Peak / RMS /
+Expand. A point mirror of the compress curve (slope 1/R below T) would raise quiet signals (upward), not expand.
+Options: Expand GR = (a) (R − 1)·body(T − x) (downward, slope R below T), (b) (1 − 1/R)·body
+(a gentle expander, slope R/(R − 1)); detection in Expand (c) peak, (d) a separate Peak / RMS switch.
+Choice: (a) and (c): one Mode switch as the plan's chips, the same soft knee mirrored about T, min(·, 70 dB); at the
+default 4:1 a signal 10 dB under T drops 30 dB more. Reversible: the Gain Computer group's `slope` mux and the `level`
+choice in compressorBlocks (modules.cpp).
+Status: open.
+
+## Q?-DY.4-b · Sidechain EQ "on" as a value block, Listen's signal, the GR jack, defaults
+Context: the plan's sidechain EQ is "an EQ Band child group off by default" with an "EQ on" control on the panel, but a
+panel binding cannot reach a group's active state (panel.h: Control / Setting / Data / Signal / Panel / Input); Listen
+"Out = SC signal" and the "GR block's output is a cable source" leave the exact taps open.
+Options: EQ on = (a) a stepped "EQ On" value block choosing In / the band through a literal mux (the band group stays
+active), (b) a new binding kind for a block's active state; Listen = (c) the detector's signal (In, or lerp(In, SC, Mix)),
+(d) the SC group's Out alone; GR = (e) reduction dB ≥ 0 on a modsource jack, (f) the linear gain.
+Choice: (a), (c), (e): (a) costs nothing off (the band is unread, not scheduled) and needs no new binding; (c) is what
+the detector hears, Mix included; (e) is what the meter shows, a cable source like any output (it can drive another
+device's control). Defaults: threshold −20 dB, 4:1, knee 6 dB, attack 2 ms, release 50 ms (it compresses when inserted; Live's
+default threshold 0 dB does nothing). Reversible: compressorBlocks only.
+Status: open.

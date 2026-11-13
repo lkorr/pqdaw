@@ -1469,3 +1469,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: the curve colour (theme `device.curve`, the display's existing curve token) and the dot (ink with a curve
   ring); whether the rules (every 6 dB) are too dense at 120 units; whether the reduction meter should be one bar for
   a linked (mono) reduction.
+
+## 2026-11-13 · DY.4 · the Compressor module (task/DY.4-compressor)
+- Try: add Compressor (node menu / browser Meta Modules, `module:compressor`) after an instrument or a drum loop. Its
+  defaults compress (−20 dB, 4:1, knee 6 dB, 2 ms / 50 ms): watch the reduction meter and the dot riding the curve.
+  Drag Threshold / Ratio / Knee (the curve follows), switch Mode Peak / RMS / Expand, Envelope Log / Lin, Auto,
+  Lookahead 0 / 1 / 10 ms (the track's latency changes; a click is a recompile). Sidechain: pick another track's
+  "Pre FX" / "Post FX" in the menu (On switches itself on; None switches it off), set Mix, try EQ (Low Cut, its
+  frequency), Listen to hear what the detector hears. Drag a cable from the GR jack (under the meter) onto a control.
+- Look at: golden `compressor-panel` (the curve at −20 dB 4:1 knee 6, the meter, the jack, seven knobs, Auto, the three
+  chip rows, the sidechain section on its darker backdrop with the source menu at None).
+- Judge: the layout (520 × 182) and the sidechain backdrop; Expand's law (Q?-DY.4-a: slope = ratio below the threshold,
+  capped at 70 dB); whether EQ On should be the band group's power switch instead (Q?-DY.4-b); the defaults (it
+  compresses when inserted, unlike Live's 0 dB threshold); the Auto release law (max of rel/4 and rel·4 − 3 dB).

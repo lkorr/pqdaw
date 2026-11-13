@@ -1614,18 +1614,19 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* 
 
 namespace {
 
-// Lookahead: 0 / 1 / 10 ms at the positions 0, ½, 1 (a chip per value), in seconds. Stepped (1 ms), so the block feeds
-// latency's const `time` as a literal (lower.h "Structural value blocks": constFeeds).
-dsp::Curve lookaheadCurve() {
-  dsp::Curve c = linear(0.0, 0.010, dsp::CurveUnit::Seconds);
-  c.segments = 2;
-  c.points[0] = {0.0, 0.0};
-  c.points[1] = {0.5, 0.1};
-  c.points[2] = {1.0, 1.0};
-  c.shapes[0] = c.shapes[1] = dsp::CurveSegment{};
-  c.step = 0.001;
-  c.preset = dsp::CurvePreset::Custom;
-  return c;
+// Three values a < b < c at the positions 0, ½, 1 (a chip each: tabs set index / 2), multiples of `step`: a stepped
+// curve, so a block on it feeds a const input as a literal (lower.h "Structural value blocks": constFeeds). The
+// Compressor's Lookahead is 0 / 1 / 10 ms in seconds (DY.6's Limiter: 1.5 / 3 / 6 ms).
+dsp::Curve threeChoiceCurve(double a, double b, double c, double step, dsp::CurveUnit unit) {
+  dsp::Curve k = linear(a, c, unit);
+  k.segments = 2;
+  k.points[0] = {0.0, 0.0};
+  k.points[1] = {0.5, (b - a) / (c - a)};
+  k.points[2] = {1.0, 1.0};
+  k.shapes[0] = k.shapes[1] = dsp::CurveSegment{};
+  k.step = step;
+  k.preset = dsp::CurvePreset::Custom;
+  return k;
 }
 
 // A child group `name` of the Kit's current group (its members built by `body` while it is the Kit's group).
@@ -1668,7 +1669,7 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   const Sig dryWet = k.val("Dry/Wet", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
   const Sig mode = k.val("Mode", stepped(3), 0.0);          // Peak | RMS | Expand
   const Sig envelope = k.val("Envelope", stepped(2), 0.0);  // Log | Lin
-  const Sig lookahead = k.val("Lookahead", lookaheadCurve(), 0.0);
+  const Sig lookahead = k.val("Lookahead", threeChoiceCurve(0.0, 0.001, 0.010, 0.001, dsp::CurveUnit::Seconds), 0.0);
   const Sig scOn = k.val("Sidechain", stepped(2), 0.0);
   const Sig scMix = k.val("Mix", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
   const Sig listen = k.val("Listen", stepped(2), 0.0);
@@ -1768,7 +1769,7 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
                                styleNumber("max", 6.0), styleNumber("dot", 1.0)}));
   p.elements.push_back(styled(element(3, "meter", 144, 8, 16, 132, signalBinding(gr.dev, gr.port)),
                               {styleText("mode", "reduction"), styleNumber("range", 24.0)}));
-  p.elements.push_back(element(4, "modsource", 142, 146, 20, 28, signalBinding(gr.dev, gr.port)));
+  p.elements.push_back(styled(element(4, "modsource", 142, 146, 20, 28, signalBinding(gr.dev, gr.port)), {styleText("label", "GR")}));
   constexpr float kCol = 54.0f, kX0 = 168.0f;
   p.elements.push_back(control(5, "knob", kX0, 8, 52, 58, threshold));
   p.elements.push_back(control(6, "knob", kX0 + kCol, 8, 52, 58, ratio));
@@ -1802,6 +1803,7 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   p.elements.push_back(button(control(21, "toggle", kScX + 72, 6, 40, 18, scOn), "On"));
   PanelElement source = element(22, "cablesource", kScX, 28, 116, 30, inputBinding(sc));
   source.bindings.push_back(controlBinding(scOn.dev, std::string(kValueParam)));
+  source.setField(styleText("label", "Source"));
   p.elements.push_back(std::move(source));
   p.elements.push_back(control(23, "knob", kScX + 4, 62, 52, 58, scGain));
   p.elements.push_back(control(24, "knob", kScX + 60, 62, 52, 58, scMix));

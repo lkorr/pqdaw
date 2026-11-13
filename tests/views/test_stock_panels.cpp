@@ -46,8 +46,9 @@ void checkImage(const std::string& name, const Image& img) {
   MESSAGE(name << ": " << pq::ui::test::describe(d));
 }
 
-// The preset `k` pasted onto a MIDI track (as the node menu pastes it), its panel in a plain tree at 2x.
-Image presetPanelImage(doc::ModuleKind k) {
+// The preset `k` pasted onto a MIDI track (as the node menu pastes it), its panel in a plain tree at 2x. `onAudioPath`
+// (DY.4): added to an audio track's path instead (module:<key>), where an effect plays.
+Image presetPanelImage(doc::ModuleKind k, bool onAudioPath = false) {
   FakeTransport port;
   ViewContext ctx{port};
   ctx.setDeviceLibrary(&devLib());
@@ -57,8 +58,19 @@ Image presetPanelImage(doc::ModuleKind k) {
     REQUIRE(st.dispatch(e->command).ok());
     return *e;
   };
-  const doc::TrackId t = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "Keys")).tracks.at(0);
-  const doc::DeviceId g = run(doc::ops::pasteBlocks(*st.current(), st.ids(), t, doc::moduleBlocks(k))).devices.at(0);
+  const doc::TrackId t = run(doc::ops::createTrack(*st.current(), st.ids(), onAudioPath ? doc::TrackKind::Audio : doc::TrackKind::Midi,
+                                                   {}, "Keys")).tracks.at(0);
+  doc::DeviceId g;
+  if (onAudioPath) {
+    const doc::ModuleInfo* m = nullptr;
+    for (const doc::ModuleInfo& i : doc::moduleInfos())
+      if (i.kind == k) m = &i;
+    REQUIRE(m != nullptr);
+    g = run(doc::ops::addDevice(*st.current(), st.ids(), t, std::string(doc::kModuleItemPrefix) + std::string(m->key),
+                                doc::DeviceKind::AudioEffect)).devices.at(0);
+  } else {
+    g = run(doc::ops::pasteBlocks(*st.current(), st.ids(), t, doc::moduleBlocks(k))).devices.at(0);
+  }
   const doc::Device* gd = doc::findDevice(*ctx.doc(), g).device;
   REQUIRE(gd != nullptr);
   const doc::Panel* p = gd->panel.get();
@@ -87,6 +99,13 @@ TEST_CASE("render: stock-utility-panel, stock-saturator-panel, stock-lfo-panel, 
   checkImage("stock-saturator-panel", presetPanelImage(doc::ModuleKind::Saturator));
   checkImage("stock-lfo-panel", presetPanelImage(doc::ModuleKind::Lfo));
   checkImage("stock-operator-panel", presetPanelImage(doc::ModuleKind::Operator));
+}
+
+// DY.4: the Compressor's panel on an audio track: the Gain Computer's curve (threshold −20 dB, 4:1, knee 6 dB) on the
+// transfer display, the reduction meter, the GR jack, the knobs, the Mode / Envelope / Lookahead chips and the sidechain
+// section (the cablesource at None).
+TEST_CASE("render: compressor-panel (DY.4, 2x)") {
+  checkImage("compressor-panel", presetPanelImage(doc::ModuleKind::Compressor, true));
 }
 
 // EQ.3: PanelTarget::run — a structural edit an element asks for (the EQ's band ops) goes through the host's history as
