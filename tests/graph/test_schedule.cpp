@@ -349,7 +349,7 @@ state global (64 B):
 TEST_CASE("schedule: feedback SCCs become loops with split kernels; delay loops run in sub-blocks") {
   // The echo loop's only cut is a delay of at least 1 ms (the param's range minimum) = 48 samples: sub-blocks of 48.
   // The one-pole loop has a z1: per sample. The control region computes time · sr once per block.
-  CHECK(dumpOf(kFeedback) == R"(schedule 'Fb': 1 stages, 3 regions, 8 ops; buffers: 3 block, 1 pattern; state: 524416 B global, 0 B per voice group
+  CHECK(dumpOf(kFeedback) == R"(schedule 'Fb': 1 stages, 3 regions, 8 ops; buffers: 3 block, 1 pattern; state: 524800 B global, 0 B per voice group
 params:
   p0 'fb' real = 0.5 [0..0.99]
   p1 'time' real = 0.25 [0.001..2]
@@ -370,9 +370,9 @@ stage 0 global
     #7 z1:write/1 (b3) [s1]  'lp'
 outputs:
   out 'y' ch0 <- b2 (global)
-state global (524416 B):
-  s0 @0 +524384 delay/1 frames 96000 'echo' ch0
-  s1 @524384 +32 z1/1 'lp' ch0
+state global (524800 B):
+  s0 @0 +524768 delay/1 frames 96000 'echo' ch0
+  s1 @524768 +32 z1/1 'lp' ch0
 )");
   // Without trusting param ranges the echo loop runs per sample.
   ScheduleOptions so;
@@ -382,7 +382,7 @@ state global (524416 B):
   compile(c, kFeedback, so);
   CHECK(ok(c).regions[1].subBlock == 1);
   // Delay interpolators: cubic ⌊D⌋ − 1, allpass ⌊D − 0.5⌋.
-  CHECK(dumpOf(kCombs) == R"(schedule 'C': 1 stages, 2 regions, 6 ops; buffers: 3 block, 0 pattern; state: 1344 B global, 0 B per voice group
+  CHECK(dumpOf(kCombs) == R"(schedule 'C': 1 stages, 2 regions, 6 ops; buffers: 3 block, 0 pattern; state: 2112 B global, 0 B per voice group
 externals:
   e0 in#0 'x' ch0 audio global
 buffers: b0=blk1 b1=blk1 b2=blk1
@@ -397,9 +397,9 @@ stage 0 global
     #5 delay:write/1 (b2) [s1]  'b'
 outputs:
   out 'y' ch0 <- b1 (global)
-state global (1344 B):
-  s0 @0 +1120 delay_cubic/1 frames 200 'a' ch0
-  s1 @1120 +224 delay_allpass/1 frames 20 'b' ch0
+state global (2112 B):
+  s0 @0 +1504 delay_cubic/1 frames 200 'a' ch0
+  s1 @1504 +608 delay_allpass/1 frames 20 'b' ch0
 )");
 }
 
