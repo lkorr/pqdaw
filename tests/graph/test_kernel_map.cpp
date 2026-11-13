@@ -91,9 +91,9 @@ TEST_CASE("kernel map: every registry atom is lowered to a matching kernel or ex
     CHECK(dsp::findKernel(m.kernel, 8, info.splRequired) != nullptr);
   }
   CHECK(kernels + elsewhere == reg.size());
-  // Every kernel but the 6 split feedback kernels, the block fill and param_ramp; T6.2: plus `latency`, an alias atom
-  // of the delay line's kernel.
-  CHECK(kernels == dsp::kAtomCount - 8 + 1);
+  // Every kernel but the 7 split feedback kernels (DT.2: delay_fade:read), the block fill and param_ramp; T6.2: plus
+  // `latency`, an alias atom of the delay line's kernel.
+  CHECK(kernels == dsp::kAtomCount - 9 + 1);
 }
 
 TEST_CASE("kernel map: the atoms without a kernel are exactly the structural, engine and const ones") {

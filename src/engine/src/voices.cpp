@@ -55,7 +55,7 @@ constexpr uint32_t kDlApY1 = offsetof(dsp::DelayState, apY1) / 4;
 constexpr uint32_t kDlStart = offsetof(dsp::DelayState, start) / 4;
 constexpr uint32_t kDlRing = sizeof(dsp::DelayState) / 4;
 // [kDlLane, kDlStart): per-lane [8] float arrays (delay_fade's heads, apY1), reset and moved per lane.
-static_assert(kDlLane + 64 == kDlApY1 && kDlApY1 + 8 == kDlStart && kDlStart + 8 == kDlRing);
+static_assert(kDlLane + 96 == kDlApY1 && kDlApY1 + 8 == kDlStart && kDlStart + 8 == kDlRing);
 
 }  // namespace
 

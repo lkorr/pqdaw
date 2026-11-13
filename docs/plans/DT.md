@@ -73,3 +73,35 @@ gravity and with the magnet off through real window events (memory: UI tests via
 - Tests through real events: drag on the face body moves the block; edge-drag stretches and undo restores; at a wide
   stretch 1/7 is labelled and gravity snaps to it, at default width it is hidden and does not pull; goldens default +
   stretched.
+
+## DT.4 Delay tap: repitch by default, the beat in the readout, samples, the micro bar (user 2026-11-12) 👁
+User (bug_reports/2026-11-12_22-06-15): "26 ms | 1/7" on a marking; the time doesn't repitch with snap on — it should
+repitch by default, with a mode for today's no-pitch behaviour; samples when very small, and a second, microscopic bar
+below to set the delay in samples.
+- **Why snap didn't repitch** (DT.2's rule, kernels_memory.cpp `DelayFade`): a change glides only while it is within
+  −fade … +fade/2 (−30 … +15 ms) of where the head is; anything larger crossfades two heads (no pitch). A snap is a
+  jump between markings (tens to hundreds of ms), so it always crossfaded; a free drag at long times also steps more
+  than 15 ms per pointer event (1 px ≈ 17 ms near 500 ms) and crossfaded too, gliding only at short times / slow drags.
+- **Repitch** (`delay_fade`'s new param-rate input `crossfade`: < 0.5 Repitch, the Delay Tap's default; ≥ 0.5 DT.2's
+  Crossfade, bit for bit): every change glides the read head from where it is, carrying its velocity (clamped to the
+  Hermite's monotone range [0, 3Δ]: no overshoot, no turning back), along a cubic Hermite arriving at the new time at
+  rest — the read rate is continuous (no pitch step, no click). Its length N = |Δ|·2 frames for a longer delay (the rate
+  dips to 1/4 at most: two octaves down) and |Δ|/2 for a shorter one (up to 4×: two octaves up), at least the fade
+  (30 ms: small moves never zip) and at most 100/3 fades (1 s: a huge jump does not take forever; it bends further).
+  1/16 → 1/4 at 120 BPM (125 → 500 ms) glides in 0.75 s, 1/4 → 1/16 in 0.19 s. An audio-rate time's step
+  within the octave bound is followed sample by sample (as in Crossfade), a larger one glides. Per lane, runtime (no
+  recompile; the Delay Tap's **Glide** value block, role 4). The frame loop skips the Hermite work when no lane repitches.
+- **Readout**: on a marking (any candidate, shown or not; snapped, typed or automated there) "26 ms | 1/7"; below 10 ms
+  "3.00 ms | 144 smp" at the engine's rate (`PanelTarget::sampleRate`; the line's floor of 1 sample shown as such). The
+  text shrinks to fit left of the buttons; it is also the hover info's body.
+- **Micro bar**: a magnifier toggle opens a second bar below (style field `micro`; the element, a whole-panel plate and
+  the panel grow 24 units: one Edit Panel step; the block re-lays out): 1 … 256 samples linear, a relative drag snapping
+  to whole samples (Shift: fine), a number box taking a typed count (click, digits, Enter; Esc cancels). One undo step
+  per gesture; the time is N / rate to within an ulp or two (Time is stored as the knob's position, Q242 item 1).
+- **Glide toggle**: a 14-unit button left of the ms / ♪ switch whose glyph shows the mode (a bend / a cross).
+- Tests: tests/dsp/test_delay_fade.cpp (the 4× jump: continuous, monotone, a 2-octave bend, the right lengths;
+  click-free against the float read position's floor; a drag carries the velocity; mode switches mid-glide; per-lane
+  modes; DT.2's cases pinned to Crossfade, the split read and "at rest" in both modes); tests/app/test_delay_tap.cpp
+  (Repitch sync step: click energy, no recompile, JIT == interpreter bit for bit; Glide switch without a recompile);
+  tests/views/test_delay_tap_face.cpp (readout through the hover info, micro bar drag / type / undo, Glide toggle, real
+  dispatch); goldens module-delay-tap-panel / -sync / -stretched re-recorded, -micro and -crossfade new.

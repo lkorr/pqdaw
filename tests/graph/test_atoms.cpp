@@ -34,7 +34,7 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "cents_to_hz", "hz_to_cents", "db_to_gain", "gain_to_db", "select", "lerp", "gate_to_real",
       "fast_cents_to_hz", "fast_hz_to_cents", "fast_db_to_gain", "fast_gain_to_db", "muladd",
       "shaper",
-      "z1", "delay", "delay_allpass", "delay_cubic", "samplehold", "latch",
+      "z1", "delay", "delay_allpass", "delay_cubic", "delay_fade", "samplehold", "latch",
       "lt", "le", "gt", "ge", "eq", "ne", "and", "or", "xor", "nand", "nor", "not",
       "schmitt", "rise", "fall", "change", "srff", "dff", "tff", "counter", "clockdiv", "mux", "demux",
       "pulse", "timer",

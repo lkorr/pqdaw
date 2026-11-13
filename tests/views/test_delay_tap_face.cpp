@@ -83,7 +83,7 @@ doc::DelayTapRoles buildDelayTap(doc::DocumentStore& st, const doc::DelayTapOpti
     FAIL("not in the set");
     return doc::DeviceId{};
   };
-  return doc::DelayTapRoles{id(l.group), id(l.time), id(l.sync), id(l.mode), id(l.delay)};
+  return doc::DelayTapRoles{id(l.group), id(l.time), id(l.sync), id(l.mode), id(l.delay), id(l.glide)};
 }
 
 // The panel's layout (tempo_slider.cpp, a 168 × 64 element at the panel's origin): the groove 10 … 158 at y 26, the
@@ -158,12 +158,23 @@ struct DelayUi {
 
 double placeOf(double seconds) { return dsp::curvePosition(doc::delayTimeCurve(), seconds, 0.5); }
 
-// `width` > 0: the face stretched to it first (GroupPanelFace::stretchTo, the edge drag's edit).
-Image panelImage(const doc::DelayTapOptions& o, float width = 0.0f) {
+// `width` > 0: the face stretched to it first (GroupPanelFace::stretchTo, the edge drag's edit). `micro`: the micro bar
+// open (DT.4: the magnifier's edit — the slider's "micro" field, it, the plate and the panel 24 taller).
+Image panelImage(const doc::DelayTapOptions& o, float width = 0.0f, bool micro = false) {
   FakeTransport port;
   ViewContext ctx{port};
   ctx.setDeviceLibrary(&devLib());
   const doc::DelayTapRoles r = buildDelayTap(ctx.store(), o);
+  if (micro) {
+    auto p = std::make_shared<doc::Panel>(*doc::findDevice(*ctx.doc(), r.group).device->panel);
+    p->elements.at(1).setField(doc::styleNumber("micro", 1.0));
+    p->elements.at(1).h += 24.0f;
+    p->elements.at(0).h += 24.0f;
+    p->height += 24.0f;
+    auto e = doc::ops::setGroupPanel(*ctx.doc(), r.group, std::move(p));
+    REQUIRE(e.ok());
+    REQUIRE(ctx.store().dispatch(e->command).ok());
+  }
   if (width > 0.0f) {
     panel::GroupPanelFace f(panel::docPanelSource(ctx, r.group), panel::makeDocPanelTarget(ctx, r.group, {}));
     f.setOwner(r.group);
@@ -461,4 +472,147 @@ TEST_CASE("render: module-delay-tap-stretched (DT.3: the face stretched to 640, 
   doc::DelayTapOptions o;
   o.time = placeOf(2.0 / 7.0);  // on 1/7
   checkImage("module-delay-tap-stretched", panelImage(o, 640.0f));
+}
+
+// ---- DT.4 -----------------------------------------------------------------------------------------------------------
+
+namespace {
+
+// The DT.4 controls (a 168-wide element): the Glide toggle 92 … 106 and the magnifier 74 … 88 at y 34 … 46; with the
+// micro bar open (the element 88 high) its groove 10 … 110 at y 66, its number box 116 … 158 at y 62 … 74.
+constexpr Vec2 kGlide{99.0f, 40.0f}, kMicro{81.0f, 40.0f}, kBox{137.0f, 68.0f};
+constexpr float kMx0 = 10.0f, kMx1 = 110.0f, kMy = 66.0f;
+constexpr double kRate = 48000.0;  // the view context's sample rate without an engine
+// (The time is stored as the knob's position: seconds = curve(position) is N / rate to within an ulp or two — the exp
+// curve's positions do not reach every double — so a set of N samples is checked as N to 1e-9 samples.)
+
+// The hover info's body over the groove (the readout's text: TempoSlider::describe), hovering through the window.
+std::string hoverReadout(DelayUi& u) {
+  u.d.move(u.at({30.0f, kGy}));
+  u.d.step();
+  return std::string(u.view().canvas().info().body);
+}
+
+}  // namespace
+
+TEST_CASE("delay tap face: on a marking the readout names it (\"667 ms | 1/3\"), off one it does not (DT.4) — real dispatch") {
+  DelayUi u;
+  CHECK(hoverReadout(u).starts_with("500 ms | 1/4."));  // the default: 500 ms is 1/4 at 120 BPM
+  u.dragTime(7.0f);                                      // gravity: onto 1/3's marking
+  CHECK(hoverReadout(u).starts_with("667 ms | 1/3."));
+  u.dragTime(-1.0f, mod::kShift);                         // fine: off it (a tenth of a unit), no snap
+  const std::string off = hoverReadout(u);
+  CHECK(off.starts_with("66"));
+  CHECK(off.find(" | 1/") == std::string::npos);
+  // A marking that is not shown at this width still names the time when it is exactly on it (2/7 s = 1/7).
+  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.r.time, std::string(doc::kValueParam), placeOf(2.0 / 7.0)}).ok());
+  u.d.step();
+  CHECK(hoverReadout(u).starts_with("286 ms | 1/7."));
+}
+
+TEST_CASE("delay tap face: the micro bar — opens below (the face grows), a drag sets whole samples, a typed count, small "
+          "times read in samples; one undo step each (DT.4) — real dispatch") {
+  DelayUi u;
+  auto panelH = [&] { return u.dev(u.r.group).panel->height; };
+  auto sliderH = [&] { return u.dev(u.r.group).panel->elements.at(1).h; };
+  auto plateH = [&] { return u.dev(u.r.group).panel->elements.at(0).h; };
+  const float nodeH0 = u.node(u.r.group).h;
+  REQUIRE(panelH() == 64.0f);
+  const size_t h0 = u.history();
+  // Open: one Edit Panel step; the element, the plate and the panel 24 taller, the block too; nothing recompiles.
+  u.d.click(u.at(kMicro));
+  u.d.step();
+  CHECK(u.dev(u.r.group).panel->elements.at(1).number("micro", 0.0) == 1.0);
+  CHECK(panelH() == 88.0f);
+  CHECK(sliderH() == 88.0f);
+  CHECK(plateH() == 88.0f);
+  CHECK(u.node(u.r.group).h == doctest::Approx(nodeH0 + 24.0f));
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.structural == 0);
+  // 500 ms is past the bar's 256 samples: the knob waits at its end. A drag of −40 units (of 100 for 255 samples) from
+  // anywhere on it: 256 − 102 = 154 samples (154 / 48000 s); one undo step.
+  u.d.drag(u.at({60.0f, kMy}), u.at({20.0f, kMy}), 8);
+  u.d.step();
+  CHECK(std::fabs(u.seconds() * kRate - 154.0) < 1e-9);
+  CHECK(u.history() == h0 + 2);
+  CHECK(u.structural == 0);
+  CHECK(hoverReadout(u).starts_with("3.21 ms | 154 smp."));
+  // Fine (Shift): a tenth — −10 units is −2.55 → −3 samples.
+  u.d.drag(u.at({60.0f, kMy}), u.at({50.0f, kMy}), 4, mod::kShift);
+  u.d.step();
+  CHECK(std::fabs(u.seconds() * kRate - 151.0) < 1e-9);
+  // Type a count into the number box: click it, type, Enter — one undo step.
+  const size_t h1 = u.history();
+  u.d.click(u.at(kBox));
+  u.d.step();
+  REQUIRE(u.d.type("48"));
+  u.d.keyDown(key::kReturn);
+  u.d.keyUp(key::kReturn);
+  u.d.step();
+  CHECK(std::fabs(u.seconds() * kRate - 48.0) < 1e-9);
+  CHECK(u.history() == h1 + 1);
+  CHECK(hoverReadout(u).starts_with("1.00 ms | 48 smp."));
+  // Esc cancels a type-in.
+  u.d.click(u.at(kBox));
+  u.d.step();
+  REQUIRE(u.d.type("7"));
+  u.d.keyDown(key::kEscape);
+  u.d.keyUp(key::kEscape);
+  u.d.step();
+  CHECK(std::fabs(u.seconds() * kRate - 48.0) < 1e-9);
+  CHECK(u.history() == h1 + 1);
+  // The delay line's floor: a time of 0 reads as its 1 sample.
+  REQUIRE(u.ctx.store().dispatch(doc::SetDeviceParam{u.r.time, std::string(doc::kValueParam), 0.0}).ok());
+  u.d.step();
+  CHECK(hoverReadout(u).starts_with("0.02 ms | 1 smp."));
+  // Undo: the type-in, the two drags, the opening.
+  REQUIRE(u.ctx.undo());  // the SetParam
+  REQUIRE(u.ctx.undo());  // the typed 48
+  CHECK(std::fabs(u.seconds() * kRate - 151.0) < 1e-9);
+  REQUIRE(u.ctx.undo());
+  CHECK(std::fabs(u.seconds() * kRate - 154.0) < 1e-9);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.position(u.r.time) == doctest::Approx(0.5));
+  REQUIRE(u.ctx.undo());
+  CHECK(panelH() == 64.0f);
+  CHECK(sliderH() == 64.0f);
+  CHECK(u.node(u.r.group).h == doctest::Approx(nodeH0));
+  // Closing it again is the magnifier too.
+  u.d.click(u.at(kMicro));
+  u.d.step();
+  CHECK(panelH() == 88.0f);
+  u.d.click(u.at(kMicro));
+  u.d.step();
+  CHECK(panelH() == 64.0f);
+  CHECK(u.dev(u.r.group).panel->elements.at(1).number("micro", 0.0) == 0.0);
+}
+
+TEST_CASE("delay tap face: the Glide toggle flips Repitch / Crossfade (one undo step, no recompile) (DT.4) — real dispatch") {
+  DelayUi u;
+  CHECK(u.position(u.r.glide) == 0.0);  // Repitch by default
+  const size_t h0 = u.history();
+  u.d.click(u.at(kGlide));
+  u.d.step();
+  CHECK(u.position(u.r.glide) == 1.0);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.structural == 0);
+  u.d.click(u.at(kGlide));
+  u.d.step();
+  CHECK(u.position(u.r.glide) == 0.0);
+  CHECK(u.history() == h0 + 2);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.position(u.r.glide) == 1.0);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.position(u.r.glide) == 0.0);
+}
+
+TEST_CASE("render: module-delay-tap-micro and module-delay-tap-crossfade (DT.4: the micro bar open at 48 samples; Crossfade, "
+          "2x)") {
+  doc::DelayTapOptions micro;
+  micro.time = placeOf(48.0 / kRate);
+  checkImage("module-delay-tap-micro", panelImage(micro, 0.0f, true));
+  doc::DelayTapOptions xf;
+  xf.glide = 1;
+  xf.time = placeOf(0.31);  // off every marking
+  checkImage("module-delay-tap-crossfade", panelImage(xf));
 }

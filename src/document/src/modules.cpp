@@ -1524,7 +1524,7 @@ dsp::Curve delayTimeCurve() {
 
 DelayRole delayRole(const Device& d) noexcept {
   const double v = settingOf(d, kDelayRoleSetting);
-  return v >= 1.0 && v <= 3.0 && v == std::floor(v) ? static_cast<DelayRole>(static_cast<uint8_t>(v)) : DelayRole::None;
+  return v >= 1.0 && v <= 4.0 && v == std::floor(v) ? static_cast<DelayRole>(static_cast<uint8_t>(v)) : DelayRole::None;
 }
 
 BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* roles) {
@@ -1539,7 +1539,10 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* 
   addRole(k, time, kDelayRoleSetting, static_cast<double>(DelayRole::Time));
   addRole(k, sync, kDelayRoleSetting, static_cast<double>(DelayRole::Sync));
   addRole(k, mode, kDelayRoleSetting, static_cast<double>(DelayRole::Mode));
-  r.time = time.dev, r.sync = sync.dev, r.mode = mode.dev;
+  // DT.4: Repitch (0) / Crossfade (1), straight into delay_fade's `crossfade` (a param-rate input: no recompile).
+  const Sig glide{k.b.value("Glide", stepped(2.0), o.glide != 0 ? 1.0 : 0.0), y};
+  addRole(k, glide, kDelayRoleSetting, static_cast<double>(DelayRole::Glide));
+  r.time = time.dev, r.sync = sync.dev, r.mode = mode.dev, r.glide = glide.dev;
   // The note value's beats, ARITHMETIC (not a mux chain: a stepped block reaching a mux index would lower as a literal
   // choice — lower.h "Structural value blocks" — so a sync step or a mode switch would recompile the unit instead of
   // gliding): a nested group "Note Value" (its In the Sync index i, its Out the beats). The ascending list is periodic
@@ -1581,7 +1584,7 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* 
   const Sig synced = k.op("min", "≤ 5 s", {{"a", k.op("div", "· 60 / bpm", {{"a", k.op("mul", "beats · 60", {{"a", beats}, {"b", k.k(60.0)}})}, {"b", bpm}})},
                                            {"b", k.k(kDelayTapMaxSeconds)}});
   const Sig seconds = k.op("lerp", "ms / sync", {{"a", time}, {"b", synced}, {"t", mode}});
-  r.delay = k.block("delay_fade", "delay", {{"x", k.in()}, {"time", seconds}});
+  r.delay = k.block("delay_fade", "delay", {{"x", k.in()}, {"time", seconds}, {"crossfade", glide}});
   k.setting(r.delay, "max", kDelayTapMaxSeconds);
   k.setting(r.delay, "fade", kDelayTapFadeSeconds);
   k.out(Sig{r.delay, "out"});
@@ -1593,6 +1596,7 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* 
   PanelElement s = element(2, "temposlider", 0, 0, p.width, p.height, controlBinding(time.dev, std::string(kValueParam)));
   s.bindings.push_back(controlBinding(sync.dev, std::string(kValueParam)));
   s.bindings.push_back(controlBinding(mode.dev, std::string(kValueParam)));
+  s.bindings.push_back(controlBinding(glide.dev, std::string(kValueParam)));
   p.elements.push_back(std::move(s));
   if (roles != nullptr) *roles = r;
   return k.finish(groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Delay Tap") : o.name, o.active, std::move(p)));

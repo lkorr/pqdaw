@@ -231,6 +231,13 @@ struct Delay {
 // over G frames reads at rate 1 − Δ/G: −G ≤ Δ ≤ G/2); a larger step crossfades a second head (frozen at the old
 // time) out and the main head, at the new time, in (equal power, `fade` frames). A step that arrives during a fade
 // and cannot glide waits for the fade's end.
+// DT.4 Repitch (the `crossfade` input < 0.5, per lane): no step crossfades; every change glides the head from where it
+// is, with the velocity it has, to the new time along a cubic Hermite that arrives at rest (pitch continuous, a tape
+// bend), over N = |Δ|·2 frames for a longer time (the read rate dips to 1/4 at most: two octaves down) or |Δ|/2 for a
+// shorter one (4×: two octaves up), at least G and at most kMaxGlideFades fades (1 s at 30 ms: a longer jump bends
+// further). The carried velocity is clamped to [0, 3Δ] (the Hermite's monotone range): the head never passes the
+// time nor turns back first. A switch between the modes converts a running glide (crossfade → repitch: the linear glide
+// becomes a Hermite to the same end; repitch → crossfade: the head stops where it is, and the crossfade rule moves it).
 //
 // Cost: at rest (every lane's head at its time, no fade) one compare per lane and block, then the plain cubic delay
 // kernel (Delay<Cubic>) with the heads as a Spl time; an audio-rate time whose every per-sample step stays inside
@@ -254,7 +261,10 @@ inline typename S::F clampFadeDelay(typename S::F v, float maxDelay) noexcept { 
   return S::min(S::max(v, S::set(kMinDelay<Interp::Cubic>)), S::set(maxDelay));
 }
 
-// Inputs: atom (x, time, fade); read (time, fade). `fade` (frames) is Spl.
+// DT.4: a Repitch glide lasts at most this many fades (1 s at the Delay Tap's 30 ms).
+constexpr float kMaxGlideFades = 100.0f / 3.0f;
+
+// Inputs: atom (x, time, fade, crossfade); read (time, fade, crossfade). `fade` (frames) and `crossfade` are Spl.
 template <bool kWrite>
 struct DelayFade {
   static constexpr uint32_t kSpec = kWrite ? 2 : 1;
@@ -278,6 +288,28 @@ struct DelayFade {
     const F glideLen = kSplT ? fadeLen : one;
     F tgt = S::load(st.fdTarget), end = S::load(st.fdEnd), inc = S::load(st.fdInc), rem = S::load(st.fdRem);
     F old = S::load(st.fdOld), frem = S::load(st.fdFadeRem), flen = S::load(st.fdFadeLen);
+    F d2 = S::load(st.fdD2), d3 = S::load(st.fdD3), il = S::load(st.fdInvLen);
+    // DT.4: the Repitch lanes (crossfade < 0.5; NaN → Crossfade), and a mode change's conversion of a running glide.
+    const F rp = S::lt(S::load(a.in[kT + 2]), S::set(0.5f));
+    {
+      const F wasRp = S::ne(S::load(st.fdRepitch), zero);
+      const F gliding = S::gt(rem, zero);
+      const F toR = S::band(S::andnot(wasRp, rp), gliding), toX = S::band(S::andnot(rp, wasRp), gliding);
+      if (S::any(S::bor(toR, toX))) {
+        // → Repitch: the linear glide (velocity inc, Δ = inc·rem left) becomes the Hermite with m0 = Δ: d2 = −2Δ, d3 = Δ.
+        const F dl = S::mul(inc, rem);
+        d2 = S::select(toR, S::mul(dl, S::set(-2.0f)), d2);
+        d3 = S::select(toR, dl, d3);
+        il = S::select(toR, S::div(one, S::max(rem, one)), il);
+        // → Crossfade: the head stops where it is (the crossfade rule then moves it to the time).
+        const F u = S::mul(rem, il);
+        const F here = S::fma(S::mul(u, u), S::fma(u, d3, d2), end);
+        end = S::select(toX, here, end);
+        rem = S::select(toX, zero, rem);
+        inc = S::andnot(S::bor(toR, toX), inc);
+      }
+      S::store(st.fdRepitch, S::band(rp, one));
+    }
     // A lane's first frame: its head starts at its time.
     const F first = clampFadeDelay<S>(time.at(0), maxD);
     const F fresh = S::eq(S::load(st.fdStarted), zero);
@@ -289,6 +321,7 @@ struct DelayFade {
     auto storeHeads = [&]() noexcept {
       S::store(st.fdTarget, tgt), S::store(st.fdEnd, end), S::store(st.fdInc, inc), S::store(st.fdRem, rem);
       S::store(st.fdOld, old), S::store(st.fdFadeRem, frem), S::store(st.fdFadeLen, flen);
+      S::store(st.fdD2, d2), S::store(st.fdD3, d3), S::store(st.fdInvLen, il);
     };
     // At rest: every lane's head at its time and no fade.
     const F rest = S::band(S::band(S::eq(rem, zero), S::eq(frem, zero)), S::eq(end, tgt));
@@ -297,7 +330,7 @@ struct DelayFade {
         if (!S::any(S::ne(first, tgt))) {  // the time did not move: the plain read at the heads
           alignas(32) float heads[8];
           S::store(heads, end);
-          const float* ins[3] = {a.in[0], a.in[1], kWrite ? a.in[2] : nullptr};
+          const float* ins[4] = {a.in[0], a.in[1], a.in[2], kWrite ? a.in[3] : nullptr};
           ins[kT] = heads;
           KernelArgs b = a;
           b.in = ins;
@@ -335,7 +368,11 @@ struct DelayFade {
       else return delayTap<S, Interp::Cubic>(ring, pos, d, maxD, rix, unusedY1);
     };
     const F halfGlide = S::mul(glideLen, S::set(0.5f)), negGlide = S::neg(glideLen);
+    const F maxLen = S::floor(S::mul(fadeLen, S::set(kMaxGlideFades)));
     float* out = a.out[0];
+    // The lanes' modes (modes 0: all Crossfade — DT.2's work only, no Hermite; 1: all Repitch — no glide-or-fade test; 2:
+    // mixed, both and a select).
+    const int modes = !S::any(rp) ? 0 : !S::any(S::bnot(rp)) ? 1 : 2;  // (loop-invariant: the branches below predict)
     for (uint32_t f = 0; f < a.frames; ++f, ++w) {
       if constexpr (kWrite) {
         const In<S, splBit(SM, 0)> x(a.in[0]);
@@ -345,9 +382,27 @@ struct DelayFade {
       const F changed = S::ne(v, tgt);
       tgt = v;
       const F fadeIdle = S::eq(frem, zero);
-      // A new time, or one that waited for a fade to end.
-      const F want = S::band(S::ne(end, tgt), S::bor(changed, fadeIdle));
-      if (S::any(want)) {
+      const F moved = S::ne(end, tgt);
+      // Crossfade lanes: a new time, or one that waited for a fade to end.
+      const F want = modes == 1 ? zero : S::andnot(rp, S::band(moved, S::bor(changed, fadeIdle)));
+      // Repitch lanes: a new time glides from where the head is, with its velocity (u = rem / len: 1 → 0).
+      const F wantR = modes == 0 ? zero : S::band(rp, moved);
+      if (modes != 0 && S::any(wantR)) {
+        const F u = S::mul(rem, il);
+        const F cur = S::fma(S::mul(u, u), S::fma(u, d3, d2), end);
+        const F vel = S::mul(S::neg(S::mul(il, u)), S::fma(S::mul(u, S::set(3.0f)), d3, S::add(d2, d2)));  // per frame
+        const F delta = S::sub(tgt, cur);
+        const F up = S::gt(delta, zero);
+        const F n = S::floor(S::min(S::max(S::mul(S::abs(delta), S::select(up, S::set(2.0f), S::set(0.5f))), glideLen), maxLen));
+        const F lim = S::mul(delta, S::set(3.0f));
+        const F m0 = S::min(S::max(S::mul(vel, n), S::min(lim, zero)), S::max(lim, zero));
+        d2 = S::select(wantR, S::fma(delta, S::set(-3.0f), m0), d2);
+        d3 = S::select(wantR, S::fnma(one, m0, S::add(delta, delta)), d3);
+        il = S::select(wantR, S::div(one, n), il);
+        rem = S::select(wantR, n, rem);
+        end = S::select(wantR, tgt, end);
+      }
+      if (modes != 1 && S::any(want)) {
         const F cur = S::fnma(inc, rem, end);  // the head's last position
         const F delta = S::sub(tgt, cur);
         const F glide = S::band(want, S::band(S::le(delta, halfGlide), S::ge(delta, negGlide)));
@@ -361,7 +416,12 @@ struct DelayFade {
       }
       rem = S::max(S::sub(rem, one), zero);
       const auto pos = S::seti(static_cast<int32_t>(w));
-      F y = read(S::fnma(inc, rem, end), pos);
+      F head = S::fnma(inc, rem, end);
+      if (modes != 0) {
+        const F ur = S::mul(rem, il);
+        head = S::select(rp, S::fma(S::mul(ur, ur), S::fma(ur, d3, d2), end), head);
+      }
+      F y = read(head, pos);
       const F fading = S::gt(frem, zero);
       if (S::any(fading)) {
         frem = S::max(S::sub(frem, one), zero);

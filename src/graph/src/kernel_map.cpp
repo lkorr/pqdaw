@@ -23,7 +23,7 @@ constexpr ArgMap kTimer[] = {{U::Input, 0}, {U::InputSeconds, 1}};              
 constexpr ArgMap kZ1[] = {{U::Input, 0}, {U::InitZ1, 0}};                               // x, init
 constexpr ArgMap kDelay[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0}};  // x, time, max
 constexpr ArgMap kDelayFade[] = {{U::Input, 0}, {U::InputSeconds, 1}, {U::InitMaxDelaySeconds, 0},   // x, time, max,
-                                 {U::InputSeconds, 2}};                                               // fade (DT.2)
+                                 {U::InputSeconds, 2}, {U::Input, 3}};                                // fade (DT.2), crossfade (DT.4)
 constexpr ArgMap kLatency[] = {{U::Input, 0}, {U::Input, 1}};                          // x, frames (samples)
 constexpr ArgMap kWavetable[] = {{U::Input, 0}, {U::Resource, 0}};                      // phase, table
 constexpr ArgMap kShaper[] = {{U::Input, 0}, {U::Resource, 0}};                         // x, table

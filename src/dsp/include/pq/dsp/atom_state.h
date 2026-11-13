@@ -200,6 +200,13 @@ struct alignas(32) DelayState {
   float fdFadeRem[8];  // fade frames left (0: one head)
   float fdFadeLen[8];  // the running fade's length
   float fdStarted[8];
+  // DT.4 Repitch (the `crossfade` input < 0.5): the main head is fdEnd + u²·(fdD2 + u·fdD3), u = fdRem·fdInvLen (a
+  // cubic Hermite from where the head was, with its velocity, to fdEnd, arriving at rest); fdInc is 0. fdRepitch: the
+  // mode of the last block (1 = Repitch), to convert a running glide when the mode changes.
+  float fdD2[8];
+  float fdD3[8];
+  float fdInvLen[8];
+  float fdRepitch[8];
   float apY1[8];      // allpass interpolator: previous output per lane
   // 8-lane rings only (voice delay lines, T1.8-fix1): per lane, the ring frame (in writePos's wrapping count) from
   // which the lane's history is valid. A tap older than it reads 0, as if the lane's ring had been zeroed when
@@ -324,7 +331,7 @@ static_assert(sizeof(TimerState) == 64);
 static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
-static_assert(sizeof(DelayState) == 352);
+static_assert(sizeof(DelayState) == 480);
 static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);
