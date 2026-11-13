@@ -1150,3 +1150,21 @@ Envelope module now outputs its envelope (`in` default 1) where it gave silence.
 pq/document/lower.h "Groups"); (b) a Noise-only rule (a clock "seen" latch at run time); (c) no In → clock wire in the
 Noise module (the user wires the engine's clock inside). Choice: (a): it is what "unwired" means for every engine, and
 it matches the Envelope's own description ("unwired, the envelope itself").
+
+## Q?-DT.4-a · 2026-11-12 · DT.4 · Repitch's glide law, the samples threshold, the micro bar's range and toggle
+Context: docs/plans/DT.md "DT.4", kernels_memory.cpp `DelayFade`, tempo_slider.cpp. Choices (each the most reversible
+found; constants in one place each):
+1. **The glide**: a velocity-carrying cubic Hermite arriving at rest over N = |Δ|·2 (longer) / |Δ|/2 (shorter) frames,
+   clamped to [fade, fade·100/3] (30 ms … 1 s): the pitch bends at most two octaves either way unless the 1 s cap
+   applies (1/16 → 1/1 at 120 BPM, Δ = 1.875 s, bends further: the read rate briefly runs backwards, a tape-zip). Options:
+   one octave (|Δ|·3 / |Δ|·0.75: 1/16 → 1/4 takes 1.1 s), a slew of fixed speed, a one-pole (unbounded pitch at the start).
+2. **Samples below 10 ms** ("3.00 ms | 144 smp", 480 samples at 48 kHz). Option: only below the micro bar's 256.
+3. **The micro bar spans 1 … 256 samples, linear, and opens with a magnifier toggle** (a panel edit: the face grows 24
+   units, one undo step), not automatically at small times (an automatic resize would be a document edit mid-drag).
+   Option: 1 … 128, or log.
+4. **The readout names any candidate fraction the time equals**, shown or not (2/7 s reads "| 1/7" at the default width
+   where 1/7 has no tick). Option: only shown markings.
+5. **Float read position**: during a glide the head is a float (a 2⁻⁹-sample grid at 24000 samples): a white error below
+   −90 dB while it moves (exact at rest), as every delay atom with a moving time. Option: an integer + fraction head in
+   `delayTap` (a change to every delay kernel).
+Status: open.

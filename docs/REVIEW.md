@@ -1376,3 +1376,13 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: the panel's density (eight knobs, four chip rows) and the chip labels (Rate/Sync/Note, Uniform/Gauss,
   Play/Free/Note, Voice/Shared); whether Rate's and Density's tops should read "every sample" / "continuous" instead
   of 48.0 kHz / 100.0 kHz; QUESTIONS Q244 (the fold flattens blue / violet noise's low end).
+
+
+## 2026-11-12 · DT.4 · Delay Tap: repitch, the beat in the readout, samples, the micro bar 👁
+- Look at: goldens tests/views/golden/module-delay-tap-panel / -sync / -stretched (re-recorded: two new buttons left of
+  ms / ♪ — a magnifier and the Glide toggle; the readout "500 ms | 1/4"), -micro (the bar open at 48 samples), -crossfade.
+- Try: snap the knob from 1/16 to 1/4 with a sound playing: a tape-like bend down and back (0.75 s), no click; click the
+  bend glyph (→ ✕) for the old crossfade. Drag to a marking: the readout says "… ms | 1/x". Below 10 ms it reads samples.
+  The magnifier opens the 1 … 256-sample bar (the block grows); drag it, or click the number and type a count + Enter.
+- Judge: the glide law (two octaves at most, 30 ms … 1 s; Q?-DT.4-a) — too slow / too wild?; the readout shrinking to fit
+  ("3.00 ms | 144 smp" gets small at the default width); the micro bar's 1 … 256 range; the two glyphs.
