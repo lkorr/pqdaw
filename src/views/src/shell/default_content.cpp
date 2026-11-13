@@ -6,6 +6,7 @@
 //   T5.6  installAudioClipView(shell); → ShellSlot::ClipDetail (shown instead of the piano roll for audio clips)
 //   T3.14 installMosWheel(shell);      → shell.overlay() (popover), the tuning.openMosWheel action
 //   T3.18 installPreferences(shell);   → shell.overlay() (the preferences window), the app.preferences action
+//   EX.2  installExportAudio(shell);   → shell.overlay() (the Export Audio window), the file.exportAudio action
 //   T3.19 installTuningsPanel(shell);  → ShellSlot::Tunings (View > Tunings), the tuning.newMain action
 //   T4.2  circuit::installCircuitViewer(shell); → shell.overlay() (the circuit viewer), the view.openPatch action
 //   T4.1  installDeviceChain(shell);   → ShellSlot::DeviceDetail (the Device view), the device.* actions
@@ -20,6 +21,7 @@
 #include "pq/views/circuit/circuit_viewer.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
+#include "pq/views/export/export_window.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
@@ -39,6 +41,7 @@ void installDefaultContent(Shell& shell) {
   installAudioClipView(shell);
   installMosWheel(shell);
   installPreferences(shell);
+  installExportAudio(shell);  // EX.2
   installTuningsPanel(shell);
   circuit::installCircuitViewer(shell);
   installDeviceChain(shell);          // the selected track's chain

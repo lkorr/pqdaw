@@ -1406,3 +1406,15 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: the red (theme `code.error`) against the mint / blue cables; whether the message wording is readable enough
   (it is the compiler's: "(atom delay_fade, #0)" is an internal name); whether a cut chain link should say more (what
   follows it on the path is not heard).
+
+## 2026-11-13 · EX.2 · the Export Audio window (task/EX.2-export-dialog)
+- Try: Ctrl+Shift+R (or File > Export Audio…) on a project with clips. Export the master as Song, 24-bit; then All
+  Individual Tracks with Include Return and Master Effects; then select two tracks and a bar range in the arrangement
+  and export Selected Tracks over Time Selection. Press Cancel during a long export; close the window during one (the
+  status line reports the end); reopen it (the choices are remembered, the last result is shown).
+- Look at: the rows (same widgets and spacing as Preferences), the range readout ("Start 1. 1. 1 · Length 17. 0. 0 +
+  tail"), Dither greyed for 32-bit float, Include Return and Master Effects greyed for the master, the progress bar
+  and Cancel in place of Export, the done line ("Exported 7 files to …"). Golden `export-audio`.
+- Judge: whether the default folder (the project's folder, else the User Library) is right; whether closing the window
+  should cancel the export instead of letting it finish (Q?-EX.2-a); the window's height (some empty space above the
+  footer); the readout wording.

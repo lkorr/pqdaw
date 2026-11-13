@@ -157,6 +157,57 @@ constexpr const char* kWarpNames[] = {"off", "rePitch", "beats", "tones", "textu
 static_assert(std::size(kWarpNames) == static_cast<size_t>(doc::kLastAudioWarp) + 1);
 }  // namespace
 
+namespace {
+// EX.2: the Export Audio window's choices (views "export" object).
+constexpr const char* kExportTrackNames[] = {"master", "allTracks", "selected"};
+constexpr const char* kExportRangeNames[] = {"song", "loop", "timeSelection"};
+constexpr const char* kExportBitNames[] = {"pcm16", "pcm24", "float32"};
+constexpr const char* kExportDitherNames[] = {"none", "tpdf", "shaped"};
+constexpr const char* kExportFormatNames[] = {"wav"};
+
+template <class E, size_t N>
+void readEnum(const json& o, const char* key, const char* const (&names)[N], E& out) {
+  const auto f = o.find(key);
+  if (f == o.end() || !f->is_string()) return;
+  const std::string v = f->get<std::string>();
+  for (size_t i = 0; i < N; ++i)
+    if (v == names[i]) out = static_cast<E>(i);
+}
+
+views::ExportPrefs exportPrefsOf(const json& o) {
+  views::ExportPrefs p;
+  readEnum(o, "tracks", kExportTrackNames, p.tracks);
+  readEnum(o, "range", kExportRangeNames, p.range);
+  readEnum(o, "bits", kExportBitNames, p.bits);
+  readEnum(o, "dither", kExportDitherNames, p.dither);
+  readEnum(o, "format", kExportFormatNames, p.format);
+  if (const auto f = o.find("includeReturnsMaster"); f != o.end() && f->is_boolean()) p.includeReturnsMaster = f->get<bool>();
+  if (const auto f = o.find("renderAsLoop"); f != o.end() && f->is_boolean()) p.renderAsLoop = f->get<bool>();
+  if (const auto f = o.find("normalize"); f != o.end() && f->is_boolean()) p.normalize = f->get<bool>();
+  if (const auto f = o.find("sampleRate"); f != o.end() && f->is_number_unsigned()) {
+    const auto r = f->get<uint64_t>();
+    if (r == 0 || (r >= 8000 && r <= 768000)) p.sampleRate = static_cast<uint32_t>(r);
+  }
+  if (const auto f = o.find("folder"); f != o.end() && f->is_string()) p.folder = f->get<std::string>();
+  return p;
+}
+
+json exportPrefsJson(const views::ExportPrefs& p) {
+  json o = json::object();
+  o["tracks"] = kExportTrackNames[static_cast<size_t>(p.tracks)];
+  o["range"] = kExportRangeNames[static_cast<size_t>(p.range)];
+  o["includeReturnsMaster"] = p.includeReturnsMaster;
+  o["renderAsLoop"] = p.renderAsLoop;
+  o["format"] = kExportFormatNames[static_cast<size_t>(p.format)];
+  o["sampleRate"] = p.sampleRate;
+  o["bits"] = kExportBitNames[static_cast<size_t>(p.bits)];
+  o["dither"] = kExportDitherNames[static_cast<size_t>(p.dither)];
+  o["normalize"] = p.normalize;
+  o["folder"] = p.folder;
+  return o;
+}
+}  // namespace
+
 views::ViewPrefs loadViewPrefs(const std::string& path) {
   views::ViewPrefs prefs;
   std::ifstream in(utf8Path(path), std::ios::binary);
@@ -184,6 +235,7 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   if (const auto f = it->find("recordOffsetMs"); f != it->end() && f->is_number())
     prefs.recordOffsetMs = std::clamp(f->get<float>(), -views::ViewPrefs::kMaxRecordOffsetMs, views::ViewPrefs::kMaxRecordOffsetMs);
   if (const auto f = it->find("autosave"); f != it->end() && f->is_boolean()) prefs.autosave = f->get<bool>();  // AS.1
+  if (const auto f = it->find("export"); f != it->end() && f->is_object()) prefs.exportAudio = exportPrefsOf(*f);  // EX.2
   return prefs;
 }
 
@@ -198,6 +250,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["defaultWarpMode"] = kWarpNames[static_cast<size_t>(prefs.defaultWarpMode)];
   v["recordOffsetMs"] = prefs.recordOffsetMs;  // T6.7b
   v["autosave"] = prefs.autosave;              // AS.1
+  v["export"] = exportPrefsJson(prefs.exportAudio);  // EX.2
   return saveSection(path, "views", std::move(v));
 }
 

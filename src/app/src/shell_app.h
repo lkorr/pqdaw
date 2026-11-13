@@ -43,6 +43,7 @@ namespace pq::app {
 class SdlFileDialogs;
 class AudioDeviceManager;
 class MidiInputService;
+class ExportService;
 
 class ShellApp {
 public:
@@ -96,6 +97,7 @@ private:
   std::unique_ptr<PreviewService> browserPreview_;  // T5.10: the browser's preview (the output's cue source)
   std::unique_ptr<library::Indexer> indexer_;      // T5.10: the browser index of the places
   std::unique_ptr<views::ViewContext> ctx_;
+  std::unique_ptr<ExportService> export_;  // EX.2: the Export Audio job (its worker); destroyed before the context
   std::unique_ptr<SdlFileDialogs> dialogs_;
   std::unique_ptr<views::Shell> shell_;
   std::unique_ptr<BugReporter> bug_;  // T5.x-bugreport (after shell_: destroyed first)

@@ -11,7 +11,11 @@
 //       "inputDevice": "",                      "inputName": "",
 //       "sampleRate": 48000, "bufferFrames": 64, "outputChannels": 2   (inputs: what the tracks use, T6.7b)
 //     },
-//     "views": { "circuitShowInactive": false },         (T4.15: views::ViewPrefs)
+//     "views": { "circuitShowInactive": false,           (T4.15: views::ViewPrefs)
+//                "export": { "tracks": "master" | "allTracks" | "selected", "range": "song" | "loop" | "timeSelection",
+//                            "includeReturnsMaster": false, "renderAsLoop": false, "format": "wav",
+//                            "sampleRate": 0 (the engine's), "bits": "pcm16" | "pcm24" | "float32",
+//                            "dither": "none" | "tpdf" | "shaped", "normalize": false, "folder": "D:\Exports" } },  (EX.2)
 //     "library": { "folders": ["C:\\Samples"], "userLibrary": "D:\\pqdaw User Library",   (T5.10, T5.x-library-prefs)
 //                  "samplesFolder": "E:\\Samples" }                                         (T5.x-samples-folder)
 //     "midi": { "inputs": [ { "name": "Arturia KeyStep 37", "enabled": true, "bend": 2 } ] }     (T6.4)

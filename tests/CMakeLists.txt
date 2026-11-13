@@ -102,6 +102,7 @@ pq_add_test(pq_tests_app
     app/test_os_drop.cpp  # T5.7: the OLE drop target (CF_HDROP data object, effects, registration)
     app/test_os_drag.cpp  # T5.12: the OLE drag source's data object (CF_HDROP, lazy files), the drag-out temp folder
     app/test_autosave.cpp  # AS.1: the autosave policy on a test clock, its files, discard on save / new, the worker
+    app/test_export_service.cpp  # EX.2: the Export Audio port (a tiny export on the worker, cancel, request mapping, settings)
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
@@ -200,6 +201,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_mos_wheel.cpp
     views/test_automation.cpp
     views/test_audio_prefs.cpp
+    views/test_export_window.cpp  # EX.2: the Export Audio window (real dispatch: rows, Export → job, progress, Cancel, selection, settings), golden
     views/test_look.cpp
     views/test_tunings_ui.cpp
     views/test_circuit.cpp

@@ -83,6 +83,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   declareViewActions(kMosWheelActions);
   declareViewActions(kMixerActions);
   declareViewActions(kPrefsActions);
+  declareViewActions(kExportActions);  // EX.2
   declareViewActions(kTuningsActions);
   declareViewActions(kCircuitActions);
   declareViewActions(kDeviceChainActions);

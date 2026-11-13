@@ -1228,4 +1228,11 @@ tempo edit compared against the old track synced the same way). A cable from ano
 nothing until the render is re-made (the block is not lowered; FZ.2's key must cover what feeds the frozen part).
 Consequences: recording into a frozen track is refused at commit (FZ.3 may disable arm); a SetSample that changes the
 rate of a sample a frozen warp-Off clip plays is refused when the re-sync changes that clip. Reversible: one function.
+
+## Q?-EX.2-a · Export Audio: closing the window during an export
+Context: the plan does not say what Close / Esc do while a job runs. Options: (a) cancel the export; (b) close the
+window and let the export finish in the background, the status line saying how it ended (the window, reopened, shows
+the progress or the result); (c) refuse to close while exporting (modal). Choice: (b): an export can take minutes and
+playing / editing go on meanwhile (it renders on a private link); Cancel is one click when wanted. Reversible: the
+window's close button and `ExportHost::watch` are the only places.
 Status: open.

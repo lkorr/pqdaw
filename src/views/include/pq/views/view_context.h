@@ -43,6 +43,7 @@
 #include "pq/ui/actions.h"
 #include "pq/ui/keymap_file.h"
 #include "pq/views/computer_keyboard.h"
+#include "pq/views/export/export_port.h"
 #include "pq/views/transport_port.h"
 
 namespace pq {
@@ -178,6 +179,8 @@ struct ViewPrefs {
   // AS.1 (Preferences → Record → Saving): the edited document is autosaved into this run's Unsaved session folder
   // (pq/app/autosave.h); off: nothing is written and an existing autosave is deleted.
   bool autosave = true;
+  // EX.2: the Export Audio window's choices (pq/views/export/export_port.h).
+  ExportPrefs exportAudio;
   bool operator==(const ViewPrefs&) const = default;
 };
 
@@ -305,6 +308,9 @@ public:
   // T3.18: the app's audio device manager, for the preferences window (Ctrl+,); null in tests and scenes without one.
   void setAudioPrefs(AudioPrefsPort* p) noexcept { audioPrefs_ = p; }
   AudioPrefsPort* audioPrefs() const noexcept { return audioPrefs_; }
+  // EX.2: the app's export job, for the Export Audio window (Ctrl+Shift+R); null in tests and scenes without one.
+  void setExportPort(ExportPort* p) noexcept { exportPort_ = p; }
+  ExportPort* exportPort() const noexcept { return exportPort_; }
   // T4.1: the device library (pq/document/devices.h: the catalog the device view's menu and generic panels are built
   // from). The app sets the playback link's; null in bare tests and scenes without one (the device view then shows
   // chains without param controls and offers nothing to add). Must outlive its use. Notifies kDevices.
@@ -645,6 +651,8 @@ public:
   static constexpr std::string_view kMixerActions[] = {"view.toggleMixer"};
   // T3.18: the preferences window (Ctrl+, as in Live), forwarded the same way (installPreferences sets the handler).
   static constexpr std::string_view kPrefsActions[] = {"app.preferences"};
+  // EX.2: File > Export Audio… (Ctrl+Shift+R, as in Live), forwarded the same way (installExportAudio sets the handler).
+  static constexpr std::string_view kExportActions[] = {"file.exportAudio"};
   // T3.19: Create > New Main Tuning (installTuningsPanel sets the handler: it shows the panel with the new tuning).
   static constexpr std::string_view kTuningsActions[] = {"tuning.newMain"};
   // T4.2: View > Open Patch in Circuit View… (installCircuitViewer sets the handler: file dialog → circuit viewer).
@@ -707,6 +715,7 @@ private:
 
   FileDialogs* dialogs_ = nullptr;
   AudioPrefsPort* audioPrefs_ = nullptr;
+  ExportPort* exportPort_ = nullptr;  // EX.2
   const doc::DeviceLibrary* devices_ = nullptr;
   doc::BlockSet blockClipboard_;  // GU.2
   ModulationSource* modulation_ = nullptr;

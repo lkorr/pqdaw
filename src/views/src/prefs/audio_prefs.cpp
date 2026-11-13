@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "../common/paint.h"
+#include "form.h"
 #include "pq/ui/theme.h"
 #include "pq/views/audio_clip/audio_clip_view.h"  // T6.8: kWarpModeNames
 #include "pq/views/browser/library.h"
@@ -92,9 +93,8 @@ FakeAudioPrefsPort FakeAudioPrefsPort::studio() {
 
 namespace {
 
-constexpr float kLabelWidth = 190.0f;
+using namespace form;  // kLabelWidth, kRowHeight, Divider, section, row (shared with the Export Audio window)
 constexpr float kControlWidth = 320.0f;
-constexpr float kRowHeight = 22.0f;
 constexpr uint32_t kCommonRates[] = {44100, 48000, 88200, 96000, 176400, 192000};
 constexpr uint32_t kCommonBuffers[] = {32, 64, 128, 256, 512, 1024, 2048};
 
@@ -186,37 +186,6 @@ private:
   }
   Library& lib_;
 };
-
-// A 1-device-px line under a section title.
-class Divider : public Widget {
-public:
-  Divider() : Widget() { setHeight(Length::fixed(1)); }
-  void paint(PaintContext& ctx) override {
-    if (const Theme* th = ctx.res.theme) ctx.dl.addRectFilled(IRect{rect().x, rect().y, rect().w, 1}.toRect(), th->surface.divider);
-  }
-};
-
-Widget& section(Widget& parent, const char* name, const char* title) {
-  auto& w = parent.add<Widget>(name);
-  w.setLayout(LayoutKind::Column);
-  w.setHeight(Length::fixed(21));
-  w.setGap(0);
-  auto& l = w.add<Label>("title", title, FontRoleId::BodyStrong, TextTone::Primary);
-  l.setHeight(Length::fixed(20));
-  w.add<Divider>();
-  return w;
-}
-
-Widget& row(Widget& parent, const char* name, const char* label, Label** labelOut = nullptr) {
-  auto& r = parent.add<Widget>(name);
-  r.setLayout(LayoutKind::Row);
-  r.setHeight(Length::fixed(kRowHeight));
-  r.setGap(8);
-  auto& l = r.add<Label>("label", label, FontRoleId::Small, TextTone::Secondary);
-  l.setWidth(Length::fixed(kLabelWidth));
-  if (labelOut) *labelOut = &l;
-  return r;
-}
 
 std::string fmtMs(double ms) {
   char b[32];

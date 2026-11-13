@@ -29,6 +29,7 @@
 #include "pq/document/modules.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
+#include "pq/views/export/export_window.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
 #include "meta/faces.h"  // TX.spectrogram: the face's analysis request (gramRequest)
@@ -533,6 +534,24 @@ Status setupPrefsTab(Shell& shell, PreferencesWindow::Tab tab, const char* scene
 }
 Status setupWarpPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Warp, "warp-prefs"); }
 Status setupRecordPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Record, "record-prefs"); }
+
+// EX.2: the Export Audio window over a scripted port: All Individual Tracks, Song, 24-bit TPDF, normalized, a fixed
+// folder (the golden must not show the machine's paths). Over a project with clips (the goldens pass the arrangement
+// fixture) the range readout shows the song's length.
+Status setupExportAudio(Shell& shell) {
+  static FakeExportPort port;
+  port = FakeExportPort{};
+  ViewContext& ctx = shell.context();
+  ctx.setExportPort(&port);
+  ViewPrefs v = ctx.viewPrefs();
+  v.exportAudio = {};
+  v.exportAudio.tracks = ExportTracks::AllTracks;
+  v.exportAudio.normalize = true;
+  v.exportAudio.folder = "D:\\Music\\Exports";
+  ctx.setViewPrefs(v);
+  if (!openExportWindow(shell.overlay(), port, ctx, {})) return Error{ErrorCode::NotFound, "export-audio: no overlay layer", {}};
+  return Ok{};
+}
 
 // ---- T3.19: menu bar, Tunings panel, ratio notes ------------------------------------------------------------------
 
@@ -3114,6 +3133,7 @@ constexpr SceneEntry kScenes[] = {
     {"midi-prefs", 1280, 800, setupMidiPrefs},
     {"warp-prefs", 1280, 800, setupWarpPrefs},
     {"record-prefs", 1280, 800, setupRecordPrefs},
+    {"export-audio", 1280, 800, setupExportAudio},
     {"menu-bar", 1280, 800, setupMenuBar},
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},

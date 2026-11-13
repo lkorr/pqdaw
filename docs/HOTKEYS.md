@@ -22,7 +22,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `file.saveAs` | `Ctrl+Shift+S` | global | Accessing Menus (File) | implemented (T3.7) |
 | `file.collectAllAndSave` | — | global | Accessing Menus (File) | T5.8: File menu only (Live has no chord): copies every used sample from outside the project into `samples/imported/`, then saves |
 | `file.relinkSamples` | — | global | — | T5.8: File menu (enabled while samples are missing): pick a folder, every missing sample found in it (by name; size and hash checked) is relinked |
-| `file.exportAudio` | `Ctrl+Shift+R` | global | Accessing Menus (File) | M10 (export) |
+| `file.exportAudio` | `Ctrl+Shift+R` | global | Accessing Menus (File) | implemented (EX.2: the Export Audio window; also File > Export Audio…) |
 | `view.toggleClipDevice` | `Shift+Tab` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleDetail` | `Ctrl+Alt+L` | global | Showing and Hiding Views | implemented (T3.7) |
 | `view.toggleBrowser` | `Ctrl+Alt+B` | global | Showing and Hiding Views | implemented (T5.10; also View > Browser) |

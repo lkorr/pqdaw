@@ -29,6 +29,7 @@
 #include "pq/views/browser/library_load.h"
 #include "pq/views/panel/style_schemas.h"
 #include "pq/app/clip_export.h"
+#include "pq/app/export_service.h"
 #include "pq/app/os_drag.h"
 #include "pq/views/sample_analysis.h"
 #include "pq/views/waveforms.h"
@@ -211,6 +212,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     if (link != nullptr) link->setRecordOffsetMs(p.recordOffsetMs);  // T6.7b: Preferences → Record
     if (Status s = saveViewPrefs(userSettingsPath(), p); !s.ok()) std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
   });
+  // EX.2: File > Export Audio… renders on the export service's worker (a private link per job, at the chosen rate).
+  app->export_ = std::make_unique<ExportService>([link = app->link_.get()] {
+    return link != nullptr ? static_cast<uint32_t>(link->engine().config().sampleRate) : 48000u;
+  });
+  app->ctx_->setExportPort(app->export_.get());
   app->dialogs_ = std::make_unique<SdlFileDialogs>(window, app->userEvent_);
   app->ctx_->setFileDialogs(app->dialogs_.get());
   // T5.8: background work (Collect All and Save's copy) comes back to the UI thread as a user event.
@@ -419,6 +425,8 @@ ShellApp::~ShellApp() {
   tree_.setRoot(std::make_unique<ui::Widget>());
   shell_.reset();
   if (ctx_) ctx_->setAudioPrefs(nullptr);
+  if (ctx_) ctx_->setExportPort(nullptr);
+  export_.reset();  // EX.2: a running export is cancelled (its temp files deleted) and its thread joined
   if (ctx_) ctx_->setDeviceLibrary(nullptr);  // the link owns it
   if (ctx_) ctx_->setModulationSource(nullptr);
   if (preview_) preview_->onActiveChanged = nullptr;
