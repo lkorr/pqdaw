@@ -97,6 +97,9 @@ struct InferOptions {
   SourceText source{};                    // optional
   // T4.5 (pq/graph/inspect.h): values to locate in the flattened patch (InferResult::probeSources). Changes nothing else.
   std::span<const ProbeTarget> probes;
+  // WI.1: > 0: blame each bound error on the edges it crossed (InferResult::blames), comparing call paths cut at this
+  // many NodeIds (a project unit: 2 = track call → track-patch node). 0: off (no blames, no work).
+  uint32_t blameDepth = 0;
 };
 
 inline constexpr uint32_t kMaxSubcircuitDepth = 64;  // nesting of subcircuit instances
@@ -165,9 +168,26 @@ struct TypedPatch {
   const PortType& outputType(NodeIndex n, uint32_t i) const noexcept { return types[patch.flatOutput(n, i)]; }
 };
 
+// WI.1: an edge between two nodes at InferOptions::blameDepth that carried a value a bound refused. Each side is the
+// NodeIds of the call path from the root to the node (the call nodes, then the node itself), cut at blameDepth.
+// Found by walking upstream from the refusing input's driver, only through inputs that carry the offending field
+// (the same width for a width error, a real for a bool bound, a voice signal for a global one, an event / too-high
+// rate for a rate error), while the node's cut path equals the consumer's; the first node whose cut path differs is
+// the source. `consumer` is the refusing input's node, cut. A walk that never leaves the consumer's node (the value
+// is made there: a pack, a stateful atom's audio rate) finds no edge; a root `in` the engine connects with a bad type
+// has one blame with an empty `source` (the value comes from outside the patch).
+struct TypeBlame {
+  std::vector<NodeId> consumer, source;
+};
+inline constexpr uint32_t kMaxBlamesPerDiagnostic = 4;
+
 struct InferResult {
   TypedPatch typed;                     // complete only when diagnostics is empty
   std::vector<Diagnostic> diagnostics;  // located at the root patch node (the call site for errors inside callees)
+  // WI.1: with InferOptions::blameDepth > 0, parallel to diagnostics: per diagnostic its blamed edges (at most
+  // kMaxBlamesPerDiagnostic; empty for everything but the bound errors of the final check and a root input's
+  // connection). Empty when blameDepth is 0 or inference succeeded.
+  std::vector<std::vector<TypeBlame>> blames;
   // Per InferOptions::probes entry: the flat output port of typed.patch carrying that value (kNone: no such node or
   // output, or unconnected). T4.5.
   std::vector<uint32_t> probeSources;

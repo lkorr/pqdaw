@@ -224,8 +224,22 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
     io.library = &up->library;
     io.voiceContext = up->voices;
     io.probes = probes;
+    io.blameDepth = 2;  // WI.1: unit root → track call (NodeId = track id) → track-patch node; work only on errors
     auto infd = inferDetailed(up->patch, io);
     if (!infd.ok()) {
+      for (size_t i = 0; i < infd.blames.size() && i < infd.diagnostics.size(); ++i)
+        for (const TypeBlame& tb : infd.blames[i]) {
+          if (tb.consumer.size() != 2) continue;  // not inside a track patch (a unit-root node)
+          UnitTypeFailure f;
+          for (uint32_t t : partition_.units[u].tracks)
+            if (g.tracks[t].id == tb.consumer[0].value) f.track = t;
+          if (f.track == graph::kNone) continue;  // a helper call of the unit root, not a track
+          f.consumer = tb.consumer[1].value;
+          f.source = tb.source.size() == 2 && tb.source[0] == tb.consumer[0] ? tb.source[1].value : 0u;
+          f.message = infd.diagnostics[i].message;
+          typeFailures_.push_back(std::move(f));
+        }
+      io.blameDepth = 0;
       auto again = infer(up->patch, io);  // the formatted message
       return compileError(again.ok() ? ErrorCode::Type : again.error().code, who + (again.ok() ? std::string("infer") : again.error().message));
     }
@@ -522,6 +536,7 @@ Result<ProjectBuild> ProjectCompiler::buildFrom(const graph::ProjectGraph& g, gr
 
 Result<TopologyBuild> ProjectCompiler::rebuild(const graph::ProjectGraph& g, std::span<const uint32_t> dirtyTracks,
                                                const UnitBackend* backend) {
+  typeFailures_.clear();
   if (units_.empty()) return compileError(ErrorCode::InvalidArgument, "rebuild before build");
   if (whole_) return compileError(ErrorCode::Unsupported, "rebuild of a whole-project build");
   auto part = graph::partitionProject(g);
@@ -663,6 +678,7 @@ void ProjectCompiler::adoptGraphCurves(const graph::ProjectGraph& g) {  // GU.1
 }
 
 Result<ProjectBuild> ProjectCompiler::build(const graph::ProjectGraph& g) {
+  typeFailures_.clear();
   adoptGraphCurves(g);
   auto part = graph::partitionProject(g);
   if (!part.ok()) return part.error();
@@ -671,6 +687,7 @@ Result<ProjectBuild> ProjectCompiler::build(const graph::ProjectGraph& g) {
 }
 
 Result<ProjectBuild> ProjectCompiler::buildWhole(const graph::ProjectGraph& g) {
+  typeFailures_.clear();
   adoptGraphCurves(g);
   auto part = graph::wholeProject(g);
   if (!part.ok()) return part.error();
@@ -680,6 +697,7 @@ Result<ProjectBuild> ProjectCompiler::buildWhole(const graph::ProjectGraph& g) {
 
 Result<std::vector<UnitUpdate>> ProjectCompiler::update(const graph::ProjectGraph& g, std::span<const uint32_t> tracks,
                                                         const UnitBackend* backend) {
+  typeFailures_.clear();
   adoptGraphCurves(g);  // GU.1
   if (units_.empty()) return compileError(ErrorCode::InvalidArgument, "update before build");
   // The partition only depends on tracks, wires and roles: O(tracks + wires).
@@ -700,14 +718,22 @@ Result<std::vector<UnitUpdate>> ProjectCompiler::update(const graph::ProjectGrap
       return compileError(ErrorCode::Unsupported, "the polyphony of unit '" + partition_.units[u].name + "' changed: rebuild");
   std::sort(dirty.begin(), dirty.end());
   std::vector<UnitUpdate> out;
+  // WI.1: all or nothing. A unit replaced before a later one fails gets its previous compile back: its new image is
+  // never returned, so the program still runs the old one, and the next update / rebuild must schedule against (and
+  // compare keys with) what runs.
+  std::vector<std::pair<uint32_t, CompiledUnit>> replaced;
+  auto undo = [&](Error e) -> Error {
+    for (auto& [u, cu] : replaced) units_[u] = std::move(cu);
+    return e;
+  };
   for (uint32_t u : dirty) {
     auto cu = compileUnit(g, u, &units_[u].schedule->state);
-    if (!cu.ok()) return cu.error();
+    if (!cu.ok()) return undo(cu.error());
     for (uint32_t b = 0; b < partition_.buses.size(); ++b)
       if (partition_.buses[b].producer == u) {
         const graph::PortType t = graph::busType(*cu.value().typed, b);
         if (t.kind != busTypes_[b].kind || t.width != busTypes_[b].width)
-          return compileError(ErrorCode::Unsupported, "the edit changed the kind or width of " + graph::busName(b) + ": rebuild");
+          return undo(compileError(ErrorCode::Unsupported, "the edit changed the kind or width of " + graph::busName(b) + ": rebuild"));
       }
     UnitUpdate upd;
     upd.unit = u;
@@ -716,9 +742,10 @@ Result<std::vector<UnitUpdate>> ProjectCompiler::update(const graph::ProjectGrap
       out.push_back(std::move(upd));
       continue;
     }
+    replaced.emplace_back(u, std::move(units_[u]));
     units_[u] = std::move(cu.value());
     auto img = makeImage(u, backend != nullptr ? *backend : opt_.backend);
-    if (!img.ok()) return img.error();
+    if (!img.ok()) return undo(img.error());
     upd.image = std::move(img.value());
     out.push_back(std::move(upd));
   }
