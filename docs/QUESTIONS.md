@@ -1272,3 +1272,15 @@ Choice: (b), (d) — `StatusAction` on the status line, the generic refusal name
 one), else appends "(track menu: Unfreeze Track)" —, (f) for now (the clip view, the take lanes and the project patch
 view's band of a frozen track are not veiled; apply refuses, the status line offers Unfreeze). Flatten is shown
 disabled in both menus until FZ.4. Reversible: `ViewContext::setTracksFrozen` / `setStatus`, one veil class.
+
+## Q?-DY.2-a · what "Pre FX" is on a MIDI track, and what "None" does to the sidechain's On
+Context: DY.2's `cablesource` picker offers per other track "Pre FX" (the plan: Wire::noteSource + kMainPort, the
+track's own signal) and "Post FX" (the block feeding its mixer), and sets an optional "On" value block when a source is
+picked. A MIDI track's own signal is its NOTES (a notes cable), not audio, so a sidechain from it would hear nothing.
+Options: Pre FX on a MIDI track = (a) the notes cable as the plan says, (b) the main output of the path's first block
+(the instrument), (c) not offered; at None, On (d) left as it is, (e) set to 0.
+Choice: (b) and (e): what "the kick before its effects" means to a user is the instrument's audio; None turning the
+sidechain off keeps the detector on the module's own input instead of silence (a compressor keyed by nothing would
+never compress). Audio / group / return tracks use the own-signal wire (a). Pre equal to Post (no blocks after it) is
+offered once, as Pre. Reversible: doc::ops::cableSources and setCableSource (edit_cables.cpp) are the one place.
+Status: open.

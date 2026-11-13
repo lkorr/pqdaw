@@ -1431,3 +1431,14 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: the strength of the clip tint (theme `track.frozen`, #9BDDF5, veil alpha 104/255) and of the progress bar;
   whether the piano roll / take lanes / circuit band of a frozen track should be veiled too (Q?-FZ.3-a: today they
   only refuse); whether Freeze should disarm.
+
+## 2026-11-13 · DY.2 · the sidechain source picker (task/DY.2-sidechain)
+- Try: a group's panel editor binding menu offers "Input" for a group inside and "Input <name>" for a block; bound,
+  the element is a `cablesource` (a menu with a jack glyph). Click it: None, then "<track>: Pre FX" / "Post FX" for
+  every other track (track-coloured dots). Pick one: the cable appears in the project patch view (solid, an audio
+  cable); draw one by hand into the same input: the picker names it ("Kick: Pre FX", or "Kick: <block>", "+1" with
+  two). DY.4's Compressor uses it for its Sidechain section.
+- Look at: the jack dot lit in the source track's colour, the text in the value colour, "None" in ink.
+- Judge: whether Pre FX on a MIDI track as the instrument's output and None switching the On block off are right
+  (Q?-DY.2-a); whether the master and group tracks should be offered (a group holding this track makes a loop: it
+  plays, delayed a sample).
