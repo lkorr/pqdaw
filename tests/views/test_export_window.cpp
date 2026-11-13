@@ -305,6 +305,17 @@ TEST_CASE("export: choices persist across windows; a window closed mid-export le
   f.d.step();
   CHECK(f.window() == nullptr);
   CHECK(f.port.cancels == 0);
+  {  // reopened while it runs: the progress, polled again
+    f.port.setProgress(0.7f);
+    ExportWindow& during = f.open();
+    CHECK(during.polling());
+    CHECK(during.cancelButton()->visible());
+    f.d.advance(0.1);
+    CHECK(during.progressShown() == doctest::Approx(0.7f));
+    f.d.press("Escape");
+    f.d.step();
+    CHECK(f.window() == nullptr);
+  }
   f.port.finish({"C:\\Out\\arrangement Drums.wav", "C:\\Out\\arrangement Bass.wav"});
   f.d.advance(0.5);
   CHECK(f.ctx.status() == "Exported 2 files to C:\\Out");

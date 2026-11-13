@@ -412,6 +412,10 @@ void ExportWindow::showStatus(const ExportStatus& s) {
   }
 }
 
+void ExportWindow::startPolling() {
+  if (running_ && timer_ == 0) timer_ = requestTimer(kPollSeconds);
+}
+
 void ExportWindow::onTimer(uint32_t id) {
   if (id != timer_) return;
   timer_ = 0;
@@ -534,6 +538,7 @@ ExportWindow* openExportWindow(Widget& from, ExportPort& port, ViewContext& ctx,
   o.dismissOnOutsideClick = false;  // a dialog (Live's is modal): Close or Esc
   o.onClosed = std::move(onClosed);
   layer->open(std::move(win), std::move(o));
+  raw->startPolling();  // reopened while a job runs
   return raw;
 }
 

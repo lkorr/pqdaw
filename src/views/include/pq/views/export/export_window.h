@@ -82,6 +82,8 @@ public:
   // Reads the port's status and updates the progress bar, the buttons and the done line (the poll timer calls it).
   void poll();
   bool polling() const noexcept { return timer_ != 0; }
+  // Starts the poll timer when a job runs (openExportWindow calls it once the window is in a tree).
+  void startPolling();
 
   // Readouts (tests).
   const std::string& rangeText() const;
