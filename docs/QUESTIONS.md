@@ -1449,7 +1449,7 @@ soloed == Mos soloed on a fresh link), so EX.1's stems with return / master FX r
 track). Reversible: `ImageHost::decideSleep`'s first line, `settleOffline`'s loop, runExport's pass loop.
 Status: open.
 
-## Q?-WI.3-a · What the gesture-time type check covers
+## Q269 · 2026-11-13 · WI.3 · What the gesture-time type check covers
 Context: the plan names "a declared-real output onto a bool-bound input, event ↔ non-event". Ends can be device outputs
 (`out` / export), note outputs, inputs, params and mixers; some declare nothing (a group's terminals, exports, a track's
 own signal). A real wire onto a bool PARAM is not compiled either (the lowering marks it Invalid). Options: (a) inputs

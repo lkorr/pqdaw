@@ -637,3 +637,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: one compare per sleep segment per block; stem exports save one compile per track.
 - Notes: Q267, Q268. Live fix too: no stale gain fading in after a locate or a knob move on a silent track.
 
+## 2026-11-13 · EX.3 + WI.3 merged · main
+- Did: merged task/EX.3-flac (3af580f7). EX.3: libFLAC 1.5.0 (BSD-3, SHA-256 checked) built from its C sources as static pq_flac (cmake/flac/config.h, no Ogg / threads); media::FlacWriter (16/24-bit, level 5, streaming; quantizePcm shared with WavWriter); ExportFormat::Flac; dialog File Type WAV / FLAC. WI.3: doc::declaredWireClash (real → bool, event ↔ non-event on declared ends only) refuses drops in the Device view and the circuit view (no-drop cursor, red ring, status line) and in connectEnds.
+- Verified (worker): pq_tests_media FLAC round trip bit-exact 16/24, pq_tests_app FLAC export == WAV export samples, pq_tests_views export 9/9 and WI.3 2/2; -Affected -Slow 88/88 (retried with 4 build jobs after a low-memory kill).
+- Notes: Q269. All RB and DY tasks are merged; audit next (critique agent + -Full), then M7 after the user's go.
+
