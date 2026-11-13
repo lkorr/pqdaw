@@ -293,6 +293,7 @@ RackInfo makeInfo(const Project& p, const TrackIndex& ix, const std::vector<cons
 bool rackValueSetting(std::string_view name) noexcept {
   if (name == kMacroSetting || name == kRandExcludeSetting || name == kRoleSetting) return true;
   if (name == kBandRoleSetting || name == kEqRoleSetting) return true;  // EQ.3 (modules.h)
+  if (name == kDelayRoleSetting) return true;                           // DT.1 (modules.h)
   return name.size() > kVariationPrefix.size() && name.substr(0, kVariationPrefix.size()) == kVariationPrefix;
 }
 bool rackGroupSetting(std::string_view name) noexcept {

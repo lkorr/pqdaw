@@ -125,6 +125,9 @@ public:
   // A position SHOWN instead of the stored one (an automated control follows its envelope at the playhead while the
   // transport plays); nullopt: the stored one again. Returns whether it changed.
   virtual bool showPosition(const doc::Binding& /*b*/, std::optional<double> /*position*/) { return false; }
+  // DT.1: the project's tempo where the playhead is (while playing; else at the start marker), in BPM — what a tempo
+  // slider's note markings are placed by. Cheap (one tempo-map lookup). 120 without a document.
+  virtual double tempoBpm() const { return 120.0; }
   // ---- EQ.3: a STRUCTURAL EDIT an element asks for (the EQ's band ops: doc::ops::addBand, setEqMode …) ----
   // `build` makes it from the document as it is now and the store's id source; the target dispatches it through its
   // host's history (one undo step). False — with a notice saying why — when the builder refuses (its message: "A chain

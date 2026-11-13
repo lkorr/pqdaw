@@ -1063,3 +1063,31 @@ Context: with the default tuning named "Tuning A", TU.3's chip rule gives the co
 narrow chips (track headers, mixer strips, compactTuningLabel) just "12" where they read "12-EDO" before. Options:
 (a) keep TU.3's rule; (b) narrow chips show the name's letter plus the label ("A · 12"); (c) show "12-EDO" (the
 summary) in narrow chips. Choice: (a), no rule change (reversible: TuningChip's narrow text).
+
+## Q?-DT.1-a · 2026-11-12 · DT.1 · The Delay Tap: the time's units, the glide, the sync table, the minimum, gravity zones
+Context: docs/plans/DT.md; `pq/document/modules.h` "the Delay Tap", `src/views/src/panel/tempo_slider.cpp`. Choices
+(each the most reversible found):
+1. **Time stored as the knob position, read in SECONDS** (a value block on an Exp0 curve, 0 … 5 s, unit Seconds:
+   "375 ms" / "1.25 s"); a wire adds seconds, the delay atom's own unit and every other time's (the Envelope). Option:
+   ms units (a wire of ±1 would add ±1 ms) — a curve-unit change, no data migration.
+2. **The glide is TX.smooth's param ramp (20 ms, linear), not a dedicated ~30 ms one-pole.** Every param-rate move of
+   the delay (drag, automation, sync step, mode switch, tempo) reaches `delay_cubic`'s time through the ramp the
+   scheduler already puts on every rampable input: zero cost at rest, one general mechanism (Q187). A one-pole would
+   need a per-sample z1 loop of atoms (always running) or a new `slew` atom. An audio-rate wire into Time is not
+   smoothed (deliberate modulation). Option: add a one-pole if the linear glide's pitch shape sounds wrong.
+3. **Sync and Mode are arithmetic, not muxes.** A stepped value block reaching a mux index lowers as a LITERAL choice
+   (lower.h "Structural value blocks"), so a sync step or the ms / ♪ switch recompiled the unit — and measured, the
+   swap restarted the delay line empty (output silent for the new delay time: the echo tail lost). Now the beats are
+   2^g / 16 · f(r) on the index (a nested group "Note Value", every value checked against the table by render) and
+   the mode a lerp: runtime params, no recompile, glided. Cost: both the time and the sync path run per block in which
+   an input changes (a few param-rate ops). **Orchestrator:** the "recompile empties a delay line" observation may be a
+   general state-transfer gap (a mux folded by a literal changes the delay node's inputs); not investigated further.
+4. **Minimum delay 2 samples** (the cubic read's floor; the plan says ≥ 1). Option: `delay` (linear) below 2 samples.
+5. **Gravity zones shrink between dense markings**: 6 device px per side, but at most 40 % of the gap to the next
+   marking (at 120 BPM the 21 markings sit in the middle of a 148-px slider, where 6-px zones would cover all of it and
+   the knob could never stop between 1/2T and 1/4.). Option: plain 6 px, or straight values only.
+6. **1/64 is a short, unlabelled tick** (the plan labels straight values 1/1 … 1/32); it is in the sync list.
+7. **Live tempo**: the markings are placed at the tempo at the playhead (start marker when stopped), re-placed whenever
+   the face repaints (its live key includes the tempo). A panel is not repainted per frame during playback, so under
+   tempo automation the markings move when something else repaints the face — not checked live.
+Status: open (user: 2, 5; orchestrator: 3's observation).

@@ -295,6 +295,10 @@ public:
     rings_.emplace_back(b, ring);
     return true;
   }
+  double tempoBpm() const override {
+    const doc::Snapshot& d = ctx_.doc();
+    return d && d->timeline ? d->timeline->tempoMap.bpmAt(ctx_.liveClipAt()) : 120.0;
+  }
   bool showPosition(const doc::Binding& b, std::optional<double> position) override {
     // TL.6: a native engine's face shows it too (its controls read the engine's DocTarget, not this target).
     bool engine = false;

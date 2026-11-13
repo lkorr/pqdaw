@@ -1342,3 +1342,12 @@ Visual/UX work (👁 tasks) and anything else the user should look at. Use this 
 - **Default tuning name**: a new project's tuning is "Tuning A"; New Tuning names the next free letter (Tuning B, C, …).
   By TU.3's chip rule the control bar reads "Tuning A · 12" and the narrow track-header / mixer chips only "12" (they
   used to read "12-EDO"): is "12" too terse there? (Q?-TU.2b-a)
+## 2026-11-12 · DT.1 · Delay Tap
+- **The module**: node menu / browser → Meta Modules → Delay Tap. One input, one output, the input delayed (0 … 5 s),
+  nothing else. For echoes wire its output back into its input through a VCA (0.5 decays by half per repeat).
+- **The face**: a slider (500 ms in the middle, 5 s at the end) with the note values marked above it at the tempo
+  (1/32 … 1/1 labelled; dotted and triplet values as short ticks); the time below. Drag near a marking: it sticks (the
+  zones shrink where markings crowd, so you can stop between them); Shift drags finely without sticking; the magnet
+  button (right) turns sticking off. The ms / ♪ switch picks sync: the same slider then steps through the note values
+  (the readout says "1/8.  375 ms"), following the tempo. Both lanes and the switch are automatable; changes glide
+  (20 ms), no clicks. Is the magnet glyph readable, and is the sticking strength right? (Q?-DT.1-a 5)

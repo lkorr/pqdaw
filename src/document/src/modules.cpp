@@ -20,7 +20,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 14> kModules = {{
+constexpr std::array<ModuleInfo, 15> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -65,6 +65,10 @@ constexpr std::array<ModuleInfo, 14> kModules = {{
     {ModuleKind::Eq, "eq", "EQ",
      "A parametric EQ: bands in series (four to start), stereo, left/right or mid/side with a second chain, and an "
      "output gain."},
+    // DT.1 (docs/plans/DT.md).
+    {ModuleKind::DelayTap, "delay_tap", "Delay Tap",
+     "Delays its input by a time (0 … 5 s, free in ms or synced to a note value at the tempo), nothing else: no dry, no "
+     "feedback. Feed its output back into its input through a VCA for echoes."},
 }};
 
 struct Builder {
@@ -304,7 +308,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Lfo:
     case ModuleKind::Operator:
     case ModuleKind::EqBand:
-    case ModuleKind::Eq: break;
+    case ModuleKind::Eq:
+    case ModuleKind::DelayTap: break;
   }
   return {};
 }
@@ -391,7 +396,8 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::Lfo:
     case ModuleKind::Operator:
     case ModuleKind::EqBand:
-    case ModuleKind::Eq: break;
+    case ModuleKind::Eq:
+    case ModuleKind::DelayTap: break;
   }
   return p;
 }
@@ -550,6 +556,7 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::Operator) return operatorBlocks(ids);
   if (k == ModuleKind::EqBand) return eqBandBlocks(ids);
   if (k == ModuleKind::Eq) return eqBlocks(ids);
+  if (k == ModuleKind::DelayTap) return delayTapBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 
@@ -1423,6 +1430,114 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
                             kOversampleItems));
   p = layEqStrip(p, bands);
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("EQ") : o.name, o.active, std::move(p)));
+}
+
+// ---- DT.1: the Delay Tap --------------------------------------------------------------------------------------------
+
+namespace {
+
+using NK = NoteValueKind;
+// Straight s, triplet 2/3 s, dotted 3/2 s for s = 1/64 … 1/1 note (1/16 … 4 beats), in ascending duration: T(n) < S(n) <
+// T(n+1) < D(n) < S(n+1) (4/3 s < 3/2 s).
+constexpr std::array<NoteValue, 21> kNoteValues = {{
+    {1.0 / 24.0, "1/64T", NK::Triplet}, {1.0 / 16.0, "1/64", NK::Straight}, {1.0 / 12.0, "1/32T", NK::Triplet},
+    {3.0 / 32.0, "1/64.", NK::Dotted},  {1.0 / 8.0, "1/32", NK::Straight},  {1.0 / 6.0, "1/16T", NK::Triplet},
+    {3.0 / 16.0, "1/32.", NK::Dotted},  {1.0 / 4.0, "1/16", NK::Straight},  {1.0 / 3.0, "1/8T", NK::Triplet},
+    {3.0 / 8.0, "1/16.", NK::Dotted},   {1.0 / 2.0, "1/8", NK::Straight},   {2.0 / 3.0, "1/4T", NK::Triplet},
+    {3.0 / 4.0, "1/8.", NK::Dotted},    {1.0, "1/4", NK::Straight},         {4.0 / 3.0, "1/2T", NK::Triplet},
+    {3.0 / 2.0, "1/4.", NK::Dotted},    {2.0, "1/2", NK::Straight},         {8.0 / 3.0, "1/1T", NK::Triplet},
+    {3.0, "1/2.", NK::Dotted},          {4.0, "1/1", NK::Straight},         {6.0, "1/1.", NK::Dotted},
+}};
+
+}  // namespace
+
+std::span<const NoteValue> noteValues() noexcept { return kNoteValues; }
+
+double noteValueSeconds(uint32_t index, double bpm) noexcept {
+  const NoteValue& v = kNoteValues[std::min<size_t>(index, kNoteValues.size() - 1)];
+  const double s = v.beats * 60.0 / std::max(bpm, 1e-6);
+  return std::min(s, kDelayTapMaxSeconds);
+}
+
+dsp::Curve delayTimeCurve() {
+  // ms(x) = 62.5 · (e^(k·x) − 1), k = 2·ln 9 = ln 81: Exp0's bend is arg · ln 2, so arg = log2(81).
+  dsp::Curve c = withUnit(dsp::curvePreset(dsp::CurvePreset::Exp0, 0.0, kDelayTapMaxSeconds, std::log2(81.0)), dsp::CurveUnit::Seconds);
+  return c;
+}
+
+DelayRole delayRole(const Device& d) noexcept {
+  const double v = settingOf(d, kDelayRoleSetting);
+  return v >= 1.0 && v <= 3.0 && v == std::floor(v) ? static_cast<DelayRole>(static_cast<uint8_t>(v)) : DelayRole::None;
+}
+
+BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o, DelayTapRoles* roles) {
+  DelayTapRoles r;
+  r.group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, r.group);
+  const std::string y(kValueOutput);
+  const Sig time{k.b.value("Time", delayTimeCurve(), o.time), y};
+  const double syncCount = static_cast<double>(kNoteValues.size());
+  const Sig sync{k.b.value("Sync", stepped(syncCount), std::min<double>(o.sync, syncCount - 1.0) / (syncCount - 1.0)), y};
+  const Sig mode{k.b.value("Mode", stepped(2.0), o.mode != 0 ? 1.0 : 0.0), y};
+  addRole(k, time, kDelayRoleSetting, static_cast<double>(DelayRole::Time));
+  addRole(k, sync, kDelayRoleSetting, static_cast<double>(DelayRole::Sync));
+  addRole(k, mode, kDelayRoleSetting, static_cast<double>(DelayRole::Mode));
+  r.time = time.dev, r.sync = sync.dev, r.mode = mode.dev;
+  // The note value's beats, ARITHMETIC (not a mux chain: a stepped block reaching a mux index would lower as a literal
+  // choice — lower.h "Structural value blocks" — so a sync step or a mode switch would recompile the unit instead of
+  // gliding): a nested group "Note Value" (its In the Sync index i, its Out the beats). The ascending list is periodic
+  // from i = 1: j = i − 1, g = floor(j / 3), r = j − 3g gives S(g), T(g+1), D(g) for r = 0, 1, 2, i.e. 2^g / 16 beats ×
+  // f(r), f = 1 + r·(5 − r)/12 (1, 4/3, 3/2); its two ends corrected: i = 0 is 1/64T (not D(−1)), i = 20 is 1/1. (not
+  // T(7)). Param rate: one Control-region evaluation per block in which Sync changes (tests/document/test_delay_tap.cpp
+  // checks it against noteValues()).
+  Sig beats;
+  {
+    const DeviceId sub = ids.device();
+    auto g = std::make_shared<Device>(*makeGroup(sub));
+    g->name = "Note Value";
+    g->group = r.group;
+    k.b.set.devices.push_back(std::move(g));
+    k.b.wire(sync.dev, sync.port, sub, kMainPort);
+    const DeviceId outer = k.b.group;
+    k.b.group = sub;
+    const Sig i{sub, std::string(kGroupInPort)};
+    auto op2 = [&](const char* atom, const char* name, const Sig& a, const Sig& b) { return k.op(atom, name, {{"a", a}, {"b", b}}); };
+    const Sig j = op2("sub", "j = i - 1", i, k.k(1.0));
+    const Sig gi = k.op("floor", "g", {{"x", op2("div", "j / 3", j, k.k(3.0))}});
+    const Sig rem = op2("sub", "r = j - 3g", j, op2("mul", "3g", gi, k.k(3.0)));
+    const Sig straight = op2("mul", "2^g / 16", op2("pow", "2^g", k.k(2.0), gi), k.k(1.0 / 16.0));
+    const Sig f = op2("add", "f(r)", k.k(1.0), op2("mul", "r (5 - r) / 12", rem, op2("mul", "(5 - r) / 12", op2("sub", "5 - r", k.k(5.0), rem), k.k(1.0 / 12.0))));
+    const Sig base = op2("mul", "S(g) f(r)", straight, f);
+    auto edge = [&](const Sig& x, const char* name) {  // clip(x, 0, 1): 1 at the end, 0 elsewhere (i whole)
+      return k.op("clip", name, {{"x", x}, {"lo", k.k(0.0)}, {"hi", k.k(1.0)}});
+    };
+    const Sig top = op2("mul", "+ 2/3 at 1/1.", edge(op2("sub", "i - 19", i, k.k(19.0)), "i = 20"), k.k(6.0 - 16.0 / 3.0));
+    const Sig bottom = op2("mul", "- 1/192 at 1/64T", edge(op2("sub", "1 - i", k.k(1.0), i), "i = 0"), k.k(1.0 / 24.0 - 3.0 / 64.0));
+    const Sig b = op2("add", "beats", op2("add", "+ top", base, top), bottom);
+    k.b.wire(b.dev, b.port, sub, kGroupOutPort);
+    k.b.group = outer;
+    beats = Sig{sub, std::string(kMainPort)};
+  }
+  // Sync seconds = min(beats · 60 / bpm, 5); the delay = lerp(time, sync, Mode) (arithmetic for the same reason; Mode
+  // is 0 or 1). Param rate: a Control region, both computed per block in which an input changes (a few ops).
+  const Sig bpm = k.op("transport.bpm", "tempo", {});
+  const Sig synced = k.op("min", "≤ 5 s", {{"a", k.op("div", "· 60 / bpm", {{"a", k.op("mul", "beats · 60", {{"a", beats}, {"b", k.k(60.0)}})}, {"b", bpm}})},
+                                           {"b", k.k(kDelayTapMaxSeconds)}});
+  const Sig seconds = k.op("lerp", "ms / sync", {{"a", time}, {"b", synced}, {"t", mode}});
+  r.delay = k.block("delay_cubic", "delay", {{"x", k.in()}, {"time", seconds}});
+  k.setting(r.delay, "max", kDelayTapMaxSeconds);
+  k.out(Sig{r.delay, "out"});
+  // The panel: the plate and one tempo slider (its tempo markings above, the readout, the ms / ♪ and magnet buttons below).
+  Panel p;
+  p.width = 168.0f;
+  p.height = 64.0f;
+  p.elements.push_back(plate(p.width, p.height, 8.0));
+  PanelElement s = element(2, "temposlider", 0, 0, p.width, p.height, controlBinding(time.dev, std::string(kValueParam)));
+  s.bindings.push_back(controlBinding(sync.dev, std::string(kValueParam)));
+  s.bindings.push_back(controlBinding(mode.dev, std::string(kValueParam)));
+  p.elements.push_back(std::move(s));
+  if (roles != nullptr) *roles = r;
+  return k.finish(groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Delay Tap") : o.name, o.active, std::move(p)));
 }
 
 }  // namespace pq::doc

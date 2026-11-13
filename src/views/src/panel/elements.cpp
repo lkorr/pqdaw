@@ -1331,6 +1331,7 @@ void registerGeneric() {
     registerEmbedElement(reg);  // GU.6
     registerEngineElements(reg);  // GU.7
     registerResponseElements(reg);  // EQ.4
+    registerTempoSlider(reg);  // DT.1
   });
 }
 

@@ -135,6 +135,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_stock_presets.cpp  # GU.10: the stock devices and the default instrument as group presets (renders vs the retired patches, interp == JIT)
     app/test_group_oversample.cpp  # TX.group-oversample: oversampled groups (linear == 1x spectrum, tanh aliasing, nesting, per voice, response == impulse, the setting)
+    app/test_delay_tap.cpp  # DT.1: the Delay Tap renders (impulse at the time, half samples, stereo, sync at the tempo, a VCA feedback loop, a glide)
     app/test_eq_render.cpp  # EQ.3: a band == a plain svf bit for bit per type; the EQ's L/R and M/S == Stereo with equal chains; chain B costs nothing in Stereo
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_voice_smooth.cpp  # AU.voices: no clicks at Play / note on / note off; voices end on time
@@ -209,6 +210,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_nested_groups_view.cpp  # GU.2: capsules in capsules, the instrument group's look, nest / unnest, copy / paste, group presets from the node menu (real dispatch), golden
     views/test_group_panels.cpp  # GU.3: element goldens, a group drawn as its panel (circuit, Device view + inspector), every element edit through real dispatch
     views/test_module_faces.cpp  # GU.5b: the modules' old faces from rich elements (dial markers as curve points), an opened group as a circuit, goldens
+    views/test_delay_tap_face.cpp  # DT.1: the Delay Tap's tempo slider (gravity, magnet, ms / note switch, sync steps) by real dispatch, goldens
     views/test_stock_panels.cpp  # GU.10: the stock presets closed as their panels (goldens)
     views/test_engine_elements.cpp  # GU.7: the engines' faces as rich elements, the modules' panels, harmonic / envelope drags
     views/test_panel_window.cpp  # GU.5: the panel window (open / move / resize / minimise), send to panel (button, P, drag), the editor and inspector, mod-source cables, link lines, goldens
@@ -466,6 +468,7 @@ pq_add_test(pq_tests_document
     document/test_blocks.cpp  # GU.2: nested groups (rules, remove / move, nest / unnest), atom + value blocks, block sets, group presets
     document/test_one_hierarchy.cpp  # GU.11: every fixture and module preset holds only blocks, groups and native engines
     document/test_group_response.cpp  # EQ.2: a group's analytic In -> Out response (lowered once, knobs re-read)
+    document/test_delay_tap.cpp  # DT.1: the Delay Tap's time law, note values, its group
     document/test_eq_modules.cpp  # EQ.3: the band and EQ modules (roles, const inputs), their ops (one undo step, save / load), the EQ's response matrix
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
     document/test_lower_incremental.cpp  # PF.6: the lowering given the previous one equals a fresh one after each edit; untouched tracks keep their patches

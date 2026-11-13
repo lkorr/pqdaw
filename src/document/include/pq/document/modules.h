@@ -41,7 +41,8 @@ namespace pq::doc {
 enum class ModuleKind : uint8_t {
   PhaseAccumulator, Vca, Wavetable, Envelope, Oscilloscope, Spectrum, Spectrogram, WavetableSynth,
   Utility, Saturator, Lfo, Operator,  // GU.10: the stock devices
-  EqBand, Eq                          // EQ.3
+  EqBand, Eq,                         // EQ.3
+  DelayTap                            // DT.1
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -259,6 +260,55 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o = {});
 // `panel` with its band strip laid out again for `bands` (A, B): the elements tagged as strip columns replaced, the
 // panel's width (and its plate) following the longest chain. Element ids: fresh ones past the panel's.
 Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
+
+// ---- DT.1: the Delay Tap (docs/plans/DT.md, SPEC §15 2026-11-12 "a delay tap meta module") ----------------------
+// A group In → delay_cubic → Out: the input delayed, nothing else (feedback is a wire from its Out back into its In
+// through something that scales: a VCA). Stereo when the input is. Its value blocks (found by role, kDelayRoleSetting):
+//   Time   the knob position x through the curve 62.5 ms · (e^(k·x) − 1), k = 2·ln 9 (Exp0: one Exp segment of bend
+//          ln 81): 0 at 0, 500 ms at 0.5, 5 s at 1, in SECONDS (dsp::CurveUnit::Seconds: it reads "375 ms" / "1.25 s";
+//          a wire adds seconds, the delay atom's own unit)
+//   Sync   a stepped index into noteValues() (ascending duration); seconds = beats · 60 / transport.bpm (the block's
+//          tempo), at most 5 s
+//   Mode   0 = Time (ms), 1 = Sync (♪); stepped, automatable
+// The delay = lerp(Time, Sync seconds, Mode) → delay_cubic's time (max 5 s: its ring sized and allocated off-thread by
+// the scheduler; per-voice lanes inside instrument groups). The read is ≥ 2 samples (the cubic read's minimum). The
+// note value's beats are arithmetic on the index, and Mode a lerp, not muxes: a stepped block reaching a mux index
+// would lower as a literal choice (lower.h "Structural value blocks"), so a sync step or a mode switch would recompile
+// the unit (measured: the delay line restarted empty). As written all three are runtime params, and every param-rate
+// move of the delay (automation, a drag, a sync step, a mode switch, the tempo) glides through the scheduler's param
+// ramp (TX.smooth: linear over 20 ms from where it is); an audio-rate wire into Time is not smoothed.
+// Its panel: one `temposlider` element (the reusable tempo-marked slider, pq/views/panel) bound to Time, Sync and Mode.
+enum class DelayRole : uint8_t { None = 0, Time, Sync, Mode };
+inline constexpr std::string_view kDelayRoleSetting = "delayRole";
+inline constexpr double kDelayTapMaxSeconds = 5.0;
+// A sync note value: its duration in beats (a quarter = 1 beat; in ticks beats · pq::kPpq), its label ("1/4", "1/8.",
+// "1/4T") and its kind.
+enum class NoteValueKind : uint8_t { Straight, Dotted, Triplet };
+struct NoteValue {
+  double beats = 1.0;
+  std::string_view label;
+  NoteValueKind kind = NoteValueKind::Straight;
+};
+// 1/64 … 1/1, straight, dotted and triplet: 21 values in ascending duration.
+std::span<const NoteValue> noteValues() noexcept;
+inline constexpr uint32_t kNoteValueQuarter = 13;  // noteValues()[13] is 1/4
+// noteValues()[index] (clamped) in seconds at `bpm`, at most kDelayTapMaxSeconds.
+double noteValueSeconds(uint32_t index, double bpm) noexcept;
+dsp::Curve delayTimeCurve();
+DelayRole delayRole(const Device& d) noexcept;
+struct DelayTapRoles {
+  DeviceId group, time, sync, mode, delay;
+};
+struct DelayTapOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the group it sits in, or none
+  std::string name;  // "" = "Delay Tap"
+  double time = 0.5;                       // the Time knob position (0.5: 500 ms)
+  uint32_t sync = kNoteValueQuarter;       // the Sync index
+  uint32_t mode = 0;                       // 0 Time, 1 Sync
+  bool active = true;
+};
+BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o = {}, DelayTapRoles* roles = nullptr);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).
