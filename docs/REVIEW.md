@@ -1442,3 +1442,17 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: whether Pre FX on a MIDI track as the instrument's output and None switching the On block off are right
   (Q?-DY.2-a); whether the master and group tracks should be offered (a group holding this track makes a loop: it
   plays, delayed a sample).
+## 2026-11-13 · FZ.4 · Flatten, Bounce to New Track, consolidate audio (task/FZ.4-flatten-bounce)
+- Try: freeze a MIDI track, wait for its render (the badge stops filling), right-click → Flatten: the status line counts
+  "Flatten: rendering… n%" (with Cancel), then the track turns into an audio track with clips named after it (one per
+  stretch of sound; long silences stay empty) — play it against Ctrl+Z (frozen again) — and `samples/frozen/<name>.wav`
+  appears in the project folder. Right-click a track → Bounce to New Track (with and without a time selection): an audio
+  track "<name> Bounce" appears below, same colour and mixer, and the source greys out (deactivated). Drag a range over
+  audio clips (with gains, fades, a crossfade) and press Ctrl+J: after the render they become one clip. Ctrl+Z each.
+  Edit the track while a long bounce renders: the result is dropped ("the track changed while it rendered").
+- Look at: the menu entries' enabling (Flatten greyed while rendering or unfrozen); the status line's progress and
+  Cancel; clip names / colours of the new clips; the new track's place.
+- Judge: whether the bounced track should copy the mixer (Q?-FZ.4-a: it does, so the song sounds the same); the 2 ms
+  fade-in a flattened clip gets when the track sounds at the very start of the song; whether consolidated audio should
+  be warped (it is warp Off: exact, but it no longer follows a tempo change); whether a track's kept-live blocks
+  (cabled to another track) should survive Flatten (today they go, with their cables).
