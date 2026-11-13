@@ -512,3 +512,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: merged task/TX.lane-drop (2a44f3a7): FileDrop generalised over EditSurface (dropSpotAt / dropInsert); ProjectCanvas forwards dragOver / drop / leave to it; ghosts drawn by ProjectPatchView::paintLaneDrop. Same rules as the arrangement (sample_drop.h).
 - Verified (worker): pq_tests_views default tier pass; 4 new real drag-dispatch tests; arrangement drop tests unchanged. Orchestrator: pq_tests_views on the merged main (both branches touch canvas.cpp).
 - Notes: browser device drops onto the patch canvas are not handled (none today).
+
+## 2026-11-12 · DT.4 merged · main
+- Did: merged task/DT.4-repitch-samples (8a395136): delay_fade `crossfade` input (param rate, no recompile): Repitch (default) glides the head for every change along a velocity-carrying Hermite; Crossfade = DT.2 bit for bit. Delay Tap Glide param + face toggle; readout "667 ms | 1/3" on a marking, "3.00 ms | 144 smp" below 10 ms; micro bar (1 … 256 samples, drag / type) opened by a toggle. Cause of "no repitch on snap": DT.2 crossfaded any change beyond −30 / +15 ms of the head; snaps jump further.
+- Verified: worker (before rebase) dsp delay 24/24, views delay 21/21 (real dispatch), playback delay tap 7/7 (interp == JIT). Orchestrator after rebase: -Affected 1 exe failed (pq_tests_graph: delay_fade missing from the atom list / kernel count since DT.2, schedule dumps' DelayState size since DT.2 + DT.4), fixed, pq_tests_graph pass; pq_tests_dsp default + slow pass; ship pq_bench_dsp links.
+- Perf: release A/B, Crossfade per-sample jumps 19.9 / 30.3 → 20.0 / 30.8 ns (L1 / L8), at rest unchanged ≈ 1.3; Repitch per-sample jumps 16.5 / 21.5. DelayState 352 → 480 B.
+- Notes: Q247. Goldens: delay-tap panel / sync / stretched re-recorded, micro / crossfade new.

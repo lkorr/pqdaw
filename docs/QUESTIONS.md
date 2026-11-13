@@ -1151,7 +1151,7 @@ pq/document/lower.h "Groups"); (b) a Noise-only rule (a clock "seen" latch at ru
 Noise module (the user wires the engine's clock inside). Choice: (a): it is what "unwired" means for every engine, and
 it matches the Envelope's own description ("unwired, the envelope itself").
 
-## Q?-DT.4-a · 2026-11-12 · DT.4 · Repitch's glide law, the samples threshold, the micro bar's range and toggle
+## Q247 · 2026-11-12 · DT.4 · Repitch's glide law, the samples threshold, the micro bar's range and toggle
 Context: docs/plans/DT.md "DT.4", kernels_memory.cpp `DelayFade`, tempo_slider.cpp. Choices (each the most reversible
 found; constants in one place each):
 1. **The glide**: a velocity-carrying cubic Hermite arriving at rest over N = |Δ|·2 (longer) / |Δ|/2 (shorter) frames,
