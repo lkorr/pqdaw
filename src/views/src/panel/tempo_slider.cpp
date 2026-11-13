@@ -5,6 +5,8 @@
 //   slots     0 "time"  the control (its curve maps the knob to seconds; a Hz curve: the markings at 1 / seconds)
 //             1 "sync"  optional: a stepped control indexing doc::noteValues() (the synced note value)
 //             2 "mode"  optional: a 0 / 1 control (0 the time, 1 the sync drives); with it a small ms / ♪ switch
+//             3 "glide" DT.4, optional: a 0 / 1 control (0 Repitch, 1 Crossfade: the Delay Tap's Glide); with it a small
+//                       toggle left of the ms / ♪ switch showing the mode (a bend: Repitch, a cross: Crossfade)
 //   markings  DT.3 (pq/views/panel/tempo_marks.h): above the groove, note values as reduced fractions of a whole note
 //             (1/4, 1/12, 3/16, 1/7 …) whose duration at the tempo (PanelTarget::tempoBpm: the playhead's while
 //             playing, else the start marker's) lies inside the curve's range, shown by simplicity while there is room
@@ -14,7 +16,16 @@
 //             the host's frame tick (Face::frameTick, ≤ 60 Hz while the transport plays) compares the playhead's tempo
 //             with the one last drawn and repaints only on a change.
 //   readout   below the groove, left: "375 ms" / "1.25 s" (time); in sync mode the note value ("3/16", "1/6") and the
-//             seconds it gives at the tempo.
+//             seconds it gives at the tempo. DT.4: a time on a marking (snapped, typed or automated there: any candidate,
+//             shown or not) names it, "26 ms | 1/7"; a time below kSamplesBelow (10 ms) reads in ms to 0.01 and in
+//             samples at the engine's rate (PanelTarget::sampleRate), "3.00 ms | 144 smp" (the delay line's floor of 1
+//             sample shown as such). The text shrinks to fit left of the buttons (and is the hover info's body).
+//   micro     DT.4 (a seconds curve only): a magnifier toggle (left of the buttons) opens a second bar below — 1 … 256
+//             SAMPLES, linear, whole samples: a drag (relative; Shift: fine) snaps to whole samples, its number box takes
+//             a typed count (click it, type, Enter: one undo step; Esc cancels). Both set the same time (seconds =
+//             samples / rate; one undo step per gesture). Opening it is a panel edit (the element's style field
+//             "micro", one "Edit Panel" step): the element and its panel grow by kMicroH (a plate spanning the panel
+//             with them, elements below move down), so the block re-lays out and its ports and cables follow.
 //   gravity   a mouse drag of the time (relative, Shift: fine, as the generic slider) sticks to a SHOWN marking while
 //             the knob is within kGravityPx logical px of it — it stays there until the pointer has moved past that
 //             zone; where markings are closer than that, each side's zone shrinks to 40 % of the gap (room to stop
@@ -36,6 +47,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <numeric>
 #include <string>
 
@@ -136,17 +148,29 @@ namespace {
 constexpr float kReadoutPx = 8.0f;
 constexpr double kGravityPx = 6.0;  // logical px
 constexpr double kGapShare = 0.4;   // at most this share of the gap to the neighbouring marking
-constexpr size_t kTime = 0, kSync = 1, kMode = 2;
-constexpr std::array<std::string_view, 3> kSlots = {"time", "sync", "mode"};
+constexpr size_t kTime = 0, kSync = 1, kMode = 2, kGlide = 3;
+constexpr std::array<std::string_view, 4> kSlots = {"time", "sync", "mode", "glide"};
 constexpr size_t kSyncs = 21;
 constexpr float kDefaultW = 168.0f, kDefaultH = 64.0f;
+constexpr float kMicroH = 24.0f;         // DT.4: the micro bar's rows (the element and its panel grow by it)
+constexpr double kMicroMax = 256.0;      // the micro bar's range: 1 … 256 samples
+constexpr double kSamplesBelow = 0.010;  // seconds: shorter times read in samples too
 
 uint64_t mix(uint64_t h, uint64_t v) noexcept { return (h ^ v) * 0x100000001B3ull + (h >> 29); }
 
 std::string secondsText(double s) {
   char b[32];
   if (s >= 1.0 - 1e-9) std::snprintf(b, sizeof b, "%.2f s", s);
-  else std::snprintf(b, sizeof b, "%.0f ms", s * 1000.0);
+  else if (s >= kSamplesBelow) std::snprintf(b, sizeof b, "%.0f ms", s * 1000.0);
+  else std::snprintf(b, sizeof b, "%.2f ms", s * 1000.0);
+  return b;
+}
+// A sample count: whole ("144"), or to a tenth when the time lies between samples.
+std::string samplesText(double n) {
+  char b[32];
+  const double r = std::round(n);
+  if (std::abs(n - r) < 1e-6) std::snprintf(b, sizeof b, "%.0f", r);
+  else std::snprintf(b, sizeof b, "%.1f", n);
   return b;
 }
 
@@ -156,6 +180,7 @@ public:
   static constexpr StyleSpec kStyle[] = {
       {"colour", StyleSpec::Type::Token, 0, "value"},
       {"gravity", StyleSpec::Type::Number, 1.0, {}, {}, 0.0, 1.0},
+      {"micro", StyleSpec::Type::Number, 0.0, {}, {}, 0.0, 1.0},  // DT.4: the micro (samples) bar open
   };
 
   bool interactive() const noexcept override { return true; }
@@ -205,15 +230,20 @@ public:
     const Rgba cap = hot ? ui::lerp(th.face.handle, th.face.value, 0.35f) : th.face.handle;
     p.roundedRect({hx - 3.0f, g.y0 - 4.0f, hx + 3.0f, g.y1 + 4.0f}, 2.0f, ui::mulAlpha(th.face.body, 0.9f));
     p.roundedRect({hx - 2.0f, g.y0 - 3.0f, hx + 2.0f, g.y1 + 3.0f}, 1.5f, on >= 0 ? accent : cap);
-    // The readout.
+    // The readout (shrunk to fit left of the buttons).
     const float ry = g.y1 + 12.0f;
+    const float room = buttonsLeft(t) - 4.0f - g.x0;
+    auto fit = [room](size_t chars) { return std::clamp(room / (static_cast<float>(chars) * 0.56f), 5.0f, kReadoutPx); };
     if (sync) {
       const doc::NoteValue& nv = doc::noteValues()[syncIndex(t)];
-      p.textAligned({g.x0, ry}, nv.label, kReadoutPx, accent, 0.0f);
-      const float lw = static_cast<float>(nv.label.size()) * kReadoutPx * 0.56f + 6.0f;
-      p.textAligned({g.x0 + lw, ry}, secondsText(doc::noteValueSeconds(syncIndex(t), m.bpm)), kReadoutPx, th.face.ink, 0.0f);
+      const std::string secs = secondsText(doc::noteValueSeconds(syncIndex(t), m.bpm));
+      const float px = fit(nv.label.size() + secs.size() + 1);
+      p.textAligned({g.x0, ry}, nv.label, px, accent, 0.0f);
+      const float lw = static_cast<float>(nv.label.size()) * px * 0.56f + 6.0f;
+      p.textAligned({g.x0 + lw, ry}, secs, px, th.face.ink, 0.0f);
     } else {
-      p.textAligned({g.x0, ry}, readoutText(t, v, kTime), kReadoutPx, ok ? accent : th.face.ink, 0.0f);
+      const std::string text = timeReadout(t, m, v);
+      p.textAligned({g.x0, ry}, text, fit(text.size()), ok ? accent : th.face.ink, 0.0f);
     }
     // The ms / ♪ switch (with a mode binding) and the magnet.
     if (binding(kMode) != nullptr) {
@@ -230,6 +260,38 @@ public:
       p.roundedRect(r, 3.0f, gravity ? ui::mulAlpha(accent, 0.85f) : ui::lerp(th.face.body, th.face.track, 0.6f));
       magnetGlyph(p, r, gravity ? th.face.body : ui::mulAlpha(th.face.ink, sync ? 0.4f : 0.8f));
     }
+    // DT.4: Repitch / Crossfade (the glyph shows the mode) and the micro bar's magnifier.
+    const Rgba off = ui::lerp(th.face.body, th.face.track, 0.6f);
+    if (binding(kGlide) != nullptr) {
+      const Rect r = glideRect();
+      p.roundedRect(r, 3.0f, off);
+      glideGlyph(p, r, crossfade(t), th.face.ink);
+    }
+    if (hasMicro(t)) {
+      const Rect r = microRect();
+      const bool open = microOpen();
+      p.roundedRect(r, 3.0f, open ? ui::mulAlpha(accent, 0.85f) : off);
+      magnifierGlyph(p, r, open ? th.face.body : ui::mulAlpha(th.face.ink, 0.8f));
+      if (open) paintMicro(p, t, th, accent, ok);
+    }
+  }
+
+  // DT.4: the readout and the hover info's body.
+  void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
+    ValueElement::describe(t, title, body);
+    if (binding(kTime) == nullptr || !bound(t, kTime).valid) return;
+    const Marks& m = marks(t, marks_.ppu > 0.0f ? marks_.ppu : 1.0f);
+    if (syncMode(t)) {
+      const uint32_t i = syncIndex(t);
+      body = std::string(doc::noteValues()[i].label) + " | " + secondsText(doc::noteValueSeconds(i, m.bpm)) + ".";
+    } else {
+      body = timeReadout(t, m, pos(t, kTime)) + ".";
+    }
+    body += " Drag: the time (Shift: fine; it sticks to the markings unless the magnet is off).";
+    if (binding(kGlide) != nullptr)
+      body += crossfade(t) ? " Crossfade: a jump of the time crossfades two read heads (no pitch)."
+                           : " Repitch: a change of the time bends the pitch as the read head glides (tape).";
+    if (microOpen()) body += " The bar below: whole samples (click the number to type one).";
   }
 
   // Live tempo: while the transport plays, each host frame compares the playhead's tempo with the one the markings
@@ -245,12 +307,16 @@ public:
     if (h == kAnyChange) return h;
     h = mix(h, std::bit_cast<uint64_t>(t.tempoBpm()));
     h = mix(h, drag_ ? 1u : 0u);
+    h = mix(h, std::bit_cast<uint64_t>(t.sampleRate()));
+    h = mix(h, typing_ ? std::hash<std::string>{}(text_) | 1u : 0u);
     return h == kAnyChange ? h - 1 : h;
   }
 
   bool hit(Vec2 l) const noexcept override {
     const Rect g = groove();
     if (l.x >= g.x0 - 5.0f && l.x <= g.x1 + 5.0f && l.y >= g.y0 - 6.0f && l.y <= g.y1 + 5.0f) return true;  // the knob's reach
+    if (binding(kGlide) != nullptr && inside(glideRect(), l)) return true;
+    if (inside(microRect(), l) || (microOpen() && (inside(microReach(), l) || inside(boxRect(), l)))) return true;
     return (binding(kMode) != nullptr && inside(modeRect(), l)) || inside(magnetRect(), l);
   }
 
@@ -259,7 +325,35 @@ public:
     noteGestures(e, t);
     if (!syncMode(t) && wheelStep(e, t)) return true;
     if (e.kind == K::Down) {
+      if (typing_) commitTyping(t);
       if (e.button != ui::PointerButton::Left) return false;
+      // DT.4: the Glide toggle, the micro bar's magnifier, its number box and its groove.
+      if (binding(kGlide) != nullptr && inside(glideRect(), e.local)) {
+        if (editable(t, kGlide)) t.setOnce(*binding(kGlide), crossfade(t) ? 0.0 : 1.0, "Delay Glide");
+        return true;
+      }
+      if (hasMicro(t) && inside(microRect(), e.local)) {
+        toggleMicro(t);
+        return true;
+      }
+      if (microOpen() && hasMicro(t) && inside(boxRect(), e.local)) {
+        if (editable(t, kTime)) {
+          typing_ = true;
+          text_.clear();
+        }
+        return true;
+      }
+      if (microOpen() && hasMicro(t) && inside(microReach(), e.local)) {
+        if (!editable(t, kTime)) return false;
+        drag_ = true;
+        dragMicro_ = true;
+        dragSync_ = false;
+        startDev_ = e.device;
+        lastSamples_ = std::clamp(std::round(samplesOf(t, pos(t, kTime))), 1.0, kMicroMax);
+        dragStart_ = lastSamples_;
+        t.begin(*binding(kTime), "Delay Samples");
+        return true;
+      }
       if (binding(kMode) != nullptr && inside(modeRect(), e.local)) {
         if (editable(t, kMode)) {
           const double to = e.local.x >= (modeRect().x0 + modeRect().x1) * 0.5f ? 1.0 : 0.0;
@@ -285,6 +379,18 @@ public:
       dragStart_ = shownPosition(t, marks(t, ppu(e)));
       lastSync_ = sync ? syncIndex(t) : 0;
       t.begin(*binding(slot), sync ? "Delay Sync" : "Delay Time");
+      return true;
+    }
+    if (e.kind == K::Move && drag_ && dragMicro_) {
+      const Rect mg = microGroove();
+      const double len = std::max(4.0, static_cast<double>(mg.x1 - mg.x0) * e.pxPerUnit);
+      const bool fine = (e.mods & ui::mod::kShift) != 0;
+      const double moved = (static_cast<double>(e.device.x) - startDev_.x) / len * (kMicroMax - 1.0) * (fine ? 0.1 : 1.0);
+      const double n = std::clamp(std::round(dragStart_ + moved), 1.0, kMicroMax);
+      if (n != lastSamples_) {
+        lastSamples_ = n;
+        t.setPosition(*binding(kTime), placeOfSamples(t, n));
+      }
       return true;
     }
     if (e.kind == K::Move && drag_) {
@@ -323,13 +429,38 @@ public:
       return true;
     }
     if (e.kind == K::Up && drag_) {
+      dragMicro_ = false;
       endDrag(t);
       return true;
     }
     return false;
   }
-  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override { return !syncMode(t) && valueKey(e, t); }
-  ui::Cursor cursor() const noexcept override { return ui::Cursor::ResizeEW; }
+  void cancelDrag(PanelTarget& t) override {
+    dragMicro_ = false;
+    ValueElement::cancelDrag(t);
+  }
+  // DT.4: the micro bar's type-in (digits; Enter commits one undo step, Esc cancels, a click elsewhere commits).
+  bool wantsText() const noexcept override { return typing_; }
+  bool onText(const ui::TextEvent& e, PanelTarget&) override {
+    if (!typing_) return false;
+    for (const char c : e.text())
+      if ((c >= '0' && c <= '9') || c == '.') text_ += c;
+    return true;
+  }
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override {
+    if (typing_) {
+      if (!e.down) return true;
+      if (e.key == ui::key::kReturn) commitTyping(t);
+      else if (e.key == ui::key::kEscape) typing_ = false;
+      else if (e.key == ui::key::kBackspace && !text_.empty()) text_.pop_back();
+      return true;
+    }
+    return !syncMode(t) && valueKey(e, t);
+  }
+  void focusLost(PanelTarget& t) override {
+    if (typing_) commitTyping(t);
+  }
+  ui::Cursor cursor() const noexcept override { return typing_ ? ui::Cursor::Text : ui::Cursor::ResizeEW; }
   std::optional<ControlAnchor> anchor() const override {
     const Rect g = groove();
     return ControlAnchor{{(g.x0 + g.x1) * 0.5f, (g.y0 + g.y1) * 0.5f}, 0.0f, desc_.w * 0.5f};
@@ -340,6 +471,7 @@ public:
     if (const doc::Binding* b = binding(kTime)) fn(*b, track);
     if (const doc::Binding* b = binding(kSync)) fn(*b, track);
     if (const doc::Binding* b = binding(kMode)) fn(*b, modeRect());
+    if (const doc::Binding* b = binding(kGlide)) fn(*b, glideRect());
   }
 
 private:
@@ -370,6 +502,137 @@ private:
   Rect magnetRect() const noexcept {
     const Rect g = groove();
     return {desc_.w - 24.0f, g.y1 + 6.0f, desc_.w - 10.0f, g.y1 + 18.0f};
+  }
+  // DT.4: the Glide toggle and the micro bar's magnifier, left of the ms / ♪ switch (each 14 wide, 4 apart).
+  Rect glideRect() const noexcept {
+    const Rect g = groove();
+    return {desc_.w - 76.0f, g.y1 + 6.0f, desc_.w - 62.0f, g.y1 + 18.0f};
+  }
+  Rect microRect() const noexcept {
+    const Rect g = groove();
+    const float x1 = binding(kGlide) != nullptr ? desc_.w - 80.0f : desc_.w - 62.0f;
+    return {x1 - 14.0f, g.y1 + 6.0f, x1, g.y1 + 18.0f};
+  }
+  // The leftmost button's left edge (the readout's room ends 4 before it).
+  float buttonsLeft(const PanelTarget& t) const {
+    if (hasMicro(t)) return microRect().x0;
+    if (binding(kGlide) != nullptr) return glideRect().x0;
+    return binding(kMode) != nullptr ? modeRect().x0 : magnetRect().x0;
+  }
+  // The micro bar (when open): its labels, ticks, groove and number box below the buttons' row.
+  float microTop() const noexcept { return groove().y1 + 22.0f; }
+  Rect microGroove() const noexcept {
+    const float y = microTop() + 18.0f;
+    return {groove().x0, y - 2.0f, std::max(groove().x0 + 1.0f, desc_.w - 58.0f), y + 2.0f};
+  }
+  Rect microReach() const noexcept {
+    const Rect mg = microGroove();
+    return {mg.x0 - 5.0f, mg.y0 - 6.0f, mg.x1 + 5.0f, mg.y1 + 5.0f};
+  }
+  Rect boxRect() const noexcept {
+    const float y = microTop() + 18.0f;
+    return {desc_.w - 52.0f, y - 6.0f, desc_.w - 10.0f, y + 6.0f};
+  }
+  bool microOpen() const noexcept { return num("micro", 0.0) >= 0.5 && desc_.h >= microTop() + 24.0f; }
+  // The micro bar needs a time in seconds (not a rate).
+  bool hasMicro(const PanelTarget& t) const {
+    const BoundInfo& i = bound(t, kTime);
+    return i.valid && i.curve.unit == dsp::CurveUnit::Seconds;
+  }
+  bool crossfade(const PanelTarget& t) const { return binding(kGlide) != nullptr && pos(t, kGlide) >= 0.5; }
+  // The delay in samples at the engine's rate for the time knob at `position` (the delay line's floor: 1).
+  double samplesOf(const PanelTarget& t, double position) const {
+    return std::max(1.0, dsp::evalCurve(bound(t, kTime).curve, position) * t.sampleRate());
+  }
+  // The time knob's position for `n` samples: the curve's inverse, refined by bisection so the time is n / rate to the
+  // last bit the curve gives (the inverse alone can be an ulp or two off).
+  double placeOfSamples(const PanelTarget& t, double n) const {
+    const dsp::Curve& c = bound(t, kTime).curve;
+    const double want = n / t.sampleRate();
+    const double p = placeOf(t, want);
+    double lo = std::max(0.0, p - 1e-9), hi = std::min(1.0, p + 1e-9);
+    if (!(dsp::evalCurve(c, lo) <= want && dsp::evalCurve(c, hi) >= want)) return p;
+    for (int k = 0; k < 64 && lo < hi; ++k) {
+      const double mid = 0.5 * (lo + hi);
+      if (mid <= lo || mid >= hi) break;
+      if (dsp::evalCurve(c, mid) < want) lo = mid;
+      else hi = mid;
+    }
+    const double eLo = std::abs(dsp::evalCurve(c, lo) - want), eHi = std::abs(dsp::evalCurve(c, hi) - want);
+    const double eP = std::abs(dsp::evalCurve(c, p) - want);
+    return eP <= std::min(eLo, eHi) ? p : eLo <= eHi ? lo : hi;
+  }
+  // DT.4: the time readout: "375 ms", "26 ms | 1/7" on a marking, "3.00 ms | 144 smp" below kSamplesBelow.
+  std::string timeReadout(const PanelTarget& t, const Marks& m, double v) const {
+    const BoundInfo& i = bound(t, kTime);
+    if (!i.valid) return {};
+    std::string out;
+    if (i.curve.unit == dsp::CurveUnit::Seconds) {
+      const double sr = t.sampleRate();
+      double s = dsp::evalCurve(i.curve, v);
+      if (s < kSamplesBelow) {
+        const double n = std::max(1.0, s * sr);
+        s = n / sr;
+        out = secondsText(s) + " | " + samplesText(n) + " smp";
+      } else {
+        out = secondsText(s);
+      }
+    } else {
+      out = readoutText(t, v, kTime);
+    }
+    if (const int32_t k = markOn(t, m, v); k >= 0) out += " | " + m.list[static_cast<size_t>(k)].label;
+    return out;
+  }
+  // The marking the time is exactly on — any candidate, shown or not (the simplest first) —, −1: none.
+  int32_t markOn(const PanelTarget& t, const Marks& m, double v) const {
+    const dsp::Curve& c = bound(t, kTime).curve;
+    const double s = dsp::evalCurve(c, v);
+    const bool hz = c.unit == dsp::CurveUnit::Hz;
+    for (size_t k = 0; k < m.list.size(); ++k) {
+      const TempoMark& mk = m.list[k];
+      const double units = hz ? 1.0 / mk.seconds : mk.seconds;
+      if (std::abs(mk.pos - v) < 1e-9 || std::abs(units - s) <= 1e-9 * std::abs(units)) return static_cast<int32_t>(k);
+    }
+    return -1;
+  }
+  void commitTyping(PanelTarget& t) {
+    typing_ = false;
+    double n = 0.0;
+    const auto [end, ec] = std::from_chars(text_.data(), text_.data() + text_.size(), n);
+    if (ec != std::errc() || end == text_.data() || binding(kTime) == nullptr || !editable(t, kTime)) return;
+    const BoundInfo& i = bound(t, kTime);
+    const double most = std::max(1.0, std::floor(std::max(i.curve.min, i.curve.max) * t.sampleRate()));
+    t.setOnce(*binding(kTime), placeOfSamples(t, std::clamp(std::round(n), 1.0, most)), "Delay Samples");
+  }
+  void paintMicro(ui::FacePainter& p, const PanelTarget& t, const ui::Theme& th, Rgba accent, bool ok) const {
+    const Rect mg = microGroove();
+    const float gy = (mg.y0 + mg.y1) * 0.5f, rr = (mg.y1 - mg.y0) * 0.5f;
+    auto xOf = [&](double n) { return mg.x0 + (mg.x1 - mg.x0) * static_cast<float>((n - 1.0) / (kMicroMax - 1.0)); };
+    p.roundedRect(mg, rr, th.face.track);
+    // Ticks every 16 samples, labelled every 64 (and 1).
+    for (int n = 0; n <= static_cast<int>(kMicroMax); n += 16) {
+      const double at = std::max(1, n);
+      const bool major = n % 64 == 0;
+      const float x = xOf(at);
+      p.line({x, gy - rr - 2.0f - (major ? 5.0f : 3.0f)}, {x, gy - rr - 2.0f}, 1.0f, ui::mulAlpha(th.face.tick, major ? 1.0f : 0.6f));
+      if (major) {
+        char b[8];
+        std::snprintf(b, sizeof b, "%d", static_cast<int>(at));
+        p.text({x, gy - rr - 12.0f}, b, kMarkTextPx * 0.85f, th.face.ink);
+      }
+    }
+    const double n = samplesOf(t, pos(t, kTime));
+    const bool beyond = n > kMicroMax + 1e-9;
+    const float hx = xOf(std::clamp(n, 1.0, kMicroMax));
+    if (hx - mg.x0 > 0.2f) p.roundedRect({mg.x0, mg.y0, hx, mg.y1}, rr, ui::mulAlpha(accent, beyond ? 0.35f : 1.0f));
+    p.roundedRect({hx - 3.0f, mg.y0 - 4.0f, hx + 3.0f, mg.y1 + 4.0f}, 2.0f, ui::mulAlpha(th.face.body, 0.9f));
+    p.roundedRect({hx - 2.0f, mg.y0 - 3.0f, hx + 2.0f, mg.y1 + 3.0f}, 1.5f, beyond ? ui::lerp(th.face.handle, th.face.track, 0.5f) : th.face.handle);
+    // The number box: the count (or the type-in).
+    const Rect box = boxRect();
+    p.roundedRect(box, 2.5f, ui::lerp(th.face.body, th.face.track, 0.6f));
+    if (typing_) outlineRect(p, box, 2.5f, 1.0f, th.circuit.selected);
+    const std::string text = typing_ ? text_ + "|" : samplesText(n) + " smp";
+    p.text({(box.x0 + box.x1) * 0.5f, (box.y0 + box.y1) * 0.5f}, text, kMarkTextPx, typing_ ? th.face.ink : (ok ? accent : th.face.ink));
   }
   static bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 && p.y <= r.y1; }
 
@@ -453,6 +716,45 @@ private:
     return marks_;
   }
 
+  // DT.4: open / close the micro bar — the element's "micro" field, its height and its panel's (a plate spanning the
+  // panel grows with it, elements below it move): one "Edit Panel" step.
+  void toggleMicro(PanelTarget& t) {
+    const doc::Binding* b = binding(kTime);
+    if (b == nullptr) return;
+    const doc::PanelElement me = desc_;
+    const bool open = num("micro", 0.0) >= 0.5;
+    const float dh = open ? -kMicroH : kMicroH;
+    (void)t.run([me, open, dh](const doc::Project& p, doc::IdSource&) -> doc::ops::EditResult {
+      for (doc::DeviceId g = doc::findDevice(p, me.bindings.front().device).device != nullptr
+                                 ? doc::findDevice(p, me.bindings.front().device).device->group
+                                 : doc::DeviceId{};
+           g.valid();) {
+        const doc::Device* d = doc::findDevice(p, g).device;
+        if (d == nullptr) break;
+        if (d->panel != nullptr)
+          if (const doc::PanelElement* e = d->panel->find(me.id); e != nullptr && e->kind == me.kind && e->bindings == me.bindings) {
+            auto next = std::make_shared<doc::Panel>(*d->panel);
+            const float bottom = e->y + e->h, height = next->height;
+            for (doc::PanelElement& x : next->elements) {
+              if (x.id == me.id) {
+                x.setField(doc::styleNumber("micro", open ? 0.0 : 1.0));
+                x.h = std::max(1.0f, x.h + dh);
+              } else if (x.y <= 0.5f && x.y + x.h >= height - 0.5f) {
+                x.h = std::max(1.0f, x.h + dh);  // a plate spanning the panel
+              } else if (x.y >= bottom - 0.5f) {
+                x.y = std::max(0.0f, x.y + dh);  // below the slider
+              }
+            }
+            next->height = std::max(1.0f, height + dh);
+            for (const doc::PanelElement& x : next->elements) next->height = std::max(next->height, x.y + x.h);
+            return doc::ops::setGroupPanel(p, g, std::move(next));
+          }
+        g = d->group;
+      }
+      return Error{ErrorCode::InvalidArgument, "The micro bar's panel was not found", {}};
+    });
+  }
+
   void toggleGravity(PanelTarget& t) {
     const doc::Binding* b = binding(kTime);
     if (b == nullptr) return;
@@ -484,6 +786,26 @@ private:
     p.line({c.x + 0.4f, c.y + 2.4f}, {c.x + 0.4f, c.y - 3.6f}, 0.9f, col);
     p.line({c.x + 0.4f, c.y - 3.6f}, {c.x + 2.6f, c.y - 1.6f}, 0.9f, col);
   }
+  // Repitch: a bend (the pitch glides down and back); Crossfade: two crossing lines.
+  static void glideGlyph(ui::FacePainter& p, const Rect& r, bool crossfade, Rgba col) {
+    const Vec2 c{(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
+    if (crossfade) {
+      p.line({c.x - 4.0f, c.y - 3.0f}, {c.x + 4.0f, c.y + 3.0f}, 1.2f, col);
+      p.line({c.x - 4.0f, c.y + 3.0f}, {c.x + 4.0f, c.y - 3.0f}, 1.2f, col);
+      return;
+    }
+    std::array<Vec2, 9> pts;
+    for (size_t i = 0; i < pts.size(); ++i) {
+      const float u = static_cast<float>(i) / static_cast<float>(pts.size() - 1);
+      pts[i] = {c.x - 4.5f + 9.0f * u, c.y - 3.0f + 6.0f * std::sin(3.14159265f * u)};
+    }
+    p.polyline(pts, 1.2f, col);
+  }
+  static void magnifierGlyph(ui::FacePainter& p, const Rect& r, Rgba col) {
+    const Vec2 c{(r.x0 + r.x1) * 0.5f - 1.0f, (r.y0 + r.y1) * 0.5f - 1.0f};
+    p.arc(c, 2.8f, 0.0f, 2.0f * 3.14159265f, 1.2f, col);
+    p.line({c.x + 2.0f, c.y + 2.0f}, {c.x + 4.2f, c.y + 4.2f}, 1.4f, col);
+  }
   static void magnetGlyph(ui::FacePainter& p, const Rect& r, Rgba col) {
     const Vec2 c{(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f - 0.5f};
     constexpr float kR = 3.0f, kPi = 3.14159265f;
@@ -496,8 +818,12 @@ private:
   double drawnBpm_ = -1.0;  // the tempo the live layer was last painted at
   bool playing_ = false;
   bool dragSync_ = false;
+  bool dragMicro_ = false;  // DT.4: the drag is the micro bar's (dragStart_ / lastSamples_ in samples)
   double dragStart_ = 0.0;
+  double lastSamples_ = 0.0;
   uint32_t lastSync_ = 0;
+  bool typing_ = false;  // DT.4: the micro bar's type-in is open
+  std::string text_;
 };
 
 }  // namespace

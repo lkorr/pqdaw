@@ -296,6 +296,7 @@ public:
     return true;
   }
   bool transportPlaying() const override { return ctx_.playing(); }
+  double sampleRate() const override { return ctx_.sampleRate(); }
   double tempoBpm() const override {
     const doc::Snapshot& d = ctx_.doc();
     return d && d->timeline ? d->timeline->tempoMap.bpmAt(ctx_.liveClipAt()) : 120.0;

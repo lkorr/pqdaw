@@ -129,6 +129,8 @@ public:
   // slider's note markings are placed by. Cheap (one tempo-map lookup). 120 without a document.
   virtual double tempoBpm() const { return 120.0; }
   virtual bool transportPlaying() const { return false; }  // DT.1: whether the transport plays (cheap)
+  // DT.4: the engine's sample rate (a tempo slider shows short times in samples); 48 kHz without one.
+  virtual double sampleRate() const { return 48000.0; }
   // ---- EQ.3: a STRUCTURAL EDIT an element asks for (the EQ's band ops: doc::ops::addBand, setEqMode …) ----
   // `build` makes it from the document as it is now and the store's id source; the target dispatches it through its
   // host's history (one undo step). False — with a notice saying why — when the builder refuses (its message: "A chain

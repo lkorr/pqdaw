@@ -276,6 +276,9 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 //   Sync   a stepped index into noteValues() (ascending duration); seconds = beats · 60 / transport.bpm (the block's
 //          tempo), at most 5 s
 //   Mode   0 = Time (ms), 1 = Sync (♪); stepped, automatable
+//   Glide  DT.4: 0 = Repitch (default: every time change glides the read head, a tape bend), 1 = Crossfade (DT.2: a
+//          change beyond the octave bound crossfades two heads); stepped, automatable; delay_fade's `crossfade` input
+//          (param rate, read per block: no recompile)
 // The delay = lerp(Time, Sync seconds, Mode) → delay_fade's time (max 5 s: its ring sized and allocated off-thread by
 // the scheduler; per-voice lanes inside instrument groups). The read is ≥ 1 sample (DT.2: linear in [1, 2)). The
 // note value's beats are arithmetic on the index, and Mode a lerp, not muxes: a stepped block reaching a mux index
@@ -285,8 +288,10 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 // kDelayTapFadeSeconds (automation, drags, tempo drift) glides; a larger one (a mode switch, a sync step, a click that
 // jumps the slider) crossfades the old and the new time, equal power over the same 30 ms (pq/dsp/atoms.h
 // "delay_fade"). An audio-rate wire into Time is followed sample by sample (a step beyond the octave bound fades).
-// Its panel: one `temposlider` element (the reusable tempo-marked slider, pq/views/panel) bound to Time, Sync and Mode.
-enum class DelayRole : uint8_t { None = 0, Time, Sync, Mode };
+// DT.4: that is Glide's Crossfade; its default, Repitch, glides every change instead (pq/dsp/atoms.h "delay_fade").
+// Its panel: one `temposlider` element (the reusable tempo-marked slider, pq/views/panel) bound to Time, Sync, Mode
+// and Glide.
+enum class DelayRole : uint8_t { None = 0, Time, Sync, Mode, Glide };
 inline constexpr std::string_view kDelayRoleSetting = "delayRole";
 inline constexpr double kDelayTapMaxSeconds = 5.0;
 inline constexpr double kDelayTapFadeSeconds = 0.030;  // DT.2: delay_fade's glide / crossfade
@@ -306,7 +311,7 @@ double noteValueSeconds(uint32_t index, double bpm) noexcept;
 dsp::Curve delayTimeCurve();
 DelayRole delayRole(const Device& d) noexcept;
 struct DelayTapRoles {
-  DeviceId group, time, sync, mode, delay;
+  DeviceId group, time, sync, mode, delay, glide;
 };
 struct DelayTapOptions {
   DeviceId id;       // the group's (invalid: a fresh one)
@@ -315,6 +320,7 @@ struct DelayTapOptions {
   double time = 0.5;                       // the Time knob position (0.5: 500 ms)
   uint32_t sync = kNoteValueQuarter;       // the Sync index
   uint32_t mode = 0;                       // 0 Time, 1 Sync
+  uint32_t glide = 0;                      // DT.4: 0 Repitch, 1 Crossfade
   bool active = true;
 };
 BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o = {}, DelayTapRoles* roles = nullptr);

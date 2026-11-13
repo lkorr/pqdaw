@@ -83,6 +83,7 @@ TEST_CASE("delay tap: the group — roles, In → delay_fade (max 5 s, fade 30 m
     if (d->id == r.time) CHECK(delayRole(*d) == DelayRole::Time);
     if (d->id == r.sync) CHECK(delayRole(*d) == DelayRole::Sync);
     if (d->id == r.mode) CHECK(delayRole(*d) == DelayRole::Mode);
+    if (d->id == r.glide) CHECK(delayRole(*d) == DelayRole::Glide);
   }
   REQUIRE(time != nullptr);
   REQUIRE(delay != nullptr);
@@ -93,21 +94,24 @@ TEST_CASE("delay tap: the group — roles, In → delay_fade (max 5 s, fade 30 m
   CHECK(delay->setting("max")->value == kDelayTapMaxSeconds);
   CHECK(*time->curve(kValueParam) == delayTimeCurve());
   CHECK(dsp::evalCurve(*time->curve(kValueParam), time->param(kValueParam)->value) == doctest::Approx(0.5));  // default 500 ms
-  bool in = false, out = false;
+  bool in = false, out = false, glide = false;
   for (const Wire& w : set.wires) {
+    glide = glide || (w.from == r.glide && w.to == r.delay && w.param == "crossfade");  // DT.4: Repitch / Crossfade
     in = in || (w.from == r.group && w.port == kGroupInPort && w.to == r.delay && w.param == "x");
     out = out || (w.from == r.delay && w.to == r.group && w.param == kGroupOutPort);
   }
   CHECK(in);
   CHECK(out);
+  CHECK(glide);
   const Panel& p = *set.devices.front()->panel;
   REQUIRE(p.elements.size() == 2);
   const PanelElement& s = p.elements[1];
   CHECK(s.kind == "temposlider");
-  REQUIRE(s.bindings.size() == 3);
+  REQUIRE(s.bindings.size() == 4);
   CHECK(s.bindings[0] == controlBinding(r.time, std::string(kValueParam)));
   CHECK(s.bindings[1] == controlBinding(r.sync, std::string(kValueParam)));
   CHECK(s.bindings[2] == controlBinding(r.mode, std::string(kValueParam)));
+  CHECK(s.bindings[3] == controlBinding(r.glide, std::string(kValueParam)));
   CHECK(findModule("delay_tap") != nullptr);
   CHECK(findModule("Delay Tap")->kind == ModuleKind::DelayTap);
 }
