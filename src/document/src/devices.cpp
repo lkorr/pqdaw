@@ -329,7 +329,9 @@ std::unique_ptr<AtomBlock> buildAtomBlock(std::string_view atomName) {
     const bool setting = spec.type.rate == graph::Rate::Const;
     if (setting) t.rate = graph::Rate::Const;
     const graph::NodeIndex in = p.addInput(nm, t);
-    if (spec.optional || setting) {
+    // WI.2: a bool input nothing drives is false (an unconnected input reads a real 0 otherwise, which a bool refuses: a
+    // logic block off every path, or one a cut wire left unfed, failed its whole track's compile).
+    if (spec.optional || setting || t.kind == graph::Kind::Bool) {
       const graph::NodeIndex c = p.addConst(t.kind == graph::Kind::Bool ? graph::Constant::boolean(spec.defaultValue != 0.0f)
                                                                        : graph::Constant::real(spec.defaultValue));
       p.connect(graph::PortRef{c, 0}, graph::PortRef{in, 0});

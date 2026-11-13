@@ -127,6 +127,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_free_instruments.cpp  # TX.all-free-fix1: instruments / racks anywhere play by their cables; cross-track mixer cables
     app/test_panel_link.cpp  # GU.3: a panel's edits through the link (a setting drag compiles once, a control / curve point never, a shape once)
     app/test_nested_groups.cpp  # GU.2: nested groups / atom + value blocks / pasted block sets render as their references
+    app/test_wire_isolation.cpp  # WI.2: one bad wire never fails a unit (cut wires, path breaks, retries)
     app/test_bool_real.cpp  # TX.bool-real: a bool into a real input converts (the user project, gate into gain / a control / a group terminal)
     app/test_instrument_groups.cpp  # IG.1-2: per note inside instrument groups (per-voice references), reducers, layering, cross-track, single-signal cables
     app/test_cross_track.cpp  # TX.cross-track: loops between tracks per sample (hand-written references), notes cables across tracks
@@ -476,6 +477,7 @@ pq_add_test(pq_tests_document
     document/test_delay_tap.cpp  # DT.1: the Delay Tap's time law, note values, its group
     document/test_eq_modules.cpp  # EQ.3: the band and EQ modules (roles, const inputs), their ops (one undo step, save / load), the EQ's response matrix
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
+    document/test_cut_wires.cpp  # WI.2: a cut wire lowers as the project without it (Refused / Type), a cut main link breaks the path, wire ends
     document/test_lower_incremental.cpp  # PF.6: the lowering given the previous one equals a fresh one after each edit; untouched tracks keep their patches
   DEPS pq_doc)
 

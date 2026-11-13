@@ -1455,6 +1455,12 @@ const PortDeps::Matrix& PortDeps::of(const graph::Patch& p) {
   return memo_.emplace(&p, std::move(m)).first->second;
 }
 
+// The Input node of a callee's `in` number `ordinal` (signature order).
+NodeIndex inputNode(const graph::Patch& callee, uint32_t ordinal) noexcept {
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v)
+    if (callee.node(v).kind == graph::NodeKind::Input && ordinal-- == 0) return v;
+  return graph::kNone;
+}
 // The signature index of a callee's first non-const `in` (the audio input), or kNone.
 uint32_t audioInIndex(const graph::Patch& callee) noexcept {
   uint32_t ordinal = 0;
@@ -2200,6 +2206,15 @@ struct Build {
   // single-signal terms into an instrument group's Out are added at (kPending: none).
   std::vector<PortRef> ctxOut, outGlobalPin;
   std::vector<GroupEnd> ends;
+  // WI.2 (lower.h "Cut wires"): where each wire and main-path link meets this patch (null: not wanted), this patch's
+  // graph track index, and its track's main path (the link into each block on it).
+  std::vector<WireEnd>* wireEnds = nullptr;
+  uint32_t graphTrack = 0;
+  const MainPath* path = nullptr;
+  void wireEnd(WireId w, PortRef from, NodeIndex to, uint32_t entity) {
+    if (wireEnds != nullptr && w.valid() && from.node != graph::kNone && to != graph::kNone)
+      wireEnds->push_back(WireEnd{w, graphTrack, ir.idOf(from.node).value, ir.idOf(to).value, entity});
+  }
 };
 
 constexpr graph::PortType kVoiceDone = graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1);
@@ -2277,7 +2292,12 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   b.calls[k] = c;
   // TMM.10-fix1: a device without an audio `in` (an unplugged chain meta device) takes nothing: the signal so far ends
   // there (its first pin is a param).
-  if (haveIn && x.node != graph::kNone) b.ir.patch().connect(x, PortRef{c, static_cast<uint16_t>(inPort)});  // (IG.1-2: kPending: the default)
+  if (haveIn && x.node != graph::kNone) {
+    b.ir.patch().connect(x, PortRef{c, static_cast<uint16_t>(inPort)});  // (IG.1-2: kPending: the default)
+    if (b.wireEnds != nullptr && b.path != nullptr)  // WI.2: the main-path link into this block
+      if (const int32_t i = b.path->indexOf(d.device->id); i >= 0 && static_cast<size_t>(i) < b.path->links.size())
+        b.wireEnd(b.path->links[static_cast<size_t>(i)], x, c, b.path->links[static_cast<size_t>(i)].value);
+  }
   x = PortRef{c, 0};
   if (outW != graph::kWidthInfer) width = outW;
   else if (inWidth == graph::kWidthStereo) width = graph::kWidthStereo;
@@ -2650,7 +2670,11 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
           gsum = gsum.node == graph::kNone ? src : ir.atom("add", {gsum, src}, wid(w, gfirst ? kWTerm : kWSum));
           gfirst = false;
         }
-        if (b.outGlobalPin[f.toDev].node != graph::kNone) ir.patch().connect(gsum, b.outGlobalPin[f.toDev]);
+        if (b.outGlobalPin[f.toDev].node != graph::kNone) {
+          ir.patch().connect(gsum, b.outGlobalPin[f.toDev]);
+          for (const uint32_t j : globalsTo.at(f.toDev))
+            if (j >= i) b.wireEnd(wp.wires[into[j]].wire->id, gsum, b.outGlobalPin[f.toDev].node, wp.wires[into[j]].wire->id.value);
+        }
         continue;
       }
       if (pin.node == graph::kNone) continue;
@@ -2685,7 +2709,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
           sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
           first = false;
         }
-      if (pin.node != graph::kNone) p.connect(sum, pin);
+      if (pin.node != graph::kNone) {
+        p.connect(sum, pin);
+        for (const uint32_t j : *group) b.wireEnd(wp.wires[into[j]].wire->id, sum, pin.node, wp.wires[into[j]].wire->id.value);  // WI.2
+      }
     }
   }
   // The sites: the modulated params first, in the order of their first wire (T4.7), then the automated ones.
@@ -2837,7 +2864,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
   };
   for (size_t i = 0; i < sites.size(); ++i) {
     const PortRef v = compute(i);
-    for (const PortRef& pin : sites[i].pins) ir.patch().connect(v, pin);
+    for (const PortRef& pin : sites[i].pins) {
+      ir.patch().connect(v, pin);
+      for (const LWire* w : sites[i].wires) b.wireEnd(w->wire->id, v, pin.node, sites[i].wires.front()->wire->id.value);  // WI.2
+    }
   }
   // GU.f4 (lower.h "Structural value blocks"): an undriven stepped (or constant) value block choosing a branch is its value's literal
   // (the float the runtime param would hold), so the optimiser folds the choice.
@@ -3052,10 +3082,13 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
                                 const WirePlan& wp, bool& voices, uint32_t& polyphony, int32_t& steal, uint32_t track,
                                 std::vector<ModulationTap>* taps, uint32_t clipSlot,
                                 std::vector<LoweredProject::MetaResource>* resources, const Callees* lib,
-                                std::vector<CurveSite>* curves, const OsRegions* os) {
+                                std::vector<CurveSite>* curves, const OsRegions* os, std::vector<WireEnd>* wireEnds) {
   const Node& n = pl.nodes[index];
   Ir ir(patchName(n));
   Build b{ir, o, devs, std::vector<NodeIndex>(devs.size(), graph::kNone), {}};
+  b.wireEnds = wireEnds;  // WI.2
+  b.graphTrack = track;
+  if (const Flow* f = lib != nullptr && lib->cables != nullptr ? lib->cables->flowOf(*n.track) : nullptr) b.path = &f->path;
   b.lib = lib;
   b.wp = &wp;
   b.pl = &pl;  // GU.1
@@ -3174,8 +3207,10 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     b.calls[k] = c;
     // (A free meta device plays its Nested form: every input has its default already.)
     const bool own = isMetaDevice(*devs[k].device) && !devs[k].bypass;
+    // WI.2: a bool input (a logic block's: `and`, a flip-flop's) is no audio input: the zero (a real) would be refused
+    // there, so a free logic block — or one a cut link took off the path — keeps its input's own default.
     if (const uint32_t in = own ? graph::kNone : audioInIndex(*devs[k].callee);
-        in != graph::kNone) {
+        in != graph::kNone && devs[k].callee->outputType(inputNode(*devs[k].callee, in), 0).kind != graph::Kind::Bool) {
       if (b.freeZero.node == graph::kNone) b.freeZero = ir.konst(-0.0, kCFreeZero);
       ir.patch().connect(b.freeZero, PortRef{c, static_cast<uint16_t>(in)});
     }
@@ -3638,9 +3673,25 @@ std::vector<WireState> withLinks(std::vector<WireState> states, const Cables& c,
 }
 }  // namespace
 
-Result<LoweredProject> lower(const Project& p, const LowerOptions& o, const LoweredProject* previous) {
-  if (!p.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
+Result<LoweredProject> lower(const Project& doc, const LowerOptions& o, const LoweredProject* previous) {
+  if (!doc.master) return Error{ErrorCode::InvalidArgument, "lower: the project has no master", {}};
   if (o.library == nullptr) return Error{ErrorCode::InvalidArgument, "lower: no device library", {}};
+  // WI.2 (lower.h "Cut wires"): the project without its cut wires (a copy only when one is cut).
+  std::vector<WireId> cut;
+  std::optional<Project> uncut;
+  if (o.cutWires && doc.wires != nullptr) {
+    for (const Wire& w : *doc.wires)
+      if (o.cutWires(w.id)) cut.push_back(w.id);
+    if (!cut.empty()) {
+      auto rest = std::make_shared<WireList>();
+      rest->reserve(doc.wires->size() - cut.size());
+      for (const Wire& w : *doc.wires)
+        if (!std::binary_search(cut.begin(), cut.end(), w.id)) rest->push_back(w);
+      uncut.emplace(doc);
+      uncut->wires = rest->empty() ? nullptr : std::shared_ptr<const WireList>(std::move(rest));
+    }
+  }
+  const Project& p = uncut ? *uncut : doc;
   // TX.all-free: the main paths, and the project as lowered (its other wires by name; lower.h "The main path").
 std::shared_ptr<const Cables> cables = cablesOf(p, o.library, o.devices);
   const Project& q = cables->q;
@@ -3659,6 +3710,10 @@ PortDeps deps(lib->lib);
 const WirePlan wp = planWires(q, pl, devs, deps, lib);  // T4.7
 const OsRegions os = oversampledGroups(q);  // TX.group-oversample
 out.wires = withLinks(wp.states, *cables, pl);
+  if (!cut.empty()) {  // WI.2: the cut wires, Refused / Type, in id order
+    for (const WireId w : cut) out.wires.push_back(WireState{w, WireStatus::Refused, WireRefusal::Type});
+    std::sort(out.wires.begin(), out.wires.end(), [](const WireState& a, const WireState& b) { return a.id < b.id; });
+  }
   std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
   if (previous != nullptr)
     for (size_t j = 0; j < previous->trackIds.size(); ++j) prev.emplace(previous->trackIds[j].value, previous->patches[j]);
@@ -3671,7 +3726,7 @@ out.wires = withLinks(wp.states, *cables, pl);
     const uint32_t clipSlot = n.kind == Kind::Audio && o.clipSlotOf ? o.clipSlotOf(n.track->id) : graph::kNone;
     if (n.kind == Kind::Audio && clipSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
     auto built = buildPatch(pl, i, o, devs[i], wp, voices, polyphony, steal, i, &out.taps, clipSlot, &out.metaResources, lib,
-                            &out.curves, &os);
+                            &out.curves, &os, &out.wireEnds);
     if (!built.ok()) return built.error();
     std::shared_ptr<const LoweredPatch> lp;
     const uint64_t hash = patchHash(built.value());

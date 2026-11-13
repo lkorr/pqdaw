@@ -218,6 +218,9 @@ struct LowerOptions {
   // the identity on the position). Unset: the lowering numbers its driven controls 1, 2, … in LoweredProject::curves
   // order and owns their slots (graph.curveSlots: a compile given no Resources::curves reads them; tests, tools).
   std::function<uint32_t(DeviceId, std::string_view param)> curveSlotOf;
+  // WI.2 ("Cut wires" below): the wires to leave out because the compile refused their signal (the playback link's cut
+  // set). Unset (the default): none — the lowering never asks.
+  std::function<bool(WireId)> cutWires;
 };
 
 // One track's patch (immutable once made; shared between lowerings while its IR is equal, so the link sees which
@@ -446,13 +449,41 @@ enum class WireStatus : uint8_t { Lowered, Delayed, Inactive, Invalid, Refused }
 // IG.1-2: VoiceLoop is every loop the engine cannot run per sample yet (IG.3): across a voice sum (a single-signal path
 // back into per-note blocks, a cable leaving a group back into it) or through two instrument tracks (one voice table
 // per unit); TX.cross-track's TwoInstruments is folded into it.
-enum class WireRefusal : uint8_t { None, VoiceLoop };  // why a Refused wire is (see above)
+// WI.2: Type is a wire LowerOptions::cutWires named (see "Cut wires" below).
+enum class WireRefusal : uint8_t { None, VoiceLoop, Type };  // why a Refused wire is (see above)
 struct WireState {
   WireId id;
   WireStatus status = WireStatus::Lowered;
   WireRefusal reason = WireRefusal::None;  // Refused only
   friend bool operator==(const WireState&, const WireState&) = default;
 };
+// ---- Cut wires (WI.2; docs/plans/RB.md D1) --------------------------------------------------------------------------
+// A wire whose signal the compiler refused (type inference blamed it: graph::TypeBlame, engine::UnitTypeFailure) is CUT
+// by the playback link: compile state, not document state. A cut wire (LowerOptions::cutWires) is lowered as if it were
+// not in the document — the project's other wires, its main paths (a cut main-path link is a path break: mainPath over
+// the remaining links) and its IR are exactly those of the project without it — and listed Refused / Type in
+// LoweredProject::wires. Without cutWires nothing changes and nothing is spent.
+// WIRE ENDS: where each lowered wire (and each main-path link into a block) meets the track patch its value is used in,
+// so the link can map a blamed track-patch edge (consumer, source NodeIds) back to wires: `from` is the node whose
+// output the connection reads (the source device's output, the wire's own last node, or the sum several wires into one
+// input share), `to` the node it feeds (the target device's call). `entity`: the NodeRole::Wire entity whose nodes carry
+// the wire's value at its target — its own id, or for a wire into a param the site's (its first wire's id: kWTarget
+// slots), so a blame on a site node maps to every wire of that param.
+struct WireEnd {
+  WireId wire;
+  uint32_t track = 0;          // index into graph.tracks of the patch holding the connection
+  uint32_t from = 0, to = 0;   // raw NodeIds in that patch
+  uint32_t entity = 0;
+};
+// The (entity, slot) a NodeId of a lowered patch decodes to (nodeIdFor's inverse; slot < 48: for a wire entity its
+// NodeRole::Wire k, for a device 32 + k); false for the fixed nodes below kEntityNodeBase.
+inline bool nodeEntity(uint32_t id, uint32_t& entity, uint32_t& slot) noexcept {
+  if (id < kEntityNodeBase) return false;
+  entity = (id - kEntityNodeBase) / kWireNodeSlots;
+  slot = (id - kEntityNodeBase) % kWireNodeSlots;
+  return true;
+}
+
 // A modulated param's tap: the export `port` of graph track `track`.
 struct ModulationTap {
   DeviceId device;
@@ -517,6 +548,7 @@ struct LoweredProject {
   std::vector<TrackId> withoutSlot;                           // MIDI / audio tracks lowered without notes / clips (no slot)
   std::vector<DeviceId> missingDevices;                       // bypassed: patch not in the library (or not its kind)
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
+  std::vector<WireEnd> wireEnds;                              // WI.2: "Cut wires" above
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
   std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
   std::vector<AudioInputBinding> audioInputs;                 // T6.1: the audio tracks reading `track.in`
