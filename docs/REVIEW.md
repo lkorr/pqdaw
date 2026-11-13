@@ -1395,3 +1395,14 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   after the autosave.
 - Judge: the wording (title, "autosaved 14:03", the date shown when not today); whether Recover should also be offered
   for an older autosave (Q?-AS.2-a); the button widths.
+
+## 2026-11-13 · WI.2 · a wire the compiler refuses is cut and drawn red (task/WI.2-cut-wires)
+- Try: on a MIDI track add a Delay Fade block (free), cable the Utility's (or the instrument's) Out into its `fade`; and
+  on another track append an `and` block to the path. Both tracks keep playing what still works (before: the whole
+  track went silent and the status line showed a compile error).
+- Look at: the two cables dashed in the error red in the Device view and the project patch (a cut chain link's joint
+  red too); hover one: "(not played: rate audio exceeds the declared bound param of input 'fade' …)"; the status line's
+  "A wire is not played: … The rest plays."
+- Judge: the red (theme `code.error`) against the mint / blue cables; whether the message wording is readable enough
+  (it is the compiler's: "(atom delay_fade, #0)" is an internal name); whether a cut chain link should say more (what
+  follows it on the path is not heard).

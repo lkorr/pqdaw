@@ -1185,3 +1185,19 @@ Choice: (a) place them (one undo step "Recover Recordings"; nothing is hidden). 
 its takes only (Discard then removes the whole session); a session left with only an outdated autosave stays on disk
 (small; one project.pqd). Reversible: (b) is one `removeUnsavedFolder` call in ProjectLink::staleRecordings.
 Status: open.
+
+## Q?-WI.2-a · 2026-11-13 · WI.2 · Which wires a blamed sum stands for; the cases a document wire can produce
+Context: inference blames one track-patch edge (consumer, source). When several wires are summed into one input the
+edge's source is the sum node; a node of a modulated param's site carries every wire into that param. The plan also
+names a "stereo → mono-bound" wire as an acceptance case.
+Options: (a) blame every wire of the sum / site; (b) only the wires whose type could carry the error (needs the
+declared types of every term in the link); (c) cut them all, then restore one at a time (more compiles per edit).
+Choice: (a) — the sum is blamed as a whole (an edge match in LoweredProject::wireEnds; a site node maps to its wires).
+A good wire summed with a bad one is cut with it until an edit of its track re-tries both. Reversible: cutBlamed is one
+function. Width: no document wire produces a width error today — the lowering takes the mid of a wider source into a
+meta module's input and channel 0 across tracks, every other input takes any width — so the acceptance test uses the
+two reachable kinds instead: rate (the Utility's audio into delay_fade's param-bound `fade`) and kind (a main-path link
+from an instrument into an `and` block: a path break). Found on the way and fixed (needed for a cut link to play): an
+`and` / flip-flop block off the path failed its whole track (its bool input got the free zero, a real; an undriven bool
+input of an atom block read a real 0): such inputs are now false.
+Status: open.
