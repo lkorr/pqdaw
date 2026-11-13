@@ -214,6 +214,12 @@ std::vector<Case> cases() {
                  return SetTrackOutput{f.bass, Output{OutputKind::Track, f.drums}};
                }, S, noCheck});
   c.push_back({"SetTrackActive", [](Fixture& f) -> Command { return SetTrackActive{f.bass, false}; }, S, noCheck});
+  c.push_back({"SetTrackFrozen", [](Fixture& f) -> Command { return SetTrackFrozen{f.drums, true}; }, S,  // FZ.1
+               [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{f.kick});  // the group's MIDI track, not the group
+                 CHECK(f.track(f.kick).frozen);
+                 CHECK_FALSE(f.track(f.drums).frozen);
+               }});
   c.push_back({"SetTrackTuning", [](Fixture& f) -> Command {
                  return SetTrackTuning{f.bass, TuningAssignment::mainTuning(f.tMos)};
                }, S, [](Fixture& f, const ChangeSet& cs) { CHECK(contains(cs.tunings, f.tMos)); }});

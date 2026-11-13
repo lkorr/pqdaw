@@ -612,12 +612,34 @@ bool operator==(const TakeLane& a, const TakeLane& b) noexcept {
 
 bool operator==(const Track& a, const Track& b) noexcept {
   if (a.id != b.id || a.kind != b.kind || a.name != b.name || a.colour != b.colour || !(a.tuning == b.tuning) ||
-      !(a.mixer == b.mixer) || a.active != b.active || a.noteInput != b.noteInput || a.auditionTake != b.auditionTake)
+      !(a.mixer == b.mixer) || a.active != b.active || a.frozen != b.frozen || a.noteInput != b.noteInput ||
+      a.auditionTake != b.auditionTake)
     return false;
   if (!deepEqList(a.children, b.children) || !deepEqList(a.lanes, b.lanes) || !deepEqList(a.devices, b.devices) ||
       !deepEqList(a.takes, b.takes))
     return false;
   return sameSlots(a.clips, b.clips);
+}
+
+bool ownedByFrozen(const Track& t, const Wire& w) noexcept {
+  const bool from = w.fromNoteSource() ? w.noteSource == t.id : t.deviceIndex(w.from) >= 0;
+  return from && (w.toMixer() ? w.mixer == t.id : t.deviceIndex(w.to) >= 0);
+}
+
+bool sameFrozenContent(const Track& a, const Track& b) noexcept {
+  if (&a == &b) return true;
+  if (a.kind != b.kind || a.auditionTake != b.auditionTake || !deepEqList(a.devices, b.devices) ||
+      !deepEqList(a.takes, b.takes) || !sameSlots(a.clips, b.clips))
+    return false;
+  // Device lanes (in their order among the track's lanes; mixer lanes may change freely).
+  auto next = [](const std::vector<LanePtr>& v, size_t i) {
+    while (i < v.size() && !isDeviceParamKind(v[i]->param.kind)) ++i;
+    return i;
+  };
+  size_t i = next(a.lanes, 0), j = next(b.lanes, 0);
+  for (; i < a.lanes.size() && j < b.lanes.size(); i = next(a.lanes, i + 1), j = next(b.lanes, j + 1))
+    if (!deepEq(a.lanes[i], b.lanes[j])) return false;
+  return i == a.lanes.size() && j == b.lanes.size();
 }
 
 const TakeLane* Track::takeLane(LaneId lane) const noexcept {

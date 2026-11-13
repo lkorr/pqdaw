@@ -222,6 +222,8 @@ Status checkSubtree(const Project& p, const Track& t, std::vector<uint32_t>& ids
   ids.push_back(t.id.value);
   if (t.kind == TrackKind::Master) return invalid("a project has exactly one master track");
   if (!t.children.empty() && t.kind != TrackKind::Group) return invalid("only groups have child tracks");
+  if (t.frozen && t.kind != TrackKind::Midi && t.kind != TrackKind::Audio)
+    return invalid("only MIDI and audio tracks can be frozen");  // FZ.1
   PQ_DOC_TRY(checkVolume(t.mixer.volumeDb));
   PQ_DOC_TRY(checkParamValue(ParamKind::TrackPan, t.mixer.pan));
   if (!t.mixer.sends.empty() && !trackHasSends(t.kind)) return invalid("this track has no sends");
@@ -763,6 +765,28 @@ Res apply_(const Snapshot& s, const SetTrackActive& c, ChangeSet& cs) {
   if (loc->track->kind == TrackKind::Master) return invalid("the master track cannot be deactivated");
   if (loc->track->active == c.active) return s;
   return editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) { t.active = c.active; return ok(); });
+}
+
+// FZ.1: a MIDI / audio track, or every one inside a group (one path copy per track that changes).
+Res apply_(const Snapshot& s, const SetTrackFrozen& c, ChangeSet& cs) {
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  const TrackKind k = loc->track->kind;
+  if (k == TrackKind::Master || k == TrackKind::Return) return invalid("only MIDI and audio tracks can be frozen");
+  std::vector<TrackId> targets;
+  auto collect = [&](auto& self, const Track& t) -> void {
+    if ((t.kind == TrackKind::Midi || t.kind == TrackKind::Audio) && t.frozen != c.frozen) targets.push_back(t.id);
+    for (const TrackPtr& ch : t.children) self(self, *ch);
+  };
+  collect(collect, *loc->track);
+  if (targets.empty()) return s;
+  auto np = copyOf(s);
+  for (const TrackId id : targets) {
+    mutableTrack(*np, *findTrack(*np, id)).frozen = c.frozen;
+    cs.tracks.push_back(id);
+  }
+  cs.mark(kChangeStructural);
+  return Snapshot(std::move(np));
 }
 
 Res apply_(const Snapshot& s, const SetTrackTuning& c, ChangeSet& cs) {
@@ -2278,7 +2302,7 @@ Res applyAny(const Snapshot& s, const Command& c, ChangeSet& cs) {
 constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLabels = {
     "Add Track", "Delete Track", "Move Track", "Rename Track", "Track Colour", "Set Volume", "Set Pan",
     "Pan Law", "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
-    "Group Tracks", "Ungroup Tracks",
+    "Group Tracks", "Ungroup Tracks", "Freeze Track",
     "Monitor", "Audio Input", "MIDI Input", "Track Delay", "Note Input", "Punch", "Record Settings",
     "Add Take Lane", "Delete Take Lane", "Rename Take Lane", "Audition Take", "Promote Take",
     "Add Clip", "Delete Clip", "Move Clip", "Resize Clip", "Clip Loop", "Clip Tuning", "Rename Clip",
@@ -2408,7 +2432,42 @@ Snapshot finishCrossfades(const Snapshot& s, ChangeSet& cs) {
   }
   return np ? Snapshot(std::move(np)) : s;
 }
+// FZ.1: a frozen track's own wires (ownedByFrozen), in id order, without their view-only tap.
+WireList ownWires(const Project& p, const Track& t) {
+  WireList out;
+  for (const Wire& w : wiresOf(p))
+    if (ownedByFrozen(t, w)) {
+      out.push_back(w);
+      out.back().tap.reset();
+    }
+  return out;
+}
 }  // namespace
+
+TrackId frozenConflict(const Project& before, const Project& after) {
+  std::vector<const Track*> frozen;
+  forEachTrack(before, [&](const Track& t, const Track*) {
+    if (t.frozen) frozen.push_back(&t);
+  });
+  for (const Track* a : frozen) {
+    const Track* b = findTrackPtr(after, a->id);
+    if (b == nullptr || !b->frozen || a == b) continue;  // gone, unfrozen by the command, or untouched
+    bool same = sameFrozenContent(*a, *b);
+    if (!same && before.timeline != after.timeline && after.timeline) {
+      // A tempo edit re-syncs warp-Off clips: compare against the old content synced the same way.
+      const TrackPtr synced = syncedTrack(*after.timeline, std::make_shared<const Track>(*a));
+      same = sameFrozenContent(*synced, *b);
+    }
+    if (same && before.wires != after.wires) same = ownWires(before, *a) == ownWires(after, *b);
+    if (!same) return a->id;
+  }
+  if (before.wires != after.wires)  // a wire edit leaves the tracks' pointers alone
+    for (const Track* a : frozen) {
+      const Track* b = findTrackPtr(after, a->id);
+      if (b != nullptr && b->frozen && a == b && ownWires(before, *a) != ownWires(after, *b)) return a->id;
+    }
+  return {};
+}
 
 Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes) {
   Res r = applyAny(s, c, changes);
@@ -2424,6 +2483,9 @@ Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes) 
     cur = finishCrossfades(cur, changes);
     changes.normalize();
   }
+  // FZ.1 (model.h "Frozen tracks"; D4): one rule after the whole command, its follow-ups included.
+  if (cur != s && frozenConflict(*s, *cur).valid())
+    return Error{ErrorCode::InvalidArgument, std::string(kFrozenRefusal), {}};
   return cur;
 }
 

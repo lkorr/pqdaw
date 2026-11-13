@@ -1213,3 +1213,19 @@ images' code). Choice: (c): exact (each solo pass equals the captured bus that c
 cost one interpreter compile per track (~50 ms on the fixture) and the JIT's, mostly cache hits. Reversible: runExport's
 pass loop is the only place.
 Status: open.
+
+## Q?-FZ.1-a · What a frozen track's "own wires" are; what the guard lets through from outside
+Context: D4 refuses edits of a frozen track's devices, clips, notes and device lanes. Cables are the circuit too
+(TX.all-free), and some cross tracks: a cable from another track's LFO into a frozen block, a cable from another track
+into the frozen mixer. A tempo edit also re-syncs a frozen audio track's warp-Off clips (their lengths change).
+Options: (a) own wires = both ends on the frozen track (its blocks / its source → its blocks / its mixer); cables from
+other tracks are inputs from outside, like tempo and tunings: allowed, the render is re-made (D3); (b) every cable
+whose target is the frozen track's (also refuses deleting another track whose block modulates it, and any cable edit
+there); (c) ChangeSet-based: refuse when `cs.devices / clips / notes / lanes` name the track's entities (refuses
+tempo edits on frozen audio tracks, which re-sync their clips).
+Choice: (a), content-based (`frozenConflict`: compares the frozen content before / after, the warp-Off re-sync of a
+tempo edit compared against the old track synced the same way). A cable from another track into a frozen block plays
+nothing until the render is re-made (the block is not lowered; FZ.2's key must cover what feeds the frozen part).
+Consequences: recording into a frozen track is refused at commit (FZ.3 may disable arm); a SetSample that changes the
+rate of a sample a frozen warp-Off clip plays is refused when the re-sync changes that clip. Reversible: one function.
+Status: open.

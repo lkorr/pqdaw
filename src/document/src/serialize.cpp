@@ -471,6 +471,10 @@ private:
     w_.string(at, colourText(t.colour));
     w_.key("active");
     w_.boolean(t.active);
+    if (t.frozen) {  // FZ.1: written only when set (no schema change)
+      w_.key("frozen");
+      w_.boolean(true);
+    }
     w_.key("tuning");
     assignment(PathSeg(&at, "tuning"), t.tuning);
 
@@ -2027,9 +2031,9 @@ private:
   TrackPtr track(const PathSeg& at, TrackList list, uint32_t depth) {
     static constexpr std::string_view K[] = {"id",      "kind",      "name",  "colour",       "active",
                                              "tuning",  "mixer",     "lanes", "clips",        "children",
-                                             "devices", "noteInput", "takes", "auditionTake"};
+                                             "devices", "noteInput", "takes", "auditionTake", "frozen"};
     enum { kId, kKind, kName, kColour, kActive, kTuning, kMixer, kLanes, kClips, kChildren, kDevices, kNoteInput, kTakes,
-           kAudition };
+           kAudition, kFrozen };
     auto t = std::make_shared<Track>();
     std::array<size_t, std::size(K)> pos{};
     Members m(r_, at, K);
@@ -2055,6 +2059,7 @@ private:
         case kNoteInput: t->noteInput = noteInput(f); break;  // T6.1
         case kTakes: t->takes = takeLanes(f); break;
         case kAudition: t->auditionTake = LaneId{ref(f)}; break;
+        case kFrozen: t->frozen = r_.readBool(f); break;  // FZ.1
       }
       pos[static_cast<size_t>(k)] = r_.valueStart();
     }
@@ -2101,6 +2106,8 @@ private:
     const Mixer& mx = t->mixer;
     if (Status s = detail::checkRecordInputs(kind, mx); !s) failKey(kMixer, s.error().message);  // T6.1
     if (m.has(kNoteInput) && kind != TrackKind::Midi) failKey(kNoteInput, "only MIDI tracks take note input");
+    if (t->frozen && kind != TrackKind::Midi && kind != TrackKind::Audio)
+      failKey(kFrozen, "only MIDI and audio tracks can be frozen");  // FZ.1
     if (m.has(kTakes) && kind != TrackKind::Midi && kind != TrackKind::Audio)
       failKey(kTakes, "only MIDI and audio tracks have take lanes");
     for (const TakeLanePtr& l : t->takes)

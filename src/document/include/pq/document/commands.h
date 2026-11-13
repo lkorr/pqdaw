@@ -64,6 +64,9 @@ struct SetSendLevel { TrackId track; TrackId target; float db = kMinVolumeDb; };
 struct SetSendPreFader { TrackId track; TrackId target; bool preFader = false; }; // Structural (tap point moves)
 struct SetTrackOutput { TrackId track; Output output; };          // Structural (routing)
 struct SetTrackActive { TrackId track; bool active = true; };     // Structural (Q15: deactivate = DCE + recompile)
+// FZ.1 (model.h "Frozen tracks"): Structural. A MIDI or audio track; on a group every MIDI and audio track inside it (at
+// any depth; a group itself is never frozen). Refused on a return or the master.
+struct SetTrackFrozen { TrackId track; bool frozen = true; };
 // ---- Recording inputs (T6.1; model.h "Recording inputs", "Note input") -----------------------------------------
 // Param (TrackMonitor): the monitor gate's value. MIDI and audio tracks.
 struct SetTrackMonitor { TrackId track; MonitorMode mode = MonitorMode::Auto; };
@@ -279,7 +282,7 @@ struct Batch {
 using CommandVariant = std::variant<
     AddTrack, RemoveTrack, MoveTrack, RenameTrack, SetTrackColour, SetTrackVolume, SetTrackPan, SetTrackPanMode,
     SetTrackMute, SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
-    GroupTracks, UngroupTracks,
+    GroupTracks, UngroupTracks, SetTrackFrozen,
     SetTrackMonitor, SetTrackAudioInput, SetTrackMidiInput, SetTrackDelay, SetNoteInput, SetPunch, SetRecordSettings,
     AddTakeLane, RemoveTakeLane, RenameTakeLane, SetAuditionTake, PromoteTake,
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
@@ -306,7 +309,15 @@ struct Command {
 std::string_view label(const Command& c) noexcept;
 
 // Applies `c` to `s`. On success returns the new snapshot (or `s` itself for a no-op) and fills `changes`
-// (merged into whatever it already holds; normalized).
+// (merged into whatever it already holds; normalized). FZ.1: a command that edits a frozen track's frozen content
+// (model.h "Frozen tracks") fails with kFrozenRefusal (ErrorCode::InvalidArgument), the whole command.
 Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes);
+
+// FZ.1 (docs/plans/RB.md D4): the one rule apply() runs after every command that changed something — the first track
+// (forEachTrack order) frozen in both `before` and `after` whose frozen content differs (sameFrozenContent, after
+// re-syncing its warp-Off clips to `after`'s tempo map, and its own wires: ownedByFrozen); invalid: none. O(tracks)
+// when no track is frozen.
+inline constexpr std::string_view kFrozenRefusal = "Frozen: unfreeze to edit";
+TrackId frozenConflict(const Project& before, const Project& after);
 
 }  // namespace pq::doc

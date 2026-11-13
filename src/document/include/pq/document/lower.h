@@ -221,6 +221,12 @@ struct LowerOptions {
   // WI.2 ("Cut wires" below): the wires to leave out because the compile refused their signal (the playback link's cut
   // set). Unset (the default): none — the lowering never asks.
   std::function<bool(WireId)> cutWires;
+  // FZ.1 ("Frozen tracks" below): the clip slot holding frozen track `id`'s render (the engine's audio sequence the app's
+  // freeze service publishes, FZ.2; stable across lowerings). kNone or unset: no render yet — the track is lowered live.
+  std::function<uint32_t(TrackId)> frozenSlotOf;
+  // FZ.1: the tracks whose OWN mixer contribution is exported as `export own` (the freeze render's capture point; such a
+  // track is lowered live, frozen or not). Set only by the freeze render's private link, never in playback. Unset: none.
+  std::function<bool(TrackId)> captureOwn;
 };
 
 // One track's patch (immutable once made; shared between lowerings while its IR is equal, so the link sees which
@@ -552,6 +558,7 @@ struct LoweredProject {
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
   std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
   std::vector<AudioInputBinding> audioInputs;                 // T6.1: the audio tracks reading `track.in`
+  std::vector<DeviceId> frozenKeep;  // FZ.1: blocks of frozen tracks lowered from their slot that still run (by id)
   // The combined library graph.library points into when the lowering added patches of its own (the native engines'
   // expansions, block patches LowerOptions::library lacks); null: graph.library is LowerOptions::library.
   std::shared_ptr<const graph::PatchLibrary> userLibrary;
@@ -635,6 +642,34 @@ inline bool addsInUnits(const dsp::Curve& curve) noexcept { return dsp::curveIsL
 const graph::ParamDecl* findParamDecl(const graph::Patch& patch, std::string_view param) noexcept;
 // The declaration of any param `param` of `patch` (bools too; null: none).
 const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_view param) noexcept;
+
+// ---- Frozen tracks (FZ.1; docs/plans/RB.md D2; model.h "Frozen tracks") --------------------------------------------
+// A frozen MIDI or audio track whose render is ready (LowerOptions::frozenSlotOf gives a slot; it is active, and not a
+// captureOwn track) is lowered from the project with its circuit replaced by the render:
+//   mixer     x = clipPlayer(slot) + Σ the cables from OTHER tracks into its mixer (in id order, as before); its own
+//             contribution — the main path's end and every cable into its mixer from its own blocks or source — is the
+//             render, so those cables are not lowered (not doubled). Then its mixer as every track's (volume, pan,
+//             sends, mute, routing: live). PDC follows from the graph.
+//   kept      its blocks whose output still reaches ANOTHER track (frozenKeep: through cables, transitively — a block
+//             feeding a kept one is kept; a group's In and Out sides apart; a kept member keeps its enclosing groups, so
+//             it runs per note as before) keep running with every cable among them and from other tracks into them;
+//             a cable from another track's notes source into them, a voice context of another track played by its
+//             notes (its source is then kept: its notes stay lowered) included.
+//   the rest  not lowered (0 CPU: no call, no params, no meta resources); a cable with an end on a block that is not
+//             lowered, and its own mixer cables, are Inactive in LoweredProject::wires. Its device lanes drive nothing
+//             (their blocks are not in the graph, as a deactivated block's). Its notes play only when a kept block or
+//             another track reads them (else the track has no voices and no event slot); an audio track's own clips
+//             and input only when its source still reaches another track (else no clip player and no `track.in`).
+// Without a slot (render not ready, or frozenSlotOf unset) the track lowers exactly as unfrozen (the same IR); a project
+// without frozen tracks costs one walk over its tracks when frozenSlotOf is set, nothing when it is not.
+// CAPTURE (captureOwn): the mixer sums the track's own contribution first and exports it as `export own` (NodeId
+// fixed), then adds the cables from other tracks; without captureOwn the sum keeps its id order (the playback IR).
+struct FrozenKeep {
+  std::vector<DeviceId> blocks;  // the track's blocks that keep running (list order)
+  bool source = false;           // its own source (notes, clips, input) still feeds another track
+};
+// What of frozen track `t` keeps running (library-free: cables only). O(wires + its blocks).
+FrozenKeep frozenKeep(const Project& p, const Track& t);
 
 // Errors: no master, no library, an entity id too large for nodeIdFor, more setting constants in one track than the
 // pool holds. `previous` (optional): patches with equal IR are shared from it.

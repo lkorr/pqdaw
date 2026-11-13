@@ -936,6 +936,8 @@ struct Track {
   TuningAssignment tuning;  // used by Midi tracks and audio clips' Steps transposes (inherited through groups)
   Mixer mixer;
   bool active = true;  // deactivate (`0`): structural (Q15)
+  // FZ.1 (docs/plans/RB.md D2, D4; "Frozen tracks" below): MIDI and audio tracks only. Structural.
+  bool frozen = false;
   std::vector<TrackPtr> children;  // Group only
   std::vector<ClipSlot> clips;     // Midi (note clips) and Audio (audio clips) only, sorted by (start, id)
   std::vector<LanePtr> lanes;      // automation lanes shown under this track
@@ -958,6 +960,26 @@ struct Track {
 // T6.1: the clips a track plays — its audition take's, else its own (the main lane). The sequences are lowered from it.
 const std::vector<ClipSlot>& playedClips(const Track& t) noexcept;
 bool operator==(const Track& a, const Track& b) noexcept;
+
+// ---- Frozen tracks (FZ.1; docs/plans/RB.md D2–D4) ------------------------------------------------------------------
+// A FROZEN track (Track::frozen; MIDI and audio tracks; SetTrackFrozen) plays an app-owned render of what its own blocks
+// contribute to its mixer input instead of running them (lower.h "Frozen tracks"); its mixer (volume, pan, sends, mute,
+// routing) stays live. Its FROZEN CONTENT is what that render depends on and an edit may not touch while it is frozen
+// (apply refuses the whole command, "Frozen: unfreeze to edit"; one rule after every command, not per command):
+//   its blocks (Track::devices: added, removed, moved, any value, curve, name, group, panel), its clips and their notes
+//   (main lane and take lanes, the audition take), its DEVICE LANES (automation of its blocks' params and of the
+//   amounts of wires into them: isDeviceParamKind), and its OWN WIRES (ownedByFrozen below).
+// Everything else stays editable: its mixer and mixer lanes, mute / solo / arm, sends, output, name, colour, activation,
+// its place in the tree, deleting it, Unfreeze — and what reaches it from OUTSIDE: tempo (a warp-Off clip re-synced to
+// the new tempo map is not an edit of it), tunings, cables from other tracks into its blocks or its mixer; the render
+// is re-made for those (D3), the track plays live meanwhile. A command that unfreezes the track (or freezes it) may
+// edit it in the same step: the rule compares the tracks frozen before AND after.
+// Track `t`'s own wires: both ends on it — from one of its blocks or its own source, into one of its blocks or its
+// mixer. Wires are compared without their view-only tap (SetWireTap stays allowed).
+bool ownedByFrozen(const Track& t, const Wire& w) noexcept;
+// Whether the frozen content of `a` and `b` (the same track in two snapshots) is equal, wires aside (shared subtrees
+// are not descended into).
+bool sameFrozenContent(const Track& a, const Track& b) noexcept;
 
 // A track with no blocks and no wires (it plays nothing: ops::createTrack wires its source to its mixer, a MIDI track
 // through the default instrument; builders wire their tracks with ops::wireSeries).
