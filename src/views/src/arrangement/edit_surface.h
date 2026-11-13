@@ -70,6 +70,23 @@ public:
   // Entries appended to the editor's right-click menu on this surface.
   virtual std::vector<ui::MenuItem> menuItems() { return {}; }
 
+  // TX.lane-drop: files and browser items dropped here (FileDrop: one drop path for every surface; the rules are
+  // pq/views/sample_drop.h). The surface maps the pointer to the track a drop targets — `track` (invalid: below the last
+  // track, new tracks at the end; sampleDropTargetFor derives the rest from its kind), `row` its clip row (−1: none) and
+  // `spot` the surface's own index of what is under the pointer (dropInsert's argument) — nullopt: no drop here.
+  struct DropSpot {
+    doc::TrackId track{};
+    int32_t row = -1;
+    int32_t spot = -1;
+  };
+  virtual std::optional<DropSpot> dropSpotAt(ui::Vec2 /*device*/) const { return std::nullopt; }
+  // Where the new tracks of a drop at `s` are shown: the insertion line's device y and one new track's height (device px).
+  struct DropInsert {
+    int32_t y = 0;
+    int32_t h = 0;
+  };
+  virtual DropInsert dropInsert(const DropSpot& /*s*/) const { return {}; }
+
   int32_t rowOf(doc::TrackId id) const noexcept {
     const auto rs = rows();
     for (size_t i = 0; i < rs.size(); ++i)

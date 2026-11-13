@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "../arrangement/internal.h"
+#include "../arrangement/lane_paint.h"
 #include "internal.h"
 #include "pq/document/racks.h"
 #include "pq/ui/lines.h"
@@ -225,6 +226,91 @@ std::vector<ui::MenuItem> LaneEditSurface::menuItems() {
   if (menuRow >= 0 && static_cast<size_t>(menuRow) < rs.size())
     items.push_back(ui::MenuItem::sub("Draw Automation", au.parameterItems(rs[static_cast<size_t>(menuRow)].id)));
   return items;
+}
+
+// ---- drops (TX.lane-drop) -----------------------------------------------------------------------------------------
+// The arrangement's FileDrop runs them (one drop path: rules, probing, ghosts, the commit); this surface only maps the
+// pointer to a band's track and says where new tracks show. CPU: a scan of the bands per drag move (a few multiplies each).
+
+std::optional<arrangement::EditSurface::DropSpot> LaneEditSurface::dropSpotAt(Vec2 pos) const {
+  const ProjectPatch& pp = view_.patch();
+  const ProjectCanvas& c = view_.canvas();
+  if (pp.scoped || view_.embedded() || !(view_.laneSpan() > 0.0) || !c.rect().contains(pos)) return std::nullopt;
+  for (uint32_t b = 0; b < pp.bands.size(); ++b) {
+    const Band& band = pp.bands[b];
+    if (band.laneH <= 0.0f || c.bandLifted(b) || view_.bandTrack(b) == nullptr) continue;
+    const Rect a = laneAreaDevice(c, pp, band);
+    if (pos.x >= a.x0 && pos.x < a.x1 && pos.y >= a.y0 && pos.y < a.y1) return DropSpot{band.track, rowOfBand(b), static_cast<int32_t>(b)};
+  }
+  return std::nullopt;
+}
+
+arrangement::EditSurface::DropInsert LaneEditSurface::dropInsert(const DropSpot& s) const {
+  const ProjectPatch& pp = view_.patch();
+  if (s.spot < 0 || static_cast<size_t>(s.spot) >= pp.bands.size()) return {};
+  const ProjectCanvas& c = view_.canvas();
+  const Band& band = pp.bands[static_cast<size_t>(s.spot)];
+  const Rect body = laneBodyDevice(c, pp, band);
+  const Rect area = laneAreaDevice(c, pp, band);
+  const float bottom = std::max(area.y1, c.deviceRect(0.0f, band.y + band.h, 0.0f, 0.0f).y0);
+  return {static_cast<int32_t>(std::lround(bottom)), std::max(1, static_cast<int32_t>(std::lround(body.y1 - body.y0)))};
+}
+
+ui::DropFeedback ProjectCanvas::dragOver(const ui::DragPayload& p, Vec2 pos, ui::Mods mods) {
+  LaneEditSurface* s = view_.laneEditReady();
+  if (s == nullptr) return {};
+  return view_.laneArr_->fileDrop().over(*s, p, pos, mods);
+}
+
+void ProjectCanvas::dragLeave() {
+  if (ArrangementView* arr = view_.laneArrangement()) arr->fileDrop().leave(*view_.laneEdit_);
+}
+
+ui::DropEffect ProjectCanvas::drop(const ui::DragPayload& p, Vec2 pos, ui::Mods mods) {
+  LaneEditSurface* s = view_.laneEditReady();
+  if (s == nullptr) return ui::DropEffect::None;
+  return view_.laneArr_->fileDrop().drop(*s, p, pos, mods);
+}
+
+// The ghosts over everything on the canvas (new tracks show under a band, over its neighbours' blocks), on the lanes'
+// one time axis, as the arrangement draws them (FileDrop::paint).
+void ProjectPatchView::paintLaneDrop(ui::PaintContext& ctx) {
+  ArrangementView* arr = laneArrangement();
+  if (arr == nullptr || ctx.res.theme == nullptr) return;
+  arrangement::FileDrop& fd = arr->fileDrop();
+  if (!fd.hovering() || fd.plan().items.empty() || fd.surface() != laneEdit_.get()) return;
+  const arrangement::TimeAxis ax = laneEdit_->axis(0);
+  if (!(ax.k > 0.0)) return;
+  const ui::IRect cr = canvas_->rect();
+  const Rect lx = snapRect(canvas_->deviceRect(patch_.laneX0, 0.0f, patch_.laneX1 - patch_.laneX0, 0.0f));
+  const ui::IRect r = ui::intersect({static_cast<int32_t>(ax.x0), cr.y, static_cast<int32_t>(lx.x1 - lx.x0), cr.h}, cr);
+  const ui::IRect c = ui::intersect(r, ctx.clip);
+  if (c.empty()) return;
+  const arrangement::EditSurface::DropSpot& spot = fd.spot();
+  const float us = ctx.scale.factor;
+  float h = 0.0f;
+  if (spot.row >= 0) {
+    const Rect b = laneEdit_->body(spot.row);
+    h = b.y1 - b.y0;
+  } else {
+    h = static_cast<float>(laneEdit_->dropInsert(spot).h);
+  }
+  const float titleH = laneClipTitleH(h, us);
+  arrangement::LanePaint lp{ctx, *ctx.res.theme, arr->model(), *arr, *ctx_.doc(), r, c, ax.k, ax.t0,
+                            static_cast<Ticks>(std::floor(ax.t0 + (static_cast<double>(c.x - r.x) - 1.0) / ax.k)),
+                            static_cast<Ticks>(std::ceil(ax.t0 + (static_cast<double>(c.right() - r.x) + 1.0) / ax.k)),
+                            static_cast<int32_t>(titleH)};
+  lp.arrangementLanes = false;
+  if (ctx.res.uiFonts != nullptr && ctx.res.text != nullptr) {
+    const ui::FontId font = ctx.res.uiFonts->small;
+    const auto px = static_cast<float>(ctx.res.text->metrics(font).pixelSize);
+    if (titleH >= px + 1.0f) {
+      lp.font = font;
+      const auto cap = static_cast<int32_t>(std::lround(0.727 * static_cast<double>(px)));
+      lp.baselineOff = (lp.titleH + cap + 1) / 2;
+    }
+  }
+  fd.paint(lp, *laneEdit_);
 }
 
 // ---- the view's routing -------------------------------------------------------------------------------------------

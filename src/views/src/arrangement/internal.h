@@ -52,6 +52,9 @@ public:
   ui::IRect pinnedRowRect(size_t i) const override;
   ui::IRect bottomRect() const override;
   void damageAll() override;
+  // TX.lane-drop: a row (with its automation lanes) under the pointer, else below the last track (AtEnd).
+  std::optional<DropSpot> dropSpotAt(ui::Vec2 device) const override;
+  DropInsert dropInsert(const DropSpot& s) const override;
 
 private:
   ArrangementView& view_;
@@ -640,40 +643,51 @@ struct LanePaint;
 // drop would put them (new tracks: under an insertion line); other kinds explain themselves in the status line
 // (MIDI, presets) or, for folders, become browser places. The drop commits once every audio file is probed: at once
 // when they are, else when the last probe arrives (the status line says so meanwhile).
+// T5.7 / TX.lane-drop: THE drop path of files and browser items onto clip lanes — every EditSurface (the arrangement's
+// lanes, the project patch view's band lanes) hands its dragOver / dragLeave / drop here with itself; the surface maps the
+// pointer to a track and a tick (EditSurface::dropSpotAt, axis, gridPxPerTick) and says where new tracks show
+// (dropInsert); the rules, the ghosts, the probing and the commit are this one object's (owned by the ArrangementView: one
+// drag session at a time in the tree).
 class FileDrop {
 public:
   explicit FileDrop(ArrangementView& view);
   ~FileDrop();
-  ui::DropFeedback over(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods);
-  void leave();
-  ui::DropEffect drop(const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods);
-  // Ghost clips and the insertion line (after the clips, before the overlay).
-  void paint(LanePaint& lp);
+  ui::DropFeedback over(EditSurface& s, const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods);
+  // `s` lost the drag (ignored when the session has moved to another surface already: the tree asks the new target's
+  // dragOver before the old one's dragLeave).
+  void leave(const EditSurface& s);
+  ui::DropEffect drop(EditSurface& s, const ui::DragPayload& p, ui::Vec2 pos, ui::Mods mods);
+  // Ghost clips and the insertion line of a drop hovering on `s` (nothing for another surface). `lp`'s columns are s's
+  // time axis.
+  void paint(LanePaint& lp, const EditSurface& s);
   bool hovering() const noexcept { return hovering_; }
   bool committing() const noexcept { return pendingCommit_; }
   const SampleDropPlan& plan() const noexcept { return plan_; }
+  // The surface a drop hovers on (null: none, or it is gone) and the spot on it.
+  const EditSurface* surface() const noexcept;
+  const EditSurface::DropSpot& spot() const noexcept { return spot_; }
   // Horizontal auto-scroll near the lanes' left / right edges (the track scroll view does the vertical).
   bool autoScroll(ui::Vec2 pos, double dt);
 
 private:
   void classify(const ui::DragPayload& p);
-  void retarget(ui::Vec2 pos, ui::Mods mods);
+  bool retarget(EditSurface& s, ui::Vec2 pos, ui::Mods mods);  // false: no drop at pos on s
   void replan();
   void damageGhosts();
   ui::IRect ghostBounds() const;
   void commit();
   void probesArrived();
-  // The track rows' local y (device px from the lanes' top) where new tracks are inserted, and the target row.
-  int32_t insertY() const;
+  EditSurface* live() const noexcept;  // surf_ while it is still one of the arrangement's surfaces
 
   ArrangementView& view_;
+  EditSurface* surf_ = nullptr;      // the surface hovered (spot_ is its)
+  EditSurface::DropSpot spot_;
   std::vector<std::string> paths_;   // the hovering payload's paths (a new session when they change)
   std::vector<std::string> audio_;   // its audio files, in order
   std::vector<std::string> folders_;
   uint32_t midi_ = 0, presets_ = 0, others_ = 0;
   std::vector<ProbedFile> probed_;   // of audio_, refreshed on every move / probe arrival
   SampleDropTarget target_;
-  int32_t row_ = -1;                 // the target row (−1: below the last track)
   Ticks at_ = 0;
   bool oneTrack_ = false;
   bool hovering_ = false;

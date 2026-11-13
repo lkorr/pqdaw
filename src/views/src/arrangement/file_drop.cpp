@@ -1,5 +1,7 @@
-// T5.7: files and browser items dropped onto the arrangement's lanes (internal.h FileDrop; the rules in
-// pq/views/sample_drop.h).
+// T5.7: files and browser items dropped onto clip lanes (internal.h FileDrop; the rules in pq/views/sample_drop.h).
+// TX.lane-drop: one drop path for every EditSurface — the arrangement's lanes and the project patch view's band lanes
+// hand their drag hooks here with themselves; only the pointer → track / tick mapping and where new tracks show are the
+// surface's (EditSurface::dropSpotAt, axis, dropInsert).
 
 #include <algorithm>
 #include <cmath>
@@ -57,32 +59,26 @@ void FileDrop::classify(const DragPayload& p) {
   if (!why.empty()) view_.context().setStatus(why);
 }
 
-int32_t FileDrop::insertY() const {
-  const auto rows = view_.rows();
-  if (row_ >= 0 && static_cast<size_t>(row_) < rows.size()) {
-    const ArrangementRow& r = rows[static_cast<size_t>(row_)];
-    return r.y + r.h + r.lanesH;
-  }
-  if (rows.empty()) return 0;
-  return rows.back().y + rows.back().h + rows.back().lanesH;
+EditSurface* FileDrop::live() const noexcept {
+  if (surf_ == nullptr) return nullptr;
+  for (EditSurface* e : view_.surfaces().all())
+    if (e == surf_) return surf_;
+  return nullptr;
 }
 
-void FileDrop::retarget(Vec2 pos, Mods mods) {
-  const IRect lr = view_.lanes().rect();
-  const float local = pos.y - static_cast<float>(lr.y);
-  const auto rows = view_.rows();
-  row_ = -1;
-  for (size_t i = 0; i < rows.size(); ++i)
-    if (local >= static_cast<float>(rows[i].y) && local < static_cast<float>(rows[i].y + rows[i].h + rows[i].lanesH)) {
-      row_ = static_cast<int32_t>(i);
-      break;
-    }
+const EditSurface* FileDrop::surface() const noexcept { return live(); }
+
+bool FileDrop::retarget(EditSurface& s, Vec2 pos, Mods mods) {
+  const std::optional<EditSurface::DropSpot> spot = s.dropSpotAt(pos);
+  if (!spot) return false;
+  spot_ = *spot;
   const doc::Project& p = *view_.shown();
-  target_ = sampleDropTargetFor(p, row_ >= 0 ? rows[static_cast<size_t>(row_)].id : doc::TrackId{});
-  const Ticks t = std::max<Ticks>(0, static_cast<Ticks>(std::llround(view_.tickAtX(pos.x))));
-  const Grid g(view_.context().grid(), p.timeline->sigMap, view_.pxPerTick());
+  target_ = sampleDropTargetFor(p, spot_.track);
+  const Ticks t = std::max<Ticks>(0, static_cast<Ticks>(std::llround(s.axis(std::max(0, spot_.row)).tick(pos.x))));
+  const Grid g(view_.context().grid(), p.timeline->sigMap, s.gridPxPerTick());
   at_ = std::max<Ticks>(0, g.snap(t));
   oneTrack_ = (mods & mod::kCtrl) != 0;
+  return true;
 }
 
 void FileDrop::replan() {
@@ -97,50 +93,61 @@ void FileDrop::replan() {
 }
 
 IRect FileDrop::ghostBounds() const {
-  if (!hovering_ || plan_.items.empty()) return {};
-  const IRect lr = view_.lanes().rect();
-  const auto rows = view_.rows();
-  const UiScale s = view_.tree() ? view_.tree()->uiScale() : UiScale{};
-  const int32_t newH = s.px(am::kTrackHeight);
+  const EditSurface* s = live();
+  if (s == nullptr || !hovering_ || plan_.items.empty()) return {};
+  const UiScale us = view_.tree() ? view_.tree()->uiScale() : UiScale{};
   Ticks t0 = INT64_MAX, t1 = INT64_MIN;
   for (const SampleDropPlan::Item& it : plan_.items) {
     t0 = std::min(t0, it.start);
     t1 = std::max(t1, it.start + it.length);
   }
   int32_t y0 = INT32_MAX, y1 = INT32_MIN;
-  if (plan_.target.kind == SampleDropTarget::Kind::OnTrack && row_ >= 0) {
-    const ArrangementRow& r = rows[static_cast<size_t>(row_)];
-    y0 = r.y;
-    y1 = r.y + r.h;
+  if (plan_.target.kind == SampleDropTarget::Kind::OnTrack && spot_.row >= 0) {
+    const IRect rr = s->rowLaneRect(spot_.row);
+    y0 = rr.y;
+    y1 = rr.bottom();
   }
   if (plan_.newTracks > 0) {
-    const int32_t iy = insertY();
-    y0 = std::min(y0, iy - s.px(2.0f));
-    y1 = std::max(y1, iy + static_cast<int32_t>(plan_.newTracks) * newH);
+    const EditSurface::DropInsert ins = s->dropInsert(spot_);
+    y0 = std::min(y0, ins.y - us.px(2.0f));
+    y1 = std::max(y1, ins.y + static_cast<int32_t>(plan_.newTracks) * ins.h);
   }
-  const float x0 = view_.xOfTick(static_cast<double>(t0)) - 2.0f;
-  const float x1 = static_cast<float>(view_.xOfTick(static_cast<double>(t1))) + 2.0f;
-  IRect b{static_cast<int32_t>(std::floor(x0)), lr.y + y0, static_cast<int32_t>(std::ceil(x1 - std::floor(x0))), y1 - y0};
-  return intersect(b, lr);
+  if (y1 <= y0) return {};
+  const TimeAxis ax = s->axis(std::max(0, spot_.row));
+  const float x0 = ax.x(static_cast<double>(t0)) - 2.0f;
+  const float x1 = ax.x(static_cast<double>(t1)) + 2.0f;
+  const IRect b{static_cast<int32_t>(std::floor(x0)), y0, static_cast<int32_t>(std::ceil(x1 - std::floor(x0))), y1 - y0};
+  return intersect(b, s->viewport());
 }
 
 void FileDrop::damageGhosts() {
-  UiTree* tree = view_.lanes().tree();
+  const EditSurface* s = live();
+  UiTree* tree = s != nullptr ? s->widget().tree() : nullptr;
   if (!tree) return;
   const IRect now = ghostBounds();
   if (now == painted_) return;
-  // The lanes clip to the track scroll view: damage only what is visible there.
-  const IRect vis = view_.trackScroll().rect();
-  if (const IRect o = intersect(painted_, vis); !o.empty()) tree->damage().add(o.toRect());
-  if (const IRect n = intersect(now, vis); !n.empty()) tree->damage().add(n.toRect());
+  // Only what the surface shows (ghostBounds is clipped to its viewport).
+  if (!painted_.empty()) tree->damage().add(painted_.toRect());
+  if (!now.empty()) tree->damage().add(now.toRect());
   painted_ = now;
 }
 
-DropFeedback FileDrop::over(const DragPayload& p, Vec2 pos, Mods mods) {
+DropFeedback FileDrop::over(EditSurface& s, const DragPayload& p, Vec2 pos, Mods mods) {
   if (!takesFiles(p) || p.paths.empty() || pendingCommit_) return {};
+  if (surf_ != &s) {  // the drag moved to another surface: the old one's ghosts go (the session's files stay classified)
+    const bool h = hovering_;
+    hovering_ = false;
+    damageGhosts();
+    hovering_ = h;
+    surf_ = &s;
+    painted_ = {};
+  }
+  if (!retarget(s, pos, mods)) {  // no drop here on this surface (the patch canvas outside its lanes)
+    if (hovering_) leave(s);
+    return {};
+  }
   if (!hovering_ || p.paths != paths_) classify(p);
   hovering_ = true;
-  retarget(pos, mods);
   if (audio_.empty()) {
     damageGhosts();
     // Folders become browser places; nothing else drops here.
@@ -156,7 +163,8 @@ DropFeedback FileDrop::over(const DragPayload& p, Vec2 pos, Mods mods) {
   return {DropEffect::Copy, Cursor::Arrow};
 }
 
-void FileDrop::leave() {
+void FileDrop::leave(const EditSurface& s) {
+  if (&s != surf_) return;  // the session is another surface's now
   hovering_ = false;
   damageGhosts();
   plan_ = {};
@@ -173,8 +181,8 @@ void FileDrop::probesArrived() {
   damageGhosts();
 }
 
-DropEffect FileDrop::drop(const DragPayload& p, Vec2 pos, Mods mods) {
-  const DropFeedback fb = over(p, pos, mods);
+DropEffect FileDrop::drop(EditSurface& s, const DragPayload& p, Vec2 pos, Mods mods) {
+  const DropFeedback fb = over(s, p, pos, mods);
   hovering_ = false;
   damageGhosts();
   ViewContext& ctx = view_.context();
@@ -259,12 +267,10 @@ bool FileDrop::autoScroll(Vec2 pos, double dt) {
   return true;
 }
 
-void FileDrop::paint(LanePaint& lp) {
-  if (!hovering_ || plan_.items.empty()) return;
-  const auto rows = view_.rows();
+void FileDrop::paint(LanePaint& lp, const EditSurface& s) {
+  if (&s != live() || !hovering_ || plan_.items.empty()) return;
   const Theme& th = lp.th;
   DrawList& dl = lp.ctx.dl;
-  const int32_t newH = lp.ctx.scale.px(am::kTrackHeight);
   const Rgba fill = withAlpha(th.accent.primary, 150);
   const Rgba pendingFill = withAlpha(th.accent.primary, 70);
   auto ghost = [&](const SampleDropPlan::Item& it, float top, float bottom) {
@@ -275,25 +281,51 @@ void FileDrop::paint(LanePaint& lp) {
     (void)titleB;
     dl.addRectStroke({cc.cx0, top, cc.cx1, bottom}, th.clip.selectedBorder);
   };
+  const EditSurface::DropInsert ins = plan_.newTracks > 0 ? s.dropInsert(spot_) : EditSurface::DropInsert{};
   if (plan_.newTracks > 0) {  // the insertion line, then the new tracks' ghosts under it
-    const float iy = static_cast<float>(lp.r.y + insertY());
+    const auto iy = static_cast<float>(ins.y);
     const float lw = static_cast<float>(std::max(2, lp.ctx.scale.px(2.0f)));
     dl.addRectFilled({static_cast<float>(lp.c.x), iy - lw * 0.5f, static_cast<float>(lp.c.right()), iy + lw * 0.5f}, th.accent.primary);
   }
   for (const SampleDropPlan::Item& it : plan_.items) {
     float top = 0, bottom = 0;
     if (it.newTrack < 0) {
-      if (row_ < 0) continue;
-      const ArrangementRow& r = rows[static_cast<size_t>(row_)];
-      top = static_cast<float>(lp.r.y + r.y + 1);
-      bottom = static_cast<float>(lp.r.y + r.y + r.h - 1);
+      if (spot_.row < 0) continue;
+      const IRect rr = s.rowLaneRect(spot_.row);
+      top = static_cast<float>(rr.y + 1);
+      bottom = static_cast<float>(rr.bottom() - 1);
     } else {
-      top = static_cast<float>(lp.r.y + insertY() + it.newTrack * newH + 1);
-      bottom = top + static_cast<float>(newH - 2);
+      top = static_cast<float>(ins.y + it.newTrack * ins.h + 1);
+      bottom = top + static_cast<float>(ins.h - 2);
     }
     if (bottom <= static_cast<float>(lp.c.y) || top >= static_cast<float>(lp.c.bottom())) continue;
     ghost(it, top, bottom);
   }
+}
+
+// --- the arrangement's lanes as a drop surface -----------------------------------------------------------------
+
+std::optional<EditSurface::DropSpot> ArrangementSurface::dropSpotAt(Vec2 pos) const {
+  const float local = pos.y - static_cast<float>(view_.lanes().rect().y);
+  const auto rows = view_.rows();
+  for (size_t i = 0; i < rows.size(); ++i)
+    if (local >= static_cast<float>(rows[i].y) && local < static_cast<float>(rows[i].y + rows[i].h + rows[i].lanesH))
+      return DropSpot{rows[i].id, static_cast<int32_t>(i), static_cast<int32_t>(i)};
+  return DropSpot{};  // below the last track: new tracks at the end
+}
+
+// Under the spot's row and its automation lanes (below the last track: after it).
+EditSurface::DropInsert ArrangementSurface::dropInsert(const DropSpot& s) const {
+  const auto rows = view_.rows();
+  const UiScale us = view_.tree() ? view_.tree()->uiScale() : UiScale{};
+  int32_t y = 0;
+  if (s.spot >= 0 && static_cast<size_t>(s.spot) < rows.size()) {
+    const ArrangementRow& r = rows[static_cast<size_t>(s.spot)];
+    y = r.y + r.h + r.lanesH;
+  } else if (!rows.empty()) {
+    y = rows.back().y + rows.back().h + rows.back().lanesH;
+  }
+  return {view_.lanes().rect().y + y, us.px(am::kTrackHeight)};
 }
 
 }  // namespace pq::views::arrangement
@@ -307,9 +339,13 @@ namespace pq::views::arrangement {
 
 // --- LaneCanvas hooks ------------------------------------------------------------------------------------------
 
-DropFeedback LaneCanvas::dragOver(const DragPayload& p, Vec2 pos, Mods mods) { return view_.fileDrop().over(p, pos, mods); }
-void LaneCanvas::dragLeave() { view_.fileDrop().leave(); }
-DropEffect LaneCanvas::drop(const DragPayload& p, Vec2 pos, Mods mods) { return view_.fileDrop().drop(p, pos, mods); }
+DropFeedback LaneCanvas::dragOver(const DragPayload& p, Vec2 pos, Mods mods) {
+  return view_.fileDrop().over(view_.surfaces().own(), p, pos, mods);
+}
+void LaneCanvas::dragLeave() { view_.fileDrop().leave(view_.surfaces().own()); }
+DropEffect LaneCanvas::drop(const DragPayload& p, Vec2 pos, Mods mods) {
+  return view_.fileDrop().drop(view_.surfaces().own(), p, pos, mods);
+}
 bool LaneCanvas::autoScrollDrag(Vec2 pos, double dt) { return view_.fileDrop().autoScroll(pos, dt); }
 
 }  // namespace pq::views::arrangement

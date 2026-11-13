@@ -1086,7 +1086,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
   if (m.buildsDeferred || (m.tilesMissing && !view_.zooming())) requestFrame();
 
   // T5.7: ghost clips of files dragged over the lanes.
-  view_.fileDrop().paint(lp);
+  view_.fileDrop().paint(lp, view_.surfaces().own());
 
   // 4. The editing overlay (T3.9), then the playhead on top.
   if (view_.onPaintOverlay) view_.onPaintOverlay(ctx);
