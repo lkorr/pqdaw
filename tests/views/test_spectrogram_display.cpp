@@ -605,3 +605,40 @@ TEST_CASE("spectrogram face: a painter without its texture pool never draws the 
   for (const TextureId t : without) CHECK(std::find(with.begin(), with.end(), t) != with.end());
   CHECK(dropped == 1u);  // the ring texture, and nothing else
 }
+
+// VZ.1: a zoom (the canvas scale moving every frame) used to rebuild the picture each time the plot crossed a 64-row
+// granule or a 12 % column step: a new texture, the ring re-read, reduced, recoloured and uploaded in one frame — a
+// hitch on every step of the gesture. The picture is now stretched while the size moves and rebuilt once it rests.
+TEST_CASE("spectrogram face: a zoom stretches the picture, rebuilt once after the size rests") {
+  Gpu& g = Gpu::get();
+  FaceRig rig(nullptr, g.renderer->images().get());
+  rig.scale = 1.5f;
+  rig.paint();
+  GramShown s = rig.play(2.0, chord);
+  REQUIRE(s.texture);
+  const uint64_t r0 = s.rebuilds;
+  const uint32_t rows0 = s.texRows, cols0 = s.cols;
+  std::vector<double> ms;
+  for (int i = 0; i < 40; ++i) {  // 1.5x → 4.9x, 3 % a frame
+    rig.scale *= 1.03f;
+    const auto t0 = std::chrono::steady_clock::now();
+    s = rig.play(1.0 / 60.0, chord);
+    ms.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  std::sort(ms.begin(), ms.end());
+  MESSAGE("zoom frames (stream + poll + paint): median " << ms[ms.size() / 2] << " ms, max " << ms.back() << " ms");
+  CHECK(s.rebuilds == r0);  // stretched while the size moves
+  CHECK(s.texRows == rows0);
+  CHECK(s.cols == cols0);
+  double rebuildMs = 0.0;
+  for (int i = 0; i < 30; ++i) {  // half a second at rest
+    const auto t0 = std::chrono::steady_clock::now();
+    s = rig.play(1.0 / 60.0, chord);
+    rebuildMs = std::max(rebuildMs, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+  }
+  MESSAGE("at rest: the rebuild's frame " << rebuildMs << " ms (" << s.cols << " columns × " << s.texRows << " rows)");
+  CHECK(s.rebuilds == r0 + 1);  // one rebuild at the new size
+  CHECK(s.texRows >= std::min<uint32_t>(1024, static_cast<uint32_t>(154.0f * rig.scale)));
+  CHECK(s.cols > cols0);
+  CHECK(s.read > 0);
+}

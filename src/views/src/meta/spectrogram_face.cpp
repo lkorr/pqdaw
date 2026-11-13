@@ -34,6 +34,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "faces.h"
@@ -303,6 +304,7 @@ public:
     cacheRow_.assign(n, int16_t{-1});
     mirror_.assign(n, 0u);  // transparent: differs from every colour, so the first colouring uploads everything
     bright_.assign(texCols_, 0.0f);
+    filled_.assign(texCols_, 0);
     dirty_.assign(texCols_, 1);
     toneRev_.assign(texCols_, 0u);
     noise_.assign(texRows_, tone_.floorDb);
@@ -316,6 +318,7 @@ public:
   }
   void clear() {
     std::fill(cacheRow_.begin(), cacheRow_.end(), int16_t{-1});
+    std::fill(filled_.begin(), filled_.end(), uint8_t{0});
     std::fill(dirty_.begin(), dirty_.end(), uint8_t{1});
     noiseValid_ = false;
     noiseSeeded_ = false;
@@ -363,6 +366,7 @@ public:
   void put(uint32_t slot, const float* rows) {
     float* cdb = cacheDb_.data() + static_cast<size_t>(slot) * texRows_;
     int16_t* crow = cacheRow_.data() + static_cast<size_t>(slot) * texRows_;
+    filled_[slot] = rows != nullptr;
     if (rows == nullptr) {
       std::fill_n(crow, texRows_, int16_t{-1});
     } else {
@@ -401,6 +405,7 @@ public:
     std::copy_n(cacheRow_.begin() + static_cast<std::ptrdiff_t>(from) * texRows_, texRows_,
                 cacheRow_.begin() + static_cast<std::ptrdiff_t>(to) * texRows_);
     bright_[to] = bright_[from];
+    filled_[to] = filled_[from];
     dirty_[to] = 1;
   }
   void columnAdded() noexcept { ++sinceNoise_; }
@@ -483,7 +488,10 @@ public:
       toneRev_[s] = rev_;
       const float* cdb = cacheDb_.data() + static_cast<size_t>(s) * rows;
       const int16_t* crow = cacheRow_.data() + static_cast<size_t>(s) * rows;
-      for (uint32_t y = 0; y < rows; ++y) col_[y] = texelColour(cdb[y], crow[y], y, s);
+      // VZ.1: an empty slot (a rebuild's whole ring until it is re-read) is one colour: no per-texel tonemap.
+      if (!filled_[s]) std::fill_n(col_.data(), rows, texelColour(0.0f, int16_t{-1}, 0, s));
+      else
+        for (uint32_t y = 0; y < rows; ++y) col_[y] = texelColour(cdb[y], crow[y], y, s);
       uint32_t* m = mirror_.data() + static_cast<size_t>(s) * rows;
       if (std::memcmp(col_.data(), m, static_cast<size_t>(rows) * 4) != 0) {  // upload only what changed
         std::memcpy(m, col_.data(), static_cast<size_t>(rows) * 4);
@@ -618,6 +626,7 @@ private:
   std::vector<int16_t> cacheRow_;
   std::vector<uint32_t> mirror_, col_, staging_;
   std::vector<float> bright_;
+  std::vector<uint8_t> filled_;  // the slot holds a column (else every texel is empty)
   std::vector<uint8_t> dirty_;
   std::vector<uint32_t> toneRev_;
   uint32_t rev_ = 1;
@@ -682,12 +691,12 @@ public:
       }
     }
     if (frozen_ || !acquired_) {
-      frames_.live_ = false;
-      return false;
+      frames_.live_ = geomPending_;  // a zoom that rested still gets its rebuild
+      return geomPending_;
     }
     bool changed = ingest();
-    changed = servo(now) || changed;
-    frames_.live_ = !settled_ || moving_;
+    changed = servo(now) || changed || geomPending_;
+    frames_.live_ = !settled_ || moving_ || geomPending_;
     if (changed) ++frames_.serial_;
     return changed;
   }
@@ -925,6 +934,7 @@ public:
     out.request = sent_;
     out.uploads = uploads_;
     out.uploadBytes = uploadBytes_;
+    out.rebuilds = rebuilds_;
   }
   bool texel(uint64_t column, uint32_t y, Rgba& rgba, float& db, int& row) const {
     if (!pic_.sized() || y >= pic_.texRows() || column >= lastRead_ || lastRead_ - column > ringCols()) return false;
@@ -1089,7 +1099,41 @@ private:
     ++requests_;
     feed_->setSpectrogram(this, q);
   }
+  // VZ.1 (PQ Meter f3cacd6's rule: never a whole-picture repaint in one frame of a gesture): a new geometry rebuilds the
+  // picture — a new texture, the ring re-read, reduced, recoloured and uploaded, and (columns) a new analysis hop. While
+  // the plot's device size moves (a zoom, a resize) the picture is stretched instead; the rebuild waits until the size
+  // has rested kSettle seconds (the face keeps asking for frames meanwhile: geomPending_).
   void sizeFor(float wPx, float hPx) {
+    constexpr double kSettle = 0.2;
+    if (pic_.sized()) {
+      const double now = clockNow();
+      if (std::fabs(wPx - lastW_) > 0.5f || std::fabs(hPx - lastH_) > 0.5f) {
+        lastW_ = wPx;
+        lastH_ = hPx;
+        sizeMoved_ = now;
+      }
+      geomPending_ = false;
+      if (now - sizeMoved_ < kSettle) {
+        // Still moving: decide once it rests (nothing pending when the geometry would not change anyway).
+        geomPending_ = wantGeometry(wPx, hPx) != std::pair{pic_.cols(), pic_.texRows()};
+        return;
+      }
+    } else {
+      lastW_ = wPx;
+      lastH_ = hPx;
+    }
+    const auto [cols, rows] = wantGeometry(wPx, hPx);
+    if (pic_.resize(cols, rows, std::max(cols, shownCols()))) {
+      ++rebuilds_;
+      loopHead_ = -1;
+      // Re-read what the feed still holds at the new geometry.
+      lastRead_ = 0;
+      disp_ = servoPrev_ = -1.0;
+      sendRequest();
+    }
+  }
+  // The geometry a plot of wPx × hPx device px wants from the current one (with the hysteresis).
+  std::pair<uint32_t, uint32_t> wantGeometry(float wPx, float hPx) const noexcept {
     uint32_t cols = pic_.cols();
     // Columns follow the width in 32-column steps, only when it moved by more than 12 % (a zoom does not re-analyse).
     if (cols == 0 || std::fabs(std::clamp(wPx, static_cast<float>(kMinCols), static_cast<float>(kMaxCols)) - static_cast<float>(cols)) >
@@ -1098,13 +1142,7 @@ private:
     const auto need = static_cast<uint32_t>(std::clamp(std::lround(hPx), 16L, static_cast<long>(kRows)));
     uint32_t rows = pic_.texRows();
     if (rows == 0 || need > rows || need + 2 * kRowGranule <= rows) rows = std::min(kRows, (need + kRowGranule - 1) / kRowGranule * kRowGranule);
-    if (pic_.resize(cols, rows, std::max(cols, shownCols()))) {
-      loopHead_ = -1;
-      // Re-read what the feed still holds at the new geometry.
-      lastRead_ = 0;
-      disp_ = servoPrev_ = -1.0;
-      sendRequest();
-    }
+    return {cols, rows};
   }
 
   // Reads the columns not seen yet into the picture (UI thread, at most once per displayed frame). True: it changed.
@@ -1607,7 +1645,11 @@ private:
   std::shared_ptr<ui::TexturePool> pool_;
   ui::TextureId tex_ = 0;
   uint32_t texW_ = 0, texH_ = 0;
-  uint64_t uploads_ = 0, uploadBytes_ = 0;
+  uint64_t uploads_ = 0, uploadBytes_ = 0, rebuilds_ = 0;
+  // VZ.1: the plot's device size last painted, when it last moved, and a rebuild waiting for it to rest.
+  float lastW_ = 0.0f, lastH_ = 0.0f;
+  double sizeMoved_ = 0.0;
+  bool geomPending_ = false;
   // Guides.
   std::vector<PitchGuide> guides_;
   uint64_t guidesKey_ = 0;

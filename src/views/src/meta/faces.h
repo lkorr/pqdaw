@@ -30,6 +30,7 @@ struct GramShown {
   uint64_t requests = 0;        // analysis requests sent to the feed
   devices::SpectrogramRequest request;  // the last one
   uint64_t uploads = 0, uploadBytes = 0;  // paints that uploaded, bytes handed to the texture pool
+  uint64_t rebuilds = 0;  // picture geometry changes (each one re-reads and recolours the whole ring)
 };
 bool gramShown(const MetaFace& f, GramShown& out);
 // Texel row y of column `column` (of the feed's sequence; scroll mode) as last coloured, its cached level (dB, before tilt
