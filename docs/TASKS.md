@@ -736,7 +736,7 @@ Starts now (IG.1–2 merged; IG.3 / IG.4 deferred, not prerequisites). Strictly 
 ### Bugs
 - [x] **TX.reset-default Delete / double-click on a value-block control resets to the module's default, not knob position 0** (found by TX.detent: a reset PA Amplitude goes silent, Pitch to −4800 c). *(merged 03fab80b; also VCA detents ×0 / ±1 / ±2, EQ Q 0.7071; Arc / Dial take Delete / Up / Down (Delete on a PA arc deleted the module))*
 - [x] **TX.bool-real A bool wired into a real input converts (gate_to_real) instead of failing the compile** (user report 2026-11-08_12-29-32 context: "kind mismatch: bool into real input 'x' of (atom gain)"; consistent with GU.f8: a bool in a circuit is a 0/1 signal). *(merged eb580ed1; Q?-TX.bool-real-a)*
-- [ ] **TX.wire-isolation One bad wire never fails a whole unit** (found by TX.bool-real: real into a bool main input, width mismatch, event-rate mismatch still fail the whole track's compile; such a wire should be refused when made, or dropped from the compile with a visible error on that wire). Queued.
+- [~] **TX.wire-isolation** *(→ RB WI.1 / WI.2)* **One bad wire never fails a whole unit** (found by TX.bool-real: real into a bool main input, width mismatch, event-rate mismatch still fail the whole track's compile; such a wire should be refused when made, or dropped from the compile with a visible error on that wire). Queued.
 - [x] **TX.detent Curve points can be detents; Phase Accumulator Amplitude 1 at the centre of its travel, latching** (user 2026-11-08). Queued.
 - [x] **TX.group-oversample Any group can be oversampled (1× / 2× / 4× / 8× setting; the lowering runs its contents in the compiler's oversample region); the EQ and EQ Band panels expose it; the analytic response gets an oversample-region rule** (user 2026-11-08: "oversampling option for filter"). Done (501d6732).
 - [x] **TX.mod-bands Modulated EQ bands keep their curve and move with the modulation** (user 2026-11-08: "modulating a filter band with anything deletes the line visuals for the curves. modulated bands should move around physically on the visualizer to reflect the modulation"). The response evaluator reads a wire-driven control as unknown → Unavailable; it should read the live modulated value (the control's ModulationRing), and the node / band / total curves be drawn there. Done (a5775900).
@@ -814,6 +814,32 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **TX.ports-always Every block has clickable in / out ports, wired or not** (bug_reports/2026-11-12_21-24-59: an Envelope placed inside the opened instrument group showed no ports) *(merged cb295833; blocks inside opened groups and value knobs now orbit their main ports like top-level blocks; symbol leads outside the body pressable; catalog sweep test (119 entries × top level / in group); 32 goldens re-recorded)*
 - [x] **TX.lane-drop Samples / files drop onto the patch view's lane windows** (bug_reports/2026-11-12_21-28-20) *(merged 2a44f3a7; the arrangement's FileDrop works on any EditSurface: one drop path for both views; audit found no other audio/MIDI lane asymmetry; not done: browser DEVICE drops onto the patch canvas (no handler today))*
 - [x] **DT.4 Delay Tap: repitch by default (Crossfade mode keeps DT.2), "26 ms | 1/7" readout on a marking, samples readout, micro zoom bar in samples** 👁 (bug_reports/2026-11-12_22-06-15) *(merged 8a395136; Q247: Repitch = velocity-carrying Hermite glide, 2·|Δ| longer / |Δ|/2 shorter (≤ 2 oct bend), 30 ms … 1 s; samples below 10 ms; micro bar 1 … 256 samples by its toggle; also fixed pq_tests_graph, broken on main since DT.2)*
+
+## RB: wire isolation, autosave + crash recovery, export, freeze (plan: docs/plans/RB.md; user 2026-11-12 / 2026-11-13, SPEC §15 "finishing a song"; design approved 2026-11-13)
+≤ 2 workers in total across RB and DY; lower.cpp (WI.2, FZ.1, DY.2) never in two workers at once. After RB and DY: an audit (critique agent + -Full), and only then M7 (docs/plans/M7.md).
+- [ ] **WI.1 Inference blames the cable** (plan §WI.1). Replaces TX.wire-isolation with WI.2.
+- [ ] **WI.2 One bad wire never fails a unit (runtime cut set, Refused/Type drawn red)** (plan §WI.2). After WI.1.
+- [ ] **WI.3 Refuse declared-type clashes at gesture time** (plan §WI.3; optional, small). After WI.2.
+- [ ] **AS.1 Autosave to the Unsaved session folder** (plan §AS.1).
+- [ ] **AS.2 Crash recovery at start** (plan §AS.2). After AS.1.
+- [ ] **EX.1 Export render core: bus capture, private link, PDC trim, loop wrap, normalize, dither, PCM16/24** (plan §EX.1).
+- [ ] **EX.2 Export Audio dialog (Ctrl+Shift+R)** 👁 (plan §EX.2). After EX.1.
+- [ ] **EX.3 FLAC export (libFLAC, BSD-3)** (plan §EX.3).
+- [ ] **FZ.1 Frozen tracks in the document and the lowering** (plan §FZ.1).
+- [ ] **FZ.2 Freeze service (cache/freeze renders)** (plan §FZ.2). After EX.1, FZ.1.
+- [ ] **FZ.3 Freeze UI** 👁 (plan §FZ.3). After FZ.1.
+- [ ] **FZ.4 Flatten, bounce to new track, consolidate audio** (plan §FZ.4). After FZ.2.
+
+## DY: Compressor, Limiter, MIDI files (plan: docs/plans/DY.md; user 2026-11-12 / 2026-11-13, SPEC §15 "finishing a song"; Reverb excluded by the user 2026-11-13)
+- [ ] **DY.1 Dynamics atoms: follow, window, latency time input** (plan §DY.1).
+- [ ] **DY.2 Sidechain routing: compensated cross-track input cables + cablesource picker** (plan §DY.2).
+- [ ] **DY.3 Transfer display (StaticTransfer) and gain-reduction meter** 👁 (plan §DY.3).
+- [ ] **DY.4 Compressor module** 👁 (plan §DY.4). After DY.1–DY.3.
+- [ ] **DY.5 truepeak atom** (plan §DY.5). After DY.1.
+- [ ] **DY.6 Limiter module** 👁 (plan §DY.6). After DY.1, DY.3, DY.5.
+- [ ] **MF.1 Standard MIDI File reader / writer** (plan §MF.1).
+- [ ] **MF.2 MIDI import** (plan §MF.2). After MF.1.
+- [ ] **MF.3 MIDI export (12edo, MPE, Degrees)** (plan §MF.3). After MF.1.
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁

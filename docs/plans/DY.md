@@ -1,6 +1,6 @@
-# DY: dynamics (Compressor, Limiter), Reverb, MIDI files
-User 2026-11-12 ("do 1, 2, 3, 5, 6": items 3 and 5). Draft against main df0c63a9. SPEC §8 (Compressor, Limiter, Reverb rows;
-sidechain paragraph), §10 (MIDI files). Tasks DY.n, RV.n, MF.n.
+# DY: dynamics (Compressor, Limiter), MIDI files
+User 2026-11-12 ("do 1, 2, 3, 5, 6": items 3 and 5); user 2026-11-13: "do only RB and DY, but exclude making the reverb". Draft against main df0c63a9. SPEC §8 (Compressor, Limiter, Reverb rows;
+sidechain paragraph), §10 (MIDI files). Tasks DY.n, MF.n. **The Reverb (RV.1 `fdn` atom, RV.2 module) is excluded by the user 2026-11-13**; its draft design is kept at the end for later.
 
 ## Core-structure decisions (approved by the user before launch)
 1. **Sidechain is an ordinary cable, not a new port or container.** A dynamics module holds a child group "Sidechain"
@@ -10,8 +10,7 @@ sidechain paragraph), §10 (MIDI files). Tasks DY.n, RV.n, MF.n.
    latency-compensated, merging the two tracks into one unit (SPEC §8, §15). A cable into a param stays `Modulation` (not
    delayed, SPEC 2026-10-24). Today every cross-track cable is `Modulation` (lower.cpp:3719): sidechains are not compensated.
 2. **New atoms reused by later devices:** `follow` (attack/release one-pole envelope, no z1 loop), `window` (sliding max / min /
-   mean over a const time), an optional `time` input (seconds) on `latency`, `truepeak` (BS.1770 4× estimator), and `fdn` (the
-   reverb core as ONE native atom; everything around it is atom blocks, the module opens as a group like every other).
+   mean over a const time), an optional `time` input (seconds) on `latency`, and `truepeak` (BS.1770 4× estimator).
 3. **Static transfer curves are derived, not special-cased.** `graph::StaticTransfer` evaluates any memoryless circuit at N input
    values (reusing LinearResponse's control-op evaluator: Set + foldPureAtom); a new `transfer` panel element draws the curve of
    a bound group (the compressor's "Gain Computer" child group; Saturator curve groups for free).
@@ -23,9 +22,6 @@ sidechain paragraph), §10 (MIDI files). Tasks DY.n, RV.n, MF.n.
 - **Compressor, Limiter: atom blocks.** Everything is block-wise; the only recursion is inside the `follow` kernel (a few cycles
   per sample per channel), so no per-sample Loop region. ≈ 25 stateless ops run 8 frames at a time; estimate ≤ ~10 ns per stereo
   sample (ship), measured by the worker. A native engine might be ~2× cheaper but not openable/rebuildable.
-- **Reverb: native `fdn` atom + atom blocks.** As atoms, an 8-line FDN with diffusers is ~100+ ops and global ops compute ONE
-  channel each (schedule.h Op::channel): no SIMD across lines, feedback in sub-blocks bounded by the shortest line; estimated
-  3–5× the cost of a core where the 8 lines are one AVX2 vector. Precedent: EQ's `svf` atom.
 
 ## DY.1 Dynamics atoms: `follow`, `window`, `latency.time` (DSP)
 - `follow(x, attack, release)` → out: y += (x − y)·(x > y ? ca : cr), c = 1 − exp(−1/(t·sr)) per block while attack/release are
@@ -113,31 +109,6 @@ sidechain paragraph), §10 (MIDI files). Tasks DY.n, RV.n, MF.n.
   channel; goldens; REVIEW.
 - Verify: `pq_tests_playback` (test_limiter_module.cpp); golden in `pq_tests_views`.
 
-## RV.1 `fdn` atom (DSP; after DY.1: same registration files)
-- `fdn(l, r, size, decay, dampHi, dampLo, loMult, diffusion, modRate, modDepth, freeze; lines const 8|16, stages const 0…4,
-  seed const, maxSize const)` → earlyL, earlyR, lateL, lateR.
-  - Input diffusion: stereo upmixed to 8 channels; `stages` steps (Signalsmith-style): per-channel delay (random in a
-    size-scaled range from seed), polarity flips, Hadamard 8; `diffusion` crossfades each step's output with its input. Early
-    outputs = diffuser outputs folded to stereo.
-  - Feedback: lines with exponentially spread lengths ∝ size (pairwise coprime), Householder matrix, per-line gain
-    10^(−3·len/(T60·sr)), first-order HF lowpass + LF shelf (loMult) per line, 8 lanes at once. Chorus: each line's read position
-    wobbles by modDepth (≤ ~2 ms) at modRate with spread phases, cubic read. Freeze: input muted, gain 1, damping bypassed.
-  - size smoothed per block; coefficients per block; buffers sized from maxSize (kVariableState). Silence: feedback tail
-    (state ≤ ε → flush); frozen never sleeps.
-- Accept: T60 within 10 % of `decay` at 1 kHz for 0.5 / 2 / 10 s; HF decays faster with damping; echo density ≥ 1 per ms within
-  ~50 ms; freeze holds energy within 0.5 dB over 10 s; L/R decorrelated; RtScope; interpreter == JIT; sleeps after the tail;
-  bench rows (8 / 16 lines; target ≤ ~40 ns per stereo sample at 8 lines, ship).
-- Verify: `-Affected -Slow` + ship link.
-
-## RV.2 Reverb module 👁 (after RV.1)
-- `module:reverb`: Predelay (`delay`, 0.5–250 ms), input filter (svf hp + lp, on/off literal mux), `fdn` (Size, Decay 0.2–60 s,
-  HF / LF damping, Diffusion, Density = stages chip, Chorus rate / amount, Freeze), Reflect / Diffuse levels (dB gains on early /
-  late), Stereo width (M/S, Utility's pattern), Dry/Wet (gain_add); Quality chip 8 / 16 lines.
-- Panel: three rows (Input, Diffusion network, Output), Freeze button, Quality chip.
-- Accept: dry/wet 0 bit-exact pass-through; predelay lands on the right sample; width 0 = mono; on a return an idle reverb sleeps
-  after its tail; golden; REVIEW.
-- Verify: `pq_tests_playback` (test_reverb_module.cpp); golden in `pq_tests_views`.
-
 ## MF.1 Standard MIDI File reader and writer
 - `pq/document/midi_file.h`, src/document/src/midi_file.cpp; in-house, bytes in / bytes out (no file I/O).
   `parseMidiFile(span<const uint8_t>) → Result<MidiFile>`, `writeMidiFile(const MidiFile&) → vector<uint8_t>`; MidiFile = format,
@@ -190,18 +161,47 @@ sidechain paragraph), §10 (MIDI files). Tasks DY.n, RV.n, MF.n.
 | Wave | Worker A | Worker B |
 |---|---|---|
 | 1 | DY.1 (dsp/graph atom registries) | MF.1 (document/midi_file) |
-| 2 | RV.1 (same registries, after DY.1) | DY.2 (lower.cpp, project_patch, panel cable_source) |
+| 2 | DY.2 (lower.cpp, project_patch, panel cable_source) | DY.5 (dsp/graph registries, after DY.1) |
 | 3 | DY.3 (graph response, panel transfer + meter) | MF.2 (edit ops, file_drop, library_load) |
 | 4 | DY.4 (modules.cpp) | MF.3 (export, shell_app, clip_export) |
-| 5 | RV.2 (modules.cpp) | DY.5 (dsp/graph registries) |
-| 6 | DY.6 (modules.cpp) | — |
-modules.cpp (kModules, ModuleKind) is shared by DY.4, RV.2, DY.6: serial.
+| 5 | DY.6 (modules.cpp) | — |
+modules.cpp (kModules, ModuleKind) is shared by DY.4, DY.6: serial. These waves interleave with RB's (docs/plans/RB.md); lower.cpp
+is touched by WI.2, FZ.1 and DY.2: never two at once.
 
 ## Choices (recommended defaults)
 - Sidechain merges the two tracks' units (SPEC §15; one-line choice in lower.cpp). v1 taps: Pre FX + Post FX (post-mixer later).
 - MTS export and mos-explorer "EDO mapped" (listValidEdos / edoDegreeSteps): deferred; v1 ships 12edo, MPE, Degrees.
 - Format 0 → one track (keeps channel-per-note microtonal files intact). Sustain applied to note ends on import; other CCs and
   mid-note bends dropped (expression curves come with M7), reported.
-- Lookahead / Density change recompiles (≈ 11 ms swap fade): accepted. Compressor RMS = 5 ms `window` mean. Reverb 8 lines
-  default, 16 = "High".
+- Lookahead change recompiles (≈ 11 ms swap fade): accepted. Compressor RMS = 5 ms `window` mean. 
 - Not now: Glue Compressor, Gate, Auto Filter's follower (all reuse follow / window / Sidechain); multiband; MIDI preview in the browser.
+
+## Excluded for now (user 2026-11-13): the Reverb
+CPU note kept for later: a native `fdn` atom (8 lines as one AVX2 vector) + atom blocks around it; built from atoms it would be
+3–5× the cost (global ops compute one channel each).
+
+### RV.1 `fdn` atom (DSP; after DY.1: same registration files)
+- `fdn(l, r, size, decay, dampHi, dampLo, loMult, diffusion, modRate, modDepth, freeze; lines const 8|16, stages const 0…4,
+  seed const, maxSize const)` → earlyL, earlyR, lateL, lateR.
+  - Input diffusion: stereo upmixed to 8 channels; `stages` steps (Signalsmith-style): per-channel delay (random in a
+    size-scaled range from seed), polarity flips, Hadamard 8; `diffusion` crossfades each step's output with its input. Early
+    outputs = diffuser outputs folded to stereo.
+  - Feedback: lines with exponentially spread lengths ∝ size (pairwise coprime), Householder matrix, per-line gain
+    10^(−3·len/(T60·sr)), first-order HF lowpass + LF shelf (loMult) per line, 8 lanes at once. Chorus: each line's read position
+    wobbles by modDepth (≤ ~2 ms) at modRate with spread phases, cubic read. Freeze: input muted, gain 1, damping bypassed.
+  - size smoothed per block; coefficients per block; buffers sized from maxSize (kVariableState). Silence: feedback tail
+    (state ≤ ε → flush); frozen never sleeps.
+- Accept: T60 within 10 % of `decay` at 1 kHz for 0.5 / 2 / 10 s; HF decays faster with damping; echo density ≥ 1 per ms within
+  ~50 ms; freeze holds energy within 0.5 dB over 10 s; L/R decorrelated; RtScope; interpreter == JIT; sleeps after the tail;
+  bench rows (8 / 16 lines; target ≤ ~40 ns per stereo sample at 8 lines, ship).
+- Verify: `-Affected -Slow` + ship link.
+
+### RV.2 Reverb module 👁 (after RV.1)
+- `module:reverb`: Predelay (`delay`, 0.5–250 ms), input filter (svf hp + lp, on/off literal mux), `fdn` (Size, Decay 0.2–60 s,
+  HF / LF damping, Diffusion, Density = stages chip, Chorus rate / amount, Freeze), Reflect / Diffuse levels (dB gains on early /
+  late), Stereo width (M/S, Utility's pattern), Dry/Wet (gain_add); Quality chip 8 / 16 lines.
+- Panel: three rows (Input, Diffusion network, Output), Freeze button, Quality chip.
+- Accept: dry/wet 0 bit-exact pass-through; predelay lands on the right sample; width 0 = mono; on a return an idle reverb sleeps
+  after its tail; golden; REVIEW.
+- Verify: `pq_tests_playback` (test_reverb_module.cpp); golden in `pq_tests_views`.
+
