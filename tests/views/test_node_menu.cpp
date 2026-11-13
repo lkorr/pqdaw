@@ -1893,7 +1893,7 @@ void checkMainPorts(Ui& u, doc::DeviceId id, std::string_view whatV) {
     CHECK_MESSAGE((h.kind == circuit::CanvasHit::Kind::Pin && h.index == p),
                   side << ": not hit (kind " << static_cast<int>(h.kind) << " index " << h.index << ", pin " << p << ")");
     const ProjectCanvas::PinHit ph = u.view().canvas().pinAt(dv);
-    CHECK_MESSAGE((ph.node == at && ph.port == static_cast<uint32_t>(k) && ph.input == pinInput), side << ": not pressable");
+    CHECK_MESSAGE((ph.node == at && ph.port == static_cast<uint32_t>(k) && ph.input == pinInput), side << ": not pressable (got node " << ph.node << " port " << ph.port << " input " << ph.input << ", want " << at << " " << k << ")");
     // A real press there (window → canvas): an output starts a cable, an orbiting input slides; Esc cancels.
     if (!pinInput || pin.orbit) {
       u.d.move(dv);
