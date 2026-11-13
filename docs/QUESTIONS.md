@@ -1331,7 +1331,7 @@ Choice: (a), (c), (f), (g) — each one function in src/document/src/midi_file.c
 its zone's range).
 Status: open.
 
-## Q?-DY.4-a · the Compressor's Expand law and its 3-way Mode
+## Q261 · 2026-11-13 · DY.4 · the Compressor's Expand law and its 3-way Mode
 Context: the plan says "Expand: mirror below threshold (downward), capped at 70 dB" and lists Mode chips Peak / RMS /
 Expand. A point mirror of the compress curve (slope 1/R below T) would raise quiet signals (upward), not expand.
 Options: Expand GR = (a) (R − 1)·body(T − x) (downward, slope R below T), (b) (1 − 1/R)·body
@@ -1341,7 +1341,7 @@ default 4:1 a signal 10 dB under T drops 30 dB more. Reversible: the Gain Comput
 choice in compressorBlocks (modules.cpp).
 Status: open.
 
-## Q?-DY.4-b · Sidechain EQ "on" as a value block, Listen's signal, the GR jack, defaults
+## Q262 · 2026-11-13 · DY.4 · Sidechain EQ "on" as a value block, Listen's signal, the GR jack, defaults
 Context: the plan's sidechain EQ is "an EQ Band child group off by default" with an "EQ on" control on the panel, but a
 panel binding cannot reach a group's active state (panel.h: Control / Setting / Data / Signal / Panel / Input); Listen
 "Out = SC signal" and the "GR block's output is a cable source" leave the exact taps open.

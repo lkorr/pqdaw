@@ -602,3 +602,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: 10 MB / 3.7 M events parse ≈ 21 ms (check, idle); resolveNotes ≈ 155 ms.
 - Notes: Q260. MPE at ±48 has 0.59 ¢ bend steps: MF.3's "within 0.01 ¢" can't hold at ±48. The merge commit cfc00c99 carried QUESTIONS.md conflict markers (orchestrator script error); fixed in the next commit.
 
+## 2026-11-13 · DY.4 merged · main
+- Did: merged task/DY.4-compressor (a0ed45b2): module:compressor from atom / value blocks only: detector mux (In / Sidechain child group: EQ Band low cut + gain / mix), Peak or RMS (window 5 ms mean) → dB → "Gain Computer" child group (soft knee; Expand downward, 70 dB cap) → follow (Log / Lin; Auto release max(fast, slow − 3 dB)); latency lookahead 0 / 1 / 10 ms; Dry/Wet gain_add; Listen; GR meter + modsource jack; panel 520×182 with transfer display, reduction meter, cablesource.
+- Verified (worker): test_compressor_module 5/5 (static curve ≤ 1e-4 dB, interp == JIT; attack/release 479/4798 frames vs 480/4800; lookahead 480 reported and reduction before the transient; sidechain ducks −31.7 dB); after rebase pq_tests_playback / document / views pass (playback re-run after a low-memory kill). Golden compressor-panel new.
+- Perf: defaults ≈ 4–5 ns per stereo sample, RMS + Auto + 10 ms ≈ 12 ns (ship, ~70 % load: indicative; idle re-measure at the audit). Only the chosen path is scheduled.
+- Notes: Q261, Q262. Audio Effects browser list is hard-coded (Utility / Saturator / LFO) in 3 files: Compressor sits under Meta Modules.
+
