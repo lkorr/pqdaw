@@ -3,7 +3,7 @@
 // listener the app saves with); Export hands the port the matching job; progress shows while it runs, Cancel cancels,
 // the done line says how it ended, and the window polls only while a job runs; Selected Tracks / Time Selection use the
 // arrangement's selection; a window closed during an export leaves the host polling until the status line can say how
-// it ended; the golden export-audio.
+// it ended; FLAC offers 16 / 24-bit only (EX.3); the golden export-audio.
 #include <doctest/doctest.h>
 
 #include <memory>
@@ -209,6 +209,39 @@ TEST_CASE("export: 32-bit float disables Dither (the job has none); the song ran
   CHECK(j.tracks == ExportTracks::Master);
   CHECK(j.sampleRate == 44100);  // the engine's
   CHECK(j.baseName == "arrangement");
+}
+
+TEST_CASE("export: FLAC offers 16 / 24-bit only (32-bit float becomes 24-bit); WAV brings 32-bit float back") {
+  Fx f;
+  ExportWindow& w = f.open();
+  CHECK(w.formatChooser()->items() == std::vector<std::string>{"WAV", "FLAC"});
+  f.pick(w.bitsChooser(), "32 (float)");
+  CHECK(f.prefs().bits == ExportBitDepth::Float32);
+  f.pick(w.formatChooser(), "FLAC");
+  CHECK(f.prefs().format == ExportFileFormat::Flac);
+  CHECK(f.prefs().bits == ExportBitDepth::Pcm24);
+  CHECK(w.bitsChooser()->items() == std::vector<std::string>{"16", "24"});
+  CHECK(w.bitsChooser()->index() == 1);
+  CHECK(w.ditherChooser()->enabled());  // integer again
+  f.pick(w.bitsChooser(), "16");
+  CHECK(f.prefs().bits == ExportBitDepth::Pcm16);
+  CHECK(f.saved.back().exportAudio == f.prefs());
+  f.click(w.exportButton());
+  REQUIRE(f.port.started.size() == 1);
+  CHECK(f.port.started[0].format == ExportFileFormat::Flac);
+  CHECK(f.port.started[0].bits == ExportBitDepth::Pcm16);
+  CHECK(f.port.started[0].dither == ExportDither::Tpdf);
+  f.port.finish({"C:\\Out\\arrangement.flac"});
+  f.d.advance(0.1);
+  CHECK_FALSE(w.polling());
+  CHECK(w.doneText() == "Exported arrangement.flac to C:\\Out");
+  // Back to WAV: the depth stays 16-bit and 32-bit float is offered again.
+  f.pick(w.formatChooser(), "WAV");
+  CHECK(f.prefs().format == ExportFileFormat::Wav);
+  CHECK(f.prefs().bits == ExportBitDepth::Pcm16);
+  CHECK(w.bitsChooser()->items().size() == 3);
+  f.pick(w.bitsChooser(), "32 (float)");
+  CHECK(f.prefs().bits == ExportBitDepth::Float32);
 }
 
 TEST_CASE("export: progress shows while the job runs; Cancel cancels; the done line; polling only while running") {

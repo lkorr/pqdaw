@@ -163,7 +163,7 @@ constexpr const char* kExportTrackNames[] = {"master", "allTracks", "selected"};
 constexpr const char* kExportRangeNames[] = {"song", "loop", "timeSelection"};
 constexpr const char* kExportBitNames[] = {"pcm16", "pcm24", "float32"};
 constexpr const char* kExportDitherNames[] = {"none", "tpdf", "shaped"};
-constexpr const char* kExportFormatNames[] = {"wav"};
+constexpr const char* kExportFormatNames[] = {"wav", "flac"};
 
 template <class E, size_t N>
 void readEnum(const json& o, const char* key, const char* const (&names)[N], E& out) {
@@ -181,6 +181,8 @@ views::ExportPrefs exportPrefsOf(const json& o) {
   readEnum(o, "bits", kExportBitNames, p.bits);
   readEnum(o, "dither", kExportDitherNames, p.dither);
   readEnum(o, "format", kExportFormatNames, p.format);
+  if (p.format == views::ExportFileFormat::Flac && p.bits == views::ExportBitDepth::Float32)
+    p.bits = views::ExportBitDepth::Pcm24;  // EX.3: FLAC is 16 or 24-bit
   if (const auto f = o.find("includeReturnsMaster"); f != o.end() && f->is_boolean()) p.includeReturnsMaster = f->get<bool>();
   if (const auto f = o.find("renderAsLoop"); f != o.end() && f->is_boolean()) p.renderAsLoop = f->get<bool>();
   if (const auto f = o.find("normalize"); f != o.end() && f->is_boolean()) p.normalize = f->get<bool>();

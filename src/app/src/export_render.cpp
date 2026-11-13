@@ -8,6 +8,7 @@
 
 #include "pq/document/store.h"
 #include "pq/media/decoder.h"
+#include "pq/media/flac_file.h"
 #include "pq/media/wav_file.h"
 
 namespace pq::app {
@@ -131,6 +132,28 @@ public:
 private:
   fs::path path_;
   media::WavWriter w_;
+};
+
+// EX.3: pass 2's output, a WAV (16 / 24-bit / 32f) or a FLAC (16 / 24-bit) file.
+class OutFile {
+public:
+  Status open(const fs::path& path, uint32_t channels, uint32_t rate, ExportFormat format, ExportBits bits) {
+    flac_ = format == ExportFormat::Flac;
+    if (flac_) return flacW_.open(path, channels, rate, bits == ExportBits::Pcm16 ? 16u : 24u);
+    return wavW_.open(path, channels, rate,
+                      bits == ExportBits::Pcm16   ? media::WavFormat::Pcm16
+                      : bits == ExportBits::Pcm24 ? media::WavFormat::Pcm24
+                                                  : media::WavFormat::Float32);
+  }
+  Status write(const float* const* ch, uint32_t frames) {
+    return flac_ ? flacW_.write(ch, frames) : wavW_.write(ch, frames);
+  }
+  Status close() { return flac_ ? flacW_.close() : wavW_.close(); }
+
+private:
+  bool flac_ = false;
+  media::WavWriter wavW_;
+  media::FlacWriter flacW_;
 };
 
 fs::path pathFromUtf8(const std::string& s) {
@@ -275,7 +298,7 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
   if (rq.to <= rq.from) return bad("empty range");
   if (rq.folder.empty()) return bad("no folder");
   if (rq.what == ExportWhat::Master && rq.baseName.empty()) return bad("no file name");
-  if (rq.format != ExportFormat::Wav) return bad("unsupported format");
+  if (rq.format == ExportFormat::Flac && rq.bits == ExportBits::Float32) return bad("FLAC is 16 or 24-bit");
   auto report = [&](float f) {
     if (progress != nullptr) progress->store(f, std::memory_order_relaxed);
   };
@@ -296,14 +319,15 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
   std::vector<Job> jobs;
   const fs::path folder = rq.folder;
   std::map<std::string, int> names;
+  const std::string ext = rq.format == ExportFormat::Flac ? ".flac" : ".wav";
   auto add = [&](doc::TrackId id, const std::string& name) {
     std::string stem = safeName(name);
     if (const int n = ++names[stem]; n > 1) stem += " (" + std::to_string(n) + ")";
     Job j;
     j.track = id;
-    j.final = folder / pathFromUtf8(stem + ".wav");
-    j.temp = folder / pathFromUtf8(stem + ".wav.pqexport.tmp");
-    j.part = folder / pathFromUtf8(stem + ".wav.pqexport.part");
+    j.final = folder / pathFromUtf8(stem + ext);
+    j.temp = folder / pathFromUtf8(stem + ext + ".pqexport.tmp");  // always a 32f WAV
+    j.part = folder / pathFromUtf8(stem + ext + ".pqexport.part");
     jobs.push_back(std::move(j));
   };
   if (rq.what == ExportWhat::Master) {
@@ -430,9 +454,7 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
     for (const Job& j : jobs) length = std::max(length, j.stats.loudEnd);
 
   // Pass 2: normalize, dither, quantize into the part files.
-  const media::WavFormat format = rq.bits == ExportBits::Pcm16   ? media::WavFormat::Pcm16
-                                  : rq.bits == ExportBits::Pcm24 ? media::WavFormat::Pcm24
-                                                                 : media::WavFormat::Float32;
+  const bool isFloat = rq.bits == ExportBits::Float32;  // WAV only
   const double scale = rq.bits == ExportBits::Pcm16 ? 32768.0 : 8388608.0;
   const ExportDither dither = rq.bits == ExportBits::Float32 ? ExportDither::None : rq.dither;
   constexpr float kNormalizePeak = 0.96605088f;  // −0.3 dBFS
@@ -458,7 +480,7 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
     f.gainDb = 20.0f * std::log10(gain);
     out.files.push_back(f);
     // 32f, no gain, the exact length: the temp file is the result.
-    if (!j.silent && format == media::WavFormat::Float32 && gain == 1.0f && j.stats.frames == length) {
+    if (!j.silent && isFloat && gain == 1.0f && j.stats.frames == length) {
       if (fs::rename(j.temp, j.part, ec); ec) {
         cleanup();
         return Error{ErrorCode::Io, "export: cannot write " + j.part.string() + ": " + ec.message(), {}};
@@ -475,8 +497,8 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
       dec = std::move(d.value());
       j.channels = dec->info().channels;
     }
-    media::WavWriter w;
-    if (auto s = w.open(j.part, j.channels, rq.rate, format); !s) {
+    OutFile w;
+    if (auto s = w.open(j.part, j.channels, rq.rate, rq.format, rq.bits); !s) {
       cleanup();
       return s.error();
     }
@@ -501,7 +523,7 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
         std::fill(x + got, x + n, 0.0f);  // past the pass's frames (a shorter solo pass): silence
         if (gain != 1.0f)
           for (uint32_t i = 0; i < n; ++i) x[i] *= gain;
-        if (format != media::WavFormat::Float32 && dither != ExportDither::None)
+        if (!isFloat && dither != ExportDither::None)
           for (uint32_t i = 0; i < n; ++i) x[i] = dith[c].process(x[i], scale, dither);
       }
       if (auto s = w.write(ptr.data(), n); !s) {

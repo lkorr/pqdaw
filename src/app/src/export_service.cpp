@@ -42,7 +42,7 @@ ExportRequest exportRequestOf(const views::ExportJob& job, bool jit) {
     case views::ExportDither::Tpdf: r.dither = ExportDither::Tpdf; break;
     case views::ExportDither::Shaped: r.dither = ExportDither::Shaped; break;
   }
-  r.format = ExportFormat::Wav;
+  r.format = job.format == views::ExportFileFormat::Flac ? ExportFormat::Flac : ExportFormat::Wav;
   r.folder = pathOfUtf8(job.folder);
   r.baseName = job.baseName;
   // RB "Choices": a whole-song export renders its tail until −90 dBFS for 1 s, at most 10 s; a loop or a time

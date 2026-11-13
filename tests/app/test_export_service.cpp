@@ -1,17 +1,20 @@
 // EX.2: the app's Export Audio port (pq/app/export_service.h): a tiny master export of the default project through the
 // real worker (interpreter images, one beat) writes its file; a cancel ends Cancelled with nothing left; the job →
 // request mapping (the whole song gets the 10 s tail, Selected → Tracks); the window's choices round-trip through the
-// settings file.
+// settings file. EX.3: a tiny FLAC export through runExport holds the same samples as the WAV export of that request.
 #include <doctest/doctest.h>
 
 #include <chrono>
 #include <filesystem>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "pq/app/export_service.h"
 #include "pq/app/user_settings.h"
 #include "pq/document/model.h"
+#include "pq/media/decoder.h"
 
 using namespace pq;
 namespace fs = std::filesystem;
@@ -112,6 +115,56 @@ TEST_CASE("export service: the job maps onto the request (tail for the whole son
   CHECK_FALSE(r.jit);
 }
 
+TEST_CASE("export: a tiny FLAC export (runExport) decodes to the WAV export's samples; FLAC refuses 32-bit float") {
+  const fs::path dir = freshDir("flac");
+  views::ExportJob job = tinyJob(dir, kPpq / 2);  // half a beat of the default project
+  job.dither = views::ExportDither::Tpdf;         // seeded: the same noise in both files (on silence: the content)
+  auto decode = [](const fs::path& p) {
+    auto d = media::Decoder::open(p);
+    REQUIRE_MESSAGE(d.ok(), (d.ok() ? "" : d.error().message));
+    std::vector<std::vector<float>> out((*d)->info().channels, std::vector<float>((*d)->info().frames));
+    std::vector<float*> ptr;
+    for (auto& c : out) ptr.push_back(c.data());
+    auto got = (*d)->read(ptr.data(), (*d)->info().frames);
+    REQUIRE(got.ok());
+    CHECK(*got == (*d)->info().frames);
+    return std::pair{(*d)->info().bitsPerSample, out};
+  };
+  for (const views::ExportBitDepth bits : {views::ExportBitDepth::Pcm16, views::ExportBitDepth::Pcm24}) {
+    CAPTURE(static_cast<int>(bits));
+    job.bits = bits;
+    job.format = views::ExportFileFormat::Wav;
+    app::ExportRequest wav = app::exportRequestOf(job, /*jit=*/false);
+    job.format = views::ExportFileFormat::Flac;
+    app::ExportRequest flac = app::exportRequestOf(job, /*jit=*/false);
+    CHECK(flac.format == app::ExportFormat::Flac);
+    auto rw = app::runExport(wav);
+    REQUIRE_MESSAGE(rw.ok(), (rw.ok() ? "" : rw.error().message));
+    auto rf = app::runExport(flac);
+    REQUIRE_MESSAGE(rf.ok(), (rf.ok() ? "" : rf.error().message));
+    REQUIRE(rf->files.size() == 1);
+    CHECK(rf->files[0].path == dir / "Tiny.flac");
+    const auto [wavBits, w] = decode(dir / "Tiny.wav");
+    const auto [flacBits, f] = decode(dir / "Tiny.flac");
+    CHECK(flacBits == (bits == views::ExportBitDepth::Pcm16 ? 16 : 24));
+    CHECK(flacBits == wavBits);
+    REQUIRE(f.size() == w.size());
+    REQUIRE(!f.empty());
+    CHECK(f[0].size() == rf->frames);
+    CHECK(f == w);  // bit for bit (float == on the integer grid)
+    bool anyNonZero = false;
+    for (float x : f[0]) anyNonZero = anyNonZero || x != 0.0f;
+    CHECK(anyNonZero);  // the dither noise: the comparison is not of silence
+  }
+  // No 32-bit float FLAC; nothing is written.
+  fs::remove(dir / "Tiny.flac");
+  job.bits = views::ExportBitDepth::Float32;
+  auto bad = app::runExport(app::exportRequestOf(job, false));
+  CHECK_FALSE(bad.ok());
+  CHECK_FALSE(fs::exists(dir / "Tiny.flac"));
+  fs::remove_all(dir);
+}
+
 TEST_CASE("export service: the window's choices round-trip through the settings file") {
   const fs::path dir = freshDir("settings");
   const std::string path = utf8(dir / "settings.json");
@@ -125,6 +178,9 @@ TEST_CASE("export service: the window's choices round-trip through the settings 
   p.exportAudio.dither = views::ExportDither::Shaped;
   p.exportAudio.normalize = true;
   p.exportAudio.folder = "D:\\M\xC3\xBCsic\\Exports";
+  REQUIRE(app::saveViewPrefs(path, p).ok());
+  CHECK(app::loadViewPrefs(path) == p);
+  p.exportAudio.format = views::ExportFileFormat::Flac;  // EX.3
   REQUIRE(app::saveViewPrefs(path, p).ok());
   CHECK(app::loadViewPrefs(path) == p);
   fs::remove_all(dir);

@@ -28,6 +28,8 @@ constexpr float kControlWidth = 220.0f;
 constexpr const char* kTrackItems[] = {"Master", "All Individual Tracks", "Selected Tracks"};
 constexpr const char* kRangeItems[] = {"Song", "Loop", "Time Selection"};
 constexpr const char* kBitItems[] = {"16", "24", "32 (float)"};
+constexpr const char* kFlacBitItems[] = {"16", "24"};  // EX.3: FLAC is integer only
+constexpr const char* kFormatItems[] = {"WAV", "FLAC"};
 constexpr const char* kDitherItems[] = {"None", "TPDF", "Shaped"};
 
 template <size_t N>
@@ -174,12 +176,14 @@ ExportWindow::ExportWindow(ExportPort& port, ViewContext& ctx, ExportSelection s
   section(body, "encoding-section", "Encoding");
   {
     auto& r = row(body, "format", "File Type");
-    format_ = &r.add<Dropdown>("chooser", std::vector<std::string>{"WAV"}, 0);
+    format_ = &r.add<Dropdown>("chooser", itemsOf(kFormatItems), static_cast<int32_t>(prefs.format));
     format_->setWidth(Length::fixed(120));
-    format_->setInfo("File Type", "The file format (WAV).");
-    format_->onChange = [this](int32_t) {
+    format_->setInfo("File Type", "WAV, or FLAC: lossless and about half the size, 16 or 24-bit only.");
+    format_->onChange = [this](int32_t i) {
       ExportPrefs p = ctx_.viewPrefs().exportAudio;
-      p.format = ExportFileFormat::Wav;
+      p.format = i == 1 ? ExportFileFormat::Flac : ExportFileFormat::Wav;
+      // FLAC has no 32-bit float: the depth becomes 24-bit (the closest; switching back to WAV keeps it).
+      if (p.format == ExportFileFormat::Flac && p.bits == ExportBitDepth::Float32) p.bits = ExportBitDepth::Pcm24;
       choose(p);
     };
   }
@@ -198,12 +202,14 @@ ExportWindow::ExportWindow(ExportPort& port, ViewContext& ctx, ExportSelection s
   }
   {
     auto& r = row(body, "bits", "Bit Depth");
-    bits_ = &r.add<Dropdown>("chooser", itemsOf(kBitItems), static_cast<int32_t>(prefs.bits));
+    bits_ = &r.add<Dropdown>("chooser", prefs.format == ExportFileFormat::Flac ? itemsOf(kFlacBitItems) : itemsOf(kBitItems),
+                             static_cast<int32_t>(prefs.bits));
     bits_->setWidth(Length::fixed(120));
-    bits_->setInfo("Bit Depth", "16 or 24-bit integer samples, or 32-bit float (no dither, no clipping above 0 dB).");
+    bits_->setInfo("Bit Depth", "16 or 24-bit integer samples, or 32-bit float (WAV only: no dither, no clipping above "
+                                "0 dB).");
     bits_->onChange = [this](int32_t i) {
       ExportPrefs p = ctx_.viewPrefs().exportAudio;
-      p.bits = static_cast<ExportBitDepth>(std::clamp(i, 0, 2));
+      p.bits = static_cast<ExportBitDepth>(std::clamp(i, 0, p.format == ExportFileFormat::Flac ? 1 : 2));
       choose(p);
     };
   }
@@ -259,7 +265,7 @@ ExportWindow::ExportWindow(ExportPort& port, ViewContext& ctx, ExportSelection s
     name_ = &r.add<TextEdit>("field", ctx_.projectName());
     name_->setWidth(Length::fixed(kControlWidth + 100.0f));
     name_->setInfo("File Name", "The master's file name; with tracks, the start of each track's file name "
-                                "(\"<name> <track>.wav\").");
+                                "(\"<name> <track>.wav\" or .flac).");
     name_->onChange = [this](const std::string&) { updateRows(); };
   }
 
@@ -441,6 +447,12 @@ void ExportWindow::updateRows() {
   range_->setIndex(static_cast<int32_t>(p.range));
   returns_->setOn(p.includeReturnsMaster);
   loop_->setOn(p.renderAsLoop);
+  format_->setIndex(static_cast<int32_t>(p.format));
+  // EX.3: FLAC offers 16 and 24-bit only (choose() never leaves FLAC at 32-bit float).
+  if (const size_t n = p.format == ExportFileFormat::Flac ? std::size(kFlacBitItems) : std::size(kBitItems);
+      bits_->items().size() != n)
+    bits_->setItems(p.format == ExportFileFormat::Flac ? itemsOf(kFlacBitItems) : itemsOf(kBitItems),
+                    static_cast<int32_t>(p.bits));
   bits_->setIndex(static_cast<int32_t>(p.bits));
   dither_->setIndex(static_cast<int32_t>(p.dither));
   normalize_->setOn(p.normalize);

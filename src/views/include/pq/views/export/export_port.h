@@ -23,7 +23,7 @@ enum class ExportTracks : uint8_t { Master, AllTracks /* every active track but 
 enum class ExportRange : uint8_t { Song, Loop, TimeSelection };
 enum class ExportBitDepth : uint8_t { Pcm16, Pcm24, Float32 };
 enum class ExportDither : uint8_t { None, Tpdf, Shaped };  // integer depths only
-enum class ExportFileFormat : uint8_t { Wav };             // EX.3 adds Flac
+enum class ExportFileFormat : uint8_t { Wav, Flac };       // EX.3: FLAC is 16 or 24-bit (no Float32)
 
 // The window's choices (remembered between runs). sampleRate 0 = the engine's rate.
 struct ExportPrefs {

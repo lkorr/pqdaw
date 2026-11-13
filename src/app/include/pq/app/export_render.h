@@ -24,7 +24,8 @@
 // last frame above −90 dBFS (at least N).
 //
 // Files (runExport): `<folder>/<baseName>.wav` for the master; `<folder>/<baseName> <track name>.wav` per track (names
-// made safe for the file system, duplicates numbered). Pass 1 writes 32-bit float temp files next to them; pass 2
+// made safe for the file system, duplicates numbered); `.flac` for ExportFormat::Flac (EX.3: media::FlacWriter, 16 or
+// 24-bit; the same samples as the WAV of the same request). Pass 1 writes 32-bit float temp files next to them; pass 2
 // applies the normalize gain (each file's peak to −0.3 dBFS), TPDF dither (±1 LSB triangular) or 3-tap shaped dither
 // (error feedback, h = 1.623, −0.982, 0.109: noise moved above ~10 kHz) for integer formats, quantizes and writes
 // `.part` files; only when all of them are complete are they renamed onto the final names (replacing existing files).
@@ -103,7 +104,7 @@ Result<PassResult> renderPass(ProjectLink& link, const doc::Project& project, co
 enum class ExportWhat : uint8_t { Master, Stems /* every active track but the master */, Tracks /* `tracks` */ };
 enum class ExportBits : uint8_t { Pcm16, Pcm24, Float32 };
 enum class ExportDither : uint8_t { None, Tpdf, Shaped };  // integer formats only
-enum class ExportFormat : uint8_t { Wav };                 // EX.3 adds Flac
+enum class ExportFormat : uint8_t { Wav, Flac };           // EX.3: FLAC (libFLAC level 5) is 16 or 24-bit
 
 struct ExportRequest {
   doc::Snapshot snapshot;

@@ -11,9 +11,9 @@
 //   │   Include Return and Master Effects [On]                            │  (tracks only)
 //   │   Render as Loop                [On]                                │
 //   │ Encoding                                                            │
-//   │   File Type                     [WAV ▾]                             │  (EX.3 adds FLAC)
+//   │   File Type                     [WAV ▾]                             │  (WAV / FLAC)
 //   │   Sample Rate                   [48000 ▾]                           │  (default: the engine's)
-//   │   Bit Depth                     [24 ▾]                              │
+//   │   Bit Depth                     [24 ▾]                              │  (16 / 24 / 32 float; FLAC 16 / 24)
 //   │   Dither                        [TPDF ▾]                            │  (16 / 24 bit only)
 //   │   Normalize                     [On]                                │
 //   │ Output                                                              │
@@ -29,7 +29,8 @@
 // row left out). Range: the song (bar 1 to the end of the last clip, plus the release tail: until −90 dBFS for 1 s, at
 // most 10 s), the loop brace, or the arrangement's time selection; the readout shows its start and length. The rows
 // that do not apply are disabled (no time selection, no selected track, Include Return and Master Effects for the
-// master, Dither for 32-bit float); Export is disabled with the reason in the done line while the choices cannot
+// master, Dither for 32-bit float); FLAC (EX.3) offers 16 and 24-bit only: choosing it at 32-bit float sets 24-bit.
+// Export is disabled with the reason in the done line while the choices cannot
 // export.
 //
 // Every choice is remembered at once (ViewPrefs::exportAudio → the app's settings file), except the file name (the
