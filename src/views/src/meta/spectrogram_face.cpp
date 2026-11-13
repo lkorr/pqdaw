@@ -800,7 +800,7 @@ public:
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
         if (part == kSheetPart) return true;
-        return false;  // the plot: the host's (select, move, double-click: the expansion)
+        return false;  // the plot: the host's (select, move)
       }
       case K::Move: {
         if (drag_) {

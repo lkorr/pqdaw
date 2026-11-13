@@ -26,6 +26,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/modules.h"
 #include "pq/ui/image.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/panel/element.h"
@@ -429,11 +430,26 @@ TEST_CASE("module faces: the Phase Accumulator's Amplitude arc (TX.detent) — x
   CHECK(dsp::evalCurve(u.curve(amp), u.position(amp)) == doctest::Approx(1.0 - 2.0 * 0.002));  // (0 … 1 over the first half: 2 per travel)
 }
 
-TEST_CASE("module faces: a double-click opens a module into its circuit (atoms as symbols, values as knobs, cables) and "
-          "on its title strip closes it — real dispatch") {
+TEST_CASE("module faces: a double-click does not open a module; its menu's Open Group opens it into its circuit (atoms "
+          "as symbols, values as knobs, cables) and a double-click on its title strip closes it — real dispatch") {
   ModuleUi u(true);
   const doc::DeviceId g = u.m.vca.group;
-  u.d.doubleClick(u.at(g, {60.0f, 116.0f}));  // the dial's rim: the block's
+  const Vec2 rim = u.at(g, {60.0f, 116.0f});  // the dial's rim: the block's
+  u.d.doubleClick(rim);
+  u.d.step();
+  REQUIRE_FALSE(u.view().groupOpen(g));
+  u.d.click(rim, mod::kNone, PointerButton::Right);
+  u.d.step();
+  Menu* menu = nullptr;
+  for (size_t i = u.shell->overlay().childCount(); i-- > 0 && menu == nullptr;)
+    menu = dynamic_cast<Menu*>(&u.shell->overlay().child(i));
+  REQUIRE(menu != nullptr);
+  int32_t open = -1;
+  for (size_t i = 0; i < menu->items().size(); ++i)
+    if (menu->items()[i].label == "Open Group") open = static_cast<int32_t>(i);
+  REQUIRE(open >= 0);
+  const IRect r = menu->itemRect(open);
+  u.d.click({static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)});
   u.d.step();
   REQUIRE(u.view().groupOpen(g));
   const ProjectPatch& pp = u.view().patch();

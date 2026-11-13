@@ -1771,7 +1771,7 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
                   spectral ? "a crossfade" : "a spectral morph");
   } else {
     title = "Wavetable";
-    std::snprintf(buf, sizeof buf, "%zu keyframe%s, %u frames. Double-click the frame to open it to its atoms.",
+    std::snprintf(buf, sizeof buf, "%zu keyframe%s, %u frames. Its menu's Open Group opens it to its atoms.",
                   model_.data().keyframes.size(), model_.data().keyframes.size() == 1 ? "" : "s", model_.frames());
   }
   body = buf;

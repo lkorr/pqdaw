@@ -320,7 +320,7 @@ public:
       default:
         MetaFace::describe(part, title, body);
         body = "Attack, decay, sustain and release, each segment bendable; wired to `in`, a VCA. Drag the points and the "
-               "rings; double-click the frame to open it to its atoms.";
+               "rings; its menu's Open Group opens it to its atoms.";
         return;
     }
     body = buf;

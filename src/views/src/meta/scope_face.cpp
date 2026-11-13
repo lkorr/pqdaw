@@ -414,7 +414,7 @@ public:
           pxPerUnit_ = e.pxPerUnit;
           return true;
         }
-        return false;  // the host's (select, move, double-click: the expansion)
+        return false;  // the host's (select, move)
       }
       case K::Move: {
         if (drag_ == Drag::Measure) {

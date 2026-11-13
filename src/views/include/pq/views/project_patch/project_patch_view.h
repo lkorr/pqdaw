@@ -122,8 +122,8 @@
 //              block menu's Ungroup) is the exact inverse. Inside a capsule everything is edited as anywhere else (wires,
 //              faces, panels, S-resize, Delete, nudges by dragging a block); a block dragged out of the capsule leaves
 //              the group, a free block dropped into one joins it. Double-click the capsule's title strip to close it (a
-//              block with a miniature of its contents), double-click the closed block to open it again (view state of
-//              this session). Delete on a selected group deletes it with its contents. The Device view shows the group
+//              block with a miniature of its contents), its menu's Open Group opens it again (no double-click: a group
+//              is not opened by accident; view state of this session). Delete on a selected group deletes it with its contents. The Device view shows the group
 //              as one device whose panel is this canvas, scoped to the group (ProjectPatchView(ctx, group)).
 //   morph      toggling animates between the views (kMorphSeconds): each lane keeps its vertical position and unfolds
 //              into its band, its clips move into the band's lane, and back.

@@ -851,14 +851,14 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           if (pp.nodes[pin.node].kind == NodeKind::Device) (void)v.unpinPort(pp.nodes[pin.node].device, pin.input);
           return true;
         }
-      // TX.groups: a group's capsule — double-click its title strip to close it, the closed block to open it again; a
-      // press on its frame selects the group (an opened capsule is no scene node) and drags or nudges it as a block.
+      // TX.groups: a group's capsule — double-click its title strip to close it; a press on its frame selects the group
+      // (an opened capsule is no scene node) and drags or nudges it as a block. A closed group opens only from its menu
+      // (Open Group): a double-click on it does nothing, so a module is not opened by accident.
       if (node != kNone && pp.nodes[node].group) {
         const Node& n = pp.nodes[node];
         const doc::DeviceId g = n.device;
-        if (e.clickCount >= 2) {
-          if (!n.groupOpen) v.setGroupOpen(g, true);
-          else if (toWorld(e.pos).y < n.y + metrics::kCapsuleTitle) v.setGroupOpen(g, false);
+        if (e.clickCount >= 2 && n.groupOpen) {
+          if (toWorld(e.pos).y < n.y + metrics::kCapsuleTitle) v.setGroupOpen(g, false);
           return true;
         }
         if (n.groupOpen) {
@@ -883,11 +883,6 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         // T5.x-one-circuit: a clip in a lane opens its editor (the piano roll, an audio clip's Clip View).
         if (const doc::ClipRef ref = v.laneClipAt(e.pos); ref.clip.valid()) {
           v.openClip(ref);
-          return true;
-        }
-        if (node != kNone && pp.nodes[node].kind == NodeKind::Device && !pp.nodes[node].missing) {
-          const Node& n = pp.nodes[node];
-          v.setDeviceExpanded(n.device, true);  // GU.11: a group opens (a leaf has no inside: a status line)
           return true;
         }
         if (node != kNone && pp.nodes[node].kind == NodeKind::Mixer) {
@@ -2504,8 +2499,8 @@ ui::InfoText ProjectCanvas::info() const {
   return {"Project Patch",
           "The whole project as one circuit. Drag an export, or a note output from a track's lane (Hz, gate, velocity), onto a "
           "device to wire it into a parameter, a mixer's output onto a group, return "
-          "or the master to route it; double-click a band to open it (its devices opened to their atoms), a device to open it "
-          "alone, inside an opened device to edit its circuit. Every band ends in its track's lane (the arrangement's time: "
+          "or the master to route it; double-click a band to open it (its devices opened to their atoms); a group opens from its "
+          "menu (Open Group), its title strip's double-click closes it. Every band ends in its track's lane (the arrangement's time: "
           "Ctrl+wheel over it zooms, Shift+wheel scrolls; the ruler on top locates); double-click a clip to edit it; a lane "
           "edits its track as the arrangement does (a click: the insert and start marker; drag: a time selection, "
           "Ctrl+Shift+M: a MIDI clip there, a clip's title moves it, Alt copies, its edges trim; A: automation). "

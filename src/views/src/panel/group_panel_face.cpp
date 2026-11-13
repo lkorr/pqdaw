@@ -651,7 +651,7 @@ void GroupPanelFace::describe(int32_t part, std::string& title, std::string& bod
   }
   title = "Group panel";
   body = "The group's panel: its elements edit the controls and settings inside the group. Drag the panel's frame to move "
-         "the group; double-click it to open the group's circuit.";
+         "the group; its menu's Open Group opens the group's circuit.";
 }
 
 bool GroupPanelFace::setHoveredPart(int32_t part) noexcept {

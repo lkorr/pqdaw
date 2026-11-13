@@ -9,8 +9,8 @@
 //                   into coverage tiles shared by every face of the type, drawn as one quad each
 //   live layer      values, hover, the voice dots: geometry each frame (cheap: a few arcs and sprites)
 //   jacks           the host's pins on the face edges, drawn by the face (paintJacks: one look for every face)
-//   interaction     hitTest → a control (a part ≥ 0), the frame (kFrame: select / move / double-click opens the
-//                   expansion) or nothing; drags are relative and measured in device px with a floor, so a control
+//   interaction     hitTest → a control (a part ≥ 0), the frame (kFrame: select / move; the block menu's Open Group
+//                   opens the expansion) or nothing; drags are relative and measured in device px with a floor, so a control
 //                   travels the same distance per pointer pixel at zoom 0.05 as at 3 (Shift: fine); a double-click on a
 //                   control resets it; the wheel goes to a face only where it uses it (phase_acc: never)
 //   binding         a MetaTarget (the document, or a read-only default state) and an optional VoiceTapReader
@@ -235,7 +235,7 @@ public:
 class Face {
 public:
   static constexpr int32_t kNone = -1;   // outside the face
-  static constexpr int32_t kFrame = -2;  // the face but no control: the block (select, move, double-click: expand)
+  static constexpr int32_t kFrame = -2;  // the face but no control: the block (select, move)
 
   Face() = default;
   virtual ~Face() = default;

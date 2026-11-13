@@ -167,7 +167,7 @@ ui::Cursor Face::cursor(int32_t part) const noexcept { return part >= 0 ? ui::Cu
 
 void MetaFace::describe(int32_t /*part*/, std::string& title, std::string& body) const {
   title = std::string(type_->name);
-  body = "Double-click the frame to open it to its atoms.";
+  body = "Its menu's Open Group opens it to its atoms.";
 }
 
 bool MetaFace::pollVoices() {
