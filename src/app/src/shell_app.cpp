@@ -56,6 +56,7 @@ struct Ticket {
 
 const SDL_DialogFileFilter kProjectFilter[] = {{"pqdaw project (project.pqd)", "pqd"}};
 const SDL_DialogFileFilter kScalaFilter[] = {{"Scala scale (*.scl)", "scl"}};
+const SDL_DialogFileFilter kMidiFilter[] = {{"MIDI file (*.mid)", "mid;midi"}};
 const SDL_DialogFileFilter kPatchFilter[] = {{"pqdaw patch (*.pqp)", "pqp"}};  // T4.2: View > Open Patch in Circuit View
 
 void pushUser(uint32_t type, int32_t code, void* data1 = nullptr, void* data2 = nullptr) {
@@ -105,6 +106,12 @@ public:
     pending_ = std::move(done);
     SDL_ShowOpenFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kScalaFilter, 1, nullptr,
                            false);
+  }
+  void chooseMidiFileToSave(std::string_view suggestedName, PathCallback done) override {  // MF.3: Export MIDI
+    pending_ = std::move(done);
+    const std::string where(suggestedName);
+    SDL_ShowSaveFileDialog(&SdlFileDialogs::onResult, new Ticket{eventType_, ++request_}, window_, kMidiFilter, 1,
+                           where.empty() ? nullptr : where.c_str());
   }
   void chooseFolder(PathCallback done) override {  // T5.8: Relink Missing Samples
     pending_ = std::move(done);
@@ -452,7 +459,8 @@ ShellApp::~ShellApp() {
 }
 
 // T5.12: an internal drag left the window. Browser items go out as their files; audio clips as WAV files rendered as
-// they play (short ones now, long ones when the drop target asks: os_drag.h); MIDI clips wait for M11's .mid export.
+// they play (short ones now, long ones when the drop target asks: os_drag.h); MF.3: MIDI clips as .mid files in the
+// last Export MIDI mode (clip_export.h dragOutClips).
 // DoDragDrop's modal loop pumps the window's messages until the drop; the audio thread is not involved.
 void ShellApp::onDragOut(ui::DragPayload p) {
   std::vector<std::string> files;
@@ -467,31 +475,12 @@ void ShellApp::onDragOut(ui::DragPayload p) {
         files.push_back(f);
     }
   } else if (p.kind == ui::DragKind::Clips) {
-    for (const uint64_t packed : p.ids) {
-      const doc::ClipRef ref = views::unpackClipRef(packed);
-      const doc::Track* t = doc::findTrackPtr(*snap, ref.track);
-      const int32_t i = t ? doc::findClipIndex(*t, ref.clip) : -1;
-      if (i < 0) continue;
-      if (!t->clips[static_cast<size_t>(i)].audio) {
-        refused = "MIDI clips drag out as .mid files with M11 (not yet)";
-        continue;
-      }
-      if (!link_) {
-        refused = "no playback engine to render the clip";
-        continue;
-      }
-      if (clipSeconds(*snap, ref) > kLazyRenderSeconds) {
-        lazy.push_back(ref);
-        continue;
-      }
-      const std::filesystem::path out = clipWavPath(*snap, ref, dragOutFolder());
-      if (Status s = writeClipWav(*link_, *snap, ref, out, pcm24); !s) {
-        refused = s.error().message;
-        continue;
-      }
-      const std::u8string u = out.u8string();
-      files.emplace_back(u.begin(), u.end());
-    }
+    std::vector<doc::ClipRef> clips;
+    for (const uint64_t packed : p.ids) clips.push_back(views::unpackClipRef(packed));
+    ClipDragOut out = dragOutClips(link_.get(), *snap, clips, dragOutFolder(), pcm24, ctx_->viewPrefs().midiExportMode);
+    files = std::move(out.files);
+    lazy = std::move(out.lazy);
+    refused = std::move(out.refused);
   }
   if (files.empty() && lazy.empty()) {
     if (!refused.empty()) ctx_->setStatus("Drag out: " + refused);

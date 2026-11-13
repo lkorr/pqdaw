@@ -103,6 +103,7 @@ pq_add_test(pq_tests_app
     app/test_os_drag.cpp  # T5.12: the OLE drag source's data object (CF_HDROP, lazy files), the drag-out temp folder
     app/test_autosave.cpp  # AS.1: the autosave policy on a test clock, its files, discard on save / new, the worker
     app/test_export_service.cpp  # EX.2: the Export Audio port (a tiny export on the worker, cancel, request mapping, settings)
+    app/test_clip_midi_export.cpp  # MF.3: MIDI clips dragged out as .mid files (dragOutClips: the mode, free names, refusals)
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,
@@ -243,6 +244,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_panel_gestures.cpp  # GU.13: one panel system: a leaf's and a group's knob take the same gestures (wheel, type-in, menu, map mode) through real dispatch
     views/test_affordances.cpp  # T4.16b: cursors, hover highlights and editing keys (arrangement, piano roll, automation)
     views/test_file_drop.cpp  # T5.7: files / browser items dropped on the arrangement (rules, ghosts, one undo step, 100 files)
+    views/test_midi_export_menu.cpp  # MF.3: the clip menu's Export MIDI > mode… by real dispatch (the dialog, the file, the remembered mode)
     views/test_browser.cpp  # T5.10: the browser panel (tree, search, keys, preview strip, drag out, goldens, 200k rows)
     views/test_user_library.cpp  # T5.11 / T5.12: user library, hot-swap, chips, width, clips dragged to the browser
     views/test_device_automation.cpp  # T4.18: device lanes (chooser sections, Show Automation, automated knobs, golden)
@@ -498,6 +500,7 @@ pq_add_test(pq_tests_document
     document/test_frozen.cpp  # FZ.1: frozen tracks (file, SetTrackFrozen, the apply guard, the lowering from a render slot, captureOwn)
     document/test_midi_file.cpp  # MF.1: SMF reader / writer (running status, sysex, RMID, errors, fuzz, 10 MB), notes (pairing, RPN / MPE bends, MTS, sustain)
     document/test_midi_import.cpp  # MF.2: MIDI import (Keys / Hz pitch, bends, MTS, tracks, tempo / signatures, ticks, one undo step)
+    document/test_midi_export.cpp  # MF.3: MIDI export (12edo keys, MPE bends within 0.3 ¢, Degrees / .kbm, loop unrolled, tempo / signatures, > 15 voices)
     document/test_flatten.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio ops (one undo step, clip placement, SetTrackKind, round trip)
   DEPS pq_doc)
 

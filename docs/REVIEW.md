@@ -1494,3 +1494,14 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   notes, the piano roll shows them on the scale rows; onto an Hz track: Cents notes.
 - Judge: whether new tracks should take the file's channel / program as a hint (they get the default instrument); no
   ghost clips while a .mid hovers (only the copy cursor); whether a format-0 file with many channels should split.
+
+## 2026-11-13 · MF.3 · MIDI file export (task/MF.3-midi-export)
+- Try: right-click a MIDI clip (or several selected) → Export MIDI → MPE… / 12edo… / Degrees…, save, and open the file
+  in another DAW or an MPE synth (MPE: lower zone, ±48 bends); drop it back into pqdaw (MF.2) onto a track in the same
+  tuning: Degrees gives the same degrees, MPE the same pitches within 0.3 ¢. Drag a MIDI clip out of the window onto
+  the desktop: "<clip>.mid" in the mode last chosen in the menu (default MPE).
+- Look at: the status line ("Exported 24 notes (MPE), 2 voices over 15 ended early to …"); a looped clip exports every
+  pass; a tempo ramp arrives as sixteenth-note tempo steps; the menu checks the last mode.
+- Judge: the submenu with the mode as items vs a dialog with a mode chip (chosen: the submenu, as the grid menus); MPE
+  voice stealing ends the oldest note (Q?-MF.3-a); whether Degrees should warn when the tuning has more than 128
+  reachable degrees (notes beyond the key range are skipped and counted).

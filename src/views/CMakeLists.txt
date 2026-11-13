@@ -33,6 +33,7 @@ set(PQ_VIEWS_SOURCES
   src/file_probes.cpp
   src/sample_drop.cpp
   src/midi_import.cpp  # MF.2: MIDI files into the project (drops, the browser)
+  src/midi_export.cpp  # MF.3: note clips → .mid files (the clip menu's Export MIDI, the app's drag-out)
   src/shell/shell.cpp
   src/shell/control_bar.cpp
   src/shell/menu_bar.cpp

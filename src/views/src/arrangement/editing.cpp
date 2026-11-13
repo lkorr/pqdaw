@@ -20,6 +20,7 @@
 #include "pq/document/commands.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/browser/library_load.h"
+#include "pq/views/midi_export.h"
 
 namespace pq::views::arrangement {
 
@@ -1558,6 +1559,23 @@ void Editor::selectAll() {
 
 // --- the right-click menu -----------------------------------------------------------------------------------
 
+// MF.3: Export MIDI > MPE… / 12edo… / Degrees… over the selected note clips (the last mode chosen is checked; the file
+// dialog and the write: pq/views/midi_export.h). Disabled without a note clip in the selection.
+MenuItem Editor::exportMidiItem() {
+  const std::vector<doc::ClipRef> clips = noteClipsOf(*ctx_.doc(), sel_.clips);
+  ViewContext& ctx = ctx_;
+  std::vector<MenuItem> modes;
+  for (const doc::MidiExportMode m : {doc::MidiExportMode::Mpe, doc::MidiExportMode::TwelveEdo, doc::MidiExportMode::Degrees}) {
+    MenuItem it = MenuItem::item(std::string(doc::kMidiExportModeNames[static_cast<size_t>(m)]) + "…",
+                                 [&ctx, clips, m] { exportMidiClips(ctx, clips, m); });
+    it.checked = ctx.viewPrefs().midiExportMode == m;
+    modes.push_back(std::move(it));
+  }
+  MenuItem sub = MenuItem::sub("Export MIDI", std::move(modes));
+  sub.enabled = !clips.empty();
+  return sub;
+}
+
 Menu* Editor::openContextMenu(Vec2 at) {
   auto action = [](std::string label, std::string id, std::string keys) {
     MenuItem m = MenuItem::item(std::move(label), {}, std::move(keys));
@@ -1578,6 +1596,7 @@ Menu* Editor::openContextMenu(Vec2 at) {
   items.push_back(action("Insert MIDI Clip", "arrangement.insertMidiClip", "Ctrl+Shift+M"));
   items.push_back(action("Loop Selection", "arrangement.loopSelection", "Ctrl+L"));
   items.push_back(action("Deactivate / Activate", "arrangement.toggleActive", "0"));
+  items.push_back(exportMidiItem());  // MF.3
   items.push_back(MenuItem::sep());
   freezeItems(items);  // FZ.3: the selected clips' tracks
   items.push_back(MenuItem::sep());

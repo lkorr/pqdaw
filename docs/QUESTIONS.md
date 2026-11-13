@@ -1380,3 +1380,19 @@ differ from other meters'). Choice: (a). Over-reading only makes the Limiter lim
 "true peak ≤ ceiling + 0.2 dB" depends on under-reading, which is ~0. Reversible: kTpPhase in kernels_dynamics.cpp
 and the test's bound (tests/dsp/test_dynamics.cpp).
 Status: open.
+
+## Q?-MF.3-a · MIDI export choices the plan leaves open
+Context: MF.3 (docs/plans/DY.md "MF.3") writes clips as SMF in 12edo / MPE / Degrees. Open points: (1) an MPE voice over
+15 reuses the oldest channel — the old note keeps sounding under the new bend, or ends; (2) several clips in one MPE
+file — one channel pool per MTrk or one for the file; (3) a key outside 0 … 127 (or, in Degrees, a degree only an 'x'
+.kbm key would play) — clamp or skip; (4) tempo ramps (SMF has only steps); (5) a deactivated clip or chance < 1 notes;
+(6) the menu's mode when its save dialog is cancelled.
+Options: (1a) ends at the new note-on (a voice steal; no mid-note bend) / (1b) keeps sounding (its pitch moves);
+(2a) per MTrk / (2b) one pool (format 1 tracks share a port's 16 channels: MF.1's reader merges them, Q260 (c));
+(3a) clamp / (3b) skip, counted; (4a) a tempo per sixteenth at the step's mean (durations exact to the µs) / (4b) the
+ramp's start tempo only; (5a) exported as stored / (5b) left out; (6a) remembered anyway / (6b) only after a write.
+Choice: (1a), (2b), (3b), (4a), (5a) — the user picked the clip; every note is written whatever its chance — and (6a).
+All in src/document/src/midi_export.cpp (`allocateMpe`, the mode switch, the tempo loop) and src/views/src/
+midi_export.cpp (`exportMidiClips`). The MCM + RPN 0 setup is repeated at tick 0 of every clip's MTrk so a track
+imported alone still plays as MPE. MPE keeps the ±48 member range (orchestrator); the round trip holds within 0.3 ¢.
+Status: open.

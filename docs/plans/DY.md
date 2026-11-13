@@ -153,7 +153,7 @@ sidechain paragraph), §10 (MIDI files). Tasks DY.n, MF.n. **The Reverb (RV.1 `f
 - App: clip context menu "Export MIDI…" (mode chip); drag-out of note clips (shell_app.cpp onDragOut: replace the "MIDI clips drag
   out as .mid files with M11" refusal; writes `<clip>.mid` next to clipWavPath's logic, in app/clip_export); drag-out uses
   ViewPrefs' last mode (default MPE).
-- Accept: export → MF.1 import round-trips pitches (12edo exact; MPE within 0.01 ¢; Degrees identical degrees); tempo and
+- Accept: export → MF.1 import round-trips pitches (12edo exact; MPE within 0.3 ¢ — ±48 kept, Q260 (i); Degrees identical degrees); tempo and
   signatures present; drag-out produces a file (app test through the handler, no OLE).
 - Verify: `-Affected`; `pq_tests_app` for the shell hook.
 

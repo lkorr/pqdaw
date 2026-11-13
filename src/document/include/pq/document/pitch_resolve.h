@@ -94,6 +94,9 @@ struct ResolveOptions {
 // Errors: NotFound (no such track). A clip whose tuning does not build (a dangling reference) has every note
 // unresolved. T6.1: the track's PLAYED clips (model.h playedClips: its audition take's, else its main lane), in order.
 Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId track, const ResolveOptions& options = {});
+// MF.3: one note clip of a track's main lane (played or not), resolved exactly as resolveTrackPitches resolves it.
+// Errors: NotFound (no such track / clip), InvalidArgument (an audio clip).
+Result<ClipPitches> resolveClipPitches(const Project& p, TrackId track, ClipId clip, const ResolveOptions& options = {});
 
 // T6.1 (pq/document/input_map.h): one identity that names no other note, resolved exactly as resolveTrackPitches
 // resolves a note of a clip in tuning `t` whose clip follows main tuning `signal`'s signal (invalid: static) — so a live
