@@ -41,6 +41,7 @@
 
 #include "pq/document/lower.h"
 #include "pq/document/model.h"
+#include "pq/document/wire_types.h"
 #include "pq/ui/widget.h"
 #include "pq/views/view_context.h"
 
@@ -113,6 +114,10 @@ public:
     std::string param;
   };
   Target targetAt(ui::Vec2 pos) const;
+  // WI.3: whether the dragged (or last dragged) cable's declared type clashes with target `t` (doc::declaredWireClash): the target then
+  // shows the no-drop state (its outline in the error colour, the NotAllowed cursor), the status line says why and a
+  // release there connects nothing.
+  doc::WireClash clashWith(const Target& t) const;
 
   // ---- what is drawn (tests) ----
   // TX.free-rack: what a cable is — a document wire (a modulation wire into a param, a wire into an input: TX.patching's
@@ -194,6 +199,7 @@ private:
     uint32_t hoverTicks = 0;  // drag ticks (1/60 s) over hoverTrack
     uint32_t timer = 0;
     ui::Cursor cursor = ui::Cursor::Crosshair;  // what a release at `pos` would do (updated on each move)
+    doc::WireClash clash = doc::WireClash::None;  // WI.3: of the target under `pos` (updated on each move)
   } drag_;
   uint64_t hoverKey_ = 0;
 };

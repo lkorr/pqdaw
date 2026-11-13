@@ -2,7 +2,8 @@
 // draws a cable between them; a drag to another track's knob (hover its row: the Device view switches) works the same;
 // cables follow scrolling in the same frame and damage only themselves; the badge's amount drag is one undo step of
 // Param changes; Delete on a selected badge removes the wire; a delay-free loop shows on its badge; show / fade / hide;
-// the knobs' rings show the static range and the polled sweeps; the views' knob travel equals the lowering's.
+// the knobs' rings show the static range and the polled sweeps; the views' knob travel equals the lowering's; WI.3: a
+// cable whose declared type clashes with the target (a real output onto a bool input) is refused at the drop.
 // GU.11: the sources are free LFO modules (their pins in the free rack), the knobs a Utility module's panel elements.
 // Golden: device-wiring.
 
@@ -223,6 +224,54 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.ctx.undo());
   CHECK(newWires(u, before).empty());
+}
+
+TEST_CASE("wiring (WI.3): a cable whose declared type clashes is refused at the target: no-drop look, the status says why") {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  // A value block (its `y` declared real) off Keys's path, in the free rack; an `and` block (bool inputs a, b) on it.
+  auto e = doc::ops::addDevice(*st.current(), st.ids(), u.keys, std::string(doc::kValueDevice), doc::DeviceKind::AudioEffect,
+                               doc::ops::kOffPath);
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+  const doc::DeviceId value = e->devices.at(0);
+  const doc::DeviceId logic = test_blocks::appendAfter(st, u.keys, "atom:and");
+  u.d.tree().layoutNow();
+  u.d.step();
+  auto socket = [&](const char* input) {
+    u.d.tree().layoutNow();
+    for (const DeviceChainView::InputSocket& is : u.view().inputSockets())
+      if (is.device == logic && is.input == input) return mid(is.rect);
+    FAIL("no socket " << input);
+    return Vec2{};
+  };
+  const doc::WireList before = all_free::drawnWires(*u.ctx.doc());
+  const size_t h0 = u.history();
+  const Vec2 from = u.jack(value), sock = socket("b");
+  u.d.down(from);
+  for (int i = 1; i <= 10; ++i)  // out of the free rack: its canvas hands the cable to the layer
+    u.d.move({from.x + (sock.x - from.x) * static_cast<float>(i) / 10.0f, from.y + (sock.y - from.y) * static_cast<float>(i) / 10.0f});
+  REQUIRE(u.layer().dragging());
+  CHECK(u.layer().targetAt(sock).device == logic);
+  CHECK(u.layer().clashWith(u.layer().targetAt(sock)) == doc::WireClash::RealIntoBool);
+  CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+  CHECK(u.ctx.status() == doc::wireClashText(doc::WireClash::RealIntoBool));
+  // A real knob takes it (Crosshair, the drag's hint back in the status line); back over the bool socket: refused again.
+  const Vec2 width = u.knob(u.util, "Width");
+  u.d.move(width);
+  CHECK(u.d.tree().cursor() == Cursor::Crosshair);
+  CHECK(u.ctx.status().find("Drop the cable") != std::string::npos);
+  u.d.move(sock);
+  CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+  u.d.up(sock);
+  CHECK_FALSE(u.layer().dragging());
+  CHECK(u.history() == h0);  // nothing connected
+  CHECK(newWires(u, before).empty());
+  CHECK(u.ctx.status() == doc::wireClashText(doc::WireClash::RealIntoBool));
+  // The same drop onto the knob connects (a real into a real param).
+  u.d.drag(u.jack(value), width, 10);
+  CHECK(u.history() == h0 + 1);
+  CHECK(newWires(u, before).size() == 1);
 }
 
 TEST_CASE("wiring: a cable to another track: hovering its row shows its chain, the drop wires across tracks") {

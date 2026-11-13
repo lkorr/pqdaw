@@ -1279,6 +1279,11 @@ bool ProjectPatchView::connectEnds(doc::Wire ends) {
   // on it: doc::canonicalWire).
   stampTap(ends);  // TL.1: a cable drawn up from a lane's edge leaves it there
   const doc::Wire w = doc::canonicalWire(*ctx_.doc(), std::move(ends), ctx_.deviceLibrary());
+  // WI.3: ends whose declared types clash (the param menu's pick too) are refused here, as a drop on them is.
+  if (const doc::WireClash c = doc::declaredWireClash(*ctx_.doc(), w, ctx_.deviceLibrary()); c != doc::WireClash::None) {
+    ctx_.setStatus(std::string(doc::wireClashText(c)));
+    return false;
+  }
   return apply(doc::ops::connect(*ctx_.doc(), ctx_.store().ids(), w), "Wire");
 }
 

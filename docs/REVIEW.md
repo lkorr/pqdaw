@@ -1514,3 +1514,15 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   Release, the three chip rows; theme tokens only.
 - Judge: the defaults (Live's: Ceiling −0.3 dB, Release 300 ms Auto, 3 ms); Link M-S holds M and S under the ceiling and
   the safety clip catches L/R overs when both peak together (Q?-DY.6-a); whether Release should go below 1 ms.
+
+## 2026-11-13 · EX.3 + WI.3 · FLAC export; refused wiring drops 👁 (task/EX.3-flac)
+- Try (EX.3): File → Export Audio… (Ctrl+Shift+R), File Type FLAC, 16 or 24-bit, Export; open the .flac in another
+  player / DAW, or drop it back into pqdaw. Pick 32 (float) first, then FLAC: the depth becomes 24 and the Bit Depth
+  menu offers only 16 / 24; back to WAV, 32 (float) is offered again.
+- Try (WI.3): add a Value block and an `and` block (node menu) to a track; drag the Value's `y` onto the `and`'s input
+  pin (circuit view) or, in the Device view, from the Value in the free rack onto the `and` frame's input socket.
+- Look at: over the bool input the cursor is the no-drop sign, the pin (circuit) / socket (Device view) is ringed in the
+  error red instead of the accent, the status line says "Wire: a real signal cannot drive a bool input (on / off):
+  compare it first …"; releasing there makes no cable. A gate note output or a comparison's output onto it still wires.
+- Judge: whether the red ring reads as "not here" next to the accent rings of the allowed targets; the message's wording;
+  FLAC's 32-bit float handling (switching to 24 rather than greying the row).

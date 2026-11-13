@@ -818,10 +818,12 @@ void CableLayer::paint(ui::PaintContext& ctx) {
   // The cable being dragged, and the knobs and inputs it can be dropped on.
   if (DeviceChainView* chain = impl_->chain()) {
     const Target hit = targetAt(drag_.pos);
+    // WI.3: a target whose declared type clashes with the cable: the no-drop look (the error colour).
+    const bool clash = hit.device.valid() && drag_.clash != doc::WireClash::None;
     for (const DeviceChainView::ParamControl& pc : chain->paramControls()) {
       const bool on = pc.device == hit.device && pc.param == hit.param;
-      paint::box(ctx.dl, pc.rect, ctx.scale.exact(3.0f), on ? ui::withAlpha(ui::signal_theme::kAccent, 60) : 0,
-                 ui::withAlpha(ui::signal_theme::kAccent, on ? 255 : 120));
+      const ui::Rgba col = on && clash ? th->code.error : ui::signal_theme::kAccent;
+      paint::box(ctx.dl, pc.rect, ctx.scale.exact(3.0f), on ? ui::withAlpha(col, 60) : 0, ui::withAlpha(col, on ? 255 : 120));
     }
     // TX.free-rack: the input sockets on the frames' left edges (an audio input, a meta module's inputs).
     for (const DeviceChainView::InputSocket& is : chain->inputSockets()) {
@@ -830,8 +832,9 @@ void CableLayer::paint(ui::PaintContext& ctx) {
       const ui::Vec2 c{static_cast<float>(is.rect.x) + 0.5f * static_cast<float>(is.rect.w),
                        static_cast<float>(is.rect.y) + 0.5f * static_cast<float>(is.rect.h)};
       const float r = 0.5f * static_cast<float>(is.rect.w) - 1.0f;
-      ctx.dl.addCircleFilled(c, r, on ? ui::withAlpha(roleColour(th, 1), 200) : ui::withAlpha(th->surface.sunken, 230));
-      ctx.dl.addCircleStroke(c, r, ui::withAlpha(roleColour(th, 1), on ? 255 : 160), ctx.scale.exact(on ? 1.6f : 1.0f));
+      const ui::Rgba col = on && clash ? th->code.error : roleColour(th, 1);
+      ctx.dl.addCircleFilled(c, r, on ? ui::withAlpha(col, 200) : ui::withAlpha(th->surface.sunken, 230));
+      ctx.dl.addCircleStroke(c, r, ui::withAlpha(col, on ? 255 : 160), ctx.scale.exact(on ? 1.6f : 1.0f));
     }
     if (const auto a = chain->sourceEnd(drag_.from, drag_.port)) {
       const uint8_t db = hit.device.valid() && chain->isInput(hit.device, hit.param) ? static_cast<uint8_t>(DeviceChainView::EndDir::Left)
@@ -857,6 +860,22 @@ CableLayer::Target CableLayer::targetAt(ui::Vec2 pos) const {
   return {};
 }
 
+doc::WireClash CableLayer::clashWith(const Target& t) const {
+  if (!drag_.from.valid() || !t.device.valid()) return doc::WireClash::None;
+  doc::Wire w;
+  w.from = drag_.from;
+  w.port = drag_.port;
+  w.to = t.device;
+  w.param = t.param;
+  return doc::declaredWireClash(*ctx_.doc(), w, ctx_.deviceLibrary());
+}
+
+namespace {
+constexpr const char* kJackDragHint =
+    "Drop the cable on a knob to modulate it, or on an input socket (a frame's left edge) to feed it (another track's: "
+    "hover its row first); Esc cancels.";
+}  // namespace
+
 void CableLayer::beginDrag(doc::DeviceId from, std::string port, ui::Vec2 pos) {
   if (mode_ == CableMode::Hide) setMode(CableMode::Show);  // a new cable is always visible
   drag_.active = true;
@@ -866,8 +885,9 @@ void CableLayer::beginDrag(doc::DeviceId from, std::string port, ui::Vec2 pos) {
   drag_.hoverTrack = {};
   drag_.hoverTicks = 0;
   drag_.cursor = ui::Cursor::Crosshair;  // over the jack it starts from
+  drag_.clash = doc::WireClash::None;
   // M4 review UI item 6: what a jack drag does, in the status line.
-  ctx_.setStatus("Drop the cable on a knob to modulate it, or on an input socket (a frame's left edge) to feed it (another track's: hover its row first); Esc cancels.");
+  ctx_.setStatus(kJackDragHint);
   setHittable(true);  // from the first move on, the layer takes the pointer (the jack strip may be rebuilt meanwhile)
   setFocusable(true);
   if (tree()) tree()->setFocus(this);  // Esc cancels
@@ -886,6 +906,10 @@ void CableLayer::endDrag(bool commit, ui::Vec2 pos) {
   if (!commit) return;
   const Target t = targetAt(pos);
   if (!t.device.valid()) return;
+  if (const doc::WireClash clash = clashWith(t); clash != doc::WireClash::None) {  // WI.3: the declared types clash: nothing is connected
+    ctx_.setStatus(std::string(doc::wireClashText(clash)));
+    return;
+  }
   auto e = doc::ops::connectWire(*ctx_.doc(), ctx_.store().ids(), drag_.from, drag_.port, t.device, t.param);
   if (!e) {
     ctx_.setStatus(e.error().message);
@@ -911,8 +935,15 @@ ui::Cursor CableLayer::cursorAt(ui::Vec2) const {
 }
 
 void CableLayer::updateDragCursor() {
-  if (targetAt(drag_.pos).device.valid()) {
-    drag_.cursor = ui::Cursor::Crosshair;
+  const Target t = targetAt(drag_.pos);
+  // WI.3: over a target whose declared type clashes: no drop, and the status line says why (the hint again once off it).
+  const doc::WireClash clash = clashWith(t);
+  if (clash != drag_.clash) {
+    ctx_.setStatus(clash != doc::WireClash::None ? std::string(doc::wireClashText(clash)) : std::string(kJackDragHint));
+    drag_.clash = clash;
+  }
+  if (t.device.valid()) {
+    drag_.cursor = clash != doc::WireClash::None ? ui::Cursor::NotAllowed : ui::Cursor::Crosshair;
     return;
   }
   ArrangementView* arr = impl_->arrangement();

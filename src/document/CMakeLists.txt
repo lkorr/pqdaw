@@ -41,6 +41,7 @@ pq_add_module(pq_doc
     src/devices.cpp
     src/meta.cpp
     src/main_path.cpp
+    src/wire_types.cpp  # WI.3: declared-type clashes a wiring gesture refuses
     src/instrument_groups.cpp
     src/audibility.cpp
     src/lower.cpp

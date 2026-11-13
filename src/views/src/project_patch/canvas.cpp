@@ -662,6 +662,25 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       const ui::Rgba ring = th.circuit.selected;
       dl.addCircleFilled(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(ring, 0.16f));
       dl.addCircleStroke(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(ring, 0.85f), std::max(1.0f, std::round(1.5f * us)));
+    } else if (drag_ == Drag::Wire && hoverClash_ != doc::WireClash::None) {
+      // WI.3: the no-drop state: the pin or control the cable would have joined (its declared type clashes), ringed in
+      // the error colour; a mixer by its outline.
+      const ui::Rgba bad = th.code.error;
+      const float lw = std::max(1.0f, std::round(1.5f * us));
+      std::optional<graph::Point2> at;
+      if (const PinHit pin = pinAt(last_); pin.valid() && pin.input && pin.node < pp.nodes.size()) {
+        at = portWorld(pin.node, pin.port, true);
+      } else if (const FaceParamHit fh = faceParamAt(last_); !fh.param.empty()) {
+        at = faceControlPoint(fh.node, fh.param, portWorld(from_.node, from_.port, false));
+      }
+      if (at) {
+        const Vec2 c = toDevice(*at);
+        dl.addCircleFilled(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(bad, 0.16f));
+        dl.addCircleStroke(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(bad, 0.9f), lw);
+      } else if (const uint32_t target = nodeAt(last_); target != kNone) {
+        const Node& tn = pp.nodes[target];
+        dl.addRoundedRectStroke(deviceRect(tn.x - 2.0f, tn.y - 2.0f, tn.w + 4.0f, tn.h + 4.0f), 4.0f * us, ui::mulAlpha(bad, 0.8f), lw);
+      }
     } else if (drag_ == Drag::Wire && wireRefusal(last_) == nullptr) {
       const uint32_t target = nodeAt(last_);
       if (target != kNone && target != from_.node && pp.nodes[target].kind == NodeKind::Device) {
@@ -961,6 +980,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           laneStart_.reset();  // TL.1: from a pin (not a lane's edge)
           v.pendingTap_.reset();
           wireCursor_ = ui::Cursor::Crosshair;
+          hoverClash_ = doc::WireClash::None;
           updateLoose(e.pos);  // TX.node-menu-fix1: the real cable comes out of the port
           markDirty();
           return true;
@@ -1055,6 +1075,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           from_ = port_;
           drag_ = Drag::Wire;
           wireCursor_ = ui::Cursor::Crosshair;
+          hoverClash_ = doc::WireClash::None;
         }
       }
       // GU.5: a block, an output's cable or a control's (W) over a panel window: the window shows it would take it.
@@ -1082,7 +1103,17 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
             v.onWireOutside(from, port, e.pos);
             return true;
           }
-          wireCursor_ = wireRefusal(e.pos) != nullptr ? ui::Cursor::NotAllowed : ui::Cursor::Crosshair;
+          if (const char* why = wireRefusal(e.pos); why != nullptr) {
+            wireCursor_ = ui::Cursor::NotAllowed;
+            // WI.3: over a target whose declared type clashes, the status line says why at once.
+            doc::WireClash clash = typeClashAt(e.pos);
+            if (doc::wireClashText(clash).data() != why) clash = doc::WireClash::None;
+            if (clash != hoverClash_ && clash != doc::WireClash::None) v.context().setStatus(why);
+            hoverClash_ = clash;
+          } else {
+            wireCursor_ = ui::Cursor::Crosshair;
+            hoverClash_ = doc::WireClash::None;
+          }
           updateLoose(e.pos);
           markDirty();
           break;
@@ -1331,6 +1362,8 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
     // "tracks are not walls"): any track's, which then plays it with its voices — no audio, no other output.
     if (onPin && t.inputs[h.port].name == "notes" && !(notes && from_.port == 0))
       return "Wire: an instrument's notes input takes a MIDI track's notes (from a track's source)";
+    // WI.3: the two ends' declared types clash (a real output onto a bool input, event vs non-event).
+    if (const doc::WireClash c = typeClashAt(pos); c != doc::WireClash::None) return doc::wireClashText(c).data();
     return nullptr;
   }
   if (a.kind != NodeKind::Mixer) return nullptr;
@@ -1345,6 +1378,37 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   const bool itsReturn = tb.kind == doc::TrackKind::Return && port.size() > 1 && port[0] == 's' &&
                          port.substr(1) == std::to_string(tb.track.value);
   return itsReturn ? nullptr : "Send: drop it on its return's input";
+}
+
+doc::WireClash ProjectCanvas::typeClashAt(Vec2 pos) const {
+  const ProjectPatch& pp = view_.patch();
+  // (from_: the output the cable is drawn from — still set while the release is handled, after drag_ was reset)
+  if (!from_.valid() || from_.input || from_.node >= pp.nodes.size()) return doc::WireClash::None;
+  const Node& a = pp.nodes[from_.node];
+  if (from_.port >= a.outputs.size()) return doc::WireClash::None;
+  doc::Wire w;
+  if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal) {
+    w.from = a.device;
+    w.port = a.outputs[from_.port].name;
+    if (const size_t at = w.port.rfind('@'); at != std::string::npos && a.group) {  // a closed group's member
+      w.from = doc::DeviceId{static_cast<uint32_t>(std::stoul(w.port.substr(at + 1)))};
+      w.port.resize(at);
+    }
+  } else if (isTrackSource(a)) {
+    w.noteSource = pp.bands[a.band].track;
+    if (from_.port != 0) w.port = a.outputs[from_.port].name;  // a note output (0: the track's own signal / notes)
+  } else {
+    return doc::WireClash::None;
+  }
+  if (const uint32_t to = nodeAt(pos); to != kNone && pp.nodes[to].kind == NodeKind::Mixer) {  // (finishWire's order)
+    w.mixer = pp.bands[pp.nodes[to].band].track;
+  } else {
+    const ProjectPatchView::WireTarget t = view_.wireTargetAt(pos);  // the pin or control a release connects
+    if (!t.device.valid()) return doc::WireClash::None;
+    w.to = t.device;
+    w.param = t.param;
+  }
+  return doc::declaredWireClash(*view_.context().doc(), w, view_.context().deviceLibrary());
 }
 
 bool ProjectCanvas::resizeHeld() const noexcept {
@@ -2886,6 +2950,7 @@ bool ProjectCanvas::laneEdgePointer(const ui::PointerEvent& e) {
       laneStart_ = graph::Point2{h.x, band.laneY};
       v.pendingTap_ = ProjectPatchView::PendingTap{band.track, h.x};
       wireCursor_ = ui::Cursor::Crosshair;
+      hoverClash_ = doc::WireClash::None;
       updateLoose(e.pos);
       markDirty();
       return true;

@@ -1448,3 +1448,14 @@ next sound). Every pass on a link now equals its first bit for bit (tests: autom
 soloed == Mos soloed on a fresh link), so EX.1's stems with return / master FX run on one link again (no compile per
 track). Reversible: `ImageHost::decideSleep`'s first line, `settleOffline`'s loop, runExport's pass loop.
 Status: open.
+
+## Q?-WI.3-a · What the gesture-time type check covers
+Context: the plan names "a declared-real output onto a bool-bound input, event ↔ non-event". Ends can be device outputs
+(`out` / export), note outputs, inputs, params and mixers; some declare nothing (a group's terminals, exports, a track's
+own signal). A real wire onto a bool PARAM is not compiled either (the lowering marks it Invalid). Options: (a) inputs
+only, the drop alone; (b) inputs and params, every path that makes a project-patch cable (the drop, the param menu
+through `connectEnds`), the reason shown already while hovering; (c) also infer a group's / export's kind from inside.
+Choice: (b): one check (`doc::declaredWireClash`) on declarations only — an undeclared end is never refused, WI.2's cut
+stays the judge of everything else; note outputs typed as their voice terminals (gate bool, hz / velocity real).
+Reversible: wire_types.cpp and its three callers.
+Status: open.

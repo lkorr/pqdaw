@@ -159,6 +159,7 @@
 
 #include "pq/core/result.h"
 #include "pq/core/time.h"
+#include "pq/document/wire_types.h"
 #include "pq/document/commands.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/overlay.h"
@@ -227,6 +228,9 @@ public:
   ui::Cursor cursorAt(ui::Vec2 pos) const override;
   // The status message a wire dropped at `pos` would be refused with (nullptr: it would be made, or nothing happens).
   const char* wireRefusal(ui::Vec2 pos) const;
+  // WI.3: whether the cable being drawn from an output, dropped at `pos` onto an input pin, a face's / panel's control or
+  // a mixer, joins ends whose DECLARED types clash (doc::declaredWireClash; wireRefusal then refuses with its text).
+  doc::WireClash typeClashAt(ui::Vec2 pos) const;
 
   // A pin of the scene nearest a device point (within 8 px; hidden pins included), and which side.
   struct PinHit {
@@ -404,6 +408,7 @@ private:
   void leaveOutside(ui::Vec2 pos);  // … and no longer (the host's marker goes)
   ui::Cursor hoverCursor_ = ui::Cursor::Arrow;     // T4.16c: pressCursor at the last move
   ui::Cursor wireCursor_ = ui::Cursor::Crosshair;  // T4.16c: during a wire drag
+  doc::WireClash hoverClash_ = doc::WireClash::None;  // WI.3: the clash the status line explains while hovering it
   mutable std::string infoTitle_;                  // TMM.10-fix2: a hovered note source's info (info() returns views)
   // TX.lane-edit
   bool laneFocus_ = false;   // the last press was in a lane
@@ -721,7 +726,8 @@ public:
   bool routeTo(doc::TrackId track, doc::TrackId target);
   bool sendOn(doc::TrackId track, doc::TrackId ret);
   // TX.all-free: a cable with these ends (doc::ops::connect; doc::canonicalWire writes two main ports as kMainPort): a
-  // device's port or a track's source → a device's param / input or a track's mixer.
+  // device's port or a track's source → a device's param / input or a track's mixer. WI.3: refused (false, the status
+  // line says why) when the ends' declared types clash (doc::declaredWireClash).
   bool connectEnds(doc::Wire ends);
   // A device into `track`'s main path at slot `index` (doc::ops::addDevice; kOffPath: unwired).
   bool addDevice(doc::TrackId track, const std::string& patch, uint32_t index = doc::kAppend);

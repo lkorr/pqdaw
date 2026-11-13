@@ -1237,6 +1237,63 @@ TEST_CASE("project patch: semantic zoom — the whole project, one band, a devic
   CHECK(v.canvas().view().zoom == doctest::Approx(whole));
 }
 
+// WI.3: an output's cable whose DECLARED type clashes with the input under the pointer (a value block's real `y` onto an
+// `and` block's bool input) shows the no-drop state (NotAllowed, not snapped), the status line says why while hovering,
+// and the release connects nothing; a bool output onto the same kind of input connects.
+TEST_CASE("project patch (WI.3): a real output onto a bool input is refused at the drop; bool onto bool connects") {
+  Ui u;
+  u.show();
+  doc::DocumentStore& st = u.ctx.store();
+  const doc::TrackId keys = u.track("Keys").id;
+  auto add = [&](std::string patch) {
+    auto e = doc::ops::addDevice(*st.current(), st.ids(), keys, std::move(patch), doc::DeviceKind::AudioEffect, doc::ops::kOffPath);
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+    return e->devices.at(0);
+  };
+  const doc::DeviceId value = add(std::string(doc::kValueDevice));
+  const doc::DeviceId and1 = add("atom:and"), and2 = add("atom:and");
+  u.zoomTo("Keys");
+  u.d.step();
+  auto inPin = [&](doc::DeviceId d, std::string_view name) {
+    const uint32_t node = u.deviceNode(d);
+    const int32_t k = u.pp().nodes[node].input(name);
+    REQUIRE(k >= 0);
+    return u.view().canvas().toDevice(u.view().canvas().portWorld(node, static_cast<uint32_t>(k), true));
+  };
+  const size_t h0 = u.history();
+  const size_t wires0 = doc::wiresOf(*u.ctx.doc()).size();
+  {
+    const Vec2 from = u.outPin(u.deviceNode(value), "y"), to = inPin(and1, "a");
+    u.d.down(from);
+    for (int i = 1; i <= 8; ++i)
+      u.d.move({from.x + (to.x - from.x) * static_cast<float>(i) / 8.0f, from.y + (to.y - from.y) * static_cast<float>(i) / 8.0f});
+    CHECK(u.view().canvas().typeClashAt(to) == doc::WireClash::RealIntoBool);
+    CHECK(u.d.tree().cursor() == Cursor::NotAllowed);
+    CHECK(u.ctx.status() == doc::wireClashText(doc::WireClash::RealIntoBool));
+    CHECK_FALSE(u.view().canvas().looseCableSnapped());  // not drawn onto the pin
+    u.d.up(to);
+    CHECK(u.history() == h0);
+    CHECK(doc::wiresOf(*u.ctx.doc()).size() == wires0);
+    CHECK(u.ctx.status() == doc::wireClashText(doc::WireClash::RealIntoBool));
+  }
+  {  // a bool (`and`'s out) onto a bool input: connected
+    const Vec2 from = u.outPin(u.deviceNode(and1), "out"), to = inPin(and2, "b");
+    u.d.down(from);
+    for (int i = 1; i <= 8; ++i)
+      u.d.move({from.x + (to.x - from.x) * static_cast<float>(i) / 8.0f, from.y + (to.y - from.y) * static_cast<float>(i) / 8.0f});
+    CHECK(u.view().canvas().typeClashAt(to) == doc::WireClash::None);
+    CHECK(u.d.tree().cursor() == Cursor::Crosshair);
+    u.d.up(to);
+    CHECK(u.history() == h0 + 1);
+    REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == wires0 + 1);
+    const doc::Wire& w = doc::wiresOf(*u.ctx.doc()).back();
+    CHECK(w.from == and1);
+    CHECK(w.to == and2);
+    CHECK(w.param == "b");
+  }
+}
+
 // TMM.10-fix2 (SPEC §15 2026-11-01 "the note source is a Hz piano roll"): a MIDI track's lane (TL.1) is its note source
 // ("Notes"); its note outputs (Hz, gate, velocity: its port chips) are wire sources like exports: Crosshair on them, a drop on a device a
 // param menu (one undo step), a drop on a param pin a wire already drives that param, the wire drawn from the window
