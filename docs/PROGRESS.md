@@ -536,3 +536,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: start-up only; one stat + one small JSON read per stale session; takes moved by rename.
 - Notes: Q249. REVIEW entry: kill the app mid-edit, restart, Recover.
 
+## 2026-11-13 · WI.2 merged · main
+- Did: merged task/WI.2-cut-wires (2c65e319): LowerOptions::cutWires + LoweredProject::wireEnds; compileNow maps lastTypeFailures to wires, cuts and recompiles (≤ 8 rounds), structural edits re-try affected cuts; Device view / project patch draw cut wires dashed red with the message; status line "A wire is not played: … The rest plays." Fixed: free bool inputs got a real zero and unconnected atom-block bool inputs read real 0 (a free `and` block used to fail its track).
+- Verified (worker): pq_tests_document cut-wire cases 46/46, pq_tests_playback WI.2 2/2 (bit-exact vs the project without the wires), -Affected after rebase 45/45 (one earlier views NVIDIA flake). No goldens.
+- Perf: clean projects lower with no cut set and never retry (typeRetries == 0 tested); a few wireEnds entries per wire.
+- Notes: Q250. Messages still name atoms by internal label ("atom delay_fade, #0"). REVIEW entry for the red-wire look.
+

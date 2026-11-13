@@ -1186,7 +1186,7 @@ its takes only (Discard then removes the whole session); a session left with onl
 (small; one project.pqd). Reversible: (b) is one `removeUnsavedFolder` call in ProjectLink::staleRecordings.
 Status: open.
 
-## Q?-WI.2-a · 2026-11-13 · WI.2 · Which wires a blamed sum stands for; the cases a document wire can produce
+## Q250 · 2026-11-13 · WI.2 · Which wires a blamed sum stands for; the cases a document wire can produce
 Context: inference blames one track-patch edge (consumer, source). When several wires are summed into one input the
 edge's source is the sum node; a node of a modulated param's site carries every wire into that param. The plan also
 names a "stereo → mono-bound" wire as an acceptance case.
