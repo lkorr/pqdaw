@@ -274,7 +274,8 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]);
 // the scheduler; per-voice lanes inside instrument groups). The read is ≥ 2 samples (the cubic read's minimum). The
 // note value's beats are arithmetic on the index, and Mode a lerp, not muxes: a stepped block reaching a mux index
 // would lower as a literal choice (lower.h "Structural value blocks"), so a sync step or a mode switch would recompile
-// the unit (measured: the delay line restarted empty). As written all three are runtime params, and every param-rate
+// the unit (the delay line is carried by the swap, but the time jumps: a crossfade instead of a glide, and a compile
+// per step of a sync drag). As written all three are runtime params, and every param-rate
 // move of the delay (automation, a drag, a sync step, a mode switch, the tempo) glides through the scheduler's param
 // ramp (TX.smooth: linear over 20 ms from where it is); an audio-rate wire into Time is not smoothed.
 // Its panel: one `temposlider` element (the reusable tempo-marked slider, pq/views/panel) bound to Time, Sync and Mode.

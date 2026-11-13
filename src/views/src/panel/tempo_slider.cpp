@@ -9,7 +9,9 @@
 //             (PanelTarget::tempoBpm: the playhead's while playing, else the start marker's) lies inside the curve's
 //             range: straight values 1/32 … 1/1 long and labelled ("1/4"), the others (1/64, dotted, triplet) short and
 //             unlabelled; a label that would collide with a longer one's is hidden (the shortest values first). Placed
-//             through the curve's inverse once per tempo / curve change (cached), drawn per frame.
+//             through the curve's inverse once per tempo / curve change (cached). Live while playing: the host's frame
+//             tick (Face::frameTick, ≤ 60 Hz while the transport plays) compares the playhead's tempo with the one
+//             last drawn and repaints only on a change.
 //   readout   below the groove, left: "375 ms" / "1.25 s" (time); in sync mode the note value ("1/8.", "1/4T") and
 //             the seconds it gives at the tempo.
 //   gravity   a mouse drag of the time (relative, Shift: fine, as the generic slider) sticks to a marking while the knob
@@ -79,6 +81,8 @@ public:
     const Rect g = groove();
     const float gy = (g.y0 + g.y1) * 0.5f, rr = (g.y1 - g.y0) * 0.5f;
     const Marks& m = marks(t);
+    drawnBpm_ = m.bpm;
+    playing_ = t.transportPlaying();
     const bool ok = editable(t, kTime);
     const bool sync = syncMode(t);
     const Rgba accent = ok ? colour(th, "colour", "value", th.face.value) : ui::lerp(th.face.track, th.face.value, 0.35f);
@@ -129,6 +133,14 @@ public:
       magnetGlyph(p, r, gravity ? th.face.body : ui::mulAlpha(th.face.ink, sync ? 0.4f : 0.8f));
     }
   }
+
+  // Live tempo: while the transport plays, each host frame compares the playhead's tempo with the one the markings
+  // were drawn at (no work at a steady tempo); a change repaints the element.
+  bool frameTick(PanelTarget& t) override {
+    playing_ = t.transportPlaying();
+    return t.tempoBpm() != drawnBpm_;
+  }
+  bool ticking() const noexcept override { return playing_; }
 
   uint64_t liveKey(const PanelTarget& t) const override {
     uint64_t h = Element::liveKey(t);
@@ -375,6 +387,8 @@ private:
   }
 
   mutable Marks marks_;
+  double drawnBpm_ = -1.0;  // the tempo the live layer was last painted at
+  bool playing_ = false;
   bool dragSync_ = false;
   double dragStart_ = 0.0;
   uint32_t lastSync_ = 0;

@@ -561,8 +561,11 @@ struct CircuitCanvas::Impl final : FaceHost {
     const ui::IRect cr = self.rect();
     for (Hosted& h : faces) {
       VoiceTapReader* rd = h.face->voices();
-      if (rd == nullptr || !faceVisible(h)) continue;
-      if (h.face->pollVoices() && tr != nullptr) {
+      if (!faceVisible(h)) continue;
+      const bool ticked = h.face->frameTick();  // DT.1: what follows the transport without voices (a compare)
+      live = live || h.face->ticking();
+      if (rd == nullptr && !ticked) continue;
+      if ((ticked | (rd != nullptr && h.face->pollVoices())) && tr != nullptr) {
         SceneNode n = scene->nodes[h.node];
         n.x += shiftOf(h.node).x, n.y += shiftOf(h.node).y;  // TX.block-drag
         faceRects.clear();
@@ -576,7 +579,7 @@ struct CircuitCanvas::Impl final : FaceHost {
           tr->damage().add(c);
         }
       }
-      live = live || rd->live() || h.face->animating();
+      live = live || (rd != nullptr && (rd->live() || h.face->animating()));
     }
     if (live && faceTimer == 0 && tr != nullptr) faceTimer = self.requestTimer(kFaceFrameSeconds);
   }
@@ -643,7 +646,7 @@ struct CircuitCanvas::Impl final : FaceHost {
         stats.facePrimitives += p.primitives();
         ++stats.facesPainted;
       }
-      wantTimer = wantTimer || (f.voices() != nullptr && (f.voices()->live() || f.animating()));
+      wantTimer = wantTimer || f.ticking() || (f.voices() != nullptr && (f.voices()->live() || f.animating()));
     }
     if (wantTimer && faceTimer == 0) faceTimer = self.requestTimer(kFaceFrameSeconds);
   }

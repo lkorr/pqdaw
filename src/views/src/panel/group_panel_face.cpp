@@ -218,6 +218,18 @@ bool GroupPanelFace::pollVoices() {
   return changed;
 }
 
+bool GroupPanelFace::frameTick() {
+  bool changed = false;
+  for (const std::unique_ptr<Element>& e : elements_) changed = e->frameTick(*target_) || changed;
+  return changed;
+}
+
+bool GroupPanelFace::ticking() const noexcept {
+  for (const std::unique_ptr<Element>& e : elements_)
+    if (e->ticking()) return true;
+  return false;
+}
+
 bool GroupPanelFace::animating() const noexcept {
   for (const std::unique_ptr<Element>& e : elements_)
     if (e->animating()) return true;
@@ -762,7 +774,14 @@ void PanelHost::endWheel() {
 
 void PanelHost::wake() {
   markDirty();
-  if (voiceTimer_ == 0 && face_->voices() != nullptr && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+  (void)face_->frameTick();  // DT.1 (the dirty mark above repaints it anyway)
+  if (voiceTimer_ == 0 && (face_->voices() != nullptr || face_->ticking()) && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+}
+
+void PanelHost::transportChanged() {
+  if (!visible()) return;
+  if (face_->frameTick()) markDirty();
+  if (voiceTimer_ == 0 && face_->ticking() && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 
 void PanelHost::onTimer(uint32_t id) {
@@ -775,9 +794,10 @@ void PanelHost::onTimer(uint32_t id) {
   if (id != voiceTimer_) return;
   voiceTimer_ = 0;
   VoiceTapReader* v = face_->voices();
-  if (v == nullptr || !visible()) return;
-  if (face_->pollVoices()) markDirty();
-  if (v->live() || face_->animating()) voiceTimer_ = requestTimer(1.0 / 60.0);
+  if (!visible()) return;
+  if (face_->frameTick()) markDirty();  // DT.1: a tempo slider while the transport plays
+  if (v != nullptr && face_->pollVoices()) markDirty();
+  if ((v != nullptr && (v->live() || face_->animating())) || face_->ticking()) voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 
 ui::FaceTransform PanelHost::transform() const noexcept {
@@ -869,7 +889,8 @@ void PanelHost::paint(ui::PaintContext& ctx) {
   if (face_->needsPrepare(tr.scale)) requestFrame();
   // GU.13: voices (an engine face's dots, a phase orbit): polled while live (as the old device panel's faces were).
   if (voiceTimer_ == 0)
-    if (VoiceTapReader* v = face_->voices(); v != nullptr && (v->live() || face_->animating())) voiceTimer_ = requestTimer(1.0 / 60.0);
+    if (VoiceTapReader* v = face_->voices(); (v != nullptr && (v->live() || face_->animating())) || face_->ticking())
+      voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 
 void PanelHost::onFrame(double /*now*/) {

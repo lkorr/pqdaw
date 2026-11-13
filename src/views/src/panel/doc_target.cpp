@@ -295,6 +295,7 @@ public:
     rings_.emplace_back(b, ring);
     return true;
   }
+  bool transportPlaying() const override { return ctx_.playing(); }
   double tempoBpm() const override {
     const doc::Snapshot& d = ctx_.doc();
     return d && d->timeline ? d->timeline->tempoMap.bpmAt(ctx_.liveClipAt()) : 120.0;

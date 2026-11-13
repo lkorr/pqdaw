@@ -1076,18 +1076,23 @@ Context: docs/plans/DT.md; `pq/document/modules.h` "the Delay Tap", `src/views/s
    need a per-sample z1 loop of atoms (always running) or a new `slew` atom. An audio-rate wire into Time is not
    smoothed (deliberate modulation). Option: add a one-pole if the linear glide's pitch shape sounds wrong.
 3. **Sync and Mode are arithmetic, not muxes.** A stepped value block reaching a mux index lowers as a LITERAL choice
-   (lower.h "Structural value blocks"), so a sync step or the ms / ♪ switch recompiled the unit — and measured, the
-   swap restarted the delay line empty (output silent for the new delay time: the echo tail lost). Now the beats are
-   2^g / 16 · f(r) on the index (a nested group "Note Value", every value checked against the table by render) and
-   the mode a lerp: runtime params, no recompile, glided. Cost: both the time and the sync path run per block in which
-   an input changes (a few param-rate ops). **Orchestrator:** the "recompile empties a delay line" observation may be a
-   general state-transfer gap (a mux folded by a literal changes the delay node's inputs); not investigated further.
+   (lower.h "Structural value blocks"), so a sync step or the ms / ♪ switch recompiled the unit, and the swap jumps
+   the time (the new time source's `param_ramp` side state is a fresh entry: it starts at its value, so the change is
+   the swap's 20 ms crossfade of two taps, not a glide). The delay line itself IS carried (checked: same state key,
+   kernel delay_cubic, ring 240000 frames, 1 MB, matched by engine/src/state_transfer.cpp's key/tag/size match; an
+   earlier reading of "the line restarted empty" was wrong — the test had switched to a delay longer than the audio
+   played so far, so it read the silence before playback started). Now the beats are 2^g / 16 · f(r) on the index (a
+   nested group "Note Value", every value checked against the table by render) and the mode a lerp: runtime params,
+   no recompile per sync step, glided. Cost: both the time and the sync path run per block in which an input changes
+   (a few param-rate ops).
 4. **Minimum delay 2 samples** (the cubic read's floor; the plan says ≥ 1). Option: `delay` (linear) below 2 samples.
 5. **Gravity zones shrink between dense markings**: 6 device px per side, but at most 40 % of the gap to the next
    marking (at 120 BPM the 21 markings sit in the middle of a 148-px slider, where 6-px zones would cover all of it and
    the knob could never stop between 1/2T and 1/4.). Option: plain 6 px, or straight values only.
 6. **1/64 is a short, unlabelled tick** (the plan labels straight values 1/1 … 1/32); it is in the sync list.
 7. **Live tempo**: the markings are placed at the tempo at the playhead (start marker when stopped), re-placed whenever
-   the face repaints (its live key includes the tempo). A panel is not repainted per frame during playback, so under
-   tempo automation the markings move when something else repaints the face — not checked live.
-Status: open (user: 2, 5; orchestrator: 3's observation).
+   the face repaints (its live key includes the tempo). While the transport plays, the hosts (project patch canvas,
+   Device view / panel window PanelHost) call `Face::frameTick` at ≤ 60 Hz: a tempo compare per slider, a repaint only
+   when the playhead's tempo changed (tests/views/test_delay_tap_face.cpp: no paint at a steady tempo, one when the
+   playhead crosses a tempo point).
+Status: open (user: 2, 5).

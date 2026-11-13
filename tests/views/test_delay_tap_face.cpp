@@ -267,3 +267,32 @@ TEST_CASE("delay tap face: the ms / note switch sets Mode; in sync mode a drag s
   u.dragTime(7.0f);
   CHECK(u.seconds() == doctest::Approx(2.0 / 3.0).epsilon(1e-9));
 }
+
+TEST_CASE("delay tap face: while the transport plays the markings follow the tempo at the playhead — a repaint when the "
+          "playhead crosses a tempo change, none at a steady tempo") {
+  DelayUi u;
+  REQUIRE(u.d.enableGpu().ok());  // (frames are painted only with the GPU)
+  // 120 BPM, 90 from bar 2 (a step: no document change happens while the playhead crosses it).
+  REQUIRE(u.ctx.store().dispatch(doc::SetTempoMap{{TempoPoint{0, 120.0}, TempoPoint{8 * kPpq, 90.0}}}).ok());
+  u.d.step();
+  u.ctx.play();  // through the view context: kTransport wakes the faces (the playhead at 0: 120 BPM)
+  u.d.advance(0.2);
+  const auto& canvas = u.view().canvas();
+  const uint64_t steady0 = canvas.stats().paints;  // (cumulative canvas paints)
+  u.d.advance(0.3);
+  CHECK(canvas.stats().paints == steady0);  // steady tempo: compares only, nothing repainted
+  CHECK(canvas.animatingFaces());                  // the ≤ 60 Hz poll runs while playing
+  u.port.locate(9 * kPpq);                         // the engine's playhead report moves past the change (no notify)
+  u.d.advance(0.1);
+  CHECK(canvas.stats().paints > steady0);
+  CHECK(canvas.stats().panelsPainted >= 1);  // (the last paint's: the Delay Tap's panel)
+  const uint64_t after = canvas.stats().paints;
+  u.d.advance(0.3);
+  CHECK(canvas.stats().paints == after);  // steady again
+  // The markings are at 90 BPM now: from 500 ms (1/8. there) +7 units lands on 1/4 = 667 ms.
+  u.dragTime(7.0f);
+  CHECK(u.seconds() == doctest::Approx(2.0 / 3.0).epsilon(1e-9));
+  u.ctx.stopButton();
+  u.d.advance(0.2);
+  CHECK_FALSE(canvas.animatingFaces());  // stopped: no poll
+}

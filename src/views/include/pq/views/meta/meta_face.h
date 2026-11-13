@@ -298,6 +298,11 @@ public:
   // The voice reader the face shows (null: none) and its poll (true: what the face shows changed).
   virtual VoiceTapReader* voices() const noexcept { return nullptr; }
   virtual bool pollVoices() { return false; }
+  // DT.1: FRAME TICKS for what follows the transport without a voice reader (a tempo slider's markings follow the tempo
+  // at the playhead). The host calls frameTick() on each visible face when it wakes (kTransport, kSignal) and at its
+  // ≤ 60 Hz poll while ticking() — a compare per element, true: the live layer changed (the host damages liveRects).
+  virtual bool frameTick() { return false; }
+  virtual bool ticking() const noexcept { return false; }
   // TX.spectrum: where the face finds the analysis of its instance's signal (a Spectrum module's face: asked at every poll
   // and paint, since the tap appears once the unit is compiled; null: none) and how it asks its host to poll it again
   // (sound arrived while it rested). Faces that show no analysis ignore it (wantsAnalysis false).

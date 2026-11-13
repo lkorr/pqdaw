@@ -392,7 +392,7 @@ TEST_CASE("delay tap: a time change while a sine plays glides — no step, and t
   CHECK(std::fabs(L[n] - want) < 0.02);
   // A sync step and a mode switch (to 1/32. = 93.75 ms at 120 BPM): param writes, no recompile (Sync and Mode reach
   // no choice: they are runtime params); the delay glides there (−16.55 ms over the 20 ms ramp: reading ≈ 1.8× as
-  // fast meanwhile), the line goes on (an emptied line would be silent for 94 ms).
+  // fast meanwhile), the line goes on.
   const uint64_t compiles = (p.link->flush(), p.link->stats().compiles);
   s.set(s.role(DelayRole::Sync), 6.0);
   s.set(s.role(DelayRole::Mode), 1.0);

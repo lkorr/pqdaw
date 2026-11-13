@@ -789,6 +789,11 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
     }
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
     else if ((bits & view_change::kTransport) && (!impl_->autoShown.empty() || impl_->chainAuto)) applyAutomation();
+    if (bits & view_change::kTransport) {  // DT.1: tempo sliders follow the playhead's tempo while it plays
+      std::vector<panel::PanelHost*> hs;
+      for (const auto& [id, f] : impl_->all) f->hosts(hs);
+      for (panel::PanelHost* h : hs) h->transportChanged();
+    }
   });
   sync(true);
 }

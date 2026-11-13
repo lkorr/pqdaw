@@ -72,6 +72,8 @@ public:
   VoiceTapReader* voices() const noexcept override;
   bool pollVoices() override;
   bool animating() const noexcept override;
+  bool frameTick() override;  // DT.1: the elements' frameTick
+  bool ticking() const noexcept override;
 
   // ---- interaction ----
   int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept override;
@@ -224,6 +226,9 @@ public:
   void notifyChanged();
   // GU.13: the face's voices may have become live (a note while nothing animated): it polls again.
   void wake();
+  // DT.1: the transport started or stopped: the face's frame ticks (a tempo slider) poll while it plays; nothing is
+  // repainted unless a tick says so.
+  void transportChanged();
   static constexpr double kWheelRunSeconds = 0.4;  // ui::ValueControl::kWheelGestureSeconds
   // GU.5: the face part under the pointer changed (a panel window's link line follows the hovered element).
   std::function<void()> onHoverPart;
