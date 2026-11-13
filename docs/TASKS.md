@@ -805,6 +805,9 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 ## DT: Delay tap meta module (user 2026-11-12, SPEC §15 "a delay tap meta module"; plan: docs/plans/DT.md)
 - [ ] **DT.1 Delay tap meta module: pure delay, exponential 0–5 s ms slider with tempo markings + gravity (magnet toggle), sync lane, ms / ♪ mode** 👁 (docs/plans/DT.md "DT.1")
 
+## NZ: Noise module (user 2026-11-12, SPEC §15 "a noise module"; plan: docs/plans/NZ.md)
+- [ ] **NZ.1 Noise module: one output, Rate (0.01 Hz … SR) / Sync / Note / clock input, Smooth, Colour on the drawn sequence, Distribution, Density, Steps, Range, Seed, Restart, Voices** 👁 (docs/plans/NZ.md "NZ.1")
+
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁
