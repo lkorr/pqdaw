@@ -62,6 +62,18 @@ namespace pq::views::devices {
 // What a consumer of a feed draws (acquire's flags).
 inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u, kWantSpectrogram = 16u;
 
+// VZ.1: the output spectrum's analysis a display may tune (the Spectrum face's ANALYSIS tab; setTuning). The axis
+// (points, fMin, fMax), the hop and the sample rate stay the feed's.
+struct SpectrumTuning {
+  uint32_t fftSize = 2048;
+  bool sharpLows = true;        // the 4x window below 500 Hz
+  float tiltDbPerOct = 4.5f;
+  float smoothingOct = 0.0f;    // 0: off
+  float attackMs = 25.0f, releaseMs = 350.0f;
+  float holdSeconds = 1.5f, fallDbPerSecond = 12.0f;
+  bool operator==(const SpectrumTuning&) const = default;
+};
+
 // TX.spectrogram: what a spectrogram consumer asks the feed to compute (setSpectrogram).
 struct SpectrogramRequest {
   dsp::SpectrogramConfig config;  // its sampleRate is replaced by the feed's
@@ -102,6 +114,10 @@ public:
   SpectrumFeed& operator=(const SpectrumFeed&) = delete;
 
   const dsp::SpectrumConfig& config() const noexcept { return cfg_; }
+  // VZ.1: tunes the output (and input) spectrum: the analysers are remade with it at the worker's next step and start
+  // from silence. The newest call decides (every display of an instance shows the same options). UI thread.
+  void setTuning(const SpectrumTuning& t);
+  SpectrumTuning tuning() const;
   float axisHz(float t) const noexcept { return axis_.axisHz(t); }
   float axisT(float hz) const noexcept { return axis_.axisT(hz); }
   float pointHz(uint32_t p) const noexcept { return axis_.pointHz(p); }
@@ -182,8 +198,11 @@ private:
   std::shared_ptr<TapRing> owner_;
   TapRing& tap_;
   dsp::SpectrumConfig cfg_;
-  dsp::SpectrumAnalyzer out_;   // worker thread
-  dsp::SpectrumAnalyzer in_;    // worker thread (4-channel taps)
+  std::unique_ptr<dsp::SpectrumAnalyzer> out_;  // worker thread (remade by a new tuning)
+  std::unique_ptr<dsp::SpectrumAnalyzer> in_;   // worker thread (4-channel taps)
+  SpectrumTuning tuning_;        // mutex_: the newest tuning asked for
+  bool tuningDirty_ = false;     // mutex_: not applied yet
+  uint32_t runFft_ = 0;          // worker: the FFT size in force
   dsp::SpectrumAnalyzer axis_;  // the same axis, for the UI's mapping (never pushed to)
   std::unique_ptr<dsp::TransferAnalyzer> transfer_;  // worker thread (4-channel taps)
   std::vector<float> ch_[4], mono_, monoIn_;

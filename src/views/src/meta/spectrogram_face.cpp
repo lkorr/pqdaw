@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "faces.h"
+#include "option_sheet.h"
 #include "pq/dsp/spectrogram.h"
 #include "pq/ui/colormap.h"
 #include "pq/ui/renderer.h"
@@ -69,7 +70,6 @@ constexpr uint32_t kRows = dsp::Spectrogram::kRows;
 constexpr uint32_t kMinCols = 64, kMaxCols = 1024;
 constexpr uint32_t kRowGranule = 64;
 constexpr uint32_t kGateEvery = 8;  // columns between noise-floor estimates (PQ Meter: kCols / 256)
-constexpr float kKeysW = 22.0f;     // the keyboard's width, world units (PQ Meter: 40 px)
 constexpr uint32_t kSpare = 16;     // ring slots past the visible columns: the servo's lag and the blank next slot
 constexpr double kMaxLag = 10.0;    // columns the servo may trail the newest before it snaps
 
@@ -96,22 +96,14 @@ constexpr const char* kPlayheadNames[] = {"Scroll", "Loop"};
 constexpr double kBeatSpans[] = {1.0, 2.0, 4.0, 8.0, 16.0};
 constexpr const char* kBeatSpanNames[] = {"1 beat", "2 beats", "1 bar", "2 bars", "4 bars"};
 constexpr const char* kKeysNames[] = {"Off", "Left", "Right"};
-constexpr const char* kOnOff[] = {"Off", "On"};
 static_assert(std::size(kMapNames) == static_cast<size_t>(ui::kColormapCount));
 
-struct Opt {
-  const char* key;
-  const char* label;
-  double def, lo, hi;
-  enum Kind : uint8_t { Choice, Toggle, Number, LogNumber, Pow2 } kind;
-  const char* const* names = nullptr;  // Choice
-  const char* fmt = "%.2f";            // Number
-  double step = 0.0;                   // a quantum (0: continuous)
-};
+using sheet::Opt;
+using sheet::kOnOff;
 enum O : uint32_t {
   oSpan, oFft, oChannel, oReassign, oMaxDev, oConsensus, oPlayhead, oLoopSpan, oFloor, oCeil, oGamma, oFade, oTilt,
   oGate, oDepth, oThresh, oKnee, oExpand, oScale, oFMin, oFMax, oMap, oSource, oGrid, oRuler, oNote, oKeys, oTuning,
-  oCount
+  oKeysW, oKeysOpacity, oKeysTintC, oCount
 };
 // PQ Meter's defaults (the power user's tuned analysis, the MiniMeters-calibrated level mapping, the gate on): a 2048
 // window, reassignment, 3.5 bins, consensus 0.5, floor −100 / ceiling −24 dB, gamma 1.57, fade 0.4, tilt 4.5 dB/oct,
@@ -146,76 +138,45 @@ const Opt kOpts[oCount] = {
     {"note", "Note readout", 1, 0, 1, Opt::Toggle, kOnOff},
     {"keys", "Keyboard", 0, 0, 2, Opt::Choice, kKeysNames},
     {"tune", "Scale lines", 0, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.1: PQ Meter's keyboard_width / keyboard_opacity / keyboard_tint_c (its 40 px at a face's scale: 22 units).
+    {"kw", "Keyboard width", 22, 8, 60, Opt::Number, nullptr, "%.0f", 1.0},
+    {"kop", "Keyboard opacity", 0.85, 0.1, 1.0, Opt::Number, nullptr, "%.2f", 0.01},
+    {"kc", "Tint the Cs", 1, 0, 1, Opt::Toggle, kOnOff},
 };
 
-struct Options {
-  std::array<double, oCount> v{};
-  Options() {
-    for (uint32_t i = 0; i < oCount; ++i) v[i] = kOpts[i].def;
-  }
-  double operator[](uint32_t i) const noexcept { return v[i]; }
-  int choice(uint32_t i) const noexcept { return static_cast<int>(std::lround(v[i])); }
-  bool on(uint32_t i) const noexcept { return v[i] >= 0.5; }
+struct Options : sheet::Values {
+  Options() : Values(kOpts) {}
   GramScale scale() const noexcept { return static_cast<GramScale>(std::clamp(choice(oScale), 0, 2)); }
   bool loop() const noexcept { return choice(oPlayhead) == 1; }
   // The level range (the ceiling at least 10 dB over the floor, as PQ Meter's sliders keep it).
-  float floorDb() const noexcept { return static_cast<float>(v[oFloor]); }
-  float ceilDb() const noexcept { return std::max(static_cast<float>(v[oCeil]), floorDb() + 10.0f); }
-  float fMin() const noexcept { return static_cast<float>(v[oFMin]); }
-  float fMax() const noexcept { return std::max(static_cast<float>(v[oFMax]), 2.0f * fMin()); }
-  meta::DataPtr data() const {
-    std::vector<std::pair<std::string, meta::DataValue>> f;
-    for (uint32_t i = 0; i < oCount; ++i)
-      if (v[i] != kOpts[i].def) f.emplace_back(kOpts[i].key, meta::DataValue::num(v[i]));  // only what differs
-    return std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
-  }
-  void load(const meta::DataValue* d) {
-    for (uint32_t i = 0; i < oCount; ++i) {
-      const meta::DataValue* f = d != nullptr ? d->field(kOpts[i].key) : nullptr;
-      v[i] = f != nullptr && f->kind == meta::DataValue::Kind::Number ? std::clamp(f->number, kOpts[i].lo, kOpts[i].hi)
-                                                                      : kOpts[i].def;
-    }
-  }
+  float floorDb() const noexcept { return static_cast<float>((*this)[oFloor]); }
+  float ceilDb() const noexcept { return std::max(static_cast<float>((*this)[oCeil]), floorDb() + 10.0f); }
+  float fMin() const noexcept { return static_cast<float>((*this)[oFMin]); }
+  float fMax() const noexcept { return std::max(static_cast<float>((*this)[oFMax]), 2.0f * fMin()); }
+  float keysW() const noexcept { return choice(oKeys) != 0 ? static_cast<float>((*this)[oKeysW]) : 0.0f; }
 };
 
-void visibleRows(const Options& o, std::vector<uint32_t>& out) {
+// The rows a sheet tab shows for these options (in order): ANALYSIS what the analysis computes (it re-analyses or
+// re-reads), DISPLAY how the columns are coloured and what is drawn over them (recoloured from the cache).
+void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   out.clear();
-  for (const uint32_t i : {oSpan, oFft, oChannel, oReassign}) out.push_back(i);
-  if (o.on(oReassign)) {
-    out.push_back(oMaxDev);
-    out.push_back(oConsensus);
+  if (tab == sheet::kAnalysis) {
+    for (const uint32_t i : {oSpan, oFft, oChannel, oReassign}) out.push_back(i);
+    if (o.on(oReassign)) {
+      out.push_back(oMaxDev);
+      out.push_back(oConsensus);
+    }
+    out.push_back(oPlayhead);
+    if (o.loop()) out.push_back(oLoopSpan);
+    for (const uint32_t i : {oScale, oFMin, oFMax}) out.push_back(i);
+    return;
   }
-  out.push_back(oPlayhead);
-  if (o.loop()) out.push_back(oLoopSpan);
   for (const uint32_t i : {oFloor, oCeil, oGamma, oFade, oTilt, oGate}) out.push_back(i);
   if (o.on(oGate))
     for (const uint32_t i : {oDepth, oThresh, oKnee, oExpand}) out.push_back(i);
-  for (const uint32_t i : {oScale, oFMin, oFMax, oMap, oSource, oGrid, oRuler, oNote, oKeys, oTuning}) out.push_back(i);
-}
-
-void valueText(const Options& o, uint32_t i, char* buf, size_t n) {
-  const Opt& op = kOpts[i];
-  if (op.kind == Opt::Choice || op.kind == Opt::Toggle) {
-    std::snprintf(buf, n, "%s", op.names[std::clamp(o.choice(i), static_cast<int>(op.lo), static_cast<int>(op.hi))]);
-    return;
-  }
-  if (op.kind == Opt::Pow2) {
-    std::snprintf(buf, n, "%d", 1 << o.choice(i));
-    return;
-  }
-  std::snprintf(buf, n, op.fmt, o[i]);
-}
-
-double toTravel(const Opt& op, double v) noexcept {
-  if (op.kind == Opt::LogNumber) return std::log(v / op.lo) / std::log(op.hi / op.lo);
-  return (v - op.lo) / (op.hi - op.lo);
-}
-double fromTravel(const Opt& op, double t) noexcept {
-  t = std::clamp(t, 0.0, 1.0);
-  double v = op.kind == Opt::LogNumber ? op.lo * std::pow(op.hi / op.lo, t) : op.lo + t * (op.hi - op.lo);
-  if (op.kind == Opt::Pow2) v = std::round(v);
-  else if (op.step > 0.0) v = std::round(v / op.step) * op.step;
-  return std::clamp(v, op.lo, op.hi);
+  for (const uint32_t i : {oMap, oSource, oGrid, oRuler, oNote, oTuning, oKeys}) out.push_back(i);
+  if (o.choice(oKeys) != 0)
+    for (const uint32_t i : {oKeysW, oKeysOpacity, oKeysTintC}) out.push_back(i);
 }
 
 // The nearest 12-EDO note of hz (C3 = 261.626 Hz, the spectrum display's naming) and its cents.
@@ -650,7 +611,7 @@ public:
   explicit SpectrogramFace(const meta::Type& t) : MetaFace(t) {
     static uint32_t made = 0;  // UI thread: faces made so far (their gate estimates land on different columns)
     pic_.setPhase(made++ * 3u);
-    visibleRows(opts_, rows_);
+    visibleRows(opts_, panel_.tab, rows_);
     applyTone();
   }
   ~SpectrogramFace() override {
@@ -774,9 +735,8 @@ public:
     if (inside(kFreezeChip, l)) return kFreezePart;
     if (inside(kSetChip, l)) return kSetPart;
     if (sheet_) {
-      const int32_t row = rowAt(l);
-      if (row >= 0) return kRowBase + row;
-      if (inside(kPlot, l)) return kSheetPart;
+      const int32_t part = panel_.hit(l, rows_.size());
+      if (part >= 0) return part == sheet::kBody ? kSheetPart : part;
     }
     if (inside(kPlot, l)) return kPlotPart;
     return kFrame;
@@ -791,7 +751,7 @@ public:
         const int32_t part = hitTest(e.local, e.pxPerUnit);
         if (part == kChPart || part == kScalePart || part == kMapPart) {
           const uint32_t o = part == kChPart ? oChannel : part == kScalePart ? oScale : oMap;
-          setOption(o, cycle(o, shift ? -1 : 1));
+          setOption(o, sheet::cycled(opts_, o, shift ? -1 : 1));
           return true;
         }
         if (part == kFreezePart) {
@@ -808,6 +768,19 @@ public:
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
+        if (part == sheet::kTabBase || part == sheet::kTabBase + 1) {
+          panel_.tab = part - sheet::kTabBase;
+          visibleRows(opts_, panel_.tab, rows_);
+          return true;
+        }
+        if (part == sheet::kSave) {
+          meta::saveUserDefaultData(type().id, opts_.data());
+          return true;
+        }
+        if (part == sheet::kReset) {
+          resetOptions();
+          return true;
+        }
         if (part == kSheetPart) return true;
         return false;  // the plot: the host's (select, move)
       }
@@ -815,7 +788,7 @@ public:
         if (drag_) {
           const Opt& op = kOpts[dragOpt_];
           const double k = (shift ? 0.1 : 1.0) / 160.0;
-          setOption(dragOpt_, fromTravel(op, std::clamp(pressTravel_ + (pressY_ - e.device.y) * k, 0.0, 1.0)));
+          setOption(dragOpt_, sheet::fromTravel(op, std::clamp(pressTravel_ + (pressY_ - e.device.y) * k, 0.0, 1.0)));
           return true;
         }
         const Vec2 h = inside(kPlot, e.local) && !sheet_ && hitTest(e.local, e.pxPerUnit) == kPlotPart ? e.local : Vec2{-1.0f, -1.0f};
@@ -858,12 +831,10 @@ public:
     if (part == kChPart || part == kScalePart || part == kMapPart || part == kFreezePart || part == kSetPart) return ui::Cursor::Pointer;
     if (part >= kRowBase) {
       const auto i = static_cast<size_t>(part - kRowBase);
-      if (i < rows_.size()) {
-        const Opt::Kind k = kOpts[rows_[i]].kind;
-        if (k == Opt::Number || k == Opt::LogNumber || k == Opt::Pow2) return ui::Cursor::ResizeNS;
-      }
+      if (i < rows_.size() && sheet::numeric(kOpts[rows_[i]])) return ui::Cursor::ResizeNS;
       return ui::Cursor::Pointer;
     }
+    if (part >= sheet::kTabBase && part <= sheet::kReset) return ui::Cursor::Pointer;
     return ui::Cursor::Inherit;
   }
 
@@ -903,11 +874,27 @@ public:
                    : "The signal passing through, over time (it is not changed). Shown when the module plays in a track's "
                      "chain.";
         return;
+      case sheet::kTabBase:
+        title = "Analysis";
+        body = "The options of what is analysed: span, window, channel, reassignment, playhead, frequency axis.";
+        return;
+      case sheet::kTabBase + 1:
+        title = "Display";
+        body = "Only how it looks: level range, gamma, fade, tilt, the visual gate, colours, grid, ruler, keyboard.";
+        return;
+      case sheet::kSave:
+        title = "Save as default";
+        body = "New Spectrograms start with these options (every tab). Saved with pqdaw's settings; existing ones keep theirs.";
+        return;
+      case sheet::kReset:
+        title = "Reset";
+        body = "Every option back to the factory default.";
+        return;
       default:
         if (part >= kRowBase && static_cast<size_t>(part - kRowBase) < rows_.size()) {
           const Opt& op = kOpts[rows_[static_cast<size_t>(part - kRowBase)]];
           title = op.label;
-          body = op.kind == Opt::Number || op.kind == Opt::LogNumber || op.kind == Opt::Pow2
+          body = sheet::numeric(op)
                      ? "Drag up / down to set (Shift: fine); double-click resets."
                      : "Click to change (Shift: back); double-click resets.";
           return;
@@ -969,7 +956,7 @@ private:
     applyOptions();
   }
   void applyOptions() {
-    visibleRows(opts_, rows_);
+    visibleRows(opts_, panel_.tab, rows_);
     const bool loop = opts_.loop();
     if (loop != wasLoop_) {  // the columns are addressed another way: start over
       wasLoop_ = loop;
@@ -999,13 +986,8 @@ private:
     t.fMax = state_.running ? state_.fMax : opts_.fMax();
     pic_.setTone(t);
   }
-  double cycle(uint32_t o, int dir) const {
-    const Opt& op = kOpts[o];
-    const int n = static_cast<int>(op.hi - op.lo) + 1;
-    return op.lo + static_cast<double>(((opts_.choice(o) - static_cast<int>(op.lo) + dir) % n + n) % n);
-  }
   void setOption(uint32_t o, double v) {
-    opts_.v[o] = std::clamp(v, kOpts[o].lo, kOpts[o].hi);
+    opts_.set(o, v);
     if (bound_ && target().editable()) {
       data_ = opts_.data();
       target().setData(data_);
@@ -1016,18 +998,18 @@ private:
     applyOptions();
     if (wakeHost_) wakeHost_();
   }
-  bool rowDown(uint32_t row, const FacePointer& e) {
-    if (row >= rows_.size()) {  // RESET
-      opts_ = Options{};
-      if (bound_ && target().editable()) {
-        target().setData(opts_.data());
-        data_ = target().data();
-      } else {
-        local_ = true;
-      }
-      applyOptions();
-      return true;
+  void resetOptions() {
+    opts_.reset();
+    if (bound_ && target().editable()) {
+      target().setData(opts_.data());
+      data_ = target().data();
+    } else {
+      local_ = true;
     }
+    applyOptions();
+  }
+  bool rowDown(uint32_t row, const FacePointer& e) {
+    if (row >= rows_.size()) return false;
     const uint32_t o = rows_[row];
     const Opt& op = kOpts[o];
     if (e.clicks >= 2) {
@@ -1035,13 +1017,13 @@ private:
       return true;
     }
     if (op.kind == Opt::Choice || op.kind == Opt::Toggle) {
-      setOption(o, cycle(o, (e.mods & ui::mod::kShift) ? -1 : 1));
+      setOption(o, sheet::cycled(opts_, o, (e.mods & ui::mod::kShift) ? -1 : 1));
       return true;
     }
     drag_ = true;
     dragOpt_ = o;
     pressY_ = e.device.y;
-    pressTravel_ = toTravel(op, opts_[o]);
+    pressTravel_ = sheet::toTravel(op, opts_[o]);
     if (bound_ && target().editable()) {
       target().begin(op.label);
       editing_ = true;
@@ -1338,7 +1320,7 @@ private:
   void paintOverlays(ui::FacePainter& p, bool labels) {
     const Tone& tone = pic_.tone();
     const float px1 = 1.0f / std::max(1e-3f, p.transform().scale);  // one device px in world units
-    const float keysW = opts_.choice(oKeys) != 0 ? kKeysW : 0.0f;
+    const float keysW = opts_.keysW();
     const bool keysLeft = opts_.choice(oKeys) == 1;
     // The frequency rules and labels: the decade ladder on log / mel (on a short plot only 100, 1k, 5k labelled),
     // round steps on linear.
@@ -1508,15 +1490,16 @@ private:
   // centres), C keys tinted green, the hovered key lit, C labels where they fit.
   void paintKeys(ui::FacePainter& p, bool left, float hoverHz, bool labels) const {
     const float back = left ? kPlot.x0 : kPlot.x1, dir = left ? 1.0f : -1.0f;
-    const float front = back + dir * kKeysW, blackEnd = back + dir * kKeysW * 0.6f;
+    const float kw = opts_.keysW();
+    const float front = back + dir * kw, blackEnd = back + dir * kw * 0.6f;
     const float xw0 = std::min(back, front), xw1 = std::max(back, front);
     const float xb0 = std::min(back, blackEnd), xb1 = std::max(back, blackEnd);
     const float px1 = 1.0f / std::max(1e-3f, p.transform().scale);
     auto yOfMidi = [&](float m) { return yOf(440.0f * std::exp2((m - 69.0f) / 12.0f)); };
     auto isBlack = [](int pc) { return pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10; };
     const int hoverMidi = hoverHz > 0.0f ? static_cast<int>(std::lround(69.0 + 12.0 * std::log2(hoverHz / 440.0))) : -1;
-    constexpr float kA = 0.85f;  // PQ Meter's keyboard opacity
-    auto col = [](uint32_t r, uint32_t g, uint32_t b, float a) { return ui::rgba(r, g, b, static_cast<uint32_t>(a * kA * 255.0f + 0.5f)); };
+    const auto kA = static_cast<float>(opts_[oKeysOpacity]);  // PQ Meter's keyboard opacity (0.85)
+    auto col = [kA](uint32_t r, uint32_t g, uint32_t b, float a) { return ui::rgba(r, g, b, static_cast<uint32_t>(a * kA * 255.0f + 0.5f)); };
     const Rgba lit = ui::withAlpha(ui::signal_theme::kAccent, static_cast<uint32_t>(kA * 255.0f));
     const Rgba white = col(232, 232, 226, 1.0f);
     // C tint: 45 % toward PQ Meter's default green (0.35, 0.85, 0.45).
@@ -1529,7 +1512,7 @@ private:
       const float hi = isBlack((pc + 1) % 12) ? static_cast<float>(m) + 1.0f : static_cast<float>(m) + 0.5f;
       const float yt = yOfMidi(hi), yb = yOfMidi(lo);
       if (yb - yt < px1) continue;
-      box(p, {xw0, yt, xw1, yb}, m == hoverMidi ? lit : pc == 0 ? cKey : white);
+      box(p, {xw0, yt, xw1, yb}, m == hoverMidi ? lit : pc == 0 && opts_.on(oKeysTintC) ? cKey : white);
       if (yb - yt >= 3.0f * px1) p.line({xw0, yb}, {xw1, yb}, px1, col(0, 0, 0, 0.35f));
     }
     for (int m = 0; m <= 143; ++m) {
@@ -1552,45 +1535,11 @@ private:
     p.line({front, kPlot.y0}, {front, kPlot.y1}, px1, col(0, 0, 0, 0.5f));
   }
 
-  // ---- the settings sheet (rows over the plot, two or three columns) ----
-  static constexpr float kSheetTop = kChipY + kChipH + 3.0f, kRowH = 10.0f;
-  size_t perColumn() const noexcept {
-    const size_t n = rows_.size() + 1;  // + RESET
-    const size_t colsN = n > 26 ? 3 : 2;
-    return (n + colsN - 1) / colsN;
-  }
-  Rect rowRect(size_t i) const noexcept {
-    const size_t per = std::max<size_t>(1, perColumn());
-    const size_t n = rows_.size() + 1;
-    const size_t colsN = n > 26 ? 3 : 2;
-    const size_t col = i / per, row = i % per;
-    const float colW = (kPlot.x1 - kPlot.x0 - 8.0f) / static_cast<float>(colsN);
-    const float x0 = kPlot.x0 + 4.0f + static_cast<float>(col) * colW;
-    const float y0 = kSheetTop + 2.0f + static_cast<float>(row) * kRowH;
-    return {x0, y0, x0 + colW - 2.0f, y0 + kRowH - 1.0f};
-  }
-  int32_t rowAt(Vec2 l) const noexcept {
-    for (size_t i = 0; i <= rows_.size(); ++i)
-      if (inside(rowRect(i), l)) return static_cast<int32_t>(i);
-    return -1;
-  }
+  // ---- the settings sheet (option_sheet.h: two tabs over the plot) ----
   void paintSheet(ui::FacePainter& p, const ui::Theme& th) const {
-    p.roundedRect({kPlot.x0 + 1.0f, kSheetTop, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 4.0f, ui::rgba(10, 10, 14, 248));
-    char buf[48];
-    for (size_t i = 0; i <= rows_.size(); ++i) {
-      const Rect rr = rowRect(i);
-      const bool hot = hovered_ == kRowBase + static_cast<int32_t>(i);
-      if (hot) p.roundedRect(rr, 2.0f, ui::mulAlpha(th.face.value, 0.18f));
-      const float cy = 0.5f * (rr.y0 + rr.y1);
-      if (i == rows_.size()) {
-        p.text({0.5f * (rr.x0 + rr.x1), cy}, "RESET", 6.0f, th.device.displayText);
-        continue;
-      }
-      const uint32_t o = rows_[i];
-      p.textAligned({rr.x0 + 2.0f, cy}, kOpts[o].label, 5.5f, th.device.displayText, 0.0f);
-      valueText(opts_, o, buf, sizeof buf);
-      p.textAligned({rr.x1 - 2.0f, cy}, buf, 5.5f, opts_[o] != kOpts[o].def ? th.face.value : kGridLabel, 1.0f);
-    }
+    Options saved;
+    const bool isSaved = sheet::savedDefault(type().id, saved) && saved == opts_;
+    panel_.paint(p, th, opts_, rows_, hovered_, isSaved);
   }
 
   static void box(ui::FacePainter& p, const Rect& r, Rgba col) {
@@ -1604,7 +1553,7 @@ private:
   // TMM.13-fix2 (MM review contrast table: 2.92:1, the keyboard covered "MID"): the left chips start right of a keyboard
   // on the left, on a solid backing (the picture's streaks ran through the translucent one), their text lifted.
   Rect leftChip(const Rect& r) const noexcept {
-    const float dx = opts_.choice(oKeys) == 1 ? kKeysW : 0.0f;
+    const float dx = opts_.choice(oKeys) == 1 ? opts_.keysW() : 0.0f;
     return {r.x0 + dx, r.y0, r.x1 + dx, r.y1};
   }
   void chip(ui::FacePainter& p, const Rect& r, const char* label, bool on, const ui::Theme& th, Rgba onCol = 0) const {
@@ -1656,6 +1605,7 @@ private:
   bool guidesValid_ = false;
 
   bool frozen_ = false, sheet_ = false;
+  sheet::Sheet panel_{{kPlot.x0 + 1.0f, kChipY + kChipH + 3.0f, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 5.5f};
   Vec2 hover_{-1.0f, -1.0f};
   bool drag_ = false, editing_ = false;
   uint32_t dragOpt_ = 0;

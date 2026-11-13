@@ -40,6 +40,7 @@
 #include "pq/app/cli.h"
 #include "pq/app/project_link.h"
 #include "pq/app/user_settings.h"
+#include "pq/meta/user_defaults.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/engine/asio_device.h"
 #include "pq/engine/null_device.h"
@@ -303,6 +304,41 @@ TEST_CASE("settings: round trip; other sections are kept; invalid fields fall ba
   CHECK(back->warnings.size() == 3);
   { std::ofstream(path) << "not json"; }
   CHECK(loadAudioSettings(path).error().code == ErrorCode::Parse);
+}
+
+TEST_CASE("settings: the metaDefaults section (VZ.1) round-trips; unknown types and refused data are skipped") {
+  const fs::path dir = tempDir("metadefaults");
+  const std::string path = (dir / "settings.json").string();
+  loadMetaDefaults(path);  // no file: nothing
+  CHECK(meta::userDefaultData("spectrogram") == nullptr);
+  AudioSettings s;
+  REQUIRE(saveAudioSettings(path, s).ok());
+  const meta::DataValue rec = meta::DataValue::record({{"map", meta::DataValue::num(2.0)}, {"gamma", meta::DataValue::num(1.2)}});
+  REQUIRE(saveMetaDefault(path, "spectrogram", rec).ok());
+  REQUIRE(saveMetaDefault(path, "oscilloscope", meta::DataValue::record({{"lw", meta::DataValue::num(2.5)}})).ok());
+  CHECK(loadAudioSettings(path).ok());  // the other sections stay
+  {  // a type that does not exist and a field that is not a number
+    std::ifstream in(path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    std::string text = ss.str();
+    const auto at = text.find("\"metaDefaults\": {");
+    REQUIRE(at != std::string::npos);
+    text.insert(at + 17, "\"nosuchtype\": {\"x\": 1}, \"spectrum\": {\"floor\": -90, \"name\": \"x\"}, ");
+    std::ofstream(path) << text;
+  }
+  loadMetaDefaults(path);
+  const meta::DataPtr g = meta::userDefaultData("spectrogram");
+  REQUIRE(g != nullptr);
+  CHECK(*g == rec);
+  const meta::DataPtr o = meta::userDefaultData("oscilloscope");
+  REQUIRE(o != nullptr);
+  CHECK(o->field("lw")->number == 2.5);
+  const meta::DataPtr sp = meta::userDefaultData("spectrum");  // the string field is dropped, the number kept
+  REQUIRE(sp != nullptr);
+  CHECK(sp->fields.size() == 1);
+  CHECK(meta::userDefaultData("nosuchtype") == nullptr);
+  for (const char* t : {"spectrogram", "oscilloscope", "spectrum"}) meta::setUserDefaultData(t, nullptr);
 }
 
 TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audio section; defaults when absent") {

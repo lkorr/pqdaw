@@ -20,6 +20,9 @@
 
 #include <nlohmann/json.hpp>
 
+#include "pq/meta/registry.h"
+#include "pq/meta/user_defaults.h"
+
 namespace pq::app {
 
 namespace fs = std::filesystem;
@@ -379,6 +382,36 @@ std::string samplesFolderDir() {
   if (std::string d = envUtf8(L"PQ_SAMPLES_DIR"); !d.empty()) return ensureDir(utf8Path(d));
   if (const std::string set = loadSamplesFolderSetting(userSettingsPath()); !set.empty()) return ensureDir(utf8Path(set));
   return {};
+}
+
+void loadMetaDefaults(const std::string& path) {
+  std::ifstream in(utf8Path(path), std::ios::binary);
+  if (!in) return;
+  std::ostringstream ss;
+  ss << in.rdbuf();
+  const json root = json::parse(ss.str(), nullptr, false);
+  if (root.is_discarded() || !root.is_object()) return;
+  const auto it = root.find("metaDefaults");
+  if (it == root.end() || !it->is_object()) return;
+  for (const auto& [type, rec] : it->items()) {
+    const meta::Type* t = meta::findType(type);
+    if (t == nullptr || !rec.is_object()) continue;
+    std::vector<std::pair<std::string, meta::DataValue>> f;
+    for (const auto& [k, v] : rec.items())
+      if (v.is_number()) f.emplace_back(k, meta::DataValue::num(v.get<double>()));
+    auto d = std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
+    if (t->dataProblem == nullptr || !t->dataProblem(*d).empty()) continue;
+    meta::setUserDefaultData(t->id, std::move(d));
+  }
+}
+
+Status saveMetaDefault(const std::string& path, std::string_view type, const meta::DataValue& data) {
+  json rec = json::object();
+  if (data.kind == meta::DataValue::Kind::Record)
+    for (const auto& [k, v] : data.fields)
+      if (v.kind == meta::DataValue::Kind::Number) rec[k] = v.number;
+  const std::string key(type);
+  return saveSection(path, "metaDefaults", std::move(rec), key.c_str());
 }
 
 }  // namespace pq::app

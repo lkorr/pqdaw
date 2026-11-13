@@ -405,14 +405,30 @@ TEST_CASE("scope face: pointer — chips cycle, a row drag is one step, Alt+whee
   s = rig.play(1.0 / 60.0);
   CHECK(s.timebase == 1);
   CHECK(t->steps == 2);
-  // SET, then drag the Window row (Pitch: Timebase, Pitch lock, Pitch from, Window …) up: one undo step.
+  // SET (it opens on DISPLAY), the ANALYSIS tab, then drag the Window row (Pitch: Timebase, Pitch lock, Pitch from,
+  // Window …) up: one undo step (the tab is view state: no step).
+  auto find = [&](int32_t part) {  // VZ.1: the centre of a part, found through hitTest
+    float sx = 0.0f, sy = 0.0f;
+    int n = 0;
+    for (float y = 0.0f; y < 200.0f; y += 0.5f)
+      for (float x = 0.0f; x < 300.0f; x += 0.5f)
+        if (rig.face->hitTest({x, y}, 2.0f) == part) {
+          sx += x;
+          sy += y;
+          ++n;
+        }
+    REQUIRE(n > 0);
+    return Vec2{sx / static_cast<float>(n), sy / static_cast<float>(n)};
+  };
   CHECK(ev(FacePointer::Kind::Down, 230.0f, 17.0f));
-  CHECK(rig.face->hitTest({30.0f, 61.0f}, 2.0f) == 103);
-  CHECK(ev(FacePointer::Kind::Down, 30.0f, 61.0f));
+  const Vec2 tab = find(90);  // sheet::kTabBase + kAnalysis
+  CHECK(ev(FacePointer::Kind::Down, tab.x, tab.y));
+  const Vec2 row = find(103);
+  CHECK(ev(FacePointer::Kind::Down, row.x, row.y));
   CHECK(rig.face->dragging());
-  CHECK(ev(FacePointer::Kind::Move, 30.0f, 61.0f - 20.0f));
-  CHECK(ev(FacePointer::Kind::Move, 30.0f, 61.0f - 40.0f));
-  CHECK(ev(FacePointer::Kind::Up, 30.0f, 61.0f - 40.0f));
+  CHECK(ev(FacePointer::Kind::Move, row.x, row.y - 20.0f));
+  CHECK(ev(FacePointer::Kind::Move, row.x, row.y - 40.0f));
+  CHECK(ev(FacePointer::Kind::Up, row.x, row.y - 40.0f));
   CHECK(t->steps == 3);
   const meta::DataValue* win = t->data_->field("win");
   REQUIRE(win != nullptr);

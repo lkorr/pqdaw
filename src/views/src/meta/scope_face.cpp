@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "faces.h"
+#include "option_sheet.h"
 #include "pq/dsp/scope.h"
 #include "pq/ui/lines.h"
 #include "pq/views/devices/analysis.h"
@@ -82,16 +83,8 @@ constexpr const char* kChNames[] = {"MID", "L", "R", "SIDE", "L/R"};
 constexpr double kBeatSpans[] = {1.0, 2.0, 4.0, 8.0, 16.0};
 constexpr const char* kBeatSpanNames[] = {"1 beat", "2 beats", "1 bar", "2 bars", "4 bars"};
 
-// One option: its data field, label, range, default and how a value reads.
-struct Opt {
-  const char* key;
-  const char* label;
-  double def, lo, hi;
-  enum Kind : uint8_t { Choice, Toggle, Number, LogNumber } kind;
-  const char* const* names = nullptr;  // Choice
-  const char* fmt = "%.2f";            // Number
-  double step = 0.0;                   // Number: a quantum (0: continuous)
-};
+using sheet::Opt;
+using sheet::kOnOff;
 enum O : uint32_t {
   oTimebase, oLock, oWindow, oCycles, oSource, oMinHz, oMaxHz, oClarity, oTrigger, oLevel, oHyst, oSpan,
   oChannel, oAutoGain, oGain, oLog, oPersist, oLine, oGlow, oGrid, oReadout, oNote, oLanes, oCount
@@ -101,7 +94,6 @@ constexpr const char* kSourceNames[] = {"Note, else detect", "Detect"};
 constexpr const char* kTrigNames[] = {"Off", "Rising", "Falling"};
 constexpr const char* kTbLong[] = {"Fixed", "Pitch", "Beat"};
 constexpr const char* kChLong[] = {"Mid", "Left", "Right", "Side", "L / R lanes"};
-constexpr const char* kOnOff[] = {"Off", "On"};
 // PQ Meter's defaults (its kDefault* constants): a constant 52.2 ms span aligned by the pitch, 20 … 7770 Hz, clarity
 // 0.80, a 1.4 px line, glow 0.35, auto gain.
 const Opt kOpts[oCount] = {
@@ -130,14 +122,8 @@ const Opt kOpts[oCount] = {
     {"lanes", "Lane letters", 1, 0, 1, Opt::Toggle, kOnOff},
 };
 
-struct Options {
-  std::array<double, oCount> v{};
-  Options() {
-    for (uint32_t i = 0; i < oCount; ++i) v[i] = kOpts[i].def;
-  }
-  double operator[](uint32_t i) const noexcept { return v[i]; }
-  int choice(uint32_t i) const noexcept { return static_cast<int>(std::lround(v[i])); }
-  bool on(uint32_t i) const noexcept { return v[i] >= 0.5; }
+struct Options : sheet::Values {
+  Options() : Values(kOpts) {}
   Tb timebase() const noexcept { return static_cast<Tb>(std::clamp(choice(oTimebase), 0, 2)); }
   Ch channel() const noexcept { return static_cast<Ch>(std::clamp(choice(oChannel), 0, 4)); }
   dsp::ScopeSettings settings() const noexcept {
@@ -145,34 +131,29 @@ struct Options {
     s.timebase = timebase();
     s.lock = static_cast<dsp::ScopeSettings::Lock>(std::clamp(choice(oLock), 0, 2));
     s.source = static_cast<dsp::ScopeSettings::PitchSource>(std::clamp(choice(oSource), 0, 1));
-    s.windowMs = static_cast<float>(v[oWindow]);
+    s.windowMs = static_cast<float>((*this)[oWindow]);
     s.cycles = choice(oCycles);
-    s.minHz = static_cast<float>(v[oMinHz]);
-    s.maxHz = static_cast<float>(v[oMaxHz]);
-    s.clarity = static_cast<float>(v[oClarity]);
+    s.minHz = static_cast<float>((*this)[oMinHz]);
+    s.maxHz = static_cast<float>((*this)[oMaxHz]);
+    s.clarity = static_cast<float>((*this)[oClarity]);
     s.trigger = static_cast<dsp::ScopeSettings::Trigger>(std::clamp(choice(oTrigger), 0, 2));
-    s.level = static_cast<float>(v[oLevel]);
-    s.hysteresis = static_cast<float>(v[oHyst]);
+    s.level = static_cast<float>((*this)[oLevel]);
+    s.hysteresis = static_cast<float>((*this)[oHyst]);
     return s;
-  }
-  meta::DataPtr data() const {
-    std::vector<std::pair<std::string, meta::DataValue>> f;
-    for (uint32_t i = 0; i < oCount; ++i)
-      if (v[i] != kOpts[i].def) f.emplace_back(kOpts[i].key, meta::DataValue::num(v[i]));  // only what differs
-    return std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
-  }
-  void load(const meta::DataValue* d) {
-    for (uint32_t i = 0; i < oCount; ++i) {
-      const meta::DataValue* f = d != nullptr ? d->field(kOpts[i].key) : nullptr;
-      v[i] = f != nullptr && f->kind == meta::DataValue::Kind::Number ? std::clamp(f->number, kOpts[i].lo, kOpts[i].hi)
-                                                                      : kOpts[i].def;
-    }
   }
 };
 
-// Which rows the sheet shows for these options (in order).
-void visibleRows(const Options& o, std::vector<uint32_t>& out) {
+// Which rows a sheet tab shows for these options (in order): ANALYSIS what is measured and how the trace is held
+// still, DISPLAY only how it is drawn.
+void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   out.clear();
+  if (tab == sheet::kDisplay) {
+    out.push_back(oAutoGain);
+    if (!o.on(oAutoGain)) out.push_back(oGain);
+    for (const uint32_t i : {oLog, oPersist, oLine, oGlow, oGrid, oReadout, oNote}) out.push_back(i);
+    if (o.channel() == Ch::Stereo) out.push_back(oLanes);
+    return;
+  }
   const Tb tb = o.timebase();
   out.push_back(oTimebase);
   if (tb == Tb::Pitch) {
@@ -194,30 +175,7 @@ void visibleRows(const Options& o, std::vector<uint32_t>& out) {
     }
   }
   if (tb == Tb::Beat) out.push_back(oSpan);
-  for (const uint32_t i : {oChannel, oAutoGain}) out.push_back(i);
-  if (!o.on(oAutoGain)) out.push_back(oGain);
-  for (const uint32_t i : {oLog, oPersist, oLine, oGlow, oGrid, oReadout, oNote}) out.push_back(i);
-  if (o.channel() == Ch::Stereo) out.push_back(oLanes);
-}
-
-void valueText(const Options& o, uint32_t i, char* buf, size_t n) {
-  const Opt& op = kOpts[i];
-  if (op.kind == Opt::Choice || op.kind == Opt::Toggle) {
-    std::snprintf(buf, n, "%s", op.names[std::clamp(o.choice(i), static_cast<int>(op.lo), static_cast<int>(op.hi))]);
-    return;
-  }
-  std::snprintf(buf, n, op.fmt, o[i]);
-}
-
-double toTravel(const Opt& op, double v) noexcept {
-  if (op.kind == Opt::LogNumber) return std::log(v / op.lo) / std::log(op.hi / op.lo);
-  return (v - op.lo) / (op.hi - op.lo);
-}
-double fromTravel(const Opt& op, double t) noexcept {
-  t = std::clamp(t, 0.0, 1.0);
-  double v = op.kind == Opt::LogNumber ? op.lo * std::pow(op.hi / op.lo, t) : op.lo + t * (op.hi - op.lo);
-  if (op.step > 0.0) v = std::round(v / op.step) * op.step;
-  return std::clamp(v, op.lo, op.hi);
+  out.push_back(oChannel);
 }
 
 // The nearest 12-EDO note of hz (C3 = 261.626 Hz, the spectrum display's naming) and its cents.
@@ -350,9 +308,8 @@ public:
     if (inside(kFreezeChip, l)) return kFreezePart;
     if (inside(kSetChip, l)) return kSetPart;
     if (sheet_) {
-      const int32_t row = rowAt(l);
-      if (row >= 0) return kRowBase + row;
-      if (inside(kPlot, l)) return kSheetPart;  // the sheet's background: nothing under it reacts
+      const int32_t part = panel_.hit(l, rows_.size());
+      if (part >= 0) return part == sheet::kBody ? kSheetPart : part;  // the sheet's background: nothing under it reacts
     }
     if (inside(kPlot, l)) return kPlotPart;
     return kFrame;
@@ -367,7 +324,7 @@ public:
         const int32_t part = hitTest(e.local, e.pxPerUnit);
         if (part == kTbPart || part == kChPart) {
           const uint32_t o = part == kTbPart ? oTimebase : oChannel;
-          setOption(o, cycle(o, shift ? -1 : 1));
+          setOption(o, sheet::cycled(opts_, o, shift ? -1 : 1));
           return true;
         }
         if (part == kFreezePart) {
@@ -383,6 +340,20 @@ public:
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
+        if (part == sheet::kTabBase || part == sheet::kTabBase + 1) {
+          panel_.tab = part - sheet::kTabBase;
+          visibleRows(opts_, panel_.tab, rows_);
+          return true;
+        }
+        if (part == sheet::kSave) {
+          meta::saveUserDefaultData(type().id, opts_.data());
+          return true;
+        }
+        if (part == sheet::kReset) {  // every option back to its default, one step
+          opts_.reset();
+          writeOptions();
+          return true;
+        }
         if (part == kSheetPart) return true;
         if (part != kPlotPart) return false;
         // The plot: Ctrl+drag measures, a drag pans while zoomed, a double-click resets the zoom.
@@ -432,7 +403,7 @@ public:
           const Opt& op = kOpts[dragOpt_];
           const double k = (shift ? 0.1 : 1.0) / 160.0;
           const double t = std::clamp(pressTravel_ + (pressY_ - e.device.y) * k, 0.0, 1.0);
-          setOption(dragOpt_, fromTravel(op, t));
+          setOption(dragOpt_, sheet::fromTravel(op, t));
           return true;
         }
         const float x = inside(kPlot, e.local) && !sheet_ && (e.mods & ui::mod::kCtrl) ? e.local.x : -1.0f;
@@ -491,10 +462,10 @@ public:
     if (part == kTbPart || part == kChPart || part == kFreezePart || part == kSetPart) return ui::Cursor::Pointer;
     if (part >= kRowBase) {
       const auto i = static_cast<size_t>(part - kRowBase);
-      if (i < rows_.size() && (kOpts[rows_[i]].kind == Opt::Number || kOpts[rows_[i]].kind == Opt::LogNumber))
-        return ui::Cursor::ResizeNS;
+      if (i < rows_.size() && sheet::numeric(kOpts[rows_[i]])) return ui::Cursor::ResizeNS;
       return ui::Cursor::Pointer;
     }
+    if (part >= sheet::kTabBase && part <= sheet::kReset) return ui::Cursor::Pointer;
     if (part == kPlotPart && drag_ == Drag::Measure) return ui::Cursor::ResizeEW;
     return ui::Cursor::Inherit;
   }
@@ -528,11 +499,29 @@ public:
                                 : "The signal passing through (it is not changed). Shown when the module plays in a track's "
                                   "chain.";
         return;
+      case sheet::kTabBase:
+        title = "Analysis";
+        body = "The options of what is measured and how the trace is held still: timebase, pitch lock, window, pitch "
+               "range, trigger, channel.";
+        return;
+      case sheet::kTabBase + 1:
+        title = "Display";
+        body = "Only how it is drawn: gain, log amplitude, persistence, line, glow, grid, readouts.";
+        return;
+      case sheet::kSave:
+        title = "Save as default";
+        body = "New Oscilloscopes start with these options (every tab). Saved with pqdaw's settings; existing ones keep "
+               "theirs.";
+        return;
+      case sheet::kReset:
+        title = "Reset";
+        body = "Every option back to the factory default.";
+        return;
       default:
         if (part >= kRowBase && static_cast<size_t>(part - kRowBase) < rows_.size()) {
           const Opt& op = kOpts[rows_[static_cast<size_t>(part - kRowBase)]];
           title = op.label;
-          body = op.kind == Opt::Number || op.kind == Opt::LogNumber
+          body = sheet::numeric(op)
                      ? "Drag up / down to set (Shift: fine); double-click resets."
                      : "Click to change (Shift: back); double-click resets.";
           return;
@@ -595,17 +584,12 @@ private:
     const uint32_t keep = keepTrails();
     while (trailsA_.size() > keep) trailsA_.erase(trailsA_.begin());
     while (trailsB_.size() > keep) trailsB_.erase(trailsB_.begin());
-    visibleRows(opts_, rows_);
+    visibleRows(opts_, panel_.tab, rows_);
     hasFrame_ = false;  // recompute with the new options at the next poll / paint
-  }
-  double cycle(uint32_t o, int dir) const {
-    const Opt& op = kOpts[o];
-    const int n = static_cast<int>(op.hi - op.lo) + 1;
-    return op.lo + static_cast<double>(((opts_.choice(o) - static_cast<int>(op.lo) + dir) % n + n) % n);
   }
   // Writes an option (one undo step, or part of the open drag's gesture).
   void setOption(uint32_t o, double v) {
-    opts_.v[o] = std::clamp(v, kOpts[o].lo, kOpts[o].hi);
+    opts_.set(o, v);
     writeOptions();
   }
   void writeOptions() {
@@ -621,11 +605,7 @@ private:
     if (wakeHost_) wakeHost_();
   }
   bool rowDown(uint32_t row, const FacePointer& e) {
-    if (row >= rows_.size()) {  // RESET: every option back to its default, one step
-      opts_ = Options{};
-      writeOptions();
-      return true;
-    }
+    if (row >= rows_.size()) return false;
     const uint32_t o = rows_[row];
     const Opt& op = kOpts[o];
     if (e.clicks >= 2) {
@@ -633,13 +613,13 @@ private:
       return true;
     }
     if (op.kind == Opt::Choice || op.kind == Opt::Toggle) {
-      setOption(o, cycle(o, (e.mods & ui::mod::kShift) ? -1 : 1));
+      setOption(o, sheet::cycled(opts_, o, (e.mods & ui::mod::kShift) ? -1 : 1));
       return true;
     }
     drag_ = Drag::Row;
     dragOpt_ = o;
     pressY_ = e.device.y;
-    pressTravel_ = toTravel(op, opts_[o]);
+    pressTravel_ = sheet::toTravel(op, opts_[o]);
     if (hasTarget() && target().editable()) {
       target().begin(op.label);
       editing_ = true;
@@ -1115,38 +1095,11 @@ private:
     }
   }
 
-  // ---- the settings sheet ----
-  static constexpr float kSheetTop = kChipY + kChipH + 3.0f, kRowH = 10.0f;
-  Rect rowRect(size_t i) const noexcept {
-    const size_t perCol = (rows_.size() + 1) / 2;
-    const size_t col = i / std::max<size_t>(1, perCol), row = i % std::max<size_t>(1, perCol);
-    const float colW = (kPlot.x1 - kPlot.x0 - 8.0f) * 0.5f;
-    const float x0 = kPlot.x0 + 4.0f + static_cast<float>(col) * colW;
-    const float y0 = kSheetTop + 2.0f + static_cast<float>(row) * kRowH;
-    return {x0, y0, x0 + colW - 2.0f, y0 + kRowH - 1.0f};
-  }
-  int32_t rowAt(Vec2 l) const noexcept {
-    for (size_t i = 0; i <= rows_.size(); ++i)  // the last one: RESET
-      if (inside(rowRect(i), l)) return static_cast<int32_t>(i);
-    return -1;
-  }
+  // ---- the settings sheet (option_sheet.h: two tabs over the plot) ----
   void paintSheet(ui::FacePainter& p, const ui::Theme& th) const {
-    p.roundedRect({kPlot.x0 + 1.0f, kSheetTop, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 4.0f, ui::rgba(10, 10, 14, 248));
-    char buf[48];
-    for (size_t i = 0; i <= rows_.size(); ++i) {
-      const Rect rr = rowRect(i);
-      const bool hot = hovered_ == kRowBase + static_cast<int32_t>(i);
-      if (hot) p.roundedRect(rr, 2.0f, ui::mulAlpha(th.face.value, 0.18f));
-      const float cy = 0.5f * (rr.y0 + rr.y1);
-      if (i == rows_.size()) {
-        p.text({0.5f * (rr.x0 + rr.x1), cy}, "RESET", 6.0f, th.device.displayText);
-        continue;
-      }
-      const uint32_t o = rows_[i];
-      p.textAligned({rr.x0 + 2.0f, cy}, kOpts[o].label, 6.0f, th.device.displayText, 0.0f);
-      valueText(opts_, o, buf, sizeof buf);
-      p.textAligned({rr.x1 - 2.0f, cy}, buf, 6.0f, opts_[o] != kOpts[o].def ? th.face.value : kGridLabel, 1.0f);
-    }
+    Options saved;
+    const bool isSaved = sheet::savedDefault(type().id, saved) && saved == opts_;
+    panel_.paint(p, th, opts_, rows_, hovered_, isSaved);
   }
 
   static void outline(ui::FacePainter& p, Rgba col) {
@@ -1180,6 +1133,7 @@ private:
   uint64_t lastEnd_ = 0, frameAbs_ = 0;
   uint32_t lead_ = 0;
   bool hasFrame_ = false, hasGain_ = false, frozen_ = false, sheet_ = false;
+  sheet::Sheet panel_{{kPlot.x0 + 1.0f, kChipY + kChipH + 3.0f, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 6.0f};
   float gain_ = 1.0f;
   std::vector<float> bufL_, bufR_, bufA_, bufBeat_, bufNote_, shownA_, shownB_;
   std::vector<std::vector<Vec2>> trailsA_, trailsB_;

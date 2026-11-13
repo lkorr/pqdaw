@@ -36,13 +36,17 @@ bool silent(const float* x, uint32_t n) noexcept {
 }  // namespace
 
 SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual)
-    : tap_(tap), cfg_(config), out_(config), in_(tap.channels() >= 4 ? config : axisOnly(config)), axis_(axisOnly(config)) {
+    : tap_(tap), cfg_(config), out_(std::make_unique<dsp::SpectrumAnalyzer>(config)),
+      in_(std::make_unique<dsp::SpectrumAnalyzer>(tap.channels() >= 4 ? config : axisOnly(config))), axis_(axisOnly(config)) {
   const uint32_t nch = std::min<uint32_t>(4, tap_.channels());
   for (uint32_t c = 0; c < nch; ++c) ch_[c].resize(kChunk);
   mono_.resize(std::max<uint32_t>(kChunk, cfg_.hop * 32));
   if (tap_.channels() >= 4) monoIn_.resize(mono_.size());  // the transfer analyser: made when first wanted (work)
   snap_.out.assign(cfg_.points, cfg_.floorDb);
   snap_.peaks.assign(cfg_.points, cfg_.floorDb);
+  tuning_ = {config.fftSize, config.sharpLows, config.tiltDbPerOct, config.smoothingOct, config.attackMs, config.releaseMs,
+             config.holdSeconds, config.fallDbPerSecond};
+  runFft_ = config.fftSize;
 }
 
 SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config) : SpectrumFeed(tap, config, Manual{}) {
@@ -343,10 +347,49 @@ void SpectrumFeed::hold() {
 
 uint32_t SpectrumFeed::step(double now) { return work(now); }
 
+void SpectrumFeed::setTuning(const SpectrumTuning& t) {
+  {
+    std::lock_guard lock(mutex_);
+    if (t == tuning_) return;
+    tuning_ = t;
+    tuningDirty_ = true;
+  }
+  cv_.notify_all();
+}
+
+SpectrumTuning SpectrumFeed::tuning() const {
+  std::lock_guard lock(mutex_);
+  return tuning_;
+}
+
 uint32_t SpectrumFeed::work(double now) {
+  {  // VZ.1: a new tuning remakes the analysers (off the audio thread: the worker's own)
+    std::optional<SpectrumTuning> t;
+    {
+      std::lock_guard lock(mutex_);
+      if (tuningDirty_) {
+        tuningDirty_ = false;
+        t = tuning_;
+      }
+    }
+    if (t) {
+      dsp::SpectrumConfig c = cfg_;
+      c.fftSize = t->fftSize;
+      c.sharpLows = t->sharpLows;
+      c.tiltDbPerOct = t->tiltDbPerOct;
+      c.smoothingOct = t->smoothingOct;
+      c.attackMs = t->attackMs;
+      c.releaseMs = t->releaseMs;
+      c.holdSeconds = t->holdSeconds;
+      c.fallDbPerSecond = t->fallDbPerSecond;
+      out_ = std::make_unique<dsp::SpectrumAnalyzer>(c);
+      in_ = std::make_unique<dsp::SpectrumAnalyzer>(tap_.channels() >= 4 ? c : axisOnly(c));
+      runFft_ = c.fftSize;
+    }
+  }
   const uint32_t want = wants();
   // A newly wanted analysis starts from silence (what it held is stale).
-  if ((want & kWantInput) && !(ranWants_ & kWantInput)) in_.reset();
+  if ((want & kWantInput) && !(ranWants_ & kWantInput)) in_->reset();
   if ((want & kWantResponse) && !(ranWants_ & kWantResponse) && transfer_) transfer_->reset();
   ranWants_ = want;
   const bool four = tap_.channels() >= 4;
@@ -398,7 +441,7 @@ uint32_t SpectrumFeed::work(double now) {
   for (int guard = 0; guard < 64; ++guard) {
     const uint64_t w = tap_.written();
     const uint64_t oldest = tap_.oldestReadable();
-    if (pos_ < oldest || pos_ > w) pos_ = std::max(oldest, w > cfg_.fftSize * 4u ? w - cfg_.fftSize * 4u : 0);  // resync
+    if (pos_ < oldest || pos_ > w) pos_ = std::max(oldest, w > runFft_ * 4u ? w - runFft_ * 4u : 0);  // resync
     if (pos_ >= w) break;
     const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(w - pos_, kChunk));
     uint32_t k = tap_.read(oL, pos_, n, ch_[oL].data());
@@ -440,8 +483,8 @@ uint32_t SpectrumFeed::work(double now) {
       }
       gramPush(src, four ? ch_[0].data() : nullptr, k);
     }
-    if (want & kWantOutput) ran += out_.push(mono_.data(), k);
-    if (want & kWantInput) in_.push(monoIn_.data(), k);
+    if (want & kWantOutput) ran += out_->push(mono_.data(), k);
+    if (want & kWantInput) in_->push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
   }
   if (data) {
@@ -449,7 +492,7 @@ uint32_t SpectrumFeed::work(double now) {
     lastSilence_ = now;
     decaying_ = false;
   } else if (now - lastData_ > kNoDataSeconds &&
-             (((want & kWantOutput) && !out_.allBelow(kSettledDb)) ||
+             (((want & kWantOutput) && !out_->allBelow(kSettledDb)) ||
               (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate) ||
               (gram && gramQuiet_ < gramCols_))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
@@ -467,8 +510,8 @@ uint32_t SpectrumFeed::work(double now) {
         scopeAppend(sc, frames, true);
       }
       if (gram) gramPush(mono_.data(), nullptr, frames);  // the picture scrolls on in time (no clock: no beat)
-      if (want & kWantOutput) ran += out_.push(mono_.data(), frames);
-      if (want & kWantInput) in_.push(mono_.data(), frames);
+      if (want & kWantOutput) ran += out_->push(mono_.data(), frames);
+      if (want & kWantInput) in_->push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
         if (monoIn_.size() >= frames) std::fill(monoIn_.begin(), monoIn_.begin() + frames, 0.0f);
         transfer_->push(mono_.data(), mono_.data(), frames);
@@ -477,8 +520,8 @@ uint32_t SpectrumFeed::work(double now) {
     }
   }
   // Settled: everything shown rests at the floor and nothing that sounds arrived (silent data may still flow).
-  const bool rest = (!(want & kWantOutput) || out_.allBelow(kSettledDb)) &&
-                    (!(want & kWantInput) || in_.allBelow(kSettledDb)) &&
+  const bool rest = (!(want & kWantOutput) || out_->allBelow(kSettledDb)) &&
+                    (!(want & kWantInput) || in_->allBelow(kSettledDb)) &&
                     (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident()) &&
                     (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate) &&
                     (!gram || gramQuiet_ >= gramCols_);
@@ -488,12 +531,12 @@ uint32_t SpectrumFeed::work(double now) {
     hops_.fetch_add(ran, std::memory_order_relaxed);
     std::lock_guard lock(mutex_);
     if (ran > 0) {
-      const auto lv = out_.levelsDb();
+      const auto lv = out_->levelsDb();
       snap_.out.assign(lv.begin(), lv.end());
-      const auto pk = out_.peaksDb();
+      const auto pk = out_->peaksDb();
       snap_.peaks.assign(pk.begin(), pk.end());
       if (want & kWantInput) {
-        const auto li = in_.levelsDb();
+        const auto li = in_->levelsDb();
         snap_.in.assign(li.begin(), li.end());
       } else {
         snap_.in.clear();

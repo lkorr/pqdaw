@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "pq/views/devices/analysis.h"
+#include "pq/views/devices/spectrum_plot.h"
 #include "pq/views/meta/meta_face.h"
 
 namespace pq::views {
@@ -44,6 +45,9 @@ bool gramTestHover(MetaFace& f, ui::Vec2 local);  // the pointer over the plot (
 // The analysis request a Spectrogram face with these options (its data) sends for a plot `plotDevicePx` wide (scenes:
 // a manual feed computes the columns before the face first paints). The plot is 284 world units wide.
 devices::SpectrogramRequest gramRequest(const meta::DataValue* data, float plotDevicePx, double sampleRate);
+
+// VZ.1 (tests): the Spectrum face's plot style (its DISPLAY options). False: not a Spectrum face.
+bool spectrumStyle(const MetaFace& f, devices::SpectrumPlotStyle& out);
 
 // TX.scope (tests): the Oscilloscope face's frame as its last poll computed it. False: not an Oscilloscope face.
 struct ScopeShown {

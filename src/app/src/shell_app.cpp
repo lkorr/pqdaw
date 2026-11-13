@@ -24,6 +24,7 @@
 #include "pq/views/shell/recover_recordings.h"
 #include "pq/app/audio_manager.h"
 #include "pq/app/user_settings.h"
+#include "pq/meta/user_defaults.h"
 #include "pq/app/pipeline_cache.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
@@ -226,6 +227,12 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
     return link != nullptr ? static_cast<uint32_t>(link->engine().config().sampleRate) : 48000u;
   });
   app->ctx_->setExportPort(app->export_.get());
+  // VZ.1: the display modules' saved defaults (SAVE DEFAULT on their sheets): new instances start from them.
+  loadMetaDefaults(userSettingsPath());
+  meta::setUserDefaultsSink([](std::string_view type, const meta::DataPtr& d) {
+    if (d == nullptr) return;
+    if (Status s = saveMetaDefault(userSettingsPath(), type, *d); !s.ok()) std::fprintf(stderr, "pqdaw: %s\n", s.error().message.c_str());
+  });
   app->dialogs_ = std::make_unique<SdlFileDialogs>(window, app->userEvent_);
   app->ctx_->setFileDialogs(app->dialogs_.get());
   // T5.8: background work (Collect All and Save's copy) comes back to the UI thread as a user event.

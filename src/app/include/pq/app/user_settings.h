@@ -29,10 +29,12 @@
 // Not RT-safe (file I/O). Any thread, but the app calls it on the UI thread only.
 
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "pq/app/midi_input.h"
 #include "pq/core/result.h"
+#include "pq/meta/data.h"
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/view_context.h"
 
@@ -87,5 +89,12 @@ std::string userLibraryDir();
 // when it cannot be). "" = the default, <User Library>\Samples (views::Library::samplesFolder resolves it, so it follows
 // a moved User Library).
 std::string samplesFolderDir();
+
+// VZ.1: the "metaDefaults" section: the meta module types' saved defaults (a display module's SAVE DEFAULT,
+// pq/meta/user_defaults.h), one record of numbers per type id: {"spectrogram": {"map": 2, "gamma": 1.2}, …}.
+// loadMetaDefaults puts them in the store (meta::setUserDefaultData); lenient: an unknown type, a field that is not a
+// number, or data its type refuses is skipped. saveMetaDefault writes one type's record (keeping every other).
+void loadMetaDefaults(const std::string& path);
+Status saveMetaDefault(const std::string& path, std::string_view type, const meta::DataValue& data);
 
 }  // namespace pq::app
