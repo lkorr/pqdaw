@@ -196,8 +196,12 @@ public:
   // ---- Offline ----
   // Renders `frames` frames at device blocks of `blockFrames` (a multiple of the image block is cheapest) into
   // `sink`, numOut channels. Must not run concurrently with a device. Not RT-safe as a whole (the sink does I/O).
+  // EX.1: `capture` (optional) also writes the listed buses of the program's layout to their sinks, chunk by chunk
+  // (ProjectProgram::setCapture: one memcpy per captured channel per image block into chunk buffers preallocated
+  // here; the sinks are written between chunks, outside the RtScope). Errors as without, plus a bus the layout does
+  // not have, a null sink, buses / sinks of different counts.
   Result<RenderStats> renderOffline(uint64_t frames, AudioSink& sink, uint32_t blockFrames = 0,
-                                    uint32_t chunkFrames = 8192);
+                                    uint32_t chunkFrames = 8192, const BusCapture* capture = nullptr);
 
 private:
   struct Audition {
@@ -223,6 +227,8 @@ private:
   };
   explicit Engine(const EngineConfig& config);
   static void onBlock(void* self, const AudioBlock& b) noexcept { static_cast<Engine*>(self)->process(b); }
+  struct CaptureRun;  // EX.1: renderOffline's bus capture
+  static void onCaptureBlock(void* self, const AudioBlock& b) noexcept;  // RT-safe
   static void onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;
   static void onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
                      std::span<float> params) noexcept;  // T6.6: the timeline's hook, then the metronome
@@ -239,6 +245,7 @@ private:
   BlockHook timelineHook_{};              // T6.6: the timeline's own hook (onHook calls it)
   bool clickPair_ = false;                // T6.6: audio thread
   bool offline_ = false;                  // T6.6: renderOffline is running (no clicks)
+  CaptureRun* capture_ = nullptr;         // EX.1: renderOffline's bus capture (while it runs)
   // Param writes (UI → audio). M4: a chain of rings; the producer pushes to the newest, the audio thread drains each
   // ring before following its `next`. collect() frees the rings the audio thread has left.
   struct ParamRing {

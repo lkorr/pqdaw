@@ -60,6 +60,8 @@ Result<RenderStats> runRenderLoop(const RenderLoop& L, AudioSink& sink) {
       }
     }
     wall += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    if (L.beforeWrite != nullptr)
+      if (auto s = L.beforeWrite(L.user, n); !s) return s.error();
     if (auto s = sink.write(chPtr.data(), n); !s) return s.error();
     t += n;
     if (L.between != nullptr) L.between(L.user, L.startFrame + static_cast<int64_t>(t));

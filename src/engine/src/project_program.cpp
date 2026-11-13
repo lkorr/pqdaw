@@ -1728,6 +1728,14 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
       }
       fading += runUnit(*s.unit, s, n, time) ? 1u : 0u;
     }
+    for (const CaptureTap& tap : capture_) {  // EX.1: offline bus capture
+      BusStore* b = tap.bus < t.stores.size() ? t.stores[tap.bus].get() : nullptr;
+      for (uint16_t c = 0; c < tap.width; ++c) {
+        float* dst = tap.dst[c] + captureAt_ + off;
+        if (b != nullptr && c < b->width) std::memcpy(dst, b->channel(c), sizeof(float) * n);
+        else std::memset(dst, 0, sizeof(float) * n);
+      }
+    }
     const uint32_t gen = meterGen_.load(std::memory_order_acquire);
     for (BusStore* bp : t.metered) {
       BusStore& b = *bp;

@@ -22,6 +22,8 @@ struct RenderLoop {
   int64_t startFrame = 0;            // AudioBlock::frameTime of the first block
   float gain = 1.0f;                 // applied to the device output (1: untouched)
   void (*between)(void* user, int64_t nextFrame) = nullptr;  // non-RT, after each chunk's sink write
+  // EX.1: non-RT, after each chunk's blocks, before its sink write (`frames` of the chunk); an error ends the render.
+  Status (*beforeWrite)(void* user, uint32_t frames) = nullptr;
   void* user = nullptr;
 };
 

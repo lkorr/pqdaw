@@ -342,6 +342,21 @@ public:
   uint32_t numUnits() const noexcept { return static_cast<uint32_t>(units_.size()); }
   const ProjectLayout& layout() const noexcept { return layout_; }
 
+  // ---- EX.1: bus capture (Engine::renderOffline's BusCapture) ----
+  // While a capture list is set, every image block copies channel c of bus `bus` (of the topology the audio thread
+  // runs) to dst[c] + captureOffset + the image block's offset in the device block, for c < min(width, the bus's
+  // width): one memcpy per captured channel per image block, nothing while the list is empty. A bus index the running
+  // topology does not have copies zeros. setCapture: non-RT, while the audio thread does not run process(); the
+  // destinations must hold every frame the caller lets process() write; an empty span ends the capture.
+  struct CaptureTap {
+    uint32_t bus = kNoBus;
+    uint16_t width = 0;
+    float* const* dst = nullptr;  // width channel pointers
+  };
+  void setCapture(std::span<const CaptureTap> taps) { capture_.assign(taps.begin(), taps.end()); }
+  // RT-safe: where in the destinations the next process() call's first frame goes.
+  void setCaptureOffset(uint32_t frame) noexcept { captureAt_ = frame; }
+
   // The audio thread stops / resumes calling process() (lets collect() free images meanwhile). RT-safe.
   void audioOffline() noexcept { reclaimer_.goOffline(reader_); }
   void audioOnline() noexcept { reclaimer_.goOnline(reader_); }
@@ -442,6 +457,8 @@ private:
   // rest per unit (runUnit), instead of a fresh context per unit.
   ProcessContext unitCtx_;
   ProjectStats stats_;
+  std::vector<CaptureTap> capture_;                 // EX.1 (set while process() does not run)
+  uint32_t captureAt_ = 0;
 };
 
 }  // namespace pq::engine

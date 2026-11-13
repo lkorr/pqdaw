@@ -39,11 +39,15 @@ void put32(std::vector<uint8_t>& b, uint32_t v) {
 }
 void putTag(std::vector<uint8_t>& b, const char* tag) { b.insert(b.end(), tag, tag + 4); }
 
-// The header up to and including the data chunk's size field. factOffset: where the fact chunk's frame count is.
-// `junk`: a 28-byte JUNK chunk right after "WAVE", the room a ds64 chunk takes when the file becomes RF64.
-std::vector<uint8_t> header(uint32_t channels, uint32_t sampleRate, uint64_t frames, uint32_t& factOffset, bool junk = false) {
+// The header up to and including the data chunk's size field. factOffset: where the fact chunk's frame count is (0:
+// none — EX.1's integer PCM has no fact chunk). `junk`: a 28-byte JUNK chunk right after "WAVE", the room a ds64 chunk
+// takes when the file becomes RF64.
+std::vector<uint8_t> header(uint32_t channels, uint32_t sampleRate, uint64_t frames, uint32_t& factOffset, bool junk,
+                            WavFormat format) {
   const bool extensible = channels > 2;
-  const uint32_t dataBytes = static_cast<uint32_t>(frames * channels * 4u);
+  const bool isFloat = format == WavFormat::Float32;
+  const uint32_t bytes = isFloat ? 4u : format == WavFormat::Pcm16 ? 2u : 3u;
+  const uint32_t dataBytes = static_cast<uint32_t>(frames * channels * bytes);
   std::vector<uint8_t> b;
   putTag(b, "RIFF");
   put32(b, 0);  // patched below
@@ -54,31 +58,41 @@ std::vector<uint8_t> header(uint32_t channels, uint32_t sampleRate, uint64_t fra
     b.insert(b.end(), 28, uint8_t{0});
   }
   putTag(b, "fmt ");
-  put32(b, extensible ? 40u : 18u);
-  put16(b, extensible ? kFormatExtensible : kFormatFloat);
+  put32(b, extensible ? 40u : isFloat ? 18u : 16u);
+  put16(b, extensible ? kFormatExtensible : isFloat ? kFormatFloat : kFormatPcm);
   put16(b, static_cast<uint16_t>(channels));
   put32(b, sampleRate);
-  put32(b, sampleRate * channels * 4u);
-  put16(b, static_cast<uint16_t>(channels * 4u));
-  put16(b, 32);
+  put32(b, sampleRate * channels * bytes);
+  put16(b, static_cast<uint16_t>(channels * bytes));
+  put16(b, static_cast<uint16_t>(bytes * 8u));
   if (extensible) {
     put16(b, 22);  // cbSize
-    put16(b, 32);  // valid bits
+    put16(b, static_cast<uint16_t>(bytes * 8u));  // valid bits
     put32(b, 0);   // channel mask: unspecified
-    put16(b, kFormatFloat);
+    put16(b, isFloat ? kFormatFloat : kFormatPcm);
     b.insert(b.end(), std::begin(kSubtypeTail), std::end(kSubtypeTail));
-  } else {
+  } else if (isFloat) {
     put16(b, 0);   // cbSize
   }
-  putTag(b, "fact");
-  put32(b, 4);
-  factOffset = static_cast<uint32_t>(b.size());
-  put32(b, static_cast<uint32_t>(frames));
+  factOffset = 0;
+  if (isFloat) {
+    putTag(b, "fact");
+    put32(b, 4);
+    factOffset = static_cast<uint32_t>(b.size());
+    put32(b, static_cast<uint32_t>(frames));
+  }
   putTag(b, "data");
   put32(b, dataBytes);
   const uint32_t riff = static_cast<uint32_t>(b.size() - 8 + dataBytes);
   std::memcpy(b.data() + 4, &riff, 4);  // little endian host (x86-64)
   return b;
+}
+
+// EX.1: the nearest integer step of x · scale, clamped to [−scale, scale − 1]; NaN → 0.
+int32_t quantize(float x, double scale) noexcept {
+  const double v = std::nearbyint(static_cast<double>(x) * scale);
+  if (v != v) return 0;
+  return static_cast<int32_t>(std::clamp(v, -scale, scale - 1.0));
 }
 
 }  // namespace
@@ -192,7 +206,7 @@ WavWriter::~WavWriter() {
   if (out_.is_open()) (void)close();
 }
 
-Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate,
+Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate, WavFormat format,
                        uint64_t patchEveryFrames) {
   if (out_.is_open()) return Error{ErrorCode::InvalidArgument, "WavWriter: already open", {}};
   if (numChannels == 0 || numChannels > kMaxWavChannels || sampleRate == 0)
@@ -201,10 +215,12 @@ Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, 
   if (!out_) return ioError(path, "cannot write");
   path_ = path;
   channels_ = numChannels;
+  format_ = format;
+  bytesPer_ = format == WavFormat::Float32 ? 4u : format == WavFormat::Pcm16 ? 2u : 3u;
   frames_ = 0;
   patched_ = 0;
   patchEvery_ = patchEveryFrames;
-  const std::vector<uint8_t> h = header(numChannels, sampleRate, 0, factOffset_, rf64Above_ != 0);
+  const std::vector<uint8_t> h = header(numChannels, sampleRate, 0, factOffset_, rf64Above_ != 0, format);
   headerBytes_ = static_cast<uint32_t>(h.size());
   isRf64_ = false;
   out_.write(reinterpret_cast<const char*>(h.data()), static_cast<std::streamsize>(h.size()));
@@ -215,9 +231,21 @@ Status WavWriter::open(const std::filesystem::path& path, uint32_t numChannels, 
 Status WavWriter::write(const float* const* channels, uint32_t frames) {
   if (!out_.is_open()) return Error{ErrorCode::InvalidArgument, "WavWriter: not open", {}};
   // RIFF sizes are 32-bit: refuse to grow past them rather than write a corrupt file (unless it may become RF64).
-  if (rf64Above_ == 0 && (frames_ + frames) * channels_ * 4u + headerBytes_ > std::numeric_limits<uint32_t>::max())
+  if (rf64Above_ == 0 && (frames_ + frames) * channels_ * bytesPer_ + headerBytes_ > std::numeric_limits<uint32_t>::max())
     return Error{ErrorCode::Overflow, "WAV file would exceed 4 GiB: " + path_.string(), {}};
-  if (channels_ == 1) {
+  if (format_ != WavFormat::Float32) {  // EX.1: integer PCM, interleaved little endian
+    const double scale = format_ == WavFormat::Pcm16 ? 32768.0 : 8388608.0;
+    packed_.resize(static_cast<size_t>(frames) * channels_ * bytesPer_);
+    uint8_t* o = packed_.data();
+    for (uint32_t f = 0; f < frames; ++f)
+      for (uint32_t c = 0; c < channels_; ++c) {
+        const int32_t q = quantize(channels[c][f], scale);
+        *o++ = static_cast<uint8_t>(q);
+        *o++ = static_cast<uint8_t>(q >> 8);
+        if (bytesPer_ == 3) *o++ = static_cast<uint8_t>(q >> 16);
+      }
+    out_.write(reinterpret_cast<const char*>(packed_.data()), static_cast<std::streamsize>(packed_.size()));
+  } else if (channels_ == 1) {
     out_.write(reinterpret_cast<const char*>(channels[0]), static_cast<std::streamsize>(frames) * 4);
   } else {
     interleaved_.resize(static_cast<size_t>(frames) * channels_);
@@ -237,7 +265,7 @@ Status WavWriter::write(const float* const* channels, uint32_t frames) {
 // The RIFF / fact / data sizes of what was written; past rf64Above_ the RF64 form (EBU Tech 3306): "RF64", the 32-bit
 // sizes 0xFFFFFFFF and the real ones in the ds64 chunk that replaces the JUNK chunk (once RF64, always RF64).
 void WavWriter::writeSizes() {
-  const uint64_t dataBytes = frames_ * channels_ * 4u;
+  const uint64_t dataBytes = frames_ * channels_ * bytesPer_;
   const uint64_t riff = headerBytes_ - 8 + dataBytes;
   if (rf64Above_ != 0 && (isRf64_ || riff > rf64Above_)) {
     isRf64_ = true;
@@ -252,8 +280,10 @@ void WavWriter::writeSizes() {
     out_.write(reinterpret_cast<const char*>(&dataBytes), 8);
     out_.write(reinterpret_cast<const char*>(&frames_), 8);
     out_.write(reinterpret_cast<const char*>(&table), 4);
-    out_.seekp(factOffset_);
-    out_.write(reinterpret_cast<const char*>(&ff), 4);
+    if (factOffset_ != 0) {
+      out_.seekp(factOffset_);
+      out_.write(reinterpret_cast<const char*>(&ff), 4);
+    }
     out_.seekp(headerBytes_ - 4);
     out_.write(reinterpret_cast<const char*>(&ff), 4);
     return;
@@ -262,8 +292,10 @@ void WavWriter::writeSizes() {
   const auto frames32 = static_cast<uint32_t>(frames_);
   out_.seekp(4);
   out_.write(reinterpret_cast<const char*>(&riff32), 4);
-  out_.seekp(factOffset_);
-  out_.write(reinterpret_cast<const char*>(&frames32), 4);
+  if (factOffset_ != 0) {
+    out_.seekp(factOffset_);
+    out_.write(reinterpret_cast<const char*>(&frames32), 4);
+  }
   out_.seekp(headerBytes_ - 4);
   out_.write(reinterpret_cast<const char*>(&data32), 4);
 }
@@ -290,7 +322,7 @@ Status WavWriter::close() {
   return Ok{};
 }
 
-// T5.12: 24-bit integer PCM (WAVE_FORMAT_PCM for 1–2 channels, EXTENSIBLE above), rounded and clamped, no dither.
+// T5.12: 24-bit integer PCM through the streaming writer (EX.1): rounded, clamped, no dither.
 Status writeWavPcm24(const std::filesystem::path& path, const std::vector<std::vector<float>>& channels,
                      uint32_t sampleRate) {
   if (channels.empty() || channels.size() > kMaxWavChannels || sampleRate == 0)
@@ -298,58 +330,15 @@ Status writeWavPcm24(const std::filesystem::path& path, const std::vector<std::v
   const size_t frames = channels.front().size();
   for (const auto& c : channels)
     if (c.size() != frames) return Error{ErrorCode::InvalidArgument, "writeWavPcm24: channel lengths differ", {}};
-  const auto nch = static_cast<uint32_t>(channels.size());
-  const uint64_t dataBytes = static_cast<uint64_t>(frames) * nch * 3;
-  if (dataBytes > 0xFFFFFFFFull - 80) return Error{ErrorCode::InvalidArgument, "writeWavPcm24: too long for a WAV file", {}};
-  const bool ext = nch > 2;
-  std::vector<uint8_t> h;
-  auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; ++i) h.push_back(static_cast<uint8_t>(v >> (8 * i))); };
-  auto u16 = [&](uint16_t v) { h.push_back(static_cast<uint8_t>(v)); h.push_back(static_cast<uint8_t>(v >> 8)); };
-  auto tag = [&](const char* t) { h.insert(h.end(), t, t + 4); };
-  const uint32_t fmtBytes = ext ? 40 : 16;
-  tag("RIFF");
-  u32(static_cast<uint32_t>(4 + 8 + fmtBytes + 8 + dataBytes));
-  tag("WAVE");
-  tag("fmt ");
-  u32(fmtBytes);
-  u16(ext ? 0xFFFE : 1);
-  u16(static_cast<uint16_t>(nch));
-  u32(sampleRate);
-  u32(sampleRate * nch * 3);
-  u16(static_cast<uint16_t>(nch * 3));
-  u16(24);
-  if (ext) {
-    u16(22);
-    u16(24);
-    u32(0);  // no speaker mask
-    static constexpr uint8_t kPcmGuid[16] = {1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71};
-    h.insert(h.end(), kPcmGuid, kPcmGuid + 16);
-  }
-  tag("data");
-  u32(static_cast<uint32_t>(dataBytes));
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) return ioError(path, "cannot write");
-  out.write(reinterpret_cast<const char*>(h.data()), static_cast<std::streamsize>(h.size()));
-  std::vector<uint8_t> buf;
+  WavWriter w;
+  if (auto s = w.open(path, static_cast<uint32_t>(channels.size()), sampleRate, WavFormat::Pcm24); !s) return s;
   constexpr size_t kChunk = 1u << 15;
+  std::vector<const float*> at(channels.size());
   for (size_t off = 0; off < frames; off += kChunk) {
-    const size_t n = std::min(kChunk, frames - off);
-    buf.resize(n * nch * 3);
-    uint8_t* o = buf.data();
-    for (size_t i = 0; i < n; ++i)
-      for (uint32_t c = 0; c < nch; ++c) {
-        const float x = channels[c][off + i];
-        const double v = std::nearbyint(static_cast<double>(x) * 8388608.0);
-        const auto q = static_cast<int32_t>(v > 8388607.0 ? 8388607.0 : (v < -8388608.0 || v != v ? (v != v ? 0.0 : -8388608.0) : v));
-        *o++ = static_cast<uint8_t>(q);
-        *o++ = static_cast<uint8_t>(q >> 8);
-        *o++ = static_cast<uint8_t>(q >> 16);
-      }
-    out.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    for (size_t c = 0; c < channels.size(); ++c) at[c] = channels[c].data() + off;
+    if (auto s = w.write(at.data(), static_cast<uint32_t>(std::min(kChunk, frames - off))); !s) return s;
   }
-  out.flush();
-  if (!out) return ioError(path, "cannot write");
-  return Ok{};
+  return w.close();
 }
 
 }  // namespace pq::media

@@ -36,6 +36,14 @@ public:
   virtual Status end() = 0;
 };
 
+// EX.1: buses captured during an Engine::renderOffline, beside its main output: bus buses[i] (an index of the
+// program's running layout, e.g. a track's "<id>:out") goes to sinks[i] — begin(the bus's width, rate, frames), one
+// write per chunk (before the main sink's), end — so a stem and the master of one pass come from the same blocks.
+struct BusCapture {
+  std::vector<uint32_t> buses;
+  std::vector<AudioSink*> sinks;  // one per bus, not null
+};
+
 // Keeps the render in memory (tests, golden comparisons).
 class BufferSink final : public AudioSink {
 public:

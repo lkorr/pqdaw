@@ -333,7 +333,29 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   }
 }
 
-Result<RenderStats> Engine::renderOffline(uint64_t frames, AudioSink& sink, uint32_t blockFrames, uint32_t chunkFrames) {
+// EX.1: the capture's chunk buffers (renderOffline allocates them before the loop) and the write position in them.
+struct Engine::CaptureRun {
+  const BusCapture* cap = nullptr;
+  std::vector<AlignedBuffer<float>> bufs;     // per bus: width channels of `chunk` frames
+  std::vector<std::vector<float*>> channels;  // per bus: its channel pointers
+  std::vector<ProjectProgram::CaptureTap> taps;
+  uint32_t pos = 0;                           // frames of the current chunk captured
+};
+
+void Engine::onCaptureBlock(void* self, const AudioBlock& b) noexcept {  // RT-safe
+  Engine& e = *static_cast<Engine*>(self);
+  CaptureRun& r = *e.capture_;
+  const uint64_t ran = e.program_->stats().blocks;
+  e.program_->setCaptureOffset(r.pos);
+  e.process(b);
+  if (e.program_->stats().blocks == ran)  // asleep: the program did not run, the block is silence
+    for (const ProjectProgram::CaptureTap& t : r.taps)
+      for (uint16_t c = 0; c < t.width; ++c) std::memset(t.dst[c] + r.pos, 0, sizeof(float) * b.frames);
+  r.pos += b.frames;
+}
+
+Result<RenderStats> Engine::renderOffline(uint64_t frames, AudioSink& sink, uint32_t blockFrames, uint32_t chunkFrames,
+                                          const BusCapture* capture) {
   if (program_ == nullptr) return Error{ErrorCode::InvalidArgument, "engine: renderOffline without a program", {}};
   detail::RenderLoop loop;  // the one offline loop (render_loop.h), as engine::renderOffline
   loop.callback = callback();
@@ -345,10 +367,55 @@ Result<RenderStats> Engine::renderOffline(uint64_t frames, AudioSink& sink, uint
   loop.startFrame = nextTime_;  // informational: process() keeps its own time base (engine time continues)
   loop.between = [](void* self, int64_t) { static_cast<Engine*>(self)->collect(); };
   loop.user = this;
+  CaptureRun run;
+  const auto rate = static_cast<uint32_t>(std::lround(cfg_.sampleRate));
+  if (capture != nullptr && !capture->buses.empty()) {
+    const BusCapture& cap = *capture;
+    const ProjectLayout& layout = program_->layout();
+    if (cap.sinks.size() != cap.buses.size())
+      return Error{ErrorCode::InvalidArgument, "engine: renderOffline capture needs one sink per bus", {}};
+    // The chunk as runRenderLoop rounds it (whole blocks).
+    const uint32_t block = std::max(loop.blockFrames, 1u);
+    const uint32_t chunk = std::max(block, (std::max(chunkFrames, 1u) + block - 1) / block * block);
+    run.cap = capture;
+    run.bufs.reserve(cap.buses.size());
+    for (size_t i = 0; i < cap.buses.size(); ++i) {
+      const uint32_t b = cap.buses[i];
+      if (b >= layout.busWidth.size() || cap.sinks[i] == nullptr)
+        return Error{ErrorCode::InvalidArgument, "engine: renderOffline capture of bus " + std::to_string(b) +
+                                                     " (the layout has " + std::to_string(layout.busWidth.size()) + ")", {}};
+      const uint16_t w = layout.busWidth[b];
+      run.bufs.emplace_back(static_cast<size_t>(w) * chunk);
+      std::vector<float*> ch(w);
+      for (uint16_t c = 0; c < w; ++c) ch[c] = run.bufs.back().data() + static_cast<size_t>(c) * chunk;
+      run.channels.push_back(std::move(ch));
+    }
+    for (size_t i = 0; i < cap.buses.size(); ++i)
+      run.taps.push_back({cap.buses[i], layout.busWidth[cap.buses[i]], run.channels[i].data()});
+    for (size_t i = 0; i < cap.buses.size(); ++i)
+      if (auto s = cap.sinks[i]->begin(layout.busWidth[cap.buses[i]], rate, frames); !s) return s.error();
+    program_->setCapture(run.taps);
+    capture_ = &run;
+    loop.callback = {&Engine::onCaptureBlock, this};
+    loop.beforeWrite = [](void* self, uint32_t n) -> Status {
+      CaptureRun& r = *static_cast<Engine*>(self)->capture_;
+      r.pos = 0;
+      for (size_t i = 0; i < r.taps.size(); ++i)
+        if (auto s = r.cap->sinks[i]->write(r.channels[i].data(), n); !s) return s;
+      return Ok{};
+    };
+  }
   offline_ = true;  // T6.6: an offline render never clicks
   metronome_->clear();
   auto r = detail::runRenderLoop(loop, sink);
   offline_ = false;
+  if (capture_ != nullptr) {
+    program_->setCapture({});
+    capture_ = nullptr;
+    if (r)
+      for (AudioSink* s : run.cap->sinks)
+        if (auto e = s->end(); !e) return e.error();
+  }
   return r;
 }
 

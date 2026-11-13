@@ -133,6 +133,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_cross_track.cpp  # TX.cross-track: loops between tracks per sample (hand-written references), notes cables across tracks
     app/test_mod_all.cpp  # TX.mod-all: a wire into any param makes it live at audio rate (repro, the sweep over every device)
     app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace; load conversion
+    app/test_export.cpp  # EX.1: the export core (== --render, stems sum to the master, solo passes, loop, PDC, tail, cancel, dither)
     app/test_wavetable_synth.cpp  # GU.8: the Wavetable Synth spawned at the notes; a chord plays, interpreter == JIT
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_noise_module.cpp  # NZ.1: the Noise module in a project (white unwired, Sync grid, On play vs Free, the display tap)
