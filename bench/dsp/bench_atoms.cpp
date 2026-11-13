@@ -69,6 +69,8 @@ struct Fixture {
 // Wavetable phase increment per sample and its per-lane spread. Default: 0.013 cycles (624 Hz at 48 kHz, inside a
 // mip crossfade), lanes 10 % apart; the " (steady 1 kHz)" variant: one pitch where only the upper level is read.
 float gWavetableInc = 0.013f, gWavetableSpread = 0.1f;
+// DT.4: delay_fade's `crossfade` input: 1 Crossfade (DT.2's rows), 0 Repitch (the " (repitch)" rows).
+float gDelayFadeXfade = 1.0f;
 
 // Realistic input values per atom/input (frame t, lane l).
 float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
@@ -84,10 +86,11 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
       return i == 1 ? 10.0f + 40.0f * r : r;
     case Atom::DelayReadLinear: case Atom::DelayReadCubic: case Atom::DelayReadAllpass:
       return 10.0f + 40.0f * r;
-    // DT.2: delay_fade (x, delay, fade) / its read (delay, fade); fade 64 frames. A Blk delay jumping per sample is the
-    // worst case (a fade every frame, both heads read); " (spl delay)" is the common case, at rest.
-    case Atom::DelayFade: return i == 1 ? 10.0f + 40.0f * r : i == 2 ? 64.0f : r;
-    case Atom::DelayReadFade: return i == 0 ? 10.0f + 40.0f * r : 64.0f;
+    // DT.2: delay_fade (x, delay, fade, crossfade) / its read (delay, fade, crossfade); fade 64 frames. A Blk delay
+    // jumping per sample is the worst case (Crossfade: a fade every frame, both heads read; DT.4 Repitch: a new glide
+    // every frame); " (spl delay)" is the common case, at rest. crossfade: gDelayFadeXfade (1: DT.2's rows).
+    case Atom::DelayFade: return i == 1 ? 10.0f + 40.0f * r : i == 2 ? 64.0f : i == 3 ? gDelayFadeXfade : r;
+    case Atom::DelayReadFade: return i == 0 ? 10.0f + 40.0f * r : i == 1 ? 64.0f : gDelayFadeXfade;
     case Atom::Phasor: case Atom::SineHz:
       return 100.0f + 1000.0f * r;
     case Atom::Wavetable:
@@ -234,6 +237,12 @@ int main(int argc, char** argv) {
   add(Atom::DelayLinear, 0b10, " (spl delay)");
   add(Atom::DelayCubic, 0b10, " (spl delay)");
   add(Atom::DelayFade, 0b10, " (spl delay, at rest)");
+  for (const auto& [split, suffix] : {std::pair{0u, " (repitch)"}, std::pair{0b10u, " (spl delay, at rest, repitch)"}})
+    runner.add(std::string("atom/delay_fade") + suffix, [&fx, &rows, split, suffix](pq::bench::Context& c) {
+      gDelayFadeXfade = 0.0f;
+      rows.push_back(benchAtom(c, fx, Atom::DelayFade, split, suffix));
+      gDelayFadeXfade = 1.0f;
+    });
   add(Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)");
   runner.add("atom/wavetable (steady 1 kHz)", [&fx, &rows](pq::bench::Context& c) {
     gWavetableInc = 1000.0f / 48000.0f;

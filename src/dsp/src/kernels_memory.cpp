@@ -370,6 +370,9 @@ struct DelayFade {
     const F halfGlide = S::mul(glideLen, S::set(0.5f)), negGlide = S::neg(glideLen);
     const F maxLen = S::floor(S::mul(fadeLen, S::set(kMaxGlideFades)));
     float* out = a.out[0];
+    // The lanes' modes (modes 0: all Crossfade — DT.2's work only, no Hermite; 1: all Repitch — no glide-or-fade test; 2:
+    // mixed, both and a select).
+    const int modes = !S::any(rp) ? 0 : !S::any(S::bnot(rp)) ? 1 : 2;  // (loop-invariant: the branches below predict)
     for (uint32_t f = 0; f < a.frames; ++f, ++w) {
       if constexpr (kWrite) {
         const In<S, splBit(SM, 0)> x(a.in[0]);
@@ -381,10 +384,10 @@ struct DelayFade {
       const F fadeIdle = S::eq(frem, zero);
       const F moved = S::ne(end, tgt);
       // Crossfade lanes: a new time, or one that waited for a fade to end.
-      const F want = S::andnot(rp, S::band(moved, S::bor(changed, fadeIdle)));
+      const F want = modes == 1 ? zero : S::andnot(rp, S::band(moved, S::bor(changed, fadeIdle)));
       // Repitch lanes: a new time glides from where the head is, with its velocity (u = rem / len: 1 → 0).
-      const F wantR = S::band(rp, moved);
-      if (S::any(wantR)) {
+      const F wantR = modes == 0 ? zero : S::band(rp, moved);
+      if (modes != 0 && S::any(wantR)) {
         const F u = S::mul(rem, il);
         const F cur = S::fma(S::mul(u, u), S::fma(u, d3, d2), end);
         const F vel = S::mul(S::neg(S::mul(il, u)), S::fma(S::mul(u, S::set(3.0f)), d3, S::add(d2, d2)));  // per frame
@@ -399,7 +402,7 @@ struct DelayFade {
         rem = S::select(wantR, n, rem);
         end = S::select(wantR, tgt, end);
       }
-      if (S::any(want)) {
+      if (modes != 1 && S::any(want)) {
         const F cur = S::fnma(inc, rem, end);  // the head's last position
         const F delta = S::sub(tgt, cur);
         const F glide = S::band(want, S::band(S::le(delta, halfGlide), S::ge(delta, negGlide)));
@@ -413,8 +416,11 @@ struct DelayFade {
       }
       rem = S::max(S::sub(rem, one), zero);
       const auto pos = S::seti(static_cast<int32_t>(w));
-      const F ur = S::mul(rem, il);
-      const F head = S::select(rp, S::fma(S::mul(ur, ur), S::fma(ur, d3, d2), end), S::fnma(inc, rem, end));
+      F head = S::fnma(inc, rem, end);
+      if (modes != 0) {
+        const F ur = S::mul(rem, il);
+        head = S::select(rp, S::fma(S::mul(ur, ur), S::fma(ur, d3, d2), end), head);
+      }
       F y = read(head, pos);
       const F fading = S::gt(frem, zero);
       if (S::any(fading)) {
