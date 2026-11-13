@@ -5,7 +5,7 @@
 //   draw       the white stream is the documented hash; uniform / gaussian moments and histograms
 //   colour     the design's response within ±0.5 dB of the slope over 20 Hz … 20 kHz at 48 kHz for every colour, unit
 //              power gain; the kernel equals a double reference of draw → cascade → fold (colours ≤ 0) or scale
-//              (colours > 0: never outside [−1, 1], Q?-NZ.1-a); RMS across colours; brown at a slow rate is a
+//              (colours > 0: never outside [−1, 1], Q244); RMS across colours; brown at a slow rate is a
 //              continuous walk inside [−1, 1]
 //   shaping    density's keep rate, Steps' levels, Smooth 0 exact holds, Smooth > 0 continuous and monotone, reaching
 //              the value exactly
@@ -355,7 +355,7 @@ TEST_CASE("noise_step: RMS across colours; brown at a slow rate is a continuous 
           doctest::test_suite("slow")) {
   // Colours ≤ 0 — Gaussian: the fold almost never acts, the RMS is the draw's; uniform: the coloured sequence is
   // near-Gaussian at σ 0.577 and the fold takes up to 1.1 dB of it. Colours > 0: no fold; the RMS is the draw's times
-  // the bound (and 1 / 1.1547 for Gaussian draws): exactly as designed (QUESTIONS Q?-NZ.1-a).
+  // the bound (and 1 / 1.1547 for Gaussian draws): exactly as designed (QUESTIONS Q244).
   for (const float dist : {1.0f, 0.0f}) {
     double rms0 = 0;
     for (const float c : {0.0f, -6.0f, -3.0f, -1.0f, 1.0f, 3.0f, 6.0f}) {

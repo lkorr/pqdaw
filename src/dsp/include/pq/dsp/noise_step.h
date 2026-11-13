@@ -13,7 +13,7 @@
 // 0.25 dB/oct grid, continued from c = 0 where z = p). The zeros and the gain g are interpolated linearly between the
 // grid rows; g makes the power gain 1 (within 0.105 dB between rows), so the cascade's output RMS is the drawn
 // distribution's at every colour. Cost: 8 multiply-adds per step (two per section; g scales the draw).
-// Q?-NZ.1-a (the user, 2026-11-12): colours ≤ 0 are FOLDED into [−1, 1] after the cascade (a brown walk reflects at the
+// Q244 (the user, 2026-11-12): colours ≤ 0 are FOLDED into [−1, 1] after the cascade (a brown walk reflects at the
 // Range's ends); colours > 0 are SCALED instead, by `bound` = 1 / Σ|h| (h the unit-power design's impulse response,
 // lowered by the worst ratio of the interpolated designs: tools/fit/noise_colour.py) and by 1 / the draw's bound
 // (Gaussian: 1 / 1.1547), so the output can never leave [−1, 1] and its slope stays the design's exactly. That costs

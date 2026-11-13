@@ -1375,4 +1375,4 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   Note draws per note-on (inside an instrument group). Wire a clock into its In: it steps on the clock's rising edges.
 - Judge: the panel's density (eight knobs, four chip rows) and the chip labels (Rate/Sync/Note, Uniform/Gauss,
   Play/Free/Note, Voice/Shared); whether Rate's and Density's tops should read "every sample" / "continuous" instead
-  of 48.0 kHz / 100.0 kHz; QUESTIONS Q?-NZ.1-a (the fold flattens blue / violet noise's low end).
+  of 48.0 kHz / 100.0 kHz; QUESTIONS Q244 (the fold flattens blue / violet noise's low end).

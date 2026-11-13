@@ -296,7 +296,7 @@ struct alignas(32) NoiseStepState {
   float z[4][8];         // its zeros (kNoiseColourPoles are fixed)
   float gain[8];
   float white[8];        // mask: colour 0, the identity
-  float pos[8];          // mask: colour > 0 (scaled, not folded: Q?-NZ.1-a)
+  float pos[8];          // mask: colour > 0 (scaled, not folded: Q244)
   float keyTag[8];       // the seed (and lanes const) the keys below are for (kNoiseStepNoKey: none yet)
   uint32_t keys[8];      // the draw keys
   float rateKey[8];      // the rate the increment below is for (kNoiseStepNoKey: none yet)

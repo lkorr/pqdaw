@@ -239,7 +239,7 @@ TEST_CASE("noise: Sync steps on the song's grid; Note draws per note-on; Per voi
   }
 }
 
-TEST_CASE("noise: blue and violet through the module keep their slope and stay in range (Q?-NZ.1-a: scaled, not folded)") {
+TEST_CASE("noise: blue and violet through the module keep their slope and stay in range (Q244: scaled, not folded)") {
   // The module's whole path (the expansion, its Range at −1 … 1) at Rate's top, 2^20 samples; a Welch power spectrum
   // (4096-point Hann, 50 % overlap) summed in third-octave bands 100 Hz … 16 kHz: each band's level minus the target
   // slope within ±1 dB of their mean (the design's ±0.42 dB plus the estimate's scatter).

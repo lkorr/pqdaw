@@ -87,7 +87,7 @@ inline typename S::F foldOf(typename S::F v) noexcept {  // noiseFold, lane-wise
 }
 
 // After the cascade: lanes of a colour > 0 (pos) are bounded by their scale already (the clip only absorbs rounding);
-// the others are folded (pq/dsp/noise_step.h, Q?-NZ.1-a).
+// the others are folded (pq/dsp/noise_step.h, Q244).
 template <class S>
 inline typename S::F rangeOf(typename S::F v, typename S::F pos, bool anyPos) noexcept {
   const auto f = foldOf<S>(v);
