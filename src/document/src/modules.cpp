@@ -21,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 17> kModules = {{
+constexpr std::array<ModuleInfo, 18> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -80,6 +80,10 @@ constexpr std::array<ModuleInfo, 17> kModules = {{
      "Peak, RMS or downward-expanding gain reduction with a soft knee, attack / release (log or linear envelope, auto "
      "release), lookahead, makeup and dry/wet; its sidechain is a cable from any track (Pre or Post FX) through an EQ "
      "band and a gain. The gain reduction is an output you can cable anywhere."},
+    {ModuleKind::Limiter, "limiter", "Limiter",
+     "A lookahead brickwall limiter: input gain, a ceiling no sample passes, release (auto: fast after a transient, slow "
+     "under sustained limiting), lookahead 1.5 / 3 / 6 ms, stereo linked, left / right or mid / side, and true-peak "
+     "detection (the peaks between samples, BS.1770)."},
 }};
 
 struct Builder {
@@ -322,7 +326,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::EqBand:
     case ModuleKind::Eq:
     case ModuleKind::DelayTap:
-    case ModuleKind::Compressor: break;
+    case ModuleKind::Compressor:
+    case ModuleKind::Limiter: break;
   }
   return {};
 }
@@ -460,7 +465,8 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::EqBand:
     case ModuleKind::Eq:
     case ModuleKind::DelayTap:
-    case ModuleKind::Compressor: break;
+    case ModuleKind::Compressor:
+    case ModuleKind::Limiter: break;
   }
   return p;
 }
@@ -621,6 +627,7 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::Eq) return eqBlocks(ids);
   if (k == ModuleKind::DelayTap) return delayTapBlocks(ids);
   if (k == ModuleKind::Compressor) return compressorBlocks(ids);
+  if (k == ModuleKind::Limiter) return limiterBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 
@@ -1649,6 +1656,32 @@ PanelElement styled(PanelElement e, std::initializer_list<StyleField> fields) {
   return e;
 }
 
+// The dynamics follower (DY.4; DY.6's Limiter too): follow(x, attack, release), or with Auto on max(follow(x, a, rel / 4),
+// follow(x, a, rel · 4) − 3 dB) — of reduction on a dB signal, × 10^(−3/20) on a linear level: a short transient
+// recovers at rel / 4, a long stretch of reduction lets go of its last 3 dB at rel · 4. A mux on the literal Auto: one
+// path computed. rel / 4 and rel · 4 are made once (with the follower), shared by every call.
+struct Follower {
+  Kit& k;
+  Sig attack, release, autoRelease, relFast, relSlow;
+  Follower(Kit& kit, Sig a, Sig rel, Sig on)
+      : k(kit), attack(std::move(a)), release(std::move(rel)), autoRelease(std::move(on)) {
+    relFast = k.op("mul", "release / 4", {{"a", release}, {"b", k.k(0.25)}});
+    relSlow = k.op("mul", "release x 4", {{"a", release}, {"b", k.k(4.0)}});
+  }
+  Sig operator()(const Sig& x, bool linearLevel, const std::string& name) const {
+    auto follow = [&](const Sig& rel, const std::string& n) {
+      return k.op("follow", n, {{"x", x}, {"attack", attack}, {"release", rel}});
+    };
+    const Sig plain = follow(release, name);
+    const Sig fast = follow(relFast, name + " fast"), slow = follow(relSlow, name + " slow");
+    const Sig held = linearLevel
+                         ? k.op("mul", "slow - 3 dB", {{"a", slow}, {"b", k.k(std::pow(10.0, -kCompressorAutoOffsetDb / 20.0))}})
+                         : k.op("sub", "slow - 3 dB", {{"a", slow}, {"b", k.k(kCompressorAutoOffsetDb)}});
+    const Sig both = k.op("max", name + " auto", {{"a", fast}, {"b", held}});
+    return k.op("mux", name + " auto?", {{"index", autoRelease}, {"in0", plain}, {"in1", both}});
+  }
+};
+
 }  // namespace
 
 BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
@@ -1710,19 +1743,8 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   const Sig rms = k.op("sqrt", "rms", {{"x", Sig{win, "out"}}});
   const std::array<Sig, 3> levels = {peak, rms, peak};
   const Sig level = k.choose(mode, levels, "level");
-  // The follower: follow(x, Attack, Release), or with Auto max(follow(x, a, rel/4), follow(x, a, rel·4) − 3 dB) (of
-  // reduction on GR; × 10^(−3/20) on a linear level). Muxes on the literal Auto: one path computed.
-  const Sig relFast = mul(release, k.k(0.25), "release / 4"), relSlow = mul(release, k.k(4.0), "release x 4");
-  auto follower = [&](const Sig& x, bool linearLevel, const std::string& name) {
-    auto follow = [&](const Sig& rel, const std::string& n) {
-      return k.op("follow", n, {{"x", x}, {"attack", attack}, {"release", rel}});
-    };
-    const Sig plain = follow(release, name);
-    const Sig fast = follow(relFast, name + " fast"), slow = follow(relSlow, name + " slow");
-    const Sig held = linearLevel ? mul(slow, k.k(std::pow(10.0, -kCompressorAutoOffsetDb / 20.0)), "slow - 3 dB")
-                                 : sub(slow, k.k(kCompressorAutoOffsetDb), "slow - 3 dB");
-    return mux(autoRelease, plain, max(fast, held, name + " auto"), name + " auto?");
-  };
+  // The follower (Auto release: Follower above).
+  const Follower follower(k, attack, release, autoRelease);
   // Envelope Lin: the follower on the linear level before the computer.
   const Sig levelEnv = mux(envelope, level, follower(level, true, "level env"), "lin?");
   const Sig db = k.op("fast_gain_to_db", "level dB", {{"gain", max(levelEnv, k.k(1e-6), ">= -120 dB")}});
@@ -1811,6 +1833,108 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   p.elements.push_back(control(26, "number", kScX + 44, 128, 72, 18, eqFreq));
   p.elements.push_back(button(control(27, "toggle", kScX, 152, 116, 18, listen), "Listen"));
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Compressor") : o.name, o.active, std::move(p)));
+}
+
+// ---- DY.6: the Limiter (modules.h "the Limiter"; docs/plans/DY.md "DY.6") ------------------------------------------
+
+BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, group);
+  auto sub = [&](const Sig& a, const Sig& b, std::string n) { return k.op("sub", std::move(n), {{"a", a}, {"b", b}}); };
+  auto add = [&](const Sig& a, const Sig& b, std::string n) { return k.op("add", std::move(n), {{"a", a}, {"b", b}}); };
+  auto max = [&](const Sig& a, const Sig& b, std::string n) { return k.op("max", std::move(n), {{"a", a}, {"b", b}}); };
+  auto mul = [&](const Sig& a, const Sig& b, std::string n) { return k.op("mul", std::move(n), {{"a", a}, {"b", b}}); };
+  auto mux = [&](const Sig& index, const Sig& in0, const Sig& in1, std::string n) {
+    return k.op("mux", std::move(n), {{"index", index}, {"in0", in0}, {"in1", in1}});
+  };
+  auto channel = [&](const Sig& x, double index, std::string n) {
+    const DeviceId c = k.block("channel", std::move(n), {{"x", x}});
+    k.setting(c, "index", index);
+    return Sig{c, "out"};
+  };
+  // The controls (the panel's labels are the blocks' names).
+  const Sig gain = k.val("Gain", detent(gainDb(-12.0, 24.0), 0.0), 0.0);
+  const Sig ceiling = k.val("Ceiling", linear(-24.0, 0.0, dsp::CurveUnit::Db), -0.3);
+  const Sig release = k.val("Release", octave(0.001, 3.0, dsp::CurveUnit::Seconds), 0.3);
+  const Sig autoRelease = k.val("Auto", stepped(2), 1.0);
+  const Sig lookahead = k.val("Lookahead", threeChoiceCurve(0.0015, 0.003, 0.006, 0.0005, dsp::CurveUnit::Seconds), 0.003);
+  const Sig link = k.val("Link", stepped(3), 0.0);  // Stereo | L-R | M-S
+  const Sig truePeak = k.val("True Peak", stepped(2), 0.0);
+  // x = In · Gain (smoothed); src = x, or with Link M-S (M, S) = ((L + R) / 2, (L − R) / 2) (the EQ's matrix).
+  const DeviceId gd = k.block("gain", "x gain", {{"x", k.in()}, {"g", gain}});
+  k.setting(gd, "start", 1.0);
+  const Sig x{gd, "out"}, half = k.k(0.5);
+  const Sig isMs = sub(link, k.k(1.0), "M-S = link - 1");  // > 0 only for M-S (a literal: the muxes fold)
+  const Sig xL = channel(x, 0.0, "L"), xR = channel(x, 1.0, "R");
+  const Sig ms = k.op("pack", "(M, S)", {{"in0", mul(add(xL, xR, "L + R"), half, "M = (L + R) / 2")},
+                                         {"in1", mul(sub(xL, xR, "L - R"), half, "S = (L - R) / 2")}});
+  const Sig src = mux(isMs, x, ms, "L/R or M/S");
+  // The detector, 7 frames behind src in both modes: |src| delayed 7, or truepeak (its group delay 6) delayed 1; Link
+  // Stereo takes the larger channel (one gain for both), L-R and M-S keep a gain per channel.
+  auto linked = [&](const Sig& v, const std::string& n) {
+    return mux(link, max(channel(v, 0.0, n + " 0"), channel(v, 1.0, n + " 1"), n + " linked"), v, n + " link?");
+  };
+  const Sig mag = linked(k.op("abs", "|src|", {{"x", src}}), "|src|");
+  const Sig tp = linked(k.op("truepeak", "true peak", {{"x", src}}), "true peak");
+  const DeviceId magLat = k.block("latency", "|src| 7", {{"x", mag}});
+  k.setting(magLat, "frames", kLimiterDetectorDelay);
+  const DeviceId tpLat = k.block("latency", "true peak 1", {{"x", tp}});
+  k.setting(tpLat, "frames", kLimiterDetectorDelay - 6.0);
+  const Sig det = mux(truePeak, Sig{magLat, "out"}, Sig{tpLat, "out"}, "true peak?");
+  // r = max(0, dB(det) − Ceiling); h = window(r, la, max); g = follow(h, 0, Release) (Auto: Follower); b = window(g, la,
+  // mean). Why b keeps the delayed sample under the ceiling: modules.h "the Limiter" (the mean of L values, each ≥ r[m]
+  // because every max window covering the L frames holds r[m] and the attack is instant, is ≥ r[m]).
+  const Sig over = max(k.k(0.0), sub(k.op("gain_to_db", "det dB", {{"gain", det}}), ceiling, "det dB - ceiling"), "r");
+  const DeviceId hold = k.block("window", "hold (max)", {{"x", over}, {"time", lookahead}});
+  k.setting(hold, "op", 0.0);
+  const Follower follower(k, k.k(0.0), release, autoRelease);
+  const Sig env = follower(Sig{hold, "out"}, false, "release env");
+  const DeviceId smooth = k.block("window", "GR (mean)", {{"x", env}, {"time", lookahead}});
+  k.setting(smooth, "op", 2.0);
+  const Sig gr{smooth, "out"};
+  // out = latency(src, 6, la) · 10^(−b/20) (M-S: back to (M + S, M − S)), then the safety clip at ±10^(Ceiling/20).
+  const DeviceId lat = k.block("latency", "lookahead", {{"x", src}, {"time", lookahead}});
+  k.setting(lat, "frames", 6.0);
+  const Sig y = mul(Sig{lat, "out"}, k.op("db_to_gain", "gain", {{"db", k.op("neg", "-GR", {{"x", gr}})}}), "x gain");
+  const Sig yM = channel(y, 0.0, "M'"), yS = channel(y, 1.0, "S'");
+  const Sig back = k.op("pack", "(M + S, M - S)", {{"in0", add(yM, yS, "M + S")}, {"in1", sub(yM, yS, "M - S")}});
+  const Sig limited = mux(isMs, y, back, "out L/R");
+  const Sig c = k.op("db_to_gain", "ceiling gain", {{"db", ceiling}});
+  const Sig out = k.op("clip", "ceiling clip", {{"x", limited}, {"lo", k.op("neg", "-ceiling", {{"x", c}})}, {"hi", c}});
+  k.out(out);
+  // The panel: the reduction and output meters, the knobs, Auto, the chips.
+  Panel p;
+  p.width = 228.0f;
+  p.height = 156.0f;
+  p.elements.push_back(plate(p.width, p.height, 6.0));
+  p.elements.push_back(styled(element(2, "meter", 8, 8, 16, 128, signalBinding(gr.dev, gr.port)),
+                              {styleText("mode", "reduction"), styleNumber("range", 24.0)}));
+  p.elements.push_back(styled(element(3, "meter", 28, 8, 16, 128, signalBinding(out.dev, out.port)), {styleNumber("floor", -48.0)}));
+  auto meterLabel = [&](uint32_t id, float x0, const char* text) {
+    PanelElement cap = caption(id, x0, 138, 20, 10, text);
+    cap.setField(styleNumber("size", 7.5));
+    cap.setField(styleText("align", "center"));
+    p.elements.push_back(std::move(cap));
+  };
+  meterLabel(14, 6, "GR");
+  meterLabel(15, 26, "Out");
+  constexpr float kCol = 54.0f, kX0 = 54.0f;
+  p.elements.push_back(control(4, "knob", kX0, 8, 52, 58, gain));
+  p.elements.push_back(control(5, "knob", kX0 + kCol, 8, 52, 58, ceiling));
+  p.elements.push_back(control(6, "knob", kX0 + 2 * kCol, 8, 52, 58, release));
+  p.elements.push_back(button(control(7, "toggle", kX0 + 2 * kCol + 4, 68, 44, 18, autoRelease), "Auto"));
+  auto chips = [&](uint32_t id, float x0, float yy, float w, const Sig& v, const char* label, const char* items) {
+    PanelElement cap = caption(id, x0, yy, w, 10, label);
+    cap.setField(styleNumber("size", 7.5));
+    p.elements.push_back(std::move(cap));
+    PanelElement t = control(id + 1, "tabs", x0, yy + 12, w, 16, v);
+    t.setField(styleText("items", items));
+    p.elements.push_back(std::move(t));
+  };
+  chips(8, kX0, 90, 2 * kCol + 52, lookahead, "Lookahead", "1.5 ms|3 ms|6 ms");
+  chips(10, kX0, 120, kCol + 52, link, "Link", "Stereo|L-R|M-S");
+  chips(12, kX0 + 2 * kCol, 120, 52, truePeak, "True Peak", "Off|On");
+  return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Limiter") : o.name, o.active, std::move(p)));
 }
 
 }  // namespace pq::doc

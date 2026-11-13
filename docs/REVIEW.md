@@ -1505,3 +1505,12 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: the submenu with the mode as items vs a dialog with a mode chip (chosen: the submenu, as the grid menus); MPE
   voice stealing ends the oldest note (Q?-MF.3-a); whether Degrees should warn when the tuning has more than 128
   reachable degrees (notes beyond the key range are skipped and counted).
+
+## 2026-11-13 · DY.6 · Limiter module 👁 (task/DY.6-limiter)
+- Try: add Limiter (browser / node menu "Limiter") after a loud drum loop; raise Gain to +12 dB: the output meter's peak
+  line stops at the Ceiling (−0.3 dB) while the reduction meter (left) shows how much is taken. Switch Lookahead 1.5 / 3
+  / 6 ms (the track's reported latency follows: L + 6 samples), Link Stereo / L-R / M-S, True Peak On.
+- Look at: the panel (golden `limiter-panel`): two meters on the left, Gain / Ceiling / Release knobs, Auto under
+  Release, the three chip rows; theme tokens only.
+- Judge: the defaults (Live's: Ceiling −0.3 dB, Release 300 ms Auto, 3 ms); Link M-S holds M and S under the ceiling and
+  the safety clip catches L/R overs when both peak together (Q?-DY.6-a); whether Release should go below 1 ms.

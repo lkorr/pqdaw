@@ -108,6 +108,12 @@ TEST_CASE("render: compressor-panel (DY.4, 2x)") {
   checkImage("compressor-panel", presetPanelImage(doc::ModuleKind::Compressor, true));
 }
 
+// DY.6: the Limiter's panel on an audio track: the reduction and output meters, Gain / Ceiling / Release, Auto (on), the
+// Lookahead (3 ms), Link (Stereo) and True Peak (Off) chips.
+TEST_CASE("render: limiter-panel (DY.6, 2x)") {
+  checkImage("limiter-panel", presetPanelImage(doc::ModuleKind::Limiter, true));
+}
+
 // EQ.3: PanelTarget::run — a structural edit an element asks for (the EQ's band ops) goes through the host's history as
 // one undo step, a refused one leaves a notice; the EQ's band strip follows Mode and the chain tabs (chain A's columns
 // show in Stereo whatever the tabs hold: panel.h kWhenHidden).

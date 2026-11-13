@@ -44,7 +44,8 @@ enum class ModuleKind : uint8_t {
   EqBand, Eq,                         // EQ.3
   DelayTap,                           // DT.1
   Noise,                              // NZ.1
-  Compressor                          // DY.4
+  Compressor,                         // DY.4
+  Limiter                             // DY.6
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -358,6 +359,33 @@ inline constexpr double kCompressorRmsSeconds = 0.005;
 inline constexpr double kCompressorExpandCapDb = 70.0;
 inline constexpr double kCompressorAutoOffsetDb = 3.0;
 BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o = {});
+
+// ---- DY.6: the Limiter (docs/plans/DY.md "DY.6"; SPEC §8 Limiter) -------------------------------------------------------
+// A group of atom and value blocks (no native engine), stereo, block-wise like the Compressor. With la the Lookahead
+// (1.5 / 3 / 6 ms: a stepped curve in seconds, positions 0 / ½ / 1, feeding the const `time` of the windows and the
+// delay: constFeeds) and L = round(la · sr):
+//   x       In · Gain (a smoothed gain; Gain −12 … +24 dB)
+//   src     Link Stereo / L-R: x; Link M-S: (M, S) = ((L + R) / 2, (L − R) / 2) (the EQ's matrix)
+//   det     True Peak off: latency(|src|, 7) — Stereo linked as max(|L|, |R|), else per channel; True Peak on:
+//           latency(truepeak(src), 1) (linked the same way). Both are 7 frames behind src (truepeak's fixed group delay
+//           6, plus 1), so toggling True Peak never changes the audio's delay or the reported latency
+//   r       max(0, gain_to_db(det) − Ceiling) (dB over the ceiling)
+//   h       window(r, la, max); g = follow(h, 0, Release) (instant attack; Auto: the Compressor's law, max(follow(h, 0,
+//           rel / 4), follow(h, 0, rel · 4) − 3 dB)); b = window(g, la, mean) — the reduction (dB ≥ 0: the meter's)
+//   out     latency(src, 6, la) · db_to_gain(−b) (M-S: back to (M + S, M − S)), then clip(·, −c, c), c = 10^(Ceiling / 20)
+// Why the gain alone keeps a sample under the ceiling (Link Stereo / L-R): the output at frame n is src[n − 6 − L], whose
+// det is r[m], m = n − L + 1 (det is 7 frames behind src). h[k] (k = n − L + 1 … n) is a max over r[k − L + 1 … k],
+// which holds r[m] for every such k, and the follower's instant attack keeps g[k] ≥ h[k] ≥ r[m]: b[n], the mean of
+// those L values, is ≥ r[m], so |out| ≤ |src|·10^(−r[m]/20) ≤ c. The final clip only trims float rounding (≈ 1e-6) —
+// and, with Link M-S, the overs of M + S when M and S peak together (M and S are each held under the ceiling: Q?-DY.6-a).
+// True Peak: r[m] also covers the interpolants between src[n − 6 − L] and the next sample, so the reconstructed output
+// stays within the estimator's error (≤ 0.2 dB) of the ceiling.
+// Reported latency = L + 6 in both True Peak modes. Every switch (Auto, Link, True Peak) is a stepped value block reaching
+// muxes: literals, only the chosen path is scheduled (the default: one window pair, two followers (Auto), no truepeak,
+// no M/S matrix). Panel: knobs Gain, Ceiling, Release; Auto; chips Lookahead, Link, True Peak; the reduction meter (on
+// b) and the output level meter (on the clip).
+inline constexpr double kLimiterDetectorDelay = 7.0;  // frames det runs behind src (truepeak's 6 + 1)
+BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o = {});
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

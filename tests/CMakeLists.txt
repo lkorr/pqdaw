@@ -147,6 +147,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_delay_tap.cpp  # DT.1: the Delay Tap renders (impulse at the time, half samples, stereo, sync at the tempo, a VCA feedback loop, a glide)
     app/test_eq_render.cpp  # EQ.3: a band == a plain svf bit for bit per type; the EQ's L/R and M/S == Stereo with equal chains; chain B costs nothing in Stereo
     app/test_compressor_module.cpp  # DY.4: the Compressor (static curve vs the formula, attack / release, lookahead latency, a sidechain ducking a pad; interp == JIT)
+    app/test_limiter_module.cpp  # DY.6: the Limiter (no sample over the ceiling at every lookahead, true peak, release law, L-R, latency L + 6; interp == JIT)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_voice_smooth.cpp  # AU.voices: no clicks at Play / note on / note off; voices end on time
     app/test_inspect_lifetime.cpp  # T4.x-fix-safety: cost meters and probe taps live as long as the images that write them

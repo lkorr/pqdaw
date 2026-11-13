@@ -1396,3 +1396,16 @@ All in src/document/src/midi_export.cpp (`allocateMpe`, the mode switch, the tem
 midi_export.cpp (`exportMidiClips`). The MCM + RPN 0 setup is repeated at tick 0 of every clip's MTrk so a track
 imported alone still plays as MPE. MPE keeps the ±48 member range (orchestrator); the round trip holds within 0.3 ¢.
 Status: open.
+
+## Q?-DY.6-a · the Limiter's Link M-S against the ceiling, and its defaults
+Context: DY.6 asks for Link Stereo / L-R / M-S (M/S = the EQ's matrix) and no output sample over the ceiling. Limiting M
+and S each to the ceiling does not bound L = M + S, R = M − S (up to +6 dB when both peak together); only a coupled gain
+can, and the plan names no defaults.
+Options: M-S (a) M and S each limited to the ceiling, the final clip catching the L/R overs; (b) one gain from
+|M| + |S| (= max(|L|, |R|): Stereo again); (c) the side's gain ≤ the mid's (narrows the image under limiting).
+Choice: (a) as the plan: the safety clip makes the ceiling hold in every mode; on ordinary material |S| ≪ |M| and the
+clip rarely acts. Defaults like Live's Limiter: Gain 0 dB (−12 … +24), Ceiling −0.3 dB (−24 … 0), Release 300 ms with
+Auto on, Lookahead 3 ms, Stereo, True Peak off. Also: the plan's det = latency(|x|, 6) beside out = latency(x, 6, la) is one
+frame short for its proof (a window of L includes its own frame), so the detector runs 7 frames behind (truepeak + 1);
+the latency stays L + 6. Reversible: limiterBlocks (modules.cpp).
+Status: open.
