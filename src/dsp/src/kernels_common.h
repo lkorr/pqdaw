@@ -133,11 +133,13 @@ KernelFn findNoiseStepKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept
 // EQ.1b: an svf state's states (every lane) all ≤ eps / set to 0 (dsp::decayStateSmall / decayStateFlush). RT-safe.
 bool svfStateSmall(const void* state, float eps) noexcept;
 bool svfStateFlush(void* state) noexcept;  // true: a word was not 0 yet
-// DY.1 (kernels_dynamics.cpp): follow, window.
+// DY.1 (kernels_dynamics.cpp): follow, window; DY.5: truepeak.
 KernelFn findDynamicsKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 bool followStateSmall(const void* state, float eps) noexcept;
 bool followStateFlush(void* state) noexcept;
 bool windowStateSmall(const void* state, float eps) noexcept;
 bool windowStateFlush(void* state) noexcept;
+bool truePeakStateSmall(const void* state, float eps) noexcept;  // DY.5
+bool truePeakStateFlush(void* state) noexcept;
 
 }  // namespace pq::dsp::detail

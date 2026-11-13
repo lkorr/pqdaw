@@ -118,6 +118,8 @@ constexpr PortSpec pLatency[] = {{"x", kR, false, 0.0f, true}, {"frames", kRCons
 // window's length (seconds, const: it sizes the state) and op (0 max, 1 min, 2 mean).
 constexpr PortSpec pFollow[] = {{"x", kR}, {"attack", kR, true, 0.001f}, {"release", kR, true, 0.1f}};
 constexpr PortSpec pWindow[] = {{"x", kR}, {"time", kRConst}, {"op", kRConst, true, 0.0f}};
+// DY.5: the BS.1770 true-peak estimate of x (a group delay of 6 frames it does not report).
+constexpr PortSpec pTruePeak[] = {{"x", kR}};
 constexpr PortSpec pSampleHold[] = {{"x", kR}, {"trig", kB}};
 constexpr PortSpec pLatch[] = {{"x", kAny}, {"enable", kB}};
 
@@ -298,6 +300,10 @@ const AtomSignature kAtoms[] = {
      "envelope follower: one pole, attack while x rises above it, release while it falls (time constants, s)"},
     {"window", C::Memory, pWindow, pOutR, sizeof(dsp::WindowState), kStateful | kVariableState | kBroadcast, 0, {},
      "max / min / mean of the last time seconds of x (op 0 max, 1 min, 2 mean)"},
+    // DY.5: nonlinear (a max of magnitudes), no response rule; its 6-frame group delay is not latency (no latency rule:
+    // the Limiter delays its audio itself, so toggling True Peak never replans PDC).
+    {"truepeak", C::Memory, pTruePeak, pOutR, sizeof(dsp::TruePeakState), kStateful | kBroadcast, 0, {},
+     "ITU-R BS.1770-4 true-peak estimate (4x oversampled |x|) about 6 samples ago; reports no latency"},
     {"samplehold", C::Memory, pSampleHold, pOutR, sizeof(dsp::SampleHoldState), kStateful | kBroadcast, 0, {},
      "x sampled on each rising edge of trig"},
     {"latch", C::Memory, pLatch, pOutAny, sizeof(dsp::LatchState), kStateful, 0, {},

@@ -7,6 +7,11 @@
 //            1 and 8 lanes; a voice lane reset (the initial words) or moved from another group (another phase) goes on
 //            exactly as a fresh / its own 1-lane window would; NaN reads as 0
 //   RtScope  both kernels, both lane counts, every Spl combination (one block each, also a realignment)
+// DY.5:
+//   truepeak = the BS.1770-4 phases in direct form (double) on random input, the same bits for every block size and for
+//            1 and 8 lanes; causal (outputs to frame m read inputs to m), an impulse peaks exactly 6 frames later and
+//            is gone 12; within 0.2 dB below / 0.23 dB above (Q?-DY.5-a) a 16× oversampled reference on 400 sines at
+//            0.24–0.49·sr with random phases; RtScope
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -329,5 +334,159 @@ TEST_CASE("follow / window: RtScope (both lane counts, every Spl combination, a 
         }
       }
   CHECK(calls == 2 * 3 * (8 + 2));
+  CHECK(violations == 0);
+}
+
+// ---- truepeak (DY.5) -------------------------------------------------------------------------------------------------
+
+namespace {
+
+// ITU-R BS.1770-4 Annex 2, typed again from the standard (the kernel derives sum / difference rows from its own copy).
+constexpr double kBs1770[4][12] = {
+    {0.0017089843750, 0.0109863281250, -0.0196533203125, 0.0332031250000, -0.0594482421875, 0.1373291015625,
+     0.9721679687500, -0.1022949218750, 0.0476074218750, -0.0266113281250, 0.0148925781250, -0.0083007812500},
+    {-0.0291748046875, 0.0292968750000, -0.0517578125000, 0.0891113281250, -0.1665039062500, 0.4650878906250,
+     0.7797851562500, -0.2003173828125, 0.1015625000000, -0.0582275390625, 0.0330810546875, -0.0189208984375},
+    {-0.0189208984375, 0.0330810546875, -0.0582275390625, 0.1015625000000, -0.2003173828125, 0.7797851562500,
+     0.4650878906250, -0.1665039062500, 0.0891113281250, -0.0517578125000, 0.0292968750000, -0.0291748046875},
+    {-0.0083007812500, 0.0148925781250, -0.0266113281250, 0.0476074218750, -0.1022949218750, 0.9721679687500,
+     0.1373291015625, -0.0594482421875, 0.0332031250000, -0.0196533203125, 0.0109863281250, 0.0017089843750},
+};
+
+// Direct form in double over a zero history: max(|x[t − 6]|, |Σ_j h_p[j] x[t − j]| for the 4 phases).
+std::vector<double> bruteTruePeak(const std::vector<float>& x) {
+  std::vector<double> y(x.size());
+  auto at = [&](size_t t, size_t k) { return t >= k ? static_cast<double>(x[t - k]) : 0.0; };
+  for (size_t t = 0; t < x.size(); ++t) {
+    double m = std::fabs(at(t, 6));
+    for (const auto& h : kBs1770) {
+      double acc = 0.0;
+      for (size_t j = 0; j < 12; ++j) acc += h[j] * at(t, j);
+      m = std::max(m, std::fabs(acc));
+    }
+    y[t] = m;
+  }
+  return y;
+}
+
+std::vector<float> truePeakIn(const std::vector<float>& x, uint32_t lanes, uint32_t block) {
+  Rig r(Atom::TruePeak, lanes, StateInit{});
+  return runWindow(r, x, block);  // any 1-input kernel in calls of `block` frames
+}
+
+}  // namespace
+
+TEST_CASE("truepeak: = the BS.1770 phases in direct form; same bits for any block size and for 1 and 8 lanes") {
+  pq::DenormalGuard dg;
+  constexpr uint32_t kN = 1000;
+  std::mt19937 rng(1770);
+  std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+  std::vector<float> x8(static_cast<size_t>(kN) * 8);
+  for (float& v : x8) v = u(rng) * (u(rng) > 0.9f ? 4.0f : 1.0f);
+  const std::vector<float> ref8 = truePeakIn(x8, 8, kN);
+  for (uint32_t block : {1u, 7u, 8u, 11u, 12u, 64u, 333u}) {
+    INFO("8 lanes, block " << block);
+    CHECK(sameBits(truePeakIn(x8, 8, block), ref8));
+  }
+  for (uint32_t l = 0; l < 8; ++l) {
+    INFO("lane " << l);
+    const std::vector<float> x = lane(x8, l, 8);
+    const std::vector<float> y = truePeakIn(x, 1, kN);
+    CHECK(sameBits(y, lane(ref8, l, 8)));
+    if (l < 2)
+      for (uint32_t block : {1u, 3u, 5u, 8u, 13u, 16u, 17u, 64u, 100u}) {
+        INFO("1 lane, block " << block);
+        CHECK(sameBits(truePeakIn(x, 1, block), y));
+      }
+    const std::vector<double> b = bruteTruePeak(x);
+    double worst = 0.0;
+    for (uint32_t t = 0; t < kN; ++t) worst = std::max(worst, std::fabs(y[t] - b[t]) / std::max(1.0, b[t]));
+    CHECK(worst < 2e-6);
+  }
+}
+
+TEST_CASE("truepeak: causal, an impulse peaks exactly 6 frames later, silent 11 frames after the input ends") {
+  constexpr uint32_t kN = 100, kAt = 37;
+  for (uint32_t lanes : {1u, 8u}) {
+    INFO("lanes " << lanes);
+    std::vector<float> x(static_cast<size_t>(kN) * lanes, 0.0f);
+    for (uint32_t l = 0; l < lanes; ++l) x[kAt * lanes + l] = l % 2 ? -0.5f : 0.5f;
+    const std::vector<float> y = truePeakIn(x, lanes, 13);
+    for (uint32_t l = 0; l < lanes; ++l) {
+      const std::vector<float> yl = lane(y, l, lanes);
+      for (uint32_t t = 0; t < kN; ++t) {
+        INFO("frame " << t << " = " << yl[t]);
+        if (t < kAt || t > kAt + 11) CHECK(yl[t] == 0.0f);
+        else if (t == kAt + 6) CHECK(yl[t] == 0.5f);  // the sample itself (the phases' largest tap is 0.972)
+        else CHECK(yl[t] < 0.5f * 0.9722f);
+      }
+      CHECK(yl[kAt + 5] == 0.5f * 0.9721679687500f);  // phase 3's centre tap, a quarter sample before
+    }
+  }
+  // Outputs up to frame m depend on inputs up to m only.
+  std::mt19937 rng(6);
+  std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+  std::vector<float> a(500), b;
+  for (float& v : a) v = u(rng);
+  for (uint32_t m : {0u, 1u, 11u, 100u, 257u}) {
+    b = a;
+    for (size_t t = m; t < b.size(); ++t) b[t] = u(rng);
+    const std::vector<float> ya = truePeakIn(a, 1, 37), yb = truePeakIn(b, 1, 37);
+    INFO("changed from " << m);
+    CHECK(std::memcmp(ya.data(), yb.data(), m * sizeof(float)) == 0);
+  }
+}
+
+// Q?-DY.5-a: the standard's own passband ripple (phases 1 and 2: +0.2 dB near sr/4) makes it OVER-read by up to
+// ≈ 0.22 dB there; it never under-reads by more than a few thousandths of a dB on these. The bound is one-sided at 0.2.
+TEST_CASE("truepeak: within 0.2 dB below / 0.23 dB above a 16× oversampled reference, sines 0.24–0.49·sr, random phases") {
+  pq::DenormalGuard dg;
+  constexpr uint32_t kN = 2048, kRounds = 50, kSkip = 64;
+  std::mt19937 rng(20261113);
+  std::uniform_real_distribution<double> uf(0.24, 0.49), uph(0.0, 2.0 * 3.141592653589793), ua(0.05, 1.0);
+  double under = 0.0, over = 0.0;
+  for (uint32_t round = 0; round < kRounds; ++round) {
+    double f[8], ph[8], amp[8];
+    std::vector<float> x(static_cast<size_t>(kN) * 8);
+    for (uint32_t l = 0; l < 8; ++l) {
+      f[l] = uf(rng), ph[l] = uph(rng), amp[l] = ua(rng);
+      for (uint32_t t = 0; t < kN; ++t)
+        x[static_cast<size_t>(t) * 8 + l] = static_cast<float>(amp[l] * std::sin(2.0 * 3.141592653589793 * f[l] * t + ph[l]));
+    }
+    const std::vector<float> y = truePeakIn(x, 8, 128);
+    for (uint32_t l = 0; l < 8; ++l) {
+      // The estimate at frames n ≥ kSkip covers positions n − 6 … n − 5.125; the reference is the band-limited
+      // reconstruction of the same samples at 16× over that span — for a sine below Nyquist, the sine itself.
+      float est = 0.0f;
+      for (uint32_t t = kSkip; t < kN; ++t) est = std::max(est, y[static_cast<size_t>(t) * 8 + l]);
+      double ref = 0.0;
+      for (uint32_t k = (kSkip - 6) * 16; k < (kN - 5) * 16; ++k)
+        ref = std::max(ref, std::fabs(amp[l] * std::sin(2.0 * 3.141592653589793 * f[l] * (k / 16.0) + ph[l])));
+      const double db = 20.0 * std::log10(est / ref);
+      INFO("f " << f[l] << "·sr, phase " << ph[l] << ": " << db << " dB");
+      CHECK(db >= -0.2);
+      CHECK(db <= 0.23);
+      under = std::min(under, db), over = std::max(over, db);
+    }
+  }
+  MESSAGE("truepeak vs 16x reference over 400 sines: " << under << " … +" << over << " dB");
+}
+
+TEST_CASE("truepeak: RtScope (both lane counts, short and long calls)") {
+  pq::DenormalGuard dg;
+  std::vector<float> x(700 * 8, 0.25f), out(700 * 8);
+  uint64_t violations = 0;
+  for (uint32_t lanes : {1u, 8u}) {
+    Rig r(Atom::TruePeak, lanes, StateInit{});
+    const KernelFn fn = findKernel(Atom::TruePeak, lanes, 0);
+    REQUIRE(fn != nullptr);
+    CHECK(findKernel(Atom::TruePeak, lanes, 1) == nullptr);  // x is always a block (the scheduler fills a Spl one)
+    for (uint32_t frames : {1u, 5u, 13u, 700u}) {
+      const float* in[1] = {x.data()};
+      float* o = out.data();
+      const KernelArgs args{in, &o, r.state.data(), nullptr, frames, 1, 1, 0};
+      violations += pq::alloc_trap::countRtViolations([&] { fn(args); });
+    }
+  }
   CHECK(violations == 0);
 }

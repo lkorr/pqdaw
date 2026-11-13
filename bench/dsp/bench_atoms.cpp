@@ -113,7 +113,8 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
     case Atom::Clip: return i == 0 ? 2.0f * r - 1.0f : i == 1 ? -0.5f : 0.5f;
     // DY.1: follow's attack 1 ms, release 100 ms (samples at 48 kHz); window: a signal in [−0.8, 0.8].
     case Atom::Follow: return i == 1 ? 48.0f : i == 2 ? 4800.0f : r;
-    case Atom::Window: return 2.0f * r - 1.0f;
+    case Atom::Window:
+    case Atom::TruePeak: return 2.0f * r - 1.0f;  // DY.5: an audio signal (its cost does not depend on it)
     default: return r;
   }
 }

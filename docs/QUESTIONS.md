@@ -1368,3 +1368,15 @@ Choice: (1b) — MTS and bend files carry absolute pitches, and 31edo MTS files 
 counted in the status line; (3a), as a recorded clip with `loop` off; (4a), one undo step for both (the drop's
 coalescing key); (5a). All in src/document/src/midi_import.cpp (importMidi) except (4) (arrangement/file_drop.cpp commit).
 Status: open.
+
+## Q?-DY.5-a · truepeak: the plan's ±0.2 dB against the BS.1770 filter's own ripple
+Context: DY.5 asks for `truepeak` to be the BS.1770-4 Annex 2 estimator AND within 0.2 dB of a 16× reference on sines
+at 0.24–0.49·sr. The standard's phases 1 and 2 have +0.2 dB of passband gain near sr/4 (−0.24 dB at DC), so with the
+standard's coefficients it OVER-reads by up to 0.222 dB at 0.24–0.265·sr (about 1 in 12 random cases above 0.2); it
+under-reads by at most a few thousandths of a dB on them (exactly rational frequencies are worse: 1/3·sr with an unlucky phase
+under-reads 0.29 dB, the 4× grid's known limit). Options: (a) the standard's coefficients, bound one-sided (under
+≤ 0.2 dB, over ≤ 0.23 dB); (b) an own flatter 48-tap filter that meets ±0.2 dB (no longer a BS.1770 meter: readouts
+differ from other meters'). Choice: (a). Over-reading only makes the Limiter limit 0.2 dB harder near sr/4; DY.6's
+"true peak ≤ ceiling + 0.2 dB" depends on under-reading, which is ~0. Reversible: kTpPhase in kernels_dynamics.cpp
+and the test's bound (tests/dsp/test_dynamics.cpp).
+Status: open.

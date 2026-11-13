@@ -65,6 +65,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "latency",
       // DY.1: the dynamics atoms (the envelope follower and the sliding max / min / mean).
       "follow", "window",
+      // DY.5: the BS.1770 true-peak estimator.
+      "truepeak",
   };
   for (const char* n : names) {
     CAPTURE(n);

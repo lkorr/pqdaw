@@ -2,6 +2,7 @@
 // mean, an `smp` length) and latency with a `time` — interpreter and JIT bit-identical in odd block sizes, RtScope on
 // every process(); latency(x, frames, time) REPORTS and DELAYS the same whole number of samples, frames +
 // round(time · sr), at 44.1 / 48 / 96 kHz (pathLatency == the impulse's position).
+// DY.5: truepeak on both backends (bit-identical, RtScope, no reported latency).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -230,4 +231,37 @@ TEST_CASE("latency(time): optimise() folds the time into the frames; without a s
     CHECK(s.ok() == (optSr > 0.0));
     if (!s.ok()) CHECK(s.error().message.find("was not folded into its frames") != std::string::npos);
   }
+}
+
+// DY.5: truepeak through whole images — both backends bit-identical in odd blocks, RtScope, and no reported latency
+// (the Limiter aligns its audio itself): pathLatency of its output is 0, while it reads |x[n − 6]| at frame n.
+TEST_CASE("truepeak: interpreter == JIT bit for bit, odd blocks; RtScope; reports no latency") {
+  constexpr double kSr = 48000.0;
+  const Compiled c = compileText(R"(
+patch T {
+  in x : audio
+  out tp : audio
+  out tq : audio
+  tp = truepeak(x)
+  tq = truepeak(x * 0.5 + 0.25)
+}
+)", kSr);
+  constexpr uint32_t kN = 3000;
+  std::vector<float> x(kN, 0.0f);
+  for (uint32_t i = 0; i < kN; ++i) x[i] = static_cast<float>(std::sin(i * 1.53 + 0.4) * (0.3 + 0.7 * ((i / 500) % 2)));
+  x[1000] = 1.5f;
+  const std::vector<std::string> names = {"tp", "tq"};
+  uint64_t violations = 0;
+  const auto i37 = render(0, c, kSr, {x}, names, kN, 37, violations);
+  const auto j37 = render(1, c, kSr, {x}, names, kN, 37, violations);
+  const auto j64 = render(1, c, kSr, {x}, names, kN, 64, violations);
+  for (size_t k = 0; k < names.size(); ++k) {
+    INFO(names[k]);
+    CHECK(sameBits(i37[k], j37[k]));
+    CHECK(sameBits(j37[k], j64[k]));
+  }
+  CHECK(violations == 0);
+  for (uint32_t t = 6; t < kN; ++t) CHECK(i37[0][t] >= std::fabs(x[t - 6]));
+  CHECK(outLatency(c.typed, "tp") == 0.0);
+  CHECK(outLatency(c.typed, "tq") == 0.0);
 }

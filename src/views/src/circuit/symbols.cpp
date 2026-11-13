@@ -74,6 +74,7 @@ Classified classifyAtom(std::string_view name, uint32_t requiredInputs) {
       {"fall", Symbol::Ic, Glyph::None, "FALL"},      {"change", Symbol::Ic, Glyph::None, "CHG"},
       {"samplehold", Symbol::Ic, Glyph::None, "S/H"}, {"latch", Symbol::Ic, Glyph::None, "LATCH"},
       {"follow", Symbol::Ic, Glyph::None, "ENV"},     {"window", Symbol::Ic, Glyph::None, "WIN"},  // DY.1
+      {"truepeak", Symbol::Ic, Glyph::None, "TP"},  // DY.5
       {"neg", Symbol::Box, Glyph::None, "-x"},        {"channel", Symbol::Box, Glyph::None, "[ ]"},
       {"pack", Symbol::Box, Glyph::None, "( , )"},
   };

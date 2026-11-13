@@ -310,6 +310,12 @@ struct alignas(32) WindowState {
   const float* values() const noexcept { return reinterpret_cast<const float*>(this + 1); }
 };
 
+// truepeak (DY.5, kernels_dynamics.cpp): the last 11 inputs, oldest first. 8 lanes: h[k·8 + lane] (every word per
+// lane, PerLane); 1 lane: h[0 … 10] (the rest unused, 0).
+struct alignas(32) TruePeakState {
+  float h[11 * 8];
+};
+
 // noise_step (NZ.1, kernels_noise_step.cpp): everything up to `counter` is [8] arrays reset per voice lane (a note-on
 // restarts the lane: a first value is drawn at its next frame); `counter` (frames this block has run), `base` (the
 // node's seed) and `group` (its voice group's mix) are the group's. A draw at frame t hashes key + (t − origin): the
@@ -364,6 +370,7 @@ static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 480);
 static_assert(sizeof(FollowState) == 32 && sizeof(WindowState) == 256);
+static_assert(sizeof(TruePeakState) == 352);
 static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);

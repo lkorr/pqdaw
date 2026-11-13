@@ -192,11 +192,14 @@ TEST_CASE("dsp silence: every declaration holds for its kernel (T1.x-silence)") 
             const uint32_t tail = pq::dsp::silenceTail(atom, init);
             if (pq::dsp::hasDecayState(atom)) {
               // Decays under silence (any coefficients, held: a design per frame would make this slow) until ≤ ε, then
-              // the host flushes it.
-              CHECK(tail == 0);
+              // the host flushes it. DY.5: one with a tail (truepeak's FIR history) is exactly 0 after it.
               std::vector<float> fixedIn(numIn);
               for (uint32_t i = 1; i < numIn; ++i) fixedIn[i] = coefficient(atom, i, info, rng);
               auto in = [&](uint32_t i, uint32_t, uint32_t) { return i == 0 ? silentValue(rng) : fixedIn[i]; };
+              if (tail > 0) {
+                runKernel(k, state.data(), tail, r, in);
+                CHECK(pq::dsp::decayStateSmall(atom, state.data(), 0.0f));
+              }
               bool small = false;
               for (uint32_t b = 0; b < 4096 && !small; ++b) {
                 runKernel(k, state.data(), 64, r, in);

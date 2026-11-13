@@ -1,5 +1,6 @@
 // Dynamics atoms (DY.1, docs/plans/DY.md): follow (attack / release one-pole envelope) and window (sliding max / min /
-// mean). Semantics: pq/dsp/atoms.h "Dynamics"; state layouts: atom_state.h FollowState / WindowState.
+// mean); DY.5: truepeak (the BS.1770-4 4× true-peak estimate). Semantics: pq/dsp/atoms.h "Dynamics"; state layouts:
+// atom_state.h FollowState / WindowState / TruePeakState.
 //
 // CPU: follow's recursion is the only per-sample dependency: y feeds two independent fmas and a compare, then a blend
 // (≈ 5 cycles of latency per frame; x·(1 − r) and the input clean-up are off the chain). Its coefficients are one
@@ -7,6 +8,10 @@
 // in-register prefix extremum (3 permute + max), one carry; the segment's suffix pass is the same, backwards, once per
 // L frames. 8 lanes: one vector per frame (the voices), the suffix pass one vector op per row. mean: one double add per
 // frame (the running sum), and a 4-way double sum over the ring per L frames.
+// truepeak: one vector per 8 frames (1 lane) or per frame (8 lanes), all four phases in one pass over the 12 taps:
+// the mirrored phase pairs share s_j / d_j (12 add / sub), then 24 fma, 4 abs, 2 adds, 2 max: 38 arithmetic ops for
+// 8 samples where four direct 12-tap phases take 48 fma. Taps read the input in place from element 16 (1 lane) / 88
+// (8 lanes) on; before that a stack copy of history + head.
 
 #include <cmath>
 #include <cstring>
@@ -434,12 +439,137 @@ struct Window {
   }
 };
 
+// ---- truepeak (DY.5) -------------------------------------------------------------------------------------------------
+
+// ITU-R BS.1770-4 Annex 2: the 48-tap 4× interpolating filter as its four 12-tap phases (tap j of phase p is h[4j + p]).
+// Group delay 23.5 at 4×: phase p's output at frame n sits at n − 5.875 + p / 4.
+constexpr float kTpPhase[4][12] = {
+    {0.0017089843750f, 0.0109863281250f, -0.0196533203125f, 0.0332031250000f, -0.0594482421875f, 0.1373291015625f,
+     0.9721679687500f, -0.1022949218750f, 0.0476074218750f, -0.0266113281250f, 0.0148925781250f, -0.0083007812500f},
+    {-0.0291748046875f, 0.0292968750000f, -0.0517578125000f, 0.0891113281250f, -0.1665039062500f, 0.4650878906250f,
+     0.7797851562500f, -0.2003173828125f, 0.1015625000000f, -0.0582275390625f, 0.0330810546875f, -0.0189208984375f},
+    {-0.0189208984375f, 0.0330810546875f, -0.0582275390625f, 0.1015625000000f, -0.2003173828125f, 0.7797851562500f,
+     0.4650878906250f, -0.1665039062500f, 0.0891113281250f, -0.0517578125000f, 0.0292968750000f, -0.0291748046875f},
+    {-0.0083007812500f, 0.0148925781250f, -0.0266113281250f, 0.0476074218750f, -0.1022949218750f, 0.9721679687500f,
+     0.1373291015625f, -0.0594482421875f, 0.0332031250000f, -0.0196533203125f, 0.0109863281250f, 0.0017089843750f},
+};
+
+constexpr bool tpMirrored() {
+  for (int j = 0; j < 12; ++j)
+    if (kTpPhase[3][j] != kTpPhase[0][11 - j] || kTpPhase[2][j] != kTpPhase[1][11 - j]) return false;
+  return true;
+}
+static_assert(tpMirrored(), "BS.1770's phases 3 and 2 are phases 0 and 1 reversed (the kernel relies on it)");
+
+// The mirrored pairs in sum / difference form, each row broadcast to 8 lanes: rows 0–5 c0_j = (h0[j] + h0[11 − j]) / 2,
+// 6–11 e0_j = (h0[j] − h0[11 − j]) / 2, 12–23 the same of phase 1. Exact: every tap is a multiple of 2^−13.
+// With s_j = x[n − j] + x[n − 11 + j], d_j = x[n − j] − x[n − 11 + j]: y0 = P0 + Q0, y3 = P0 − Q0 (P0 = Σ c0_j s_j,
+// Q0 = Σ e0_j d_j), y1 = P1 + Q1, y2 = P1 − Q1.
+struct TpRows {
+  alignas(32) float v[24][8];
+};
+constexpr TpRows makeTpRows() {
+  TpRows r{};
+  for (int ph = 0; ph < 2; ++ph)
+    for (int j = 0; j < 6; ++j)
+      for (int l = 0; l < 8; ++l) {
+        r.v[ph * 12 + j][l] = (kTpPhase[ph][j] + kTpPhase[ph][11 - j]) * 0.5f;
+        r.v[ph * 12 + 6 + j][l] = (kTpPhase[ph][j] - kTpPhase[ph][11 - j]) * 0.5f;
+      }
+  return r;
+}
+alignas(32) constexpr TpRows kTpRows = makeTpRows();
+
+// One vector of estimates: 8 frames of one lane (W = 1) or one frame of 8 lanes (W = 8). p is the newest input element
+// (x[n]); reads p − j·W for j = 0 … 11. max(|P + Q|, |P − Q|) = |P| + |Q|, so each pair is two abs and an add. The
+// operation order is the same for both widths (a lane's bits do not depend on W).
+template <uint32_t W>
+inline __m256 truePeakVec(const float* p) noexcept {  // RT-safe
+  const __m256 absMask = _mm256_castsi256_ps(_mm256_set1_epi32(0x7FFFFFFF));
+  auto row = [](int r) noexcept { return _mm256_load_ps(kTpRows.v[r]); };
+  __m256 a = _mm256_loadu_ps(p), b = _mm256_loadu_ps(p - 11 * W);
+  __m256 s = _mm256_add_ps(a, b), d = _mm256_sub_ps(a, b);
+  __m256 p0 = _mm256_mul_ps(s, row(0)), q0 = _mm256_mul_ps(d, row(6));
+  __m256 p1 = _mm256_mul_ps(s, row(12)), q1 = _mm256_mul_ps(d, row(18));
+  for (int j = 1; j < 6; ++j) {
+    a = _mm256_loadu_ps(p - j * static_cast<int>(W));
+    b = _mm256_loadu_ps(p - (11 - j) * static_cast<int>(W));
+    s = _mm256_add_ps(a, b);
+    d = _mm256_sub_ps(a, b);
+    p0 = _mm256_fmadd_ps(s, row(j), p0);
+    q0 = _mm256_fmadd_ps(d, row(6 + j), q0);
+    p1 = _mm256_fmadd_ps(s, row(12 + j), p1);
+    q1 = _mm256_fmadd_ps(d, row(18 + j), q1);
+  }
+  // b is now x[n − 6], the sample itself. maxps returns its second operand when either is NaN: a NaN interpolant is
+  // skipped, a NaN sample reads NaN.
+  const __m256 m0 = _mm256_add_ps(_mm256_and_ps(p0, absMask), _mm256_and_ps(q0, absMask));
+  const __m256 m1 = _mm256_add_ps(_mm256_and_ps(p1, absMask), _mm256_and_ps(q1, absMask));
+  return _mm256_max_ps(m0, _mm256_max_ps(m1, _mm256_and_ps(b, absMask)));
+}
+
+inline void storePart(float* out, __m256 y, uint32_t n) noexcept {  // RT-safe; n ≤ 8
+  alignas(32) float t[8];
+  _mm256_store_ps(t, y);
+  std::memcpy(out, t, n * sizeof(float));
+}
+
+struct TruePeak {
+  static constexpr uint32_t kSpec = 0;  // x is always a block
+  template <class S, uint32_t SM>
+  static void run(const KernelArgs& a) noexcept {  // RT-safe
+    constexpr uint32_t W = S::kW;
+    constexpr uint32_t H = 11 * W;               // history elements
+    constexpr uint32_t kHead = (H + 7) / 8 * 8;  // the leading elements whose vectors read history: 16 / 88
+    const uint32_t total = a.frames * W;
+    if (total == 0) return;
+    auto& st = *static_cast<TruePeakState*>(a.state);
+    const float* x = a.in[0];
+    float* out = a.out[0];
+    // The history and the call's first kHead elements, contiguous (zeros past the call's end). Fixed-size copies
+    // unless the call is shorter than kHead.
+    alignas(32) float buf[H + kHead];
+    std::memcpy(buf, st.h, H * sizeof(float));
+    uint32_t nh = kHead;
+    if (total >= kHead) {
+      std::memcpy(buf + H, x, kHead * sizeof(float));
+    } else {
+      nh = total;
+      std::memcpy(buf + H, x, nh * sizeof(float));
+      std::memset(buf + H + nh, 0, (kHead - nh) * sizeof(float));
+    }
+    // From kHead on every tap is inside the call's input. These run first, so the copies above have left the store
+    // buffer before the head's loads read them (a load spanning two pending stores cannot be forwarded: a stall). One
+    // vector per step: two at once (sharing the coefficient rows) measured slower — MSVC re-folds the rows into every
+    // fma and spills the eight accumulators.
+    uint32_t e = kHead;
+    for (; e + 8 <= total; e += 8) _mm256_storeu_ps(out + e, truePeakVec<W>(x + e));
+    for (uint32_t h = 0; h < nh; h += 8) {
+      const __m256 y = truePeakVec<W>(buf + H + h);
+      if (h + 8 <= total) _mm256_storeu_ps(out + h, y);
+      else storePart(out + h, y, total - h);
+    }
+    if (e < total) {  // 1 lane: the last frames of a call that is not a multiple of 8 (e ≥ kHead > H)
+      alignas(32) float t[H + 8] = {};
+      std::memcpy(t, x + e - H, (total - e + H) * sizeof(float));
+      storePart(out + e, truePeakVec<W>(t + H), total - e);
+    }
+    if (total >= H) {
+      std::memcpy(st.h, x + total - H, H * sizeof(float));
+    } else {
+      std::memmove(st.h, st.h + total, (H - total) * sizeof(float));
+      std::memcpy(st.h + H - total, x, total * sizeof(float));
+    }
+  }
+};
+
 }  // namespace
 
 KernelFn findDynamicsKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept {
   switch (a) {
     case Atom::Follow: return pick<Follow>(lanes, specMask);
     case Atom::Window: return pick<Window>(lanes, specMask);
+    case Atom::TruePeak: return pick<TruePeak>(lanes, specMask);
     default: return nullptr;
   }
 }
@@ -494,6 +624,22 @@ bool windowStateFlush(void* state) noexcept {  // RT-safe
     st.prefix[l] = p;
     any |= (std::bit_cast<uint64_t>(sumOf(st, l)) & 0x7FFFFFFFFFFFFFFFull) != 0;
     setSum(st, l, 0.0);
+  }
+  return any;
+}
+
+// The history (every lane's 11 words; a 1-lane block's unused words are 0) ≤ eps / set to 0.
+bool truePeakStateSmall(const void* state, float eps) noexcept {  // RT-safe
+  for (float v : static_cast<const TruePeakState*>(state)->h)
+    if (!(std::fabs(v) <= eps)) return false;
+  return true;
+}
+
+bool truePeakStateFlush(void* state) noexcept {  // RT-safe
+  bool any = false;
+  for (float& v : static_cast<TruePeakState*>(state)->h) {
+    any |= (std::bit_cast<uint32_t>(v) & 0x7FFFFFFFu) != 0;
+    v = 0.0f;
   }
   return any;
 }

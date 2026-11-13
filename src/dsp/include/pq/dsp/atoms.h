@@ -108,6 +108,15 @@
 //                                     recomputed from the ring every L frames (drift-free; bits independent of the
 //                                     calls too), out = float(sum / L). Bounded: ≤ 2 passes over L per L frames.
 //                                     Its state decays (hasDecayState): silent for 2L frames → every value 0.
+//   truepeak (x)                      DY.5: the ITU-R BS.1770-4 Annex 2 true-peak estimate about x[n − 6]: max of |x[n − 6]|
+//                                     and |·| of the 4 polyphase interpolants of the standard's 48-tap 4× filter (12
+//                                     taps per phase over x[n − 11 … n]; they sit at n − 5.875 … n − 5.125). A fixed
+//                                     group delay of 6 frames that it does NOT report as latency (the Limiter delays
+//                                     its audio by la + 6 itself). Each phase pair (0, 3) and (1, 2) is mirrored, so
+//                                     the kernel takes s_j = x[n − j] + x[n − 11 + j], d_j = x[n − j] − x[n − 11 + j]
+//                                     (j < 6) and max(|P + Q|, |P − Q|) = |P| + |Q| per pair. A NaN interpolant is
+//                                     skipped (an inf input reads inf). History: 11 frames (initially 0); a FIR, so
+//                                     silent for 11 frames → exactly 0 (tail 11; hasDecayState: the host checks all 11).
 // Generators:
 //   phasor (hz, reset)                uint32 phase; output phase/2^32 in [0, 1) (top 24 bits, truncated);
 //                                     increment = round(hz · 2^32 / sr) with hz clamped to [−sr/2, sr/2]
@@ -326,6 +335,8 @@ enum class Atom : uint16_t {
   NoiseStep,
   // DY.1: the dynamics atoms (see "Dynamics" above)
   Follow, Window,
+  // DY.5: the BS.1770 true-peak estimator (see "Dynamics" above)
+  TruePeak,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);
@@ -447,7 +458,8 @@ SilenceInfo silenceInfo(Atom a) noexcept;  // RT-safe
 uint32_t silenceTail(Atom a, const StateInit& init) noexcept;  // RT-safe
 // EQ.1b: an atom whose history DECAYS rather than ends (svf: an IIR; DY.1: follow, and window, whose values are only
 // all 0 again once a segment / ring wrap has passed) is a Memory atom with tail 0 whose state the host
-// checks instead: decayStateSmall = every state word (of every lane; the host's are global 1-lane blocks) is ≤ eps (NaN:
+// checks instead (DY.5: truepeak's history ENDS after its tail of 11, but it is 11 words per lane, so the host checks it
+// the same way rather than as a one-word z1 memory): decayStateSmall = every state word (of every lane; the host's are global 1-lane blocks) is ≤ eps (NaN:
 // false); decayStateFlush sets those words to exactly 0 (the block's output is then exactly 0 for a silent input) and
 // returns whether one was not 0 yet. False / nothing for other atoms. RT-safe.
 bool hasDecayState(Atom a) noexcept;

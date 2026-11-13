@@ -125,6 +125,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // the values).
     {"follow", 3, 1, false, false, 0, 0, kB0 | kB1 | kB2, 0, sizeof(FollowState), Resource::None, true},
     {"window", 1, 1, false, false, 0, 0, kB0, 0, sizeof(WindowState), Resource::None, true},
+    // DY.5 (kernels_dynamics.cpp): x Blk only (a param-rate true peak is the value itself: the scheduler fills a
+    // block); it reads x behind its output, so no in-place output.
+    {"truepeak", 1, 1, false, false, 0, 0, 0, 0, sizeof(TruePeakState), Resource::None, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -243,6 +246,7 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     // 8-lane kernel after a lane reset or move).
     case Atom::Follow: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(FollowState))};
     case Atom::Window: return {LaneState::Whole, 0};
+    case Atom::TruePeak: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(TruePeakState))};  // DY.5: h[k·8 + lane]
     case Atom::OversampleUp:
     case Atom::OversampleDown:
     case Atom::OversamplePhase: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
@@ -309,7 +313,8 @@ SilenceInfo silenceInfo(Atom a) noexcept {  // RT-safe
     case Atom::DelayFade:
     case Atom::Svf:  // svf, follow, window: x; their state decays (hasDecayState)
     case Atom::Follow:
-    case Atom::Window: return {R::Memory, i0, 0};
+    case Atom::Window:
+    case Atom::TruePeak: return {R::Memory, i0, 0};  // DY.5: a FIR (tail 11), checked by value like the decaying ones
     case Atom::Z1Read:
     case Atom::DelayReadLinear:
     case Atom::DelayReadCubic:
@@ -329,6 +334,7 @@ uint32_t silenceTail(Atom a, const StateInit& init) noexcept {  // RT-safe
     case Atom::Rise:
     case Atom::Fall:
     case Atom::Change: return 1;
+    case Atom::TruePeak: return 11;  // DY.5: x[n − 11] is its oldest tap
     default: break;
   }
   if (!isDelay(a)) return 0;  // svf: 0 (its state decays: decayStateSmall)
@@ -336,13 +342,16 @@ uint32_t silenceTail(Atom a, const StateInit& init) noexcept {  // RT-safe
   return clampMaxDelay(init.maxDelayFrames, ringLanes(init)) + 3u;
 }
 
-bool hasDecayState(Atom a) noexcept { return a == Atom::Svf || a == Atom::Follow || a == Atom::Window; }  // RT-safe
+bool hasDecayState(Atom a) noexcept {  // RT-safe
+  return a == Atom::Svf || a == Atom::Follow || a == Atom::Window || a == Atom::TruePeak;
+}
 
 bool decayStateSmall(Atom a, const void* state, float eps) noexcept {  // RT-safe
   switch (a) {
     case Atom::Svf: return detail::svfStateSmall(state, eps);
     case Atom::Follow: return detail::followStateSmall(state, eps);
     case Atom::Window: return detail::windowStateSmall(state, eps);
+    case Atom::TruePeak: return detail::truePeakStateSmall(state, eps);
     default: return false;
   }
 }
@@ -352,6 +361,7 @@ bool decayStateFlush(Atom a, void* state) noexcept {  // RT-safe
     case Atom::Svf: return detail::svfStateFlush(state);
     case Atom::Follow: return detail::followStateFlush(state);
     case Atom::Window: return detail::windowStateFlush(state);
+    case Atom::TruePeak: return detail::truePeakStateFlush(state);
     default: return false;
   }
 }

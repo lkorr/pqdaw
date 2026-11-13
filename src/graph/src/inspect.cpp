@@ -69,6 +69,7 @@ float opCostWeight(const Schedule& s, uint32_t op) noexcept {
     case Atom::NoiseStep: return 4.0f;        // NZ.1: a phase compare per frame; at audio rate the draw (= noise's)
     case Atom::Follow: return 4.0f;           // DY.1: a 5-cycle recursion per sample (≈ 1.3 ns, bench_atoms)
     case Atom::Window: return 4.0f;           // DY.1: max / min ≈ 2 compares per sample amortised, mean a double add
+    case Atom::TruePeak: return 4.0f;         // DY.5: 38 vector ops per 8 samples (bench_atoms)
     case Atom::DelayLinear: case Atom::DelayCubic: case Atom::DelayAllpass: case Atom::DelayReadLinear:
     case Atom::DelayReadCubic: case Atom::DelayReadAllpass: case Atom::DelayWrite: case Atom::SineHz:
     case Atom::DelayFade: case Atom::DelayReadFade:
