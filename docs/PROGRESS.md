@@ -548,3 +548,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: one memcpy per captured channel per block; nothing when no capture; 32f exact-length export renames instead of rewriting.
 - Notes: Q251 (fresh link per solo pass instead of a solo param write).
 
+## 2026-11-13 · FZ.1 merged · main
+- Did: merged task/FZ.1-frozen-tracks (86136237): Track::frozen + SetTrackFrozen (groups set each MIDI/audio member, one undo step); the frozen-content rule as one check at the end of apply() ("Frozen: unfreeze to edit"); LowerOptions::frozenSlotOf / captureOwn (`export own`), LoweredProject::frozenKeep, dropped wires Inactive.
+- Verified (worker): pq_tests_document 222/222 (frozen 7/7); -Affected after rebase 45/45.
+- Perf: unfrozen projects lower to the same IR; a frozen track with nothing kept = clip player + mixer (IR text checked).
+- Notes: Q252. doc::wireStates / lowerParams don't know slots yet (FZ.2 reads LoweredProject::wires); recording into a frozen track fails at commit (FZ.3: disable arm).
+

@@ -825,7 +825,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **EX.1 Export render core: bus capture, private link, PDC trim, loop wrap, normalize, dither, PCM16/24** *(merged fbb26630; Q251: a stem with return/master FX renders on a fresh private link per track (one link's solo passes bled ~20 ms of the previous pass); `--render` now runs on the same core)* (plan §EX.1).
 - [ ] **EX.2 Export Audio dialog (Ctrl+Shift+R)** 👁 (plan §EX.2). After EX.1.
 - [ ] **EX.3 FLAC export (libFLAC, BSD-3)** (plan §EX.3).
-- [ ] **FZ.1 Frozen tracks in the document and the lowering** (plan §FZ.1).
+- [x] **FZ.1 Frozen tracks in the document and the lowering** *(merged 86136237; Q252: cables from other tracks are outside input (allowed; the freeze key must cover them); one content check at the end of apply)* (plan §FZ.1).
 - [ ] **FZ.2 Freeze service (cache/freeze renders)** (plan §FZ.2). After EX.1, FZ.1.
 - [ ] **FZ.3 Freeze UI** 👁 (plan §FZ.3). After FZ.1.
 - [ ] **FZ.4 Flatten, bounce to new track, consolidate audio** (plan §FZ.4). After FZ.2.

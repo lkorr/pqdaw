@@ -1214,7 +1214,7 @@ cost one interpreter compile per track (~50 ms on the fixture) and the JIT's, mo
 pass loop is the only place.
 Status: open.
 
-## Q?-FZ.1-a · What a frozen track's "own wires" are; what the guard lets through from outside
+## Q252 · 2026-11-13 · FZ.1 · What a frozen track's "own wires" are; what the guard lets through from outside
 Context: D4 refuses edits of a frozen track's devices, clips, notes and device lanes. Cables are the circuit too
 (TX.all-free), and some cross tracks: a cable from another track's LFO into a frozen block, a cable from another track
 into the frozen mixer. A tempo edit also re-syncs a frozen audio track's warp-Off clips (their lengths change).
