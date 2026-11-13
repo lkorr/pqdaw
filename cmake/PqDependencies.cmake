@@ -277,6 +277,39 @@ pq_fetch_declare(dr_libs
   EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(dr_libs)
 
+# --- libFLAC (Xiph, BSD-3-Clause): FLAC encoding for Export Audio (EX.3) ---------------------------------------
+# The official release tarball of 1.5.0 (2025-02-11; GitHub release asset, downloads.xiph.org as a fallback, identical
+# bytes), SHA-256 pinned. Populated only: its CMake project configures programs, examples, tests, docs, Ogg and
+# pthreads; pqdaw compiles libFLAC's C sources itself as the static `pq_flac` (no Ogg, no version resource, /MT via
+# CMAKE_MSVC_RUNTIME_LIBRARY, warnings off), with the configure step replaced by cmake/flac/config.h. Decoding stays
+# dr_flac's (pq_media_codecs); libFLAC's decoder is compiled only because the encoder's verify mode references it.
+pq_fetch_declare(flac
+  URL      https://github.com/xiph/flac/releases/download/1.5.0/flac-1.5.0.tar.xz
+           https://downloads.xiph.org/releases/flac/flac-1.5.0.tar.xz
+  URL_HASH SHA256=f2c1c76592a82ffff8413ba3c4a1299b6c7ab06c734dee03fd88630485c2b920
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  SOURCE_SUBDIR  pq-no-cmake
+  EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(flac)
+set(_pq_flac_src ${flac_SOURCE_DIR}/src/libFLAC)
+add_library(pq_flac STATIC
+  ${_pq_flac_src}/bitmath.c ${_pq_flac_src}/bitreader.c ${_pq_flac_src}/bitwriter.c ${_pq_flac_src}/cpu.c
+  ${_pq_flac_src}/crc.c ${_pq_flac_src}/fixed.c ${_pq_flac_src}/fixed_intrin_sse2.c ${_pq_flac_src}/fixed_intrin_ssse3.c
+  ${_pq_flac_src}/fixed_intrin_sse42.c ${_pq_flac_src}/fixed_intrin_avx2.c ${_pq_flac_src}/float.c
+  ${_pq_flac_src}/format.c ${_pq_flac_src}/lpc.c ${_pq_flac_src}/lpc_intrin_sse2.c ${_pq_flac_src}/lpc_intrin_sse41.c
+  ${_pq_flac_src}/lpc_intrin_avx2.c ${_pq_flac_src}/lpc_intrin_fma.c ${_pq_flac_src}/md5.c ${_pq_flac_src}/memory.c
+  ${_pq_flac_src}/metadata_iterators.c ${_pq_flac_src}/metadata_object.c ${_pq_flac_src}/stream_decoder.c
+  ${_pq_flac_src}/stream_encoder.c ${_pq_flac_src}/stream_encoder_intrin_sse2.c
+  ${_pq_flac_src}/stream_encoder_intrin_ssse3.c ${_pq_flac_src}/stream_encoder_intrin_avx2.c
+  ${_pq_flac_src}/stream_encoder_framing.c ${_pq_flac_src}/window.c
+  ${flac_SOURCE_DIR}/src/share/win_utf8_io/win_utf8_io.c)
+target_include_directories(pq_flac PRIVATE ${CMAKE_CURRENT_LIST_DIR}/flac ${_pq_flac_src}/include)
+target_include_directories(pq_flac SYSTEM PUBLIC ${flac_SOURCE_DIR}/include)
+target_compile_definitions(pq_flac PUBLIC FLAC__NO_DLL PRIVATE HAVE_CONFIG_H _CRT_SECURE_NO_WARNINGS _USE_MATH_DEFINES)
+# /fp:fast as upstream builds it for MSVC (the LPC analysis only: the bitstream stays lossless); /arch:AVX2 is
+# pqdaw's baseline (upstream sets it on the AVX2 kernels alone and picks them at run time, as it still does here).
+target_compile_options(pq_flac PRIVATE /W0 /utf-8 /fp:fast /arch:AVX2)
+
 # --- stb (public domain or MIT): stb_vorbis (OGG Vorbis decoding) for pq_media (T5.1) -------------------------
 # stb_vorbis.c v1.22 (unchanged since 2021) from one stb master commit (2026-08-02), SHA-256 pinned; populated only.
 pq_fetch_declare(stb

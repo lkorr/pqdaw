@@ -13,6 +13,7 @@ target_compile_definitions(pq_media_codecs PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN 
 pq_add_module(pq_media
   SOURCES
     src/wav_file.cpp
+    src/flac_file.cpp  # EX.3: libFLAC (pq_flac), the export's FLAC writer
     src/pcm.cpp
     src/hash.cpp
     src/file_io.cpp
@@ -23,6 +24,6 @@ pq_add_module(pq_media
     src/transients.cpp
     src/tempo_detect.cpp
   DEPS pq_core pq_dsp
-  PRIVATE_DEPS pq_media_codecs
+  PRIVATE_DEPS pq_media_codecs pq_flac
 )
 target_include_directories(pq_media SYSTEM PRIVATE third_party ${dr_libs_SOURCE_DIR} ${stb_SOURCE_DIR})

@@ -8,6 +8,8 @@
 //
 // RT-safe (no allocation, no I/O), though only non-RT threads call it today.
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -24,5 +26,14 @@ void pcmToPlanar(PcmEncoding enc, bool bigEndian, const uint8_t* src, uint32_t c
 void deinterleaveF32(const float* src, uint32_t channels, std::size_t frames, float* const* dst) noexcept;  // RT-safe
 // Interleaved left-justified int32 (dr_flac output: a b-bit sample is value << (32 − b)) → planar float, × 2^-31.
 void deinterleaveS32(const int32_t* src, uint32_t channels, std::size_t frames, float* const* dst) noexcept;  // RT-safe
+
+// The writers' float → integer step (EX.1 WavWriter, EX.3 FlacWriter): the nearest step of x · scale (scale = 2^(bits−1)),
+// clamped to [−scale, scale − 1]; NaN → 0. A value already on the grid, q / scale, maps to q exactly. No dither (the
+// caller adds it).
+inline int32_t quantizePcm(float x, double scale) noexcept {  // RT-safe
+  const double v = std::nearbyint(static_cast<double>(x) * scale);
+  if (v != v) return 0;
+  return static_cast<int32_t>(std::clamp(v, -scale, scale - 1.0));
+}
 
 }  // namespace pq::media

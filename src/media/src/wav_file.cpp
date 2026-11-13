@@ -1,5 +1,7 @@
 #include "pq/media/wav_file.h"
 
+#include "pq/media/pcm.h"
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -86,13 +88,6 @@ std::vector<uint8_t> header(uint32_t channels, uint32_t sampleRate, uint64_t fra
   const uint32_t riff = static_cast<uint32_t>(b.size() - 8 + dataBytes);
   std::memcpy(b.data() + 4, &riff, 4);  // little endian host (x86-64)
   return b;
-}
-
-// EX.1: the nearest integer step of x · scale, clamped to [−scale, scale − 1]; NaN → 0.
-int32_t quantize(float x, double scale) noexcept {
-  const double v = std::nearbyint(static_cast<double>(x) * scale);
-  if (v != v) return 0;
-  return static_cast<int32_t>(std::clamp(v, -scale, scale - 1.0));
 }
 
 }  // namespace
@@ -239,7 +234,7 @@ Status WavWriter::write(const float* const* channels, uint32_t frames) {
     uint8_t* o = packed_.data();
     for (uint32_t f = 0; f < frames; ++f)
       for (uint32_t c = 0; c < channels_; ++c) {
-        const int32_t q = quantize(channels[c][f], scale);
+        const int32_t q = quantizePcm(channels[c][f], scale);
         *o++ = static_cast<uint8_t>(q);
         *o++ = static_cast<uint8_t>(q >> 8);
         if (bytesPer_ == 3) *o++ = static_cast<uint8_t>(q >> 16);
