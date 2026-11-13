@@ -1097,7 +1097,7 @@ Context: docs/plans/DT.md; `pq/document/modules.h` "the Delay Tap", `src/views/s
    playhead crosses a tempo point).
 Status: open (user: 2, 5).
 
-## Q?-DT.3-a · 2026-11-12 · DT.3 · The Delay Tap face: tick spacing by tier, dotted before triplets, the left edge's undo
+## Q243 · 2026-11-12 · DT.3 · The Delay Tap face: tick spacing by tier, dotted before triplets, the left edge's undo
 Context: docs/plans/DT.md "DT.3", `pq/views/panel/tempo_marks.h`, `ProjectCanvas::stretchEdgeAt`. Choices (each the most
 reversible found):
 1. **The spacing a tick needs grows with its family**: 3 logical px for powers of two and threes, 6 for fives, 8 for

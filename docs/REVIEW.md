@@ -1364,4 +1364,4 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   numerators. At the default size you see the straight, dotted and triplet ticks; stretch it or zoom the circuit in and
   1/5, 1/7, 2/7, 3/7, 5/16 … appear and get labels. Gravity only pulls to markings you can see.
 - Look at: is the default size's tick density right (a few close triplets near 0 are hidden)? Is 2/1 labelled at the
-  right end too busy? Is the left-edge drag pleasant (the right edge stays put)? (Q?-DT.3-a)
+  right end too busy? Is the left-edge drag pleasant (the right edge stays put)? (Q243)

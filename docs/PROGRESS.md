@@ -486,3 +486,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): -Affected -Slow 87/88 (pq_tests_timeline preview timing flake, 2/2 alone); follow-up pq_tests_views default tier pass (one SIGSEGV first run, not reproduced in 3 solo runs: NVIDIA flake). Goldens new: module-delay-tap-panel, module-delay-tap-sync.
 - Perf: no new kernel; per sample = existing cubic delay + param ramp only while moving; the face does one compare per frame while playing.
 - Notes: Q242. The delay line IS carried across recompiles (state_transfer verified); the worker's earlier "restart" was a test artefact.
+
+## 2026-11-12 · DT.3 merged · main
+- Did: merged task/DT.3-delay-face (cbf32457): body-drag moves the Delay Tap (tempo slider and generic slider took presses on their whole rect; now only groove/buttons); general horizontal stretch (Face::stretchX, edge drag in the patch canvas, undoable); whole-note fraction names; tempo_marks.h ranks n/d marks by simplicity, shown by screen-px room (stretch and zoom), gravity only to shown ticks.
+- Verified (worker): pq_tests_views 685/685; -Affected 23/24 then pq_tests_document fixed (old label test) and passing. Goldens: delay-tap panel/sync re-recorded, -stretched new.
+- Notes: Q243. Not done: edge stretch in the Device view's PanelHost.
