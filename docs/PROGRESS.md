@@ -525,3 +525,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: idle tick 3 pointer compares; per write the UI pays a ViewState copy, serialisation and I/O on the worker.
 - Notes: Q248. No live-app check; no autosave without the playback link. AS.2 next.
 
+## 2026-11-13 · WI.1 merged · main
+- Did: merged task/WI.1-blame (09a69c68): InferOptions::blameDepth / InferResult::blames (≤ 4 consumer/source edges per type diagnostic, upstream walk only along the offending field); ProjectCompiler infers at depth 2 and keeps lastTypeFailures(). Fixed: a failed update() kept never-published unit compiles (next update could call a unit "unchanged"); update() is now all-or-nothing.
+- Verified (worker): pq_tests_graph + pq_tests_project new cases; -Affected default tier pass except the pq_tests_views NVIDIA SIGSEGV (passed alone).
+- Perf: the walk runs only after a type error; a clean infer does no extra work or allocation.
+

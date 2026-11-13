@@ -817,7 +817,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## RB: wire isolation, autosave + crash recovery, export, freeze (plan: docs/plans/RB.md; user 2026-11-12 / 2026-11-13, SPEC §15 "finishing a song"; design approved 2026-11-13)
 ≤ 2 workers in total across RB and DY; lower.cpp (WI.2, FZ.1, DY.2) never in two workers at once. After RB and DY: an audit (critique agent + -Full), and only then M7 (docs/plans/M7.md).
-- [ ] **WI.1 Inference blames the cable** (plan §WI.1). Replaces TX.wire-isolation with WI.2.
+- [x] **WI.1 Inference blames the cable** *(merged 09a69c68; ProjectCompiler::lastTypeFailures; failed update() now all-or-nothing (it used to keep unpublished unit compiles))* (plan §WI.1). Replaces TX.wire-isolation with WI.2.
 - [ ] **WI.2 One bad wire never fails a unit (runtime cut set, Refused/Type drawn red)** (plan §WI.2). After WI.1.
 - [ ] **WI.3 Refuse declared-type clashes at gesture time** (plan §WI.3; optional, small). After WI.2.
 - [x] **AS.1 Autosave to the Unsaved session folder** *(merged 1ac36f9a; Q248: switch in Preferences → Record; view-state-only edits don't write)* (plan §AS.1).
