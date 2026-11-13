@@ -28,6 +28,7 @@ pq_add_module(pq_app
     src/export_render.cpp  # EX.1: the export render core (private link, passes, PDC trim, dither)
     src/export_service.cpp  # EX.2: the Export Audio window's port (runExport on a worker thread)
     src/freeze_service.cpp  # FZ.2: frozen-track renders (render document, key, cache, background thread)
+    src/render_edits.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio (render on a worker, one undo step)
     src/jit_cache.cpp
     src/patch_preview.cpp
     src/os_drop.cpp

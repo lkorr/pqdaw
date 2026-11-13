@@ -1,3 +1,5 @@
+// FZ.4: Flatten (offered once the render plays), Bounce to New Track and Ctrl+J over audio clips start the app's render
+// edits (a fake RenderEditPort records the jobs) through the same real dispatch.
 // FZ.3 (docs/plans/RB.md FZ.3): the freeze UI through real window dispatch over the mixer fixture — the track menu's
 // Freeze Track / Unfreeze Track (one undo step each; a group's freezes its members; freezing disarms; the arm button is
 // disabled on a frozen track), a drag on a frozen track's clip does nothing and the status line explains with an
@@ -23,6 +25,7 @@
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/render_edit_port.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 #include "pq/views/view_scenes.h"
@@ -148,7 +151,7 @@ TEST_CASE("freeze UI: the track menu freezes (one step, disarmed, arm disabled) 
     CHECK_FALSE(f.track("Bass").mixer.arm);
     CHECK(f.history() == h + 1);
   }
-  // The menu now offers Unfreeze Track (Flatten is FZ.4's: shown, disabled).
+  // The menu now offers Unfreeze Track; Flatten is disabled until the track plays its render (no source here: never).
   f.d.click(f.title("Bass"), mod::kNone, PointerButton::Right);
   f.d.step();
   auto* m = dynamic_cast<Menu*>(f.layer().top());
@@ -286,6 +289,125 @@ TEST_CASE("freeze UI: the header shows rendering progress and a failure from the
   (void)f.ctx.pollFreeze();
   CHECK_FALSE(static_cast<bool>(f.ctx.frozenSlotOf()));
   CHECK(f.header("Bass").freezeShown().state == FreezeView::State::None);
+}
+
+namespace {
+
+// FZ.4: records the render edits the views ask for.
+struct FakeRenderEdits final : RenderEditPort {
+  std::vector<RenderEditJob> jobs;
+  bool start(const RenderEditJob& j) override {
+    jobs.push_back(j);
+    return true;
+  }
+  bool busy() const override { return false; }
+  void cancel() override {}
+};
+
+bool itemEnabled(Fx& f, std::string_view track, std::string_view label) {
+  f.d.click(f.title(track), mod::kNone, PointerButton::Right);
+  f.d.step();
+  auto* m = dynamic_cast<Menu*>(f.layer().top());
+  REQUIRE(m != nullptr);
+  bool enabled = false, found = false;
+  for (size_t i = 0; i < m->items().size(); ++i)
+    if (m->items()[i].label == label) {
+      found = true;
+      enabled = m->selectable(static_cast<int32_t>(i));
+    }
+  REQUIRE_MESSAGE(found, label);
+  f.d.press("Escape");
+  f.d.step();
+  return enabled;
+}
+
+}  // namespace
+
+TEST_CASE("render edits: Flatten is offered once the frozen track plays its render; Bounce to New Track from the menu") {
+  Fx f;
+  FakeRenderEdits port;
+  FakeFreeze src;
+  f.ctx.setFreezeSource(src.source());
+  const doc::TrackId bass = f.track("Bass").id;
+  // Without a port: the status line says why, nothing changes.
+  const size_t h0 = f.history();
+  f.menu("Drums", "Bounce to New Track");
+  CHECK(f.ctx.status().find("needs the audio engine") != std::string::npos);
+  CHECK(f.history() == h0);
+  f.ctx.setRenderEditPort(&port);
+  CHECK_FALSE(itemEnabled(f, "Bass", "Flatten"));  // not frozen
+  f.menu("Bass", "Freeze Track");
+  src.set(bass, FreezeView::State::Rendering, 0.5f);
+  (void)f.ctx.pollFreeze();
+  CHECK_FALSE(itemEnabled(f, "Bass", "Flatten"));  // frozen, still rendering
+  src.set(bass, FreezeView::State::Ready, 1.0f);
+  (void)f.ctx.pollFreeze();
+  REQUIRE(itemEnabled(f, "Bass", "Flatten"));
+  const size_t h = f.history();
+  f.menu("Bass", "Flatten");
+  REQUIRE(port.jobs.size() == 1);
+  CHECK(port.jobs[0].kind == RenderEditJob::Kind::Flatten);
+  CHECK(port.jobs[0].tracks == std::vector<doc::TrackId>{bass});
+  CHECK(f.history() == h);  // the edit lands when the app's render is done
+  // Bounce to New Track: the whole track (no time selection); a group bounces its members.
+  f.menu("Drums", "Bounce to New Track");
+  REQUIRE(port.jobs.size() == 2);
+  CHECK(port.jobs[1].kind == RenderEditJob::Kind::Bounce);
+  CHECK(port.jobs[1].tracks == std::vector<doc::TrackId>{f.track("Drums").id});
+  CHECK_FALSE(port.jobs[1].range);
+  f.menu("Keys", "Bounce to New Track");
+  REQUIRE(port.jobs.size() == 3);
+  CHECK(port.jobs[2].tracks == std::vector<doc::TrackId>{f.track("Piano").id, f.track("Pad").id});
+  f.ctx.setRenderEditPort(nullptr);
+}
+
+TEST_CASE("render edits: Ctrl+J over a time selection on an audio track asks for its consolidation render") {
+  Fx f;
+  FakeRenderEdits port;
+  f.ctx.setRenderEditPort(&port);
+  // An audio track with one clip (the file is never read: the port is a fake).
+  doc::IdSource& ids = f.ctx.store().ids();
+  auto tr = doc::ops::createTrack(*f.ctx.doc(), ids, doc::TrackKind::Audio, f.track("Drums").id, "Vox");
+  REQUIRE(tr.ok());
+  REQUIRE(f.ctx.store().dispatch(tr->command).ok());
+  const doc::TrackId vox = tr->tracks.at(0);
+  doc::SampleRef s;
+  s.id = ids.sample();
+  s.path = "samples/vox.wav";
+  s.frames = 8 * 48000;
+  s.channels = 1;
+  s.displayName = "vox";
+  const doc::ops::NewAudioClip nc{vox, 0, s.id, {}};
+  auto add = doc::ops::addAudioClips(*f.ctx.doc(), ids, std::span<const doc::SampleRef>(&s, 1),
+                                     std::span<const doc::ops::NewAudioClip>(&nc, 1));
+  REQUIRE(add.ok());
+  REQUIRE(f.ctx.store().dispatch(add->command).ok());
+  f.d.step();
+  f.d.tree().layoutNow();
+  const doc::ClipRef clip{vox, f.track("Vox").clips.at(0).id};
+  const IRect box = f.arr->clipRect(clip);
+  REQUIRE_FALSE(box.empty());
+  // A range drag in the clip's body, then Ctrl+J.
+  const float y = static_cast<float>(box.y) + 0.75f * static_cast<float>(box.h);
+  f.d.drag({static_cast<float>(box.x) + 0.2f * static_cast<float>(box.w), y},
+           {static_cast<float>(box.x) + 0.6f * static_cast<float>(box.w), y}, 6);
+  REQUIRE(f.arr->selection().range);
+  REQUIRE(f.arr->selection().time.has_value());
+  const size_t h = f.history();
+  CHECK(f.d.press("Ctrl+J") == KeyResult::Action);
+  REQUIRE(port.jobs.size() == 1);
+  CHECK(port.jobs[0].kind == RenderEditJob::Kind::Consolidate);
+  CHECK(port.jobs[0].tracks == std::vector<doc::TrackId>{vox});
+  CHECK(port.jobs[0].range);
+  CHECK(port.jobs[0].from == f.arr->selection().time->start);
+  CHECK(port.jobs[0].to == f.arr->selection().time->end);
+  CHECK(f.history() == h);  // no MIDI track in the range: nothing else changed
+  // A frozen audio track is refused at once (status line with Unfreeze).
+  REQUIRE(f.ctx.store().dispatch(doc::SetTrackFrozen{vox, true}).ok());
+  CHECK(f.d.press("Ctrl+J") == KeyResult::Action);
+  CHECK(port.jobs.size() == 1);
+  CHECK(f.ctx.status().find(doc::kFrozenRefusal) != std::string::npos);
+  f.ctx.setRenderEditPort(nullptr);
 }
 
 namespace {

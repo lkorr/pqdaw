@@ -30,6 +30,7 @@
 #include "pq/views/panel/style_schemas.h"
 #include "pq/app/clip_export.h"
 #include "pq/app/export_service.h"
+#include "pq/app/render_edits.h"
 #include "pq/app/os_drag.h"
 #include "pq/views/sample_analysis.h"
 #include "pq/views/waveforms.h"
@@ -224,6 +225,11 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
   app->ctx_->setUiPoster([type = app->userEvent_](std::function<void()> fn) {
     pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn)));
   });
+  // FZ.4: Flatten / Bounce to New Track / Consolidate on audio render on the service's worker (results posted back).
+  if (app->link_) {
+    app->renderEdits_ = std::make_unique<RenderEditService>(*app->link_, *app->ctx_);
+    app->ctx_->setRenderEditPort(app->renderEdits_.get());
+  }
   // T5.5: waveform overviews go to the project's cache/ folder, or (an untitled project) per user (LRU 1 GiB).
   app->ctx_->waveforms().setProjectCache(true);
   app->ctx_->sampleAnalysis().setProjectCache(true);  // T6.8: <project>/cache/analysis, shared with the link's Beats job
@@ -427,6 +433,8 @@ ShellApp::~ShellApp() {
   shell_.reset();
   if (ctx_) ctx_->setAudioPrefs(nullptr);
   if (ctx_) ctx_->setExportPort(nullptr);
+  if (ctx_) ctx_->setRenderEditPort(nullptr);
+  renderEdits_.reset();  // FZ.4: a running render is cancelled (its files deleted) and its thread joined
   export_.reset();  // EX.2: a running export is cancelled (its temp files deleted) and its thread joined
   if (ctx_) ctx_->setDeviceLibrary(nullptr);  // the link owns it
   if (ctx_) ctx_->setModulationSource(nullptr);

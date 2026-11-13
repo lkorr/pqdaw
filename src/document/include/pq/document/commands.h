@@ -67,6 +67,12 @@ struct SetTrackActive { TrackId track; bool active = true; };     // Structural 
 // FZ.1 (model.h "Frozen tracks"): Structural. A MIDI or audio track; on a group every MIDI and audio track inside it (at
 // any depth; a group itself is never frozen). Refused on a return or the master.
 struct SetTrackFrozen { TrackId track; bool frozen = true; };
+// FZ.4 (docs/plans/RB.md D5; ops::flattenTrack): Structural. A MIDI track becomes an audio track or back, in place (its
+// id, mixer, sends, routing and lanes stay). Refused unless the track is MIDI or audio and EMPTY of what only one kind
+// holds: no blocks, no clips, no take lanes, and no cable from its source but from its main output (a MIDI track's
+// note outputs "hz", "gate", … do not exist on an audio track). Refused on a frozen track. What only the old kind has
+// is reset (an audio track's input; a MIDI track's MIDI input and note input).
+struct SetTrackKind { TrackId track; TrackKind kind = TrackKind::Audio; };
 // ---- Recording inputs (T6.1; model.h "Recording inputs", "Note input") -----------------------------------------
 // Param (TrackMonitor): the monitor gate's value. MIDI and audio tracks.
 struct SetTrackMonitor { TrackId track; MonitorMode mode = MonitorMode::Auto; };
@@ -282,7 +288,7 @@ struct Batch {
 using CommandVariant = std::variant<
     AddTrack, RemoveTrack, MoveTrack, RenameTrack, SetTrackColour, SetTrackVolume, SetTrackPan, SetTrackPanMode,
     SetTrackMute, SetTrackSolo, SetTrackArm, SetSendLevel, SetSendPreFader, SetTrackOutput, SetTrackActive, SetTrackTuning,
-    GroupTracks, UngroupTracks, SetTrackFrozen,
+    GroupTracks, UngroupTracks, SetTrackFrozen, SetTrackKind,
     SetTrackMonitor, SetTrackAudioInput, SetTrackMidiInput, SetTrackDelay, SetNoteInput, SetPunch, SetRecordSettings,
     AddTakeLane, RemoveTakeLane, RenameTakeLane, SetAuditionTake, PromoteTake,
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,

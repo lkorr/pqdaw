@@ -24,6 +24,7 @@ pq_add_module(pq_doc
     src/edit_tunings.cpp
     src/edit_audio.cpp
     src/edit_takes.cpp
+    src/edit_render.cpp  # FZ.4: flatten, bounce to a new track, consolidate audio
     src/edit_devices.cpp
     src/edit_cables.cpp  # DY.2: cable sources (the sidechain picker)
     src/edit_racks.cpp

@@ -53,6 +53,8 @@ class TapRing;  // pq/core/tap_ring.h (TX.spectrum: the analysis taps)
 namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
+class RenderEditPort;  // pq/views/render_edit_port.h (FZ.4)
+struct RenderEditJob;
 class Waveforms;       // pq/views/waveforms.h (T5.5)
 class SampleAnalysis;  // pq/views/sample_analysis.h (T6.8)
 class FileProbes;      // pq/views/file_probes.h (T5.7)
@@ -337,6 +339,11 @@ public:
   // EX.2: the app's export job, for the Export Audio window (Ctrl+Shift+R); null in tests and scenes without one.
   void setExportPort(ExportPort* p) noexcept { exportPort_ = p; }
   ExportPort* exportPort() const noexcept { return exportPort_; }
+  // FZ.4: the app's render edits (Flatten, Bounce to New Track, Consolidate on audio; pq/views/render_edit_port.h);
+  // null in tests and scenes without one. startRenderEdit: the port's start(), or (no port) false with a status line.
+  void setRenderEditPort(RenderEditPort* p) noexcept { renderEdits_ = p; }
+  RenderEditPort* renderEditPort() const noexcept { return renderEdits_; }
+  bool startRenderEdit(const RenderEditJob& job);
   // T4.1: the device library (pq/document/devices.h: the catalog the device view's menu and generic panels are built
   // from). The app sets the playback link's; null in bare tests and scenes without one (the device view then shows
   // chains without param controls and offers nothing to add). Must outlive its use. Notifies kDevices.
@@ -769,6 +776,7 @@ private:
   FileDialogs* dialogs_ = nullptr;
   AudioPrefsPort* audioPrefs_ = nullptr;
   ExportPort* exportPort_ = nullptr;  // EX.2
+  RenderEditPort* renderEdits_ = nullptr;  // FZ.4
   const doc::DeviceLibrary* devices_ = nullptr;
   doc::BlockSet blockClipboard_;  // GU.2
   ModulationSource* modulation_ = nullptr;

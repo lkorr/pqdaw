@@ -750,6 +750,142 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   return out;
 }
 
+ProjectLink::SamplePaths ProjectLink::samplePaths(const doc::Project& p, doc::TrackId track) {
+  SamplePaths out;
+  const doc::Track* t = doc::findTrackPtr(p, track);
+  if (t == nullptr) return out;
+  for (const doc::ClipSlot& c : doc::playedClips(*t))
+    if (c.audio && out.count(c.audio->sample.value) == 0) out.emplace(c.audio->sample.value, samplePathOf(p, c.audio->sample));
+  return out;
+}
+
+Status ProjectLink::renderClips(const doc::Project& p, doc::TrackId track, Ticks from, Ticks to, const SamplePaths& paths,
+                                engine::AudioSink& sink, const std::atomic<bool>* cancel, std::atomic<float>* progress) {
+  const std::optional<doc::TrackPath> path = doc::findTrack(p, track);
+  if (!path || doc::trackAt(p, *path).kind != doc::TrackKind::Audio)
+    return Error{ErrorCode::InvalidArgument, "renderClips: not an audio track", {}};
+  if (to <= from) return Error{ErrorCode::InvalidArgument, "renderClips: empty range", {}};
+  if (pool_ == nullptr) return Error{ErrorCode::Unsupported, "renderClips: no sample pool", {}};
+  auto pathOf = [&](doc::SampleId id) -> const std::string* {
+    const auto it = paths.find(id.value);
+    return it != paths.end() && !it->second.empty() ? &it->second : nullptr;
+  };
+  doc::AudioLowerOptions lo;
+  lo.available = [&](doc::SampleId id) { return pathOf(id) != nullptr; };
+  const doc::AudioTrackDesc desc = doc::lowerAudioTrack(p, *path, lo);
+  // The clips that may sound in the range (a crossfade plays a clip past its edges); the others are silent here.
+  Ticks xfade = 0;
+  for (const doc::AudioClipDesc& d : desc.clips) xfade = std::max(xfade, d.crossfadeIn);
+  engine::AudioTrackDesc one;
+  one.id = track.value;
+  std::vector<engine::ClipSample> samples;
+  std::unordered_map<uint32_t, uint32_t> index;
+  std::vector<media::TransientsPtr> transients;  // alive until the build copied them
+  uint32_t channels = 1;
+  for (const doc::AudioClipDesc& d : desc.clips) {
+    bool in = d.playable && d.start < to + xfade && d.start + d.length + xfade > from;
+    uint32_t si = 0;
+    std::span<const double> tr;
+    if (in) {
+      auto ix = index.find(d.sample.value);
+      if (ix == index.end()) {
+        auto loaded = pool_->load(pathFromUtf8(*pathOf(d.sample)));
+        if (!loaded) return std::move(loaded).error();
+        engine::ClipSample cs;
+        cs.pooled = *loaded;
+        channels = std::max(channels, std::min<uint32_t>(2, std::max<uint32_t>(1, cs.pooled->view().channels)));
+        ix = index.emplace(d.sample.value, static_cast<uint32_t>(samples.size())).first;
+        samples.push_back(std::move(cs));
+      }
+      si = ix->second;
+      if (wantsTransients(d)) {
+        const media::SampleRef& ref = samples[si].pooled;
+        if (media::TransientsPtr t = media::transientCache().find(ref->contentHash(), ref->view().frames)) {
+          transients.push_back(t);
+          tr = t->onsets;
+        }
+      }
+    }
+    one.clips.push_back(toEngine(d, si, in, tr));
+  }
+  engine::AudioBuildOptions bo;
+  bo.sampleRate = cfg_.sampleRate;
+  bo.edgeDeclick = cfg_.edgeDeclick;
+  const bool any = !samples.empty();
+  auto img = engine::AudioSequenceImage::build(std::span<const engine::AudioTrackDesc>(&one, 1), std::move(samples),
+                                               p.timeline->tempoMap, bo);
+  if (!img) return std::move(img).error();
+  const engine::AudioSequenceImage& image = **img;
+  const TempoMap& tm = p.timeline->tempoMap;
+  const SampleTime s0 = tm.ticksToSamples(from, cfg_.sampleRate), s1 = tm.ticksToSamples(to, cfg_.sampleRate);
+  // From the earliest play start of a clip sounding in the range, less the look-ahead, on the engine block grid.
+  const uint32_t block = cfg_.blockFrames;
+  SampleTime s = s0;
+  bool complex = false, stereoComplex = false;
+  for (const engine::AudioSequenceImage::Clip& c : image.clips(0))
+    if (c.sample != engine::AudioSequenceImage::kNoSample && c.playEnd > s0 && c.playStart < s1) {
+      s = std::min(s, c.playStart);
+      if (engine::clipComplex(c.warp)) {
+        complex = true;
+        stereoComplex = stereoComplex || image.sample(c.sample).view().channels > 1;
+      }
+    }
+  const auto ahead = static_cast<SampleTime>(std::ceil(cfg_.clipLookaheadSeconds * cfg_.sampleRate));
+  s = std::max<SampleTime>(0, s - ahead);
+  s -= s % block;
+  if (Status st = sink.begin(channels, static_cast<uint32_t>(std::lround(cfg_.sampleRate)), static_cast<uint64_t>(s1 - s0)); !st)
+    return st;
+  engine::ClipPlayerConfig pc;
+  pc.slots = 1;
+  pc.maxBlockFrames = block;
+  pc.sampleRate = cfg_.sampleRate;
+  pc.maxVoices = 16;
+  pc.streamBuffers = 4;
+  pc.streams = &pool_->streams();
+  pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
+  pc.stretchVoices = complex && stereoComplex ? 4u : 0u;  // T6.5: a crossfade's two voices and a swap's fade-outs
+  pc.stretchMonoVoices = complex ? 4u : 0u;
+  pc.stretchCapacity = 0;
+  engine::ClipPlayer player(pc);
+  player.setStreamFill(&waitFill, pool_.get());
+  pool_->engage();  // refcounted: the playing link's engagement is not touched
+  std::vector<float> zeros(block, 0.0f);
+  std::vector<const float*> ch(channels);
+  const SampleTime total = std::max<SampleTime>(1, s1 - s);
+  const SampleTime first = s;
+  bool started = false;
+  Status result = Ok{};
+  while (s < s1) {
+    if (cancel != nullptr && cancel->load(std::memory_order_relaxed)) break;
+    const auto n = static_cast<uint32_t>(std::min<SampleTime>(block, s1 - s));
+    if (any) {
+      player.beginBlock(n);
+      if (!started) {
+        player.setImage(&image, s, true);
+        player.seek(s);
+        started = true;
+      }
+      player.play(0, s, n);
+      player.endBlock();
+    }
+    if (s + n > s0) {
+      const SampleTime a = std::max(s, s0);
+      const bool active = any && player.active()[0] != 0;
+      for (uint32_t c = 0; c < channels; ++c) ch[c] = (active ? player.channels()[c] : zeros.data()) + (a - s);
+      if (Status st = sink.write(ch.data(), static_cast<uint32_t>(s + n - a)); !st) {
+        result = st;
+        break;
+      }
+    }
+    s += n;
+    if (progress != nullptr)
+      progress->store(static_cast<float>(static_cast<double>(s - first) / static_cast<double>(total)), std::memory_order_relaxed);
+  }
+  pool_->disengage();
+  if (Status st = sink.end(); result.ok() && !st) result = st;
+  return result;
+}
+
 Result<engine::RenderStats> ProjectLink::renderOffline(Ticks fromTick, uint64_t frames, engine::AudioSink& sink,
                                                         uint32_t blockFrames) {
   return renderOffline(fromTick, frames, sink, blockFrames, nullptr);

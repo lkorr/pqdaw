@@ -789,6 +789,32 @@ Res apply_(const Snapshot& s, const SetTrackFrozen& c, ChangeSet& cs) {
   return Snapshot(std::move(np));
 }
 
+// FZ.4: MIDI <-> audio in place, on a track holding nothing of its kind (commands.h SetTrackKind).
+Res apply_(const Snapshot& s, const SetTrackKind& c, ChangeSet& cs) {
+  Result<Loc> loc = locate(*s, c.track);
+  if (!loc) return std::move(loc).error();
+  const Track& t = *loc->track;
+  const auto clipKind = [](TrackKind k) { return k == TrackKind::Midi || k == TrackKind::Audio; };
+  if (!clipKind(t.kind) || !clipKind(c.kind)) return invalid("only MIDI and audio tracks change kind");
+  if (t.kind == c.kind) return s;
+  if (t.frozen) return invalid("a frozen track cannot change kind");
+  if (!t.devices.empty() || !t.clips.empty() || !t.takes.empty())
+    return invalid("a track changes kind only without blocks, clips or take lanes");
+  for (const Wire& w : wiresOf(*s))
+    if (w.noteSource == c.track && w.port != kMainPort) return invalid("a cable leaves the track's note outputs");
+  return editTrack(s, loc->path, cs, kChangeStructural, [&](Track& n) {
+    n.kind = c.kind;
+    n.auditionTake = LaneId{};
+    if (c.kind == TrackKind::Audio) {  // what only the other kind has (model.h Mixer: midiIn on MIDI tracks only, …)
+      n.mixer.midiIn = MidiInput{};
+      n.noteInput = NoteInput{};
+    } else {
+      n.mixer.audioIn = AudioInput{};
+    }
+    return ok();
+  });
+}
+
 Res apply_(const Snapshot& s, const SetTrackTuning& c, ChangeSet& cs) {
   Result<Loc> loc = locate(*s, c.track);
   if (!loc) return std::move(loc).error();
@@ -2302,7 +2328,7 @@ Res applyAny(const Snapshot& s, const Command& c, ChangeSet& cs) {
 constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLabels = {
     "Add Track", "Delete Track", "Move Track", "Rename Track", "Track Colour", "Set Volume", "Set Pan",
     "Pan Law", "Mute", "Solo", "Arm", "Set Send", "Send Pre/Post", "Set Output", "Activate Track", "Track Tuning",
-    "Group Tracks", "Ungroup Tracks", "Freeze Track",
+    "Group Tracks", "Ungroup Tracks", "Freeze Track", "Track Kind",
     "Monitor", "Audio Input", "MIDI Input", "Track Delay", "Note Input", "Punch", "Record Settings",
     "Add Take Lane", "Delete Take Lane", "Rename Take Lane", "Audition Take", "Promote Take",
     "Add Clip", "Delete Clip", "Move Clip", "Resize Clip", "Clip Loop", "Clip Tuning", "Rename Clip",

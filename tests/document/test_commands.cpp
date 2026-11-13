@@ -220,6 +220,15 @@ std::vector<Case> cases() {
                  CHECK(f.track(f.kick).frozen);
                  CHECK_FALSE(f.track(f.drums).frozen);
                }});
+  static TrackId emptyMidi;
+  c.push_back({"SetTrackKind (FZ.4: an empty MIDI track becomes an audio track)", [](Fixture& f) -> Command {
+                 emptyMidi = f.store.ids().track();
+                 REQUIRE(f.store.dispatch(AddTrack{makeTrackPtr(emptyMidi, TrackKind::Midi, "E"), {}, kAppend}).ok());
+                 return SetTrackKind{emptyMidi, TrackKind::Audio};
+               }, S, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.tracks == std::vector<TrackId>{emptyMidi});
+                 CHECK(f.track(emptyMidi).kind == TrackKind::Audio);
+               }});
   c.push_back({"SetTrackTuning", [](Fixture& f) -> Command {
                  return SetTrackTuning{f.bass, TuningAssignment::mainTuning(f.tMos)};
                }, S, [](Fixture& f, const ChangeSet& cs) { CHECK(contains(cs.tunings, f.tMos)); }});

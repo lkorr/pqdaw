@@ -417,6 +417,22 @@ public:
   // as in a render of the project, so the frames equal what the clip's track plays when it is alone in the project.
   // Any thread except the audio thread (the link's pool is thread-safe; nothing of the playing engine is touched).
   Result<std::vector<std::vector<float>>> renderClip(const doc::Project& p, doc::ClipRef clip);
+  // FZ.4 (consolidate on audio): what audio track `track`'s clip player plays over [from, to) — its played clips (main
+  // lane or audition take) with gains, fades, crossfades, warp and the edge declicks; no devices, no mixer — through a
+  // private clip player (the engine's code, offline, its samples loaded into the pool and streamed reads waited for),
+  // into `sink`: begin(2 channels when a clip in the range plays a stereo sample, else 1; the engine rate; frames) →
+  // write per engine block → end. Frame k = song sample samples(from) + k. The player starts at the earliest play start
+  // (minus the look-ahead) of the clips sounding in the range, so a clip that began before `from` plays exactly as it
+  // does in a render of the project from its start (a stretch voice's grid is fixed by its start). `paths`: the samples'
+  // absolute paths (samplePaths(), resolved on the UI thread; a missing one plays silence, as in playback). Any thread
+  // but the audio thread (the pool is thread-safe; nothing of the playing engine is touched). `cancel` is polled per
+  // block (true: Ok, sink ended early); `progress` 0 … 1. Errors: not an audio track, an empty range, no sample pool.
+  using SamplePaths = std::unordered_map<uint32_t, std::string>;  // sample id → absolute path ("" missing)
+  SamplePaths samplePaths(const doc::Project& p, doc::TrackId track);  // UI thread
+  Status renderClips(const doc::Project& p, doc::TrackId track, Ticks from, Ticks to, const SamplePaths& paths,
+                     engine::AudioSink& sink, const std::atomic<bool>* cancel = nullptr,
+                     std::atomic<float>* progress = nullptr);
+  double sampleRate() const noexcept { return cfg_.sampleRate; }
 
   // ---- T5.4: audio clips (see the file comment) ----
   media::SamplePool& samplePool() noexcept { return *pool_; }

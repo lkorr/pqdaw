@@ -21,6 +21,7 @@
 #include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
 #include "pq/views/panel/group_responses.h"
+#include "pq/views/render_edit_port.h"
 #include "pq/views/sample_analysis.h"
 #include "pq/views/sample_drop.h"
 #include "pq/views/waveforms.h"
@@ -1192,6 +1193,17 @@ void ViewContext::runStatusAction() {
   statusAction_ = {};
   notify(view_change::kStatus);
   if (a.run) a.run();
+}
+
+// ---- FZ.4: render edits -----------------------------------------------------------------------------------------
+
+bool ViewContext::startRenderEdit(const RenderEditJob& job) {
+  if (renderEdits_ != nullptr) return renderEdits_->start(job);
+  const char* what = job.kind == RenderEditJob::Kind::Flatten  ? "Flatten"
+                     : job.kind == RenderEditJob::Kind::Bounce ? "Bounce to New Track"
+                                                               : "Consolidate";
+  setStatus(std::string(what) + ": rendering needs the audio engine");
+  return false;
 }
 
 // ---- FZ.3: frozen tracks ------------------------------------------------------------------------------------

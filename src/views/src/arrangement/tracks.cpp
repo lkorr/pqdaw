@@ -9,6 +9,7 @@
 #include "../common/colour_grid.h"
 #include "../common/paint.h"
 #include "internal.h"
+#include "pq/views/render_edit_port.h"
 #include "pq/ui/theme.h"
 
 namespace pq::views::arrangement {
@@ -100,25 +101,74 @@ bool Editor::freezeSelection(bool frozen) {
   return ctx_.setTracksFrozen(sel_.tracks, frozen);
 }
 
-void Editor::freezeItems(std::vector<MenuItem>& items) {
-  const doc::Project& p = *ctx_.doc();
-  uint32_t leaves = 0, frozen = 0;
+namespace {
+
+// The MIDI / audio tracks of a selection (groups: their members, at any depth), row order, each once.
+std::vector<const doc::Track*> clipLeaves(const doc::Project& p, std::span<const doc::TrackId> tracks) {
+  std::vector<const doc::Track*> out;
   auto walk = [&](auto& self, const doc::Track& t) -> void {
     if (t.kind == doc::TrackKind::Midi || t.kind == doc::TrackKind::Audio) {
-      ++leaves;
-      if (t.frozen) ++frozen;
+      if (std::find(out.begin(), out.end(), &t) == out.end()) out.push_back(&t);
+      return;
     }
     for (const doc::TrackPtr& c : t.children) self(self, *c);
   };
-  for (doc::TrackId id : sel_.tracks)
+  for (doc::TrackId id : tracks)
     if (const doc::Track* t = doc::findTrackPtr(p, id)) walk(walk, *t);
-  const bool unfreeze = leaves > 0 && frozen == leaves;
+  return out;
+}
+
+}  // namespace
+
+// FZ.4: every MIDI / audio track of the selection frozen and playing its render.
+bool Editor::flattenSelection() {
+  RenderEditJob job;
+  job.kind = RenderEditJob::Kind::Flatten;
+  for (const doc::Track* t : clipLeaves(*ctx_.doc(), sel_.tracks)) {
+    if (!t->frozen || ctx_.freezeStatus(t->id).state != FreezeView::State::Ready) {
+      ctx_.setStatus("Flatten: freeze the track and wait for its render first");
+      return false;
+    }
+    job.tracks.push_back(t->id);
+  }
+  if (job.tracks.empty()) return false;
+  return ctx_.startRenderEdit(job);
+}
+
+// FZ.4: the active MIDI / audio tracks of the selection, over its time range (else the whole tracks).
+bool Editor::bounceSelection() {
+  RenderEditJob job;
+  job.kind = RenderEditJob::Kind::Bounce;
+  for (const doc::Track* t : clipLeaves(*ctx_.doc(), sel_.tracks))
+    if (t->active) job.tracks.push_back(t->id);
+  if (job.tracks.empty()) {
+    ctx_.setStatus("Bounce to New Track: select an active MIDI or audio track");
+    return false;
+  }
+  if (sel_.range && sel_.time && sel_.time->end > sel_.time->start) {
+    job.range = true;
+    job.from = sel_.time->start;
+    job.to = sel_.time->end;
+  }
+  return ctx_.startRenderEdit(job);
+}
+
+void Editor::freezeItems(std::vector<MenuItem>& items) {
+  const std::vector<const doc::Track*> leaves = clipLeaves(*ctx_.doc(), sel_.tracks);
+  const auto frozen = static_cast<size_t>(std::count_if(leaves.begin(), leaves.end(), [](const doc::Track* t) { return t->frozen; }));
+  const bool unfreeze = !leaves.empty() && frozen == leaves.size();
   MenuItem f = MenuItem::item(unfreeze ? "Unfreeze Track" : "Freeze Track", [this, unfreeze] { (void)freezeSelection(!unfreeze); });
-  f.enabled = leaves > 0;
+  f.enabled = !leaves.empty();
   items.push_back(std::move(f));
-  MenuItem flat = MenuItem::item("Flatten", {});  // FZ.4: the render becomes the track's audio
-  flat.enabled = false;
+  // FZ.4: the render becomes the track's audio (only once it plays it).
+  MenuItem flat = MenuItem::item("Flatten", [this] { (void)flattenSelection(); });
+  flat.enabled = unfreeze && std::all_of(leaves.begin(), leaves.end(), [&](const doc::Track* t) {
+                   return ctx_.freezeStatus(t->id).state == FreezeView::State::Ready;
+                 });
   items.push_back(std::move(flat));
+  MenuItem bounce = MenuItem::item("Bounce to New Track", [this] { (void)bounceSelection(); });
+  bounce.enabled = std::any_of(leaves.begin(), leaves.end(), [](const doc::Track* t) { return t->active; });
+  items.push_back(std::move(bounce));
 }
 
 Menu* Editor::openTrackMenu(doc::TrackId id, Vec2 at) {

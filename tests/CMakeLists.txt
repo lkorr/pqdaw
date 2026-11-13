@@ -136,6 +136,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_module_presets.cpp  # GU.4: the Phase Accumulator / VCA presets render as the meta modules they replace; load conversion
     app/test_export.cpp  # EX.1: the export core (== --render, stems sum to the master, solo passes, loop, PDC, tail, cancel, dither)
     app/test_freeze.cpp  # FZ.2: frozen tracks through the link (master null vs live, one clip player, tempo re-render, cache reuse, the key)
+    app/test_render_edits.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio through the service (nulls, one undo step, stale, save / load)
     app/test_wavetable_synth.cpp  # GU.8: the Wavetable Synth spawned at the notes; a chord plays, interpreter == JIT
     app/test_engine_modules.cpp  # GU.7: the Wavetable / Envelope modules render as their engines; the orbit's lowering tap
     app/test_noise_module.cpp  # NZ.1: the Noise module in a project (white unwired, Sync grid, On play vs Free, the display tap)
@@ -491,6 +492,7 @@ pq_add_test(pq_tests_document
     document/test_lower_incremental.cpp  # PF.6: the lowering given the previous one equals a fresh one after each edit; untouched tracks keep their patches
     document/test_sidechain.cpp  # DY.2: cross-track cables into signal inputs are Sidechain (params Modulation); cable sources, one-step picks
     document/test_frozen.cpp  # FZ.1: frozen tracks (file, SetTrackFrozen, the apply guard, the lowering from a render slot, captureOwn)
+    document/test_flatten.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio ops (one undo step, clip placement, SetTrackKind, round trip)
   DEPS pq_doc)
 
 # library (T5.9): index builds and revalidation on synthetic trees in %TEMP% (2k files; 200k in `slow`), the index

@@ -309,6 +309,40 @@ struct RecordingCommit {
 };
 EditResult commitRecording(const Project& p, IdSource& ids, const RecordingCommit& commit);
 
+// ---- Render edits (FZ.4; docs/plans/RB.md D5, "### FZ.4") ---------------------------------------------------------
+// The app renders first — a frozen track's render, a track's own contribution, an audio track's clip player — into a
+// WAV file, then builds one of these from it: one Batch, one undo step. `sample` is the file's table entry (id drawn by
+// the caller from the store's IdSource; added unless the table holds that id; its rate is the render's). A REGION
+// [start, end) becomes a warp-Off clip at `start` (gain 0 dB, no fades; name: the sample's display name; colour: the
+// track's) playing file frame samples(t) − samples(origin) at tick t — the tempo map's tick → sample at the sample's
+// rate — so the clips together play the render exactly where it was rendered: song sample k plays file frame
+// k − samples(origin). Regions are sorted, disjoint, end > start ≥ origin. Errors: unknown tracks, a track of another
+// kind, bad regions, a bad sample entry.
+struct RenderRegion {
+  Ticks start = 0, end = 0;
+};
+// Flatten (D5): a frozen (or not) MIDI or audio track becomes an AUDIO track in place — id, name, colour, mixer, sends,
+// routing, mixer lanes and tuning lanes stay — playing `regions` of the render (origin: tick 0). Its blocks (every one:
+// a block whose output reached another track goes too, with its cables), its clips, take lanes, device lanes and the
+// cables from its source go; it is unfrozen; a fresh main link source → mixer is made; cables from other tracks into
+// its mixer stay. Selection: the track and its new clips.
+EditResult flattenTrack(const Project& p, IdSource& ids, TrackId track, const SampleRef& sample,
+                        std::span<const RenderRegion> regions);
+// Bounce to New Track: a new audio track right after `track` among its siblings ("<name> Bounce", its colour, its
+// mixer — volume, pan, pan law, mute, sends, output, Track Delay; not solo, arm, monitoring or inputs) playing
+// `regions` of the render (file frame 0 = tick `origin`); `track` is deactivated in the same step. Selection: the new
+// track and its clips. Errors: `track` is not a MIDI or audio track.
+EditResult bounceToNewTrack(const Project& p, IdSource& ids, TrackId track, const SampleRef& sample, Ticks origin,
+                            std::span<const RenderRegion> regions);
+// Consolidate on audio tracks: per track, what lies in [start, end) is replaced by one clip of its render (file frame 0
+// = tick `start`; clips across the edges are trimmed there, as any clip placed over them). Selection: the new clips.
+struct ConsolidatedAudio {
+  TrackId track;
+  SampleRef sample;
+};
+EditResult consolidateAudio(const Project& p, IdSource& ids, std::span<const ConsolidatedAudio> tracks, Ticks start,
+                            Ticks end);
+
 // ---- Notes -----------------------------------------------------------------------------------------------------
 
 // Adds notes (their `id` fields are ignored: fresh ids are assigned). Returns their keys.

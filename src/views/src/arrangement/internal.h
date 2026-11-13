@@ -496,8 +496,12 @@ public:
   bool setTracksColour(doc::Colour c);
   // FZ.3: Freeze / Unfreeze the selected tracks (groups: their members; one undo step; ViewContext::setTracksFrozen).
   // freezeItem: the menus' entry — "Unfreeze Track" when every MIDI / audio track of the selection is frozen, else
-  // "Freeze Track" (disabled without one); Flatten follows it, disabled (FZ.4).
+  // "Freeze Track" (disabled without one); FZ.4: then "Flatten" (enabled when every MIDI / audio track of the selection
+  // is frozen and plays its render: FreezeView Ready) and "Bounce to New Track" (the active ones; the time selection's
+  // range, else the whole tracks). Both start a render edit (ViewContext::startRenderEdit).
   bool freezeSelection(bool frozen);
+  bool flattenSelection();
+  bool bounceSelection();
   void freezeItems(std::vector<ui::MenuItem>& items);
   ui::Menu* openTrackMenu(doc::TrackId id, ui::Vec2 at);
   ui::Widget* openColourPicker(ui::Vec2 at);

@@ -15,6 +15,7 @@
 
 #include "../common/drag.h"
 #include "internal.h"
+#include "pq/views/render_edit_port.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -1387,7 +1388,43 @@ bool Editor::splitSelection() {
 }
 
 bool Editor::consolidateSelection() {
-  if (sel_.range && sel_.time && sel_.time->end > sel_.time->start) {
+  const doc::Project& p = *ctx_.doc();
+  const bool ranged = sel_.range && sel_.time && sel_.time->end > sel_.time->start;
+  // FZ.4: audio tracks are rendered — what each one's clip player plays over the range (the time selection, else the
+  // selected audio clips' span) becomes one clip (the app's render edit, its own undo step when the render is done).
+  RenderEditJob audio;
+  audio.kind = RenderEditJob::Kind::Consolidate;
+  audio.range = true;
+  std::vector<doc::ClipRef> noteClips;
+  if (ranged) {
+    audio.from = sel_.time->start;
+    audio.to = sel_.time->end;
+    for (doc::TrackId id : clipTracks())
+      if (const doc::Track* t = doc::findTrackPtr(p, id); t && t->kind == doc::TrackKind::Audio)
+        if (std::any_of(t->clips.begin(), t->clips.end(), [&](const doc::ClipSlot& c) { return c.start() < audio.to && c.end() > audio.from; }))
+          audio.tracks.push_back(id);
+  } else {
+    audio.from = doc::kMaxTicks;
+    audio.to = -doc::kMaxTicks;
+    for (const doc::ClipRef& r : sel_.clips) {
+      const doc::ClipSlot* c = findClip(p, r);
+      if (c == nullptr) continue;
+      if (!c->isAudio()) {
+        noteClips.push_back(r);
+        continue;
+      }
+      audio.from = std::min(audio.from, c->start());
+      audio.to = std::max(audio.to, c->end());
+      if (std::find(audio.tracks.begin(), audio.tracks.end(), r.track) == audio.tracks.end()) audio.tracks.push_back(r.track);
+    }
+  }
+  for (doc::TrackId id : audio.tracks)
+    if (const doc::Track* t = doc::findTrackPtr(p, id); t && t->frozen) {
+      ctx_.refuseFrozen(id);
+      return false;
+    }
+  bool did = false;
+  if (ranged) {
     const Ticks s = sel_.time->start, e = sel_.time->end;
     doc::IdSource& ids = ctx_.store().ids();
     Chain ch(ctx_.doc(), "Consolidate");
@@ -1404,19 +1441,22 @@ bool Editor::consolidateSelection() {
       if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
         for (const doc::ClipSlot& c : t->clips)
           if (c.start() >= s && c.end() <= e) inside.push_back({id, c.id});
-    if (inside.empty()) return false;
-    const doc::ops::EditResult r = doc::ops::consolidateClips(*ch.snap, ids, inside);
-    (void)ch.run(r);
-    if (!ch.error.empty()) {
-      ctx_.setStatus("Consolidate: " + ch.error);
-      return false;
+    if (!inside.empty()) {
+      const doc::ops::EditResult r = doc::ops::consolidateClips(*ch.snap, ids, inside);
+      (void)ch.run(r);
+      if (!ch.error.empty()) {
+        ctx_.setStatus("Consolidate: " + ch.error);
+        return false;
+      }
+      if (!dispatch(std::move(ch.batch), "Consolidate")) return false;
+      if (audio.tracks.empty()) setSelection(selectionOfClips(r->clips), true);
+      did = true;
     }
-    if (!dispatch(std::move(ch.batch), "Consolidate")) return false;
-    setSelection(selectionOfClips(r->clips), true);
-    return true;
+  } else if (!noteClips.empty()) {
+    did = apply(doc::ops::consolidateClips(*ctx_.doc(), ctx_.store().ids(), noteClips), "Consolidate", audio.tracks.empty());
   }
-  if (sel_.clips.empty()) return false;
-  return apply(doc::ops::consolidateClips(*ctx_.doc(), ctx_.store().ids(), sel_.clips), "Consolidate", true);
+  if (!audio.tracks.empty()) did = ctx_.startRenderEdit(audio) || did;
+  return did;
 }
 
 bool Editor::insertMidiClip() {
