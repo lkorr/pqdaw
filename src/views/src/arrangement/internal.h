@@ -503,6 +503,7 @@ public:
   bool flattenSelection();
   bool bounceSelection();
   void freezeItems(std::vector<ui::MenuItem>& items);
+  ui::MenuItem exportMidiItem();  // MF.3: the clip menu's Export MIDI submenu
   ui::Menu* openTrackMenu(doc::TrackId id, ui::Vec2 at);
   ui::Widget* openColourPicker(ui::Vec2 at);
   // Selects exactly these tracks (after a track edit).

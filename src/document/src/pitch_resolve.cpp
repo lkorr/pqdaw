@@ -233,6 +233,50 @@ bool hasTuningSignal(const TuningDef& def) noexcept {
   return false;
 }
 
+namespace {
+
+using BuiltTunings = std::unordered_map<const TuningDef*, std::optional<tuning::Tuning>>;  // clips share their tuning
+
+// One note clip of the track at `path`, resolved in its effective tuning (resolveTrackPitches' per-clip work).
+ClipPitches resolveClip(const Project& p, const TrackPath& path, const NoteClip& clip, const ResolveOptions& options,
+                        BuiltTunings& built) {
+  ClipPitches cp;
+  cp.clip = clip.id;
+  cp.tuning = effectiveTuningRef(p, path, &clip);
+  cp.notes.reserve(clip.notes.size());
+  const bool signal = cp.tuning.main.valid() && cp.tuning.def && hasTuningSignal(*cp.tuning.def);
+  const tuning::Tuning* t = nullptr;
+  if (signal && options.signalTuning) t = options.signalTuning(cp.tuning.main, *cp.tuning.def);
+  if (!t && cp.tuning.def) {
+    auto it = built.find(cp.tuning.def);
+    if (it == built.end()) {
+      Result<tuning::Tuning> b = buildTuning(*cp.tuning.def);
+      it = built.emplace(cp.tuning.def, b.ok() ? std::optional<tuning::Tuning>(std::move(b.value())) : std::nullopt).first;
+    }
+    if (it->second) t = &*it->second;
+  }
+  if (t) {
+    ClipResolver r(clip, *t, signal);
+    for (uint32_t i = 0; i < r.size(); ++i) {
+      const ClipResolver::Resolved v = r.get(i);
+      NotePitch np;
+      np.note = r.note(i).id;
+      np.hz = v.hz;
+      np.follow = v.follow;
+      if (v.follow != PitchFollow::Static) np.signal = cp.tuning.main;
+      np.degree = v.degree;
+      np.equave = v.equave;
+      if (v.hz) np.keyDegree = keyDegreeOf(r.note(i).pitch, *v.hz, *t);
+      cp.notes.push_back(np);
+    }
+  } else {
+    for (const Note& n : clip.notes) cp.notes.push_back(NotePitch{n.id, std::nullopt, {}, PitchFollow::Static, 0, 0});
+  }
+  return cp;
+}
+
+}  // namespace
+
 Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id, const ResolveOptions& options) {
   const std::optional<TrackPath> path = findTrack(p, id);
   if (!path) return Error{ErrorCode::NotFound, "resolveTrackPitches: no such track", {}};
@@ -241,50 +285,28 @@ Result<TrackPitches> resolveTrackPitches(const Project& p, TrackId id, const Res
   out.track = id;
   const std::vector<ClipSlot>& clips = playedClips(track);  // T6.1: the audition take's, else the main lane's
   out.clips.reserve(clips.size());
-  std::unordered_map<const TuningDef*, std::optional<tuning::Tuning>> built;  // clips share their track's tuning
+  BuiltTunings built;
   for (const ClipSlot& slot : clips) {
     if (!slot.clip) {  // T5.3: an audio clip has no notes (keeps out.clips aligned with the played clips)
       out.clips.push_back(ClipPitches{});
       out.clips.back().clip = slot.id;
       continue;
     }
-    const NoteClip& clip = *slot.clip;
-    ClipPitches cp;
-    cp.clip = clip.id;
-    cp.tuning = effectiveTuningRef(p, *path, &clip);
-    cp.notes.reserve(clip.notes.size());
-    const bool signal = cp.tuning.main.valid() && cp.tuning.def && hasTuningSignal(*cp.tuning.def);
-    const tuning::Tuning* t = nullptr;
-    if (signal && options.signalTuning) t = options.signalTuning(cp.tuning.main, *cp.tuning.def);
-    if (!t && cp.tuning.def) {
-      auto it = built.find(cp.tuning.def);
-      if (it == built.end()) {
-        Result<tuning::Tuning> b = buildTuning(*cp.tuning.def);
-        it = built.emplace(cp.tuning.def, b.ok() ? std::optional<tuning::Tuning>(std::move(b.value())) : std::nullopt)
-                 .first;
-      }
-      if (it->second) t = &*it->second;
-    }
-    if (t) {
-      ClipResolver r(clip, *t, signal);
-      for (uint32_t i = 0; i < r.size(); ++i) {
-        const ClipResolver::Resolved v = r.get(i);
-        NotePitch np;
-        np.note = r.note(i).id;
-        np.hz = v.hz;
-        np.follow = v.follow;
-        if (v.follow != PitchFollow::Static) np.signal = cp.tuning.main;
-        np.degree = v.degree;
-        np.equave = v.equave;
-        if (v.hz) np.keyDegree = keyDegreeOf(r.note(i).pitch, *v.hz, *t);
-        cp.notes.push_back(np);
-      }
-    } else {
-      for (const Note& n : clip.notes) cp.notes.push_back(NotePitch{n.id, std::nullopt, {}, PitchFollow::Static, 0, 0});
-    }
-    out.clips.push_back(std::move(cp));
+    out.clips.push_back(resolveClip(p, *path, *slot.clip, options, built));
   }
   return out;
+}
+
+Result<ClipPitches> resolveClipPitches(const Project& p, TrackId track, ClipId clip, const ResolveOptions& options) {
+  const std::optional<TrackPath> path = findTrack(p, track);
+  if (!path) return Error{ErrorCode::NotFound, "resolveClipPitches: no such track", {}};
+  const Track& t = trackAt(p, *path);
+  const int32_t i = findClipIndex(t, clip);
+  if (i < 0) return Error{ErrorCode::NotFound, "resolveClipPitches: no such clip on the track", {}};
+  const ClipSlot& slot = t.clips[static_cast<size_t>(i)];
+  if (!slot.clip) return Error{ErrorCode::InvalidArgument, "resolveClipPitches: not a note clip", {}};
+  BuiltTunings built;
+  return resolveClip(p, *path, *slot.clip, options, built);
 }
 
 }  // namespace pq::doc

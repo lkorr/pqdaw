@@ -49,6 +49,7 @@ pq_add_module(pq_doc
     src/input_map.cpp
     src/midi_file.cpp  # MF.1: Standard MIDI File reader / writer, note resolution
     src/midi_import.cpp  # MF.2: MIDI file import (resolved notes → clips, tempo, signatures)
+    src/midi_export.cpp  # MF.3: MIDI file export (clips → SMF: 12edo, MPE, Degrees)
   # nlohmann/json: schema migrations (generic DOM transforms of old project files); the public header names
   # nlohmann::json in MigrationFn.
   # pq_graph: project → graph lowering (lower.h, T3.17).

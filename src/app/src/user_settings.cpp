@@ -236,6 +236,11 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
     prefs.recordOffsetMs = std::clamp(f->get<float>(), -views::ViewPrefs::kMaxRecordOffsetMs, views::ViewPrefs::kMaxRecordOffsetMs);
   if (const auto f = it->find("autosave"); f != it->end() && f->is_boolean()) prefs.autosave = f->get<bool>();  // AS.1
   if (const auto f = it->find("export"); f != it->end() && f->is_object()) prefs.exportAudio = exportPrefsOf(*f);  // EX.2
+  if (const auto f = it->find("midiExportMode"); f != it->end() && f->is_string()) {  // MF.3
+    const std::string m = f->get<std::string>();
+    for (size_t i = 0; i < doc::kMidiExportModeNames.size(); ++i)
+      if (m == doc::kMidiExportModeNames[i]) prefs.midiExportMode = static_cast<doc::MidiExportMode>(i);
+  }
   return prefs;
 }
 
@@ -251,6 +256,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["recordOffsetMs"] = prefs.recordOffsetMs;  // T6.7b
   v["autosave"] = prefs.autosave;              // AS.1
   v["export"] = exportPrefsJson(prefs.exportAudio);  // EX.2
+  v["midiExportMode"] = std::string(doc::kMidiExportModeNames[static_cast<size_t>(prefs.midiExportMode)]);  // MF.3
   return saveSection(path, "views", std::move(v));
 }
 

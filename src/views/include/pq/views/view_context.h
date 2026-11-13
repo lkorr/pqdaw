@@ -36,6 +36,7 @@
 #include "pq/core/grid.h"
 #include "pq/core/result.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/midi_export.h"
 #include "pq/document/model.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/document/samples.h"
@@ -173,6 +174,8 @@ public:
   virtual void choosePatchFile(PathCallback done) { done(std::string()); }
   // T5.8: a folder to search for missing samples (Relink). The default implementation cancels (no dialogs).
   virtual void chooseFolder(PathCallback done) { done(std::string()); }
+  // MF.3: where to save a MIDI export (a .mid file; `suggestedName` e.g. "Lead.mid"). The default cancels.
+  virtual void chooseMidiFileToSave(std::string_view /*suggestedName*/, PathCallback done) { done(std::string()); }
   // T5.10: the browser's context menu: show a file in Explorer (selected), move a file to the Recycle Bin (false: not
   // done). The defaults do nothing (tests, scenes).
   virtual void showInExplorer(const std::string& /*pathUtf8*/) {}
@@ -209,6 +212,8 @@ struct ViewPrefs {
   bool autosave = true;
   // EX.2: the Export Audio window's choices (pq/views/export/export_port.h).
   ExportPrefs exportAudio;
+  // MF.3: the last MIDI export mode chosen in the clip menu (Export MIDI); MIDI clips dragged out use it.
+  doc::MidiExportMode midiExportMode = doc::MidiExportMode::Mpe;
   bool operator==(const ViewPrefs&) const = default;
 };
 

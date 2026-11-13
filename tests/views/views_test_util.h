@@ -48,9 +48,14 @@ inline void clickMenuItem(ui::TestDriver& d, ui::OverlayLayer& layer, std::strin
 
 // Dialogs that answer immediately with preset values (as if the user picked them).
 struct ScriptedDialogs final : FileDialogs {
-  std::string openPath, savePath, scalaPath;
+  std::string openPath, savePath, scalaPath, midiPath, midiSuggested;
   SaveChoice choice = SaveChoice::Discard;
-  int opens = 0, saves = 0, asks = 0, scalas = 0;
+  int opens = 0, saves = 0, asks = 0, scalas = 0, midis = 0;
+  void chooseMidiFileToSave(std::string_view suggested, PathCallback done) override {  // MF.3
+    ++midis;
+    midiSuggested = suggested;
+    done(midiPath);
+  }
   void chooseScalaFile(PathCallback done) override {
     ++scalas;
     done(scalaPath);
