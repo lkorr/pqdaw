@@ -1237,7 +1237,7 @@ playing / editing go on meanwhile (it renders on a private link); Cancel is one 
 window's close button and `ExportHost::watch` are the only places.
 Status: open.
 
-## Q?-FZ.2-a · The freeze key, the render document and the cache file names
+## Q254 · 2026-11-13 · FZ.2 · The freeze key, the render document and the cache file names
 Context: D3 keys a render by (rate, tempo map, tunings, the frozen part's patch hash); Q252 adds what feeds it. A patch
 hash needs a lowering (a library, slots); the plan names the file `cache/freeze/<track id>.wav`.
 Options: (a) hash the lowered patches of F and its feeders; (b) hash the RENDER DOCUMENT (F, the MIDI / audio tracks

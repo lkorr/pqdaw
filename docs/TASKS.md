@@ -826,7 +826,8 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **EX.2 Export Audio dialog (Ctrl+Shift+R)** 👁 *(merged af0c3225; Q253: closing the window lets the export finish, the status line reports it; ExportService thread; choices in ViewPrefs::exportAudio)* (plan §EX.2). After EX.1.
 - [ ] **EX.3 FLAC export (libFLAC, BSD-3)** (plan §EX.3).
 - [x] **FZ.1 Frozen tracks in the document and the lowering** *(merged 86136237; Q252: cables from other tracks are outside input (allowed; the freeze key must cover them); one content check at the end of apply)* (plan §FZ.1).
-- [ ] **FZ.2 Freeze service (cache/freeze renders)** (plan §FZ.2). After EX.1, FZ.1.
+- [x] **FZ.2 Freeze service (cache/freeze renders)** *(merged b99478da; Q254: key = rate + tempo / tunings / pruned render-document hashes, files `<id>-<key>.wav`; frozen vs live bit-exact)* (plan §FZ.2).
+- [ ] **EX.x-fix-settle A fresh link's first ~26 ms depend on history** (found by EX.1 / FZ.2, Q251): an automated param's smoother starts from its default instead of the automation's value at the render start, so a fresh offline link's first pass (export, freeze render) ramps for ~26 ms. Settle every smoother to its start value before the first block of an offline render (and on locate?), then let EX.1's stems-with-FX use one link again if that removes the solo-pass bleed.
 - [ ] **FZ.3 Freeze UI** 👁 (plan §FZ.3). After FZ.1.
 - [ ] **FZ.4 Flatten, bounce to new track, consolidate audio** (plan §FZ.4). After FZ.2.
 

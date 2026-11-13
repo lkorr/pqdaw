@@ -560,3 +560,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: no window object when closed; ~30 Hz poll only while a job runs.
 - Notes: Q253. REVIEW entry for the hand check.
 
+## 2026-11-13 · FZ.2 merged · main
+- Did: merged task/FZ.2-freeze-service (b99478da): app/freeze_service (planFreeze prunes the render document to the frozen track and the tracks cabling into it; renderTrackOwn renders `<id>:own` on a private link, tail to −90 dBFS ≤ 30 s, below-normal thread, 0.25 s debounce), cache/freeze/<id>-<key>.wav, the link publishes the render in a slot and frozenSlotOf names it only while the current key is loaded (stale → live); doc::wireStates with frozen slots; LowerOptions::frozenMono; per-clip AudioClipDesc::declick.
+- Verified (worker): pq_tests_playback FZ.2 3/3 (frozen vs live −589 dB, re-render at a new tempo, unfreeze same patch hash, cache reuse / re-render); -Affected 45/45 (first run killed for low memory, re-run).
+- Perf: frozen track = clip player + mixer (43 vs 82 nodes); renders off UI/audio threads.
+- Notes: Q254. A fresh link's first ~26 ms depend on smoother history → EX.x-fix-settle. Self-feeding through a group/return/master falls back to the whole project, untested.
+
