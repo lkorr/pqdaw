@@ -820,7 +820,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **WI.1 Inference blames the cable** (plan §WI.1). Replaces TX.wire-isolation with WI.2.
 - [ ] **WI.2 One bad wire never fails a unit (runtime cut set, Refused/Type drawn red)** (plan §WI.2). After WI.1.
 - [ ] **WI.3 Refuse declared-type clashes at gesture time** (plan §WI.3; optional, small). After WI.2.
-- [ ] **AS.1 Autosave to the Unsaved session folder** (plan §AS.1).
+- [x] **AS.1 Autosave to the Unsaved session folder** *(merged 1ac36f9a; Q248: switch in Preferences → Record; view-state-only edits don't write)* (plan §AS.1).
 - [ ] **AS.2 Crash recovery at start** (plan §AS.2). After AS.1.
 - [ ] **EX.1 Export render core: bus capture, private link, PDC trim, loop wrap, normalize, dither, PCM16/24** (plan §EX.1).
 - [ ] **EX.2 Export Audio dialog (Ctrl+Shift+R)** 👁 (plan §EX.2). After EX.1.

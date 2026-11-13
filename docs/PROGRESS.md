@@ -518,3 +518,10 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker (before rebase) dsp delay 24/24, views delay 21/21 (real dispatch), playback delay tap 7/7 (interp == JIT). Orchestrator after rebase: -Affected 1 exe failed (pq_tests_graph: delay_fade missing from the atom list / kernel count since DT.2, schedule dumps' DelayState size since DT.2 + DT.4), fixed, pq_tests_graph pass; pq_tests_dsp default + slow pass; ship pq_bench_dsp links.
 - Perf: release A/B, Crossfade per-sample jumps 19.9 / 30.3 → 20.0 / 30.8 ns (L1 / L8), at rest unchanged ≈ 1.3; Repitch per-sample jumps 16.5 / 21.5. DelayState 352 → 480 B.
 - Notes: Q247. Goldens: delay-tap panel / sync / stretched re-recorded, micro / crossfade new.
+
+## 2026-11-13 · AS.1 merged · main
+- Did: ff-merged task/AS.1-autosave (1ac36f9a): app/autosave Autosaver (below-normal worker thread, latest-wins job) writes <session>/autosave/project.pqd + autosave.json; policy 10 s quiet / 60 s max, not mid-gesture; deleted when the document equals the saved snapshot, pref off or clean quit; SDL one-shot timer so an idle window still writes; Preferences → Record → Autosave.
+- Verified (worker): pq_tests_app 39/39 (5 new), pq_tests_views pass (one SIGSEGV in test_meta_envelope_face first run: known NVIDIA flake). Golden re-recorded: record-prefs.
+- Perf: idle tick 3 pointer compares; per write the UI pays a ViewState copy, serialisation and I/O on the worker.
+- Notes: Q248. No live-app check; no autosave without the playback link. AS.2 next.
+
