@@ -532,3 +532,41 @@ TEST_CASE("midi file: a 10 MB file parses in under 50 ms" * doctest::test_suite(
   MESSAGE("10 MB parse, best of 3: ", best, " ms");
   CHECK(best < 50.0);
 }
+
+TEST_CASE("midi notes (AU.dsp, RB-DY M7): a hostile file — 300k note-ons on one track, their note-offs on another — "
+          "resolves in linear time") {
+  // Each note-off of track 1 finds no note of its own track on C4; it used to walk all of track 0's sounding C4s
+  // (≈ 4.5e10 link visits here), now one lookup.
+  constexpr int kN = 300000;
+  MidiFile f;
+  f.format = 1;
+  f.tracks.resize(2);
+  for (int i = 0; i < kN; ++i) f.tracks[0].noteOn(i, 0, 60, 100);
+  for (int i = 0; i < kN; ++i) f.tracks[1].noteOff(i, 0, 60);
+  f.tracks[0].endTick = f.tracks[1].endTick = kN + 10;
+  const auto t0 = std::chrono::steady_clock::now();
+  const MidiNotes n = resolveNotes(f);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  MESSAGE("hostile pairing: " << ms << " ms");
+  REQUIRE(n.notes.size() == static_cast<size_t>(kN));
+  CHECK(n.notes.front().length == kN + 10);  // unpaired: to its track's end
+  CHECK(n.notes.back().length == 11);
+  CHECK(ms < 2000.0);  // seconds before the fix would be hours
+  // Paired on its own track, interleaved with another track's same key: still FIFO per track.
+  MidiFile g;
+  g.format = 1;
+  g.tracks.resize(2);
+  for (int i = 0; i < 1000; ++i) {
+    g.tracks[0].noteOn(2 * i, 0, 60, 100);
+    g.tracks[1].noteOn(2 * i, 0, 60, 90);
+  }
+  for (int i = 0; i < 1000; ++i) g.tracks[1].noteOff(5000 + i, 0, 60);
+  for (int i = 0; i < 1000; ++i) g.tracks[0].noteOff(9000 + i, 0, 60);
+  g.tracks[0].endTick = g.tracks[1].endTick = 20000;
+  const MidiNotes m = resolveNotes(g);
+  REQUIRE(m.notes.size() == 2000u);
+  for (const MidiNote& x : m.notes) {
+    const int i = static_cast<int>(x.tick / 2);
+    CHECK(x.tick + x.length == (x.track == 0 ? 9000 + i : 5000 + i));
+  }
+}

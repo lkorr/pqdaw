@@ -24,7 +24,14 @@ std::string utf8Of(const fs::path& p) {
   return std::string(reinterpret_cast<const char*>(s.data()), s.size());
 }
 
+// AU.dsp (RB-DY M7): the import runs on the UI thread, so its work is bounded: parsing and resolving are linear in the
+// file (a 10 MB file ≈ 20 ms + its notes), and a file over this is refused rather than read (no real SMF comes close).
+constexpr uintmax_t kMaxMidiImportBytes = 32ull << 20;
+
 Result<std::vector<uint8_t>> readAll(const fs::path& p) {
+  std::error_code ec;
+  if (const uintmax_t size = fs::file_size(p, ec); !ec && size > kMaxMidiImportBytes)
+    return Error{ErrorCode::InvalidArgument, "larger than 32 MB", {}};
   std::ifstream in(p, std::ios::binary);
   if (!in) return Error{ErrorCode::NotFound, "cannot open the file", {}};
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());

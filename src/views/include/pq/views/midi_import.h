@@ -5,7 +5,8 @@
 // load). Reads each file, parses and resolves it (pq/document/midi_file.h), imports it (pq/document/midi_import.h
 // ops::importMidi) and dispatches all of it as ONE undo step; the status line text names what was dropped.
 //
-// UI thread only (reads the files synchronously: a 10 MB file parses in ~20 ms).
+// UI thread only (reads the files synchronously: a 10 MB file parses in ~20 ms; note pairing is linear even on hostile
+// files, AU.dsp RB-DY M7; a file over 32 MB is refused unread, named in the status).
 
 #include <cstdint>
 #include <span>

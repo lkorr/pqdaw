@@ -10,10 +10,12 @@
 //           track (`target`) when there is one, the rest (or all) on new MIDI tracks (default instrument) after
 //           `newTracksAfter`, each after the previous. One clip per track from `at` (file tick 0) to its last note-off,
 //           its end rounded up to a bar line (not looped).
-//   Pitch   a plain key (cents == 0) stores what live input on that track gives (its InputPitchMap: Keys → a Degree,
-//           Hz → a frozen Cents); a bent or MTS-retuned key (and a key the track's .kbm leaves unmapped) is its
-//           absolute pitch, 12-TET(key) · 2^(cents / 1200): a Degree in Keys mode when within kMidiDegreeSnapCents of
-//           the track's nearest degree, else Cents (frozen against the track's reference).
+//   Pitch   decided per FILE (AU.dsp, RB-DY M8; Q263 user 2026-11-13): a file with any pitch bend, MTS message or
+//           RPN tuning (RPN 0 / 3 / 4: MidiNotes::absolutePitch) is absolute pitch for every note, 12-TET(key) ·
+//           2^(cents / 1200): a Degree in Keys mode when within kMidiDegreeSnapCents of the track's nearest degree, else
+//           Cents (frozen against the track's reference). Any other file plays each key as live input on that track
+//           would (its InputPitchMap: Keys → a Degree, Hz → a frozen Cents); a key the track's .kbm leaves unmapped is
+//           imported at its 12-TET pitch the same way.
 //   Tempo   the file's tempo map and time signatures replace the project's from `at` on, only when the project has no
 //   & sigs  clip (main or take lane: projectHasClips, the Capture MIDI bpm rule). A signature change off a bar line
 //           moves to the next bar line (counted). Signatures the model cannot hold (denominator > 256) are skipped.
@@ -45,7 +47,7 @@ struct MidiImportReport {
   uint32_t tracks = 0;          // tracks that received a clip
   uint32_t newTracks = 0;
   uint32_t notes = 0;
-  uint32_t bentNotes = 0;       // notes with a bend / MTS offset (cents != 0)
+  uint32_t bentNotes = 0;       // notes with a bend / MTS offset (cents != 0; the file is then absolute pitch)
   uint32_t unmappedKeys = 0;    // plain keys the track's .kbm leaves unmapped: imported at their 12-TET pitch
   bool tempoImported = false;   // the tempo map was replaced (the file has tempo events, the project had no clips)
   bool signaturesImported = false;

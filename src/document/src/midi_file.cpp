@@ -6,6 +6,7 @@
 #include <cstring>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace pq::doc {
@@ -509,26 +510,29 @@ private:
     ch_.fill(ChannelState{});
     lowerMembers_ = upperMembers_ = 0;
     programs_.clear();
+    programIndex_.assign(128 * 128, -1);
     sounding_.fill(Slot{});
+    trackSlots_.clear();
     held_.fill(kNone);
   }
 
   // ── notes ──
 
-  // A (channel, key) slot: its sounding notes as a FIFO list (Link::next), and the ones released under the pedal (Link::nextHeld).
+  // A (channel, key) slot: its sounding notes as a FIFO list (Link::next / prev, every track's), and the ones released
+  // under the pedal (Link::nextHeld). AU.dsp (RB-DY M7): each track's sounding notes of the slot are a FIFO of their own
+  // too (Link::nextInTrack, headed in trackSlots_), so a note-off finds its track's oldest note in O(1): a format-1 file
+  // with 500k note-ons on one track and their note-offs on another walked the shared list per note-off (quadratic).
   struct Slot {
     int32_t head = kNone, tail = kNone;
   };
   static size_t slotOf(uint8_t channel, uint8_t key) noexcept { return size_t(channel) * 128 + key; }
+  static uint64_t trackSlot(size_t track, size_t slot) noexcept { return (uint64_t(track) << 11) | slot; }
 
   double keyOffset(uint8_t channel, uint8_t key) const noexcept {
     const ChannelState& c = ch_[channel];
     double cents = c.scaleOctave[key % 12];
-    for (const TuningProgram& p : programs_)
-      if (p.bank == c.tuningBank && p.program == c.tuningProgram) {
-        cents += p.cents[key];
-        break;
-      }
+    // AU.dsp (RB-DY M7): the channel's tuning program by index, not a scan of the programs per note-on.
+    if (const int32_t i = programIndex_[size_t(c.tuningBank & 0x7F) * 128 + (c.tuningProgram & 0x7F)]; i >= 0) cents += programs_[size_t(i)].cents[key];
     return cents;
   }
 
@@ -565,13 +569,21 @@ private:
     const int m = masterOf(channel);
     if (m >= 0) cents += ch_[size_t(m)].bendCents();
     note.cents = cents;
-    links_.push_back(Link{kNone, kNone, uint32_t(track)});
+    links_.push_back(Link{});
+    links_.back().track = uint32_t(track);
     Slot& sl = sounding_[s];
+    links_[size_t(n)].prev = sl.tail;
     if (sl.tail == kNone)
       sl.head = n;
     else
       links_[size_t(sl.tail)].next = n;
     sl.tail = n;
+    Slot& ts = trackSlots_[trackSlot(track, s)];
+    if (ts.tail == kNone)
+      ts.head = n;
+    else
+      links_[size_t(ts.tail)].nextInTrack = n;
+    ts.tail = n;
     ++ch_[channel].sounding;
     ++out_.trackNotes[track];
   }
@@ -579,20 +591,24 @@ private:
   // Releases the oldest sounding note of `track` on (channel, key): ends it, or holds it while the pedal is down.
   void noteOff(size_t track, int64_t tick, uint8_t channel, uint8_t key, uint8_t release) {
     const size_t s = slotOf(channel, key);
+    const auto it = trackSlots_.find(trackSlot(track, s));
+    if (it == trackSlots_.end() || it->second.head == kNone) return;  // nothing to release
+    const int32_t n = it->second.head;
+    it->second.head = links_[size_t(n)].nextInTrack;
+    if (it->second.head == kNone) trackSlots_.erase(it);
+    links_[size_t(n)].nextInTrack = kNone;
+    // Out of the slot's list (doubly linked: O(1)).
     Slot& sl = sounding_[s];
-    int32_t prev = kNone, n = sl.head;
-    while (n != kNone && links_[size_t(n)].track != track) {
-      prev = n;
-      n = links_[size_t(n)].next;
-    }
-    if (n == kNone) return;  // nothing to release
-    const int32_t after = links_[size_t(n)].next;
-    if (prev == kNone)
+    const int32_t before = links_[size_t(n)].prev, after = links_[size_t(n)].next;
+    if (before == kNone)
       sl.head = after;
     else
-      links_[size_t(prev)].next = after;
-    if (sl.tail == n) sl.tail = prev;
-    links_[size_t(n)].next = kNone;
+      links_[size_t(before)].next = after;
+    if (after == kNone)
+      sl.tail = before;
+    else
+      links_[size_t(after)].prev = before;
+    links_[size_t(n)].next = links_[size_t(n)].prev = kNone;
     out_.notes[size_t(n)].releaseVelocity = release;
     if (ch_[channel].sustain) {
       links_[size_t(n)].nextHeld = held_[s];
@@ -608,7 +624,8 @@ private:
       Slot& sl = sounding_[s];
       for (int32_t n = sl.head; n != kNone;) {
         const int32_t after = links_[size_t(n)].next;
-        links_[size_t(n)].next = kNone;
+        trackSlots_.erase(trackSlot(links_[size_t(n)].track, s));  // every track's notes of the slot end here
+        links_[size_t(n)].next = links_[size_t(n)].prev = links_[size_t(n)].nextInTrack = kNone;
         if (ch_[channel].sustain && !immediate) {
           links_[size_t(n)].nextHeld = held_[s];
           held_[s] = n;
@@ -639,6 +656,7 @@ private:
   // ── controllers ──
 
   void bend(int64_t, uint8_t channel, int value) {
+    out_.absolutePitch = true;  // AU.dsp (M8): any pitch bend
     ChannelState& c = ch_[channel];
     if (value == c.bend) return;
     bool affects = c.sounding > 0;
@@ -689,6 +707,7 @@ private:
   void dataEntry(uint8_t channel, bool msb, uint8_t value) {
     ChannelState& c = ch_[channel];
     if (c.nrpn || c.rpn == kRpnNull) return;
+    if (c.rpn == 0 || c.rpn == 3 || c.rpn == 4) out_.absolutePitch = true;  // AU.dsp (M8): an RPN tuning
     switch (c.rpn) {
       case 0:  // pitch bend sensitivity
         setMemberRange(channel, msb ? int(value) * 100 : int(c.rangeSemis) * 100 + value);
@@ -743,8 +762,9 @@ private:
   // ── MTS ──
 
   TuningProgram& program(uint8_t bank, uint8_t prog) {
-    for (TuningProgram& p : programs_)
-      if (p.bank == bank && p.program == prog) return p;
+    int32_t& i = programIndex_[size_t(bank & 0x7F) * 128 + (prog & 0x7F)];
+    if (i >= 0) return programs_[size_t(i)];
+    i = int32_t(programs_.size());
     TuningProgram& p = programs_.emplace_back();
     p.bank = bank;
     p.program = prog;
@@ -793,6 +813,7 @@ private:
   void sysexMessage(std::span<const uint8_t> m) {
     if (!m.empty() && m.back() == 0xF7) m = m.first(m.size() - 1);
     if (m.size() < 4 || (m[0] != 0x7E && m[0] != 0x7F) || m[2] != 0x08) return;
+    out_.absolutePitch = true;  // AU.dsp (M8): an MTS message
     const uint8_t* d = m.data() + 4;
     const size_t n = m.size() - 4;
     switch (m[3]) {
@@ -888,11 +909,15 @@ private:
   std::array<ChannelState, 16> ch_{};
   uint8_t lowerMembers_ = 0, upperMembers_ = 0;
   std::vector<TuningProgram> programs_;
+  std::vector<int32_t> programIndex_ = std::vector<int32_t>(128 * 128, -1);  // (bank, program) → programs_, −1: none
   std::array<Slot, 16 * 128> sounding_{};
+  std::unordered_map<uint64_t, Slot> trackSlots_;  // (track, slot) → that track's sounding notes there (non-empty)
   std::array<int32_t, 16 * 128> held_{};
   struct Link {
-    int32_t next = kNone;      // the next sounding note of its slot
-    int32_t nextHeld = kNone;  // the next pedal-held note of its slot
+    int32_t next = kNone;         // the next sounding note of its slot
+    int32_t prev = kNone;         // the previous one
+    int32_t nextInTrack = kNone;  // the next sounding note of its slot and track
+    int32_t nextHeld = kNone;     // the next pedal-held note of its slot
     uint32_t track = 0;
   };
   std::vector<Link> links_;  // per note

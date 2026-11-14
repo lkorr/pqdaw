@@ -349,3 +349,59 @@ TEST_CASE("midi import: tempo and signatures only into a project without clips; 
   Imported empty = roundTrip({c}, 1);
   CHECK_FALSE(ops::importMidi(d.doc(), d.store.ids(), empty.notes, optionsFor(empty.file)).ok());
 }
+
+TEST_CASE("midi import (AU.dsp, RB-DY M8; Q263): absolute pitch is decided per FILE — one +1 ¢ bend makes every note "
+          "absolute") {
+  // A 31edo Keys track: live input plays key k as degree k − 60 (one key per degree).
+  auto file = [](bool bend) {
+    MidiTrack t;
+    int64_t tick = 0;
+    for (const int k : {60, 62, 72}) {
+      if (bend && k == 72) t.pitchBend(tick, 0, 8192 + 41);  // +1.001 ¢ (±2 semitones) on this note only
+      t.noteOn(tick, 0, static_cast<uint8_t>(k), 100);
+      t.noteOff(tick + kFilePpq, 0, static_cast<uint8_t>(k));
+      if (bend && k == 72) t.pitchBend(tick + kFilePpq, 0, 8192);
+      tick += kFilePpq;
+    }
+    return roundTrip({t}, 0);
+  };
+  Doc d;
+  TuningDef edo31;
+  edo31.system = tuning::Edo::make(31).value();
+  d.tuning(d.keys, edo31);
+  const InputPitchMapPtr m = d.map(d.keys);
+  // (a) A plain file: every key through the key map — mapped degrees (key 72 is degree 12, ≈ 465 ¢ up).
+  const Imported plain = file(false);
+  CHECK_FALSE(plain.notes.absolutePitch);
+  d.edit(ops::importMidi(d.doc(), d.store.ids(), plain.notes, optionsFor(plain.file, d.keys)));
+  const auto a = d.notesOf(d.keys);
+  REQUIRE(a.size() == 3);
+  for (size_t i = 0; i < 3; ++i) CHECK(a[i].pitch == m->at(static_cast<uint8_t>(i == 0 ? 60 : i == 1 ? 62 : 72)).id);
+  // (b) The same with one bent note: the whole file is absolute (12-TET key + cents). Key 60 is exactly degree 0; 62
+  // (200 ¢) and the bent 72 (1201 ¢) are Cents on the 12-TET path, 1001 ¢ apart — the bent note 1 ¢ off its plain
+  // neighbour's path, not on the key map's (465 ¢).
+  const Imported bent = file(true);
+  CHECK(bent.notes.absolutePitch);
+  const TrackId t2 = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, d.keys, "B")).tracks.at(0);
+  d.tuning(t2, edo31);
+  ops::MidiImportReport rep;
+  d.edit(ops::importMidi(d.doc(), d.store.ids(), bent.notes, optionsFor(bent.file, t2), &rep));
+  CHECK(rep.bentNotes == 1);
+  const auto b = d.notesOf(t2);
+  REQUIRE(b.size() == 3);
+  const TuningDef* def = effectiveTuning(d.doc(), *findTrack(d.doc(), t2));
+  REQUIRE(def);
+  const double ref = def->referenceHz;
+  CHECK(b[0].pitch == m->at(60).id);  // exactly a degree (within 0.5 ¢): Degree
+  REQUIRE(b[1].pitch.kind() == tuning::PitchKind::Cents);
+  REQUIRE(b[2].pitch.kind() == tuning::PitchKind::Cents);
+  const double bendCents = 41.0 / 8192.0 * 200.0;
+  CHECK(std::fabs(b[1].pitch.cents() - 1200.0 * std::log2(twelveTetHz(62.0) / ref)) < 1e-9);
+  CHECK(std::fabs(b[2].pitch.cents() - (1200.0 * std::log2(twelveTetHz(72.0) / ref) + bendCents)) < 1e-9);
+  CHECK(std::fabs(b[2].pitch.cents() - b[1].pitch.cents() - (1000.0 + bendCents)) < 1e-9);
+  // An RPN tuning alone (RPN 0, no bend) also makes the file absolute; MTS is covered above.
+  MidiTrack r = plainRun();
+  r.rpn(0, 0, 0, 2);
+  CHECK(roundTrip({r}, 0).notes.absolutePitch);
+  CHECK_FALSE(roundTrip({plainRun()}, 0).notes.absolutePitch);
+}

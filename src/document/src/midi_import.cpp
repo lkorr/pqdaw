@@ -237,19 +237,21 @@ EditResult importMidi(const Project& p, IdSource& ids, const MidiNotes& notes, c
       n.length = std::max<Ticks>(1, toTicks(mn.tick + mn.length) - n.start);
       n.velocity = static_cast<float>(std::max<uint8_t>(1, mn.velocity));
       n.releaseVelocity = static_cast<float>(mn.releaseVelocity);
-      bool plain = mn.cents == 0.0;
-      if (plain) {
+      // AU.dsp (RB-DY M8, Q263 user 2026-11-13): one rule per FILE, no per-note test — a file with any bend, MTS or RPN
+      // tuning is absolute pitch for every note; any other plays its keys through the track's key map.
+      bool keyed = !notes.absolutePitch;
+      if (keyed) {
         const InputPitch& k = m.at(mn.key);
         if (k.mapped) {
           n.pitch = k.id;
         } else {
           ++rep.unmappedKeys;
-          plain = false;
+          keyed = false;
         }
-      } else {
+      } else if (mn.cents != 0.0) {
         ++rep.bentNotes;
       }
-      if (!plain) {
+      if (!keyed) {
         const double hz = twelveTetHz(static_cast<double>(mn.key)) * std::exp2(mn.cents / 1200.0);
         n.pitch = m.atHz(hz, kMidiDegreeSnapCents).id;
       }

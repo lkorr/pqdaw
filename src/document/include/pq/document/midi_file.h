@@ -153,6 +153,10 @@ struct MidiNotes {
   uint32_t droppedControllers = 0;
   uint32_t droppedPressure = 0;
   uint32_t midNoteBends = 0;
+  // AU.dsp (RB-DY M8, Q263): the file speaks in absolute pitch — it holds a pitch bend, an MTS message or an RPN tuning
+  // (RPN 0 bend range, 3 tuning program, 4 tuning bank) anywhere. The import then reads EVERY note of it as its 12-TET
+  // key + cents, not through the track's key map (pq/document/midi_import.h).
+  bool absolutePitch = false;
 };
 
 // Notes of `file`. Channel state (bend, ranges, sustain, MPE zones, tuning programs) is shared by every track in
