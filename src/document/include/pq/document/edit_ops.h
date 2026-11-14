@@ -476,8 +476,22 @@ struct JiFromNotesOptions {
 EditResult jiFromNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
                        const JiFromNotesOptions& options = {});
 
-// Moves the object by `dt`; its inner notes (the clip's notes that follow it) move with it.
-EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks dt);
+// Moves the object by `dt`; its inner notes (the clip's notes that follow it) move with it. T7.5 (Q279), in pitch:
+// `steps` display-grid steps — the fundamental and every tuning stop's pitches step as a note of that identity does
+// (stepPitch: a Degree by degrees, Cents on the grid lines / `displayGrid`), the proportions ride on the fundamental —
+// then `cents` free: when non-zero the fundamental and the tuning stops' pitches become Cents identities that far from
+// where they were (Alt-drag in the roll). Errors: a pitch that cannot step, a pitch out of range.
+EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks dt, int32_t steps = 0,
+                        const tuning::Edo* displayGrid = nullptr, double cents = 0.0);
+// T7.5 (Q279): a copy of `source` over [start, start + source.length) with fresh object and voice-note ids, and copies
+// of `inner` (notes that follow `source`: Harmonic(source, voice) or a Ratio on its fundamental; others are refused)
+// re-pointed to the copy and shifted by start − source.start; `curves` are the source notes' curves, matched by id
+// (as addNotes). `source` need not be in the clip (a paste from the roll's clipboard). Edit::jiObjects = the copy,
+// Edit::notes = the copied notes.
+EditResult pasteJiObject(const Project& p, IdSource& ids, ClipRef clip, const JiObject& source, std::span<const Note> inner,
+                         std::span<const NoteCurves> curves, Ticks start);
+// The object copied `dt` ticks later (its inner notes and their curves with it): pasteJiObject of the clip's own.
+EditResult duplicateJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, Ticks dt);
 // Moves one edge by `delta` (length ≥ 1). End: the length changes; stops beyond the end are kept (never reached).
 // Start: the object's content keeps its absolute time: later stops and the ride shift, a stop the start passes becomes
 // stop 0 (the earlier ones are dropped), a start moved earlier extends stop 0. Inner notes stay where they are.
@@ -485,7 +499,8 @@ EditResult resizeJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjec
 // Removes the object; its inner notes leave it first, each keeping the pitch it has at its start: on a hold of a tuning
 // stop the stop's own pitch; on a hold of a proportion over a reference-Ratio fundamental the exact reference-anchored
 // Ratio; otherwise (a Degree / Cents fundamental, mid-glide, under a ride) Cents.
-EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object);
+// T7.5 `withNotes` (a cut): the inner notes are removed with it instead.
+EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object, bool withNotes = false);
 // Replaces the object (same id) with `object`, every field: fundamental, flags, velocity, ride, stops. The voice count
 // follows the stops (new voices get fresh note ids, `object.voiceNotes` beyond it are dropped). Errors: an invalid
 // object, a Harmonic note on a voice it would lose.

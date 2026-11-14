@@ -55,6 +55,8 @@ bool RollState::refresh() {
     clip_.reset();
     sel_.clear();
     jiSel_ = {};
+    jiEntered_ = {};
+    jiStopSel_ = jiTermSel_ = -1;
     jiPending_.reset();
     insertTick_.reset();
     fitted_ = false;
@@ -425,6 +427,7 @@ tuning::PitchId RollState::drawnPitch(const DrawnNote& d) const noexcept {
   switch (d.mode) {
     case DrawPitch::Overlay: return tuning::PitchId::fromCents(d.cents);
     case DrawPitch::Ratio: return tuning::PitchId::fromRatio(d.ratio);
+    case DrawPitch::Voice: return tuning::PitchId::fromHarmonic(jiEntered_.value, d.voice);  // T7.5
     case DrawPitch::Row: break;
   }
   return degreePitch(d.degree);
@@ -1036,14 +1039,28 @@ const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
   int hitZone = 0;
   int hitKey = -1;
   const bool zOrder = rows_.layout() == RowLayout::Proportional;
+  const bool anyPath = clip_->curves != nullptr || clip_->ji != nullptr;
+  const float half = pathHalfThickness() + 1.0f;
   forNotesIn(static_cast<Ticks>(std::floor(t0)), static_cast<Ticks>(std::ceil(t1)) + 1, [&](const doc::Note& n) {
-    const NotePlace pl = place(n.pitch);
-    if (!pl.ok || cy < pl.top || cy >= pl.bottom) return;
+    // T7.5: inside an entered object only its notes are hit.
+    if (jiEntered_.valid() && doc::jiObjectOf(n.pitch) != jiEntered_) return;
     const float x0 = std::round(xOfTick(static_cast<double>(n.start)));
     const float x1 = std::max(x0 + 3.0f, std::round(xOfTick(static_cast<double>(n.start + n.length))));
     if (p.x < x0 || p.x >= x1) return;
-    // The note drawn on top: later notes, and in the Proportional layout higher z (selected notes highest).
-    const int key = zOrder ? pl.z + (selected(n.id) ? 256 : 0) : 0;
+    int key = 0;
+    if (anyPath && onPath(n, n.pitch)) {
+      // T7.5: a note drawn along a path (a pitch curve, a JI object's voice) is hit where it is drawn: its pitch at
+      // the pointer's tick.
+      const double off = std::clamp(tickAtX(p.x) - static_cast<double>(n.start), 0.0, static_cast<double>(n.length));
+      const std::optional<double> c = pathCents(n, n.start, n.pitch, off);
+      if (!c || std::fabs(yOfCents(*c) - p.y) > half) return;
+      key = 1024;  // path notes are painted over the others
+    } else {
+      const NotePlace pl = place(n.pitch);
+      if (!pl.ok || cy < pl.top || cy >= pl.bottom) return;
+      // The note drawn on top: later notes, and in the Proportional layout higher z (selected notes highest).
+      key = zOrder ? pl.z + (selected(n.id) ? 256 : 0) : 0;
+    }
     if (key < hitKey) return;
     hitKey = key;
     hit = &n;
@@ -1150,7 +1167,11 @@ bool RollState::apply(const doc::ops::EditResult& e, std::string_view what) {
 
 void RollState::deleteSelection() {
   if (!clip_) return;
-  if (jiSel_.valid()) {  // T7.4: the selected JI object
+  if (sel_.empty() && jiStopSel_ >= 0 && jiActive().valid()) {  // T7.5: the selected stop
+    (void)deleteJiStop(jiActive(), static_cast<uint32_t>(jiStopSel_));
+    return;
+  }
+  if (jiSel_.valid() && !jiEntered_.valid()) {  // T7.4: the selected JI object (not the one the user is inside)
     (void)deleteJiSelection();
     return;
   }
@@ -1161,7 +1182,7 @@ void RollState::deleteSelection() {
 
 void RollState::duplicateSelection() {
   if (!clip_) return;
-  if (jiSel_.valid()) {  // T7.4
+  if (jiSel_.valid() && sel_.empty()) {  // T7.4
     (void)duplicateJiSelection();
     return;
   }
@@ -1275,6 +1296,10 @@ void RollState::lengthenSelection(int32_t cells) {
 }
 
 void RollState::copySelection() {
+  if (clip_ && sel_.empty() && jiSel_.valid()) {  // T7.5: the selected JI object, its inner notes with it
+    (void)copyJiSelection();
+    return;
+  }
   clipboard_.clear();
   clipboardCurves_.clear();
   if (!clip_) return;
@@ -1301,6 +1326,7 @@ void RollState::copySelection() {
     }
   for (doc::Note& n : clipboard_) n.start -= first;
   if (!clipboard_.empty()) {
+    jiClipboard_.reset();  // one clipboard: the notes replace a copied object
     Ticks end = 0;
     for (const doc::Note& n : clipboard_) end = std::max(end, n.start + n.length);
     insertTick_ = first + end;  // paste right after the copied notes unless the user clicks elsewhere
@@ -1309,11 +1335,19 @@ void RollState::copySelection() {
 }
 
 void RollState::cutSelection() {
+  if (clip_ && sel_.empty() && jiSel_.valid() && !jiEntered_.valid()) {  // T7.5: the object goes with its inner notes
+    if (copyJiSelection()) (void)applyJi(doc::ops::deleteJiObject(*ctx.doc(), ref_, jiSel_, true), "Cut JI Object", {});
+    return;
+  }
   copySelection();
   deleteSelection();
 }
 
 void RollState::paste() {
+  if (clip_ && jiClipboard_ && !jiEntered_.valid()) {  // T7.5
+    (void)pasteJiObject();
+    return;
+  }
   if (!clip_ || clipboard_.empty()) return;
   const Ticks at = insertTick_.value_or(0);
   std::vector<doc::Note> notes = clipboard_;
@@ -1334,12 +1368,17 @@ tuning::PitchId RollState::degreePitch(int64_t degree) const noexcept {
 
 void RollState::addNotes(const std::vector<DrawnNote>& drawn) {
   if (!clip_ || drawn.empty()) return;
-  std::vector<doc::Note> notes(drawn.size());
-  for (size_t i = 0; i < drawn.size(); ++i) {
-    notes[i].start = drawn[i].start;
-    notes[i].length = drawn[i].length;
-    notes[i].pitch = drawnPitch(drawn[i]);
+  std::vector<doc::Note> notes;
+  notes.reserve(drawn.size());
+  for (const DrawnNote& d : drawn) {
+    if (d.length < 1) continue;  // T7.5: a cell outside the entered object
+    doc::Note n;
+    n.start = d.start;
+    n.length = d.length;
+    n.pitch = drawnPitch(d);
+    notes.push_back(n);
   }
+  if (notes.empty()) return;
   (void)apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes), "Add Notes");
 }
 
@@ -1356,6 +1395,7 @@ void RollState::updatePreviewPitches() {
   pc.tuning = &tuning_;
   pc.displayGrid = overlay();  // Cents notes move on the background EDO (T3.12)
   pc.fundamental = virtualFundamental();
+  pc.clip = clip_.get();  // T7.5: a Harmonic note steps within its object's voices
   for (const ChunkInfo& c : chunks_) {
     if (c.nonDegree == 0) continue;
     for (uint32_t i = 0; i < c.count; ++i) {
@@ -1417,7 +1457,14 @@ void RollState::beginDragTracking() {
   drag.trackDamage = clip_ && sel_.size() <= kMaxTrackedDragNotes;
   if (!drag.trackDamage) return;
   for (const doc::Note& n : clip_->notes)
-    if (selected(n.id)) drag.tracked.push_back(n);
+    if (selected(n.id)) {
+      if (onPath(n, n.pitch)) {  // T7.5: a path note has no row rect: the whole area repaints
+        drag.trackDamage = false;
+        drag.tracked.clear();
+        return;
+      }
+      drag.tracked.push_back(n);
+    }
 }
 
 ui::IRect RollState::screenRectOf(Ticks start, Ticks length, const tuning::PitchId& pitch) const {
@@ -1520,9 +1567,21 @@ void RollState::commitDrag() {
     case DragKind::JiResizeStart:
     case DragKind::JiResizeEnd:
       jiPreview_.reset();
-      if (d.dt != 0 || d.steps != 0)
+      jiPreviewObject_.reset();
+      if (d.dt != 0 || d.steps != 0 || d.cents != 0.0)
         (void)applyJi(jiDragEdit(d), d.kind == DragKind::JiMove ? "Move JI Object" : "Resize JI Object", d.ji);
       break;
+    // T7.5
+    case DragKind::JiStop:
+    case DragKind::JiGlide:
+    case DragKind::JiBezier: {
+      jiPreview_.reset();
+      jiPreviewObject_.reset();
+      const int32_t keepStop = jiStopSel_;
+      if (applyJi(jiDragEdit(d), d.kind == DragKind::JiStop ? "Move JI Stop" : d.kind == DragKind::JiGlide ? "JI Glide" : "Transition Shape", d.ji))
+        jiStopSel_ = keepStop;
+      break;
+    }
     case DragKind::LoopBrace:
       if (d.dt != 0) {
         doc::ClipLoop l = clip_->loop;
@@ -1564,6 +1623,7 @@ void RollState::cancelDrag() {
   if (drag.kind == DragKind::None) return;
   drag = {};
   jiPreview_.reset();
+  jiPreviewObject_.reset();
   markAllDirty();
 }
 
@@ -1572,6 +1632,13 @@ void RollState::cancelDrag() {
 void RollState::audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length) {
   if (!clip_) return;
   tuning::ResolveContext rc;
+  if (doc::jiObjectOf(p).valid()) {  // T7.5: a note of a JI object sounds where its voice is at its start
+    static const doc::Note kNoNote{};
+    const std::optional<double> c = pathCents(kNoNote, contentStart, p, 0.0);
+    if (!c) return;
+    ctx.audition(static_cast<float>(tuning_.referenceHz() * std::exp2(*c / 1200.0)), velocity, 300.0f, ref_, std::nullopt);
+    return;
+  }
   if (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Note) {
     const std::optional<double> c = centsOf(p);
     if (!c) return;

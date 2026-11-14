@@ -265,9 +265,12 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   paintOverlay(ctx, s_, vis, static_cast<float>(vis.x), static_cast<float>(vis.right()));
   paintFundamental(ctx, s_, r, vis);
   const DragState& dr0 = s_.drag;
+  // T7.5: inside an entered object everything else is painted first and dimmed, then the object on top.
+  const bool entered = s_.jiEntered().valid();
+  const JiPass under = entered ? JiPass::NotEntered : JiPass::All;
   if (!s_.jiViews().empty() || s_.jiPending() || dr0.kind == DragKind::JiBox) {  // T7.4: under the notes
     const PaintClock::time_point t0 = PaintClock::now();
-    paintJiObjects(ctx, s_, vis, false);
+    paintJiObjects(ctx, s_, vis, false, under);
     s_.paintStats.jiMs = std::chrono::duration<double, std::milli>(PaintClock::now() - t0).count();
   } else {
     s_.paintStats.jiMs = 0.0;
@@ -276,7 +279,11 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
 
   // Notes. A Move / Copy drag shows the selected notes displaced: look as far back / ahead as the drag reaches.
   const DragState& dr = s_.drag;
-  const bool shifting = dr.kind == DragKind::Move || dr.kind == DragKind::Copy;
+  // T7.5: the inner notes of a dragged JI object follow its preview (in time with a move; on its voices as the
+  // release will leave them for every object drag).
+  const doc::JiObject* jiDragged = dr.moved ? s_.jiPreviewObject() : nullptr;
+  const Ticks jiDt = (jiDragged && dr.kind == DragKind::JiMove) ? dr.dt : 0;
+  const bool shifting = dr.kind == DragKind::Move || dr.kind == DragKind::Copy || jiDt != 0;
   const Ticks lookFrom = shifting ? std::min(from, from - dr.dt) : from;
   const Ticks lookTo = shifting ? std::max(to, to - dr.dt) : to;
   const NoteColours& col = s_.colours();
@@ -332,6 +339,10 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
     const bool sel = anySelected && s_.selected(n.id);
+    if (jiDt != 0 && doc::jiObjectOf(n.pitch) == jiDragged->id) {
+      emit(n, n.start + jiDt, n.length, n.pitch, sel);
+      return;
+    }
     if (sel && dr.kind != DragKind::None) {
       if (const std::optional<RollState::Preview> pv = s_.preview(n)) {
         if (dr.kind == DragKind::Copy) emit(n, n.start, n.length, n.pitch, false);  // the original stays
@@ -353,7 +364,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   // T4.16b: the part of the note a press would grab (Live): the note brightened (inside its border,
   // under its label), the edge it would trim marked.
   if (const RollState::HoverPart& hp = s_.hoverPart(); hp.note != 0 && dr.kind == DragKind::None)
-    if (const doc::Note* n = s_.findNote(doc::NoteId{hp.note}))
+    if (const doc::Note* n = s_.findNote(doc::NoteId{hp.note}); n && !s_.onPath(*n, n->pitch))
       if (const NotePlace pl = s_.place(n->pitch); pl.ok) {
         const float x0 = std::round(s_.xOfTick(static_cast<double>(n->start)));
         const float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(n->start + n->length))));
@@ -368,17 +379,36 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
         }
       }
 
-  if (!curved.empty()) paintCurveNotes(ctx, s_, vis);
+  if (!curved.empty()) paintCurveNotes(ctx, s_, vis, under);
   if (!s_.jiViews().empty()) {  // T7.4: the objects' text, over the notes
     const PaintClock::time_point t0 = PaintClock::now();
-    paintJiObjects(ctx, s_, vis, true);
+    paintJiObjects(ctx, s_, vis, true, under);
     s_.paintStats.jiMs += std::chrono::duration<double, std::milli>(PaintClock::now() - t0).count();
   }
   if (!labels.empty()) paintNoteLabels(ctx);
+  if (entered) {
+    // T7.5: the roll around the entered object is dimmed; the object, its voices (the rows in there), its notes and
+    // the notes being drawn on its voices are painted over the dim.
+    dl.addRectFilled(vis.toRect(), th->roll.outside);
+    dl.addRectFilled(vis.toRect(), th->roll.outside);  // twice: clearly behind the object
+    paintJiObjects(ctx, s_, vis, false, JiPass::EnteredOnly);
+    if (dr.kind == DragKind::Draw) {
+      static const doc::Note kPreviewNote = [] {
+        doc::Note n;
+        n.velocity = 100.0f;
+        return n;
+      }();
+      for (const DrawnNote& dn : dr.drawn)
+        if (dn.mode == DrawPitch::Voice && dn.length > 0) curved.push_back({&kPreviewNote, dn.start, dn.length, s_.drawnPitch(dn), true});
+    }
+    if (!curved.empty()) paintCurveNotes(ctx, s_, vis, JiPass::EnteredOnly);
+    paintJiObjects(ctx, s_, vis, true, JiPass::EnteredOnly);
+  }
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)
     for (const DrawnNote& dn : dr.drawn) {
+      if (dn.mode == DrawPitch::Voice) continue;  // painted along its voice above
       const NotePlace pl = s_.place(s_.drawnPitch(dn));
       if (!pl.ok) continue;
       const float x0 = std::round(s_.xOfTick(static_cast<double>(dn.start)));

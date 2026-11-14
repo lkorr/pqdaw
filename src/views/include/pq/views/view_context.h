@@ -718,7 +718,10 @@ public:
       "pianoroll.nudgeFineLeft", "pianoroll.nudgeFineRight", "pianoroll.shorten", "pianoroll.lengthen",
       "pianoroll.deselect",
       // T7.4
-      "pianoroll.toggleJiTool"};
+      "pianoroll.toggleJiTool",
+      // T7.5
+      "pianoroll.tuneToJi", "pianoroll.jiTuningStop", "pianoroll.jiWalkUp", "pianoroll.jiWalkDown",
+      "pianoroll.jiWalkUpTop", "pianoroll.jiWalkDownTop"};
   // View actions of the MOS wheel (T3.14): installMosWheel sets the handler (Ctrl+Shift+W, Q15).
   static constexpr std::string_view kMosWheelActions[] = {"tuning.openMosWheel"};
   // T3.10: the mixer view's toggle (Ctrl+Alt+M), forwarded the same way (installMixer sets the handler).

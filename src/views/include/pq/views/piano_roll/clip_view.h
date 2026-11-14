@@ -179,6 +179,33 @@ public:
   };
   PaintStats paintStats() const noexcept;
 
+  // --- inner roll and morph editing (T7.5; roll_ji_edit.cpp) ---
+  // A double-click on an object enters it (Esc / a double-click outside leaves): its voices are the rows inside the
+  // box, the rest of the roll is dimmed, drawing and double-clicks put Harmonic notes on the voice under the pointer,
+  // typing a proportion adds a stop at the pointer, T a tuning stop. A stop's label under the box selects it (drag:
+  // move, double-click: retype, Delete: remove), the grip on the bottom border sets its glide; a harmonic number
+  // selects that term (Alt+Up / Down: ops::walkJiTerm). "Tune to JI" (Ctrl+Shift+J, "pianoroll.tuneToJi") turns the
+  // selected notes into the inner notes of an object that glides from the tuning to the nearest proportion; "Is
+  // Harmonic…" in a note's menu locks the virtual fundamental at note / N.
+  doc::JiObjectId jiEntered() const noexcept;
+  void enterJiObject(doc::JiObjectId id);
+  void leaveJiObject();
+  int32_t jiStopSelection() const noexcept;  // index into the object's stops; −1 none
+  int32_t jiTermSelection() const noexcept;  // the voice whose harmonic number is selected; −1 none
+  void selectJiStop(doc::JiObjectId id, int32_t stop);
+  void selectJiTerm(doc::JiObjectId id, int32_t voice);
+  bool tuneSelectionToJi();
+  bool lockFundamentalAt(doc::NoteId note, uint32_t n, bool subharmonic);
+  // Where the object's parts are on screen (device px; empty: not shown): a stop's label under the box, a voice's
+  // harmonic number, a stop's glide grip on the bottom border. `index`: the stop (StopLabel, Glide) or the voice.
+  enum class JiPart : uint8_t { StopLabel, VoiceLabel, Glide };
+  ui::IRect jiPartRect(doc::JiObjectId id, JiPart part, int32_t index) const;
+  // A point on voice `voice`'s line at object tick `objectTick`; a bezier transition's handle (0 / 1); a point `frac`
+  // of the way through a note where it is drawn (on its row, or along its path). {−1, −1}: none.
+  ui::Vec2 jiVoicePoint(doc::JiObjectId id, uint32_t voice, Ticks objectTick) const;
+  ui::Vec2 jiBezierHandle(doc::JiObjectId id, uint32_t stop, uint32_t voice, int handle) const;
+  ui::Vec2 notePoint(doc::NoteId id, double frac) const;
+
   roll::RollState& state() noexcept { return *state_; }
 
 private:

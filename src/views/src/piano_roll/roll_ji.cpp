@@ -23,11 +23,14 @@
 // creates the object; the header and the border select (drag: move in time and by rows; the left / right border:
 // resize); Delete and Ctrl+D act on the selected object.
 //
-// Seams for T7.5 / T7.6 (not implemented here): RollState::jiAt is the one hit test (a double-click on a hit is where
-// "enter the object" hooks in: NoteAreaWidget::onPointer), JiView::stops carries every marker's tick (stop dragging,
-// glide handles), jiDragEdit shows how a gesture previews through the edit it will commit, pathCents is the pitch of
-// any note at any tick (hit-testing and drawing along curves, the pen), and the note menu (openMenu) is where
-// "Tune to JI" (ops::jiFromNotes) and "Is harmonic N" (lockFundamentalOn exists) are added.
+// T7.5 (the inner roll and morph editing: roll_ji_edit.cpp) draws on this file: jiLayout places every text and handle
+// for both paint and jiAt; the active object (entered, else selected) shows its glide handles, a selected stop / voice
+// label as a chip, and — entered — its voice lanes and the bezier handles of its transitions; a stop between the
+// tuning and a proportion shows how far each voice moves ("−14¢").
+//
+// Seams for T7.6 (not implemented here): RollState::jiAt is the one hit test, jiDragEdit shows how a gesture previews
+// through the edit it will commit, pathCents is the pitch of any note at any tick (hit-testing and drawing along
+// curves: noteAt uses it; the pen records against it), pathBox / pathPoint give a path note's screen extent.
 
 #include <algorithm>
 #include <charconv>
@@ -76,8 +79,39 @@ std::string stopLabel(const doc::JiStop& stop, bool undertone, const std::string
 }
 
 bool jiDragKind(DragKind k) noexcept {
-  return k == DragKind::JiMove || k == DragKind::JiResizeStart || k == DragKind::JiResizeEnd;
+  return k == DragKind::JiMove || k == DragKind::JiResizeStart || k == DragKind::JiResizeEnd || k == DragKind::JiStop ||
+         k == DragKind::JiGlide || k == DragKind::JiBezier;
 }
+
+// "−14¢" / "+2¢" / "+0.4¢": how far a voice moves into a stop.
+std::string deltaText(double d) {
+  char buf[32];
+  const double a = std::fabs(d);
+  if (a >= 9.95) std::snprintf(buf, sizeof buf, "%s%.0f\xC2\xA2", d < 0 ? "\xE2\x88\x92" : "+", a);
+  else std::snprintf(buf, sizeof buf, "%s%.1f\xC2\xA2", d < 0 ? "\xE2\x88\x92" : "+", a);
+  return buf;
+}
+
+struct JiFont {
+  TextSystem* ts = nullptr;
+  FontId font = kNoFont;
+  float fh = 12.0f;
+  float measure(const std::string& t, float sc) const {
+    return (ts && font != kNoFont) ? static_cast<float>(ts->measure(font, t)) : 6.5f * sc * static_cast<float>(t.size());
+  }
+};
+JiFont jiFont(const PaintResources* res, float sc) {
+  JiFont f;
+  f.fh = 12.0f * sc;
+  if (!res) return f;
+  f.ts = res->text;
+  if (const ThemeFonts* fonts = res->uiFonts) f.font = fonts->numeric != kNoFont ? fonts->numeric : fonts->small;
+  if (f.ts && f.font != kNoFont) f.fh = static_cast<float>(f.ts->metrics(f.font).pixelSize);
+  return f;
+}
+
+// A filled chip behind a selected label.
+void chip(DrawList& dl, const Rect& box, Rgba col, float sc) { dl.addRoundedRectFilled(box, 2.0f * sc, col); }
 
 Error invalid(std::string message) { return Error{ErrorCode::InvalidArgument, std::move(message), {}}; }
 
@@ -197,6 +231,8 @@ void voicePath(RollState& s, const JiView& v, const std::vector<doc::JiPitchPoin
 // the notes; the text (`labels`) over them, so an inner note lying on its voice does not hide the voice's number.
 bool paintJiObject(PaintContext& ctx, RollState& s, const JiView& v, bool selected, const IRect& vis, bool labels) {
   if (!v.ok) return false;
+  const bool entered = v.id == s.jiEntered();
+  JiLayout& lay = s.jiLayoutScratch();
   const Theme& th = *ctx.res.theme;
   TextSystem* ts = ctx.res.text;
   const ThemeFonts* fonts = ctx.res.uiFonts;
@@ -247,12 +283,16 @@ bool paintJiObject(PaintContext& ctx, RollState& s, const JiView& v, bool select
       dl.addCircleFilled({b.x0, s.yOfCents(v.rideBase + doc::automationValueAt(v.ride, 0)) + gap}, 2.75f * sc, th.roll.jiRide);
   }
 
-  // The voices: the lowest (voice 0, the pinned one) thicker, a diamond at its end.
+  // The voices: the lowest (voice 0, the pinned one) thicker, a diamond at its end. Entered (T7.5): each voice is a
+  // row, a translucent lane along its path.
   const float thin = std::max(1.25f, 1.4f * sc), thick = std::max(2.0f, 2.6f * sc);
+  const float laneW = 2.0f * s.pathHalfThickness() + 4.0f * sc;
   for (size_t i = v.plan.voices.size(); i-- > 0;) {
     if (!v.distinct[i]) continue;
     voicePath(s, v, v.plan.voices[i].pitch, std::max(b.x0, vx0 - step), std::min(b.x1, vx1 + step), step);
-    if (s.linePts.size() >= 2) smoothPolyline(dl, s.linePts, th.roll.jiLine, i == 0 ? thick : thin);
+    if (s.linePts.size() < 2) continue;
+    if (entered) smoothPolyline(dl, s.linePts, withAlpha(th.roll.jiLine, 44), laneW);
+    smoothPolyline(dl, s.linePts, th.roll.jiLine, i == 0 ? thick : thin);
   }
   if (!v.plan.voices.empty() && b.x1 >= vx0 - 6.0f * sc && b.x1 <= vx1 + 6.0f * sc) {
     const float y = s.yOfCents(v.plan.voices[0].pitch.back().cents);
@@ -269,28 +309,51 @@ bool paintJiObject(PaintContext& ctx, RollState& s, const JiView& v, bool select
       dl.addRoundedRectFilled({b.x0 - hw, my - hh, b.x0 + hw + 1.0f, my + hh}, hw, th.roll.jiSelected);
       dl.addRoundedRectFilled({b.x1 - hw - 1.0f, my - hh, b.x1 + hw, my + hh}, hw, th.roll.jiSelected);
     }
+    // T7.5: every later stop's glide — a bar along the bottom border from where the glide begins to the stop, a grip
+    // at its start (drag it to set the glide length).
+    s.jiLayout(v, lay);
+    for (const JiLayout::Label& g : lay.glides) {
+      if (g.box.x1 < vx0 || g.box.x0 > vx1) continue;
+      const float gx = 0.5f * (g.box.x0 + g.box.x1);
+      float sx = gx;
+      for (const JiStopMark& m : v.stops)
+        if (static_cast<int32_t>(m.index) == g.index) sx = std::round(s.xOfTick(static_cast<double>(v.start + m.at)));
+      const float y = b.y1 - 1.0f, r = 4.5f * sc;
+      if (sx > gx) dl.addRectFilled({gx, y - std::round(1.0f * sc), sx, y + std::round(1.0f * sc)}, th.roll.jiSelected);
+      const Vec2 tri[3] = {{gx - r, y}, {gx + r * 0.6f, y - r}, {gx + r * 0.6f, y + r}};
+      dl.addConvexPolyFilled(tri, th.roll.jiSelected);
+    }
+  }
+  if (entered) {  // bezier transitions: the two handles
+    for (const JiView::Bezier& bz : v.beziers) {
+      const Vec2 p0{s.xOfTick(static_cast<double>(v.start + bz.begin)), s.yOfCents(bz.from)};
+      const Vec2 p3{s.xOfTick(static_cast<double>(v.start + bz.arrive)), s.yOfCents(bz.to)};
+      if (p3.x < vx0 || p0.x > vx1) continue;
+      const Vec2 h1 = s.jiBezierHandle(v, bz, 0), h2 = s.jiBezierHandle(v, bz, 1);
+      const Vec2 l1[2] = {p0, h1}, l2[2] = {p3, h2};
+      smoothPolyline(dl, l1, th.roll.jiSelected, std::max(1.0f, sc));
+      smoothPolyline(dl, l2, th.roll.jiSelected, std::max(1.0f, sc));
+      dl.addCircleFilled(h1, 3.5f * sc, th.roll.jiSelected);
+      dl.addCircleFilled(h2, 3.5f * sc, th.roll.jiSelected);
+    }
   }
 
   return true;
   }
   if (!ts || font == kNoFont) return true;
   const Rgba text = selected ? th.roll.jiSelected : th.roll.jiText;
-  const int32_t ifh = static_cast<int32_t>(fh);
+  s.jiLayout(v, lay);  // the one placement paint and jiAt share
+  auto labelText = [&](const Rect& box, const std::string& str, bool chosen) {
+    if (box.x1 < vx0 || box.x0 > vx1 || box.y1 < vy0 || box.y0 > vy1) return;
+    if (chosen) chip(dl, box, th.roll.jiSelected, sc);
+    const IRect ib{static_cast<int32_t>(box.x0 + 2.0f * sc), static_cast<int32_t>(box.y0), static_cast<int32_t>(box.x1 - box.x0),
+                   static_cast<int32_t>(box.y1 - box.y0)};
+    paint::text(ctx, font, ib, str, chosen ? th.roll.rowNatural : text, TextAlign::Left);
+  };
   // Harmonic numbers at the lines' left ends (above the line; a label that would sit on the previous one is skipped).
-  if (b.x1 - b.x0 >= 26.0f * sc && b.x0 + 40.0f * sc > vx0 && b.x0 < vx1) {
-    float lastY = 1e30f;
-    const int32_t lx = static_cast<int32_t>(b.x0 + 4.0f * sc);
-    const int32_t room = static_cast<int32_t>(b.x1 - b.x0 - 6.0f * sc);
-    for (size_t i = 0; i < v.voiceLabels.size() && i < v.plan.voices.size(); ++i) {
-      if (v.voiceLabels[i].empty()) continue;
-      const float y = s.yOfCents(v.plan.voices[i].pitch.front().cents) - 2.0f * sc;
-      if (std::fabs(y - lastY) < fh + 1.0f) continue;
-      lastY = y;
-      if (y < vy0 || y - fh > vy1) continue;
-      const IRect box{lx, static_cast<int32_t>(std::lround(y)) - ifh - 1, room, ifh + 2};
-      paint::text(ctx, font, box, v.voiceLabels[i], text, TextAlign::Left);
-    }
-  }
+  const int32_t termSel = selected ? s.jiTermSelection() : -1;
+  for (const JiLayout::Label& l : lay.voiceLabels)
+    labelText(l.box, v.voiceLabels[static_cast<size_t>(l.index)], l.index == termSel);
   // The header, above the box, and the stops' proportions under it: not for a box too narrow to read them over (a
   // zoomed-out clip full of objects would only smear them across its neighbours).
   if (b.x1 - b.x0 < kJiTextMin * sc) return true;
@@ -299,18 +362,24 @@ bool paintJiObject(PaintContext& ctx, RollState& s, const JiView& v, bool select
     paint::text(ctx, font, box, v.header, text, TextAlign::Left, static_cast<int32_t>(sc));
   }
   // The stops' proportions under the box, each at its marker; one that would run into the previous label is skipped.
-  if (b.y1 < vy1 && b.y1 + lblH > vy0) {
-    float lastRight = -1e30f;
-    const float gap = 8.0f * sc;
-    for (size_t i = 0; i < v.stops.size(); ++i) {
-      const float x = i == 0 ? b.x0 + 2.0f * sc : std::round(s.xOfTick(static_cast<double>(v.start + v.stops[i].at))) + 2.0f * sc;
-      if (x >= vx1) break;
-      if (x < lastRight + gap) continue;
-      const float w = static_cast<float>(ts->measure(font, v.stops[i].label));
-      lastRight = x + w;
-      if (x + w < vx0) continue;
-      const IRect box{static_cast<int32_t>(x), static_cast<int32_t>(b.y1 + 1.0f), static_cast<int32_t>(w) + 2, static_cast<int32_t>(lblH)};
-      paint::text(ctx, font, box, v.stops[i].label, text, TextAlign::Left);
+  const int32_t stopSel = selected ? s.jiStopSelection() : -1;
+  for (const JiLayout::Label& l : lay.stopLabels)
+    for (const JiStopMark& m : v.stops)
+      if (static_cast<int32_t>(m.index) == l.index) labelText(l.box, m.label, l.index == stopSel);
+  // T7.5: between the tuning and a proportion, how far each voice moves, right of the stop's marker.
+  for (const JiStopMark& m : v.stops) {
+    if (m.deltas.empty()) continue;
+    const float x = std::round(s.xOfTick(static_cast<double>(v.start + m.at))) + 4.0f * sc;
+    if (x < b.x0 + 34.0f * sc || x > vx1 || x + 44.0f * sc > b.x1) continue;
+    float lastY = 1e30f;
+    for (size_t i = 0; i < m.deltas.size(); ++i) {
+      if (m.deltas[i].empty()) continue;
+      const float y = s.yOfCents(m.deltaCents[i]) - 2.0f * sc - s.pathHalfThickness();
+      if (std::fabs(y - lastY) < fh + 1.0f) continue;
+      lastY = y;
+      if (y < vy0 || y - fh > vy1) continue;
+      const IRect box{static_cast<int32_t>(x), static_cast<int32_t>(std::lround(y - fh)) - 1, static_cast<int32_t>(60.0f * sc), static_cast<int32_t>(fh) + 2};
+      paint::text(ctx, font, box, m.deltas[i], text, TextAlign::Left);
     }
   }
   return true;
@@ -327,18 +396,25 @@ JiView RollState::makeJiView(const doc::JiObject& o) const {
   v.length = o.length;
   v.ride = o.ride;
   bool allProportions = true;
-  for (const doc::JiStop& stop : o.stops) {
+  for (size_t i = 0; i < o.stops.size(); ++i) {
+    const doc::JiStop& stop = o.stops[i];
     allProportions = allProportions && !stop.isTuning();
-    if (&stop != &o.stops.front() && stop.at >= o.length) continue;  // kept in the document, never reached
-    v.stops.push_back({stop.at, stopLabel(stop, o.undertone, tuningName_)});
+    if (i > 0 && stop.at >= o.length) continue;  // kept in the document, never reached
+    JiStopMark m{stop.at, stopLabel(stop, o.undertone, tuningName_)};
+    m.index = static_cast<uint32_t>(i);
+    if (i > 0) m.glide = std::clamp<Ticks>(stop.timing.glide, 0, stop.at - o.stops[i - 1].at);
+    v.stops.push_back(std::move(m));
   }
+  // The header: up to three stops read as the path itself ("12-EDO > 4:5:6"), a longer morph by its length.
   if (!o.stops.empty()) v.header = stopLabel(o.stops.front(), o.undertone, tuningName_);
-  if (o.stops.size() > 1) {
+  if (o.stops.size() > 1 && o.stops.size() <= 3) {
+    for (size_t i = 1; i < o.stops.size(); ++i) v.header += " \xE2\x86\x92 " + stopLabel(o.stops[i], o.undertone, tuningName_);
+  } else if (o.stops.size() > 1) {
     v.header += " \xC2\xB7 morphs through " + std::to_string(o.stops.size());
     v.header += allProportions ? " proportions" : " stops";
   }
   if (!o.ride.empty()) v.header += " \xC2\xB7 rides a curve";
-  if (!o.sounds) v.header += " \xC2\xB7 scaffold";
+  if (!o.sounds) v.header += " \xC2\xB7 tunes its notes";
 
   const uint32_t V = o.voices();
   v.voiceLabels.resize(V);
@@ -348,16 +424,49 @@ JiView RollState::makeJiView(const doc::JiObject& o) const {
       first = &stop;
       break;
     }
+  v.voiceEntry.assign(V, 0);
   if (first) {
+    v.labelStop = static_cast<int32_t>(first - o.stops.data());
     uint32_t prev = UINT32_MAX;
     for (uint32_t i = 0; i < V; ++i) {
       const uint32_t e = doc::jiVoiceEntry(o, *first, i);
+      v.voiceEntry[i] = e;
       if (e == prev || e >= first->terms.size()) continue;  // doubles the voice before it
       prev = e;
       v.voiceLabels[i] = (o.undertone ? "1/" : "") + std::to_string(first->terms[e]);
     }
   }
   if (!tuningValid_) return v;
+  // T7.5: per transition — bezier handles, and between the tuning and a proportion how far each voice moves.
+  {
+    auto rideAt = [&](Ticks t) { return o.ride.empty() ? 0.0 : static_cast<double>(doc::automationValueAt(o.ride, std::clamp<Ticks>(t, 0, o.length))); };
+    for (JiStopMark& m : v.stops) {
+      if (m.index == 0) continue;
+      const doc::JiStop& stop = o.stops[m.index];
+      const bool cross = stop.isTuning() != o.stops[m.index - 1].isTuning();
+      if (cross) {
+        m.deltas.assign(V, {});
+        m.deltaCents.assign(V, 0.0);
+      }
+      uint32_t prevEntry = UINT32_MAX;
+      for (uint32_t i = 0; i < V; ++i) {
+        const doc::JiTransition tr = doc::jiTransition(o, i, m.index);
+        if (tr.arrive > o.length) continue;
+        const std::optional<double> a = doc::jiVoiceCents(o, tuning_, i, static_cast<double>(tr.begin));
+        const std::optional<double> b = doc::jiVoiceCents(o, tuning_, i, static_cast<double>(tr.arrive));
+        if (!a || !b) continue;
+        const double from = tr.arrive > tr.begin ? *a - rideAt(tr.begin) : *b - rideAt(tr.arrive), to = *b - rideAt(tr.arrive);
+        if (tr.shape.kind == doc::JiShape::Bezier && tr.arrive > tr.begin)
+          v.beziers.push_back({m.index, i, tr.begin, tr.arrive, from, to, tr.shape.x1, tr.shape.y1, tr.shape.x2, tr.shape.y2});
+        const uint32_t e = doc::jiVoiceEntry(o, stop, i);
+        if (cross && e != prevEntry && tr.arrive > tr.begin && std::fabs(to - from) >= 0.05) {
+          m.deltas[i] = deltaText(to - from);
+          m.deltaCents[i] = *b;
+        }
+        prevEntry = e;
+      }
+    }
+  }
   doc::JiPlanOptions po;
   po.toleranceCents = 0.25;  // a quarter cent: under half a pixel up to 2 px per cent
   std::optional<doc::JiPlan> plan = doc::jiVoicePlan(o, tuning_, po);
@@ -393,14 +502,76 @@ void RollState::rebuildJiViews() {
   jiViewsFor_ = clip_ ? clip_->ji.get() : nullptr;
   jiViewsDirty_ = false;
   jiPreview_.reset();
+  jiPreviewObject_.reset();
   if (!clip_) {
     jiSel_ = {};
+    jiEntered_ = {};
+    jiStopSel_ = jiTermSel_ = -1;
     return;
   }
   const std::span<const doc::JiObject> objects = doc::jiObjectsOf(*clip_);
   jiViews_.reserve(objects.size());
   for (const doc::JiObject& o : objects) jiViews_.push_back(makeJiView(o));
   if (jiSel_.valid() && !doc::findJiObject(*clip_, jiSel_)) jiSel_ = {};  // undone / deleted elsewhere
+  if (jiEntered_.valid() && !doc::findJiObject(*clip_, jiEntered_)) jiEntered_ = {};
+  const doc::JiObject* act = jiObject(jiActive());
+  if (!act || jiStopSel_ >= static_cast<int32_t>(act->stops.size())) jiStopSel_ = -1;
+  if (!act || jiTermSel_ >= static_cast<int32_t>(act->voices())) jiTermSel_ = -1;
+}
+
+JiLayout& RollState::jiLayoutScratch() const noexcept { return jiLayoutScratch_; }
+
+float RollState::pathHalfThickness() const noexcept {
+  const float sc = scaleOf(*this);
+  const float lane = static_cast<float>(std::max(1, rows_.laneHeight()));
+  return 0.5f * std::clamp(0.55f * lane, 3.0f * sc, 9.0f * sc);
+}
+
+ui::Vec2 RollState::jiBezierHandle(const JiView& v, const JiView::Bezier& bz, int handle) const {
+  const double u = handle == 0 ? bz.x1 : bz.x2, w = handle == 0 ? bz.y1 : bz.y2;
+  const double t = static_cast<double>(bz.begin) + u * static_cast<double>(bz.arrive - bz.begin);
+  return {xOfTick(static_cast<double>(v.start) + t), yOfCents(bz.from + (bz.to - bz.from) * w)};
+}
+
+void RollState::jiLayout(const JiView& v, JiLayout& out) const {
+  out.clear();
+  if (!v.ok) return;
+  const float sc = scaleOf(*this);
+  const ui::Rect b = jiBoxRect(v);
+  const JiFont f = jiFont(noteArea && noteArea->tree() ? noteArea->tree()->resources() : nullptr, sc);
+  const float w = b.x1 - b.x0;
+  // Harmonic numbers: above each line's left end.
+  if (w >= 26.0f * sc) {
+    float lastY = 1e30f;
+    const float lx = std::floor(b.x0 + 4.0f * sc);
+    for (size_t i = 0; i < v.voiceLabels.size() && i < v.plan.voices.size(); ++i) {
+      if (v.voiceLabels[i].empty()) continue;
+      const float y = yOfCents(v.plan.voices[i].pitch.front().cents) - 2.0f * sc;
+      if (std::fabs(y - lastY) < f.fh + 1.0f) continue;
+      lastY = y;
+      const float top = std::round(y) - std::floor(f.fh) - 1.0f;
+      const float tw = std::min(f.measure(v.voiceLabels[i], sc) + 4.0f * sc, w - 6.0f * sc);
+      out.voiceLabels.push_back({static_cast<int32_t>(i), {lx - 2.0f * sc, top, lx - 2.0f * sc + tw, top + std::floor(f.fh) + 2.0f}});
+    }
+  }
+  if (w < kJiTextMin * sc) return;
+  // The stops' proportions under the box, each at its marker; one that would run into the one before is skipped.
+  const float lblH = f.fh + 4.0f * sc, gap = 8.0f * sc;
+  float lastRight = -1e30f;
+  for (size_t i = 0; i < v.stops.size(); ++i) {
+    const float x = i == 0 ? b.x0 : std::round(xOfTick(static_cast<double>(v.start + v.stops[i].at)));
+    if (x < lastRight + gap) continue;
+    const float tw = f.measure(v.stops[i].label, sc) + 4.0f * sc;
+    lastRight = x + tw;
+    out.stopLabels.push_back({static_cast<int32_t>(v.stops[i].index), {x, b.y1 + 1.0f, x + tw, b.y1 + 1.0f + lblH}});
+  }
+  // Glide handles on the bottom border (the active object shows and grabs them).
+  if (w >= kJiNarrow * sc)
+    for (size_t i = 1; i < v.stops.size(); ++i) {
+      const float gx = std::round(xOfTick(static_cast<double>(v.start + v.stops[i].at - v.stops[i].glide)));
+      const float r = 5.0f * sc;
+      out.glides.push_back({static_cast<int32_t>(v.stops[i].index), {gx - r, b.y1 - 1.0f - r, gx + r, b.y1 + 1.0f}});
+    }
 }
 
 float RollState::yOfCents(double cents) const noexcept {
@@ -431,11 +602,37 @@ JiHit RollState::jiAt(ui::Vec2 p) const {
   const float sc = scaleOf(*this);
   const float grab = kJiGrab * sc;
   const float hdrH = 17.0f * sc;
+  const doc::JiObjectId active = jiActive();
+  auto in = [&](const ui::Rect& r) { return p.x >= r.x0 && p.x < r.x1 && p.y >= r.y0 && p.y < r.y1; };
   for (size_t i = jiViews_.size(); i-- > 0;) {  // the last drawn is on top
     const JiView& v = jiViews_[i];
     if (!v.ok) continue;
+    if (jiEntered_.valid() && v.id != jiEntered_) continue;  // T7.5: inside an object only it is hit
     const ui::Rect b = jiBoxRect(v);
-    if (p.x < b.x0 - grab || p.y < b.y0 - hdrH || p.y > b.y1 + grab) continue;
+    if (p.x < b.x0 - grab || p.y < b.y0 - hdrH || p.y > b.y1 + 22.0f * sc) continue;
+    // T7.5: the handles of the active object (bezier handles, glide grips, harmonic numbers), then any object's
+    // stop labels under its box.
+    const bool act = v.id == active;
+    if (act || p.y >= b.y1) {
+      JiLayout& lay = jiLayoutScratch_;
+      jiLayout(v, lay);
+      if (act) {
+        if (v.id == jiEntered_)
+          for (size_t k = 0; k < v.beziers.size(); ++k)
+            for (int h = 0; h < 2; ++h) {
+              const ui::Vec2 q = jiBezierHandle(v, v.beziers[k], h);
+              if (std::fabs(p.x - q.x) <= 6.0f * sc && std::fabs(p.y - q.y) <= 6.0f * sc)
+                return {v.id, JiZone::Bezier, static_cast<int32_t>(k), static_cast<uint8_t>(h)};
+            }
+        for (const JiLayout::Label& g : lay.glides)
+          if (in(g.box)) return {v.id, JiZone::Glide, g.index};
+        for (const JiLayout::Label& l : lay.voiceLabels)
+          if (in(l.box)) return {v.id, JiZone::VoiceLabel, l.index};
+      }
+      for (const JiLayout::Label& l : lay.stopLabels)
+        if (in(l.box)) return {v.id, JiZone::StopLabel, l.index};
+    }
+    if (p.y > b.y1 + grab) continue;
     const float w = b.x1 - b.x0;
     // The header strip: as wide as the box (at least a short grip for a narrow one).
     if (p.y < b.y0 - grab) {
@@ -444,7 +641,7 @@ JiHit RollState::jiAt(ui::Vec2 p) const {
     }
     if (p.x > b.x1 + grab) continue;
     const bool inside = p.x > b.x0 + grab && p.x < b.x1 - grab && p.y > b.y0 + grab && p.y < b.y1 - grab;
-    if (inside) continue;  // the inside belongs to the notes
+    if (inside) return {v.id, JiZone::Inside};  // the inside belongs to the notes (a double-click enters)
     if (w >= 6.0f * grab) {
       if (p.x <= b.x0 + grab) return {v.id, JiZone::Start};
       if (p.x >= b.x1 - grab) return {v.id, JiZone::End};
@@ -471,6 +668,7 @@ void RollState::selectJiObject(doc::JiObjectId id) {
   if (id.valid()) select({});
   if (id == jiSel_) return;
   jiSel_ = id;
+  jiStopSel_ = jiTermSel_ = -1;  // T7.5: they belong to the object that was selected
   markNotesDirty();
 }
 
@@ -479,6 +677,7 @@ bool RollState::applyJi(const doc::ops::EditResult& e, std::string_view what, do
   if (ok) {
     select({});
     jiSel_ = (keep.valid() && clip_ && doc::findJiObject(*clip_, keep)) ? keep : doc::JiObjectId{};
+    if (!jiSel_.valid() && !jiEntered_.valid()) jiStopSel_ = jiTermSel_ = -1;
     markNotesDirty();
   }
   return ok;
@@ -618,35 +817,8 @@ bool RollState::duplicateJiSelection() {
   if (!clip_ || !jiSel_.valid()) return false;
   const doc::JiObject* o = doc::findJiObject(*clip_, jiSel_);
   if (!o) return false;
-  // The document has no "duplicate object" builder (Q?-T7.4-a): the copy is put together here from the raw commands,
-  // as ops::cloneNoteClip does for a whole clip: fresh object, voice-note and note ids, the inner notes re-pointed.
-  doc::IdSource& ids = ctx.store().ids();
-  doc::JiObject c = *o;
-  c.id = ids.jiObject();
-  c.start += o->length;
-  for (doc::NoteId& v : c.voiceNotes) v = ids.note();
-  doc::Batch batch{"Duplicate JI Object", {}};
-  batch.commands.push_back(doc::AddJiObject{ref_, c});
-  doc::AddNotes add{ref_, {}};
-  std::vector<doc::Command> curves;
-  for (const doc::Note& n : clip_->notes) {
-    if (doc::jiObjectOf(n.pitch) != o->id) continue;
-    doc::Note m = n;
-    m.id = ids.note();
-    m.start += o->length;
-    m.pitch = n.pitch.kind() == tuning::PitchKind::Harmonic
-                  ? tuning::PitchId::fromHarmonic(c.id.value, n.pitch.voiceIndex())
-                  : tuning::PitchId::fromRatio(n.pitch.ratio(), tuning::AnchorKind::JiFundamental, c.id.value);
-    if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id)) curves.push_back(doc::SetNoteCurve{ref_, doc::keyOf(m), nc->pitch});
-    add.notes.push_back(m);
-  }
-  if (!add.notes.empty()) batch.commands.push_back(std::move(add));
-  for (doc::Command& cmd : curves) batch.commands.push_back(std::move(cmd));
-  doc::ops::Edit e;
-  e.command = std::move(batch);
-  e.noteClip = ref_;
-  e.jiObjects.push_back(c.id);
-  return applyJi(e, "Duplicate JI Object", c.id);
+  const doc::ops::EditResult e = doc::ops::duplicateJiObject(*ctx.doc(), ctx.store().ids(), ref_, jiSel_, o->length);
+  return applyJi(e, "Duplicate JI Object", e && !e->jiObjects.empty() ? e->jiObjects.front() : doc::JiObjectId{});
 }
 
 doc::ops::EditResult RollState::jiDragEdit(const DragState& d) const {
@@ -657,39 +829,36 @@ doc::ops::EditResult RollState::jiDragEdit(const DragState& d) const {
       return doc::ops::resizeJiObject(p, ctx.store().ids(), ref_, d.ji, doc::ops::NoteEdge::Start, d.dt);
     case DragKind::JiResizeEnd:
       return doc::ops::resizeJiObject(p, ctx.store().ids(), ref_, d.ji, doc::ops::NoteEdge::End, d.dt);
-    case DragKind::JiMove: {
-      doc::ops::EditResult e = doc::ops::moveJiObject(p, ref_, d.ji, d.dt);
-      if (!e || d.steps == 0) return e;
+    // By rows the fundamental and every tuning stop's pitches step as a note of that identity does; with Alt (cents)
+    // they move freely (ops::moveJiObject, Q279).
+    case DragKind::JiMove: return doc::ops::moveJiObject(p, ref_, d.ji, d.dt, d.steps, overlay(), d.cents);
+    case DragKind::JiStop:
+    case DragKind::JiGlide:
+    case DragKind::JiBezier: {
       const doc::JiObject* o = doc::findJiObject(*clip_, d.ji);
-      if (!o) return invalid("no such JI object");
-      // By rows: the fundamental and every tuning stop's pitches step as a note of that identity does (ops::stepPitch:
-      // a Degree by degrees, Cents on the grid lines). The proportions ride on the fundamental.
-      doc::JiObject m = *o;
-      m.start += d.dt;
-      doc::ops::PitchStepContext pc;
-      pc.tuning = &tuning_;
-      pc.displayGrid = overlay();
-      bool ok = true;
-      auto step = [&](tuning::PitchId& q) {
-        if (const std::optional<tuning::PitchId> r = doc::ops::stepPitch(q, d.steps, doc::ops::StepUnit::Grid, pc)) q = *r;
-        else ok = false;
-      };
-      step(m.fundamental);
-      for (doc::JiStop& stop : m.stops)
-        for (tuning::PitchId& q : stop.pitches) step(q);
-      if (!ok) return invalid("the object cannot move to that pitch");
-      if (Status st = doc::validateJiObject(m); !st) return st.error();
-      doc::ops::Edit edit = std::move(*e);
-      bool placed = false;
-      if (doc::Batch* b = std::get_if<doc::Batch>(&edit.command.v)) {
-        for (doc::Command& c : b->commands)
-          if (doc::SetJiObject* set = std::get_if<doc::SetJiObject>(&c.v); set && set->object.id == m.id) {
-            set->object = m;
-            placed = true;
-          }
-        if (!placed) b->commands.push_back(doc::SetJiObject{ref_, m});
+      if (!o || d.jiStop < 1 || d.jiStop >= static_cast<int32_t>(o->stops.size())) return invalid("no such JI stop");
+      std::vector<doc::JiStop> stops = o->stops;
+      const size_t i = static_cast<size_t>(d.jiStop);
+      doc::JiStop& stop = stops[i];
+      if (d.kind == DragKind::JiStop) {
+        // Between its neighbours, inside the object.
+        const Ticks lo = stops[i - 1].at + 1;
+        const Ticks hi = i + 1 < stops.size() ? stops[i + 1].at - 1 : std::max(stop.at, o->length - 1);
+        stop.at = std::clamp(stop.at + d.dt, lo, std::max(lo, hi));
+      } else if (d.kind == DragKind::JiGlide) {
+        const Ticks gap = stop.at - stops[i - 1].at;
+        stop.timing.glide = std::clamp<Ticks>(std::min(stop.timing.glide, gap) - d.dt, 0, gap);
+      } else {
+        const uint32_t V = o->voices();
+        if (d.jiVoice >= V) return invalid("no such voice");
+        if (stop.voiceTiming.size() != V) stop.voiceTiming.assign(V, std::nullopt);
+        doc::JiTiming t = stop.voiceTiming[d.jiVoice].value_or(stop.timing);
+        t.shape.kind = doc::JiShape::Bezier;
+        (d.jiHandle == 0 ? t.shape.x1 : t.shape.x2) = std::clamp(d.bx, 0.0f, 1.0f);
+        (d.jiHandle == 0 ? t.shape.y1 : t.shape.y2) = std::clamp(d.by, -1.0f, 2.0f);
+        stop.voiceTiming[d.jiVoice] = t;
       }
-      return edit;
+      return doc::ops::setJiStops(p, ctx.store().ids(), ref_, d.ji, std::move(stops));
     }
     default: return invalid("not a JI drag");
   }
@@ -697,13 +866,16 @@ doc::ops::EditResult RollState::jiDragEdit(const DragState& d) const {
 
 void RollState::updateJiPreview() {
   jiPreview_.reset();
-  if (!jiDragKind(drag.kind) || (drag.dt == 0 && drag.steps == 0)) return;
+  jiPreviewObject_.reset();
+  if (!jiDragKind(drag.kind)) return;
   const doc::ops::EditResult e = jiDragEdit(drag);
   if (!e) return;  // refused (e.g. a start dragged past the end): the object is shown as it is
   if (const doc::Batch* b = std::get_if<doc::Batch>(&e->command.v))
     for (const doc::Command& c : b->commands)
-      if (const doc::SetJiObject* set = std::get_if<doc::SetJiObject>(&c.v); set && set->object.id == drag.ji)
+      if (const doc::SetJiObject* set = std::get_if<doc::SetJiObject>(&c.v); set && set->object.id == drag.ji) {
         jiPreview_ = makeJiView(set->object);
+        jiPreviewObject_ = set->object;
+      }
 }
 
 // --- pitch paths ------------------------------------------------------------------------------------------------
@@ -719,7 +891,8 @@ std::optional<double> RollState::pathCents(const doc::Note& n, Ticks start, cons
   if (!clip_) return std::nullopt;
   double base = 0.0;
   if (const doc::JiObjectId oid = doc::jiObjectOf(pitch); oid.valid()) {
-    const doc::JiObject* o = doc::findJiObject(*clip_, oid);
+    // T7.5: while an object is dragged its inner notes are drawn on the object as the release will leave it.
+    const doc::JiObject* o = (jiPreviewObject_ && jiPreviewObject_->id == oid) ? &*jiPreviewObject_ : doc::findJiObject(*clip_, oid);
     if (!o) return std::nullopt;
     const double t = static_cast<double>(start - o->start) + offset;
     std::optional<double> c;
@@ -744,15 +917,18 @@ std::optional<double> RollState::pathCents(const doc::Note& n, Ticks start, cons
 
 // --- paint ------------------------------------------------------------------------------------------------------
 
-void paintJiObjects(PaintContext& ctx, RollState& s, const IRect& vis, bool labels) {
+void paintJiObjects(PaintContext& ctx, RollState& s, const IRect& vis, bool labels, JiPass pass) {
   if (!ctx.res.theme || !s.hasClip()) return;
   const Theme& th = *ctx.res.theme;
   const DragState& dr = s.drag;
   const JiView* pv = (jiDragKind(dr.kind) && dr.moved) ? s.jiPreview() : nullptr;
+  const doc::JiObjectId entered = s.jiEntered(), active = s.jiActive();
   uint32_t painted = 0;
   for (const JiView& v : s.jiViews()) {
+    if (pass == JiPass::NotEntered && v.id == entered) continue;
+    if (pass == JiPass::EnteredOnly && v.id != entered) continue;
     const bool dragged = pv && pv->id == v.id;
-    painted += paintJiObject(ctx, s, dragged ? *pv : v, v.id == s.jiSelection(), vis, labels) ? 1u : 0u;
+    painted += paintJiObject(ctx, s, dragged ? *pv : v, v.id == active, vis, labels) ? 1u : 0u;
   }
   if (labels) return;
   s.paintStats.jiPainted = painted;
@@ -771,8 +947,9 @@ void paintJiObjects(PaintContext& ctx, RollState& s, const IRect& vis, bool labe
   }
 }
 
-void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
+void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis, JiPass pass) {
   if (!ctx.res.theme || s.curveNotes.empty()) return;
+  const doc::JiObjectId entered = s.jiEntered();
   const NoteColours& col = s.colours();
   const float sc = ctx.scale.factor;
   const float step = std::max(1.0f, kJiSampleStep * sc);
@@ -781,6 +958,7 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   const float vx0 = static_cast<float>(vis.x) - 2.0f * step, vx1 = static_cast<float>(vis.right()) + 2.0f * step;
   std::vector<Vec2>& pts = s.linePts;
   for (const CurveNote& c : s.curveNotes) {
+    if (pass != JiPass::All && (doc::jiObjectOf(c.pitch) == entered) != (pass == JiPass::EnteredOnly)) continue;
     const float x0 = s.xOfTick(static_cast<double>(c.start));
     const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
     const float xa = std::max(x0, vx0), xb = std::min(x1, vx1);

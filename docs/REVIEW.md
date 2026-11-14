@@ -1648,3 +1648,37 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   the panel; the waveform keeps at least 240 px. Tall panels look as before. Look at: audio-clip-warp-short.
 - Open question for you: in the short layout the waveform can get narrow on a 1280 px window - would you rather
   Warp and the mode card share one column (shorter knobs) instead?
+
+## 2026-11-14 · T7.5 · piano roll: inside a JI object, morph editing, Tune to JI, the fundamental with the mouse 👁
+- Look at (tests/views/golden): `pianoroll-tune-to-ji` (C E G tuned to 4:5:6 and D F A to 10:12:15 and back: the stop
+  labels read "12-EDO" and the proportion, each note bends off its tempered row, the cents each voice moves stand at the
+  stop), `pianoroll-tune-to-ji-31edo` (the same in a 31-EDO clip), `pianoroll-ji-entered` (inside an object: its voices
+  as lanes, notes on them through the morph, a selected stop, a bezier transition with its handles, the rest dimmed),
+  `pianoroll-fundamental-lock` (E declared harmonic 5: guide lines, notes drawn on them). `pianoroll-ji-tuning` moved
+  (header now reads the path "12-EDO → 20:25:30:36", cents at the stop).
+- Tune to JI: select the notes of a chord, `Ctrl+Shift+J` (or right-click → Tune to JI). They stay your notes, now bent
+  by a JI object: as written at the start, the nearest just proportion one grid step later. Right-click the object →
+  "Back to Tuning Here" (or select it, point, `T`) returns to the tuning at that point; "Remove JI Tuning" (or Delete)
+  gives the plain notes back.
+- Inside an object: double-click it (Esc or a double-click outside leaves). Double-click or Draw Mode (`B`) puts notes on
+  the voice under the pointer; Up / Down move a selected note to the next voice; notes on voices and curved notes are
+  now clicked where they are drawn. Point somewhere and type a proportion (`5:6:7:8`, Enter) for a new stop; `T` for a
+  tuning stop.
+- Stops: click a stop's label under the box to select it; drag it to move it in time; drag the small grip on the box's
+  bottom border to set how long the glide is; Delete removes it; double-click the label to retype it.
+- A voice's transition: right-click on a voice's line → "Voice 5 into 5:6:7:8" → Straight / S-Curve / Bezier (inside
+  the object the bezier shows two handles to drag), Glide… / Delay… in beats for that voice only, Same for All Voices.
+- Harmonic numbers: click a number at a voice's left end, then `Alt+Up` / `Alt+Down` walk that term (the bottom voice
+  stays; with Shift the top voice stays). Dragging the header moves the object by rows; with `Alt` held freely in
+  cents. "Undertone (1/n)" is in the object's menu. `Ctrl+C` / `Ctrl+X` / `Ctrl+V` work on a selected object and take
+  its notes along.
+- Fundamental with the mouse: right-click a note → "Is Harmonic…" → type N, Enter. The virtual fundamental is locked at
+  the note / N: guide lines appear and drawing (Draw Mode, double-click) now snaps to the harmonics; hold Shift to draw
+  on the rows. "Unlock Fundamental" is in the same menu.
+- Decisions to check: (1) "Is Harmonic N" on a tempered note uses the simplest just ratio near it and leaves the note
+  itself alone, so the guide passes up to a few cents beside it (Q?-T7.5-a); (2) "Is Subharmonic N" puts the
+  fundamental N times ABOVE the note; the guides still only show its overtones (Q?-T7.5-b); (3) a new stop stands on
+  the same fundamental as the one before it (4:5:6 → 5:6:7 lifts the bottom voice a third); (4) with a locked
+  fundamental the plain draw is the harmonic one and Shift the tempered one; (5) the header's "scaffold" now reads
+  "tunes its notes".
+- Not in this task: pen modes, bends between notes, vibrato, ride-curve editing (T7.6); the arpeggiator (T7.8).

@@ -240,7 +240,8 @@ EditResult jiFromNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<
   return e;
 }
 
-EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks dt) {
+EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks dt, int32_t steps,
+                        const tuning::Edo* displayGrid, double cents) {
   Result<JiFound> f = findJi(p, clip, object);
   if (!f) return std::move(f).error();
   Edit e = makeEdit("Move JI Object");
@@ -249,6 +250,30 @@ EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks
   JiObject o = *f->object;
   o.start += dt;
   PQ_DOC_TRY(checkTick(o.start, "JI object start"));
+  if (steps != 0 || cents != 0.0) {
+    if (!std::isfinite(cents)) return invalid("JI object pitch out of range");
+    Result<tuning::Tuning> t = clipTuning(p, f->clip);
+    if (!t) return std::move(t).error();
+    PitchStepContext pc;
+    pc.tuning = &*t;
+    pc.displayGrid = displayGrid;
+    bool moved = true;
+    auto shift = [&](PitchId& q) {
+      if (steps != 0) {
+        if (const std::optional<PitchId> r = stepPitch(q, steps, StepUnit::Grid, pc)) q = *r;
+        else moved = false;
+      }
+      if (cents != 0.0) {
+        if (const std::optional<double> c = jiPitchCents(q, *t)) q = PitchId::fromCents(*c + cents);
+        else moved = false;
+      }
+    };
+    shift(o.fundamental);
+    for (JiStop& s : o.stops)
+      for (PitchId& q : s.pitches) shift(q);
+    if (!moved) return invalid("the JI object cannot move to that pitch");
+    PQ_DOC_TRY(checkJiObject(o));
+  }
   UpdateNotes u{clip, {}};
   for (const Note& n : f->clip.clip->notes) {
     if (jiObjectOf(n.pitch) != object) continue;
@@ -258,9 +283,69 @@ EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks
     if (dt != 0) u.updates.push_back({keyOf(n), m});
     e.notes.push_back(keyOf(m));
   }
-  if (dt == 0) return e;
+  if (o == *f->object) return e;
   batchOf(e).commands.push_back(SetJiObject{clip, std::move(o)});
   if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
+  return e;
+}
+
+EditResult pasteJiObject(const Project& p, IdSource& ids, ClipRef clip, const JiObject& source, std::span<const Note> inner,
+                         std::span<const NoteCurves> curves, Ticks start) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  PQ_DOC_TRY(checkJiObject(source));
+  PQ_DOC_TRY(checkTick(start, "JI object start"));
+  const Ticks dt = start - source.start;
+  for (const Note& n : inner) {
+    if (jiObjectOf(n.pitch) != source.id) return invalid("a pasted note does not follow the JI object");
+    if (n.pitch.kind() == PitchKind::Harmonic && n.pitch.voiceIndex() >= source.voices())
+      return invalid("a pasted note follows a voice the JI object does not have");
+    PQ_DOC_TRY(checkTick(n.start + dt, "note start"));
+    for (const NoteCurves& nc : curves)
+      if (nc.note == n.id) PQ_DOC_TRY(checkCurve(nc.pitch, "note curve"));
+  }
+  JiObject c = source;
+  c.id = ids.jiObject();
+  c.start = start;
+  for (NoteId& v : c.voiceNotes) v = ids.note();
+  Edit e = makeEdit("Paste JI Object");
+  e.noteClip = clip;
+  e.jiObjects.push_back(c.id);
+  const JiObjectId copy = c.id;
+  batchOf(e).commands.push_back(AddJiObject{clip, std::move(c)});
+  AddNotes add{clip, {}};
+  std::vector<Command> curveCmds;
+  for (const Note& n : inner) {
+    Note m = n;
+    m.id = ids.note();
+    m.start += dt;
+    m.pitch = n.pitch.kind() == PitchKind::Harmonic ? PitchId::fromHarmonic(copy.value, n.pitch.voiceIndex())
+                                                    : PitchId::fromRatio(n.pitch.ratio(), tuning::AnchorKind::JiFundamental, copy.value);
+    for (const NoteCurves& nc : curves)
+      if (nc.note == n.id && !nc.pitch.empty()) {
+        curveCmds.push_back(SetNoteCurve{clip, keyOf(m), nc.pitch});
+        break;
+      }
+    e.notes.push_back(keyOf(m));
+    add.notes.push_back(m);
+  }
+  if (!add.notes.empty()) batchOf(e).commands.push_back(std::move(add));
+  for (Command& cmd : curveCmds) batchOf(e).commands.push_back(std::move(cmd));
+  return e;
+}
+
+EditResult duplicateJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, Ticks dt) {
+  Result<JiFound> f = findJi(p, clip, object);
+  if (!f) return std::move(f).error();
+  std::vector<Note> inner;
+  std::vector<NoteCurves> curves;
+  for (const Note& n : f->clip.clip->notes) {
+    if (jiObjectOf(n.pitch) != object) continue;
+    inner.push_back(n);
+    if (const NoteCurves* nc = findNoteCurves(*f->clip.clip, n.id)) curves.push_back(*nc);
+  }
+  EditResult e = pasteJiObject(p, ids, clip, *f->object, inner, curves, f->object->start + dt);
+  if (e) batchOf(*e).label = "Duplicate JI Object";
   return e;
 }
 
@@ -312,12 +397,20 @@ EditResult resizeJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjec
   return replaceObject(clip, *f, std::move(o), &ids, "Resize JI Object");
 }
 
-EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object) {
+EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object, bool withNotes) {
   Result<JiFound> f = findJi(p, clip, object);
   if (!f) return std::move(f).error();
   const JiObject& o = *f->object;
   Edit e = makeEdit("Delete JI Object");
   e.noteClip = clip;
+  if (withNotes) {
+    RemoveNotes r{clip, {}};
+    for (const Note& n : f->clip.clip->notes)
+      if (jiObjectOf(n.pitch) == object) r.notes.push_back(keyOf(n));
+    if (!r.notes.empty()) batchOf(e).commands.push_back(std::move(r));
+    batchOf(e).commands.push_back(RemoveJiObject{clip, object});
+    return e;
+  }
   UpdateNotes u{clip, {}};
   std::optional<tuning::Tuning> tun;  // built for the first inner note
   const std::optional<Rational> fundRatio =

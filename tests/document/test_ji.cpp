@@ -938,3 +938,121 @@ TEST_CASE("ji file: the rich project's objects, tuning stop and curve survive sa
   broken("\"voiceTerm\": [2, 1, 0, 0]", "\"voiceTerm\": [2, 1, 0]", "one entry per voice");
   broken("\"undertone\": true", "\"undertone\": true, \"bogus\": 1", "unknown key");
 }
+
+// ---- T7.5 (Q279): pitch moves, paste / duplicate, delete with notes ----------------------------------------------------
+
+TEST_CASE("ji ops: moveJiObject steps the fundamental and tuning stops by grid steps, or freely by cents; one undo step") {
+  JiFix f({0, 4, 7});
+  std::vector<NoteKey> keys;
+  for (const Note& n : f.clip().notes) keys.push_back(keyOf(n));
+  auto made = ops::jiFromNotes(f.doc(), f.store.ids(), f.ref, keys);
+  commit(f.store, made);
+  const JiObjectId id = made->jiObjects.at(0);
+  const JiObject before = f.ji(id);
+  REQUIRE(before.stops.size() == 2);
+  REQUIRE(before.stops[0].isTuning());
+  const Note first = *f.clip().notes.begin();
+
+  // By rows: every Degree identity steps, the proportion rides on the fundamental; the inner notes move in time.
+  auto mv = ops::moveJiObject(f.doc(), f.ref, id, kPpq, 2);
+  commit(f.store, mv);
+  {
+    const JiObject& o = f.ji(id);
+    CHECK(o.start == before.start + kPpq);
+    CHECK(o.fundamental == PitchId::fromDegree(2));
+    CHECK(o.stops[0].pitches == std::vector<PitchId>{PitchId::fromDegree(2), PitchId::fromDegree(6), PitchId::fromDegree(9)});
+    CHECK(o.stops[1] == before.stops[1]);
+    CHECK(f.clip().notes.findById(first.id)->start == first.start + kPpq);
+    CHECK(validateJiObject(o).ok());
+  }
+  REQUIRE(f.store.undo());
+  CHECK(f.ji(id) == before);
+  CHECK(f.clip().notes.findById(first.id)->start == first.start);
+
+  // Freely: the fundamental and the tuning stop's pitches become Cents that far away; no time move, notes untouched.
+  auto bend = ops::moveJiObject(f.doc(), f.ref, id, 0, 0, nullptr, 37.5);
+  commit(f.store, bend);
+  {
+    const JiObject& o = f.ji(id);
+    CHECK(o.start == before.start);
+    REQUIRE(o.fundamental.kind() == pq::tuning::PitchKind::Cents);
+    CHECK(o.fundamental.cents() == doctest::Approx(37.5));
+    REQUIRE(o.stops[0].pitches[1].kind() == pq::tuning::PitchKind::Cents);
+    CHECK(o.stops[0].pitches[1].cents() == doctest::Approx(437.5));
+    CHECK(o.stops[1] == before.stops[1]);
+  }
+  REQUIRE(f.store.undo());
+  CHECK(ops::moveJiObject(f.doc(), f.ref, id, 0, 0, nullptr, 0.0)->empty());
+  CHECK_FALSE(ops::moveJiObject(f.doc(), f.ref, JiObjectId{9999}, 0, 1).ok());
+}
+
+TEST_CASE("ji ops: duplicate / paste copy an object with its inner notes and curves under fresh ids; delete with notes") {
+  JiFix f;
+  auto made = ops::createJiObject(f.doc(), f.store.ids(), f.ref, kPpq, 2 * kPpq, PitchId::fromDegree(0), std::vector<int64_t>{4, 5, 6});
+  commit(f.store, made);
+  const JiObjectId id = made->jiObjects.at(0);
+  const Note h = f.note(kPpq, PitchId::fromHarmonic(id.value, 2));
+  const Note r = f.note(2 * kPpq, PitchId::fromRatio(Rational{2}, pq::tuning::AnchorKind::JiFundamental, id.value));
+  const Note plain = f.note(0, PitchId::fromDegree(0));
+  REQUIRE(f.store.dispatch(AddNotes{f.ref, {h, r, plain}}).ok());
+  commit(f.store, ops::setNoteCurve(f.doc(), f.ref, keyOf(h), {{0, 0.0f, 0.0f, {}}, {kPpq, 50.0f, 0.0f, {}}}));
+  const JiObject src = f.ji(id);
+
+  auto dup = ops::duplicateJiObject(f.doc(), f.store.ids(), f.ref, id, src.length);
+  commit(f.store, dup);
+  REQUIRE(dup->jiObjects.size() == 1);
+  const JiObjectId copy = dup->jiObjects[0];
+  CHECK(copy != id);
+  {
+    const JiObject& c = f.ji(copy);
+    CHECK(c.start == src.start + src.length);
+    CHECK(c.stops == src.stops);
+    CHECK(c.fundamental == src.fundamental);
+    for (NoteId v : c.voiceNotes) CHECK(std::find(src.voiceNotes.begin(), src.voiceNotes.end(), v) == src.voiceNotes.end());
+    CHECK(dup->notes.size() == 2);
+    int harmonic = 0, anchored = 0;
+    for (const Note& n : f.clip().notes) {
+      if (n.pitch == PitchId::fromHarmonic(copy.value, 2) && n.start == 3 * kPpq) {
+        ++harmonic;
+        const NoteCurves* nc = findNoteCurves(f.clip(), n.id);
+        REQUIRE(nc != nullptr);
+        CHECK(nc->pitch.size() == 2);
+      }
+      if (n.pitch == PitchId::fromRatio(Rational{2}, pq::tuning::AnchorKind::JiFundamental, copy.value) && n.start == 4 * kPpq) ++anchored;
+    }
+    CHECK(harmonic == 1);
+    CHECK(anchored == 1);
+    CHECK(f.clip().notes.size() == 5);
+    CHECK(validateClipJi(f.clip()).ok());
+  }
+  REQUIRE(f.store.undo());  // one step
+  CHECK(jiObjectsOf(f.clip()).size() == 1);
+  CHECK(f.clip().notes.size() == 3);
+
+  // A paste of an object the clip no longer has (the roll's clipboard), at another tick.
+  const std::vector<Note> inner = {h};
+  const NoteCurves hc = *findNoteCurves(f.clip(), h.id);
+  commit(f.store, ops::deleteJiObject(f.doc(), f.ref, id, true));  // with its notes
+  CHECK(jiObjectsOf(f.clip()).empty());
+  CHECK(f.clip().notes.size() == 1);  // the plain note stays
+  CHECK(f.clip().notes.findById(plain.id) != nullptr);
+  auto pasted = ops::pasteJiObject(f.doc(), f.store.ids(), f.ref, src, inner, std::span<const NoteCurves>(&hc, 1), 8 * kPpq);
+  commit(f.store, pasted);
+  REQUIRE(jiObjectsOf(f.clip()).size() == 1);
+  const JiObject& p = jiObjectsOf(f.clip())[0];
+  CHECK(p.id != id);
+  CHECK(p.start == 8 * kPpq);
+  REQUIRE(pasted->notes.size() == 1);
+  const Note* pn = f.clip().notes.findById(pasted->notes[0].id);
+  REQUIRE(pn != nullptr);
+  CHECK(pn->start == 8 * kPpq);
+  CHECK(pn->pitch == PitchId::fromHarmonic(p.id.value, 2));
+  CHECK(findNoteCurves(f.clip(), pn->id) != nullptr);
+  CHECK(validateClipJi(f.clip()).ok());
+
+  // Refused: a note that follows another object, a voice the source does not have.
+  const Note stray = f.note(0, PitchId::fromHarmonic(4242, 0));
+  CHECK_FALSE(ops::pasteJiObject(f.doc(), f.store.ids(), f.ref, src, std::span<const Note>(&stray, 1), {}, 0).ok());
+  const Note high = f.note(0, PitchId::fromHarmonic(src.id.value, 7));
+  CHECK_FALSE(ops::pasteJiObject(f.doc(), f.store.ids(), f.ref, src, std::span<const Note>(&high, 1), {}, 0).ok());
+}

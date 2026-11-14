@@ -1599,3 +1599,27 @@ Context: every breakpoint is a curve point to store and an event on the audio th
 1 / sqrt(tolerance). At 0.05 c (the plan's default for drawing) the 100 × 8 × 32 lowering made 734 k points.
 Choice: 1 c while a pitch moves (`kJiPitchTolerance`; holds and straight lines are exact at any tolerance), plus a
 1 ms minimum spacing inside curved spans. Reversible: one constant.
+## Q283 · 2026-11-14 · T7.5 · "Is Harmonic N" on a note that is not a just ratio
+Context: A4 locks the fundamental at note / N through `ops::lockFundamental`, which takes a reference-anchored Ratio
+note only; `ClipFundamental::lock` is a Rational. The usual note is a 12-EDO Degree.
+Options: (a) lock at (the simplest ratio near the note) / N and leave the note as written: the guide of harmonic N
+passes within the snap tolerance of the note (12-EDO E as harmonic 5: 13.7 cents under it); (b) convert the note to that
+Ratio in the same step, so it IS harmonic N (its pitch moves); (c) a lock in cents (a model change).
+Choice: (a), composed in the roll (`RollState::lockFundamentalAt`: `SetClipFundamental`); the status line says how far
+the note is from the harmonic. (b) is one more command in the same Batch if wanted.
+Status: open.
+
+## Q284 · 2026-11-14 · T7.5 · What "Is Subharmonic N" shows
+Context: the lock is one fundamental whose overtones the guide draws and the Shift-draw snaps to. A note declared the
+N-th subharmonic puts that fundamental N times above the note.
+Options: (a) lock at note x N and keep the overtone guide (the note itself is then not on a guide line); (b) an
+undertone guide (lines at F / k, snapping to them): new display and step rules in `document` (HarmonicStep is
+overtone-only).
+Choice: (a); (b) needs a document change outside T7.5.
+Status: open.
+
+## Q285 · 2026-11-14 · T7.5 · Q279 closed: object duplicate and pitch move are document ops
+Context: Q279 left them composed in the roll.
+Choice: `ops::moveJiObject(…, steps, displayGrid, cents)`, `ops::pasteJiObject`, `ops::duplicateJiObject`,
+`ops::deleteJiObject(…, withNotes)`; the roll's raw-command compositions are deleted.
+Status: closed.
