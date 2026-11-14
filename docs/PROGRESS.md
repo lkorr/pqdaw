@@ -686,3 +686,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_views default tier 741/741 (frame sockets through real drags, input cable + master socket, scrolled-arrangement morph camera); -Affected after rebase onto 83130931: 20/20.
 - Perf / CPU-efficiency check: UI-thread scene build / paint only; socket→cable lookup built once per scene, no per-frame allocation.
 - Notes: 47 goldens re-recorded (project-patch-*, project-cables*, device-* group panels, panel-window-*, meta faces in the patch). Q274 (socket order follows inner pins; sends end on the return's left socket). Open: the bus along band edges can read like a band outline.
+
+## 2026-11-13 · BR.wires · task/BR.wires
+- Did: thinner wires (audio traces 1 px at 100 %, cables 4.5·zoom clamped 1.25…12 px); flow arrowheads on traces (world multiples of a power-of-two 140…280 px spacing, shared runs coincide) and one mid-length arrow per cable; each bus trunk / detour column per destination, kBusColumn = 8 apart, sorted by the target band's y (lower further out), no `% 3` wrap.
+- Verified: pq_tests_views default tier 742/742 after re-recording 74 goldens (every scene drawing wires; project-mixer, project-cables, project-patch-overview checked by eye).
+- Perf / CPU-efficiency check: arrows are ≤ a few AA triangles per visible segment, none at Far LOD (cached chunks untouched); column sort is per layout, O(targets log targets).
+- Notes/blockers: none.

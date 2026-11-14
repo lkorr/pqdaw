@@ -1287,7 +1287,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   }
 
   // Tube width in device px at the current zoom.
-  float cableWidth() const noexcept { return std::clamp(6.0f * s(), 1.5f * uiScale(), 16.0f * uiScale()); }
+  float cableWidth() const noexcept { return std::clamp(4.5f * s(), 1.25f * uiScale(), 12.0f * uiScale()); }
 
   // A cable's damage rect for world box b (device px), padded by its shadow, plugs and glow.
   void damageCableBox(const CableSim::Box& b) {
@@ -1953,6 +1953,13 @@ void crispSegment(ui::DrawList& dl, Vec2 a, Vec2 b, Rgba col, float t) {
   else dl.addVLine(a.x, std::min(a.y, b.y) - h, std::max(a.y, b.y) + h, col, t);
 }
 
+// BR.wires: a flow arrowhead centred on `at`, pointing along `dir` (unit), `hw` px to each side of the wire.
+void flowArrow(ui::DrawList& dl, Vec2 at, Vec2 dir, float hw, Rgba col) {
+  const float l = 1.7f * hw;
+  const Vec2 tip{at.x + dir.x * 0.5f * l, at.y + dir.y * 0.5f * l}, base{at.x - dir.x * 0.5f * l, at.y - dir.y * 0.5f * l};
+  dl.addTriangleFilled(tip, {base.x - dir.y * hw, base.y + dir.x * hw}, {base.x + dir.y * hw, base.y - dir.x * hw}, col);
+}
+
 // Dashed crisp orthogonal line; `phase` (device px into the pattern) continues across segments.
 void dashedSegment(ui::DrawList& dl, Vec2 a, Vec2 b, Rgba col, float t, float on, float off, float& phase) {
   const bool horiz = a.y == b.y;
@@ -2271,6 +2278,16 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
         const Rgba c3[3] = {ui::withAlpha(gr, 0), gr, ui::withAlpha(gr, 0)};
         ribbon(dl, p, nr, d.count, o, c3, 3);
       }
+      // BR.wires: a flow arrow halfway along the rope (source → target), on its tangent there.
+      if (const float* arc = carc.data() + d.first; d.count >= 2 && arc[d.count - 1] >= 12.0f * (0.5f * d.w + 2.5f * us)) {
+        const float half = 0.5f * arc[d.count - 1];
+        uint32_t k = 1;
+        while (k + 1 < d.count && arc[k] < half) ++k;
+        const float seg = arc[k] - arc[k - 1], f = seg > 1e-6f ? (half - arc[k - 1]) / seg : 0.0f;
+        const float dx = p[k].x - p[k - 1].x, dy = p[k].y - p[k - 1].y, l = std::sqrt(dx * dx + dy * dy);
+        if (l > 1e-4f)
+          flowArrow(dl, {p[k - 1].x + dx * f, p[k - 1].y + dy * f}, {dx / l, dy / l}, 0.5f * d.w + 2.5f * us, ui::mulAlpha(d.col, d.alpha));
+      }
       const float chord = std::hypot(p[d.count - 1].x - p[0].x, p[d.count - 1].y - p[0].y);
       const float plugK = std::clamp(chord / (3.5f * (d.plugA + d.plugB)), 0.3f, 1.0f);
       const float reach = 2.4f * d.plugA * plugK, reachB = 2.4f * d.plugB * plugK;
@@ -2503,7 +2520,33 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
   ui::TileAtlas* atlas = ctx.res.tiles;
   bool missing = false;
   const float thin = std::max(1.0f, std::round(us));
-  const float thick = std::max(2.0f, std::round(2.0f * us));
+  // BR.wires (the user: "a lil bit thinner"): an audio trace 1 px at 100 %, 3 px at 200 % (rate reads by colour).
+  const float thick = std::max(1.0f, std::floor(1.5f * us));
+  // BR.wires: flow arrows along the traces at world multiples of a power-of-two spacing 140 … 280 px apart on screen
+  // (wires sharing a run put theirs in the same places; a zoom halves or doubles the set, nothing slides), or one in
+  // the middle of a run too short for any.
+  const float arrowHw = 0.5f * thick + 3.0f * us;
+  const float arrowStep = std::exp2(std::ceil(std::log2(140.0f * us / s)));
+  auto arrows = [&](const SceneWire& sw, Rgba col, float t) {
+    const float minLen = 4.0f * arrowHw, margin = 2.0f * arrowHw / s;
+    for (uint32_t i = 0; i + 1 < sw.pointCount; ++i) {
+      const Point2 a = sc.points[sw.firstPoint + i], b = sc.points[sw.firstPoint + i + 1];
+      const bool horiz = a.y == b.y;
+      const float ua = horiz ? a.x : a.y, ub = horiz ? b.x : b.y, sign = ub >= ua ? 1.0f : -1.0f;
+      if (std::fabs(ub - ua) * s < minLen) continue;
+      const Vec2 dir = horiz ? Vec2{sign, 0.0f} : Vec2{0.0f, sign};
+      auto at = [&](float u) {
+        return horiz ? Vec2{m.devX(u), snapCentre(m.devY(a.y), t)} : Vec2{snapCentre(m.devX(a.x), t), m.devY(u)};
+      };
+      const float lo = std::min(ua, ub) + margin, hi = std::max(ua, ub) - margin;
+      bool any = false;
+      for (float u = std::ceil(lo / arrowStep) * arrowStep; u <= hi; u += arrowStep) {
+        flowArrow(dl, at(u), dir, arrowHw, col);
+        any = true;
+      }
+      if (!any) flowArrow(dl, at(0.5f * (ua + ub)), dir, arrowHw, col);
+    }
+  };
   auto baseWireColour = [&](uint32_t w) {
     if (m.wireSel[w]) return C.selected;
     if (m.hover.kind == CanvasHit::Kind::Wire && m.hover.index == w) return C.hover;
@@ -2612,6 +2655,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       } else {
         strokePath(m.pts, t);
       }
+      arrows(sw, col, ws.poly ? thin : t);
       ++st.wiresPainted;
     }
     // Junction dots.

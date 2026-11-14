@@ -319,6 +319,7 @@ inline constexpr float kBandGap = 12.0f;    // between bands
 inline constexpr float kNodeGap = 40.0f;    // between chain nodes
 inline constexpr float kFreeRowGap = 20.0f;  // TX.patching: between the chain and the free devices' row under it
 inline constexpr float kBusGap = 56.0f;     // before a summing node (room for its bus)
+inline constexpr float kBusColumn = 8.0f;   // between two buses' columns where they detour right of the mixers
 inline constexpr float kPinTop = 24.0f;     // the main pin's offset from a node's top (the band's spine)
 inline constexpr float kPinPitch = 12.0f;   // further pins
 // TL.1: a band's lane — its default height, the gap above it (from the circuit) and under it (the band's bottom edge),

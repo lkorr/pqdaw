@@ -1951,15 +1951,35 @@ struct Builder {
     }
     // BR.patch-io (user 2026-11-13: "the current cable that goes into the master should instead go into the very left of
     // the master before turning into a normal fluid looking cable"): a bus into a band's input socket — down a trunk right
-    // of every source (one per destination, 6 apart), along the gap above that band, down its left side, into the socket
-    // on its left edge. The feeds of one destination share all of it (one net: junctions where they join).
+    // of every source, along the gap above that band, down its left side, into the socket on its left edge. The feeds
+    // of one destination share all of it (one net: junctions where they join).
+    // BR.wires (the user: wires "bunched up" there): each destination its own trunk, kBusColumn apart, the lower bands'
+    // further out (a run turning left at its band's gap crosses no trunk that goes on down); none shared, none wrapped.
     float trunk0 = -1e30f;
+    std::vector<uint32_t> trunks;  // destination sockets, by their band's y
     for (const Edge& e : out.edges)
-      if (e.drawnTo != kNone && (e.kind == EdgeKind::Route || e.kind == EdgeKind::Send))
+      if (e.drawnTo != kNone && (e.kind == EdgeKind::Route || e.kind == EdgeKind::Send)) {
         trunk0 = std::max(trunk0, outPin(out.nodes[e.from], e.fromPort).x);
+        trunks.push_back(e.drawnTo);
+      }
     trunk0 += 12.0f;
-    std::unordered_map<uint32_t, float> trunkX;  // destination socket → its trunk's x
-    uint32_t serial = 0;
+    auto bandY = [&](uint32_t node) { return out.bands[out.nodes[node].band].y; };
+    std::sort(trunks.begin(), trunks.end(), [&](uint32_t x, uint32_t y) { return bandY(x) < bandY(y) || (bandY(x) == bandY(y) && x < y); });
+    trunks.erase(std::unique(trunks.begin(), trunks.end()), trunks.end());
+    auto columnOf = [](const std::vector<uint32_t>& order, uint32_t v) {
+      return static_cast<float>(std::find(order.begin(), order.end(), v) - order.begin());
+    };
+    // The summing buses left of their source (below) detour the same way: a column per target, the lower ones out.
+    std::vector<uint32_t> detours;
+    for (const Edge& e : out.edges) {
+      if (e.drawnTo != kNone || isCable(e.kind, out.nodes[e.from].kind)) continue;
+      const Node& a = out.nodes[e.from];
+      const float sx = a.kind == NodeKind::Lane ? e.tapX : outPin(a, e.fromPort).x;
+      const auto bi = busX.find(e.to);
+      if (!((bi != busX.end() ? bi->second : inPin(out.nodes[e.to], e.toPort).x - 16.0f) > sx + 4.0f)) detours.push_back(e.to);
+    }
+    std::sort(detours.begin(), detours.end(), [&](uint32_t x, uint32_t y) { return bandY(x) < bandY(y) || (bandY(x) == bandY(y) && x < y); });
+    detours.erase(std::unique(detours.begin(), detours.end()), detours.end());
     for (size_t k = 0; k < out.edges.size(); ++k) {
       Edge& e = out.edges[k];
       const Node& a = out.nodes[e.from];
@@ -1981,12 +2001,11 @@ struct Builder {
       }
       if (e.drawnTo != kNone) {
         const graph::Point2 d = outPin(out.nodes[e.drawnTo], 0);
-        const auto [it, fresh] = trunkX.try_emplace(e.drawnTo, 0.0f);
-        if (fresh) it->second = trunk0 + 6.0f * static_cast<float>((trunkX.size() - 1) % 3);
+        const float tx = trunk0 + m::kBusColumn * columnOf(trunks, e.drawnTo);
         const Band& tb = out.bands[b.band];
         const float gy = tb.y - m::kBandGap * 0.5f, lx = tb.x0 - 6.0f;
-        pts.push_back({it->second, s.y});
-        pts.push_back({it->second, gy});
+        pts.push_back({tx, s.y});
+        pts.push_back({tx, gy});
         pts.push_back({lx, gy});
         pts.push_back({lx, d.y});
         pts.push_back(d);
@@ -1997,8 +2016,6 @@ struct Builder {
         continue;
       }
       // A bus (route / send) into a summing input: every wire into one input shares its vertical channel.
-      // TMM.13-fix2 (MM review M10): parallel runs 6 apart (3 channels in a 20-unit title strip), never closer.
-      const uint32_t off = (serial++ % 3) * 6;
       const float bx = busX.count(e.to) ? busX[e.to] : t.x - 16.0f;
       if (bx > s.x + 4.0f) {
         pts.push_back({bx, s.y});
@@ -2006,8 +2023,9 @@ struct Builder {
       } else {  // the bus is left of the source (a return routed into a group): out right, over the band, back
         const Band& tb = out.bands[b.band];
         const float gy = tb.y - m::kBandGap * 0.5f;
-        pts.push_back({s.x + 12.0f + static_cast<float>(off), s.y});
-        pts.push_back({s.x + 12.0f + static_cast<float>(off), gy});
+        const float cx = s.x + 12.0f + m::kBusColumn * columnOf(detours, e.to);
+        pts.push_back({cx, s.y});
+        pts.push_back({cx, gy});
         pts.push_back({bx, gy});
         pts.push_back({bx, t.y});
       }
