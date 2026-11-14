@@ -342,6 +342,7 @@ bool paintJiObject(PaintContext& ctx, RollState& s, const JiView& v, bool select
   }
   if (!ts || font == kNoFont) return true;
   const Rgba text = selected ? th.roll.jiSelected : th.roll.jiText;
+  if (b.x1 - b.x0 < 26.0f * sc) return true;  // too narrow for any text (a zoomed-out clip full of objects pays nothing)
   s.jiLayout(v, lay);  // the one placement paint and jiAt share
   auto labelText = [&](const Rect& box, const std::string& str, bool chosen) {
     if (box.x1 < vx0 || box.x0 > vx1 || box.y1 < vy0 || box.y0 > vy1) return;
@@ -538,8 +539,9 @@ void RollState::jiLayout(const JiView& v, JiLayout& out) const {
   if (!v.ok) return;
   const float sc = scaleOf(*this);
   const ui::Rect b = jiBoxRect(v);
-  const JiFont f = jiFont(noteArea && noteArea->tree() ? noteArea->tree()->resources() : nullptr, sc);
   const float w = b.x1 - b.x0;
+  if (w < std::min(26.0f, kJiNarrow) * sc) return;  // nothing is placed on a box this narrow
+  const JiFont f = jiFont(noteArea && noteArea->tree() ? noteArea->tree()->resources() : nullptr, sc);
   // Harmonic numbers: above each line's left end.
   if (w >= 26.0f * sc) {
     float lastY = 1e30f;
