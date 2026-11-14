@@ -4,6 +4,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <variant>
@@ -290,4 +291,53 @@ TEST_CASE("copies re-point bends: clip duplicate, note duplicate, paste, split, 
     }
     CHECK(validateClipJi(merged).ok());
   }
+}
+
+// M7 review M13: a copy of many curved notes was one SetNoteCurve per note, each copying the clip's whole curve list.
+TEST_CASE("M13: duplicating 2000 curved notes is one curve command (timed against one command per note)") {
+  BendFix f;
+  IdSource& ids = f.store.ids();
+  constexpr int kNotes = 2000;
+  std::vector<Note> notes;
+  std::vector<NoteCurves> curves;
+  for (int i = 0; i < kNotes; ++i) {
+    Note n;
+    n.id = ids.note();
+    n.start = i * 10;
+    n.length = 8;
+    n.pitch = PitchId::fromDegree(i % 24);
+    notes.push_back(n);
+    curves.push_back(NoteCurves{n.id, {{0, 0.0f, 0.0f, {}}, {2, 20.0f, 0.0f, {}}, {4, -20.0f, 0.0f, {}}, {6, 0.0f, 0.0f, {}}}, {}, {}});
+  }
+  REQUIRE(f.store.dispatch(AddNotes{f.ref, notes}).ok());
+  REQUIRE(f.store.dispatch(SetNoteCurves{f.ref, curves}).ok());
+  std::vector<NoteKey> keys;
+  for (const Note& n : notes) keys.push_back(keyOf(n));
+  auto ms = [](auto&& fn) {
+    const auto t0 = std::chrono::steady_clock::now();
+    fn();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  };
+  const Snapshot before = f.store.current();
+  // The builder as it is now.
+  pq::Result<ops::Edit> e = ops::duplicateNotes(f.doc(), ids, f.ref, keys, kNotes * 10);
+  REQUIRE(e.ok());
+  CHECK(e->batch().commands.size() == 2);  // AddNotes + one SetNoteCurves
+  const double now = ms([&] { REQUIRE(f.store.dispatch(e->command).ok()); });
+  REQUIRE(noteCurvesOf(f.clip()).size() == 2 * kNotes);
+  const Snapshot after = f.store.current();
+  REQUIRE(f.store.undo());
+  REQUIRE(f.store.current() == before);
+  // What it emitted before: the same notes, one SetNoteCurve each.
+  Batch old{"Duplicate Notes", {}};
+  old.commands.push_back(e->batch().commands.front());
+  for (const NoteCurves& nc : std::get<SetNoteCurves>(e->batch().commands.back().v).curves) {
+    const Note* n = after->tracks.back()->clips.front().clip->notes.findById(nc.note);
+    REQUIRE(n != nullptr);
+    old.commands.push_back(SetNoteCurve{f.ref, keyOf(*n), nc.pitch});
+  }
+  const double was = ms([&] { REQUIRE(f.store.dispatch(old).ok()); });
+  CHECK(f.clip() == *after->tracks.back()->clips.front().clip);  // the same document either way
+  MESSAGE("duplicate " << kNotes << " curved notes: one SetNoteCurves " << now << " ms, one SetNoteCurve per note " << was << " ms");
+  CHECK(now < was);
 }
