@@ -331,6 +331,7 @@ void ViewContext::newProject() {
   setStatus("New project");
   if (wasUntitled) discardUnsaved(oldUnsaved, true);  // T6.7b: the untitled project's recordings go with it
   unsavedRecordingDir_ = unsaved_.fresh ? unsaved_.fresh() : std::string();  // C1: its own folder
+  releaseRecovery(heldRecovery());  // H1: a recovered document replaced (the user chose not to keep it)
 }
 
 Status ViewContext::openProject(std::string_view dirUtf8) {
@@ -344,6 +345,7 @@ Status ViewContext::openProject(std::string_view dirUtf8) {
   projectDir_ = std::string(dirUtf8);
   afterLoad();
   if (wasUntitled) discardUnsaved(unsavedRecordingDir_, true);  // T6.7b
+  releaseRecovery(heldRecovery());  // H1: a recovered document replaced (the user chose not to keep it)
   if (missing_.empty()) setStatus("Opened " + projectName());  // else the status line says which samples are missing
   return Ok{};
 }
@@ -420,7 +422,16 @@ void ViewContext::discardUnsaved(const std::string& dir, bool includeStore) {
 // ---- M6 review L13: recordings of earlier runs that ended without cleaning up ------------------------------------------
 
 std::vector<ViewContext::StaleRecordings> ViewContext::staleRecordings() const {
-  return unsaved_.findStale ? unsaved_.findStale() : std::vector<StaleRecordings>{};
+  std::vector<StaleRecordings> v = unsaved_.findStale ? unsaved_.findStale() : std::vector<StaleRecordings>{};
+  if (held_) std::erase_if(v, [&](const StaleRecordings& s) { return pathKey(s.dir) == pathKey(held_->dir); });  // H1
+  return v;
+}
+
+void ViewContext::releaseRecovery(uint64_t serial) {
+  if (!held_ || serial != heldSerial_) return;
+  const StaleRecordings s = std::move(*held_);
+  held_.reset();
+  dropStaleSession(s);
 }
 
 std::vector<std::pair<std::string, std::string>> ViewContext::moveStaleTakes(const std::vector<std::string>& files,
@@ -470,17 +481,28 @@ size_t ViewContext::placeRecoveredTakes(const std::vector<std::string>& files) {
 void ViewContext::dropStaleSession(const StaleRecordings& s) {
   namespace fs = std::filesystem;
   if (!unsaved_.discardStale) return;
-  // Anything of the user's left outside the autosave folder (a take that could not be moved) keeps the session.
+  // Anything of the user's left outside the autosave folder (a take that could not be moved) keeps the session; a
+  // `cache` folder (frozen-track renders: deletable, M5) does not. L2: an error while looking fails toward keeping.
   const std::wstring autosaveKey = s.autosave ? pathKey(s.autosave->dir) : std::wstring();
   bool left = false;
   std::error_code ec;
-  for (fs::recursive_directory_iterator it(u8Path(s.dir), ec), end; !ec && it != end && !left; it.increment(ec)) {
-    if (!autosaveKey.empty() && it->is_directory(ec) && pathKey(u8Str(it->path())) == autosaveKey) {
+  fs::recursive_directory_iterator it(u8Path(s.dir), ec);
+  if (ec) left = true;
+  const fs::recursive_directory_iterator end{};
+  for (; !left && !ec && it != end; it.increment(ec)) {
+    std::error_code fec;
+    const bool dir = it->is_directory(fec);
+    if (fec) {
+      left = true;
+      break;
+    }
+    if (dir && ((!autosaveKey.empty() && pathKey(u8Str(it->path())) == autosaveKey) || it->path().filename() == "cache")) {
       it.disable_recursion_pending();
       continue;
     }
-    left = it->is_regular_file(ec);
+    left = !dir;  // a file (or anything else that is not a folder) is the user's
   }
+  if (ec) left = true;
   if (!left) (void)unsaved_.discardStale(s.dir);
   else if (s.autosave) (void)unsaved_.discardStale(s.autosave->dir);  // offered later for its takes only
 }
@@ -550,7 +572,11 @@ bool ViewContext::recoverAutosave(const StaleRecordings& s) {
   lastDirty_ = true;
   notify(view_change::kProject);
   const size_t placed = placeRecoveredTakes(unreferenced);  // takes recorded after the last autosave
-  dropStaleSession(s);
+  // H1: the session's autosave is the only copy on disk of what was recovered until this session writes its own
+  // autosave or saves: it stays (offered again after another crash), and goes with the session's leftovers then.
+  releaseRecovery(heldRecovery());  // (an earlier recovery's: replaced through guardUnsaved)
+  held_ = s;
+  ++heldSerial_;
   char when[16] = "?";
   const std::time_t t = static_cast<std::time_t>(a.savedAt);
   if (std::tm tm{}; localtime_s(&tm, &t) == 0) std::strftime(when, sizeof when, "%H:%M", &tm);
@@ -657,17 +683,9 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   if (!unsaved_.root.empty())  // C1: a saved project still pointing into an unsaved folder pins it
     for (const doc::SampleRef& r : doc::samplesOf(*store_.current()))
       if (doc::isAbsoluteSamplePath(r.path) && pathInside(r.path, unsaved_.root, false)) savedUnsavedRefs_.push_back(r.path);
+  // (FZ.2, AU.app M6: the frozen tracks' renders follow on the freeze service's thread: the link's next sync sees the
+  // new folder and copies each playing render into its cache/freeze. Nothing is copied here.)
   const bool renamed = projectDir_ != dirUtf8;
-  if (renamed) {  // FZ.2: the frozen tracks' renders come along (cache/freeze; an untitled project's from its folder)
-    namespace fs = std::filesystem;
-    const std::string& from = projectDir_.empty() ? unsavedRecordingDir_ : projectDir_;
-    std::error_code ec;
-    if (!from.empty() && fs::is_directory(u8Path(from) / "cache" / "freeze", ec)) {
-      fs::create_directories(u8Path(dirUtf8) / "cache" / "freeze", ec);
-      fs::copy(u8Path(from) / "cache" / "freeze", u8Path(dirUtf8) / "cache" / "freeze",
-               fs::copy_options::recursive | fs::copy_options::skip_existing, ec);  // a miss only re-renders
-    }
-  }
   projectDir_ = std::string(dirUtf8);
   saved_ = store_.current();
   viewStateDirty_ = false;
@@ -675,6 +693,7 @@ Status ViewContext::saveProjectAs(std::string_view dirUtf8) {
   lastDirty_ = false;
   if (renamed || wasDirty) notify(view_change::kProject);
   if (renamed) refreshSamples();
+  releaseRecovery(heldRecovery());  // H1: the saved file holds the recovered document now
   setStatus("Saved " + projectName());
   return Ok{};
 }

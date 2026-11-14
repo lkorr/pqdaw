@@ -131,6 +131,7 @@ uint64_t ProjectLink::discardUnsavedRecordings(const std::string& dir) {  // UI 
 
 std::vector<views::ViewContext::StaleRecordings> ProjectLink::staleRecordings() const {  // UI thread
   std::vector<views::ViewContext::StaleRecordings> out;
+  (void)sweepStaleUnsaved(u8path(unsavedRoot()), sessionName());  // AU.app M5: dead sessions holding only caches
   for (const StaleUnsavedSession& s : findStaleUnsaved(u8path(unsavedRoot()), sessionName())) {
     views::ViewContext::StaleRecordings r;
     r.dir = pathUtf8(s.dir);

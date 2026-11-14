@@ -311,13 +311,20 @@ public:
   // AS.2 (D6): recoverAutosave replaces the document by `s.autosave`'s (call it through guardUnsaved): history empty,
   // dirty. Untitled: a new untitled document whose own folder receives every take of the session (moved; the
   // autosave's references follow them, a take it does not reference is placed on a "Recovered" track as above). Saved
-  // project: titled `originDir` (relative samples resolve there; the session's takes stay for a later offer). The
-  // session's autosave folder goes, and the session folder when nothing else is left. False (status line says why)
-  // when the autosave cannot be read: nothing changes then.
-  std::vector<StaleRecordings> staleRecordings() const;
+  // project: titled `originDir` (relative samples resolve there; the session's takes stay for a later offer). AU.app
+  // H1: the session's autosave stays on disk (the only copy of the recovered document) until this session holds the
+  // document itself (heldRecovery below); then the autosave folder goes, and the session folder when nothing else is
+  // left (a `cache` folder does not count, M5). False (status line says why) when the autosave cannot be read: nothing
+  // changes then.
+  std::vector<StaleRecordings> staleRecordings() const;  // (never the held session)
   bool recoverStaleRecordings(const StaleRecordings& s);
   bool recoverAutosave(const StaleRecordings& s);
   bool discardStaleRecordings(const StaleRecordings& s);
+  // AU.app H1: nonzero while a recovered session's autosave is kept (above). releaseRecovery(n) drops it when `n` is
+  // still the held one: the Autosaver calls it once a write it submitted while `n` was held succeeded; a successful
+  // save, New and Open release it too.
+  uint64_t heldRecovery() const noexcept { return held_ ? heldSerial_ : 0; }
+  void releaseRecovery(uint64_t serial);
   const std::string& unsavedRecordingDir() const noexcept { return unsavedRecordingDir_; }
   // The last line of defence before a discard deletes `dir` (M6 review C1 / H1): true when the project directory lies
   // inside it, when any project this context saved referenced a file inside it, or (`includeStore`: the store no
@@ -774,6 +781,8 @@ private:
   std::string unsavedRecordingDir_;  // T6.7 / C1: the current untitled document's folder
   UnsavedRecordings unsaved_;        // T6.7b / C1
   std::vector<std::string> savedUnsavedRefs_;  // C1: absolute paths inside unsaved_.root that a save wrote
+  std::optional<StaleRecordings> held_;  // AU.app H1: the recovered session, kept until this session holds its document
+  uint64_t heldSerial_ = 0;
   bool lastDirty_ = false;
   bool viewStateDirty_ = false;  // ViewState edited since the last save / load
   doc::ListenerId storeListener_ = 0;

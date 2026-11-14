@@ -97,6 +97,11 @@ struct StaleUnsavedSession {
 // (never deletes).
 std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& root, std::string_view own,
                                                   const std::function<bool(uint32_t pid, int64_t started)>& alive = {});
+// AU.app M5: deletes (removeUnsavedFolder) the session folders under `root`, other than `own`, whose process is gone and
+// that hold nothing but caches (no file outside a `cache` folder: frozen-track renders are deletable, SPEC §12), which
+// findStaleUnsaved never offers. Returns how many went. ProjectLink::staleRecordings runs it before it lists.
+uint32_t sweepStaleUnsaved(const std::filesystem::path& root, std::string_view own,
+                           const std::function<bool(uint32_t pid, int64_t started)>& alive = {});
 // True while process `pid` runs and was created within a few minutes before `started` (a reused pid is another
 // process); a process this user cannot query counts as alive.
 bool processAlive(uint32_t pid, int64_t started);

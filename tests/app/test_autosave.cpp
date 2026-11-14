@@ -78,7 +78,7 @@ TEST_CASE("AS.1: an edit is autosaved 10 s after the last change; the files roun
   CHECK(f.saver.tick(f.ctx, 8.0) == doctest::Approx(10.0));  // the quiet period restarts at the change
   CHECK(f.saver.tick(f.ctx, 17.9) > 0);
   CHECK_FALSE(f.saver.pump());
-  CHECK(f.saver.tick(f.ctx, 18.0) < 0);
+  CHECK(f.saver.tick(f.ctx, 18.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));  // submitted: back for its outcome (L1)
   REQUIRE(f.saver.pump());
   CHECK(f.saver.writes() == 1);
   CHECK(f.saver.lastError().empty());
@@ -114,7 +114,7 @@ TEST_CASE("AS.1: a long editing run is autosaved 60 s after its first change; ne
     CHECK_FALSE(f.saver.pump());
   }
   CHECK(f.saver.tick(f.ctx, 59.0) == doctest::Approx(1.0));
-  CHECK(f.saver.tick(f.ctx, 60.0) < 0);
+  CHECK(f.saver.tick(f.ctx, 60.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));
   REQUIRE(f.saver.pump());
   CHECK(f.saver.writes() == 1);
 
@@ -124,7 +124,7 @@ TEST_CASE("AS.1: a long editing run is autosaved 60 s after its first change; ne
   CHECK(f.saver.tick(f.ctx, 200.0) < 0);  // overdue, but the gesture is open
   CHECK_FALSE(f.saver.pump());
   REQUIRE(f.ctx.store().commitGesture().ok());
-  CHECK(f.saver.tick(f.ctx, 200.0) < 0);
+  CHECK(f.saver.tick(f.ctx, 200.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));
   REQUIRE(f.saver.pump());
   CHECK(f.saver.writes() == 2);
 }
@@ -133,7 +133,7 @@ TEST_CASE("AS.1: Save As, New, an undo back to the saved state and the preferenc
   Fixture f;
   auto autosaveAt = [&](double t) {
     CHECK(f.saver.tick(f.ctx, t) > 0);
-    CHECK(f.saver.tick(f.ctx, t + 10.0) < 0);
+    CHECK(f.saver.tick(f.ctx, t + 10.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));
     REQUIRE(f.saver.pump());
     REQUIRE(f.written());
   };
@@ -186,7 +186,7 @@ TEST_CASE("AS.1: Save As, New, an undo back to the saved state and the preferenc
   CHECK_FALSE(f.saver.pump());
   p.autosave = true;
   f.ctx.setViewPrefs(p);
-  CHECK(f.saver.tick(f.ctx, 201.0) < 0);  // on again: the change is older than the quiet period, written at once
+  CHECK(f.saver.tick(f.ctx, 201.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));  // on again: the change is older than the quiet period, written at once
   REQUIRE(f.saver.pump());
   CHECK(f.written());
 
@@ -208,7 +208,7 @@ TEST_CASE("AS.1: an untitled document's autosave references its recordings by ab
   const std::string take = utf8(takes / "Audio 1 take 1.wav");
   const doc::SampleId id = f.addSample(take);
   CHECK(f.saver.tick(f.ctx, 0.0) > 0);
-  CHECK(f.saver.tick(f.ctx, 10.0) < 0);
+  CHECK(f.saver.tick(f.ctx, 10.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));
   REQUIRE(f.saver.pump());
   auto loaded = doc::loadProject(utf8(f.dir()));
   REQUIRE(loaded.ok());
@@ -275,27 +275,36 @@ TEST_CASE("AS.2: findStaleUnsaved returns a dead session's autosave with its met
   };
   const AutosaveMeta untitled = autosave("111-1000", "");
   const AutosaveMeta titled = autosave("222-1100", utf8(song));
-  setMtime(song / "project.pqd", titled.savedAt - 60);  // saved a minute before the crash: the autosave is newer
+  setMtime(song / "project.pqd", titled.originMtime - 60);  // as it was when 222 and 333 were written (below)
   (void)autosave("333-1200", utf8(song));               // ... but this one is older than the file (below)
   fs::create_directories(root / "444-1300" / "autosave");  // a project.pqd without its autosave.json: not offered
   std::ofstream(root / "444-1300" / "autosave" / "project.pqd") << "{}";
   const auto alive = [](uint32_t pid, int64_t) { return pid == 999; };
 
-  // The stale check reads the origin's time now: 333's autosave predates a save made after it.
+  // The stale check reads the origin's time now and compares it with the time it had when the autosave was written
+  // (AU.app M10: the origin's own clock, never this machine's savedAt).
   {
     fs::path meta333 = root / "333-1200" / "autosave";
     const AutosaveMeta m = readAutosaveMeta(meta333).value();
-    CHECK(autosaveSupersedesOrigin(m));  // the origin (a minute old) is older
-    setMtime(song / "project.pqd", m.savedAt + 30);  // the user saved after that autosave
+    setMtime(song / "project.pqd", m.originMtime);
+    CHECK(autosaveSupersedesOrigin(m));  // not written since
+    setMtime(song / "project.pqd", m.originMtime + 30);  // the user saved after that autosave
     CHECK_FALSE(autosaveSupersedesOrigin(m));
-    setMtime(song / "project.pqd", titled.savedAt - 60);
+    // A NAS whose clock runs an hour ahead: the origin's mtime is "in the future" for this machine, the autosave is
+    // still the newer state (the old rule, origin mtime <= savedAt, hid it).
+    AutosaveMeta skew = m;
+    skew.originMtime = m.savedAt + 3600;
+    setMtime(song / "project.pqd", skew.originMtime);
+    CHECK(autosaveSupersedesOrigin(skew));
+    setMtime(song / "project.pqd", titled.originMtime);
   }
-  // Make 333's autosave older than the origin file by rewriting its savedAt.
+  // Make 333's autosave older than the origin file: it was written while the origin had an earlier mtime.
   {
     const fs::path f = root / "333-1200" / "autosave" / std::string(kAutosaveMetaFileName);
     AutosaveMeta m = readAutosaveMeta(f.parent_path()).value();
     std::ofstream(f, std::ios::trunc) << "{\"originDir\":\"" << m.originDir << "\",\"recordingsDir\":\"\",\"name\":\"Song\","
-                                      << "\"savedAt\":" << (titled.savedAt - 120) << ",\"originMtime\":0}";
+                                      << "\"savedAt\":" << (titled.savedAt - 120) << ",\"originMtime\":"
+                                      << (titled.originMtime - 120) << "}";
     REQUIRE(readAutosaveMeta(f.parent_path()).value().savedAt == titled.savedAt - 120);
   }
   const std::vector<StaleUnsavedSession> stale = findStaleUnsaved(root, "999-5000", alive);
@@ -317,6 +326,113 @@ TEST_CASE("AS.2: findStaleUnsaved returns a dead session's autosave with its met
   CHECK(again[2].dir.filename() == "333-1200");
   CHECK_FALSE(again[2].autosave.has_value());
   CHECK(again[2].wavs.size() == 1);
+  std::error_code ec;
+  fs::remove_all(base, ec);
+}
+
+// ---- AU.app (docs/reviews/RB-DY.md H1, L1, M5) ---------------------------------------------------------------------
+
+TEST_CASE("AU.app L1: a failed autosave write is retried quietSeconds later without another edit") {
+  Fixture f;
+  std::ofstream(f.dir()) << "a file where the autosave folder goes";  // the write cannot create its folder
+  f.addSample("C:/samples/a.wav");
+  CHECK(f.saver.tick(f.ctx, 0.0) == doctest::Approx(10.0));
+  CHECK(f.saver.tick(f.ctx, 10.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));
+  REQUIRE(f.saver.pump());
+  CHECK_FALSE(f.saver.lastError().empty());
+  CHECK(f.saver.writes() == 0);
+  CHECK(f.saver.tick(f.ctx, 10.25) == doctest::Approx(10.0));  // the outcome: failed; retried, no edit needed
+  CHECK_FALSE(f.saver.pump());
+  fs::remove(f.dir());  // whatever blocked it went away
+  CHECK(f.saver.tick(f.ctx, 20.25) == doctest::Approx(Autosaver::kOutcomePollSeconds));
+  REQUIRE(f.saver.pump());
+  CHECK(f.saver.writes() == 1);
+  CHECK(f.written());
+  CHECK(f.saver.tick(f.ctx, 20.5) < 0);  // written: idle again
+}
+
+TEST_CASE("AU.app H1: a recovered session's autosave stays until this session's own autosave write succeeds") {
+  Fixture f;
+  const fs::path root = f.session.parent_path() / ("pq_au_h1_" + std::to_string(std::random_device{}()));
+  const fs::path dead = root / "111-1000";
+  // The crashed run's autosave of an untitled document with one sample.
+  doc::DocumentStore crashed;
+  doc::SampleRef ref;
+  ref.id = crashed.ids().sample();
+  ref.path = "C:/samples/crashed.wav";
+  REQUIRE(crashed.dispatch(doc::AddSample{ref}).ok());
+  {
+    Autosaver a{dead / "autosave", dead, false};
+    a.submit(crashed.current(), {}, AutosaveMeta{"", "", "Untitled", 0, 0});
+    REQUIRE(a.pump());
+  }
+  views::ViewContext::UnsavedRecordings u;
+  u.root = utf8(root);
+  u.current = utf8(f.session / "1");
+  u.fresh = [&] { return utf8(f.session / "2"); };
+  u.discard = [](const std::string&) {};
+  u.discardStale = [](const std::string& dir) {
+    std::error_code ec;
+    return fs::remove_all(fs::path(std::u8string(dir.begin(), dir.end())), ec) > 0;
+  };
+  f.ctx.setUnsavedRecordings(u);
+  views::ViewContext::StaleRecordings s;
+  s.dir = utf8(dead);
+  views::ViewContext::StaleAutosave sa;
+  sa.dir = utf8(dead / "autosave");
+  sa.name = "Untitled";
+  s.autosave = sa;
+  REQUIRE(f.ctx.recoverAutosave(s));
+  REQUIRE(doc::findSample(*f.ctx.doc(), ref.id) != nullptr);
+  // Crash now (before this session wrote anything): the recovered edits are still on disk, offered again.
+  CHECK(f.ctx.heldRecovery() != 0);
+  CHECK(fs::exists(dead / "autosave" / "project.pqd"));
+  {
+    auto again = doc::loadProject(utf8(dead / "autosave"));
+    REQUIRE(again.ok());
+    CHECK(doc::findSample(*again->project, ref.id) != nullptr);
+  }
+  const std::vector<StaleUnsavedSession> offered = findStaleUnsaved(root, "999-5000", [](uint32_t, int64_t) { return false; });
+  REQUIRE(offered.size() == 1);
+  CHECK(offered[0].autosave.has_value());
+  // This session's autosave: once its write succeeded, the dead session goes.
+  CHECK(f.saver.tick(f.ctx, 0.0) > 0);
+  CHECK(f.saver.tick(f.ctx, 10.0) == doctest::Approx(Autosaver::kOutcomePollSeconds));
+  CHECK(fs::exists(dead));  // written only when the job ran
+  REQUIRE(f.saver.pump());
+  REQUIRE(f.written());
+  (void)f.saver.tick(f.ctx, 10.25);
+  CHECK(f.ctx.heldRecovery() == 0);
+  CHECK_FALSE(fs::exists(dead));
+  auto ours = doc::loadProject(utf8(f.dir()));
+  REQUIRE(ours.ok());
+  CHECK(doc::findSample(*ours->project, ref.id) != nullptr);  // the first crash's edits, now in this session's autosave
+  std::error_code ec;
+  fs::remove_all(root, ec);
+}
+
+TEST_CASE("AU.app M5: sweepStaleUnsaved deletes dead sessions that hold only caches; takes, autosaves and live runs stay") {
+  const fs::path base = freshDir("pq_au_m5_");
+  const fs::path root = base / "Unsaved";
+  auto file = [](const fs::path& p) {
+    fs::create_directories(p.parent_path());
+    std::ofstream(p, std::ios::binary) << "RIFF";
+  };
+  file(root / "111-1000" / "1" / "cache" / "freeze" / "3-48000-00.wav");  // only a cache: goes
+  fs::create_directories(root / "112-1000" / "1");                       // empty: goes
+  file(root / "222-1000" / "1" / "take.wav");                             // a take: stays
+  file(root / "222-1000" / "1" / "cache" / "freeze" / "3-48000-00.wav");
+  file(root / "333-1000" / "autosave" / "project.pqd");                   // an autosave: stays
+  file(root / "999-1000" / "1" / "cache" / "freeze" / "3-48000-00.wav");  // its process runs: stays
+  file(root / "notes" / "x.txt");                                         // not a session folder: stays
+  const auto alive = [](uint32_t pid, int64_t) { return pid == 999; };
+  CHECK(sweepStaleUnsaved(root, "555-1000", alive) == 2);
+  CHECK_FALSE(fs::exists(root / "111-1000"));
+  CHECK_FALSE(fs::exists(root / "112-1000"));
+  CHECK(fs::exists(root / "222-1000" / "1" / "take.wav"));
+  CHECK(fs::exists(root / "333-1000" / "autosave" / "project.pqd"));
+  CHECK(fs::exists(root / "999-1000"));
+  CHECK(fs::exists(root / "notes" / "x.txt"));
   std::error_code ec;
   fs::remove_all(base, ec);
 }

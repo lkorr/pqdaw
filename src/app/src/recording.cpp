@@ -74,7 +74,8 @@ std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& r
   std::error_code ec;
   for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
     if (!it->is_directory(ec) || it->is_symlink(ec)) continue;
-    const std::string name = it->path().filename().string();
+    const std::u8string u8name = it->path().filename().u8string();  // (path::string() throws for a non-ANSI name)
+    const std::string name(u8name.begin(), u8name.end());
     if (name == own) continue;
     unsigned long pid = 0;
     long long started = 0;
@@ -110,6 +111,48 @@ std::vector<StaleUnsavedSession> findStaleUnsaved(const std::filesystem::path& r
   }
   std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.started < b.started; });
   return out;
+}
+
+uint32_t sweepStaleUnsaved(const std::filesystem::path& root, std::string_view own,
+                           const std::function<bool(uint32_t, int64_t)>& alive) {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> gone;
+  std::error_code ec;
+  for (fs::directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code dec;
+    if (!it->is_directory(dec) || it->is_symlink(dec) || dec) continue;
+    const std::u8string u8name = it->path().filename().u8string();  // (path::string() throws for a non-ANSI name)
+    const std::string name(u8name.begin(), u8name.end());
+    if (name == own) continue;
+    unsigned long pid = 0;
+    long long started = 0;
+    char tail = 0;
+    if (std::sscanf(name.c_str(), "%lu-%lld%c", &pid, &started, &tail) != 2) continue;  // not a session folder
+    if (alive ? alive(static_cast<uint32_t>(pid), started) : processAlive(static_cast<uint32_t>(pid), started)) continue;
+    bool keep = false;  // a file outside `cache`, or an error while looking: the folder stays
+    std::error_code wec;
+    fs::recursive_directory_iterator w(it->path(), fs::directory_options::none, wec);
+    if (wec) keep = true;
+    for (const fs::recursive_directory_iterator wend{}; !keep && !wec && w != wend; w.increment(wec)) {
+      std::error_code fec;
+      const bool dir = w->is_directory(fec);
+      if (fec) {
+        keep = true;
+        break;
+      }
+      if (dir && w->path().filename() == "cache") {
+        w.disable_recursion_pending();
+        continue;
+      }
+      keep = !dir;
+    }
+    if (wec) keep = true;
+    if (!keep) gone.push_back(it->path());
+  }
+  uint32_t n = 0;
+  for (const fs::path& g : gone)
+    if (removeUnsavedFolder(g, root) > 0) ++n;
+  return n;
 }
 
 RecordingService::RecordingService() { startThread(); }

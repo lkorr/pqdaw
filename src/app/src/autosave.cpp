@@ -75,7 +75,7 @@ int64_t fileUnixTime(const fs::path& file) {
 bool autosaveSupersedesOrigin(const AutosaveMeta& m) {
   if (m.originDir.empty()) return true;
   const int64_t t = fileUnixTime(u8path(m.originDir) / "project.pqd");
-  return t == 0 || t <= m.savedAt;
+  return t == 0 || t <= m.originMtime;  // M10: the origin's clock against itself
 }
 
 Result<AutosaveMeta> readAutosaveMeta(const fs::path& autosaveDir) {
@@ -127,11 +127,24 @@ double Autosaver::tick(views::ViewContext& ctx, double now) {
     errorsShown_ = e;
     if (const std::string why = lastError(); !why.empty()) ctx.setStatus("Autosave failed: " + why);
   }
+  // H1: a write made while the context held a recovered session's autosave holds the recovered edits now.
+  if (const uint64_t held = ctx.heldRecovery(); held != 0 && recoveryWritten_.load(std::memory_order_acquire) == held)
+    ctx.releaseRecovery(held);
+  recovery_ = ctx.heldRecovery();
+  // L1: the outcome of the write in flight. A failure is retried (the document is no longer "written").
+  if (const uint64_t o = outcome_.load(std::memory_order_acquire); inFlight_ && (o >> 1) == submitted_) {
+    inFlight_ = false;
+    if ((o & 1u) == 0) {
+      written_ = nullptr;
+      retryAt_ = now + policy_.quietSeconds;
+    }
+  }
   const doc::Snapshot& cur = ctx.doc();
   const doc::Snapshot& saved = ctx.savedSnapshot();
   const bool on = ctx.viewPrefs().autosave;
   // Idle: nothing changed since the last tick and nothing is waiting.
-  if (cur == seen_ && saved == savedSeen_ && dirtySince_ < 0 && on == on_) return -1.0;
+  if (cur == seen_ && saved == savedSeen_ && dirtySince_ < 0 && on == on_ && retryAt_ < 0)
+    return inFlight_ ? kOutcomePollSeconds : -1.0;
   on_ = on;
   if (cur != seen_) {
     seen_ = cur;
@@ -141,29 +154,32 @@ double Autosaver::tick(views::ViewContext& ctx, double now) {
   if (!on || cur == saved) {  // nothing worth keeping: the saved file holds it (or autosave is off)
     if (exists_) discard();
     dirtySince_ = -1.0;
+    retryAt_ = -1.0;
     return -1.0;
   }
   if (cur == written_) {
     dirtySince_ = -1.0;
-    return -1.0;
+    return inFlight_ ? kOutcomePollSeconds : -1.0;
   }
   if (dirtySince_ < 0) dirtySince_ = now;
   if (ctx.store().inGesture()) return -1.0;  // its commit (or cancel) presents a frame, which ticks again
-  const double due = std::min(lastChange_ + policy_.quietSeconds, dirtySince_ + policy_.maxSeconds);
+  const double due = std::max(std::min(lastChange_ + policy_.quietSeconds, dirtySince_ + policy_.maxSeconds), retryAt_);
   if (now < due) return due - now;
   AutosaveMeta m;
   m.originDir = ctx.projectDir();
   if (m.originDir.empty()) m.recordingsDir = ctx.unsavedRecordingDir();
   m.name = ctx.projectName();
   submit(cur, ctx.store().view(), std::move(m));
-  return -1.0;
+  return kOutcomePollSeconds;  // L1: back for its outcome
 }
 
 void Autosaver::submit(doc::Snapshot p, doc::ViewState view, AutosaveMeta meta) {
   written_ = p;
   exists_ = true;
   dirtySince_ = -1.0;
-  post(Job{JobKind::Write, std::move(p), std::move(view), std::move(meta)});
+  retryAt_ = -1.0;
+  inFlight_ = true;
+  post(Job{JobKind::Write, std::move(p), std::move(view), std::move(meta), recovery_, ++submitted_});
 }
 
 void Autosaver::discard() {
@@ -270,11 +286,16 @@ void Autosaver::run(Job& j) {
   }
   std::lock_guard lk(mutex_);
   if (s) {
-    if (j.kind == JobKind::Write) ++writes_;
+    if (j.kind == JobKind::Write) {
+      ++writes_;
+      if (j.recovery != 0) recoveryWritten_.store(j.recovery, std::memory_order_release);  // H1
+      outcome_.store(j.seq << 1 | 1u, std::memory_order_release);
+    }
     lastError_.clear();
   } else {
     lastError_ = s.error().message;
     errors_.fetch_add(1, std::memory_order_relaxed);
+    if (j.kind == JobKind::Write) outcome_.store(j.seq << 1, std::memory_order_release);  // L1: retried
   }
 }
 

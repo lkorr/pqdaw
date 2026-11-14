@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <ctime>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <random>
@@ -364,6 +365,12 @@ TEST_CASE("AS.2: Recover (through save-changes) restores an untitled autosave an
   CHECK(rec->clips.size() == 1);
   CHECK(f.ctx.store().history().cursor() == 1);  // only that placement (the old history is not kept)
   CHECK(f.ctx.missingSamples().empty());
+  // AU.app H1: the emptied session keeps its autosave (the only copy on disk of the recovered document) until this
+  // session holds the document; it is not offered again meanwhile.
+  CHECK(fs::exists(f.session / "autosave" / "project.pqd"));
+  CHECK(f.ctx.heldRecovery() != 0);
+  CHECK(offerRecordingRecovery(*f.shell) == nullptr);
+  f.ctx.releaseRecovery(f.ctx.heldRecovery());  // (the Autosaver's first write after it, or a save)
   CHECK_FALSE(fs::exists(f.session));  // the emptied session (and its autosave) went
   CHECK(offerRecordingRecovery(*f.shell) == nullptr);
   f.ctx.setFileDialogs(nullptr);
@@ -395,7 +402,10 @@ TEST_CASE("AS.2: Recover opens a saved project's autosave titled with its folder
   const std::string& played = f.ctx.sampleResolutions()[0].path;
   REQUIRE_FALSE(played.empty());
   CHECK(fs::equivalent(fs::path(std::u8string(played.begin(), played.end())), song / "samples" / "x.wav"));
-  // The autosave went; the session's takes are not this project's: offered again as recordings.
+  // AU.app H1: the autosave stays until this session holds the document (a save here); the session's takes are not
+  // this project's: offered again as recordings.
+  CHECK(fs::exists(f.session / "autosave" / "project.pqd"));
+  REQUIRE(f.ctx.saveProject().ok());
   CHECK_FALSE(fs::exists(f.session / "autosave"));
   CHECK(fs::exists(f.session / "1" / "beat.wav"));
   RecoverRecordingsPopover* p = offerRecordingRecovery(*f.shell);
@@ -426,4 +436,38 @@ TEST_CASE("AS.2: Later keeps an autosave (offered again); Discard deletes it wit
   CHECK_FALSE(fs::exists(f.session));
   CHECK(f.ctx.doc() == before);
   CHECK_FALSE(f.ctx.dirty());
+}
+
+// AU.app H1 (docs/reviews/RB-DY.md): crash twice. A Recover, then a crash before this session wrote its own autosave:
+// the next run finds the first session's autosave again, with its edits. M5: a cache folder left in it does not keep
+// the session once released.
+TEST_CASE("AU.app H1: after a Recover the dead session's autosave survives until released; a second crash recovers "
+          "the same edits") {
+  Stale f;
+  doc::DocumentStore crashed;
+  const fs::path beat = f.session / "1" / "beat.wav";
+  const doc::SampleRef ref = sampleFor(crashed, beat, doc::storedSamplePath(u8s(beat), {}));
+  REQUIRE(crashed.dispatch(doc::AddSample{ref}).ok());
+  f.writeAutosave(*crashed.current(), "", "Untitled");
+  fs::create_directories(f.session / "cache" / "freeze");
+  std::ofstream(f.session / "cache" / "freeze" / "3-48000-00.wav") << "render";
+  REQUIRE(offerRecordingRecovery(*f.shell) != nullptr);
+  f.d.step();
+  f.click("recover");
+  REQUIRE(f.popover() == nullptr);
+  REQUIRE(doc::findSample(*f.ctx.doc(), ref.id) != nullptr);
+  // "Crash" now: what the next run finds in the Unsaved folder still holds the first crash's edits.
+  REQUIRE(fs::exists(f.session / "autosave" / "project.pqd"));
+  {
+    auto again = doc::loadProject(u8s(f.session / "autosave"));
+    REQUIRE(again.ok());
+    CHECK(doc::findSample(*again->project, ref.id) != nullptr);
+  }
+  CHECK(f.ctx.staleRecordings().empty());  // this run does not offer the held session again
+  // Released: the session goes (its cache does not keep it: M5).
+  f.ctx.releaseRecovery(f.ctx.heldRecovery() + 1);  // not the held one: nothing happens
+  CHECK(fs::exists(f.session));
+  f.ctx.releaseRecovery(f.ctx.heldRecovery());
+  CHECK(f.ctx.heldRecovery() == 0);
+  CHECK_FALSE(fs::exists(f.session));
 }

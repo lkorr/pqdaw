@@ -14,7 +14,9 @@
 // Policy (tick(), polled by the shell after every presented frame and when its wake timer fires): the current snapshot
 // is written when it differs from the last one written and from the saved one (ViewContext::savedSnapshot), no gesture
 // is open, and either `quietSeconds` passed since the last change or `maxSeconds` since the document first differed
-// from what was written (a long editing run is still saved once a minute). Once the document equals the saved one
+// from what was written (a long editing run is still saved once a minute). AU.app L1: a write that fails is retried
+// `quietSeconds` after the failure (while the document still differs), with no edit needed; while a write is in flight
+// tick() asks to look again shortly, so the outcome is seen without a frame. Once the document equals the saved one
 // again (Save / Save As, New, Open, an undo back to the saved state) or ViewPrefs::autosave is off, a written autosave
 // is deleted. A clean quit deletes it too (close()); a quit that never asked (an error exit) keeps it.
 //
@@ -22,7 +24,10 @@
 // first job) runs the jobs: a single pending slot, latest wins (a discard replaces a pending write and a write a
 // pending discard), jobs run one at a time in submission order. With `threaded` false (tests) jobs run in pump().
 //
-// CPU: an idle tick is a few pointer compares (no change since the last tick: two compares, return). A write costs the
+// AU.app H1: a write submitted while the context holds a recovered session's autosave (ViewContext::heldRecovery)
+// releases it once it succeeded (the next tick): until then that autosave is the only copy of the recovered edits.
+//
+// CPU: an idle tick is a few pointer compares and two atomic loads (no change since the last tick: return). A write costs the
 // UI thread a doc::ViewState copy; serialisation (≈ 45 ms for 100k notes) and the disk run on the worker.
 
 #include <atomic>
@@ -55,6 +60,7 @@ struct AutosaveMeta {
   std::string name;           // the display name (ViewContext::projectName: "Untitled" or the folder's name)
   int64_t savedAt = 0;        // when this autosave was written
   int64_t originMtime = 0;    // originDir/project.pqd's last write time when it was written (0: untitled / missing)
+                              // (the origin's own clock: M10 compares the origin's mtime with it, never with savedAt)
   friend bool operator==(const AutosaveMeta&, const AutosaveMeta&) = default;
 };
 // Reads `autosaveDir`/autosave.json (NotFound when absent, Parse when malformed).
@@ -62,8 +68,9 @@ Result<AutosaveMeta> readAutosaveMeta(const std::filesystem::path& autosaveDir);
 // A file's last write time in unix seconds (0 when it does not exist).
 int64_t fileUnixTime(const std::filesystem::path& file);
 // AS.2: an autosave is worth offering back: always for an untitled document; for a saved project only while its
-// origin's project.pqd was not written after the autosave (missing, or last written at or before `savedAt`; a tie
-// offers it: a lost edit costs more than a needless offer).
+// origin's project.pqd was not written after the autosave: missing, or last written at or before `originMtime` (AU.app
+// M10: both times are the origin file's own, so a clock skew between this machine and a NAS never hides an autosave; a
+// tie offers it: a lost edit costs more than a needless offer).
 bool autosaveSupersedesOrigin(const AutosaveMeta& m);
 
 struct AutosavePolicy {
@@ -73,6 +80,7 @@ struct AutosavePolicy {
 
 class Autosaver {
 public:
+  static constexpr double kOutcomePollSeconds = 0.25;  // L1: tick()'s wait while a write is in flight
   // `dir`: the autosave folder (<session>/autosave). `root`: the session folder; the delete goes through
   // removeUnsavedFolder(dir, root)'s guard and close() removes `root` itself when it is left empty.
   Autosaver(std::filesystem::path dir, std::filesystem::path root, bool threaded = true, AutosavePolicy policy = {});
@@ -108,6 +116,8 @@ private:
     doc::Snapshot project;
     doc::ViewState view;
     AutosaveMeta meta;
+    uint64_t recovery = 0;  // H1: ViewContext::heldRecovery() when it was submitted
+    uint64_t seq = 0;       // L1: submit()'s count
   };
   void post(Job j);
   void run(Job& j);  // worker (or pump); no lock held
@@ -126,6 +136,10 @@ private:
   double lastChange_ = 0;   // when the last tick saw `seen_` change
   double dirtySince_ = -1;  // when the document first differed from `written_` (< 0: it does not)
   uint64_t errorsShown_ = 0;
+  bool inFlight_ = false;      // L1: write `submitted_` was submitted and its outcome not seen yet
+  uint64_t submitted_ = 0;
+  double retryAt_ = -1;        // L1: a failed write is retried at the earliest then
+  uint64_t recovery_ = 0;      // H1: what the next submit() stamps its job with (tick sets it)
 
   mutable std::mutex mutex_;
   std::condition_variable wake_, idle_;
@@ -134,6 +148,8 @@ private:
   bool stop_ = false;
   uint64_t writes_ = 0;
   std::atomic<uint64_t> errors_{0};  // failed jobs (tick reads it without the lock)
+  std::atomic<uint64_t> outcome_{0};  // L1: the last write's seq << 1 | succeeded (tick reads it without the lock)
+  std::atomic<uint64_t> recoveryWritten_{0};  // H1: the `recovery` of the last successful write
   std::string lastError_;
   std::thread thread_;
 };
