@@ -177,6 +177,25 @@ TEST_CASE("H3: a split that parts a note from its anchor keeps both halves sound
   f.roundTrips();
 }
 
+TEST_CASE("H3: Duplicate Time drops hidden notes; a playing note anchored to one keeps its pitch") {
+  BendFix f;
+  IdSource& ids = f.store.ids();
+  const Note a = f.add(0, PitchId::fromRatio(Rational{5, 4}), kPpq);                                    // bar 1
+  const Note b = f.add(kBar, PitchId::fromRatio(Rational{3, 2}, AnchorKind::Note, a.id.value));         // bar 2
+  const double hb = f.hz(b.id);
+  commit(f.store, ops::duplicateTime(f.doc(), ids, kBar, 2 * kBar));  // bar 2 again at bar 3
+  // The copy holds bar 2 only (the anchor in bar 1 is not played by that piece).
+  const NoteClip* copy = nullptr;
+  for (const ClipSlot& s : f.track(f.bass).clips)
+    if (s.clip->start == 2 * kBar) copy = s.clip.get();
+  REQUIRE(copy != nullptr);
+  REQUIRE(copy->notes.size() == 1);
+  const Note& b2 = *copy->notes.begin();
+  CHECK(b2.pitch == PitchId::fromRatio(Rational{15, 8}));  // 5/4 · 3/2: exact
+  REQUIRE(f.hzIn(*copy, b2.id).has_value());
+  CHECK(*f.hzIn(*copy, b2.id) == doctest::Approx(hb).epsilon(1e-15));
+}
+
 // ---- M7 review M5 --------------------------------------------------------------------------------------------------
 
 TEST_CASE("M5: a note anchored to another note takes the anchor's pitch at its own start") {
