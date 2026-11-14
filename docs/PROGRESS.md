@@ -757,3 +757,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, on deacee8f): `build.ps1 -Affected` 24/24. Orchestrator looked at pianoroll-fundamental-lock.
 - Perf / CPU-efficiency check: no per-frame work added; the derivation runs per document change.
 - Notes/blockers: limits in TASKS.
+
+## 2026-11-14 · T7.7 merged · main (eb31eb81)
+- Did: `NoteEventKind::Sync {noteId, sourceNoteId}` (copy the source lane at block end) + a conditional Gain step (`kNoteEventIfSynced`) so a unison steps to 1/k together or not at all; jiVoicePlan gains rewritten (merge fade distance², Sync, 1/k; split mirrored); object voices carry keyDegree, inner Harmonic notes set voice.harmonic / voice.ratio; jiVoicePlan 5.5 → 2.4 ms on the stress case. Three JI tests rewritten for the synced behaviour.
+- Verified: worker `build.ps1 -Affected -Slow` 62/63 (its own new no-ride flatten variant at 0.0502 ¢ vs 0.05, bounded 0.0505), ship pq_bench_dsp / timeline / playback link; orchestrator after the rebase onto ee5d91de: pq_tests_document, pq_tests_app, pq_tests_playback (4 shards), pq_tests_views pass.
+- Perf / CPU-efficiency check: timeline `busy/16ths x64` 206.7 vs 207.1 ns/block against 7d4833d1 (+0.2 %, noise); lowering 100 × 8 × 32 min 3.7 ms (release). 4:5:6:7 → 1 → 4:5:6:7: merged difference to one voice 0, split 0 → +6.0 dB.
+- Notes/blockers: Q286–Q288; bench/RESULTS.md rows not appended (machine at 56 % load).
