@@ -858,7 +858,14 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **T7.5b "Is Harmonic N" as the user described it (2026-11-14)**: the note is the frozen anchor and sits exactly on guide N (F = note / N, no nearest-ratio approximation; supersedes Q283); notes placed are exact ratios to it; the fundamental is derived and renumbers when a note falls between harmonics (3/2 above harmonic 5 → 10 and 15); "Is Subharmonic…" removed (supersedes Q284) *(merged 3a785350; ClipFundamental::anchor {note, index}; one rule doc::clipHarmonics: F = anchor / (N·m), m the smallest integer making every related note a whole harmonic; limits: no UI to type a ratio from the anchor (paste / document only), notes chained through another anchored note are not numbered, exact 6/5 checked through resolveClipPitches not the app lowering)*
 - [x] **T7.6 Pen modes, ride curves, bend between notes, vibrato** 👁 *(merged 8a9b72cb; Alt + edge drag = bend in / out, Ctrl+G glide selection, Draw Mode drag = free draw, Alt = vibrato, Ctrl+click = breakpoint, Shift + drag = detune; Q289: bends are baked (do not follow a neighbour moved later); Q290: no Bezier bend; Q291: modifier choices; changed gestures: Shift + drag on a note detunes (was add to selection + move by rows), a Draw Mode drag on a note draws (was delete at press); playback of drawn curves not auditioned)* (plan "T7.6" + A3; after T7.5)
 - [x] **T7.7 Phase-locked merges (Sync)** *(merged eb31eb81; Sync event + conditional Gain step; merge glide gain = distance² (Q281: 4:5 → 4 dips −0.13 / −0.25 dB, was −5.4); lowering 100 × 8 × 32 min 3.7 ms, 4.7–5.8 median under load; keyDegree / voice.harmonic set; Q286–Q288; open: bench/RESULTS.md rows on a quiet machine)* (plan "T7.7"; after T7.3)
-- [~] **T7.10 Review** (critique agent + `-Full`)
+- [x] **T7.10 Review** *(docs/reviews/M7.md on task/T7.10-review: 0 C / 5 H / 19 M / 20 L; -Full 85/87, pq_tests_library load flake, pqmeter_diff skipped)*
+- **Rework: notes-first JI (user 2026-11-14; plan "Rework" R1–R6): the box object goes away, JI groups are regular notes tied to an anchor note**
+- [~] **T7.11a Review fixes that survive the rework**: H2 (clone remaps anchors), H3 (anchor deleted / split away), M5, M13, derived bends (bendIn / bendOut follow the neighbour)
+- [~] **T7.12 Look: every note as a line along its pitch** 👁 (R6, notes only)
+- [ ] **T7.13 Groups + warps model, object removal, lowering** (R1–R4; after T7.11a)
+- [ ] **T7.14 Roll: groups, Tune to JI toggle + chooser, warp markers, walk, proportion tool, Add Note at Ratio, bends** 👁 (R3–R6; review H4, H5, M7–M11; after T7.12, T7.13)
+- [ ] **T7.15 Review of the rework + `-Full`**
+- [ ] Deferred: phase-locked unisons for notes that bend into each other (engine Sync exists); MIDI export of curves (M3); arrangement thumbnails (M4)
 - [ ] T7.8 pulse arpeggiator + chord sets, T7.9 flatten: deferred
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
