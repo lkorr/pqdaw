@@ -1347,7 +1347,7 @@ Options: Expand GR = (a) (R − 1)·body(T − x) (downward, slope R below T), (
 Choice: (a) and (c): one Mode switch as the plan's chips, the same soft knee mirrored about T, min(·, 70 dB); at the
 default 4:1 a signal 10 dB under T drops 30 dB more. Reversible: the Gain Computer group's `slope` mux and the `level`
 choice in compressorBlocks (modules.cpp).
-Status: open.
+Status: user 2026-11-13: two switches — Detector (Peak / RMS) and Law (Compress / Expand), every combination (AU.dsp: the Mode chip split; literal muxes, no extra CPU).
 
 ## Q262 · 2026-11-13 · DY.4 · Sidechain EQ "on" as a value block, Listen's signal, the GR jack, defaults
 Context: the plan's sidechain EQ is "an EQ Band child group off by default" with an "EQ on" control on the panel, but a
@@ -1375,7 +1375,7 @@ reverse. (5a) the SMF defaults (120 BPM, 4/4) from the file's start; (5b) the pr
 Choice: (1b) — MTS and bend files carry absolute pitches, and 31edo MTS files then land on the 31edo degrees; (2b),
 counted in the status line; (3a), as a recorded clip with `loop` off; (4a), one undo step for both (the drop's
 coalescing key); (5a). All in src/document/src/midi_import.cpp (importMidi) except (4) (arrangement/file_drop.cpp commit).
-Status: open.
+Status: (1) user 2026-11-13: per FILE — a file with any MTS message, pitch bend or RPN tuning (RPN 0 / 3 / 4) is read as absolute pitch for every note (12-TET key + cents → InputPitchMap::atHz: Degree within 0.5 ¢ in Keys mode, else Cents); otherwise every key goes through the track's key map (AU.dsp, RB-DY M8). (2)–(5) open.
 
 ## Q264 · 2026-11-13 · DY.5 · truepeak: the plan's ±0.2 dB against the BS.1770 filter's own ripple
 Context: DY.5 asks for `truepeak` to be the BS.1770-4 Annex 2 estimator AND within 0.2 dB of a 16× reference on sines
@@ -1416,7 +1416,7 @@ clip rarely acts. Defaults like Live's Limiter: Gain 0 dB (−12 … +24), Ceili
 Auto on, Lookahead 3 ms, Stereo, True Peak off. Also: the plan's det = latency(|x|, 6) beside out = latency(x, 6, la) is one
 frame short for its proof (a window of L includes its own frame), so the detector runs 7 frames behind (truepeak + 1);
 the latency stays L + 6. Reversible: limiterBlocks (modules.cpp).
-Status: open.
+Status: user 2026-11-13: M-S removed (AU.dsp: Link is Stereo / L-R); the defaults stand.
 
 ## Q267 · 2026-11-13 · FZ.x-fix · Flatten with blocks that still feed another track; what a render clip's "no edge fade" means
 Context: Q258 chose (c) (kept-live blocks removed) and (a) (render clips keep the 2 ms edge declick); FZ.x-fix reverses
@@ -1483,3 +1483,16 @@ Status: open.
 - Choice: (a), the sheet opening on DISPLAY; SAVE DEFAULT saves every option (both tabs) for that type; RESET goes to the
   factory options (the saved default stays until saved over). The Spectrum's PEAK chip is now its "Peak line" option
   (an undo step, saved with the rest). Most reversible: the store and the sheet are independent of where they are shown.
+
+## Q?-AU.dsp-a · How quiet a dB-domain follower must be before its segment sleeps
+Context: AU.dsp lets the Compressor and Limiter sleep (RB-DY H4). A state sleeps once it is within ε = 2^-30 of rest in
+its own units; that is −180 dBFS for an audio state, but a gain-reduction follower holds dB, where 2^-30 dB is far below
+anything audible. A release from R dB takes τ·ln(R / ε) ≈ (21 + ln R)·τ: about 1.5 s from 20 dB at the Compressor's
+50 ms, about 30 s with the Limiter's Auto (its slow follower's τ is 4 · 300 ms). Until then the region runs.
+Options: (a) keep ε in the state's units for every atom (exact to −180 dB in audio terms, slow dB tails); (b) a looser
+ε for dB-domain followers (e.g. 1e-4 dB: an error of ~1e-5 in the gain when sound resumes), declared per block (a
+`follow` setting the modules set) or inferred from what feeds it (fast_gain_to_db upstream); (c) flush a follower
+once its effect on the output is below −120 dB relative (needs the downstream gain law in the plan).
+Choice: (a), the most conservative and reversible (dsp::followStateSmall's eps and the host's kSleepEpsilon); (b)
+would cut the Limiter's silent tail to ~3 s.
+Status: open.

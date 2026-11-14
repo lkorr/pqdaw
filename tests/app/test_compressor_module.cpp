@@ -272,7 +272,7 @@ TEST_CASE("DY.4 CPU: the switches lower as literals — only the chosen detector
   CHECK(count("mux") == 0);
   const int mins = count("min");  // (the mixer's: the Expand cap adds one)
   // RMS, Auto, 10 ms lookahead, the sidechain with its EQ on: the window, two followers, the delay, the lerp, the band.
-  r.set("Mode", 1.0);
+  r.set("Detector", 1.0);
   r.set("Auto", 1.0);
   r.set("Lookahead", 0.010);
   r.set("Sidechain", 1.0);
@@ -284,30 +284,162 @@ TEST_CASE("DY.4 CPU: the switches lower as literals — only the chosen detector
   CHECK(count("lerp") == 1);
   CHECK(count("svf") == 1);
   CHECK(count("mux") == 0);
-  // Expand: the cap; Lin: the follower moves before the computer (still two with Auto).
-  r.set("Mode", 2.0);
+  // Expand (Peak): the cap; Lin: the follower moves before the computer (still two with Auto).
+  r.set("Detector", 0.0);
+  r.set("Law", 1.0);
   r.set("Envelope", 1.0);
   CHECK(count("min") == mins + 1);
   CHECK(count("window") == 0);
   CHECK(count("follow") == 2);
+  CHECK(count("mux") == 0);
+  // Q261: RMS with Expand (impossible with the old 3-way Mode): the window and the cap.
+  r.set("Detector", 1.0);
+  CHECK(count("window") == 1);
+  CHECK(count("min") == mins + 1);
   CHECK(count("mux") == 0);
 }
 
 TEST_CASE("AU.dsp H4: a Compressor on a track that falls silent sleeps after its tail (Peak, RMS, Expand, Lin, Auto) and wakes") {
   struct Case {
     const char* name;
-    double mode, envelope, autoRelease;
+    double detector, law, envelope, autoRelease;
   };
-  for (const Case& c : {Case{"Peak Log", 0, 0, 0}, Case{"RMS", 1, 0, 0}, Case{"Expand Log", 2, 0, 0}, Case{"Expand Lin", 2, 1, 0},
-                        Case{"Peak Auto", 0, 0, 1}, Case{"Lin Auto", 0, 1, 1}}) {
+  for (const Case& c : {Case{"Peak Log", 0, 0, 0, 0}, Case{"RMS", 1, 0, 0, 0}, Case{"Expand Log", 0, 1, 0, 0},
+                        Case{"Expand Lin", 0, 1, 1, 0}, Case{"RMS Expand", 1, 1, 0, 0}, Case{"Peak Auto", 0, 0, 0, 1},
+                        Case{"Lin Auto", 0, 0, 1, 1}}) {
     CAPTURE(std::string(c.name));
     NoteRig r("compressor", {{0, kPpq / 4}, {8 * kPpq, kPpq / 4}});
     r.set("Threshold", -30.0);  // the synth's note is compressed: a tail of reduction to release
     r.set("Release", 0.02);     // to ε = 2^-30 dB: ≈ 24 τ, Auto's slow τ 4 · Release
-    r.set("Mode", c.mode);
+    r.set("Detector", c.detector);
+    r.set("Law", c.law);
     r.set("Envelope", c.envelope);
     r.set("Auto", c.autoRelease);
     checkSleeps(r.store.current(), 8.0, 3.0);
   }
 }
 
+
+TEST_CASE("AU.dsp M4: one inf sample does not hold the Compressor's reduction") {
+  // A −12 dB sine compressed (threshold −30 dB) with one inf sample at beat 1: after the release the output is the
+  // clean render's (the follower read the inf as 0 — one frame of release, recovered at the 2 ms attack —; before, as
+  // FLT_MAX: ~10^38 dB of reduction).
+  auto renderWith = [](bool bad) {
+    DocumentStore store;
+    store.setDeviceLibrary(&library());
+    auto e = ops::createTrack(*store.current(), store.ids(), TrackKind::Audio, {}, "A");
+    REQUIRE(e.ok());
+    REQUIRE(store.dispatch(e->command).ok());
+    const TrackId t = e->tracks.at(0);
+    auto p = ops::pasteBlocks(*store.current(), store.ids(), t, spikeBlocks(store.ids(), 0.25, bad, 1e38));
+    REQUIRE(p.ok());
+    REQUIRE(store.dispatch(p->command).ok());
+    auto ins = ops::insertOnPath(*store.current(), store.ids(), p->devices.at(0), 0);
+    REQUIRE(ins.ok());
+    REQUIRE(store.dispatch(ins->command).ok());
+    const DeviceId comp = test_blocks::addModule(store, t, "compressor");
+    const DeviceId th = test_blocks::member(*store.current(), comp, "Threshold");
+    const dsp::Curve& c = *findDevice(*store.current(), th).device->curve(kValueParam);
+    REQUIRE(store.dispatch(SetDeviceParam{th, std::string(kValueParam), dsp::curvePosition(c, -30.0, 0.0)}).ok());
+    return render(store.current(), static_cast<uint32_t>(2 * kBeat));
+  };
+  const golden::Channels clean = renderWith(false), inf = renderWith(true);
+  const size_t from = static_cast<size_t>(kBeat + 0.02 * kRate);  // (the inf itself passes: a compressor has no clip)
+  double d = 0.0;
+  for (size_t i = from; i < clean[0].size(); ++i) d = std::max(d, std::fabs(static_cast<double>(inf[0][i]) - clean[0][i]));
+  CHECK(d < 1e-6);
+}
+
+namespace {
+
+// The Expand law (modules.h): below T, GR = min((R − 1)·body, 70 dB) with s = T − x.
+double expansion(double x, double t, double r, double w) {
+  const double under = t - x;
+  const double k = std::clamp(under + w / 2.0, 0.0, w);
+  return std::min((r - 1.0) * (k * k / (2.0 * std::max(w, 1e-3)) + std::max(0.0, under - w / 2.0)), kCompressorExpandCapDb);
+}
+
+std::vector<Step> dcStaircase() {  // −40 … 0 dB DC, a stair every quarter beat
+  std::vector<Step> s;
+  for (int i = 1; i <= 8; ++i) s.push_back({0.25 * i, std::pow(10.0, (-40.0 + 5.0 * i) / 20.0)});
+  return s;
+}
+
+}  // namespace
+
+TEST_CASE("AU.dsp M9: static curves by value — Expand (Peak and RMS) and RMS Compress follow the laws within 0.05 dB") {
+  struct Case {
+    const char* name;
+    double detector, law;
+    bool sine;  // RMS reads a sine 3.01 dB under its peak; Peak reads DC exactly
+  };
+  for (const Case& c : {Case{"Peak Expand", 0, 1, false}, Case{"RMS Expand", 1, 1, true}, Case{"RMS Compress", 1, 0, true}}) {
+    CAPTURE(std::string(c.name));
+    Rig r(std::pow(10.0, -2.0), c.sine ? staircase() : dcStaircase(), c.sine);
+    r.set("Detector", c.detector);
+    r.set("Law", c.law);
+    r.set("Threshold", -20.0);
+    r.set("Ratio", c.law > 0 ? 2.0 : 4.0);
+    r.set("Knee", 6.0);
+    r.set("Attack", 0.00001);
+    r.set("Release", 0.001);
+    const golden::Channels out = render(r.store.current(), static_cast<uint32_t>(9 * kBeat / 4));
+    for (int i = 0; i <= 8; ++i) {
+      const double level = -40.0 + 5.0 * i;  // the peak (sine) or DC level
+      const double detected = c.sine ? level + 20.0 * std::log10(std::sqrt(0.5)) : level;
+      const double gr = c.law > 0 ? expansion(detected, -20.0, 2.0, 6.0) : reduction(detected, -20.0, 4.0, 6.0);
+      const size_t end = static_cast<size_t>((i + 1) * kBeat / 4);
+      const double got = db(peakOf(out[0], end - 2400, end - 48));
+      CAPTURE(level);
+      CHECK(std::fabs(got - (level - gr)) <= 0.05);
+    }
+  }
+}
+
+TEST_CASE("AU.dsp M9: the Lin envelope follows the linear level (63 % of a DC step after one attack), then the law") {
+  Rig r(0.001, {{1.0, 1.0}}, false);
+  r.set("Threshold", -20.0);
+  r.set("Ratio", 4.0);
+  r.set("Knee", 0.0);
+  r.set("Attack", 0.010);
+  r.set("Release", 0.100);
+  r.set("Envelope", 1.0);
+  const golden::Channels out = render(r.store.current(), static_cast<uint32_t>(2 * kBeat));
+  const std::vector<float>& o = out[0];
+  size_t up = 0;
+  while (up < o.size() && std::fabs(o[up]) < 0.01f) ++up;
+  REQUIRE(up < o.size());
+  // k frames into the step the level envelope is 1 − 0.999·ra^k (ra = e^(−1/480)); the gain follows it at once.
+  for (const size_t k : {size_t{48}, size_t{480}, size_t{2400}}) {
+    const double env = 1.0 - 0.999 * std::exp(-static_cast<double>(k) / 480.0);
+    const double want = -reduction(db(env), -20.0, 4.0, 0.0);
+    CAPTURE(k);
+    CHECK(std::fabs(db(std::fabs(o[up + k - 1])) - want) <= 0.05);
+  }
+  // (the Log envelope at one attack: 63 % of the 15 dB reduction, 9.5 dB; the Lin one already 12.0 dB)
+  CHECK(db(std::fabs(o[up + 479])) < -11.9);
+}
+
+TEST_CASE("AU.dsp M9: Auto release — max(fast at rel / 4, slow at rel · 4 − 3 dB) after a step down, by value") {
+  Rig r(1.0, {{1.0, 0.001}}, false);  // 0 dB (15 dB of reduction, settled), then −60 dB at beat 1
+  r.set("Threshold", -20.0);
+  r.set("Ratio", 4.0);
+  r.set("Knee", 0.0);
+  r.set("Attack", 0.00001);
+  r.set("Release", 0.100);
+  r.set("Auto", 1.0);
+  const golden::Channels out = render(r.store.current(), static_cast<uint32_t>(4 * kBeat));
+  const std::vector<float>& o = out[0];
+  size_t down = static_cast<size_t>(kBeat) - 10;
+  while (down < o.size() && std::fabs(o[down]) > 0.01f) ++down;
+  REQUIRE(down < o.size());
+  for (const double t : {0.005, 0.05, 0.2, 0.5}) {
+    const double k = std::round(t * kRate) + 1.0;  // release updates by then
+    const double fast = 15.0 * std::exp(-k / (0.025 * kRate)), slow = 15.0 * std::exp(-k / (0.4 * kRate));
+    const double gr = std::max({fast, slow - kCompressorAutoOffsetDb, 0.0});
+    const double got = db(0.001) - db(std::fabs(o[down + static_cast<size_t>(k) - 1]));
+    CAPTURE(t);
+    MESSAGE("Auto release at " << t << " s: " << got << " dB (law " << gr << ")");
+    CHECK(std::fabs(got - gr) <= 0.05);
+  }
+}

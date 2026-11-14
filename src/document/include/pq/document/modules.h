@@ -334,27 +334,33 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o = {}, DelayTapRo
 //             from another track lands: a compensated sidechain, lower.h "Sidechains"; inside: an EQ Band child group
 //             (Low Cut 100 Hz) chosen by "EQ On" (off), then a smoothed Gain); Sidechain is set to 1 by the cablesource
 //             picker when a source is picked (0 at None)
-//   level     Peak: max(|L|, |R|) (linked); RMS: sqrt(window(max(L², R²), 5 ms, mean)); Mode 0 Peak, 1 RMS, 2 Expand (peak)
+//   level     Detector 0 Peak: max(|L|, |R|) (linked); 1 RMS: sqrt(window(max(L², R²), 5 ms, mean)) (Q261: the
+//             detector and the law are two switches, so RMS expansion works)
 //   envelope  Env Log (default): dB = fast_gain_to_db(max(level, 1e-6)) → Gain Computer → follow(GR, Attack, Release);
 //             Env Lin: follow(level, Attack, Release) → dB → Gain Computer. Auto release (Auto 1): the follower is
 //             max(follow(·, a, rel / 4), follow(·, a, rel · 4) − 3 dB) — on GR (Log: minus 3 dB of reduction) or on the
 //             level (Lin: × 10^(−3/20)): a short transient recovers at rel / 4, a long stretch of compression lets go of
 //             its last 3 dB at rel · 4
 //   computer  the child group "Gain Computer" (memoryless: In = level dB, Out = reduction dB ≥ 0; its own value blocks
-//             Threshold, Ratio, Knee): s = over = x − T (Compress) or under = T − x (Expand), k = clip(s + W/2, 0, W),
+//             Threshold, Ratio, Knee): s = over = x − T (Law 0 Compress) or under = T − x (Law 1 Expand), k = clip(s + W/2, 0, W),
 //             body = k² / (2·max(W, 1e-3)) + max(0, s − W/2); Compress GR = (1 − 1/R)·body; Expand (downward, slope R
 //             below T) GR = min((R − 1)·body, 70 dB). The `transfer` element draws it (units db, output reduction)
 //   output    GR = max(env, 0) (the block "GR": the meter's and the jack's signal, a cable source like any output);
 //             g = fast_db_to_gain(Makeup − GR); out = latency(In, 0, Lookahead) · gain_add(1, g − 1, Dry/Wet) (the dry /
 //             wet a smoothed mono gain on the delayed input: dry + w·(wet − dry) with wet = dry·g, one stereo multiply);
 //             Listen 1: Out = det (what the detector hears)
-// Stepped switches (Mode, Envelope, Auto, Sidechain, EQ On, Listen) lower as literals (lower.h "Structural value
+// Stepped switches (Detector, Law, Envelope, Auto, Sidechain, EQ On, Listen) lower as literals (lower.h "Structural value
 // blocks"): a change recompiles and only the chosen path is computed. Lookahead (0 / 1 / 10 ms: a stepped curve in
 // seconds, its positions 0, ½, 1) feeds latency's const `time` (constFeeds): the delay and the reported latency are
 // round(la · sr) samples (PDC follows; a change recompiles). Value blocks are found by name (Device::name).
-// Panel: the transfer display, the reduction meter and the GR jack; knobs Threshold, Ratio, Attack, Release, Knee,
-// Makeup, Dry/Wet; Auto; chips Mode, Envelope, Lookahead; the Sidechain section (cablesource, Gain, Mix, EQ On +
-// Frequency, Listen).
+// Panel: the transfer display, the GR (reduction) and Out (level, on the module's output) meters with their labels
+// and dB scales (AU.dsp, RB-DY L13), the GR jack; knobs Threshold, Ratio, Attack, Release, Knee, Makeup, Dry/Wet; Auto
+// under Release; chips Envelope (under Knee), Lookahead, Detector, Law; the Sidechain section (cablesource, Gain, Mix,
+// EQ On + Frequency, Listen).
+// Sleep (AU.dsp, RB-DY H4; pq/graph/schedule.h "Sleep plan"): on a silent input the Gain Computer's input is the
+// −120 dB floor, its reduction a constant (0 below the threshold: Z by its range when the controls are undriven), so
+// the followers converge or decay and the region sleeps once they rest; the reduction releases to 2^-30 dB first (≈ 24
+// release time constants, Auto: of rel · 4: QUESTIONS Q?-AU.dsp-a).
 inline constexpr double kCompressorRmsSeconds = 0.005;
 inline constexpr double kCompressorExpandCapDb = 70.0;
 inline constexpr double kCompressorAutoOffsetDb = 3.0;
@@ -364,26 +370,29 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o = {});
 // A group of atom and value blocks (no native engine), stereo, block-wise like the Compressor. With la the Lookahead
 // (1.5 / 3 / 6 ms: a stepped curve in seconds, positions 0 / ½ / 1, feeding the const `time` of the windows and the
 // delay: constFeeds) and L = round(la · sr):
-//   x       In · Gain (a smoothed gain; Gain −12 … +24 dB)
-//   src     Link Stereo / L-R: x; Link M-S: (M, S) = ((L + R) / 2, (L − R) / 2) (the EQ's matrix)
+//   src     In · Gain (a smoothed gain; Gain −12 … +24 dB). Link: Stereo (one gain for both) or L-R (a gain per
+//           channel); M-S was removed (Q266, user 2026-11-13: it hard-clipped up to 6 dB)
 //   det     True Peak off: latency(|src|, 7) — Stereo linked as max(|L|, |R|), else per channel; True Peak on:
 //           latency(truepeak(src), 1) (linked the same way). Both are 7 frames behind src (truepeak's fixed group delay
 //           6, plus 1), so toggling True Peak never changes the audio's delay or the reported latency
 //   r       max(0, fast_gain_to_db(det) − Ceiling) (dB over the ceiling; fast_ errors ≤ ~1e-6 relative)
 //   h       window(r, la, max); g = follow(h, 0, Release) (instant attack; Auto: the Compressor's law, max(follow(h, 0,
 //           rel / 4), follow(h, 0, rel · 4) − 3 dB)); b = window(g, la, mean) — the reduction (dB ≥ 0: the meter's)
-//   out     latency(src, 6, la) · fast_db_to_gain(−b) (M-S: back to (M + S, M − S)), then clip(·, −c, c), c = 10^(Ceiling / 20)
+//   out     latency(src, 6, la) · fast_db_to_gain(−b), then clip(·, −c, c), c = 10^(Ceiling / 20)
 // Why the gain alone keeps a sample under the ceiling (Link Stereo / L-R): the output at frame n is src[n − 6 − L], whose
 // det is r[m], m = n − L + 1 (det is 7 frames behind src). h[k] (k = n − L + 1 … n) is a max over r[k − L + 1 … k],
 // which holds r[m] for every such k, and the follower's instant attack keeps g[k] ≥ h[k] ≥ r[m]: b[n], the mean of
-// those L values, is ≥ r[m], so |out| ≤ |src|·10^(−r[m]/20) ≤ c. The final clip only trims float rounding (≈ 1e-6) —
-// and, with Link M-S, the overs of M + S when M and S peak together (M and S are each held under the ceiling: Q?-DY.6-a).
+// those L values, is ≥ r[m], so |out| ≤ |src|·10^(−r[m]/20) ≤ c. The final clip only trims float rounding (≈ 1e-6).
+// An inf sample is ignored by the detector (window / follow read it as 0: AU.dsp, RB-DY M4) and clipped at c in the
+// audio; a huge finite one (1e30: ~600 dB) is a signal like any other and releases by the release law.
 // True Peak: r[m] also covers the interpolants between src[n − 6 − L] and the next sample, so the reconstructed output
 // stays within the estimator's error (≤ 0.2 dB) of the ceiling.
 // Reported latency = L + 6 in both True Peak modes. Every switch (Auto, Link, True Peak) is a stepped value block reaching
 // muxes: literals, only the chosen path is scheduled (the default: one window pair, two followers (Auto), no truepeak,
-// no M/S matrix). Panel: knobs Gain, Ceiling, Release; Auto; chips Lookahead, Link, True Peak; the reduction meter (on
-// b) and the output level meter (on the clip).
+// one linking max). Panel: knobs Gain, Ceiling, Release; Auto; chips Lookahead, Link (Stereo | L-R), True Peak; the
+// reduction meter (on b) and the output level meter (on the clip), labelled, with dB scales (AU.dsp, RB-DY L13).
+// Sleep (AU.dsp, RB-DY H4): fast_gain_to_db of a silent detector is −inf, so r is exactly 0 for any finite Ceiling
+// and its windows and followers decay; the region sleeps once the reduction has released to 2^-30 dB.
 inline constexpr double kLimiterDetectorDelay = 7.0;  // frames det runs behind src (truepeak's 6 + 1)
 BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o = {});
 

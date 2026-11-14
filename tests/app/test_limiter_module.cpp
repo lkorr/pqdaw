@@ -3,7 +3,7 @@
 //   ceiling    the acceptance set — impulses, square bursts, full-scale noise, a 20 Hz … 20 kHz sweep, a beat each, up to
 //              +12 dB over a −1 dB ceiling — at every lookahead (1.5 / 3 / 6 ms), Link Stereo: with the safety clip taken
 //              out of the circuit no sample passes the ceiling (the gain alone holds it: the proof in modules.h), and the
-//              link reports round(la · sr) + 6 frames; L-R and True Peak the same at 3 ms; M-S with its clip in
+//              link reports round(la · sr) + 6 frames; L-R and True Peak the same at 3 ms (M-S removed: Q266)
 //   true peak  sines at 12 kHz (samples ±45° off the peaks: +3 dB between them) and 15.5 kHz, +6 dB over a −1 dB
 //              ceiling: with True Peak the output's true peak (a 16× windowed-sinc reconstruction) ≤ ceiling + 0.2 dB;
 //              without it the sample peaks hold and the true peak goes ≥ 2 dB over
@@ -156,7 +156,7 @@ TEST_CASE("DY.6 ceiling: no sample over it on the acceptance set at every lookah
     bool clip;
   };
   const Case cases[] = {{0.0015, 0, 0, false}, {0.003, 0, 0, false}, {0.006, 0, 0, false},
-                        {0.003, 1, 0, false},  {0.003, 0, 1, false}, {0.003, 2, 0, true}};
+                        {0.003, 1, 0, false},  {0.003, 0, 1, false}};
   for (const Case& k : cases) {
     CAPTURE(k.la);
     CAPTURE(k.link);
@@ -312,7 +312,7 @@ TEST_CASE("DY.6 interpreter == JIT on the acceptance set (True Peak, Auto releas
   CHECK(diff <= 1e-5);
 }
 
-TEST_CASE("DY.6 CPU: the switches lower as literals — only the chosen detector and matrix are compiled") {
+TEST_CASE("DY.6 CPU: the switches lower as literals — only the chosen detector is compiled") {
   Rig r([](IdSource& ids) { return sourceBlocks(ids, 0.5, {}, false); });
   auto count = [&](const char* atom) {
     const std::map<std::string, int> m = atomsOf(r.store.current());
@@ -326,7 +326,7 @@ TEST_CASE("DY.6 CPU: the switches lower as literals — only the chosen detector
   CHECK(count("latency") == 2);
   CHECK(count("abs") == 1);
   CHECK(count("mux") == 0);
-  const int adds = count("add"), packs = count("pack");
+  const int packs = count("pack");  // the source's and the track's: no M/S matrix (Link M-S removed: Q266)
   r.set("Auto", 0.0);
   CHECK(count("follow") == 1);
   r.set("True Peak", 1.0);
@@ -334,19 +334,17 @@ TEST_CASE("DY.6 CPU: the switches lower as literals — only the chosen detector
   CHECK(count("abs") == 0);
   CHECK(count("latency") == 2);
   CHECK(count("mux") == 0);
-  // M-S: the matrix in and out (L + R and M + S; two packs).
-  r.set("Link", 2.0);
-  CHECK(count("add") == adds + 2);
-  CHECK(count("pack") == packs + 2);
+  r.set("Link", 1.0);  // L-R: a gain per channel, no linking max
   CHECK(count("mux") == 0);
+  CHECK(count("pack") == packs);
 }
 
-TEST_CASE("AU.dsp H4: a Limiter on a track that falls silent sleeps after its tail (Auto, True Peak, M-S) and wakes") {
+TEST_CASE("AU.dsp H4: a Limiter on a track that falls silent sleeps after its tail (Auto, True Peak, L-R) and wakes") {
   struct Case {
     const char* name;
     double truePeak, link, autoRelease;
   };
-  for (const Case& c : {Case{"Auto", 0, 0, 1}, Case{"plain release", 0, 0, 0}, Case{"True Peak", 1, 0, 1}, Case{"M-S", 0, 2, 1}}) {
+  for (const Case& c : {Case{"Auto", 0, 0, 1}, Case{"plain release", 0, 0, 0}, Case{"True Peak", 1, 0, 1}, Case{"L-R", 0, 1, 1}}) {
     CAPTURE(std::string(c.name));
     NoteRig r("limiter", {{0, kPpq / 4}, {8 * kPpq, kPpq / 4}});
     r.set("Gain", 24.0);  // over the ceiling: a tail of reduction to release
@@ -358,4 +356,24 @@ TEST_CASE("AU.dsp H4: a Limiter on a track that falls silent sleeps after its ta
     r.set("Auto", c.autoRelease);
     checkSleeps(r.store.current(), 8.0, 3.0);
   }
+}
+
+TEST_CASE("AU.dsp M4: one inf sample does not hold the Limiter's reduction; a 1e30 one releases by the release law") {
+  // A −12 dB sine (no reduction) with one bad sample at beat 1: after the lookahead the output is the clean render's.
+  auto renderWith = [](bool bad, double scale) {
+    Rig r([&](IdSource& ids) { return spikeBlocks(ids, 0.25, bad, scale); });
+    r.set("Auto", 0.0);
+    r.set("Release", 0.1);
+    return render(r.store.current(), static_cast<uint32_t>(6 * kBeat));
+  };
+  const golden::Channels clean = renderWith(false, 0.0), inf = renderWith(true, 1e38), huge = renderWith(true, 1e-8);
+  const size_t from = static_cast<size_t>(kBeat + 0.01 * kRate);  // past the sample and the 3 ms lookahead
+  double dInf = 0.0;
+  for (size_t i = from; i < clean[0].size(); ++i) dInf = std::max(dInf, std::fabs(static_cast<double>(inf[0][i]) - clean[0][i]));
+  CHECK(dInf == 0.0);
+  for (float v : inf[0]) REQUIRE(std::isfinite(v));
+  // 1e30 is a signal: ~600 dB of reduction, released at 100 ms (≈ 1.3 s to 0.001 dB): reduced at first, clean by the end.
+  const size_t end = clean[0].size();
+  CHECK(peakOf(huge[0], from, from + 2400) < 0.5 * peakOf(clean[0], from, from + 2400));
+  CHECK(std::fabs(peakOf(huge[0], end - 2400, end) - peakOf(clean[0], end - 2400, end)) < 1e-3);
 }

@@ -328,6 +328,8 @@ std::unique_ptr<Element> makeSection(const doc::PanelElement& d) {
 //   level      the RMS as a bar with the peak as a line, over `floor` … 0 dBFS (the top 6 dB warm)
 //   reduction  DY.3: the signal read as dB of gain reduction (≥ 0: a compressor's GR output), its largest value in the
 //              window drawn DOWNWARD from the top over `range` dB (12 / 24 / 48), a tick every quarter of the range
+// `scale` (AU.dsp, RB-DY L13; 0: none): px on the left for the dB of the quarter ticks (reduction 6 / 12 / 18 for 24
+// dB; level −36 / −24 / −12 for a −48 floor; the level mode then draws the ticks too), the bars in the rest.
 class Meter final : public Element {
 public:
   using Element::Element;
@@ -337,9 +339,10 @@ public:
       {"floor", StyleSpec::Type::Number, -60.0, {}, {}, -120.0, -6.0},
       {"range", StyleSpec::Type::Number, 24.0, {}, {}, 12.0, 48.0},
       {"colour", StyleSpec::Type::Token, 0, "signal"},
+      {"scale", StyleSpec::Type::Number, 0.0, {}, {}, 0.0, 16.0},
   };
 
-  uint32_t staticLayerCount() const noexcept override { return reduction() ? 2 : 1; }
+  uint32_t staticLayerCount() const noexcept override { return reduction() || scaleW() > 0.0f ? 2 : 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
     return layer == 0 ? th.face.track : th.face.tick;
   }
@@ -348,7 +351,7 @@ public:
       for (int c = 0; c < 2; ++c) p.roundedRect(bar(c), 1.5f, ui::rgba(255, 255, 255));
       return;
     }
-    // reduction: a tick every quarter of the range, across both bars
+    // reduction (and a scaled level): a tick every quarter of the range, across both bars
     const Rect b0 = bar(0), b1 = bar(1);
     for (int q = 1; q < 4; ++q) {
       const float y = b0.y0 + (b0.y1 - b0.y0) * static_cast<float>(q) * 0.25f;
@@ -358,6 +361,17 @@ public:
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     if (env.target != nullptr) window_.acquire(*env.target, binding());
+    if (const float sw = scaleW(); sw > 0.0f) {  // the quarter ticks' dB, right-aligned left of the bars
+      const Rect b0 = bar(0);
+      const double floor = std::clamp(num("floor", -60.0), -120.0, -6.0), range = rangeDb();
+      for (int q = 1; q < 4; ++q) {
+        const float y = b0.y0 + (b0.y1 - b0.y0) * static_cast<float>(q) * 0.25f;
+        const double v = reduction() ? range * q / 4.0 : floor * q / 4.0;
+        char buf[8];
+        std::snprintf(buf, sizeof buf, "%.0f", v);
+        p.textAligned({sw - 1.0f, y}, buf, kScalePx, th.face.ink, 1.0f);
+      }
+    }
     if (reduction()) {
       // (the reduction's colour: the value accent unless the style names one)
       const Rgba col = colour(th, "colour", "value", th.face.value);
@@ -407,11 +421,14 @@ public:
   }
 
 private:
+  static constexpr float kScalePx = 5.5f;
   bool reduction() const noexcept { return txt("mode", "level") == "reduction"; }
+  float scaleW() const noexcept { return static_cast<float>(std::clamp(num("scale", 0.0), 0.0, 16.0)); }
   double rangeDb() const noexcept { return std::clamp(num("range", 24.0), 12.0, 48.0); }
   Rect bar(int c) const noexcept {
-    const float gap = std::max(1.0f, desc_.w * 0.12f), w = (desc_.w - 3.0f * gap) * 0.5f;
-    const float x0 = gap + static_cast<float>(c) * (w + gap);
+    const float sw = scaleW(), bw = desc_.w - sw;
+    const float gap = std::max(1.0f, bw * 0.12f), w = (bw - 3.0f * gap) * 0.5f;
+    const float x0 = sw + gap + static_cast<float>(c) * (w + gap);
     return {x0, 2.0f, x0 + w, desc_.h - 2.0f};
   }
   float level(float amp) const noexcept {

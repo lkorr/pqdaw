@@ -254,6 +254,19 @@ inline double checkSleeps(const Snapshot& s, double secondBeat, double tailS) {
   return asleepS;
 }
 
+// AU.dsp (RB-DY M4): a 1 kHz sine of amplitude `a` on both channels, plus (bad) one sample of `badValue` at beat 1 (a
+// one-frame pulse × 1e38 × badScale: inf for 1e38, 1e30 for 1e-8; exactly 0 elsewhere).
+inline BlockSet spikeBlocks(IdSource& ids, double a, bool bad, double badScale) {
+  SourceKit k(ids);
+  const SourceKit::Ref beat = k.op("transport.beat", {});
+  SourceKit::Ref x = k.mul(k.V(a), k.op("sine", {{"phase", k.op("phasor", {{"hz", k.V(1000.0)}})}}));
+  if (bad) {
+    const SourceKit::Ref pulse = k.sub(k.from(beat, 1.0), k.from(beat, 1.0 + 1.0 / kBeat));
+    x = k.add(x, k.mul(k.mul(pulse, k.V(1e38)), k.V(badScale)));
+  }
+  return k.finish(x, x);
+}
+
 // The atoms of `s`'s optimised program (every unit), by name.
 inline std::map<std::string, int> atomsOf(const Snapshot& s) {
   LowerOptions lo;

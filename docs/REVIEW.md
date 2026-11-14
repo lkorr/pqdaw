@@ -1546,3 +1546,12 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   them; restart pqdaw: still saved (settings.json "metaDefaults").
 - Judge: the tab split (which options are "display"); the sheet's density on the small Spectrum face; whether RESET
   should go to your saved default instead of the factory (Q?-VZ.1-a); the new spectrum options' ranges.
+
+## AU.dsp · Compressor and Limiter panels (RB-DY L13, Q261, Q266)
+- Compressor: two meters, GR and Out, labelled under them, each with a small dB scale on its left (GR 6 / 12 / 18, Out
+  −12 / −24 / −36); the transfer display is 8 px smaller to make room. Auto sits under Release; the Envelope chips
+  (Log / Lin) under Knee; the Mode chip is now two: Detector (Peak / RMS) and Law (Compress / Expand). Golden:
+  tests/views/golden/compressor-panel.png.
+- Limiter: the same dB scales on its GR and Out meters; Link is Stereo / L-R (M-S removed). Golden:
+  tests/views/golden/limiter-panel.png.
+- To look at: whether the scale digits (5.5 px) read well at 1x, and the GR jack under the meters (unchanged).

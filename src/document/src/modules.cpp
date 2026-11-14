@@ -1700,7 +1700,8 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   const Sig autoRelease = k.val("Auto", stepped(2), 0.0);
   const Sig makeup = k.val("Makeup", detent(linear(-24.0, 24.0, dsp::CurveUnit::Db), 0.0), 0.0);
   const Sig dryWet = k.val("Dry/Wet", linear(0.0, 1.0, dsp::CurveUnit::Percent), 1.0);
-  const Sig mode = k.val("Mode", stepped(3), 0.0);          // Peak | RMS | Expand
+  const Sig detector = k.val("Detector", stepped(2), 0.0);  // Peak | RMS (Q261: the detector and the law are two switches)
+  const Sig law = k.val("Law", stepped(2), 0.0);            // Compress | Expand
   const Sig envelope = k.val("Envelope", stepped(2), 0.0);  // Log | Lin
   const Sig lookahead = k.val("Lookahead", threeChoiceCurve(0.0, 0.001, 0.010, 0.001, dsp::CurveUnit::Seconds), 0.0);
   const Sig scOn = k.val("Sidechain", stepped(2), 0.0);
@@ -1735,14 +1736,14 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   k.setting(chL, "index", 0.0);
   k.setting(chR, "index", 1.0);
   const Sig L{chL, "out"}, R{chR, "out"};
-  // The level (linked): Peak max(|L|, |R|); RMS sqrt(5 ms mean of max(L², R²)); Expand detects peaks.
+  // The level (linked): Peak max(|L|, |R|); RMS sqrt(5 ms mean of max(L², R²)); either law with either.
   const Sig peak = max(k.op("abs", "|L|", {{"x", L}}), k.op("abs", "|R|", {{"x", R}}), "peak");
   const DeviceId win = k.block("window", "5 ms mean", {{"x", max(mul(L, L, "L^2"), mul(R, R, "R^2"), "max(L^2, R^2)")}});
   k.setting(win, "time", kCompressorRmsSeconds);
   k.setting(win, "op", 2.0);
   const Sig rms = k.op("sqrt", "rms", {{"x", Sig{win, "out"}}});
-  const std::array<Sig, 3> levels = {peak, rms, peak};
-  const Sig level = k.choose(mode, levels, "level");
+  const std::array<Sig, 2> levels = {peak, rms};
+  const Sig level = k.choose(detector, levels, "level");
   // The follower (Auto release: Follower above).
   const Follower follower(k, attack, release, autoRelease);
   // Envelope Lin: the follower on the linear level before the computer.
@@ -1755,7 +1756,7 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
     ratio = k.val("Ratio", octave(1.0, 100.0), 4.0);
     knee = k.val("Knee", linear(0.0, 24.0, dsp::CurveUnit::Db), 6.0);
     const Sig x = k.in();
-    const Sig expand = sub(mode, k.k(1.0), "expand = mode - 1");  // > 0 only for Expand (a literal: the muxes fold)
+    const Sig& expand = law;  // 1 for Expand (a literal: the muxes fold)
     const Sig s = mux(expand, sub(x, threshold, "over = x - T"), sub(threshold, x, "under = T - x"), "s");
     const Sig halfW = mul(knee, k.k(0.5), "W / 2");
     const Sig kn = k.op("clip", "k = clip(s + W/2, 0, W)",
@@ -1779,28 +1780,40 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
   const Sig g = k.op("fast_db_to_gain", "gain", {{"db", sub(makeup, gr, "makeup - GR")}});
   const DeviceId mix = k.block("gain_add", "dry/wet", {{"acc", k.k(1.0)}, {"x", sub(g, k.k(1.0), "g - 1")}, {"g", dryWet}});
   k.setting(mix, "start", 1.0);
-  const Sig out = mul(Sig{lat, "out"}, Sig{mix, "out"}, "x gain");
-  k.out(mux(listen, out, det, "listen?"));
-  // The panel: the curve, the meter and the GR jack; the knobs; the chips; the sidechain section.
+  const Sig wet = mul(Sig{lat, "out"}, Sig{mix, "out"}, "x gain");
+  const Sig out = mux(listen, wet, det, "listen?");
+  k.out(out);
+  // The panel: the curve, the GR and Out meters (labelled, dB scales: AU.dsp RB-DY L13) and the GR jack; the knobs
+  // (Auto under Release, the Envelope chips under Knee); the Lookahead, Detector and Law chips; the sidechain section.
   Panel p;
   p.width = 520.0f;
   p.height = 182.0f;
   p.elements.push_back(plate(p.width, p.height, 6.0));
-  p.elements.push_back(styled(element(2, "transfer", 8, 8, 132, 132, signalBinding(gc, std::string(kGroupInPort))),
+  p.elements.push_back(styled(element(2, "transfer", 8, 8, 124, 124, signalBinding(gc, std::string(kGroupInPort))),
                               {styleText("units", "db"), styleText("output", "reduction"), styleNumber("min", -60.0),
                                styleNumber("max", 6.0), styleNumber("dot", 1.0)}));
-  p.elements.push_back(styled(element(3, "meter", 144, 8, 16, 132, signalBinding(gr.dev, gr.port)),
-                              {styleText("mode", "reduction"), styleNumber("range", 24.0)}));
-  p.elements.push_back(styled(element(4, "modsource", 142, 146, 20, 28, signalBinding(gr.dev, gr.port)), {styleText("label", "GR")}));
-  constexpr float kCol = 54.0f, kX0 = 168.0f;
+  p.elements.push_back(styled(element(3, "meter", 134, 8, 18, 124, signalBinding(gr.dev, gr.port)),
+                              {styleText("mode", "reduction"), styleNumber("range", 24.0), styleNumber("scale", 7.0)}));
+  p.elements.push_back(styled(element(31, "meter", 152, 8, 18, 124, signalBinding(out.dev, out.port)),
+                              {styleNumber("floor", -48.0), styleNumber("scale", 7.0)}));
+  auto meterLabel = [&](uint32_t id, float x0, const char* text) {
+    PanelElement cap = caption(id, x0, 133, 18, 10, text);
+    cap.setField(styleNumber("size", 7.5));
+    cap.setField(styleText("align", "center"));
+    p.elements.push_back(std::move(cap));
+  };
+  meterLabel(32, 134, "GR");
+  meterLabel(33, 152, "Out");
+  p.elements.push_back(styled(element(4, "modsource", 142, 148, 20, 28, signalBinding(gr.dev, gr.port)), {styleText("label", "GR")}));
+  constexpr float kCol = 54.0f, kX0 = 172.0f;
   p.elements.push_back(control(5, "knob", kX0, 8, 52, 58, threshold));
   p.elements.push_back(control(6, "knob", kX0 + kCol, 8, 52, 58, ratio));
   p.elements.push_back(control(7, "knob", kX0 + 2 * kCol, 8, 52, 58, knee));
   p.elements.push_back(control(8, "knob", kX0 + 3 * kCol, 8, 52, 58, makeup));
-  p.elements.push_back(control(9, "knob", kX0, 70, 52, 58, attack));
-  p.elements.push_back(control(10, "knob", kX0 + kCol, 70, 52, 58, release));
-  p.elements.push_back(button(control(11, "toggle", kX0 + 2 * kCol + 4, 90, 44, 18, autoRelease), "Auto"));
-  p.elements.push_back(control(12, "knob", kX0 + 3 * kCol, 70, 52, 58, dryWet));
+  p.elements.push_back(control(9, "knob", kX0, 68, 52, 58, attack));
+  p.elements.push_back(control(10, "knob", kX0 + kCol, 68, 52, 58, release));
+  p.elements.push_back(button(control(11, "toggle", kX0 + kCol + 4, 126, 44, 15, autoRelease), "Auto"));
+  p.elements.push_back(control(12, "knob", kX0 + 3 * kCol, 68, 52, 58, dryWet));
   auto chips = [&](uint32_t id, float x, float yy, float w, const Sig& v, const char* label, const char* items) {
     PanelElement c = caption(id, x, yy, w, 10, label);
     c.setField(styleNumber("size", 7.5));
@@ -1809,9 +1822,10 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
     t.setField(styleText("items", items));
     p.elements.push_back(std::move(t));
   };
-  chips(13, 8, 146, 130, lookahead, "Lookahead", "0 ms|1 ms|10 ms");
-  chips(15, kX0, 146, 120, mode, "Mode", "Peak|RMS|Expand");
-  chips(17, kX0 + 126, 146, 84, envelope, "Envelope", "Log|Lin");
+  chips(13, 8, 146, 124, lookahead, "Lookahead", "0 ms|1 ms|10 ms");
+  chips(17, kX0 + 2 * kCol, 84, 52, envelope, "Envelope", "Log|Lin");
+  chips(15, kX0, 146, 100, detector, "Detector", "Peak|RMS");
+  chips(29, kX0 + 106, 146, 106, law, "Law", "Compress|Expand");
   // The sidechain section (its own backdrop).
   constexpr float kScX = 392.0f;
   PanelElement back = element(19, "shape", kScX - 4, 4, 124, p.height - 8, {});
@@ -1841,7 +1855,6 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId group = o.id.valid() ? o.id : ids.device();
   Kit k(ids, group);
   auto sub = [&](const Sig& a, const Sig& b, std::string n) { return k.op("sub", std::move(n), {{"a", a}, {"b", b}}); };
-  auto add = [&](const Sig& a, const Sig& b, std::string n) { return k.op("add", std::move(n), {{"a", a}, {"b", b}}); };
   auto max = [&](const Sig& a, const Sig& b, std::string n) { return k.op("max", std::move(n), {{"a", a}, {"b", b}}); };
   auto mul = [&](const Sig& a, const Sig& b, std::string n) { return k.op("mul", std::move(n), {{"a", a}, {"b", b}}); };
   auto mux = [&](const Sig& index, const Sig& in0, const Sig& in1, std::string n) {
@@ -1858,19 +1871,14 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   const Sig release = k.val("Release", octave(0.001, 3.0, dsp::CurveUnit::Seconds), 0.3);
   const Sig autoRelease = k.val("Auto", stepped(2), 1.0);
   const Sig lookahead = k.val("Lookahead", threeChoiceCurve(0.0015, 0.003, 0.006, 0.0005, dsp::CurveUnit::Seconds), 0.003);
-  const Sig link = k.val("Link", stepped(3), 0.0);  // Stereo | L-R | M-S
+  const Sig link = k.val("Link", stepped(2), 0.0);  // Stereo | L-R (M-S removed: Q266, user 2026-11-13)
   const Sig truePeak = k.val("True Peak", stepped(2), 0.0);
-  // x = In · Gain (smoothed); src = x, or with Link M-S (M, S) = ((L + R) / 2, (L − R) / 2) (the EQ's matrix).
+  // src = In · Gain (smoothed).
   const DeviceId gd = k.block("gain", "x gain", {{"x", k.in()}, {"g", gain}});
   k.setting(gd, "start", 1.0);
-  const Sig x{gd, "out"}, half = k.k(0.5);
-  const Sig isMs = sub(link, k.k(1.0), "M-S = link - 1");  // > 0 only for M-S (a literal: the muxes fold)
-  const Sig xL = channel(x, 0.0, "L"), xR = channel(x, 1.0, "R");
-  const Sig ms = k.op("pack", "(M, S)", {{"in0", mul(add(xL, xR, "L + R"), half, "M = (L + R) / 2")},
-                                         {"in1", mul(sub(xL, xR, "L - R"), half, "S = (L - R) / 2")}});
-  const Sig src = mux(isMs, x, ms, "L/R or M/S");
+  const Sig src{gd, "out"};
   // The detector, 7 frames behind src in both modes: |src| delayed 7, or truepeak (its group delay 6) delayed 1; Link
-  // Stereo takes the larger channel (one gain for both), L-R and M-S keep a gain per channel.
+  // Stereo takes the larger channel (one gain for both), L-R keeps a gain per channel.
   auto linked = [&](const Sig& v, const std::string& n) {
     return mux(link, max(channel(v, 0.0, n + " 0"), channel(v, 1.0, n + " 1"), n + " linked"), v, n + " link?");
   };
@@ -1894,13 +1902,10 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId smooth = k.block("window", "GR (mean)", {{"x", env}, {"time", lookahead}});
   k.setting(smooth, "op", 2.0);
   const Sig gr{smooth, "out"};
-  // out = latency(src, 6, la) · 10^(−b/20) (M-S: back to (M + S, M − S)), then the safety clip at ±10^(Ceiling/20).
+  // out = latency(src, 6, la) · 10^(−b/20), then the safety clip at ±10^(Ceiling/20).
   const DeviceId lat = k.block("latency", "lookahead", {{"x", src}, {"time", lookahead}});
   k.setting(lat, "frames", 6.0);
-  const Sig y = mul(Sig{lat, "out"}, k.op("fast_db_to_gain", "gain", {{"db", k.op("neg", "-GR", {{"x", gr}})}}), "x gain");
-  const Sig yM = channel(y, 0.0, "M'"), yS = channel(y, 1.0, "S'");
-  const Sig back = k.op("pack", "(M + S, M - S)", {{"in0", add(yM, yS, "M + S")}, {"in1", sub(yM, yS, "M - S")}});
-  const Sig limited = mux(isMs, y, back, "out L/R");
+  const Sig limited = mul(Sig{lat, "out"}, k.op("fast_db_to_gain", "gain", {{"db", k.op("neg", "-GR", {{"x", gr}})}}), "x gain");
   const Sig c = k.op("db_to_gain", "ceiling gain", {{"db", ceiling}});
   const Sig out = k.op("clip", "ceiling clip", {{"x", limited}, {"lo", k.op("neg", "-ceiling", {{"x", c}})}, {"hi", c}});
   k.out(out);
@@ -1909,17 +1914,18 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   p.width = 228.0f;
   p.height = 156.0f;
   p.elements.push_back(plate(p.width, p.height, 6.0));
-  p.elements.push_back(styled(element(2, "meter", 8, 8, 16, 128, signalBinding(gr.dev, gr.port)),
-                              {styleText("mode", "reduction"), styleNumber("range", 24.0)}));
-  p.elements.push_back(styled(element(3, "meter", 28, 8, 16, 128, signalBinding(out.dev, out.port)), {styleNumber("floor", -48.0)}));
+  p.elements.push_back(styled(element(2, "meter", 4, 8, 23, 128, signalBinding(gr.dev, gr.port)),
+                              {styleText("mode", "reduction"), styleNumber("range", 24.0), styleNumber("scale", 9.0)}));
+  p.elements.push_back(styled(element(3, "meter", 27, 8, 23, 128, signalBinding(out.dev, out.port)),
+                              {styleNumber("floor", -48.0), styleNumber("scale", 9.0)}));
   auto meterLabel = [&](uint32_t id, float x0, const char* text) {
-    PanelElement cap = caption(id, x0, 138, 20, 10, text);
+    PanelElement cap = caption(id, x0, 138, 14, 10, text);
     cap.setField(styleNumber("size", 7.5));
     cap.setField(styleText("align", "center"));
     p.elements.push_back(std::move(cap));
   };
-  meterLabel(14, 6, "GR");
-  meterLabel(15, 26, "Out");
+  meterLabel(14, 13, "GR");  // centred under the bars (the scale is the meter's left 9 px)
+  meterLabel(15, 36, "Out");
   constexpr float kCol = 54.0f, kX0 = 54.0f;
   p.elements.push_back(control(4, "knob", kX0, 8, 52, 58, gain));
   p.elements.push_back(control(5, "knob", kX0 + kCol, 8, 52, 58, ceiling));
@@ -1934,7 +1940,7 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
     p.elements.push_back(std::move(t));
   };
   chips(8, kX0, 90, 2 * kCol + 52, lookahead, "Lookahead", "1.5 ms|3 ms|6 ms");
-  chips(10, kX0, 120, kCol + 52, link, "Link", "Stereo|L-R|M-S");
+  chips(10, kX0, 120, kCol + 52, link, "Link", "Stereo|L-R");
   chips(12, kX0 + 2 * kCol, 120, 52, truePeak, "True Peak", "Off|On");
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Limiter") : o.name, o.active, std::move(p)));
 }
