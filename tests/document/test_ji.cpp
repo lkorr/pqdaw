@@ -4,11 +4,13 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <string>
 #include <vector>
 
 #include "edit_helpers.h"
+#include "pq/core/alloc_trap.h"
 #include "pq/document/ji_object.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/document/serialize.h"
@@ -237,6 +239,22 @@ TEST_CASE("ji: the voice plan stays within 0.05 cents of the dense evaluation fo
   CHECK(p->voices[0].pitch[2].tick == 500);
   CHECK(p->voices[0].pitch[0].cents == p->voices[0].pitch[1].cents);
   CHECK(p->voices[0].pitch[2].cents == p->voices[0].pitch[3].cents);
+  // Cost of a large object (64 voices, 256 S-curve transitions): a number for the log, no threshold.
+  std::vector<JiStop> stops;
+  for (int k = 0; k < 256; ++k) {
+    std::vector<int64_t> terms;
+    for (int i = 0; i < 64; ++i) terms.push_back(64 + k + i);
+    stops.push_back(prop(k * 1000, std::move(terms), k == 0 ? 0 : 400));
+  }
+  const JiObject big = object(256 * 1000, std::move(stops));
+  REQUIRE(validateJiObject(big).ok());
+  const auto t0 = std::chrono::steady_clock::now();
+  const std::optional<JiPlan> bp = jiVoicePlan(big, t);
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  REQUIRE(bp.has_value());
+  size_t points = 0;
+  for (const JiVoicePlan& vp : bp->voices) points += vp.pitch.size();
+  MESSAGE("jiVoicePlan, 64 voices x 256 stops: " << ms << " ms, " << points << " pitch points");
 }
 
 TEST_CASE("ji: unison classes and gains for 1 -> 2:3 -> 4:5:6 -> 2:3 -> 1") {
@@ -305,6 +323,24 @@ TEST_CASE("ji: a tuning stop morphs into a proportion — the resolved degrees a
   o.stops[2].scale = Rational{1, 4};
   CHECK(*jiVoiceCents(o, t, 1, 2750.0) == doctest::Approx(0.5 * (600.0 + 200.0 + 1200.0 * std::log2(1.25))));
   CHECK(*jiVoiceHz(o, t, 1, 3000.0) == *pq::tuning::resolveHzDouble(ids[1], t, {}));
+}
+
+TEST_CASE("ji: the single queries do not allocate") {
+  REQUIRE(pq::alloc_trap::installed());
+  const pq::tuning::Tuning t = edo(31);
+  JiObject o = object(40000, {prop(0, {4, 5, 6}), prop(10000, {5, 6, 7}, 6000, JiShape::Bezier),
+                              written(20000, {PitchId::fromDegree(0, 2), PitchId::fromCents(2786.0), PitchId::fromRatio(Rational{6})}, 5000)});
+  o.fundamental = PitchId::fromDegree(3, -1);
+  o.stops[2].voiceTiming = {std::nullopt, JiTiming{700, 3000, JiShape{}}, std::nullopt};
+  o.ride = {{0, 0.0f, 0.5f, {}}, {30000, 40.0f, 0.0f, {}}};
+  volatile double sink = 0.0;
+  CHECK(pq::alloc_trap::countRtViolations([&] {
+          for (double x = 0.0; x <= 40000.0; x += 1250.0)
+            for (uint32_t v = 0; v < 3; ++v) {
+              sink = sink + *jiVoiceCents(o, t, v, x) + *jiVoiceHz(o, t, v, x) + *jiFundamentalCents(o, t, x) + *jiFundamentalHz(o, t, x);
+              sink = sink + jiVoiceRatio(o, v, 1)->toDouble() + static_cast<double>(jiTransition(o, v, 2).arrive) + jiPosition(o, static_cast<int32_t>(v), x).u;
+            }
+        }) == 0);
 }
 
 // ---- Commands ----------------------------------------------------------------------------------------------------------
