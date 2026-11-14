@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "pq/core/automation_curve.h"
+#include "pq/document/pitch_resolve.h"
 
 namespace pq::app {
 
@@ -228,6 +229,14 @@ void ClipJiLowering::noteCurve(const doc::Note& n, engine::NoteDesc& nd) {
         if (op.plan && v < op.plan->voices.size()) {
           src = &op.plan->voices[v].pitch;
           base = doc::jiVoiceCents(*o, *tuning_, v, at);
+          // voice.harmonic / voice.ratio: the stop the note starts on (or is gliding to).
+          const doc::JiPosition pos = doc::jiPosition(*o, static_cast<int32_t>(v), at);
+          const uint32_t stop = pos.holding() ? pos.stop : static_cast<uint32_t>(pos.next);
+          const doc::JiStop& st = o->stops[stop];
+          if (!st.isTuning() && !st.terms.empty()) {
+            nd.harmonic = static_cast<float>(st.terms[doc::jiVoiceEntry(*o, st, v)]);
+            if (const std::optional<tuning::Rational> r = doc::jiVoiceRatio(*o, v, stop)) nd.ratio = static_cast<float>(r->toDouble());
+          }
         }
       } else {
         src = &fundamentalOf(*o, op);
@@ -278,6 +287,15 @@ uint32_t ClipJiLowering::voices(const doc::JiObject& o, std::vector<engine::Note
     nd.velocity = std::clamp(o.velocity, 1.0f, 127.0f);
     if (const std::optional<tuning::Rational> r = doc::jiVoiceRatio(o, v, 0)) nd.ratio = static_cast<float>(r->toDouble());
     if (!stop0.isTuning()) nd.harmonic = static_cast<float>(stop0.terms[doc::jiVoiceEntry(o, stop0, v)]);
+    // voice.noteDegree (an Instrument Rack's Degree zones): where the voice starts among the tuning's degrees.
+    if (previous && vp.pitch.front().cents == plan.voices[v - 1].pitch.front().cents) {
+      nd.keyDegree = out.back().keyDegree;
+    } else {
+      const tuning::PitchId pid = stop0.isTuning() ? stop0.pitches[doc::jiVoiceEntry(o, stop0, v)]
+                                                   : tuning::PitchId::fromCents(vp.pitch.front().cents);
+      if (const std::optional<double> kd = doc::resolvePitch(pid, *tuning_, doc::TuningId{}).keyDegree)
+        nd.keyDegree = static_cast<float>(*kd);
+    }
     const doc::JiUnison& un = vp.unison.front();
     nd.unisonCount = un.size;
     uint16_t index = 0;
@@ -299,7 +317,9 @@ uint32_t ClipJiLowering::voices(const doc::JiObject& o, std::vector<engine::Note
     for (const doc::JiGainPoint& g : vp.gain) moves |= g.gain != 1.0f;
     if (moves) {
       nd.gainCurve.reserve(vp.gain.size());
-      for (const doc::JiGainPoint& g : vp.gain) nd.gainCurve.push_back({o.start + g.tick, std::max(g.gain, 0.0f)});
+      for (const doc::JiGainPoint& g : vp.gain)
+        nd.gainCurve.push_back({o.start + g.tick, std::max(g.gain, 0.0f),
+                                g.sync >= 0 ? o.voiceNotes[static_cast<size_t>(g.sync)].value : 0u});
     }
     out.push_back(std::move(nd));
     previous = true;

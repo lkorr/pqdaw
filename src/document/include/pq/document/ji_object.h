@@ -94,15 +94,20 @@ struct JiPitchPoint {
   friend bool operator==(const JiPitchPoint&, const JiPitchPoint&) noexcept = default;
 };
 // A voice's gain (a factor on the object's level) as breakpoints, linear between them, same conventions.
+// `sync` (T7.7; -1: none) is the voice a unison is completed against (its leader). On the point a tick's value lands
+// on: the step onto it happens only together with the Syncs to that voice at that tick. On the first point of a jump:
+// this voice is Synced to that voice first (engine/sequence.h "Synced unisons").
 struct JiGainPoint {
   Ticks tick = 0;
   float gain = 1.0f;
+  int16_t sync = -1;
   friend bool operator==(const JiGainPoint&, const JiGainPoint&) noexcept = default;
 };
-// From `from` (the voice's arrival at a stop) until the next entry: the voice shares its pitch with `size` voices
-// (itself included), the lowest of which is `leader`. `locked`: it has moved identically to the leader since tick 0
-// (same stop entries, same timing at every stop), so their lanes are bit-identical and phase-locked; `lockedSize` of
-// the class are.
+// From `from` (the voice's arrival at a stop; for a unison completed by a Sync, the tick it is complete) until the
+// next entry: the voice shares its pitch with `size` voices (itself included). `locked`: it takes part in the unison
+// — it is there when the last of them arrives — so it is, or is Synced to be, the identical lane of `leader` (the
+// lowest such voice); `lockedSize` of the class are. Not locked: it moves on before the unison is complete and is
+// parked against `leader` meanwhile.
 struct JiUnison {
   Ticks from = 0;
   uint8_t leader = 0;
@@ -123,18 +128,28 @@ struct JiPlanOptions {
   // The flattened pitch stays within this many cents of the exact curve (transition shapes and ride curvature are
   // subdivided until it does; holds and straight lines cost two points).
   double toleranceCents = 0.05;
-  // The longest gain ramp, in ticks (the caller converts its time, 20 ms in the lowering, at the object's tempo). A
-  // ramp lasts min(the transition's glide, gainRamp); a jump (glide 0) steps.
+  // The fade of a voice that moves on before the unison it glided into is complete (it is parked against it), in
+  // ticks (the caller converts its time, 20 ms in the lowering, at the object's tempo).
   Ticks gainRamp = kPpq / 16;
 };
-// Gains (M7 core decision 3: deterministic unisons, a merging voice is parked):
-//   - the voices of a unison class that are locked to its leader each get 1 / lockedSize (k identical lanes sum to
-//     one voice's level);
-//   - a voice that joins a class it is not locked to (it merged into a neighbour with another phase) gets 0: it fades
-//     out at the end of the merge (ending when both it and the leader have arrived) and back in from the start of the
-//     transition that splits it off again;
-//   - a gain that rises (a split: 1/k → 1/j, or 0 → …) ramps from the start of the transition.
-// T7.7's Sync event will let a parked voice re-lock; `unison` carries what it needs (leader, size, locked).
+// Gains (M7 core decision 3, T7.7; Q281). A unison is k identical lanes at 1 / k each: one voice's level, exactly.
+// Voices are identical lanes when they share a pitch from tick 0, or after a Sync; they stay identical while they
+// move the same way (same entries, same timing).
+//   - MERGE. A voice gliding into a unison fades with its distance to the unison's keeper (its lowest voice):
+//     gain = (distance / the distance when the glide began)², distances in cents — 1 where the glide begins, 0 where
+//     it arrives, and already small when the two are a few Hz apart, where two free-running voices beat slowly (Q281:
+//     the troughs of those beats, not the fast roughness of the interval, are what a merge without it sounds like).
+//     The keeper keeps its level throughout. When the last voice of the unison has arrived, the merged voices are
+//     Synced to the keeper and every voice of the unison steps to 1 / k at that tick (JiGainPoint::sync): on
+//     identical lanes the sum does not move. A refused Sync leaves everything as it is — the keeper at its level, the
+//     merged voice parked at 0 — which is the same sound.
+//   - SPLIT, the mirror image. At the tick the first voice of a unison begins to leave, the voices that stay with
+//     its lowest voice step to 1 / (their number) and the others to 0 (identical lanes: the sum does not move); each
+//     leaving voice then rises with its distance to that voice: (distance / the distance at the end)². The level of
+//     the object rises monotonically from one voice's to the chord's.
+//   - A voice that glides onto a unison's pitch but moves on before the unison is complete fades like a merging
+//     voice and is parked (over gainRamp at most) when it moves on; it comes back like a leaving voice.
+// A jump (glide 0) steps. Voices that split and merge at once take the product of both.
 // nullopt: an invalid object (no stops / voices) or a pitch the tuning cannot resolve. O(V · (stops + ride points) ·
 // log) plus the subdivision of curved spans; a voice identical to the previous one copies its pitch points.
 std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, const JiPlanOptions& options = {});

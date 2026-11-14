@@ -441,83 +441,203 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
     if (out.size() < 2) out.push_back({length, out.back().cents});
   }
 
-  // ---- Unison classes and gains, stop by stop. ----
-  std::array<uint8_t, kMaxJiVoices> coh{}, nextCoh{}, leader{};
-  std::array<float, kMaxJiVoices> gain{};
+  // ---- Unison classes and gains, stop by stop (ji_object.h "Gains"). ----
+  // After each stop: rep[v] = the lowest voice of the group v is identical to (or, parked, the voice it is parked
+  // against).
+  std::array<uint8_t, kMaxJiVoices> rep{}, lead{}, sub{}, subSize{};
+  std::array<bool, kMaxJiVoices> parked{}, included{}, reached{}, leaver{}, merger{};
+  std::array<Ticks, kMaxJiVoices> t1{}, split{};
+  std::array<bool, kMaxJiVoices> needSync{}, splits{};
+  std::array<uint8_t, kMaxJiVoices> classSize{}, lockedSize{};
+  std::vector<Ticks> grid;
+  auto emit = [](std::vector<JiGainPoint>& g, Ticks tick, float gain, int16_t sync = -1) {
+    if (!g.empty()) tick = std::max(tick, g.back().tick);
+    const size_t n = g.size();
+    if (n >= 1 && g[n - 1].tick == tick && g[n - 1].gain == gain && sync < 0) return;
+    if (n >= 2 && g[n - 1].tick == tick && g[n - 2].tick == tick) {  // a tick keeps its first and its last point
+      g[n - 1] = {tick, gain, sync};
+      return;
+    }
+    g.push_back({tick, gain, sync});
+  };
   for (size_t s = 0; s < S; ++s) {
     const JiStop& st = o.stops[s];
     const uint8_t* e = &entryOf[s * V];
     auto samePitch = [&](uint32_t a, uint32_t b) {
       return e[a] == e[b] || (st.isTuning() && st.pitches[e[a]] == st.pitches[e[b]]);
     };
+    if (s == 0) {  // voices on one pitch from the start are identical lanes
+      for (uint32_t v = 0; v < V; ++v) {
+        uint32_t l = v;
+        for (uint32_t u = 0; u < v; ++u)
+          if (samePitch(u, v)) {
+            l = u;
+            break;
+          }
+        rep[v] = static_cast<uint8_t>(l);
+      }
+      for (uint32_t v = 0; v < V; ++v) {
+        uint32_t size = 0;
+        for (uint32_t u = 0; u < V; ++u) size += rep[u] == rep[v] ? 1u : 0u;
+        plan.voices[v].gain.push_back({0, 1.0f / static_cast<float>(size), -1});
+        plan.voices[v].unison.push_back({0, rep[v], static_cast<uint8_t>(size), static_cast<uint8_t>(size), true});
+      }
+      continue;
+    }
     auto sameTiming = [&](uint32_t a, uint32_t b) {
       const VoiceTrack &x = tracks[a], &y = tracks[b];
       return x.begin[s] == y.begin[s] && x.arrive[s] == y.arrive[s] &&
              (x.arrive[s] == x.begin[s] || x.shape[s] == y.shape[s]);
     };
-    for (uint32_t v = 0; v < V; ++v) {
-      // The class leader: the first voice on the pitch. The lock group's representative: the first voice v has moved
-      // identically to since tick 0.
-      uint32_t l = v, c = v;
-      for (uint32_t u = 0; u < v; ++u)
-        if (samePitch(u, v)) {
-          l = u;
-          break;
-        }
-      for (uint32_t u = l; u < v; ++u)
-        if (samePitch(u, v) && (s == 0 || (coh[u] == coh[v] && sameTiming(u, v)))) {
-          c = u;
-          break;
-        }
-      nextCoh[v] = static_cast<uint8_t>(c);
-      leader[v] = static_cast<uint8_t>(l);
-    }
-    coh = nextCoh;
     bool anyReached = false;
     for (uint32_t v = 0; v < V; ++v) {
-      const VoiceTrack& tr = tracks[v];
-      uint32_t size = 0, lockedSize = 0;
+      reached[v] = tracks[v].begin[s] < length;
+      anyReached = anyReached || reached[v];
+    }
+    if (!anyReached) break;  // begins only grow: no later stop is reached either
+    auto together = [&](uint32_t a, uint32_t b) { return reached[a] && reached[b] && samePitch(a, b); };
+    // The unison a voice takes part in: the voices on its pitch that are still there when the last of them arrives
+    // (one that moves on earlier never holds the unison: it is parked against it instead).
+    for (uint32_t v = 0; v < V; ++v) {
+      Ticks last = tracks[v].arrive[s];
       for (uint32_t u = 0; u < V; ++u)
-        if (leader[u] == leader[v]) {
-          ++size;
-          if (coh[u] == coh[leader[v]]) ++lockedSize;
+        if (u != v && together(u, v)) last = std::max(last, tracks[u].arrive[s]);
+      included[v] = !reached[v] || s + 1 >= S || tracks[v].begin[s + 1] >= last;
+    }
+    for (uint32_t v = 0; v < V; ++v) {
+      uint32_t l = v;
+      bool found = false;
+      for (uint32_t u = 0; u < V && !found; ++u)
+        if (included[u] && (u == v || together(u, v))) {
+          l = u;
+          found = true;
         }
-      const bool locked = coh[v] == coh[leader[v]];
-      const float g = locked ? 1.0f / static_cast<float>(lockedSize) : 0.0f;
-      JiVoicePlan& vp = plan.voices[v];
-      if (s == 0) {
-        vp.gain.push_back({0, g});
-        vp.unison.push_back({0, leader[v], static_cast<uint8_t>(size), static_cast<uint8_t>(lockedSize), locked});
-        gain[v] = g;
-        anyReached = true;
-        continue;
+      lead[v] = static_cast<uint8_t>(l);  // an excluded voice: the unison it is parked against (itself if none)
+    }
+    for (uint32_t v = 0; v < V; ++v) {
+      t1[v] = 0;
+      classSize[v] = lockedSize[v] = 0;
+      for (uint32_t u = 0; u < V; ++u) {
+        if (u != v && !together(u, v)) continue;
+        ++classSize[v];
+        if (included[u] && lead[u] == lead[v]) {
+          ++lockedSize[v];
+          t1[v] = std::max(t1[v], tracks[u].arrive[s]);
+        }
       }
-      if (tr.begin[s] >= length) continue;  // never reached
-      anyReached = true;
+    }
+    // sub[v]: the lowest voice that stays identical to v through this transition (same group before, same unison
+    // after, the same motion).
+    for (uint32_t v = 0; v < V; ++v) {
+      uint32_t c = v;
+      if (!parked[v])
+        for (uint32_t u = 0; u < v; ++u)
+          if (!parked[u] && rep[u] == rep[v] && lead[u] == lead[v] && included[u] == included[v] &&
+              reached[u] == reached[v] && (!reached[v] || sameTiming(u, v))) {
+            c = u;
+            break;
+          }
+      sub[v] = static_cast<uint8_t>(c);
+    }
+    for (uint32_t v = 0; v < V; ++v) {
+      subSize[v] = 0;
+      for (uint32_t u = 0; u < V; ++u) subSize[v] += sub[u] == sub[v] ? 1 : 0;
+      needSync[v] = false;
+      splits[v] = false;
+      split[v] = length;
+    }
+    for (uint32_t v = 0; v < V; ++v) {
+      leaver[v] = parked[v] || sub[v] != sub[rep[v]];
+      merger[v] = !included[v] ? lead[v] != v : sub[v] != sub[lead[v]];
+      if (included[v] && merger[v]) needSync[lead[v]] = true;
+      if (!parked[v] && leaver[v]) splits[rep[v]] = true;
+      if (!parked[v] && reached[v]) split[rep[v]] = std::min(split[rep[v]], tracks[v].begin[s]);
+    }
+    // The gain follows the squared distance (in cents) to the voice it leaves / joins: see ji_object.h.
+    auto dist = [&](uint32_t a, uint32_t b, Ticks x, bool left) {
+      return std::abs(tracks[a].at(static_cast<double>(x), left) - tracks[b].at(static_cast<double>(x), left));
+    };
+    auto riseEnd = [&](uint32_t v) { return std::max(tracks[v].arrive[s], tracks[rep[v]].arrive[s]); };
+    auto rise = [&](uint32_t v, Ticks x) {
+      if (!leaver[v]) return 1.0;
+      const double full = dist(v, rep[v], riseEnd(v), false);
+      if (!(full > 1e-9)) return 0.0;
+      const double d = std::min(1.0, dist(v, rep[v], x, false) / full);
+      return d * d;
+    };
+    auto fallStart = [&](uint32_t v) { return std::min(tracks[v].begin[s], tracks[lead[v]].begin[s]); };
+    auto fall = [&](uint32_t v, Ticks x) {
+      if (!merger[v]) return 1.0;
+      const double full = dist(v, lead[v], fallStart(v), true);
+      if (!(full > 1e-9)) return 0.0;
+      const double d = std::min(1.0, dist(v, lead[v], x, false) / full);
+      return d * d;
+    };
+    for (uint32_t v = 0; v < V; ++v) {
+      if (!reached[v]) continue;
+      const VoiceTrack& tr = tracks[v];
+      JiVoicePlan& vp = plan.voices[v];
+      const uint32_t l = lead[v];
+      const bool sync = included[v] && needSync[l];
       if (tr.arrive[s] < length) {
-        const JiUnison un{tr.arrive[s], leader[v], static_cast<uint8_t>(size), static_cast<uint8_t>(lockedSize), locked};
+        const JiUnison un{sync ? t1[v] : tr.arrive[s], static_cast<uint8_t>(l), classSize[v], lockedSize[v], included[v]};
         const JiUnison& last = vp.unison.back();
         if (last.leader != un.leader || last.size != un.size || last.lockedSize != un.lockedSize || last.locked != un.locked) {
-          if (last.from == un.from) vp.unison.back() = un;
+          if (last.from >= un.from) vp.unison.back() = {last.from, un.leader, un.size, un.lockedSize, un.locked};
           else vp.unison.push_back(un);
         }
       }
-      if (g == gain[v]) continue;
-      const Ticks ramp = std::min(tr.arrive[s] - tr.begin[s], gainRamp);
-      Ticks t0, t1;
-      if (g > gain[v]) {  // a split: in from the start of the transition
-        t0 = tr.begin[s];
-        t1 = t0 + ramp;
-      } else {  // a merge: out once both it and the class leader are there (not past its next move)
-        t1 = std::max(tr.arrive[s], tracks[leader[v]].arrive[s]);
-        if (s + 1 < S) t1 = std::max(tr.arrive[s], std::min(t1, tr.begin[s + 1]));
-        t0 = std::max(t1 - ramp, tr.begin[s]);
+      // The span in which this voice's gain moves.
+      Ticks T0 = length + 1, T1 = -1;
+      auto span = [&](Ticks a, Ticks b) {
+        T0 = std::min(T0, a);
+        T1 = std::max(T1, b);
+      };
+      if (parked[v]) span(std::min(tr.begin[s], tracks[rep[v]].begin[s]), riseEnd(v));
+      else if (splits[rep[v]]) span(split[rep[v]], leaver[v] ? riseEnd(v) : split[rep[v]]);
+      if (merger[v]) span(fallStart(v), included[v] ? t1[v] : std::max(tr.begin[s + 1], fallStart(v)));
+      if (sync) span(t1[v], leaver[l] ? std::max(t1[v], riseEnd(l)) : t1[v]);
+      if (T1 < 0) continue;  // its group moves as one into a unison of its own: nothing changes
+      const double base = 1.0 / static_cast<double>(subSize[v]);
+      const Ticks end = included[v] ? T1 : tr.begin[s + 1];  // an excluded voice is parked when it moves on
+      const Ticks tail = std::min(gainRamp, end - T0);
+      auto before = [&](Ticks x) {  // the voice on its own way (until its unison is complete)
+        double g = base * rise(v, x) * fall(v, x);
+        if (!included[v]) g *= tail > 0 ? std::clamp(static_cast<double>(end - x) / static_cast<double>(tail), 0.0, 1.0) : 0.0;
+        return static_cast<float>(g);
+      };
+      auto after = [&](Ticks x) {  // in the complete unison: 1 / k of the keeper's level
+        return static_cast<float>(rise(l, x) / static_cast<double>(lockedSize[v]));
+      };
+      grid.clear();
+      const Ticks corners[] = {T0, T1, t1[v], tr.begin[s], tr.arrive[s], tracks[rep[v]].begin[s], tracks[rep[v]].arrive[s],
+                             tracks[l].begin[s], tracks[l].arrive[s], end - tail};
+      for (const Ticks k : corners)
+        if (k >= T0 && k <= T1) grid.push_back(k);
+      constexpr Ticks kSteps = 16;
+      for (Ticks k = 1; k < kSteps; ++k) grid.push_back(T0 + (T1 - T0) * k / kSteps);
+      std::sort(grid.begin(), grid.end());
+      grid.erase(std::unique(grid.begin(), grid.end()), grid.end());
+      std::vector<JiGainPoint>& g = vp.gain;
+      emit(g, T0, g.back().gain);  // held until here
+      const int16_t key = static_cast<int16_t>(l);
+      for (const Ticks x : grid) {
+        if (sync && x == t1[v]) {  // the unison is complete: Sync (a merging voice), then every voice steps to 1 / k
+          const float pre = x > T0 ? before(x) : g.back().gain;
+          if (g.back().tick == x && merger[v]) g.back().sync = key;  // a jump: the point it leaves carries the Sync
+          else emit(g, x, pre, merger[v] ? key : int16_t{-1});
+          if (g.size() >= 2 && g[g.size() - 2].tick == x) g.back() = {x, after(x), key};  // a tick keeps two points
+          else g.push_back({x, after(x), key});
+        } else {
+          emit(g, x, sync && x > t1[v] ? after(x) : before(x));
+        }
       }
-      if (!(vp.gain.back() == JiGainPoint{t0, gain[v]})) vp.gain.push_back({t0, gain[v]});
-      vp.gain.push_back({t1, g});
-      gain[v] = g;
     }
-    if (!anyReached) break;  // begins only grow: no later stop is reached either
+    for (uint32_t v = 0; v < V; ++v) {
+      if (!reached[v]) continue;
+      parked[v] = !included[v];
+      rep[v] = lead[v];
+    }
   }
   for (JiVoicePlan& vp : plan.voices) {  // clip to [0, length], closing at length
     std::vector<JiGainPoint>& g = vp.gain;
@@ -526,10 +646,10 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
       const JiGainPoint a = g[i - 1], b = g[i];
       const float x = static_cast<float>(static_cast<double>(length - a.tick) / static_cast<double>(b.tick - a.tick));
       g.resize(i);
-      g.push_back({length, a.gain + (b.gain - a.gain) * x});
+      g.push_back({length, a.gain + (b.gain - a.gain) * x, -1});
       break;
     }
-    if (g.back().tick < length || g.size() < 2) g.push_back({length, g.back().gain});
+    if (g.back().tick < length || g.size() < 2) g.push_back({length, g.back().gain, -1});
   }
   return plan;
 }

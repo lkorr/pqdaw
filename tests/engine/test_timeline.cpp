@@ -2012,3 +2012,88 @@ TEST_CASE("timeline: an arrangement loop wrap and the end of a count-in chase th
     CHECK(tl.stats().chasedNotes == 0);
   }
 }
+
+// ---- T7.7: synced unisons (sequence.h "Synced unisons") ---------------------------------------------------------------
+
+TEST_CASE("timeline: a gain point with `sync` sends a Sync and conditional steps keyed by the keeper's event id; a chase and a changed curve Sync too (T7.7)") {
+  // Note 1 (the keeper) holds 200 Hz; note 2 glides from a fifth above onto it over [1 q, 2 q] while its gain falls
+  // to 0; at 2 q it is Synced to note 1 and both step to 1/2.
+  const e::NoteDesc keeper = curved(note(1, 0, 4 * kPpq, 200.0f), {}, {{2 * kPpq, 1.0f}, {2 * kPpq, 0.5f, 1}});
+  const e::NoteDesc merger = curved(note(2, 0, 4 * kPpq, 300.0f), {{kPpq, 0.0f}, {2 * kPpq, -701.955f}},
+                                    {{kPpq, 1.0f}, {2 * kPpq, 0.0f, 1}, {2 * kPpq, 0.5f, 1}});
+  using K = e::NoteEventKind;
+  for (uint32_t block : {64u, 1u, 512u}) {
+    INFO("block " << block);
+    CurveRig r(kGate);
+    REQUIRE(r.tl.publishSequence(image({{1, {clip(1, 0, 2 * kBar, {keeper, merger})}}})));
+    r.tl.apply(cmd(e::TransportCommandKind::Play, 0));
+    r.run(3 * kQ, block);
+    uint32_t inst[3] = {0, 0, 0};
+    for (const Ev& v : r.events)
+      if (v.e.kind == K::NoteOn) inst[v.e.hz < 250.0f ? 1 : 2] = v.e.noteId;
+    REQUIRE(inst[1] != 0);
+    REQUIRE(inst[2] != 0);
+    std::vector<e::NoteEvent> at;
+    for (const Ev& v : r.events)
+      if (v.t == 2 * kQ) at.push_back(v.e);
+    uint32_t syncs = 0, steps = 0;
+    for (const e::NoteEvent& ev : at) {
+      if (ev.kind == K::Sync) {
+        ++syncs;
+        CHECK(ev.noteId == inst[2]);
+        CHECK(ev.sourceNoteId == inst[1]);
+      } else {
+        REQUIRE(ev.kind == K::Gain);
+        ++steps;
+        CHECK((ev.flags & e::kNoteEventIfSynced) != 0);
+        CHECK(ev.sourceNoteId == inst[1]);
+        CHECK(ev.gain == 0.5f);
+      }
+    }
+    CHECK(syncs == 1);
+    CHECK(steps == 2);
+    CHECK(r.tl.stats().syncEvents == 1);
+    CHECK(r.ve.stats().syncs == 1);
+    CHECK(r.ve.stats().refusedSyncs == 0);
+    CHECK(r.ve.stats().skippedGains == 0);
+    // The mix is the sum of the lane gains: 1 (the keeper; the merging voice is at 0) up to the block's end, then
+    // 1/2 + 1/2.
+    for (int64_t i = 2 * kQ; i < 2 * kQ + 2000; ++i) CHECK(r.mix[static_cast<size_t>(i)] == 1.0f);
+    CHECK(r.mix[static_cast<size_t>(3 * kQ / 2)] == doctest::Approx(1.5).epsilon(1e-4));
+    CHECK(r.rtViolations == 0);
+  }
+  {  // a chase into the unison: both start at 1/2 at the same frame, and the merged voice is Synced
+    CurveRig r(kGate);
+    REQUIRE(r.tl.publishSequence(image({{1, {clip(1, 0, 2 * kBar, {keeper, merger})}}})));
+    r.tl.apply(cmd(e::TransportCommandKind::Play, 3 * kPpq));
+    r.run(kQ / 2, 64);
+    uint32_t ons = 0, syncs = 0;
+    for (const Ev& v : r.events) {
+      if (v.e.kind == K::NoteOn) {
+        ++ons;
+        CHECK(v.t == 0);
+        CHECK(v.e.gain == 0.5f);
+      }
+      if (v.e.kind == K::Sync) {
+        ++syncs;
+        CHECK(v.t == 0);
+      }
+    }
+    CHECK(ons == 2);
+    CHECK(syncs == 1);
+    CHECK(r.ve.stats().syncs == 1);
+    CHECK(r.mix[100] == 1.0f);
+    CHECK(r.rtViolations == 0);
+  }
+  {  // the keeper is not sounding (disabled): neither the Sync nor the step is sent — the voice stays parked
+    e::NoteDesc off = keeper;
+    off.enabled = false;
+    CurveRig r(kGate);
+    REQUIRE(r.tl.publishSequence(image({{1, {clip(1, 0, 2 * kBar, {off, merger})}}})));
+    r.tl.apply(cmd(e::TransportCommandKind::Play, 0));
+    r.run(3 * kQ, 64);
+    for (const Ev& v : r.events) CHECK(v.e.kind != K::Sync);
+    CHECK(r.mix[static_cast<size_t>(5 * kQ / 2)] == 0.0f);
+    CHECK(r.rtViolations == 0);
+  }
+}

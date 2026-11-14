@@ -231,7 +231,8 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
           uint64_t h = splitmix64((static_cast<uint64_t>(np) << 32) | ng);
           for (size_t i = ref.begin + 1; i < cv.size(); ++i)
             h = splitmix64(h ^ splitmix64(static_cast<uint64_t>(cv[i].tick - nd.start)) ^
-                           (static_cast<uint64_t>(std::bit_cast<uint32_t>(cv[i].value)) << 17));
+                           (static_cast<uint64_t>(std::bit_cast<uint32_t>(cv[i].value)) << 17) ^
+                           (static_cast<uint64_t>(cv[i].sync) << 43));
           cv[ref.begin].tick = static_cast<Ticks>(h);
           img->curveRefs_.push_back(ref);
           curved.push_back(static_cast<uint32_t>(img->notes_.size()));

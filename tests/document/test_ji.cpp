@@ -266,16 +266,56 @@ TEST_CASE("ji: unison classes and gains for 1 -> 2:3 -> 4:5:6 -> 2:3 -> 1") {
   REQUIRE(plan->voices.size() == 3);
   using U = JiUnison;
   // {from, leader, size, lockedSize, locked}: all three start as one voice; 0 and 1 stay bit-identical through 2:3;
-  // after 4:5:6 they have different histories, so 1 merging back into 0 is not locked (parked), then 2 as well.
-  CHECK(plan->voices[0].unison == std::vector<U>{{0, 0, 3, 3, true}, {1000, 0, 2, 2, true}, {2000, 0, 1, 1, true}, {3000, 0, 2, 1, true}, {4000, 0, 3, 1, true}});
-  CHECK(plan->voices[1].unison == std::vector<U>{{0, 0, 3, 3, true}, {1000, 0, 2, 2, true}, {2000, 1, 1, 1, true}, {3000, 0, 2, 1, false}, {4000, 0, 3, 1, false}});
-  CHECK(plan->voices[2].unison == std::vector<U>{{0, 0, 3, 3, true}, {1000, 2, 1, 1, true}, {4000, 0, 3, 1, false}});
+  // after 4:5:6 they have different histories: 1 merging back into 0 is Synced to it at 3000 (T7.7), then 2 at 4000.
+  CHECK(plan->voices[0].unison == std::vector<U>{{0, 0, 3, 3, true}, {1000, 0, 2, 2, true}, {2000, 0, 1, 1, true}, {3000, 0, 2, 2, true}, {4000, 0, 3, 3, true}});
+  CHECK(plan->voices[1].unison == std::vector<U>{{0, 0, 3, 3, true}, {1000, 0, 2, 2, true}, {2000, 1, 1, 1, true}, {3000, 0, 2, 2, true}, {4000, 0, 3, 3, true}});
+  CHECK(plan->voices[2].unison == std::vector<U>{{0, 0, 3, 3, true}, {1000, 2, 1, 1, true}, {4000, 0, 3, 3, true}});
   using G = JiGainPoint;
   const float third = 1.0f / 3.0f;
-  // Splits ramp in from the start of the transition (min(glide, 50) ticks), merges fade out ending at the arrival.
-  CHECK(plan->voices[0].gain == std::vector<G>{{0, third}, {800, third}, {850, 0.5f}, {1800, 0.5f}, {1850, 1.0f}, {5000, 1.0f}});
-  CHECK(plan->voices[1].gain == std::vector<G>{{0, third}, {800, third}, {850, 0.5f}, {1800, 0.5f}, {1850, 1.0f}, {2950, 1.0f}, {3000, 0.0f}, {5000, 0.0f}});
-  CHECK(plan->voices[2].gain == std::vector<G>{{0, third}, {800, third}, {850, 1.0f}, {3950, 1.0f}, {4000, 0.0f}, {5000, 0.0f}});
+  // T7.7 (ji_object.h "Gains"). The keeper (voice 0): at each split the voices that stay step to 1 / (their number)
+  // at the tick the split begins; at each merge every voice of the unison steps to 1 / k when it is complete, keyed
+  // by the keeper (sync 0).
+  CHECK(plan->voices[0].gain == std::vector<G>{{0, third}, {800, third}, {800, 0.5f}, {1800, 0.5f}, {1800, 1.0f}, {3000, 1.0f},
+                                               {3000, 0.5f, 0}, {4000, 0.5f}, {4000, third, 0}, {5000, third}});
+  // Voice 1 stays with the keeper at 800, leaves it at 1800 (0, rising with its squared distance to the keeper over
+  // the glide), merges back over [2800, 3000] (falling the same way), is Synced at 3000 (the point the jump leaves
+  // carries the Sync) and steps to 1/2 with the keeper; at 4000 both step to 1/3 (no Sync: they are identical).
+  const std::vector<G>& g1 = plan->voices[1].gain;
+  auto at = [](const std::vector<G>& g, Ticks tick) {  // the value from `tick` on
+    float v = g.front().gain;
+    for (size_t i = 0; i < g.size() && g[i].tick <= tick; ++i) {
+      v = g[i].gain;
+      if (i + 1 < g.size() && g[i + 1].tick > tick && g[i].tick < tick)
+        v += (g[i + 1].gain - g[i].gain) * static_cast<float>(tick - g[i].tick) / static_cast<float>(g[i + 1].tick - g[i].tick);
+    }
+    return v;
+  };
+  auto find = [](const std::vector<G>& g, const G& p) { return std::find(g.begin(), g.end(), p) != g.end(); };
+  CHECK(find(g1, G{800, 0.5f}));
+  CHECK(find(g1, G{1800, 0.0f}));
+  CHECK(at(g1, 1800) == 0.0f);
+  CHECK(at(g1, 1900) == doctest::Approx(0.25).epsilon(0.02));  // the S-curve's middle: half the distance, squared
+  CHECK(at(g1, 2000) == 1.0f);
+  CHECK(at(g1, 2800) == 1.0f);
+  CHECK(at(g1, 2900) == doctest::Approx(0.25).epsilon(0.02));
+  CHECK(find(g1, G{3000, 0.0f, 0}));
+  CHECK(find(g1, G{3000, 0.5f, 0}));
+  CHECK(find(g1, G{4000, third, 0}));
+  CHECK(g1.back() == G{5000, third});
+  for (size_t i = 1; i < g1.size(); ++i) CHECK(g1[i].tick >= g1[i - 1].tick);
+  // Voice 2 leaves at 800 (0 → 1 over the glide) and merges over [3800, 4000]: Synced to voice 0, then 1/3.
+  const std::vector<G>& g2 = plan->voices[2].gain;
+  CHECK(find(g2, G{800, 0.0f}));
+  CHECK(at(g2, 1000) == 1.0f);
+  CHECK(at(g2, 3800) == 1.0f);
+  CHECK(at(g2, 3900) == doctest::Approx(0.25).epsilon(0.02));
+  CHECK(find(g2, G{4000, 0.0f, 0}));
+  CHECK(find(g2, G{4000, third, 0}));
+  // Every unison sums to one voice: identical lanes at 1 / k.
+  for (const Ticks x : {Ticks{0}, Ticks{500}, Ticks{1500}, Ticks{3500}, Ticks{4500}}) {
+    CHECK(at(plan->voices[0].gain, x) * static_cast<float>(x < 800 || x >= 4000 ? 3 : x >= 1800 && x < 3000 ? 1 : 2) ==
+          doctest::Approx(1.0));
+  }
   // Locked voices have the identical pitch curve (bit for bit) while they are locked.
   for (Ticks x = 0; x <= 1800; x += 7) CHECK(*jiVoiceCents(o, t, 0, static_cast<double>(x)) == *jiVoiceCents(o, t, 1, static_cast<double>(x)));
   CHECK(plan->voices[0].pitch.front() == plan->voices[1].pitch.front());

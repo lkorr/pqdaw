@@ -25,6 +25,20 @@
 // at gain 0 is invisible to the mix and the patch's reducers). The voice's lane gain is its steal fade × this gain
 // (voices.h "Gain, stealing, mixing"). Pitch and Gain ramps start from the note's current value at `frame` and
 // reach the target exactly at frame + rampFrames; a later event of the same kind replaces a running ramp.
+// Sync (T7.7): makes a sounding note a CLONE of another one: at the END of the block the event is in, the source
+// voice's lane state (every per-lane state word of the patch, the reachable part of its delay rings), its pitch
+// (Hz, a running glide) and its note-on signals (velocity, ratio, harmonic, degree, equave, tuning, noteHz,
+// noteDegree) are copied into the note's lane; the note keeps its id, gate, gain and unison count / index. From the
+// next block on the two lanes compute the same samples for as long as they get the same events (two voices that
+// merged into a unison sum coherently). The producer parks the note first (gain 0): a copy into a sounding lane is a
+// phase jump. A Sync is REFUSED (VoiceStats::refusedSyncs; nothing is copied) when either note is not sounding or the
+// block's delay-ring copies would exceed VoiceConfig::moveBudgetFrames.
+// A Gain step flagged kNoteEventIfSynced is the other half: it takes effect at frame 0 of the NEXT block (after the
+// block's Syncs were done; the note's later events of this block wait with it, in order) and only if a Sync from
+// source `sourceNoteId` succeeded in this block and none from that source was refused. So the producer sends, at one
+// frame, Sync(merging voice ← keeper) and conditional steps to 1/k for every voice of the unison, keyed by the
+// keeper: either all of them move at one frame, on identical lanes, or none does (the merging voice stays parked, the
+// others keep their level: no jump either way).
 
 #include <cstdint>
 #include <limits>
@@ -38,6 +52,7 @@ enum class NoteEventKind : uint8_t {
   NoteOff,      // noteId, velocity = release velocity
   Pitch,        // noteId, hz = new Hz, rampFrames (0: step at `frame`)
   Gain,         // noteId, gain = new linear gain (≥ 0), rampFrames (0: step at `frame`) (T7.1)
+  Sync,         // noteId, sourceNoteId: the note's lane becomes a copy of the source's at the block's end (T7.7)
   AllNotesOff,  // release every held voice; deferred starts are dropped (transport stop / locate)
   AllSoundOff,  // fast-fade every sounding voice (panic, project close); pending starts are dropped
 };
@@ -45,6 +60,8 @@ enum class NoteEventKind : uint8_t {
 // NoteEvent::flags.
 inline constexpr uint8_t kNoteEventRetune = 1;  // Pitch: also replace the note's identity (ratio, harmonic, degree,
                                                 // equave, tuning): a held note re-resolved by an edit (T2.6-fix3)
+inline constexpr uint8_t kNoteEventIfSynced = 2;  // Gain (a step): only if the block's Syncs from sourceNoteId
+                                                  // succeeded; at frame 0 of the next block (T7.7, see above)
 
 struct NoteEvent {
   uint32_t frame = 0;             // sample offset in the block
@@ -58,7 +75,10 @@ struct NoteEvent {
   float harmonic = 0.0f;          // NoteOn: voice.harmonic (harmonic number of a Harmonic identity; 0 if none)
   uint16_t unisonIndex = 0;       // NoteOn: voice.index (index within its unison group)
   uint16_t pad2_ = 0;
-  uint32_t rampFrames = 0;        // Pitch: glide length in samples (0 = step)
+  union {
+    uint32_t rampFrames = 0;      // Pitch, Gain: glide / ramp length in samples (0 = step)
+    uint32_t sourceNoteId;        // Sync: the note to copy; Gain with kNoteEventIfSynced: the Syncs' source (T7.7)
+  };
   float degree = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.degree (T2.6; NaN = no Degree identity)
   float equave = std::numeric_limits<float>::quiet_NaN();  // NoteOn: voice.equave
   float tuning = 0.0f;            // NoteOn: voice.tuning (T2.6-fix3: the tuning node the note follows; 0 = none)
@@ -109,6 +129,27 @@ inline NoteEvent noteGain(uint32_t frame, uint32_t noteId, float gain, uint32_t 
   return e;
 }
 
+// T7.7: note `noteId` becomes a clone of the sounding note `sourceNoteId` at the end of the block (see "Sync").
+inline NoteEvent noteSync(uint32_t frame, uint32_t noteId, uint32_t sourceNoteId) noexcept {  // RT-safe
+  NoteEvent e;
+  e.frame = frame;
+  e.kind = NoteEventKind::Sync;
+  e.noteId = noteId;
+  e.sourceNoteId = sourceNoteId;
+  return e;
+}
+// T7.7: a gain step that happens only with the block's Syncs from `sourceNoteId` (see "Sync").
+inline NoteEvent noteGainIfSynced(uint32_t frame, uint32_t noteId, float gain, uint32_t sourceNoteId) noexcept {  // RT-safe
+  NoteEvent e;
+  e.frame = frame;
+  e.kind = NoteEventKind::Gain;
+  e.flags = kNoteEventIfSynced;
+  e.noteId = noteId;
+  e.gain = gain;
+  e.sourceNoteId = sourceNoteId;
+  return e;
+}
+
 // A view of one block's events (what ProcessContext::events points at).
 struct EventList {
   const NoteEvent* events = nullptr;
@@ -120,12 +161,12 @@ struct EventList {
 // Overflow (a full buffer) never loses a note-off (M1 review M7: a lost NoteOff is a stuck note):
 //   1. an incoming NoteOn is dropped;
 //   2. otherwise the newest NoteOn in the buffer is dropped to make room (its note never starts);
-//   3. an incoming expression event (Pitch, Gain) is dropped; otherwise the newest one in the buffer is dropped;
+//   3. an incoming expression event (Pitch, Gain, Sync) is dropped; otherwise the newest one in the buffer is dropped;
 //   4. the buffer holds only offs (NoteOff / AllNotesOff / AllSoundOff) and another off arrives: if an All* event at
 //      or before its frame already covers it, it is redundant (no NoteOn is in the block, so every held note is
 //      released by it); otherwise the newest event and the incoming one are merged into one AllNotesOff (AllSoundOff
 //      if either is one) at the earlier of their frames: notes may be released early, never left hanging.
-// dropped() counts dropped NoteOn / Pitch / Gain events; mergedOffs() counts offs absorbed by rule 4.
+// dropped() counts dropped NoteOn / Pitch / Gain / Sync events; mergedOffs() counts offs absorbed by rule 4.
 class EventBuffer {
 public:
   EventBuffer() = default;
@@ -143,12 +184,12 @@ public:
         ++dropped_;
         return false;
       }
-      if (removeNewest(NoteEventKind::NoteOn, NoteEventKind::NoteOn)) {
+      if (removeNewest(false)) {
         ++dropped_;
-      } else if (e.kind == NoteEventKind::Pitch || e.kind == NoteEventKind::Gain) {
+      } else if (expression(e.kind)) {
         ++dropped_;
         return false;
-      } else if (removeNewest(NoteEventKind::Pitch, NoteEventKind::Gain)) {
+      } else if (removeNewest(true)) {
         ++dropped_;
       } else {
         mergeOff(e);
@@ -177,11 +218,14 @@ private:
     ev[i] = e;
     ++list_.count;
   }
-  // RT-safe: removes the last event of kind k (or k2): latest frame, latest push.
-  bool removeNewest(NoteEventKind k, NoteEventKind k2) noexcept {
+  static bool expression(NoteEventKind k) noexcept {
+    return k == NoteEventKind::Pitch || k == NoteEventKind::Gain || k == NoteEventKind::Sync;
+  }
+  // RT-safe: removes the last expression event (or the last NoteOn): latest frame, latest push.
+  bool removeNewest(bool expr) noexcept {
     NoteEvent* ev = storage_.data();
     for (uint32_t i = list_.count; i > 0; --i)
-      if (ev[i - 1].kind == k || ev[i - 1].kind == k2) {
+      if (expr ? expression(ev[i - 1].kind) : ev[i - 1].kind == NoteEventKind::NoteOn) {
         for (uint32_t j = i; j < list_.count; ++j) ev[j - 1] = ev[j];
         --list_.count;
         return true;

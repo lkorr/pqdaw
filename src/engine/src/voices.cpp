@@ -327,6 +327,10 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   sortedOps_.assign(opCap, LaneOp{});
   carry_.assign(opCap, LaneOp{});
   numCarry_ = 0;
+  syncs_.assign(cfg_.maxEventsPerBlock, PendingSync{});
+  numSyncs_ = 0;
+  conditional_ = false;
+  moveUsed_ = 0;
   curFrames_ = maxBlock_;
   floor_.assign(lanes_, 0);
   hasCarry_.assign(lanes_, 0);
@@ -603,7 +607,8 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
   for (uint32_t i = 0; i < n; ++i) {
     const NoteEvent& e = events->events[i];
     const bool all = e.kind == NoteEventKind::AllNotesOff || e.kind == NoteEventKind::AllSoundOff;
-    if (e.kind == NoteEventKind::NoteOn || e.kind == NoteEventKind::Pitch || e.kind == NoteEventKind::Gain) {
+    if (e.kind == NoteEventKind::NoteOn || e.kind == NoteEventKind::Pitch || e.kind == NoteEventKind::Gain ||
+        e.kind == NoteEventKind::Sync) {
       if (budget == 0) {
         ++stats_.droppedEvents;
         continue;
@@ -675,7 +680,15 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
         ++stats_.gainEvents;
         const uint32_t lane = findNote(e.noteId, true);
         if (lane != kNoSlot) {
+          if (e.flags & kNoteEventIfSynced) {  // T7.7: decided at the block's end; the lane's later ops wait with it
+            floor_[lane] = curFrames_;
+            conditional_ = true;
+          }
           addOp(frame, lane, OpKind::Gain, e);
+          break;
+        }
+        if (e.flags & kNoteEventIfSynced) {  // a deferred note is no party to a Sync
+          ++stats_.skippedGains;
           break;
         }
         bool found = false;
@@ -687,6 +700,9 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
         if (!found) ++stats_.unmatchedEvents;
         break;
       }
+      case NoteEventKind::Sync:  // T7.7: done at the end of the block (resolveSyncs); budget ≤ the list's capacity
+        syncs_[numSyncs_++] = {e.noteId, e.sourceNoteId, false};
+        break;
       case NoteEventKind::AllNotesOff:
         for (uint32_t l = 0; l < lanes_; ++l) {
           if (hasPending_[l]) {  // a deferred note released before it could start
@@ -900,6 +916,7 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       fadeLeft_[lane] = laneGain_[lane] > 0.0f || gainRampLeft_[lane] > 0 ? fadeFrames_ : 0u;
       if (fadeLeft_[lane] == 0) noteGain_[lane] = 0.0;  // a parked voice: nothing to fade
       break;
+    case OpKind::Nop: break;  // T7.7: a conditional Gain step whose Syncs did not all succeed
   }
 }
 
@@ -966,9 +983,9 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
   if (changing || moving) carryDirty_[g] = 1;
 }
 
-// Moves the voice in lane a to the free lane b (other group): its state words, then the engine's per-lane state.
+// Copies lane a's state words into lane b, in both images while a hot-swap crossfade runs (moveLane, resolveSyncs).
 // Noise state stays with the group (the voice continues with the destination group's noise stream).
-void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
+void VoiceEngine::copyLaneState(uint32_t a, uint32_t b) noexcept {  // RT-safe
   const uint32_t la = a & 7u, lb = b & 7u;
   VoiceBinding* const bs[2] = {b_, fade_};  // both images while a hot-swap crossfade runs
   for (VoiceBinding* bd : bs) {
@@ -995,6 +1012,11 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
       for (uint32_t i = 0; i < n; ++i) t[kDlRing + ((tw - n + i) & mask) * 8 + lb] = s[kDlRing + ((sw - n + i) & mask) * 8 + la];
     }
   }
+}
+
+// Moves the voice in lane a to the free lane b (other group): its state words, then the engine's per-lane state.
+void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
+  copyLaneState(a, b);
   noteId_[b] = noteId_[a];
   startTime_[b] = startTime_[a];
   releaseTime_[b] = releaseTime_[a];
@@ -1059,6 +1081,7 @@ void VoiceEngine::compact() noexcept {  // RT-safe
     if (src == kNoSlot || groupCount_[g] <= groupCount_[src]) src = g;
   }
   if (occupied <= (used + 7) / 8 || numCarry_ > 0) return;
+  const uint32_t budget = cfg_.moveBudgetFrames - std::min(moveUsed_, cfg_.moveBudgetFrames);  // T7.7: after the Syncs
   // Ring budget (M9): the source group's moves must fit moveBudgetFrames; else try the next least occupied group
   // that fits (moving it still frees a group), else skip this block.
   auto groupCost = [&](uint32_t g) {
@@ -1067,10 +1090,10 @@ void VoiceEngine::compact() noexcept {  // RT-safe
     return c;
   };
   if (!(b_ != nullptr && b_->delays.empty() && (fade_ == nullptr || fade_->delays.empty())) &&
-      groupCost(src) > cfg_.moveBudgetFrames) {
+      groupCost(src) > budget) {
     src = kNoSlot;
     for (uint32_t g = 0; g < groups_; ++g)
-      if (laneMask_[g] != 0 && (src == kNoSlot || groupCount_[g] < groupCount_[src]) && groupCost(g) <= cfg_.moveBudgetFrames)
+      if (laneMask_[g] != 0 && (src == kNoSlot || groupCount_[g] < groupCount_[src]) && groupCost(g) <= budget)
         src = g;
     if (src == kNoSlot) {
       ++stats_.skippedMoves;
@@ -1085,6 +1108,62 @@ void VoiceEngine::compact() noexcept {  // RT-safe
     moveLane(src * 8 + static_cast<uint32_t>(std::countr_zero(m)),
              dst * 8 + static_cast<uint32_t>(std::countr_zero(~laneMask_[dst] & 0xFFu)));
   }
+}
+
+// T7.7 (note_events.h "Sync"), at the end of a block: every Sync of the block copies its source's lane into the
+// note's lane, within the ring budget; then the conditional Gain steps waiting in the carry list are kept if a Sync
+// from their source succeeded and none was refused, else turned into no-ops.
+void VoiceEngine::resolveSyncs() noexcept {  // RT-safe
+  for (uint32_t i = 0; i < numSyncs_; ++i) {
+    PendingSync& s = syncs_[i];
+    const uint32_t lane = findNote(s.noteId, true), src = findNote(s.source, true);
+    s.ok = lane != kNoSlot && src != kNoSlot && lane != src;
+    if (s.ok) {
+      const uint32_t cost = moveCost(src);
+      s.ok = cost <= cfg_.moveBudgetFrames - std::min(moveUsed_, cfg_.moveBudgetFrames);
+      if (s.ok) moveUsed_ += cost;
+    }
+    if (!s.ok) {
+      ++stats_.refusedSyncs;
+      continue;
+    }
+    copyLaneState(src, lane);
+    // The pitch (a running glide included) and the note-on signals: the lanes get the same inputs from here on.
+    noteHz_[lane] = noteHz_[src];
+    hz_[lane] = hz_[src];
+    cents_[lane] = cents_[src];
+    hzMul_[lane] = hzMul_[src];
+    centsStep_[lane] = centsStep_[src];
+    hzTarget_[lane] = hzTarget_[src];
+    centsTarget_[lane] = centsTarget_[src];
+    rampLeft_[lane] = rampLeft_[src];
+    velocity_[lane] = velocity_[src];
+    ratio_[lane] = ratio_[src];
+    harmonic_[lane] = harmonic_[src];
+    degree_[lane] = degree_[src];
+    equave_[lane] = equave_[src];
+    tuning_[lane] = tuning_[src];
+    onsetHz_[lane] = onsetHz_[src];
+    onsetDegree_[lane] = onsetDegree_[src];
+    carryDirty_[lane >> 3] = 1;
+    ++stats_.syncs;
+  }
+  if (conditional_) {
+    for (uint32_t i = 0; i < numCarry_; ++i) {
+      LaneOp& op = carry_[i];
+      if (op.kind != OpKind::Gain || (op.ev.flags & kNoteEventIfSynced) == 0) continue;
+      bool ok = false, refused = false;
+      for (uint32_t k = 0; k < numSyncs_; ++k)
+        if (syncs_[k].source == op.ev.sourceNoteId) (syncs_[k].ok ? ok : refused) = true;
+      op.ev.flags = 0;
+      op.ev.rampFrames = 0;  // a step
+      if (ok && !refused) continue;
+      op.kind = OpKind::Nop;
+      ++stats_.skippedGains;
+    }
+  }
+  numSyncs_ = 0;
+  conditional_ = false;
 }
 
 void VoiceEngine::freeLane(uint32_t lane) noexcept {  // RT-safe
@@ -1304,6 +1383,8 @@ void VoiceEngine::process(ProcessContext& ctx, ProcessContext* fadeCtx) noexcept
   std::fill(startMask_.begin(), startMask_.end(), 0u);  // TX.smooth-fix1: the images ran their ramps for them
   measure(frames);
   endVoices(frames);
+  moveUsed_ = 0;
+  if (numSyncs_ != 0 || conditional_) resolveSyncs();  // T7.7
   if (cfg_.compact) compact();
   clock_ += frames;
   ++stats_.blocks;
@@ -1339,6 +1420,8 @@ void VoiceEngine::skipBlock(const EventList* events, uint32_t frames) noexcept {
     validFrames_[g] = 0;
   }
   endVoices(frames, false);
+  moveUsed_ = 0;
+  if (numSyncs_ != 0 || conditional_) resolveSyncs();  // T7.7
   if (cfg_.compact) compact();
   clock_ += frames;
   ++stats_.blocks;

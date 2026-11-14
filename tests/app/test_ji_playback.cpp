@@ -232,9 +232,19 @@ TEST_CASE("ji playback: 4:5:6 -> 2:3 -> 1 — every voice's pitch and gain follo
     CHECK(n.harmonic == static_cast<float>(4.0 + v));
     CHECK(n.unisonCount == 1);
     CHECK(n.unisonIndex == 0);
+    // T7.7: voice.noteDegree — where the voice starts among the tuning's degrees (12-EDO, the fundamental on degree 0).
+    CHECK(n.keyDegree == doctest::Approx(12.0 * std::log2(4.0 + v)).epsilon(1e-6));
   }
-  CHECK(img->gainCurve(img->notes()[0]).empty());   // voice 0 keeps gain 1 throughout
-  CHECK(!img->gainCurve(img->notes()[1]).empty());  // voice 1 is parked on the merge
+  // T7.7: at 3 q voice 1 is Synced to voice 0 (the point the jump leaves carries the Sync) and both step to 1/2,
+  // keyed by voice 0's note.
+  const uint32_t keeper = r.object(id).voiceNotes[0].value;
+  const auto g0 = img->gainCurve(img->notes()[0]), g1 = img->gainCurve(img->notes()[1]);
+  auto has = [](std::span<const engine::CurvePoint> g, const engine::CurvePoint& p) { return std::find(g.begin(), g.end(), p) != g.end(); };
+  CHECK(has(g0, engine::CurvePoint{3 * kQ, 1.0f, 0}));
+  CHECK(has(g0, engine::CurvePoint{3 * kQ, 0.5f, keeper}));
+  CHECK(has(g1, engine::CurvePoint{3 * kQ, 0.0f, keeper}));
+  CHECK(has(g1, engine::CurvePoint{3 * kQ, 0.5f, keeper}));
+  CHECK(ts.syncEvents == 2);  // voice 1 at 3 q; voice 2 at 6 q (voices 0 and 1 are identical lanes by then)
 }
 
 TEST_CASE("ji playback: a unison from the start is bit-identical lanes — three voices at 1/3 are one voice (sine)") {
@@ -273,9 +283,10 @@ TEST_CASE("ji playback: a unison from the start is bit-identical lanes — three
   }
 }
 
-TEST_CASE("ji playback: a merge without Sync — the level never falls below the keeper's by 1 dB; parked, it is the keeper (sine)") {
-  // 4:5 -> 4: voice 1 glides onto voice 0 (which never moves) over [1 q, 2 q] and is parked there (its gain fades to
-  // 0 over the last 20 ms of the glide). The reference is the keeper alone.
+TEST_CASE("ji playback: a merge — the voice fades as it closes in, is Synced, and the unison is the keeper sample for sample (sine; T7.7, Q281)") {
+  // 4:5 -> 4: voice 1 glides onto voice 0 (which never moves) over [1 q, 2 q]; its gain is the squared distance to the
+  // keeper (ji_object.h "Gains"). At 2 q (1 s) it is Synced to the keeper and both step to 1/2. The reference is the
+  // keeper alone.
   Rig two(false);
   const JiObjectId id = two.create(0, 8 * kQ, {4, 5});
   (void)two.stop(id, 2 * kQ, {4}, kQ);
@@ -289,23 +300,102 @@ TEST_CASE("ji playback: a merge without Sync — the level never falls below the
       worst = std::min(worst, 20.0 * std::log10(rms(a, i, win) / rms(b, i, win)));
     return worst;
   };
-  // The level over 100 ms windows (every 10 ms, from the end of the attack): never 1 dB below the keeper — no dip
-  // while the voices merge, no jump when the merging voice is parked.
+  CHECK(tstats(*la).syncEvents == 1);
+  // The level over 100 ms windows (every 10 ms, from the end of the attack): never 1 dB below the keeper.
   const double level = worstDb(4800, 480, 0.05, 3.0);
   CHECK(level > -1.0);
-  // Parked (from 1 s on): the keeper alone, sample for sample.
+  // From the end of the merge on: two identical lanes at 1/2 — the keeper alone, sample for sample, in every 10 ms
+  // window (the plan's bound is -0.5 dB).
   CHECK(worstDb(480, 240, 1.0, 3.0) > -0.01);
   double diff = 0.0;
-  for (size_t i = at(1.0) + 2; i < a.size(); ++i) diff = std::max(diff, static_cast<double>(std::fabs(a[i] - b[i])));
+  for (size_t i = at(1.0); i < a.size(); ++i) diff = std::max(diff, static_cast<double>(std::fabs(a[i] - b[i])));
   CHECK(diff <= 1e-6);
-  // What 100 ms does not show: while the two free-running voices converge they BEAT (two sines a few Hz apart), and
-  // in 10 ms windows the troughs of the last, slow beats are below the keeper; in the final 20 ms the fading voice
-  // may still be in antiphase. Measured, not hidden: only a phase lock removes it (T7.7's Sync; Q?-T7.3-a).
-  const double beats = worstDb(480, 240, 0.05, 0.98), fade = worstDb(480, 240, 0.97, 1.0);
-  CHECK(beats > -12.0);
-  CHECK(fade > -3.0);
-  MESSAGE("merge 4:5 -> 4 against the keeper alone: 100 ms windows " << level << " dB; 10 ms windows " << beats
-          << " dB while the voices beat, " << fade << " dB in the 20 ms fade; parked: difference " << diff);
+  // While the two free-running voices converge they beat; the fade keeps the slow beats of the last part of the glide
+  // (where a 10 ms window sees a whole trough) shallow. Before T7.7 (full gain until a 20 ms fade): -5.4 dB here, and
+  // down to -28 dB at the worst relative phase (Q281).
+  const double early = worstDb(480, 240, 0.5, 0.75), late = worstDb(480, 240, 0.75, 1.0);
+  CHECK(late > -1.5);
+  CHECK(early > -6.0);
+  MESSAGE("merge 4:5 -> 4 against the keeper alone: 100 ms windows " << level << " dB; 10 ms windows " << early
+          << " dB in the first half of the glide, " << late << " dB in the second; merged: difference " << diff);
+}
+
+// T7.7's acceptance (docs/plans/M7.md): 4:5:6:7 -> 1 -> 4:5:6:7. The reference is one voice on the keeper's path
+// (4 -> 1 -> 4).
+TEST_CASE("ji playback: 4:5:6:7 -> 1 -> 4:5:6:7 — after the merge the unison is one voice, the split's level rises monotonically; interpreter == JIT; a chase lands in the unison (sine; T7.7)") {
+  auto make = [](std::vector<int64_t> chord, Rig& r) {
+    const JiObjectId id = r.create(0, 8 * kQ, std::move(chord));
+    (void)r.stop(id, 2 * kQ, {1}, kQ);
+    return r.stop(id, 4 * kQ, r.object(id).stops[0].terms, kQ);
+  };
+  Rig four(false), one(false);
+  (void)make({4, 5, 6, 7}, four);
+  (void)make({4}, one);
+  auto la = makeLink(four.store.current()), lb = makeLink(one.store.current());
+  const std::vector<float> a = render(*la, 3.0), b = render(*lb, 3.0);
+  CHECK(tstats(*la).syncEvents == 3);
+  CHECK(tstats(*la).droppedCurveEvents == 0);
+  // Merged ([1 s, 1.5 s): from the Sync to the tick the split begins): four identical lanes at 1/4 are the single
+  // voice, sample for sample; no 10 ms window is below it (the plan: none below -0.5 dB).
+  double diff = 0.0, peak = 0.0, worst = 0.0;
+  for (size_t i = at(1.0); i < at(1.5); ++i) {
+    diff = std::max(diff, static_cast<double>(std::fabs(a[i] - b[i])));
+    peak = std::max(peak, static_cast<double>(std::fabs(b[i])));
+  }
+  for (size_t i = at(1.0); i + 480 <= at(1.5); i += 120)
+    worst = std::min(worst, 20.0 * std::log10(rms(a, i, 480) / rms(b, i, 480)));
+  CHECK(peak > 0.05);
+  CHECK(diff <= 1e-6);
+  CHECK(worst > -0.01);
+  // No jump into the unison or out of it: around the Sync (1 s) and the first tick of the split (1.5 s) consecutive
+  // samples differ no more than the single voice's do.
+  for (const double t : {1.0, 1.5}) {
+    double stepA = 0.0, stepB = 0.0;
+    for (size_t i = at(t) - 200; i < at(t) + 200; ++i) {
+      stepA = std::max(stepA, static_cast<double>(std::fabs(a[i + 1] - a[i])));
+      stepB = std::max(stepB, static_cast<double>(std::fabs(b[i + 1] - b[i])));
+    }
+    CHECK(stepA <= stepB * 1.5 + 1e-4);
+  }
+  // The split ([1.5 s, 2 s]): the level over 50 ms windows rises from one voice's to the chord's and never falls
+  // (0.5 dB of slack for the beats inside a window); it never falls below the single voice either.
+  double prev = -100.0, fall = 0.0, below = 0.0, first = 0.0, last = 0.0;
+  for (size_t i = at(1.5) - 2400; i + 2400 <= at(2.1); i += 480) {
+    const double db = 20.0 * std::log10(rms(a, i, 2400) / rms(b, at(1.2), 2400));
+    if (prev > -100.0) fall = std::max(fall, prev - db);
+    else first = db;
+    below = std::min(below, db);
+    prev = last = db;
+  }
+  CHECK(std::fabs(first) < 0.1);
+  CHECK(last > 4.0);  // four voices at different pitches: about +6 dB
+  CHECK(fall < 0.5);
+  CHECK(below > -0.25);
+  MESSAGE("4:5:6:7 -> 1 -> 4:5:6:7: merged difference " << diff << " (peak " << peak << "); split level " << first << " -> "
+          << last << " dB, largest fall between 50 ms windows " << fall << " dB");
+  // interpreter == JIT.
+  auto jit = makeLink(four.store.current(), true);
+  REQUIRE(jit->waitForJit());
+  const std::vector<float> c = render(*jit, 3.0);
+  REQUIRE(a.size() == c.size());
+  CHECK(std::memcmp(a.data(), c.data(), a.size() * sizeof(float)) == 0);
+  // A chase into the unison (2.5 q), driven like a device (RtScope): the four voices start at one frame at 1/4 and
+  // are Synced; the sound is the single voice chased to the same place, without a click.
+  auto ca = makeLink(four.store.current()), cb = makeLink(one.store.current());
+  Driver da{*ca}, db{*cb};
+  ca->play(5 * kQ / 2);
+  cb->play(5 * kQ / 2);
+  da.run(150);
+  db.run(150);
+  CHECK(tstats(*ca).chasedNotes == 4);
+  CHECK(tstats(*ca).syncEvents == 3);
+  double chase = 0.0, chasePeak = 0.0;
+  for (size_t i = 0; i < da.out.size(); ++i) {
+    chase = std::max(chase, static_cast<double>(std::fabs(da.out[i] - db.out[i])));
+    chasePeak = std::max(chasePeak, static_cast<double>(std::fabs(db.out[i])));
+  }
+  CHECK(chasePeak > 0.05);
+  CHECK(chase <= 1e-5);
 }
 
 TEST_CASE("ji playback: a ride curve, an undertone object, a note's own curve and a note on the fundamental (probe)") {
@@ -404,6 +494,14 @@ TEST_CASE("ji playback: a ride curve, an undertone object, a note's own curve an
     auto link = makeLink(r.store.current());
     const std::vector<float> out = render(*link, 3.2);
     CHECK(tstats(*link).noteOns == 2);  // the scaffold itself does not sound
+    {  // T7.7: an inner Harmonic note carries voice.harmonic and its exact ratio to the fundamental at its start
+      const engine::SequenceImage* img = link->engine().timeline().sequence();
+      REQUIRE(img != nullptr);
+      REQUIRE(img->notes().size() == 2);
+      const engine::SequenceImage::Note& in = img->notes()[img->notes()[0].start == kQ ? 0 : 1];
+      CHECK(in.harmonic == 6.0f);
+      CHECK(in.ratio == 6.0f);
+    }
     const double K = static_cast<double>(out[at(0.75)]) / want(1.5 * kQ);
     // Before the morph: 6 f + 3/2 f; after it (3 q … 4 q, before the own curve moves): 7 · 9/8 f + 3/2 · 9/8 f.
     CHECK(worstRel(out, at(0.5) + kAttack, at(1.0), K, [](double) { return 7.5 * kRef; }) < 2e-6);

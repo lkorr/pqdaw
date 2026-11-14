@@ -79,6 +79,10 @@
 // Events of one tick go out as offs, then curve events, then ons. Each sounding note keeps its curve cursor; a track
 // keeps the tick of its next breakpoint, so a block without one costs the per-track compare it already paid for
 // its next note. After its note-off a note gets no more curve events (its release tail finishes the running ramp).
+// Synced unisons (T7.7; sequence.h): a gain point that lands with `sync` set sends its step as a conditional Gain
+// event keyed by the event id of the sounding note `sync` on the track, after a Sync to that note when the jump's
+// first point asks for one; when note `sync` is not sounding, neither is sent (the voice keeps its gain). The same
+// when a note is re-synchronised inside such a span. After a chase, every chased note that landed in one is Synced.
 // Seek / locate / loop: a chased note (see "Chase") starts at its curves' values at the new position; a note that
 // starts after the new position starts mid-curve when its curve began earlier. Clip-loop passes replay the note and
 // its curve.
@@ -271,6 +275,7 @@ struct TimelineStats {
   uint64_t chasedNotes = 0;        // T7.3: note-ons (counted in noteOns too) of notes started in their middle
   uint64_t curveEvents = 0;        // T7.1: Pitch / Gain events emitted from note curves
   uint64_t droppedCurveEvents = 0; // T7.1: curve events without room in the track's event list
+  uint64_t syncEvents = 0;         // T7.7: Sync events emitted (counted in curveEvents too)
   uint64_t curveResyncs = 0;       // T7.1: sounding notes re-synchronised to a changed curve (swap) or tempo map
   uint64_t curveCollapses = 0;     // T7.1: blocks whose breakpoints exceeded the per-block limit on a track
   uint64_t sequenceSwaps = 0, automationSwaps = 0, tempoSwaps = 0, audioSwaps = 0;
@@ -446,6 +451,9 @@ private:
     const SequenceImage* image;
     uint32_t track, frame, pendingOffs;
     SampleTime sample;
+    // T7.7: the sounding notes a `sync` note id is looked up in (null: the track's heap; a swap passes the old one).
+    const Sounding* heap = nullptr;
+    uint32_t heapSize = 0;
   };
   Ticks nextCurveTick(const SequenceImage& image, const Sounding& s) const noexcept;
   // Moves the cursor of `kind` past tick `at` and returns the curve's value there, or (given a sample) at the tick of
@@ -455,6 +463,14 @@ private:
   // The ramp from `value` (the curve at the playhead) to the cursor's breakpoint, if there is one and it differs.
   void curveRamp(const CurveOut& o, const Sounding& s, CurveKind kind, float value) noexcept;
   void curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSync mode, Ticks at) noexcept;
+  // T7.7: the gain point the cursor of `s` landed on: its `sync` note (0: none) and, when it is the second point of
+  // a jump, the first point's (0: none).
+  struct SyncAt {
+    uint32_t key = 0, copy = 0;
+  };
+  SyncAt syncAt(const SequenceImage& image, const Sounding& s) const noexcept;
+  // The event id of document note `noteId` sounding on the track (the newest), or 0.
+  uint32_t instanceOf(const CurveOut& o, uint32_t noteId) const noexcept;
   bool pushCurveEvent(const CurveOut& o, const NoteEvent& e) noexcept;
   // A note-on with curves (s.on its tick): the note-on with hz and gain from the curves there, the ramps to the next
   // breakpoints, and the sounding note (its cursor set) pushed on the track's heap.

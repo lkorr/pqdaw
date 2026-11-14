@@ -3,6 +3,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -1542,4 +1543,150 @@ TEST_CASE("voices: Gain events at the event-volume limit — the newest are drop
   CHECK(y[150] == 0.0f);  // every note-off was applied (the gate is the output)
   for (uint32_t l = 0; l < r.ve.lanes(); ++l) CHECK(r.ve.laneStatus(l) != eng::LaneStatus::Held);
   CHECK(r.rtViolations == 0);
+}
+
+// ---- T7.7: Sync — a voice becomes a clone of another one (phase-locked unisons) ----------------------------------------
+
+namespace {
+
+Ev syncEv(int64_t t, uint32_t id, uint32_t source) { return {t, eng::noteSync(0, id, source)}; }
+Ev gainIf(int64_t t, uint32_t id, float g, uint32_t source) { return {t, eng::noteGainIfSynced(0, id, g, source)}; }
+
+// A JI merge and split as the lowering sends it: note 2 (a fifth above, started later: another phase) glides onto
+// note 1 while its gain falls to 0, is Synced to it at 5000 with both stepping to 1/2, and leaves again at 9000 (the
+// keeper steps to 1, the leaving voice to 0 and rises as it glides away).
+std::vector<Ev> mergeSplit(bool second) {
+  std::vector<Ev> evs = {on(0, 1, 220.0f, 1.0f)};
+  if (second) {
+    evs.push_back(on(500, 2, 330.0f, 1.0f));
+    evs.push_back(pitch(1000, 2, 220.0f, 4000));
+    evs.push_back(gainEv(1000, 2, 0.0f, 4000));
+    evs.push_back(syncEv(5000, 2, 1));
+    evs.push_back(gainIf(5000, 1, 0.5f, 1));
+    evs.push_back(gainIf(5000, 2, 0.5f, 1));
+    evs.push_back(gainEv(9000, 1, 1.0f));
+    evs.push_back(gainEv(9000, 2, 0.0f));
+    evs.push_back(pitch(9000, 2, 330.0f, 4000));
+    evs.push_back(gainEv(9000, 2, 1.0f, 4000));
+    evs.push_back(off(14000, 2));
+  }
+  evs.push_back(off(14000, 1));
+  return evs;
+}
+
+struct SyncRun {
+  std::vector<float> mix;
+  bool identical = true;     // the two lanes' outputs, bit for bit, in every whole block inside [5200, 8900)
+  uint32_t compared = 0;
+  eng::VoiceStats stats;
+  uint64_t rt = 0;
+};
+SyncRun runMergeSplit(const char* patch, bool second, uint32_t budget, uint32_t block, bool interpreter) {
+  const auto saved = rigImageBuilder();
+  if (interpreter) rigImageBuilder() = {};
+  VoiceConfig cfg;
+  cfg.silenceMs = 5.0f;
+  cfg.moveBudgetFrames = budget;
+  auto r = std::make_unique<Rig>(patch, cfg, eng::voiceGroupsFor(16), block);
+  rigImageBuilder() = saved;
+  const uint32_t slot = r->ve.mixSlot(0);
+  SyncRun out;
+  out.mix = r->run(15000, block, mergeSplit(second), [&](int64_t t, uint32_t n) {
+    if (!second || t < 5200 || t + n > 8900) return;
+    const uint32_t a = r->ve.laneOf(1), b = r->ve.laneOf(2);
+    REQUIRE(a != eng::kNoSlot);
+    REQUIRE(b != eng::kNoSlot);
+    const float* oa = r->ve.voiceOut(a >> 3, slot);
+    const float* ob = r->ve.voiceOut(b >> 3, slot);
+    for (uint32_t f = 0; f < n; ++f)
+      out.identical = out.identical && std::bit_cast<uint32_t>(oa[f * 8 + (a & 7u)]) == std::bit_cast<uint32_t>(ob[f * 8 + (b & 7u)]);
+    out.compared += n;
+  })[0];
+  out.stats = r->ve.stats();
+  out.rt = r->rtViolations;
+  return out;
+}
+
+double worstDiff(const std::vector<float>& a, const std::vector<float>& b, size_t from, size_t to) {
+  double worst = 0.0;
+  for (size_t i = from; i < to; ++i) worst = std::max(worst, static_cast<double>(std::fabs(a[i] - b[i])));
+  return worst;
+}
+
+}  // namespace
+
+TEST_CASE("voices: Sync — a parked voice becomes its keeper's lane and both step to 1/2 at one frame: the sum is the keeper, the lanes are bit-identical; interpreter == JIT (T7.7)") {
+  for (const char* patch : {kGatedSine, kEcho}) {  // kEcho: a delay line per voice (its ring is copied)
+    CAPTURE(patch);
+    const SyncRun keeper = runMergeSplit(patch, false, 32768, 64, false);
+    for (uint32_t block : {64u, 1u, 512u}) {
+      CAPTURE(block);
+      const SyncRun m = runMergeSplit(patch, true, 32768, block, false);
+      CHECK(m.rt == 0);
+      CHECK(m.stats.syncs == 1);
+      CHECK(m.stats.refusedSyncs == 0);
+      CHECK(m.stats.skippedGains == 0);
+      CHECK(m.stats.unmatchedEvents == 0);
+      CHECK(m.stats.droppedEvents == 0);
+      CHECK(m.identical);
+      CHECK(m.compared > 2000);
+      // From the merge's end (the merging voice is at 0 from 5000; the steps come at the next block) to the split:
+      // two identical lanes at 1/2 are the keeper alone, sample for sample — no jump at the Sync, none at the split.
+      CHECK(worstDiff(m.mix, keeper.mix, 5000, 9001) <= 1e-6);
+      double peak = 0.0;
+      for (size_t i = 5000; i < 9000; ++i) peak = std::max(peak, static_cast<double>(std::fabs(keeper.mix[i])));
+      CHECK(peak > 0.1);
+      // After the split the second voice is back (the sum differs from the keeper alone).
+      CHECK(worstDiff(m.mix, keeper.mix, 12000, 13900) > 0.05);
+    }
+    const SyncRun jit = runMergeSplit(patch, true, 32768, 64, false), interp = runMergeSplit(patch, true, 32768, 64, true);
+    REQUIRE(jit.mix.size() == interp.mix.size());
+    CHECK(std::memcmp(jit.mix.data(), interp.mix.data(), sizeof(float) * jit.mix.size()) == 0);
+    CHECK(interp.identical);
+  }
+}
+
+TEST_CASE("voices: a refused Sync is counted and changes nothing — the merging voice stays parked, the keeper keeps its level (T7.7)") {
+  // Budget 0 with a delay line per voice: the ring copy does not fit. The conditional steps are dropped with it.
+  const SyncRun keeper = runMergeSplit(kEcho, false, 0, 64, false);
+  const SyncRun m = runMergeSplit(kEcho, true, 0, 64, false);
+  CHECK(m.rt == 0);
+  CHECK(m.stats.syncs == 0);
+  CHECK(m.stats.refusedSyncs == 1);
+  CHECK(m.stats.skippedGains == 2);
+  CHECK(worstDiff(m.mix, keeper.mix, 5000, 9001) <= 1e-6);  // parked: the keeper alone, through the split's steps
+  CHECK(worstDiff(m.mix, keeper.mix, 12000, 13900) > 0.05);  // and the voice comes back on the split
+  // A source that is not sounding: refused too; a conditional step without any Sync of its key is dropped.
+  VoiceConfig cfg;
+  Rig r(kGainProbe, cfg, 2, 64);
+  std::vector<Ev> evs = {on(0, 1, 220.0f), on(0, 2, 330.0f), syncEv(100, 2, 77), gainIf(100, 2, 0.25f, 77),
+                         gainIf(300, 1, 0.25f, 1), gainEv(500, 2, 0.5f)};
+  const auto out = r.run(1024, 64, evs);
+  CHECK(r.ve.stats().refusedSyncs == 1);
+  CHECK(r.ve.stats().skippedGains == 2);
+  CHECK(out[r.mixIndex("y")][400] == 2.0f);
+  CHECK(out[r.mixIndex("y")][600] == 1.5f);  // later events of the lane are applied as ever
+  CHECK(r.rtViolations == 0);
+}
+
+TEST_CASE("voices: a conditional step waits for the next block with the lane's later events in order; Sync events count against the event limit (T7.7)") {
+  VoiceConfig cfg;
+  Rig r(kGainProbe, cfg, 2, 64);
+  // Block 1 (64..127): Sync 2 <- 1 and both to 0.5 at frame 70; a plain ramp of note 2 at 80 must follow its step.
+  std::vector<Ev> evs = {on(0, 1, 220.0f), on(0, 2, 220.0f), syncEv(70, 2, 1), gainIf(70, 1, 0.5f, 1), gainIf(70, 2, 0.5f, 1),
+                         gainEv(80, 2, 1.0f, 64)};
+  const auto y = r.run(512, 64, evs)[r.mixIndex("y")];
+  CHECK(y[127] == 2.0f);  // nothing moved inside the block of the Sync
+  CHECK(y[128] == 1.0f);  // both stepped at frame 0 of the next block
+  CHECK(y[128 + 32] == doctest::Approx(0.5 + 0.75).epsilon(1e-5));  // the ramp started after the step
+  CHECK(y[128 + 64] == doctest::Approx(1.5).epsilon(1e-6));
+  CHECK(r.ve.stats().syncs == 1);
+  CHECK(r.rtViolations == 0);
+  eng::EventBuffer b(2);
+  CHECK(b.push(eng::noteSync(0, 2, 1)));
+  CHECK(b.push(eng::noteGainIfSynced(0, 2, 0.5f, 1)));
+  CHECK_FALSE(b.push(eng::noteSync(1, 3, 1)));  // an expression event: dropped when the buffer is full
+  CHECK(b.push(eng::noteOff(1, 2)));            // … and the newest one makes room for a note-off
+  CHECK(b.list().events[0].kind == eng::NoteEventKind::Sync);
+  CHECK(b.list().events[1].kind == eng::NoteEventKind::NoteOff);
 }

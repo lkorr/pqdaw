@@ -46,7 +46,13 @@
 // moved by Gain events as a step or a linear ramp over rampFrames (reaching the target exactly at frame +
 // rampFrames; per-note gain curves). A voice whose note gain is 0 (a parked voice) keeps running but is excluded
 // like a pre-onset lane, and comes back when a Gain event raises it. Lanes without a gain ramp keep the block's
-// constant fill. The same gain is handed to the image (VoiceGroupIO::gain): audio-rate
+// constant fill. Sync (T7.7, note_events.h "Sync"): at the end of a block every Sync event of the block copies its
+// source's lane into the note's lane — the state words compaction moves (moveSpans, the ramp side table, the
+// reachable part of each delay ring re-aligned to the destination group's write position), the pitch render state and
+// the note-on signals — and the block's conditional Gain steps (kNoteEventIfSynced), which wait in the carry list for
+// frame 0 of the next block, are kept or dropped by their source's result. The ring frames copied count against
+// moveBudgetFrames together with the block's compaction (which gets what is left); a Sync that does not fit, or
+// whose note or source is not sounding, is refused (refusedSyncs). The same gain is handed to the image (VoiceGroupIO::gain): audio-rate
 // voice_sum and voice sends inside the patch select and weight lanes by it, voice_last reads its lane only where
 // the gain ≠ 0 (docs/QUESTIONS.md Q61 option A); voice_highest / lowest / loudest keep the block lane mask.
 // Stealing (live voices ≥ maxVoices): released voices are taken before held ones; among them the oldest
@@ -126,9 +132,9 @@ struct VoiceConfig {
   uint32_t monitorMask = 0;         // bit s: voice out/export slot s is monitored for silence and level (0: every
                                     // voice `out`); slots ≥ 32 cannot be named here
   uint32_t doneSlot = kNoSlot;      // index into io().voiceOut, or kNoSlot (findVoiceSlot(io, patch, "done"))
-  uint32_t maxEventsPerBlock = 1024; // NoteOns + Pitch + Gain events applied per block; the newest beyond it are dropped
+  uint32_t maxEventsPerBlock = 1024; // NoteOns + Pitch + Gain + Sync events applied per block; the newest beyond it are dropped
                                      // (VoiceStats::droppedEvents). Note-offs are never dropped
-  uint32_t moveBudgetFrames = 32768; // compaction: delay-ring frames moved per block at most (bench/RESULTS.md)
+  uint32_t moveBudgetFrames = 32768; // compaction and Syncs: delay-ring frames copied per block at most (bench/RESULTS.md)
 };
 
 // Voice groups an image needs for maxVoices plus one group of fade headroom.
@@ -184,9 +190,12 @@ struct VoiceStats {
   uint64_t droppedNotes = 0;    // StealPolicy::None beyond maxVoices, or a deferred note replaced / released early
   uint64_t unmatchedEvents = 0; // note-off / pitch / gain for a note id that is not sounding
   uint64_t lateEvents = 0;      // frame ≥ block length (clamped)
-  uint64_t droppedEvents = 0;   // NoteOn / Pitch / Gain beyond VoiceConfig::maxEventsPerBlock
+  uint64_t droppedEvents = 0;   // NoteOn / Pitch / Gain / Sync beyond VoiceConfig::maxEventsPerBlock
   uint64_t oversizeBlocks = 0;  // blocks longer than io().maxBlockFrames (events applied, image refused: silence)
   uint64_t skippedMoves = 0;    // compactions not done because the group's delay rings exceed moveBudgetFrames
+  uint64_t syncs = 0;           // T7.7: Sync events done (a lane became a copy of its source)
+  uint64_t refusedSyncs = 0;    // T7.7: Sync events refused (a note not sounding, the ring budget)
+  uint64_t skippedGains = 0;    // T7.7: conditional Gain steps dropped because their Syncs did not all succeed
   uint64_t voicesEnded = 0;
   uint64_t voiceMoves = 0;      // compaction: voices moved to another group
   uint64_t blocks = 0;
@@ -260,7 +269,7 @@ public:
   const VoiceConfig& config() const noexcept { return cfg_; }
 
 private:
-  enum class OpKind : uint8_t { Start, Retrigger, Release, Pitch, Gain, Fade };
+  enum class OpKind : uint8_t { Start, Retrigger, Release, Pitch, Gain, Fade, Nop };
   struct LaneOp {
     uint32_t frame;
     uint16_t lane;
@@ -286,7 +295,9 @@ private:
   void applyOp(const LaneOp& op, bool writeTrigger = true) noexcept;
   void freeLane(uint32_t lane) noexcept;
   void moveLane(uint32_t from, uint32_t to) noexcept;
+  void copyLaneState(uint32_t from, uint32_t to) noexcept;
   void compact() noexcept;
+  void resolveSyncs() noexcept;
   void resetLaneState(uint32_t lane) noexcept;
   // After the image.
   void mixOutputs(VoiceBinding& b, uint32_t frames) noexcept;
@@ -357,6 +368,15 @@ private:
   std::vector<uint32_t> opBegin_;     // per lane + 1 (counting sort)
   uint32_t numOps_ = 0;
   uint32_t numReady_ = 0;             // lanes in status Pending (start at the next block)
+  // T7.7: the block's Sync events (done at its end) and whether it carried a conditional Gain step.
+  struct PendingSync {
+    uint32_t noteId, source;
+    bool ok;
+  };
+  std::vector<PendingSync> syncs_;    // capacity maxEventsPerBlock
+  uint32_t numSyncs_ = 0;
+  bool conditional_ = false;
+  uint32_t moveUsed_ = 0;             // ring frames the block's Syncs copied (compaction gets the rest of the budget)
   bool opsLastBlock_ = true;          // opBegin_ holds non-zero offsets from the last block
   int64_t clock_ = 0;                 // engine frames before frame 0 of the current block (ages, timeouts)
   uint32_t live_ = 0;

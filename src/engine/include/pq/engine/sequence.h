@@ -45,6 +45,16 @@
 // tempo is constant between the two breakpoints (inside a tempo ramp the curve bends with the tempo: put breakpoints
 // closer there). The identity signals (voice.ratio, voice.harmonic, degree) do not follow a curve; a note that follows
 // a tuning node keeps doing so, with the curve on top (the node keeps glides: dsp/kernels_tuning.cpp).
+// Synced unisons (T7.7; note_events.h "Sync"): a GAIN point may carry `sync`, the id of another note of the same
+// track (or the note's own id). On the point a tick's value lands on (the last point of the tick): the step onto it
+// is conditional — it happens only together with the Syncs from note `sync` at that tick (a Gain event with
+// kNoteEventIfSynced keyed by that note), else the voice keeps the gain it has. On the first point of a jump (two
+// points at one tick): the note is Synced to note `sync` first (it becomes a clone of that sounding note). So voices
+// that merge into a unison write: … → (T, 0, sync = keeper) (T, 1/k, sync = keeper) for the merging voice, and
+// (T, g) (T, 1/k, sync = keeper) for the keeper and the voices already identical to it: all step at one frame onto
+// identical lanes, or none does. A chased note starts at the curve's value (the notes of a unison start at one frame
+// from reset state: coherent) and is Synced when it lands inside such a span; a re-synchronised note (a changed
+// curve) is Synced and steps conditionally. `sync` on pitch points is ignored.
 // Storage: curves cost notes without them nothing (SequenceImage::curvesOf).
 // Limits: at most kMaxCurvePoints points per curve after build-time clean-up (points sorted by tick, stably; of
 // several points at one tick the first and the last are kept); values finite, |cents| ≤ kMaxCurveCents, gain ≥ 0.
@@ -80,6 +90,7 @@ struct PitchSource {
 struct CurvePoint {
   Ticks tick = 0;      // content ticks
   float value = 0.0f;  // pitch: cents relative to the note's hz; gain: linear gain
+  uint32_t sync = 0;   // T7.7, gain points: a note id (see "Synced unisons"); 0 = an ordinary point
   friend bool operator==(const CurvePoint&, const CurvePoint&) = default;
 };
 inline constexpr uint32_t kMaxCurvePoints = 65535;

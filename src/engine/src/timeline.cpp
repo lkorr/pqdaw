@@ -486,7 +486,7 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
             if (pushEvent(j, e)) ++stats_.retunedOnSwap;
             s.hz = n->hz;
           }
-          const CurveOut out{next, j, 0, src.heapSize, pos_};
+          const CurveOut out{next, j, 0, src.heapSize, pos_, src.heap, src.heapSize};
           const bool syncPitch = retune ? hasPitch : curvesChanged && (hadPitch || hasPitch);
           const bool syncGain = curvesChanged && (hadGain || hasGain);
           // After a retune only the ramp is missing (the retune stepped); else a step onto the new curve first.
@@ -669,6 +669,8 @@ __declspec(noinline) void Timeline::chase(uint32_t track, Ticks t, uint32_t fram
     hi = cl.loopEnd;
   }
   TrackState& ts = tracks_[track];
+  const uint32_t firstInstance = nextInstance_;
+  uint32_t curved = 0;
   const uint32_t found = seq_->covering(cl, lo, hi, passContent + (t - passStart), chaseScratch_.data(),
                                         static_cast<uint32_t>(chaseScratch_.size()));
   const auto notes = seq_->notes();
@@ -699,10 +701,24 @@ __declspec(noinline) void Timeline::chase(uint32_t track, Ticks t, uint32_t fram
       heapPush(ts, s);
     } else {
       startCurvedNote(track, e, s, frame, sample, t);
+      ++curved;
     }
     ++stats_.noteOns;
     ++stats_.chasedNotes;
     if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;
+  }
+  // T7.7: a chased voice that landed in a synced unison becomes a clone of its keeper (both started at this frame
+  // from reset state, at the unison's gains: the copy removes what their pitch paths' rounding left).
+  if (curved != 0) {
+    const CurveOut o{seq_, track, frame, ts.heapSize, sample};
+    for (uint32_t i = 0; i < ts.heapSize; ++i) {
+      const Sounding& s = ts.heap[i];
+      if (s.gainCount == 0 || s.instance - firstInstance >= nextInstance_ - firstInstance) continue;
+      const SyncAt sy = syncAt(*seq_, s);
+      if (sy.key == 0 || sy.copy == 0) continue;
+      const uint32_t src = instanceOf(o, sy.copy);
+      if (src != 0 && src != s.instance && pushCurveEvent(o, noteSync(frame, s.instance, src))) ++stats_.syncEvents;
+    }
   }
   refreshNext(track);
 }
@@ -786,6 +802,28 @@ void Timeline::curveRamp(const CurveOut& o, const Sounding& s, CurveKind kind, f
                           : noteGain(o.frame, s.instance, p.value, ramp));
 }
 
+Timeline::SyncAt Timeline::syncAt(const SequenceImage& image, const Sounding& s) const noexcept {  // RT-safe
+  if (s.gainNext == 0) return {};
+  const CurvePoint* p = image.curves().data() + s.curve + 1 + s.pitchCount + (s.gainNext - 1u);
+  SyncAt out;
+  out.key = p->sync;
+  if (s.gainNext >= 2 && p[-1].tick == p->tick) out.copy = p[-1].sync;
+  return out;
+}
+
+uint32_t Timeline::instanceOf(const CurveOut& o, uint32_t noteId) const noexcept {  // RT-safe
+  const Sounding* heap = o.heap != nullptr ? o.heap : tracks_[o.track].heap;
+  const uint32_t n = o.heap != nullptr ? o.heapSize : tracks_[o.track].heapSize;
+  uint32_t best = 0;
+  uint64_t order = 0;
+  for (uint32_t i = 0; i < n; ++i)
+    if (heap[i].noteId == noteId && (best == 0 || heap[i].order > order)) {
+      best = heap[i].instance;
+      order = heap[i].order;
+    }
+  return best;
+}
+
 void Timeline::curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSync mode, Ticks at) noexcept {  // RT-safe
   const bool pitch = kind == CurveKind::Pitch;
   bool step = mode == CurveSync::Step;
@@ -795,6 +833,18 @@ void Timeline::curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSy
         o.image->curves()[s.curve + 1 + (pitch ? s.pitchNext : static_cast<uint32_t>(s.pitchCount) + s.gainNext)].value);
   const float value = curveLocate(*o.image, s, kind, at, mode == CurveSync::Breakpoint ? INT64_MIN : o.sample);
   if (mode == CurveSync::Breakpoint) step = std::bit_cast<uint32_t>(value) != arriving;  // a jump
+  if (!pitch && mode != CurveSync::Resume) {
+    // T7.7 (timeline.h "Synced unisons"): the step onto this point happens with the Syncs of its key, or not at all.
+    if (const SyncAt sy = syncAt(*o.image, s); sy.key != 0) {
+      const uint32_t key = sy.key == s.noteId ? s.instance : instanceOf(o, sy.key);
+      if (key != 0) {
+        if (sy.copy != 0 && key != s.instance && pushCurveEvent(o, noteSync(o.frame, s.instance, key)))
+          ++stats_.syncEvents;
+        pushCurveEvent(o, noteGainIfSynced(o.frame, s.instance, value, key));
+      }
+      step = false;
+    }
+  }
   if (step) pushCurveEvent(o, pitch ? notePitch(o.frame, s.instance, curveHz(s.hz, value)) : noteGain(o.frame, s.instance, value));
   curveRamp(o, s, kind, value);
 }

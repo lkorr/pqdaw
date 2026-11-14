@@ -19,7 +19,10 @@
 //   - inside a curved span, breakpoints closer than a minimum spacing are dropped: 1 ms, or longer for an object with
 //     many voices so that all of them together send about a quarter of the event list per block
 //     (JiLowerLimits). Corners (where a hold begins or ends, jumps) are always kept.
-// Gain ramps (a voice parked on a merge, back on a split) last 20 ms at the tempo where the object starts.
+// Gains (doc::jiVoicePlan "Gains", T7.7): a voice merging into a unison fades with its distance to the keeper, is
+// Synced to it when the unison is complete and steps to 1 / k with the others (engine/sequence.h "Synced unisons":
+// the plan's JiGainPoint::sync becomes the keeper voice's note id); a split is the mirror image. kJiGainRampSeconds
+// (at the tempo where the object starts) is the fade of a voice that leaves a unison before it is complete.
 // Inside a tempo ramp, sloped segments are cut to a sixteenth note (the engine interpolates over samples).
 // Tuning stops are flattened in the tuning as the document defines it: a modulated tuning is followed through the
 // object's fundamental (the notes keep their ratio to it), not through a tuning stop's own degrees (A1).
@@ -52,10 +55,13 @@ public:
   ClipJiLowering(const doc::NoteClip& clip, const tuning::Tuning* tuning, const TempoMap& tempo, bool tempoMoves,
                  const JiLowerLimits& limits);
 
-  // The pitch curve of clip note `n` (see above) into nd.pitchCurve; nd.start must be set.
+  // The pitch curve of clip note `n` (see above) into nd.pitchCurve; nd.start must be set. An inner Harmonic note
+  // on a proportion stop also gets voice.harmonic (the term it starts on, or glides to) and voice.ratio (its exact
+  // ratio to the fundamental there).
   void noteCurve(const doc::Note& n, engine::NoteDesc& nd);
   // What a sounding object's voices play: one NoteDesc each (start, length, id, hz, velocity, ratio, harmonic, unison,
-  // curves; `pitch` / keyDegree left for the caller), appended to `out`. Returns the object's voice count appended
+  // keyDegree — the voice's place among the tuning's degrees at the object's start — and curves; `pitch` is left for
+  // the caller), appended to `out`. Returns the object's voice count appended
   // (0: not sounding, or unresolvable).
   uint32_t voices(const doc::JiObject& o, std::vector<engine::NoteDesc>& out);
 
