@@ -1,6 +1,7 @@
 // T1.8: voice engine costs. Release build only.
 //   overhead/*     VoiceEngine::process around an image that does nothing (NullImage, 1 voice out slot): the
 //                  engine's own per-block cost (signal buffers, mixing, level metering, voice end checks)
+//                  T7.1: "gliding" / "gain ramps": all 64 voices inside a Pitch / Gain ramp (the per-lane scalar walk)
 //   event/*        extra cost per note event (allocation, op bucketing, per-lane signal rendering), null image
 //   fm_voice/*     FmVoice end to end through the VoiceEngine vs the bare image with a hand-filled voice table
 //   split/*        the rejected alternative: running the image in sub-blocks split at event frames
@@ -145,6 +146,23 @@ void overhead(const char* name, uint32_t voices, uint32_t groups) {
   cfg.maxVoices = std::min(64u, groups * 8);
   Driver d(&img, cfg);
   for (uint32_t i = 0; i < voices; ++i) d.buf.push(e::noteOn(i % kBlock, i + 1, pitch(i), 0.8f));
+  d.block();
+  d.block();
+  DenormalGuard dg;
+  const bench::Stats s = bench::measure([&] { d.block(); }, 1);
+  bench::report(name, s, "ns/block");
+}
+
+// T7.1: every held voice inside a long Pitch glide (pitchRamp) or Gain ramp: the lanes' per-sample walk.
+void ramping(const char* name, uint32_t voices, uint32_t groups, bool pitchRamp) {
+  NullImage img(groups, kBlock);
+  e::VoiceConfig cfg;
+  cfg.maxVoices = std::min(64u, groups * 8);
+  Driver d(&img, cfg);
+  for (uint32_t i = 0; i < voices; ++i) d.buf.push(e::noteOn(0, i + 1, pitch(i), 0.8f));
+  d.block();
+  for (uint32_t i = 0; i < voices; ++i)
+    d.buf.push(pitchRamp ? e::notePitch(0, i + 1, pitch(i) * 1.5f, 0x40000000u) : e::noteGain(0, i + 1, 0.5f, 0x40000000u));
   d.block();
   d.block();
   DenormalGuard dg;
@@ -411,6 +429,8 @@ int main(int argc, char** argv) {
   overhead("overhead/no voices (9 groups)", 0, e::voiceGroupsFor(64));
   overhead("overhead/8 voices held (2 groups)", 8, e::voiceGroupsFor(8));
   overhead("overhead/64 voices held (9 groups)", 64, e::voiceGroupsFor(64));
+  ramping("overhead/64 voices gliding (9 groups)", 64, e::voiceGroupsFor(64), true);
+  ramping("overhead/64 voices, gain ramps (9 groups)", 64, e::voiceGroupsFor(64), false);
   NullImage nul(e::voiceGroupsFor(64), kBlock);
   eventCost("event/null image, 32 voices, no events", &nul, 8, false);
   eventCost("event/null image, 32 voices, 8 on + 8 off", &nul, 8, true);

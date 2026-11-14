@@ -2,10 +2,20 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstring>
 #include <string>
 
 namespace pq::engine {
+
+namespace {
+
+// T7.1: the Hz of a note `cents` away from its pitch (exactly hz at 0 ¢). One exp2 per breakpoint. RT-safe.
+inline float curveHz(float hz, float cents) noexcept {
+  return static_cast<float>(static_cast<double>(hz) * std::exp2(static_cast<double>(cents) * (1.0 / 1200.0)));
+}
+
+}  // namespace
 
 // ---- TempoImage -----------------------------------------------------------------------------------------------
 
@@ -418,6 +428,7 @@ void Timeline::swapTempo(const TempoImage* next) noexcept {  // RT-safe
   barStartTick_ = barEndTick_ = 0;  // the bar and tempo caches (computeSnapshot) are stale
   bpmFrom_ = bpmTo_ = 0;
   ++stats_.tempoSwaps;
+  if (playing_) resyncCurvesToTempo();  // T7.1: the running curve ramps get their new lengths
 }
 
 void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
@@ -432,8 +443,13 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
   // into `dst.heap` (which may be src.heap itself). Note-offs for the others go to slot `j` at frame 0. A survivor
   // whose pitch changed (a re-resolved note: a tuning edit, a re-pitch) is retuned at frame 0 by a Pitch event that
   // also carries its new identity, instead of being cut (T2.6-fix3, M3 review H5).
-  auto carry = [&](const TrackState& src, TrackState& dst, uint32_t j) noexcept {
+  // T7.1: a kept note keeps its curve cursor when its curves did not change; otherwise (or when it is retuned and has
+  // a pitch curve) it is re-synchronised at frame 0 to the new image's curve.
+  // `oldTrack`: src's index in the old image (seq_ until the end of this function), which every sounding note is in:
+  // it started from it, or the last swap kept it because it was there. The identity it sounds with is that note's.
+  auto carry = [&](const TrackState& src, uint32_t oldTrack, TrackState& dst, uint32_t j) noexcept {
     uint32_t kept = 0;
+    Ticks nextCurve = kNever;
     for (uint32_t i = 0; i < src.heapSize; ++i) {
       Sounding s = src.heap[i];
       Ticks passEnd = 0;
@@ -441,18 +457,41 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
       if (n != nullptr) {
         s.off = offTick(s.on, std::min(s.on + n->length, passEnd));
         if (s.off > now || !playing_) {
-          if (std::bit_cast<uint32_t>(n->hz) != std::bit_cast<uint32_t>(s.hz) || !(n->pitch == s.pitch) ||
-              std::bit_cast<uint32_t>(n->ratio) != std::bit_cast<uint32_t>(s.ratio) ||
-              std::bit_cast<uint32_t>(n->harmonic) != std::bit_cast<uint32_t>(s.harmonic)) {
-            NoteEvent e = notePitch(0, s.instance, n->hz);
+          const SequenceImage::Note* o = seq_->findOccurrence(oldTrack, s.noteId, s.on, nullptr);
+          const bool retune =
+              o == nullptr || std::bit_cast<uint32_t>(n->hz) != std::bit_cast<uint32_t>(s.hz) || !(n->pitch == o->pitch) ||
+              std::bit_cast<uint32_t>(n->ratio) != std::bit_cast<uint32_t>(o->ratio) ||
+              std::bit_cast<uint32_t>(n->harmonic) != std::bit_cast<uint32_t>(o->harmonic);
+          const SequenceImage::NoteCurves nc = next->curvesOf(*n);
+          const bool hadPitch = s.pitchCount != 0, hasPitch = nc.pitchCount != 0;
+          const bool hadGain = s.gainCount != 0, hasGain = nc.gainCount != 0;
+          const bool curvesChanged =
+              s.pitchCount != nc.pitchCount || s.gainCount != nc.gainCount ||
+              ((hadPitch || hadGain) && static_cast<uint64_t>(seq_->curves()[s.curve].tick) != next->curveHash(nc));
+          s.curve = nc.begin;
+          s.pitchCount = nc.pitchCount;
+          s.gainCount = nc.gainCount;
+          if (retune) {  // at the curve's value at the block's first sample
+            const float cents =
+                hasPitch ? SequenceImage::curveValueAt(next->pitchCurve(*n),
+                                                       tempo_->tempo().samplesToTicks(pos_, cfg_.sampleRate) -
+                                                           static_cast<double>(s.shift),
+                                                       0.0f)
+                         : 0.0f;
+            NoteEvent e = notePitch(0, s.instance, cents != 0.0f ? curveHz(n->hz, cents) : n->hz);
             e.flags = kNoteEventRetune;
             setIdentity(e, *n);
             if (pushEvent(j, e)) ++stats_.retunedOnSwap;
             s.hz = n->hz;
-            s.ratio = n->ratio;
-            s.harmonic = n->harmonic;
-            s.pitch = n->pitch;
           }
+          const CurveOut out{next, j, 0, src.heapSize, pos_};
+          const bool syncPitch = retune ? hasPitch : curvesChanged && (hadPitch || hasPitch);
+          const bool syncGain = curvesChanged && (hadGain || hasGain);
+          // After a retune only the ramp is missing (the retune stepped); else a step onto the new curve first.
+          if (syncPitch) curveSync(out, s, CurveKind::Pitch, retune ? CurveSync::Resume : CurveSync::Step, now);
+          if (syncGain) curveSync(out, s, CurveKind::Gain, CurveSync::Step, now);
+          if (syncPitch || syncGain) ++stats_.curveResyncs;
+          if (hasPitch || hasGain) nextCurve = std::min(nextCurve, nextCurveTick(*next, s));
           dst.heap[kept++] = s;
           ++stats_.keptOnSwap;
           continue;
@@ -462,13 +501,14 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
       ++stats_.stoppedOnSwap;
     }
     dst.heapSize = kept;
+    dst.nextCurve = nextCurve;
     std::make_heap(dst.heap, dst.heap + kept, [](const Sounding& a, const Sounding& b) noexcept {
       return a.off != b.off ? a.off > b.off : a.order > b.order;
     });
   };
 
   if (identity) {
-    for (uint32_t k = 0; k < newN; ++k) carry(tracks_[k], tracks_[k], k);
+    for (uint32_t k = 0; k < newN; ++k) carry(tracks_[k], k, tracks_[k], k);
   } else {
     // Sounding notes follow their track id into the other heap pool.
     const uint32_t side = heapPoolSide_ ^ 1u;
@@ -487,7 +527,7 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
         if (matched[i] || tracks_[i].id != id) continue;
         matched[i] = 1;
         scratchTracks_[j].order = tracks_[i].order;
-        carry(tracks_[i], scratchTracks_[j], j);
+        carry(tracks_[i], i, scratchTracks_[j], j);
         break;
       }
     }
@@ -502,11 +542,13 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
     heapPoolSide_ = side;
   }
   seq_ = next;
+  seqCurves_ = next != nullptr && next->hasCurves();
   numTracks_ = newN;
   for (uint32_t k = newN; k < cfg_.maxTracks; ++k) {
     tracks_[k].heapSize = 0;
     tracks_[k].cur = Cursor{};
     tracks_[k].cur.nextOn = kNever;
+    tracks_[k].nextCurve = kNever;
     next_[k] = kNever;
   }
   seekAll(now);
@@ -624,8 +666,117 @@ Timeline::Sounding Timeline::heapPop(TrackState& t) noexcept {  // RT-safe
 
 void Timeline::refreshNext(uint32_t track) noexcept {  // RT-safe
   const TrackState& t = tracks_[track];
-  next_[track] = std::min(t.cur.nextOn, t.heapSize != 0 ? t.heap[0].off : kNever);
+  next_[track] = std::min(std::min(t.cur.nextOn, t.heapSize != 0 ? t.heap[0].off : kNever), t.nextCurve);
   minNextDirty_ = true;
+}
+
+// ---- Audio thread: note curves (T7.1) ----------------------------------------------------------------------------
+
+Ticks Timeline::nextCurveTick(const SequenceImage& image, const Sounding& s) const noexcept {  // RT-safe
+  const CurvePoint* p = image.curves().data() + s.curve + 1;
+  Ticks t = kNever;
+  if (s.pitchNext < s.pitchCount) t = p[s.pitchNext].tick + s.shift;
+  if (s.gainNext < s.gainCount) t = std::min(t, p[s.pitchCount + s.gainNext].tick + s.shift);
+  return t;
+}
+
+float Timeline::curveLocate(const SequenceImage& image, Sounding& s, CurveKind kind, Ticks at,
+                            SampleTime sample) const noexcept {  // RT-safe
+  const bool pitch = kind == CurveKind::Pitch;
+  const std::span<const CurvePoint> curve{image.curves().data() + s.curve + 1 + (pitch ? 0u : s.pitchCount),
+                                          pitch ? s.pitchCount : s.gainCount};
+  const float empty = pitch ? 0.0f : 1.0f;
+  uint32_t after = 0;
+  float v = SequenceImage::curveValue(curve, at - s.shift, empty, &after);  // O(log points)
+  (pitch ? s.pitchNext : s.gainNext) = static_cast<uint16_t>(after);
+  if (sample != INT64_MIN && !curve.empty())
+    v = SequenceImage::curveValueAt(
+        curve, tempo_->tempo().samplesToTicks(sample, cfg_.sampleRate) - static_cast<double>(s.shift), empty);
+  return v;
+}
+
+bool Timeline::pushCurveEvent(const CurveOut& o, const NoteEvent& e) noexcept {  // RT-safe
+  // Room stays for every pending note-off (as for note-ons).
+  if (eventCount_[o.track] + o.pendingOffs >= cfg_.maxEventsPerTrack || !pushEvent(o.track, e)) {
+    ++stats_.droppedCurveEvents;
+    return false;
+  }
+  ++stats_.curveEvents;
+  return true;
+}
+
+void Timeline::curveRamp(const CurveOut& o, const Sounding& s, CurveKind kind, float value) noexcept {  // RT-safe
+  const bool pitch = kind == CurveKind::Pitch;
+  const uint32_t next = pitch ? s.pitchNext : s.gainNext;
+  if (next >= (pitch ? s.pitchCount : s.gainCount)) return;
+  const CurvePoint& p = o.image->curves()[s.curve + 1 + (pitch ? 0u : s.pitchCount) + next];
+  if (std::bit_cast<uint32_t>(p.value) == std::bit_cast<uint32_t>(value)) return;  // flat: nothing moves
+  const SampleTime d = tempo_->tempo().ticksToSamples(p.tick + s.shift, cfg_.sampleRate) - o.sample;
+  const auto ramp = static_cast<uint32_t>(std::clamp<SampleTime>(d, 0, 0xFFFFFFFFll));
+  pushCurveEvent(o, pitch ? notePitch(o.frame, s.instance, curveHz(s.hz, p.value), ramp)
+                          : noteGain(o.frame, s.instance, p.value, ramp));
+}
+
+void Timeline::curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSync mode, Ticks at) noexcept {  // RT-safe
+  const bool pitch = kind == CurveKind::Pitch;
+  bool step = mode == CurveSync::Step;
+  uint32_t arriving = 0;
+  if (mode == CurveSync::Breakpoint)  // the value the running ramp ends on
+    arriving = std::bit_cast<uint32_t>(
+        o.image->curves()[s.curve + 1 + (pitch ? s.pitchNext : static_cast<uint32_t>(s.pitchCount) + s.gainNext)].value);
+  const float value = curveLocate(*o.image, s, kind, at, mode == CurveSync::Breakpoint ? INT64_MIN : o.sample);
+  if (mode == CurveSync::Breakpoint) step = std::bit_cast<uint32_t>(value) != arriving;  // a jump
+  if (step) pushCurveEvent(o, pitch ? notePitch(o.frame, s.instance, curveHz(s.hz, value)) : noteGain(o.frame, s.instance, value));
+  curveRamp(o, s, kind, value);
+}
+
+// Out of line (as playCurves): the sequencer's loop over notes without curves stays as small as it was.
+__declspec(noinline) void Timeline::startCurvedNote(uint32_t track, NoteEvent e, Sounding s, uint32_t frame,
+                                                    SampleTime sample) noexcept {  // RT-safe
+  TrackState& tr = tracks_[track];
+  const float cents = curveLocate(*seq_, s, CurveKind::Pitch, s.on), gain = curveLocate(*seq_, s, CurveKind::Gain, s.on);
+  if (cents != 0.0f) e.hz = curveHz(s.hz, cents);
+  e.gain = gain;
+  pushEvent(track, e);
+  const CurveOut o{seq_, track, frame, tr.heapSize + 1, sample};  // + 1: this note's own off
+  curveRamp(o, s, CurveKind::Pitch, cents);
+  curveRamp(o, s, CurveKind::Gain, gain);
+  tr.nextCurve = std::min(tr.nextCurve, nextCurveTick(*seq_, s));
+  heapPush(tr, s);
+}
+
+__declspec(noinline) void Timeline::playCurves(uint32_t track, Ticks at, uint32_t frame, SampleTime sample,
+                                               CurveSync mode) noexcept {  // RT-safe
+  TrackState& tr = tracks_[track];
+  const CurvePoint* curves = seq_->curves().data();
+  const CurveOut o{seq_, track, frame, tr.heapSize, sample};
+  Ticks mn = kNever;
+  for (uint32_t i = 0; i < tr.heapSize; ++i) {
+    Sounding& s = tr.heap[i];  // the cursor is not part of the heap order
+    if ((s.pitchCount | s.gainCount) == 0) continue;
+    const CurvePoint* p = curves + s.curve + 1;
+    if (s.pitchNext < s.pitchCount && p[s.pitchNext].tick + s.shift <= at) curveSync(o, s, CurveKind::Pitch, mode, at);
+    if (s.gainNext < s.gainCount && p[s.pitchCount + s.gainNext].tick + s.shift <= at) curveSync(o, s, CurveKind::Gain, mode, at);
+    mn = std::min(mn, nextCurveTick(*seq_, s));
+  }
+  tr.nextCurve = mn;
+}
+
+void Timeline::resyncCurvesToTempo() noexcept {  // RT-safe
+  const Ticks now = resolveTick();
+  for (uint32_t k = 0; k < numTracks_; ++k) {
+    TrackState& tr = tracks_[k];
+    if (tr.nextCurve == kNever) continue;
+    for (uint32_t i = 0; i < tr.heapSize; ++i) {
+      Sounding& s = tr.heap[i];
+      if ((s.pitchCount | s.gainCount) == 0) continue;
+      const CurveOut o{seq_, k, 0, tr.heapSize, pos_};
+      curveSync(o, s, CurveKind::Pitch, CurveSync::Resume, now);
+      curveSync(o, s, CurveKind::Gain, CurveSync::Resume, now);
+      ++stats_.curveResyncs;
+    }
+    refreshNext(k);
+  }
 }
 
 bool Timeline::pushEvent(uint32_t track, const NoteEvent& e) noexcept {  // RT-safe
@@ -666,6 +817,7 @@ void Timeline::releaseAll(uint32_t frame) noexcept {  // RT-safe
   for (uint32_t k = 0; k < cfg_.maxTracks; ++k) {
     TrackState& t = tracks_[k];
     while (t.heapSize != 0) emitOff(k, heapPop(t), frame);
+    t.nextCurve = kNever;
     next_[k] = t.cur.nextOn;
     minNextDirty_ = true;
   }
@@ -673,6 +825,13 @@ void Timeline::releaseAll(uint32_t frame) noexcept {  // RT-safe
 
 void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0,
                          Ticks t1) noexcept {  // RT-safe
+  if (seqCurves_) playTrackImpl<true>(track, frame, s0, len, t0, t1);
+  else playTrackImpl<false>(track, frame, s0, len, t0, t1);
+}
+
+template <bool Curves>
+void Timeline::playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0,
+                             Ticks t1) noexcept {  // RT-safe
   TrackState& tr = tracks_[track];
   Cursor& c = tr.cur;
   const auto notes = seq_->notes();
@@ -688,13 +847,29 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
   // by a seek, so a pathological pile of notes in one block costs bounded time.
   uint32_t looked = 0;
   const uint32_t lookLimit = 4 * cap;
+  bool collapsed = false;  // T7.1: the breakpoint limit was hit (see "Note curves" in timeline.h)
   for (;;) {
     const Ticks on = c.nextOn;
     const Ticks off = tr.heapSize != 0 ? tr.heap[0].off : kNever;
-    if (off <= on) {  // offs first at equal ticks
+    // T7.1: the track's next breakpoint (an image without curves has none: nextCurve is kNever).
+    const Ticks cv = Curves && !collapsed ? tr.nextCurve : kNever;
+    if (off <= on && off <= cv) {  // offs first at equal ticks
       if (off >= t1) break;
       emitOff(track, heapPop(tr), frameOf(off));
       continue;
+    }
+    if constexpr (Curves) {
+      if (cv <= on) {  // then the breakpoints of sounding notes, then ons
+        if (cv >= t1) break;
+        if (++looked > lookLimit) {  // too many in one block: one step per note at the block's last tick (below)
+          ++stats_.curveCollapses;
+          collapsed = true;
+          continue;
+        }
+        const uint32_t f = frameOf(cv);
+        playCurves(track, cv, f, s0 + (f - frame), CurveSync::Breakpoint);
+        continue;
+      }
     }
     if (on >= t1) break;
     if (++looked > lookLimit) {
@@ -717,15 +892,29 @@ void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t
       const float vel = std::clamp(n.velocity + r.velocity * n.velocityRange, 1.0f, 127.0f) * (1.0f / 127.0f);
       NoteEvent e = noteOn(f, nextInstance_, n.hz, vel);
       setIdentity(e, n);
-      pushEvent(track, e);
+      const Ticks offAt = offTick(on, std::min(on + n.length, c.passEnd));
+      const float release = std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f);
+      // T7.1: a note with curves takes its own (out-of-line) path; this one stays what it was before curves existed.
+      SequenceImage::NoteCurves nc;
+      if constexpr (Curves) nc = seq_->curvesOf(n);
+      if (!nc.any()) [[likely]] {
+        pushEvent(track, e);
+        heapPush(tr, Sounding{offAt, tr.order++, on, on - n.start, nextInstance_, n.id, n.hz, release, 0, 0, 0, 0, 0});
+      } else {
+        startCurvedNote(track, e,
+                        Sounding{offAt, tr.order++, on, on - n.start, nextInstance_, n.id, n.hz, release, nc.begin,
+                                 nc.pitchCount, nc.gainCount, 0, 0},
+                        f, s0 + (f - frame));
+      }
       ++stats_.noteOns;
-      heapPush(tr, Sounding{offTick(on, std::min(on + n.length, c.passEnd)), tr.order++, on, nextInstance_, n.id, n.hz,
-                            std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f), n.ratio, n.harmonic,
-                            n.pitch});
       if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;  // T6.4: live notes (0xE…) and auditions (0xF…) above
     }
     ++c.note;
     computeNextOn(c);
+  }
+  if (collapsed) {  // after every other event of the range: this is its last frame
+    const uint32_t f = frameOf(t1 - 1);
+    playCurves(track, t1 - 1, f, s0 + (f - frame), CurveSync::Step);
   }
   refreshNext(track);
 }

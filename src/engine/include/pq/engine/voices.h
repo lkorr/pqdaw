@@ -41,8 +41,12 @@
 // ---- Gain, stealing, mixing ----------------------------------------------------------------------------------
 // The engine mixes every voice `out` slot (not exports) into one global buffer per slot: Σ lanes gain · out over
 // the lanes with gain ≠ 0 (a select, not a multiply: an idle lane's NaN or inf never reaches the mix), with gain
-// per lane and sample: 0 before the onset and while free, 1 while sounding, a raised-cosine fade to 0 over
-// stealFadeMs when the voice is stolen. The same gain is handed to the image (VoiceGroupIO::gain): audio-rate
+// per lane and sample: 0 before the onset and while free, the NOTE GAIN while sounding, times a raised-cosine fade
+// to 0 over stealFadeMs when the voice is stolen. Note gain (T7.1): NoteEvent::gain of the note-on (1 by default),
+// moved by Gain events as a step or a linear ramp over rampFrames (reaching the target exactly at frame +
+// rampFrames; per-note gain curves). A voice whose note gain is 0 (a parked voice) keeps running but is excluded
+// like a pre-onset lane, and comes back when a Gain event raises it. Lanes without a gain ramp keep the block's
+// constant fill. The same gain is handed to the image (VoiceGroupIO::gain): audio-rate
 // voice_sum and voice sends inside the patch select and weight lanes by it, voice_last reads its lane only where
 // the gain ≠ 0 (docs/QUESTIONS.md Q61 option A); voice_highest / lowest / loudest keep the block lane mask.
 // Stealing (live voices ≥ maxVoices): released voices are taken before held ones; among them the oldest
@@ -58,7 +62,7 @@
 // Note lookup: NoteOff takes the newest held voice with the note id; Pitch the newest held one, else the newest
 // released one. voice_last is the newest started voice; when its lane frees or is stolen it moves to the newest
 // held or released voice.
-// Overflow: events beyond maxEventsPerBlock in one block drop the newest NoteOns / Pitch events; NoteOff,
+// Overflow: events beyond maxEventsPerBlock in one block drop the newest NoteOns / Pitch / Gain events; NoteOff,
 // AllNotesOff and AllSoundOff are always applied (note_events.h: EventBuffer degrades the same way when full). A
 // block longer than io().maxBlockFrames (refused by the image: silence) still applies its events and voice ends.
 //
@@ -122,7 +126,7 @@ struct VoiceConfig {
   uint32_t monitorMask = 0;         // bit s: voice out/export slot s is monitored for silence and level (0: every
                                     // voice `out`); slots ≥ 32 cannot be named here
   uint32_t doneSlot = kNoSlot;      // index into io().voiceOut, or kNoSlot (findVoiceSlot(io, patch, "done"))
-  uint32_t maxEventsPerBlock = 1024; // NoteOns + Pitch events applied per block; the newest beyond it are dropped
+  uint32_t maxEventsPerBlock = 1024; // NoteOns + Pitch + Gain events applied per block; the newest beyond it are dropped
                                      // (VoiceStats::droppedEvents). Note-offs are never dropped
   uint32_t moveBudgetFrames = 32768; // compaction: delay-ring frames moved per block at most (bench/RESULTS.md)
 };
@@ -173,13 +177,14 @@ struct VoiceBinding {
 
 struct VoiceStats {
   uint64_t noteOns = 0, noteOffs = 0, pitchEvents = 0;
+  uint64_t gainEvents = 0;      // T7.1: Gain events
   uint64_t retriggers = 0;      // same-note retriggers
   uint64_t steals = 0;          // voices faded out to make room
   uint64_t deferredStarts = 0;  // notes that waited for a fade (no free lane)
   uint64_t droppedNotes = 0;    // StealPolicy::None beyond maxVoices, or a deferred note replaced / released early
-  uint64_t unmatchedEvents = 0; // note-off / pitch for a note id that is not sounding
+  uint64_t unmatchedEvents = 0; // note-off / pitch / gain for a note id that is not sounding
   uint64_t lateEvents = 0;      // frame ≥ block length (clamped)
-  uint64_t droppedEvents = 0;   // NoteOn / Pitch beyond VoiceConfig::maxEventsPerBlock
+  uint64_t droppedEvents = 0;   // NoteOn / Pitch / Gain beyond VoiceConfig::maxEventsPerBlock
   uint64_t oversizeBlocks = 0;  // blocks longer than io().maxBlockFrames (events applied, image refused: silence)
   uint64_t skippedMoves = 0;    // compactions not done because the group's delay rings exceed moveBudgetFrames
   uint64_t voicesEnded = 0;
@@ -255,13 +260,13 @@ public:
   const VoiceConfig& config() const noexcept { return cfg_; }
 
 private:
-  enum class OpKind : uint8_t { Start, Retrigger, Release, Pitch, Fade };
+  enum class OpKind : uint8_t { Start, Retrigger, Release, Pitch, Gain, Fade };
   struct LaneOp {
     uint32_t frame;
     uint16_t lane;
     OpKind kind;
     uint8_t pad_;
-    NoteEvent ev;  // the note-on (Start/Retrigger), note-off (Release) or pitch event
+    NoteEvent ev;  // the note-on (Start/Retrigger), note-off (Release), pitch or gain event
   };
 
   // Allocation (logical state, time order).
@@ -332,9 +337,12 @@ private:
   std::vector<double> centsTarget_;
   std::vector<uint32_t> rampLeft_;
   std::vector<float> gateMask_;       // 0 or all-ones mask
-  std::vector<float> laneGain_;
+  std::vector<float> laneGain_;       // steal fade × note gain
   std::vector<uint32_t> fadeLeft_;    // > 0 while fading: frames to go
-  std::vector<float> fadeFrom_;       // gain when the fade started
+  // T7.1: the note gain (NoteEvent::gain, Gain events): current value, and its linear ramp (double: it accumulates).
+  std::vector<double> noteGain_, gainStep_;
+  std::vector<float> gainTarget_;
+  std::vector<uint32_t> gainRampLeft_;  // > 0 while the note gain ramps: frames to go
   std::vector<float> velocity_, release_, ratio_, harmonic_, unison_, index_, degree_, equave_, tuning_;
   std::vector<float> onsetHz_;      // T4.17: voice.noteHz, the Hz of the lane's latest note-on
   std::vector<float> onsetDegree_;  // T4.17: voice.noteDegree, its absolute degree (NaN: unknown)

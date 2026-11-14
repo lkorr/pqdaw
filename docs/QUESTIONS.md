@@ -1516,3 +1516,18 @@ Choice: (b) — the set and the keys stay the closed block's, only the rows foll
 only feeds are sends, so its bus and the master's / groups' read the same. Both are view-only (model.cpp
 frameSockets / route), reversible without document changes.
 Status: open.
+
+## Q?-T7.1-a · 2026-11-13 · T7.1 · Chase long notes on a seek / loop into their middle?
+Context: the M7 plan's T7.1 says the curve cursor works "at note-on (also seek / loop into the middle of a note)". The
+timeline has never chased notes: a note sounds only when its START lies in the played range (timeline.h "notes that
+started earlier are not chased"; clip passes drop notes that start before them). T7.1 keeps that: a note-on reads its
+curves at its own tick wherever that lies in them (a curve may begin before its note), but a locate or an arrangement
+loop into the middle of a long note — a whole JI object lowered to one note per voice — plays nothing until the next
+note starts.
+Options: (a) leave it (today's rule for every note); (b) chase in the timeline: on a seek, start the notes whose span
+covers the new position (hz / gain from the curve there; needs a per-clip index to find them in bounded time on the
+audio thread, and a decision for chance, one-shots and envelopes that restart); (c) T7.3's lowering splits a JI
+object's voices into shorter notes at stop holds, so a seek loses at most one segment (unison phase would restart).
+Choice: (a) for now — nothing new can break; the engine side of (b) is one more caller of the existing
+curve-at-a-tick path (`Timeline::curveLocate` + `curveRamp`).
+Status: open.

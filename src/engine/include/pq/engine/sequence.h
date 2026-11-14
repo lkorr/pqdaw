@@ -28,7 +28,26 @@
 // of the track patch's tuning nodes, T2.6-fix3) and, for kind Degree, degree/equave as voice.degree / voice.equave
 // (note_events.h; NaN for kind Reference), from which that node (`tuning_hz` + `tune_voices`) derives the voice's Hz
 // per sample. `hz` stays the static pitch (and the fallback where no tuning node is bound).
+//
+// ---- Per-note curves (T7.1) --------------------------------------------------------------------------------------
+// Every note may carry a pitch curve and a gain curve: breakpoints (CurvePoint) in CONTENT ticks (the frame of
+// NoteDesc::start, not relative to the note), piecewise linear between them, held at the first / last value outside
+// them. A curve may begin before its note and end after it (several notes can share one curve: the note reads it from
+// its own start on). Two points at one tick are a jump (the second is the value from that tick on).
+//   pitchCurve   cents relative to `hz`: the note sounds at hz · 2^(cents / 1200), linear in cents between points
+//   gainCurve    linear gain ≥ 0 (NoteEvent::gain): the voice's note gain; 0 parks the voice (it keeps running but
+//                is invisible to the mix and the patch's reducers until the gain rises again)
+// An empty curve is the constant 0 ¢ / gain 1 and costs nothing. The timeline (timeline.h "Note curves") starts the
+// note at the curve's value at its note-on tick and sends one Pitch / Gain ramp per breakpoint: the voice
+// interpolates per sample, linear in cents / linear in gain over SAMPLES, which equals linear over ticks while the
+// tempo is constant between the two breakpoints (inside a tempo ramp the curve bends with the tempo: put breakpoints
+// closer there). The identity signals (voice.ratio, voice.harmonic, degree) do not follow a curve; a note that follows
+// a tuning node keeps doing so, with the curve on top (the node keeps glides: dsp/kernels_tuning.cpp).
+// Storage: curves cost notes without them nothing (SequenceImage::curvesOf).
+// Limits: at most kMaxCurvePoints points per curve after build-time clean-up (points sorted by tick, stably; of
+// several points at one tick the first and the last are kept); values finite, |cents| ≤ kMaxCurveCents, gain ≥ 0.
 
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -55,6 +74,15 @@ struct PitchSource {
   friend bool operator==(const PitchSource&, const PitchSource&) = default;
 };
 
+// T7.1: one breakpoint of a note curve (see "Per-note curves").
+struct CurvePoint {
+  Ticks tick = 0;      // content ticks
+  float value = 0.0f;  // pitch: cents relative to the note's hz; gain: linear gain
+  friend bool operator==(const CurvePoint&, const CurvePoint&) = default;
+};
+inline constexpr uint32_t kMaxCurvePoints = 65535;
+inline constexpr float kMaxCurveCents = 24000.0f;
+
 struct NoteDesc {
   Ticks start = 0;                // content ticks (relative to the clip's content origin, as doc::Note)
   Ticks length = kPpq;            // ≥ 1
@@ -69,6 +97,9 @@ struct NoteDesc {
   PitchSource pitch;
   float keyDegree = std::numeric_limits<float>::quiet_NaN();  // voice.noteDegree (T4.17; NaN: unknown)
   bool enabled = true;            // disabled notes are kept in the document but never play
+  // T7.1 (see "Per-note curves"): content ticks; empty = constant (0 ¢ / gain 1).
+  std::vector<CurvePoint> pitchCurve;  // cents relative to hz
+  std::vector<CurvePoint> gainCurve;   // linear gain ≥ 0
 };
 
 struct ClipDesc {
@@ -101,7 +132,7 @@ NoteRandom noteRandom(uint64_t seed, uint32_t noteId, int64_t pass) noexcept;
 
 class SequenceImage {
 public:
-  // A note as stored: 64 bytes, one cache line.
+  // A note as stored: 72 bytes. Its curves (T7.1) are not in it: see curvesOf().
   struct Note {
     Ticks start;            // content ticks
     Ticks length;
@@ -113,6 +144,14 @@ public:
     float keyDegree;        // T4.17: voice.noteDegree (NaN: unknown)
   };
   static_assert(sizeof(Note) == 72);
+
+  // T7.1: where a note's curves are in curves(): one header entry at `begin` (its `tick` holds the curve hash), then
+  // pitchCount pitch points, then gainCount gain points. Both counts 0: no curves (`begin` is meaningless).
+  struct NoteCurves {
+    uint32_t begin = 0;
+    uint16_t pitchCount = 0, gainCount = 0;
+    bool any() const noexcept { return (pitchCount | gainCount) != 0; }
+  };
 
   // A clip as stored (after trimming overlaps). Arrangement ticks unless noted.
   struct Clip {
@@ -134,7 +173,8 @@ public:
   };
 
   // Off the audio thread (allocates). Errors: a clip with length < 1, a note with length < 1 or a non-finite /
-  // non-positive Hz, a non-finite velocity / chance, more than 2^32 − 1 notes.
+  // non-positive Hz, a non-finite velocity / chance, more than 2^32 − 1 notes; a curve with a non-finite value, a
+  // pitch beyond ±kMaxCurveCents, a negative gain or more than kMaxCurvePoints points (T7.1).
   static Result<std::unique_ptr<SequenceImage>> build(std::span<const TrackSequenceDesc> tracks,
                                                       const SequenceBuildOptions& options = {});
 
@@ -143,6 +183,38 @@ public:
   std::span<const Clip> clips() const noexcept { return clips_; }
   std::span<const Note> notes() const noexcept { return notes_; }
   uint32_t numTracks() const noexcept { return static_cast<uint32_t>(tracks_.size()); }
+  // T7.1: the curve storage of every note, and one note's curves (`n` must be an element of notes()). Notes without
+  // curves pay nothing: the note record has no curve field; a bit per note says whether it has curves (one load when
+  // the image has any curve, none otherwise), and a rank over those bits finds the curved note's NoteCurves. O(1).
+  std::span<const CurvePoint> curves() const noexcept { return curves_; }
+  bool hasCurves() const noexcept { return !curveRefs_.empty(); }
+  NoteCurves curvesOf(const Note& n) const noexcept {
+    if (curveRefs_.empty()) return {};
+    const size_t i = static_cast<size_t>(&n - notes_.data());
+    const uint64_t word = curveBits_[i >> 6], bit = uint64_t{1} << (i & 63u);
+    if ((word & bit) == 0) return {};
+    return curveRefs_[curveRank_[i >> 6] + static_cast<uint32_t>(std::popcount(word & (bit - 1)))];
+  }
+  std::span<const CurvePoint> pitchCurve(const Note& n) const noexcept {
+    const NoteCurves c = curvesOf(n);
+    return {curves_.data() + c.begin + 1, c.pitchCount};
+  }
+  std::span<const CurvePoint> gainCurve(const Note& n) const noexcept {
+    const NoteCurves c = curvesOf(n);
+    return {curves_.data() + c.begin + 1 + c.pitchCount, c.gainCount};
+  }
+  // A hash of both curves relative to the note's start (0 without curves): equal for the same note in two images iff
+  // its curves did not change (up to hash collisions), so a swap keeps the curve cursors of unchanged notes.
+  uint64_t curveHash(const NoteCurves& c) const noexcept {
+    return c.any() ? static_cast<uint64_t>(curves_[c.begin].tick) : 0u;
+  }
+  uint64_t curveHash(const Note& n) const noexcept { return curveHash(curvesOf(n)); }
+  // The value of a curve at content tick t: linear between points, the first / last value outside them, the last
+  // point of a tick at a jump; `empty` for a curve without points. `after` (optional) receives the index of the
+  // first point with tick > t. O(log points). RT-safe.
+  static float curveValue(std::span<const CurvePoint> curve, Ticks t, float empty, uint32_t* after = nullptr) noexcept;
+  // The same at a fractional tick (the tick of a sample: TempoMap::samplesToTicks). RT-safe.
+  static float curveValueAt(std::span<const CurvePoint> curve, double tick, float empty) noexcept;
   uint64_t seed() const noexcept { return seed_; }
 
   // The occurrence of note `noteId` that starts at arrangement tick `on` on track `track`: its stored note and the
@@ -154,6 +226,10 @@ private:
   std::vector<Track> tracks_;
   std::vector<Clip> clips_;
   std::vector<Note> notes_;
+  std::vector<CurvePoint> curves_;      // T7.1
+  std::vector<NoteCurves> curveRefs_;   // per curved note, in note order
+  std::vector<uint64_t> curveBits_;     // bit i: note i has curves (empty when no note has)
+  std::vector<uint32_t> curveRank_;     // per 64 notes: curved notes before them
   uint64_t seed_ = 0;
 };
 

@@ -2,7 +2,7 @@
 //   1. allocate()   events in time order → lane decisions (logical state) + LaneOps {frame, lane, kind, event}
 //   2. LaneOps bucketed per lane (stable counting sort); lanes that start this block get their state reset
 //   3. renderGroup()  only for groups whose signals change: a vector fill of every lane's start-of-block values,
-//                     then per lane with ops / glides / fades a scalar walk of its segments between op frames
+//                     then per lane with ops / glides / gain ramps / fades a scalar walk of its segments between op frames
 //   4. image->process with the voice table (groups with no voice are skipped by the image)
 //   5. mixOutputs() / measure()  Σ select(gain ≠ 0, out) · gain per voice `out` slot; per-lane peaks of the
 //                     monitored outs (lanes with gain ≠ 0)
@@ -37,6 +37,11 @@ uint32_t roundUp(uint32_t n, uint32_t a) noexcept { return (n + a - 1) / a * a; 
 // NaN or out-of-range value must not reach every patch that multiplies by it).
 inline float unitVelocity(float v) noexcept {  // RT-safe
   return v >= 0.0f ? (v <= 1.0f ? v : 1.0f) : 0.0f;
+}
+
+// A note gain as the lane sees it (T7.1): linear, finite and ≥ 0; anything else → 0.
+inline float cleanGain(float v) noexcept {  // RT-safe
+  return v > 0.0f && v <= std::numeric_limits<float>::max() ? v : 0.0f;
 }
 
 inline float horizontalSum(__m256 v) noexcept {  // RT-safe
@@ -290,7 +295,10 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   gateMask_.assign(lanes_, 0.0f);
   laneGain_.assign(lanes_, 0.0f);
   fadeLeft_.assign(lanes_, 0);
-  fadeFrom_.assign(lanes_, 0.0f);
+  noteGain_.assign(lanes_, 0.0);
+  gainStep_.assign(lanes_, 0.0);
+  gainTarget_.assign(lanes_, 0.0f);
+  gainRampLeft_.assign(lanes_, 0);
   velocity_.assign(lanes_, 0.0f);
   release_.assign(lanes_, 0.0f);
   ratio_.assign(lanes_, 1.0f);
@@ -313,7 +321,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   mixGain_.assign(groups_, nullptr);
   // Ops per block: ≤ 4 per lane besides Pitch (Release, Retrigger, Release, Fade for a lane held at the block start;
   // Start, Release, Fade for a free or pending one) plus ≤ 3 carried from the last block (Retrigger, Release, Fade),
-  // plus one per Pitch event (≤ maxEventsPerBlock this block and as many carried).
+  // plus one per Pitch / Gain event (≤ maxEventsPerBlock this block and as many carried).
   const size_t opCap = 2 * static_cast<size_t>(cfg_.maxEventsPerBlock) + 8 * static_cast<size_t>(lanes_);
   ops_.assign(opCap, LaneOp{});
   sortedOps_.assign(opCap, LaneOp{});
@@ -591,11 +599,11 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
   }
   if (events == nullptr || events->events == nullptr) return;
   const uint32_t n = events->count;
-  uint32_t budget = cfg_.maxEventsPerBlock;  // NoteOn + Pitch events; offs are always applied (M7)
+  uint32_t budget = cfg_.maxEventsPerBlock;  // NoteOn + Pitch + Gain events; offs are always applied (M7)
   for (uint32_t i = 0; i < n; ++i) {
     const NoteEvent& e = events->events[i];
     const bool all = e.kind == NoteEventKind::AllNotesOff || e.kind == NoteEventKind::AllSoundOff;
-    if (e.kind == NoteEventKind::NoteOn || e.kind == NoteEventKind::Pitch) {
+    if (e.kind == NoteEventKind::NoteOn || e.kind == NoteEventKind::Pitch || e.kind == NoteEventKind::Gain) {
       if (budget == 0) {
         ++stats_.droppedEvents;
         continue;
@@ -663,6 +671,22 @@ void VoiceEngine::allocate(const EventList* events, uint32_t frames) noexcept { 
         if (!found) ++stats_.unmatchedEvents;
         break;
       }
+      case NoteEventKind::Gain: {  // T7.1
+        ++stats_.gainEvents;
+        const uint32_t lane = findNote(e.noteId, true);
+        if (lane != kNoSlot) {
+          addOp(frame, lane, OpKind::Gain, e);
+          break;
+        }
+        bool found = false;
+        for (uint32_t l = 0; l < lanes_ && !found; ++l)
+          if (hasPending_[l] && pending_[l].noteId == e.noteId) {  // a deferred note starts at the target
+            pending_[l].gain = e.gain;
+            found = true;
+          }
+        if (!found) ++stats_.unmatchedEvents;
+        break;
+      }
       case NoteEventKind::AllNotesOff:
         for (uint32_t l = 0; l < lanes_; ++l) {
           if (hasPending_[l]) {  // a deferred note released before it could start
@@ -715,7 +739,7 @@ void VoiceEngine::resetLaneState(uint32_t lane) noexcept {  // RT-safe
   startMask_[lane >> 3] |= 1u << (lane & 7u);  // the image runs this group's ramps this block (VoiceGroupIO)
 }
 
-// Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides and fades. A constant
+// Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides, gain ramps and fades. A constant
 // field equal (bit for bit) to the block's vector fill (`fill`: hz, cents, gate, gain) is already in place.
 void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
   if (from >= to) return;
@@ -755,16 +779,44 @@ void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const
   const float gm = gateMask_[lane];
   if (!same(gm, 2))
     for (uint32_t f = from; f < to; ++f) gate[f * 8 + l] = gm;
+  // Lane gain = steal fade × note gain (T7.1). The common lane has neither a fade nor a gain ramp: constant.
   if (fadeLeft_[lane] > 0) {
     uint32_t left = fadeLeft_[lane];
-    const float from0 = fadeFrom_[lane];
-    const float* tab = fadeTable_.data() + fadeFrames_;  // tab[-left]: the gain `left` frames before the end
-    for (uint32_t f = from; f < to; ++f) {
-      gain[f * 8 + l] = from0 * tab[-static_cast<int32_t>(left)];
-      if (left > 0) --left;
+    const float* tab = fadeTable_.data() + fadeFrames_;  // tab[-left]: the fade `left` frames before the end
+    if (gainRampLeft_[lane] == 0) {
+      const float from0 = static_cast<float>(noteGain_[lane]);
+      for (uint32_t f = from; f < to; ++f) {
+        gain[f * 8 + l] = from0 * tab[-static_cast<int32_t>(left)];
+        if (left > 0) --left;
+      }
+      laneGain_[lane] = from0 * tab[-static_cast<int32_t>(left)];
+    } else {
+      double ng = noteGain_[lane];
+      uint32_t gl = gainRampLeft_[lane];
+      for (uint32_t f = from; f < to; ++f) {
+        gain[f * 8 + l] = static_cast<float>(ng) * tab[-static_cast<int32_t>(left)];
+        if (left > 0) --left;
+        if (gl > 0) ng = --gl == 0 ? static_cast<double>(gainTarget_[lane]) : ng + gainStep_[lane];
+      }
+      noteGain_[lane] = ng;
+      gainRampLeft_[lane] = gl;
+      laneGain_[lane] = static_cast<float>(ng) * tab[-static_cast<int32_t>(left)];
     }
     fadeLeft_[lane] = left;
-    laneGain_[lane] = from0 * tab[-static_cast<int32_t>(left)];
+    if (left == 0) {  // faded out: the lane stays at 0 until it is freed (at the end of this block)
+      noteGain_[lane] = 0.0;
+      gainRampLeft_[lane] = 0;
+    }
+  } else if (gainRampLeft_[lane] > 0) {
+    double ng = noteGain_[lane];
+    uint32_t gl = gainRampLeft_[lane];
+    for (uint32_t f = from; f < to; ++f) {
+      gain[f * 8 + l] = static_cast<float>(ng);
+      if (gl > 0) ng = --gl == 0 ? static_cast<double>(gainTarget_[lane]) : ng + gainStep_[lane];
+    }
+    noteGain_[lane] = ng;
+    gainRampLeft_[lane] = gl;
+    laneGain_[lane] = static_cast<float>(ng);
   } else if (const float v = laneGain_[lane]; !same(v, 3)) {
     for (uint32_t f = from; f < to; ++f) gain[f * 8 + l] = v;
   }
@@ -780,7 +832,9 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       cents_[lane] = 1200.0 * std::log2(static_cast<double>(e.hz) / cfg_.referenceHz);
       rampLeft_[lane] = 0;
       gateMask_[lane] = kTrueMask;
-      laneGain_[lane] = 1.0f;
+      laneGain_[lane] = cleanGain(e.gain);
+      noteGain_[lane] = laneGain_[lane];
+      gainRampLeft_[lane] = 0;
       fadeLeft_[lane] = 0;
       velocity_[lane] = unitVelocity(e.velocity);
       release_[lane] = 0.0f;
@@ -827,9 +881,22 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
       }
       break;
     }
-    case OpKind::Fade:  // raised cosine from the current gain to 0 over fadeFrames_ (tab[0] = 1 at this frame)
-      fadeFrom_[lane] = laneGain_[lane];
-      fadeLeft_[lane] = laneGain_[lane] > 0.0f ? fadeFrames_ : 0u;
+    case OpKind::Gain: {  // T7.1: the note gain steps, or ramps linearly from its current value
+      const float target = cleanGain(e.gain);
+      if (e.rampFrames == 0) {
+        noteGain_[lane] = target;
+        gainRampLeft_[lane] = 0;
+        if (fadeLeft_[lane] == 0) laneGain_[lane] = target;
+      } else {
+        gainStep_[lane] = (static_cast<double>(target) - noteGain_[lane]) / static_cast<double>(e.rampFrames);
+        gainTarget_[lane] = target;
+        gainRampLeft_[lane] = e.rampFrames;
+      }
+      break;
+    }
+    case OpKind::Fade:  // the note gain × a raised cosine from 1 to 0 over fadeFrames_ (tab[0] = 1 at this frame)
+      fadeLeft_[lane] = laneGain_[lane] > 0.0f || gainRampLeft_[lane] > 0 ? fadeFrames_ : 0u;
+      if (fadeLeft_[lane] == 0) noteGain_[lane] = 0.0;  // a parked voice: nothing to fade
       break;
   }
 }
@@ -855,15 +922,16 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
     _mm256_store_ps(a + 3 * groupStride_ + f * 8, z);
     _mm256_store_ps(gain + f * 8, gn);
   }
-  // 2. Lanes with ops, glides or fades: segments between their op frames.
+  // 2. Lanes with ops, glides, gain ramps or fades: segments between their op frames.
   bool changing = false;
   for (uint32_t l = 0; l < 8; ++l) {
     const uint32_t lane = l0 + l;
     const uint32_t b = opBegin_[lane], e = opBegin_[lane + 1];
-    if (b == e && rampLeft_[lane] == 0 && fadeLeft_[lane] == 0) continue;
+    const bool still = (rampLeft_[lane] | fadeLeft_[lane] | gainRampLeft_[lane]) == 0;
+    if (b == e && still) continue;
     changing = true;
-    // Before its first op a lane without a glide or fade holds its start-of-block values: already written.
-    uint32_t cursor = b < e && rampLeft_[lane] == 0 && fadeLeft_[lane] == 0 ? sortedOps_[b].frame : 0u;
+    // Before its first op a lane without a glide, gain ramp or fade holds its start-of-block values: already written.
+    uint32_t cursor = b < e && still ? sortedOps_[b].frame : 0u;
     const uint32_t fill[4] = {std::bit_cast<uint32_t>(hv[l]), std::bit_cast<uint32_t>(cv[l]),
                               std::bit_cast<uint32_t>(gv[l]), std::bit_cast<uint32_t>(av[l])};
     for (uint32_t i = b; i < e; ++i) {
@@ -891,7 +959,7 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
   }
   // Constant over time only if nothing changed in this block and nothing keeps changing.
   bool moving = false;
-  for (uint32_t l = 0; l < 8; ++l) moving = moving || rampLeft_[l0 + l] != 0 || fadeLeft_[l0 + l] != 0;
+  for (uint32_t l = 0; l < 8; ++l) moving = moving || (rampLeft_[l0 + l] | fadeLeft_[l0 + l] | gainRampLeft_[l0 + l]) != 0;
   validFrames_[g] = changing ? 0u : frames;
   if (changing || moving) carryDirty_[g] = 1;
 }
@@ -945,7 +1013,10 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   gateMask_[b] = gateMask_[a];
   laneGain_[b] = laneGain_[a];
   fadeLeft_[b] = fadeLeft_[a];
-  fadeFrom_[b] = fadeFrom_[a];
+  noteGain_[b] = noteGain_[a];
+  gainStep_[b] = gainStep_[a];
+  gainTarget_[b] = gainTarget_[a];
+  gainRampLeft_[b] = gainRampLeft_[a];
   velocity_[b] = velocity_[a];
   release_[b] = release_[a];
   ratio_[b] = ratio_[a];
@@ -966,6 +1037,8 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   gateMask_[a] = 0.0f;
   laneGain_[a] = 0.0f;
   fadeLeft_[a] = 0;
+  noteGain_[a] = 0.0;
+  gainRampLeft_[a] = 0;
   level_[a] = 0.0f;
   if (lastLane_ == a) lastLane_ = b;
   carryDirty_[a >> 3] = 1;
@@ -1029,6 +1102,8 @@ void VoiceEngine::freeLane(uint32_t lane) noexcept {  // RT-safe
   gateMask_[lane] = 0.0f;
   laneGain_[lane] = 0.0f;
   fadeLeft_[lane] = 0;
+  noteGain_[lane] = 0.0;
+  gainRampLeft_[lane] = 0;
   level_[lane] = 0.0f;
   carryDirty_[lane >> 3] = 1;
   if (lastLane_ == lane) lastLane_ = newestLive();  // M6: voice_last moves to the newest sounding voice
@@ -1245,8 +1320,14 @@ void VoiceEngine::skipBlock(const EventList* events, uint32_t frames) noexcept {
       cents_[l] = centsTarget_[l];
       rampLeft_[l] = 0;
     }
+    if (gainRampLeft_[l] > 0) {  // T7.1: so do gain ramps
+      noteGain_[l] = gainTarget_[l];
+      gainRampLeft_[l] = 0;
+      laneGain_[l] = gainTarget_[l];
+    }
     if (fadeLeft_[l] > 0) {
       fadeLeft_[l] = 0;
+      noteGain_[l] = 0.0;
       laneGain_[l] = 0.0f;
     }
     level_[l] = 0.0f;  // the image played silence

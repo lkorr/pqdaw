@@ -1,6 +1,7 @@
 #include "pq/engine/sequence.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <numeric>
 #include <string>
@@ -21,11 +22,24 @@ constexpr uint64_t splitmix64(uint64_t x) noexcept {
 // Top 24 bits → [0, 1) exactly representable in float32.
 constexpr float unitFloat(uint64_t h) noexcept { return static_cast<float>(h >> 40) * (1.0f / 16777216.0f); }
 
-bool before(const SequenceImage::Note& a, const SequenceImage::Note& b) noexcept {
-  return a.start != b.start ? a.start < b.start : a.id < b.id;
-}
-
 Error invalid(const std::string& what) { return Error{ErrorCode::InvalidArgument, "SequenceImage: " + what, {}}; }
+
+// T7.1: appends a cleaned copy of `in` to `out`: sorted by tick (stably), and of several points at one tick only
+// the first and the last (a jump needs no more). Returns the number of points appended.
+size_t appendCurve(const std::vector<CurvePoint>& in, std::vector<CurvePoint>& out) {
+  const size_t begin = out.size();
+  out.insert(out.end(), in.begin(), in.end());
+  const auto first = out.begin() + static_cast<std::ptrdiff_t>(begin);
+  const auto byTick = [](const CurvePoint& a, const CurvePoint& b) noexcept { return a.tick < b.tick; };
+  if (!std::is_sorted(first, out.end(), byTick)) std::stable_sort(first, out.end(), byTick);
+  size_t w = begin;
+  for (size_t r = begin; r < out.size(); ++r) {
+    if (w >= begin + 2 && out[w - 1].tick == out[r].tick && out[w - 2].tick == out[r].tick) out[w - 1] = out[r];
+    else out[w++] = out[r];
+  }
+  out.resize(w);
+  return w - begin;
+}
 
 }  // namespace
 
@@ -33,6 +47,35 @@ NoteRandom noteRandom(uint64_t seed, uint32_t noteId, int64_t pass) noexcept {  
   const uint64_t h1 = splitmix64(seed ^ splitmix64((static_cast<uint64_t>(noteId) << 32) ^ static_cast<uint64_t>(pass)));
   const uint64_t h2 = splitmix64(h1);
   return {unitFloat(h1), unitFloat(h2)};
+}
+
+namespace {
+
+// T = Ticks or double (a fractional tick; ticks are exact in a double far beyond any project length).
+template <class T>
+float curveValueImpl(std::span<const CurvePoint> curve, T t, float empty, uint32_t* after) noexcept {  // RT-safe
+  const CurvePoint* b = curve.data();
+  const CurvePoint* e = b + curve.size();
+  const CurvePoint* it =
+      std::upper_bound(b, e, t, [](T v, const CurvePoint& p) noexcept { return v < static_cast<T>(p.tick); });
+  if (after != nullptr) *after = static_cast<uint32_t>(it - b);
+  if (b == e) return empty;
+  if (it == b) return b->value;
+  const CurvePoint& p0 = *(it - 1);
+  if (it == e || static_cast<T>(p0.tick) == t) return p0.value;
+  const double x = static_cast<double>(t - static_cast<T>(p0.tick)) / static_cast<double>(it->tick - p0.tick);
+  return static_cast<float>(static_cast<double>(p0.value) + (static_cast<double>(it->value) - p0.value) * x);
+}
+
+}  // namespace
+
+float SequenceImage::curveValue(std::span<const CurvePoint> curve, Ticks t, float empty,
+                                uint32_t* after) noexcept {  // RT-safe
+  return curveValueImpl<Ticks>(curve, t, empty, after);
+}
+
+float SequenceImage::curveValueAt(std::span<const CurvePoint> curve, double tick, float empty) noexcept {  // RT-safe
+  return curveValueImpl<double>(curve, tick, empty, nullptr);
 }
 
 Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const TrackSequenceDesc> tracks,
@@ -49,7 +92,7 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
   img->clips_.reserve(totalClips);
   img->notes_.reserve(totalNotes);
 
-  std::vector<uint32_t> order;
+  std::vector<uint32_t> order, play, curved;  // clip order; a clip's playable notes; the curved notes' indices
   for (const TrackSequenceDesc& td : tracks) {
     Track tr{td.id, static_cast<uint32_t>(img->clips_.size()), 0};
     // Active clips by start (stable: at equal starts the later one in the description comes last and wins).
@@ -84,13 +127,33 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
         return (s >= c.content0 && s < pass0To) || (loopPasses && s >= cd.loopStart && s < cd.loopEnd);
       };
       c.noteBegin = static_cast<uint32_t>(img->notes_.size());
-      for (const NoteDesc& nd : cd.notes) {
+      // The playable notes in (start, id) order (T7.1: emitted in that order, so curved notes are appended to the
+      // curve tables in note order).
+      play.clear();
+      for (uint32_t ni = 0; ni < cd.notes.size(); ++ni) {
+        const NoteDesc& nd = cd.notes[ni];
         if (nd.length < 1) return invalid("note " + std::to_string(nd.id) + " has length < 1");
         if (!std::isfinite(nd.hz) || !(nd.hz > 0.0f)) return invalid("note " + std::to_string(nd.id) + " has a bad Hz");
         if (!std::isfinite(nd.velocity) || !std::isfinite(nd.releaseVelocity) || !std::isfinite(nd.chance) ||
             !std::isfinite(nd.velocityRange) || !std::isfinite(nd.ratio) || !std::isfinite(nd.harmonic))
           return invalid("note " + std::to_string(nd.id) + " has a non-finite field");
+        for (const CurvePoint& p : nd.pitchCurve)
+          if (!std::isfinite(p.value) || std::fabs(p.value) > kMaxCurveCents)
+            return invalid("note " + std::to_string(nd.id) + " has a bad pitch-curve value");
+        for (const CurvePoint& p : nd.gainCurve)
+          if (!std::isfinite(p.value) || p.value < 0.0f)
+            return invalid("note " + std::to_string(nd.id) + " has a bad gain-curve value");
         if (!nd.enabled || !(nd.chance > 0.0f) || !playable(nd.start)) continue;
+        play.push_back(ni);
+      }
+      const auto earlier = [&](uint32_t a, uint32_t b) noexcept {
+        const NoteDesc& x = cd.notes[a];
+        const NoteDesc& y = cd.notes[b];
+        return x.start != y.start ? x.start < y.start : x.id < y.id;
+      };
+      if (!std::is_sorted(play.begin(), play.end(), earlier)) std::sort(play.begin(), play.end(), earlier);
+      for (const uint32_t ni : play) {
+        const NoteDesc& nd = cd.notes[ni];
         Note n{};
         n.start = nd.start;
         n.length = nd.length;
@@ -104,11 +167,32 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
         n.harmonic = nd.harmonic;
         n.pitch = nd.pitch;
         n.keyDegree = nd.keyDegree;
+        if (!nd.pitchCurve.empty() || !nd.gainCurve.empty()) {  // T7.1: header (hash), pitch points, gain points
+          std::vector<CurvePoint>& cv = img->curves_;
+          if (cv.size() + 1 + nd.pitchCurve.size() + nd.gainCurve.size() >= 0xFFFFFFFFull)
+            return invalid("too many curve points");
+          NoteCurves ref;
+          ref.begin = static_cast<uint32_t>(cv.size());
+          cv.push_back(CurvePoint{});
+          const size_t np = appendCurve(nd.pitchCurve, cv);
+          const size_t ng = appendCurve(nd.gainCurve, cv);
+          if (np > kMaxCurvePoints || ng > kMaxCurvePoints)
+            return invalid("note " + std::to_string(nd.id) + " has a curve with more than " +
+                           std::to_string(kMaxCurvePoints) + " points");
+          ref.pitchCount = static_cast<uint16_t>(np);
+          ref.gainCount = static_cast<uint16_t>(ng);
+          uint64_t h = splitmix64((static_cast<uint64_t>(np) << 32) | ng);
+          for (size_t i = ref.begin + 1; i < cv.size(); ++i)
+            h = splitmix64(h ^ splitmix64(static_cast<uint64_t>(cv[i].tick - nd.start)) ^
+                           (static_cast<uint64_t>(std::bit_cast<uint32_t>(cv[i].value)) << 17));
+          cv[ref.begin].tick = static_cast<Ticks>(h);
+          img->curveRefs_.push_back(ref);
+          curved.push_back(static_cast<uint32_t>(img->notes_.size()));
+        }
         img->notes_.push_back(n);
       }
       c.noteEnd = static_cast<uint32_t>(img->notes_.size());
       const auto nb = img->notes_.begin() + c.noteBegin, ne = img->notes_.begin() + c.noteEnd;
-      if (!std::is_sorted(nb, ne, before)) std::sort(nb, ne, before);
       auto firstAtOrAfter = [&](Ticks s) {
         return static_cast<uint32_t>(
             std::lower_bound(nb, ne, s, [](const Note& n, Ticks v) noexcept { return n.start < v; }) -
@@ -122,6 +206,17 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
     }
     tr.clipEnd = static_cast<uint32_t>(img->clips_.size());
     img->tracks_.push_back(tr);
+  }
+  if (!curved.empty()) {  // T7.1: the bit per note and the rank per 64 notes (curvesOf)
+    const size_t words = img->notes_.size() / 64 + 1;
+    img->curveBits_.assign(words, 0);
+    img->curveRank_.assign(words, 0);
+    for (const uint32_t i : curved) img->curveBits_[i >> 6] |= uint64_t{1} << (i & 63u);
+    uint32_t before = 0;
+    for (size_t w = 0; w < words; ++w) {
+      img->curveRank_[w] = before;
+      before += static_cast<uint32_t>(std::popcount(img->curveBits_[w]));
+    }
   }
   return img;
 }

@@ -1294,3 +1294,252 @@ patch EchoDone {
   CHECK(ended >= 960 + 2400 + 2883);
   CHECK(ended <= 960 + 2400 + 2883 + 1500);
 }
+
+// ---- T7.1: note gain, and pitch / gain ramps as note curves send them -------------------------------------------------
+
+namespace {
+
+Ev gainEv(int64_t t, uint32_t id, float g, uint32_t ramp = 0) { return {t, eng::noteGain(0, id, g, ramp)}; }
+Ev onGain(int64_t t, uint32_t id, float hz, float g) {
+  Ev e = on(t, id, hz, 1.0f);
+  e.e.gain = g;
+  return e;
+}
+
+// The gate as 0 / 1 per voice (mix `y` = Σ lane gain) and its voice_sum inside the patch (global out `g`).
+const char* kGainProbe = R"(
+patch GainProbe {
+  out y : audio voice
+  out g : audio
+  y = gate_to_real(voice.gate)
+  g = voice_sum(gate_to_real(voice.gate))
+}
+)";
+
+// A gated sine per voice: silent (and so ended) soon after its note-off.
+const char* kGatedSine = R"(
+patch GatedSine {
+  out y : audio voice
+  y = sine(phasor(voice.hz)) * gate_to_real(voice.gate) * 0.3
+}
+)";
+
+double dbError(double got, double want) { return std::fabs(20.0 * std::log10(got / want)); }
+
+}  // namespace
+
+TEST_CASE("voices: note gain — the note-on's gain, Gain steps and linear ramps within 0.01 dB, blocks 1 / 64 / 512 (T7.1)") {
+  // Note gain over time: 0.5 from the onset (10), ramp to 1 over [100, 1100), step to 0.25 at 2000, ramp to 0 over
+  // [2500, 3000) (parked until 4000), ramp towards 0.8 over 300 from 4000, replaced at 4100 by a ramp to 0.1 over 1000.
+  const double at4100 = 0.8 * 100.0 / 300.0;
+  auto expect = [&](int64_t t) -> double {
+    if (t < 10) return 0.0;
+    if (t < 100) return 0.5;
+    if (t < 1100) return 0.5 + 0.5 * static_cast<double>(t - 100) / 1000.0;
+    if (t < 2000) return 1.0;
+    if (t < 2500) return 0.25;
+    if (t < 3000) return 0.25 * (1.0 - static_cast<double>(t - 2500) / 500.0);
+    if (t < 4000) return 0.0;
+    if (t < 4100) return 0.8 * static_cast<double>(t - 4000) / 300.0;
+    if (t < 5100) return at4100 + (0.1 - at4100) * static_cast<double>(t - 4100) / 1000.0;
+    return 0.1;
+  };
+  std::vector<float> ref;
+  for (uint32_t block : {1u, 64u, 512u}) {
+    INFO("block " << block);
+    VoiceConfig cfg;
+    Rig r(kGainProbe, cfg, 2, 512);
+    const auto out = r.run(6000, block,
+                           {onGain(10, 1, 220.0f, 0.5f), gainEv(100, 1, 1.0f, 1000), gainEv(2000, 1, 0.25f),
+                            gainEv(2500, 1, 0.0f, 500), gainEv(4000, 1, 0.8f, 300), gainEv(4100, 1, 0.1f, 1000)});
+    const auto& y = out[r.mixIndex("y")];
+    const auto& g = out.back();
+    double worst = 0.0;
+    size_t bad = 0;
+    for (int64_t t = 0; t < 6000; ++t) {
+      const double want = expect(t);
+      if (want == 0.0) {
+        bad += y[static_cast<size_t>(t)] != 0.0f || g[static_cast<size_t>(t)] != 0.0f ? 1u : 0u;  // parked: exactly 0
+      } else {
+        worst = std::max({worst, dbError(y[static_cast<size_t>(t)], want), dbError(g[static_cast<size_t>(t)], want)});
+      }
+    }
+    CHECK(bad == 0);
+    CHECK(worst <= 0.01);
+    CHECK(y[1100] == 1.0f);  // ramps end exactly on their targets
+    CHECK(y[1999] == 1.0f);
+    CHECK(y[2000] == 0.25f);
+    CHECK(y[3000] == 0.0f);
+    CHECK(y[5100] == 0.1f);
+    CHECK(y[5999] == 0.1f);
+    CHECK(r.ve.stats().gainEvents == 5);
+    CHECK(r.ve.stats().unmatchedEvents == 0);
+    CHECK(r.ve.liveVoices() == 1);  // a parked voice keeps sounding (held)
+    CHECK(r.rtViolations == 0);
+    if (ref.empty()) ref = y;
+    else CHECK(std::memcmp(ref.data(), y.data(), sizeof(float) * y.size()) == 0);  // sample-exact for any block size
+    MESSAGE("block " << block << ": worst gain error " << worst << " dB");
+  }
+}
+
+TEST_CASE("voices: lane gain = steal fade x note gain; a parked voice is stolen without a fade (T7.1)") {
+  const uint32_t N = 144;  // 3 ms
+  auto fade = [&](uint32_t k) { return k < N ? 0.5 + 0.5 * std::cos(3.141592653589793 * k / N) : 0.0; };
+  {  // a constant note gain under the fade
+    VoiceConfig cfg;
+    cfg.maxVoices = 1;
+    Rig r(kGainProbe, cfg, eng::voiceGroupsFor(1), 64);
+    const auto out = r.run(512, 64, {onGain(0, 1, 100.0f, 0.5f), on(100, 2, 200.0f)});  // note 2 steals note 1 at 100
+    const auto& y = out[r.mixIndex("y")];
+    const auto& g = out.back();
+    CHECK(y[50] == 0.5f);
+    for (uint32_t k = 0; k <= N + 20; ++k) {
+      INFO("k " << k);
+      CHECK(y[100 + k] == doctest::Approx(1.0 + 0.5 * fade(k)).epsilon(1e-6));
+      CHECK(g[100 + k] == doctest::Approx(1.0 + 0.5 * fade(k)).epsilon(1e-6));
+    }
+  }
+  {  // a gain ramp keeps running under the fade
+    VoiceConfig cfg;
+    cfg.maxVoices = 1;
+    Rig r(kGainProbe, cfg, eng::voiceGroupsFor(1), 64);
+    const auto out = r.run(512, 64, {onGain(0, 1, 100.0f, 0.5f), gainEv(50, 1, 1.0f, 1000), on(100, 2, 200.0f)});
+    const auto& y = out[r.mixIndex("y")];
+    for (uint32_t k = 0; k <= N + 20; ++k) {
+      INFO("k " << k);
+      const double ng = 0.5 + 0.5 * (50.0 + k) / 1000.0;
+      CHECK(y[100 + k] == doctest::Approx(1.0 + ng * fade(k)).epsilon(1e-6));
+    }
+    CHECK(y[400] == 1.0f);  // only the new voice is left
+  }
+  {  // a parked voice (gain 0): the steal has nothing to fade, and a Gain for the stolen note finds no voice
+    VoiceConfig cfg;
+    cfg.maxVoices = 1;
+    Rig r(kGainProbe, cfg, eng::voiceGroupsFor(1), 64);
+    const auto out = r.run(512, 64, {onGain(0, 1, 100.0f, 0.0f), on(100, 2, 200.0f), gainEv(110, 1, 1.0f)});
+    const auto& y = out[r.mixIndex("y")];
+    for (uint32_t t = 0; t < 100; ++t) CHECK(y[t] == 0.0f);
+    for (uint32_t t = 100; t < 512; ++t) CHECK(y[t] == 1.0f);
+    CHECK(r.ve.stats().steals == 1);
+    CHECK(r.ve.stats().unmatchedEvents == 1);
+  }
+}
+
+// Two notes with the same onset, pitch and ramps (a unison of a JI object's voices) are the same samples, lane for
+// lane, also while compaction moves them to another group; and the interpreter and the JIT (in pq_tests_jit: the rig's
+// builder) render them bit-identically.
+TEST_CASE("voices: two notes with the same onset and ramps are bit-identical lanes under compaction; interpreter == JIT (T7.1)") {
+  // Group 0 fills with 8 notes, the unison pair lands in group 1; 6 of the 8 end, and compaction moves the pair.
+  std::vector<Ev> evs;
+  for (uint32_t i = 0; i < 8; ++i) evs.push_back(on(0, 10 + i, 110.0f + 7.0f * static_cast<float>(i), 0.5f));
+  const float hz = 220.0f;
+  const float fifth = static_cast<float>(220.0 * std::exp2(702.0 / 1200.0));
+  for (uint32_t id : {1u, 2u}) evs.push_back(onGain(37, id, hz, 0.5f));
+  for (uint32_t id : {1u, 2u}) evs.push_back(pitch(37, id, fifth, 3000));
+  for (uint32_t id : {1u, 2u}) evs.push_back(gainEv(37, id, 1.0f, 2000));
+  for (uint32_t i = 0; i < 6; ++i) evs.push_back(off(300 + 10 * i, 10 + i));
+  for (uint32_t id : {1u, 2u}) evs.push_back(pitch(3037, id, hz, 3000));
+  for (uint32_t id : {1u, 2u}) evs.push_back(gainEv(3500, id, 0.2f, 1500));
+  for (uint32_t id : {1u, 2u}) evs.push_back(off(7000, id));
+  std::stable_sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
+
+  struct Result {
+    std::vector<float> mix, lane[2], gain[2];
+    uint64_t moves = 0;
+    bool moved = false;
+  };
+  auto render = [&](bool interpreter) {
+    Result res;
+    const auto saved = rigImageBuilder();
+    if (interpreter) rigImageBuilder() = {};
+    VoiceConfig cfg;
+    cfg.silenceMs = 5.0f;
+    auto r = std::make_unique<Rig>(kGatedSine, cfg, eng::voiceGroupsFor(16), 64);
+    rigImageBuilder() = saved;
+    const uint32_t slot = r->ve.mixSlot(r->mixIndex("y"));
+    uint32_t lanes[2] = {eng::kNoSlot, eng::kNoSlot};  // the lane each note plays the NEXT block in
+    uint32_t first[2] = {eng::kNoSlot, eng::kNoSlot};
+    uint64_t movesBefore = 0;
+    res.mix = r->run(7400, 64, evs, [&](int64_t, uint32_t n) {
+      for (int i = 0; i < 2; ++i) {
+        uint32_t lane = lanes[i];
+        if (lane == eng::kNoSlot) {  // started in this block: where it is now, if nothing moved at the block's end
+          lane = r->ve.laneOf(1 + static_cast<uint32_t>(i));
+          if (lane != eng::kNoSlot) {
+            REQUIRE(r->ve.stats().voiceMoves == movesBefore);
+            first[i] = lane;
+          }
+        }
+        if (lane != eng::kNoSlot) {
+          const float* o = r->ve.voiceOut(lane >> 3, slot);
+          const float* gn = r->ve.gain(lane >> 3);
+          for (uint32_t f = 0; f < n; ++f) {
+            res.lane[i].push_back(o[f * 8 + (lane & 7u)]);
+            res.gain[i].push_back(gn[f * 8 + (lane & 7u)]);
+          }
+        }
+        lanes[i] = r->ve.laneOf(1 + static_cast<uint32_t>(i));
+        if (lanes[i] != eng::kNoSlot && first[i] != eng::kNoSlot && (lanes[i] >> 3) != (first[i] >> 3)) res.moved = true;
+      }
+      movesBefore = r->ve.stats().voiceMoves;
+    })[0];
+    res.moves = r->ve.stats().voiceMoves;
+    CHECK(r->rtViolations == 0);
+    CHECK(r->ve.stats().unmatchedEvents == 0);
+    CHECK(r->ve.stats().gainEvents == 4);
+    CHECK(r->ve.stats().pitchEvents == 4);
+    return res;
+  };
+  const Result a = render(false);
+  CHECK(a.moves >= 2);
+  CHECK(a.moved);  // the pair changed group mid-glide
+  REQUIRE(a.lane[0].size() > 6000);
+  REQUIRE(a.lane[0].size() == a.lane[1].size());
+  CHECK(std::memcmp(a.lane[0].data(), a.lane[1].data(), sizeof(float) * a.lane[0].size()) == 0);
+  CHECK(std::memcmp(a.gain[0].data(), a.gain[1].data(), sizeof(float) * a.gain[0].size()) == 0);
+  double energy = 0.0;
+  for (float v : a.lane[0]) energy += static_cast<double>(v) * v;
+  CHECK(energy > 50.0);
+  const Result b = render(true);  // the interpreter
+  REQUIRE(b.mix.size() == a.mix.size());
+  CHECK(std::memcmp(a.mix.data(), b.mix.data(), sizeof(float) * a.mix.size()) == 0);
+  CHECK(std::memcmp(a.lane[0].data(), b.lane[0].data(), sizeof(float) * a.lane[0].size()) == 0);
+  CHECK(std::memcmp(a.gain[1].data(), b.gain[1].data(), sizeof(float) * a.gain[1].size()) == 0);
+}
+
+TEST_CASE("voices: Gain events at the event-volume limit — the newest are dropped and counted, note-offs never (T7.1)") {
+  {  // EventBuffer: a full buffer drops expression events (Pitch, Gain) for a note-off, and an incoming one
+    eng::EventBuffer b(3);
+    CHECK(b.push(eng::noteGain(0, 1, 0.5f)));
+    CHECK(b.push(eng::notePitch(1, 1, 300.0f)));
+    CHECK(b.push(eng::noteGain(2, 1, 0.7f, 10)));
+    CHECK_FALSE(b.push(eng::noteGain(3, 1, 0.9f)));  // full: the incoming Gain is dropped
+    CHECK(b.push(eng::noteOff(3, 1)));               // full: the newest expression event (the Gain at 2) makes room
+    CHECK(b.dropped() == 2);
+    const eng::EventList& l = b.list();
+    REQUIRE(l.count == 3);
+    CHECK(l.events[0].kind == eng::NoteEventKind::Gain);
+    CHECK(l.events[1].kind == eng::NoteEventKind::Pitch);
+    CHECK(l.events[2].kind == eng::NoteEventKind::NoteOff);
+  }
+  VoiceConfig cfg;
+  cfg.maxEventsPerBlock = 16;
+  Rig r(kGainProbe, cfg, 2, 64);
+  std::vector<Ev> evs;
+  for (uint32_t i = 0; i < 8; ++i) evs.push_back(on(0, 1 + i, 100.0f + static_cast<float>(i)));
+  // Block 2 (frames 128..191): 40 Gain events (5 per note; only the first 16 fit) and every note-off after them.
+  for (uint32_t k = 0; k < 5; ++k)
+    for (uint32_t i = 0; i < 8; ++i) evs.push_back(gainEv(130 + k, 1 + i, 0.1f * static_cast<float>(k + 1)));
+  for (uint32_t i = 0; i < 8; ++i) evs.push_back(off(150, 1 + i));
+  const auto out = r.run(512, 64, evs);
+  const auto& y = out[r.mixIndex("y")];
+  CHECK(r.ve.stats().gainEvents == 16);
+  CHECK(r.ve.stats().droppedEvents == 24);
+  CHECK(r.ve.stats().noteOffs == 8);
+  CHECK(y[120] == 8.0f);
+  CHECK(y[131] == doctest::Approx(8 * 0.2).epsilon(1e-6));  // the two rounds that fit: 0.1, then 0.2
+  CHECK(y[149] == doctest::Approx(8 * 0.2).epsilon(1e-6));
+  CHECK(y[150] == 0.0f);  // every note-off was applied (the gate is the output)
+  for (uint32_t l = 0; l < r.ve.lanes(); ++l) CHECK(r.ve.laneStatus(l) != eng::LaneStatus::Held);
+  CHECK(r.rtViolations == 0);
+}
