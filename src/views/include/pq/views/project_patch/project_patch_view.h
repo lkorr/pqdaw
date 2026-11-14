@@ -596,6 +596,10 @@ public:
   void setLaneHeight(doc::TrackId track, float h);
   bool bandFolded(doc::TrackId track) const noexcept;
   void setBandFolded(doc::TrackId track, bool folded);
+  // BR.tuning-block: a MIDI band's tuning block opened in place to its MOS wheel, or closed (view state saved with the
+  // project: doc::PatchNudge::tuningOpen; not undoable). A double-click on the block, or its menu.
+  bool tuningOpen(doc::TrackId track) const noexcept;
+  void setTuningOpen(doc::TrackId track, bool open);
   void setAllFolded(bool folded);
   // A lane cable's tap: where it leaves its lane's top edge (world x; nullopt: back to the default, the lane's left end). One undo
   // step (doc::SetWireTap).

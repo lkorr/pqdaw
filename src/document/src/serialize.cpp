@@ -1374,6 +1374,10 @@ private:
           w_.key("folded");
           w_.boolean(true);
         }
+        if (n.tuningOpen) {  // BR.tuning-block: a MIDI band's tuning block opened to its wheel
+          w_.key("tuningOpen");
+          w_.boolean(true);
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -3438,7 +3442,7 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY", "laneH", "folded"};
+          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY", "laneH", "folded", "tuningOpen"};
           RawNudge e{0, {}, r_.pos()};
           bool mixerSeen[2] = {false, false};
           Members em(r_, el, N);
@@ -3470,6 +3474,7 @@ private:
                 r_.failValue(f, "a lane's height must be within 16 … 1024");
             }
             if (q == 9) e.nudge.folded = r_.readBool(f);  // TL.1 (optional)
+            if (q == 10) e.nudge.tuningOpen = r_.readBool(f);  // BR.tuning-block (optional)
           }
           em.require({0, 1, 2});
           if (mixerSeen[0] != mixerSeen[1]) r_.failValue(el, "a placed mixer needs both mixerX and mixerY");

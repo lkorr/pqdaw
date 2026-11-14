@@ -41,6 +41,7 @@
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/prefs/audio_prefs.h"
 #include "pq/views/project_patch/project_patch_view.h"
+#include "project_patch/internal.h"
 #include "pq/views/tunings/tunings_panel.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/devices.h"
@@ -1498,6 +1499,42 @@ Status setupProjectMixer(Shell& shell) {
   v->canvas().setView(view);
   shell.tree().layoutNow();
   v->wakeFaces();  // the meter read (the hosts poll visible faces)
+  shell.tree().layoutNow();
+  return Ok{};
+}
+// BR.tuning-block: the MIDI bands' tuning blocks at their left edge — Keys's opened to its MOS circle (12-EDO, the new
+// track's default) with C, E and G sounding (lit in their frequencies' colours), the band under it closed (the narrow
+// TUNING panel), each with its notes cable up from the lane's chip and on into the instrument.
+Status setupProjectPatchTuning(Shell& shell) {
+  if (Status s = setupProjectPatch(shell, true); !s) return s;
+  ViewContext& ctx = shell.context();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch-tuning: no Keys track", {}};
+  v->setTuningOpen(keys->id, true);
+  shell.tree().layoutNow();
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t b = pp.bandOf(keys->id);
+  if (b == project_patch::kNone || pp.bands[b].tuning == project_patch::kNone)
+    return Error{ErrorCode::NotFound, "project-patch-tuning: Keys has no tuning block", {}};
+  const project_patch::Node& tn = pp.nodes[pp.bands[b].tuning];
+  const ui::IRect r = v->canvas().rect();
+  const float us = shell.tree().scale();
+  circuit::CircuitCanvas::View view;
+  view.zoom = std::min(1.0, static_cast<double>(r.h) / (static_cast<double>(us) * (tn.h + 420.0)));
+  view.x = pp.bands[b].x0 - 24.0;
+  view.y = tn.y - 52.0;
+  v->canvas().setView(view);
+  shell.tree().layoutNow();
+  const uint32_t sn = pp.bands[b].tuning < v->scene().sceneNode.size() ? v->scene().sceneNode[pp.bands[b].tuning] : project_patch::kNone;
+  Face* f = sn != project_patch::kNone ? v->canvas().panelOn(sn) : nullptr;
+  if (f == nullptr) return Error{ErrorCode::NotFound, "project-patch-tuning: no tuning face", {}};
+  (void)f->prepare(v->canvas().deviceScale());  // laid out now (the canvas would at its first settled frame)
+  MosCircle* c = project_patch::tuningFaceCircle(*f);
+  if (c == nullptr) return Error{ErrorCode::NotFound, "project-patch-tuning: the face has no circle", {}};
+  c->noteOn(1, 0, 261.63);  // C
+  c->noteOn(2, 4, 329.63);  // E
+  c->noteOn(3, 7, 392.0);   // G
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3238,6 +3275,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-overview", 1280, 800, setupProjectPatchOverview},  // T4.13
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"project-mixer", 1280, 800, setupProjectMixer},  // TX.mixer-look
+    {"project-patch-tuning", 1280, 800, setupProjectPatchTuning},  // BR.tuning-block
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio

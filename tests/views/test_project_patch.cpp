@@ -2214,64 +2214,22 @@ TEST_CASE("lanes (TL.1): a lane's bottom edge resizes it; the fold triangle coll
   CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
 }
 
-TEST_CASE("lanes (TL.1): cables leave the lane's top edge at their own spots — slide one (one undo step), draw new ones") {
+TEST_CASE("lanes (TL.1): cables leave the lane's top edge at their own spots — draw new ones, slide one (one undo step)") {
   Ui u;
   REQUIRE(u.d.enableGpu().ok());
   u.show();
   ProjectPatchView& v = u.view();
-  u.zoomTo("Keys");
   const doc::TrackId keysId = u.track("Keys").id;
   const uint32_t keys = v.patch().bandOf(keysId);
-  // The notes cable into the instrument: under the block it feeds by default (its centre), on the lane's top edge.
+  // BR.tuning-block: the notes link into the instrument is drawn into the band's tuning block, a cable up from the lane's
+  // "notes" chip (not a tap on the lane's edge: it does not slide); the lane's other cables do.
   const doc::DeviceId inst = u.onPath("Keys", 0);
   const uint32_t instNode = u.deviceNode(inst);
   uint32_t ek = kNone;
   for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
     if (v.patch().edges[k].from == v.patch().bands[keys].source && v.patch().edges[k].to == instNode) ek = k;
   REQUIRE(ek != kNone);
-  const Edge e0 = v.patch().edges[ek];
-  const Node& in = v.patch().nodes[instNode];
-  CHECK_FALSE(e0.tapPinned);
-  CHECK(e0.tapX >= in.x - 1.0f);  // under the block it feeds
-  CHECK(e0.tapX <= in.x + in.w + 1.0f);
-  CHECK(e0.points.front().x == doctest::Approx(e0.tapX));
-  CHECK(e0.points.front().y == doctest::Approx(v.patch().bands[keys].laneY));
-  // Slide its lane end 60 units right: saved on the wire (band-local), one undo step; the lowering untouched.
-  const Vec2 tap = u.dev(e0.tapX, v.patch().bands[keys].laneY);
-  REQUIRE(v.canvas().laneEdgeAt(tap).kind == ProjectCanvas::LaneEdgeHit::Kind::Tap);
-  const size_t h0 = u.history();
-  const uint64_t lowerings = v.stats().rebuilds;
-  const float s = v.canvas().deviceScale();
-  u.d.drag(tap, {tap.x + 60.0f * s, tap.y}, 8);
-  u.d.step();
-  CHECK(u.history() == h0 + 1);
-  const doc::Wire* w = doc::findWire(*u.ctx.doc(), e0.wire);
-  REQUIRE(w != nullptr);
-  REQUIRE(w->tap.has_value());
-  CHECK(*w->tap == doctest::Approx(e0.tapX + 60.0f - v.patch().bands[keys].x0).epsilon(0.02));
-  (void)lowerings;
-  uint32_t ek2 = kNone;
-  for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
-    if (v.patch().edges[k].wire == e0.wire) ek2 = k;
-  REQUIRE(ek2 != kNone);
-  CHECK(v.patch().edges[ek2].tapPinned);
-  CHECK(v.patch().edges[ek2].tapX == doctest::Approx(e0.tapX + 60.0f).epsilon(0.02));
-  CHECK(v.patch().edges[ek2].points.front().x == doctest::Approx(v.patch().edges[ek2].tapX));
-  // Saved with the project.
-  {
-    const auto json = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
-    REQUIRE(json.ok());
-    doc::LoadOptions lo;
-    lo.devices = &library();
-    auto back = doc::parseProject(*json, lo);
-    REQUIRE_MESSAGE(back.ok(), (back.ok() ? "" : back.error().message));
-    const doc::Wire* bw = doc::findWire(*back->project, e0.wire);
-    REQUIRE(bw != nullptr);
-    CHECK(bw->tap == w->tap);
-  }
-  REQUIRE(u.ctx.undo());
-  CHECK_FALSE(doc::findWire(*u.ctx.doc(), e0.wire)->tap.has_value());
-  REQUIRE(u.ctx.redo());
+  CHECK(v.patch().edges[ek].drawnTo == v.patch().bands[keys].tuning);
   // A new cable drawn up from the lane's Hz chip onto the Saturator's drive pin... or its face: a note-output wire
   // leaving the lane at the chip.
   u.frameLane("Keys");  // from the lane's left end, its port chips readable
@@ -2296,20 +2254,62 @@ TEST_CASE("lanes (TL.1): cables leave the lane's top edge at their own spots —
     u.d.step();
   }
   REQUIRE(doc::wiresOf(*u.ctx.doc()).size() == wires0 + 1);
-  const doc::Wire& made = doc::wiresOf(*u.ctx.doc()).back();
+  const doc::Wire made = doc::wiresOf(*u.ctx.doc()).back();
   CHECK(made.noteSource == keysId);
   CHECK(made.port == "hz");
   REQUIRE(made.tap.has_value());
   CHECK(*made.tap == doctest::Approx((hz.x0 + hz.x1) * 0.5f - v.patch().bands[keys].x0).epsilon(0.02));
-  // Double-click a cable's lane end: back under the block it feeds (one undo step).
+  uint32_t e0k = kNone;
+  for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
+    if (v.patch().edges[k].wire == made.id) e0k = k;
+  REQUIRE(e0k != kNone);
+  const Edge e0 = v.patch().edges[e0k];
+  CHECK(e0.tapPinned);
+  CHECK(e0.points.front().x == doctest::Approx(e0.tapX));
+  CHECK(e0.points.front().y == doctest::Approx(v.patch().bands[keys].laneY));
+  // Slide its lane end 60 units right: saved on the wire (band-local), one undo step; the lowering untouched.
+  const Vec2 tap = u.dev(e0.tapX, v.patch().bands[keys].laneY);
+  REQUIRE(v.canvas().laneEdgeAt(tap).kind == ProjectCanvas::LaneEdgeHit::Kind::Tap);
+  const size_t h0 = u.history();
+  const float s = v.canvas().deviceScale();
+  u.d.drag(tap, {tap.x + 60.0f * s, tap.y}, 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  const doc::Wire* w = doc::findWire(*u.ctx.doc(), e0.wire);
+  REQUIRE(w != nullptr);
+  REQUIRE(w->tap.has_value());
+  CHECK(*w->tap == doctest::Approx(e0.tapX + 60.0f - v.patch().bands[keys].x0).epsilon(0.02));
+  uint32_t ek2 = kNone;
+  for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
+    if (v.patch().edges[k].wire == e0.wire) ek2 = k;
+  REQUIRE(ek2 != kNone);
+  CHECK(v.patch().edges[ek2].tapPinned);
+  CHECK(v.patch().edges[ek2].tapX == doctest::Approx(e0.tapX + 60.0f).epsilon(0.02));
+  CHECK(v.patch().edges[ek2].points.front().x == doctest::Approx(v.patch().edges[ek2].tapX));
+  // Saved with the project.
+  {
+    const auto json = doc::serializeProject(*u.ctx.doc(), u.ctx.store().view());
+    REQUIRE(json.ok());
+    doc::LoadOptions lo;
+    lo.devices = &library();
+    auto back = doc::parseProject(*json, lo);
+    REQUIRE_MESSAGE(back.ok(), (back.ok() ? "" : back.error().message));
+    const doc::Wire* bw = doc::findWire(*back->project, e0.wire);
+    REQUIRE(bw != nullptr);
+    CHECK(bw->tap == w->tap);
+  }
+  const std::optional<float> slid = w->tap;
+  REQUIRE(u.ctx.undo());
+  CHECK(doc::findWire(*u.ctx.doc(), e0.wire)->tap == made.tap);
+  REQUIRE(u.ctx.redo());
+  CHECK(doc::findWire(*u.ctx.doc(), e0.wire)->tap == slid);
+  // Double-click a cable's lane end: back to the default, the lane's left end right of its chips (one undo step).
   const size_t h1 = u.history();
-  const Vec2 tap2 = u.dev(v.patch().edges[ek2].tapX, v.patch().bands[keys].laneY);
   uint32_t ek3 = kNone;
   for (uint32_t k = 0; k < v.patch().edges.size(); ++k)
     if (v.patch().edges[k].wire == e0.wire) ek3 = k;
   REQUIRE(ek3 != kNone);
   const Vec2 tap3 = u.dev(v.patch().edges[ek3].tapX, v.patch().bands[keys].laneY);
-  (void)tap2;
   u.d.doubleClick(tap3);
   u.d.step();
   CHECK_FALSE(doc::findWire(*u.ctx.doc(), e0.wire)->tap.has_value());

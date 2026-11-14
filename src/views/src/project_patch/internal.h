@@ -17,6 +17,13 @@
 #include "pq/ui/widget.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
+namespace pq::ui {
+class TextEdit;
+}
+namespace pq::views {
+class MosCircle;
+}
+
 namespace pq::views::project_patch {
 
 inline ui::Rect snapRect(ui::Rect r) noexcept { return {std::round(r.x0), std::round(r.y0), std::round(r.x1), std::round(r.y1)}; }
@@ -96,6 +103,17 @@ std::optional<ControlAnchor> mixerControlAnchor(const Face& f, const doc::ParamR
 // the face-local rect to repaint in `area`.
 doc::TrackId mixerFaceTrack(const Face& f);
 bool mixerShow(Face& f, const doc::ParamRef& p, std::optional<double> value, ui::Rect& area);
+
+// BR.tuning-block: a MIDI band's tuning block drawn as its face (tuning_face.cpp): closed, a narrow vertical panel
+// labelled TUNING; opened, a tree of its own (the MOS circle, the EDO entry, a button to the full wheel) laid out at the
+// canvas's scale, editing the track's tuning (TuningEdit), its degrees lit as the track's notes sound (CircleNotes). A
+// tuning node's SceneFace has the track as its owner and tuningFacePath as its path (closed and opened: two faces).
+inline constexpr std::string_view kTuningFacePrefix = "tuning:";
+std::string tuningFacePath(const Node& n);
+std::unique_ptr<Face> makeTuningFace(ProjectPatchView& view, const ProjectPatch& pp, const Node& n);
+// The opened face's widgets (tests): its MOS circle and EDO entry (null: not an opened tuning face, not laid out yet).
+MosCircle* tuningFaceCircle(Face& f);
+ui::TextEdit* tuningFaceEdo(Face& f);
 
 // TX.lane-edit: the title strip of the clips in a window body `bodyH` device px high (0: the body is too low for one).
 inline float laneClipTitleH(float bodyH, float uiScale) noexcept {

@@ -963,6 +963,13 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           v.setMixerExpanded(t, !v.mixerExpanded(t));
           return true;
         }
+        // BR.tuning-block: a double-click on a tuning block (closed: anywhere; opened: its header, outside the wheel's
+        // controls) opens it in place to its MOS wheel, or closes it.
+        if (node != kNone && pp.nodes[node].kind == NodeKind::Tuning && pp.nodes[node].band < pp.bands.size()) {
+          const doc::TrackId t = pp.bands[pp.nodes[node].band].track;
+          v.setTuningOpen(t, !v.tuningOpen(t));
+          return true;
+        }
         if (node == kNone) {
           if (v.embedded()) v.fitAll();  // TX.groups / TX.free-rack: an embedded canvas has no band to open
           else if (const uint32_t b = bandAt(e.pos); b != kNone) v.openBand(pp.bands[b].track);  // T5.x-circuit-chain
@@ -2208,6 +2215,7 @@ void ProjectCanvas::updateGrow() {
       take(q, down);
     };
     if (b.source != kNone && pp.nodes[b.source].kind != NodeKind::Lane) keep(b.source, false, 0.0f);
+    keep(b.tuning, true, 0.0f);  // BR.tuning-block: an opened tuning block holds the band down too
     for (const uint32_t d : b.devices) keep(d, true, 0.0f);
     keep(b.mixer, true, growMixer_[bi]);
     keep(b.output, true, growMixer_[bi]);

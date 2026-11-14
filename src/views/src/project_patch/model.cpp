@@ -1033,6 +1033,22 @@ struct Builder {
         s.outputs.push_back({"in", ""});
         out.bands[bi].input = addNode(std::move(s));
       }
+      // BR.tuning-block: a MIDI track's tuning block (a view of its tuning: no device), closed or opened to its wheel.
+      if (t.kind == doc::TrackKind::Midi) {
+        bool open = false;
+        if (opt.nudges != nullptr)
+          if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end()) open = it->second.tuningOpen;
+        Node s;
+        s.kind = NodeKind::Tuning;
+        s.band = bi;
+        s.title = "Tuning";
+        s.inputs.push_back({"notes", ""});
+        s.outputs.push_back({"notes", ""});
+        s.expanded = open;
+        s.w = open ? m::kTuningOpenW : m::kTuningW;
+        s.h = open ? m::kTuningOpenH : m::kTuningH;
+        out.bands[bi].tuning = addNode(std::move(s));
+      }
     }
     DocDerived::PerTrack& td = derived->tracks[t.id.value];
     if (!td.made) {  // PF.2: once per document (DocDerived)
@@ -1242,6 +1258,7 @@ struct Builder {
       crossingEdges(k, a, fromPort, b, toPort, w, std::move(e));
     }
     inputEdges();
+    tuningEdges();  // BR.tuning-block
   }
 
   // BR.patch-io: a wire from `a` to `b` as edges — one, or across opened groups' frames one per stretch between their
@@ -1328,6 +1345,29 @@ struct Builder {
         x.typeError = e.typeError;
         const uint32_t to = e.to, toPort = e.toPort;  // (into a group's frame: to its first stretch's socket)
         addEdge(EdgeKind::Chain, b.input, 0, to, static_cast<int32_t>(toPort), std::move(x));
+      }
+    }
+  }
+
+  // BR.tuning-block (user 2026-11-13: "the output cable comes from that into the midi in"): a MIDI band's notes pass
+  // through its tuning block — each notes link out of its lane (its `notes` output, the link's first stretch) is drawn
+  // into the block (route(): a cable up from the lane's "notes" chip), and a cable of the SAME wire goes on from the
+  // block's output to where the link went (a Z, an insert, a Delete or a drag on it acts on the lane's link).
+  void tuningEdges() {
+    const size_t n = out.edges.size();
+    for (const Band& b : out.bands) {
+      if (b.tuning == kNone || b.source == kNone || out.nodes[b.source].kind != NodeKind::Lane) continue;
+      for (size_t i = 0; i < n; ++i) {
+        Edge& e = out.edges[i];
+        if (e.from != b.source || e.fromPort != 0 || e.kind != EdgeKind::Notes || e.hop != 0) continue;
+        e.drawnTo = b.tuning;
+        Edge x;
+        x.wire = e.wire;
+        x.status = e.status;
+        x.typeError = e.typeError;
+        x.voice = e.voice;
+        const uint32_t to = e.to, toPort = e.toPort;
+        addEdge(EdgeKind::Notes, b.tuning, 0, to, static_cast<int32_t>(toPort), std::move(x));
       }
     }
   }
@@ -1421,6 +1461,8 @@ struct Builder {
     b.x0 = m::kLeft + m::kIndent * static_cast<float>(b.depth);
     // BR.patch-io: a recording input's socket at the band's left edge, its cable into the first block: room for both.
     float start = b.x0 + 8.0f + (b.input != kNone && b.kind == doc::TrackKind::Audio ? m::kInputRoom : 0.0f);
+    // BR.tuning-block: a MIDI track's tuning block at its left edge (opened: as wide as its wheel), the chain after it.
+    if (b.tuning != kNone) start += out.nodes[b.tuning].w + m::kTuningGap;
     if (b.kind == doc::TrackKind::Group && b.lastMember != kNone) {
       float membersEnd = start;
       for (uint32_t c = bi + 1; c <= b.lastMember; ++c)
@@ -1480,6 +1522,10 @@ struct Builder {
         Node& in = out.nodes[b.input];
         in.x = b.x0 + m::kInputInset;
         in.y = spine;
+      }
+      if (b.tuning != kNone) {  // BR.tuning-block: its tuning block there too, its output on the spine
+        out.nodes[b.tuning].x = b.x0 + m::kInputInset;
+        place(b.tuning);
       }
       for (const uint32_t d : b.devices)
         if (!out.nodes[d].offPath && stackUnder.count(d) == 0) place(d);
@@ -1554,6 +1600,7 @@ struct Builder {
         };
         move(b.source);
         move(b.input);
+        move(b.tuning);  // BR.tuning-block
         for (const uint32_t d : b.devices) move(d);
         move(b.mixer);
         move(b.output);
@@ -1778,6 +1825,12 @@ struct Builder {
       Edge& e = out.edges[i];
       const Node& a = out.nodes[e.from];
       if (a.kind != NodeKind::Lane || a.band >= out.bands.size()) continue;
+      // BR.tuning-block: a notes link drawn into the tuning block leaves from the lane's "notes" chip (route()).
+      if (e.drawnTo != kNone && out.nodes[e.drawnTo].kind == NodeKind::Tuning) {
+        const LaneRect c = lanePortChip(out, out.bands[a.band], 0);
+        e.tapX = c.x1 > c.x0 ? std::round((c.x0 + c.x1) * 0.5f) : out.laneX0 + kTapLeft;
+        continue;
+      }
       if (!e.tapPinned) {
         order.push_back(i);
         continue;
@@ -1993,6 +2046,16 @@ struct Builder {
       pts.clear();
       // BR.input-port: an audio lane's signal into its band's input socket — out of the lane's left end at its clip row's
       // middle, round the band's left edge (where the buses into a summing band run), up and in to the socket.
+      // BR.tuning-block: a MIDI lane's notes into its band's tuning block — a cable up from the top of the lane's
+      // "notes" chip (taps(): its centre) into the block's bottom.
+      if (a.kind == NodeKind::Lane && e.drawnTo != kNone && out.nodes[e.drawnTo].kind == NodeKind::Tuning) {
+        const LaneRect c = lanePortChip(out, out.bands[a.band], 0);
+        pts.push_back({e.tapX, c.y1 > c.y0 ? c.y0 : a.y});
+        pts.push_back(inPin(out.nodes[e.drawnTo], 0));
+        e.cable = true;
+        e.net = 1u << 30 | static_cast<uint32_t>(k);
+        continue;
+      }
       if (a.kind == NodeKind::Lane && e.drawnTo != kNone) {
         const graph::Point2 d = outPin(out.nodes[e.drawnTo], 0);
         const float ly = std::round(a.y + m::kLaneRulerH + (a.h - m::kLaneRulerH) * 0.5f), lx = out.bands[a.band].x0 - 6.0f;

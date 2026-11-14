@@ -23,8 +23,8 @@ uint64_t playId(doc::ClipId clip, doc::NoteId note) noexcept {
 
 }  // namespace
 
-CircleNotes::CircleNotes(ViewContext& ctx, const TuningTarget& target, MosCircle& circle, ui::Widget& host)
-    : ctx_(ctx), target_(target), circle_(circle), host_(host) {
+CircleNotes::CircleNotes(ViewContext& ctx, const TuningTarget& target, MosCircle& circle, ui::Widget& host, doc::TrackId only)
+    : ctx_(ctx), target_(target), only_(only), circle_(circle), host_(host) {
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { playDirty_ = true; });
   auditionSeen_ = ctx_.lastAudition().serial;  // an audition from before the wheel opened is not shown
@@ -82,7 +82,7 @@ void CircleNotes::syncKeyboard() {
     bool listens = false;
     if (def)
       doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-        if (listens || t.kind != doc::TrackKind::Midi || !(t.mixer.arm || t.id == autoArm)) return;
+        if (listens || t.kind != doc::TrackKind::Midi || !(t.mixer.arm || t.id == autoArm) || skips(t.id)) return;
         // A 12-TET key map plays semitones, not the tuning's degrees: nothing to light.
         if (t.noteInput.keyMap == doc::InputKeyMap::TwelveTetNearest || t.noteInput.keyMap == doc::InputKeyMap::TwelveTetHz) return;
         const std::optional<doc::TrackPath> path = doc::findTrack(p, t.id);
@@ -110,7 +110,7 @@ void CircleNotes::syncMidi() {
     uint32_t lastTrack = 0;
     bool lastPlays = false;
     for (const LiveMidiNote& n : notes) {
-      if (!def || !std::isfinite(n.noteDegree) || !(n.hz > 0.0f)) continue;
+      if (!def || !std::isfinite(n.noteDegree) || !(n.hz > 0.0f) || skips(doc::TrackId{n.trackId})) continue;
       if (n.trackId != lastTrack) {
         lastTrack = n.trackId;
         lastPlays = false;
@@ -133,7 +133,7 @@ void CircleNotes::syncAudition() {
   if (a.serial != auditionSeen_) {
     auditionSeen_ = a.serial;
     auditionReleased_ = a.released;
-    if (!a.degree || !a.clip.clip.valid()) return;
+    if (!a.degree || !a.clip.clip.valid() || skips(a.clip.track)) return;
     const doc::Project& p = *ctx_.doc();
     const std::optional<doc::TrackPath> path = doc::findTrack(p, a.clip.track);
     if (!path) return;
@@ -157,7 +157,7 @@ void CircleNotes::rebuildPlayback() {
   const doc::TuningDef* def = views::targetTuning(p, target_);
   if (!def) return;
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    if (t.kind != doc::TrackKind::Midi) return;
+    if (t.kind != doc::TrackKind::Midi || skips(t.id)) return;
     const std::optional<doc::TrackPath> path = doc::findTrack(p, t.id);
     if (!path) return;
     const std::vector<doc::ClipSlot>& clips = doc::playedClips(t);

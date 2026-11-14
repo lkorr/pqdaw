@@ -306,7 +306,8 @@ TEST_CASE("module faces: a cable into the Phase Accumulator's main input lands o
   uint32_t found = 0;
   for (uint32_t k = 0; k < pp.edges.size(); ++k) {
     const Edge& e = pp.edges[k];
-    if (e.to != pa || e.toPort != static_cast<uint32_t>(n.mainIn)) continue;
+    // (BR.tuning-block: the lane's link is drawn into the track's tuning block; the cable on from it lands here.)
+    if (e.to != pa || e.toPort != static_cast<uint32_t>(n.mainIn) || e.drawnTo != kNone) continue;
     ++found;
     CHECK(e.kind == EdgeKind::Notes);
     CHECK(e.cable);

@@ -38,6 +38,15 @@
 //              its cable going to where its clips' signal enters the chain (each chain edge from its lane's `out`: the
 //              first block, or the mixer); a summing band (group, return, master) fed by buses gets one, the buses
 //              ending there and a cable going on into its Σ.
+//   tuning     (BR.tuning-block, user 2026-11-13: "the tuning module to be a physical object paired with every midi channel")
+//              every MIDI band's TUNING BLOCK (lanes() mode only: not in a scoped model), on its spine at its left edge,
+//              before its chain (which starts kTuningRoom further right). Not a device: a view of the track's tuning
+//              (doc::TuningAssignment, as the track resolves it), derived from the track like its mixer. Closed (the
+//              default), a narrow vertical panel labelled TUNING; opened (doc::PatchNudge::tuningOpen: a double-click, its
+//              menu) it grows in place to the MOS wheel (tuning_face.cpp). Input `notes` on its BOTTOM edge (inputEntry),
+//              output `notes` on its right edge at the spine. The lane's notes link is drawn into it (Edge::drawnTo: a
+//              cable up from the lane's "notes" chip) and a cable of the same wire goes on from its output to the
+//              instrument. It cannot be deleted or rewired.
 //   group      a container around its band and its members' bands; its own chain starts right of its members' mixers.
 // Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind; BR.patch-io: one per frame it
 // crosses more, Edge::hops), the main path's links included; route (a track's `out` → the summing input of its group or the master: graph wire out → in), send (a
@@ -59,6 +68,7 @@
 // Pure and UI-free (UI thread; ~O(tracks + devices + wires)). The scene for the canvas is buildProjectScene
 // (project_patch_view.h).
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <functional>
@@ -94,7 +104,8 @@ inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 // BR.patch-io: Input = a band's input socket on its LEFT edge (Band::input): an audio track's input (its lane's signal
 // drawn into it and its recording input track.in; a cable into where its clip signal enters its chain) or a summing band's bus input (its routes and sends end there; a
 // cable on into its Σ). Zero-size, one output "in".
-enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input };
+// BR.tuning-block: Tuning = a MIDI band's tuning block (see "tuning" above; Band::tuning).
+enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input, Tuning };
 
 struct Port {
   std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
@@ -259,6 +270,9 @@ struct Edge {
   // BR.patch-io: a bus (route / send) into a summing input is drawn to its band's input socket (this Input node; the
   // edge itself still ends on the Σ), and a cable goes on from there into the Σ. BR.input-port: so is an audio lane's
   // chain edge (a trace out of the lane's left end round the band's left edge; the cable on from the socket).
+  // BR.tuning-block: and a MIDI lane's notes link (hop 0) is drawn into its band's tuning block (NodeKind::Tuning: a
+  // cable up from the lane's "notes" chip into the block's bottom), and a cable of the same wire goes on from the block's
+  // output into the link's target.
   uint32_t drawnTo = 0xFFFFFFFFu;
 };
 
@@ -276,6 +290,7 @@ struct Band {
   graph::TrackRole role = graph::TrackRole::Audio;
   uint32_t source = kNone, mixer = kNone, output = kNone;  // node indices (source: the Lane, or the Σ)
   uint32_t input = kNone;  // BR.patch-io: its input socket on its left edge (NodeKind::Input; kNone: none)
+  uint32_t tuning = kNone;  // BR.tuning-block: a MIDI band's tuning block (NodeKind::Tuning; kNone: none)
   std::vector<uint32_t> devices;                           // node indices (its blocks, list order)
   float y = 0, h = 0;          // world: the band's strip
   float x0 = 0, x1 = 0;        // world: its strip from the indent to the end of its chain
@@ -352,6 +367,12 @@ inline constexpr float kTerminalW = 36.0f, kTerminalH = 32.0f;  // its In / Out 
 // left edge (clear of its colour bar).
 inline constexpr float kSocketPitch = 16.0f, kInputInset = 8.0f;
 inline constexpr float kInputRoom = 40.0f;  // … and an audio track with one starts its chain this much further right
+// BR.tuning-block: a MIDI band's tuning block — closed (a narrow vertical panel), opened (its MOS wheel; the face's own
+// header strip on top) — and the gap between it and the band's chain (the chain starts its width + kTuningGap right of
+// it: kInputRoom when closed).
+inline constexpr float kTuningW = 16.0f, kTuningH = 80.0f;
+inline constexpr float kTuningOpenW = 320.0f, kTuningOpenH = 432.0f, kTuningHeaderH = 28.0f;
+inline constexpr float kTuningGap = kInputRoom - kTuningW;
 inline constexpr float kClosedGroupW = 168.0f, kClosedGroupH = 96.0f;  // a closed group's block (its miniature)
 inline constexpr float kValueKnobW = 48.0f, kValueKnobH = 56.0f;      // GU.5b: a value block's knob
 }  // namespace metrics
@@ -476,6 +497,7 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
     case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
       return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
     case NodeKind::Terminal: return metrics::kTerminalH * 0.5f * n.scale;  // TX.group-resize: scaled with its group
+    case NodeKind::Tuning: return metrics::kPinTop;  // BR.tuning-block: its output on the spine (its input: inputEntry)
     case NodeKind::Mixer:  // TX.mixer-look: in / out under the header; a send's pin level with its row (TL.4: scaled)
       return (i == 0 ? metrics::kPinTop : metrics::kMixerSendTop + metrics::kPinPitch * static_cast<float>(i - 1)) * n.scale;
     default: return metrics::kPinTop + metrics::kPinPitch * static_cast<float>(i);
@@ -497,6 +519,8 @@ inline float pinOffset(const Node& n, size_t i, bool input) noexcept {
 // Where input `i`'s wires meet node `n` (world units): its pin on the left edge, or (TX.mod-all) for an anchored param
 // the point of the edge nearest its control, level with it (the canvas draws on from there to the control).
 inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
+  // BR.tuning-block: a tuning block's notes come up from its lane below: its input on its bottom edge, near its left.
+  if (n.kind == NodeKind::Tuning) return {n.x + std::min(n.w * 0.5f, 16.0f), n.y + n.h};
   if (i < n.inputs.size() && n.inputs[i].anchored) {
     const Port& p = n.inputs[i];
     switch (entrySide(n, p)) {

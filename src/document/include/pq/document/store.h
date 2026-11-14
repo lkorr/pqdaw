@@ -61,6 +61,9 @@ inline constexpr float kMaxPatchScale = 3.0f;
 // units, kMinPatchLaneH … kMaxPatchLaneH; 0 = the view's default; dragging the lane's bottom edge) and whether its band's
 // circuit is FOLDED (collapsed: the band shows its title strip and its lane only). Saved as the entry's optional "laneH" /
 // "folded"; view state like the nudge (not undoable).
+// BR.tuning-block: a MIDI track's entry also keeps whether its band's TUNING BLOCK (the view of the track's tuning on its
+// spine, left of its chain) is OPENED to its MOS wheel. Saved as the entry's optional "tuningOpen"; view state like the
+// nudge (not undoable).
 inline constexpr float kMinPatchLaneH = 16.0f;
 inline constexpr float kMaxPatchLaneH = 1024.0f;
 struct PatchNudge {
@@ -73,8 +76,10 @@ struct PatchNudge {
   float mixerX = 0.0f, mixerY = 0.0f;
   float laneH = 0.0f;   // TL.1
   bool folded = false;  // TL.1
+  bool tuningOpen = false;  // BR.tuning-block
   bool empty() const noexcept {
-    return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned && !mixerPlaced && laneH == 0.0f && !folded;
+    return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned && !mixerPlaced && laneH == 0.0f && !folded &&
+           !tuningOpen;
   }
   friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
 };

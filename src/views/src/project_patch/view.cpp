@@ -24,6 +24,7 @@
 #include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/panel/panel_window.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
@@ -1136,6 +1137,22 @@ void ProjectPatchView::setBandFolded(doc::TrackId track, bool folded) {
   if (bandFolded(track) == folded) return;
   doc::PatchNudge& n = nudges[track.value];
   n.folded = folded;
+  if (n.empty()) nudges.erase(track.value);
+  ctx_.viewStateChanged();
+  relayout();
+}
+
+bool ProjectPatchView::tuningOpen(doc::TrackId track) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  return it != nudges.end() && it->second.tuningOpen;
+}
+
+void ProjectPatchView::setTuningOpen(doc::TrackId track, bool open) {
+  if (tuningOpen(track) == open) return;
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[track.value];
+  n.tuningOpen = open;
   if (n.empty()) nudges.erase(track.value);
   ctx_.viewStateChanged();
   relayout();
@@ -2271,6 +2288,14 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
       (void)dispatch(doc::Batch{"Route Output", {doc::SetTrackOutput{t, doc::Output{doc::OutputKind::None, {}}}}}, "Route");
     }));
     if (patch_.bands[self].kind != doc::TrackKind::Master) items.push_back(ui::MenuItem::sub("Output", std::move(outs)));
+  } else if (n.kind == NodeKind::Tuning && n.band < patch_.bands.size()) {
+    // BR.tuning-block: open / close it in place, then the track's tuning chip menu (choose a tuning, New Tuning, the
+    // full MOS wheel, …).
+    const doc::TrackId t = patch_.bands[n.band].track;
+    const bool open = tuningOpen(t);
+    items.push_back(ui::MenuItem::item(open ? "Close Tuning" : "Open Tuning", [this, t, open] { setTuningOpen(t, !open); }));
+    items.push_back(ui::MenuItem::sep());
+    for (ui::MenuItem& it : tuningMenuItems(*canvas_, ctx_, TuningTarget::forTrack(t))) items.push_back(std::move(it));
   } else {
     return openBandMenu(n.band, at);
   }

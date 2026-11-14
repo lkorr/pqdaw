@@ -24,6 +24,11 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
     const uint32_t mn = f.node < scene_.modelNode.size() ? scene_.modelNode[f.node] : kNone;
     return mn < patch_.nodes.size() ? makeMixerFace(*this, patch_, patch_.nodes[mn]) : nullptr;
   }
+  // BR.tuning-block: a MIDI band's tuning block (closed or opened to its wheel).
+  if (std::string_view(f.path).starts_with(kTuningFacePrefix)) {
+    const uint32_t mn = f.node < scene_.modelNode.size() ? scene_.modelNode[f.node] : kNone;
+    return mn < patch_.nodes.size() ? makeTuningFace(*this, patch_, patch_.nodes[mn]) : nullptr;
+  }
   // GU.5b: a value block drawn as its knob (a one-knob panel bound to its `value`; a wire into it ends on the knob).
   if (std::string_view(f.path).starts_with(kValueKnobFacePrefix)) {
     const doc::DeviceId v{f.owner};

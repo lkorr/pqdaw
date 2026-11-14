@@ -68,6 +68,10 @@ SymbolSpec specOf(const Node& n) {
       s.symbol = Symbol::Input;
       inStub = outStub = 0.0f;
       break;
+    case NodeKind::Tuning:  // BR.tuning-block: drawn as its face (TuningFace), its sockets on its edges
+      s.symbol = Symbol::Subcircuit;
+      inStub = outStub = 0.0f;
+      break;
   }
   if (n.face != nullptr) {  // TMM.4: the face draws its jacks (no stubs)
     s.face = n.face;
@@ -138,6 +142,7 @@ uint64_t nodeIdentity(const ProjectPatch& pp, uint32_t i) noexcept {
     case NodeKind::Mixer: return (5ull << 60) | track;
     case NodeKind::Output: return (6ull << 60) | track;
     case NodeKind::Input: return (7ull << 60) | track;
+    case NodeKind::Tuning: return (8ull << 60) | track;
   }
   return 0;
 }
@@ -217,6 +222,12 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         if (hidden && !(socket && !n.folded)) pin.visible = false;  // TL.1
         // BR.patch-io: drawn as a module's port — the In side and a band's input as an input (a ring), Out as an output.
         if (socket) pin.socket = n.kind == NodeKind::Input || !n.outputs.empty() ? circuit::ScenePin::kSocketIn : circuit::ScenePin::kSocketOut;
+        // BR.tuning-block: a tuning block's notes come up into its bottom edge.
+        if (side == 0 && n.kind == NodeKind::Tuning) {
+          const Point2 at = inputEntry(n, k);
+          pin.x = at.x;
+          pin.y = at.y;
+        }
         // TX.mod-all: an anchored param has no pin (its wire ends on the control): an invisible one where the wire
         // meets the block, so the wire's end and the face's "driven" look (FaceJack::name) still find it.
         if (side == 0 && n.inputs[k].anchored) {
@@ -275,6 +286,16 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       f.panel = true;
       sc.faces.push_back(std::move(f));
     }
+    // BR.tuning-block: a MIDI band's tuning block is drawn as its face (TuningFace: the view's panelMaker makes it; closed
+    // and opened are two faces, the open one hosting the wheel). Its title is the face's own.
+    if (n.kind == NodeKind::Tuning && n.band < pp.bands.size()) {
+      circuit::SceneFace f;
+      f.node = v;
+      f.owner = pp.bands[n.band].track.value;
+      f.path = tuningFacePath(n);
+      f.panel = true;
+      sc.faces.push_back(std::move(f));
+    }
     // Labels: titles as buildScene places them; pin labels inside blocks.
     SceneLabel title;
     title.node = v;
@@ -305,7 +326,8 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         title.y = n.y + n.h + 3.0f;
         break;
       case NodeKind::Sum:
-      case NodeKind::Input: title.node = UINT32_MAX; break;  // the symbol says it (an input socket: hidden)
+      case NodeKind::Input:
+      case NodeKind::Tuning: title.node = UINT32_MAX; break;  // the symbol says it (an input socket: hidden; a tuning block: its face)
     }
     if (title.node != UINT32_MAX) sc.labels.push_back(title);
     // TMM.13-fix2 (MM review "UI and aesthetic" 8): in a scoped canvas (the free-device rack, a group's panel) a face has
@@ -414,6 +436,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     const uint32_t a = out.sceneNode[e.from], b = out.sceneNode[e.to];
     if (a != kNone) sc.pins[sc.nodes[a].firstPin + pp.nodes[e.from].inputs.size() + e.fromPort].connected = true;
     if (b != kNone) sc.pins[sc.nodes[b].firstPin + e.toPort].connected = true;
+    // BR.tuning-block: a lane's notes drawn into a tuning block plug into its input.
+    if (e.drawnTo != kNone && e.drawnTo < pp.nodes.size() && pp.nodes[e.drawnTo].kind == NodeKind::Tuning && !e.points.empty())
+      if (const uint32_t t = out.sceneNode[e.drawnTo]; t != kNone) sc.pins[sc.nodes[t].firstPin].connected = true;
   }
 
   // Expanded devices: the device patch's scene inside the block's frame, its terminals joined to the frame's pins.

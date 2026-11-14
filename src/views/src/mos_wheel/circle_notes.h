@@ -33,8 +33,10 @@ class MosCircle;
 class CircleNotes {
 public:
   static constexpr double kRebuildSeconds = 0.1;
-  // `host` asks for the frames (the popover; it forwards onFrame to frame()).
-  CircleNotes(ViewContext& ctx, const TuningTarget& target, MosCircle& circle, ui::Widget& host);
+  // `host` asks for the frames (the popover; it forwards onFrame to frame()). BR.tuning-block: `only` valid — only the
+  // notes of that track (its playback, the keyboard / MIDI in while it listens, its clips' auditions) light the circle,
+  // not every track that shares its tuning (a track's tuning block shows what passes through it).
+  CircleNotes(ViewContext& ctx, const TuningTarget& target, MosCircle& circle, ui::Widget& host, doc::TrackId only = {});
   ~CircleNotes();
   CircleNotes(const CircleNotes&) = delete;
   CircleNotes& operator=(const CircleNotes&) = delete;
@@ -77,8 +79,11 @@ private:
   void apply(std::vector<Lit>& now, std::vector<uint64_t>& was);
   const tuning::Tuning* targetTuning();  // built from the target's definition (cached on it)
 
+  bool skips(doc::TrackId t) const noexcept { return only_.valid() && t != only_; }
+
   ViewContext& ctx_;
   TuningTarget target_;
+  doc::TrackId only_{};
   MosCircle& circle_;
   ui::Widget& host_;
   ViewContext::Subscription viewSub_, docSub_;
