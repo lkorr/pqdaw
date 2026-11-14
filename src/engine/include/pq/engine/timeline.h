@@ -421,7 +421,6 @@ private:
   void pushRun(uint32_t frame, uint32_t len, SampleTime pos, TransportRun::Kind kind) noexcept;
   Ticks resolveTick() noexcept;                       // nextTick_, computing it from pos_ when lazy
   void refreshMinNext() noexcept;
-  void playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0, Ticks t1) noexcept;
   // T7.1: the sequencer's loop, compiled twice: Curves = false for an image without any note curve (the loop as it
   // was before curves: no breakpoint compare, no curve lookup at a note-on), true otherwise.
   template <bool Curves>

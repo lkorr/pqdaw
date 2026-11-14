@@ -894,12 +894,6 @@ void Timeline::releaseAll(uint32_t frame) noexcept {  // RT-safe
   }
 }
 
-void Timeline::playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0,
-                         Ticks t1) noexcept {  // RT-safe
-  if (seqCurves_) playTrackImpl<true>(track, frame, s0, len, t0, t1);
-  else playTrackImpl<false>(track, frame, s0, len, t0, t1);
-}
-
 template <bool Curves>
 void Timeline::playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0,
                              Ticks t1) noexcept {  // RT-safe
@@ -963,19 +957,25 @@ void Timeline::playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint
       const float vel = std::clamp(n.velocity + r.velocity * n.velocityRange, 1.0f, 127.0f) * (1.0f / 127.0f);
       NoteEvent e = noteOn(f, nextInstance_, n.hz, vel);
       setIdentity(e, n);
-      const Ticks offAt = offTick(on, std::min(on + n.length, c.passEnd));
-      const float release = std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f);
-      // T7.1: a note with curves takes its own (out-of-line) path; this one stays what it was before curves existed.
-      SequenceImage::NoteCurves nc;
-      if constexpr (Curves) nc = seq_->curvesOf(n);
-      if (!nc.any()) [[likely]] {
+      // T7.1: a note with curves takes its own (out-of-line) path. T7.3: the plain note is pushed BEFORE its off tick
+      // is computed, as before curves existed — computing it first kept the 56-byte event alive across the tempo-map
+      // calls and cost every note-on ~2.5 ns (bench busy/16ths x64).
+      bool curved = false;
+      if constexpr (Curves) {
+        const SequenceImage::NoteCurves nc = seq_->curvesOf(n);
+        if (nc.any()) [[unlikely]] {
+          curved = true;
+          startCurvedNote(track, e,
+                          Sounding{offTick(on, std::min(on + n.length, c.passEnd)), tr.order++, on, on - n.start,
+                                   nextInstance_, n.id, n.hz, std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f),
+                                   nc.begin, nc.pitchCount, nc.gainCount, 0, 0},
+                          f, s0 + (f - frame), on);
+        }
+      }
+      if (!curved) {
         pushEvent(track, e);
-        heapPush(tr, Sounding{offAt, tr.order++, on, on - n.start, nextInstance_, n.id, n.hz, release, 0, 0, 0, 0, 0});
-      } else {
-        startCurvedNote(track, e,
-                        Sounding{offAt, tr.order++, on, on - n.start, nextInstance_, n.id, n.hz, release, nc.begin,
-                                 nc.pitchCount, nc.gainCount, 0, 0},
-                        f, s0 + (f - frame), on);
+        heapPush(tr, Sounding{offTick(on, std::min(on + n.length, c.passEnd)), tr.order++, on, on - n.start, nextInstance_,
+                              n.id, n.hz, std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f), 0, 0, 0, 0, 0});
       }
       ++stats_.noteOns;
       if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;  // T6.4: live notes (0xE…) and auditions (0xF…) above
@@ -1033,8 +1033,13 @@ void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
         ticked = true;
         if (t1 > t0) {
           const Ticks* nx = next_.data();
-          for (uint32_t k = 0; k < numTracks_; ++k)
-            if (nx[k] < t1) playTrack(k, f, pos_, len, t0, t1);  // idle tracks: one compare each
+          if (seqCurves_) {
+            for (uint32_t k = 0; k < numTracks_; ++k)
+              if (nx[k] < t1) playTrackImpl<true>(k, f, pos_, len, t0, t1);
+          } else {  // an image without curves: the loop as it was before them (no dispatch per track)
+            for (uint32_t k = 0; k < numTracks_; ++k)
+              if (nx[k] < t1) playTrackImpl<false>(k, f, pos_, len, t0, t1);  // idle tracks: one compare each
+          }
         }
       }
     }
