@@ -668,3 +668,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf (ship, indicative): dynamics rows within ±5 % of the audit's idle numbers; the gain is sleeping on silent tracks.
 - Notes: Q271. RB and DY are done and audited; open lows L5, L8, L9, L12, L14 (docs/reviews/RB-DY.md). M7 deferred by the user.
 
+
+## 2026-11-13 · BR.ui (user bug reports) · task/BR.ui-playhead-mixer (merged e707c4dd)
+- Did: playhead trail in the patch view lanes (the per-frame column repaint drew the click's insert marker at its left edge; same in the arrangement lanes), partial repaints clipping ruler labels, start-marker moves not damaging lane rulers; plain click on an automation sub-lane / group / return / master lane locates; any socket a face draws is pressable where drawn (mixer out was out of the 8 px edge band when zoomed); Spectrum / Scope / Spectrogram settings open as a side panel beside the face (right, flip left, over the plot only if neither fits).
+- Verified (worker): pq_tests_views default tier 739/739; new real-dispatch tests (partial-vs-full render through playback, sub-lane / group locate, mixer cable drag, side sheet); the fixes reverted made the new tests fail.
+- Perf: per-frame cost unchanged; the side sheet is outside the faces' live damage.
+- Notes: 11 project-* goldens re-recorded (ruler left-end labels only). Bug reports 2026-11-13_17-17-10, _17-39-14 → fixed/.
