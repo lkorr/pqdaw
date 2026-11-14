@@ -739,3 +739,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: after the rebase onto 15dfccb7 `build.ps1 -Affected -Slow` 56/56 passed; existing audio-clip goldens 0 px diff; the formant test fails on the old clip_player.cpp (kept 0, faded 1, silent window) and passes now; RtScope test covers handover + formant swaps (0 violations).
 - Perf / CPU-efficiency check: a formant edit now costs one setParams instead of a new voice + ~70 ms of 4x priming; a handover runs two stretchers only until the new one sounds (same cost as the existing H2 retry path).
 - Notes/blockers: a transpose drag steps in ~80 ms (each step waits for its vocoder to prime). Open look question in REVIEW (narrow waveform vs Warp + mode card sharing a column).
+
+## 2026-11-14 · T7.3 merged · main (8f48544d)
+- Did: `app/src/project_link_ji.{h,cpp}`: note curves, inner Harmonic notes, JiFundamental-anchored notes and sounding JI objects become NoteDescs with pitch / gain curves (jiVoicePlan, 20 ms gain ramps, 1 ¢ flatten tolerance). Chase (Q278): play / continue / locate / count-in end / loop wrap start every note under the position at its curve values (`SequenceImage::covering`). Three test_timeline cases changed because they asserted no-chase. T7.4-fix: the theme token count checks (pq_tests_ui was red on main since T7.4; the orchestrator merged T7.4 on its views run only).
+- Verified: worker `build.ps1 -Affected -Slow` 86/87 (the failure = the token count, fixed), ship `pq_bench_dsp` links; orchestrator after the rebase onto 7b04787d: pq_tests_ui, pq_tests_timeline, pq_tests_app pass.
+- Perf / CPU-efficiency check: timeline `busy/16ths x64` (release, ns/block): 853ee655 96–98, T7.1 100–102, now 96.7–99.5. Lowering 100 objects × 8 voices × 32 stops 6.5–7 ms (target 5; 214 ms in the first version; 75 % in jiVoicePlan).
+- Notes/blockers: Q281, Q282. Merge beating until T7.7.

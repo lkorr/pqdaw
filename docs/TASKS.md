@@ -852,11 +852,11 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 ≤ 2 workers. This run: T7.1–T7.7 + T7.10; T7.8, T7.9 and M8 deferred until the user asks.
 - [x] **T7.1 Engine: per-note pitch and gain curves** *(merged f19e75e5; Note stays 72 B (a bit per note finds its curves); Q278: no chase on a seek into a note → done in T7.3 for every note; open: the no-curve timeline A/B on an idle machine (+0…3.5 % measured under load), ship bench rows)* (plan "T7.1")
 - [x] **T7.2 Document: JI objects (proportion + tuning stops), note curves, Harmonic resolution** *(merged f19e75e5; Q275: Tune to JI keeps the notes as inner notes of a non-sounding object; Q276, Q277; roll paste must pass curves → T7.4)* (plan "T7.2" + A1)
-- [~] **T7.3 Lowering: objects and curves play** (plan "T7.3" + A1; after T7.1, T7.2)
+- [x] **T7.3 Lowering: objects and curves play; chase** *(merged 8f48544d; chase for every note on play / locate / loop wrap (Q278); T7.1's no-curve timeline regression fixed (+0.7 %, noise); per-track event limit 128 → 256 per block; Q281: a merge without Sync beats (−5.4 dB in 10 ms windows, −0.1 dB over 100 ms) until T7.7; Q282: 1 ¢ flatten tolerance; missed: lowering 100 × 8 × 32 takes 6.5–7 ms (target 5); not done → T7.7: voice notes carry no keyDegree, inner Harmonic notes do not set voice.harmonic)* (plan "T7.3" + A1)
 - [x] **T7.4 Roll: draw and create JI objects** 👁 *(merged 493464df; Q279: object duplicate / pitch move composed in views, move into ops in T7.5; Q280: a drawn box's bottom row = the fundamental = the lowest voice; pasted Harmonic notes become Cents; open → T7.5: inner notes are hit-tested on their written row, no Ctrl+C/V of an object, inner notes keep their old path during a move preview, no real-dispatch test in a MOS / equidistant roll)* (plan "T7.4"; after T7.2)
-- [ ] **T7.5 Inner roll, morph editing, Tune to JI, fundamental with the mouse** 👁 (plan "T7.5" + A2, A4; after T7.4)
+- [~] **T7.5 Inner roll, morph editing, Tune to JI, fundamental with the mouse** 👁 (plan "T7.5" + A2, A4; after T7.4)
 - [ ] **T7.6 Pen modes, ride curves, bend between notes, vibrato** 👁 (plan "T7.6" + A3; after T7.5)
-- [ ] **T7.7 Phase-locked merges (Sync)** (plan "T7.7"; after T7.3)
+- [~] **T7.7 Phase-locked merges (Sync)** (plan "T7.7"; after T7.3)
 - [ ] **T7.10 Review** (critique agent + `-Full`)
 - [ ] T7.8 pulse arpeggiator + chord sets, T7.9 flatten: deferred
 
