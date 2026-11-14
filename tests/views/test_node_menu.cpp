@@ -1745,21 +1745,21 @@ TEST_CASE("TL.7: an empty audio track is one long, nearly straight cable from it
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
   REQUIRE(u.ctx.undo());
 
-  // A MIDI lane: BR.tuning-block — its notes cable goes up from its "notes" chip into the band's tuning block (the
-  // block above the chip; a press on a chip still starts a new cable), and a cable of the same wire on from the block.
+  // A MIDI lane: BR.tuning-block — its notes cable goes out of the lane's left end into the band's tuning block
+  // (BR.tuning-outside: hitched outside the band; a press on a chip still starts a new cable), and a cable of the same
+  // wire on from the block.
   {
     const ProjectPatch& q = u.pp();
     const Band& kb = q.bands[q.bandOf(u.keys)];
-    const LaneRect notes = lanePortChip(q, kb, 0);
-    REQUIRE(notes.x1 > notes.x0);
     REQUIRE(kb.tuning != kNone);
+    const Node& lane = q.nodes[kb.source];
     bool found = false;
     for (const Edge& f : q.edges)
       if (f.from == kb.source && f.kind == EdgeKind::Notes) {
         CHECK(f.drawnTo == kb.tuning);
-        CHECK(f.tapX == doctest::Approx(std::round((notes.x0 + notes.x1) * 0.5f)));
         REQUIRE(f.points.size() == 2);
-        CHECK(f.points.front().y == doctest::Approx(notes.y0));
+        CHECK(f.points.front().x == doctest::Approx(lane.x));
+        CHECK(f.points.back().x < kb.x0);
         bool on = false;
         for (const Edge& g : q.edges) on = on || (g.from == kb.tuning && g.wire == f.wire && g.to == f.to);
         CHECK(on);

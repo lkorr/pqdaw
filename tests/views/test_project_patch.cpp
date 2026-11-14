@@ -2221,8 +2221,8 @@ TEST_CASE("lanes (TL.1): cables leave the lane's top edge at their own spots —
   ProjectPatchView& v = u.view();
   const doc::TrackId keysId = u.track("Keys").id;
   const uint32_t keys = v.patch().bandOf(keysId);
-  // BR.tuning-block: the notes link into the instrument is drawn into the band's tuning block, a cable up from the lane's
-  // "notes" chip (not a tap on the lane's edge: it does not slide); the lane's other cables do.
+  // BR.tuning-block: the notes link into the instrument is drawn into the band's tuning block, a cable out of the lane's
+  // left end (BR.tuning-outside; not a tap on the lane's edge: it does not slide); the lane's other cables do.
   const doc::DeviceId inst = u.onPath("Keys", 0);
   const uint32_t instNode = u.deviceNode(inst);
   uint32_t ek = kNone;

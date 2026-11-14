@@ -1035,9 +1035,12 @@ struct Builder {
       }
       // BR.tuning-block: a MIDI track's tuning block (a view of its tuning: no device), closed or opened to its wheel.
       if (t.kind == doc::TrackKind::Midi) {
-        bool open = false;
+        bool open = false, wheel = false;
         if (opt.nudges != nullptr)
-          if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end()) open = it->second.tuningOpen;
+          if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end()) {
+            open = it->second.tuningOpen;
+            wheel = open && it->second.tuningWheel;  // BR.tuning-outside: the full wheel, the chart left of the circle
+          }
         Node s;
         s.kind = NodeKind::Tuning;
         s.band = bi;
@@ -1045,7 +1048,7 @@ struct Builder {
         s.inputs.push_back({"notes", ""});
         s.outputs.push_back({"notes", ""});
         s.expanded = open;
-        s.w = open ? m::kTuningOpenW : m::kTuningW;
+        s.w = open ? m::kTuningOpenW + (wheel ? m::kTuningWheelW : 0.0f) : m::kTuningW;
         s.h = open ? m::kTuningOpenH : m::kTuningH;
         out.bands[bi].tuning = addNode(std::move(s));
       }
@@ -1461,8 +1464,6 @@ struct Builder {
     b.x0 = m::kLeft + m::kIndent * static_cast<float>(b.depth);
     // BR.patch-io: a recording input's socket at the band's left edge, its cable into the first block: room for both.
     float start = b.x0 + 8.0f + (b.input != kNone && b.kind == doc::TrackKind::Audio ? m::kInputRoom : 0.0f);
-    // BR.tuning-block: a MIDI track's tuning block at its left edge (opened: as wide as its wheel), the chain after it.
-    if (b.tuning != kNone) start += out.nodes[b.tuning].w + m::kTuningGap;
     if (b.kind == doc::TrackKind::Group && b.lastMember != kNone) {
       float membersEnd = start;
       for (uint32_t c = bi + 1; c <= b.lastMember; ++c)
@@ -1523,8 +1524,10 @@ struct Builder {
         in.x = b.x0 + m::kInputInset;
         in.y = spine;
       }
-      if (b.tuning != kNone) {  // BR.tuning-block: its tuning block there too, its output on the spine
-        out.nodes[b.tuning].x = b.x0 + m::kInputInset;
+      // BR.tuning-block: its tuning block, its output on the spine; BR.tuning-outside: hitched outside the band, its right
+      // edge in the gutter left of the bands (opened, it grows leftward), the band growing down to hold it.
+      if (b.tuning != kNone) {
+        out.nodes[b.tuning].x = m::kLeft - m::kTuningGap - out.nodes[b.tuning].w;
         place(b.tuning);
       }
       for (const uint32_t d : b.devices)
@@ -1825,10 +1828,9 @@ struct Builder {
       Edge& e = out.edges[i];
       const Node& a = out.nodes[e.from];
       if (a.kind != NodeKind::Lane || a.band >= out.bands.size()) continue;
-      // BR.tuning-block: a notes link drawn into the tuning block leaves from the lane's "notes" chip (route()).
+      // BR.tuning-block: a notes link drawn into the tuning block leaves from the lane's left end (route()).
       if (e.drawnTo != kNone && out.nodes[e.drawnTo].kind == NodeKind::Tuning) {
-        const LaneRect c = lanePortChip(out, out.bands[a.band], 0);
-        e.tapX = c.x1 > c.x0 ? std::round((c.x0 + c.x1) * 0.5f) : out.laneX0 + kTapLeft;
+        e.tapX = a.x;
         continue;
       }
       if (!e.tapPinned) {
@@ -2044,11 +2046,10 @@ struct Builder {
       const graph::Point2 s = a.kind == NodeKind::Lane ? graph::Point2{e.tapX, a.y} : outPin(a, e.fromPort), t = inPin(b, e.toPort);
       std::vector<graph::Point2>& pts = e.points;
       pts.clear();
-      // BR.tuning-block: a MIDI lane's notes into its band's tuning block — a cable up from the top of the lane's
-      // "notes" chip (taps(): its centre) into the block's bottom.
+      // BR.tuning-block: a MIDI lane's notes into its band's tuning block — BR.tuning-outside: a cable out of the lane's
+      // left end at its clip row's middle, across the band's left edge, up into the block's bottom (outside the band).
       if (a.kind == NodeKind::Lane && e.drawnTo != kNone && out.nodes[e.drawnTo].kind == NodeKind::Tuning) {
-        const LaneRect c = lanePortChip(out, out.bands[a.band], 0);
-        pts.push_back({e.tapX, c.y1 > c.y0 ? c.y0 : a.y});
+        pts.push_back({a.x, std::round(a.y + m::kLaneRulerH + (a.h - m::kLaneRulerH) * 0.5f)});
         pts.push_back(inPin(out.nodes[e.drawnTo], 0));
         e.cable = true;
         e.net = 1u << 30 | static_cast<uint32_t>(k);

@@ -400,6 +400,8 @@ private:
   bool stretchLeft_ = false;
   float stretchW0_ = 0.0f, stretchK_ = 1.0f, stretchRight_ = 0.0f, stretchNudge0_ = 0.0f;
   Face* stretchFace(uint32_t node) const;
+  // BR.tuning-outside: a left press on an opened tuning block's Wheel button toggles its wheel (true: taken).
+  bool tuningWheelPress(ui::Vec2 pos);
   void stretchDrag(ui::Vec2 pos);
   void endStretch(bool commit);
   ui::Vec2 pointer_{0, 0};         // the last pointer position (the readout is drawn there)
@@ -596,10 +598,15 @@ public:
   void setLaneHeight(doc::TrackId track, float h);
   bool bandFolded(doc::TrackId track) const noexcept;
   void setBandFolded(doc::TrackId track, bool folded);
-  // BR.tuning-block: a MIDI band's tuning block opened in place to its MOS wheel, or closed (view state saved with the
-  // project: doc::PatchNudge::tuningOpen; not undoable). A double-click on the block, or its menu.
+  // BR.tuning-block: a MIDI band's tuning block opened in place to its MOS circle, or closed (view state saved with the
+  // project: doc::PatchNudge::tuningOpen; not undoable). A double-click on the block, or its menu. Closing it folds its
+  // wheel too.
   bool tuningOpen(doc::TrackId track) const noexcept;
   void setTuningOpen(doc::TrackId track, bool open);
+  // BR.tuning-outside: an opened block grown leftward to the full wheel (the region chart beside the circle), or back to
+  // the circle (PatchNudge::tuningWheel; showing it opens the block). Its Wheel button, its menu.
+  bool tuningWheel(doc::TrackId track) const noexcept;
+  void setTuningWheel(doc::TrackId track, bool wheel);
   void setAllFolded(bool folded);
   // A lane cable's tap: where it leaves its lane's top edge (world x; nullopt: back to the default, the lane's left end). One undo
   // step (doc::SetWireTap).

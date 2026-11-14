@@ -874,6 +874,9 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     v.automationWirePress(nodeAt(e.pos), ctl);  // TL.3: a press elsewhere ends the automation wire
     v.setSelectedControl(std::move(ctl));
   }
+  // BR.tuning-outside: an opened tuning block's Wheel button grows it to the full wheel or back (before its face: the
+  // toggle re-lays out and replaces the face, which must not happen inside its own dispatch).
+  if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left && tuningWheelPress(e.pos)) return true;
   if (drag_ == Drag::None && facePointer(e)) return true;  // TMM.4: a face's control (its drag, hover, wheel)
   switch (e.type) {
     case ui::PointerType::Wheel: return CircuitCanvas::onPointer(e);  // (over a lane: laneEdgePointer)
@@ -1453,6 +1456,22 @@ uint32_t ProjectCanvas::resizableAt(Vec2 pos) const {
 }
 
 // ---- DT.3: horizontal stretch ---------------------------------------------------------------------------------------
+
+bool ProjectCanvas::tuningWheelPress(Vec2 pos) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  const uint32_t node = nodeAt(pos);
+  if (node == kNone || pp.nodes[node].kind != NodeKind::Tuning || !pp.nodes[node].expanded || pp.nodes[node].band >= pp.bands.size()) return false;
+  const Face* f = stretchFace(node);  // (the node's hosted panel)
+  const std::optional<ui::Rect> r = f != nullptr ? tuningFaceWheelButton(*f) : std::nullopt;
+  if (!r) return false;
+  const Node& n = pp.nodes[node];
+  const graph::Point2 w = toWorld(pos);
+  if (!(w.x >= n.x + r->x0 && w.x <= n.x + r->x1 && w.y >= n.y + r->y0 && w.y <= n.y + r->y1)) return false;
+  const doc::TrackId t = pp.bands[n.band].track;
+  v.setTuningWheel(t, !v.tuningWheel(t));
+  return true;
+}
 
 Face* ProjectCanvas::stretchFace(uint32_t node) const {
   const ProjectPatchView& v = view_;

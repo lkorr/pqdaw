@@ -1378,6 +1378,10 @@ private:
           w_.key("tuningOpen");
           w_.boolean(true);
         }
+        if (n.tuningWheel) {  // BR.tuning-outside: … grown to the full wheel
+          w_.key("tuningWheel");
+          w_.boolean(true);
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -3442,7 +3446,8 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY", "laneH", "folded", "tuningOpen"};
+          static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY", "laneH", "folded", "tuningOpen",
+                                                   "tuningWheel"};
           RawNudge e{0, {}, r_.pos()};
           bool mixerSeen[2] = {false, false};
           Members em(r_, el, N);
@@ -3475,6 +3480,7 @@ private:
             }
             if (q == 9) e.nudge.folded = r_.readBool(f);  // TL.1 (optional)
             if (q == 10) e.nudge.tuningOpen = r_.readBool(f);  // BR.tuning-block (optional)
+            if (q == 11) e.nudge.tuningWheel = r_.readBool(f);  // BR.tuning-outside (optional)
           }
           em.require({0, 1, 2});
           if (mixerSeen[0] != mixerSeen[1]) r_.failValue(el, "a placed mixer needs both mixerX and mixerY");

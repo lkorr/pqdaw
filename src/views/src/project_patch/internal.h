@@ -21,6 +21,7 @@ namespace pq::ui {
 class TextEdit;
 }
 namespace pq::views {
+class MosChart;
 class MosCircle;
 }
 
@@ -111,9 +112,16 @@ bool mixerShow(Face& f, const doc::ParamRef& p, std::optional<double> value, ui:
 inline constexpr std::string_view kTuningFacePrefix = "tuning:";
 std::string tuningFacePath(const Node& n);
 std::unique_ptr<Face> makeTuningFace(ProjectPatchView& view, const ProjectPatch& pp, const Node& n);
-// The opened face's widgets (tests): its MOS circle and EDO entry (null: not an opened tuning face, not laid out yet).
+// The opened face's widgets (tests): its MOS circle and EDO entry (null: not an opened tuning face, not laid out yet);
+// BR.tuning-outside: the wheel's chart (null: not grown to the wheel).
 MosCircle* tuningFaceCircle(Face& f);
 ui::TextEdit* tuningFaceEdo(Face& f);
+MosChart* tuningFaceChart(Face& f);
+// BR.tuning-outside: an opened tuning block grown to the full wheel (Node::w past the circle's column).
+bool tuningWheelShown(const Node& n) noexcept;
+// The opened face's Wheel button (world units from the block's top-left; none: not an opened tuning face, not laid out).
+// The canvas takes its presses (a toggle re-lays out and replaces the face: never from inside the face's dispatch).
+std::optional<ui::Rect> tuningFaceWheelButton(const Face& f);
 
 // TX.lane-edit: the title strip of the clips in a window body `bodyH` device px high (0: the body is too low for one).
 inline float laneClipTitleH(float bodyH, float uiScale) noexcept {

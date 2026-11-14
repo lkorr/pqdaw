@@ -485,12 +485,14 @@ void MosWheelPopover::syncFooter() {
   revert_->setEnabled(changed());
 }
 
-void MosWheelPopover::focusChart() {
-  const std::optional<MosSelection>& sel = chart_->selection();
+void focusChartSelection(MosChart& chart) {
+  const std::optional<MosSelection>& sel = chart.selection();
   if (!sel) return;
   const double w = sel->regionHigh - sel->regionLow;
-  chart_->setView(sel->regionLow - 1.5 * w, sel->regionHigh + 1.5 * w);
+  chart.setView(sel->regionLow - 1.5 * w, sel->regionHigh + 1.5 * w);
 }
+
+void MosWheelPopover::focusChart() { focusChartSelection(*chart_); }
 
 bool MosWheelPopover::setDraft(doc::TuningDef def, MosGesture g) {
   if (g == MosGesture::Cancel) {  // the drag's gesture is undone: show the document again
@@ -552,25 +554,28 @@ bool MosWheelPopover::chooseEdo(int32_t n) {
   return true;
 }
 
-Status MosWheelPopover::chooseScalaFile(std::string_view pathUtf8) {
+Result<doc::TuningDef> readScalaTuning(ViewContext& ctx, std::string_view pathUtf8, double referenceHz) {
   const std::filesystem::path path(std::u8string(reinterpret_cast<const char8_t*>(pathUtf8.data()), pathUtf8.size()));
   std::ifstream in(path, std::ios::binary);
   if (!in) {
-    ctx_.setStatus("Scala: cannot open " + std::string(pathUtf8));
+    ctx.setStatus("Scala: cannot open " + std::string(pathUtf8));
     return Error{ErrorCode::NotFound, "cannot open " + std::string(pathUtf8), {}};
   }
   const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   const std::u8string leaf = path.filename().u8string();
   Result<tu::ScalaScale> scl = tu::parseScl(text, std::string_view(reinterpret_cast<const char*>(leaf.data()), leaf.size()));
   if (!scl) {
-    ctx_.setStatus("Scala: " + scl.error().message);
+    ctx.setStatus("Scala: " + scl.error().message);
     return std::move(scl).error();
   }
-  Result<doc::TuningDef> def = doc::makeScaleDef(std::move(*scl), std::nullopt, draft_.referenceHz);
-  if (!def) {
-    ctx_.setStatus("Scala: " + def.error().message);
-    return std::move(def).error();
-  }
+  Result<doc::TuningDef> def = doc::makeScaleDef(std::move(*scl), std::nullopt, referenceHz);
+  if (!def) ctx.setStatus("Scala: " + def.error().message);
+  return def;
+}
+
+Status MosWheelPopover::chooseScalaFile(std::string_view pathUtf8) {
+  Result<doc::TuningDef> def = readScalaTuning(ctx_, pathUtf8, draft_.referenceHz);
+  if (!def) return std::move(def).error();
   if (!setDraft(std::move(*def), MosGesture::Commit)) return Error{ErrorCode::InvalidArgument, "the tuning was refused", {}};
   chart_->clearSelection();
   circle_->setSelection(std::nullopt);
@@ -600,17 +605,17 @@ bool MosWheelPopover::chooseMos(tu::MosKey perPeriodKey, double generatorCents, 
   return draftFromCircle(MosGesture::Commit);
 }
 
-bool MosWheelPopover::chooseTemperament(int32_t index) {
+bool selectTemperament(ViewContext& ctx, MosChart& chart, MosCircle& circle, int32_t index) {
   const auto temps = tu::temperaments();
   if (index < 0 || static_cast<size_t>(index) >= temps.size()) return false;
   const tu::Temperament& t = temps[static_cast<size_t>(index)];
-  const MosChartConfig before = chart_->config();
+  const MosChartConfig before = chart.config(), circleBefore = circle.config();
   MosChartConfig cfg = before;
   const double ratio = 1200.0 / t.period;
   cfg.period = t.period;
   cfg.periodsPerEquave = std::fabs(ratio - std::round(ratio)) < 1e-6 ? std::max(1, static_cast<int32_t>(std::lround(ratio))) : 1;
-  chart_->setConfig(cfg);
-  circle_->setConfig(cfg);
+  chart.setConfig(cfg);
+  circle.setConfig(cfg);
   const double mid = (t.genLow + t.genHigh) / 2.0;
   const int32_t reps = cfg.periodsPerEquave;
   for (const tu::MosKey& k : t.mos) {
@@ -618,22 +623,29 @@ bool MosWheelPopover::chooseTemperament(int32_t index) {
     for (const tu::MosKey pk : {tu::MosKey{k.nL / reps, k.nS / reps}, k}) {
       if (!(pk.nL * reps == k.nL && pk.nS * reps == k.nS) && !(pk == k)) continue;
       if (pk.size() < 2) continue;
-      if (!chart_->select(pk, mid, 0)) continue;
-      const std::optional<MosSelection>& sel = chart_->selection();
+      if (!chart.select(pk, mid, 0)) continue;
+      const std::optional<MosSelection>& sel = chart.selection();
       if (!sel || mid < sel->regionLow - 1e-9 || mid > sel->regionHigh + 1e-9) continue;
-      circle_->setSelection(sel);
-      circle_->setModmos({});
-      edo_->setText({});
-      search_->setText(std::string(t.name));
-      focusChart();
-      return draftFromCircle(MosGesture::Commit);
+      circle.setSelection(sel);
+      circle.setModmos({});
+      focusChartSelection(chart);
+      return true;
     }
   }
-  chart_->setConfig(before);  // back to what the draft is
-  circle_->setConfig(before);
-  showDraft();
-  ctx_.setStatus("Temperament " + std::string(t.name) + ": no MOS of it within the chart's sizes");
+  chart.setConfig(before);  // back to what the draft is
+  circle.setConfig(circleBefore);
+  ctx.setStatus("Temperament " + std::string(t.name) + ": no MOS of it within the chart's sizes");
   return false;
+}
+
+bool MosWheelPopover::chooseTemperament(int32_t index) {
+  if (!selectTemperament(ctx_, *chart_, *circle_, index)) {
+    showDraft();
+    return false;
+  }
+  edo_->setText({});
+  search_->setText(std::string(tu::temperaments()[static_cast<size_t>(index)].name));
+  return draftFromCircle(MosGesture::Commit);
 }
 
 std::vector<int32_t> MosWheelPopover::matchTemperaments(std::string_view text, size_t limit) {
@@ -662,7 +674,14 @@ std::vector<int32_t> MosWheelPopover::matchTemperaments(std::string_view text, s
 }
 
 bool MosWheelPopover::findTemperament(std::string_view text) {
-  const std::vector<int32_t> found = matchTemperaments(text);
+  std::shared_ptr<bool> alive = alive_;
+  return views::findTemperament(*search_, text, [this, alive](int32_t i) {
+    if (*alive) (void)chooseTemperament(i);
+  });
+}
+
+bool findTemperament(Widget& field, std::string_view text, std::function<void(int32_t)> choose) {
+  const std::vector<int32_t> found = MosWheelPopover::matchTemperaments(text);
   if (found.empty()) return false;
   const auto temps = tu::temperaments();
   auto sameName = [](std::string_view a, std::string_view b) {
@@ -673,15 +692,14 @@ bool MosWheelPopover::findTemperament(std::string_view text) {
   std::string_view q = text;
   while (!q.empty() && q.front() == ' ') q.remove_prefix(1);
   while (!q.empty() && q.back() == ' ') q.remove_suffix(1);
-  if (found.size() == 1 || sameName(temps[static_cast<size_t>(found.front())].name, q)) return chooseTemperament(found.front());
+  if (found.size() == 1 || sameName(temps[static_cast<size_t>(found.front())].name, q)) {
+    choose(found.front());
+    return true;
+  }
   std::vector<MenuItem> items;
-  std::shared_ptr<bool> alive = alive_;
-  for (const int32_t i : found)
-    items.push_back(MenuItem::item(std::string(temps[static_cast<size_t>(i)].name), [this, alive, i] {
-      if (*alive) (void)chooseTemperament(i);
-    }));
-  const IRect r = search_->rect();
-  (void)openContextMenu(*search_, {static_cast<float>(r.x), static_cast<float>(r.bottom())}, std::move(items));
+  for (const int32_t i : found) items.push_back(MenuItem::item(std::string(temps[static_cast<size_t>(i)].name), [choose, i] { choose(i); }));
+  const IRect r = field.rect();
+  (void)openContextMenu(field, {static_cast<float>(r.x), static_cast<float>(r.bottom())}, std::move(items));
   return true;
 }
 

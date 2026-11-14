@@ -1502,42 +1502,50 @@ Status setupProjectMixer(Shell& shell) {
   shell.tree().layoutNow();
   return Ok{};
 }
-// BR.tuning-block: the MIDI bands' tuning blocks at their left edge — Keys's opened to its MOS circle (12-EDO, the new
-// track's default) with C, E and G sounding (lit in their frequencies' colours), the band under it closed (the narrow
-// TUNING panel), each with its notes cable up from the lane's chip and on into the instrument.
-Status setupProjectPatchTuning(Shell& shell) {
+// BR.tuning-block: the MIDI bands' tuning blocks hitched outside their bands' left edge (BR.tuning-outside) — Keys's
+// opened to its MOS circle (12-EDO, the new track's default) with C, E and G sounding (lit in their frequencies'
+// colours), the band under it closed (the narrow TUNING panel), each with its notes cable out of the lane's left end and
+// on across the band's edge into the instrument. `wheel`: Keys's grown leftward to the full wheel (the region chart
+// beside the circle, which stays where it was).
+Status setupProjectPatchTuningAt(Shell& shell, bool wheel, const char* scene) {
+  const std::string name(scene);
   if (Status s = setupProjectPatch(shell, true); !s) return s;
   ViewContext& ctx = shell.context();
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
-  if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch-tuning: no Keys track", {}};
+  if (keys == nullptr) return Error{ErrorCode::NotFound, name + ": no Keys track", {}};
   v->setTuningOpen(keys->id, true);
+  if (wheel) v->setTuningWheel(keys->id, true);
   shell.tree().layoutNow();
   const project_patch::ProjectPatch& pp = v->patch();
   const uint32_t b = pp.bandOf(keys->id);
   if (b == project_patch::kNone || pp.bands[b].tuning == project_patch::kNone)
-    return Error{ErrorCode::NotFound, "project-patch-tuning: Keys has no tuning block", {}};
+    return Error{ErrorCode::NotFound, name + ": Keys has no tuning block", {}};
   const project_patch::Node& tn = pp.nodes[pp.bands[b].tuning];
   const ui::IRect r = v->canvas().rect();
   const float us = shell.tree().scale();
   circuit::CircuitCanvas::View view;
-  view.zoom = std::min(1.0, static_cast<double>(r.h) / (static_cast<double>(us) * (tn.h + 420.0)));
-  view.x = pp.bands[b].x0 - 24.0;
+  view.zoom = std::min({1.0, static_cast<double>(r.h) / (static_cast<double>(us) * (tn.h + 420.0)),
+                        static_cast<double>(r.w) / (static_cast<double>(us) * (tn.w + 520.0))});
+  view.x = tn.x - 24.0;
   view.y = tn.y - 52.0;
   v->canvas().setView(view);
   shell.tree().layoutNow();
   const uint32_t sn = pp.bands[b].tuning < v->scene().sceneNode.size() ? v->scene().sceneNode[pp.bands[b].tuning] : project_patch::kNone;
   Face* f = sn != project_patch::kNone ? v->canvas().panelOn(sn) : nullptr;
-  if (f == nullptr) return Error{ErrorCode::NotFound, "project-patch-tuning: no tuning face", {}};
+  if (f == nullptr) return Error{ErrorCode::NotFound, name + ": no tuning face", {}};
   (void)f->prepare(v->canvas().deviceScale());  // laid out now (the canvas would at its first settled frame)
   MosCircle* c = project_patch::tuningFaceCircle(*f);
-  if (c == nullptr) return Error{ErrorCode::NotFound, "project-patch-tuning: the face has no circle", {}};
+  if (c == nullptr) return Error{ErrorCode::NotFound, name + ": the face has no circle", {}};
+  if (wheel && project_patch::tuningFaceChart(*f) == nullptr) return Error{ErrorCode::NotFound, name + ": the face has no chart", {}};
   c->noteOn(1, 0, 261.63);  // C
   c->noteOn(2, 4, 329.63);  // E
   c->noteOn(3, 7, 392.0);   // G
   shell.tree().layoutNow();
   return Ok{};
 }
+Status setupProjectPatchTuning(Shell& shell) { return setupProjectPatchTuningAt(shell, false, "project-patch-tuning"); }
+Status setupProjectPatchTuningWheel(Shell& shell) { return setupProjectPatchTuningAt(shell, true, "project-patch-tuning-wheel"); }
 // T5.x-circuit-chain: zooming into a band of the project patch view (a double-click on it): the sketch project's Keys
 // band opened — Operator → Saturator, each opened to its atoms in its labelled frame, wired through to the mixer.
 Status setupProjectPatchZoom(Shell& shell) {
@@ -3276,6 +3284,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-band", 1280, 800, setupProjectPatchBand},
     {"project-mixer", 1280, 800, setupProjectMixer},  // TX.mixer-look
     {"project-patch-tuning", 1280, 800, setupProjectPatchTuning},  // BR.tuning-block
+    {"project-patch-tuning-wheel", 1280, 800, setupProjectPatchTuningWheel},  // BR.tuning-outside
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio

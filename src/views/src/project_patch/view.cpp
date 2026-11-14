@@ -1153,6 +1153,24 @@ void ProjectPatchView::setTuningOpen(doc::TrackId track, bool open) {
   auto& nudges = ctx_.store().view().patchNudges;
   doc::PatchNudge& n = nudges[track.value];
   n.tuningOpen = open;
+  n.tuningWheel = n.tuningWheel && open;  // BR.tuning-outside: closing folds the wheel too
+  if (n.empty()) nudges.erase(track.value);
+  ctx_.viewStateChanged();
+  relayout();
+}
+
+bool ProjectPatchView::tuningWheel(doc::TrackId track) const noexcept {
+  const auto& nudges = ctx_.store().view().patchNudges;
+  const auto it = nudges.find(track.value);
+  return it != nudges.end() && it->second.tuningOpen && it->second.tuningWheel;
+}
+
+void ProjectPatchView::setTuningWheel(doc::TrackId track, bool wheel) {
+  if (tuningWheel(track) == wheel) return;
+  auto& nudges = ctx_.store().view().patchNudges;
+  doc::PatchNudge& n = nudges[track.value];
+  n.tuningWheel = wheel;
+  n.tuningOpen = n.tuningOpen || wheel;
   if (n.empty()) nudges.erase(track.value);
   ctx_.viewStateChanged();
   relayout();
@@ -2292,8 +2310,9 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
     // BR.tuning-block: open / close it in place, then the track's tuning chip menu (choose a tuning, New Tuning, the
     // full MOS wheel, …).
     const doc::TrackId t = patch_.bands[n.band].track;
-    const bool open = tuningOpen(t);
+    const bool open = tuningOpen(t), wheel = tuningWheel(t);
     items.push_back(ui::MenuItem::item(open ? "Close Tuning" : "Open Tuning", [this, t, open] { setTuningOpen(t, !open); }));
+    items.push_back(ui::MenuItem::item(wheel ? "Circle Only" : "Open Wheel Here", [this, t, wheel] { setTuningWheel(t, !wheel); }));
     items.push_back(ui::MenuItem::sep());
     for (ui::MenuItem& it : tuningMenuItems(*canvas_, ctx_, TuningTarget::forTrack(t))) items.push_back(std::move(it));
   } else {

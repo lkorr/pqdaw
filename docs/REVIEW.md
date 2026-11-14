@@ -1604,3 +1604,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   slider turns it into that MOS. Say if you'd rather see 12-EDO drawn differently (e.g. no MOS title).
 - Not done: the block cannot be moved (it has no device id for a nudge); a pinned lane tap on the notes link is ignored
   (the link always leaves from the chip).
+
+## 2026-11-13 · BR.tuning-outside · circuit view: the tuning block hitched outside its band, the wheel opened on it 👁
+- The tuning block now sits OUTSIDE its band, in the gutter left of the bands (all MIDI bands' blocks in one column,
+  40 units clear of the band edge). The lane's notes leave the lane's left end and hang across into the block's bottom;
+  its output cable goes back across the band edge into the instrument. The chain starts at the band's own left edge
+  again. Look at: project-patch-tuning (Pad bottom left: closed), project-patch-group.
+- Opened, the block grows LEFTWARD (its right edge stays). Its Wheel button (was "Wheel…", a popover) now grows the same
+  block further left to the full wheel: Scala, the temperament search and the region chart beside the circle, which
+  keeps its size and place. The chart follows the circle (row scrolled to the size, zoomed to the region); a click or
+  drag in it changes the track's tuning (one undo step); the mouse wheel over the chart zooms the chart. "Circle" folds
+  it back. Look at: project-patch-tuning-wheel.
+- Open questions for you: gutter width (40); chart width (560); whether the block should be as tall as its band when
+  closed (your sketch drew it tall). The popover wheel is still there from the block's menu (MOS Wheel…).

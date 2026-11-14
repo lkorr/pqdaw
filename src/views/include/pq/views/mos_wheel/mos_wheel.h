@@ -31,6 +31,7 @@
 // Opened from a TuningChip (the clip view's clip box; T3.10's headers) or the tuning.openMosWheel action
 // (Ctrl+Shift+W, Q15: the clip in the clip view, else the project's default tuning). UI thread only.
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -110,6 +111,19 @@ private:
   TuningTarget target_;
   bool gesture_ = false;  // this edit's store gesture is open
 };
+
+// BR.tuning-outside: what the wheel's controls do, shared by the popover and the tuning block's wheel (project patch).
+// Zooms `chart` to its selected region (± 1.5 region widths; no-op without one).
+void focusChartSelection(MosChart& chart);
+// tuning::temperaments()[index]: the chart and circle take its period and its MOS at the middle of its generator range
+// (the circle's MODMOS cleared). False (both configs as before, the reason on the status line): out of range, or no MOS
+// of it within the chart's sizes. The caller applies the circle's params.
+bool selectTemperament(ViewContext& ctx, MosChart& chart, MosCircle& circle, int32_t index);
+// The temperament search over `text` (MosWheelPopover::matchTemperaments): the only / exact match is chosen at once,
+// several open a menu of them under `field` (each item calls `choose`, which must guard its own lifetime). False: none.
+bool findTemperament(ui::Widget& field, std::string_view text, std::function<void(int32_t)> choose);
+// A Scala file (.scl, UTF-8 path) read and parsed as a tuning at `referenceHz`; the reason on the status line on failure.
+Result<doc::TuningDef> readScalaTuning(ViewContext& ctx, std::string_view pathUtf8, double referenceHz);
 
 class MosWheelPopover : public ui::Popover {
 public:

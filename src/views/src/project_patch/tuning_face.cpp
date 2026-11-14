@@ -8,15 +8,24 @@
 //            face (letter-spaced capitals in the accent, a soft glow behind them), the tuning's short label ("12")
 //            under them when it fits; its notes socket on the bottom edge, its output on the right edge at the spine.
 //            Vector painting only (a few primitives per paint, nothing static to cache), no clock.
-//   opened   a ui::UiTree of its own (TuningPanel: a header — TUNING, the tuning's name, an EDO entry, a button to
-//            the full MOS wheel — over the MosCircle) laid out at the canvas's device scale with the theme's fonts
+//   opened   a ui::UiTree of its own (TuningPanel: a header — TUNING, the tuning's name, an EDO entry, the Wheel
+//            button — over the MosCircle) laid out at the canvas's device scale with the theme's fonts
 //            resolved at that scale, so it zooms with the canvas and its text stays crisp at every settled zoom (the
 //            way TX.panel-faces hosted a device panel: retired/src/views/src/devices/panel_face.cpp). The tree paints
 //            into a recorded draw list once per change; the list is replayed into the canvas's each frame, scaled while
 //            a zoom settles (Face::prepare lays it out again at the new scale). The canvas routes presses on the
 //            header's controls and on the circle to the tree in panel px; the header's empty strip is the block's (a
 //            double-click there closes it). Keys and text go to the tree while one of its fields holds the focus.
-//   edits    the circle's drags and buttons, a typed EDO: TuningEdit (pq/views/mos_wheel/mos_wheel.h) — live while
+//   wheel    (BR.tuning-outside, user 2026-11-13: "the wheel view … should just expand/open the wheel up on the same
+//            module; keeping the mos circle in its same location, and just expanding out to its left") the Wheel button
+//            grows the opened block LEFTWARD by kTuningWheelW: the full wheel's region chart (MosChart), a Scala button and
+//            the temperament search in a column left of the circle's, which keeps its size and place (the block's right
+//            edge stays put: the model anchors it). The button is the canvas's (ProjectCanvas: a press on it toggles
+//            PatchNudge::tuningWheel, which re-lays out and so replaces this face — never from inside the face's own
+//            dispatch); the face only draws it (tuningFaceWheelButton). The chart and the circle follow each other as in
+//            the popover (mos_wheel.h's shared helpers: focusChartSelection, selectTemperament, findTemperament,
+//            readScalaTuning).
+//   edits    the circle's and chart's drags and buttons, a typed EDO: TuningEdit (pq/views/mos_wheel/mos_wheel.h) — live while
 //            dragging, one undo step per gesture, Esc during a drag cancels it. A document change from elsewhere (undo,
 //            the wheel, another track sharing the tuning) is shown at once.
 //   EDO      an equal division of the octave is shown on the circle as its n equal steps: the n-note MOS of its fifth's
@@ -45,6 +54,7 @@
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
 #include "pq/ui/tile_atlas.h"
+#include "pq/tuning/mos_data.h"
 #include "pq/views/meta/meta_face.h"
 #include "pq/views/mos_wheel/mos_circle.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
@@ -113,20 +123,62 @@ std::optional<MosSelection> edoSelection(const MosCircle& c, const tu::Edo& e) {
   return std::nullopt;
 }
 
-// The opened face's widget tree root: the header over the circle. Reads and edits the track's tuning.
+// The opened face's widget tree root: the header over the circle (the circle's column, kTuningOpenW wide, at the right);
+// BR.tuning-outside: with `wheel`, the wheel's column (its header: Scala, the temperament search; the region chart) left of
+// it. Reads and edits the track's tuning.
 class TuningPanel final : public ui::Widget {
 public:
   static constexpr float kHeaderH = metrics::kTuningHeaderH;
   static constexpr float kLabelW = 96.0f;  // the TUNING label's room at the header's left
 
-  TuningPanel(ViewContext& ctx, doc::TrackId track)
+  TuningPanel(ViewContext& ctx, doc::TrackId track, bool wheel)
       : Widget("tuning-panel"), ctx_(ctx), track_(track), target_(TuningTarget::forTrack(track)), edit_(ctx, target_) {
-    setLayout(ui::LayoutKind::Column);
+    setLayout(ui::LayoutKind::Row);
     if (const doc::TuningDef* d = targetTuning(*ctx_.doc(), target_)) draft_ = *d;
-    auto& header = add<ui::Widget>("header");
+    if (wheel) {
+      auto& side = add<ui::Widget>("wheel-side");
+      side.setLayout(ui::LayoutKind::Column);
+      side.setWidth(ui::Length::fixed(metrics::kTuningWheelW));
+      auto& wh = side.add<ui::Widget>("wheel-header");
+      wh.setLayout(ui::LayoutKind::Row);
+      wh.setHeight(ui::Length::fixed(kHeaderH));
+      wh.setPadding({static_cast<int16_t>(kLabelW), 4, 8, 4});
+      wh.setGap(4);
+      wh.setAlign(ui::Align::Start, ui::Align::Center);
+      auto& scala = wh.add<ui::Button>("scala", "Scala\xE2\x80\xA6");
+      scala.setSize(ui::Length::fixed(52), ui::Length::fixed(18));
+      scala.setFocusable(false);
+      scala.setInfo("Scala File", "Imports a Scala scale (.scl) as this track's tuning.");
+      scala.onClick = [this] { requestScalaFile(); };
+      search_ = &wh.add<ui::TextEdit>("temperament");
+      search_->setSize(ui::Length::flex(1), ui::Length::fixed(18));
+      search_->setPlaceholder("Temperament\xE2\x80\xA6");
+      search_->setInfo("Find Temperament", "Type part of a temperament's name (meantone, porcupine, magic\xE2\x80\xA6) and press "
+                                           "Enter: its MOS at the middle of its generator range. Several matches open a short list.");
+      search_->onCommit = [this](const std::string& t) {
+        std::shared_ptr<bool> alive = alive_;
+        if (!t.empty() && !findTemperament(*search_, t, [this, alive](int32_t i) {
+              if (*alive) (void)chooseTemperament(i);
+            }))
+          ctx_.setStatus("Temperament: no name contains \xE2\x80\x9C" + t + "\xE2\x80\x9D");
+      };
+      auto& box = side.add<ui::Widget>("chart-box");
+      box.setLayout(ui::LayoutKind::Column);
+      box.setHeight(ui::Length::flex(1));
+      box.setPadding({8, 4, 8, 8});
+      chart_ = &box.add<MosChart>("chart", configFor(draft_));
+      chart_->setHeight(ui::Length::flex(1));
+      chart_->setOnChange([this](const std::optional<MosSelection>& s, MosGesture g) { onChart(s, g); });
+    }
+    auto& col = add<ui::Widget>("circle-side");
+    col.setLayout(ui::LayoutKind::Column);
+    col.setWidth(ui::Length::fixed(metrics::kTuningOpenW));
+    auto& header = col.add<ui::Widget>("header");
     header.setLayout(ui::LayoutKind::Row);
     header.setHeight(ui::Length::fixed(kHeaderH));
-    header.setPadding({static_cast<int16_t>(kLabelW), 4, 10, 4});  // (right: clear of the output socket on the edge)
+    // (left: the TUNING label, at the block's left edge: the wheel's header has it when shown; right: clear of the output
+    // socket on the edge)
+    header.setPadding({static_cast<int16_t>(wheel ? 8.0f : kLabelW), 4, 10, 4});
     header.setGap(4);
     header.setAlign(ui::Align::Start, ui::Align::Center);
     name_ = &header.add<ui::Label>("name", std::string(), ui::FontRoleId::Small, ui::TextTone::Secondary);
@@ -141,13 +193,16 @@ public:
       if (std::sscanf(t.c_str(), "%d", &n) == 1 && n >= 1 && n <= 9999) (void)chooseEdo(n);
       else showDraft();
     };
-    auto& wheel = header.add<ui::Button>("wheel", "Wheel\xE2\x80\xA6");
-    wheel.setSize(ui::Length::fixed(52), ui::Length::fixed(18));
-    wheel.setFocusable(false);
-    wheel.setInfo("MOS Wheel", "Opens the full MOS wheel for this tuning: the region chart, Scala files, the temperament "
-                               "search.");
-    wheel.onClick = [this, &wheel] { openWheel(wheel); };
-    circle_ = &add<MosCircle>("circle", configFor(draft_));
+    // The canvas takes its presses (TuningFace: tuningFaceWheelButton); the tree draws it and its hover.
+    wheel_ = &header.add<ui::Button>("wheel", wheel ? "Circle" : "Wheel");
+    wheel_->setSize(ui::Length::fixed(52), ui::Length::fixed(18));
+    wheel_->setFocusable(false);
+    if (wheel)
+      wheel_->setInfo("Circle Only", "Folds the wheel's region chart away: the block is its MOS circle again.");
+    else
+      wheel_->setInfo("MOS Wheel", "Opens the full MOS wheel here, out to the block's left: the region chart, Scala files, the "
+                                   "temperament search. The circle stays where it is.");
+    circle_ = &col.add<MosCircle>("circle", configFor(draft_));
     circle_->setHeight(ui::Length::flex(1));
     circle_->setOnChange([this](const std::optional<MosSelection>& s, std::span<const double>, MosGesture g) { onCircle(s, g); });
     circle_->onAudition = [this](double cents) {
@@ -158,16 +213,21 @@ public:
     docSub_ = ctx_.subscribe([this](const doc::StoreEvent& e) {
       if (applying_ || !TuningChip::tuningMayChange(e)) return;
       const doc::TuningDef* d = targetTuning(*ctx_.doc(), target_);
-      if (d == nullptr || *d == draft_ || circle_->dragging()) return;
+      if (d == nullptr || *d == draft_ || circle_->dragging() || (chart_ != nullptr && chart_->dragging())) return;
       draft_ = *d;
       showDraft();
     });
     showDraft();
   }
-  ~TuningPanel() override { edit_.finish(); }
+  ~TuningPanel() override {
+    *alive_ = false;
+    edit_.finish();
+  }
 
   MosCircle& circle() const noexcept { return *circle_; }
   ui::TextEdit& edo() const noexcept { return *edo_; }
+  MosChart* chart() const noexcept { return chart_; }  // null: not grown to the wheel
+  const ui::Button& wheelButton() const noexcept { return *wheel_; }
 
   // TU.2: what lights the circle — made once the panel is in its tree (a frame request outside a tree is dropped).
   void startNotes() {
@@ -198,6 +258,11 @@ public:
       (void)paint::text(ctx, ctx.res.uiFonts->bodyStrong,
                         {r.x + static_cast<int32_t>(std::lround(13.0f * us)), r.y, static_cast<int32_t>(std::lround((kLabelW - 13.0f) * us)), hh},
                         "T U N I N G", th.face.value, ui::TextAlign::Left);
+    if (chart_ != nullptr) {  // the wheel's column and the circle's: a rule between them under the header
+      const auto lw = std::max(1, static_cast<int32_t>(us));
+      const int32_t x = r.x + r.w - static_cast<int32_t>(std::lround(metrics::kTuningOpenW * us));
+      ctx.dl.addRectFilled(ui::IRect{x, r.y + hh, lw, r.h - hh}.toRect(), th.face.frame);
+    }
   }
 
 private:
@@ -231,6 +296,7 @@ private:
       circle_->setModmos({});
       edo_->setText({});
     }
+    syncChart();
     std::string name;
     const doc::Project& p = *ctx_.doc();
     if (const doc::TuningSlot* s = doc::findTuning(p, targetTuningId(p, target_))) name = s->name;
@@ -247,14 +313,49 @@ private:
     return ok;
   }
 
+  // The chart shows what the circle does (its sizes, the selected region; zoomed to it, its row scrolled into view a few
+  // rows down).
+  void syncChart() {
+    if (chart_ == nullptr) return;
+    if (!(chart_->config() == circle_->config())) chart_->setConfig(circle_->config());
+    if (const std::optional<MosSelection>& sel = circle_->selection();
+        sel && chart_->select(sel->perPeriodKey, sel->generatorCents, sel->modeRotation)) {
+      focusChartSelection(*chart_);
+      chart_->setFirstSize(std::max(2, sel->notesPerPeriod() - 4));
+    } else {
+      chart_->clearSelection();
+    }
+  }
+
+  void cancelToDocument() {  // the drag's gesture is undone: show the document again
+    edit_.cancel();
+    if (const doc::TuningDef* d = targetTuning(*ctx_.doc(), target_)) draft_ = *d;
+    showDraft();
+  }
+
+  // A click or drag in the wheel's chart: the circle takes its MOS, the track's tuning follows.
+  void onChart(const std::optional<MosSelection>& sel, MosGesture g) {
+    if (g == MosGesture::Cancel) {
+      cancelToDocument();
+      return;
+    }
+    circle_->setSelection(sel);
+    if (!sel) return;  // nothing selected: the track keeps its tuning
+    fromCircle(g);
+  }
+
   void onCircle(const std::optional<MosSelection>& sel, MosGesture g) {
-    if (g == MosGesture::Cancel) {  // the drag's gesture is undone: show the document again
-      edit_.cancel();
-      if (const doc::TuningDef* d = targetTuning(*ctx_.doc(), target_)) draft_ = *d;
-      showDraft();
+    if (g == MosGesture::Cancel) {
+      cancelToDocument();
       return;
     }
     if (!sel) return;
+    if (chart_ != nullptr) (void)chart_->select(sel->perPeriodKey, sel->generatorCents, sel->modeRotation);
+    fromCircle(g);
+  }
+
+  // The circle's MOS as the track's tuning (live while dragging, one undo step at the commit).
+  void fromCircle(MosGesture g) {
     const std::optional<tu::MosParams> p = circle_->params();
     if (!p) return;
     doc::TuningDef d;
@@ -279,12 +380,31 @@ private:
     return ok;
   }
 
-  void openWheel(const ui::Widget& from) {
-    ui::UiTree* t = tree();
-    ui::TreeHost* h = t != nullptr ? t->host() : nullptr;
-    ui::Widget* host = h != nullptr ? h->hostWidget() : nullptr;
-    if (host == nullptr) return;
-    (void)openMosWheel(*host, ctx_, target_, h->toHost(from.rect()));
+  bool chooseTemperament(int32_t index) {
+    if (chart_ == nullptr || !selectTemperament(ctx_, *chart_, *circle_, index)) {
+      showDraft();
+      return false;
+    }
+    search_->setText(std::string(tu::temperaments()[static_cast<size_t>(index)].name));
+    fromCircle(MosGesture::Commit);
+    return true;
+  }
+
+  void requestScalaFile() {
+    FileDialogs* d = ctx_.fileDialogs();
+    if (d == nullptr) {
+      ctx_.setStatus("Scala: no file dialog available");
+      return;
+    }
+    // The dialog may answer after the block closed (a re-layout replaced this face): the token says whether we exist.
+    std::shared_ptr<bool> alive = alive_;
+    d->chooseScalaFile([this, alive](std::string path) {
+      if (!*alive || path.empty()) return;
+      Result<doc::TuningDef> def = readScalaTuning(ctx_, path, draft_.referenceHz);
+      if (!def) return;
+      (void)apply(std::move(*def), MosGesture::Commit, "Change Tuning");
+      showDraft();
+    });
   }
 
   ViewContext& ctx_;
@@ -293,11 +413,15 @@ private:
   doc::TuningDef draft_;
   TuningEdit edit_;
   MosCircle* circle_ = nullptr;
+  MosChart* chart_ = nullptr;        // BR.tuning-outside: the wheel's (null: the circle alone)
+  ui::TextEdit* search_ = nullptr;   // … its temperament search
   ui::Label* name_ = nullptr;
   ui::TextEdit* edo_ = nullptr;
+  ui::Button* wheel_ = nullptr;
   std::unique_ptr<CircleNotes> notes_;
   ViewContext::Subscription docSub_;
   bool applying_ = false;
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // false once destroyed (late dialog / menu callbacks)
 };
 
 constexpr float kCorner = 4.0f;
@@ -307,15 +431,23 @@ public:
   static constexpr float kMinScale = 0.5f;  // device px per world unit: below it the recording is drawn shrunk
   static constexpr float kMaxScale = 8.0f;  // above it, stretched
 
-  TuningFace(ViewContext& ctx, doc::TrackId track, bool open, Vec2 size) : ctx_(ctx), track_(track), open_(open), size_(size) {
+  TuningFace(ViewContext& ctx, doc::TrackId track, bool open, bool wheel, Vec2 size)
+      : ctx_(ctx), track_(track), open_(open), size_(size) {
     if (!open_) return;
-    panel_ = &tree_.emplaceRoot<TuningPanel>(ctx, track);
+    panel_ = &tree_.emplaceRoot<TuningPanel>(ctx, track, wheel);
     tree_.setHost(this);
   }
   ~TuningFace() override { tree_.setHost(nullptr); }
 
   TuningPanel* panel() const noexcept { return panel_; }
   float layoutScale() const noexcept { return layScale_; }
+  // The Wheel button's rect (world units from the block's top-left; none: closed, not laid out yet).
+  std::optional<Rect> wheelButton() const noexcept {
+    if (panel_ == nullptr || layScale_ == 0.0f) return std::nullopt;
+    const ui::IRect r = panel_->wheelButton().rect();
+    return Rect{static_cast<float>(r.x) / layScale_, static_cast<float>(r.y) / layScale_, static_cast<float>(r.right()) / layScale_,
+                static_cast<float>(r.bottom()) / layScale_};
+  }
 
   // ---- geometry ----
   Vec2 worldSize() const noexcept override { return size_; }
@@ -359,8 +491,10 @@ public:
     if (local.x < 0.0f || local.y < 0.0f || local.x > size_.x || local.y > size_.y) return kNone;
     if (!open_ || layScale_ == 0.0f) return kFrame;  // closed: the block (a double-click opens it)
     const ui::Widget* w = tree_.hitTest(toPanel(local));
-    // The header's empty strip and the TUNING label are the block's (a double-click there closes it).
-    if (w == nullptr || w == panel_ || w->name() == "header" || w->name() == "name") return kFrame;
+    // The headers' empty strips and the TUNING label are the block's (a double-click there closes it).
+    if (w == nullptr || w == panel_) return kFrame;
+    for (const std::string_view n : {"header", "name", "wheel-header", "wheel-side", "chart-box", "circle-side"})
+      if (w->name() == n) return kFrame;
     return 0;
   }
 
@@ -413,7 +547,17 @@ public:
         pe.type = ui::PointerType::Leave;
         (void)tree_.dispatchPointer(pe);
         return tree_.needsPaint();
-      case FacePointer::Kind::Wheel: return false;  // the canvas's (it pans and zooms)
+      case FacePointer::Kind::Wheel: {
+        // Over the wheel's chart, the chart's (it zooms its cents, Shift scrolls its rows, Ctrl scales them: as in the
+        // popover); elsewhere the canvas's (it pans and zooms).
+        const MosChart* chart = panel_ != nullptr ? panel_->chart() : nullptr;
+        if (chart == nullptr || !chart->rect().contains(toPanel(e.local))) return false;
+        pe.type = ui::PointerType::Wheel;
+        pe.pos = toPanel(e.local);
+        pe.wheel = e.wheel;
+        (void)tree_.dispatchPointer(pe);
+        return true;
+      }
     }
     return false;
   }
@@ -445,8 +589,9 @@ public:
       if (!title.empty()) return;
     }
     title = "Tuning";
-    body = open_ ? "The track's tuning on the MOS circle: drag the hardness slider, step through its modes, type an EDO. Its "
-                   "degrees light as the track's notes sound. Double-click the header to close it."
+    body = open_ ? "The track's tuning on the MOS circle: drag the hardness slider, step through its modes, type an EDO; Wheel "
+                   "opens the region chart beside it. Its degrees light as the track's notes sound. Double-click the header "
+                   "to close it."
                  : "The track's tuning: its notes pass through here to the instrument. Double-click to open its MOS circle.";
   }
   bool setHoveredPart(int32_t part) noexcept override {
@@ -656,11 +801,26 @@ private:
 
 }  // namespace
 
-std::string tuningFacePath(const Node& n) { return std::string(kTuningFacePrefix) + (n.expanded ? "open" : "closed"); }
+// BR.tuning-outside: an opened block wider than the circle's column is grown to the wheel (the model's only reason).
+bool tuningWheelShown(const Node& n) noexcept { return n.kind == NodeKind::Tuning && n.expanded && n.w > metrics::kTuningOpenW + 0.5f; }
+
+std::string tuningFacePath(const Node& n) {
+  return std::string(kTuningFacePrefix) + (!n.expanded ? "closed" : tuningWheelShown(n) ? "wheel" : "open");
+}
 
 std::unique_ptr<Face> makeTuningFace(ProjectPatchView& view, const ProjectPatch& pp, const Node& n) {
   if (n.kind != NodeKind::Tuning || n.band >= pp.bands.size()) return nullptr;
-  return std::make_unique<TuningFace>(view.context(), pp.bands[n.band].track, n.expanded, Vec2{n.w, n.h});
+  return std::make_unique<TuningFace>(view.context(), pp.bands[n.band].track, n.expanded, tuningWheelShown(n), Vec2{n.w, n.h});
+}
+
+std::optional<Rect> tuningFaceWheelButton(const Face& f) {
+  const auto* t = dynamic_cast<const TuningFace*>(&f);
+  return t != nullptr ? t->wheelButton() : std::nullopt;
+}
+
+MosChart* tuningFaceChart(Face& f) {
+  auto* t = dynamic_cast<TuningFace*>(&f);
+  return t != nullptr && t->panel() != nullptr && t->layoutScale() > 0.0f ? t->panel()->chart() : nullptr;
 }
 
 MosCircle* tuningFaceCircle(Face& f) {

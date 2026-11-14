@@ -39,14 +39,19 @@
 //              first block, or the mixer); a summing band (group, return, master) fed by buses gets one, the buses
 //              ending there and a cable going on into its Σ.
 //   tuning     (BR.tuning-block, user 2026-11-13: "the tuning module to be a physical object paired with every midi channel")
-//              every MIDI band's TUNING BLOCK (lanes() mode only: not in a scoped model), on its spine at its left edge,
-//              before its chain (which starts kTuningRoom further right). Not a device: a view of the track's tuning
-//              (doc::TuningAssignment, as the track resolves it), derived from the track like its mixer. Closed (the
-//              default), a narrow vertical panel labelled TUNING; opened (doc::PatchNudge::tuningOpen: a double-click, its
-//              menu) it grows in place to the MOS wheel (tuning_face.cpp). Input `notes` on its BOTTOM edge (inputEntry),
-//              output `notes` on its right edge at the spine. The lane's notes link is drawn into it (Edge::drawnTo: a
-//              cable up from the lane's "notes" chip) and a cable of the same wire goes on from its output to the
-//              instrument. It cannot be deleted or rewired.
+//              every MIDI band's TUNING BLOCK (lanes() mode only: not in a scoped model), HITCHED OUTSIDE its band
+//              (BR.tuning-outside, user 2026-11-13: "its supposed to sit right outside of the thing"): in the gutter left
+//              of the bands, its right edge kTuningGap left of kLeft (every depth: one column), its output on the band's
+//              spine; the band's chain starts at its left edge as without one. Not a device: a view of the track's
+//              tuning (doc::TuningAssignment, as the track resolves it), derived from the track like its mixer. Closed
+//              (the default), a narrow vertical panel labelled TUNING; opened (doc::PatchNudge::tuningOpen: a
+//              double-click, its menu) it grows LEFTWARD in place to the MOS circle, and its Wheel button
+//              (PatchNudge::tuningWheel) grows it further left to the full wheel, the region chart beside the circle —
+//              the right edge, and so the circle, stays where it was (tuning_face.cpp). The band grows to hold it.
+//              Input `notes` on its BOTTOM edge near its right end (inputEntry), output `notes` on its right edge at the
+//              spine. The lane's notes link is drawn into it (Edge::drawnTo: a cable out of the lane's left end) and a
+//              cable of the same wire goes on from its output across the band's edge to the instrument. It cannot be
+//              deleted or rewired.
 //   group      a container around its band and its members' bands; its own chain starts right of its members' mixers.
 // Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind; BR.patch-io: one per frame it
 // crosses more, Edge::hops), the main path's links included; route (a track's `out` → the summing input of its group or the master: graph wire out → in), send (a
@@ -271,7 +276,7 @@ struct Edge {
   // edge itself still ends on the Σ), and a cable goes on from there into the Σ. BR.input-port: so is an audio lane's
   // chain edge (a trace out of the lane's left end round the band's left edge; the cable on from the socket).
   // BR.tuning-block: and a MIDI lane's notes link (hop 0) is drawn into its band's tuning block (NodeKind::Tuning: a
-  // cable up from the lane's "notes" chip into the block's bottom), and a cable of the same wire goes on from the block's
+  // cable out of the lane's left end into the block's bottom), and a cable of the same wire goes on from the block's
   // output into the link's target.
   uint32_t drawnTo = 0xFFFFFFFFu;
 };
@@ -367,12 +372,13 @@ inline constexpr float kTerminalW = 36.0f, kTerminalH = 32.0f;  // its In / Out 
 // left edge (clear of its colour bar).
 inline constexpr float kSocketPitch = 16.0f, kInputInset = 8.0f;
 inline constexpr float kInputRoom = 40.0f;  // … and an audio track with one starts its chain this much further right
-// BR.tuning-block: a MIDI band's tuning block — closed (a narrow vertical panel), opened (its MOS wheel; the face's own
-// header strip on top) — and the gap between it and the band's chain (the chain starts its width + kTuningGap right of
-// it: kInputRoom when closed).
+// BR.tuning-block: a MIDI band's tuning block — closed (a narrow vertical panel), opened (its MOS circle; the face's own
+// header strip on top), BR.tuning-outside: grown to the full wheel (the region chart, kTuningWheelW, left of the circle
+// column; as tall) — and the gutter between its right edge and the bands' left edge (kLeft).
 inline constexpr float kTuningW = 16.0f, kTuningH = 80.0f;
 inline constexpr float kTuningOpenW = 320.0f, kTuningOpenH = 432.0f, kTuningHeaderH = 28.0f;
-inline constexpr float kTuningGap = kInputRoom - kTuningW;
+inline constexpr float kTuningWheelW = 560.0f;
+inline constexpr float kTuningGap = 40.0f;
 inline constexpr float kClosedGroupW = 168.0f, kClosedGroupH = 96.0f;  // a closed group's block (its miniature)
 inline constexpr float kValueKnobW = 48.0f, kValueKnobH = 56.0f;      // GU.5b: a value block's knob
 }  // namespace metrics
@@ -519,8 +525,9 @@ inline float pinOffset(const Node& n, size_t i, bool input) noexcept {
 // Where input `i`'s wires meet node `n` (world units): its pin on the left edge, or (TX.mod-all) for an anchored param
 // the point of the edge nearest its control, level with it (the canvas draws on from there to the control).
 inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
-  // BR.tuning-block: a tuning block's notes come up from its lane below: its input on its bottom edge, near its left.
-  if (n.kind == NodeKind::Tuning) return {n.x + std::min(n.w * 0.5f, 16.0f), n.y + n.h};
+  // BR.tuning-block: a tuning block's notes come up from its lane below: its input on its bottom edge, near its right
+  // end (BR.tuning-outside: the side toward the lane).
+  if (n.kind == NodeKind::Tuning) return {n.x + n.w - std::min(n.w * 0.5f, 16.0f), n.y + n.h};
   if (i < n.inputs.size() && n.inputs[i].anchored) {
     const Port& p = n.inputs[i];
     switch (entrySide(n, p)) {
