@@ -1527,3 +1527,12 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   (the cable is made; a bool input other than the main one is not compiled yet: the lowering marks such a cable Invalid).
 - Judge: whether the red ring reads as "not here" next to the accent rings of the allowed targets; the message's wording;
   FLAC's 32-bit float handling (switching to 24 rather than greying the row).
+
+## 2026-11-13 · AU.app · freeze / autosave / recovery / export fixes (task/AU.app-fixes)
+- Try: File > Export Audio into a folder that already holds the file (export twice with the same name).
+- Look at: the first press says "<name>.wav already exists. Press Replace to overwrite it." and the button reads
+  Replace; the second press exports. Changing any row first asks again.
+- Try: freeze a track, add a cable from a group's Pre FX into one of its blocks (a sidechain), then move faders of
+  tracks outside that group: the frozen track stays frozen (no Rendering bar); moving a fader inside the group makes it
+  play live and re-render once.
+- Judge: the Replace wording; whether a two-press confirm is enough (no dialog).

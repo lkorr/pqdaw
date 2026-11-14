@@ -1464,3 +1464,13 @@ Choice: (b): one check (`doc::declaredWireClash`) on declarations only — an un
 stays the judge of everything else; note outputs typed as their voice terminals (gate bool, hz / velocity real).
 Reversible: wire_types.cpp and its three callers.
 Status: open.
+
+## Q?-AU.app-a · A frozen track's render ignores solo on the tracks that reach a sum it hears
+Context: AU.app H3 replaced the whole-project fallback (a cable from a group's / return's / master's source into a
+frozen track's block) by the sum's contributors with their mixers. Live, a soloed track mutes the others (and with them
+what reaches the sum); the render document has only part of the project. Options: (a) clear solo in the render
+document (the render is the unsoloed mix; soloing never re-renders); (b) keep every track's solo state in the key
+(soloing while mixing re-renders and flips the track live); (c) keep the contributors' solo flags only (wrong when a
+track outside them is soloed). Choice: (a): a freeze is a mixdown aid, and soloing to listen should not re-render.
+Reversible: `normalTrack`'s `full` branch in src/app/src/freeze_service.cpp.
+Status: open.
