@@ -2096,4 +2096,11 @@ TEST_CASE("timeline: a gain point with `sync` sends a Sync and conditional steps
     CHECK(r.mix[static_cast<size_t>(5 * kQ / 2)] == 0.0f);
     CHECK(r.rtViolations == 0);
   }
+  {  // `sync` is part of the curve hash: a swap re-synchronises a note whose Sync points changed
+    e::NoteDesc plain = keeper;
+    plain.gainCurve[1].sync = 0;
+    const auto x = image({{1, {clip(1, 0, 2 * kBar, {keeper})}}}), y = image({{1, {clip(1, 0, 2 * kBar, {plain})}}});
+    CHECK(x->gainCurve(x->notes()[0])[1].sync == 1);
+    CHECK(x->curveHash(x->notes()[0]) != y->curveHash(y->notes()[0]));
+  }
 }
