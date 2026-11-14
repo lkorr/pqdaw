@@ -763,3 +763,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker `build.ps1 -Affected -Slow` 62/63 (its own new no-ride flatten variant at 0.0502 ¢ vs 0.05, bounded 0.0505), ship pq_bench_dsp / timeline / playback link; orchestrator after the rebase onto ee5d91de: pq_tests_document, pq_tests_app, pq_tests_playback (4 shards), pq_tests_views pass.
 - Perf / CPU-efficiency check: timeline `busy/16ths x64` 206.7 vs 207.1 ns/block against 7d4833d1 (+0.2 %, noise); lowering 100 × 8 × 32 min 3.7 ms (release). 4:5:6:7 → 1 → 4:5:6:7: merged difference to one voice 0, split 0 → +6.0 dB.
 - Notes/blockers: Q286–Q288; bench/RESULTS.md rows not appended (machine at 56 % load).
+
+## 2026-11-14 · T7.6 merged · main (8a9b72cb)
+- Did: `roll_pen.cpp`: bend between notes (Alt + edge drag, Ctrl+G), free draw / breakpoints / vibrato in Draw Mode, Shift + drag detune, ride-curve editing on an object's lowest line, Clear Bends; stored as baked breakpoints (SetNoteCurve / SetJiObject), views only. Fixed: a click on an already-selected note selected note id 0. Goldens: + pianoroll-bends, -vibrato, -ride; re-recorded pianoroll-note-menu.
+- Verified: worker before the rebase pq_tests_views 793/794 (the note-menu golden, re-recorded); orchestrator after the rebase onto 25d4e32f: `build.ps1 -Target X -TestRegex X` for pq_tests_views, pq_tests_ui, pq_tests_app pass. Orchestrator looked at the bends and vibrato goldens.
+- Perf / CPU-efficiency check: nothing per audio block; a drag frame re-thins one stroke or rebuilds one bend per selected note.
+- Notes/blockers: Q289–Q291; two existing gestures changed (TASKS); not auditioned.

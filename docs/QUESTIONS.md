@@ -1661,7 +1661,7 @@ hold, within about 1e-7 relative in frequency (a beat period of hours) after a j
 Choice: leave it (inaudible); a Sync at every joint arrival would restore bit identity at the price of a state copy
 per stop and voice.
 
-## Q?-T7.6-a · 2026-11-14 · T7.6 · A bend between notes when the neighbour later moves
+## Q289 · 2026-11-14 · T7.6 · A bend between notes when the neighbour later moves
 Context: A3: Alt + a note's edge makes it glide in from the previous note / out to the next one. The glide is stored as
 the note's own pitch curve (breakpoints), its far end computed from the neighbour's resolved pitch when the gesture is made.
 Options: (a) baked: the curve keeps its cents; after the neighbour is moved or retuned the glide still aims at the old
@@ -1674,14 +1674,14 @@ mechanisms"; it needs `document` + `app/project_link_ji.cpp`. A tuning morph is 
 their baked glides do not.
 Status: open (say if (b) is wanted).
 
-## Q?-T7.6-b · 2026-11-14 · T7.6 · Bend shapes: Straight and S-Curve, no Bezier handles
+## Q290 · 2026-11-14 · T7.6 · Bend shapes: Straight and S-Curve, no Bezier handles
 Context: the task asked for Straight / S-Curve / Bezier "reusing the object transition shapes and handles".
 Choice: a note's bend is baked points, so a Bezier's two handles have nowhere to live (a model field would be needed, as
 in Q?-T7.6-a (b)). The menu offers Straight and S-Curve; a Straight bend is two breakpoints with the diamond between them,
 which bends the segment (`Breakpoint::curve`), and every point can be dragged. Bezier handles come with (b) if wanted.
 Status: open.
 
-## Q?-T7.6-c · 2026-11-14 · T7.6 · Modifiers and what a resize does to a curve
+## Q291 · 2026-11-14 · T7.6 · Modifiers and what a resize does to a curve
 Choices made (all reversible):
 - Alt + an edge = bend (Alt on an edge was free; Alt + body still copies). Shift + body = free detune to Cents notes
   (Shift + click still toggles; a selected note is now taken off on release, so a Shift drag can start on it). Before,
