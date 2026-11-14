@@ -745,3 +745,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker `build.ps1 -Affected -Slow` 86/87 (the failure = the token count, fixed), ship `pq_bench_dsp` links; orchestrator after the rebase onto 7b04787d: pq_tests_ui, pq_tests_timeline, pq_tests_app pass.
 - Perf / CPU-efficiency check: timeline `busy/16ths x64` (release, ns/block): 853ee655 96–98, T7.1 100–102, now 96.7–99.5. Lowering 100 objects × 8 voices × 32 stops 6.5–7 ms (target 5; 214 ms in the first version; 75 % in jiVoicePlan).
 - Notes/blockers: Q281, Q282. Merge beating until T7.7.
+
+## 2026-11-14 · T7.5 merged · main (bf3d1d31)
+- Did: `roll_ji_edit.cpp`: enter an object (voices as rows, notes on voices, path notes hit where drawn), stops (typed proportion, `T` tuning stop, drag label / glide grip, Delete, retype), per-voice shape / glide / delay, walk a harmonic (Alt+Up / Down), Alt-drag free cents, undertone; Tune to JI (`Ctrl+Shift+J`), Back to Tuning, Remove JI Tuning; Is Harmonic… ; ops::moveJiObject(steps, cents) / pasteJiObject / duplicateJiObject / deleteJiObject(withNotes), Ctrl+C / X / V of an object. Goldens: + pianoroll-ji-entered, -tune-to-ji, -tune-to-ji-31edo, -fundamental-lock; re-recorded pianoroll-ji-tuning, pianoroll-note-menu.
+- Verified: worker `build.ps1 -Affected` 44/45 (the failure = T7.4's token count, fixed on main); orchestrator after the rebase onto 7d4833d1: pq_tests_views, pq_tests_document, pq_tests_app, pq_tests_ui pass; pianoroll-ji-entered re-recorded (T7.3's S-curve flattening, sub-pixel, looked at).
+- Perf / CPU-efficiency check: 200-object paint 1.05 ms (narrow boxes skip the label layout).
+- Notes/blockers: user 2026-11-14 on "Is Harmonic N" → T7.5b (TASKS).
