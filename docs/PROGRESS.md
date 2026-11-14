@@ -727,3 +727,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (orchestrator, both branches stacked, pqdaw-w2): `build.ps1 -Affected -Slow` 86/86 passed + pq_tests_pqmeter_diff skipped; `-Preset ship -Target pq_bench_dsp -NoTests` links; after the rebase onto 853ee655 `-Target pq_tests_document -TestRegex pq_tests_document` passes.
 - Perf / CPU-efficiency check: curve work is per breakpoint (48 ns per curve event, release); 0 → +702 ¢ → 0 tracks within 0.0001 ¢. Open: the no-curve `busy/16ths x64` A/B was inconclusive under load (0 … +3.5 %); re-measure idle.
 - Notes/blockers: pq_tests_pqmeter_diff does not compile against today's uncommitted PQ Meter tree (`_FringeScale`, `IM_COL32_A_MASK` missing from the shim): verified with PQ_METER_SOURCE_DIR pointing nowhere (skip). Q275–Q278.
+
+## 2026-11-14 · T7.4 merged · main (493464df)
+- Did: `roll_ji.cpp`: JI objects drawn in the roll (box, voice lines through the morphs, harmonic numbers, header, stop markers + labels, tuning stops named by the tuning, ride line), notes drawn along their pitch curves; JI tool `J` (drag a box → proportion field), select / move / resize / Delete / Ctrl+D, one undo step each; copy / paste carries curves (Harmonic notes pasted as Cents). Goldens added: pianoroll-ji-morph, -ji-undertone, -ji-tuning, pianoroll-curve-notes.
+- Verified (worker, after the rebase): `build.ps1 -Target pq_tests_views -TestRegex pq_tests_views` passed; exe default tier 764/764. Orchestrator looked at the morph and tuning goldens.
+- Perf / CPU-efficiency check: 200 objects in view paint in 0.98 ms median (check preset); objects flattened once per document change, paint samples visible moving segments per 2 px.
+- Notes/blockers: Q279, Q280; open items carried to T7.5 (TASKS).
