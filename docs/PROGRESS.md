@@ -646,3 +646,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: release-free audit at f1e6a932: `./scripts/build.ps1 -Full` (check preset, default + slow) 88/88, no warnings; independent review docs/reviews/RB-DY.md (0 C / 4 H / 11 M / 14 L; nothing built by the reviewer); idle ship re-measure of the dynamics (cost = row − eq oversample/none, per stereo sample): Compressor peak 5.4 ns, RMS + Auto + 10 ms 10.0 ns, Limiter default 10.4 ns, True Peak 12.5 ns (rows "RB/DY audit" in bench/RESULTS.md).
 - Notes: fixes filed as AU.app / AU.dsp; AU.decide waits on the user (M3, M8, Q261). QUESTIONS hygiene (M11): missing Status lines added (Q246, Q250, Q252, Q254, Q256), Q258's doubled heading fixed. M7 starts only after the AU fixes and the user's go.
 
+## 2026-11-13 · AU.app merged · main
+- Did: merged task/AU.app-fixes (67f90e6a): H1 (a recovered autosave stays until this session's first write / save / New / Open), H2 (freeze files `<id>-<rate>-<hex>.wav`), H3 (freeze planning on the service thread, debounced; sum-fed sources key on what reaches the sum, whole-project fallback removed; the old render keeps playing until the new one loads), M2 (RF64 everywhere we write long WAVs), M5 (cache-only dead sessions swept), M6 (Save As copies renders off the UI thread), M10 (single-clock autosave offer), L1, L2, L3, L4 (Replace confirm), L6, L7 (key includes the executable hash and sample file size / mtime).
+- Verified (worker): one regression test per finding (L2 by reading); -Affected 35/35.
+- Perf: an unrelated edit while a track is frozen costs one render-document compare (was a whole-project serialisation on the UI thread + a live flip).
+- Notes: Q270. AS.2's two recover tests had asserted the H1 bug (deletion at Recover): updated. User decisions M3 / M8 / Q261 sent to the AU.dsp worker.
+

@@ -1465,7 +1465,7 @@ stays the judge of everything else; note outputs typed as their voice terminals 
 Reversible: wire_types.cpp and its three callers.
 Status: open.
 
-## Q?-AU.app-a · A frozen track's render ignores solo on the tracks that reach a sum it hears
+## Q270 · 2026-11-13 · AU.app · A frozen track's render ignores solo on the tracks that reach a sum it hears
 Context: AU.app H3 replaced the whole-project fallback (a cable from a group's / return's / master's source into a
 frozen track's block) by the sum's contributors with their mixers. Live, a soloed track mutes the others (and with them
 what reaches the sum); the render document has only part of the project. Options: (a) clear solo in the render
