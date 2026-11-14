@@ -5,6 +5,7 @@
 
 #include "pq/graph/infer.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/user_defaults.h"
 
 namespace pq::doc {
 
@@ -63,7 +64,11 @@ MetaInstance defaultMetaInstance(const meta::Type& t) {
   MetaInstance m;
   m.type = std::string(t.id);
   m.version = t.version;
-  if (t.defaultData != nullptr) m.data = t.defaultData();
+  // VZ.1: the user's saved defaults for the type (a display module's SAVE DEFAULT), else the type's own.
+  if (meta::DataPtr u = meta::userDefaultData(t.id); u != nullptr && (t.dataProblem == nullptr || t.dataProblem(*u).empty()))
+    m.data = std::move(u);
+  else if (t.defaultData != nullptr)
+    m.data = t.defaultData();
   return m;
 }
 

@@ -14,8 +14,11 @@
 #include <thread>
 #include <vector>
 
+#include "../../src/views/src/meta/faces.h"  // VZ.1: the Spectrum face's style (tests)
 #include "../ui/golden_check.h"
 #include "pq/document/devices.h"
+#include "pq/document/meta.h"
+#include "pq/meta/user_defaults.h"
 #include "pq/meta/spectrum.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/face_painter.h"
@@ -305,6 +308,128 @@ TEST_CASE("spectrum face: reads its host's feed, polls while it moves, lets go w
   CHECK_FALSE(face->pollVoices());
   CHECK_FALSE(tap.wanted());
   MetaFace::setClock(nullptr);
+}
+
+namespace {
+// VZ.1: an instance's data, as the document keeps it (one step per write outside a gesture).
+class SpectrumData final : public MetaTarget {
+public:
+  const meta::Type* targetType() const noexcept override { return &meta::spectrumType(); }
+  double value(size_t) const override { return 0.0; }
+  void begin(const char*) override { gesture_ = true; }
+  void set(size_t, double) override {}
+  void end() override {
+    gesture_ = false;
+    ++steps;
+  }
+  void cancel() override { gesture_ = false; }
+  void reset(size_t) override {}
+  meta::DataPtr data() const override { return data_ ? data_ : MetaTarget::data(); }
+  void setData(meta::DataPtr d) override {
+    data_ = std::move(d);
+    if (!gesture_) ++steps;
+  }
+  int steps = 0;
+  meta::DataPtr data_;
+
+private:
+  bool gesture_ = false;
+};
+}  // namespace
+
+TEST_CASE("spectrum face: SET — DISPLAY options reach the plot, ANALYSIS the feed; SAVE DEFAULT seeds new instances") {
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  TapRing tap(4, 32768, 1024);  // (before the face: it holds the feed until it is destroyed)
+  SpectrumFeed feed(tap, AnalysisHub::config(48000.0), SpectrumFeed::Manual{});
+  std::unique_ptr<MetaFace> face = makeFace(meta::spectrumType());
+  REQUIRE(face != nullptr);
+  auto owned = std::make_unique<SpectrumData>();
+  SpectrumData* t = owned.get();
+  face->bind(std::move(owned), nullptr);
+  face->setAnalysis([&] { return &feed; }, [] {});
+  FaceEnv env;
+  env.theme = &*theme;
+  env.uiScale = 1.0f;
+  DrawList dl;
+  auto paint = [&] {
+    dl.reset(800, 400);
+    FacePainter p(dl, {{10.0f, 10.0f}, 2.0f});
+    face->paintLive(p, env);
+  };
+  paint();
+  CHECK(feed.tuning() == SpectrumTuning{});  // the factory options are the hub's analysis
+  auto find = [&](int32_t part) {  // the centre of a part, through hitTest
+    float sx = 0.0f, sy = 0.0f;
+    int n = 0;
+    for (float y = 0.0f; y < 150.0f; y += 0.5f)
+      for (float x = 0.0f; x < 240.0f; x += 0.5f)
+        if (face->hitTest({x, y}, 2.0f) == part) {
+          sx += x;
+          sy += y;
+          ++n;
+        }
+    REQUIRE_MESSAGE(n > 0, "part " << part);
+    return Vec2{sx / static_cast<float>(n), sy / static_cast<float>(n)};
+  };
+  auto ev = [&](FacePointer::Kind k, Vec2 at, uint8_t clicks = 1) {
+    FacePointer e;
+    e.kind = k;
+    e.button = PointerButton::Left;
+    e.local = at;
+    e.device = {at.x * 2.0f, at.y * 2.0f};
+    e.pxPerUnit = 2.0f;
+    e.clicks = clicks;
+    return face->onPointer(e);
+  };
+  CHECK(ev(FacePointer::Kind::Down, find(3)));  // SET
+  paint();
+  // DISPLAY (the tab it opens on): Peak line, Floor, … — drag Floor down 40 px: one step, the plot's floor.
+  const Vec2 floorRow = find(101);
+  CHECK(ev(FacePointer::Kind::Down, floorRow));
+  CHECK(face->dragging());
+  CHECK(ev(FacePointer::Kind::Move, {floorRow.x, floorRow.y + 20.0f}));
+  CHECK(ev(FacePointer::Kind::Up, {floorRow.x, floorRow.y + 20.0f}));
+  CHECK(t->steps == 1);
+  REQUIRE(t->data_ != nullptr);
+  const meta::DataValue* fl = t->data_->field("floor");
+  REQUIRE(fl != nullptr);
+  CHECK(fl->number < -78.0);
+  SpectrumPlotStyle st;
+  REQUIRE(spectrumStyle(*face, st));
+  CHECK(st.floorDb == doctest::Approx(fl->number));
+  CHECK(feed.tuning() == SpectrumTuning{});  // a display option leaves the analysis alone
+  // ANALYSIS: Window 2048 → dragged up; Smoothing clicked to 1/24 octave: the feed's tuning.
+  CHECK(ev(FacePointer::Kind::Down, find(90)));
+  const Vec2 fftRow = find(100);
+  CHECK(ev(FacePointer::Kind::Down, fftRow));
+  CHECK(ev(FacePointer::Kind::Move, {fftRow.x, fftRow.y - 60.0f}));
+  CHECK(ev(FacePointer::Kind::Up, {fftRow.x, fftRow.y - 60.0f}));
+  CHECK(feed.tuning().fftSize > 2048u);
+  CHECK(ev(FacePointer::Kind::Down, find(102)));
+  CHECK(feed.tuning().smoothingOct == doctest::Approx(1.0f / 24.0f));
+  writeTap(tap, 1.0, [](float x) { return 0.5f * x; });  // (the 8192 window · 4 below 500 Hz fills first)
+  CHECK(feed.step(1.0) > 0);  // the worker remakes its analysers with the tuning and runs them
+  // SAVE DEFAULT: the store holds these options; a new instance starts from them; existing data is untouched.
+  CHECK(meta::userDefaultData("spectrum") == nullptr);
+  CHECK(ev(FacePointer::Kind::Down, find(92)));
+  const meta::DataPtr saved = meta::userDefaultData("spectrum");
+  REQUIRE(saved != nullptr);
+  CHECK(*saved == *t->data_);
+  const doc::MetaInstance fresh = doc::defaultMetaInstance(meta::spectrumType());
+  REQUIRE(fresh.data != nullptr);
+  CHECK(*fresh.data == *saved);
+  // RESET: the factory options (the saved default stays).
+  const int before = t->steps;
+  CHECK(ev(FacePointer::Kind::Down, find(93)));
+  CHECK(t->steps == before + 1);
+  CHECK(t->data_->fields.empty());
+  CHECK(feed.tuning() == SpectrumTuning{});
+  CHECK(meta::userDefaultData("spectrum") != nullptr);
+  meta::setUserDefaultData("spectrum", nullptr);
+  const doc::MetaInstance plain = doc::defaultMetaInstance(meta::spectrumType());
+  REQUIRE(plain.data != nullptr);
+  CHECK(plain.data->fields.empty());
 }
 
 TEST_CASE("spectrum meta module: pass-through, a signal tap of request 0") {

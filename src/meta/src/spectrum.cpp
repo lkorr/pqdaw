@@ -2,6 +2,9 @@
 #include "pq/meta/spectrum.h"
 
 #include <array>
+#include <cmath>
+#include <memory>
+#include <string>
 
 namespace pq::meta {
 
@@ -29,6 +32,16 @@ Status body(Builder& bld) {
 
 std::vector<ResourceRequest> resources(std::span<const double>) { return {ResourceRequest{ResourceKind::SignalTap, 0}}; }
 
+// VZ.1: the display options (the face's sheet): a record of numbers (an empty one by default: every field at its
+// default).
+DataPtr defaultData() { return std::make_shared<const DataValue>(DataValue::record({})); }
+std::string dataProblem(const DataValue& v) {
+  if (v.kind != DataValue::Kind::Record) return "the spectrum's data is a record of numbers";
+  for (const auto& [name, f] : v.fields)
+    if (f.kind != DataValue::Kind::Number || !std::isfinite(f.number)) return "the spectrum's '" + name + "' is not a number";
+  return {};
+}
+
 Type makeType() {
   Type t;
   t.id = "spectrum";
@@ -39,6 +52,8 @@ Type makeType() {
   t.chainInput = 0;
   t.resources = &resources;
   t.body = &body;
+  t.defaultData = &defaultData;
+  t.dataProblem = &dataProblem;
   return t;
 }
 

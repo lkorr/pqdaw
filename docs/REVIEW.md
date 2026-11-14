@@ -1536,3 +1536,13 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   tracks outside that group: the frozen track stays frozen (no Rendering bar); moving a fader inside the group makes it
   play live and re-render once.
 - Judge: the Replace wording; whether a two-press confirm is enough (no dialog).
+
+
+## 2026-11-13 · VZ.1 · Visual modules: settings sheet with tabs, save as default; spectrogram zoom 👁
+- Look at: goldens tests/views/golden/device-meta-spectrum / project-meta-spectrum (re-recorded: a SET chip left of PEAK).
+- Try: zoom the canvas in and out over a playing Spectrogram — it stretches smoothly and sharpens ~0.2 s after you stop
+  (before: a rebuild on every zoom step). Click SET on a Spectrum, Oscilloscope or Spectrogram: ANALYSIS / DISPLAY tabs,
+  SAVE DEFAULT, RESET. Change a few looks, SAVE DEFAULT (it reads SAVED), add a new one of that module: it starts with
+  them; restart pqdaw: still saved (settings.json "metaDefaults").
+- Judge: the tab split (which options are "display"); the sheet's density on the small Spectrum face; whether RESET
+  should go to your saved default instead of the factory (Q?-VZ.1-a); the new spectrum options' ranges.

@@ -1474,3 +1474,12 @@ document (the render is the unsoloed mix; soloing never re-renders); (b) keep ev
 track outside them is soloed). Choice: (a): a freeze is a mixdown aid, and soloing to listen should not re-render.
 Reversible: `normalTrack`'s `full` branch in src/app/src/freeze_service.cpp.
 Status: open.
+
+## Q?-VZ.1-a · 2026-11-13 · VZ.1 · What "a tab with just the visual settings" and "save setting" mean
+- Context: the user asked for an options dropdown on every visual module, "a tab that changes settings to just visual
+  components", and a save option that applies to newly spawned modules.
+- Options: (a) tabs inside each module's sheet (ANALYSIS / DISPLAY); (b) a Preferences page holding every module type's
+  look; (c) both. Save: all options vs the DISPLAY tab only; RESET to the saved default vs the factory.
+- Choice: (a), the sheet opening on DISPLAY; SAVE DEFAULT saves every option (both tabs) for that type; RESET goes to the
+  factory options (the saved default stays until saved over). The Spectrum's PEAK chip is now its "Peak line" option
+  (an undo step, saved with the rest). Most reversible: the store and the sheet are independent of where they are shown.
