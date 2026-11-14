@@ -4,7 +4,10 @@
 //                                track (criterion: < 50 ns per track) and per block
 //   busy/16ths x64               64 tracks of 1/16 notes (one note-on + one note-off every 1/16 per track), an 8-bar
 //                                loop: per block and per event (block cost / events per block)
-//   build/100k notes             SequenceImage::build from plain descriptions (criterion: < 20 ms)
+//   build/100k notes             SequenceImage::build from plain descriptions (criterion: < 20 ms); T7.1: "+ curves":
+//                                the same notes with a 4-point pitch curve and a 2-point gain curve each
+//   curves/64 notes, 32nds       T7.1: one track, 64 long notes sounding, each with a pitch and a gain breakpoint every
+//                                1/32 note (64 × 2 curve events every 3000 samples): per block and per curve event
 //   automation/<kind>            AutomationRenderer per lane-sample for 32 lanes over 64-frame blocks: constant,
 //                                straight, curved, and a ramping tempo (exact per-sample ticks); "…, block rate":
 //                                the same lanes with AutomationLaneDesc::perSample false (T2.6-fix2: lanes whose
@@ -280,6 +283,72 @@ int main(int argc, char** argv) {
       auto img = build(d);
       pq::bench::doNotOptimize(img);
     }, 1, "ns/build");
+  });
+
+  r.add("build/100k notes + curves", [](pq::bench::Context& c) {  // T7.1
+    auto d = arrangement(64, 8, 0, false);
+    for (auto& t : d)
+      for (auto& cl : t.clips)
+        for (auto& n : cl.notes) {
+          n.pitchCurve = {{n.start, 0.0f}, {n.start + n.length / 4, 30.0f}, {n.start + n.length / 2, -30.0f}, {n.start + n.length, 0.0f}};
+          n.gainCurve = {{n.start, 1.0f}, {n.start + n.length, 0.5f}};
+        }
+    c.measure([&] {
+      auto img = build(d);
+      pq::bench::doNotOptimize(img);
+    }, 1, "ns/build");
+  });
+
+  // T7.1: 64 sounding notes whose pitch and gain curves have a breakpoint every 1/32 note.
+  r.add("curves/64 notes, 32nds", [](pq::bench::Context& c) {
+    std::vector<e::TrackSequenceDesc> d(1);
+    d[0].id = 1;
+    e::ClipDesc cd;
+    cd.id = 1;
+    cd.start = 0;
+    cd.length = 8 * kBar;
+    for (uint32_t i = 0; i < 64; ++i) {
+      e::NoteDesc n;
+      n.id = i + 1;
+      n.start = 0;
+      n.length = 8 * kBar;
+      n.hz = 110.0f + static_cast<float>(i);
+      for (Ticks t = 0, k = 0; t <= 8 * kBar; t += kPpq / 8, ++k) {
+        n.pitchCurve.push_back({t, k % 2 == 0 ? -25.0f : 25.0f});
+        n.gainCurve.push_back({t, k % 2 == 0 ? 0.7f : 1.0f});
+      }
+      cd.notes.push_back(std::move(n));
+    }
+    d[0].clips.push_back(std::move(cd));
+    e::Timeline tl(config(1));
+    if (!tl.publishSequence(build(d))) die("publish");
+    e::TransportCommand loop;
+    loop.kind = e::TransportCommandKind::SetLoop;
+    loop.loopEnabled = true;
+    loop.loopStart = 0;
+    loop.loopEnd = 8 * kBar;
+    tl.apply(loop);
+    tl.apply(play(0));
+    int64_t clock = 0;
+    const int warm = 6000;  // 8 s: one loop pass
+    const uint64_t before = tl.stats().curveEvents;
+    for (int i = 0; i < warm; ++i) {
+      tl.process(clock, kBlock);
+      clock += kBlock;
+    }
+    const double perBlock = static_cast<double>(tl.stats().curveEvents - before) / warm;
+    std::printf("INFO   curves: %.2f curve events per 64-frame block; dropped %llu\n", perBlock,
+                static_cast<unsigned long long>(tl.stats().droppedCurveEvents));
+    const pq::bench::Stats s = c.measure([&] {
+      tl.process(clock, kBlock);
+      clock += kBlock;
+    }, 1, "ns/block", "per block");
+    pq::bench::Stats perEvent = s;
+    perEvent.medianNs /= perBlock;
+    perEvent.minNs /= perBlock;
+    perEvent.p99Ns /= perBlock;
+    perEvent.maxNs /= perBlock;
+    c.record(perEvent, "ns/event", "per curve event");
   });
 
   // Automation: 32 lanes, one long segment each (or flat), 64-frame blocks.

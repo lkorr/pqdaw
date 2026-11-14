@@ -1517,7 +1517,7 @@ only feeds are sends, so its bus and the master's / groups' read the same. Both 
 frameSockets / route), reversible without document changes.
 Status: open.
 
-## Q?-T7.2-a · 2026-11-13 · T7.2 · What "Tune to JI" does with the selected notes
+## Q275 · 2026-11-13 · T7.2 · What "Tune to JI" does with the selected notes
 Context: `ops::jiFromNotes` makes the object (stop 0 = the notes as written, stop 1 = the proportion). The plan does not
 say whether the notes stay.
 Options: (a) the notes stay and become the object's inner notes (`Harmonic(object, voice)`), the object a scaffold
@@ -1526,7 +1526,7 @@ inner notes their voice's curve; (b) the notes are removed and the object sounds
 Choice: (a) by default (nothing is lost, `deleteJiObject` gives plain notes back); (b) is
 `JiFromNotesOptions::replaceNotes`. Until T7.3 lands, an inner note plays the pitch it has at its start (no morph).
 
-## Q?-T7.2-b · 2026-11-13 · T7.2 · A note that follows a JI object the clip does not have is refused
+## Q276 · 2026-11-13 · T7.2 · A note that follows a JI object the clip does not have is refused
 Context: the plan asks for validation (Harmonic names an object of the clip, voice < V). Before T7.2 such notes were
 accepted and stayed unresolved (as a Ratio anchored to a missing note still is).
 Choice: strict, as planned: AddNotes / UpdateNotes / MoveNote, AddClip and the loader refuse them. Consequences: the
@@ -1535,8 +1535,23 @@ test generators' three dangling notes (object ids 7, 42, 0xFFFFFFFF) now follow 
 whole, so the roll (T7.4 / T7.5) should convert them first (`convertNotes`) or paste the object too. A fundamental and
 a tuning stop's pitches may be Degree, Cents or a reference-anchored Ratio only (not anchored to a note).
 
-## Q?-T7.2-c · 2026-11-13 · T7.2 · Stops beyond an object's end are kept
+## Q277 · 2026-11-13 · T7.2 · Stops beyond an object's end are kept
 Context: shortening an object could drop the stops past its end, which can lower the voice count and strand inner
 notes on voices that no longer exist.
 Choice: a stop at or after `length` is valid and simply never reached (lengthening brings it back). Only a start moved
 later past a stop drops the earlier ones (that stop becomes stop 0); the op is refused if a note would lose its voice.
+
+## Q278 · 2026-11-13 · T7.1 · Chase long notes on a seek / loop into their middle?
+Context: the M7 plan's T7.1 says the curve cursor works "at note-on (also seek / loop into the middle of a note)". The
+timeline has never chased notes: a note sounds only when its START lies in the played range (timeline.h "notes that
+started earlier are not chased"; clip passes drop notes that start before them). T7.1 keeps that: a note-on reads its
+curves at its own tick wherever that lies in them (a curve may begin before its note), but a locate or an arrangement
+loop into the middle of a long note — a whole JI object lowered to one note per voice — plays nothing until the next
+note starts.
+Options: (a) leave it (today's rule for every note); (b) chase in the timeline: on a seek, start the notes whose span
+covers the new position (hz / gain from the curve there; needs a per-clip index to find them in bounded time on the
+audio thread, and a decision for chance, one-shots and envelopes that restart); (c) T7.3's lowering splits a JI
+object's voices into shorter notes at stop holds, so a seek loses at most one segment (unison phase would restart).
+Choice: (a) for now — nothing new can break; the engine side of (b) is one more caller of the existing
+curve-at-a-tick path (`Timeline::curveLocate` + `curveRamp`).
+Status: open.

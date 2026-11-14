@@ -56,6 +56,29 @@
 // Capacities: maxSoundingPerTrack (beyond it the earliest-ending note is cut early, counted) and maxEventsPerTrack
 // per block (a note-on is only emitted while room remains for every pending note-off; dropped ons are counted).
 //
+// ---- Note curves (T7.1; sequence.h "Per-note curves") -------------------------------------------------------------
+// A note with a pitch / gain curve starts at the curve's value at its note-on tick (NoteOn hz = hz · 2^(cents / 1200),
+// NoteOn gain), wherever that tick lies in the curve, followed at the same frame by a Pitch / Gain ramp to the next
+// breakpoint. Every later breakpoint inside the note emits, at its exact sample (ticksToSamples of its tick), a ramp
+// to the breakpoint after it — rampFrames = the samples between the two under the current tempo map — and a step
+// first when the breakpoint is a jump; flat segments emit nothing. So the work is per breakpoint: the voice
+// interpolates per sample (voices.h), and each ramp ends exactly on its breakpoint's value, so nothing accumulates.
+// Events of one tick go out as offs, then curve events, then ons. Each sounding note keeps its curve cursor; a track
+// keeps the tick of its next breakpoint, so a block without one costs the per-track compare it already paid for
+// its next note. After its note-off a note gets no more curve events (its release tail finishes the running ramp).
+// Seek / locate / loop: notes are not chased (as before), a note that starts after the new position starts
+// mid-curve when its curve began earlier. Clip-loop passes replay the note and its curve.
+// Image swap: a kept note (same id and start) whose curves are unchanged keeps its cursor and gets no event; if its
+// curves changed (or it is retuned and has a pitch curve: the retune carries the curve's value) it is
+// re-synchronised at frame 0: a step to the new curve's value at the playhead (the block's first sample, as a
+// fractional tick) and a ramp to the next breakpoint. A new tempo map re-sends the running ramps with their new
+// lengths. Capacity: curve events are only emitted while room remains for every pending note-off; a dropped one
+// (TimelineStats::droppedCurveEvents) leaves the voice on its last ramp until the next breakpoint, whose ramp ends on
+// the right value again. More than 4 · maxEventsPerTrack breakpoints and note-ons on one track in one block: the
+// rest of the block's breakpoints collapse into one step per note at the block's last frame (bounded audio-thread
+// time; TimelineStats::curveCollapses).
+// Cost: an image without any curve runs the sequencer loop it ran before curves existed (playTrackImpl<false>).
+//
 // ---- Automation ----------------------------------------------------------------------------------------------
 // AutomationRenderer (automation.h) renders every lane per sample for the block's samples (same segments as the
 // notes), or holds the value at the playhead while stopped. writeAutomatedParams() writes each lane's frame-0 value
@@ -231,6 +254,10 @@ struct TimelineStats {
   uint64_t orphanedNotes = 0;      // sounding notes of a track missing from a new image
   uint64_t keptOnSwap = 0, stoppedOnSwap = 0;
   uint64_t retunedOnSwap = 0;      // kept notes whose pitch changed: a Pitch event (kNoteEventRetune) at frame 0
+  uint64_t curveEvents = 0;        // T7.1: Pitch / Gain events emitted from note curves
+  uint64_t droppedCurveEvents = 0; // T7.1: curve events without room in the track's event list
+  uint64_t curveResyncs = 0;       // T7.1: sounding notes re-synchronised to a changed curve (swap) or tempo map
+  uint64_t curveCollapses = 0;     // T7.1: blocks whose breakpoints exceeded the per-block limit on a track
   uint64_t sequenceSwaps = 0, automationSwaps = 0, tempoSwaps = 0, audioSwaps = 0;
   uint64_t loopWraps = 0;
   uint64_t droppedReports = 0;
@@ -326,13 +353,20 @@ private:
     Ticks off;
     uint64_t order;       // tie-break: earlier note-ons end first at equal ticks
     Ticks on;
+    // T7.1: arrangement tick of one of the note's curve points = its content tick + shift (= on − the note's start).
+    Ticks shift;
     uint32_t instance;    // the event note id
     uint32_t noteId;      // the document note id
-    float hz;
+    float hz;             // the note's Hz (its curve's 0 ¢); an image swap retunes it when the image's note changed
     float releaseVelocity;
-    float ratio, harmonic;  // the identity it sounds with (an image swap retunes it when they change)
-    PitchSource pitch;
+    // T7.1: the curve cursor. `curve` is the note's block in the image's curves() (NoteCurves::begin); *Next = the
+    // first point not yet played (tick > the playhead).
+    uint32_t curve;
+    uint16_t pitchCount, gainCount, pitchNext, gainNext;
   };
+  // One cache line, as before T7.1: the identity a note sounds with (ratio, harmonic, PitchSource) is no longer
+  // copied here; a swap reads it from the image the note sounds from (always the current one).
+  static_assert(sizeof(Sounding) == 64);
   struct Cursor {
     uint32_t clip = 0, clipEnd = 0;  // into the image's clips
     int64_t pass = 0;
@@ -346,6 +380,7 @@ private:
     uint32_t heapSize = 0;
     uint32_t id = 0;
     uint64_t order = 0;
+    Ticks nextCurve = kNever;  // T7.1: the earliest next breakpoint of its sounding notes (may be early, never late)
   };
   struct SourceSlot {
     Timeline* timeline;
@@ -372,6 +407,10 @@ private:
   Ticks resolveTick() noexcept;                       // nextTick_, computing it from pos_ when lazy
   void refreshMinNext() noexcept;
   void playTrack(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0, Ticks t1) noexcept;
+  // T7.1: the sequencer's loop, compiled twice: Curves = false for an image without any note curve (the loop as it
+  // was before curves: no breakpoint compare, no curve lookup at a note-on), true otherwise.
+  template <bool Curves>
+  void playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint32_t len, Ticks t0, Ticks t1) noexcept;
   void renderAutomation(uint32_t frame, SampleTime s0, uint32_t len, bool wholeBlock) noexcept;
   // The ticks of song samples [s0, s0 + len) (tA, tB: those of s0 and s0 + len) for the automation renderer.
   TickSpan tickSpan(SampleTime s0, uint32_t len, double tA, double tB) noexcept;
@@ -380,6 +419,35 @@ private:
   bool pushEvent(uint32_t track, const NoteEvent& e) noexcept;
   void emitOff(uint32_t track, const Sounding& s, uint32_t frame) noexcept;
   static void setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept;  // ratio, harmonic, tuning identity
+  // T7.1: note curves (see "Note curves").
+  enum class CurveKind : uint8_t { Pitch, Gain };
+  enum class CurveSync : uint8_t {
+    Breakpoint,  // the playhead is on the cursor's breakpoint: a step only at a jump, then the ramp to the next
+    Step,        // a step to the curve's value at the playhead, then the ramp (a changed curve, a collapsed block)
+    Resume,      // only the ramp, from wherever the voice is (a new tempo map; after a retune step)
+  };
+  // Where curve events go: the image the note's curves are in, the track's event list, the block frame and its song
+  // sample, and how many note-offs are still to come on the track (room is kept for them).
+  struct CurveOut {
+    const SequenceImage* image;
+    uint32_t track, frame, pendingOffs;
+    SampleTime sample;
+  };
+  Ticks nextCurveTick(const SequenceImage& image, const Sounding& s) const noexcept;
+  // Moves the cursor of `kind` past tick `at` and returns the curve's value there, or (given a sample) at the tick of
+  // song sample `sample`: where a re-synchronised voice really is (the tick `at` rounds onto that sample).
+  float curveLocate(const SequenceImage& image, Sounding& s, CurveKind kind, Ticks at,
+                    SampleTime sample = INT64_MIN) const noexcept;
+  // The ramp from `value` (the curve at the playhead) to the cursor's breakpoint, if there is one and it differs.
+  void curveRamp(const CurveOut& o, const Sounding& s, CurveKind kind, float value) noexcept;
+  void curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSync mode, Ticks at) noexcept;
+  bool pushCurveEvent(const CurveOut& o, const NoteEvent& e) noexcept;
+  // A note-on with curves (s.on its tick): the note-on with hz and gain from the curves there, the ramps to the next
+  // breakpoints, and the sounding note (its cursor set) pushed on the track's heap.
+  void startCurvedNote(uint32_t track, NoteEvent e, Sounding s, uint32_t frame, SampleTime sample) noexcept;
+  // Every breakpoint at tick `at` of the track's sounding notes; refreshes TrackState::nextCurve.
+  void playCurves(uint32_t track, Ticks at, uint32_t frame, SampleTime sample, CurveSync mode) noexcept;
+  void resyncCurvesToTempo() noexcept;
   // Heap.
   void heapPush(TrackState& t, const Sounding& s) noexcept;
   Sounding heapPop(TrackState& t) noexcept;
@@ -422,6 +490,7 @@ private:
 
   // Audio thread: current images.
   const SequenceImage* seq_ = nullptr;
+  bool seqCurves_ = false;  // T7.1: seq_ has note curves (SequenceImage::hasCurves)
   const AutomationImage* auto_ = nullptr;
   const TempoImage* tempo_ = nullptr;
   const AudioSequenceImage* audio_ = nullptr;  // T5.4
