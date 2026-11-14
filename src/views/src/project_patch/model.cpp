@@ -981,15 +981,16 @@ struct Builder {
 
     Band& band = out.bands[bi];
     // TL.1: the band's lane (its height and whether its circuit is folded: view state, by track id). A scoped model (a
-    // group's panel, the free rack) has no lanes.
+    // group's panel, the free rack) has no lanes; BR.input-port (user 2026-11-13: "groups in the circuit view shouldnt
+    // have 'timelines'") nor has a group: its members' buses into its input socket are what feeds it.
     if (lanes()) {
-      band.laneH = m::kLaneH;
+      band.laneH = t.kind == doc::TrackKind::Group ? 0.0f : m::kLaneH;
       if (opt.nudges != nullptr)
         if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end()) {
-          if (it->second.laneH > 0.0f) band.laneH = roundUp4(std::clamp(it->second.laneH, std::max(doc::kMinPatchLaneH, m::kLaneMinH), doc::kMaxPatchLaneH));
+          if (it->second.laneH > 0.0f && band.laneH > 0.0f) band.laneH = roundUp4(std::clamp(it->second.laneH, std::max(doc::kMinPatchLaneH, m::kLaneMinH), doc::kMaxPatchLaneH));
           band.folded = it->second.folded;
         }
-      if (opt.subLanes != nullptr)  // TL.2: its automation sub-lanes under the lane
+      if (opt.subLanes != nullptr && band.laneH > 0.0f)  // TL.2: its automation sub-lanes under the lane
         if (const auto it = opt.subLanes->find(t.id.value); it != opt.subLanes->end()) band.subH = std::max(0.0f, it->second);
     }
     if (t.kind == doc::TrackKind::Midi) {
@@ -1020,13 +1021,11 @@ struct Builder {
       s.h = m::kSumH;
       out.bands[bi].source = addNode(std::move(s));
     }
-    // BR.patch-io: its input socket on its left edge — a summing band's bus input, an audio track's recording input (its
-    // patch reads `track.in`). Not in a scoped model (no bands of its own).
+    // BR.patch-io: its input socket on its left edge — a summing band's bus input, an audio track's input (BR.input-port:
+    // every audio track's — its lane's clips and its recording input enter there). Not in a scoped model (no bands).
     if (lanes()) {
       const bool summing = t.kind == doc::TrackKind::Group || t.kind == doc::TrackKind::Return || t.kind == doc::TrackKind::Master;
-      const bool recording = t.kind == doc::TrackKind::Audio && std::any_of(low.audioInputs.begin(), low.audioInputs.end(),
-                                                                         [&](const doc::AudioInputBinding& a) { return a.track == t.id; });
-      if (summing || recording) {
+      if (summing || t.kind == doc::TrackKind::Audio) {
         Node s;
         s.kind = NodeKind::Input;
         s.band = bi;
@@ -1304,9 +1303,11 @@ struct Builder {
 
   // BR.patch-io (user 2026-11-13: "inputting sound, either into an audio track or to the master, should create a long
   // cable that stretches from the very left (the input port) to the very right"): a band's input socket's cables — an
-  // audio track's recording input into each block its clips' signal enters the chain by (each chain edge from its lane's
-  // `out`: the signal is clips + input, lower.h "Signal flow": Audio), dim while it is not monitored; a summing band's
-  // into its Σ (the buses end on the socket: route()).
+  // audio track's into each block its clips' signal enters the chain by (each chain edge from its lane's `out`: the
+  // signal is clips + input, lower.h "Signal flow": Audio); a summing band's into its Σ (the buses end on the socket:
+  // route()). BR.input-port (user 2026-11-13: "a fancy cable connects from the audio track into an input port, and that
+  // serves as a node that can travel to the mixer"): that lane edge is drawn into the socket (route(): out of the lane's
+  // left end, round the band's left edge), so the clips and the recording input share the one long cable.
   void inputEdges() {
     const size_t n = out.edges.size();
     for (const Band& b : out.bands) {
@@ -1316,14 +1317,17 @@ struct Builder {
         addEdge(EdgeKind::Chain, b.input, 0, b.source, 0);
         continue;
       }
-      const auto ti = trackById.find(b.track.value);
-      const bool live = ti != trackById.end() && doc::monitorGate(ti->second->mixer) > 0.0f;
       for (size_t i = 0; i < n; ++i) {
-        const Edge& e = out.edges[i];
+        Edge& e = out.edges[i];
         if (e.from != b.source || e.fromPort != 0 || e.kind != EdgeKind::Chain || e.hop != 0) continue;
+        e.drawnTo = b.input;
+        // The cable is that wire's too (a Z, an insert, a Delete or a drag on it acts on the lane's link).
         Edge x;
-        x.silent = !live;  // (into a group's frame: to its first stretch's socket)
-        addEdge(EdgeKind::Chain, b.input, 0, e.to, static_cast<int32_t>(e.toPort), std::move(x));
+        x.wire = e.wire;
+        x.status = e.status;
+        x.typeError = e.typeError;
+        const uint32_t to = e.to, toPort = e.toPort;  // (into a group's frame: to its first stretch's socket)
+        addEdge(EdgeKind::Chain, b.input, 0, to, static_cast<int32_t>(toPort), std::move(x));
       }
     }
   }
@@ -1887,7 +1891,7 @@ struct Builder {
     // (port key = node · 2 + 0 input / 1 output, the other end), sorted by key.
     std::vector<std::pair<uint32_t, graph::Point2>> ends;
     for (const Edge& e : out.edges) {
-      if (!isCable(e.kind, out.nodes[e.from].kind)) continue;
+      if (!isCable(e.kind, out.nodes[e.from].kind) || e.drawnTo != kNone) continue;  // (BR.input-port: a lane's: a trace)
       if (portOrbits(out.nodes[e.from], e.fromPort, false)) ends.emplace_back(e.from * 2 + 1, anchorOf(e.to, e.toPort, true, e));
       if (portOrbits(out.nodes[e.to], e.toPort, true)) ends.emplace_back(e.to * 2, anchorOf(e.from, e.fromPort, false, e));
     }
@@ -1987,6 +1991,16 @@ struct Builder {
       const graph::Point2 s = a.kind == NodeKind::Lane ? graph::Point2{e.tapX, a.y} : outPin(a, e.fromPort), t = inPin(b, e.toPort);
       std::vector<graph::Point2>& pts = e.points;
       pts.clear();
+      // BR.input-port: an audio lane's signal into its band's input socket — out of the lane's left end at its clip row's
+      // middle, round the band's left edge (where the buses into a summing band run), up and in to the socket.
+      if (a.kind == NodeKind::Lane && e.drawnTo != kNone) {
+        const graph::Point2 d = outPin(out.nodes[e.drawnTo], 0);
+        const float ly = std::round(a.y + m::kLaneRulerH + (a.h - m::kLaneRulerH) * 0.5f), lx = out.bands[a.band].x0 - 6.0f;
+        pts.insert(pts.end(), {{a.x, ly}, {lx, ly}, {lx, d.y}, d});
+        e.cable = false;
+        e.net = 1u << 30 | static_cast<uint32_t>(k);
+        continue;
+      }
       pts.push_back(s);
       // TX.cables: a connection between blocks hangs straight from port to port (an anchored param's: onto its
       // control); the scene gives it its rest shape and the canvas its motion.

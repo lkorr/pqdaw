@@ -294,7 +294,8 @@ TEST_CASE("project patch (BR.patch-io): an audio track's input and the master's 
   const doc::TrackId mic = t->tracks.at(0);
   u.show();
   auto bandOf = [&](doc::TrackId id) -> const Band& { return u.pp().bands[u.pp().bandOf(id)]; };
-  CHECK(bandOf(mic).input == kNone);  // no input set: no socket (nothing reads track.in)
+  // BR.input-port: every audio track has its socket (its lane's clips enter there), an input set or not.
+  REQUIRE(bandOf(mic).input != kNone);
   REQUIRE(st.dispatch(doc::SetTrackAudioInput{mic, doc::AudioInput{0, 2}}).ok());
   REQUIRE(st.dispatch(doc::SetTrackMonitor{mic, doc::MonitorMode::In}).ok());
   u.d.step();
@@ -319,7 +320,7 @@ TEST_CASE("project patch (BR.patch-io): an audio track's input and the master's 
       CHECK(e.kind == EdgeKind::Chain);
       CHECK(e.cable);
       CHECK(e.to == b.mixer);
-      CHECK_FALSE(e.silent);  // monitored
+      CHECK_FALSE(e.silent);
       CHECK(e.points.front() == graph::Point2{in.x, in.y});
       CHECK(e.points.back().x >= mx.x - 0.01f);
     }
@@ -338,11 +339,35 @@ TEST_CASE("project patch (BR.patch-io): an audio track's input and the master's 
     }
     CHECK(found);
   }
-  // Not monitored (Off): drawn dim.
+  // BR.input-port: the lane's signal is drawn into the socket — a trace out of the lane's left end, round the band's left
+  // edge (left of it), up and in to the socket; the edge itself still ends where the clips enter the chain.
+  {
+    const ProjectPatch& pp = u.pp();
+    const Band& b = bandOf(mic);
+    const Node& in = pp.nodes[b.input];
+    uint32_t lane = 0;
+    for (const Edge& e : pp.edges) {
+      if (e.from != b.source || e.kind != EdgeKind::Chain) continue;
+      ++lane;
+      CHECK(e.to == b.mixer);
+      CHECK(e.drawnTo == b.input);
+      CHECK_FALSE(e.cable);
+      REQUIRE(e.points.size() == 4);
+      CHECK(e.points.front().x == doctest::Approx(pp.laneX0));
+      CHECK(e.points.front().y > b.laneY + metrics::kLaneRulerH);
+      CHECK(e.points.front().y < b.laneY + b.laneH);
+      CHECK(e.points[1].x < b.x0);
+      CHECK(e.points[2].x < b.x0);
+      CHECK(e.points[2].y == doctest::Approx(in.y));
+      CHECK(e.points.back() == graph::Point2{in.x, in.y});
+    }
+    CHECK(lane == 1);
+  }
+  // Not monitored (Off): the socket's cable still carries the clips (not dim).
   REQUIRE(st.dispatch(doc::SetTrackMonitor{mic, doc::MonitorMode::Off}).ok());
   u.d.step();
   for (const Edge& e : u.pp().edges)
-    if (e.from == bandOf(mic).input) CHECK(e.silent);
+    if (e.from == bandOf(mic).input) CHECK_FALSE(e.silent);
   // A device on its path: the input goes into it (where the clips' signal enters the chain), not past it to the mixer.
   auto d = doc::ops::addDevice(*st.current(), st.ids(), mic, "module:utility", doc::DeviceKind::AudioEffect);
   REQUIRE(d.ok());
@@ -1778,9 +1803,17 @@ TEST_CASE("lanes (TL.1): every band ends in its lane, over one x range, showing 
   ProjectPatchView& v = u.view();
   const ProjectPatch& pp0 = v.patch();
   REQUIRE(pp0.laneX1 > pp0.laneX0);
-  // Every band (MIDI, group, return, master) ends in a lane inside it, at its bottom, all over the same x range.
+  // Every band (MIDI, return, master) ends in a lane inside it, at its bottom, all over the same x range; BR.input-port:
+  // a group's band has none (its members' buses into its input socket feed it).
   for (const Band& b : pp0.bands) {
     CAPTURE(b.name);
+    if (b.kind == doc::TrackKind::Group) {
+      CHECK(b.laneH == 0.0f);
+      CHECK(b.subH == 0.0f);
+      CHECK(b.input != kNone);
+      for (const uint32_t n : b.devices) CHECK(pp0.nodes[n].y + pp0.nodes[n].h <= b.y + b.h);
+      continue;
+    }
     CHECK(b.laneH == metrics::kLaneH);
     CHECK(b.laneY + b.laneH + metrics::kLaneGapBelow == doctest::Approx(b.y + b.h));
     CHECK(b.x0 <= pp0.laneX0);

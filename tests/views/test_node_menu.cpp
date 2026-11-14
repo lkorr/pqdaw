@@ -1662,18 +1662,30 @@ TEST_CASE("TL.7: an empty audio track is one long, nearly straight cable from it
   // The mixer: at the lanes' right end, its input on the band's spine (nothing else on it: its own pin row sets it).
   CHECK(m.x + m.w == doctest::Approx(pp.laneX1 + metrics::kLaneInset - 12.0f));
   CHECK(m.y + pinOffset(m, 0) == doctest::Approx(b.y + metrics::kTitle + std::max(metrics::kPinTop, pinOffset(m, 0))));
-  // The one cable: from the lane's left end into the mixer.
-  uint32_t cable = kNone;
-  for (uint32_t i = 0; i < pp.edges.size(); ++i)
+  // BR.input-port: the lane's link is drawn into the band's input socket at its left edge; the one cable goes on from
+  // the socket into the mixer (the same wire).
+  REQUIRE(b.input != kNone);
+  uint32_t trace = kNone, cable = kNone;
+  for (uint32_t i = 0; i < pp.edges.size(); ++i) {
     if (pp.edges[i].from == b.source) {
+      CHECK(trace == kNone);
+      trace = i;
+    }
+    if (pp.edges[i].from == b.input) {
       CHECK(cable == kNone);
       cable = i;
     }
+  }
+  REQUIRE(trace != kNone);
   REQUIRE(cable != kNone);
+  CHECK(pp.edges[trace].to == b.mixer);
+  CHECK(pp.edges[trace].drawnTo == b.input);
+  CHECK_FALSE(pp.edges[trace].cable);
   const Edge& e = pp.edges[cable];
   CHECK(e.to == b.mixer);
   CHECK(e.cable);
-  CHECK(e.tapX == doctest::Approx(pp.laneX0 + 12.0f));
+  CHECK(e.wire == pp.edges[trace].wire);
+  CHECK(e.points.front().x == doctest::Approx(b.x0 + metrics::kInputInset));
   REQUIRE(e.points.size() == 2);
   const graph::Point2 a = e.points.front(), z = e.points.back();
   const float chord = std::hypot(z.x - a.x, z.y - a.y);

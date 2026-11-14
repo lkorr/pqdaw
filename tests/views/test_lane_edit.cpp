@@ -1426,10 +1426,10 @@ TEST_CASE("lane edit (BR.ui): a plain click on a sub-lane or a group's lane move
   CHECK(u.port.playhead().tick == want2);
   REQUIRE(u.d.press("Space") == KeyResult::Action);
   u.d.step();
-  // A group's lane (no clip row): a click there locates too.
-  const doc::TrackId grp = u.track("Group").id;
-  const uint32_t gb = v.patch().bandOf(grp);
+  // The master's lane (no clip row): a click there locates too (BR.input-port: a group's band has no lane).
+  const uint32_t gb = v.patch().master;
   REQUIRE(gb != kNone);
+  const doc::TrackId grp = v.patch().bands[gb].track;
   v.focusBand(grp, false);
   u.d.tree().layoutNow();
   const Band& g = v.patch().bands[gb];

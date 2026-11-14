@@ -697,3 +697,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: the F12 panel's ticket rows show a × while hovered; clicking it closes the ticket: `closeTicket` moves the folder to `closed/` beside it (bug_reports/closed/, suggestions/closed/; `_2` suffix on a taken name), `listTickets` skips `closed/`. A picked ticket goes back to the new report first (its text kept); the list keeps its scroll; the message line says where it went. Nothing is deleted (user request).
 - Verified: pq_tests_views `--test-case="bug report*"`: 6/6 (new: closeTicket on disk; the panel's × by real dispatch: pick, close, back to new report, row body only picks). No golden renders the panel.
 - Perf / CPU-efficiency check: one rename + one re-list per click; nothing on paint paths beyond one hover rect.
+
+## 2026-11-13 · BR.input-port (user requests 2026-11-13) · task/BR.input-port
+- Did: every audio track gets its left-edge input socket on the spine; its lane's chain link is drawn as a trace out of the lane's left end, round the band's left edge, into the socket, and one long cable (the same wire: Z / insert / Delete act on it) runs on to the first block or mixer, no longer dimmed by monitoring (it carries the clips). Group bands have no lane (no timeline strip, no sub-lanes); their members' buses into the group's socket feed them.
+- Verified: pq_tests_views default tier 742/742 (BR.patch-io input test rewritten for the lane trace; TL.7 Z-insert now through the socket cable; lane-edit locate click moved to the master's lane).
+- Perf / CPU-efficiency check: layout-time only (one 4-point trace per audio lane, no new per-frame work); group bands paint no lane at all.
+- Notes: 10 goldens re-recorded (project-patch-overview/band/lanes/lane-edit/auto-wire, project-mixer, project-circuit-device, project-meta-scope/spectrum/spectrogram): the group lost its lane, the audio lanes' trace in project-patch-lanes.

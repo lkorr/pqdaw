@@ -1568,3 +1568,11 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Ctrl+Alt+P: the camera fits the project's width and puts the first visible arrangement row's band at the top.
 - To look at: the bus runs along band edges (they read a bit like outlines), unconnected main sockets of a nested group
   whose wires cross its frame directly (project-patch-nested, "Tone").
+
+## 2026-11-13 · BR.input-port · circuit view: audio input socket, groups without lanes 👁
+- An audio track's lane no longer sends its cable up from its top-left corner: a thin trace leaves the lane's left end,
+  runs round the band's left edge and enters the input socket on the spine; one long cable goes on to the mixer (or
+  the first block). Z / Tab on that cable inserts as before. Look at: project-patch-lanes (Vox, the beat track).
+- Group bands have no timeline strip; only their members' buses (along the gap above) enter the group's socket.
+  Look at: project-patch-overview (Group).
+- Traces keep the square PCB corners the buses use; say if you want this one drawn as a curved cable instead.

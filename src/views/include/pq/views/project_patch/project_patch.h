@@ -33,10 +33,11 @@
 //              their nudges put them), at the band's top — unless the user placed it (doc::PatchNudge::mixerPlaced:
 //              from the band's top-left corner, so it travels with the band and no other block's move shifts it).
 //   output     the master's "Out" terminal after its mixer.
-//   input      (BR.patch-io) a band's input socket at its left edge: an audio track with a recording input (Mixer::
-//              audioIn: `track.in`) gets one, its cable going to where its clips' signal enters the chain (each chain
-//              edge from its lane's `out`: the first block, or the mixer); a summing band (group, return, master) fed by
-//              buses gets one, the buses ending there and a cable going on into its Σ.
+//   input      (BR.patch-io) a band's input socket at its left edge: every audio track gets one (BR.input-port: its
+//              lane's chain edges are drawn into it, round the band's left edge, with its recording input `track.in`),
+//              its cable going to where its clips' signal enters the chain (each chain edge from its lane's `out`: the
+//              first block, or the mixer); a summing band (group, return, master) fed by buses gets one, the buses
+//              ending there and a cable going on into its Σ.
 //   group      a container around its band and its members' bands; its own chain starts right of its members' mixers.
 // Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind; BR.patch-io: one per frame it
 // crosses more, Edge::hops), the main path's links included; route (a track's `out` → the summing input of its group or the master: graph wire out → in), send (a
@@ -44,7 +45,7 @@
 // dim); across tracks a wire is also a graph wire m<id> → m<id>.
 //
 // Layout (world units = logical px at zoom 1, multiples of 4): bands stacked in lane order, a group's members indented
-// under it, each band's lane at its bottom (its height: doc::PatchNudge::laneH, else kLaneH; a FOLDED band —
+// under it, each band's lane at its bottom (BR.input-port: a group's band has none; its height: doc::PatchNudge::laneH, else kLaneH; a FOLDED band —
 // PatchNudge::folded — is its title strip and its lane, its blocks and their wires hidden: Node::folded); signal left → right; a group's own chain starts right of its members' mixers; returns start right of every
 // main track (their sends arrive by buses), the master right of everything. Then the stored nudges (doc::ViewState::
 // patchNudges: by track id for a band, by device id for a block), the mixers (TX.mixer-look: placed, or pushed right of
@@ -90,8 +91,8 @@ inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 // the group's main In (kGroupInPort) / Out (kGroupOutPort), then one per connection crossing the frame, in the closed
 // block's port order and keys ("<port>@<device id>"). Each socket is drawn once, as a module's port (circuit::ScenePin::
 // socket); a crossing wire is drawn as two cables, outside → the capsule's port, the terminal's port → inside.
-// BR.patch-io: Input = a band's input socket on its LEFT edge (Band::input): an audio track's recording input (track.in,
-// a cable into where its clip signal enters its chain) or a summing band's bus input (its routes and sends end there; a
+// BR.patch-io: Input = a band's input socket on its LEFT edge (Band::input): an audio track's input (its lane's signal
+// drawn into it and its recording input track.in; a cable into where its clip signal enters its chain) or a summing band's bus input (its routes and sends end there; a
 // cable on into its Σ). Zero-size, one output "in".
 enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input };
 
@@ -256,7 +257,8 @@ struct Edge {
   // from its In terminal's). Only its ends are the wire's (checkAgainstGraph joins the pieces).
   uint8_t hop = 0, hops = 1;
   // BR.patch-io: a bus (route / send) into a summing input is drawn to its band's input socket (this Input node; the
-  // edge itself still ends on the Σ), and a cable goes on from there into the Σ.
+  // edge itself still ends on the Σ), and a cable goes on from there into the Σ. BR.input-port: so is an audio lane's
+  // chain edge (a trace out of the lane's left end round the band's left edge; the cable on from the socket).
   uint32_t drawnTo = 0xFFFFFFFFu;
 };
 

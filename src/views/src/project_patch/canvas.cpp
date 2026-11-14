@@ -2769,7 +2769,7 @@ ProjectCanvas::LaneEdgeHit ProjectCanvas::laneEdgeAt(Vec2 d) const {
       float best = 1.5f * tol;
       for (uint32_t k = 0; k < pp.edges.size(); ++k) {
         const Edge& e = pp.edges[k];
-        if (e.from != src || e.points.size() < 2) continue;
+        if (e.from != src || e.points.size() < 2 || e.drawnTo != kNone) continue;  // BR.input-port: into the socket
         const float dx = std::fabs(toDevice({e.tapX, b.laneY}).x - d.x);
         if (dx <= best) {
           best = dx;
@@ -2839,6 +2839,7 @@ void ProjectCanvas::paintLanePorts(ui::PaintContext& ctx) {
     const Edge& e = pp.edges[k];
     const Node& a = pp.nodes[e.from];
     if (a.kind != NodeKind::Lane || e.points.size() < 2 || a.band >= pp.bands.size() || bandLifted(a.band)) continue;
+    if (e.drawnTo != kNone) continue;  // BR.input-port: it leaves the lane's left end, into the band's input socket
     const Band& b = pp.bands[a.band];
     const float y = std::round(toDevice({0.0f, b.laneY + (bandNow(a.band).y1 - (b.y + b.h))}).y);
     const float x = std::round(toDevice({e.tapX, 0.0f}).x);
