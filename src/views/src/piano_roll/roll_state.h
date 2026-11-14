@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,6 +74,11 @@ enum class DragKind : uint8_t {
   JiStop,    // a stop's `at` by dt (its label under the box)
   JiGlide,   // a stop's glide length (the handle on the box's bottom border)
   JiBezier,  // one bezier handle of a voice's transition (entered object)
+  // T7.6 (roll_pen.cpp): a pitch curve of a note, or the ride curve of a JI object (DragState::curve)
+  PenDraw,     // Draw Mode on a note / an object's lowest voice: the stroke is the curve
+  PenVibrato,  // the same with Alt: vibrato over the dragged span (depth from the stroke's height)
+  CurvePoint,  // one breakpoint by (ticks, cents)
+  CurveBow,    // the curvature of the segment after a breakpoint
 };
 
 enum class BraceEdge : uint8_t { Start, End, Both };
@@ -103,6 +109,14 @@ struct NoteLabel {
   ui::Rgba fill;
   int64_t num, den;   // num 0 (T7.5b): the declared harmonic's anchor note, labelled with its number only
   uint32_t harmonic;  // its harmonic number over the virtual fundamental (0: not one)
+};
+
+// T7.6: the curve a pen / breakpoint gesture edits: a note's pitch curve, or a JI object's ride.
+struct CurveTarget {
+  doc::NoteId note;
+  doc::JiObjectId ji;
+  bool valid() const noexcept { return note.valid() || ji.valid(); }
+  friend bool operator==(const CurveTarget&, const CurveTarget&) noexcept = default;
 };
 
 struct DragState {
@@ -149,6 +163,27 @@ struct DragState {
   uint8_t jiHandle = 0;
   float bx = 0.0f, by = 0.0f;
   int32_t pressVoice = -1;
+  // T7.6. ResizeStart / ResizeEnd with Alt: the edge stays and the note glides in from the previous note / out to the
+  // next one over |dt| (`bendDelta`: per selected note, sorted by id, how far away that neighbour is in cents; found
+  // once, when the gesture first bends). Move with Shift: `cents` free instead of rows (the notes become Cents).
+  bool bend = false;
+  bool bendFound = false;
+  std::vector<std::pair<uint32_t, double>> bendDelta;
+  // Pen and breakpoint gestures: the curve, the point (CurvePoint / CurveBow), the curve as the release will store it,
+  // the stroke so far (PenDraw: ticks from the target's start, curve value in cents; sorted by tick), what the pointer
+  // holds (`penHold`: pointer cents + penHold − base = the value), the vibrato being painted.
+  CurveTarget curve;
+  int32_t curveIndex = -1;
+  std::vector<doc::Breakpoint> curvePts;
+  std::vector<std::pair<Ticks, float>> stroke;
+  Ticks strokeLast = 0;
+  double penHold = 0.0;
+  float bow0 = 0.0f;
+  double vibDepth = 0.0, vibRate = 0.0;
+  bool curveAdded = false;     // CurvePoint: the press added the point (a release without a drag still commits)
+  bool deleteOnClick = false;  // PenDraw on a note: a click (no drag) deletes it, as Draw Mode always did
+  bool toggleOnClick = false;  // Shift on a selected note: a click deselects it, a drag detunes freely
+  ui::Mods pressMods = 0;
 };
 
 // ---- JI objects (T7.4; roll_ji.cpp) -----------------------------------------------------------------------------
@@ -616,6 +651,108 @@ public:
   // Half the drawn thickness of a path note (device px).
   float pathHalfThickness() const noexcept;
 
+  // --- bends, pen modes, breakpoints, vibrato, ride curves (T7.6; roll_pen.cpp) ---
+  // A note's pitch curve is baked breakpoints (NoteCurves::pitch; what plays). Two parts of it are recognised by
+  // their form, so every gesture finds them again without extra stored state:
+  //   lead-in   the curve from tick 0 (value ≠ 0) to its first point of value 0: the note glides IN to its own pitch;
+  //   lead-out  from its last point of value 0 to its last point (value ≠ 0): it glides OUT.
+  // Alt + a note's left / right edge writes them (bendEdit): the value is the neighbour's pitch minus the note's
+  // (bendNeighbour: the note ending nearest before this one's start / starting nearest after its end, nearest in pitch
+  // when several), computed when the gesture is made and not followed afterwards (Q?-T7.6-a).
+  // The points of a curve as shown: a gesture's preview, else the document's. Empty: none.
+  std::span<const doc::Breakpoint> curvePoints(const CurveTarget& t) const;
+  // The pitch the curve is added to, `offset` ticks into its note / object (a note: its identity's pitch; a ride: the
+  // object's lowest voice without the ride), in cents. nullopt: unresolvable.
+  std::optional<double> curveBase(const CurveTarget& t, double offset) const;
+  // The target's start and length in content ticks (false: no such note / object).
+  bool curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) const;
+  // Breakpoint handles (device px): a dot per point, a diamond in the middle of a segment wide enough to bend. Shown
+  // for the selected notes, the active object's ride and, in Draw Mode, the note under the pointer; a curve of more
+  // than kMaxCurveHandles points (a free-drawn stroke, a vibrato) shows none.
+  struct CurveHandle {
+    int32_t index = -1;  // the point, or the segment's first point (mid)
+    bool mid = false;
+    ui::Vec2 pos{};
+    // −1 / +1: the point lies on its note's start / end. The note's edge (a resize, an Alt bend) is grabbed first
+    // there, so this handle's hit box reaches further into the note.
+    int8_t end = 0;
+  };
+  void curveHandles(const CurveTarget& t, std::vector<CurveHandle>& out) const;
+  struct CurveHit {
+    CurveTarget target;
+    int32_t index = -1;
+    bool mid = false;
+    bool valid() const noexcept { return target.valid() && index >= 0; }
+  };
+  CurveHit curveHandleAt(ui::Vec2 p) const;
+  // The curves whose handles are shown now (see curveHandles).
+  void shownCurves(std::vector<CurveTarget>& out) const;
+  // The object whose lowest voice's line is under `p` (the ride is drawn and edited on it); invalid: none.
+  doc::JiObjectId rideLaneAt(ui::Vec2 p) const;
+  // The edit an Alt + edge drag in state `d` commits (one SetNoteCurve per selected note that has such a neighbour).
+  doc::ops::EditResult bendEdit(DragState& d) const;
+  void updateBendPreview();
+  // The neighbour's pitch minus the note's own, in cents (edge −1: the note before, +1: the note after). nullopt: none.
+  std::optional<double> bendNeighbour(const doc::Note& n, int edge) const;
+  // The length of a note's lead-in / lead-out (0: none) and how far it bends (cents).
+  Ticks bendLength(doc::NoteId note, int edge, float* cents = nullptr) const;
+  // Ctrl+G: every selected note glides out into the next selected one over one grid step. One undo step.
+  bool glideSelection();
+  // The lead-in (edge −1) / lead-out (+1) of the selected notes redrawn Straight or as an S-curve (same length and depth).
+  bool setBendShape(int edge, doc::JiShape::Kind kind);
+  bool bendIsStraight(doc::NoteId note, int edge) const;
+  // Removes the selected notes' pitch curves (one undo step).
+  bool clearBends();
+  // Vibrato: a sine of `depth` cents (peak) at `rateHz`, whole half cycles, baked into breakpoints. On the selected
+  // notes it fills each note between its lead-in and lead-out. defaultVibratoRate: one cycle per grid cell, folded by
+  // octaves into 4 … 8 Hz at the clip's tempo (6 Hz without a grid).
+  bool addVibratoToSelection(double depthCents, double rateHz);
+  double defaultVibratoRate(Ticks at) const;
+  // Ticks per second at a content tick where the clip plays it (120 bpm without a timeline).
+  double ticksPerSecond(Ticks contentTick) const;
+  double vibratoDepth() const noexcept { return vibratoDepth_; }
+  // The vibrato in a curve around `offset` (alternating, evenly spaced swings of one size), as painted: where it
+  // starts and ends (ticks from the target's start), its depth and its rate. nullopt: none there.
+  struct Vibrato {
+    Ticks from = 0, to = 0;
+    double depth = 0.0, rateHz = 0.0;
+  };
+  std::optional<Vibrato> vibratoAt(const CurveTarget& t, Ticks offset) const;
+  // Rewrites that vibrato with another depth / rate over the same span (one undo step).
+  bool setVibrato(const CurveTarget& t, const Vibrato& was, double depthCents, double rateHz);
+  static std::string vibratoText(double depthCents, double rateHz);  // "Vibrato 30 ¢ · 6 Hz"
+  // "30 6", "30 ¢ · 6 Hz": depth 0 … 1200 ¢, rate 0.1 … 30 Hz (the rate may be left out: `rateHz` is kept).
+  static bool parseVibrato(std::string_view text, double& depthCents, double& rateHz, std::string& error);
+  ui::TextEdit* openVibratoEntry();                                       // "Add Vibrato…" (the selection)
+  ui::TextEdit* openVibratoEdit(const CurveTarget& t, const Vibrato& v);  // "Edit Vibrato…"
+  // Pen gestures (the note area calls them; each previews the curve the release stores).
+  void beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool vibrato);
+  void penTo(ui::Vec2 p, ui::Mods mods);
+  // Ctrl+click in Draw Mode: a breakpoint on the curve at the pointer (the press then drags it).
+  bool beginCurvePoint(const CurveTarget& t, ui::Vec2 p);
+  void beginCurveHandle(const CurveHit& h, ui::Vec2 p);
+  void curveHandleTo(ui::Vec2 p, ui::Mods mods);
+  bool deleteCurvePoint(const CurveHit& h);
+  // Stores a curve (a note: SetNoteCurve, a ride: SetJiObject), one undo step; the selection is kept.
+  bool commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what);
+  // A pitch in cents snapped for a breakpoint drag: the nearest row, harmonic guide (when shown) or `own` (the pitch
+  // the curve is added to: value 0).
+  double snapCurveCents(double cents, double own) const;
+  // The pitch under device y, not rounded (the inverse of yOfCents).
+  double centsAtScreenY(float y) const noexcept;
+  // A resized note's curve: its lead-in stays on its start and its lead-out on its end, what lies between keeps its
+  // place in time (cut where the note no longer reaches). `startDelta`: how far the start moved.
+  static std::vector<doc::Breakpoint> retimeCurve(std::span<const doc::Breakpoint> pts, Ticks oldLength, Ticks newLength, Ticks startDelta);
+  // A resize of the selected notes (ops::resizeNotes) with their curves retimed in the same undo step.
+  doc::ops::EditResult resizeEdit(doc::ops::NoteEdge edge, Ticks delta) const;
+  bool hasCurvePreview() const noexcept { return !curvePreview_.empty(); }
+  // A Shift + body drag: the selected notes `cents` away as Cents notes, `dt` later (one undo step).
+  doc::ops::EditResult detuneEdit(Ticks dt, double cents) const;
+  inline static constexpr size_t kMaxCurveHandles = 24;
+  inline static constexpr size_t kMaxPenPoints = 512;  // a stroke's points after thinning
+  inline static constexpr size_t kMaxVibratoPoints = 4096;
+  void clearCurvePreview();
+
   // --- pitch paths (T7.4) ---
   // Device y of a pitch in cents, not rounded.
   float yOfCents(double cents) const noexcept;
@@ -627,6 +764,8 @@ public:
   // fundamental along the fundamental) plus the note's own pitch curve. nullopt: unresolvable. The seam T7.5 / T7.6
   // hit-test and edit along.
   std::optional<double> pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const;
+  // The same without the note's own curve (T7.6: what a curve's values are added to).
+  std::optional<double> pathBaseCents(Ticks start, const tuning::PitchId& pitch, double offset) const;
 
   // --- row labels (T3.19) ---
   RowLabels rowLabels() const noexcept { return rowLabels_; }
@@ -772,6 +911,13 @@ private:
     std::vector<doc::NoteCurves> curves;
   };
   std::optional<JiClipboard> jiClipboard_;
+  // T7.6: the curves a gesture in progress shows instead of the document's (sorted by note id; an empty curve = the
+  // note shown without one), and the depth of the last vibrato painted (the default of the next).
+  std::vector<doc::NoteCurves> curvePreview_;
+  double vibratoDepth_ = 30.0;
+  void setCurvePreview(const CurveTarget& t, const std::vector<doc::Breakpoint>& pts);
+  mutable std::vector<CurveHandle> handleScratch_;
+  mutable std::vector<CurveTarget> targetScratch_;
   mutable JiLayout jiLayoutScratch_;
   JiView makeJiView(const doc::JiObject& o) const;
   RowLabels rowLabels_ = RowLabels::Auto;

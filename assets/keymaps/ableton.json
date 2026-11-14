@@ -95,6 +95,7 @@
     {"scope": "pianoroll", "keys": "J", "action": "pianoroll.toggleJiTool", "status": "implemented", "task": "T7.4"},
     {"scope": "pianoroll", "keys": "Ctrl+Shift+J", "action": "pianoroll.tuneToJi", "status": "implemented", "task": "T7.5"},
     {"scope": "pianoroll", "keys": "T", "action": "pianoroll.jiTuningStop", "status": "implemented", "task": "T7.5"},
+    {"scope": "pianoroll", "keys": "Ctrl+G", "action": "pianoroll.glide", "status": "implemented", "task": "T7.6"},
     {"scope": "pianoroll", "keys": "Alt+Up", "action": "pianoroll.jiWalkUp", "status": "implemented", "task": "T7.5"},
     {"scope": "pianoroll", "keys": "Alt+Down", "action": "pianoroll.jiWalkDown", "status": "implemented", "task": "T7.5"},
     {"scope": "pianoroll", "keys": "Alt+Shift+Up", "action": "pianoroll.jiWalkUpTop", "status": "implemented", "task": "T7.5"},

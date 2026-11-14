@@ -309,7 +309,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   // T7.4: notes with a pitch curve and notes of a JI object are drawn along their path, after the others.
   std::vector<CurveNote>& curved = s_.curveNotes;
   curved.clear();
-  const bool anyPath = s_.clip()->curves != nullptr || s_.clip()->ji != nullptr;
+  const bool anyPath = s_.clip()->curves != nullptr || s_.clip()->ji != nullptr || s_.hasCurvePreview();
   const std::optional<RollState::Harmonics> H = s_.harmonics();
   auto emit = [&](const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch, bool sel) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
@@ -418,6 +418,8 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     if (!curved.empty()) paintCurveNotes(ctx, s_, vis, JiPass::EnteredOnly);
     paintJiObjects(ctx, s_, vis, true, JiPass::EnteredOnly);
   }
+
+  paintCurveHandles(ctx, s_, vis);  // T7.6: the breakpoints of the curves being edited
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)

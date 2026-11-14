@@ -884,12 +884,22 @@ void RollState::updateJiPreview() {
 
 bool RollState::onPath(const doc::Note& n, const tuning::PitchId& pitch) const noexcept {
   if (!clip_) return false;
-  if (!clip_->curves && !clip_->ji) return false;
+  if (!clip_->curves && !clip_->ji && curvePreview_.empty()) return false;
   if (clip_->ji && doc::jiObjectOf(pitch).valid()) return true;
-  return clip_->curves && doc::findNoteCurves(*clip_, n.id) != nullptr;
+  return !curvePoints(CurveTarget{n.id, {}}).empty();
 }
 
 std::optional<double> RollState::pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const {
+  std::optional<double> base = pathBaseCents(start, pitch, offset);
+  if (!base) return std::nullopt;
+  // T7.6: the note's own curve (a gesture's preview first).
+  if (clip_->curves || !curvePreview_.empty())
+    if (const std::span<const doc::Breakpoint> pts = curvePoints(CurveTarget{n.id, {}}); !pts.empty())
+      *base += pq::evalAutomation(pts, offset);
+  return base;
+}
+
+std::optional<double> RollState::pathBaseCents(Ticks start, const tuning::PitchId& pitch, double offset) const {
   if (!clip_) return std::nullopt;
   double base = 0.0;
   if (const doc::JiObjectId oid = doc::jiObjectOf(pitch); oid.valid()) {
@@ -911,9 +921,6 @@ std::optional<double> RollState::pathCents(const doc::Note& n, Ticks start, cons
     if (!c) return std::nullopt;
     base = *c;
   }
-  if (clip_->curves)
-    if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id))
-      base += doc::automationValueAt(nc->pitch, static_cast<Ticks>(std::llround(offset)));
   return base;
 }
 
@@ -923,7 +930,7 @@ void paintJiObjects(PaintContext& ctx, RollState& s, const IRect& vis, bool labe
   if (!ctx.res.theme || !s.hasClip()) return;
   const Theme& th = *ctx.res.theme;
   const DragState& dr = s.drag;
-  const JiView* pv = (jiDragKind(dr.kind) && dr.moved) ? s.jiPreview() : nullptr;
+  const JiView* pv = ((jiDragKind(dr.kind) && dr.moved) || dr.curve.ji.valid()) ? s.jiPreview() : nullptr;
   const doc::JiObjectId entered = s.jiEntered(), active = s.jiActive();
   uint32_t painted = 0;
   for (const JiView& v : s.jiViews()) {

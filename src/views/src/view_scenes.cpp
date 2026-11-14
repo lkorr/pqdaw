@@ -1013,6 +1013,112 @@ Status setupPianoRollFundamentalLock(Shell& shell) {
   return Ok{};
 }
 
+// ---- T7.6: bends between notes, vibrato, a ride curve ---------------------------------------------------------------
+
+namespace {
+
+// Alt + the note's edge, as the roll does it (RollState::bendEdit): the selected notes glide in / out over `length`.
+bool sceneBend(doc::DocumentStore& store, roll::RollState& st, bool in, Ticks length) {
+  st.drag = {};
+  st.drag.kind = in ? roll::DragKind::ResizeStart : roll::DragKind::ResizeEnd;
+  st.drag.bend = true;
+  st.drag.dt = in ? length : -length;
+  const doc::ops::EditResult e = st.bendEdit(st.drag);
+  st.drag = {};
+  return e && !e->empty() && runEdit(store, e).has_value();
+}
+
+}  // namespace
+
+// A melody whose notes glide into each other: Ctrl+G on the first four (each bends out into the next over one grid
+// step), a long scoop into the last from the note before it (Alt + its left edge), made straight; that note is selected
+// and shows its breakpoints.
+Status setupPianoRollBends(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Bends", 16, 6);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-bends: building the clip failed", {}};
+  quarterGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  roll::RollState& st = sc->view->state();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 3 * q / 2, PitchId::fromDegree(0, 0)), scnNote(3 * q / 2, 3 * q / 2, PitchId::fromDegree(4, 0)),
+                                        scnNote(3 * q, q, PitchId::fromDegree(7, 0)),     scnNote(4 * q, 3 * q / 2, PitchId::fromDegree(5, 0)),
+                                        scnNote(11 * q / 2, 5 * q / 2, PitchId::fromDegree(9, 0)), scnNote(0, 8 * q, PitchId::fromDegree(-5, 0), 70.0f)};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
+    return Error{ErrorCode::Unknown, "pianoroll-bends: addNotes", {}};
+  shell.tree().layoutNow();
+  std::vector<doc::NoteId> melody;
+  for (int i = 0; i < 4; ++i)
+    if (const doc::Note* n = sceneNote(shell.context(), *sc->view, notes[static_cast<size_t>(i)].pitch, notes[static_cast<size_t>(i)].start)) melody.push_back(n->id);
+  const doc::Note* last = sceneNote(shell.context(), *sc->view, notes[4].pitch, notes[4].start);
+  if (melody.size() != 4 || !last) return Error{ErrorCode::NotFound, "pianoroll-bends: the notes", {}};
+  const doc::NoteId lastId = last->id;
+  sc->view->select(melody);
+  if (!st.glideSelection()) return Error{ErrorCode::Unknown, "pianoroll-bends: the glide", {}};
+  sc->view->select(std::span<const doc::NoteId>(&lastId, 1));
+  if (!sceneBend(store, st, true, q)) return Error{ErrorCode::Unknown, "pianoroll-bends: the bend in", {}};
+  sc->view->select(std::span<const doc::NoteId>(&lastId, 1));
+  if (!st.setBendShape(-1, doc::JiShape::LogLinear)) return Error{ErrorCode::Unknown, "pianoroll-bends: the shape", {}};
+  sc->view->select(std::span<const doc::NoteId>(&lastId, 1));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// Vibrato: a long note with 30 ¢ at 6 Hz ("Add Vibrato…"), one that scoops in from the note before it and then
+// swings 60 ¢ at 4 Hz, a plain note under them.
+Status setupPianoRollVibrato(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Vibrato", 16, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-vibrato: building the clip failed", {}};
+  quarterGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  roll::RollState& st = sc->view->state();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 4 * q, PitchId::fromDegree(7, 0)), scnNote(4 * q, 4 * q, PitchId::fromDegree(9, 0)),
+                                        scnNote(0, 8 * q, PitchId::fromDegree(0, 0), 70.0f)};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
+    return Error{ErrorCode::Unknown, "pianoroll-vibrato: addNotes", {}};
+  shell.tree().layoutNow();
+  const doc::Note* a = sceneNote(shell.context(), *sc->view, notes[0].pitch, 0);
+  const doc::Note* b = sceneNote(shell.context(), *sc->view, notes[1].pitch, 4 * q);
+  if (!a || !b) return Error{ErrorCode::NotFound, "pianoroll-vibrato: the notes", {}};
+  const doc::NoteId ida = a->id, idb = b->id;
+  sc->view->select(std::span<const doc::NoteId>(&ida, 1));
+  if (!st.addVibratoToSelection(30.0, 6.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the vibrato", {}};
+  sc->view->select(std::span<const doc::NoteId>(&idb, 1));
+  if (!sceneBend(store, st, true, q)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the bend in", {}};
+  sc->view->select(std::span<const doc::NoteId>(&idb, 1));
+  if (!st.addVibratoToSelection(60.0, 4.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the second vibrato", {}};
+  sc->view->select(std::span<const doc::NoteId>(&ida, 1));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// Ride curves: 4:5:6:7 riding a drawn rise of a whole tone and back (selected: its breakpoints on the lowest voice,
+// the diamonds that bend its segments), and 4:5:6 under a vibrato; every voice follows.
+Status setupPianoRollRide(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Ride", 14, 7);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ride: building the clip failed", {}};
+  quarterGrid(shell.context());
+  roll::RollState& st = sc->view->state();
+  const Ticks q = kPpq;
+  std::string why;
+  if (!st.createJiObject({4 * q + q / 2, 3 * q, 0, 7}, "4:5:6", &why)) return Error{ErrorCode::Unknown, "pianoroll-ride: " + why, {}};
+  const doc::JiObjectId second = st.jiSelection();
+  if (!st.createJiObject({0, 4 * q, 0, 12}, "4:5:6:7", &why)) return Error{ErrorCode::Unknown, "pianoroll-ride: " + why, {}};
+  const doc::JiObjectId first = st.jiSelection();
+  const roll::CurveTarget ride{{}, first};
+  if (!st.commitCurve(ride, {{0, 0.0f, 0.0f, {}}, {q, 0.0f, 0.6f, {}}, {2 * q, 200.0f, 0.0f, {}}, {3 * q, 200.0f, -0.6f, {}}, {4 * q, 0.0f, 0.0f, {}}}, "Ride"))
+    return Error{ErrorCode::Unknown, "pianoroll-ride: the ride", {}};
+  const roll::CurveTarget wobble{{}, second};
+  const roll::RollState::Vibrato whole{q / 2, 3 * q, 0.0, 0.0};
+  if (!st.setVibrato(wobble, whole, 40.0, 5.0))
+    return Error{ErrorCode::Unknown, "pianoroll-ride: the vibrato", {}};
+  st.selectJiObject(first);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T4.16b: the pointer resting on the end of Bass B (bars 5–8): the edge a drag would trim is marked (Live).
 Status setupArrangementHover(Shell& shell) {
   ArrangementView* a = arrangementOf(shell);
@@ -3549,6 +3655,9 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-tune-to-ji", 1280, 800, setupPianoRollTuneToJi},
     {"pianoroll-tune-to-ji-31edo", 1280, 800, setupPianoRollTuneToJi31},
     {"pianoroll-fundamental-lock", 1280, 800, setupPianoRollFundamentalLock},
+    {"pianoroll-bends", 1280, 800, setupPianoRollBends},
+    {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
+    {"pianoroll-ride", 1280, 800, setupPianoRollRide},
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},

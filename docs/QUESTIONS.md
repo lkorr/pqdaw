@@ -1660,3 +1660,38 @@ can differ from the keeper's by a float32 ulp when both glide on together or rid
 hold, within about 1e-7 relative in frequency (a beat period of hours) after a joint move.
 Choice: leave it (inaudible); a Sync at every joint arrival would restore bit identity at the price of a state copy
 per stop and voice.
+
+## Q?-T7.6-a · 2026-11-14 · T7.6 · A bend between notes when the neighbour later moves
+Context: A3: Alt + a note's edge makes it glide in from the previous note / out to the next one. The glide is stored as
+the note's own pitch curve (breakpoints), its far end computed from the neighbour's resolved pitch when the gesture is made.
+Options: (a) baked: the curve keeps its cents; after the neighbour is moved or retuned the glide still aims at the old
+pitch until the gesture (or Ctrl+G) is repeated; (b) derived: the curve names its neighbour and the far end is recomputed
+whenever either note changes (a model field on NoteCurves, serialisation, a re-derive pass in every note edit and in the
+lowering, which another task owns).
+Choice: (a), as the plan says: no model change, what is drawn is exactly what plays, and repeating the gesture is one drag
+(Alt + the edge again keeps the bend's shape and re-aims it). (b) is the better end state per "derive from general
+mechanisms"; it needs `document` + `app/project_link_ji.cpp`. A tuning morph is the visible case: Degree notes retune,
+their baked glides do not.
+Status: open (say if (b) is wanted).
+
+## Q?-T7.6-b · 2026-11-14 · T7.6 · Bend shapes: Straight and S-Curve, no Bezier handles
+Context: the task asked for Straight / S-Curve / Bezier "reusing the object transition shapes and handles".
+Choice: a note's bend is baked points, so a Bezier's two handles have nowhere to live (a model field would be needed, as
+in Q?-T7.6-a (b)). The menu offers Straight and S-Curve; a Straight bend is two breakpoints with the diamond between them,
+which bends the segment (`Breakpoint::curve`), and every point can be dragged. Bezier handles come with (b) if wanted.
+Status: open.
+
+## Q?-T7.6-c · 2026-11-14 · T7.6 · Modifiers and what a resize does to a curve
+Choices made (all reversible):
+- Alt + an edge = bend (Alt on an edge was free; Alt + body still copies). Shift + body = free detune to Cents notes
+  (Shift + click still toggles; a selected note is now taken off on release, so a Shift drag can start on it). Before,
+  Shift + drag on an unselected note added it and moved by rows.
+- Draw Mode: a click on a note still deletes it; a DRAG that starts on a note now draws its pitch curve (it deleted the
+  note at the press before). Alt = vibrato, Ctrl + click = breakpoint, only over a note / an object's lowest voice.
+- The ride curve is drawn on the object's lowest voice (the thick line), only while no object is entered (entered,
+  that press draws a note on the voice). The ride line under the box is unchanged.
+- A resize keeps the lead-in on the start and the lead-out on the end; what lies between keeps its place in time and
+  is cut (not scaled: a vibrato keeps its rate). Move, duplicate, copy / paste carry the curve unchanged; a pasted bend
+  therefore still aims at the pitch it was made for.
+- Ctrl+G bends OUT of each note into the next (the tail of the earlier note moves), not into the start of the later one.
+Status: open for review.

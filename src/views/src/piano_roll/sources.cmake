@@ -6,4 +6,5 @@ set(PQ_VIEWS_PIANO_ROLL_SOURCES
   src/piano_roll/roll_input.cpp
   src/piano_roll/roll_ji.cpp
   src/piano_roll/roll_ji_edit.cpp
+  src/piano_roll/roll_pen.cpp
   src/piano_roll/clip_view.cpp)

@@ -712,6 +712,8 @@ void RollState::setHoverPart(HoverPart h) {
         if (const doc::Note* n = findNote(doc::NoteId{id}))
           if (const ui::IRect r = intersect(screenRectOf(n->start, n->length, n->pitch), area()); !r.empty()) tree->damage().add(r.toRect());
   hoverPart_ = h;
+  // T7.6: in Draw Mode the note under the pointer shows its curve's breakpoints (anywhere along its path).
+  if (ctx.drawMode() && clip_ && clip_->curves) markNotesDirty();
 }
 
 void RollState::hoverPartAt(ui::Vec2 p) {
@@ -1326,8 +1328,7 @@ void RollState::lengthenSelection(int32_t cells) {
     dt = -std::min(step, room);
   }
   if (dt == 0) return;
-  (void)apply(doc::ops::resizeNotes(*ctx.doc(), ref_, keys, doc::ops::NoteEdge::End, dt),
-              dt > 0 ? "Lengthen Notes" : "Shorten Notes");
+  (void)apply(resizeEdit(doc::ops::NoteEdge::End, dt), dt > 0 ? "Lengthen Notes" : "Shorten Notes");  // T7.6: curves retimed
 }
 
 void RollState::copySelection() {
@@ -1458,7 +1459,10 @@ std::optional<RollState::Preview> RollState::previewOf(const DragState& d, const
     case DragKind::Move:
     case DragKind::Copy:
       p.start = n.start + d.dt;
-      if (d.steps != 0) {
+      if (d.cents != 0.0) {  // T7.6: Shift = free detune (a note of a JI object stays on its voice)
+        if (!doc::jiObjectOf(n.pitch).valid())
+          if (const std::optional<double> c = centsOf(n.pitch)) p.pitch = tuning::PitchId::fromCents(*c + d.cents);
+      } else if (d.steps != 0) {
         if (n.pitch.kind() == tuning::PitchKind::Degree) {
           p.pitch = degreePitch(absoluteDegree(tuning_, n.pitch.degree(), n.pitch.equave()) + d.steps);
         } else {
@@ -1468,8 +1472,11 @@ std::optional<RollState::Preview> RollState::previewOf(const DragState& d, const
         }
       }
       break;
-    case DragKind::ResizeEnd: p.length = std::max<Ticks>(1, n.length + d.dt); break;
+    case DragKind::ResizeEnd:
+      if (!d.bend) p.length = std::max<Ticks>(1, n.length + d.dt);  // T7.6: a bend leaves the edge where it is
+      break;
     case DragKind::ResizeStart: {
+      if (d.bend) break;
       const Ticks end = n.start + n.length;
       p.start = std::min(n.start + d.dt, end - 1);
       p.length = end - p.start;
@@ -1550,7 +1557,9 @@ void RollState::commitDrag() {
   const doc::Project& p = *ctx.doc();
   switch (d.kind) {
     case DragKind::Move:
-      if (d.dt != 0 || d.steps != 0) {
+      if (d.cents != 0.0) {  // T7.6: Shift = free detune
+        (void)apply(detuneEdit(d.dt, d.cents), "Detune Notes");
+      } else if (d.dt != 0 || d.steps != 0) {
         // Ratio notes moved by rows step by harmonics of their fundamental, exactly as Up/Down does.
         const std::vector<doc::NoteKey> keys = selectionKeys();
         (void)apply(doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, overlay()), "Move Notes");
@@ -1578,12 +1587,36 @@ void RollState::commitDrag() {
     }
     case DragKind::ResizeEnd:
     case DragKind::ResizeStart:
-      if (d.dt != 0)
-        (void)apply(doc::ops::resizeNotes(p, ref_, selectionKeys(),
-                                          d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start,
-                                          d.dt),
-                    "Resize Notes");
+      curvePreview_.clear();
+      if (d.bend) {  // T7.6 (A3): Alt = the note glides in from the previous note / out to the next one
+        const bool in = d.kind == DragKind::ResizeStart;
+        const doc::ops::EditResult e = bendEdit(d);
+        if (d.bendDelta.empty()) ctx.setStatus(in ? "Bend In: no note before this one to glide from" : "Bend Out: no note after this one to glide to");
+        else (void)apply(e, in ? "Bend In" : "Bend Out");
+      } else if (d.dt != 0) {
+        // T7.6: the notes' curves are retimed in the same step (bends stay on their edges).
+        (void)apply(resizeEdit(d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start, d.dt), "Resize Notes");
+      }
       break;
+    // T7.6: pen strokes, vibrato, breakpoints (a note's pitch curve or an object's ride)
+    case DragKind::PenDraw:
+    case DragKind::PenVibrato:
+    case DragKind::CurvePoint:
+    case DragKind::CurveBow: {
+      curvePreview_.clear();
+      jiPreview_.reset();
+      jiPreviewObject_.reset();
+      const char* what = d.kind == DragKind::PenDraw      ? (d.curve.ji.valid() ? "Draw Ride Curve" : "Draw Pitch Curve")
+                         : d.kind == DragKind::PenVibrato ? "Paint Vibrato"
+                         : d.kind == DragKind::CurveBow   ? "Bend Segment"
+                         : d.curveAdded                   ? "Add Bend Point"
+                                                          : "Move Bend Point";
+      if (commitCurve(d.curve, std::move(d.curvePts), what) && d.kind == DragKind::PenVibrato) {
+        vibratoDepth_ = d.vibDepth;
+        ctx.setStatus(vibratoText(d.vibDepth, d.vibRate) + " (right-click it: Edit Vibrato\xE2\x80\xA6)");
+      }
+      break;
+    }
     case DragKind::Velocity:
       if (d.dValue != 0.0f) {
         const std::vector<uint32_t> keep = sel_;
@@ -1657,6 +1690,7 @@ void RollState::abortDrag() {
 void RollState::cancelDrag() {
   if (drag.kind == DragKind::None) return;
   drag = {};
+  curvePreview_.clear();  // T7.6
   jiPreview_.reset();
   jiPreviewObject_.reset();
   markAllDirty();

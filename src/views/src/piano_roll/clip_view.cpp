@@ -72,6 +72,10 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
                      [this] { return hasClip() && !state_->selection().empty(); });
   ctx_.setViewAction("pianoroll.jiTuningStop", [this] { (void)state_->jiTuningStopAtPointer(); },
                      [this] { return hasClip() && state_->jiActive().valid(); });
+  // T7.6: Ctrl+G: each selected note glides out into the next selected one (two or more notes; else the chord falls
+  // through).
+  ctx_.setViewAction("pianoroll.glide", [this] { (void)state_->glideSelection(); },
+                     [this] { return hasClip() && state_->selection().size() >= 2; });
   auto walk = [this](std::string_view id, int32_t steps, bool top) {
     ctx_.setViewAction(id, [this, steps, top] { (void)state_->walkJiSelection(steps, top); },
                        [this] { return hasClip() && state_->jiActive().valid() && state_->jiTermSelection() >= 0; });

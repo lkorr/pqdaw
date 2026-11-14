@@ -16,6 +16,12 @@
 //               (Alt+Up / Down walk it), a bezier transition's handles drag. Right-click on an object: its menu
 //               (stops, the transition of the voice under the pointer, undertone, back to the tuning); on notes:
 //               Tune to JI, Is Harmonic… (the virtual fundamental).
+//               T7.6 (roll_pen.cpp): Alt + a note's left / right edge bends it in from the previous note / out to
+//               the next one; Shift + a note's body detunes freely (cents); in Draw Mode a drag on a note draws its
+//               pitch curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint (a click still deletes the
+//               note), the same on a JI object's lowest voice for its ride curve; the breakpoints of the selected
+//               notes / the active object's ride drag (Shift: free), a double-click deletes one, the diamond between
+//               two bends the segment.
 //   keys        click auditions the row and selects its notes (Shift adds); horizontal drag zooms the rows;
 //               right-click: row labels; hover: the row's pitch readout.
 //   ruler       drag the loop brace (its ends or the whole brace), the start marker and the end marker; elsewhere a
@@ -66,7 +72,9 @@ NoteAreaWidget::NoteAreaWidget(RollState& s) : Control("notes"), s_(s) {
   setFocusable(true);
   setInfo("MIDI Note Editor",
           "Click a note to select it, drag to move (Alt+drag copies), drag a note's end to resize. Double-click adds or "
-          "deletes a note; B toggles Draw Mode. Up/Down move by one step of the tuning, Shift+Up/Down by one equave.");
+          "deletes a note; B toggles Draw Mode. Up/Down move by one step of the tuning, Shift+Up/Down by one equave. "
+          "Alt+drag a note's edge to glide it in from the previous note or out to the next; in Draw Mode drag on a note "
+          "to draw its pitch, Alt+drag to paint vibrato.");
 }
 
 void NoteAreaWidget::onFocusChanged(bool focused) {
@@ -78,7 +86,10 @@ void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zo
   DragState& d = s_.drag;
   d = {};
   d.pressedWasSelected = s_.selected(n.id);
-  if (toggle) {
+  d.pressMods = e.mods;
+  if (toggle && d.pressedWasSelected && zone == 0 && !(e.mods & mod::kCtrl)) {
+    d.toggleOnClick = true;  // T7.6: Shift on a selected note: a click deselects it, a drag detunes freely
+  } else if (toggle) {
     s_.toggleSelected(n.id);
     if (!s_.selected(n.id)) return;  // toggled off: no drag
   } else if (!d.pressedWasSelected) {
@@ -239,6 +250,22 @@ void NoteAreaWidget::pressJiPart(const PointerEvent& e, const JiHit& hit) {
   }
 }
 
+// T7.6: Draw Mode on a note, or on the lowest voice of a JI object (its ride curve; not while an object is entered):
+// a drag draws the curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint and drags it. False: nothing
+// there for the pen (the press draws notes as before).
+bool NoteAreaWidget::pressPen(const PointerEvent& e) {
+  CurveTarget t;
+  const doc::Note* n = s_.noteAt(e.pos);
+  if (n) t.note = n->id;
+  else if (const doc::JiObjectId ji = s_.rideLaneAt(e.pos); ji.valid()) t.ji = ji;
+  else return false;
+  if (e.mods & mod::kCtrl) return s_.beginCurvePoint(t, e.pos);
+  s_.beginPen(t, e.pos, e.mods, (e.mods & mod::kAlt) != 0);
+  if (s_.drag.kind == DragKind::None) return false;
+  s_.drag.deleteOnClick = n != nullptr;
+  return true;
+}
+
 // T7.4 (JI tool): the box of a new object, from the grid cell and row under the press.
 void NoteAreaWidget::pressJiBox(const PointerEvent& e) {
   DragState& d = s_.drag;
@@ -264,7 +291,13 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
     case DragKind::Move:
     case DragKind::Copy: {
       d.dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
-      if (s_.jiEntered().valid()) {  // T7.5: by the object's voices
+      d.cents = 0.0;
+      if (d.kind == DragKind::Move && (mods & mod::kShift) && !s_.jiEntered().valid() && !s_.rows().empty()) {
+        // T7.6: Shift = free detune: cents instead of rows (the notes become Cents notes).
+        d.steps = 0;
+        d.cents = s_.centsAtScreenY(p.y) - s_.centsAtScreenY(d.press.y);
+        d.trackDamage = false;
+      } else if (s_.jiEntered().valid()) {  // T7.5: by the object's voices
         const int32_t voice = s_.jiVoiceAt(s_.jiEntered(), p);
         if (voice >= 0 && d.pressVoice >= 0) d.steps = voice - d.pressVoice;
       } else if (!s_.rows().empty()) {
@@ -275,7 +308,22 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
       break;
     }
     case DragKind::ResizeEnd:
-    case DragKind::ResizeStart: d.dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw; break;
+    case DragKind::ResizeStart:
+      d.dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
+      // T7.6 (A3): with Alt the edge stays and the note glides in from the previous note / out to the next one over
+      // the dragged length (previewed from the edit the release dispatches).
+      d.bend = (mods & mod::kAlt) != 0;
+      if (d.bend) {
+        d.trackDamage = false;
+        s_.updateBendPreview();
+      } else {
+        s_.clearCurvePreview();
+      }
+      break;
+    case DragKind::PenDraw:
+    case DragKind::PenVibrato: s_.penTo(p, mods); break;
+    case DragKind::CurvePoint:
+    case DragKind::CurveBow: s_.curveHandleTo(p, mods); break;
     case DragKind::Rubber: {
       const int32_t x0 = static_cast<int32_t>(std::min(p.x, d.press.x)), x1 = static_cast<int32_t>(std::max(p.x, d.press.x));
       const int32_t y0 = static_cast<int32_t>(std::min(p.y, d.press.y)), y1 = static_cast<int32_t>(std::max(p.y, d.press.y));
@@ -419,6 +467,22 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         }
         return true;
       }
+      // T7.6: a breakpoint of a curve being shown (the selected notes, the active object's ride): drag it, a
+      // double-click deletes it; the diamond between two points bends the segment. A note's edge comes first (a
+      // bend's first / last point lies on it; its handle reaches further into the note).
+      if (const RollState::CurveHit ch = s_.curveHandleAt(e.pos); ch.valid()) {
+        int edgeZone = 0;
+        if (!s_.ctx.drawMode()) (void)s_.noteAt(e.pos, &edgeZone);
+        if (edgeZone == 0) {
+          if (e.clickCount >= 2 && !ch.mid) {
+            s_.drag = {};
+            (void)s_.deleteCurvePoint(ch);
+          } else {
+            s_.beginCurveHandle(ch, e.pos);
+          }
+          return true;
+        }
+      }
       if (s_.jiTool()) {
         if (jh.grabs()) pressJi(e, jh);
         else pressJiBox(e);
@@ -430,6 +494,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       }
       int zone = 0;
       const doc::Note* n = s_.noteAt(e.pos, &zone);
+      if (s_.ctx.drawMode() && pressPen(e)) return true;  // T7.6: the pen on a note / an object's lowest voice
       if (!n && jh.grabs()) {
         if (e.clickCount >= 2 && jh.zone == JiZone::StopLabel) {
           s_.drag = {};
@@ -494,15 +559,46 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         s_.hoverPartAt(e.pos);
         return true;
       }
-      if (!d.moved && (d.kind == DragKind::Move || d.kind == DragKind::Copy) && d.pressedWasSelected &&
-          !(e.mods & (mod::kShift | mod::kCtrl))) {
+      if (!d.moved && d.toggleOnClick) {  // T7.6: Shift + click on a selected note deselects it (on release)
+        const doc::NoteId id = d.pressed;
         s_.drag = {};
-        s_.selectOnly(d.pressed);  // a click on a note of a multiple selection selects just it (Live)
+        s_.toggleSelected(id);
         s_.hoverPartAt(e.pos);
         return true;
       }
-      if (!d.moved && d.kind != DragKind::Draw) {
+      if (!d.moved && (d.kind == DragKind::PenDraw || d.kind == DragKind::PenVibrato || (d.kind == DragKind::CurvePoint && !d.curveAdded) ||
+                       d.kind == DragKind::CurveBow)) {
+        // T7.6: a click with the pen. On a note it deletes the note (Draw Mode's click); on an object's lowest voice
+        // it puts the cell's note there, as a Draw Mode click does anywhere else; on a breakpoint it does nothing.
+        const DragState was = d;
+        s_.cancelDrag();
+        if (was.kind == DragKind::PenDraw || was.kind == DragKind::PenVibrato) {
+          if (was.deleteOnClick) {
+            s_.selectOnly(was.curve.note);
+            s_.deleteSelection();
+          } else if (was.curve.ji.valid()) {
+            PointerEvent pe = e;
+            pe.pos = was.press;
+            pe.mods = was.pressMods;
+            pressEmpty(pe);
+            s_.commitDrag();
+            s_.releaseAudition();
+          }
+        }
+        s_.hoverPartAt(e.pos);
+        return true;
+      }
+      if (!d.moved && (d.kind == DragKind::Move || d.kind == DragKind::Copy) && d.pressedWasSelected &&
+          !(e.mods & (mod::kShift | mod::kCtrl))) {
+        const doc::NoteId only = d.pressed;  // read before the reset (`d` is s_.drag; the click used to select note 0)
         s_.drag = {};
+        s_.selectOnly(only);  // a click on a note of a multiple selection selects just it (Live)
+        s_.hoverPartAt(e.pos);
+        return true;
+      }
+      if (!d.moved && d.kind != DragKind::Draw && !(d.kind == DragKind::CurvePoint && d.curveAdded)) {
+        s_.drag = {};
+        s_.clearCurvePreview();
         s_.markNotesDirty();
         s_.hoverPartAt(e.pos);
         return true;
@@ -569,7 +665,11 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
       case DragKind::Copy: return Cursor::Move;
       case DragKind::ResizeStart:
       case DragKind::ResizeEnd: return Cursor::ResizeEW;
-      case DragKind::Draw: return Cursor::Crosshair;
+      case DragKind::Draw:
+      case DragKind::PenDraw:
+      case DragKind::PenVibrato: return Cursor::Crosshair;
+      case DragKind::CurvePoint: return Cursor::Move;
+      case DragKind::CurveBow: return Cursor::ResizeNS;
       case DragKind::Rubber: return Cursor::Arrow;
       case DragKind::JiMove:
       case DragKind::JiBezier: return Cursor::Move;
@@ -581,6 +681,12 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
       default: break;
     }
   const bool entered = s_.jiEntered().valid();
+  // T7.6: a breakpoint (drag it), the diamond between two (bend the segment); a note's edge comes first, as the press.
+  if (const RollState::CurveHit ch = s_.curveHandleAt(p); ch.valid()) {
+    int edgeZone = 0;
+    if (!s_.ctx.drawMode()) (void)s_.noteAt(p, &edgeZone);
+    if (edgeZone == 0) return ch.mid ? Cursor::ResizeNS : Cursor::Move;
+  }
   if (s_.ctx.drawMode() && !entered) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
   // T7.4: a JI object's header / border (as the press: always with the JI tool, else where no note is). T7.5: its
   // stop labels (a later stop drags sideways), glide grips, harmonic numbers, bezier handles.
@@ -663,6 +769,39 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
     MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
     unlock.enabled = lock;
     items.push_back(std::move(unlock));
+    items.push_back(MenuItem::sep());
+    // T7.6: bends. The bend of the note under the pointer (Alt + its edge made it) can be straight or an S-curve;
+    // the vibrato under the pointer can be retyped; the selection glides, gets a vibrato, loses its curves.
+    bool anyCurve = false;
+    for (const uint32_t id : sel) anyCurve = anyCurve || !s_.curvePoints(CurveTarget{doc::NoteId{id}, {}}).empty();
+    if (const doc::Note* target = under ? under : single) {
+      const doc::NoteId id = target->id;
+      for (const int edge : {-1, 1}) {
+        if (s_.bendLength(id, edge) <= 0) continue;
+        const bool straight = s_.bendIsStraight(id, edge);
+        std::vector<MenuItem> sub;
+        MenuItem a = MenuItem::item("Straight", guarded([edge](RollState& st) { (void)st.setBendShape(edge, doc::JiShape::LogLinear); }));
+        a.checked = straight;
+        MenuItem b = MenuItem::item("S-Curve", guarded([edge](RollState& st) { (void)st.setBendShape(edge, doc::JiShape::SCurve); }));
+        b.checked = !straight;
+        sub.push_back(std::move(a));
+        sub.push_back(std::move(b));
+        items.push_back(MenuItem::sub(edge < 0 ? "Bend In" : "Bend Out", std::move(sub)));
+      }
+      if (under) {
+        const CurveTarget t{id, {}};
+        const Ticks off = static_cast<Ticks>(std::llround(s_.tickAtX(at.x))) - under->start;
+        if (const std::optional<RollState::Vibrato> v = s_.vibratoAt(t, off))
+          items.push_back(MenuItem::item("Edit Vibrato\xE2\x80\xA6", guarded([t, v = *v](RollState& st) { (void)st.openVibratoEdit(t, v); })));
+      }
+    }
+    MenuItem glide = MenuItem::item("Glide into Next", guarded([](RollState& st) { (void)st.glideSelection(); }), "Ctrl+G");
+    glide.enabled = sel.size() >= 2;
+    items.push_back(std::move(glide));
+    items.push_back(MenuItem::item("Add Vibrato\xE2\x80\xA6", guarded([](RollState& st) { (void)st.openVibratoEntry(); })));
+    MenuItem clear = MenuItem::item("Clear Bends", guarded([](RollState& st) { (void)st.clearBends(); }));
+    clear.enabled = anyCurve;
+    items.push_back(std::move(clear));
     items.push_back(MenuItem::sep());
     MenuItem dup = MenuItem::item("Duplicate", guarded([](RollState& st) { st.duplicateSelection(); }), "Ctrl+D");
     items.push_back(std::move(dup));
@@ -754,6 +893,15 @@ Menu* NoteAreaWidget::openJiMenu(Vec2 at, const JiHit& hit) {
   back.enabled = tick.has_value();
   items.push_back(std::move(back));
   items.push_back(MenuItem::sep());
+  // T7.6: the ride curve (drawn on the lowest voice in Draw Mode).
+  if (!o->ride.empty()) {
+    const CurveTarget t{{}, id};
+    const Ticks off = static_cast<Ticks>(std::llround(s_.tickAtX(at.x))) - o->start;
+    if (const std::optional<RollState::Vibrato> vib = s_.vibratoAt(t, off))
+      items.push_back(MenuItem::item("Edit Vibrato\xE2\x80\xA6", guarded([t, vib = *vib](RollState& st) { (void)st.openVibratoEdit(t, vib); })));
+    items.push_back(MenuItem::item("Clear Ride Curve", guarded([t](RollState& st) { (void)st.commitCurve(t, {}, "Clear Ride Curve"); })));
+    items.push_back(MenuItem::sep());
+  }
   MenuItem under = MenuItem::item("Undertone (1/n)", guarded([id](RollState& st) { (void)st.toggleJiUndertone(id); }));
   under.checked = o->undertone;
   items.push_back(std::move(under));

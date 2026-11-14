@@ -1696,3 +1696,29 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Supersedes the T7.5 entry's decisions (1) and (2): no nearest-ratio approximation, no subharmonic item.
 - Open: "Set Pitch…" cannot yet type a ratio relative to the anchor (it makes reference ratios), so a between-the-lines
   note comes from a paste, a duplicate that is then stepped, or the document; say if you want "3/2 of the anchor" typed.
+
+## 2026-11-14 · T7.6 · piano roll: bends between notes, pen, breakpoints, vibrato, ride curves 👁
+- Look at (tests/views/golden): `pianoroll-bends` (a melody whose notes glide into each other, the last note scooping
+  in on a straight bend with its two breakpoints and the diamond between), `pianoroll-vibrato` (30 ¢ at 6 Hz; a scoop
+  into 60 ¢ at 4 Hz), `pianoroll-ride` (a JI chord riding a drawn rise, its breakpoints on the lowest voice; one under a
+  vibrato).
+- Bend between notes: select a note, hold Alt and drag its LEFT edge inward: it glides in from the note before it.
+  The RIGHT edge: it glides out to the next note. The drag length is the glide time (it snaps to the grid). Alt-drag
+  the edge again to change it; a short drag (under half a grid step) removes it. Right-click the note → Bend In / Bend
+  Out → Straight or S-Curve.
+- Several at once: select a phrase, Ctrl+G: every note glides into the next one over one grid step.
+- Free bend: B (Draw Mode), then drag along a note: the note follows the pen from where you pressed. Come back to the
+  line and the rest of the note is kept; end somewhere else and the note stays there. A click still deletes a note.
+- Vibrato: in Draw Mode hold Alt and drag along a note: up / down sets the depth, a flat stroke repeats the last depth.
+  The status line reads "Vibrato 50 ¢ · 8 Hz". Right-click it → Edit Vibrato… (type "20 5"; depth 0 removes it).
+  Right-click any selection → Add Vibrato….
+- Breakpoints: in Draw Mode Ctrl + click a note and drag: a point. Select the note: its points are dots; drag them (they
+  snap to rows, harmonic guides and the note's own pitch; Shift = free), double-click deletes, the diamond between two
+  bends the segment. Curves with more than 24 points (a drawn stroke, a vibrato) show no dots.
+- Detune: Shift + drag a note up / down: free cents (it becomes a Cents note).
+- Ride curve: in Draw Mode do the same three things on the THICK lowest line of a JI object (not entered): every voice
+  and inner note follows. Its menu has Clear Ride Curve.
+- Clear Bends in the notes' menu removes the selected notes' curves.
+- Decide (QUESTIONS Q?-T7.6-a/b/c): a bend is baked — it does not follow its neighbour if that note moves later
+  (repeat the gesture); there is no Bezier bend with handles; Ctrl+G bends the END of the earlier note (say if the
+  glide should sit at the start of the later note instead); Shift + drag on a note is now detune.

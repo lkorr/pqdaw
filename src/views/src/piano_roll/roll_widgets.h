@@ -127,6 +127,7 @@ private:
   void pressJiPart(const ui::PointerEvent& e, const JiHit& hit);  // T7.5: a stop label, glide grip, voice label, bezier handle
   ui::Menu* openJiMenu(ui::Vec2 at, const JiHit& hit);            // T7.5: the object's right-click menu
   void pressJiBox(const ui::PointerEvent& e);                  // T7.4 (JI tool): start the box of a new object
+  bool pressPen(const ui::PointerEvent& e);                    // T7.6: Draw Mode on a note / an object's lowest voice
   void dragTo(ui::Vec2 p, ui::Mods mods);
   DrawnNote cellNote(TickRange c, ui::Vec2 p, DrawPitch mode) const;
   void paintNoteLabels(ui::PaintContext& ctx);
@@ -185,6 +186,8 @@ void paintOverlay(ui::PaintContext& ctx, const RollState& s, const ui::IRect& vi
 enum class JiPass : uint8_t { All, NotEntered, EnteredOnly };
 void paintJiObjects(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis, bool labels, JiPass pass = JiPass::All);
 void paintCurveNotes(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis, JiPass pass = JiPass::All);
+// T7.6 (roll_pen.cpp): the breakpoint handles of the curves being edited.
+void paintCurveHandles(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 // Key colours of a scale's step classes (T3.12): L in roll.keyLarge, s blended toward roll.keySmall by hardness
 // (mos-explorer's softness: s = L at L/s = 1, fully keySmall from L/s = 3), sizes in between interpolated between
 // their neighbours and pulled toward roll.keyExtra the more they stand apart (drawMOSCircle's colour map, with the
