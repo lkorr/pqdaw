@@ -26,6 +26,7 @@
 #include "pq/core/denormal_guard.h"
 #include "pq/core/rt_scope.h"
 #include "pq/document/ji_object.h"
+#include "pq/document/note_bend.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/tuning/mos_tuning.h"
 
@@ -457,6 +458,40 @@ TEST_CASE("ji playback: a ride curve, an undertone object, a note's own curve an
     CHECK(worstRel(out, at(1.0) + 2, at(1.5), K, [&](double) { return hz; }) < 2e-6);
     CHECK(out[at(0.5) - 2] == 0.0f);  // the note starts at 1 q
     MESSAGE("note curve: worst " << cents(worst) << " c");
+  }
+  SUBCASE("a derived bend plays the glide from the neighbour's pitch, and follows the neighbour when it moves (T7.11a)") {
+    Rig r(true, {});
+    const Note a = playback_fixture::note(r.store.ids(), 0, kQ, 0);
+    const Note b = playback_fixture::note(r.store.ids(), 2 * kQ, 4 * kQ, 7);
+    auto added = ops::addNotes(r.doc(), r.store.ids(), r.ref, std::vector<Note>{a, b});
+    test_blocks::dispatchEdit(r.store, added);
+    const NoteKey ka = added->notes[0], kb = added->notes[1];
+    test_blocks::dispatchEdit(r.store, ops::setNoteBend(r.doc(), r.ref, kb, ops::NoteEdge::Start, kQ, JiShape{}, ka.id));
+    const NoteCurves record = *findNoteCurves(r.clip(), kb.id);
+    const double hz = kRef * std::exp2(7.0 / 12.0);
+    for (const double from : {-700.0, -500.0}) {  // the neighbour a fifth below, then moved up two steps
+      auto link = makeLink(r.store.current());
+      const std::vector<float> out = render(*link, 2.6);
+      NoteBendTargets targets;
+      targets.in = from;
+      auto want = [&](double tick) {
+        const double rel = tick - static_cast<double>(2 * kQ);
+        if (rel < 0.0 || rel >= 4.0 * kQ) return 0.0;
+        return hz * std::exp2(noteCurveCents(record, 4 * kQ, targets, rel) / 1200.0);
+      };
+      const double K = static_cast<double>(out[at(2.0)]) / hz;  // after the glide
+      const double worst = worstRel(out, at(1.0) + kAttack, at(2.5), K, want);
+      CHECK(cents(worst) < kGlideCents);
+      CHECK(worstRel(out, at(1.5) + 2, at(2.5), K, [&](double) { return hz; }) < 2e-6);  // arrived: its own pitch, exactly
+      // It does start a long way below (the glide is there at all): a tenth into it, still more than 300 c under.
+      CHECK(static_cast<double>(out[at(1.05)]) / K < hz * std::exp2(-300.0 / 1200.0));
+      MESSAGE("bend from " << from << " c: worst " << cents(worst) << " c");
+      if (from == -700.0) {
+        const NoteKey keys[] = {ka};
+        test_blocks::dispatchEdit(r.store, ops::transposeNotes(r.doc(), r.ref, keys, 2, ops::StepUnit::Grid));
+        CHECK(*findNoteCurves(r.clip(), kb.id) == record);  // nothing stored changed
+      }
+    }
   }
   SUBCASE("a scaffold: an inner note follows its voice (plus its own curve), a 3/2 on the fundamental follows it") {
     Rig r(true);

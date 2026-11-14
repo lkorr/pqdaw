@@ -523,6 +523,16 @@ EditResult walkJiTerm(const Project& p, ClipRef clip, JiObjectId object, uint32_
                       uint32_t pin);
 // Sets (empty: removes) a note's pitch curve: cents offsets over ticks from the note's start (NoteCurves).
 EditResult setNoteCurve(const Project& p, ClipRef clip, NoteKey note, std::vector<Breakpoint> pitch);
+// T7.11a (Q289 b; model.h NoteBend): the note glides in from (edge Start: NoteCurves::bendIn) or out to (edge End:
+// bendOut) the pitch of note `other` of the same clip over `length` ticks (clamped to [1, the note's length]) with
+// `shape`. The far end is derived from the two notes' current pitches wherever the curve is read, so nothing needs
+// re-doing when either note moves. An invalid `other` (or length ≤ 0) removes that edge's bend. The free curve
+// (NoteCurves::pitch) is untouched. Errors: NotFound (the note, `other`), InvalidArgument (`other` is the note itself,
+// an invalid shape).
+EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge edge, Ticks length, JiShape shape,
+                       NoteId other);
+// Removes both bends of each note (the free curves stay). Notes without bends are skipped; one undo step.
+EditResult clearNoteBends(const Project& p, ClipRef clip, std::span<const NoteKey> notes);
 // A copy of a note clip with fresh clip, note and JI ids (objects and their voice notes), the copies' identities
 // re-pointed to the copied objects and the curves re-keyed: what every clip copy / paste / duplicate uses.
 NoteClip cloneNoteClip(const NoteClip& c, IdSource& ids);

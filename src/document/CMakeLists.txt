@@ -48,6 +48,7 @@ pq_add_module(pq_doc
     src/group_response.cpp
     src/pitch_resolve.cpp
     src/ji_object.cpp  # T7.2: JI object evaluation (voices, morphs, the per-voice plan)
+    src/note_bend.cpp  # T7.11a: derived bends between notes (the effective note curve)
     src/edit_ji.cpp    # T7.2: JI object and note-curve edit operations
     src/input_map.cpp
     src/midi_file.cpp  # MF.1: Standard MIDI File reader / writer, note resolution

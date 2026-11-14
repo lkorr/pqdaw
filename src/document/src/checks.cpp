@@ -307,12 +307,27 @@ Status checkJiList(const JiObjectList& l) {
   return ok();
 }
 
+Status checkNoteBend(const NoteBend& b, NoteId note) {
+  if (!b.set()) return b == NoteBend{} ? ok() : invalid("a note bend without a neighbour has no length or shape");
+  if (b.other == note) return invalid("a note cannot bend to itself");
+  if (b.length < 1 || b.length > kMaxTicks) return invalid("note bend length out of range");
+  JiTiming t;
+  t.shape = b.shape;
+  return checkJiTiming(t);
+}
+
+Status checkNoteCurveRecord(const NoteCurves& c) {
+  if (!c.note.valid()) return invalid("note curve without a note");
+  PQ_DOC_TRY(checkCurve(c.pitch, "note curve"));
+  PQ_DOC_TRY(checkNoteBend(c.bendIn, c.note));
+  return checkNoteBend(c.bendOut, c.note);
+}
+
 Status checkNoteCurves(const NoteCurveList& l) {
   for (size_t i = 0; i < l.size(); ++i) {
-    if (!l[i].note.valid()) return invalid("note curve without a note");
     if (i > 0 && !(l[i - 1].note < l[i].note)) return invalid("note curves must be sorted by note id");
-    if (l[i].pitch.empty()) return invalid("an empty note curve is not stored");
-    PQ_DOC_TRY(checkCurve(l[i].pitch, "note curve"));
+    if (l[i].empty()) return invalid("an empty note curve is not stored");
+    PQ_DOC_TRY(checkNoteCurveRecord(l[i]));
   }
   return ok();
 }

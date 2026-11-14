@@ -280,23 +280,22 @@ EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<con
   e.noteClip = clip;
   AddNotes a{clip, {}};
   a.notes.reserve(notes.size());
-  std::vector<SetNoteCurve> carried;  // T7.2
+  std::vector<NoteId> sources;  // T7.2: the ids the given notes carry (what `curves` are matched by)
+  sources.reserve(notes.size());
   for (const Note& n : notes) {
     Note m = n;
     m.id = ids.note();
     PQ_DOC_TRY(validateNote(m));
     PQ_DOC_TRY(checkNoteJi(*f->clip, m.pitch));
-    for (const NoteCurves& nc : curves)
-      if (nc.note == n.id && n.id.valid() && !nc.pitch.empty()) {
-        PQ_DOC_TRY(checkCurve(nc.pitch, "note curve"));
-        carried.push_back(SetNoteCurve{clip, keyOf(m), nc.pitch});
-        break;
-      }
+    sources.push_back(n.id);
     a.notes.push_back(m);
     e.notes.push_back(keyOf(m));
   }
+  // One command for all the carried curves (M13); bends between pasted notes glide between the copies (T7.11a).
+  Result<std::optional<SetNoteCurves>> carried = copiedCurves(clip, *f->clip, curves, sources, a.notes);
+  if (!carried) return std::move(carried).error();
   if (!a.notes.empty()) batchOf(e).commands.push_back(std::move(a));
-  for (SetNoteCurve& c : carried) batchOf(e).commands.push_back(std::move(c));
+  if (*carried) batchOf(e).commands.push_back(std::move(**carried));
   return e;
 }
 
@@ -518,11 +517,17 @@ EditResult duplicateNotes(const Project& p, IdSource& ids, ClipRef clip, std::sp
     a.notes.push_back(m);
     e.notes.push_back(keyOf(m));
   }
-  batchOf(e).commands.push_back(std::move(a));
-  if (f->clip->curves)  // T7.2: a copy has its source's curves
-    for (size_t i = 0; i < src.size(); ++i)
-      if (const NoteCurves* nc = findNoteCurves(*f->clip, src[i].id))
-        batchOf(e).commands.push_back(SetNoteCurve{clip, e.notes[i], nc->pitch});
+  if (f->clip->curves) {  // T7.2: a copy has its source's curves, in one command (M13)
+    std::vector<NoteId> sources;
+    sources.reserve(src.size());
+    for (const Note& n : src) sources.push_back(n.id);
+    Result<std::optional<SetNoteCurves>> carried = copiedCurves(clip, *f->clip, noteCurvesOf(*f->clip), sources, a.notes);
+    if (!carried) return std::move(carried).error();
+    batchOf(e).commands.push_back(std::move(a));
+    if (*carried) batchOf(e).commands.push_back(std::move(**carried));
+  } else {
+    batchOf(e).commands.push_back(std::move(a));
+  }
   return e;
 }
 

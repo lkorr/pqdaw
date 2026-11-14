@@ -1259,18 +1259,29 @@ Res apply_(const Snapshot& s, const RemoveNotes& c, ChangeSet& cs) {
     std::sort(keys.begin(), keys.end());
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
     NoteClip n = withNotes(old, old.notes.withRemoved(keys));
-    if (old.curves) {  // T7.2: a removed note's curves go with it (O(removed · log curves); copied only when one had any)
+    if (old.curves) {
+      // T7.2: a removed note's curves go with it; T7.11a: so does every bend to or from it (NoteBend: a bend never
+      // names a note that is gone). One pass over the curve list; copied only when something changes.
+      std::vector<NoteId> gone;
+      gone.reserve(keys.size());
+      for (const NoteKey& k : keys) gone.push_back(k.id);
+      std::sort(gone.begin(), gone.end());
+      auto isGone = [&](NoteId id) { return std::binary_search(gone.begin(), gone.end(), id); };
       bool any = false;
-      for (const NoteKey& k : keys) any = any || findNoteCurves(old, k.id) != nullptr;
+      for (const NoteCurves& nc : *old.curves)
+        any = any || isGone(nc.note) || (nc.bendIn.set() && isGone(nc.bendIn.other)) ||
+              (nc.bendOut.set() && isGone(nc.bendOut.other));
       if (any) {
         NoteCurveList kept;
         kept.reserve(old.curves->size());
-        std::vector<NoteId> gone;
-        gone.reserve(keys.size());
-        for (const NoteKey& k : keys) gone.push_back(k.id);
-        std::sort(gone.begin(), gone.end());
-        for (const NoteCurves& nc : *old.curves)
-          if (!std::binary_search(gone.begin(), gone.end(), nc.note)) kept.push_back(nc);
+        for (const NoteCurves& nc : *old.curves) {
+          if (isGone(nc.note)) continue;
+          kept.push_back(nc);
+          NoteCurves& k = kept.back();
+          if (k.bendIn.set() && isGone(k.bendIn.other)) k.bendIn = {};
+          if (k.bendOut.set() && isGone(k.bendOut.other)) k.bendOut = {};
+          if (k.empty()) kept.pop_back();
+        }
         n.curves = kept.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(kept));
       }
     }
@@ -1422,14 +1433,78 @@ Res apply_(const Snapshot& s, const SetNoteCurve& c, ChangeSet& cs) {
     if (have ? have->pitch == c.pitch : c.pitch.empty()) return ClipPtr{};
     NoteCurveList list(noteCurvesOf(old).begin(), noteCurvesOf(old).end());
     const auto it = std::lower_bound(list.begin(), list.end(), id, [](const NoteCurves& o, NoteId x) { return o.note < x; });
-    if (c.pitch.empty()) list.erase(it);
-    else if (have) it->pitch = c.pitch;
-    else list.insert(it, NoteCurves{id, c.pitch});
+    if (have) {
+      it->pitch = c.pitch;  // the bends stay (T7.11a)
+      if (it->empty()) list.erase(it);
+    } else {
+      list.insert(it, NoteCurves{id, c.pitch});
+    }
     NoteClip n = withNotes(old, old.notes);
     n.curves = list.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(list));
     return ClipPtr(std::make_shared<const NoteClip>(std::move(n)));
   });
   if (r && *r != s) cs.notes.push_back(id);
+  return r;
+}
+
+// T7.11a (M13): every record in one merge with the clip's (sorted) curve list — one list copy per command.
+Res apply_(const Snapshot& s, const SetNoteCurves& c, ChangeSet& cs) {
+  if (c.curves.empty()) return s;
+  std::vector<NoteId> changed;
+  Res r = editClip(s, c.clip, cs, kChangeSequence, [&](const NoteClip& old) -> Result<ClipPtr> {
+    std::vector<const NoteCurves*> in;
+    in.reserve(c.curves.size());
+    for (const NoteCurves& nc : c.curves) in.push_back(&nc);
+    std::sort(in.begin(), in.end(), [](const NoteCurves* a, const NoteCurves* b) { return a->note < b->note; });
+    // Which of the ids the records name are notes of the clip: one pass over the notes (a NoteSeq is ordered by
+    // start, not id) against the few ids needed, O(notes · log records) without copying the clip's ids.
+    std::vector<NoteId> need;
+    need.reserve(in.size() * 3);
+    for (const NoteCurves* nc : in) {
+      need.push_back(nc->note);
+      if (nc->bendIn.set()) need.push_back(nc->bendIn.other);
+      if (nc->bendOut.set()) need.push_back(nc->bendOut.other);
+    }
+    std::sort(need.begin(), need.end());
+    need.erase(std::unique(need.begin(), need.end()), need.end());
+    std::vector<uint8_t> found(need.size(), 0);
+    for (const Note& n : old.notes) {
+      const auto it = std::lower_bound(need.begin(), need.end(), n.id);
+      if (it != need.end() && *it == n.id) found[static_cast<size_t>(it - need.begin())] = 1;
+    }
+    auto has = [&](NoteId id) {
+      return found[static_cast<size_t>(std::lower_bound(need.begin(), need.end(), id) - need.begin())] != 0;
+    };
+    for (size_t i = 0; i < in.size(); ++i) {
+      const NoteCurves& nc = *in[i];
+      if (i > 0 && in[i - 1]->note == nc.note) return invalid("two curve records for one note");
+      PQ_DOC_TRY(checkNoteCurveRecord(nc));
+      if (!has(nc.note)) return notFound("note not found");
+      if (nc.bendIn.set() && !has(nc.bendIn.other)) return notFound("the note a bend glides from is not in the clip");
+      if (nc.bendOut.set() && !has(nc.bendOut.other)) return notFound("the note a bend glides to is not in the clip");
+    }
+    const std::span<const NoteCurves> have = noteCurvesOf(old);
+    NoteCurveList list;
+    list.reserve(have.size() + in.size());
+    size_t i = 0, j = 0;
+    while (i < have.size() || j < in.size()) {
+      if (j >= in.size() || (i < have.size() && have[i].note < in[j]->note)) {
+        list.push_back(have[i++]);
+        continue;
+      }
+      const NoteCurves& nc = *in[j++];
+      const bool same = i < have.size() && have[i].note == nc.note;
+      if (same ? !(have[i] == nc) : !nc.empty()) changed.push_back(nc.note);
+      if (same) ++i;
+      if (!nc.empty()) list.push_back(nc);
+    }
+    if (changed.empty()) return ClipPtr{};
+    NoteClip n = withNotes(old, old.notes);
+    n.curves = list.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(list));
+    return ClipPtr(std::make_shared<const NoteClip>(std::move(n)));
+  });
+  if (r && *r != s)
+    for (const NoteId id : changed) cs.notes.push_back(id);
   return r;
 }
 
@@ -2438,7 +2513,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental", "Edit Audio Clip", "Add Sample",
     "Delete Sample", "Edit Sample",
     "Add Notes", "Delete Notes", "Edit Notes", "Move Note", "Resize Note", "Note Property",
-    "Add JI Object", "Delete JI Object", "Edit JI Object", "Note Curve",
+    "Add JI Object", "Delete JI Object", "Edit JI Object", "Note Curve", "Note Curves",
     "Add Automation Lane", "Delete Automation Lane", "Add Breakpoints", "Delete Breakpoints", "Edit Breakpoints",
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",

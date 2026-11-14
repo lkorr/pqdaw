@@ -3,6 +3,7 @@
 // Internals shared by the edit-operation builders (T3.6). Private to pq_doc.
 
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -61,8 +62,23 @@ using JiIdMap = std::vector<std::pair<JiObjectId, JiObjectId>>;  // sorted by ol
 tuning::PitchId remapJiPitch(const tuning::PitchId& p, const JiIdMap& map) noexcept;
 // A copy of `o` with a fresh object id and fresh voice-note ids.
 JiObject freshJiObject(const JiObject& o, IdSource& ids);
-// Drops the curves of notes that are not in c.notes (after notes left the clip). O(notes + curves) when it has curves.
+// Drops the curves of notes that are not in c.notes (after notes left the clip), and the bends to notes that are not
+// (T7.11a). O(notes + curves) when it has curves.
 void pruneCurves(NoteClip& c);
+// T7.11a: old → new ids of copied notes (sources[i] was copied to copies[i]), sorted by old id.
+using NoteIdMap = std::vector<std::pair<NoteId, NoteId>>;
+NoteIdMap noteIdMap(std::span<const NoteId> sources, std::span<const Note> copies);
+// The copy of `id` (invalid: it was not copied).
+NoteId remapNote(NoteId id, const NoteIdMap& map) noexcept;
+// A copy of a curve record for the copied note `note`: a bend to a note that was copied too glides to that copy; to
+// one that was not, it stays when that note is a note of `target` (a copy inside its own clip) and is dropped
+// otherwise (target null: a copy into another clip).
+NoteCurves remapNoteCurves(const NoteCurves& nc, NoteId note, const NoteIdMap& map, const NoteClip* target = nullptr);
+// The curve records of notes copied into `target` as ONE command (M13): copies[i] is the copy of note sources[i]
+// (invalid: none), `curves` the source notes' records (any order, matched by id, O((curves + copies) · log)); bends
+// re-pointed as remapNoteCurves. nullopt: no copy has a curve. Errors: an invalid record.
+Result<std::optional<SetNoteCurves>> copiedCurves(ClipRef clip, const NoteClip& target, std::span<const NoteCurves> curves,
+                                                  std::span<const NoteId> sources, std::span<const Note> copies);
 // Builds a sequence from notes known to be valid with unique ids.
 NoteSeq seqOf(std::vector<Note> notes);
 

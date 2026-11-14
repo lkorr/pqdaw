@@ -3,7 +3,9 @@
 // T7.3 (docs/plans/M7.md "T7.3", amendment A1): how a note clip's JI objects and note curves become the engine's
 // per-note curves (engine/sequence.h "Per-note curves"). Used by ProjectLink::lowerTrack only.
 //
-//   a note with a pitch curve (doc::NoteCurves)        its curve, flattened (the automation curve law → lines)
+//   a note with a pitch curve (doc::NoteCurves)        its EFFECTIVE curve (doc/note_bend.h: the free curve plus the
+//                                                      bends in from / out to its neighbours, whose far ends are the
+//                                                      neighbours' pitches as resolved now), flattened to lines
 //   an inner note of an object (Harmonic(obj, voice))  its voice's curve over the note's span + its own curve
 //   a Ratio anchored to an object's fundamental        the fundamental's curve over the note's span + its own
 //   an object with `sounds`                            one note per voice over the object's span: hz, ratio,
@@ -33,6 +35,8 @@
 #include "pq/core/time.h"
 #include "pq/document/ji_object.h"
 #include "pq/document/model.h"
+#include "pq/document/note_bend.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/engine/sequence.h"
 #include "pq/tuning/tuning.h"
 
@@ -51,9 +55,10 @@ struct JiLowerLimits {
 class ClipJiLowering {
 public:
   // `tuning`: the clip's effective tuning as its notes are resolved in (null: nothing resolves). `tempoMoves`: the
-  // tempo map is not one constant tempo.
+  // tempo map is not one constant tempo. `pitches`: the clip's resolved pitches (what its notes' bends aim at:
+  // T7.11a; null: bends do nothing); it must outlive this object.
   ClipJiLowering(const doc::NoteClip& clip, const tuning::Tuning* tuning, const TempoMap& tempo, bool tempoMoves,
-                 const JiLowerLimits& limits);
+                 const JiLowerLimits& limits, const doc::ClipPitches* pitches = nullptr);
 
   // The pitch curve of clip note `n` (see above) into nd.pitchCurve; nd.start must be set. An inner Harmonic note
   // on a proportion stop also gets voice.harmonic (the term it starts on, or glides to) and voice.ratio (its exact
@@ -94,6 +99,8 @@ private:
   JiLowerLimits limits_;
   std::vector<ObjectPlan> plans_;  // by index into the clip's object list
   std::vector<Point> a_, b_, c_;   // scratch
+  const doc::ClipPitches* pitches_;
+  std::optional<doc::NotePitchIndex> pitchIndex_;  // built for the first note with a bend
 };
 
 }  // namespace pq::app

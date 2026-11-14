@@ -1413,11 +1413,32 @@ private:
       w_.beginObject(false);
       w_.key("note");
       w_.integer(list[i].note.value);
-      w_.key("pitch");
-      curvePoints(PathSeg(&at, i), list[i].pitch);
+      if (!list[i].pitch.empty()) {
+        w_.key("pitch");
+        curvePoints(PathSeg(&at, i), list[i].pitch);
+      }
+      if (list[i].bendIn.set()) noteBend(PathSeg(&at, i), "in", list[i].bendIn);    // T7.11a
+      if (list[i].bendOut.set()) noteBend(PathSeg(&at, i), "out", list[i].bendOut);
       w_.endObject();
     }
     w_.endArray();
+  }
+  void noteBend(const PathSeg& at, std::string_view key, const NoteBend& b) {
+    w_.key(key);
+    w_.beginObject(false);
+    w_.key("other");
+    w_.integer(b.other.value);
+    w_.key("length");
+    w_.integer(b.length);
+    w_.key("shape");
+    w_.string(at, kJiShapeNames[static_cast<size_t>(b.shape.kind)]);
+    if (!(b.shape == JiShape{b.shape.kind})) {
+      w_.key("handles");
+      w_.beginArray(false);
+      for (const float h : {b.shape.x1, b.shape.y1, b.shape.x2, b.shape.y2}) w_.number(at, h);
+      w_.endArray();
+    }
+    w_.endObject();
   }
 
   void viewState(const Project& p, const ViewState& v) {
@@ -3456,9 +3477,9 @@ private:
     }
     return list;
   }
-  // [{"note": id, "pitch": [points]}]
+  // [{"note": id, "pitch": [points], "in": bend, "out": bend}]; pitch and the bends optional (T7.11a).
   NoteCurveList noteCurves(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"note", "pitch"};
+    static constexpr std::string_view K[] = {"note", "pitch", "in", "out"};
     NoteCurveList list;
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
@@ -3469,11 +3490,41 @@ private:
         const PathSeg f(&el, K[static_cast<size_t>(k)]);
         if (k == 0) nc.note = NoteId{ref(f)};
         if (k == 1) nc.pitch = curvePoints(f);
+        if (k == 2) nc.bendIn = noteBend(f);
+        if (k == 3) nc.bendOut = noteBend(f);
       }
-      m.require({0, 1});
+      m.require({0});
       list.push_back(std::move(nc));
     }
     return list;
+  }
+  // {"other": note id, "length": t, "shape": "linear" | "s" | "bezier", "handles": [x1, y1, x2, y2]}, handles optional.
+  NoteBend noteBend(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"other", "length", "shape", "handles"};
+    NoteBend b;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) b.other = NoteId{ref(f)};
+      if (k == 1) b.length = r_.readInt(f);
+      if (k == 2) b.shape.kind = static_cast<JiShape::Kind>(name(f, kJiShapeNames, "shape"));
+      if (k == 3) {
+        float h[4] = {};
+        size_t n = 0;
+        r_.beginArray(f);
+        for (; r_.nextElement(f); ++n) {
+          const float x = r_.readFloat(PathSeg(&f, n));
+          if (n < 4) h[n] = x;
+        }
+        if (n != 4) json::fail(f, "handles are [x1, y1, x2, y2]");
+        b.shape.x1 = h[0];
+        b.shape.y1 = h[1];
+        b.shape.x2 = h[2];
+        b.shape.y2 = h[3];
+      }
+    }
+    m.require({0, 1, 2});
+    return b;
   }
 
   NoteSeq notes(const PathSeg& at) {

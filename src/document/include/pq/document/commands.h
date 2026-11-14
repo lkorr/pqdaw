@@ -159,8 +159,14 @@ struct AddJiObject { ClipRef clip; JiObject object; };
 struct RemoveJiObject { ClipRef clip; JiObjectId object; };
 // Replaces the object with this id (every field). Refused when a Harmonic note names a voice it no longer has.
 struct SetJiObject { ClipRef clip; JiObject object; };
-// Sets the note's pitch curve (NoteCurves::pitch); empty removes it.
+// Sets the note's free pitch curve (NoteCurves::pitch); empty removes it. The note's bends are kept.
 struct SetNoteCurve { ClipRef clip; NoteKey note; std::vector<Breakpoint> pitch; };
+// T7.11a (M7 review M13; bends): replaces the WHOLE curve record (free curve, bendIn, bendOut) of each named note in
+// one pass over the clip's curve list (one list copy per command, however many notes: what builders that touch
+// several notes emit — a paste, a duplicate, a bend edit). An empty record removes the note's entry. Errors: a note
+// that is not in the clip (NoteCurves::note is its id), two records for one note, an invalid curve, a bend with
+// length < 1, an unknown shape, or `other` == the note itself or not a note of the clip.
+struct SetNoteCurves { ClipRef clip; std::vector<NoteCurves> curves; };
 
 // ---- Notes (all Sequence) --------------------------------------------------------------------------------------
 // T7.2: a note that follows a JI object (Harmonic, or a Ratio anchored to JiFundamental) must name an object of the
@@ -308,7 +314,7 @@ using CommandVariant = std::variant<
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
     SetClipSignature, SetClipActive, SetClipFundamental, SetAudioClip, AddSample, RemoveSample, SetSample,
     AddNotes, RemoveNotes, UpdateNotes, MoveNote, ResizeNote, SetNoteProperty,
-    AddJiObject, RemoveJiObject, SetJiObject, SetNoteCurve,
+    AddJiObject, RemoveJiObject, SetJiObject, SetNoteCurve, SetNoteCurves,
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam, SetDefaultTuning,

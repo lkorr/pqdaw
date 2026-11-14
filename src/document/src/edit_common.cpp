@@ -219,19 +219,78 @@ JiObject freshJiObject(const JiObject& o, IdSource& ids) {
   return n;
 }
 
+NoteIdMap noteIdMap(std::span<const NoteId> sources, std::span<const Note> copies) {
+  NoteIdMap map;
+  map.reserve(sources.size());
+  for (size_t i = 0; i < sources.size(); ++i) map.emplace_back(sources[i], copies[i].id);
+  std::sort(map.begin(), map.end());
+  return map;
+}
+
+NoteId remapNote(NoteId id, const NoteIdMap& map) noexcept {
+  const auto it = std::lower_bound(map.begin(), map.end(), id, [](const auto& e, NoteId x) { return e.first < x; });
+  return it != map.end() && it->first == id ? it->second : NoteId{};
+}
+
+NoteCurves remapNoteCurves(const NoteCurves& nc, NoteId note, const NoteIdMap& map, const NoteClip* target) {
+  NoteCurves out = nc;
+  out.note = note;
+  auto point = [&](NoteBend& b) {
+    if (!b.set()) return;
+    const NoteId to = remapNote(b.other, map);
+    if (to.valid()) b.other = to;
+    else if (target == nullptr || b.other == note || target->notes.findById(b.other) == nullptr) b = {};
+  };
+  point(out.bendIn);
+  point(out.bendOut);
+  return out;
+}
+
+Result<std::optional<SetNoteCurves>> copiedCurves(ClipRef clip, const NoteClip& target, std::span<const NoteCurves> curves,
+                                                  std::span<const NoteId> sources, std::span<const Note> copies) {
+  if (curves.empty() || copies.empty()) return std::optional<SetNoteCurves>{};
+  std::vector<const NoteCurves*> byNote;
+  byNote.reserve(curves.size());
+  for (const NoteCurves& nc : curves) byNote.push_back(&nc);
+  std::sort(byNote.begin(), byNote.end(), [](const NoteCurves* x, const NoteCurves* y) { return x->note < y->note; });
+  const NoteIdMap map = noteIdMap(sources, copies);
+  SetNoteCurves set{clip, {}};
+  for (size_t i = 0; i < copies.size(); ++i) {
+    if (!sources[i].valid()) continue;
+    const auto it = std::lower_bound(byNote.begin(), byNote.end(), sources[i],
+                                     [](const NoteCurves* x, NoteId id) { return x->note < id; });
+    if (it == byNote.end() || (*it)->note != sources[i]) continue;
+    NoteCurves copy = remapNoteCurves(**it, copies[i].id, map, &target);
+    if (copy.empty()) continue;
+    PQ_DOC_TRY(checkNoteCurveRecord(copy));
+    set.curves.push_back(std::move(copy));
+  }
+  if (set.curves.empty()) return std::optional<SetNoteCurves>{};
+  return std::optional<SetNoteCurves>(std::move(set));
+}
+
 void pruneCurves(NoteClip& c) {
   if (!c.curves) return;
   std::vector<NoteId> have;
   have.reserve(c.notes.size());
   for (const Note& n : c.notes) have.push_back(n.id);
   std::sort(have.begin(), have.end());
-  size_t kept = 0;
-  for (const NoteCurves& nc : *c.curves) kept += std::binary_search(have.begin(), have.end(), nc.note) ? 1 : 0;
-  if (kept == c.curves->size()) return;
+  auto has = [&](NoteId id) { return std::binary_search(have.begin(), have.end(), id); };
+  // T7.11a: a bend whose neighbour is not in the clip goes too (NoteBend), and a record left empty with it.
+  auto lost = [&](const NoteBend& b) { return b.set() && !has(b.other); };
+  bool all = true;
+  for (const NoteCurves& nc : *c.curves) all = all && has(nc.note) && !lost(nc.bendIn) && !lost(nc.bendOut);
+  if (all) return;
   NoteCurveList out;
-  out.reserve(kept);
-  for (const NoteCurves& nc : *c.curves)
-    if (std::binary_search(have.begin(), have.end(), nc.note)) out.push_back(nc);
+  out.reserve(c.curves->size());
+  for (const NoteCurves& nc : *c.curves) {
+    if (!has(nc.note)) continue;
+    out.push_back(nc);
+    NoteCurves& k = out.back();
+    if (lost(k.bendIn)) k.bendIn = {};
+    if (lost(k.bendOut)) k.bendOut = {};
+    if (k.empty()) out.pop_back();
+  }
   c.curves = out.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(out));
 }
 
@@ -245,20 +304,29 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
     objects.push_back(freshJiObject(o, ids));
     map.emplace_back(o.id, objects.back().id);
   }
-  NoteCurveList curves;
+  std::vector<NoteId> sources;  // sources[i]: the note notes[i] copies
   auto take = [&](const Note& n) {
     Note m = n;
     m.id = ids.note();
     if (!map.empty()) m.pitch = remapJiPitch(m.pitch, map);
-    if (c.curves)
-      if (const NoteCurves* nc = findNoteCurves(c, n.id)) curves.push_back(NoteCurves{m.id, nc->pitch});
+    sources.push_back(n.id);
     notes.push_back(m);
   };
   if (onlyPlaying && !clipLooped(c)) {
     for (auto [it, end] = c.notes.range(c.contentStart, c.contentStart + c.length); it != end; ++it) take(*it);
   } else {
     notes.reserve(c.notes.size());
+    sources.reserve(c.notes.size());
     for (const Note& n : c.notes) take(n);
+  }
+  // T7.11a: what names a note is re-pointed to its copy (old → new note ids): the curves' bends here.
+  NoteIdMap noteMap;
+  NoteCurveList curves;
+  if (c.curves) {
+    noteMap = noteIdMap(sources, notes);
+    for (size_t i = 0; i < notes.size(); ++i)  // fresh ids ascend: the list stays sorted
+      if (const NoteCurves* nc = findNoteCurves(c, sources[i]))
+        if (NoteCurves copy = remapNoteCurves(*nc, notes[i].id, noteMap); !copy.empty()) curves.push_back(std::move(copy));
   }
   NoteClip n = withNotes(c, seqOf(std::move(notes)));
   n.id = ids.clip();

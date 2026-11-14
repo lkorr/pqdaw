@@ -206,7 +206,7 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
           }
           if (it->second) t = &*it->second;
         }
-        ji.emplace(c, t, p.timeline->tempoMap, tempoMoves, limits);
+        ji.emplace(c, t, p.timeline->tempoMap, tempoMoves, limits, &cp);
         if (hasJi && t != nullptr) {  // one note per voice of every sounding object
           const doc::TuningId follows = signal ? cp.tuning.main : doc::TuningId{};
           for (const doc::JiObject& o : *c.ji) {

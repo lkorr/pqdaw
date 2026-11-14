@@ -40,7 +40,10 @@ Status checkCurve(const std::vector<Breakpoint>& pts, const char* what);
 Status checkJiObject(const JiObject& o);
 // A clip's object list: every object, sorted by id and unique, voice-note ids unique across the list.
 Status checkJiList(const JiObjectList& l);
-// A clip's curve list: sorted by note id, unique, every curve non-empty and valid.
+// T7.11a: one curve record's own fields (the free curve; each bend: none, or a neighbour ≠ the note, a length in
+// [1, kMaxTicks] and a valid shape). Whether the neighbour is in the clip is the command's check (SetNoteCurves).
+Status checkNoteCurveRecord(const NoteCurves& c);
+// A clip's curve list: sorted by note id, unique, every record non-empty and valid.
 Status checkNoteCurves(const NoteCurveList& l);
 // A note's identity against the clip's objects: Harmonic names an object of the clip and a voice < V; a Ratio anchored
 // to JiFundamental names an object of the clip. Other identities: ok. O(log objects).

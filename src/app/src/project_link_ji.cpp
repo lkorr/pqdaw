@@ -101,8 +101,8 @@ void flattenOwn(const std::vector<doc::Breakpoint>& pts, Ticks origin, std::vect
 }  // namespace
 
 ClipJiLowering::ClipJiLowering(const doc::NoteClip& clip, const tuning::Tuning* tuning, const TempoMap& tempo,
-                               bool tempoMoves, const JiLowerLimits& limits)
-    : clip_(clip), tuning_(tuning), tempo_(tempo), tempoMoves_(tempoMoves), limits_(limits) {
+                               bool tempoMoves, const JiLowerLimits& limits, const doc::ClipPitches* pitches)
+    : clip_(clip), tuning_(tuning), tempo_(tempo), tempoMoves_(tempoMoves), limits_(limits), pitches_(pitches) {
   const std::span<const doc::JiObject> objects = doc::jiObjectsOf(clip);
   plans_.resize(objects.size());
   if (objects.empty()) return;
@@ -250,8 +250,18 @@ void ClipJiLowering::noteCurve(const doc::Note& n, engine::NoteDesc& nd) {
       }
     }
   }
-  if (const doc::NoteCurves* own = doc::findNoteCurves(clip_, n.id); own != nullptr && !own->pitch.empty()) {
-    flattenOwn(own->pitch, n.start, b_);
+  const doc::NoteCurves* own = doc::findNoteCurves(clip_, n.id);
+  std::vector<doc::Breakpoint> effective;  // only for a note with a live bend (an allocation per such note)
+  const std::vector<doc::Breakpoint>* points = own != nullptr ? &own->pitch : nullptr;
+  if (own != nullptr && pitches_ != nullptr && (own->bendIn.set() || own->bendOut.set())) {
+    if (!pitchIndex_) pitchIndex_.emplace(*pitches_);
+    if (const doc::NoteBendTargets targets = doc::noteBendTargets(*own, *pitchIndex_); targets.any()) {
+      effective = doc::effectiveNoteCurve(*own, std::max<Ticks>(n.length, 1), targets, kJiPitchTolerance);
+      points = &effective;
+    }
+  }
+  if (points != nullptr && !points->empty()) {
+    flattenOwn(*points, n.start, b_);
     thin(b_, ticksOf(kJiMinSpacingSeconds, n.start));
     if (a_.empty()) {
       a_.swap(b_);

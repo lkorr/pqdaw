@@ -438,6 +438,15 @@ std::vector<Case> cases() {
                  CHECK(cs.notes == std::vector<NoteId>{f.notesA[3].id});
                  REQUIRE(findNoteCurves(f.clip(f.lead, f.clipA), f.notesA[3].id) != nullptr);
                }});
+  c.push_back({"SetNoteCurves", [](Fixture& f) -> Command {  // T7.11a: whole records (free curve + bends), batched
+                 return SetNoteCurves{{f.lead, f.clipA},
+                                      {NoteCurves{f.notesA[5].id, {}, NoteBend{50, JiShape{}, f.notesA[4].id}, {}},
+                                       NoteCurves{f.notesA[3].id, {{0, 0.0f, 0.0f, {}}, {100, 50.0f, 0.0f, {}}}, {}, {}}}};
+               }, Q, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.notes == std::vector<NoteId>{f.notesA[3].id, f.notesA[5].id});
+                 REQUIRE(findNoteCurves(f.clip(f.lead, f.clipA), f.notesA[5].id) != nullptr);
+                 CHECK(findNoteCurves(f.clip(f.lead, f.clipA), f.notesA[5].id)->bendIn.other == f.notesA[4].id);
+               }});
   // ---- automation
   c.push_back({"AddAutomationLane", [](Fixture& f) -> Command {
                  AutomationLane l;

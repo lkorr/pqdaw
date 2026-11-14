@@ -311,12 +311,30 @@ struct JiObject {
   Ticks end() const noexcept { return start + length; }
   friend bool operator==(const JiObject&, const JiObject&) noexcept = default;
 };
-// A note's own curves (SPEC §3.1). pitch: a cents offset added to the note's pitch, ticks from the note's start, sorted
-// by tick, ids unused (invalid); before the first / after the last point the curve holds their value. A note has an
-// entry only while it has a curve (an empty curve is no entry).
+// A bend between two notes of a clip (T7.11a; QUESTIONS Q289 option b: DERIVED, not baked). The note glides for
+// `length` ticks in from (NoteCurves::bendIn, over its first `length` ticks) or out to (bendOut, over its last
+// `length` ticks) the pitch of note `other`. Only the neighbour's NAME is stored: the glide's far end is computed from
+// the two notes' CURRENT resolved pitches wherever the curve is read (pq/document/note_bend.h effectiveNoteCurve: the
+// roll, pitch_resolve, the playback lowering), so it follows either note when one is moved, retuned or the tuning
+// changes. A bend whose `other` is not a note of the clip does nothing; the commands that remove or move notes away
+// drop such bends in the same edit (RemoveNotes, a clip split), and copies re-point them (clone / duplicate / paste).
+struct NoteBend {
+  Ticks length = 0;  // 1 … kMaxTicks while set (the effective glide is clamped to the note's length)
+  JiShape shape;     // as a JI transition: cents = from + (to − from) · jiShapeValue(shape, u)
+  NoteId other;      // a note of the same clip, never the note itself; invalid: no bend
+  bool set() const noexcept { return other.valid(); }
+  friend bool operator==(const NoteBend&, const NoteBend&) noexcept = default;
+};
+// A note's own curves (SPEC §3.1). pitch: the FREE curve (drawn curves, vibrato) — a cents offset added to the note's
+// pitch, ticks from the note's start, sorted by tick, ids unused (invalid); before the first / after the last point
+// the curve holds their value. bendIn / bendOut: the derived glides from / to another note (NoteBend), added to it.
+// A note has an entry only while it has a curve or a bend (an empty record is no entry).
 struct NoteCurves {
   NoteId note;
   std::vector<Breakpoint> pitch;
+  NoteBend bendIn;   // over [0, min(length, the note's length)]: starts on `other`'s pitch, arrives on the note's own
+  NoteBend bendOut;  // over the last min(length, the note's length) ticks: leaves the note's own pitch for `other`'s
+  bool empty() const noexcept { return pitch.empty() && !bendIn.set() && !bendOut.set(); }
   friend bool operator==(const NoteCurves&, const NoteCurves&) noexcept = default;
 };
 using JiObjectList = std::vector<JiObject>;     // sorted by id, unique
@@ -338,6 +356,7 @@ struct NoteClip {
   // T7.2: null = none (never an empty list). Shared between snapshots; a note edit does not copy them.
   std::shared_ptr<const JiObjectList> ji;
   std::shared_ptr<const NoteCurveList> curves;  // a curve whose note is not in `notes` is ignored (RemoveNotes drops it)
+                                                // and so is a bend whose `other` is not (NoteBend)
 };
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept;
 using ClipPtr = std::shared_ptr<const NoteClip>;

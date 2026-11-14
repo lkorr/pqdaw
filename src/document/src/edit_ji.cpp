@@ -301,8 +301,6 @@ EditResult pasteJiObject(const Project& p, IdSource& ids, ClipRef clip, const Ji
     if (n.pitch.kind() == PitchKind::Harmonic && n.pitch.voiceIndex() >= source.voices())
       return invalid("a pasted note follows a voice the JI object does not have");
     PQ_DOC_TRY(checkTick(n.start + dt, "note start"));
-    for (const NoteCurves& nc : curves)
-      if (nc.note == n.id) PQ_DOC_TRY(checkCurve(nc.pitch, "note curve"));
   }
   JiObject c = source;
   c.id = ids.jiObject();
@@ -314,23 +312,21 @@ EditResult pasteJiObject(const Project& p, IdSource& ids, ClipRef clip, const Ji
   const JiObjectId copy = c.id;
   batchOf(e).commands.push_back(AddJiObject{clip, std::move(c)});
   AddNotes add{clip, {}};
-  std::vector<Command> curveCmds;
+  std::vector<NoteId> sources;
   for (const Note& n : inner) {
     Note m = n;
     m.id = ids.note();
     m.start += dt;
     m.pitch = n.pitch.kind() == PitchKind::Harmonic ? PitchId::fromHarmonic(copy.value, n.pitch.voiceIndex())
                                                     : PitchId::fromRatio(n.pitch.ratio(), tuning::AnchorKind::JiFundamental, copy.value);
-    for (const NoteCurves& nc : curves)
-      if (nc.note == n.id && !nc.pitch.empty()) {
-        curveCmds.push_back(SetNoteCurve{clip, keyOf(m), nc.pitch});
-        break;
-      }
+    sources.push_back(n.id);
     e.notes.push_back(keyOf(m));
     add.notes.push_back(m);
   }
+  Result<std::optional<SetNoteCurves>> carried = copiedCurves(clip, *f->clip, curves, sources, add.notes);  // M13
+  if (!carried) return std::move(carried).error();
   if (!add.notes.empty()) batchOf(e).commands.push_back(std::move(add));
-  for (Command& cmd : curveCmds) batchOf(e).commands.push_back(std::move(cmd));
+  if (*carried) batchOf(e).commands.push_back(std::move(**carried));
   return e;
 }
 
@@ -547,6 +543,56 @@ EditResult setNoteCurve(const Project& p, ClipRef clip, NoteKey note, std::vecto
   e.notes.push_back(keyOf(*n));
   const NoteCurves* have = findNoteCurves(*f->clip, n->id);
   if (have ? have->pitch != pitch : !pitch.empty()) batchOf(e).commands.push_back(SetNoteCurve{clip, keyOf(*n), std::move(pitch)});
+  return e;
+}
+
+namespace {
+Edit curveEdit(const char* label, ClipRef clip) {
+  Edit e = makeEdit(label);
+  e.noteClip = clip;
+  return e;
+}
+}  // namespace
+
+EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge edge, Ticks length, JiShape shape,
+                       NoteId other) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  const Note* n = f->clip->notes.locate(note);
+  if (!n) return notFound("note not found");
+  NoteBend bend;
+  if (other.valid() && length > 0) {
+    if (other == n->id) return invalid("a note cannot bend to itself");
+    if (!f->clip->notes.findById(other)) return notFound("the note to bend to is not in the clip");
+    bend = NoteBend{std::clamp<Ticks>(length, 1, std::max<Ticks>(n->length, 1)), shape, other};
+  }
+  const NoteCurves* have = findNoteCurves(*f->clip, n->id);
+  NoteCurves rec = have ? *have : NoteCurves{n->id, {}, {}, {}};
+  (edge == NoteEdge::Start ? rec.bendIn : rec.bendOut) = bend;
+  PQ_DOC_TRY(checkNoteCurveRecord(rec));
+  Edit e = curveEdit(bend.set() ? "Bend Note" : "Clear Bend", clip);
+  e.notes.push_back(keyOf(*n));
+  if (have ? !(*have == rec) : !rec.empty()) batchOf(e).commands.push_back(SetNoteCurves{clip, {std::move(rec)}});
+  return e;
+}
+
+EditResult clearNoteBends(const Project& p, ClipRef clip, std::span<const NoteKey> notes) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  Edit e = curveEdit("Clear Bends", clip);
+  SetNoteCurves set{clip, {}};
+  std::vector<NoteKey> keys(notes.begin(), notes.end());
+  std::sort(keys.begin(), keys.end(), [](const NoteKey& x, const NoteKey& y) { return x.id < y.id; });
+  keys.erase(std::unique(keys.begin(), keys.end(), [](const NoteKey& x, const NoteKey& y) { return x.id == y.id; }), keys.end());
+  for (const NoteKey& k : keys) {
+    const Note* n = f->clip->notes.locate(k);
+    if (!n) return notFound("note not found");
+    e.notes.push_back(keyOf(*n));
+    const NoteCurves* have = findNoteCurves(*f->clip, n->id);
+    if (!have || (!have->bendIn.set() && !have->bendOut.set())) continue;
+    set.curves.push_back(NoteCurves{n->id, have->pitch, {}, {}});
+  }
+  if (!set.curves.empty()) batchOf(e).commands.push_back(std::move(set));
   return e;
 }
 

@@ -363,6 +363,8 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
         // T7.2: this pass's objects — those overlapping it, and any a note of the pass follows — placed like its notes
         // and cut at the pass's end; an object already taken (an earlier pass of a loop) is copied with fresh ids and
         // this pass's notes follow the copy.
+        NoteIdMap noteMap;  // T7.11a: this pass's notes that got fresh ids (old → new)
+        const size_t firstCurve = curves.size();
         JiIdMap map;       // objects of this pass that got fresh ids (sorted)
         std::vector<JiObjectId> taken;  // objects of this pass (sorted)
         auto takeObject = [&](const JiObject& o) {
@@ -384,14 +386,28 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
           m.start = seg.at + (it->start - seg.contentFrom) - g.start;
           m.length = std::min(it->length, seg.contentTo - it->start);
           if (!c->active) m.flags |= kNoteDisabled;
-          if (!seen.insert(it->id.value).second) m.id = ids.note();
+          if (!seen.insert(it->id.value).second) {
+            m.id = ids.note();
+            noteMap.emplace_back(it->id, m.id);
+          }
           if (const JiObjectId followed = jiObjectOf(m.pitch); followed.valid()) {
             if (const JiObject* o = findJiObject(*c, followed)) takeObject(*o);
             m.pitch = remapJiPitch(m.pitch, map);
           }
           if (c->curves)
-            if (const NoteCurves* nc = findNoteCurves(*c, it->id)) curves.push_back(NoteCurves{m.id, nc->pitch});
+            if (const NoteCurves* nc = findNoteCurves(*c, it->id)) {
+              curves.push_back(*nc);
+              curves.back().note = m.id;
+            }
           notes.push_back(m);
+        }
+        // T7.11a: a bend of this pass glides to this pass's copy of its neighbour (else it keeps the neighbour's id:
+        // the first pass's note; pruneCurves below drops it when that note is not in the merged clip).
+        if (!noteMap.empty()) {
+          std::sort(noteMap.begin(), noteMap.end());
+          for (size_t k = firstCurve; k < curves.size(); ++k)
+            for (NoteBend* b : {&curves[k].bendIn, &curves[k].bendOut})
+              if (const NoteId to = remapNote(b->other, noteMap); b->set() && to.valid()) b->other = to;
         }
       });
     }
@@ -400,6 +416,7 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
     std::sort(curves.begin(), curves.end(), [](const NoteCurves& a, const NoteCurves& b) { return a.note < b.note; });
     c.ji = objects.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(objects));
     c.curves = curves.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(curves));
+    pruneCurves(c);
     c.id = ids.clip();
     c.start = g.start;
     c.length = g.end - g.start;

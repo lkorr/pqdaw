@@ -340,4 +340,10 @@ Result<ClipPitches> resolveClipPitches(const Project& p, TrackId track, ClipId c
   return resolveClip(p, *path, *slot.clip, options, built);
 }
 
+ClipPitches resolveClipPitches(const Project& p, const TrackPath& path, const NoteClip& clip,
+                               const ResolveOptions& options) {
+  BuiltTunings built;
+  return resolveClip(p, path, clip, options, built);
+}
+
 }  // namespace pq::doc
