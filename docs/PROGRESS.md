@@ -666,7 +666,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Did: merged task/AU.dsp-fixes (b5b7fbde): H4 (sleep plan bounds values and treats provable 0 as silent; settled followers / smoothers sleep; non-finite params fall back to their default; undriven constant value blocks lower as literals), M1 (a param ramp wakes only the segments that read it), M4 (follow / window read inf as 0), M7 (linear MIDI pairing; imports > 32 MB refused), M9 (Expand / RMS / Lin / Auto value tests), L10, L11, L13 (Compressor GR + Out meters labelled, dB scales, Auto under Release); user decisions: Limiter M-S removed (Q266), MIDI per-file pitch rule (Q263), Compressor Detector / Law chips (Q261). SPEC Limiter row + §15 updated.
 - Verified (worker, after rebase onto bccfafe3 = AU.app + TU.2): -Affected -Slow 75/76; the device-chains param-count slow test resized (fewer params now that constants are literals: 192 → 224 tracks), re-run passes; ship pq_bench_dsp links. Goldens re-recorded: compressor-panel, limiter-panel; lowering fixtures lower_meta_voice_run, audio-track (two constants now literals).
 - Perf (ship, indicative): dynamics rows within ±5 % of the audit's idle numbers; the gain is sleeping on silent tracks.
-- Notes: Q271. RB and DY are done and audited; open lows L5, L8, L9, L12, L14 (docs/reviews/RB-DY.md). M7 deferred by the user.
+- Notes: Q272. RB and DY are done and audited; open lows L5, L8, L9, L12, L14 (docs/reviews/RB-DY.md). M7 deferred by the user.
 
 
 ## 2026-11-13 · BR.ui (user bug reports) · task/BR.ui-playhead-mixer (merged e707c4dd)
@@ -674,3 +674,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_views default tier 739/739; new real-dispatch tests (partial-vs-full render through playback, sub-lane / group locate, mixer cable drag, side sheet); the fixes reverted made the new tests fail.
 - Perf: per-frame cost unchanged; the side sheet is outside the faces' live damage.
 - Notes: 11 project-* goldens re-recorded (ruler left-end labels only). Bug reports 2026-11-13_17-17-10, _17-39-14 → fixed/.
+
+## 2026-11-13 · BR.wt (user bug report) · task/BR.wt-shaper-range (merged c30dac00)
+- Did: report 2026-11-13_17-42-08 measured on its project: the Wavetable was in Phase mode with a ±0.09 sweep round the sine's trough, so the near-DC output is the curve there (DSP, tap and display agree; the Operator adds no DC). Real mismatch fixed in Shape mode: the idle dot sat at u = phase, the DSP reads (phase + 1)/2; one mapping dsp::shapeTablePosition for kernel tap and face.
+- Verified (worker): pq_tests_dsp BR.wt, pq_tests_views wavetable face 22/22; -Affected -Slow 76/76 after the rebase; ship pq_bench_dsp linked.
+- Perf: kernel expression unchanged (same scalar, now an inline function).
+- Notes: Q273 (Shape mode's phase slider only biases into the upper half). Duplicate Q271 heading fixed: AU.dsp's is Q272.

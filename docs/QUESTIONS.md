@@ -1484,7 +1484,7 @@ Status: open.
   factory options (the saved default stays until saved over). The Spectrum's PEAK chip is now its "Peak line" option
   (an undo step, saved with the rest). Most reversible: the store and the sheet are independent of where they are shown.
 
-## Q271 · 2026-11-13 · AU.dsp · How quiet a dB-domain follower must be before its segment sleeps
+## Q272 · 2026-11-13 · AU.dsp · How quiet a dB-domain follower must be before its segment sleeps
 Context: AU.dsp lets the Compressor and Limiter sleep (RB-DY H4). A state sleeps once it is within ε = 2^-30 of rest in
 its own units; that is −180 dBFS for an audio state, but a gain-reduction follower holds dB, where 2^-30 dB is far below
 anything audible. A release from R dB takes τ·ln(R / ε) ≈ (21 + ln R)·τ: about 1.5 s from 20 dB at the Compressor's
@@ -1497,7 +1497,7 @@ Choice: (a), the most conservative and reversible (dsp::followStateSmall's eps a
 would cut the Limiter's silent tail to ~3 s.
 Status: open.
 
-## Q?-BR.wt-a · Shape mode's phase slider reaches only the upper half of the curve
+## Q273 · 2026-11-13 · BR.wt · Shape mode's phase slider reaches only the upper half of the curve
 Context (bug report 2026-11-13_17-42-08): in Shape mode x = input + phase and u = clamp((x + 1)/2), but `phase` is a
 wrapping 0 … 1 control, so with a small input the bias can place it only on u ∈ [0.5, 1): the left half of the drawn
 curve is unreachable without a DC source. (The report's own project was in Phase mode, where the slider spans the
