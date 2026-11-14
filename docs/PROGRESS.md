@@ -751,3 +751,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker `build.ps1 -Affected` 44/45 (the failure = T7.4's token count, fixed on main); orchestrator after the rebase onto 7d4833d1: pq_tests_views, pq_tests_document, pq_tests_app, pq_tests_ui pass; pianoroll-ji-entered re-recorded (T7.3's S-curve flattening, sub-pixel, looked at).
 - Perf / CPU-efficiency check: 200-object paint 1.05 ms (narrow boxes skip the label layout).
 - Notes/blockers: user 2026-11-14 on "Is Harmonic N" → T7.5b (TASKS).
+
+## 2026-11-14 · T7.5b merged · main (3a785350)
+- Did: "Is Harmonic N" as the user described it: the note is a frozen anchor exactly on guide N (`ClipFundamental::anchor {note, index}` replaces `lock`), drawn notes are Ratio notes anchored to it, the fundamental is derived by one rule (`doc::clipHarmonics`) and renumbers when a related note falls between harmonics (5 + a 3/2 above → 10 / 15); "Is Subharmonic…" removed. Q283 rewritten, Q284 withdrawn. Goldens re-recorded: pianoroll-fundamental-lock, pianoroll-note-menu.
+- Verified (worker, on deacee8f): `build.ps1 -Affected` 24/24. Orchestrator looked at pianoroll-fundamental-lock.
+- Perf / CPU-efficiency check: no per-frame work added; the derivation runs per document change.
+- Notes/blockers: limits in TASKS.
