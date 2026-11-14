@@ -703,3 +703,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier 742/742 (BR.patch-io input test rewritten for the lane trace; TL.7 Z-insert now through the socket cable; lane-edit locate click moved to the master's lane).
 - Perf / CPU-efficiency check: layout-time only (one 4-point trace per audio lane, no new per-frame work); group bands paint no lane at all.
 - Notes: 10 goldens re-recorded (project-patch-overview/band/lanes/lane-edit/auto-wire, project-mixer, project-circuit-device, project-meta-scope/spectrum/spectrogram): the group lost its lane, the audio lanes' trace in project-patch-lanes.
+
+## 2026-11-13 · AC.look (user request) · task/AC.look-clip-view
+- Did: audio clip view redone in the device panels' look. Clip / Warp / mode cards: arc knobs (Detune, Gain, mode settings, lit by value), chip rows replace every dropdown (warp mode, Preserve, Transient Loop), lit toggle chips (Reverse, Loop, :2, ×2), fill boxes for the fades. Transpose is a knob: Up/Down = one tuning step, Shift = one period, typed steps / cents / exact ratios ("5/4 · 386.3 ¢"). Sample display: filled peak + RMS waveform on a dark field (playing region lit), bar.beat / seconds ruler, warp segments tinted by speed with the factor written, marker tags, fade curves. New reusable controls in clip_controls.h/.cpp.
+- Verified: pq_tests_views default tier 744 cases (new real-dispatch tests: chips, transpose keys / Shift / type-in / wheel / drag, knob fill); after the rebase `-Affected` 20/20. 3 goldens re-recorded (audio-clip-warp-beats, audio-clip-warp-markers, clip-view-audio); no other golden moved.
+- Perf / CPU-efficiency check: waveform columns cached per (clip, range, width, overview); paint reads the cache, no per-frame allocation or sample rescans.
+- Notes: steps read "+7 stp" (typed "+7st" means semitones); for long files the RMS core is estimated from the overview's peaks.
