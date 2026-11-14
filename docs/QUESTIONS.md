@@ -1484,7 +1484,7 @@ Status: open.
   factory options (the saved default stays until saved over). The Spectrum's PEAK chip is now its "Peak line" option
   (an undo step, saved with the rest). Most reversible: the store and the sheet are independent of where they are shown.
 
-## Q?-AU.dsp-a · How quiet a dB-domain follower must be before its segment sleeps
+## Q271 · 2026-11-13 · AU.dsp · How quiet a dB-domain follower must be before its segment sleeps
 Context: AU.dsp lets the Compressor and Limiter sleep (RB-DY H4). A state sleeps once it is within ε = 2^-30 of rest in
 its own units; that is −180 dBFS for an audio state, but a gain-reduction follower holds dB, where 2^-30 dB is far below
 anything audible. A release from R dB takes τ·ln(R / ε) ≈ (21 + ln R)·τ: about 1.5 s from 20 dB at the Compressor's
