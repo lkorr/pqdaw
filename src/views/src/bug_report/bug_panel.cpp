@@ -224,6 +224,16 @@ public:
     const int row = y / rh;
     return row <= static_cast<int>(panel_.shownTickets_.size()) ? row - 1 : -2;
   }
+  IRect rowRect(int i) const {
+    const int32_t rh = tree() ? tree()->uiScale().px(kRowH) : static_cast<int32_t>(kRowH);
+    return {rect().x, rect().y + (i + 1) * rh - scroll, rect().w, rh};
+  }
+  // The close × of ticket row `row` (shown while it is hovered).
+  IRect closeBox(const IRect& row) const {
+    const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+    const int32_t b = s.px(18.0f), m = s.px(5.0f);
+    return {row.right() - b - m, row.y + m, b, b};
+  }
   void paint(PaintContext& ctx) override {
     const Theme* th = ctx.res.theme;
     if (!th || !ctx.res.uiFonts) return;
@@ -234,7 +244,7 @@ public:
     const auto& list = panel_.shownTickets_;
     tiles.resize(list.size());
     for (int i = -1; i < static_cast<int>(list.size()); ++i) {
-      const IRect row{r.x, r.y + (i + 1) * rh - scroll, r.w, rh};
+      const IRect row = rowRect(i);
       if (row.bottom() < ctx.clip.y || row.y > ctx.clip.bottom()) continue;
       const bool sel = panel_.selected_ == i;
       if (sel) ctx.dl.addRectFilled(row.toRect(), th->selection.fill);
@@ -244,7 +254,9 @@ public:
                            th->surface.divider);
       const IRect thumb{row.x + pad, row.y + (rh - ctx.scale.px(kListThumbH)) / 2, ctx.scale.px(kListThumbW), ctx.scale.px(kListThumbH)};
       const int32_t tx = thumb.right() + pad * 2;
-      const IRect line1{tx, row.y + pad, row.right() - tx - pad, ctx.scale.px(20.0f)};
+      const bool showClose = i >= 0 && hovered == i;
+      const IRect xBox = closeBox(row);
+      const IRect line1{tx, row.y + pad, (showClose ? xBox.x : row.right()) - tx - pad, ctx.scale.px(20.0f)};
       const IRect line2{tx, line1.bottom(), line1.w, ctx.scale.px(18.0f)};
       const Rgba primary = sel ? th->selection.text : th->text.primary, secondary = sel ? th->selection.text : th->text.secondary;
       if (i < 0) {
@@ -263,20 +275,27 @@ public:
       std::string meta = t.id + " \xC2\xB7 " + std::to_string(t.shots.size()) + (t.shots.size() == 1 ? " shot" : " shots");
       for (const std::string& tag : t.tags) meta += "  #" + tag;
       paint::text(ctx, ctx.res.uiFonts->small, line2, meta, secondary, TextAlign::Left);
+      if (showClose) {
+        paint::box(ctx.dl, xBox, ctx.scale.exact(3.0f), overClose_ ? th->accent.arm : rgba(0, 0, 0, 170), 0);
+        paint::text(ctx, ctx.res.uiFonts->bodyStrong, xBox, "Ã", rgba(255, 255, 255), TextAlign::Center);
+      }
     }
     ctx.dl.popClip();
   }
   bool onPointer(const PointerEvent& e) override {
     if (e.type == PointerType::Move) {
       const int h = rowAt(e.pos);
-      if (h != hovered) {
+      const bool x = h >= 0 && closeBox(rowRect(h)).contains(e.pos);
+      if (h != hovered || x != overClose_) {
         hovered = h;
+        overClose_ = x;
         markDirty();
       }
       return false;
     }
     if (e.type == PointerType::Leave) {
       hovered = -2;
+      overClose_ = false;
       markDirty();
       return false;
     }
@@ -289,7 +308,13 @@ public:
     }
     if (e.type == PointerType::Down && e.button == PointerButton::Left) {
       const int row = rowAt(e.pos);
-      if (row >= -1) panel_.selectTicket(row);
+      if (row >= 0 && closeBox(rowRect(row)).contains(e.pos)) {
+        hovered = -2;
+        overClose_ = false;
+        panel_.closeTicket(row);
+      } else if (row >= -1) {
+        panel_.selectTicket(row);
+      }
       return true;
     }
     return e.type == PointerType::Up;
@@ -297,6 +322,7 @@ public:
 
 private:
   BugReportPanel& panel_;
+  bool overClose_ = false;
 };
 
 // ---- the shot strip ---------------------------------------------------------------------------------------------
@@ -602,6 +628,24 @@ void BugReportPanel::selectTicket(int index) {
   description_->setText(draft_.text, static_cast<uint32_t>(draft_.text.size()));
   updateLabels();
   markDirty();
+}
+
+void BugReportPanel::closeTicket(int index) {
+  if (index < 0 || index >= static_cast<int>(shownTickets_.size())) return;
+  const Ticket t = shownTickets_[static_cast<size_t>(index)];
+  if (index == selected_) selectTicket(-1);
+  auto moved = hooks_.closeTicket ? hooks_.closeTicket(t.dir) : bugreport::closeTicket(t.dir);
+  if (!moved) {
+    setMessage("Cannot close " + t.id + ": " + moved.error().message);
+    return;
+  }
+  const int32_t scroll = list_ ? list_->scroll : 0;
+  refresh();
+  if (list_) {  // stay where the list was (refresh scrolls to the top)
+    const int32_t rh = tree() ? tree()->uiScale().px(kRowH) : static_cast<int32_t>(kRowH);
+    list_->scroll = std::clamp(scroll, 0, std::max(0, rh * static_cast<int32_t>(shownTickets_.size() + 1) - list_->rect().h));
+  }
+  setMessage("Closed " + t.id + ": moved to " + moved->parent_path().filename().string() + "/ (move it back to reopen).");
 }
 
 void BugReportPanel::setSuggestions(bool on) {

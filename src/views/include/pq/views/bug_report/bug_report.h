@@ -15,11 +15,11 @@
 //
 // Size budget (the user's requirement): a typical folder ≤ ~600 KB at 1920×1080, report.md ≤ ~20 KB.
 //
-// THE TICKET LIST. Every folder directly in bug_reports/ is an OPEN ticket (`fixed/` and `suggestions/` are not;
-// agents move a ticket to bug_reports/fixed/ once its fix is merged). Picking one in the panel APPENDS: the new shots
-// become shot_{N+1}.png ... with their own `### Shot N` sections, the description and the tags line are rewritten, and
-// everything else (earlier shots, the context, agents' `## Progress` sections) stays verbatim. Nothing here deletes a
-// ticket or a picture.
+// THE TICKET LIST. Every folder directly in bug_reports/ is an OPEN ticket (`fixed/`, `closed/` and `suggestions/` are
+// not; agents move a ticket to bug_reports/fixed/ once its fix is merged, the user closes one from the panel into
+// closed/). Picking one in the panel APPENDS: the new shots become shot_{N+1}.png ... with their own `### Shot N`
+// sections, the description and the tags line are rewritten, and everything else (earlier shots, the context, agents'
+// `## Progress` sections) stays verbatim. Nothing here deletes a ticket or a picture: closing moves the folder.
 //
 // TAGS: lower-case [a-z0-9-_], one line `tags: a, b` under the title, so an agent finds every UI ticket with
 //   grep -l "^tags:.*\bui\b" bug_reports/*/report.md
@@ -144,6 +144,9 @@ struct Ticket {
 };
 // The open tickets (folders directly in kindRoot(root, suggestions) that hold a report.md), newest first.
 std::vector<Ticket> listTickets(const std::filesystem::path& root, bool suggestions);
+// Closes an open ticket: moves `dir` into closed/ beside it (bug_reports/closed/ or bug_reports/suggestions/closed/; a
+// "_2" ... suffix when that name is taken). Moving it back reopens it. Returns where it went.
+Result<std::filesystem::path> closeTicket(const std::filesystem::path& dir);
 // A ticket's report.md, parsed.
 Result<ReportMd> readTicket(const std::filesystem::path& dir);
 // The starter tags, then root/tags.txt's, then the tickets', each once.

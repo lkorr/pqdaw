@@ -18,7 +18,8 @@
 //
 // Left: the open tickets (bug_report.h listTickets: folders directly in bug_reports/, newest first; with the switch on
 // Suggestions, bug_reports/suggestions/), each by its first shot and the first line of its text, filterable by tag,
-// under a "new report" row. Picking a ticket loads its text and tags; Submit then appends the new shots to it.
+// under a "new report" row. Picking a ticket loads its text and tags; Submit then appends the new shots to it. The ×
+// on a hovered ticket closes it (bug_report.h closeTicket: the folder moves to closed/, nothing is deleted).
 // Right: the shots of this report (each removable with its ×; a picked ticket's own shots shown first, dimmed, never
 // removable), the description (focused on open), tag chips (click toggles; a new tag is typed into the field and
 // remembered in bug_reports/tags.txt), "attach project", and the buttons.
@@ -56,8 +57,9 @@ struct PanelHooks {
   std::function<void()> discard;     // the draft is dropped
   std::function<void()> close;       // Esc / Close: the panel hides, the draft is kept
   ViewContext::UiPoster post;        // set: tickets' thumbnails decode on a loader thread
-  // Defaults: listTickets(root, suggestions) and loadThumbnail(png, w, h).
+  // Defaults: listTickets(root, suggestions), closeTicket(dir) and loadThumbnail(png, w, h).
   std::function<std::vector<Ticket>(bool suggestions)> tickets;
+  std::function<Result<std::filesystem::path>(const std::filesystem::path& dir)> closeTicket;
   std::function<Result<ui::Image>(const std::filesystem::path& png, uint32_t maxW, uint32_t maxH)> thumbnail;
 };
 
@@ -78,6 +80,8 @@ public:
   void selectTicket(int index);
   int selectedTicket() const noexcept { return selected_; }
   const std::vector<Ticket>& tickets() const noexcept { return shownTickets_; }
+  // Closes ticket `index` of the shown list (moved to closed/; picked: back to the new report first) and re-lists.
+  void closeTicket(int index);
   void setSuggestions(bool on);
   bool suggestions() const noexcept { return draft_.suggestion; }
   void setTagFilter(std::string tag);  // "" = all

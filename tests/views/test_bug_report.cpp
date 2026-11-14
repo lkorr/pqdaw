@@ -1,5 +1,6 @@
 // T5.x-bugreport: the F12 bug report's pure parts (pq/views/bug_report/): report.md compose / parse, the writer's
-// folder layout and size budget, the recent-input ring's formatting, the pointer crop's clamping.
+// folder layout and size budget, the recent-input ring's formatting, the pointer crop's clamping, closing a ticket (on
+// disk and by the panel's x).
 #include <doctest/doctest.h>
 
 #include <cstdlib>
@@ -9,7 +10,10 @@
 #include <string>
 
 #include "pq/ui/input.h"
+#include "pq/ui/overlay.h"
+#include "pq/ui/test_driver.h"
 #include "pq/ui/widget.h"
+#include "pq/views/bug_report/bug_panel.h"
 #include "pq/views/bug_report/bug_report.h"
 #include "pq/views/bug_report/input_log.h"
 
@@ -164,4 +168,84 @@ TEST_CASE("bug report: the input ring formats clicks, drags, wheel bursts, keys 
   const std::string last = log.format(5.0, 1);
   CHECK(last.find("key Ctrl+Z") != std::string::npos);
   CHECK(last.find("click") == std::string::npos);
+}
+
+namespace {
+
+void writeTicket(const fs::path& dir, std::string_view text) {
+  fs::create_directories(dir);
+  std::ofstream(dir / "report.md", std::ios::binary) << "# Bug report x\n\n" << text << "\n\n## Screenshots\n\n";
+}
+
+}  // namespace
+
+TEST_CASE("bug report: closing a ticket moves its folder to closed/ and takes it off the list") {
+  const fs::path root = fs::temp_directory_path() / "pq_bug_close_test";
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  writeTicket(root / "2026-11-01_10-00-00", "first");
+  writeTicket(root / "2026-11-02_10-00-00", "second");
+  writeTicket(root / "suggestions" / "2026-11-03_10-00-00", "idea");
+  REQUIRE(listTickets(root, false).size() == 2);
+  auto to = closeTicket(root / "2026-11-01_10-00-00");
+  REQUIRE_MESSAGE(to.ok(), (to.ok() ? "" : to.error().message));
+  CHECK(*to == root / "closed" / "2026-11-01_10-00-00");
+  CHECK(fs::exists(*to / "report.md"));
+  CHECK_FALSE(fs::exists(root / "2026-11-01_10-00-00"));
+  const auto open = listTickets(root, false);
+  REQUIRE(open.size() == 1);
+  CHECK(open[0].id == "2026-11-02_10-00-00");
+  // A taken name gets a suffix; a suggestion closes into suggestions/closed/.
+  writeTicket(root / "2026-11-01_10-00-00", "again");
+  CHECK(*closeTicket(root / "2026-11-01_10-00-00") == root / "closed" / "2026-11-01_10-00-00_2");
+  CHECK(*closeTicket(root / "suggestions" / "2026-11-03_10-00-00") == root / "suggestions" / "closed" / "2026-11-03_10-00-00");
+  CHECK(listTickets(root, true).empty());
+  CHECK_FALSE(closeTicket(root / "nope").ok());
+  fs::remove_all(root, ec);
+}
+
+TEST_CASE("bug report panel: the hovered ticket's x closes it (real dispatch)") {
+  const fs::path root = fs::temp_directory_path() / "pq_bug_close_panel_test";
+  std::error_code ec;
+  fs::remove_all(root, ec);
+  writeTicket(root / "2026-11-01_10-00-00", "older");
+  writeTicket(root / "2026-11-02_10-00-00", "newer");
+  ui::TestDriver d(1280, 800);
+  ui::Widget& r = d.setRoot<ui::Widget>();
+  auto& layer = r.add<ui::OverlayLayer>("overlay");
+  d.tree().layoutNow();
+  Draft draft;
+  draft.text = "my new report";
+  BugReportPanel* p = openBugReportPanel(layer, draft, root, {});
+  REQUIRE(p != nullptr);
+  d.tree().layoutNow();
+  d.step();
+  REQUIRE(p->tickets().size() == 2);
+  const ui::IRect list = d.rect("overlay/bug-report/tickets");
+  REQUIRE_FALSE(list.empty());
+  // Row 0 is "new report"; row 1 the newest ticket. Pick it, then click its x (top right of the row).
+  const float rh = 58.0f;
+  const ui::Vec2 row1{static_cast<float>(list.x) + 150.0f, static_cast<float>(list.y) + rh + 30.0f};
+  d.click(row1);
+  CHECK(p->selectedTicket() == 0);
+  CHECK(draft.target == root / "2026-11-02_10-00-00");
+  const ui::Vec2 x{static_cast<float>(list.right()) - 14.0f, static_cast<float>(list.y) + rh + 14.0f};
+  d.move(x);
+  d.step();
+  d.click(x);
+  CHECK_FALSE(fs::exists(root / "2026-11-02_10-00-00"));
+  CHECK(fs::exists(root / "closed" / "2026-11-02_10-00-00" / "report.md"));
+  REQUIRE(p->tickets().size() == 1);
+  CHECK(p->tickets()[0].id == "2026-11-01_10-00-00");
+  // The closed ticket was picked: the panel is back on the new report, its text kept.
+  CHECK(p->selectedTicket() == -1);
+  CHECK(draft.target.empty());
+  CHECK(draft.text == "my new report");
+  CHECK(p->message().find("Closed 2026-11-02_10-00-00") == 0);
+  // A click on the row body (not the x) only picks.
+  d.click(row1);
+  CHECK(p->selectedTicket() == 0);
+  CHECK(fs::exists(root / "2026-11-01_10-00-00"));
+  layer.closeAll();
+  fs::remove_all(root, ec);
 }

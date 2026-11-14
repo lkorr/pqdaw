@@ -692,3 +692,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier 742/742 after re-recording 74 goldens (every scene drawing wires; project-mixer, project-cables, project-patch-overview checked by eye).
 - Perf / CPU-efficiency check: arrows are ≤ a few AA triangles per visible segment, none at Far LOD (cached chunks untouched); column sort is per layout, O(targets log targets).
 - Notes/blockers: none.
+
+## 2026-11-13 · BR.bug-close · task/bug-close
+- Did: the F12 panel's ticket rows show a × while hovered; clicking it closes the ticket: `closeTicket` moves the folder to `closed/` beside it (bug_reports/closed/, suggestions/closed/; `_2` suffix on a taken name), `listTickets` skips `closed/`. A picked ticket goes back to the new report first (its text kept); the list keeps its scroll; the message line says where it went. Nothing is deleted (user request).
+- Verified: pq_tests_views `--test-case="bug report*"`: 6/6 (new: closeTicket on disk; the panel's × by real dispatch: pick, close, back to new report, row body only picks). No golden renders the panel.
+- Perf / CPU-efficiency check: one rename + one re-list per click; nothing on paint paths beyond one hover rect.

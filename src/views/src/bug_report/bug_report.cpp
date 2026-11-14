@@ -20,6 +20,7 @@ namespace {
 
 constexpr const char* kSuggestDir = "suggestions";
 constexpr const char* kFixedDir = "fixed";
+constexpr const char* kClosedDir = "closed";
 constexpr const char* kTagFile = "tags.txt";
 
 std::string trimRight(std::string_view s) {
@@ -378,7 +379,7 @@ std::vector<Ticket> listTickets(const fs::path& root, bool suggestions) {
     std::error_code e2;
     if (!it->is_directory(e2)) continue;
     const std::string name = it->path().filename().string();
-    if (name == kFixedDir || name == kSuggestDir) continue;
+    if (name == kFixedDir || name == kClosedDir || name == kSuggestDir) continue;
     auto md = readFile(it->path() / "report.md");
     if (!md) continue;
     const ReportMd m = parseReportMd(std::move(*md));
@@ -397,6 +398,19 @@ std::vector<Ticket> listTickets(const fs::path& root, bool suggestions) {
   }
   std::sort(out.begin(), out.end(), [](const Ticket& a, const Ticket& b) { return a.id > b.id; });
   return out;
+}
+
+Result<fs::path> closeTicket(const fs::path& dir) {
+  std::error_code ec;
+  if (!fs::is_regular_file(dir / "report.md", ec)) return Error{ErrorCode::NotFound, "no report.md in " + dir.string(), {}};
+  const fs::path base = dir.parent_path() / kClosedDir;
+  fs::create_directories(base, ec);
+  const std::string id = dir.filename().string();
+  fs::path to = base / id;
+  for (int k = 2; fs::exists(to, ec) && k < 100; ++k) to = base / (id + "_" + std::to_string(k));
+  fs::rename(dir, to, ec);
+  if (ec) return Error{ErrorCode::Io, "cannot move " + dir.string() + " to " + to.string() + ": " + ec.message(), {}};
+  return to;
 }
 
 Result<ui::Image> loadThumbnail(const fs::path& png, uint32_t maxW, uint32_t maxH) {
