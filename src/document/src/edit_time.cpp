@@ -107,7 +107,7 @@ void editClips(const Project& p, const TimeEdit& te, IdSource& ids, Batch& out) 
         for (const ClipSlot& c : e.clips()) {
           if (c.end() <= te.a || c.start() >= te.b) continue;
           const ClipSlot part = e.bounded(c, std::max(c.start(), te.a), std::min(c.end(), te.b));
-          const ClipSlot copy = cloneSlot(part, ids, true);
+          const ClipSlot copy = e.clonePlaying(part, ids);
           copies.push_back(e.moved(copy, copy.start() + te.len));
         }
         openGap(e, te.b, te.len, ids);

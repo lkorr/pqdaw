@@ -7,7 +7,11 @@
 //   - effectiveTuningRef: the tuning a track (and optionally one of its clips) uses, following Inherit up the group
 //     chain to the project's default tuning (Project::defaultTuning), plus WHICH main tuning that is;
 //   - resolveTrackPitches: every note of every clip of a track, resolved in its clip's effective tuning: the static
-//     Hz (double; resolveHzDouble, a Ratio anchored to another note of the clip follows that note), and for a note
+//     Hz (double; resolveHzDouble; a Ratio anchored to another note of the clip takes that note's pitch WHERE IT
+//     STARTS ITSELF — T7.11a, M7 review M5: the anchor's Hz times its curve there (free curve and bends,
+//     note_bend.h), and for an anchor that follows a JI object its voice there; clamped to the anchor's span, so a
+//     note that starts after its anchor ended takes the pitch the anchor ended on. Once started it keeps that pitch:
+//     it does not follow the anchor's later movement), and for a note
 //     in a main tuning with an audio-rate linear form (EDO, MOS without MODMOS / generator sequence:
 //     tuning::linearTuningForm) the tuning signal it follows and how (T2.6, T2.6-fix3: PitchFollow below; the
 //     playback link's engine::PitchSource).

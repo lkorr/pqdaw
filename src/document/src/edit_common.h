@@ -50,7 +50,10 @@ bool sameNotes(const NoteSeq& a, const NoteSeq& b) noexcept;
 // moves with the left edge). end > start.
 NoteClip withBounds(const NoteClip& c, Ticks start, Ticks end);
 // Splits at arrangement tick t (start < t < end). Left keeps the id; right gets `rightId`.
-std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rightId, IdSource& ids);
+// T7.11a: `p` / `path`: the project and the clip's track (a note parted from its anchor is re-anchored in its
+// tuning: reanchorWithout).
+std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rightId, IdSource& ids, const Project& p,
+                                          const TrackPath& path);
 // Copy with fresh clip and note ids. `onlyPlaying`: for a non-looped clip, copy only the notes that start inside
 // the played content window (hidden notes are dropped).
 NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying);
@@ -65,6 +68,8 @@ JiObject freshJiObject(const JiObject& o, IdSource& ids);
 // Drops the curves of notes that are not in c.notes (after notes left the clip), and the bends to notes that are not
 // (T7.11a). O(notes + curves) when it has curves.
 void pruneCurves(NoteClip& c);
+// The note a pitch is anchored to (a Ratio with AnchorKind::Note); invalid for every other identity.
+NoteId noteAnchorOf(const tuning::PitchId& p) noexcept;
 // T7.11a: old → new ids of copied notes (sources[i] was copied to copies[i]), sorted by old id.
 using NoteIdMap = std::vector<std::pair<NoteId, NoteId>>;
 NoteIdMap noteIdMap(std::span<const NoteId> sources, std::span<const Note> copies);
@@ -79,6 +84,27 @@ NoteCurves remapNoteCurves(const NoteCurves& nc, NoteId note, const NoteIdMap& m
 // re-pointed as remapNoteCurves. nullopt: no copy has a curve. Errors: an invalid record.
 Result<std::optional<SetNoteCurves>> copiedCurves(ClipRef clip, const NoteClip& target, std::span<const NoteCurves> curves,
                                                   std::span<const NoteId> sources, std::span<const Note> copies);
+// T7.11a (M7 review H3): what keeps the remaining notes of `clip` (a clip of the track at `path`, or a working copy of
+// one) sounding at the same pitch when the notes `gone` (sorted ids) leave it — deleted, or parted from them by a
+// split. A note anchored to a leaving note is re-anchored:
+//   - the anchor's pitch is an exact ratio to the reference (a chain of note anchors ending on a reference-anchored
+//     Ratio, no curve on the way): the exact reference-anchored Ratio;
+//   - else, when the anchor sounds at one pitch for all its dependants (no curve record, not a note of a JI object) and
+//     there are several (or it is the clip's declared harmonic): the first dependant without a curve carries the pitch
+//     as Cents and the others are anchored to it by their exact ratios to it; the declared harmonic moves to it
+//     (index N · its ratio) when that is a whole number ≤ kMaxHarmonicIndex;
+//   - else Cents at the pitch it resolves to now.
+// A declared harmonic whose note leaves is otherwise cleared; harmonic steps of leaving notes are dropped. A note that
+// does not resolve is left as it is. Nothing to do costs one pass over the notes (no resolution).
+struct Reanchored {
+  std::vector<Note> updates;                   // remaining notes with their new identity
+  std::optional<ClipFundamental> fundamental;  // set: the clip's fundamental becomes this
+  bool empty() const noexcept { return updates.empty() && !fundamental; }
+};
+Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteClip& clip, std::span<const NoteId> gone);
+// The result applied to a clip value / as commands (UpdateNotes, SetClipFundamental) appended to a batch.
+void applyReanchored(NoteClip& c, Reanchored r);
+void appendReanchored(Batch& b, const ClipRef& clip, Reanchored r);
 // Builds a sequence from notes known to be valid with unique ids.
 NoteSeq seqOf(std::vector<Note> notes);
 
@@ -105,6 +131,9 @@ public:
   std::pair<ClipSlot, ClipSlot> split(const ClipSlot& c, Ticks t, ClipId rightId, IdSource& ids) const;
   // The clip at a new start (an audio Off clip's length re-derived there).
   ClipSlot moved(const ClipSlot& c, Ticks start) const;
+  // cloneSlot(c, ids, true): a copy with fresh ids of what the clip plays (a non-looped note clip's hidden notes are
+  // dropped), a playing note anchored to a dropped one keeping its pitch (T7.11a, reanchorWithout).
+  ClipSlot clonePlaying(const ClipSlot& c, IdSource& ids) const;
   // Overwrites [a, b): covered clips are removed, partly covered ones trimmed or split (new ids for right pieces).
   // Clips whose id is in `keep` are left alone.
   void clearRange(Ticks a, Ticks b, IdSource& ids, std::span<const ClipId> keep = {});

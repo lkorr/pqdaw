@@ -483,7 +483,8 @@ pq_add_test(pq_tests_document
     document/test_main_tunings.cpp
     document/test_virtual_fundamental.cpp
     document/test_ji.cpp  # T7.2: JI objects (commands, evaluation, the voice plan, ops, file), note curves
-    document/test_note_bends.cpp  # T7.11a: derived bends, SetNoteCurves, anchors through copies / deletions (H2, H3, M5)
+    document/test_note_bends.cpp  # T7.11a: derived bends between notes, SetNoteCurves (M13)
+    document/test_note_anchors.cpp  # T7.11a: note anchors through copies / deletions / splits (H2, H3), the anchor where the note starts (M5)
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_recording.cpp  # T6.1: recording model (inputs, monitor gate, input map, take lanes, comping, warp markers, file)

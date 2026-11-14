@@ -2,8 +2,12 @@
 
 #include "edit_common.h"
 
+#include "pq/document/note_bend.h"
+#include "pq/document/pitch_resolve.h"
+
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 
 namespace pq::doc {
 
@@ -136,7 +140,19 @@ NoteClip withBounds(const NoteClip& c, Ticks start, Ticks end) {
   return n;
 }
 
-std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rightId, IdSource& ids) {
+std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rightId, IdSource& ids, const Project& p,
+                                          const TrackPath& path) {
+  // T7.11a (H3): a note parted from its anchor by the cut keeps its pitch (reanchorWithout), in either piece.
+  auto reanchor = [&](NoteClip& left, NoteClip& right) {
+    if (left.notes.size() == c.notes.size() || right.notes.size() == c.notes.size()) return;  // nothing parted
+    std::vector<NoteId> l, r;
+    for (const Note& n : left.notes) l.push_back(n.id);
+    for (const Note& n : right.notes) r.push_back(n.id);
+    std::sort(l.begin(), l.end());
+    std::sort(r.begin(), r.end());
+    applyReanchored(left, reanchorWithout(p, path, c, r));
+    applyReanchored(right, reanchorWithout(p, path, c, l));
+  };
   NoteClip left = withNotes(c, c.notes);
   left.length = t - c.start;
   if (clipLooped(c)) {
@@ -189,6 +205,7 @@ std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rig
     right.start = t;
     right.length = clipEnd(c) - t;
     right.contentStart = sc;
+    reanchor(left, right);
     pruneCurves(left);
     pruneCurves(right);
     return {std::move(left), std::move(right)};
@@ -198,6 +215,7 @@ std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rig
   right.start = t;
   right.length = clipEnd(c) - t;
   right.contentStart = sc;
+  reanchor(left, right);
   pruneCurves(left);
   pruneCurves(right);
   return {std::move(left), std::move(right)};
@@ -217,6 +235,10 @@ JiObject freshJiObject(const JiObject& o, IdSource& ids) {
   n.id = ids.jiObject();
   for (NoteId& v : n.voiceNotes) v = ids.note();
   return n;
+}
+
+NoteId noteAnchorOf(const tuning::PitchId& p) noexcept {
+  return p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Note ? NoteId{p.anchorId()} : NoteId{};
 }
 
 NoteIdMap noteIdMap(std::span<const NoteId> sources, std::span<const Note> copies) {
@@ -305,9 +327,11 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
     map.emplace_back(o.id, objects.back().id);
   }
   std::vector<NoteId> sources;  // sources[i]: the note notes[i] copies
+  bool anchored = false;        // a copied note is anchored to a note
   auto take = [&](const Note& n) {
     Note m = n;
     m.id = ids.note();
+    anchored = anchored || noteAnchorOf(n.pitch).valid();
     if (!map.empty()) m.pitch = remapJiPitch(m.pitch, map);
     sources.push_back(n.id);
     notes.push_back(m);
@@ -319,20 +343,161 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
     sources.reserve(c.notes.size());
     for (const Note& n : c.notes) take(n);
   }
-  // T7.11a: what names a note is re-pointed to its copy (old → new note ids): the curves' bends here.
+  // T7.11a (M7 review H2): whatever names a note is re-pointed to its copy (old → new note ids) — the identities
+  // anchored to a note, the clip's declared harmonic and harmonic steps, the curves' bends. The map is only built for
+  // a clip that has any of them.
   NoteIdMap noteMap;
   NoteCurveList curves;
+  ClipFundamental fundamental = c.fundamental;
+  if (c.curves || anchored || !fundamental.empty()) noteMap = noteIdMap(sources, notes);
+  if (anchored)
+    for (Note& m : notes)
+      if (const NoteId to = remapNote(noteAnchorOf(m.pitch), noteMap); to.valid())
+        m.pitch = tuning::PitchId::fromRatio(m.pitch.ratio(), tuning::AnchorKind::Note, to.value);
+  if (fundamental.anchor) {
+    fundamental.anchor->note = remapNote(fundamental.anchor->note, noteMap);
+    if (!fundamental.anchor->note.valid()) fundamental.anchor.reset();  // its note was not copied
+  }
+  if (!fundamental.steps.empty()) {
+    for (HarmonicStep& st : fundamental.steps) st.note = remapNote(st.note, noteMap);
+    std::erase_if(fundamental.steps, [](const HarmonicStep& st) { return !st.note.valid(); });
+    std::sort(fundamental.steps.begin(), fundamental.steps.end(),
+              [](const HarmonicStep& x, const HarmonicStep& y) { return x.note < y.note; });
+  }
   if (c.curves) {
-    noteMap = noteIdMap(sources, notes);
     for (size_t i = 0; i < notes.size(); ++i)  // fresh ids ascend: the list stays sorted
       if (const NoteCurves* nc = findNoteCurves(c, sources[i]))
         if (NoteCurves copy = remapNoteCurves(*nc, notes[i].id, noteMap); !copy.empty()) curves.push_back(std::move(copy));
   }
   NoteClip n = withNotes(c, seqOf(std::move(notes)));
   n.id = ids.clip();
+  n.fundamental = std::move(fundamental);
   n.ji = objects.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(objects));
   n.curves = curves.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(curves));  // ids ascend
   return n;
+}
+
+// ---- Notes that lose their anchor (T7.11a, M7 review H3) -------------------------------------------------------------
+
+Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteClip& clip, std::span<const NoteId> gone) {
+  Reanchored out;
+  if (gone.empty()) return out;
+  auto isGone = [&](NoteId id) { return std::binary_search(gone.begin(), gone.end(), id); };
+  // The cheap part, for every removal: is any remaining note anchored to a leaving one, does the fundamental name one?
+  std::vector<const Note*> lost;
+  for (const Note& n : clip.notes)
+    if (const NoteId a = noteAnchorOf(n.pitch); a.valid() && isGone(a) && !isGone(n.id)) lost.push_back(&n);
+  const ClipFundamental& cf = clip.fundamental;
+  bool fundamental = cf.anchor && isGone(cf.anchor->note);
+  for (const HarmonicStep& st : cf.steps) fundamental = fundamental || isGone(st.note);
+  if (lost.empty() && !fundamental) return out;
+
+  ClipFundamental nf = cf;
+  std::erase_if(nf.steps, [&](const HarmonicStep& st) { return isGone(st.note); });
+  const NoteId declared = cf.anchor ? cf.anchor->note : NoteId{};
+  if (declared.valid() && isGone(declared)) nf.anchor.reset();  // moved below when a dependant can take it over
+  if (!lost.empty()) {
+    const ClipPitches cp = resolveClipPitches(p, path, clip);
+    const NotePitchIndex hz(cp);
+    Result<tuning::Tuning> tun = cp.tuning.def ? buildTuning(*cp.tuning.def) : Result<tuning::Tuning>(notFound("no tuning"));
+    std::vector<std::pair<NoteId, const Note*>> byId;  // the clip's notes by id (a NoteSeq is ordered by start)
+    byId.reserve(clip.notes.size());
+    for (const Note& n : clip.notes) byId.emplace_back(n.id, &n);
+    std::sort(byId.begin(), byId.end());
+    auto noteOf = [&](NoteId id) -> const Note* {
+      const auto it = std::lower_bound(byId.begin(), byId.end(), std::pair<NoteId, const Note*>{id, nullptr});
+      return it != byId.end() && it->first == id ? it->second : nullptr;
+    };
+    // A note's pitch as an exact ratio to the reference: a chain of note anchors that ends on a reference-anchored
+    // Ratio, none of its notes with a curve record (a curve moves what is anchored to it: pitch_resolve.h).
+    auto exactRatio = [&](const Note* n) -> std::optional<tuning::Rational> {
+      tuning::Rational r{1};
+      for (int link = 0; n != nullptr && link <= 8; ++link) {
+        if (n->pitch.kind() != tuning::PitchKind::Ratio || findNoteCurves(clip, n->id) != nullptr) return std::nullopt;
+        const std::optional<tuning::Rational> m = tuning::mul(r, n->pitch.ratio());
+        if (!m || !m->isPositive()) return std::nullopt;
+        r = *m;
+        if (n->pitch.anchorKind() == tuning::AnchorKind::Reference) return r;
+        if (n->pitch.anchorKind() != tuning::AnchorKind::Note) return std::nullopt;
+        n = noteOf(NoteId{n->pitch.anchorId()});
+      }
+      return std::nullopt;
+    };
+    auto centsPitch = [&](const Note& n) -> std::optional<tuning::PitchId> {
+      const std::optional<double> v = hz.hz(n.id);
+      if (!v || !tun) return std::nullopt;  // it did not sound before either: left as it is
+      const double c = 1200.0 * std::log2(*v / tun->referenceHz());
+      return std::isfinite(c) ? std::optional<tuning::PitchId>(tuning::PitchId::fromCents(c)) : std::nullopt;
+    };
+    auto set = [&](const Note& n, const tuning::PitchId& pitch) {
+      Note m = n;
+      m.pitch = pitch;
+      out.updates.push_back(m);
+    };
+    std::stable_sort(lost.begin(), lost.end(), [](const Note* x, const Note* y) { return x->pitch.anchorId() < y->pitch.anchorId(); });
+    for (size_t i = 0; i < lost.size();) {
+      size_t j = i;
+      while (j < lost.size() && lost[j]->pitch.anchorId() == lost[i]->pitch.anchorId()) ++j;
+      const NoteId anchorId{lost[i]->pitch.anchorId()};
+      const Note* anchor = noteOf(anchorId);
+      const std::optional<tuning::Rational> exact = exactRatio(anchor);
+      // The anchor sounds at one pitch for all of them: no curve record, not a note of a JI object.
+      const bool constant = anchor != nullptr && findNoteCurves(clip, anchorId) == nullptr &&
+                            !jiObjectOf(anchor->pitch).valid();
+      // Tempered anchor: the first dependant without a curve of its own carries the pitch (Cents), the others keep
+      // their exact ratios to it. Worth it for two or more, or to keep the declared harmonic.
+      const Note* leader = nullptr;
+      if (!exact && constant && (j - i > 1 || anchorId == declared))
+        for (size_t k = i; k < j && leader == nullptr; ++k)
+          if (findNoteCurves(clip, lost[k]->id) == nullptr && hz.hz(lost[k]->id) && tun) leader = lost[k];
+      for (size_t k = i; k < j; ++k) {
+        const Note& n = *lost[k];
+        std::optional<tuning::PitchId> pitch;
+        if (exact) {
+          if (const std::optional<tuning::Rational> r = tuning::mul(*exact, n.pitch.ratio()); r && r->isPositive())
+            pitch = tuning::PitchId::fromRatio(*r);
+        } else if (leader != nullptr && &n != leader) {
+          if (const std::optional<tuning::Rational> r = tuning::div(n.pitch.ratio(), leader->pitch.ratio()); r && r->isPositive())
+            pitch = tuning::PitchId::fromRatio(*r, tuning::AnchorKind::Note, leader->id.value);
+        }
+        if (!pitch) pitch = centsPitch(n);
+        if (pitch) set(n, *pitch);
+      }
+      if (anchorId == declared && leader != nullptr) {
+        // "The anchor is harmonic N" becomes "the leader is harmonic N · its ratio" when that is a whole number.
+        const std::optional<tuning::Rational> index =
+            tuning::mul(tuning::Rational{static_cast<int64_t>(cf.anchor->index)}, leader->pitch.ratio());
+        if (index && index->den() == 1 && index->num() >= 1 && index->num() <= static_cast<int64_t>(kMaxHarmonicIndex))
+          nf.anchor = HarmonicAnchor{leader->id, static_cast<uint32_t>(index->num())};
+      }
+      i = j;
+    }
+  }
+  if (!(nf == cf)) out.fundamental = std::move(nf);
+  return out;
+}
+
+void applyReanchored(NoteClip& c, Reanchored r) {
+  if (!r.updates.empty()) {
+    std::sort(r.updates.begin(), r.updates.end(), [](const Note& x, const Note& y) { return x.id < y.id; });
+    std::vector<Note> notes(c.notes.begin(), c.notes.end());
+    for (Note& n : notes) {
+      const auto it = std::lower_bound(r.updates.begin(), r.updates.end(), n.id, [](const Note& x, NoteId id) { return x.id < id; });
+      if (it != r.updates.end() && it->id == n.id) n.pitch = it->pitch;
+    }
+    c.notes = seqOf(std::move(notes));
+  }
+  if (r.fundamental) c.fundamental = std::move(*r.fundamental);
+}
+
+void appendReanchored(Batch& b, const ClipRef& clip, Reanchored r) {
+  if (!r.updates.empty()) {
+    UpdateNotes u{clip, {}};
+    u.updates.reserve(r.updates.size());
+    for (const Note& n : r.updates) u.updates.push_back({keyOf(n), n});
+    b.commands.push_back(std::move(u));
+  }
+  if (r.fundamental) b.commands.push_back(SetClipFundamental{clip, std::move(*r.fundamental)});
 }
 
 // ---- ClipEditor ----------------------------------------------------------------------------------------------------
@@ -383,9 +548,29 @@ std::pair<ClipSlot, ClipSlot> ClipEditor::split(const ClipSlot& c, Ticks t, Clip
     return {ClipSlot{l.id, nullptr, std::make_shared<const AudioClip>(std::move(l)), c.take},
             ClipSlot{r.id, nullptr, std::make_shared<const AudioClip>(std::move(r)), c.take}};
   }
-  auto [l, r] = splitClipAt(*c.clip, t, rightId, ids);
+  auto [l, r] = splitClipAt(*c.clip, t, rightId, ids, *p_, path_);
   return {ClipSlot{l.id, std::make_shared<const NoteClip>(std::move(l)), nullptr, c.take},
           ClipSlot{r.id, std::make_shared<const NoteClip>(std::move(r)), nullptr, c.take}};
+}
+
+ClipSlot ClipEditor::clonePlaying(const ClipSlot& c, IdSource& ids) const {
+  if (c.audio || clipLooped(*c.clip)) return cloneSlot(c, ids, true);
+  // T7.11a (H3): the hidden notes are dropped; a playing note anchored to one keeps its pitch.
+  const NoteClip& src = *c.clip;
+  std::vector<Note> playing;
+  for (auto [it, end] = src.notes.range(src.contentStart, src.contentStart + src.length); it != end; ++it) playing.push_back(*it);
+  if (playing.size() == src.notes.size()) return cloneSlot(c, ids, false);
+  std::vector<NoteId> kept, gone;
+  for (const Note& n : playing) kept.push_back(n.id);
+  std::sort(kept.begin(), kept.end());
+  for (const Note& n : src.notes)
+    if (!std::binary_search(kept.begin(), kept.end(), n.id)) gone.push_back(n.id);
+  std::sort(gone.begin(), gone.end());
+  NoteClip visible = withNotes(src, seqOf(std::move(playing)));
+  applyReanchored(visible, reanchorWithout(*p_, path_, src, gone));
+  pruneCurves(visible);
+  auto n = std::make_shared<const NoteClip>(cloneClip(visible, ids, false));
+  return ClipSlot{n->id, std::move(n), nullptr};
 }
 
 ClipSlot ClipEditor::moved(const ClipSlot& c, Ticks start) const {

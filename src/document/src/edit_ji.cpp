@@ -223,8 +223,14 @@ EditResult jiFromNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<
   batchOf(e).commands.push_back(AddJiObject{clip, std::move(o)});
   if (options.replaceNotes) {
     RemoveNotes r{clip, {}};
+    std::vector<NoteId> gone;
     for (const Voice& v : distinct)
-      for (const Note* n : v.notes) r.notes.push_back(keyOf(*n));
+      for (const Note* n : v.notes) {
+        r.notes.push_back(keyOf(*n));
+        gone.push_back(n->id);
+      }
+    std::sort(gone.begin(), gone.end());
+    appendReanchored(batchOf(e), clip, reanchorWithout(p, f->path, *f->clip, gone));  // T7.11a (H3)
     batchOf(e).commands.push_back(std::move(r));
   } else {
     UpdateNotes u{clip, {}};
@@ -401,8 +407,14 @@ EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object, boo
   e.noteClip = clip;
   if (withNotes) {
     RemoveNotes r{clip, {}};
+    std::vector<NoteId> gone;
     for (const Note& n : f->clip.clip->notes)
-      if (jiObjectOf(n.pitch) == object) r.notes.push_back(keyOf(n));
+      if (jiObjectOf(n.pitch) == object) {
+        r.notes.push_back(keyOf(n));
+        gone.push_back(n.id);
+      }
+    std::sort(gone.begin(), gone.end());
+    appendReanchored(batchOf(e), clip, reanchorWithout(p, f->clip.path, *f->clip.clip, gone));  // T7.11a (H3)
     if (!r.notes.empty()) batchOf(e).commands.push_back(std::move(r));
     batchOf(e).commands.push_back(RemoveJiObject{clip, object});
     return e;

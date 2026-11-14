@@ -305,8 +305,16 @@ EditResult deleteNotes(const Project& p, ClipRef clip, std::span<const NoteKey> 
   Edit e = makeEdit(notes.size() == 1 ? "Delete Note" : "Delete Notes");
   e.noteClip = clip;
   RemoveNotes r{clip, distinct(notes)};
-  for (const NoteKey& k : r.notes)
-    if (!f->clip->notes.locate(k)) return notFound("note not found");
+  std::vector<NoteId> gone;
+  gone.reserve(r.notes.size());
+  for (const NoteKey& k : r.notes) {
+    const Note* n = f->clip->notes.locate(k);
+    if (!n) return notFound("note not found");
+    gone.push_back(n->id);
+  }
+  std::sort(gone.begin(), gone.end());
+  // T7.11a (H3): the notes anchored to a deleted note keep their pitch, in the same undo step.
+  appendReanchored(batchOf(e), clip, reanchorWithout(p, f->path, *f->clip, gone));
   if (!r.notes.empty()) batchOf(e).commands.push_back(std::move(r));
   return e;
 }

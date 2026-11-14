@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "pq/document/ji_object.h"
+#include "pq/document/note_bend.h"
 #include "pq/tuning/mos.h"
 #include "pq/tuning/tuning.h"
 
@@ -71,10 +72,26 @@ public:
   size_t size() const noexcept { return notes_.size(); }
   const Note& note(size_t i) const noexcept { return *notes_[i]; }
 
-  Resolved get(uint32_t i, int depth = 0) {
-    if (state_[i] == 2) return out_[i];
-    if (state_[i] == 1 || depth > 8) return Resolved{};  // a cycle, or a chain longer than the lowering allows
-    state_[i] = 1;
+  Resolved get(uint32_t i) {
+    int hit = kNoHit;
+    return get(i, 0, hit);
+  }
+
+private:
+  // `hit`: the smallest depth of a note still being resolved that this resolution ran into (a cycle). A note on a
+  // cycle of anchors does not resolve (as before). T7.11a: a cycle can also run through a bend — the bend's neighbour
+  // is anchored, through other notes, to a note that takes the bending note's pitch inside that bend. Such a bend does
+  // nothing for the note that closes the loop; nothing is silenced. Only results that met no cycle, and a note asked
+  // for itself, are memoised, so what a note resolves to does not depend on which walk reached it first.
+  Resolved get(uint32_t i, int depth, int& hit) {
+    if (state_[i] == kDone) return out_[i];
+    if (state_[i] >= kBusy) {
+      hit = std::min(hit, static_cast<int>(state_[i] - kBusy));
+      return Resolved{};
+    }
+    if (depth > 8) return Resolved{};  // a chain longer than the lowering allows
+    state_[i] = static_cast<uint8_t>(kBusy + depth);
+    int below = kNoHit;
     const tuning::PitchId& p = notes_[i]->pitch;
     tuning::ResolveContext rc;
     Resolved r;
@@ -89,11 +106,13 @@ public:
         break;
       case tuning::PitchKind::Ratio:
         if (p.anchorKind() == tuning::AnchorKind::Note) {
-          const auto it = std::lower_bound(byId_.begin(), byId_.end(), std::pair<uint32_t, uint32_t>{p.anchorId(), 0});
-          if (it == byId_.end() || it->first != p.anchorId()) {
+          const int32_t ai = indexOf(NoteId{p.anchorId()});
+          if (ai < 0) {
             resolvable = false;
-          } else if (const Resolved a = get(it->second, depth + 1); a.hz) {
-            rc.anchorHz = *a.hz;
+          } else if (const Resolved a = get(static_cast<uint32_t>(ai), depth + 1, below); a.hz) {
+            // T7.11a (M7 review M5): the anchor's pitch where this note starts — along the object voice it follows
+            // and its own curve (free curve and bends), not where the anchor itself started.
+            rc.anchorHz = pitchAt(static_cast<uint32_t>(ai), *a.hz, notes_[i]->start, depth, below);
             r.follow = a.follow;  // the chain follows its root
             r.degree = a.degree;
             r.equave = a.equave;
@@ -126,12 +145,57 @@ public:
     }
     if (resolvable) r.hz = playableHz(p, t_, rc);
     if (!r.hz || !signal_) r.follow = PitchFollow::Static;
+    if (below != kNoHit && depth > 0) {
+      // It ran into a note that is still being resolved: this result holds for this walk only. The note is resolved
+      // again when it is asked for itself (depth 0), where every path that comes back to it is cut.
+      state_[i] = kNew;
+      if (below < depth) hit = std::min(hit, below);  // a cycle that closes on this note ends here
+      return r;
+    }
     out_[i] = r;
-    state_[i] = 2;
+    state_[i] = kDone;
     return r;
   }
 
-private:
+  int32_t indexOf(NoteId id) const noexcept {
+    const auto it = std::lower_bound(byId_.begin(), byId_.end(), std::pair<uint32_t, uint32_t>{id.value, 0});
+    return it != byId_.end() && it->first == id.value ? static_cast<int32_t>(it->second) : -1;
+  }
+
+  // The pitch of note `ai` (resolved: `hz` at its own start) at content tick `tick`, clamped to the note's span: an
+  // inner note of a JI object is where its voice / the fundamental is there; its curve record (the free curve and
+  // the bends, note_bend.h) is added. Without an object and a curve record this is `hz` itself, exactly.
+  double pitchAt(uint32_t ai, double hz, Ticks tick, int depth, int& hit) {
+    const Note& a = *notes_[ai];
+    const Ticks at = std::clamp<Ticks>(tick, a.start, a.start + std::max<Ticks>(a.length, 1));
+    double base = hz;
+    if (at != a.start) {
+      if (a.pitch.kind() == tuning::PitchKind::Harmonic) {
+        if (const JiObject* o = findJiObject(clip_, JiObjectId{a.pitch.jiObject()}))
+          if (const std::optional<double> v = jiVoiceHz(*o, t_, a.pitch.voiceIndex(), static_cast<double>(at - o->start)); v && *v > 0.0)
+            base = *v;
+      } else if (a.pitch.kind() == tuning::PitchKind::Ratio && a.pitch.anchorKind() == tuning::AnchorKind::JiFundamental) {
+        if (const JiObject* o = findJiObject(clip_, JiObjectId{a.pitch.anchorId()})) {
+          tuning::ResolveContext rc;
+          if (const std::optional<double> f = jiFundamentalHz(*o, t_, static_cast<double>(at - o->start))) {
+            rc.anchorHz = *f;
+            if (const std::optional<double> v = tuning::resolveHzDouble(a.pitch, t_, rc); v && *v > 0.0) base = *v;
+          }
+        }
+      }
+    }
+    const NoteCurves* nc = findNoteCurves(clip_, a.id);
+    if (nc == nullptr) return base;
+    auto neighbour = [&](const NoteBend& b) -> std::optional<double> {
+      if (!b.set()) return std::nullopt;
+      const int32_t k = indexOf(b.other);
+      return k < 0 ? std::nullopt : get(static_cast<uint32_t>(k), depth + 1, hit).hz;
+    };
+    const NoteBendTargets targets = noteBendTargets(*nc, hz, neighbour(nc->bendIn), neighbour(nc->bendOut));
+    const double cents = noteCurveCents(*nc, a.length, targets, static_cast<double>(at - a.start));
+    return cents == 0.0 ? base : base * std::exp2(cents / 1200.0);
+  }
+
   // A note of a JI object follows the tuning signal as the object's fundamental does (a Degree fundamental: its
   // degree, the note keeping its ratio to it).
   static void followFundamental(Resolved& r, const JiObject& o) noexcept {
@@ -147,7 +211,9 @@ private:
   bool signal_;
   std::vector<const Note*> notes_;
   std::vector<std::pair<uint32_t, uint32_t>> byId_;  // (note id, index), sorted
-  std::vector<uint8_t> state_;                       // 0 new, 1 in progress, 2 done
+  static constexpr int kNoHit = 1 << 20;
+  static constexpr uint8_t kNew = 0, kDone = 1, kBusy = 2;  // kBusy + depth: being resolved at that depth
+  std::vector<uint8_t> state_;
   std::vector<Resolved> out_;
 };
 
