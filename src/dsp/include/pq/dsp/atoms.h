@@ -96,17 +96,20 @@
 //   follow (x, attack, release)       one-pole envelope: y ← x > y ? y·ra + x·(1 − ra) : y·rr + x·(1 − rr) (one fma
 //                                     each, the select last), r = exp(−1 / max(T, 1e−6)) for a time constant of T
 //                                     SAMPLES (the compiler multiplies seconds by sr): 63 % of a step after T frames;
-//                                     T ≤ 0 or NaN: r = 0, instant. x NaN reads as 0, ±inf as ±FLT_MAX (y stays
-//                                     finite). attack / release Spl: r once per call; Blk: per frame (the same exp, so
-//                                     a ramp's held value gives the same bits). Initially y = 0. Its state decays
-//                                     (hasDecayState): silent input → y → 0.
+//                                     T ≤ 0 or NaN: r = 0, instant. x non-finite (NaN, ±inf) reads as 0
+//                                     (AU.dsp: an inf no longer pins y at FLT_MAX). attack / release Spl: r once per
+//                                     call; Blk: per frame (the same exp, so a ramp's held value gives the same bits).
+//                                     Initially y = 0. Its state decays (hasDecayState): silent input → y → 0; on a
+//                                     constant input it converges (hasConvergeState: y → x).
 //   window (x)                        the extremum or mean of the last L inputs (this frame's included; before the
 //                                     first frame the history is 0): op 0 max, 1 min, 2 mean (StateInit::windowOp),
-//                                     L = StateInit::windowFrames (the compiler: max(1, round(time · sr))). x NaN
-//                                     reads as 0, ±inf as ±FLT_MAX. max / min: van Herk–Gil-Werman, exact (any split
+//                                     L = StateInit::windowFrames (the compiler: max(1, round(time · sr))). x
+//                                     non-finite reads as 0 (AU.dsp). max / min: van Herk–Gil-Werman, exact (any split
 //                                     of the frames into calls gives the same bits); mean: a running sum in double,
 //                                     recomputed from the ring every L frames (drift-free; bits independent of the
-//                                     calls too), out = float(sum / L). Bounded: ≤ 2 passes over L per L frames.
+//                                     calls too), out = float(sum / L), clamped at ≥ 0 while the window holds no
+//                                     negative input (AU.dsp, RB-DY L10: the sum's rounding residue). Bounded: ≤ 2
+//                                     passes over L per L frames.
 //                                     Its state decays (hasDecayState): silent for 2L frames → every value 0.
 //   truepeak (x)                      DY.5: the ITU-R BS.1770-4 Annex 2 true-peak estimate about x[n − 6]: max of |x[n − 6]|
 //                                     and |·| of the 4 polyphase interpolants of the standard's 48-tap 4× filter (12
@@ -462,9 +465,34 @@ uint32_t silenceTail(Atom a, const StateInit& init) noexcept;  // RT-safe
 // the same way rather than as a one-word z1 memory): decayStateSmall = every state word (of every lane; the host's are global 1-lane blocks) is ≤ eps (NaN:
 // false); decayStateFlush sets those words to exactly 0 (the block's output is then exactly 0 for a silent input) and
 // returns whether one was not 0 yet. False / nothing for other atoms. RT-safe.
+// AU.dsp (RB-DY L11): `historySmall` = this state was found ≤ eps at an earlier look and its input has been exactly
+// silent since, so the history it holds is still ≤ eps (a window's ring then only gained zeros): its O(L) values are not
+// scanned again (the O(1) words are).
 bool hasDecayState(Atom a) noexcept;
-bool decayStateSmall(Atom a, const void* state, float eps) noexcept;
+bool decayStateSmall(Atom a, const void* state, float eps, bool historySmall = false) noexcept;
 bool decayStateFlush(Atom a, void* state) noexcept;
+// AU.dsp (RB-DY H4): an atom whose state CONVERGES on a constant input rather than decaying to 0 (follow: y → x). In
+// float a one-pole stops moving at a fixed point (x itself, or an ulp-bound step short of it: the step (x − y)·(1 − r)
+// rounds away; with a slow release that is up to ~0.5 dB short of a 70 dB target), so the host does not compare y with
+// x: convergeStateStill = every lane's y is bit for bit what it was at the start of the last call (FollowState::y0).
+// After a call on a constant input with constant coefficients that means a fixed point: every later frame gives the
+// same y, so the state needs no flush. False for other atoms. RT-safe.
+bool hasConvergeState(Atom a) noexcept;
+bool convergeStateStill(Atom a, const void* state) noexcept;
+
+// AU.dsp (RB-DY H4): what a stateless atom does to CONSTANT inputs known only by their bounds (the sleep plan's values
+// under its hypothesis H: a silent input is [0, 0], fast_gain_to_db of it [−inf, −inf], a ranged param its range, a
+// literal a point). rangeOf: true and `out` = bounds of every output the kernel can give for inputs within `in`
+// (numIn of them, mux: the actual count), never NaN; false when the atom has no rule or a NaN could arise (0 · inf,
+// inf − inf, x / [.. 0 ..], sqrt or log of a negative). The rules follow the kernels' own operations (correctly rounded
+// ops are monotone, so the corners bound them; the approximations are widened by more than their error bounds), and
+// tests/dsp/test_silence.cpp checks them against the kernels. Bool inputs (select's condition, mux's index) may be
+// anything. Rules: add sub mul div min max neg abs floor sqrt(_fast) clip muladd lerp select mux const gain_to_db(_fast)
+// db_to_gain(_fast).
+struct ValueRange {
+  float lo = 0.0f, hi = 0.0f;  // lo ≤ hi; ±inf allowed, NaN never
+};
+bool rangeOf(Atom a, const ValueRange* in, uint32_t numIn, ValueRange& out) noexcept;  // RT-safe
 
 // Writes the initial state into `state` (stateBytes bytes, kStateAlign-aligned). No allocation: RT-safe, so it
 // can also reset a voice's state on the audio thread (cost: proportional to the delay ring for delay lines; the

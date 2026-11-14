@@ -280,9 +280,11 @@ struct alignas(32) SvfState {
 inline constexpr uint32_t kSvfHeaderBytes = static_cast<uint32_t>(sizeof(SvfState) - sizeof(SvfState::sec));
 static_assert(kSvfHeaderBytes % 32 == 0 && kSvfHeaderBytes == 25 * 32);
 
-// follow (DY.1, kernels_dynamics.cpp): the envelope per lane (every word per lane).
+// follow (DY.1, kernels_dynamics.cpp): the envelope per lane (every word per lane); AU.dsp (RB-DY H4): y0 = y at the
+// start of the last call, what the sleep host checks a converged envelope by (dsp::convergeStateStill).
 struct alignas(32) FollowState {
   float y[8];
+  float y0[8];
 };
 
 // window (DY.1, kernels_dynamics.cpp): a header of per-lane [8] arrays, then the values (stateBytes: L = length).
@@ -305,7 +307,9 @@ struct alignas(32) WindowState {
   uint32_t length[8];  // L ≥ 1 (StateInit::windowFrames, clamped)
   uint32_t op[8];      // 0 max, 1 min, 2 mean (StateInit::windowOp, clamped)
   uint32_t lanes[8];   // 1 or 8: the layout of the values
-  uint32_t pad_[8];
+  // mean (AU.dsp, RB-DY L10): frames until the newest negative input leaves the window (0: the window holds none, so
+  // the output is clamped at ≥ 0: the running sum's rounding residue after a large drop never reads negative)
+  uint32_t negLeft[8];
   float* values() noexcept { return reinterpret_cast<float*>(this + 1); }
   const float* values() const noexcept { return reinterpret_cast<const float*>(this + 1); }
 };
@@ -369,7 +373,7 @@ static_assert(sizeof(PhasorState) == 64);
 static_assert(sizeof(NoiseState) == 64);
 static_assert(sizeof(WavetableState) == 64);
 static_assert(sizeof(DelayState) == 480);
-static_assert(sizeof(FollowState) == 32 && sizeof(WindowState) == 256);
+static_assert(sizeof(FollowState) == 64 && sizeof(WindowState) == 256);
 static_assert(sizeof(TruePeakState) == 352);
 static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);

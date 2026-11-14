@@ -7,6 +7,9 @@
 //            1 and 8 lanes; a voice lane reset (the initial words) or moved from another group (another phase) goes on
 //            exactly as a fresh / its own 1-lane window would; NaN reads as 0
 //   RtScope  both kernels, both lane counts, every Spl combination (one block each, also a realignment)
+// AU.dsp (RB-DY): an inf / NaN sample reads as 0 in both (M4); a mean of non-negative inputs never reads below 0 after a
+//            160 dB drop, a signed one is not clamped (L10); a follower on a constant stops at a fixed point that
+//            convergeStateStill reports (H4); a window history known small is not rescanned (L11)
 // DY.5:
 //   truepeak = the BS.1770-4 phases in direct form (double) on random input, the same bits for every block size and for
 //            1 and 8 lanes; causal (outputs to frame m read inputs to m), an impulse peaks exactly 6 frames later and
@@ -15,6 +18,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -489,4 +493,121 @@ TEST_CASE("truepeak: RtScope (both lane counts, short and long calls)") {
     }
   }
   CHECK(violations == 0);
+}
+
+TEST_CASE("follow / window (AU.dsp, RB-DY M4): an inf sample reads as 0 — it does not pin the envelope or the window") {
+  pq::DenormalGuard dg;
+  constexpr float inf = std::numeric_limits<float>::infinity();
+  for (const float bad : {inf, -inf, std::numeric_limits<float>::quiet_NaN()}) {
+    std::vector<float> x(256, 0.5f), z = x;
+    x[100] = bad;
+    z[100] = 0.0f;
+    for (uint32_t lanes : {1u, 8u}) {
+      INFO("lanes " << lanes << ", sample " << bad);
+      auto widen = [&](const std::vector<float>& v) {
+        std::vector<float> o;
+        for (float s : v)
+          for (uint32_t l = 0; l < lanes; ++l) o.push_back(s);
+        return o;
+      };
+      Rig a(Atom::Follow, lanes, {}), b(Atom::Follow, lanes, {});
+      CHECK(sameBits(a.run({widen(x), pattern(10.0f), pattern(48000.0f)}, 256), b.run({widen(z), pattern(10.0f), pattern(48000.0f)}, 256)));
+      for (uint32_t op = 0; op < 3; ++op) {
+        StateInit init;
+        init.windowFrames = 64;
+        init.windowOp = op;
+        Rig wa(Atom::Window, lanes, init), wb(Atom::Window, lanes, init);
+        CHECK(sameBits(runWindow(wa, widen(x), 256), runWindow(wb, widen(z), 256)));
+      }
+    }
+  }
+}
+
+TEST_CASE("window mean (AU.dsp, RB-DY L10): never below 0 while the window holds no negative input; signed input unclamped") {
+  pq::DenormalGuard dg;
+  constexpr uint32_t kLen = 64;
+  // x² of a signal that drops 160 dB: the running sum's residue must not read negative.
+  std::vector<float> x;
+  std::mt19937 rng(7);
+  std::uniform_real_distribution<float> u(0.5f, 1.0f);
+  for (int i = 0; i < 300; ++i) x.push_back(1e8f * u(rng));
+  for (int i = 0; i < 700; ++i) x.push_back(1e-8f * u(rng));
+  StateInit init;
+  init.windowFrames = kLen;
+  init.windowOp = 2;
+  for (uint32_t lanes : {1u, 8u})
+    for (uint32_t block : {1u, 37u, 64u, 1000u}) {
+      INFO("lanes " << lanes << ", block " << block);
+      std::vector<float> xi;
+      for (float v : x)
+        for (uint32_t l = 0; l < lanes; ++l) xi.push_back(v);
+      Rig r(Atom::Window, lanes, init);
+      const std::vector<float> y = runWindow(r, xi, block);
+      for (float v : y) REQUIRE(v >= 0.0f);
+    }
+  // A signed input keeps its negative means (the window holds a negative input: nothing is clamped).
+  std::vector<float> s(400);
+  for (size_t i = 0; i < s.size(); ++i) s[i] = i % 3 == 0 ? -1.0f : 0.25f;
+  const std::vector<double> want = bruteWindow(s, kLen, 2);
+  for (uint32_t lanes : {1u, 8u}) {
+    std::vector<float> si;
+    for (float v : s)
+      for (uint32_t l = 0; l < lanes; ++l) si.push_back(v);
+    Rig r(Atom::Window, lanes, init);
+    const std::vector<float> y = runWindow(r, si, 50);
+    for (size_t i = 0; i < s.size(); ++i) CHECK(y[i * lanes] == doctest::Approx(want[i]).epsilon(1e-6));
+    CHECK(*std::min_element(y.begin(), y.end()) < -0.1f);
+  }
+  // After the last negative input leaves, the clamp is back: −1 at frame 100, then 0.
+  std::vector<float> one(300, 0.0f);
+  one[100] = -1.0f;
+  Rig r(Atom::Window, 1, init);
+  const std::vector<float> y = runWindow(r, one, 7);
+  CHECK(y[100] == doctest::Approx(-1.0f / kLen));
+  CHECK(y[100 + kLen - 1] == doctest::Approx(-1.0f / kLen));
+  CHECK(y[100 + kLen] == 0.0f);
+}
+
+TEST_CASE("follow (AU.dsp, RB-DY H4): on a constant input it stops at a fixed point, which convergeStateStill reports") {
+  pq::DenormalGuard dg;
+  // A 70 dB target with a slow release: the float one-pole stalls short of it; still = it stopped moving.
+  for (const float rel : {100.0f, 144000.0f}) {
+    Rig r(Atom::Follow, 1, {});
+    CHECK(hasConvergeState(Atom::Follow));
+    CHECK_FALSE(hasConvergeState(Atom::Window));
+    std::vector<float> y = r.run({std::vector<float>(64, 70.0f), pattern(96.0f), pattern(rel)}, 64);
+    CHECK_FALSE(convergeStateStill(Atom::Follow, r.state.data()));
+    float last = y.back();
+    int blocks = 0;
+    while (!convergeStateStill(Atom::Follow, r.state.data()) && blocks < 20000) {
+      y = r.run({std::vector<float>(64, 70.0f), pattern(96.0f), pattern(rel)}, 64);
+      last = y.back();
+      ++blocks;
+    }
+    MESSAGE("release " << rel << ": still after " << blocks << " blocks at " << last << " (target 70)");
+    REQUIRE(convergeStateStill(Atom::Follow, r.state.data()));
+    // A fixed point: every later frame gives the same bits.
+    const std::vector<float> more = r.run({std::vector<float>(512, 70.0f), pattern(96.0f), pattern(rel)}, 512);
+    for (float v : more) CHECK(std::memcmp(&v, &last, 4) == 0);
+    CHECK(std::fabs(last - 70.0f) < 1e-3f);
+  }
+}
+
+TEST_CASE("window (AU.dsp, RB-DY L11): a history known small is not scanned again (the O(1) words still are)") {
+  StateInit init;
+  init.windowFrames = 4800;
+  init.windowOp = 2;
+  init.lanes = 1;
+  Rig r(Atom::Window, 1, init);
+  CHECK(decayStateSmall(Atom::Window, r.state.data(), 1e-9f));
+  CHECK(decayStateSmall(Atom::Window, r.state.data(), 1e-9f, true));
+  auto& st = *reinterpret_cast<WindowState*>(r.state.data());
+  st.values()[1234] = 1.0f;  // a value in the ring only (the scan sees it; a known-small history is not scanned)
+  CHECK_FALSE(decayStateSmall(Atom::Window, r.state.data(), 1e-9f));
+  CHECK(decayStateSmall(Atom::Window, r.state.data(), 1e-9f, true));
+  st.values()[1234] = 0.0f;
+  const uint64_t one = std::bit_cast<uint64_t>(1.0);  // the running sum is always checked
+  st.sumLo[0] = static_cast<uint32_t>(one);
+  st.sumHi[0] = static_cast<uint32_t>(one >> 32);
+  CHECK_FALSE(decayStateSmall(Atom::Window, r.state.data(), 1e-9f, true));
 }

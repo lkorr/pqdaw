@@ -4,7 +4,8 @@
 //     accurately when its input resumes mid-block: identical to a run that never sleeps;
 //   - a feedback chain (combs, a Schroeder allpass, a one-pole) sleeps once its tail is below −120 dBFS: identical to
 //     the Shadow run (same decisions, every region still running), within the cut residue of a never-sleeping run;
-//   - a param change wakes a sleeping smoother; RtScope clean; the silence reports;
+//   - a param change wakes a sleeping smoother; RtScope clean; the silence reports; AU.dsp (RB-DY M1): a param's ramp
+//     keeps awake only the segments that wake on that param;
 //   - every patch of the corpus (tests/graph/cases, tests/engine/patches, stdlib): Shadow runs never see a region it
 //     would have skipped produce anything but zeros, and sleeping runs equal the Shadow runs.
 #include <doctest/doctest.h>
@@ -208,4 +209,37 @@ patch Eq {
   MESSAGE("svf chain: first sleep at frame " << first << ", max |sleeping - never sleeping| " << d);
   CHECK(d <= 4e-6);
   CHECK(on.rtViolations == 0);
+}
+
+TEST_CASE("silence (AU.dsp, RB-DY M1): a param's ramp keeps awake only the segments that wake on it") {
+  // Two segments in one stage: a feedback comb (no waking params) and a smoothed gain (wakes on vol). vol moves while
+  // both are silent: the gain's segment wakes for the ramp, the comb's sleeps on (EX.x-fix-settle kept the whole stage
+  // awake while any of its ramps moved).
+  const interp_test::Compiled c = interp_test::compileText(R"(
+patch Two {
+  in    a : audio
+  in    b : audio
+  param fb = 0.5 [0..0.9]
+  param vol = 0.5 [0..1]
+  out   ya : audio
+  out   yb : audio
+  d  = delay(a + d * fb, 10ms, 20ms)
+  ya = d
+  yb = gain(b, vol, 2ms)
+}
+)");
+  REQUIRE(c.sched.sleep.segments.size() == 2);
+  REQUIRE(!c.sched.ramps.empty());
+  auto params = [](uint64_t t, std::vector<float>& p) {
+    p[0] = 0.5f;
+    p[1] = t < 30000 ? 0.5f : 0.9f;
+  };
+  const std::vector<uint32_t> blocks{64};
+  const Run on = run(c, eng::SleepMode::On, burst(), 60000, blocks, interp_test::rigImageBuilder(), params);
+  const Run shadow = run(c, eng::SleepMode::Shadow, burst(), 60000, blocks, interp_test::rigImageBuilder(), params);
+  REQUIRE(on.error.empty());
+  std::string where;
+  CHECK_MESSAGE(sameValues(on, shadow, where), where);  // a feedback tail: the Shadow run, as the comb tests
+  CHECK(on.stats.wakes == 1);   // the gain's segment only
+  CHECK(on.stats.sleeps == 3);  // both after the burst, the gain again after its ramp
 }

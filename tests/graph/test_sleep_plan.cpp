@@ -208,3 +208,62 @@ patch Solved {
   CHECK_FALSE(c.sched.sleep.dormantCapable);  // the unknown's guess is global state
 }
 
+
+TEST_CASE("sleep plan (AU.dsp, RB-DY H4): a limiter's dB detector is Z by its range; its windows and follower decay") {
+  // fast_gain_to_db of silence is −inf: max(0, −inf − ceiling) = 0 for any finite ceiling (ranged or not: the host
+  // keeps every param finite), so the hold window, the release follower and the smoothing window see silence.
+  for (const char* ceiling : {"param ceiling = -1 [-24..0]", "param ceiling = -1"}) {
+    CAPTURE(std::string(ceiling));
+    Compiled c;
+    compile(c, std::string(R"(
+patch Lim {
+  in    x : audio
+  )") + ceiling + R"(
+  out   y : audio
+  r  = max(0, fast_gain_to_db(abs(x)) - ceiling)
+  gr = window(max(follow(window(r, 3ms), 0, 100ms), follow(window(r, 3ms), 0, 400ms) - 3), 3ms, 2)
+  y  = z1(x) * fast_db_to_gain(-gr)
+}
+)");
+    REQUIRE(c.sched.sleep.segments.size() == 1);
+    const std::vector<SleepStateKind> k = kinds(c.sched, c.sched.sleep.segments[0]);
+    CHECK(std::count(k.begin(), k.end(), SleepStateKind::Decay) == 5);  // three windows, two followers
+    CHECK(std::count(k.begin(), k.end(), SleepStateKind::Memory) == 1);
+    CHECK(c.sched.sleep.dormantCapable);
+  }
+  {
+    Compiled c;  // a ceiling that moves on its own (an LFO): r is neither Z nor constant, the follower never rests
+    compile(c, R"(
+patch Lim {
+  in    x : audio
+  out   y : audio
+  r = max(0, fast_gain_to_db(abs(x)) - sine(phasor(1Hz)) * 6)
+  y = z1(x) * fast_db_to_gain(-follow(r, 0, 100ms))
+}
+)");
+    CHECK(sleepingRegions(c.sched) == 0);
+  }
+}
+
+TEST_CASE("sleep plan (AU.dsp, RB-DY H4): a follower on a constant converges, a smoother of constants settles; both wake on "
+          "the params they are made of") {
+  Compiled c;  // an expander at silence: its reduction is a constant (70 dB here), not 0
+  compile(c, R"(
+patch Exp {
+  in    x : audio
+  param t = -40 [-60..0]
+  param mix = 1 [0..1]
+  out   y : audio
+  lvl = fast_gain_to_db(max(abs(x), 0.000001))
+  gr  = min(follow(max(0, (t - lvl) * 2), 1ms, 100ms), 70)
+  y   = x * gain(fast_db_to_gain(-gr) - 1, mix, 2ms)
+}
+)");
+  REQUIRE(c.sched.sleep.segments.size() == 1);
+  const SleepSegment& g = c.sched.sleep.segments[0];
+  const std::vector<SleepStateKind> k = kinds(c.sched, g);
+  CHECK(std::count(k.begin(), k.end(), SleepStateKind::Converged) == 1);
+  CHECK(std::count(k.begin(), k.end(), SleepStateKind::Smoother) == 1);
+  CHECK(g.numParams == 2);  // t (the follower's input), mix (the smoother's target)
+  CHECK(c.sched.sleep.dormantCapable);
+}

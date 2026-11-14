@@ -39,8 +39,13 @@
 //                a delay line's last `tail` written frames ≤ ε (the frames written since the last check are scanned,
 //                once the whole span), smoother residuals exactly 0. Quiescent → flushed (the ≤ ε residue set to 0)
 //                and asleep. Asleep with silent sources and unchanged params → stays asleep (state untouched).
-//                A stage in its param-ramp mode (decideRamps) counts as a param change for its segments
-//                (EX.x-fix-settle: a smoother falls asleep at its target, not mid-ramp).
+//                AU.dsp (RB-DY H4): a segment with CONVERGED states (a follower on a constant) first flushes the
+//                others and runs one more block from them (so the follower's input is the exact constant), then
+//                sleeps once each is within tolerance of it (y set to it). A state found ≤ ε (or flushed) is not
+//                checked again until the segment wakes (RB-DY L11: a window's O(L) scan once).
+//                A param ramp counts as a param change for the segments that wake on that param, for the ramp's
+//                length after the change (EX.x-fix-settle: a smoother falls asleep at its target, not mid-ramp;
+//                AU.dsp, RB-DY M1: only those segments, no longer every segment of the stage).
 //                Anything else → awake for the whole block. The backends read regionAsleep (the interpreter) or
 //                the flag word in aux (layout().sleepOff + segment, generated code) per sleepable region and run
 //                it or zero its fill buffers instead (fillRegion), one branch per region per block. ε = kSleepEpsilon
@@ -352,12 +357,17 @@ private:
     uint32_t scanPos = 0;            // delay: writes before this ring counter are accounted for
     uint32_t loudPos = 0;            // delay: one past the last write > ε
     uint32_t nonzeroPos = 0;         // delay: one past the last write ≠ ±0
+    bool small = false;              // AU.dsp (L11): found ≤ ε since the segment last woke (its history stays so)
+    bool flushed = false;            // AU.dsp: flushed since the segment last woke (exactly its rest value since)
   };
   struct SegRun {
     uint32_t stage = 0;
     uint32_t firstSource = 0, numSources = 0, firstState = 0, numStates = 0, firstParam = 0, numParams = 0;
     bool asleep = false;
     bool skip = false;               // asleep and SleepMode::On: the backends skip its regions
+    bool converges = false;          // AU.dsp: holds a Converged state
+    bool settled = false;            // AU.dsp: its other states were flushed before the block that just ran
+    uint32_t rampLeft = 0;           // AU.dsp (M1): frames its params' ramps still move
     uint32_t* flag = nullptr;        // in aux (the generated code's copy of `skip`)
   };
   struct FillRun {
@@ -593,8 +603,10 @@ void ImageHost::run(ProcessContext& ctx, GlobalStage&& global, VoiceStage&& voic
     if (!any) initReducers(st, frames, true);
     anyVoice = anyVoice || any;
   }
-  if (anyRamps_)  // TX.smooth-fix1: what is left of the ramps after this block
+  if (anyRamps_) {  // TX.smooth-fix1: what is left of the ramps after this block (AU.dsp: and of each segment's)
     for (uint32_t k = 0; k < rampLeft_.size(); ++k) rampLeft_[k] -= rampLeft_[k] < frames ? rampLeft_[k] : frames;
+    for (SegRun& g : segs_) g.rampLeft -= g.rampLeft < frames ? g.rampLeft : frames;
+  }
   run_.laneMask = 0;
   run_.gain = nullptr;
   bool outsSilent = true;

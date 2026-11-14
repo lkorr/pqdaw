@@ -2,6 +2,7 @@
 
 #include "pq/dsp/atoms.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cmath>
@@ -346,11 +347,11 @@ bool hasDecayState(Atom a) noexcept {  // RT-safe
   return a == Atom::Svf || a == Atom::Follow || a == Atom::Window || a == Atom::TruePeak;
 }
 
-bool decayStateSmall(Atom a, const void* state, float eps) noexcept {  // RT-safe
+bool decayStateSmall(Atom a, const void* state, float eps, bool historySmall) noexcept {  // RT-safe
   switch (a) {
     case Atom::Svf: return detail::svfStateSmall(state, eps);
     case Atom::Follow: return detail::followStateSmall(state, eps);
-    case Atom::Window: return detail::windowStateSmall(state, eps);
+    case Atom::Window: return detail::windowStateSmall(state, eps, historySmall);
     case Atom::TruePeak: return detail::truePeakStateSmall(state, eps);
     default: return false;
   }
@@ -364,6 +365,157 @@ bool decayStateFlush(Atom a, void* state) noexcept {  // RT-safe
     case Atom::TruePeak: return detail::truePeakStateFlush(state);
     default: return false;
   }
+}
+
+bool hasConvergeState(Atom a) noexcept { return a == Atom::Follow; }  // RT-safe
+
+bool convergeStateStill(Atom a, const void* state) noexcept {  // RT-safe
+  return a == Atom::Follow && detail::followStill(state);
+}
+
+// ---- value ranges (AU.dsp, RB-DY H4) ------------------------------------------------------------------------------
+
+namespace {
+
+constexpr float kInf = std::numeric_limits<float>::infinity();
+
+bool hasInf(ValueRange r) noexcept { return r.lo == -kInf || r.hi == kInf; }
+bool has0(ValueRange r) noexcept { return r.lo <= 0.0f && r.hi >= 0.0f; }
+bool ordered(ValueRange r) noexcept { return r.lo == r.lo && r.hi == r.hi && r.lo <= r.hi; }
+
+bool addRange(ValueRange a, ValueRange b, ValueRange& o) noexcept {
+  if ((a.lo == -kInf && b.hi == kInf) || (a.hi == kInf && b.lo == -kInf)) return false;  // inf − inf
+  o = {a.lo + b.lo, a.hi + b.hi};
+  return true;
+}
+ValueRange negRange(ValueRange a) noexcept { return {-a.hi, -a.lo}; }
+bool mulRange(ValueRange a, ValueRange b, ValueRange& o) noexcept {
+  if ((has0(a) && hasInf(b)) || (has0(b) && hasInf(a))) return false;  // 0 · inf
+  const float p[4] = {a.lo * b.lo, a.lo * b.hi, a.hi * b.lo, a.hi * b.hi};
+  o = {std::min({p[0], p[1], p[2], p[3]}), std::max({p[0], p[1], p[2], p[3]})};
+  return true;
+}
+// fma(a, b, c) over the box: the exact a·b + c is bilinear in (a, b) and increasing in c, the rounding monotone, so
+// the corners with c's ends bound it.
+bool fmaRange(ValueRange a, ValueRange b, ValueRange c, ValueRange& o) noexcept {
+  ValueRange p;
+  if (!mulRange(a, b, p) || !addRange(p, c, o)) return false;
+  float lo = kInf, hi = -kInf;
+  for (const float x : {a.lo, a.hi})
+    for (const float y : {b.lo, b.hi}) {
+      lo = std::min(lo, std::fma(x, y, c.lo));
+      hi = std::max(hi, std::fma(x, y, c.hi));
+    }
+  o = {lo, hi};
+  return true;
+}
+ValueRange unite(ValueRange a, ValueRange b) noexcept { return {std::min(a.lo, b.lo), std::max(a.hi, b.hi)}; }
+
+// The dB conversions: exact at ±0 / ±inf (gain_to_db(0) = −inf, db_to_gain(−inf) = 0, both kernels), otherwise the
+// double value widened by far more than either kernel's error (units.h: ≤ 4e-5 dB, ≤ 2e-6 relative).
+float toDb(float g, bool up) noexcept {
+  if (g < std::numeric_limits<float>::min()) return -kInf;  // 0 and denormals (flushed on audio threads: −inf)
+  if (g == kInf) return kInf;
+  const double d = 20.0 * std::log10(static_cast<double>(g));
+  return static_cast<float>(up ? d + 1e-3 + 1e-6 * std::fabs(d) : d - 1e-3 - 1e-6 * std::fabs(d));
+}
+float fromDb(float db, bool up) noexcept {
+  if (db == -kInf) return 0.0f;
+  if (db == kInf) return kInf;
+  const double g = std::pow(10.0, static_cast<double>(db) / 20.0) * (up ? 1.0 + 1e-4 : 1.0 - 1e-4);
+  if (!up) return g < static_cast<double>(std::numeric_limits<float>::min()) ? 0.0f : static_cast<float>(g);
+  return g > static_cast<double>(std::numeric_limits<float>::max()) ? kInf : static_cast<float>(g);
+}
+
+}  // namespace
+
+bool rangeOf(Atom a, const ValueRange* in, uint32_t numIn, ValueRange& out) noexcept {  // RT-safe
+  for (uint32_t i = 0; i < numIn; ++i)
+    if (!ordered(in[i])) return false;
+  auto need = [&](uint32_t k) noexcept { return numIn >= k; };
+  ValueRange o{};
+  switch (a) {
+    case Atom::Const:
+      if (!need(1)) return false;
+      o = in[0];
+      break;
+    case Atom::Add:
+      if (!need(2) || !addRange(in[0], in[1], o)) return false;
+      break;
+    case Atom::Sub:
+      if (!need(2) || !addRange(in[0], negRange(in[1]), o)) return false;
+      break;
+    case Atom::Mul:
+      if (!need(2) || !mulRange(in[0], in[1], o)) return false;
+      break;
+    case Atom::Div: {
+      if (!need(2) || has0(in[1]) || (hasInf(in[0]) && hasInf(in[1]))) return false;
+      const ValueRange x = in[0], y = in[1];
+      const float p[4] = {x.lo / y.lo, x.lo / y.hi, x.hi / y.lo, x.hi / y.hi};
+      o = {std::min({p[0], p[1], p[2], p[3]}), std::max({p[0], p[1], p[2], p[3]})};
+      break;
+    }
+    case Atom::Min:
+      if (!need(2)) return false;
+      o = {std::min(in[0].lo, in[1].lo), std::min(in[0].hi, in[1].hi)};
+      break;
+    case Atom::Max:
+      if (!need(2)) return false;
+      o = {std::max(in[0].lo, in[1].lo), std::max(in[0].hi, in[1].hi)};
+      break;
+    case Atom::Neg:
+      if (!need(1)) return false;
+      o = negRange(in[0]);
+      break;
+    case Atom::Abs:
+      if (!need(1)) return false;
+      o = in[0].lo >= 0.0f ? in[0] : in[0].hi <= 0.0f ? negRange(in[0]) : ValueRange{0.0f, std::max(-in[0].lo, in[0].hi)};
+      break;
+    case Atom::Floor:
+      if (!need(1)) return false;
+      o = {std::floor(in[0].lo), std::floor(in[0].hi)};
+      break;
+    case Atom::Sqrt:
+    case Atom::SqrtFast:
+      if (!need(1) || in[0].lo < 0.0f) return false;
+      o = {std::sqrt(in[0].lo), std::sqrt(in[0].hi)};
+      break;
+    case Atom::Clip:  // min(max(x, lo), hi)
+      if (!need(3)) return false;
+      o = {std::min(std::max(in[0].lo, in[1].lo), in[2].lo), std::min(std::max(in[0].hi, in[1].hi), in[2].hi)};
+      break;
+    case Atom::MulAdd:
+      if (!need(3) || !fmaRange(in[0], in[1], in[2], o)) return false;
+      break;
+    case Atom::Lerp: {  // fma(t, b − a, a)
+      ValueRange d;
+      if (!need(3) || !addRange(in[1], negRange(in[0]), d) || !fmaRange(in[2], d, in[0], o)) return false;
+      break;
+    }
+    case Atom::Select:
+      if (!need(3)) return false;
+      o = unite(in[1], in[2]);
+      break;
+    case Atom::Mux:
+      if (!need(2)) return false;
+      o = in[1];
+      for (uint32_t i = 2; i < numIn; ++i) o = unite(o, in[i]);
+      break;
+    case Atom::GainToDb:
+    case Atom::GainToDbFast:
+      if (!need(1) || in[0].lo < 0.0f) return false;
+      o = {toDb(in[0].lo, false), toDb(in[0].hi, true)};
+      break;
+    case Atom::DbToGain:
+    case Atom::DbToGainFast:
+      if (!need(1)) return false;
+      o = {fromDb(in[0].lo, false), fromDb(in[0].hi, true)};
+      break;
+    default: return false;
+  }
+  if (!ordered(o)) return false;
+  out = o;
+  return true;
 }
 
 uint32_t maxDelayFramesLimit(uint32_t lanes) noexcept {

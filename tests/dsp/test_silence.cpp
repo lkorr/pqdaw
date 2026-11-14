@@ -10,10 +10,12 @@
 //                               (residual exactly 0) stays bit for bit unchanged while target and time do.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -298,4 +300,87 @@ TEST_CASE("dsp silence: tails (T1.x-silence)") {
     CHECK(pq::dsp::silenceInfo(a).rule == SilenceRule::None);
   CHECK(pq::dsp::silenceTail(Atom::WavetablePos, init) == 0);
   CHECK(pq::dsp::silenceTail(Atom::VoiceTap, init) == 0);
+}
+
+TEST_CASE("dsp silence: value ranges (AU.dsp, RB-DY H4) bound every output the kernel gives for inputs within them") {
+  using pq::dsp::ValueRange;
+  constexpr float inf = std::numeric_limits<float>::infinity();
+  std::mt19937 rng(20261113);
+  // Range shapes: a point (0, a value, ±inf), finite, half-open to ±inf.
+  auto randomRange = [&](int shape) -> ValueRange {
+    std::uniform_real_distribution<float> u(-100.0f, 100.0f);
+    const float a = u(rng), b = u(rng);
+    switch (shape) {
+      case 0: return {0.0f, 0.0f};
+      case 1: return {-inf, -inf};
+      case 2: return {a, a};
+      case 3: return {std::min(a, b), std::max(a, b)};
+      case 4: return {-inf, a};
+      case 5: return {a, inf};
+      case 6: return {0.0f, std::fabs(a)};
+      default: return {std::fabs(std::min(a, b)) + 1.0f, std::fabs(std::max(a, b)) + 2.0f};  // positive
+    }
+  };
+  // A sample within r: an end, or between them.
+  auto sample = [&](ValueRange r) -> float {
+    const int pick = std::uniform_int_distribution<int>(0, 3)(rng);
+    if (pick == 0) return r.lo;
+    if (pick == 1) return r.hi;
+    const float lo = std::max(r.lo, -1e30f), hi = std::min(r.hi, 1e30f);
+    if (lo >= hi) return pick == 2 ? r.lo : r.hi;
+    return std::uniform_real_distribution<float>(lo, hi)(rng);
+  };
+  const Atom atoms[] = {Atom::Const, Atom::Add, Atom::Sub, Atom::Mul, Atom::Div, Atom::Min, Atom::Max, Atom::Neg,
+                        Atom::Abs, Atom::Floor, Atom::Sqrt, Atom::SqrtFast, Atom::Clip, Atom::MulAdd, Atom::Lerp,
+                        Atom::Select, Atom::Mux, Atom::GainToDb, Atom::GainToDbFast, Atom::DbToGain, Atom::DbToGainFast};
+  uint32_t checked = 0;
+  for (const Atom atom : atoms) {
+    const pq::dsp::KernelInfo& info = pq::dsp::kernelInfo(atom);
+    INFO(std::string(info.name));
+    uint32_t numIn = 0, numOut = 0;
+    arity(atom, info, numIn, numOut);
+    for (int trial = 0; trial < 400; ++trial) {
+      std::vector<ValueRange> in(numIn);
+      for (uint32_t i = 0; i < numIn; ++i) in[i] = randomRange(std::uniform_int_distribution<int>(0, 7)(rng));
+      ValueRange out;
+      if (!pq::dsp::rangeOf(atom, in.data(), numIn, out)) continue;
+      ++checked;
+      CHECK(out.lo <= out.hi);
+      constexpr uint32_t kFrames = 32;
+      const Kernel k{atom, 1, 0, numIn, numOut};
+      Run r;
+      runKernel(k, nullptr, kFrames, r, [&](uint32_t i, uint32_t, uint32_t) {
+        if (i == 0 && atom == Atom::Select) return pq::dsp::boolMask(std::bernoulli_distribution(0.5)(rng));
+        if (i == 0 && atom == Atom::Mux) return static_cast<float>(std::uniform_int_distribution<int>(0, 2)(rng));
+        return sample(in[i]);
+      });
+      for (uint32_t f = 0; f < kFrames; ++f) {
+        const float y = r.out[0][f];
+        INFO("trial " << trial << " frame " << f << ": " << y << " not in [" << out.lo << ", " << out.hi << "]");
+        REQUIRE((y >= out.lo && y <= out.hi));
+      }
+    }
+  }
+  CHECK(checked > 2000);
+  // The silence points the sleep plan relies on, exactly.
+  const ValueRange zero{0.0f, 0.0f}, ninf{-inf, -inf}, finite{-3.4e38f, 3.4e38f};
+  ValueRange o;
+  REQUIRE(pq::dsp::rangeOf(Atom::GainToDbFast, &zero, 1, o));
+  CHECK((o.lo == -inf && o.hi == -inf));
+  REQUIRE(pq::dsp::rangeOf(Atom::DbToGainFast, &ninf, 1, o));
+  CHECK((o.lo == 0.0f && o.hi == 0.0f));
+  const ValueRange sub[2] = {ninf, finite};  // dB of silence − any finite Ceiling
+  REQUIRE(pq::dsp::rangeOf(Atom::Sub, sub, 2, o));
+  CHECK((o.lo == -inf && o.hi == -inf));
+  const ValueRange mx[2] = {zero, ninf};  // max(0, that)
+  REQUIRE(pq::dsp::rangeOf(Atom::Max, mx, 2, o));
+  CHECK((o.lo == 0.0f && o.hi == 0.0f));
+  // A NaN could arise: no range.
+  const ValueRange zeroTimesInf[2] = {zero, {1.0f, inf}};
+  CHECK_FALSE(pq::dsp::rangeOf(Atom::Mul, zeroTimesInf, 2, o));
+  const ValueRange infMinusInf[2] = {{-inf, 0.0f}, {-inf, 0.0f}};
+  CHECK_FALSE(pq::dsp::rangeOf(Atom::Sub, infMinusInf, 2, o));
+  const ValueRange negSqrt{-1.0f, 1.0f};
+  CHECK_FALSE(pq::dsp::rangeOf(Atom::Sqrt, &negSqrt, 1, o));
+  CHECK_FALSE(pq::dsp::rangeOf(Atom::Exp, &zero, 1, o));  // no rule
 }

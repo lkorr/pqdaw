@@ -13,6 +13,8 @@
 // 8 samples where four direct 12-tap phases take 48 fma. Taps read the input in place from element 16 (1 lane) / 88
 // (8 lanes) on; before that a stack copy of history + head.
 
+#include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -22,13 +24,12 @@
 namespace pq::dsp::detail {
 namespace {
 
-constexpr float kFltMax = std::numeric_limits<float>::max();
-
-// NaN → 0, ±inf → ±FLT_MAX (both atoms' input rule: a follower or a window never holds a non-finite value).
+// Non-finite → 0 (both atoms' input rule: a follower or a window never holds a non-finite value). AU.dsp (RB-DY M4):
+// ±inf reads as 0 like NaN, no longer ±FLT_MAX: a single inf sample in a dB detector held FLT_MAX dB of reduction
+// (~100 s of release); now it is ignored. |x| < inf is false for NaN and ±inf: abs, compare, and (3 ops, was 4).
 template <class S>
 inline typename S::F clean(typename S::F x) noexcept {  // RT-safe
-  const auto ordered = S::eq(x, x);
-  return S::min(S::max(S::band(x, ordered), S::set(-kFltMax)), S::set(kFltMax));
+  return S::band(x, S::lt(S::abs(x), S::set(std::numeric_limits<float>::infinity())));
 }
 
 // ---- follow ----------------------------------------------------------------------------------------------------------
@@ -61,6 +62,7 @@ struct Follow {
     const F one = S::set(1.0f);
     F y = S::load(st.y);
     auto xAt = [&](uint32_t f) noexcept { return clean<S>(S::load(splBit(SM, 0) ? x : x + static_cast<size_t>(f) * L)); };
+    S::store(st.y0, y);  // AU.dsp (H4): where this call starts (dsp::convergeStateStill)
     if constexpr (splBit(SM, 1) && splBit(SM, 2)) {
       const F ra = retention<S>(S::load(at)), rr = retention<S>(S::load(rt));
       const F ia = S::sub(one, ra), ir = S::sub(one, rr);
@@ -241,6 +243,11 @@ void extremum1(WindowState& st, const float* x, float* out, uint32_t frames) noe
   _mm_store_ss(st.prefix, p1);
 }
 
+// AU.dsp (RB-DY L10): the mean of a window that holds no negative input is ≥ 0, but the running sum's rounding residue
+// after a large drop (x² falling 160 dB: 320 dB of range in the double sum) could read slightly negative, so a
+// sqrt(window(x², mean)) gave NaN for up to L frames. So out = max(out, 0) on the frames whose window holds no negative
+// (cleaned) input: negLeft counts the frames until the newest one leaves (n ← x < 0 ? L : max(n − 1, 0); clamp where
+// n = 0). The inputs are read back from the ring the frame wrote (the output may take x's buffer in place).
 // Per chunk of ≤ 64 frames: the differences x − old in double 4 frames at a time (and the ring written), the running
 // sum alone on the dependency chain (one add per frame), then the outputs 4 at a time. Every value is the per-frame
 // definition's (the 8-lane kernel's per lane), only the work is regrouped.
@@ -252,6 +259,7 @@ void mean1(WindowState& st, const float* x, float* out, uint32_t frames) noexcep
   float* v = st.values();
   uint32_t pos = st.pos[0] < len ? st.pos[0] : 0u;
   double sum = sumOf(st, 0);
+  uint32_t left = st.negLeft[0];
   const double inv = 1.0 / static_cast<double>(len);
   const __m256d inv4 = _mm256_set1_pd(inv);
   const __m128 xs = kSplX ? clean<simd::S1>(_mm_set1_ps(*x)) : _mm_setzero_ps();
@@ -276,8 +284,26 @@ void mean1(WindowState& st, const float* x, float* out, uint32_t frames) noexcep
         vp[k] = xv;
       }
       for (k = 0; k < n; ++k) d[k] = sum += d[k];
-      for (k = 0; k + 4 <= n; k += 4) _mm_storeu_ps(op + k, _mm256_cvtpd_ps(_mm256_mul_pd(_mm256_load_pd(d + k), inv4)));
-      for (; k < n; ++k) op[k] = static_cast<float>(d[k] * inv);
+      // L10: a chunk without negative inputs (the usual: a square, a level) clamps from where the last one left, one
+      // compare per 4 inputs and a max per 4 outputs; otherwise the count per frame.
+      __m128 negs = _mm_setzero_ps();
+      for (k = 0; k + 4 <= n; k += 4) negs = _mm_or_ps(negs, _mm_cmplt_ps(_mm_loadu_ps(vp + k), _mm_setzero_ps()));
+      bool anyNeg = _mm_movemask_ps(negs) != 0;
+      for (; k < n; ++k) anyNeg = anyNeg || vp[k] < 0.0f;
+      if (!anyNeg) {
+        const uint32_t from = left == 0 ? 0u : left - 1 < n ? left - 1 : n;
+        left = left > n ? left - n : 0u;
+        for (k = 0; k < from; ++k) op[k] = static_cast<float>(d[k] * inv);
+        for (; k + 4 <= n; k += 4)
+          _mm_storeu_ps(op + k, _mm_max_ps(_mm256_cvtpd_ps(_mm256_mul_pd(_mm256_load_pd(d + k), inv4)), _mm_setzero_ps()));
+        for (; k < n; ++k) op[k] = std::max(static_cast<float>(d[k] * inv), 0.0f);
+      } else {
+        for (k = 0; k < n; ++k) {
+          left = vp[k] < 0.0f ? len : left > 0 ? left - 1 : 0u;
+          const float y = static_cast<float>(d[k] * inv);
+          op[k] = left == 0 ? std::max(y, 0.0f) : y;
+        }
+      }
     }
     pos += run;
     f += run;
@@ -287,6 +313,7 @@ void mean1(WindowState& st, const float* x, float* out, uint32_t frames) noexcep
     }
   }
   st.pos[0] = pos;
+  st.negLeft[0] = left;
   setSum(st, 0, sum);
 }
 
@@ -389,6 +416,10 @@ void mean8(WindowState& st, const float* x, float* out, uint32_t frames) noexcep
   __m256d lo = _mm256_load_pd(s), hi = _mm256_load_pd(s + 4);
   const __m256d inv = _mm256_set1_pd(1.0 / static_cast<double>(len));
   const __m256 xs = kSplX ? clean<simd::S8>(_mm256_loadu_ps(x)) : _mm256_setzero_ps();
+  // L10: the count per lane (5 vector ops per frame).
+  __m256i left = _mm256_load_si256(reinterpret_cast<const __m256i*>(st.negLeft));
+  const __m256i lenV = _mm256_set1_epi32(static_cast<int>(len)), one = _mm256_set1_epi32(1), zi = _mm256_setzero_si256();
+  const __m256 zf = _mm256_setzero_ps();
   uint32_t f = 0;
   while (f < frames) {
     const uint32_t run = frames - f < len - pos ? frames - f : len - pos;
@@ -402,7 +433,11 @@ void mean8(WindowState& st, const float* x, float* out, uint32_t frames) noexcep
       hi = _mm256_add_pd(hi, _mm256_sub_pd(_mm256_cvtps_pd(_mm256_extractf128_ps(xv, 1)),
                                            _mm256_cvtps_pd(_mm256_extractf128_ps(old, 1))));
       const __m256 y = _mm256_set_m128(_mm256_cvtpd_ps(_mm256_mul_pd(hi, inv)), _mm256_cvtpd_ps(_mm256_mul_pd(lo, inv)));
-      _mm256_storeu_ps(out + static_cast<size_t>(f + k) * 8, y);
+      left = _mm256_max_epi32(_mm256_sub_epi32(left, one), zi);
+      left = _mm256_castps_si256(
+          _mm256_blendv_ps(_mm256_castsi256_ps(left), _mm256_castsi256_ps(lenV), _mm256_cmp_ps(xv, zf, _CMP_LT_OQ)));
+      const __m256 clamped = _mm256_blendv_ps(y, _mm256_max_ps(y, zf), _mm256_castsi256_ps(_mm256_cmpeq_epi32(left, zi)));
+      _mm256_storeu_ps(out + static_cast<size_t>(f + k) * 8, clamped);
     }
     pos += run;
     f += run;
@@ -415,6 +450,7 @@ void mean8(WindowState& st, const float* x, float* out, uint32_t frames) noexcep
   _mm256_store_pd(s + 4, hi);
   for (uint32_t l = 0; l < 8; ++l) setSum(st, l, s[l]);
   _mm256_store_si256(reinterpret_cast<__m256i*>(st.pos), _mm256_set1_epi32(static_cast<int>(pos)));
+  _mm256_store_si256(reinterpret_cast<__m256i*>(st.negLeft), left);
 }
 
 struct Window {
@@ -591,12 +627,20 @@ bool followStateFlush(void* state) noexcept {  // RT-safe
   return any;
 }
 
+// AU.dsp (H4): the last call left every lane's envelope where it started (a fixed point on a constant input).
+bool followStill(const void* state) noexcept {  // RT-safe
+  const auto& st = *static_cast<const FollowState*>(state);
+  return std::memcmp(st.y, st.y0, sizeof st.y) == 0;
+}
+
 // Every value the window still holds (the ring / segment values, the prefix where not empty, the running sum), every
-// lane: ≤ eps. The empty-suffix sentinel (values[L]) and an empty prefix (NaN) are not history.
-bool windowStateSmall(const void* state, float eps) noexcept {  // RT-safe
+// lane: ≤ eps. The empty-suffix sentinel (values[L]) and an empty prefix (NaN) are not history. historySmall (AU.dsp,
+// RB-DY L11): the values were ≤ eps at an earlier look and only silent input came since (it writes zeros): the O(L)
+// scan is skipped, the O(1) words are still checked.
+bool windowStateSmall(const void* state, float eps, bool historySmall) noexcept {  // RT-safe
   const auto& st = *static_cast<const WindowState*>(state);
   const uint32_t len = st.length[0];
-  const size_t n = static_cast<size_t>(len) * (st.lanes[0] == 8 ? 8u : 1u);
+  const size_t n = historySmall ? 0u : static_cast<size_t>(len) * (st.lanes[0] == 8 ? 8u : 1u);
   const float* v = st.values();
   for (size_t i = 0; i < n; ++i)
     if (!(std::fabs(v[i]) <= eps)) return false;

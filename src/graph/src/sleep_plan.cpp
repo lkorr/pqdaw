@@ -4,9 +4,19 @@
 // Values are op outputs (a value id per output of every op), found by replaying the schedule's buffer writes in op
 // order, so physical buffer reuse never confuses two values. Reads of a value made in an EARLIER stage are sources of
 // the reading stage (the buffer still holds the value when the stage starts).
+//
+// AU.dsp (RB-DY H4): besides Z, every value gets under H whether it is CONSTANT (C: from params, constants and Z values
+// through stateless ops, a follower converged on a C input, a settled smoother of C signals) and, when known, its
+// RANGE (dsp::rangeOf from its inputs' ranges: Z [0, 0], a literal its value, a ranged param its declared range, which
+// the host clamps to). A value whose range is [0, 0] is Z like one its rule proves: fast_gain_to_db of a silent level is
+// [−inf, −inf], so max(0, dB − Ceiling) is Z and the Limiter's windows and followers decay; the Compressor's Gain
+// Computer gives [0, 0] below its threshold. A smoother whose signals are C (not Z) keeps its state once settled, a
+// follower on a C input once converged (SleepStateKind::Converged); both wake on the params their C inputs are made of.
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <string_view>
 #include <utility>
@@ -52,6 +62,10 @@ public:
     SleepPlan& plan = s_.sleep;
     plan = SleepPlan{};
     index();
+    C_.assign(n_, 0);
+    known_.assign(n_, 0);
+    zRule_.assign(n_, 0);
+    range_.assign(n_, dsp::ValueRange{});
     computeK();
     voiceTail();
     plan.regions.assign(s_.regions.size(), RegionSleep{});
@@ -337,24 +351,154 @@ private:
     }
     return false;
   }
+  // AU.dsp: one forward pass per round (a stateless op reads only values written before it in op order; the memory
+  // halves that read later writes are Z by their rule or nothing): each op's Z by its rule or by its range, then its
+  // C-ness and range from its inputs'. Rounds only remove Z, so ranges only widen: the greatest fixpoint as before.
   void computeZ() {
     Z_.assign(n_, 0);
     for (uint32_t i = 0; i < n_; ++i) Z_[i] = eligible(i) ? 1 : 0;
     for (bool changed = true; changed;) {
       changed = false;
-      for (uint32_t i = 0; i < n_; ++i)
-        if (Z_[i] && !rule(i)) {
+      for (uint32_t i = 0; i < n_; ++i) {
+        zRule_[i] = Z_[i] && rule(i) ? 1 : 0;
+        classify(i);
+        if (Z_[i] && !zRule_[i] && !(known_[i] && isZero(range_[i].lo) && isZero(range_[i].hi))) {
           Z_[i] = 0;
           changed = true;
+          classify(i);
         }
+        if (Z_[i]) {
+          C_[i] = known_[i] = 1;
+          range_[i] = {0.0f, 0.0f};
+        }
+      }
     }
   }
+
+  // ---- C and ranges under H (AU.dsp) -------------------------------------------------------------------------------
+  bool inC(const In& x) const noexcept {
+    switch (x.kind) {
+      case InKind::Param: case InKind::ConstZero: case InKind::ConstK: return true;
+      case InKind::Source: return true;  // silent (Z) or computed from params (K)
+      case InKind::Value: return x.value != kNone && (K_[x.value] || C_[valOp_[x.value]] || Z_[valOp_[x.value]]);
+      default: return false;
+    }
+  }
+  bool inRange(const In& x, dsp::ValueRange& r) const noexcept {
+    switch (x.kind) {
+      case InKind::ConstZero: case InKind::ConstK: {
+        const ConstValue& c = s_.constants[x.index];
+        if (c.kind != Kind::Real || c.value != c.value) return false;
+        r = {c.value, c.value};
+        return true;
+      }
+      case InKind::Param: {
+        const ParamSlot& p = s_.params[x.index];
+        if (p.kind != Kind::Real) return false;
+        // The host clamps a ranged param and maps a non-finite one to its default: finite either way.
+        constexpr float big = std::numeric_limits<float>::max();
+        if (p.hasRange && p.rangeMin <= p.rangeMax && std::fabs(p.rangeMin) <= big && std::fabs(p.rangeMax) <= big) {
+          r = {p.rangeMin, p.rangeMax};
+          return true;
+        }
+        if (!(std::fabs(p.defaultValue) <= big)) return false;
+        r = {-big, big};
+        return true;
+      }
+      case InKind::Source:  // silent, or a value of an earlier stage computed from params (its range, when known)
+        if (inZ(x)) {
+          r = {0.0f, 0.0f};
+          return true;
+        }
+        if (x.value == kNone || !known_[valOp_[x.value]]) return false;
+        r = range_[valOp_[x.value]];
+        return true;
+      case InKind::Value: {
+        const uint32_t j = valOp_[x.value];
+        if (Z_[j]) {
+          r = {0.0f, 0.0f};
+          return true;
+        }
+        if (!known_[j]) return false;
+        r = range_[j];
+        return true;
+      }
+      default: return false;
+    }
+  }
+  // C-ness and range of op i's outputs from its inputs' (range: one-output stateless kernels only).
+  void classify(uint32_t i) noexcept {
+    C_[i] = known_[i] = 0;
+    const Op& op = s_.ops[i];
+    if (!global(i)) return;
+    if (op.kind == OpKind::Broadcast) {
+      if (op.numIn < 1) return;
+      C_[i] = inC(in(i, 0)) ? 1 : 0;
+      dsp::ValueRange r;
+      if (C_[i] && inRange(in(i, 0), r)) {
+        known_[i] = 1;
+        range_[i] = r;
+      }
+      return;
+    }
+    if (op.kind != OpKind::Kernel) return;
+    const dsp::KernelInfo& info = dsp::kernelInfo(op.kernel);
+    if (info.stateSize != 0) {
+      SleepStateKind k{};
+      C_[i] = cStateful(i, k) ? 1 : 0;
+      return;
+    }
+    if (info.resource != dsp::Resource::None) return;
+    for (uint32_t k = 0; k < op.numIn; ++k)
+      if (!inC(in(i, k))) return;
+    C_[i] = 1;
+    if (op.numOut != 1 || op.numIn > kMaxRangeIn) return;
+    constexpr float inf = std::numeric_limits<float>::infinity();
+    dsp::ValueRange r[kMaxRangeIn];
+    for (uint32_t k = 0; k < op.numIn; ++k)
+      if (!inRange(in(i, k), r[k])) {
+        // A choice's index (select's condition, mux's index) may be any value: only the data inputs bound it.
+        if (k != 0 || (op.kernel != Atom::Select && op.kernel != Atom::Mux)) return;
+        r[k] = {-inf, inf};
+      }
+    dsp::ValueRange o;
+    if (dsp::rangeOf(op.kernel, r, op.numIn, o)) {
+      known_[i] = 1;
+      range_[i] = o;
+    }
+  }
+  // A stateful op whose output is C under H without being Z (eligible: in a candidate region, its state checked):
+  // a follower converged on a C input (with C coefficients: then it reaches a fixed point), a settled smoother of C
+  // signals and K target and time.
+  bool cStateful(uint32_t i, SleepStateKind& kind) const noexcept {
+    const Op& op = s_.ops[i];
+    if (Z_[i] || !eligible(i)) return false;
+    if (dsp::hasConvergeState(op.kernel) && op.numOut == 1) {
+      for (uint32_t k = 0; k < op.numIn; ++k)
+        if (!inC(in(i, k))) return false;
+      kind = SleepStateKind::Converged;
+      return true;
+    }
+    const dsp::SilenceInfo si = dsp::silenceInfo(op.kernel);
+    if (si.rule != SilenceRule::Smoother) return false;
+    for (uint32_t k = 0; k < op.numIn && k < 32; ++k) {
+      if (((si.inputs >> k) & 1u) && !inC(in(i, k))) return false;
+      if (((si.settle >> k) & 1u) && !inK(in(i, k))) return false;
+    }
+    kind = SleepStateKind::Smoother;
+    return true;
+  }
   // The inputs op i's Z-ness rests on (its rule's named inputs that are Z; a smoother's signal; a memory's history).
+  // AU.dsp: a value Z by its range, or C, rests on every input (a silent source among them is a source).
   bool relied(uint32_t i, uint32_t k) const noexcept {
     const Op& op = s_.ops[i];
-    if (!Z_[i]) return false;
+    if (!Z_[i] && !C_[i]) return false;
     if (op.kind == OpKind::Broadcast || op.kind == OpKind::Send) return k == 0;
     if (op.kind != OpKind::Kernel) return false;
+    if (!zRule_[i]) {
+      const In& x = in(i, k);
+      return x.kind == InKind::Value || (x.kind == InKind::Source && inZ(x));
+    }
     if (equalK(i)) return false;
     const dsp::SilenceInfo si = dsp::silenceInfo(op.kernel);
     if (si.rule == SilenceRule::Any || si.rule == SilenceRule::MulAdd) {
@@ -398,7 +542,7 @@ private:
       kind = SleepStateKind::Smoother;
       return true;
     }
-    return false;
+    return cStateful(i, kind);  // AU.dsp: converged on / settled with C inputs
   }
   bool opKeepsState(uint32_t i) const noexcept {
     const Op& op = s_.ops[i];
@@ -523,6 +667,37 @@ private:
     }
   }
 
+  // AU.dsp: params a C value is made of: kParams' walk, stopped at Z values and values whose range is a point (the same
+  // for every param value in range), and through the stateful C ops (a converged follower, a settled smoother) to
+  // their inputs.
+  void cParams(const In& x0, std::vector<uint32_t>& out, std::vector<uint32_t>& seen, uint32_t gen) const {
+    std::vector<std::pair<uint32_t, uint32_t>> stack;  // (op, next input)
+    auto enter = [&](const In& x) {
+      if (x.kind == InKind::Param) {
+        out.push_back(x.index);
+        return;
+      }
+      if ((x.kind != InKind::Value && x.kind != InKind::Source) || x.value == kNone) return;
+      if (x.kind == InKind::Source && !K_[x.value]) return;  // silent
+      const uint32_t j = valOp_[x.value];
+      if (Z_[j] || (known_[j] && range_[j].lo == range_[j].hi)) return;
+      if (seen[j] == gen) return;
+      seen[j] = gen;
+      stack.emplace_back(j, 0u);
+    };
+    enter(x0);
+    while (!stack.empty()) {
+      const uint32_t j = stack.back().first;
+      const uint32_t k = stack.back().second;
+      if (k == s_.ops[j].numIn) {
+        stack.pop_back();
+        continue;
+      }
+      ++stack.back().second;
+      enter(in(j, k));
+    }
+  }
+
   void build() {
     SleepPlan& plan = s_.sleep;
     unite();
@@ -573,8 +748,12 @@ private:
           const dsp::SilenceInfo si = dsp::silenceInfo(op.kernel);
           if (kind == SleepStateKind::Settled) kParams(in(i, 0), params, pseen, pgen);
           if (kind == SleepStateKind::Smoother)
-            for (uint32_t k = 0; k < op.numIn && k < 32; ++k)
+            for (uint32_t k = 0; k < op.numIn && k < 32; ++k) {
               if ((si.settle >> k) & 1u) kParams(in(i, k), params, pseen, pgen);
+              if (((si.inputs >> k) & 1u) && !Z_[i]) cParams(in(i, k), params, pseen, pgen);  // AU.dsp: C signals
+            }
+          if (kind == SleepStateKind::Converged)  // its input and its coefficients: their change moves its fixed point
+            for (uint32_t k = 0; k < op.numIn; ++k) cParams(in(i, k), params, pseen, pgen);
           const uint32_t tail = dsp::silenceTail(op.kernel, s_.state.entries[op.state].init);
           auto it = std::find_if(states.begin(), states.end(), [&](const SleepState& x) { return x.entry == op.state; });
           if (it == states.end()) {
@@ -673,6 +852,11 @@ private:
   std::vector<uint8_t> K_;
   std::vector<uint64_t> canon_;
   std::vector<uint8_t> Z_;          // per op
+  std::vector<uint8_t> zRule_;      // per op: Z by its silence rule (else by its range)
+  std::vector<uint8_t> C_;          // per op: constant under H (AU.dsp)
+  std::vector<uint8_t> known_;      // per op: range_ holds its (one) output's bounds under H
+  std::vector<dsp::ValueRange> range_;
+  static constexpr uint32_t kMaxRangeIn = 16;
   std::vector<uint8_t> cand_;       // per region
   std::vector<uint32_t> uf_;
   std::vector<uint32_t> stamp_;     // walk(): per op, the generation that visited it

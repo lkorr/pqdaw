@@ -1132,12 +1132,17 @@ bool ImageHost::sleepLayout(const g::Schedule& s, SleepMode mode) {
       if (st.entry >= s.state.entries.size() || s.state.entries[st.entry].arena != g::Poly::Global)
         return fail("sleep state is not a global state entry");
       const g::StateEntry& e = s.state.entries[st.entry];
+      const bool byAtom = st.kind == g::SleepStateKind::Decay || st.kind == g::SleepStateKind::Converged;
       const size_t need = st.kind == g::SleepStateKind::Delay      ? sizeof(dsp::DelayState)
                           : st.kind == g::SleepStateKind::Smoother ? sizeof(dsp::GainState)
-                          : st.kind == g::SleepStateKind::Decay    ? dsp::stateBytes(static_cast<dsp::Atom>(e.tag.kernel), e.init)
+                          : byAtom                                 ? dsp::stateBytes(static_cast<dsp::Atom>(e.tag.kernel), e.init)
                                                                    : sizeof(float);
       if (st.kind == g::SleepStateKind::Decay && (e.tag.lanes != 1 || !dsp::hasDecayState(static_cast<dsp::Atom>(e.tag.kernel))))
         return fail("decaying sleep state is not a global filter");
+      if (st.kind == g::SleepStateKind::Converged &&
+          (e.tag.lanes != 1 || !dsp::hasConvergeState(static_cast<dsp::Atom>(e.tag.kernel))))
+        return fail("converging sleep state is not a global follower");
+      r.converges = r.converges || st.kind == g::SleepStateKind::Converged;
       if (e.size < need) return fail("sleep state smaller than its kind");
       SegState ss;
       ss.ptr = globalState() + e.offset;
@@ -1220,21 +1225,26 @@ bool ImageHost::regionFillsSilent(uint32_t region, uint32_t frames) const noexce
   return true;
 }
 
-// Whether the segment's states have decayed (see the header); flushes them when they have.
+// Whether the segment's states have decayed (see the header); flushes them when they have. AU.dsp: a state flushed
+// since the segment last woke is exactly at rest (silent input keeps it there) and is not looked at again; Converged
+// states are checked only after a block that ran from the flushed others (g.settled): asleep once none moved in it.
 bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
   bool quiet = true;
   for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {
     SegState& st = segStates_[k];
+    if (st.flushed || (!quiet && st.kind != g::SleepStateKind::Delay)) continue;  // a delay keeps its scan current
     switch (st.kind) {
       case g::SleepStateKind::Memory:
-        quiet = quiet && small(*reinterpret_cast<const float*>(st.ptr));
+        quiet = small(*reinterpret_cast<const float*>(st.ptr));
         break;
       case g::SleepStateKind::Smoother:
-        quiet = quiet && (std::bit_cast<uint32_t>(reinterpret_cast<const dsp::GainState*>(st.ptr)->d[0]) & 0x7FFFFFFFu) == 0;
+        quiet = (std::bit_cast<uint32_t>(reinterpret_cast<const dsp::GainState*>(st.ptr)->d[0]) & 0x7FFFFFFFu) == 0;
         break;
       case g::SleepStateKind::Settled: break;
+      case g::SleepStateKind::Converged: break;  // below, once the others are flushed
       case g::SleepStateKind::Decay:
-        quiet = quiet && dsp::decayStateSmall(static_cast<dsp::Atom>(st.atom), st.ptr, kSleepEpsilon);
+        quiet = dsp::decayStateSmall(static_cast<dsp::Atom>(st.atom), st.ptr, kSleepEpsilon, st.small);
+        st.small = quiet;
         break;
       case g::SleepStateKind::Delay: {
         auto& d = *reinterpret_cast<dsp::DelayState*>(st.ptr);
@@ -1270,6 +1280,8 @@ bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
   if (!quiet) return false;
   for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {  // flush the ≤ ε residue
     SegState& st = segStates_[k];
+    if (st.flushed || st.kind == g::SleepStateKind::Converged) continue;
+    st.flushed = true;
     if (st.kind == g::SleepStateKind::Decay) {
       if (dsp::decayStateFlush(static_cast<dsp::Atom>(st.atom), st.ptr)) ++sleepStats_.flushes;  // ≤ ε → exactly 0
     } else if (st.kind == g::SleepStateKind::Memory) {
@@ -1294,6 +1306,18 @@ bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
       st.nonzeroPos = st.loudPos = w - reach;
     }
   }
+  if (!g.converges) return true;
+  // AU.dsp (H4): the followers' inputs are the exact constants only in a block that ran from the flushed others.
+  if (!g.settled) {
+    g.settled = true;
+    return false;
+  }
+  // Then each follower that did not move in it sits at its fixed point: exactly where it would stay.
+  for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {
+    const SegState& st = segStates_[k];
+    if (st.kind == g::SleepStateKind::Converged && !dsp::convergeStateStill(static_cast<dsp::Atom>(st.atom), st.ptr))
+      return false;
+  }
   return true;
 }
 
@@ -1307,15 +1331,21 @@ void ImageHost::decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t 
       const float* p = src.buf != nullptr ? src.buf : extPtr(src.ext, 0);
       silentIn = allSilent(p, src.perFrame == 0 ? 8u : frames * src.perFrame);
     }
-    // EX.x-fix-settle: while its stage's param ramps move (rampOn_, decideRamps), a smoother there follows a moving
-    // target: awake until the ramps end, so it falls asleep AT its target. (Asleep mid-ramp, a gain kept the target
-    // of the block it fell asleep in, and the next sound faded from there: a stopped locate's automation value
-    // reached it only once the transport played.) A ramp lasts kParamRampSeconds after a change: nothing at rest.
-    bool changed = anyRamps_ && rampOn_[stage] != 0;
+    // EX.x-fix-settle: while the ramp of a param it wakes on moves, a smoother follows a moving target: awake until
+    // the ramp ends, so it falls asleep AT its target. (Asleep mid-ramp, a gain kept the target of the block it fell
+    // asleep in, and the next sound faded from there: a stopped locate's automation value reached it only once the
+    // transport played.) A ramp lasts the stage's ramp length (kParamRampSeconds) after a change: nothing at rest.
+    // AU.dsp (RB-DY M1): per segment, from its own params' changes (rampLeft; the stage's ramps of other params keep
+    // it awake no longer).
+    bool changed = false;
     for (uint32_t k = g.firstParam; k < g.firstParam + g.numParams && !changed; ++k) changed = paramChanged_[segParams_[k]] != 0;
+    if (changed && anyRamps_ && rampStage_[stage]) g.rampLeft = rampFrames_[stage];
+    changed = changed || g.rampLeft != 0;
     if (!silentIn || changed) {
       if (g.asleep) ++sleepStats_.wakes;
       g.asleep = false;
+      g.settled = false;
+      for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) segStates_[k].small = segStates_[k].flushed = false;
       // This block writes the delay lines: count it as loud (the next look starts after it).
       for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {
         SegState& st = segStates_[k];
@@ -1499,7 +1529,8 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   *meterFlag_ = metering_ ? 1u : 0u;
   run_.sends = ctx.sends;
   run_.numSends = ctx.sends ? ctx.numSends : 0;
-  // Params: clamped to the declared range (Q44), NaN → default, splatted once per block. Sleep (T1.x-silence): which
+  // Params: clamped to the declared range (Q44), NaN (AU.dsp: and ±inf, so a param is always finite, which the sleep
+  // plan's ranges rely on) → default, splatted once per block. Sleep (T1.x-silence): which
   // of them changed since the previous block.
   // T5.x-perf-audio: the caller vouches that the params are the previous block's, and that block changed none of them
   // (paramChanged_ is all 0 already): nothing to read, clamp or splat.
@@ -1514,7 +1545,7 @@ bool ImageHost::begin(const ProcessContext& ctx) noexcept {  // RT-safe
   for (uint32_t i = 0; i < params_.size(); ++i) {
     const ParamRun& p = params_[i];
     float v = ctx.params != nullptr && i < ctx.numParams ? ctx.params[i] : p.def;
-    if (v != v) v = p.def;
+    if (!(std::fabs(v) <= std::numeric_limits<float>::max())) v = p.def;
     if (p.isBool) {
       v = dsp::boolMask(v != 0.0f);
     } else if (p.hasRange) {

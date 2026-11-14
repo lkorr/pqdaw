@@ -347,6 +347,8 @@ enum class SleepStateKind : uint8_t {
   Smoother,  // gain / gain_add: lane 0's residual exactly 0
   Settled,   // a z1 of a K value: equal to its input while the params are unchanged (not checked)
   Decay,     // EQ.1b, an svf (dsp::hasDecayState): every state word of lane 0 ≤ ε (dsp::decayStateSmall; then flushed)
+  Converged, // AU.dsp, a follower on a C input (dsp::hasConvergeState): y did not move in a block that ran under H from
+             // the segment's other states flushed (dsp::convergeStateStill: a fixed point; not flushed)
 };
 
 struct SleepState {

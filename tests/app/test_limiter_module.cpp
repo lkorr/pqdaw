@@ -340,3 +340,22 @@ TEST_CASE("DY.6 CPU: the switches lower as literals — only the chosen detector
   CHECK(count("pack") == packs + 2);
   CHECK(count("mux") == 0);
 }
+
+TEST_CASE("AU.dsp H4: a Limiter on a track that falls silent sleeps after its tail (Auto, True Peak, M-S) and wakes") {
+  struct Case {
+    const char* name;
+    double truePeak, link, autoRelease;
+  };
+  for (const Case& c : {Case{"Auto", 0, 0, 1}, Case{"plain release", 0, 0, 0}, Case{"True Peak", 1, 0, 1}, Case{"M-S", 0, 2, 1}}) {
+    CAPTURE(std::string(c.name));
+    NoteRig r("limiter", {{0, kPpq / 4}, {8 * kPpq, kPpq / 4}});
+    r.set("Gain", 24.0);  // over the ceiling: a tail of reduction to release
+    // The reduction (dB) releases to ε = 2^-30 before the segment sleeps: τ·ln(GR / ε) ≈ 24 τ, the slowest τ Auto's
+    // 4 · Release.
+    r.set("Release", 0.02);
+    r.set("True Peak", c.truePeak);
+    r.set("Link", c.link);
+    r.set("Auto", c.autoRelease);
+    checkSleeps(r.store.current(), 8.0, 3.0);
+  }
+}

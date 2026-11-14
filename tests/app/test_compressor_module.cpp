@@ -292,3 +292,22 @@ TEST_CASE("DY.4 CPU: the switches lower as literals — only the chosen detector
   CHECK(count("follow") == 2);
   CHECK(count("mux") == 0);
 }
+
+TEST_CASE("AU.dsp H4: a Compressor on a track that falls silent sleeps after its tail (Peak, RMS, Expand, Lin, Auto) and wakes") {
+  struct Case {
+    const char* name;
+    double mode, envelope, autoRelease;
+  };
+  for (const Case& c : {Case{"Peak Log", 0, 0, 0}, Case{"RMS", 1, 0, 0}, Case{"Expand Log", 2, 0, 0}, Case{"Expand Lin", 2, 1, 0},
+                        Case{"Peak Auto", 0, 0, 1}, Case{"Lin Auto", 0, 1, 1}}) {
+    CAPTURE(std::string(c.name));
+    NoteRig r("compressor", {{0, kPpq / 4}, {8 * kPpq, kPpq / 4}});
+    r.set("Threshold", -30.0);  // the synth's note is compressed: a tail of reduction to release
+    r.set("Release", 0.02);     // to ε = 2^-30 dB: ≈ 24 τ, Auto's slow τ 4 · Release
+    r.set("Mode", c.mode);
+    r.set("Envelope", c.envelope);
+    r.set("Auto", c.autoRelease);
+    checkSleeps(r.store.current(), 8.0, 3.0);
+  }
+}
+
