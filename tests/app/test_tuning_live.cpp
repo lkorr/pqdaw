@@ -13,6 +13,7 @@
 //   hz input    M6 review L3: a held live Hz-input note keeps its Hz through a Generator drag (a raw pitch)
 //   mos shape   M6 review L4: a MOS size + generator change (a new table): before and after the compile the held
 //               note sounds the old or the new pitch, never a third (the old table at the new generator)
+//   wheel play  TU.2: a MOS wheel opened while the clip plays lights the playing note on its circle
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -418,4 +419,23 @@ TEST_CASE("tuning live: a MOS size + generator change sounds the old or the new 
   CHECK((std::fabs(cents(during, oldHz)) < 0.05 || std::fabs(cents(during, newHz)) < 0.05));
   // Published: straight to the new pitch.
   CHECK(std::fabs(cents(hzOfTail(a.run(0.12), 0.08), newHz)) < 0.05);
+}
+
+// The MOS wheel opened while the clip already plays: the circle lights the playing note's degree off the real link's
+// playhead reports (its frame request used to be made before the popover was in the tree, and was dropped).
+TEST_CASE("tuning live: a MOS wheel opened during playback lights the playing clip note on its circle (TU.2)") {
+  LiveApp a(mosDef(700.0));
+  (void)a.run(0.2);
+  REQUIRE(a.link->playhead().playing);
+  views::MosWheelPopover* w = views::openMosWheel(a.shell->overlay(), *a.ctx, views::TuningTarget::forMain(a.tuning));
+  REQUIRE(w != nullptr);
+  a.d.tree().layoutNow();
+  for (int i = 0; i < 10; ++i) {
+    (void)a.run(0.05);
+    a.d.advance(0.05);
+  }
+  CHECK(w->circle().glowOf(kDegree) == doctest::Approx(1.0f));
+  CHECK(w->circle().glowOf(0) == 0.0f);
+  w->apply();
+  a.d.step();
 }

@@ -432,7 +432,10 @@ MosWheelPopover::MosWheelPopover(ViewContext& ctx, const TuningTarget& target)
   doneBtn.onClick = [this] { apply(); };
 
   showDraft();
-  notes_ = std::make_unique<CircleNotes>(ctx_, target_, *circle_, *this);
+}
+
+void MosWheelPopover::opened() {
+  if (!notes_) notes_ = std::make_unique<CircleNotes>(ctx_, target_, *circle_, *this);
 }
 
 void MosWheelPopover::onFrame(double now) {
@@ -760,6 +763,7 @@ MosWheelPopover* openMosWheel(Widget& from, ViewContext& ctx, const TuningTarget
   if (UiTree* tree = layer->tree()) o.within = tree->find("main/body");
   o.onClosed = [raw] { raw->closed(); };
   layer->open(std::move(pop), std::move(o));
+  raw->opened();
   return raw;
 }
 

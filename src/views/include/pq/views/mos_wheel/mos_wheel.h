@@ -155,6 +155,10 @@ public:
   static std::optional<ui::Vec2> rememberedPosition() noexcept;
   static void forgetPosition() noexcept;
 
+  // Called by openMosWheel once the popover is in the tree: starts what lights the circle (CircleNotes). Not in the
+  // constructor: a frame request before the popover is attached is dropped, so a wheel opened during playback (or
+  // over held notes) never started following them.
+  void opened();
   // Called by the overlay when the popover closes for any reason (openMosWheel wires it): ends an open drag.
   void closed();
 
