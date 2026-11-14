@@ -1594,6 +1594,23 @@ troughs (about −3 dB), but the merging voice is quieter through the whole morp
 a few Hz of the keeper.
 Choice: (a) — the plan's decision 3 ("park it; T7.7 adds Sync") as written; (b) / (c) are one option of jiVoicePlan.
 
+Answer (T7.7, 2026-11-14): the merging voice's gain is the SQUARE of its remaining distance to the keeper (cents,
+relative to the distance where its glide began); at the arrival it is 0, is Synced, and the unison steps to 1/k.
+Measured against the keeper alone in 10 ms windows, worst over 16 relative phases of two sines (keeper 220 Hz, merger
+from 5/4, 0.5 s S-glide; in brackets from 7/4, and 440 Hz from 3/2 over 2 s): minimum while the voices are less than
+20 Hz apart (the slow beats one hears as a wobble) / mean level of the merging voice over the glide —
+  full gain, 20 ms fade (T7.3)   −28 dB (−24, −41) / −0.1 dB
+  linear in time (option b)      −4.1 dB (−2.2, −1.8) / −4.8 dB
+  distance                       −3.7 dB (−1.3, −0.9) / −4.3 dB
+  distance² (chosen)             −1.3 dB (−0.2, −0.1) / −5.7 dB
+  distance³                      −0.5 dB (−0.0, −0.0) / −6.6 dB
+  fade between 60 and 30 Hz (c)  −3.4 dB (−2.1, −2.2) / −4.5 … −1.8 dB (and silent throughout for a close interval)
+No shape dips in the mean (the keeper stays at 1: expected power 1 + g² ≥ 1). The square is where the slow troughs
+are about 1 dB; the cube buys 0.8 dB for a voice another dB quieter. Two voices a comma apart beat at full depth
+under every shape — as they did before the glide began. In the engine (4:5 → 4 at 261.6 Hz, one phase): −0.13 dB in
+the first half of the glide, −0.25 dB in the second (was −5.4 dB), and the keeper sample for sample after the Sync.
+A split is the mirror image. Reversible: the exponent is one line of `jiVoicePlan` (rise / fall).
+
 ## Q282 · 2026-11-14 · T7.3 · Flatten tolerance of lowered curves: 1 cent
 Context: every breakpoint is a curve point to store and an event on the audio thread; the count goes with
 1 / sqrt(tolerance). At 0.05 c (the plan's default for drawing) the 100 × 8 × 32 lowering made 734 k points.
@@ -1619,3 +1636,27 @@ Context: Q279 left them composed in the roll.
 Choice: `ops::moveJiObject(…, steps, displayGrid, cents)`, `ops::pasteJiObject`, `ops::duplicateJiObject`,
 `ops::deleteJiObject(…, withNotes)`; the roll's raw-command compositions are deleted.
 Status: closed.
+
+## Q?-T7.7-a · 2026-11-14 · T7.7 · A Sync happens at the end of its block; the unison's steps at the next block's first frame
+Context: the image runs a block once, so a lane's state can only be copied between blocks. The merging voice is at 0
+from the merge tick; the keeper keeps its level until the steps.
+Options: (a) copy at the block's end, the conditional steps (and the later events of those notes in that block, in
+order) at frame 0 of the next block: up to one block (1.3 ms at 64 frames) late, no level change meanwhile; (b) split
+the block at the Sync (sample-exact, but every Sync costs an extra image run for the whole track).
+Choice: (a). Nothing audible depends on the tick: before the steps the sum is the keeper alone, after them too.
+
+## Q?-T7.7-b · 2026-11-14 · T7.7 · A split's level is carried by the unison's lowest voice
+Context: "split level monotonic". If every voice of a unison rose from 1/k as it left, the sum would fall below one
+voice once the voices decorrelate (k voices at little more than 1/k each).
+Choice: at the tick the split begins the voices that stay with the lowest voice step to 1/(their number) and the
+leaving ones to 0 (identical lanes: the sum does not move), then each leaving voice rises with its squared distance:
+expected power 1 + Σ g² only rises. Measured (4:5:6:7 → 1 → 4:5:6:7, sine): 0 → +6.0 dB over the glide, largest fall
+between consecutive 50 ms windows 0.22 dB (beats inside the window); in 10 ms windows the first slow beats of the
+leaving voices are visible, as on the merge. The cost: for the first part of a split the lowest voice is the loudest.
+
+## Q?-T7.7-c · 2026-11-14 · T7.7 · Voices that keep moving together after a Sync are not re-Synced
+Context: a Synced voice gets its own Pitch events afterwards (targets computed from its own note Hz and curve), which
+can differ from the keeper's by a float32 ulp when both glide on together or ride a curve: bit-identical while they
+hold, within about 1e-7 relative in frequency (a beat period of hours) after a joint move.
+Choice: leave it (inaudible); a Sync at every joint arrival would restore bit identity at the price of a state copy
+per stop and voice.
