@@ -769,3 +769,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker before the rebase pq_tests_views 793/794 (the note-menu golden, re-recorded); orchestrator after the rebase onto 25d4e32f: `build.ps1 -Target X -TestRegex X` for pq_tests_views, pq_tests_ui, pq_tests_app pass. Orchestrator looked at the bends and vibrato goldens.
 - Perf / CPU-efficiency check: nothing per audio block; a drag frame re-thins one stroke or rebuilds one bend per selected note.
 - Notes/blockers: Q289–Q291; two existing gestures changed (TASKS); not auditioned.
+
+## 2026-11-14 · M7 -Full + review · main (34ec2837)
+- Did: `build.ps1 -Full` on main after T7.1–T7.7; independent review docs/reviews/M7.md on task/T7.10-review (0 C / 5 H / 19 M / 20 L, nothing reproduced by the reviewer).
+- Verified: 85/87 passed, pq_tests_pqmeter_diff skipped (PQ Meter tree), pq_tests_library failed once at test_indexer.cpp:63-64 while two release builds ran; the exe alone passes 22/22 twice and M7 touched nothing under src/library (load flake).
+- Notes/blockers: the user tried the app (first an exe from 7b04787d built by another session: T7.4 only) and rejected the object model: JI objects must be made of regular notes declared as integer harmonics of a fundamental, no separate box / voice-line entity, notes drawn like the screenshot lines. Rework design restated to the user, waiting for a yes. T7.11a narrowed to H2, H3, M5, M13 and derived bends; T7.11b not started.
