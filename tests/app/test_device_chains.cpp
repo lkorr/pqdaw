@@ -258,7 +258,7 @@ TEST_CASE("device chains: an instrument group's voices are its track's polyphony
 TEST_CASE("device chains: a project with more than 16,384 params plays every stored value (M4)" * doctest::test_suite("slow")) {
   DocumentStore store;
   IdSource& ids = store.ids();
-  constexpr int kTracks = 192;  // (about 97 params a track)
+  constexpr int kTracks = 224;  // (about 81 params a track: AU.dsp made the modules' constants literals)
   std::vector<DeviceId> utilities;  // their Gain value blocks
   {
     Batch b{"many", {}};
