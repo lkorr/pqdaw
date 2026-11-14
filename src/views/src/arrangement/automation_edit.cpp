@@ -867,6 +867,11 @@ void ArrangementAutomation::press(const PointerEvent& e, const AutomationBand& b
   drag_.anchor = at;
   select(b.track, b.param, {}, TickRange{at, at});
   selOverClips_ = b.overClips;
+  // BR.ui (user 2026-11-13: "just clicking on a spot should generally make it be where the playhead spawns"): as a press
+  // on a lane's empty space (Editor::press, SPEC §15 2026-11-08), a press here moves where play starts — on every
+  // surface (the arrangement's automation lanes, the band lanes' automation sub-lanes), stopped or playing.
+  ctx_.setStartMarker(at);
+  if (!ctx_.transport().playhead().playing) ctx_.transport().locate(at);
 }
 
 void ArrangementAutomation::dragTo(const PointerEvent& e) {

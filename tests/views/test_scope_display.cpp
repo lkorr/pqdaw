@@ -411,7 +411,7 @@ TEST_CASE("scope face: pointer — chips cycle, a row drag is one step, Alt+whee
     float sx = 0.0f, sy = 0.0f;
     int n = 0;
     for (float y = 0.0f; y < 200.0f; y += 0.5f)
-      for (float x = 0.0f; x < 300.0f; x += 0.5f)
+      for (float x = 0.0f; x < 540.0f; x += 0.5f)  // (BR.ui: the sheet opens right of the face)
         if (rig.face->hitTest({x, y}, 2.0f) == part) {
           sx += x;
           sy += y;

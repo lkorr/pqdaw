@@ -139,12 +139,20 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
     if (w.y < y0 - reach - out || w.y > y1 + reach + out) continue;
     // TX.block-drag: a small block's pins reach a part of its size (its middle stays its body: it can be grabbed).
     const float nodeReach = n.kind == NodeKind::Device ? std::min(reach, std::max(floorReach, kSmallPinReach * std::min(n.w, n.h))) : reach;
+    // BR.ui (user: "need to be able to drag cables from mixer output"): a face draws its ports as sockets jackInset() in
+    // from its edge (Face::paintJacks: a mixer's out 5 units in, ×2 at its default scale): such a port is pressed where it
+    // is drawn as well as on the edge its lead starts from (zoomed in, the socket is far outside the edge's reach).
+    const Face* face = nullptr;
+    if (const ProjectScene& ps = view_.scene(); i < ps.sceneNode.size() && ps.sceneNode[i] != kNone) face = hostedFace(ps.sceneNode[i]);
+    const float inset = face != nullptr ? face->jackInset() * n.scale : 0.0f;
     for (int side = 0; side < 2; ++side) {
       const auto& ports = side == 0 ? n.inputs : n.outputs;
       const float px = side == 0 ? n.x : n.x + n.w;
+      const float sx = side == 0 ? px + inset : px - inset;  // the drawn socket's x (= px without a face)
       for (size_t k = 0; k < ports.size(); ++k) {
         if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
-        float dd = std::max(std::fabs(w.x - px), std::fabs(w.y - (n.y + pinOffset(n, k, side == 0))));
+        const float dy = std::fabs(w.y - (n.y + pinOffset(n, k, side == 0)));
+        float dd = std::max(std::min(std::fabs(w.x - px), std::fabs(w.x - sx)), dy);
         // TX.orbit-ports: where the port is drawn now — its disc, and a few px around it outside the block (inside the
         // block's outline a press is the block's unless it is on the disc: far out a port is a dot on the block's edge).
         if (portOrbits(n, k, side == 0)) {
@@ -1796,6 +1804,11 @@ bool ProjectCanvas::lanePointer(const ui::PointerEvent& e) {
       if (drag_ != Drag::None || (e.button != ui::PointerButton::Left && e.button != ui::PointerButton::Right) ||
           !v.laneEditAt(e.pos)) {
         if (e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right) laneFocus_ = false;
+        // BR.ui: a lane without a clip row (a group's, a return's, the master's) is a time strip too: a plain press there
+        // moves where play starts (the canvas goes on with the press: a drag still selects / pans as before).
+        if (drag_ == Drag::None && e.button == ui::PointerButton::Left && e.clickCount == 1 &&
+            (e.mods & (ui::mod::kCtrl | ui::mod::kShift | ui::mod::kAlt)) == 0 && v.laneAt(e.pos) != kNone)
+          v.placeStartAt(e.pos.x);
         return false;
       }
       if (tree()) tree()->setFocus(this);

@@ -25,6 +25,9 @@
 #include "pq/meta/wavetable.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
+#include "pq/ui/offscreen.h"
+#include "pq/ui/renderer.h"
+#include "pq/ui/scene_textures.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -3533,4 +3536,304 @@ TEST_CASE("KB.1: with the computer keyboard on, every note key plays whichever m
   u.d.keyDown('a');
   u.d.keyUp('a');
   CHECK(liveKeys() == n0);
+}
+
+// BR.ui (user bug 2026-11-13_17-17-10: "the playhead leaves behind a ton of glitchy lines when it's running through a
+// track"): the user's gesture — a click on a lane's empty space (the start marker and the insert marker there), Play —
+// then the playhead running through the lane into a clip: every partial frame (the playhead's columns, the rulers' start
+// marker) equals a full repaint of the same state. Before the fix each column's repaint drew the insert marker at the
+// column's left edge (the trail), labels of the lane rulers lost slices, and the moved start marker was not repainted.
+TEST_CASE("render: the lane playhead's partial repaints equal a full repaint (no trail)") {
+  GpuOptions go;
+  go.validation = true;
+  auto gpu = GpuContext::create(go);
+  REQUIRE_MESSAGE(gpu.ok(), (gpu.ok() ? "" : gpu.error().message));
+  auto renderer = Renderer::create(**gpu, OffscreenTarget::kFormat, 3);
+  REQUIRE(renderer.ok());
+  auto tex = createSceneTextures(**renderer);
+  REQUIRE(tex.ok());
+  const PaintResources res = paintResources(*tex);
+  constexpr uint32_t W = 1280, H = 800;
+
+  FakeTransport port;
+  ViewContext ctx(port);
+  ctx.setDeviceLibrary(&library());
+  REQUIRE(buildSketchProject(ctx.store()).ok());
+  UiTree tree;
+  tree.setViewport(W, H);
+  tree.setResources(&res);
+  auto shell = Shell::create(tree, ctx);
+  REQUIRE(shell.ok());
+  tree.layoutNow();
+  ProjectPatchView* v = findProjectPatch(**shell);
+  REQUIRE(v != nullptr);
+  v->setShown(true, false);
+  tree.layoutNow();
+  const doc::Track& pad = *named(*ctx.doc(), "Pad");
+  REQUIRE_FALSE(pad.clips.empty());
+  const doc::ClipSlot clip = pad.clips.front();
+  const Ticks bar = ticksPerBar(ctx.doc()->timeline->sigMap.signatureAt(0));
+  v->setLaneTime(0.0, static_cast<double>(clip.end() + bar));
+  v->focusBand(pad.id, false);
+  tree.layoutNow();
+  {  // its lane on the canvas, across it
+    const ProjectPatch& pp = v->patch();
+    const Band& band = pp.bands[pp.bandOf(pad.id)];
+    const IRect cr = v->canvas().rect();
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = std::min(1.5, (static_cast<double>(cr.w) - 40.0) / static_cast<double>(pp.laneX1 - pp.laneX0));
+    cv.x = static_cast<double>(pp.laneX0) - 20.0 / cv.zoom;
+    cv.y = static_cast<double>(band.laneY) - 0.5 * static_cast<double>(cr.h) / cv.zoom;
+    v->canvas().setView(cv);
+    tree.layoutNow();
+  }
+  const doc::ClipRef ref{pad.id, clip.id};
+  v->openClip(ref);  // selected (its outline), in the clip view (as in the report)
+
+  auto partial = OffscreenTarget::create(**gpu, W, H, 1);
+  auto full = OffscreenTarget::create(**gpu, W, H, 1);
+  REQUIRE((partial.ok() && full.ok()));
+  DrawList dl;
+  const DrawLayer layer{&dl, kTransientLayer, 0};
+  FrameDesc ff;
+  ff.layers = {&layer, 1};
+  ff.clear = kSceneClearColor;
+  double now = 0.0;
+  for (int i = 0; i < 64 && (tree.needsFrame() || i == 0); ++i) {
+    tree.update(now += 1.0 / 144.0);
+    tex->text->beginFrame();
+    dl.reset(W, H);
+    tree.paint(dl, res, now);
+  }
+  REQUIRE((*partial)->draw(**renderer, ff).ok());
+  uint64_t partialFrames = 0;
+  auto frame = [&] {
+    now += 1.0 / 144.0;
+    tree.update(now);
+    const Damage& d = tree.damage();
+    if (!d.needsFrame()) return;
+    tex->text->beginFrame();
+    dl.reset(W, H);
+    if (d.full()) {
+      tree.paint(dl, res, now);
+      REQUIRE((*partial)->draw(**renderer, ff).ok());
+      return;
+    }
+    ClipRect rects[Damage::kMaxRects];
+    const uint32_t n = views::test::paintDamage(tree, dl, res, now, rects);
+    FrameDesc pf = ff;
+    pf.full = false;
+    pf.damage = {rects, n};
+    REQUIRE((*partial)->draw(**renderer, pf).ok());
+    ++partialFrames;
+  };
+  auto compare = [&](const std::string& what) {
+    tex->text->beginFrame();
+    dl.reset(W, H);
+    tree.paint(dl, res, now);
+    REQUIRE((*full)->draw(**renderer, ff).ok());
+    auto a = (*partial)->read();
+    auto b = (*full)->read();
+    REQUIRE((a.ok() && b.ok()));
+    const ImageDiff diff = compareImages(*a, *b, 0);
+    if (diff.pixelsOverTolerance != 0) {
+      (void)writePng(what + ".partial.png", *a);
+      (void)writePng(what + ".full.png", *b);
+    }
+    CHECK_MESSAGE(diff.pixelsOverTolerance == 0, what << ": " << diff.pixelsOverTolerance << " px differ");
+  };
+  frame();
+  compare("lane-playhead-settled");
+  // The user's gesture: a click on the lane's empty space before the clip (the start marker there; the arrangement's
+  // selection: the track, the insert marker), then Play.
+  {
+    const ProjectPatch& pp = v->patch();
+    const LaneRect body = laneBody(pp, pp.bands[pp.bandOf(pad.id)]);
+    const double kx = static_cast<double>(body.x1 - body.x0) / v->laneSpan();
+    const Vec2 at = v->canvas().toDevice({body.x0 + static_cast<float>((static_cast<double>(clip.start() - bar / 2) - v->laneStart()) * kx),
+                                          body.y0 + 0.7f * (body.y1 - body.y0)});
+    for (const PointerType t : {PointerType::Move, PointerType::Down, PointerType::Up}) {
+      PointerEvent e;
+      e.type = t;
+      e.pos = at;
+      e.button = t == PointerType::Move ? PointerButton::None : PointerButton::Left;
+      e.clickCount = 1;
+      tree.dispatchPointer(e);
+      frame();
+    }
+  }
+  for (int i = 0; i < 4; ++i) frame();
+  compare("lane-playhead-clicked");
+  ctx.togglePlay();
+  for (int i = 0; i < 4; ++i) frame();
+  REQUIRE(v->lanePlayhead().has_value());
+  // Small steps (about a device px each, as the playhead timer wakes) from before the clip into it.
+  const double k = static_cast<double>(v->laneSpan()) / std::max(1.0f, (v->patch().laneX1 - v->patch().laneX0) * v->canvas().deviceScale());
+  Ticks t = clip.start() - bar / 2;
+  for (int i = 0; i < 160; ++i) {
+    t += static_cast<Ticks>(std::max(1.0, k * 1.3));
+    port.setPlayheadTick(t);
+    frame();
+    frame();
+  }
+  compare("lane-playhead-run");
+  CHECK(partialFrames > 50);
+  CHECK((*gpu)->validationErrorCount() == 0);
+  tree.setRoot(std::make_unique<Widget>());
+}
+
+// BR.ui (user bug 2026-11-13_17-39-14: "need to be able to drag cables from mixer output"): a face-drawn port (the mixer's
+// out socket, drawn jackInset() in from the face's edge) starts a cable where it is DRAWN, at any zoom — through real
+// dispatch: from Mod's mixer out socket (already routed to the master) onto the Space return's Σ: a send, one undo step.
+TEST_CASE("project patch (BR.ui): a cable drags out of the mixer's drawn out socket (zoomed in), onto a return: a send") {
+  Ui u;
+  u.ctx.setDetailVisible(false);  // the canvas takes the window's height
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& c = v.canvas();
+  const doc::TrackId mod = u.track("Mod").id, space = u.track("Space").id;
+  const size_t h0 = u.history();
+  const doc::OutputKind out0 = u.track("Mod").mixer.output.kind;
+  const uint32_t mixer = u.pp().bands[u.pp().bandOf(mod)].mixer;
+  const Node& n = u.pp().nodes[mixer];
+  const int32_t k = n.output("out");
+  REQUIRE(k >= 0);
+  const uint32_t sv = v.scene().sceneNode[mixer];
+  REQUIRE(sv != kNone);
+  const Face* face = c.hostedFace(sv);
+  REQUIRE(face != nullptr);
+  const float inset = face->jackInset();
+  REQUIRE(inset > 0.0f);
+  // The socket as the face draws it (Face::paintJacks: worldSize().x − jackInset() in face units, at the node's scale).
+  const circuit::SceneNode& sn = c.scene()->nodes[sv];
+  const uint32_t pin = sn.firstPin + static_cast<uint32_t>(n.inputs.size()) + static_cast<uint32_t>(k);
+  REQUIRE(pin < sn.firstPin + sn.pinCount);
+  const graph::Point2 sock{sn.x + (face->worldSize().x - inset) * n.scale, c.scene()->pins[pin].y};
+  // Zoomed in on the mixer (the socket well inside the 8 px pin reach of the block's edge), the Σ on the canvas too.
+  const Node& sum = u.pp().nodes[u.pp().bands[u.pp().bandOf(space)].source];
+  const graph::Point2 to{sum.x + sum.w * 0.5f, sum.y + sum.h * 0.5f};
+  const IRect cr = c.rect();
+  const double us = static_cast<double>(u.d.tree().scale());
+  circuit::CircuitCanvas::View cv;
+  cv.zoom = std::min(1.4, 0.9 * std::min(static_cast<double>(cr.w) / us / std::max(1.0, std::fabs(static_cast<double>(to.x - sock.x))),
+                                         static_cast<double>(cr.h) / us / std::max(1.0, std::fabs(static_cast<double>(to.y - sock.y)))));
+  REQUIRE(inset * n.scale * cv.zoom * us > 9.0);  // drawn more than the pin reach in from the edge
+  cv.x = 0.5 * static_cast<double>(sock.x + to.x) - 0.5 * static_cast<double>(cr.w) / (cv.zoom * us);
+  cv.y = 0.5 * static_cast<double>(sock.y + to.y) - 0.5 * static_cast<double>(cr.h) / (cv.zoom * us);
+  c.setView(cv);
+  u.d.tree().layoutNow();
+  const Vec2 from = c.toDevice({sock.x, sock.y});
+  const Vec2 drop = c.toDevice({to.x, to.y});
+  REQUIRE(cr.contains(from));
+  REQUIRE(cr.contains(drop));
+  u.d.move(from);
+  u.d.down(from);
+  u.d.move({from.x + 12.0f, from.y + 6.0f});
+  CHECK(c.drag() == ProjectCanvas::Drag::Wire);
+  u.d.move(drop);
+  u.d.up(drop);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  bool sent = false;
+  for (const doc::Send& s : u.track("Mod").mixer.sends) sent = sent || (s.target == space && s.levelDb == 0.0f);
+  CHECK(sent);
+  CHECK(u.track("Mod").mixer.output.kind == out0);  // the existing route stays
+}
+
+// BR.ui (user 2026-11-13: the visual modules' settings sheet "covers the visual"; open it as an adjacent panel so the
+// visual changes live while the settings are adjusted): through real dispatch on the canvas — SET opens the sheet as a
+// floating panel right of the Spectrum face (its plot uncovered and still the face's), a row clicked there changes the
+// option (one undo step), it follows the face's zoom, SET closes it; a face at the canvas's right edge opens it left.
+TEST_CASE("project patch (BR.ui): a Spectrum's SET opens its sheet beside the face, the plot uncovered (real dispatch)") {
+  Ui u(false);
+  project_patch::MetaSpectrumIds ids;
+  REQUIRE(buildSpectrumProject(u.ctx.store(), &ids).ok());
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& c = v.canvas();
+  const uint32_t mn = u.pp().nodeOf(ids.spectrum);
+  REQUIRE(mn != kNone);
+  auto place = [&](float fx, double zoom) {  // the face's left edge at `fx` of the canvas's width, at `zoom`
+    const uint32_t sv = v.scene().sceneNode[mn];
+    const circuit::SceneNode& sn = c.scene()->nodes[sv];
+    const IRect cr = c.rect();
+    const double us = static_cast<double>(u.d.tree().scale());
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = zoom;
+    cv.x = static_cast<double>(sn.x) - static_cast<double>(fx) * static_cast<double>(cr.w) / (zoom * us);
+    cv.y = static_cast<double>(sn.y) - 0.3 * static_cast<double>(cr.h) / (zoom * us);
+    c.setView(cv);
+    u.d.tree().layoutNow();
+    u.d.step();
+  };
+  struct Hit {
+    MetaFace* face;
+    circuit::SceneNode sn;
+    float scale;
+  };
+  auto hit = [&] {
+    const uint32_t sv = v.scene().sceneNode[mn];
+    MetaFace* f = c.faceOn(sv);
+    REQUIRE(f != nullptr);
+    REQUIRE(f->type().id == "spectrum");
+    const circuit::SceneNode& sn = c.scene()->nodes[sv];
+    return Hit{f, sn, sn.scale > 0.0f ? sn.scale : 1.0f};
+  };
+  auto dev = [&](const Hit& h, Vec2 l) { return c.toDevice({h.sn.x + l.x * h.scale, h.sn.y + l.y * h.scale}); };
+  // A face-local point of part `part` (through hitTest, inside `r`).
+  auto partIn = [&](const Hit& h, int32_t part, const Rect& r) {
+    for (float y = r.y0; y <= r.y1; y += 0.5f)
+      for (float x = r.x0; x <= r.x1; x += 0.5f)
+        if (h.face->hitTest({x, y}, 1.0f) == part) return Vec2{x + 1.0f, y + 1.0f};
+    FAIL("no part " << part);
+    return Vec2{};
+  };
+  place(0.2f, 1.2);
+  Hit h = hit();
+  const Vec2 fs = h.face->worldSize();
+  const Rect faceR{0.0f, 0.0f, fs.x, fs.y};
+  REQUIRE_FALSE(h.face->popupRect().has_value());
+  const Vec2 set = partIn(h, 3, faceR);  // the SET chip (spectrum_face.cpp kSetPart)
+  u.d.click(dev(h, set));
+  u.d.step();
+  h = hit();
+  const std::optional<Rect> pr = h.face->popupRect();
+  REQUIRE(pr.has_value());
+  CHECK(pr->x0 >= fs.x);  // right of the face: the face (its plot) is not covered
+  CHECK(pr->y0 >= 0.0f);
+  CHECK(pr->y1 <= fs.y);
+  const Vec2 plot{fs.x * 0.5f, fs.y * 0.6f};
+  CHECK(h.face->hitTest(plot, 1.0f) == 0);  // the plot (kPlotPart), not the sheet
+  // On screen, inside the canvas.
+  const Vec2 p0 = dev(h, {pr->x0, pr->y0}), p1 = dev(h, {pr->x1, pr->y1});
+  CHECK(c.rect().contains(p0));
+  CHECK(c.rect().contains(p1));
+  // A row of the sheet (DISPLAY: Peak line, a toggle) clicked through the canvas: the option changes, one undo step.
+  const size_t h0 = u.history();
+  const Vec2 row = partIn(h, 100, *pr);
+  u.d.click(dev(h, row));
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  h = hit();
+  REQUIRE(h.face->popupRect().has_value());  // still open
+  // The sheet follows the face's zoom (face-local: the same rect at another zoom).
+  place(0.2f, 0.9);
+  h = hit();
+  REQUIRE(h.face->popupRect().has_value());
+  CHECK(h.face->popupRect()->x0 == doctest::Approx(pr->x0));
+  // SET again: closed.
+  u.d.click(dev(h, set));
+  u.d.step();
+  CHECK_FALSE(hit().face->popupRect().has_value());
+  // The face near the canvas's right edge: the sheet opens on its left.
+  place(0.62f, 1.2);
+  h = hit();
+  REQUIRE(c.rect().contains(dev(h, set)));
+  u.d.click(dev(h, set));
+  u.d.step();
+  h = hit();
+  const std::optional<Rect> pl = h.face->popupRect();
+  REQUIRE(pl.has_value());
+  CHECK(pl->x1 <= 0.0f);
+  CHECK(c.rect().contains(dev(h, {pl->x0, pl->y0})));
 }

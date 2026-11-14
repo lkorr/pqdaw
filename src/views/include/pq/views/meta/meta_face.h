@@ -190,6 +190,9 @@ struct FacePointer {
   // is one undo step: Face::endWheel), a press gives it the keys (type a value, Delete: default, Up / Down: a step). The
   // Device view's and the panel window's PanelHost set it; the circuit canvas does not (its wheel pans and zooms).
   bool valueGestures = false;
+  // BR.ui: the host's visible area (device px) a floating panel (popupRect) may use: a face opens one on the side with
+  // room. Unbounded unless the host says (the circuit canvas: its rect; a PanelHost: its rect).
+  ui::Rect room{-1e30f, -1e30f, 1e30f, 1e30f};
 };
 
 // TX.mod-all: where a modulation wire into a param ends on a face — the control that shows the param (the user: "the

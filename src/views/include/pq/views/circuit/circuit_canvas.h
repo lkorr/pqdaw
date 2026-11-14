@@ -155,6 +155,8 @@ public:
   void rebindFaces();
   // The meta face on scene node `node` (null: none), the meta faces in scene order.
   MetaFace* faceOn(uint32_t node) const noexcept;
+  // BR.ui: the face of any kind on scene node `node` (a meta face, a panel, a mixer face; null: none).
+  Face* hostedFace(uint32_t node) const noexcept;
   size_t faceCount() const noexcept;
   MetaFace& faceAt(size_t i) const noexcept;
   uint32_t faceNode(size_t i) const noexcept;

@@ -2,7 +2,10 @@
 
 // VZ.1: the display modules' settings sheet (Spectrogram, Oscilloscope, Spectrum), private to views. A face keeps its
 // options as the instance's data (a record of numbers: only the fields that differ from the factory default) through
-// Values over its table of Opt; its SET chip opens the Sheet over the plot:
+// Values over its table of Opt; its SET chip opens the Sheet BESIDE the face (BR.ui, the user: "make it open as an
+// adjacent panel so I can see the visual change live"): a floating panel (MetaFace::popupRect) the host draws over
+// everything, right of the face, left when the host's area has no room on the right; over the plot only when there is
+// room on neither side (or the host has none around the face: setPopupOverFace):
 //
 //   [ANALYSIS] [DISPLAY]                         [SAVE DEFAULT] [RESET]
 //   label ............ value   label ............ value   …
@@ -112,14 +115,38 @@ enum Part : int32_t { kTabBase = 90, kSave = 92, kReset = 93, kBody = 94, kRowBa
 enum Tab : int { kAnalysis = 0, kDisplay = 1 };
 inline constexpr const char* kTabNames[] = {"ANALYSIS", "DISPLAY"};
 
+// BR.ui: where a sheet shows — over the plot, or a floating panel right / left of the face.
+enum class Place : uint8_t { Over, Right, Left };
+inline constexpr float kSideGap = 6.0f;  // face units between the face and a side sheet
+
+// The side with room for a side sheet `panelW` wide (face units) next to a face `faceW` wide whose left edge is at device
+// x `faceX0` (`pxPerUnit` device px per unit), inside the host's device x range [roomX0, roomX1]: the right first, then
+// the left, else over the plot. `hostOver`: the host has no room around the face (MetaFace::setPopupOverFace).
+inline Place choosePlace(float faceX0, float pxPerUnit, float faceW, float panelW, float roomX0, float roomX1, bool hostOver) noexcept {
+  if (hostOver) return Place::Over;
+  const float side = (kSideGap + panelW) * pxPerUnit;
+  if (faceX0 + faceW * pxPerUnit + side <= roomX1) return Place::Right;
+  if (faceX0 - side >= roomX0) return Place::Left;
+  return Place::Over;
+}
+
 // The sheet's geometry and painting over `area` (face-local world units). The face decides which options a tab shows
 // (in order) and passes them as `rows`.
 class Sheet {
 public:
-  Sheet(ui::Rect area, float textPx) : area_(area), px_(textPx) {}
+  Sheet(ui::Rect area, float textPx) : over_(area), area_(area), px_(textPx) {}
 
   int tab = kDisplay;  // opens on the look: what a user changes most
 
+  // BR.ui: placed over the plot (the area it was made with) or beside a face `faceW` × `faceH`, as wide as the face.
+  void place(Place where, float faceW, float faceH) noexcept {
+    place_ = where;
+    if (where == Place::Right) area_ = {faceW + kSideGap, 0.0f, 2.0f * faceW + kSideGap, faceH};
+    else if (where == Place::Left) area_ = {-kSideGap - faceW, 0.0f, -kSideGap, faceH};
+    else area_ = over_;
+  }
+  Place placed() const noexcept { return place_; }
+  bool beside() const noexcept { return place_ != Place::Over; }
   ui::Rect area() const noexcept { return area_; }
   ui::Rect tabRect(int t) const noexcept {
     const float w = px_ * 7.6f;
@@ -163,7 +190,13 @@ public:
   void paint(ui::FacePainter& p, const ui::Theme& th, const Values& v, std::span<const uint32_t> rows, int32_t hovered,
              bool saved) const {
     const ui::Rgba dim = ui::rgba(150, 162, 166), text = th.device.displayText;
-    p.roundedRect(area_, 4.0f, ui::rgba(10, 10, 14, 248));
+    if (beside()) {  // a panel of its own: a shadow and the faces' frame round it
+      p.roundedRect({area_.x0 + 1.5f, area_.y0 + 2.5f, area_.x1 + 1.5f, area_.y1 + 2.5f}, 7.0f, ui::rgba(0, 0, 0, 90));
+      p.roundedRect(area_, 7.0f, th.face.frame);
+      p.roundedRect({area_.x0 + 1.25f, area_.y0 + 1.25f, area_.x1 - 1.25f, area_.y1 - 1.25f}, 5.75f, ui::rgba(10, 10, 14, 255));
+    } else {
+      p.roundedRect(area_, 4.0f, ui::rgba(10, 10, 14, 248));
+    }
     for (int t = 0; t < 2; ++t) {
       const ui::Rect r = tabRect(t);
       const bool on = tab == t;
@@ -196,8 +229,9 @@ private:
   float headH() const noexcept { return px_ + 4.0f; }
   static bool in(const ui::Rect& r, ui::Vec2 p) noexcept { return p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 && p.y <= r.y1; }
   static ui::Vec2 centre(const ui::Rect& r) noexcept { return {0.5f * (r.x0 + r.x1), 0.5f * (r.y0 + r.y1)}; }
-  ui::Rect area_;
+  ui::Rect over_, area_;
   float px_;
+  Place place_ = Place::Over;
 };
 
 // The type's saved default as options (false: none saved).

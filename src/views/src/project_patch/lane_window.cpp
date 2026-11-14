@@ -295,9 +295,13 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
       arrangement::flushTiles(lp);
       // The time selection (the insert marker a line) over the selected tracks' windows, as in the arrangement.
       if (const auto& ts = ed->selection().time; ts && ed->showTimeSelection() && ed->trackSelected(t->id)) {
+        // BR.ui (user bug 2026-11-13_17-17-10, "the playhead leaves behind a ton of glitchy lines"): the marker is a line at
+        // its own column, clipped to the painted columns — never moved to their left edge (a playhead column's partial
+        // repaint drew one there each frame: the trail).
         const bool marker = ts->end <= ts->start;
-        const float x0 = std::max(static_cast<float>(bc.x), std::floor(lp.X(static_cast<double>(ts->start))));
-        const float x1 = std::min(static_cast<float>(bc.right()), marker ? x0 + std::max(1.0f, std::round(us))
+        const float mx = std::floor(lp.X(static_cast<double>(ts->start)));
+        const float x0 = std::max(static_cast<float>(bc.x), mx);
+        const float x1 = std::min(static_cast<float>(bc.right()), marker ? mx + std::max(1.0f, std::round(us))
                                                                          : std::floor(lp.X(static_cast<double>(ts->end))));
         if (x1 > x0) dl.addRectFilled({x0, top, x1, bottom}, ui::withAlpha(th.clip.selectedBorder, marker ? 200 : 46));
       }

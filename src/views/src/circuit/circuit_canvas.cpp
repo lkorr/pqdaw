@@ -534,6 +534,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     fp.mods = e.mods;
     fp.clicks = e.clickCount;
     fp.wheel = e.wheel;
+    fp.room = self.rect().toRect();  // BR.ui: a floating panel opens where the canvas shows it
     if (e.button != ui::PointerButton::None) fp.button = e.button;
     return fp;
   }
@@ -3232,6 +3233,10 @@ void CircuitCanvas::rebindFaces() {
 MetaFace* CircuitCanvas::faceOn(uint32_t node) const noexcept {
   const Impl& m = *impl_;
   return node < m.faceOf.size() && m.faceOf[node] >= 0 ? m.faces[static_cast<size_t>(m.faceOf[node])].meta() : nullptr;
+}
+Face* CircuitCanvas::hostedFace(uint32_t node) const noexcept {
+  const Impl& m = *impl_;
+  return node < m.faceOf.size() && m.faceOf[node] >= 0 ? m.faces[static_cast<size_t>(m.faceOf[node])].face.get() : nullptr;
 }
 size_t CircuitCanvas::faceCount() const noexcept { return impl_->metaIdx.size(); }
 MetaFace& CircuitCanvas::faceAt(size_t i) const noexcept { return *impl_->faces[impl_->metaIdx[i]].meta(); }

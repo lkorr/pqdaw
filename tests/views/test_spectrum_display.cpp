@@ -363,7 +363,7 @@ TEST_CASE("spectrum face: SET — DISPLAY options reach the plot, ANALYSIS the f
     float sx = 0.0f, sy = 0.0f;
     int n = 0;
     for (float y = 0.0f; y < 150.0f; y += 0.5f)
-      for (float x = 0.0f; x < 240.0f; x += 0.5f)
+      for (float x = 0.0f; x < 500.0f; x += 0.5f)  // (BR.ui: the sheet opens right of the face)
         if (face->hitTest({x, y}, 2.0f) == part) {
           sx += x;
           sy += y;

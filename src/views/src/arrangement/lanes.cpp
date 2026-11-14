@@ -1065,9 +1065,11 @@ void LaneCanvas::paint(PaintContext& ctx) {
   // 3b. Editing (T3.9): the time selection (lighter over the selected rows; the insert marker a line), then the
   // clips being dragged, drawn at their target.
   if (const auto& ts = ed.selection().time; ts && ed.showTimeSelection()) {
+    // BR.ui: the insert marker stays at its own column (a partial repaint right of it drew it at the columns' left edge).
     const bool marker = ts->end <= ts->start;
-    const float x0 = std::max(cx0, std::floor(lp.X(static_cast<double>(ts->start))));
-    const float x1 = std::min(cx1, marker ? x0 + static_cast<float>(std::max(1, ctx.scale.px(1.0f)))
+    const float mx = std::floor(lp.X(static_cast<double>(ts->start)));
+    const float x0 = std::max(cx0, mx);
+    const float x1 = std::min(cx1, marker ? mx + static_cast<float>(std::max(1, ctx.scale.px(1.0f)))
                                           : std::floor(lp.X(static_cast<double>(ts->end))));
     const Rgba col = withAlpha(th.clip.selectedBorder, marker ? 200 : 46);
     if (x1 > x0)

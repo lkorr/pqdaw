@@ -345,6 +345,18 @@ uint32_t ProjectPatchView::laneBodyAt(Vec2 device) const {
   return kNone;
 }
 
+void ProjectPatchView::placeStartAt(float deviceX) {
+  const Rect r = canvas_->deviceRect(patch_.laneX0, 0.0f, patch_.laneX1 - patch_.laneX0, 0.0f);
+  const double span = laneSpan();
+  if (!(span > 0.0) || !(r.x1 > r.x0)) return;
+  const float us = tree() != nullptr ? tree()->scale() : 1.0f;
+  const double pxPerTick = static_cast<double>(r.x1 - r.x0) / span / static_cast<double>(us);  // logical, as the ruler's
+  const auto raw = static_cast<Ticks>(std::floor(laneTickAt(deviceX)));
+  const Ticks tick = std::max<Ticks>(0, Grid(ctx_.grid(), ctx_.doc()->timeline->sigMap, pxPerTick).snap(std::max<Ticks>(0, raw)));
+  ctx_.setStartMarker(tick);
+  if (!ctx_.transport().playhead().playing) ctx_.transport().locate(tick);
+}
+
 bool ProjectPatchView::lanePointer(const ui::PointerEvent& e) {
   LaneEditSurface* s = laneEditReady();
   if (s == nullptr) return false;

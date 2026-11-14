@@ -1352,3 +1352,96 @@ TEST_CASE("lane edit: 64 tracks — the windows painted by the arrangement's pai
   MESSAGE("64 tracks: a time-selection drag frame in a window, median " << dm[dm.size() / 2] << " ms (plain full frame " << plain << " ms)");
   CHECK(dm[dm.size() / 2] < 1000.0 / 60.0);
 }
+
+// BR.ui (user bug 2026-11-13_17-17-10: "it's extremely difficult to get it to play from where I'm clicking; just clicking
+// on a spot should generally make it be where the playhead spawns"): every part of a track's time strip locates on a plain
+// click, through real dispatch — an automation sub-lane off its envelope line (no breakpoint made), a group's lane (no
+// clip row); stopped (the playhead moves there) and playing (the start marker moves, playback goes on).
+TEST_CASE("lane edit (BR.ui): a plain click on a sub-lane or a group's lane moves where play starts") {
+  Ui u;
+  u.show();
+  u.frame();
+  ProjectPatchView& v = u.view();
+  ArrangementAutomation& au = u.arrangement().automation();
+  arrangement::EditSurface& s = *v.laneSurface();
+  const doc::TrackId keys = u.track("Keys").id;
+  const doc::ParamRef vol = doc::ParamRef::track(doc::ParamKind::TrackVolume, keys);
+  // Keys' volume sub-lane (its band's automation toggle, through dispatch).
+  v.focusBand(keys, false);
+  u.d.tree().layoutNow();
+  const LaneRect tr = ProjectCanvas::subLaneButtonRect(v.patch().bands[v.patch().bandOf(keys)]);
+  readableAt(v, {(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f});
+  u.d.click(v.canvas().toDevice({(tr.x0 + tr.x1) * 0.5f, (tr.y0 + tr.y1) * 0.5f}));
+  u.d.step();
+  REQUIRE(v.subLanes().size() == 1);
+  // Zoomed in on the sub-lane (tall enough to press well off its envelope line), its first bars on the canvas.
+  v.setLaneTime(0.0, static_cast<double>(16 * u.bar));
+  {
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = 2.0;
+    cv.x = static_cast<double>(v.patch().laneX0) - 20.0;
+    cv.y = static_cast<double>(v.subLanes()[0].y) - 60.0;
+    v.canvas().setView(cv);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  REQUIRE(s.laneRows().size() == 1);
+  std::optional<AutomationBand> b0;
+  {
+    arrangement::Surfaces::Bind bind(u.arrangement().surfaces(), &s);
+    b0 = au.band(keys, vol, false);
+  }
+  REQUIRE(b0.has_value());
+  const Rect sr = v.subLaneDevice(0);
+  const float lineY = au.yOfValue(*b0, currentParamValue(*u.ctx.doc(), vol));
+  // The sub-lane's row farthest from its envelope line (a press near the line draws a breakpoint).
+  const float y = lineY - sr.y0 > sr.y1 - lineY ? sr.y0 + 3.0f : sr.y1 - 3.0f;
+  REQUIRE(std::fabs(y - lineY) > 10.0f);
+  const Ticks want = u.bar + 2 * u.beat;
+  const float x = s.axis(s.laneRows()[0].row).x(static_cast<double>(want)) + 0.5f;
+  REQUIRE_MESSAGE(v.canvas().rect().contains({x, y}), x << "," << y << " canvas " << v.canvas().rect().x << "," << v.canvas().rect().y << " "
+                  << v.canvas().rect().w << "x" << v.canvas().rect().h << " sub " << sr.x0 << "," << sr.y0 << "-" << sr.x1 << "," << sr.y1);
+  REQUIRE(v.subLaneAt({x, y}) == 0u);
+  const size_t hist = u.history();
+  REQUIRE(u.ctx.startMarker() != want);
+  u.d.click({x, y});
+  u.d.step();
+  CHECK(u.ctx.startMarker() == want);
+  CHECK(u.port.playhead().tick == want);  // stopped: the playhead moved there
+  CHECK(u.history() == hist);  // no breakpoint
+  CHECK(findAutomationLane(*u.ctx.doc(), vol).lane == nullptr);
+  // Playing: a click there moves the start marker; playback goes on; the next Play starts there.
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  REQUIRE(u.port.playhead().playing);
+  const Ticks want2 = 2 * u.bar;
+  u.d.click({s.axis(s.laneRows()[0].row).x(static_cast<double>(want2)) + 0.5f, y});
+  u.d.step();
+  CHECK(u.ctx.startMarker() == want2);
+  CHECK(u.port.playhead().playing);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // stop
+  u.d.step();
+  REQUIRE(u.d.press("Space") == KeyResult::Action);  // play: from the click
+  u.d.step();
+  CHECK(u.port.playhead().tick == want2);
+  REQUIRE(u.d.press("Space") == KeyResult::Action);
+  u.d.step();
+  // A group's lane (no clip row): a click there locates too.
+  const doc::TrackId grp = u.track("Group").id;
+  const uint32_t gb = v.patch().bandOf(grp);
+  REQUIRE(gb != kNone);
+  v.focusBand(grp, false);
+  u.d.tree().layoutNow();
+  const Band& g = v.patch().bands[gb];
+  REQUIRE(g.laneH > 0.0f);
+  const Rect gl = laneBodyDevice(v.canvas(), v.patch(), g);
+  const double k = static_cast<double>(gl.x1 - gl.x0) / v.laneSpan();
+  const Ticks want3 = u.bar + u.beat;
+  const Vec2 gp{gl.x0 + static_cast<float>((static_cast<double>(want3) - v.laneStart()) * k) + 0.5f, (gl.y0 + gl.y1) * 0.5f};
+  REQUIRE(v.laneAt(gp) == gb);
+  REQUIRE(v.laneBodyAt(gp) == kNone);
+  u.d.click(gp);
+  u.d.step();
+  CHECK(u.ctx.startMarker() == want3);
+  CHECK(u.port.playhead().tick == want3);
+}

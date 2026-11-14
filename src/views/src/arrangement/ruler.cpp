@@ -226,7 +226,12 @@ void Ruler::paint(PaintContext& ctx) {
   const int32_t cap = ts && font != kNoFont ? static_cast<int32_t>(std::lround(0.727 * ts->metrics(font).pixelSize)) : 0;
   const Grid labels = Grid::adaptive(am::kRulerLabelMinPx, sigs, ax_->pxPerTick());
   char buf[kRulerLabelMaxChars];
-  for (const GridLine& g : labels.lines(from, to)) {
+  // BR.ui: a label left of the painted columns may reach into them (its text runs right of its tick): a partial repaint
+  // (the lanes' playhead columns) draws it again, or the column erases a slice of it (user bug 2026-11-13_17-17-10).
+  const double textReach = static_cast<double>(s.px(3.0f)) +
+                           (ts && font != kNoFont ? 0.7 * static_cast<double>(ts->metrics(font).pixelSize) * kRulerLabelMaxChars : 0.0);
+  const Ticks labelFrom = std::max<Ticks>(0, from - static_cast<Ticks>(std::ceil(textReach / k)));
+  for (const GridLine& g : labels.lines(labelFrom, to)) {
     const float x = std::floor(X(static_cast<double>(g.tick)));
     if (x >= rx1) break;
     dl.addRectFilled({x, numY + std::round(static_cast<float>(numH) * 0.4f), x + 1.0f, tickB}, at.rulerText);

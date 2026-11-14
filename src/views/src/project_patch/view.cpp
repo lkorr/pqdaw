@@ -1082,6 +1082,19 @@ void ProjectPatchView::damageLaneColumn(Ticks t) {
   if (ruler_ != nullptr) ruler_->markDirty();  // its playhead line (a thin strip)
 }
 
+void ProjectPatchView::damageLaneRulers() {
+  ui::UiTree* tr = tree();
+  if (tr == nullptr || !shown()) return;
+  const ui::IRect cr = canvas_->rect();
+  for (const Band& b : patch_.bands) {  // thin strips: the whole strip costs less than finding the marker's old column
+    if (b.laneH <= 0.0f) continue;
+    const Rect r = laneRulerDevice(*canvas_, patch_, b);
+    const ui::IRect d = ui::intersect(toIRect({r.x0 - 1.0f, r.y0 - 1.0f, r.x1 + 1.0f, r.y1 + 1.0f}), cr);
+    if (!d.empty()) tr->damage().add(d.toRect());
+  }
+  if (ruler_ != nullptr) ruler_->markDirty();
+}
+
 // ---- lane height, folding (TL.1: view state, saved, not undoable) ----------------------------------------------------
 
 float ProjectPatchView::laneHeight(doc::TrackId track) const noexcept {
@@ -1178,6 +1191,10 @@ void ProjectPatchView::stampTap(doc::Wire& w) {
 // stopped; nothing at all while hidden.
 void ProjectPatchView::refreshTransport() {
   const bool on = shown();
+  if (on && ctx_.startMarker() != shownStartMarker_) {
+    shownStartMarker_ = ctx_.startMarker();
+    damageLaneRulers();
+  }
   PlayheadSnapshot ph{};
   if (on) {
     ++stats_.playheadReads;

@@ -281,7 +281,7 @@ public:
     const bool labels = kLabelPx * scale >= kLabelMinDevicePx * env.uiScale;
     dl.pushClip(r);
     paintTrace(dl, r, scale);
-    paintMeasure(p, dl, r, scale, labels && !sheet_);  // the sheet covers the card
+    paintMeasure(p, dl, r, scale, labels && !coversPlot());  // the sheet over the plot covers the card
     dl.popClip();
     if (labels) {
       paintText(p, r);
@@ -289,7 +289,7 @@ public:
       chip(p, kChChip, kChNames[static_cast<int>(opts_.channel())], false, th);
       chip(p, kFreezeChip, "FREEZE", frozen_, th, frozen_ ? kFrozen : 0);
       chip(p, kSetChip, "SET", sheet_, th);
-      if (sheet_) paintSheet(p, th);
+      if (coversPlot()) paintSheet(p, th);
     }
     for (const FaceJack& j : env.jacks) {  // leads in and out: the signal passes through unchanged
       if (!j.visible) continue;
@@ -299,9 +299,24 @@ public:
     if (env.selected || (env.hovered && hovered_ == kFrame)) outline(p, env.selected ? th.circuit.selected : th.circuit.hover);
   }
 
+  // (A side sheet is not live: it changes only through its own presses, which repaint the host.)
   void liveRects(std::vector<Rect>& out) const override { out.push_back({0.0f, 0.0f, kW, kH}); }
 
+  // BR.ui: the sheet beside the face is a floating panel (the trace stays in view while its options change).
+  std::optional<Rect> popupRect() const noexcept override {
+    if (!sheet_ || !panel_.beside()) return std::nullopt;
+    return panel_.area();
+  }
+  void paintPopup(ui::FacePainter& p, const FaceEnv& env) override {
+    if (sheet_ && panel_.beside() && env.theme != nullptr) paintSheet(p, *env.theme);
+  }
+  void setPopupOverFace(bool on) override { hostOver_ = on; }
+
   int32_t hitTest(Vec2 l, float) const noexcept override {
+    if (sheet_ && panel_.beside()) {
+      const int32_t part = panel_.hit(l, rows_.size());
+      if (part >= 0) return part == sheet::kBody ? kSheetPart : part;
+    }
     if (l.x < 0.0f || l.y < 0.0f || l.x > kW || l.y > kH) return kNone;
     if (inside(kTbChip, l)) return kTbPart;
     if (inside(kChChip, l)) return kChPart;
@@ -337,6 +352,8 @@ public:
         }
         if (part == kSetPart) {
           sheet_ = !sheet_;
+          if (sheet_)
+            panel_.place(sheet::choosePlace(e.device.x - e.local.x * e.pxPerUnit, e.pxPerUnit, kW, kW, e.room.x0, e.room.x1, hostOver_), kW, kH);
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
@@ -406,7 +423,7 @@ public:
           setOption(dragOpt_, sheet::fromTravel(op, t));
           return true;
         }
-        const float x = inside(kPlot, e.local) && !sheet_ && (e.mods & ui::mod::kCtrl) ? e.local.x : -1.0f;
+        const float x = inside(kPlot, e.local) && !coversPlot() && (e.mods & ui::mod::kCtrl) ? e.local.x : -1.0f;
         if (x == hoverX_) return false;
         hoverX_ = x;
         return true;
@@ -422,7 +439,7 @@ public:
         return d != Drag::None;
       }
       case K::Wheel: {
-        if (!(e.mods & ui::mod::kAlt) || !inside(kPlot, e.local) || sheet_) return false;
+        if (!(e.mods & ui::mod::kAlt) || !inside(kPlot, e.local) || coversPlot()) return false;
         const double f = std::pow(0.85, static_cast<double>(e.wheel.y));
         const double at = std::clamp((e.local.x - kPlot.x0) / (kPlot.x1 - kPlot.x0), 0.0f, 1.0f);
         const double focus = zoomStart_ + at * zoomSpan_;
@@ -1095,7 +1112,8 @@ private:
     }
   }
 
-  // ---- the settings sheet (option_sheet.h: two tabs over the plot) ----
+  // ---- the settings sheet (option_sheet.h: two tabs beside the face, or over the plot) ----
+  bool coversPlot() const noexcept { return sheet_ && !panel_.beside(); }
   void paintSheet(ui::FacePainter& p, const ui::Theme& th) const {
     Options saved;
     const bool isSaved = sheet::savedDefault(type().id, saved) && saved == opts_;
@@ -1132,7 +1150,7 @@ private:
   dsp::ScopeFrame frame_;
   uint64_t lastEnd_ = 0, frameAbs_ = 0;
   uint32_t lead_ = 0;
-  bool hasFrame_ = false, hasGain_ = false, frozen_ = false, sheet_ = false;
+  bool hasFrame_ = false, hasGain_ = false, frozen_ = false, sheet_ = false, hostOver_ = false;
   sheet::Sheet panel_{{kPlot.x0 + 1.0f, kChipY + kChipH + 3.0f, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 6.0f};
   float gain_ = 1.0f;
   std::vector<float> bufL_, bufR_, bufA_, bufBeat_, bufNote_, shownA_, shownB_;

@@ -588,6 +588,9 @@ public:
   void zoomLanes(double notches, float anchor = 0.0f);  // + = zoom in (a shorter span); anchor: 0..1 across the lanes
   float laneAnchor(ui::Vec2 device) const;           // where a device x is across the lanes (0..1)
   double laneTickAt(float deviceX) const;            // the tick at a device x on the lanes
+  // BR.ui: a plain click at device x of a lane moves where play starts there (snapped to the grid at the lanes' zoom; the
+  // playhead too while stopped), as a click on a clip lane's empty space does (arrangement::Editor::placeStart).
+  void placeStartAt(float deviceX);
   // A lane's height (world units; view state saved with the project, kLaneH by default) and a band's folded circuit.
   float laneHeight(doc::TrackId track) const noexcept;
   void setLaneHeight(doc::TrackId track, float h);
@@ -1038,6 +1041,8 @@ private:
   void readPlayhead();
   void schedulePlayhead();
   void damageLaneColumn(Ticks t);
+  // BR.ui: the start marker moved — the rulers that draw it (the top one, every lane's scrub strip) repaint.
+  void damageLaneRulers();
   void damageLanes();
   // TL.2: the sub-lanes the arrangement shows now (per track, in band order) into `out`; their heights per track into
   // `heights` (null: not wanted). And: the shown set or a height changed since the model was built: re-layout.
@@ -1084,6 +1089,7 @@ private:
   doc::DeviceId focus_;           // T5.x-one-circuit: the device "Open in Circuit View" framed
   // The playhead the lanes show (TL.1: the time window is the context's).
   std::optional<Ticks> playhead_;
+  Ticks shownStartMarker_ = -1;  // BR.ui: the start marker the rulers last drew (−1: none yet)
   ui::Widget* laneRuler_ = nullptr;  // TL.4
   ui::Widget* ruler_ = nullptr;  // TL.1: a child of the canvas (its top strip; hidden in an embedded view)
   // TL.1: a cable started from a lane's top edge: where (world x) and whose (the wire it makes gets the tap: stampTap).

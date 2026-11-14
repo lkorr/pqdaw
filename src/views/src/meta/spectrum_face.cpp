@@ -206,7 +206,7 @@ public:
     }
     dl.pushClip(r);
     devices::SpectrumPlotStyle s = plot_.style();
-    s.freqLabels = s.dbLabels = labels && opts_.on(oLabels) && !sheet_;
+    s.freqLabels = s.dbLabels = labels && opts_.on(oLabels) && !coversPlot();
     plot_.setStyle(s);
     plot_.paintAll(dl, r, th, scale, text, hoverX_ >= 0.0f ? t.map({hoverX_, 0.0f}).x : -1.0f);
     dl.popClip();
@@ -214,11 +214,7 @@ public:
       chip(p, kSetChip, "SET", sheet_, th);
       chip(p, kPeakChip, "PEAK", opts_.on(oPeaks), th);
       chip(p, kFreezeChip, "FREEZE", frozen_, th);
-      if (sheet_) {
-        Options saved;
-        const bool isSaved = sheet::savedDefault(type().id, saved) && saved == opts_;
-        panel_.paint(p, th, opts_, rows_, hovered_, isSaved);
-      }
+      if (coversPlot()) paintSheet(p, th);
     }
     // Leads in and out: the signal passes through unchanged.
     for (const FaceJack& j : env.jacks) {
@@ -230,9 +226,24 @@ public:
       outline(p, env.selected ? th.circuit.selected : th.circuit.hover);
   }
 
+  // (A side sheet is not live: it changes only through its own presses, which repaint the host.)
   void liveRects(std::vector<Rect>& out) const override { out.push_back({0.0f, 0.0f, kW, kH}); }
 
+  // BR.ui: the sheet beside the face is a floating panel (the plot stays in view while its options change).
+  std::optional<Rect> popupRect() const noexcept override {
+    if (!sheet_ || !panel_.beside()) return std::nullopt;
+    return panel_.area();
+  }
+  void paintPopup(ui::FacePainter& p, const FaceEnv& env) override {
+    if (sheet_ && panel_.beside() && env.theme != nullptr) paintSheet(p, *env.theme);
+  }
+  void setPopupOverFace(bool on) override { hostOver_ = on; }
+
   int32_t hitTest(Vec2 l, float) const noexcept override {
+    if (sheet_ && panel_.beside()) {
+      const int32_t part = panel_.hit(l, rows_.size());
+      if (part >= 0) return part == sheet::kBody ? kSheetPart : part;
+    }
     if (l.x < 0.0f || l.y < 0.0f || l.x > kW || l.y > kH) return kNone;
     if (inside(kSetChip, l)) return kSetPart;
     if (inside(kPeakChip, l)) return kPeak;
@@ -261,7 +272,7 @@ public:
           return true;
         }
         if (part == kSetPart) {
-          sheet_ = !sheet_;
+          toggleSheet(e);
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
@@ -289,7 +300,7 @@ public:
           setOption(dragOpt_, sheet::fromTravel(op, std::clamp(pressTravel_ + (pressY_ - e.device.y) * k, 0.0, 1.0)));
           return true;
         }
-        const float x = !sheet_ && hitTest(e.local, e.pxPerUnit) == kPlotPart ? e.local.x : -1.0f;
+        const float x = !coversPlot() && hitTest(e.local, e.pxPerUnit) == kPlotPart ? e.local.x : -1.0f;
         if (x == hoverX_) return false;
         hoverX_ = x;
         return true;
@@ -396,6 +407,19 @@ public:
   const devices::SpectrumPlotStyle& style() const noexcept { return plot_.style(); }
 
 private:
+  // ---- the settings sheet (BR.ui: beside the face where the host has room) ----
+  bool coversPlot() const noexcept { return sheet_ && !panel_.beside(); }
+  void toggleSheet(const FacePointer& e) {
+    sheet_ = !sheet_;
+    if (sheet_)
+      panel_.place(sheet::choosePlace(e.device.x - e.local.x * e.pxPerUnit, e.pxPerUnit, kW, kW, e.room.x0, e.room.x1, hostOver_), kW, kH);
+  }
+  void paintSheet(ui::FacePainter& p, const ui::Theme& th) const {
+    Options saved;
+    const bool isSaved = sheet::savedDefault(type().id, saved) && saved == opts_;
+    panel_.paint(p, th, opts_, rows_, hovered_, isSaved);
+  }
+
   // ---- options ----
   void syncOptions(bool force = false) {
     const meta::DataPtr d = hasTarget() ? target().data() : nullptr;
@@ -479,7 +503,7 @@ private:
   mutable FeedFrames frames_;
   std::function<devices::SpectrumFeed*()> feedOf_;
   std::function<void()> wakeHost_;
-  bool frozen_ = false, sheet_ = false;
+  bool frozen_ = false, sheet_ = false, hostOver_ = false;
   Options opts_;
   meta::DataPtr data_;
   bool optionsLoaded_ = false, local_ = false;

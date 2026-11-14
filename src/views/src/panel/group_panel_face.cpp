@@ -967,6 +967,7 @@ FacePointer PanelHost::pointerOf(const ui::PointerEvent& e) const {
   f.wheel = e.wheel;
   f.button = e.button;
   f.valueGestures = true;  // GU.13
+  f.room = rect().toRect();  // BR.ui: a floating panel opens inside the host (none fits: over the face)
   switch (e.type) {
     case ui::PointerType::Down: f.kind = FacePointer::Kind::Down; break;
     case ui::PointerType::Up: f.kind = FacePointer::Kind::Up; break;
