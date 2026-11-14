@@ -1590,3 +1590,17 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Judge: Steps read "+7 stp" (not "+7 st": "+7st" typed means semitones, so the readout keeps them apart); the RMS core
   is estimated from the peaks for long files (the overview stores no RMS); the stretch tint strength; whether the
   empty space under the cards wants anything.
+
+## 2026-11-13 · BR.tuning-block · circuit view: a tuning block on every MIDI band 👁
+- Every MIDI band has a narrow TUNING panel at its left edge on the spine (the track's colour on its cap, T-U-N-I-N-G
+  stacked in the accent, "12" under it). The lane's notes go up from its "notes" chip into the block's bottom; one
+  cable (the same wire: Z / Tab / Delete act on it) goes on from its right edge into the instrument. The chain starts
+  40 units further right. Look at: project-patch-tuning (Pad, bottom left), project-patch-band.
+- Double-click it (or its menu: Open Tuning) and it opens in place to the MOS circle (zooms with the canvas): header
+  with the tuning's name, an EDO field and Wheel… (the full MOS wheel), the circle with gen / step, the hardness slider,
+  JI markers, parent / child arrows. Edits change the track's tuning (one undo step per drag); the track's own notes
+  light its degrees. Double-click its header to close it. Look at: project-patch-tuning (Keys, C E G lit).
+- 12-EDO shows as 7L 5s at its equalized end (12 equal "L" steps), so its degrees exist to light; dragging the hardness
+  slider turns it into that MOS. Say if you'd rather see 12-EDO drawn differently (e.g. no MOS title).
+- Not done: the block cannot be moved (it has no device id for a nudge); a pinned lane tap on the notes link is ignored
+  (the link always leaves from the chip).

@@ -2044,8 +2044,6 @@ struct Builder {
       const graph::Point2 s = a.kind == NodeKind::Lane ? graph::Point2{e.tapX, a.y} : outPin(a, e.fromPort), t = inPin(b, e.toPort);
       std::vector<graph::Point2>& pts = e.points;
       pts.clear();
-      // BR.input-port: an audio lane's signal into its band's input socket — out of the lane's left end at its clip row's
-      // middle, round the band's left edge (where the buses into a summing band run), up and in to the socket.
       // BR.tuning-block: a MIDI lane's notes into its band's tuning block — a cable up from the top of the lane's
       // "notes" chip (taps(): its centre) into the block's bottom.
       if (a.kind == NodeKind::Lane && e.drawnTo != kNone && out.nodes[e.drawnTo].kind == NodeKind::Tuning) {
@@ -2056,6 +2054,8 @@ struct Builder {
         e.net = 1u << 30 | static_cast<uint32_t>(k);
         continue;
       }
+      // BR.input-port: an audio lane's signal into its band's input socket — out of the lane's left end at its clip row's
+      // middle, round the band's left edge (where the buses into a summing band run), up and in to the socket.
       if (a.kind == NodeKind::Lane && e.drawnTo != kNone) {
         const graph::Point2 d = outPin(out.nodes[e.drawnTo], 0);
         const float ly = std::round(a.y + m::kLaneRulerH + (a.h - m::kLaneRulerH) * 0.5f), lx = out.bands[a.band].x0 - 6.0f;
