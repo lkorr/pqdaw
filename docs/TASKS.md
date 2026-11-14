@@ -848,6 +848,18 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **MF.2 MIDI import** *(merged 481a1604; Q263: bent / MTS keys = absolute 12-TET pitch + cents; unmapped .kbm keys kept at 12-TET; clips not looped; MIDI first in a mixed drop)* (plan §MF.2).
 - [x] **MF.3 MIDI export (12edo, MPE, Degrees)** *(merged fa193ed9; Q265; MPE ±48, round trip ≤ 0.3 ¢ (Q260 option i); clip menu Export MIDI ▸ and drag-out write .mid; Alt-drop of a MIDI clip on a browser folder still refused)* (plan §MF.3).
 
+## M7: JI objects, note bends (plan: docs/plans/M7.md + its "Amendments"; SPEC §5, §15 "JI objects and bends"; design approved by the user 2026-11-13)
+≤ 2 workers. This run: T7.1–T7.7 + T7.10; T7.8, T7.9 and M8 deferred until the user asks.
+- [~] **T7.1 Engine: per-note pitch and gain curves** (plan "T7.1")
+- [~] **T7.2 Document: JI objects (proportion + tuning stops), note curves, Harmonic resolution** (plan "T7.2" + A1)
+- [ ] **T7.3 Lowering: objects and curves play** (plan "T7.3" + A1; after T7.1, T7.2)
+- [ ] **T7.4 Roll: draw and create JI objects** 👁 (plan "T7.4"; after T7.2)
+- [ ] **T7.5 Inner roll, morph editing, Tune to JI, fundamental with the mouse** 👁 (plan "T7.5" + A2, A4; after T7.4)
+- [ ] **T7.6 Pen modes, ride curves, bend between notes, vibrato** 👁 (plan "T7.6" + A3; after T7.5)
+- [ ] **T7.7 Phase-locked merges (Sync)** (plan "T7.7"; after T7.3)
+- [ ] **T7.10 Review** (critique agent + `-Full`)
+- [ ] T7.8 pulse arpeggiator + chord sets, T7.9 flatten: deferred
+
 ## M5 onward (outline: refine into tasks before starting; most need user review)
 - **M4 (original outline, now the section above)**: circuit-diagram editor + text pane, device panels, cross-device wiring, Audio Effect/Instrument racks + macros, Operator, Utility, EQ Eight, Auto Filter, Saturator.; **project patch view** (SPEC §15 2026-10-24: the whole project as one editable patch — bands per track mirroring the arrangement, source nodes for MIDI/audio clips, device chains, mixer-strip nodes, groups as containers, sends/modulation as wires, semantic zoom, animated morph from the arrangement; builds on the circuit-editor canvas + cross-device wiring). 👁
 - **M5** (re-scoped by the user 2026-10-30, SPEC §15): **audio tracks + audio clips** (pulled forward from M6: samples dragged in from the browser or Explorer play on the timeline, without warping beyond Re-Pitch), **browser + user library** (index, search, preview, drag in/out, saving presets / user devices / racks). Plan: docs/plans/M5.md. Simpler and Drum Rack follow (M5b) once sample playback exists. 👁
