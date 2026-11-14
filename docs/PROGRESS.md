@@ -680,3 +680,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_dsp BR.wt, pq_tests_views wavetable face 22/22; -Affected -Slow 76/76 after the rebase; ship pq_bench_dsp linked.
 - Perf: kernel expression unchanged (same scalar, now an inline function).
 - Notes: Q273 (Shape mode's phase slider only biases into the upper half). Duplicate Q271 heading fixed: AU.dsp's is Q272.
+
+## 2026-11-13 · BR.patch-io (user suggestion 2026-11-13_19-10-25 + requests) · task/BR.patch-io
+- Did: opened groups lose the In/Out pentagons: frame sockets drawn like module ports (main In/Out + one per crossing connection, the closed block's ports), crossing wires as two cables meeting at the socket; an audio track with a recording input gets a left-edge band socket and a cable to where its clips enter the chain (dim while not monitoring); routes / sends run down a right-hand trunk, along the gap above their band and into its left socket, then a hanging cable to the Σ (groups, returns, master); Ctrl+Alt+P fits the project's width with the first visible arrangement row's band at the top (the morph uses the same camera). Dragging from a closed group's crossing output port wires from the inner block (was broken).
+- Verified (worker): pq_tests_views default tier 741/741 (frame sockets through real drags, input cable + master socket, scrolled-arrangement morph camera); -Affected after rebase onto 83130931: 20/20.
+- Perf / CPU-efficiency check: UI-thread scene build / paint only; socket→cable lookup built once per scene, no per-frame allocation.
+- Notes: 47 goldens re-recorded (project-patch-*, project-cables*, device-* group panels, panel-window-*, meta faces in the patch). Q274 (socket order follows inner pins; sends end on the return's left socket). Open: the bus along band edges can read like a band outline.

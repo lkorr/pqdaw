@@ -1506,7 +1506,7 @@ Options: (a) leave it (bias the input upstream); (b) in Shape mode read the slid
 spans the display one to one; changes the expansion and every Shape-mode project's sound); (c) a separate bias param.
 Choice: (a) for now — most reversible; BR.wt only fixed the idle dot to sit at the true u = (phase + 1)/2.
 
-## Q?-BR.patch-io-a · 2026-11-13 · BR.patch-io · Frame sockets' order and the buses into returns
+## Q274 · 2026-11-13 · BR.patch-io · Frame sockets' order and the buses into returns
 Context: BR.patch-io gives an opened group's frame one socket per crossing connection, the closed block's ports, and
 ends every bus at its band's input socket on the band's left edge.
 Options: frame sockets (a) top to bottom in the closed block's port order, or (b) each level with the pin it leads to
