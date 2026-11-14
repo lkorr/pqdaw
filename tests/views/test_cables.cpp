@@ -352,7 +352,7 @@ TEST_CASE("cables: a kept connection keeps its motion across a rebuild; a new on
 
 // ---- the project patch view -----------------------------------------------------------------------------------------
 
-TEST_CASE("cables: every connection between blocks is a cable from port to port; buses stay traces") {
+TEST_CASE("cables: every connection between blocks is a cable from port to port; buses stay traces, into their band's left socket") {
   Ui u;
   // (GU.11: the modules' panels lay out at their first paint: the LFO's wires end on their knobs from there)
   REQUIRE(u.d.enableGpu().ok());
@@ -400,6 +400,27 @@ TEST_CASE("cables: every connection between blocks is a cable from port to port;
   }
   CHECK(cables >= 8);
   CHECK(traces >= 4);
+  // BR.patch-io (user 2026-11-13: the cable into the master "should instead go into the very left of the master before
+  // turning into a normal fluid looking cable"): a bus (route / send) stays a trace, from its mixer at the right to its
+  // band's input socket on the band's left edge; from that socket a cable goes on into the band's Σ.
+  uint32_t buses = 0;
+  for (const Edge& e : pp.edges) {
+    if (e.kind != EdgeKind::Route && e.kind != EdgeKind::Send) continue;
+    ++buses;
+    const Band& tb = pp.bands[pp.nodes[e.to].band];
+    REQUIRE(tb.input != kNone);
+    CHECK(e.drawnTo == tb.input);
+    const Node& in = pp.nodes[tb.input];
+    CHECK(in.kind == NodeKind::Input);
+    CHECK(in.x == doctest::Approx(tb.x0 + metrics::kInputInset));
+    CHECK(e.points.back() == Point2{in.x, in.y});
+    CHECK(e.points.front().x > in.x + 100.0f);  // from its mixer, at the bands' right end
+    const bool onIntoSum = std::any_of(pp.edges.begin(), pp.edges.end(), [&](const Edge& c) {
+      return c.from == tb.input && c.to == tb.source && c.cable && c.kind == EdgeKind::Chain;
+    });
+    CHECK(onIntoSum);
+  }
+  CHECK(buses >= 4);
   // No junction dots on cables; idle.
   for (const uint32_t w : sc.junctionWire) CHECK_FALSE(sc.wires[w].cable);
   CHECK_FALSE(u.canvas().cablesMoving());

@@ -322,7 +322,11 @@ void indexScene(CircuitScene& sc, const float* include, uint32_t junctionNetsFro
   fill(g.nodeBegin, g.nodeItems, static_cast<uint32_t>(sc.nodes.size()), [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {
     const SceneNode& sn = sc.nodes[i];
     bx0 = sn.x, by0 = sn.y - 12, bx1 = sn.x + sn.w, by1 = sn.y + sn.h;
-    return !sn.hidden;
+    if (!sn.hidden) return true;
+    // BR.patch-io: a body-less node's sockets are hit (its pins, visible, in its cells).
+    for (uint32_t k = 0; k < sn.pinCount; ++k)
+      if (const ScenePin& pin = sc.pins[sn.firstPin + k]; pin.socket != 0 && pin.visible) return true;
+    return false;
   });
   fill(g.segBegin, g.segItems, static_cast<uint32_t>(sc.segments.size()),
        [&](uint32_t i, float& bx0, float& by0, float& bx1, float& by1) {

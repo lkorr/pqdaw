@@ -472,8 +472,15 @@ TEST_CASE("module faces: a double-click does not open a module; its menu's Open 
   for (const Node* k : {&in, &out, &mul, &val}) {
     CHECK(k->x >= cap.x);
     CHECK(k->x + k->w <= cap.x + cap.w);
-    CHECK(k->y >= cap.y + metrics::kCapsuleTitle);
+    // (BR.patch-io: In and Out are the frame's edges — strips as tall as the frame; their sockets under its title)
+    CHECK(k->y >= cap.y + (k->kind == NodeKind::Terminal ? 0.0f : metrics::kCapsuleTitle));
     CHECK(k->y + k->h <= cap.y + cap.h);
+  }
+  for (const Node* k : {&in, &out}) {
+    CHECK(k->w == 0.0f);
+    const std::vector<Port>& ports = k == &in ? k->outputs : k->inputs;
+    REQUIRE_FALSE(ports.empty());
+    CHECK(ports[0].y >= metrics::kCapsuleTitle);
   }
   // TX.cable-look: the wires among them are hanging cables (two ends: the scene hangs them), as every other.
   size_t cables = 0;

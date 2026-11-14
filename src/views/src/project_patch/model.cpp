@@ -679,6 +679,38 @@ struct Builder {
     return value == nullptr ? std::string() : portKey(c, value->id, std::string(doc::kValueParam));
   }
 
+  // Group `g`'s contents at any depth and its ports for the connections crossing its edge (into a block inside it:
+  // "<param>@<id>", labelled with the param; out of one: "<port>@<id>"), in the order the wires first cross it — a closed
+  // block's ports, and (BR.patch-io) an opened capsule's frame sockets: the same set and keys either way. PF.2: found
+  // once per document (DocDerived::closed): they depend on the wires alone.
+  DocDerived::Closed& crossings(const doc::Device& g, const doc::Track& t) {
+    DocDerived::Closed& cd = derived->closed[g.id.value];
+    if (cd.made) return cd;
+    cd.made = true;
+    for (const doc::Device* d : doc::groupMembersDeep(t.devices, g.id)) cd.inner.push_back(d->id);
+    auto inside = [&](doc::DeviceId d) { return d.valid() && within(d, g.id); };  // g or in cd.inner
+    auto has = [](const std::vector<Port>& v, const std::string& key) {
+      return std::any_of(v.begin(), v.end(), [&](const Port& q) { return q.name == key; });
+    };
+    Node probe;  // (portKey's reading of the group's own block)
+    probe.device = g.id;
+    for (const doc::Wire* wp : wiresOn(t)) {
+      const doc::Wire& w = *wp;
+      if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
+      const bool from = !w.fromNoteSource() && inside(w.from), to = inside(w.to);
+      if (from == to) continue;  // inside (or outside) the group altogether
+      if (to && w.to != g.id) {
+        std::string key = portKey(probe, w.to, w.param);
+        if (!has(cd.ins, key)) cd.ins.push_back({std::move(key), w.param, true});
+      }
+      if (from && w.from != g.id) {
+        std::string key = portKey(probe, w.from, w.port);
+        if (!has(cd.outs, key)) cd.outs.push_back({std::move(key), w.port});
+      }
+    }
+    return cd;
+  }
+
   uint32_t groupNode(uint32_t band, const doc::Device& g, const doc::Track& t, const graph::Patch* tp) {
     Node c;
     c.kind = NodeKind::Device;
@@ -795,33 +827,9 @@ struct Builder {
       }
       // Everything inside it at any depth (wires to and from them end on the block, as a rack's do) and their ports that
       // cross its edge.
-      // PF.2: found once per document (DocDerived::closed): the ports it gains here depend on the wires alone.
-      DocDerived::Closed& cd = derived->closed[g.id.value];
-      if (!cd.made) {
-        cd.made = true;
-        const size_t in0 = c.inputs.size(), out0 = c.outputs.size();
-        for (const doc::Device* d : doc::groupMembersDeep(t.devices, g.id)) cd.inner.push_back(d->id);
-        auto inside = [&](doc::DeviceId d) { return d.valid() && within(d, g.id); };  // g or in cd.inner
-        for (const doc::Wire* wp : wiresOn(t)) {
-          const doc::Wire& w = *wp;
-          if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
-          const bool from = !w.fromNoteSource() && inside(w.from), to = inside(w.to);
-          if (from == to) continue;  // inside (or outside) the group altogether
-          if (to && w.to != g.id) {
-            const std::string key = portKey(c, w.to, w.param);
-            if (c.input(key) < 0) c.inputs.push_back({key, w.param, true});
-          }
-          if (from && w.from != g.id) {
-            const std::string key = portKey(c, w.from, w.port);
-            if (c.output(key) < 0) c.outputs.push_back({key, w.port});
-          }
-        }
-        cd.ins.assign(c.inputs.begin() + static_cast<std::ptrdiff_t>(in0), c.inputs.end());
-        cd.outs.assign(c.outputs.begin() + static_cast<std::ptrdiff_t>(out0), c.outputs.end());
-      } else {
-        c.inputs.insert(c.inputs.end(), cd.ins.begin(), cd.ins.end());
-        c.outputs.insert(c.outputs.end(), cd.outs.begin(), cd.outs.end());
-      }
+      DocDerived::Closed& cd = crossings(g, t);
+      c.inputs.insert(c.inputs.end(), cd.ins.begin(), cd.ins.end());
+      c.outputs.insert(c.outputs.end(), cd.outs.begin(), cd.outs.end());
       c.inner = cd.inner;
       // GU.5: drawn as its panel, a wire into a control inside the group that an element shows ends on that element (no
       // pin: TX.mod-all's anchored port, its key "<name>@<id>" as the panel face answers it). Anchored ports go last, so
@@ -875,15 +883,30 @@ struct Builder {
       return addNode(scaled(std::move(c)));
     }
     // Opened: the capsule first, then In, the members (a nested group recursively: its capsule and contents), Out.
+    // BR.patch-io: the capsule has the closed block's ports (the connections crossing its frame), each a socket on its
+    // frame (layout(): frameSockets); its terminals the same sockets' inner sides.
+    {
+      const DocDerived::Closed& cd = crossings(g, t);
+      c.inputs.insert(c.inputs.end(), cd.ins.begin(), cd.ins.end());
+      c.outputs.insert(c.outputs.end(), cd.outs.begin(), cd.outs.end());
+    }
     const uint32_t ci = addNode(Node{});
     const size_t capIndex = capsules.size();
     capsules.emplace_back();
     capsules[capIndex].node = ci;
     std::vector<uint32_t> kids;
-    kids.push_back(addNode(terminal(true)));
+    {
+      Node in = terminal(true);
+      for (size_t k = 1; k < c.inputs.size(); ++k) in.outputs.push_back({c.inputs[k].name, ""});
+      kids.push_back(addNode(std::move(in)));
+    }
     for (const doc::Device* d : members)
       kids.push_back(doc::isGroupDevice(*d) ? groupNode(band, *d, t, tp) : addNode(scaled(deviceNode(band, *d, tp))));
-    kids.push_back(addNode(terminal(false)));
+    {
+      Node o = terminal(false);
+      for (size_t k = 1; k < c.outputs.size(); ++k) o.inputs.push_back({c.outputs[k].name, ""});
+      kids.push_back(addNode(std::move(o)));
+    }
     std::vector<graph::Point2> rel;
     circuitLayout(g, t, kids, c, rel);  // GU.5b: a circuit, not a row
     out.nodes[ci] = std::move(c);
@@ -997,6 +1020,21 @@ struct Builder {
       s.h = m::kSumH;
       out.bands[bi].source = addNode(std::move(s));
     }
+    // BR.patch-io: its input socket on its left edge — a summing band's bus input, an audio track's recording input (its
+    // patch reads `track.in`). Not in a scoped model (no bands of its own).
+    if (lanes()) {
+      const bool summing = t.kind == doc::TrackKind::Group || t.kind == doc::TrackKind::Return || t.kind == doc::TrackKind::Master;
+      const bool recording = t.kind == doc::TrackKind::Audio && std::any_of(low.audioInputs.begin(), low.audioInputs.end(),
+                                                                         [&](const doc::AudioInputBinding& a) { return a.track == t.id; });
+      if (summing || recording) {
+        Node s;
+        s.kind = NodeKind::Input;
+        s.band = bi;
+        s.title = "In";
+        s.outputs.push_back({"in", ""});
+        out.bands[bi].input = addNode(std::move(s));
+      }
+    }
     DocDerived::PerTrack& td = derived->tracks[t.id.value];
     if (!td.made) {  // PF.2: once per document (DocDerived)
       td.made = true;
@@ -1098,6 +1136,7 @@ struct Builder {
       const Band& to = out.bands[tb->second];
       Edge e;
       e.graphWire = gi;
+      e.drawnTo = to.input;  // BR.patch-io: the bus ends on the band's input socket
       if (gw.from.port == "out" && gw.to.port == "in") {
         addEdge(EdgeKind::Route, from.mixer, 0, to.source, out.nodes[to.source].input("in"), e);
       } else if ((gw.from.port == "post" || gw.from.port == "pre") && gw.to.port.size() > 1 && gw.to.port[0] == 's') {
@@ -1201,7 +1240,91 @@ struct Builder {
       if (w.fromNoteSource() && fromMidi && mainFrom && mainTo) k = EdgeKind::Notes;
       else if (series && out.nodes[a].kind == NodeKind::Terminal) k = EdgeKind::Notes;
       else if (sameBand && e.graphWire == kNone && ((mainFrom && mainTo) || w.toMixer() || (w.fromNoteSource() && mainFrom))) k = EdgeKind::Chain;
-      addEdge(k, a, fromPort, b, toPort, e);
+      crossingEdges(k, a, fromPort, b, toPort, w, std::move(e));
+    }
+    inputEdges();
+  }
+
+  // BR.patch-io: a wire from `a` to `b` as edges — one, or across opened groups' frames one per stretch between their
+  // sockets (Edge::hops): out of each capsule `a` sits in up to the innermost one holding both ends (into its Out
+  // terminal's port for the wire's source, on from the capsule's port of that key), then into each capsule down to `b`'s
+  // (into the capsule's port for the wire's target, on from its In terminal's). A socket missing (never: the crossing
+  // ports are made from the same wires): one edge, as before.
+  void crossingEdges(EdgeKind k, uint32_t a, int32_t fromPort, uint32_t b, int32_t toPort, const doc::Wire& w, Edge e) {
+    if (a == kNone || b == kNone || (out.nodes[a].capsule == kNone && out.nodes[b].capsule == kNone)) {
+      addEdge(k, a, fromPort, b, toPort, std::move(e));
+      return;
+    }
+    auto chain = [&](uint32_t n, std::vector<uint32_t>& v) {
+      for (uint32_t c = out.nodes[n].capsule; c != kNone && v.size() <= doc::kMaxGroupDepth + 1; c = out.nodes[c].capsule) v.push_back(c);
+    };
+    std::vector<uint32_t> up, down;  // innermost first
+    chain(a, up);
+    chain(b, down);
+    while (!up.empty() && !down.empty() && up.back() == down.back()) up.pop_back(), down.pop_back();
+    struct Piece {
+      uint32_t from;
+      int32_t fromPort;
+      uint32_t to;
+      int32_t toPort;
+    };
+    std::vector<Piece> pieces;
+    uint32_t at = a;
+    int32_t atPort = fromPort;
+    bool ok = true;
+    for (const uint32_t c : up) {
+      const Node& cn = out.nodes[c];
+      const std::string key = portKey(cn, w.from, w.port);
+      const int32_t in = cn.groupOut != kNone ? out.nodes[cn.groupOut].input(key) : -1, on = cn.output(key);
+      if (in <= 0 || on <= 0) ok = false;
+      pieces.push_back({at, atPort, cn.groupOut, in});
+      at = c, atPort = on;
+    }
+    for (auto it = down.rbegin(); it != down.rend(); ++it) {
+      const Node& cn = out.nodes[*it];
+      const std::string key = portKey(cn, w.to, w.param);
+      const int32_t in = cn.input(key), on = cn.groupIn != kNone ? out.nodes[cn.groupIn].output(key) : -1;
+      if (in <= 0 || on <= 0) ok = false;
+      pieces.push_back({at, atPort, *it, in});
+      at = cn.groupIn, atPort = on;
+    }
+    pieces.push_back({at, atPort, b, toPort});
+    if (!ok || pieces.size() > 255) {
+      addEdge(k, a, fromPort, b, toPort, std::move(e));
+      return;
+    }
+    for (size_t i = 0; i < pieces.size(); ++i) {
+      Edge x = e;
+      x.hop = static_cast<uint8_t>(i);
+      x.hops = static_cast<uint8_t>(pieces.size());
+      if (i > 0) x.tapPinned = false, x.tapX = 0.0f;  // (a lane's tap: its first stretch's)
+      addEdge(k, pieces[i].from, pieces[i].fromPort, pieces[i].to, pieces[i].toPort, std::move(x));
+    }
+  }
+
+  // BR.patch-io (user 2026-11-13: "inputting sound, either into an audio track or to the master, should create a long
+  // cable that stretches from the very left (the input port) to the very right"): a band's input socket's cables — an
+  // audio track's recording input into each block its clips' signal enters the chain by (each chain edge from its lane's
+  // `out`: the signal is clips + input, lower.h "Signal flow": Audio), dim while it is not monitored; a summing band's
+  // into its Σ (the buses end on the socket: route()).
+  void inputEdges() {
+    const size_t n = out.edges.size();
+    for (const Band& b : out.bands) {
+      if (b.input == kNone || b.source == kNone) continue;
+      const Node& src = out.nodes[b.source];
+      if (src.kind == NodeKind::Sum) {
+        addEdge(EdgeKind::Chain, b.input, 0, b.source, 0);
+        continue;
+      }
+      const auto ti = trackById.find(b.track.value);
+      const bool live = ti != trackById.end() && doc::monitorGate(ti->second->mixer) > 0.0f;
+      for (size_t i = 0; i < n; ++i) {
+        const Edge& e = out.edges[i];
+        if (e.from != b.source || e.fromPort != 0 || e.kind != EdgeKind::Chain || e.hop != 0) continue;
+        Edge x;
+        x.silent = !live;  // (into a group's frame: to its first stretch's socket)
+        addEdge(EdgeKind::Chain, b.input, 0, e.to, static_cast<int32_t>(e.toPort), std::move(x));
+      }
     }
   }
 
@@ -1292,7 +1415,8 @@ struct Builder {
   float placeMain(uint32_t bi) {
     Band& b = out.bands[bi];
     b.x0 = m::kLeft + m::kIndent * static_cast<float>(b.depth);
-    float start = b.x0 + 8.0f;
+    // BR.patch-io: a recording input's socket at the band's left edge, its cable into the first block: room for both.
+    float start = b.x0 + 8.0f + (b.input != kNone && b.kind == doc::TrackKind::Audio ? m::kInputRoom : 0.0f);
     if (b.kind == doc::TrackKind::Group && b.lastMember != kNone) {
       float membersEnd = start;
       for (uint32_t c = bi + 1; c <= b.lastMember; ++c)
@@ -1348,6 +1472,11 @@ struct Builder {
         bottom = std::max(bottom, nd.y + nd.h);
       };
       if (b.source != kNone && out.nodes[b.source].kind != NodeKind::Lane) place(b.source);  // TL.1: a Σ (the lane: below)
+      if (b.input != kNone) {  // BR.patch-io: its input socket on its left edge, on the spine
+        Node& in = out.nodes[b.input];
+        in.x = b.x0 + m::kInputInset;
+        in.y = spine;
+      }
       for (const uint32_t d : b.devices)
         if (!out.nodes[d].offPath && stackUnder.count(d) == 0) place(d);
       // GU.9: a rack's other chains, each under the one before it (the band grows to hold them).
@@ -1420,6 +1549,7 @@ struct Builder {
           moveKids(n, dx, dy);  // TX.groups
         };
         move(b.source);
+        move(b.input);
         for (const uint32_t d : b.devices) move(d);
         move(b.mixer);
         move(b.output);
@@ -1449,8 +1579,7 @@ struct Builder {
       }
       cn.pinTop += cn.y - y0;
       cn.x = x0, cn.y = y0, cn.w = x1 - x0, cn.h = y1 - y0;
-      if (cn.groupIn != kNone) out.nodes[cn.groupIn].x = cn.x + m::kCapsulePad;
-      if (cn.groupOut != kNone) out.nodes[cn.groupOut].x = cn.x + cn.w - m::kCapsulePad - out.nodes[cn.groupOut].w;
+      frameSockets(c.node);
     }
     // TX.node-menu (SPEC §15 2026-11-02: "the band grows to fit blocks placed at its edge"): a band grows down to hold
     // its blocks wherever their nudges put them (a block placed at or past its bottom edge, an opened capsule grown by
@@ -1524,6 +1653,69 @@ struct Builder {
     }
     for (const Node& n : out.nodes)
       if (!n.folded) grow(n.x, n.y - 12.0f, n.x + n.w, n.y + n.h);
+  }
+
+  // BR.patch-io: opened capsule `ci`'s frame sockets — its terminals become strips on its frame's edges (In: the left,
+  // Out: the right; as tall as the frame) and every port of the capsule and of its terminals gets its row (Port::y): the
+  // main In / Out on the capsule's spine (pinTop), each crossing connection's socket level with the pin it leads to
+  // inside (the block or nested frame its inner cable reaches), so the inner cables run across without crossing each
+  // other; at least kSocketPitch apart, within the frame under its title strip. After the capsule has its final rect and
+  // its nested capsules their sockets (inner first).
+  void frameSockets(uint32_t ci) {
+    Node& cn = out.nodes[ci];
+    if (cn.groupIn == kNone || cn.groupOut == kNone) return;
+    for (const uint32_t t : {cn.groupIn, cn.groupOut}) {
+      Node& k = out.nodes[t];
+      k.x = t == cn.groupIn ? cn.x : cn.x + cn.w;
+      k.y = cn.y;
+      k.w = 0.0f;
+      k.h = cn.h;
+    }
+    const float lo = m::kCapsuleTitle + 8.0f, hi = std::max(lo, cn.h - 8.0f);
+    for (int side = 0; side < 2; ++side) {
+      const bool in = side == 0;
+      const uint32_t term = in ? cn.groupIn : cn.groupOut;
+      std::vector<Port>& ports = in ? cn.inputs : cn.outputs;
+      const size_t n = ports.size();
+      // Where each crossing's inner cable lands (node-relative): its other end's pin, from the stretch on the terminal.
+      std::vector<std::pair<float, size_t>> want;
+      for (size_t k = 1; k < n; ++k) {
+        float y = (lo + hi) * 0.5f;
+        for (const Edge& e : out.edges) {
+          if (in && e.from == term && e.fromPort == k) y = inPin(out.nodes[e.to], e.toPort).y - cn.y;
+          else if (!in && e.to == term && e.toPort == k) y = outPin(out.nodes[e.from], e.fromPort).y - cn.y;
+          else continue;
+          break;
+        }
+        want.emplace_back(std::clamp(y, lo, hi), k);
+      }
+      std::stable_sort(want.begin(), want.end());
+      const float main = std::clamp(cn.pinTop, lo, hi);
+      // Fewer rows than the frame holds at kSocketPitch: closer (never under 8).
+      const float pitch = std::clamp((hi - lo) / static_cast<float>(std::max<size_t>(n, 2) - 1), 8.0f, m::kSocketPitch);
+      std::vector<float> rows(n, main);
+      // Above the main socket (nearest first, upward), then below it (downward); what does not fit above goes below.
+      std::vector<std::pair<float, size_t>> below;
+      float prev = main;
+      for (auto it = std::lower_bound(want.begin(), want.end(), std::make_pair(main, size_t{0})); it != want.begin();) {
+        --it;
+        const float y = std::min(it->first, prev - pitch);
+        if (y < lo - 0.01f) {
+          below.insert(below.begin(), *it);
+          continue;
+        }
+        rows[it->second] = prev = y;
+      }
+      std::vector<std::pair<float, size_t>> rest(std::lower_bound(want.begin(), want.end(), std::make_pair(main, size_t{0})), want.end());
+      below.insert(below.end(), rest.begin(), rest.end());
+      prev = main;
+      for (const auto& [y, k] : below) rows[k] = prev = std::max(y, prev + pitch);
+      for (size_t k = 0; k < n; ++k) {
+        ports[k].y = rows[k];
+        std::vector<Port>& mirror = in ? out.nodes[term].outputs : out.nodes[term].inputs;
+        if (k < mirror.size()) mirror[k].y = rows[k];
+      }
+    }
   }
 
   // TL.1: the lanes — every band's over one x range (from right of the deepest band's indent to the right end of the
@@ -1757,6 +1949,16 @@ struct Builder {
       }
       busX[b.source] = x;
     }
+    // BR.patch-io (user 2026-11-13: "the current cable that goes into the master should instead go into the very left of
+    // the master before turning into a normal fluid looking cable"): a bus into a band's input socket — down a trunk right
+    // of every source (one per destination, 6 apart), along the gap above that band, down its left side, into the socket
+    // on its left edge. The feeds of one destination share all of it (one net: junctions where they join).
+    float trunk0 = -1e30f;
+    for (const Edge& e : out.edges)
+      if (e.drawnTo != kNone && (e.kind == EdgeKind::Route || e.kind == EdgeKind::Send))
+        trunk0 = std::max(trunk0, outPin(out.nodes[e.from], e.fromPort).x);
+    trunk0 += 12.0f;
+    std::unordered_map<uint32_t, float> trunkX;  // destination socket → its trunk's x
     uint32_t serial = 0;
     for (size_t k = 0; k < out.edges.size(); ++k) {
       Edge& e = out.edges[k];
@@ -1775,6 +1977,23 @@ struct Builder {
         const Port* tp = e.toPort < b.inputs.size() ? &b.inputs[e.toPort] : nullptr;
         pts.push_back(tp != nullptr && tp->anchored ? graph::Point2{b.x + tp->ax, b.y + tp->ay} : t);
         e.net = 1u << 30 | static_cast<uint32_t>(k);
+        continue;
+      }
+      if (e.drawnTo != kNone) {
+        const graph::Point2 d = outPin(out.nodes[e.drawnTo], 0);
+        const auto [it, fresh] = trunkX.try_emplace(e.drawnTo, 0.0f);
+        if (fresh) it->second = trunk0 + 6.0f * static_cast<float>((trunkX.size() - 1) % 3);
+        const Band& tb = out.bands[b.band];
+        const float gy = tb.y - m::kBandGap * 0.5f, lx = tb.x0 - 6.0f;
+        pts.push_back({it->second, s.y});
+        pts.push_back({it->second, gy});
+        pts.push_back({lx, gy});
+        pts.push_back({lx, d.y});
+        pts.push_back(d);
+        e.net = e.to;
+        simplify(pts);
+        for (const graph::Point2& q : pts)  // (the bounds hold the bus: its trunk, its run left of the band)
+          out.x0 = std::min(out.x0, q.x), out.y0 = std::min(out.y0, q.y), out.x1 = std::max(out.x1, q.x), out.y1 = std::max(out.y1, q.y);
         continue;
       }
       // A bus (route / send) into a summing input: every wire into one input shares its vertical channel.
@@ -1884,6 +2103,8 @@ struct Builder {
       x.from = map[e.from];
       x.to = map[e.to];
       x.graphWire = kNone;
+      x.hop = 0, x.hops = 1;  // BR.patch-io: a stretch kept alone (the wire's others are outside)
+      x.drawnTo = kNone;
       keep.edges.push_back(std::move(x));
     }
     keep.x0 = x0 - 8.0f, keep.y0 = y0 - 12.0f, keep.x1 = x1 + 8.0f, keep.y1 = y1 + 8.0f;
@@ -1934,6 +2155,8 @@ struct Builder {
       x.from = map[e.from];
       x.to = map[e.to];
       x.graphWire = kNone;
+      x.hop = 0, x.hops = 1;  // BR.patch-io: a stretch kept alone (the wire's others are outside)
+      x.drawnTo = kNone;
       keep.edges.push_back(std::move(x));
     }
     keep.x0 = c.x, keep.y0 = c.y - 12.0f, keep.x1 = c.x + c.w, keep.y1 = c.y + c.h;
@@ -2010,10 +2233,41 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     if (b.graphTrack == kNone)
       for (const uint32_t d : b.devices)
         if (pp.nodes[d].lowered) return "band " + b.name + " is not lowered but has a lowered block";
-  // Graph wires ↔ edges.
-  std::vector<uint32_t> edgeOfWire(g.wires.size(), kNone);
+  // BR.patch-io: a wire drawn as stretches between frame sockets (Edge::hops, consecutive) is checked as one edge from
+  // its first stretch's source to its last stretch's target.
+  std::vector<Edge> joined;
+  joined.reserve(pp.edges.size());
   for (uint32_t k = 0; k < pp.edges.size(); ++k) {
     const Edge& e = pp.edges[k];
+    if (e.hops <= 1) {
+      joined.push_back(e);
+      continue;
+    }
+    if (e.hop != 0 || k + e.hops > pp.edges.size()) return "edge " + std::to_string(k) + ": a stretch out of its wire's order";
+    const Edge& last = pp.edges[k + e.hops - 1u];
+    for (uint32_t i = 1; i < e.hops; ++i) {
+      const Edge& x = pp.edges[k + i];
+      const Edge& prev = pp.edges[k + i - 1];
+      if (x.hop != i || x.hops != e.hops || x.wire != e.wire) return "edge " + std::to_string(k + i) + ": a stretch out of its wire's order";
+      // Each stretch starts where the last one ended: at the same frame socket (a capsule's port and its terminal's).
+      const Node& was = pp.nodes[prev.to];
+      const Node& now = pp.nodes[x.from];
+      const bool socket = (was.kind == NodeKind::Terminal && now.group && now.groupOpen && now.groupOut == prev.to &&
+                           was.inputs[prev.toPort].name == now.outputs[x.fromPort].name) ||
+                          (was.group && was.groupOpen && now.kind == NodeKind::Terminal && was.groupIn == x.from &&
+                           was.inputs[prev.toPort].name == now.outputs[x.fromPort].name);
+      if (!socket) return "edge " + std::to_string(k + i) + ": a stretch not continuing at its frame socket";
+    }
+    Edge w = e;
+    w.to = last.to;
+    w.toPort = last.toPort;
+    joined.push_back(std::move(w));
+    k += e.hops - 1u;
+  }
+  // Graph wires ↔ edges.
+  std::vector<uint32_t> edgeOfWire(g.wires.size(), kNone);
+  for (uint32_t k = 0; k < joined.size(); ++k) {
+    const Edge& e = joined[k];
     if (e.graphWire == kNone) continue;
     if (e.graphWire >= g.wires.size()) return "edge " + std::to_string(k) + ": graph wire out of range";
     if (edgeOfWire[e.graphWire] != kNone) return "graph wire " + std::to_string(e.graphWire) + " drawn twice";
@@ -2024,7 +2278,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     const std::string what = "graph wire " + g.tracks[gw.from.track].name + "." + gw.from.port + " → " +
                              g.tracks[gw.to.track].name + "." + gw.to.port;
     if (edgeOfWire[w] == kNone) return what + " is not drawn";
-    const Edge& e = pp.edges[edgeOfWire[w]];
+    const Edge& e = joined[edgeOfWire[w]];
     const Node& a = pp.nodes[e.from];
     const Node& b = pp.nodes[e.to];
     if (a.band != bandOfGraph[gw.from.track] || b.band != bandOfGraph[gw.to.track]) return what + ": drawn between other bands";
@@ -2043,7 +2297,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     }
   }
   // Every other edge is internal to a band, or a same-track modulation wire into a driven param pin.
-  for (const Edge& e : pp.edges) {
+  for (const Edge& e : joined) {
     if (e.graphWire != kNone) continue;
     const Node& a = pp.nodes[e.from];
     const Node& b = pp.nodes[e.to];

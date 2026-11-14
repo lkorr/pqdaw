@@ -1505,4 +1505,14 @@ whole cycle; there DSP, tap and display already agreed.)
 Options: (a) leave it (bias the input upstream); (b) in Shape mode read the slider as x = 2·phase − 1 (its travel then
 spans the display one to one; changes the expansion and every Shape-mode project's sound); (c) a separate bias param.
 Choice: (a) for now — most reversible; BR.wt only fixed the idle dot to sit at the true u = (phase + 1)/2.
+
+## Q?-BR.patch-io-a · 2026-11-13 · BR.patch-io · Frame sockets' order and the buses into returns
+Context: BR.patch-io gives an opened group's frame one socket per crossing connection, the closed block's ports, and
+ends every bus at its band's input socket on the band's left edge.
+Options: frame sockets (a) top to bottom in the closed block's port order, or (b) each level with the pin it leads to
+inside (fewest crossings; the order can change as blocks move); sends into a return (c) keep their old trace into the
+Σ, or (d) end on the return's left socket like routes (one rule for every bus).
+Choice: (b) — the set and the keys stay the closed block's, only the rows follow the pins inside; and (d) — a return's
+only feeds are sends, so its bus and the master's / groups' read the same. Both are view-only (model.cpp
+frameSockets / route), reversible without document changes.
 Status: open.

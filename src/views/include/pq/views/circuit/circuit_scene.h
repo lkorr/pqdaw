@@ -67,6 +67,11 @@ struct ScenePin {
   bool pinned = false;
   float angle = 0.0f;
   uint64_t orbitKey = 0;
+  // BR.patch-io: a SOCKET — a port with no body of its own (the project patch view's opened-group frame sockets, a band's
+  // input socket), drawn by the canvas at (x, y) exactly as an orbiting port is drawn (kSocketIn: a ring, kSocketOut: a
+  // disc with its glow; the colour of a cable plugged into it), hit there; no stub. 0: an ordinary pin.
+  static constexpr uint8_t kSocketIn = 1, kSocketOut = 2;
+  uint8_t socket = 0;
 };
 
 struct SceneNode {
@@ -75,7 +80,7 @@ struct SceneNode {
   uint32_t firstPin = 0, pinCount = 0;            // into CircuitScene::pins (inputs, then outputs)
   graph::NodeIndex node = graph::kNone;
   bool inactive = false;  // T4.15: switched off by a structural constant (drawn dimmed)
-  bool hidden = false;    // … and hidden (not drawn, not hit)
+  bool hidden = false;    // … and hidden (not drawn, not hit; BR.patch-io: its sockets, ScenePin::socket, are both)
   // TX.resize: the node drawn `scale` times its own size (the project patch view's S-drag): the rect above is already the
   // scaled one; a face or panel on it is drawn, hit-tested and laid out at scale × the canvas's px per world unit, in
   // face-local units of its own size (local = (world − x, y) / scale). 1 everywhere else.

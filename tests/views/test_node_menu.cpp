@@ -1836,7 +1836,9 @@ graph::Point2 insideCapsule(const Ui& u) {
   REQUIRE(cap.group);
   REQUIRE(cap.groupOpen);
   for (float y = cap.y + metrics::kCapsuleTitle + 16.0f; y < cap.y + cap.h - 24.0f; y += 8.0f)
-    for (float x = cap.x + 24.0f; x < cap.x + cap.w - 24.0f; x += 8.0f) {
+    // (BR.patch-io: clear of the frame's socket column on its left, where the In terminal was: a block placed centred
+    // at the frame's very edge would hang out of the band)
+    for (float x = cap.x + 64.0f; x < cap.x + cap.w - 24.0f; x += 8.0f) {
       const Vec2 p = u.dev({x, y});
       if (u.view().canvas().nodeAt(p) == c && !u.view().canvas().pinAt(p).valid() && u.view().canvas().edgeAt(p) == kNone)
         return {x, y};
@@ -1877,7 +1879,7 @@ void checkMainPorts(Ui& u, doc::DeviceId id, std::string_view whatV) {
     REQUIRE_MESSAGE(p != kNone, side << ": no scene pin");
     const circuit::ScenePin& pin = (*u.view().canvas().scene()).pins[p];
     CHECK_MESSAGE(pin.visible, side << ": invisible");
-    CHECK_MESSAGE((pin.orbit || pin.stub > 0.0f), side << ": nothing draws it");
+    CHECK_MESSAGE((pin.orbit || pin.stub > 0.0f || pin.socket != 0), side << ": nothing draws it");  // (BR.patch-io: a frame socket)
     if (pin.orbit) CHECK_MESSAGE((pinInput ? u.pp().nodes[at].orbitIn.on : u.pp().nodes[at].orbitOut.on), side);
     const graph::Point2 w = u.view().canvas().portWorld(at, static_cast<uint32_t>(k), pinInput);
     {
@@ -1893,12 +1895,18 @@ void checkMainPorts(Ui& u, doc::DeviceId id, std::string_view whatV) {
     CHECK_MESSAGE((h.kind == circuit::CanvasHit::Kind::Pin && h.index == p),
                   side << ": not hit (kind " << static_cast<int>(h.kind) << " index " << h.index << ", pin " << p << ")");
     const ProjectCanvas::PinHit ph = u.view().canvas().pinAt(dv);
-    CHECK_MESSAGE((ph.node == at && ph.port == static_cast<uint32_t>(k) && ph.input == pinInput), side << ": not pressable (got node " << ph.node << " port " << ph.port << " input " << ph.input << ", want " << at << " " << k << ")");
+    // BR.patch-io: an opened group's main Out is a socket on its frame — the Out terminal's input inside, the capsule's
+    // own output outside, at one point: a press (no cable being drawn) is the output's (it draws from the group).
+    const bool outSocket = n.group && n.groupOpen && !input;
+    const uint32_t wantNode = outSocket ? i : at;
+    const bool wantInput = outSocket ? false : pinInput;
+    CHECK_MESSAGE((ph.node == wantNode && ph.port == (outSocket ? 0u : static_cast<uint32_t>(k)) && ph.input == wantInput),
+                  side << ": not pressable (got node " << ph.node << " port " << ph.port << " input " << ph.input << ", want " << wantNode << " " << k << ")");
     // A real press there (window → canvas): an output starts a cable, an orbiting input slides; Esc cancels.
-    if (!pinInput || pin.orbit) {
+    if (!wantInput || pin.orbit) {
       u.d.move(dv);
       u.d.down(dv);
-      CHECK_MESSAGE(u.view().canvas().drag() == (pinInput ? ProjectCanvas::Drag::Port : ProjectCanvas::Drag::Wire),
+      CHECK_MESSAGE(u.view().canvas().drag() == (wantInput ? ProjectCanvas::Drag::Port : ProjectCanvas::Drag::Wire),
                     side << ": a press there is not the port's (drag " << static_cast<int>(u.view().canvas().drag()) << ")");
       u.d.press("Escape");
       u.d.up(dv);

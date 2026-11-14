@@ -1555,3 +1555,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Limiter: the same dB scales on its GR and Out meters; Link is Stereo / L-R (M-S removed). Golden:
   tests/views/golden/limiter-panel.png.
 - To look at: whether the scale digits (5.5 px) read well at 1x, and the GR jack under the meters (unchanged).
+
+## 2026-11-13 · BR.patch-io · circuit view: group frame sockets, band input sockets, Ctrl+Alt+P camera 👁
+- Opened groups: no In / Out pentagons. The frame's left and right edges carry sockets drawn like module ports (ring =
+  input, disc = output), the main In / Out at the inner spine plus one per connection crossing the frame (the same ports
+  as the closed block). A crossing wire is two cables meeting at its socket. Goldens: project-patch-group,
+  project-patch-nested, project-cables*, device-chain / device-group-panel (the Device view's group panel), others.
+- Buses (routes, sends) now run down the right trunk, along the gap above their band and in from its left to an input
+  socket on the band's left edge; a cable continues to the Σ. Look at: project-patch-overview (Group, Space, Master).
+- An audio track with a recording input gets the same left socket and a long cable to its mixer (or its first block),
+  dim while not monitored (no golden: test "project patch (BR.patch-io)").
+- Ctrl+Alt+P: the camera fits the project's width and puts the first visible arrangement row's band at the top.
+- To look at: the bus runs along band edges (they read a bit like outlines), unconnected main sockets of a nested group
+  whose wires cross its frame directly (project-patch-nested, "Tone").

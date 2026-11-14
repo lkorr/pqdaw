@@ -980,8 +980,25 @@ struct CircuitCanvas::Impl final : FaceHost {
     scene0 = scene;
     orbitLast = -1.0;
   }
-  // After syncCables: each orbit's cables.
+  // BR.patch-io: the scene's sockets (ScenePin::socket) and the cable plugged into each (−1: none; its colour).
+  struct SocketRef {
+    uint32_t pin = 0;
+    int32_t cable = -1;
+  };
+  std::vector<SocketRef> sockets;
+  // After syncCables: each orbit's cables (BR.patch-io: and each socket's).
   void linkOrbits() {
+    sockets.clear();
+    for (uint32_t p = 0; scene && p < scene->pins.size(); ++p)
+      if (scene->pins[p].socket != 0) sockets.push_back({p, -1});
+    if (!sockets.empty())
+      for (uint32_t i = 0; i < cables.size(); ++i) {
+        const SceneWire& sw = scene->wires[cables[i].wire];
+        for (const uint32_t p : {sw.fromPin, sw.toPin}) {
+          const auto it = std::lower_bound(sockets.begin(), sockets.end(), p, [](const SocketRef& r, uint32_t v) { return r.pin < v; });
+          if (it != sockets.end() && it->pin == p && it->cable < 0) it->cable = static_cast<int32_t>(i);
+        }
+      }
     orbitEnds.clear();
     for (OrbitRef& o : orbits) o.firstEnd = o.endCount = 0;
     for (uint32_t i = 0; i < cables.size(); ++i) {
@@ -1217,17 +1234,22 @@ struct CircuitCanvas::Impl final : FaceHost {
     const Point2 port = loose.endA(0), free = loose.endB(0);
     uint32_t best = UINT32_MAX;
     bool bestRev = false;
-    float bestD = kLooseAdoptReach + kLoosePortReach;
-    for (uint32_t i = 0; i < cables.size(); ++i) {
-      if (std::binary_search(sortedOld.begin(), sortedOld.end(), simKeys[i])) continue;  // not new
-      const Point2 a = sim.endA(i), b = sim.endB(i);
-      for (int rev = 0; rev < 2; ++rev) {
-        const Point2 at = rev ? b : a, other = rev ? a : b;
-        // From the loose cable's port (a control's rim moves with the cable's direction: a little reach).
-        const float pd = std::hypot(at.x - port.x, at.y - port.y);
-        if (pd > kLoosePortReach) continue;
-        const float d = pd + std::hypot(other.x - free.x, other.y - free.y);
-        if (d < bestD) best = i, bestRev = rev != 0, bestD = d;
+    // BR.patch-io: a connection into or out of an opened group is drawn in stretches (frame socket to frame socket): the
+    // loose cable's free end is where it was dropped, the stretch at its port ends on the frame. Failing a cable between
+    // both ends (pass 0), the new one at its port nearest the drop (pass 1) takes the motion.
+    for (int pass = 0; pass < 2 && best == UINT32_MAX; ++pass) {
+      float bestD = pass == 0 ? kLooseAdoptReach + kLoosePortReach : std::numeric_limits<float>::max();
+      for (uint32_t i = 0; i < cables.size(); ++i) {
+        if (std::binary_search(sortedOld.begin(), sortedOld.end(), simKeys[i])) continue;  // not new
+        const Point2 a = sim.endA(i), b = sim.endB(i);
+        for (int rev = 0; rev < 2; ++rev) {
+          const Point2 at = rev ? b : a, other = rev ? a : b;
+          // From the loose cable's port (a control's rim moves with the cable's direction: a little reach).
+          const float pd = std::hypot(at.x - port.x, at.y - port.y);
+          if (pd > kLoosePortReach) continue;
+          const float d = pd + std::hypot(other.x - free.x, other.y - free.y);
+          if (d < bestD) best = i, bestRev = rev != 0, bestD = d;
+        }
       }
     }
     if (best == UINT32_MAX) return;
@@ -1603,7 +1625,7 @@ struct CircuitCanvas::Impl final : FaceHost {
           const uint32_t i = g.nodeItems[k];
           if (nodeStamp[i] == stamp) continue;
           nodeStamp[i] = stamp;
-          if (nodeIn(i)) visNodes.push_back(i);
+          if (!sc.nodes[i].hidden && nodeIn(i)) visNodes.push_back(i);  // (BR.patch-io: a body-less node's sockets are in the grid)
         }
         for (uint32_t k = g.segBegin[cell]; k < g.segBegin[cell + 1]; ++k) {
           const uint32_t i = g.segItems[k];
@@ -1896,7 +1918,7 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
     const uint32_t i = sc.grid.nodeItems[k];
     if (m.lifted(i)) continue;
     const SceneNode& n = sc.nodes[i];
-    if (w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return {CanvasHit::Kind::Node, i};
+    if (!n.hidden && w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return {CanvasHit::Kind::Node, i};
   }
   sc.grid.cellRange(w.x - wireR, w.y - wireR, w.x + wireR, w.y + wireR, c0, r0, c1, r1);
   float bestWire = wireR;
@@ -2305,7 +2327,7 @@ Rgba cableColour(const ui::Theme& th, const WireStyle& ws) noexcept {
 }  // namespace
 
 void CircuitCanvas::Impl::paintPorts(ui::PaintContext& ctx, Point2 w0, Point2 w1) {
-  if (orbits.empty() || !scene) return;
+  if ((orbits.empty() && sockets.empty()) || !scene) return;
   const ui::Theme& th = *ctx.res.theme;
   ui::DrawList& dl = ctx.dl;
   const float us = ctx.scale.factor;
@@ -2332,6 +2354,24 @@ void CircuitCanvas::Impl::paintPorts(ui::PaintContext& ctx, Point2 w0, Point2 w1
     d.connected = o.endCount > 0;
     d.col = d.connected ? cableColour(th, sc.wires[cables[orbitEnds[o.firstEnd]].wire].style) : th.face.jackRing;
     d.hot = hover.kind == CanvasHit::Kind::Pin && hover.index == o.pin;
+    draws.push_back(d);
+  }
+  // BR.patch-io: sockets, drawn as the ports are (where their node's layer has them now).
+  for (const SocketRef& k : sockets) {
+    const ScenePin& pin = sc.pins[k.pin];
+    if (!pin.visible || !showNode(pin.node)) continue;
+    const Point2 sh = shiftOf(pin.node);
+    const Point2 p{pin.x + sh.x, pin.y + sh.y};
+    if (p.x < w0.x - pad || p.x > w1.x + pad || p.y < w0.y - pad || p.y > w1.y + pad) continue;
+    const float r = kOrbitPortR * nodeScale(pin.node) * s();
+    if (r < 0.9f) continue;
+    PortDraw d;
+    d.at = {devX(p.x), devY(p.y)};
+    d.r = r;
+    d.input = pin.socket == ScenePin::kSocketIn;
+    d.connected = k.cable >= 0;
+    d.col = d.connected ? cableColour(th, sc.wires[cables[static_cast<size_t>(k.cable)].wire].style) : th.face.jackRing;
+    d.hot = hover.kind == CanvasHit::Kind::Pin && hover.index == k.pin;
     draws.push_back(d);
   }
   if (draws.empty()) return;
@@ -2626,7 +2666,7 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
     // T4.16c: the hovered pin (a press there starts a wire in the editor) is ringed in the hover colour.
     if (m.hover.kind == CanvasHit::Kind::Pin && m.hover.index < sc.pins.size()) {
       const ScenePin& pin = sc.pins[m.hover.index];
-      if (pin.visible && !pin.orbit && m.showNode(pin.node)) {  // TX.orbit-ports: a port shows its own hover (paintPorts)
+      if (pin.visible && !pin.orbit && pin.socket == 0 && m.showNode(pin.node)) {  // TX.orbit-ports: a port shows its own hover (paintPorts)
         const float rr = std::max(3.0f, std::round(3.0f * us));
         dl.addCircleStroke({m.devX(pin.x), m.devY(pin.y)}, rr, C.hover, std::max(1.0f, std::round(1.5f * us)));
       }

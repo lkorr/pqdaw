@@ -124,9 +124,15 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
   PinHit best;
   float bestD = reach;
   const float floorReach = 2.0f * (tree() ? tree()->scale() : 1.0f) / std::max(s, 1e-6f);
+  // BR.patch-io: an opened group's frame socket is two pins at one point — the capsule's (outside) and its terminal's
+  // (inside). While a cable is drawn out of an output the input there is meant (a drop into the group's input, onto its
+  // Out); else the output (a press draws from the group's In, from its output). Only the main sockets' terminal pins are
+  // pressed: a crossing socket is the capsule's port (a drop onto the param inside, a press on an output draws from the
+  // block inside).
+  const bool wantInput = from_.valid() && !from_.input;
   for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
     const Node& n = pp.nodes[i];
-    if (!shownNode(n)) continue;  // TL.1
+    if (!shownNode(n) || n.kind == NodeKind::Input) continue;  // TL.1; BR.patch-io: a band's input socket is drawn only
     // TX.orbit-ports: an orbiting port sits outside the block (a port's width at its scale).
     const float out = n.orbitIn.on || n.orbitOut.on ? 2.0f * (circuit::kOrbitPortR + circuit::kOrbitGap) * n.scale : 0.0f;
     if (w.x < n.x - reach - out || w.x > n.x + n.w + reach + out) continue;
@@ -151,8 +157,11 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
       const float sx = side == 0 ? px + inset : px - inset;  // the drawn socket's x (= px without a face)
       for (size_t k = 0; k < ports.size(); ++k) {
         if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
+        if (n.kind == NodeKind::Terminal && k > 0) continue;  // BR.patch-io (above)
         const float dy = std::fabs(w.y - (n.y + pinOffset(n, k, side == 0)));
         float dd = std::max(std::min(std::fabs(w.x - px), std::fabs(w.x - sx)), dy);
+        // BR.patch-io: of a frame socket's two pins the one not meant is a hair farther.
+        if ((n.kind == NodeKind::Terminal || (n.group && n.groupOpen)) && (side == 0) != wantInput) dd += 1e-3f / std::max(s, 1e-6f);
         // TX.orbit-ports: where the port is drawn now — its disc, and a few px around it outside the block (inside the
         // block's outline a press is the block's unless it is on the disc: far out a port is a dot on the block's edge).
         if (portOrbits(n, k, side == 0)) {
@@ -185,7 +194,7 @@ uint32_t ProjectCanvas::nodeAt(Vec2 d) const {
   const float minW = kMinHitPx * (tree() ? tree()->scale() : 1.0f) / std::max(deviceScale(), 1e-6f);
   for (uint32_t i = static_cast<uint32_t>(pp.nodes.size()); i-- > 0;) {
     const Node& n = pp.nodes[i];
-    if (!shownNode(n)) continue;  // TL.1
+    if (!shownNode(n) || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input) continue;  // TL.1; BR.patch-io: sockets only
     float x0 = n.x, x1 = n.x + n.w, y0 = n.y, y1 = n.y + n.h;
     if (n.kind == NodeKind::Device) {
       if (n.w < minW) x0 = n.x + (n.w - minW) * 0.5f, x1 = x0 + minW;
@@ -581,7 +590,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
         if (!mine(n) || !shownNode(n)) continue;
-        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal) continue;  // the symbol says it
+        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input) continue;  // the symbol says it
         // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
         if (n.face != nullptr || n.panel || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
         if (n.symbol) continue;  // GU.5b: an atom block's symbol says what it is
@@ -914,9 +923,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       // (Open Group): a double-click on it does nothing, so a module is not opened by accident.
       // TX.ports-always: a port over the capsule (the main ports of a block inside it orbit its outline, off the block) is
       // the port's.
+      // BR.patch-io: and so is a socket on its frame (its own port and its terminal's).
       bool portOverCapsule = false;
       if (node != kNone && pp.nodes[node].group && pp.nodes[node].groupOpen)
-        if (const PinHit pin = pinAt(e.pos); pin.valid() && pin.node != node) portOverCapsule = true;
+        if (const PinHit pin = pinAt(e.pos); pin.valid()) portOverCapsule = true;
       if (node != kNone && pp.nodes[node].group && !portOverCapsule) {
         const Node& n = pp.nodes[node];
         const doc::DeviceId g = n.device;
@@ -1586,9 +1596,15 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   // params and inputs.
   if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) {
     // TX.all-free: a track source's output 0 is its own signal (kMainPort); its others a MIDI track's note outputs.
-    const std::string port = isTrackSource(a) && from_.port == 0 ? std::string() : a.outputs[from_.port].name;
+    std::string port = isTrackSource(a) && from_.port == 0 ? std::string() : a.outputs[from_.port].name;
     const bool device = a.kind == NodeKind::Device || a.kind == NodeKind::Terminal;  // TX.groups: In is the group's port
-    const doc::DeviceId from = device ? a.device : doc::DeviceId{};
+    doc::DeviceId from = device ? a.device : doc::DeviceId{};
+    // A group's port of a block inside it ("<port>@<id>": a closed block's, BR.patch-io an opened frame's socket): that
+    // block's port.
+    if (const size_t at = port.rfind('@'); device && a.group && at != std::string::npos) {
+      from = doc::DeviceId{static_cast<uint32_t>(std::stoul(port.substr(at + 1)))};
+      port.resize(at);
+    }
     const doc::TrackId notes = device ? doc::TrackId{} : fromBand.track;
     auto wire = [&](doc::DeviceId to, const std::string& param) {
       (void)(notes.valid() ? v.connectNotes(notes, port, to, param) : v.connect(from, port, to, param));

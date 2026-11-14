@@ -282,6 +282,118 @@ struct Ui {
 
 }  // namespace
 
+// BR.patch-io (user 2026-11-13: "inputting sound, either into an audio track or to the master, should create a long cable
+// that stretches from the very left (the input port) to the very right (the mixer)"; "the current cable that goes into
+// the master should instead go into the very left of the master before turning into a normal fluid looking cable").
+TEST_CASE("project patch (BR.patch-io): an audio track's input and the master's buses enter at the band's left edge") {
+  Ui u;
+  doc::DocumentStore& st = u.ctx.store();
+  auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, {}, "Mic");
+  REQUIRE(t.ok());
+  REQUIRE(st.dispatch(t->command).ok());
+  const doc::TrackId mic = t->tracks.at(0);
+  u.show();
+  auto bandOf = [&](doc::TrackId id) -> const Band& { return u.pp().bands[u.pp().bandOf(id)]; };
+  CHECK(bandOf(mic).input == kNone);  // no input set: no socket (nothing reads track.in)
+  REQUIRE(st.dispatch(doc::SetTrackAudioInput{mic, doc::AudioInput{0, 2}}).ok());
+  REQUIRE(st.dispatch(doc::SetTrackMonitor{mic, doc::MonitorMode::In}).ok());
+  u.d.step();
+  u.view().focusBand(mic, false);
+  u.d.tree().layoutNow();
+  {
+    const ProjectPatch& pp = u.pp();
+    CHECK(checkAgainstGraph(pp, *u.ctx.doc(), *u.view().lowered()) == "");
+    const Band& b = bandOf(mic);
+    REQUIRE(b.input != kNone);
+    const Node& in = pp.nodes[b.input];
+    CHECK(in.kind == NodeKind::Input);
+    CHECK(in.x == doctest::Approx(b.x0 + metrics::kInputInset));  // the band's very left, left of its lane window
+    CHECK(in.x < pp.laneX0);
+    const Node& mx = pp.nodes[b.mixer];
+    CHECK(in.y == doctest::Approx(mx.y + pinOffset(mx, 0)));  // on the spine: level with the mixer's input
+    // One cable from it to where the clips' signal enters the chain (no blocks: the mixer), as the lane's own cable.
+    uint32_t cables = 0;
+    for (const Edge& e : pp.edges) {
+      if (e.from != b.input) continue;
+      ++cables;
+      CHECK(e.kind == EdgeKind::Chain);
+      CHECK(e.cable);
+      CHECK(e.to == b.mixer);
+      CHECK_FALSE(e.silent);  // monitored
+      CHECK(e.points.front() == graph::Point2{in.x, in.y});
+      CHECK(e.points.back().x >= mx.x - 0.01f);
+    }
+    CHECK(cables == 1);
+    // Its rest shape is the tight long-cable one: it hangs over the band's circuit, never into its lane.
+    const circuit::CircuitScene& sc = *u.view().canvas().scene();
+    bool found = false;
+    for (uint32_t w = 0; w < sc.wires.size(); ++w) {
+      if (w >= u.view().scene().modelEdge.size() || u.view().scene().modelEdge[w] == kNone) continue;
+      const Edge& e = pp.edges[u.view().scene().modelEdge[w]];
+      if (e.from != b.input) continue;
+      found = true;
+      for (uint32_t i = 0; i < sc.wires[w].pointCount; ++i) CHECK(sc.points[sc.wires[w].firstPoint + i].y < b.laneY - 4.0f);
+      // The socket is drawn as an input port.
+      CHECK(sc.pins[sc.wires[w].fromPin].socket == circuit::ScenePin::kSocketIn);
+    }
+    CHECK(found);
+  }
+  // Not monitored (Off): drawn dim.
+  REQUIRE(st.dispatch(doc::SetTrackMonitor{mic, doc::MonitorMode::Off}).ok());
+  u.d.step();
+  for (const Edge& e : u.pp().edges)
+    if (e.from == bandOf(mic).input) CHECK(e.silent);
+  // A device on its path: the input goes into it (where the clips' signal enters the chain), not past it to the mixer.
+  auto d = doc::ops::addDevice(*st.current(), st.ids(), mic, "module:utility", doc::DeviceKind::AudioEffect);
+  REQUIRE(d.ok());
+  REQUIRE(st.dispatch(d->command).ok());
+  u.d.step();
+  {
+    const ProjectPatch& pp = u.pp();
+    const Band& b = bandOf(mic);
+    const uint32_t util = pp.nodeOf(d->devices.at(0));
+    REQUIRE(util != kNone);
+    uint32_t lane = kNone, input = kNone;
+    for (const Edge& e : pp.edges) {
+      if (e.from == b.source && e.fromPort == 0 && e.kind == EdgeKind::Chain) lane = e.to;
+      if (e.from == b.input) input = e.to;
+    }
+    CHECK(lane == util);
+    CHECK(input == lane);
+    CHECK(pp.nodes[util].x >= pp.nodes[b.input].x + metrics::kInputRoom - 8.0f);  // room for the socket and its cable
+  }
+  // The master: every route into it is a trace that ends on its input socket at its left edge; a cable goes on into
+  // its Σ.
+  {
+    const ProjectPatch& pp = u.pp();
+    const Band& m = pp.bands[pp.master];
+    REQUIRE(m.input != kNone);
+    const Node& in = pp.nodes[m.input];
+    CHECK(in.x == doctest::Approx(m.x0 + metrics::kInputInset));
+    uint32_t routes = 0;
+    for (const Edge& e : pp.edges) {
+      if (e.kind != EdgeKind::Route || e.to != m.source) continue;
+      ++routes;
+      CHECK_FALSE(e.cable);
+      CHECK(e.drawnTo == m.input);
+      CHECK(e.points.back() == graph::Point2{in.x, in.y});
+      CHECK(e.points[e.points.size() - 2].x < in.x);  // it comes in from the band's left
+      CHECK(e.points[e.points.size() - 2].y == in.y);
+    }
+    CHECK(routes >= 3);
+    bool intoSum = false;
+    for (const Edge& e : pp.edges) intoSum = intoSum || (e.from == m.input && e.to == m.source && e.cable);
+    CHECK(intoSum);
+    // In the scene the routes end on the socket (it moves with them).
+    const circuit::CircuitScene& sc = *u.view().canvas().scene();
+    const uint32_t sock = u.view().canvas().scenePin(m.input, 0, false);
+    REQUIRE(sock != kNone);
+    for (uint32_t w = 0; w < sc.wires.size() && w < u.view().scene().modelEdge.size(); ++w)
+      if (const uint32_t k = u.view().scene().modelEdge[w]; k != kNone && pp.edges[k].kind == EdgeKind::Route && pp.edges[k].to == m.source)
+        CHECK(sc.wires[w].toPin == sock);
+  }
+}
+
 TEST_CASE("project patch: an audio track's source is its clip player (T5.3), the view still matches the graph") {
   doc::DocumentStore store;
   REQUIRE(buildSketchProject(store).ok());
@@ -326,7 +438,9 @@ TEST_CASE("project patch: the sketch project's view is its lowered ProjectGraph,
     routes += e.kind == EdgeKind::Route;
     sends += e.kind == EdgeKind::Send;
     silent += e.kind == EdgeKind::Send && e.silent;
-    mods += e.kind == EdgeKind::Modulation && e.graphWire != kNone;  // (GU.11: not the modules' inner wires)
+    // (GU.11: not the modules' inner wires; BR.patch-io: a wire into an opened group is drawn as a stretch per frame
+    // socket, each its wire's: counted once)
+    mods += e.kind == EdgeKind::Modulation && e.graphWire != kNone && e.hop == 0;
     CHECK(routedAsDrawn(e));
   }
   size_t graphRoutes = 0, graphSends = 0, graphMods = 0;
@@ -870,9 +984,21 @@ TEST_CASE("project patch: Ctrl+Alt+P morphs from the arrangement (lanes keep the
   CHECK_FALSE(v.morphing());
   CHECK(v.morphProgress() == 1.0f);
   CHECK(v.canvas().visible());
-  // At the end the first lane's band is where the lane was (the zoom makes bands about lane height).
-  const Band& first = v.patch().bands[v.patch().bandOf(lanes[0].first)];
-  CHECK(v.canvas().toDevice({first.x0, first.y}).y == doctest::Approx(static_cast<float>(lanes[0].second.y)).epsilon(0.01));
+  // BR.patch-io (user 2026-11-13: it "should spawn proportional to the project; it should at least horizontally take up
+  // the screen and vertically be showing the same modules that were open and visible"): at the end the project's width
+  // fills the canvas (a margin each side) and the first lane's band is at the canvas's top, under the time ruler.
+  {
+    const ProjectPatch& pp = v.patch();
+    const IRect cr = v.canvas().rect();
+    const float l = v.canvas().toDevice({pp.x0, 0.0f}).x, r = v.canvas().toDevice({pp.x1, 0.0f}).x;
+    CHECK(l >= static_cast<float>(cr.x));
+    CHECK(r <= static_cast<float>(cr.right()));
+    CHECK(r - l >= 0.95f * static_cast<float>(cr.w));
+    const Band& first = pp.bands[pp.bandOf(lanes[0].first)];
+    const float top = v.canvas().toDevice({first.x0, first.kind == doc::TrackKind::Group ? first.cy0 : first.y}).y;
+    CHECK(top > static_cast<float>(cr.y));
+    CHECK(top < static_cast<float>(cr.y) + 64.0f);
+  }
   // Idle once settled: no frames, no timers.
   u.d.advance(0.5);
   const uint64_t f1 = u.d.framesDrawn();
@@ -885,6 +1011,34 @@ TEST_CASE("project patch: Ctrl+Alt+P morphs from the arrangement (lanes keep the
   CHECK_FALSE(v.morphing());
   CHECK_FALSE(v.shown());
   CHECK(arr.visible());
+  // BR.patch-io: scrolled down in the arrangement, the band of the first lane it shows is the one at the canvas's top
+  // (more tracks first: room to scroll).
+  for (int i = 0; i < 10; ++i) {
+    doc::DocumentStore& st = u.ctx.store();
+    auto t = doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Midi, {}, "More " + std::to_string(i));
+    REQUIRE(t.ok());
+    REQUIRE(st.dispatch(t->command).ok());
+  }
+  u.d.step();
+  u.d.tree().layoutNow();
+  arr.scrollToY(arr.rowLaneRect(3).y - arr.rowLaneRect(0).y);
+  u.d.tree().layoutNow();
+  const ui::IRect vp = arr.lanesViewport();
+  int32_t firstShown = -1;
+  for (size_t i = 0; i < arr.rows().size() && firstShown < 0; ++i)
+    if (arr.rowLaneRect(static_cast<int32_t>(i)).bottom() > vp.y) firstShown = static_cast<int32_t>(i);
+  REQUIRE(firstShown >= 1);
+  CHECK(u.d.press("Ctrl+Alt+P") == KeyResult::Action);
+  u.d.advance(ProjectPatchView::kMorphSeconds * 2.0);
+  REQUIRE(v.shown());
+  {
+    const ProjectPatch& pp = v.patch();
+    const Band& b = pp.bands[pp.bandOf(arr.rows()[static_cast<size_t>(firstShown)].id)];
+    const float top = v.canvas().toDevice({b.x0, b.kind == doc::TrackKind::Group ? b.cy0 : b.y}).y;
+    const IRect cr = v.canvas().rect();
+    CHECK(top > static_cast<float>(cr.y));
+    CHECK(top < static_cast<float>(cr.y) + 64.0f);
+  }
 }
 
 TEST_CASE("project patch: a wire, a re-route, add / remove / move devices, mixer changes — one undo step each, shown in the Ableton view") {

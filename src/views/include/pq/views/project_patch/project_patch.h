@@ -33,9 +33,13 @@
 //              their nudges put them), at the band's top — unless the user placed it (doc::PatchNudge::mixerPlaced:
 //              from the band's top-left corner, so it travels with the band and no other block's move shifts it).
 //   output     the master's "Out" terminal after its mixer.
+//   input      (BR.patch-io) a band's input socket at its left edge: an audio track with a recording input (Mixer::
+//              audioIn: `track.in`) gets one, its cable going to where its clips' signal enters the chain (each chain
+//              edge from its lane's `out`: the first block, or the mixer); a summing band (group, return, master) fed by
+//              buses gets one, the buses ending there and a cable going on into its Σ.
 //   group      a container around its band and its members' bands; its own chain starts right of its members' mixers.
-// Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind), the main path's links
-// included; route (a track's `out` → the summing input of its group or the master: graph wire out → in), send (a
+// Edges: TX.all-free — every document wire is one edge (notes, chain, modulation: EdgeKind; BR.patch-io: one per frame it
+// crosses more, Edge::hops), the main path's links included; route (a track's `out` → the summing input of its group or the master: graph wire out → in), send (a
 // mixer's send pin → a return's summing input: graph wire post / pre → s<id>; a send at −∞ is in the graph too and drawn
 // dim); across tracks a wire is also a graph wire m<id> → m<id>.
 //
@@ -45,7 +49,8 @@
 // main track (their sends arrive by buses), the master right of everything. Then the stored nudges (doc::ViewState::
 // patchNudges: by track id for a band, by device id for a block), the mixers (TX.mixer-look: placed, or pushed right of
 // any block nudged past them) and the wires' orthogonal routes (buses into each
-// summing input: every wire into one input shares its vertical channel, as a summing bus).
+// summing input: every wire into one input shares its channel, as a summing bus; BR.patch-io: down a trunk right of the
+// mixers, along the gap above its band, into the band's input socket at its left edge — a cable on from there to the Σ).
 // TX.resize: a scaled block (the nudge's scale) takes its scaled size in the layout — the blocks after it move right,
 // its band's spine moves down to its main pin and the band grows to hold it, the routes reach its scaled pins and
 // anchors — so neighbours make room (positions after a scaled block are not multiples of 4).
@@ -78,9 +83,17 @@ namespace pq::views::project_patch {
 
 inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 
-// TX.groups: Terminal = a group's In (its output kGroupInPort) or Out (its input kGroupOutPort) terminal inside an opened
-// group's capsule (`device` = the group's id).
-enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal };
+// TX.groups: Terminal = the inner side of an opened group's frame sockets (`device` = the group's id). BR.patch-io (user
+// 2026-11-13: the group's input and output "should be consistent with the general look and feel of the cables and module
+// input/output nodes"): no block of its own — a zero-width strip on the capsule's frame edge (In: its left edge, its
+// outputs; Out: its right edge, its inputs) whose ports sit exactly where the capsule's own ports are (Port::y): port 0
+// the group's main In (kGroupInPort) / Out (kGroupOutPort), then one per connection crossing the frame, in the closed
+// block's port order and keys ("<port>@<device id>"). Each socket is drawn once, as a module's port (circuit::ScenePin::
+// socket); a crossing wire is drawn as two cables, outside → the capsule's port, the terminal's port → inside.
+// BR.patch-io: Input = a band's input socket on its LEFT edge (Band::input): an audio track's recording input (track.in,
+// a cable into where its clip signal enters its chain) or a summing band's bus input (its routes and sends end there; a
+// cable on into its Σ). Zero-size, one output "in".
+enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input };
 
 struct Port {
   std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
@@ -100,6 +113,9 @@ struct Port {
   // TX.cable-look: the face's key of the control when it is not the port's own name (a closed group's main input landing
   // on the control its signal is added to inside: "value@<id>"; the canvas follows that control).
   std::string anchorKey;
+  // BR.patch-io: an opened capsule's frame socket (the capsule's ports, its terminals' and a band's Input): its row, the
+  // offset from the node's top in world units (< 0: the node's own rows, pinOffset).
+  float y = -1.0f;
 };
 
 struct Node {
@@ -140,8 +156,9 @@ struct Node {
   float scale = 1.0f;
   // TX.groups (doc::Device "Groups"): a group device is a CAPSULE. Opened (`groupOpen`, the default): the block is the
   // capsule's frame around its contents — `members` (free device blocks placed freely inside) and its two terminal nodes
-  // `groupIn` / `groupOut` (NodeKind::Terminal) — not a scene node of its own (the canvas draws the frame); its chain
-  // pins (`x` in, `y` out) on its edges at `pinTop`, level with the band's spine. Closed: one block (like a rack:
+  // `groupIn` / `groupOut` (NodeKind::Terminal: BR.patch-io the inner side of its frame sockets) — not a scene node of its
+  // own (the canvas draws the frame); its chain pins (`x` in, `y` out) on its edges at `pinTop`, level with the band's
+  // spine, then (BR.patch-io) the closed block's "<port>@<device id>" ports, each a socket on its frame (Port::y). Closed: one block (like a rack:
   // `inner` = its members, wires to and from them end on it as "<port>@<device id>") showing a miniature of its contents
   // (`mini`, in the block's unit square). A member's or terminal's `capsule` is its group's node.
   // GU.2: groups nest — a member may be a group (its capsule inside its parent's, or a closed block there); `capsule` is
@@ -200,7 +217,7 @@ struct Node {
 // into Out.)
 enum class EdgeKind : uint8_t { Notes, Chain, Route, Send, Modulation };
 // TX.cables (SPEC §15 2026-11-02 "cables and the node menu"): every connection between blocks — notes, chain, modulation
-// and free wires, a group's terminals — is a hanging cable straight from its source port to its target port (a param
+// and free wires, a group's frame sockets, a band's input socket — is a hanging cable straight from its source port to its target port (a param
 // whose control shows: onto the control); the bus structure stays orthogonal traces: route / send into a Σ and a
 // mixer's output (the master's mixer into Out).
 inline bool isCable(EdgeKind k, NodeKind from) noexcept {
@@ -217,7 +234,7 @@ struct Edge {
   // WI.2: the playback link cut the wire from its compile (ViewContext::wireError; status Refused): drawn in the error
   // colour, the message in its readout. Any kind with a wire (a cut main-path link is a Chain edge).
   bool typeError = false;
-  bool silent = false;                  // Send: its level is −∞ (lowered, plays nothing)
+  bool silent = false;                  // Send: its level is −∞ (lowered, plays nothing); BR.patch-io: an input not monitored
   bool delayed = false;                 // an automatic 1-sample delay (a delayed send or wire)
   bool pre = false;                     // Send: pre-fader
   bool voice = false;                   // Notes / a voice source: per voice
@@ -233,6 +250,14 @@ struct Edge {
   // lane's left end), and whether the wire pins it (Wire::tap set).
   float tapX = 0.0f;
   bool tapPinned = false;
+  // BR.patch-io: a wire crossing opened groups' frames is drawn as `hops` edges (hop 0 … hops − 1, consecutive in
+  // ProjectPatch::edges, the same document wire): each from one socket to the next — out of each frame it leaves (into its
+  // Out terminal's port, on from the capsule's port of that key), into each frame it enters (into the capsule's port, on
+  // from its In terminal's). Only its ends are the wire's (checkAgainstGraph joins the pieces).
+  uint8_t hop = 0, hops = 1;
+  // BR.patch-io: a bus (route / send) into a summing input is drawn to its band's input socket (this Input node; the
+  // edge itself still ends on the Σ), and a cable goes on from there into the Σ.
+  uint32_t drawnTo = 0xFFFFFFFFu;
 };
 
 struct Band {
@@ -248,6 +273,7 @@ struct Band {
   uint32_t graphTrack = kNone;  // index into the LoweredProject's graph.tracks (kNone: not lowered)
   graph::TrackRole role = graph::TrackRole::Audio;
   uint32_t source = kNone, mixer = kNone, output = kNone;  // node indices (source: the Lane, or the Σ)
+  uint32_t input = kNone;  // BR.patch-io: its input socket on its left edge (NodeKind::Input; kNone: none)
   std::vector<uint32_t> devices;                           // node indices (its blocks, list order)
   float y = 0, h = 0;          // world: the band's strip
   float x0 = 0, x1 = 0;        // world: its strip from the indent to the end of its chain
@@ -318,7 +344,11 @@ inline constexpr float kMixerSendTop = 82.0f;  // the first send row's centre (a
 inline constexpr float kExpandedPad = 16.0f;                // around an expanded device's atoms
 inline constexpr float kCapsuleTitle = 20.0f;               // TX.groups: an opened group's title strip
 inline constexpr float kCapsulePad = 12.0f;                 // around its contents
-inline constexpr float kTerminalW = 36.0f, kTerminalH = 32.0f;  // its In / Out terminals
+inline constexpr float kTerminalW = 36.0f, kTerminalH = 32.0f;  // its In / Out terminals' room in its inner layout
+// BR.patch-io: frame sockets at least this far apart along the frame's edge; a band's input socket this far in from its
+// left edge (clear of its colour bar).
+inline constexpr float kSocketPitch = 16.0f, kInputInset = 8.0f;
+inline constexpr float kInputRoom = 40.0f;  // … and an audio track with one starts its chain this much further right
 inline constexpr float kClosedGroupW = 168.0f, kClosedGroupH = 96.0f;  // a closed group's block (its miniature)
 inline constexpr float kValueKnobW = 48.0f, kValueKnobH = 56.0f;      // GU.5b: a value block's knob
 }  // namespace metrics
@@ -438,7 +468,8 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
   switch (n.kind) {
     case NodeKind::Sum: return 16.0f;
     case NodeKind::Output: return 8.0f;
-    case NodeKind::Lane: return 0.0f;
+    case NodeKind::Lane:
+    case NodeKind::Input: return 0.0f;
     case NodeKind::Device:  // TX.resize; TX.groups: an opened group's chain pins at its inner spine
       return ((n.pinTop > 0.0f ? n.pinTop : metrics::kPinTop) + metrics::kPinPitch * static_cast<float>(i)) * n.scale;
     case NodeKind::Terminal: return metrics::kTerminalH * 0.5f * n.scale;  // TX.group-resize: scaled with its group
@@ -449,7 +480,9 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
 }
 
 // GU.5b: input `i` (input) or output `i` of `n`: an atom block's symbol puts its inputs and outputs at their own rows.
+// BR.patch-io: a frame socket at its own row (Port::y).
 inline float pinOffset(const Node& n, size_t i, bool input) noexcept {
+  if (const std::vector<Port>& ports = input ? n.inputs : n.outputs; i < ports.size() && ports[i].y >= 0.0f) return ports[i].y;
   if (n.symbol) {
     const std::vector<circuit::PinSpec>& pins = input ? n.symbol->inputs : n.symbol->outputs;
     if (i < pins.size()) return pins[i].y;
@@ -469,7 +502,7 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
       case EntrySide::Bottom: return {n.x + std::max(2.0f, p.ax - p.aclear), n.y + n.h};
     }
   }
-  return {n.x, n.y + pinOffset(n, i)};
+  return {n.x, n.y + pinOffset(n, i, true)};
 }
 
 // TX.orbit-ports: where output `i` / input `i` of `n` meets its wires — an orbiting main port's settled place (Node::

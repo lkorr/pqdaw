@@ -139,7 +139,19 @@ TEST_CASE("groups view: select → Ctrl+G groups in one step, the capsule holds 
   CHECK(edgeBetween(u.node(u.ids.pa1), u.node(u.ids.wt)));
   CHECK(edgeBetween(u.node(u.ids.wt), u.node(u.ids.pa2)));
   CHECK(edgeBetween(u.node(u.ids.pa2), c.groupOut));
-  CHECK(edgeBetween(u.node(u.ids.lfo), u.node(u.ids.wt)));
+  // BR.patch-io: the LFO's wire is drawn as two cables through a socket on the frame — into the capsule's port
+  // "<param>@<wavetable>" (the closed block's port), on from the In terminal's port of that key onto the Wavetable.
+  CHECK_FALSE(edgeBetween(u.node(u.ids.lfo), u.node(u.ids.wt)));
+  CHECK(edgeBetween(u.node(u.ids.lfo), cap));
+  CHECK(edgeBetween(c.groupIn, u.node(u.ids.wt)));
+  for (const Edge& e : u.pp().edges)
+    if (e.from == u.node(u.ids.lfo) && e.to == cap) {
+      CHECK(e.hops == 2);
+      CHECK(e.hop == 0);
+      const std::string& key = c.inputs[e.toPort].name;
+      CHECK(key.ends_with("@" + std::to_string(u.ids.wt.value)));
+      CHECK(u.pp().nodes[c.groupIn].output(key) == static_cast<int32_t>(e.toPort));  // the same socket inside
+    }
   for (const uint32_t k : c.members) CHECK(u.pp().nodes[k].capsule == cap);
   // Ctrl+Shift+G with the group selected: the document as before grouping.
   CHECK(u.d.press("Ctrl+Shift+G") != KeyResult::Unhandled);
@@ -228,6 +240,159 @@ TEST_CASE("groups view: wiring inside a capsule and across it, a block dragged o
 
 // TX.group-resize: an opened group's factor is saved with the project (its nudge's "scale", as a block's) and laid out
 // at it when loaded: its members at the factor.
+// BR.patch-io (user suggestion 2026-11-13_19-10-25: the group's input and output "should be consistent with the general
+// look and feel of the cables and module input/output nodes … if you connect something else to modulate something in the
+// group it'll just add another input port"): an opened group's frame carries one socket per connection crossing it (and
+// its main In / Out), the closed block's ports, drawn as ports; a crossing wire is two cables through its socket; a press
+// and a drop on a socket wire as the In / Out terminals and the closed block's ports did — through real dispatch.
+TEST_CASE("groups view (BR.patch-io): an opened group's frame sockets — one per crossing connection, as the closed block's "
+          "ports; drags from and onto them — real dispatch") {
+  Ui u;
+  u.show();
+  const doc::DeviceId sel[3] = {u.ids.pa1, u.ids.wt, u.ids.pa2};
+  REQUIRE(u.view().groupDevices(sel));
+  u.d.step();
+  const doc::DeviceId g = u.groupOf(u.ids.wt);
+  REQUIRE(g.valid());
+  // A second connection out of the group: its last member into the Bass Utility's input (across tracks).
+  REQUIRE(u.view().connect(u.ids.pa2, "out", u.ids.util, ""));
+  u.d.step();
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // Closed: the block's ports. Opened again: the same ports, the same order, on the frame.
+  u.view().setGroupOpen(g, false);
+  u.d.step();
+  std::vector<std::string> closedIn, closedOut;
+  {
+    const Node& b = u.pp().nodes[u.node(g)];
+    REQUIRE_FALSE(b.groupOpen);
+    for (const Port& q : b.inputs) closedIn.push_back(q.name);
+    for (const Port& q : b.outputs) closedOut.push_back(q.name);
+  }
+  REQUIRE(closedIn.size() == 2);   // its main input, the LFO's wire onto the Wavetable
+  REQUIRE(closedOut.size() == 2);  // its main output, its member's into the Utility
+  u.view().setGroupOpen(g, true);
+  u.d.step();
+  u.view().focusBand(u.ids.keys, false);
+  u.d.tree().layoutNow();
+  const ProjectPatch& pp = u.pp();
+  const uint32_t ci = u.node(g);
+  const Node& c = pp.nodes[ci];
+  REQUIRE(c.groupOpen);
+  std::vector<std::string> openIn, openOut;
+  for (const Port& q : c.inputs) openIn.push_back(q.name);
+  for (const Port& q : c.outputs) openOut.push_back(q.name);
+  CHECK(openIn == closedIn);
+  CHECK(openOut == closedOut);
+  const Node& in = pp.nodes[c.groupIn];
+  const Node& out = pp.nodes[c.groupOut];
+  // The terminals are the frame's edges (no block): each socket's inside, at the capsule's port of the same key and row.
+  CHECK(in.x == c.x);
+  CHECK(out.x == c.x + c.w);
+  CHECK(in.w == 0.0f);
+  CHECK(out.w == 0.0f);
+  REQUIRE(in.outputs.size() == c.inputs.size());
+  REQUIRE(out.inputs.size() == c.outputs.size());
+  for (size_t k = 0; k < c.inputs.size(); ++k) {
+    CHECK(in.outputs[k].name == (k == 0 ? std::string(doc::kGroupInPort) : c.inputs[k].name));
+    CHECK(inPortPoint(c, k).x == outPortPoint(in, k).x);
+    CHECK(inPortPoint(c, k).y == outPortPoint(in, k).y);
+    CHECK(c.inputs[k].y >= metrics::kCapsuleTitle);  // under the title strip, on the frame
+    CHECK(c.inputs[k].y <= c.h);
+  }
+  for (size_t k = 0; k < c.outputs.size(); ++k) {
+    CHECK(out.inputs[k].name == (k == 0 ? std::string(doc::kGroupOutPort) : c.outputs[k].name));
+    CHECK(outPortPoint(c, k).x == inPortPoint(out, k).x);
+    CHECK(outPortPoint(c, k).y == inPortPoint(out, k).y);
+  }
+  CHECK(std::fabs(c.inputs[1].y - c.inputs[0].y) >= 8.0f);  // two sockets, apart
+  CHECK(std::fabs(c.outputs[1].y - c.outputs[0].y) >= 8.0f);
+  // Each crossing wire: two cables through its socket (one wire: hop 0 then 1).
+  auto stretches = [&](uint32_t a, uint32_t b) {
+    std::vector<const Edge*> v;
+    for (size_t i = 0; i + 1 < pp.edges.size(); ++i)
+      if (pp.edges[i].from == a && pp.edges[i + 1].to == b && pp.edges[i].hops == 2) v = {&pp.edges[i], &pp.edges[i + 1]};
+    return v;
+  };
+  const std::vector<const Edge*> lfo = stretches(u.node(u.ids.lfo), u.node(u.ids.wt));
+  REQUIRE(lfo.size() == 2);
+  CHECK(lfo[0]->to == ci);
+  CHECK(lfo[1]->from == c.groupIn);
+  CHECK(lfo[0]->wire == lfo[1]->wire);
+  CHECK((lfo[0]->cable && lfo[1]->cable));
+  CHECK(lfo[0]->points.back() == lfo[1]->points.front());  // they meet at the socket
+  const std::vector<const Edge*> toUtil = stretches(u.node(u.ids.pa2), u.node(u.ids.util));
+  REQUIRE(toUtil.size() == 2);
+  CHECK(toUtil[0]->to == c.groupOut);
+  CHECK(toUtil[1]->from == ci);
+  CHECK(toUtil[0]->points.back() == toUtil[1]->points.front());
+  // In the scene: each socket once, drawn as a port (the In side a ring, the Out side a disc), the cables plugged into it.
+  const circuit::CircuitScene& sc = *u.view().canvas().scene();
+  for (size_t k = 0; k < c.inputs.size(); ++k) {
+    const uint32_t p = u.view().canvas().scenePin(c.groupIn, static_cast<uint32_t>(k), false);
+    REQUIRE(p != kNone);
+    CHECK(sc.pins[p].socket == circuit::ScenePin::kSocketIn);
+    CHECK(sc.pins[p].visible);
+  }
+  for (size_t k = 0; k < c.outputs.size(); ++k) {
+    const uint32_t p = u.view().canvas().scenePin(c.groupOut, static_cast<uint32_t>(k), true);
+    REQUIRE(p != kNone);
+    CHECK(sc.pins[p].socket == circuit::ScenePin::kSocketOut);
+  }
+  CHECK(sc.nodes[u.view().scene().sceneNode[c.groupIn]].hidden);  // no body (no pentagon)
+  const std::string lfoKey = c.inputs[1].name;  // (the model is built again by each edit below)
+  // A drop onto the LFO's socket from another block's output: a wire into the param inside (the Bass Saturator's output).
+  u.view().fitAll(false);
+  u.d.tree().layoutNow();
+  {
+    const size_t h0 = u.history();
+    const Vec2 from = u.outPin(u.node(u.ids.sat));
+    const Vec2 to = u.inPin(ci, 1);
+    u.d.drag(from, to, 12);
+    u.d.step();
+    CHECK(u.history() == h0 + 1);
+    const doc::Wire& w = doc::wiresOf(*u.ctx.doc()).back();
+    CHECK(w.from == u.ids.sat);
+    CHECK(w.to == u.ids.wt);
+    CHECK(lfoKey == w.param + "@" + std::to_string(u.ids.wt.value));
+    CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+    REQUIRE(u.ctx.undo());
+    u.d.step();
+  }
+  // A press on the Utility socket's outside (the capsule's output) draws from the member inside: onto the Bass
+  // Saturator's input, a wire from that member.
+  {
+    u.view().fitAll(false);
+    u.d.tree().layoutNow();
+    const size_t h0 = u.history();
+    const uint32_t cap = u.node(g);
+    const Vec2 from = u.outPin(cap, 1);
+    const Vec2 to = u.inPin(u.node(u.ids.sat), static_cast<size_t>(std::max(0, u.pp().nodes[u.node(u.ids.sat)].mainIn)));
+    u.d.drag(from, to, 12);
+    u.d.step();
+    CHECK(u.history() == h0 + 1);
+    const doc::Wire& w = doc::wiresOf(*u.ctx.doc()).back();
+    CHECK(w.from == u.ids.pa2);
+    CHECK(w.to == u.ids.sat);
+    REQUIRE(u.ctx.undo());
+    u.d.step();
+  }
+  // The main sockets: from In (its inside) onto Out (its inside) — the dry path, as the terminals did.
+  {
+    u.view().focusBand(u.ids.keys, false);
+    u.d.tree().layoutNow();
+    const size_t h0 = u.history();
+    const Node& c2 = u.pp().nodes[u.node(g)];
+    u.d.drag(u.outPin(c2.groupIn), u.inPin(c2.groupOut), 8);
+    u.d.step();
+    CHECK(u.history() == h0 + 1);
+    const doc::Wire& w = doc::wiresOf(*u.ctx.doc()).back();
+    CHECK(w.from == g);
+    CHECK(w.port == doc::kGroupInPort);
+    CHECK(w.to == g);
+    CHECK(w.param == doc::kGroupOutPort);
+  }
+}
+
 TEST_CASE("groups view (TX.group-resize): an opened group's scale is saved and loaded with the project") {
   Ui u;
   u.show();
@@ -287,7 +452,9 @@ TEST_CASE("groups view: the Device view shows the group as one device; its panel
   CHECK(pp.nodes.size() == 6);  // the capsule, In, three members, Out
   size_t wires = 0;
   for (const Edge& e : pp.edges) wires += e.kind != EdgeKind::Route && e.kind != EdgeKind::Send ? 1 : 0;
-  CHECK(wires == 4);  // In → … → Out, its series (GU.11: the notes into it, chain edges; the LFO's wire comes from outside)
+  // In → … → Out, its series (GU.11: the notes into it, chain edges), and (BR.patch-io) the LFO's wire from outside as
+  // its stretch inside: from its socket on the frame onto the Wavetable.
+  CHECK(wires == 5);
   CHECK(pv.canvas().rect().w > 100);
   // An edit inside the panel: a cable dragged on the embedded canvas; one undo step; the main view's document too.
   const size_t h0 = u.history();
@@ -359,7 +526,8 @@ TEST_CASE("groups view: Delete and Ctrl+Shift+G inside a group's own panel (pois
   CHECK(u.history() == h0);
   // H1 a: the capsule (the group itself) selected by its frame inside its own panel, Delete.
   const Node& cap = pv->patch().nodes[0];
-  u.d.click(pv->canvas().toDevice({cap.x + 4.0f, cap.y + cap.h - 4.0f}));
+  // (BR.patch-io: mid-way along its bottom edge — its left and right edges carry its sockets)
+  u.d.click(pv->canvas().toDevice({cap.x + cap.w * 0.5f, cap.y + cap.h - 4.0f}));
   u.d.tree().setFocus(&pv->canvas());
   REQUIRE(std::find(pv->selectedDevices().begin(), pv->selectedDevices().end(), g) != pv->selectedDevices().end());
   h0 = u.history();

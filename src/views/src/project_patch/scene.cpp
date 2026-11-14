@@ -32,7 +32,7 @@ uint64_t bodyKeyOf(const SymbolSpec& s) noexcept {
          (static_cast<uint64_t>(std::lround(s.w * 4.0f)) << 16) | (static_cast<uint64_t>(std::lround(s.h * 4.0f)) << 36);
 }
 
-float pinYOf(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
+float pinYOf(const Node& n, size_t i) noexcept { return pinOffset(n, i, true); }  // (an input)
 
 SymbolSpec specOf(const Node& n) {
   if (n.symbol) {  // GU.5b: an atom block is its circuit symbol (pins at the symbol's rows, the symbol's stubs)
@@ -60,9 +60,13 @@ SymbolSpec specOf(const Node& n) {
       s.symbol = Symbol::Output;
       inStub = 4.0f;
       break;
-    case NodeKind::Terminal:  // TX.groups: a group's In / Out terminal (the circuit's terminal symbols)
+    case NodeKind::Terminal:  // BR.patch-io: an opened group's frame sockets (no body: hidden, its pins drawn as sockets)
       s.symbol = n.inputs.empty() ? Symbol::Input : Symbol::Output;
-      inStub = outStub = 4.0f;
+      inStub = outStub = 0.0f;
+      break;
+    case NodeKind::Input:  // BR.patch-io: a band's input socket (no body)
+      s.symbol = Symbol::Input;
+      inStub = outStub = 0.0f;
       break;
   }
   if (n.face != nullptr) {  // TMM.4: the face draws its jacks (no stubs)
@@ -133,6 +137,7 @@ uint64_t nodeIdentity(const ProjectPatch& pp, uint32_t i) noexcept {
     case NodeKind::Sum: return (4ull << 60) | track;
     case NodeKind::Mixer: return (5ull << 60) | track;
     case NodeKind::Output: return (6ull << 60) | track;
+    case NodeKind::Input: return (7ull << 60) | track;
   }
   return 0;
 }
@@ -190,7 +195,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sn.h = n.h;
     sn.scale = n.scale;  // TX.resize: its face or panel drawn at it
     // TL.1: a lane is no block (the view draws it; its cables leave its top edge), a folded band's blocks are hidden.
-    const bool hidden = n.kind == NodeKind::Lane || n.folded;
+    // BR.patch-io: frame sockets and a band's input socket are no blocks either: only their pins, drawn as sockets.
+    const bool socket = n.kind == NodeKind::Terminal || n.kind == NodeKind::Input;
+    const bool hidden = n.kind == NodeKind::Lane || n.folded || socket;
     sn.hidden = hidden;
     sc.hiddenNodes += hidden ? 1u : 0u;
     sn.spec = v;
@@ -207,7 +214,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         pin.node = v;
         pin.port = static_cast<uint16_t>(k);
         if (!pins[k].label.empty()) pin.label = addString(pins[k].label);
-        if (hidden) pin.visible = false;  // TL.1
+        if (hidden && !(socket && !n.folded)) pin.visible = false;  // TL.1
+        // BR.patch-io: drawn as a module's port — the In side and a band's input as an input (a ring), Out as an output.
+        if (socket) pin.socket = n.kind == NodeKind::Input || !n.outputs.empty() ? circuit::ScenePin::kSocketIn : circuit::ScenePin::kSocketOut;
         // TX.mod-all: an anchored param has no pin (its wire ends on the control): an invisible one where the wire
         // meets the block, so the wire's end and the face's "driven" look (FaceJack::name) still find it.
         if (side == 0 && n.inputs[k].anchored) {
@@ -295,7 +304,8 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         title.x1 = n.x + n.w + 4.0f;
         title.y = n.y + n.h + 3.0f;
         break;
-      case NodeKind::Sum: title.node = UINT32_MAX; break;  // the symbol says it
+      case NodeKind::Sum:
+      case NodeKind::Input: title.node = UINT32_MAX; break;  // the symbol says it (an input socket: hidden)
     }
     if (title.node != UINT32_MAX) sc.labels.push_back(title);
     // TMM.13-fix2 (MM review "UI and aesthetic" 8): in a scoped canvas (the free-device rack, a group's panel) a face has
@@ -375,11 +385,24 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;
     sw.toPin = b != kNone ? sc.nodes[b].firstPin + e.toPort : 0;
     // TX.drag-grow: the chain into / out of an opened capsule ends on its frame's edge (no pin): it moves with the
-    // terminal at that edge (a drag that moves or grows the capsule moves its end).
-    if (a == kNone && pp.nodes[e.from].group && pp.nodes[e.from].groupOpen && pp.nodes[e.from].groupOut != kNone)
-      sw.fromNode = out.sceneNode[pp.nodes[e.from].groupOut];
-    if (b == kNone && pp.nodes[e.to].group && pp.nodes[e.to].groupOpen && pp.nodes[e.to].groupIn != kNone)
-      sw.toNode = out.sceneNode[pp.nodes[e.to].groupIn];
+    // terminal at that edge (a drag that moves or grows the capsule moves its end). BR.patch-io: and plugs into that
+    // terminal's socket of the same port (the capsule's port k is its terminal's port k).
+    if (a == kNone && pp.nodes[e.from].group && pp.nodes[e.from].groupOpen && pp.nodes[e.from].groupOut != kNone) {
+      const uint32_t t = out.sceneNode[pp.nodes[e.from].groupOut];
+      sw.fromNode = t;
+      if (t != kNone && e.fromPort < sc.nodes[t].pinCount) sw.fromPin = sc.nodes[t].firstPin + e.fromPort;  // (its inputs)
+    }
+    if (b == kNone && pp.nodes[e.to].group && pp.nodes[e.to].groupOpen && pp.nodes[e.to].groupIn != kNone) {
+      const uint32_t t = out.sceneNode[pp.nodes[e.to].groupIn];
+      sw.toNode = t;
+      if (t != kNone && e.toPort < sc.nodes[t].pinCount) sw.toPin = sc.nodes[t].firstPin + e.toPort;  // (its outputs)
+    }
+    // BR.patch-io: a bus drawn to its band's input socket ends there.
+    if (e.drawnTo != kNone && e.drawnTo < pp.nodes.size() && out.sceneNode[e.drawnTo] != kNone) {
+      const uint32_t t = out.sceneNode[e.drawnTo];
+      sw.toNode = t;
+      sw.toPin = sc.nodes[t].firstPin;
+    }
     // TX.mod-all: it goes on over the face to the control of its param (CircuitCanvas draws that part).
     if (b != kNone && e.toPort < pp.nodes[e.to].inputs.size() && pp.nodes[e.to].inputs[e.toPort].anchored) {
       const Port& q = pp.nodes[e.to].inputs[e.toPort];

@@ -235,35 +235,33 @@ void ProjectPatchView::finishMorph() {
   markDirty();
 }
 
-// Where the canvas starts so that the bands line up with the lanes they unfold from: a zoom giving bands about the
-// lanes' height, and the first visible lane's band at that lane's top.
+// Where the canvas starts (BR.patch-io, user 2026-11-13: entering circuit mode "should spawn proportional to the project;
+// it should at least horizontally take up the screen and vertically be showing the same modules that were open and
+// visible"): the project's whole width across the canvas (a margin each side; centred), and the band of the first lane
+// the arrangement shows at the canvas's top, under the time ruler.
 circuit::CircuitCanvas::View ProjectPatchView::viewForArrangement() const {
   circuit::CircuitCanvas::View v;
   const ArrangementView* arr = arrangementNear(*this);
   const float us = tree() ? tree()->scale() : 1.0f;
-  const ui::IRect area = parent() ? parent()->rect() : rect();
   if (arr == nullptr || patch_.bands.empty()) return canvas_->view();
-  // The median lane and band heights.
-  std::vector<float> lanes, bands;
-  for (size_t i = 0; i < arr->rows().size(); ++i) lanes.push_back(static_cast<float>(arr->rows()[i].h) / us);
-  for (const Band& b : patch_.bands) bands.push_back(b.h + metrics::kBandGap);
-  if (lanes.empty()) {
-    v.zoom = 0.4;
-  } else {
-    std::nth_element(lanes.begin(), lanes.begin() + static_cast<std::ptrdiff_t>(lanes.size() / 2), lanes.end());
-    std::nth_element(bands.begin(), bands.begin() + static_cast<std::ptrdiff_t>(bands.size() / 2), bands.end());
-    v.zoom = std::clamp(static_cast<double>(lanes[lanes.size() / 2]) / std::max(1.0f, bands[bands.size() / 2]), 0.12, 1.0);
-  }
-  v.x = static_cast<double>(patch_.x0) - 12.0;
-  v.y = static_cast<double>(patch_.y0) - 8.0;
+  const ui::IRect r = canvas_->rect().w > 0 ? canvas_->rect() : (parent() ? parent()->rect() : rect());
+  constexpr double kMargin = 16.0, kMaxZoom = 1.5;
+  const double lw = std::max(1, r.w) / static_cast<double>(us);
+  const double contentW = std::max(1.0, static_cast<double>(patch_.x1 - patch_.x0));
+  v.zoom = std::clamp(lw / (contentW + 2.0 * kMargin), circuit::CircuitCanvas::kMinZoom, kMaxZoom);
+  v.x = static_cast<double>(patch_.x0 + patch_.x1) * 0.5 - lw / v.zoom * 0.5;
+  const double top = static_cast<double>(rulerInset()) / static_cast<double>(us) + 6.0;  // logical px over the first band
+  v.y = static_cast<double>(patch_.y0) - top / v.zoom;
   const ui::IRect vp = arr->lanesViewport();
   for (size_t i = 0; i < arr->rows().size(); ++i) {
     const ui::IRect lr = arr->rowLaneRect(static_cast<int32_t>(i));
     if (lr.bottom() <= vp.y) continue;
     const uint32_t b = patch_.bandOf(arr->rows()[i].id);
     if (b == kNone) break;
-    const double offset = (lr.y - area.y) / static_cast<double>(us);  // logical px from the top of the view
-    v.y = static_cast<double>(patch_.bands[b].y) - offset / v.zoom;
+    // A group's band: its container's top (the frame around it and its members starts there).
+    const Band& band = patch_.bands[b];
+    const float y = band.kind == doc::TrackKind::Group ? band.cy0 : band.y;
+    v.y = static_cast<double>(y) - top / v.zoom;
     break;
   }
   return v;
@@ -708,6 +706,15 @@ void ProjectPatchView::onDocument(const doc::StoreEvent& e) {
         rebuildNeeded = true;
         break;
       }
+    }
+    // BR.patch-io: an audio input's cable is dim while the track does not monitor it (its monitor switch, its arm).
+    for (const Band& b : patch_.bands) {
+      if (rebuildNeeded || b.input == kNone || b.kind != doc::TrackKind::Audio) continue;
+      const doc::Track* t = bandTrack(static_cast<uint32_t>(&b - patch_.bands.data()));
+      if (t == nullptr) continue;
+      const bool silent = !(doc::monitorGate(t->mixer) > 0.0f);
+      for (const Edge& ed : patch_.edges)
+        if (ed.from == b.input && ed.silent != silent) rebuildNeeded = true;
     }
   }
   if (rebuildNeeded) stale_ = true;
