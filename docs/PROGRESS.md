@@ -733,3 +733,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, after the rebase): `build.ps1 -Target pq_tests_views -TestRegex pq_tests_views` passed; exe default tier 764/764. Orchestrator looked at the morph and tuning goldens.
 - Perf / CPU-efficiency check: 200 objects in view paint in 0.98 ms median (check preset); objects flattened once per document change, paint samples visible moving segments per 2 px.
 - Notes/blockers: Q279, Q280; open items carried to T7.5 (TASKS).
+
+## 2026-11-14 · AC.fix · task/AC.fix
+- Did: ClipPlayer: formant settings left `sameLaw` (a Formants / Envelope edit keeps the voice and sets its stretcher's params: no re-prime silence); a law change on a playing Complex / Complex Pro voice hands it over (`handOver`: the new voice primes while the old one plays, 2 ms crossfade via the H2 takeover), `ClipPlayerStats::handovers`. Clip view: Shift+Up/Down / Shift+wheel = 1200 ¢ whatever the tuning (steps in an octave EDO, cents otherwise, ratio x2); cards in a `CardFlow` that flows into columns when the panel is short (Complex Pro knobs visible at the default 240 px; waveform ≥ 240 px). Golden added: audio-clip-warp-short.
+- Verified: after the rebase onto 15dfccb7 `build.ps1 -Affected -Slow` 56/56 passed; existing audio-clip goldens 0 px diff; the formant test fails on the old clip_player.cpp (kept 0, faded 1, silent window) and passes now; RtScope test covers handover + formant swaps (0 violations).
+- Perf / CPU-efficiency check: a formant edit now costs one setParams instead of a new voice + ~70 ms of 4x priming; a handover runs two stretchers only until the new one sounds (same cost as the existing H2 retry path).
+- Notes/blockers: a transpose drag steps in ~80 ms (each step waits for its vocoder to prime). Open look question in REVIEW (narrow waveform vs Warp + mode card sharing a column).

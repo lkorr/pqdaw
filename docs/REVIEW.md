@@ -1635,3 +1635,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   (4) colours are new theme tokens `roll.ji*` (warm amber on the dark roll, not the screenshots' brown on white).
 - Not in this task (T7.5 / T7.6): entering an object, editing stops, Tune to JI in the menu, "Is harmonic N", drawing
   bends. Notes on a path are still clicked on their written row (a JI object's inner notes cannot be clicked yet).
+
+## 2026-11-14 · AC.fix · audio clips: no silence on formant / transpose edits, Shift = octave, cards that fit 👁
+- Complex Pro: turning Formants or Envelope while the clip plays no longer drops out (it was silent while a new
+  voice primed, ~70 ms per change and the whole drag). Transposing (or any other warp edit) a playing Complex /
+  Complex Pro clip now keeps the old sound until the new one is ready, then crossfades (2 ms) - no gap. During a
+  transpose drag the pitch follows in ~80 ms steps (each one waits for its vocoder to prime).
+- Transpose Shift+Up / Down (and Shift+wheel) is always an octave (12 semitones), whatever the tuning. In an EDO it
+  stays in steps (31-EDO: 31 steps); in a non-octave tuning (Bohlen-Pierce) it becomes cents; a ratio doubles.
+- The clip view's cards flow into side-by-side columns when the panel is too short for the stack (at the default
+  panel height: Clip | Warp | the mode's card), so Complex Pro's Formants / Envelope knobs are visible without raising
+  the panel; the waveform keeps at least 240 px. Tall panels look as before. Look at: audio-clip-warp-short.
+- Open question for you: in the short layout the waveform can get narrow on a 1280 px window - would you rather
+  Warp and the mode card share one column (shorter knobs) instead?
