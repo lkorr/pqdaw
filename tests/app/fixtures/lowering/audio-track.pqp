@@ -24,10 +24,10 @@ patch Audio6 {
   _n17 = -0
   d23 = Atom_mux(d22, d19, d20)
   d24 = Atom_sub(d19, d23)
-  d25 = Value()
+  d25 = Value(2)
   d26 = Atom_mod(d9, d25)
   d27 = Atom_sub(d19, d26)
-  d28 = Value()
+  d28 = Value(-1)
   d29 = Atom_mux(d10, d19, d28)
   d30 = Atom_mux(d11, d19, d28)
   d31 = Atom_sub(d19, d14)

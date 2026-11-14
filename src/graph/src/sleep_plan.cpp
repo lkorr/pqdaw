@@ -10,7 +10,7 @@
 // RANGE (dsp::rangeOf from its inputs' ranges: Z [0, 0], a literal its value, a ranged param its declared range, which
 // the host clamps to). A value whose range is [0, 0] is Z like one its rule proves: fast_gain_to_db of a silent level is
 // [−inf, −inf], so max(0, dB − Ceiling) is Z and the Limiter's windows and followers decay; the Compressor's Gain
-// Computer gives [0, 0] below its threshold. A smoother whose signals are C (not Z) keeps its state once settled, a
+// Computer, fed the −120 dB floor and its controls, is a constant its followers converge on. A smoother whose signals are C (not Z) keeps its state once settled, a
 // follower on a C input once converged (SleepStateKind::Converged); both wake on the params their C inputs are made of.
 #include <algorithm>
 #include <bit>

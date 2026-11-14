@@ -4,12 +4,6 @@ patch Midi4 {
   param gate = 1 [0..1]
   param sendGate = 1 [0..1]
   param mute = 0 [0..1]
-  param d56__value = 0 [0..4]
-  param d58__value = 0 [-1..1]
-  param d60__value = 0 [-1..1]
-  param d61__value = 0 [-70..35]
-  param d69__value = 2 [2..2]
-  param d72__value = -1 [-1..-1]
   out done : bool voice mono
   out out : real audio global stereo
 
@@ -24,12 +18,12 @@ patch Midi4 {
   d53 = Value(_n133)
   d54 = Value(_n133)
   d55 = Value(_n133)
-  d56 = Value(d56__value)
+  d56 = Value()
   d57 = Value(_n133)
-  d58 = Value(d58__value)
+  d58 = Value()
   d59 = Value(_n133)
-  d60 = Value(d60__value)
-  d61 = Value(d61__value)
+  d60 = Value()
+  d61 = Value()
   d62 = Value(_n133)
   d63 = Value(1)
   d64 = Value(_n133)
@@ -38,10 +32,10 @@ patch Midi4 {
   _n33 = -0
   d67 = Atom_mux(d66, d63, d64)
   d68 = Atom_sub(d63, d67)
-  d69 = Value(d69__value)
+  d69 = Value(2)
   d70 = Atom_mod(d53, d69)
   d71 = Atom_sub(d63, d70)
-  d72 = Value(d72__value)
+  d72 = Value(-1)
   d73 = Atom_mux(d54, d63, d72)
   d74 = Atom_mux(d55, d63, d72)
   d75 = Atom_sub(d63, d58)

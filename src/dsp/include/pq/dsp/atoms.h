@@ -476,9 +476,12 @@ bool decayStateFlush(Atom a, void* state) noexcept;
 // rounds away; with a slow release that is up to ~0.5 dB short of a 70 dB target), so the host does not compare y with
 // x: convergeStateStill = every lane's y is bit for bit what it was at the start of the last call (FollowState::y0).
 // After a call on a constant input with constant coefficients that means a fixed point: every later frame gives the
-// same y, so the state needs no flush. False for other atoms. RT-safe.
+// same y, so the state needs no flush. A follower decaying toward 0 never stops in float before it underflows, so a lane
+// whose |y| ≤ eps and did not grow in that call (|y| ≤ |y0| ≤ eps) counts too, and is set to 0 (its constant is then 0,
+// or so small that the call moved it less than eps: |c| ≲ eps / (frames · (1 − r)), the same order). False for other
+// atoms. RT-safe.
 bool hasConvergeState(Atom a) noexcept;
-bool convergeStateStill(Atom a, const void* state) noexcept;
+bool convergeStateStill(Atom a, void* state, float eps) noexcept;
 
 // AU.dsp (RB-DY H4): what a stateless atom does to CONSTANT inputs known only by their bounds (the sleep plan's values
 // under its hypothesis H: a silent input is [0, 0], fast_gain_to_db of it [−inf, −inf], a ranged param its range, a

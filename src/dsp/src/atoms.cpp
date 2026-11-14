@@ -369,8 +369,8 @@ bool decayStateFlush(Atom a, void* state) noexcept {  // RT-safe
 
 bool hasConvergeState(Atom a) noexcept { return a == Atom::Follow; }  // RT-safe
 
-bool convergeStateStill(Atom a, const void* state) noexcept {  // RT-safe
-  return a == Atom::Follow && detail::followStill(state);
+bool convergeStateStill(Atom a, void* state, float eps) noexcept {  // RT-safe
+  return a == Atom::Follow && detail::followStill(state, eps);
 }
 
 // ---- value ranges (AU.dsp, RB-DY H4) ------------------------------------------------------------------------------

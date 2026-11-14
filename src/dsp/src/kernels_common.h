@@ -137,7 +137,7 @@ bool svfStateFlush(void* state) noexcept;  // true: a word was not 0 yet
 KernelFn findDynamicsKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;
 bool followStateSmall(const void* state, float eps) noexcept;
 bool followStateFlush(void* state) noexcept;
-bool followStill(const void* state) noexcept;  // AU.dsp (H4)
+bool followStill(void* state, float eps) noexcept;  // AU.dsp (H4)
 bool windowStateSmall(const void* state, float eps, bool historySmall) noexcept;
 bool windowStateFlush(void* state) noexcept;
 bool truePeakStateSmall(const void* state, float eps) noexcept;  // DY.5

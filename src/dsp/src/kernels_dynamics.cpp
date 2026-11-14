@@ -627,10 +627,21 @@ bool followStateFlush(void* state) noexcept {  // RT-safe
   return any;
 }
 
-// AU.dsp (H4): the last call left every lane's envelope where it started (a fixed point on a constant input).
-bool followStill(const void* state) noexcept {  // RT-safe
-  const auto& st = *static_cast<const FollowState*>(state);
-  return std::memcmp(st.y, st.y0, sizeof st.y) == 0;
+// AU.dsp (H4): the last call left every lane's envelope where it started (a fixed point on a constant input), or at
+// most eps and not growing (decayed toward 0: set to 0).
+bool followStill(void* state, float eps) noexcept {  // RT-safe
+  auto& st = *static_cast<FollowState*>(state);
+  bool zero = false;
+  for (uint32_t l = 0; l < 8; ++l) {
+    if (std::bit_cast<uint32_t>(st.y[l]) == std::bit_cast<uint32_t>(st.y0[l])) continue;
+    const float a = std::fabs(st.y[l]), b = std::fabs(st.y0[l]);
+    if (!(a <= eps && b <= eps && a <= b)) return false;
+    zero = true;
+  }
+  if (zero)
+    for (uint32_t l = 0; l < 8; ++l)
+      if (std::bit_cast<uint32_t>(st.y[l]) != std::bit_cast<uint32_t>(st.y0[l])) st.y[l] = st.y0[l] = 0.0f;
+  return true;
 }
 
 // Every value the window still holds (the ring / segment values, the prefix where not empty, the running sum), every

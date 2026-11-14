@@ -576,21 +576,32 @@ TEST_CASE("follow (AU.dsp, RB-DY H4): on a constant input it stops at a fixed po
     CHECK(hasConvergeState(Atom::Follow));
     CHECK_FALSE(hasConvergeState(Atom::Window));
     std::vector<float> y = r.run({std::vector<float>(64, 70.0f), pattern(96.0f), pattern(rel)}, 64);
-    CHECK_FALSE(convergeStateStill(Atom::Follow, r.state.data()));
+    CHECK_FALSE(convergeStateStill(Atom::Follow, r.state.data(), 1e-9f));
     float last = y.back();
     int blocks = 0;
-    while (!convergeStateStill(Atom::Follow, r.state.data()) && blocks < 20000) {
+    while (!convergeStateStill(Atom::Follow, r.state.data(), 1e-9f) && blocks < 20000) {
       y = r.run({std::vector<float>(64, 70.0f), pattern(96.0f), pattern(rel)}, 64);
       last = y.back();
       ++blocks;
     }
     MESSAGE("release " << rel << ": still after " << blocks << " blocks at " << last << " (target 70)");
-    REQUIRE(convergeStateStill(Atom::Follow, r.state.data()));
+    REQUIRE(convergeStateStill(Atom::Follow, r.state.data(), 1e-9f));
     // A fixed point: every later frame gives the same bits.
     const std::vector<float> more = r.run({std::vector<float>(512, 70.0f), pattern(96.0f), pattern(rel)}, 512);
     for (float v : more) CHECK(std::memcmp(&v, &last, 4) == 0);
     CHECK(std::fabs(last - 70.0f) < 1e-3f);
   }
+  // Toward 0 a one-pole only stops at underflow: ≤ eps and not growing counts, and is set to exactly 0.
+  Rig r(Atom::Follow, 1, {});
+  r.run({std::vector<float>(64, 20.0f), pattern(0.0f), pattern(960.0f)}, 64);
+  int blocks = 0;
+  do {
+    r.run({std::vector<float>(64, 0.0f), pattern(0.0f), pattern(960.0f)}, 64);
+    ++blocks;
+  } while (!convergeStateStill(Atom::Follow, r.state.data(), 1e-9f) && blocks < 100000);
+  MESSAGE("decay to 0: still after " << blocks << " blocks (≈ 24 τ: " << 24.0 * 960.0 / 64.0 << ")");
+  CHECK(blocks < 500);
+  CHECK(reinterpret_cast<const FollowState*>(r.state.data())->y[0] == 0.0f);
 }
 
 TEST_CASE("window (AU.dsp, RB-DY L11): a history known small is not scanned again (the O(1) words still are)") {

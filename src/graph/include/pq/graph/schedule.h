@@ -348,7 +348,8 @@ enum class SleepStateKind : uint8_t {
   Settled,   // a z1 of a K value: equal to its input while the params are unchanged (not checked)
   Decay,     // EQ.1b, an svf (dsp::hasDecayState): every state word of lane 0 ≤ ε (dsp::decayStateSmall; then flushed)
   Converged, // AU.dsp, a follower on a C input (dsp::hasConvergeState): y did not move in a block that ran under H from
-             // the segment's other states flushed (dsp::convergeStateStill: a fixed point; not flushed)
+             // the segment's other states flushed (dsp::convergeStateStill: a fixed point, kept; or decayed to ≤ ε
+             // toward 0, set to 0)
 };
 
 struct SleepState {

@@ -2239,7 +2239,7 @@ void voiceDone(Build& b, PortRef done, uint32_t device) {
 }
 // Device node slots of a voice context's block (NodeRole::Device, k 6 / 7: free slots): its voices summed for a remote
 // placeholder, its `done` in the AND of the track's.
-enum DevK : uint32_t { kDVoiceSum = 6, kDDone = 7, kDValueParam = 8 };  // 8: a value block's ranged param (AU.dsp)
+enum DevK : uint32_t { kDVoiceSum = 6, kDDone = 7 };
 void finishDones(Build& b) {
   if (!b.multi || !b.allDone || b.dones.empty()) return;
   PortRef d = b.dones.front().first;
@@ -2889,12 +2889,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     sites[si].value = v;
     return v;
   };
-  std::vector<PortRef> sitePins;  // AU.dsp: the pins the sites drive
   for (size_t i = 0; i < sites.size(); ++i) {
     const PortRef v = compute(i);
     for (const PortRef& pin : sites[i].pins) {
       ir.patch().connect(v, pin);
-      sitePins.push_back(pin);
       for (const LWire* w : sites[i].wires) b.wireEnd(w->wire->id, v, pin.node, sites[i].wires.front()->wire->id.value);  // WI.2
     }
   }
@@ -2912,36 +2910,6 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       if (it == made.end()) it = made.insert(made.end(), {v, ir.literal(v)});
       ir.patch().connect(it->second, PortRef{b.calls[k], pp->pin});
     }
-  }
-  // AU.dsp (RB-DY H4): an undriven value block that is not a literal: its runtime param, d<id>__value (the name its
-  // callee's param would get), declared with the range of its curve, which the image host then clamps to and the
-  // sleep plan bounds values by (pq/graph/schedule.h "Sleep plan": a k.k(0) constant is the point [0, 0], a Threshold
-  // [−60, 0]). Every point's y is in [0, 1] and each segment is monotonic, so a value lies between the curve's min and
-  // max, stepped and converted (both non-decreasing): the curve's ends taken straight. Only min, max, step and the
-  // conversion enter it, so moving a curve's points is no graph change.
-  for (uint32_t k = 0; k < td.size(); ++k) {
-    const LDev& d = td[k];
-    if (d.callee == nullptr || d.remote || d.bypass || b.calls[k] == graph::kNone || !isValueDevice(*d.device)) continue;
-    if (b.pl != nullptr && b.pl->isLiteral(d.device->id)) continue;
-    const auto pp = realParamPin(*d.callee, kValueParam);
-    if (!pp) continue;
-    const PortRef pin{b.calls[k], pp->pin};
-    if (std::find(sitePins.begin(), sitePins.end(), pin) != sitePins.end()) continue;
-    const graph::ParamDecl& decl = d.callee->paramDecl(pp->node);
-    dsp::Curve ends = controlCurve(*d.device, kValueParam, decl);
-    ends.segments = 1;
-    ends.points[0] = {0.0, 0.0};
-    ends.points[1] = {1.0, 1.0};
-    ends.shapes[0] = dsp::CurveSegment{};
-    const double a = dsp::evalCurve(ends, 0.0), z = dsp::evalCurve(ends, 1.0);
-    const double lo = std::min(a, z), hi = std::max(a, z);
-    if (!(std::isfinite(lo) && std::isfinite(hi))) continue;
-    // Its default is the callee's, clamped (not the knob's value: a knob turn stays a param write, not a graph change).
-    const std::string name = "d" + std::to_string(d.device->id.value) + "__" + std::string(kValueParam);
-    const double def = std::clamp(static_cast<double>(decl.defaultValue.value()), lo, hi);
-    const PortRef param = ir.param(name, def, static_cast<float>(lo), static_cast<float>(hi),
-                                   nodeIdFor(NodeRole::Device, d.device->id.value, kDValueParam));
-    ir.patch().connect(param, pin);
   }
 }
 
@@ -3566,6 +3534,9 @@ bool literalIn(const LiteralIndex& ix, const Device& d) {
   const dsp::Curve* c = d.curve(kValueParam);  // the declared curve (linear 0 … 1) is neither stepped nor a constant
   if (c == nullptr || !(c->step > 0.0 || c->min == c->max)) return false;
   if (ix.driven.count(d.id.value) != 0 || ix.laned.count(d.id.value) != 0) return false;  // driven
+  // AU.dsp (RB-DY H4): an undriven constant is its literal wherever it goes (a module's `k.k(0)`, `- 3 dB`): its knob
+  // cannot move it, the optimiser folds it, and the sleep plan knows its value (0 is 0: max(0, −inf) is silent).
+  if (c->step <= 0.0 && c->min == c->max) return true;
   if (feedsConstIn(ix, d)) return true;  // EQ.3: a structural input's value
   // Forward through atom blocks to a choice's index (LiteralIndex::choosing: that walk, made once).
   return ix.choosing.count(d.id.value) != 0;

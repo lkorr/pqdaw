@@ -1312,10 +1312,12 @@ bool ImageHost::segmentQuiescent(SegRun& g) noexcept {  // RT-safe
     g.settled = true;
     return false;
   }
-  // Then each follower that did not move in it sits at its fixed point: exactly where it would stay.
+  // Then each follower that did not move in it sits at its fixed point: exactly where it would stay (one that decayed
+  // to ≤ ε toward 0 is set to 0; a lane already checked keeps its answer: the calls are idempotent).
   for (uint32_t k = g.firstState; k < g.firstState + g.numStates; ++k) {
-    const SegState& st = segStates_[k];
-    if (st.kind == g::SleepStateKind::Converged && !dsp::convergeStateStill(static_cast<dsp::Atom>(st.atom), st.ptr))
+    SegState& st = segStates_[k];
+    if (st.kind == g::SleepStateKind::Converged &&
+        !dsp::convergeStateStill(static_cast<dsp::Atom>(st.atom), st.ptr, kSleepEpsilon))
       return false;
   }
   return true;

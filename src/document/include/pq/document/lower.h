@@ -625,7 +625,9 @@ double paramValue(const Device& device, std::string_view param, const graph::Par
 // GU.f4: STRUCTURAL VALUE BLOCKS. A value block whose control is stepped (its curve's step > 0: a menu, a switch) or a
 // constant (min == max: a preset's number, such as the 1 in `type − 1` of a menu's mux chain), that
 // nothing drives (no wire into it, no automation lane on it) and whose output reaches a choice — a mux / demux `index`
-// or a select `cond`, directly or through atom blocks — lowers as the LITERAL of its value instead of a runtime param,
+// or a select `cond`, directly or through atom blocks — lowers as the LITERAL of its value instead of a runtime param
+// (AU.dsp, RB-DY H4: an undriven CONSTANT does wherever its output goes: its knob cannot move it, the optimiser folds
+// it, and the sleep plan's ranges know its value),
 // so the optimiser folds the choice and dead-codes the branches not taken (a Saturator computes its one curve, an LFO
 // its one shape). Its value is then structural: SetDeviceParam on it (and a curve edit that makes or unmakes one) is a
 // kChangeStructural edit that recompiles, and lowerParams lists no runtime param for it. Same answer for `project` and

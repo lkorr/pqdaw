@@ -358,8 +358,8 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o = {}, DelayTapRo
 // under Release; chips Envelope (under Knee), Lookahead, Detector, Law; the Sidechain section (cablesource, Gain, Mix,
 // EQ On + Frequency, Listen).
 // Sleep (AU.dsp, RB-DY H4; pq/graph/schedule.h "Sleep plan"): on a silent input the Gain Computer's input is the
-// −120 dB floor, its reduction a constant (0 below the threshold: Z by its range when the controls are undriven), so
-// the followers converge or decay and the region sleeps once they rest; the reduction releases to 2^-30 dB first (≈ 24
+// −120 dB floor, its reduction a constant (whatever the controls), so the followers converge on it (or decay, Lin) and
+// the region sleeps once they rest; the reduction releases to 2^-30 dB first (≈ 24
 // release time constants, Auto: of rel · 4: QUESTIONS Q?-AU.dsp-a).
 inline constexpr double kCompressorRmsSeconds = 0.005;
 inline constexpr double kCompressorExpandCapDb = 70.0;
