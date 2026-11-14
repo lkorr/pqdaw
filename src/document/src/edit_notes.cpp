@@ -325,7 +325,7 @@ bool referenceRatio(const PitchId& p) noexcept {
 std::optional<ClipFundamental> steppedMemory(const NoteClip& clip, const std::optional<Rational>& fundamental,
                                             std::vector<std::pair<NoteId, Rational>> stepped) {
   std::sort(stepped.begin(), stepped.end(), [](const auto& a, const auto& b) { return a.first.value < b.first.value; });
-  if (clip.fundamental.lock) {  // a lock is the fundamental: steps under it are not remembered
+  if (clip.fundamental.anchor) {  // a declared harmonic gives the fundamental: steps under it are not remembered
     if (clip.fundamental.steps.empty()) return std::nullopt;
   } else if (stepped.empty() && clip.fundamental.steps.empty()) {
     return std::nullopt;
@@ -347,7 +347,7 @@ std::optional<ClipFundamental> steppedMemory(const NoteClip& clip, const std::op
       if (it != old.end() && it->note == n.id && it->ratio == n.pitch.ratio() && !isStepped(n.id)) next.push_back(*it);
     }
   }
-  if (!clip.fundamental.lock && D > 0)
+  if (!clip.fundamental.anchor && D > 0)
     for (const auto& [id, r] : stepped) {
       const int64_t used = lcmCapped(D, r.den(), kMaxFundamentalDenominator);  // −1: finer than any fundamental
       if (used > 0 && used != r.den()) next.push_back(HarmonicStep{id, used, r});
@@ -408,16 +408,14 @@ EditResult lockFundamental(const Project& p, ClipRef clip, NoteKey key, uint32_t
   if (!f) return std::move(f).error();
   const Note* n = f->clip->notes.locate(key);
   if (!n) return notFound("note not found");
-  if (harmonicIndex < 1) return invalid("harmonic index must be at least 1");
-  if (!referenceRatio(n->pitch)) return invalid("the fundamental lock needs a Ratio note (relative to the reference)");
-  const std::optional<Rational> lock = tuning::div(n->pitch.ratio(), Rational(static_cast<int64_t>(harmonicIndex)));
-  if (!lock) return invalid("fundamental out of range");
+  if (harmonicIndex < 1 || harmonicIndex > kMaxHarmonicIndex) return invalid("the harmonic number goes from 1 to 4096");
+  const HarmonicAnchor anchor{n->id, harmonicIndex};
   Edit e = makeEdit("Lock Fundamental");
   e.noteClip = clip;
   e.notes.push_back(key);
-  if (f->clip->fundamental.lock != lock) {
+  if (f->clip->fundamental.anchor != anchor) {
     ClipFundamental cf = f->clip->fundamental;
-    cf.lock = lock;
+    cf.anchor = anchor;
     batchOf(e).commands.push_back(SetClipFundamental{clip, std::move(cf)});
   }
   return e;
@@ -428,9 +426,9 @@ EditResult unlockFundamental(const Project& p, ClipRef clip) {
   if (!f) return std::move(f).error();
   Edit e = makeEdit("Unlock Fundamental");
   e.noteClip = clip;
-  if (f->clip->fundamental.lock) {
+  if (f->clip->fundamental.anchor) {
     ClipFundamental cf = f->clip->fundamental;
-    cf.lock.reset();
+    cf.anchor.reset();
     batchOf(e).commands.push_back(SetClipFundamental{clip, std::move(cf)});
   }
   return e;

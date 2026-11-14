@@ -593,10 +593,42 @@ int64_t lcmCapped(int64_t a, int64_t b, int64_t cap) noexcept {  // RT-safe
 }
 
 std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t own) {
-  if (c.fundamental.lock) return c.fundamental.lock;
+  const std::optional<ClipHarmonics> h = clipHarmonics(c, own);
+  if (!h || h->anchor.valid()) return std::nullopt;
+  return h->ratio;
+}
+
+std::optional<ClipHarmonics> clipHarmonics(const NoteClip& c, int64_t own) {
   auto isRefRatio = [](const Note& n) {
     return n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.anchorKind() == tuning::AnchorKind::Reference;
   };
+  // T7.5b: a declared harmonic — the same derivation with the declared index as the starting denominator.
+  if (c.fundamental.anchor) {
+    const HarmonicAnchor& a = *c.fundamental.anchor;
+    if (const Note* an = c.notes.findById(a.note); an && a.index >= 1) {
+      const bool ref = isRefRatio(*an);
+      const int64_t N = a.index;
+      int64_t m = 1;
+      auto join = [&](const tuning::Rational& q) {  // q = n/d: the note's ratio to the anchor; harmonic N·m·n/d
+        if (!q.isPositive()) return;
+        const int64_t need = q.den() / std::gcd(q.den(), N);  // gcd(d, N·n) = gcd(d, N): n/d is reduced
+        const int64_t next = lcmCapped(m, need, kMaxFundamentalDenominator / N);
+        if (next > 0) m = next;  // too fine for any numbering: left unnumbered
+      };
+      for (const Note& n : c.notes) {
+        if (n.id == a.note || n.pitch.kind() != tuning::PitchKind::Ratio) continue;
+        if (n.pitch.anchorKind() == tuning::AnchorKind::Note && n.pitch.anchorId() == a.note.value) {
+          join(n.pitch.ratio());
+        } else if (ref && isRefRatio(n)) {
+          if (const std::optional<tuning::Rational> q = tuning::div(n.pitch.ratio(), an->pitch.ratio())) join(*q);
+        }
+      }
+      const tuning::Rational f(1, N * m);
+      if (!ref) return ClipHarmonics{a.note, f};
+      if (const std::optional<tuning::Rational> r = tuning::mul(an->pitch.ratio(), f); r && r->isPositive()) return ClipHarmonics{{}, *r};
+      return std::nullopt;
+    }
+  }
   int64_t D = 0;  // −1: too fine
   auto join = [&D](int64_t d) {
     if (D < 0 || d == 0) return;
@@ -620,7 +652,7 @@ std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t ow
     join(own);
   }
   if (D <= 0) return std::nullopt;
-  return tuning::Rational(1, D);
+  return ClipHarmonics{{}, tuning::Rational(1, D)};
 }
 
 namespace {

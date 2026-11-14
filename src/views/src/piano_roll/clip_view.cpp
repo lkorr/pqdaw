@@ -283,7 +283,16 @@ int32_t ClipView::jiTermSelection() const noexcept { return state_->jiTermSelect
 void ClipView::selectJiStop(doc::JiObjectId id, int32_t stop) { state_->selectJiStop(id, stop); }
 void ClipView::selectJiTerm(doc::JiObjectId id, int32_t voice) { state_->selectJiTerm(id, voice); }
 bool ClipView::tuneSelectionToJi() { return state_->tuneSelectionToJi(); }
-bool ClipView::lockFundamentalAt(doc::NoteId note, uint32_t n, bool subharmonic) { return state_->lockFundamentalAt(note, n, subharmonic); }
+bool ClipView::lockFundamentalAt(doc::NoteId note, uint32_t n) { return state_->lockFundamentalAt(note, n); }
+std::optional<uint64_t> ClipView::harmonicOf(doc::NoteId note) const {
+  const doc::Note* n = state_->findNote(note);
+  return n ? state_->harmonicOf(*n) : std::nullopt;
+}
+std::optional<float> ClipView::harmonicGuideY(uint64_t k) const {
+  const std::optional<RollState::Harmonics> h = state_->harmonics();
+  if (!h || k < 1) return std::nullopt;
+  return state_->yOfCents(h->baseCents + tuning::cents(h->ratio) + 1200.0 * std::log2(static_cast<double>(k)));
+}
 IRect ClipView::jiPartRect(doc::JiObjectId id, JiPart part, int32_t index) const {
   const roll::JiView* v = state_->jiViewOf(id);
   if (!v) return {};

@@ -296,10 +296,10 @@ std::vector<Case> cases() {
                noCheck});
   c.push_back({"SetClipFundamental", [](Fixture& f) -> Command {
                  ClipFundamental cf;
-                 cf.lock = pq::tuning::Rational(1, 8);
+                 cf.anchor = HarmonicAnchor{NoteId{7}, 8};  // T7.5b: the declared harmonic replaced the Rational lock
                  return SetClipFundamental{{f.lead, f.clipA}, cf};
                }, M, [](Fixture& f, const ChangeSet&) {
-                 CHECK(f.clip(f.lead, f.clipA).fundamental.lock == pq::tuning::Rational(1, 8));
+                 CHECK(f.clip(f.lead, f.clipA).fundamental.anchor == HarmonicAnchor{NoteId{7}, 8});
                }});
   // ---- audio clips and samples (T5.3)
   auto sampleOf = [](Fixture& f) {

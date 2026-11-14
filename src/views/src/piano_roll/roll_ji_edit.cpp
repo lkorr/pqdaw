@@ -12,7 +12,8 @@
 //   - A harmonic number (voice label) can be selected and walked with Alt+Up / Down (ops::walkJiTerm).
 //   - "Tune to JI" (selected notes -> ops::jiFromNotes), "Back to Tuning" (ops::addJiTuningStop), "Remove JI Tuning"
 //     (ops::deleteJiObject: the plain notes come back).
-//   - "Is Harmonic…" on a note locks the clip's virtual fundamental at note / N (A4).
+//   - "Is Harmonic…" on a note declares it harmonic N (A4, T7.5b): the note is the frozen anchor, exactly on guide N;
+//     notes drawn afterwards are exact ratios to it and the numbering is derived (doc::clipHarmonics).
 //   - Ctrl+C / Ctrl+X / Ctrl+V of a selected object with its inner notes (ops::pasteJiObject).
 // Every edit is one doc::ops builder dispatched once: one undo step. Nothing here runs per frame; the pointer-driven
 // queries (jiVoiceAt, jiTransitionAt) evaluate one object at one tick (O(voices · stops)).
@@ -128,7 +129,7 @@ DrawPitch RollState::drawPitchFor(ui::Mods m) const noexcept {
   if (jiEntered_.valid()) return DrawPitch::Voice;
   if (m & mod::kAlt) return DrawPitch::Overlay;
   // A4: with a locked fundamental drawing snaps to its harmonics; Shift then draws on the rows.
-  const bool locked = clip_ && clip_->fundamental.lock.has_value();
+  const bool locked = clip_ && clip_->fundamental.anchor.has_value() && findNote(clip_->fundamental.anchor->note) != nullptr;
   return (((m & mod::kShift) != 0) != locked) ? DrawPitch::Ratio : DrawPitch::Row;
 }
 
@@ -407,7 +408,7 @@ bool RollState::jiTuningStopAtPointer() {
 
 // --- the fundamental with the mouse (A4) -------------------------------------------------------------------------------
 
-bool RollState::lockFundamentalAt(doc::NoteId note, uint32_t n, bool subharmonic, std::string* error) {
+bool RollState::lockFundamentalAt(doc::NoteId note, uint32_t n, std::string* error) {
   auto fail = [&](std::string m) {
     ctx.setStatus("Fundamental: " + m);
     if (error) *error = std::move(m);
@@ -416,46 +417,19 @@ bool RollState::lockFundamentalAt(doc::NoteId note, uint32_t n, bool subharmonic
   if (!clip_) return fail("no clip");
   const doc::Note* nt = findNote(note);
   if (!nt) return fail("no such note");
-  if (n < 1 || n > 4096) return fail("type a harmonic number from 1 to 4096");
-  const bool exact = nt->pitch.kind() == tuning::PitchKind::Ratio && nt->pitch.anchorKind() == tuning::AnchorKind::Reference;
-  std::optional<tuning::Rational> r;
-  double off = 0.0;  // how far the note is from the ratio the lock uses (0: exact)
-  if (exact) {
-    r = nt->pitch.ratio();
-  } else {
-    const std::optional<double> c = pathCents(*nt, nt->start, nt->pitch, 0.0);
-    if (!c) return fail("the note's pitch cannot be resolved");
-    r = doc::ops::simplestRatioNear(*c, doc::ops::ratioSnapTolerance(tuning_, *c));
-    if (!r) return fail("no simple ratio is near this note");
-    off = *c - tuning::cents(*r);
-  }
-  const tuning::Rational k(static_cast<int64_t>(n));
-  const std::optional<tuning::Rational> F = subharmonic ? tuning::mul(*r, k) : tuning::div(*r, k);
-  if (!F || !F->isPositive()) return fail("the fundamental is out of range");
+  if (n < 1 || n > doc::kMaxHarmonicIndex) return fail("type a harmonic number from 1 to 4096");
+  if (!pathCents(*nt, nt->start, nt->pitch, 0.0)) return fail("the note's pitch cannot be resolved");
+  const doc::HarmonicAnchor want{note, n};
   const std::vector<uint32_t> keep = sel_;
-  bool ok = false;
-  if (exact && !subharmonic) {
-    ok = clip_->fundamental.lock == F || apply(doc::ops::lockFundamental(*ctx.doc(), ref_, doc::keyOf(*nt), n), "Lock Fundamental");
-  } else if (clip_->fundamental.lock == F) {
-    ok = true;
-  } else {
-    doc::ClipFundamental cf = clip_->fundamental;
-    cf.lock = F;
-    doc::ops::Edit e;
-    e.command = doc::Batch{"Lock Fundamental", {doc::SetClipFundamental{ref_, std::move(cf)}}};
-    e.noteClip = ref_;
-    ok = apply(doc::ops::EditResult(std::move(e)), "Lock Fundamental");
+  if (clip_->fundamental.anchor != want) {
+    const doc::ops::EditResult e = doc::ops::lockFundamental(*ctx.doc(), ref_, doc::keyOf(*nt), n);
+    if (!e) return fail(e.error().message);
+    if (!apply(e, "Lock Fundamental")) return fail("the document refused the fundamental");
+    select(keep);
   }
-  if (!ok) return fail("the document refused the fundamental");
-  select(keep);
   setShowHarmonics(true);
   char buf[160];
-  if (std::fabs(off) >= 0.05)
-    std::snprintf(buf, sizeof buf, "Fundamental locked at %lld/%lld: the note is %sharmonic %u (%+.1f \xC2\xA2 from it); drawing snaps to the harmonics",
-                  static_cast<long long>(F->num()), static_cast<long long>(F->den()), subharmonic ? "sub" : "", n, off);
-  else
-    std::snprintf(buf, sizeof buf, "Fundamental locked at %lld/%lld: the note is %sharmonic %u; drawing snaps to the harmonics",
-                  static_cast<long long>(F->num()), static_cast<long long>(F->den()), subharmonic ? "sub" : "", n);
+  std::snprintf(buf, sizeof buf, "The note is harmonic %u: it stays where it is, drawing snaps to its harmonic series (Shift: the rows)", n);
   ctx.setStatus(buf);
   return true;
 }
@@ -541,17 +515,16 @@ ui::TextEdit* RollState::openJiStopRetype(doc::JiObjectId id, uint32_t stop) {
                      [id, stop](RollState& st, const std::string& text, std::string& why) { return st.retypeJiStop(id, stop, text, &why); });
 }
 
-ui::TextEdit* RollState::openHarmonicEntry(doc::NoteId note, bool subharmonic) {
+ui::TextEdit* RollState::openHarmonicEntry(doc::NoteId note) {
   const doc::Note* n = findNote(note);
   if (!n) return nullptr;
   ui::IRect anchor = onPath(*n, n->pitch) ? pathBox(*n, n->start, n->length, n->pitch) : screenRectOf(n->start, n->length, n->pitch);
-  return openJiField("harmonic-entry", subharmonic ? "This note is subharmonic number:" : "This note is harmonic number:",
-                     subharmonic ? "Type N and press Enter: the virtual fundamental is locked N times above this note (the note "
-                                   "is its N-th subharmonic). Esc closes."
-                                 : "Type N and press Enter: the virtual fundamental is locked at this note's pitch / N. Its "
-                                   "harmonics are drawn as guide lines and drawing snaps to them (Shift draws on the rows). "
-                                   "Unlock Fundamental is in the same menu. Esc closes.",
-                     "", anchor, [note, subharmonic](RollState& s, const std::string& text, std::string& why) {
+  return openJiField("harmonic-entry", "This note is harmonic number:",
+                     "Type N and press Enter: this note becomes harmonic N of a series and stays exactly where it is. The "
+                     "series is drawn as guide lines; notes you draw snap to it as exact ratios to this note (Shift draws on "
+                     "the rows). A note placed between the lines renumbers the series (5 and a 3/2 above it read 10 and "
+                     "15). Unlock Fundamental is in the same menu. Esc closes.",
+                     "", anchor, [note](RollState& s, const std::string& text, std::string& why) {
                        const std::string_view t = trimmed(text);
                        uint32_t k = 0;
                        const auto [end, ec] = std::from_chars(t.data(), t.data() + t.size(), k);
@@ -559,7 +532,7 @@ ui::TextEdit* RollState::openHarmonicEntry(doc::NoteId note, bool subharmonic) {
                          why = "type a whole number such as 5";
                          return false;
                        }
-                       return s.lockFundamentalAt(note, k, subharmonic, &why);
+                       return s.lockFundamentalAt(note, k, &why);
                      });
 }
 

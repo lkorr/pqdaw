@@ -1064,9 +1064,14 @@ private:
       const PathSeg fp(&at, "fundamental");
       w_.key("fundamental");
       w_.beginObject(false);
-      if (c.fundamental.lock) {
-        w_.key("lock");
-        w_.string(fp, ratioText(c.fundamental.lock->num(), c.fundamental.lock->den()));
+      if (c.fundamental.anchor) {  // T7.5b
+        w_.key("anchor");
+        w_.beginObject(false);
+        w_.key("note");
+        w_.integer(c.fundamental.anchor->note.value);
+        w_.key("index");
+        w_.integer(c.fundamental.anchor->index);
+        w_.endObject();
       }
       if (!c.fundamental.steps.empty()) {
         w_.key("steps");
@@ -3266,9 +3271,10 @@ private:
     return fd;
   }
 
-  // T3.6-fix1: {"lock": "n/d", "steps": [{"note": id, "denominator": D, "ratio": "n/d"}]}, both optional.
+  // T3.6-fix1 / T7.5b: {"anchor": {"note": id, "index": N}, "steps": [{"note": id, "denominator": D, "ratio": "n/d"}]},
+  // both optional.
   ClipFundamental fundamental(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"lock", "steps"};
+    static constexpr std::string_view K[] = {"anchor", "steps"};
     ClipFundamental out;
     auto ratioOf = [&](const PathSeg& f) {
       std::string s;
@@ -3280,7 +3286,18 @@ private:
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
-      if (k == 0) out.lock = ratioOf(f);
+      if (k == 0) {
+        static constexpr std::string_view A[] = {"note", "index"};
+        HarmonicAnchor a;
+        Members am(r_, f, A);
+        for (int q; (q = am.next()) >= 0;) {
+          const PathSeg g(&f, A[static_cast<size_t>(q)]);
+          if (q == 0) a.note = NoteId{u32(g)};
+          if (q == 1) a.index = u32(g);
+        }
+        am.require({0, 1});
+        out.anchor = a;
+      }
       if (k == 1) {
         r_.beginArray(f);
         for (size_t i = 0; r_.nextElement(f); ++i) {

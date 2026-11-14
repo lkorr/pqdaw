@@ -426,7 +426,12 @@ double RollState::nearestOverlayCents(double cents) const noexcept {
 tuning::PitchId RollState::drawnPitch(const DrawnNote& d) const noexcept {
   switch (d.mode) {
     case DrawPitch::Overlay: return tuning::PitchId::fromCents(d.cents);
-    case DrawPitch::Ratio: return tuning::PitchId::fromRatio(d.ratio);
+    case DrawPitch::Ratio: {
+      // T7.5b: under a declared harmonic the note is an exact ratio to the anchor note (it follows the anchor).
+      const std::optional<Harmonics> h = harmonics();
+      if (h && h->anchor.valid()) return tuning::PitchId::fromRatio(d.ratio, tuning::AnchorKind::Note, h->anchor.value);
+      return tuning::PitchId::fromRatio(d.ratio);
+    }
     case DrawPitch::Voice: return tuning::PitchId::fromHarmonic(jiEntered_.value, d.voice);  // T7.5
     case DrawPitch::Row: break;
   }
@@ -584,7 +589,7 @@ bool RollState::lockFundamentalOn(doc::NoteId note, uint32_t harmonicIndex) {
 }
 
 bool RollState::unlockFundamental() {
-  if (!clip_ || !clip_->fundamental.lock) return false;
+  if (!clip_ || !clip_->fundamental.anchor) return false;
   const std::vector<uint32_t> keep = sel_;
   if (!apply(doc::ops::unlockFundamental(*ctx.doc(), ref_), "Unlock Fundamental")) return false;
   select(keep);
@@ -592,15 +597,18 @@ bool RollState::unlockFundamental() {
 }
 
 tuning::Rational RollState::ratioFor(int64_t degree, double cents) const {
-  if (const std::optional<tuning::Rational> F = virtualFundamental()) {
-    // The harmonic k·F nearest the pointer in pitch (log distance), k ≥ 1.
-    const double f = F->toDouble();
-    const double x = std::exp2(cents / 1200.0) / f;
+  if (const std::optional<Harmonics> H = harmonics()) {
+    // The harmonic k·F nearest the pointer in pitch (log distance), k ≥ 1; the ratio is to the fundamental's base
+    // (the reference, or the declared harmonic's anchor note).
+    const tuning::Rational& F = H->ratio;
+    const double f = F.toDouble();
+    const double x = std::exp2((cents - H->baseCents) / 1200.0) / f;
     if (x < 1e9) {
       const double lo = std::max(1.0, std::floor(x));
       const double k = (x <= 1.0 || std::fabs(std::log2(x / lo)) <= std::fabs(std::log2((lo + 1.0) / x))) ? lo : lo + 1.0;
-      if (const auto r = tuning::Rational::tryMake(F->num() * static_cast<int64_t>(k), F->den()); r && r->isPositive()) return *r;
+      if (const auto r = tuning::Rational::tryMake(F.num() * static_cast<int64_t>(k), F.den()); r && r->isPositive()) return *r;
     }
+    if (H->anchor.valid()) return tuning::Rational{1};  // out of range: the anchor's own pitch
   }
   // No fundamental yet: the row's pitch snapped to the simplest ratio near it (as Convert to Ratio does).
   const double rc = degreeCents(tuning_, degree);
@@ -666,13 +674,13 @@ void RollState::hoverAt(ui::Vec2 p, bool keys) {
     hoverTitle_.assign(buf, static_cast<size_t>(std::clamp(len, 0, static_cast<int>(sizeof buf) - 1)));
     const std::optional<double> c = centsOf(id);
     hoverBody_ = c ? pitchReadout(*c, id.kind() != tuning::PitchKind::Ratio) : std::string("Its pitch needs a JI object.");
-    if (id.kind() == tuning::PitchKind::Ratio && id.anchorKind() == tuning::AnchorKind::Reference)
-      if (const std::optional<tuning::Rational> F = virtualFundamental())
-        if (const std::optional<uint64_t> k = tuning::harmonicNumber(id.ratio(), *F)) {
-          len = std::snprintf(buf, sizeof buf, " \xC2\xB7 harmonic %llu of F = %lld/%lld", static_cast<unsigned long long>(*k),
-                              static_cast<long long>(F->num()), static_cast<long long>(F->den()));
-          hoverBody_.append(buf, static_cast<size_t>(std::max(0, len)));
-        }
+    if (const std::optional<uint64_t> k = harmonicOf(*n)) {
+      const std::optional<tuning::Rational> F = virtualFundamental();
+      if (F) len = std::snprintf(buf, sizeof buf, " \xC2\xB7 harmonic %llu of F = %lld/%lld", static_cast<unsigned long long>(*k),
+                                 static_cast<long long>(F->num()), static_cast<long long>(F->den()));
+      else len = std::snprintf(buf, sizeof buf, " \xC2\xB7 harmonic %llu", static_cast<unsigned long long>(*k));
+      hoverBody_.append(buf, static_cast<size_t>(std::max(0, len)));
+    }
     hoverBody_ += ". Right-click: convert to Degree / Ratio / Cents, set its pitch, lock the fundamental.";
   } else {
     hoverTitle_ = label.empty() ? std::string("Row") : "Row " + label;
@@ -1228,8 +1236,35 @@ std::optional<tuning::Rational> RollState::virtualFundamental() const {
     if (D > kMaxHarmonicDenominator) D = -1;
   }
   vfClip_ = clip_.get();
-  vf_ = doc::virtualFundamental(*clip_, D);
+  vh_ = doc::clipHarmonics(*clip_, D);
+  vf_ = (vh_ && !vh_->anchor.valid()) ? std::optional<tuning::Rational>(vh_->ratio) : std::nullopt;
   return vf_;
+}
+
+std::optional<RollState::Harmonics> RollState::harmonics() const {
+  if (!clip_) return std::nullopt;
+  (void)virtualFundamental();  // fills the per-snapshot cache
+  if (!vh_) return std::nullopt;
+  Harmonics h{vh_->anchor, 0.0, vh_->ratio};
+  if (h.anchor.valid()) {
+    // Where the anchor note sounds now (the tuning may have moved under it; an inner note of a JI object: at its start).
+    const doc::Note* a = findNote(h.anchor);
+    const std::optional<double> c = a ? pathCents(*a, a->start, a->pitch, 0.0) : std::nullopt;
+    if (!c) return std::nullopt;
+    h.baseCents = *c;
+  }
+  return h;
+}
+
+std::optional<uint64_t> RollState::harmonicOf(const doc::Note& n) const {
+  if (!clip_) return std::nullopt;
+  (void)virtualFundamental();
+  if (!vh_) return std::nullopt;
+  if (vh_->anchor.valid() && n.id == vh_->anchor) return tuning::harmonicNumber(tuning::Rational(1), vh_->ratio);
+  if (n.pitch.kind() != tuning::PitchKind::Ratio) return std::nullopt;
+  const bool related = vh_->anchor.valid() ? (n.pitch.anchorKind() == tuning::AnchorKind::Note && n.pitch.anchorId() == vh_->anchor.value)
+                                           : n.pitch.anchorKind() == tuning::AnchorKind::Reference;
+  return related ? tuning::harmonicNumber(n.pitch.ratio(), vh_->ratio) : std::nullopt;
 }
 
 void RollState::stepSelection(int32_t steps, doc::ops::StepUnit unit) {

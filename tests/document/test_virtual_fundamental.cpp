@@ -169,20 +169,26 @@ TEST_CASE("virtual fundamental: Up/Down step on the shared fundamental; a step k
   CHECK(r.note(d)->pitch.ratio() == Rational(2));
 }
 
-TEST_CASE("virtual fundamental: the explicit lock (b + index) overrides the derivation until unlocked") {
+// T7.5b (user 2026-11-14): the Rational lock became a declared harmonic — a note of any identity is the anchor of the
+// series and the fundamental is DERIVED from it (anchor pitch / index, refined by the notes related to it). This case
+// was "the explicit lock overrides the derivation": a Degree note is now accepted, and a stepped anchor takes the
+// series with it (it stays harmonic 5), so the second step lands on 3 · 21/50, not on the old fixed grid's 7/5.
+TEST_CASE("virtual fundamental: a declared harmonic (b + index) gives the fundamental until unlocked") {
   Roll r;
   const NoteId a = r.add(ratio(7, 4), 0);
   const NoteId deg = r.add(PitchId::fromDegree(3), pq::kPpq);
   REQUIRE(r.fundamental() == Rational(1, 4));
-  CHECK_FALSE(ops::lockFundamental(*r.store.current(), r.ref, r.key(deg), 5).ok());  // no exact ratio
+  CHECK(ops::lockFundamental(*r.store.current(), r.ref, r.key(deg), 5).ok());  // any identity can be the anchor
   CHECK_FALSE(ops::lockFundamental(*r.store.current(), r.ref, r.key(a), 0).ok());
+  CHECK_FALSE(ops::lockFundamental(*r.store.current(), r.ref, r.key(a), kMaxHarmonicIndex + 1).ok());
   commit(r.store, ops::lockFundamental(*r.store.current(), r.ref, r.key(a), 5));  // "7/4 is the 5th harmonic"
   CHECK(r.fundamental() == Rational(7, 20));
   r.step(a, 1);
   CHECK(r.ratio(a) == Rational(42, 20));  // the 6th harmonic of 7/20 = 21/10
-  CHECK(r.clip().fundamental.steps.empty());  // nothing to remember: the lock is the fundamental
+  CHECK(r.clip().fundamental.steps.empty());  // nothing to remember: the declared harmonic gives the fundamental
+  CHECK(r.fundamental() == Rational(21, 50));  // the anchor moved and is still harmonic 5
   r.step(a, -2);
-  CHECK(r.ratio(a) == Rational(7, 5));  // the 4th
+  CHECK(r.ratio(a) == Rational(63, 50));  // the 3rd harmonic of 21/50
   REQUIRE(r.store.undo());
   REQUIRE(r.store.undo());
   REQUIRE(r.store.undo());  // the lock
@@ -205,7 +211,7 @@ TEST_CASE("virtual fundamental: serialization round-trips (schema 2, the field w
   commit(r.store, ops::lockFundamental(*r.store.current(), r.ref, r.key(a), 3));  // 3/2 = 3 · 1/2
   const auto text = serializeProject(*r.store.current());
   REQUIRE(text.ok());
-  CHECK(text.value().find("\"fundamental\": {\"lock\": \"1/2\", \"steps\": [{\"note\": " +
+  CHECK(text.value().find("\"fundamental\": {\"anchor\": {\"note\": " + std::to_string(a.value) + ", \"index\": 3}, \"steps\": [{\"note\": " +
                           std::to_string(a.value) + ", \"denominator\": 8, \"ratio\": \"3/2\"}]}") != std::string::npos);
   auto back = parseProject(text.value());
   REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
@@ -217,6 +223,65 @@ TEST_CASE("virtual fundamental: serialization round-trips (schema 2, the field w
   std::string bad = text.value();
   bad.replace(bad.find("\"denominator\": 8"), 16, "\"denominator\": 0");
   CHECK_FALSE(parseProject(bad).ok());
+}
+
+TEST_CASE("virtual fundamental: a declared harmonic on a tempered note — the numbering is derived from the notes related to it (T7.5b)") {
+  Roll r;
+  const NoteId e = r.add(PitchId::fromDegree(4), 0);  // a 12-EDO E
+  const NoteId ref = r.add(ratio(4, 3), 7 * pq::kPpq);  // a reference ratio: unrelated to a tempered anchor
+  auto on = [&](int64_t n, int64_t d) { return PitchId::fromRatio(Rational(n, d), AnchorKind::Note, e.value); };
+  auto harmonics = [&] { return clipHarmonics(r.clip()); };
+  commit(r.store, ops::lockFundamental(*r.store.current(), r.ref, r.key(e), 5));
+  CHECK(r.clip().fundamental.anchor == HarmonicAnchor{e, 5});
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 5)});  // F = E / 5: the E is exactly harmonic 5
+  CHECK_FALSE(r.fundamental().has_value());               // not a ratio of the reference
+  CHECK(r.note(e)->pitch == PitchId::fromDegree(4));       // the anchor is not changed
+  const NoteId six = r.add(on(6, 5), pq::kPpq);  // harmonic 6: on the series
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 5)});
+  const NoteId fifth = r.add(on(3, 2), 2 * pq::kPpq);  // 7.5: between the harmonics — the fundamental halves
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 10)});  // the anchor reads 10, the fifth 15, the 6/5 12
+  const NoteId fourth = r.add(on(4, 3), 3 * pq::kPpq);
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 30)});
+  commit(r.store, ops::deleteNotes(*r.store.current(), r.ref, std::vector<NoteKey>{r.key(fourth)}));
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 10)});
+  commit(r.store, ops::deleteNotes(*r.store.current(), r.ref, std::vector<NoteKey>{r.key(fifth)}));
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 5)});  // back to 5
+  REQUIRE(r.store.undo());
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 10)});
+  REQUIRE(r.store.redo());
+  // Up / Down on a related note: (n ± 1)/d, on the series.
+  r.step(six, 1);
+  CHECK(r.note(six)->pitch == on(7, 5));
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 5)});
+  // A related note too fine for any numbering is left out of it.
+  const NoteId fine = r.add(on(3, (int64_t{1} << 19) + 3), 4 * pq::kPpq);
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 5)});
+  (void)fine;
+  // Unlocked: the plain derivation (the reference ratio's 1/3).
+  commit(r.store, ops::unlockFundamental(*r.store.current(), r.ref));
+  CHECK_FALSE(r.clip().fundamental.anchor.has_value());
+  CHECK(harmonics() == ClipHarmonics{{}, Rational(1, 3)});
+  REQUIRE(r.store.undo());
+  CHECK(harmonics() == ClipHarmonics{e, Rational(1, 5)});
+  // An anchor whose note is gone is ignored.
+  commit(r.store, ops::deleteNotes(*r.store.current(), r.ref, std::vector<NoteKey>{r.key(six), r.key(fine)}));
+  commit(r.store, ops::deleteNotes(*r.store.current(), r.ref, std::vector<NoteKey>{r.key(e)}));
+  CHECK(harmonics() == ClipHarmonics{{}, Rational(1, 3)});
+  (void)ref;
+}
+
+TEST_CASE("virtual fundamental: a declared harmonic on a reference ratio — the other reference ratios refine it (T7.5b)") {
+  Roll r;
+  const NoteId a = r.add(ratio(5, 4), 0);
+  commit(r.store, ops::lockFundamental(*r.store.current(), r.ref, r.key(a), 5));
+  CHECK(r.fundamental() == Rational(1, 4));
+  CHECK(clipHarmonics(r.clip()) == ClipHarmonics{{}, Rational(1, 4)});
+  r.add(ratio(3, 2), pq::kPpq);  // harmonic 6
+  CHECK(r.fundamental() == Rational(1, 4));
+  const NoteId b = r.add(ratio(15, 8), 2 * pq::kPpq);  // 3/2 above the anchor: 7.5 — the fundamental halves
+  CHECK(r.fundamental() == Rational(1, 8));
+  commit(r.store, ops::deleteNotes(*r.store.current(), r.ref, std::vector<NoteKey>{r.key(b)}));
+  CHECK(r.fundamental() == Rational(1, 4));
 }
 
 TEST_CASE("virtual fundamental: denominators near int64 never overflow the lcm (M3 review L8)") {

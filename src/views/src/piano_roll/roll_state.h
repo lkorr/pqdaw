@@ -101,7 +101,7 @@ struct DrawnNote {
 struct NoteLabel {
   float x0, x1, y0, y1;
   ui::Rgba fill;
-  int64_t num, den;
+  int64_t num, den;   // num 0 (T7.5b): the declared harmonic's anchor note, labelled with its number only
   uint32_t harmonic;  // its harmonic number over the virtual fundamental (0: not one)
 };
 
@@ -411,6 +411,18 @@ public:
   // The clip's virtual fundamental as a denominator D (fundamental = reference / D; 0 = none), see the rule at its
   // definition (Q40). Ratio Up/Down and vertical drags step on its harmonics; the note area draws it (SPEC §4.3).
   std::optional<tuning::Rational> virtualFundamental() const;
+  // T7.5b: the derived fundamental the roll draws and snaps to (doc::clipHarmonics): `ratio` times the pitch at
+  // `baseCents` — the clip's reference (anchor invalid, 0 cents), or the declared harmonic's anchor note where it
+  // sounds now (so the guides follow it). nullopt: none.
+  struct Harmonics {
+    doc::NoteId anchor;
+    double baseCents = 0.0;
+    tuning::Rational ratio{1};
+  };
+  std::optional<Harmonics> harmonics() const;
+  // A note's harmonic number over it: the anchor note itself, a Ratio note anchored to the anchor (or, without an
+  // anchor note, to the reference). nullopt: not a whole harmonic / unrelated.
+  std::optional<uint64_t> harmonicOf(const doc::Note& n) const;
   void addNotes(const std::vector<DrawnNote>& notes);
   // How a draw gesture with these modifiers picks its pitch (T7.5: inside an entered object always its voices; with
   // a locked fundamental the plain draw is Ratio and Shift the rows).
@@ -582,17 +594,17 @@ public:
   bool tuneSelectionToJi();
   // T / "Back to Tuning": a tuning stop on the active object at the pointer (else the playhead).
   bool jiTuningStopAtPointer();
-  // A4: the clip's virtual fundamental locked so that `note` is its N-th harmonic (subharmonic: F = note × N). A
-  // reference-anchored Ratio note locks exactly (ops::lockFundamental); any other note through the simplest ratio
-  // near its pitch (the note itself is not changed).
-  bool lockFundamentalAt(doc::NoteId note, uint32_t n, bool subharmonic, std::string* error = nullptr);
+  // A4 / T7.5b: `note` is declared the N-th harmonic (ops::lockFundamental): it becomes the frozen anchor of the
+  // series, exactly on guide N whatever its identity; its pitch does not change. Notes drawn afterwards are exact
+  // ratios to it, and the numbering is derived (doc::clipHarmonics).
+  bool lockFundamentalAt(doc::NoteId note, uint32_t n, std::string* error = nullptr);
   // An inline field under `anchor`: a title line, a text field (initial text selected) and an error line. Enter calls
   // `commit(text, error)`: true closes the field, false shows `error` and keeps it open. Esc closes.
   ui::TextEdit* openJiField(std::string_view name, std::string_view title, std::string_view info, std::string_view initial,
                             ui::IRect anchor, std::function<bool(RollState&, const std::string&, std::string&)> commit);
   ui::TextEdit* openJiStopEntry(doc::JiObjectId id, Ticks at);  // a new proportion stop
   ui::TextEdit* openJiStopRetype(doc::JiObjectId id, uint32_t stop);                // retype a stop's proportion
-  ui::TextEdit* openHarmonicEntry(doc::NoteId note, bool subharmonic);              // "Is Harmonic…"
+  ui::TextEdit* openHarmonicEntry(doc::NoteId note);                                // "Is Harmonic…"
   ui::TextEdit* openJiTimingEntry(doc::JiObjectId id, uint32_t stop, uint32_t voice, bool delay);
   // Copy / paste of the selected object with its inner notes (Ctrl+C / Ctrl+X / Ctrl+V).
   bool copyJiSelection();
@@ -773,6 +785,7 @@ private:
   std::shared_ptr<RollState*> self_;
   mutable const doc::NoteClip* vfClip_ = nullptr;  // virtualFundamental() cache (per clip snapshot)
   mutable std::optional<tuning::Rational> vf_;
+  mutable std::optional<doc::ClipHarmonics> vh_;  // T7.5b: the same snapshot's derived fundamental
 };
 
 }  // namespace pq::views::roll

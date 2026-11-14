@@ -1600,23 +1600,19 @@ Context: every breakpoint is a curve point to store and an event on the audio th
 Choice: 1 c while a pitch moves (`kJiPitchTolerance`; holds and straight lines are exact at any tolerance), plus a
 1 ms minimum spacing inside curved spans. Reversible: one constant.
 ## Q283 · 2026-11-14 · T7.5 · "Is Harmonic N" on a note that is not a just ratio
-Context: A4 locks the fundamental at note / N through `ops::lockFundamental`, which takes a reference-anchored Ratio
-note only; `ClipFundamental::lock` is a Rational. The usual note is a 12-EDO Degree.
-Options: (a) lock at (the simplest ratio near the note) / N and leave the note as written: the guide of harmonic N
-passes within the snap tolerance of the note (12-EDO E as harmonic 5: 13.7 cents under it); (b) convert the note to that
-Ratio in the same step, so it IS harmonic N (its pitch moves); (c) a lock in cents (a model change).
-Choice: (a), composed in the roll (`RollState::lockFundamentalAt`: `SetClipFundamental`); the status line says how far
-the note is from the harmonic. (b) is one more command in the same Batch if wanted.
-Status: open.
+Context: A4 declares a note the N-th harmonic. The usual note is a 12-EDO Degree; the old lock was a Rational of the
+reference, so T7.5 locked at the simplest ratio near the note and the guide passed 13.7 cents beside a 12-EDO E.
+Answer (user 2026-11-14, T7.5b): the declared note is the frozen anchor and sits EXACTLY on guide N whatever its
+identity; its pitch does not change. `ClipFundamental::anchor {note, index}` replaces the Rational lock, and the
+fundamental is derived, not rigid: F = the anchor's pitch / (N · m), m the smallest integer that makes every note
+related to the anchor by an exact ratio a whole harmonic (anchor 5 + a note 3/2 above it → 10 and 15; 5 again when
+that note is deleted). Notes drawn afterwards are Ratio notes anchored to the anchor note.
+Status: closed (T7.5b).
 
 ## Q284 · 2026-11-14 · T7.5 · What "Is Subharmonic N" shows
-Context: the lock is one fundamental whose overtones the guide draws and the Shift-draw snaps to. A note declared the
-N-th subharmonic puts that fundamental N times above the note.
-Options: (a) lock at note x N and keep the overtone guide (the note itself is then not on a guide line); (b) an
-undertone guide (lines at F / k, snapping to them): new display and step rules in `document` (HarmonicStep is
-overtone-only).
-Choice: (a); (b) needs a document change outside T7.5.
-Status: open.
+Withdrawn (user 2026-11-14: "i dont care about subharmonics, dont include that yet"): the menu item and its code path
+were removed in T7.5b.
+Status: withdrawn.
 
 ## Q285 · 2026-11-14 · T7.5 · Q279 closed: object duplicate and pitch move are document ops
 Context: Q279 left them composed in the roll.

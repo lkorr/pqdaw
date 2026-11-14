@@ -988,8 +988,8 @@ Status setupPianoRollTuneToJi31(Shell& shell) {
   return Ok{};
 }
 
-// "Is Harmonic… 5" on a 12-EDO E: the virtual fundamental locked at 1/4, its harmonics as guide lines (numbered at the
-// right edge), and notes drawn afterwards snapped to them (3/2, 7/4, 9/4) next to the tempered E.
+// "Is Harmonic… 5" on a 12-EDO E (T7.5b): the E is the anchor, exactly on guide 5 of the series drawn around it
+// (numbered at the right edge), and the notes drawn afterwards are exact ratios to it on guides 4, 6, 7 and 9.
 Status setupPianoRollFundamentalLock(Shell& shell) {
   const std::optional<JiScene> sc = buildJiScene(shell, "Fundamental", 14, 12);
   if (!sc) return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: building the clip failed", {}};
@@ -1002,9 +1002,10 @@ Status setupPianoRollFundamentalLock(Shell& shell) {
   if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
     return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: addNotes", {}};
   const std::vector<doc::NoteId> ids = sceneNoteIds(shell.context(), *sc->view);
-  if (ids.size() != 1 || !st.lockFundamentalAt(ids[0], 5, false)) return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: the lock", {}};
-  const std::vector<doc::Note> drawn = {scnNote(2 * q, 2 * q, PitchId::fromRatio(Rational(3, 2))), scnNote(4 * q, 2 * q, PitchId::fromRatio(Rational(7, 4))),
-                                        scnNote(4 * q, 4 * q, PitchId::fromRatio(Rational(1))),    scnNote(6 * q, 2 * q, PitchId::fromRatio(Rational(9, 4)))};
+  if (ids.size() != 1 || !st.lockFundamentalAt(ids[0], 5)) return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: the lock", {}};
+  const auto on = [&](int64_t k) { return PitchId::fromRatio(Rational(k, 5), tuning::AnchorKind::Note, ids[0].value); };
+  const std::vector<doc::Note> drawn = {scnNote(2 * q, 2 * q, on(6)), scnNote(4 * q, 2 * q, on(7)), scnNote(4 * q, 4 * q, on(4)),
+                                        scnNote(6 * q, 2 * q, on(9))};
   if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, drawn)))
     return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: the drawn notes", {}};
   sc->view->select(std::span<const doc::NoteId>(ids.data(), 1));

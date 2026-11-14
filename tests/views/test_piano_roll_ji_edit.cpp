@@ -6,7 +6,7 @@
 //   curve; stops (typed proportion at the pointer, T, drag a label, drag the glide grip, Delete, retype); a voice's
 //   transition (shape, bezier handles, its own glide / delay, the same for all); walking a harmonic (Alt+Up / Down);
 //   the fundamental with Alt (free cents); undertone; Tune to JI (chord + menu), back to the tuning, removing it; in
-//   31-EDO and in an Equidistant MOS roll; "Is Harmonic…" / "Is Subharmonic…" / Unlock; Ctrl+C / Ctrl+V / Ctrl+X of
+//   31-EDO and in an Equidistant MOS roll; "Is Harmonic…" (the anchor, derived numbering) / Unlock; Ctrl+C / Ctrl+V / Ctrl+X of
 //   an object.
 // Goldens: pianoroll-ji-entered, pianoroll-tune-to-ji, pianoroll-tune-to-ji-31edo, pianoroll-fundamental-lock.
 
@@ -740,59 +740,117 @@ TEST_CASE("roll JI edit: Tune to JI in 31-EDO, and in an Equidistant MOS roll wh
   }
 }
 
-TEST_CASE("roll JI edit: Is Harmonic… locks the virtual fundamental at note / N; drawing snaps to its harmonics; Unlock") {
+// T7.5b: the declared note is the frozen anchor, exactly on guide N; notes drawn afterwards are exact ratios to it;
+// the numbering is derived (a note between the harmonics renumbers everything, deleting it puts the numbers back).
+TEST_CASE("roll JI edit: Is Harmonic… — the note sits exactly on guide N, drawn notes are exact ratios to it, the numbering is derived; Unlock") {
   Ji r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Ji::plain(kQ, 2 * kQ, PitchId::fromDegree(4, 0))});  // E, 400 cents
+  const doc::NoteId e = ids[0];
+  auto hzOf = [&](doc::NoteId id) {
+    auto res = doc::resolveClipPitches(*r.ctx.doc(), r.ref.track, r.ref.clip);
+    REQUIRE(res.ok());
+    for (const doc::NotePitch& np : res->notes)
+      if (np.note == id) {
+        REQUIRE(np.hz.has_value());
+        return *np.hz;
+      }
+    FAIL("note not resolved");
+    return 0.0;
+  };
+  const double eHz = hzOf(e);
   size_t h = r.history();
-  CHECK_FALSE(r.clip().fundamental.lock.has_value());
+  CHECK_FALSE(r.clip().fundamental.anchor.has_value());
 
-  r.choose(r.rightClick(r.view->notePoint(ids[0], 0.5)), "Is Harmonic");
+  Menu* menu = r.rightClick(r.view->notePoint(e, 0.5));
+  CHECK(Ji::itemOf(menu, "Is Subharmonic") < 0);  // not offered
+  r.choose(menu, "Is Harmonic");
   REQUIRE(r.field() != nullptr);
   REQUIRE(r.d.type("x"));
   (void)r.d.press("Enter");
   r.d.step();
-  CHECK_FALSE(r.clip().fundamental.lock.has_value());
+  CHECK_FALSE(r.clip().fundamental.anchor.has_value());
   REQUIRE(r.shell->overlay().openCount() == 1);  // the field stays with its error
   (void)r.d.press("Backspace");
   r.typeEnter("5");
   CHECK(r.shell->overlay().openCount() == 0);
   CHECK(r.history() == h + 1);
-  REQUIRE(r.clip().fundamental.lock.has_value());
-  CHECK(*r.clip().fundamental.lock == Rational(1, 4));  // the just third 5/4 nearest E, / 5
-  CHECK(r.view->virtualFundamental() == Rational(1, 4));
+  CHECK(r.clip().fundamental.anchor == doc::HarmonicAnchor{e, 5});
   CHECK(r.view->showHarmonics());
-  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(4, 0));  // the note itself is not changed
+  // The note is not changed and guide 5 passes through it.
+  CHECK(r.note(e).pitch == PitchId::fromDegree(4, 0));
+  CHECK(hzOf(e) == eHz);
+  REQUIRE(r.view->harmonicGuideY(5).has_value());
+  CHECK(std::fabs(*r.view->harmonicGuideY(5) - r.view->yOfDegree(4)) <= 0.5f);
+  CHECK(r.view->harmonicOf(e) == 5u);
 
-  // Drawing snaps to the harmonics: a click near G gives 3/2 (harmonic 6); Shift draws on the row.
+  // Drawing snaps to the series: a click on guide 6 is an exact 6/5 of the anchor (anchored to it); Shift: the row.
   REQUIRE(r.notesFocused());
   CHECK(r.d.press("B") == KeyResult::Action);
-  r.d.click(r.at(4.5 * static_cast<double>(kQ), 7));
+  r.d.click({r.view->xOfTick(4.5 * static_cast<double>(kQ)), *r.view->harmonicGuideY(6)});
   r.d.step();
   r.d.click(r.at(6.5 * static_cast<double>(kQ), 7), mod::kShift);
   r.d.step();
   (void)r.d.press("B");
   CHECK(r.history() == h + 3);
-  int just = 0, tempered = 0;
+  doc::NoteId six;
+  int tempered = 0;
   for (const doc::Note& n : r.clip().notes) {
-    if (n.pitch == PitchId::fromRatio(Rational(3, 2)) && n.start == 4 * kQ) ++just;
+    if (n.pitch == PitchId::fromRatio(Rational(6, 5), tuning::AnchorKind::Note, e.value) && n.start == 4 * kQ) six = n.id;
     if (n.pitch == PitchId::fromDegree(7, 0) && n.start == 6 * kQ) ++tempered;
   }
-  CHECK(just == 1);
+  REQUIRE(six.valid());
   CHECK(tempered == 1);
+  CHECK(hzOf(six) == doctest::Approx(eHz * 6.0 / 5.0).epsilon(1e-12));
+  CHECK(r.view->harmonicOf(six) == 6u);
+  CHECK(std::fabs(r.view->notePoint(six, 0.5).y - *r.view->harmonicGuideY(6)) <= 1.5f);  // drawn on its guide
 
-  // Is Subharmonic…: the fundamental N times above the note.
-  r.choose(r.rightClick(r.view->notePoint(ids[0], 0.5)), "Is Subharmonic");
-  r.typeEnter("3");
-  CHECK(r.history() == h + 4);
-  CHECK(*r.clip().fundamental.lock == Rational(15, 4));
-
-  // Unlock, from the same menu.
-  r.choose(r.rightClick(r.view->notePoint(ids[0], 0.5)), "Unlock Fundamental");
-  CHECK(r.history() == h + 5);
-  CHECK_FALSE(r.clip().fundamental.lock.has_value());
+  // A note 3/2 above the anchor falls between the harmonics: the fundamental halves, everything renumbers.
+  const doc::NoteId fifth = r.addNotes({Ji::plain(4 * kQ, kQ, PitchId::fromRatio(Rational(3, 2), tuning::AnchorKind::Note, e.value))})[0];
+  CHECK(r.view->harmonicOf(e) == 10u);
+  CHECK(r.view->harmonicOf(fifth) == 15u);
+  CHECK(r.view->harmonicOf(six) == 12u);
+  CHECK(std::fabs(*r.view->harmonicGuideY(10) - r.view->yOfDegree(4)) <= 0.5f);
+  CHECK(hzOf(e) == eHz);
+  CHECK(hzOf(fifth) == doctest::Approx(eHz * 1.5).epsilon(1e-12));
+  // Deleting it (click, Delete): 5 again; undo: 10; undo: the note was never there.
+  h = r.history();
+  r.d.click(r.view->notePoint(fifth, 0.5));
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.d.press("Delete") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.view->harmonicOf(e) == 5u);
+  CHECK(r.view->harmonicOf(six) == 6u);
   REQUIRE(r.ctx.undo());
-  CHECK(*r.clip().fundamental.lock == Rational(15, 4));
+  CHECK(r.view->harmonicOf(e) == 10u);
+  REQUIRE(r.ctx.undo());
+  CHECK(r.view->harmonicOf(e) == 5u);
+
+  // Up on the drawn note: the next harmonic, still anchored.
+  h = r.history();
+  r.d.click(r.view->notePoint(six, 0.5));
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.d.press("Up") == KeyResult::Action);
+  CHECK(r.note(six).pitch == PitchId::fromRatio(Rational(7, 5), tuning::AnchorKind::Note, e.value));
+  CHECK(r.view->harmonicOf(six) == 7u);
+  CHECK(r.view->harmonicOf(e) == 5u);
+  // The anchor moved a row up: the series and the related note follow it.
+  r.d.click(r.view->notePoint(e, 0.5));
+  CHECK(r.d.press("Up") == KeyResult::Action);
+  CHECK(r.note(e).pitch == PitchId::fromDegree(5, 0));
+  CHECK(std::fabs(*r.view->harmonicGuideY(5) - r.view->yOfDegree(5)) <= 0.5f);
+  CHECK(hzOf(six) == doctest::Approx(hzOf(e) * 7.0 / 5.0).epsilon(1e-12));
+  CHECK(r.history() == h + 2);
+
+  // Unlock, from the same menu; undo brings the declaration back.
+  h = r.history();
+  r.choose(r.rightClick(r.view->notePoint(e, 0.5)), "Unlock Fundamental");
+  CHECK(r.history() == h + 1);
+  CHECK_FALSE(r.clip().fundamental.anchor.has_value());
+  CHECK_FALSE(r.view->harmonicOf(e).has_value());
+  REQUIRE(r.ctx.undo());
+  CHECK(r.clip().fundamental.anchor == doc::HarmonicAnchor{e, 5});
 }
 
 TEST_CASE("roll JI edit: Ctrl+C / Ctrl+V / Ctrl+X of a selected object take its inner notes along") {

@@ -128,13 +128,15 @@ namespace {
 // f(k, screen y) top to bottom; lines closer than 3 device px to the previous one are skipped (a dense high range costs
 // at most one per 3 px). At most 4096 per call.
 template <class F>
-void forEachHarmonic(const RollState& s, const tuning::Rational& Fr, int32_t contentTop, int32_t contentBottom, float yMin, float yMax, F&& f) {
+void forEachHarmonic(const RollState& s, const RollState::Harmonics& H, int32_t contentTop, int32_t contentBottom, float yMin, float yMax, F&& f) {
+  const tuning::Rational& Fr = H.ratio;
   const RowModel& rows = s.rows();
   const auto [first, last] = rows.rowsIn(contentTop, contentBottom + 1);
   if (first >= last) return;
   const double fn = static_cast<double>(Fr.num()), fd = static_cast<double>(Fr.den());
-  const double hiCents = rows.row(first).cents + 100.0, loCents = rows.row(last - 1).cents - 100.0;
-  const double fund = 1200.0 * std::log2(fn) - 1200.0 * std::log2(fd);  // cents of reference · F (1/D: −1200·log2 D)
+  // T7.5b: the fundamental stands on its base (the reference at 0 cents, or the declared harmonic's anchor note).
+  const double hiCents = rows.row(first).cents + 100.0 - H.baseCents, loCents = rows.row(last - 1).cents - 100.0 - H.baseCents;
+  const double fund = H.baseCents + 1200.0 * std::log2(fn) - 1200.0 * std::log2(fd);  // cents of base · F (1/D: −1200·log2 D)
   const double kLo = std::max(1.0, std::ceil(fd / fn * std::exp2(loCents / 1200.0)));
   const double kHi = std::floor(fd / fn * std::exp2(hiCents / 1200.0));
   if (kHi < kLo) return;
@@ -142,7 +144,8 @@ void forEachHarmonic(const RollState& s, const tuning::Rational& Fr, int32_t con
   const double kEnd = std::min(kHi, kLo + 4096.0);
   for (double k = kLo; k <= kEnd; k += 1.0) {
     const double c = fund + 1200.0 * std::log2(k);
-    const float y = static_cast<float>(s.screenY(rows.placeCents(c).centre));
+    // On a tempered anchor the lines fall between rows: placed by pitch (yOfCents), not on the nearest row's centre.
+    const float y = H.anchor.valid() ? std::round(s.yOfCents(c)) : static_cast<float>(s.screenY(rows.placeCents(c).centre));
     if (y < yMin - 1.0f || y > yMax + 1.0f) continue;
     if (k != 1.0 && std::fabs(lastY - y) < 3.0f) continue;
     lastY = y;
@@ -156,7 +159,7 @@ void forEachHarmonic(const RollState& s, const tuning::Rational& Fr, int32_t con
 // as faint guide lines, under the notes. Their labels are drawn over the notes' area in a strip at its right edge
 // (paintHarmonicLabels), never under notes (T3.x-fix-look, M3 review M18). Off with the clip box's JI switch.
 void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, const IRect& vis) {
-  const std::optional<tuning::Rational> F = s.virtualFundamental();
+  const std::optional<RollState::Harmonics> F = s.harmonics();
   if (!F || !s.showHarmonics() || s.rows().empty()) return;
   (void)r;
   const Theme& th = *ctx.res.theme;
@@ -173,7 +176,9 @@ void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, con
 // LabelSpace over the whole widget (partial and full repaints place the same ones). When F's own line is out of view a
 // chip pins it to the corner it lies beyond: "F = 1/4 · 65.41 Hz" (bottom-left when F is below, top-left when above).
 void paintHarmonicLabels(PaintContext& ctx, const RollState& s, const IRect& r) {
-  const std::optional<tuning::Rational> F = s.virtualFundamental();
+  const std::optional<RollState::Harmonics> H = s.harmonics();
+  const std::optional<tuning::Rational> F = H ? std::optional<tuning::Rational>(H->ratio) : std::nullopt;
+  const bool anchored = H && H->anchor.valid();  // T7.5b: F hangs on a note, not on the reference: it reads "F"
   TextSystem* ts = ctx.res.text;
   const ThemeFonts* fonts = ctx.res.uiFonts;
   if (!F || !s.showHarmonics() || s.rows().empty() || !ts || !fonts || r.empty()) return;
@@ -194,26 +199,28 @@ void paintHarmonicLabels(PaintContext& ctx, const RollState& s, const IRect& r) 
   }
   paint::LabelSpace space(ctx.scale.px(2));
   bool fundamentalShown = false;
-  forEachHarmonic(s, *F, s.contentY(static_cast<float>(r.y)), s.contentY(static_cast<float>(r.bottom())), static_cast<float>(r.y),
+  forEachHarmonic(s, *H, s.contentY(static_cast<float>(r.y)), s.contentY(static_cast<float>(r.bottom())), static_cast<float>(r.y),
                   static_cast<float>(r.bottom()), [&](double k, float y) {
                     const int32_t top = static_cast<int32_t>(y) - lineH / 2;
                     if (top < r.y || top + lineH > r.bottom()) return;
                     if (!space.place(top, top + lineH)) return;
-                    const int n = k == 1.0 ? std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(F->num()),
-                                                           static_cast<long long>(F->den()))
-                                           : std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(k));
+                    const int n = k != 1.0   ? std::snprintf(buf, sizeof buf, "%lld", static_cast<long long>(k))
+                                  : anchored ? std::snprintf(buf, sizeof buf, "F")
+                                             : std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(F->num()),
+                                                             static_cast<long long>(F->den()));
                     if (k == 1.0) fundamentalShown = true;
                     paint::text(ctx, font, {strip.x, top, strip.w, lineH}, std::string_view(buf, static_cast<size_t>(std::max(0, n))),
                                 k == 1.0 ? th.text.primary : th.roll.fundamental, TextAlign::Center, 0, 0);
                   });
   if (fundamentalShown) return;
   // F out of view: where is it?
-  const double fund = 1200.0 * std::log2(static_cast<double>(F->num())) - 1200.0 * std::log2(static_cast<double>(F->den()));
+  const double fund = H->baseCents + 1200.0 * std::log2(static_cast<double>(F->num())) - 1200.0 * std::log2(static_cast<double>(F->den()));
   const float fy = static_cast<float>(s.screenY(s.rows().placeCents(fund).centre));
   const bool below = fy >= static_cast<float>(r.bottom());
-  const double hz = s.tuning().referenceHz() * static_cast<double>(F->num()) / static_cast<double>(F->den());
-  const int n = std::snprintf(buf, sizeof buf, "F = %lld/%lld \xC2\xB7 %.2f Hz %s", static_cast<long long>(F->num()),
-                              static_cast<long long>(F->den()), hz, below ? "\xE2\x86\x93" : "\xE2\x86\x91");
+  const double hz = s.tuning().referenceHz() * std::exp2(fund / 1200.0);
+  const int n = anchored ? std::snprintf(buf, sizeof buf, "F \xC2\xB7 %.2f Hz %s", hz, below ? "\xE2\x86\x93" : "\xE2\x86\x91")
+                         : std::snprintf(buf, sizeof buf, "F = %lld/%lld \xC2\xB7 %.2f Hz %s", static_cast<long long>(F->num()),
+                                         static_cast<long long>(F->den()), hz, below ? "\xE2\x86\x93" : "\xE2\x86\x91");
   const std::string_view label(buf, static_cast<size_t>(std::max(0, n)));
   const int32_t w = std::min(r.w - stripW, ts->measure(font, label) + 2 * ctx.scale.px(5));
   const int32_t h = lineH + ctx.scale.px(2);
@@ -303,7 +310,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   std::vector<CurveNote>& curved = s_.curveNotes;
   curved.clear();
   const bool anyPath = s_.clip()->curves != nullptr || s_.clip()->ji != nullptr;
-  const std::optional<tuning::Rational> F = s_.virtualFundamental();
+  const std::optional<RollState::Harmonics> H = s_.harmonics();
   auto emit = [&](const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch, bool sel) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
@@ -332,9 +339,16 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     if (pitch.kind() == tuning::PitchKind::Ratio) {
       const tuning::Rational r = pitch.ratio();
       uint32_t k = 0;
-      if (F && pitch.anchorKind() == tuning::AnchorKind::Reference)
-        if (const std::optional<uint64_t> h = tuning::harmonicNumber(r, *F); h && *h <= 99999) k = static_cast<uint32_t>(*h);
+      // Its harmonic number: over the reference's fundamental, or (T7.5b) over the declared harmonic it is anchored to.
+      const bool related = H && (H->anchor.valid() ? (pitch.anchorKind() == tuning::AnchorKind::Note && pitch.anchorId() == H->anchor.value)
+                                                   : pitch.anchorKind() == tuning::AnchorKind::Reference);
+      if (related)
+        if (const std::optional<uint64_t> h = tuning::harmonicNumber(r, H->ratio); h && *h <= 99999) k = static_cast<uint32_t>(*h);
       labels.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, r.num(), r.den(), k});
+    } else if (H && H->anchor.valid() && n.id == H->anchor) {
+      // T7.5b: the anchor note of a declared harmonic carries its (derived) number.
+      if (const std::optional<uint64_t> h = tuning::harmonicNumber(tuning::Rational(1), H->ratio); h && *h <= 99999)
+        labels.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, 0, 1, static_cast<uint32_t>(*h)});
     }
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
@@ -450,12 +464,13 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
   for (const NoteLabel& l : s_.noteLabels) {
     const float w = l.x1 - l.x0, h = l.y1 - l.y0;
     if (w < minW || h < minH) continue;
-    int n = std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(l.num), static_cast<long long>(l.den));
+    int n = l.num == 0 ? std::snprintf(buf, sizeof buf, "%u", l.harmonic)  // the anchor: its harmonic number
+                       : std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(l.num), static_cast<long long>(l.den));
     if (n <= 0) continue;
     const int32_t avail = static_cast<int32_t>(w) - 2 * pad;
     std::string_view text(buf, static_cast<size_t>(n));
     if (ts->measure(font, text) > avail) continue;
-    if (l.harmonic) {
+    if (l.harmonic && l.num != 0) {
       const int m = std::snprintf(buf + n, sizeof buf - static_cast<size_t>(n), " \xC2\xB7 %u", l.harmonic);
       if (m > 0 && ts->measure(font, std::string_view(buf, static_cast<size_t>(n + m))) <= avail) text = std::string_view(buf, static_cast<size_t>(n + m));
     }

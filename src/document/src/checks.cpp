@@ -191,7 +191,8 @@ Status checkSampleRef(const SampleRef& r) {
 }
 
 Status checkFundamental(const ClipFundamental& f) {
-  if (f.lock && !f.lock->isPositive()) return invalid("a fundamental lock must be positive");
+  if (f.anchor && (!f.anchor->note.valid() || f.anchor->index < 1 || f.anchor->index > kMaxHarmonicIndex))
+    return invalid("a declared harmonic names a note and an index from 1 to 4096");
   for (size_t i = 0; i < f.steps.size(); ++i) {
     const HarmonicStep& h = f.steps[i];
     if (!h.note.valid()) return invalid("harmonic step without a note");

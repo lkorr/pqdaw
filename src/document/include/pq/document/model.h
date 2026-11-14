@@ -205,8 +205,16 @@ struct ClipLoop {
 // reduced denominator, or, while the note still has the pitch an Up/Down step (or a vertical drag) gave it, the
 // denominator of the fundamental it was stepped on (a HarmonicStep). Ratios stay stored reduced and exact: 5/4 Up is
 // stored 3/2 with the step {note, 4, 3/2}, so the next Up still lands on 7/4. Adding 4/3 gives lcm(4, 3) = 12;
-// deleting it gives 4 again; undo / redo restore both, because the steps live in the clip snapshot. An explicit
-// lock (b + index, SPEC §6.2: "this note is the N-th harmonic") overrides the derivation with F = note / N.
+// deleting it gives 4 again; undo / redo restore both, because the steps live in the clip snapshot.
+//
+// The declared harmonic (T7.5b; SPEC §6.2 b + index: "this note is the N-th harmonic"): ClipFundamental::anchor names
+// a note of ANY identity and its index N. The note is the frozen anchor of the series and sits exactly on harmonic N:
+// F = (the anchor's pitch) / (N · m). It is the same derivation with N as the starting denominator: m is the smallest
+// integer that makes every RELATED note a whole harmonic — the Ratio notes anchored to the anchor note (ratio n/d to
+// it: harmonic N·m·n/d), and, when the anchor is itself a reference-anchored Ratio, the other reference-anchored Ratio
+// notes. Anchor declared 5, a note 3/2 above it: m = 2, the anchor reads 10 and the note 15; delete the note and it
+// reads 5 again. A related note too fine for any numbering (N · m > kMaxFundamentalDenominator) is left unnumbered. An
+// anchor whose note is gone is ignored (the plain derivation applies). Under an anchor no HarmonicStep is recorded.
 inline constexpr int64_t kMaxFundamentalDenominator = int64_t{1} << 20;  // finer: no fundamental (own denominators)
 // lcm(a, b) for a, b ≥ 1, or −1 when it exceeds `cap` (computed without overflow: std::lcm is undefined when the
 // result does not fit; T2.6-fix4, M3 review L8). RT-safe.
@@ -219,10 +227,17 @@ struct HarmonicStep {
   friend bool operator==(const HarmonicStep&, const HarmonicStep&) noexcept = default;
 };
 
+struct HarmonicAnchor {
+  NoteId note;         // a note of the clip (any identity)
+  uint32_t index = 1;  // the harmonic it is declared to be, 1 … kMaxHarmonicIndex
+  friend bool operator==(const HarmonicAnchor&, const HarmonicAnchor&) noexcept = default;
+};
+inline constexpr uint32_t kMaxHarmonicIndex = 4096;
+
 struct ClipFundamental {
   std::vector<HarmonicStep> steps;        // sorted by note id, unique; only steps finer than the ratio's own denominator
-  std::optional<tuning::Rational> lock;   // explicit fundamental (relative to the clip reference), > 0
-  bool empty() const noexcept { return steps.empty() && !lock; }
+  std::optional<HarmonicAnchor> anchor;   // T7.5b: the declared harmonic (see above)
+  bool empty() const noexcept { return steps.empty() && !anchor; }
   friend bool operator==(const ClipFundamental&, const ClipFundamental&) noexcept = default;
 };
 
@@ -344,11 +359,21 @@ Status validateClipJi(const NoteClip& c);
 // invalid for every other identity.
 JiObjectId jiObjectOf(const tuning::PitchId& p) noexcept;
 
-// The clip's virtual fundamental relative to its reference (see ClipFundamental): the lock if set, else 1/D, else
-// nullopt (no reference-anchored Ratio note, or D > kMaxFundamentalDenominator). `ownDenominators`: the lcm of the
+// The clip's derived fundamental (see ClipFundamental): F = pitch(anchor) · ratio, where an invalid `anchor` is the
+// clip's reference. With a declared harmonic on a tempered note: {that note, 1 / (N · m)}; on a reference-anchored
+// Ratio note r: {reference, r / (N · m)}; without one: {reference, 1/D}. nullopt: nothing to derive from (no
+// reference-anchored Ratio note, or D > kMaxFundamentalDenominator). `ownDenominators`: the lcm of the
 // reference-anchored Ratio notes' own denominators if the caller has it cached (0 none, −1 too large), or
-// kComputeOwnDenominators to scan the clip. O(1) without steps (given the lcm); with steps, one pass over the notes.
+// kComputeOwnDenominators to scan the clip. O(1) without steps and anchor (given the lcm); else one pass over the notes.
 inline constexpr int64_t kComputeOwnDenominators = -2;
+struct ClipHarmonics {
+  NoteId anchor;
+  tuning::Rational ratio{1};
+  friend bool operator==(const ClipHarmonics&, const ClipHarmonics&) noexcept = default;
+};
+std::optional<ClipHarmonics> clipHarmonics(const NoteClip& clip, int64_t ownDenominators = kComputeOwnDenominators);
+// The same when it is relative to the reference (what reference-anchored Ratio notes step on); nullopt also when the
+// fundamental hangs on a tempered anchor note.
 std::optional<tuning::Rational> virtualFundamental(const NoteClip& clip,
                                                    int64_t ownDenominators = kComputeOwnDenominators);
 

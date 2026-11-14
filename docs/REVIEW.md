@@ -1682,3 +1682,17 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   fundamental the plain draw is the harmonic one and Shift the tempered one; (5) the header's "scaffold" now reads
   "tunes its notes".
 - Not in this task: pen modes, bends between notes, vibrato, ride-curve editing (T7.6); the arpeggiator (T7.8).
+
+## 2026-11-14 · T7.5b · piano roll: "Is Harmonic N" makes the note the anchor of a derived harmonic series 👁
+- Look at (tests/views/golden): `pianoroll-fundamental-lock` — a 12-EDO E declared harmonic 5: guide 5 runs through the
+  E itself (it carries a "5"), the notes drawn afterwards sit on guides 4, 6, 7, 9 and read "6/5 · 6" (their exact ratio
+  to the E, and their harmonic number). `pianoroll-note-menu`: "Is Subharmonic…" is gone.
+- Try it: right-click a note → Is Harmonic… → 5, Enter. The note does not move; the lines are its series. Draw (B, or
+  double-click): notes land on the lines as exact ratios to that note; hold Shift for the ordinary rows. Move the
+  anchor note and the lines and the notes drawn on them follow.
+- The numbering is derived, not fixed: put a note between two lines (paste or set a pitch 3/2 above the anchor) and the
+  anchor reads 10, the new note 15; delete it and the anchor reads 5 again. Up / Down on a drawn note goes to the next
+  line of the series it was drawn on.
+- Supersedes the T7.5 entry's decisions (1) and (2): no nearest-ratio approximation, no subharmonic item.
+- Open: "Set Pitch…" cannot yet type a ratio relative to the anchor (it makes reference ratios), so a between-the-lines
+  note comes from a paste, a duplicate that is then stepped, or the document; say if you want "3/2 of the anchor" typed.

@@ -186,7 +186,8 @@ public:
   // move, double-click: retype, Delete: remove), the grip on the bottom border sets its glide; a harmonic number
   // selects that term (Alt+Up / Down: ops::walkJiTerm). "Tune to JI" (Ctrl+Shift+J, "pianoroll.tuneToJi") turns the
   // selected notes into the inner notes of an object that glides from the tuning to the nearest proportion; "Is
-  // Harmonic…" in a note's menu locks the virtual fundamental at note / N.
+  // Harmonic…" in a note's menu declares the note harmonic N: the frozen anchor of the series the roll then draws and
+  // snaps to (T7.5b).
   doc::JiObjectId jiEntered() const noexcept;
   void enterJiObject(doc::JiObjectId id);
   void leaveJiObject();
@@ -195,7 +196,11 @@ public:
   void selectJiStop(doc::JiObjectId id, int32_t stop);
   void selectJiTerm(doc::JiObjectId id, int32_t voice);
   bool tuneSelectionToJi();
-  bool lockFundamentalAt(doc::NoteId note, uint32_t n, bool subharmonic);
+  bool lockFundamentalAt(doc::NoteId note, uint32_t n);
+  // T7.5b: the harmonic number the roll shows on a note (the declared harmonic's anchor, a Ratio note related to the
+  // fundamental); the screen y of harmonic k's guide line. nullopt: none.
+  std::optional<uint64_t> harmonicOf(doc::NoteId note) const;
+  std::optional<float> harmonicGuideY(uint64_t k) const;
   // Where the object's parts are on screen (device px; empty: not shown): a stop's label under the box, a voice's
   // harmonic number, a stop's glide grip on the bottom border. `index`: the stop (StopLabel, Glide) or the voice.
   enum class JiPart : uint8_t { StopLabel, VoiceLabel, Glide };

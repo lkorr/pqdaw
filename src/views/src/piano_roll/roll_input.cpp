@@ -132,7 +132,8 @@ DrawnNote NoteAreaWidget::cellNote(TickRange c, Vec2 p, DrawPitch mode) const {
     dn.mode = DrawPitch::Ratio;
     const int64_t row = rows.row(rows.indexAtY(cy)).degree;
     dn.ratio = s_.ratioFor(row, rows.centsAtY(static_cast<double>(cy)));
-    dn.degree = rows.placeCents(tuning::cents(dn.ratio)).nearestDegree;
+    const std::optional<RollState::Harmonics> h = s_.harmonics();  // T7.5b: the ratio is to the fundamental's base
+    dn.degree = rows.placeCents(tuning::cents(dn.ratio) + (h ? h->baseCents : 0.0)).nearestDegree;
   } else {
     dn.degree = rows.row(rows.indexAtY(cy)).degree;
   }
@@ -654,14 +655,13 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
     items.push_back(MenuItem::sep());
     // T7.5 (A4): the virtual fundamental with the mouse: "this note is harmonic N" (a number field): the fundamental
     // is locked at the note / N, its harmonics are drawn as guides and drawing snaps to them.
-    const std::optional<tuning::Rational> lock = s_.clip()->fundamental.lock;
+    const bool lock = s_.clip()->fundamental.anchor.has_value();
     if (const doc::Note* target = under ? under : single) {
       const doc::NoteId id = target->id;
-      items.push_back(MenuItem::item("Is Harmonic\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openHarmonicEntry(id, false); })));
-      items.push_back(MenuItem::item("Is Subharmonic\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openHarmonicEntry(id, true); })));
+      items.push_back(MenuItem::item("Is Harmonic\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openHarmonicEntry(id); })));
     }
     MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
-    unlock.enabled = lock.has_value();
+    unlock.enabled = lock;
     items.push_back(std::move(unlock));
     items.push_back(MenuItem::sep());
     MenuItem dup = MenuItem::item("Duplicate", guarded([](RollState& st) { st.duplicateSelection(); }), "Ctrl+D");
@@ -672,7 +672,7 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
     items.push_back(MenuItem::item("Paste", guarded([](RollState& st) { st.paste(); }), "Ctrl+V"));
     items.push_back(MenuItem::item("Select All", guarded([](RollState& st) { st.selectAll(); }), "Ctrl+A"));
     MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
-    unlock.enabled = s_.clip()->fundamental.lock.has_value();
+    unlock.enabled = s_.clip()->fundamental.anchor.has_value();
     items.push_back(std::move(unlock));
   }
   items.push_back(MenuItem::sep());
@@ -1216,7 +1216,7 @@ void ClipBoxPanel::refresh() {
     if (!grid_->inGesture()) grid_->setValue(static_cast<double>(s_.overlayEdo()));
   }
   labels_->setIndex(static_cast<int32_t>(s_.rowLabels()));
-  const bool ji = s_.hasClip() && s_.virtualFundamental().has_value();
+  const bool ji = s_.hasClip() && s_.harmonics().has_value();
   if (jiRow_->visible() != ji) jiRow_->setVisible(ji);
   ji_->setOn(s_.showHarmonics());
   if (mos && !gen_->inGesture()) {

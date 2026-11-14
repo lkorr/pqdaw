@@ -401,8 +401,9 @@ EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
 EditResult transposeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, int32_t steps,
                           StepUnit unit, const tuning::Edo* displayGrid = nullptr);
 // The explicit fundamental lock (b + index, SPEC §6.2): "this note is the index-th harmonic", so the clip's virtual
-// fundamental becomes the note's ratio / index until unlocked. The note must be a reference-anchored Ratio note
-// (other identities have no exact ratio to divide; InvalidArgument), index ≥ 1. One undo step each.
+// fundamental is derived from the note's pitch / index until unlocked (T7.5b: ClipFundamental::anchor — a note of any
+// identity, the frozen anchor of the series; notes related to it by exact ratios refine the numbering, see
+// model.h "Virtual fundamental"). index 1 … kMaxHarmonicIndex. One undo step each.
 EditResult lockFundamental(const Project& p, ClipRef clip, NoteKey note, uint32_t harmonicIndex);
 EditResult unlockFundamental(const Project& p, ClipRef clip);
 
