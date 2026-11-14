@@ -1554,7 +1554,14 @@ audio thread, and a decision for chance, one-shots and envelopes that restart); 
 object's voices into shorter notes at stop holds, so a seek loses at most one segment (unison phase would restart).
 Choice: (a) for now — nothing new can break; the engine side of (b) is one more caller of the existing
 curve-at-a-tick path (`Timeline::curveLocate` + `curveRamp`).
-Status: open.
+Answer (T7.3, orchestrator decision): (b), for every note, as Live's "Chase MIDI Notes". A jump of the playhead while
+playing (Play / Record at a tick, Continue, a Locate while playing, the end of a count-in, an arrangement loop wrap)
+starts the notes of the clip pass under the new position whose start lies before it and whose end after it: a fresh
+note-on there (envelope from its start), the pass's chance / velocity decision, Hz and gain from the curves at that
+tick. Found through a per-clip max-end tree (`SequenceImage::covering`, O((found + 1) log notes)). Not chased: by a
+sequence swap (an edit under the playhead starts nothing), notes of an earlier clip-loop pass (they are cut at the
+wrap), one-shot state inside the instrument (an envelope cannot be resumed mid-way). timeline.h "Chase".
+Status: answered.
 
 ## Q279 · 2026-11-14 · T7.4 · No document builder duplicates a JI object or moves it in pitch
 Context: the roll's Ctrl+D and its row drag need "copy this object (with its inner notes)" and "move by (dt, rows)".
@@ -1574,3 +1581,21 @@ Options: (a) scale 1: the box only marks the fundamental; (b) pin the lowest voi
 is, and the stored fundamental is still the bottom row (a Degree identity).
 Choice: (b). The harmonic numbers still read 8, 9, 10…; the true fundamental (jiFundamentalCents) lies below the box.
 Status: open (reversible: one line in `RollState::createJiObject`).
+
+## Q?-T7.3-a · 2026-11-14 · T7.3 · "Merge without Sync never dips below −1 dB of the keeper": true over 100 ms, not over 10 ms
+Context: the M7 plan accepts the parked merge with "no window below −1 dB of the keeper". Measured on 4:5 → 4 (one
+quarter S-glide, sine, against the keeper alone): 100 ms windows −0.1 dB (and exactly the keeper once the merging
+voice is parked: no jump); 10 ms windows down to −5.4 dB during the last, slow beats of the glide and about −1 dB in
+the 20 ms fade. That is two free-running oscillators converging: they beat, and the troughs of beats slower than the
+window are below one voice. No gain rule of the plan removes it without knowing the phases.
+Options: (a) accept until T7.7's Sync (the test asserts the 100 ms level, the exact parked level, and bounds the
+10 ms figures); (b) fade the merging voice over the whole glide (`JiPlanOptions::gainRamp` = the glide): shallower
+troughs (about −3 dB), but the merging voice is quieter through the whole morph; (c) fade it out when it comes within
+a few Hz of the keeper.
+Choice: (a) — the plan's decision 3 ("park it; T7.7 adds Sync") as written; (b) / (c) are one option of jiVoicePlan.
+
+## Q?-T7.3-b · 2026-11-14 · T7.3 · Flatten tolerance of lowered curves: 1 cent
+Context: every breakpoint is a curve point to store and an event on the audio thread; the count goes with
+1 / sqrt(tolerance). At 0.05 c (the plan's default for drawing) the 100 × 8 × 32 lowering made 734 k points.
+Choice: 1 c while a pitch moves (`kJiPitchTolerance`; holds and straight lines are exact at any tolerance), plus a
+1 ms minimum spacing inside curved spans. Reversible: one constant.
