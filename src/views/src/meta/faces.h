@@ -76,6 +76,7 @@ struct WavetableShown {
   uint32_t level = 0;      // ... at this mip level
   const dsp::FrameTable* table = nullptr;  // ... of this table (the one the face holds)
   std::vector<std::vector<float>> stack;  // the stacked display's frames (σ-smoothed thumbnails, kPoints + 1 each)
+  float idleAxis = 0.0f;  // BR.wt: the no-voice dot's x-axis value (Phase mode: a read phase; Shape mode: u)
 };
 bool wavetableShown(const MetaFace& f, WavetableShown& out);
 

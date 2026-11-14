@@ -609,6 +609,60 @@ TEST_CASE("wavetable_shape: a still input reads the curve; ADAA is the mean of t
   CHECK(*std::max_element(y.begin(), y.begin() + 256) == 0.0f);
 }
 
+TEST_CASE("wavetable_shape (BR.wt): a small input round a low point shapes the curve there; the tap is the display's u") {
+  // The bug report: a small signal biased onto a sine curve's trough. The output must be the curve over the swept
+  // span (here −cos: a ripple at twice the input frequency, not DC), and the voice tap — the face's dots — must sit at
+  // the u the kernel read, through the one mapping both use (shapeTablePosition).
+  const TablePtr t = build({ftfix::basic(BasicCycle::Sine)}, kSr, {}, true);
+  FrameTableSlot slot(t);
+  slot.tap()->addReader();
+  ShapeRegion r(1, kSr);
+  constexpr uint32_t F = 4096;
+  constexpr double kBias = 0.5, kAmp = 0.15;  // u = 0.75 ± 0.075: the trough of sin(2πu)
+  std::vector<float> x(F), y(F);
+  for (uint32_t i = 0; i < F; ++i) x[i] = static_cast<float>(kBias + kAmp * std::sin(kTwoPi * 100.0 * i / kSr));
+  r.block(slot, x.data(), F, y.data());
+  double worst = 0, worstU = 0, lo = 1e9, hi = -1e9, wantLo = 1e9, wantHi = -1e9;
+  for (uint32_t i = 64; i < F; ++i) {
+    const double u = shapeTablePosition(x[i]);
+    worstU = std::max(worstU, std::fabs(u - (0.5 * x[i] + 0.5)));
+    const double want = shapeCurve(t->view(), 0.0f, liveLevels(t->view(), 0.0f), u);
+    worst = std::max(worst, std::fabs(want - y[i]));
+    lo = std::min(lo, static_cast<double>(y[i]));
+    hi = std::max(hi, static_cast<double>(y[i]));
+    wantLo = std::min(wantLo, want);
+    wantHi = std::max(wantHi, want);
+  }
+  MESSAGE("trough: output " << lo << " … " << hi << ", the curve " << wantLo << " … " << wantHi << ", worst " << worst);
+  CHECK(worstU < 1e-6);  // u = (x + 1)/2 inside −1 … 1
+  CHECK(worst < 2e-3);
+  CHECK(wantHi - wantLo > 0.1);  // the curve's span there is a ripple (1 − cos(2π·0.075) ≈ 0.11), not DC
+  CHECK(hi - lo == doctest::Approx(wantHi - wantLo).epsilon(0.05));
+  CHECK(lo == doctest::Approx(-1.0).epsilon(2e-3));
+  // Every tapped sample is shapeTablePosition of an input sample (the face draws dots at exactly these u).
+  const pq::VoiceTap& tap = *slot.tap();
+  REQUIRE(tap.written(0) > 0);
+  uint32_t checked = 0;
+  float worstTap = 0.0f, tapLo = 1.0f, tapHi = 0.0f;
+  for (uint64_t k = 0; k < tap.written(0); ++k) {
+    pq::VoiceTapRecord rec;
+    if (!tap.read(0, k, rec)) continue;
+    for (uint32_t j = 0; j < pq::kVoiceTapSamples; ++j) {
+      float best = 1.0f;
+      for (uint32_t i = 0; i < F; ++i) best = std::min(best, std::fabs(rec.sample[j][0] - shapeTablePosition(x[i])));
+      worstTap = std::max(worstTap, best);
+      tapLo = std::min(tapLo, rec.sample[j][0]);
+      tapHi = std::max(tapHi, rec.sample[j][0]);
+      ++checked;
+    }
+  }
+  CHECK(checked > 0);
+  CHECK(worstTap == 0.0f);
+  CHECK(tapLo >= 0.675f - 1e-6f);  // within the swept span 0.75 ± 0.075
+  CHECK(tapHi <= 0.825f + 1e-6f);
+  slot.tap()->removeReader();
+}
+
 namespace {
 
 void shapeSuite(double sr, uint32_t N, const std::vector<uint32_t>& ks,

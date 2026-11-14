@@ -57,6 +57,7 @@
 // wavetable_live chooses levels from base-rate speeds × liveSpeedScale; wavetable_shape from its held speed × liveHeadroom.
 // RT: both kernels are RT-safe (no allocation; the residual tables are built at static initialisation).
 
+#include <cmath>
 #include <cstdint>
 
 #include "pq/dsp/frame_table.h"
@@ -68,6 +69,12 @@ inline constexpr uint32_t kLiveCorrHalf = 4;         // residual half-width (sam
 inline constexpr uint32_t kLiveResidualSteps = 1024;  // residual table resolution per sample
 inline constexpr float kShapeAdaaMin = 1.0f / 4096.0f;  // |Δu| below which Shape mode reads the midpoint
 inline constexpr double kShapeHoldSeconds = 0.05;
+
+// Shape mode's input → table position: u = clamp((x + 1)/2, 0, 1) (NaN → 0). The one mapping the kernel's voice tap
+// writes and the Wavetable face draws its x axis with (x = −1 … 1 spans the display; BR.wt).
+inline float shapeTablePosition(float x) noexcept {  // RT-safe
+  return std::fmin(std::fmax(std::fma(x, 0.5f, 0.5f), 0.0f), 1.0f);
+}
 
 
 // The level pair a read at `speed` (cycles per sample, ≥ 0) uses: the bucket's level info, the richer level's info

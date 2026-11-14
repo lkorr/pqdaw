@@ -1012,12 +1012,12 @@ void wavetableShapeK(const KernelArgs& k) noexcept {  // RT-safe
   float position[8];
   const float* lastPos = a.posSpl ? k.in[1] : k.in[1] + static_cast<size_t>(k.frames - 1) * L;
   for (uint32_t l = 0; l < L; ++l) position[l] = lastPos[l];
-  // The dots sit at the input's table position u = clamp((x + 1)/2) (no wrap), sampled at the base rate.
+  // The dots sit at the input's table position u = shapeTablePosition(x) (no wrap), sampled at the base rate.
   float inc[8];
   for (uint32_t l = 0; l < L; ++l) inc[l] = s.hold[l] * static_cast<float>(os);
   if (a.xSpl) {
     float u[8];
-    for (uint32_t l = 0; l < L; ++l) u[l] = std::fmin(std::fmax(std::fma(a.x[l], 0.5f, 0.5f), 0.0f), 1.0f);
+    for (uint32_t l = 0; l < L; ++l) u[l] = shapeTablePosition(a.x[l]);
     tap->write(s.group, L, u, 0u, k.frames / os, false, position, inc);
     return;
   }
@@ -1028,8 +1028,7 @@ void wavetableShapeK(const KernelArgs& k) noexcept {  // RT-safe
     const uint32_t m = base - done < kChunk ? base - done : kChunk;
     for (uint32_t f = 0; f < m; ++f)
       for (uint32_t l = 0; l < L; ++l) {
-        const float x = a.x[(static_cast<size_t>(done + f) * os) * L + l];
-        u[f * L + l] = std::fmin(std::fmax(std::fma(x, 0.5f, 0.5f), 0.0f), 1.0f);
+        u[f * L + l] = shapeTablePosition(a.x[(static_cast<size_t>(done + f) * os) * L + l]);
       }
     tap->write(s.group, L, u, L, m, false, position, inc);
     done += m;

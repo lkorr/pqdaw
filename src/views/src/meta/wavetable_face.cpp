@@ -58,6 +58,7 @@
 
 #include "faces.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/wave_live.h"
 #include "pq/meta/wavetable.h"
 #include "wavetable_edit.h"
 #include "wavetable_model.h"
@@ -720,9 +721,11 @@ private:
       acc += v[static_cast<size_t>(j < 0 ? j + n : (j >= n ? j - n : j))];  // |j − i| < n: one wrap at most
     return acc / static_cast<float>(step);
   }
-  Vec2 pointAt(float u, float phase) const {  // on the sounding frame (TMM.16)
+  // On the sounding frame (TMM.16) at x-axis value `phase`: a read phase in Phase mode (wraps), the input's table
+  // position u in Shape mode (clamped, as wavetable_shape clamps it: u = 1 is the right edge, not the left).
+  Vec2 pointAt(float u, float phase) const {
     const FrameGeom g = geom(u);
-    const float ph = phase - std::floor(phase);
+    const float ph = shapeAxis_ ? std::clamp(phase, 0.0f, 1.0f) : phase - std::floor(phase);
     return {g.x0 + g.w * ph, g.cy - g.a * dispGain() * dispSoundAt(u, ph)};
   }
   // Draw mode's position (TMM.16): where the edited cycle is heard — the position when edits follow it (or none is
@@ -733,6 +736,8 @@ private:
       return std::clamp(static_cast<float>(param(meta::kWtPosition)), 0.0f, 1.0f);
     return k[static_cast<size_t>(std::clamp<int32_t>(selected_, 0, static_cast<int32_t>(k.size()) - 1))].position;
   }
+  bool shapeAxis_ = false;  // the display's x axis is Shape mode's u (set by paintDisplay, read by pointAt)
+  float idleAxis_ = 0.0f;   // the no-voice dot's x-axis value as last painted (tests)
   void recordShown(float u, bool drawMode) {
     shown_u_ = u;
     shownDraw_ = drawMode;
@@ -751,6 +756,7 @@ public:
   uint32_t shownLevel() const noexcept { return heard_.active() ? heard_.level() : 0u; }
   bool shownHeard() const noexcept { return heard_.active(); }
   const dsp::FrameTable* shownTable() const noexcept { return heard_.table(); }
+  float shownIdleAxis() const noexcept { return idleAxis_; }
 
 private:
 
@@ -1159,9 +1165,13 @@ private:
     const FrameGeom g = geom(u);
     p.fillUnder(curve_, g.cy, ui::mulAlpha(th.face.value, 0.22f), ui::mulAlpha(th.face.value, 0.02f));
     p.polyline(curve_, 1.5f, th.face.value);
-    // No voice: a dashed line and a dot at the phase slider's read phase (the sketch).
-    const float base = travel(kPhasePart);
+    // No voice: a dashed line and a dot where the DSP reads with x unwired (the sketch): Phase mode's read phase
+    // frac(phase); Shape mode's table position u = clamp((phase + 1)/2) — the slider is a bias on x, which spans the
+    // display as −1 … 1 (BR.wt: the dot sat at u = phase, half the slider's travel off the true read).
+    shapeAxis_ = target().setting(meta::kWtMode) >= 0.5;
+    const float base = shapeAxis_ ? dsp::shapeTablePosition(static_cast<float>(param(meta::kWtPhase))) : travel(kPhasePart);
     const bool quiet = shown_.empty();
+    idleAxis_ = base;
     const Vec2 bp = pointAt(u, base);
     const Vec2 bar[2] = {{bp.x, g.cy - g.a - 2.0f}, {bp.x, g.cy + g.a + 2.0f}};
     p.dashed(bar, 0.9f, 2.5f, 2.0f, quiet ? ui::mulAlpha(th.face.handle, 0.45f) : 0);
@@ -1794,6 +1804,7 @@ bool wavetableShown(const MetaFace& f, WavetableShown& out) {
   out.level = w->shownLevel();
   out.heard = w->shownHeard();
   out.table = w->shownTable();
+  out.idleAxis = w->shownIdleAxis();
   out.stack.clear();
   for (uint32_t d = 0; d < w->stackFrames(); ++d) {
     const auto fr = w->stackFrame(d);

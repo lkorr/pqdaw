@@ -16,12 +16,14 @@
 #include <string>
 #include <vector>
 
+#include "../../src/views/src/meta/faces.h"
 #include "../../src/views/src/meta/wavetable_model.h"
 #include "../ui/golden_check.h"
 #include "../support/blocks.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/wave_live.h"
 #include "pq/dsp/wave_warp.h"
 #include "pq/meta/registry.h"
 #include "pq/meta/wavetable.h"
@@ -667,6 +669,38 @@ TEST_CASE("wavetable face: warp mode, keyframe select / move / snap / add / dele
   CHECK(u.setting("os") == 1.0);
   for (int i = 0; i < 4; ++i) u.d.click(u.at(164.0f, 233.0f));
   CHECK(u.setting("os") == 0.0);
+}
+
+TEST_CASE("wavetable face (BR.wt): with no voice the dot sits where the DSP reads x unwired, in both modes") {
+  // Phase mode reads frac(phase); Shape mode reads u = shapeTablePosition(phase) (the slider is a bias on x, and x
+  // spans the display as −1 … 1). The dot used to sit at u = phase in Shape mode: half the slider's travel off.
+  WtUi u;
+  REQUIRE(u.d.enableGpu().ok());
+  u.frame(1.5);
+  project_patch::ProjectCanvas& c = u.view().canvas();
+  MetaFace* f = c.faceOn(u.view().scene().sceneNode[u.view().patch().nodeOf(u.wave)]);
+  REQUIRE(f != nullptr);
+  auto idleAt = [&](double phase) {
+    f->target().begin("Phase");
+    f->target().set(meta::kWtPhase, phase);
+    f->target().end();
+    c.markDirty();
+    for (int i = 0; i < 3; ++i) u.d.step();
+    WavetableShown sh;
+    REQUIRE(wavetableShown(*f, sh));
+    return sh.idleAxis;
+  };
+  for (const double ph : {0.0, 0.25, 0.7526}) {
+    CAPTURE(ph);
+    CHECK(idleAt(ph) == doctest::Approx(ph));
+  }
+  f->target().setSetting(meta::kWtMode, 1.0);
+  REQUIRE(u.setting("mode") == 1.0);
+  for (const double ph : {0.0, 0.25, 0.7526}) {
+    CAPTURE(ph);
+    CHECK(idleAt(ph) == doctest::Approx(dsp::shapeTablePosition(static_cast<float>(ph))));
+    CHECK(u.value("phase") == doctest::Approx(ph));  // the value the expansion adds to x
+  }
 }
 
 TEST_CASE("wavetable face: Esc during a knob drag undoes it; the stacked frames are drawn directly while it runs") {
