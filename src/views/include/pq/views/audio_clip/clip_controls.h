@@ -15,12 +15,17 @@
 //             toggle flips); `on` fills it in face.value. Not focusable (as the choosers it replaces).
 //   FillBox   a ui::DragBox drawn as a dark rounded field with an optional label inside on the left and the value on the
 //             right; `fill` paints the part of the field up to the value (from 0 when the range spans 0).
+//   CardFlow  the cards (fixed heights) top to bottom, flowing into further columns when its height is too short for
+//             them (AC.fix: at the default panel height the mode card sat below the bottom edge). One column: every card
+//             as wide as the flow; several: each column as wide as its widest card's natural width (setCardWidth),
+//             scaled down together when the flow is narrower. plan() is what the owner sizes the flow from.
 //
 // UI thread only. Painting allocates nothing once text runs are cached.
 
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
@@ -92,6 +97,28 @@ public:
 private:
   std::string label_;
   bool fill_;
+};
+
+class CardFlow : public ui::Widget {
+public:
+  explicit CardFlow(std::string name);
+  static constexpr float kGap = 6.0f;  // logical px between cards and between columns
+  static constexpr float kTop = 4.0f;  // logical px above the first card
+  // A card's width in a column of its own (logical px; one column always spans the flow).
+  void setCardWidth(const ui::Widget& card, float width);
+  // The width (logical px) the visible cards need when the flow is `height` logical px tall: one column (`single`),
+  // or the columns they flow into; `columns` (optional) receives the count.
+  float plan(float height, float single, int* columns = nullptr) const;
+  void arrange(ui::LayoutPass& pass) override;
+
+private:
+  struct Column {
+    size_t first = 0, end = 0;  // children_ indices [first, end) of the visible cards
+    float width = 0.0f;         // logical px
+  };
+  float naturalWidth(const ui::Widget& card) const;
+  std::vector<Column> columnsFor(float height) const;  // greedy: the fewest columns of contiguous cards
+  std::vector<std::pair<const ui::Widget*, float>> widths_;
 };
 
 }  // namespace pq::views::audio_clip

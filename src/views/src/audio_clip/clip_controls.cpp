@@ -195,4 +195,81 @@ void FillBox::paint(PaintContext& ctx) {
               label_.empty() ? pad : pad + used + ctx.scale.px(4.0f), pad);
 }
 
+// ---- CardFlow -----------------------------------------------------------------------------------------------------
+
+CardFlow::CardFlow(std::string name) : Widget(std::move(name)) { setLayout(LayoutKind::Custom); }
+
+void CardFlow::setCardWidth(const Widget& card, float width) {
+  for (auto& [c, w] : widths_)
+    if (c == &card) {
+      if (w != width) invalidateArrange();
+      w = width;
+      return;
+    }
+  widths_.emplace_back(&card, width);
+  invalidateArrange();
+}
+
+float CardFlow::naturalWidth(const Widget& card) const {
+  for (const auto& [c, w] : widths_)
+    if (c == &card) return w;
+  return 0.0f;
+}
+
+std::vector<CardFlow::Column> CardFlow::columnsFor(float height) const {
+  std::vector<Column> cols;
+  float used = 0.0f;
+  for (size_t i = 0; i < childCount(); ++i) {
+    const Widget& c = child(i);
+    if (!c.visible()) continue;
+    const float h = c.height().value;
+    if (cols.empty() || used + kGap + h > height) {  // a new column (a card taller than the flow gets one alone)
+      cols.push_back({i, i + 1, naturalWidth(c)});
+      used = h;
+    } else {
+      cols.back().end = i + 1;
+      cols.back().width = std::max(cols.back().width, naturalWidth(c));
+      used += kGap + h;
+    }
+  }
+  return cols;
+}
+
+float CardFlow::plan(float height, float single, int* columns) const {
+  const std::vector<Column> cols = columnsFor(height - kTop);
+  if (columns != nullptr) *columns = static_cast<int>(cols.size());
+  if (cols.size() <= 1) return single;
+  float w = kGap * static_cast<float>(cols.size() - 1);
+  for (const Column& c : cols) w += c.width;
+  return w;
+}
+
+void CardFlow::arrange(LayoutPass& pass) {
+  const IRect r = rect();
+  const IRect in{r.x, r.y + pass.px(kTop), r.w, std::max(0, r.h - pass.px(kTop))};
+  const std::vector<Column> cols = columnsFor(static_cast<float>(in.h) / pass.scale());
+  const int32_t gap = pass.px(kGap);
+  // Column widths: one column spans the flow; several keep their natural widths, scaled to fit (edges from the
+  // running sum, so they add up to the content width exactly when scaled).
+  float natural = 0.0f;
+  for (const Column& c : cols) natural += c.width;
+  const int32_t free = in.w - gap * static_cast<int32_t>(cols.empty() ? 0 : cols.size() - 1);
+  const double k = cols.size() <= 1 || natural <= 0.0f
+                       ? 1.0
+                       : std::min(1.0, static_cast<double>(free) / (static_cast<double>(natural) * pass.scale()));
+  int32_t x = in.x;
+  for (const Column& c : cols) {
+    const int32_t w = cols.size() == 1 ? in.w : static_cast<int32_t>(std::lround(c.width * pass.scale() * k));
+    int32_t y = in.y;
+    for (size_t i = c.first; i < c.end; ++i) {
+      Widget& card = child(i);
+      if (!card.visible()) continue;
+      const int32_t h = pass.px(card.height().value);
+      pass.place(card, {x, y, w, h});
+      y += h + gap;
+    }
+    x += w + gap;
+  }
+}
+
 }  // namespace pq::views::audio_clip

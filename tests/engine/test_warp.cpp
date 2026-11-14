@@ -570,6 +570,97 @@ TEST_CASE("warp: a gain-only edit while playing keeps every stretch voice (seaml
   }
 }
 
+TEST_CASE("AC.fix: a formant edit while playing keeps the Complex Pro voice (no gap) and takes effect at once") {
+  const e::ClipSample s = makeSample(400000, 2, busy);
+  auto clipWith = [&](float formants, float envelope) {
+    e::AudioClipDesc c = warped(e::ClipWarp::ComplexPro, 1, 0, kPpq * 8, 120.0);
+    c.stretch.pitchRatio = 1.26;
+    c.stretch.formants = formants;
+    c.stretch.formantEnvelope = envelope;
+    return c;
+  };
+  Rig ref(64);
+  ref.tempo({{0, 97.0, pq::TempoCurve::Step}});
+  ref.audio({{1, {clipWith(100.0f, 128.0f)}}}, {s});
+  ref.play(0);
+  const std::vector<float> unedited = ref.render(48000);
+  Rig rig(64);
+  rig.tempo({{0, 97.0, pq::TempoCurve::Step}});
+  rig.audio({{1, {clipWith(100.0f, 128.0f)}}}, {s});
+  rig.play(0);
+  std::vector<float> got = rig.render(24000);
+  // A knob drag: a new image every 10 ms for 0.1 s (formants 100 → 0, envelope 128 → 32).
+  for (int k = 1; k <= 10; ++k) {
+    rig.audio({{1, {clipWith(100.0f - 10.0f * static_cast<float>(k), 128.0f - 9.6f * static_cast<float>(k))}}}, {s});
+    const std::vector<float> part = rig.render(480);
+    got.insert(got.end(), part.begin(), part.end());
+  }
+  const std::vector<float> rest = rig.render(48000 - got.size());
+  got.insert(got.end(), rest.begin(), rest.end());
+  CHECK(rig.tl->clipPlayer().stats().kept == 10);
+  CHECK(rig.tl->clipPlayer().stats().faded == 0);
+  auto rms = [&](size_t from, size_t n) {
+    double e2 = 0.0;
+    for (size_t i = from; i < from + n; ++i) e2 += static_cast<double>(got[i]) * got[i];
+    return std::sqrt(e2 / static_cast<double>(n));
+  };
+  const double before = rms(12000, 12000);
+  REQUIRE(before > 0.05);
+  double quietest = 1e9;
+  for (size_t w = 24000; w + 480 <= 48000; w += 480) quietest = std::min(quietest, rms(w, 480));
+  CHECK(quietest > 0.3 * before);  // before AC.fix: silent while the voice re-primed
+  size_t diff = 0;
+  for (size_t i = 36000; i < 48000; ++i) diff += got[i] != unedited[i] ? 1u : 0u;
+  CHECK(diff > 6000);  // the new formant settings are heard
+}
+
+TEST_CASE("AC.fix: a transpose while playing hands a Complex voice over (it plays on until the new one sounds, no gap)") {
+  const e::ClipSample s = makeSample(400000, 2, busy);
+  for (const e::ClipWarp w : {e::ClipWarp::Complex, e::ClipWarp::ComplexPro}) {
+    for (const bool drag : {false, true}) {
+      CAPTURE(static_cast<int>(w));
+      CAPTURE(drag);
+      auto clipWith = [&](double ratio) {
+        e::AudioClipDesc c = warped(w, 1, 0, kPpq * 8, 120.0);
+        c.stretch.pitchRatio = ratio;
+        return c;
+      };
+      Rig rig(64);
+      rig.tempo({{0, 97.0, pq::TempoCurve::Step}});
+      rig.audio({{1, {clipWith(1.0)}}}, {s});
+      rig.play(0);
+      std::vector<float> got = rig.render(24000);
+      // One semitone, or a drag: a new image every 10 ms for 0.2 s (to +6.7 st; Complex Pro grows quieter further up).
+      for (int k = 1; k <= (drag ? 20 : 1); ++k) {
+        rig.audio({{1, {clipWith(std::exp2(static_cast<double>(k) / (drag ? 36.0 : 12.0)))}}}, {s});
+        const std::vector<float> part = rig.render(480);
+        got.insert(got.end(), part.begin(), part.end());
+      }
+      const std::vector<float> rest = rig.render(60000 - got.size());
+      got.insert(got.end(), rest.begin(), rest.end());
+      const e::ClipPlayerStats& st = rig.tl->clipPlayer().stats();
+      CHECK(st.handovers >= 1);
+      CHECK(st.faded == 0);
+      CHECK(st.stretchRetries == 0);
+      auto rms = [&](size_t from, size_t n) {
+        double e2 = 0.0;
+        for (size_t i = from; i < from + n; ++i) e2 += static_cast<double>(got[i]) * got[i];
+        return std::sqrt(e2 / static_cast<double>(n));
+      };
+      const double before = rms(12000, 12000);
+      REQUIRE(before > 0.05);
+      double quietest = 1e9;
+      for (size_t w0 = 24000; w0 + 480 <= 60000; w0 += 480) quietest = std::min(quietest, rms(w0, 480));
+      CHECK(quietest > 0.3 * before);  // before AC.fix: ~70 ms of silence per step, silent through the drag
+      CHECK(st.swaps >= (drag ? 2u : 1u));  // a drag's images wait while a handover plays (a few are skipped)
+      double tail = 0.0;
+      for (size_t i = 48000; i < 60000; ++i) tail = std::max(tail, static_cast<double>(std::abs(got[i])));
+      CHECK(tail > 0.2);
+      CHECK(rig.tl->clipPlayer().swapping() == false);
+    }
+  }
+}
+
 TEST_CASE("warp: streamed samples render bit-identically to resident ones (offline blocking fills), every mode") {
   const fs::path wav = writeWav("warp_streamed.wav", 400000, 2, busy);
   auto renderWith = [&](bool streamed) {
@@ -639,19 +730,23 @@ TEST_CASE("rt: the warp modes (Re-Pitch markers, Beats, Tones, Texture, Complex,
     auto img1 = rig.build({{1, a}, {2, b}}, {cs, res});
     for (auto& c : a) c.gain = 0.6f;
     auto img2 = rig.build({{1, a}, {2, b}}, {cs, res});
+    for (auto& c : a) c.stretch.pitchRatio *= 1.06;  // AC.fix: a law change hands Complex voices over
+    for (auto& c : b) c.stretch.formants = 40.0f;    // AC.fix: a formant edit keeps them
+    auto img3 = rig.build({{1, a}, {2, b}}, {cs, res});
     rig.play(0);
     REQUIRE(rig.tl->publishAudio(std::move(img1)).ok());
     pool.engage();
     (void)rig.render(64);
     uint64_t violations = 0;
-    for (int round = 0; round < 3; ++round) {
+    for (int round = 0; round < 4; ++round) {
       violations += pq::alloc_trap::countRtViolations([&] {
-        for (int k = 0; k < 4000; ++k) {
+        for (int k = 0; k < (round == 2 ? 800 : 4000); ++k) {
           rig.tl->process(rig.time, 64);
           rig.time += 64;
         }
       });
       if (round == 0) REQUIRE(rig.tl->publishAudio(std::move(img2)).ok());
+      if (round == 2) REQUIRE(rig.tl->publishAudio(std::move(img3)).ok());  // ≈ 11.7 s: inside the Complex clip
     }
     CHECK(violations == 0);
     const e::ClipPlayerStats& st = rig.tl->clipPlayer().stats();
@@ -659,6 +754,7 @@ TEST_CASE("rt: the warp modes (Re-Pitch markers, Beats, Tones, Texture, Complex,
     CHECK(st.slicePasses > 0);
     CHECK(st.stretchCells > 0);  // T6.5: Complex / Complex Pro rendered (streamed and resident)
     CHECK(st.stretchFallbacks == 0);
+    CHECK(st.handovers > 0);
     pool.disengage();
   }
   pool.stopDiskThread();

@@ -52,7 +52,9 @@ bool sameSlices(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a,
   return true;
 }
 
-// Same source law (a swap keeps the voice): positions equal at s, same step / content mapping, same sample.
+// Same source law (a swap keeps the voice): positions equal at s, same step / content mapping, same sample. Complex
+// Pro's formant settings are not part of it: the kept voice's stretcher takes them at once (AC.fix: a formant edit
+// used to replace the voice, which re-primed: silent for its priming, and for a whole knob drag).
 bool sameLaw(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, const AudioSequenceImage& ib,
              const AudioSequenceImage::Clip& b, SampleTime s) noexcept {  // RT-safe
   if (a.warp != b.warp || a.reverse != b.reverse || a.sample == AudioSequenceImage::kNoSample ||
@@ -66,8 +68,7 @@ bool sameLaw(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, co
            a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled && a.loop.start == b.loop.start &&
            a.loop.end == b.loop.end && a.pitchStep == b.pitchStep && a.grain == b.grain && a.alignLags == b.alignLags &&
            a.alignLen == b.alignLen && a.jitter == b.jitter && a.seed == b.seed && a.sliceLoop == b.sliceLoop &&
-           a.envelope == b.envelope && a.playStart == b.playStart && a.formantFactor == b.formantFactor &&
-           a.formantBase == b.formantBase && sameSlices(ia, a, ib, b);
+           a.envelope == b.envelope && a.playStart == b.playStart && sameSlices(ia, a, ib, b);
   return a.start == b.start && a.contentStart == b.contentStart && a.loop.enabled == b.loop.enabled &&
          a.loop.start == b.loop.start && a.loop.end == b.loop.end && a.framesPerTick == b.framesPerTick &&
          (!a.reverse || a.length == b.length) && ia.repitchOffset(a, s) == ib.repitchOffset(b, s);
@@ -502,6 +503,28 @@ void ClipPlayer::retryStretch(Voice& v, SampleTime s0) noexcept {  // RT-safe
   v.takeover = r;
 }
 
+// AC.fix: a playing Complex voice whose clip `match` (in the new image) reads another law plays on until a voice of
+// `match` started here (pending, primed on its schedule) sounds, as a fallen-back voice's takeover does. Only with a
+// stretcher free for it, and the clip still under the playhead; false: the caller fades the voice out.
+bool ClipPlayer::handOver(Voice& v, const AudioSequenceImage::Clip* match, SampleTime s) noexcept {  // RT-safe
+  if (match == nullptr || v.stretch == StretchPool::kNone || v.takeover != kNone || !clipComplex(match->warp) ||
+      match->sample == AudioSequenceImage::kNoSample || match->playStart > s || match->playEnd <= s || free_.empty())
+    return false;
+  const ClipSample& cs = img_->sample(match->sample);
+  if (!stretch_->canClaim(cs.view().channels == 1 ? 1u : 2u)) return false;
+  if (cs.pooled != nullptr && cfg_.streams != nullptr && cs.view().streamed() && freeBuffers_.empty()) return false;
+  const auto self = static_cast<uint32_t>(&v - voices_.data());
+  startVoice(v.slot, *match, s);
+  const uint32_t r = live_.back();
+  if (voices_[r].stretch == StretchPool::kNone) {  // not expected (canClaim)
+    endVoice(static_cast<uint32_t>(live_.size() - 1));
+    return false;
+  }
+  voices_[r].replaces = self;
+  v.takeover = r;
+  return true;
+}
+
 // The song sample the voice's replacement starts sounding at, if before s1 (it gates the replacement's start first,
 // as its own turn in play() would: idempotent); INT64_MAX otherwise.
 SampleTime ClipPlayer::takeoverAt(Voice& v, SampleTime s1) noexcept {  // RT-safe
@@ -650,6 +673,10 @@ void ClipPlayer::setImage(const AudioSequenceImage* next, SampleTime s, bool /*p
       ++i;
       continue;
     }
+    if (v.replaces != kNone && v.img == next && prev != next) {  // a handover's new voice, started by this swap
+      ++i;
+      continue;
+    }
     const AudioSequenceImage::Clip* match = nullptr;
     if (next != nullptr && v.slot < next->numSlots())
       for (const AudioSequenceImage::Clip& c : next->clips(v.slot))
@@ -669,6 +696,9 @@ void ClipPlayer::setImage(const AudioSequenceImage* next, SampleTime s, bool /*p
       }
       // The start may have moved with the law (a trim); a start inside the clip (T6.5b) stays.
       if (v.state == State::Pending) v.vs = v.vs == v.clip->playStart ? match->playStart : std::max(v.vs, match->playStart);
+      if (v.stretch != StretchPool::kNone &&
+          (match->formantFactor != v.clip->formantFactor || match->formantBase != v.clip->formantBase))
+        stretch_->setParams(v.stretch, StretchParams{1.0, match->formantFactor, false, match->formantBase});
       v.clip = match;
       v.img = next;
       ++stats_.kept;
@@ -677,6 +707,12 @@ void ClipPlayer::setImage(const AudioSequenceImage* next, SampleTime s, bool /*p
     }
     if (v.state == State::Pending || declick_ == 0) {
       endVoice(i);
+      continue;
+    }
+    if (handOver(v, match, s)) {
+      if (prev != next) ++prevUsers_;
+      ++stats_.handovers;
+      ++i;
       continue;
     }
     releaseVoice(v);
@@ -735,16 +771,16 @@ void ClipPlayer::play(uint32_t frame, SampleTime s0, uint32_t len) noexcept {  /
         v.state = State::Playing;
         // T6.x-fix-warp (H2): a Complex voice playing as Tones claims again; once its replacement sounds, it fades out
         // there (the replacement fades in: a 2 ms crossfade).
+        // AC.fix: a handed-over voice (a swap changed its law) does the same with the voice of its new clip.
         SampleTime h = INT64_MAX;
-        if (v.stretch == StretchPool::kNone && stretch_ != nullptr && clipComplex(v.clip->warp)) {
-          if (v.takeover == kNone) retryStretch(v, s0);
-          if (v.takeover != kNone) h = takeoverAt(v, s1);
-        }
+        if (v.stretch == StretchPool::kNone && v.takeover == kNone && stretch_ != nullptr && clipComplex(v.clip->warp))
+          retryStretch(v, s0);
+        if (v.takeover != kNone) h = takeoverAt(v, s1);
         if (h < s1) {
           const auto cut = static_cast<uint32_t>(std::clamp<SampleTime>(h - v.vs, 0, len - off));
           alive = cut == 0 || renderVoice(v, frame + off, cut);
           unlinkTakeover(v);
-          ++stats_.stretchRetries;
+          if (v.stretch == StretchPool::kNone) ++stats_.stretchRetries;
           if (alive && declick_ != 0) {
             releaseVoice(v);
             alive = renderVoice(v, frame + off + cut, len - off - cut);

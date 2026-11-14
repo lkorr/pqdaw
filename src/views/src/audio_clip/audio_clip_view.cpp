@@ -30,7 +30,12 @@ using namespace pq::ui;
 
 namespace {
 
-constexpr float kBoxWidth = 384.0f;   // logical px: the three cards (AC.look)
+constexpr float kBoxWidth = 384.0f;   // logical px: the three cards (AC.look), stacked in one column
+constexpr float kBoxPadX = 8.0f;      // the box's side padding
+constexpr float kBoxPadBottom = 8.0f;
+constexpr float kHeaderH = 20.0f + 17.0f + 17.0f;  // the name strip, the file and the format lines above the cards
+constexpr float kWarpCardW = 290.0f;  // AC.fix: card widths in a column of their own (the cards flowed side by side)
+constexpr float kMinDisplayW = 240.0f;  // the waveform keeps at least this when the cards flow into columns
 constexpr float kRulerH = 16.0f;      // the loop strip (start marker, loop brace)
 constexpr float kTimeH = 16.0f;       // AC.look: the time ruler under it
 constexpr float kGrab = 5.0f;          // logical px around the marker / brace ends
@@ -1210,7 +1215,7 @@ private:
     endTypeIn(false);
     (void)v_.setTranspose(text);
   }
-  // The wheel: one step per notch (Shift: one period), a run of notches one gesture (as ValueControl's wheel).
+  // The wheel: one step per notch (Shift: an octave), a run of notches one gesture (as ValueControl's wheel).
   bool wheel(const PointerEvent& e) {
     if (!wheelAdjusts() || dragging() || !enabled()) return false;
     if ((e.mods & (mod::kCtrl | mod::kAlt | mod::kSuper)) != 0 || e.wheel.y == 0.0f) return false;
@@ -1260,7 +1265,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   box_ = &add<Widget>("audio-box");
   box_->setLayout(LayoutKind::Column);
   box_->setAlign(Align::Start, Align::Start);
-  box_->setPadding({8, 0, 8, 8});
+  box_->setPadding({static_cast<int16_t>(kBoxPadX), 0, static_cast<int16_t>(kBoxPadX), static_cast<int16_t>(kBoxPadBottom)});
   name_ = &box_->add<Label>("name", "", FontRoleId::BodyStrong, TextTone::Primary);
   name_->setHeight(Length::fixed(20));
   // An empty label: the space of the title strip, which the view paints in the clip colour with the name.
@@ -1270,12 +1275,10 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   format_->setHeight(Length::fixed(17));
   // AC.look: three cards in the device panels' look (M5 review UI 2's Clip / Sample groups): Clip (pitch, level,
   // fades), Warp (the mode, the source tempo, the loop) and the mode's settings.
-  Widget& props = box_->add<Widget>("props");
-  props.setLayout(LayoutKind::Column);
-  props.setGap(6);
-  props.setPadding({0, 4, 0, 0});
-  props.setHeight(Length::flex(1));
-  props.setAlign(Align::Start, Align::Start);
+  // AC.fix: they flow into columns side by side when the panel is too short for the stack (arrange widens the box).
+  flow_ = &box_->add<audio_clip::CardFlow>("props");
+  flow_->setHeight(Length::flex(1));
+  audio_clip::CardFlow& props = *flow_;
   auto knob = [](Widget& parent, const char* name, const char* label, ValueSpec spec, float width, float height = kKnobH) -> ClipKnob& {
     ClipKnob& k = parent.add<ClipKnob>(name, label, std::move(spec));
     k.setWidth(Length::fixed(width));
@@ -1297,6 +1300,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
 
   // ---- Clip: Transpose (the big knob), Detune, Gain; Reverse and the fades beside them.
   Section& clipCard = props.add<Section>("clip", "Clip");
+  props.setCardWidth(clipCard, kBoxWidth - 2 * kBoxPadX);
   clipCard.setLayout(LayoutKind::Row);
   clipCard.setGap(4);
   clipCard.setHeight(Length::fixed(audio_clip::Section::kTitleH + kClipKnobH + 7));
@@ -1312,9 +1316,9 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   transpose_->setWidth(Length::fixed(100));
   transpose_->setHeight(Length::fixed(kClipKnobH));
   transpose_->setInfo("Transpose", "Drag in steps of the clip's tuning (Shift: free cents). Up / Down: one step; Shift+Up / "
-                                   "Down: one period (octave). Type 7 for 7 steps, 386.3c for cents, +7st for semitones, "
-                                   "5/4 for an exact ratio (double-click or start typing). Every warp mode but Re-Pitch "
-                                   "(which follows the tempo).");
+                                   "Down: an octave (12 semitones, whatever the tuning). Type 7 for 7 steps, 386.3c for "
+                                   "cents, +7st for semitones, 5/4 for an exact ratio (double-click or start typing). Every "
+                                   "warp mode but Re-Pitch (which follows the tempo).");
   bindGesture(*transpose_, "Transpose", [this](double) { (void)setTranspose(transpose_->pending); });
   ValueSpec ds;
   ds.min = -doc::kMaxDetuneCents;
@@ -1384,6 +1388,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
 
   // ---- Warp: the seven modes (a 4 + 3 grid, Complex Pro two cells wide), the source tempo, the loop.
   Section& warpCard = props.add<Section>("warp", "Warp");
+  props.setCardWidth(warpCard, kWarpCardW);
   warpCard.setLayout(LayoutKind::Column);
   warpCard.setGap(4);
   warpCard.setHeight(Length::fixed(audio_clip::Section::kTitleH + 3 * 20 + 2 * 4 + 7));
@@ -1632,6 +1637,13 @@ void AudioClipView::refresh() {
   flux_->setVisible(texture);
   formants_->setVisible(pro);
   envOrder_->setVisible(pro);
+  // AC.fix: the card's width in a column of its own (its controls' widths + the card's padding); the box's width
+  // depends on it when the cards flow into columns.
+  if (const float w = beats ? 330.0f : tones ? 112.0f : texture || pro ? 176.0f : 0.0f; w != modeW_) {
+    modeW_ = w;
+    flow_->setCardWidth(*mode_, w);
+    invalidateArrange();
+  }
   {
     int32_t gi = 3;  // an unknown granulation reads as 1/16
     for (int32_t i = 0; i < 5; ++i)
@@ -1710,24 +1722,28 @@ std::optional<doc::AudioTranspose> AudioClipView::steppedTranspose(int dir, bool
   const int64_t sign = dir > 0 ? 1 : -1;
   doc::AudioTranspose t = cur;
   if (octave) {
-    const double period = stepCentsOf(tuning_, dpe);
+    // AC.fix: an octave (2/1, 12 semitones) whatever the tuning, the unit kept where it can be: Steps ± the degrees
+    // per equave when the equave is the octave, else cents; a Ratio × or ÷ 2 (cents if that overflows).
+    constexpr double kOctave = 1200.0;
+    const double octaves = static_cast<double>(sign * count);
     switch (cur.unit) {
-      case doc::TransposeUnit::Steps: t = stepsOf(static_cast<int64_t>(cur.steps) + sign * count * dpe); break;
-      case doc::TransposeUnit::Cents: t.cents = cur.cents + static_cast<double>(sign * count) * period; break;
+      case doc::TransposeUnit::Steps:
+        if (std::abs(stepCentsOf(tuning_, dpe) - kOctave) < 1e-6) {
+          t = stepsOf(static_cast<int64_t>(cur.steps) + sign * count * dpe);
+        } else {
+          t = doc::AudioTranspose{};
+          t.cents = transposeCents(cur) + octaves * kOctave;
+        }
+        break;
+      case doc::TransposeUnit::Cents: t.cents = cur.cents + octaves * kOctave; break;
       case doc::TransposeUnit::Ratio: {
-        // The period as an exact ratio when it is one (an EDO's exact equave, else 2/1 or 3/1 by size), else cents.
-        std::optional<tuning::Rational> pr;
-        if (tuning_)
-          if (const tuning::Edo* e = tuning_->edo()) pr = e->equaveRatio();
-        for (const tuning::Rational cand : {tuning::Rational(2), tuning::Rational(3)})
-          if (!pr && std::abs(tuning::cents(cand) - period) < 1e-6) pr = cand;
         std::optional<tuning::Rational> r = cur.ratio;
-        for (int i = 0; pr && r && i < count; ++i) r = sign > 0 ? tuning::mul(*r, *pr) : tuning::div(*r, *pr);
-        if (pr && r) {
+        for (int i = 0; r && i < count; ++i) r = sign > 0 ? tuning::mul(*r, tuning::Rational(2)) : tuning::div(*r, tuning::Rational(2));
+        if (r) {
           t.ratio = *r;
         } else {
           t = doc::AudioTranspose{};
-          t.cents = transposeCents(cur) + static_cast<double>(sign * count) * period;
+          t.cents = transposeCents(cur) + octaves * kOctave;
         }
         break;
       }
@@ -1913,8 +1929,14 @@ void AudioClipView::paint(PaintContext& ctx) {
 
 void AudioClipView::arrange(LayoutPass& pass) {
   const IRect r = rect();
-  const int32_t boxW = std::min(pass.px(kBoxWidth), r.w / 2);
+  // One column of cards: kBoxWidth (at most half the view). AC.fix: when the view is too short for the stack, the
+  // cards flow into columns and the box widens to hold them, leaving the waveform at least kMinDisplayW.
+  const int32_t single = std::min(pass.px(kBoxWidth), r.w / 2);
+  int cols = 1;
+  const float want = flow_->plan(static_cast<float>(r.h) / pass.scale() - kHeaderH - kBoxPadBottom,
+                                 kBoxWidth - 2 * kBoxPadX, &cols) + 2 * kBoxPadX;
   const int32_t gap = 1;
+  const int32_t boxW = cols <= 1 ? single : std::min(pass.px(want), std::max(single, r.w - gap - pass.px(kMinDisplayW)));
   pass.place(*box_, {r.x, r.y, boxW, r.h});
   pass.place(*display_, {r.x + boxW + gap, r.y, std::max(0, r.w - boxW - gap), r.h});
 }

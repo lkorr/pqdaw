@@ -19,9 +19,9 @@
 //   Transpose  knob, value = the resolved cents (±kMaxTransposeCents); the document keeps an exact doc::AudioTranspose.
 //              Drag: steps of the clip's tuning (Steps); Shift-drag: fine, free cents (Cents). Up / Down (and the wheel,
 //              one notch each): the next step of the tuning above / below the current pitch (Steps). Shift+Up / Down
-//              (Shift+wheel): ± one period of the tuning, the unit kept (Steps ± its degrees per period, Cents ± the
-//              period's cents, a Ratio × or ÷ the period when the period is 2/1, 3/1 or an EDO's exact equave, else
-//              cents) — the period, not 1200 c, for a non-octave tuning (Bohlen-Pierce: 3/1). Typed (a digit while
+//              (Shift+wheel): ± an octave, 1200 c whatever the tuning (AC.fix, the user's call: it was the tuning's
+//              period), the unit kept where it can be (Steps ± its degrees per equave when the equave is 2/1, Cents
+//              ± 1200, a Ratio × or ÷ 2; else cents: Bohlen-Pierce steps become cents). Typed (a digit while
 //              focused, or double-click): "7" = 7 steps, "386.3c" / "386.3 ¢" = cents, "+7st" = semitones, "5/4" = an
 //              exact ratio; Enter commits, Esc cancels. Delete: 0. Readout: "+7 stp" (steps), "+7 st" / "+386.3 ¢"
 //              (cents), "5/4 · 386.3 ¢" (a ratio and its true size).   ops::setAudioClipTranspose (all but Re-Pitch)
@@ -77,6 +77,7 @@ class ClipKnob;
 class Chip;
 class FillBox;
 class Section;
+class CardFlow;
 }
 
 // "7" → 7 steps, "700c" / "700 ¢" → cents, "+7st" → 700 cents, "3/2" → ratio; nullopt for anything else.
@@ -110,7 +111,7 @@ public:
   bool setGain(float db);
   bool setTranspose(std::string_view text);  // false: not a transpose (status line)
   bool setTranspose(const doc::AudioTranspose& t);  // AC.look: the knob's exact value
-  // AC.look: the transpose `count` steps (octave: periods) up (dir > 0) or down from the clip's, as the knob's keys do;
+  // AC.look: the transpose `count` steps (octave: octaves, AC.fix) up (dir > 0) or down from the clip's, as the knob's keys do;
   // nullopt when it would leave ±kMaxTransposeCents. And the cents a transpose resolves to in the clip's tuning.
   std::optional<doc::AudioTranspose> steppedTranspose(int dir, bool octave, int count = 1) const;
   double transposeCents(const doc::AudioTranspose& t) const;
@@ -173,6 +174,7 @@ private:
   std::string container_;
 
   ui::Widget* box_ = nullptr;
+  audio_clip::CardFlow* flow_ = nullptr;  // AC.fix: the cards (Clip, Warp, the mode's), in columns when short
   audio_clip::SampleDisplay* display_ = nullptr;
   ui::Label* name_ = nullptr;
   ui::Label* file_ = nullptr;
@@ -189,6 +191,7 @@ private:
   audio_clip::Chip* loop_ = nullptr;
   // T6.8: the mode card (titled with the mode; shown when the mode has settings) and its controls.
   audio_clip::Section* mode_ = nullptr;
+  float modeW_ = -1.0f;  // AC.fix: the mode card's width in a column of its own (0: hidden), as last given to flow_
   ui::Widget* beatsCol_ = nullptr;
   audio_clip::Chip* preserve_[5] = {};   // Transients, 1/4, 1/8, 1/16, 1/32
   audio_clip::Chip* beatsLoop_[3] = {};  // Off, Forward, Back-Fwd

@@ -14,6 +14,8 @@
 
 #include "../ui/golden_check.h"
 #include "pq/document/audio_clip.h"
+#include "pq/document/commands.h"
+#include "pq/tuning/edo.h"
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/test_driver.h"
@@ -251,7 +253,7 @@ TEST_CASE("AC.look: the transpose knob - Up / Down one step of the clip's tuning
   CHECK(knob->value() == doctest::Approx(100.0));
   CHECK(knob->readout() == "+1 stp");
   CHECK(f.history() == h + 1);
-  // Shift+Up: one period (12 steps).
+  // Shift+Up: an octave (12 steps of 12-EDO).
   f.d.press("Shift+Up");
   CHECK(f.clip().transpose.steps == 13);
   CHECK(knob->value() == doctest::Approx(1300.0));
@@ -334,6 +336,96 @@ TEST_CASE("AC.look: the transpose knob - Up / Down one step of the clip's tuning
   CHECK(knob->value() > before);
   CHECK(knob->value() < before + 100.0);
   CHECK(f.history() == h + 2);
+}
+
+TEST_CASE("AC.fix: Shift+Up / Down is an octave whatever the tuning (31-EDO: 31 steps; Bohlen-Pierce: +1200 c)") {
+  Fixture f;
+  auto* knob = dynamic_cast<audio_clip::ClipKnob*>(f.box("clip/transpose"));
+  REQUIRE(knob != nullptr);
+  f.d.tree().layoutNow();
+  f.d.click(mid(knob->dialRect()));
+  REQUIRE(knob->focused());
+  // The clip's tuning slot.
+  const doc::Snapshot snap = f.ctx.doc();
+  const std::optional<doc::TrackPath> tp = doc::findTrack(*snap, f.beat.track);
+  REQUIRE(tp.has_value());
+  const doc::TuningDef* def = doc::audioClipTuning(*snap, *tp, f.clip());
+  REQUIRE(def != nullptr);
+  doc::TuningId tid;
+  for (const doc::TuningSlotPtr& slot : *snap->tunings)
+    if (&slot->def == def) tid = slot->id;
+  REQUIRE(tid.valid());
+  auto retune = [&](tuning::Edo e) {
+    doc::TuningDef d;
+    d.system = e;
+    REQUIRE(f.ctx.store().dispatch(doc::SetTuningDef{tid, d}).ok());
+    f.d.step();
+  };
+  // 31-EDO: an octave is 31 steps (stays Steps).
+  retune(*tuning::Edo::make(31));
+  CHECK(f.clip().transpose.unit == doc::TransposeUnit::Cents);  // 0 c: Shift+Up would add 1200 c
+  f.d.press("Up");
+  f.d.press("Down");
+  REQUIRE(f.clip().transpose.unit == doc::TransposeUnit::Steps);
+  f.d.press("Shift+Up");
+  CHECK(f.clip().transpose.unit == doc::TransposeUnit::Steps);
+  CHECK(f.clip().transpose.steps == 31);
+  CHECK(knob->value() == doctest::Approx(1200.0));
+  f.d.press("Shift+Down");
+  CHECK(f.clip().transpose.steps == 0);
+  // Bohlen-Pierce (13 steps of 3/1): not its 1902 c period but an octave, in cents.
+  retune(*tuning::Edo::make(13, tuning::Rational(3)));
+  f.d.press("Up");
+  f.d.press("Up");
+  REQUIRE(f.clip().transpose.steps == 2);
+  const double two = knob->value();
+  f.d.press("Shift+Up");
+  CHECK(f.clip().transpose.unit == doc::TransposeUnit::Cents);
+  CHECK(knob->value() == doctest::Approx(two + 1200.0));
+  f.d.press("Shift+Down");
+  CHECK(knob->value() == doctest::Approx(two));
+  // A ratio is multiplied by 2/1 exactly.
+  f.d.press("5");
+  f.d.type("/4");
+  f.d.press("Enter");
+  f.d.press("Shift+Up");
+  CHECK(f.clip().transpose.unit == doc::TransposeUnit::Ratio);
+  CHECK(f.clip().transpose.ratio == tuning::Rational(5, 2));
+}
+
+TEST_CASE("AC.fix: at the default panel height (240 px) the cards flow into columns, every mode's controls inside the view") {
+  Fixture f;
+  auto* body = dynamic_cast<Splitter*>(f.d.find("main/body"));
+  REQUIRE(body != nullptr);
+  auto inside = [&](const char* path) {
+    const IRect v = f.view().rect();
+    const IRect r = f.box(path)->rect();
+    CAPTURE(path);
+    CHECK(r.w > 0);
+    CHECK(r.x >= v.x);
+    CHECK(r.y >= v.y);
+    CHECK(r.right() <= v.right());
+    CHECK(r.bottom() <= v.bottom());
+  };
+  body->setPosition(240.0f);
+  f.d.tree().layoutNow();
+  for (const char* mode : {"Beats", "Tones", "Texture", "Complex Pro"}) {
+    CAPTURE(mode);
+    f.pick(mode);
+    for (const char* p : {"clip/transpose", "clip/gain", "warp/modes-2/pro", "warp/tempo/loop", "mode"}) inside(p);
+    // The waveform keeps its room.
+    CHECK(f.view().sampleRect().w >= 240);
+  }
+  inside("mode/formants");
+  inside("mode/env-order");
+  // Side by side: the mode card right of the Clip card.
+  CHECK(f.box("mode")->rect().x > f.box("clip")->rect().right());
+  // Tall enough for the stack: one column again (every card at the same x, the box its usual width).
+  body->setPosition(440.0f);
+  f.d.tree().layoutNow();
+  CHECK(f.box("mode")->rect().x == f.box("clip")->rect().x);
+  CHECK(f.box("warp")->rect().x == f.box("clip")->rect().x);
+  CHECK(f.box("mode")->rect().bottom() <= f.view().rect().bottom());
 }
 
 TEST_CASE("AC.look: a percentage knob lights its arc in proportion to its value (the fill indicator)") {
@@ -626,4 +718,8 @@ TEST_CASE("render: audio-clip-warp-beats (Beats, Preserve Transients: the mode r
 
 TEST_CASE("render: audio-clip-warp-markers (Complex Pro, three markers, the middle one moved) matches the golden") {
   checkGolden("audio-clip-warp-markers");
+}
+
+TEST_CASE("render: audio-clip-warp-short (Complex Pro at the default panel height: the cards in columns) matches the golden") {
+  checkGolden("audio-clip-warp-short");
 }

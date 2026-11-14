@@ -48,6 +48,10 @@
 // audio thread when it publishes an image, adoptStretchers() takes them; M6 review H2 / L15). A voice that still finds
 // none free plays as Tones (counted: stretchFallbacks) and retries its claim every block; once it gets one, a second
 // voice of the clip primes like a locate's start and takes over with a 2 ms crossfade (stretchRetries).
+// AC.fix: a swap that changes a playing Complex voice's law (a transpose, a warp edit) hands over the same way: the
+// voice plays on (on the previous image, which the timeline keeps while it is read) until a voice of the new clip,
+// primed like a locate's start, sounds, then they crossfade (handovers); before, the new voice started silent for its
+// priming (≈ 70 ms per edit, silent through a whole drag). Formant edits keep the voice (its stretcher takes them).
 // A voice primes (an output latency + a block + the resampler's reach ≈ 10k vocoder frames, plus its phase offset)
 // before it sounds, and never in a burst (T6.5b): its vocoder runs at most kStretchPrimeRate × max(1, its pitch rate)
 // vocoder frames per song sample, on a schedule anchored in song time (so renders do not depend on the block). A
@@ -142,6 +146,7 @@ struct ClipPlayerStats {
   uint64_t stretchClaims = 0;     // T6.5: Complex / Complex Pro voices that got a stretcher
   uint64_t stretchFallbacks = 0;  // ... and ones that found none free: played as Tones (until a retry gets one)
   uint64_t stretchRetries = 0;    // T6.x-fix-warp: fallen-back voices that got a stretcher later and took over
+  uint64_t handovers = 0;         // AC.fix: playing Complex voices a swap changed the law of, kept until the new one sounds
   uint64_t stretchCells = 0;      // vocoder chunks processed (kStretchCell of its output frames each, priming included)
   uint64_t stretchCellsBlockMax = 0;  // T6.5b: the most chunks any one block processed (the priming burst bound)
   uint64_t stretchMonoClaims = 0;     // T6.5b: claims that got a mono stretcher
@@ -355,6 +360,7 @@ private:
   void complexChunk(Voice& v, const media::SampleView& view) noexcept;  // vocoder frames [vHi, vHi + kStretchCell)
   void complexInput(Voice& v, const media::SampleView& view, int64_t k0, int64_t k1) noexcept;  // → stretchIn_
   void retryStretch(Voice& v, SampleTime s0) noexcept;      // H2: a fallen-back voice claims again
+  bool handOver(Voice& v, const AudioSequenceImage::Clip* match, SampleTime s) noexcept;  // AC.fix: a swapped law
   SampleTime takeoverAt(Voice& v, SampleTime s1) noexcept;  // where its replacement starts (INT64_MAX: not before s1)
   void unlinkTakeover(Voice& v) noexcept;
   float* touch(uint32_t slot) noexcept;  // the slot's channel 0 (channel 1 follows), cleared on its first write

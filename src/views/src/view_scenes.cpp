@@ -1066,7 +1066,8 @@ Status setupClipViewAudio(Shell& shell) {
 // T6.8: the audio Clip View on the first Drums clip (beat.wav: four kicks and hats, 2 s) warped. `markers`: Beats with
 // Preserve = Transients (the mode rows, the faint transients, the beat grid on the content axis); else Complex Pro with
 // three warp markers, the middle one moved half a beat later (the waveform stretched before it, squeezed after).
-Status setupAudioClipWarp(Shell& shell, bool markers) {
+// `panel`: the bottom panel's height (AC.fix: 240, the default, flows the cards into columns).
+Status setupAudioClipWarp(Shell& shell, bool markers, float panel = 440.0f) {
   ViewContext& ctx = shell.context();
   doc::ClipRef ref{};
   doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
@@ -1100,7 +1101,7 @@ Status setupAudioClipWarp(Shell& shell, bool markers) {
   ctx.setDetailClip(ref);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Clip);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(440.0f);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(panel);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3472,6 +3473,7 @@ constexpr SceneEntry kScenes[] = {
     {"arrangement-comp", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, true); }},    // T6.10
     {"audio-clip-warp-beats", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, false); }},   // T6.8: the same --project
     {"audio-clip-warp-markers", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, true); }},  // T6.8
+    {"audio-clip-warp-short", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, true, 240.0f); }},  // AC.fix
     {"browser-panel", 1280, 800, setupBrowserPanel},           // T5.10: the same --project (its samples as the User Library)
     {"browser-search", 1280, 800, setupBrowserSearch},         // T5.10
     {"browser-hotswap", 1280, 800, setupBrowserHotSwap},       // T5.11: the same --project
