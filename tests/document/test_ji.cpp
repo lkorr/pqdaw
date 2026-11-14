@@ -203,7 +203,10 @@ TEST_CASE("ji: timing — a voice arrives at at + delay after a glide; windows a
 
 TEST_CASE("ji: the voice plan stays within 0.05 cents of the dense evaluation for every shape") {
   const pq::tuning::Tuning t = edo(12);
+  // With a ride (the general flattening) and without one (T7.7: the walk over the stops, no evaluation at the knots).
+  for (const bool ride : {true, false})
   for (JiShape::Kind kind : {JiShape::LogLinear, JiShape::SCurve, JiShape::Bezier}) {
+    CAPTURE(ride);
     CAPTURE(static_cast<int>(kind));
     const JiShape shape{kind, 0.3f, -0.6f, 0.6f, 1.8f};  // (the handles matter for Bezier only: an overshoot)
     JiObject o = object(40000, {prop(0, {4, 5, 6}), prop(10000, {5, 6, 7}, 6000, kind),
@@ -212,7 +215,7 @@ TEST_CASE("ji: the voice plan stays within 0.05 cents of the dense evaluation fo
     o.stops[1].timing.shape = shape;
     o.stops[2].timing.shape = shape;
     o.stops[2].voiceTiming = {std::nullopt, JiTiming{700, 3000, shape}, JiTiming{2500, 9000, shape}};
-    o.ride = {{2000, 0.0f, 0.8f, {}}, {9000, 35.0f, -0.6f, {}}, {9000, -20.0f, 0.0f, {}}, {26000, 10.0f, 0.3f, {}}, {39000, 0.0f, 0.0f, {}}};
+    if (ride) o.ride = {{2000, 0.0f, 0.8f, {}}, {9000, 35.0f, -0.6f, {}}, {9000, -20.0f, 0.0f, {}}, {26000, 10.0f, 0.3f, {}}, {39000, 0.0f, 0.0f, {}}};
     REQUIRE(validateJiObject(o).ok());
     const std::optional<JiPlan> plan = jiVoicePlan(o, t, JiPlanOptions{0.05, 500});
     REQUIRE(plan.has_value());

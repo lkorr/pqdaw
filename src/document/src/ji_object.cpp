@@ -286,11 +286,18 @@ struct Flattener {
   // it ends before the mirror point 1 − u — and mirrored for the second half: about a third fewer points than equal
   // steps at the same tolerance (fewer events for the engine). False: not such a span (a ride, a Bezier), the caller
   // subdivides adaptively.
-  std::vector<double> us;  // scratch: the first half's breakpoints
+  std::vector<double>& us;  // scratch: the first half's breakpoints (of the last S-curve marched: usK, usTicks)
+  double usK = -1.0;
+  Ticks usTicks = -1;
+  bool centre = false;      // … and a breakpoint at u = 1/2
   bool closedForm(Ticks a, Ticks b) {
     if (!o.ride.empty()) return false;
     const size_t next = static_cast<size_t>(std::upper_bound(tr.arrive.begin(), tr.arrive.end(), a) - tr.arrive.begin());
     if (next >= tr.arrive.size() || tr.begin[next] > a || tr.arrive[next] < b) return true;  // a hold
+    return transition(next, a, b);
+  }
+  // The interior points of the part (a, b) of the transition into stop `next` (no ride). False: a Bezier.
+  bool transition(size_t next, Ticks a, Ticks b) {
     const JiShape::Kind kind = tr.shape[next].kind;
     if (kind == JiShape::LogLinear) return true;
     if (kind != JiShape::SCurve) return false;
@@ -299,19 +306,25 @@ struct Flattener {
     const Ticks begin = tr.begin[next], ticks = tr.arrive[next] - begin;
     const double len = static_cast<double>(ticks);
     const double k = 8.0 * tolerance / (std::abs(delta) * 6.0);  // a step h from u is fine while h² (1 − 2u) ≤ k
-    us.clear();
-    bool centre = false;  // a breakpoint at u = 1/2
-    for (double u = 0.0; static_cast<Ticks>(us.size()) < ticks;) {
-      const double mirror = 1.0 - 2.0 * u;  // the distance to the mirror point
-      if (!(mirror > 0.0)) break;
-      const double h = std::sqrt(k / mirror);
-      if (h >= mirror) break;  // [u, 1 − u] is one segment
-      if (h > 0.5 * mirror) {
-        centre = true;
-        break;
+    // T7.7: the steps depend on (k, ticks) only: a voice that goes back and forth between two pitches (or repeats an
+    // interval at the same glide) marches once (a square root and a division per step).
+    if (k != usK || ticks != usTicks) {
+      us.clear();
+      centre = false;
+      for (double u = 0.0; static_cast<Ticks>(us.size()) < ticks;) {
+        const double mirror = 1.0 - 2.0 * u;  // the distance to the mirror point
+        if (!(mirror > 0.0)) break;
+        const double h = std::sqrt(k / mirror);
+        if (h >= mirror) break;  // [u, 1 − u] is one segment
+        if (h > 0.5 * mirror) {
+          centre = true;
+          break;
+        }
+        u += h;
+        us.push_back(u);
       }
-      u += h;
-      us.push_back(u);
+      usK = k;
+      usTicks = ticks;
     }
     Ticks last = a;
     auto point = [&](double u) {
@@ -363,12 +376,31 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
   std::vector<uint32_t> entryBase(S + 1, 0);
   for (size_t s = 0; s < S; ++s) entryBase[s + 1] = entryBase[s] + o.stops[s].size();
   std::vector<double> entry(entryBase[S]);
-  for (size_t s = 0; s < S; ++s)
-    for (uint32_t e = 0; e < o.stops[s].size(); ++e) {
-      const std::optional<double> c = entryCents(o, t, o.stops[s], e, fund);
-      if (!c) return std::nullopt;
-      entry[entryBase[s] + e] = *c;
+  // T7.7: the same doubles as entryCents, with each log taken once — a stop's scale per stop, a term per distinct
+  // term (stops repeat their terms; a small direct-mapped cache).
+  struct TermLog {
+    int64_t term = 0;
+    double log = 0.0;
+  };
+  std::array<TermLog, 64> termLogs{};
+  for (size_t s = 0; s < S; ++s) {
+    const JiStop& st = o.stops[s];
+    if (st.isTuning() || !fund) {
+      for (uint32_t e = 0; e < st.size(); ++e) {
+        const std::optional<double> c = entryCents(o, t, st, e, fund);
+        if (!c) return std::nullopt;
+        entry[entryBase[s] + e] = *c;
+      }
+      continue;
     }
+    const double scale = log2Ratio(st.scale);
+    for (uint32_t e = 0; e < st.size(); ++e) {
+      const int64_t term = st.terms[e];
+      TermLog& tl = termLogs[static_cast<uint64_t>(term) & 63u];
+      if (tl.term != term) tl = {term, std::log2(static_cast<double>(term))};
+      entry[entryBase[s] + e] = *fund + 1200.0 * (scale + (o.undertone ? -tl.log : tl.log));
+    }
+  }
 
   std::vector<VoiceTrack> tracks(V);
   std::vector<uint8_t> entryOf(S * V);  // [s · V + v]
@@ -405,6 +437,7 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
   for (const Breakpoint& b : o.ride)
     if (b.tick > 0 && b.tick < length) rideKnots.push_back(b.tick);
   std::vector<Ticks> knots;
+  std::vector<double> us;
   for (uint32_t v = 0; v < V; ++v) {
     std::vector<JiPitchPoint>& out = plan.voices[v].pitch;
     if (v > 0 && tracks[v].sameAs(tracks[v - 1])) {  // a unison from the start: the identical curve
@@ -424,7 +457,39 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
     if (!rideKnots.empty()) std::sort(knots.begin(), knots.end());
     knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
     out.reserve(v > 0 ? plan.voices[v - 1].pitch.size() + 8 : knots.size() * 8);  // T7.3: voices are alike
-    Flattener f{o, tr, tolerance, out, {}};
+    Flattener f{o, tr, tolerance, out, us};
+    if (o.ride.empty()) {
+      // T7.7: without a ride the voice is its stops — hold, transition, hold, … — so the walk below needs no
+      // evaluation at the knots (two binary searches and a shape value each in the general loop). The same points.
+      size_t cur = 0;
+      while (cur + 1 < S && tr.arrive[cur + 1] == 0) ++cur;  // stops arriving at tick 0: the last one is where it starts
+      out.push_back({0, tr.cents[cur]});
+      Ticks at = 0;        // the tick the walk has reached
+      double value = tr.cents[cur];
+      for (size_t s = cur + 1; s < S && tr.begin[s] < length; ++s) {
+        const Ticks b = tr.begin[s], a = tr.arrive[s];
+        if (b > at) f.push(b, value);  // the hold
+        if (a == b) {  // a jump; several at one tick are one jump to the last
+          at = b;
+          if (s + 1 < S && tr.arrive[s + 1] == a) continue;
+          if (std::abs(tr.cents[s] - value) > 1e-9) {
+            out.push_back({b, tr.cents[s]});
+            value = tr.cents[s];
+          }
+          at = b;
+          continue;
+        }
+        const Ticks end = std::min(a, length);
+        const double to = a <= length ? tr.cents[s] : f.upTo(length);
+        if (!f.transition(s, b, end)) f.span(b, value, end, to);
+        f.push(end, to);
+        value = to;
+        at = end;
+      }
+      if (at < length) f.push(length, value);
+      if (out.size() < 2) out.push_back({length, out.back().cents});
+      continue;
+    }
     double fa = f.from(0);
     out.push_back({0, fa});
     for (size_t i = 0; i + 1 < knots.size(); ++i) {
@@ -450,6 +515,7 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
   std::array<bool, kMaxJiVoices> needSync{}, splits{};
   std::array<uint8_t, kMaxJiVoices> classSize{}, lockedSize{};
   std::vector<Ticks> grid;
+  bool plain = true;  // every voice is on its own: no unison, nothing parked
   auto emit = [](std::vector<JiGainPoint>& g, Ticks tick, float gain, int16_t sync = -1) {
     if (!g.empty()) tick = std::max(tick, g.back().tick);
     const size_t n = g.size();
@@ -481,6 +547,7 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
         for (uint32_t u = 0; u < V; ++u) size += rep[u] == rep[v] ? 1u : 0u;
         plan.voices[v].gain.push_back({0, 1.0f / static_cast<float>(size), -1});
         plan.voices[v].unison.push_back({0, rep[v], static_cast<uint8_t>(size), static_cast<uint8_t>(size), true});
+        plain = plain && size == 1;
       }
       continue;
     }
@@ -496,6 +563,12 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
     }
     if (!anyReached) break;  // begins only grow: no later stop is reached either
     auto together = [&](uint32_t a, uint32_t b) { return reached[a] && reached[b] && samePitch(a, b); };
+    if (plain) {  // the common stop: no two voices meet, so no gain moves (O(V²) byte compares)
+      bool meet = false;
+      for (uint32_t v = 1; v < V && !meet; ++v)
+        for (uint32_t u = 0; u < v && !meet; ++u) meet = together(u, v);
+      if (!meet) continue;
+    }
     // The unison a voice takes part in: the voices on its pitch that are still there when the last of them arrives
     // (one that moves on earlier never holds the unison: it is parked against it instead).
     for (uint32_t v = 0; v < V; ++v) {
@@ -638,6 +711,8 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
       parked[v] = !included[v];
       rep[v] = lead[v];
     }
+    plain = true;
+    for (uint32_t v = 0; v < V; ++v) plain = plain && rep[v] == v && !parked[v];
   }
   for (JiVoicePlan& vp : plan.voices) {  // clip to [0, length], closing at length
     std::vector<JiGainPoint>& g = vp.gain;

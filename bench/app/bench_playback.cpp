@@ -33,6 +33,9 @@
 // cost = row − eq oversample/none; ÷ 64 = ns per stereo sample.
 // DY.6: limiter/<case> — the same track with a Limiter (module:limiter) instead: "default" its defaults (Stereo link, 3 ms
 // lookahead, Auto release), "true peak" with True Peak on. Cost = row − eq oversample/none; ÷ 64 = ns per stereo sample.
+// T7.7: ji lowering/100 objects x 8 voices x 32 stops — one MIDI track, one clip, 100 sounding JI objects (8 voices,
+// a new proportion every eighth note, 1/32 S-glides): ProjectLink's lowering of the track (LinkStats::lowerMs: the
+// voice plans, the per-note curves; not the compile), ms, over 15 links. Target: < 5 ms.
 // Release / ship build. Usage: pq_bench_playback [runner options]
 #include <chrono>
 #include <cmath>
@@ -570,6 +573,50 @@ int main(int argc, char** argv) {
       std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });
   }
+  runner.add("ji lowering/100 objects x 8 voices x 32 stops", [](bench::Context& c) {  // T7.7
+    DocumentStore store;
+    IdSource& ids = store.ids();
+    auto made = ops::createTrack(*store.current(), ids, TrackKind::Midi, {}, "JI");
+    if (!made.ok() || !store.dispatch(made->command).ok()) std::exit(12);
+    const TrackId track = made->tracks.at(0);
+    NoteClip clip;
+    clip.id = ids.clip();
+    clip.start = 0;
+    clip.length = 100 * 16 * kPpq;
+    const ClipRef ref{track, clip.id};
+    if (!store.dispatch(AddClip{track, std::make_shared<const NoteClip>(std::move(clip))}).ok()) std::exit(12);
+    std::vector<int64_t> a, b;
+    for (int64_t k = 0; k < 8; ++k) {
+      a.push_back(8 + k);
+      b.push_back(9 + k);
+    }
+    Batch all{"objects", {}};
+    for (int i = 0; i < 100; ++i) {
+      auto e = ops::createJiObject(*store.current(), ids, ref, static_cast<Ticks>(i) * 16 * kPpq, 16 * kPpq,
+                                   tuning::PitchId::fromDegree(i % 12), a);
+      if (!e.ok()) std::exit(12);
+      JiObject o = std::get<AddJiObject>(e->batch().commands.front().v).object;
+      for (int s = 1; s < 32; ++s) {
+        JiStop st = o.stops[0];
+        st.at = static_cast<Ticks>(s) * kPpq / 2;
+        st.terms = s % 2 == 1 ? b : a;
+        st.timing.glide = kPpq / 8;
+        o.stops.push_back(st);
+      }
+      all.commands.push_back(AddJiObject{ref, std::move(o)});
+    }
+    if (!store.dispatch(all).ok()) std::exit(12);
+    std::vector<double> ms;
+    for (int round = 0; round < 15; ++round) {
+      app::LinkConfig lc;
+      lc.compileThread = false;
+      lc.sleepAfterMs = 0.0f;
+      auto link = app::ProjectLink::create(lc, store.current());
+      if (!link.ok()) std::exit(12);
+      ms.push_back(link.value()->stats().lowerMs);
+    }
+    c.record(bench::summarize(std::move(ms)), "ms/lowering");
+  });
   // GU.4: compile and play the Phase Accumulator / VCA projects.
   for (const char* m : {"pa_voice", "pa_free", "vca_law", "vca_driven"}) {
     const std::string mod = m;
