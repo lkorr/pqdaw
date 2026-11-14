@@ -1516,3 +1516,27 @@ Choice: (b) — the set and the keys stay the closed block's, only the rows foll
 only feeds are sends, so its bus and the master's / groups' read the same. Both are view-only (model.cpp
 frameSockets / route), reversible without document changes.
 Status: open.
+
+## Q?-T7.2-a · 2026-11-13 · T7.2 · What "Tune to JI" does with the selected notes
+Context: `ops::jiFromNotes` makes the object (stop 0 = the notes as written, stop 1 = the proportion). The plan does not
+say whether the notes stay.
+Options: (a) the notes stay and become the object's inner notes (`Harmonic(object, voice)`), the object a scaffold
+(`sounds = false`): ids, timing, velocities and curves are kept, each note follows its voice's morph once T7.3 gives
+inner notes their voice's curve; (b) the notes are removed and the object sounds as one block.
+Choice: (a) by default (nothing is lost, `deleteJiObject` gives plain notes back); (b) is
+`JiFromNotesOptions::replaceNotes`. Until T7.3 lands, an inner note plays the pitch it has at its start (no morph).
+
+## Q?-T7.2-b · 2026-11-13 · T7.2 · A note that follows a JI object the clip does not have is refused
+Context: the plan asks for validation (Harmonic names an object of the clip, voice < V). Before T7.2 such notes were
+accepted and stayed unresolved (as a Ratio anchored to a missing note still is).
+Choice: strict, as planned: AddNotes / UpdateNotes / MoveNote, AddClip and the loader refuse them. Consequences: the
+test generators' three dangling notes (object ids 7, 42, 0xFFFFFFFF) now follow real objects and
+`fixtures/full/project.pqd` was regenerated; pasting Harmonic notes into another clip with `ops::addNotes` fails as a
+whole, so the roll (T7.4 / T7.5) should convert them first (`convertNotes`) or paste the object too. A fundamental and
+a tuning stop's pitches may be Degree, Cents or a reference-anchored Ratio only (not anchored to a note).
+
+## Q?-T7.2-c · 2026-11-13 · T7.2 · Stops beyond an object's end are kept
+Context: shortening an object could drop the stops past its end, which can lower the voice count and strand inner
+notes on voices that no longer exist.
+Choice: a stop at or after `length` is valid and simply never reached (lengthening brings it back). Only a start moved
+later past a stop drops the earlier ones (that stop becomes stop 0); the op is refused if a note would lose its voice.
