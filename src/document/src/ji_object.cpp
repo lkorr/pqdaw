@@ -279,6 +279,53 @@ struct Flattener {
     }
     out.push_back({tick, cents});
   }
+  // T7.3: without a ride, a span between two knots is one hold or one piece of one transition, known in closed form:
+  // a hold and a LogLinear transition are a line (no point, no evaluation). An S-curve s(u) = 3u² − 2u³ has
+  // |s''(u)| = 6 |1 − 2u|, largest at its ends and 0 in the middle, so its breakpoints are marched from u = 0 with
+  // steps h that grow as the curvature falls — a chord over [u, u + h] is within delta · 6 (1 − 2u) · h² / 8 as long as
+  // it ends before the mirror point 1 − u — and mirrored for the second half: about a third fewer points than equal
+  // steps at the same tolerance (fewer events for the engine). False: not such a span (a ride, a Bezier), the caller
+  // subdivides adaptively.
+  std::vector<double> us;  // scratch: the first half's breakpoints
+  bool closedForm(Ticks a, Ticks b) {
+    if (!o.ride.empty()) return false;
+    const size_t next = static_cast<size_t>(std::upper_bound(tr.arrive.begin(), tr.arrive.end(), a) - tr.arrive.begin());
+    if (next >= tr.arrive.size() || tr.begin[next] > a || tr.arrive[next] < b) return true;  // a hold
+    const JiShape::Kind kind = tr.shape[next].kind;
+    if (kind == JiShape::LogLinear) return true;
+    if (kind != JiShape::SCurve) return false;
+    const double from = tr.cents[next - 1], delta = tr.cents[next] - from;
+    if (delta == 0.0) return true;
+    const Ticks begin = tr.begin[next], ticks = tr.arrive[next] - begin;
+    const double len = static_cast<double>(ticks);
+    const double k = 8.0 * tolerance / (std::abs(delta) * 6.0);  // a step h from u is fine while h² (1 − 2u) ≤ k
+    us.clear();
+    bool centre = false;  // a breakpoint at u = 1/2
+    for (double u = 0.0; static_cast<Ticks>(us.size()) < ticks;) {
+      const double mirror = 1.0 - 2.0 * u;  // the distance to the mirror point
+      if (!(mirror > 0.0)) break;
+      const double h = std::sqrt(k / mirror);
+      if (h >= mirror) break;  // [u, 1 − u] is one segment
+      if (h > 0.5 * mirror) {
+        centre = true;
+        break;
+      }
+      u += h;
+      us.push_back(u);
+    }
+    Ticks last = a;
+    auto point = [&](double u) {
+      const Ticks x = begin + static_cast<Ticks>(std::llround(u * len));
+      if (x <= last || x >= b) return;
+      last = x;
+      const double v = static_cast<double>(x - begin) / len;
+      push(x, from + delta * (v * v * (3.0 - 2.0 * v)));
+    };
+    for (const double u : us) point(u);
+    if (centre) point(0.5);
+    for (size_t i = us.size(); i-- > 0;) point(1.0 - us[i]);
+    return true;
+  }
   // Adds the interior points of the smooth span (a, b) so that the polyline stays within the tolerance.
   void span(Ticks a, double fa, Ticks b, double fb) {
     if (b - a <= 1) return;
@@ -367,20 +414,23 @@ std::optional<JiPlan> jiVoicePlan(const JiObject& o, const tuning::Tuning& t, co
     const VoiceTrack& tr = tracks[v];
     knots.assign(rideKnots.begin(), rideKnots.end());
     knots.push_back(0);
-    knots.push_back(length);
     for (size_t s = 1; s < S && tr.begin[s] < length; ++s) {
       if (tr.begin[s] > 0) knots.push_back(tr.begin[s]);
       if (tr.arrive[s] > 0 && tr.arrive[s] < length) knots.push_back(tr.arrive[s]);
     }
-    std::sort(knots.begin(), knots.end());
+    knots.push_back(length);
+    // T7.3: the windows ascend (a voice's begins and arrivals are running maxima), so without ride points the knots
+    // are in order already.
+    if (!rideKnots.empty()) std::sort(knots.begin(), knots.end());
     knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
-    Flattener f{o, tr, tolerance, out};
+    out.reserve(v > 0 ? plan.voices[v - 1].pitch.size() + 8 : knots.size() * 8);  // T7.3: voices are alike
+    Flattener f{o, tr, tolerance, out, {}};
     double fa = f.from(0);
     out.push_back({0, fa});
     for (size_t i = 0; i + 1 < knots.size(); ++i) {
       const Ticks a = knots[i], b = knots[i + 1];
       const double fb = f.upTo(b);
-      f.span(a, fa, b, fb);
+      if (!f.closedForm(a, b)) f.span(a, fa, b, fb);
       f.push(b, fb);
       if (i + 2 < knots.size()) {
         fa = f.from(b);

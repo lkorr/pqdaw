@@ -12,6 +12,7 @@ pq_add_module(pq_app
     src/file_watch.cpp
     src/project_link.cpp
     src/project_link_cost.cpp
+    src/project_link_ji.cpp
     src/project_link_latency.cpp
     src/project_link_audio.cpp
     src/project_link_input.cpp

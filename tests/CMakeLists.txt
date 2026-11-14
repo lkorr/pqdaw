@@ -118,6 +118,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_playback_ir.cpp
     app/test_playback_semantics.cpp
     app/test_tuning_playback.cpp
+    app/test_ji_playback.cpp  # T7.3: JI objects and note curves play (lowering), chase
     app/test_live_jit.cpp
     app/test_tuning_coverage.cpp
     app/test_jit_aot.cpp
