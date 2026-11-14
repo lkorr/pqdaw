@@ -315,7 +315,7 @@ struct Flattener {
     }
     Ticks last = a;
     auto point = [&](double u) {
-      const Ticks x = begin + static_cast<Ticks>(std::llround(u * len));
+      const Ticks x = begin + static_cast<Ticks>(u * len + 0.5);  // u ≥ 0 (llround is a call)
       if (x <= last || x >= b) return;
       last = x;
       const double v = static_cast<double>(x - begin) / len;
