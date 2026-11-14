@@ -652,3 +652,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf: an unrelated edit while a track is frozen costs one render-document compare (was a whole-project serialisation on the UI thread + a live flip).
 - Notes: Q270. AS.2's two recover tests had asserted the H1 bug (deletion at Recover): updated. User decisions M3 / M8 / Q261 sent to the AU.dsp worker.
 
+## 2026-11-13 · VZ.1 · task/VZ.1-visual-settings (user request, merged fed0594e)
+- Did: Spectrogram zoom: the picture stretches while the plot's size moves and rebuilds once it rests 0.2 s (was a full rebuild — texture, ring re-read, recolour, upload, new hop — at every 64-row / 12 %-column step of a zoom); empty slots skip the tonemap. One settings sheet (option_sheet.h) for Spectrum / Oscilloscope / Spectrogram: ANALYSIS / DISPLAY tabs, SAVE DEFAULT (meta::userDefaultData → doc::defaultMetaInstance; settings.json "metaDefaults"), RESET. Spectrum: 17 options (SpectrumFeed::setTuning retunes its analysers). Spectrogram: keyboard width / opacity / C tint.
+- Verified: -Affected 33/34 then the one failure (module-spectrum-panel golden: the SET chip) re-recorded; after the rebase onto aed23b9f: pqdaw built, pq_tests_audio 1/1, pq_tests_app 1/1, pq_tests_views 1/1 (one known driver SIGSEGV in an EQ test on the first run; passed 3× alone and on the re-run).
+- Perf / CPU-efficiency check: zoom of 1.5→4.9x: worst frame 10.6 → 0.7 ms, 10 rebuilds → 1 at rest (20.7 → 7.5 ms, empty-slot fast path); the sheet costs nothing unless open; a feed retune happens only when the tuning changes.
+- Notes: Q271. Goldens re-recorded: device-meta-spectrum, project-meta-spectrum, module-spectrum-panel (the SET chip). Load-sensitive perf test "spectrogram feed: the UI's reads never wait" failed twice under machine load (p99 1.28 ms vs 1.0) — not touched by this change.
+

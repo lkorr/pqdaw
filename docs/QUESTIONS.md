@@ -1475,7 +1475,7 @@ track outside them is soloed). Choice: (a): a freeze is a mixdown aid, and soloi
 Reversible: `normalTrack`'s `full` branch in src/app/src/freeze_service.cpp.
 Status: open.
 
-## Q?-VZ.1-a · 2026-11-13 · VZ.1 · What "a tab with just the visual settings" and "save setting" mean
+## Q271 · 2026-11-13 · VZ.1 · What "a tab with just the visual settings" and "save setting" mean
 - Context: the user asked for an options dropdown on every visual module, "a tab that changes settings to just visual
   components", and a save option that applies to newly spawned modules.
 - Options: (a) tabs inside each module's sheet (ANALYSIS / DISPLAY); (b) a Preferences page holding every module type's
