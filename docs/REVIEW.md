@@ -1617,3 +1617,21 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   it back. Look at: project-patch-tuning-wheel.
 - Open questions for you: gutter width (40); chart width (560); whether the block should be as tall as its band when
   closed (your sketch drew it tall). The popover wheel is still there from the block's menu (MOS Wheel…).
+
+## 2026-11-14 · T7.4 · piano roll: JI objects drawn and created, notes along their pitch curves 👁
+- Look at (tests/views/golden): `pianoroll-ji-morph` (7:8:9:10:11:12:13 → 5:6:7:8:9 → 4:5:6:7 → 3:4:5 riding a curve: the
+  box, the voices merging, harmonic numbers, the header, dotted stop markers with each proportion under the box, the blue
+  ride line, the diamond at the end of the thick lowest voice), `pianoroll-ji-undertone` (1/4:1/5:1/6:1/7, and a selected
+  4:5:6:7 with its solid border and edge handles), `pianoroll-ji-tuning` (a 12-EDO chord gliding to 20:25:30:36: the
+  tuning stop is labelled with the tuning's name, the four notes lie on their voices), `pianoroll-curve-notes` (a bend,
+  a scoop, a vibrato drawn along their curves).
+- Try it: open a MIDI clip, click in the note editor, press `J` (the corner shows an orange bar), drag a box, type
+  `8:9:10:12:15` (or `1/4:1/5:1/6`), Enter. The chord's LOWEST voice sits on the box's bottom row. Click an object's
+  header or border to select it; drag from there to move it (time and rows), drag its left / right border to resize,
+  `Delete`, `Ctrl+D`. Each is one undo step. A wrong proportion shows why under the field and creates nothing.
+- Decisions to check: (1) the bottom row is both the fundamental the object stores and its lowest voice (stop scale
+  1/lowest term, as "Tune to JI" pins the lowest note) — Q?-T7.4-b; (2) copying an inner note pastes a Cents note at the
+  pitch it had, not the object; (3) a box under 44 px wide shows no header / stop labels, under 24 px a plain border;
+  (4) colours are new theme tokens `roll.ji*` (warm amber on the dark roll, not the screenshots' brown on white).
+- Not in this task (T7.5 / T7.6): entering an object, editing stops, Tune to JI in the menu, "Is harmonic N", drawing
+  bends. Notes on a path are still clicked on their written row (a JI object's inner notes cannot be clicked yet).

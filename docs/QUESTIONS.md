@@ -1555,3 +1555,22 @@ object's voices into shorter notes at stop holds, so a seek loses at most one se
 Choice: (a) for now — nothing new can break; the engine side of (b) is one more caller of the existing
 curve-at-a-tick path (`Timeline::curveLocate` + `curveRamp`).
 Status: open.
+
+## Q?-T7.4-a · 2026-11-14 · T7.4 · No document builder duplicates a JI object or moves it in pitch
+Context: the roll's Ctrl+D and its row drag need "copy this object (with its inner notes)" and "move by (dt, rows)".
+`ops` has `moveJiObject` (time only) and `cloneNoteClip` (a whole clip).
+Options: (a) the roll composes them from raw commands (`AddJiObject` + `AddNotes` + `SetNoteCurve` in one Batch; the
+`SetJiObject` inside `moveJiObject`'s Batch replaced by the pitch-stepped object); (b) add `ops::duplicateJiObject` and a
+`steps` argument to `ops::moveJiObject` in `document`.
+Choice: (a) in `views/src/piano_roll/roll_ji.cpp` (T7.4 may not touch `document`); (b) is the cleaner home — move it when
+T7.5 edits `document` anyway. A pitch move steps the fundamental and every tuning stop's pitches with `ops::stepPitch`.
+Status: open.
+
+## Q?-T7.4-b · 2026-11-14 · T7.4 · Where the chord sits in a drawn box
+Context: "the fundamental is the pitch at the box's bottom edge". With `ops::createJiObject`'s scale 1, 8:9:10:12:15 on
+that fundamental sounds three octaves above the box.
+Options: (a) scale 1: the box only marks the fundamental; (b) pin the lowest voice to the bottom row (stop 0's scale =
+1 / lowest term; undertone: the largest term), as `ops::jiFromNotes` pins the lowest note: the chord is where the box
+is, and the stored fundamental is still the bottom row (a Degree identity).
+Choice: (b). The harmonic numbers still read 8, 9, 10…; the true fundamental (jiFundamentalCents) lies below the box.
+Status: open (reversible: one line in `RollState::createJiObject`).

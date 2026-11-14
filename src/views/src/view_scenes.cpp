@@ -36,6 +36,7 @@
 #include "meta/faces.h"  // TX.spectrogram: the face's analysis request (gramRequest)
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
+#include "piano_roll/roll_state.h"  // T7.4: the JI scenes create objects as the JI tool does
 #include "pq/views/mos_wheel/mos_chart.h"
 #include "pq/views/mos_wheel/mos_circle.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
@@ -737,6 +738,134 @@ Status setupPianoRollRatios(Shell& shell) {
   e.type = ui::PointerType::Move;
   e.pos = *at;
   shell.tree().dispatchPointer(e);
+  return Ok{};
+}
+
+// ---- T7.4: JI objects and notes along pitch curves in the piano roll -------------------------------------------
+
+namespace {
+
+// A MIDI track with one empty two-bar clip in the roll, the detail view tall enough for a chord's morph.
+struct JiScene {
+  ClipView* view = nullptr;
+  doc::ClipRef clip{};
+};
+std::optional<JiScene> buildJiScene(Shell& shell, std::string_view name, int32_t rowPx, int64_t centre) {
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& store = ctx.store();
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "JI", doc::Colour{0x5FA8D8}));
+  if (!t) return std::nullopt;
+  const auto c = runEdit(store, doc::ops::insertEmptyClip(*store.current(), store.ids(), t->tracks[0], 0, 2 * kTicksPerWhole, std::string(name)));
+  if (!c) return std::nullopt;
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(480.0f);  // the detail view at its tallest
+  ctx.setDetailClip(c->clips[0]);
+  shell.tree().layoutNow();
+  auto* view = dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
+  if (!view) return std::nullopt;
+  view->setRowHeight(rowPx);
+  view->centreOnDegree(centre);
+  view->setZoom(92.0 / static_cast<double>(kPpq), 0.0);  // the two bars across the note area
+  view->scrollToTick(-0.35 * static_cast<double>(kPpq));
+  shell.tree().layoutNow();
+  return JiScene{view, c->clips[0]};
+}
+
+}  // namespace
+
+// A four-stop morph (7:8:9:10:11:12:13 → 5:6:7:8:9 → 4:5:6:7 → 3:4:5) over two bars on C1, riding a curve: the box,
+// the seven voices merging as the chords shrink, harmonic numbers, the header, the stop markers and their proportions,
+// the ride line.
+Status setupPianoRollJiMorph(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Morph", 11, 8);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-morph: building the clip failed", {}};
+  doc::DocumentStore& store = shell.context().store();
+  const Ticks q = kPpq;
+  const int64_t s0[] = {7, 8, 9, 10, 11, 12, 13}, s1[] = {5, 6, 7, 8, 9}, s2[] = {4, 5, 6, 7}, s3[] = {3, 4, 5};
+  const auto e = runEdit(store, doc::ops::createJiObject(*store.current(), store.ids(), sc->clip, 0, 8 * q,
+                                                         tuning::PitchId::fromDegree(0, -2), s0));
+  if (!e || e->jiObjects.empty()) return Error{ErrorCode::Unknown, "pianoroll-ji-morph: createJiObject", {}};
+  const doc::JiObjectId id = e->jiObjects[0];
+  if (!runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 2 * q, s1, q)) ||
+      !runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 4 * q, s2, q)) ||
+      !runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 6 * q, s3, 3 * q / 2)))
+    return Error{ErrorCode::Unknown, "pianoroll-ji-morph: addJiStop", {}};
+  const doc::Track* t = doc::findTrackPtr(*store.current(), sc->clip.track);
+  const int32_t ci = t ? doc::findClipIndex(*t, sc->clip.clip) : -1;
+  const doc::JiObject* o = ci >= 0 ? doc::findJiObject(*t->clips[static_cast<size_t>(ci)].clip, id) : nullptr;
+  if (!o) return Error{ErrorCode::NotFound, "pianoroll-ji-morph: the object", {}};
+  doc::JiObject ride = *o;
+  ride.ride = {{0, 0.0f, 0.0f, {}}, {2 * q, -45.0f, 0.0f, {}}, {9 * q / 2, 35.0f, 0.0f, {}}, {13 * q / 2, -20.0f, 0.0f, {}}, {8 * q, 0.0f, 0.0f, {}}};
+  if (!runEdit(store, doc::ops::setJiObject(*store.current(), store.ids(), sc->clip, ride)))
+    return Error{ErrorCode::Unknown, "pianoroll-ji-morph: the ride curve", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// An undertone object (1/4:1/5:1/6:1/7) and an overtone one (4:5:6:7) made as the JI tool makes them (the lowest
+// voice on the box's bottom row); the second is selected (solid border, edge handles).
+Status setupPianoRollJiUndertone(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Undertone", 14, 8);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-undertone: building the clip failed", {}};
+  roll::RollState& st = sc->view->state();
+  const Ticks q = kPpq;
+  std::string why;
+  if (!st.createJiObject({0, 4 * q, 0, 12}, "1/4:1/5:1/6:1/7", &why) || !st.createJiObject({9 * q / 2, 3 * q, 2, 14}, "4:5:6:7", &why))
+    return Error{ErrorCode::Unknown, "pianoroll-ji-undertone: " + why, {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// "Tune to JI" as the document builds it (ops::jiFromNotes): C E G A# as written in the tuning (a tuning stop, labelled
+// with the tuning's name) gliding to the nearest proportion; the four notes stay as the object's inner notes and are
+// drawn along their voices.
+Status setupPianoRollJiTuning(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Tune to JI", 16, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-tuning: building the clip failed", {}};
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 6 * q, PitchId::fromDegree(0, 0)), scnNote(0, 6 * q, PitchId::fromDegree(4, 0)),
+                                        scnNote(0, 6 * q, PitchId::fromDegree(7, 0)), scnNote(0, 6 * q, PitchId::fromDegree(10, 0))};
+  const auto added = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes));
+  if (!added) return Error{ErrorCode::Unknown, "pianoroll-ji-tuning: addNotes", {}};
+  doc::ops::JiFromNotesOptions opt;
+  opt.glide = 2 * q;
+  if (!runEdit(store, doc::ops::jiFromNotes(*store.current(), store.ids(), sc->clip, added->notes, opt)))
+    return Error{ErrorCode::Unknown, "pianoroll-ji-tuning: jiFromNotes", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// Notes with pitch curves, in no object: a bend up a whole tone, a scoop into the note, a vibrato (selected), next to
+// plain notes.
+Status setupPianoRollCurveNotes(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Bends", 16, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-curve-notes: building the clip failed", {}};
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 4 * q, PitchId::fromDegree(0, 0)), scnNote(0, 2 * q, PitchId::fromDegree(7, 0)),
+                                        scnNote(2 * q, 2 * q, PitchId::fromDegree(9, 0)), scnNote(4 * q, 4 * q, PitchId::fromDegree(4, 0)),
+                                        scnNote(4 * q, 2 * q, PitchId::fromDegree(-3, 0), 80.0f)};
+  const auto added = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes));
+  if (!added || added->notes.size() != notes.size()) return Error{ErrorCode::Unknown, "pianoroll-curve-notes: addNotes", {}};
+  auto keyAt = [&](Ticks start, PitchId p) -> std::optional<doc::NoteKey> {
+    const doc::Note* n = sceneNote(shell.context(), *sc->view, p, start);
+    return n ? std::optional<doc::NoteKey>(doc::keyOf(*n)) : std::nullopt;
+  };
+  const std::optional<doc::NoteKey> bend = keyAt(0, PitchId::fromDegree(0, 0)), scoop = keyAt(2 * q, PitchId::fromDegree(9, 0)),
+                                    vib = keyAt(4 * q, PitchId::fromDegree(4, 0));
+  if (!bend || !scoop || !vib) return Error{ErrorCode::NotFound, "pianoroll-curve-notes: the notes", {}};
+  std::vector<doc::Breakpoint> wobble;
+  for (int i = 0; i <= 32; ++i)
+    wobble.push_back({i * (4 * q) / 32, i < 8 ? 0.0f : 35.0f * std::sin(static_cast<float>(i - 8) * 1.5707963f) * std::min(1.0f, static_cast<float>(i - 8) / 8.0f), 0.0f, {}});
+  if (!runEdit(store, doc::ops::setNoteCurve(*store.current(), sc->clip, *bend, {{0, 0.0f, 0.0f, {}}, {q, 0.0f, 0.0f, {}}, {5 * q / 2, 200.0f, 0.0f, {}}, {4 * q, 200.0f, 0.0f, {}}})) ||
+      !runEdit(store, doc::ops::setNoteCurve(*store.current(), sc->clip, *scoop, {{0, -200.0f, 0.0f, {}}, {q, 0.0f, 0.0f, {}}})) ||
+      !runEdit(store, doc::ops::setNoteCurve(*store.current(), sc->clip, *vib, wobble)))
+    return Error{ErrorCode::Unknown, "pianoroll-curve-notes: setNoteCurve", {}};
+  const doc::NoteId sel = vib->id;
+  sc->view->select(std::span<const doc::NoteId>(&sel, 1));
+  shell.tree().layoutNow();
   return Ok{};
 }
 
@@ -3267,6 +3396,10 @@ constexpr SceneEntry kScenes[] = {
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},
     {"pianoroll-note-menu", 1280, 800, setupPianoRollNoteMenu},
+    {"pianoroll-ji-morph", 1280, 800, setupPianoRollJiMorph},
+    {"pianoroll-ji-undertone", 1280, 800, setupPianoRollJiUndertone},
+    {"pianoroll-ji-tuning", 1280, 800, setupPianoRollJiTuning},
+    {"pianoroll-curve-notes", 1280, 800, setupPianoRollCurveNotes},
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},

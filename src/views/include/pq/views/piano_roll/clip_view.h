@@ -16,7 +16,7 @@
 // Every gesture (draw, move, copy, resize, velocity / chance drag, brace drag) is previewed while it runs and
 // dispatched as one edit when it ends: one undo step each. Keys (scope "pianoroll", docs/HOTKEYS.md): Up / Down
 // and Shift+Up / Down (identity-aware steps, pq::doc::ops::transposeNotes), Delete, Ctrl+D, Ctrl+U, Ctrl+A,
-// Ctrl+C / X / V, 0; B (draw mode) and Ctrl+1–5 (grid) are global. Clicking or drawing a note auditions it through
+// Ctrl+C / X / V, 0, J (the JI tool, T7.4); B (draw mode) and Ctrl+1–5 (grid) are global. Clicking or drawing a note auditions it through
 // TransportPort::auditionHz.
 //
 // Painting is virtualised by the visible time range (note chunks outside it are skipped) and by the visible rows.
@@ -25,6 +25,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
@@ -150,6 +151,33 @@ public:
   // The info view's text for the pointer at device `p` over the note area (keys = false) or the keys: the hovered
   // note's identity and pitch, or the row's (cents, Hz, nearest ratio, overlay EDO step). Tests read it directly.
   ui::InfoText readoutAt(ui::Vec2 p, bool keys);
+
+  // --- JI objects (T7.4, SPEC §5; roll_ji.cpp) ---
+  // Drawn as a box over the object's span and pitch range with its voices as lines through the morphs, harmonic
+  // numbers, a header, stop markers and the ride curve. The JI tool (J, "pianoroll.toggleJiTool"): drag a box, then
+  // type a proportion ("8:9:10:12:15"; "1/4:1/5:1/6" = undertone) in the field that opens; the lowest voice sits on
+  // the box's bottom row. An object's header or border selects it (drag: move in time and by rows; left / right
+  // border: resize); Delete and Ctrl+D act on the selected object. One undo step each.
+  bool jiTool() const noexcept;
+  void setJiTool(bool on);
+  doc::JiObjectId jiSelection() const noexcept;
+  void selectJiObject(doc::JiObjectId id);
+  // The object's box as drawn, device px, not clipped (empty: no such object). Its header is the strip above it.
+  ui::IRect jiObjectRect(doc::JiObjectId id) const;
+  // What the proportion field accepts: "8:9:10:12:15" (overtone; terms strictly ascending), "1/4:1/5:1/6" (undertone:
+  // terms 4, 5, 6, in any order). The error says what is wrong.
+  struct Proportion {
+    std::vector<int64_t> terms;
+    bool undertone = false;
+  };
+  static Result<Proportion> parseProportion(std::string_view text);
+  // Wall-clock time of the note area's last paint and of its JI-object part; the objects it drew (tests).
+  struct PaintStats {
+    double notesMs = 0.0;
+    double jiMs = 0.0;
+    uint32_t jiPainted = 0;
+  };
+  PaintStats paintStats() const noexcept;
 
   roll::RollState& state() noexcept { return *state_; }
 

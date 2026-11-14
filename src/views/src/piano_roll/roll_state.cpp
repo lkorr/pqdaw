@@ -9,6 +9,7 @@
 #include <numeric>
 
 #include "../common/drag.h"
+#include "pq/document/automation_curve.h"
 #include "pq/document/commands.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/tuning/ji.h"
@@ -53,6 +54,8 @@ bool RollState::refresh() {
     ref_ = want;
     clip_.reset();
     sel_.clear();
+    jiSel_ = {};
+    jiPending_.reset();
     insertTick_.reset();
     fitted_ = false;
     drag = {};
@@ -79,6 +82,7 @@ bool RollState::refresh() {
   bool clipCaches = false;
   bool morphed = false;
   if (def && (!tuningValid_ || !(tuningDef_ == *def))) {
+    jiViewsDirty_ = true;
     if (tuningValid_ && morphInPlace(*def)) {
       // A generator move inside one MosLinearTable interval (T3.12 live morph): the tuning and the rows were
       // retuned in place; the row set, labels, chunk caches and highlight scale stay.
@@ -105,6 +109,7 @@ bool RollState::refresh() {
     if (const doc::TuningSlot* slot = doc::findTuning(*cur, tuningId)) name = slot->name;
     if (name != tuningName_) {
       tuningName_ = std::move(name);
+      jiViewsDirty_ = true;  // tuning stops are labelled with it
       changed = true;
     }
   }
@@ -128,6 +133,9 @@ bool RollState::refresh() {
     }
   }
   if (rowsDirty || rows_.empty()) rebuildRows();
+  // T7.4: the JI objects' views follow the clip's object list (shared between snapshots: a note edit keeps it) and
+  // the tuning (its pitches and its name label the stops).
+  if (jiViewsDirty_ || (clip_ ? clip_->ji.get() : nullptr) != jiViewsFor_) rebuildJiViews();
   pitchOnlyChange_ = morphed && !changed;
   return changed || morphed;
 }
@@ -1062,6 +1070,7 @@ bool RollState::selected(doc::NoteId id) const noexcept {
 void RollState::select(std::vector<uint32_t> ids) {
   std::sort(ids.begin(), ids.end());
   ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  if (!ids.empty() && jiSel_.valid()) jiSel_ = {};  // T7.4: notes or an object, not both
   if (ids == sel_) return;
   sel_ = std::move(ids);
   // A bitmap over [min id, max id] when it is compact (ids of one clip mostly are): ≤ 64 bits per selected note
@@ -1141,6 +1150,10 @@ bool RollState::apply(const doc::ops::EditResult& e, std::string_view what) {
 
 void RollState::deleteSelection() {
   if (!clip_) return;
+  if (jiSel_.valid()) {  // T7.4: the selected JI object
+    (void)deleteJiSelection();
+    return;
+  }
   const std::vector<doc::NoteKey> keys = selectionKeys();
   if (keys.empty()) return;
   if (apply(doc::ops::deleteNotes(*ctx.doc(), ref_, keys), "Delete Notes")) clearSelection();
@@ -1148,6 +1161,10 @@ void RollState::deleteSelection() {
 
 void RollState::duplicateSelection() {
   if (!clip_) return;
+  if (jiSel_.valid()) {  // T7.4
+    (void)duplicateJiSelection();
+    return;
+  }
   const std::vector<doc::NoteKey> keys = selectionKeys();
   if (keys.empty()) return;
   (void)apply(doc::ops::duplicateNotes(*ctx.doc(), ctx.store().ids(), ref_, keys), "Duplicate Notes");
@@ -1259,12 +1276,28 @@ void RollState::lengthenSelection(int32_t cells) {
 
 void RollState::copySelection() {
   clipboard_.clear();
+  clipboardCurves_.clear();
   if (!clip_) return;
   Ticks first = INT64_MAX;
   for (const doc::Note& n : clip_->notes)
     if (selected(n.id)) {
       clipboard_.push_back(n);
       first = std::min(first, n.start);
+      // T7.4: the copy carries the note's pitch curve; a note of a JI object is copied as the pitch it has at its
+      // start (Cents), so a paste never depends on an object the target clip may not have (Q276). Its voice's morph
+      // is not carried: copy the object itself (Ctrl+D) for that.
+      if (doc::jiObjectOf(n.pitch).valid()) {
+        doc::Note& c = clipboard_.back();
+        if (const std::optional<double> cents = pathCents(c, n.start, n.pitch, 0.0)) {
+          double own = 0.0;
+          if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id)) own = doc::automationValueAt(nc->pitch, 0);
+          c.pitch = tuning::PitchId::fromCents(*cents - own);
+        } else {
+          clipboard_.pop_back();
+          continue;
+        }
+      }
+      if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id)) clipboardCurves_.push_back(*nc);
     }
   for (doc::Note& n : clipboard_) n.start -= first;
   if (!clipboard_.empty()) {
@@ -1289,7 +1322,8 @@ void RollState::paste() {
     span = std::max(span, n.start + n.length);
     n.start += at;
   }
-  if (apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes), "Paste Notes")) insertTick_ = at + span;
+  if (apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes, clipboardCurves_), "Paste Notes"))
+    insertTick_ = at + span;
 }
 
 tuning::PitchId RollState::degreePitch(int64_t degree) const noexcept {
@@ -1445,8 +1479,10 @@ void RollState::commitDrag() {
       // on the originals: invisible and double-triggered. Nothing to do, as in the arrangement (M3 review M10).
       if (d.dt == 0 && d.steps == 0) break;
       std::vector<doc::Note> copies;
+      std::vector<doc::NoteCurves> curves;  // T7.4: a copy has its source's pitch curve
       for (const doc::Note& n : clip_->notes) {
         if (!selected(n.id)) continue;
+        if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id)) curves.push_back(*nc);
         const std::optional<Preview> pv = previewOf(d, n);
         doc::Note c = n;
         if (pv) {
@@ -1455,7 +1491,7 @@ void RollState::commitDrag() {
         }
         copies.push_back(c);
       }
-      (void)apply(doc::ops::addNotes(p, ctx.store().ids(), ref_, copies), "Copy Notes");
+      (void)apply(doc::ops::addNotes(p, ctx.store().ids(), ref_, copies, curves), "Copy Notes");
       break;
     }
     case DragKind::ResizeEnd:
@@ -1476,6 +1512,17 @@ void RollState::commitDrag() {
       }
       break;
     case DragKind::Draw: addNotes(d.drawn); break;
+    // T7.4
+    case DragKind::JiBox:
+      if (d.jiLength > 0) (void)openJiEntry({d.jiStart, d.jiLength, d.jiLow, d.jiHigh});
+      break;
+    case DragKind::JiMove:
+    case DragKind::JiResizeStart:
+    case DragKind::JiResizeEnd:
+      jiPreview_.reset();
+      if (d.dt != 0 || d.steps != 0)
+        (void)applyJi(jiDragEdit(d), d.kind == DragKind::JiMove ? "Move JI Object" : "Resize JI Object", d.ji);
+      break;
     case DragKind::LoopBrace:
       if (d.dt != 0) {
         doc::ClipLoop l = clip_->loop;
@@ -1516,6 +1563,7 @@ void RollState::abortDrag() {
 void RollState::cancelDrag() {
   if (drag.kind == DragKind::None) return;
   drag = {};
+  jiPreview_.reset();
   markAllDirty();
 }
 

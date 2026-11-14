@@ -107,7 +107,10 @@ struct Theme {
     Rgba keyWhite, keyBlack, keyText, rowNatural, rowAccidental, rowScale, rowLine, equave, outside, offGrid, fundamental,
         harmonic,
         // scale / MOS layouts (T3.12): step-class keys, the proportional pitch line, the background EDO overlay
-        keyTonic, keyLarge, keySmall, keyExtra, pitchLine, edoLine, edoEquave;
+        keyTonic, keyLarge, keySmall, keyExtra, pitchLine, edoLine, edoEquave,
+        // JI objects (T7.4): the box over an object's span and pitch range, its dashed border, the voice lines, the
+        // header / harmonic / stop labels, the dotted stop markers, the ride curve, the selected object's border
+        jiFill, jiBorder, jiLine, jiText, jiStop, jiRide, jiSelected;
     bool operator==(const Roll&) const = default;
   } roll{};
   struct MosChart {  // MOS wheel region chart (T3.13): surfaces from the Live 12 look, data colours from mos-explorer

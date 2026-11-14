@@ -56,6 +56,8 @@ const ColorToken kColors[] = {
     PQ_COLOR(roll, outside), PQ_COLOR(roll, offGrid), PQ_COLOR(roll, fundamental), PQ_COLOR(roll, harmonic),
     PQ_COLOR(roll, keyTonic), PQ_COLOR(roll, keyLarge), PQ_COLOR(roll, keySmall), PQ_COLOR(roll, keyExtra),
     PQ_COLOR(roll, pitchLine), PQ_COLOR(roll, edoLine), PQ_COLOR(roll, edoEquave),
+    PQ_COLOR(roll, jiFill), PQ_COLOR(roll, jiBorder), PQ_COLOR(roll, jiLine), PQ_COLOR(roll, jiText), PQ_COLOR(roll, jiStop),
+    PQ_COLOR(roll, jiRide), PQ_COLOR(roll, jiSelected),
     PQ_COLOR(mosChart, background), PQ_COLOR(mosChart, grid), PQ_COLOR(mosChart, axis), PQ_COLOR(mosChart, axisBorder),
     PQ_COLOR(mosChart, axisText), PQ_COLOR(mosChart, axisTick), PQ_COLOR(mosChart, axisSubTick), PQ_COLOR(mosChart, periodLine),
     PQ_COLOR(mosChart, edoLine), PQ_COLOR(mosChart, edoText), PQ_COLOR(mosChart, edoCents), PQ_COLOR(mosChart, edoHardness),

@@ -6,6 +6,8 @@
 //               Shift draws Ratio notes on the virtual fundamental's harmonics (T3.19). Right-click: the note menu
 //               (convert identity, set pitch, lock the fundamental, row labels). Wheel scrolls (Shift: horizontally),
 //               Ctrl+wheel zooms time, Ctrl+Alt+wheel zooms rows. Esc cancels a drag. Hover: the pitch readout.
+//               T7.4 JI objects: J toggles the JI tool (drag a box, then type a proportion); a JI object's header or
+//               border selects it, a drag from there moves it (time and rows), its left / right border resizes it.
 //   keys        click auditions the row and selects its notes (Shift adds); horizontal drag zooms the rows;
 //               right-click: row labels; hover: the row's pitch readout.
 //   ruler       drag the loop brace (its ends or the whole brace), the start marker and the end marker; elsewhere a
@@ -139,9 +141,43 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   d.kind = DragKind::Rubber;
   d.pressSelection = s_.selection();
   d.additive = (e.mods & (mod::kShift | mod::kCtrl)) != 0;
-  if (!d.additive) s_.clearSelection();
+  if (!d.additive) {
+    s_.clearSelection();
+    s_.selectJiObject({});  // T7.4
+  }
   d.base = s_.selection();
   d.rubber = {static_cast<int32_t>(e.pos.x), static_cast<int32_t>(e.pos.y), 0, 0};
+}
+
+// T7.4: a press on a JI object's header or border selects it; a drag from the header / top / bottom border moves it
+// (time snapped as a note's, pitch by rows), from the left / right border resizes it.
+void NoteAreaWidget::pressJi(const PointerEvent& e, const JiHit& hit) {
+  s_.selectJiObject(hit.id);
+  DragState& d = s_.drag;
+  d = {};
+  const JiView* v = nullptr;
+  for (const JiView& j : s_.jiViews())
+    if (j.id == hit.id) v = &j;
+  if (!v) return;
+  d.kind = hit.zone == JiZone::Start ? DragKind::JiResizeStart : hit.zone == JiZone::End ? DragKind::JiResizeEnd : DragKind::JiMove;
+  d.ji = hit.id;
+  d.press = d.last = e.pos;
+  d.originTick = hit.zone == JiZone::End ? v->start + v->length : v->start;
+  d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
+  if (!s_.rows().empty()) d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
+}
+
+// T7.4 (JI tool): the box of a new object, from the grid cell and row under the press.
+void NoteAreaWidget::pressJiBox(const PointerEvent& e) {
+  DragState& d = s_.drag;
+  d = {};
+  s_.selectJiObject({});
+  s_.clearSelection();
+  if (s_.rows().empty()) return;
+  d.kind = DragKind::JiBox;
+  d.press = d.last = e.pos;
+  d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
+  d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
 }
 
 void NoteAreaWidget::dragTo(Vec2 p) {
@@ -177,6 +213,39 @@ void NoteAreaWidget::dragTo(Vec2 p) {
         if (pl.ok && pl.bottom > cy0 && pl.top <= cy1) ids.push_back(n.id.value);
       });
       s_.select(std::move(ids));
+      break;
+    }
+    case DragKind::JiMove: {
+      const Ticks dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
+      int32_t steps = d.steps;
+      if (!s_.rows().empty()) {
+        const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
+        steps = static_cast<int32_t>(std::clamp<int64_t>(deg - d.pressDegree, INT32_MIN / 2, INT32_MAX / 2));
+      }
+      if (dt != d.dt || steps != d.steps || !s_.jiPreview()) {
+        d.dt = dt;
+        d.steps = steps;
+        s_.updateJiPreview();  // built from the edit the release will dispatch
+      }
+      break;
+    }
+    case DragKind::JiResizeStart:
+    case DragKind::JiResizeEnd: {
+      const Ticks dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
+      if (dt != d.dt || !s_.jiPreview()) {
+        d.dt = dt;
+        s_.updateJiPreview();
+      }
+      break;
+    }
+    case DragKind::JiBox: {
+      if (s_.rows().empty()) break;
+      const TickRange a = drawCell(g, d.pressTick), b = drawCell(g, roundTicks(s_.tickAtX(p.x)));
+      d.jiStart = std::min(a.start, b.start);
+      d.jiLength = std::max(a.end, b.end) - d.jiStart;
+      const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
+      d.jiLow = std::min(deg, d.pressDegree);
+      d.jiHigh = std::max(deg, d.pressDegree);
       break;
     }
     case DragKind::Draw: {
@@ -218,8 +287,21 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left) return false;
       if (tree()) tree()->setFocus(this);
       s_.setHoverPart({});  // a gesture shows its own preview
+      // T7.4: the JI tool grabs an object's header / border or draws a new box (also over notes); without it an
+      // object's header / border is grabbed where no note lies under the pointer. (T7.5: a double-click on a hit
+      // enters the object.)
+      const JiHit jh = s_.ctx.drawMode() ? JiHit{} : s_.jiAt(e.pos);
+      if (s_.jiTool()) {
+        if (jh.zone != JiZone::None) pressJi(e, jh);
+        else pressJiBox(e);
+        return true;
+      }
       int zone = 0;
       const doc::Note* n = s_.noteAt(e.pos, &zone);
+      if (!n && jh.zone != JiZone::None) {
+        pressJi(e, jh);
+        return true;
+      }
       if (n && (s_.ctx.drawMode() || (e.clickCount >= 2 && !(e.mods & (mod::kShift | mod::kCtrl))))) {
         // Draw mode click / double-click on a note: delete it.
         s_.drag = {};
@@ -330,11 +412,19 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
       case DragKind::ResizeEnd: return Cursor::ResizeEW;
       case DragKind::Draw: return Cursor::Crosshair;
       case DragKind::Rubber: return Cursor::Arrow;
+      case DragKind::JiMove: return Cursor::Move;
+      case DragKind::JiResizeStart:
+      case DragKind::JiResizeEnd: return Cursor::ResizeEW;
+      case DragKind::JiBox: return Cursor::Crosshair;
       default: break;
     }
   if (s_.ctx.drawMode()) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
+  // T7.4: a JI object's header / border (as the press: always with the JI tool, else where no note is).
+  const JiHit jh = s_.jiAt(p);
+  const Cursor jiCursor = jh.zone == JiZone::None ? Cursor::Arrow : jh.zone == JiZone::Body ? Cursor::Move : Cursor::ResizeEW;
+  if (s_.jiTool()) return jh.zone == JiZone::None ? Cursor::Crosshair : jiCursor;
   int zone = 0;
-  if (!s_.noteAt(p, &zone)) return Cursor::Arrow;  // a drag draws the selection rectangle
+  if (!s_.noteAt(p, &zone)) return jiCursor;  // empty space: a drag draws the selection rectangle
   return zone != 0 ? Cursor::ResizeEW : Cursor::Move;
 }
 

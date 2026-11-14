@@ -27,6 +27,7 @@
 
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/ji_object.h"
 #include "pq/document/model.h"
 #include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
@@ -62,6 +63,11 @@ enum class DragKind : uint8_t {
   EndMarker,    // ruler: the clip's end (unlooped clips)
   RulerZoom,    // ruler: vertical drag zooms, horizontal drag scrolls
   KeysZoom,     // keys: horizontal drag zooms the rows
+  // T7.4 (roll_ji.cpp)
+  JiBox,          // JI tool: the box of a new JI object (time snapped to grid cells, pitch to rows)
+  JiMove,         // the selected JI object by (dt, steps); its inner notes move with it
+  JiResizeStart,  // its start edge by dt
+  JiResizeEnd,    // its end edge by dt
 };
 
 enum class BraceEdge : uint8_t { Start, End, Both };
@@ -122,6 +128,55 @@ struct DragState {
   bool trackDamage = false;
   std::vector<doc::Note> tracked;
   ui::IRect damage{};
+  // T7.4: the JI object dragged (JiMove / JiResize*), the box drawn (JiBox: content ticks, absolute degrees).
+  doc::JiObjectId ji;
+  Ticks jiStart = 0, jiLength = 0;
+  int64_t jiLow = 0, jiHigh = 0;
+};
+
+// ---- JI objects (T7.4; roll_ji.cpp) -----------------------------------------------------------------------------
+// What the note area draws of one JI object, built off the paint path when the clip's object list or the tuning
+// changes (RollState::refresh): the voices flattened to breakpoints linear in cents (doc::jiVoicePlan, the one
+// evaluation the lowering shares), the pitch range, and every label as text. Paint only maps it to the screen.
+struct JiStopMark {
+  Ticks at = 0;       // object ticks
+  std::string label;  // the proportion ("5:6:7:8:9", undertone "1/4:1/5:1/6") or, for a tuning stop, the tuning's name
+};
+struct JiView {
+  doc::JiObjectId id;
+  Ticks start = 0, length = 0;
+  bool ok = false;                     // false: a pitch the tuning cannot resolve (nothing is drawn)
+  double minCents = 0.0, maxCents = 0.0;  // over every voice and the whole span, ride included
+  double rideBase = 0.0;               // the ride line is drawn at rideBase + ride(t) (under the lowest voice)
+  double boxLow = 0.0;                 // the lowest pitch the box covers (minCents, or the ride line's lowest point)
+  doc::JiPlan plan;                    // V voices
+  std::vector<uint8_t> distinct;       // per voice: 0 = the same path as the voice before it (drawn once)
+  std::vector<std::string> voiceLabels;  // per voice: its term in the first proportion stop ("8", "1/4"); may be empty
+  std::string header;
+  std::vector<JiStopMark> stops;       // stop 0 first; only the stops inside the span
+  std::vector<doc::Breakpoint> ride;
+};
+// A typed proportion: "8:9:10:12:15" (overtone), "1/4:1/5:1/6" (undertone; terms 4, 5, 6).
+struct JiProportion {
+  std::vector<int64_t> terms;  // strictly ascending
+  bool undertone = false;
+};
+// The box of a new object: content ticks, the rows (absolute degrees) at its bottom and top edges.
+struct JiBox {
+  Ticks start = 0, length = 0;
+  int64_t low = 0, high = 0;
+};
+enum class JiZone : uint8_t { None, Body, Start, End };  // Body: the header or the top / bottom border
+struct JiHit {
+  doc::JiObjectId id;
+  JiZone zone = JiZone::None;
+};
+// A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve, or follows a JI object.
+struct CurveNote {
+  const doc::Note* note;
+  Ticks start, length;
+  tuning::PitchId pitch;
+  bool selected;
 };
 
 // Per note chunk: what the visibility tests need without touching the notes.
@@ -362,6 +417,67 @@ public:
   // Paint scratch (the note area's z-ordered notes, the ratio labels), reused across frames.
   std::vector<ZNote> zNotes, zSorted;
   std::vector<NoteLabel> noteLabels;
+  std::vector<CurveNote> curveNotes;  // T7.4: the visible notes drawn along a path
+  // T7.4: wall-clock time of the note area's last paint and of its JI part (tests: the 200-object budget).
+  struct PaintStats {
+    double notesMs = 0.0;
+    double jiMs = 0.0;
+    uint32_t jiPainted = 0;  // objects whose box met the clip rect
+  };
+  PaintStats paintStats;
+  std::vector<ui::Vec2> linePts;      // T7.4: one polyline being built
+
+  // --- JI objects (T7.4; roll_ji.cpp) ---
+  // The JI tool (J): a drag on empty space draws the box of a new object, then the proportion field opens. View
+  // state; turning it on leaves Draw Mode and the other way round.
+  bool jiTool() const noexcept { return jiTool_; }
+  void setJiTool(bool on);
+  const std::vector<JiView>& jiViews() const noexcept { return jiViews_; }
+  // The object as a drag in progress would leave it (JiMove / JiResize*), else nullptr.
+  const JiView* jiPreview() const noexcept { return jiPreview_ ? &*jiPreview_ : nullptr; }
+  // The selected object (invalid: none). Selecting an object clears the note selection and the other way round.
+  doc::JiObjectId jiSelection() const noexcept { return jiSel_; }
+  void selectJiObject(doc::JiObjectId id);
+  // The object's box in device px (not clipped): its span x its pitch range plus the padding the lines need.
+  ui::Rect jiBoxRect(const JiView& v) const;
+  // The device rect of a box being drawn / waiting for its proportion.
+  ui::Rect jiBoxRect(const JiBox& b) const;
+  // What a press at `p` grabs of an object: its header or top / bottom border (Body: select, drag = move), its left /
+  // right border (Start / End: resize). The inside of a box belongs to the notes.
+  JiHit jiAt(ui::Vec2 p) const;
+  // The box waiting for its proportion (the field is open), drawn dashed.
+  const std::optional<JiBox>& jiPending() const noexcept { return jiPending_; }
+  // Opens the proportion field under the box (Enter creates the object, Esc / a click outside drops the box).
+  // nullptr without a clip or overlay layer.
+  ui::TextEdit* openJiEntry(const JiBox& box);
+  // "8:9:10:12:15" / "1/4:1/5:1/6" (spaces allowed). An error says what is wrong.
+  static Result<JiProportion> parseProportion(std::string_view text);
+  // Creates the object over `box` (one undo step) and selects it. The pitch at the box's bottom edge (the row
+  // `box.low`, a Degree identity) is the object's fundamental AND its lowest voice: stop 0's scale is 1 / (the lowest
+  // term) (undertone: the largest term), so the chord sits in the box as drawn (ops::jiFromNotes' pinned-lowest-voice
+  // convention). False with `error` set when the text is no proportion or the document refuses it: nothing is created.
+  bool createJiObject(const JiBox& box, std::string_view text, std::string* error = nullptr);
+  // apply(), then the note selection is cleared and `keep` (if it still exists) is the selected object.
+  bool applyJi(const doc::ops::EditResult& e, std::string_view what, doc::JiObjectId keep);
+  bool deleteJiSelection();     // ops::deleteJiObject: inner notes stay, converted to the pitch they had
+  bool duplicateJiSelection();  // a copy right after the object, inner notes included; the copy is selected
+  // The edit a JiMove / JiResize drag in state `d` commits (also what the preview is built from).
+  doc::ops::EditResult jiDragEdit(const DragState& d) const;
+  void updateJiPreview();
+  // After the clip or the tuning changed (refresh()).
+  void rebuildJiViews();
+
+  // --- pitch paths (T7.4) ---
+  // Device y of a pitch in cents, not rounded.
+  float yOfCents(double cents) const noexcept;
+  // Whether a note is drawn along a path: it has a pitch curve or follows a JI object. O(1) for a clip without
+  // curves and objects.
+  bool onPath(const doc::Note& n, const tuning::PitchId& pitch) const noexcept;
+  // The pitch in cents of a note `offset` ticks after its start, when it starts at `start` with identity `pitch` (a
+  // drag preview may differ from the note): the identity's pitch (a Harmonic note along its voice, a Ratio on a JI
+  // fundamental along the fundamental) plus the note's own pitch curve. nullopt: unresolvable. The seam T7.5 / T7.6
+  // hit-test and edit along.
+  std::optional<double> pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const;
 
   // --- row labels (T3.19) ---
   RowLabels rowLabels() const noexcept { return rowLabels_; }
@@ -487,6 +603,16 @@ private:
   double morphRegionsPeriod_ = 0.0;
   int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;
   std::vector<doc::Note> clipboard_;  // starts relative to the earliest copied note
+  std::vector<doc::NoteCurves> clipboardCurves_;  // T7.4: the copied notes' pitch curves (keyed by the source ids)
+  // T7.4
+  bool jiTool_ = false;
+  doc::JiObjectId jiSel_;
+  std::vector<JiView> jiViews_;
+  const void* jiViewsFor_ = nullptr;  // the clip's JiObjectList the views were built from
+  bool jiViewsDirty_ = true;          // the tuning changed (rebuild or in-place morph)
+  std::optional<JiView> jiPreview_;
+  std::optional<JiBox> jiPending_;
+  JiView makeJiView(const doc::JiObject& o) const;
   RowLabels rowLabels_ = RowLabels::Auto;
   int64_t hoverRow_ = -1;   // the row index the readout is for (−1: none)
   uint32_t hoverNote_ = 0;  // the note id it is for (0: none)

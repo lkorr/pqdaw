@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 
@@ -238,6 +239,13 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     dl.popClip();
     return;
   }
+  using PaintClock = std::chrono::steady_clock;
+  const PaintClock::time_point paintStart = PaintClock::now();
+  struct PaintTimer {  // T7.4: RollState::paintStats.notesMs (tests)
+    double& ms;
+    PaintClock::time_point start;
+    ~PaintTimer() { ms = std::chrono::duration<double, std::milli>(PaintClock::now() - start).count(); }
+  } paintTimer{s_.paintStats.notesMs, paintStart};
   paintRowsBackground(ctx, s_, r);
   const float vy0 = static_cast<float>(vis.y), vy1 = static_cast<float>(vis.bottom());
   const auto [from, to] = tickSpan(s_, vis.x, vis.right());
@@ -256,6 +264,15 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
 
   paintOverlay(ctx, s_, vis, static_cast<float>(vis.x), static_cast<float>(vis.right()));
   paintFundamental(ctx, s_, r, vis);
+  const DragState& dr0 = s_.drag;
+  if (!s_.jiViews().empty() || s_.jiPending() || dr0.kind == DragKind::JiBox) {  // T7.4: under the notes
+    const PaintClock::time_point t0 = PaintClock::now();
+    paintJiObjects(ctx, s_, vis, false);
+    s_.paintStats.jiMs = std::chrono::duration<double, std::milli>(PaintClock::now() - t0).count();
+  } else {
+    s_.paintStats.jiMs = 0.0;
+    s_.paintStats.jiPainted = 0;
+  }
 
   // Notes. A Move / Copy drag shows the selected notes displaced: look as far back / ahead as the drag reaches.
   const DragState& dr = s_.drag;
@@ -275,11 +292,19 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   // T3.19: Ratio notes carry their ratio (and harmonic number over the virtual fundamental), drawn after every note.
   std::vector<NoteLabel>& labels = s_.noteLabels;
   labels.clear();
+  // T7.4: notes with a pitch curve and notes of a JI object are drawn along their path, after the others.
+  std::vector<CurveNote>& curved = s_.curveNotes;
+  curved.clear();
+  const bool anyPath = s_.clip()->curves != nullptr || s_.clip()->ji != nullptr;
   const std::optional<tuning::Rational> F = s_.virtualFundamental();
   auto emit = [&](const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch, bool sel) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
     if (x1 <= vx0 || x0 >= vx1) return;
+    if (anyPath && s_.onPath(n, pitch)) {
+      curved.push_back({&n, start, length, pitch, sel});
+      return;
+    }
     const NotePlace pl = s_.place(pitch);
     if (!pl.ok) return;
     const float y0 = static_cast<float>(s_.screenY(pl.top)), y1 = static_cast<float>(s_.screenY(pl.bottom));
@@ -343,6 +368,12 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
         }
       }
 
+  if (!curved.empty()) paintCurveNotes(ctx, s_, vis);
+  if (!s_.jiViews().empty()) {  // T7.4: the objects' text, over the notes
+    const PaintClock::time_point t0 = PaintClock::now();
+    paintJiObjects(ctx, s_, vis, true);
+    s_.paintStats.jiMs += std::chrono::duration<double, std::milli>(PaintClock::now() - t0).count();
+  }
   if (!labels.empty()) paintNoteLabels(ctx);
 
   // Draw-mode preview: the notes the drag will add.
@@ -801,12 +832,13 @@ void ClipBoxPanel::paint(PaintContext& ctx) {
 void CornerPanel::paint(PaintContext& ctx) {
   if (const Theme* th = ctx.res.theme) {
     ctx.dl.addRectFilled(rect().toRect(), th->surface.panel);
-    if (s_.ctx.drawMode()) {
-      // Draw mode indicator: a pencil-coloured bar along the bottom (Live highlights its draw-mode switch).
+    if (s_.ctx.drawMode() || s_.jiTool()) {
+      // Draw mode indicator: a pencil-coloured bar along the bottom (Live highlights its draw-mode switch). T7.4: the
+      // JI tool shows the same bar in the JI objects' colour.
       const IRect r = rect();
       ctx.dl.addRectFilled(Rect{static_cast<float>(r.x), static_cast<float>(r.bottom() - ctx.scale.px(2)),
                                 static_cast<float>(r.right()), static_cast<float>(r.bottom())},
-                           th->accent.primary);
+                           s_.jiTool() ? th->roll.jiLine : th->accent.primary);
     }
   }
 }

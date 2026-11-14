@@ -92,6 +92,7 @@
     {"scope": "pianoroll", "keys": "Shift+Up", "action": "pianoroll.equaveUp", "status": "implemented", "task": "T3.11"},
     {"scope": "pianoroll", "keys": "Shift+Down", "action": "pianoroll.equaveDown", "status": "implemented", "task": "T3.11"},
     {"scope": "pianoroll", "keys": "0", "action": "pianoroll.toggleActive", "status": "implemented", "task": "T3.11"},
+    {"scope": "pianoroll", "keys": "J", "action": "pianoroll.toggleJiTool", "status": "implemented", "task": "T7.4"},
     {"scope": "devices", "keys": "Delete", "action": "device.delete", "status": "implemented", "task": "T4.1"},
     {"scope": "devices", "keys": "Ctrl+C", "action": "device.copy", "status": "implemented", "task": "T4.1"},
     {"scope": "devices", "keys": "Ctrl+X", "action": "device.cut", "status": "implemented", "task": "T4.1"},

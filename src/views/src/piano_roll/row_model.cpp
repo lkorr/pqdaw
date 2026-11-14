@@ -380,6 +380,21 @@ int64_t RowModel::indexOfDegree(int64_t degree) const noexcept {
   return (lo < rows_.size() && rows_[lo].degree == degree) ? static_cast<int64_t>(lo) : -1;
 }
 
+double RowModel::yOfCents(double cents) const noexcept {
+  size_t lo = 0, hi = rows_.size();
+  while (lo < hi) {  // first row at or below the pitch (rows descend in cents)
+    const size_t mid = (lo + hi) / 2;
+    if (rows_[mid].cents > cents) lo = mid + 1;
+    else hi = mid;
+  }
+  if (rows_.size() == 1) return rows_[0].centre;
+  const size_t b = std::clamp<size_t>(lo, 1, rows_.size() - 1), a = b - 1;  // a above, b below; the end pair extrapolates
+  const PitchRow& ra = rows_[a];
+  const PitchRow& rb = rows_[b];
+  if (ra.cents == rb.cents) return ra.centre;
+  return rb.centre + (ra.centre - rb.centre) * ((cents - rb.cents) / (ra.cents - rb.cents));
+}
+
 CentsPlacement RowModel::placeCents(double cents) const noexcept {
   // k = first row at or below the pitch (rows descend in cents).
   size_t lo = 0, hi = rows_.size();

@@ -194,6 +194,9 @@ public:
   }
   // Placement of a pitch in cents (see the file comment). The model must not be empty.
   CentsPlacement placeCents(double cents) const noexcept;
+  // T7.4: the content y of a pitch in cents, not rounded (placeCents' interpolation between the row centres): what
+  // lines drawn through pitches use (JI voices, notes along their pitch curve). The model must not be empty.
+  double yOfCents(double cents) const noexcept;
   // Pitch in cents at content y: interpolated linearly between the row centres around y (extrapolated past the
   // ends). The model must not be empty.
   double centsAtY(double y) const noexcept;

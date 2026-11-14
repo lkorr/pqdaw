@@ -52,8 +52,14 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   ctx_.setViewAction("pianoroll.shorten", [this] { state_->lengthenSelection(-1); }, [this] { return hasClip(); });
   ctx_.setViewAction("pianoroll.lengthen", [this] { state_->lengthenSelection(1); }, [this] { return hasClip(); });
   // Only with a selection: else Esc falls through (Q27).
-  ctx_.setViewAction("pianoroll.deselect", [this] { state_->clearSelection(); },
-                     [this] { return hasClip() && !state_->selection().empty(); });
+  ctx_.setViewAction("pianoroll.deselect",
+                     [this] {
+                       state_->clearSelection();
+                       state_->selectJiObject({});
+                     },
+                     [this] { return hasClip() && (!state_->selection().empty() || state_->jiSelection().valid()); });
+  // T7.4: the JI tool (J).
+  ctx_.setViewAction("pianoroll.toggleJiTool", [this] { state_->setJiTool(!state_->jiTool()); }, [this] { return hasClip(); });
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { onDocument(); });
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
@@ -93,6 +99,7 @@ void ClipView::onView(uint32_t bits) {
     if (s.rulerView) s.rulerView->markDirty();
     s.markNotesDirty();
   }
+  if ((bits & view_change::kTool) && ctx_.drawMode()) s.setJiTool(false);  // T7.4: one tool at a time
   if ((bits & view_change::kTool) && s.cornerPanel) s.cornerPanel->markDirty();
   if (bits & view_change::kTool) s.refreshHoverPart();  // Draw Mode shows no edges
 }
@@ -232,6 +239,28 @@ void ClipView::setRowLabels(roll::RowLabels mode) { state_->setRowLabels(mode); 
 ui::InfoText ClipView::readoutAt(ui::Vec2 p, bool keys) {
   state_->hoverAt(p, keys);
   return {state_->hoverTitle(), state_->hoverBody()};
+}
+
+// T7.4
+ClipView::PaintStats ClipView::paintStats() const noexcept {
+  return {state_->paintStats.notesMs, state_->paintStats.jiMs, state_->paintStats.jiPainted};
+}
+Result<ClipView::Proportion> ClipView::parseProportion(std::string_view text) {
+  Result<roll::JiProportion> p = RollState::parseProportion(text);
+  if (!p) return p.error();
+  return Proportion{std::move(p->terms), p->undertone};
+}
+bool ClipView::jiTool() const noexcept { return state_->jiTool(); }
+void ClipView::setJiTool(bool on) { state_->setJiTool(on); }
+doc::JiObjectId ClipView::jiSelection() const noexcept { return state_->jiSelection(); }
+void ClipView::selectJiObject(doc::JiObjectId id) { state_->selectJiObject(id); }
+IRect ClipView::jiObjectRect(doc::JiObjectId id) const {
+  for (const roll::JiView& v : state_->jiViews())
+    if (v.id == id && v.ok) {
+      const Rect b = state_->jiBoxRect(v);
+      return {static_cast<int32_t>(b.x0), static_cast<int32_t>(b.y0), static_cast<int32_t>(b.x1 - b.x0), static_cast<int32_t>(b.y1 - b.y0)};
+    }
+  return {};
 }
 
 ClipView& installClipView(Shell& shell) {

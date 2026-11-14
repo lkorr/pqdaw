@@ -203,6 +203,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_audio_clip_warp.cpp  # T6.8: warp modes and settings, warp markers, warp commands, Warp prefs tab (real dispatch), goldens
     views/test_piano_roll.cpp
     views/test_piano_roll_scale.cpp
+    views/test_piano_roll_ji.cpp  # T7.4: JI objects in the roll (real dispatch: tool drag -> field, move, resize, delete, duplicate, undo), copy / paste of curves, goldens, perf
     views/test_mos_chart.cpp
     views/test_mixer.cpp
     views/test_mos_wheel.cpp

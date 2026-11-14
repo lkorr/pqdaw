@@ -103,6 +103,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.toggleActive` | `0` | pianoroll | MIDI Note Editor | implemented (T3.11) |
+| `pianoroll.toggleJiTool` | `J` | pianoroll | — (pqdaw; SPEC §5) | implemented (T7.4: the JI tool on / off — drag a box in the note editor, then type a proportion (`8:9:10:12:15`, undertone `1/4:1/5:1/6`) and press Enter: a JI object whose lowest voice sits on the box's bottom row. Turning it on leaves Draw Mode and the other way round. With the computer MIDI keyboard on (`M`), `J` plays a note instead, as every letter key does) |
 | `device.delete` | `Delete` | devices | Editing | implemented (T4.1: deletes the selected devices) |
 | `device.copy` | `Ctrl+C` | devices | Editing | implemented (T4.1) |
 | `device.cut` | `Ctrl+X` | devices | Editing | implemented (T4.1) |
