@@ -1637,7 +1637,7 @@ Choice: `ops::moveJiObject(…, steps, displayGrid, cents)`, `ops::pasteJiObject
 `ops::deleteJiObject(…, withNotes)`; the roll's raw-command compositions are deleted.
 Status: closed.
 
-## Q?-T7.7-a · 2026-11-14 · T7.7 · A Sync happens at the end of its block; the unison's steps at the next block's first frame
+## Q286 · 2026-11-14 · T7.7 · A Sync happens at the end of its block; the unison's steps at the next block's first frame
 Context: the image runs a block once, so a lane's state can only be copied between blocks. The merging voice is at 0
 from the merge tick; the keeper keeps its level until the steps.
 Options: (a) copy at the block's end, the conditional steps (and the later events of those notes in that block, in
@@ -1645,7 +1645,7 @@ order) at frame 0 of the next block: up to one block (1.3 ms at 64 frames) late,
 the block at the Sync (sample-exact, but every Sync costs an extra image run for the whole track).
 Choice: (a). Nothing audible depends on the tick: before the steps the sum is the keeper alone, after them too.
 
-## Q?-T7.7-b · 2026-11-14 · T7.7 · A split's level is carried by the unison's lowest voice
+## Q287 · 2026-11-14 · T7.7 · A split's level is carried by the unison's lowest voice
 Context: "split level monotonic". If every voice of a unison rose from 1/k as it left, the sum would fall below one
 voice once the voices decorrelate (k voices at little more than 1/k each).
 Choice: at the tick the split begins the voices that stay with the lowest voice step to 1/(their number) and the
@@ -1654,7 +1654,7 @@ expected power 1 + Σ g² only rises. Measured (4:5:6:7 → 1 → 4:5:6:7, sine)
 between consecutive 50 ms windows 0.22 dB (beats inside the window); in 10 ms windows the first slow beats of the
 leaving voices are visible, as on the merge. The cost: for the first part of a split the lowest voice is the loudest.
 
-## Q?-T7.7-c · 2026-11-14 · T7.7 · Voices that keep moving together after a Sync are not re-Synced
+## Q288 · 2026-11-14 · T7.7 · Voices that keep moving together after a Sync are not re-Synced
 Context: a Synced voice gets its own Pitch events afterwards (targets computed from its own note Hz and curve), which
 can differ from the keeper's by a float32 ulp when both glide on together or ride a curve: bit-identical while they
 hold, within about 1e-7 relative in frequency (a beat period of hours) after a joint move.
