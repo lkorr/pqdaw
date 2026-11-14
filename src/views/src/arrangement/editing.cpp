@@ -111,17 +111,7 @@ doc::ClipSlot cloneFresh(const doc::ClipSlot& slot, doc::IdSource& ids, Ticks st
     out.audio = std::make_shared<const doc::AudioClip>(std::move(a));
     return out;
   }
-  const doc::NoteClip& c = *slot.clip;
-  std::vector<doc::Note> notes;
-  notes.reserve(c.notes.size());
-  for (const doc::Note& n : c.notes) {
-    doc::Note m = n;
-    m.id = ids.note();
-    notes.push_back(m);
-  }
-  Result<doc::NoteSeq> seq = doc::NoteSeq::fromNotes(std::move(notes));
-  doc::NoteClip nc = doc::withNotes(c, seq ? std::move(*seq) : doc::NoteSeq{});
-  nc.id = ids.clip();
+  doc::NoteClip nc = doc::ops::cloneNoteClip(*slot.clip, ids);  // T7.2: JI objects and note curves copied with it
   nc.start = start;
   out.id = nc.id;
   out.clip = std::make_shared<const doc::NoteClip>(std::move(nc));

@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "pq/document/ji_object.h"
 #include "pq/tuning/mos.h"
 #include "pq/tuning/tuning.h"
 
@@ -58,7 +59,7 @@ public:
     int32_t degree = 0, equave = 0;
   };
 
-  ClipResolver(const NoteClip& clip, const tuning::Tuning& t, bool signal) : t_(t), signal_(signal) {
+  ClipResolver(const NoteClip& clip, const tuning::Tuning& t, bool signal) : clip_(clip), t_(t), signal_(signal) {
     notes_.reserve(clip.notes.size());
     for (const Note& n : clip.notes) notes_.push_back(&n);
     byId_.reserve(notes_.size());
@@ -100,9 +101,28 @@ public:
             resolvable = false;
           }
         }
-        break;  // a JI-fundamental anchor needs its JI object (M7): resolveHzDouble fails without anchorHz
-      case tuning::PitchKind::Harmonic:
+        if (p.anchorKind() == tuning::AnchorKind::JiFundamental) {  // T7.2: the object's fundamental at the note's start
+          const JiObject* o = findJiObject(clip_, JiObjectId{p.anchorId()});
+          const std::optional<double> f =
+              o ? jiFundamentalHz(*o, t_, static_cast<double>(notes_[i]->start - o->start)) : std::nullopt;
+          if (f) {
+            rc.anchorHz = *f;
+            followFundamental(r, *o);
+          } else {
+            resolvable = false;
+          }
+        }
         break;
+      case tuning::PitchKind::Harmonic: {  // T7.2: the object's voice at the note's start (exact at a hold)
+        const JiObject* o = findJiObject(clip_, JiObjectId{p.jiObject()});
+        std::optional<double> hz =
+            o ? jiVoiceHz(*o, t_, p.voiceIndex(), static_cast<double>(notes_[i]->start - o->start)) : std::nullopt;
+        if (hz && !(*hz >= static_cast<double>(FLT_MIN) && *hz <= static_cast<double>(FLT_MAX))) hz.reset();
+        if (hz) followFundamental(r, *o);
+        r.hz = hz;
+        resolvable = false;  // resolved here, not by the tuning
+        break;
+      }
     }
     if (resolvable) r.hz = playableHz(p, t_, rc);
     if (!r.hz || !signal_) r.follow = PitchFollow::Static;
@@ -112,6 +132,17 @@ public:
   }
 
 private:
+  // A note of a JI object follows the tuning signal as the object's fundamental does (a Degree fundamental: its
+  // degree, the note keeping its ratio to it).
+  static void followFundamental(Resolved& r, const JiObject& o) noexcept {
+    r.follow = ownFollow(o.fundamental);
+    if (o.fundamental.kind() == tuning::PitchKind::Degree) {
+      r.degree = o.fundamental.degree();
+      r.equave = o.fundamental.equave();
+    }
+  }
+
+  const NoteClip& clip_;
   const tuning::Tuning& t_;
   bool signal_;
   std::vector<const Note*> notes_;

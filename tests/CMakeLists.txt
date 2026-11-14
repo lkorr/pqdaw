@@ -478,6 +478,7 @@ pq_add_test(pq_tests_document
     document/test_audibility.cpp
     document/test_main_tunings.cpp
     document/test_virtual_fundamental.cpp
+    document/test_ji.cpp  # T7.2: JI objects (commands, evaluation, the voice plan, ops, file), note curves
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_recording.cpp  # T6.1: recording model (inputs, monitor gate, input map, take lanes, comping, warp markers, file)

@@ -58,6 +58,7 @@ struct Edit {
   std::vector<TuningId> tunings;  // main tunings created or kept (T3.19)
   std::vector<DeviceId> devices;  // devices created or kept (T4.1)
   std::vector<WireId> wires;      // wires created or kept (T4.7)
+  std::vector<JiObjectId> jiObjects;  // JI objects created or kept, in `noteClip` (T7.2)
 
   bool empty() const noexcept;    // the batch has no commands
   const Batch& batch() const noexcept;
@@ -353,8 +354,10 @@ EditResult consolidateAudio(const Project& p, IdSource& ids, std::span<const Con
 
 // ---- Notes -----------------------------------------------------------------------------------------------------
 
-// Adds notes (their `id` fields are ignored: fresh ids are assigned). Returns their keys.
-EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const Note> notes);
+// Adds notes (fresh ids are assigned). Returns their keys. T7.2 `curves` (a paste): the curves of the SOURCE notes,
+// matched by the `id` each given note still carries (any order; the id is otherwise ignored): the new note gets a copy.
+EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const Note> notes,
+                    std::span<const NoteCurves> curves = {});
 EditResult deleteNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes);
 
 // Identity-aware pitch steps (SPEC §6.1 microtonal Up/Down, T3.6).
@@ -368,6 +371,8 @@ struct PitchStepContext {
   // Reference-anchored Ratio notes: the clip's virtual fundamental (doc::virtualFundamental, T3.6-fix1); nullopt =
   // each note's own fundamental 1/d. Ratios anchored to other notes always step on their own.
   std::optional<tuning::Rational> fundamental;
+  // T7.2: the clip, for Harmonic notes: a voice steps within its JI object's voices (0 … V − 1). nullptr: no upper bound.
+  const NoteClip* clip = nullptr;
 };
 // One note's pitch after `steps` steps (negative = down). nullopt = the note cannot move that way (left unchanged):
 //   Degree   Grid: ±1 degree of the tuning (one EDO step / one scale or MOS degree), carrying into the equave.
@@ -380,7 +385,8 @@ struct PitchStepContext {
 //            5/4 → 6/4 (= 3/2) → 7/4. Fails below the first harmonic (m ± steps < 1).
 //            Equave: × / ÷ the tuning's equave ratio (exact for EDO ratio equaves and Scala ratio equaves; a cents
 //            equave within 0.001 ¢ of a ratio p/q with p, q ≤ 64 uses that ratio; otherwise fails).
-//   Harmonic Grid: next voice of the JI object (voiceIndex ± 1, ≥ 0). Equave: fails (a voice has no equave).
+//   Harmonic Grid: next voice of the JI object (voiceIndex ± 1, in [0, V − 1] with ctx.clip). Equave: fails (a voice
+//            has no equave).
 std::optional<tuning::PitchId> stepPitch(const tuning::PitchId& pitch, int32_t steps, StepUnit unit,
                                          const PitchStepContext& ctx);
 
@@ -416,17 +422,19 @@ EditResult offsetNotesProperty(const Project& p, ClipRef clip, std::span<const N
 EditResult quantizeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, const Grid& grid,
                          Ticks gridOrigin = 0, int amountPercent = 100, QuantizeMode mode = QuantizeMode::StartOnly);
 // Ctrl+D in the clip view: copies the notes `offset` ticks later (0 = the selection's span, max end − min start).
+// T7.2: a copy has its source's curves; a copy of a JI object's inner note follows the same object.
 EditResult duplicateNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
                           Ticks offset = 0);
 
 // SPEC §3.1 explicit identity conversions. Degree and Ratio (reference-anchored) → Cents: the exact same pitch
 // ("freeze"). Ratio/Cents → Degree: the nearest degree of the clip's tuning ("snap"). Degree/Cents → Ratio (T3.19):
 // the simplest ratio (smallest denominator, the Stern–Brocot node nearest the root) within ratioSnapTolerance of the
-// pitch, reference-anchored, so Degree → Ratio → Degree returns the same degree. Other notes are left alone; `to` =
-// Harmonic is refused (no JI objects yet).
+// pitch, reference-anchored, so Degree → Ratio → Degree returns the same degree. T7.2: a note of a JI object (Harmonic,
+// or a Ratio anchored to its fundamental) converts from the pitch it has at its start (ji_object.h), leaving the
+// object. Notes anchored to other notes are left alone; `to` = Harmonic is refused. Curves stay (ids do not change).
 EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, tuning::PitchKind to);
-// Sets every note's pitch identity to `pitch` (a type-in, T3.19). A Ratio must be positive and anchored to the
-// reference or a note; Harmonic is refused.
+// Sets every note's pitch identity to `pitch` (a type-in, T3.19). A Ratio must be positive; T7.2: a Harmonic pitch or
+// a Ratio anchored to a JI fundamental must name an object of the clip (and a voice it has).
 EditResult setNotesPitch(const Project& p, ClipRef clip, std::span<const NoteKey> notes, const tuning::PitchId& pitch);
 
 // The simplest positive ratio in [lo, hi] (smallest denominator, then numerator: the first Stern–Brocot node inside
@@ -440,6 +448,68 @@ std::optional<tuning::Rational> simplestRatioNear(double cents, double tolerance
 inline constexpr double kRatioSnapMinCents = 0.05;
 inline constexpr double kRatioSnapMaxCents = 20.0;  // 12-EDO's 900 ¢ → 5/3 (15.6 ¢ off), 300 ¢ → 6/5
 double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept;
+
+// ---- JI objects and note curves (T7.2; model.h "JI objects and note curves", ji_object.h; plan M7 + A1) ------------
+// Every builder is one undo step. `Edit::jiObjects` names the object; `Edit::notes` the notes it touched.
+
+// A new object over [start, start + length) (clip-content ticks) with one proportion stop `terms` (ascending) on
+// `fundamental` (Degree, Cents or a reference-anchored Ratio): terms.size() voices, sounding.
+EditResult createJiObject(const Project& p, IdSource& ids, ClipRef clip, Ticks start, Ticks length,
+                          const tuning::PitchId& fundamental, std::span<const int64_t> terms, bool undertone = false);
+
+struct JiFromNotesOptions {
+  // true (A1, "Tune to JI"): stop 0 = the notes as written (a tuning stop), stop 1 = the proportion, reached by a
+  // glide of `glide` ticks ending at stop 1's `at` (= glide). false: the proportion only.
+  bool tuningStop = true;
+  Ticks glide = kPpq / 4;  // the roll passes one grid step; clamped to [1, the span − 1]
+  // false: the notes stay and become the object's inner notes (Harmonic(object, voice)), the object a scaffold
+  // (sounds = false): nothing about them is lost. true: the notes are removed and the object sounds instead.
+  bool replaceNotes = false;
+};
+// A chord → an object over the notes' span (min start … max end). One voice per distinct pitch, ascending. The
+// proportion: each voice's ratio to the lowest — exact between reference-anchored Ratio notes, else the simplest ratio
+// within ratioSnapTolerance of the interval (simplestRatioNear) — times the lcm of the denominators (12-EDO C E G →
+// 4:5:6). The lowest voice is pinned: the object's fundamental IS the lowest note's pitch (so it follows the tuning as
+// that note does) and the stops' scale is 1 / (its term), so its ratio to the fundamental is exactly 1 and its Hz does
+// not change. Errors: no notes, more than kMaxJiVoices pitches, an unresolvable note, a chord with no proportion
+// within kMaxJiTerm.
+EditResult jiFromNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
+                       const JiFromNotesOptions& options = {});
+
+// Moves the object by `dt`; its inner notes (the clip's notes that follow it) move with it.
+EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks dt);
+// Moves one edge by `delta` (length ≥ 1). End: the length changes; stops beyond the end are kept (never reached).
+// Start: the object's content keeps its absolute time: later stops and the ride shift, a stop the start passes becomes
+// stop 0 (the earlier ones are dropped), a start moved earlier extends stop 0. Inner notes stay where they are.
+EditResult resizeJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, NoteEdge edge, Ticks delta);
+// Removes the object; its inner notes leave it first, each keeping the pitch it has at its start: on a hold of a tuning
+// stop the stop's own pitch; on a hold of a proportion over a reference-Ratio fundamental the exact reference-anchored
+// Ratio; otherwise (a Degree / Cents fundamental, mid-glide, under a ride) Cents.
+EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object);
+// Replaces the object (same id) with `object`, every field: fundamental, flags, velocity, ride, stops. The voice count
+// follows the stops (new voices get fresh note ids, `object.voiceNotes` beyond it are dropped). Errors: an invalid
+// object, a Harmonic note on a voice it would lose.
+EditResult setJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObject object);
+// Replaces the stops (sorted by `at`, the first at 0). When the voice count changes, voice maps / per-voice timings of
+// another size are dropped (the spread rule applies again).
+EditResult setJiStops(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, std::vector<JiStop> stops);
+// A proportion stop at object tick `at` (replacing a stop already there), on the scale of the stop before it, reached
+// by a glide of `glide` ticks (clamped to the gap after the previous stop).
+EditResult addJiStop(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, Ticks at,
+                     std::span<const int64_t> terms, Ticks glide = 0);
+// A1: back to the tuning at object tick `at`: the object's stop-0 pitches when stop 0 is a tuning stop (the chord as
+// written), else each voice's nearest degree of the clip's tuning to where it is at `at` (ride excluded).
+EditResult addJiTuningStop(const Project& p, ClipRef clip, JiObjectId object, Ticks at, Ticks glide = 0);
+// Walks entry `term` of proportion stop `stop` by `steps` (22:26:… −1 → 21:26:…) and rescales the stop so that entry
+// `pin` keeps its pitch exactly (pin == term: every other voice moves instead). Errors: a tuning stop, terms that
+// would no longer ascend or leave [1, kMaxJiTerm], a scale out of range.
+EditResult walkJiTerm(const Project& p, ClipRef clip, JiObjectId object, uint32_t stop, uint32_t term, int32_t steps,
+                      uint32_t pin);
+// Sets (empty: removes) a note's pitch curve: cents offsets over ticks from the note's start (NoteCurves).
+EditResult setNoteCurve(const Project& p, ClipRef clip, NoteKey note, std::vector<Breakpoint> pitch);
+// A copy of a note clip with fresh clip, note and JI ids (objects and their voice notes), the copies' identities
+// re-pointed to the copied objects and the curves re-keyed: what every clip copy / paste / duplicate uses.
+NoteClip cloneNoteClip(const NoteClip& c, IdSource& ids);
 
 // ---- Main tunings (T3.19, SPEC §3.2) ---------------------------------------------------------------------------
 

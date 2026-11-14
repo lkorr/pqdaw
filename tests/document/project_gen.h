@@ -120,10 +120,48 @@ struct RichProject : Fixture {
     using pq::tuning::Rational;
     using pq::tuning::AnchorKind;
     const NoteId anchor = notesA[7].id;
+    // T7.2: two JI objects in clip B with every stop kind and field set; the JI-following notes below name them (a
+    // note must follow an object of its clip, so the old dangling ids 42 / 7 / 0xFFFFFFFF are gone).
+    JiObject jiA;
+    jiA.id = ids.jiObject();
+    jiA.start = -3;
+    jiA.length = 2 * pq::kPpq;
+    jiA.fundamental = PitchId::fromRatio(Rational{3, 2});
+    jiA.velocity = 64.5f;
+    for (int i = 0; i < 4; ++i) jiA.voiceNotes.push_back(ids.note());
+    {
+      JiStop s0;
+      s0.terms = {4, 5, 6, 7};
+      JiStop s1;
+      s1.at = pq::kPpq / 2;
+      s1.terms = {22, 26, 30};
+      s1.scale = Rational{2, 11};
+      s1.voiceTerm = {0, 0, 1, 2};
+      s1.timing = JiTiming{3, 100, JiShape{JiShape::Bezier, 0.25f, -0.5f, 0.75f, 1.5f}};
+      s1.voiceTiming = {std::nullopt, JiTiming{0, 5, JiShape{JiShape::LogLinear}}, std::nullopt, JiTiming{}};
+      JiStop s2;  // a tuning stop
+      s2.at = pq::kPpq;
+      s2.pitches = {PitchId::fromDegree(3, 0), PitchId::fromCents(386.3137138648348), PitchId::fromRatio(Rational{7, 4})};
+      s2.timing.glide = 10;
+      jiA.stops = {s0, s1, s2};
+    }
+    jiA.ride = {{0, 0.0f, 0.5f, {}}, {100, 12.5f, 0.0f, {}}, {100, -3.0f, -1.0f, {}}};
+    JiObject jiB;  // an undertone scaffold on a Degree fundamental
+    jiB.id = ids.jiObject();
+    jiB.start = kMaxTicks - 1;
+    jiB.length = 1;
+    jiB.fundamental = PitchId::fromDegree(-2, 1);
+    jiB.undertone = true;
+    jiB.sounds = false;
+    jiB.voiceNotes.push_back(ids.note());
+    jiB.stops.resize(1);
+    jiB.stops[0].terms = {1};
+    b.commands.push_back(AddJiObject{{lead, clipB}, jiA});
+    b.commands.push_back(AddJiObject{{lead, clipB}, jiB});
     note(-5, PitchId::fromDegree(-5, -2)).velocity = 127.0f;
     note(1, PitchId::fromRatio(Rational{5, 4})).velocity = 0.1f;
     note(2, PitchId::fromRatio(Rational{7, 4}, AnchorKind::Note, anchor.value)).releaseVelocity = 0.0f;
-    note(3, PitchId::fromRatio(Rational{3, 2}, AnchorKind::JiFundamental, 42)).chance = 0.25f;
+    note(3, PitchId::fromRatio(Rational{3, 2}, AnchorKind::JiFundamental, jiA.id.value)).chance = 0.25f;
     note(4, PitchId::fromRatio(Rational{INT64_MAX, INT64_MAX - 1})).velocityRange = -127.0f;
     note(5, PitchId::fromRatio(Rational{9, 8}, AnchorKind::Reference, 9)).releaseVelocity = -0.0f;  // anchorId kept
     note(6, PitchId::fromCents(386.3137138648348)).velocityRange = -0.0f;
@@ -132,10 +170,12 @@ struct RichProject : Fixture {
     note(9, PitchId::fromCents(std::numeric_limits<double>::max())).chance = 0.0f;
     note(10, PitchId::fromCents(-1e-300)).flags = kNoteDisabled;
     note(11, PitchId::fromCents(1.0 / 3.0)).velocity = 1.0f / 3.0f;
-    note(12, PitchId::fromHarmonic(7, 3));
-    note(kMaxTicks, PitchId::fromHarmonic(0xFFFFFFFFu, 0)).length = 1;
+    note(12, PitchId::fromHarmonic(jiA.id.value, 3));
+    note(kMaxTicks, PitchId::fromHarmonic(jiB.id.value, 0)).length = 1;
     note(-kMaxTicks, PitchId::fromDegree(INT32_MIN, INT32_MAX)).length = kMaxTicks;
     b.commands.push_back(AddNotes{{lead, clipB}, notes});
+    // T7.2: a note curve (with a jump).
+    b.commands.push_back(SetNoteCurve{{lead, clipB}, keyOf(notes[1]), {{0, 0.0f, 0.0f, {}}, {50, -25.5f, 0.25f, {}}, {50, 10.0f, 0.0f, {}}}});
     // An empty clip on the nested track.
     NoteClip empty;
     empty.id = clipR = ids.clip();
@@ -229,6 +269,43 @@ struct RandomProject : RichProject {
       return std::min(std::max(v, lo), hi);
     };
     Batch b{"random", {}};
+    // T7.2: a random JI object in the clip; the random Harmonic / JiFundamental notes follow it.
+    JiObject ji;
+    ji.id = ids.jiObject();
+    ji.start = static_cast<pq::Ticks>(pick(100000)) - 50000;
+    ji.length = 1 + pick(1000000);
+    ji.fundamental = pick(2) ? pq::tuning::PitchId::fromDegree(pick(100) - 50, pick(7) - 3) : pq::tuning::PitchId::fromCents(uni(-4800.0, 4800.0));
+    ji.undertone = pick(2) != 0;
+    ji.sounds = pick(2) != 0;
+    const int jiVoices = 1 + pick(8);
+    for (int i = 0; i < jiVoices; ++i) ji.voiceNotes.push_back(ids.note());
+    const int jiStops = 1 + pick(5);
+    for (int k = 0; k < jiStops; ++k) {
+      JiStop st;
+      st.at = k == 0 ? 0 : ji.stops.back().at + 1 + pick(5000);
+      const int n = k == 0 ? jiVoices : 1 + pick(jiVoices);
+      int64_t term = 0;
+      for (int i = 0; i < n; ++i) {
+        term += 1 + pick(40);
+        if (k % 2 == 1) st.pitches.push_back(pq::tuning::PitchId::fromDegree(static_cast<int32_t>(term), pick(3)));
+        else st.terms.push_back(term);
+      }
+      st.scale = pq::tuning::Rational{1 + pick(30), 1 + pick(30)};
+      st.timing = JiTiming{pick(100), pick(3000), JiShape{static_cast<JiShape::Kind>(pick(3)), static_cast<float>(uni(0.0, 1.0)),
+                                                         static_cast<float>(uni(-1.0, 2.0)), static_cast<float>(uni(0.0, 1.0)),
+                                                         static_cast<float>(uni(-1.0, 2.0))}};
+      if (pick(2))
+        for (int i = 0; i < jiVoices; ++i) st.voiceTerm.push_back(static_cast<uint8_t>(pick(n)));
+      if (pick(2))
+        for (int i = 0; i < jiVoices; ++i)
+          st.voiceTiming.push_back(pick(2) ? std::optional<JiTiming>(JiTiming{pick(50), pick(500), JiShape{}}) : std::nullopt);
+      ji.stops.push_back(std::move(st));
+    }
+    for (int i = 0, tick = 0; i < pick(6); ++i) {
+      tick += pick(1000);
+      ji.ride.push_back({tick, static_cast<float>(uni(-1200.0, 1200.0)), static_cast<float>(uni(-1.0, 1.0)), {}});
+    }
+    b.commands.push_back(AddJiObject{{kick, clipK}, ji});
     std::vector<Note> notes;
     const int count = 50 + pick(400);
     for (int i = 0; i < count; ++i) {
@@ -241,12 +318,13 @@ struct RandomProject : RichProject {
         case 1: {
           auto r = pq::tuning::Rational::tryMake(1 + static_cast<int64_t>(rng() >> 2),
                                                   1 + static_cast<int64_t>((rng() >> 2) >> pick(62)));
-          n.pitch = pq::tuning::PitchId::fromRatio(*r, static_cast<pq::tuning::AnchorKind>(pick(3)),
-                                                   static_cast<uint32_t>(rng()));
+          const auto anchorKind = static_cast<pq::tuning::AnchorKind>(pick(3));
+          n.pitch = pq::tuning::PitchId::fromRatio(
+              *r, anchorKind, anchorKind == pq::tuning::AnchorKind::JiFundamental ? ji.id.value : static_cast<uint32_t>(rng()));
           break;
         }
         case 2: n.pitch = pq::tuning::PitchId::fromCents(wildDouble()); break;
-        default: n.pitch = pq::tuning::PitchId::fromHarmonic(static_cast<uint32_t>(rng()), static_cast<uint32_t>(rng())); break;
+        default: n.pitch = pq::tuning::PitchId::fromHarmonic(ji.id.value, static_cast<uint32_t>(pick(jiVoices))); break;
       }
       n.velocity = std::max(unit(0.0f, 127.0f), FLT_MIN);
       n.releaseVelocity = unit(0.0f, 127.0f);
@@ -256,6 +334,14 @@ struct RandomProject : RichProject {
       notes.push_back(n);
     }
     b.commands.push_back(AddNotes{{kick, clipK}, notes});
+    for (int i = 0; i < 5; ++i) {  // T7.2: random note curves
+      std::vector<Breakpoint> curve;
+      for (int k = 0, tick = 0; k < 1 + pick(5); ++k) {
+        tick += pick(500);
+        curve.push_back({tick, static_cast<float>(uni(-2400.0, 2400.0)), static_cast<float>(uni(-1.0, 1.0)), {}});
+      }
+      b.commands.push_back(SetNoteCurve{{kick, clipK}, keyOf(notes[static_cast<size_t>(pick(count))]), curve});
+    }
     std::vector<Breakpoint> pts;
     for (int i = 0; i < 20; ++i)
       pts.push_back({static_cast<pq::Ticks>(pick(100000)), unit(-70.0f, 6.0f), unit(-1.0f, 1.0f), ids.breakpoint()});

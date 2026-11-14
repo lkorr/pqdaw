@@ -151,7 +151,20 @@ struct SetSample { SampleRef sample; };
 // Up/Down and drag builders (ops::transposeNotes / moveNotes) and the lock builders (ops::lockFundamental).
 struct SetClipFundamental { ClipRef clip; ClipFundamental fundamental; };
 
+// ---- JI objects and note curves (T7.2; model.h "JI objects and note curves"; all Sequence, never a recompile) ----
+// The object must be valid (its own fields: checks.h checkJiObject) with an id and voice-note ids new to the clip.
+struct AddJiObject { ClipRef clip; JiObject object; };
+// Refused while a note of the clip still follows the object (Harmonic / JiFundamental): ops::deleteJiObject converts
+// them in the same Batch.
+struct RemoveJiObject { ClipRef clip; JiObjectId object; };
+// Replaces the object with this id (every field). Refused when a Harmonic note names a voice it no longer has.
+struct SetJiObject { ClipRef clip; JiObject object; };
+// Sets the note's pitch curve (NoteCurves::pitch); empty removes it.
+struct SetNoteCurve { ClipRef clip; NoteKey note; std::vector<Breakpoint> pitch; };
+
 // ---- Notes (all Sequence) --------------------------------------------------------------------------------------
+// T7.2: a note that follows a JI object (Harmonic, or a Ratio anchored to JiFundamental) must name an object of the
+// clip (and a voice it has); RemoveNotes drops the removed notes' curves.
 struct AddNotes { ClipRef clip; std::vector<Note> notes; };
 struct RemoveNotes { ClipRef clip; std::vector<NoteKey> notes; };
 // Replaces whole notes (matched by id; the new value may change any field but the id). Drags of many notes.
@@ -295,6 +308,7 @@ using CommandVariant = std::variant<
     AddClip, RemoveClip, MoveClip, SetClipBounds, SetClipLoop, SetClipTuning, RenameClip, SetClipColour,
     SetClipSignature, SetClipActive, SetClipFundamental, SetAudioClip, AddSample, RemoveSample, SetSample,
     AddNotes, RemoveNotes, UpdateNotes, MoveNote, ResizeNote, SetNoteProperty,
+    AddJiObject, RemoveJiObject, SetJiObject, SetNoteCurve,
     AddAutomationLane, RemoveAutomationLane, AddBreakpoints, RemoveBreakpoints, UpdateBreakpoints,
     SetTempoMap, SetTimeSignatures, SetLoop, AddLocator, RemoveLocator, UpdateLocator,
     AddTuning, RemoveTuning, RenameTuning, SetTuningColour, SetTuningDef, SetTuningParam, SetDefaultTuning,

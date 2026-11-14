@@ -47,6 +47,8 @@ pq_add_module(pq_doc
     src/lower.cpp
     src/group_response.cpp
     src/pitch_resolve.cpp
+    src/ji_object.cpp  # T7.2: JI object evaluation (voices, morphs, the per-voice plan)
+    src/edit_ji.cpp    # T7.2: JI object and note-curve edit operations
     src/input_map.cpp
     src/midi_file.cpp  # MF.1: Standard MIDI File reader / writer, note resolution
     src/midi_import.cpp  # MF.2: MIDI file import (resolved notes → clips, tempo, signatures)
