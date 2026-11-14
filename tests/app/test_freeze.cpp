@@ -8,11 +8,17 @@
 //             deleting cache/ renders again
 //   key       what moves the key: tempo, tunings, a cable from another track into Lead's blocks (Q252: that track joins
 //             the render document); what does not: Lead's mixer, name, colour, another track, a cable into Lead's mixer
+//   AU.app    H2 a rate change renders to its own path; H3 a cable from a group's sum keys on its contributors (an
+//             unrelated edit costs one compare, a feeder burst one plan off the UI thread); M6 Save As copies the
+//             playing render on the service thread; M5 the sweep; L7 the executable and the sample files in the key;
+//             M2 RF64 past the RIFF limit (a lowered limit)
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -20,6 +26,9 @@
 #include "pq/app/export_render.h"
 #include "pq/app/freeze_service.h"
 #include "pq/app/project_link.h"
+#include "pq/jit/compiler.h"
+#include "pq/media/probe.h"
+#include "pq/media/wav_file.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -296,4 +305,248 @@ TEST_CASE("FZ.2: the render key follows tempo, tunings and cables into the froze
   auto p96 = app::planFreeze(*f.snap(), f.lead, 96000.0);
   REQUIRE(p96.ok());
   CHECK_FALSE(p96->key == k3);
+}
+
+// ---- AU.app (docs/reviews/RB-DY.md H2, H3, M2, M5, M6, L7) ----------------------------------------------------------
+
+namespace {
+
+std::string u8(const fs::path& p) {
+  const std::u8string s = p.u8string();
+  return std::string(s.begin(), s.end());
+}
+fs::path ofU8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
+
+}  // namespace
+
+TEST_CASE("AU.app H2: a rate change re-renders a frozen track to a path of its own at the new rate, and it plays that") {
+  playback_fixture::Fixture f;
+  const fs::path dir = freshDir("rate");
+  REQUIRE(f.store.dispatch(SetTrackFrozen{f.lead, true}).ok());
+  auto link = makeLink(f.snap(), dir);
+  REQUIRE(link->waitForFreeze());
+  const auto at48 = link->frozenRender(f.lead);
+  REQUIRE(at48.has_value());
+  CHECK(at48->rate == 48000);
+  CHECK(u8(ofU8(at48->path).filename()).find("-48000-") != std::string::npos);
+  pump(*link);
+
+  REQUIRE(link->setSampleRate(44100.0).ok());
+  CHECK(link->frozenSlot(f.lead) == app::ProjectLink::kNoSlot);  // stale at once: live
+  REQUIRE(link->waitForFreeze());
+  pump(*link);
+  REQUIRE(link->waitForFreeze());
+  const auto at44 = link->frozenRender(f.lead);
+  REQUIRE_MESSAGE(at44.has_value(), link->freezeStatus(f.lead).error);
+  CHECK(at44->rate == 44100);
+  CHECK(at44->path != at48->path);  // never renamed onto the file the pool held
+  CHECK(u8(ofU8(at44->path).filename()).find("-44100-") != std::string::npos);
+  CHECK(link->frozenSlot(f.lead) != app::ProjectLink::kNoSlot);
+  CHECK(link->freezeStatus(f.lead).state == app::FreezeState::Ready);
+  CHECK(link->freezeService()->stats().started == 2);
+  CHECK(link->freezeService()->stats().failed == 0);
+  link.reset();
+  fs::remove_all(dir);
+}
+
+TEST_CASE("AU.app H3: a frozen track cabled from a group's sum keys on what reaches it; an unrelated edit neither "
+          "re-plans nor flips it live; a feeder burst plans once, off the UI thread") {
+  playback_fixture::Fixture f;
+  f.store.setDeviceLibrary(&playback_fixture::unitsLibrary());
+  const fs::path dir = freshDir("sum");
+  // "Duck the frozen Lead from Grp": Grp's summed input (Mos) into the second input of a block on Lead's path.
+  const DeviceId sub = test_blocks::appendAfter(f.store, f.lead, "atom:sub");
+  Wire w;
+  w.noteSource = f.grp;
+  w.port = std::string(kMainPort);
+  w.to = sub;
+  w.param = "b";
+  test_blocks::dispatchEdit(f.store, ops::connect(*f.snap(), f.store.ids(), w));
+  {  // The render document: Lead, Grp (its blocks, no mixer, no volume lane) and Mos with its whole mixer; not Muted.
+    const auto d = app::freezeDocument(*f.snap(), f.lead);
+    REQUIRE(d.has_value());
+    const Track* mos = findTrackPtr(*d, f.mos);
+    const Track* grp = findTrackPtr(*d, f.grp);
+    REQUIRE(mos != nullptr);
+    REQUIRE(grp != nullptr);
+    CHECK(mos->mixer.pan == doctest::Approx(0.5f));
+    CHECK(grp->mixer == Mixer{});
+    CHECK(grp->lanes.empty());
+    CHECK(findTrackPtr(*d, f.muted) == nullptr);
+    CHECK(d->returns.empty());
+  }
+  REQUIRE(f.store.dispatch(SetTrackFrozen{f.lead, true}).ok());
+  auto link = makeLink(f.snap(), dir);
+  [[maybe_unused]] const ListenerId lsub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  REQUIRE(link->waitForFreeze());
+  REQUIRE_MESSAGE(link->frozenSlot(f.lead) != app::ProjectLink::kNoSlot, link->freezeStatus(f.lead).error);
+  pump(*link);
+  const app::FreezeService::Stats s0 = link->freezeService()->stats();
+
+  // Unrelated: Muted's fader (a drag of 20 steps), Lead's own fader, Grp's fader (after the sum Lead hears).
+  for (int i = 0; i < 20; ++i) {
+    REQUIRE(f.store.dispatch(SetTrackVolume{f.muted, -1.0f - static_cast<float>(i)}).ok());
+    link->flush();
+    CHECK(link->frozenSlot(f.lead) != app::ProjectLink::kNoSlot);
+  }
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.lead, -9.0f}).ok());
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.grp, -6.0f}).ok());
+  link->flush();
+  {
+    const app::FreezeService::Stats s = link->freezeService()->stats();
+    CHECK(s.synced == s0.synced);    // each edit: one render-document compare, equal
+    CHECK(s.planned == s0.planned);  // nothing serialised
+    CHECK(s.started == s0.started);
+  }
+  CHECK(link->frozenSlot(f.lead) != app::ProjectLink::kNoSlot);
+  CHECK(link->freezeStatus(f.lead).state == app::FreezeState::Ready);
+
+  // What reaches the sum: Mos's fader. Stale at once (live), and the burst is planned and rendered once.
+  for (int i = 0; i < 5; ++i) REQUIRE(f.store.dispatch(SetTrackVolume{f.mos, -2.0f - static_cast<float>(i)}).ok());
+  link->flush();
+  CHECK(link->frozenSlot(f.lead) == app::ProjectLink::kNoSlot);
+  CHECK(link->freezeService()->stats().synced == s0.synced + 5);
+  REQUIRE(link->waitForFreeze());
+  pump(*link);
+  REQUIRE(link->waitForFreeze());
+  const app::FreezeService::Stats s1 = link->freezeService()->stats();
+  CHECK(s1.planned == s0.planned + 1);
+  CHECK(s1.started == s0.started + 1);
+  CHECK(link->frozenSlot(f.lead) != app::ProjectLink::kNoSlot);
+  link.reset();
+  fs::remove_all(dir);
+}
+
+TEST_CASE("AU.app M6, M5, L7: a new cache folder gets a copy of the playing render on the service thread (it keeps "
+          "playing); the first job sweeps strays; another build's cache or a rewritten sample moves the key") {
+  playback_fixture::Fixture f;
+  REQUIRE(f.store.dispatch(SetTrackFrozen{f.lead, true}).ok());
+  const fs::path a = freshDir("copy_a"), b = freshDir("copy_b");
+  const fs::path ca = a / "cache" / "freeze", cb = b / "cache" / "freeze";
+  fs::create_directories(ca);
+  std::ofstream(ca / "99-48000-0123456789abcdef.wav") << "stray";     // no .json names it
+  std::ofstream(ca / "7-48000-0123456789abcdef.wav.part") << "half";  // an interrupted render
+  app::FreezeService::Options o;
+  o.jit = false;
+  auto svc = std::make_unique<app::FreezeService>(o);
+  (void)svc->sync(f.snap(), u8(a), u8(a), true);
+  REQUIRE(svc->waitIdle(120.0));
+  CHECK(svc->takeResults());
+  std::vector<app::FreezeService::Render> r = svc->renders();
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].current);
+  const fs::path inA = ofU8(r[0].path);
+  CHECK(inA.parent_path() == ca);
+  CHECK_FALSE(fs::exists(ca / "99-48000-0123456789abcdef.wav"));
+  CHECK_FALSE(fs::exists(ca / "7-48000-0123456789abcdef.wav.part"));
+  CHECK(svc->stats().swept == 2);
+  CHECK(svc->stats().started == 1);
+
+  // Save As: the folder moves, the document does not. The render keeps playing; the copy happens on the thread.
+  CHECK_FALSE(svc->sync(f.snap(), u8(b), u8(b), false));
+  CHECK(svc->renders().at(0).current);
+  CHECK(svc->status(f.lead).state == app::FreezeState::Ready);
+  REQUIRE(svc->waitIdle(120.0));
+  CHECK(svc->takeResults());
+  r = svc->renders();
+  REQUIRE(r.size() == 1);
+  CHECK(r[0].current);
+  CHECK(ofU8(r[0].path).parent_path() == cb);
+  CHECK(fs::exists(cb / (std::to_string(f.lead.value) + ".json")));
+  CHECK(fs::exists(inA));  // the old folder's cache keeps its file
+  CHECK(svc->stats().started == 1);
+  CHECK(svc->stats().cacheHits == 1);
+  svc.reset();
+
+  // L7: the key names the executable: a `.json` another build wrote does not match.
+  const auto plan = app::planFreeze(*f.snap(), f.lead, 48000.0);
+  REQUIRE(plan.ok());
+  CHECK(plan->key.engine == jit::binaryHash());
+  CHECK(plan->key.engine != 0);
+  {
+    const fs::path meta = cb / (std::to_string(f.lead.value) + ".json");
+    std::ifstream in(meta);
+    std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    const size_t at = text.find(app::hex64(plan->key.engine));
+    REQUIRE(at != std::string::npos);
+    text.replace(at, 16, "0000000000000001");
+    std::ofstream(meta, std::ios::trunc) << text;
+  }
+  svc = std::make_unique<app::FreezeService>(o);
+  (void)svc->sync(f.snap(), u8(b), u8(b), true);
+  REQUIRE(svc->waitIdle(120.0));
+  CHECK(svc->stats().cacheHits == 0);
+  CHECK(svc->stats().started == 1);
+  svc.reset();
+
+  // L7: a sample overwritten in place moves the key (its size and write time), not the document's hash.
+  {
+    const fs::path wav = a / "x.wav";
+    REQUIRE(media::writeWav(wav, {std::vector<float>(100, 0.1f)}, 48000).ok());
+    SampleRef s;
+    s.id = f.store.ids().sample();
+    s.path = "x.wav";
+    s.size = fs::file_size(wav);
+    s.frames = 100;
+    s.channels = 1;
+    DocumentStore st(f.snap());
+    REQUIRE(st.dispatch(AddSample{s}).ok());
+    const auto k1 = app::planDocument(st.current(), 48000.0, u8(a));
+    REQUIRE(k1.ok());
+    REQUIRE(media::writeWav(wav, {std::vector<float>(200, 0.2f)}, 48000).ok());
+    const auto k2 = app::planDocument(st.current(), 48000.0, u8(a));
+    REQUIRE(k2.ok());
+    CHECK(k1->key.content == k2->key.content);
+    CHECK(k1->key.samples != k2->key.samples);
+  }
+  fs::remove_all(a);
+  fs::remove_all(b);
+}
+
+TEST_CASE("AU.app M2: a freeze render and an export past the RIFF limit are RF64 and read back whole") {
+  app::setLongWavLimitForTests(64 * 1024);  // stands for 4 GiB
+  struct Restore {
+    ~Restore() { app::setLongWavLimitForTests(0); }
+  } restore;
+  playback_fixture::Fixture f;
+  const fs::path dir = freshDir("rf64");
+  const auto plan = app::planFreeze(*f.snap(), f.lead, 48000.0);
+  REQUIRE(plan.ok());
+  app::OwnRenderRequest rq;
+  rq.project = plan->project;
+  rq.track = f.lead;
+  rq.to = 2 * kTicksPerWhole;
+  rq.tailMaxSeconds = 0.0;
+  rq.file = dir / "own.wav";
+  rq.jit = false;
+  const auto own = app::renderTrackOwn(rq);
+  REQUIRE_MESSAGE(own.ok(), (own.ok() ? std::string() : own.error().message));
+  const auto info = media::probe(rq.file);
+  REQUIRE(info.ok());
+  CHECK(info->container == media::Container::Rf64);
+  CHECK(info->frames == own->frames);
+  const auto back = media::readWav(rq.file);
+  REQUIRE(back.ok());
+  CHECK(back->frames() == own->frames);
+
+  // An export (32f, normalized: pass 2 reads the RF64 temp through the decoder and writes an RF64 file).
+  app::ExportRequest e;
+  e.snapshot = f.snap();
+  e.to = 2 * kTicksPerWhole;
+  e.bits = app::ExportBits::Float32;
+  e.normalize = true;
+  e.folder = dir;
+  e.baseName = "Song";
+  e.jit = false;
+  const auto rep = app::runExport(e);
+  REQUIRE_MESSAGE(rep.ok(), (rep.ok() ? std::string() : rep.error().message));
+  REQUIRE(rep->files.size() == 1);
+  const auto out = media::probe(rep->files[0].path);
+  REQUIRE(out.ok());
+  CHECK(out->container == media::Container::Rf64);
+  const auto wav = media::readWav(rep->files[0].path);
+  REQUIRE(wav.ok());
+  CHECK(wav->frames() == rep->frames);
+  fs::remove_all(dir);
 }

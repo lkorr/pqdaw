@@ -440,10 +440,12 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
       }
       if (f.ref == nullptr) {
         requestLoad(r.path);  // (a no-op while it loads)
-        const auto old = frozenPub_.find(r.track.value);  // the slot's previous render plays meanwhile (not current)
+        // The slot's previous render stays in it meanwhile; it keeps playing when it played and the new file is current
+        // (AU.app H3: a copy into a new folder, a render the track waited for while it played) — else live.
+        const auto old = frozenPub_.find(r.track.value);
         if (old != frozenPub_.end() && old->second.ref != nullptr && old->second.render.path != r.path) {
           f = old->second;
-          f.render.current = false;
+          f.render.current = old->second.render.current && r.current;
         }
       }
       std::erase_if(retiring_, [&](const FrozenPub& x) { return x.render.track == r.track; });

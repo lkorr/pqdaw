@@ -369,6 +369,11 @@ const BinaryIdentity& binaryIdentity() {
 
 namespace pq::jit {
 
+uint64_t binaryHash() noexcept {
+  const detail::BinaryIdentity& id = detail::binaryIdentity();
+  return id.ok ? id.hash.lo ^ (id.hash.hi * 0x9E3779B97F4A7C15ull) : 0;
+}
+
 // The function-local static in binaryIdentity() makes a compile that asks while the thread hashes wait for that one
 // computation (never a second). The thread is joined at exit (the hash takes milliseconds).
 void startBinaryIdentity() noexcept {
@@ -680,6 +685,7 @@ const BinaryIdentity& binaryIdentity() {
 }  // namespace pq::jit::detail
 namespace pq::jit {
 void startBinaryIdentity() noexcept {}  // nothing to hash off Windows
+uint64_t binaryHash() noexcept { return 0; }
 }  // namespace pq::jit
 namespace pq::jit::detail {
 std::filesystem::path entryPath(const std::filesystem::path& dir, const Key& key) { return dir / (key.hex() + ".pqjit"); }

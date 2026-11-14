@@ -165,6 +165,10 @@ private:
 // calls it; the app calls it at startup (compile::setJitCache). Not RT-safe; never fails (a thread that cannot be
 // started leaves the hash to the first compile).
 void startBinaryIdentity() noexcept;
+// AU.app L7: a 64-bit fold of that hash (0 when it could not be computed): what a cache of audio rendered by this
+// executable (frozen tracks, pq/app/freeze_service.h) keys on, so a new build re-renders. Waits for the hash on the
+// first call. Not RT-safe.
+uint64_t binaryHash() noexcept;
 
 // Tests (TMM.13-fix1 L10): what LLVM does when an allocation fails (llvm::report_bad_alloc_error); call it inside a
 // compile, e.g. from CompilerConfig::beforeCompile.

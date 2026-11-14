@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <system_error>
@@ -24,7 +25,9 @@
 #include <nlohmann/json.hpp>
 
 #include "pq/app/export_render.h"
+#include "pq/document/samples.h"
 #include "pq/document/serialize.h"
+#include "pq/jit/compiler.h"
 #include "pq/media/wav_file.h"
 
 namespace pq::app {
@@ -82,18 +85,34 @@ doc::Mixer normalMixer(const doc::Mixer& m) {
 }
 
 // A track of the render document. `content`: it is kept (blocks, clips, device lanes); otherwise an empty container
-// (an ancestor of a kept track: its tuning assignment). Tuning lanes go to `tuningLanes` (they drive tunings wherever
-// they live).
-std::shared_ptr<doc::Track> normalTrack(const doc::Track& t, bool content, std::vector<doc::LanePtr>& tuningLanes) {
+// (an ancestor of a kept track: its tuning assignment). `full` (H3: its output reaches a sum F hears): its mixer and
+// mixer lanes stay (solo cleared; sends and an output to tracks `kept` does not hold dropped). Tuning lanes go to
+// `tuningLanes` (they drive tunings wherever they live).
+template <class Kept>
+std::shared_ptr<doc::Track> normalTrack(const doc::Track& t, bool content, bool full, const Kept& kept,
+                                        std::vector<doc::LanePtr>& tuningLanes) {
   auto n = std::make_shared<doc::Track>(t);
   n->name.clear();
   n->colour = doc::Colour{};
-  n->mixer = normalMixer(t.mixer);
   n->frozen = false;
+  if (full) {
+    n->mixer.solo = false;
+    std::erase_if(n->mixer.sends, [&](const doc::Send& s) { return !kept(s.target); });
+    if (n->mixer.output.kind == doc::OutputKind::Track && !kept(n->mixer.output.track))
+      n->mixer.output = doc::Output{doc::OutputKind::None, {}};
+  } else {
+    n->mixer = normalMixer(t.mixer);
+  }
   n->lanes.clear();
   for (const doc::LanePtr& l : t.lanes) {
-    if (tuningLane(l)) tuningLanes.push_back(l);
-    else if (content && doc::isDeviceParamKind(l->param.kind)) n->lanes.push_back(l);
+    if (tuningLane(l)) {
+      tuningLanes.push_back(l);
+    } else if (content && doc::isDeviceParamKind(l->param.kind)) {
+      n->lanes.push_back(l);
+    } else if (full && doc::isTrackParam(l->param.kind) && l->param.kind != doc::ParamKind::TrackSolo &&
+               (l->param.kind != doc::ParamKind::TrackSend || kept(doc::TrackId{l->param.target}))) {
+      n->lanes.push_back(l);
+    }
   }
   if (!content) {
     n->devices.clear();
@@ -106,10 +125,14 @@ std::shared_ptr<doc::Track> normalTrack(const doc::Track& t, bool content, std::
 
 std::string keyField(uint64_t v) { return hex64(v); }
 
+fs::path metaPath(const fs::path& dir, doc::TrackId track) {
+  return dir / u8path(std::to_string(track.value) + ".json");
+}
+
 // The render a cache `.json` describes, if it matches `key` and its WAV exists.
 std::optional<FreezeService::Render> lookupCache(const fs::path& dir, doc::TrackId track, const FreezeKey& key) {
   std::error_code ec;
-  const fs::path meta = dir / u8path(std::to_string(track.value) + ".json");
+  const fs::path meta = metaPath(dir, track);
   if (!fs::is_regular_file(meta, ec)) return std::nullopt;
   std::ifstream in(meta, std::ios::binary);
   std::stringstream ss;
@@ -118,8 +141,9 @@ std::optional<FreezeService::Render> lookupCache(const fs::path& dir, doc::Track
   if (!j.is_object()) return std::nullopt;
   auto str = [&](const char* k) { return j.contains(k) && j[k].is_string() ? j[k].get<std::string>() : std::string(); };
   auto num = [&](const char* k) { return j.contains(k) && j[k].is_number_integer() ? j[k].get<uint64_t>() : 0ull; };
-  if (num("version") != 1 || num("rate") != key.rate || str("tempo") != keyField(key.tempo) ||
-      str("tunings") != keyField(key.tunings) || str("content") != keyField(key.content))
+  if (num("version") != 2 || num("rate") != key.rate || str("engine") != keyField(key.engine) ||
+      str("tempo") != keyField(key.tempo) || str("tunings") != keyField(key.tunings) ||
+      str("content") != keyField(key.content) || str("samples") != keyField(key.samples))
     return std::nullopt;
   const std::string file = str("file");
   if (file.empty() || file.find_first_of("/\\") != std::string::npos) return std::nullopt;
@@ -136,19 +160,31 @@ std::optional<FreezeService::Render> lookupCache(const fs::path& dir, doc::Track
   return r;
 }
 
+// The WAV a cache folder's `.json` names ("" when unreadable).
+std::string cacheFileOf(const fs::path& meta) {
+  std::ifstream in(meta, std::ios::binary);
+  std::stringstream ss;
+  ss << in.rdbuf();
+  const json j = json::parse(ss.str(), nullptr, false);
+  if (!j.is_object() || !j.contains("file") || !j["file"].is_string()) return {};
+  return j["file"].get<std::string>();
+}
+
 Status writeCacheMeta(const fs::path& dir, doc::TrackId track, const FreezeKey& key, const fs::path& wav,
-                      const OwnRender& out) {
+                      uint64_t frames, uint32_t channels) {
   json j;
-  j["version"] = 1;
+  j["version"] = 2;
   j["track"] = track.value;
   j["rate"] = key.rate;
+  j["engine"] = keyField(key.engine);
   j["tempo"] = keyField(key.tempo);
   j["tunings"] = keyField(key.tunings);
   j["content"] = keyField(key.content);
+  j["samples"] = keyField(key.samples);
   j["file"] = u8str(wav.filename());
-  j["frames"] = out.frames;
-  j["channels"] = out.channels;
-  const fs::path meta = dir / u8path(std::to_string(track.value) + ".json");
+  j["frames"] = frames;
+  j["channels"] = channels;
+  const fs::path meta = metaPath(dir, track);
   const fs::path tmp = dir / u8path(std::to_string(track.value) + ".json.part");
   {
     std::ofstream o(tmp, std::ios::binary | std::ios::trunc);
@@ -171,6 +207,7 @@ public:
   Status begin(uint32_t ch, uint32_t rate, uint64_t) override {
     channels = ch;
     open_ = true;
+    w_.enableRf64(longWavLimit());  // M2: a long render becomes RF64 instead of failing at 4 GiB
     return w_.open(path_, ch, rate);
   }
   Status write(const float* const* ch, uint32_t frames) override { return w_.write(ch, frames); }
@@ -195,15 +232,23 @@ std::string hex64(uint64_t v) {
   return b;
 }
 
+std::string freezeFileName(doc::TrackId track, const FreezeKey& key) {
+  return std::to_string(track.value) + "-" + std::to_string(key.rate) + "-" +
+         hex64(key.content ^ (key.engine * 0x9E3779B97F4A7C15ull) ^ (key.samples * 0xBF58476D1CE4E5B9ull)) + ".wav";
+}
+
 // ---- The render document ----------------------------------------------------------------------------------------
 
 std::optional<doc::Project> freezeDocument(const doc::Project& p, doc::TrackId id) {
   const doc::Track* f = doc::findTrackPtr(p, id);
   if (f == nullptr || !frozenable(*f)) return std::nullopt;
-  // The tracks whose blocks (or source) feed F's blocks through cables, transitively.
-  std::unordered_map<uint32_t, const doc::Track*> owner;  // device id → its track
-  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+  std::unordered_map<uint32_t, const doc::Track*> owner;   // device id → its track
+  std::unordered_map<uint32_t, const doc::Track*> parent;  // track id → its parent (null: top level, a return, master)
+  std::vector<const doc::Track*> all;
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track* up) {
     for (const doc::DevicePtr& d : t.devices) owner.emplace(d->id.value, &t);
+    parent.emplace(t.id.value, up);
+    all.push_back(&t);
   });
   const doc::WireList& wires = doc::wiresOf(p);
   auto sourceOf = [&](const doc::Wire& w) -> const doc::Track* {
@@ -216,25 +261,60 @@ std::optional<doc::Project> freezeDocument(const doc::Project& p, doc::TrackId i
     const auto it = owner.find(w.to.value);
     return it != owner.end() ? it->second : nullptr;
   };
-  std::set<uint32_t> keep{id.value};
+  // Where a track's output goes (the master's: nowhere).
+  auto outputOf = [&](const doc::Track& c) -> const doc::Track* {
+    if (c.kind == doc::TrackKind::Master) return nullptr;
+    switch (c.mixer.output.kind) {
+      case doc::OutputKind::Default: {
+        const auto it = parent.find(c.id.value);
+        const doc::Track* up = it != parent.end() ? it->second : nullptr;
+        return up != nullptr ? up : p.master.get();
+      }
+      case doc::OutputKind::Master: return p.master.get();
+      case doc::OutputKind::Track: return doc::findTrackPtr(p, c.mixer.output.track);
+      case doc::OutputKind::None: return nullptr;
+    }
+    return nullptr;
+  };
+  // What reaches sum S: its output (a group, the master) or a stored send (a return).
+  auto reaches = [&](const doc::Track& c, const doc::Track& s) {
+    if (outputOf(c) == &s) return true;
+    if (s.kind != doc::TrackKind::Return) return false;
+    return std::any_of(c.mixer.sends.begin(), c.mixer.sends.end(), [&](const doc::Send& x) { return x.target == s.id; });
+  };
+  // The tracks whose blocks (or source) feed F's blocks through cables, transitively (`keep`); a sum's source brings its
+  // contributors with their mixers (`full`; H3).
+  std::set<uint32_t> keep{id.value}, full, sums;
   std::vector<const doc::Track*> todo{f};
-  bool whole = false;
-  while (!todo.empty() && !whole) {
+  auto addSum = [&](const doc::Track& s) {
+    std::vector<const doc::Track*> stack{&s};
+    while (!stack.empty()) {
+      const doc::Track* x = stack.back();
+      stack.pop_back();
+      if (!sums.insert(x->id.value).second) continue;
+      for (const doc::Track* c : all) {
+        if (c == x || !reaches(*c, *x)) continue;
+        keep.insert(c->id.value);
+        if (full.insert(c->id.value).second) todo.push_back(c);  // (again: its mixer's cables now count)
+        if (sumTrack(*c)) stack.push_back(c);
+      }
+    }
+  };
+  while (!todo.empty()) {
     const doc::Track* t = todo.back();
     todo.pop_back();
+    const bool mixerCounts = full.count(t->id.value) != 0;  // a contributor's mixer input reaches F
     for (const doc::Wire& w : wires) {
-      if (w.toMixer() || targetOf(w) != t) continue;  // a mixer's input is not what its blocks hear
+      if (targetOf(w) != t || (w.toMixer() && !mixerCounts)) continue;
       const doc::Track* s = sourceOf(w);
-      if (s == nullptr || keep.count(s->id.value) != 0) continue;
-      if (sumTrack(*s)) {
-        whole = true;
-        break;
-      }
-      keep.insert(s->id.value);
-      todo.push_back(s);
+      if (s == nullptr) continue;
+      if (keep.insert(s->id.value).second) todo.push_back(s);
+      if (w.fromNoteSource() && sumTrack(*s)) addSum(*s);
     }
   }
   auto kept = [&](const doc::Track* t) { return t != nullptr && keep.count(t->id.value) != 0; };
+  auto keptId = [&](doc::TrackId t) { return keep.count(t.value) != 0; };
+  auto isFull = [&](const doc::Track& t) { return full.count(t.id.value) != 0; };
 
   doc::Project q;
   q.timeline = p.timeline;
@@ -242,81 +322,70 @@ std::optional<doc::Project> freezeDocument(const doc::Project& p, doc::TrackId i
   q.defaultTuning = p.defaultTuning;
   q.locators = std::make_shared<const doc::LocatorList>();
   std::vector<doc::LanePtr> tuningLanes;
-  if (whole) {
-    // A sum (a group's, a return's, the master's) feeds F: anything may reach it, F's own output too (through its
-    // group). The project as it is; only the loop, locators, punch and record settings are not part of it.
-    q.tracks = p.tracks;
-    q.returns = p.returns;
-    q.master = p.master;
-    q.samples = p.samples;
-    q.wires = p.wires;
-    return q;
-  } else {
-    // A kept track keeps its content; an ancestor of one is an empty container; everything else goes.
-    std::function<bool(const doc::Track&)> anyKept = [&](const doc::Track& t) {
-      if (kept(&t)) return true;
-      return std::any_of(t.children.begin(), t.children.end(), [&](const doc::TrackPtr& c) { return anyKept(*c); });
-    };
-    std::function<doc::TrackPtr(const doc::Track&)> copy = [&](const doc::Track& t) -> doc::TrackPtr {
-      auto n = normalTrack(t, kept(&t), tuningLanes);
-      n->children.clear();
-      for (const doc::TrackPtr& c : t.children)
-        if (anyKept(*c)) n->children.push_back(copy(*c));
-      return n;
-    };
-    for (const doc::TrackPtr& t : p.tracks)
-      if (anyKept(*t)) q.tracks.push_back(copy(*t));
-    for (const doc::TrackPtr& t : p.returns)
-      if (kept(t.get())) q.returns.push_back(copy(*t));
-    // Tuning lanes of the tracks left out (they drive their tunings from anywhere).
-    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-      if (kept(&t) || t.kind == doc::TrackKind::Master) return;
-      bool ancestor = false;
-      for (const doc::TrackPtr& c : t.children) ancestor |= anyKept(*c);
-      if (ancestor) return;  // collected by copy()
-      for (const doc::LanePtr& l : t.lanes)
-        if (tuningLane(l)) tuningLanes.push_back(l);
-    });
-    if (p.master) {
-      auto m = normalTrack(*p.master, kept(p.master.get()), tuningLanes);
-      m->lanes.insert(m->lanes.end(), tuningLanes.begin(), tuningLanes.end());
-      q.master = std::move(m);
-    }
-    // The samples the kept tracks' clips play.
-    std::set<uint32_t> used;
-    doc::forEachTrack(q, [&](const doc::Track& t, const doc::Track*) {
-      auto add = [&](const std::vector<doc::ClipSlot>& clips) {
-        for (const doc::ClipSlot& c : clips)
-          if (c.audio) used.insert(c.audio->sample.value);
-      };
-      add(t.clips);
-      for (const doc::TakeLanePtr& l : t.takes) add(l->clips);
-    });
-    if (!used.empty()) {
-      auto s = std::make_shared<doc::SampleList>();
-      for (const doc::SampleRef& r : doc::samplesOf(p))
-        if (used.count(r.id.value) != 0) s->push_back(r);
-      q.samples = std::move(s);
-    }
+  // A kept track keeps its content; an ancestor of one is an empty container; everything else goes.
+  std::function<bool(const doc::Track&)> anyKept = [&](const doc::Track& t) {
+    if (kept(&t)) return true;
+    return std::any_of(t.children.begin(), t.children.end(), [&](const doc::TrackPtr& c) { return anyKept(*c); });
+  };
+  std::function<doc::TrackPtr(const doc::Track&)> copy = [&](const doc::Track& t) -> doc::TrackPtr {
+    auto n = normalTrack(t, kept(&t), isFull(t), keptId, tuningLanes);
+    n->children.clear();
+    for (const doc::TrackPtr& c : t.children)
+      if (anyKept(*c)) n->children.push_back(copy(*c));
+    return n;
+  };
+  for (const doc::TrackPtr& t : p.tracks)
+    if (anyKept(*t)) q.tracks.push_back(copy(*t));
+  for (const doc::TrackPtr& t : p.returns)
+    if (kept(t.get())) q.returns.push_back(copy(*t));
+  // Tuning lanes of the tracks left out (they drive their tunings from anywhere).
+  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+    if (kept(&t) || t.kind == doc::TrackKind::Master) return;
+    bool ancestor = false;
+    for (const doc::TrackPtr& c : t.children) ancestor |= anyKept(*c);
+    if (ancestor) return;  // collected by copy()
+    for (const doc::LanePtr& l : t.lanes)
+      if (tuningLane(l)) tuningLanes.push_back(l);
+  });
+  if (p.master) {
+    auto m = normalTrack(*p.master, kept(p.master.get()), false, keptId, tuningLanes);
+    m->lanes.insert(m->lanes.end(), tuningLanes.begin(), tuningLanes.end());
+    q.master = std::move(m);
   }
-  // The cables: into a kept track's blocks from a kept track, and a kept track's own cables into its mixer. A cable
-  // into F's mixer from another track is not F's own contribution (it stays live in playback).
+  // The samples the kept tracks' clips play.
+  std::set<uint32_t> used;
+  doc::forEachTrack(q, [&](const doc::Track& t, const doc::Track*) {
+    auto add = [&](const std::vector<doc::ClipSlot>& clips) {
+      for (const doc::ClipSlot& c : clips)
+        if (c.audio) used.insert(c.audio->sample.value);
+    };
+    add(t.clips);
+    for (const doc::TakeLanePtr& l : t.takes) add(l->clips);
+  });
+  if (!used.empty()) {
+    auto s = std::make_shared<doc::SampleList>();
+    for (const doc::SampleRef& r : doc::samplesOf(p))
+      if (used.count(r.id.value) != 0) s->push_back(r);
+    q.samples = std::move(s);
+  }
+  // The cables: into a kept track's blocks from a kept track, a kept track's own cables into its mixer, and (H3) the
+  // cables into a contributor's mixer. A cable into F's mixer from another track is not F's own contribution (it stays
+  // live in playback) unless F is a contributor.
   if (!wires.empty()) {
     auto w2 = std::make_shared<doc::WireList>();
     for (const doc::Wire& w : wires) {
       const doc::Track* s = sourceOf(w);
       const doc::Track* t = targetOf(w);
       if (s == nullptr || t == nullptr || !kept(s) || !kept(t)) continue;
-      if (!w.toMixer() || s == t) w2->push_back(w);
+      if (!w.toMixer() || s == t || isFull(*t)) w2->push_back(w);
     }
     if (!w2->empty()) q.wires = std::move(w2);
   }
   return q;
 }
 
-Result<FreezePlan> planFreeze(const doc::Project& p, doc::TrackId track, double rate) {
-  std::optional<doc::Project> q = freezeDocument(p, track);
-  if (!q) return freezeError("track " + std::to_string(track.value) + " is not an active MIDI or audio track");
+Result<FreezePlan> planDocument(doc::Snapshot q, double rate, const std::string& projectDir) {
+  if (!q) return freezeError("no render document");
   FreezePlan plan;
   // The range: 0 → the last clip a kept track plays (at least a beat).
   Ticks to = kPpq;
@@ -328,14 +397,36 @@ Result<FreezePlan> planFreeze(const doc::Project& p, doc::TrackId track, double 
   auto text = doc::serializeProject(*q);
   if (!text) return text.error();
   plan.key.rate = static_cast<uint32_t>(std::lround(rate));
+  plan.key.engine = jit::binaryHash();
   plan.key.content = fnv(*text);
   const json j = json::parse(*text, nullptr, false);
   if (j.is_object()) {
     if (j.contains("timeline")) plan.key.tempo = fnv(j["timeline"].dump());
     if (j.contains("tunings")) plan.key.tunings = fnv(j["tunings"].dump());
   }
-  plan.project = std::make_shared<const doc::Project>(std::move(*q));
+  // L7: the sample files as they are on disk now (size, last write time; 0 for a missing one).
+  uint64_t h = 1469598103934665603ull;
+  for (const doc::SampleRef& r : doc::samplesOf(*q)) {
+    const std::string at = doc::isAbsoluteSamplePath(r.path) ? r.path : doc::absoluteSamplePath(r.path, projectDir);
+    std::error_code sec, tec;
+    const uint64_t size = fs::file_size(u8path(at), sec);
+    const auto stamp = fs::last_write_time(u8path(at), tec);
+    const uint64_t t = tec ? 0 : static_cast<uint64_t>(stamp.time_since_epoch().count());
+    for (const uint64_t v : {static_cast<uint64_t>(r.id.value), sec ? uint64_t{0} : size, t})
+      for (int b = 0; b < 8; ++b) {
+        h ^= (v >> (8 * b)) & 0xFFu;
+        h *= 1099511628211ull;
+      }
+  }
+  plan.key.samples = doc::samplesOf(*q).empty() ? 0 : h;
+  plan.project = std::move(q);
   return plan;
+}
+
+Result<FreezePlan> planFreeze(const doc::Project& p, doc::TrackId track, double rate) {
+  std::optional<doc::Project> q = freezeDocument(p, track);
+  if (!q) return freezeError("track " + std::to_string(track.value) + " is not an active MIDI or audio track");
+  return planDocument(std::make_shared<const doc::Project>(std::move(*q)), rate);
 }
 
 // ---- The render core ----------------------------------------------------------------------------------------------
@@ -430,7 +521,8 @@ void FreezeService::queue(Entry& e, doc::TrackId id, const std::string& projectD
   dropJob(e);
   auto job = std::make_shared<Job>();
   job->track = id;
-  job->plan = e.plan;
+  job->plan.project = e.doc;
+  job->rate = e.rate;
   job->dir = e.dir;
   job->projectDir = projectDir;
   job->due = nowSeconds() + delay;
@@ -443,40 +535,29 @@ void FreezeService::queue(Entry& e, doc::TrackId id, const std::string& projectD
 void FreezeService::plan(Entry& e, const doc::Project& p, const doc::Track& t, const std::string& cacheDir,
                          const std::string& projectDir, bool fresh) {  // mutex_ held
   const fs::path dir = u8path(cacheDir) / "cache" / "freeze";
+  const uint32_t rate = static_cast<uint32_t>(std::lround(opt_.rate));
   std::optional<doc::Project> d = freezeDocument(p, t.id);
   if (!d) return;
-  // The cheap check: the same render document (shared subtrees compare by address) and folder: the same key.
-  if (!fresh && e.plan.project && dir == e.dir && *e.plan.project == *d) return;
-  ++stats_.planned;
-  auto planned = planFreeze(p, t.id, opt_.rate);
+  // The cheap compare (H3): the same render document (shared subtrees compare by address), rate and folder: nothing to do.
+  const bool sameDoc = !fresh && e.doc && e.rate == rate && *e.doc == *d;
+  if (sameDoc && dir == e.dir) return;
+  ++stats_.synced;
+  if (!sameDoc) {
+    e.doc = std::make_shared<const doc::Project>(std::move(*d));
+    e.rate = rate;
+  }
   e.dir = dir;
-  if (!planned) {
-    dropJob(e);
-    e.plan = FreezePlan{};
-    e.error = planned.error().message;
-    if (e.file) e.file->current = false;
-    return;
-  }
-  const bool sameKey = e.plan.project && planned->key == e.plan.key;
-  e.plan = std::move(*planned);
-  if (sameKey && !fresh && (e.job || (e.file && e.file->current))) return;
   e.error.clear();
-  if (e.file && e.fileKey == e.plan.key) {
-    dropJob(e);
-    e.file->current = true;
-    return;
+  if (e.file) {
+    // An undo back to what the render was made from plays it again; any other change makes it stale (live).
+    const bool rendered = e.fileDoc && e.fileKey.rate == rate && (e.fileDoc == e.doc || *e.fileDoc == *e.doc);
+    e.file->current = rendered;
+    if (rendered && u8path(e.file->path).parent_path() == dir) {
+      dropJob(e);
+      return;
+    }
   }
-  if (e.file) e.file->current = false;
-  if (std::optional<Render> hit = lookupCache(dir, t.id, e.plan.key)) {
-    dropJob(e);
-    if (e.file && e.file->path != hit->path) superseded_.push_back(e.file->path);
-    hit->clipId = nextClip_++;
-    e.file = std::move(hit);
-    e.fileKey = e.plan.key;
-    ++stats_.cacheHits;
-    return;
-  }
-  queue(e, t.id, projectDir, fresh ? 0.0 : kFreezeDebounceSeconds);
+  queue(e, t.id, projectDir, fresh || sameDoc ? 0.0 : kFreezeDebounceSeconds);
 }
 
 bool FreezeService::sync(const doc::Snapshot& s, const std::string& cacheDir, const std::string& projectDir,
@@ -490,7 +571,7 @@ bool FreezeService::sync(const doc::Snapshot& s, const std::string& cacheDir, co
     return f;
   };
   const auto before = fingerprint();
-  const uint64_t jobsBefore = stats_.planned;
+  const uint64_t syncedBefore = stats_.synced;
   if (reset) {
     for (auto& [id, e] : entries_) {
       dropJob(e);
@@ -517,7 +598,7 @@ bool FreezeService::sync(const doc::Snapshot& s, const std::string& cacheDir, co
     it = entries_.erase(it);
   }
   const bool changed = fingerprint() != before;
-  if (changed || reset || stats_.planned != jobsBefore) bump();
+  if (changed || reset || stats_.synced != syncedBefore) bump();
   return changed;
 }
 
@@ -529,14 +610,16 @@ bool FreezeService::takeResults() {
     done.swap(results_);
     for (const std::shared_ptr<Job>& job : done) {
       const auto it = entries_.find(job->track.value);
-      if (it == entries_.end() || it->second.job != job) {  // superseded while it rendered: its file is litter
-        if (job->ok && !fileInUse(job->path)) removeQuietly(u8path(job->path));
+      if (it == entries_.end() || it->second.job != job) {  // superseded meanwhile: a file it rendered is litter
+        if (job->ok && u8path(job->path).parent_path() == job->dir && !fileInUse(job->path))
+          removeQuietly(u8path(job->path));
         continue;
       }
       Entry& e = it->second;
       e.job.reset();
       if (!job->ok) {
         e.error = job->error;
+        if (e.file) e.file->current = false;
         changed = true;
         continue;
       }
@@ -547,14 +630,17 @@ bool FreezeService::takeResults() {
       r.frames = job->out.frames;
       r.channels = job->out.channels;
       r.rate = job->plan.key.rate;
-      r.clipId = nextClip_++;
-      r.current = job->plan.key == e.plan.key;
+      r.clipId = old && old->path == r.path ? old->clipId : nextClip_++;
+      r.current = true;
       e.file = std::move(r);
       e.fileKey = job->plan.key;
+      e.fileDoc = job->plan.project;
       e.error.clear();
       if (old && old->path != e.file->path) {
         superseded_.push_back(old->path);
-        removeQuietly(u8path(old->path));  // best effort (a stream the pool still holds keeps it)
+        // Best effort (a stream the pool still holds keeps it; the next sweep takes it). A file in another folder (the
+        // project before a Save As) belongs to that folder's cache.
+        if (u8path(old->path).parent_path() == e.dir) removeQuietly(u8path(old->path));
       }
       changed = true;
     }
@@ -565,8 +651,7 @@ bool FreezeService::takeResults() {
 
 void FreezeService::setRate(double rate) {
   std::lock_guard lock(mutex_);
-  opt_.rate = rate;
-  for (auto& [id, e] : entries_) e.plan.project.reset();  // re-planned at the next sync (fresh key)
+  opt_.rate = rate;  // the next sync sees every entry at another rate: stale, re-planned
   bump();
 }
 
@@ -589,17 +674,17 @@ FreezeStatus FreezeService::status(doc::TrackId track) const {
   const auto it = entries_.find(track.value);
   if (it == entries_.end()) return s;
   const Entry& e = it->second;
-  if (e.job) {
-    s.state = FreezeState::Rendering;
-    s.progress = e.job->progress.load(std::memory_order_relaxed);
-  } else if (e.file && e.file->current) {
+  if (e.file && e.file->current) {  // (a job meanwhile copies it into a new folder: it plays)
     s.state = FreezeState::Ready;
     s.progress = 1.0f;
+  } else if (e.job) {
+    s.state = FreezeState::Rendering;
+    s.progress = e.job->progress.load(std::memory_order_relaxed);
   } else if (!e.error.empty()) {
     s.state = FreezeState::Failed;
     s.error = e.error;
   } else {
-    s.state = FreezeState::Rendering;  // (planned, nothing queued: not reached)
+    s.state = FreezeState::Rendering;  // (synced, nothing queued: not reached)
   }
   return s;
 }
@@ -620,76 +705,220 @@ FreezeService::Stats FreezeService::stats() const {
   return stats_;
 }
 
+void FreezeService::finish(const std::shared_ptr<Job>& job) {  // mutex_ held
+  job->done = true;
+  const auto it = std::find(jobs_.begin(), jobs_.end(), job);
+  if (it != jobs_.end()) jobs_.erase(it);
+  results_.push_back(job);
+}
+
+void FreezeService::sweep(const fs::path& dir) {
+  if (std::find(swept_.begin(), swept_.end(), dir) != swept_.end()) return;
+  swept_.push_back(dir);
+  std::error_code ec;
+  if (!fs::is_directory(dir, ec)) return;
+  std::set<std::string> named;  // the WAVs the folder's `.json` files name
+  std::vector<fs::path> candidates;
+  for (fs::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+    std::error_code fec;
+    if (!it->is_regular_file(fec)) continue;
+    const fs::path& f = it->path();
+    const std::string ext = u8str(f.extension());
+    if (ext == ".json") {
+      if (std::string n = cacheFileOf(f); !n.empty()) named.insert(std::move(n));
+    } else if (ext == ".wav" || ext == ".part") {  // (`<file>.wav.part`, `<id>.json.part`: an interrupted write)
+      candidates.push_back(f);
+    }
+  }
+  if (ec) return;  // an unreadable folder: delete nothing
+  uint64_t n = 0;
+  for (const fs::path& f : candidates) {
+    if (u8str(f.extension()) == ".wav" && named.count(u8str(f.filename())) != 0) continue;
+    {
+      std::lock_guard lock(mutex_);
+      if (fileInUse(u8str(f))) continue;
+    }
+    std::error_code rec;
+    if (fs::remove(f, rec)) ++n;
+  }
+  std::lock_guard lock(mutex_);
+  stats_.swept += n;
+}
+
+void FreezeService::planJob(const std::shared_ptr<Job>& job) {
+  Result<FreezePlan> planned = planDocument(job->plan.project, static_cast<double>(job->rate), job->projectDir);
+  sweep(job->dir);
+  std::optional<Render> have;  // the track's file now, and the key it was made for
+  FreezeKey haveKey;
+  {
+    std::lock_guard lock(mutex_);
+    running_.reset();
+    if (job->cancel.load(std::memory_order_relaxed)) {
+      cv_.notify_all();
+      return;
+    }
+    ++stats_.planned;
+    if (!planned) {
+      job->error = planned.error().message;
+      ++stats_.failed;
+      finish(job);
+      cv_.notify_all();
+      bump();
+      if (opt_.notify) opt_.notify();
+      return;
+    }
+    job->plan = std::move(*planned);
+    const auto it = entries_.find(job->track.value);
+    if (it != entries_.end() && it->second.job == job && it->second.file) {
+      have = it->second.file;
+      haveKey = it->second.fileKey;
+    }
+  }
+  // What to reuse: the track's own file (the same key: another folder, M6, or the same file), else the folder's cache.
+  std::optional<Render> found;
+  std::string error;
+  if (have && haveKey == job->plan.key) {
+    const fs::path from = u8path(have->path);
+    if (from.parent_path() == job->dir) {
+      found = have;
+    } else {
+      std::error_code ec;
+      fs::create_directories(job->dir, ec);
+      const fs::path to = job->dir / u8path(freezeFileName(job->track, job->plan.key));
+      fs::path part = to;
+      part += ".part";
+      fs::copy_file(from, part, fs::copy_options::overwrite_existing, ec);
+      if (!ec) fs::rename(part, to, ec);
+      if (!ec) {
+        if (Status st = writeCacheMeta(job->dir, job->track, job->plan.key, to, have->frames, have->channels); st) {
+          found = have;
+          found->path = u8str(to);
+        }
+      } else {
+        removeQuietly(part);  // (the copy failed: it renders instead)
+      }
+    }
+  }
+  if (!found) found = lookupCache(job->dir, job->track, job->plan.key);
+  {
+    std::lock_guard lock(mutex_);
+    if (job->cancel.load(std::memory_order_relaxed)) {
+      cv_.notify_all();
+      return;
+    }
+    if (!found) {
+      job->planned = true;  // renders next
+      cv_.notify_all();
+      return;
+    }
+    job->ok = true;
+    job->path = found->path;
+    job->out.frames = found->frames;
+    job->out.channels = found->channels;
+    ++stats_.cacheHits;
+    finish(job);
+  }
+  cv_.notify_all();
+  bump();
+  if (opt_.notify) opt_.notify();
+}
+
+void FreezeService::renderJob(const std::shared_ptr<Job>& job) {
+  std::error_code ec;
+  fs::create_directories(job->dir, ec);
+  const fs::path wav = job->dir / u8path(freezeFileName(job->track, job->plan.key));
+  OwnRenderRequest rq;
+  rq.project = job->plan.project;
+  rq.track = job->track;
+  rq.from = 0;
+  rq.to = job->plan.to;
+  rq.rate = static_cast<double>(job->plan.key.rate);
+  rq.file = wav;
+  rq.projectDir = job->projectDir;
+  rq.chanceSeed = opt_.chanceSeed;
+  rq.jit = opt_.jit;
+  rq.cancel = &job->cancel;
+  rq.progress = &job->progress;
+  Result<OwnRender> r = ec ? Result<OwnRender>(freezeError("cannot create " + u8str(job->dir) + ": " + ec.message()))
+                           : renderTrackOwn(rq);
+  bool deliver = false;
+  {
+    std::lock_guard lock(mutex_);  // (the .json is written under it: a sync's cache lookup sees both files or neither)
+    running_.reset();
+    if (r && !r->cancelled && job->cancel.load(std::memory_order_relaxed)) {  // finished after its cancel: superseded
+      if (!fileInUse(u8str(wav))) removeQuietly(wav);
+      r->cancelled = true;
+    }
+    if (r && !r->cancelled)
+      if (Status st = writeCacheMeta(job->dir, job->track, job->plan.key, wav, r->frames, r->channels); !st) {
+        if (!fileInUse(u8str(wav))) removeQuietly(wav);
+        r = st.error();
+      }
+    if (!r) {
+      job->error = r.error().message;
+      ++stats_.failed;
+      deliver = true;
+    } else if (r->cancelled) {
+      ++stats_.cancelled;
+    } else {
+      job->ok = true;
+      job->path = u8str(wav);
+      job->out = *r;
+      ++stats_.finished;
+      deliver = true;
+    }
+    if (deliver) {
+      job->done = true;
+      results_.push_back(job);
+    }
+  }
+  cv_.notify_all();
+  bump();
+  if (deliver && opt_.notify) opt_.notify();
+}
+
 void FreezeService::workerMain() {
 #ifdef _WIN32
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #endif
   for (;;) {
     std::shared_ptr<Job> job;
+    bool render = false;
     {
       std::unique_lock lock(mutex_);
       cv_.wait(lock, [&] { return quit_ || !jobs_.empty(); });
       if (quit_) return;
-      job = jobs_.front();
-      const double wait = job->due - nowSeconds();
-      if (wait > 0.0) {  // the debounce: a newer edit cancels it meanwhile
-        cv_.wait_for(lock, std::chrono::duration<double>(wait));
+      // A due job to plan first (planning is cheap and a load's cache hits must not wait behind a render), then a
+      // planned one to render. The debounce: a newer edit cancels a job meanwhile.
+      const double now = nowSeconds();
+      double next = std::numeric_limits<double>::infinity();
+      for (const std::shared_ptr<Job>& j : jobs_) {
+        if (j->planned) continue;
+        if (j->due <= now) {
+          job = j;
+          break;
+        }
+        next = std::min(next, j->due);
+      }
+      if (!job)
+        for (const std::shared_ptr<Job>& j : jobs_)
+          if (j->planned) {
+            job = j;
+            render = true;
+            break;
+          }
+      if (!job) {
+        cv_.wait_for(lock, std::chrono::duration<double>(next - now));
         continue;
       }
-      jobs_.pop_front();
+      if (render) {
+        jobs_.erase(std::find(jobs_.begin(), jobs_.end(), job));
+        ++stats_.started;
+      }
       running_ = job;
-      ++stats_.started;
     }
-    std::error_code ec;
-    fs::create_directories(job->dir, ec);
-    const fs::path wav =
-        job->dir / u8path(std::to_string(job->track.value) + "-" + hex64(job->plan.key.content) + ".wav");
-    OwnRenderRequest rq;
-    rq.project = job->plan.project;
-    rq.track = job->track;
-    rq.from = 0;
-    rq.to = job->plan.to;
-    rq.rate = static_cast<double>(job->plan.key.rate);
-    rq.file = wav;
-    rq.projectDir = job->projectDir;
-    rq.chanceSeed = opt_.chanceSeed;
-    rq.jit = opt_.jit;
-    rq.cancel = &job->cancel;
-    rq.progress = &job->progress;
-    Result<OwnRender> r = ec ? Result<OwnRender>(freezeError("cannot create " + u8str(job->dir) + ": " + ec.message()))
-                             : renderTrackOwn(rq);
-    bool deliver = false;
-    {
-      std::lock_guard lock(mutex_);  // (the .json is written under it: a sync's cache lookup sees both files or neither)
-      running_.reset();
-      job->done = true;
-      if (r && !r->cancelled && job->cancel.load(std::memory_order_relaxed)) {  // finished after its cancel: superseded
-        if (!fileInUse(u8str(wav))) removeQuietly(wav);
-        r->cancelled = true;
-      }
-      if (r && !r->cancelled)
-        if (Status st = writeCacheMeta(job->dir, job->track, job->plan.key, wav, *r); !st) {
-          if (!fileInUse(u8str(wav))) removeQuietly(wav);
-          r = st.error();
-        }
-      if (!r) {
-        job->error = r.error().message;
-        ++stats_.failed;
-        deliver = true;
-      } else if (r->cancelled) {
-        ++stats_.cancelled;
-      } else {
-        job->ok = true;
-        job->path = u8str(wav);
-        job->out = *r;
-        ++stats_.finished;
-        deliver = true;
-      }
-      if (deliver) results_.push_back(job);
-    }
-    cv_.notify_all();
-    bump();
-    if (deliver && opt_.notify) opt_.notify();
+    if (render) renderJob(job);
+    else planJob(job);
   }
 }
 

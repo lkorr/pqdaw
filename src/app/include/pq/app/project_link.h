@@ -162,14 +162,15 @@
 // ---- Frozen tracks (FZ.2; pq/app/freeze_service.h, project_link_audio.cpp; docs/plans/RB.md D2, D3) -----------------
 // With LinkConfig::freeze the link owns a FreezeService. Every change that can move a frozen track's render key (a Reset,
 // a structural change, any change while a track is frozen: tempo, tunings, an upstream knob) syncs it on the UI thread
-// (the cheap check makes an unrelated edit cost a document compare per frozen track); renders run on its thread and
+// (an unrelated edit costs a render-document compare per frozen track, never a serialisation: AU.app H3); planning,
+// cache lookups and renders run on its thread, and
 // their results come back through the UI poster (or collectIdle / waitForFreeze). Each frozen track's newest render is
 // a one-clip audio sequence (warp Off, its file's rate, no edge declick: song sample k = file frame k) in a clip slot
 // of its own (the event-slot allocator, keyed apart from the track's own clip slot), published with the audio image;
 // a file still loading leaves the slot's previous render in place. LowerOptions::frozenSlotOf names the slot only while
 // the CURRENT key's render is in the published image (frozenReady_), so a missing, stale or failed render plays live;
 // a change of that set republishes the wire states (doc::wireStates with frozenSlotOf) and asks for one structural
-// compile. Unfreezing (or deleting) a track keeps its last render in its slot until a compile begun after it has
+// compile. A new file of a track that plays its render (a copy after Save As) keeps the old one playing until it loads. Unfreezing (or deleting) a track keeps its last render in its slot until a compile begun after it has
 // published (no gap while the live circuit compiles), then frees the slot; the cache file stays. A Reset drops every
 // slot at once. A sample-rate change re-keys every render (they play live until re-rendered).
 // ---- Capture MIDI (T6.9; project_link_input.cpp, pq/app/midi_capture.h) ----------------------------------------------
