@@ -1496,3 +1496,13 @@ once its effect on the output is below −120 dB relative (needs the downstream 
 Choice: (a), the most conservative and reversible (dsp::followStateSmall's eps and the host's kSleepEpsilon); (b)
 would cut the Limiter's silent tail to ~3 s.
 Status: open.
+
+## Q?-BR.wt-a · Shape mode's phase slider reaches only the upper half of the curve
+Context (bug report 2026-11-13_17-42-08): in Shape mode x = input + phase and u = clamp((x + 1)/2), but `phase` is a
+wrapping 0 … 1 control, so with a small input the bias can place it only on u ∈ [0.5, 1): the left half of the drawn
+curve is unreachable without a DC source. (The report's own project was in Phase mode, where the slider spans the
+whole cycle; there DSP, tap and display already agreed.)
+Options: (a) leave it (bias the input upstream); (b) in Shape mode read the slider as x = 2·phase − 1 (its travel then
+spans the display one to one; changes the expansion and every Shape-mode project's sound); (c) a separate bias param.
+Choice: (a) for now — most reversible; BR.wt only fixed the idle dot to sit at the true u = (phase + 1)/2.
+Status: open.
