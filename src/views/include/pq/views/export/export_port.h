@@ -79,6 +79,11 @@ public:
   virtual ExportStatus status() = 0;
   // Asks the running job to stop: it ends Cancelled with no new file left (a no-op when none runs).
   virtual void cancel() = 0;
+  // AU.app L4: the files `job` would write that exist already (UTF-8 paths; the window asks before replacing them).
+  virtual std::vector<std::string> existingFiles(const ExportJob& job) {
+    (void)job;
+    return {};
+  }
 };
 
 // A scripted port: start() records the job and reports Running; the test moves it on (progress, finish, fail).
@@ -88,6 +93,7 @@ public:
   std::vector<ExportJob> started;
   ExportStatus now;
   int cancels = 0;
+  std::vector<std::string> existing;  // what existingFiles reports
 
   uint32_t engineSampleRate() override { return rate; }
   bool start(const ExportJob& job) override {
@@ -98,6 +104,7 @@ public:
     return true;
   }
   ExportStatus status() override { return now; }
+  std::vector<std::string> existingFiles(const ExportJob&) override { return existing; }
   void cancel() override {
     if (now.state == ExportStatus::State::Running) ++cancels;
   }

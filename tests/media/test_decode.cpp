@@ -6,12 +6,14 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <random>
 #include <vector>
 
 #include "media_test_util.h"
 #include "pq/media/decoder.h"
 #include "pq/media/pcm.h"
+#include "pq/media/probe.h"
 #include "pq/media/wav_file.h"
 
 using namespace pq;
@@ -197,4 +199,47 @@ TEST_CASE("pcm: conversion kernels equal a scalar reference (every encoding, 1..
           for (uint32_t c = 0; c < ch; ++c) CHECK(out[c][frames] == -99.0f);  // nothing written past the end
           CHECK(bad == 0);
         }
+}
+
+// AU.app M2 (docs/reviews/RB-DY.md): the app's long WAVs are RF64 past the RIFF limit; every reader of ours takes the
+// RF64 header (32-bit sizes 0xFFFFFFFF, the real ones in ds64). A lowered limit stands in for 4 GiB.
+TEST_CASE("AU.app M2: a WAV past its RF64 limit reads back whole through readWav, probe and the decoder") {
+  const std::filesystem::path path = std::filesystem::temp_directory_path() / "pq_au_m2_rf64.wav";
+  constexpr uint32_t kFrames = 3000;
+  std::vector<float> l(kFrames), r(kFrames);
+  for (uint32_t i = 0; i < kFrames; ++i) {
+    l[i] = static_cast<float>(i) / kFrames;
+    r[i] = -l[i];
+  }
+  {
+    WavWriter w;
+    w.enableRf64(4096);  // the RIFF size past which it becomes RF64
+    REQUIRE(w.open(path, 2, 48000).ok());
+    const float* ch[2] = {l.data(), r.data()};
+    REQUIRE(w.write(ch, kFrames).ok());
+    REQUIRE(w.close().ok());
+    CHECK(w.isRf64());
+  }
+  const auto whole = readWav(path);
+  REQUIRE_MESSAGE(whole.ok(), (whole.ok() ? std::string() : whole.error().message));
+  REQUIRE(whole->frames() == kFrames);
+  CHECK(whole->channels[0] == l);
+  CHECK(whole->channels[1] == r);
+  const auto info = probe(path);
+  REQUIRE(info.ok());
+  CHECK(info->container == Container::Rf64);
+  CHECK(info->frames == kFrames);
+  {
+    auto opened = Decoder::open(path);
+    REQUIRE(opened.ok());
+    std::unique_ptr<Decoder> d = std::move(*opened);
+    std::vector<float> a(kFrames + 16), b(kFrames + 16);
+    float* ptrs[2] = {a.data(), b.data()};
+    const auto got = d->read(ptrs, kFrames + 16);
+    REQUIRE(got.ok());
+    CHECK(*got == kFrames);
+    CHECK(std::equal(l.begin(), l.end(), a.begin()));
+  }
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
 }

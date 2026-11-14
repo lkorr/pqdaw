@@ -373,3 +373,32 @@ TEST_CASE("render: export-audio (All Individual Tracks, Song, 24-bit TPDF, norma
   CHECK(pq::ui::test::matchesGolden(scene, *img, *ref, true, &d));
   MESSAGE(std::string(scene) << ": " << pq::ui::test::describe(d));
 }
+
+// AU.app L4 (docs/reviews/RB-DY.md): files of the names it would write exist: the first press asks (the button reads
+// Replace, the done line names the file), the second exports; a change of the choices asks again.
+TEST_CASE("export: an existing file is replaced only on a second press (Replace); a changed choice asks again") {
+  Fx f;
+  ExportWindow& w = f.open();
+  f.port.existing = {f.ctx.projectDir() + "/arrangement.wav"};
+  f.click(w.exportButton());
+  CHECK(f.port.started.empty());
+  CHECK(w.exportButton()->text() == "Replace");
+  CHECK(w.doneText().find("arrangement.wav already exists") != std::string::npos);
+  f.pick(w.bitsChooser(), "16");  // another choice: asked again
+  CHECK(w.exportButton()->text() == "Export");
+  f.click(w.exportButton());
+  CHECK(f.port.started.empty());
+  CHECK(w.exportButton()->text() == "Replace");
+  f.click(w.exportButton());
+  REQUIRE(f.port.started.size() == 1);
+  CHECK(f.port.started[0].bits == ExportBitDepth::Pcm16);
+  f.port.finish({f.ctx.projectDir() + "/arrangement.wav"});
+  w.poll();
+  f.d.tree().layoutNow();  // (the button was hidden while it ran)
+  CHECK(w.exportButton()->text() == "Export");
+  // Two of them: the count and the first.
+  f.port.existing = {"C:/x/a.wav", "C:/x/b.wav"};
+  f.click(w.exportButton());
+  CHECK(f.port.started.size() == 1);
+  CHECK(w.doneText().find("2 files already exist (a.wav") != std::string::npos);
+}

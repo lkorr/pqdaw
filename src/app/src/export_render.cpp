@@ -125,7 +125,10 @@ private:
 class WavFileSink final : public engine::AudioSink {
 public:
   explicit WavFileSink(fs::path path) : path_(std::move(path)) {}
-  Status begin(uint32_t ch, uint32_t rate, uint64_t) override { return w_.open(path_, ch, rate); }
+  Status begin(uint32_t ch, uint32_t rate, uint64_t) override {
+    w_.enableRf64(longWavLimit());  // M2: pass 1 is always 32f (4 GiB is 46 min of stereo at 192 kHz)
+    return w_.open(path_, ch, rate);
+  }
   Status write(const float* const* ch, uint32_t frames) override { return w_.write(ch, frames); }
   Status end() override { return w_.close(); }
 
@@ -140,6 +143,7 @@ public:
   Status open(const fs::path& path, uint32_t channels, uint32_t rate, ExportFormat format, ExportBits bits) {
     flac_ = format == ExportFormat::Flac;
     if (flac_) return flacW_.open(path, channels, rate, bits == ExportBits::Pcm16 ? 16u : 24u);
+    wavW_.enableRf64(longWavLimit());  // M2
     return wavW_.open(path, channels, rate,
                       bits == ExportBits::Pcm16   ? media::WavFormat::Pcm16
                       : bits == ExportBits::Pcm24 ? media::WavFormat::Pcm24
@@ -158,6 +162,12 @@ private:
 
 fs::path pathFromUtf8(const std::string& s) {
   return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size()));
+}
+// L3: a path for a message (path::string() throws on MSVC for characters outside the ANSI code page: stems are named
+// after tracks, and a throw on the export worker is std::terminate).
+std::string u8str(const fs::path& p) {
+  const std::u8string s = p.u8string();
+  return std::string(s.begin(), s.end());
 }
 
 // A file name part: no characters Windows refuses, no trailing dots or spaces, never empty.
@@ -293,6 +303,66 @@ Result<PassResult> renderPass(ProjectLink& link, const doc::Project& project, co
 
 // ---- Export Audio -------------------------------------------------------------------------------------------------
 
+namespace {
+
+std::atomic<uint64_t> gLongWavLimit{0};
+
+struct Named {
+  doc::TrackId track{};  // {} for the master
+  fs::path file;
+};
+// The final files of `rq` over document `p` (names made safe, duplicates numbered); `why`: a bad track list.
+std::vector<Named> namedFiles(const doc::Project& p, const ExportRequest& rq, std::string* why) {
+  std::vector<Named> out;
+  std::map<std::string, int> names;
+  const std::string ext = rq.format == ExportFormat::Flac ? ".flac" : ".wav";
+  auto add = [&](doc::TrackId id, const std::string& name) {
+    std::string stem = safeName(name);
+    if (const int n = ++names[stem]; n > 1) stem += " (" + std::to_string(n) + ")";
+    out.push_back(Named{id, rq.folder / pathFromUtf8(stem + ext)});
+  };
+  if (rq.what == ExportWhat::Master) {
+    add({}, rq.baseName);
+    return out;
+  }
+  std::vector<const doc::Track*> tracks;
+  if (rq.what == ExportWhat::Stems) {
+    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
+      if (t.kind != doc::TrackKind::Master && t.active) tracks.push_back(&t);
+    });
+  } else {
+    for (doc::TrackId id : rq.tracks) {
+      const doc::Track* t = doc::findTrackPtr(p, id);
+      if (t == nullptr) {
+        if (why != nullptr) *why = "track " + std::to_string(id.value) + " is not in the project";
+        return {};
+      }
+      tracks.push_back(t);
+    }
+  }
+  if (tracks.empty()) {
+    if (why != nullptr) *why = "no tracks to export";
+    return {};
+  }
+  for (const doc::Track* t : tracks) add(t->id, rq.baseName.empty() ? t->name : rq.baseName + " " + t->name);
+  return out;
+}
+
+}  // namespace
+
+uint64_t longWavLimit() noexcept {
+  const uint64_t v = gLongWavLimit.load(std::memory_order_relaxed);
+  return v != 0 ? v : 0xFFFFFFFFull;
+}
+void setLongWavLimitForTests(uint64_t riffBytes) noexcept { gLongWavLimit.store(riffBytes, std::memory_order_relaxed); }
+
+std::vector<fs::path> exportFiles(const ExportRequest& rq) {
+  std::vector<fs::path> out;
+  if (!rq.snapshot) return out;
+  for (Named& n : namedFiles(*rq.snapshot, rq, nullptr)) out.push_back(std::move(n.file));
+  return out;
+}
+
 Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* progress, const std::atomic<bool>* cancel) {
   if (!rq.snapshot) return bad("no document");
   if (rq.to <= rq.from) return bad("empty range");
@@ -317,37 +387,20 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
 
   // The files.
   std::vector<Job> jobs;
-  const fs::path folder = rq.folder;
-  std::map<std::string, int> names;
-  const std::string ext = rq.format == ExportFormat::Flac ? ".flac" : ".wav";
-  auto add = [&](doc::TrackId id, const std::string& name) {
-    std::string stem = safeName(name);
-    if (const int n = ++names[stem]; n > 1) stem += " (" + std::to_string(n) + ")";
-    Job j;
-    j.track = id;
-    j.final = folder / pathFromUtf8(stem + ext);
-    j.temp = folder / pathFromUtf8(stem + ext + ".pqexport.tmp");  // always a 32f WAV
-    j.part = folder / pathFromUtf8(stem + ext + ".pqexport.part");
-    jobs.push_back(std::move(j));
-  };
-  if (rq.what == ExportWhat::Master) {
-    add({}, rq.baseName);
-  } else {
-    std::vector<const doc::Track*> tracks;
-    if (rq.what == ExportWhat::Stems) {
-      doc::forEachTrack(*store.current(), [&](const doc::Track& t, const doc::Track*) {
-        if (t.kind != doc::TrackKind::Master && t.active) tracks.push_back(&t);
-      });
-    } else {
-      for (doc::TrackId id : rq.tracks) {
-        const doc::Track* t = doc::findTrackPtr(*store.current(), id);
-        if (t == nullptr) return bad("track " + std::to_string(id.value) + " is not in the project");
-        tracks.push_back(t);
-      }
+  {
+    std::string why;
+    std::vector<Named> named = namedFiles(*store.current(), rq, &why);
+    if (!why.empty()) return bad(why);
+    for (Named& n : named) {
+      Job j;
+      j.track = n.track;
+      j.final = std::move(n.file);
+      j.temp = fs::path(j.final).concat(L".pqexport.tmp");  // always a 32f WAV
+      j.part = fs::path(j.final).concat(L".pqexport.part");
+      jobs.push_back(std::move(j));
     }
-    if (tracks.empty()) return bad("no tracks to export");
-    for (const doc::Track* t : tracks) add(t->id, rq.baseName.empty() ? t->name : rq.baseName + " " + t->name);
   }
+  const fs::path folder = rq.folder;
 
   auto cleanup = [&] {
     for (const Job& j : jobs) {
@@ -357,7 +410,7 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
   };
   std::error_code ec;
   fs::create_directories(folder, ec);
-  if (!fs::is_directory(folder, ec)) return Error{ErrorCode::Io, "export: cannot create " + folder.string(), {}};
+  if (!fs::is_directory(folder, ec)) return Error{ErrorCode::Io, "export: cannot create " + u8str(folder), {}};
 
   // Passes: one with every target, or (stems through the returns and the master) one solo pass per track — all on ONE
   // link: a solo pass is the track's solo written into the export's document (a param write on the link: the gates,
@@ -483,7 +536,7 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
     if (!j.silent && isFloat && gain == 1.0f && j.stats.frames == length) {
       if (fs::rename(j.temp, j.part, ec); ec) {
         cleanup();
-        return Error{ErrorCode::Io, "export: cannot write " + j.part.string() + ": " + ec.message(), {}};
+        return Error{ErrorCode::Io, "export: cannot write " + u8str(j.part) + ": " + ec.message(), {}};
       }
       continue;
     }
@@ -548,13 +601,34 @@ Result<ExportReport> runExport(const ExportRequest& rq, std::atomic<float>* prog
     rep.passes = passes;
     return rep;
   }
-  // Every part is complete: they become the files.
+  // Every part is complete: they become the files. L4: the files they replace are moved aside first and put back when
+  // any rename fails (a file open in a player refuses it), so a failed export never leaves some of them replaced.
+  std::vector<std::pair<fs::path, fs::path>> aside;  // a final name -> its old file, moved aside
+  std::vector<fs::path> placed;                      // the finals renamed into place so far
+  auto undo = [&] {
+    std::error_code uec;
+    for (const fs::path& f : placed) fs::remove(f, uec);
+    for (const auto& [f, old] : aside) fs::rename(old, f, uec);
+    cleanup();
+  };
+  for (const Job& j : jobs) {
+    if (!fs::exists(j.final, ec)) continue;
+    const fs::path old = fs::path(j.final).concat(L".pqexport.old");
+    removeQuietly(old);
+    if (fs::rename(j.final, old, ec); ec) {
+      undo();
+      return Error{ErrorCode::Io, "export: cannot replace " + u8str(j.final) + ": " + ec.message(), {}};
+    }
+    aside.emplace_back(j.final, old);
+  }
   for (const Job& j : jobs) {
     if (fs::rename(j.part, j.final, ec); ec) {
-      cleanup();
-      return Error{ErrorCode::Io, "export: cannot write " + j.final.string() + ": " + ec.message(), {}};
+      undo();
+      return Error{ErrorCode::Io, "export: cannot write " + u8str(j.final) + ": " + ec.message(), {}};
     }
+    placed.push_back(j.final);
   }
+  for (const auto& [f, old] : aside) removeQuietly(old);
   report(1.0f);
   return out;
 }

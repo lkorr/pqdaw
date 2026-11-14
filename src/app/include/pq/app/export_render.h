@@ -28,7 +28,9 @@
 // 24-bit; the same samples as the WAV of the same request). Pass 1 writes 32-bit float temp files next to them; pass 2
 // applies the normalize gain (each file's peak to −0.3 dBFS), TPDF dither (±1 LSB triangular) or 3-tap shaped dither
 // (error feedback, h = 1.623, −0.982, 0.109: noise moved above ~10 kHz) for integer formats, quantizes and writes
-// `.part` files; only when all of them are complete are they renamed onto the final names (replacing existing files).
+// `.part` files; only when all of them are complete are they renamed onto the final names (replacing existing files: the
+// window asks first, AU.app L4; the files they replace are moved aside first and put back when a rename fails, so a
+// failed export never leaves half the old stems replaced). Every WAV becomes RF64 past 4 GiB (M2).
 // A cancel or an error deletes every temp and part file: nothing new is left. Solo is cleared in the export's copy of
 // the document (mute is respected). A stem with master FX is a pass with that track soloed, all on one link: the solo
 // is a param write (no recompile; D7). Each pass starts settled, so it equals that track rendered as a first pass
@@ -52,6 +54,12 @@
 namespace pq::app {
 
 // ---- The core (FZ.2 reuses it) ---------------------------------------------------------------------------------
+
+// AU.app M2: the app's long WAVs (export temps and WAV files, freeze renders, render edits) pass this to
+// media::WavWriter::enableRf64: past this RIFF size (4 GiB) the file becomes RF64 instead of failing. Tests lower it
+// (setLongWavLimitForTests; 0 restores 4 GiB) to reach the RF64 path without writing 4 GiB.
+uint64_t longWavLimit() noexcept;
+void setLongWavLimitForTests(uint64_t riffBytes) noexcept;
 
 // What every offline render settles for before it plays (ProjectLink::settleOffline).
 inline constexpr double kSettleMinSeconds = 0.05;  // the PDC plan's 10 ms crossfade, a few JIT swaps
@@ -143,6 +151,8 @@ struct ExportReport {
 // The export job (see the file comment). `progress` (0 … 1) and `cancel` may be null; the caller's thread runs it.
 // Errors: a bad request (empty range, rate, no tracks, a track not in the project, no folder or name), a compile or
 // render error, a file error; in every error and on cancel no new file is left behind.
+// AU.app L4: the files runExport writes for `request` (its final paths, in its order; the request is not validated).
+std::vector<std::filesystem::path> exportFiles(const ExportRequest& request);
 Result<ExportReport> runExport(const ExportRequest& request, std::atomic<float>* progress = nullptr,
                                const std::atomic<bool>* cancel = nullptr);
 

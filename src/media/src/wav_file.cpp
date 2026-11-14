@@ -1,6 +1,7 @@
 #include "pq/media/wav_file.h"
 
 #include "pq/media/pcm.h"
+#include "file_io.h"  // pathUtf8 (AU.app L3: path::string() throws for names outside the ANSI code page)
 
 #include <algorithm>
 #include <cmath>
@@ -22,7 +23,7 @@ constexpr uint8_t kSubtypeTail[14] = {0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 
                                       0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71};
 
 Error ioError(const std::filesystem::path& path, const char* what) {
-  return Error{ErrorCode::Io, std::string(what) + " " + path.string(), {}};
+  return Error{ErrorCode::Io, std::string(what) + " " + detail::pathUtf8(path), {}};
 }
 Error formatError(const std::string& what) { return Error{ErrorCode::Parse, "WAV: " + what, {}}; }
 
@@ -172,7 +173,7 @@ Result<WavData> readWav(const std::filesystem::path& path) {
   if (!in) return ioError(path, "cannot read");
   std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   auto w = parseWav(bytes.data(), bytes.size());
-  if (!w) return Error{w.error().code, path.string() + ": " + w.error().message, {}};
+  if (!w) return Error{w.error().code, detail::pathUtf8(path) + ": " + w.error().message, {}};
   return w;
 }
 
@@ -227,7 +228,7 @@ Status WavWriter::write(const float* const* channels, uint32_t frames) {
   if (!out_.is_open()) return Error{ErrorCode::InvalidArgument, "WavWriter: not open", {}};
   // RIFF sizes are 32-bit: refuse to grow past them rather than write a corrupt file (unless it may become RF64).
   if (rf64Above_ == 0 && (frames_ + frames) * channels_ * bytesPer_ + headerBytes_ > std::numeric_limits<uint32_t>::max())
-    return Error{ErrorCode::Overflow, "WAV file would exceed 4 GiB: " + path_.string(), {}};
+    return Error{ErrorCode::Overflow, "WAV file would exceed 4 GiB: " + detail::pathUtf8(path_), {}};
   if (format_ != WavFormat::Float32) {  // EX.1: integer PCM, interleaved little endian
     const double scale = format_ == WavFormat::Pcm16 ? 32768.0 : 8388608.0;
     packed_.resize(static_cast<size_t>(frames) * channels_ * bytesPer_);

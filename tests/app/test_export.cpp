@@ -20,6 +20,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -414,5 +415,63 @@ TEST_CASE("EX.1: PCM16 (TPDF, shaped) and PCM24 within their error bounds of the
   const double lt = lowRms(tpdf), ls = lowRms(shaped);
   MESSAGE("low-frequency error RMS (LSB): TPDF " << lt / lsb16 << ", shaped " << ls / lsb16);
   CHECK(ls < 0.6 * lt);
+  fs::remove_all(dir);
+}
+
+// ---- AU.app (docs/reviews/RB-DY.md L3, L4) --------------------------------------------------------------------------
+
+TEST_CASE("AU.app L3: an export error names a non-ANSI folder in UTF-8 (path::string() would throw on the worker)") {
+  playback_fixture::Fixture f;
+  const fs::path base = freshDir("l3");
+  const fs::path folder = base / fs::path(u8"Ωμέγα");  // Greek: outside the ANSI code page
+  std::ofstream(folder) << "a file where the folder goes";
+  app::ExportRequest r = request(f.snap(), kTicksPerWhole, folder, "\xCE\x94");
+  bool threw = false;
+  std::string message;
+  try {
+    auto rep = app::runExport(r);
+    REQUIRE_FALSE(rep.ok());
+    message = rep.error().message;
+  } catch (...) {
+    threw = true;
+  }
+  CHECK_FALSE(threw);
+  CHECK(message.find("\xCE\xA9") != std::string::npos);  // the folder's name, in UTF-8
+  fs::remove_all(base);
+}
+
+TEST_CASE("AU.app L4: exportFiles names runExport's files; a replace refused mid-way puts every old file back") {
+  playback_fixture::Fixture f;
+  const fs::path dir = freshDir("l4");
+  app::ExportRequest r = request(f.snap(), kTicksPerWhole, dir, "Mix");
+  r.what = app::ExportWhat::Stems;
+  const std::vector<fs::path> names = app::exportFiles(r);
+  REQUIRE(names.size() >= 2);
+  for (const fs::path& n : names) std::ofstream(n, std::ios::binary) << "old";
+  auto content = [](const fs::path& p) {
+    std::ifstream in(p, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  };
+  auto leftovers = [&] {
+    size_t n = 0;
+    for (const auto& e : fs::directory_iterator(dir)) n += e.path().u8string().find(u8".pqexport") != std::u8string::npos;
+    return n;
+  };
+  {  // The last file is open in a player (no delete sharing): the export fails and no old file is replaced.
+    std::ifstream held(names.back(), std::ios::binary);
+    REQUIRE(held.is_open());
+    auto rep = app::runExport(r);
+    CHECK_FALSE(rep.ok());
+  }
+  for (const fs::path& n : names) CHECK(content(n) == "old");
+  CHECK(leftovers() == 0);
+  // Not held: every file is replaced; they are the files exportFiles named, in its order.
+  const app::ExportReport rep = run(r);
+  REQUIRE(rep.files.size() == names.size());
+  for (size_t i = 0; i < names.size(); ++i) {
+    CHECK(rep.files[i].path == names[i]);
+    CHECK(content(names[i]) != "old");
+  }
+  CHECK(leftovers() == 0);
   fs::remove_all(dir);
 }

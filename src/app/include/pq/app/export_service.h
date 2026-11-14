@@ -34,6 +34,7 @@ public:
   bool start(const views::ExportJob& job) override;
   views::ExportStatus status() override;
   void cancel() override;
+  std::vector<std::string> existingFiles(const views::ExportJob& job) override;  // AU.app L4
 
 private:
   std::function<uint32_t()> engineRate_;

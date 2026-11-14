@@ -6,6 +6,7 @@
 #include <FLAC/stream_encoder.h>
 
 #include "pq/media/pcm.h"
+#include "file_io.h"  // pathUtf8 (AU.app L3: path::string() throws for names outside the ANSI code page)
 
 namespace pq::media {
 
@@ -28,7 +29,7 @@ Status FlacWriter::fail(const char* what) {
     FLAC__stream_encoder_delete(e);
     enc_ = nullptr;
   }
-  return Error{ErrorCode::Io, "FLAC: " + why + " " + path_.string(), {}};
+  return Error{ErrorCode::Io, "FLAC: " + why + " " + detail::pathUtf8(path_), {}};
 }
 
 Status FlacWriter::open(const std::filesystem::path& path, uint32_t numChannels, uint32_t sampleRate,
@@ -54,14 +55,14 @@ Status FlacWriter::open(const std::filesystem::path& path, uint32_t numChannels,
   if (f == nullptr) {
     FLAC__stream_encoder_delete(e);
     enc_ = nullptr;
-    return Error{ErrorCode::Io, "cannot write " + path.string(), {}};
+    return Error{ErrorCode::Io, "cannot write " + detail::pathUtf8(path), {}};
   }
   if (const FLAC__StreamEncoderInitStatus st = FLAC__stream_encoder_init_FILE(e, f, nullptr, nullptr);
       st != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
     const std::string why = std::string("cannot start: ") + FLAC__StreamEncoderInitStatusString[st];
     FLAC__stream_encoder_delete(e);  // init_FILE took the FILE before it failed: delete (finish) closes it
     enc_ = nullptr;
-    return Error{ErrorCode::Io, "FLAC: " + why + " " + path.string(), {}};
+    return Error{ErrorCode::Io, "FLAC: " + why + " " + detail::pathUtf8(path), {}};
   }
   return Ok{};
 }
@@ -88,7 +89,7 @@ Status FlacWriter::close() {
   enc_ = nullptr;
   if (!ok)
     return Error{ErrorCode::Io,
-                 std::string("FLAC: cannot finish: ") + FLAC__StreamEncoderStateString[st] + " " + path_.string(), {}};
+                 std::string("FLAC: cannot finish: ") + FLAC__StreamEncoderStateString[st] + " " + detail::pathUtf8(path_), {}};
   return Ok{};
 }
 

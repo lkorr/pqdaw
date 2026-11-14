@@ -377,6 +377,18 @@ bool ExportWindow::exportNow() {
     done_->setText(why);
     return false;
   }
+  // L4: existing files are replaced only on a second press (the button reads Replace meanwhile).
+  if (!confirmReplace_)
+    if (const std::vector<std::string> there = port_.existingFiles(*j); !there.empty()) {
+      confirmReplace_ = true;
+      export_->setText("Replace");
+      done_->setText(there.size() == 1 ? fileNameOf(there[0]) + " already exists. Press Replace to overwrite it."
+                                       : std::to_string(there.size()) + " files already exist (" + fileNameOf(there[0]) +
+                                             ", \xE2\x80\xA6). Press Replace to overwrite them.");
+      markDirty();
+      return false;
+    }
+  confirmReplace_ = false;
   if (!port_.start(*j)) {
     done_->setText("Another export is running.");
     return false;
@@ -438,6 +450,10 @@ void ExportWindow::choose(const ExportPrefs& p) {
 
 void ExportWindow::updateRows() {
   const ExportPrefs& p = ctx_.viewPrefs().exportAudio;
+  if (confirmReplace_ || export_->text() != "Export") {  // L4: a change of the choices asks again
+    confirmReplace_ = false;
+    export_->setText("Export");
+  }
   const bool idle = !running_;
   // The button pressed is disabled and hidden below (which drops the keyboard focus): the focus moves to the one taking
   // its place, so Esc keeps closing the window and Space / Enter press the new button.

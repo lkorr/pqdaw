@@ -93,6 +93,15 @@ bool ExportService::start(const views::ExportJob& job) {
   return true;
 }
 
+std::vector<std::string> ExportService::existingFiles(const views::ExportJob& job) {
+  std::vector<std::string> out;
+  for (const std::filesystem::path& f : exportFiles(exportRequestOf(job, jit_))) {
+    std::error_code ec;
+    if (std::filesystem::exists(f, ec)) out.push_back(utf8Of(f));
+  }
+  return out;
+}
+
 views::ExportStatus ExportService::status() {
   std::lock_guard lock(mutex_);
   views::ExportStatus s = result_;

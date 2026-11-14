@@ -456,3 +456,32 @@ TEST_CASE("FZ.4: an edit of the track while it renders drops the result: no edit
   CHECK(a.ctx->status().find("cancelled") != std::string::npos);
   CHECK_FALSE(fs::exists(a.dir / "samples" / "bounced" / "Lead Bounce.wav"));
 }
+
+// AU.app L6 (docs/reviews/RB-DY.md): the project is saved elsewhere while a Bounce renders: the result lands in the
+// folder the document belongs to when it is applied (a relative ref), not in the one it started in.
+TEST_CASE("AU.app L6: a Bounce whose project is saved elsewhere while it renders lands in the new project's folder") {
+  App a("l6");
+  const fs::path moved = freshDir("l6_moved");
+  views::RenderEditJob job;
+  job.kind = views::RenderEditJob::Kind::Bounce;
+  job.tracks = {a.f.lead};
+  REQUIRE(a.svc->start(job));
+  REQUIRE(a.svc->waitIdle());
+  REQUIRE(a.ctx->saveProjectAs(utf8(moved)).ok());  // before the result is taken
+  REQUIRE(a.svc->poll());
+  INFO(a.ctx->status());
+  const Track* bounced = nullptr;
+  for (const TrackPtr& t : a.doc().tracks)
+    if (t->name == "Lead Bounce") bounced = t.get();
+  REQUIRE(bounced != nullptr);
+  REQUIRE_FALSE(bounced->clips.empty());
+  REQUIRE(bounced->clips[0].audio != nullptr);
+  const SampleRef* ref = findSample(a.doc(), bounced->clips[0].audio->sample);
+  REQUIRE(ref != nullptr);
+  CHECK(ref->path == "samples/bounced/Lead Bounce.wav");  // relative to the project it belongs to now
+  CHECK(fs::exists(moved / "samples" / "bounced" / "Lead Bounce.wav"));
+  CHECK_FALSE(fs::exists(a.dir / "samples" / "bounced" / "Lead Bounce.wav"));
+  a.ctx->store().reset(a.f.snap());
+  std::error_code ec;
+  fs::remove_all(moved, ec);
+}

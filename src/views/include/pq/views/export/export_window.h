@@ -31,7 +31,9 @@
 // that do not apply are disabled (no time selection, no selected track, Include Return and Master Effects for the
 // master, Dither for 32-bit float); FLAC (EX.3) offers 16 and 24-bit only: choosing it at 32-bit float sets 24-bit.
 // Export is disabled with the reason in the done line while the choices cannot
-// export.
+// export. AU.app L4: when files of the names it would write exist (ExportPort::existingFiles), the first press says so in
+// the done line and turns the button into Replace; the second press exports (replacing them). Any change of the
+// choices asks again.
 //
 // Every choice is remembered at once (ViewPrefs::exportAudio → the app's settings file), except the file name (the
 // project's name each time). Export hands an ExportJob to the port; while it runs the rows are disabled, a progress bar
@@ -134,6 +136,7 @@ private:
   ui::Widget* progress_ = nullptr;
   ExportStatus shown_;
   bool running_ = false;
+  bool confirmReplace_ = false;  // L4: the next press replaces existing files
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // for the folder dialog's late answer
 };

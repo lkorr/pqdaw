@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <system_error>
 
+#include "pq/app/export_render.h"
 #include "pq/app/freeze_service.h"
 #include "pq/app/project_link.h"
 #include "pq/document/commands.h"
@@ -70,6 +71,7 @@ public:
   explicit WavSink(fs::path path) : path_(std::move(path)) {}
   Status begin(uint32_t ch, uint32_t rate, uint64_t) override {
     open_ = true;
+    w_.enableRf64(longWavLimit());  // AU.app M2: RF64 past 4 GiB
     return w_.open(path_, ch, rate);
   }
   Status write(const float* const* ch, uint32_t frames) override { return w_.write(ch, frames); }
@@ -474,6 +476,29 @@ bool RenderEditService::poll() {
     dropFiles();
     ctx_.setStatus(label + ": cancelled (the track changed while it rendered)");
     return true;
+  }
+  // L6: the project was saved elsewhere while it rendered (an untitled project's Save As): the files move into the folder
+  // the document now belongs to, so its refs are made there, never as absolute paths into a folder that may go. A file
+  // that cannot be moved (or copied) stays where it is (referenced by its absolute path).
+  if (const std::string now = ctx_.projectDir(); now != j->projectDir) {
+    const char* sub = j->req.kind == RenderEditJob::Kind::Flatten  ? "frozen"
+                      : j->req.kind == RenderEditJob::Kind::Bounce ? "bounced"
+                                                                   : "consolidated";
+    const fs::path dir = now.empty() ? u8path(ctx_.unsavedRecordingDir()) : u8path(now) / "samples" / sub;
+    std::error_code ec;
+    if (!dir.empty()) fs::create_directories(dir, ec);
+    for (Job::Item& it : j->items) {
+      if (dir.empty()) break;
+      const fs::path to = freshFile(dir, u8str(it.file.stem()));
+      ec.clear();
+      fs::rename(it.file, to, ec);
+      if (ec) {  // another volume
+        ec.clear();
+        fs::copy_file(it.file, to, ec);
+        if (!ec) removeQuietly(it.file);
+      }
+      if (!ec) it.file = to;
+    }
   }
   // One Batch: each item's edit built on the document its predecessors made.
   doc::IdSource& ids = ctx_.store().ids();
