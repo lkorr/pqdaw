@@ -658,3 +658,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: zoom of 1.5→4.9x: worst frame 10.6 → 0.7 ms, 10 rebuilds → 1 at rest (20.7 → 7.5 ms, empty-slot fast path); the sheet costs nothing unless open; a feed retune happens only when the tuning changes.
 - Notes: Q271. Goldens re-recorded: device-meta-spectrum, project-meta-spectrum, module-spectrum-panel (the SET chip). Load-sensitive perf test "spectrogram feed: the UI's reads never wait" failed twice under machine load (p99 1.28 ms vs 1.0) — not touched by this change.
 
+## 2026-11-13 · TU.2 wheel fix (the user's uncommitted change) · main
+- Did: committed the user's working-tree fix: MosWheelPopover::opened() (called by openMosWheel once the popover is in the tree) creates CircleNotes; in the constructor its frame request was dropped, so a wheel opened during playback never lit the playing note. Test "a MOS wheel opened during playback lights the playing clip note" (test_tuning_live.cpp).
+- Verified: pq_tests_playback default tier (one meta-wavetable generation check failed under another checkout's build load, passed 3/3 alone; the new case passes), pq_tests_views pass (one NVIDIA SIGSEGV first run).
+
