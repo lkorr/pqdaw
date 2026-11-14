@@ -56,13 +56,16 @@ bool hasTuningSignal(const TuningDef& def) noexcept;
 //              that pitch times its fixed ratio to it (its static Hz over the root's);
 //   Reference  a Ratio anchored to the reference, a Cents note, or a Ratio anchored (through notes) to one of them:
 //              hz = static hz · reference(t) / reference₀ (it keeps its ratio to the tuning's reference);
-//   Static     everything else (a private / Scala / MODMOS tuning, Harmonic and JI-fundamental identities).
+//   Static     everything else (a private / Scala / MODMOS tuning).
+// T7.2: a note of a JI object (Harmonic, or a Ratio anchored to JiFundamental) resolves at ITS START to the object's
+// voice / fundamental there (ji_object.h jiVoiceHz / jiFundamentalHz: exact ratio × fundamental at a hold) and follows
+// as the object's fundamental does: a Degree fundamental → Degree with the fundamental's (degree, equave), the note
+// keeping its ratio to it; a Cents / reference-Ratio fundamental → Reference.
 enum class PitchFollow : uint8_t { Static, Degree, Reference };
 
 struct NotePitch {
   NoteId note;
-  std::optional<double> hz;  // nullopt: unresolvable (a missing or cyclic anchor, a Harmonic identity without its JI
-                             // object (M7), a pitch outside float32's range)
+  std::optional<double> hz;  // nullopt: unresolvable (a missing or cyclic anchor, a pitch outside float32's range)
   TuningId signal;           // valid: the note follows this main tuning's signal (T2.6); invalid: static Hz
   PitchFollow follow = PitchFollow::Static;
   int32_t degree = 0;        // Degree: the (root anchor's) Degree identity

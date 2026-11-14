@@ -26,6 +26,7 @@ struct LocatorTag {};
 struct DeviceTag {};  // T4.1: a device instance in a track's chain
 struct WireTag {};    // T4.7: a cross-device modulation wire
 struct SampleTag {};  // T5.3: an entry of the project's sample table
+struct JiObjectTag {};  // T7.2: a JI object of a note clip (model.h "JI objects")
 
 using TrackId = StableId<TrackTag>;
 using ClipId = StableId<ClipTag>;
@@ -37,6 +38,7 @@ using LocatorId = StableId<LocatorTag>;
 using DeviceId = StableId<DeviceTag>;
 using WireId = StableId<WireTag>;
 using SampleId = StableId<SampleTag>;
+using JiObjectId = StableId<JiObjectTag>;
 
 // The project-wide id counter. Not thread-safe (owned by the UI thread's DocumentStore).
 class IdSource {
@@ -58,6 +60,7 @@ public:
   DeviceId device() noexcept { return next<DeviceTag>(); }
   WireId wire() noexcept { return next<WireTag>(); }
   SampleId sample() noexcept { return next<SampleTag>(); }
+  JiObjectId jiObject() noexcept { return next<JiObjectTag>(); }
 
   // The value next() would hand out.
   uint32_t peek() const noexcept { return next_; }

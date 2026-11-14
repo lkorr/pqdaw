@@ -356,19 +356,50 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
     for (const NoteClip* c : merge)
       if (!(c->tuning == first.tuning)) return invalid("the clips use different tunings");
     std::vector<Note> notes;
+    JiObjectList objects;  // T7.2
+    NoteCurveList curves;
     for (const NoteClip* c : merge) {
       forEachClipSegment(*c, c->start, clipEnd(*c), [&](const ClipSegment& seg) {
+        // T7.2: this pass's objects — those overlapping it, and any a note of the pass follows — placed like its notes
+        // and cut at the pass's end; an object already taken (an earlier pass of a loop) is copied with fresh ids and
+        // this pass's notes follow the copy.
+        JiIdMap map;       // objects of this pass that got fresh ids (sorted)
+        std::vector<JiObjectId> taken;  // objects of this pass (sorted)
+        auto takeObject = [&](const JiObject& o) {
+          if (std::binary_search(taken.begin(), taken.end(), o.id)) return;
+          taken.insert(std::upper_bound(taken.begin(), taken.end(), o.id), o.id);
+          JiObject n = o;
+          if (!seen.insert(o.id.value).second) {
+            n = freshJiObject(o, ids);
+            map.insert(std::upper_bound(map.begin(), map.end(), std::pair(o.id, n.id)), {o.id, n.id});
+          }
+          n.start = seg.at + (o.start - seg.contentFrom) - g.start;
+          if (o.start < seg.contentTo) n.length = std::min(o.length, seg.contentTo - o.start);
+          objects.push_back(std::move(n));
+        };
+        for (const JiObject& o : jiObjectsOf(*c))
+          if (o.start < seg.contentTo && o.end() > seg.contentFrom) takeObject(o);
         for (auto [it, end] = c->notes.range(seg.contentFrom, seg.contentTo); it != end; ++it) {
           Note m = *it;
           m.start = seg.at + (it->start - seg.contentFrom) - g.start;
           m.length = std::min(it->length, seg.contentTo - it->start);
           if (!c->active) m.flags |= kNoteDisabled;
           if (!seen.insert(it->id.value).second) m.id = ids.note();
+          if (const JiObjectId followed = jiObjectOf(m.pitch); followed.valid()) {
+            if (const JiObject* o = findJiObject(*c, followed)) takeObject(*o);
+            m.pitch = remapJiPitch(m.pitch, map);
+          }
+          if (c->curves)
+            if (const NoteCurves* nc = findNoteCurves(*c, it->id)) curves.push_back(NoteCurves{m.id, nc->pitch});
           notes.push_back(m);
         }
       });
     }
     NoteClip c = withNotes(first, seqOf(std::move(notes)));
+    std::sort(objects.begin(), objects.end(), [](const JiObject& a, const JiObject& b) { return a.id < b.id; });
+    std::sort(curves.begin(), curves.end(), [](const NoteCurves& a, const NoteCurves& b) { return a.note < b.note; });
+    c.ji = objects.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(objects));
+    c.curves = curves.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(curves));
     c.id = ids.clip();
     c.start = g.start;
     c.length = g.end - g.start;

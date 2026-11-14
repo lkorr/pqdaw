@@ -193,6 +193,7 @@ Status checkClipList(const Project& p, TrackKind kind, const std::vector<ClipSlo
     } else {
       if (c.audio || !c.clip || c.clip->id != c.id) return invalid("clip slot does not match its clip");
       PQ_DOC_TRY(checkClip(p, *c.clip));
+      PQ_DOC_TRY(checkClipJi(*c.clip));  // T7.2
     }
     if (i > 0 && !clipLess(clips[i - 1], c)) return invalid("clips must be sorted");
     ids.push_back(c.id.value);
@@ -1011,6 +1012,7 @@ Res apply_(const Snapshot& s, const AddClip& c, ChangeSet& cs) {
   if (!loc) return std::move(loc).error();
   if (loc->track->kind != TrackKind::Midi) return invalid("note clips live on MIDI tracks");
   PQ_DOC_TRY(checkClip(*s, *c.clip));
+  PQ_DOC_TRY(checkClipJi(*c.clip));  // T7.2
   if (findClipIndex(*loc->track, c.clip->id) >= 0) return invalid("clip id already on this track");
   auto np = copyOf(s);
   Track& t = mutableTrack(*np, loc->path);
@@ -1233,8 +1235,10 @@ Res apply_(const Snapshot& s, const AddNotes& c, ChangeSet& cs) {
   std::sort(ids.begin(), ids.end());
   if (std::adjacent_find(ids.begin(), ids.end()) != ids.end()) return invalid("duplicate note id");
   Res r = editClip(s, c.clip, cs, kChangeSequence, [&](const NoteClip& old) -> Result<ClipPtr> {
-    for (const Note& n : c.notes)
+    for (const Note& n : c.notes) {
       if (old.notes.find(keyOf(n))) return invalid("note already in the clip");
+      PQ_DOC_TRY(checkNoteJi(old, n.pitch));  // T7.2
+    }
     return clipWith(old, old.notes.withInserted(c.notes));
   });
   if (r)
@@ -1254,7 +1258,23 @@ Res apply_(const Snapshot& s, const RemoveNotes& c, ChangeSet& cs) {
     }
     std::sort(keys.begin(), keys.end());
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-    return clipWith(old, old.notes.withRemoved(keys));
+    NoteClip n = withNotes(old, old.notes.withRemoved(keys));
+    if (old.curves) {  // T7.2: a removed note's curves go with it (O(removed · log curves); copied only when one had any)
+      bool any = false;
+      for (const NoteKey& k : keys) any = any || findNoteCurves(old, k.id) != nullptr;
+      if (any) {
+        NoteCurveList kept;
+        kept.reserve(old.curves->size());
+        std::vector<NoteId> gone;
+        gone.reserve(keys.size());
+        for (const NoteKey& k : keys) gone.push_back(k.id);
+        std::sort(gone.begin(), gone.end());
+        for (const NoteCurves& nc : *old.curves)
+          if (!std::binary_search(gone.begin(), gone.end(), nc.note)) kept.push_back(nc);
+        n.curves = kept.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(kept));
+      }
+    }
+    return ClipPtr(std::make_shared<const NoteClip>(std::move(n)));
   });
   if (r)
     for (const NoteKey& k : keys) cs.notes.push_back(k.id);
@@ -1276,6 +1296,7 @@ Res editNotes(const Snapshot& s, const ClipRef& clip, std::span<const NoteKey> n
       if (*m == *n) continue;
       if (m->id != n->id) return invalid("a note's id cannot change");
       PQ_DOC_TRY(validateNote(*m));
+      if (!(m->pitch == n->pitch)) PQ_DOC_TRY(checkNoteJi(old, m->pitch));  // T7.2
       rem.push_back(keyOf(*n));
       ins.push_back(*m);
     }
@@ -1329,6 +1350,87 @@ Res apply_(const Snapshot& s, const SetNoteProperty& c, ChangeSet& cs) {
     }
     return m;
   });
+}
+
+// ---- JI objects and note curves (T7.2) ---------------------------------------------------------------------------
+
+// Edits the clip's object list: f(JiObjectList&, const NoteClip& old) → Status; the result is validated as a list.
+template <class F>
+Res editJi(const Snapshot& s, const ClipRef& clip, JiObjectId object, ChangeSet& cs, F&& f) {
+  Res r = editClip(s, clip, cs, kChangeSequence, [&](const NoteClip& old) -> Result<ClipPtr> {
+    JiObjectList list(jiObjectsOf(old).begin(), jiObjectsOf(old).end());
+    PQ_DOC_TRY(f(list, old));
+    if (std::ranges::equal(list, jiObjectsOf(old))) return ClipPtr{};
+    PQ_DOC_TRY(checkJiList(list));
+    NoteClip n = withNotes(old, old.notes);
+    n.ji = list.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(list));
+    return ClipPtr(std::make_shared<const NoteClip>(std::move(n)));
+  });
+  if (r && *r != s) cs.jiObjects.push_back(object);
+  return r;
+}
+
+auto jiPosition(JiObjectList& list, JiObjectId id) {
+  return std::lower_bound(list.begin(), list.end(), id, [](const JiObject& o, JiObjectId x) { return o.id < x; });
+}
+
+Res apply_(const Snapshot& s, const AddJiObject& c, ChangeSet& cs) {
+  return editJi(s, c.clip, c.object.id, cs, [&](JiObjectList& list, const NoteClip&) -> Status {
+    PQ_DOC_TRY(checkJiObject(c.object));
+    const auto it = jiPosition(list, c.object.id);
+    if (it != list.end() && it->id == c.object.id) return invalid("JI object id already in the clip");
+    list.insert(it, c.object);
+    return ok();
+  });
+}
+
+Res apply_(const Snapshot& s, const RemoveJiObject& c, ChangeSet& cs) {
+  return editJi(s, c.clip, c.object, cs, [&](JiObjectList& list, const NoteClip& old) -> Status {
+    const auto it = jiPosition(list, c.object);
+    if (it == list.end() || it->id != c.object) return notFound("JI object not found");
+    for (const Note& n : old.notes)
+      if (jiObjectOf(n.pitch) == c.object) return invalid("notes still follow this JI object");
+    list.erase(it);
+    return ok();
+  });
+}
+
+Res apply_(const Snapshot& s, const SetJiObject& c, ChangeSet& cs) {
+  return editJi(s, c.clip, c.object.id, cs, [&](JiObjectList& list, const NoteClip& old) -> Status {
+    const auto it = jiPosition(list, c.object.id);
+    if (it == list.end() || it->id != c.object.id) return notFound("JI object not found");
+    if (*it == c.object) return ok();
+    PQ_DOC_TRY(checkJiObject(c.object));
+    if (c.object.voices() < it->voices())
+      for (const Note& n : old.notes)
+        if (n.pitch.kind() == tuning::PitchKind::Harmonic && n.pitch.jiObject() == c.object.id.value &&
+            n.pitch.voiceIndex() >= c.object.voices())
+          return invalid("a note follows a voice the JI object would lose");
+    *it = c.object;
+    return ok();
+  });
+}
+
+Res apply_(const Snapshot& s, const SetNoteCurve& c, ChangeSet& cs) {
+  NoteId id;
+  Res r = editClip(s, c.clip, cs, kChangeSequence, [&](const NoteClip& old) -> Result<ClipPtr> {
+    const Note* note = old.notes.locate(c.note);
+    if (!note) return notFound("note not found");
+    id = note->id;
+    PQ_DOC_TRY(checkCurve(c.pitch, "note curve"));
+    const NoteCurves* have = findNoteCurves(old, id);
+    if (have ? have->pitch == c.pitch : c.pitch.empty()) return ClipPtr{};
+    NoteCurveList list(noteCurvesOf(old).begin(), noteCurvesOf(old).end());
+    const auto it = std::lower_bound(list.begin(), list.end(), id, [](const NoteCurves& o, NoteId x) { return o.note < x; });
+    if (c.pitch.empty()) list.erase(it);
+    else if (have) it->pitch = c.pitch;
+    else list.insert(it, NoteCurves{id, c.pitch});
+    NoteClip n = withNotes(old, old.notes);
+    n.curves = list.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(list));
+    return ClipPtr(std::make_shared<const NoteClip>(std::move(n)));
+  });
+  if (r && *r != s) cs.notes.push_back(id);
+  return r;
 }
 
 // ---- Automation ----------------------------------------------------------------------------------------------------
@@ -2336,6 +2438,7 @@ constexpr std::array<std::string_view, std::variant_size_v<CommandVariant>> kLab
     "Clip Colour", "Clip Signature", "Activate Clip", "Clip Fundamental", "Edit Audio Clip", "Add Sample",
     "Delete Sample", "Edit Sample",
     "Add Notes", "Delete Notes", "Edit Notes", "Move Note", "Resize Note", "Note Property",
+    "Add JI Object", "Delete JI Object", "Edit JI Object", "Note Curve",
     "Add Automation Lane", "Delete Automation Lane", "Add Breakpoints", "Delete Breakpoints", "Edit Breakpoints",
     "Tempo", "Time Signature", "Loop", "Add Locator", "Delete Locator", "Edit Locator",
     "Add Tuning", "Delete Tuning", "Rename Tuning", "Tuning Colour", "Edit Tuning", "Tuning Parameter",

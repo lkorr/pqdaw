@@ -57,6 +57,7 @@ constexpr std::array<std::string_view, 5> kKnobCurveNames = {"default", "linear"
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
+constexpr std::array<std::string_view, 3> kJiShapeNames = {"linear", "s", "bezier"};  // T7.2: JiShape::Kind
 constexpr std::array<std::string_view, 7> kWarpNames = {"off",     "rePitch", "beats",     "tones",  // T5.3, T6.1
                                                         "texture", "complex", "complexPro"};
 // T6.1 (schema 22).
@@ -1090,6 +1091,8 @@ private:
     size_t i = 0;
     for (const Note& n : c.notes) note(PathSeg(&notes, i++), n);
     w_.endArray();
+    if (c.ji && !c.ji->empty()) jiObjects(PathSeg(&at, "ji"), *c.ji);  // T7.2: only when set (older files unchanged)
+    if (c.curves && !c.curves->empty()) noteCurves(PathSeg(&at, "curves"), *c.curves);
     w_.endObject();
   }
 
@@ -1223,8 +1226,32 @@ private:
     w_.key("length");
     w_.integer(n.length);
     w_.key("pitch");
+    pitch(at, n.pitch);
+    w_.key("velocity");
+    w_.number(PathSeg(&at, "velocity"), n.velocity);
+    if (n.releaseVelocity != 64.0f || std::signbit(n.releaseVelocity)) {
+      w_.key("releaseVelocity");
+      w_.number(PathSeg(&at, "releaseVelocity"), n.releaseVelocity);
+    }
+    if (n.chance != 1.0f) {
+      w_.key("chance");
+      w_.number(PathSeg(&at, "chance"), n.chance);
+    }
+    if (n.velocityRange != 0.0f || std::signbit(n.velocityRange)) {
+      w_.key("velocityRange");
+      w_.number(PathSeg(&at, "velocityRange"), n.velocityRange);
+    }
+    if (n.flags & kNoteDisabled) {
+      w_.key("disabled");
+      w_.boolean(true);
+    }
+    if (n.flags & ~static_cast<uint32_t>(kNoteDisabled)) json::fail(at, "unknown note flags");
+    w_.endObject();
+  }
+
+  // A pitch identity (a note's, a JI object's fundamental, a tuning stop's entry).
+  void pitch(const PathSeg& at, const tuning::PitchId& p) {
     w_.beginObject(false);
-    const tuning::PitchId& p = n.pitch;
     switch (p.kind()) {
       case tuning::PitchKind::Degree:
         w_.key("degree");
@@ -1256,26 +1283,136 @@ private:
         break;
     }
     w_.endObject();
-    w_.key("velocity");
-    w_.number(PathSeg(&at, "velocity"), n.velocity);
-    if (n.releaseVelocity != 64.0f || std::signbit(n.releaseVelocity)) {
-      w_.key("releaseVelocity");
-      w_.number(PathSeg(&at, "releaseVelocity"), n.releaseVelocity);
+  }
+
+  // ---- T7.2: JI objects and note curves (written only when the clip has any) ----
+  void curvePoints(const PathSeg& at, const std::vector<Breakpoint>& pts) {
+    w_.beginArray(false);
+    for (const Breakpoint& b : pts) {
+      w_.beginObject(false);
+      w_.key("tick");
+      w_.integer(b.tick);
+      w_.key("value");
+      w_.number(at, b.value);
+      if (b.curve != 0.0f || std::signbit(b.curve)) {
+        w_.key("curve");
+        w_.number(at, b.curve);
+      }
+      w_.endObject();
     }
-    if (n.chance != 1.0f) {
-      w_.key("chance");
-      w_.number(PathSeg(&at, "chance"), n.chance);
+    w_.endArray();
+  }
+  void jiTiming(const PathSeg& at, const JiTiming& t) {
+    w_.beginObject(false);
+    w_.key("delay");
+    w_.integer(t.delay);
+    w_.key("glide");
+    w_.integer(t.glide);
+    w_.key("shape");
+    w_.string(at, kJiShapeNames[static_cast<size_t>(t.shape.kind)]);
+    if (!(JiShape{t.shape.kind, t.shape.x1, t.shape.y1, t.shape.x2, t.shape.y2} == JiShape{t.shape.kind})) {
+      w_.key("handles");
+      w_.beginArray(false);
+      for (const float h : {t.shape.x1, t.shape.y1, t.shape.x2, t.shape.y2}) w_.number(at, h);
+      w_.endArray();
     }
-    if (n.velocityRange != 0.0f || std::signbit(n.velocityRange)) {
-      w_.key("velocityRange");
-      w_.number(PathSeg(&at, "velocityRange"), n.velocityRange);
-    }
-    if (n.flags & kNoteDisabled) {
-      w_.key("disabled");
-      w_.boolean(true);
-    }
-    if (n.flags & ~static_cast<uint32_t>(kNoteDisabled)) json::fail(at, "unknown note flags");
     w_.endObject();
+  }
+  void jiObjects(const PathSeg& at, const JiObjectList& list) {
+    w_.key("ji");
+    w_.beginArray(true);
+    for (size_t i = 0; i < list.size(); ++i) {
+      const JiObject& o = list[i];
+      const PathSeg el(&at, i);
+      w_.beginObject(true);
+      w_.key("id");
+      w_.integer(o.id.value);
+      w_.key("start");
+      w_.integer(o.start);
+      w_.key("length");
+      w_.integer(o.length);
+      w_.key("fundamental");
+      pitch(PathSeg(&el, "fundamental"), o.fundamental);
+      if (o.undertone) {
+        w_.key("undertone");
+        w_.boolean(true);
+      }
+      if (!o.sounds) {
+        w_.key("sounds");
+        w_.boolean(false);
+      }
+      w_.key("velocity");
+      w_.number(PathSeg(&el, "velocity"), o.velocity);
+      w_.key("voices");
+      w_.beginArray(false);
+      for (const NoteId v : o.voiceNotes) w_.integer(v.value);
+      w_.endArray();
+      const PathSeg stops(&el, "stops");
+      w_.key("stops");
+      w_.beginArray(true);
+      for (size_t k = 0; k < o.stops.size(); ++k) {
+        const JiStop& st = o.stops[k];
+        const PathSeg sp(&stops, k);
+        w_.beginObject(false);
+        w_.key("at");
+        w_.integer(st.at);
+        if (st.isTuning()) {
+          w_.key("pitches");
+          w_.beginArray(false);
+          for (const tuning::PitchId& q : st.pitches) pitch(sp, q);
+          w_.endArray();
+        } else {
+          w_.key("terms");
+          w_.beginArray(false);
+          for (const int64_t term : st.terms) w_.integer(term);
+          w_.endArray();
+        }
+        if (!(st.scale == tuning::Rational(1))) {
+          w_.key("scale");
+          w_.string(sp, ratioText(st.scale.num(), st.scale.den()));
+        }
+        if (!st.voiceTerm.empty()) {
+          w_.key("voiceTerm");
+          w_.beginArray(false);
+          for (const uint8_t e : st.voiceTerm) w_.integer(e);
+          w_.endArray();
+        }
+        if (!(st.timing == JiTiming{})) {
+          w_.key("timing");
+          jiTiming(sp, st.timing);
+        }
+        if (!st.voiceTiming.empty()) {
+          w_.key("voiceTiming");
+          w_.beginArray(false);
+          for (const std::optional<JiTiming>& t : st.voiceTiming) {
+            if (t) jiTiming(sp, *t);
+            else w_.null();
+          }
+          w_.endArray();
+        }
+        w_.endObject();
+      }
+      w_.endArray();
+      if (!o.ride.empty()) {
+        w_.key("ride");
+        curvePoints(PathSeg(&el, "ride"), o.ride);
+      }
+      w_.endObject();
+    }
+    w_.endArray();
+  }
+  void noteCurves(const PathSeg& at, const NoteCurveList& list) {
+    w_.key("curves");
+    w_.beginArray(true);
+    for (size_t i = 0; i < list.size(); ++i) {
+      w_.beginObject(false);
+      w_.key("note");
+      w_.integer(list[i].note.value);
+      w_.key("pitch");
+      curvePoints(PathSeg(&at, i), list[i].pitch);
+      w_.endObject();
+    }
+    w_.endArray();
   }
 
   void viewState(const Project& p, const ViewState& v) {
@@ -2969,9 +3106,11 @@ private:
         "id",     "name",    "colour", "start",  "length",  "contentStart", "loop",   "signature", "tuning",
         "active", "notes",   "fundamental",
         "kind",   "sample",  "warp",   "contentStartFrame", "seconds", "sourceBpm", "gainDb", "transpose",
-        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn", "markers", "warpParams", "take", "noEdgeFade"};
+        "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn", "markers", "warpParams", "take", "noEdgeFade",
+        "ji", "curves"};
     enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade,
-           kMarkers, kWarpParams, kTake, kNoEdgeFade };
+           kMarkers, kWarpParams, kTake, kNoEdgeFade, kJi, kCurves };
+    size_t jiStart = 0;
     LaneId take;  // T6.1: the slot's provenance (either kind)
     NoteClip note;  // the fields both kinds have are read into it (T5.x-perf-audio: on the stack, not the heap)
     NoteClip* c = &note;
@@ -3003,6 +3142,19 @@ private:
         case kWarpParams: a.warpParams = warpParams(f); break;  // T6.1
         case kTake: take = LaneId{ref(f)}; break;               // T6.1
         case kNoEdgeFade: a.noEdgeFade = r_.readBool(f); break;  // FZ.x-fix
+        case kJi: {  // T7.2
+          jiStart = r_.pos();
+          JiObjectList list = jiObjects(f);
+          c->ji = list.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(list));
+          break;
+        }
+        case kCurves: {  // T7.2
+          const size_t start = r_.pos();
+          NoteCurveList list = noteCurves(f);
+          checkAt(f, start, detail::checkNoteCurves(list));
+          c->curves = list.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(list));
+          break;
+        }
         case 0: c->id = ClipId{defineId(f)}; break;
         case 1: c->name = str(f); break;
         case 2: c->colour = colour(f); break;
@@ -3049,10 +3201,13 @@ private:
       for (int k = kSample; k <= kNoEdgeFade; ++k)
         if (k != kTake && m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
       m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+      // T7.2: the objects, and the notes against them (keys come in any order, so after the whole clip).
+      checkAt(m.has(kJi) ? PathSeg(&at, "ji") : PathSeg(&at, "notes"), m.has(kJi) ? jiStart : m.start(),
+              detail::checkClipJi(note));
       const ClipId id = note.id;
       return ClipSlot{id, std::make_shared<const NoteClip>(std::move(note)), nullptr, take};
     }
-    for (int k : {7, 10, 11})
+    for (int k : {7, 10, 11, static_cast<int>(kJi), static_cast<int>(kCurves)})
       if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only note clips have this key");
     m.require({0, 1, 2, 3, 4, 5, 6, 8, 9, kKind, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune,
                kReverse, kFadeIn, kFadeOut, kXfade});
@@ -3145,6 +3300,163 @@ private:
       }
     }
     return out;
+  }
+
+  // ---- T7.2: JI objects and note curves ----
+  // [{"tick": t, "value": cents, "curve": c}], curve optional (0).
+  std::vector<Breakpoint> curvePoints(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"tick", "value", "curve"};
+    std::vector<Breakpoint> v;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      Breakpoint b;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) b.tick = r_.readInt(f);
+        if (k == 1) b.value = r_.readFloat(f);
+        if (k == 2) b.curve = r_.readFloat(f);
+      }
+      m.require({0, 1});
+      v.push_back(b);
+    }
+    return v;
+  }
+  // {"delay": t, "glide": t, "shape": "linear" | "s" | "bezier", "handles": [x1, y1, x2, y2]}, handles optional.
+  JiTiming jiTiming(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"delay", "glide", "shape", "handles"};
+    JiTiming t;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) t.delay = r_.readInt(f);
+      if (k == 1) t.glide = r_.readInt(f);
+      if (k == 2) t.shape.kind = static_cast<JiShape::Kind>(name(f, kJiShapeNames, "shape"));
+      if (k == 3) {
+        float h[4] = {};
+        size_t n = 0;
+        r_.beginArray(f);
+        for (; r_.nextElement(f); ++n) {
+          const float x = r_.readFloat(PathSeg(&f, n));
+          if (n < 4) h[n] = x;
+        }
+        if (n != 4) json::fail(f, "handles are [x1, y1, x2, y2]");
+        t.shape.x1 = h[0];
+        t.shape.y1 = h[1];
+        t.shape.x2 = h[2];
+        t.shape.y2 = h[3];
+      }
+    }
+    m.require({0, 1, 2});
+    return t;
+  }
+  JiStop jiStop(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"at", "terms", "pitches", "scale", "voiceTerm", "timing", "voiceTiming"};
+    JiStop st;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      switch (k) {
+        case 0: st.at = r_.readInt(f); break;
+        case 1:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) st.terms.push_back(r_.readInt(PathSeg(&f, i)));
+          break;
+        case 2:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) st.pitches.push_back(pitch(PathSeg(&f, i)));
+          break;
+        case 3: {
+          std::string text;
+          r_.readString(f, text);
+          const std::optional<tuning::Rational> q = parseRatioText(text);
+          if (!q || !q->isPositive()) r_.failValue(f, "scale must be \"n/d\" with positive integers n, d");
+          st.scale = q.value_or(tuning::Rational(1));
+          break;
+        }
+        case 4:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            const int64_t e = r_.readInt(el);
+            if (e < 0 || e > 255) r_.failValue(el, "must be in [0, 255]");
+            st.voiceTerm.push_back(static_cast<uint8_t>(e));
+          }
+          break;
+        case 5: st.timing = jiTiming(f); break;
+        case 6:
+          r_.beginArray(f);
+          for (size_t i = 0; r_.nextElement(f); ++i) {
+            const PathSeg el(&f, i);
+            if (r_.peek() == json::Reader::Kind::Null) {
+              r_.readNull(el);
+              st.voiceTiming.emplace_back();
+            } else {
+              st.voiceTiming.emplace_back(jiTiming(el));
+            }
+          }
+          break;
+      }
+    }
+    m.require({0});
+    return st;
+  }
+  JiObjectList jiObjects(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"id",     "start", "length", "fundamental", "undertone", "sounds",
+                                             "velocity", "voices", "stops",  "ride"};
+    JiObjectList list;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      const size_t start = r_.pos();
+      JiObject o;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        switch (k) {
+          case 0: o.id = JiObjectId{defineId(f)}; break;
+          case 1: o.start = tick(f); break;
+          case 2: o.length = length(f); break;
+          case 3: o.fundamental = pitch(f); break;
+          case 4: o.undertone = r_.readBool(f); break;
+          case 5: o.sounds = r_.readBool(f); break;
+          case 6: o.velocity = r_.readFloat(f); break;
+          case 7:
+            r_.beginArray(f);
+            for (size_t v = 0; r_.nextElement(f); ++v) o.voiceNotes.push_back(NoteId{defineId(PathSeg(&f, v))});
+            break;
+          case 8:
+            r_.beginArray(f);
+            for (size_t q = 0; r_.nextElement(f); ++q) o.stops.push_back(jiStop(PathSeg(&f, q)));
+            break;
+          case 9: o.ride = curvePoints(f); break;
+        }
+      }
+      m.require({0, 1, 2, 3, 6, 7, 8});
+      checkAt(el, start, detail::checkJiObject(o));
+      list.push_back(std::move(o));
+    }
+    return list;
+  }
+  // [{"note": id, "pitch": [points]}]
+  NoteCurveList noteCurves(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"note", "pitch"};
+    NoteCurveList list;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      NoteCurves nc;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) nc.note = NoteId{ref(f)};
+        if (k == 1) nc.pitch = curvePoints(f);
+      }
+      m.require({0, 1});
+      list.push_back(std::move(nc));
+    }
+    return list;
   }
 
   NoteSeq notes(const PathSeg& at) {

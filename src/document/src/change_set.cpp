@@ -31,6 +31,7 @@ void ChangeSet::merge(const ChangeSet& o) {
   append(devices, o.devices);
   append(wires, o.wires);
   append(samples, o.samples);
+  append(jiObjects, o.jiObjects);
   append(params, o.params);
   append(metaData, o.metaData);
 }
@@ -45,6 +46,7 @@ void ChangeSet::normalize() {
   sortUnique(devices);
   sortUnique(wires);
   sortUnique(samples);
+  sortUnique(jiObjects);
   sortUnique(params);
   sortUnique(metaData);
 }
@@ -60,6 +62,7 @@ void ChangeSet::clear() noexcept {
   devices.clear();
   wires.clear();
   samples.clear();
+  jiObjects.clear();
   params.clear();
   metaData.clear();
 }

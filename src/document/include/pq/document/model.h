@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -225,6 +226,87 @@ struct ClipFundamental {
   friend bool operator==(const ClipFundamental&, const ClipFundamental&) noexcept = default;
 };
 
+// ---- JI objects and note curves (T7.2; SPEC §5, §3.1; docs/plans/M7.md "Data model", amendment A1) ---------------
+// A JI object is a chord that lives in a note clip next to its notes: a span, a fundamental, and a list of STOPS the
+// chord morphs through. A stop is either a PROPORTION (exact integer terms over the fundamental × `scale`; undertone
+// objects: 1/term) or a TUNING STOP (one ordinary pitch per entry: the chord as written in the clip's tuning). Nothing
+// is a container: inner notes are ordinary clip notes whose identity is Harmonic(object, voice) (or a Ratio anchored to
+// JiFundamental(object)), resolved at their start (pitch_resolve.h). What the object sounds like at every tick is
+// pq/document/ji_object.h (the one evaluation the roll, the lowering and flattening share).
+//
+// Voices: V = voiceNotes.size() = the largest stop size. A stop with n < V entries spreads them: voice v takes entry
+// ⌊v·n/V⌋ (JiStop::voiceTerm overrides), so voices stay in pitch order and a voice "not needed" doubles a neighbour.
+inline constexpr uint32_t kMaxJiVoices = 64;
+inline constexpr uint32_t kMaxJiStops = 4096;
+inline constexpr int64_t kMaxJiTerm = int64_t{1} << 20;
+inline constexpr uint32_t kMaxCurvePoints = 1u << 16;  // per ride / note curve
+inline constexpr float kMaxCurveCents = 1200.0f * 16;  // |value| of a ride / note-curve point
+
+// How a transition moves from the previous stop's pitch a to the next one's b: cents = a + (b − a)·s(u), u ∈ [0, 1].
+//   LogLinear  s(u) = u (a straight line in cents = exponential in Hz)
+//   SCurve     s(u) = 3u² − 2u³
+//   Bezier     the CSS cubic-bezier(x1, y1, x2, y2): x1, x2 ∈ [0, 1], y1, y2 ∈ [−1, 2] (overshoot allowed)
+// The handles are kept (and compared) for every kind, so switching kinds and back loses nothing.
+struct JiShape {
+  enum Kind : uint8_t { LogLinear, SCurve, Bezier };
+  Kind kind = SCurve;
+  float x1 = 0.42f, y1 = 0.0f, x2 = 0.58f, y2 = 1.0f;
+  friend bool operator==(const JiShape&, const JiShape&) noexcept = default;
+};
+// The transition INTO a stop: the voice ARRIVES at stop.at + delay and glides for `glide` ticks before that (it holds
+// the previous stop until then). glide 0 = a jump. Evaluation clamps: a voice never arrives before it arrived at the
+// previous stop, and a glide never starts before that arrival (ji_object.h). Stop 0's timing is unused.
+struct JiTiming {
+  Ticks delay = 0;  // ≥ 0
+  Ticks glide = 0;  // ≥ 0
+  JiShape shape;
+  friend bool operator==(const JiTiming&, const JiTiming&) noexcept = default;
+};
+struct JiStop {
+  Ticks at = 0;                          // object ticks (from JiObject::start); stop 0 at 0, strictly ascending
+  // Exactly one of the two is non-empty:
+  std::vector<int64_t> terms;            // a proportion: strictly ascending, each in [1, kMaxJiTerm]
+  std::vector<tuning::PitchId> pitches;  // A1, a tuning stop: one pitch per entry, ascending as written (Degree, Cents
+                                         // or reference-anchored Ratio), resolved in the clip's tuning
+  tuning::Rational scale{1};             // fundamental multiplier, > 0 (a walk keeps a pinned voice's pitch with it)
+  std::vector<uint8_t> voiceTerm;        // empty (the spread rule) or V entries: voice → index into terms / pitches
+  JiTiming timing;                       // every voice's transition into this stop
+  std::vector<std::optional<JiTiming>> voiceTiming;  // empty or V entries: per-voice override
+
+  bool isTuning() const noexcept { return !pitches.empty(); }
+  uint32_t size() const noexcept { return static_cast<uint32_t>(isTuning() ? pitches.size() : terms.size()); }
+  friend bool operator==(const JiStop&, const JiStop&) noexcept = default;
+};
+struct JiObject {
+  JiObjectId id;
+  Ticks start = 0;               // clip-content ticks, as notes
+  Ticks length = kPpq;           // ≥ 1; stops at or after it are kept but never reached
+  tuning::PitchId fundamental;   // Degree, Cents or reference-anchored Ratio (never Harmonic / anchored elsewhere)
+  bool undertone = false;        // terms are 1/term (SPEC §15)
+  bool sounds = true;            // false: a scaffold, only the inner notes play
+  float velocity = 100.0f;       // (0, 127]
+  std::vector<JiStop> stops;     // 1 … kMaxJiStops
+  std::vector<Breakpoint> ride;  // cents added to every voice and the fundamental; object ticks; sorted by tick; ids
+                                 // unused (invalid): a curve is replaced whole
+  // One id per voice (V = size, 1 … kMaxJiVoices): the ids of the notes the lowering plays for the object's voices.
+  // They are not in NoteClip::notes; like every id, unique in the project and never reused.
+  std::vector<NoteId> voiceNotes;
+
+  uint32_t voices() const noexcept { return static_cast<uint32_t>(voiceNotes.size()); }
+  Ticks end() const noexcept { return start + length; }
+  friend bool operator==(const JiObject&, const JiObject&) noexcept = default;
+};
+// A note's own curves (SPEC §3.1). pitch: a cents offset added to the note's pitch, ticks from the note's start, sorted
+// by tick, ids unused (invalid); before the first / after the last point the curve holds their value. A note has an
+// entry only while it has a curve (an empty curve is no entry).
+struct NoteCurves {
+  NoteId note;
+  std::vector<Breakpoint> pitch;
+  friend bool operator==(const NoteCurves&, const NoteCurves&) noexcept = default;
+};
+using JiObjectList = std::vector<JiObject>;     // sorted by id, unique
+using NoteCurveList = std::vector<NoteCurves>;  // sorted by note id, unique
+
 struct NoteClip {
   ClipId id;
   std::string name;
@@ -238,11 +320,29 @@ struct NoteClip {
   bool active = true;       // deactivated clips are kept but not played
   ClipFundamental fundamental;  // T3.6-fix1: what the virtual fundamental is derived from (see above)
   NoteSeq notes;
+  // T7.2: null = none (never an empty list). Shared between snapshots; a note edit does not copy them.
+  std::shared_ptr<const JiObjectList> ji;
+  std::shared_ptr<const NoteCurveList> curves;  // a curve whose note is not in `notes` is ignored (RemoveNotes drops it)
 };
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept;
 using ClipPtr = std::shared_ptr<const NoteClip>;
-// A copy of every field except the notes, which are replaced (avoids copying the old chunk directory).
+// A copy of every field except the notes, which are replaced (avoids copying the old chunk directory). The JI objects
+// and curves are kept (shared).
 NoteClip withNotes(const NoteClip& c, NoteSeq notes);
+
+// T7.2 lookups (binary searches; empty / nullptr when the clip has none).
+std::span<const JiObject> jiObjectsOf(const NoteClip& c) noexcept;
+std::span<const NoteCurves> noteCurvesOf(const NoteClip& c) noexcept;
+const JiObject* findJiObject(const NoteClip& c, JiObjectId id) noexcept;
+const NoteCurves* findNoteCurves(const NoteClip& c, NoteId note) noexcept;
+// The rules stated at JiObject / JiStop / JiTiming, for one object (what AddJiObject / SetJiObject check), and for a
+// whole clip: its object and curve lists (sorted, unique, voice-note ids unique and no note of the clip), every note
+// that follows an object naming one of the clip and a voice it has (what AddClip and the loader check).
+Status validateJiObject(const JiObject& o);
+Status validateClipJi(const NoteClip& c);
+// The JI object a note's identity refers to: Harmonic(object, voice) or a Ratio anchored to JiFundamental(object);
+// invalid for every other identity.
+JiObjectId jiObjectOf(const tuning::PitchId& p) noexcept;
 
 // The clip's virtual fundamental relative to its reference (see ClipFundamental): the lock if set, else 1/D, else
 // nullopt (no reference-anchored Ratio note, or D > kMaxFundamentalDenominator). `ownDenominators`: the lcm of the

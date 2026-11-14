@@ -53,6 +53,16 @@ std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rig
 // Copy with fresh clip and note ids. `onlyPlaying`: for a non-looped clip, copy only the notes that start inside
 // the played content window (hidden notes are dropped).
 NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying);
+// T7.2: the degree of `t` nearest to `cents` (above its reference); nullopt for a tuning without a usable lattice.
+std::optional<tuning::PitchId> nearestDegreePitch(const tuning::Tuning& t, double cents);
+// T7.2: old → new ids of JI objects given fresh ids.
+using JiIdMap = std::vector<std::pair<JiObjectId, JiObjectId>>;  // sorted by old id
+// `p` re-pointed through `map` (Harmonic / JiFundamental identities whose object is in it); else unchanged.
+tuning::PitchId remapJiPitch(const tuning::PitchId& p, const JiIdMap& map) noexcept;
+// A copy of `o` with a fresh object id and fresh voice-note ids.
+JiObject freshJiObject(const JiObject& o, IdSource& ids);
+// Drops the curves of notes that are not in c.notes (after notes left the clip). O(notes + curves) when it has curves.
+void pruneCurves(NoteClip& c);
 // Builds a sequence from notes known to be valid with unique ids.
 NoteSeq seqOf(std::vector<Note> notes);
 

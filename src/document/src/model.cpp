@@ -539,7 +539,32 @@ bool operator==(const AutomationLane& a, const AutomationLane& b) noexcept {
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept {
   return a.id == b.id && a.name == b.name && a.colour == b.colour && a.start == b.start && a.length == b.length &&
          a.contentStart == b.contentStart && a.loop == b.loop && a.signature == b.signature &&
-         a.tuning == b.tuning && a.active == b.active && a.fundamental == b.fundamental && a.notes == b.notes;
+         a.tuning == b.tuning && a.active == b.active && a.fundamental == b.fundamental && a.notes == b.notes &&
+         (a.ji == b.ji || std::ranges::equal(jiObjectsOf(a), jiObjectsOf(b))) &&
+         (a.curves == b.curves || std::ranges::equal(noteCurvesOf(a), noteCurvesOf(b)));
+}
+
+std::span<const JiObject> jiObjectsOf(const NoteClip& c) noexcept {
+  return c.ji ? std::span<const JiObject>(*c.ji) : std::span<const JiObject>();
+}
+std::span<const NoteCurves> noteCurvesOf(const NoteClip& c) noexcept {
+  return c.curves ? std::span<const NoteCurves>(*c.curves) : std::span<const NoteCurves>();
+}
+const JiObject* findJiObject(const NoteClip& c, JiObjectId id) noexcept {
+  const std::span<const JiObject> v = jiObjectsOf(c);
+  const auto it = std::lower_bound(v.begin(), v.end(), id, [](const JiObject& o, JiObjectId x) { return o.id < x; });
+  return it != v.end() && it->id == id ? &*it : nullptr;
+}
+const NoteCurves* findNoteCurves(const NoteClip& c, NoteId note) noexcept {
+  const std::span<const NoteCurves> v = noteCurvesOf(c);
+  const auto it = std::lower_bound(v.begin(), v.end(), note, [](const NoteCurves& o, NoteId x) { return o.note < x; });
+  return it != v.end() && it->note == note ? &*it : nullptr;
+}
+JiObjectId jiObjectOf(const tuning::PitchId& p) noexcept {
+  if (p.kind() == tuning::PitchKind::Harmonic) return JiObjectId{p.jiObject()};
+  if (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::JiFundamental)
+    return JiObjectId{p.anchorId()};
+  return {};
 }
 
 NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
@@ -556,6 +581,8 @@ NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
   n.active = c.active;
   n.fundamental = c.fundamental;
   n.notes = std::move(notes);
+  n.ji = c.ji;
+  n.curves = c.curves;
   return n;
 }
 
@@ -766,8 +793,13 @@ uint32_t maxEntityId(const Project& p) {
     auto seeClips = [&](const std::vector<ClipSlot>& clips) {
       for (const ClipSlot& c : clips) {
         see(c.id.value);
-        if (c.clip)
+        if (c.clip) {
           for (const Note& n : c.clip->notes) see(n.id.value);
+          for (const JiObject& o : jiObjectsOf(*c.clip)) {  // T7.2
+            see(o.id.value);
+            for (const NoteId v : o.voiceNotes) see(v.value);
+          }
+        }
       }
     };
     seeClips(t.clips);

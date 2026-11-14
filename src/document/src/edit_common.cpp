@@ -155,19 +155,103 @@ std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rig
     keys.push_back(keyOf(*it));
   }
   if (!keys.empty()) left.notes = c.notes.withRemoved(keys);
+  if (c.ji) {
+    // T7.2: an object goes where it is needed — left: it starts before the cut or a left note follows it; right: it
+    // ends after the cut or a moved note follows it. One needed on both sides is copied to the right with fresh ids
+    // (ids name one entity), the moved notes re-pointed to the copy.
+    std::vector<JiObjectId> leftRefs, rightRefs;
+    for (const Note& n : left.notes)
+      if (const JiObjectId o = jiObjectOf(n.pitch); o.valid()) leftRefs.push_back(o);
+    for (const Note& n : moved)
+      if (const JiObjectId o = jiObjectOf(n.pitch); o.valid()) rightRefs.push_back(o);
+    std::sort(leftRefs.begin(), leftRefs.end());
+    std::sort(rightRefs.begin(), rightRefs.end());
+    JiObjectList l, r;
+    JiIdMap map;
+    for (const JiObject& o : *c.ji) {
+      const bool inLeft = o.start < sc || std::binary_search(leftRefs.begin(), leftRefs.end(), o.id);
+      const bool inRight = o.end() > sc || std::binary_search(rightRefs.begin(), rightRefs.end(), o.id);
+      if (inLeft) l.push_back(o);
+      if (inRight && inLeft) {
+        r.push_back(freshJiObject(o, ids));
+        map.emplace_back(o.id, r.back().id);
+      } else if (inRight) {
+        r.push_back(o);
+      }
+    }
+    if (!map.empty())
+      for (Note& n : moved) n.pitch = remapJiPitch(n.pitch, map);
+    std::sort(r.begin(), r.end(), [](const JiObject& a, const JiObject& b) { return a.id < b.id; });
+    left.ji = l.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(l));
+    NoteClip right = withNotes(c, seqOf(std::move(moved)));
+    right.ji = r.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(r));
+    right.id = rightId;
+    right.start = t;
+    right.length = clipEnd(c) - t;
+    right.contentStart = sc;
+    pruneCurves(left);
+    pruneCurves(right);
+    return {std::move(left), std::move(right)};
+  }
   NoteClip right = withNotes(c, seqOf(std::move(moved)));
   right.id = rightId;
   right.start = t;
   right.length = clipEnd(c) - t;
   right.contentStart = sc;
+  pruneCurves(left);
+  pruneCurves(right);
   return {std::move(left), std::move(right)};
+}
+
+tuning::PitchId remapJiPitch(const tuning::PitchId& p, const JiIdMap& map) noexcept {
+  const JiObjectId id = jiObjectOf(p);
+  if (!id.valid()) return p;
+  const auto it = std::lower_bound(map.begin(), map.end(), id, [](const auto& e, JiObjectId x) { return e.first < x; });
+  if (it == map.end() || it->first != id) return p;
+  if (p.kind() == tuning::PitchKind::Harmonic) return tuning::PitchId::fromHarmonic(it->second.value, p.voiceIndex());
+  return tuning::PitchId::fromRatio(p.ratio(), tuning::AnchorKind::JiFundamental, it->second.value);
+}
+
+JiObject freshJiObject(const JiObject& o, IdSource& ids) {
+  JiObject n = o;
+  n.id = ids.jiObject();
+  for (NoteId& v : n.voiceNotes) v = ids.note();
+  return n;
+}
+
+void pruneCurves(NoteClip& c) {
+  if (!c.curves) return;
+  std::vector<NoteId> have;
+  have.reserve(c.notes.size());
+  for (const Note& n : c.notes) have.push_back(n.id);
+  std::sort(have.begin(), have.end());
+  size_t kept = 0;
+  for (const NoteCurves& nc : *c.curves) kept += std::binary_search(have.begin(), have.end(), nc.note) ? 1 : 0;
+  if (kept == c.curves->size()) return;
+  NoteCurveList out;
+  out.reserve(kept);
+  for (const NoteCurves& nc : *c.curves)
+    if (std::binary_search(have.begin(), have.end(), nc.note)) out.push_back(nc);
+  c.curves = out.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(out));
 }
 
 NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
   std::vector<Note> notes;
+  // T7.2: the copy's objects get fresh ids (objects first, so a clip without any allocates exactly as before), its
+  // notes follow the copies, its curves are re-keyed to the copied notes.
+  JiObjectList objects;
+  JiIdMap map;
+  for (const JiObject& o : jiObjectsOf(c)) {  // sorted by id, and fresh ids ascend: both stay sorted
+    objects.push_back(freshJiObject(o, ids));
+    map.emplace_back(o.id, objects.back().id);
+  }
+  NoteCurveList curves;
   auto take = [&](const Note& n) {
     Note m = n;
     m.id = ids.note();
+    if (!map.empty()) m.pitch = remapJiPitch(m.pitch, map);
+    if (c.curves)
+      if (const NoteCurves* nc = findNoteCurves(c, n.id)) curves.push_back(NoteCurves{m.id, nc->pitch});
     notes.push_back(m);
   };
   if (onlyPlaying && !clipLooped(c)) {
@@ -178,6 +262,8 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
   }
   NoteClip n = withNotes(c, seqOf(std::move(notes)));
   n.id = ids.clip();
+  n.ji = objects.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(objects));
+  n.curves = curves.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(curves));  // ids ascend
   return n;
 }
 
@@ -300,7 +386,7 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
       if (before[i].slot->clip.get() != after[j].slot->clip.get()) {
         const bool boundsOnly = o.name == n.name && o.colour == n.colour && o.loop == n.loop &&
                                 o.signature == n.signature && o.tuning == n.tuning && o.active == n.active &&
-                                sameNotes(o.notes, n.notes);
+                                sameNotes(o.notes, n.notes) && o.ji == n.ji && o.curves == n.curves;
         if (boundsOnly) {
           if (o.start != n.start || o.length != n.length || o.contentStart != n.contentStart)
             updates.commands.push_back(SetClipBounds{{tid, n.id}, n.start, n.length, n.contentStart});

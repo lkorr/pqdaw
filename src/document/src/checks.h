@@ -32,6 +32,22 @@ Status checkLoop(const ClipLoop& l);
 // Everything about a clip except note validity (validated where notes enter: NoteSeq::fromNotes, note commands).
 Status checkClip(const Project& p, const NoteClip& c);
 Status checkFundamental(const ClipFundamental& f);  // T3.6-fix1: lock > 0; steps sorted by note id, in range
+// T7.2 (model.h "JI objects and note curves").
+// A ride / note curve: ≤ kMaxCurvePoints, ticks in [0, kMaxTicks] non-decreasing, |value| ≤ kMaxCurveCents, curve in
+// [−1, 1], no ids.
+Status checkCurve(const std::vector<Breakpoint>& pts, const char* what);
+// One object's own fields (every rule stated at JiObject / JiStop / JiTiming).
+Status checkJiObject(const JiObject& o);
+// A clip's object list: every object, sorted by id and unique, voice-note ids unique across the list.
+Status checkJiList(const JiObjectList& l);
+// A clip's curve list: sorted by note id, unique, every curve non-empty and valid.
+Status checkNoteCurves(const NoteCurveList& l);
+// A note's identity against the clip's objects: Harmonic names an object of the clip and a voice < V; a Ratio anchored
+// to JiFundamental names an object of the clip. Other identities: ok. O(log objects).
+Status checkNoteJi(const NoteClip& c, const tuning::PitchId& pitch);
+// Everything above for a whole clip (where a clip enters: AddClip, a track, a take lane, the loader), plus: no voice
+// note id is a note of the clip. O(objects + curves + notes).
+Status checkClipJi(const NoteClip& c);
 // T5.3: an audio clip's own fields and its sample (in the project's table); its Off length is not checked (commands
 // derive it: audio_clip.h syncedClip).
 Status checkAudioClip(const Project& p, const AudioClip& c);

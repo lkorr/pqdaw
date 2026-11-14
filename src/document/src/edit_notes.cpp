@@ -6,6 +6,7 @@
 #include <numeric>
 
 #include "edit_common.h"
+#include "pq/document/ji_object.h"
 #include "pq/tuning/ji.h"
 
 namespace pq::doc::ops {
@@ -261,27 +262,41 @@ std::optional<PitchId> stepPitch(const PitchId& pitch, int32_t steps, StepUnit u
       if (unit == StepUnit::Equave) return std::nullopt;
       const int64_t v = static_cast<int64_t>(pitch.voiceIndex()) + steps;
       if (v < 0 || v > std::numeric_limits<uint32_t>::max()) return std::nullopt;
+      if (ctx.clip) {  // T7.2: within the object's voices
+        const JiObject* o = findJiObject(*ctx.clip, JiObjectId{pitch.jiObject()});
+        if (!o || v >= static_cast<int64_t>(o->voices())) return std::nullopt;
+      }
       return PitchId::fromHarmonic(pitch.jiObject(), static_cast<uint32_t>(v));
     }
   }
   return std::nullopt;
 }
 
-EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const Note> notes) {
+EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const Note> notes,
+                    std::span<const NoteCurves> curves) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
   Edit e = makeEdit(notes.size() == 1 ? "Add Note" : "Add Notes");
   e.noteClip = clip;
   AddNotes a{clip, {}};
   a.notes.reserve(notes.size());
+  std::vector<SetNoteCurve> carried;  // T7.2
   for (const Note& n : notes) {
     Note m = n;
     m.id = ids.note();
     PQ_DOC_TRY(validateNote(m));
+    PQ_DOC_TRY(checkNoteJi(*f->clip, m.pitch));
+    for (const NoteCurves& nc : curves)
+      if (nc.note == n.id && n.id.valid() && !nc.pitch.empty()) {
+        PQ_DOC_TRY(checkCurve(nc.pitch, "note curve"));
+        carried.push_back(SetNoteCurve{clip, keyOf(m), nc.pitch});
+        break;
+      }
     a.notes.push_back(m);
     e.notes.push_back(keyOf(m));
   }
   if (!a.notes.empty()) batchOf(e).commands.push_back(std::move(a));
+  for (SetNoteCurve& c : carried) batchOf(e).commands.push_back(std::move(c));
   return e;
 }
 
@@ -357,7 +372,7 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
     tun = std::move(t).value();
   }
   const std::optional<Rational> fundamental = steps != 0 ? virtualFundamental(*f->clip) : std::nullopt;
-  const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, fundamental};
+  const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, fundamental, f->clip.get()};
   std::vector<std::pair<NoteId, Rational>> stepped;
   EditResult e = updateNotes(p, clip, notes, std::move(label), [&](Note& n) -> Status {
     move(n);
@@ -506,6 +521,10 @@ EditResult duplicateNotes(const Project& p, IdSource& ids, ClipRef clip, std::sp
     e.notes.push_back(keyOf(m));
   }
   batchOf(e).commands.push_back(std::move(a));
+  if (f->clip->curves)  // T7.2: a copy has its source's curves
+    for (size_t i = 0; i < src.size(); ++i)
+      if (const NoteCurves* nc = findNoteCurves(*f->clip, src[i].id))
+        batchOf(e).commands.push_back(SetNoteCurve{clip, e.notes[i], nc->pitch});
   return e;
 }
 
@@ -560,22 +579,32 @@ EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey>
   const DegreeLattice l = DegreeLattice::of(*t);
   if (!l.usable()) return invalid("the clip's tuning has no usable equave");
   // Cents of a note relative to the tuning's reference, if it has a fixed one.
-  auto centsOf = [&](const PitchId& id) -> std::optional<double> {
+  auto centsOf = [&](const Note& n) -> std::optional<double> {
+    const PitchId& id = n.pitch;
     switch (id.kind()) {
       case PitchKind::Degree:
         return l.centsOf(static_cast<int64_t>(id.equave()) * l.size + id.degree());
       case PitchKind::Ratio:
+        if (id.anchorKind() == tuning::AnchorKind::JiFundamental) {  // T7.2: over the object's fundamental at its start
+          const JiObject* o = findJiObject(*f->clip, JiObjectId{id.anchorId()});
+          const std::optional<double> fc = o ? jiFundamentalCents(*o, *t, static_cast<double>(n.start - o->start)) : std::nullopt;
+          if (!fc) return std::nullopt;
+          return *fc + 1200.0 * std::log2(id.ratio().toDouble());
+        }
         if (id.anchorKind() != tuning::AnchorKind::Reference) return std::nullopt;
         return 1200.0 * std::log2(id.ratio().toDouble());
       case PitchKind::Cents: return id.cents();
-      case PitchKind::Harmonic: return std::nullopt;
+      case PitchKind::Harmonic: {  // T7.2: the object's voice at the note's start
+        const JiObject* o = findJiObject(*f->clip, JiObjectId{id.jiObject()});
+        return o ? jiVoiceCents(*o, *t, id.voiceIndex(), static_cast<double>(n.start - o->start)) : std::nullopt;
+      }
     }
     return std::nullopt;
   };
   const char* label = to == PitchKind::Cents ? "Freeze to Cents" : to == PitchKind::Degree ? "Snap to Degree" : "Snap to Ratio";
   return updateNotes(p, clip, notes, label, [&](Note& n) -> Status {
     if (n.pitch.kind() == to) return ok();
-    const auto c = centsOf(n.pitch);
+    const auto c = centsOf(n);
     if (!c) return ok();
     if (to == PitchKind::Cents) {
       n.pitch = PitchId::fromCents(*c);
@@ -593,6 +622,17 @@ EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey>
   });
 }
 
+namespace detail {
+std::optional<PitchId> nearestDegreePitch(const tuning::Tuning& t, double cents) {
+  const DegreeLattice l = DegreeLattice::of(t);
+  if (!l.usable() || !std::isfinite(cents)) return std::nullopt;
+  const int64_t abs = l.nearest(cents);
+  const int64_t e = floorDiv(abs, l.size);
+  if (!fitsI32(e)) return std::nullopt;
+  return PitchId::fromDegree(static_cast<int32_t>(abs - e * l.size), static_cast<int32_t>(e));
+}
+}  // namespace detail
+
 double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept {
   const DegreeLattice l = DegreeLattice::of(t);
   if (!l.usable()) return kRatioSnapMaxCents;
@@ -602,9 +642,12 @@ double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept {
 }
 
 EditResult setNotesPitch(const Project& p, ClipRef clip, std::span<const NoteKey> notes, const PitchId& pitch) {
-  if (pitch.kind() == PitchKind::Harmonic) return invalid("a Harmonic pitch needs a JI object");
-  if (pitch.kind() == PitchKind::Ratio && (!pitch.ratio().isPositive() || pitch.anchorKind() == tuning::AnchorKind::JiFundamental))
-    return invalid("a ratio pitch must be positive and anchored to the reference or a note");
+  if (pitch.kind() == PitchKind::Ratio && !pitch.ratio().isPositive()) return invalid("a ratio pitch must be positive");
+  {  // T7.2: a pitch that follows a JI object names one of the clip
+    Result<ClipFound> f = findClip(p, clip);
+    if (!f) return std::move(f).error();
+    PQ_DOC_TRY(checkNoteJi(*f->clip, pitch));
+  }
   return updateNotes(p, clip, notes, "Set Note Pitch", [&](Note& n) -> Status {
     n.pitch = pitch;
     return ok();
