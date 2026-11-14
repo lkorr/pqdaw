@@ -11,7 +11,9 @@
 // or after loopEnd is folded into the loop. Each run over the content is a PASS (pass 0 = the first, then one per
 // loop repetition). A note sounds in a pass if its start lies in the pass's content range; it is cut at the end of
 // the pass (the loop wrap or the clip end), as in Ableton. Notes that can never play (before the start marker,
-// outside the loop) are dropped at build time. Disabled notes and inactive clips (`0`, deactivated: SPEC §9.3, Q15)
+// outside the loop) are dropped at build time. A seek into the middle of a note (a locate, a transport start, an
+// arrangement loop wrap) starts it there: the timeline's chase (timeline.h "Chase"; covering() finds the notes).
+// Disabled notes and inactive clips (`0`, deactivated: SPEC §9.3, Q15)
 // emit nothing; muting a track is a gain param elsewhere (Q15), the sequencer keeps running.
 //
 // Clips on one track must not overlap (the document guarantees it, Q41); if they do, the later-starting clip wins
@@ -96,6 +98,9 @@ struct NoteDesc {
   float harmonic = 0.0f;          // voice.harmonic
   PitchSource pitch;
   float keyDegree = std::numeric_limits<float>::quiet_NaN();  // voice.noteDegree (T4.17; NaN: unknown)
+  // T7.3: voice.unisonCount / voice.index (NoteEvent): a JI object's voices that share one pitch at the note's start.
+  uint16_t unisonCount = 1;
+  uint16_t unisonIndex = 0;
   bool enabled = true;            // disabled notes are kept in the document but never play
   // T7.1 (see "Per-note curves"): content ticks; empty = constant (0 ¢ / gain 1).
   std::vector<CurvePoint> pitchCurve;  // cents relative to hz
@@ -142,6 +147,8 @@ public:
     float ratio, harmonic;
     PitchSource pitch;
     float keyDegree;        // T4.17: voice.noteDegree (NaN: unknown)
+    uint16_t unisonCount;   // T7.3: voice.unisonCount / voice.index (in what was padding)
+    uint16_t unisonIndex;
   };
   static_assert(sizeof(Note) == 72);
 
@@ -217,6 +224,13 @@ public:
   static float curveValueAt(std::span<const CurvePoint> curve, double tick, float empty) noexcept;
   uint64_t seed() const noexcept { return seed_; }
 
+  // T7.3 (chase): the notes of clip `c` with index in [lo, hi) (one of the clip's pass ranges) that started before
+  // content tick `content` and still last beyond it (start < content < start + length), in (start, id) order: at
+  // most `max` indices into notes() written to `out`; returns how many. A max-end tree over each clip's notes
+  // (8 bytes per note, read only here) prunes every subtree that ended earlier: O((found + 1) · log notes), whatever
+  // lies between. RT-safe.
+  uint32_t covering(const Clip& c, uint32_t lo, uint32_t hi, Ticks content, uint32_t* out, uint32_t max) const noexcept;
+
   // The occurrence of note `noteId` that starts at arrangement tick `on` on track `track`: its stored note and the
   // end of the pass it plays in (the note-off tick is min(on + length, passEnd)). Null when there is none (the note
   // was removed, moved, or its clip deactivated). O(log clips + log notes). RT-safe.
@@ -226,6 +240,7 @@ private:
   std::vector<Track> tracks_;
   std::vector<Clip> clips_;
   std::vector<Note> notes_;
+  std::vector<Ticks> endMax_;           // T7.3: per note, the latest end of its subtree (implicit tree per clip)
   std::vector<CurvePoint> curves_;      // T7.1
   std::vector<NoteCurves> curveRefs_;   // per curved note, in note order
   std::vector<uint64_t> curveBits_;     // bit i: note i has curves (empty when no note has)

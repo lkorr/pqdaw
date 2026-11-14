@@ -9,6 +9,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <random>
 #include <set>
 #include <vector>
 
@@ -416,7 +417,8 @@ TEST_CASE("timeline: clip loops unrolled lazily match document clip_time semanti
         CHECK(got[i].hz == want[i].hz);
       }
     }
-    // Starting in the middle (a seek into a later pass) plays exactly the notes from there on.
+    // Starting in the middle (a seek into a later pass) plays the notes from there on, and (T7.3, Q278: chase) the
+    // notes of that pass that sound across the start begin at it.
     e::Timeline tl(config());
     REQUIRE(tl.publishSequence(image({{1, {cd}}})));
     // Just after the middle, at the first tick of a sample: every earlier tick is on an earlier sample, so "plays
@@ -429,6 +431,8 @@ TEST_CASE("timeline: clip loops unrolled lazily match document clip_time semanti
     std::vector<Played> tail;
     for (const Played& p : want)
       if (p.on >= s0) tail.push_back({p.on - s0, p.off - s0, 0, p.hz, 0.0f});
+      else if (p.off > s0) tail.push_back({0, p.off - s0, 0, p.hz, 0.0f});  // chased
+    std::sort(tail.begin(), tail.end());
     const auto got = played(d.events);
     REQUIRE(got.size() == tail.size());
     for (size_t i = 0; i < tail.size(); ++i) {
@@ -544,7 +548,9 @@ TEST_CASE("timeline: stop releases, continue resumes at the held tick, locate du
   tl.apply(cmd(e::TransportCommandKind::Continue));
   block(64);
   CHECK(tl.position() > held);
-  CHECK(heldLanes(ve) == 0);  // notes that started before are not chased
+  CHECK(heldLanes(ve) == 3);  // T7.3 (Q278): the three notes under the position are chased: they start again here
+  CHECK(tl.soundingNotes(0) == 3);
+  CHECK(tl.stats().chasedNotes == 3);
 
   // Locate back to 0 (notes 1 and 2 start again at ticks 0 / 100), then, while they sound, far ahead: every
   // sounding voice is released at once.
@@ -1496,13 +1502,26 @@ TEST_CASE("timeline: a note-on in the middle of its curves (the curve began earl
       r.run(4 * kQ, block);
       check(r, 4096 + kQ / 4);
     }
-    {  // a seek into the note itself: notes are not chased (timeline.h), so nothing sounds and no curve event is sent
+    {  // a seek into the note itself, at 2.5 q (T7.3, Q278): the note is chased — it starts there at its curves'
+       // values (+750 c, gain 0.8) and follows them to its end
       CurveRig r(kGate);
       REQUIRE(r.tl.publishSequence(image({{1, {clip(1, 0, 2 * kBar, {n})}}})));
       r.tl.apply(cmd(e::TransportCommandKind::Play, 5 * kPpq / 2));
       r.run(3 * kQ, block);
-      CHECK(r.events.empty());
-      CHECK(r.tl.stats().curveEvents == 0);
+      const auto got = flat(r.events);
+      REQUIRE(got.size() == 4);
+      CHECK(got[0].t == 0);
+      CHECK(got[0].kind == K::NoteOn);
+      CHECK(got[0].hz == doctest::Approx(hzAt(200.0f, 750.0f)).epsilon(1e-7));
+      CHECK(got[0].gain == doctest::Approx(0.8f).epsilon(1e-6));
+      CHECK(got[1] == Flat{0, K::Pitch, 400.0f, 0.0f, 3 * kQ / 2});
+      CHECK(got[2] == Flat{0, K::Gain, 0.0f, 1.0f, kQ / 2});
+      CHECK(got[3] == Flat{3 * kQ / 2, K::NoteOff, 0.0f, 0.0f, 0});
+      CHECK(r.tl.stats().chasedNotes == 1);
+      const double s0 = -2.5 * kQ;  // the engine sample of content tick 0
+      CHECK(r.worstHzCents(0, 3 * kQ / 2, {{s0, 0.0}, {s0 + 4.0 * kQ, 1200.0}}, 200.0) <= 0.01);
+      CHECK(r.worstGainDb(0, 3 * kQ / 2, {{s0 + 1.0 * kQ, 0.2}, {s0 + 3.0 * kQ, 1.0}}) <= 0.01);
+      CHECK(r.rtViolations == 0);
     }
   }
 }
@@ -1896,4 +1915,100 @@ TEST_CASE("timeline: RtScope-clean with curved notes on 8 tracks under loops, sw
   CHECK(tl.stats().loopWraps > 0);
   for (uint32_t k = 0; k < 8; ++k) CHECK(tl.soundingNotes(k) == 0);
   tl.collect();
+}
+
+// ---- T7.3: chase (Q278; timeline.h "Chase") ---------------------------------------------------------------------
+
+TEST_CASE("sequence: covering() finds exactly the notes sounding across a content tick (random clips vs brute force) (T7.3)") {
+  std::mt19937 rng(73);
+  for (int round = 0; round < 60; ++round) {
+    std::vector<e::NoteDesc> notes;
+    const int count = 1 + static_cast<int>(rng() % 300);
+    for (int i = 0; i < count; ++i)
+      notes.push_back(note(static_cast<uint32_t>(i + 1), static_cast<Ticks>(rng() % (4 * kBar)),
+                           1 + static_cast<Ticks>(rng() % (round % 3 == 0 ? 4 * kBar : kPpq))));
+    const auto img = image({{1, {clip(1, 0, 4 * kBar, notes)}}});
+    const e::SequenceImage::Clip& c = img->clips()[0];
+    const auto stored = img->notes();
+    for (int q = 0; q < 40; ++q) {
+      const Ticks at = static_cast<Ticks>(rng() % (4 * kBar + 10));
+      uint32_t lo = c.noteBegin + static_cast<uint32_t>(rng() % (c.noteEnd - c.noteBegin + 1));
+      uint32_t hi = c.noteBegin + static_cast<uint32_t>(rng() % (c.noteEnd - c.noteBegin + 1));
+      if (lo > hi) std::swap(lo, hi);
+      std::vector<uint32_t> want;
+      for (uint32_t i = lo; i < hi; ++i)
+        if (stored[i].start < at && stored[i].start + stored[i].length > at) want.push_back(i);
+      std::vector<uint32_t> got(stored.size() + 1);
+      got.resize(img->covering(c, lo, hi, at, got.data(), static_cast<uint32_t>(got.size())));
+      CHECK(got == want);  // ascending: (start, id) order
+      if (want.size() > 2) {  // a short output buffer keeps the first ones
+        std::vector<uint32_t> few(2);
+        CHECK(img->covering(c, lo, hi, at, few.data(), 2) == 2);
+        CHECK(few[0] == want[0]);
+        CHECK(few[1] == want[1]);
+      }
+    }
+  }
+}
+
+TEST_CASE("timeline: an arrangement loop wrap and the end of a count-in chase the notes under the new position (T7.3)") {
+  const pq::TempoMap tm;
+  // A long note from bar 1 over the loop [2, 3) bars; a short one inside the loop; one that ended before the loop start.
+  const auto seq = [&] {
+    return image({{1, {clip(1, 0, 8 * kBar, {note(1, kBar, 4 * kBar, 220.0f), note(2, 2 * kBar + kPpq, kPpq, 330.0f),
+                                           note(3, 0, 2 * kBar, 110.0f)})}}});
+  };
+  for (uint32_t block : {1u, 64u, 480u}) {
+    INFO("block " << block);
+    e::Timeline tl(config());
+    REQUIRE(tl.publishSequence(seq()));
+    tl.apply(loopCmd(2 * kBar, 3 * kBar));
+    tl.apply(cmd(e::TransportCommandKind::Play, 2 * kBar));  // into note 1: chased at once
+    Driver d{tl};
+    const int64_t bar = tm.ticksToSamples(kBar, kSr), q = tm.ticksToSamples(kPpq, kSr);
+    d.run(2 * bar + q / 2, block);  // two wraps
+    const auto p = played(d.events);
+    // Note 1 from every pass start, cut at the wrap; note 2 inside each pass; note 3 (ends at the loop start) never.
+    REQUIRE(p.size() == 5);
+    CHECK(p[0] == Played{0, bar, 0, 220.0f, 0.0f});
+    CHECK(p[1] == Played{q, 2 * q, 0, 330.0f, 0.0f});
+    CHECK(p[2] == Played{bar, 2 * bar, 0, 220.0f, 0.0f});
+    CHECK(p[3] == Played{bar + q, bar + 2 * q, 0, 330.0f, 0.0f});
+    CHECK(p[4].on == 2 * bar);
+    CHECK(p[4].hz == 220.0f);
+    CHECK(tl.stats().chasedNotes == 3);
+    // Offs before the chased on at the wrap frame.
+    for (size_t i = 1; i < d.events.size(); ++i)
+      if (d.events[i].t == bar && d.events[i].e.kind == e::NoteEventKind::NoteOff)
+        CHECK((d.events[i - 1].t != bar || d.events[i - 1].e.kind != e::NoteEventKind::NoteOn));
+  }
+  {  // a count-in: nothing sounds while it runs; the note under the start begins at the frame the bars end
+    e::Timeline tl(config());
+    REQUIRE(tl.publishSequence(seq()));
+    e::TransportCommand c = cmd(e::TransportCommandKind::Play, 3 * kBar);
+    c.countInBars = 1;
+    tl.apply(c);
+    Driver d{tl};
+    const int64_t bar = tm.ticksToSamples(kBar, kSr);
+    d.run(bar + 4096, 100);
+    const auto p = played(d.events);
+    REQUIRE(p.size() == 1);
+    CHECK(p[0].on == bar);
+    CHECK(p[0].hz == 220.0f);
+    CHECK(tl.stats().chasedNotes == 1);
+  }
+  {  // a locate while stopped starts nothing; a sequence swap does not chase
+    e::Timeline tl(config());
+    REQUIRE(tl.publishSequence(seq()));
+    tl.apply(cmd(e::TransportCommandKind::Locate, 3 * kBar));
+    Driver d{tl};
+    d.run(256, 64);
+    CHECK(d.events.empty());
+    tl.apply(cmd(e::TransportCommandKind::Play, 6 * kBar));
+    d.run(256, 64);
+    REQUIRE(tl.publishSequence(image({{1, {clip(1, 0, 8 * kBar, {note(9, 5 * kBar, 3 * kBar, 440.0f)})}}})));
+    d.run(256, 64);
+    CHECK(d.events.empty());
+    CHECK(tl.stats().chasedNotes == 0);
+  }
 }

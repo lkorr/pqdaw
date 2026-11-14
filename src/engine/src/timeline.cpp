@@ -104,6 +104,7 @@ Timeline::Timeline(const TimelineConfig& config)
   events_ = AlignedBuffer<NoteEvent>(static_cast<size_t>(cfg_.maxTracks) * cfg_.maxEventsPerTrack);
   eventCount_.assign(cfg_.maxTracks, 0);
   matchedScratch_.assign(cfg_.maxTracks, 0);
+  chaseScratch_.assign(cfg_.maxSoundingPerTrack, 0);
   sources_.resize(cfg_.maxTracks);
   for (uint32_t k = 0; k < cfg_.maxTracks; ++k) sources_[k] = {this, k};
   automation_.prepare(cfg_.maxAutomationLanes, cfg_.maxBlockFrames);
@@ -461,7 +462,8 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
           const bool retune =
               o == nullptr || std::bit_cast<uint32_t>(n->hz) != std::bit_cast<uint32_t>(s.hz) || !(n->pitch == o->pitch) ||
               std::bit_cast<uint32_t>(n->ratio) != std::bit_cast<uint32_t>(o->ratio) ||
-              std::bit_cast<uint32_t>(n->harmonic) != std::bit_cast<uint32_t>(o->harmonic);
+              std::bit_cast<uint32_t>(n->harmonic) != std::bit_cast<uint32_t>(o->harmonic) ||
+              n->unisonCount != o->unisonCount || n->unisonIndex != o->unisonIndex;
           const SequenceImage::NoteCurves nc = next->curvesOf(*n);
           const bool hadPitch = s.pitchCount != 0, hasPitch = nc.pitchCount != 0;
           const bool hadGain = s.gainCount != 0, hasGain = nc.gainCount != 0;
@@ -643,6 +645,73 @@ void Timeline::seekAll(Ticks t) noexcept {  // RT-safe
   }
 }
 
+// T7.3 (Q278; timeline.h "Chase"): the notes of the pass under `t` that started before it and still sound there
+// start at `frame` (song sample `sample`), each a fresh note-on with its pitch and gain read from its curves at t.
+// Out of line and only called where the playhead jumped. O(log clips + (found + 1) · log notes) per track.
+__declspec(noinline) void Timeline::chase(uint32_t track, Ticks t, uint32_t frame, SampleTime sample) noexcept {  // RT-safe
+  const SequenceImage::Track& tr = seq_->tracks()[track];
+  const auto clips = seq_->clips();
+  const auto* cb = clips.data() + tr.clipBegin;
+  const auto* ce = clips.data() + tr.clipEnd;
+  const auto* it = std::upper_bound(cb, ce, t, [](Ticks v, const SequenceImage::Clip& cl) noexcept { return v < cl.end; });
+  if (it == ce || it->start >= t) return;  // no clip under t, or it starts here: nothing began earlier
+  const SequenceImage::Clip& cl = *it;
+  int64_t pass = 0;
+  Ticks passStart = cl.start, passContent = cl.content0, passEnd = cl.firstPassEnd;
+  uint32_t lo = cl.pass0Begin, hi = cl.pass0End;
+  if (cl.loopLen != 0 && t >= cl.firstPassEnd) {
+    const Ticks k = (t - cl.firstPassEnd) / cl.loopLen;
+    pass = 1 + k;
+    passStart = cl.firstPassEnd + k * cl.loopLen;
+    passContent = cl.loopStart;
+    passEnd = std::min(passStart + cl.loopLen, cl.end);
+    lo = cl.loopBegin;
+    hi = cl.loopEnd;
+  }
+  TrackState& ts = tracks_[track];
+  const uint32_t found = seq_->covering(cl, lo, hi, passContent + (t - passStart), chaseScratch_.data(),
+                                        static_cast<uint32_t>(chaseScratch_.size()));
+  const auto notes = seq_->notes();
+  const TempoMap& tm = tempo_->tempo();
+  for (uint32_t i = 0; i < found; ++i) {
+    const SequenceImage::Note& n = notes[chaseScratch_[i]];
+    const Ticks on = passStart + (n.start - passContent);
+    const Ticks off = std::min(on + n.length, passEnd);
+    if (off <= t || tm.ticksToSamples(off, cfg_.sampleRate) <= sample) continue;  // over within this sample
+    const NoteRandom r = noteRandom(seq_->seed() ^ (playbackPass_ * 0x9E3779B97F4A7C15ull), n.id, pass);
+    if (!(r.chance < n.chance)) {
+      ++stats_.chanceSkips;
+      continue;
+    }
+    if (eventCount_[track] + 2 + ts.heapSize > cfg_.maxEventsPerTrack || ts.heapSize >= cfg_.maxSoundingPerTrack) {
+      ++stats_.droppedNoteOns;
+      continue;
+    }
+    const float vel = std::clamp(n.velocity + r.velocity * n.velocityRange, 1.0f, 127.0f) * (1.0f / 127.0f);
+    NoteEvent e = noteOn(frame, nextInstance_, n.hz, vel);
+    setIdentity(e, n);
+    const float release = std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f);
+    const SequenceImage::NoteCurves nc = seq_->curvesOf(n);
+    const Sounding s{off, ts.order++, on, on - n.start, nextInstance_, n.id, n.hz, release, nc.begin,
+                     nc.pitchCount, nc.gainCount, 0, 0};
+    if (!nc.any()) {
+      pushEvent(track, e);
+      heapPush(ts, s);
+    } else {
+      startCurvedNote(track, e, s, frame, sample, t);
+    }
+    ++stats_.noteOns;
+    ++stats_.chasedNotes;
+    if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;
+  }
+  refreshNext(track);
+}
+
+void Timeline::chaseAll(Ticks t, uint32_t frame) noexcept {  // RT-safe
+  if (seq_ == nullptr) return;
+  for (uint32_t k = 0; k < numTracks_; ++k) chase(k, t, frame, pos_);
+}
+
 // ---- Audio thread: events ---------------------------------------------------------------------------------------
 
 namespace {
@@ -732,9 +801,9 @@ void Timeline::curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSy
 
 // Out of line (as playCurves): the sequencer's loop over notes without curves stays as small as it was.
 __declspec(noinline) void Timeline::startCurvedNote(uint32_t track, NoteEvent e, Sounding s, uint32_t frame,
-                                                    SampleTime sample) noexcept {  // RT-safe
+                                                    SampleTime sample, Ticks at) noexcept {  // RT-safe
   TrackState& tr = tracks_[track];
-  const float cents = curveLocate(*seq_, s, CurveKind::Pitch, s.on), gain = curveLocate(*seq_, s, CurveKind::Gain, s.on);
+  const float cents = curveLocate(*seq_, s, CurveKind::Pitch, at), gain = curveLocate(*seq_, s, CurveKind::Gain, at);
   if (cents != 0.0f) e.hz = curveHz(s.hz, cents);
   e.gain = gain;
   pushEvent(track, e);
@@ -796,6 +865,8 @@ void Timeline::setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept 
   e.ratio = n.ratio;
   e.harmonic = n.harmonic;
   e.noteDegree = n.keyDegree;
+  e.unisonCount = n.unisonCount;  // T7.3
+  e.unisonIndex = n.unisonIndex;
   if (n.pitch.tuning != 0) {  // T2.6: a note following a tuning signal (T2.6-fix3: which node, and how)
     e.tuning = static_cast<float>(n.pitch.node);
     if (n.pitch.kind == PitchFollowKind::Degree) {
@@ -904,7 +975,7 @@ void Timeline::playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint
         startCurvedNote(track, e,
                         Sounding{offAt, tr.order++, on, on - n.start, nextInstance_, n.id, n.hz, release, nc.begin,
                                  nc.pitchCount, nc.gainCount, 0, 0},
-                        f, s0 + (f - frame));
+                        f, s0 + (f - frame), on);
       }
       ++stats_.noteOns;
       if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;  // T6.4: live notes (0xE…) and auditions (0xF…) above
@@ -983,6 +1054,7 @@ void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
       if (f < frames) {
         releaseAll(f);
         seekAll(loopStart_);
+        chaseAll(loopStart_, f);  // T7.3
         clips_->seek(pos_);
       } else {  // the wrap sample is the next block's frame 0
         releasePending_ = true;
@@ -1106,6 +1178,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
   }
   if (seekPending_) {
     seekAll(resolveTick());
+    if (playing_) chaseAll(resolveTick(), 0);  // T7.3: the notes under the new position
     clips_->seek(pos_);
     seekPending_ = false;
   }
@@ -1152,6 +1225,8 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
         snapshotDirty_ = true;
         reportPending_ = true;
         from = n;
+        if (from < frames) chaseAll(resolveTick(), from);  // T7.3: the notes under the start
+        else seekPending_ = true;                          // the start is the next block's frame 0
         if (from > 0) {  // the frames before the start hold, as while stopped
           if (clips_->liveVoices() != 0) clips_->idle(from);
           if (!holdValid_ && automation_.numLanes() != 0)

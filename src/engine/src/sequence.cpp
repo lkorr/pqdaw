@@ -78,6 +78,51 @@ float SequenceImage::curveValueAt(std::span<const CurvePoint> curve, double tick
   return curveValueImpl<double>(curve, tick, empty, nullptr);
 }
 
+namespace {
+
+// T7.3: the max-end tree of notes [lo, hi) (sorted by start): the node of a range is its middle element, endMax of
+// it = the latest end (start + length) in the whole range. Depth ≤ 32.
+Ticks buildEndMax(const SequenceImage::Note* notes, Ticks* endMax, uint32_t lo, uint32_t hi) {
+  if (lo >= hi) return std::numeric_limits<Ticks>::min();
+  const uint32_t mid = lo + (hi - lo) / 2;
+  const Ticks m = std::max({notes[mid].start + notes[mid].length, buildEndMax(notes, endMax, lo, mid),
+                            buildEndMax(notes, endMax, mid + 1, hi)});
+  endMax[mid] = m;
+  return m;
+}
+
+struct CoverQuery {
+  const SequenceImage::Note* notes;
+  const Ticks* endMax;
+  uint32_t a, b;  // the index range asked for
+  Ticks content;
+  uint32_t* out;
+  uint32_t max, n;
+};
+// In-order walk of the tree of [lo, hi), pruned: subtrees that ended at or before `content`, that lie outside
+// [a, b), or (to the right of a node starting at or after `content`) that start too late. RT-safe: depth ≤ 32.
+void coverWalk(CoverQuery& q, uint32_t lo, uint32_t hi) noexcept {
+  while (lo < hi && q.n < q.max) {
+    if (hi <= q.a || lo >= q.b) return;
+    const uint32_t mid = lo + (hi - lo) / 2;
+    if (q.endMax[mid] <= q.content) return;
+    coverWalk(q, lo, mid);
+    const SequenceImage::Note& n = q.notes[mid];
+    if (n.start >= q.content) return;  // so does everything to its right
+    if (mid >= q.a && mid < q.b && n.start + n.length > q.content && q.n < q.max) q.out[q.n++] = mid;
+    lo = mid + 1;
+  }
+}
+
+}  // namespace
+
+uint32_t SequenceImage::covering(const Clip& c, uint32_t lo, uint32_t hi, Ticks content, uint32_t* out,
+                                 uint32_t max) const noexcept {  // RT-safe
+  CoverQuery q{notes_.data(), endMax_.data(), lo, hi, content, out, max, 0};
+  coverWalk(q, c.noteBegin, c.noteEnd);
+  return q.n;
+}
+
 Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const TrackSequenceDesc> tracks,
                                                             const SequenceBuildOptions& options) {
   auto img = std::unique_ptr<SequenceImage>(new SequenceImage());
@@ -167,6 +212,8 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
         n.harmonic = nd.harmonic;
         n.pitch = nd.pitch;
         n.keyDegree = nd.keyDegree;
+        n.unisonCount = nd.unisonCount;
+        n.unisonIndex = nd.unisonIndex;
         if (!nd.pitchCurve.empty() || !nd.gainCurve.empty()) {  // T7.1: header (hash), pitch points, gain points
           std::vector<CurvePoint>& cv = img->curves_;
           if (cv.size() + 1 + nd.pitchCurve.size() + nd.gainCurve.size() >= 0xFFFFFFFFull)
@@ -192,6 +239,8 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
         img->notes_.push_back(n);
       }
       c.noteEnd = static_cast<uint32_t>(img->notes_.size());
+      img->endMax_.resize(img->notes_.size());
+      buildEndMax(img->notes_.data(), img->endMax_.data(), c.noteBegin, c.noteEnd);
       const auto nb = img->notes_.begin() + c.noteBegin, ne = img->notes_.begin() + c.noteEnd;
       auto firstAtOrAfter = [&](Ticks s) {
         return static_cast<uint32_t>(

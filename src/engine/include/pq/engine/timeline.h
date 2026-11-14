@@ -52,9 +52,22 @@
 // frame 0 by a Pitch step carrying its new identity (kNoteEventRetune, T2.6-fix3), never cut. One that was removed
 // gets a note-off at frame 0 of the first block of the new image. Notes of a track
 // that disappeared are dropped (counted: its instrument goes away with the recompile). Cursors re-seek at the
-// current tick: notes starting from it on play from the new image; notes that started earlier are not chased.
+// current tick: notes starting from it on play from the new image; notes that started earlier and are not sounding
+// are not chased by a swap (an edit under the playhead does not start notes).
 // Capacities: maxSoundingPerTrack (beyond it the earliest-ending note is cut early, counted) and maxEventsPerTrack
 // per block (a note-on is only emitted while room remains for every pending note-off; dropped ons are counted).
+//
+// ---- Chase (T7.3, Q278: every note, as Live's "Chase MIDI Notes") ------------------------------------------------
+// When the playhead JUMPS into the middle of a note while playing — Play / Record at a tick, Continue, a Locate while
+// playing, the end of a count-in, an arrangement loop wrap — the note starts there: a fresh note-on at the jump's
+// frame (after the note-offs of what sounded before), with the velocity and chance decision of its clip pass, its Hz
+// and gain read from its curves at that tick and the ramps to their next breakpoints, and its note-off where it
+// would have been. Its envelope starts at the jump (the voice does not know how long the note had sounded). Which
+// notes: those of the clip pass under the new position whose start lies before it and whose end (cut at the pass
+// end) after it — the notes that pass would be sounding had it played from its beginning; a clip-loop wrap is not a
+// jump (notes are cut at it, as before). Found through the image's per-clip max-end tree (SequenceImage::covering:
+// O((found + 1) · log notes) per track), at most maxSoundingPerTrack per track, in (start, id) order; a chased
+// note-on needs the same room in the event list as any other (droppedNoteOns). A sequence swap does not chase.
 //
 // ---- Note curves (T7.1; sequence.h "Per-note curves") -------------------------------------------------------------
 // A note with a pitch / gain curve starts at the curve's value at its note-on tick (NoteOn hz = hz · 2^(cents / 1200),
@@ -66,8 +79,9 @@
 // Events of one tick go out as offs, then curve events, then ons. Each sounding note keeps its curve cursor; a track
 // keeps the tick of its next breakpoint, so a block without one costs the per-track compare it already paid for
 // its next note. After its note-off a note gets no more curve events (its release tail finishes the running ramp).
-// Seek / locate / loop: notes are not chased (as before), a note that starts after the new position starts
-// mid-curve when its curve began earlier. Clip-loop passes replay the note and its curve.
+// Seek / locate / loop: a chased note (see "Chase") starts at its curves' values at the new position; a note that
+// starts after the new position starts mid-curve when its curve began earlier. Clip-loop passes replay the note and
+// its curve.
 // Image swap: a kept note (same id and start) whose curves are unchanged keeps its cursor and gets no event; if its
 // curves changed (or it is retuned and has a pitch curve: the retune carries the curve's value) it is
 // re-synchronised at frame 0: a step to the new curve's value at the playhead (the block's first sample, as a
@@ -254,6 +268,7 @@ struct TimelineStats {
   uint64_t orphanedNotes = 0;      // sounding notes of a track missing from a new image
   uint64_t keptOnSwap = 0, stoppedOnSwap = 0;
   uint64_t retunedOnSwap = 0;      // kept notes whose pitch changed: a Pitch event (kNoteEventRetune) at frame 0
+  uint64_t chasedNotes = 0;        // T7.3: note-ons (counted in noteOns too) of notes started in their middle
   uint64_t curveEvents = 0;        // T7.1: Pitch / Gain events emitted from note curves
   uint64_t droppedCurveEvents = 0; // T7.1: curve events without room in the track's event list
   uint64_t curveResyncs = 0;       // T7.1: sounding notes re-synchronised to a changed curve (swap) or tempo map
@@ -444,7 +459,11 @@ private:
   bool pushCurveEvent(const CurveOut& o, const NoteEvent& e) noexcept;
   // A note-on with curves (s.on its tick): the note-on with hz and gain from the curves there, the ramps to the next
   // breakpoints, and the sounding note (its cursor set) pushed on the track's heap.
-  void startCurvedNote(uint32_t track, NoteEvent e, Sounding s, uint32_t frame, SampleTime sample) noexcept;
+  // `at`: the tick the note starts sounding at (s.on, or later for a chased note).
+  void startCurvedNote(uint32_t track, NoteEvent e, Sounding s, uint32_t frame, SampleTime sample, Ticks at) noexcept;
+  // T7.3 (see "Chase"): starts the notes of `track` under tick `t` that began before it, at `frame`.
+  void chase(uint32_t track, Ticks t, uint32_t frame, SampleTime sample) noexcept;
+  void chaseAll(Ticks t, uint32_t frame) noexcept;
   // Every breakpoint at tick `at` of the track's sounding notes; refreshes TrackState::nextCurve.
   void playCurves(uint32_t track, Ticks at, uint32_t frame, SampleTime sample, CurveSync mode) noexcept;
   void resyncCurvesToTempo() noexcept;
@@ -548,6 +567,7 @@ private:
   uint32_t heapPoolSide_ = 0;
   std::vector<TrackState> scratchTracks_;
   std::vector<uint8_t> matchedScratch_;
+  std::vector<uint32_t> chaseScratch_;  // T7.3: note indices found by one chase (maxSoundingPerTrack)
   AlignedBuffer<NoteEvent> events_;
   std::vector<uint32_t> eventCount_;
   bool anyEvents_ = false;

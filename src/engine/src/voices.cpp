@@ -878,6 +878,8 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
         degree_[lane] = e.degree;
         equave_[lane] = e.equave;
         tuning_[lane] = e.tuning;
+        unison_[lane] = static_cast<float>(e.unisonCount);  // T7.3: a JI object's unison classes at its start
+        index_[lane] = static_cast<float>(e.unisonIndex);
       }
       break;
     }
