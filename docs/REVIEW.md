@@ -1576,3 +1576,17 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Group bands have no timeline strip; only their members' buses (along the gap above) enter the group's socket.
   Look at: project-patch-overview (Group).
 - Traces keep the square PCB corners the buses use; say if you want this one drawn as a curved cable instead.
+
+## 2026-11-13 · AC.look · audio clip view: device-panel look, transpose wheel, filled waveform 👁
+- Look at: tests/views/golden/audio-clip-warp-beats.png, audio-clip-warp-markers.png, clip-view-audio.png. The box is
+  three cards like the Compressor (Clip / Warp / the mode): arc knobs with lit arcs and readouts, chip rows instead of
+  every dropdown (7 warp modes as a 4 + 3 grid, Preserve, Transient Loop → / ↔), lit Reverse / Loop chips, fades as
+  fill boxes (the fill is the fade's share of the clip). The sample: dark field, filled waveform (peak body + brighter
+  RMS core), a bar.beat / seconds ruler, warp segments tinted by speed (red faster, blue slower, the factor between
+  markers), tag-shaped marker handles, fade curves.
+- Try: click Transpose, Up / Down (one step of the clip's tuning), Shift+Up / Down (one octave = the tuning's period),
+  type 5/4 + Enter (reads "5/4 · 386.3 ¢", stays an exact ratio), 386.3c, double-click to edit, the wheel, Shift-drag
+  for free cents. Undo after each: one step.
+- Judge: Steps read "+7 stp" (not "+7 st": "+7st" typed means semitones, so the readout keeps them apart); the RMS core
+  is estimated from the peaks for long files (the overview stores no RMS); the stretch tint strength; whether the
+  empty space under the cards wants anything.

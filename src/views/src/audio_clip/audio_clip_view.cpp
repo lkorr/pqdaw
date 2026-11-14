@@ -11,12 +11,16 @@
 
 #include "../common/paint.h"
 #include "../common/waveform_data.h"
+#include "pq/core/automation_curve.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/media/probe.h"
+#include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/waveform.h"
+#include "pq/views/audio_clip/clip_controls.h"
 #include "pq/views/sample_analysis.h"
 #include "pq/views/waveforms.h"
 
@@ -26,8 +30,9 @@ using namespace pq::ui;
 
 namespace {
 
-constexpr float kBoxWidth = 352.0f;   // logical px: two property columns (M5 review UI 2)
-constexpr float kRulerH = 16.0f;
+constexpr float kBoxWidth = 384.0f;   // logical px: the three cards (AC.look)
+constexpr float kRulerH = 16.0f;      // the loop strip (start marker, loop brace)
+constexpr float kTimeH = 16.0f;       // AC.look: the time ruler under it
 constexpr float kGrab = 5.0f;          // logical px around the marker / brace ends
 
 std::string_view trim(std::string_view s) {
@@ -105,6 +110,26 @@ std::string formatTranspose(const doc::AudioTranspose& t) {
   return buf;
 }
 
+std::string transposeReadout(const doc::AudioTranspose& t, double cents) {
+  char buf[64];
+  switch (t.unit) {
+    case doc::TransposeUnit::Steps:
+      if (t.steps == 0) std::snprintf(buf, sizeof buf, "0 stp");
+      else std::snprintf(buf, sizeof buf, "%+d stp", t.steps);
+      break;
+    case doc::TransposeUnit::Cents:
+      if (t.cents == 0.0) std::snprintf(buf, sizeof buf, "0 st");
+      else if (t.cents == std::round(t.cents / 100.0) * 100.0) std::snprintf(buf, sizeof buf, "%+g st", t.cents / 100.0);
+      else std::snprintf(buf, sizeof buf, "%+.1f \xC2\xA2", t.cents);
+      break;
+    case doc::TransposeUnit::Ratio:
+      std::snprintf(buf, sizeof buf, "%lld/%lld \xC2\xB7 %.1f \xC2\xA2", static_cast<long long>(t.ratio.num()),
+                    static_cast<long long>(t.ratio.den()), cents);
+      break;
+  }
+  return buf;
+}
+
 double sourceBpmFor(double fileBpm, double durationSeconds) {
   if (fileBpm >= kMinBpm && fileBpm <= kMaxBpm) return fileBpm;
   if (!(durationSeconds > 0.0)) return 120.0;
@@ -150,7 +175,8 @@ int32_t loopBarsFor(double seconds, double bpm, double beatsPerBar) {
 namespace audio_clip {
 
 namespace {
-constexpr float kWarpStripH = 14.0f;     // logical px: the warp markers' strip (warped clips)
+constexpr float kWarpStripH = 16.0f;     // logical px: the warp markers' strip (warped clips)
+constexpr double kEnvelopeSeconds = 0.025;  // AC.look: the waveform body's window (a solid body, not a trace)
 constexpr double kConfident = 0.6;       // a detected tempo the warp commands trust (plan: auto-warp threshold)
 }  // namespace
 
@@ -201,8 +227,14 @@ public:
     const int32_t h = tree() ? tree()->uiScale().px(kRulerH) : static_cast<int32_t>(kRulerH);
     return {r.x, r.y, r.w, std::min(h, r.h)};
   }
-  IRect strip() const noexcept {
+  // AC.look: the time ruler (bar.beat / seconds) under the loop strip.
+  IRect timeline() const noexcept {
     const IRect r = rect(), u = ruler();
+    const int32_t h = tree() ? tree()->uiScale().px(kTimeH) : static_cast<int32_t>(kTimeH);
+    return {r.x, u.bottom(), r.w, std::max(0, std::min(h, r.bottom() - u.bottom()))};
+  }
+  IRect strip() const noexcept {
+    const IRect r = rect(), u = timeline();
     if (!warped()) return {r.x, u.bottom(), r.w, 0};
     const int32_t h = tree() ? tree()->uiScale().px(kWarpStripH) : static_cast<int32_t>(kWarpStripH);
     return {r.x, u.bottom(), r.w, std::max(0, std::min(h, r.bottom() - u.bottom()))};
@@ -327,8 +359,29 @@ private:
   }
   void dragTo(const PointerEvent& e);
   void doubleClick(Vec2 p);
+  // AC.look: the waveform's columns (per channel: the peak body's [lo, hi] and the RMS, full scale 1), recomputed only
+  // when what they depend on changes (the clip, the axis, the width, the overview / window revision): painting reads
+  // them, it never rescans the sample.
+  struct Columns {
+    doc::AudioClipPtr clip;  // a shared pointer: a freed clip's address can never match a new one
+    uint64_t revision = ~uint64_t{0};
+    int32_t x = 0, w = -1;
+    double a0 = 0.0, a1 = 0.0;
+    bool samples = false;
+    uint32_t channels = 0;
+    std::vector<float> lo, hi, rms;  // channel c's column i at [c · w + i]; lo > hi: no audio there
+    std::vector<float> sq, sq2;      // scratch: each column's mean square before the window; copies
+    std::vector<float> lo0, hi0;     // scratch: the columns' own extremes
+    std::vector<uint8_t> half;       // each column's window: ± this many columns (its own frames per column)
+  };
+  const Columns* columns(const WaveformData& data, bool samples);
+  void paintWaveform(PaintContext& ctx, float xa, float xb, Rgba colour);
+  void paintTimeline(PaintContext& ctx);
+  void paintStretch(PaintContext& ctx);
+  void paintFades(PaintContext& ctx, float xa, float xb);
 
   AudioClipView& v_;
+  Columns cols_;
   Drag drag_ = Drag::None;
   float pressX_ = 0.0f;
   doc::AudioClipPtr pressClip_;
@@ -339,15 +392,413 @@ private:
   bool gestureOpen_ = false;
 };
 
+const SampleDisplay::Columns* SampleDisplay::columns(const WaveformData& data, bool samples) {
+  const IRect w = wave();
+  double a0 = 0, a1 = 1;
+  if (warped()) axis(a0, a1);
+  Columns& k = cols_;
+  const uint64_t rev = v_.ctx_.waveforms().revision();
+  if (k.clip == v_.clip_ && k.revision == rev && k.x == w.x && k.w == w.w && k.a0 == a0 && k.a1 == a1 && k.samples == samples &&
+      k.channels == data.channels)
+    return &k;
+  k.clip = v_.clip_;
+  k.revision = rev;
+  k.x = w.x;
+  k.w = w.w;
+  k.a0 = a0;
+  k.a1 = a1;
+  k.samples = samples;
+  k.channels = data.channels;
+  const auto cw = static_cast<size_t>(std::max(0, w.w));
+  const size_t n = cw * data.channels;
+  k.lo.assign(n, 1.0f);  // assign keeps the capacity: no allocation once grown
+  k.hi.assign(n, -1.0f);
+  k.rms.assign(n, 0.0f);
+  k.sq.assign(n, 0.0f);
+  k.sq2.assign(n, 0.0f);
+  k.lo0.assign(n, 1.0f);
+  k.hi0.assign(n, -1.0f);
+  k.half.assign(cw, 0);
+  if (n == 0) return &k;
+  const double total = static_cast<double>(data.frames);
+  constexpr float kFull = 1.0f / 32767.0f;
+  // Pass 1: each column's [min, max] and mean square over the source frames under it (warped: through the warp law).
+  const double envFrames = kEnvelopeSeconds * rate();
+  for (size_t i = 0; i < cw; ++i) {
+    const float x = static_cast<float>(w.x) + static_cast<float>(i);
+    double f0 = frameAt(x), f1 = frameAt(x + 1.0f);
+    if (f1 < f0) std::swap(f0, f1);
+    // The window in this column's own columns (a stretched segment has fewer frames per column).
+    k.half[i] = static_cast<uint8_t>(std::clamp(std::ceil(0.5 * envFrames / std::max(1e-9, f1 - f0)) - 1.0, 0.0, 64.0));
+    if (f1 <= 0.0 || f0 >= total) continue;
+    f0 = std::max(0.0, f0);
+    f1 = std::min(total, std::max(f1, f0 + 1.0));
+    const auto a = static_cast<int64_t>(std::floor(f0));
+    const int64_t b = std::max(a + 1, static_cast<int64_t>(std::ceil(f1)));
+    // The coarsest level whose buckets are no wider than the column (the finest one at least).
+    size_t lvl = 0;
+    for (size_t L = 0; L < data.levels.size(); ++L)
+      if (static_cast<double>(data.levels[L].framesPerBucket) <= std::max(1.0, f1 - f0)) lvl = L;
+    for (uint32_t c = 0; c < data.channels; ++c) {
+      float mn = 1.0f, mx = -1.0f;
+      double s2 = 0.0;
+      int64_t cnt = 0;
+      if (samples && a >= data.samples.frame0 && b <= data.samples.frame0 + data.samples.frames) {
+        const float* p = data.samples.channel[c] + (a - data.samples.frame0);
+        for (int64_t j = 0; j < b - a; ++j) {
+          mn = std::min(mn, p[j]);
+          mx = std::max(mx, p[j]);
+          s2 += static_cast<double>(p[j]) * p[j];
+        }
+        cnt = b - a;
+      } else if (!data.levels.empty() && data.levels[lvl].framesPerBucket > 0 && data.levels[lvl].minMax[c]) {
+        // The overview keeps no RMS: each bucket counts as a sine over its range (mean square = half range² / 2).
+        const WaveformLevel& L = data.levels[lvl];
+        const auto fpb = static_cast<int64_t>(L.framesPerBucket);
+        const int64_t ka = a / fpb, kb = std::min<int64_t>(static_cast<int64_t>(L.buckets), (b + fpb - 1) / fpb);
+        for (int64_t q = ka; q < kb; ++q) {
+          const float lo = static_cast<float>(L.minMax[c][2 * q]) * kFull, hi = static_cast<float>(L.minMax[c][2 * q + 1]) * kFull;
+          mn = std::min(mn, lo);
+          mx = std::max(mx, hi);
+          const double h = 0.5 * static_cast<double>(hi - lo);
+          s2 += 0.5 * h * h;
+          ++cnt;
+        }
+      }
+      if (cnt == 0 || mn > mx) continue;
+      const size_t at = c * cw + i;
+      k.lo[at] = mn;
+      k.hi[at] = mx;
+      k.sq[at] = static_cast<float>(s2 / static_cast<double>(cnt));
+    }
+  }
+  // Pass 2: a window of kEnvelopeSeconds of source around each column (at least the column itself), so the peak body is
+  // solid where the columns are narrower than a cycle of the sound, and the RMS is that window's.
+  const uint8_t* hw = k.half.data();
+  auto span = [&](size_t i, size_t h, size_t& j0, size_t& j1) {
+    j0 = i >= h ? i - h : 0;
+    j1 = std::min(cw - 1, i + h);
+  };
+  for (uint32_t c = 0; c < data.channels; ++c) {
+    float* lo = k.lo.data() + c * cw;
+    float* hi = k.hi.data() + c * cw;
+    float* rm = k.rms.data() + c * cw;
+    float* sq = k.sq.data() + c * cw;
+    float* t = k.sq2.data() + c * cw;
+    size_t j0 = 0, j1 = 0;
+    // RMS over the window (sq: the mean squares), then smoothed over half of it (t: a copy).
+    for (size_t i = 0; i < cw; ++i) {
+      if (lo[i] > hi[i]) continue;  // no audio under this column: stays empty
+      double sum = 0.0;
+      size_t m = 0;
+      span(i, hw[i], j0, j1);
+      for (size_t j = j0; j <= j1; ++j)
+        if (lo[j] <= hi[j]) {
+          sum += sq[j];
+          ++m;
+        }
+      rm[i] = static_cast<float>(std::sqrt(sum / static_cast<double>(m)));
+    }
+    for (size_t i = 0; i < cw; ++i) t[i] = rm[i];
+    for (size_t i = 0; i < cw; ++i) {
+      if (lo[i] > hi[i]) continue;
+      double sum = 0.0;
+      size_t m = 0;
+      span(i, std::max<size_t>(1, hw[i] / 2u), j0, j1);
+      for (size_t j = j0; j <= j1; ++j)
+        if (lo[j] <= hi[j]) {
+          sum += t[j];
+          ++m;
+        }
+      rm[i] = static_cast<float>(sum / static_cast<double>(m));
+    }
+    // The windowed extremes (empty columns hold lo = 1, hi = −1 and so never widen a body): from copies (sq, t; the
+    // originals also in lo0 / hi0).
+    float* lo0 = k.lo0.data() + c * cw;
+    float* hi0 = k.hi0.data() + c * cw;
+    for (size_t i = 0; i < cw; ++i) {
+      sq[i] = lo0[i] = lo[i];
+      t[i] = hi0[i] = hi[i];
+    }
+    for (size_t i = 0; i < cw; ++i) {
+      if (sq[i] > t[i] || hw[i] == 0) continue;
+      float mn = sq[i], mx = t[i];
+      span(i, hw[i], j0, j1);
+      for (size_t j = j0; j <= j1; ++j) {
+        mn = std::min(mn, sq[j]);
+        mx = std::max(mx, t[j]);
+      }
+      lo[i] = mn;
+      hi[i] = mx;
+    }
+    for (size_t i = 0; i < cw; ++i) {
+      sq[i] = lo[i];
+      t[i] = hi[i];
+    }
+    // A mean over the window turns the running extremes' steps (a cycle's peak entering or leaving) into a smooth
+    // outline. It is capped by the extremes of the columns BEFORE it (2 windows back), so nothing grows ahead of an
+    // attack (a warp marker lines up with the transient as drawn), and each column keeps at least its own extremes.
+    for (size_t i = 0; i < cw; ++i) {
+      if (sq[i] > t[i] || hw[i] == 0) continue;
+      double sl = 0.0, sh = 0.0;
+      size_t m = 0;
+      span(i, hw[i], j0, j1);
+      for (size_t j = j0; j <= j1; ++j)
+        if (sq[j] <= t[j]) {
+          sl += sq[j];
+          sh += t[j];
+          ++m;
+        }
+      float pastLo = lo0[i], pastHi = hi0[i];
+      for (size_t j = i >= 2u * hw[i] ? i - 2u * hw[i] : 0; j < i; ++j)
+        if (lo0[j] <= hi0[j]) {
+          pastLo = std::min(pastLo, lo0[j]);
+          pastHi = std::max(pastHi, hi0[j]);
+        }
+      lo[i] = std::min(lo0[i], std::max(pastLo, static_cast<float>(sl / static_cast<double>(m))));
+      hi[i] = std::max(hi0[i], std::min(pastHi, static_cast<float>(sh / static_cast<double>(m))));
+    }
+  }
+  return &k;
+}
+
+void SampleDisplay::paintWaveform(PaintContext& ctx, float xa, float xb, Rgba colour) {
+  const Theme& th = *ctx.res.theme;
+  DrawList& dl = ctx.dl;
+  const IRect w = wave();
+  const media::WaveformOverview* ov = v_.ctx_.waveforms().overview(v_.clip_->sample);
+  if (!ov) {
+    const FontId font = ctx.res.uiFonts ? ctx.res.uiFonts->small : kNoFont;
+    paint::text(ctx, font, w, "Loading waveform\xE2\x80\xA6", th.face.ink, TextAlign::Center, 8, 8);
+    return;
+  }
+  WaveformLevel lv[kMaxOverviewLevels];
+  WaveformData data = waveformData(*ov, nullptr, lv);
+  bool samples = false;
+  if (waveformLevelFor(data, frames() / std::max(1, w.w)) < 0)  // deep zoom (a short file): the samples themselves
+    if (const media::SampleWindow* sw = v_.ctx_.waveforms().window(v_.clip_->sample, 0, static_cast<int64_t>(frames()))) {
+      data = waveformData(*ov, sw, lv);
+      samples = true;
+    }
+  const Columns* k = columns(data, samples);
+  if (!k || k->channels == 0 || k->w <= 0) return;
+  const auto cw = static_cast<size_t>(k->w);
+  const float wy0 = static_cast<float>(w.y), wy1 = static_cast<float>(w.bottom());
+  const float laneH = (wy1 - wy0) / static_cast<float>(k->channels);
+  const Rgba bg = th.face.body;
+  const Rgba peakIn = lerp(bg, colour, 0.5f), rmsIn = lerp(colour, rgba(255, 255, 255), 0.16f);
+  const Rgba peakOut = lerp(bg, colour, 0.17f), rmsOut = lerp(bg, colour, 0.3f);
+  for (uint32_t c = 0; c < k->channels; ++c) {
+    const float top = wy0 + laneH * static_cast<float>(c);
+    const float mid = std::round(top + 0.5f * laneH);
+    const float amp = 0.5f * laneH - static_cast<float>(ctx.scale.px(3.0f));
+    if (c > 0) dl.addRectFilled({static_cast<float>(w.x), std::round(top), static_cast<float>(w.right()), std::round(top) + 1.0f}, th.face.track);
+    dl.addRectFilled({static_cast<float>(w.x), mid, static_cast<float>(w.right()), mid + 1.0f}, withAlpha(th.face.tick, 90));
+    const float* lo = k->lo.data() + c * cw;
+    const float* hi = k->hi.data() + c * cw;
+    const float* rm = k->rms.data() + c * cw;
+    for (size_t i = 0; i < cw; ++i) {
+      if (lo[i] > hi[i]) continue;
+      const float x = static_cast<float>(w.x) + static_cast<float>(i);
+      const bool in = x >= xa && x < xb;
+      float y0 = std::round(mid - std::clamp(hi[i], -1.0f, 1.0f) * amp), y1 = std::round(mid - std::clamp(lo[i], -1.0f, 1.0f) * amp) + 1.0f;
+      dl.addRectFilled({x, y0, x + 1.0f, y1}, in ? peakIn : peakOut);
+      const float r = std::min(rm[i], std::max(std::abs(lo[i]), std::abs(hi[i])));
+      y0 = std::max(y0, std::round(mid - r * amp));
+      y1 = std::min(y1, std::round(mid + r * amp) + 1.0f);
+      if (y1 > y0) dl.addRectFilled({x, y0, x + 1.0f, y1}, in ? rmsIn : rmsOut);
+    }
+  }
+}
+
+// The time ruler: warped, bar.beat of the content (1 = content tick 0, 4/4 as the beat grid); Off, seconds of the file.
+// Labels at least 40 px apart (beats when they fit, else every 1, 2, 4 … bars); ticks at bars / beats (and 16ths when
+// they are 6 px apart).
+void SampleDisplay::paintTimeline(PaintContext& ctx) {
+  const Theme& th = *ctx.res.theme;
+  DrawList& dl = ctx.dl;
+  const IRect t = timeline(), w = wave();
+  if (t.h <= 0 || w.w <= 0) return;
+  const FontId font = ctx.res.uiFonts ? ctx.res.uiFonts->small : kNoFont;
+  const float minGap = static_cast<float>(ctx.scale.px(40.0f));
+  const float ty1 = static_cast<float>(t.bottom());
+  const float major = static_cast<float>(ctx.scale.px(6.0f)), minor = static_cast<float>(ctx.scale.px(3.0f));
+  const float tx0 = static_cast<float>(t.x), tx1 = static_cast<float>(t.right());
+  char num[32];
+  auto label = [&](float x, const char* s, Rgba col) {
+    if (font == kNoFont || x < tx0 - 0.5f || x >= tx1 - static_cast<float>(ctx.scale.px(12.0f))) return;
+    paint::text(ctx, font, {static_cast<int32_t>(x), t.y, t.right() - static_cast<int32_t>(x), t.h - ctx.scale.px(3.0f)}, s, col,
+                TextAlign::Left, ctx.scale.px(3.0f), 0);
+  };
+  auto tick = [&](float x, float h, Rgba col) {
+    if (x >= tx0 && x < tx1) dl.addRectFilled({x, ty1 - h, x + 1.0f, ty1}, col);
+  };
+  if (warped()) {
+    double a0 = 0, a1 = 1;
+    axis(a0, a1);
+    const double pxPerTick = static_cast<double>(w.w) / (a1 - a0);
+    const double pxPerBeat = pxPerTick * static_cast<double>(kPpq);
+    // Ticks: 16ths, beats, bars, as dense as they stay apart.
+    const Ticks sub = kPpq / 4;
+    const Ticks tickStep = pxPerTick * static_cast<double>(sub) >= 6.0 ? sub : pxPerBeat >= 5.0 ? kPpq : kTicksPerWhole;
+    for (Ticks k = static_cast<Ticks>(std::ceil(a0 / static_cast<double>(tickStep))) * tickStep; static_cast<double>(k) <= a1; k += tickStep) {
+      const float x = std::round(xOfContent(static_cast<double>(k)));
+      const bool bar = k % kTicksPerWhole == 0, beat = k % kPpq == 0;
+      tick(x, bar ? major : beat ? minor + 1.0f : minor - 1.0f, bar ? th.face.tick : withAlpha(th.face.tick, beat ? 170 : 110));
+    }
+    if (pxPerBeat >= static_cast<double>(minGap)) {  // every beat: "1", "1.2", "1.3", "1.4", "2"
+      for (Ticks k = static_cast<Ticks>(std::ceil(a0 / static_cast<double>(kPpq))) * kPpq; static_cast<double>(k) <= a1; k += kPpq) {
+        const int64_t bar = (k >= 0 ? k : k - kTicksPerWhole + 1) / kTicksPerWhole;
+        const int64_t beat = (k - bar * kTicksPerWhole) / kPpq;
+        if (beat == 0) std::snprintf(num, sizeof num, "%lld", static_cast<long long>(bar + 1));
+        else std::snprintf(num, sizeof num, "%lld.%lld", static_cast<long long>(bar + 1), static_cast<long long>(beat + 1));
+        label(std::round(xOfContent(static_cast<double>(k))), num, beat == 0 ? th.text.secondary : th.face.ink);
+      }
+    } else {
+      const double pxPerBar = pxPerTick * static_cast<double>(kTicksPerWhole);
+      int64_t every = 1;
+      while (pxPerBar * static_cast<double>(every) < static_cast<double>(minGap) && every < (int64_t{1} << 30)) every *= 2;
+      int64_t first = static_cast<int64_t>(std::ceil(a0 / static_cast<double>(kTicksPerWhole)));
+      if (const int64_t rem = ((first % every) + every) % every; rem != 0) first += every - rem;
+      for (int64_t bar = first; static_cast<double>(bar * kTicksPerWhole) <= a1; bar += every) {
+        std::snprintf(num, sizeof num, "%lld", static_cast<long long>(bar + 1));
+        label(std::round(xOfContent(static_cast<double>(bar * kTicksPerWhole))), num, th.text.secondary);
+      }
+    }
+  } else {
+    const double secs = frames() / std::max(1.0, rate());
+    const double pxPerSec = static_cast<double>(w.w) / std::max(1e-9, secs);
+    static constexpr double kSteps[] = {0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600};
+    double every = kSteps[std::size(kSteps) - 1];
+    for (const double s : kSteps)
+      if (pxPerSec * s >= static_cast<double>(minGap)) {
+        every = s;
+        break;
+      }
+    const double mant = every / std::pow(10.0, std::floor(std::log10(every)));
+    const double minorEvery = every / (std::abs(mant - 2.0) < 1e-9 ? 4.0 : 5.0);
+    if (pxPerSec * minorEvery >= 5.0)
+      for (int64_t i = 0; static_cast<double>(i) * minorEvery <= secs; ++i)
+        tick(std::round(xOf(static_cast<double>(i) * minorEvery * rate())), minor, withAlpha(th.face.tick, 130));
+    for (int64_t i = 0; static_cast<double>(i) * every <= secs + 1e-9; ++i) {
+      const double s = static_cast<double>(i) * every;
+      const float x = std::round(xOf(s * rate()));
+      tick(x, major, th.face.tick);
+      if (s >= 60.0) std::snprintf(num, sizeof num, "%d:%02d", static_cast<int>(s) / 60, static_cast<int>(s) % 60);
+      else std::snprintf(num, sizeof num, "%gs", s);
+      label(x, num, th.text.secondary);
+    }
+  }
+}
+
+// Each segment between warp markers tinted by its speed against the source tempo (faster: accent.arm, slower:
+// accent.solo; alpha by |log2 speed|, full at an octave), with its speed in the warp strip when it fits. The parts
+// before the first and after the last marker run at their neighbour's slope (warpFrameAt).
+void SampleDisplay::paintStretch(PaintContext& ctx) {
+  const doc::AudioClip& c = *v_.clip_;
+  if (c.markers.size() < 2) return;
+  const Theme& th = *ctx.res.theme;
+  DrawList& dl = ctx.dl;
+  const IRect st = strip(), w = wave();
+  const float wx0 = static_cast<float>(w.x), wx1 = static_cast<float>(w.right());
+  const double fpt = doc::framesPerContentTick(rate(), c.sourceBpm);
+  if (!(fpt > 0.0)) return;
+  const FontId font = ctx.res.uiFonts ? ctx.res.uiFonts->small : kNoFont;
+  char buf[24];
+  for (size_t i = 0; i + 1 < c.markers.size(); ++i) {
+    const doc::WarpMarker &m0 = c.markers[i], &m1 = c.markers[i + 1];
+    const double dc = static_cast<double>(m1.content - m0.content);
+    if (!(dc > 0.0)) continue;
+    const double speed = (m1.sourceFrame - m0.sourceFrame) / dc / fpt;
+    if (!(speed > 0.0)) continue;
+    const double oct = std::abs(std::log2(speed));
+    float x0 = std::round(warpMarkerX(i)), x1 = std::round(warpMarkerX(i + 1));
+    if (i == 0) x0 = wx0;                          // before the first marker: this segment's slope
+    if (i + 2 == c.markers.size()) x1 = wx1;       // after the last: the last segment's
+    x0 = std::clamp(x0, wx0, wx1);
+    x1 = std::clamp(x1, wx0, wx1);
+    if (!(x1 > x0)) continue;
+    const Rgba hue = speed > 1.0 ? th.accent.arm : th.accent.solo;
+    if (oct > 0.004) {  // the red reads stronger than the blue at one alpha: each its own scale
+      const double t = std::min(1.0, oct);
+      const auto a = static_cast<uint32_t>(speed > 1.0 ? 12.0 + 40.0 * t : 22.0 + 60.0 * t);
+      dl.addRectFilled({x0, static_cast<float>(st.y), x1, static_cast<float>(w.bottom())}, withAlpha(hue, a));
+    }
+    // The speed, centred between the two markers.
+    const float mx0 = std::round(warpMarkerX(i)), mx1 = std::round(warpMarkerX(i + 1));
+    if (font != kNoFont && st.h > 0 && mx1 - mx0 >= static_cast<float>(ctx.scale.px(52.0f))) {
+      std::snprintf(buf, sizeof buf, "%.2f\xC3\x97", speed);
+      paint::text(ctx, font, {static_cast<int32_t>(mx0), st.y, static_cast<int32_t>(mx1 - mx0), st.h}, buf,
+                  oct > 0.004 ? lerp(hue, th.face.handle, 0.45f) : th.face.ink, TextAlign::Center, 6, 6);
+    }
+  }
+}
+
+// The fades as curves over the waveform's ends (the arrangement's automation-curve law), the faded part shaded. A
+// reversed clip plays the region backwards: its fade-in is at the region's right end. A looped clip's fade-out happens
+// in some later pass of the loop, so only its fade-in is drawn.
+void SampleDisplay::paintFades(PaintContext& ctx, float xa, float xb) {
+  const doc::AudioClip& c = *v_.clip_;
+  const Theme& th = *ctx.res.theme;
+  DrawList& dl = ctx.dl;
+  const IRect w = wave();
+  const float wy0 = static_cast<float>(w.y) + 1.0f, wy1 = static_cast<float>(w.bottom()) - 1.0f;
+  const Ticks fi = std::clamp<Ticks>(c.fadeIn.length, 0, c.length), fo = std::clamp<Ticks>(c.fadeOut.length, 0, c.length - fi);
+  // A fade's width in px from the region's start (in) or end (out).
+  auto width = [&](Ticks len, bool atStart) -> float {
+    if (len <= 0) return 0.0f;
+    if (warped()) {
+      const double s = static_cast<double>(c.contentStart);
+      const double e = static_cast<double>(c.contentStart + c.length);
+      return atStart ? xOfContent(s + static_cast<double>(len)) - xOfContent(s) : xOfContent(e) - xOfContent(e - static_cast<double>(len));
+    }
+    const TempoMap& tm = v_.snap_->timeline->tempoMap;
+    const double secs = atStart ? tm.ticksToSeconds(c.start + len) - tm.ticksToSeconds(c.start)
+                                : tm.ticksToSeconds(c.start + c.length) - tm.ticksToSeconds(c.start + c.length - len);
+    return xOf(c.contentStartFrame + secs * rate() * speedRatio()) - xOf(c.contentStartFrame);
+  };
+  const bool looped = warped() && contentLooped(doc::contentLoop(c));
+  const float inW = width(fi, true), outW = looped ? 0.0f : width(fo, false);
+  const Rgba shade = rgba(0, 0, 0, 96), line = withAlpha(th.face.handle, 150);
+  const float lw = std::max(1.0f, ctx.scale.factor);
+  Vec2 pts[65];
+  auto fade = [&](float x0, float fw, float curve, bool rising) {
+    if (fw < 1.0f) return;
+    const int n = std::clamp(static_cast<int>(fw / 3.0f), 2, 64);
+    for (int i = 0; i <= n; ++i) {
+      const double t = static_cast<double>(i) / n;
+      const double g = rising ? automationShape(t, curve) : 1.0 - automationShape(t, curve);
+      pts[i] = {x0 + fw * static_cast<float>(t), wy1 - static_cast<float>(g) * (wy1 - wy0)};
+    }
+    for (int i = 0; i < n; ++i) {
+      const Vec2 q[4] = {{pts[i].x, wy0}, {pts[i + 1].x, wy0}, pts[i + 1], pts[i]};
+      dl.addConvexPolyFilled(q, shade);
+    }
+    smoothPolyline(dl, pts, static_cast<uint32_t>(n + 1), line, lw);
+  };
+  // Forward: in at the region's start rising, out at its end falling; reversed: mirrored.
+  if (!c.reverse) {
+    fade(xa, inW, c.fadeIn.curve, true);
+    fade(xb - outW, outW, c.fadeOut.curve, false);
+  } else {
+    fade(xb - inW, inW, c.fadeIn.curve, false);
+    fade(xa, outW, c.fadeOut.curve, true);
+  }
+}
+
 void SampleDisplay::paint(PaintContext& ctx) {
   const Theme* th = ctx.res.theme;
   if (!th) return;
   DrawList& dl = ctx.dl;
   const IRect r = rect();
-  dl.addRectFilled(r.toRect(), th->surface.sunken);
-  const IRect u = ruler(), st = strip(), w = wave();
-  dl.addRectFilled(u.toRect(), th->surface.panel);
-  if (st.h > 0) dl.addRectFilled(st.toRect(), lerp(th->surface.panel, th->surface.sunken, 0.5f));
+  const Rgba bg = th->face.body;
+  dl.addRectFilled(r.toRect(), bg);
+  const IRect u = ruler(), tl = timeline(), st = strip(), w = wave();
+  dl.addRectFilled(u.toRect(), lerp(bg, th->face.track, 0.75f));
+  dl.addRectFilled(tl.toRect(), lerp(bg, th->face.track, 0.4f));
+  if (st.h > 0) dl.addRectFilled(st.toRect(), lerp(bg, th->face.track, 0.18f));
+  dl.addRectFilled({static_cast<float>(r.x), static_cast<float>(tl.bottom()) - 1.0f, static_cast<float>(r.right()), static_cast<float>(tl.bottom())},
+                   th->face.track);
   if (!v_.clip_) return;
   const doc::AudioClip& c = *v_.clip_;
   const doc::SampleRef* s = sample();
@@ -361,7 +812,7 @@ void SampleDisplay::paint(PaintContext& ctx) {
   const bool isWarped = warped();
   const float wx0 = static_cast<float>(w.x), wx1 = static_cast<float>(w.right());
   const float wy0 = static_cast<float>(w.y), wy1 = static_cast<float>(w.bottom());
-  // The region the clip plays, lit in the clip colour; the rest dimmed.
+  // The region the clip plays: subtly lit in the clip colour (the rest stays dark and its waveform dim).
   float xa = 0.0f, xb = 0.0f;
   if (isWarped) {
     const Ticks end = contentLooped(doc::contentLoop(c)) ? c.loop.end : c.contentStart + c.length;
@@ -373,128 +824,56 @@ void SampleDisplay::paint(PaintContext& ctx) {
   }
   xa = std::clamp(std::round(xa), wx0, wx1);
   xb = std::clamp(std::round(xb), wx0, wx1);
-  // M6 review L19: a dark tint of the clip colour (a full-colour slab outweighed the arrangement); the waveform in
-  // the clip colour over it.
-  if (xb > xa) dl.addRectFilled({xa, wy0, xb, wy1}, lerp(th->surface.sunken, colour, 0.22f));
-  // Warped: the content's beat grid (bars brighter), where beats are at least 4 px apart.
+  if (xb > xa) {
+    dl.addRectFilled({xa, wy0, xb, wy1}, lerp(bg, colour, 0.075f));
+    if (st.h > 0) dl.addRectFilled({xa, static_cast<float>(st.y), xb, static_cast<float>(st.bottom())}, withAlpha(colour, 18));
+  }
+  if (isWarped) paintStretch(ctx);
+  // Warped: the content's beat grid (bars brighter), where beats are at least 6 px apart.
   if (isWarped) {
     double a0 = 0, a1 = 1;
     axis(a0, a1);
     const double pxPerTick = static_cast<double>(w.w) / (a1 - a0);
     Ticks step = kPpq;
-    while (static_cast<double>(step) * pxPerTick < 4.0 && step < (Ticks{1} << 40)) step *= 2;
+    while (static_cast<double>(step) * pxPerTick < 6.0 && step < (Ticks{1} << 40)) step *= 2;
     for (Ticks t = static_cast<Ticks>(std::ceil(a0 / static_cast<double>(step))) * step; static_cast<double>(t) <= a1; t += step) {
       const float x = std::round(xOfContent(static_cast<double>(t)));
+      if (x < wx0 || x >= wx1) continue;
       const bool bar = t % kTicksPerWhole == 0;
-      dl.addRectFilled({x, wy0, x + 1.0f, wy1}, bar ? th->grid.bar : th->grid.beat);
+      dl.addRectFilled({x, wy0, x + 1.0f, wy1}, bar ? withAlpha(th->face.tick, 110) : withAlpha(th->face.tick, 45));
     }
   }
-  if (const media::WaveformOverview* ov = v_.ctx_.waveforms().overview(c.sample)) {
-    WaveformLevel lv[kMaxOverviewLevels];
-    WaveformData data = waveformData(*ov, nullptr, lv);
-    if (waveformLevelFor(data, frames() / std::max(1, w.w)) < 0)
-      if (const media::SampleWindow* sw = v_.ctx_.waveforms().window(c.sample, 0, static_cast<int64_t>(frames())))
-        data = waveformData(*ov, sw, lv);
-    WaveformDraw d;
-    // M5 review UI 2: the sample at unity (the clip gain is a readout in the corner).
-    d.gain = 1.0f;
-    d.colour = lerp(colour, th->text.primary, 0.12f);
-    // One piece per segment of the warp law: [0, first marker), between markers, [last marker, end) — each linear in
-    // content, so drawn stretched into its x range.
-    double cuts[2 + 64];
-    size_t n = 0;
-    cuts[n++] = 0.0;
-    if (isWarped) {
-      const auto& m = c.markers;
-      // More markers than pieces: every k-th (the pieces between stay close to linear at that zoom).
-      const size_t k = std::max<size_t>(1, (m.size() + 63) / 64);
-      for (size_t i = 0; i < m.size(); i += k)
-        if (m[i].sourceFrame > cuts[n - 1] && m[i].sourceFrame < frames()) cuts[n++] = m[i].sourceFrame;
-    }
-    cuts[n++] = frames();
-    for (size_t i = 0; i + 1 < n; ++i) {
-      const float x0 = xOf(cuts[i]), x1 = xOf(cuts[i + 1]);
-      if (!(x1 > x0) || x1 < wx0 || x0 > wx1) continue;
-      d.frame0 = cuts[i];
-      d.frame1 = cuts[i + 1];
-      d.rect = {x0, wy0, x1, wy1};
-      d.clipX0 = std::max(wx0, x0);
-      d.clipX1 = std::min(wx1, x1);
-      (void)drawWaveform(dl, data, d);
-    }
-  } else {
-    paint::text(ctx, font, w, "Loading waveform\xE2\x80\xA6", th->text.secondary, TextAlign::Center, 8, 8);
-  }
-  // Outside the played region the waveform is veiled (it is drawn in the clip colour everywhere).
-  {
-    const Rgba veil = withAlpha(th->surface.sunken, 150);
-    if (xa > wx0) dl.addRectFilled({wx0, wy0, xa, wy1}, veil);
-    if (xb < wx1) dl.addRectFilled({std::max(xb, wx0), wy0, wx1, wy1}, veil);
-  }
-  // The sample's transients: faint lines (one per pixel column at most).
+  // The sample's transients: faint lines (one per pixel column at most), a tick at the strip's foot.
   if (const SampleAnalysisResult* an = v_.ctx_.sampleAnalysis().get(c.sample); an && an->transients) {
-    const Rgba tc = withAlpha(th->text.primary, 46);
+    const Rgba tc = withAlpha(th->face.handle, 26), tick = withAlpha(th->face.handle, 70);
     float last = -1e9f;
     for (const double f : an->transients->onsets) {
       const float x = std::round(xOf(f));
       if (x < wx0 || x >= wx1 || x == last) continue;
       last = x;
       dl.addRectFilled({x, wy0, x + 1.0f, wy1}, tc);
-      if (st.h > 0) dl.addRectFilled({x, static_cast<float>(st.bottom() - st.h / 3), x + 1.0f, static_cast<float>(st.bottom())}, tc);
+      if (st.h > 0) dl.addRectFilled({x, static_cast<float>(st.bottom() - st.h / 3), x + 1.0f, static_cast<float>(st.bottom())}, tick);
     }
   }
-  // M6 review L19: numbers on the axis at the top of the waveform — warped: content bars (1 = content tick 0, as the
-  // grid's bar lines); Off: seconds of the file. Every 1, 2, 4, … so labels stay ≥ 36 px apart.
-  if (font != kNoFont && ctx.res.text && w.h > 0) {
-    const Rgba numCol = withAlpha(th->text.primary, 170);
-    const float minGap = static_cast<float>(ctx.scale.px(36.0f));
-    const int32_t lh = ctx.res.text->metrics(font).lineHeight, pad = ctx.scale.px(3.0f);
-    char num[24];
-    auto label = [&](float x, const char* t) {
-      if (x < wx0 - 0.5f || x >= wx1 - static_cast<float>(pad)) return;
-      paint::text(ctx, font, {static_cast<int32_t>(x), w.y + pad / 2, w.right() - static_cast<int32_t>(x), lh}, t, numCol,
-                  TextAlign::Left, pad, 0);
-    };
-    if (isWarped) {
-      double a0 = 0, a1 = 1;
-      axis(a0, a1);
-      const double pxPerBar = static_cast<double>(w.w) / (a1 - a0) * static_cast<double>(kTicksPerWhole);
-      int64_t every = 1;
-      while (pxPerBar * static_cast<double>(every) < minGap && every < (int64_t{1} << 30)) every *= 2;
-      int64_t first = static_cast<int64_t>(std::ceil(a0 / static_cast<double>(kTicksPerWhole)));
-      if (const int64_t rem = ((first % every) + every) % every; rem != 0) first += every - rem;  // a multiple of every
-      for (int64_t bar = first; static_cast<double>(bar * kTicksPerWhole) <= a1; bar += every) {
-        std::snprintf(num, sizeof num, "%lld", static_cast<long long>(bar + 1));
-        label(std::round(xOfContent(static_cast<double>(bar * kTicksPerWhole))), num);
-      }
-    } else {
-      const double secs = frames() / std::max(1.0, rate());
-      const double pxPerSec = static_cast<double>(w.w) / std::max(1e-9, secs);
-      double every = 0.25;
-      while (pxPerSec * every < minGap && every < 1e6) every *= 2.0;
-      for (double t = 0.0; t <= secs; t += every) {
-        std::snprintf(num, sizeof num, "%gs", t);
-        const float x = std::round(xOf(t * rate()));
-        dl.addRectFilled({x, wy0, x + 1.0f, wy0 + static_cast<float>(lh)}, withAlpha(th->text.primary, 60));
-        label(x, num);
-      }
-    }
-  }
+  paintWaveform(ctx, xa, xb, colour);
+  paintFades(ctx, xa, xb);
+  paintTimeline(ctx);
   // Region edges.
-  const Rgba edge = withAlpha(th->text.primary, 150);
   if (xb > xa) {
+    const Rgba edge = withAlpha(th->face.handle, 110);
     dl.addRectFilled({xa, wy0, xa + 1.0f, wy1}, edge);
     dl.addRectFilled({xb - 1.0f, wy0, xb, wy1}, edge);
   }
-  // Warped: the loop brace in the ruler.
+  // Warped: the loop brace in the loop strip (lit when on), its ends as grips.
   if (isWarped) {
     const float la = std::round(xOfContent(static_cast<double>(c.loop.start))), lb = std::round(xOfContent(static_cast<double>(c.loop.end)));
-    const Rgba braceCol = c.loop.enabled ? th->accent.primary : withAlpha(th->text.disabled, 160);
-    const float by0 = static_cast<float>(u.y + u.h / 4), by1 = static_cast<float>(u.bottom() - u.h / 4);
+    const Rgba braceCol = c.loop.enabled ? th->face.value : th->face.tick;
+    const float by0 = static_cast<float>(u.y) + static_cast<float>(ctx.scale.px(4.0f)), by1 = static_cast<float>(u.bottom()) - static_cast<float>(ctx.scale.px(4.0f));
     if (lb > la) {
-      dl.addRectFilled({la, by0, lb, by1}, withAlpha(braceCol, c.loop.enabled ? 200 : 110));
-      dl.addRectFilled({la, by0, la + 2.0f, static_cast<float>(u.bottom())}, braceCol);
-      dl.addRectFilled({lb - 2.0f, by0, lb, static_cast<float>(u.bottom())}, braceCol);
+      dl.addRoundedRectFilled({la, by0, lb, by1}, ctx.scale.exact(2.0f), withAlpha(braceCol, c.loop.enabled ? 150 : 90));
+      const float gw = std::max(2.0f, ctx.scale.exact(2.0f));
+      dl.addRectFilled({la, static_cast<float>(u.y + 1), la + gw, static_cast<float>(u.bottom() - 1)}, braceCol);
+      dl.addRectFilled({lb - gw, static_cast<float>(u.y + 1), lb, static_cast<float>(u.bottom() - 1)}, braceCol);
     }
   }
   // The clip gain as a readout (the waveform is drawn at unity).
@@ -502,24 +881,27 @@ void SampleDisplay::paint(PaintContext& ctx) {
     char g[32];
     if (c.gainDb <= doc::kMinClipGainDb) std::snprintf(g, sizeof g, "Gain -inf dB");
     else std::snprintf(g, sizeof g, "Gain %+.1f dB", static_cast<double>(c.gainDb));
-    paint::text(ctx, font, {w.x, w.y + ctx.scale.px(4.0f), w.w, ctx.scale.px(16.0f)}, g, th->text.primary, TextAlign::Right,
+    paint::text(ctx, font, {w.x, w.y + ctx.scale.px(4.0f), w.w, ctx.scale.px(16.0f)}, g, th->text.secondary, TextAlign::Right,
                 ctx.scale.px(8.0f), ctx.scale.px(8.0f));
   }
-  // Warp markers: a yellow pin in the strip (Live's colour), a line over the waveform; the selected one outlined.
+  // Warp markers: a tag with a point in the strip (Live's yellow), a line over the waveform; the selected one light.
   if (isWarped && st.h > 0) {
     const Rgba pin = th->accent.activator;
-    const float half = static_cast<float>(std::max(3, ctx.scale.px(4.5f)));
-    const float sy0 = static_cast<float>(st.y + 1), sy1 = static_cast<float>(st.bottom());
+    const float hw = std::max(3.0f, ctx.scale.exact(4.5f));
+    const float sy0 = static_cast<float>(st.y) + 2.0f, sy1 = static_cast<float>(st.bottom());
+    const float neck = sy1 - std::max(3.0f, ctx.scale.exact(4.5f));
     for (size_t i = 0; i < c.markers.size(); ++i) {
       const float x = std::round(warpMarkerX(i));
-      if (x < wx0 - half || x > wx1 + half) continue;
+      if (x < wx0 - hw || x > wx1 + hw) continue;
       const bool sel = static_cast<int32_t>(i) == selected();
-      dl.addRectFilled({x, wy0, x + 1.0f, wy1}, withAlpha(pin, sel ? 255 : 190));
-      if (sel) dl.addTriangleFilled({x - half - 1.5f, sy0 - 1.0f}, {x + half + 2.5f, sy0 - 1.0f}, {x + 0.5f, sy1 + 0.5f}, th->text.primary);
-      dl.addTriangleFilled({x - half, sy0}, {x + half + 1.0f, sy0}, {x + 0.5f, sy1}, pin);
+      const Rgba body = sel ? th->face.handle : pin;
+      dl.addRectFilled({x, wy0, x + 1.0f, wy1}, withAlpha(body, sel ? 230 : 150));
+      dl.addRoundedRectFilled({x - hw + 0.5f, sy0, x + hw + 0.5f, neck}, ctx.scale.exact(2.0f), body);
+      dl.addTriangleFilled({x - hw + 0.5f, neck - 0.5f}, {x + hw + 0.5f, neck - 0.5f}, {x + 0.5f, sy1}, body);
+      dl.addRectFilled({x, sy0 + 2.0f, x + 1.0f, neck - 1.0f}, withAlpha(th->face.body, 120));  // a grip line
     }
   }
-  // The start marker (M5 review UI 2): a flag in the accent colour filling the ruler, and a 2-px line over the waveform.
+  // The start marker (M5 review UI 2): a flag in the accent colour filling the loop strip, and a 2-px line down.
   const float mx = std::round(startX());
   const float fh = static_cast<float>(u.h);
   const float sz = std::max(static_cast<float>(ctx.scale.px(9.0f)), fh * 0.75f);
@@ -725,6 +1107,131 @@ Menu* SampleDisplay::openMenu(Vec2 at) {
 
 }  // namespace audio_clip
 
+// ---- the transpose knob ----------------------------------------------------------------------------------------------
+
+namespace audio_clip {
+
+// AC.look: the transpose "wheel" (see the header): a ClipKnob whose value is the resolved cents; every change goes
+// through `pending`, the exact doc::AudioTranspose the view's onChange stores.
+class TransposeKnob final : public ClipKnob {
+public:
+  TransposeKnob(AudioClipView& v, ValueSpec spec) : ClipKnob("transpose", "Transpose", std::move(spec)), v_(v) {}
+  doc::AudioTranspose pending;
+
+  bool onPointer(const PointerEvent& e) override {
+    switch (e.type) {
+      case PointerType::Down:
+        if (e.button != PointerButton::Left) return false;
+        if (e.clickCount >= 2) {  // the type-in (Delete returns to 0)
+          dragEnd();
+          beginTypeIn();
+          return true;
+        }
+        if (typingIn()) commitTypeIn();
+        dragStart(e.pos);
+        return true;
+      case PointerType::Move: {
+        if (!dragging()) return false;
+        const double s = tree() ? tree()->scale() : 1.0;
+        const double d = static_cast<double>(last_.y - e.pos.y);
+        last_ = e.pos;
+        const bool fine = (e.mods & mod::kShift) != 0;
+        raw_ = std::clamp(raw_ + d * (spec_.max - spec_.min) / (spec_.dragPixels * s) * (fine ? spec_.fineFactor : 1.0), spec_.min, spec_.max);
+        if (fine) {  // free cents, to a tenth
+          doc::AudioTranspose t;
+          t.unit = doc::TransposeUnit::Cents;
+          t.cents = std::round(raw_ * 10.0) / 10.0;
+          apply(t);
+        } else {  // the nearest step of the clip's tuning
+          apply(v_.nearestStep(raw_));
+        }
+        return true;
+      }
+      case PointerType::Up:
+        if (e.button != PointerButton::Left || !dragging()) return false;
+        dragEnd();
+        return true;
+      case PointerType::Wheel: return wheel(e);
+      default: return false;
+    }
+  }
+
+  bool onKey(const KeyEvent& e) override {
+    if (typingIn()) {
+      if (e.down && (e.key == key::kReturn || e.key == key::kTab)) {
+        commitTypeIn();
+        return e.key == key::kReturn;  // Tab: focus traversal continues
+      }
+      return typeInKey(e);  // Esc cancels; the editing keys
+    }
+    const Mods chord = e.mods & mod::kChordMask;
+    if (e.down && (e.key == key::kUp || e.key == key::kDown) && (chord & ~mod::kShift) == 0) {
+      if (!enabled()) return false;
+      finishWheel();  // a key step is its own gesture
+      if (const std::optional<doc::AudioTranspose> t = v_.steppedTranspose(e.key == key::kUp ? 1 : -1, (chord & mod::kShift) != 0)) {
+        apply(*t);
+        endGesture();
+      }
+      return true;
+    }
+    if (e.down && (e.key == key::kDelete || e.key == key::kBackspace) && chord == mod::kNone) {
+      pending = doc::AudioTranspose{};
+      resetToDefault();
+      return true;
+    }
+    return ClipKnob::onKey(e);  // a digit opens the type-in; Esc cancels a drag
+  }
+
+  void onFocusChanged(bool focused) override {
+    if (!focused && typingIn()) commitTypeIn();  // focus loss commits
+    markDirty();
+  }
+
+  void beginTypeIn() {
+    if (!enabled()) return;
+    finishWheel();
+    typing_ = true;
+    typeIn_.setText(v_.clip_ ? formatTranspose(v_.clip_->transpose) : std::string());
+    typeIn_.selectAll();
+    setAcceptsTextInput(true);
+    if (tree() && !focused()) tree()->setFocus(this);
+    markDirty();
+  }
+
+private:
+  void apply(const doc::AudioTranspose& t) {
+    pending = t;
+    userSet(v_.transposeCents(t));
+  }
+  // The typed text through parseTranspose (the exact unit: "5/4" stays a ratio); one undo step; unparsable: the status
+  // line says what parses, nothing changes.
+  void commitTypeIn() {
+    const std::string text = typeInBuffer().text();
+    endTypeIn(false);
+    (void)v_.setTranspose(text);
+  }
+  // The wheel: one step per notch (Shift: one period), a run of notches one gesture (as ValueControl's wheel).
+  bool wheel(const PointerEvent& e) {
+    if (!wheelAdjusts() || dragging() || !enabled()) return false;
+    if ((e.mods & (mod::kCtrl | mod::kAlt | mod::kSuper)) != 0 || e.wheel.y == 0.0f) return false;
+    if (!wheelTimer_) wheelRaw_ = 0.0;  // a new run: the notch accumulator (trackpads send fractions)
+    wheelRaw_ += static_cast<double>(e.wheel.y);
+    const auto n = static_cast<int>(std::trunc(wheelRaw_));
+    if (n != 0) {
+      wheelRaw_ -= n;
+      if (const std::optional<doc::AudioTranspose> t = v_.steppedTranspose(n > 0 ? 1 : -1, (e.mods & mod::kShift) != 0, std::abs(n)))
+        apply(*t);
+    }
+    if (wheelTimer_) cancelTimer(wheelTimer_);
+    wheelTimer_ = requestTimer(kWheelGestureSeconds);  // ends the run (and its gesture, if one began)
+    return true;
+  }
+
+  AudioClipView& v_;
+};
+
+}  // namespace audio_clip
+
 // ---- the view ---------------------------------------------------------------------------------------------------
 
 bool AudioClipView::dragging() const noexcept { return display_ != nullptr && display_->dragging(); }
@@ -737,75 +1244,78 @@ bool AudioClipView::onKey(const KeyEvent& e) {
   return false;
 }
 
+namespace {
+constexpr Ticks kGrans[] = {0, kPpq, kPpq / 2, kPpq / 4, kPpq / 8};  // Preserve: Transients, 1/4, 1/8, 1/16, 1/32
+constexpr float kKnobH = 84.0f;      // logical px: label, dial, readout
+constexpr float kClipKnobH = 96.0f;  // the Clip card's (the transpose dial the largest)
+}  // namespace
+
 AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_(ctx) {
+  using audio_clip::Chip;
+  using audio_clip::ClipKnob;
+  using audio_clip::FillBox;
+  using audio_clip::Section;
   setLayout(LayoutKind::Custom);
   setClipChildren(true);
   box_ = &add<Widget>("audio-box");
   box_->setLayout(LayoutKind::Column);
   box_->setAlign(Align::Start, Align::Start);
-  box_->setPadding({8, 0, 8, 6});
+  box_->setPadding({8, 0, 8, 8});
   name_ = &box_->add<Label>("name", "", FontRoleId::BodyStrong, TextTone::Primary);
   name_->setHeight(Length::fixed(20));
   // An empty label: the space of the title strip, which the view paints in the clip colour with the name.
   file_ = &box_->add<Label>("file", "", FontRoleId::Small, TextTone::Secondary);
-  file_->setHeight(Length::fixed(16));
+  file_->setHeight(Length::fixed(17));
   format_ = &box_->add<Label>("format", "", FontRoleId::Small, TextTone::Secondary);
-  format_->setHeight(Length::fixed(18));
-  // M5 review UI 2: the properties in two groups side by side, as Live's Sample and Clip boxes (one long form ran
-  // down the panel): Clip (gain, transpose, detune, reverse, fades) and Sample (warp, tempo, loop, the mode's settings).
+  format_->setHeight(Length::fixed(17));
+  // AC.look: three cards in the device panels' look (M5 review UI 2's Clip / Sample groups): Clip (pitch, level,
+  // fades), Warp (the mode, the source tempo, the loop) and the mode's settings.
   Widget& props = box_->add<Widget>("props");
-  props.setLayout(LayoutKind::Row);
-  props.setGap(12);
+  props.setLayout(LayoutKind::Column);
+  props.setGap(6);
+  props.setPadding({0, 4, 0, 0});
   props.setHeight(Length::flex(1));
   props.setAlign(Align::Start, Align::Start);
-  Widget* clipCol = &props.add<Widget>("clip");
-  Widget* sampleCol = &props.add<Widget>("sample");
-  for (Widget* col : {clipCol, sampleCol}) {
-    col->setLayout(LayoutKind::Column);
-    col->setWidth(Length::flex(1));
-    col->setAlign(Align::Start, Align::Start);
-  }
-  Widget* rowParent = clipCol;
-  auto row = [&rowParent](const char* name, const char* text) -> Widget& {
-    Widget& w = rowParent->add<Widget>(name);
+  auto knob = [](Widget& parent, const char* name, const char* label, ValueSpec spec, float width, float height = kKnobH) -> ClipKnob& {
+    ClipKnob& k = parent.add<ClipKnob>(name, label, std::move(spec));
+    k.setWidth(Length::fixed(width));
+    k.setHeight(Length::fixed(height));
+    return k;
+  };
+  auto chip = [](Widget& parent, const char* name, const char* text) -> Chip& {
+    Chip& c = parent.add<Chip>(name, text);
+    c.setHeight(Length::fixed(20));
+    return c;
+  };
+  auto row = [](Widget& parent, const char* name) -> Widget& {
+    Widget& w = parent.add<Widget>(name);
     w.setLayout(LayoutKind::Row);
+    w.setGap(3);
     w.setHeight(Length::fixed(20));
-    w.setPadding({0, 2, 0, 0});
-    w.add<Label>("label", text, FontRoleId::Small, TextTone::Secondary).setWidth(Length::flex(1));
     return w;
   };
-  auto box = [](Widget& r, const char* name, ValueSpec spec) -> DragBox& {
-    DragBox& b = r.add<DragBox>(name, std::move(spec));
-    b.setWidth(Length::fixed(84));
-    return b;
-  };
-  ValueSpec gs;
-  gs.min = doc::kMinClipGainDb;
-  gs.max = doc::kMaxClipGainDb;
-  gs.def = 0.0;
-  gs.dragPixels = 400.0;
-  gs.keyStep = 0.5;
-  gs.decimals = 1;
-  gs.unit = "dB";
-  gain_ = &box(row("gain-row", "Gain"), "gain", gs);
-  gain_->formatter = [](double v) {
-    if (v <= doc::kMinClipGainDb) return std::string("-inf dB");
-    char b[32];
-    std::snprintf(b, sizeof b, "%.1f dB", v);
-    return std::string(b);
-  };
-  gain_->setSpec(gs);
-  gain_->setInfo("Clip Gain", "The clip's gain (−inf … +24 dB). The waveform follows it.");
-  bindGesture(*gain_, "Clip Gain", [this](double v) { (void)setGain(static_cast<float>(v)); });
 
-  Widget& tr = row("transpose-row", "Transpose");
-  transpose_ = &tr.add<TextEdit>("transpose");
-  transpose_->setWidth(Length::fixed(84));
-  transpose_->setInfo("Transpose", "Type 7 for 7 steps of the clip's tuning, 700c for cents, +7st for semitones, 3/2 for a "
-                                   "ratio. Every warp mode but Re-Pitch (which follows the tempo).");
-  transpose_->onCommit = [this](const std::string& t) {
-    if (!setTranspose(t) && clip_) transpose_->setText(formatTranspose(clip_->transpose));
-  };
+  // ---- Clip: Transpose (the big knob), Detune, Gain; Reverse and the fades beside them.
+  Section& clipCard = props.add<Section>("clip", "Clip");
+  clipCard.setLayout(LayoutKind::Row);
+  clipCard.setGap(4);
+  clipCard.setHeight(Length::fixed(audio_clip::Section::kTitleH + kClipKnobH + 7));
+  ValueSpec ts;
+  ts.min = -doc::kMaxTransposeCents;
+  ts.max = doc::kMaxTransposeCents;
+  ts.def = 0.0;
+  ts.dragPixels = 768.0;  // ~8 px per 100 c
+  ts.fineFactor = 0.1;
+  ts.decimals = 1;
+  ts.unit = "\xC2\xA2";
+  transpose_ = &clipCard.add<audio_clip::TransposeKnob>(*this, ts);
+  transpose_->setWidth(Length::fixed(100));
+  transpose_->setHeight(Length::fixed(kClipKnobH));
+  transpose_->setInfo("Transpose", "Drag in steps of the clip's tuning (Shift: free cents). Up / Down: one step; Shift+Up / "
+                                   "Down: one period (octave). Type 7 for 7 steps, 386.3c for cents, +7st for semitones, "
+                                   "5/4 for an exact ratio (double-click or start typing). Every warp mode but Re-Pitch "
+                                   "(which follows the tempo).");
+  bindGesture(*transpose_, "Transpose", [this](double) { (void)setTranspose(transpose_->pending); });
   ValueSpec ds;
   ds.min = -doc::kMaxDetuneCents;
   ds.max = doc::kMaxDetuneCents;
@@ -814,66 +1324,120 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   ds.keyStep = 1.0;
   ds.decimals = 0;
   ds.unit = "\xC2\xA2";
-  detune_ = &box(row("detune-row", "Detune"), "detune", ds);
+  detune_ = &knob(clipCard, "detune", "Detune", ds, 54, kClipKnobH);
+  detune_->formatter = [](double v) {
+    char b[32];
+    if (std::round(v) == 0.0) std::snprintf(b, sizeof b, "0 \xC2\xA2");
+    else std::snprintf(b, sizeof b, "%+.0f \xC2\xA2", v);
+    return std::string(b);
+  };
+  detune_->setSpec(ds);
   detune_->setInfo("Detune", "Fine pitch in cents (±50). Every warp mode but Re-Pitch.");
   bindGesture(*detune_, "Clip Detune", [this](double v) { (void)setDetune(static_cast<float>(v)); });
-
-  // M6 review L19: a switch names itself (as Live's Rev. and Loop), no row label repeating it.
-  auto toggleRow = [&rowParent](const char* name, const char* control, const char* text) -> Toggle& {
-    Widget& w = rowParent->add<Widget>(name);
-    w.setLayout(LayoutKind::Row);
-    w.setHeight(Length::fixed(20));
-    w.setPadding({0, 2, 0, 0});
-    Toggle& t = w.add<Toggle>(control, text);
-    w.add<Widget>("rest").setWidth(Length::flex(1));
-    return t;
+  ValueSpec gs;
+  gs.min = doc::kMinClipGainDb;
+  gs.max = doc::kMaxClipGainDb;
+  gs.def = 0.0;
+  gs.dragPixels = 400.0;
+  gs.keyStep = 0.5;
+  gs.decimals = 1;
+  gs.unit = "dB";
+  gain_ = &knob(clipCard, "gain", "Gain", gs, 54, kClipKnobH);
+  gain_->formatter = [](double v) {
+    if (v <= doc::kMinClipGainDb) return std::string("-inf dB");
+    char b[32];
+    std::snprintf(b, sizeof b, "%.1f dB", v);
+    return std::string(b);
   };
-  reverse_ = &toggleRow("reverse-row", "reverse", "Reverse");
-  reverse_->setWidth(Length::fixed(84));
-  reverse_->setInfo("Reverse", "Plays the clip backwards (the file is not changed).");
-  reverse_->onToggle = [this](bool on) { (void)setReverse(on); };
-
-  rowParent = sampleCol;
-  warp_ = &row("warp-row", "Warp").add<Dropdown>("warp", std::vector<std::string>(std::begin(kWarpModeNames), std::end(kWarpModeNames)), 0);
-  warp_->setWidth(Length::fixed(96));  // "Complex Pro"
-  warp_->setFocusable(false);
-  warp_->setInfo("Warp", "Off: the file's own speed, its duration in seconds. Re-Pitch: follows the song tempo like a tape "
-                         "(speed and pitch together). Beats: slices at transients or the grid, for drums. Tones: grains "
-                         "that keep a single pitched voice (monophonic) exactly in tune; chords drift, use Complex. Texture: grains with randomness, for pads and noise. Complex: "
-                         "a phase vocoder for whole mixes. Complex Pro: Complex keeping the formants (voices).");
-  warp_->onChange = [this](int32_t i) {
-    if (i >= 0 && i <= static_cast<int32_t>(doc::kLastAudioWarp)) (void)setWarp(static_cast<doc::AudioWarp>(i));
-  };
-  ValueSpec bs;
-  bs.min = 20.0;
-  bs.max = 999.0;
-  bs.def = 120.0;
-  bs.dragPixels = 1000.0;
-  bs.keyStep = 1.0;
-  bs.decimals = 2;
-  bpm_ = &box(row("bpm-row", "BPM"), "bpm", bs);
-  bpm_->setInfo("Source Tempo", "The tempo the file was recorded at (its tempo tag or name, else its detected tempo, else its "
-                                "length). Warp markers override it between them.");
-  bindGesture(*bpm_, "Clip Tempo", [this](double v) { (void)setSourceBpm(v); });
+  gain_->setSpec(gs);
+  gain_->setInfo("Clip Gain", "The clip's gain (−inf … +24 dB).");
+  bindGesture(*gain_, "Clip Gain", [this](double v) { (void)setGain(static_cast<float>(v)); });
   {
-    Widget& sr = row("bpm-scale-row", "");
-    halve_ = &sr.add<Button>("halve", ":2");
-    halve_->setWidth(Length::fixed(41));
-    halve_->setInfo("Halve Tempo", "The source tempo ÷ 2 (the clip plays twice as many of its beats per song beat).");
-    halve_->onClick = [this] { (void)scaleSourceBpm(0.5); };
-    sr.add<Widget>("gap").setWidth(Length::fixed(2));
-    double_ = &sr.add<Button>("double", "*2");
-    double_->setWidth(Length::fixed(41));
-    double_->setInfo("Double Tempo", "The source tempo × 2.");
-    double_->onClick = [this] { (void)scaleSourceBpm(2.0); };
+    Widget& side = clipCard.add<Widget>("side");
+    side.setLayout(LayoutKind::Column);
+    side.setGap(4);
+    side.setWidth(Length::flex(1));
+    side.setPadding({4, static_cast<int16_t>((kClipKnobH - 3 * 20 - 2 * 4) / 2), 0, 0});
+    reverse_ = &chip(side, "reverse", "Reverse");
+    reverse_->setInfo("Reverse", "Plays the clip backwards (the file is not changed).");
+    reverse_->onPress = [this] {
+      if (clip_) (void)setReverse(!clip_->reverse);
+    };
+    ValueSpec fs;
+    fs.min = 0.0;
+    fs.max = 60000.0;  // refresh: the clip's length (a fade cannot be longer), so the fill is the fade's share of it
+    fs.def = 0.0;
+    fs.dragPixels = 200.0;
+    fs.keyStep = 1.0;
+    fs.decimals = 0;
+    fs.unit = "ms";
+    fadeIn_ = &side.add<FillBox>("fade-in", "Fade In", fs, true);
+    fadeIn_->setHeight(Length::fixed(20));
+    fadeIn_->setInfo("Fade In", "The fade at the clip start in milliseconds (or drag its handle in the arrangement); the fill "
+                                "is its share of the clip.");
+    bindGesture(*fadeIn_, "Clip Fade", [this](double v) { (void)setFadesMs(v, fadeOut_->value()); });
+    fadeOut_ = &side.add<FillBox>("fade-out", "Fade Out", fs, true);
+    fadeOut_->setHeight(Length::fixed(20));
+    fadeOut_->setInfo("Fade Out", "The fade at the clip end in milliseconds; the fill is its share of the clip.");
+    bindGesture(*fadeOut_, "Clip Fade", [this](double v) { (void)setFadesMs(fadeIn_->value(), v); });
   }
-  loop_ = &toggleRow("loop-row", "loop", "Loop");
-  loop_->setWidth(Length::fixed(84));
-  loop_->setInfo("Loop", "Warped clips: repeats the part under the loop brace.");
-  loop_->onToggle = [this](bool on) { (void)setLoopEnabled(on); };
 
-  // T6.8: each mode's settings (rows shown for their mode).
-  auto paramGesture = [this](DragBox& b, std::string label, auto set) {
+  // ---- Warp: the seven modes (a 4 + 3 grid, Complex Pro two cells wide), the source tempo, the loop.
+  Section& warpCard = props.add<Section>("warp", "Warp");
+  warpCard.setLayout(LayoutKind::Column);
+  warpCard.setGap(4);
+  warpCard.setHeight(Length::fixed(audio_clip::Section::kTitleH + 3 * 20 + 2 * 4 + 7));
+  {
+    static constexpr const char* kChipNames[] = {"off", "repitch", "beats", "tones", "texture", "complex", "pro"};
+    Widget& m1 = row(warpCard, "modes-1");
+    Widget& m2 = row(warpCard, "modes-2");
+    for (size_t i = 0; i < std::size(kChipNames); ++i) {
+      Chip& c = chip(i < 4 ? m1 : m2, kChipNames[i], kWarpModeNames[i]);
+      c.setWidth(Length::flex(i == 6 ? 2.0f : 1.0f));
+      c.setInfo("Warp", "Off: the file's own speed, its duration in seconds. Re-Pitch: follows the song tempo like a tape "
+                        "(speed and pitch together). Beats: slices at transients or the grid, for drums. Tones: grains "
+                        "that keep a single pitched voice (monophonic) exactly in tune; chords drift, use Complex. Texture: "
+                        "grains with randomness, for pads and noise. Complex: a phase vocoder for whole mixes. Complex "
+                        "Pro: Complex keeping the formants (voices).");
+      c.onPress = [this, i] { (void)setWarp(static_cast<doc::AudioWarp>(i)); };
+      warp_[i] = &c;
+    }
+    // Row 2 has 4 cells' worth (1 + 1 + 2): the grid's columns line up with row 1.
+    Widget& tempo = row(warpCard, "tempo");
+    ValueSpec bs;
+    bs.min = 20.0;
+    bs.max = 999.0;
+    bs.def = 120.0;
+    bs.dragPixels = 1000.0;
+    bs.keyStep = 1.0;
+    bs.decimals = 2;
+    bpm_ = &tempo.add<FillBox>("bpm", "BPM", bs, false);
+    bpm_->setWidth(Length::flex(2));
+    bpm_->setInfo("Source Tempo", "The tempo the file was recorded at (its tempo tag or name, else its detected tempo, else its "
+                                  "length). Warp markers override it between them.");
+    bindGesture(*bpm_, "Clip Tempo", [this](double v) { (void)setSourceBpm(v); });
+    halve_ = &chip(tempo, "halve", ":2");
+    halve_->setWidth(Length::flex(0.5f));
+    halve_->setInfo("Halve Tempo", "The source tempo ÷ 2 (the clip plays twice as many of its beats per song beat).");
+    halve_->onPress = [this] { (void)scaleSourceBpm(0.5); };
+    double_ = &chip(tempo, "double", "\xC3\x97" "2");
+    double_->setWidth(Length::flex(0.5f));
+    double_->setInfo("Double Tempo", "The source tempo × 2.");
+    double_->onPress = [this] { (void)scaleSourceBpm(2.0); };
+    loop_ = &chip(tempo, "loop", "Loop");
+    loop_->setWidth(Length::flex(1));
+    loop_->setInfo("Loop", "Warped clips: repeats the part under the loop brace.");
+    loop_->onPress = [this] {
+      if (clip_) (void)setLoopEnabled(!clip_->loop.enabled);
+    };
+  }
+
+  // ---- The mode's settings (T6.8), titled with the mode.
+  mode_ = &props.add<Section>("mode", "");
+  mode_->setLayout(LayoutKind::Row);
+  mode_->setGap(6);
+  mode_->setHeight(Length::fixed(audio_clip::Section::kTitleH + kKnobH + 7));
+  auto paramGesture = [this](ValueControl& b, std::string label, auto set) {
     bindGesture(b, std::move(label), [this, set](double v) {
       if (!clip_) return;
       doc::WarpParams p = clip_->warpParams;
@@ -881,30 +1445,47 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
       (void)setWarpParams(p);
     });
   };
-  preserveRow_ = &row("preserve-row", "Preserve");
-  preserve_ = &preserveRow_->add<Dropdown>("preserve", std::vector<std::string>{"Transients", "1/4", "1/8", "1/16", "1/32"}, 3);
-  preserve_->setWidth(Length::fixed(84));
-  preserve_->setFocusable(false);
-  preserve_->setInfo("Preserve", "Beats: where the sample is cut into slices — at its transients, or on a grid of its beats.");
-  preserve_->onChange = [this](int32_t i) {
-    if (!clip_) return;
-    constexpr Ticks kGrans[] = {0, kPpq, kPpq / 2, kPpq / 4, kPpq / 8};
-    doc::WarpParams p = clip_->warpParams;
-    p.beatsGranulation = kGrans[std::clamp(i, 0, 4)];
-    (void)setWarpParams(p);
-  };
-  beatsLoopRow_ = &row("beats-loop-row", "Loop Mode");
-  beatsLoop_ = &beatsLoopRow_->add<Dropdown>("beats-loop", std::vector<std::string>{"Off", "Forward", "Back-Fwd"}, 1);
-  beatsLoop_->setWidth(Length::fixed(84));
-  beatsLoop_->setFocusable(false);
-  beatsLoop_->setInfo("Transient Loop Mode", "Beats, slowed down: what a slice does when it ends before the next one — "
-                                             "stop (Off), loop forward, or loop back and forth.");
-  beatsLoop_->onChange = [this](int32_t i) {
-    if (!clip_) return;
-    doc::WarpParams p = clip_->warpParams;
-    p.beatsLoop = static_cast<doc::BeatsLoop>(std::clamp(i, 0, 2));
-    (void)setWarpParams(p);
-  };
+  {
+    beatsCol_ = &mode_->add<Widget>("beats");
+    beatsCol_->setLayout(LayoutKind::Column);
+    beatsCol_->setWidth(Length::flex(1));
+    beatsCol_->setGap(2);
+    auto caption = [](Widget& parent, const char* name, const char* text) {
+      parent.add<audio_clip::Caption>(name, text).setHeight(Length::fixed(15));
+    };
+    caption(*beatsCol_, "preserve-label", "Preserve");
+    Widget& pr = row(*beatsCol_, "preserve");
+    static constexpr const char* kPreserve[][2] = {{"transients", "Trans"}, {"1-4", "1/4"}, {"1-8", "1/8"}, {"1-16", "1/16"}, {"1-32", "1/32"}};
+    for (size_t i = 0; i < 5; ++i) {
+      Chip& c = chip(pr, kPreserve[i][0], kPreserve[i][1]);
+      c.setWidth(Length::flex(i == 0 ? 1.3f : 1.0f));
+      c.setInfo("Preserve", "Beats: where the sample is cut into slices — at its transients (Trans), or on a grid of its "
+                            "beats.");
+      c.onPress = [this, i] {
+        if (!clip_) return;
+        doc::WarpParams p = clip_->warpParams;
+        p.beatsGranulation = kGrans[i];
+        (void)setWarpParams(p);
+      };
+      preserve_[i] = &c;
+    }
+    caption(*beatsCol_, "loop-label", "Transient Loop");
+    Widget& lr = row(*beatsCol_, "beats-loop");
+    static constexpr const char* kLoops[][2] = {{"off", "Off"}, {"forward", "\xE2\x86\x92"}, {"back-fwd", "\xE2\x86\x94"}};
+    for (size_t i = 0; i < 3; ++i) {
+      Chip& c = chip(lr, kLoops[i][0], kLoops[i][1]);
+      c.setWidth(Length::flex(1));
+      c.setInfo("Transient Loop Mode", "Beats, slowed down: what a slice does when it ends before the next one — stop (Off), "
+                                       "loop forward (→), or loop back and forth (↔).");
+      c.onPress = [this, i] {
+        if (!clip_) return;
+        doc::WarpParams p = clip_->warpParams;
+        p.beatsLoop = static_cast<doc::BeatsLoop>(i);
+        (void)setWarpParams(p);
+      };
+      beatsLoop_[i] = &c;
+    }
+  }
   ValueSpec pct;
   pct.min = 0.0;
   pct.max = 100.0;
@@ -913,8 +1494,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   pct.keyStep = 1.0;
   pct.decimals = 0;
   pct.unit = "%";
-  beatsEnvRow_ = &row("beats-env-row", "Envelope");
-  beatsEnv_ = &box(*beatsEnvRow_, "beats-env", pct);
+  beatsEnv_ = &knob(*mode_, "beats-env", "Envelope", pct, 64);
   beatsEnv_->setInfo("Transient Envelope", "Beats: how long each slice holds before it fades (100: the whole gap).");
   paramGesture(*beatsEnv_, "Warp Settings", [](doc::WarpParams& p, double v) { p.beatsEnvelope = static_cast<float>(v); });
   ValueSpec gr;
@@ -925,18 +1505,15 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   gr.keyStep = 1.0;
   gr.decimals = 0;
   gr.unit = "ms";
-  grainRow_ = &row("grain-row", "Grain Size");
-  grain_ = &box(*grainRow_, "grain", gr);
+  grain_ = &knob(*mode_, "grain", "Grain Size", gr, 72);
   grain_->setInfo("Grain Size", "Tones / Texture: the length of the grains (short: tighter timing; long: smoother pitch).");
   paramGesture(*grain_, "Warp Settings", [](doc::WarpParams& p, double v) { p.grainSizeMs = static_cast<float>(v); });
   ValueSpec fx = pct;
   fx.def = 0.0;
-  fluxRow_ = &row("flux-row", "Flux");
-  flux_ = &box(*fluxRow_, "flux", fx);
+  flux_ = &knob(*mode_, "flux", "Flux", fx, 72);
   flux_->setInfo("Flux", "Texture: randomness of the grains' positions.");
   paramGesture(*flux_, "Warp Settings", [](doc::WarpParams& p, double v) { p.flux = static_cast<float>(v); });
-  formantsRow_ = &row("formants-row", "Formants");
-  formants_ = &box(*formantsRow_, "formants", pct);
+  formants_ = &knob(*mode_, "formants", "Formants", pct, 72);
   formants_->setInfo("Formants", "Complex Pro: how much the formants (a voice's character) stay put when transposed.");
   paramGesture(*formants_, "Warp Settings", [](doc::WarpParams& p, double v) { p.formants = static_cast<float>(v); });
   ValueSpec eo;
@@ -947,33 +1524,10 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   eo.keyStep = 1.0;
   eo.decimals = 0;
   eo.unit = "bins";  // M6 review L19: a count, not Beats' "Envelope" percentage
-  envOrderRow_ = &row("env-order-row", "Envelope");
-  envOrder_ = &box(*envOrderRow_, "env-order", eo);
+  envOrder_ = &knob(*mode_, "env-order", "Envelope", eo, 72);
   envOrder_->setInfo("Envelope", "Complex Pro: the detail of the spectral envelope the formants follow, in frequency bins "
                                  "(low: smooth).");
   paramGesture(*envOrder_, "Warp Settings", [](doc::WarpParams& p, double v) { p.envelope = static_cast<float>(v); });
-
-  // The Sample column's controls one width (the chooser fits "Complex Pro").
-  for (Widget* w : std::initializer_list<Widget*>{bpm_, loop_, preserve_, beatsLoop_, beatsEnv_, grain_, flux_, formants_, envOrder_})
-    w->setWidth(Length::fixed(96));
-  halve_->setWidth(Length::fixed(47));
-  double_->setWidth(Length::fixed(47));
-
-  rowParent = clipCol;
-  ValueSpec fs;
-  fs.min = 0.0;
-  fs.max = 60000.0;
-  fs.def = 0.0;
-  fs.dragPixels = 2000.0;
-  fs.keyStep = 1.0;
-  fs.decimals = 0;
-  fs.unit = "ms";
-  fadeIn_ = &box(row("fade-in-row", "Fade In"), "fade-in", fs);
-  fadeIn_->setInfo("Fade In", "The fade at the clip start, in milliseconds (or drag its handle in the arrangement).");
-  bindGesture(*fadeIn_, "Clip Fade", [this](double v) { (void)setFadesMs(v, fadeOut_->value()); });
-  fadeOut_ = &box(row("fade-out-row", "Fade Out"), "fade-out", fs);
-  fadeOut_->setInfo("Fade Out", "The fade at the clip end, in milliseconds.");
-  bindGesture(*fadeOut_, "Clip Fade", [this](double v) { (void)setFadesMs(fadeIn_->value(), v); });
 
   display_ = &add<audio_clip::SampleDisplay>(*this);
 
@@ -1044,11 +1598,18 @@ void AudioClipView::refresh() {
                     s->channels == 1 ? "mono" : s->channels == 2 ? "stereo" : "multi", secs);
     format_->setText(fmt);
   }
+  // AC.look: the clip's tuning (the transpose knob's steps; a Steps transpose resolves in it).
+  tuning_.reset();
+  if (const std::optional<doc::TrackPath> tp = doc::findTrack(*cur, ref_.track))
+    if (const doc::TuningDef* def = doc::audioClipTuning(*cur, *tp, a))
+      if (Result<tuning::Tuning> t = doc::buildTuning(*def)) tuning_ = std::move(*t);
+  const double cents = transposeCents(a.transpose);
+  if (!transpose_->inGesture()) transpose_->setValue(cents);
+  transpose_->setReadout(transposeReadout(a.transpose, cents));
   if (!gain_->inGesture()) gain_->setValue(a.gainDb);
-  if (!transpose_->focused()) transpose_->setText(formatTranspose(a.transpose));
   if (!detune_->inGesture()) detune_->setValue(a.detuneCents);
   reverse_->setOn(a.reverse);
-  warp_->setIndex(static_cast<int32_t>(a.warp));
+  for (size_t i = 0; i < std::size(warp_); ++i) warp_[i]->setOn(static_cast<size_t>(a.warp) == i);
   if (!bpm_->inGesture()) bpm_->setValue(a.sourceBpm);
   loop_->setOn(a.loop.enabled);
   const bool warped = doc::isWarped(a.warp);
@@ -1059,25 +1620,25 @@ void AudioClipView::refresh() {
   halve_->setEnabled(warped);
   double_->setEnabled(warped);
   loop_->setEnabled(warped);
-  // T6.8: the mode's rows.
+  // T6.8: the mode's card, with its controls; hidden for the modes without settings (Off, Re-Pitch, Complex).
   const doc::WarpParams& wp = a.warpParams;
   const bool beats = a.warp == doc::AudioWarp::Beats, tones = a.warp == doc::AudioWarp::Tones,
              texture = a.warp == doc::AudioWarp::Texture, pro = a.warp == doc::AudioWarp::ComplexPro;
-  preserveRow_->setVisible(beats);
-  beatsLoopRow_->setVisible(beats);
-  beatsEnvRow_->setVisible(beats);
-  grainRow_->setVisible(tones || texture);
-  fluxRow_->setVisible(texture);
-  formantsRow_->setVisible(pro);
-  envOrderRow_->setVisible(pro);
+  mode_->setVisible(beats || tones || texture || pro);
+  mode_->setTitle(beats || tones || texture || pro ? kWarpModeNames[static_cast<size_t>(a.warp)] : "");
+  beatsCol_->setVisible(beats);
+  beatsEnv_->setVisible(beats);
+  grain_->setVisible(tones || texture);
+  flux_->setVisible(texture);
+  formants_->setVisible(pro);
+  envOrder_->setVisible(pro);
   {
-    constexpr Ticks kGrans[] = {0, kPpq, kPpq / 2, kPpq / 4, kPpq / 8};
-    int32_t gi = -1;
+    int32_t gi = 3;  // an unknown granulation reads as 1/16
     for (int32_t i = 0; i < 5; ++i)
       if (kGrans[i] == wp.beatsGranulation) gi = i;
-    preserve_->setIndex(gi >= 0 ? gi : 3);
+    for (int32_t i = 0; i < 5; ++i) preserve_[i]->setOn(i == gi);
   }
-  beatsLoop_->setIndex(static_cast<int32_t>(wp.beatsLoop));
+  for (size_t i = 0; i < 3; ++i) beatsLoop_[i]->setOn(static_cast<size_t>(wp.beatsLoop) == i);
   if (!beatsEnv_->inGesture()) beatsEnv_->setValue(wp.beatsEnvelope);
   if (!grain_->inGesture()) grain_->setValue(wp.grainSizeMs);
   if (!flux_->inGesture()) flux_->setValue(wp.flux);
@@ -1085,11 +1646,106 @@ void AudioClipView::refresh() {
   if (!envOrder_->inGesture()) envOrder_->setValue(wp.envelope);
   const TempoMap& tm = cur->timeline->tempoMap;
   const double t0 = tm.ticksToSeconds(a.start), t1 = tm.ticksToSeconds(a.start + a.length);
+  // The fades' boxes range over the clip's length (what a fade can be), so their fill is the fade's share of the clip.
+  const double clipMs = std::max(1.0, std::floor((t1 - t0) * 1000.0));
+  for (audio_clip::FillBox* b : {fadeIn_, fadeOut_})
+    if (!b->inGesture() && b->spec().max != clipMs) {
+      ValueSpec fs = b->spec();
+      fs.max = clipMs;
+      b->setSpec(fs);
+    }
   const Ticks fi = std::clamp<Ticks>(a.fadeIn.length, 0, a.length), fo = std::clamp<Ticks>(a.fadeOut.length, 0, a.length - fi);
   if (!fadeIn_->inGesture()) fadeIn_->setValue(std::round((tm.ticksToSeconds(a.start + fi) - t0) * 1000.0));
   if (!fadeOut_->inGesture()) fadeOut_->setValue(std::round((t1 - tm.ticksToSeconds(a.start + a.length - fo)) * 1000.0));
   box_->markDirty();
   display_->markDirty();
+}
+
+double AudioClipView::transposeCents(const doc::AudioTranspose& t) const {
+  if (t.unit == doc::TransposeUnit::Steps) {
+    if (tuning_) return doc::transposeCents(t, &*tuning_);
+    return 100.0 * static_cast<double>(t.steps);  // no tuning resolves: semitones
+  }
+  return doc::transposeCents(t, nullptr);
+}
+
+namespace {
+doc::AudioTranspose stepsOf(int64_t n) {
+  doc::AudioTranspose t;
+  t.unit = doc::TransposeUnit::Steps;
+  t.steps = static_cast<int32_t>(std::clamp<int64_t>(n, -doc::kMaxTransposeSteps, doc::kMaxTransposeSteps));
+  return t;
+}
+}  // namespace
+
+// The clip's tuning's degree n in cents above degree 0, its degrees per period and the period in cents (no tuning:
+// 12-EDO semitones).
+static double stepCentsOf(const std::optional<tuning::Tuning>& tun, int64_t n) {
+  if (!tun) return 100.0 * static_cast<double>(n);
+  return doc::transposeCents(stepsOf(n), &*tun);
+}
+
+doc::AudioTranspose AudioClipView::nearestStep(double cents) const {
+  const int64_t dpe = tuning_ ? std::max<int64_t>(1, doc::degreesPerEquave(*tuning_)) : 12;
+  const double period = stepCentsOf(tuning_, dpe);
+  const double mean = period > 0.0 ? period / static_cast<double>(dpe) : 100.0;
+  const auto n0 = static_cast<int64_t>(std::llround(cents / mean));
+  int64_t best = n0;
+  double bd = 1e300;
+  const int64_t reach = std::min<int64_t>(64, dpe / 2 + 2);  // an uneven scale's degree sits within half a period
+  for (int64_t n = n0 - reach; n <= n0 + reach; ++n) {
+    const double d = std::abs(stepCentsOf(tuning_, n) - cents);
+    if (d < bd - 1e-9) {
+      bd = d;
+      best = n;
+    }
+  }
+  return stepsOf(best);
+}
+
+std::optional<doc::AudioTranspose> AudioClipView::steppedTranspose(int dir, bool octave, int count) const {
+  if (!clip_ || dir == 0 || count <= 0) return std::nullopt;
+  const doc::AudioTranspose cur = clip_->transpose;
+  const int64_t dpe = tuning_ ? std::max<int64_t>(1, doc::degreesPerEquave(*tuning_)) : 12;
+  const int64_t sign = dir > 0 ? 1 : -1;
+  doc::AudioTranspose t = cur;
+  if (octave) {
+    const double period = stepCentsOf(tuning_, dpe);
+    switch (cur.unit) {
+      case doc::TransposeUnit::Steps: t = stepsOf(static_cast<int64_t>(cur.steps) + sign * count * dpe); break;
+      case doc::TransposeUnit::Cents: t.cents = cur.cents + static_cast<double>(sign * count) * period; break;
+      case doc::TransposeUnit::Ratio: {
+        // The period as an exact ratio when it is one (an EDO's exact equave, else 2/1 or 3/1 by size), else cents.
+        std::optional<tuning::Rational> pr;
+        if (tuning_)
+          if (const tuning::Edo* e = tuning_->edo()) pr = e->equaveRatio();
+        for (const tuning::Rational cand : {tuning::Rational(2), tuning::Rational(3)})
+          if (!pr && std::abs(tuning::cents(cand) - period) < 1e-6) pr = cand;
+        std::optional<tuning::Rational> r = cur.ratio;
+        for (int i = 0; pr && r && i < count; ++i) r = sign > 0 ? tuning::mul(*r, *pr) : tuning::div(*r, *pr);
+        if (pr && r) {
+          t.ratio = *r;
+        } else {
+          t = doc::AudioTranspose{};
+          t.cents = transposeCents(cur) + static_cast<double>(sign * count) * period;
+        }
+        break;
+      }
+    }
+  } else if (cur.unit == doc::TransposeUnit::Steps) {
+    t = stepsOf(static_cast<int64_t>(cur.steps) + sign * count);
+  } else {
+    // The next degree strictly above (below) the current pitch, then count − 1 more.
+    const double c = transposeCents(cur);
+    int64_t n = nearestStep(c).steps;
+    for (int guard = 0; guard < 4096 && (sign > 0 ? stepCentsOf(tuning_, n) <= c + 1e-6 : stepCentsOf(tuning_, n) >= c - 1e-6); ++guard)
+      n += sign;
+    for (int guard = 0; guard < 4096 && (sign > 0 ? stepCentsOf(tuning_, n - 1) > c + 1e-6 : stepCentsOf(tuning_, n + 1) < c - 1e-6); ++guard)
+      n -= sign;
+    t = stepsOf(n + sign * (count - 1));
+  }
+  if (std::abs(transposeCents(t)) > doc::kMaxTransposeCents + 1e-6) return std::nullopt;
+  return t;
 }
 
 bool AudioClipView::dispatch(const doc::ops::EditResult& e, std::string_view what) {
@@ -1114,11 +1770,15 @@ bool AudioClipView::setTranspose(std::string_view text) {
   if (!clip_) return false;
   const std::optional<doc::AudioTranspose> t = parseTranspose(text);
   if (!t) {
-    ctx_.setStatus("Transpose: type 7 (steps), 700c (cents), +7st (semitones) or 3/2 (a ratio)");
+    ctx_.setStatus("Transpose: type 7 (steps), 386.3c (cents), +7st (semitones) or 5/4 (a ratio)");
     return false;
   }
-  if (*t == clip_->transpose) return false;
-  return dispatch(doc::ops::setAudioClipTranspose(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), *t), "Transpose");
+  return setTranspose(*t);
+}
+
+bool AudioClipView::setTranspose(const doc::AudioTranspose& t) {
+  if (!clip_ || t == clip_->transpose) return false;
+  return dispatch(doc::ops::setAudioClipTranspose(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), t), "Transpose");
 }
 
 bool AudioClipView::setDetune(float cents) {

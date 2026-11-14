@@ -327,7 +327,7 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   AudioClipView& v = f.view();
   REQUIRE(v.hasClip());
   CHECK(v.clip()->warp == doc::AudioWarp::RePitch);
-  CHECK_FALSE(v.box().find("props/clip/transpose-row/transpose")->enabled());  // greyed in Re-Pitch (Q145)
+  CHECK_FALSE(v.box().find("props/clip/transpose")->enabled());  // greyed in Re-Pitch (Q145)
 
   // Transpose parsing.
   CHECK(parseTranspose("7")->unit == doc::TransposeUnit::Steps);
@@ -343,6 +343,12 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(formatTranspose(*parseTranspose("-700c")) == "-7 st");
   CHECK(formatTranspose(*parseTranspose("386.3c")) == "386.3 \xC2\xA2");
   for (const char* t : {"0 st", "-7 st", "386.3 \xC2\xA2"}) CHECK(formatTranspose(*parseTranspose(t)) == t);
+  // AC.look: the transpose knob's readout (a ratio with its true size).
+  CHECK(transposeReadout(*parseTranspose("5/4"), tuning::cents(tuning::Rational(5, 4))) == "5/4 \xC2\xB7 386.3 \xC2\xA2");
+  CHECK(transposeReadout(*parseTranspose("7"), 700.0) == "+7 stp");
+  CHECK(transposeReadout(*parseTranspose("-700c"), -700.0) == "-7 st");
+  CHECK(transposeReadout(*parseTranspose("386.3c"), 386.3) == "+386.3 \xC2\xA2");
+  CHECK(transposeReadout(doc::AudioTranspose{}, 0.0) == "0 st");
   CHECK(sourceBpmFor(0.0, 1.5) == doctest::Approx(160.0));  // one bar of 4/4 in 1.5 s
   CHECK(sourceBpmFor(98.0, 1.5) == 98.0);
   // M6 review M11: Warp as N-Bar Loop's count in the clip's signature, any whole number with a detected tempo.
@@ -355,7 +361,7 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   size_t h = f.history();
   CHECK(v.setWarp(doc::AudioWarp::Off));
   CHECK(v.clip()->warp == doc::AudioWarp::Off);
-  CHECK(v.box().find("props/clip/transpose-row/transpose")->enabled());
+  CHECK(v.box().find("props/clip/transpose")->enabled());
   CHECK(v.setTranspose("3/2"));
   CHECK(v.clip()->transpose.unit == doc::TransposeUnit::Ratio);
   CHECK_FALSE(v.setTranspose("nonsense"));
@@ -368,9 +374,9 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(v.clip()->sourceBpm == doctest::Approx(160.0));  // vox.wav: 1.5 s, no tempo tag → one bar
   CHECK(f.history() == h + 5);
 
-  // The gain box: a drag is one undo step.
+  // The gain knob: a drag is one undo step.
   h = f.history();
-  const IRect gb = f.d.rect(std::string("main/body/bottom/detail/clip/audio-clip-view/audio-box/props/clip/gain-row/gain"));
+  const IRect gb = f.d.rect(std::string("main/body/bottom/detail/clip/audio-clip-view/audio-box/props/clip/gain"));
   const Vec2 gc{static_cast<float>(gb.x + gb.w / 2), static_cast<float>(gb.y + gb.h / 2)};
   f.d.drag(gc, {gc.x, gc.y - 40.0f}, 8);
   CHECK(f.get(vox).gainDb > -3.0f);

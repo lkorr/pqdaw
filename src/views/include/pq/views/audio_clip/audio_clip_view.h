@@ -1,32 +1,45 @@
 #pragma once
 
-// The audio Clip View (T5.6, SPEC §9.4; T6.8 warping): the detail view's clip panel when the clip shown
-// (ViewContext::detailClip) is an audio clip; the piano roll (ClipView) covers the same slot for note clips. Live's
-// audio clip view, simplified:
+// The audio Clip View (T5.6, SPEC §9.4; T6.8 warping; AC.look: drawn as a device panel): the detail view's clip panel
+// when the clip shown (ViewContext::detailClip) is an audio clip; the piano roll (ClipView) covers the same slot for note
+// clips. Live's audio clip view, simplified:
 //
-//   audio-box (left)                         | sample (right)
-//   name, file, rate · bits · channels · s   | ruler strip: start marker, loop brace
-//   Clip: Gain, Transpose, Detune, Reverse,  | warp strip (warped clips): the warp markers
-//         Fade In, Fade Out                  | the sample's waveform: an Off clip's whole file on a frame axis; a warped
-//   Sample: Warp (7 modes), BPM, :2 / *2,    |   clip's on its CONTENT axis (beats of the clip, each segment between
-//         Loop, the mode's settings          |   markers stretched as it plays), with the beat grid; the clip's region
-//                                            |   lit, faint lines at the sample's transients (SampleAnalysis)
+//   audio-box (left): the name strip, file, rate · bits · channels · s, then three cards (audio_clip/clip_controls.h)
+//     Clip   Transpose (the big knob), Detune, Gain knobs; Reverse chip, Fade In / Fade Out fill boxes
+//     Warp   the seven modes as a chip grid; BPM box with :2 and ×2 chips; Loop chip
+//     <mode> the warp mode's settings (Beats / Tones / Texture / Complex Pro; hidden for the others)
+//   sample (right): the loop strip (start marker, loop brace), the time ruler (bar.beat of the content for warped clips,
+//     seconds of the file for Off), the warp strip (warped: the markers, each segment's speed), the waveform (filled:
+//     the peak body with a brighter RMS body inside, per channel) on a dark field, the clip's region lit and the rest
+//     dimmed; a warped clip on its CONTENT axis (beats of the clip, each segment between markers stretched as it plays)
+//     with the beat grid, each segment tinted by its speed against the source (faster / slower: two hues, stronger the
+//     further from 1x); faint lines at the sample's transients (SampleAnalysis); the fades as curves over the ends.
 //
-// Edits (each one undo step; drags and box drags are one store gesture, so the clip follows live and plays the change):
-//   Gain       dB box (−inf … +24)                         ops::setAudioClipGain
-//   Transpose  typed: "7" = 7 steps of the clip's tuning, "700c" = cents, "+7st" = semitones, "3/2" = a ratio
-//                                                           ops::setAudioClipTranspose (every mode but Re-Pitch)
-//   Detune     cents box (±50)                             ops::setAudioClipDetune (every mode but Re-Pitch)
-//   Reverse    toggle                                      ops::setAudioClipsReverse
-//   Warp       Off / Re-Pitch / Beats / Tones / Texture / Complex / Complex Pro. From Off the BPM is seeded from the
-//              file's tempo tag or name, else its detected tempo (confidence >= 0.6), else its length as a whole
+// Edits (each one undo step; drags and wheel runs are one store gesture, so the clip follows live and plays the change):
+//   Transpose  knob, value = the resolved cents (±kMaxTransposeCents); the document keeps an exact doc::AudioTranspose.
+//              Drag: steps of the clip's tuning (Steps); Shift-drag: fine, free cents (Cents). Up / Down (and the wheel,
+//              one notch each): the next step of the tuning above / below the current pitch (Steps). Shift+Up / Down
+//              (Shift+wheel): ± one period of the tuning, the unit kept (Steps ± its degrees per period, Cents ± the
+//              period's cents, a Ratio × or ÷ the period when the period is 2/1, 3/1 or an EDO's exact equave, else
+//              cents) — the period, not 1200 c, for a non-octave tuning (Bohlen-Pierce: 3/1). Typed (a digit while
+//              focused, or double-click): "7" = 7 steps, "386.3c" / "386.3 ¢" = cents, "+7st" = semitones, "5/4" = an
+//              exact ratio; Enter commits, Esc cancels. Delete: 0. Readout: "+7 stp" (steps), "+7 st" / "+386.3 ¢"
+//              (cents), "5/4 · 386.3 ¢" (a ratio and its true size).   ops::setAudioClipTranspose (all but Re-Pitch)
+//   Detune     knob ±50 ¢                                  ops::setAudioClipDetune (every mode but Re-Pitch)
+//   Gain       knob, −inf … +24 dB                         ops::setAudioClipGain
+//   Reverse    lit chip                                    ops::setAudioClipsReverse
+//   Fade In / Fade Out  fill boxes, ms at the clip's tempo; the fill is the fade's share of the clip
+//              ops::setAudioClipFades
+//   Warp       chips Off / Re-Pitch / Beats / Tones / Texture / Complex / Complex Pro. From Off the BPM is seeded from
+//              the file's tempo tag or name, else its detected tempo (confidence >= 0.6), else its length as a whole
 //              number of 4/4 bars (sourceBpmFor)          ops::setAudioClipWarp
-//   BPM, :2 *2 the source tempo (halved / doubled)         ops::setAudioClipWarp
-//   Loop       loop on / off                               ops::setAudioClipLoop
-//   mode rows  Beats: Preserve (Transients, 1/4 … 1/32), Loop Mode (Off / Forward / Back-Fwd), Envelope; Tones: Grain;
-//              Texture: Grain, Flux; Complex Pro: Formants, Envelope   ops::setAudioClipWarpParams
-//   Fade In / Fade Out  milliseconds at the clip's tempo   ops::setAudioClipFades
-//   start marker  drag in the ruler strip (Off: the source frame at the clip start; warped: the content start,
+//   BPM, :2 ×2 the source tempo (halved / doubled)         ops::setAudioClipWarp
+//   Loop       lit chip                                    ops::setAudioClipLoop
+//   mode card  Beats: Preserve chips (Trans, 1/4 … 1/32), Transient Loop chips (Off, → forward, ↔ back and forth),
+//              Envelope knob (%); Tones: Grain knob; Texture: Grain, Flux (%) knobs; Complex Pro: Formants (%),
+//              Envelope (bins) knobs                      ops::setAudioClipWarpParams
+//   Knobs as ui::Knob: drag (Shift fine), wheel, Up / Down, Delete / double-click = default, a digit types a value.
+//   start marker  drag in the loop strip (Off: the source frame at the clip start; warped: the content start,
 //              snapped to 1/16 notes, Shift: free)          SetAudioClip
 //   loop brace    warped: drag its ends or the whole brace (1/16 notes, Shift: free)   ops::setAudioClipLoop
 //   warp markers  (warped clips) double-click the waveform or the strip: add one (at a transient within reach, else
@@ -48,6 +61,7 @@
 
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/tuning/tuning.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
@@ -58,6 +72,11 @@ namespace pq::views {
 
 namespace audio_clip {
 class SampleDisplay;
+class TransposeKnob;
+class ClipKnob;
+class Chip;
+class FillBox;
+class Section;
 }
 
 // "7" → 7 steps, "700c" / "700 ¢" → cents, "+7st" → 700 cents, "3/2" → ratio; nullopt for anything else.
@@ -72,7 +91,10 @@ double sourceBpmFor(double fileBpm, double durationSeconds);
 // M11: the signature at the clip's start): with a detected tempo (bpm > 0) the whole number of bars nearest to it;
 // without, the power of two (1 … 64) whose tempo is nearest to 120 BPM. Always within kMinBpm … kMaxBpm when one is.
 int32_t loopBarsFor(double seconds, double bpm, double beatsPerBar = 4.0);
-// T6.8: the warp chooser's items, index = doc::AudioWarp.
+// AC.look: the transpose knob's readout: steps "+7 stp", whole semitones "+7 st", cents "+386.3 ¢", a ratio with its
+// true size "5/4 · 386.3 ¢" (`cents`: the resolved size; only a ratio shows it).
+std::string transposeReadout(const doc::AudioTranspose& t, double cents);
+// T6.8: the warp modes' names, index = doc::AudioWarp (the chips' texts in the Clip View).
 inline constexpr const char* kWarpModeNames[] = {"Off", "Re-Pitch", "Beats", "Tones", "Texture", "Complex", "Complex Pro"};
 
 class AudioClipView : public ui::Widget {
@@ -87,6 +109,13 @@ public:
   // --- edits (also what the controls do; tests call them directly) ---
   bool setGain(float db);
   bool setTranspose(std::string_view text);  // false: not a transpose (status line)
+  bool setTranspose(const doc::AudioTranspose& t);  // AC.look: the knob's exact value
+  // AC.look: the transpose `count` steps (octave: periods) up (dir > 0) or down from the clip's, as the knob's keys do;
+  // nullopt when it would leave ±kMaxTransposeCents. And the cents a transpose resolves to in the clip's tuning.
+  std::optional<doc::AudioTranspose> steppedTranspose(int dir, bool octave, int count = 1) const;
+  double transposeCents(const doc::AudioTranspose& t) const;
+  // The degree of the clip's tuning nearest `cents` (a Steps transpose; no tuning: semitones).
+  doc::AudioTranspose nearestStep(double cents) const;
   bool setDetune(float cents);
   bool setReverse(bool on);
   bool setWarp(doc::AudioWarp warp);
@@ -128,6 +157,7 @@ public:
 
 private:
   friend class audio_clip::SampleDisplay;
+  friend class audio_clip::TransposeKnob;
   bool dispatch(const doc::ops::EditResult& e, std::string_view what);
   void bindGesture(ui::ValueControl& c, std::string label, std::function<void(double)> apply);
 
@@ -147,21 +177,22 @@ private:
   ui::Label* name_ = nullptr;
   ui::Label* file_ = nullptr;
   ui::Label* format_ = nullptr;
-  ui::DragBox* gain_ = nullptr;
-  ui::TextEdit* transpose_ = nullptr;
-  ui::DragBox* detune_ = nullptr;
-  ui::Toggle* reverse_ = nullptr;
-  ui::Dropdown* warp_ = nullptr;
-  ui::DragBox* bpm_ = nullptr;
-  ui::Button *halve_ = nullptr, *double_ = nullptr;  // T6.8
-  ui::Toggle* loop_ = nullptr;
-  // T6.8: the mode rows (shown for their mode) and their controls.
-  ui::Widget *preserveRow_ = nullptr, *beatsLoopRow_ = nullptr, *beatsEnvRow_ = nullptr, *grainRow_ = nullptr,
-             *fluxRow_ = nullptr, *formantsRow_ = nullptr, *envOrderRow_ = nullptr;
-  ui::Dropdown *preserve_ = nullptr, *beatsLoop_ = nullptr;
-  ui::DragBox *beatsEnv_ = nullptr, *grain_ = nullptr, *flux_ = nullptr, *formants_ = nullptr, *envOrder_ = nullptr;
-  ui::DragBox* fadeIn_ = nullptr;
-  ui::DragBox* fadeOut_ = nullptr;
+  // AC.look: the clip's tuning (built on refresh; nullopt: none resolves): the transpose knob's steps.
+  std::optional<tuning::Tuning> tuning_;
+  audio_clip::TransposeKnob* transpose_ = nullptr;
+  audio_clip::ClipKnob *detune_ = nullptr, *gain_ = nullptr;
+  audio_clip::Chip* reverse_ = nullptr;
+  audio_clip::FillBox *fadeIn_ = nullptr, *fadeOut_ = nullptr;
+  audio_clip::Chip* warp_[7] = {};  // index = doc::AudioWarp
+  audio_clip::FillBox* bpm_ = nullptr;
+  audio_clip::Chip *halve_ = nullptr, *double_ = nullptr;  // T6.8
+  audio_clip::Chip* loop_ = nullptr;
+  // T6.8: the mode card (titled with the mode; shown when the mode has settings) and its controls.
+  audio_clip::Section* mode_ = nullptr;
+  ui::Widget* beatsCol_ = nullptr;
+  audio_clip::Chip* preserve_[5] = {};   // Transients, 1/4, 1/8, 1/16, 1/32
+  audio_clip::Chip* beatsLoop_[3] = {};  // Off, Forward, Back-Fwd
+  audio_clip::ClipKnob *beatsEnv_ = nullptr, *grain_ = nullptr, *flux_ = nullptr, *formants_ = nullptr, *envOrder_ = nullptr;
 };
 
 // Adds the audio clip view to the shell's ClipDetail slot (next to the piano roll; one line in installDefaultContent).
