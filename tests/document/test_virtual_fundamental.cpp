@@ -172,8 +172,8 @@ TEST_CASE("virtual fundamental: Up/Down step on the shared fundamental; a step k
 // T7.13 (user 2026-11-14, notes-first JI): a declared harmonic is a JI group — an anchor note and the Ratio notes
 // anchored to it, with a fundamental of its own (doc::groupHarmonics; tests: test_ji.cpp). This case was "a declared
 // harmonic (b + index) gives the fundamental until unlocked" (T7.5b: ClipFundamental::anchor): the clip-wide lock is
-// gone, so the reference ratios' fundamental is derived as before whatever groups the clip has, and the anchor steps
-// as its own identity does.
+// gone, so the reference ratios' fundamental is derived as before whatever groups the clip has. bug-ji-input: the
+// anchor stepped without its member moves alone, as a member (ops::moveNotes re-anchors the group onto the member).
 TEST_CASE("virtual fundamental: a JI group has its own fundamental; the reference ratios' derivation is untouched") {
   Roll r;
   const NoteId a = r.add(ratio(7, 4), 0);
@@ -194,12 +194,18 @@ TEST_CASE("virtual fundamental: a JI group has its own fundamental; the referenc
   CHECK(r.fundamental() == Rational(1, 12));
   g = findJiGroup(r.clip(), made->jiGroups.at(0));
   CHECK(groupHarmonics(r.clip(), *g)->proportion == std::vector<int64_t>{5, 6});
-  // The anchor steps as a reference ratio does (on 1/12: 21/12 → 22/12), the member on the group's harmonics (6 → 7).
+  // The anchor stepped alone goes to the group's next harmonic (5 → 6, where the 6 is); the 6 carries the group, frozen
+  // at its exact pitch (7/4 · 6/5 = 21/10 of the reference).
   r.step(a, 1);
-  CHECK(r.ratio(a) == Rational(11, 6));
+  g = findJiGroup(r.clip(), made->jiGroups.at(0));
+  REQUIRE(g != nullptr);
+  CHECK(g->anchor == six);
+  CHECK(r.note(six)->pitch == PitchId::fromRatio(Rational(21, 10)));
+  CHECK(r.note(a)->pitch == PitchId::fromRatio(Rational(1), AnchorKind::Note, six.value));
+  REQUIRE(r.store.undo());
+  // The member steps on the group's harmonics (6 → 7).
   r.step(six, 1);
   CHECK(r.note(six)->pitch == PitchId::fromRatio(Rational(7, 5), AnchorKind::Note, a.value));
-  REQUIRE(r.store.undo());
   REQUIRE(r.store.undo());
   CHECK(r.ratio(a) == Rational(7, 4));
   commit(r.store, ops::removeJiGroup(*r.store.current(), r.ref, made->jiGroups.at(0)));
