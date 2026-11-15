@@ -407,9 +407,10 @@ struct WindowApp {
       return;
     }
     // T7.16b (review M12, Q299): Ctrl / Alt / Win + Caps Lock (macro mode's toggle) leaves the OS Caps Lock as it was;
-    // the guard's own restoring tap never reaches the tree.
+    // the guard's own restoring tap (sent when the chord's Caps Lock comes up) never reaches the tree.
     if ((e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) && e.key.key == SDLK_CAPSLOCK &&
-        capsGuard.drop(e.type == SDL_EVENT_KEY_DOWN, (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) != 0, e.key.repeat))
+        capsGuard.drop(e.type == SDL_EVENT_KEY_DOWN, (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) != 0, e.key.repeat,
+                       e.key.timestamp, SDL_GetTicksNS()))
       return;
     bool consumed = false;
     if (ui) {
