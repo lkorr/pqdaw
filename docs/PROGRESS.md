@@ -857,3 +857,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_views 853 cases; all pq_tests_* + pqdaw built, `ctest -E pqmeter -LE "slow|perf"` 43/44 (pq_bench_runner_smoke: pq_bench_dsp not built); pq_tests_pqmeter_diff doesn't compile against the user's PQ Meter tree.
 - Perf / CPU-efficiency check: playhead frame 19.8 µs median vs 536 µs full repaint (100k-note clip, ~3000 in view); no note-path rebuilds per frame.
 - Notes/blockers: Q314, Q315. A plain sideways ruler drag now scrubs instead of scrolling.
+## 2026-11-15 · bug-paused-playhead · main
+- Did: stopped, the roll's playhead line stays at the transport's position (where playback stopped / Shift+Space resumes / a press placed the start marker); `ViewContext::placeStart` / `jumpTo` replace setStartMarker + locate at the five call sites so the transport moves before views hear kTransport; the roll ruler gains a 7 px scrub strip between the loop brace and the numbers (press plays / jumps, drag scrubs, Alt unsnapped), the numbers row returns to zoom (↕) / scroll (↔). Goldens: 36 re-recorded (ruler strip; the stopped line at bar 1 in roll scenes); orchestrator looked at the diffs (ruler band + one line).
+- Verified: `build.ps1 -Affected` (pq_tests_app / audio / playback / views): all passed except pq_tests_views shard crash SIGSEGV in test_cables (GPU, known flake) — test_cables.cpp alone 15/15; render:* 2080/2080 assertions after re-record.
+- Perf / CPU-efficiency check: stopped, one transport read per kTransport notification, no timer; the strip is two rects per ruler paint.
+- Notes/blockers: the arrangement ruler still scrubs on a sideways drag (bug-roll-playhead); left as is.
