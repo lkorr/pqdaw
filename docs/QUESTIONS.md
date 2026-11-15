@@ -1696,7 +1696,7 @@ Choices made (all reversible):
 - Ctrl+G bends OUT of each note into the next (the tail of the earlier note moves), not into the start of the later one.
 Status: open for review.
 
-## Q?-T7.11a-a · 2026-11-14 · T7.11a · Bends are derived (Q289 b): which pitch of the neighbour, and cycles
+## Q292 · 2026-11-14 · T7.11a · Bends are derived (Q289 b): which pitch of the neighbour, and cycles
 Context: `NoteCurves::bendIn / bendOut` name a neighbour note; the glide's far end is computed where the curve is read.
 Choices: (1) the far end is the neighbour's RESOLVED pitch (its pitch at its own start, `NotePitch::hz`), not the
 neighbour's own curve value at the moment of the hand-over (for both edges). Following the neighbour's curve at the
@@ -1705,7 +1705,7 @@ re-write). (3) A bend whose neighbour leaves the clip is dropped (delete, split)
 copied too or is a note of the target clip. (4) Bezier bends are stored and evaluated (`JiShape`), answering Q290 on the
 model side. Status: decided (reversible); Q289 → (b).
 
-## Q?-T7.11a-b · 2026-11-14 · T7.11a · A note anchored to a moving note (M5): at its start only
+## Q293 · 2026-11-14 · T7.11a · A note anchored to a moving note (M5): at its start only
 Context: a Ratio note anchored to a note that glides (Tune to JI, a bend, a drawn curve).
 Options: (a) it takes the anchor's pitch where it starts and keeps it; (b) it also follows the anchor's movement during
 its own span (a derived curve on the dependant: lowering + drawing).
@@ -1713,7 +1713,7 @@ Choice: (a): one rule in `pitch_resolve`, no new curve, and it is what makes "dr
 (b) would make a held note wobble with a vibrato on its anchor; it fits the planned groups / warps better than a
 per-note rule. A dependant that starts after its anchor ended takes the pitch the anchor ended on. Status: open.
 
-## Q?-T7.11a-c · 2026-11-14 · T7.11a · What a note becomes when its anchor is deleted or split away (H3)
+## Q294 · 2026-11-14 · T7.11a · What a note becomes when its anchor is deleted or split away (H3)
 Choice: exact reference Ratio when the anchor's pitch is one; else the first dependant (without a curve) is written
 as Cents and the others stay exact Ratios anchored to it, and "Is harmonic N" moves to it (N · its ratio, when whole),
 so the JI structure and the guide lines survive deleting a tempered reference note; else Cents. The reviewer's other
