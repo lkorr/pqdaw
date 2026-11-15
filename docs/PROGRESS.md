@@ -780,3 +780,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, on 18a9e65f): `build.ps1 -Target pq_tests_views -TestRegex pq_tests_views` and `-Target pq_tests_ui -TestRegex pq_tests_ui` pass. Orchestrator looked at pianoroll-note-lines and pianoroll-12edo.
 - Perf / CPU-efficiency check: release pq_bench_piano_roll, 3009 notes in view: full paint min 0.415–0.42 → 0.51–0.53 ms (+25 %, 71,407 → 88,951 vertices; criterion 1.5 ms); one-note drag frame unchanged; no per-note allocation.
 - Notes/blockers: two look decisions for the user in REVIEW.
+
+## 2026-11-14 · T7.11a merged · main (e18d78b7)
+- Did: review H2 (cloneClip remaps note anchors, the declared harmonic, steps and bends), H3 (`reanchorWithout`: deleting / splitting away an anchor keeps dependants at pitch, same undo step), M5 (a note anchored to a note takes the anchor's pitch at its own start: curve, bend, voice), M13 (`SetNoteCurves`, one list copy per command), derived bends (`NoteBend {length, shape, other}` on NoteCurves, `effectiveNoteCurve`, `ops::setNoteBend`; a bend follows its neighbour; lowering plays the effective curve). docs/reviews/M7.md lands with it.
+- Verified: worker on 18a9e65f `build.ps1 -Affected -Slow` 87/87 (pqmeter_diff skipped), ship pq_bench_dsp links; orchestrator after the rebase onto 072ebc1e: pq_tests_views, pq_tests_document pass.
+- Perf / CPU-efficiency check: duplicating 2000 curved notes 846.6 → 3.56 ms (check); resolve unchanged for notes without note anchors; no engine change.
+- Notes/blockers: Q292–Q294. Review items H1, M1, M2, M6, M12, M15, M16 are object-specific and die with the rework (T7.13).
