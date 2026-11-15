@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include "pq/ui/chord_lock.h"
 #include "pq/ui/damage.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/frame_pacer.h"
@@ -141,6 +142,7 @@ struct WindowApp {
   // T5.x-bugreport: the pointer as the tree last saw it (device px), for the shot's pointer crop and widget path.
   Vec2 pointer{0, 0};
   bool pointerInside = false;
+  ChordLockGuard capsGuard;  // T7.16b: Ctrl+CapsLock never leaves the OS lock flipped
 
   // F12 (pq/app/bug_reporter.h): the frame on screen is read back only when the reporter wants a shot.
   void bugReportKey(bool shift) {
@@ -404,6 +406,11 @@ struct WindowApp {
       if (!e.key.repeat && !inFrame) bugReportKey((e.key.mod & SDL_KMOD_SHIFT) != 0);
       return;
     }
+    // T7.16b (review M12, Q299): Ctrl / Alt / Win + Caps Lock (macro mode's toggle) leaves the OS Caps Lock as it was;
+    // the guard's own restoring tap never reaches the tree.
+    if ((e.type == SDL_EVENT_KEY_DOWN || e.type == SDL_EVENT_KEY_UP) && e.key.key == SDLK_CAPSLOCK &&
+        capsGuard.drop(e.type == SDL_EVENT_KEY_DOWN, (e.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_ALT | SDL_KMOD_GUI)) != 0, e.key.repeat))
+      return;
     bool consumed = false;
     if (ui) {
       InputEvent in;

@@ -18,6 +18,7 @@ pq_add_module(pq_ui
   SOURCES
     src/actions.cpp
     src/atlas.cpp
+    src/chord_lock.cpp
     src/colormap.cpp
     src/controls.cpp
     src/drag.cpp

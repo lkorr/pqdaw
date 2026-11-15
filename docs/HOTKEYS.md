@@ -339,7 +339,9 @@ A release ends the note its press started. A note outside the keyboard's range (
 in the clip view and the clip view has the keyboard focus or the pointer, the keys below belong to it (T7.16b; elsewhere
 they act as usual and the lamp, unlit with an accent outline, says "MACRO (click the notes)"); keys with Ctrl / Alt /
 Super / Shift, keys its preset does not bind (Space), a focused text field and an open menu or popup are not touched.
-During a pointer drag its keys are refused ("finish the drag first"), so nothing joins the drag's undo step. It takes the computer MIDI keyboard's place as
+During a pointer drag its keys are refused ("finish the drag first"), so nothing joins the drag's undo step.
+`Ctrl+CapsLock` leaves the OS Caps Lock as it was (T7.16b: the app taps the lock back after any Ctrl / Alt / Win +
+Caps Lock chord, `pq/ui/chord_lock.h`). It takes the computer MIDI keyboard's place as
 the key listener: turning one on turns the other off. The keys are data: `assets/macro/<preset>.json`, chosen in
 Preferences → MIDI → Macro Mode (`trainer` = this table, the default; `ahk-numpad` = the AHK macro's keypad slots,
 matched by scancode).

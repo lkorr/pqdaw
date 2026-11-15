@@ -1762,6 +1762,10 @@ field afterwards is upper case until Caps Lock is pressed again.
 Options: (a) leave it; (b) the app sends a synthetic Caps Lock press after the chord (Windows `SendInput`; an `app`
 change, platform code); (c) another default chord.
 Choice: (a): the chord is SPEC §6.2's and is data in the keymap. Status: open.
+T7.16b (review M12): (b) is built, for every Ctrl / Alt / Win + Caps Lock chord (`pq/ui/chord_lock.h`
+ChordLockGuard in the app's event loop: one SendInput tap flips the lock back, the tap's two events are dropped). Checked
+by unit tests of the event logic only; the SendInput itself was not exercised by a test (it would flip the test
+machine's lock). Status: decided (reversible).
 
 ## Q300 · 2026-11-14 · T8.1 · What the tempered layer measures with, and what Up / Down mean
 Choice: an EDO maps the composed interval by a val applied to its monzo (the patent val; a preset may list another
