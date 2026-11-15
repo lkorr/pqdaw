@@ -266,8 +266,8 @@ int main() {
   // timers (the roll's, the arrangement's, the control bar's readout) → their reads → the damage (the line's old and new
   // columns in the roll and the arrangement, the readout) → a partial paint per damage rect, as the window loop does.
   {
-    Ticks t = 400 * kTicksPerWhole + 10 * kTicksPerWhole;
-    ctx.playFrom(t);
+    Ticks ph = 400 * kTicksPerWhole + 10 * kTicksPerWhole;
+    ctx.playFrom(ph);
     double now = 0.5;
     tree.update(now);
     tex->text->beginFrame();
@@ -279,9 +279,9 @@ int main() {
     pq::bench::reportStats("pianoroll.playhead frame: the line moves ~1.5 px (timers, reads, column damage, per-rect paint), ~3000 notes in view",
                            pq::bench::measure(
                                [&] {
-                                 t += step;
-                                 if (t > 428 * kTicksPerWhole) t = 402 * kTicksPerWhole;  // stays in view: no Follow page
-                                 port.setPlayheadTick(t);
+                                 ph += step;
+                                 if (ph > 428 * kTicksPerWhole) ph = 402 * kTicksPerWhole;  // stays in view: no Follow page
+                                 port.setPlayheadTick(ph);
                                  now += 0.1;
                                  tree.update(now);
                                  rects.clear();
@@ -297,8 +297,7 @@ int main() {
                                },
                                1),
                            "ns/frame");
-    std::printf("  %.0f vertices, %.0f damaged px per frame; playhead at content tick %lld
-",
+    std::printf("  %.0f vertices, %.0f damaged px per frame; playhead at content tick %lld\n",
                 frames ? static_cast<double>(verts) / static_cast<double>(frames) : 0.0,
                 frames ? static_cast<double>(px) / static_cast<double>(frames) : 0.0,
                 static_cast<long long>(view->playheadTick().value_or(-1)));
