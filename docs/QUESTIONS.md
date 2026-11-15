@@ -1859,7 +1859,7 @@ vibratos; 12edo / Degrees modes keep the static note (one channel cannot bend no
 a vibrato as CC1 + a fixed-rate hint. Choice: (a) for now (full pitch-bend export was out of T7.16b's scope); (b) is
 the natural next step and needs no new data. Status: open.
 
-## Q?-bug-ji-input-a · 2026-11-15 · bug-ji-input · The frozen note of a JI group moved alone
+## Q312 · 2026-11-15 · bug-ji-input · The frozen note of a JI group moved alone
 Context: the user: dragging a group's anchor (the bottom note) moved the whole chord; it must move only that note, and
 the chord moves when all of it is selected (the header click). The model has no "anchor moves, members stay": members
 are ratios to the anchor. Options: (a) re-anchor the group onto a staying member first (ops::reanchorJiGroup with that
@@ -1872,7 +1872,7 @@ carrier becomes a Cents note (or the exact reference ratio) with its written ide
 "Is Harmonic N" on a member makes. A time-only move re-anchors nothing; the group's warps stay where they are in the
 clip (this replaces Q310's "moving the anchor alone in time moves the warps"). Status: decided (reversible).
 
-## Q?-bug-ji-input-b · 2026-11-15 · bug-ji-input · Macro mode's next-note length
+## Q313 · 2026-11-15 · bug-ji-input · Macro mode's next-note length
 Choice: Shift + the preset's left / right keys (Shift+A / Shift+F) and Shift+Left / Shift+Right set the length of the
 note macro mode places next, a grid step at a time (from its end, as the roll's Shift+arrows measure), at least one
 grid step (a 16th with the grid off); in macro mode these keys are the cursor's, not the selection's. The length is

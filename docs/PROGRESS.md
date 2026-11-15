@@ -841,3 +841,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: `build.ps1 -Affected` 23/24, the failure = the 8 goldens above (diffs only in the arrangement clip strip), re-recorded, then pq_tests_views 871/871; pq_tests_document vibrato cases 3/3.
 - Perf / CPU-efficiency check: previews resolve a clip only when it has anchored notes, curves or groups, once per clip snapshot (cached, 2 ¢ flattening); sloped pieces cost one rect per column only where a note moves; curved guide lines are sampled every 3 px with flat runs collapsed, straight rects when the anchor is steady.
 - Notes/blockers: not driven in the live app.
+
+## 2026-11-15 · bug-ji-input merged · main (d9635e49)
+- Did: a JI group's anchor dragged / stepped without its whole group moves alone (re-anchor onto the lowest staying member, same undo step; the label click selects the chord, which moves as one); Shift+arrows auto-repeat; macro mode Shift+A / F and Shift+Left / Right set the next note's length; Ctrl+CapsLock toggles every press (the guard taps the lock back on the chord's release, ignores the tap's repeat flag, forgets a lost tap after 500 ms). Goldens: 3 help goldens re-recorded.
+- Verified (worker): `build.ps1 -Affected` 23/25 → pq_tests_document fixed (test asserted the old anchor rule) 1/1; pq_tests_timeline preview-player race passes 3/3 alone (load-sensitive, outside the diff); pq_tests_views 848 cases green.
+- Perf / CPU-efficiency check: one extra pass over moved notes; a re-anchor per anchor-moved-alone, on the edit only.
+- Notes/blockers: Q312, Q313. The real OS Caps Lock path was not driven live.
