@@ -92,11 +92,29 @@ uint32_t paintNotes(ui::DrawList& dl, const arrangement::Preview& pv, const doc:
       if (b <= a) continue;
       float x0 = std::round(static_cast<float>(segX + static_cast<double>(a - seg.contentFrom) * k));
       float x1 = std::round(static_cast<float>(segX + static_cast<double>(b - seg.contentFrom) * k));
-      if (x1 - x0 >= 3.0f) x1 -= 1.0f;  // a pixel gap between notes wide enough
+      if (x1 - x0 >= 3.0f && !(it->flags & arrangement::kPreviewJoined)) x1 -= 1.0f;  // a pixel gap between notes wide enough
       x0 = std::max(x0, vx0);
       x1 = std::min(std::max(x1, x0 + 1.0f), vx1);
       if (x1 <= x0) continue;
       const auto row = static_cast<uint16_t>((static_cast<uint32_t>(it->y) * span + 32767u) / 65535u);
+      if (it->y1 != it->y) {
+        // A sloped piece of a moving note (as the arrangement draws it): column by column, as tall as the line there.
+        const double px0 = segX + static_cast<double>(it->start - seg.contentFrom) * k;
+        const double full = static_cast<double>(it->end - it->start) * k;
+        const double inv = full > 0.0 ? 1.0 / full : 0.0;
+        const double r0 = static_cast<double>(it->y) * span / 65535.0, r1 = static_cast<double>(it->y1) * span / 65535.0;
+        const Rgba col = (it->flags & arrangement::kPreviewDisabled) ? offCol : noteCol;
+        for (float x = x0; x < x1; x += 1.0f) {
+          const double ua = std::clamp((static_cast<double>(x) - px0) * inv, 0.0, 1.0);
+          const double ub = std::clamp((static_cast<double>(x) + 1.0 - px0) * inv, 0.0, 1.0);
+          const double ra = r0 + (r1 - r0) * ua, rb = r0 + (r1 - r0) * ub;
+          const float top = by0 + static_cast<float>(std::floor(std::min(ra, rb)));
+          const float bottom = std::min(by0 + static_cast<float>(bodyH), by0 + static_cast<float>(std::ceil(std::max(ra, rb))) + static_cast<float>(noteH));
+          dl.addRectFilled({x, top, x + 1.0f, bottom}, col);
+          ++emitted;
+        }
+        continue;
+      }
       if (it->flags & arrangement::kPreviewDisabled) {
         const float y = by0 + static_cast<float>(row);
         dl.addRectFilled({x0, y, x1, y + static_cast<float>(noteH)}, offCol);
@@ -339,7 +357,7 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
       const Rgba noteCol = arrangement::clipNoteColour(colour);
       if (!c.isAudio()) {
         if (model == nullptr || c.clip->notes.empty()) continue;
-        const arrangement::Preview* pv = model->preview(c.clip, clipTuning(view.bandTuning(bi), *c.clip, p));
+        const arrangement::Preview* pv = model->preview(c.clip, clipTuning(view.bandTuning(bi), *c.clip, p), &p, view.bandTrack(bi) ? view.bandTrack(bi)->id : doc::TrackId{});
         if (pv == nullptr || pv->notes.empty()) continue;
         (void)paintNotes(dl, *pv, *c.clip, std::max(start, c.start()), std::min(end, c.end()), k, cx0, vx0, vx1, by0, innerH, noteCol);
       } else {

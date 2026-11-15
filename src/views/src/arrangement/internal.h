@@ -70,15 +70,20 @@ struct ClipIndex {
   std::pair<size_t, size_t> visible(Ticks from, Ticks to) const noexcept;
 };
 
-// One note of a clip's cached preview: content ticks and a vertical position (0 = top = highest pitch).
+// One note of a clip's cached preview — or one straight piece of a note whose pitch moves (a bend, a drawn curve, a
+// vibrato, a warp: its effective curve, note_bend.h, as the roll draws it and the playback plays it): content ticks
+// and a vertical position at its start and end (0 = top = highest pitch; equal for a steady note).
 struct PreviewNote {
   Ticks start = 0;
   Ticks end = 0;
-  uint16_t y = 0;      // 0 … 65535 over the clip's pitch range (top → bottom)
-  uint16_t flags = 0;  // kPreviewDisabled
-  uint32_t pad = 0;
+  uint16_t y = 0;      // 0 … 65535 over the clip's pitch range (top → bottom), at `start`
+  uint16_t flags = 0;  // kPreviewDisabled, kPreviewJoined
+  uint16_t y1 = 0;     // … at `end` (≠ y: a sloped piece, drawn column by column)
+  uint16_t pad = 0;
+  uint32_t pad2 = 0;
 };
 inline constexpr uint16_t kPreviewDisabled = 1;
+inline constexpr uint16_t kPreviewJoined = 2;  // the note goes on after this piece: no pixel gap at its end
 
 // A clip's preview rendered into the renderer's TileAtlas (T3.8-fix1): a coverage mask in clip-local device px
 // (column 0 = the clip's left edge, row 0 = the top of its body) at one zoom and body height. The key is the device
@@ -96,6 +101,7 @@ struct PreviewTile {
 struct Preview {
   doc::ClipPtr clip;                       // keeps the clip alive: the cache key is its address
   const doc::TuningDef* tuning = nullptr;  // the tuning the pitches were resolved in
+  const void* timeline = nullptr;          // the project timeline a vibrato's period was taken from (key)
   std::vector<PreviewNote> notes;          // sorted by start
   Ticks maxLength = 0;                     // longest note (range lookups back off by it)
   float rowFraction = 0.25f;               // note height as a fraction of the body height
@@ -253,11 +259,13 @@ public:
   const ClipIndex& clips(const doc::Track& t);
   // T6.10: the clip index of a take lane (by lane id; rebuilt when the lane pointer changed).
   const ClipIndex& clips(const doc::TakeLane& l);
-  // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning), or nullptr when it is not cached and
-  // this paint's build budget is spent (buildsDeferred is then set).
-  Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning);
+  // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning + p's timeline), or nullptr when it is
+  // not cached and this paint's build budget is spent (buildsDeferred is then set). A clip whose notes need the clip to
+  // resolve (a Ratio anchored to a note, a curve record, a group) is resolved as a clip of `track` in `p`
+  // (doc::resolveClipPitches: its exact pitches, and its notes' effective curves drawn as sloped pieces).
+  Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning, const doc::Project* p, doc::TrackId track);
   // The cached preview, or nullptr (never builds).
-  Preview* cachedPreview(const doc::ClipPtr& clip, const doc::TuningDef* tuning) noexcept;
+  Preview* cachedPreview(const doc::ClipPtr& clip, const doc::TuningDef* tuning, const doc::Project* p) noexcept;
   // Per lanes paint: resets the build budget (0 = unlimited); after it, drops old previews beyond the cache bound.
   void beginPaint(uint32_t buildBudgetNotes) noexcept;
   void endPaint();

@@ -6,7 +6,9 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -204,6 +206,53 @@ TEST_CASE("render: preview tiles draw exactly the direct path's pixels (1x, 1.5x
     rig.compareDirect("tiles-vs-direct-muted-selected-" + std::to_string(scale));
     CHECK(rig.gpu->validationErrorCount() == 0);
   }
+}
+
+TEST_CASE("render: a clip's preview shows its notes' pitch movement — a drawn curve and a vibrato bend the note in the arrangement, tiles and direct drawing alike") {
+  Rig rig(1280, 800, 1.0f, "arrangement");
+  rig.install();
+  ArrangementView& arr = *rig.arr;
+  rig.settle();
+  const int32_t bass = rowNamed(arr, "Bass");
+  REQUIRE(bass >= 0);
+  const ArrangementRow& row = arr.rows()[static_cast<size_t>(bass)];
+  const doc::ClipRef ref{row.id, row.track->clips[0].id};
+  const doc::ClipPtr clip = row.track->clips[0].clip;
+  REQUIRE(clip != nullptr);
+  REQUIRE(clip->notes.size() >= 2);
+  const doc::Note first = *clip->notes.begin();
+  const Image steady = rig.drawFull(*rig.full, rig.res);
+
+  // The first note rises an octave over its length; another vibrates two semitones wide.
+  const doc::Note second = *std::next(clip->notes.begin());
+  doc::NoteVibrato vib;
+  vib.depthCents = 200.0f;
+  vib.rate = 6.0f;
+  std::vector<doc::NoteCurves> curves{doc::NoteCurves{first.id, {{0, 0.0f, 0.0f, {}}, {first.length, 1200.0f, 0.0f, {}}}, {}, {}, {}},
+                                      doc::NoteCurves{second.id, {}, {}, {}, vib}};
+  std::sort(curves.begin(), curves.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+  REQUIRE(rig.ctx.store().dispatch(doc::SetNoteCurves{ref, curves}).ok());
+  rig.settle();
+  const Image bent = rig.drawFull(*rig.full, rig.res);
+  // Inside the bass row, over the first clip: the preview changed over several pixel rows (a slope and a wave, not
+  // one flat run moved).
+  const IRect lv = arr.lanesViewport();
+  const uint32_t ry0 = static_cast<uint32_t>(lv.y + row.y), ry1 = static_cast<uint32_t>(lv.y + row.y + row.h);
+  const uint32_t rx0 = static_cast<uint32_t>(arr.xOfTick(static_cast<double>(clip->start))), rx1 = static_cast<uint32_t>(arr.xOfTick(static_cast<double>(clip->start + clip->length)));
+  uint32_t changed = 0, top = ry1, bottom = ry0;
+  for (uint32_t y = ry0; y < ry1; ++y)
+    for (uint32_t x = rx0; x < rx1; ++x)
+      if (std::memcmp(steady.pixel(x, y), bent.pixel(x, y), 4) != 0) {
+        ++changed;
+        top = std::min(top, y);
+        bottom = std::max(bottom, y + 1);
+      }
+  MESSAGE("changed in the clip: " << changed << " px over rows [" << top << ", " << bottom << ")");
+  CHECK(changed > 20);
+  CHECK(bottom > top + 6u);
+  // The tile and the direct path draw the sloped pieces the same.
+  rig.compareDirect("tiles-vs-direct-curves");
+  CHECK(rig.gpu->validationErrorCount() == 0);
 }
 
 TEST_CASE("render: with preview tiles, partial repaints equal a full repaint through zoom, settle, scroll and mute") {
