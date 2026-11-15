@@ -1720,7 +1720,7 @@ so the JI structure and the guide lines survive deleting a tempered reference no
 option for a split (copy the anchor into the other piece as a hidden note) was not taken: a second copy of one note
 that sounds again when the piece is extended. Status: decided (reversible).
 
-## Q?-T7.13-a · 2026-11-14 · T7.13 · Warps: what moves, and what happens to a tuned member that is edited
+## Q295 · 2026-11-14 · T7.13 · Warps: what moves, and what happens to a tuned member that is edited
 Context: `JiWarp {at, glide, shape, toJi}` in group ticks (from the group's earliest note start).
 Choices: (1) the glide STARTS at `at` and ends at `at + glide`; warps may not overlap. (2) Only members with a written
 identity move; the anchor and members drawn as JI (no written identity) are JI throughout. (3) Group ticks follow the
@@ -1731,7 +1731,7 @@ keeps it. Alternative for (4): re-write the written identity to the nearest degr
 anchor takes its JI pitch (so the other members keep their Hz); if it was sounding in its written state it moves by the
 difference. Status: decided (reversible).
 
-## Q?-T7.13-b · 2026-11-14 · T7.13 · Tune to JI: the candidate ranking and its two constants
+## Q296 · 2026-11-14 · T7.13 · Tune to JI: the candidate ranking and its two constants
 Context: R3 wants 4:5:6:7 before 20:25:30:36 and both 10:12:15 and 6:7:9 for a 12-EDO minor triad.
 Choice: a term may lie up to 34 ¢ from the written pitch (7/6 is 33.1 ¢ from a 12-EDO minor third; less would lose
 6:7:9); rank by mean error + 12 ¢ · the mean Tenney height log2(n·d) of the intervals between every two terms. "Largest
@@ -1739,7 +1739,7 @@ term" as the simplicity measure put readings like 18:23:27:32 ahead of 20:25:30:
 candidates. Without any candidate each pitch takes its simplest ratio (the old Convert to Ratio rule). Status: decided
 (reversible; two constants in `edit_ops.h`).
 
-## Q?-T7.13-c · 2026-11-14 · T7.13 · "Is Harmonic N" on a note that already is a member
+## Q297 · 2026-11-14 · T7.13 · "Is Harmonic N" on a note that already is a member
 Context: a note is the anchor of at most one group; a member is a Ratio anchored to its group's anchor.
 Options: (a) the member also anchors a second group of its own (a chain: it stays a member of the first); (b) the
 first group is re-indexed so that this member reads N; (c) refuse.
@@ -1747,7 +1747,7 @@ Choice: (a), the general mechanism (any note may anchor a group). T7.14 may pref
 anchor of a group is deleted, a note that was anchored to the PROMOTED member becomes a member of that group (membership
 is "anchored to the anchor"). Status: open.
 
-## Q?-T7.13-d · 2026-11-14 · T7.13 · The roll between T7.13 and T7.14
+## Q298 · 2026-11-14 · T7.13 · The roll between T7.13 and T7.14
 Context: the object UI is deleted; the group UI is T7.14.
 State: "Is Harmonic…" makes a group; guides and the plain draw use the ACTIVE group (the first selected note's group,
 else the one active last, else the newest); "Remove JI Group" replaced "Unlock Fundamental" and detaches the members

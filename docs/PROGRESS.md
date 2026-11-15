@@ -792,3 +792,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, after the rebase): `build.ps1 -Target pq_tests_views,pq_tests_ui -TestRegex "pq_tests_views|pq_tests_ui"` 2/2. Orchestrator looked at pianoroll-help; rebased onto the doc-only commits since.
 - Perf / CPU-efficiency check: nothing runs while the panel is closed; layout cached per width / scale.
 - Notes/blockers: T7.13 must drop the help entries of the actions it deletes (the stale-action test will fail otherwise). SPEC §9.7 wording updated for `M`.
+
+## 2026-11-14 · T7.13 merged · main (11bab6cd)
+- Did: notes-first JI. The box JI object is deleted end to end (model, commands, ops, ji_object.*, PitchKind::Harmonic, AnchorKind::JiFundamental, ClipFundamental::anchor, object lowering, the roll's object UI, 7 goldens, the object tests). Added `NoteClip::groups` (`JiGroup {id, anchor, index, warps}`), `NoteClip::written`, `groupHarmonics`, warps and one effective-curve function (free curve + bends + warps) used by resolve and lowering; ops makeJiGroup, removeJiGroup, tuneToJi + tuneToJiCandidates, untuneJiGroup, addGroupNote, walkJiGroup, proportionNotes, setJiWarps. No Sync emitted (unison phase-lock deferred).
+- Verified (worker, rebased on ee337147): `build.ps1 -Affected -Slow` 85/87, the two failures pass on re-run (pqdaw_idle_shell SEGFAULT at 1.8 s; pq_tests_playback_slow EX.1 `temp_directory_path: not a directory`); ship pq_bench_dsp links; pq_tests_document 290/290.
+- Perf / CPU-efficiency check: clips without groups / warps pay nothing new; lowering 100 groups × 8 notes × 32 warps 12.9 ms (check, bound 25 ms).
+- Notes/blockers: Q295–Q298. The roll has only "Is Harmonic…" groups until T7.14.
