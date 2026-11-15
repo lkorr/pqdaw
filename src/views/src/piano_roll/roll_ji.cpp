@@ -56,6 +56,20 @@ float RollState::pathHalfThickness() const noexcept {
   return 0.5f * std::clamp(0.55f * lane, 3.0f * sc, 9.0f * sc);
 }
 
+void RollState::fitPathTolerance(float maxPx) noexcept {
+  // Device px per cent over an octave of the rows (a Proportional / Equidistant layout's rows differ; this is their
+  // mean, the uniform layouts' exact slope).
+  double pxPerCent = 0.0;
+  if (!rows_.empty()) pxPerCent = std::fabs(rows_.yOfCents(1200.0) - rows_.yOfCents(0.0)) / 1200.0;
+  // Fitted again only when the rows changed scale by more than 2× since the last fit: a tuning change (a MOS morph
+  // frame) moves the rows a little and must not flatten every path again (T7.16a M16); a vertical zoom does.
+  if (fittedPxPerCent_ > 0.0 && pxPerCent < 2.0 * fittedPxPerCent_ && pxPerCent > 0.5 * fittedPxPerCent_) return;
+  fittedPxPerCent_ = pxPerCent;
+  double tol = kPathToleranceCents;
+  while (tol > kMinPathToleranceCents && tol * pxPerCent > static_cast<double>(maxPx)) tol *= 0.5;
+  pathTol_ = tol;
+}
+
 float RollState::yOfCents(double cents) const noexcept {
   if (rows_.empty()) return static_cast<float>(area().y);
   return static_cast<float>(static_cast<double>(area().y - scrollY_) + rows_.yOfCents(cents));
@@ -171,8 +185,27 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
     doc::NoteBendTargets targets = rec && index ? doc::noteBendTargets(*rec, *index) : doc::NoteBendTargets{};
     if (rec && rec->vibrato.set()) targets.vibratoPeriod = doc::vibratoPeriodTicks(rec->vibrato, ticksPerSecond(n.start));
     const doc::NoteWarp warp = index && index->anyWarp() ? index->warp(clip, n.id) : doc::NoteWarp{};
-    if (rec || warp.any()) out.pts = doc::effectiveNoteCurve(rec, std::max<Ticks>(n.length, 1), targets, warp, kPathToleranceCents);
+    const Ticks L = std::max<Ticks>(n.length, 1);
+    out.tol = pathTol_;
+    if (rec || warp.any()) out.pts = doc::effectiveNoteCurve(rec, L, targets, warp, pathTol_);
     out.curved = std::any_of(out.pts.begin(), out.pts.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
+    // bug-curve-render: the curve without its vibrato, for the band a zoomed-out paint draws instead of the wave.
+    out.rest.clear();
+    out.restCurved = false;
+    out.vib = {};
+    out.vibPeriod = 0.0;
+    if (rec && targets.vibratoPeriod > 0.0) {
+      out.vib = doc::VibratoEnvelope(rec->vibrato, L);
+      if (out.vib.any()) {
+        out.vibPeriod = std::max(targets.vibratoPeriod, doc::kMinVibratoPeriodTicks);
+        doc::NoteCurves still = *rec;
+        still.vibrato = {};
+        doc::NoteBendTargets t = targets;
+        t.vibratoPeriod = 0.0;
+        out.rest = doc::effectiveNoteCurve(&still, L, t, warp, pathTol_);
+        out.restCurved = std::any_of(out.rest.begin(), out.rest.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
+      }
+    }
     out.lo = out.hi = 0.0f;
     for (const doc::Breakpoint& b : out.pts) {
       out.lo = std::min(out.lo, b.value);
@@ -188,7 +221,8 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
   if (preview) {
     // One flattening per note and preview (M15): the entry stands until the preview changes (previewGen_).
     NotePath& e = previewPaths_[n.id.value];
-    if (e.previewGen != previewGen_ || e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.baseGen != tuningGen_) {
+    if (e.previewGen != previewGen_ || e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.baseGen != tuningGen_ ||
+        e.tol > 2.0 * pathTol_) {
       const bool warped = warpPreview_.valid() && warpPreview_.clip != nullptr;
       const bool index = needIndex || (warped && warpPreview_.index.warped(n.id) != nullptr);
       build(warped ? *warpPreview_.clip : *clip_, warped ? &warpPreview_.index : index ? &pitchIndex() : nullptr, e);
@@ -203,8 +237,9 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
   if (it == paths_.notes.end()) {
     it = paths_.notes.emplace(n.id.value, NotePath{}).first;
     build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);
-  } else if (const NotePath& e = it->second; e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.usedIndex != needIndex) {
-    build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);  // the note changed under a kept entry
+  } else if (const NotePath& e = it->second;
+             e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.usedIndex != needIndex || e.tol > 2.0 * pathTol_) {
+    build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);  // the note changed under a kept entry (or the rows grew past its tolerance)
   } else if (e.baseGen != tuningGen_) {
     // Only the tuning moved (M16): the points stand, the pitch it starts on is derived again.
     NotePath& k = it->second;

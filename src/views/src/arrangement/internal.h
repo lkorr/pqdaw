@@ -16,6 +16,7 @@
 #include "pq/document/clip_time.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/document/note_bend.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/text.h"
 #include "pq/ui/theme.h"
@@ -70,20 +71,30 @@ struct ClipIndex {
   std::pair<size_t, size_t> visible(Ticks from, Ticks to) const noexcept;
 };
 
-// One note of a clip's cached preview — or one straight piece of a note whose pitch moves (a bend, a drawn curve, a
-// vibrato, a warp: its effective curve, note_bend.h, as the roll draws it and the playback plays it): content ticks
-// and a vertical position at its start and end (0 = top = highest pitch; equal for a steady note).
+// One steady note of a clip's cached preview: content ticks and a vertical position (0 = top = highest pitch).
 struct PreviewNote {
   Ticks start = 0;
   Ticks end = 0;
-  uint16_t y = 0;      // 0 … 65535 over the clip's pitch range (top → bottom), at `start`
-  uint16_t flags = 0;  // kPreviewDisabled, kPreviewJoined
-  uint16_t y1 = 0;     // … at `end` (≠ y: a sloped piece, drawn column by column)
-  uint16_t pad = 0;
-  uint32_t pad2 = 0;
+  uint16_t y = 0;      // 0 … 65535 over the clip's pitch range (top → bottom)
+  uint16_t flags = 0;  // kPreviewDisabled
+  uint32_t pad = 0;
 };
 inline constexpr uint16_t kPreviewDisabled = 1;
-inline constexpr uint16_t kPreviewJoined = 2;  // the note goes on after this piece: no pixel gap at its end
+
+// bug-curve-render: a note of a clip's preview whose pitch moves (a bend, a drawn curve, a vibrato, a warp): its
+// effective curve (note_bend.h, as the roll draws it and the playback plays it), drawn as an anti-aliased stroke through
+// it (paintPreviewPaths). Cents, flattened once per preview (Preview::pathTolerance); a vibrato also keeps the curve
+// without it and its envelope, for the band a zoom too far out for its cycles draws instead.
+struct PreviewPath {
+  Ticks start = 0, end = 0;
+  double cents = 0.0;                 // where the note starts (its resolved pitch)
+  std::vector<doc::Breakpoint> pts;   // its curve: cents over ticks from its start (straight segments, or the stored free curve)
+  std::vector<doc::Breakpoint> rest;  // a vibrato's note: the curve without it (empty: straight)
+  doc::VibratoEnvelope vib;
+  double vibPeriod = 0.0;  // ticks; 0: no vibrato
+  bool curved = false, restCurved = false;  // a point has a curvature (the stored free curve as it is)
+  uint16_t flags = 0;                       // kPreviewDisabled
+};
 
 // A clip's preview rendered into the renderer's TileAtlas (T3.8-fix1): a coverage mask in clip-local device px
 // (column 0 = the clip's left edge, row 0 = the top of its body) at one zoom and body height. The key is the device
@@ -102,8 +113,11 @@ struct Preview {
   doc::ClipPtr clip;                       // keeps the clip alive: the cache key is its address
   const doc::TuningDef* tuning = nullptr;  // the tuning the pitches were resolved in
   const void* timeline = nullptr;          // the project timeline a vibrato's period was taken from (key)
-  std::vector<PreviewNote> notes;          // sorted by start
+  std::vector<PreviewNote> notes;          // the steady notes, sorted by start
   Ticks maxLength = 0;                     // longest note (range lookups back off by it)
+  std::vector<PreviewPath> paths;          // bug-curve-render: the moving notes, sorted by start
+  Ticks maxPathLength = 0;                 // longest moving note
+  double hiCents = 0.0, invRange = 0.0;    // the pitch range: y = (hiCents − cents) · invRange (0 … 1; 0: one pitch, mid)
   float rowFraction = 0.25f;               // note height as a fraction of the body height
   uint64_t lastUsed = 0;                   // Model::paintSerial of the last paint that drew it
   PreviewTile tile;                        // the last tile rendered for it (T3.8-fix1)
@@ -262,7 +276,7 @@ public:
   // The preview of a clip resolved in `tuning` (cached by clip pointer + tuning + p's timeline), or nullptr when it is
   // not cached and this paint's build budget is spent (buildsDeferred is then set). A clip whose notes need the clip to
   // resolve (a Ratio anchored to a note, a curve record, a group) is resolved as a clip of `track` in `p`
-  // (doc::resolveClipPitches: its exact pitches, and its notes' effective curves drawn as sloped pieces).
+  // (doc::resolveClipPitches: its exact pitches, and its moving notes as PreviewPath: anti-aliased strokes).
   Preview* preview(const doc::ClipPtr& clip, const doc::TuningDef* tuning, const doc::Project* p, doc::TrackId track);
   // The cached preview, or nullptr (never builds).
   Preview* cachedPreview(const doc::ClipPtr& clip, const doc::TuningDef* tuning, const doc::Project* p) noexcept;
@@ -298,6 +312,8 @@ public:
   // Overlay geometry (fade curves, crossfades, handles) of clips whose waveform is a queued tile: appended to the
   // draw list by flushTiles after the quads. Untextured geometry only.
   ui::DrawList overlay;
+  // bug-curve-render: the moving notes' strokes of clips drawn from tiles, appended by flushTiles after the quads.
+  ui::DrawList previewStrokes;
 
   // Clip-name colour per clip colour (clipTextFor is not for per-frame use).
   ui::Rgba clipTextColour(const ui::Theme& th, ui::Rgba fill);
@@ -352,6 +368,7 @@ private:
   uint64_t nextTrim_ = 0;
   std::unordered_map<const doc::TuningDef*, std::optional<tuning::Tuning>> tunings_;
   std::vector<double> centsScratch_;
+  std::vector<uint8_t> movingScratch_;
   struct TextColour {
     ui::Rgba fill = 0, text = 0;
     const ui::Theme* theme = nullptr;

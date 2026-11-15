@@ -18,6 +18,7 @@
 #include <psapi.h>
 #include <intrin.h>
 
+#include "pq/document/commands.h"
 #include "pq/ui/atlas.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/scene_textures.h"
@@ -434,6 +435,66 @@ int main() {
                 "frame, %zu previews cached, %llu evicted\n",
                 mem0, mem1, mem1 - mem0, maxVerts, maxIdx, arr->previewCacheSize(),
                 static_cast<unsigned long long>(st.previewsEvicted));
+
+    // bug-curve-render: moving notes in the clip previews. Every note of the clips in the default view of the first 24
+    // tracks gets a curve — alternately a 35 ¢ / 6 Hz vibrato (fading in) and a glide into the next note: the cold
+    // frames (previews resolved and flattened, tiles built) and the settled full repaint, at the default zoom and with
+    // the whole song in view.
+    {
+      arr->setTimeView(0.0, arrangement_metrics::kDefaultPxPerTick);
+      arr->scrollToY(0);
+      settle();
+      const TickRange vis = arr->visibleTicks();
+      std::vector<std::pair<doc::ClipRef, std::vector<doc::NoteCurves>>> edits;
+      size_t curvedNotes = 0;
+      for (size_t ti = 0; ti < ctx.doc()->tracks.size() && ti < 24; ++ti) {
+        const doc::Track& t = *ctx.doc()->tracks[ti];
+        for (const doc::ClipSlot& slot : t.clips) {
+          if (!slot.clip || slot.clip->start >= vis.end || slot.clip->start + slot.clip->length <= vis.start) continue;
+          std::vector<doc::NoteCurves> recs;
+          const doc::Note* prev = nullptr;
+          for (const doc::Note& n : slot.clip->notes) {
+            doc::NoteCurves r;
+            r.note = n.id;
+            if (recs.size() % 2 == 0) {
+              r.vibrato.depthCents = 35.0f;
+              r.vibrato.rate = 6.0f;
+              r.vibrato.fadeIn = n.length / 4;
+            }
+            recs.push_back(r);
+            if (prev && recs.size() % 2 == 1) {  // the previous (odd) note glides into this one
+              for (doc::NoteCurves& p : recs)
+                if (p.note == prev->id) p.bendOut = doc::NoteBend{std::max<Ticks>(prev->length / 2, 1), doc::GlideShape{}, n.id};
+            }
+            prev = &n;
+          }
+          std::sort(recs.begin(), recs.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+          curvedNotes += recs.size();
+          edits.push_back({doc::ClipRef{t.id, slot.id}, std::move(recs)});
+        }
+      }
+      for (auto& [ref, recs] : edits) (void)ctx.store().dispatch(doc::SetNoteCurves{ref, recs});
+      std::vector<double> cold;
+      for (int i = 0; i < 400 && (i == 0 || tree.needsFrame()); ++i) cold.push_back(timed([] {}));
+      double coldSum = 0.0;
+      for (const double c : cold) coldSum += c;
+      std::printf("  moving notes: %zu clips, %zu curved notes; %zu cold frames, %.2f ms CPU in all\n", edits.size(), curvedNotes,
+                  cold.size(), coldSum * 1e-6);
+      settle();
+      paintFull();
+      std::printf("  moving notes, settled: %u clips painted, %u note rects, %u vertices\n", st.clipsPainted, st.noteRectsEmitted,
+                  static_cast<unsigned>(dl.vertices().size()));
+      std::snprintf(name, sizeof name, "arrangement.paint(full, moving notes) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+      pq::bench::reportStats(name, pq::bench::measure(paintFull, 1), "ns/frame");
+      arr->zoomToSelection();
+      settle();
+      paintFull();
+      std::printf("  moving notes, whole song: %u clips painted, %u note rects, %u vertices\n", st.clipsPainted, st.noteRectsEmitted,
+                  static_cast<unsigned>(dl.vertices().size()));
+      std::snprintf(name, sizeof name, "arrangement.paint(full, whole song, moving notes) %ux%u@%.0fx", w, h, static_cast<double>(scale));
+      pq::bench::reportStats(name, pq::bench::measure(paintFull, 1), "ns/frame");
+      (void)arr->zoomBack();
+    }
     tree.setRoot(std::make_unique<Widget>());
   }
   return 0;

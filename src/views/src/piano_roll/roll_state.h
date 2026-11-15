@@ -804,7 +804,9 @@ public:
   // A path note as it is drawn and hit: `base` = the pitch it resolves to at its start in cents (a warped member:
   // its written pitch, its JI pitch or the point of the glide), `pts` = doc::effectiveNoteCurve (the free curve, the
   // bends, the warps and the vibrato; cents over ticks from the note's start; empty: straight) flattened to
-  // kPathToleranceCents. Cached (M7 review M14): a paint walks the cached points and evaluates nothing. An entry
+  // pathTolerance() (bug-curve-render: a fraction of a device px at the vertical zoom it was built for; an entry
+  // too coarse for the current zoom is flattened again, a finer one stands — the paint simplifies in device px).
+  // Cached (M7 review M14): a paint walks the cached points and evaluates nothing. An entry
   // stands until what it was flattened from changes: the note (start, length, identity), its curve record (compared
   // by value when the clip's curve list is replaced), the tuning or the timeline; an entry that read the clip's
   // resolved pitches (a bend's neighbour, a warp, a note anchor) is rebuilt for every new clip snapshot. So moving
@@ -817,6 +819,14 @@ public:
     bool ok = false;
     bool curved = false;  // a point has a curvature (the stored free curve as it is): segments are not straight
     float lo = 0.0f, hi = 0.0f;  // the extent of `pts` in cents (0 … 0 when empty): what a note too narrow for its wave is drawn as
+    // bug-curve-render: a note with a vibrato also keeps the curve without it (`rest`, flattened alike; empty:
+    // straight) and the vibrato's envelope and period (ticks), so a paint where its cycles are too short to draw shows
+    // the band the wave fills around `rest` (vibPeriod 0: no vibrato).
+    std::vector<doc::Breakpoint> rest;
+    bool restCurved = false;
+    doc::VibratoEnvelope vib;
+    double vibPeriod = 0.0;
+    double tol = 0.0;  // the tolerance (cents) it was flattened to
     // What it was flattened from (the cache keeps an entry across clip snapshots while these stand).
     const doc::NoteCurves* rec = nullptr;
     Ticks start = 0, length = 0;
@@ -826,7 +836,14 @@ public:
     uint64_t previewGen = 0;  // a preview entry: the preview it was built for
   };
   const NotePath* pathOf(const doc::Note& n) const;
+  // The flattening tolerance (cents) of the cached paths: kPathToleranceCents, halved until it is under `maxPx`
+  // device px at the current rows (never under kMinPathToleranceCents). Set by the paint (fitPathTolerance), again
+  // only once the rows' scale moved by 2× (a vertical zoom, not a tuning morph); an entry is flattened again when it is
+  // more than 2× coarser than this.
   inline static constexpr double kPathToleranceCents = 1.0;
+  inline static constexpr double kMinPathToleranceCents = 1.0 / 64.0;
+  double pathTolerance() const noexcept { return pathTol_; }
+  void fitPathTolerance(float maxPx) noexcept;
   // The resolved pitches of the shown clip and their index (built once per clip snapshot / tuning / timeline, only
   // when a note needs them).
   const doc::NotePitchIndex& pitchIndex() const;
@@ -1006,6 +1023,8 @@ private:
     std::unordered_map<uint32_t, NotePath> notes;
   };
   mutable PathCache paths_;
+  double pathTol_ = kPathToleranceCents;
+  double fittedPxPerCent_ = 0.0;  // the rows' scale pathTol_ was fitted to
   // T7.16a (M7 review M15): a gesture's preview paths by note id, valid while previewGen_ stands (bumped whenever
   // curvePreview_ or warpPreview_ changes), so a drag frame flattens each previewed note once, not per query.
   mutable std::unordered_map<uint32_t, NotePath> previewPaths_;

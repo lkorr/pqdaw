@@ -6,6 +6,7 @@
 #include <cmath>
 #include <complex>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <utility>
@@ -753,12 +754,12 @@ struct JiScene {
   ClipView* view = nullptr;
   doc::ClipRef clip{};
 };
-std::optional<JiScene> buildJiScene(Shell& shell, std::string_view name, int32_t rowPx, int64_t centre) {
+std::optional<JiScene> buildJiScene(Shell& shell, std::string_view name, int32_t rowPx, int64_t centre, int32_t bars = 2) {
   ViewContext& ctx = shell.context();
   doc::DocumentStore& store = ctx.store();
   const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Midi, {}, "JI", doc::Colour{0x5FA8D8}));
   if (!t) return std::nullopt;
-  const auto c = runEdit(store, doc::ops::insertEmptyClip(*store.current(), store.ids(), t->tracks[0], 0, 2 * kTicksPerWhole, std::string(name)));
+  const auto c = runEdit(store, doc::ops::insertEmptyClip(*store.current(), store.ids(), t->tracks[0], 0, bars * kTicksPerWhole, std::string(name)));
   if (!c) return std::nullopt;
   if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(480.0f);  // the detail view at its tallest
   ctx.setDetailClip(c->clips[0]);
@@ -1102,6 +1103,112 @@ Status setupPianoRollVibrato(Shell& shell) {
   sc->view->select(std::span<const doc::NoteId>(&idb, 1));
   if (!st.setSelectionVibrato(60.0, 4.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the second vibrato", {}};
   sc->view->select(std::span<const doc::NoteId>(&ida, 1));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// bug-curve-render: moving notes at every zoom. A 32-bar clip of a 4-bar motif: a melody whose notes glide into each
+// other ending on a 6 Hz vibrato that fades in, a scoop, a pen-drawn curve (a slow swell with quick wiggles, a point
+// every 32nd), vibratos at 3 Hz (inverted, 80 ¢), 5.5 Hz (50 ¢, fades) and 7 Hz (25 ¢), and a plain note. `barsShown`
+// bars across the note area (32: far out, where most vibratos are faster than a few px per cycle).
+namespace {
+
+std::optional<JiScene> buildCurvesScene(Shell& shell, double barsShown) {
+  std::optional<JiScene> sc = buildJiScene(shell, "Curves", 9, 4, 32);
+  if (!sc) return std::nullopt;
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& store = ctx.store();
+  const Ticks q = kPpq, bar = kTicksPerWhole;
+  using tuning::PitchId;
+  struct Spec {
+    Ticks start, length;
+    int32_t degree;
+  };
+  // One motif (beats): the melody 0–8, the scoop's source and the scoop 7–12, the 5.5 Hz note 12–16, the pen curve 0–8,
+  // the 7 Hz note 8–16, the inverted 3 Hz note 0–6, the plain note 4–12.
+  const Spec motif[] = {{0, 2 * q, 12}, {2 * q, 2 * q, 14}, {4 * q, 2 * q, 16}, {6 * q, 2 * q, 19}, {7 * q, q, 9},   {8 * q, 4 * q, 7},
+                        {12 * q, 4 * q, 9}, {0, 8 * q, 0},   {8 * q, 8 * q, -5}, {0, 6 * q, -10}, {4 * q, 8 * q, -12}};
+  std::vector<doc::Note> notes;
+  for (int m = 0; m < 8; ++m)
+    for (const Spec& s : motif) notes.push_back(scnNote(m * 4 * bar + s.start, s.length, PitchId::fromDegree(s.degree, 0)));
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes))) return std::nullopt;
+  shell.tree().layoutNow();
+  std::vector<doc::NoteCurves> recs;
+  for (int m = 0; m < 8; ++m) {
+    const Ticks at = m * 4 * bar;
+    auto id = [&](size_t i) {
+      const doc::Note* n = sceneNote(ctx, *sc->view, PitchId::fromDegree(motif[i].degree, 0), at + motif[i].start);
+      return n ? n->id : doc::NoteId{};
+    };
+    doc::NoteId ids[std::size(motif)];
+    for (size_t i = 0; i < std::size(motif); ++i)
+      if (!(ids[i] = id(i)).valid()) return std::nullopt;
+    for (size_t i = 0; i < 3; ++i) {  // the melody glides into its next note over its last half beat
+      doc::NoteCurves r;
+      r.note = ids[i];
+      r.bendOut = doc::NoteBend{q / 2, doc::GlideShape{}, ids[i + 1]};
+      recs.push_back(r);
+    }
+    doc::NoteCurves last;
+    last.note = ids[3];
+    last.vibrato.depthCents = 40.0f;
+    last.vibrato.rate = 6.0f;
+    last.vibrato.fadeIn = q;
+    recs.push_back(last);
+    doc::NoteCurves scoop;
+    scoop.note = ids[5];
+    scoop.bendIn = doc::NoteBend{q, doc::GlideShape{}, ids[4]};
+    recs.push_back(scoop);
+    doc::NoteCurves fades;
+    fades.note = ids[6];
+    fades.vibrato = doc::NoteVibrato{50.0f, 5.5f, doc::NoteVibrato::RateUnit::Hz, q / 2, q, 0, q};
+    recs.push_back(fades);
+    doc::NoteCurves pen;
+    pen.note = ids[7];
+    for (Ticks t = 0; t <= 8 * q; t += q / 8) {
+      const double u = static_cast<double>(t) / static_cast<double>(q);
+      pen.pitch.push_back({t, static_cast<float>(150.0 * std::sin(2.0 * std::numbers::pi * u / 8.0) + 25.0 * std::sin(2.0 * std::numbers::pi * u / 0.75)), 0.0f, {}});
+    }
+    recs.push_back(pen);
+    doc::NoteCurves fast;
+    fast.note = ids[8];
+    fast.vibrato = doc::NoteVibrato{25.0f, 7.0f, doc::NoteVibrato::RateUnit::Hz, 0, 0, 0, 0};
+    recs.push_back(fast);
+    doc::NoteCurves inverted;
+    inverted.note = ids[9];
+    inverted.vibrato = doc::NoteVibrato{-80.0f, 3.0f, doc::NoteVibrato::RateUnit::Hz, 0, 0, 0, 0};
+    recs.push_back(inverted);
+  }
+  std::sort(recs.begin(), recs.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+  if (!store.dispatch(doc::SetNoteCurves{sc->clip, recs}).ok()) return std::nullopt;
+  shell.tree().layoutNow();
+  // (buildJiScene's zoom puts two bars across the note area.)
+  sc->view->setZoom(sc->view->pxPerTick() * 2.0 / barsShown, 0.0);
+  sc->view->scrollToTick(-0.01 * barsShown * static_cast<double>(bar));
+  shell.tree().layoutNow();
+  return sc;
+}
+
+}  // namespace
+
+Status setupPianoRollCurves(Shell& shell, double barsShown) {
+  if (!buildCurvesScene(shell, barsShown)) return Error{ErrorCode::Unknown, "pianoroll-curves: building the clip failed", {}};
+  return Ok{};
+}
+
+// The same clip in the arrangement: its track tall and the first motif (4 bars) across the lanes, so the preview's
+// glides, wiggles and vibratos are large enough to judge their edges.
+Status setupArrangementCurvePreview(Shell& shell) {
+  const std::optional<JiScene> sc = buildCurvesScene(shell, 32.0);
+  if (!sc) return Error{ErrorCode::Unknown, "arrangement-curve-preview: building the clip failed", {}};
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  ViewContext& ctx = shell.context();
+  ctx.setDetailVisible(false);
+  a->setTrackHeight(sc->clip.track, 220.0f);
+  shell.tree().layoutNow();
+  const float s = shell.tree().scale();
+  a->setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), static_cast<double>(a->lanesViewport().w) / s / (4.2 * static_cast<double>(kTicksPerWhole)));
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3819,6 +3926,9 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-bends", 1280, 800, setupPianoRollBends},
     {"pianoroll-note-lines", 1280, 800, setupPianoRollNoteLines},  // T7.12
     {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
+    {"pianoroll-curves-far", 1280, 800, [](Shell& s) { return setupPianoRollCurves(s, 32.0); }},  // bug-curve-render
+    {"pianoroll-curves-mid", 1280, 800, [](Shell& s) { return setupPianoRollCurves(s, 8.0); }},
+    {"arrangement-curve-preview", 1280, 800, setupArrangementCurvePreview},
     // T7.14: JI groups as frames
     {"pianoroll-group-triad", 1280, 800, setupPianoRollGroupTriad},
     {"pianoroll-group-chooser", 1280, 800, setupPianoRollGroupChooser},

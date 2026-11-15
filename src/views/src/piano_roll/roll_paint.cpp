@@ -16,6 +16,7 @@
 
 #include "../common/labels.h"
 #include "../common/paint.h"
+#include "../common/pitch_path.h"
 #include "pq/document/automation_curve.h"
 #include "pq/tuning/ji.h"
 #include "pq/ui/lines.h"
@@ -60,8 +61,8 @@ void drawNoteLine(DrawList& dl, const LineStyle& st, const NoteLine& d, std::spa
   const float hw = std::min(st.headW, w);
   const bool head = hh >= t + 2.0f;
   if (path.size() >= 2) {
-    if (st.bandAlpha) smoothPolyline(dl, path, withAlpha(d.fill, st.bandAlpha), st.pathBand);
-    smoothPolyline(dl, path, d.fill, t);
+    if (st.bandAlpha) strokePath(dl, path, withAlpha(d.fill, st.bandAlpha), st.pathBand);
+    strokePath(dl, path, d.fill, t);
     const Vec2 a = path.front(), b = path.back();
     if (b.x >= d.x1 - 0.5f) dl.addCircleFilled(b, 0.5f * t, d.fill);
     if (a.x <= d.x0 + 0.5f) {  // the note's start is in view
@@ -605,19 +606,30 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
 
 // The notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint): the note's cached
 // effective curve (RollState::pathOf: flattened once per clip snapshot, M7 review M14) mapped to the screen into the
-// shared scratch polyline, then the same line as every note. Nothing is evaluated per frame: a paint walks the cached
-// points in view; where several fall on one pixel column only the column's extremes are emitted (a zoomed-out vibrato
-// costs two points per px however fast it is).
+// shared scratch polyline, then the same line as every note. Nothing is evaluated per frame but the view's two ends:
+// a paint walks the cached points in view. bug-curve-render: the points are simplified in device px as they are mapped
+// (views/common/pitch_path.h PxPolyline: within kPathPxTolerance of the curve), so a zoomed-out note is its silhouette
+// in a few vertices — the per-column extremes this replaced were vertical reversals the stroke's miters drew as spikes
+// and combs; the cache is flattened to a fraction of a px at the current rows (fitPathTolerance), so a zoomed-in curve
+// has no visible facets; and a vibrato whose cycle is shorter than kVibratoBandPx (or than two strokes and their gaps)
+// is drawn as its band — the envelope around the rest of the curve, at kVibratoBandAlpha — with the rest of the curve
+// as the note's line, instead of a zig-zag aliasing with the zoom.
 void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   if (!ctx.res.theme || s.curveNotes.empty()) return;
   const Theme& th = *ctx.res.theme;
   const NoteColours& col = s.colours();
   const LineStyle style = lineStyle(th, s, ctx.scale.factor);
+  s.fitPathTolerance(0.5f * kPathPxTolerance);
   const float step = std::max(1.0f, kPathSampleStep * ctx.scale.factor);
   const float lane = static_cast<float>(std::max(1, s.rows().laneHeight()));
   const float thick = std::min(style.thick, std::clamp(lane - 2.0f, std::min(2.0f, lane), lane));  // as drawNoteLine
   const float vx0 = static_cast<float>(vis.x) - 2.0f * step, vx1 = static_cast<float>(vis.right()) + 2.0f * step;
+  const double ppt = s.pxPerTick();
+  const double chunk = pathChunkTicks(ppt, ctx.scale.factor);
+  const double bandPeriodPx = std::max(static_cast<double>(kVibratoBandPx * ctx.scale.factor), 2.0 * (static_cast<double>(thick) + 2.0 * ctx.scale.factor));
   std::vector<Vec2>& pts = s.linePts;
+  static thread_local std::vector<Vec2> up, dn;
+  static thread_local std::vector<double> ticks;
   for (const CurveNote& c : s.curveNotes) {
     const float x0 = s.xOfTick(static_cast<double>(c.start));
     const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
@@ -635,63 +647,29 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
       ctx.dl.addRectFilled(frect(std::round(x0), std::round(ya - 0.5f * thick), std::round(x1), std::round(yb + 0.5f * thick)), fill);
       continue;
     }
-    pts.clear();
-    if (!p || p->pts.empty()) {
-      const float y = s.yOfCents(*base);  // a member its group's warps hold in one state: straight, where it sounds
-      pts.push_back({xa, y});
-      pts.push_back({xb, y});
-    } else if (p->curved) {
-      // The stored free curve with bowed segments: sampled along the curve law.
-      const std::span<const doc::Breakpoint> curve(p->pts);
-      const int n = std::clamp(static_cast<int>(std::ceil((xb - xa) / step)), 1, 8192);
-      for (int k = 0; k <= n; ++k) {
-        const float x = xa + (xb - xa) * static_cast<float>(k) / static_cast<float>(n);
-        const double off = std::clamp(s.tickAtX(x) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
-        pts.push_back({x, s.yOfCents(*base + pq::evalAutomation(curve, off))});
-      }
-    } else {
-      // Straight segments between the cached points: the ones in view, between the values at the view's edges.
-      const std::span<const doc::Breakpoint> curve(p->pts);
-      const double ta = std::clamp(s.tickAtX(xa) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
-      const double tb = std::clamp(s.tickAtX(xb) - static_cast<double>(c.start), ta, static_cast<double>(c.length));
-      pts.push_back({xa, s.yOfCents(*base + pq::evalAutomation(curve, ta))});
-      auto it = std::upper_bound(curve.begin(), curve.end(), ta, [](double t, const doc::Breakpoint& b) { return t < static_cast<double>(b.tick); });
-      float colX = xa, colMin = pts.back().y, colMax = colMin, colLast = colMin;
-      bool colMany = false;
-      auto flush = [&] {
-        if (!colMany) return;
-        // The column's extremes, ending where the curve left it.
-        if (colLast == colMin) {
-          pts.push_back({colX, colMax});
-          pts.push_back({colX, colMin});
-        } else {
-          pts.push_back({colX, colMin});
-          pts.push_back({colX, colMax});
-          if (colLast != colMax) pts.push_back({colX, colLast});
-        }
-        colMany = false;
-      };
-      for (; it != curve.end() && static_cast<double>(it->tick) < tb; ++it) {
-        const float x = s.xOfTick(static_cast<double>(c.start + it->tick));
-        const float y = s.yOfCents(*base + static_cast<double>(it->value));
-        if (x - colX < 1.0f) {
-          colMin = std::min(colMin, y);
-          colMax = std::max(colMax, y);
-          colLast = y;
-          colMany = true;
-          continue;
-        }
-        flush();
-        pts.push_back({x, y});
-        colX = x;
-        colMin = colMax = colLast = y;
-      }
-      flush();
-      pts.push_back({xb, s.yOfCents(*base + pq::evalAutomation(curve, tb))});
+    // A vibrato too fast for this zoom: its band, and the rest of the curve as the line.
+    const bool band = p && p->vibPeriod > 0.0 && p->vibPeriod * ppt < bandPeriodPx;
+    const std::vector<doc::Breakpoint>* src = p ? (band ? &p->rest : &p->pts) : nullptr;
+    const std::span<const doc::Breakpoint> curve = src ? std::span<const doc::Breakpoint>(*src) : std::span<const doc::Breakpoint>{};
+    // The whole chunks of the note in view (pitch_path.h chunkSpan: a partial repaint draws the vertices a full one does).
+    const double len = static_cast<double>(c.length);
+    double ta = 0.0, tb = len;
+    chunkSpan(s.tickAtX(xa) - static_cast<double>(c.start), s.tickAtX(xb) - static_cast<double>(c.start), len, chunk, ta, tb);
+    auto xAt = [&](double t) { return s.xOfTick(static_cast<double>(c.start) + t); };
+    auto yAt = [&](double v) { return s.yOfCents(*base + v); };
+    {
+      PxPolyline line(pts);
+      addPathSpan(line, curve, band ? p->restCurved : p != nullptr && p->curved, ta, tb, static_cast<double>(step) / std::max(ppt, 1e-12), chunk, xAt, yAt);
+      line.finish();
     }
-    if (pts.size() < 2) continue;
+    if (pts.size() < 2) pts.push_back({xAt(tb), pts.empty() ? s.yOfCents(*base) : pts.back().y});
+    if (band) {
+      // The envelope around the rest of the curve, sampled every ~1.5 px and at the envelope's corners.
+      bandSpan(up, dn, ticks, curve, p->vib, ta, tb, 1.5 * ctx.scale.factor / std::max(ppt, 1e-12), 0.5f * thick, xAt, yAt);
+      smoothBand(ctx.dl, up.data(), dn.data(), static_cast<uint32_t>(up.size()), mulAlpha(fill, kVibratoBandAlpha));
+    }
     if (x1 - x0 < kPathSmallPx * ctx.scale.factor) {
-      smoothPolyline(ctx.dl, pts, fill, thick);
+      strokePath(ctx.dl, pts, fill, thick);
       continue;
     }
     const float y = pts.front().y;

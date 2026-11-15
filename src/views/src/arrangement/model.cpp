@@ -92,6 +92,14 @@ const void* timelineOf(const doc::Project* p) noexcept { return p ? static_cast<
 
 // Whether a clip's notes need the clip resolved (pitch_resolve) to be placed and drawn: a Ratio anchored to another
 // note, a note whose pitch moves (a curve record), a JI group (its warps).
+// What a preview counts as against the cache bound (in notes): its steady notes, and a moving note as one note plus
+// a note per four points of its curves.
+size_t previewWeight(const Preview& pv) noexcept {
+  size_t w = pv.notes.size();
+  for (const PreviewPath& path : pv.paths) w += 1 + (path.pts.size() + path.rest.size()) / 4;
+  return w;
+}
+
 bool needsResolve(const doc::NoteClip& c) noexcept {
   if (c.curves || c.groups) return true;
   for (const doc::Note& n : c.notes)
@@ -127,12 +135,13 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
   Preview& pv = found != previews_.end() ? found->second : previews_[clip.get()];
   pv.lastUsed = paintSerial_;
   ++stats.previewBuilds;
-  cachedNotes_ -= pv.notes.size();  // (the new entries are added once built: a moving note is several pieces)
+  cachedNotes_ -= previewWeight(pv);  // (the new entries are added once built)
   pv.clip = clip;
   pv.tuning = tuningDef;
   pv.timeline = timelineOf(p);
   pv.tile = PreviewTile{};  // a reused entry's tile showed another clip
   pv.notes.clear();
+  pv.paths.clear();
   pv.maxLength = 0;
   const doc::NoteSeq& seq = clip->notes;
   if (seq.empty()) return &pv;
@@ -155,8 +164,8 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
   cents.clear();
   cents.reserve(seq.size());
   double lo = INFINITY, hi = -INFINITY;
-  std::vector<std::vector<doc::Breakpoint>> paths;  // per note (empty: steady); only when the clip has curves
-  if (curves) paths.resize(seq.size());
+  std::vector<uint8_t>& moving = movingScratch_;
+  moving.assign(seq.size(), 0);
   size_t i = 0;
   for (const doc::Note& n : seq) {
     double c = pitchCents(n.pitch, t, refHz);
@@ -166,11 +175,21 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
     lo = std::min(lo, c);
     hi = std::max(hi, c);
     if (curves) {
-      // (A preview is a few dozen px tall: 2 ¢ is far below a pixel; a vibrato costs ~10 pieces a cycle.)
-      paths[i] = doc::effectiveNoteCurve(*clip, n, index, 2.0);
-      for (const doc::Breakpoint& b : paths[i]) {
-        lo = std::min(lo, c + static_cast<double>(b.value));
-        hi = std::max(hi, c + static_cast<double>(b.value));
+      // bug-curve-render: a moving note is a path (drawn as an anti-aliased stroke, paintPreviewPaths). First at 2 ¢,
+      // for the clip's pitch range; flattened again below to a fraction of a pixel of the tallest body.
+      std::vector<doc::Breakpoint> pts = doc::effectiveNoteCurve(*clip, n, index, 2.0);
+      if (!pts.empty()) {
+        for (const doc::Breakpoint& b : pts) {
+          lo = std::min(lo, c + static_cast<double>(b.value));
+          hi = std::max(hi, c + static_cast<double>(b.value));
+        }
+        PreviewPath& path = pv.paths.emplace_back();
+        path.start = n.start;
+        path.end = n.start + n.length;
+        path.cents = c;
+        path.pts = std::move(pts);
+        path.flags = n.enabled() ? 0 : kPreviewDisabled;
+        moving[i] = 1;
       }
     }
     ++i;
@@ -182,53 +201,50 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
   const double range = hi - lo;
   const double rowsD = range / std::max(step, 1.0) + 1.0;
   pv.rowFraction = static_cast<float>(1.0 / std::max(4.0, std::min(rowsD, 512.0)));
+  pv.hiCents = hi;
+  pv.invRange = range > 1e-9 ? 1.0 / range : 0.0;
 
   auto yOf = [&](double c) {
     const double yNorm = range > 1e-9 ? (hi - c) / range : 0.5;
     return static_cast<uint16_t>(std::lround(std::clamp(yNorm, 0.0, 1.0) * 65535.0));
   };
-  pv.notes.reserve(seq.size());
+  pv.notes.reserve(seq.size() - std::min(seq.size(), pv.paths.size()));
   i = 0;
-  bool pieces = false;
+  size_t next = 0;  // the next path (pv.paths is in note order)
   for (const doc::Note& n : seq) {
-    const uint16_t flags = n.enabled() ? 0 : kPreviewDisabled;
     pv.maxLength = std::max(pv.maxLength, n.length);
-    const std::vector<doc::Breakpoint>* path = curves && !paths[i].empty() ? &paths[i] : nullptr;
-    if (!path) {
-      const uint16_t y = yOf(cents[i]);
-      pv.notes.push_back({n.start, n.start + n.length, y, flags, y});
+    if (moving[i]) {
+      PreviewPath& path = pv.paths[next++];  // (made in note order)
+      // Flattened to ~1/8 px of the tallest body (kMaxTrackHeight at 2×: ~1000 px over the range), and its vibrato's
+      // envelope and the curve without it, for the band a zoom too far out for the cycles draws.
+      const double tol = std::clamp(range / 8000.0, 1.0 / 64.0, 2.0);
+      const doc::NoteCurves* rec = clip->curves ? doc::findNoteCurves(*clip, n.id) : nullptr;
+      if (tol < 2.0) path.pts = doc::effectiveNoteCurve(*clip, n, index, tol);
+      path.curved = std::any_of(path.pts.begin(), path.pts.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
+      const double period = rec && rec->vibrato.set() ? index.vibratoPeriod(n.id) : 0.0;
+      if (period > 0.0) {
+        const Ticks L = std::max<Ticks>(n.length, 1);
+        path.vib = doc::VibratoEnvelope(rec->vibrato, L);
+        if (path.vib.any()) {
+          path.vibPeriod = std::max(period, doc::kMinVibratoPeriodTicks);
+          doc::NoteCurves still = *rec;
+          still.vibrato = {};
+          const doc::NoteWarp warp = index.anyWarp() ? index.warp(*clip, n.id) : doc::NoteWarp{};
+          doc::NoteBendTargets targets = doc::noteBendTargets(still, index);
+          path.rest = doc::effectiveNoteCurve(&still, L, targets, warp, tol);
+          path.restCurved = std::any_of(path.rest.begin(), path.rest.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
+        }
+      }
       ++i;
       continue;
     }
-    // A moving note: straight pieces between its curve's knots (a stored curved segment cut into eighths), clipped to
-    // the note; a jump (two points on one tick) is where one piece ends and the next begins.
-    pieces = true;
-    const std::span<const doc::Breakpoint> pts(*path);
-    const Ticks L = std::max<Ticks>(n.length, 1);
-    Ticks prev = 0;
-    auto piece = [&](Ticks a, Ticks b) {
-      if (b <= a) return;
-      const double va = doc::automationValueAt(pts, a), vb = doc::automationValueBefore(pts, b);
-      pv.notes.push_back({n.start + a, n.start + b, yOf(cents[i] + va), static_cast<uint16_t>(flags | (b < L ? kPreviewJoined : 0)),
-                          yOf(cents[i] + vb)});
-    };
-    for (size_t j = 0; j < pts.size(); ++j) {
-      const Ticks at = std::clamp<Ticks>(pts[j].tick, 0, L);
-      if (j > 0 && pts[j - 1].curve != 0.0f && at > prev)  // a stored curved segment
-        for (int s = 1; s < 8; ++s) {
-          const Ticks mid = prev + (at - prev) * s / 8;
-          piece(prev, mid);
-          prev = std::max(prev, mid);
-        }
-      piece(prev, at);
-      prev = std::max(prev, at);
-    }
-    piece(prev, L);
+    const uint16_t y = yOf(cents[i]);
+    pv.notes.push_back({n.start, n.start + n.length, y, static_cast<uint16_t>(n.enabled() ? 0 : kPreviewDisabled)});
     ++i;
   }
-  if (pieces)
-    std::stable_sort(pv.notes.begin(), pv.notes.end(), [](const PreviewNote& a, const PreviewNote& b) { return a.start < b.start; });
-  cachedNotes_ += pv.notes.size();
+  pv.maxPathLength = 0;
+  for (const PreviewPath& path : pv.paths) pv.maxPathLength = std::max(pv.maxPathLength, path.end - path.start);
+  cachedNotes_ += previewWeight(pv);
   return &pv;
 }
 
@@ -301,7 +317,7 @@ void Model::endPaint() {
 
 void Model::recountNotes() noexcept {
   cachedNotes_ = 0;
-  for (const auto& kv : previews_) cachedNotes_ += kv.second.notes.size();
+  for (const auto& kv : previews_) cachedNotes_ += previewWeight(kv.second);
 }
 
 void Model::afterDocumentChange(size_t clipsInProject) {

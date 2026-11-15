@@ -402,6 +402,21 @@ int main() {
     const double first = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0).count();
     std::printf("%s: %zu curved notes; first paint after the edit %.3f ms, %u vertices\n", name, count, first, static_cast<unsigned>(dl.vertices().size()));
     pq::bench::reportStats(name, pq::bench::measure(paintOnce, 1), "ns/frame");
+    // bug-curve-render: the same notes zoomed out 16× (the 2,000 curved notes now in a sixteenth of the width, among
+    // ~16× the straight notes): the paint and its vertices.
+    {
+      const double z = view->pxPerTick(), at = view->scrollTick();
+      view->setZoom(z / 16.0, at);
+      tree.update(2.2);
+      paintOnce();
+      std::printf("%s, zoomed out 16x: %u vertices\n", name, static_cast<unsigned>(dl.vertices().size()));
+      const std::string far = std::string(name) + ", zoomed out 16x";
+      pq::bench::reportStats(far.c_str(), pq::bench::measure(paintOnce, 1), "ns/frame");
+      view->setZoom(z, at);
+      view->scrollToTick(at);
+      tree.update(2.3);
+      paintOnce();
+    }
     // One of the curved notes moves a row up / down: the edit, the clip view's refresh and a full paint. The other
     // notes' paths must not be flattened again.
     if (!recs.empty()) {

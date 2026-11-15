@@ -250,7 +250,11 @@ TEST_CASE("render: a clip's preview shows its notes' pitch movement — a drawn 
   MESSAGE("changed in the clip: " << changed << " px over rows [" << top << ", " << bottom << ")");
   CHECK(changed > 20);
   CHECK(bottom > top + 6u);
-  // The tile and the direct path draw the sloped pieces the same.
+  // bug-curve-render: the moving notes are anti-aliased strokes, drawn over the tile or over the direct path's rects;
+  // the two paints are the same pixels.
+  CHECK(arr.stats().pathVertices > 0);
+  (void)rig.drawFull(*rig.partial, rig.resNoTiles);
+  CHECK(arr.stats().pathVertices > 0);
   rig.compareDirect("tiles-vs-direct-curves");
   CHECK(rig.gpu->validationErrorCount() == 0);
 }

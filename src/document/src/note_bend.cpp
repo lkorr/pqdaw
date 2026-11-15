@@ -64,29 +64,18 @@ struct Warp {
   }
 };
 
-// vibrato(t): the note's vibrato as note_bend.h defines it.
-struct Vib {
-  double depth = 0.0, period = 0.0;
-  double on = 0.0, stop = 0.0, fadeIn = 0.0, fadeOut = 0.0;
+// vibrato(t): the note's vibrato as note_bend.h defines it: sign(depth) · A(t) · sin(…), A = VibratoEnvelope.
+struct Vib : VibratoEnvelope {
+  double sign = 1.0, period = 0.0;
   Vib(const NoteCurves& c, Ticks noteLength, double periodTicks) noexcept {
-    const NoteVibrato& v = c.vibrato;
-    if (!v.set() || !(periodTicks > 0.0)) return;
-    const Ticks e = vibratoStop(v, noteLength);
-    if (e <= v.onset) return;
-    depth = static_cast<double>(v.depthCents);
+    if (!c.vibrato.set() || !(periodTicks > 0.0)) return;
+    static_cast<VibratoEnvelope&>(*this) = VibratoEnvelope(c.vibrato, noteLength);
+    sign = c.vibrato.depthCents < 0.0f ? -1.0 : 1.0;
     period = std::max(periodTicks, kMinVibratoPeriodTicks);
-    on = static_cast<double>(v.onset);
-    stop = static_cast<double>(e);
-    fadeIn = static_cast<double>(std::max<Ticks>(v.fadeIn, 0));
-    fadeOut = static_cast<double>(std::max<Ticks>(v.fadeOut, 0));
   }
-  bool any() const noexcept { return depth != 0.0; }
   double at(double t) const noexcept {
-    if (depth == 0.0 || t <= on || t >= stop) return 0.0;
-    double a = 1.0;
-    if (fadeIn > 0.0) a = std::min(a, (t - on) / fadeIn);
-    if (fadeOut > 0.0) a = std::min(a, (stop - t) / fadeOut);
-    return depth * a * std::sin(2.0 * std::numbers::pi * (t - on) / period);
+    const double a = VibratoEnvelope::at(t);
+    return a == 0.0 ? 0.0 : sign * a * std::sin(2.0 * std::numbers::pi * (t - on) / period);
   }
 };
 
@@ -107,6 +96,33 @@ double clipTicksPerSecond(const Project& p, const NoteClip& clip, Ticks contentT
 Ticks vibratoStop(const NoteVibrato& v, Ticks noteLength) noexcept {
   const Ticks L = std::max<Ticks>(noteLength, 1);
   return v.end > 0 ? std::min(v.end, L) : L;
+}
+
+VibratoEnvelope::VibratoEnvelope(const NoteVibrato& v, Ticks noteLength) noexcept {
+  if (!v.set()) return;
+  const Ticks e = vibratoStop(v, noteLength);
+  if (e <= v.onset) return;
+  depth = std::fabs(static_cast<double>(v.depthCents));
+  on = static_cast<double>(v.onset);
+  stop = static_cast<double>(e);
+  fadeIn = static_cast<double>(std::max<Ticks>(v.fadeIn, 0));
+  fadeOut = static_cast<double>(std::max<Ticks>(v.fadeOut, 0));
+}
+
+int VibratoEnvelope::corners(double (&out)[5]) const noexcept {
+  if (depth == 0.0) return 0;
+  int n = 0;
+  out[n++] = on;
+  const double a = fadeIn > 0.0 ? on + fadeIn : on, b = fadeOut > 0.0 ? stop - fadeOut : stop;
+  if (a < b) {
+    if (a > on) out[n++] = a;
+    if (b < stop) out[n++] = b;
+  } else if (fadeIn > 0.0 && fadeOut > 0.0) {
+    // The fades overlap (a swell): they meet where (t − on) / fadeIn = (stop − t) / fadeOut.
+    out[n++] = (on * fadeOut + stop * fadeIn) / (fadeIn + fadeOut);
+  }
+  out[n++] = stop;
+  return n;
 }
 
 NotePitchIndex::NotePitchIndex(const ClipPitches& pitches) : warped_(pitches.warped), vibrato_(pitches.vibrato), bends_(pitches.bends) {

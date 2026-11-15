@@ -31,6 +31,7 @@
 //
 // Not RT code (the flattening allocates its result); the single-tick query is allocation-free and noexcept.
 
+#include <algorithm>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -83,6 +84,27 @@ double vibratoPeriodTicks(const NoteVibrato& v, double ticksPerSecond) noexcept;
 double clipTicksPerSecond(const Project& p, const NoteClip& clip, Ticks contentTick) noexcept;
 // Where a vibrato stops on a note `noteLength` long (see vibrato(t) above).
 Ticks vibratoStop(const NoteVibrato& v, Ticks noteLength) noexcept;
+// A vibrato's amplitude A(t) (see vibrato(t) above) as a non-negative swing: |depth| · min(1, (t − onset) / fadeIn,
+// (stop − t) / fadeOut) inside [onset, stop], 0 outside. What the wave swings either way around the rest of the curve:
+// vibrato(t) = sign(depth) · at(t) · sin(…). The views draw a vibrato whose cycles are too short to show as this band.
+// RT-safe.
+struct VibratoEnvelope {
+  double depth = 0.0;  // |depthCents|; 0: no vibrato (on a note too short for it to start, too)
+  double on = 0.0, stop = 0.0, fadeIn = 0.0, fadeOut = 0.0;
+  VibratoEnvelope() = default;
+  VibratoEnvelope(const NoteVibrato& v, Ticks noteLength) noexcept;
+  bool any() const noexcept { return depth != 0.0; }
+  double at(double t) const noexcept {
+    if (depth == 0.0 || t <= on || t >= stop) return 0.0;
+    double a = 1.0;
+    if (fadeIn > 0.0) a = std::min(a, (t - on) / fadeIn);
+    if (fadeOut > 0.0) a = std::min(a, (stop - t) / fadeOut);
+    return depth * a;
+  }
+  // The ticks where A(t) bends (onset, the fade-in's end, the fade-out's start, stop, and where two overlapping fades
+  // meet), ascending, inside [onset, stop]; returns how many of `out` it wrote (0 without a vibrato).
+  int corners(double (&out)[5]) const noexcept;
+};
 
 // A group member's warp as its curve needs it (see warp(t) above). `warps` points into the clip's group.
 struct NoteWarp {
