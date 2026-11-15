@@ -1,14 +1,20 @@
 #pragma once
 
-// Derived bends between notes (T7.11a; QUESTIONS Q289 option b; model.h NoteBend / NoteCurves): the ONE evaluation of
-// a note's pitch curve — its free curve plus its bends — that the piano roll (drawing), pitch_resolve (a note anchored
-// to a bent note) and the playback lowering share, so they cannot disagree.
+// A note's effective pitch curve (T7.11a derived bends, QUESTIONS Q289 option b; T7.13 warps; model.h NoteBend /
+// NoteCurves / JiWarp): the ONE evaluation of how a note's pitch moves after its start — its group's warps, its bends
+// and its free curve — that the piano roll (drawing), pitch_resolve (a note anchored to a moving note) and the
+// playback lowering share, so they cannot disagree.
 //
-// A note's curve at note tick t (ticks from its start, the note being L ticks long), in cents added to its pitch:
+// A note's curve at note tick t (ticks from its start, the note being L ticks long), in cents added to the pitch it
+// RESOLVES to at its start (pitch_resolve.h NotePitch::hz — for a warped member that already is the written pitch,
+// the JI pitch or the point of the glide its start falls on):
 //   free(t)      NoteCurves::pitch under the automation curve law (pq/core/automation_curve.h), 0 when empty
-//   bendIn       a = min(bendIn.length, L):  in · (1 − s(t / a)) for t < a, else 0        (s = jiShapeValue of its shape)
+//   bendIn       a = min(bendIn.length, L):  in · (1 − s(t / a)) for t < a, else 0        (s = glideShapeValue of its shape)
 //   bendOut      b = min(bendOut.length, L): out · s((t − (L − b)) / b) for t > L − b, else 0
-//   curve(t) = free(t) + bendIn(t) + bendOut(t)
+//   warp(t)      (w(o + t) − w(o)) · D for a group member with a written identity: w = jiWarpWritten of its group's
+//                warps (1 = written, 0 = JI), o = the note's start in group ticks, D = written − JI in cents. A warp's
+//                glide starts at JiWarp::at and ends at at + glide; a note that spans it glides mid-note.
+//   curve(t) = free(t) + bendIn(t) + bendOut(t) + warp(t)
 // `in` / `out` are the bend TARGETS: where the neighbour (NoteBend::other) is relative to the note, in cents:
 // 1200 · log2(other's resolved Hz / the note's resolved Hz), both as pitch_resolve resolves them NOW (NotePitch::hz:
 // each note's pitch at its own start, without its own curve). Nothing is stored but the neighbour's id, so moving or
@@ -19,6 +25,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -29,22 +36,49 @@ namespace pq::doc {
 
 struct ClipPitches;  // pitch_resolve.h
 
+// What pitch_resolve records for a group member that has a written identity in a group with warps
+// (ClipPitches::warped, sorted by note id): the two pitches it moves between and where it starts in group ticks. Its
+// NotePitch::hz is the pitch at its start: writtenHz, jiHz, or the point of a glide between them.
+struct NoteWarpState {
+  NoteId note;
+  JiGroupId group;
+  Ticks offset = 0;        // the note's start in group ticks (note.start − the group's start)
+  double jiHz = 0.0;       // anchor × ratio
+  double writtenHz = 0.0;  // the written identity in the clip's tuning
+  double cents = 0.0;      // 1200 · log2(writtenHz / jiHz)
+  friend bool operator==(const NoteWarpState&, const NoteWarpState&) noexcept = default;
+};
+
 // The targets of a note's two bends in cents relative to the note's own pitch; nullopt: that bend does nothing.
 struct NoteBendTargets {
   std::optional<double> in, out;
   bool any() const noexcept { return in.has_value() || out.has_value(); }
 };
 
+// A group member's warp as its curve needs it (see warp(t) above). `warps` points into the clip's group.
+struct NoteWarp {
+  std::span<const JiWarp> warps;
+  Ticks offset = 0;    // the note's start in group ticks
+  double cents = 0.0;  // D: 1200 · log2(written Hz / JI Hz)
+  bool any() const noexcept { return !warps.empty() && cents != 0.0; }
+};
+
 // A clip's resolved pitches by note id (ClipPitches is in note order): built once per clip, O(n log n); a lookup is
-// O(log n). Unresolved notes have no Hz.
+// O(log n). Unresolved notes have no Hz. It also carries the clip's warped members (ClipPitches::warped, copied).
 class NotePitchIndex {
 public:
   NotePitchIndex() = default;
   explicit NotePitchIndex(const ClipPitches& pitches);
   std::optional<double> hz(NoteId note) const noexcept;
+  // The warp of note `note` of `clip` (the clip the pitches were resolved from); !any(): it has none.
+  NoteWarp warp(const NoteClip& clip, NoteId note) const noexcept;
+  // What pitch_resolve recorded for a warped member (its JI and written Hz); nullptr: not one.
+  const NoteWarpState* warped(NoteId note) const noexcept;
+  bool anyWarp() const noexcept { return !warped_.empty(); }
 
 private:
   std::vector<std::pair<uint32_t, double>> byId_;  // (note id, Hz; 0: unresolved), sorted by id
+  std::vector<NoteWarpState> warped_;              // sorted by note id
 };
 
 // The targets of `c`'s bends from the clip's resolved pitches (see above). O(log notes).
@@ -54,18 +88,30 @@ NoteBendTargets noteBendTargets(const NoteCurves& c, std::optional<double> noteH
                                 std::optional<double> outHz) noexcept;
 
 // curve(t) of a note `noteLength` ticks long at note tick `tick` (clamped to [0, noteLength]; at a jump of the free
-// curve the value from that tick on). O(log points). Allocation-free.
-double noteCurveCents(const NoteCurves& c, Ticks noteLength, const NoteBendTargets& targets, double tick) noexcept;
+// curve or of a warp the value from that tick on). `c` null: no curve record (a warp only). O(log points + log
+// warps). Allocation-free.
+double noteCurveCents(const NoteCurves* c, Ticks noteLength, const NoteBendTargets& targets, const NoteWarp& warp,
+                      double tick) noexcept;
+inline double noteCurveCents(const NoteCurves& c, Ticks noteLength, const NoteBendTargets& targets, double tick) noexcept {
+  return noteCurveCents(&c, noteLength, targets, NoteWarp{}, tick);
+}
 
 // The effective pitch breakpoints of a note: curve(t) over the note (see above), ticks from the note's start.
-//   - no bend with a target: the free curve exactly as stored (curvature and all; empty when the note has none);
+//   - no bend with a target and no warp: the free curve exactly as stored (curvature and all; empty when the note has
+//     none);
 //   - else: straight segments (Breakpoint::curve 0) within `toleranceCents` of curve(t), from tick 0 to at least
-//     `noteLength` (free-curve points beyond the note are kept); the bends' shapes and curved free segments are
-//     subdivided until they are that close, straight spans cost two points. Two points on one tick are a jump.
-// Ids are invalid (as every note curve). Preconditions: noteLength ≥ 1, toleranceCents > 0.
-std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves& c, Ticks noteLength, const NoteBendTargets& targets,
-                                           double toleranceCents = 0.05);
-// The same for note `note` of `clip` (empty when it has no curve record), targets from `pitches`.
+//     `noteLength` (free-curve points beyond the note are kept); the glides' shapes and curved free segments are
+//     subdivided until they are that close, straight spans cost two points. Two points on one tick are a jump. A
+//     note its group's warps do not move (it starts and stays in one state) and that has no curve record: empty.
+// Ids are invalid (as every note curve). `c` null: no curve record. Preconditions: noteLength ≥ 1, toleranceCents > 0.
+std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* c, Ticks noteLength, const NoteBendTargets& targets,
+                                           const NoteWarp& warp, double toleranceCents = 0.05);
+inline std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves& c, Ticks noteLength, const NoteBendTargets& targets,
+                                                  double toleranceCents = 0.05) {
+  return effectiveNoteCurve(&c, noteLength, targets, NoteWarp{}, toleranceCents);
+}
+// The same for note `note` of `clip` (empty when it has no curve record and no warp): bend targets and the warp from
+// `pitches` (resolved from this clip). What the roll draws and the lowering plays.
 std::vector<Breakpoint> effectiveNoteCurve(const NoteClip& clip, const Note& note, const NotePitchIndex& pitches,
                                            double toleranceCents = 0.05);
 

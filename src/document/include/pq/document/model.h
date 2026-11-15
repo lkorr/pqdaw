@@ -207,14 +207,7 @@ struct ClipLoop {
 // stored 3/2 with the step {note, 4, 3/2}, so the next Up still lands on 7/4. Adding 4/3 gives lcm(4, 3) = 12;
 // deleting it gives 4 again; undo / redo restore both, because the steps live in the clip snapshot.
 //
-// The declared harmonic (T7.5b; SPEC §6.2 b + index: "this note is the N-th harmonic"): ClipFundamental::anchor names
-// a note of ANY identity and its index N. The note is the frozen anchor of the series and sits exactly on harmonic N:
-// F = (the anchor's pitch) / (N · m). It is the same derivation with N as the starting denominator: m is the smallest
-// integer that makes every RELATED note a whole harmonic — the Ratio notes anchored to the anchor note (ratio n/d to
-// it: harmonic N·m·n/d), and, when the anchor is itself a reference-anchored Ratio, the other reference-anchored Ratio
-// notes. Anchor declared 5, a note 3/2 above it: m = 2, the anchor reads 10 and the note 15; delete the note and it
-// reads 5 again. A related note too fine for any numbering (N · m > kMaxFundamentalDenominator) is left unnumbered. An
-// anchor whose note is gone is ignored (the plain derivation applies). Under an anchor no HarmonicStep is recorded.
+// A declared harmonic ("this note is the N-th harmonic") is a JI GROUP (below): its own fundamental, per group.
 inline constexpr int64_t kMaxFundamentalDenominator = int64_t{1} << 20;  // finer: no fundamental (own denominators)
 // lcm(a, b) for a, b ≥ 1, or −1 when it exceeds `cap` (computed without overflow: std::lcm is undefined when the
 // result does not fit; T2.6-fix4, M3 review L8). RT-safe.
@@ -227,89 +220,75 @@ struct HarmonicStep {
   friend bool operator==(const HarmonicStep&, const HarmonicStep&) noexcept = default;
 };
 
-struct HarmonicAnchor {
-  NoteId note;         // a note of the clip (any identity)
-  uint32_t index = 1;  // the harmonic it is declared to be, 1 … kMaxHarmonicIndex
-  friend bool operator==(const HarmonicAnchor&, const HarmonicAnchor&) noexcept = default;
-};
-inline constexpr uint32_t kMaxHarmonicIndex = 4096;
+inline constexpr uint32_t kMaxHarmonicIndex = 4096;  // a group's declared index, 1 … this
 
 struct ClipFundamental {
   std::vector<HarmonicStep> steps;        // sorted by note id, unique; only steps finer than the ratio's own denominator
-  std::optional<HarmonicAnchor> anchor;   // T7.5b: the declared harmonic (see above)
-  bool empty() const noexcept { return steps.empty() && !anchor; }
+  bool empty() const noexcept { return steps.empty(); }
   friend bool operator==(const ClipFundamental&, const ClipFundamental&) noexcept = default;
 };
 
-// ---- JI objects and note curves (T7.2; SPEC §5, §3.1; docs/plans/M7.md "Data model", amendment A1) ---------------
-// A JI object is a chord that lives in a note clip next to its notes: a span, a fundamental, and a list of STOPS the
-// chord morphs through. A stop is either a PROPORTION (exact integer terms over the fundamental × `scale`; undertone
-// objects: 1/term) or a TUNING STOP (one ordinary pitch per entry: the chord as written in the clip's tuning). Nothing
-// is a container: inner notes are ordinary clip notes whose identity is Harmonic(object, voice) (or a Ratio anchored to
-// JiFundamental(object)), resolved at their start (pitch_resolve.h). What the object sounds like at every tick is
-// pq/document/ji_object.h (the one evaluation the roll, the lowering and flattening share).
+// ---- JI groups, warps and note curves (T7.13; SPEC §15; docs/plans/M7.md "Rework: notes-first JI" R1–R4) ----------
+// The note is the only primitive. A JI GROUP is a declaration about ordinary notes of a clip: an ANCHOR note (any
+// identity: Degree / Cents / Ratio; it keeps its identity and its pitch — it is frozen), the harmonic `index` it is
+// declared to be, and its MEMBERS — the clip's Ratio notes anchored to the anchor note (AnchorKind::Note). Nothing is
+// stored per member: membership is the note's own identity. A note is the anchor of at most one group; a member's
+// group is its anchor's.
 //
-// Voices: V = voiceNotes.size() = the largest stop size. A stop with n < V entries spreads them: voice v takes entry
-// ⌊v·n/V⌋ (JiStop::voiceTerm overrides), so voices stay in pitch order and a voice "not needed" doubles a neighbour.
-inline constexpr uint32_t kMaxJiVoices = 64;
-inline constexpr uint32_t kMaxJiStops = 4096;
-inline constexpr int64_t kMaxJiTerm = int64_t{1} << 20;
-inline constexpr uint32_t kMaxCurvePoints = 1u << 16;  // per ride / note curve
-inline constexpr float kMaxCurveCents = 1200.0f * 16;  // |value| of a ride / note-curve point
+// The group's fundamental is derived (groupHarmonics): F = anchor pitch / (index · m), m the smallest integer that
+// makes every member a whole harmonic (member ratio n/d to the anchor → harmonic index · m · n / d). Anchor declared
+// 5 + a member 3/2 above it: m = 2, the anchor reads 10 and the member 15; delete the member and it reads 5 again.
+// A member too fine for any numbering (index · m > kMaxFundamentalDenominator) is left unnumbered.
+//
+// WARPS (R4): "play a tempered chord, then warp it into JI" and back. A member may remember what it was WRITTEN as
+// before it was tuned (NoteClip::written: Degree, Cents or a reference-anchored Ratio). A group's warps are points in
+// GROUP TICKS — ticks from the group's start, the earliest start among its anchor and members (groupSpan) — sorted,
+// alternating in direction and not overlapping:
+//   toJi    before `at` such a member sounds at its written pitch; it glides over [at, at + glide] (shape) and sounds
+//           at its JI pitch (anchor × ratio) from at + glide on;
+//   !toJi   the reverse: JI before `at`, written from at + glide on.
+// No warps: JI throughout. Members without a written identity and the anchor do not move. A note that spans a warp
+// glides mid-note; a note that starts after it starts on the target pitch (pitch_resolve.h resolves a note's Hz at its
+// start with the warp state there; note_bend.h is the ONE evaluation of the curve from there on).
+inline constexpr uint32_t kMaxJiWarps = 1024;  // per group
+inline constexpr uint32_t kMaxCurvePoints = 1u << 16;  // per note curve
+inline constexpr float kMaxCurveCents = 1200.0f * 16;  // |value| of a note-curve point
 
-// How a transition moves from the previous stop's pitch a to the next one's b: cents = a + (b − a)·s(u), u ∈ [0, 1].
+// How a glide (a warp, a bend) moves from pitch a to pitch b: cents = a + (b − a)·s(u), u ∈ [0, 1].
 //   LogLinear  s(u) = u (a straight line in cents = exponential in Hz)
 //   SCurve     s(u) = 3u² − 2u³
 //   Bezier     the CSS cubic-bezier(x1, y1, x2, y2): x1, x2 ∈ [0, 1], y1, y2 ∈ [−1, 2] (overshoot allowed)
 // The handles are kept (and compared) for every kind, so switching kinds and back loses nothing.
-struct JiShape {
+struct GlideShape {
   enum Kind : uint8_t { LogLinear, SCurve, Bezier };
   Kind kind = SCurve;
   float x1 = 0.42f, y1 = 0.0f, x2 = 0.58f, y2 = 1.0f;
-  friend bool operator==(const JiShape&, const JiShape&) noexcept = default;
+  friend bool operator==(const GlideShape&, const GlideShape&) noexcept = default;
 };
-// The transition INTO a stop: the voice ARRIVES at stop.at + delay and glides for `glide` ticks before that (it holds
-// the previous stop until then). glide 0 = a jump. Evaluation clamps: a voice never arrives before it arrived at the
-// previous stop, and a glide never starts before that arrival (ji_object.h). Stop 0's timing is unused.
-struct JiTiming {
-  Ticks delay = 0;  // ≥ 0
-  Ticks glide = 0;  // ≥ 0
-  JiShape shape;
-  friend bool operator==(const JiTiming&, const JiTiming&) noexcept = default;
-};
-struct JiStop {
-  Ticks at = 0;                          // object ticks (from JiObject::start); stop 0 at 0, strictly ascending
-  // Exactly one of the two is non-empty:
-  std::vector<int64_t> terms;            // a proportion: strictly ascending, each in [1, kMaxJiTerm]
-  std::vector<tuning::PitchId> pitches;  // A1, a tuning stop: one pitch per entry, ascending as written (Degree, Cents
-                                         // or reference-anchored Ratio), resolved in the clip's tuning
-  tuning::Rational scale{1};             // fundamental multiplier, > 0 (a walk keeps a pinned voice's pitch with it)
-  std::vector<uint8_t> voiceTerm;        // empty (the spread rule) or V entries: voice → index into terms / pitches
-  JiTiming timing;                       // every voice's transition into this stop
-  std::vector<std::optional<JiTiming>> voiceTiming;  // empty or V entries: per-voice override
+// s(u) of a glide shape, u clamped to [0, 1]; s(0) = 0, s(1) = 1. RT-safe.
+double glideShapeValue(const GlideShape& shape, double u) noexcept;
 
-  bool isTuning() const noexcept { return !pitches.empty(); }
-  uint32_t size() const noexcept { return static_cast<uint32_t>(isTuning() ? pitches.size() : terms.size()); }
-  friend bool operator==(const JiStop&, const JiStop&) noexcept = default;
+struct JiWarp {
+  Ticks at = 0;     // group ticks, 0 … kMaxTicks: where the glide starts
+  Ticks glide = 0;  // ≥ 0; 0 = a jump at `at`. The glide ends at at + glide, at or before the next warp's `at`
+  GlideShape shape;
+  bool toJi = true;  // true: written → JI; false: JI → written
+  friend bool operator==(const JiWarp&, const JiWarp&) noexcept = default;
 };
-struct JiObject {
-  JiObjectId id;
-  Ticks start = 0;               // clip-content ticks, as notes
-  Ticks length = kPpq;           // ≥ 1; stops at or after it are kept but never reached
-  tuning::PitchId fundamental;   // Degree, Cents or reference-anchored Ratio (never Harmonic / anchored elsewhere)
-  bool undertone = false;        // terms are 1/term (SPEC §15)
-  bool sounds = true;            // false: a scaffold, only the inner notes play
-  float velocity = 100.0f;       // (0, 127]
-  std::vector<JiStop> stops;     // 1 … kMaxJiStops
-  std::vector<Breakpoint> ride;  // cents added to every voice and the fundamental; object ticks; sorted by tick; ids
-                                 // unused (invalid): a curve is replaced whole
-  // One id per voice (V = size, 1 … kMaxJiVoices): the ids of the notes the lowering plays for the object's voices.
-  // They are not in NoteClip::notes; like every id, unique in the project and never reused.
-  std::vector<NoteId> voiceNotes;
-
-  uint32_t voices() const noexcept { return static_cast<uint32_t>(voiceNotes.size()); }
-  Ticks end() const noexcept { return start + length; }
-  friend bool operator==(const JiObject&, const JiObject&) noexcept = default;
+struct JiGroup {
+  JiGroupId id;
+  NoteId anchor;       // a note of the clip (any identity); the anchor of this group only
+  uint32_t index = 1;  // the harmonic the anchor is declared to be, 1 … kMaxHarmonicIndex
+  std::vector<JiWarp> warps;  // ≤ kMaxJiWarps; `at` strictly ascending, toJi alternating, glides not overlapping
+  friend bool operator==(const JiGroup&, const JiGroup&) noexcept = default;
+};
+// What a tuned member was written as (Degree, Cents or a reference-anchored Ratio), so "Back to Tuning" restores it
+// exactly and a warp knows the tempered pitch. Only records of notes that are members of a group mean anything; the
+// builders drop the others.
+struct NoteWritten {
+  NoteId note;
+  tuning::PitchId written;
+  friend bool operator==(const NoteWritten&, const NoteWritten&) noexcept = default;
 };
 // A bend between two notes of a clip (T7.11a; QUESTIONS Q289 option b: DERIVED, not baked). The note glides for
 // `length` ticks in from (NoteCurves::bendIn, over its first `length` ticks) or out to (bendOut, over its last
@@ -320,7 +299,7 @@ struct JiObject {
 // drop such bends in the same edit (RemoveNotes, a clip split), and copies re-point them (clone / duplicate / paste).
 struct NoteBend {
   Ticks length = 0;  // 1 … kMaxTicks while set (the effective glide is clamped to the note's length)
-  JiShape shape;     // as a JI transition: cents = from + (to − from) · jiShapeValue(shape, u)
+  GlideShape shape;  // cents = from + (to − from) · glideShapeValue(shape, u)
   NoteId other;      // a note of the same clip, never the note itself; invalid: no bend
   bool set() const noexcept { return other.valid(); }
   friend bool operator==(const NoteBend&, const NoteBend&) noexcept = default;
@@ -337,7 +316,8 @@ struct NoteCurves {
   bool empty() const noexcept { return pitch.empty() && !bendIn.set() && !bendOut.set(); }
   friend bool operator==(const NoteCurves&, const NoteCurves&) noexcept = default;
 };
-using JiObjectList = std::vector<JiObject>;     // sorted by id, unique
+using JiGroupList = std::vector<JiGroup>;          // sorted by id, unique
+using NoteWrittenList = std::vector<NoteWritten>;  // sorted by note id, unique
 using NoteCurveList = std::vector<NoteCurves>;  // sorted by note id, unique
 
 struct NoteClip {
@@ -353,46 +333,75 @@ struct NoteClip {
   bool active = true;       // deactivated clips are kept but not played
   ClipFundamental fundamental;  // T3.6-fix1: what the virtual fundamental is derived from (see above)
   NoteSeq notes;
-  // T7.2: null = none (never an empty list). Shared between snapshots; a note edit does not copy them.
-  std::shared_ptr<const JiObjectList> ji;
+  // Null = none (never an empty list). Shared between snapshots; a note edit does not copy them.
+  std::shared_ptr<const JiGroupList> groups;       // T7.13: a group whose anchor is not in `notes` is ignored
+  std::shared_ptr<const NoteWrittenList> written;  // (RemoveNotes drops it), and so is a record of a missing note
   std::shared_ptr<const NoteCurveList> curves;  // a curve whose note is not in `notes` is ignored (RemoveNotes drops it)
                                                 // and so is a bend whose `other` is not (NoteBend)
 };
 bool operator==(const NoteClip& a, const NoteClip& b) noexcept;
 using ClipPtr = std::shared_ptr<const NoteClip>;
-// A copy of every field except the notes, which are replaced (avoids copying the old chunk directory). The JI objects
-// and curves are kept (shared).
+// A copy of every field except the notes, which are replaced (avoids copying the old chunk directory). The groups,
+// written identities and curves are kept (shared).
 NoteClip withNotes(const NoteClip& c, NoteSeq notes);
 
-// T7.2 lookups (binary searches; empty / nullptr when the clip has none).
-std::span<const JiObject> jiObjectsOf(const NoteClip& c) noexcept;
+// Lookups (binary searches; empty / nullptr when the clip has none).
+std::span<const JiGroup> jiGroupsOf(const NoteClip& c) noexcept;
+std::span<const NoteWritten> notesWrittenOf(const NoteClip& c) noexcept;
 std::span<const NoteCurves> noteCurvesOf(const NoteClip& c) noexcept;
-const JiObject* findJiObject(const NoteClip& c, JiObjectId id) noexcept;
+const JiGroup* findJiGroup(const NoteClip& c, JiGroupId id) noexcept;
+const JiGroup* findJiGroupByAnchor(const NoteClip& c, NoteId anchor) noexcept;  // O(groups)
+const NoteWritten* findNoteWritten(const NoteClip& c, NoteId note) noexcept;
 const NoteCurves* findNoteCurves(const NoteClip& c, NoteId note) noexcept;
-// The rules stated at JiObject / JiStop / JiTiming, for one object (what AddJiObject / SetJiObject check), and for a
-// whole clip: its object and curve lists (sorted, unique, voice-note ids unique and no note of the clip), every note
-// that follows an object naming one of the clip and a voice it has (what AddClip and the loader check).
-Status validateJiObject(const JiObject& o);
+// The note a pitch is anchored to (a Ratio with AnchorKind::Note); invalid for every other identity.
+NoteId noteAnchorOf(const tuning::PitchId& p) noexcept;
+// The group a note belongs to: the one it anchors, else the one whose anchor it is anchored to; nullptr: none.
+const JiGroup* jiGroupOfNote(const NoteClip& c, const Note& n) noexcept;
+// What a written identity may be: Degree, Cents or a reference-anchored Ratio.
+bool plainPitch(const tuning::PitchId& p) noexcept;
+// The rules of a clip's groups, written identities and curves as lists (sorted, unique, every group / warp / record
+// valid, every group's anchor a note of the clip and the anchor of that group only, every written note a note of the
+// clip): what AddClip and the loader check.
 Status validateClipJi(const NoteClip& c);
-// The JI object a note's identity refers to: Harmonic(object, voice) or a Ratio anchored to JiFundamental(object);
-// invalid for every other identity.
-JiObjectId jiObjectOf(const tuning::PitchId& p) noexcept;
 
-// The clip's derived fundamental (see ClipFundamental): F = pitch(anchor) · ratio, where an invalid `anchor` is the
-// clip's reference. With a declared harmonic on a tempered note: {that note, 1 / (N · m)}; on a reference-anchored
-// Ratio note r: {reference, r / (N · m)}; without one: {reference, 1/D}. nullopt: nothing to derive from (no
-// reference-anchored Ratio note, or D > kMaxFundamentalDenominator). `ownDenominators`: the lcm of the
-// reference-anchored Ratio notes' own denominators if the caller has it cached (0 none, −1 too large), or
-// kComputeOwnDenominators to scan the clip. O(1) without steps and anchor (given the lcm); else one pass over the notes.
-inline constexpr int64_t kComputeOwnDenominators = -2;
-struct ClipHarmonics {
-  NoteId anchor;
-  tuning::Rational ratio{1};
-  friend bool operator==(const ClipHarmonics&, const ClipHarmonics&) noexcept = default;
+// A group's harmonic numbering (see "JI groups"). nullopt: the anchor is not a note of the clip.
+struct GroupMember {
+  NoteId note;
+  tuning::Rational ratio{1};  // to the anchor
+  int64_t harmonic = 0;       // its number; 0: too fine to number
+  friend bool operator==(const GroupMember&, const GroupMember&) noexcept = default;
 };
-std::optional<ClipHarmonics> clipHarmonics(const NoteClip& clip, int64_t ownDenominators = kComputeOwnDenominators);
-// The same when it is relative to the reference (what reference-anchored Ratio notes step on); nullopt also when the
-// fundamental hangs on a tempered anchor note.
+struct GroupHarmonics {
+  int64_t anchor = 1;                   // the anchor's number: index · m
+  tuning::Rational fundamental{1};      // F as a ratio to the anchor's pitch: 1 / (index · m)
+  std::vector<GroupMember> members;     // in the clip's note order (the anchor is not one)
+  std::vector<int64_t> proportion;      // the distinct numbers of the anchor and the numbered members, ascending
+  friend bool operator==(const GroupHarmonics&, const GroupHarmonics&) noexcept = default;
+};
+// O(notes) for one group.
+std::optional<GroupHarmonics> groupHarmonics(const NoteClip& clip, const JiGroup& group);
+// Only F (ratio to the anchor's pitch) and the anchor's number, without the member list. O(notes), no allocation.
+struct GroupFundamental {
+  int64_t anchor = 1;
+  tuning::Rational fundamental{1};
+};
+std::optional<GroupFundamental> groupFundamental(const NoteClip& clip, const JiGroup& group) noexcept;
+// A group's span in content ticks: [earliest start, latest end) over its anchor and members; warps count from
+// `start`. nullopt: the anchor is not a note of the clip. O(notes).
+struct GroupSpan {
+  Ticks start = 0, end = 0;
+};
+std::optional<GroupSpan> groupSpan(const NoteClip& clip, const JiGroup& group) noexcept;
+// How far a member with a written identity is from its JI pitch at group tick `tick`: 0 = JI, 1 = written, between
+// them inside a glide (see JiWarp). No warps: 0. At the tick of a jump (glide 0): the state from that tick on, or with
+// `before` the state it arrives with. Exactly 0 / 1 outside the glides. O(log warps). RT-safe.
+double jiWarpWritten(std::span<const JiWarp> warps, double tick, bool before = false) noexcept;
+
+// The clip's derived fundamental relative to the reference (see "Virtual fundamental"): 1/D. nullopt: nothing to
+// derive from (no reference-anchored Ratio note, or D > kMaxFundamentalDenominator). `ownDenominators`: the lcm of the
+// reference-anchored Ratio notes' own denominators if the caller has it cached (0 none, −1 too large), or
+// kComputeOwnDenominators to scan the clip. O(1) without steps (given the lcm); else one pass over the notes.
+inline constexpr int64_t kComputeOwnDenominators = -2;
 std::optional<tuning::Rational> virtualFundamental(const NoteClip& clip,
                                                    int64_t ownDenominators = kComputeOwnDenominators);
 

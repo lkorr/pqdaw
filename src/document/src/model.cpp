@@ -540,31 +540,52 @@ bool operator==(const NoteClip& a, const NoteClip& b) noexcept {
   return a.id == b.id && a.name == b.name && a.colour == b.colour && a.start == b.start && a.length == b.length &&
          a.contentStart == b.contentStart && a.loop == b.loop && a.signature == b.signature &&
          a.tuning == b.tuning && a.active == b.active && a.fundamental == b.fundamental && a.notes == b.notes &&
-         (a.ji == b.ji || std::ranges::equal(jiObjectsOf(a), jiObjectsOf(b))) &&
+         (a.groups == b.groups || std::ranges::equal(jiGroupsOf(a), jiGroupsOf(b))) &&
+         (a.written == b.written || std::ranges::equal(notesWrittenOf(a), notesWrittenOf(b))) &&
          (a.curves == b.curves || std::ranges::equal(noteCurvesOf(a), noteCurvesOf(b)));
 }
 
-std::span<const JiObject> jiObjectsOf(const NoteClip& c) noexcept {
-  return c.ji ? std::span<const JiObject>(*c.ji) : std::span<const JiObject>();
+std::span<const JiGroup> jiGroupsOf(const NoteClip& c) noexcept {
+  return c.groups ? std::span<const JiGroup>(*c.groups) : std::span<const JiGroup>();
+}
+std::span<const NoteWritten> notesWrittenOf(const NoteClip& c) noexcept {
+  return c.written ? std::span<const NoteWritten>(*c.written) : std::span<const NoteWritten>();
 }
 std::span<const NoteCurves> noteCurvesOf(const NoteClip& c) noexcept {
   return c.curves ? std::span<const NoteCurves>(*c.curves) : std::span<const NoteCurves>();
 }
-const JiObject* findJiObject(const NoteClip& c, JiObjectId id) noexcept {
-  const std::span<const JiObject> v = jiObjectsOf(c);
-  const auto it = std::lower_bound(v.begin(), v.end(), id, [](const JiObject& o, JiObjectId x) { return o.id < x; });
+const JiGroup* findJiGroup(const NoteClip& c, JiGroupId id) noexcept {
+  const std::span<const JiGroup> v = jiGroupsOf(c);
+  const auto it = std::lower_bound(v.begin(), v.end(), id, [](const JiGroup& o, JiGroupId x) { return o.id < x; });
   return it != v.end() && it->id == id ? &*it : nullptr;
+}
+const JiGroup* findJiGroupByAnchor(const NoteClip& c, NoteId anchor) noexcept {
+  if (!anchor.valid()) return nullptr;
+  for (const JiGroup& g : jiGroupsOf(c))
+    if (g.anchor == anchor) return &g;
+  return nullptr;
+}
+const NoteWritten* findNoteWritten(const NoteClip& c, NoteId note) noexcept {
+  const std::span<const NoteWritten> v = notesWrittenOf(c);
+  const auto it = std::lower_bound(v.begin(), v.end(), note, [](const NoteWritten& o, NoteId x) { return o.note < x; });
+  return it != v.end() && it->note == note ? &*it : nullptr;
 }
 const NoteCurves* findNoteCurves(const NoteClip& c, NoteId note) noexcept {
   const std::span<const NoteCurves> v = noteCurvesOf(c);
   const auto it = std::lower_bound(v.begin(), v.end(), note, [](const NoteCurves& o, NoteId x) { return o.note < x; });
   return it != v.end() && it->note == note ? &*it : nullptr;
 }
-JiObjectId jiObjectOf(const tuning::PitchId& p) noexcept {
-  if (p.kind() == tuning::PitchKind::Harmonic) return JiObjectId{p.jiObject()};
-  if (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::JiFundamental)
-    return JiObjectId{p.anchorId()};
-  return {};
+NoteId noteAnchorOf(const tuning::PitchId& p) noexcept {
+  return p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Note ? NoteId{p.anchorId()} : NoteId{};
+}
+const JiGroup* jiGroupOfNote(const NoteClip& c, const Note& n) noexcept {
+  if (!c.groups) return nullptr;
+  if (const JiGroup* g = findJiGroupByAnchor(c, n.id)) return g;
+  return findJiGroupByAnchor(c, noteAnchorOf(n.pitch));
+}
+bool plainPitch(const tuning::PitchId& p) noexcept {
+  return p.kind() == tuning::PitchKind::Degree || p.kind() == tuning::PitchKind::Cents ||
+         (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Reference);
 }
 
 NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
@@ -581,7 +602,8 @@ NoteClip withNotes(const NoteClip& c, NoteSeq notes) {
   n.active = c.active;
   n.fundamental = c.fundamental;
   n.notes = std::move(notes);
-  n.ji = c.ji;
+  n.groups = c.groups;
+  n.written = c.written;
   n.curves = c.curves;
   return n;
 }
@@ -592,43 +614,128 @@ int64_t lcmCapped(int64_t a, int64_t b, int64_t cap) noexcept {  // RT-safe
   return x > cap / b ? -1 : x * b;
 }
 
-std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t own) {
-  const std::optional<ClipHarmonics> h = clipHarmonics(c, own);
-  if (!h || h->anchor.valid()) return std::nullopt;
-  return h->ratio;
+double glideShapeValue(const GlideShape& shape, double u) noexcept {  // RT-safe
+  u = std::clamp(u, 0.0, 1.0);
+  switch (shape.kind) {
+    case GlideShape::LogLinear: return u;
+    case GlideShape::SCurve: return u * u * (3.0 - 2.0 * u);
+    case GlideShape::Bezier: {
+      // x(p) = 3(1−p)²p·x1 + 3(1−p)p²·x2 + p³ is monotonic for x1, x2 ∈ [0, 1]: solve x(p) = u (Newton, then
+      // bisection where the slope is too flat), then y(p).
+      const double x1 = shape.x1, x2 = shape.x2, y1 = shape.y1, y2 = shape.y2;
+      const double cx = 3.0 * x1, bx = 3.0 * (x2 - x1) - cx, ax = 1.0 - cx - bx;
+      const double cy = 3.0 * y1, by = 3.0 * (y2 - y1) - cy, ay = 1.0 - cy - by;
+      auto x = [&](double p) { return ((ax * p + bx) * p + cx) * p; };
+      double p = u;
+      bool solved = false;
+      for (int i = 0; i < 8; ++i) {
+        const double err = x(p) - u;
+        if (std::abs(err) < 1e-12) {
+          solved = true;
+          break;
+        }
+        const double d = (3.0 * ax * p + 2.0 * bx) * p + cx;
+        if (std::abs(d) < 1e-9) break;
+        p -= err / d;
+      }
+      if (!solved || !(p >= 0.0 && p <= 1.0)) {
+        double lo = 0.0, hi = 1.0;
+        p = u;
+        for (int i = 0; i < 60; ++i) {
+          const double v = x(p);
+          if (std::abs(v - u) < 1e-13) break;
+          if (v < u) lo = p;
+          else hi = p;
+          p = 0.5 * (lo + hi);
+        }
+      }
+      return ((ay * p + by) * p + cy) * p;
+    }
+  }
+  return u;
 }
 
-std::optional<ClipHarmonics> clipHarmonics(const NoteClip& c, int64_t own) {
+double jiWarpWritten(std::span<const JiWarp> warps, double tick, bool before) noexcept {  // RT-safe
+  if (warps.empty()) return 0.0;
+  // The last warp that has begun at `tick` (before: strictly before it).
+  const auto it = before ? std::lower_bound(warps.begin(), warps.end(), tick,
+                                            [](const JiWarp& w, double t) noexcept { return static_cast<double>(w.at) < t; })
+                         : std::upper_bound(warps.begin(), warps.end(), tick,
+                                            [](double t, const JiWarp& w) noexcept { return t < static_cast<double>(w.at); });
+  if (it == warps.begin()) return warps.front().toJi ? 1.0 : 0.0;  // before the first: where it comes from
+  const JiWarp& w = *(it - 1);
+  const double into = tick - static_cast<double>(w.at);
+  // Exactly 0 / 1 outside the glide, so a held state costs no pitch arithmetic (identities stay exact there).
+  const double s = w.glide <= 0 || into >= static_cast<double>(w.glide) ? 1.0
+                   : into <= 0.0 ? 0.0 : glideShapeValue(w.shape, into / static_cast<double>(w.glide));
+  return w.toJi ? 1.0 - s : s;
+}
+
+namespace {
+// m of a group (model.h "JI groups"): one pass over the notes; `each` sees every member.
+template <class Each>
+std::optional<GroupFundamental> deriveGroup(const NoteClip& c, const JiGroup& g, Each&& each) {
+  if (g.index < 1 || c.notes.findById(g.anchor) == nullptr) return std::nullopt;
+  const int64_t N = g.index;
+  int64_t m = 1;
+  for (const Note& n : c.notes) {
+    if (noteAnchorOf(n.pitch) != g.anchor || n.id == g.anchor) continue;
+    const tuning::Rational q = n.pitch.ratio();  // n/d reduced: harmonic N·m·n/d
+    if (q.isPositive()) {
+      const int64_t need = q.den() / std::gcd(q.den(), N);  // gcd(d, N·n) = gcd(d, N)
+      const int64_t next = lcmCapped(m, need, kMaxFundamentalDenominator / N);
+      if (next > 0) m = next;  // too fine for any numbering: left unnumbered
+    }
+    each(n);
+  }
+  return GroupFundamental{N * m, tuning::Rational(1, N * m)};
+}
+}  // namespace
+
+std::optional<GroupFundamental> groupFundamental(const NoteClip& c, const JiGroup& g) noexcept {
+  return deriveGroup(c, g, [](const Note&) noexcept {});
+}
+
+std::optional<GroupHarmonics> groupHarmonics(const NoteClip& c, const JiGroup& g) {
+  GroupHarmonics out;
+  const std::optional<GroupFundamental> f =
+      deriveGroup(c, g, [&](const Note& n) { out.members.push_back(GroupMember{n.id, n.pitch.ratio(), 0}); });
+  if (!f) return std::nullopt;
+  out.anchor = f->anchor;
+  out.fundamental = f->fundamental;
+  out.proportion.reserve(out.members.size() + 1);
+  out.proportion.push_back(out.anchor);
+  for (GroupMember& mb : out.members) {
+    const std::optional<tuning::Rational> h = tuning::mul(tuning::Rational(out.anchor), mb.ratio);
+    if (h && h->den() == 1 && h->num() >= 1) {
+      mb.harmonic = h->num();
+      out.proportion.push_back(mb.harmonic);
+    }
+  }
+  std::sort(out.proportion.begin(), out.proportion.end());
+  out.proportion.erase(std::unique(out.proportion.begin(), out.proportion.end()), out.proportion.end());
+  return out;
+}
+
+std::optional<GroupSpan> groupSpan(const NoteClip& c, const JiGroup& g) noexcept {
+  bool any = false, anchor = false;
+  GroupSpan s;
+  for (const Note& n : c.notes) {
+    const bool isAnchor = n.id == g.anchor;
+    if (!isAnchor && noteAnchorOf(n.pitch) != g.anchor) continue;
+    anchor = anchor || isAnchor;
+    const Ticks end = n.start + std::max<Ticks>(n.length, 1);
+    s.start = any ? std::min(s.start, n.start) : n.start;
+    s.end = any ? std::max(s.end, end) : end;
+    any = true;
+  }
+  return anchor ? std::optional<GroupSpan>(s) : std::nullopt;
+}
+
+std::optional<tuning::Rational> virtualFundamental(const NoteClip& c, int64_t own) {
   auto isRefRatio = [](const Note& n) {
     return n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.anchorKind() == tuning::AnchorKind::Reference;
   };
-  // T7.5b: a declared harmonic — the same derivation with the declared index as the starting denominator.
-  if (c.fundamental.anchor) {
-    const HarmonicAnchor& a = *c.fundamental.anchor;
-    if (const Note* an = c.notes.findById(a.note); an && a.index >= 1) {
-      const bool ref = isRefRatio(*an);
-      const int64_t N = a.index;
-      int64_t m = 1;
-      auto join = [&](const tuning::Rational& q) {  // q = n/d: the note's ratio to the anchor; harmonic N·m·n/d
-        if (!q.isPositive()) return;
-        const int64_t need = q.den() / std::gcd(q.den(), N);  // gcd(d, N·n) = gcd(d, N): n/d is reduced
-        const int64_t next = lcmCapped(m, need, kMaxFundamentalDenominator / N);
-        if (next > 0) m = next;  // too fine for any numbering: left unnumbered
-      };
-      for (const Note& n : c.notes) {
-        if (n.id == a.note || n.pitch.kind() != tuning::PitchKind::Ratio) continue;
-        if (n.pitch.anchorKind() == tuning::AnchorKind::Note && n.pitch.anchorId() == a.note.value) {
-          join(n.pitch.ratio());
-        } else if (ref && isRefRatio(n)) {
-          if (const std::optional<tuning::Rational> q = tuning::div(n.pitch.ratio(), an->pitch.ratio())) join(*q);
-        }
-      }
-      const tuning::Rational f(1, N * m);
-      if (!ref) return ClipHarmonics{a.note, f};
-      if (const std::optional<tuning::Rational> r = tuning::mul(an->pitch.ratio(), f); r && r->isPositive()) return ClipHarmonics{{}, *r};
-      return std::nullopt;
-    }
-  }
   int64_t D = 0;  // −1: too fine
   auto join = [&D](int64_t d) {
     if (D < 0 || d == 0) return;
@@ -652,7 +759,7 @@ std::optional<ClipHarmonics> clipHarmonics(const NoteClip& c, int64_t own) {
     join(own);
   }
   if (D <= 0) return std::nullopt;
-  return ClipHarmonics{{}, tuning::Rational(1, D)};
+  return tuning::Rational(1, D);
 }
 
 namespace {
@@ -827,10 +934,7 @@ uint32_t maxEntityId(const Project& p) {
         see(c.id.value);
         if (c.clip) {
           for (const Note& n : c.clip->notes) see(n.id.value);
-          for (const JiObject& o : jiObjectsOf(*c.clip)) {  // T7.2
-            see(o.id.value);
-            for (const NoteId v : o.voiceNotes) see(v.value);
-          }
+          for (const JiGroup& g : jiGroupsOf(*c.clip)) see(g.id.value);  // T7.13
         }
       }
     };

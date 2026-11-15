@@ -171,9 +171,10 @@ constexpr HelpEntry kHarmonics[] = {
      "Show or hide the guide lines",
      "The JI switch appears once the clip has a harmonic series. It shows or hides the guide lines and their "
      "numbers."},
-    {"right-click > Unlock Fundamental",
-     "Unlock",
-     "Forgets which note was declared. Every note keeps its pitch; new notes land on the rows again."},
+    {"right-click > Remove JI Group",
+     "Remove the declaration",
+     "Forgets which note was declared. Every note keeps its pitch (the notes that were tied to it become fixed "
+     "pitches); new notes land on the rows again."},
 };
 
 // ---- Tuning ----------------------------------------------------------------------------------------------
@@ -205,39 +206,25 @@ constexpr HelpEntry kTuning[] = {
 };
 
 // ---- JI groups -----------------------------------------------------------------------------------------------
-// SEPARATE BLOCK (KB.help): today's box-object JI. The notes-first rework (docs/plans/M7.md "Rework: notes-first JI",
-// R3-R5; T7.13 removes the object UI, T7.14 builds groups) REPLACES this whole array: rewrite kJiGroups and its intro
-// in kSections, touch nothing else. Delete an entry here when its feature goes.
+// SEPARATE BLOCK (KB.help). T7.13 removed the box-object JI (the JI tool, entering a chord, stops, Tune to JI, walking
+// a term); what is left is what a group can do today. T7.14 (the group tools: Tune to JI and its chooser, warps,
+// walk, typed proportions, Add Note at Ratio) rewrites kJiGroups and its intro in kSections, and touches nothing else.
 constexpr HelpEntry kJiGroups[] = {
-    {"{pianoroll.tuneToJi}",
-     "Tune to JI",
-     "Select the notes of a chord. They slide, over one grid cell, from where the tuning puts them to the nearest "
-     "just chord: a 12-EDO major triad becomes 4:5:6. Also in the right-click menu. Remove JI Tuning in the chord's "
-     "right-click menu gives the plain notes back."},
-    {"{pianoroll.toggleJiTool}\ndrag a box, type, Enter",
-     "The JI tool",
-     "Turn the tool on, drag a box in the roll and type a chord as a proportion such as 8:9:10:12:15 (or 1/4:1/5:1/6 "
-     "for an undertone chord). You get a just chord as long as the box, its lowest voice on the box's bottom row."},
-    {"double-click a JI chord\n{pianoroll.deselect}",
-     "Enter a chord",
-     "Inside a chord its voices are the rows and the rest of the roll is dimmed; notes you draw go on the voice under "
-     "the pointer. The key, or a double-click outside, leaves."},
-    {"[1] \xE2\x80\xA6" " [9]\ninside an entered chord",
-     "Add a stop",
-     "A stop is a point where the chord changes to another proportion. Start typing the new proportion at the "
-     "pointer and press Enter: the voices glide to it. Drag a stop's label to move it, the grip on the chord's bottom "
-     "border to set how long the glide takes; double-click the label to retype it."},
-    {"{pianoroll.jiTuningStop}",
-     "Back to the tuning",
-     "Adds a stop at the pointer where the chord returns to the pitches of the clip's tuning. Needs a JI chord "
-     "selected or entered."},
-    {"{pianoroll.jiWalkUp} / {pianoroll.jiWalkDown}",
-     "Walk a harmonic",
-     "Click a harmonic number at the left end of a voice, then move that voice to the next harmonic up or down. The "
-     "lowest voice keeps its pitch."},
-    {"{pianoroll.jiWalkUpTop} / {pianoroll.jiWalkDownTop}",
-     "Walk, holding the top",
-     "The same walk with the highest voice keeping its pitch instead."},
+    {"click a note of a group",
+     "Which group the guide lines show",
+     "A clip can hold several groups. The guide lines and the snapping follow the group of the note you select; "
+     "with nothing selected they stay on the group you used last."},
+    {"{pianoroll.stepUp} / {pianoroll.stepDown}\non a note of a group",
+     "Next or previous harmonic",
+     "A note that sits on a guide line moves to the next harmonic of its group instead of the next row. The declared "
+     "note itself moves row by row and takes its whole group with it."},
+    {"{pianoroll.copy} / {pianoroll.paste}",
+     "Copy a group",
+     "Copy the declared note together with its notes and the paste is a group of its own, tuned the same way. A note "
+     "copied without its declared note is pasted as a fixed pitch."},
+    {"{pianoroll.delete}\non the declared note",
+     "Delete the declared note",
+     "The lowest remaining note of the group takes its place: every note keeps its pitch and its number."},
 };
 
 constexpr HelpSection kSections[] = {
@@ -264,7 +251,9 @@ constexpr HelpSection kSections[] = {
      kTuning},
     // The separate block: see kJiGroups.
     {"JI groups",
-     "Whole chords in just intonation, written as proportions such as 4:5:6:7.",
+     "A JI group is a declared note (see Harmonics) and the notes tied to it as exact ratios: ordinary notes that are "
+     "in tune with each other. A note's number is its harmonic in the group, so a group reads as a proportion such as "
+     "4:5:6:7.",
      kJiGroups},
 };
 

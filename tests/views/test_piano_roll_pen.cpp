@@ -1,13 +1,13 @@
-// T7.6 piano roll: bends between notes, pen modes, breakpoints, vibrato, ride curves. Every gesture goes through the
+// T7.6 piano roll: bends between notes, pen modes, breakpoints, vibrato. Every gesture goes through the
 // real shell, pointer and key dispatch (TestDriver → UiTree → the note area / the keymap / the menus / the inline
 // field), one undo step each:
 //   Alt + a note's left / right edge (bend in / out, the nearest neighbour in pitch, removing it, its shape by menu);
 //   Ctrl+G (the selection glides); Draw Mode: a stroke on a note (bounded points; a click still deletes the note),
 //   Ctrl + click (a breakpoint), Alt + drag (vibrato; "Edit Vibrato…", "Add Vibrato…"); breakpoints (drag with row
-//   snapping, Shift free, in time, the diamond's curvature, double-click deletes); the ride curve of a JI object on
-//   its lowest voice (stroke, breakpoint, vibrato; a click there still draws a note); Shift + body (free detune,
+//   snapping, Shift free, in time, the diamond's curvature, double-click deletes); Shift + body (free detune,
 //   Shift + click deselects); a resize keeps a bend on its edge; duplicate carries the curve; Clear Bends.
-// Goldens: pianoroll-bends, pianoroll-vibrato, pianoroll-ride.
+// Goldens: pianoroll-bends, pianoroll-vibrato. (T7.13: the ride curve of a JI object went with the object: its test
+// and the golden pianoroll-ride are deleted.)
 
 #include <doctest/doctest.h>
 
@@ -18,7 +18,6 @@
 
 #include "pq/document/automation_curve.h"
 #include "pq/document/commands.h"
-#include "pq/document/ji_object.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -119,11 +118,6 @@ struct Pen {
     const std::vector<doc::Breakpoint> c = curve(id);
     return c.empty() ? 0.0 : doc::automationValueAt(c, t);
   }
-  const doc::JiObject& object(doc::JiObjectId id) const {
-    const doc::JiObject* o = doc::findJiObject(clip(), id);
-    REQUIRE(o != nullptr);
-    return *o;
-  }
   size_t history() const { return ctx.store().history().cursor(); }
   Vec2 at(double tick, int64_t degree) const { return {view->xOfTick(tick), view->yOfDegree(degree)}; }
   void focusNotes() {
@@ -151,22 +145,6 @@ struct Pen {
     n.length = len;
     n.pitch = PitchId::fromDegree(degree, 0);
     return n;
-  }
-  // 4:5:6:7 over [start, start + len), its lowest voice on the row `degree`.
-  doc::JiObjectId makeObject(Ticks start, Ticks len, int32_t degree) {
-    const int64_t terms[] = {4, 5, 6, 7};
-    auto e = doc::ops::createJiObject(*ctx.doc(), ctx.store().ids(), ref, start, len, PitchId::fromDegree(degree, 0), terms);
-    REQUIRE(e.ok());
-    REQUIRE(ctx.store().dispatch(e->command).ok());
-    const doc::JiObjectId id = e->jiObjects.at(0);
-    std::vector<doc::JiStop> stops = object(id).stops;
-    stops[0].scale = tuning::Rational(1, 4);
-    auto s = doc::ops::setJiStops(*ctx.doc(), ctx.store().ids(), ref, id, stops);
-    REQUIRE(s.ok());
-    REQUIRE(ctx.store().dispatch(s->command).ok());
-    d.tree().layoutNow();
-    d.step();
-    return id;
   }
   void drawMode(bool on) {
     if (ctx.drawMode() != on) (void)d.press("B");
@@ -396,7 +374,7 @@ TEST_CASE("roll pen: breakpoints — Ctrl + click adds one, drag snaps to rows (
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 4 * kQ, 0)});
   const doc::NoteId n = ids[0];
-  const CurveTarget t{n, {}};
+  const CurveTarget t{n};
   r.drawMode(true);
   size_t h = r.history();
 
@@ -463,7 +441,7 @@ TEST_CASE("roll pen: Alt paints vibrato in Draw Mode (depth from the stroke's he
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 8 * kQ, 0), Pen::plain(0, 8 * kQ, 7)});
   const doc::NoteId n = ids[0];
-  const CurveTarget t{n, {}};
+  const CurveTarget t{n};
   r.drawMode(true);
   size_t h = r.history();
   const double rate = r.st().defaultVibratoRate(kQ);
@@ -529,95 +507,11 @@ TEST_CASE("roll pen: Alt paints vibrato in Draw Mode (depth from the stroke's he
   (void)r.d.press("Enter");
   r.d.step();
   CHECK(r.history() == h + 1);
-  const std::optional<RollState::Vibrato> w = r.st().vibratoAt(CurveTarget{ids[1], {}}, 4 * kQ);
+  const std::optional<RollState::Vibrato> w = r.st().vibratoAt(CurveTarget{ids[1]}, 4 * kQ);
   REQUIRE(w.has_value());
   CHECK(w->depth == doctest::Approx(20.0).epsilon(0.01));
   CHECK(w->from == 0);
   CHECK(w->to > 7 * kQ);
-}
-
-TEST_CASE("roll pen: the ride curve of a JI object is drawn on its lowest voice — stroke, breakpoint, vibrato; every voice follows") {
-  Pen r;
-  r.focusNotes();
-  const doc::JiObjectId id = r.makeObject(2 * kQ, 4 * kQ, 0);
-  const CurveTarget t{{}, id};
-  const tuning::Tuning tun = [&] {
-    const std::optional<doc::TrackPath> path = doc::findTrack(*r.ctx.doc(), r.ref.track);
-    REQUIRE(path.has_value());
-    auto built = doc::buildTuning(*doc::effectiveTuningRef(*r.ctx.doc(), *path, &r.clip()).def);
-    REQUIRE(built.ok());
-    return *built;
-  }();
-  const double third = *doc::jiVoiceCents(r.object(id), tun, 2, 3.5 * kQ);
-  r.drawMode(true);
-  size_t h = r.history();
-
-  // A stroke along the lowest voice from one beat in, a row up over a beat.
-  const Vec2 from = r.view->jiVoicePoint(id, 0, kQ);
-  r.d.drag(from, {from.x + kBeat, from.y - kRow}, 12);
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  REQUIRE(r.noteCount() == 0);  // the stroke drew no notes
-  std::vector<doc::Breakpoint> ride = r.object(id).ride;
-  REQUIRE(ride.size() >= 2);
-  CHECK(ride.front().tick == kQ);
-  CHECK(ride.front().value == 0.0f);
-  CHECK(doc::automationValueAt(ride, 2 * kQ) == doctest::Approx(100.0).epsilon(0.03));
-  // Every voice rides it.
-  CHECK(*doc::jiVoiceCents(r.object(id), tun, 2, 3.5 * kQ) == doctest::Approx(third + 100.0).epsilon(0.001));
-  CHECK(r.view->jiSelection() == id);
-
-  // "Clear Ride Curve" in the object's menu.
-  h = r.history();
-  r.drawMode(false);
-  const IRect box = r.view->jiObjectRect(id);
-  r.choose(r.rightClick({static_cast<float>(box.x) + 30.0f, static_cast<float>(box.y) - 8.0f}), "Clear Ride Curve");
-  CHECK(r.history() == h + 1);
-  CHECK(r.object(id).ride.empty());
-
-  // Ctrl + press on the lowest voice adds a breakpoint; dragged up a row.
-  r.drawMode(true);
-  h = r.history();
-  const Vec2 p = r.view->jiVoicePoint(id, 0, 2 * kQ);
-  r.d.drag(p, {p.x, p.y - kRow}, 4, mod::kCtrl);
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  ride = r.object(id).ride;
-  REQUIRE(ride.size() == 3);
-  CHECK(ride[1].tick == 2 * kQ);
-  CHECK(ride[1].value == doctest::Approx(100.0).epsilon(0.01));
-  // The selected object shows it on the lowest voice; dragged another row up in pointer mode.
-  r.drawMode(false);
-  h = r.history();
-  const Vec2 hp = r.handle(t, 1);
-  CHECK(hp.y == doctest::Approx(r.view->jiVoicePoint(id, 0, 2 * kQ).y).epsilon(0.001));
-  r.d.drag(hp, {hp.x, hp.y - kRow}, 5);
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  CHECK(r.object(id).ride[1].value == doctest::Approx(200.0).epsilon(0.01));
-  // A double-click deletes it: no ride is left.
-  h = r.history();
-  r.d.doubleClick(r.handle(t, 1));
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  CHECK(r.object(id).ride.empty());
-
-  // Alt paints vibrato on the ride.
-  r.drawMode(true);
-  h = r.history();
-  const Vec2 v0 = r.view->jiVoicePoint(id, 0, kQ / 2);
-  r.d.drag(v0, {v0.x + 3.0f * kBeat, v0.y - 6.0f}, 8, mod::kAlt);
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  CHECK(r.object(id).ride.size() > 16);
-  CHECK(r.st().vibratoAt(t, 2 * kQ).has_value());
-
-  // A click (no drag) on the lowest voice still draws the cell's note there.
-  h = r.history();
-  r.d.click(r.view->jiVoicePoint(id, 0, 7 * kQ / 2 + kQ / 4));
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  CHECK(r.noteCount() == 1);
 }
 
 TEST_CASE("roll pen: Shift + a note's body detunes it freely (a Cents note); Shift + click on a selected note deselects it") {
@@ -749,4 +643,3 @@ TEST_CASE("roll pen: curve arithmetic — retiming on a resize, parsing a typed 
 TEST_CASE("render: pianoroll-note-lines (T7.12: repeated 16ths, a selected run, soft / deactivated / Cents / Ratio notes as lines) matches the golden image") { checkGolden("pianoroll-note-lines"); }
 TEST_CASE("render: pianoroll-bends (a melody gliding between its notes, a straight scoop with its breakpoints) matches the golden image") { checkGolden("pianoroll-bends"); }
 TEST_CASE("render: pianoroll-vibrato (a 30 ¢ / 6 Hz vibrato, a scoop into a 60 ¢ / 4 Hz one) matches the golden image") { checkGolden("pianoroll-vibrato"); }
-TEST_CASE("render: pianoroll-ride (ride curves on JI objects: breakpoints on the lowest voice, a vibrato) matches the golden image") { checkGolden("pianoroll-ride"); }

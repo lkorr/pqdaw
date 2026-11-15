@@ -14,6 +14,7 @@
 #include "pq/document/automation_curve.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/note_bend.h"
 
 namespace pq::doc::ops::detail {
 
@@ -57,19 +58,14 @@ std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rig
 // Copy with fresh clip and note ids. `onlyPlaying`: for a non-looped clip, copy only the notes that start inside
 // the played content window (hidden notes are dropped).
 NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying);
-// T7.2: the degree of `t` nearest to `cents` (above its reference); nullopt for a tuning without a usable lattice.
+// The degree of `t` nearest to `cents` (above its reference); nullopt for a tuning without a usable lattice.
 std::optional<tuning::PitchId> nearestDegreePitch(const tuning::Tuning& t, double cents);
-// T7.2: old → new ids of JI objects given fresh ids.
-using JiIdMap = std::vector<std::pair<JiObjectId, JiObjectId>>;  // sorted by old id
-// `p` re-pointed through `map` (Harmonic / JiFundamental identities whose object is in it); else unchanged.
-tuning::PitchId remapJiPitch(const tuning::PitchId& p, const JiIdMap& map) noexcept;
-// A copy of `o` with a fresh object id and fresh voice-note ids.
-JiObject freshJiObject(const JiObject& o, IdSource& ids);
 // Drops the curves of notes that are not in c.notes (after notes left the clip), and the bends to notes that are not
 // (T7.11a). O(notes + curves) when it has curves.
 void pruneCurves(NoteClip& c);
-// The note a pitch is anchored to (a Ratio with AnchorKind::Note); invalid for every other identity.
-NoteId noteAnchorOf(const tuning::PitchId& p) noexcept;
+// T7.13: drops the JI groups whose anchor is not in c.notes and the written identities of notes that are not members
+// of a group of the clip. O(notes log notes) when it has either.
+void pruneJi(NoteClip& c);
 // T7.11a: old → new ids of copied notes (sources[i] was copied to copies[i]), sorted by old id.
 using NoteIdMap = std::vector<std::pair<NoteId, NoteId>>;
 NoteIdMap noteIdMap(std::span<const NoteId> sources, std::span<const Note> copies);
@@ -84,27 +80,59 @@ NoteCurves remapNoteCurves(const NoteCurves& nc, NoteId note, const NoteIdMap& m
 // re-pointed as remapNoteCurves. nullopt: no copy has a curve. Errors: an invalid record.
 Result<std::optional<SetNoteCurves>> copiedCurves(ClipRef clip, const NoteClip& target, std::span<const NoteCurves> curves,
                                                   std::span<const NoteId> sources, std::span<const Note> copies);
+// T7.13: copies of notes carry their JI structure. copies[i] is the copy of note sources[i] (invalid: none) about to
+// be added to `target`; `source` holds the groups and written identities of where they come from (the same clip for a
+// duplicate, a clipboard for a paste). The copies anchored to a copied note are re-pointed to the copy (in place); a
+// group whose anchor and at least one member were copied is copied with a fresh id; a copied member keeps its written
+// identity. The commands replace the target's whole lists (push them after the AddNotes).
+struct CopiedJi {
+  std::optional<SetJiGroups> groups;
+  std::optional<SetNotesWritten> written;
+  std::vector<JiGroupId> made;
+};
+Result<CopiedJi> copyJi(ClipRef clip, const NoteClip& target, const JiSource& source, std::span<const NoteId> sources,
+                        std::span<Note> copies, IdSource& ids);
+// A note's pitch as an exact ratio to the reference: a chain of note anchors (≤ 8 links) that ends on a
+// reference-anchored Ratio, none of its notes with a curve record or a warp (they move what is anchored to them:
+// pitch_resolve.h). nullopt: it is not one (also for n == nullptr). O(links · notes).
+std::optional<tuning::Rational> exactReferenceRatio(const NoteClip& clip, const NotePitchIndex& hz, const Note* n);
+// T7.13: a group's warps when its start moves `by` ticks later (by > 0): the same points in the clip. Warps that are
+// over before the new start are dropped (the state they left is what the first remaining warp comes from); one that
+// is still gliding keeps the rest of its glide from tick 0; a group left in its written state keeps that as a jump at
+// 0; one left in JI has no warps.
+std::vector<JiWarp> shiftedWarps(std::span<const JiWarp> warps, Ticks by);
 // T7.11a (M7 review H3): what keeps the remaining notes of `clip` (a clip of the track at `path`, or a working copy of
 // one) sounding at the same pitch when the notes `gone` (sorted ids) leave it — deleted, or parted from them by a
 // split. A note anchored to a leaving note is re-anchored:
 //   - the anchor's pitch is an exact ratio to the reference (a chain of note anchors ending on a reference-anchored
 //     Ratio, no curve on the way): the exact reference-anchored Ratio;
-//   - else, when the anchor sounds at one pitch for all its dependants (no curve record, not a note of a JI object) and
-//     there are several (or it is the clip's declared harmonic): the first dependant without a curve carries the pitch
-//     as Cents and the others are anchored to it by their exact ratios to it; the declared harmonic moves to it
-//     (index N · its ratio) when that is a whole number ≤ kMaxHarmonicIndex;
+//   - else, when the anchor sounds at one pitch for all its dependants (no curve record, no warp) and there are
+//     several: the LOWEST dependant without a curve carries the pitch as Cents and the others are anchored to it by
+//     their exact ratios to it;
 //   - else Cents at the pitch it resolves to now.
-// A declared harmonic whose note leaves is otherwise cleared; harmonic steps of leaving notes are dropped. A note that
-// does not resolve is left as it is. Nothing to do costs one pass over the notes (no resolution).
+// T7.13: when the leaving note is the anchor of a JI group, the group lives on — its lowest remaining member (without
+// a curve) is promoted to anchor in either of the first two cases (it carries the pitch: the exact reference Ratio,
+// else Cents at its JI pitch), the others keep their exact ratios to it, and the group's index becomes the number the
+// new anchor had, so every member keeps its number and its Hz. Its warps stay where they are in the clip (shifted by
+// how far the group's start moved: shiftedWarps); the new anchor's written identity is dropped (an anchor does not warp). A group that finds no member to
+// promote goes with its anchor. Harmonic steps of leaving notes are dropped. A note that does not resolve is left as
+// it is. Nothing to do costs one pass over the notes (no resolution).
 struct Reanchored {
-  std::vector<Note> updates;                   // remaining notes with their new identity
-  std::optional<ClipFundamental> fundamental;  // set: the clip's fundamental becomes this
-  bool empty() const noexcept { return updates.empty() && !fundamental; }
+  std::vector<Note> updates;                         // remaining notes with their new identity
+  std::optional<ClipFundamental> fundamental;        // set: the clip's fundamental becomes this
+  std::optional<std::vector<JiGroup>> groups;        // set: the clip's group list becomes this
+  std::optional<std::vector<NoteWritten>> written;   // set: the clip's written identities become this
+  bool empty() const noexcept { return updates.empty() && !fundamental && !groups && !written; }
 };
 Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteClip& clip, std::span<const NoteId> gone);
-// The result applied to a clip value / as commands (UpdateNotes, SetClipFundamental) appended to a batch.
+// The result applied to a clip value / as commands (UpdateNotes, SetClipFundamental, SetJiGroups, SetNotesWritten)
+// appended to a batch (before the RemoveNotes).
 void applyReanchored(NoteClip& c, Reanchored r);
 void appendReanchored(Batch& b, const ClipRef& clip, Reanchored r);
+// T7.13: a note whose pitch an UpdateNotes of `b` changes is no longer the note that was written: appends the
+// SetNotesWritten that drops such notes' written identities (`before`: the clip the batch applies to). Nothing for a
+// clip without any. For the builders that re-pitch notes one by one (steps, drags, type-ins).
+void dropRepitchedWritten(Batch& b, const ClipRef& clip, const NoteClip& before);
 // Builds a sequence from notes known to be valid with unique ids.
 NoteSeq seqOf(std::vector<Note> notes);
 

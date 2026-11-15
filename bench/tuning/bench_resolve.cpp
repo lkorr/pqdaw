@@ -31,28 +31,24 @@ void benchKind(const char* name, const std::vector<PitchId>& ids, const Tuning& 
 int main() {
   std::mt19937_64 rng(1);
   const Tuning t31 = *Tuning::make(*Edo::make(31), kDefaultReferenceHz);
-  const uint32_t chord[] = {4, 5, 6, 7, 9, 11, 13, 15};
   ResolveContext ctx;
   ctx.anchorHz = 220.0;
-  ctx.harmonic = {55.0, chord, 8, false};
 
-  std::vector<PitchId> degree, ratio, cents, harmonic, mixed;
+  std::vector<PitchId> degree, ratio, cents, mixed;
   for (size_t i = 0; i < kCount; ++i) {
     degree.push_back(PitchId::fromDegree(static_cast<int32_t>(rng() % 31), static_cast<int32_t>(rng() % 5) - 2));
     ratio.push_back(PitchId::fromRatio(Rational(static_cast<int64_t>(rng() % 64 + 1), static_cast<int64_t>(rng() % 64 + 1)),
                                        (i & 1) ? AnchorKind::Note : AnchorKind::Reference, 0));
     cents.push_back(PitchId::fromCents(static_cast<double>(rng() % 480000) / 100.0 - 2400.0));
-    harmonic.push_back(PitchId::fromHarmonic(0, static_cast<uint32_t>(rng() % 8)));
   }
   for (size_t i = 0; i < kCount; ++i) {
-    const std::vector<PitchId>* src[] = {&degree, &ratio, &cents, &harmonic};
-    mixed.push_back((*src[rng() % 4])[i]);
+    const std::vector<PitchId>* src[] = {&degree, &ratio, &cents};
+    mixed.push_back((*src[rng() % 3])[i]);
   }
 
   benchKind("resolveHz/degree(31edo)", degree, t31, ctx);
   benchKind("resolveHz/ratio", ratio, t31, ctx);
   benchKind("resolveHz/cents", cents, t31, ctx);
-  benchKind("resolveHz/harmonic", harmonic, t31, ctx);
   benchKind("resolveHz/mixed(random kinds)", mixed, t31, ctx);
 
   // Checked Rational multiply (gcd cross-cancellation + overflow-checked 64×64): the cost of one macro-mode interval

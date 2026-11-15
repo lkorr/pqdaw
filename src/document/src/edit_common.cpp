@@ -142,17 +142,6 @@ NoteClip withBounds(const NoteClip& c, Ticks start, Ticks end) {
 
 std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rightId, IdSource& ids, const Project& p,
                                           const TrackPath& path) {
-  // T7.11a (H3): a note parted from its anchor by the cut keeps its pitch (reanchorWithout), in either piece.
-  auto reanchor = [&](NoteClip& left, NoteClip& right) {
-    if (left.notes.size() == c.notes.size() || right.notes.size() == c.notes.size()) return;  // nothing parted
-    std::vector<NoteId> l, r;
-    for (const Note& n : left.notes) l.push_back(n.id);
-    for (const Note& n : right.notes) r.push_back(n.id);
-    std::sort(l.begin(), l.end());
-    std::sort(r.begin(), r.end());
-    applyReanchored(left, reanchorWithout(p, path, c, r));
-    applyReanchored(right, reanchorWithout(p, path, c, l));
-  };
   NoteClip left = withNotes(c, c.notes);
   left.length = t - c.start;
   if (clipLooped(c)) {
@@ -171,74 +160,40 @@ std::pair<NoteClip, NoteClip> splitClipAt(const NoteClip& c, Ticks t, ClipId rig
     keys.push_back(keyOf(*it));
   }
   if (!keys.empty()) left.notes = c.notes.withRemoved(keys);
-  if (c.ji) {
-    // T7.2: an object goes where it is needed — left: it starts before the cut or a left note follows it; right: it
-    // ends after the cut or a moved note follows it. One needed on both sides is copied to the right with fresh ids
-    // (ids name one entity), the moved notes re-pointed to the copy.
-    std::vector<JiObjectId> leftRefs, rightRefs;
-    for (const Note& n : left.notes)
-      if (const JiObjectId o = jiObjectOf(n.pitch); o.valid()) leftRefs.push_back(o);
-    for (const Note& n : moved)
-      if (const JiObjectId o = jiObjectOf(n.pitch); o.valid()) rightRefs.push_back(o);
-    std::sort(leftRefs.begin(), leftRefs.end());
-    std::sort(rightRefs.begin(), rightRefs.end());
-    JiObjectList l, r;
-    JiIdMap map;
-    for (const JiObject& o : *c.ji) {
-      const bool inLeft = o.start < sc || std::binary_search(leftRefs.begin(), leftRefs.end(), o.id);
-      const bool inRight = o.end() > sc || std::binary_search(rightRefs.begin(), rightRefs.end(), o.id);
-      if (inLeft) l.push_back(o);
-      if (inRight && inLeft) {
-        r.push_back(freshJiObject(o, ids));
-        map.emplace_back(o.id, r.back().id);
-      } else if (inRight) {
-        r.push_back(o);
-      }
-    }
-    if (!map.empty())
-      for (Note& n : moved) n.pitch = remapJiPitch(n.pitch, map);
-    std::sort(r.begin(), r.end(), [](const JiObject& a, const JiObject& b) { return a.id < b.id; });
-    left.ji = l.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(l));
-    NoteClip right = withNotes(c, seqOf(std::move(moved)));
-    right.ji = r.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(r));
-    right.id = rightId;
-    right.start = t;
-    right.length = clipEnd(c) - t;
-    right.contentStart = sc;
-    reanchor(left, right);
-    pruneCurves(left);
-    pruneCurves(right);
-    return {std::move(left), std::move(right)};
-  }
   NoteClip right = withNotes(c, seqOf(std::move(moved)));
   right.id = rightId;
   right.start = t;
   right.length = clipEnd(c) - t;
   right.contentStart = sc;
-  reanchor(left, right);
+  // T7.11a (H3): a note parted from its anchor by the cut keeps its pitch (reanchorWithout), in either piece; T7.13:
+  // a group parted from its anchor promotes a member there, so a group cut in two is a group in each piece.
+  if (left.notes.size() != c.notes.size() && right.notes.size() != c.notes.size()) {
+    std::vector<NoteId> l, r;
+    for (const Note& n : left.notes) l.push_back(n.id);
+    for (const Note& n : right.notes) r.push_back(n.id);
+    std::sort(l.begin(), l.end());
+    std::sort(r.begin(), r.end());
+    applyReanchored(left, reanchorWithout(p, path, c, r));
+    applyReanchored(right, reanchorWithout(p, path, c, l));
+  }
   pruneCurves(left);
   pruneCurves(right);
+  pruneJi(left);
+  pruneJi(right);
+  if (left.groups && right.groups) {  // ids name one entity: a group in both pieces is a new group on the right
+    JiGroupList list = *right.groups;
+    bool any = false;
+    for (JiGroup& g : list)
+      if (findJiGroup(left, g.id) != nullptr) {
+        g.id = ids.jiGroup();
+        any = true;
+      }
+    if (any) {
+      std::sort(list.begin(), list.end(), [](const JiGroup& a, const JiGroup& b) { return a.id < b.id; });
+      right.groups = std::make_shared<const JiGroupList>(std::move(list));
+    }
+  }
   return {std::move(left), std::move(right)};
-}
-
-tuning::PitchId remapJiPitch(const tuning::PitchId& p, const JiIdMap& map) noexcept {
-  const JiObjectId id = jiObjectOf(p);
-  if (!id.valid()) return p;
-  const auto it = std::lower_bound(map.begin(), map.end(), id, [](const auto& e, JiObjectId x) { return e.first < x; });
-  if (it == map.end() || it->first != id) return p;
-  if (p.kind() == tuning::PitchKind::Harmonic) return tuning::PitchId::fromHarmonic(it->second.value, p.voiceIndex());
-  return tuning::PitchId::fromRatio(p.ratio(), tuning::AnchorKind::JiFundamental, it->second.value);
-}
-
-JiObject freshJiObject(const JiObject& o, IdSource& ids) {
-  JiObject n = o;
-  n.id = ids.jiObject();
-  for (NoteId& v : n.voiceNotes) v = ids.note();
-  return n;
-}
-
-NoteId noteAnchorOf(const tuning::PitchId& p) noexcept {
-  return p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Note ? NoteId{p.anchorId()} : NoteId{};
 }
 
 NoteIdMap noteIdMap(std::span<const NoteId> sources, std::span<const Note> copies) {
@@ -291,6 +246,57 @@ Result<std::optional<SetNoteCurves>> copiedCurves(ClipRef clip, const NoteClip& 
   return std::optional<SetNoteCurves>(std::move(set));
 }
 
+Result<CopiedJi> copyJi(ClipRef clip, const NoteClip& target, const JiSource& source, std::span<const NoteId> sources,
+                        std::span<Note> copies, IdSource& ids) {
+  CopiedJi out;
+  bool anchored = false;
+  for (const Note& n : copies) anchored = anchored || noteAnchorOf(n.pitch).valid();
+  if (!anchored) return out;  // no member among the copies: a group is not copied for its anchor alone
+  const NoteIdMap map = noteIdMap(sources, copies);
+  // An identity anchored to a note that was copied too names the copy; to one that was not, it is left as it is (a
+  // note of the target clip: a copy inside its own clip, still a member of the original group).
+  for (Note& n : copies)
+    if (const NoteId to = remapNote(noteAnchorOf(n.pitch), map); to.valid())
+      n.pitch = tuning::PitchId::fromRatio(n.pitch.ratio(), tuning::AnchorKind::Note, to.value);
+  // A group whose anchor was copied together with a member is copied (fresh id, same index and warps).
+  JiGroupList groups;
+  for (const JiGroup& g : source.groups) {
+    const NoteId to = remapNote(g.anchor, map);
+    if (!to.valid() || std::ranges::none_of(copies, [&](const Note& n) { return noteAnchorOf(n.pitch) == to; })) continue;
+    JiGroup copy = g;
+    copy.id = ids.jiGroup();
+    copy.anchor = to;
+    PQ_DOC_TRY(checkJiGroup(copy));
+    out.made.push_back(copy.id);
+    groups.push_back(std::move(copy));
+  }
+  // A copied member has its source's written identity.
+  NoteWrittenList written;
+  if (!source.written.empty()) {
+    std::vector<const NoteWritten*> byNote;
+    byNote.reserve(source.written.size());
+    for (const NoteWritten& w : source.written) byNote.push_back(&w);
+    std::sort(byNote.begin(), byNote.end(), [](const NoteWritten* x, const NoteWritten* y) { return x->note < y->note; });
+    for (size_t i = 0; i < copies.size(); ++i) {
+      if (!sources[i].valid() || !noteAnchorOf(copies[i].pitch).valid()) continue;
+      const auto it = std::lower_bound(byNote.begin(), byNote.end(), sources[i],
+                                       [](const NoteWritten* x, NoteId id) { return x->note < id; });
+      if (it == byNote.end() || (*it)->note != sources[i]) continue;
+      PQ_DOC_TRY(checkWrittenPitch((*it)->written));
+      written.push_back(NoteWritten{copies[i].id, (*it)->written});
+    }
+  }
+  if (!groups.empty()) {
+    groups.insert(groups.begin(), jiGroupsOf(target).begin(), jiGroupsOf(target).end());
+    out.groups = SetJiGroups{clip, std::move(groups)};
+  }
+  if (!written.empty()) {
+    written.insert(written.begin(), notesWrittenOf(target).begin(), notesWrittenOf(target).end());
+    out.written = SetNotesWritten{clip, std::move(written)};
+  }
+  return out;
+}
+
 void pruneCurves(NoteClip& c) {
   if (!c.curves) return;
   std::vector<NoteId> have;
@@ -316,23 +322,46 @@ void pruneCurves(NoteClip& c) {
   c.curves = out.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(out));
 }
 
+void pruneJi(NoteClip& c) {
+  if (!c.groups && !c.written) return;
+  // (note id, the note it is anchored to), sorted by id: which notes there are and which are members.
+  std::vector<std::pair<NoteId, NoteId>> have;
+  have.reserve(c.notes.size());
+  for (const Note& n : c.notes) have.emplace_back(n.id, noteAnchorOf(n.pitch));
+  std::sort(have.begin(), have.end());
+  auto find = [&](NoteId id) {
+    const auto it = std::lower_bound(have.begin(), have.end(), std::pair<NoteId, NoteId>{id, NoteId{}});
+    return it != have.end() && it->first == id ? &*it : nullptr;
+  };
+  if (c.groups && !std::ranges::all_of(*c.groups, [&](const JiGroup& g) { return find(g.anchor) != nullptr; })) {
+    JiGroupList kept;
+    for (const JiGroup& g : *c.groups)
+      if (find(g.anchor)) kept.push_back(g);
+    c.groups = kept.empty() ? nullptr : std::make_shared<const JiGroupList>(std::move(kept));
+  }
+  if (c.written) {
+    // A written identity means something for a member of a group only.
+    auto member = [&](const NoteWritten& w) {
+      const auto* e = find(w.note);
+      return e != nullptr && e->second.valid() && findJiGroupByAnchor(c, e->second) != nullptr;
+    };
+    if (!std::ranges::all_of(*c.written, member)) {
+      NoteWrittenList kept;
+      for (const NoteWritten& w : *c.written)
+        if (member(w)) kept.push_back(w);
+      c.written = kept.empty() ? nullptr : std::make_shared<const NoteWrittenList>(std::move(kept));
+    }
+  }
+}
+
 NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
   std::vector<Note> notes;
-  // T7.2: the copy's objects get fresh ids (objects first, so a clip without any allocates exactly as before), its
-  // notes follow the copies, its curves are re-keyed to the copied notes.
-  JiObjectList objects;
-  JiIdMap map;
-  for (const JiObject& o : jiObjectsOf(c)) {  // sorted by id, and fresh ids ascend: both stay sorted
-    objects.push_back(freshJiObject(o, ids));
-    map.emplace_back(o.id, objects.back().id);
-  }
   std::vector<NoteId> sources;  // sources[i]: the note notes[i] copies
   bool anchored = false;        // a copied note is anchored to a note
   auto take = [&](const Note& n) {
     Note m = n;
     m.id = ids.note();
     anchored = anchored || noteAnchorOf(n.pitch).valid();
-    if (!map.empty()) m.pitch = remapJiPitch(m.pitch, map);
     sources.push_back(n.id);
     notes.push_back(m);
   };
@@ -344,20 +373,18 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
     for (const Note& n : c.notes) take(n);
   }
   // T7.11a (M7 review H2): whatever names a note is re-pointed to its copy (old → new note ids) — the identities
-  // anchored to a note, the clip's declared harmonic and harmonic steps, the curves' bends. The map is only built for
-  // a clip that has any of them.
+  // anchored to a note, the harmonic steps, the curves' bends, and (T7.13) the JI groups' anchors and the written
+  // identities. The map is only built for a clip that has any of them.
   NoteIdMap noteMap;
   NoteCurveList curves;
+  JiGroupList groups;
+  NoteWrittenList written;
   ClipFundamental fundamental = c.fundamental;
-  if (c.curves || anchored || !fundamental.empty()) noteMap = noteIdMap(sources, notes);
+  if (c.curves || c.groups || c.written || anchored || !fundamental.empty()) noteMap = noteIdMap(sources, notes);
   if (anchored)
     for (Note& m : notes)
       if (const NoteId to = remapNote(noteAnchorOf(m.pitch), noteMap); to.valid())
         m.pitch = tuning::PitchId::fromRatio(m.pitch.ratio(), tuning::AnchorKind::Note, to.value);
-  if (fundamental.anchor) {
-    fundamental.anchor->note = remapNote(fundamental.anchor->note, noteMap);
-    if (!fundamental.anchor->note.valid()) fundamental.anchor.reset();  // its note was not copied
-  }
   if (!fundamental.steps.empty()) {
     for (HarmonicStep& st : fundamental.steps) st.note = remapNote(st.note, noteMap);
     std::erase_if(fundamental.steps, [](const HarmonicStep& st) { return !st.note.valid(); });
@@ -369,15 +396,58 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
       if (const NoteCurves* nc = findNoteCurves(c, sources[i]))
         if (NoteCurves copy = remapNoteCurves(*nc, notes[i].id, noteMap); !copy.empty()) curves.push_back(std::move(copy));
   }
+  for (const JiGroup& g : jiGroupsOf(c)) {  // sorted by id, and fresh ids ascend: the copy stays sorted
+    const NoteId to = remapNote(g.anchor, noteMap);
+    if (!to.valid()) continue;  // its anchor was not copied
+    groups.push_back(g);
+    groups.back().id = ids.jiGroup();
+    groups.back().anchor = to;
+  }
+  for (const NoteWritten& w : notesWrittenOf(c))
+    if (const NoteId to = remapNote(w.note, noteMap); to.valid()) written.push_back(NoteWritten{to, w.written});
+  std::sort(written.begin(), written.end(), [](const NoteWritten& x, const NoteWritten& y) { return x.note < y.note; });
   NoteClip n = withNotes(c, seqOf(std::move(notes)));
   n.id = ids.clip();
   n.fundamental = std::move(fundamental);
-  n.ji = objects.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(objects));
   n.curves = curves.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(curves));  // ids ascend
+  n.groups = groups.empty() ? nullptr : std::make_shared<const JiGroupList>(std::move(groups));
+  n.written = written.empty() ? nullptr : std::make_shared<const NoteWrittenList>(std::move(written));
   return n;
 }
 
-// ---- Notes that lose their anchor (T7.11a, M7 review H3) -------------------------------------------------------------
+std::optional<tuning::Rational> exactReferenceRatio(const NoteClip& clip, const NotePitchIndex& hz, const Note* n) {
+  tuning::Rational r{1};
+  for (int link = 0; n != nullptr && link <= 8; ++link) {
+    if (n->pitch.kind() != tuning::PitchKind::Ratio || findNoteCurves(clip, n->id) != nullptr || hz.warped(n->id) != nullptr)
+      return std::nullopt;
+    const std::optional<tuning::Rational> m = tuning::mul(r, n->pitch.ratio());
+    if (!m || !m->isPositive()) return std::nullopt;
+    r = *m;
+    if (n->pitch.anchorKind() == tuning::AnchorKind::Reference) return r;
+    n = clip.notes.findById(NoteId{n->pitch.anchorId()});
+  }
+  return std::nullopt;
+}
+
+std::vector<JiWarp> shiftedWarps(std::span<const JiWarp> warps, Ticks by) {
+  std::vector<JiWarp> out;
+  for (size_t i = 0; i < warps.size(); ++i) {
+    JiWarp w = warps[i];
+    w.at -= by;
+    if (w.at + w.glide <= 0 && i + 1 < warps.size() && warps[i + 1].at - by <= 0) continue;  // over before the start, and so is the next
+    if (w.at < 0) {  // the last one that began before the start: what is left of its glide, from the start
+      w.glide = std::max<Ticks>(w.at + w.glide, 0);
+      w.at = 0;
+      // A jump at the start says nothing the warps after it do not (they alternate), nor does "JI from here on".
+      if (w.glide == 0 && (w.toJi || i + 1 < warps.size())) continue;
+    }
+    out.push_back(w);
+  }
+  if (out.size() == 1 && out[0].at == 0 && out[0].glide == 0 && out[0].toJi) out.clear();
+  return out;
+}
+
+// ---- Notes that lose their anchor (T7.11a, M7 review H3; T7.13 groups) -----------------------------------------------
 
 Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteClip& clip, std::span<const NoteId> gone) {
   Reanchored out;
@@ -388,14 +458,12 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
   for (const Note& n : clip.notes)
     if (const NoteId a = noteAnchorOf(n.pitch); a.valid() && isGone(a) && !isGone(n.id)) lost.push_back(&n);
   const ClipFundamental& cf = clip.fundamental;
-  bool fundamental = cf.anchor && isGone(cf.anchor->note);
+  bool fundamental = false;
   for (const HarmonicStep& st : cf.steps) fundamental = fundamental || isGone(st.note);
   if (lost.empty() && !fundamental) return out;
 
   ClipFundamental nf = cf;
   std::erase_if(nf.steps, [&](const HarmonicStep& st) { return isGone(st.note); });
-  const NoteId declared = cf.anchor ? cf.anchor->note : NoteId{};
-  if (declared.valid() && isGone(declared)) nf.anchor.reset();  // moved below when a dependant can take it over
   if (!lost.empty()) {
     const ClipPitches cp = resolveClipPitches(p, path, clip);
     const NotePitchIndex hz(cp);
@@ -409,11 +477,12 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
       return it != byId.end() && it->first == id ? it->second : nullptr;
     };
     // A note's pitch as an exact ratio to the reference: a chain of note anchors that ends on a reference-anchored
-    // Ratio, none of its notes with a curve record (a curve moves what is anchored to it: pitch_resolve.h).
+    // Ratio, none of its notes with a curve record or a warp (they move what is anchored to them: pitch_resolve.h).
     auto exactRatio = [&](const Note* n) -> std::optional<tuning::Rational> {
       tuning::Rational r{1};
       for (int link = 0; n != nullptr && link <= 8; ++link) {
-        if (n->pitch.kind() != tuning::PitchKind::Ratio || findNoteCurves(clip, n->id) != nullptr) return std::nullopt;
+        if (n->pitch.kind() != tuning::PitchKind::Ratio || findNoteCurves(clip, n->id) != nullptr || hz.warped(n->id) != nullptr)
+          return std::nullopt;
         const std::optional<tuning::Rational> m = tuning::mul(r, n->pitch.ratio());
         if (!m || !m->isPositive()) return std::nullopt;
         r = *m;
@@ -423,58 +492,124 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
       }
       return std::nullopt;
     };
-    auto centsPitch = [&](const Note& n) -> std::optional<tuning::PitchId> {
-      const std::optional<double> v = hz.hz(n.id);
+    // Cents at `v` Hz.
+    auto centsAt = [&](std::optional<double> v) -> std::optional<tuning::PitchId> {
       if (!v || !tun) return std::nullopt;  // it did not sound before either: left as it is
       const double c = 1200.0 * std::log2(*v / tun->referenceHz());
       return std::isfinite(c) ? std::optional<tuning::PitchId>(tuning::PitchId::fromCents(c)) : std::nullopt;
     };
+    // A member's JI pitch (a warped member's start pitch may be its written one).
+    auto jiHz = [&](NoteId id) -> std::optional<double> {
+      if (const NoteWarpState* w = hz.warped(id)) return w->jiHz;
+      return hz.hz(id);
+    };
+    std::vector<NoteId> unwritten;  // notes whose written identity no longer applies
     auto set = [&](const Note& n, const tuning::PitchId& pitch) {
       Note m = n;
       m.pitch = pitch;
       out.updates.push_back(m);
+      if (!noteAnchorOf(pitch).valid() && findNoteWritten(clip, n.id) != nullptr) unwritten.push_back(n.id);
     };
+    JiGroupList groups(jiGroupsOf(clip).begin(), jiGroupsOf(clip).end());
+    bool groupsChanged = false;
     std::stable_sort(lost.begin(), lost.end(), [](const Note* x, const Note* y) { return x->pitch.anchorId() < y->pitch.anchorId(); });
     for (size_t i = 0; i < lost.size();) {
       size_t j = i;
       while (j < lost.size() && lost[j]->pitch.anchorId() == lost[i]->pitch.anchorId()) ++j;
       const NoteId anchorId{lost[i]->pitch.anchorId()};
       const Note* anchor = noteOf(anchorId);
+      const auto git = std::find_if(groups.begin(), groups.end(), [&](const JiGroup& g) { return g.anchor == anchorId; });
+      JiGroup* group = git != groups.end() ? &*git : nullptr;
       const std::optional<tuning::Rational> exact = exactRatio(anchor);
-      // The anchor sounds at one pitch for all of them: no curve record, not a note of a JI object.
-      const bool constant = anchor != nullptr && findNoteCurves(clip, anchorId) == nullptr &&
-                            !jiObjectOf(anchor->pitch).valid();
-      // Tempered anchor: the first dependant without a curve of its own carries the pitch (Cents), the others keep
-      // their exact ratios to it. Worth it for two or more, or to keep the declared harmonic.
+      // The anchor sounds at one pitch for all of them: no curve record, no warp of its own.
+      const bool constant = anchor != nullptr && findNoteCurves(clip, anchorId) == nullptr && hz.warped(anchorId) == nullptr;
+      // The LEADER takes the anchor's place: the lowest remaining dependant without a curve of its own. It carries the
+      // pitch (the exact reference Ratio when the anchor's pitch is one, else Cents) and the others keep their exact
+      // ratios to it. For a JI group: always (T7.13: the group lives on, the leader its anchor). Without a group: only
+      // under a tempered anchor with two or more dependants (an exact anchor makes them all exact reference Ratios).
       const Note* leader = nullptr;
-      if (!exact && constant && (j - i > 1 || anchorId == declared))
-        for (size_t k = i; k < j && leader == nullptr; ++k)
-          if (findNoteCurves(clip, lost[k]->id) == nullptr && hz.hz(lost[k]->id) && tun) leader = lost[k];
+      if ((exact || constant) && (group != nullptr || (!exact && j - i > 1)))
+        for (size_t k = i; k < j; ++k) {
+          const Note& n = *lost[k];
+          if (findNoteCurves(clip, n.id) != nullptr || (!exact && !(jiHz(n.id) && tun))) continue;
+          if (leader == nullptr || n.pitch.ratio() < leader->pitch.ratio()) leader = &n;
+        }
       for (size_t k = i; k < j; ++k) {
         const Note& n = *lost[k];
         std::optional<tuning::PitchId> pitch;
-        if (exact) {
-          if (const std::optional<tuning::Rational> r = tuning::mul(*exact, n.pitch.ratio()); r && r->isPositive())
-            pitch = tuning::PitchId::fromRatio(*r);
-        } else if (leader != nullptr && &n != leader) {
+        if (leader != nullptr && &n != leader) {
           if (const std::optional<tuning::Rational> r = tuning::div(n.pitch.ratio(), leader->pitch.ratio()); r && r->isPositive())
             pitch = tuning::PitchId::fromRatio(*r, tuning::AnchorKind::Note, leader->id.value);
+        } else if (exact) {
+          if (const std::optional<tuning::Rational> r = tuning::mul(*exact, n.pitch.ratio()); r && r->isPositive())
+            pitch = tuning::PitchId::fromRatio(*r);
+        } else if (&n == leader) {
+          pitch = centsAt(jiHz(n.id));
         }
-        if (!pitch) pitch = centsPitch(n);
+        if (!pitch) pitch = centsAt(hz.hz(n.id));
         if (pitch) set(n, *pitch);
       }
-      if (anchorId == declared && leader != nullptr) {
-        // "The anchor is harmonic N" becomes "the leader is harmonic N · its ratio" when that is a whole number.
-        const std::optional<tuning::Rational> index =
-            tuning::mul(tuning::Rational{static_cast<int64_t>(cf.anchor->index)}, leader->pitch.ratio());
-        if (index && index->den() == 1 && index->num() >= 1 && index->num() <= static_cast<int64_t>(kMaxHarmonicIndex))
-          nf.anchor = HarmonicAnchor{leader->id, static_cast<uint32_t>(index->num())};
+      if (group != nullptr && leader != nullptr) {
+        // The group's numbering stays: the leader keeps the number it had (the anchor's × its ratio); reduced by what
+        // all the remaining numbers share when that is beyond the limit; 1 when it had none.
+        int64_t index = 1;
+        if (const std::optional<GroupHarmonics> gh = groupHarmonics(clip, *group)) {
+          int64_t own = 0, shared = 0;
+          for (const GroupMember& m : gh->members) {
+            if (isGone(m.note) || m.harmonic < 1) continue;
+            shared = std::gcd(shared, m.harmonic);
+            if (m.note == leader->id) own = m.harmonic;
+          }
+          if (own > static_cast<int64_t>(kMaxHarmonicIndex) && shared > 0) own /= shared;
+          if (own >= 1 && own <= static_cast<int64_t>(kMaxHarmonicIndex)) index = own;
+        }
+        // The warps stay where they are in the clip: group ticks count from the group's start, which moves when the
+        // notes that leave started before the ones that stay.
+        if (!group->warps.empty()) {
+          const std::optional<GroupSpan> was = groupSpan(clip, *group);
+          Ticks start = leader->start;
+          for (size_t k = i; k < j; ++k) start = std::min(start, lost[k]->start);
+          if (was && start > was->start) group->warps = shiftedWarps(group->warps, start - was->start);
+        }
+        group->anchor = leader->id;
+        group->index = static_cast<uint32_t>(index);
+        groupsChanged = true;
+        if (findNoteWritten(clip, leader->id) != nullptr) unwritten.push_back(leader->id);  // an anchor does not warp
       }
       i = j;
+    }
+    if (groupsChanged) {
+      // A group that found no leader goes with its anchor (RemoveNotes / pruneJi drop it).
+      out.groups = std::move(groups);
+    }
+    if (!unwritten.empty()) {
+      std::sort(unwritten.begin(), unwritten.end());
+      NoteWrittenList kept;
+      for (const NoteWritten& w : notesWrittenOf(clip))
+        if (!std::binary_search(unwritten.begin(), unwritten.end(), w.note)) kept.push_back(w);
+      out.written = std::move(kept);
     }
   }
   if (!(nf == cf)) out.fundamental = std::move(nf);
   return out;
+}
+
+void dropRepitchedWritten(Batch& b, const ClipRef& clip, const NoteClip& before) {
+  if (!before.written) return;
+  std::vector<NoteId> gone;
+  for (const Command& c : b.commands)
+    if (const UpdateNotes* u = std::get_if<UpdateNotes>(&c.v))
+      for (const NoteUpdate& up : u->updates) {
+        if (findNoteWritten(before, up.note.id) == nullptr) continue;
+        const Note* was = before.notes.locate(up.key);
+        if (was != nullptr && !(was->pitch == up.note.pitch)) gone.push_back(up.note.id);
+      }
+  if (gone.empty()) return;
+  std::sort(gone.begin(), gone.end());
+  NoteWrittenList kept;
+  for (const NoteWritten& w : *before.written)
+    if (!std::binary_search(gone.begin(), gone.end(), w.note)) kept.push_back(w);
+  b.commands.push_back(SetNotesWritten{clip, std::move(kept)});
 }
 
 void applyReanchored(NoteClip& c, Reanchored r) {
@@ -488,6 +623,8 @@ void applyReanchored(NoteClip& c, Reanchored r) {
     c.notes = seqOf(std::move(notes));
   }
   if (r.fundamental) c.fundamental = std::move(*r.fundamental);
+  if (r.groups) c.groups = r.groups->empty() ? nullptr : std::make_shared<const JiGroupList>(std::move(*r.groups));
+  if (r.written) c.written = r.written->empty() ? nullptr : std::make_shared<const NoteWrittenList>(std::move(*r.written));
 }
 
 void appendReanchored(Batch& b, const ClipRef& clip, Reanchored r) {
@@ -498,6 +635,8 @@ void appendReanchored(Batch& b, const ClipRef& clip, Reanchored r) {
     b.commands.push_back(std::move(u));
   }
   if (r.fundamental) b.commands.push_back(SetClipFundamental{clip, std::move(*r.fundamental)});
+  if (r.groups) b.commands.push_back(SetJiGroups{clip, std::move(*r.groups)});
+  if (r.written) b.commands.push_back(SetNotesWritten{clip, std::move(*r.written)});
 }
 
 // ---- ClipEditor ----------------------------------------------------------------------------------------------------
@@ -569,6 +708,7 @@ ClipSlot ClipEditor::clonePlaying(const ClipSlot& c, IdSource& ids) const {
   NoteClip visible = withNotes(src, seqOf(std::move(playing)));
   applyReanchored(visible, reanchorWithout(*p_, path_, src, gone));
   pruneCurves(visible);
+  pruneJi(visible);
   auto n = std::make_shared<const NoteClip>(cloneClip(visible, ids, false));
   return ClipSlot{n->id, std::move(n), nullptr};
 }
@@ -639,7 +779,8 @@ void ClipEditor::emit(Batch& removes, Batch& updates, Batch& adds) const {
       if (before[i].slot->clip.get() != after[j].slot->clip.get()) {
         const bool boundsOnly = o.name == n.name && o.colour == n.colour && o.loop == n.loop &&
                                 o.signature == n.signature && o.tuning == n.tuning && o.active == n.active &&
-                                sameNotes(o.notes, n.notes) && o.ji == n.ji && o.curves == n.curves;
+                                sameNotes(o.notes, n.notes) && o.groups == n.groups && o.written == n.written &&
+                                o.curves == n.curves;
         if (boundsOnly) {
           if (o.start != n.start || o.length != n.length || o.contentStart != n.contentStart)
             updates.commands.push_back(SetClipBounds{{tid, n.id}, n.start, n.length, n.contentStart});

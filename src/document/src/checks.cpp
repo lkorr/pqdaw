@@ -191,8 +191,6 @@ Status checkSampleRef(const SampleRef& r) {
 }
 
 Status checkFundamental(const ClipFundamental& f) {
-  if (f.anchor && (!f.anchor->note.valid() || f.anchor->index < 1 || f.anchor->index > kMaxHarmonicIndex))
-    return invalid("a declared harmonic names a note and an index from 1 to 4096");
   for (size_t i = 0; i < f.steps.size(); ++i) {
     const HarmonicStep& h = f.steps[i];
     if (!h.note.valid()) return invalid("harmonic step without a note");
@@ -204,7 +202,7 @@ Status checkFundamental(const ClipFundamental& f) {
   return ok();
 }
 
-// ---- JI objects and note curves (T7.2) -----------------------------------------------------------------------------
+// ---- JI groups, written identities and note curves (T7.13) -----------------------------------------------------------------------------
 
 Status checkCurve(const std::vector<Breakpoint>& pts, const char* what) {
   const std::string w(what);
@@ -220,90 +218,65 @@ Status checkCurve(const std::vector<Breakpoint>& pts, const char* what) {
   return ok();
 }
 
-namespace {
-
-inline constexpr int64_t kMaxJiScalePart = int64_t{1} << 40;  // term (≤ 2^20) × scale stays far inside int64
-
-bool jiPitchKind(const tuning::PitchId& p) noexcept {  // what a fundamental / a tuning stop's pitch may be
-  switch (p.kind()) {
-    case tuning::PitchKind::Degree: return true;
-    case tuning::PitchKind::Cents: return std::isfinite(p.cents());
-    case tuning::PitchKind::Ratio:
-      return p.anchorKind() == tuning::AnchorKind::Reference && p.rawNum() > 0 && p.rawDen() > 0;
-    case tuning::PitchKind::Harmonic: break;
-  }
-  return false;
-}
-
-Status checkJiTiming(const JiTiming& t) {
-  if (t.delay < 0 || t.delay > kMaxTicks) return invalid("JI stop delay out of range");
-  if (t.glide < 0 || t.glide > kMaxTicks) return invalid("JI stop glide out of range");
-  if (t.shape.kind > JiShape::Bezier) return invalid("unknown JI transition shape");
-  if (!finiteIn(t.shape.x1, 0.0, 1.0) || !finiteIn(t.shape.x2, 0.0, 1.0) || !finiteIn(t.shape.y1, -1.0, 2.0) ||
-      !finiteIn(t.shape.y2, -1.0, 2.0))
-    return invalid("JI transition handles out of range (x in [0, 1], y in [-1, 2])");
+Status checkGlideShape(const GlideShape& s) {
+  if (s.kind > GlideShape::Bezier) return invalid("unknown glide shape");
+  if (!finiteIn(s.x1, 0.0, 1.0) || !finiteIn(s.x2, 0.0, 1.0) || !finiteIn(s.y1, -1.0, 2.0) || !finiteIn(s.y2, -1.0, 2.0))
+    return invalid("glide shape handles out of range (x in [0, 1], y in [-1, 2])");
   return ok();
 }
 
-}  // namespace
-
-Status checkJiObject(const JiObject& o) {
-  if (!o.id.valid()) return invalid("JI object has no id");
-  PQ_DOC_TRY(checkTick(o.start, "JI object start"));
-  PQ_DOC_TRY(checkLength(o.length, "JI object length"));
-  if (!jiPitchKind(o.fundamental))
-    return invalid("a JI object's fundamental is a degree, cents or a ratio to the reference");
-  if (!finiteIn(o.velocity, 0.0, 127.0) || o.velocity == 0.0f) return invalid("JI object velocity must be in (0, 127]");
-  const size_t V = o.voiceNotes.size();
-  if (V < 1 || V > kMaxJiVoices) return invalid("a JI object has 1 to 64 voices");
-  if (o.stops.empty() || o.stops.size() > kMaxJiStops) return invalid("a JI object has 1 to 4096 stops");
-  size_t largest = 0;
-  for (size_t i = 0; i < o.stops.size(); ++i) {
-    const JiStop& s = o.stops[i];
-    if (i == 0 ? s.at != 0 : s.at <= o.stops[i - 1].at) return invalid("JI stops start at 0 and ascend");
-    if (s.at > kMaxTicks) return invalid("JI stop out of range");
-    if (s.terms.empty() == s.pitches.empty()) return invalid("a JI stop holds either terms or pitches");
-    const size_t n = s.size();
-    if (n > V) return invalid("a JI stop has more entries than the object has voices");
-    largest = std::max(largest, n);
-    for (size_t k = 0; k < s.terms.size(); ++k) {
-      if (s.terms[k] < 1 || s.terms[k] > kMaxJiTerm) return invalid("JI term out of range (1 to 2^20)");
-      if (k > 0 && s.terms[k] <= s.terms[k - 1]) return invalid("JI terms must ascend");
-    }
-    for (const tuning::PitchId& p : s.pitches)
-      if (!jiPitchKind(p)) return invalid("a tuning stop's pitch is a degree, cents or a ratio to the reference");
-    if (!s.scale.isPositive() || s.scale.num() > kMaxJiScalePart || s.scale.den() > kMaxJiScalePart)
-      return invalid("JI stop scale out of range");
-    if (!s.voiceTerm.empty()) {
-      if (s.voiceTerm.size() != V) return invalid("a JI stop's voice map has one entry per voice");
-      for (const uint8_t t : s.voiceTerm)
-        if (t >= n) return invalid("a JI stop's voice map names an entry it does not have");
-    }
-    PQ_DOC_TRY(checkJiTiming(s.timing));
-    if (!s.voiceTiming.empty()) {
-      if (s.voiceTiming.size() != V) return invalid("a JI stop's voice timings have one entry per voice");
-      for (const std::optional<JiTiming>& t : s.voiceTiming)
-        if (t) PQ_DOC_TRY(checkJiTiming(*t));
-    }
+Status checkJiGroup(const JiGroup& g) {
+  if (!g.id.valid()) return invalid("JI group has no id");
+  if (!g.anchor.valid()) return invalid("a JI group names its anchor note");
+  if (g.index < 1 || g.index > kMaxHarmonicIndex) return invalid("the harmonic number goes from 1 to 4096");
+  if (g.warps.size() > kMaxJiWarps) return invalid("a JI group has too many warps");
+  for (size_t i = 0; i < g.warps.size(); ++i) {
+    const JiWarp& w = g.warps[i];
+    if (w.at < 0 || w.at > kMaxTicks) return invalid("JI warp out of range");
+    if (w.glide < 0 || w.glide > kMaxTicks) return invalid("JI warp glide out of range");
+    PQ_DOC_TRY(checkGlideShape(w.shape));
+    if (i == 0) continue;
+    const JiWarp& before = g.warps[i - 1];
+    if (w.at <= before.at) return invalid("JI warps must ascend");
+    if (w.at < before.at + before.glide) return invalid("a JI warp starts before the glide before it has ended");
+    if (w.toJi == before.toJi) return invalid("JI warps alternate between to-JI and back");
   }
-  if (largest != V) return invalid("a JI object has as many voices as its largest stop");
-  for (size_t i = 0; i < V; ++i) {
-    if (!o.voiceNotes[i].valid()) return invalid("JI voice without a note id");
-    for (size_t j = 0; j < i; ++j)
-      if (o.voiceNotes[j] == o.voiceNotes[i]) return invalid("duplicate JI voice note id");
-  }
-  return checkCurve(o.ride, "JI ride");
+  return ok();
 }
 
-Status checkJiList(const JiObjectList& l) {
-  std::vector<uint32_t> voiceIds;
+Status checkJiGroups(const JiGroupList& l) {
+  std::vector<uint32_t> anchors;
+  anchors.reserve(l.size());
   for (size_t i = 0; i < l.size(); ++i) {
-    PQ_DOC_TRY(checkJiObject(l[i]));
-    if (i > 0 && !(l[i - 1].id < l[i].id)) return invalid("JI objects must be sorted by id");
-    for (const NoteId v : l[i].voiceNotes) voiceIds.push_back(v.value);
+    PQ_DOC_TRY(checkJiGroup(l[i]));
+    if (i > 0 && !(l[i - 1].id < l[i].id)) return invalid("JI groups must be sorted by id");
+    anchors.push_back(l[i].anchor.value);
   }
-  std::sort(voiceIds.begin(), voiceIds.end());
-  if (std::adjacent_find(voiceIds.begin(), voiceIds.end()) != voiceIds.end()) return invalid("duplicate JI voice note id");
+  std::sort(anchors.begin(), anchors.end());
+  if (std::adjacent_find(anchors.begin(), anchors.end()) != anchors.end())
+    return invalid("a note is the anchor of one JI group only");
+  return ok();
+}
+
+Status checkWrittenPitch(const tuning::PitchId& p) {
+  switch (p.kind()) {
+    case tuning::PitchKind::Degree: return ok();
+    case tuning::PitchKind::Cents:
+      if (std::isfinite(p.cents())) return ok();
+      break;
+    case tuning::PitchKind::Ratio:
+      if (p.anchorKind() == tuning::AnchorKind::Reference && p.rawNum() > 0 && p.rawDen() > 0) return ok();
+      break;
+  }
+  return invalid("a written identity is a degree, cents or a ratio to the reference");
+}
+
+Status checkNotesWritten(const NoteWrittenList& l) {
+  for (size_t i = 0; i < l.size(); ++i) {
+    if (!l[i].note.valid()) return invalid("a written identity without a note");
+    if (i > 0 && !(l[i - 1].note < l[i].note)) return invalid("written identities must be sorted by note id");
+    PQ_DOC_TRY(checkWrittenPitch(l[i].written));
+  }
   return ok();
 }
 
@@ -311,9 +284,7 @@ Status checkNoteBend(const NoteBend& b, NoteId note) {
   if (!b.set()) return b == NoteBend{} ? ok() : invalid("a note bend without a neighbour has no length or shape");
   if (b.other == note) return invalid("a note cannot bend to itself");
   if (b.length < 1 || b.length > kMaxTicks) return invalid("note bend length out of range");
-  JiTiming t;
-  t.shape = b.shape;
-  return checkJiTiming(t);
+  return checkGlideShape(b.shape);
 }
 
 Status checkNoteCurveRecord(const NoteCurves& c) {
@@ -332,48 +303,40 @@ Status checkNoteCurves(const NoteCurveList& l) {
   return ok();
 }
 
-Status checkNoteJi(const NoteClip& c, const tuning::PitchId& pitch) {
-  const JiObjectId id = jiObjectOf(pitch);
-  if (!id.valid()) {
-    if (pitch.kind() == tuning::PitchKind::Harmonic || (pitch.kind() == tuning::PitchKind::Ratio &&
-                                                         pitch.anchorKind() == tuning::AnchorKind::JiFundamental))
-      return invalid("the note follows no JI object");
-    return ok();
-  }
-  const JiObject* o = findJiObject(c, id);
-  if (!o) return invalid("the note's JI object is not in the clip");
-  if (pitch.kind() == tuning::PitchKind::Harmonic && pitch.voiceIndex() >= o->voices())
-    return invalid("the note's JI object has no such voice");
+Status checkJiNotes(const NoteClip& c, std::span<const JiGroup> groups, std::span<const NoteWritten> written) {
+  if (groups.empty() && written.empty()) return ok();
+  // One pass over the notes (a NoteSeq is ordered by start, not id) against the few ids needed.
+  std::vector<NoteId> need;
+  need.reserve(groups.size() + written.size());
+  for (const JiGroup& g : groups) need.push_back(g.anchor);
+  for (const NoteWritten& w : written) need.push_back(w.note);
+  std::sort(need.begin(), need.end());
+  need.erase(std::unique(need.begin(), need.end()), need.end());
+  size_t found = 0;
+  for (const Note& n : c.notes) found += std::binary_search(need.begin(), need.end(), n.id) ? 1 : 0;
+  if (found != need.size()) return notFound("a JI group's anchor or a written note is not in the clip");
   return ok();
 }
 
 Status checkClipJi(const NoteClip& c) {
-  if (c.ji) {
-    if (c.ji->empty()) return invalid("an empty JI object list is not stored");
-    PQ_DOC_TRY(checkJiList(*c.ji));
+  if (c.groups) {
+    if (c.groups->empty()) return invalid("an empty JI group list is not stored");
+    PQ_DOC_TRY(checkJiGroups(*c.groups));
+  }
+  if (c.written) {
+    if (c.written->empty()) return invalid("an empty written-identity list is not stored");
+    PQ_DOC_TRY(checkNotesWritten(*c.written));
   }
   if (c.curves) {
     if (c.curves->empty()) return invalid("an empty note curve list is not stored");
     PQ_DOC_TRY(checkNoteCurves(*c.curves));
   }
-  std::vector<uint32_t> voiceIds;
-  for (const JiObject& o : jiObjectsOf(c))
-    for (const NoteId v : o.voiceNotes) voiceIds.push_back(v.value);
-  std::sort(voiceIds.begin(), voiceIds.end());
-  for (const Note& n : c.notes) {
-    if (n.pitch.kind() == tuning::PitchKind::Harmonic ||
-        (n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.anchorKind() == tuning::AnchorKind::JiFundamental))
-      PQ_DOC_TRY(checkNoteJi(c, n.pitch));
-    if (!voiceIds.empty() && std::binary_search(voiceIds.begin(), voiceIds.end(), n.id.value))
-      return invalid("a JI voice note id is a note of the clip");
-  }
-  return ok();
+  return checkJiNotes(c, jiGroupsOf(c), notesWrittenOf(c));
 }
 
 }  // namespace pq::doc::detail
 
 namespace pq::doc {
-Status validateJiObject(const JiObject& o) { return detail::checkJiObject(o); }
 Status validateClipJi(const NoteClip& c) { return detail::checkClipJi(c); }
 }  // namespace pq::doc
 

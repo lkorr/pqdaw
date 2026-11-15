@@ -8,10 +8,12 @@
 //     chain to the project's default tuning (Project::defaultTuning), plus WHICH main tuning that is;
 //   - resolveTrackPitches: every note of every clip of a track, resolved in its clip's effective tuning: the static
 //     Hz (double; resolveHzDouble; a Ratio anchored to another note of the clip takes that note's pitch WHERE IT
-//     STARTS ITSELF — T7.11a, M7 review M5: the anchor's Hz times its curve there (free curve and bends,
-//     note_bend.h), and for an anchor that follows a JI object its voice there; clamped to the anchor's span, so a
-//     note that starts after its anchor ended takes the pitch the anchor ended on. Once started it keeps that pitch:
-//     it does not follow the anchor's later movement), and for a note
+//     STARTS ITSELF — T7.11a, M7 review M5: the anchor's Hz times its curve there (free curve, bends and warps,
+//     note_bend.h); clamped to the anchor's span, so a note that starts after its anchor ended takes the pitch the
+//     anchor ended on. Once started it keeps that pitch: it does not follow the anchor's later movement. T7.13: a
+//     member of a JI group that has a written identity resolves, where its group has warps, to the pitch the warps
+//     give at its start — its written pitch (exactly the Hz of the note as written), its JI pitch (exactly anchor ×
+//     ratio), or the point of the glide between them — and is listed in ClipPitches::warped), and for a note
 //     in a main tuning with an audio-rate linear form (EDO, MOS without MODMOS / generator sequence:
 //     tuning::linearTuningForm) the tuning signal it follows and how (T2.6, T2.6-fix3: PitchFollow below; the
 //     playback link's engine::PitchSource).
@@ -27,6 +29,7 @@
 
 #include "pq/core/result.h"
 #include "pq/document/model.h"
+#include "pq/document/note_bend.h"
 
 namespace pq::doc {
 
@@ -61,10 +64,8 @@ bool hasTuningSignal(const TuningDef& def) noexcept;
 //   Reference  a Ratio anchored to the reference, a Cents note, or a Ratio anchored (through notes) to one of them:
 //              hz = static hz · reference(t) / reference₀ (it keeps its ratio to the tuning's reference);
 //   Static     everything else (a private / Scala / MODMOS tuning).
-// T7.2: a note of a JI object (Harmonic, or a Ratio anchored to JiFundamental) resolves at ITS START to the object's
-// voice / fundamental there (ji_object.h jiVoiceHz / jiFundamentalHz: exact ratio × fundamental at a hold) and follows
-// as the object's fundamental does: a Degree fundamental → Degree with the fundamental's (degree, equave), the note
-// keeping its ratio to it; a Cents / reference-Ratio fundamental → Reference.
+// T7.13: a warped member that starts in its written state follows as its written identity does; in its JI state or
+// inside a glide, as its anchor does.
 enum class PitchFollow : uint8_t { Static, Degree, Reference };
 
 struct NotePitch {
@@ -84,6 +85,7 @@ struct ClipPitches {
   ClipId clip;
   EffectiveTuning tuning;
   std::vector<NotePitch> notes;  // in the clip's note order (start, id)
+  std::vector<NoteWarpState> warped;  // T7.13: the resolved members a warp moves (note_bend.h), sorted by note id
 };
 
 struct TrackPitches {
@@ -111,8 +113,8 @@ ClipPitches resolveClipPitches(const Project& p, const TrackPath& path, const No
 
 // T6.1 (pq/document/input_map.h): one identity that names no other note, resolved exactly as resolveTrackPitches
 // resolves a note of a clip in tuning `t` whose clip follows main tuning `signal`'s signal (invalid: static) — so a live
-// note sounds as the same note drawn. A Ratio anchored to a note or a JI fundamental, a Harmonic, or a pitch outside
-// float32: unresolved (`note` is left invalid).
+// note sounds as the same note drawn. A Ratio anchored to a note, or a pitch outside float32: unresolved (`note` is
+// left invalid).
 NotePitch resolvePitch(const tuning::PitchId& pitch, const tuning::Tuning& t, TuningId signal);
 // Degrees per equave of a built tuning (0: none).
 int64_t degreesPerEquave(const tuning::Tuning& t) noexcept;

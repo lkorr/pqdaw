@@ -124,11 +124,7 @@ public:
 private:
   void pressNote(const ui::PointerEvent& e, const doc::Note& n, int zone);
   void pressEmpty(const ui::PointerEvent& e);
-  void pressJi(const ui::PointerEvent& e, const JiHit& hit);  // T7.4: select the object, start its move / resize
-  void pressJiPart(const ui::PointerEvent& e, const JiHit& hit);  // T7.5: a stop label, glide grip, voice label, bezier handle
-  ui::Menu* openJiMenu(ui::Vec2 at, const JiHit& hit);            // T7.5: the object's right-click menu
-  void pressJiBox(const ui::PointerEvent& e);                  // T7.4 (JI tool): start the box of a new object
-  bool pressPen(const ui::PointerEvent& e);                    // T7.6: Draw Mode on a note / an object's lowest voice
+  bool pressPen(const ui::PointerEvent& e);                    // T7.6: Draw Mode on a note
   void dragTo(ui::Vec2 p, ui::Mods mods);
   DrawnNote cellNote(TickRange c, ui::Vec2 p, DrawPitch mode) const;
   void paintNoteLabels(ui::PaintContext& ctx);
@@ -179,14 +175,9 @@ void paintRowsBackground(ui::PaintContext& ctx, const RollState& s, const ui::IR
 void paintFundamental(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r, const ui::IRect& vis);
 void paintHarmonicLabels(ui::PaintContext& ctx, const RollState& s, const ui::IRect& r);
 void paintOverlay(ui::PaintContext& ctx, const RollState& s, const ui::IRect& vis, float x0, float x1);
-// T7.4 (roll_ji.cpp): the JI objects of the clip (labels = false: box, markers, ride, voices, the box being drawn,
-// under the notes; labels = true: harmonic numbers, header, stop labels, over the notes); and the
-// notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint); T7.12: roll_paint.cpp, the same line as every note).
-// T7.5: inside an entered object the rest of the roll is dimmed, so the note area paints in two layers: everything
-// but the entered object and its notes (NotEntered), the dim, then the entered object (EnteredOnly).
-enum class JiPass : uint8_t { All, NotEntered, EnteredOnly };
-void paintJiObjects(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis, bool labels, JiPass pass = JiPass::All);
-void paintCurveNotes(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis, JiPass pass = JiPass::All);
+// The notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint; T7.12: roll_paint.cpp,
+// the same line as every note).
+void paintCurveNotes(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 // T7.6 (roll_pen.cpp): the breakpoint handles of the curves being edited.
 void paintCurveHandles(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 // Key colours of a scale's step classes (T3.12): L in roll.keyLarge, s blended toward roll.keySmall by hardness

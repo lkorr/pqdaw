@@ -1,74 +1,55 @@
 #pragma once
 
-// T7.3 (docs/plans/M7.md "T7.3", amendment A1): how a note clip's JI objects and note curves become the engine's
-// per-note curves (engine/sequence.h "Per-note curves"). Used by ProjectLink::lowerTrack only.
+// T7.3 / T7.13 (docs/plans/M7.md "Rework: notes-first JI"): how a note clip's notes become the engine's per-note
+// pitch curves (engine/sequence.h "Per-note curves"). Used by ProjectLink::lowerTrack only.
 //
-//   a note with a pitch curve (doc::NoteCurves)        its EFFECTIVE curve (doc/note_bend.h: the free curve plus the
-//                                                      bends in from / out to its neighbours, whose far ends are the
-//                                                      neighbours' pitches as resolved now), flattened to lines
-//   an inner note of an object (Harmonic(obj, voice))  its voice's curve over the note's span + its own curve
-//   a Ratio anchored to an object's fundamental        the fundamental's curve over the note's span + its own
-//   an object with `sounds`                            one note per voice over the object's span: hz, ratio,
-//                                                      harmonic and unison class at stop 0, the voice's pitch and
-//                                                      gain curves (doc::jiVoicePlan)
-// Curve values are cents relative to the note's own Hz — the pitch the document resolves it to at its start
-// (pitch_resolve.h) — so a hold on a proportion stop is the exact ratio (its cents come from the same doubles).
+// The note is the only primitive. A note with an EFFECTIVE curve (doc/note_bend.h: its free curve, the bends in from /
+// out to its neighbours — whose far ends are the neighbours' pitches as resolved now — and, for a member of a JI group
+// with a written identity, its group's warps between the written and the JI pitch) gets that curve flattened to
+// lines. Curve values are cents relative to the note's own Hz — the pitch the document resolves it to at its start
+// (pitch_resolve.h: for a warped member the written pitch, the JI pitch or the point of the glide it starts on) — so a
+// note that starts after a warp is the exact ratio with no curve at all, and one that glides into JI ends within the
+// float32 of the cents between the two pitches.
+// Members of a JI group also carry voice.harmonic (their number in the group) and voice.ratio (to the anchor); the
+// anchor its number.
 //
 // Event volume. The engine sends one event per breakpoint and note; a track's event list is finite
-// (TimelineConfig::maxEventsPerTrack per image block). So:
-//   - shapes are flattened to kJiPitchTolerance cents (1 c: inaudible while the pitch moves, and a tenth of the
-//     points 0.01 c would take; holds and straight lines are exact and cost two points);
-//   - inside a curved span, breakpoints closer than a minimum spacing are dropped: 1 ms, or longer for an object with
-//     many voices so that all of them together send about a quarter of the event list per block
-//     (JiLowerLimits). Corners (where a hold begins or ends, jumps) are always kept.
-// Gains (doc::jiVoicePlan "Gains", T7.7): a voice merging into a unison fades with its distance to the keeper, is
-// Synced to it when the unison is complete and steps to 1 / k with the others (engine/sequence.h "Synced unisons":
-// the plan's JiGainPoint::sync becomes the keeper voice's note id); a split is the mirror image. kJiGainRampSeconds
-// (at the tempo where the object starts) is the fade of a voice that leaves a unison before it is complete.
-// Inside a tempo ramp, sloped segments are cut to a sixteenth note (the engine interpolates over samples).
-// Tuning stops are flattened in the tuning as the document defines it: a modulated tuning is followed through the
-// object's fundamental (the notes keep their ratio to it), not through a tuning stop's own degrees (A1).
+// (TimelineConfig::maxEventsPerTrack per image block). So shapes are flattened to kJiPitchTolerance cents (1 c:
+// inaudible while the pitch moves, and a tenth of the points 0.01 c would take; holds and straight lines are exact and
+// cost two points), and inside a curved span breakpoints closer than 1 ms are dropped. Corners (where a hold begins or
+// ends, jumps) are always kept. Inside a tempo ramp, sloped segments are cut to a sixteenth note (the engine
+// interpolates over samples).
+// Unisons: notes that bend or warp into one pitch are not phase-locked (the engine's Sync / Gain events stay, tested at
+// engine level; nothing here emits them — deferred, docs/TASKS.md).
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "pq/core/time.h"
-#include "pq/document/ji_object.h"
 #include "pq/document/model.h"
 #include "pq/document/note_bend.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/engine/sequence.h"
-#include "pq/tuning/tuning.h"
 
 namespace pq::app {
 
-inline constexpr double kJiPitchTolerance = 1.0;   // cents
-inline constexpr double kJiGainRampSeconds = 0.020;
+inline constexpr double kJiPitchTolerance = 1.0;  // cents
 inline constexpr double kJiMinSpacingSeconds = 0.001;
 
-struct JiLowerLimits {
-  double blockSeconds = 64.0 / 48000.0;  // the engine's image block
-  uint32_t eventsPerBlock = 256;         // TimelineConfig::maxEventsPerTrack
-};
-
-// One note clip's JI lowering. Plans are made once per object, on first use. Not RT code.
-class ClipJiLowering {
+// One note clip's curve lowering. Not RT code.
+class ClipCurveLowering {
 public:
-  // `tuning`: the clip's effective tuning as its notes are resolved in (null: nothing resolves). `tempoMoves`: the
-  // tempo map is not one constant tempo. `pitches`: the clip's resolved pitches (what its notes' bends aim at:
-  // T7.11a; null: bends do nothing); it must outlive this object.
-  ClipJiLowering(const doc::NoteClip& clip, const tuning::Tuning* tuning, const TempoMap& tempo, bool tempoMoves,
-                 const JiLowerLimits& limits, const doc::ClipPitches* pitches = nullptr);
+  // True when the clip has anything to lower here (a curve record, a group): lowerTrack skips the rest otherwise.
+  static bool needed(const doc::NoteClip& clip) noexcept { return clip.curves != nullptr || clip.groups != nullptr; }
 
-  // The pitch curve of clip note `n` (see above) into nd.pitchCurve; nd.start must be set. An inner Harmonic note
-  // on a proportion stop also gets voice.harmonic (the term it starts on, or glides to) and voice.ratio (its exact
-  // ratio to the fundamental there).
-  void noteCurve(const doc::Note& n, engine::NoteDesc& nd);
-  // What a sounding object's voices play: one NoteDesc each (start, length, id, hz, velocity, ratio, harmonic, unison,
-  // keyDegree — the voice's place among the tuning's degrees at the object's start — and curves; `pitch` is left for
-  // the caller), appended to `out`. Returns the object's voice count appended
-  // (0: not sounding, or unresolvable).
-  uint32_t voices(const doc::JiObject& o, std::vector<engine::NoteDesc>& out);
+  // `tempoMoves`: the tempo map is not one constant tempo. `pitches`: the clip's resolved pitches (what its notes'
+  // bends aim at and its members' warps move between); it must outlive this object.
+  ClipCurveLowering(const doc::NoteClip& clip, const TempoMap& tempo, bool tempoMoves, const doc::ClipPitches& pitches);
+
+  // The effective pitch curve of clip note `n` into nd.pitchCurve (nd.start must be set), and for a note of a JI
+  // group nd.harmonic (and nd.ratio for a member).
+  void note(const doc::Note& n, engine::NoteDesc& nd);
 
   struct Point {
     Ticks tick;
@@ -76,31 +57,18 @@ public:
   };
 
 private:
-  struct ObjectPlan {
-    bool tried = false, fundamentalTried = false;
-    bool followed = false;  // a note of the clip follows the object
-    std::optional<doc::JiPlan> plan;
-    std::vector<doc::JiPitchPoint> fundamental;  // empty: unresolvable
-    Ticks spacing = 1, gainRamp = 1;
-  };
-  ObjectPlan& planOf(const doc::JiObject& o);
-  const std::vector<doc::JiPitchPoint>& fundamentalOf(const doc::JiObject& o, ObjectPlan& p);
   double bpmAt(Ticks contentTick) const noexcept;
   Ticks ticksOf(double seconds, Ticks contentTick) const noexcept;
   // Points (content ticks, cents relative to the note's Hz) → the note's curve (empty when it never leaves 0).
   void emit(const std::vector<Point>& pts, std::vector<engine::CurvePoint>& out) const;
-  void voiceCurve(const std::vector<doc::JiPitchPoint>& plan, Ticks origin, Ticks spacing,
-                  std::vector<engine::CurvePoint>& out) const;
 
   const doc::NoteClip& clip_;
-  const tuning::Tuning* tuning_;
   const TempoMap& tempo_;
   bool tempoMoves_;
-  JiLowerLimits limits_;
-  std::vector<ObjectPlan> plans_;  // by index into the clip's object list
-  std::vector<Point> a_, b_, c_;   // scratch
-  const doc::ClipPitches* pitches_;
-  std::optional<doc::NotePitchIndex> pitchIndex_;  // built for the first note with a bend
+  const doc::ClipPitches& pitches_;
+  std::optional<doc::NotePitchIndex> pitchIndex_;  // built for the first note with a bend or a warp
+  std::vector<std::pair<doc::NoteId, int64_t>> harmonics_;  // (note, its number in its group; > 0), sorted by note
+  std::vector<Point> a_;                                     // scratch
 };
 
 }  // namespace pq::app

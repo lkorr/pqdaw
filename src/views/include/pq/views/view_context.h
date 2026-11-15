@@ -717,11 +717,6 @@ public:
       // T4.16b
       "pianoroll.nudgeFineLeft", "pianoroll.nudgeFineRight", "pianoroll.shorten", "pianoroll.lengthen",
       "pianoroll.deselect",
-      // T7.4
-      "pianoroll.toggleJiTool",
-      // T7.5
-      "pianoroll.tuneToJi", "pianoroll.jiTuningStop", "pianoroll.jiWalkUp", "pianoroll.jiWalkDown",
-      "pianoroll.jiWalkUpTop", "pianoroll.jiWalkDownTop",
       // T7.6
       "pianoroll.glide"};
   // View actions of the MOS wheel (T3.14): installMosWheel sets the handler (Ctrl+Shift+W, Q15).

@@ -29,7 +29,6 @@
 
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
-#include "pq/document/ji_object.h"
 #include "pq/document/model.h"
 #include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
@@ -65,17 +64,8 @@ enum class DragKind : uint8_t {
   EndMarker,    // ruler: the clip's end (unlooped clips)
   RulerZoom,    // ruler: vertical drag zooms, horizontal drag scrolls
   KeysZoom,     // keys: horizontal drag zooms the rows
-  // T7.4 (roll_ji.cpp)
-  JiBox,          // JI tool: the box of a new JI object (time snapped to grid cells, pitch to rows)
-  JiMove,         // the selected JI object by (dt, steps); its inner notes move with it
-  JiResizeStart,  // its start edge by dt
-  JiResizeEnd,    // its end edge by dt
-  // T7.5 (roll_ji_edit.cpp)
-  JiStop,    // a stop's `at` by dt (its label under the box)
-  JiGlide,   // a stop's glide length (the handle on the box's bottom border)
-  JiBezier,  // one bezier handle of a voice's transition (entered object)
-  // T7.6 (roll_pen.cpp): a pitch curve of a note, or the ride curve of a JI object (DragState::curve)
-  PenDraw,     // Draw Mode on a note / an object's lowest voice: the stroke is the curve
+  // T7.6 (roll_pen.cpp): a pitch curve of a note (DragState::curve)
+  PenDraw,     // Draw Mode on a note: the stroke is the curve
   PenVibrato,  // the same with Alt: vibrato over the dragged span (depth from the stroke's height)
   CurvePoint,  // one breakpoint by (ticks, cents)
   CurveBow,    // the curvature of the segment after a breakpoint
@@ -88,9 +78,9 @@ enum class DrawPitch : uint8_t {
   Row,      // a Degree note on the row
   Overlay,  // Alt (T3.12): a Cents note on the background EDO line nearest the pointer
   Ratio,    // Shift (T3.19): a Ratio note on the virtual fundamental's nearest harmonic (no fundamental: the row's
-            // pitch snapped to the simplest ratio, ops::simplestRatioNear). With a LOCKED fundamental (T7.5, A4) this
-            // is the plain draw and Shift draws on the rows.
-  Voice,    // T7.5: inside an entered JI object: a Harmonic note on the voice under the pointer
+            // pitch snapped to the simplest ratio, ops::simplestRatioNear). With an active JI group (T7.13: "Is
+            // Harmonic N") this is the plain draw — a member on the group's nearest harmonic — and Shift draws on
+            // the rows.
 };
 
 struct DrawnNote {
@@ -99,8 +89,7 @@ struct DrawnNote {
   int64_t degree = 0;  // the row (a Degree note), or the nearest row of a Cents / Ratio note
   DrawPitch mode = DrawPitch::Row;
   double cents = 0.0;     // Overlay
-  tuning::Rational ratio{1};  // Ratio (reference-anchored)
-  uint32_t voice = 0;         // Voice: the entered object's voice
+  tuning::Rational ratio{1};  // Ratio (to the reference, or to the active JI group's anchor)
 };
 
 // A Ratio note's label waiting to be drawn over the notes (T3.19): its box and the colour it sits on.
@@ -108,15 +97,14 @@ struct NoteLabel {
   float x0, x1, y0, y1;  // the note's band (device px)
   float yc;              // T7.12: its pitch line at the note's start
   ui::Rgba fill;
-  int64_t num, den;   // num 0 (T7.5b): the declared harmonic's anchor note, labelled with its number only
-  uint32_t harmonic;  // its harmonic number over the virtual fundamental (0: not one)
+  int64_t num, den;   // num 0: the anchor note of a JI group, labelled with its number only
+  uint32_t harmonic;  // its harmonic number in its JI group / over the virtual fundamental (0: not one)
 };
 
-// T7.6: the curve a pen / breakpoint gesture edits: a note's pitch curve, or a JI object's ride.
+// T7.6: the curve a pen / breakpoint gesture edits: a note's pitch curve.
 struct CurveTarget {
   doc::NoteId note;
-  doc::JiObjectId ji;
-  bool valid() const noexcept { return note.valid() || ji.valid(); }
+  bool valid() const noexcept { return note.valid(); }
   friend bool operator==(const CurveTarget&, const CurveTarget&) noexcept = default;
 };
 
@@ -151,22 +139,11 @@ struct DragState {
   bool trackDamage = false;
   std::vector<doc::Note> tracked;
   ui::IRect damage{};
-  // T7.4: the JI object dragged (JiMove / JiResize*), the box drawn (JiBox: content ticks, absolute degrees).
-  doc::JiObjectId ji;
-  Ticks jiStart = 0, jiLength = 0;
-  int64_t jiLow = 0, jiHigh = 0;
-  // T7.5: JiMove with Alt: free cents instead of rows; JiStop / JiGlide / JiBezier: the stop (index into the
-  // object's stops), the voice and handle (0 / 1) of a bezier drag and where the handle is now; Move inside an
-  // entered object: the voice under the press (steps = voices).
+  // T7.6: Move with Shift: free cents instead of rows (the notes become Cents).
   double cents = 0.0;
-  int32_t jiStop = -1;
-  uint32_t jiVoice = 0;
-  uint8_t jiHandle = 0;
-  float bx = 0.0f, by = 0.0f;
-  int32_t pressVoice = -1;
   // T7.6. ResizeStart / ResizeEnd with Alt: the edge stays and the note glides in from the previous note / out to the
   // next one over |dt| (`bendDelta`: per selected note, sorted by id, how far away that neighbour is in cents; found
-  // once, when the gesture first bends). Move with Shift: `cents` free instead of rows (the notes become Cents).
+  // once, when the gesture first bends).
   bool bend = false;
   bool bendFound = false;
   std::vector<std::pair<uint32_t, double>> bendDelta;
@@ -180,6 +157,7 @@ struct DragState {
   Ticks strokeLast = 0;
   double penHold = 0.0;
   float bow0 = 0.0f;
+  float bx = 0.0f;  // CurvePoint: the handle's x offset from the pointer (it keeps it through the drag)
   double vibDepth = 0.0, vibRate = 0.0;
   bool curveAdded = false;     // CurvePoint: the press added the point (a release without a drag still commits)
   bool deleteOnClick = false;  // PenDraw on a note: a click (no drag) deletes it, as Draw Mode always did
@@ -187,87 +165,7 @@ struct DragState {
   ui::Mods pressMods = 0;
 };
 
-// ---- JI objects (T7.4; roll_ji.cpp) -----------------------------------------------------------------------------
-// What the note area draws of one JI object, built off the paint path when the clip's object list or the tuning
-// changes (RollState::refresh): the voices flattened to breakpoints linear in cents (doc::jiVoicePlan, the one
-// evaluation the lowering shares), the pitch range, and every label as text. Paint only maps it to the screen.
-struct JiStopMark {
-  Ticks at = 0;       // object ticks
-  std::string label;  // the proportion ("5:6:7:8:9", undertone "1/4:1/5:1/6") or, for a tuning stop, the tuning's name
-  // T7.5
-  uint32_t index = 0;  // the stop's index in JiObject::stops
-  Ticks glide = 0;     // the default glide into it as it plays (clamped to the gap after the stop before)
-  // Between a tuning stop and a proportion (either way): how far each voice moves into this stop, as text ("−14¢"),
-  // and where the voice is once it arrived (cents). Empty otherwise; an entry is empty for a voice that does not move
-  // or doubles the one before it.
-  std::vector<std::string> deltas;
-  std::vector<double> deltaCents;
-};
-struct JiView {
-  doc::JiObjectId id;
-  Ticks start = 0, length = 0;
-  bool ok = false;                     // false: a pitch the tuning cannot resolve (nothing is drawn)
-  double minCents = 0.0, maxCents = 0.0;  // over every voice and the whole span, ride included
-  double rideBase = 0.0;               // the ride line is drawn at rideBase + ride(t) (under the lowest voice)
-  double boxLow = 0.0;                 // the lowest pitch the box covers (minCents, or the ride line's lowest point)
-  doc::JiPlan plan;                    // V voices
-  std::vector<uint8_t> distinct;       // per voice: 0 = the same path as the voice before it (drawn once)
-  std::vector<std::string> voiceLabels;  // per voice: its term in the first proportion stop ("8", "1/4"); may be empty
-  std::string header;
-  std::vector<JiStopMark> stops;       // stop 0 first; only the stops inside the span
-  std::vector<doc::Breakpoint> ride;
-  // T7.5: the stop the voice labels name (the first proportion; −1: none) and each voice's entry in it.
-  int32_t labelStop = -1;
-  std::vector<uint32_t> voiceEntry;
-  // A voice's transition with a Bezier shape (drawn with its two handles in the entered object).
-  struct Bezier {
-    uint32_t stop = 0, voice = 0;
-    Ticks begin = 0, arrive = 0;  // object ticks
-    double from = 0.0, to = 0.0;  // cents (ride excluded)
-    float x1 = 0, y1 = 0, x2 = 0, y2 = 0;
-  };
-  std::vector<Bezier> beziers;
-};
-// A typed proportion: "8:9:10:12:15" (overtone), "1/4:1/5:1/6" (undertone; terms 4, 5, 6).
-struct JiProportion {
-  std::vector<int64_t> terms;  // strictly ascending
-  bool undertone = false;
-};
-// The box of a new object: content ticks, the rows (absolute degrees) at its bottom and top edges.
-struct JiBox {
-  Ticks start = 0, length = 0;
-  int64_t low = 0, high = 0;
-};
-// Body: the header or the top / bottom border. T7.5: StopLabel (a stop's proportion under the box; index = the
-// stop), Glide (its glide handle on the bottom border), VoiceLabel (a harmonic number; index = the voice), Bezier (a
-// handle of a bezier transition; index = into JiView::beziers, handle 0 / 1), Inside (the box's inside: no grab, but
-// a double-click enters and a right-click opens the object's menu).
-enum class JiZone : uint8_t { None, Body, Start, End, StopLabel, Glide, VoiceLabel, Bezier, Inside };
-struct JiHit {
-  doc::JiObjectId id;
-  JiZone zone = JiZone::None;
-  int32_t index = -1;
-  uint8_t handle = 0;
-  // A zone a press grabs (everything but None / Inside).
-  bool grabs() const noexcept { return zone != JiZone::None && zone != JiZone::Inside; }
-};
-// Where the texts and handles of an object are on screen (device px): what paint draws and jiAt hits (RollState::
-// jiLayout, one function so they cannot disagree).
-struct JiLayout {
-  struct Label {
-    int32_t index = 0;  // stop index (stopLabels) or voice (voiceLabels)
-    ui::Rect box{};
-  };
-  std::vector<Label> stopLabels;   // the ones shown (a label that would run into the one before is skipped)
-  std::vector<Label> voiceLabels;
-  std::vector<Label> glides;       // the glide handles' boxes (index = stop)
-  void clear() {
-    stopLabels.clear();
-    voiceLabels.clear();
-    glides.clear();
-  }
-};
-// A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve, or follows a JI object.
+// A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve.
 struct CurveNote {
   const doc::Note* note;
   Ticks start, length;
@@ -301,7 +199,7 @@ struct NotePlace {
   int32_t top = 0, bottom = 0;
   int32_t centre = 0;  // T7.12: the pitch itself (the row's pitch line; between rows for an off-grid pitch)
   int8_t offGrid = 0;  // 0 on its row; +1 above / −1 below the nearest row (marked)
-  bool ok = false;     // false: the pitch cannot be placed (Harmonic, JI-fundamental anchors: no JI objects yet)
+  bool ok = false;     // false: the pitch cannot be placed (a Ratio whose anchor note is missing)
   uint8_t z = 0;       // the row's z (scale layouts: notes on larger steps paint over smaller ones)
 };
 
@@ -453,21 +351,27 @@ public:
   // The clip's virtual fundamental as a denominator D (fundamental = reference / D; 0 = none), see the rule at its
   // definition (Q40). Ratio Up/Down and vertical drags step on its harmonics; the note area draws it (SPEC §4.3).
   std::optional<tuning::Rational> virtualFundamental() const;
-  // T7.5b: the derived fundamental the roll draws and snaps to (doc::clipHarmonics): `ratio` times the pitch at
-  // `baseCents` — the clip's reference (anchor invalid, 0 cents), or the declared harmonic's anchor note where it
-  // sounds now (so the guides follow it). nullopt: none.
+  // The fundamental the roll draws and snaps to: `ratio` times the pitch at `baseCents`. With an active JI group
+  // (T7.13): its anchor note where it sounds now and the group's derived fundamental 1 / (index · m)
+  // (doc::groupFundamental), so the guides follow the anchor. Else the clip's reference (anchor invalid, 0 cents) and
+  // the virtual fundamental. nullopt: none.
   struct Harmonics {
     doc::NoteId anchor;
     double baseCents = 0.0;
     tuning::Rational ratio{1};
   };
   std::optional<Harmonics> harmonics() const;
-  // A note's harmonic number over it: the anchor note itself, a Ratio note anchored to the anchor (or, without an
-  // anchor note, to the reference). nullopt: not a whole harmonic / unrelated.
+  // T7.13 (the seam for the group UI): the JI group the guides, the plain draw and "Remove JI Group" act on — the
+  // group of the first selected note (in clip order) that is an anchor or a member, else the group that was active
+  // last (so a click on empty space keeps it), else the clip's newest group; nullptr: none. Cached per clip snapshot
+  // and selection.
+  const doc::JiGroup* activeJiGroup() const;
+  // A note's harmonic number: in its JI group (its anchor, a numbered member), else — a reference-anchored Ratio —
+  // over the virtual fundamental. nullopt: none. O(log members) after the first call for a clip snapshot.
   std::optional<uint64_t> harmonicOf(const doc::Note& n) const;
   void addNotes(const std::vector<DrawnNote>& notes);
-  // How a draw gesture with these modifiers picks its pitch (T7.5: inside an entered object always its voices; with
-  // a locked fundamental the plain draw is Ratio and Shift the rows).
+  // How a draw gesture with these modifiers picks its pitch (with an active JI group the plain draw is Ratio and
+  // Shift the rows).
   DrawPitch drawPitchFor(ui::Mods m) const noexcept;
   // The pitch of a note in a cell of row `degree` (a Degree identity).
   tuning::PitchId degreePitch(int64_t degree) const noexcept;
@@ -537,122 +441,28 @@ public:
   std::vector<NoteLine> zNotes, zSorted;
   std::vector<NoteLabel> noteLabels;
   std::vector<CurveNote> curveNotes;  // T7.4: the visible notes drawn along a path
-  // T7.4: wall-clock time of the note area's last paint and of its JI part (tests: the 200-object budget).
+  // Wall-clock time of the note area's last paint (tests).
   struct PaintStats {
     double notesMs = 0.0;
-    double jiMs = 0.0;
-    uint32_t jiPainted = 0;  // objects whose box met the clip rect
   };
   PaintStats paintStats;
   std::vector<ui::Vec2> linePts;      // T7.4: one polyline being built
 
-  // --- JI objects (T7.4; roll_ji.cpp) ---
-  // The JI tool (J): a drag on empty space draws the box of a new object, then the proportion field opens. View
-  // state; turning it on leaves Draw Mode and the other way round.
-  bool jiTool() const noexcept { return jiTool_; }
-  void setJiTool(bool on);
-  const std::vector<JiView>& jiViews() const noexcept { return jiViews_; }
-  // The object as a drag in progress would leave it (JiMove / JiResize*), else nullptr.
-  const JiView* jiPreview() const noexcept { return jiPreview_ ? &*jiPreview_ : nullptr; }
-  // The selected object (invalid: none). Selecting an object clears the note selection and the other way round.
-  doc::JiObjectId jiSelection() const noexcept { return jiSel_; }
-  void selectJiObject(doc::JiObjectId id);
-  // The object's box in device px (not clipped): its span x its pitch range plus the padding the lines need.
-  ui::Rect jiBoxRect(const JiView& v) const;
-  // The device rect of a box being drawn / waiting for its proportion.
-  ui::Rect jiBoxRect(const JiBox& b) const;
-  // What a press at `p` grabs of an object: its header or top / bottom border (Body: select, drag = move), its left /
-  // right border (Start / End: resize). The inside of a box belongs to the notes.
-  JiHit jiAt(ui::Vec2 p) const;
-  // The box waiting for its proportion (the field is open), drawn dashed.
-  const std::optional<JiBox>& jiPending() const noexcept { return jiPending_; }
-  // Opens the proportion field under the box (Enter creates the object, Esc / a click outside drops the box).
-  // nullptr without a clip or overlay layer.
-  ui::TextEdit* openJiEntry(const JiBox& box);
-  // "8:9:10:12:15" / "1/4:1/5:1/6" (spaces allowed). An error says what is wrong.
-  static Result<JiProportion> parseProportion(std::string_view text);
-  // Creates the object over `box` (one undo step) and selects it. The pitch at the box's bottom edge (the row
-  // `box.low`, a Degree identity) is the object's fundamental AND its lowest voice: stop 0's scale is 1 / (the lowest
-  // term) (undertone: the largest term), so the chord sits in the box as drawn (ops::jiFromNotes' pinned-lowest-voice
-  // convention). False with `error` set when the text is no proportion or the document refuses it: nothing is created.
-  bool createJiObject(const JiBox& box, std::string_view text, std::string* error = nullptr);
-  // apply(), then the note selection is cleared and `keep` (if it still exists) is the selected object.
-  bool applyJi(const doc::ops::EditResult& e, std::string_view what, doc::JiObjectId keep);
-  bool deleteJiSelection();     // ops::deleteJiObject: inner notes stay, converted to the pitch they had
-  bool duplicateJiSelection();  // a copy right after the object, inner notes included; the copy is selected
-  // The edit a JiMove / JiResize drag in state `d` commits (also what the preview is built from).
-  doc::ops::EditResult jiDragEdit(const DragState& d) const;
-  void updateJiPreview();
-  // After the clip or the tuning changed (refresh()).
-  void rebuildJiViews();
-
-  // --- inner roll and morph editing (T7.5; roll_ji_edit.cpp) ---
-  // The entered object (invalid: none): its voices are the rows inside its box, the rest of the roll is dimmed, notes
-  // drawn there are Harmonic notes on the voice under the pointer, and only its inner notes are hit. Entering selects
-  // it; Esc / a double-click outside leaves.
-  doc::JiObjectId jiEntered() const noexcept { return jiEntered_; }
-  void enterJiObject(doc::JiObjectId id);
-  void leaveJiObject();
-  // The object whose handles are shown and that the stop / term keys act on: the entered one, else the selected one.
-  doc::JiObjectId jiActive() const noexcept { return jiEntered_.valid() ? jiEntered_ : jiSel_; }
-  const doc::JiObject* jiObject(doc::JiObjectId id) const noexcept;
-  const JiView* jiViewOf(doc::JiObjectId id) const noexcept;
-  // The selected stop (index into the active object's stops; −1 none) and the selected voice label (−1 none).
-  int32_t jiStopSelection() const noexcept { return jiStopSel_; }
-  int32_t jiTermSelection() const noexcept { return jiTermSel_; }
-  void selectJiStop(doc::JiObjectId id, int32_t stop);
-  void selectJiTerm(doc::JiObjectId id, int32_t voice);
-  // Texts and handles of `v` on screen (see JiLayout). `out` is cleared first.
-  void jiLayout(const JiView& v, JiLayout& out) const;
-  JiLayout& jiLayoutScratch() const noexcept;  // reused by paint and jiAt
-  // Where handle 0 / 1 of a bezier transition is on screen.
-  ui::Vec2 jiBezierHandle(const JiView& v, const JiView::Bezier& bz, int handle) const;
-  // The object a drag in progress would leave (with jiPreview), else nullptr.
-  const doc::JiObject* jiPreviewObject() const noexcept { return jiPreviewObject_ ? &*jiPreviewObject_ : nullptr; }
-  // The voice of `id` nearest device `p` in pitch at p's tick (−1: no such object / unresolvable).
-  int32_t jiVoiceAt(doc::JiObjectId id, ui::Vec2 p) const;
-  // A voice's transition under `p`: the one in progress at p's tick, else the next stop the voice moves to (−1: none).
-  int32_t jiTransitionAt(doc::JiObjectId id, uint32_t voice, ui::Vec2 p) const;
-  // The object tick a stop added "at the pointer" gets: the grid line nearest device x, strictly inside the object
-  // (nullopt: x is outside its span).
-  std::optional<Ticks> jiStopTickAt(doc::JiObjectId id, float x) const;
-  // The last pointer position over the note area, else the playhead's x (the "at the pointer / playhead" of T / the
-  // menu when the pointer is elsewhere).
-  float jiPointerX() const;
-  // Stops (one undo step each; false + status text when refused).
-  bool addJiStopAt(doc::JiObjectId id, Ticks at, std::string_view proportion, std::string* error = nullptr);
-  bool addJiTuningStopAt(doc::JiObjectId id, Ticks at);
-  bool retypeJiStop(doc::JiObjectId id, uint32_t stop, std::string_view proportion, std::string* error = nullptr);
-  bool deleteJiStop(doc::JiObjectId id, uint32_t stop);
-  // A voice's transition into `stop`: its shape kind, its own glide / delay (a per-voice override), or the same for
-  // every voice again (the override dropped, this voice's timing the stop's default).
-  bool setJiVoiceShape(doc::JiObjectId id, uint32_t stop, uint32_t voice, doc::JiShape::Kind kind);
-  bool setJiVoiceTiming(doc::JiObjectId id, uint32_t stop, uint32_t voice, std::optional<Ticks> glide, std::optional<Ticks> delay);
-  bool setJiTimingForAll(doc::JiObjectId id, uint32_t stop, uint32_t voice);
-  // Alt+Up / Down on the selected voice label: ops::walkJiTerm on the stop the labels name, the lowest entry pinned
-  // (pinHighest: the highest).
-  bool walkJiSelection(int32_t steps, bool pinHighest);
-  bool toggleJiUndertone(doc::JiObjectId id);
-  // A2 "Tune to JI": the selected notes become the inner notes of a new non-sounding object (ops::jiFromNotes: stop 0
-  // = as written in the tuning, stop 1 = the nearest proportion, one grid step of glide); the object is selected.
-  bool tuneSelectionToJi();
-  // T / "Back to Tuning": a tuning stop on the active object at the pointer (else the playhead).
-  bool jiTuningStopAtPointer();
-  // A4 / T7.5b: `note` is declared the N-th harmonic (ops::lockFundamental): it becomes the frozen anchor of the
-  // series, exactly on guide N whatever its identity; its pitch does not change. Notes drawn afterwards are exact
-  // ratios to it, and the numbering is derived (doc::clipHarmonics).
-  bool lockFundamentalAt(doc::NoteId note, uint32_t n, std::string* error = nullptr);
+  // --- declaring JI (T7.13; roll_ji.cpp). The group UI (frames, Tune to JI + chooser, warp markers, walk, the
+  // proportion tool, Add Note at Ratio) is T7.14's; these are what the roll keeps meanwhile. ---
+  // "8:9:10:12:15" (spaces allowed): strictly ascending whole terms. An error says what is wrong.
+  static Result<std::vector<int64_t>> parseProportion(std::string_view text);
+  // "Is Harmonic N": `note` becomes the frozen anchor of a JI group with index n (ops::makeJiGroup; a note that
+  // already anchors one: its index). Its pitch does not change; it sits exactly on guide n. Notes drawn afterwards
+  // are exact ratios to it, and the numbering is derived (doc::groupHarmonics). The selection is kept.
+  bool declareHarmonic(doc::NoteId note, uint32_t n, std::string* error = nullptr);
+  // Removes the active JI group (ops::removeJiGroup: its members keep sounding where they are). False: none.
+  bool removeActiveJiGroup();
   // An inline field under `anchor`: a title line, a text field (initial text selected) and an error line. Enter calls
   // `commit(text, error)`: true closes the field, false shows `error` and keeps it open. Esc closes.
   ui::TextEdit* openJiField(std::string_view name, std::string_view title, std::string_view info, std::string_view initial,
                             ui::IRect anchor, std::function<bool(RollState&, const std::string&, std::string&)> commit);
-  ui::TextEdit* openJiStopEntry(doc::JiObjectId id, Ticks at);  // a new proportion stop
-  ui::TextEdit* openJiStopRetype(doc::JiObjectId id, uint32_t stop);                // retype a stop's proportion
-  ui::TextEdit* openHarmonicEntry(doc::NoteId note);                                // "Is Harmonic…"
-  ui::TextEdit* openJiTimingEntry(doc::JiObjectId id, uint32_t stop, uint32_t voice, bool delay);
-  // Copy / paste of the selected object with its inner notes (Ctrl+C / Ctrl+X / Ctrl+V).
-  bool copyJiSelection();
-  bool pasteJiObject();
+  ui::TextEdit* openHarmonicEntry(doc::NoteId note);  // "Is Harmonic…"
   // A point on a note drawn along a path, `frac` of the way through it (tests, anchors); nullopt: not on a path.
   std::optional<ui::Vec2> pathPoint(const doc::Note& n, double frac) const;
   // The device box of an on-path note (its path's extent plus its thickness).
@@ -660,7 +470,7 @@ public:
   // Half the drawn thickness of a path note (device px).
   float pathHalfThickness() const noexcept;
 
-  // --- bends, pen modes, breakpoints, vibrato, ride curves (T7.6; roll_pen.cpp) ---
+  // --- bends, pen modes, breakpoints, vibrato (T7.6; roll_pen.cpp) ---
   // A note's pitch curve is baked breakpoints (NoteCurves::pitch; what plays). Two parts of it are recognised by
   // their form, so every gesture finds them again without extra stored state:
   //   lead-in   the curve from tick 0 (value ≠ 0) to its first point of value 0: the note glides IN to its own pitch;
@@ -670,13 +480,13 @@ public:
   // when several), computed when the gesture is made and not followed afterwards (Q?-T7.6-a).
   // The points of a curve as shown: a gesture's preview, else the document's. Empty: none.
   std::span<const doc::Breakpoint> curvePoints(const CurveTarget& t) const;
-  // The pitch the curve is added to, `offset` ticks into its note / object (a note: its identity's pitch; a ride: the
-  // object's lowest voice without the ride), in cents. nullopt: unresolvable.
+  // The pitch the curve is added to, `offset` ticks into its note (its identity's pitch), in cents. nullopt:
+  // unresolvable.
   std::optional<double> curveBase(const CurveTarget& t, double offset) const;
-  // The target's start and length in content ticks (false: no such note / object).
+  // The target's start and length in content ticks (false: no such note).
   bool curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) const;
   // Breakpoint handles (device px): a dot per point, a diamond in the middle of a segment wide enough to bend. Shown
-  // for the selected notes, the active object's ride and, in Draw Mode, the note under the pointer; a curve of more
+  // for the selected notes and, in Draw Mode, the note under the pointer; a curve of more
   // than kMaxCurveHandles points (a free-drawn stroke, a vibrato) shows none.
   struct CurveHandle {
     int32_t index = -1;  // the point, or the segment's first point (mid)
@@ -696,8 +506,6 @@ public:
   CurveHit curveHandleAt(ui::Vec2 p) const;
   // The curves whose handles are shown now (see curveHandles).
   void shownCurves(std::vector<CurveTarget>& out) const;
-  // The object whose lowest voice's line is under `p` (the ride is drawn and edited on it); invalid: none.
-  doc::JiObjectId rideLaneAt(ui::Vec2 p) const;
   // The edit an Alt + edge drag in state `d` commits (one SetNoteCurve per selected note that has such a neighbour).
   doc::ops::EditResult bendEdit(DragState& d) const;
   void updateBendPreview();
@@ -708,7 +516,7 @@ public:
   // Ctrl+G: every selected note glides out into the next selected one over one grid step. One undo step.
   bool glideSelection();
   // The lead-in (edge −1) / lead-out (+1) of the selected notes redrawn Straight or as an S-curve (same length and depth).
-  bool setBendShape(int edge, doc::JiShape::Kind kind);
+  bool setBendShape(int edge, doc::GlideShape::Kind kind);
   bool bendIsStraight(doc::NoteId note, int edge) const;
   // Removes the selected notes' pitch curves (one undo step).
   bool clearBends();
@@ -742,7 +550,7 @@ public:
   void beginCurveHandle(const CurveHit& h, ui::Vec2 p);
   void curveHandleTo(ui::Vec2 p, ui::Mods mods);
   bool deleteCurvePoint(const CurveHit& h);
-  // Stores a curve (a note: SetNoteCurve, a ride: SetJiObject), one undo step; the selection is kept.
+  // Stores a note's curve (SetNoteCurve), one undo step; the selection is kept.
   bool commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what);
   // A pitch in cents snapped for a breakpoint drag: the nearest row, harmonic guide (when shown) or `own` (the pitch
   // the curve is added to: value 0).
@@ -765,13 +573,11 @@ public:
   // --- pitch paths (T7.4) ---
   // Device y of a pitch in cents, not rounded.
   float yOfCents(double cents) const noexcept;
-  // Whether a note is drawn along a path: it has a pitch curve or follows a JI object. O(1) for a clip without
-  // curves and objects.
+  // Whether a note is drawn along a path: it has a pitch curve. O(1) for a clip without curves.
   bool onPath(const doc::Note& n, const tuning::PitchId& pitch) const noexcept;
   // The pitch in cents of a note `offset` ticks after its start, when it starts at `start` with identity `pitch` (a
-  // drag preview may differ from the note): the identity's pitch (a Harmonic note along its voice, a Ratio on a JI
-  // fundamental along the fundamental) plus the note's own pitch curve. nullopt: unresolvable. The seam T7.5 / T7.6
-  // hit-test and edit along.
+  // drag preview may differ from the note): the identity's pitch plus the note's own pitch curve. nullopt:
+  // unresolvable. The seam hit-testing and curve editing go along.
   std::optional<double> pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const;
   // The same without the note's own curve (T7.6: what a curve's values are added to).
   std::optional<double> pathBaseCents(Ticks start, const tuning::PitchId& pitch, double offset) const;
@@ -794,9 +600,6 @@ public:
   // A typed pitch: "7/4" or "7:4" (a ratio over the reference), "386.3c" / "386.3¢" (cents), "4\22" or "4\22+1"
   // (degree 4, equave +1, of the clip's tuning: the size must match). nullopt when unparsable.
   std::optional<tuning::PitchId> parsePitch(std::string_view text) const;
-  // The fundamental lock (ops::lockFundamental: `note` is the index-th harmonic) and its release; one undo step each.
-  bool lockFundamentalOn(doc::NoteId note, uint32_t harmonicIndex);
-  bool unlockFundamental();
   // Shift-draw: the reference-anchored ratio a drawn note on row `degree` with the pointer at `cents` gets.
   tuning::Rational ratioFor(int64_t degree, double cents) const;
 
@@ -901,25 +704,8 @@ private:
   int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;
   std::vector<doc::Note> clipboard_;  // starts relative to the earliest copied note
   std::vector<doc::NoteCurves> clipboardCurves_;  // T7.4: the copied notes' pitch curves (keyed by the source ids)
-  // T7.4
-  bool jiTool_ = false;
-  doc::JiObjectId jiSel_;
-  std::vector<JiView> jiViews_;
-  const void* jiViewsFor_ = nullptr;  // the clip's JiObjectList the views were built from
-  bool jiViewsDirty_ = true;          // the tuning changed (rebuild or in-place morph)
-  std::optional<JiView> jiPreview_;
-  std::optional<doc::JiObject> jiPreviewObject_;  // T7.5: the object the preview shows (inner notes follow it)
-  std::optional<JiBox> jiPending_;
-  // T7.5
-  doc::JiObjectId jiEntered_;
-  int32_t jiStopSel_ = -1;
-  int32_t jiTermSel_ = -1;
-  struct JiClipboard {
-    doc::JiObject object;
-    std::vector<doc::Note> notes;
-    std::vector<doc::NoteCurves> curves;
-  };
-  std::optional<JiClipboard> jiClipboard_;
+  std::vector<doc::JiGroup> clipboardGroups_;     // T7.13: the JI groups whose anchor was copied (source ids)
+  std::vector<doc::NoteWritten> clipboardWritten_;  // and the copied members' written identities
   // T7.6: the curves a gesture in progress shows instead of the document's (sorted by note id; an empty curve = the
   // note shown without one), and the depth of the last vibrato painted (the default of the next).
   std::vector<doc::NoteCurves> curvePreview_;
@@ -927,8 +713,6 @@ private:
   void setCurvePreview(const CurveTarget& t, const std::vector<doc::Breakpoint>& pts);
   mutable std::vector<CurveHandle> handleScratch_;
   mutable std::vector<CurveTarget> targetScratch_;
-  mutable JiLayout jiLayoutScratch_;
-  JiView makeJiView(const doc::JiObject& o) const;
   RowLabels rowLabels_ = RowLabels::Auto;
   int64_t hoverRow_ = -1;   // the row index the readout is for (−1: none)
   uint32_t hoverNote_ = 0;  // the note id it is for (0: none)
@@ -940,7 +724,15 @@ private:
   std::shared_ptr<RollState*> self_;
   mutable const doc::NoteClip* vfClip_ = nullptr;  // virtualFundamental() cache (per clip snapshot)
   mutable std::optional<tuning::Rational> vf_;
-  mutable std::optional<doc::ClipHarmonics> vh_;  // T7.5b: the same snapshot's derived fundamental
+  // T7.13: the same snapshot's JI group numbers ((note id, its number), sorted by id; the anchors' ids, sorted), and
+  // the active group for the current selection (activeJiGroup()).
+  mutable std::vector<std::pair<uint32_t, int64_t>> groupNumbers_;
+  mutable std::vector<uint32_t> groupAnchors_;
+  mutable bool activeGroupValid_ = false;
+  mutable const doc::JiGroup* activeGroup_ = nullptr;
+  mutable doc::JiGroupId lastActiveGroup_;
+  mutable const doc::Note* activeAnchor_ = nullptr;
+  mutable tuning::Rational activeFundamental_{1};
 };
 
 }  // namespace pq::views::roll

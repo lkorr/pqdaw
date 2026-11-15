@@ -1,9 +1,8 @@
-// T7.6 piano roll: bends between notes, pen modes, breakpoints, vibrato, ride curves (SPEC §3.1, §5; docs/plans/M7.md
+// T7.6 piano roll: bends between notes, pen modes, breakpoints, vibrato (SPEC §3.1; docs/plans/M7.md
 // "T7.6" + amendment A3). The RollState half lives here; roll_input.cpp routes the presses, roll_state.cpp commits.
 //
 // What is stored is always baked breakpoints: a note's NoteCurves::pitch (cents added to the note's pitch, ticks from
-// its start) or a JI object's ride (cents added to every voice, object ticks). The lowering plays exactly those, so
-// what is drawn is what sounds. Nothing else is stored: a bend's lead-in / lead-out and a vibrato are recognised by
+// its start). The lowering plays exactly those, so what is drawn is what sounds. Nothing else is stored: a bend's lead-in / lead-out and a vibrato are recognised by
 // their form (roll_state.h "bends, pen modes …"), which is why a bend can be re-dragged, reshaped or removed and a
 // vibrato re-typed after a reload, a copy or an undo.
 //
@@ -15,12 +14,11 @@
 //                                      most kMaxPenPoints points); Alt + drag: vibrato over the dragged span (depth =
 //                                      the stroke's height, a flat stroke repeats the last depth; rate from the grid);
 //                                      Ctrl + click: a breakpoint (drag it on); a click still deletes the note.
-//   the same on a JI object's lowest voice (not entered): its ride curve.
-//   breakpoints                        shown on the selected notes and the active object's ride: drag (rows / harmonic
+//   breakpoints                        shown on the selected notes: drag (rows / harmonic
 //                                      guides / the note's own pitch; Shift: free), double-click deletes, the diamond
 //                                      between two points bends the segment.
 //   Shift + a note's body              free detune: the selected notes become Cents notes that far away.
-// Every gesture previews the curve its release stores (curvePreview_ / jiPreviewObject_) and is one undo step.
+// Every gesture previews the curve its release stores (curvePreview_) and is one undo step.
 //
 // Cost: nothing here runs per audio block. A drag frame re-thins one stroke (O(points · log)) or rebuilds one bend
 // per selected note; the neighbour search of a bend runs once per gesture (two passes over the clip's notes per
@@ -36,7 +34,6 @@
 
 #include "pq/document/automation_curve.h"
 #include "pq/document/commands.h"
-#include "pq/document/ji_object.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -118,16 +115,16 @@ Pts replaceRegion(Span old, Ticks ta, Ticks te, const Pts& fresh, bool keepTail)
 
 // A glide from `from` to `to` cents over [t0, t0 + length]: two points when straight, else the shape sampled and
 // thinned to kThinCents. The end values are exact.
-Pts glidePoints(Ticks t0, Ticks length, double from, double to, doc::JiShape::Kind kind) {
+Pts glidePoints(Ticks t0, Ticks length, double from, double to, doc::GlideShape::Kind kind) {
   if (length <= 0) return {};
   const int n = static_cast<int>(std::min<Ticks>(length, 48));
-  if (kind == doc::JiShape::LogLinear || n < 3) return {bp(t0, from), bp(t0 + length, to)};
-  doc::JiShape shape;
+  if (kind == doc::GlideShape::LogLinear || n < 3) return {bp(t0, from), bp(t0 + length, to)};
+  doc::GlideShape shape;
   shape.kind = kind;
   Pts raw;
   raw.reserve(static_cast<size_t>(n) + 1);
   for (int k = 0; k <= n; ++k)
-    raw.push_back(bp(t0 + length * k / n, from + (to - from) * doc::jiShapeValue(shape, static_cast<double>(k) / n)));
+    raw.push_back(bp(t0 + length * k / n, from + (to - from) * doc::glideShapeValue(shape, static_cast<double>(k) / n)));
   raw.front() = bp(t0, from);
   raw.back() = bp(t0 + length, to);
   return doc::ops::thinAutomation(raw, kThinCents);
@@ -135,7 +132,7 @@ Pts glidePoints(Ticks t0, Ticks length, double from, double to, doc::JiShape::Ki
 
 // `old` (a note `length` long) with its lead-in (edge < 0) / lead-out replaced by a glide of `bend` ticks from /
 // to `cents`; bend 0 removes it.
-Pts withBend(Span old, Ticks length, int edge, Ticks bend, double cents, doc::JiShape::Kind kind) {
+Pts withBend(Span old, Ticks length, int edge, Ticks bend, double cents, doc::GlideShape::Kind kind) {
   if (edge < 0) {
     const size_t e = leadInEnd(old);
     const Ticks was = e ? old[e].tick : 0;
@@ -205,10 +202,6 @@ std::span<const doc::Breakpoint> RollState::curvePoints(const CurveTarget& t) co
       if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, t.note)) return nc->pitch;
     return {};
   }
-  if (t.ji.valid()) {
-    if (jiPreviewObject_ && jiPreviewObject_->id == t.ji) return jiPreviewObject_->ride;
-    if (const doc::JiObject* o = doc::findJiObject(*clip_, t.ji)) return o->ride;
-  }
   return {};
 }
 
@@ -221,11 +214,7 @@ bool RollState::curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) con
     length = n->length;
     return true;
   }
-  const doc::JiObject* o = t.ji.valid() ? doc::findJiObject(*clip_, t.ji) : nullptr;
-  if (!o) return false;
-  start = o->start;
-  length = o->length;
-  return true;
+  return false;
 }
 
 std::optional<double> RollState::curveBase(const CurveTarget& t, double offset) const {
@@ -234,12 +223,7 @@ std::optional<double> RollState::curveBase(const CurveTarget& t, double offset) 
     const doc::Note* n = findNote(t.note);
     return n ? pathBaseCents(n->start, n->pitch, offset) : std::nullopt;
   }
-  const doc::JiObject* o = t.ji.valid() ? doc::findJiObject(*clip_, t.ji) : nullptr;
-  if (!o) return std::nullopt;
-  const double at = std::clamp(offset, 0.0, static_cast<double>(o->length));
-  const std::optional<double> c = doc::jiVoiceCents(*o, tuning_, 0, at);
-  if (!c) return std::nullopt;
-  return *c - (o->ride.empty() ? 0.0 : pq::evalAutomation(std::span<const doc::Breakpoint>(o->ride), at, 0.0));
+  return std::nullopt;
 }
 
 double RollState::centsAtScreenY(float y) const noexcept {
@@ -263,11 +247,6 @@ void RollState::setCurvePreview(const CurveTarget& t, const std::vector<doc::Bre
                                      [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
     if (it != curvePreview_.end() && it->note == t.note) it->pitch = pts;
     else curvePreview_.insert(it, doc::NoteCurves{t.note, pts});
-  } else if (const doc::JiObject* o = t.ji.valid() && clip_ ? doc::findJiObject(*clip_, t.ji) : nullptr) {
-    doc::JiObject copy = *o;
-    copy.ride = pts;
-    jiPreview_ = makeJiView(copy);
-    jiPreviewObject_ = std::move(copy);
   }
   markNotesDirty();
 }
@@ -287,17 +266,7 @@ bool RollState::commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> p
     if (ok) select(std::move(keep));
     return ok;
   }
-  const doc::JiObject* o = t.ji.valid() ? doc::findJiObject(*clip_, t.ji) : nullptr;
-  if (!o || o->ride == pts) return false;
-  doc::JiObject copy = *o;
-  copy.ride = std::move(pts);
-  const int32_t stop = jiStopSel_, term = jiTermSel_;
-  const bool ok = applyJi(doc::ops::setJiObject(*ctx.doc(), ctx.store().ids(), ref_, std::move(copy)), what, jiSel_.valid() ? jiSel_ : t.ji);
-  if (ok) {
-    jiStopSel_ = stop;
-    jiTermSel_ = term;
-  }
-  return ok;
+  return false;
 }
 
 // --- handles ----------------------------------------------------------------------------------------------------------
@@ -309,10 +278,9 @@ void RollState::shownCurves(std::vector<CurveTarget>& out) const {
     if (std::find(out.begin(), out.end(), t) == out.end() && !curvePoints(t).empty()) out.push_back(t);
   };
   if ((clip_->curves || !curvePreview_.empty()) && sel_.size() <= 64)
-    for (const uint32_t id : sel_) add(CurveTarget{doc::NoteId{id}, {}});
-  if (ctx.drawMode() && hoverPart_.note != 0 && drag.kind == DragKind::None) add(CurveTarget{doc::NoteId{hoverPart_.note}, {}});
+    for (const uint32_t id : sel_) add(CurveTarget{doc::NoteId{id}});
+  if (ctx.drawMode() && hoverPart_.note != 0 && drag.kind == DragKind::None) add(CurveTarget{doc::NoteId{hoverPart_.note}});
   if (drag.curve.valid()) add(drag.curve);
-  if (const doc::JiObjectId a = jiActive(); a.valid()) add(CurveTarget{{}, a});
 }
 
 void RollState::curveHandles(const CurveTarget& t, std::vector<CurveHandle>& out) const {
@@ -345,7 +313,7 @@ void RollState::curveHandles(const CurveTarget& t, std::vector<CurveHandle>& out
 
 RollState::CurveHit RollState::curveHandleAt(ui::Vec2 p) const {
   CurveHit hit;
-  if (!clip_ || (!clip_->curves && !clip_->ji)) return hit;
+  if (!clip_ || !clip_->curves) return hit;
   const float sc = scaleOf(*this);
   shownCurves(targetScratch_);
   float best = 1e30f;
@@ -364,22 +332,6 @@ RollState::CurveHit RollState::curveHandleAt(ui::Vec2 p) const {
     }
   }
   return hit;
-}
-
-doc::JiObjectId RollState::rideLaneAt(ui::Vec2 p) const {
-  if (!clip_ || !clip_->ji || jiEntered_.valid()) return {};
-  const float half = pathHalfThickness() + 1.0f;
-  for (size_t i = jiViews_.size(); i-- > 0;) {
-    const JiView& v = jiViews_[i];
-    if (!v.ok) continue;
-    const double t = tickAtX(p.x) - static_cast<double>(v.start);
-    if (t < 0.0 || t > static_cast<double>(v.length)) continue;
-    const doc::JiObject* o = doc::findJiObject(*clip_, v.id);
-    if (!o) continue;
-    const std::optional<double> c = doc::jiVoiceCents(*o, tuning_, 0, t);
-    if (c && std::fabs(yOfCents(*c) - p.y) <= half) return v.id;
-  }
-  return {};
 }
 
 double RollState::snapCurveCents(double cents, double own) const {
@@ -469,7 +421,7 @@ doc::ops::EditResult RollState::bendEdit(DragState& d) const {
     // Inward from the edge, as far as the bend on the other edge leaves room.
     const Ticks room = n->length - bendLength(n->id, -edge);
     const Ticks bend = std::clamp<Ticks>(edge < 0 ? d.dt : -d.dt, 0, std::max<Ticks>(room, 0));
-    const doc::JiShape::Kind kind = bendIsStraight(n->id, edge) ? doc::JiShape::LogLinear : doc::JiShape::SCurve;
+    const doc::GlideShape::Kind kind = bendIsStraight(n->id, edge) ? doc::GlideShape::LogLinear : doc::GlideShape::SCurve;
     Pts pts = withBend(old, n->length, edge, bend, delta, kind);
     if (!std::equal(pts.begin(), pts.end(), old.begin(), old.end())) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(*n), std::move(pts)});
   }
@@ -520,7 +472,7 @@ bool RollState::glideSelection() {
     const Ticks bend = std::clamp<Ticks>(step, 0, std::max<Ticks>(a.length - bendLength(a.id, -1), 0));
     const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, a.id) : nullptr;
     const Span old = nc ? Span(nc->pitch) : Span();
-    Pts pts = withBend(old, a.length, 1, bend, *delta, doc::JiShape::SCurve);
+    Pts pts = withBend(old, a.length, 1, bend, *delta, doc::GlideShape::SCurve);
     if (!std::equal(pts.begin(), pts.end(), old.begin(), old.end())) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(a), std::move(pts)});
   }
   if (commands.empty()) {
@@ -530,7 +482,7 @@ bool RollState::glideSelection() {
   return apply(batchOf("Glide Notes", std::move(commands), ref_, selectionKeys()), "Glide Notes");
 }
 
-bool RollState::setBendShape(int edge, doc::JiShape::Kind kind) {
+bool RollState::setBendShape(int edge, doc::GlideShape::Kind kind) {
   if (!clip_ || !clip_->curves) return false;
   std::vector<doc::Command> commands;
   for (const doc::Note& n : clip_->notes) {
@@ -630,8 +582,7 @@ doc::ops::EditResult RollState::detuneEdit(Ticks dt, double cents) const {
     if (!selected(n.id)) continue;
     doc::Note m = n;
     m.start = n.start + dt;
-    // A note of a JI object stays on its voice (it has no pitch of its own to detune).
-    if (cents != 0.0 && !doc::jiObjectOf(n.pitch).valid())
+    if (cents != 0.0)
       if (const std::optional<double> c = centsOf(n.pitch)) m.pitch = tuning::PitchId::fromCents(*c + cents);
     if (m.start == n.start && m.pitch == n.pitch) {
       keys.push_back(doc::keyOf(n));
@@ -871,8 +822,6 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
   Span old;
   if (d.curve.note.valid()) {
     if (const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, d.curve.note) : nullptr) old = nc->pitch;
-  } else if (const doc::JiObject* o = doc::findJiObject(*clip_, d.curve.ji)) {
-    old = o->ride;
   }
   const double px2 = std::fabs(centsAtScreenY(p.y) - centsAtScreenY(p.y + 2.0f));  // two pixels, in cents
   if (d.kind == DragKind::PenVibrato) {
@@ -1013,7 +962,7 @@ void paintCurveHandles(PaintContext& ctx, RollState& s, const IRect& vis) {
   const DragState& d = s.drag;
   for (const CurveTarget& t : targets) {
     s.curveHandles(t, handles);
-    const Rgba ring = t.ji.valid() ? th.roll.jiSelected : s.colours().selBorder;
+    const Rgba ring = s.colours().selBorder;
     for (const RollState::CurveHandle& h : handles) {
       if (h.pos.x < x0 || h.pos.x > x1 || h.pos.y < y0 || h.pos.y > y1) continue;
       const bool held = d.curve == t && d.curveIndex == h.index && (d.kind == DragKind::CurveBow) == h.mid &&

@@ -50,15 +50,6 @@ std::optional<double> resolveHzDouble(const PitchId& pitch, const Tuning& tuning
     case PitchKind::Cents:
       hz = tuning.referenceHz() * std::exp2(pitch.cents() * (1.0 / 1200.0));
       break;
-    case PitchKind::Harmonic: {
-      const HarmonicFrame& f = ctx.harmonic;
-      const uint32_t v = pitch.voiceIndex();
-      if (f.harmonics == nullptr || v >= f.count || f.harmonics[v] == 0 || !(f.fundamentalHz > 0.0))
-        return std::nullopt;
-      const double h = static_cast<double>(f.harmonics[v]);
-      hz = f.undertone ? f.fundamentalHz / h : f.fundamentalHz * h;
-      break;
-    }
   }
   // Must survive the float32 conversion as a finite, positive, normal frequency (also rejects NaN).
   if (!(hz >= static_cast<double>(FLT_MIN) && hz <= static_cast<double>(FLT_MAX))) return std::nullopt;

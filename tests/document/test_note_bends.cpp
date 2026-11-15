@@ -11,7 +11,6 @@
 #include <vector>
 
 #include "note_fix.h"
-#include "pq/document/ji_object.h"
 
 using namespace edit_test;
 using doctest_fixture::makeClip;
@@ -46,11 +45,11 @@ TEST_CASE("a bend names its neighbour: the glide follows either note without ano
   BendFix f;
   const Note a = f.add(0, PitchId::fromDegree(0));
   const Note b = f.add(kPpq, PitchId::fromDegree(7));
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq / 2, JiShape{}, a.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq / 2, GlideShape{}, a.id));
   const NoteCurves* nc = findNoteCurves(f.clip(), b.id);
   REQUIRE(nc != nullptr);
   CHECK(nc->pitch.empty());
-  CHECK(nc->bendIn == NoteBend{kPpq / 2, JiShape{}, a.id});
+  CHECK(nc->bendIn == NoteBend{kPpq / 2, GlideShape{}, a.id});
   CHECK_FALSE(nc->bendOut.set());
 
   // In from the neighbour's pitch (7 steps of 12-EDO below), arriving on the note's own after the bend's length.
@@ -94,10 +93,10 @@ TEST_CASE("bend out, both bends and the free curve add up; shapes; jumps of the 
   const Note a = f.add(0, PitchId::fromDegree(0));
   const Note b = f.add(kPpq, PitchId::fromDegree(4), 2 * kPpq);
   const Note c = f.add(3 * kPpq, PitchId::fromDegree(9));
-  JiShape linear;
-  linear.kind = JiShape::LogLinear;
-  JiShape bezier;
-  bezier.kind = JiShape::Bezier;
+  GlideShape linear;
+  linear.kind = GlideShape::LogLinear;
+  GlideShape bezier;
+  bezier.kind = GlideShape::Bezier;
   bezier.x1 = 0.2f;
   bezier.y1 = 0.9f;
   bezier.x2 = 0.5f;
@@ -137,7 +136,7 @@ TEST_CASE("bend out, both bends and the free curve add up; shapes; jumps of the 
   // A coarser tolerance costs fewer points.
   CHECK(f.effective(f.clip(), b, 1.0).size() < eff.size());
   // A bend longer than the note is clamped to it by the builder; an unresolvable neighbour does nothing.
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(c), ops::NoteEdge::Start, 100 * kPpq, JiShape{}, b.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(c), ops::NoteEdge::Start, 100 * kPpq, GlideShape{}, b.id));
   CHECK(findNoteCurves(f.clip(), c.id)->bendIn.length == kPpq);
   NoteCurves alone = *nc;
   CHECK(effectiveNoteCurve(alone, b.length, NoteBendTargets{}) == free);  // no targets: the free curve as stored
@@ -161,19 +160,19 @@ TEST_CASE("bend commands: validation, one record per note, removing a bend") {
     CHECK_FALSE(f.store.dispatch(c).ok());
     CHECK(f.store.current() == before);
   };
-  const NoteBend good{kPpq / 2, JiShape{}, a.id};
-  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, JiShape{}, b.id}, {}}}});           // itself
-  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, JiShape{}, NoteId{999999}}, {}}}});  // not in the clip
-  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{0, JiShape{}, a.id}, {}}}});               // no length
-  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, JiShape{}, NoteId{}}, {}}}});        // a length without a neighbour
+  const NoteBend good{kPpq / 2, GlideShape{}, a.id};
+  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, GlideShape{}, b.id}, {}}}});           // itself
+  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, GlideShape{}, NoteId{999999}}, {}}}});  // not in the clip
+  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{0, GlideShape{}, a.id}, {}}}});               // no length
+  refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, GlideShape{}, NoteId{}}, {}}}});        // a length without a neighbour
   refused(SetNoteCurves{f.ref, {NoteCurves{NoteId{999999}, {}, good, {}}}});                             // no such note
   refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, good, {}}, NoteCurves{b.id, {}, {}, good}}});       // two records
   refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {{0, 1e9f, 0.0f, {}}}, good, {}}}});                    // an invalid curve
-  JiShape bad;
+  GlideShape bad;
   bad.x1 = 2.0f;
   refused(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, NoteBend{kPpq, bad, a.id}, {}}}});
-  CHECK_FALSE(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq, JiShape{}, b.id).ok());
-  CHECK_FALSE(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq, JiShape{}, NoteId{999999}).ok());
+  CHECK_FALSE(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq, GlideShape{}, b.id).ok());
+  CHECK_FALSE(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq, GlideShape{}, NoteId{999999}).ok());
 
   REQUIRE(f.store.dispatch(SetNoteCurves{f.ref, {NoteCurves{b.id, {}, good, {}}}}).ok());
   const Snapshot with = f.store.current();
@@ -185,9 +184,9 @@ TEST_CASE("bend commands: validation, one record per note, removing a bend") {
   CHECK(*findNoteCurves(f.clip(), b.id) == NoteCurves{b.id, free, good, {}});
   REQUIRE(f.store.dispatch(SetNoteCurve{f.ref, keyOf(b), {}}).ok());
   CHECK(*findNoteCurves(f.clip(), b.id) == NoteCurves{b.id, {}, good, {}});
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, 0, JiShape{}, NoteId{}));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, 0, GlideShape{}, NoteId{}));
   CHECK(f.clip().curves == nullptr);
-  CHECK(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, 0, JiShape{}, NoteId{})->empty());
+  CHECK(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, 0, GlideShape{}, NoteId{})->empty());
 }
 
 TEST_CASE("deleting a bend's neighbour drops the bend in the same edit") {
@@ -195,9 +194,9 @@ TEST_CASE("deleting a bend's neighbour drops the bend in the same edit") {
   const Note a = f.add(0, PitchId::fromDegree(0));
   const Note b = f.add(kPpq, PitchId::fromDegree(7));
   const Note c = f.add(2 * kPpq, PitchId::fromDegree(9));
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq / 2, JiShape{}, a.id));
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::End, kPpq / 2, JiShape{}, c.id));
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(c), ops::NoteEdge::Start, kPpq / 2, JiShape{}, b.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq / 2, GlideShape{}, a.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::End, kPpq / 2, GlideShape{}, c.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(c), ops::NoteEdge::Start, kPpq / 2, GlideShape{}, b.id));
   const NoteKey ka[] = {keyOf(a)};
   commit(f.store, ops::deleteNotes(f.doc(), f.ref, ka));  // one undo step (commit checks it)
   const NoteCurves* nb = findNoteCurves(f.clip(), b.id);
@@ -219,8 +218,8 @@ TEST_CASE("copies re-point bends: clip duplicate, note duplicate, paste, split, 
   const Note a = f.add(0, PitchId::fromDegree(0));
   const Note b = f.add(kPpq, PitchId::fromDegree(7));
   const Note c = f.add(kBar + kPpq, PitchId::fromDegree(9));  // in bar 2
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq / 2, JiShape{}, a.id));
-  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::End, kPpq / 2, JiShape{}, c.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, kPpq / 2, GlideShape{}, a.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::End, kPpq / 2, GlideShape{}, c.id));
 
   SUBCASE("a duplicated clip's bends glide between the copies") {
     const ClipRef sel[] = {f.ref};

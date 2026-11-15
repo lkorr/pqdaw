@@ -7,7 +7,6 @@
 #include <unordered_map>
 #include <utility>
 
-#include "pq/document/ji_object.h"
 #include "pq/document/note_bend.h"
 #include "pq/tuning/mos.h"
 #include "pq/tuning/tuning.h"
@@ -36,7 +35,6 @@ PitchFollow ownFollow(const tuning::PitchId& p) noexcept {
     case tuning::PitchKind::Cents: return PitchFollow::Reference;
     case tuning::PitchKind::Ratio:
       return p.anchorKind() == tuning::AnchorKind::Reference ? PitchFollow::Reference : PitchFollow::Static;
-    case tuning::PitchKind::Harmonic: break;
   }
   return PitchFollow::Static;
 }
@@ -68,6 +66,16 @@ public:
     std::sort(byId_.begin(), byId_.end());
     state_.assign(notes_.size(), 0);
     out_.assign(notes_.size(), Resolved{});
+    findWarped();
+  }
+  // The members a warp moves, resolved (sorted by note id).
+  std::vector<NoteWarpState> takeWarped() {
+    std::vector<NoteWarpState> out;
+    out.reserve(warped_.size());
+    for (const Warped& w : warped_)
+      if (w.state.jiHz > 0.0 && w.state.writtenHz > 0.0) out.push_back(w.state);
+    std::sort(out.begin(), out.end(), [](const NoteWarpState& a, const NoteWarpState& b) { return a.note < b.note; });
+    return out;
   }
   size_t size() const noexcept { return notes_.size(); }
   const Note& note(size_t i) const noexcept { return *notes_[i]; }
@@ -110,8 +118,8 @@ private:
           if (ai < 0) {
             resolvable = false;
           } else if (const Resolved a = get(static_cast<uint32_t>(ai), depth + 1, below); a.hz) {
-            // T7.11a (M7 review M5): the anchor's pitch where this note starts — along the object voice it follows
-            // and its own curve (free curve and bends), not where the anchor itself started.
+            // T7.11a (M7 review M5): the anchor's pitch where this note starts — along its effective curve
+            // (free curve, bends, warps), not where the anchor itself started.
             rc.anchorHz = pitchAt(static_cast<uint32_t>(ai), *a.hz, notes_[i]->start, depth, below);
             r.follow = a.follow;  // the chain follows its root
             r.degree = a.degree;
@@ -120,30 +128,10 @@ private:
             resolvable = false;
           }
         }
-        if (p.anchorKind() == tuning::AnchorKind::JiFundamental) {  // T7.2: the object's fundamental at the note's start
-          const JiObject* o = findJiObject(clip_, JiObjectId{p.anchorId()});
-          const std::optional<double> f =
-              o ? jiFundamentalHz(*o, t_, static_cast<double>(notes_[i]->start - o->start)) : std::nullopt;
-          if (f) {
-            rc.anchorHz = *f;
-            followFundamental(r, *o);
-          } else {
-            resolvable = false;
-          }
-        }
         break;
-      case tuning::PitchKind::Harmonic: {  // T7.2: the object's voice at the note's start (exact at a hold)
-        const JiObject* o = findJiObject(clip_, JiObjectId{p.jiObject()});
-        std::optional<double> hz =
-            o ? jiVoiceHz(*o, t_, p.voiceIndex(), static_cast<double>(notes_[i]->start - o->start)) : std::nullopt;
-        if (hz && !(*hz >= static_cast<double>(FLT_MIN) && *hz <= static_cast<double>(FLT_MAX))) hz.reset();
-        if (hz) followFundamental(r, *o);
-        r.hz = hz;
-        resolvable = false;  // resolved here, not by the tuning
-        break;
-      }
     }
     if (resolvable) r.hz = playableHz(p, t_, rc);
+    if (r.hz && !warpOf_.empty() && warpOf_[i] >= 0) applyWarp(i, r);
     if (!r.hz || !signal_) r.follow = PitchFollow::Static;
     if (below != kNoHit && depth > 0) {
       // It ran into a note that is still being resolved: this result holds for this walk only. The note is resolved
@@ -162,48 +150,95 @@ private:
     return it != byId_.end() && it->first == id.value ? static_cast<int32_t>(it->second) : -1;
   }
 
-  // The pitch of note `ai` (resolved: `hz` at its own start) at content tick `tick`, clamped to the note's span: an
-  // inner note of a JI object is where its voice / the fundamental is there; its curve record (the free curve and
-  // the bends, note_bend.h) is added. Without an object and a curve record this is `hz` itself, exactly.
+  // T7.13 (model.h "JI groups"): the members with a written identity in a group that has warps. One pass over the
+  // notes for the groups' starts, one for the members; nothing for a clip without warps.
+  void findWarped() {
+    if (!clip_.written) return;
+    struct G {
+      uint32_t anchor;
+      const JiGroup* group;
+      Ticks start;
+      bool any;
+    };
+    std::vector<G> groups;
+    for (const JiGroup& g : jiGroupsOf(clip_))
+      if (!g.warps.empty()) groups.push_back({g.anchor.value, &g, 0, false});
+    if (groups.empty()) return;
+    std::sort(groups.begin(), groups.end(), [](const G& a, const G& b) { return a.anchor < b.anchor; });
+    auto groupOf = [&](NoteId anchor) -> G* {
+      const auto it = std::lower_bound(groups.begin(), groups.end(), anchor.value, [](const G& g, uint32_t id) { return g.anchor < id; });
+      return it != groups.end() && it->anchor == anchor.value ? &*it : nullptr;
+    };
+    for (const Note* n : notes_) {
+      G* g = groupOf(n->id);
+      if (g == nullptr) g = groupOf(noteAnchorOf(n->pitch));
+      if (g == nullptr) continue;
+      g->start = g->any ? std::min(g->start, n->start) : n->start;
+      g->any = true;
+    }
+    for (uint32_t i = 0; i < notes_.size(); ++i) {
+      const Note& n = *notes_[i];
+      const G* g = groupOf(noteAnchorOf(n.pitch));
+      if (g == nullptr) continue;
+      const NoteWritten* w = findNoteWritten(clip_, n.id);
+      if (w == nullptr) continue;
+      if (warpOf_.empty()) warpOf_.assign(notes_.size(), -1);
+      warpOf_[i] = static_cast<int32_t>(warped_.size());
+      warped_.push_back(Warped{g->group, w->written, NoteWarpState{n.id, g->group->id, n.start - g->start, 0.0, 0.0, 0.0}});
+    }
+  }
+
+  // r.hz is the member's JI pitch: the pitch its group's warps give at its start, and how it follows there.
+  void applyWarp(uint32_t i, Resolved& r) {
+    Warped& w = warped_[static_cast<size_t>(warpOf_[i])];
+    const std::optional<double> written = playableHz(w.written, t_, {});
+    if (!written) return;  // a written identity the tuning cannot resolve: JI throughout
+    w.state.jiHz = *r.hz;
+    w.state.writtenHz = *written;
+    w.state.cents = 1200.0 * std::log2(*written / *r.hz);
+    if (!std::isfinite(w.state.cents)) {
+      w.state.jiHz = w.state.writtenHz = w.state.cents = 0.0;
+      return;
+    }
+    const double s = jiWarpWritten(w.group->warps, static_cast<double>(w.state.offset));
+    if (s == 0.0) return;  // JI: anchor × ratio, exactly
+    if (s == 1.0) {        // written: the Hz of the note as written, exactly; it follows the tuning as written
+      r.hz = *written;
+      r.follow = ownFollow(w.written);
+      if (w.written.kind() == tuning::PitchKind::Degree) {
+        r.degree = w.written.degree();
+        r.equave = w.written.equave();
+      }
+      return;
+    }
+    const double hz = *r.hz * std::exp2(s * w.state.cents / 1200.0);  // inside a glide
+    if (hz >= static_cast<double>(FLT_MIN) && hz <= static_cast<double>(FLT_MAX)) r.hz = hz;
+  }
+
+  NoteWarp warpFor(uint32_t i) const noexcept {
+    if (warpOf_.empty() || warpOf_[i] < 0) return {};
+    const Warped& w = warped_[static_cast<size_t>(warpOf_[i])];
+    return w.state.jiHz > 0.0 ? NoteWarp{w.group->warps, w.state.offset, w.state.cents} : NoteWarp{};
+  }
+
+  // The pitch of note `ai` (resolved: `hz` at its own start) at content tick `tick`, clamped to the note's span: its
+  // effective curve there (the free curve, the bends and its group's warps: note_bend.h) is added. Without a curve
+  // record and a warp this is `hz` itself, exactly.
   double pitchAt(uint32_t ai, double hz, Ticks tick, int depth, int& hit) {
     const Note& a = *notes_[ai];
     const Ticks at = std::clamp<Ticks>(tick, a.start, a.start + std::max<Ticks>(a.length, 1));
-    double base = hz;
-    if (at != a.start) {
-      if (a.pitch.kind() == tuning::PitchKind::Harmonic) {
-        if (const JiObject* o = findJiObject(clip_, JiObjectId{a.pitch.jiObject()}))
-          if (const std::optional<double> v = jiVoiceHz(*o, t_, a.pitch.voiceIndex(), static_cast<double>(at - o->start)); v && *v > 0.0)
-            base = *v;
-      } else if (a.pitch.kind() == tuning::PitchKind::Ratio && a.pitch.anchorKind() == tuning::AnchorKind::JiFundamental) {
-        if (const JiObject* o = findJiObject(clip_, JiObjectId{a.pitch.anchorId()})) {
-          tuning::ResolveContext rc;
-          if (const std::optional<double> f = jiFundamentalHz(*o, t_, static_cast<double>(at - o->start))) {
-            rc.anchorHz = *f;
-            if (const std::optional<double> v = tuning::resolveHzDouble(a.pitch, t_, rc); v && *v > 0.0) base = *v;
-          }
-        }
-      }
-    }
     const NoteCurves* nc = findNoteCurves(clip_, a.id);
-    if (nc == nullptr) return base;
+    const NoteWarp warp = warpFor(ai);
+    if (nc == nullptr && !warp.any()) return hz;
     auto neighbour = [&](const NoteBend& b) -> std::optional<double> {
       if (!b.set()) return std::nullopt;
       const int32_t k = indexOf(b.other);
       return k < 0 ? std::nullopt : get(static_cast<uint32_t>(k), depth + 1, hit).hz;
     };
-    const NoteBendTargets targets = noteBendTargets(*nc, hz, neighbour(nc->bendIn), neighbour(nc->bendOut));
-    const double cents = noteCurveCents(*nc, a.length, targets, static_cast<double>(at - a.start));
-    return cents == 0.0 ? base : base * std::exp2(cents / 1200.0);
-  }
-
-  // A note of a JI object follows the tuning signal as the object's fundamental does (a Degree fundamental: its
-  // degree, the note keeping its ratio to it).
-  static void followFundamental(Resolved& r, const JiObject& o) noexcept {
-    r.follow = ownFollow(o.fundamental);
-    if (o.fundamental.kind() == tuning::PitchKind::Degree) {
-      r.degree = o.fundamental.degree();
-      r.equave = o.fundamental.equave();
-    }
+    const NoteBendTargets targets =
+        nc != nullptr ? noteBendTargets(*nc, hz, neighbour(nc->bendIn), neighbour(nc->bendOut)) : NoteBendTargets{};
+    const double cents = noteCurveCents(nc, a.length, targets, warp, static_cast<double>(at - a.start));
+    return cents == 0.0 ? hz : hz * std::exp2(cents / 1200.0);
   }
 
   const NoteClip& clip_;
@@ -215,6 +250,13 @@ private:
   static constexpr uint8_t kNew = 0, kDone = 1, kBusy = 2;  // kBusy + depth: being resolved at that depth
   std::vector<uint8_t> state_;
   std::vector<Resolved> out_;
+  struct Warped {
+    const JiGroup* group;
+    tuning::PitchId written;
+    NoteWarpState state;  // jiHz / writtenHz / cents: 0 until the note resolved
+  };
+  std::vector<Warped> warped_;
+  std::vector<int32_t> warpOf_;  // by note index: its entry in warped_, −1 none; empty: the clip has no warped note
 };
 
 }  // namespace
@@ -366,6 +408,7 @@ ClipPitches resolveClip(const Project& p, const TrackPath& path, const NoteClip&
       if (v.hz) np.keyDegree = keyDegreeOf(r.note(i).pitch, *v.hz, *t);
       cp.notes.push_back(np);
     }
+    cp.warped = r.takeWarped();
   } else {
     for (const Note& n : clip.notes) cp.notes.push_back(NotePitch{n.id, std::nullopt, {}, PitchFollow::Static, 0, 0});
   }

@@ -40,13 +40,10 @@ TEST_CASE("rt: resolveHz / resolveHzDouble for every pitch kind, EDO and MOS") {
   p.modmos = {0, 0, 1};
   p.octaveStretch = 1.5;
   const Tuning mos = *Tuning::make(*Mos::make(p), 220.0);
-  const uint32_t chord[] = {4, 5, 6, 7};
   ResolveContext ctx;
   ctx.anchorHz = 330.0;
-  ctx.harmonic = {55.0, chord, 4, false};
   const PitchId ids[] = {PitchId::fromDegree(5, -1), PitchId::fromRatio(Rational(3, 2)),
-                         PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, 3), PitchId::fromCents(-250.0),
-                         PitchId::fromHarmonic(0, 2), PitchId::fromHarmonic(0, 9)};
+                         PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, 3), PitchId::fromCents(-250.0)};
   CHECK(countRtViolations([&] {
           for (const PitchId& id : ids) {
             gF = resolveHz(id, edo, ctx);

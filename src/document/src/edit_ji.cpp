@@ -1,11 +1,11 @@
-// JI object and note-curve edit operations (T7.2; edit_ops.h "JI objects and note curves").
+// JI group, warp and note-curve edit operations (T7.13; edit_ops.h "JI groups, warps and note curves").
 
 #include <algorithm>
 #include <cmath>
 #include <numeric>
 
 #include "edit_common.h"
-#include "pq/document/ji_object.h"
+#include "pq/document/note_bend.h"
 #include "pq/document/pitch_resolve.h"
 
 namespace pq::doc::ops {
@@ -17,531 +17,517 @@ using tuning::Rational;
 
 namespace {
 
-struct JiFound {
+struct GroupFound {
   ClipFound clip;
-  const JiObject* object = nullptr;
+  const JiGroup* group = nullptr;
+  const Note* anchor = nullptr;
 };
 
-Result<JiFound> findJi(const Project& p, const ClipRef& clip, JiObjectId object) {
+Result<GroupFound> findGroup(const Project& p, const ClipRef& clip, JiGroupId group) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
-  const JiObject* o = findJiObject(*f->clip, object);
-  if (!o) return notFound("JI object not found");
-  return JiFound{std::move(*f), o};
+  const JiGroup* g = findJiGroup(*f->clip, group);
+  if (!g) return notFound("JI group not found");
+  const Note* anchor = f->clip->notes.findById(g->anchor);
+  if (!anchor) return notFound("the JI group's anchor is not in the clip");
+  return GroupFound{std::move(*f), g, anchor};
 }
 
-// What a fundamental / a tuning stop's pitch may be.
-bool plainPitch(const PitchId& p) noexcept {
-  return p.kind() == PitchKind::Degree || p.kind() == PitchKind::Cents ||
-         (p.kind() == PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Reference);
-}
-
-// The voice count follows the stops: new voices get fresh note ids, voices beyond it are dropped; voice maps and
-// per-voice timings of another size are dropped (the spread rule applies again).
-Status fitVoices(JiObject& o, IdSource* ids) {
-  size_t V = 0;
-  for (const JiStop& s : o.stops) V = std::max<size_t>(V, s.size());
-  if (V < 1 || V > kMaxJiVoices) return invalid("a JI object has 1 to 64 voices");
-  if (o.voiceNotes.size() > V) o.voiceNotes.resize(V);
-  while (o.voiceNotes.size() < V) {
-    if (!ids) return invalid("the JI object would need more voices");
-    o.voiceNotes.push_back(ids->note());
-  }
-  for (JiStop& s : o.stops) {
-    if (!s.voiceTerm.empty() && s.voiceTerm.size() != V) s.voiceTerm.clear();
-    if (!s.voiceTiming.empty() && s.voiceTiming.size() != V) s.voiceTiming.clear();
-  }
-  return ok();
-}
-
-// The Edit replacing `f.object` by `o` (voices fitted, validated; a Harmonic note on a lost voice refuses).
-EditResult replaceObject(const ClipRef& clip, const JiFound& f, JiObject o, IdSource* ids, std::string label) {
-  o.id = f.object->id;
-  PQ_DOC_TRY(fitVoices(o, ids));
-  PQ_DOC_TRY(checkJiObject(o));
-  if (o.voices() < f.object->voices())
-    for (const Note& n : f.clip.clip->notes)
-      if (n.pitch.kind() == PitchKind::Harmonic && n.pitch.jiObject() == o.id.value && n.pitch.voiceIndex() >= o.voices())
-        return invalid("a note follows a voice the JI object would lose");
-  Edit e = makeEdit(std::move(label));
+Edit groupEdit(const char* label, const ClipRef& clip) {
+  Edit e = makeEdit(label);
   e.noteClip = clip;
-  e.jiObjects.push_back(o.id);
-  if (!(o == *f.object)) batchOf(e).commands.push_back(SetJiObject{clip, std::move(o)});
   return e;
 }
 
-Status checkTerms(std::span<const int64_t> terms) {
-  if (terms.empty() || terms.size() > kMaxJiVoices) return invalid("a proportion has 1 to 64 terms");
-  for (size_t i = 0; i < terms.size(); ++i) {
-    if (terms[i] < 1 || terms[i] > kMaxJiTerm) return invalid("JI term out of range (1 to 2^20)");
-    if (i > 0 && terms[i] <= terms[i - 1]) return invalid("JI terms must ascend");
+// The clip's group list with `g` put in (replacing the group with its id) or, with `remove`, taken out.
+JiGroupList groupsWith(const NoteClip& c, const JiGroup& g, bool remove = false) {
+  JiGroupList list;
+  list.reserve(jiGroupsOf(c).size() + 1);
+  for (const JiGroup& o : jiGroupsOf(c))
+    if (o.id != g.id) list.push_back(o);
+  if (!remove) list.push_back(g);
+  return list;
+}
+
+void pushGroups(Edit& e, const ClipRef& clip, const NoteClip& c, JiGroupList list) {
+  std::sort(list.begin(), list.end(), [](const JiGroup& a, const JiGroup& b) { return a.id < b.id; });
+  if (!std::ranges::equal(list, jiGroupsOf(c))) batchOf(e).commands.push_back(SetJiGroups{clip, std::move(list)});
+}
+
+void pushWritten(Edit& e, const ClipRef& clip, const NoteClip& c, NoteWrittenList list) {
+  std::sort(list.begin(), list.end(), [](const NoteWritten& a, const NoteWritten& b) { return a.note < b.note; });
+  if (!std::ranges::equal(list, notesWrittenOf(c))) batchOf(e).commands.push_back(SetNotesWritten{clip, std::move(list)});
+}
+
+// A clip resolved for an operation that turns pitches into identities.
+struct Resolved {
+  tuning::Tuning tuning;
+  ClipPitches pitches;
+  NotePitchIndex hz;
+  // A member's JI pitch (a warped member's start pitch may be its written one).
+  std::optional<double> jiHz(NoteId id) const noexcept {
+    if (const NoteWarpState* w = hz.warped(id)) return w->jiHz;
+    return hz.hz(id);
   }
-  return ok();
+  std::optional<PitchId> centsAt(std::optional<double> v) const noexcept {
+    if (!v || !(*v > 0.0)) return std::nullopt;
+    const double c = 1200.0 * std::log2(*v / tuning.referenceHz());
+    return std::isfinite(c) ? std::optional<PitchId>(PitchId::fromCents(c)) : std::nullopt;
+  }
+};
+
+Result<Resolved> resolveFor(const Project& p, const ClipFound& f) {
+  Result<tuning::Tuning> t = clipTuning(p, f);
+  if (!t) return std::move(t).error();
+  ClipPitches cp = resolveClipPitches(p, f.path, *f.clip);
+  NotePitchIndex hz(cp);
+  return Resolved{std::move(t).value(), std::move(cp), std::move(hz)};
 }
 
-// Inserts `stop` (its `at` set) into o.stops, replacing a stop at the same tick; the glide is clamped to the gap after
-// the stop before it.
-void placeStop(JiObject& o, JiStop stop) {
-  auto it = std::lower_bound(o.stops.begin(), o.stops.end(), stop.at, [](const JiStop& s, Ticks at) { return s.at < at; });
-  const Ticks gap = it == o.stops.begin() ? 0 : stop.at - (it - 1)->at;
-  stop.timing.glide = std::clamp<Ticks>(stop.timing.glide, 0, gap);
-  if (it != o.stops.end() && it->at == stop.at) *it = std::move(stop);
-  else o.stops.insert(it, std::move(stop));
+// What a note that leaves its anchor becomes so that it keeps its JI pitch: the exact reference-anchored Ratio when
+// the anchor's pitch is one (`anchorExact`), else Cents. nullopt: it does not resolve.
+std::optional<PitchId> detached(const Note& n, const std::optional<Rational>& anchorExact, const Resolved& r) {
+  if (anchorExact)
+    if (const std::optional<Rational> x = tuning::mul(*anchorExact, n.pitch.ratio()); x && x->isPositive())
+      return PitchId::fromRatio(*x);
+  return r.centsAt(r.jiHz(n.id));
 }
 
-Status checkStopTick(Ticks at) {
-  if (at < 0 || at > kMaxTicks) return invalid("JI stop out of range");
+// removeJiGroup / untuneJiGroup.
+EditResult dissolve(const Project& p, ClipRef clip, JiGroupId group, bool restoreWritten, const char* label) {
+  Result<GroupFound> f = findGroup(p, clip, group);
+  if (!f) return std::move(f).error();
+  const NoteClip& c = *f->clip.clip;
+  Edit e = groupEdit(label, clip);
+  UpdateNotes u{clip, {}};
+  std::optional<Resolved> r;  // resolved for the first member that needs a pitch
+  std::optional<Rational> anchorExact;
+  std::vector<NoteId> members;
+  for (const Note& n : c.notes) {
+    if (noteAnchorOf(n.pitch) != f->group->anchor) {
+      if (n.id == f->group->anchor) e.notes.push_back(keyOf(n));
+      continue;
+    }
+    members.push_back(n.id);
+    e.notes.push_back(keyOf(n));
+    std::optional<PitchId> pitch;
+    if (const NoteWritten* w = restoreWritten ? findNoteWritten(c, n.id) : nullptr) {
+      pitch = w->written;
+    } else {
+      if (!r) {
+        Result<Resolved> res = resolveFor(p, f->clip);
+        if (!res) return std::move(res).error();
+        r = std::move(res).value();
+        anchorExact = exactReferenceRatio(c, r->hz, f->anchor);
+      }
+      pitch = detached(n, anchorExact, *r);
+    }
+    if (!pitch) continue;  // it did not sound: left anchored to the note
+    Note m = n;
+    m.pitch = *pitch;
+    u.updates.push_back({keyOf(n), m});
+  }
+  if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
+  pushGroups(e, clip, c, groupsWith(c, *f->group, true));
+  std::sort(members.begin(), members.end());
+  NoteWrittenList written;
+  for (const NoteWritten& w : notesWrittenOf(c))
+    if (!std::binary_search(members.begin(), members.end(), w.note)) written.push_back(w);
+  pushWritten(e, clip, c, std::move(written));
+  return e;
+}
+
+// ---- Tune to JI -------------------------------------------------------------------------------------------------
+
+// The selected notes as a chord: its distinct pitches as written, ascending; pitches[0] holds the anchor.
+struct Chord {
+  ClipFound clip;
+  Resolved r;
+  struct Pitch {
+    double cents = 0.0;             // above the tuning's reference, as written
+    std::optional<Rational> exact;  // its ratio to the anchor when it already is exact (kept in every reading)
+    struct Member {
+      const Note* note;
+      bool exact;  // this note is that exact ratio
+    };
+    std::vector<Member> notes;
+  };
+  std::vector<Pitch> pitches;
+  const Note* anchor = nullptr;
+};
+
+// A member that remembers what it was written as.
+const NoteWritten* writtenOf(const NoteClip& c, const Note& n) noexcept {
+  return noteAnchorOf(n.pitch).valid() ? findNoteWritten(c, n.id) : nullptr;
+}
+
+Result<Chord> chordOf(const Project& p, const ClipRef& clip, std::span<const NoteKey> keys) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  if (keys.empty()) return invalid("no notes");
+  Result<Resolved> res = resolveFor(p, *f);
+  if (!res) return std::move(res).error();
+  Chord ch{std::move(*f), std::move(res).value(), {}, nullptr};
+  const NoteClip& c = *ch.clip.clip;
+  struct Entry {
+    const Note* note;
+    double cents;
+  };
+  std::vector<Entry> entries;
+  std::vector<NoteId> seen;
+  for (const NoteKey& k : keys) {
+    const Note* n = c.notes.locate(k);
+    if (!n) return notFound("note not found");
+    if (std::find(seen.begin(), seen.end(), n->id) != seen.end()) continue;
+    seen.push_back(n->id);
+    // As written: a tuned member is read as what it was before it was tuned.
+    std::optional<double> hz;
+    if (const NoteWritten* w = writtenOf(c, *n)) hz = resolvePitch(w->written, ch.r.tuning, TuningId{}).hz;
+    else hz = ch.r.hz.hz(n->id);
+    if (!hz || !(*hz > 0.0)) return invalid("a note's pitch cannot be resolved");
+    entries.push_back({n, 1200.0 * std::log2(*hz / ch.r.tuning.referenceHz())});
+  }
+  std::stable_sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+    if (a.cents != b.cents) return a.cents < b.cents;
+    if (a.note->start != b.note->start) return a.note->start < b.note->start;
+    return a.note->id < b.note->id;
+  });
+  ch.anchor = entries.front().note;
+  // The anchor's pitch as an exact ratio of the reference (not for one that goes back to a written identity).
+  const std::optional<Rational> anchorExact =
+      writtenOf(c, *ch.anchor) ? std::nullopt : exactReferenceRatio(c, ch.r.hz, ch.anchor);
+  auto exactTo = [&](const Note& n) -> std::optional<Rational> {
+    if (&n == ch.anchor || writtenOf(c, n)) return std::nullopt;
+    if (noteAnchorOf(n.pitch) == ch.anchor->id) return n.pitch.ratio();
+    if (!anchorExact) return std::nullopt;
+    const std::optional<Rational> own = exactReferenceRatio(c, ch.r.hz, &n);
+    const std::optional<Rational> q = own ? tuning::div(*own, *anchorExact) : std::nullopt;
+    return q && q->isPositive() ? q : std::nullopt;
+  };
+  for (const Entry& en : entries) {
+    const std::optional<Rational> exact = exactTo(*en.note);
+    if (ch.pitches.empty() || en.cents - ch.pitches.back().cents > 1e-6)
+      ch.pitches.push_back({en.cents, ch.pitches.empty() ? std::nullopt : exact, {}});
+    Chord::Pitch& pitch = ch.pitches.back();
+    pitch.notes.push_back({en.note, exact && pitch.exact && *exact == *pitch.exact});
+  }
+  if (ch.pitches.size() > kMaxProportionTerms) return invalid("a proportion has at most 64 terms");
+  return ch;
+}
+
+std::vector<JiCandidate> candidatesOf(const Chord& ch) {
+  std::vector<JiCandidate> out;
+  const size_t n = ch.pitches.size();
+  // Every exact ratio needs a whole term: the lowest term is a multiple of their denominators' lcm.
+  int64_t step = 1;
+  for (size_t i = 1; i < n; ++i)
+    if (ch.pitches[i].exact) {
+      step = lcmCapped(step, ch.pitches[i].exact->den(), kMaxHarmonicIndex);
+      if (step < 0) return out;
+    }
+  const int64_t last = std::max<int64_t>(kMaxJiCandidateBase, step);
+  std::vector<int64_t> terms(n);
+  for (int64_t a0 = step; a0 <= last; a0 += step) {
+    terms[0] = a0;
+    JiCandidate cand;
+    bool fits = true;
+    for (size_t i = 1; i < n && fits; ++i) {
+      const Chord::Pitch& pi = ch.pitches[i];
+      const double want = pi.cents - ch.pitches[0].cents;
+      if (pi.exact) {
+        terms[i] = pi.exact->num() * (a0 / pi.exact->den());
+      } else {
+        const double t = std::round(static_cast<double>(a0) * std::exp2(want / 1200.0));
+        fits = t >= 1.0 && t <= static_cast<double>(kMaxFundamentalDenominator);
+        if (!fits) break;
+        terms[i] = static_cast<int64_t>(t);
+        const double err = std::fabs(1200.0 * std::log2(t / static_cast<double>(a0)) - want);
+        fits = err <= kTuneToJiToleranceCents;
+        cand.error += err;
+        cand.worst = std::max(cand.worst, err);
+      }
+      fits = fits && terms[i] > terms[i - 1];  // two written pitches are two terms
+    }
+    if (!fits) continue;
+    int64_t g = 0;
+    for (const int64_t t : terms) g = std::gcd(g, t);
+    cand.terms = terms;
+    for (int64_t& t : cand.terms) t /= g;
+    if (std::ranges::any_of(out, [&](const JiCandidate& o) { return o.terms == cand.terms; })) continue;
+    // Simplicity: the mean Tenney height log2(n · d) of the intervals between every two terms (4:5:6 → 5/4, 3/2, 6/5).
+    double height = 0.0;
+    for (size_t i = 0; i < n; ++i)
+      for (size_t k = i + 1; k < n; ++k) {
+        const int64_t d = std::gcd(cand.terms[i], cand.terms[k]);
+        height += std::log2(static_cast<double>(cand.terms[i] / d) * static_cast<double>(cand.terms[k] / d));
+      }
+    const double pairs = static_cast<double>(n * (n - 1) / 2);
+    cand.score = (n > 1 ? cand.error / static_cast<double>(n - 1) + kTuneToJiSimplicity * height / pairs : 0.0);
+    out.push_back(std::move(cand));
+  }
+  std::stable_sort(out.begin(), out.end(), [](const JiCandidate& a, const JiCandidate& b) { return a.score < b.score; });
+  if (out.size() > kMaxJiCandidates) out.resize(kMaxJiCandidates);
+  return out;
+}
+
+Status checkTerms(std::span<const int64_t> terms) {
+  if (terms.empty() || terms.size() > kMaxProportionTerms) return invalid("a proportion has 1 to 64 terms");
+  for (size_t i = 0; i < terms.size(); ++i) {
+    if (terms[i] < 1 || terms[i] > kMaxFundamentalDenominator) return invalid("proportion term out of range (1 to 2^20)");
+    if (i > 0 && terms[i] <= terms[i - 1]) return invalid("the terms of a proportion ascend");
+  }
+  if (terms[0] > static_cast<int64_t>(kMaxHarmonicIndex)) return invalid("the lowest term of a proportion goes from 1 to 4096");
   return ok();
 }
 
 }  // namespace
 
-EditResult createJiObject(const Project& p, IdSource& ids, ClipRef clip, Ticks start, Ticks length,
-                          const PitchId& fundamental, std::span<const int64_t> terms, bool undertone) {
+EditResult makeJiGroup(const Project& p, IdSource& ids, ClipRef clip, NoteKey anchorNote, uint32_t index) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
+  const Note* n = f->clip->notes.locate(anchorNote);
+  if (!n) return notFound("note not found");
+  if (index < 1 || index > kMaxHarmonicIndex) return invalid("the harmonic number goes from 1 to 4096");
+  Edit e = groupEdit("Is Harmonic", clip);
+  e.notes.push_back(keyOf(*n));
+  JiGroup g;
+  if (const JiGroup* have = findJiGroupByAnchor(*f->clip, n->id)) {
+    g = *have;
+    if (g.index == index) {
+      e.jiGroups.push_back(g.id);
+      return e;
+    }
+  } else {
+    g.id = ids.jiGroup();
+    g.anchor = n->id;
+  }
+  g.index = index;
+  e.jiGroups.push_back(g.id);
+  pushGroups(e, clip, *f->clip, groupsWith(*f->clip, g));
+  return e;
+}
+
+EditResult removeJiGroup(const Project& p, ClipRef clip, JiGroupId group) {
+  return dissolve(p, clip, group, false, "Remove JI Group");
+}
+
+EditResult untuneJiGroup(const Project& p, ClipRef clip, JiGroupId group) {
+  return dissolve(p, clip, group, true, "Back to Tuning");
+}
+
+Result<std::vector<JiCandidate>> tuneToJiCandidates(const Project& p, ClipRef clip, std::span<const NoteKey> notes) {
+  Result<Chord> ch = chordOf(p, clip, notes);
+  if (!ch) return std::move(ch).error();
+  return candidatesOf(*ch);
+}
+
+EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
+                    const TuneToJiOptions& options) {
+  Result<Chord> chord = chordOf(p, clip, notes);
+  if (!chord) return std::move(chord).error();
+  const Chord& ch = *chord;
+  const NoteClip& c = *ch.clip.clip;
+  const size_t n = ch.pitches.size();
+  std::vector<int64_t> terms = options.proportion;
+  if (!terms.empty()) {
+    if (terms.size() != n) return invalid("the proportion has one term per distinct pitch of the notes");
+  } else if (std::vector<JiCandidate> cands = candidatesOf(ch); !cands.empty()) {
+    terms = std::move(cands.front().terms);
+  } else {
+    // No reading of the whole chord: each pitch its simplest ratio to the lowest.
+    std::vector<Rational> ratios(n, Rational(1));
+    int64_t L = 1;
+    for (size_t i = 1; i < n; ++i) {
+      const std::optional<Rational> q =
+          ch.pitches[i].exact ? ch.pitches[i].exact
+                              : simplestRatioNear(ch.pitches[i].cents - ch.pitches[0].cents,
+                                                  ratioSnapTolerance(ch.r.tuning, ch.pitches[i].cents));
+      if (!q || !q->isPositive()) return invalid("the chord has no proportion");
+      ratios[i] = *q;
+      L = lcmCapped(L, q->den(), kMaxHarmonicIndex);
+      if (L < 0) return invalid("the chord has no proportion within the harmonic limit");
+    }
+    terms.resize(n);
+    for (size_t i = 0; i < n; ++i) {
+      const int64_t mult = L / ratios[i].den();
+      if (ratios[i].num() > kMaxFundamentalDenominator / mult) return invalid("the chord has no proportion within the harmonic limit");
+      terms[i] = ratios[i].num() * mult;
+    }
+  }
   PQ_DOC_TRY(checkTerms(terms));
-  JiObject o;
-  o.start = start;
-  o.length = length;
-  o.fundamental = fundamental;
-  o.undertone = undertone;
-  JiStop s;
-  s.terms.assign(terms.begin(), terms.end());
-  o.stops.push_back(std::move(s));
-  o.id = JiObjectId{1};  // validated before ids are drawn, so a refused object costs none
-  o.voiceNotes.assign(terms.size(), NoteId{});
-  for (size_t i = 0; i < o.voiceNotes.size(); ++i) o.voiceNotes[i] = NoteId{static_cast<uint32_t>(i + 1)};
-  PQ_DOC_TRY(checkJiObject(o));
-  o.id = ids.jiObject();
-  for (NoteId& v : o.voiceNotes) v = ids.note();
-  Edit e = makeEdit("Create JI Object");
-  e.noteClip = clip;
-  e.jiObjects.push_back(o.id);
-  batchOf(e).commands.push_back(AddJiObject{clip, std::move(o)});
-  return e;
-}
 
-EditResult jiFromNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> keys,
-                       const JiFromNotesOptions& options) {
-  Result<ClipFound> f = findClip(p, clip);
-  if (!f) return std::move(f).error();
-  if (keys.empty()) return invalid("no notes");
-  Result<tuning::Tuning> t = clipTuning(p, *f);
-  if (!t) return std::move(t).error();
-  Result<ClipPitches> resolved = resolveClipPitches(p, clip.track, clip.clip);
-  if (!resolved) return std::move(resolved).error();
-  std::vector<std::pair<NoteId, double>> hzOf;  // sorted by note id
-  hzOf.reserve(resolved->notes.size());
-  for (const NotePitch& np : resolved->notes)
-    if (np.hz) hzOf.emplace_back(np.note, *np.hz);
-  std::sort(hzOf.begin(), hzOf.end());
-
-  struct Voice {
-    double cents = 0.0;
-    PitchId pitch;                  // as written when it may be a stop's pitch, else Cents
-    std::optional<Rational> ratio;  // a reference-anchored Ratio note's
-    std::vector<const Note*> notes;
-  };
-  std::vector<Voice> voices;
-  std::vector<NoteId> seen;
-  Ticks lo = kMaxTicks, hi = -kMaxTicks;
-  float velocity = 0.0f;
-  for (const NoteKey& k : keys) {
-    const Note* n = f->clip->notes.locate(k);
-    if (!n) return notFound("note not found");
-    if (std::find(seen.begin(), seen.end(), n->id) != seen.end()) continue;
-    seen.push_back(n->id);
-    const auto it = std::lower_bound(hzOf.begin(), hzOf.end(), n->id, [](const auto& e, NoteId id) { return e.first < id; });
-    if (it == hzOf.end() || it->first != n->id) return invalid("a note's pitch cannot be resolved");
-    Voice v;
-    v.cents = 1200.0 * std::log2(it->second / t->referenceHz());
-    v.pitch = plainPitch(n->pitch) ? n->pitch : PitchId::fromCents(v.cents);
-    if (n->pitch.kind() == PitchKind::Ratio && n->pitch.anchorKind() == tuning::AnchorKind::Reference) v.ratio = n->pitch.ratio();
-    v.notes.push_back(n);
-    voices.push_back(std::move(v));
-    lo = std::min(lo, n->start);
-    hi = std::max(hi, n->start + n->length);
-    velocity = std::max(velocity, n->velocity);
-  }
-  std::stable_sort(voices.begin(), voices.end(), [](const Voice& a, const Voice& b) { return a.cents < b.cents; });
-  std::vector<Voice> distinct;  // one voice per pitch
-  for (Voice& v : voices) {
-    if (!distinct.empty() && std::abs(distinct.back().cents - v.cents) < 1e-6) distinct.back().notes.push_back(v.notes.front());
-    else distinct.push_back(std::move(v));
-  }
-  const size_t V = distinct.size();
-  if (V > kMaxJiVoices) return invalid("a JI object has at most 64 voices");
-
-  // Each voice's ratio to the lowest, then the proportion over the lcm of the denominators.
-  std::vector<Rational> ratios(V, Rational(1));
-  int64_t L = 1;
-  for (size_t i = 1; i < V; ++i) {
-    std::optional<Rational> r;
-    if (distinct[i].ratio && distinct[0].ratio) r = tuning::div(*distinct[i].ratio, *distinct[0].ratio);
-    else r = simplestRatioNear(distinct[i].cents - distinct[0].cents, ratioSnapTolerance(*t, distinct[i].cents));
-    if (!r || !r->isPositive()) return invalid("the chord has no proportion");
-    ratios[i] = *r;
-    L = lcmCapped(L, r->den(), kMaxJiTerm);
-    if (L < 0) return invalid("the chord has no proportion within the term limit");
-  }
-  std::vector<int64_t> terms(V);
-  for (size_t i = 0; i < V; ++i) {
-    const int64_t mult = L / ratios[i].den();
-    if (ratios[i].num() > kMaxJiTerm / mult) return invalid("the chord has no proportion within the term limit");
-    terms[i] = ratios[i].num() * mult;
-    if (i > 0 && terms[i] <= terms[i - 1]) return invalid("two notes are too close to be different terms");
-  }
-
-  JiObject o;
-  o.id = ids.jiObject();
-  o.start = lo;
-  o.length = hi - lo;
-  o.fundamental = distinct[0].pitch;  // the pinned (lowest) voice: scale · its term = 1 exactly
-  o.velocity = velocity;
-  o.sounds = options.replaceNotes;
-  const Rational scale(1, terms[0]);
-  JiStop proportion;
-  proportion.terms = terms;
-  proportion.scale = scale;
-  if (options.tuningStop) {
-    JiStop written;
-    written.scale = scale;  // the fundamental stays put through the morph
-    for (const Voice& v : distinct) written.pitches.push_back(v.pitch);
-    proportion.at = std::clamp<Ticks>(options.glide, 1, std::max<Ticks>(1, o.length - 1));
-    proportion.timing.glide = proportion.at;
-    o.stops.push_back(std::move(written));
-  }
-  o.stops.push_back(std::move(proportion));
-  for (size_t i = 0; i < V; ++i) o.voiceNotes.push_back(ids.note());
-  PQ_DOC_TRY(checkJiObject(o));
-
-  Edit e = makeEdit("Tune to JI");
-  e.noteClip = clip;
-  e.jiObjects.push_back(o.id);
-  const JiObjectId id = o.id;
-  batchOf(e).commands.push_back(AddJiObject{clip, std::move(o)});
-  if (options.replaceNotes) {
-    RemoveNotes r{clip, {}};
-    std::vector<NoteId> gone;
-    for (const Voice& v : distinct)
-      for (const Note* n : v.notes) {
-        r.notes.push_back(keyOf(*n));
-        gone.push_back(n->id);
-      }
-    std::sort(gone.begin(), gone.end());
-    appendReanchored(batchOf(e), clip, reanchorWithout(p, f->path, *f->clip, gone));  // T7.11a (H3)
-    batchOf(e).commands.push_back(std::move(r));
-  } else {
-    UpdateNotes u{clip, {}};
-    for (size_t i = 0; i < V; ++i)
-      for (const Note* n : distinct[i].notes) {
-        Note m = *n;
-        m.pitch = PitchId::fromHarmonic(id.value, static_cast<uint32_t>(i));
-        u.updates.push_back({keyOf(*n), m});
-        e.notes.push_back(keyOf(m));
-      }
-    batchOf(e).commands.push_back(std::move(u));
-  }
-  return e;
-}
-
-EditResult moveJiObject(const Project& p, ClipRef clip, JiObjectId object, Ticks dt, int32_t steps,
-                        const tuning::Edo* displayGrid, double cents) {
-  Result<JiFound> f = findJi(p, clip, object);
-  if (!f) return std::move(f).error();
-  Edit e = makeEdit("Move JI Object");
-  e.noteClip = clip;
-  e.jiObjects.push_back(object);
-  JiObject o = *f->object;
-  o.start += dt;
-  PQ_DOC_TRY(checkTick(o.start, "JI object start"));
-  if (steps != 0 || cents != 0.0) {
-    if (!std::isfinite(cents)) return invalid("JI object pitch out of range");
-    Result<tuning::Tuning> t = clipTuning(p, f->clip);
-    if (!t) return std::move(t).error();
-    PitchStepContext pc;
-    pc.tuning = &*t;
-    pc.displayGrid = displayGrid;
-    bool moved = true;
-    auto shift = [&](PitchId& q) {
-      if (steps != 0) {
-        if (const std::optional<PitchId> r = stepPitch(q, steps, StepUnit::Grid, pc)) q = *r;
-        else moved = false;
-      }
-      if (cents != 0.0) {
-        if (const std::optional<double> c = jiPitchCents(q, *t)) q = PitchId::fromCents(*c + cents);
-        else moved = false;
-      }
-    };
-    shift(o.fundamental);
-    for (JiStop& s : o.stops)
-      for (PitchId& q : s.pitches) shift(q);
-    if (!moved) return invalid("the JI object cannot move to that pitch");
-    PQ_DOC_TRY(checkJiObject(o));
-  }
+  Edit e = groupEdit("Tune to JI", clip);
   UpdateNotes u{clip, {}};
-  for (const Note& n : f->clip.clip->notes) {
-    if (jiObjectOf(n.pitch) != object) continue;
-    Note m = n;
-    m.start += dt;
-    PQ_DOC_TRY(checkTick(m.start, "note start"));
-    if (dt != 0) u.updates.push_back({keyOf(n), m});
-    e.notes.push_back(keyOf(m));
-  }
-  if (o == *f->object) return e;
-  batchOf(e).commands.push_back(SetJiObject{clip, std::move(o)});
-  if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
-  return e;
-}
-
-EditResult pasteJiObject(const Project& p, IdSource& ids, ClipRef clip, const JiObject& source, std::span<const Note> inner,
-                         std::span<const NoteCurves> curves, Ticks start) {
-  Result<ClipFound> f = findClip(p, clip);
-  if (!f) return std::move(f).error();
-  PQ_DOC_TRY(checkJiObject(source));
-  PQ_DOC_TRY(checkTick(start, "JI object start"));
-  const Ticks dt = start - source.start;
-  for (const Note& n : inner) {
-    if (jiObjectOf(n.pitch) != source.id) return invalid("a pasted note does not follow the JI object");
-    if (n.pitch.kind() == PitchKind::Harmonic && n.pitch.voiceIndex() >= source.voices())
-      return invalid("a pasted note follows a voice the JI object does not have");
-    PQ_DOC_TRY(checkTick(n.start + dt, "note start"));
-  }
-  JiObject c = source;
-  c.id = ids.jiObject();
-  c.start = start;
-  for (NoteId& v : c.voiceNotes) v = ids.note();
-  Edit e = makeEdit("Paste JI Object");
-  e.noteClip = clip;
-  e.jiObjects.push_back(c.id);
-  const JiObjectId copy = c.id;
-  batchOf(e).commands.push_back(AddJiObject{clip, std::move(c)});
-  AddNotes add{clip, {}};
-  std::vector<NoteId> sources;
-  for (const Note& n : inner) {
-    Note m = n;
-    m.id = ids.note();
-    m.start += dt;
-    m.pitch = n.pitch.kind() == PitchKind::Harmonic ? PitchId::fromHarmonic(copy.value, n.pitch.voiceIndex())
-                                                    : PitchId::fromRatio(n.pitch.ratio(), tuning::AnchorKind::JiFundamental, copy.value);
-    sources.push_back(n.id);
-    e.notes.push_back(keyOf(m));
-    add.notes.push_back(m);
-  }
-  Result<std::optional<SetNoteCurves>> carried = copiedCurves(clip, *f->clip, curves, sources, add.notes);  // M13
-  if (!carried) return std::move(carried).error();
-  if (!add.notes.empty()) batchOf(e).commands.push_back(std::move(add));
-  if (*carried) batchOf(e).commands.push_back(std::move(**carried));
-  return e;
-}
-
-EditResult duplicateJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, Ticks dt) {
-  Result<JiFound> f = findJi(p, clip, object);
-  if (!f) return std::move(f).error();
-  std::vector<Note> inner;
-  std::vector<NoteCurves> curves;
-  for (const Note& n : f->clip.clip->notes) {
-    if (jiObjectOf(n.pitch) != object) continue;
-    inner.push_back(n);
-    if (const NoteCurves* nc = findNoteCurves(*f->clip.clip, n.id)) curves.push_back(*nc);
-  }
-  EditResult e = pasteJiObject(p, ids, clip, *f->object, inner, curves, f->object->start + dt);
-  if (e) batchOf(*e).label = "Duplicate JI Object";
-  return e;
-}
-
-EditResult resizeJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, NoteEdge edge, Ticks delta) {
-  Result<JiFound> f = findJi(p, clip, object);
-  if (!f) return std::move(f).error();
-  JiObject o = *f->object;
-  if (edge == NoteEdge::End) {
-    o.length = std::max<Ticks>(o.length + delta, 1);
-  } else {
-    const Ticks d = std::min(delta, o.length - 1);  // how far the start moves (later: > 0)
-    o.start += d;
-    o.length -= d;
-    PQ_DOC_TRY(checkTick(o.start, "JI object start"));
-    // The content keeps its absolute time: the stop the start is on (the last at or before it) becomes stop 0.
-    size_t first = 0;
-    for (size_t s = 1; s < o.stops.size() && o.stops[s].at <= d; ++s) first = s;
-    o.stops.erase(o.stops.begin(), o.stops.begin() + static_cast<std::ptrdiff_t>(first));
-    for (size_t s = 1; s < o.stops.size(); ++s) o.stops[s].at -= d;
-    o.stops[0].at = 0;
-    if (!o.ride.empty()) {
-      std::vector<Breakpoint> ride;
-      if (d > 0) {
-        // Cut at d: the curve family is closed under cutting (the rest of a segment of curvature c from x0 on has
-        // curvature c · (1 − x0)).
-        const auto it = std::lower_bound(o.ride.begin(), o.ride.end(), d, [](const Breakpoint& b, Ticks v) { return b.tick < v; });
-        if (it != o.ride.begin() && (it == o.ride.end() || it->tick > d)) {
-          Breakpoint head;
-          head.tick = 0;
-          head.value = static_cast<float>(automationValueAt(o.ride, d, 0.0));
-          if (it != o.ride.end()) {
-            const Breakpoint& a = *(it - 1);
-            head.curve = a.curve * static_cast<float>(static_cast<double>(it->tick - d) / static_cast<double>(it->tick - a.tick));
-          }
-          ride.push_back(head);
-        }
-        for (auto q = it; q != o.ride.end(); ++q) {
-          ride.push_back(*q);
-          ride.back().tick -= d;
-        }
-      } else {
-        ride = o.ride;
-        for (Breakpoint& b : ride) b.tick -= d;
-      }
-      o.ride = std::move(ride);
-    }
-  }
-  PQ_DOC_TRY(checkLength(o.length, "JI object length"));
-  return replaceObject(clip, *f, std::move(o), &ids, "Resize JI Object");
-}
-
-EditResult deleteJiObject(const Project& p, ClipRef clip, JiObjectId object, bool withNotes) {
-  Result<JiFound> f = findJi(p, clip, object);
-  if (!f) return std::move(f).error();
-  const JiObject& o = *f->object;
-  Edit e = makeEdit("Delete JI Object");
-  e.noteClip = clip;
-  if (withNotes) {
-    RemoveNotes r{clip, {}};
-    std::vector<NoteId> gone;
-    for (const Note& n : f->clip.clip->notes)
-      if (jiObjectOf(n.pitch) == object) {
-        r.notes.push_back(keyOf(n));
-        gone.push_back(n.id);
-      }
-    std::sort(gone.begin(), gone.end());
-    appendReanchored(batchOf(e), clip, reanchorWithout(p, f->clip.path, *f->clip.clip, gone));  // T7.11a (H3)
-    if (!r.notes.empty()) batchOf(e).commands.push_back(std::move(r));
-    batchOf(e).commands.push_back(RemoveJiObject{clip, object});
-    return e;
-  }
-  UpdateNotes u{clip, {}};
-  std::optional<tuning::Tuning> tun;  // built for the first inner note
-  const std::optional<Rational> fundRatio =
-      o.fundamental.kind() == PitchKind::Ratio ? std::optional<Rational>(o.fundamental.ratio()) : std::nullopt;
-  for (const Note& n : f->clip.clip->notes) {
-    if (jiObjectOf(n.pitch) != object) continue;
-    if (!tun) {
-      Result<tuning::Tuning> t = clipTuning(p, f->clip);
-      if (!t) return std::move(t).error();
-      tun = std::move(t).value();
-    }
-    const double tick = static_cast<double>(n.start - o.start);
-    const bool harmonic = n.pitch.kind() == PitchKind::Harmonic;
-    const JiPosition at = jiPosition(o, harmonic ? static_cast<int32_t>(n.pitch.voiceIndex()) : -1, tick);
-    const JiStop& stop = o.stops[at.stop];
-    const bool still = at.holding() && automationValueAt(o.ride, static_cast<Ticks>(std::clamp<double>(tick, 0.0, static_cast<double>(o.length))), 0.0) == 0.0;
+  NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
+  auto unwrite = [&](NoteId id) { std::erase_if(written, [&](const NoteWritten& w) { return w.note == id; }); };
+  // The anchor: frozen where it is written. One that hung on another note is detached (what it was written as, else
+  // its exact pitch), so no member can be its own anchor's anchor.
+  const Note& a = *ch.anchor;
+  if (noteAnchorOf(a.pitch).valid()) {
     std::optional<PitchId> pitch;
-    if (still && harmonic && stop.isTuning()) {
-      pitch = stop.pitches[jiVoiceEntry(o, stop, n.pitch.voiceIndex())];
-    } else if (still && fundRatio && (!harmonic || !stop.isTuning())) {  // exact: fundamental × the voice's / note's ratio
-      const std::optional<Rational> over = harmonic ? jiVoiceRatio(o, n.pitch.voiceIndex(), at.stop) : tuning::mul(stop.scale, n.pitch.ratio());
-      const std::optional<Rational> r = over ? tuning::mul(*fundRatio, *over) : std::nullopt;
-      if (r && r->isPositive()) pitch = PitchId::fromRatio(*r);
+    if (const NoteWritten* w = findNoteWritten(c, a.id)) {
+      pitch = w->written;
+    } else {
+      const Note* its = c.notes.findById(noteAnchorOf(a.pitch));
+      pitch = detached(a, exactReferenceRatio(c, ch.r.hz, its), ch.r);
     }
-    if (!pitch) {
-      std::optional<double> c = harmonic ? jiVoiceCents(o, *tun, n.pitch.voiceIndex(), tick) : jiFundamentalCents(o, *tun, tick);
-      if (c && !harmonic) *c += tuning::cents(n.pitch.ratio());
-      if (!c || !std::isfinite(*c)) return invalid("an inner note's pitch cannot be resolved");
-      pitch = PitchId::fromCents(*c);
-    }
-    Note m = n;
+    if (!pitch) return invalid("the lowest note's pitch cannot be resolved");
+    Note m = a;
     m.pitch = *pitch;
-    u.updates.push_back({keyOf(n), m});
-    e.notes.push_back(keyOf(m));
+    u.updates.push_back({keyOf(a), m});
   }
+  unwrite(a.id);
+  e.notes.push_back(keyOf(a));
+  for (size_t i = 0; i < n; ++i) {
+    const std::optional<Rational> ratio = Rational::tryMake(terms[i], terms[0]);
+    if (!ratio || !ratio->isPositive()) return invalid("proportion term out of range");
+    for (const Chord::Pitch::Member& member : ch.pitches[i].notes) {
+      const Note& note = *member.note;
+      if (&note == &a) continue;
+      e.notes.push_back(keyOf(note));
+      const PitchId pitch = PitchId::fromRatio(*ratio, tuning::AnchorKind::Note, a.id.value);
+      if (pitch == note.pitch) continue;  // already this exact ratio to the anchor
+      if (writtenOf(c, note) == nullptr) {
+        // What it was written as. An exact ratio of the reference that the proportion keeps needs no memory.
+        const bool kept = member.exact && *ch.pitches[i].exact == *ratio && noteAnchorOf(note.pitch) != a.id;
+        unwrite(note.id);
+        if (!kept) {
+          std::optional<PitchId> was = plainPitch(note.pitch) ? std::optional<PitchId>(note.pitch) : ch.r.centsAt(ch.r.hz.hz(note.id));
+          if (!was) return invalid("a note's pitch cannot be resolved");
+          written.push_back(NoteWritten{note.id, *was});
+        }
+      }
+      Note m = note;
+      m.pitch = pitch;
+      u.updates.push_back({keyOf(note), m});
+    }
+  }
+  JiGroup g;
+  if (const JiGroup* have = findJiGroupByAnchor(c, a.id)) {
+    g = *have;
+  } else {
+    g.id = ids.jiGroup();
+    g.anchor = a.id;
+  }
+  g.index = static_cast<uint32_t>(terms[0]);
+  e.jiGroups.push_back(g.id);
   if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
-  batchOf(e).commands.push_back(RemoveJiObject{clip, object});
+  pushGroups(e, clip, c, groupsWith(c, g));
+  pushWritten(e, clip, c, std::move(written));
   return e;
 }
 
-EditResult setJiObject(const Project& p, IdSource& ids, ClipRef clip, JiObject object) {
-  Result<JiFound> f = findJi(p, clip, object.id);
+EditResult addGroupNote(const Project& p, IdSource& ids, ClipRef clip, JiGroupId group, const GroupNotePitch& pitch,
+                        Ticks start, Ticks length, float velocity) {
+  Result<GroupFound> f = findGroup(p, clip, group);
   if (!f) return std::move(f).error();
-  return replaceObject(clip, *f, std::move(object), &ids, "Edit JI Object");
+  Rational ratio = pitch.ratio;
+  if (pitch.harmonic != 0) {
+    const std::optional<GroupFundamental> gf = groupFundamental(*f->clip.clip, *f->group);
+    const std::optional<Rational> q =
+        gf && pitch.harmonic > 0 && pitch.harmonic <= kMaxFundamentalDenominator ? Rational::tryMake(pitch.harmonic, gf->anchor)
+                                                                                 : std::nullopt;
+    if (!q) return invalid("harmonic number out of range");
+    ratio = *q;
+  }
+  if (!ratio.isPositive()) return invalid("a ratio pitch must be positive");
+  Note n;
+  n.id = NoteId{1};  // validated before an id is drawn, so a refused note costs none
+  n.start = start;
+  n.length = length;
+  n.velocity = velocity;
+  n.pitch = PitchId::fromRatio(ratio, tuning::AnchorKind::Note, f->group->anchor.value);
+  PQ_DOC_TRY(validateNote(n));
+  n.id = ids.note();
+  Edit e = groupEdit("Add Note", clip);
+  e.notes.push_back(keyOf(n));
+  e.jiGroups.push_back(group);
+  batchOf(e).commands.push_back(AddNotes{clip, {n}});
+  return e;
 }
 
-EditResult setJiStops(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, std::vector<JiStop> stops) {
-  Result<JiFound> f = findJi(p, clip, object);
+EditResult walkJiGroup(const Project& p, ClipRef clip, JiGroupId group, int32_t steps) {
+  Result<GroupFound> f = findGroup(p, clip, group);
   if (!f) return std::move(f).error();
-  JiObject o = *f->object;
-  o.stops = std::move(stops);
-  return replaceObject(clip, *f, std::move(o), &ids, "Edit JI Stops");
+  const NoteClip& c = *f->clip.clip;
+  const std::optional<GroupHarmonics> gh = groupHarmonics(c, *f->group);
+  if (!gh) return notFound("the JI group's anchor is not in the clip");
+  Edit e = groupEdit("Walk JI Group", clip);
+  e.jiGroups.push_back(group);
+  e.notes.push_back(keyOf(*f->anchor));
+  const int64_t anchor = gh->anchor + steps;
+  if (anchor < 1) return invalid("the group is on its first harmonic");
+  if (anchor > static_cast<int64_t>(kMaxHarmonicIndex)) return invalid("the harmonic number goes from 1 to 4096");
+  UpdateNotes u{clip, {}};
+  size_t mi = 0;
+  for (const Note& n : c.notes) {  // gh->members is in the clip's note order
+    if (mi >= gh->members.size() || gh->members[mi].note != n.id) continue;
+    const GroupMember& m = gh->members[mi++];
+    if (m.harmonic < 1) return invalid("a note of the group has no harmonic number");
+    const int64_t h = m.harmonic + steps;
+    if (h < 1) return invalid("the group is on its first harmonic");
+    const std::optional<Rational> ratio = Rational::tryMake(h, anchor);
+    if (!ratio || !ratio->isPositive()) return invalid("harmonic number out of range");
+    Note w = n;
+    w.pitch = PitchId::fromRatio(*ratio, tuning::AnchorKind::Note, f->group->anchor.value);
+    if (!(w.pitch == n.pitch)) u.updates.push_back({keyOf(n), w});
+    e.notes.push_back(keyOf(n));
+  }
+  if (steps == 0) return e;
+  JiGroup g = *f->group;
+  g.index = static_cast<uint32_t>(anchor);
+  if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
+  pushGroups(e, clip, c, groupsWith(c, g));
+  return e;
 }
 
-EditResult addJiStop(const Project& p, IdSource& ids, ClipRef clip, JiObjectId object, Ticks at,
-                     std::span<const int64_t> terms, Ticks glide) {
-  Result<JiFound> f = findJi(p, clip, object);
+EditResult proportionNotes(const Project& p, IdSource& ids, ClipRef clip, Ticks start, Ticks length,
+                           const PitchId& bottomPitch, std::span<const int64_t> terms, float velocity) {
+  Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
-  PQ_DOC_TRY(checkStopTick(at));
   PQ_DOC_TRY(checkTerms(terms));
-  if (glide < 0) return invalid("JI stop glide out of range");
-  JiObject o = *f->object;
-  JiStop s;
-  s.at = at;
-  s.terms.assign(terms.begin(), terms.end());
-  s.timing.glide = glide;
-  for (const JiStop& before : o.stops)
-    if (before.at <= at) s.scale = before.scale;
-  placeStop(o, std::move(s));
-  return replaceObject(clip, *f, std::move(o), &ids, "Add JI Stop");
+  if (const NoteId on = noteAnchorOf(bottomPitch); on.valid() && f->clip->notes.findById(on) == nullptr)
+    return notFound("the note the bottom pitch is anchored to is not in the clip");
+  AddNotes add{clip, {}};
+  add.notes.resize(terms.size());
+  for (size_t i = 0; i < terms.size(); ++i) {  // validated before ids are drawn, so a refused proportion costs none
+    Note& n = add.notes[i];
+    n.id = NoteId{static_cast<uint32_t>(i + 1)};
+    n.start = start;
+    n.length = length;
+    n.velocity = velocity;
+    const std::optional<Rational> ratio = Rational::tryMake(terms[i], terms[0]);
+    if (!ratio) return invalid("proportion term out of range");
+    n.pitch = i == 0 ? bottomPitch : PitchId::fromRatio(*ratio, tuning::AnchorKind::Note, 1);
+    PQ_DOC_TRY(validateNote(n));
+  }
+  Edit e = groupEdit("Add Proportion", clip);
+  for (Note& n : add.notes) n.id = ids.note();
+  const NoteId anchor = add.notes[0].id;
+  for (size_t i = 1; i < add.notes.size(); ++i)
+    add.notes[i].pitch = PitchId::fromRatio(add.notes[i].pitch.ratio(), tuning::AnchorKind::Note, anchor.value);
+  for (const Note& n : add.notes) e.notes.push_back(keyOf(n));
+  JiGroup g;
+  g.id = ids.jiGroup();
+  g.anchor = anchor;
+  g.index = static_cast<uint32_t>(terms[0]);
+  e.jiGroups.push_back(g.id);
+  JiGroupList list = groupsWith(*f->clip, g);
+  batchOf(e).commands.push_back(std::move(add));
+  batchOf(e).commands.push_back(SetJiGroups{clip, std::move(list)});
+  return e;
 }
 
-EditResult addJiTuningStop(const Project& p, ClipRef clip, JiObjectId object, Ticks at, Ticks glide) {
-  Result<JiFound> f = findJi(p, clip, object);
+EditResult setJiWarps(const Project& p, ClipRef clip, JiGroupId group, std::vector<JiWarp> warps) {
+  Result<GroupFound> f = findGroup(p, clip, group);
   if (!f) return std::move(f).error();
-  PQ_DOC_TRY(checkStopTick(at));
-  if (glide < 0) return invalid("JI stop glide out of range");
-  JiObject o = *f->object;
-  JiStop s;
-  s.at = at;
-  s.timing.glide = glide;
-  for (const JiStop& before : o.stops)
-    if (before.at <= at) s.scale = before.scale;
-  if (o.stops[0].isTuning()) {  // back to the chord as written
-    s.pitches = o.stops[0].pitches;
-    s.voiceTerm = o.stops[0].voiceTerm;
-  } else {  // each voice to the nearest degree of the clip's tuning
-    Result<tuning::Tuning> t = clipTuning(p, f->clip);
-    if (!t) return std::move(t).error();
-    const double ride = o.ride.empty() ? 0.0
-                                       : pq::evalAutomation(std::span<const Breakpoint>(o.ride),
-                                                            std::clamp(static_cast<double>(at), 0.0, static_cast<double>(o.length)), 0.0);
-    for (uint32_t v = 0; v < o.voices(); ++v) {
-      const std::optional<double> c = jiVoiceCents(o, *t, v, static_cast<double>(at));
-      const std::optional<PitchId> d = c ? nearestDegreePitch(*t, *c - ride) : std::nullopt;
-      if (!d) return invalid("the clip's tuning has no degree for a voice");
-      s.pitches.push_back(*d);
-    }
-  }
-  placeStop(o, std::move(s));
-  return replaceObject(clip, *f, std::move(o), nullptr, "Add Tuning Stop");
-}
-
-EditResult walkJiTerm(const Project& p, ClipRef clip, JiObjectId object, uint32_t stop, uint32_t term, int32_t steps,
-                      uint32_t pin) {
-  Result<JiFound> f = findJi(p, clip, object);
-  if (!f) return std::move(f).error();
-  JiObject o = *f->object;
-  if (stop >= o.stops.size()) return notFound("JI stop not found");
-  JiStop& s = o.stops[stop];
-  if (s.isTuning()) return invalid("a tuning stop has no terms to walk");
-  if (term >= s.terms.size() || pin >= s.terms.size()) return notFound("JI term not found");
-  const int64_t was = s.terms[term];
-  const int64_t now = was + steps;
-  if (now < 1 || now > kMaxJiTerm) return invalid("JI term out of range (1 to 2^20)");
-  s.terms[term] = now;
-  if (pin == term) {  // the pinned entry keeps scale · term (undertone: scale / term)
-    const std::optional<Rational> scale = o.undertone ? tuning::mul(s.scale, Rational(now, was)) : tuning::mul(s.scale, Rational(was, now));
-    if (!scale) return invalid("JI stop scale out of range");
-    s.scale = *scale;
-  }
-  PQ_DOC_TRY(checkTerms(s.terms));
-  return replaceObject(clip, *f, std::move(o), nullptr, "Walk JI Term");
+  JiGroup g = *f->group;
+  g.warps = std::move(warps);
+  PQ_DOC_TRY(checkJiGroup(g));
+  Edit e = groupEdit("JI Warp", clip);
+  e.jiGroups.push_back(group);
+  pushGroups(e, clip, *f->clip.clip, groupsWith(*f->clip.clip, g));
+  return e;
 }
 
 EditResult setNoteCurve(const Project& p, ClipRef clip, NoteKey note, std::vector<Breakpoint> pitch) {
@@ -566,7 +552,7 @@ Edit curveEdit(const char* label, ClipRef clip) {
 }
 }  // namespace
 
-EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge edge, Ticks length, JiShape shape,
+EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge edge, Ticks length, GlideShape shape,
                        NoteId other) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();

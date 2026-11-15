@@ -177,7 +177,6 @@ Follow expectedFollow(const NoteClip& clip, const Note& n, int depth = 0) {
         for (const Note& m : clip.notes)
           if (m.id.value == n.pitch.anchorId()) return expectedFollow(clip, m, depth + 1);
       return {};
-    case PitchKind::Harmonic: return {};
   }
   return {};
 }

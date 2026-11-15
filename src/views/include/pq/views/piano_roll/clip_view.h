@@ -16,7 +16,7 @@
 // Every gesture (draw, move, copy, resize, velocity / chance drag, brace drag) is previewed while it runs and
 // dispatched as one edit when it ends: one undo step each. Keys (scope "pianoroll", docs/HOTKEYS.md): Up / Down
 // and Shift+Up / Down (identity-aware steps, pq::doc::ops::transposeNotes), Delete, Ctrl+D, Ctrl+U, Ctrl+A,
-// Ctrl+C / X / V, 0, J (the JI tool, T7.4); B (draw mode) and Ctrl+1–5 (grid) are global. Clicking or drawing a note auditions it through
+// Ctrl+C / X / V, 0; B (draw mode) and Ctrl+1–5 (grid) are global. Clicking or drawing a note auditions it through
 // TransportPort::auditionHz.
 //
 // Painting is virtualised by the visible time range (note chunks outside it are skipped) and by the visible rows.
@@ -140,7 +140,11 @@ public:
   //   convertSelection   Degree ↔ Ratio ↔ Cents (pq::doc::ops::convertNotes: Ratio = the simplest ratio within
   //                      ops::ratioSnapTolerance, so Degree → Ratio → Degree is the identity)
   //   setSelectionPitch  a typed identity (enterPitch parses "7/4", "386.3c", "4\22", "4\22+1")
-  //   lockFundamental    "this note is the index-th harmonic" (ops::lockFundamental) / unlockFundamental
+  //   declareHarmonic    "Is Harmonic N" (T7.13, ops::makeJiGroup): the note becomes the frozen anchor of a JI group
+  //                      with that index; the active group's series is drawn as guides, the plain draw puts members
+  //                      on it (Shift: the rows), members and the anchor show their harmonic numbers.
+  //                      removeActiveJiGroup: ops::removeJiGroup of the active group (activeJiGroup: the group of
+  //                      the first selected note in one, else the clip's newest).
   // Drawing with Shift (draw mode, or Shift+double-click) adds Ratio notes on the harmonics of the virtual fundamental
   // (no fundamental yet: the row's pitch snapped to the simplest ratio). Ratio notes show "n/d · k" when they fit.
   bool convertSelection(tuning::PitchKind to);
@@ -149,8 +153,9 @@ public:
   std::optional<tuning::PitchId> parsePitch(std::string_view text) const;
   // The pitch type-in popover for the selection (the menu's Set Pitch…): returns its text field.
   ui::TextEdit* openPitchEntry();
-  bool lockFundamental(doc::NoteId note, uint32_t harmonicIndex);
-  bool unlockFundamental();
+  bool declareHarmonic(doc::NoteId note, uint32_t n);
+  bool removeActiveJiGroup();
+  doc::JiGroupId activeJiGroup() const;  // invalid: none
   // What the keys print on each row (the clip box's Row Labels, the keys' right-click menu). View state.
   roll::RowLabels rowLabels() const noexcept;
   void setRowLabels(roll::RowLabels mode);
@@ -158,63 +163,20 @@ public:
   // note's identity and pitch, or the row's (cents, Hz, nearest ratio, overlay EDO step). Tests read it directly.
   ui::InfoText readoutAt(ui::Vec2 p, bool keys);
 
-  // --- JI objects (T7.4, SPEC §5; roll_ji.cpp) ---
-  // Drawn as a box over the object's span and pitch range with its voices as lines through the morphs, harmonic
-  // numbers, a header, stop markers and the ride curve. The JI tool (J, "pianoroll.toggleJiTool"): drag a box, then
-  // type a proportion ("8:9:10:12:15"; "1/4:1/5:1/6" = undertone) in the field that opens; the lowest voice sits on
-  // the box's bottom row. An object's header or border selects it (drag: move in time and by rows; left / right
-  // border: resize); Delete and Ctrl+D act on the selected object. One undo step each.
-  bool jiTool() const noexcept;
-  void setJiTool(bool on);
-  doc::JiObjectId jiSelection() const noexcept;
-  void selectJiObject(doc::JiObjectId id);
-  // The object's box as drawn, device px, not clipped (empty: no such object). Its header is the strip above it.
-  ui::IRect jiObjectRect(doc::JiObjectId id) const;
-  // What the proportion field accepts: "8:9:10:12:15" (overtone; terms strictly ascending), "1/4:1/5:1/6" (undertone:
-  // terms 4, 5, 6, in any order). The error says what is wrong.
-  struct Proportion {
-    std::vector<int64_t> terms;
-    bool undertone = false;
-  };
-  static Result<Proportion> parseProportion(std::string_view text);
-  // Wall-clock time of the note area's last paint and of its JI-object part; the objects it drew (tests).
+  // --- JI (T7.13; roll_ji.cpp). The group UI is T7.14's. ---
+  // "8:9:10:12:15": strictly ascending whole terms. The error says what is wrong.
+  static Result<std::vector<int64_t>> parseProportion(std::string_view text);
+  // Wall-clock time of the note area's last paint (tests).
   struct PaintStats {
     double notesMs = 0.0;
-    double jiMs = 0.0;
-    uint32_t jiPainted = 0;
   };
   PaintStats paintStats() const noexcept;
-
-  // --- inner roll and morph editing (T7.5; roll_ji_edit.cpp) ---
-  // A double-click on an object enters it (Esc / a double-click outside leaves): its voices are the rows inside the
-  // box, the rest of the roll is dimmed, drawing and double-clicks put Harmonic notes on the voice under the pointer,
-  // typing a proportion adds a stop at the pointer, T a tuning stop. A stop's label under the box selects it (drag:
-  // move, double-click: retype, Delete: remove), the grip on the bottom border sets its glide; a harmonic number
-  // selects that term (Alt+Up / Down: ops::walkJiTerm). "Tune to JI" (Ctrl+Shift+J, "pianoroll.tuneToJi") turns the
-  // selected notes into the inner notes of an object that glides from the tuning to the nearest proportion; "Is
-  // Harmonic…" in a note's menu declares the note harmonic N: the frozen anchor of the series the roll then draws and
-  // snaps to (T7.5b).
-  doc::JiObjectId jiEntered() const noexcept;
-  void enterJiObject(doc::JiObjectId id);
-  void leaveJiObject();
-  int32_t jiStopSelection() const noexcept;  // index into the object's stops; −1 none
-  int32_t jiTermSelection() const noexcept;  // the voice whose harmonic number is selected; −1 none
-  void selectJiStop(doc::JiObjectId id, int32_t stop);
-  void selectJiTerm(doc::JiObjectId id, int32_t voice);
-  bool tuneSelectionToJi();
-  bool lockFundamentalAt(doc::NoteId note, uint32_t n);
-  // T7.5b: the harmonic number the roll shows on a note (the declared harmonic's anchor, a Ratio note related to the
-  // fundamental); the screen y of harmonic k's guide line. nullopt: none.
+  // The harmonic number the roll shows on a note (the anchor of a JI group, a numbered member, a reference Ratio over
+  // the virtual fundamental); the screen y of harmonic k's guide line (the active group's series, else the virtual
+  // fundamental's). nullopt: none.
   std::optional<uint64_t> harmonicOf(doc::NoteId note) const;
   std::optional<float> harmonicGuideY(uint64_t k) const;
-  // Where the object's parts are on screen (device px; empty: not shown): a stop's label under the box, a voice's
-  // harmonic number, a stop's glide grip on the bottom border. `index`: the stop (StopLabel, Glide) or the voice.
-  enum class JiPart : uint8_t { StopLabel, VoiceLabel, Glide };
-  ui::IRect jiPartRect(doc::JiObjectId id, JiPart part, int32_t index) const;
-  // A point on voice `voice`'s line at object tick `objectTick`; a bezier transition's handle (0 / 1); a point `frac`
-  // of the way through a note where it is drawn (on its row, or along its path). {−1, −1}: none.
-  ui::Vec2 jiVoicePoint(doc::JiObjectId id, uint32_t voice, Ticks objectTick) const;
-  ui::Vec2 jiBezierHandle(doc::JiObjectId id, uint32_t stop, uint32_t voice, int handle) const;
+  // A point `frac` of the way through a note where it is drawn (on its row, or along its path). {−1, −1}: none.
   ui::Vec2 notePoint(doc::NoteId id, double frac) const;
 
   roll::RollState& state() noexcept { return *state_; }

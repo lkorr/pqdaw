@@ -67,7 +67,6 @@ Status validateNote(const Note& n) {
       if (!(n.pitch.rawNum() > 0 && n.pitch.rawDen() > 0)) return invalid("ratio pitch must be positive");
       break;
     case tuning::PitchKind::Degree:
-    case tuning::PitchKind::Harmonic:
       break;
   }
   return Ok{};

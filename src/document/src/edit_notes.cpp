@@ -6,7 +6,6 @@
 #include <numeric>
 
 #include "edit_common.h"
-#include "pq/document/ji_object.h"
 #include "pq/tuning/ji.h"
 
 namespace pq::doc::ops {
@@ -243,8 +242,16 @@ std::optional<PitchId> stepPitch(const PitchId& pitch, int32_t steps, StepUnit u
       } else {
         // The fundamental both the note and the clip's fundamental are harmonics of: gcd(n/d, F) (own: 1/d).
         Rational f = Rational(1, r.den());
-        if (ctx.fundamental && pitch.anchorKind() == tuning::AnchorKind::Reference) {
-          const Rational both[2] = {r, *ctx.fundamental};
+        std::optional<Rational> on;  // the fundamental the note steps on with its own
+        if (pitch.anchorKind() == tuning::AnchorKind::Reference) {
+          on = ctx.fundamental;
+        } else if (!ctx.groups.empty()) {  // T7.13: a member of a JI group: the group's harmonics
+          const auto it = std::lower_bound(ctx.groups.begin(), ctx.groups.end(), NoteId{pitch.anchorId()},
+                                           [](const GroupStepFundamental& g, NoteId id) { return g.anchor < id; });
+          if (it != ctx.groups.end() && it->anchor.value == pitch.anchorId()) on = it->fundamental;
+        }
+        if (on) {
+          const Rational both[2] = {r, *on};
           const std::optional<Rational> g = tuning::virtualFundamental(both);
           if (!g) return std::nullopt;
           f = *g;
@@ -258,35 +265,32 @@ std::optional<PitchId> stepPitch(const PitchId& pitch, int32_t steps, StepUnit u
       if (!out || !out->isPositive()) return std::nullopt;
       return PitchId::fromRatio(*out, pitch.anchorKind(), pitch.anchorId());
     }
-    case PitchKind::Harmonic: {
-      if (unit == StepUnit::Equave) return std::nullopt;
-      const int64_t v = static_cast<int64_t>(pitch.voiceIndex()) + steps;
-      if (v < 0 || v > std::numeric_limits<uint32_t>::max()) return std::nullopt;
-      if (ctx.clip) {  // T7.2: within the object's voices
-        const JiObject* o = findJiObject(*ctx.clip, JiObjectId{pitch.jiObject()});
-        if (!o || v >= static_cast<int64_t>(o->voices())) return std::nullopt;
-      }
-      return PitchId::fromHarmonic(pitch.jiObject(), static_cast<uint32_t>(v));
-    }
   }
   return std::nullopt;
 }
 
+std::vector<GroupStepFundamental> groupStepFundamentals(const NoteClip& clip) {
+  std::vector<GroupStepFundamental> out;
+  for (const JiGroup& g : jiGroupsOf(clip))
+    if (const std::optional<GroupFundamental> f = groupFundamental(clip, g)) out.push_back({g.anchor, f->fundamental});
+  std::sort(out.begin(), out.end(), [](const GroupStepFundamental& a, const GroupStepFundamental& b) { return a.anchor < b.anchor; });
+  return out;
+}
+
 EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<const Note> notes,
-                    std::span<const NoteCurves> curves) {
+                    std::span<const NoteCurves> curves, const JiSource& ji) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
   Edit e = makeEdit(notes.size() == 1 ? "Add Note" : "Add Notes");
   e.noteClip = clip;
   AddNotes a{clip, {}};
   a.notes.reserve(notes.size());
-  std::vector<NoteId> sources;  // T7.2: the ids the given notes carry (what `curves` are matched by)
+  std::vector<NoteId> sources;  // the ids the given notes carry (what `curves` and `ji` are matched by)
   sources.reserve(notes.size());
   for (const Note& n : notes) {
     Note m = n;
     m.id = ids.note();
     PQ_DOC_TRY(validateNote(m));
-    PQ_DOC_TRY(checkNoteJi(*f->clip, m.pitch));
     sources.push_back(n.id);
     a.notes.push_back(m);
     e.notes.push_back(keyOf(m));
@@ -294,8 +298,15 @@ EditResult addNotes(const Project& p, IdSource& ids, ClipRef clip, std::span<con
   // One command for all the carried curves (M13); bends between pasted notes glide between the copies (T7.11a).
   Result<std::optional<SetNoteCurves>> carried = copiedCurves(clip, *f->clip, curves, sources, a.notes);
   if (!carried) return std::move(carried).error();
+  // T7.13: pasted members follow the pasted anchor, as one new group.
+  Result<CopiedJi> copied = !ji.groups.empty() || !ji.written.empty() ? copyJi(clip, *f->clip, ji, sources, a.notes, ids)
+                                                                       : Result<CopiedJi>(CopiedJi{});
+  if (!copied) return std::move(copied).error();
+  e.jiGroups = copied->made;
   if (!a.notes.empty()) batchOf(e).commands.push_back(std::move(a));
   if (*carried) batchOf(e).commands.push_back(std::move(**carried));
+  if (copied->groups) batchOf(e).commands.push_back(std::move(*copied->groups));
+  if (copied->written) batchOf(e).commands.push_back(std::move(*copied->written));
   return e;
 }
 
@@ -332,11 +343,7 @@ bool referenceRatio(const PitchId& p) noexcept {
 std::optional<ClipFundamental> steppedMemory(const NoteClip& clip, const std::optional<Rational>& fundamental,
                                             std::vector<std::pair<NoteId, Rational>> stepped) {
   std::sort(stepped.begin(), stepped.end(), [](const auto& a, const auto& b) { return a.first.value < b.first.value; });
-  if (clip.fundamental.anchor) {  // a declared harmonic gives the fundamental: steps under it are not remembered
-    if (clip.fundamental.steps.empty()) return std::nullopt;
-  } else if (stepped.empty() && clip.fundamental.steps.empty()) {
-    return std::nullopt;
-  }
+  if (stepped.empty() && clip.fundamental.steps.empty()) return std::nullopt;
   const int64_t D = fundamental && fundamental->num() == 1 ? fundamental->den() : 0;
   std::vector<HarmonicStep> next;
   auto isStepped = [&](NoteId id) {
@@ -354,7 +361,7 @@ std::optional<ClipFundamental> steppedMemory(const NoteClip& clip, const std::op
       if (it != old.end() && it->note == n.id && it->ratio == n.pitch.ratio() && !isStepped(n.id)) next.push_back(*it);
     }
   }
-  if (!clip.fundamental.anchor && D > 0)
+  if (D > 0)
     for (const auto& [id, r] : stepped) {
       const int64_t used = lcmCapped(D, r.den(), kMaxFundamentalDenominator);  // −1: finer than any fundamental
       if (used > 0 && used != r.den()) next.push_back(HarmonicStep{id, used, r});
@@ -379,7 +386,9 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
     tun = std::move(t).value();
   }
   const std::optional<Rational> fundamental = steps != 0 ? virtualFundamental(*f->clip) : std::nullopt;
-  const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, fundamental, f->clip.get()};
+  const std::vector<GroupStepFundamental> groups =
+      steps != 0 && f->clip->groups ? groupStepFundamentals(*f->clip) : std::vector<GroupStepFundamental>{};
+  const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, fundamental, groups};
   std::vector<std::pair<NoteId, Rational>> stepped;
   EditResult e = updateNotes(p, clip, notes, std::move(label), [&](Note& n) -> Status {
     move(n);
@@ -393,6 +402,7 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
   if (!e || steps == 0) return e;
   if (std::optional<ClipFundamental> mem = steppedMemory(*f->clip, fundamental, stepped))
     batchOf(*e).commands.push_back(SetClipFundamental{clip, std::move(*mem)});
+  dropRepitchedWritten(batchOf(*e), clip, *f->clip);
   return e;
 }
 
@@ -408,37 +418,6 @@ EditResult transposeNotes(const Project& p, ClipRef clip, std::span<const NoteKe
                           const tuning::Edo* displayGrid) {
   return stepNotes(p, clip, notes, unit == StepUnit::Equave ? "Transpose Equave" : "Transpose", steps, unit,
                    displayGrid, [](Note&) {});
-}
-
-EditResult lockFundamental(const Project& p, ClipRef clip, NoteKey key, uint32_t harmonicIndex) {
-  Result<ClipFound> f = findClip(p, clip);
-  if (!f) return std::move(f).error();
-  const Note* n = f->clip->notes.locate(key);
-  if (!n) return notFound("note not found");
-  if (harmonicIndex < 1 || harmonicIndex > kMaxHarmonicIndex) return invalid("the harmonic number goes from 1 to 4096");
-  const HarmonicAnchor anchor{n->id, harmonicIndex};
-  Edit e = makeEdit("Lock Fundamental");
-  e.noteClip = clip;
-  e.notes.push_back(key);
-  if (f->clip->fundamental.anchor != anchor) {
-    ClipFundamental cf = f->clip->fundamental;
-    cf.anchor = anchor;
-    batchOf(e).commands.push_back(SetClipFundamental{clip, std::move(cf)});
-  }
-  return e;
-}
-
-EditResult unlockFundamental(const Project& p, ClipRef clip) {
-  Result<ClipFound> f = findClip(p, clip);
-  if (!f) return std::move(f).error();
-  Edit e = makeEdit("Unlock Fundamental");
-  e.noteClip = clip;
-  if (f->clip->fundamental.anchor) {
-    ClipFundamental cf = f->clip->fundamental;
-    cf.anchor.reset();
-    batchOf(e).commands.push_back(SetClipFundamental{clip, std::move(cf)});
-  }
-  return e;
 }
 
 EditResult resizeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, NoteEdge edge, Ticks delta) {
@@ -525,14 +504,21 @@ EditResult duplicateNotes(const Project& p, IdSource& ids, ClipRef clip, std::sp
     a.notes.push_back(m);
     e.notes.push_back(keyOf(m));
   }
-  if (f->clip->curves) {  // T7.2: a copy has its source's curves, in one command (M13)
+  if (f->clip->curves || f->clip->groups || f->clip->written) {
+    // A copy has its source's curves, in one command (M13); T7.13: copied members follow the copied anchor as a new
+    // group and keep their written identities.
     std::vector<NoteId> sources;
     sources.reserve(src.size());
     for (const Note& n : src) sources.push_back(n.id);
     Result<std::optional<SetNoteCurves>> carried = copiedCurves(clip, *f->clip, noteCurvesOf(*f->clip), sources, a.notes);
     if (!carried) return std::move(carried).error();
+    Result<CopiedJi> copied = copyJi(clip, *f->clip, JiSource{jiGroupsOf(*f->clip), notesWrittenOf(*f->clip)}, sources, a.notes, ids);
+    if (!copied) return std::move(copied).error();
+    e.jiGroups = copied->made;
     batchOf(e).commands.push_back(std::move(a));
     if (*carried) batchOf(e).commands.push_back(std::move(**carried));
+    if (copied->groups) batchOf(e).commands.push_back(std::move(*copied->groups));
+    if (copied->written) batchOf(e).commands.push_back(std::move(*copied->written));
   } else {
     batchOf(e).commands.push_back(std::move(a));
   }
@@ -582,7 +568,6 @@ std::optional<Rational> simplestRatioNear(double cents, double toleranceCents) n
 }
 
 EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, PitchKind to) {
-  if (to == PitchKind::Harmonic) return invalid("notes convert to Degree, Ratio or Cents");
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
   Result<tuning::Tuning> t = clipTuning(p, *f);
@@ -596,19 +581,9 @@ EditResult convertNotes(const Project& p, ClipRef clip, std::span<const NoteKey>
       case PitchKind::Degree:
         return l.centsOf(static_cast<int64_t>(id.equave()) * l.size + id.degree());
       case PitchKind::Ratio:
-        if (id.anchorKind() == tuning::AnchorKind::JiFundamental) {  // T7.2: over the object's fundamental at its start
-          const JiObject* o = findJiObject(*f->clip, JiObjectId{id.anchorId()});
-          const std::optional<double> fc = o ? jiFundamentalCents(*o, *t, static_cast<double>(n.start - o->start)) : std::nullopt;
-          if (!fc) return std::nullopt;
-          return *fc + 1200.0 * std::log2(id.ratio().toDouble());
-        }
         if (id.anchorKind() != tuning::AnchorKind::Reference) return std::nullopt;
         return 1200.0 * std::log2(id.ratio().toDouble());
       case PitchKind::Cents: return id.cents();
-      case PitchKind::Harmonic: {  // T7.2: the object's voice at the note's start
-        const JiObject* o = findJiObject(*f->clip, JiObjectId{id.jiObject()});
-        return o ? jiVoiceCents(*o, *t, id.voiceIndex(), static_cast<double>(n.start - o->start)) : std::nullopt;
-      }
     }
     return std::nullopt;
   };
@@ -654,15 +629,13 @@ double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept {
 
 EditResult setNotesPitch(const Project& p, ClipRef clip, std::span<const NoteKey> notes, const PitchId& pitch) {
   if (pitch.kind() == PitchKind::Ratio && !pitch.ratio().isPositive()) return invalid("a ratio pitch must be positive");
-  {  // T7.2: a pitch that follows a JI object names one of the clip
-    Result<ClipFound> f = findClip(p, clip);
-    if (!f) return std::move(f).error();
-    PQ_DOC_TRY(checkNoteJi(*f->clip, pitch));
-  }
-  return updateNotes(p, clip, notes, "Set Note Pitch", [&](Note& n) -> Status {
+  EditResult e = updateNotes(p, clip, notes, "Set Note Pitch", [&](Note& n) -> Status {
     n.pitch = pitch;
     return ok();
   });
+  if (e)
+    if (Result<ClipFound> f = findClip(p, clip); f && f->clip->written) dropRepitchedWritten(batchOf(*e), clip, *f->clip);
+  return e;
 }
 
 }  // namespace pq::doc::ops

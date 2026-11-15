@@ -573,7 +573,9 @@ int main(int argc, char** argv) {
       std::printf("  %s: %.2f %% of a core (median)\n", name.c_str(), 100.0 * s.medianNs / (1e9 * kBlock / kRate));
     });
   }
-  runner.add("ji lowering/100 objects x 8 voices x 32 stops", [](bench::Context& c) {  // T7.7
+  // T7.13: 100 JI groups of 8 notes (8:9:…:15 on a 12-EDO anchor), every member written as a degree and warped
+  // between the tuning and JI 32 times (S-curve glides) over its 16 beats.
+  runner.add("ji lowering/100 groups x 8 notes x 32 warps", [](bench::Context& c) {
     DocumentStore store;
     IdSource& ids = store.ids();
     auto made = ops::createTrack(*store.current(), ids, TrackKind::Midi, {}, "JI");
@@ -585,26 +587,33 @@ int main(int argc, char** argv) {
     clip.length = 100 * 16 * kPpq;
     const ClipRef ref{track, clip.id};
     if (!store.dispatch(AddClip{track, std::make_shared<const NoteClip>(std::move(clip))}).ok()) std::exit(12);
-    std::vector<int64_t> a, b;
-    for (int64_t k = 0; k < 8; ++k) {
-      a.push_back(8 + k);
-      b.push_back(9 + k);
-    }
-    Batch all{"objects", {}};
+    const int32_t written[8] = {0, 2, 4, 5, 7, 8, 10, 11};  // the nearest 12-EDO degrees of 8:9:…:15
+    AddNotes add{ref, {}};
+    SetJiGroups groups{ref, {}};
+    SetNotesWritten was{ref, {}};
     for (int i = 0; i < 100; ++i) {
-      auto e = ops::createJiObject(*store.current(), ids, ref, static_cast<Ticks>(i) * 16 * kPpq, 16 * kPpq,
-                                   tuning::PitchId::fromDegree(i % 12), a);
-      if (!e.ok()) std::exit(12);
-      JiObject o = std::get<AddJiObject>(e->batch().commands.front().v).object;
-      for (int s = 1; s < 32; ++s) {
-        JiStop st = o.stops[0];
-        st.at = static_cast<Ticks>(s) * kPpq / 2;
-        st.terms = s % 2 == 1 ? b : a;
-        st.timing.glide = kPpq / 8;
-        o.stops.push_back(st);
+      const NoteId anchor = ids.note();
+      for (int k = 0; k < 8; ++k) {
+        Note n;
+        n.id = k == 0 ? anchor : ids.note();
+        n.start = static_cast<Ticks>(i) * 16 * kPpq;
+        n.length = 16 * kPpq;
+        n.pitch = k == 0 ? tuning::PitchId::fromDegree(i % 12)
+                         : tuning::PitchId::fromRatio(tuning::Rational(8 + k, 8), tuning::AnchorKind::Note, anchor.value);
+        if (k > 0) was.written.push_back({n.id, tuning::PitchId::fromDegree(i % 12 + written[k])});
+        add.notes.push_back(n);
       }
-      all.commands.push_back(AddJiObject{ref, std::move(o)});
+      JiGroup g;
+      g.id = ids.jiGroup();
+      g.anchor = anchor;
+      g.index = 8;
+      for (int s = 0; s < 32; ++s) g.warps.push_back(JiWarp{static_cast<Ticks>(s) * kPpq / 2, kPpq / 8, GlideShape{}, s % 2 == 0});
+      groups.groups.push_back(std::move(g));
     }
+    Batch all{"groups", {}};
+    all.commands.push_back(std::move(add));
+    all.commands.push_back(std::move(groups));
+    all.commands.push_back(std::move(was));
     if (!store.dispatch(all).ok()) std::exit(12);
     std::vector<double> ms;
     for (int round = 0; round < 15; ++round) {

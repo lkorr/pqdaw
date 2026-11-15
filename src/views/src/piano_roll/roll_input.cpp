@@ -4,24 +4,15 @@
 //               double-click adds / deletes a note; in draw mode (B) a click adds a grid-cell note (or deletes the
 //               note under it) and a drag adds one per cell crossed. Alt draws Cents notes on the background EDO,
 //               Shift draws Ratio notes on the virtual fundamental's harmonics (T3.19). Right-click: the note menu
-//               (convert identity, set pitch, lock the fundamental, row labels). Wheel scrolls (Shift: horizontally),
+//               (convert identity, set pitch, Is Harmonic…, row labels). Wheel scrolls (Shift: horizontally),
 //               Ctrl+wheel zooms time, Ctrl+Alt+wheel zooms rows. Esc cancels a drag. Hover: the pitch readout.
-//               T7.4 JI objects: J toggles the JI tool (drag a box, then type a proportion); a JI object's header or
-//               border selects it, a drag from there moves it (time and rows; Alt: free cents), its left / right
-//               border resizes it.
-//               T7.5: a double-click on an object enters it (Esc / a double-click outside leaves): drawing and
-//               double-clicks put notes on its voices, a digit key opens the field for a new stop at the pointer.
-//               A stop's label under the box selects it (drag: move it in time, double-click: retype it, Delete:
-//               remove it), the grip on the bottom border sets its glide, a harmonic number selects that term
-//               (Alt+Up / Down walk it), a bezier transition's handles drag. Right-click on an object: its menu
-//               (stops, the transition of the voice under the pointer, undertone, back to the tuning); on notes:
-//               Tune to JI, Is Harmonic… (the virtual fundamental).
+//               T7.13: "Is Harmonic…" declares the note the anchor of a JI group; with an active group the plain
+//               draw puts members on its harmonics (Shift: the rows).
 //               T7.6 (roll_pen.cpp): Alt + a note's left / right edge bends it in from the previous note / out to
 //               the next one; Shift + a note's body detunes freely (cents); in Draw Mode a drag on a note draws its
 //               pitch curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint (a click still deletes the
-//               note), the same on a JI object's lowest voice for its ride curve; the breakpoints of the selected
-//               notes / the active object's ride drag (Shift: free), a double-click deletes one, the diamond between
-//               two bends the segment.
+//               note); the breakpoints of the selected notes drag (Shift: free), a double-click deletes one, the
+//               diamond between two bends the segment.
 //   keys        click auditions the row and selects its notes (Shift adds); horizontal drag zooms the rows;
 //               right-click: row labels; hover: the row's pitch readout.
 //   ruler       drag the loop brace (its ends or the whole brace), the start marker and the end marker; elsewhere a
@@ -102,9 +93,6 @@ void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zo
   d.originTick = zone > 0 ? n.start + n.length : n.start;
   d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
   if (!s_.rows().empty()) d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
-  // T7.5: inside an entered object a vertical drag steps by its voices.
-  if (s_.jiEntered().valid())
-    d.pressVoice = n.pitch.kind() == tuning::PitchKind::Harmonic ? static_cast<int32_t>(n.pitch.voiceIndex()) : s_.jiVoiceAt(s_.jiEntered(), e.pos);
   s_.beginDragTracking();
   s_.audition(n.pitch, n.velocity, n.start, n.length);
   s_.auditionHeld = true;  // AU.voices: released on pointer up
@@ -118,23 +106,6 @@ DrawnNote NoteAreaWidget::cellNote(TickRange c, Vec2 p, DrawPitch mode) const {
   const RowModel& rows = s_.rows();
   if (rows.empty()) return dn;
   const int32_t cy = s_.contentY(p.y);
-  if (mode == DrawPitch::Voice) {
-    // T7.5: inside the entered object: a Harmonic note on the voice under the pointer, clipped to the object's span
-    // (a cell outside it gets no note: length 0).
-    dn.mode = DrawPitch::Voice;
-    dn.degree = rows.row(rows.indexAtY(cy)).degree;
-    const doc::JiObject* o = s_.jiObject(s_.jiEntered());
-    const int32_t voice = s_.jiVoiceAt(s_.jiEntered(), p);
-    const Ticks a = o ? std::max(c.start, o->start) : 0, b = o ? std::min(c.end, o->end()) : 0;
-    if (!o || voice < 0 || b <= a) {
-      dn.length = 0;
-      return dn;
-    }
-    dn.start = a;
-    dn.length = b - a;
-    dn.voice = static_cast<uint32_t>(voice);
-    return dn;
-  }
   if (mode == DrawPitch::Overlay && s_.overlay()) {
     dn.mode = DrawPitch::Overlay;
     dn.cents = s_.nearestOverlayCents(rows.centsAtY(static_cast<double>(cy)));
@@ -143,7 +114,7 @@ DrawnNote NoteAreaWidget::cellNote(TickRange c, Vec2 p, DrawPitch mode) const {
     dn.mode = DrawPitch::Ratio;
     const int64_t row = rows.row(rows.indexAtY(cy)).degree;
     dn.ratio = s_.ratioFor(row, rows.centsAtY(static_cast<double>(cy)));
-    const std::optional<RollState::Harmonics> h = s_.harmonics();  // T7.5b: the ratio is to the fundamental's base
+    const std::optional<RollState::Harmonics> h = s_.harmonics();  // the ratio is to the fundamental's base
     dn.degree = rows.placeCents(tuning::cents(dn.ratio) + (h ? h->baseCents : 0.0)).nearestDegree;
   } else {
     dn.degree = rows.row(rows.indexAtY(cy)).degree;
@@ -163,7 +134,7 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
     const TickRange c = drawCell(g, t);
     d.kind = DragKind::Draw;
     d.drawn.push_back(cellNote(c, e.pos, s_.drawPitchFor(e.mods)));
-    d.trackDamage = d.drawn.back().mode != DrawPitch::Voice;  // no notes tracked: the drawn cells are (a voice note: the area)
+    d.trackDamage = true;  // no notes tracked: the drawn cells are
     s_.audition(s_.drawnPitch(d.drawn.back()), 100.0f, d.drawn.back().start, c.end - c.start);
     s_.auditionHeld = true;  // AU.voices: released on pointer up
     s_.damageDrag();
@@ -173,110 +144,22 @@ void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
   d.kind = DragKind::Rubber;
   d.pressSelection = s_.selection();
   d.additive = (e.mods & (mod::kShift | mod::kCtrl)) != 0;
-  if (!d.additive) {
-    s_.clearSelection();
-    if (s_.jiEntered().valid()) s_.selectJiStop(s_.jiEntered(), -1);  // T7.5: the stop / harmonic selection goes too
-    else s_.selectJiObject({});  // T7.4
-  }
+  if (!d.additive) s_.clearSelection();
   d.base = s_.selection();
   d.rubber = {static_cast<int32_t>(e.pos.x), static_cast<int32_t>(e.pos.y), 0, 0};
 }
 
-// T7.4: a press on a JI object's header or border selects it; a drag from the header / top / bottom border moves it
-// (time snapped as a note's, pitch by rows), from the left / right border resizes it.
-void NoteAreaWidget::pressJi(const PointerEvent& e, const JiHit& hit) {
-  if (hit.zone != JiZone::Body && hit.zone != JiZone::Start && hit.zone != JiZone::End) {
-    pressJiPart(e, hit);
-    return;
-  }
-  s_.selectJiObject(hit.id);
-  if (s_.jiEntered().valid()) s_.selectJiStop(hit.id, -1);
-  DragState& d = s_.drag;
-  d = {};
-  const JiView* v = nullptr;
-  for (const JiView& j : s_.jiViews())
-    if (j.id == hit.id) v = &j;
-  if (!v) return;
-  d.kind = hit.zone == JiZone::Start ? DragKind::JiResizeStart : hit.zone == JiZone::End ? DragKind::JiResizeEnd : DragKind::JiMove;
-  d.ji = hit.id;
-  d.press = d.last = e.pos;
-  d.originTick = hit.zone == JiZone::End ? v->start + v->length : v->start;
-  d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
-  if (!s_.rows().empty()) d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
-}
-
-// T7.5: a stop's label (select; drag = move it in time), its glide grip, a harmonic number (select the term), a
-// bezier handle of a voice's transition.
-void NoteAreaWidget::pressJiPart(const PointerEvent& e, const JiHit& hit) {
-  DragState& d = s_.drag;
-  d = {};
-  const JiView* v = s_.jiViewOf(hit.id);
-  const doc::JiObject* o = s_.jiObject(hit.id);
-  if (!v || !o) return;
-  d.press = d.last = e.pos;
-  d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
-  d.ji = hit.id;
-  switch (hit.zone) {
-    case JiZone::StopLabel:
-      s_.selectJiStop(hit.id, hit.index);
-      if (hit.index >= 1 && hit.index < static_cast<int32_t>(o->stops.size())) {  // stop 0 is the object's start
-        d.kind = DragKind::JiStop;
-        d.jiStop = hit.index;
-        d.originTick = o->start + o->stops[static_cast<size_t>(hit.index)].at;
-      }
-      break;
-    case JiZone::Glide:
-      if (hit.index >= 1 && hit.index < static_cast<int32_t>(o->stops.size())) {
-        s_.selectJiStop(hit.id, hit.index);
-        const doc::JiStop& st = o->stops[static_cast<size_t>(hit.index)];
-        d.kind = DragKind::JiGlide;
-        d.jiStop = hit.index;
-        d.originTick = o->start + st.at - std::min(st.timing.glide, st.at - o->stops[static_cast<size_t>(hit.index) - 1].at);
-      }
-      break;
-    case JiZone::VoiceLabel: s_.selectJiTerm(hit.id, hit.index); break;
-    case JiZone::Bezier:
-      if (hit.index >= 0 && hit.index < static_cast<int32_t>(v->beziers.size())) {
-        const JiView::Bezier& bz = v->beziers[static_cast<size_t>(hit.index)];
-        d.kind = DragKind::JiBezier;
-        d.jiStop = static_cast<int32_t>(bz.stop);
-        d.jiVoice = bz.voice;
-        d.jiHandle = hit.handle;
-        d.bx = hit.handle == 0 ? bz.x1 : bz.x2;
-        d.by = hit.handle == 0 ? bz.y1 : bz.y2;
-      }
-      break;
-    default: break;
-  }
-}
-
-// T7.6: Draw Mode on a note, or on the lowest voice of a JI object (its ride curve; not while an object is entered):
-// a drag draws the curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint and drags it. False: nothing
-// there for the pen (the press draws notes as before).
+// T7.6: Draw Mode on a note: a drag draws its pitch curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint
+// and drags it. False: nothing there for the pen (the press draws notes as before).
 bool NoteAreaWidget::pressPen(const PointerEvent& e) {
-  CurveTarget t;
   const doc::Note* n = s_.noteAt(e.pos);
-  if (n) t.note = n->id;
-  else if (const doc::JiObjectId ji = s_.rideLaneAt(e.pos); ji.valid()) t.ji = ji;
-  else return false;
+  if (!n) return false;
+  const CurveTarget t{n->id};
   if (e.mods & mod::kCtrl) return s_.beginCurvePoint(t, e.pos);
   s_.beginPen(t, e.pos, e.mods, (e.mods & mod::kAlt) != 0);
   if (s_.drag.kind == DragKind::None) return false;
-  s_.drag.deleteOnClick = n != nullptr;
+  s_.drag.deleteOnClick = true;
   return true;
-}
-
-// T7.4 (JI tool): the box of a new object, from the grid cell and row under the press.
-void NoteAreaWidget::pressJiBox(const PointerEvent& e) {
-  DragState& d = s_.drag;
-  d = {};
-  s_.selectJiObject({});
-  s_.clearSelection();
-  if (s_.rows().empty()) return;
-  d.kind = DragKind::JiBox;
-  d.press = d.last = e.pos;
-  d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
-  d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
 }
 
 void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
@@ -292,14 +175,11 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
     case DragKind::Copy: {
       d.dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
       d.cents = 0.0;
-      if (d.kind == DragKind::Move && (mods & mod::kShift) && !s_.jiEntered().valid() && !s_.rows().empty()) {
+      if (d.kind == DragKind::Move && (mods & mod::kShift) && !s_.rows().empty()) {
         // T7.6: Shift = free detune: cents instead of rows (the notes become Cents notes).
         d.steps = 0;
         d.cents = s_.centsAtScreenY(p.y) - s_.centsAtScreenY(d.press.y);
         d.trackDamage = false;
-      } else if (s_.jiEntered().valid()) {  // T7.5: by the object's voices
-        const int32_t voice = s_.jiVoiceAt(s_.jiEntered(), p);
-        if (voice >= 0 && d.pressVoice >= 0) d.steps = voice - d.pressVoice;
       } else if (!s_.rows().empty()) {
         const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
         d.steps = static_cast<int32_t>(std::clamp<int64_t>(deg - d.pressDegree, INT32_MIN / 2, INT32_MAX / 2));
@@ -331,10 +211,8 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
       const int32_t cy0 = s_.contentY(static_cast<float>(y0)), cy1 = s_.contentY(static_cast<float>(y1));
       std::vector<uint32_t> ids = d.base;
       const Ticks t0 = roundTicks(s_.tickAtX(static_cast<float>(x0))), t1 = roundTicks(s_.tickAtX(static_cast<float>(x1)));
-      const doc::JiObjectId entered = s_.jiEntered();
       s_.forNotesIn(t0, t1 + 1, [&](const doc::Note& n) {
-        if (entered.valid() && doc::jiObjectOf(n.pitch) != entered) return;  // T7.5: only the entered object's notes
-        if (s_.onPath(n, n.pitch)) {  // T7.5: where the note is drawn
+        if (s_.onPath(n, n.pitch)) {  // where the note is drawn
           const IRect b = s_.pathBox(n, n.start, n.length, n.pitch);
           if (!b.empty() && b.x < x1 && b.right() > x0 && b.y < y1 && b.bottom() > y0) ids.push_back(n.id.value);
           return;
@@ -343,71 +221,6 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
         if (pl.ok && pl.bottom > cy0 && pl.top <= cy1) ids.push_back(n.id.value);
       });
       s_.select(std::move(ids));
-      break;
-    }
-    case DragKind::JiMove: {
-      const Ticks dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
-      int32_t steps = d.steps;
-      double cents = 0.0;
-      if (!s_.rows().empty()) {
-        if (mods & mod::kAlt) {  // T7.5: Alt = the fundamental moves freely (cents), not by rows
-          steps = 0;
-          cents = s_.rows().centsAtY(static_cast<double>(s_.contentY(p.y))) - s_.rows().centsAtY(static_cast<double>(s_.contentY(d.press.y)));
-        } else {
-          const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
-          steps = static_cast<int32_t>(std::clamp<int64_t>(deg - d.pressDegree, INT32_MIN / 2, INT32_MAX / 2));
-        }
-      }
-      if (dt != d.dt || steps != d.steps || cents != d.cents || !s_.jiPreview()) {
-        d.dt = dt;
-        d.steps = steps;
-        d.cents = cents;
-        s_.updateJiPreview();  // built from the edit the release will dispatch
-      }
-      break;
-    }
-    case DragKind::JiStop:
-    case DragKind::JiGlide: {  // T7.5
-      const Ticks dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
-      if (dt != d.dt || !s_.jiPreview()) {
-        d.dt = dt;
-        s_.updateJiPreview();
-      }
-      break;
-    }
-    case DragKind::JiBezier: {  // T7.5: the handle follows the pointer inside its transition
-      const JiView* v = s_.jiViewOf(d.ji);
-      if (!v || s_.rows().empty()) break;
-      for (const JiView::Bezier& bz : v->beziers) {
-        if (static_cast<int32_t>(bz.stop) != d.jiStop || bz.voice != d.jiVoice) continue;
-        const double span = static_cast<double>(bz.arrive - bz.begin);
-        const double t = s_.tickAtX(p.x) - static_cast<double>(v->start + bz.begin);
-        d.bx = static_cast<float>(std::clamp(span > 0.0 ? t / span : 0.0, 0.0, 1.0));
-        const double c = s_.rows().centsAtY(static_cast<double>(s_.contentY(p.y)));
-        const double dc = bz.to - bz.from;
-        if (std::fabs(dc) > 1e-6) d.by = static_cast<float>(std::clamp((c - bz.from) / dc, -1.0, 2.0));
-        s_.updateJiPreview();
-        break;
-      }
-      break;
-    }
-    case DragKind::JiResizeStart:
-    case DragKind::JiResizeEnd: {
-      const Ticks dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
-      if (dt != d.dt || !s_.jiPreview()) {
-        d.dt = dt;
-        s_.updateJiPreview();
-      }
-      break;
-    }
-    case DragKind::JiBox: {
-      if (s_.rows().empty()) break;
-      const TickRange a = drawCell(g, d.pressTick), b = drawCell(g, roundTicks(s_.tickAtX(p.x)));
-      d.jiStart = std::min(a.start, b.start);
-      d.jiLength = std::max(a.end, b.end) - d.jiStart;
-      const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
-      d.jiLow = std::min(deg, d.pressDegree);
-      d.jiHigh = std::max(deg, d.pressDegree);
       break;
     }
     case DragKind::Draw: {
@@ -449,25 +262,7 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left) return false;
       if (tree()) tree()->setFocus(this);
       s_.setHoverPart({});  // a gesture shows its own preview
-      // T7.4: the JI tool grabs an object's header / border or draws a new box (also over notes); without it an
-      // object's header / border is grabbed where no note lies under the pointer. (T7.5: a double-click on a hit
-      // enters the object.)
-      // T7.5: inside an entered object only it and its notes take presses (Draw Mode included: it draws on the
-      // voices); a double-click outside leaves it; its handles (glide grips, harmonic numbers, bezier handles) come
-      // before its notes. A double-click on an object enters it; on a stop's label retypes the stop.
-      const doc::JiObjectId entered = s_.jiEntered();
-      const JiHit jh = (s_.ctx.drawMode() && !entered.valid()) ? JiHit{} : s_.jiAt(e.pos);
-      if (entered.valid() && jh.id != entered) {
-        s_.drag = {};
-        if (e.clickCount >= 2) {
-          s_.leaveJiObject();
-        } else {
-          s_.clearSelection();
-          s_.selectJiStop(entered, -1);
-        }
-        return true;
-      }
-      // T7.6: a breakpoint of a curve being shown (the selected notes, the active object's ride): drag it, a
+      // T7.6: a breakpoint of a curve being shown (the selected notes): drag it, a
       // double-click deletes it; the diamond between two points bends the segment. A note's edge comes first (a
       // bend's first / last point lies on it; its handle reaches further into the note).
       if (const RollState::CurveHit ch = s_.curveHandleAt(e.pos); ch.valid()) {
@@ -483,38 +278,9 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
           return true;
         }
       }
-      if (s_.jiTool()) {
-        if (jh.grabs()) pressJi(e, jh);
-        else pressJiBox(e);
-        return true;
-      }
-      if (jh.zone == JiZone::Glide || jh.zone == JiZone::VoiceLabel || jh.zone == JiZone::Bezier) {
-        pressJi(e, jh);
-        return true;
-      }
       int zone = 0;
       const doc::Note* n = s_.noteAt(e.pos, &zone);
-      if (s_.ctx.drawMode() && pressPen(e)) return true;  // T7.6: the pen on a note / an object's lowest voice
-      if (!n && jh.grabs()) {
-        if (e.clickCount >= 2 && jh.zone == JiZone::StopLabel) {
-          s_.drag = {};
-          s_.selectJiStop(jh.id, jh.index);
-          (void)s_.openJiStopRetype(jh.id, static_cast<uint32_t>(jh.index));
-          return true;
-        }
-        if (e.clickCount >= 2 && !entered.valid()) {
-          s_.drag = {};
-          s_.enterJiObject(jh.id);
-          return true;
-        }
-        pressJi(e, jh);
-        return true;
-      }
-      if (!n && jh.zone == JiZone::Inside && e.clickCount >= 2 && !entered.valid() && !s_.ctx.drawMode()) {
-        s_.drag = {};
-        s_.enterJiObject(jh.id);
-        return true;
-      }
+      if (s_.ctx.drawMode() && pressPen(e)) return true;  // T7.6: the pen on a note
       if (n && (s_.ctx.drawMode() || (e.clickCount >= 2 && !(e.mods & (mod::kShift | mod::kCtrl))))) {
         // Draw mode click / double-click on a note: delete it.
         s_.drag = {};
@@ -568,21 +334,14 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       }
       if (!d.moved && (d.kind == DragKind::PenDraw || d.kind == DragKind::PenVibrato || (d.kind == DragKind::CurvePoint && !d.curveAdded) ||
                        d.kind == DragKind::CurveBow)) {
-        // T7.6: a click with the pen. On a note it deletes the note (Draw Mode's click); on an object's lowest voice
-        // it puts the cell's note there, as a Draw Mode click does anywhere else; on a breakpoint it does nothing.
+        // T7.6: a click with the pen. On a note it deletes the note (Draw Mode's click); on a breakpoint it does
+        // nothing.
         const DragState was = d;
         s_.cancelDrag();
         if (was.kind == DragKind::PenDraw || was.kind == DragKind::PenVibrato) {
           if (was.deleteOnClick) {
             s_.selectOnly(was.curve.note);
             s_.deleteSelection();
-          } else if (was.curve.ji.valid()) {
-            PointerEvent pe = e;
-            pe.pos = was.press;
-            pe.mods = was.pressMods;
-            pressEmpty(pe);
-            s_.commitDrag();
-            s_.releaseAudition();
           }
         }
         s_.hoverPartAt(e.pos);
@@ -631,17 +390,6 @@ bool NoteAreaWidget::onKey(const KeyEvent& e) {
     if (tree() && tree()->captured() == this) tree()->releaseCapture();
     return true;
   }
-  // T7.5 (A2): inside an entered object, typing a proportion adds a stop at the pointer: the first digit opens the
-  // field (the character itself arrives as text in the field).
-  if (e.down && !e.repeat && (e.mods & mod::kChordMask) == 0 && e.key >= '1' && e.key <= '9' && s_.jiEntered().valid() &&
-      s_.drag.kind == DragKind::None) {
-    const std::optional<Ticks> at = s_.jiStopTickAt(s_.jiEntered(), s_.jiPointerX());
-    if (!at) {
-      s_.ctx.setStatus("New stop: point inside the object, then type its proportion");
-      return true;
-    }
-    return s_.openJiStopEntry(s_.jiEntered(), *at) != nullptr;
-  }
   return false;
 }
 
@@ -671,44 +419,17 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
       case DragKind::CurvePoint: return Cursor::Move;
       case DragKind::CurveBow: return Cursor::ResizeNS;
       case DragKind::Rubber: return Cursor::Arrow;
-      case DragKind::JiMove:
-      case DragKind::JiBezier: return Cursor::Move;
-      case DragKind::JiResizeStart:
-      case DragKind::JiResizeEnd:
-      case DragKind::JiStop:
-      case DragKind::JiGlide: return Cursor::ResizeEW;
-      case DragKind::JiBox: return Cursor::Crosshair;
       default: break;
     }
-  const bool entered = s_.jiEntered().valid();
   // T7.6: a breakpoint (drag it), the diamond between two (bend the segment); a note's edge comes first, as the press.
   if (const RollState::CurveHit ch = s_.curveHandleAt(p); ch.valid()) {
     int edgeZone = 0;
     if (!s_.ctx.drawMode()) (void)s_.noteAt(p, &edgeZone);
     if (edgeZone == 0) return ch.mid ? Cursor::ResizeNS : Cursor::Move;
   }
-  if (s_.ctx.drawMode() && !entered) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
-  // T7.4: a JI object's header / border (as the press: always with the JI tool, else where no note is). T7.5: its
-  // stop labels (a later stop drags sideways), glide grips, harmonic numbers, bezier handles.
-  const JiHit jh = s_.jiAt(p);
-  Cursor jiCursor = Cursor::Arrow;
-  switch (jh.zone) {
-    case JiZone::Body:
-    case JiZone::Bezier: jiCursor = Cursor::Move; break;
-    case JiZone::Start:
-    case JiZone::End:
-    case JiZone::Glide: jiCursor = Cursor::ResizeEW; break;
-    case JiZone::StopLabel: jiCursor = jh.index >= 1 ? Cursor::ResizeEW : Cursor::Pointer; break;
-    case JiZone::VoiceLabel: jiCursor = Cursor::Pointer; break;
-    default: break;
-  }
-  if (s_.jiTool()) return jh.grabs() ? jiCursor : Cursor::Crosshair;
-  if (jh.zone == JiZone::Glide || jh.zone == JiZone::VoiceLabel || jh.zone == JiZone::Bezier) return jiCursor;
+  if (s_.ctx.drawMode()) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
   int zone = 0;
-  if (!s_.noteAt(p, &zone)) {  // empty space: a drag draws the selection rectangle (Draw Mode inside an object: a note)
-    if (entered && s_.ctx.drawMode() && jh.zone == JiZone::Inside) return Cursor::Crosshair;
-    return jiCursor;
-  }
+  if (!s_.noteAt(p, &zone)) return Cursor::Arrow;  // empty space: a drag draws the selection rectangle
   return zone != 0 ? Cursor::ResizeEW : Cursor::Move;
 }
 
@@ -717,14 +438,11 @@ InfoText NoteAreaWidget::info() const {
   return {s_.hoverTitle(), s_.hoverBody()};
 }
 
-// The right-click menu (T3.19, M3 review H7): identity conversions, a typed pitch and the fundamental lock for the
+// The right-click menu (T3.19, M3 review H7): identity conversions, a typed pitch and "Is Harmonic…" for the
 // selected notes (a note under the pointer that is not selected becomes the selection, as Live), else paste / select
 // all; the row labels for any press.
 Menu* NoteAreaWidget::openMenu(Vec2 at) {
   const doc::Note* under = s_.noteAt(at);
-  // T7.5: a JI object (its box, header, border, a stop's label) where no note lies under the pointer: its own menu.
-  if (!under)
-    if (const JiHit jh = s_.jiAt(at); jh.zone != JiZone::None) return openJiMenu(at, jh);
   if (under && !s_.selected(under->id)) s_.selectOnly(under->id);
   std::shared_ptr<RollState*> alive = s_.self();
   auto guarded = [alive](std::function<void(RollState&)> f) {
@@ -736,7 +454,7 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
   const std::vector<uint32_t>& sel = s_.selection();
   if (!sel.empty()) {
     // Which identities the selection holds.
-    bool kinds[4] = {false, false, false, false};
+    bool kinds[3] = {false, false, false};
     const doc::Note* single = nullptr;
     for (const doc::Note& n : s_.clip()->notes)
       if (s_.selected(n.id)) {
@@ -744,52 +462,49 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
         single = &n;
       }
     if (sel.size() != 1) single = nullptr;
-    const int nKinds = kinds[0] + kinds[1] + kinds[2] + kinds[3];
+    const int nKinds = kinds[0] + kinds[1] + kinds[2];
     auto conv = [&](const char* label, tuning::PitchKind k) {
       MenuItem m = MenuItem::item(label, guarded([k](RollState& st) { (void)st.convertSelection(k); }));
       m.checked = nKinds == 1 && kinds[static_cast<size_t>(k)];
-      m.enabled = !(nKinds == 1 && kinds[static_cast<size_t>(k)]) && !(nKinds == 1 && kinds[3]);
+      m.enabled = !(nKinds == 1 && kinds[static_cast<size_t>(k)]);
       return m;
     };
-    // T7.5 (A2): the selected chord goes from the tuning to the nearest just proportion (a JI object the notes follow).
-    items.push_back(MenuItem::item("Tune to JI", guarded([](RollState& st) { (void)st.tuneSelectionToJi(); }), "Ctrl+Shift+J"));
-    items.push_back(MenuItem::sep());
     items.push_back(conv("Degree (moves with the tuning)", tuning::PitchKind::Degree));
     items.push_back(conv("Ratio (stays at its just pitch)", tuning::PitchKind::Ratio));
     items.push_back(conv("Cents (never moves)", tuning::PitchKind::Cents));
     items.push_back(MenuItem::item("Set Pitch\xE2\x80\xA6", guarded([](RollState& st) { (void)st.openPitchEntry(); })));
     items.push_back(MenuItem::sep());
-    // T7.5 (A4): the virtual fundamental with the mouse: "this note is harmonic N" (a number field): the fundamental
-    // is locked at the note / N, its harmonics are drawn as guides and drawing snaps to them.
-    const bool lock = s_.clip()->fundamental.anchor.has_value();
+    // T7.13: "this note is harmonic N" (a number field): the note becomes the anchor of a JI group; its harmonic
+    // series is drawn as guides and drawing snaps to it.
+    const bool lock = s_.activeJiGroup() != nullptr;
     if (const doc::Note* target = under ? under : single) {
       const doc::NoteId id = target->id;
       items.push_back(MenuItem::item("Is Harmonic\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openHarmonicEntry(id); })));
     }
-    MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
+    MenuItem unlock = MenuItem::item("Remove JI Group", guarded([](RollState& st) { (void)st.removeActiveJiGroup(); }));
     unlock.enabled = lock;
     items.push_back(std::move(unlock));
     items.push_back(MenuItem::sep());
     // T7.6: bends. The bend of the note under the pointer (Alt + its edge made it) can be straight or an S-curve;
     // the vibrato under the pointer can be retyped; the selection glides, gets a vibrato, loses its curves.
     bool anyCurve = false;
-    for (const uint32_t id : sel) anyCurve = anyCurve || !s_.curvePoints(CurveTarget{doc::NoteId{id}, {}}).empty();
+    for (const uint32_t id : sel) anyCurve = anyCurve || !s_.curvePoints(CurveTarget{doc::NoteId{id}}).empty();
     if (const doc::Note* target = under ? under : single) {
       const doc::NoteId id = target->id;
       for (const int edge : {-1, 1}) {
         if (s_.bendLength(id, edge) <= 0) continue;
         const bool straight = s_.bendIsStraight(id, edge);
         std::vector<MenuItem> sub;
-        MenuItem a = MenuItem::item("Straight", guarded([edge](RollState& st) { (void)st.setBendShape(edge, doc::JiShape::LogLinear); }));
+        MenuItem a = MenuItem::item("Straight", guarded([edge](RollState& st) { (void)st.setBendShape(edge, doc::GlideShape::LogLinear); }));
         a.checked = straight;
-        MenuItem b = MenuItem::item("S-Curve", guarded([edge](RollState& st) { (void)st.setBendShape(edge, doc::JiShape::SCurve); }));
+        MenuItem b = MenuItem::item("S-Curve", guarded([edge](RollState& st) { (void)st.setBendShape(edge, doc::GlideShape::SCurve); }));
         b.checked = !straight;
         sub.push_back(std::move(a));
         sub.push_back(std::move(b));
         items.push_back(MenuItem::sub(edge < 0 ? "Bend In" : "Bend Out", std::move(sub)));
       }
       if (under) {
-        const CurveTarget t{id, {}};
+        const CurveTarget t{id};
         const Ticks off = static_cast<Ticks>(std::llround(s_.tickAtX(at.x))) - under->start;
         if (const std::optional<RollState::Vibrato> v = s_.vibratoAt(t, off))
           items.push_back(MenuItem::item("Edit Vibrato\xE2\x80\xA6", guarded([t, v = *v](RollState& st) { (void)st.openVibratoEdit(t, v); })));
@@ -810,121 +525,9 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
   } else {
     items.push_back(MenuItem::item("Paste", guarded([](RollState& st) { st.paste(); }), "Ctrl+V"));
     items.push_back(MenuItem::item("Select All", guarded([](RollState& st) { st.selectAll(); }), "Ctrl+A"));
-    MenuItem unlock = MenuItem::item("Unlock Fundamental", guarded([](RollState& st) { (void)st.unlockFundamental(); }));
-    unlock.enabled = s_.clip()->fundamental.anchor.has_value();
+    MenuItem unlock = MenuItem::item("Remove JI Group", guarded([](RollState& st) { (void)st.removeActiveJiGroup(); }));
+    unlock.enabled = s_.activeJiGroup() != nullptr;
     items.push_back(std::move(unlock));
-  }
-  items.push_back(MenuItem::sep());
-  items.push_back(rowLabelsMenu(s_));
-  return openContextMenu(*this, at, std::move(items));
-}
-
-// T7.5: the right-click menu of a JI object: the transition of the voice under the pointer (shape, its own glide and
-// delay), stops at the pointer, undertone, enter / leave, copy / duplicate / remove.
-Menu* NoteAreaWidget::openJiMenu(Vec2 at, const JiHit& hit) {
-  const doc::JiObjectId id = hit.id;
-  const doc::JiObject* o = s_.jiObject(id);
-  const JiView* v = s_.jiViewOf(id);
-  if (!o || !v) return nullptr;
-  const bool entered = s_.jiEntered() == id;
-  if (!entered) s_.selectJiObject(id);
-  if (hit.zone == JiZone::StopLabel) s_.selectJiStop(id, hit.index);
-  std::shared_ptr<RollState*> alive = s_.self();
-  auto guarded = [alive](std::function<void(RollState&)> f) {
-    return [alive, f = std::move(f)] {
-      if (*alive) f(**alive);
-    };
-  };
-  const float scale = tree() ? tree()->scale() : 1.0f;
-  std::vector<MenuItem> items;
-  // The voice under the pointer and the transition it is in (or moves to next).
-  if (hit.zone == JiZone::Inside || hit.zone == JiZone::Body) {
-    const int32_t voice = s_.jiVoiceAt(id, at);
-    const int32_t stop = voice >= 0 ? s_.jiTransitionAt(id, static_cast<uint32_t>(voice), at) : -1;
-    bool onVoice = false;
-    if (voice >= 0 && stop >= 1) {
-      const double t = std::clamp(s_.tickAtX(at.x) - static_cast<double>(o->start), 0.0, static_cast<double>(o->length));
-      if (const std::optional<double> c = doc::jiVoiceCents(*o, s_.tuning(), static_cast<uint32_t>(voice), t))
-        onVoice = std::fabs(s_.yOfCents(*c) - at.y) <= 10.0f * scale;
-    }
-    if (onVoice) {
-      const uint32_t vi = static_cast<uint32_t>(voice), si = static_cast<uint32_t>(stop);
-      const doc::JiTransition tr = doc::jiTransition(*o, vi, si);
-      std::vector<MenuItem> sub;
-      const std::pair<const char*, doc::JiShape::Kind> shapes[] = {{"Straight", doc::JiShape::LogLinear},
-                                                                   {"S-Curve", doc::JiShape::SCurve},
-                                                                   {"Bezier (drag its handles inside the object)", doc::JiShape::Bezier}};
-      for (const auto& [label, kind] : shapes) {
-        MenuItem m = MenuItem::item(label, guarded([id, si, vi, kind = kind](RollState& st) { (void)st.setJiVoiceShape(id, si, vi, kind); }));
-        m.checked = tr.shape.kind == kind;
-        sub.push_back(std::move(m));
-      }
-      sub.push_back(MenuItem::sep());
-      sub.push_back(MenuItem::item("Glide\xE2\x80\xA6", guarded([id, si, vi](RollState& st) { (void)st.openJiTimingEntry(id, si, vi, false); })));
-      sub.push_back(MenuItem::item("Delay\xE2\x80\xA6", guarded([id, si, vi](RollState& st) { (void)st.openJiTimingEntry(id, si, vi, true); })));
-      sub.push_back(MenuItem::sep());
-      sub.push_back(MenuItem::item("Same for All Voices", guarded([id, si, vi](RollState& st) { (void)st.setJiTimingForAll(id, si, vi); })));
-      std::string name = vi < v->voiceLabels.size() && !v->voiceLabels[vi].empty() ? "Voice " + v->voiceLabels[vi] : "Voice " + std::to_string(vi + 1);
-      for (const JiStopMark& m : v->stops)
-        if (m.index == si) name += " into " + m.label;
-      items.push_back(MenuItem::sub(std::move(name), std::move(sub)));
-      items.push_back(MenuItem::sep());
-    }
-  }
-  if (hit.zone == JiZone::StopLabel && hit.index >= 0) {
-    const uint32_t si = static_cast<uint32_t>(hit.index);
-    items.push_back(MenuItem::item("Retype Stop\xE2\x80\xA6", guarded([id, si](RollState& st) { (void)st.openJiStopRetype(id, si); }), "Double-click"));
-    MenuItem del = MenuItem::item("Delete Stop", guarded([id, si](RollState& st) { (void)st.deleteJiStop(id, si); }), "Delete");
-    del.enabled = o->stops.size() > 1;
-    items.push_back(std::move(del));
-    items.push_back(MenuItem::sep());
-  }
-  const std::optional<Ticks> tick = s_.jiStopTickAt(id, at.x);
-  MenuItem add = MenuItem::item("Add Stop Here\xE2\x80\xA6", guarded([id, tick](RollState& st) {
-                                  if (tick) (void)st.openJiStopEntry(id, *tick);
-                                }),
-                                entered ? "type it" : "");
-  add.enabled = tick.has_value();
-  items.push_back(std::move(add));
-  MenuItem back = MenuItem::item("Back to Tuning Here", guarded([id, tick](RollState& st) {
-                                   if (tick) (void)st.addJiTuningStopAt(id, *tick);
-                                 }),
-                                 "T");
-  back.enabled = tick.has_value();
-  items.push_back(std::move(back));
-  items.push_back(MenuItem::sep());
-  // T7.6: the ride curve (drawn on the lowest voice in Draw Mode).
-  if (!o->ride.empty()) {
-    const CurveTarget t{{}, id};
-    const Ticks off = static_cast<Ticks>(std::llround(s_.tickAtX(at.x))) - o->start;
-    if (const std::optional<RollState::Vibrato> vib = s_.vibratoAt(t, off))
-      items.push_back(MenuItem::item("Edit Vibrato\xE2\x80\xA6", guarded([t, vib = *vib](RollState& st) { (void)st.openVibratoEdit(t, vib); })));
-    items.push_back(MenuItem::item("Clear Ride Curve", guarded([t](RollState& st) { (void)st.commitCurve(t, {}, "Clear Ride Curve"); })));
-    items.push_back(MenuItem::sep());
-  }
-  MenuItem under = MenuItem::item("Undertone (1/n)", guarded([id](RollState& st) { (void)st.toggleJiUndertone(id); }));
-  under.checked = o->undertone;
-  items.push_back(std::move(under));
-  if (entered) items.push_back(MenuItem::item("Leave", guarded([](RollState& st) { st.leaveJiObject(); }), "Esc"));
-  else items.push_back(MenuItem::item("Enter", guarded([id](RollState& st) { st.enterJiObject(id); }), "Double-click"));
-  items.push_back(MenuItem::sep());
-  items.push_back(MenuItem::item("Copy", guarded([id](RollState& st) {
-                                   if (!st.jiEntered().valid()) st.selectJiObject(id);
-                                   (void)st.copyJiSelection();
-                                 }),
-                                 "Ctrl+C"));
-  if (!entered) {
-    items.push_back(MenuItem::item("Duplicate", guarded([id](RollState& st) {
-                                     st.selectJiObject(id);
-                                     (void)st.duplicateJiSelection();
-                                   }),
-                                   "Ctrl+D"));
-    // Removing the object gives the plain notes back (each at the pitch it has at its start).
-    items.push_back(MenuItem::item(o->sounds ? "Delete JI Object" : "Remove JI Tuning", guarded([id](RollState& st) {
-                                     st.selectJiObject(id);
-                                     (void)st.deleteJiSelection();
-                                   }),
-                                   "Delete"));
   }
   items.push_back(MenuItem::sep());
   items.push_back(rowLabelsMenu(s_));

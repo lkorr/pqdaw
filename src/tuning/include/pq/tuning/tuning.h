@@ -55,32 +55,20 @@ private:
   double referenceHz_ = kDefaultReferenceHz;
 };
 
-// The harmonic numbers of one JI object's voices (SPEC §5), as needed to resolve Harmonic identities.
-// Voice i sounds at fundamentalHz · harmonics[i], or fundamentalHz / harmonics[i] for an undertone object
-// (SPEC §15: undertone JI objects are a flag on the same object type). The array is owned by the caller.
-struct HarmonicFrame {
-  double fundamentalHz = 0.0;
-  const uint32_t* harmonics = nullptr;
-  uint32_t count = 0;
-  bool undertone = false;
-};
-
 // Values that live outside the note and its tuning. The caller (document/engine) fills in whatever the identity
-// refers to: the resolved Hz of a Ratio's anchor note or JI fundamental, and the frame of a Harmonic's JI object.
+// refers to: the resolved Hz of a Ratio's anchor note.
 struct ResolveContext {
-  double anchorHz = 0.0;  // for Ratio with AnchorKind::Note / JiFundamental
-  HarmonicFrame harmonic{};
+  double anchorHz = 0.0;  // for Ratio with AnchorKind::Note
 };
 
-// Pitch in Hz as double, or nullopt if it cannot be resolved: a Ratio anchor or Harmonic frame missing from the
-// context, a voice index out of range, harmonic number 0, or a result that is not a finite positive float32.
+// Pitch in Hz as double, or nullopt if it cannot be resolved: a Ratio anchor missing from the context, or a
+// result that is not a finite positive float32.
 // Rules:
 //   Degree   EDO: referenceHz · 2^((equave·n + degree) · log2(equave ratio) / n)
 //            MOS: referenceHz · 2^(Mos::centsOfDegree(equave·size + degree) / 1200)  (stretch included)
 //            Scale: referenceHz · 2^(Scale::centsOfDegree(equave·size + degree) / 1200)
 //   Ratio    anchorHz · n/d, where anchorHz = referenceHz for AnchorKind::Reference
 //   Cents    referenceHz · 2^(cents/1200)
-//   Harmonic fundamentalHz · h  (undertone: fundamentalHz / h), h = harmonics[voiceIndex]
 // RT-safe: no allocation, no locks, bounded.
 std::optional<double> resolveHzDouble(const PitchId& pitch, const Tuning& tuning, const ResolveContext& ctx) noexcept;
 

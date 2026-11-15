@@ -4,7 +4,7 @@
 // Also times nlohmann/json on the same text (SAX with a no-op handler, and DOM), the alternative this module's
 // specialised reader replaces.
 //
-// Project: 16 MIDI tracks × 10 clips × 625 notes; pitches 70 % Degree, 10 % Ratio, 10 % Cents, 10 % Harmonic;
+// Project: 16 MIDI tracks × 10 clips × 625 notes; pitches 70 % Degree, 10 % Ratio, 20 % Cents;
 // velocities and chances are non-integer floats (the slow path of shortest-float printing), every 4th note has a
 // non-default release velocity.
 
@@ -50,10 +50,8 @@ Snapshot buildProject(IdSource& ids, size_t& noteCount) {
           n.pitch = pq::tuning::PitchId::fromDegree(static_cast<int32_t>(rng() % 31), static_cast<int32_t>(rng() % 5) - 2);
         else if (kind == 7)
           n.pitch = pq::tuning::PitchId::fromRatio(pq::tuning::Rational{static_cast<int64_t>(rng() % 31 + 1), 16});
-        else if (kind == 8)
-          n.pitch = pq::tuning::PitchId::fromCents(std::uniform_real_distribution<double>(-2400.0, 2400.0)(rng));
         else
-          n.pitch = pq::tuning::PitchId::fromHarmonic(1, static_cast<uint32_t>(rng() % 16));
+          n.pitch = pq::tuning::PitchId::fromCents(std::uniform_real_distribution<double>(-2400.0, 2400.0)(rng));
         n.velocity = 1.0f + static_cast<float>(rng() % 12600) / 100.0f;
         n.chance = static_cast<float>(rng() % 1000) / 1000.0f;
         if (i % 4 == 0) n.releaseVelocity = static_cast<float>(rng() % 128);

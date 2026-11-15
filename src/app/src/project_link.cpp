@@ -48,7 +48,7 @@ constexpr uint32_t kNone = 0xFFFFFFFFu;
 constexpr uint32_t kInitialParams = 16384;
 constexpr uint32_t kMaxProjectParams = 1u << 24;
 constexpr uint32_t kEventSlots = ProjectLink::kEventSlots;
-constexpr uint32_t kTimelineEventsPerTrack = 256;  // T7.3 (makeEngine; the curve lowering's budget)
+constexpr uint32_t kTimelineEventsPerTrack = 256;  // T7.3 (makeEngine)
 
 double nowSeconds() {
   return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -139,10 +139,10 @@ std::optional<ProjectLink::TableKey> ProjectLink::tableKey(const doc::TuningDef&
 // track's tuning signals (doc::trackTuningSignals: one node each, T2.6-fix3) carries how (PitchSource: the node,
 // Degree with its (root's) degree, or Reference) and its static Hz in that tuning's TABLE definition (see the file
 // comment of project_link.h); every other note plays its static Hz.
-// T7.3 (project_link_ji.h): note curves and JI objects become per-note curves — a note's own pitch curve, an inner
-// note's voice (or fundamental) curve over its span, and one note per voice of every sounding object (ids =
-// JiObject::voiceNotes, so a re-lowering after an edit keeps the sounding voices: the timeline's swap retunes them
-// and re-synchronises their curves). An object's voices follow the tuning signal as its fundamental does.
+// T7.3 / T7.13 (project_link_ji.h): a note's effective curve — its free curve, its bends and its JI group's warps —
+// becomes its per-note pitch curve; the notes of a JI group carry their harmonic numbers. Notes keep their ids, so a
+// re-lowering after an edit keeps the sounding voices (the timeline's swap retunes them and re-synchronises their
+// curves).
 engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const doc::TrackPath& path,
                                                   const doc::Track& track) {
   ++stats_.trackLowerings;
@@ -172,12 +172,7 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
       nd.pitch.equave = np.equave;
     }
   };
-  // T7.3: the engine's limits the curve lowering keeps the event volume under (project_link_ji.h).
-  JiLowerLimits limits;
-  limits.blockSeconds = static_cast<double>(cfg_.blockFrames) / cfg_.sampleRate;
-  limits.eventsPerBlock = kTimelineEventsPerTrack;
   const bool tempoMoves = p.timeline->tempo.size() > 1;
-  std::unordered_map<const doc::TuningDef*, std::optional<tuning::Tuning>> built;  // clips share their tuning
   for (size_t ci = 0; ci < clips.size(); ++ci) {
     const doc::NoteClip& c = *clips[ci].clip;
     engine::ClipDesc cd;
@@ -191,32 +186,9 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
     cd.active = c.active;
     if (pitches.ok()) {
       const doc::ClipPitches& cp = pitches.value().clips[ci];
-      // T7.3: the clip's JI objects and note curves, in the tuning its notes were resolved in.
-      std::optional<ClipJiLowering> ji;
-      const bool hasJi = c.ji != nullptr && !c.ji->empty();
-      if (hasJi || (c.curves != nullptr && !c.curves->empty())) {
-        const tuning::Tuning* t = nullptr;
-        const bool signal = cp.tuning.main.valid() && cp.tuning.def != nullptr && doc::hasTuningSignal(*cp.tuning.def);
-        if (hasJi && signal) t = ro.signalTuning(cp.tuning.main, *cp.tuning.def);
-        if (hasJi && t == nullptr && cp.tuning.def != nullptr) {
-          auto it = built.find(cp.tuning.def);
-          if (it == built.end()) {
-            Result<tuning::Tuning> b = doc::buildTuning(*cp.tuning.def);
-            it = built.emplace(cp.tuning.def, b.ok() ? std::optional<tuning::Tuning>(std::move(b.value())) : std::nullopt).first;
-          }
-          if (it->second) t = &*it->second;
-        }
-        ji.emplace(c, t, p.timeline->tempoMap, tempoMoves, limits, &cp);
-        if (hasJi && t != nullptr) {  // one note per voice of every sounding object
-          const doc::TuningId follows = signal ? cp.tuning.main : doc::TuningId{};
-          for (const doc::JiObject& o : *c.ji) {
-            const size_t first = cd.notes.size();
-            if (ji->voices(o, cd.notes) == 0) continue;
-            const doc::NotePitch fp = doc::resolvePitch(o.fundamental, *t, follows);  // as the fundamental follows
-            for (size_t k = first; k < cd.notes.size(); ++k) setFollow(cd.notes[k], fp);
-          }
-        }
-      }
+      // T7.13: the clip's note curves, bends, warps and harmonic numbers (project_link_ji.h).
+      std::optional<ClipCurveLowering> curves;
+      if (ClipCurveLowering::needed(c)) curves.emplace(c, p.timeline->tempoMap, tempoMoves, cp);
       cd.notes.reserve(cd.notes.size() + c.notes.size());
       size_t ni = 0;
       for (const doc::Note& n : c.notes) {
@@ -238,7 +210,7 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
         if (n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.rawDen() != 0)
           nd.ratio = static_cast<float>(static_cast<double>(n.pitch.rawNum()) / static_cast<double>(n.pitch.rawDen()));
         nd.enabled = n.enabled();
-        if (ji) ji->noteCurve(n, nd);
+        if (curves) curves->note(n, nd);
         cd.notes.push_back(std::move(nd));
       }
     }
@@ -259,12 +231,6 @@ std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const d
   for (const doc::TuningId id : doc::trackTuningSignals(p, path))
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(id.value)));
   key.push_back(nullptr);  // separator
-  // T7.3: a JI object's gain ramps and breakpoint spacing are times: its track is lowered again with the tempo map.
-  for (const doc::ClipSlot& c : doc::playedClips(t))
-    if (c.clip != nullptr && c.clip->ji != nullptr) {
-      key.push_back(p.timeline.get());
-      break;
-    }
   std::lock_guard lock(mutex_);
   for (const doc::ClipSlot& c : doc::playedClips(t)) {  // T6.1
     const doc::EffectiveTuning e = doc::effectiveTuningRef(p, path, c.clip.get());
@@ -525,8 +491,8 @@ Status ProjectLink::makeEngine() {
   ec.maxSlots = kEventSlots;
   // T3.17-fix3: 512 slots at 128 sounding notes per track instead of 128 slots at 512 events / 256 notes: more than
   // enough for a 64-frame block, and room for 512 MIDI tracks. T7.3: 256 events per block (≈ 32 KB per slot) — a
-  // 64-voice JI object starts 64 notes with a pitch and a gain ramp each at one tick (192 events, and a note-on
-  // keeps room for every pending note-off).
+  // 64-note chord whose notes each start with a pitch ramp at one tick is 128 events (and a note-on keeps room for
+  // every pending note-off).
   ec.timeline.maxEventsPerTrack = kTimelineEventsPerTrack;
   ec.timeline.maxSoundingPerTrack = 128;
   ec.sleepAfterMs = cfg_.sleepAfterMs;

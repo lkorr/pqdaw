@@ -356,31 +356,14 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
     for (const NoteClip* c : merge)
       if (!(c->tuning == first.tuning)) return invalid("the clips use different tunings");
     std::vector<Note> notes;
-    JiObjectList objects;  // T7.2
     NoteCurveList curves;
+    JiGroupList jiGroups;     // T7.13
+    NoteWrittenList written;
     for (const NoteClip* c : merge) {
       forEachClipSegment(*c, c->start, clipEnd(*c), [&](const ClipSegment& seg) {
-        // T7.2: this pass's objects — those overlapping it, and any a note of the pass follows — placed like its notes
-        // and cut at the pass's end; an object already taken (an earlier pass of a loop) is copied with fresh ids and
-        // this pass's notes follow the copy.
         NoteIdMap noteMap;  // T7.11a: this pass's notes that got fresh ids (old → new)
-        const size_t firstCurve = curves.size();
-        JiIdMap map;       // objects of this pass that got fresh ids (sorted)
-        std::vector<JiObjectId> taken;  // objects of this pass (sorted)
-        auto takeObject = [&](const JiObject& o) {
-          if (std::binary_search(taken.begin(), taken.end(), o.id)) return;
-          taken.insert(std::upper_bound(taken.begin(), taken.end(), o.id), o.id);
-          JiObject n = o;
-          if (!seen.insert(o.id.value).second) {
-            n = freshJiObject(o, ids);
-            map.insert(std::upper_bound(map.begin(), map.end(), std::pair(o.id, n.id)), {o.id, n.id});
-          }
-          n.start = seg.at + (o.start - seg.contentFrom) - g.start;
-          if (o.start < seg.contentTo) n.length = std::min(o.length, seg.contentTo - o.start);
-          objects.push_back(std::move(n));
-        };
-        for (const JiObject& o : jiObjectsOf(*c))
-          if (o.start < seg.contentTo && o.end() > seg.contentFrom) takeObject(o);
+        std::vector<NoteId> pass;  // T7.13: the source ids of this pass's notes (a group needs its anchor in the pass)
+        const size_t firstCurve = curves.size(), firstNote = notes.size();
         for (auto [it, end] = c->notes.range(seg.contentFrom, seg.contentTo); it != end; ++it) {
           Note m = *it;
           m.start = seg.at + (it->start - seg.contentFrom) - g.start;
@@ -390,33 +373,51 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
             m.id = ids.note();
             noteMap.emplace_back(it->id, m.id);
           }
-          if (const JiObjectId followed = jiObjectOf(m.pitch); followed.valid()) {
-            if (const JiObject* o = findJiObject(*c, followed)) takeObject(*o);
-            m.pitch = remapJiPitch(m.pitch, map);
-          }
           if (c->curves)
             if (const NoteCurves* nc = findNoteCurves(*c, it->id)) {
               curves.push_back(*nc);
               curves.back().note = m.id;
             }
+          if (c->written)
+            if (const NoteWritten* w = findNoteWritten(*c, it->id)) written.push_back(NoteWritten{m.id, w->written});
+          if (c->groups) pass.push_back(it->id);
           notes.push_back(m);
         }
         // T7.11a: a bend of this pass glides to this pass's copy of its neighbour (else it keeps the neighbour's id:
-        // the first pass's note; pruneCurves below drops it when that note is not in the merged clip).
+        // the first pass's note; pruneCurves below drops it when that note is not in the merged clip). T7.13: so does
+        // a note anchored to a note of this pass.
         if (!noteMap.empty()) {
           std::sort(noteMap.begin(), noteMap.end());
           for (size_t k = firstCurve; k < curves.size(); ++k)
             for (NoteBend* b : {&curves[k].bendIn, &curves[k].bendOut})
               if (const NoteId to = remapNote(b->other, noteMap); b->set() && to.valid()) b->other = to;
+          for (size_t k = firstNote; k < notes.size(); ++k)
+            if (const NoteId to = remapNote(noteAnchorOf(notes[k].pitch), noteMap); to.valid())
+              notes[k].pitch = tuning::PitchId::fromRatio(notes[k].pitch.ratio(), tuning::AnchorKind::Note, to.value);
+        }
+        // T7.13: this pass's groups — those whose anchor is in the pass — with the anchor's id in this pass; a group
+        // already taken (an earlier pass of a loop) is a new group.
+        if (c->groups) {
+          std::sort(pass.begin(), pass.end());
+          for (const JiGroup& grp : *c->groups) {
+            if (!std::binary_search(pass.begin(), pass.end(), grp.anchor)) continue;
+            JiGroup copy = grp;
+            if (const NoteId to = remapNote(grp.anchor, noteMap); to.valid()) copy.anchor = to;
+            if (!seen.insert(grp.id.value).second) copy.id = ids.jiGroup();
+            jiGroups.push_back(std::move(copy));
+          }
         }
       });
     }
     NoteClip c = withNotes(first, seqOf(std::move(notes)));
-    std::sort(objects.begin(), objects.end(), [](const JiObject& a, const JiObject& b) { return a.id < b.id; });
     std::sort(curves.begin(), curves.end(), [](const NoteCurves& a, const NoteCurves& b) { return a.note < b.note; });
-    c.ji = objects.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(objects));
+    std::sort(jiGroups.begin(), jiGroups.end(), [](const JiGroup& a, const JiGroup& b) { return a.id < b.id; });
+    std::sort(written.begin(), written.end(), [](const NoteWritten& a, const NoteWritten& b) { return a.note < b.note; });
     c.curves = curves.empty() ? nullptr : std::make_shared<const NoteCurveList>(std::move(curves));
+    c.groups = jiGroups.empty() ? nullptr : std::make_shared<const JiGroupList>(std::move(jiGroups));
+    c.written = written.empty() ? nullptr : std::make_shared<const NoteWrittenList>(std::move(written));
     pruneCurves(c);
+    pruneJi(c);
     c.id = ids.clip();
     c.start = g.start;
     c.length = g.end - g.start;

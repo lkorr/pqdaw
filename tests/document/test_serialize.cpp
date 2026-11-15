@@ -94,8 +94,8 @@ TEST_CASE("serialize: the rich project covers every entity, pitch, anchor, tunin
     }
   });
   for (const TuningSlotPtr& s : *p.tunings) tuningKinds.insert(static_cast<int>(s->def.system.index()));
-  CHECK(pitchKinds.size() == 4);
-  CHECK(anchorKinds.size() == 3);
+  CHECK(pitchKinds.size() == 3);
+  CHECK(anchorKinds.size() == 2);
   CHECK(paramKinds.size() == 9);  // every automatable kind (TrackSolo is not automatable)
   CHECK(tuningKinds.size() == 3);
   CHECK(trackKinds.size() == 4);  // midi, group, return, master (audio is not supported until M6)

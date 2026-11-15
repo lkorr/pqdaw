@@ -4,7 +4,7 @@
 //
 // T7.12: every note is a line along its pitch, painted by one routine (drawNoteLine): a faint band over the row it
 // is grabbed in, a body a few px thick centred on the exact pitch (between rows for a Ratio / Cents pitch off the
-// grid, along the pitch path for a note with a curve or on a JI voice), round ends, and a thicker head at its start
+// grid, along the pitch path for a note with a curve), round ends, and a thicker head at its start
 // so repeated notes on one pitch read as separate notes. Colours from a per-clip table indexed by velocity; the head
 // of an off-grid note takes the theme's offGrid colour. Metrics: the theme's roll.noteLine* tokens.
 
@@ -169,7 +169,7 @@ void forEachHarmonic(const RollState& s, const RollState::Harmonics& H, int32_t 
   const auto [first, last] = rows.rowsIn(contentTop, contentBottom + 1);
   if (first >= last) return;
   const double fn = static_cast<double>(Fr.num()), fd = static_cast<double>(Fr.den());
-  // T7.5b: the fundamental stands on its base (the reference at 0 cents, or the declared harmonic's anchor note).
+  // The fundamental stands on its base (the reference at 0 cents, or the active JI group's anchor note).
   const double hiCents = rows.row(first).cents + 100.0 - H.baseCents, loCents = rows.row(last - 1).cents - 100.0 - H.baseCents;
   const double fund = H.baseCents + 1200.0 * std::log2(fn) - 1200.0 * std::log2(fd);  // cents of base · F (1/D: −1200·log2 D)
   const double kLo = std::max(1.0, std::ceil(fd / fn * std::exp2(loCents / 1200.0)));
@@ -190,7 +190,8 @@ void forEachHarmonic(const RollState& s, const RollState::Harmonics& H, int32_t 
 
 }  // namespace
 
-// The clip's virtual fundamental F (reference · F; 1/D derived, or a lock) as a translucent line and its harmonics k·F
+// The fundamental F (the virtual fundamental reference · 1/D, or the active JI group's: its anchor's pitch / (index · m))
+// as a translucent line and its harmonics k·F
 // as faint guide lines, under the notes. Their labels are drawn over the notes' area in a strip at its right edge
 // (paintHarmonicLabels), never under notes (T3.x-fix-look, M3 review M18). Off with the clip box's JI switch.
 void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, const IRect& vis) {
@@ -306,26 +307,10 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
 
   paintOverlay(ctx, s_, vis, static_cast<float>(vis.x), static_cast<float>(vis.right()));
   paintFundamental(ctx, s_, r, vis);
-  const DragState& dr0 = s_.drag;
-  // T7.5: inside an entered object everything else is painted first and dimmed, then the object on top.
-  const bool entered = s_.jiEntered().valid();
-  const JiPass under = entered ? JiPass::NotEntered : JiPass::All;
-  if (!s_.jiViews().empty() || s_.jiPending() || dr0.kind == DragKind::JiBox) {  // T7.4: under the notes
-    const PaintClock::time_point t0 = PaintClock::now();
-    paintJiObjects(ctx, s_, vis, false, under);
-    s_.paintStats.jiMs = std::chrono::duration<double, std::milli>(PaintClock::now() - t0).count();
-  } else {
-    s_.paintStats.jiMs = 0.0;
-    s_.paintStats.jiPainted = 0;
-  }
 
   // Notes. A Move / Copy drag shows the selected notes displaced: look as far back / ahead as the drag reaches.
   const DragState& dr = s_.drag;
-  // T7.5: the inner notes of a dragged JI object follow its preview (in time with a move; on its voices as the
-  // release will leave them for every object drag).
-  const doc::JiObject* jiDragged = dr.moved ? s_.jiPreviewObject() : nullptr;
-  const Ticks jiDt = (jiDragged && dr.kind == DragKind::JiMove) ? dr.dt : 0;
-  const bool shifting = dr.kind == DragKind::Move || dr.kind == DragKind::Copy || jiDt != 0;
+  const bool shifting = dr.kind == DragKind::Move || dr.kind == DragKind::Copy;
   const Ticks lookFrom = shifting ? std::min(from, from - dr.dt) : from;
   const Ticks lookTo = shifting ? std::max(to, to - dr.dt) : to;
   const NoteColours& col = s_.colours();
@@ -344,11 +329,13 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   // T3.19: Ratio notes carry their ratio (and harmonic number over the virtual fundamental), drawn after every note.
   std::vector<NoteLabel>& labels = s_.noteLabels;
   labels.clear();
-  // T7.4: notes with a pitch curve and notes of a JI object are drawn along their path, after the others.
+  // T7.4: notes with a pitch curve are drawn along their path, after the others.
   std::vector<CurveNote>& curved = s_.curveNotes;
   curved.clear();
-  const bool anyPath = s_.clip()->curves != nullptr || s_.clip()->ji != nullptr || s_.hasCurvePreview();
+  const bool anyPath = s_.clip()->curves != nullptr || s_.hasCurvePreview();
   const std::optional<RollState::Harmonics> H = s_.harmonics();
+  const std::optional<tuning::Rational> vf = s_.virtualFundamental();
+  const bool anyGroup = s_.clip()->groups != nullptr;
   auto emit = [&](const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch, bool sel) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
@@ -391,24 +378,28 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     if (pitch.kind() == tuning::PitchKind::Ratio) {
       const tuning::Rational r = pitch.ratio();
       uint32_t k = 0;
-      // Its harmonic number: over the reference's fundamental, or (T7.5b) over the declared harmonic it is anchored to.
-      const bool related = H && (H->anchor.valid() ? (pitch.anchorKind() == tuning::AnchorKind::Note && pitch.anchorId() == H->anchor.value)
-                                                   : pitch.anchorKind() == tuning::AnchorKind::Reference);
-      if (related)
-        if (const std::optional<uint64_t> h = tuning::harmonicNumber(r, H->ratio); h && *h <= 99999) k = static_cast<uint32_t>(*h);
+      // Its harmonic number: a member of a JI group in its group (T7.13; a drag's preview pitch against the active
+      // group's series), a reference Ratio over the virtual fundamental.
+      std::optional<uint64_t> h;
+      if (pitch.anchorKind() == tuning::AnchorKind::Reference) {
+        if (vf) h = tuning::harmonicNumber(r, *vf);
+        if (anyGroup && pitch == n.pitch)
+          if (const std::optional<uint64_t> own = s_.harmonicOf(n)) h = own;  // the anchor of a group
+      } else if (pitch == n.pitch) {
+        if (anyGroup) h = s_.harmonicOf(n);
+      } else if (H && H->anchor.valid() && pitch.anchorId() == H->anchor.value) {
+        h = tuning::harmonicNumber(r, H->ratio);
+      }
+      if (h && *h <= 99999) k = static_cast<uint32_t>(*h);
       labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, r.num(), r.den(), k});
-    } else if (H && H->anchor.valid() && n.id == H->anchor) {
-      // T7.5b: the anchor note of a declared harmonic carries its (derived) number.
-      if (const std::optional<uint64_t> h = tuning::harmonicNumber(tuning::Rational(1), H->ratio); h && *h <= 99999)
+    } else if (anyGroup) {
+      // The anchor note of a JI group carries its (derived) number.
+      if (const std::optional<uint64_t> h = s_.harmonicOf(n); h && *h <= 99999)
         labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, 0, 1, static_cast<uint32_t>(*h)});
     }
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
     const bool sel = anySelected && s_.selected(n.id);
-    if (jiDt != 0 && doc::jiObjectOf(n.pitch) == jiDragged->id) {
-      emit(n, n.start + jiDt, n.length, n.pitch, sel);
-      return;
-    }
     if (sel && dr.kind != DragKind::None) {
       if (const std::optional<RollState::Preview> pv = s_.preview(n)) {
         if (dr.kind == DragKind::Copy) emit(n, n.start, n.length, n.pitch, false);  // the original stays
@@ -445,38 +436,14 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
         }
       }
 
-  if (!curved.empty()) paintCurveNotes(ctx, s_, vis, under);  // the same lines, along their paths
-  if (!s_.jiViews().empty()) {  // T7.4: the objects' text, over the notes
-    const PaintClock::time_point t0 = PaintClock::now();
-    paintJiObjects(ctx, s_, vis, true, under);
-    s_.paintStats.jiMs += std::chrono::duration<double, std::milli>(PaintClock::now() - t0).count();
-  }
+  if (!curved.empty()) paintCurveNotes(ctx, s_, vis);  // the same lines, along their paths
   if (!labels.empty()) paintNoteLabels(ctx);
-  if (entered) {
-    // T7.5: the roll around the entered object is dimmed; the object, its voices (the rows in there), its notes and
-    // the notes being drawn on its voices are painted over the dim.
-    dl.addRectFilled(vis.toRect(), th->roll.outside);
-    dl.addRectFilled(vis.toRect(), th->roll.outside);  // twice: clearly behind the object
-    paintJiObjects(ctx, s_, vis, false, JiPass::EnteredOnly);
-    if (dr.kind == DragKind::Draw) {
-      static const doc::Note kPreviewNote = [] {
-        doc::Note n;
-        n.velocity = 100.0f;
-        return n;
-      }();
-      for (const DrawnNote& dn : dr.drawn)
-        if (dn.mode == DrawPitch::Voice && dn.length > 0) curved.push_back({&kPreviewNote, dn.start, dn.length, s_.drawnPitch(dn), true});
-    }
-    if (!curved.empty()) paintCurveNotes(ctx, s_, vis, JiPass::EnteredOnly);
-    paintJiObjects(ctx, s_, vis, true, JiPass::EnteredOnly);
-  }
 
   paintCurveHandles(ctx, s_, vis);  // T7.6: the breakpoints of the curves being edited
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)
     for (const DrawnNote& dn : dr.drawn) {
-      if (dn.mode == DrawPitch::Voice) continue;  // painted along its voice above
       const NotePlace pl = s_.place(s_.drawnPitch(dn));
       if (!pl.ok) continue;
       const float x0 = std::round(s_.xOfTick(static_cast<double>(dn.start)));
@@ -541,12 +508,11 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
   }
 }
 
-// The notes drawn along a pitch path (a pitch curve, a JI object's voice; RollState::curveNotes, filled by the note
+// The notes drawn along a pitch path (a pitch curve; RollState::curveNotes, filled by the note
 // area's paint): the path sampled every kPathSampleStep px into the shared scratch polyline, then the same line.
-void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis, JiPass pass) {
+void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   if (!ctx.res.theme || s.curveNotes.empty()) return;
   const Theme& th = *ctx.res.theme;
-  const doc::JiObjectId entered = s.jiEntered();
   const NoteColours& col = s.colours();
   const LineStyle style = lineStyle(th, s, ctx.scale.factor);
   const float step = std::max(1.0f, kPathSampleStep * ctx.scale.factor);
@@ -554,7 +520,6 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis, JiPass p
   const float vx0 = static_cast<float>(vis.x) - 2.0f * step, vx1 = static_cast<float>(vis.right()) + 2.0f * step;
   std::vector<Vec2>& pts = s.linePts;
   for (const CurveNote& c : s.curveNotes) {
-    if (pass != JiPass::All && (doc::jiObjectOf(c.pitch) == entered) != (pass == JiPass::EnteredOnly)) continue;
     const float x0 = s.xOfTick(static_cast<double>(c.start));
     const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
     const float xa = std::max(x0, vx0), xb = std::min(x1, vx1);
@@ -975,13 +940,12 @@ void ClipBoxPanel::paint(PaintContext& ctx) {
 void CornerPanel::paint(PaintContext& ctx) {
   if (const Theme* th = ctx.res.theme) {
     ctx.dl.addRectFilled(rect().toRect(), th->surface.panel);
-    if (s_.ctx.drawMode() || s_.jiTool()) {
-      // Draw mode indicator: a pencil-coloured bar along the bottom (Live highlights its draw-mode switch). T7.4: the
-      // JI tool shows the same bar in the JI objects' colour.
+    if (s_.ctx.drawMode()) {
+      // Draw mode indicator: a pencil-coloured bar along the bottom (Live highlights its draw-mode switch).
       const IRect r = rect();
       ctx.dl.addRectFilled(Rect{static_cast<float>(r.x), static_cast<float>(r.bottom() - ctx.scale.px(2)),
                                 static_cast<float>(r.right()), static_cast<float>(r.bottom())},
-                           s_.jiTool() ? th->roll.jiLine : th->accent.primary);
+                           th->accent.primary);
     }
   }
 }

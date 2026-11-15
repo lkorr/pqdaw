@@ -526,18 +526,19 @@ TEST_CASE("clip view: Up on 5/4 → 6/4 → 7/4 keeps the fundamental (Q40); Shi
   CHECK(r.view->virtualFundamental() == std::nullopt);
 
   // T3.6-fix1: the fundamental lives in the document, so undo brings back the note AND the fundamental it was
-  // stepped on (the view keeps no memory of its own), and an explicit lock (b + index; the keys are M8's macro mode)
-  // is what the roll steps on and draws.
+  // stepped on (the view keeps no memory of its own). T7.13: the clip-wide lock (ops::lockFundamental, "5/4 is
+  // harmonic 5 → F = 1/4") is gone — a declared harmonic is a JI group with a fundamental of its own, and a reference
+  // ratio keeps stepping on the derived 1/12 (this case stepped 5/4 → 6/4 on the lock).
   REQUIRE(r.ctx.undo());
   REQUIRE(r.note(125) != nullptr);
   CHECK(r.view->virtualFundamental() == Rational(1, 12));
-  auto lock = doc::ops::lockFundamental(*r.ctx.doc(), r.ref, doc::keyOf(*r.note(125)), 5);  // 5/4 = 5 · 1/4
-  REQUIRE(lock.ok());
-  REQUIRE(r.ctx.store().dispatch(lock->command).ok());
-  CHECK(r.view->virtualFundamental() == Rational(1, 4));
+  auto group = doc::ops::makeJiGroup(*r.ctx.doc(), r.ctx.store().ids(), r.ref, doc::keyOf(*r.note(125)), 5);
+  REQUIRE(group.ok());
+  REQUIRE(r.ctx.store().dispatch(group->command).ok());
+  CHECK(r.view->virtualFundamental() == Rational(1, 12));
   r.d.click(r.centreOf(125));
   CHECK(r.d.press("Up") == KeyResult::Action);
-  CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(6, 4)));
+  CHECK(r.note(125)->pitch == PitchId::fromRatio(Rational(16, 12)));
 }
 
 TEST_CASE("clip view: velocity drag over a selection is one undo step; chance lane; Ctrl+U; 0; Ctrl+D; Ctrl+A") {

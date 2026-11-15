@@ -54,10 +54,6 @@ bool RollState::refresh() {
     ref_ = want;
     clip_.reset();
     sel_.clear();
-    jiSel_ = {};
-    jiEntered_ = {};
-    jiStopSel_ = jiTermSel_ = -1;
-    jiPending_.reset();
     insertTick_.reset();
     fitted_ = false;
     drag = {};
@@ -84,7 +80,6 @@ bool RollState::refresh() {
   bool clipCaches = false;
   bool morphed = false;
   if (def && (!tuningValid_ || !(tuningDef_ == *def))) {
-    jiViewsDirty_ = true;
     if (tuningValid_ && morphInPlace(*def)) {
       // A generator move inside one MosLinearTable interval (T3.12 live morph): the tuning and the rows were
       // retuned in place; the row set, labels, chunk caches and highlight scale stay.
@@ -111,7 +106,6 @@ bool RollState::refresh() {
     if (const doc::TuningSlot* slot = doc::findTuning(*cur, tuningId)) name = slot->name;
     if (name != tuningName_) {
       tuningName_ = std::move(name);
-      jiViewsDirty_ = true;  // tuning stops are labelled with it
       changed = true;
     }
   }
@@ -135,9 +129,6 @@ bool RollState::refresh() {
     }
   }
   if (rowsDirty || rows_.empty()) rebuildRows();
-  // T7.4: the JI objects' views follow the clip's object list (shared between snapshots: a note edit keeps it) and
-  // the tuning (its pitches and its name label the stops).
-  if (jiViewsDirty_ || (clip_ ? clip_->ji.get() : nullptr) != jiViewsFor_) rebuildJiViews();
   pitchOnlyChange_ = morphed && !changed;
   return changed || morphed;
 }
@@ -427,12 +418,10 @@ tuning::PitchId RollState::drawnPitch(const DrawnNote& d) const noexcept {
   switch (d.mode) {
     case DrawPitch::Overlay: return tuning::PitchId::fromCents(d.cents);
     case DrawPitch::Ratio: {
-      // T7.5b: under a declared harmonic the note is an exact ratio to the anchor note (it follows the anchor).
-      const std::optional<Harmonics> h = harmonics();
-      if (h && h->anchor.valid()) return tuning::PitchId::fromRatio(d.ratio, tuning::AnchorKind::Note, h->anchor.value);
+      // T7.13: with an active JI group the note is a member: an exact ratio to the group's anchor note.
+      if (const doc::JiGroup* g = activeJiGroup()) return tuning::PitchId::fromRatio(d.ratio, tuning::AnchorKind::Note, g->anchor.value);
       return tuning::PitchId::fromRatio(d.ratio);
     }
-    case DrawPitch::Voice: return tuning::PitchId::fromHarmonic(jiEntered_.value, d.voice);  // T7.5
     case DrawPitch::Row: break;
   }
   return degreePitch(d.degree);
@@ -547,7 +536,6 @@ ui::TextEdit* RollState::openPitchEntry() {
       case tuning::PitchKind::Degree:
         std::snprintf(buf, sizeof buf, p.equave() ? "%d\\%d%+d" : "%d\\%d", p.degree(), degreesPerEquave(tuning_), p.equave());
         break;
-      case tuning::PitchKind::Harmonic: break;
     }
     edit.setText(buf);
   }
@@ -578,28 +566,10 @@ ui::TextEdit* RollState::openPitchEntry() {
   return &edit;
 }
 
-bool RollState::lockFundamentalOn(doc::NoteId note, uint32_t harmonicIndex) {
-  if (!clip_) return false;
-  const doc::Note* n = findNote(note);
-  if (!n) return false;
-  const std::vector<uint32_t> keep = sel_;
-  if (!apply(doc::ops::lockFundamental(*ctx.doc(), ref_, doc::keyOf(*n), harmonicIndex), "Lock Fundamental")) return false;
-  select(keep);
-  return true;
-}
-
-bool RollState::unlockFundamental() {
-  if (!clip_ || !clip_->fundamental.anchor) return false;
-  const std::vector<uint32_t> keep = sel_;
-  if (!apply(doc::ops::unlockFundamental(*ctx.doc(), ref_), "Unlock Fundamental")) return false;
-  select(keep);
-  return true;
-}
-
 tuning::Rational RollState::ratioFor(int64_t degree, double cents) const {
   if (const std::optional<Harmonics> H = harmonics()) {
     // The harmonic k·F nearest the pointer in pitch (log distance), k ≥ 1; the ratio is to the fundamental's base
-    // (the reference, or the declared harmonic's anchor note).
+    // (the reference, or the active JI group's anchor note).
     const tuning::Rational& F = H->ratio;
     const double f = F.toDouble();
     const double x = std::exp2((cents - H->baseCents) / 1200.0) / f;
@@ -669,19 +639,18 @@ void RollState::hoverAt(ui::Vec2 p, bool keys) {
         len = std::snprintf(buf, sizeof buf, "Ratio Note %lld/%lld", static_cast<long long>(id.ratio().num()), static_cast<long long>(id.ratio().den()));
         break;
       case tuning::PitchKind::Cents: len = std::snprintf(buf, sizeof buf, "Cents Note %.3f \xC2\xA2", id.cents()); break;
-      case tuning::PitchKind::Harmonic: len = std::snprintf(buf, sizeof buf, "Harmonic Note"); break;
     }
     hoverTitle_.assign(buf, static_cast<size_t>(std::clamp(len, 0, static_cast<int>(sizeof buf) - 1)));
     const std::optional<double> c = centsOf(id);
-    hoverBody_ = c ? pitchReadout(*c, id.kind() != tuning::PitchKind::Ratio) : std::string("Its pitch needs a JI object.");
+    hoverBody_ = c ? pitchReadout(*c, id.kind() != tuning::PitchKind::Ratio) : std::string("Its pitch cannot be resolved (the note it is anchored to is missing).");
     if (const std::optional<uint64_t> k = harmonicOf(*n)) {
-      const std::optional<tuning::Rational> F = virtualFundamental();
+      const std::optional<tuning::Rational> F = doc::jiGroupOfNote(*clip_, *n) ? std::nullopt : virtualFundamental();
       if (F) len = std::snprintf(buf, sizeof buf, " \xC2\xB7 harmonic %llu of F = %lld/%lld", static_cast<unsigned long long>(*k),
                                  static_cast<long long>(F->num()), static_cast<long long>(F->den()));
       else len = std::snprintf(buf, sizeof buf, " \xC2\xB7 harmonic %llu", static_cast<unsigned long long>(*k));
       hoverBody_.append(buf, static_cast<size_t>(std::max(0, len)));
     }
-    hoverBody_ += ". Right-click: convert to Degree / Ratio / Cents, set its pitch, lock the fundamental.";
+    hoverBody_ += ". Right-click: convert to Degree / Ratio / Cents, set its pitch, declare it a harmonic.";
   } else {
     hoverTitle_ = label.empty() ? std::string("Row") : "Row " + label;
     if (const std::string& eq = rows_.equaveLabel(static_cast<size_t>(idx)); !eq.empty()) hoverTitle_ += " \xC2\xB7 equave " + eq;
@@ -960,7 +929,6 @@ std::optional<double> RollState::centsOf(const tuning::PitchId& p) const {
     case tuning::PitchKind::Ratio: {
       const double rc = tuning::cents(p.ratio());
       if (p.anchorKind() == tuning::AnchorKind::Reference) return rc;
-      if (p.anchorKind() != tuning::AnchorKind::Note) return std::nullopt;  // JI objects do not exist yet
       if (!anchorIndexValid_) buildAnchorIndex();
       // Follow the anchor chain (bounded: a cycle or a missing anchor leaves the note unplaced).
       double total = rc;
@@ -976,12 +944,10 @@ std::optional<double> RollState::centsOf(const tuning::PitchId& p) const {
         }
         total += tuning::cents(a.ratio());
         if (a.anchorKind() == tuning::AnchorKind::Reference) return total;
-        if (a.anchorKind() != tuning::AnchorKind::Note) return std::nullopt;
         id = a.anchorId();
       }
       return std::nullopt;
     }
-    case tuning::PitchKind::Harmonic: return std::nullopt;  // needs the JI object (SPEC §5)
   }
   return std::nullopt;
 }
@@ -1051,18 +1017,15 @@ const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
   int hitZone = 0;
   int hitKey = -1;
   const bool zOrder = rows_.layout() == RowLayout::Proportional;
-  const bool anyPath = clip_->curves != nullptr || clip_->ji != nullptr;
+  const bool anyPath = clip_->curves != nullptr;
   const float half = pathHalfThickness() + 1.0f;
   forNotesIn(static_cast<Ticks>(std::floor(t0)), static_cast<Ticks>(std::ceil(t1)) + 1, [&](const doc::Note& n) {
-    // T7.5: inside an entered object only its notes are hit.
-    if (jiEntered_.valid() && doc::jiObjectOf(n.pitch) != jiEntered_) return;
     const float x0 = std::round(xOfTick(static_cast<double>(n.start)));
     const float x1 = std::max(x0 + 3.0f, std::round(xOfTick(static_cast<double>(n.start + n.length))));
     if (p.x < x0 || p.x >= x1) return;
     int key = 0;
     if (anyPath && onPath(n, n.pitch)) {
-      // T7.5: a note drawn along a path (a pitch curve, a JI object's voice) is hit where it is drawn: its pitch at
-      // the pointer's tick.
+      // A note drawn along a path (a pitch curve) is hit where it is drawn: its pitch at the pointer's tick.
       const double off = std::clamp(tickAtX(p.x) - static_cast<double>(n.start), 0.0, static_cast<double>(n.length));
       const std::optional<double> c = pathCents(n, n.start, n.pitch, off);
       if (!c || std::fabs(yOfCents(*c) - p.y) > half) return;
@@ -1099,9 +1062,9 @@ bool RollState::selected(doc::NoteId id) const noexcept {
 void RollState::select(std::vector<uint32_t> ids) {
   std::sort(ids.begin(), ids.end());
   ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-  if (!ids.empty() && jiSel_.valid()) jiSel_ = {};  // T7.4: notes or an object, not both
   if (ids == sel_) return;
   sel_ = std::move(ids);
+  activeGroupValid_ = false;  // T7.13: the active JI group follows the selection
   // A bitmap over [min id, max id] when it is compact (ids of one clip mostly are): ≤ 64 bits per selected note
   // plus 64 KiB; otherwise selected() binary-searches.
   selBits_.clear();
@@ -1179,14 +1142,6 @@ bool RollState::apply(const doc::ops::EditResult& e, std::string_view what) {
 
 void RollState::deleteSelection() {
   if (!clip_) return;
-  if (sel_.empty() && jiStopSel_ >= 0 && jiActive().valid()) {  // T7.5: the selected stop
-    (void)deleteJiStop(jiActive(), static_cast<uint32_t>(jiStopSel_));
-    return;
-  }
-  if (jiSel_.valid() && !jiEntered_.valid()) {  // T7.4: the selected JI object (not the one the user is inside)
-    (void)deleteJiSelection();
-    return;
-  }
   const std::vector<doc::NoteKey> keys = selectionKeys();
   if (keys.empty()) return;
   if (apply(doc::ops::deleteNotes(*ctx.doc(), ref_, keys), "Delete Notes")) clearSelection();
@@ -1194,10 +1149,6 @@ void RollState::deleteSelection() {
 
 void RollState::duplicateSelection() {
   if (!clip_) return;
-  if (jiSel_.valid() && sel_.empty()) {  // T7.4
-    (void)duplicateJiSelection();
-    return;
-  }
   const std::vector<doc::NoteKey> keys = selectionKeys();
   if (keys.empty()) return;
   (void)apply(doc::ops::duplicateNotes(*ctx.doc(), ctx.store().ids(), ref_, keys), "Duplicate Notes");
@@ -1227,9 +1178,10 @@ void RollState::toggleSelectionActive() {
 }
 
 // Q40 / T3.6-fix1: the rule lives in the document (doc::virtualFundamental: 1/lcm of the reference-anchored Ratio
-// notes' effective denominators, the steps it remembers kept in the clip, or the clip's lock). The view only feeds
-// it the lcm of the notes' own denominators from its per-chunk summaries, so an edit rescans just the rebuilt
-// chunks (plus one pass over the notes while the clip has remembered steps).
+// notes' effective denominators, the steps it remembers kept in the clip). The view only feeds it the lcm of the
+// notes' own denominators from its per-chunk summaries, so an edit rescans just the rebuilt chunks (plus one pass
+// over the notes while the clip has remembered steps). T7.13: the same per-snapshot cache holds the JI groups'
+// harmonic numbers (doc::groupHarmonics, O(groups · notes) once per clip snapshot that has groups).
 std::optional<tuning::Rational> RollState::virtualFundamental() const {
   if (!clip_) return std::nullopt;
   if (vfClip_ == clip_.get()) return vf_;
@@ -1240,35 +1192,75 @@ std::optional<tuning::Rational> RollState::virtualFundamental() const {
     if (D > kMaxHarmonicDenominator) D = -1;
   }
   vfClip_ = clip_.get();
-  vh_ = doc::clipHarmonics(*clip_, D);
-  vf_ = (vh_ && !vh_->anchor.valid()) ? std::optional<tuning::Rational>(vh_->ratio) : std::nullopt;
+  vf_ = doc::virtualFundamental(*clip_, D);
+  groupNumbers_.clear();
+  groupAnchors_.clear();
+  activeGroupValid_ = false;
+  for (const doc::JiGroup& g : doc::jiGroupsOf(*clip_)) {
+    const std::optional<doc::GroupHarmonics> gh = doc::groupHarmonics(*clip_, g);
+    if (!gh) continue;
+    groupAnchors_.push_back(g.anchor.value);
+    groupNumbers_.emplace_back(g.anchor.value, gh->anchor);
+    for (const doc::GroupMember& m : gh->members)
+      if (m.harmonic > 0) groupNumbers_.emplace_back(m.note.value, m.harmonic);
+  }
+  std::sort(groupNumbers_.begin(), groupNumbers_.end());
+  std::sort(groupAnchors_.begin(), groupAnchors_.end());
   return vf_;
+}
+
+const doc::JiGroup* RollState::activeJiGroup() const {
+  if (!clip_ || !clip_->groups) return nullptr;
+  (void)virtualFundamental();  // a new clip snapshot drops the cache
+  if (activeGroupValid_) return activeGroup_;
+  activeGroupValid_ = true;
+  activeGroup_ = nullptr;
+  activeAnchor_ = nullptr;
+  // The first selected note (clip order) that is in a group; one pass, and only when something is selected.
+  if (!sel_.empty())
+    for (const doc::Note& n : clip_->notes) {
+      if (!selected(n.id)) continue;
+      if ((activeGroup_ = doc::jiGroupOfNote(*clip_, n)) != nullptr) break;
+    }
+  if (!activeGroup_ && lastActiveGroup_.valid()) {  // else the group that was active last (a click on empty space)
+    activeGroup_ = doc::findJiGroup(*clip_, lastActiveGroup_);
+    if (activeGroup_ && !std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), activeGroup_->anchor.value)) activeGroup_ = nullptr;
+  }
+  if (!activeGroup_)  // else the newest group whose anchor is there
+    for (auto it = clip_->groups->rbegin(); it != clip_->groups->rend() && !activeGroup_; ++it)
+      if (std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), it->anchor.value)) activeGroup_ = &*it;
+  if (activeGroup_) {
+    const std::optional<doc::GroupFundamental> f = doc::groupFundamental(*clip_, *activeGroup_);
+    activeAnchor_ = findNote(activeGroup_->anchor);
+    if (!f || !activeAnchor_) activeGroup_ = nullptr;
+    else activeFundamental_ = f->fundamental;
+  }
+  if (activeGroup_) lastActiveGroup_ = activeGroup_->id;
+  return activeGroup_;
 }
 
 std::optional<RollState::Harmonics> RollState::harmonics() const {
   if (!clip_) return std::nullopt;
-  (void)virtualFundamental();  // fills the per-snapshot cache
-  if (!vh_) return std::nullopt;
-  Harmonics h{vh_->anchor, 0.0, vh_->ratio};
-  if (h.anchor.valid()) {
-    // Where the anchor note sounds now (the tuning may have moved under it; an inner note of a JI object: at its start).
-    const doc::Note* a = findNote(h.anchor);
-    const std::optional<double> c = a ? pathCents(*a, a->start, a->pitch, 0.0) : std::nullopt;
+  if (const doc::JiGroup* g = activeJiGroup()) {
+    // Where the anchor note sounds now (the tuning may have moved under it).
+    const std::optional<double> c = pathCents(*activeAnchor_, activeAnchor_->start, activeAnchor_->pitch, 0.0);
     if (!c) return std::nullopt;
-    h.baseCents = *c;
+    return Harmonics{g->anchor, *c, activeFundamental_};
   }
-  return h;
+  const std::optional<tuning::Rational> f = virtualFundamental();
+  if (!f) return std::nullopt;
+  return Harmonics{{}, 0.0, *f};
 }
 
 std::optional<uint64_t> RollState::harmonicOf(const doc::Note& n) const {
   if (!clip_) return std::nullopt;
-  (void)virtualFundamental();
-  if (!vh_) return std::nullopt;
-  if (vh_->anchor.valid() && n.id == vh_->anchor) return tuning::harmonicNumber(tuning::Rational(1), vh_->ratio);
-  if (n.pitch.kind() != tuning::PitchKind::Ratio) return std::nullopt;
-  const bool related = vh_->anchor.valid() ? (n.pitch.anchorKind() == tuning::AnchorKind::Note && n.pitch.anchorId() == vh_->anchor.value)
-                                           : n.pitch.anchorKind() == tuning::AnchorKind::Reference;
-  return related ? tuning::harmonicNumber(n.pitch.ratio(), vh_->ratio) : std::nullopt;
+  const std::optional<tuning::Rational> f = virtualFundamental();  // fills the per-snapshot cache
+  if (!groupNumbers_.empty()) {
+    const auto it = std::lower_bound(groupNumbers_.begin(), groupNumbers_.end(), std::pair<uint32_t, int64_t>{n.id.value, 0});
+    if (it != groupNumbers_.end() && it->first == n.id.value) return static_cast<uint64_t>(it->second);
+  }
+  if (n.pitch.kind() != tuning::PitchKind::Ratio || n.pitch.anchorKind() != tuning::AnchorKind::Reference || !f) return std::nullopt;
+  return tuning::harmonicNumber(n.pitch.ratio(), *f);
 }
 
 void RollState::stepSelection(int32_t steps, doc::ops::StepUnit unit) {
@@ -1334,27 +1326,24 @@ void RollState::lengthenSelection(int32_t cells) {
 }
 
 void RollState::copySelection() {
-  if (clip_ && sel_.empty() && jiSel_.valid()) {  // T7.5: the selected JI object, its inner notes with it
-    (void)copyJiSelection();
-    return;
-  }
   clipboard_.clear();
   clipboardCurves_.clear();
+  clipboardGroups_.clear();
+  clipboardWritten_.clear();
   if (!clip_) return;
   Ticks first = INT64_MAX;
   for (const doc::Note& n : clip_->notes)
     if (selected(n.id)) {
       clipboard_.push_back(n);
       first = std::min(first, n.start);
-      // T7.4: the copy carries the note's pitch curve; a note of a JI object is copied as the pitch it has at its
-      // start (Cents), so a paste never depends on an object the target clip may not have (Q276). Its voice's morph
-      // is not carried: copy the object itself (Ctrl+D) for that.
-      if (doc::jiObjectOf(n.pitch).valid()) {
-        doc::Note& c = clipboard_.back();
-        if (const std::optional<double> cents = pathCents(c, n.start, n.pitch, 0.0)) {
-          double own = 0.0;
-          if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id)) own = doc::automationValueAt(nc->pitch, 0);
-          c.pitch = tuning::PitchId::fromCents(*cents - own);
+      // T7.13: a member copied with its anchor stays a member (the paste makes them a group of their own); one
+      // copied without it is copied as the pitch it has (Cents), so a paste never depends on a note the target
+      // clip may not have.
+      if (const doc::NoteId a = doc::noteAnchorOf(n.pitch); a.valid()) {
+        if (selected(a)) {
+          if (const doc::NoteWritten* w = doc::findNoteWritten(*clip_, n.id)) clipboardWritten_.push_back(*w);
+        } else if (const std::optional<double> cents = centsOf(n.pitch)) {
+          clipboard_.back().pitch = tuning::PitchId::fromCents(*cents);
         } else {
           clipboard_.pop_back();
           continue;
@@ -1362,9 +1351,10 @@ void RollState::copySelection() {
       }
       if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id)) clipboardCurves_.push_back(*nc);
     }
+  for (const doc::JiGroup& g : doc::jiGroupsOf(*clip_))
+    if (selected(g.anchor)) clipboardGroups_.push_back(g);
   for (doc::Note& n : clipboard_) n.start -= first;
   if (!clipboard_.empty()) {
-    jiClipboard_.reset();  // one clipboard: the notes replace a copied object
     Ticks end = 0;
     for (const doc::Note& n : clipboard_) end = std::max(end, n.start + n.length);
     insertTick_ = first + end;  // paste right after the copied notes unless the user clicks elsewhere
@@ -1373,19 +1363,11 @@ void RollState::copySelection() {
 }
 
 void RollState::cutSelection() {
-  if (clip_ && sel_.empty() && jiSel_.valid() && !jiEntered_.valid()) {  // T7.5: the object goes with its inner notes
-    if (copyJiSelection()) (void)applyJi(doc::ops::deleteJiObject(*ctx.doc(), ref_, jiSel_, true), "Cut JI Object", {});
-    return;
-  }
   copySelection();
   deleteSelection();
 }
 
 void RollState::paste() {
-  if (clip_ && jiClipboard_ && !jiEntered_.valid()) {  // T7.5
-    (void)pasteJiObject();
-    return;
-  }
   if (!clip_ || clipboard_.empty()) return;
   const Ticks at = insertTick_.value_or(0);
   std::vector<doc::Note> notes = clipboard_;
@@ -1394,7 +1376,9 @@ void RollState::paste() {
     span = std::max(span, n.start + n.length);
     n.start += at;
   }
-  if (apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes, clipboardCurves_), "Paste Notes"))
+  if (apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes, clipboardCurves_,
+                               doc::ops::JiSource{clipboardGroups_, clipboardWritten_}),
+            "Paste Notes"))
     insertTick_ = at + span;
 }
 
@@ -1409,7 +1393,7 @@ void RollState::addNotes(const std::vector<DrawnNote>& drawn) {
   std::vector<doc::Note> notes;
   notes.reserve(drawn.size());
   for (const DrawnNote& d : drawn) {
-    if (d.length < 1) continue;  // T7.5: a cell outside the entered object
+    if (d.length < 1) continue;
     doc::Note n;
     n.start = d.start;
     n.length = d.length;
@@ -1433,7 +1417,10 @@ void RollState::updatePreviewPitches() {
   pc.tuning = &tuning_;
   pc.displayGrid = overlay();  // Cents notes move on the background EDO (T3.12)
   pc.fundamental = virtualFundamental();
-  pc.clip = clip_.get();  // T7.5: a Harmonic note steps within its object's voices
+  // T7.13: a member of a JI group steps on its group's harmonics (as the edit will).
+  const std::vector<doc::ops::GroupStepFundamental> groups =
+      clip_->groups ? doc::ops::groupStepFundamentals(*clip_) : std::vector<doc::ops::GroupStepFundamental>{};
+  pc.groups = groups;
   for (const ChunkInfo& c : chunks_) {
     if (c.nonDegree == 0) continue;
     for (uint32_t i = 0; i < c.count; ++i) {
@@ -1461,9 +1448,8 @@ std::optional<RollState::Preview> RollState::previewOf(const DragState& d, const
     case DragKind::Move:
     case DragKind::Copy:
       p.start = n.start + d.dt;
-      if (d.cents != 0.0) {  // T7.6: Shift = free detune (a note of a JI object stays on its voice)
-        if (!doc::jiObjectOf(n.pitch).valid())
-          if (const std::optional<double> c = centsOf(n.pitch)) p.pitch = tuning::PitchId::fromCents(*c + d.cents);
+      if (d.cents != 0.0) {  // T7.6: Shift = free detune
+        if (const std::optional<double> c = centsOf(n.pitch)) p.pitch = tuning::PitchId::fromCents(*c + d.cents);
       } else if (d.steps != 0) {
         if (n.pitch.kind() == tuning::PitchKind::Degree) {
           p.pitch = degreePitch(absoluteDegree(tuning_, n.pitch.degree(), n.pitch.equave()) + d.steps);
@@ -1594,7 +1580,10 @@ void RollState::commitDrag() {
         }
         copies.push_back(c);
       }
-      (void)apply(doc::ops::addNotes(p, ctx.store().ids(), ref_, copies, curves), "Copy Notes");
+      // T7.13: copied members follow the copied anchor as a group of their own.
+      (void)apply(doc::ops::addNotes(p, ctx.store().ids(), ref_, copies, curves,
+                                     doc::ops::JiSource{doc::jiGroupsOf(*clip_), doc::notesWrittenOf(*clip_)}),
+                  "Copy Notes");
       break;
     }
     case DragKind::ResizeEnd:
@@ -1610,15 +1599,13 @@ void RollState::commitDrag() {
         (void)apply(resizeEdit(d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start, d.dt), "Resize Notes");
       }
       break;
-    // T7.6: pen strokes, vibrato, breakpoints (a note's pitch curve or an object's ride)
+    // T7.6: pen strokes, vibrato, breakpoints (a note's pitch curve)
     case DragKind::PenDraw:
     case DragKind::PenVibrato:
     case DragKind::CurvePoint:
     case DragKind::CurveBow: {
       curvePreview_.clear();
-      jiPreview_.reset();
-      jiPreviewObject_.reset();
-      const char* what = d.kind == DragKind::PenDraw      ? (d.curve.ji.valid() ? "Draw Ride Curve" : "Draw Pitch Curve")
+      const char* what = d.kind == DragKind::PenDraw      ? "Draw Pitch Curve"
                          : d.kind == DragKind::PenVibrato ? "Paint Vibrato"
                          : d.kind == DragKind::CurveBow   ? "Bend Segment"
                          : d.curveAdded                   ? "Add Bend Point"
@@ -1639,29 +1626,6 @@ void RollState::commitDrag() {
       }
       break;
     case DragKind::Draw: addNotes(d.drawn); break;
-    // T7.4
-    case DragKind::JiBox:
-      if (d.jiLength > 0) (void)openJiEntry({d.jiStart, d.jiLength, d.jiLow, d.jiHigh});
-      break;
-    case DragKind::JiMove:
-    case DragKind::JiResizeStart:
-    case DragKind::JiResizeEnd:
-      jiPreview_.reset();
-      jiPreviewObject_.reset();
-      if (d.dt != 0 || d.steps != 0 || d.cents != 0.0)
-        (void)applyJi(jiDragEdit(d), d.kind == DragKind::JiMove ? "Move JI Object" : "Resize JI Object", d.ji);
-      break;
-    // T7.5
-    case DragKind::JiStop:
-    case DragKind::JiGlide:
-    case DragKind::JiBezier: {
-      jiPreview_.reset();
-      jiPreviewObject_.reset();
-      const int32_t keepStop = jiStopSel_;
-      if (applyJi(jiDragEdit(d), d.kind == DragKind::JiStop ? "Move JI Stop" : d.kind == DragKind::JiGlide ? "JI Glide" : "Transition Shape", d.ji))
-        jiStopSel_ = keepStop;
-      break;
-    }
     case DragKind::LoopBrace:
       if (d.dt != 0) {
         doc::ClipLoop l = clip_->loop;
@@ -1703,8 +1667,6 @@ void RollState::cancelDrag() {
   if (drag.kind == DragKind::None) return;
   drag = {};
   curvePreview_.clear();  // T7.6
-  jiPreview_.reset();
-  jiPreviewObject_.reset();
   markAllDirty();
 }
 
@@ -1713,13 +1675,6 @@ void RollState::cancelDrag() {
 void RollState::audition(const tuning::PitchId& p, float velocity, Ticks contentStart, Ticks length) {
   if (!clip_) return;
   tuning::ResolveContext rc;
-  if (doc::jiObjectOf(p).valid()) {  // T7.5: a note of a JI object sounds where its voice is at its start
-    static const doc::Note kNoNote{};
-    const std::optional<double> c = pathCents(kNoNote, contentStart, p, 0.0);
-    if (!c) return;
-    ctx.audition(static_cast<float>(tuning_.referenceHz() * std::exp2(*c / 1200.0)), velocity, 300.0f, ref_, std::nullopt);
-    return;
-  }
   if (p.kind() == tuning::PitchKind::Ratio && p.anchorKind() == tuning::AnchorKind::Note) {
     const std::optional<double> c = centsOf(p);
     if (!c) return;

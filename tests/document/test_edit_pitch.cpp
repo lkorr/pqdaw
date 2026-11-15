@@ -147,12 +147,21 @@ TEST_CASE("pitch steps: Ratio moves to the next harmonic of its fundamental, Shi
   CHECK_FALSE(step(r54, 1, StepUnit::Equave, odd));
 }
 
-TEST_CASE("pitch steps: Harmonic moves to the next voice; no equave") {
+TEST_CASE("pitch steps: a member of a JI group steps on its group's harmonics (T7.13)") {
   const auto e31 = tuningOf(edoDef(31));
-  CHECK(step(PitchId::fromHarmonic(3, 2), 1, StepUnit::Grid, e31) == PitchId::fromHarmonic(3, 3));
-  CHECK(step(PitchId::fromHarmonic(3, 2), -2, StepUnit::Grid, e31) == PitchId::fromHarmonic(3, 0));
-  CHECK_FALSE(step(PitchId::fromHarmonic(3, 0), -1, StepUnit::Grid, e31));
-  CHECK_FALSE(step(PitchId::fromHarmonic(3, 0), 1, StepUnit::Equave, e31));
+  // Group anchored on note 9 with fundamental 1/4 (4:5:6): the 6 (3/2) steps to 7/4, the 5 (5/4) down to 1/1.
+  const ops::GroupStepFundamental groups[] = {{NoteId{9}, Rational(1, 4)}};
+  ops::PitchStepContext ctx;
+  ctx.tuning = &e31;
+  ctx.groups = groups;
+  const PitchId six = PitchId::fromRatio(Rational(3, 2), pq::tuning::AnchorKind::Note, 9);
+  CHECK(ops::stepPitch(six, 1, StepUnit::Grid, ctx) == PitchId::fromRatio(Rational(7, 4), pq::tuning::AnchorKind::Note, 9));
+  CHECK(ops::stepPitch(PitchId::fromRatio(Rational(5, 4), pq::tuning::AnchorKind::Note, 9), -1, StepUnit::Grid, ctx) ==
+        PitchId::fromRatio(Rational(1), pq::tuning::AnchorKind::Note, 9));
+  CHECK_FALSE(ops::stepPitch(PitchId::fromRatio(Rational(1, 4), pq::tuning::AnchorKind::Note, 9), -1, StepUnit::Grid, ctx));
+  // A Ratio anchored to a note that anchors no group steps on its own fundamental 1/d: 3/2 → 4/2.
+  CHECK(ops::stepPitch(PitchId::fromRatio(Rational(3, 2), pq::tuning::AnchorKind::Note, 8), 1, StepUnit::Grid, ctx) ==
+        PitchId::fromRatio(Rational(2), pq::tuning::AnchorKind::Note, 8));
 }
 
 TEST_CASE("edit ops: Up/Down on documents in 31-EDO, 5L2s, a Scala scale and Ratio 5/4 → 6/4") {

@@ -46,18 +46,12 @@ TEST_CASE("pitch id: layout and kinds") {
   CHECK(c.kind() == PitchKind::Cents);
   CHECK(c.cents() == -386.3);
 
-  const PitchId h = PitchId::fromHarmonic(5, 2);
-  CHECK(h.kind() == PitchKind::Harmonic);
-  CHECK(h.jiObject() == 5);
-  CHECK(h.voiceIndex() == 2);
-
   CHECK(PitchId{} == PitchId::fromDegree(0, 0));
   CHECK(d == PitchId::fromDegree(7, -1));
   CHECK_FALSE(d == PitchId::fromDegree(7, 0));
   CHECK(r == PitchId::fromRatio(Rational(3, 2), AnchorKind::Note, 99));
   CHECK_FALSE(r == PitchId::fromRatio(Rational(3, 2), AnchorKind::Note, 98));
   CHECK_FALSE(r == PitchId::fromRatio(Rational(3, 2)));
-  CHECK_FALSE(h == PitchId::fromHarmonic(5, 3));
   CHECK_FALSE(PitchId::fromCents(0.0) == PitchId::fromDegree(0, 0));
 
   CHECK_FALSE(PitchId::tryFromRatio(Rational{}).has_value());
@@ -106,15 +100,12 @@ TEST_CASE("resolve: ratio relative to its anchor") {
   CHECK(*pq::tuning::resolveHzDouble(PitchId::fromRatio(Rational(3, 2)), t, ctx) == 300.0);
   CHECK(*pq::tuning::resolveHzDouble(PitchId::fromRatio(Rational(1, 3)), t, ctx) ==
         doctest::Approx(200.0 / 3.0).epsilon(1e-15));
-  // Note / JI fundamental anchors need the anchor's Hz from the caller.
+  // A note anchor needs the anchor's Hz from the caller.
   const PitchId onNote = PitchId::fromRatio(Rational(5, 4), AnchorKind::Note, 7);
   CHECK_FALSE(pq::tuning::resolveHzDouble(onNote, t, ctx).has_value());
   CHECK(pq::tuning::resolveHz(onNote, t, ctx) == 0.0f);
   ctx.anchorHz = 440.0;
   CHECK(*pq::tuning::resolveHzDouble(onNote, t, ctx) == 550.0);
-  const PitchId onFundamental = PitchId::fromRatio(Rational(7), AnchorKind::JiFundamental, 1);
-  ctx.anchorHz = 55.0;
-  CHECK(pq::tuning::resolveHz(onFundamental, t, ctx) == 385.0f);
   // The tuning's step structure does not matter for a ratio: it stays at true pitch.
   CHECK(*pq::tuning::resolveHzDouble(PitchId::fromRatio(Rational(3, 2)), tuningOf(31, Rational(2), 200.0), ctx) ==
         300.0);
@@ -139,32 +130,6 @@ TEST_CASE("resolve: cents from the reference") {
   CHECK_FALSE(pq::tuning::resolveHzDouble(PitchId::fromCents(std::nan("")), t, ctx).has_value());
 }
 
-TEST_CASE("resolve: harmonic identity follows its JI object") {
-  const Tuning t;
-  const uint32_t chord[] = {4, 5, 6, 7};  // a 4:5:6:7 JI object
-  ResolveContext ctx;
-  ctx.harmonic = {100.0, chord, 4, false};
-  CHECK(pq::tuning::resolveHz(PitchId::fromHarmonic(1, 0), t, ctx) == 400.0f);
-  CHECK(pq::tuning::resolveHz(PitchId::fromHarmonic(1, 3), t, ctx) == 700.0f);
-  // Moving the object's fundamental moves its voices.
-  ctx.harmonic.fundamentalHz = 50.0;
-  CHECK(pq::tuning::resolveHz(PitchId::fromHarmonic(1, 1), t, ctx) == 250.0f);
-  // Undertone object: voices sit at fundamental / h.
-  ctx.harmonic.undertone = true;
-  ctx.harmonic.fundamentalHz = 840.0;
-  CHECK(pq::tuning::resolveHz(PitchId::fromHarmonic(1, 0), t, ctx) == 210.0f);
-  CHECK(pq::tuning::resolveHz(PitchId::fromHarmonic(1, 3), t, ctx) == 120.0f);
-  // Missing frame, out-of-range voice, harmonic 0, missing fundamental: unresolvable, resolveHz gives 0.
-  CHECK(pq::tuning::resolveHz(PitchId::fromHarmonic(1, 4), t, ctx) == 0.0f);
-  CHECK_FALSE(pq::tuning::resolveHzDouble(PitchId::fromHarmonic(1, 0), t, ResolveContext{}).has_value());
-  const uint32_t zero[] = {0};
-  ResolveContext bad;
-  bad.harmonic = {100.0, zero, 1, false};
-  CHECK_FALSE(pq::tuning::resolveHzDouble(PitchId::fromHarmonic(1, 0), t, bad).has_value());
-  bad.harmonic = {0.0, chord, 4, false};
-  CHECK_FALSE(pq::tuning::resolveHzDouble(PitchId::fromHarmonic(1, 0), t, bad).has_value());
-}
-
 // Acceptance (T2.1): the float32 Hz result is within 0.001 ¢ of a double reference. The reference is computed by a
 // different formula path (std::pow on the equave ratio / 2, not exp2 of a precomputed log2 step).
 TEST_CASE("resolve: float32 Hz within 0.001 cents of a double reference") {
@@ -174,7 +139,6 @@ TEST_CASE("resolve: float32 Hz within 0.001 cents of a double reference") {
   std::uniform_int_distribution<int64_t> partDist(1, 1'000'000);
   std::uniform_real_distribution<double> centsDist(-6000.0, 6000.0);
   std::uniform_real_distribution<double> refDist(8.0, 1000.0);
-  std::uniform_int_distribution<uint32_t> harmDist(1, 128);
   const Rational equaves[] = {Rational(2), Rational(3), Rational(3, 2), Rational(5, 2), Rational(9, 4)};
 
   double worstFloat = 0.0, worstDouble = 0.0;
@@ -185,12 +149,10 @@ TEST_CASE("resolve: float32 Hz within 0.001 cents of a double reference") {
     const Tuning t = tuningOf(n, equave, ref);
     ResolveContext ctx;
     ctx.anchorHz = refDist(rng);
-    const uint32_t harmonics[1] = {harmDist(rng)};
-    ctx.harmonic = {refDist(rng) / 8.0, harmonics, 1, (rng() & 1) != 0};
 
     PitchId p;
     double expect = 0.0;
-    switch (i % 4) {
+    switch (i % 3) {
       case 0: {
         // Degrees span ±1 equave around the chosen equave index, as on a piano roll (also outside [0, n)).
         const int32_t deg = std::uniform_int_distribution<int32_t>(-static_cast<int32_t>(n), static_cast<int32_t>(n))(rng);
@@ -207,16 +169,10 @@ TEST_CASE("resolve: float32 Hz within 0.001 cents of a double reference") {
         expect = (onNote ? ctx.anchorHz : ref) * static_cast<double>(r.num()) / static_cast<double>(r.den());
         break;
       }
-      case 2: {
+      default: {
         const double c = centsDist(rng);
         p = PitchId::fromCents(c);
         expect = ref * std::pow(2.0, c / 1200.0);
-        break;
-      }
-      default: {
-        p = PitchId::fromHarmonic(0, 0);
-        const double f = ctx.harmonic.fundamentalHz, h = harmonics[0];
-        expect = ctx.harmonic.undertone ? f / h : f * h;
         break;
       }
     }

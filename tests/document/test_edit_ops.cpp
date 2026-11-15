@@ -542,8 +542,6 @@ TEST_CASE("edit ops: Degree → Ratio → Degree is the identity; Cents → Rati
   commit(f.store, ops::setNotesPitch(f.doc(), a, c, PitchId::fromCents(968.0)));
   commit(f.store, ops::convertNotes(f.doc(), a, c, pq::tuning::PitchKind::Ratio));
   CHECK(f.clip(f.lead, f.clipA).notes.find(c[0])->pitch == PitchId::fromRatio(pq::tuning::Rational(7, 4)));
-  CHECK_FALSE(ops::convertNotes(f.doc(), a, c, pq::tuning::PitchKind::Harmonic).ok());
-  CHECK_FALSE(ops::setNotesPitch(f.doc(), a, c, PitchId::fromHarmonic(1, 0)).ok());
 }
 
 TEST_CASE("edit ops: add a main tuning; remove one reassigns its tracks and clips in one step (T3.19)") {

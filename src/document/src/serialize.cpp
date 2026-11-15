@@ -56,8 +56,8 @@ constexpr std::array<std::string_view, 7> kCurvePresetNames = {"custom", "linear
 constexpr std::array<std::string_view, 5> kKnobCurveNames = {"default", "linear", "octave", "exponential", "logarithmic"};
 constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "audioEffect"};
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
-constexpr std::array<std::string_view, 3> kAnchorNames = {"reference", "note", "jiFundamental"};
-constexpr std::array<std::string_view, 3> kJiShapeNames = {"linear", "s", "bezier"};  // T7.2: JiShape::Kind
+constexpr std::array<std::string_view, 2> kAnchorNames = {"reference", "note"};
+constexpr std::array<std::string_view, 3> kGlideShapeNames = {"linear", "s", "bezier"};  // GlideShape::Kind
 constexpr std::array<std::string_view, 7> kWarpNames = {"off",     "rePitch", "beats",     "tones",  // T5.3, T6.1
                                                         "texture", "complex", "complexPro"};
 // T6.1 (schema 22).
@@ -1064,15 +1064,6 @@ private:
       const PathSeg fp(&at, "fundamental");
       w_.key("fundamental");
       w_.beginObject(false);
-      if (c.fundamental.anchor) {  // T7.5b
-        w_.key("anchor");
-        w_.beginObject(false);
-        w_.key("note");
-        w_.integer(c.fundamental.anchor->note.value);
-        w_.key("index");
-        w_.integer(c.fundamental.anchor->index);
-        w_.endObject();
-      }
       if (!c.fundamental.steps.empty()) {
         w_.key("steps");
         w_.beginArray(false);
@@ -1096,7 +1087,9 @@ private:
     size_t i = 0;
     for (const Note& n : c.notes) note(PathSeg(&notes, i++), n);
     w_.endArray();
-    if (c.ji && !c.ji->empty()) jiObjects(PathSeg(&at, "ji"), *c.ji);  // T7.2: only when set (older files unchanged)
+    // T7.13: written only when set.
+    if (c.groups && !c.groups->empty()) jiGroups(PathSeg(&at, "groups"), *c.groups);
+    if (c.written && !c.written->empty()) notesWritten(PathSeg(&at, "written"), *c.written);
     if (c.curves && !c.curves->empty()) noteCurves(PathSeg(&at, "curves"), *c.curves);
     w_.endObject();
   }
@@ -1254,7 +1247,7 @@ private:
     w_.endObject();
   }
 
-  // A pitch identity (a note's, a JI object's fundamental, a tuning stop's entry).
+  // A pitch identity (a note's, a written identity).
   void pitch(const PathSeg& at, const tuning::PitchId& p) {
     w_.beginObject(false);
     switch (p.kind()) {
@@ -1280,17 +1273,11 @@ private:
         w_.key("cents");
         w_.number(PathSeg(&at, "pitch"), p.cents());
         break;
-      case tuning::PitchKind::Harmonic:
-        w_.key("jiObject");
-        w_.integer(p.jiObject());
-        w_.key("voice");
-        w_.integer(p.voiceIndex());
-        break;
     }
     w_.endObject();
   }
 
-  // ---- T7.2: JI objects and note curves (written only when the clip has any) ----
+  // ---- T7.13: JI groups, written identities and note curves (written only when the clip has any) ----
   void curvePoints(const PathSeg& at, const std::vector<Breakpoint>& pts) {
     w_.beginArray(false);
     for (const Breakpoint& b : pts) {
@@ -1307,101 +1294,58 @@ private:
     }
     w_.endArray();
   }
-  void jiTiming(const PathSeg& at, const JiTiming& t) {
-    w_.beginObject(false);
-    w_.key("delay");
-    w_.integer(t.delay);
-    w_.key("glide");
-    w_.integer(t.glide);
+  void glideShape(const PathSeg& at, const GlideShape& shape) {
     w_.key("shape");
-    w_.string(at, kJiShapeNames[static_cast<size_t>(t.shape.kind)]);
-    if (!(JiShape{t.shape.kind, t.shape.x1, t.shape.y1, t.shape.x2, t.shape.y2} == JiShape{t.shape.kind})) {
+    w_.string(at, kGlideShapeNames[static_cast<size_t>(shape.kind)]);
+    if (!(shape == GlideShape{shape.kind})) {
       w_.key("handles");
       w_.beginArray(false);
-      for (const float h : {t.shape.x1, t.shape.y1, t.shape.x2, t.shape.y2}) w_.number(at, h);
+      for (const float h : {shape.x1, shape.y1, shape.x2, shape.y2}) w_.number(at, h);
       w_.endArray();
     }
-    w_.endObject();
   }
-  void jiObjects(const PathSeg& at, const JiObjectList& list) {
-    w_.key("ji");
+  void jiGroups(const PathSeg& at, const JiGroupList& list) {
+    w_.key("groups");
     w_.beginArray(true);
     for (size_t i = 0; i < list.size(); ++i) {
-      const JiObject& o = list[i];
+      const JiGroup& g = list[i];
       const PathSeg el(&at, i);
-      w_.beginObject(true);
+      w_.beginObject(false);
       w_.key("id");
-      w_.integer(o.id.value);
-      w_.key("start");
-      w_.integer(o.start);
-      w_.key("length");
-      w_.integer(o.length);
-      w_.key("fundamental");
-      pitch(PathSeg(&el, "fundamental"), o.fundamental);
-      if (o.undertone) {
-        w_.key("undertone");
-        w_.boolean(true);
+      w_.integer(g.id.value);
+      w_.key("anchor");
+      w_.integer(g.anchor.value);
+      w_.key("index");
+      w_.integer(g.index);
+      if (!g.warps.empty()) {
+        w_.key("warps");
+        w_.beginArray(false);
+        for (const JiWarp& w : g.warps) {
+          w_.beginObject(false);
+          w_.key("at");
+          w_.integer(w.at);
+          w_.key("glide");
+          w_.integer(w.glide);
+          glideShape(el, w.shape);
+          w_.key("toJi");
+          w_.boolean(w.toJi);
+          w_.endObject();
+        }
+        w_.endArray();
       }
-      if (!o.sounds) {
-        w_.key("sounds");
-        w_.boolean(false);
-      }
-      w_.key("velocity");
-      w_.number(PathSeg(&el, "velocity"), o.velocity);
-      w_.key("voices");
-      w_.beginArray(false);
-      for (const NoteId v : o.voiceNotes) w_.integer(v.value);
-      w_.endArray();
-      const PathSeg stops(&el, "stops");
-      w_.key("stops");
-      w_.beginArray(true);
-      for (size_t k = 0; k < o.stops.size(); ++k) {
-        const JiStop& st = o.stops[k];
-        const PathSeg sp(&stops, k);
-        w_.beginObject(false);
-        w_.key("at");
-        w_.integer(st.at);
-        if (st.isTuning()) {
-          w_.key("pitches");
-          w_.beginArray(false);
-          for (const tuning::PitchId& q : st.pitches) pitch(sp, q);
-          w_.endArray();
-        } else {
-          w_.key("terms");
-          w_.beginArray(false);
-          for (const int64_t term : st.terms) w_.integer(term);
-          w_.endArray();
-        }
-        if (!(st.scale == tuning::Rational(1))) {
-          w_.key("scale");
-          w_.string(sp, ratioText(st.scale.num(), st.scale.den()));
-        }
-        if (!st.voiceTerm.empty()) {
-          w_.key("voiceTerm");
-          w_.beginArray(false);
-          for (const uint8_t e : st.voiceTerm) w_.integer(e);
-          w_.endArray();
-        }
-        if (!(st.timing == JiTiming{})) {
-          w_.key("timing");
-          jiTiming(sp, st.timing);
-        }
-        if (!st.voiceTiming.empty()) {
-          w_.key("voiceTiming");
-          w_.beginArray(false);
-          for (const std::optional<JiTiming>& t : st.voiceTiming) {
-            if (t) jiTiming(sp, *t);
-            else w_.null();
-          }
-          w_.endArray();
-        }
-        w_.endObject();
-      }
-      w_.endArray();
-      if (!o.ride.empty()) {
-        w_.key("ride");
-        curvePoints(PathSeg(&el, "ride"), o.ride);
-      }
+      w_.endObject();
+    }
+    w_.endArray();
+  }
+  void notesWritten(const PathSeg& at, const NoteWrittenList& list) {
+    w_.key("written");
+    w_.beginArray(true);
+    for (size_t i = 0; i < list.size(); ++i) {
+      w_.beginObject(false);
+      w_.key("note");
+      w_.integer(list[i].note.value);
+      w_.key("pitch");
+      pitch(PathSeg(&at, i), list[i].written);
       w_.endObject();
     }
     w_.endArray();
@@ -1430,14 +1374,7 @@ private:
     w_.integer(b.other.value);
     w_.key("length");
     w_.integer(b.length);
-    w_.key("shape");
-    w_.string(at, kJiShapeNames[static_cast<size_t>(b.shape.kind)]);
-    if (!(b.shape == JiShape{b.shape.kind})) {
-      w_.key("handles");
-      w_.beginArray(false);
-      for (const float h : {b.shape.x1, b.shape.y1, b.shape.x2, b.shape.y2}) w_.number(at, h);
-      w_.endArray();
-    }
+    glideShape(at, b.shape);
     w_.endObject();
   }
 
@@ -3133,9 +3070,9 @@ private:
         "active", "notes",   "fundamental",
         "kind",   "sample",  "warp",   "contentStartFrame", "seconds", "sourceBpm", "gainDb", "transpose",
         "detuneCents", "reverse", "fadeIn", "fadeOut", "crossfadeIn", "markers", "warpParams", "take", "noEdgeFade",
-        "ji", "curves"};
+        "groups", "written", "curves"};
     enum { kKind = 12, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune, kReverse, kFadeIn, kFadeOut, kXfade,
-           kMarkers, kWarpParams, kTake, kNoEdgeFade, kJi, kCurves };
+           kMarkers, kWarpParams, kTake, kNoEdgeFade, kGroups, kWritten, kCurves };
     size_t jiStart = 0;
     LaneId take;  // T6.1: the slot's provenance (either kind)
     NoteClip note;  // the fields both kinds have are read into it (T5.x-perf-audio: on the stack, not the heap)
@@ -3168,13 +3105,21 @@ private:
         case kWarpParams: a.warpParams = warpParams(f); break;  // T6.1
         case kTake: take = LaneId{ref(f)}; break;               // T6.1
         case kNoEdgeFade: a.noEdgeFade = r_.readBool(f); break;  // FZ.x-fix
-        case kJi: {  // T7.2
+        case kGroups: {  // T7.13
           jiStart = r_.pos();
-          JiObjectList list = jiObjects(f);
-          c->ji = list.empty() ? nullptr : std::make_shared<const JiObjectList>(std::move(list));
+          JiGroupList list = jiGroups(f);
+          checkAt(f, jiStart, detail::checkJiGroups(list));
+          c->groups = list.empty() ? nullptr : std::make_shared<const JiGroupList>(std::move(list));
           break;
         }
-        case kCurves: {  // T7.2
+        case kWritten: {  // T7.13
+          const size_t start = r_.pos();
+          NoteWrittenList list = notesWritten(f);
+          checkAt(f, start, detail::checkNotesWritten(list));
+          c->written = list.empty() ? nullptr : std::make_shared<const NoteWrittenList>(std::move(list));
+          break;
+        }
+        case kCurves: {
           const size_t start = r_.pos();
           NoteCurveList list = noteCurves(f);
           checkAt(f, start, detail::checkNoteCurves(list));
@@ -3227,13 +3172,13 @@ private:
       for (int k = kSample; k <= kNoEdgeFade; ++k)
         if (k != kTake && m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only audio clips have this key");
       m.require({0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
-      // T7.2: the objects, and the notes against them (keys come in any order, so after the whole clip).
-      checkAt(m.has(kJi) ? PathSeg(&at, "ji") : PathSeg(&at, "notes"), m.has(kJi) ? jiStart : m.start(),
+      // T7.13: the groups and written identities against the notes (keys come in any order, so after the whole clip).
+      checkAt(m.has(kGroups) ? PathSeg(&at, "groups") : PathSeg(&at, "notes"), m.has(kGroups) ? jiStart : m.start(),
               detail::checkClipJi(note));
       const ClipId id = note.id;
       return ClipSlot{id, std::make_shared<const NoteClip>(std::move(note)), nullptr, take};
     }
-    for (int k : {7, 10, 11, static_cast<int>(kJi), static_cast<int>(kCurves)})
+    for (int k : {7, 10, 11, static_cast<int>(kGroups), static_cast<int>(kWritten), static_cast<int>(kCurves)})
       if (m.has(k)) json::fail(PathSeg(&at, K[static_cast<size_t>(k)]), "only note clips have this key");
     m.require({0, 1, 2, 3, 4, 5, 6, 8, 9, kKind, kSample, kWarp, kFrame, kSeconds, kBpm, kGain, kTranspose, kDetune,
                kReverse, kFadeIn, kFadeOut, kXfade});
@@ -3292,10 +3237,9 @@ private:
     return fd;
   }
 
-  // T3.6-fix1 / T7.5b: {"anchor": {"note": id, "index": N}, "steps": [{"note": id, "denominator": D, "ratio": "n/d"}]},
-  // both optional.
+  // T3.6-fix1: {"steps": [{"note": id, "denominator": D, "ratio": "n/d"}]}.
   ClipFundamental fundamental(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"anchor", "steps"};
+    static constexpr std::string_view K[] = {"steps"};
     ClipFundamental out;
     auto ratioOf = [&](const PathSeg& f) {
       std::string s;
@@ -3308,18 +3252,6 @@ private:
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
       if (k == 0) {
-        static constexpr std::string_view A[] = {"note", "index"};
-        HarmonicAnchor a;
-        Members am(r_, f, A);
-        for (int q; (q = am.next()) >= 0;) {
-          const PathSeg g(&f, A[static_cast<size_t>(q)]);
-          if (q == 0) a.note = NoteId{u32(g)};
-          if (q == 1) a.index = u32(g);
-        }
-        am.require({0, 1});
-        out.anchor = a;
-      }
-      if (k == 1) {
         r_.beginArray(f);
         for (size_t i = 0; r_.nextElement(f); ++i) {
           const PathSeg el(&f, i);
@@ -3340,7 +3272,7 @@ private:
     return out;
   }
 
-  // ---- T7.2: JI objects and note curves ----
+  // ---- T7.13: JI groups, written identities and note curves ----
   // [{"tick": t, "value": cents, "curve": c}], curve optional (0).
   std::vector<Breakpoint> curvePoints(const PathSeg& at) {
     static constexpr std::string_view K[] = {"tick", "value", "curve"};
@@ -3361,119 +3293,77 @@ private:
     }
     return v;
   }
-  // {"delay": t, "glide": t, "shape": "linear" | "s" | "bezier", "handles": [x1, y1, x2, y2]}, handles optional.
-  JiTiming jiTiming(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"delay", "glide", "shape", "handles"};
-    JiTiming t;
-    Members m(r_, at, K);
-    for (int k; (k = m.next()) >= 0;) {
-      const PathSeg f(&at, K[static_cast<size_t>(k)]);
-      if (k == 0) t.delay = r_.readInt(f);
-      if (k == 1) t.glide = r_.readInt(f);
-      if (k == 2) t.shape.kind = static_cast<JiShape::Kind>(name(f, kJiShapeNames, "shape"));
-      if (k == 3) {
-        float h[4] = {};
-        size_t n = 0;
-        r_.beginArray(f);
-        for (; r_.nextElement(f); ++n) {
-          const float x = r_.readFloat(PathSeg(&f, n));
-          if (n < 4) h[n] = x;
-        }
-        if (n != 4) json::fail(f, "handles are [x1, y1, x2, y2]");
-        t.shape.x1 = h[0];
-        t.shape.y1 = h[1];
-        t.shape.x2 = h[2];
-        t.shape.y2 = h[3];
-      }
+  // "handles": [x1, y1, x2, y2] of a glide shape.
+  void shapeHandles(const PathSeg& f, GlideShape& shape) {
+    float h[4] = {};
+    size_t n = 0;
+    r_.beginArray(f);
+    for (; r_.nextElement(f); ++n) {
+      const float x = r_.readFloat(PathSeg(&f, n));
+      if (n < 4) h[n] = x;
     }
-    m.require({0, 1, 2});
-    return t;
+    if (n != 4) json::fail(f, "handles are [x1, y1, x2, y2]");
+    shape.x1 = h[0];
+    shape.y1 = h[1];
+    shape.x2 = h[2];
+    shape.y2 = h[3];
   }
-  JiStop jiStop(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"at", "terms", "pitches", "scale", "voiceTerm", "timing", "voiceTiming"};
-    JiStop st;
-    Members m(r_, at, K);
-    for (int k; (k = m.next()) >= 0;) {
-      const PathSeg f(&at, K[static_cast<size_t>(k)]);
-      switch (k) {
-        case 0: st.at = r_.readInt(f); break;
-        case 1:
-          r_.beginArray(f);
-          for (size_t i = 0; r_.nextElement(f); ++i) st.terms.push_back(r_.readInt(PathSeg(&f, i)));
-          break;
-        case 2:
-          r_.beginArray(f);
-          for (size_t i = 0; r_.nextElement(f); ++i) st.pitches.push_back(pitch(PathSeg(&f, i)));
-          break;
-        case 3: {
-          std::string text;
-          r_.readString(f, text);
-          const std::optional<tuning::Rational> q = parseRatioText(text);
-          if (!q || !q->isPositive()) r_.failValue(f, "scale must be \"n/d\" with positive integers n, d");
-          st.scale = q.value_or(tuning::Rational(1));
-          break;
-        }
-        case 4:
-          r_.beginArray(f);
-          for (size_t i = 0; r_.nextElement(f); ++i) {
-            const PathSeg el(&f, i);
-            const int64_t e = r_.readInt(el);
-            if (e < 0 || e > 255) r_.failValue(el, "must be in [0, 255]");
-            st.voiceTerm.push_back(static_cast<uint8_t>(e));
-          }
-          break;
-        case 5: st.timing = jiTiming(f); break;
-        case 6:
-          r_.beginArray(f);
-          for (size_t i = 0; r_.nextElement(f); ++i) {
-            const PathSeg el(&f, i);
-            if (r_.peek() == json::Reader::Kind::Null) {
-              r_.readNull(el);
-              st.voiceTiming.emplace_back();
-            } else {
-              st.voiceTiming.emplace_back(jiTiming(el));
-            }
-          }
-          break;
-      }
-    }
-    m.require({0});
-    return st;
-  }
-  JiObjectList jiObjects(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"id",     "start", "length", "fundamental", "undertone", "sounds",
-                                             "velocity", "voices", "stops",  "ride"};
-    JiObjectList list;
+  // [{"id": id, "anchor": note id, "index": N, "warps": [{"at": t, "glide": t, "shape": "linear" | "s" | "bezier",
+  // "handles": [x1, y1, x2, y2], "toJi": bool}]}]; warps and handles optional.
+  JiGroupList jiGroups(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"id", "anchor", "index", "warps"};
+    static constexpr std::string_view W[] = {"at", "glide", "shape", "handles", "toJi"};
+    JiGroupList list;
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
       const PathSeg el(&at, i);
-      const size_t start = r_.pos();
-      JiObject o;
+      JiGroup g;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
         const PathSeg f(&el, K[static_cast<size_t>(k)]);
-        switch (k) {
-          case 0: o.id = JiObjectId{defineId(f)}; break;
-          case 1: o.start = tick(f); break;
-          case 2: o.length = length(f); break;
-          case 3: o.fundamental = pitch(f); break;
-          case 4: o.undertone = r_.readBool(f); break;
-          case 5: o.sounds = r_.readBool(f); break;
-          case 6: o.velocity = r_.readFloat(f); break;
-          case 7:
-            r_.beginArray(f);
-            for (size_t v = 0; r_.nextElement(f); ++v) o.voiceNotes.push_back(NoteId{defineId(PathSeg(&f, v))});
-            break;
-          case 8:
-            r_.beginArray(f);
-            for (size_t q = 0; r_.nextElement(f); ++q) o.stops.push_back(jiStop(PathSeg(&f, q)));
-            break;
-          case 9: o.ride = curvePoints(f); break;
+        if (k == 0) g.id = JiGroupId{defineId(f)};
+        if (k == 1) g.anchor = NoteId{ref(f)};
+        if (k == 2) g.index = u32(f);
+        if (k == 3) {
+          r_.beginArray(f);
+          for (size_t q = 0; r_.nextElement(f); ++q) {
+            const PathSeg we(&f, q);
+            JiWarp w;
+            Members wm(r_, we, W);
+            for (int j; (j = wm.next()) >= 0;) {
+              const PathSeg wf(&we, W[static_cast<size_t>(j)]);
+              if (j == 0) w.at = r_.readInt(wf);
+              if (j == 1) w.glide = r_.readInt(wf);
+              if (j == 2) w.shape.kind = static_cast<GlideShape::Kind>(name(wf, kGlideShapeNames, "shape"));
+              if (j == 3) shapeHandles(wf, w.shape);
+              if (j == 4) w.toJi = r_.readBool(wf);
+            }
+            wm.require({0, 1, 2, 4});
+            g.warps.push_back(w);
+          }
         }
       }
-      m.require({0, 1, 2, 3, 6, 7, 8});
-      checkAt(el, start, detail::checkJiObject(o));
-      list.push_back(std::move(o));
+      m.require({0, 1, 2});
+      list.push_back(std::move(g));
+    }
+    return list;
+  }
+  // [{"note": id, "pitch": {pitch}}].
+  NoteWrittenList notesWritten(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"note", "pitch"};
+    NoteWrittenList list;
+    r_.beginArray(at);
+    for (size_t i = 0; r_.nextElement(at); ++i) {
+      const PathSeg el(&at, i);
+      NoteWritten w;
+      Members m(r_, el, K);
+      for (int k; (k = m.next()) >= 0;) {
+        const PathSeg f(&el, K[static_cast<size_t>(k)]);
+        if (k == 0) w.note = NoteId{ref(f)};
+        if (k == 1) w.written = pitch(f);
+      }
+      m.require({0, 1});
+      list.push_back(w);
     }
     return list;
   }
@@ -3507,21 +3397,8 @@ private:
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
       if (k == 0) b.other = NoteId{ref(f)};
       if (k == 1) b.length = r_.readInt(f);
-      if (k == 2) b.shape.kind = static_cast<JiShape::Kind>(name(f, kJiShapeNames, "shape"));
-      if (k == 3) {
-        float h[4] = {};
-        size_t n = 0;
-        r_.beginArray(f);
-        for (; r_.nextElement(f); ++n) {
-          const float x = r_.readFloat(PathSeg(&f, n));
-          if (n < 4) h[n] = x;
-        }
-        if (n != 4) json::fail(f, "handles are [x1, y1, x2, y2]");
-        b.shape.x1 = h[0];
-        b.shape.y1 = h[1];
-        b.shape.x2 = h[2];
-        b.shape.y2 = h[3];
-      }
+      if (k == 2) b.shape.kind = static_cast<GlideShape::Kind>(name(f, kGlideShapeNames, "shape"));
+      if (k == 3) shapeHandles(f, b.shape);
     }
     m.require({0, 1, 2});
     return b;
@@ -3570,13 +3447,12 @@ private:
   }
 
   tuning::PitchId pitch(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"degree", "equave", "ratio", "anchor", "anchorId", "cents", "jiObject",
-                                             "voice"};
-    enum { kDegree, kEquave, kRatio, kAnchor, kAnchorId, kCents, kJi, kVoice };
+    static constexpr std::string_view K[] = {"degree", "equave", "ratio", "anchor", "anchorId", "cents"};
+    enum { kDegree, kEquave, kRatio, kAnchor, kAnchorId, kCents };
     int32_t degree = 0, equave = 0;
     std::optional<tuning::Rational> ratio;
     int anchor = 0;
-    uint32_t anchorId = 0, ji = 0, voice = 0;
+    uint32_t anchorId = 0;
     double cents = 0.0;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
@@ -3594,13 +3470,11 @@ private:
         case kAnchor: anchor = name(f, kAnchorNames, "anchor"); break;
         case kAnchorId: anchorId = u32(f); break;
         case kCents: cents = r_.readDouble(f); break;
-        case kJi: ji = u32(f); break;
-        case kVoice: voice = u32(f); break;
       }
     }
-    const int kinds = int(m.has(kDegree)) + int(m.has(kRatio)) + int(m.has(kCents)) + int(m.has(kJi));
+    const int kinds = int(m.has(kDegree)) + int(m.has(kRatio)) + int(m.has(kCents));
     if (kinds != 1)
-      json::fail(at, "a pitch needs exactly one of \"degree\", \"ratio\", \"cents\" and \"jiObject\"",
+      json::fail(at, "a pitch needs exactly one of \"degree\", \"ratio\" and \"cents\"",
                  ErrorCode::InvalidArgument, m.start());
     auto only = [&](int key, bool allowed, const char* owner) {
       if (m.has(key) && !allowed)
@@ -3610,12 +3484,9 @@ private:
     only(kEquave, m.has(kDegree), "degree");
     only(kAnchor, m.has(kRatio), "ratio");
     only(kAnchorId, m.has(kRatio), "ratio");
-    only(kVoice, m.has(kJi), "jiObject");
     if (m.has(kDegree)) return tuning::PitchId::fromDegree(degree, equave);
     if (m.has(kRatio)) return tuning::PitchId::fromRatio(*ratio, static_cast<tuning::AnchorKind>(anchor), anchorId);
-    if (m.has(kCents)) return tuning::PitchId::fromCents(cents);
-    m.require({kVoice});
-    return tuning::PitchId::fromHarmonic(ji, voice);
+    return tuning::PitchId::fromCents(cents);
   }
 
   // ---- Cross-references (after the whole project is read) ----

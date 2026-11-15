@@ -32,24 +32,27 @@ Status checkLoop(const ClipLoop& l);
 // Everything about a clip except note validity (validated where notes enter: NoteSeq::fromNotes, note commands).
 Status checkClip(const Project& p, const NoteClip& c);
 Status checkFundamental(const ClipFundamental& f);  // T3.6-fix1: lock > 0; steps sorted by note id, in range
-// T7.2 (model.h "JI objects and note curves").
-// A ride / note curve: ≤ kMaxCurvePoints, ticks in [0, kMaxTicks] non-decreasing, |value| ≤ kMaxCurveCents, curve in
+// T7.13 (model.h "JI groups, warps and note curves").
+// A note curve: ≤ kMaxCurvePoints, ticks in [0, kMaxTicks] non-decreasing, |value| ≤ kMaxCurveCents, curve in
 // [−1, 1], no ids.
 Status checkCurve(const std::vector<Breakpoint>& pts, const char* what);
-// One object's own fields (every rule stated at JiObject / JiStop / JiTiming).
-Status checkJiObject(const JiObject& o);
-// A clip's object list: every object, sorted by id and unique, voice-note ids unique across the list.
-Status checkJiList(const JiObjectList& l);
+Status checkGlideShape(const GlideShape& s);
+// One group's own fields: an id, an anchor id, index in [1, kMaxHarmonicIndex], warps in range, strictly ascending,
+// alternating, no glide running into the next warp.
+Status checkJiGroup(const JiGroup& g);
+// A clip's group list: every group, sorted by id and unique, no note the anchor of two.
+Status checkJiGroups(const JiGroupList& l);
+// A clip's written identities: sorted by note id, unique, each Degree / finite Cents / a reference-anchored Ratio.
+Status checkWrittenPitch(const tuning::PitchId& p);
+Status checkNotesWritten(const NoteWrittenList& l);
+// Every group's anchor and every written note is a note of `c`. O(notes · log(groups + written)).
+Status checkJiNotes(const NoteClip& c, std::span<const JiGroup> groups, std::span<const NoteWritten> written);
 // T7.11a: one curve record's own fields (the free curve; each bend: none, or a neighbour ≠ the note, a length in
 // [1, kMaxTicks] and a valid shape). Whether the neighbour is in the clip is the command's check (SetNoteCurves).
 Status checkNoteCurveRecord(const NoteCurves& c);
 // A clip's curve list: sorted by note id, unique, every record non-empty and valid.
 Status checkNoteCurves(const NoteCurveList& l);
-// A note's identity against the clip's objects: Harmonic names an object of the clip and a voice < V; a Ratio anchored
-// to JiFundamental names an object of the clip. Other identities: ok. O(log objects).
-Status checkNoteJi(const NoteClip& c, const tuning::PitchId& pitch);
-// Everything above for a whole clip (where a clip enters: AddClip, a track, a take lane, the loader), plus: no voice
-// note id is a note of the clip. O(objects + curves + notes).
+// Everything above for a whole clip (where a clip enters: AddClip, a track, a take lane, the loader).
 Status checkClipJi(const NoteClip& c);
 // T5.3: an audio clip's own fields and its sample (in the project's table); its Off length is not checked (commands
 // derive it: audio_clip.h syncedClip).

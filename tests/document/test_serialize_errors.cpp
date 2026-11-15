@@ -174,13 +174,11 @@ TEST_CASE("serialize errors: tracks, clips, notes, lanes and references") {
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["length"] = 0; },
                  "$.tracks[0].clips[0].notes[5]: note length must be at least one tick");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["pitch"]["cents"] = 1.0; },
-                 "$.tracks[0].clips[0].notes[5].pitch: a pitch needs exactly one of \"degree\", \"ratio\", \"cents\" and \"jiObject\"");
+                 "$.tracks[0].clips[0].notes[5].pitch: a pitch needs exactly one of \"degree\", \"ratio\" and \"cents\"");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["pitch"] = {{"ratio", "0/1"}}; },
                  "$.tracks[0].clips[0].notes[5].pitch.ratio: ratio must be \"n/d\" with positive integers n, d");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["pitch"] = {{"degree", 1}, {"anchor", "note"}}; },
                  "$.tracks[0].clips[0].notes[5].pitch.anchor: only allowed with \"ratio\"");
-  expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["pitch"] = {{"jiObject", 1}}; },
-                 "$.tracks[0].clips[0].notes[5].pitch: missing key \"voice\"");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["id"] = d["tracks"][0]["clips"][0]["notes"][6]["id"]; },
                  "$.tracks[0].clips[0].notes: duplicate note id");
   expectDomError([](json& d) { d["tracks"][0]["clips"][0]["notes"][5]["id"] = d["tracks"][0]["id"]; },

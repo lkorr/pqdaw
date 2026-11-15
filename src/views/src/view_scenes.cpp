@@ -36,7 +36,7 @@
 #include "meta/faces.h"  // TX.spectrogram: the face's analysis request (gramRequest)
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
-#include "piano_roll/roll_state.h"  // T7.4: the JI scenes create objects as the JI tool does
+#include "piano_roll/roll_state.h"  // the roll scenes make their bends and declarations as the roll does
 #include "piano_roll/roll_help.h"   // KB.help: the help panel scenes
 #include "pq/views/mos_wheel/mos_chart.h"
 #include "pq/views/mos_wheel/mos_circle.h"
@@ -742,11 +742,11 @@ Status setupPianoRollRatios(Shell& shell) {
   return Ok{};
 }
 
-// ---- T7.4: JI objects and notes along pitch curves in the piano roll -------------------------------------------
+// ---- T7.4 / T7.13: notes along pitch curves, a declared harmonic in the piano roll -------------------------------------------
 
 namespace {
 
-// A MIDI track with one empty two-bar clip in the roll, the detail view tall enough for a chord's morph.
+// A MIDI track with one empty two-bar clip in the roll, the detail view at its tallest.
 struct JiScene {
   ClipView* view = nullptr;
   doc::ClipRef clip{};
@@ -773,71 +773,7 @@ std::optional<JiScene> buildJiScene(Shell& shell, std::string_view name, int32_t
 
 }  // namespace
 
-// A four-stop morph (7:8:9:10:11:12:13 → 5:6:7:8:9 → 4:5:6:7 → 3:4:5) over two bars on C1, riding a curve: the box,
-// the seven voices merging as the chords shrink, harmonic numbers, the header, the stop markers and their proportions,
-// the ride line.
-Status setupPianoRollJiMorph(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Morph", 11, 8);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-morph: building the clip failed", {}};
-  doc::DocumentStore& store = shell.context().store();
-  const Ticks q = kPpq;
-  const int64_t s0[] = {7, 8, 9, 10, 11, 12, 13}, s1[] = {5, 6, 7, 8, 9}, s2[] = {4, 5, 6, 7}, s3[] = {3, 4, 5};
-  const auto e = runEdit(store, doc::ops::createJiObject(*store.current(), store.ids(), sc->clip, 0, 8 * q,
-                                                         tuning::PitchId::fromDegree(0, -2), s0));
-  if (!e || e->jiObjects.empty()) return Error{ErrorCode::Unknown, "pianoroll-ji-morph: createJiObject", {}};
-  const doc::JiObjectId id = e->jiObjects[0];
-  if (!runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 2 * q, s1, q)) ||
-      !runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 4 * q, s2, q)) ||
-      !runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 6 * q, s3, 3 * q / 2)))
-    return Error{ErrorCode::Unknown, "pianoroll-ji-morph: addJiStop", {}};
-  const doc::Track* t = doc::findTrackPtr(*store.current(), sc->clip.track);
-  const int32_t ci = t ? doc::findClipIndex(*t, sc->clip.clip) : -1;
-  const doc::JiObject* o = ci >= 0 ? doc::findJiObject(*t->clips[static_cast<size_t>(ci)].clip, id) : nullptr;
-  if (!o) return Error{ErrorCode::NotFound, "pianoroll-ji-morph: the object", {}};
-  doc::JiObject ride = *o;
-  ride.ride = {{0, 0.0f, 0.0f, {}}, {2 * q, -45.0f, 0.0f, {}}, {9 * q / 2, 35.0f, 0.0f, {}}, {13 * q / 2, -20.0f, 0.0f, {}}, {8 * q, 0.0f, 0.0f, {}}};
-  if (!runEdit(store, doc::ops::setJiObject(*store.current(), store.ids(), sc->clip, ride)))
-    return Error{ErrorCode::Unknown, "pianoroll-ji-morph: the ride curve", {}};
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// An undertone object (1/4:1/5:1/6:1/7) and an overtone one (4:5:6:7) made as the JI tool makes them (the lowest
-// voice on the box's bottom row); the second is selected (solid border, edge handles).
-Status setupPianoRollJiUndertone(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Undertone", 14, 8);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-undertone: building the clip failed", {}};
-  roll::RollState& st = sc->view->state();
-  const Ticks q = kPpq;
-  std::string why;
-  if (!st.createJiObject({0, 4 * q, 0, 12}, "1/4:1/5:1/6:1/7", &why) || !st.createJiObject({9 * q / 2, 3 * q, 2, 14}, "4:5:6:7", &why))
-    return Error{ErrorCode::Unknown, "pianoroll-ji-undertone: " + why, {}};
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// "Tune to JI" as the document builds it (ops::jiFromNotes): C E G A# as written in the tuning (a tuning stop, labelled
-// with the tuning's name) gliding to the nearest proportion; the four notes stay as the object's inner notes and are
-// drawn along their voices.
-Status setupPianoRollJiTuning(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Tune to JI", 16, 5);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-tuning: building the clip failed", {}};
-  doc::DocumentStore& store = shell.context().store();
-  using tuning::PitchId;
-  const Ticks q = kPpq;
-  const std::vector<doc::Note> notes = {scnNote(0, 6 * q, PitchId::fromDegree(0, 0)), scnNote(0, 6 * q, PitchId::fromDegree(4, 0)),
-                                        scnNote(0, 6 * q, PitchId::fromDegree(7, 0)), scnNote(0, 6 * q, PitchId::fromDegree(10, 0))};
-  const auto added = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes));
-  if (!added) return Error{ErrorCode::Unknown, "pianoroll-ji-tuning: addNotes", {}};
-  doc::ops::JiFromNotesOptions opt;
-  opt.glide = 2 * q;
-  if (!runEdit(store, doc::ops::jiFromNotes(*store.current(), store.ids(), sc->clip, added->notes, opt)))
-    return Error{ErrorCode::Unknown, "pianoroll-ji-tuning: jiFromNotes", {}};
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// Notes with pitch curves, in no object: a bend up a whole tone, a scoop into the note, a vibrato (selected), next to
+// Notes with pitch curves: a bend up a whole tone, a scoop into the note, a vibrato (selected), next to
 // plain notes.
 Status setupPianoRollCurveNotes(Shell& shell) {
   const std::optional<JiScene> sc = buildJiScene(shell, "Bends", 16, 5);
@@ -903,7 +839,7 @@ Status setupPianoRollHelpScrolled(Shell& shell) {
   return Ok{};
 }
 
-// ---- T7.5: the inner roll, Tune to JI, the fundamental with the mouse ----------------------------------------------
+// ---- T7.13: "Is Harmonic…" with the mouse ----------------------------------------------
 
 namespace {
 
@@ -916,7 +852,7 @@ std::vector<doc::NoteId> sceneNoteIds(const ViewContext& ctx, const ClipView& v)
   return ids;
 }
 
-// The scene's grid: quarter notes (the glide "Tune to JI" gives is one grid step).
+// The scene's grid: quarter notes (a glide is one grid step).
 void quarterGrid(ViewContext& ctx) {
   GridSpec g;
   g.mode = GridMode::Fixed;
@@ -926,104 +862,8 @@ void quarterGrid(ViewContext& ctx) {
 
 }  // namespace
 
-// An entered object (4:5:6:7 morphing to 5:6:7:8, one voice on a bezier with its handles): its voices are the rows
-// (lanes), its inner notes lie on them through the morph, the stop is selected, and the plain notes around it are
-// dimmed.
-Status setupPianoRollJiEntered(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Inner Roll", 14, 8);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ji-entered: building the clip failed", {}};
-  quarterGrid(shell.context());
-  doc::DocumentStore& store = shell.context().store();
-  roll::RollState& st = sc->view->state();
-  using tuning::PitchId;
-  const Ticks q = kPpq;
-  std::string why;
-  if (!st.createJiObject({q, 6 * q, 0, 12}, "4:5:6:7", &why)) return Error{ErrorCode::Unknown, "pianoroll-ji-entered: " + why, {}};
-  const doc::JiObjectId id = st.jiSelection();
-  const int64_t next[] = {5, 6, 7, 8};
-  if (!runEdit(store, doc::ops::addJiStop(*store.current(), store.ids(), sc->clip, id, 7 * q / 2, next, 3 * q / 2)))
-    return Error{ErrorCode::Unknown, "pianoroll-ji-entered: addJiStop", {}};
-  if (!st.setJiVoiceShape(id, 1, 2, doc::JiShape::Bezier)) return Error{ErrorCode::Unknown, "pianoroll-ji-entered: the bezier", {}};
-  const std::vector<doc::Note> notes = {scnNote(q, 2 * q, PitchId::fromHarmonic(id.value, 0)),     scnNote(2 * q, 3 * q, PitchId::fromHarmonic(id.value, 1)),
-                                        scnNote(3 * q, 3 * q, PitchId::fromHarmonic(id.value, 2)), scnNote(5 * q, 2 * q, PitchId::fromHarmonic(id.value, 3)),
-                                        scnNote(5 * q, 2 * q, PitchId::fromHarmonic(id.value, 0), 70.0f),
-                                        scnNote(0, q, PitchId::fromDegree(7, 0)),                  scnNote(7 * q, q, PitchId::fromDegree(4, 0)),
-                                        scnNote(0, q, PitchId::fromDegree(0, 1)),                  scnNote(7 * q, q, PitchId::fromDegree(2, 1))};
-  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
-    return Error{ErrorCode::Unknown, "pianoroll-ji-entered: addNotes", {}};
-  shell.tree().layoutNow();
-  st.enterJiObject(id);
-  st.selectJiStop(id, 1);
-  if (st.jiEntered() != id) return Error{ErrorCode::Unknown, "pianoroll-ji-entered: entering", {}};
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// "Tune to JI" as the roll does it (RollState::tuneSelectionToJi, one grid step of glide): C E G -> 4:5:6, and D F A ->
-// 10:12:15 that goes back to the tuning three beats in ("Back to Tuning"). The second is selected: its glide grips show.
-Status setupPianoRollTuneToJi(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Tune to JI", 16, 5);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji: building the clip failed", {}};
-  quarterGrid(shell.context());
-  doc::DocumentStore& store = shell.context().store();
-  roll::RollState& st = sc->view->state();
-  using tuning::PitchId;
-  const Ticks q = kPpq;
-  const std::vector<doc::Note> first = {scnNote(0, 7 * q / 2, PitchId::fromDegree(0, 0)), scnNote(0, 7 * q / 2, PitchId::fromDegree(4, 0)),
-                                        scnNote(0, 7 * q / 2, PitchId::fromDegree(7, 0))};
-  const auto a = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, first));
-  if (!a) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji: addNotes", {}};
-  std::vector<doc::NoteId> ids;
-  for (const doc::NoteKey& k : a->notes) ids.push_back(k.id);
-  sc->view->select(ids);
-  if (!st.tuneSelectionToJi()) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji: the first chord", {}};
-  const std::vector<doc::Note> second = {scnNote(4 * q, 4 * q, PitchId::fromDegree(2, 0)), scnNote(4 * q, 4 * q, PitchId::fromDegree(5, 0)),
-                                         scnNote(4 * q, 4 * q, PitchId::fromDegree(9, 0))};
-  const auto b = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, second));
-  if (!b) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji: addNotes", {}};
-  ids.clear();
-  for (const doc::NoteKey& k : b->notes) ids.push_back(k.id);
-  sc->view->select(ids);
-  if (!st.tuneSelectionToJi()) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji: the second chord", {}};
-  const doc::JiObjectId id = st.jiSelection();
-  if (!st.addJiTuningStopAt(id, 3 * q)) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji: back to the tuning", {}};
-  st.selectJiStop(id, -1);
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// The same in another active tuning: a 31-EDO clip, its 4:5:6:7 chord (steps 0, 10, 18, 25) tuned to JI. The first
-// stop is labelled with the tuning's name.
-Status setupPianoRollTuneToJi31(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Tune to JI", 9, 14);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji-31edo: building the clip failed", {}};
-  quarterGrid(shell.context());
-  doc::DocumentStore& store = shell.context().store();
-  roll::RollState& st = sc->view->state();
-  using tuning::PitchId;
-  const Ticks q = kPpq;
-  doc::TuningDef def;
-  if (auto e = tuning::Edo::make(31)) def.system = *e;
-  const auto tb = runEdit(store, doc::ops::addMainTuning(*store.current(), store.ids(), "31-EDO", def, doc::Colour{0x8FC24A}));
-  if (!tb || !store.dispatch(doc::SetClipTuning{sc->clip, doc::TuningAssignment::mainTuning(tb->tunings[0])}).ok())
-    return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji-31edo: the clip's tuning", {}};
-  shell.tree().layoutNow();
-  sc->view->centreOnDegree(14);
-  const std::vector<doc::Note> notes = {scnNote(q, 6 * q, PitchId::fromDegree(0, 0)), scnNote(q, 6 * q, PitchId::fromDegree(10, 0)),
-                                        scnNote(q, 6 * q, PitchId::fromDegree(18, 0)), scnNote(q, 6 * q, PitchId::fromDegree(25, 0))};
-  const auto a = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes));
-  if (!a) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji-31edo: addNotes", {}};
-  std::vector<doc::NoteId> ids;
-  for (const doc::NoteKey& k : a->notes) ids.push_back(k.id);
-  sc->view->select(ids);
-  if (!st.tuneSelectionToJi()) return Error{ErrorCode::Unknown, "pianoroll-tune-to-ji-31edo: Tune to JI", {}};
-  st.selectJiObject({});
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// "Is Harmonic… 5" on a 12-EDO E (T7.5b): the E is the anchor, exactly on guide 5 of the series drawn around it
-// (numbered at the right edge), and the notes drawn afterwards are exact ratios to it on guides 4, 6, 7 and 9.
+// "Is Harmonic… 5" on a 12-EDO E (T7.13: a JI group): the E is the anchor, exactly on guide 5 of the series drawn
+// around it (numbered at the right edge), and the notes drawn afterwards are exact ratios to it on guides 4, 6, 7 and 9.
 Status setupPianoRollFundamentalLock(Shell& shell) {
   const std::optional<JiScene> sc = buildJiScene(shell, "Fundamental", 14, 12);
   if (!sc) return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: building the clip failed", {}};
@@ -1036,7 +876,7 @@ Status setupPianoRollFundamentalLock(Shell& shell) {
   if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
     return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: addNotes", {}};
   const std::vector<doc::NoteId> ids = sceneNoteIds(shell.context(), *sc->view);
-  if (ids.size() != 1 || !st.lockFundamentalAt(ids[0], 5)) return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: the lock", {}};
+  if (ids.size() != 1 || !st.declareHarmonic(ids[0], 5)) return Error{ErrorCode::Unknown, "pianoroll-fundamental-lock: the lock", {}};
   const auto on = [&](int64_t k) { return PitchId::fromRatio(Rational(k, 5), tuning::AnchorKind::Note, ids[0].value); };
   const std::vector<doc::Note> drawn = {scnNote(2 * q, 2 * q, on(6)), scnNote(4 * q, 2 * q, on(7)), scnNote(4 * q, 4 * q, on(4)),
                                         scnNote(6 * q, 2 * q, on(9))};
@@ -1047,7 +887,7 @@ Status setupPianoRollFundamentalLock(Shell& shell) {
   return Ok{};
 }
 
-// ---- T7.6: bends between notes, vibrato, a ride curve ---------------------------------------------------------------
+// ---- T7.6: bends between notes, vibrato ---------------------------------------------------------------
 
 namespace {
 
@@ -1092,7 +932,7 @@ Status setupPianoRollBends(Shell& shell) {
   sc->view->select(std::span<const doc::NoteId>(&lastId, 1));
   if (!sceneBend(store, st, true, q)) return Error{ErrorCode::Unknown, "pianoroll-bends: the bend in", {}};
   sc->view->select(std::span<const doc::NoteId>(&lastId, 1));
-  if (!st.setBendShape(-1, doc::JiShape::LogLinear)) return Error{ErrorCode::Unknown, "pianoroll-bends: the shape", {}};
+  if (!st.setBendShape(-1, doc::GlideShape::LogLinear)) return Error{ErrorCode::Unknown, "pianoroll-bends: the shape", {}};
   sc->view->select(std::span<const doc::NoteId>(&lastId, 1));
   shell.tree().layoutNow();
   return Ok{};
@@ -1159,31 +999,6 @@ Status setupPianoRollVibrato(Shell& shell) {
   sc->view->select(std::span<const doc::NoteId>(&idb, 1));
   if (!st.addVibratoToSelection(60.0, 4.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the second vibrato", {}};
   sc->view->select(std::span<const doc::NoteId>(&ida, 1));
-  shell.tree().layoutNow();
-  return Ok{};
-}
-
-// Ride curves: 4:5:6:7 riding a drawn rise of a whole tone and back (selected: its breakpoints on the lowest voice,
-// the diamonds that bend its segments), and 4:5:6 under a vibrato; every voice follows.
-Status setupPianoRollRide(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Ride", 14, 7);
-  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-ride: building the clip failed", {}};
-  quarterGrid(shell.context());
-  roll::RollState& st = sc->view->state();
-  const Ticks q = kPpq;
-  std::string why;
-  if (!st.createJiObject({4 * q + q / 2, 3 * q, 0, 7}, "4:5:6", &why)) return Error{ErrorCode::Unknown, "pianoroll-ride: " + why, {}};
-  const doc::JiObjectId second = st.jiSelection();
-  if (!st.createJiObject({0, 4 * q, 0, 12}, "4:5:6:7", &why)) return Error{ErrorCode::Unknown, "pianoroll-ride: " + why, {}};
-  const doc::JiObjectId first = st.jiSelection();
-  const roll::CurveTarget ride{{}, first};
-  if (!st.commitCurve(ride, {{0, 0.0f, 0.0f, {}}, {q, 0.0f, 0.6f, {}}, {2 * q, 200.0f, 0.0f, {}}, {3 * q, 200.0f, -0.6f, {}}, {4 * q, 0.0f, 0.0f, {}}}, "Ride"))
-    return Error{ErrorCode::Unknown, "pianoroll-ride: the ride", {}};
-  const roll::CurveTarget wobble{{}, second};
-  const roll::RollState::Vibrato whole{q / 2, 3 * q, 0.0, 0.0};
-  if (!st.setVibrato(wobble, whole, 40.0, 5.0))
-    return Error{ErrorCode::Unknown, "pianoroll-ride: the vibrato", {}};
-  st.selectJiObject(first);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3716,18 +3531,11 @@ constexpr SceneEntry kScenes[] = {
     {"tunings-panel", 1280, 800, setupTuningsPanel},
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},
     {"pianoroll-note-menu", 1280, 800, setupPianoRollNoteMenu},
-    {"pianoroll-ji-morph", 1280, 800, setupPianoRollJiMorph},
-    {"pianoroll-ji-undertone", 1280, 800, setupPianoRollJiUndertone},
-    {"pianoroll-ji-tuning", 1280, 800, setupPianoRollJiTuning},
     {"pianoroll-curve-notes", 1280, 800, setupPianoRollCurveNotes},
-    {"pianoroll-ji-entered", 1280, 800, setupPianoRollJiEntered},
-    {"pianoroll-tune-to-ji", 1280, 800, setupPianoRollTuneToJi},
-    {"pianoroll-tune-to-ji-31edo", 1280, 800, setupPianoRollTuneToJi31},
     {"pianoroll-fundamental-lock", 1280, 800, setupPianoRollFundamentalLock},
     {"pianoroll-bends", 1280, 800, setupPianoRollBends},
     {"pianoroll-note-lines", 1280, 800, setupPianoRollNoteLines},  // T7.12
     {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
-    {"pianoroll-ride", 1280, 800, setupPianoRollRide},
     {"pianoroll-help", 1280, 800, setupPianoRollHelp},                   // KB.help
     {"pianoroll-help-scrolled", 1280, 800, setupPianoRollHelpScrolled},  // KB.help
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},

@@ -118,7 +118,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_playback_ir.cpp
     app/test_playback_semantics.cpp
     app/test_tuning_playback.cpp
-    app/test_ji_playback.cpp  # T7.3: JI objects and note curves play (lowering), chase
+    app/test_ji_playback.cpp  # T7.3 / T7.13: note curves, bends and JI groups (warps) play (lowering), chase
     app/test_live_jit.cpp
     app/test_tuning_coverage.cpp
     app/test_jit_aot.cpp
@@ -204,9 +204,8 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_audio_clip_warp.cpp  # T6.8: warp modes and settings, warp markers, warp commands, Warp prefs tab (real dispatch), goldens
     views/test_piano_roll.cpp
     views/test_piano_roll_scale.cpp
-    views/test_piano_roll_ji.cpp  # T7.4: JI objects in the roll (real dispatch: tool drag -> field, move, resize, delete, duplicate, undo), copy / paste of curves, goldens, perf
-    views/test_piano_roll_ji_edit.cpp  # T7.5: the inner roll, stops, transitions, walks, Tune to JI, Is Harmonic, object copy / paste (real dispatch), goldens
-    views/test_piano_roll_pen.cpp  # T7.6: bends between notes, Ctrl+G, pen strokes, breakpoints, vibrato, ride curves, detune, Clear Bends (real dispatch), goldens
+    views/test_piano_roll_ji.cpp  # T7.13: Is Harmonic (JI groups: guides, numbering, members, the active group), curve hit test, copy / paste of curves and groups (real dispatch), goldens
+    views/test_piano_roll_pen.cpp  # T7.6: bends between notes, Ctrl+G, pen strokes, breakpoints, vibrato, detune, Clear Bends (real dispatch), goldens
     views/test_piano_roll_help.cpp  # KB.help: the ? button and the help panel (real dispatch: open / close, keys, scroll, keys from the loaded keymap), goldens
     views/test_mos_chart.cpp
     views/test_mixer.cpp
@@ -483,7 +482,7 @@ pq_add_test(pq_tests_document
     document/test_audibility.cpp
     document/test_main_tunings.cpp
     document/test_virtual_fundamental.cpp
-    document/test_ji.cpp  # T7.2: JI objects (commands, evaluation, the voice plan, ops, file), note curves
+    document/test_ji.cpp  # T7.13: JI groups, written identities, warps (commands, resolution, ops, file), note curves
     document/test_note_bends.cpp  # T7.11a: derived bends between notes, SetNoteCurves (M13)
     document/test_note_anchors.cpp  # T7.11a: note anchors through copies / deletions / splits (H2, H3), the anchor where the note starts (M5)
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)

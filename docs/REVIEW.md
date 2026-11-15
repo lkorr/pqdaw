@@ -1752,3 +1752,14 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Keys shown are read from the loaded keymap. The text is one table: `src/views/src/piano_roll/roll_help_content.cpp`.
 - Decide: is the `?` in the right place, or would you rather widen the keys' gutter by ~16 px so it sits right of
   Scale? Is the wording at the right level (anything too long, anything missing)?
+## T7.13 · notes-first JI: the box object is gone (2026-11-14)
+- The piano roll no longer has JI objects: no `J` tool, no boxes with voice lines, no entering, stops, ride curves or
+  the old Tune to JI. Old projects with objects do not load (no migration, as decided).
+- What you can do today: right-click a note → "Is Harmonic…" (type 5): the note stays exactly where it is and becomes
+  harmonic 5 of a series drawn as guide lines; notes you draw snap to the series as exact ratios to it and show their
+  harmonic numbers; a note 3/2 above it renumbers the series (10 and 15). Several such groups can live in one clip;
+  the guides follow the group of the note you select. "Remove JI Group" is in the same menu.
+- In the model and in playback, but not yet in the roll (T7.14): Tune to JI on selected notes with a list of candidate
+  proportions, Back to Tuning, warps (tempered → JI and back, gliding), walking a group, typed proportions.
+- Look at: `tests/views/golden/pianoroll-fundamental-lock.png` (a group: guides, numbered members),
+  `pianoroll-note-menu.png` (the note menu without the object entries).

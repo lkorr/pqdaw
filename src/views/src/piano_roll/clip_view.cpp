@@ -67,38 +67,12 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   ctx_.setViewAction("pianoroll.shorten", [this] { state_->lengthenSelection(-1); }, [this] { return hasClip(); });
   ctx_.setViewAction("pianoroll.lengthen", [this] { state_->lengthenSelection(1); }, [this] { return hasClip(); });
   // Only with a selection: else Esc falls through (Q27).
-  ctx_.setViewAction("pianoroll.deselect",
-                     [this] {
-                       if (state_->jiEntered().valid()) {  // T7.5: Esc leaves the entered object
-                         state_->leaveJiObject();
-                         return;
-                       }
-                       state_->clearSelection();
-                       state_->selectJiObject({});
-                     },
-                     [this] {
-                       return hasClip() && (!state_->selection().empty() || state_->jiSelection().valid() || state_->jiEntered().valid());
-                     });
-  // T7.4: the JI tool (J).
-  ctx_.setViewAction("pianoroll.toggleJiTool", [this] { state_->setJiTool(!state_->jiTool()); }, [this] { return hasClip(); });
-  // T7.5: Tune to JI (the selected notes), back to the tuning at the pointer (an entered / selected object), walking
-  // the selected harmonic number. Each only while it applies: else its chord falls through (Q27).
-  ctx_.setViewAction("pianoroll.tuneToJi", [this] { (void)state_->tuneSelectionToJi(); },
+  ctx_.setViewAction("pianoroll.deselect", [this] { state_->clearSelection(); },
                      [this] { return hasClip() && !state_->selection().empty(); });
-  ctx_.setViewAction("pianoroll.jiTuningStop", [this] { (void)state_->jiTuningStopAtPointer(); },
-                     [this] { return hasClip() && state_->jiActive().valid(); });
   // T7.6: Ctrl+G: each selected note glides out into the next selected one (two or more notes; else the chord falls
   // through).
   ctx_.setViewAction("pianoroll.glide", [this] { (void)state_->glideSelection(); },
                      [this] { return hasClip() && state_->selection().size() >= 2; });
-  auto walk = [this](std::string_view id, int32_t steps, bool top) {
-    ctx_.setViewAction(id, [this, steps, top] { (void)state_->walkJiSelection(steps, top); },
-                       [this] { return hasClip() && state_->jiActive().valid() && state_->jiTermSelection() >= 0; });
-  };
-  walk("pianoroll.jiWalkUp", 1, false);
-  walk("pianoroll.jiWalkDown", -1, false);
-  walk("pianoroll.jiWalkUpTop", 1, true);
-  walk("pianoroll.jiWalkDownTop", -1, true);
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { onDocument(); });
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
@@ -138,7 +112,6 @@ void ClipView::onView(uint32_t bits) {
     if (s.rulerView) s.rulerView->markDirty();
     s.markNotesDirty();
   }
-  if ((bits & view_change::kTool) && ctx_.drawMode()) s.setJiTool(false);  // T7.4: one tool at a time
   if ((bits & view_change::kTool) && s.cornerPanel) s.cornerPanel->markDirty();
   if (bits & view_change::kTool) s.refreshHoverPart();  // Draw Mode shows no edges
 }
@@ -282,8 +255,12 @@ bool ClipView::enterPitch(std::string_view text) {
   return p && state_->setSelectionPitch(*p);
 }
 ui::TextEdit* ClipView::openPitchEntry() { return state_->openPitchEntry(); }
-bool ClipView::lockFundamental(doc::NoteId note, uint32_t index) { return state_->lockFundamentalOn(note, index); }
-bool ClipView::unlockFundamental() { return state_->unlockFundamental(); }
+bool ClipView::declareHarmonic(doc::NoteId note, uint32_t n) { return state_->declareHarmonic(note, n); }
+bool ClipView::removeActiveJiGroup() { return state_->removeActiveJiGroup(); }
+doc::JiGroupId ClipView::activeJiGroup() const {
+  const doc::JiGroup* g = state_->activeJiGroup();
+  return g ? g->id : doc::JiGroupId{};
+}
 roll::RowLabels ClipView::rowLabels() const noexcept { return state_->rowLabels(); }
 void ClipView::setRowLabels(roll::RowLabels mode) { state_->setRowLabels(mode); }
 ui::InfoText ClipView::readoutAt(ui::Vec2 p, bool keys) {
@@ -291,29 +268,8 @@ ui::InfoText ClipView::readoutAt(ui::Vec2 p, bool keys) {
   return {state_->hoverTitle(), state_->hoverBody()};
 }
 
-// T7.4
-ClipView::PaintStats ClipView::paintStats() const noexcept {
-  return {state_->paintStats.notesMs, state_->paintStats.jiMs, state_->paintStats.jiPainted};
-}
-Result<ClipView::Proportion> ClipView::parseProportion(std::string_view text) {
-  Result<roll::JiProportion> p = RollState::parseProportion(text);
-  if (!p) return p.error();
-  return Proportion{std::move(p->terms), p->undertone};
-}
-bool ClipView::jiTool() const noexcept { return state_->jiTool(); }
-void ClipView::setJiTool(bool on) { state_->setJiTool(on); }
-doc::JiObjectId ClipView::jiSelection() const noexcept { return state_->jiSelection(); }
-void ClipView::selectJiObject(doc::JiObjectId id) { state_->selectJiObject(id); }
-// T7.5
-doc::JiObjectId ClipView::jiEntered() const noexcept { return state_->jiEntered(); }
-void ClipView::enterJiObject(doc::JiObjectId id) { state_->enterJiObject(id); }
-void ClipView::leaveJiObject() { state_->leaveJiObject(); }
-int32_t ClipView::jiStopSelection() const noexcept { return state_->jiStopSelection(); }
-int32_t ClipView::jiTermSelection() const noexcept { return state_->jiTermSelection(); }
-void ClipView::selectJiStop(doc::JiObjectId id, int32_t stop) { state_->selectJiStop(id, stop); }
-void ClipView::selectJiTerm(doc::JiObjectId id, int32_t voice) { state_->selectJiTerm(id, voice); }
-bool ClipView::tuneSelectionToJi() { return state_->tuneSelectionToJi(); }
-bool ClipView::lockFundamentalAt(doc::NoteId note, uint32_t n) { return state_->lockFundamentalAt(note, n); }
+ClipView::PaintStats ClipView::paintStats() const noexcept { return {state_->paintStats.notesMs}; }
+Result<std::vector<int64_t>> ClipView::parseProportion(std::string_view text) { return RollState::parseProportion(text); }
 std::optional<uint64_t> ClipView::harmonicOf(doc::NoteId note) const {
   const doc::Note* n = state_->findNote(note);
   return n ? state_->harmonicOf(*n) : std::nullopt;
@@ -323,32 +279,6 @@ std::optional<float> ClipView::harmonicGuideY(uint64_t k) const {
   if (!h || k < 1) return std::nullopt;
   return state_->yOfCents(h->baseCents + tuning::cents(h->ratio) + 1200.0 * std::log2(static_cast<double>(k)));
 }
-IRect ClipView::jiPartRect(doc::JiObjectId id, JiPart part, int32_t index) const {
-  const roll::JiView* v = state_->jiViewOf(id);
-  if (!v) return {};
-  roll::JiLayout lay;
-  state_->jiLayout(*v, lay);
-  const std::vector<roll::JiLayout::Label>& list =
-      part == JiPart::StopLabel ? lay.stopLabels : part == JiPart::VoiceLabel ? lay.voiceLabels : lay.glides;
-  for (const roll::JiLayout::Label& l : list)
-    if (l.index == index)
-      return {static_cast<int32_t>(l.box.x0), static_cast<int32_t>(l.box.y0), static_cast<int32_t>(l.box.x1 - l.box.x0),
-              static_cast<int32_t>(l.box.y1 - l.box.y0)};
-  return {};
-}
-Vec2 ClipView::jiVoicePoint(doc::JiObjectId id, uint32_t voice, Ticks objectTick) const {
-  const doc::JiObject* o = state_->jiObject(id);
-  if (!o) return {-1.0f, -1.0f};
-  const std::optional<double> c = doc::jiVoiceCents(*o, state_->tuning(), voice, static_cast<double>(objectTick));
-  if (!c) return {-1.0f, -1.0f};
-  return {state_->xOfTick(static_cast<double>(o->start + objectTick)), state_->yOfCents(*c)};
-}
-Vec2 ClipView::jiBezierHandle(doc::JiObjectId id, uint32_t stop, uint32_t voice, int handle) const {
-  if (const roll::JiView* v = state_->jiViewOf(id))
-    for (const roll::JiView::Bezier& bz : v->beziers)
-      if (bz.stop == stop && bz.voice == voice) return state_->jiBezierHandle(*v, bz, handle);
-  return {-1.0f, -1.0f};
-}
 Vec2 ClipView::notePoint(doc::NoteId id, double frac) const {
   const RollState& s = *state_;
   const doc::Note* n = s.findNote(id);
@@ -357,15 +287,6 @@ Vec2 ClipView::notePoint(doc::NoteId id, double frac) const {
   const roll::NotePlace pl = s.place(n->pitch);
   if (!pl.ok) return {-1.0f, -1.0f};
   return {s.xOfTick(static_cast<double>(n->start) + frac * static_cast<double>(n->length)), static_cast<float>(s.screenY((pl.top + pl.bottom) / 2))};
-}
-
-IRect ClipView::jiObjectRect(doc::JiObjectId id) const {
-  for (const roll::JiView& v : state_->jiViews())
-    if (v.id == id && v.ok) {
-      const Rect b = state_->jiBoxRect(v);
-      return {static_cast<int32_t>(b.x0), static_cast<int32_t>(b.y0), static_cast<int32_t>(b.x1 - b.x0), static_cast<int32_t>(b.y1 - b.y0)};
-    }
-  return {};
 }
 
 ClipView& installClipView(Shell& shell) {

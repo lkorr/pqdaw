@@ -296,10 +296,10 @@ std::vector<Case> cases() {
                noCheck});
   c.push_back({"SetClipFundamental", [](Fixture& f) -> Command {
                  ClipFundamental cf;
-                 cf.anchor = HarmonicAnchor{NoteId{7}, 8};  // T7.5b: the declared harmonic replaced the Rational lock
+                 cf.steps = {HarmonicStep{NoteId{7}, 8, pq::tuning::Rational(3, 2)}};
                  return SetClipFundamental{{f.lead, f.clipA}, cf};
                }, M, [](Fixture& f, const ChangeSet&) {
-                 CHECK(f.clip(f.lead, f.clipA).fundamental.anchor == HarmonicAnchor{NoteId{7}, 8});
+                 CHECK(f.clip(f.lead, f.clipA).fundamental.steps.size() == 1);
                }});
   // ---- audio clips and samples (T5.3)
   auto sampleOf = [](Fixture& f) {
@@ -398,39 +398,25 @@ std::vector<Case> cases() {
                }, Q, [](Fixture& f, const ChangeSet&) {
                  CHECK_FALSE(f.clip(f.lead, f.clipA).notes.find(f.keyA(1))->enabled());
                }});
-  // ---- JI objects and note curves (T7.2): Sequence, never a recompile
-  auto jiObject = [](Fixture& f) {
-    JiObject o;
-    o.id = f.store.ids().jiObject();
-    o.length = pq::kPpq;
-    o.stops.resize(1);
-    o.stops[0].terms = {4, 5, 6};
-    for (int i = 0; i < 3; ++i) o.voiceNotes.push_back(f.store.ids().note());
-    return o;
-  };
-  c.push_back({"AddJiObject", [jiObject](Fixture& f) -> Command { return AddJiObject{{f.lead, f.clipA}, jiObject(f)}; }, Q,
-               [](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.jiObjects.size() == 1);
+  // ---- JI groups, written identities and note curves (T7.13): Sequence, never a recompile
+  c.push_back({"SetJiGroups", [](Fixture& f) -> Command {
+                 JiGroup g;
+                 g.id = f.store.ids().jiGroup();
+                 g.anchor = f.notesA[2].id;
+                 g.index = 5;
+                 g.warps = {JiWarp{0, pq::kPpq, GlideShape{}, true}, JiWarp{2 * pq::kPpq, 0, GlideShape{}, false}};
+                 return SetJiGroups{{f.lead, f.clipA}, {g}};
+               }, Q, [](Fixture& f, const ChangeSet& cs) {
+                 CHECK(cs.jiGroups.size() == 1);
                  CHECK(contains(cs.clips, f.clipA));
-                 CHECK(jiObjectsOf(f.clip(f.lead, f.clipA)).size() == 1);
+                 REQUIRE(jiGroupsOf(f.clip(f.lead, f.clipA)).size() == 1);
+                 CHECK(jiGroupsOf(f.clip(f.lead, f.clipA))[0].anchor == f.notesA[2].id);
                }});
-  c.push_back({"RemoveJiObject", [jiObject](Fixture& f) -> Command {
-                 const JiObject o = jiObject(f);
-                 REQUIRE(f.store.dispatch(AddJiObject{{f.lead, f.clipA}, o}).ok());
-                 return RemoveJiObject{{f.lead, f.clipA}, o.id};
+  c.push_back({"SetNotesWritten", [](Fixture& f) -> Command {
+                 return SetNotesWritten{{f.lead, f.clipA}, {NoteWritten{f.notesA[4].id, pq::tuning::PitchId::fromDegree(4, 0)}}};
                }, Q, [](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.jiObjects.size() == 1);
-                 CHECK(f.clip(f.lead, f.clipA).ji == nullptr);
-               }});
-  c.push_back({"SetJiObject", [jiObject](Fixture& f) -> Command {
-                 JiObject o = jiObject(f);
-                 REQUIRE(f.store.dispatch(AddJiObject{{f.lead, f.clipA}, o}).ok());
-                 o.undertone = true;
-                 o.stops[0].terms = {5, 6, 7};
-                 return SetJiObject{{f.lead, f.clipA}, o};
-               }, Q, [](Fixture& f, const ChangeSet& cs) {
-                 CHECK(cs.jiObjects.size() == 1);
-                 CHECK(jiObjectsOf(f.clip(f.lead, f.clipA))[0].undertone);
+                 CHECK(cs.notes == std::vector<NoteId>{f.notesA[4].id});
+                 REQUIRE(findNoteWritten(f.clip(f.lead, f.clipA), f.notesA[4].id) != nullptr);
                }});
   c.push_back({"SetNoteCurve", [](Fixture& f) -> Command {
                  return SetNoteCurve{{f.lead, f.clipA}, f.keyA(3), {{0, 0.0f, 0.0f, {}}, {100, 50.0f, 0.0f, {}}}};
@@ -440,7 +426,7 @@ std::vector<Case> cases() {
                }});
   c.push_back({"SetNoteCurves", [](Fixture& f) -> Command {  // T7.11a: whole records (free curve + bends), batched
                  return SetNoteCurves{{f.lead, f.clipA},
-                                      {NoteCurves{f.notesA[5].id, {}, NoteBend{50, JiShape{}, f.notesA[4].id}, {}},
+                                      {NoteCurves{f.notesA[5].id, {}, NoteBend{50, GlideShape{}, f.notesA[4].id}, {}},
                                        NoteCurves{f.notesA[3].id, {{0, 0.0f, 0.0f, {}}, {100, 50.0f, 0.0f, {}}}, {}, {}}}};
                }, Q, [](Fixture& f, const ChangeSet& cs) {
                  CHECK(cs.notes == std::vector<NoteId>{f.notesA[3].id, f.notesA[5].id});
