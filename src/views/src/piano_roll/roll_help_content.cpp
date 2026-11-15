@@ -76,12 +76,17 @@ constexpr HelpEntry kNotes[] = {
 constexpr HelpEntry kBends[] = {
     {"[Alt] + drag a note's left edge",
      "Bend in",
-     "The note starts on the pitch of the note that ends just before it and slides into its own pitch; how far you "
-     "drag sets how long the slide takes. With several notes ending there it comes from the one nearest in pitch."},
+     "The note starts on the pitch of the note before it and slides into its own pitch; how far you drag sets how long "
+     "the slide takes. The note it comes from is outlined while you drag: of the notes that end just before this one, "
+     "the nearest in pitch."},
     {"[Alt] + drag a note's right edge",
      "Bend out",
      "The end of the note slides to the pitch of the note that starts next, over the length you drag. With several "
      "notes selected each one bends to its own neighbour."},
+    {"move or retune\nthe other note",
+     "A bend follows its notes",
+     "A bend remembers which note it leads from or to, not a fixed pitch. Move that note, retune it or change the "
+     "tuning, and the slide still lands exactly on it; nothing has to be redone."},
     {"{pianoroll.glide}",
      "Glide into the next note",
      "Select two or more notes: each slides into the next selected one over its last grid cell. The quick way to "
@@ -96,16 +101,17 @@ constexpr HelpEntry kBends[] = {
      "Bends in the right-click menu removes all of a note's bends at once."},
 };
 
-// ---- Free pitch curves and vibrato -------------------------------------------------------------------------
+// ---- Pitch curves ----------------------------------------------------------------------------------------
 constexpr HelpEntry kCurves[] = {
     {"Draw Mode {edit.toggleDrawMode}\ndrag along a note",
      "Draw a pitch curve",
      "The line you draw becomes the pitch of the note from that point on: a scoop, a fall, a slow drift to another "
-     "pitch. Start the stroke where the change should begin."},
+     "pitch. Start the stroke where the change should begin. (A drag of only a few pixels counts as a click: it "
+     "deletes the note, as a click in Draw Mode does.)"},
     {"Draw Mode {edit.toggleDrawMode}\n[Ctrl] + click on a note",
      "Add a breakpoint",
      "Puts one point on the note's pitch line at the pointer; keep the button down to drag it into place. Use it to "
-     "build a bend from a few exact points instead of a freehand line."},
+     "build a curve from a few exact points instead of a freehand line."},
     {"drag a breakpoint\n[Shift] + drag",
      "Move a breakpoint",
      "Select a note to see the points of its curve. A point snaps to the rows, to the harmonic guide lines and to the "
@@ -117,20 +123,43 @@ constexpr HelpEntry kCurves[] = {
     {"double-click a breakpoint",
      "Delete a breakpoint",
      "Removes that point; the line joins its neighbours."},
-    {"Draw Mode {edit.toggleDrawMode}\n[Alt] + drag along a note",
-     "Paint vibrato",
-     "Vibrato over the stretch you drag. How far the stroke moves up or down sets how wide it swings; a flat stroke "
-     "uses the width of the last one. Its speed follows the grid (one swing per cell, kept between about 4 and 8 per "
-     "second)."},
-    {"right-click a vibrato >\nEdit Vibrato\xE2\x80\xA6",
-     "Edit a vibrato",
-     "Type its width in cents (the swing each way) and its speed in Hz, for example 30 6. A width of 0 removes it."},
-    {"right-click a selected note >\nAdd Vibrato\xE2\x80\xA6",
-     "Add vibrato by typing",
-     "Gives the selected notes a vibrato of the width and speed you type."},
     {"right-click a selected note >\nClear Bends",
      "Clear Bends",
      "Removes every bend, drawn curve and vibrato from the selected notes: they are plain steady notes again."},
+};
+
+// ---- Vibrato ---------------------------------------------------------------------------------------------
+constexpr HelpEntry kVibrato[] = {
+    {"drag the ~ above a note's\nright end up or down",
+     "Vibrato: how wide",
+     "Point at a note (or select it) and a small ~ appears above its right end. Drag it up and the note starts to "
+     "waver; the further up, the wider the swing. You see the wave grow on the note, and the status line reads its "
+     "width in cents. Drag it back down to nothing to turn the vibrato off."},
+    {"drag the ~ left or right",
+     "Vibrato: how fast",
+     "To the right the waves stretch out (slower), to the left they squeeze together (faster); the status line reads "
+     "the speed in Hz. A small sideways slip while you set the width changes nothing."},
+    {"drag the small squares\nunder a vibrating note",
+     "Fade in, fade out, start and end",
+     "A note with vibrato shows four squares under it, the corners of the vibrato's outline: where it starts, where it "
+     "has grown to full width, where it begins to die away and where it ends. Drag any of them sideways. Two squares "
+     "that sit on each other (no fade yet) come apart as you drag: to the right for a fade-in, to the left for a "
+     "fade-out. Pull the two inner ones together for a swell that rises and falls. They snap to the grid."},
+    {"[Shift] + drag the ~\n[Shift] + drag a square",
+     "Fine adjustment",
+     "With Shift the ~ moves the width by tenths of a cent and the speed by hundredths of a Hz, and a square goes "
+     "anywhere instead of onto the grid."},
+    {"several notes selected,\ndrag the ~ of one",
+     "Vibrato on several notes",
+     "Every selected note gets the same width and speed; each keeps its own start, end and fades. Dragging a square "
+     "moves that corner on all of them."},
+    {"double-click the ~",
+     "Remove a vibrato",
+     "Turns the vibrato off (on every selected note, when the note is one of them)."},
+    {"Draw Mode {edit.toggleDrawMode}\n[Alt] + drag along a note",
+     "Vibrato over a stretch",
+     "Vibrato only over the stretch you drag. How far the stroke moves up or down sets how wide it swings; a flat "
+     "stroke uses the width of the last one. Afterwards the ~ and the squares change it like any other."},
 };
 
 // ---- Detune ----------------------------------------------------------------------------------------------
@@ -138,8 +167,9 @@ constexpr HelpEntry kDetune[] = {
     {"[Shift] + drag a note up or down",
      "Free detune",
      "Moves the selected notes smoothly in pitch instead of row by row, for a note that should be a few cents sharp "
-     "or flat. They become cents notes: fixed pitches that no longer follow the tuning. In time they still snap to "
-     "the grid. (Shift + click without dragging only selects.)"},
+     "or flat; the status line reads the amount. Nothing happens until the pointer has moved a little way up or down, "
+     "so a Shift + click that slips, or a Shift + drag along the time, never detunes by accident. The notes become "
+     "cents notes: fixed pitches that no longer follow the tuning. In time they still snap to the grid."},
     {"right-click a selected note >\nSet Pitch\xE2\x80\xA6",
      "Type an exact pitch",
      "A ratio such as 7/4 (a just pitch), cents such as 386.3c (a fixed pitch) or a step of the tuning such as 4\\22 "
@@ -152,28 +182,36 @@ constexpr HelpEntry kHarmonics[] = {
      "Declare a note as harmonic N",
      "Type a whole number N and press Enter. The note stays exactly where it is, in the roll and in sound, and a "
      "harmonic series is fitted around it so that it sits on harmonic N. Call a note 4, and the lines 5, 6 and 7 "
-     "above it are its just major third, fifth and harmonic seventh."},
+     "above it are its just major third, fifth and harmonic seventh. The note is frozen: the series hangs on it."},
     {"draw \xC2\xB7" " double-click",
      "Notes snap to the harmonics",
-     "While a note is declared, the notes you add land on the nearest guide line instead of a row. Each is kept as an "
-     "exact ratio to the declared note, so a chord built this way is perfectly in tune with it."},
+     "While the guide lines show, the notes you add land on the nearest line instead of a row. Each is kept as an "
+     "exact ratio to the frozen note, so a chord built this way is perfectly in tune with it."},
     {"[Shift] + draw",
      "Draw on the rows instead",
-     "With a note declared, hold Shift to put an ordinary note on a row of the tuning. With no note declared it is the "
-     "other way round: Shift draws a just note, at the simplest ratio near the pointer."},
-    {"the numbers at the\nroll's right edge",
+     "With the guide lines showing, hold Shift to put an ordinary note on a row of the tuning. With no guide lines "
+     "it is the other way round: Shift draws a just note, at the simplest ratio near the pointer."},
+    {"right-click a note of the series >\nAdd Note at Ratio\xE2\x80\xA6",
+     "Add a note at a ratio",
+     "Type 3/2 (or 7:4) and press Enter for a note that far above the note you clicked; 2/3 puts it below. A whole "
+     "number such as 5 means that harmonic of the series. The new note starts and ends with the one you clicked."},
+    {"the numbers on the notes\nand at the roll's right edge",
      "How the numbers renumber",
      "The numbers are always the smallest whole numbers that fit every note. When a note falls between two harmonics "
      "the whole series is renumbered so that it gets a whole number too. Declare a note 5 and add a note a perfect "
      "fifth (3/2) above it: 7.5 is not a harmonic, so both double and now read 10 and 15. No note changes pitch; only "
      "the numbers and the lines do."},
+    {"{pianoroll.deselect}",
+     "Back to the tuning's rows",
+     "The guide lines belong to the note you selected last. Esc puts them away: new notes land on the rows of the "
+     "tuning again. Click any note of a series to bring its lines back."},
     {"Harmonics: JI\n(the box left of the roll)",
      "Show or hide the guide lines",
      "The JI switch appears once the clip has a harmonic series. It shows or hides the guide lines and their "
      "numbers."},
     {"right-click > Remove JI Group",
      "Remove the declaration",
-     "Forgets which note was declared. Every note keeps its pitch (the notes that were tied to it become fixed "
+     "Forgets which note was frozen. Every note keeps its pitch (the notes that were tied to it become fixed "
      "pitches); new notes land on the rows again."},
 };
 
@@ -206,24 +244,68 @@ constexpr HelpEntry kTuning[] = {
 };
 
 // ---- JI groups -----------------------------------------------------------------------------------------------
-// SEPARATE BLOCK (KB.help). T7.13 removed the box-object JI (the JI tool, entering a chord, stops, Tune to JI, walking
-// a term); what is left is what a group can do today. T7.14 (the group tools: Tune to JI and its chooser, warps,
-// walk, typed proportions, Add Note at Ratio) rewrites kJiGroups and its intro in kSections, and touches nothing else.
+// The whole JI workflow of the roll (T7.14): tune a chord and switch back, the other readings, warps, walking,
+// typed proportions, the group as notes.
 constexpr HelpEntry kJiGroups[] = {
-    {"click a note of a group",
-     "Which group the guide lines show",
-     "A clip can hold several groups. The guide lines and the snapping follow the group of the note you select; "
-     "with nothing selected they stay on the group you used last."},
-    {"{pianoroll.stepUp} / {pianoroll.stepDown}\non a note of a group",
+    {"{pianoroll.tuneToJi}",
+     "Tune a chord to JI, and back",
+     "Select the notes of a chord and press the key: the lowest note stays where it is and the others move to the "
+     "nearest simple just intervals above it. They are the same notes, now inside a dashed frame headed by the chord's "
+     "proportion. Press the key again with them selected and they go back exactly to what you wrote. Also in the "
+     "right-click menu, as Tune to JI and Back to Tuning."},
+    {"click the proportion\nabove the frame",
+     "Other readings of the chord",
+     "A tempered chord can be heard as more than one just chord: C E G B\xE2\x99\xAD as 4:5:6:7, or as 20:25:30:36. The "
+     "list shows each reading with how many cents the notes move in total. Click one, or use Up / Down and Enter; Esc "
+     "keeps the ticked one. The list also opens by itself right after tuning."},
+    {"drag the frame's bottom-left\ncorner inward",
+     "Warp: play it tempered, then glide into JI",
+     "The frame of the selected group has a small arrow on each bottom corner. Drag the left one into the chord: up to "
+     "that point the chord plays as you wrote it, then it glides into just intonation. The notes are drawn doing "
+     "exactly that, and under the frame the two states are named, for example 12-EDO and 4:5:6."},
+    {"drag the frame's bottom-right\ncorner inward",
+     "Warp back to the tuning",
+     "From that point the chord glides out of just intonation, back to the pitches you wrote."},
+    {"drag a warp's diamond\ndrag its round grip",
+     "Move a warp, set how long it glides",
+     "The diamond on the frame's bottom line is where the glide starts, the round grip where it ends. Put the grip on "
+     "the diamond for a sudden switch. Both snap to the grid; hold Shift to place them freely."},
+    {"right-click a warp's diamond\nclick it, then {pianoroll.delete}",
+     "Shape or remove a warp",
+     "The menu offers S-Curve (gentle at both ends, the default), Straight (even speed) and Remove Warp. A diamond "
+     "you click is selected: Delete removes it, not the notes."},
+    {"right-click inside a frame >\nBack to Tuning Here / Into JI Here",
+     "Warp at the pointer",
+     "Puts the change at the pointer's time: the next warp moves there, or a new one is made when there is none."},
+    {"{pianoroll.stepUp} / {pianoroll.stepDown}\ndrag a note of a group up or down",
      "Next or previous harmonic",
-     "A note that sits on a guide line moves to the next harmonic of its group instead of the next row. The declared "
-     "note itself moves row by row and takes its whole group with it."},
+     "A note of a group moves along the group's harmonics instead of the rows: up from the 6 of 4:5:6 is the 7. "
+     "Dragged, it snaps to the harmonic nearest the pointer. The frozen note itself moves row by row and takes its "
+     "whole group with it."},
+    {"{pianoroll.walkUp} / {pianoroll.walkDown}",
+     "Walk the chord",
+     "With a note of a group selected, every number of the group goes up or down by one while the frozen note stays "
+     "where it is: 4:5:6 becomes 5:6:7, then 6:7:8. The chord narrows going up and widens going down. Also Walk Up "
+     "and Walk Down in the right-click menu."},
+    {"{pianoroll.proportionTool}, drag a box,\ntype 8:9:10:12:15, Enter",
+     "Type a chord as a proportion",
+     "Press the key, drag a box where the chord should sit, type the proportion and press Enter: one note per number, "
+     "as long as the box, the lowest on the box's bottom row. With the mouse alone: right-click empty space > Insert "
+     "Proportion\xE2\x80\xA6."},
+    {"right-click a note of a group >\nIs Harmonic\xE2\x80\xA6",
+     "Freeze another note of the group",
+     "On a note that already belongs to a group, Is Harmonic N makes THAT note the frozen one, with number N. Every "
+     "note keeps its pitch; the numbers are worked out again."},
+    {"click a group's header\nclick a note of a group",
+     "Select a group; which guide lines show",
+     "A click on the header selects all the notes of the group, to move, copy or delete it as one. A clip can hold "
+     "several groups: the guide lines and the snapping follow the group of the note you select."},
     {"{pianoroll.copy} / {pianoroll.paste}",
      "Copy a group",
-     "Copy the declared note together with its notes and the paste is a group of its own, tuned the same way. A note "
-     "copied without its declared note is pasted as a fixed pitch."},
-    {"{pianoroll.delete}\non the declared note",
-     "Delete the declared note",
+     "Copy the frozen note together with its notes and the paste is a group of its own, tuned the same way. A note "
+     "copied without its frozen note is pasted as a fixed pitch."},
+    {"{pianoroll.delete}\non the frozen note",
+     "Delete the frozen note",
      "The lowest remaining note of the group takes its place: every note keeps its pitch and its number."},
 };
 
@@ -297,10 +379,14 @@ constexpr HelpSection kSections[] = {
      "A bend makes a note slide out of, or into, its neighbour instead of jumping. What is drawn is exactly what "
      "sounds.",
      kBends},
-    {"Free pitch curves and vibrato",
+    {"Pitch curves",
      "In Draw Mode the pencil also draws on notes that are already there: any pitch movement inside a note. A curve "
      "belongs to its note and travels with it when you move, copy or duplicate it.",
      kCurves},
+    {"Vibrato",
+     "Vibrato is set on the note itself, by dragging: nothing is typed. It belongs to the note and travels with it; "
+     "what is drawn is what sounds.",
+     kVibrato},
     {"Detune", "", kDetune},
     {"Harmonics and the virtual fundamental",
      "Just intonation in the roll starts from one note. Say that a note is harmonic number N and the roll works out "
@@ -311,11 +397,11 @@ constexpr HelpSection kSections[] = {
      "Each clip plays in a tuning. The rows of the roll are that tuning's steps, so the same roll can be 12-EDO, "
      "31-EDO, a MOS scale or a just scale.",
      kTuning},
-    // The separate block: see kJiGroups.
     {"JI groups",
-     "A JI group is a declared note (see Harmonics) and the notes tied to it as exact ratios: ordinary notes that are "
-     "in tune with each other. A note's number is its harmonic in the group, so a group reads as a proportion such as "
-     "4:5:6:7.",
+     "A JI group is a chord of ordinary notes that share one fundamental: a frozen note and the others as exact "
+     "ratios to it. The roll draws a dashed frame around the group; its header is the chord as a proportion such as "
+     "4:5:6:7, and every note carries its number (the frozen note's has a small diamond). You can write a chord in "
+     "the clip's tuning, tune it to JI, switch back, or let it glide from one to the other.",
      kJiGroups},
     {"Macro mode",
      "Enter notes from the computer keyboard by interval, without the mouse: the number row goes up by just "

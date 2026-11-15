@@ -178,8 +178,14 @@ void paintOverlay(ui::PaintContext& ctx, const RollState& s, const ui::IRect& vi
 // The notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint; T7.12: roll_paint.cpp,
 // the same line as every note).
 void paintCurveNotes(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
-// T7.6 (roll_pen.cpp): the breakpoint handles of the curves being edited.
+// T7.6 (roll_pen.cpp): the breakpoint handles of the curves being edited, the neighbours an Alt + edge drag bends to.
 void paintCurveHandles(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
+// T7.14 (roll_vibrato.cpp): the ~ grips and the envelope corners of the hovered and the selected notes.
+void paintVibratoGrips(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
+// T7.14 (roll_groups.cpp): the groups' frames and headers (under the notes); warp markers, grips and labels, the
+// proportion tool's box (over them).
+void paintGroupFrames(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
+void paintGroupOverlays(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 // Key colours of a scale's step classes (T3.12): L in roll.keyLarge, s blended toward roll.keySmall by hardness
 // (mos-explorer's softness: s = L at L/s = 1, fully keySmall from L/s = 3), sizes in between interpolated between
 // their neighbours and pulled toward roll.keyExtra the more they stand apart (drawMOSCircle's colour map, with the

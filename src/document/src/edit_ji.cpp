@@ -307,6 +307,52 @@ EditResult makeJiGroup(const Project& p, IdSource& ids, ClipRef clip, NoteKey an
   return e;
 }
 
+EditResult reanchorJiGroup(const Project& p, ClipRef clip, JiGroupId group, NoteKey member, uint32_t index) {
+  Result<GroupFound> f = findGroup(p, clip, group);
+  if (!f) return std::move(f).error();
+  const NoteClip& c = *f->clip.clip;
+  const Note* m = c.notes.locate(member);
+  if (!m) return notFound("note not found");
+  if (index < 1 || index > kMaxHarmonicIndex) return invalid("the harmonic number goes from 1 to 4096");
+  if (noteAnchorOf(m->pitch) != f->group->anchor) return invalid("the note is not a member of the JI group");
+  const Rational mr = m->pitch.ratio();
+  Result<Resolved> res = resolveFor(p, f->clip);
+  if (!res) return std::move(res).error();
+  const std::optional<PitchId> frozen = detached(*m, exactReferenceRatio(c, res->hz, f->anchor), *res);
+  if (!frozen) return invalid("the note's pitch cannot be resolved");
+  Edit e = groupEdit("Is Harmonic", clip);
+  e.jiGroups.push_back(group);
+  UpdateNotes u{clip, {}};
+  NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
+  std::erase_if(written, [&](const NoteWritten& w) { return w.note == m->id || w.note == f->anchor->id; });
+  for (const Note& n : c.notes) {
+    Note w = n;
+    if (n.id == m->id) {
+      w.pitch = *frozen;
+    } else if (n.id == f->anchor->id) {
+      const std::optional<Rational> inv = Rational::tryMake(mr.den(), mr.num());
+      if (!inv || !inv->isPositive()) return invalid("ratio out of range");
+      w.pitch = PitchId::fromRatio(*inv, tuning::AnchorKind::Note, m->id.value);
+      if (plainPitch(n.pitch)) written.push_back(NoteWritten{n.id, n.pitch});
+    } else if (noteAnchorOf(n.pitch) == f->anchor->id) {
+      const std::optional<Rational> q = tuning::div(n.pitch.ratio(), mr);
+      if (!q || !q->isPositive()) return invalid("ratio out of range");
+      w.pitch = PitchId::fromRatio(*q, tuning::AnchorKind::Note, m->id.value);
+    } else {
+      continue;
+    }
+    e.notes.push_back(keyOf(n));
+    if (!(w.pitch == n.pitch)) u.updates.push_back({keyOf(n), w});
+  }
+  JiGroup g = *f->group;
+  g.anchor = m->id;
+  g.index = index;
+  if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
+  pushGroups(e, clip, c, groupsWith(c, g));
+  pushWritten(e, clip, c, std::move(written));
+  return e;
+}
+
 EditResult removeJiGroup(const Project& p, ClipRef clip, JiGroupId group) {
   return dissolve(p, clip, group, false, "Remove JI Group");
 }
@@ -588,7 +634,44 @@ EditResult clearNoteBends(const Project& p, ClipRef clip, std::span<const NoteKe
     e.notes.push_back(keyOf(*n));
     const NoteCurves* have = findNoteCurves(*f->clip, n->id);
     if (!have || (!have->bendIn.set() && !have->bendOut.set())) continue;
-    set.curves.push_back(NoteCurves{n->id, have->pitch, {}, {}});
+    set.curves.push_back(NoteCurves{n->id, have->pitch, {}, {}, have->vibrato});
+  }
+  if (!set.curves.empty()) batchOf(e).commands.push_back(std::move(set));
+  return e;
+}
+
+EditResult setNoteVibrato(const Project& p, ClipRef clip, std::span<const NoteVibratoEdit> edits) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  Edit e = curveEdit("Vibrato", clip);
+  SetNoteCurves set{clip, {}};
+  std::vector<NoteId> seen;
+  for (const NoteVibratoEdit& ed : edits) {
+    const Note* n = f->clip->notes.locate(ed.note);
+    if (!n) return notFound("note not found");
+    if (std::find(seen.begin(), seen.end(), n->id) != seen.end()) return invalid("two vibratos for one note");
+    seen.push_back(n->id);
+    e.notes.push_back(keyOf(*n));
+    NoteVibrato v = ed.vibrato;
+    if (!std::isfinite(v.depthCents) || !std::isfinite(v.rate)) return invalid("a vibrato's depth and rate are finite numbers");
+    if (!(v.depthCents > 0.0f)) {
+      v = {};
+    } else {
+      const bool beats = v.unit == NoteVibrato::RateUnit::Beats;
+      const Ticks L = std::max<Ticks>(n->length, 1);
+      v.depthCents = std::min(v.depthCents, kMaxVibratoCents);
+      v.rate = std::clamp(v.rate, beats ? kMinVibratoBeats : kMinVibratoHz, beats ? kMaxVibratoBeats : kMaxVibratoHz);
+      v.onset = std::clamp<Ticks>(v.onset, 0, L - 1);
+      if (v.end >= L || v.end <= v.onset) v.end = 0;
+      const Ticks span = (v.end > 0 ? v.end : L) - v.onset;
+      v.fadeIn = std::clamp<Ticks>(v.fadeIn, 0, span);
+      v.fadeOut = std::clamp<Ticks>(v.fadeOut, 0, span - v.fadeIn);
+    }
+    const NoteCurves* have = findNoteCurves(*f->clip, n->id);
+    NoteCurves rec = have ? *have : NoteCurves{n->id, {}, {}, {}, {}};
+    rec.vibrato = v;
+    PQ_DOC_TRY(checkNoteCurveRecord(rec));
+    if (have ? !(*have == rec) : !rec.empty()) set.curves.push_back(std::move(rec));
   }
   if (!set.curves.empty()) batchOf(e).commands.push_back(std::move(set));
   return e;

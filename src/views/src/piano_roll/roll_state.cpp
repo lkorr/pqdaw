@@ -57,6 +57,12 @@ bool RollState::refresh() {
     insertTick_.reset();
     fitted_ = false;
     drag = {};
+    curvePreview_.clear();
+    warpPreview_ = {};
+    warpSel_ = {};
+    hoverGroup_ = {};
+    proportionArmed_ = false;
+    lastActiveGroup_ = {};
     changed = true;
   }
   doc::ClipPtr c;
@@ -80,6 +86,7 @@ bool RollState::refresh() {
   bool clipCaches = false;
   bool morphed = false;
   if (def && (!tuningValid_ || !(tuningDef_ == *def))) {
+    ++tuningGen_;  // T7.14: the cached pitch paths and frames are for the tuning as it was
     if (tuningValid_ && morphInPlace(*def)) {
       // A generator move inside one MosLinearTable interval (T3.12 live morph): the tuning and the rows were
       // retuned in place; the row set, labels, chunk caches and highlight scale stay.
@@ -678,8 +685,17 @@ void RollState::setHoverPart(HoverPart h) {
   if (tree)
     for (const uint32_t id : {hoverPart_.note, h.note})
       if (id != 0)
-        if (const doc::Note* n = findNote(doc::NoteId{id}))
-          if (const ui::IRect r = intersect(screenRectOf(n->start, n->length, n->pitch), area()); !r.empty()) tree->damage().add(r.toRect());
+        if (const doc::Note* n = findNote(doc::NoteId{id})) {
+          // T7.14: the note and its vibrato grips (the ~ above its end, the envelope's corners under it).
+          ui::IRect r = onPath(*n, n->pitch) ? pathBox(*n, n->start, n->length, n->pitch) : screenRectOf(n->start, n->length, n->pitch);
+          if (r.empty()) continue;
+          const int32_t m = static_cast<int32_t>(std::ceil((kVibratoGripRise + kVibratoGrip) * tree->scale())) + 2;
+          int32_t depth = 0;
+          if (const doc::NoteVibrato v = vibratoOf(n->id); v.set())
+            if (const std::optional<double> c = startCents(*n)) depth = static_cast<int32_t>(std::ceil(std::fabs(yOfCents(*c + v.depthCents) - yOfCents(*c))));
+          r = {r.x - m, r.y - m - depth, r.w + 2 * m, r.h + 2 * (m + depth)};
+          if (const ui::IRect a = intersect(r, area()); !a.empty()) tree->damage().add(a.toRect());
+        }
   hoverPart_ = h;
   // T7.6: in Draw Mode the note under the pointer shows its curve's breakpoints (anywhere along its path).
   if (ctx.drawMode() && clip_ && clip_->curves) markNotesDirty();
@@ -687,6 +703,9 @@ void RollState::setHoverPart(HoverPart h) {
 
 void RollState::hoverPartAt(ui::Vec2 p) {
   hoverPartPos_ = p;
+  setHoverGroup(groupFrameAt(p));
+  // T7.14: over a vibrato grip of the hovered note the note stays hovered (the grips lie outside its band).
+  if (const VibratoHit vh = vibratoPartAt(p); vh.valid() && vh.note.value == hoverPart_.note) return;
   int zone = 0;
   const doc::Note* n = noteAt(p, &zone);
   HoverPart h;
@@ -699,6 +718,7 @@ void RollState::hoverPartAt(ui::Vec2 p) {
 
 void RollState::clearHoverPart() {
   hoverPartPos_.reset();
+  setHoverGroup({});
   setHoverPart({});
 }
 
@@ -1005,7 +1025,39 @@ NotePlace RollState::place(const tuning::PitchId& p) const {
   return r;
 }
 
-const doc::Note* RollState::findNote(doc::NoteId id) const noexcept { return clip_ ? clip_->notes.findById(id) : nullptr; }
+// By id: NoteSeq::findById is a linear scan, and the grips, handles and hover of a paint ask for the same few notes
+// every frame: the answers are kept per clip snapshot (the notes do not move while the clip pointer stands).
+const doc::Note* RollState::findNote(doc::NoteId id) const {
+  if (!clip_) return nullptr;
+  if (noteCacheFor_ != clip_.get() || noteCache_.size() > 4096) {
+    noteCache_.clear();
+    noteCacheFor_ = clip_.get();
+  }
+  if (const auto it = noteCache_.find(id.value); it != noteCache_.end()) return it->second;
+  const doc::Note* n = nullptr;
+  if (anchorIndexValid_) {
+    const auto it = anchorIndex_.find(id.value);
+    n = it != anchorIndex_.end() ? it->second : nullptr;
+  } else {
+    n = clip_->notes.findById(id);
+  }
+  noteCache_.emplace(id.value, n);
+  return n;
+}
+
+void RollState::cacheSelectedNotes() const {
+  if (!clip_ || sel_.empty() || sel_.size() > 64) return;
+  if (noteCacheFor_ != clip_.get()) {
+    noteCache_.clear();
+    noteCacheFor_ = clip_.get();
+  }
+  bool missing = false;
+  for (const uint32_t id : sel_) missing = missing || noteCache_.find(id) == noteCache_.end();
+  if (!missing) return;
+  for (const uint32_t id : sel_) noteCache_.emplace(id, nullptr);  // (an id that is gone stays null)
+  for (const doc::Note& n : clip_->notes)  // one pass for all of them
+    if (selected(n.id)) noteCache_[n.id.value] = &n;
+}
 
 const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
   if (!clip_ || pxPerTick_ <= 0.0) return nullptr;
@@ -1017,7 +1069,8 @@ const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
   int hitZone = 0;
   int hitKey = -1;
   const bool zOrder = rows_.layout() == RowLayout::Proportional;
-  const bool anyPath = clip_->curves != nullptr;
+  syncPaths();
+  const bool anyPath = clip_->curves != nullptr || paths_.anyWarp || hasCurvePreview();
   const float half = pathHalfThickness() + 1.0f;
   forNotesIn(static_cast<Ticks>(std::floor(t0)), static_cast<Ticks>(std::ceil(t1)) + 1, [&](const doc::Note& n) {
     const float x0 = std::round(xOfTick(static_cast<double>(n.start)));
@@ -1065,6 +1118,7 @@ void RollState::select(std::vector<uint32_t> ids) {
   if (ids == sel_) return;
   sel_ = std::move(ids);
   activeGroupValid_ = false;  // T7.13: the active JI group follows the selection
+  if (!sel_.empty()) warpSel_ = {};  // T7.14: a note selection takes the keys back from a selected warp marker
   // A bitmap over [min id, max id] when it is compact (ids of one clip mostly are): ≤ 64 bits per selected note
   // plus 64 KiB; otherwise selected() binary-searches.
   selBits_.clear();
@@ -1142,9 +1196,13 @@ bool RollState::apply(const doc::ops::EditResult& e, std::string_view what) {
 
 void RollState::deleteSelection() {
   if (!clip_) return;
+  if (warpSel_.valid()) {  // T7.14: Delete on a selected warp marker (it was selected after the notes: it is the one meant)
+    (void)removeSelectedWarp();
+    return;
+  }
   const std::vector<doc::NoteKey> keys = selectionKeys();
   if (keys.empty()) return;
-  if (apply(doc::ops::deleteNotes(*ctx.doc(), ref_, keys), "Delete Notes")) clearSelection();
+  if (apply(doc::ops::deleteNotes(*ctx.doc(), ref_, keys), "Delete Notes")) select({});  // the group stays active (an edit, not a deselect)
 }
 
 void RollState::duplicateSelection() {
@@ -1217,18 +1275,21 @@ const doc::JiGroup* RollState::activeJiGroup() const {
   activeGroup_ = nullptr;
   activeAnchor_ = nullptr;
   // The first selected note (clip order) that is in a group; one pass, and only when something is selected.
+  bool anySelected = false;
   if (!sel_.empty())
     for (const doc::Note& n : clip_->notes) {
       if (!selected(n.id)) continue;
+      anySelected = true;
       if ((activeGroup_ = doc::jiGroupOfNote(*clip_, n)) != nullptr) break;
     }
-  if (!activeGroup_ && lastActiveGroup_.valid()) {  // else the group that was active last (a click on empty space)
+  if (anySelected && !activeGroup_) {
+    lastActiveGroup_ = {};  // T7.14: notes of no group are selected: no group is active (the roll is on its rows)
+  } else if (!activeGroup_ && lastActiveGroup_.valid()) {
+    // Nothing selected (a click on empty space, a deleted note): the group that was active stays, so the next note
+    // still lands on its guides. Esc puts it away (forgetActiveGroup).
     activeGroup_ = doc::findJiGroup(*clip_, lastActiveGroup_);
-    if (activeGroup_ && !std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), activeGroup_->anchor.value)) activeGroup_ = nullptr;
   }
-  if (!activeGroup_)  // else the newest group whose anchor is there
-    for (auto it = clip_->groups->rbegin(); it != clip_->groups->rend() && !activeGroup_; ++it)
-      if (std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), it->anchor.value)) activeGroup_ = &*it;
+  if (activeGroup_ && !std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), activeGroup_->anchor.value)) activeGroup_ = nullptr;
   if (activeGroup_) {
     const std::optional<doc::GroupFundamental> f = doc::groupFundamental(*clip_, *activeGroup_);
     activeAnchor_ = findNote(activeGroup_->anchor);
@@ -1250,6 +1311,14 @@ std::optional<RollState::Harmonics> RollState::harmonics() const {
   const std::optional<tuning::Rational> f = virtualFundamental();
   if (!f) return std::nullopt;
   return Harmonics{{}, 0.0, *f};
+}
+
+int RollState::groupRole(const doc::Note& n) const {
+  if (!clip_ || !clip_->groups) return 0;
+  (void)virtualFundamental();  // fills the per-snapshot cache
+  if (std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), n.id.value)) return 2;
+  const doc::NoteId anchor = doc::noteAnchorOf(n.pitch);
+  return anchor.valid() && std::binary_search(groupAnchors_.begin(), groupAnchors_.end(), anchor.value) ? 1 : 0;
 }
 
 std::optional<uint64_t> RollState::harmonicOf(const doc::Note& n) const {
@@ -1556,7 +1625,11 @@ void RollState::commitDrag() {
   switch (d.kind) {
     case DragKind::Move:
       if (d.cents != 0.0) {  // T7.6: Shift = free detune
-        (void)apply(detuneEdit(d.dt, d.cents), "Detune Notes");
+        if (apply(detuneEdit(d.dt, d.cents), "Detune Notes")) {
+          char buf[96];
+          std::snprintf(buf, sizeof buf, "Detuned %+.0f \xC2\xA2: %zu note%s now a fixed pitch (cents)", d.cents, sel_.size(), sel_.size() == 1 ? " is" : "s are");
+          ctx.setStatus(buf);
+        }
       } else if (d.dt != 0 || d.steps != 0) {
         // Ratio notes moved by rows step by harmonics of their fundamental, exactly as Up/Down does.
         const std::vector<doc::NoteKey> keys = selectionKeys();
@@ -1592,28 +1665,42 @@ void RollState::commitDrag() {
       if (d.bend) {  // T7.6 (A3): Alt = the note glides in from the previous note / out to the next one
         const bool in = d.kind == DragKind::ResizeStart;
         const doc::ops::EditResult e = bendEdit(d);
-        if (d.bendDelta.empty()) ctx.setStatus(in ? "Bend In: no note before this one to glide from" : "Bend Out: no note after this one to glide to");
-        else (void)apply(e, in ? "Bend In" : "Bend Out");
+        if (d.bendPicks.empty()) {
+          bool same = false;
+          if (const doc::Note* pressed = findNote(d.pressed)) (void)bendNeighbour(*pressed, in ? -1 : 1, &same);
+          ctx.setStatus(same ? (in ? "Bend In: the note before this one is at the same pitch" : "Bend Out: the note after this one is at the same pitch")
+                             : (in ? "Bend In: no note before this one to glide from" : "Bend Out: no note after this one to glide to"));
+        } else {
+          const std::vector<uint32_t> keep = sel_;
+          if (apply(e, in ? "Bend In" : "Bend Out")) select(keep);
+        }
       } else if (d.dt != 0) {
-        // T7.6: the notes' curves are retimed in the same step (bends stay on their edges).
+        // T7.6: the notes' free curves are retimed in the same step (bends and vibratos are properties).
         (void)apply(resizeEdit(d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start, d.dt), "Resize Notes");
       }
       break;
-    // T7.6: pen strokes, vibrato, breakpoints (a note's pitch curve)
-    case DragKind::PenDraw:
+    // T7.14: the pen's Alt stroke writes the note's vibrato property; the ~ grip and the envelope's corners too.
     case DragKind::PenVibrato:
+    case DragKind::Vibrato:
+    case DragKind::VibratoCorner:
+      if (commitVibratoDrag(d) && d.kind == DragKind::PenVibrato) {
+        vibratoDepth_ = d.vibDepth;
+        ctx.setStatus(vibratoText(d.vibDepth, d.vibRate) + " (drag the ~ grip above the note's end to change it)");
+      }
+      break;
+    case DragKind::WarpNew:
+    case DragKind::WarpMove:
+    case DragKind::WarpGlide: (void)commitWarpDrag(d); break;
+    // T7.6: pen strokes, breakpoints (a note's free pitch curve)
+    case DragKind::PenDraw:
     case DragKind::CurvePoint:
     case DragKind::CurveBow: {
       curvePreview_.clear();
-      const char* what = d.kind == DragKind::PenDraw      ? "Draw Pitch Curve"
-                         : d.kind == DragKind::PenVibrato ? "Paint Vibrato"
-                         : d.kind == DragKind::CurveBow   ? "Bend Segment"
-                         : d.curveAdded                   ? "Add Bend Point"
-                                                          : "Move Bend Point";
-      if (commitCurve(d.curve, std::move(d.curvePts), what) && d.kind == DragKind::PenVibrato) {
-        vibratoDepth_ = d.vibDepth;
-        ctx.setStatus(vibratoText(d.vibDepth, d.vibRate) + " (right-click it: Edit Vibrato\xE2\x80\xA6)");
-      }
+      const char* what = d.kind == DragKind::PenDraw    ? "Draw Pitch Curve"
+                         : d.kind == DragKind::CurveBow ? "Bend Segment"
+                         : d.curveAdded                 ? "Add Bend Point"
+                                                        : "Move Bend Point";
+      (void)commitCurve(d.curve, std::move(d.curvePts), what);
       break;
     }
     case DragKind::Velocity:
@@ -1666,7 +1753,7 @@ void RollState::abortDrag() {
 void RollState::cancelDrag() {
   if (drag.kind == DragKind::None) return;
   drag = {};
-  curvePreview_.clear();  // T7.6
+  clearCurvePreview();  // T7.6 / T7.14: a curve record's or a warp's preview
   markAllDirty();
 }
 

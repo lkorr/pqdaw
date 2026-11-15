@@ -1,13 +1,15 @@
-// T7.6 piano roll: bends between notes, pen modes, breakpoints, vibrato. Every gesture goes through the
-// real shell, pointer and key dispatch (TestDriver → UiTree → the note area / the keymap / the menus / the inline
-// field), one undo step each:
-//   Alt + a note's left / right edge (bend in / out, the nearest neighbour in pitch, removing it, its shape by menu);
-//   Ctrl+G (the selection glides); Draw Mode: a stroke on a note (bounded points; a click still deletes the note),
-//   Ctrl + click (a breakpoint), Alt + drag (vibrato; "Edit Vibrato…", "Add Vibrato…"); breakpoints (drag with row
-//   snapping, Shift free, in time, the diamond's curvature, double-click deletes); Shift + body (free detune,
-//   Shift + click deselects); a resize keeps a bend on its edge; duplicate carries the curve; Clear Bends.
-// Goldens: pianoroll-bends, pianoroll-vibrato. (T7.13: the ride curve of a JI object went with the object: its test
-// and the golden pianoroll-ride are deleted.)
+// T7.6 / T7.14 piano roll: bends between notes (on the derived API: a bend names its neighbour), pen modes,
+// breakpoints, free detune. Every gesture goes through the real shell, pointer and key dispatch (TestDriver → UiTree
+// → the note area / the keymap / the menus), one undo step each:
+//   Alt + a note's left / right edge (bend in / out: ops NoteBend, nothing baked; the neighbour — M9: the nearest in
+//   pitch among the notes that end / start within a grid step of the nearest; it is outlined while dragging; the
+//   bend follows it when it moves; removing it; its shape by menu); Ctrl+G (the selection glides); Draw Mode: a stroke
+//   on a note (bounded points; a click — or a drag of a few px, M7 — still deletes the note; a stroke is never a
+//   bend, H4), Ctrl + click (a breakpoint), Alt + drag (the note's vibrato property); breakpoints (drag with row
+//   snapping, Shift free, in time, the diamond's curvature, double-click deletes); Shift + body (free detune past a
+//   dead zone with a live status line, H5; Shift + click only selects); a resize leaves bends on their edges and a
+//   drawn curve where it is; duplicate carries the record; Clear Bends.
+// Goldens: pianoroll-bends, pianoroll-note-lines. Vibrato by dragging: test_piano_roll_vibrato.cpp.
 
 #include <doctest/doctest.h>
 
@@ -211,43 +213,63 @@ void checkGolden(const char* scene) {
 
 }  // namespace
 
-TEST_CASE("roll pen: Alt + a note's left edge glides it in from the previous note; a short drag removes the bend; the menu makes it straight") {
+TEST_CASE("roll pen: Alt + a note's left edge glides it in from the previous note — a derived bend that follows its neighbour; a short drag removes it; the menu makes it straight") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(2 * kQ, 2 * kQ, 4)});
-  const doc::NoteId b = ids[1];
+  const doc::NoteId a = ids[0], b = ids[1];
   r.d.click(r.at(3.0 * kQ, 4));
   REQUIRE(r.view->selection().size() == 1);
   size_t h = r.history();
 
-  // One beat inward from its left edge, Alt held.
+  // One beat inward from its left edge, Alt held. While the drag runs the neighbour is outlined.
   const Vec2 edge{r.view->xOfTick(2.0 * kQ) + 1.5f, r.view->yOfDegree(4)};
-  r.d.drag(edge, {edge.x + kBeat, edge.y}, 6, mod::kAlt);
+  REQUIRE(r.d.down(edge, PointerButton::Left, mod::kAlt));
+  r.d.move({edge.x + 0.5f * kBeat, edge.y}, mod::kAlt);
+  r.d.move({edge.x + kBeat, edge.y}, mod::kAlt);
   r.d.step();
+  CHECK(r.view->bendHighlights() == std::vector<doc::NoteId>{a});
+  CHECK(r.history() == h);  // a preview so far
+  CHECK(r.view->notePoint(b, 0.0).y == doctest::Approx(r.view->yOfDegree(0)).epsilon(0.01));  // … of what the release stores
+  r.d.up({edge.x + kBeat, edge.y}, PointerButton::Left, mod::kAlt);
+  r.d.step();
+  CHECK(r.view->bendHighlights().empty());
   CHECK(r.history() == h + 1);
-  std::vector<doc::Breakpoint> c = r.curve(b);
-  REQUIRE(c.size() > 2);  // an S-curve
-  CHECK(c.front().tick == 0);
-  CHECK(c.front().value == doctest::Approx(-400.0));  // from the note before it, four steps below
-  CHECK(c.back().tick == kQ);
-  CHECK(c.back().value == 0.0f);
+  // What is stored is the neighbour's name, a length and a shape: no breakpoints.
+  const doc::NoteCurves* rec = doc::findNoteCurves(r.clip(), b);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->pitch.empty());
+  CHECK(rec->bendIn == doc::NoteBend{kQ, doc::GlideShape{}, a});
+  CHECK_FALSE(rec->bendOut.set());
   CHECK(r.st().bendLength(b, -1) == kQ);
-  CHECK(r.curveAt(b, kQ / 2) == doctest::Approx(-200.0).epsilon(0.02));  // half way through the S
   CHECK(r.note(b).start == 2 * kQ);  // the edge did not move
   CHECK(r.note(b).length == 2 * kQ);
   CHECK(r.view->selection().size() == 1);
-  // It is drawn where it sounds: it starts on the previous note's row.
+  // It is drawn where it sounds: from the previous note's row, half way through the S at half the glide.
   CHECK(r.view->notePoint(b, 0.0).y == doctest::Approx(r.view->yOfDegree(0)).epsilon(0.01));
+  CHECK(*r.view->noteCentsAt(b, 0.25) - *r.view->noteCentsAt(b, 1.0) == doctest::Approx(-200.0).epsilon(0.02));
+  CHECK(*r.view->noteCentsAt(b, 0.5) == doctest::Approx(*r.view->noteCentsAt(b, 1.0)));
 
-  // The note's menu: the bend straight (two points), one undo step.
+  // The neighbour moves a row up (click it, Up): the glide starts there now. Nothing was re-done.
+  r.d.click(r.at(1.0 * kQ, 0));
+  CHECK(r.d.press("Up") == KeyResult::Action);
+  r.d.step();
+  CHECK(*doc::findNoteCurves(r.clip(), b) == *rec);
+  CHECK(r.view->notePoint(b, 0.0).y == doctest::Approx(r.view->yOfDegree(1)).epsilon(0.01));
+  CHECK(*r.view->noteCentsAt(b, 0.0) - *r.view->noteCentsAt(b, 1.0) == doctest::Approx(-300.0).epsilon(1e-6));
+  CHECK(r.d.press("Down") == KeyResult::Action);
+  r.d.step();
+
+  // The note's menu: the bend straight, one undo step.
+  r.d.click(r.view->notePoint(b, 0.8));
   h = r.history();
   r.chooseSub(r.rightClick(r.view->notePoint(b, 0.6)), "Bend In", "Straight");
   CHECK(r.history() == h + 1);
-  c = r.curve(b);
-  REQUIRE(c.size() == 2);
-  CHECK(c[0].value == doctest::Approx(-400.0));
-  CHECK(c[1].tick == kQ);
+  CHECK(doc::findNoteCurves(r.clip(), b)->bendIn.shape.kind == doc::GlideShape::LogLinear);
+  CHECK(doc::findNoteCurves(r.clip(), b)->bendIn.other == a);
   CHECK(r.st().bendIsStraight(b, -1));
+  CHECK(*r.view->noteCentsAt(b, 0.25) - *r.view->noteCentsAt(b, 1.0) == doctest::Approx(-200.0).epsilon(1e-3));
+  CHECK(*r.view->noteCentsAt(b, 0.125) - *r.view->noteCentsAt(b, 1.0) == doctest::Approx(-300.0).epsilon(1e-3));
 
   // Alt + the edge again, back to the edge (under half a grid step): the bend is gone.
   h = r.history();
@@ -255,7 +277,7 @@ TEST_CASE("roll pen: Alt + a note's left edge glides it in from the previous not
   r.d.drag(start, {start.x + 9.0f, start.y}, 4, mod::kAlt);
   r.d.step();
   CHECK(r.history() == h + 1);
-  CHECK(r.curve(b).empty());
+  CHECK(doc::findNoteCurves(r.clip(), b) == nullptr);
 
   // Without a note before it there is nothing to glide from: no edit, the status says so.
   r.d.click(r.at(1.0 * kQ, 0));
@@ -268,10 +290,13 @@ TEST_CASE("roll pen: Alt + a note's left edge glides it in from the previous not
   CHECK(r.note(ids[0]).length == 2 * kQ);  // and it was no resize
 }
 
-TEST_CASE("roll pen: Alt + a note's right edge glides it out to the next note, the nearest in pitch when several start there") {
+TEST_CASE("roll pen: Alt + a note's right edge glides it out to the next note — the nearest in pitch of the notes that start there (M9), never a note at its own pitch") {
   Pen r;
   r.focusNotes();
-  const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(2 * kQ, 2 * kQ, 4), Pen::plain(2 * kQ, 2 * kQ, 9)});
+  // After the C: an E and an A on the beat, and a bass note that starts EXACTLY on the C's end while the E starts a
+  // 32nd late. The melody's E is the neighbour, not the bass two octaves down (nearest in time).
+  const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(2 * kQ + kQ / 8, 2 * kQ, 4), Pen::plain(2 * kQ + kQ / 8, 2 * kQ, 9),
+                                                   Pen::plain(2 * kQ, 2 * kQ, -24)});
   const doc::NoteId a = ids[0];
   r.d.click(r.at(1.0 * kQ, 0));
   const size_t h = r.history();
@@ -279,18 +304,29 @@ TEST_CASE("roll pen: Alt + a note's right edge glides it out to the next note, t
   r.d.drag(edge, {edge.x - kBeat, edge.y}, 6, mod::kAlt);
   r.d.step();
   CHECK(r.history() == h + 1);
-  const std::vector<doc::Breakpoint> c = r.curve(a);
-  REQUIRE(c.size() > 2);
-  CHECK(c.front().tick == kQ);
-  CHECK(c.front().value == 0.0f);
-  CHECK(c.back().tick == 2 * kQ);
-  CHECK(c.back().value == doctest::Approx(400.0));  // the E, not the A above it
+  const doc::NoteCurves* rec = doc::findNoteCurves(r.clip(), a);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->pitch.empty());
+  CHECK(rec->bendOut == doc::NoteBend{kQ, doc::GlideShape{}, ids[1]});  // the E: not the A above it, not the bass
   CHECK(r.st().bendLength(a, 1) == kQ);
   CHECK(r.note(a).length == 2 * kQ);
+  CHECK(*r.view->noteCentsAt(a, 1.0) - *r.view->noteCentsAt(a, 0.0) == doctest::Approx(400.0).epsilon(1e-6));
+  CHECK(*r.view->noteCentsAt(a, 0.5) == doctest::Approx(*r.view->noteCentsAt(a, 0.0)));
   // Undo gives the plain note back.
   REQUIRE(r.ctx.store().undo());
   r.d.step();
-  CHECK(r.curve(a).empty());
+  CHECK(doc::findNoteCurves(r.clip(), a) == nullptr);
+
+  // A repeated note: the only note after it is at its own pitch — nothing to bend to, and the status says why.
+  const std::vector<doc::NoteId> rep = r.addNotes({Pen::plain(8 * kQ, kQ, 2), Pen::plain(9 * kQ, kQ, 2)});
+  r.d.click(r.at(8.5 * kQ, 2));
+  const size_t h2 = r.history();
+  const Vec2 e2{r.view->xOfTick(9.0 * kQ) - 2.0f, r.view->yOfDegree(2)};
+  r.d.drag(e2, {e2.x - 0.5f * kBeat, e2.y}, 6, mod::kAlt);
+  r.d.step();
+  CHECK(r.history() == h2);
+  CHECK(r.ctx.status().find("same pitch") != std::string::npos);
+  CHECK(doc::findNoteCurves(r.clip(), rep[0]) == nullptr);
 }
 
 TEST_CASE("roll pen: Ctrl+G glides each selected note into the next selected one over a grid step; Clear Bends removes them") {
@@ -308,24 +344,27 @@ TEST_CASE("roll pen: Ctrl+G glides each selected note into the next selected one
   CHECK(r.d.press("Ctrl+G") == KeyResult::Action);
   r.d.step();
   CHECK(r.history() == h + 1);
-  CHECK(r.st().bendLength(ids[0], 1) == kQ);
-  CHECK(r.curve(ids[0]).back().value == doctest::Approx(400.0));
-  CHECK(r.st().bendLength(ids[1], 1) == kQ);
-  CHECK(r.curve(ids[1]).back().value == doctest::Approx(-200.0));
-  CHECK(r.curve(ids[2]).empty());  // the last has nothing to glide into
+  CHECK(doc::findNoteCurves(r.clip(), ids[0])->bendOut == doc::NoteBend{kQ, doc::GlideShape{}, ids[1]});
+  CHECK(doc::findNoteCurves(r.clip(), ids[1])->bendOut == doc::NoteBend{kQ, doc::GlideShape{}, ids[2]});
+  CHECK(doc::findNoteCurves(r.clip(), ids[2]) == nullptr);  // the last has nothing to glide into
+  CHECK(*r.view->noteCentsAt(ids[0], 1.0) - *r.view->noteCentsAt(ids[0], 0.0) == doctest::Approx(400.0));
+  CHECK(*r.view->noteCentsAt(ids[1], 1.0) - *r.view->noteCentsAt(ids[1], 0.0) == doctest::Approx(-200.0));
   CHECK(r.view->selection().size() == 3);
+  // A second Ctrl+G changes nothing (no undo step).
+  h = r.history();
+  (void)r.d.press("Ctrl+G");
+  CHECK(r.history() == h);
 
   // The menu of the selection.
-  h = r.history();
   r.choose(r.rightClick(r.view->notePoint(ids[0], 0.2)), "Clear Bends");
   CHECK(r.history() == h + 1);
-  for (const doc::NoteId id : ids) CHECK(r.curve(id).empty());
+  CHECK(r.clip().curves == nullptr);
 }
 
-TEST_CASE("roll pen: Draw Mode — a stroke on a note is its pitch curve (thinned, bounded); a click still deletes the note") {
+TEST_CASE("roll pen: Draw Mode — a stroke on a note is its pitch curve (thinned, bounded), never a bend (H4); a click, also one that wanders a few px (M7), deletes the note") {
   Pen r;
   r.focusNotes();
-  const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 4 * kQ, 0), Pen::plain(4 * kQ, 4 * kQ, 0)});
+  const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 4 * kQ, 0), Pen::plain(4 * kQ, 4 * kQ, 0), Pen::plain(8 * kQ, 2 * kQ, 3)});
   r.drawMode(true);
   size_t h = r.history();
 
@@ -334,7 +373,7 @@ TEST_CASE("roll pen: Draw Mode — a stroke on a note is its pitch curve (thinne
   r.d.drag(from, {from.x + kBeat, from.y - 2.0f * kRow}, 20);
   r.d.step();
   CHECK(r.history() == h + 1);
-  REQUIRE(r.noteCount() == 2);  // the drag drew on the note, it did not delete it
+  REQUIRE(r.noteCount() == 3);  // the drag drew on the note, it did not delete it
   std::vector<doc::Breakpoint> c = r.curve(ids[0]);
   REQUIRE(c.size() >= 2);
   CHECK(c.size() <= 6);  // a straight stroke thins to its ends
@@ -344,6 +383,26 @@ TEST_CASE("roll pen: Draw Mode — a stroke on a note is its pitch curve (thinne
   CHECK(r.curveAt(ids[0], kQ) == doctest::Approx(100.0).epsilon(0.05));
   CHECK(r.curveAt(ids[0], 3 * kQ) == doctest::Approx(200.0).epsilon(0.02));  // held to the note's end
   CHECK(r.curveAt(ids[0], 0) == 0.0);
+  // H4: the stroke starts on 0 and ends away from it — the shape the old roll took for a "Bend Out". It is a drawn
+  // curve: the record has no bend, the menu offers none, and a resize leaves every point where it is.
+  CHECK_FALSE(doc::findNoteCurves(r.clip(), ids[0])->bendOut.set());
+  r.drawMode(false);
+  r.d.click(r.view->notePoint(ids[0], 0.05));
+  REQUIRE(r.view->selection().size() == 1);
+  Menu* menu = r.rightClick(r.view->notePoint(ids[0], 0.05));
+  CHECK(Pen::itemOf(menu, "Bend Out") < 0);
+  CHECK(Pen::itemOf(menu, "Bend In") < 0);
+  (void)r.d.press("Escape");
+  r.d.step();
+  const std::vector<doc::Breakpoint> before = r.curve(ids[0]);
+  const Vec2 end = r.view->notePoint(ids[0], 0.998);
+  h = r.history();
+  r.d.drag(end, {end.x - kBeat, end.y}, 6);  // a beat shorter: the note still reaches every point
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  REQUIRE(r.note(ids[0]).length == 3 * kQ);
+  CHECK(r.curve(ids[0]) == before);
+  r.drawMode(true);
 
   // A long wiggly stroke: the stored curve is bounded.
   h = r.history();
@@ -361,6 +420,14 @@ TEST_CASE("roll pen: Draw Mode — a stroke on a note is its pitch curve (thinne
   CHECK(c.size() <= RollState::kMaxPenPoints + 4);
   for (size_t i = 1; i < c.size(); ++i) CHECK(c[i].tick >= c[i - 1].tick);
 
+  // M7: a click whose hand slips 5 px is still a click: the note is deleted, no stray curve is stored.
+  h = r.history();
+  const Vec2 slip = r.at(9.0 * kQ, 3);
+  r.d.drag(slip, {slip.x + 5.0f, slip.y + 4.0f}, 3);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.noteCount() == 2);
+  CHECK(r.clip().notes.findById(ids[2]) == nullptr);
   // A click (no drag) on a note deletes it, as Draw Mode always did.
   h = r.history();
   r.d.click(r.view->notePoint(ids[0], 0.05));
@@ -436,12 +503,11 @@ TEST_CASE("roll pen: breakpoints — Ctrl + click adds one, drag snaps to rows (
   CHECK(r.noteCount() == 1);
 }
 
-TEST_CASE("roll pen: Alt paints vibrato in Draw Mode (depth from the stroke's height, rate from the grid); Edit / Add Vibrato by menu") {
+TEST_CASE("roll pen: Alt paints vibrato in Draw Mode — the note's vibrato property over the dragged span (depth from the stroke's height, rate from the grid), nothing baked, no menu entry") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 8 * kQ, 0), Pen::plain(0, 8 * kQ, 7)});
   const doc::NoteId n = ids[0];
-  const CurveTarget t{n};
   r.drawMode(true);
   size_t h = r.history();
   const double rate = r.st().defaultVibratoRate(kQ);
@@ -454,67 +520,31 @@ TEST_CASE("roll pen: Alt paints vibrato in Draw Mode (depth from the stroke's he
   r.d.step();
   CHECK(r.history() == h + 1);
   REQUIRE(r.noteCount() == 2);
-  std::vector<doc::Breakpoint> c = r.curve(n);
-  REQUIRE(c.size() > 16);
-  CHECK(c.size() <= RollState::kMaxVibratoPoints);
-  CHECK(c.front().tick == kQ);
-  CHECK(c.front().value == 0.0f);
-  CHECK(c.back().value == 0.0f);
-  CHECK(c.back().tick <= 5 * kQ);
-  std::optional<RollState::Vibrato> v = r.st().vibratoAt(t, 3 * kQ);
-  REQUIRE(v.has_value());
-  CHECK(v->depth == doctest::Approx(50.0).epsilon(0.03));
-  CHECK(v->rateHz == doctest::Approx(rate).epsilon(0.02));
-  CHECK(v->from == kQ);
+  const doc::NoteCurves* rec = doc::findNoteCurves(r.clip(), n);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->pitch.empty());  // a property, not breakpoints
+  CHECK(rec->vibrato.depthCents == doctest::Approx(50.0).epsilon(0.03));
+  CHECK(rec->vibrato.rate == doctest::Approx(rate).epsilon(0.001));
+  CHECK(rec->vibrato.unit == doc::NoteVibrato::RateUnit::Hz);
+  CHECK(rec->vibrato.onset == kQ);
+  CHECK(rec->vibrato.end == 5 * kQ);
   CHECK(r.ctx.status().find("Vibrato 50") != std::string::npos);
-  float peak = 0.0f;
-  for (const doc::Breakpoint& b : c) peak = std::max(peak, std::fabs(b.value));
+  // The wave is drawn on the note: silent before the onset, swinging 50 ¢ inside it.
+  const double base = *r.view->noteCentsAt(n, 0.0);
+  CHECK(*r.view->noteCentsAt(n, 0.1) == base);
+  double peak = 0.0;
+  for (int i = 0; i <= 400; ++i) peak = std::max(peak, std::fabs(*r.view->noteCentsAt(n, 0.125 + 0.5 * i / 400.0) - base));
   CHECK(peak == doctest::Approx(50.0).epsilon(0.03));
+  CHECK(*r.view->noteCentsAt(n, 0.8) == base);
 
-  // Its menu: Edit Vibrato… opens the field with what is there; another depth and rate, one undo step.
+  // No typed values anywhere: the note's menu has no vibrato entry.
   r.drawMode(false);
-  h = r.history();
-  r.choose(r.rightClick(r.view->notePoint(n, 0.375)), "Edit Vibrato");
-  REQUIRE(r.field() != nullptr);
-  CHECK(r.field()->text().find("50") == 0);
-  REQUIRE(r.d.type("20 5"));
-  (void)r.d.press("Enter");
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  v = r.st().vibratoAt(t, 3 * kQ);
-  REQUIRE(v.has_value());
-  CHECK(v->depth == doctest::Approx(20.0).epsilon(0.01));
-  CHECK(v->rateHz == doctest::Approx(5.0).epsilon(0.02));
-  CHECK(r.field() == nullptr);
-
-  // A text that is no vibrato keeps the field open and changes nothing.
-  h = r.history();
-  r.choose(r.rightClick(r.view->notePoint(n, 0.375)), "Edit Vibrato");
-  REQUIRE(r.field() != nullptr);
-  REQUIRE(r.d.type("wide"));
-  (void)r.d.press("Enter");
-  r.d.step();
-  CHECK(r.history() == h);
-  REQUIRE(r.field() != nullptr);
-  (void)r.d.press("Escape");
-  r.d.step();
-
-  // Add Vibrato… on the other note: the whole note, with the depth last used.
-  h = r.history();
-  r.choose(r.rightClick(r.at(2.0 * kQ, 7)), "Add Vibrato");
-  REQUIRE(r.field() != nullptr);
-  CHECK(r.field()->text().find("20") == 0);
-  (void)r.d.press("Enter");
-  r.d.step();
-  CHECK(r.history() == h + 1);
-  const std::optional<RollState::Vibrato> w = r.st().vibratoAt(CurveTarget{ids[1]}, 4 * kQ);
-  REQUIRE(w.has_value());
-  CHECK(w->depth == doctest::Approx(20.0).epsilon(0.01));
-  CHECK(w->from == 0);
-  CHECK(w->to > 7 * kQ);
+  Menu* menu = r.rightClick(r.view->notePoint(n, 0.05));
+  REQUIRE(menu != nullptr);
+  for (const MenuItem& item : menu->items()) CHECK(item.label.find("Vibrato") == std::string::npos);
 }
 
-TEST_CASE("roll pen: Shift + a note's body detunes it freely (a Cents note); Shift + click on a selected note deselects it") {
+TEST_CASE("roll pen: Shift + a note's body detunes it freely past a dead zone, with the amount in the status line (H5); Shift + click, also with a slip, only selects") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(2 * kQ, 2 * kQ, 4)});
@@ -522,13 +552,19 @@ TEST_CASE("roll pen: Shift + a note's body detunes it freely (a Cents note); Shi
   REQUIRE(r.view->selection().size() == 1);
   size_t h = r.history();
   const Vec2 p = r.at(1.0 * kQ, 0);
-  r.d.drag(p, {p.x, p.y - 5.0f}, 5, mod::kShift);
+  // 20 px up: 6 px of dead zone, then 14 px = one row = 100 ¢. The status line says so while dragging.
+  REQUIRE(r.d.down(p, PointerButton::Left, mod::kShift));
+  r.d.move({p.x, p.y - 10.0f}, mod::kShift);
+  r.d.move({p.x, p.y - 20.0f}, mod::kShift);
+  CHECK(r.ctx.status() == "Detune +100 \xC2\xA2");
+  r.d.up({p.x, p.y - 20.0f}, PointerButton::Left, mod::kShift);
   r.d.step();
   CHECK(r.history() == h + 1);
   CHECK(r.note(ids[0]).pitch.kind() == PitchKind::Cents);
-  CHECK(r.note(ids[0]).pitch.cents() == doctest::Approx(500.0 / 14.0).epsilon(0.01));
+  CHECK(r.note(ids[0]).pitch.cents() == doctest::Approx(100.0));
   CHECK(r.note(ids[0]).start == 0);
   CHECK(r.view->selection().size() == 1);
+  CHECK(r.ctx.status().find("Detuned +100") != std::string::npos);
 
   // Shift + click: add the other note, then take it off again; no edit.
   h = r.history();
@@ -538,9 +574,24 @@ TEST_CASE("roll pen: Shift + a note's body detunes it freely (a Cents note); Shi
   CHECK(r.view->selection().size() == 1);
   CHECK(r.history() == h);
   CHECK(r.note(ids[1]).pitch.kind() == PitchKind::Degree);
+  // H5: Shift + click to add a note with the hand slipping 5 px (past the click slop, inside the dead zone): the
+  // note joins the selection and nothing is detuned.
+  const Vec2 q = r.at(3.0 * kQ, 4);
+  r.d.drag(q, {q.x + 1.0f, q.y + 5.0f}, 3, mod::kShift);
+  r.d.step();
+  CHECK(r.view->selection().size() == 2);
+  CHECK(r.history() == h);
+  CHECK(r.note(ids[1]).pitch == PitchId::fromDegree(4, 0));
+  CHECK(r.note(ids[0]).pitch.cents() == doctest::Approx(100.0));
+  // A Shift drag along the time moves the notes on the grid and detunes nothing.
+  r.d.drag(q, {q.x + kBeat, q.y + 4.0f}, 5, mod::kShift);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.note(ids[1]).start == 3 * kQ);
+  CHECK(r.note(ids[1]).pitch == PitchId::fromDegree(4, 0));
 }
 
-TEST_CASE("roll pen: a resize keeps a bend on its edge; move and duplicate carry the curve") {
+TEST_CASE("roll pen: a resize leaves a bend on its edge (a property) and moves no drawn curve; move and duplicate carry the record") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(4 * kQ, 2 * kQ, 4)});
@@ -549,27 +600,25 @@ TEST_CASE("roll pen: a resize keeps a bend on its edge; move and duplicate carry
   CHECK(r.d.press("Ctrl+G") == KeyResult::Action);
   r.d.step();
   REQUIRE(r.st().bendLength(a, 1) == kQ);
+  const doc::NoteCurves rec = *doc::findNoteCurves(r.clip(), a);
   r.d.click(r.view->notePoint(a, 0.2));
   REQUIRE(r.view->selection().size() == 1);
 
-  // Its right edge a beat later (no Alt: a resize). The glide still ends on the note's end.
+  // Its right edge a beat later (no Alt: a resize). The glide still ends on the note's end: nothing was rewritten.
   size_t h = r.history();
   const Vec2 end = r.view->notePoint(a, 0.996);
   r.d.drag(end, {end.x + kBeat, end.y}, 6);
   r.d.step();
   CHECK(r.history() == h + 1);
   REQUIRE(r.note(a).length == 3 * kQ);
-  std::vector<doc::Breakpoint> c = r.curve(a);
-  REQUIRE(c.size() > 2);
-  CHECK(c.back().tick == 3 * kQ);
-  CHECK(c.back().value == doctest::Approx(400.0));
-  CHECK(c.front().tick == 2 * kQ);
+  CHECK(*doc::findNoteCurves(r.clip(), a) == rec);
   CHECK(r.st().bendLength(a, 1) == kQ);
-  // Undo: the note and its curve as before, in one step.
+  CHECK(*r.view->noteCentsAt(a, 1.0) - *r.view->noteCentsAt(a, 0.0) == doctest::Approx(400.0));
+  CHECK(*r.view->noteCentsAt(a, 0.66) == doctest::Approx(*r.view->noteCentsAt(a, 0.0)));  // steady until the last beat
+  // Undo: the note as before, in one step.
   REQUIRE(r.ctx.store().undo());
   r.d.step();
   CHECK(r.note(a).length == 2 * kQ);
-  CHECK(r.curve(a).back().tick == 2 * kQ);
 
   // Shift+Right lengthens by a grid cell: the same.
   r.d.click(r.view->notePoint(a, 0.2));
@@ -578,68 +627,53 @@ TEST_CASE("roll pen: a resize keeps a bend on its edge; move and duplicate carry
   CHECK(r.d.press("Shift+Right") == KeyResult::Action);
   r.d.step();
   CHECK(r.note(a).length == 3 * kQ);
-  CHECK(r.curve(a).back().tick == 3 * kQ);
+  CHECK(*doc::findNoteCurves(r.clip(), a) == rec);
 
-  // Moved a beat later, the curve goes with it; Ctrl+D copies it.
+  // Moved a beat later, the bend goes with it; Ctrl+D copies it (the copy bends to the same neighbour).
   const Vec2 body = r.view->notePoint(a, 0.3);
   r.d.drag(body, {body.x + kBeat, body.y}, 6);
   r.d.step();
   CHECK(r.note(a).start == kQ);
-  CHECK(r.curve(a).back().value == doctest::Approx(400.0));
+  CHECK(*doc::findNoteCurves(r.clip(), a) == rec);
   CHECK(r.d.press("Ctrl+D") == KeyResult::Action);
   r.d.step();
   REQUIRE(r.noteCount() == 3);
-  size_t curved = 0;
+  size_t bent = 0;
   for (const doc::Note& n : r.clip().notes)
-    if (!r.curve(n.id).empty() && r.curve(n.id).back().value == doctest::Approx(400.0)) ++curved;
-  CHECK(curved == 2);
+    if (const doc::NoteCurves* nc = doc::findNoteCurves(r.clip(), n.id); nc && nc->bendOut.other == ids[1]) ++bent;
+  CHECK(bent == 2);
 }
 
-TEST_CASE("roll pen: curve arithmetic — retiming on a resize, parsing a typed vibrato") {
+TEST_CASE("roll pen: curve arithmetic — a resized note's drawn curve keeps its place in time and is cut where the note no longer reaches") {
   using B = doc::Breakpoint;
-  // A lead-in (0 … 100), a point in the middle, a lead-out (300 … 400).
   const std::vector<B> c = {{0, -200.0f, 0.0f, {}}, {100, 0.0f, 0.0f, {}}, {200, 50.0f, 0.0f, {}}, {300, 0.0f, 0.0f, {}}, {400, 300.0f, 0.0f, {}}};
-  // The end 100 later: the lead-out moves with it, the middle stays.
-  std::vector<B> r = RollState::retimeCurve(c, 400, 500, 0);
-  REQUIRE(r.size() == 5);
-  CHECK(r[2].tick == 200);
-  CHECK(r[3].tick == 400);
-  CHECK(r[4].tick == 500);
-  CHECK(r[4].value == 300.0f);
-  // The start 50 later: the lead-in stays on the start, the middle keeps its place in time.
-  r = RollState::retimeCurve(c, 400, 350, 50);
+  // The end 100 later: nothing moves.
+  std::vector<B> r = RollState::retimeCurve(c, 500, 0);
+  CHECK(r == c);
+  // The start 50 later: every point 50 ticks earlier in the note (the same place in time), cut at the new start.
+  r = RollState::retimeCurve(c, 350, 50);
   REQUIRE(r.size() == 5);
   CHECK(r[0].tick == 0);
-  CHECK(r[1].tick == 100);
+  CHECK(r[0].value == doctest::Approx(-100.0));
+  CHECK(r[1].tick == 50);
   CHECK(r[2].tick == 150);
   CHECK(r[3].tick == 250);
   CHECK(r[4].tick == 350);
-  // Shorter than its two bends: they are squeezed, nothing is left between.
-  r = RollState::retimeCurve(c, 400, 150, 0);
-  REQUIRE(r.size() >= 3);
-  CHECK(r.front().value == -200.0f);
+  CHECK(r[4].value == 300.0f);
+  // Shorter: cut at the new end, where the curve was.
+  r = RollState::retimeCurve(c, 150, 0);
+  REQUIRE(r.size() == 3);
   CHECK(r.back().tick == 150);
-  CHECK(r.back().value == 300.0f);
-  // No bends: the curve is cut at the new end, where it was.
+  CHECK(r.back().value == doctest::Approx(25.0));
   const std::vector<B> plain = {{0, 0.0f, 0.0f, {}}, {200, 100.0f, 0.0f, {}}, {400, 0.0f, 0.0f, {}}};
-  r = RollState::retimeCurve(plain, 400, 300, 0);
+  r = RollState::retimeCurve(plain, 300, 0);
   REQUIRE(r.size() == 3);
   CHECK(r[2].tick == 300);
   CHECK(r[2].value == doctest::Approx(50.0));
-
-  double depth = 30.0, rate = 6.0;
-  std::string why;
-  CHECK(RollState::parseVibrato("45 \xC2\xA2 \xC2\xB7 5.5 Hz", depth, rate, why));
-  CHECK(depth == 45.0);
-  CHECK(rate == 5.5);
-  CHECK(RollState::parseVibrato("12", depth, rate, why));  // the rate stays
-  CHECK(depth == 12.0);
-  CHECK(rate == 5.5);
-  CHECK_FALSE(RollState::parseVibrato("deep", depth, rate, why));
-  CHECK_FALSE(RollState::parseVibrato("30 90", depth, rate, why));
   CHECK(RollState::vibratoText(30.0, 6.0) == "Vibrato 30 \xC2\xA2 \xC2\xB7 6 Hz");
+  CHECK(RollState::vibratoText(35.0, 5.5) == "Vibrato 35 \xC2\xA2 \xC2\xB7 5.5 Hz");
 }
 
 TEST_CASE("render: pianoroll-note-lines (T7.12: repeated 16ths, a selected run, soft / deactivated / Cents / Ratio notes as lines) matches the golden image") { checkGolden("pianoroll-note-lines"); }
 TEST_CASE("render: pianoroll-bends (a melody gliding between its notes, a straight scoop with its breakpoints) matches the golden image") { checkGolden("pianoroll-bends"); }
-TEST_CASE("render: pianoroll-vibrato (a 30 ¢ / 6 Hz vibrato, a scoop into a 60 ¢ / 4 Hz one) matches the golden image") { checkGolden("pianoroll-vibrato"); }
+

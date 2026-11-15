@@ -16,6 +16,7 @@
 
 #include "../common/labels.h"
 #include "../common/paint.h"
+#include "pq/document/automation_curve.h"
 #include "pq/tuning/ji.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
@@ -83,8 +84,13 @@ void drawNoteLine(DrawList& dl, const LineStyle& st, const NoteLine& d, std::spa
   }
 }
 
-// Px between samples along a pitch path (logical).
+// Px between samples along a stored free curve with bowed segments (logical); every other path is its cached
+// straight segments.
 constexpr float kPathSampleStep = 2.0f;
+// A path note narrower than kPathTinyPx is one quad over its wave's extent; narrower than kPathSmallPx its line
+// alone (no grab band, no round ends, no head). Logical px.
+constexpr float kPathTinyPx = 10.0f;
+constexpr float kPathSmallPx = 20.0f;
 
 // Visible content tick range of a device x span.
 std::pair<Ticks, Ticks> tickSpan(const RollState& s, int32_t x0, int32_t x1) {
@@ -307,6 +313,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
 
   paintOverlay(ctx, s_, vis, static_cast<float>(vis.x), static_cast<float>(vis.right()));
   paintFundamental(ctx, s_, r, vis);
+  paintGroupFrames(ctx, s_, vis);  // T7.14: every JI group's frame and header, under its notes
 
   // Notes. A Move / Copy drag shows the selected notes displaced: look as far back / ahead as the drag reaches.
   const DragState& dr = s_.drag;
@@ -332,7 +339,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   // T7.4: notes with a pitch curve are drawn along their path, after the others.
   std::vector<CurveNote>& curved = s_.curveNotes;
   curved.clear();
-  const bool anyPath = s_.clip()->curves != nullptr || s_.hasCurvePreview();
+  const bool anyPath = s_.clip()->curves != nullptr || s_.clip()->groups != nullptr || s_.hasCurvePreview();  // (warps)
   const std::optional<RollState::Harmonics> H = s_.harmonics();
   const std::optional<tuning::Rational> vf = s_.virtualFundamental();
   const bool anyGroup = s_.clip()->groups != nullptr;
@@ -375,6 +382,13 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     if (path) curved.push_back({&n, start, length, pitch, sel});
     else if (zOrder) zNotes.push_back(d);
     else drawNoteLine(dl, style, d);
+    // T7.14: a note of a JI group carries its harmonic number alone (the anchor's marked), in the group's colours.
+    if (anyGroup && pitch == n.pitch)
+      if (const int role = s_.groupRole(n); role != 0)
+        if (const std::optional<uint64_t> h = s_.harmonicOf(n); h && *h <= 99999) {
+          labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, 0, 1, static_cast<uint32_t>(*h), static_cast<uint8_t>(role)});
+          return;
+        }
     if (pitch.kind() == tuning::PitchKind::Ratio) {
       const tuning::Rational r = pitch.ratio();
       uint32_t k = 0;
@@ -383,19 +397,15 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
       std::optional<uint64_t> h;
       if (pitch.anchorKind() == tuning::AnchorKind::Reference) {
         if (vf) h = tuning::harmonicNumber(r, *vf);
-        if (anyGroup && pitch == n.pitch)
-          if (const std::optional<uint64_t> own = s_.harmonicOf(n)) h = own;  // the anchor of a group
-      } else if (pitch == n.pitch) {
-        if (anyGroup) h = s_.harmonicOf(n);
       } else if (H && H->anchor.valid() && pitch.anchorId() == H->anchor.value) {
-        h = tuning::harmonicNumber(r, H->ratio);
+        h = tuning::harmonicNumber(r, H->ratio);  // a member being dragged: its number on the active group's series
+        if (h && *h <= 99999) {
+          labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, 0, 1, static_cast<uint32_t>(*h), 1});
+          return;
+        }
       }
       if (h && *h <= 99999) k = static_cast<uint32_t>(*h);
-      labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, r.num(), r.den(), k});
-    } else if (anyGroup) {
-      // The anchor note of a JI group carries its (derived) number.
-      if (const std::optional<uint64_t> h = s_.harmonicOf(n); h && *h <= 99999)
-        labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, 0, 1, static_cast<uint32_t>(*h)});
+      labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, r.num(), r.den(), k, 0});
     }
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
@@ -439,7 +449,9 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   if (!curved.empty()) paintCurveNotes(ctx, s_, vis);  // the same lines, along their paths
   if (!labels.empty()) paintNoteLabels(ctx);
 
-  paintCurveHandles(ctx, s_, vis);  // T7.6: the breakpoints of the curves being edited
+  paintGroupOverlays(ctx, s_, vis);  // T7.14: warp markers, grips, labels; the proportion tool's box
+  paintCurveHandles(ctx, s_, vis);   // T7.6: the breakpoints of the curves being edited
+  paintVibratoGrips(ctx, s_, vis);   // T7.14: the ~ grips and the envelope corners
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)
@@ -487,6 +499,28 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
   char buf[48];
   for (const NoteLabel& l : s_.noteLabels) {
     const float w = l.x1 - l.x0, h = l.y1 - l.y0;
+    if (l.group != 0) {
+      // T7.14: a JI group's note: its harmonic number above the line at its left end, as in the frame's proportion;
+      // the anchor's brighter, after a small diamond (the frozen note).
+      if (w < ctx.scale.exact(12.0f) || h < 0.6f * minH) continue;
+      const int n = std::snprintf(buf, sizeof buf, "%u", l.harmonic);
+      if (n <= 0) continue;
+      const float t = std::min(style.thick, std::max(1.0f, h - 2.0f));
+      const int32_t bottom = static_cast<int32_t>(std::round(l.yc - 0.5f * t)) - 1;
+      const int32_t top = bottom - px - 1;
+      int32_t left = static_cast<int32_t>(l.x0) + pad;
+      const Rgba ink = l.group == 2 ? th.roll.jiSelected : th.roll.jiText;
+      if (l.group == 2) {
+        const float r = std::max(2.5f, 0.28f * static_cast<float>(px));
+        const Vec2 c{static_cast<float>(left) + r, static_cast<float>(top + bottom) * 0.5f + 1.0f};
+        const Vec2 diamond[4] = {{c.x - r, c.y}, {c.x, c.y - r}, {c.x + r, c.y}, {c.x, c.y + r}};
+        ctx.dl.addConvexPolyFilled(diamond, ink);
+        left += static_cast<int32_t>(std::ceil(2.0f * r)) + pad;
+      }
+      const std::string_view text(buf, static_cast<size_t>(n));
+      paint::text(ctx, l.group == 2 ? fonts->bodyStrong : font, {left, top, ts->measure(fonts->bodyStrong, text) + 2 * pad, bottom - top + 1}, text, ink, TextAlign::Left);
+      continue;
+    }
     if (w < minW || h < minH) continue;
     int n = l.num == 0 ? std::snprintf(buf, sizeof buf, "%u", l.harmonic)  // the anchor: its harmonic number
                        : std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(l.num), static_cast<long long>(l.den));
@@ -508,8 +542,11 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
   }
 }
 
-// The notes drawn along a pitch path (a pitch curve; RollState::curveNotes, filled by the note
-// area's paint): the path sampled every kPathSampleStep px into the shared scratch polyline, then the same line.
+// The notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint): the note's cached
+// effective curve (RollState::pathOf: flattened once per clip snapshot, M7 review M14) mapped to the screen into the
+// shared scratch polyline, then the same line as every note. Nothing is evaluated per frame: a paint walks the cached
+// points in view; where several fall on one pixel column only the column's extremes are emitted (a zoomed-out vibrato
+// costs two points per px however fast it is).
 void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   if (!ctx.res.theme || s.curveNotes.empty()) return;
   const Theme& th = *ctx.res.theme;
@@ -517,6 +554,7 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   const LineStyle style = lineStyle(th, s, ctx.scale.factor);
   const float step = std::max(1.0f, kPathSampleStep * ctx.scale.factor);
   const float lane = static_cast<float>(std::max(1, s.rows().laneHeight()));
+  const float thick = std::min(style.thick, std::clamp(lane - 2.0f, std::min(2.0f, lane), lane));  // as drawNoteLine
   const float vx0 = static_cast<float>(vis.x) - 2.0f * step, vx1 = static_cast<float>(vis.right()) + 2.0f * step;
   std::vector<Vec2>& pts = s.linePts;
   for (const CurveNote& c : s.curveNotes) {
@@ -524,19 +562,77 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
     const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
     const float xa = std::max(x0, vx0), xb = std::min(x1, vx1);
     if (xb <= xa) continue;
-    pts.clear();
-    const int n = std::clamp(static_cast<int>(std::ceil((xb - xa) / step)), 1, 8192);
-    bool ok = true;
-    for (int k = 0; k <= n && ok; ++k) {
-      const float x = xa + (xb - xa) * static_cast<float>(k) / static_cast<float>(n);
-      const double off = std::clamp(s.tickAtX(x) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
-      const std::optional<double> cents = s.pathCents(*c.note, c.start, c.pitch, off);
-      if (!cents) ok = false;
-      else pts.push_back({x, s.yOfCents(*cents)});
-    }
-    if (!ok || pts.size() < 2) continue;
+    const RollState::NotePath* p = s.pathOf(*c.note);
+    const std::optional<double> base = p && c.pitch == c.note->pitch ? std::optional<double>(p->base) : s.centsOf(c.pitch);
+    if (!base) continue;
     const bool on = c.note->enabled();
     const Rgba fill = on ? (c.selected ? col.selFill : col.fill)[velIndex(c.note->velocity)] : col.disabledFill;
+    // Level of detail (a zoomed-out clip stays cheap, as the straight notes' two quads): a note too narrow to show
+    // its wave is one quad over the wave's extent; a small one is its line without the band and the round ends.
+    if (x1 - x0 < kPathTinyPx * ctx.scale.factor) {
+      const float ya = s.yOfCents(*base + (p ? static_cast<double>(p->hi) : 0.0)), yb = s.yOfCents(*base + (p ? static_cast<double>(p->lo) : 0.0));
+      ctx.dl.addRectFilled(frect(std::round(x0), std::round(ya - 0.5f * thick), std::round(x1), std::round(yb + 0.5f * thick)), fill);
+      continue;
+    }
+    pts.clear();
+    if (!p || p->pts.empty()) {
+      const float y = s.yOfCents(*base);  // a member its group's warps hold in one state: straight, where it sounds
+      pts.push_back({xa, y});
+      pts.push_back({xb, y});
+    } else if (p->curved) {
+      // The stored free curve with bowed segments: sampled along the curve law.
+      const std::span<const doc::Breakpoint> curve(p->pts);
+      const int n = std::clamp(static_cast<int>(std::ceil((xb - xa) / step)), 1, 8192);
+      for (int k = 0; k <= n; ++k) {
+        const float x = xa + (xb - xa) * static_cast<float>(k) / static_cast<float>(n);
+        const double off = std::clamp(s.tickAtX(x) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
+        pts.push_back({x, s.yOfCents(*base + pq::evalAutomation(curve, off))});
+      }
+    } else {
+      // Straight segments between the cached points: the ones in view, between the values at the view's edges.
+      const std::span<const doc::Breakpoint> curve(p->pts);
+      const double ta = std::clamp(s.tickAtX(xa) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
+      const double tb = std::clamp(s.tickAtX(xb) - static_cast<double>(c.start), ta, static_cast<double>(c.length));
+      pts.push_back({xa, s.yOfCents(*base + pq::evalAutomation(curve, ta))});
+      auto it = std::upper_bound(curve.begin(), curve.end(), ta, [](double t, const doc::Breakpoint& b) { return t < static_cast<double>(b.tick); });
+      float colX = xa, colMin = pts.back().y, colMax = colMin, colLast = colMin;
+      bool colMany = false;
+      auto flush = [&] {
+        if (!colMany) return;
+        // The column's extremes, ending where the curve left it.
+        if (colLast == colMin) {
+          pts.push_back({colX, colMax});
+          pts.push_back({colX, colMin});
+        } else {
+          pts.push_back({colX, colMin});
+          pts.push_back({colX, colMax});
+          if (colLast != colMax) pts.push_back({colX, colLast});
+        }
+        colMany = false;
+      };
+      for (; it != curve.end() && static_cast<double>(it->tick) < tb; ++it) {
+        const float x = s.xOfTick(static_cast<double>(c.start + it->tick));
+        const float y = s.yOfCents(*base + static_cast<double>(it->value));
+        if (x - colX < 1.0f) {
+          colMin = std::min(colMin, y);
+          colMax = std::max(colMax, y);
+          colLast = y;
+          colMany = true;
+          continue;
+        }
+        flush();
+        pts.push_back({x, y});
+        colX = x;
+        colMin = colMax = colLast = y;
+      }
+      flush();
+      pts.push_back({xb, s.yOfCents(*base + pq::evalAutomation(curve, tb))});
+    }
+    if (pts.size() < 2) continue;
+    if (x1 - x0 < kPathSmallPx * ctx.scale.factor) {
+      smoothPolyline(ctx.dl, pts, fill, thick);
+      continue;
+    }
     const float y = pts.front().y;
     drawNoteLine(ctx.dl, style, {x0, x1, y - 0.5f * lane, y + 0.5f * lane, y, fill, on ? fill : col.disabledBorder, 0}, pts);
   }

@@ -24,6 +24,7 @@
 
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -165,9 +166,45 @@ public:
   // note's identity and pitch, or the row's (cents, Hz, nearest ratio, overlay EDO step). Tests read it directly.
   ui::InfoText readoutAt(ui::Vec2 p, bool keys);
 
-  // --- JI (T7.13; roll_ji.cpp). The group UI is T7.14's. ---
+  // --- JI (T7.13; roll_ji.cpp) ---
   // "8:9:10:12:15": strictly ascending whole terms. The error says what is wrong.
   static Result<std::vector<int64_t>> parseProportion(std::string_view text);
+  // --- JI groups, warps, vibrato (T7.14; roll_groups.cpp, roll_vibrato.cpp) ---
+  // The commands behind the keys / menus / fields (each one undo step): Ctrl+Shift+J (ops::tuneToJi on the selection,
+  // or ops::untuneJiGroup when it already is one tuned group), Alt+Up / Down (ops::walkJiGroup on the active group),
+  // the proportion tool's field (ops::proportionNotes) and "Add Note at Ratio…" (ops::addGroupNote; "3/2", "7:4" to
+  // that note, or a harmonic number).
+  bool toggleTuneToJi();
+  bool walkActiveGroup(int32_t steps);
+  bool insertProportion(Ticks start, Ticks length, int64_t bottomDegree, const std::vector<int64_t>& terms);
+  bool addNoteAtRatio(doc::NoteId note, std::string_view text);
+  bool proportionArmed() const noexcept;  // J was pressed: the next drag in the note area is the proportion's box
+  // Where a group's frame and its parts are (device px; tests script the pointer with these). The corner grips, the
+  // warp markers and their glide grips are centred on the frame's bottom border.
+  struct GroupGeometry {
+    bool valid = false;
+    ui::Rect box{}, header{};
+    ui::Vec2 proportion{};  // the middle of the proportion inside the header (a click opens the chooser)
+    ui::Vec2 leftGrip{}, rightGrip{};
+    std::vector<ui::Vec2> markers, glideGrips;  // one per warp
+    std::string headerText, proportionText;
+    bool tuned = false;       // a member remembers what it was written as
+    bool gripsShown = false;  // the corner grips (a tuned group that is active or under the pointer)
+  };
+  GroupGeometry groupGeometry(doc::JiGroupId id) const;
+  int32_t selectedWarp() const noexcept;  // the selected warp marker's index (−1: none)
+  // A note's ~ vibrato grip and the corners of its vibrato's envelope (0 onset, 1 end of the fade-in, 2 start of the
+  // fade-out, 3 end); nullopt: not placed / no vibrato.
+  std::optional<ui::Vec2> vibratoGrip(doc::NoteId id) const;
+  std::optional<ui::Vec2> vibratoCorner(doc::NoteId id, int corner) const;
+  // The pitch the roll draws a note at, `frac` of the way through it, in cents from the reference (its effective
+  // curve: bends, warps, vibrato, drawn curve); the device y of a pitch.
+  std::optional<double> noteCentsAt(doc::NoteId id, double frac) const;
+  float yOfCents(double cents) const noexcept;
+  // How many note paths were flattened so far (a repaint of an unchanged clip adds none: M7 review M14).
+  uint64_t pathBuilds() const noexcept;
+  // The notes outlined as bend targets while an Alt + edge drag runs.
+  std::vector<doc::NoteId> bendHighlights() const;
   // Wall-clock time of the note area's last paint (tests).
   struct PaintStats {
     double notesMs = 0.0;

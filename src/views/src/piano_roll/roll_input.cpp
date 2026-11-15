@@ -9,10 +9,14 @@
 //               T7.13: "Is Harmonic…" declares the note the anchor of a JI group; with an active group the plain
 //               draw puts members on its harmonics (Shift: the rows).
 //               T7.6 (roll_pen.cpp): Alt + a note's left / right edge bends it in from the previous note / out to
-//               the next one; Shift + a note's body detunes freely (cents); in Draw Mode a drag on a note draws its
-//               pitch curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint (a click still deletes the
-//               note); the breakpoints of the selected notes drag (Shift: free), a double-click deletes one, the
-//               diamond between two bends the segment.
+//               the next one; Shift + a note's body detunes freely (cents, after a dead zone); in Draw Mode a drag on
+//               a note draws its pitch curve, Alt + drag paints vibrato, Ctrl + click adds a breakpoint (a click —
+//               or a drag of a few px — still deletes the note); the breakpoints of the selected notes drag (Shift:
+//               free), a double-click deletes one, the diamond between two bends the segment.
+//               T7.14, what a press finds first: the proportion tool's box (J armed), a vibrato grip (the ~ above a
+//               note's end, the envelope's corners under it; roll_vibrato.cpp), a warp marker / glide grip / frame
+//               corner grip (roll_groups.cpp), a breakpoint, a note, a group's header (only where no note is), then
+//               empty space. A frame itself takes nothing: inside it notes and empty space are what they are.
 //   keys        click auditions the row and selects its notes (Shift adds); horizontal drag zooms the rows;
 //               right-click: row labels; hover: the row's pitch readout.
 //   ruler       drag the loop brace (its ends or the whole brace), the start marker and the end marker; elsewhere a
@@ -64,8 +68,9 @@ NoteAreaWidget::NoteAreaWidget(RollState& s) : Control("notes"), s_(s) {
   setInfo("MIDI Note Editor",
           "Click a note to select it, drag to move (Alt+drag copies), drag a note's end to resize. Double-click adds or "
           "deletes a note; B toggles Draw Mode. Up/Down move by one step of the tuning, Shift+Up/Down by one equave. "
-          "Alt+drag a note's edge to glide it in from the previous note or out to the next; in Draw Mode drag on a note "
-          "to draw its pitch, Alt+drag to paint vibrato.");
+          "Alt+drag a note's edge to glide it in from the previous note or out to the next; drag the ~ above a note's "
+          "end for vibrato. Ctrl+Shift+J tunes the selected chord to just intonation and back. The ? button lists "
+          "everything.");
 }
 
 void NoteAreaWidget::onFocusChanged(bool focused) {
@@ -74,6 +79,7 @@ void NoteAreaWidget::onFocusChanged(bool focused) {
 
 void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zone) {
   const bool toggle = (e.mods & (mod::kShift | mod::kCtrl)) != 0;
+  s_.selectWarp({});  // T7.14: the notes have the keys again
   DragState& d = s_.drag;
   d = {};
   d.pressedWasSelected = s_.selected(n.id);
@@ -123,6 +129,7 @@ DrawnNote NoteAreaWidget::cellNote(TickRange c, Vec2 p, DrawPitch mode) const {
 }
 
 void NoteAreaWidget::pressEmpty(const PointerEvent& e) {
+  s_.selectWarp({});
   DragState& d = s_.drag;
   d = {};
   const Ticks t = roundTicks(s_.tickAtX(e.pos.x));
@@ -166,8 +173,10 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
   DragState& d = s_.drag;
   const float scale = tree() ? tree()->scale() : 1.0f;
   if (!d.moved && !moreThanSlop(p, d.press, scale)) return;
+  if (!d.moved) s_.markNotesDirty();  // T7.14: the vibrato grips of the selected notes go while another gesture runs
   d.moved = true;
   d.last = p;
+  d.travel = std::max(d.travel, std::max(std::fabs(p.x - d.press.x), std::fabs(p.y - d.press.y)));
   const Grid g = s_.grid();
   const Ticks raw = roundTicks(s_.tickAtX(p.x) - s_.tickAtX(d.press.x));
   switch (d.kind) {
@@ -176,13 +185,23 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
       d.dt = g.snapping() ? g.snapDelta(d.originTick, raw) : raw;
       d.cents = 0.0;
       if (d.kind == DragKind::Move && (mods & mod::kShift) && !s_.rows().empty()) {
-        // T7.6: Shift = free detune: cents instead of rows (the notes become Cents notes).
+        // T7.6: Shift = free detune: cents instead of rows (the notes become Cents notes). T7.14 (M7 review H5): only
+        // past a vertical dead zone, so a Shift + click that slips, or a Shift drag along the time, detunes nothing.
         d.steps = 0;
-        d.cents = s_.centsAtScreenY(p.y) - s_.centsAtScreenY(d.press.y);
+        const float dead = RollState::kDetuneDeadZone * scale;
+        const float dy = p.y - d.press.y;
+        if (std::fabs(dy) > dead) d.cents = std::round(s_.centsAtScreenY(p.y) - s_.centsAtScreenY(d.press.y + std::copysign(dead, dy)));
         d.trackDamage = false;
+        char buf[64];
+        if (d.cents != 0.0) std::snprintf(buf, sizeof buf, "Detune %+.0f \xC2\xA2", d.cents);
+        else std::snprintf(buf, sizeof buf, "Detune: drag up or down");
+        s_.ctx.setStatus(buf);
       } else if (!s_.rows().empty()) {
         const int64_t deg = s_.rows().row(s_.rows().indexAtY(s_.contentY(p.y))).degree;
         d.steps = static_cast<int32_t>(std::clamp<int64_t>(deg - d.pressDegree, INT32_MIN / 2, INT32_MAX / 2));
+        // T7.14: a member of a JI group snaps to its group's harmonics: the one nearest the pointer.
+        if (const doc::Note* pressed = s_.findNote(d.pressed))
+          if (const std::optional<int32_t> h = s_.harmonicDragSteps(*pressed, p.y + d.grabY)) d.steps = *h;
       }
       s_.updatePreviewPitches();
       break;
@@ -204,6 +223,18 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
     case DragKind::PenVibrato: s_.penTo(p, mods); break;
     case DragKind::CurvePoint:
     case DragKind::CurveBow: s_.curveHandleTo(p, mods); break;
+    case DragKind::Vibrato:
+    case DragKind::VibratoCorner: s_.vibratoDragTo(p, mods); break;
+    case DragKind::WarpNew:
+    case DragKind::WarpMove:
+    case DragKind::WarpGlide: s_.warpDragTo(p, mods); break;
+    case DragKind::ProportionBox: {
+      const int32_t x0 = static_cast<int32_t>(std::min(p.x, d.press.x)), x1 = static_cast<int32_t>(std::max(p.x, d.press.x));
+      const int32_t y0 = static_cast<int32_t>(std::min(p.y, d.press.y)), y1 = static_cast<int32_t>(std::max(p.y, d.press.y));
+      d.rubber = {x0, y0, std::max(1, x1 - x0), std::max(1, y1 - y0)};
+      s_.markNotesDirty();
+      break;
+    }
     case DragKind::Rubber: {
       const int32_t x0 = static_cast<int32_t>(std::min(p.x, d.press.x)), x1 = static_cast<int32_t>(std::max(p.x, d.press.x));
       const int32_t y0 = static_cast<int32_t>(std::min(p.y, d.press.y)), y1 = static_cast<int32_t>(std::max(p.y, d.press.y));
@@ -261,6 +292,33 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       }
       if (e.button != PointerButton::Left) return false;
       if (tree()) tree()->setFocus(this);
+      // T7.14: the proportion tool (J): this press starts its box, whatever is under it.
+      if (s_.proportionArmed()) {
+        s_.setHoverPart({});
+        DragState& d = s_.drag;
+        d = {};
+        d.kind = DragKind::ProportionBox;
+        d.press = d.last = e.pos;
+        d.rubber = {static_cast<int32_t>(e.pos.x), static_cast<int32_t>(e.pos.y), 1, 1};
+        return true;
+      }
+      // T7.14: a vibrato grip (they lie outside the note's band: above its end, under its envelope).
+      if (const RollState::VibratoHit vh = s_.vibratoPartAt(e.pos); vh.valid()) {
+        if (e.clickCount >= 2 && vh.part == RollState::VibratoPart::Grip) {
+          s_.drag = {};
+          (void)s_.removeVibrato(vh.note);
+        } else {
+          s_.beginVibratoDrag(vh, e.pos);
+        }
+        return true;
+      }
+      // T7.14: a warp marker, its glide grip, a frame's corner grip (on the frame's bottom border).
+      const GroupHit gh = s_.groupPartAt(e.pos);
+      if (gh.part == GroupPart::Marker || gh.part == GroupPart::GlideGrip || gh.part == GroupPart::LeftGrip || gh.part == GroupPart::RightGrip) {
+        s_.setHoverPart({});
+        s_.beginWarpDrag(gh, e.pos);
+        return true;
+      }
       s_.setHoverPart({});  // a gesture shows its own preview
       // T7.6: a breakpoint of a curve being shown (the selected notes): drag it, a
       // double-click deletes it; the diamond between two points bends the segment. A note's edge comes first (a
@@ -290,6 +348,15 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       }
       if (n) {
         pressNote(e, *n, zone);
+        // Where the press holds the note's line (a member dragged vertically snaps to the harmonic under its line).
+        if (const std::optional<double> c = s_.pathCents(*n, n->start, n->pitch, std::clamp(s_.tickAtX(e.pos.x) - static_cast<double>(n->start), 0.0, static_cast<double>(n->length))))
+          s_.drag.grabY = s_.yOfCents(*c) - e.pos.y;
+      } else if (gh.part == GroupPart::Header || gh.part == GroupPart::Proportion) {
+        // T7.14: a group's header (where no note is): its notes are selected; on a tuned group's proportion the
+        // chooser opens.
+        s_.drag = {};
+        s_.selectGroup(gh.group);
+        if (gh.part == GroupPart::Proportion) (void)s_.openJiChooser(gh.group);
       } else if (e.clickCount >= 2 && !s_.ctx.drawMode()) {
         // Double-click on empty space: one note in the grid cell.
         s_.drag = {};
@@ -325,6 +392,42 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         s_.hoverPartAt(e.pos);
         return true;
       }
+      // T7.14: grips and markers.
+      if (d.kind == DragKind::ProportionBox) {
+        const DragState was = d;
+        s_.drag = {};
+        s_.armProportionTool(false);
+        if (!s_.rows().empty()) {
+          // The box in ticks (whole grid cells; a click: one bar from its cell) and its bottom row.
+          const Grid g = s_.grid();
+          const float xa = was.moved ? static_cast<float>(was.rubber.x) : was.press.x;
+          const float xb = was.moved ? static_cast<float>(was.rubber.right()) : was.press.x;
+          const TickRange first = drawCell(g, std::max<Ticks>(roundTicks(s_.tickAtX(xa)), 0));
+          const TickRange last = drawCell(g, std::max<Ticks>(roundTicks(s_.tickAtX(xb)) - (was.moved ? 1 : 0), first.start));
+          Ticks end = std::max(last.end, first.end);
+          if (!was.moved) end = first.start + kTicksPerWhole * s_.clip()->signature.numerator / std::max(1, static_cast<int>(s_.clip()->signature.denominator));
+          const float yb = was.moved ? static_cast<float>(was.rubber.bottom()) - 1.0f : was.press.y;
+          const int64_t bottom = s_.rows().row(s_.rows().indexAtY(s_.contentY(yb))).degree;
+          const IRect anchor = was.moved ? was.rubber : IRect{static_cast<int32_t>(was.press.x), static_cast<int32_t>(was.press.y), 1, 1};
+          (void)s_.openProportionEntry(first.start, end - first.start, bottom, anchor);
+        }
+        s_.markNotesDirty();
+        return true;
+      }
+      if (!d.moved && (d.kind == DragKind::Vibrato || d.kind == DragKind::VibratoCorner || d.kind == DragKind::WarpNew || d.kind == DragKind::WarpGlide ||
+                       d.kind == DragKind::WarpMove)) {
+        const DragState was = d;
+        s_.cancelDrag();
+        if (was.kind == DragKind::WarpMove) s_.selectWarp({was.group, was.warpIndex});  // a click selects the marker (Delete removes it)
+        else if (was.kind == DragKind::WarpNew) s_.ctx.setStatus(was.fromLeft ? "Drag this corner inward: the chord plays as written up to there, then glides into JI"
+                                                                               : "Drag this corner inward: from there the chord glides back to the tuning");
+        else if (was.kind == DragKind::Vibrato) s_.ctx.setStatus("Vibrato: drag this grip up for depth, sideways for speed; double-click removes it");
+        s_.hoverPartAt(e.pos);
+        return true;
+      }
+      // T7.14 (M7 review M7): a pen drag of a few px is a click: it erases the note, as Draw Mode's click does.
+      const float penMin = RollState::kMinPenStroke * (tree() ? tree()->scale() : 1.0f);
+      if (d.moved && (d.kind == DragKind::PenDraw || d.kind == DragKind::PenVibrato) && d.travel < penMin) d.moved = false;
       if (!d.moved && d.toggleOnClick) {  // T7.6: Shift + click on a selected note deselects it (on release)
         const doc::NoteId id = d.pressed;
         s_.drag = {};
@@ -385,7 +488,8 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
 }
 
 bool NoteAreaWidget::onKey(const KeyEvent& e) {
-  if (e.down && e.key == key::kEscape && s_.drag.kind != DragKind::None) {
+  if (e.down && e.key == key::kEscape && (s_.drag.kind != DragKind::None || s_.proportionArmed())) {
+    s_.armProportionTool(false);  // T7.14: Esc also puts the proportion tool away
     s_.abortDrag();
     if (tree() && tree()->captured() == this) tree()->releaseCapture();
     return true;
@@ -419,17 +523,30 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
       case DragKind::CurvePoint: return Cursor::Move;
       case DragKind::CurveBow: return Cursor::ResizeNS;
       case DragKind::Rubber: return Cursor::Arrow;
+      case DragKind::Vibrato: return Cursor::Move;
+      case DragKind::VibratoCorner:
+      case DragKind::WarpNew:
+      case DragKind::WarpMove:
+      case DragKind::WarpGlide: return Cursor::ResizeEW;
+      case DragKind::ProportionBox: return Cursor::Crosshair;
       default: break;
     }
+  // T7.14: as the press: the proportion tool, a vibrato grip, a warp marker / grip.
+  if (s_.proportionArmed()) return Cursor::Crosshair;
+  if (const RollState::VibratoHit vh = s_.vibratoPartAt(p); vh.valid()) return vh.part == RollState::VibratoPart::Grip ? Cursor::Move : Cursor::ResizeEW;
+  const GroupHit gh = s_.groupPartAt(p);
+  if (gh.part == GroupPart::Marker || gh.part == GroupPart::GlideGrip || gh.part == GroupPart::LeftGrip || gh.part == GroupPart::RightGrip) return Cursor::ResizeEW;
   // T7.6: a breakpoint (drag it), the diamond between two (bend the segment); a note's edge comes first, as the press.
   if (const RollState::CurveHit ch = s_.curveHandleAt(p); ch.valid()) {
     int edgeZone = 0;
     if (!s_.ctx.drawMode()) (void)s_.noteAt(p, &edgeZone);
     if (edgeZone == 0) return ch.mid ? Cursor::ResizeNS : Cursor::Move;
   }
-  if (s_.ctx.drawMode()) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
   int zone = 0;
-  if (!s_.noteAt(p, &zone)) return Cursor::Arrow;  // empty space: a drag draws the selection rectangle
+  const doc::Note* under = s_.noteAt(p, &zone);
+  if (!under && (gh.part == GroupPart::Header || gh.part == GroupPart::Proportion)) return Cursor::Pointer;  // selects the group / opens the chooser
+  if (s_.ctx.drawMode()) return Cursor::Crosshair;  // a click adds a cell's note (or deletes the one under it)
+  if (!under) return Cursor::Arrow;  // empty space: a drag draws the selection rectangle
   return zone != 0 ? Cursor::ResizeEW : Cursor::Move;
 }
 
@@ -442,16 +559,48 @@ InfoText NoteAreaWidget::info() const {
 // selected notes (a note under the pointer that is not selected becomes the selection, as Live), else paste / select
 // all; the row labels for any press.
 Menu* NoteAreaWidget::openMenu(Vec2 at) {
-  const doc::Note* under = s_.noteAt(at);
-  if (under && !s_.selected(under->id)) s_.selectOnly(under->id);
   std::shared_ptr<RollState*> alive = s_.self();
   auto guarded = [alive](std::function<void(RollState&)> f) {
     return [alive, f = std::move(f)] {
       if (*alive) f(**alive);
     };
   };
+  // T7.14: a warp marker (or its glide grip): its shape, or away with it.
+  if (const GroupHit gh = s_.groupPartAt(at); gh.part == GroupPart::Marker || gh.part == GroupPart::GlideGrip) {
+    const GroupInfo* g = s_.groupInfo(gh.group);
+    if (g && gh.warp >= 0 && static_cast<size_t>(gh.warp) < g->group->warps.size()) {
+      s_.selectWarp({gh.group, gh.warp});
+      const doc::GlideShape::Kind kind = g->group->warps[static_cast<size_t>(gh.warp)].shape.kind;
+      std::vector<MenuItem> items;
+      MenuItem straight = MenuItem::item("Straight", guarded([gh](RollState& st) { (void)st.setWarpShape(gh.group, gh.warp, doc::GlideShape::LogLinear); }));
+      straight.checked = kind == doc::GlideShape::LogLinear;
+      MenuItem scurve = MenuItem::item("S-Curve", guarded([gh](RollState& st) { (void)st.setWarpShape(gh.group, gh.warp, doc::GlideShape::SCurve); }));
+      scurve.checked = kind != doc::GlideShape::LogLinear;
+      items.push_back(std::move(straight));
+      items.push_back(std::move(scurve));
+      items.push_back(MenuItem::sep());
+      items.push_back(MenuItem::item("Remove Warp", guarded([gh](RollState& st) { (void)st.removeWarp(gh.group, gh.warp); }), "Delete"));
+      return openContextMenu(*this, at, std::move(items));
+    }
+  }
+  const doc::Note* under = s_.noteAt(at);
+  if (under && !s_.selected(under->id)) s_.selectOnly(under->id);
   std::vector<MenuItem> items;
+  // Ids of notes that are gone (an undo) may linger in the selection: the menu is for notes that are there.
+  if (!s_.selection().empty() && s_.selectionKeys().empty()) s_.select({});
   const std::vector<uint32_t>& sel = s_.selection();
+  const Ticks atTick = roundTicks(s_.tickAtX(at.x));
+  // T7.14: the warp entry for the group whose frame the pointer is in (a tuned group): the next transition moves
+  // here, or a new one is made.
+  auto warpHere = [&](const GroupInfo* g) {
+    if (!g || !g->tuned || atTick < g->start || atTick > g->end) return;
+    const double state = s_.warpStateAt(*g, atTick);
+    if (state != 0.0 && state != 1.0) return;
+    const Grid gr = s_.grid();
+    const Ticks tick = gr.snapping() ? gr.snap(atTick) : atTick;
+    const doc::JiGroupId id = g->group->id;
+    items.push_back(MenuItem::item(state == 0.0 ? "Back to Tuning Here" : "Into JI Here", guarded([id, tick](RollState& st) { (void)st.insertWarpAt(id, tick); })));
+  };
   if (!sel.empty()) {
     // Which identities the selection holds.
     bool kinds[3] = {false, false, false};
@@ -474,21 +623,42 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
     items.push_back(conv("Cents (never moves)", tuning::PitchKind::Cents));
     items.push_back(MenuItem::item("Set Pitch\xE2\x80\xA6", guarded([](RollState& st) { (void)st.openPitchEntry(); })));
     items.push_back(MenuItem::sep());
-    // T7.13: "this note is harmonic N" (a number field): the note becomes the anchor of a JI group; its harmonic
-    // series is drawn as guides and drawing snaps to it.
-    const bool lock = s_.activeJiGroup() != nullptr;
+    // T7.14: just intonation. Tune to JI is a switch: on notes that already are one tuned group it reads Back to
+    // Tuning. "Is Harmonic…" declares a note (a member: it becomes its group's frozen note).
+    const doc::JiGroup* active = s_.activeJiGroup();
+    const GroupInfo* info = active ? s_.groupInfo(active->id) : nullptr;
+    bool oneTuned = info != nullptr && info->tuned;
+    if (oneTuned)
+      for (const doc::Note& n : s_.clip()->notes)
+        if (s_.selected(n.id) && doc::jiGroupOfNote(*s_.clip(), n) != active) oneTuned = false;
+    MenuItem tune = MenuItem::item(oneTuned ? "Back to Tuning" : "Tune to JI", guarded([](RollState& st) { (void)st.toggleTuneToJi(); }), "Ctrl+Shift+J");
+    tune.enabled = oneTuned || sel.size() >= 2;
+    items.push_back(std::move(tune));
+    if (oneTuned) {
+      const doc::JiGroupId id = active->id;
+      items.push_back(MenuItem::item("Other Readings\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openJiChooser(id); })));
+    }
     if (const doc::Note* target = under ? under : single) {
       const doc::NoteId id = target->id;
       items.push_back(MenuItem::item("Is Harmonic\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openHarmonicEntry(id); })));
+      MenuItem ratio = MenuItem::item("Add Note at Ratio\xE2\x80\xA6", guarded([id](RollState& st) { (void)st.openRatioEntry(id); }));
+      ratio.enabled = doc::jiGroupOfNote(*s_.clip(), *target) != nullptr;
+      items.push_back(std::move(ratio));
     }
+    MenuItem up = MenuItem::item("Walk Up", guarded([](RollState& st) { (void)st.walkActiveGroup(1); }), "Alt+Up");
+    MenuItem down = MenuItem::item("Walk Down", guarded([](RollState& st) { (void)st.walkActiveGroup(-1); }), "Alt+Down");
+    up.enabled = down.enabled = active != nullptr;
+    items.push_back(std::move(up));
+    items.push_back(std::move(down));
+    warpHere(info);
     MenuItem unlock = MenuItem::item("Remove JI Group", guarded([](RollState& st) { (void)st.removeActiveJiGroup(); }));
-    unlock.enabled = lock;
+    unlock.enabled = active != nullptr;
     items.push_back(std::move(unlock));
     items.push_back(MenuItem::sep());
-    // T7.6: bends. The bend of the note under the pointer (Alt + its edge made it) can be straight or an S-curve;
-    // the vibrato under the pointer can be retyped; the selection glides, gets a vibrato, loses its curves.
+    // T7.6 / T7.14: bends. The bend of the note under the pointer (Alt + its edge made it) can be straight or an
+    // S-curve; the selection glides, loses its bends and curves. (Vibrato has no menu: the ~ grip on the note.)
     bool anyCurve = false;
-    for (const uint32_t id : sel) anyCurve = anyCurve || !s_.curvePoints(CurveTarget{doc::NoteId{id}}).empty();
+    for (const uint32_t id : sel) anyCurve = anyCurve || s_.curveRecord(doc::NoteId{id}) != nullptr;
     if (const doc::Note* target = under ? under : single) {
       const doc::NoteId id = target->id;
       for (const int edge : {-1, 1}) {
@@ -503,17 +673,10 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
         sub.push_back(std::move(b));
         items.push_back(MenuItem::sub(edge < 0 ? "Bend In" : "Bend Out", std::move(sub)));
       }
-      if (under) {
-        const CurveTarget t{id};
-        const Ticks off = static_cast<Ticks>(std::llround(s_.tickAtX(at.x))) - under->start;
-        if (const std::optional<RollState::Vibrato> v = s_.vibratoAt(t, off))
-          items.push_back(MenuItem::item("Edit Vibrato\xE2\x80\xA6", guarded([t, v = *v](RollState& st) { (void)st.openVibratoEdit(t, v); })));
-      }
     }
     MenuItem glide = MenuItem::item("Glide into Next", guarded([](RollState& st) { (void)st.glideSelection(); }), "Ctrl+G");
     glide.enabled = sel.size() >= 2;
     items.push_back(std::move(glide));
-    items.push_back(MenuItem::item("Add Vibrato\xE2\x80\xA6", guarded([](RollState& st) { (void)st.openVibratoEntry(); })));
     MenuItem clear = MenuItem::item("Clear Bends", guarded([](RollState& st) { (void)st.clearBends(); }));
     clear.enabled = anyCurve;
     items.push_back(std::move(clear));
@@ -525,9 +688,22 @@ Menu* NoteAreaWidget::openMenu(Vec2 at) {
   } else {
     items.push_back(MenuItem::item("Paste", guarded([](RollState& st) { st.paste(); }), "Ctrl+V"));
     items.push_back(MenuItem::item("Select All", guarded([](RollState& st) { st.selectAll(); }), "Ctrl+A"));
-    MenuItem unlock = MenuItem::item("Remove JI Group", guarded([](RollState& st) { (void)st.removeActiveJiGroup(); }));
-    unlock.enabled = s_.activeJiGroup() != nullptr;
-    items.push_back(std::move(unlock));
+    items.push_back(MenuItem::sep());
+    // T7.14: the proportion tool's mouse path: a typed chord from the cell under the pointer, one bar long, its
+    // lowest note on this row.
+    if (!s_.rows().empty()) {
+      const TickRange cell = drawCell(s_.grid(), std::max<Ticks>(atTick, 0));
+      const Ticks bar = kTicksPerWhole * s_.clip()->signature.numerator / std::max(1, static_cast<int>(s_.clip()->signature.denominator));
+      const int64_t row = s_.rows().row(s_.rows().indexAtY(s_.contentY(at.y))).degree;
+      const IRect anchor{static_cast<int32_t>(at.x), static_cast<int32_t>(at.y), 1, 1};
+      items.push_back(MenuItem::item("Insert Proportion\xE2\x80\xA6", guarded([cell, bar, row, anchor](RollState& st) { (void)st.openProportionEntry(cell.start, bar, row, anchor); }), "J"));
+    }
+    const doc::JiGroupId framed = s_.groupFrameAt(at);
+    if (const GroupInfo* g = framed.valid() ? s_.groupInfo(framed) : nullptr) {
+      const doc::JiGroupId id = g->group->id;
+      items.push_back(MenuItem::item("Select Group", guarded([id](RollState& st) { st.selectGroup(id); })));
+      warpHere(g);
+    }
   }
   items.push_back(MenuItem::sep());
   items.push_back(rowLabelsMenu(s_));

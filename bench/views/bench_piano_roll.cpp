@@ -5,8 +5,12 @@
 
 #include <algorithm>
 #include <climits>
+#include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <memory>
+#include <span>
+#include <string>
 #include <vector>
 
 #include "pq/document/commands.h"
@@ -309,6 +313,94 @@ int main() {
                         },
                         1, 9, 2),
                     "ns/edit");
+  // T7.14 (M7 review M14): notes drawn along a pitch path. 2,000 of the ~3000 visible notes get a 35 c / 6 Hz wobble:
+  // "baked" as a free curve of breakpoints (16 per cycle: what a pen stroke or the old baked vibrato stores; the case
+  // that exists before and after T7.14), and as the note's vibrato PROPERTY (T7.14: flattened once per clip snapshot
+  // into the roll's path cache, RollState::pathOf). Reported: a repaint of the unchanged clip (the cache is warm) and
+  // the first paint after an edit (every visible path is flattened again).
+  auto curveBench = [&](const char* name, bool property) {
+    const doc::NoteClip& clip = *ctx.doc()->tracks[0]->clips[0].clip;
+    const double t0 = view->scrollTick(), t1 = t0 + static_cast<double>(area.w) / view->pxPerTick();
+    std::vector<doc::NoteCurves> recs;
+    for (const doc::Note& n : clip.notes) {
+      if (recs.size() >= 2000) break;
+      if (static_cast<double>(n.start) < t0 || static_cast<double>(n.start) >= t1) continue;
+      doc::NoteCurves rec;
+      rec.note = n.id;
+      bool ok = false;
+      auto set = [&](auto& r) {
+        if constexpr (requires { r.vibrato; }) {
+          if (property) {
+            r.vibrato.depthCents = 35.0f;
+            r.vibrato.rate = 6.0f;
+            r.vibrato.fadeIn = n.length / 4;
+            ok = true;
+          }
+        }
+      };
+      set(rec);
+      if (!ok) {
+        if (property) return;  // this build has no vibrato property
+        const double period = static_cast<double>(kPpq) * 2.0 / 6.0;  // 6 Hz at 120 bpm
+        for (Ticks t = 0; t <= n.length; t += static_cast<Ticks>(period / 16.0))
+          rec.pitch.push_back({t, static_cast<float>(35.0 * std::sin(6.283185307179586 * static_cast<double>(t) / period)), 0.0f, {}});
+      }
+      recs.push_back(std::move(rec));
+    }
+    std::sort(recs.begin(), recs.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+    std::vector<doc::NoteCurves> none;
+    for (const doc::NoteCurves& r : recs) {
+      doc::NoteCurves e;
+      e.note = r.note;
+      none.push_back(std::move(e));
+    }
+    const size_t count = recs.size();
+    if (!st.dispatch(doc::SetNoteCurves{c->clips[0], recs})) return;
+    tree.update(2.0);
+    auto paintOnce = [&] {
+      tex->text->beginFrame();
+      dl.reset(w, h);
+      tree.paint(dl, res, 2.0);
+      pq::bench::doNotOptimize(dl.indices().size());
+    };
+    const auto a0 = std::chrono::steady_clock::now();
+    paintOnce();
+    const double first = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0).count();
+    std::printf("%s: %zu curved notes; first paint after the edit %.3f ms, %u vertices\n", name, count, first, static_cast<unsigned>(dl.vertices().size()));
+    pq::bench::reportStats(name, pq::bench::measure(paintOnce, 1), "ns/frame");
+    // One of the curved notes moves a row up / down: the edit, the clip view's refresh and a full paint. The other
+    // notes' paths must not be flattened again.
+    if (!recs.empty()) {
+      const doc::NoteId moved = recs[recs.size() / 2].note;
+      int dir = 1;
+      const std::string edit = std::string(name) + ": one note transposed + refresh + paint";
+      pq::bench::reportStats(edit.c_str(),
+                             pq::bench::measure(
+                                 [&] {
+                                   const doc::NoteClip& cl = *ctx.doc()->tracks[0]->clips[0].clip;
+                                   const doc::Note* note = nullptr;
+                                   for (const doc::Note& x : cl.notes)
+                                     if (x.id == moved) {
+                                       note = &x;
+                                       break;
+                                     }
+                                   if (!note) return;
+                                   const doc::NoteKey key = doc::keyOf(*note);
+                                   const auto e = doc::ops::transposeNotes(*ctx.doc(), c->clips[0], std::span<const doc::NoteKey>(&key, 1), dir, doc::ops::StepUnit::Grid);
+                                   dir = -dir;
+                                   if (e) (void)st.dispatch(e->command);
+                                   tree.update(2.5);
+                                   paintOnce();
+                                 },
+                                 1, 9, 2),
+                             "ns/edit");
+    }
+    (void)st.dispatch(doc::SetNoteCurves{c->clips[0], none});
+    tree.update(3.0);
+  };
+  curveBench("pianoroll.paint, 2000 notes with a baked 35 c / 6 Hz curve (16 points per cycle)", false);
+  curveBench("pianoroll.paint, 2000 notes with a vibrato property (35 c / 6 Hz, fade-in)", true);
+
   tree.setRoot(std::make_unique<Widget>());
   return morphBench(res, *tex);
 }

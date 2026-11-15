@@ -205,7 +205,9 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_piano_roll.cpp
     views/test_piano_roll_scale.cpp
     views/test_piano_roll_ji.cpp  # T7.13: Is Harmonic (JI groups: guides, numbering, members, the active group), curve hit test, copy / paste of curves and groups (real dispatch), goldens
-    views/test_piano_roll_pen.cpp  # T7.6: bends between notes, Ctrl+G, pen strokes, breakpoints, vibrato, detune, Clear Bends (real dispatch), goldens
+    views/test_piano_roll_pen.cpp  # T7.6 / T7.14: derived bends between notes, Ctrl+G, pen strokes, breakpoints, detune, Clear Bends (real dispatch), goldens
+    views/test_piano_roll_groups.cpp  # T7.14: JI groups (Tune to JI switch + chooser, frames, warps, walk, proportion tool, Add Note at Ratio; real dispatch), goldens
+    views/test_piano_roll_vibrato.cpp  # T7.14: vibrato by dragging (the ~ grip, the envelope's corners; real dispatch), the path cache, golden
     views/test_piano_roll_help.cpp  # KB.help: the ? button and the help panel (real dispatch: open / close, keys, scroll, keys from the loaded keymap), goldens
     views/test_macro_mode.cpp  # T8.1: macro mode (real dispatch: toggle chord, layers, the just-from-a-JI-note rule, pointer anchor, lock, undo ring, presets, the trainer's BFS fixture), goldens
     views/test_mos_chart.cpp
@@ -486,6 +488,7 @@ pq_add_test(pq_tests_document
     document/test_ji.cpp  # T7.13: JI groups, written identities, warps (commands, resolution, ops, file), note curves
     document/test_note_bends.cpp  # T7.11a: derived bends between notes, SetNoteCurves (M13)
     document/test_note_anchors.cpp  # T7.11a: note anchors through copies / deletions / splits (H2, H3), the anchor where the note starts (M5)
+    document/test_note_vibrato.cpp  # T7.14: vibrato as a note property (V1-V3), Is Harmonic N on a member (reanchorJiGroup)
     document/test_devices.cpp  # T4.1: device chains (commands, builders, catalog, lowering)
     document/test_audio.cpp    # T5.3: audio tracks + clips (commands, builders, warp laws, file)
     document/test_recording.cpp  # T6.1: recording model (inputs, monitor gate, input map, take lanes, comping, warp markers, file)

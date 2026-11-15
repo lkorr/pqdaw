@@ -469,6 +469,15 @@ double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept;
 // identity and pitch do not change. A note that already anchors a group: the group's index is set. Notes drawn on its
 // guides are Ratio notes anchored to it (addGroupNote). Errors: NotFound (the note), InvalidArgument (the index).
 EditResult makeJiGroup(const Project& p, IdSource& ids, ClipRef clip, NoteKey anchorNote, uint32_t index);
+// T7.14 ("Is Harmonic N" on a note that already is a MEMBER; QUESTIONS Q297 b): `member` becomes the group's anchor
+// with index `index`. Every note keeps the pitch it has in JI: the member is frozen at its JI pitch (the exact
+// reference-anchored Ratio when the old anchor's pitch is one, else Cents; its written identity is dropped), the old
+// anchor becomes a member (the inverse ratio; what it was — Degree / Cents / reference Ratio — is remembered as its
+// written identity, so Back to Tuning restores it) and the other members are re-expressed against the new anchor
+// (ratio / the member's ratio). The group keeps its id and warps; the numbers re-derive (groupHarmonics). Errors:
+// NotFound (the group, the note), InvalidArgument (the index, the note is not a member of the group, a ratio out of
+// range, a pitch that does not resolve).
+EditResult reanchorJiGroup(const Project& p, ClipRef clip, JiGroupId group, NoteKey member, uint32_t index);
 // Removes the group; its members keep sounding where they are (their JI pitch): the exact reference-anchored Ratio
 // when the anchor's pitch is one, else Cents. Their written identities are dropped.
 EditResult removeJiGroup(const Project& p, ClipRef clip, JiGroupId group);
@@ -551,7 +560,17 @@ EditResult setNoteCurve(const Project& p, ClipRef clip, NoteKey note, std::vecto
 // an invalid shape).
 EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge edge, Ticks length, GlideShape shape,
                        NoteId other);
-// Removes both bends of each note (the free curves stay). Notes without bends are skipped; one undo step.
+// T7.14 (model.h NoteVibrato): sets each note's vibrato (depth 0: removes it); the free curve and the bends are
+// untouched. Values are clamped to their ranges (depth to [0, kMaxVibratoCents], the rate to its unit's range, the
+// onset to [0, the note's length − 1], an end at or beyond the note's end is stored as 0 = "the note's end", the
+// fades to the vibrato's span). One SetNoteCurves: one undo step for any number of notes. Edit::notes = the notes.
+// Errors: NotFound (a note), InvalidArgument (a value that is not finite, two entries for one note).
+struct NoteVibratoEdit {
+  NoteKey note;
+  NoteVibrato vibrato;
+};
+EditResult setNoteVibrato(const Project& p, ClipRef clip, std::span<const NoteVibratoEdit> edits);
+// Removes both bends of each note (the free curves and vibratos stay). Notes without bends are skipped; one undo step.
 EditResult clearNoteBends(const Project& p, ClipRef clip, std::span<const NoteKey> notes);
 // A copy of a note clip with fresh clip, note and JI group ids, whatever names a note re-pointed to its copy (note
 // anchors, group anchors, written identities, harmonic steps, curves and bends): what every clip copy / paste /

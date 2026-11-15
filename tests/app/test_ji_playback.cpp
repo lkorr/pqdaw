@@ -433,6 +433,144 @@ TEST_CASE("ji playback: a 64-note group warped back and forth every eighth stays
                        << "worst relative error " << worst);
 }
 
+// ---- T7.14: vibrato as a note property (plan M7 V1–V3) ---------------------------------------------------------------
+
+namespace {
+
+NoteVibrato vibrato(float depth, float rate, Ticks onset = 0, Ticks fadeIn = 0, Ticks end = 0, Ticks fadeOut = 0) {
+  NoteVibrato v;
+  v.depthCents = depth;
+  v.rate = rate;
+  v.onset = onset;
+  v.fadeIn = fadeIn;
+  v.end = end;
+  v.fadeOut = fadeOut;
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("ji playback: a vibrato with fades and a warped chord SOUND as they are drawn — every sample within 2 c of the note's effective curve (probe)") {
+  Rig r(true);
+  // A long note: 35 c at 5.5 Hz from a beat in, fading in over a beat and a half, fading out over a beat before 5 q.
+  const Note n = playback_fixture::note(r.store.ids(), 0, 6 * kQ, 12);
+  auto added = ops::addNotes(r.doc(), r.store.ids(), r.ref, std::vector<Note>{n});
+  test_blocks::dispatchEdit(r.store, added);
+  const NoteVibrato v = vibrato(35.0f, 5.5f, kQ, 3 * kQ / 2, 5 * kQ, kQ);
+  const ops::NoteVibratoEdit edits[] = {{added->notes.front(), v}};
+  test_blocks::dispatchEdit(r.store, ops::setNoteVibrato(r.doc(), r.ref, edits));
+  CHECK(findNoteCurves(r.clip(), added->notes.front().id)->pitch.empty());  // nothing baked: the lowering reads the property
+  // Then a seventh chord written in 12-EDO that warps into JI and back.
+  const JiGroupId g = r.tuned({0, 4, 7, 10}, 8 * kQ, 8 * kQ);
+  r.warps(g, {JiWarp{2 * kQ, kQ, GlideShape{}, true}, JiWarp{5 * kQ, kQ, GlideShape{}, false}});
+  const ClipSum want(r);  // the document's evaluation: what the roll draws (RollState::pathOf uses the same function)
+  auto link = makeLink(r.store.current());
+  const std::vector<float> out = render(*link, 8.1);
+  const double hz = kRef * 2.0;
+  const double K = static_cast<double>(out[at(0.25)]) / hz;  // before the onset: the note's own pitch
+  CHECK(worstRel(out, kAttack, at(0.5) - 2, K, [&](double) { return hz; }) < 2e-6);  // steady until the onset
+  const double vib = worstRel(out, kAttack, at(3.0) - 2, K, want);
+  CHECK(cents(vib) < 2.0);
+  // It really swings: ± 35 c between the fades, about half of that half way through the fade-in, nothing after its end.
+  auto swing = [&](size_t from, size_t to) {
+    double lo = 1e9, hi = -1e9;
+    for (size_t i = from; i < to; ++i) {
+      const double c = 1200.0 * std::log2(static_cast<double>(out[i]) / K / hz);
+      lo = std::min(lo, c);
+      hi = std::max(hi, c);
+    }
+    return std::pair<double, double>{lo, hi};
+  };
+  const auto full = swing(at(1.3), at(1.95));
+  CHECK(full.first == doctest::Approx(-35.0).epsilon(0.03));
+  CHECK(full.second == doctest::Approx(35.0).epsilon(0.03));
+  const auto early = swing(at(0.5), at(0.875));  // the first half of the fade-in
+  CHECK(early.second < 19.0);
+  CHECK(early.second > 8.0);
+  CHECK(worstRel(out, at(2.5) + 2, at(3.0) - 2, K, [&](double) { return hz; }) < 2e-6);  // after the end: steady again
+  // The chord: tempered, gliding into 4:5:6:7, back.
+  const double chord = worstRel(out, at(4.0) + kAttack, at(8.0) - 2, K, want);
+  CHECK(cents(chord) < 2.0);
+  const double ji = kRef * (1.0 + 5.0 / 4.0 + 3.0 / 2.0 + 7.0 / 4.0);
+  CHECK(worstRel(out, at(5.5) + 2, at(6.5) - 2, K, [&](double) { return ji; }) < 2e-6);
+  CHECK(tstats(*link).droppedCurveEvents == 0);
+  MESSAGE("vibrato within " << cents(vib) << " c, warped chord within " << cents(chord) << " c of the effective curve");
+}
+
+TEST_CASE("ji playback: interpreter == JIT on a vibrato with fades over a warped chord (sine)") {
+  Rig r(false);
+  const JiGroupId g = r.tuned({0, 4, 7}, 0, 6 * kQ);
+  r.warps(g, {JiWarp{kQ, kQ, GlideShape{}, true}, JiWarp{4 * kQ, kQ / 2, GlideShape{}, false}});
+  const Note n = playback_fixture::note(r.store.ids(), kQ / 2, 5 * kQ, 12);
+  auto added = ops::addNotes(r.doc(), r.store.ids(), r.ref, std::vector<Note>{n});
+  test_blocks::dispatchEdit(r.store, added);
+  const ops::NoteVibratoEdit edits[] = {{added->notes.front(), vibrato(40.0f, 6.0f, kQ / 2, kQ, 4 * kQ, kQ)}};
+  test_blocks::dispatchEdit(r.store, ops::setNoteVibrato(r.doc(), r.ref, edits));
+  auto interp = makeLink(r.store.current());
+  const std::vector<float> a = render(*interp, 3.2);
+  float peak = 0.0f;
+  for (const float x : a) peak = std::max(peak, std::fabs(x));
+  CHECK(peak > 0.1f);
+  auto jit = makeLink(r.store.current(), true);
+  REQUIRE(jit->waitForJit());
+  CHECK(jit->jitStats().published >= 1);
+  const std::vector<float> b = render(*jit, 3.2);
+  REQUIRE(a.size() == b.size());
+  CHECK(std::memcmp(a.data(), b.data(), a.size() * sizeof(float)) == 0);
+}
+
+TEST_CASE("ji playback: 64 notes vibrating at once stay inside the track's event list — a usual vibrato exactly, the fastest and deepest allowed without a dropped event" *
+          doctest::test_suite("slow")) {
+  for (const bool extreme : {false, true}) {
+    CAPTURE(extreme);
+    Rig r(true);
+    test_blocks::dispatchEdit(r.store, [&] {
+      GroupPolyphony gp;
+      gp.voices = 64;
+      return ops::setGroupPolyphony(r.doc(), r.group, gp);
+    }());
+    std::vector<int64_t> terms;
+    for (int64_t k = 0; k < 64; ++k) terms.push_back(16 + k);
+    auto made = ops::proportionNotes(r.doc(), r.store.ids(), r.ref, 0, 8 * kQ, PitchId::fromCents(-4800.0), terms);
+    (void)r.edit(made);
+    std::vector<ops::NoteVibratoEdit> edits;
+    for (size_t i = 0; i < made->notes.size(); ++i)
+      edits.push_back({made->notes[i], extreme ? vibrato(kMaxVibratoCents, kMaxVibratoHz)
+                                               : vibrato(35.0f + static_cast<float>(i % 7), 5.0f + 0.05f * static_cast<float>(i), 0, kQ, 0, kQ)});
+    test_blocks::dispatchEdit(r.store, ops::setNoteVibrato(r.doc(), r.ref, edits));
+    const ClipSum want(r);
+    auto link = makeLink(r.store.current());
+    Driver d{*link};
+    link->play(0);
+    const engine::Timeline& tl = link->engine().timeline();
+    uint64_t worstBlock = 0, sumEvents = 0, blocks = 0;
+    for (uint32_t blk = 0; blk < at(4.1) / kBlock; ++blk) {
+      d.run(1);
+      worstBlock = std::max<uint64_t>(worstBlock, tl.events(0).count);
+      sumEvents += tl.events(0).count;
+      ++blocks;
+    }
+    const engine::TimelineStats& ts = tl.stats();
+    CHECK(ts.noteOns == 64);
+    CHECK(ts.noteOffs == 64);
+    CHECK(ts.droppedNoteOns == 0);
+    CHECK(ts.droppedCurveEvents == 0);
+    CHECK(ts.curveCollapses == 0);
+    CHECK(worstBlock <= 256);
+    if (!extreme) {
+      // … and what plays is the 64 waves: Σ hz on every 5th sample.
+      const double K = static_cast<double>(d.out[at(2.4)]) / want(2.4 * kRate * kTicksPerSample);
+      const double worst = worstRel(d.out, kAttack, at(3.99), K, want, 0.0, 5);
+      CHECK(worst < 3e-3);
+      MESSAGE("64 vibratos (35-41 c, 5-8.2 Hz): at most " << worstBlock << " events in one 64-frame block (limit 256), "
+                                                            << static_cast<double>(sumEvents) / static_cast<double>(blocks) << " on average; worst relative error " << worst);
+    } else {
+      MESSAGE("64 vibratos (1200 c, 30 Hz): at most " << worstBlock << " events in one 64-frame block (limit 256), "
+                                                       << static_cast<double>(sumEvents) / static_cast<double>(blocks) << " on average");
+    }
+  }
+}
+
 TEST_CASE("ji playback: lowering 100 groups x 8 notes x 32 warps (CPU)") {
   Rig r(true, {}, 100 * 16 * kQ);
   IdSource& ids = r.store.ids();

@@ -304,16 +304,40 @@ struct NoteBend {
   bool set() const noexcept { return other.valid(); }
   friend bool operator==(const NoteBend&, const NoteBend&) noexcept = default;
 };
-// A note's own curves (SPEC §3.1). pitch: the FREE curve (drawn curves, vibrato) — a cents offset added to the note's
+// A note's vibrato (T7.14; plan M7 V1–V3): a PROPERTY of the note, not baked breakpoints. A sine of `depthCents`
+// (peak, each way) added to the note's pitch from `onset` (note ticks; phase 0 there, rising first) to its end, with
+// an amplitude envelope of four corners: 0 at `onset`, the full depth from onset + fadeIn, the full depth until
+// stop − fadeOut, 0 at stop — stop = `end`, or the note's end when `end` is 0 (so a resize keeps "to the end") or lies
+// beyond it. The two inner corners may meet (a swell); where the fades overlap the smaller of the two wins.
+// `rate`: cycles per second (Hz: the period in ticks is taken from the tempo where the note starts and kept for the
+// note) or cycles per quarter note (Beats). Evaluated by note_bend.h (effectiveNoteCurve) wherever the curve is read.
+inline constexpr float kMaxVibratoCents = 1200.0f;
+inline constexpr float kMinVibratoHz = 0.1f, kMaxVibratoHz = 30.0f;        // RateUnit::Hz
+inline constexpr float kMinVibratoBeats = 1.0f / 64, kMaxVibratoBeats = 64.0f;  // RateUnit::Beats (cycles per quarter)
+struct NoteVibrato {
+  enum class RateUnit : uint8_t { Hz, Beats };
+  float depthCents = 0.0f;  // 0: no vibrato (then every other field is its default); else (0, kMaxVibratoCents]
+  float rate = 0.0f;
+  RateUnit unit = RateUnit::Hz;
+  Ticks onset = 0;    // note ticks ≥ 0
+  Ticks fadeIn = 0;   // ≥ 0
+  Ticks end = 0;      // note ticks; 0: the note's end; else > onset
+  Ticks fadeOut = 0;  // ≥ 0
+  bool set() const noexcept { return depthCents > 0.0f; }
+  friend bool operator==(const NoteVibrato&, const NoteVibrato&) noexcept = default;
+};
+// A note's own curves (SPEC §3.1). pitch: the FREE curve (drawn curves) — a cents offset added to the note's
 // pitch, ticks from the note's start, sorted by tick, ids unused (invalid); before the first / after the last point
 // the curve holds their value. bendIn / bendOut: the derived glides from / to another note (NoteBend), added to it.
-// A note has an entry only while it has a curve or a bend (an empty record is no entry).
+// vibrato: see NoteVibrato. A note has an entry only while it has a curve, a bend or a vibrato (an empty record is no
+// entry).
 struct NoteCurves {
   NoteId note;
   std::vector<Breakpoint> pitch;
   NoteBend bendIn;   // over [0, min(length, the note's length)]: starts on `other`'s pitch, arrives on the note's own
   NoteBend bendOut;  // over the last min(length, the note's length) ticks: leaves the note's own pitch for `other`'s
-  bool empty() const noexcept { return pitch.empty() && !bendIn.set() && !bendOut.set(); }
+  NoteVibrato vibrato;
+  bool empty() const noexcept { return pitch.empty() && !bendIn.set() && !bendOut.set() && !vibrato.set(); }
   friend bool operator==(const NoteCurves&, const NoteCurves&) noexcept = default;
 };
 using JiGroupList = std::vector<JiGroup>;          // sorted by id, unique

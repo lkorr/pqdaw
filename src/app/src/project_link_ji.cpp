@@ -103,7 +103,7 @@ void ClipCurveLowering::note(const doc::Note& n, engine::NoteDesc& nd) {
     if (it != harmonics_.end() && it->first == n.id) nd.harmonic = static_cast<float>(it->second);
   }
   const doc::NoteCurves* own = doc::findNoteCurves(clip_, n.id);
-  const bool bends = own != nullptr && (own->bendIn.set() || own->bendOut.set());
+  const bool bends = own != nullptr && (own->bendIn.set() || own->bendOut.set() || own->vibrato.set());  // T7.14
   if (own == nullptr && pitches_.warped.empty()) return;
   // The stored free curve as it is, unless a bend or a warp moves the note (then the one evaluation, flattened: an
   // allocation per such note; the pitch index is built for the first of them).

@@ -1791,3 +1791,38 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   pointer arrives on a note (so Tab chaining survives a resting mouse): right, or should a resting pointer always win
   after `` ` ``? (3) In the tempered layer `s` / `d` move rows on top of the composed interval and `` ` `` returns to
   the anchor (the trainer's save point): is that the feel you want? (4) Is the overlay loud enough / too loud?
+## T7.14 · JI as notes: frames, Tune to JI as a switch, warps, walk, proportions, bends that follow, vibrato by dragging (2026-11-14)
+- A JI group is now what you described: ordinary notes that share a fundamental. The roll draws a dashed frame around
+  them, the chord's proportion above it ("4:5:6:7"), each note's harmonic number at its left end (the frozen note's
+  after a small diamond). The frame takes no clicks; inside it notes and empty space behave as everywhere.
+- Try this (a new MIDI clip in 12-EDO; the `?` button in the clip box lists every gesture):
+  1. Draw C E G B♭ as one chord (four notes, a bar long). Select them, press `Ctrl+Shift+J`: they are 4:5:6:7 now. A
+     list of other readings opens (20:25:30:36 …): pick one or press `Esc`. Press `Ctrl+Shift+J` again: back to 12-EDO,
+     exactly. Press it once more to tune again.
+  2. With the chord selected, drag the small arrow on the frame's BOTTOM-LEFT corner one beat inward. Play: the chord
+     starts tempered and glides into JI at the marker; the notes are drawn doing that (watch the B♭ sink to the 7).
+     Drag the diamond to move the warp, its round grip for the glide's length; right-click the diamond for Straight /
+     S-Curve; click it and press Delete to remove it. Drag the bottom-RIGHT corner inward for a warp back to 12-EDO.
+  3. Click one note of the chord and press Up / Down: it moves along the harmonics. Drag it up or down: it snaps to
+     them. Press `Alt+Up` / `Alt+Down`: the whole chord walks (4:5:6:7 → 5:6:7:8) on its frozen bottom note.
+  4. Press `J`, drag a box in empty space, type `8:9:10:12:15`, Enter: five notes in one group. (Mouse only:
+     right-click empty space → Insert Proportion….)
+  5. Your example: draw one note, right-click → Is Harmonic… → 5. Right-click it again → Add Note at Ratio… → `3/2`.
+     The labels read 10 and 15. Press `Esc` with nothing selected and the guide lines go: you are back on the rows.
+  6. Bends: `Alt` + drag a note's left edge inward: it slides in from the note before it (outlined while you drag).
+     Now move that other note: the slide still starts on it. `Ctrl+G` on a selected melody glides each note into
+     the next.
+  7. Vibrato: point at a long note. Drag the small `~` above its right end UP: the note starts to waver, wider the
+     further you go (the status line reads "Vibrato 35 ¢ · 8 Hz"). Drag it sideways for the speed. Four squares appear
+     under the note: drag the first to the right for a fade-in, the last to the left for a fade-out, pull the two
+     inner ones together for a swell. Double-click the `~` to remove it. Nothing is typed anywhere.
+  8. Select several notes and drag one `~`: all of them get the vibrato. `Shift` + drag a note up or down still
+     detunes it freely, but only after the pointer has moved a little (the status line reads "Detune +12 ¢").
+- Decide / tell me: is the frame legible enough against the inspiration (amber on the dark roll; numbers above the
+  lines)? Is "right = slower" right for the `~` grip? Should the chooser open by itself after `Ctrl+Shift+J`, or only
+  on a click on the header? Should a group stay active (guides showing) after a click on empty space (it does;
+  `Esc` puts it away)? Questions Q?-T7.14-a … d.
+- Look at: `tests/views/golden/pianoroll-group-triad.png` (a tuned triad), `pianoroll-group-chooser.png`,
+  `pianoroll-group-warp.png` (tempered → JI → tempered), `pianoroll-group-two.png`, `pianoroll-group-walk.png`,
+  `pianoroll-group-proportion.png`, `pianoroll-group-ratio.png` (5 → 10 / 15), `pianoroll-group-31edo.png`,
+  `pianoroll-bends.png`, `pianoroll-vibrato.png` (fades and grips).

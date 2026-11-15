@@ -58,6 +58,7 @@ constexpr std::array<std::string_view, 2> kDeviceKindNames = {"instrument", "aud
 constexpr std::array<std::string_view, 2> kTempoCurveNames = {"step", "linear"};
 constexpr std::array<std::string_view, 2> kAnchorNames = {"reference", "note"};
 constexpr std::array<std::string_view, 3> kGlideShapeNames = {"linear", "s", "bezier"};  // GlideShape::Kind
+constexpr std::array<std::string_view, 2> kVibratoUnitNames = {"hz", "beats"};          // NoteVibrato::RateUnit
 constexpr std::array<std::string_view, 7> kWarpNames = {"off",     "rePitch", "beats",     "tones",  // T5.3, T6.1
                                                         "texture", "complex", "complexPro"};
 // T6.1 (schema 22).
@@ -1363,9 +1364,29 @@ private:
       }
       if (list[i].bendIn.set()) noteBend(PathSeg(&at, i), "in", list[i].bendIn);    // T7.11a
       if (list[i].bendOut.set()) noteBend(PathSeg(&at, i), "out", list[i].bendOut);
+      if (list[i].vibrato.set()) noteVibrato(PathSeg(&at, i), list[i].vibrato);  // T7.14
       w_.endObject();
     }
     w_.endArray();
+  }
+  void noteVibrato(const PathSeg& at, const NoteVibrato& v) {
+    w_.key("vibrato");
+    w_.beginObject(false);
+    w_.key("depth");
+    w_.number(at, v.depthCents);
+    w_.key("rate");
+    w_.number(at, v.rate);
+    w_.key("unit");
+    w_.string(at, kVibratoUnitNames[static_cast<size_t>(v.unit)]);
+    w_.key("onset");
+    w_.integer(v.onset);
+    w_.key("fadeIn");
+    w_.integer(v.fadeIn);
+    w_.key("end");
+    w_.integer(v.end);
+    w_.key("fadeOut");
+    w_.integer(v.fadeOut);
+    w_.endObject();
   }
   void noteBend(const PathSeg& at, std::string_view key, const NoteBend& b) {
     w_.key(key);
@@ -3367,9 +3388,10 @@ private:
     }
     return list;
   }
-  // [{"note": id, "pitch": [points], "in": bend, "out": bend}]; pitch and the bends optional (T7.11a).
+  // [{"note": id, "pitch": [points], "in": bend, "out": bend, "vibrato": vibrato}]; pitch, the bends (T7.11a) and
+  // the vibrato (T7.14) optional.
   NoteCurveList noteCurves(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"note", "pitch", "in", "out"};
+    static constexpr std::string_view K[] = {"note", "pitch", "in", "out", "vibrato"};
     NoteCurveList list;
     r_.beginArray(at);
     for (size_t i = 0; r_.nextElement(at); ++i) {
@@ -3382,11 +3404,30 @@ private:
         if (k == 1) nc.pitch = curvePoints(f);
         if (k == 2) nc.bendIn = noteBend(f);
         if (k == 3) nc.bendOut = noteBend(f);
+        if (k == 4) nc.vibrato = noteVibrato(f);
       }
       m.require({0});
       list.push_back(std::move(nc));
     }
     return list;
+  }
+  // {"depth": cents, "rate": r, "unit": "hz" | "beats", "onset": t, "fadeIn": t, "end": t, "fadeOut": t}.
+  NoteVibrato noteVibrato(const PathSeg& at) {
+    static constexpr std::string_view K[] = {"depth", "rate", "unit", "onset", "fadeIn", "end", "fadeOut"};
+    NoteVibrato v;
+    Members m(r_, at, K);
+    for (int k; (k = m.next()) >= 0;) {
+      const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 0) v.depthCents = r_.readFloat(f);
+      if (k == 1) v.rate = r_.readFloat(f);
+      if (k == 2) v.unit = static_cast<NoteVibrato::RateUnit>(name(f, kVibratoUnitNames, "unit"));
+      if (k == 3) v.onset = r_.readInt(f);
+      if (k == 4) v.fadeIn = r_.readInt(f);
+      if (k == 5) v.end = r_.readInt(f);
+      if (k == 6) v.fadeOut = r_.readInt(f);
+    }
+    m.require({0, 1, 2, 3, 4, 5, 6});
+    return v;
   }
   // {"other": note id, "length": t, "shape": "linear" | "s" | "bezier", "handles": [x1, y1, x2, y2]}, handles optional.
   NoteBend noteBend(const PathSeg& at) {

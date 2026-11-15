@@ -836,7 +836,7 @@ Status setupPianoRollHelp(Shell& shell) {
 Status setupPianoRollHelpScrolled(Shell& shell) {
   roll::RollHelpPopover* help = openHelpScene(shell);
   if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-scrolled: opening the panel failed", {}};
-  help->showSection(4);
+  help->showSection(5);  // (T7.14: Vibrato is a section of its own before it)
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -1054,18 +1054,19 @@ Status setupPianoRollNoteLines(Shell& shell) {
   return Ok{};
 }
 
-// Vibrato: a long note with 30 ¢ at 6 Hz ("Add Vibrato…"), one that scoops in from the note before it and then
-// swings 60 ¢ at 4 Hz, a plain note under them.
+// Vibrato by dragging (T7.14): a long note whose vibrato fades in over two beats from a beat in and fades out before
+// its end (selected: the wave, its envelope, the four corner grips under it and the ~ grip above its end), a note that
+// scoops in from the one before it and then swings 60 ¢ at 4 Hz, a plain note under them.
 Status setupPianoRollVibrato(Shell& shell) {
-  const std::optional<JiScene> sc = buildJiScene(shell, "Vibrato", 16, 5);
+  const std::optional<JiScene> sc = buildJiScene(shell, "Vibrato", 24, 5);
   if (!sc) return Error{ErrorCode::Unknown, "pianoroll-vibrato: building the clip failed", {}};
   quarterGrid(shell.context());
   doc::DocumentStore& store = shell.context().store();
   roll::RollState& st = sc->view->state();
   using tuning::PitchId;
   const Ticks q = kPpq;
-  const std::vector<doc::Note> notes = {scnNote(0, 4 * q, PitchId::fromDegree(7, 0)), scnNote(4 * q, 4 * q, PitchId::fromDegree(9, 0)),
-                                        scnNote(0, 8 * q, PitchId::fromDegree(0, 0), 70.0f)};
+  const std::vector<doc::Note> notes = {scnNote(0, 6 * q, PitchId::fromDegree(9, 0)), scnNote(4 * q, 4 * q, PitchId::fromDegree(5, 0)),
+                                        scnNote(0, 4 * q, PitchId::fromDegree(3, 0)), scnNote(0, 8 * q, PitchId::fromDegree(0, 0), 70.0f)};
   if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
     return Error{ErrorCode::Unknown, "pianoroll-vibrato: addNotes", {}};
   shell.tree().layoutNow();
@@ -1073,13 +1074,200 @@ Status setupPianoRollVibrato(Shell& shell) {
   const doc::Note* b = sceneNote(shell.context(), *sc->view, notes[1].pitch, 4 * q);
   if (!a || !b) return Error{ErrorCode::NotFound, "pianoroll-vibrato: the notes", {}};
   const doc::NoteId ida = a->id, idb = b->id;
-  sc->view->select(std::span<const doc::NoteId>(&ida, 1));
-  if (!st.addVibratoToSelection(30.0, 6.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the vibrato", {}};
+  doc::NoteVibrato fades;
+  fades.depthCents = 50.0f;
+  fades.rate = 5.5f;
+  fades.onset = q;
+  fades.fadeIn = 2 * q;
+  fades.end = 11 * q / 2;
+  fades.fadeOut = 3 * q / 2;
+  const doc::ops::NoteVibratoEdit edit[] = {{doc::keyOf(*a), fades}};
+  if (!runEdit(store, doc::ops::setNoteVibrato(*store.current(), sc->clip, edit))) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the vibrato", {}};
   sc->view->select(std::span<const doc::NoteId>(&idb, 1));
   if (!sceneBend(store, st, true, q)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the bend in", {}};
   sc->view->select(std::span<const doc::NoteId>(&idb, 1));
-  if (!st.addVibratoToSelection(60.0, 4.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the second vibrato", {}};
+  if (!st.setSelectionVibrato(60.0, 4.0)) return Error{ErrorCode::Unknown, "pianoroll-vibrato: the second vibrato", {}};
   sc->view->select(std::span<const doc::NoteId>(&ida, 1));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// ---- T7.14: JI groups as frames --------------------------------------------------------------------------------------
+
+namespace {
+
+// The notes of a 12-EDO (or any tuning's) chord on `degrees` over [start, start + length); returns their ids, lowest first.
+std::vector<doc::NoteId> sceneChord(Shell& shell, const JiScene& sc, std::initializer_list<int32_t> degrees, Ticks start, Ticks length) {
+  doc::DocumentStore& store = shell.context().store();
+  std::vector<doc::Note> notes;
+  for (const int32_t d : degrees) notes.push_back(scnNote(start, length, tuning::PitchId::fromDegree(d, 0)));
+  std::vector<doc::NoteId> ids;
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc.clip, notes))) return ids;
+  for (const int32_t d : degrees)
+    if (const doc::Note* n = sceneNote(shell.context(), *sc.view, tuning::PitchId::fromDegree(d, 0), start)) ids.push_back(n->id);
+  return ids;
+}
+
+// Selects the notes and tunes them (Ctrl+Shift+J); `chooser`: leave the list of readings open.
+bool sceneTune(const JiScene& sc, const std::vector<doc::NoteId>& ids, bool chooser = false) {
+  sc.view->select(ids);
+  return sc.view->state().toggleTuneToJi(chooser);
+}
+
+const doc::NoteClip* sceneClip(const ViewContext& ctx, const ClipView& v) {
+  const doc::Track* t = doc::findTrackPtr(*ctx.doc(), v.clip().track);
+  const int32_t ci = t ? doc::findClipIndex(*t, v.clip().clip) : -1;
+  return ci >= 0 ? t->clips[static_cast<size_t>(ci)].clip.get() : nullptr;
+}
+
+}  // namespace
+
+// A 12-EDO C major triad tuned to JI (Ctrl+Shift+J): the same three notes inside a dashed frame headed 4:5:6, each
+// with its harmonic number (the frozen C marked), the fundamental's guides and the numbers gutter for the selected
+// group, the corner grips on the frame's bottom border; tempered notes around it.
+Status setupPianoRollGroupTriad(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Tuned", 18, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-triad: building the clip failed", {}};
+  quarterGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::NoteId> triad = sceneChord(shell, *sc, {0, 4, 7}, q, 4 * q);
+  const std::vector<doc::Note> melody = {scnNote(5 * q, q, PitchId::fromDegree(9, 0)), scnNote(6 * q, q, PitchId::fromDegree(7, 0)),
+                                         scnNote(7 * q, q, PitchId::fromDegree(5, 0)), scnNote(0, q, PitchId::fromDegree(2, 0))};
+  if (triad.size() != 3 || !runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, melody)))
+    return Error{ErrorCode::Unknown, "pianoroll-group-triad: the notes", {}};
+  if (!sceneTune(*sc, triad)) return Error{ErrorCode::Unknown, "pianoroll-group-triad: Tune to JI", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// C E G B♭ tuned: 4:5:6:7, and the chooser open under the header with the other readings and their errors.
+Status setupPianoRollGroupChooser(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Readings", 18, 9);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-chooser: building the clip failed", {}};
+  quarterGrid(shell.context());
+  const std::vector<doc::NoteId> chord = sceneChord(shell, *sc, {0, 4, 7, 10}, kPpq, 4 * kPpq);
+  if (chord.size() != 4 || !sceneTune(*sc, chord, true)) return Error{ErrorCode::Unknown, "pianoroll-group-chooser: Tune to JI", {}};
+  shell.tree().layoutNow();
+  if (shell.overlay().openCount() == 0) return Error{ErrorCode::Unknown, "pianoroll-group-chooser: no chooser", {}};
+  return Ok{};
+}
+
+// "Play a tempered chord, then warp it into JI" and back: a seventh chord written in 12-EDO, tuned, with a warp into
+// JI after two beats and one back to the tuning before its end. The members are drawn on their rows first, glide to
+// their just pitches (the B♭ 31 ¢ down to the 7) and back; the states are named under the frame.
+Status setupPianoRollGroupWarp(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Warp", 26, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-warp: building the clip failed", {}};
+  quarterGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  const Ticks q = kPpq;
+  const std::vector<doc::NoteId> chord = sceneChord(shell, *sc, {0, 4, 7, 10}, 0, 8 * q);
+  if (chord.size() != 4 || !sceneTune(*sc, chord)) return Error{ErrorCode::Unknown, "pianoroll-group-warp: Tune to JI", {}};
+  const doc::NoteClip* clip = sceneClip(shell.context(), *sc->view);
+  if (!clip || doc::jiGroupsOf(*clip).size() != 1) return Error{ErrorCode::Unknown, "pianoroll-group-warp: the group", {}};
+  const doc::JiGroupId group = doc::jiGroupsOf(*clip)[0].id;
+  if (!runEdit(store, doc::ops::setJiWarps(*store.current(), sc->clip, group,
+                                           {doc::JiWarp{2 * q, 3 * q / 2, doc::GlideShape{}, true}, doc::JiWarp{6 * q, q, doc::GlideShape{}, false}})))
+    return Error{ErrorCode::Unknown, "pianoroll-group-warp: the warps", {}};
+  sc->view->select(chord);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// Two groups in one clip: a major triad (4:5:6) and a minor one (10:12:15), each in its own frame; the guides and the
+// corner grips are the selected group's.
+Status setupPianoRollGroupTwo(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Two Groups", 16, 6);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-two: building the clip failed", {}};
+  quarterGrid(shell.context());
+  const Ticks q = kPpq;
+  const std::vector<doc::NoteId> a = sceneChord(shell, *sc, {0, 4, 7}, 0, 3 * q);
+  const std::vector<doc::NoteId> b = sceneChord(shell, *sc, {2, 5, 9}, 4 * q, 4 * q);
+  if (a.size() != 3 || b.size() != 3 || !sceneTune(*sc, a) || !sceneTune(*sc, b)) return Error{ErrorCode::Unknown, "pianoroll-group-two: Tune to JI", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// A walk: 22:26:30:33 typed once, duplicated twice, the copies walked down one and two steps (Alt+Down): 21:25:29:32
+// and 20:24:28:31 on the same frozen bottom note.
+Status setupPianoRollGroupWalk(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Walk", 18, 4);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-walk: building the clip failed", {}};
+  quarterGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  roll::RollState& st = sc->view->state();
+  const Ticks q = kPpq;
+  if (!st.insertProportion(0, 2 * q, 0, {22, 26, 30, 33})) return Error{ErrorCode::Unknown, "pianoroll-group-walk: the proportion", {}};
+  const doc::NoteClip* clip = sceneClip(shell.context(), *sc->view);
+  if (!clip) return Error{ErrorCode::Unknown, "pianoroll-group-walk: the clip", {}};
+  std::vector<doc::NoteKey> keys;
+  for (const doc::Note& n : clip->notes) keys.push_back(doc::keyOf(n));
+  for (const int32_t steps : {-1, -2}) {
+    const auto dup = runEdit(store, doc::ops::duplicateNotes(*store.current(), store.ids(), sc->clip, keys, -3 * q * steps));
+    if (!dup || dup->jiGroups.size() != 1 || !runEdit(store, doc::ops::walkJiGroup(*store.current(), sc->clip, dup->jiGroups[0], steps)))
+      return Error{ErrorCode::Unknown, "pianoroll-group-walk: the walk", {}};
+    if (steps == -2) {
+      std::vector<doc::NoteId> ids;
+      for (const doc::NoteKey& k : dup->notes) ids.push_back(k.id);
+      sc->view->select(ids);
+    }
+  }
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// A typed proportion (J, a box, "8:9:10:12:15", Enter): five regular notes in one group, the lowest frozen on the
+// box's bottom row.
+Status setupPianoRollGroupProportion(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Proportion", 18, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-proportion: building the clip failed", {}};
+  quarterGrid(shell.context());
+  const Ticks q = kPpq;
+  if (!sc->view->state().insertProportion(q, 6 * q, 0, {8, 9, 10, 12, 15})) return Error{ErrorCode::Unknown, "pianoroll-group-proportion: the proportion", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The user's example: an E declared harmonic 5, then "Add Note at Ratio… 3/2" on it: 7.5 is no harmonic, so the E
+// reads 10 and the new note 15 (the fundamental halved); nothing moved.
+Status setupPianoRollGroupRatio(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "5 > 10 : 15", 18, 8);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-ratio: building the clip failed", {}};
+  quarterGrid(shell.context());
+  roll::RollState& st = sc->view->state();
+  const Ticks q = kPpq;
+  const std::vector<doc::NoteId> e = sceneChord(shell, *sc, {4}, q, 5 * q);
+  if (e.size() != 1 || !st.declareHarmonic(e[0], 5) || !st.addNoteAtRatio(e[0], "3/2")) return Error{ErrorCode::Unknown, "pianoroll-group-ratio: the edits", {}};
+  sc->view->select(e);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same in 31-EDO: a 4:5:6:7 written on 31-EDO's steps, tuned, with a warp into JI — the header and the label
+// under the frame name the clip's tuning ("31-EDO"), not 12-EDO.
+Status setupPianoRollGroup31Edo(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "31-EDO", 9, 13);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-group-31edo: building the clip failed", {}};
+  quarterGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  const Ticks q = kPpq;
+  doc::TuningDef def;
+  def.system = *tuning::Edo::make(31);
+  const auto t = runEdit(store, doc::ops::addMainTuning(*store.current(), store.ids(), "Thirty-one", def, doc::Colour{0xE0A43C}));
+  if (!t || !store.dispatch(doc::SetClipTuning{sc->clip, doc::TuningAssignment::mainTuning(t->tunings[0])}).ok())
+    return Error{ErrorCode::Unknown, "pianoroll-group-31edo: the tuning", {}};
+  shell.tree().layoutNow();
+  sc->view->setRowHeight(9);
+  sc->view->centreOnDegree(13);
+  const std::vector<doc::NoteId> chord = sceneChord(shell, *sc, {0, 10, 18, 25}, 0, 8 * q);  // 31-EDO's 4:5:6:7
+  if (chord.size() != 4 || !sceneTune(*sc, chord)) return Error{ErrorCode::Unknown, "pianoroll-group-31edo: Tune to JI", {}};
+  const doc::NoteClip* clip = sceneClip(shell.context(), *sc->view);
+  if (!clip || doc::jiGroupsOf(*clip).size() != 1) return Error{ErrorCode::Unknown, "pianoroll-group-31edo: the group", {}};
+  if (!runEdit(store, doc::ops::setJiWarps(*store.current(), sc->clip, doc::jiGroupsOf(*clip)[0].id, {doc::JiWarp{3 * q, 2 * q, doc::GlideShape{}, true}})))
+    return Error{ErrorCode::Unknown, "pianoroll-group-31edo: the warp", {}};
+  sc->view->select(chord);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3617,6 +3805,15 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-bends", 1280, 800, setupPianoRollBends},
     {"pianoroll-note-lines", 1280, 800, setupPianoRollNoteLines},  // T7.12
     {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
+    // T7.14: JI groups as frames
+    {"pianoroll-group-triad", 1280, 800, setupPianoRollGroupTriad},
+    {"pianoroll-group-chooser", 1280, 800, setupPianoRollGroupChooser},
+    {"pianoroll-group-warp", 1280, 800, setupPianoRollGroupWarp},
+    {"pianoroll-group-two", 1280, 800, setupPianoRollGroupTwo},
+    {"pianoroll-group-walk", 1280, 800, setupPianoRollGroupWalk},
+    {"pianoroll-group-proportion", 1280, 800, setupPianoRollGroupProportion},
+    {"pianoroll-group-ratio", 1280, 800, setupPianoRollGroupRatio},
+    {"pianoroll-group-31edo", 1280, 800, setupPianoRollGroup31Edo},
     {"pianoroll-help", 1280, 800, setupPianoRollHelp},                   // KB.help
     {"pianoroll-help-scrolled", 1280, 800, setupPianoRollHelpScrolled},  // KB.help
     {"pianoroll-macro-tempered", 1280, 800, setupPianoRollMacroTempered},  // T8.1

@@ -287,11 +287,25 @@ Status checkNoteBend(const NoteBend& b, NoteId note) {
   return checkGlideShape(b.shape);
 }
 
+Status checkNoteVibrato(const NoteVibrato& v) {
+  if (!v.set()) return v == NoteVibrato{} ? ok() : invalid("a vibrato without a depth has no other setting");
+  if (!std::isfinite(v.depthCents) || v.depthCents > kMaxVibratoCents) return invalid("vibrato depth out of range (0 to 1200 cents)");
+  const bool beats = v.unit == NoteVibrato::RateUnit::Beats;
+  if (v.unit != NoteVibrato::RateUnit::Hz && !beats) return invalid("unknown vibrato rate unit");
+  const float lo = beats ? kMinVibratoBeats : kMinVibratoHz, hi = beats ? kMaxVibratoBeats : kMaxVibratoHz;
+  if (!std::isfinite(v.rate) || v.rate < lo || v.rate > hi) return invalid("vibrato rate out of range");
+  if (v.onset < 0 || v.onset > kMaxTicks) return invalid("vibrato onset out of range");
+  if (v.fadeIn < 0 || v.fadeIn > kMaxTicks || v.fadeOut < 0 || v.fadeOut > kMaxTicks) return invalid("vibrato fade out of range");
+  if (v.end != 0 && (v.end <= v.onset || v.end > kMaxTicks)) return invalid("a vibrato ends after it starts");
+  return ok();
+}
+
 Status checkNoteCurveRecord(const NoteCurves& c) {
   if (!c.note.valid()) return invalid("note curve without a note");
   PQ_DOC_TRY(checkCurve(c.pitch, "note curve"));
   PQ_DOC_TRY(checkNoteBend(c.bendIn, c.note));
-  return checkNoteBend(c.bendOut, c.note);
+  PQ_DOC_TRY(checkNoteBend(c.bendOut, c.note));
+  return checkNoteVibrato(c.vibrato);
 }
 
 Status checkNoteCurves(const NoteCurveList& l) {

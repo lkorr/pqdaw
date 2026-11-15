@@ -47,8 +47,12 @@ Status checkWrittenPitch(const tuning::PitchId& p);
 Status checkNotesWritten(const NoteWrittenList& l);
 // Every group's anchor and every written note is a note of `c`. O(notes · log(groups + written)).
 Status checkJiNotes(const NoteClip& c, std::span<const JiGroup> groups, std::span<const NoteWritten> written);
+// T7.14: a vibrato: none (all defaults), or depth in (0, kMaxVibratoCents], a rate in its unit's range, onset and
+// fades in [0, kMaxTicks], end 0 (the note's end) or after the onset.
+Status checkNoteVibrato(const NoteVibrato& v);
 // T7.11a: one curve record's own fields (the free curve; each bend: none, or a neighbour ≠ the note, a length in
-// [1, kMaxTicks] and a valid shape). Whether the neighbour is in the clip is the command's check (SetNoteCurves).
+// [1, kMaxTicks] and a valid shape; the vibrato). Whether the neighbour is in the clip is the command's check
+// (SetNoteCurves).
 Status checkNoteCurveRecord(const NoteCurves& c);
 // A clip's curve list: sorted by note id, unique, every record non-empty and valid.
 Status checkNoteCurves(const NoteCurveList& l);

@@ -1,16 +1,20 @@
-// Pitch paths and declaring JI in the piano roll (T7.4 / T7.13; docs/plans/M7.md "Rework: notes-first JI").
+// Pitch paths and declaring JI in the piano roll (T7.4 / T7.13 / T7.14; docs/plans/M7.md "Rework: notes-first JI").
 //
-// The note is the only primitive (T7.13). What the roll keeps here until the group UI (T7.14):
-//   - pitch paths: every note with a pitch curve is drawn along its pitch path instead of on a row
-//     (roll_paint.cpp paintCurveNotes: the same line as every other note, T7.12). pathCents is the pitch of any note
-//     at any tick (hit-testing and drawing along curves: noteAt uses it; the pen records against it), pathBox /
-//     pathPoint give a path note's screen extent.
-//   - "Is Harmonic…" on a note (declareHarmonic → ops::makeJiGroup): the note becomes the frozen anchor of a JI
-//     group; the active group's harmonic series is drawn as guide lines (RollState::harmonics), the plain draw puts
-//     members on it (DrawPitch::Ratio), and members carry their harmonic numbers (RollState::harmonicOf).
-//   - parseProportion ("8:9:10:12:15") and the inline text field (openJiField) the proportion tool and the vibrato
-//     entry use.
-// Every edit is one doc::ops builder dispatched once: one undo step. Nothing here runs per frame.
+// The note is the only primitive (T7.13).
+//   - pitch paths: a note whose pitch moves — a drawn curve, a bend, a vibrato (its curve record) or its group's
+//     warps — is drawn along its pitch path instead of on a row (roll_paint.cpp paintCurveNotes: the same line as
+//     every other note, T7.12). The path is the document's ONE evaluation (doc::effectiveNoteCurve) on the pitch the
+//     note resolves to where it starts, so what is drawn is what plays; it is flattened once per clip snapshot
+//     (RollState::pathOf, M7 review M14) and a paint only maps the cached points to the screen. pathCents is the
+//     pitch of any note at any tick (hit-testing: noteAt), pathBox / pathPoint give a path note's screen extent.
+//   - "Is Harmonic…" on a note (declareHarmonic → ops::makeJiGroup, or ops::reanchorJiGroup for a member): the note
+//     becomes the frozen anchor of a JI group; the active group's harmonic series is drawn as guide lines
+//     (RollState::harmonics), the plain draw puts members on it (DrawPitch::Ratio), and members carry their harmonic
+//     numbers (RollState::harmonicOf).
+//   - parseProportion ("8:9:10:12:15") and the inline text field (openJiField) of the harmonic, proportion and ratio
+//     entries.
+// The group UI (frames, Tune to JI, warps, walk, proportions, ratio entry) is roll_groups.cpp.
+// Every edit is one doc::ops builder dispatched once: one undo step. Nothing here runs per frame but cache lookups.
 
 #include <algorithm>
 #include <charconv>
@@ -20,6 +24,7 @@
 
 #include "pq/document/automation_curve.h"
 #include "pq/document/commands.h"
+#include "pq/document/note_bend.h"
 #include "pq/ui/overlay.h"
 #include "roll_widgets.h"
 
@@ -56,25 +61,137 @@ float RollState::yOfCents(double cents) const noexcept {
   return static_cast<float>(static_cast<double>(area().y - scrollY_) + rows_.yOfCents(cents));
 }
 
-bool RollState::onPath(const doc::Note& n, const tuning::PitchId&) const noexcept {
+void RollState::syncPaths() const {
+  const void* tl = snap_ && snap_->timeline ? static_cast<const void*>(snap_->timeline.get()) : nullptr;
+  const bool world = paths_.timeline != tl || paths_.tuningGen != tuningGen_;
+  if (paths_.clip == clip_.get() && !world) return;
+  if (world || !clip_ || paths_.notes.size() > (size_t{1} << 16)) {
+    paths_.notes.clear();  // every pitch or every tick moved
+  } else {
+    // A new snapshot of the clip: an entry stays while what it was flattened from stands. Entries that read the
+    // resolved pitches go (a neighbour may have moved); when the curve list was replaced, an entry stays if its
+    // record is equal in the new list (the old list is still alive here: paths_.curves holds it).
+    const bool listChanged = clip_->curves.get() != paths_.curves.get();
+    for (auto it = paths_.notes.begin(); it != paths_.notes.end();) {
+      NotePath& e = it->second;
+      bool keep = e.ok && !e.usedIndex && e.rec != nullptr;
+      if (keep && listChanged) {
+        const doc::NoteCurves* now = clip_->curves ? doc::findNoteCurves(*clip_, doc::NoteId{it->first}) : nullptr;
+        keep = now != nullptr && *e.rec == *now;
+        if (keep) e.rec = now;
+      }
+      it = keep ? std::next(it) : paths_.notes.erase(it);
+    }
+  }
+  paths_.curves = clip_ ? clip_->curves : nullptr;
+  paths_.clip = clip_.get();
+  paths_.timeline = tl;
+  paths_.tuningGen = tuningGen_;
+  paths_.resolved = false;
+  paths_.anyWarp = false;
+  if (clip_)
+    for (const doc::JiGroup& g : doc::jiGroupsOf(*clip_)) paths_.anyWarp = paths_.anyWarp || !g.warps.empty();
+}
+
+const doc::NotePitchIndex& RollState::pitchIndex() const {
+  syncPaths();
+  if (!paths_.resolved) {
+    paths_.resolved = true;
+    paths_.pitches = {};
+    if (clip_ && snap_)
+      if (const std::optional<doc::TrackPath> path = doc::findTrack(*snap_, ref_.track))
+        paths_.pitches = doc::resolveClipPitches(*snap_, *path, *clip_);
+    paths_.index = doc::NotePitchIndex(paths_.pitches);
+  }
+  return paths_.index;
+}
+
+bool RollState::previewTouches(const doc::Note& n) const {
+  if (!curvePreview_.empty()) {
+    const auto it = std::lower_bound(curvePreview_.begin(), curvePreview_.end(), n.id,
+                                     [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
+    if (it != curvePreview_.end() && it->note == n.id) return true;
+  }
+  if (warpPreview_.valid() && warpPreview_.clip)
+    if (const doc::JiGroup* g = doc::findJiGroup(*warpPreview_.clip, warpPreview_.group))
+      return doc::noteAnchorOf(n.pitch) == g->anchor && doc::findNoteWritten(*clip_, n.id) != nullptr;
+  return false;
+}
+
+bool RollState::onPath(const doc::Note& n, const tuning::PitchId&) const {
   if (!clip_) return false;
-  if (!clip_->curves && curvePreview_.empty()) return false;
-  return !curvePoints(CurveTarget{n.id}).empty();
+  if (previewTouches(n)) return true;
+  if (clip_->curves && doc::findNoteCurves(*clip_, n.id) != nullptr) return true;
+  syncPaths();
+  return paths_.anyWarp && pitchIndex().warped(n.id) != nullptr;
 }
 
-std::optional<double> RollState::pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const {
-  std::optional<double> base = pathBaseCents(start, pitch, offset);
-  if (!base) return std::nullopt;
-  // T7.6: the note's own curve (a gesture's preview first).
-  if (clip_->curves || !curvePreview_.empty())
-    if (const std::span<const doc::Breakpoint> pts = curvePoints(CurveTarget{n.id}); !pts.empty())
-      *base += pq::evalAutomation(pts, offset);
-  return base;
+const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
+  if (!clip_) return nullptr;
+  const bool preview = previewTouches(n);
+  const doc::NoteCurves* rec = curveRecord(n.id);
+  // One evaluation for the document's notes and a gesture's preview alike.
+  // The clip's resolved pitches are needed only by a note that bends to a neighbour, that a warp moves, or that is
+  // anchored to another note (it starts where that note's curve is, Q293): a drawn curve or a vibrato on a plain note
+  // costs no resolve of the clip.
+  auto build = [&](const doc::NoteClip& clip, const doc::NotePitchIndex* index, NotePath& out) {
+    out.pts.clear();
+    out.ok = false;
+    out.rec = rec;
+    out.start = n.start;
+    out.length = n.length;
+    out.pitch = n.pitch;
+    out.usedIndex = index != nullptr;
+    std::optional<double> base;
+    if (const std::optional<double> hz = index ? index->hz(n.id) : std::nullopt; hz && tuning_.referenceHz() > 0.0) base = 1200.0 * std::log2(*hz / tuning_.referenceHz());
+    else base = centsOf(n.pitch);
+    if (!base || !std::isfinite(*base)) return;
+    out.base = *base;
+    out.ok = true;
+    doc::NoteBendTargets targets = rec && index ? doc::noteBendTargets(*rec, *index) : doc::NoteBendTargets{};
+    if (rec && rec->vibrato.set()) targets.vibratoPeriod = doc::vibratoPeriodTicks(rec->vibrato, ticksPerSecond(n.start));
+    const doc::NoteWarp warp = index && index->anyWarp() ? index->warp(clip, n.id) : doc::NoteWarp{};
+    if (rec || warp.any()) out.pts = doc::effectiveNoteCurve(rec, std::max<Ticks>(n.length, 1), targets, warp, kPathToleranceCents);
+    out.curved = std::any_of(out.pts.begin(), out.pts.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
+    out.lo = out.hi = 0.0f;
+    for (const doc::Breakpoint& b : out.pts) {
+      out.lo = std::min(out.lo, b.value);
+      out.hi = std::max(out.hi, b.value);
+    }
+    ++pathBuilds_;
+  };
+  syncPaths();
+  const bool needIndex = paths_.anyWarp || (rec && (rec->bendIn.set() || rec->bendOut.set())) || doc::noteAnchorOf(n.pitch).valid();
+  if (preview) {
+    const bool warped = warpPreview_.valid() && warpPreview_.clip != nullptr;
+    build(warped ? *warpPreview_.clip : *clip_, warped ? &warpPreview_.index : needIndex ? &pitchIndex() : nullptr, scratchPath_);
+    return scratchPath_.ok ? &scratchPath_ : nullptr;
+  }
+  if (!rec && !(paths_.anyWarp && pitchIndex().warped(n.id) != nullptr)) return nullptr;
+  auto it = paths_.notes.find(n.id.value);
+  if (it == paths_.notes.end()) {
+    it = paths_.notes.emplace(n.id.value, NotePath{}).first;
+    build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);
+  } else if (const NotePath& e = it->second; e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.usedIndex != needIndex) {
+    build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);  // the note changed under a kept entry
+  }
+  return it->second.ok ? &it->second : nullptr;
 }
 
-std::optional<double> RollState::pathBaseCents(Ticks, const tuning::PitchId& pitch, double) const {
+std::optional<double> RollState::startCents(const doc::Note& n) const {
+  if (const NotePath* p = pathOf(n)) return p->base;
+  return clip_ ? centsOf(n.pitch) : std::nullopt;
+}
+
+std::optional<double> RollState::pathCents(const doc::Note& n, Ticks, const tuning::PitchId& pitch, double offset) const {
   if (!clip_) return std::nullopt;
-  return centsOf(pitch);
+  const NotePath* p = pathOf(n);
+  if (!p) return centsOf(pitch);
+  // A drag's preview pitch: its identity's pitch, with the note's curve.
+  std::optional<double> base = pitch == n.pitch ? std::optional<double>(p->base) : centsOf(pitch);
+  if (!base) return std::nullopt;
+  if (!p->pts.empty()) *base += pq::evalAutomation(std::span<const doc::Breakpoint>(p->pts), offset);
+  return base;
 }
 
 std::optional<ui::Vec2> RollState::pathPoint(const doc::Note& n, double frac) const {
@@ -88,19 +205,16 @@ std::optional<ui::Vec2> RollState::pathPoint(const doc::Note& n, double frac) co
 ui::IRect RollState::pathBox(const doc::Note& n, Ticks start, Ticks length, const tuning::PitchId& pitch) const {
   const float x0 = std::round(xOfTick(static_cast<double>(start)));
   const float x1 = std::max(x0 + 3.0f, std::round(xOfTick(static_cast<double>(start + length))));
-  const int samples = std::clamp(static_cast<int>((x1 - x0) / 8.0f) + 2, 2, 256);
-  float lo = 1e30f, hi = -1e30f;
-  for (int k = 0; k < samples; ++k) {
-    const double off = static_cast<double>(length) * k / (samples - 1);
-    const std::optional<double> c = pathCents(n, start, pitch, off);
-    if (!c) return {};
-    const float y = yOfCents(*c);
-    lo = std::min(lo, y);
-    hi = std::max(hi, y);
-  }
+  const NotePath* p = pathOf(n);
+  const std::optional<double> base = p && pitch == n.pitch ? std::optional<double>(p->base) : centsOf(pitch);
+  if (!base) return {};
+  // The extent of the cached points (segments are straight between them; a stored free curve's bow stays inside
+  // its end values).
+  const double lo = p ? static_cast<double>(p->lo) : 0.0, hi = p ? static_cast<double>(p->hi) : 0.0;
+  const float ya = yOfCents(*base + hi), yb = yOfCents(*base + lo);
   const float h = pathHalfThickness() + 2.0f;
-  return {static_cast<int32_t>(x0) - 1, static_cast<int32_t>(std::floor(lo - h)), static_cast<int32_t>(x1 - x0) + 2,
-          static_cast<int32_t>(std::ceil(hi + h)) - static_cast<int32_t>(std::floor(lo - h))};
+  return {static_cast<int32_t>(x0) - 1, static_cast<int32_t>(std::floor(ya - h)), static_cast<int32_t>(x1 - x0) + 2,
+          static_cast<int32_t>(std::ceil(yb + h)) - static_cast<int32_t>(std::floor(ya - h))};
 }
 
 // --- declaring JI -----------------------------------------------------------------------------------------------
@@ -147,14 +261,18 @@ bool RollState::declareHarmonic(doc::NoteId note, uint32_t n, std::string* error
   if (!pathCents(*nt, nt->start, nt->pitch, 0.0)) return fail("the note's pitch cannot be resolved");
   std::vector<uint32_t> keep = sel_;
   if (keep.empty()) keep.push_back(note.value);  // the declared note's group is the active one
-  const doc::ops::EditResult e = doc::ops::makeJiGroup(*ctx.doc(), ctx.store().ids(), ref_, doc::keyOf(*nt), n);
+  // A member of a group: it becomes that group's anchor (Q297 b) — no second, chained group from the menu.
+  const doc::JiGroup* own = doc::findJiGroupByAnchor(*clip_, note);
+  const doc::JiGroup* of = own ? nullptr : doc::jiGroupOfNote(*clip_, *nt);
+  const doc::ops::EditResult e = of ? doc::ops::reanchorJiGroup(*ctx.doc(), ref_, of->id, doc::keyOf(*nt), n)
+                                    : doc::ops::makeJiGroup(*ctx.doc(), ctx.store().ids(), ref_, doc::keyOf(*nt), n);
   if (!e) return fail(e.error().message);
   if (!e->empty() && !apply(e, "Is Harmonic")) return fail("the document refused the harmonic");
   select(std::move(keep));
   if (const doc::JiGroup* g = activeJiGroup(); !g || g->anchor != note) selectOnly(note);  // its group is the active one
   setShowHarmonics(true);
   char buf[160];
-  std::snprintf(buf, sizeof buf, "The note is harmonic %u: it stays where it is, drawing snaps to its harmonic series (Shift: the rows)", n);
+  std::snprintf(buf, sizeof buf, "The note is harmonic %u: it stays where it is; draw on the guide lines to add notes of its series (Shift: the rows)", n);
   ctx.setStatus(buf);
   return true;
 }
@@ -227,7 +345,8 @@ ui::TextEdit* RollState::openHarmonicEntry(doc::NoteId note) {
                      "Type N and press Enter: this note becomes harmonic N of a series and stays exactly where it is. The "
                      "series is drawn as guide lines; notes you draw snap to it as exact ratios to this note (Shift draws on "
                      "the rows). A note placed between the lines renumbers the series (5 and a 3/2 above it read 10 and "
-                     "15). Remove JI Group is in the same menu. Esc closes.",
+                     "15). On a note that already belongs to a group, that note becomes the group's frozen note and the "
+                     "others keep their pitches. Remove JI Group is in the same menu. Esc closes.",
                      "", anchor, [note](RollState& s, const std::string& text, std::string& why) {
                        const std::string_view t = trimmed(text);
                        uint32_t k = 0;

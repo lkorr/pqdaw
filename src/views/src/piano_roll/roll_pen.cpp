@@ -1,28 +1,34 @@
-// T7.6 piano roll: bends between notes, pen modes, breakpoints, vibrato (SPEC §3.1; docs/plans/M7.md
-// "T7.6" + amendment A3). The RollState half lives here; roll_input.cpp routes the presses, roll_state.cpp commits.
+// T7.6 / T7.14 piano roll: bends between notes, pen modes, breakpoints (SPEC §3.1; docs/plans/M7.md "T7.6",
+// amendment A3, "Rework: notes-first JI"). The RollState half lives here; roll_input.cpp routes the presses,
+// roll_state.cpp commits. Vibrato is roll_vibrato.cpp.
 //
-// What is stored is always baked breakpoints: a note's NoteCurves::pitch (cents added to the note's pitch, ticks from
-// its start). The lowering plays exactly those, so what is drawn is what sounds. Nothing else is stored: a bend's lead-in / lead-out and a vibrato are recognised by
-// their form (roll_state.h "bends, pen modes …"), which is why a bend can be re-dragged, reshaped or removed and a
-// vibrato re-typed after a reload, a copy or an undo.
+// What is stored (T7.14: the derived API of T7.11a, QUESTIONS Q289 b):
+//   bends        doc::NoteBend on the note's curve record: the NEIGHBOUR'S ID, a length and a shape. The glide's far
+//                end is computed wherever the curve is read (doc::effectiveNoteCurve: the roll, the lowering), so a
+//                bend follows its neighbour when either note is moved or retuned. Nothing is recognised by shape.
+//   free curve   NoteCurves::pitch: pen strokes and breakpoints, cents over ticks from the note's start. Never read as
+//                a bend (M7 review H4): a resize leaves it where it is in time.
 //
 //   Alt + a note's left / right edge   the note glides in from the previous note / out to the next one over the
 //                                      dragged length (S-curve; "Bend In / Out ▸ Straight" in the note's menu); back to
-//                                      the edge removes it. Every selected note bends, each to its own neighbour.
+//                                      the edge removes it. Every selected note bends, each to its own neighbour
+//                                      (bendNeighbour); the neighbours are outlined while the drag runs.
 //   Ctrl+G                             each selected note glides out into the next selected one over one grid step.
 //   Draw Mode (B) on a note            drag: the stroke is the note's pitch curve from there on (thinned to 0.5 ¢, at
-//                                      most kMaxPenPoints points); Alt + drag: vibrato over the dragged span (depth =
-//                                      the stroke's height, a flat stroke repeats the last depth; rate from the grid);
-//                                      Ctrl + click: a breakpoint (drag it on); a click still deletes the note.
+//                                      most kMaxPenPoints points; a drag under kMinPenStroke px is a click);
+//                                      Alt + drag: vibrato over the dragged span (the note's vibrato property: depth
+//                                      = the stroke's height); Ctrl + click: a breakpoint (drag it on); a click
+//                                      deletes the note.
 //   breakpoints                        shown on the selected notes: drag (rows / harmonic
 //                                      guides / the note's own pitch; Shift: free), double-click deletes, the diamond
 //                                      between two points bends the segment.
-//   Shift + a note's body              free detune: the selected notes become Cents notes that far away.
-// Every gesture previews the curve its release stores (curvePreview_) and is one undo step.
+//   Shift + a note's body              free detune (after a dead zone): the selected notes become Cents notes.
+// Every gesture previews the record its release stores (curvePreview_) and is one undo step.
 //
-// Cost: nothing here runs per audio block. A drag frame re-thins one stroke (O(points · log)) or rebuilds one bend
-// per selected note; the neighbour search of a bend runs once per gesture (two passes over the clip's notes per
-// selected note). Paint adds the handles of at most 64 selected notes, each of at most kMaxCurveHandles points.
+// Cost: nothing here runs per audio block. A drag frame re-thins one stroke (O(points · log)) or rebuilds one record
+// per selected note (and the roll flattens those notes' paths once per frame: RollState::pathOf's scratch entry); the
+// neighbour search of a bend runs once per gesture (two passes over the clip's notes per selected note). Paint adds
+// the handles of at most 64 selected notes, each of at most kMaxCurveHandles points.
 
 #include <algorithm>
 #include <charconv>
@@ -34,6 +40,7 @@
 
 #include "pq/document/automation_curve.h"
 #include "pq/document/commands.h"
+#include "pq/document/note_bend.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
@@ -47,8 +54,8 @@ namespace {
 
 using Pts = std::vector<doc::Breakpoint>;
 using Span = std::span<const doc::Breakpoint>;
-constexpr size_t kNone = static_cast<size_t>(-1);
-constexpr double kThinCents = 0.5;  // a stroke / a sampled shape stays this close to what was drawn
+constexpr double kThinCents = 0.5;  // a stroke stays this close to what was drawn
+constexpr double kSamePitchCents = 0.5;  // a neighbour nearer than this is "at the note's own pitch"
 
 Error invalid(std::string message) { return Error{ErrorCode::InvalidArgument, std::move(message), {}}; }
 
@@ -69,21 +76,6 @@ void push(Pts& out, const doc::Breakpoint& b) {
 // A curve that is 0 everywhere is no curve.
 void normalise(Pts& p) {
   if (std::all_of(p.begin(), p.end(), [](const doc::Breakpoint& b) { return b.value == 0.0f; })) p.clear();
-}
-
-// The index of the lead-in's last point (its first point of value 0); 0: no lead-in.
-size_t leadInEnd(Span p) {
-  if (p.size() < 2 || p[0].tick != 0 || p[0].value == 0.0f) return 0;
-  for (size_t i = 1; i < p.size(); ++i)
-    if (p[i].value == 0.0f) return i;
-  return 0;
-}
-// The index of the lead-out's first point (the curve's last point of value 0); kNone: no lead-out.
-size_t leadOutBegin(Span p) {
-  if (p.size() < 2 || p.back().value == 0.0f) return kNone;
-  for (size_t i = p.size() - 1; i-- > 0;)
-    if (p[i].value == 0.0f) return i;
-  return kNone;
 }
 
 // `old` with [ta, te] replaced by `fresh` (ticks inside it, ascending). What lies before arrives where it did, and
@@ -113,71 +105,6 @@ Pts replaceRegion(Span old, Ticks ta, Ticks te, const Pts& fresh, bool keepTail)
   return out;
 }
 
-// A glide from `from` to `to` cents over [t0, t0 + length]: two points when straight, else the shape sampled and
-// thinned to kThinCents. The end values are exact.
-Pts glidePoints(Ticks t0, Ticks length, double from, double to, doc::GlideShape::Kind kind) {
-  if (length <= 0) return {};
-  const int n = static_cast<int>(std::min<Ticks>(length, 48));
-  if (kind == doc::GlideShape::LogLinear || n < 3) return {bp(t0, from), bp(t0 + length, to)};
-  doc::GlideShape shape;
-  shape.kind = kind;
-  Pts raw;
-  raw.reserve(static_cast<size_t>(n) + 1);
-  for (int k = 0; k <= n; ++k)
-    raw.push_back(bp(t0 + length * k / n, from + (to - from) * doc::glideShapeValue(shape, static_cast<double>(k) / n)));
-  raw.front() = bp(t0, from);
-  raw.back() = bp(t0 + length, to);
-  return doc::ops::thinAutomation(raw, kThinCents);
-}
-
-// `old` (a note `length` long) with its lead-in (edge < 0) / lead-out replaced by a glide of `bend` ticks from /
-// to `cents`; bend 0 removes it.
-Pts withBend(Span old, Ticks length, int edge, Ticks bend, double cents, doc::GlideShape::Kind kind) {
-  if (edge < 0) {
-    const size_t e = leadInEnd(old);
-    const Ticks was = e ? old[e].tick : 0;
-    return replaceRegion(old, 0, std::max(was, bend), glidePoints(0, bend, cents, 0.0, kind), true);
-  }
-  const size_t b = leadOutBegin(old);
-  const Ticks was = b != kNone ? old[b].tick : length;
-  return replaceRegion(old, std::min(was, length - bend), length, glidePoints(length - bend, bend, 0.0, cents, kind), false);
-}
-
-// A sine of `depth` cents from `ta`, whole half cycles ending at or before `tb`, sampled so the polyline stays within
-// kThinCents of it (fewer points per cycle when that would pass `maxPoints`). Starts and ends on exact zeros, its
-// swings on exact ±depth. Empty: under one cycle fits, or the period is too short to sample.
-Pts vibratoPoints(Ticks ta, Ticks tb, double depth, double periodTicks, size_t maxPoints) {
-  if (!(depth > 0.0) || !(periodTicks >= 16.0) || tb <= ta) return {};
-  const int halves = static_cast<int>(std::floor(static_cast<double>(tb - ta) / (0.5 * periodTicks) + 1e-9));
-  if (halves < 2) return {};
-  // 1 − cos(π / per) ≤ kThinCents / depth, per a multiple of 4 (so the zeros and the swings are sampled).
-  const double need = depth <= kThinCents ? 8.0 : std::numbers::pi / std::acos(1.0 - kThinCents / depth);
-  int per = std::clamp(4 * static_cast<int>(std::ceil(need / 4.0)), 8, 64);
-  while (per > 8 && (static_cast<size_t>(halves) * static_cast<size_t>(per) / 2 + 1 > maxPoints || periodTicks < 2.0 * per)) per -= 4;
-  const int total = halves * per / 2;
-  if (static_cast<size_t>(total) + 1 > maxPoints) return {};
-  Pts out;
-  out.reserve(static_cast<size_t>(total) + 1);
-  for (int k = 0; k <= total; ++k) {
-    const int phase = k % per;
-    double v = depth * std::sin(2.0 * std::numbers::pi * phase / per);
-    if (phase % (per / 2) == 0) v = 0.0;
-    else if (phase == per / 4) v = depth;
-    else if (phase == 3 * per / 4) v = -depth;
-    out.push_back(bp(ta + static_cast<Ticks>(std::llround(k * periodTicks / per)), v));
-  }
-  return out;
-}
-
-std::string number(double v) {
-  char buf[32];
-  std::snprintf(buf, sizeof buf, "%.1f", v);
-  std::string s = buf;
-  while (!s.empty() && s.back() == '0') s.pop_back();
-  if (!s.empty() && s.back() == '.') s.pop_back();
-  return s.empty() ? "0" : s;
-}
-
 doc::ops::EditResult batchOf(std::string label, std::vector<doc::Command> commands, doc::ClipRef clip, std::vector<doc::NoteKey> keys) {
   doc::ops::Edit e;
   e.command = doc::Command{doc::Batch{std::move(label), std::move(commands)}};
@@ -186,44 +113,53 @@ doc::ops::EditResult batchOf(std::string label, std::vector<doc::Command> comman
   return e;
 }
 
+doc::NoteBend& bendOf(doc::NoteCurves& c, int edge) { return edge < 0 ? c.bendIn : c.bendOut; }
+const doc::NoteBend& bendOf(const doc::NoteCurves& c, int edge) { return edge < 0 ? c.bendIn : c.bendOut; }
+
 }  // namespace
 
 // --- the curves -------------------------------------------------------------------------------------------------------
 
-std::span<const doc::Breakpoint> RollState::curvePoints(const CurveTarget& t) const {
-  if (!clip_) return {};
-  if (t.note.valid()) {
-    if (!curvePreview_.empty()) {
-      const auto it = std::lower_bound(curvePreview_.begin(), curvePreview_.end(), t.note,
-                                       [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
-      if (it != curvePreview_.end() && it->note == t.note) return it->pitch;
-    }
-    if (clip_->curves)
-      if (const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, t.note)) return nc->pitch;
-    return {};
+const doc::NoteCurves* RollState::curveRecord(doc::NoteId note) const {
+  if (!clip_ || !note.valid()) return nullptr;
+  if (!curvePreview_.empty()) {
+    const auto it = std::lower_bound(curvePreview_.begin(), curvePreview_.end(), note,
+                                     [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
+    if (it != curvePreview_.end() && it->note == note) return &*it;
   }
-  return {};
+  return clip_->curves ? doc::findNoteCurves(*clip_, note) : nullptr;
+}
+
+std::span<const doc::Breakpoint> RollState::curvePoints(const CurveTarget& t) const {
+  const doc::NoteCurves* rec = curveRecord(t.note);
+  return rec ? std::span<const doc::Breakpoint>(rec->pitch) : std::span<const doc::Breakpoint>();
 }
 
 bool RollState::curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) const {
-  if (!clip_) return false;
-  if (t.note.valid()) {
-    const doc::Note* n = findNote(t.note);
-    if (!n) return false;
-    start = n->start;
-    length = n->length;
-    return true;
-  }
-  return false;
+  const doc::Note* n = clip_ && t.note.valid() ? findNote(t.note) : nullptr;
+  if (!n) return false;
+  start = n->start;
+  length = n->length;
+  return true;
 }
 
 std::optional<double> RollState::curveBase(const CurveTarget& t, double offset) const {
-  if (!clip_) return std::nullopt;
-  if (t.note.valid()) {
-    const doc::Note* n = findNote(t.note);
-    return n ? pathBaseCents(n->start, n->pitch, offset) : std::nullopt;
-  }
-  return std::nullopt;
+  const doc::Note* n = clip_ && t.note.valid() ? findNote(t.note) : nullptr;
+  if (!n) return std::nullopt;
+  std::optional<double> base = startCents(*n);
+  if (!base) return std::nullopt;
+  // Its bends and its group's warp there (the free curve is what is edited; the vibrato rides on top of it).
+  const doc::NoteCurves* rec = curveRecord(n->id);
+  const doc::NotePitchIndex& index = pitchIndex();
+  const doc::NoteWarp warp = index.anyWarp() ? index.warp(*clip_, n->id) : doc::NoteWarp{};
+  if (!rec && !warp.any()) return base;
+  doc::NoteBendTargets targets = rec ? doc::noteBendTargets(*rec, index) : doc::NoteBendTargets{};
+  targets.vibratoPeriod = 0.0;
+  const Ticks len = std::max<Ticks>(n->length, 1);
+  const double tick = std::clamp(offset, 0.0, static_cast<double>(len));
+  *base += doc::noteCurveCents(rec, len, targets, warp, tick);
+  if (rec && !rec->pitch.empty()) *base -= pq::evalAutomation(std::span<const doc::Breakpoint>(rec->pitch), tick);
+  return base;
 }
 
 double RollState::centsAtScreenY(float y) const noexcept {
@@ -232,41 +168,41 @@ double RollState::centsAtScreenY(float y) const noexcept {
 }
 
 double RollState::ticksPerSecond(Ticks contentTick) const {
-  if (clip_ && snap_ && snap_->timeline) {
-    const Ticks at = clip_->start - clip_->contentStart + contentTick;
-    const TempoMap& tm = snap_->timeline->tempoMap;
-    const double tps = tm.secondsToTicks(tm.ticksToSeconds(at) + 1.0) - static_cast<double>(at);
-    if (tps > 0.0) return tps;
-  }
-  return 2.0 * static_cast<double>(kPpq);  // 120 bpm
+  if (clip_ && snap_) return doc::clipTicksPerSecond(*snap_, *clip_, contentTick);  // as the playback's vibrato period
+  return 2.0 * static_cast<double>(kPpq);                                           // 120 bpm
+}
+
+doc::NoteCurves& RollState::previewRecord(doc::NoteId note) {
+  const auto it = std::lower_bound(curvePreview_.begin(), curvePreview_.end(), note,
+                                   [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
+  if (it != curvePreview_.end() && it->note == note) return *it;
+  doc::NoteCurves rec;
+  if (const doc::NoteCurves* have = clip_ && clip_->curves ? doc::findNoteCurves(*clip_, note) : nullptr) rec = *have;
+  rec.note = note;
+  return *curvePreview_.insert(it, std::move(rec));
 }
 
 void RollState::setCurvePreview(const CurveTarget& t, const std::vector<doc::Breakpoint>& pts) {
-  if (t.note.valid()) {
-    const auto it = std::lower_bound(curvePreview_.begin(), curvePreview_.end(), t.note,
-                                     [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
-    if (it != curvePreview_.end() && it->note == t.note) it->pitch = pts;
-    else curvePreview_.insert(it, doc::NoteCurves{t.note, pts});
-  }
+  if (t.note.valid()) previewRecord(t.note).pitch = pts;
   markNotesDirty();
 }
 
-void RollState::clearCurvePreview() { curvePreview_.clear(); }
+void RollState::clearCurvePreview() {
+  curvePreview_.clear();
+  warpPreview_ = {};
+}
 
 bool RollState::commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what) {
   if (!clip_) return false;
   normalise(pts);
-  if (t.note.valid()) {
-    const doc::Note* n = findNote(t.note);
-    if (!n) return false;
-    const doc::NoteCurves* have = doc::findNoteCurves(*clip_, t.note);
-    if (have ? have->pitch == pts : pts.empty()) return false;  // nothing changed: no undo step
-    std::vector<uint32_t> keep = sel_;
-    const bool ok = apply(doc::ops::setNoteCurve(*ctx.doc(), ref_, doc::keyOf(*n), std::move(pts)), what);
-    if (ok) select(std::move(keep));
-    return ok;
-  }
-  return false;
+  const doc::Note* n = t.note.valid() ? findNote(t.note) : nullptr;
+  if (!n) return false;
+  const doc::NoteCurves* have = clip_->curves ? doc::findNoteCurves(*clip_, t.note) : nullptr;
+  if (have ? have->pitch == pts : pts.empty()) return false;  // nothing changed: no undo step
+  std::vector<uint32_t> keep = sel_;
+  const bool ok = apply(doc::ops::setNoteCurve(*ctx.doc(), ref_, doc::keyOf(*n), std::move(pts)), what);
+  if (ok) select(std::move(keep));
+  return ok;
 }
 
 // --- handles ----------------------------------------------------------------------------------------------------------
@@ -277,8 +213,10 @@ void RollState::shownCurves(std::vector<CurveTarget>& out) const {
   auto add = [&](const CurveTarget& t) {
     if (std::find(out.begin(), out.end(), t) == out.end() && !curvePoints(t).empty()) out.push_back(t);
   };
-  if ((clip_->curves || !curvePreview_.empty()) && sel_.size() <= 64)
+  if ((clip_->curves || !curvePreview_.empty()) && sel_.size() <= 64) {
+    cacheSelectedNotes();  // (the handles ask for each note)
     for (const uint32_t id : sel_) add(CurveTarget{doc::NoteId{id}});
+  }
   if (ctx.drawMode() && hoverPart_.note != 0 && drag.kind == DragKind::None) add(CurveTarget{doc::NoteId{hoverPart_.note}});
   if (drag.curve.valid()) add(drag.curve);
 }
@@ -352,79 +290,99 @@ double RollState::snapCurveCents(double cents, double own) const {
 
 // --- bends between notes ----------------------------------------------------------------------------------------------
 
-std::optional<double> RollState::bendNeighbour(const doc::Note& n, int edge) const {
-  if (!clip_) return std::nullopt;
-  const std::optional<double> own = pathBaseCents(n.start, n.pitch, edge < 0 ? 0.0 : static_cast<double>(n.length));
-  if (!own) return std::nullopt;
+const doc::Note* RollState::bendNeighbour(const doc::Note& n, int edge, bool* samePitch) const {
+  if (samePitch) *samePitch = false;
+  if (!clip_) return nullptr;
+  const std::optional<double> own = startCents(n);
+  if (!own) return nullptr;
   const Ticks at = edge < 0 ? n.start : n.start + n.length;
-  auto distance = [&](const doc::Note& m) -> Ticks {
+  // How far a note's facing end is from this edge: a note that starts earlier ends there (bend in), a note that
+  // starts later starts there (bend out). −1: not a candidate.
+  auto gap = [&](const doc::Note& m) -> Ticks {
     if (m.id == n.id) return -1;
     if (edge < 0) return m.start < n.start ? std::abs(m.start + m.length - at) : -1;
     return m.start > n.start ? std::abs(m.start - at) : -1;
   };
   Ticks nearest = INT64_MAX;
   for (const doc::Note& m : clip_->notes)
-    if (const Ticks d = distance(m); d >= 0) nearest = std::min(nearest, d);
-  if (nearest == INT64_MAX) return std::nullopt;
-  std::optional<double> best;
-  for (const doc::Note& m : clip_->notes) {
-    if (distance(m) != nearest) continue;
-    // Where the neighbour sounds at the edge that faces this note (its own curve included).
-    const std::optional<double> c = pathCents(m, m.start, m.pitch, edge < 0 ? static_cast<double>(m.length) : 0.0);
-    if (c && (!best || std::fabs(*c - *own) < std::fabs(*best))) best = *c - *own;
+    if (const Ticks d = gap(m); d >= 0) nearest = std::min(nearest, d);
+  if (nearest == INT64_MAX) return nullptr;
+  // Everything within one grid step of the nearest is "the notes before / after": a bass note that ends exactly on
+  // the edge does not win over the melody note that ends a few ticks early (M9).
+  Ticks step = kPpq / 4;
+  if (const Grid g = grid(); g.enabled()) {
+    const TickRange cell = g.cellAt(std::max<Ticks>(at - (edge < 0 ? 1 : 0), 0));
+    step = std::max<Ticks>(1, cell.end - cell.start);
   }
+  const doc::Note* best = nullptr;
+  double bestCents = 0.0;
+  Ticks bestGap = 0;
+  bool same = false;
+  for (const doc::Note& m : clip_->notes) {
+    const Ticks d = gap(m);
+    if (d < 0 || d - nearest > step) continue;
+    const std::optional<double> c = startCents(m);
+    if (!c) continue;
+    const double delta = std::fabs(*c - *own);
+    if (delta <= kSamePitchCents) {
+      same = true;
+      continue;
+    }
+    if (!best || delta < bestCents || (delta == bestCents && d < bestGap)) {
+      best = &m;
+      bestCents = delta;
+      bestGap = d;
+    }
+  }
+  if (!best && samePitch) *samePitch = same;
   return best;
 }
 
-Ticks RollState::bendLength(doc::NoteId note, int edge, float* cents) const {
-  const doc::NoteCurves* nc = clip_ && clip_->curves ? doc::findNoteCurves(*clip_, note) : nullptr;
-  if (!nc) return 0;
-  const Span p = nc->pitch;
-  if (edge < 0) {
-    const size_t e = leadInEnd(p);
-    if (!e) return 0;
-    if (cents) *cents = p[0].value;
-    return p[e].tick;
-  }
-  const size_t b = leadOutBegin(p);
-  if (b == kNone) return 0;
-  if (cents) *cents = p.back().value;
-  return p.back().tick - p[b].tick;
+Ticks RollState::bendLength(doc::NoteId note, int edge) const {
+  const doc::NoteCurves* rec = curveRecord(note);
+  const doc::Note* n = findNote(note);
+  if (!rec || !n || !bendOf(*rec, edge).set()) return 0;
+  return std::min(bendOf(*rec, edge).length, std::max<Ticks>(n->length, 1));
 }
 
 bool RollState::bendIsStraight(doc::NoteId note, int edge) const {
-  const doc::NoteCurves* nc = clip_ && clip_->curves ? doc::findNoteCurves(*clip_, note) : nullptr;
-  if (!nc) return false;
-  const Span p = nc->pitch;
-  if (edge < 0) return leadInEnd(p) == 1;
-  const size_t b = leadOutBegin(p);
-  return b != kNone && b + 2 == p.size();
+  const doc::NoteCurves* rec = curveRecord(note);
+  return rec && bendOf(*rec, edge).set() && bendOf(*rec, edge).shape.kind == doc::GlideShape::LogLinear;
 }
 
 doc::ops::EditResult RollState::bendEdit(DragState& d) const {
   if (!clip_) return invalid("no clip");
   const int edge = d.kind == DragKind::ResizeStart ? -1 : 1;
+  auto docRecord = [&](doc::NoteId id) { return clip_->curves ? doc::findNoteCurves(*clip_, id) : nullptr; };
   if (!d.bendFound) {
     d.bendFound = true;
-    d.bendDelta.clear();
-    for (const doc::Note& n : clip_->notes)
-      if (selected(n.id))
-        if (const std::optional<double> delta = bendNeighbour(n, edge)) d.bendDelta.emplace_back(n.id.value, *delta);
-    std::sort(d.bendDelta.begin(), d.bendDelta.end());
+    d.bendPicks.clear();
+    for (const doc::Note& n : clip_->notes) {
+      if (!selected(n.id)) continue;
+      // A bend that is there keeps its neighbour (the drag changes its length); a new one finds it.
+      const doc::NoteCurves* have = docRecord(n.id);
+      if (have && bendOf(*have, edge).set() && findNote(bendOf(*have, edge).other)) d.bendPicks.emplace_back(n.id.value, bendOf(*have, edge).other);
+      else if (const doc::Note* other = bendNeighbour(n, edge)) d.bendPicks.emplace_back(n.id.value, other->id);
+    }
+    std::sort(d.bendPicks.begin(), d.bendPicks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
   }
-  std::vector<doc::Command> commands;
-  for (const auto& [id, delta] : d.bendDelta) {
+  doc::SetNoteCurves set{ref_, {}};
+  for (const auto& [id, other] : d.bendPicks) {
     const doc::Note* n = findNote(doc::NoteId{id});
     if (!n) continue;
-    const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, n->id) : nullptr;
-    const Span old = nc ? Span(nc->pitch) : Span();
+    const doc::NoteCurves* have = docRecord(n->id);
+    doc::NoteCurves rec = have ? *have : doc::NoteCurves{n->id, {}, {}, {}, {}};
+    doc::NoteBend& b = bendOf(rec, edge);
     // Inward from the edge, as far as the bend on the other edge leaves room.
-    const Ticks room = n->length - bendLength(n->id, -edge);
-    const Ticks bend = std::clamp<Ticks>(edge < 0 ? d.dt : -d.dt, 0, std::max<Ticks>(room, 0));
-    const doc::GlideShape::Kind kind = bendIsStraight(n->id, edge) ? doc::GlideShape::LogLinear : doc::GlideShape::SCurve;
-    Pts pts = withBend(old, n->length, edge, bend, delta, kind);
-    if (!std::equal(pts.begin(), pts.end(), old.begin(), old.end())) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(*n), std::move(pts)});
+    const doc::NoteBend& opposite = bendOf(rec, -edge);
+    const Ticks room = n->length - (opposite.set() ? std::min(opposite.length, n->length) : 0);
+    const Ticks length = std::clamp<Ticks>(edge < 0 ? d.dt : -d.dt, 0, std::max<Ticks>(room, 0));
+    if (length <= 0) b = {};
+    else b = doc::NoteBend{length, b.set() ? b.shape : doc::GlideShape{}, other};
+    if (have ? !(*have == rec) : !rec.empty()) set.curves.push_back(std::move(rec));
   }
+  std::vector<doc::Command> commands;
+  if (!set.curves.empty()) commands.push_back(std::move(set));
   return batchOf(edge < 0 ? "Bend In" : "Bend Out", std::move(commands), ref_, selectionKeys());
 }
 
@@ -434,7 +392,7 @@ void RollState::updateBendPreview() {
   const doc::ops::EditResult e = bendEdit(drag);
   if (!e) return;
   for (const doc::Command& c : e->batch().commands)
-    if (const doc::SetNoteCurve* set = std::get_if<doc::SetNoteCurve>(&c.v)) curvePreview_.push_back(doc::NoteCurves{set->note.id, set->pitch});
+    if (const doc::SetNoteCurves* set = std::get_if<doc::SetNoteCurves>(&c.v)) curvePreview_ = set->curves;
   std::sort(curvePreview_.begin(), curvePreview_.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
 }
 
@@ -448,98 +406,93 @@ bool RollState::glideSelection() {
     if (selected(n.id)) notes.push_back(&n);
   std::stable_sort(notes.begin(), notes.end(), [](const doc::Note* a, const doc::Note* b) { return a->start < b->start; });
   const Grid g = grid();
-  std::vector<doc::Command> commands;
+  doc::SetNoteCurves set{ref_, {}};
   for (size_t i = 0; i < notes.size(); ++i) {
     const doc::Note& a = *notes[i];
     // The next selected note: the earliest start after this one's, nearest in pitch when several start together.
     size_t j = i + 1;
     while (j < notes.size() && notes[j]->start <= a.start) ++j;
     if (j == notes.size()) continue;
-    const std::optional<double> own = pathBaseCents(a.start, a.pitch, static_cast<double>(a.length));
+    const std::optional<double> own = startCents(a);
     if (!own) continue;
-    std::optional<double> delta;
+    const doc::Note* next = nullptr;
+    double best = 0.0;
     for (size_t k = j; k < notes.size() && notes[k]->start == notes[j]->start; ++k) {
-      const std::optional<double> c = pathCents(*notes[k], notes[k]->start, notes[k]->pitch, 0.0);
-      if (c && (!delta || std::fabs(*c - *own) < std::fabs(*delta))) delta = *c - *own;
+      const std::optional<double> c = startCents(*notes[k]);
+      if (c && (!next || std::fabs(*c - *own) < best)) {
+        next = notes[k];
+        best = std::fabs(*c - *own);
+      }
     }
-    if (!delta) continue;
+    if (!next) continue;
     const Ticks end = a.start + a.length;
     Ticks step = kPpq / 4;
     if (g.enabled()) {
       const TickRange cell = g.cellAt(end - 1);
       step = std::max<Ticks>(1, cell.end - cell.start);
     }
-    const Ticks bend = std::clamp<Ticks>(step, 0, std::max<Ticks>(a.length - bendLength(a.id, -1), 0));
-    const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, a.id) : nullptr;
-    const Span old = nc ? Span(nc->pitch) : Span();
-    Pts pts = withBend(old, a.length, 1, bend, *delta, doc::GlideShape::SCurve);
-    if (!std::equal(pts.begin(), pts.end(), old.begin(), old.end())) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(a), std::move(pts)});
+    const doc::NoteCurves* have = clip_->curves ? doc::findNoteCurves(*clip_, a.id) : nullptr;
+    doc::NoteCurves rec = have ? *have : doc::NoteCurves{a.id, {}, {}, {}, {}};
+    const Ticks room = a.length - (rec.bendIn.set() ? std::min(rec.bendIn.length, a.length) : 0);
+    const Ticks length = std::clamp<Ticks>(step, 0, std::max<Ticks>(room, 0));
+    if (length <= 0) continue;
+    rec.bendOut = doc::NoteBend{length, rec.bendOut.set() ? rec.bendOut.shape : doc::GlideShape{}, next->id};
+    if (have ? !(*have == rec) : true) set.curves.push_back(std::move(rec));
   }
-  if (commands.empty()) {
-    ctx.setStatus("Glide: the selected notes already glide into each other (or start together at one pitch)");
+  if (set.curves.empty()) {
+    ctx.setStatus("Glide: the selected notes already glide into each other (or start together)");
     return false;
   }
+  std::vector<doc::Command> commands;
+  commands.push_back(std::move(set));
   return apply(batchOf("Glide Notes", std::move(commands), ref_, selectionKeys()), "Glide Notes");
 }
 
 bool RollState::setBendShape(int edge, doc::GlideShape::Kind kind) {
   if (!clip_ || !clip_->curves) return false;
-  std::vector<doc::Command> commands;
+  doc::SetNoteCurves set{ref_, {}};
   for (const doc::Note& n : clip_->notes) {
     if (!selected(n.id)) continue;
-    float cents = 0.0f;
-    const Ticks bend = bendLength(n.id, edge, &cents);
-    if (bend <= 0) continue;
-    const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id);
-    Pts pts = withBend(nc->pitch, n.length, edge, bend, cents, kind);
-    if (pts != nc->pitch) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(n), std::move(pts)});
+    const doc::NoteCurves* have = doc::findNoteCurves(*clip_, n.id);
+    if (!have || !bendOf(*have, edge).set() || bendOf(*have, edge).shape.kind == kind) continue;
+    doc::NoteCurves rec = *have;
+    bendOf(rec, edge).shape.kind = kind;
+    set.curves.push_back(std::move(rec));
   }
-  if (commands.empty()) return false;
+  if (set.curves.empty()) return false;
+  std::vector<doc::Command> commands;
+  commands.push_back(std::move(set));
   return apply(batchOf("Bend Shape", std::move(commands), ref_, selectionKeys()), "Bend Shape");
 }
 
 bool RollState::clearBends() {
   if (!clip_ || !clip_->curves) return false;
-  std::vector<doc::Command> commands;
+  doc::SetNoteCurves set{ref_, {}};
   for (const doc::Note& n : clip_->notes)
-    if (selected(n.id) && doc::findNoteCurves(*clip_, n.id)) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(n), {}});
-  if (commands.empty()) return false;
+    if (selected(n.id) && doc::findNoteCurves(*clip_, n.id)) set.curves.push_back(doc::NoteCurves{n.id, {}, {}, {}, {}});
+  if (set.curves.empty()) return false;
+  std::vector<doc::Command> commands;
+  commands.push_back(std::move(set));
   return apply(batchOf("Clear Bends", std::move(commands), ref_, selectionKeys()), "Clear Bends");
 }
 
 // --- resize, detune ---------------------------------------------------------------------------------------------------
 
-std::vector<doc::Breakpoint> RollState::retimeCurve(std::span<const doc::Breakpoint> p, Ticks oldLength, Ticks newLength, Ticks startDelta) {
-  (void)oldLength;
+std::vector<doc::Breakpoint> RollState::retimeCurve(std::span<const doc::Breakpoint> p, Ticks newLength, Ticks startDelta) {
   Pts out;
   if (p.empty() || newLength < 1) return out;
-  const size_t n = p.size();
-  const size_t inEnd = leadInEnd(p), outBegin = leadOutBegin(p);
-  const Ticks lin = inEnd ? p[inEnd].tick : 0;
-  const Ticks lout = outBegin != kNone ? p.back().tick - p[outBegin].tick : 0;
-  const Ticks nin = std::min(lin, newLength), nout = std::min(lout, newLength - nin);
-  // The lead-in stays on the start (squeezed when the note is now shorter than it).
-  if (lin > 0)
-    for (size_t i = 0; i <= inEnd; ++i) push(out, bp(lin == nin ? p[i].tick : p[i].tick * nin / lin, p[i].value, p[i].curve));
-  // What lies between keeps its place in time and is cut where the note no longer reaches.
-  const Ticks lo = nin, hi = newLength - nout;
-  const size_t b0 = lin > 0 ? inEnd + 1 : 0, b1 = outBegin != kNone ? outBegin : n;
-  if (b0 < b1 && hi > lo) {
-    Pts mid;
-    bool cutLo = false, cutHi = false;
-    for (size_t i = b0; i < b1; ++i) {
-      const Ticks t = p[i].tick - startDelta;
-      if (t < lo) cutLo = true;
-      else if (t > hi) cutHi = true;
-      else mid.push_back(bp(t, p[i].value, p[i].curve));
-    }
-    if (cutLo) push(out, bp(lo, valueAt(p, lo + startDelta)));
-    for (const doc::Breakpoint& b : mid) push(out, b);
-    if (cutHi) push(out, bp(hi, valueBefore(p, hi + startDelta)));
+  // Every point keeps its place in time; what the note no longer reaches is cut, with a point on the cut.
+  bool cutLo = false, cutHi = false;
+  Pts mid;
+  for (const doc::Breakpoint& b : p) {
+    const Ticks t = b.tick - startDelta;
+    if (t < 0) cutLo = true;
+    else if (t > newLength) cutHi = true;
+    else mid.push_back(bp(t, b.value, b.curve));
   }
-  // The lead-out stays on the end.
-  if (lout > 0 && nout > 0)
-    for (size_t i = outBegin; i < n; ++i) push(out, bp(newLength - (p.back().tick - p[i].tick) * nout / lout, p[i].value, p[i].curve));
+  if (cutLo) push(out, bp(0, valueAt(p, startDelta)));
+  for (const doc::Breakpoint& b : mid) push(out, b);
+  if (cutHi) push(out, bp(newLength, valueBefore(p, newLength + startDelta)));
   normalise(out);
   return out;
 }
@@ -553,7 +506,7 @@ doc::ops::EditResult RollState::resizeEdit(doc::ops::NoteEdge edge, Ticks delta)
   for (const doc::Note& n : clip_->notes) {
     if (!selected(n.id)) continue;
     const doc::NoteCurves* nc = doc::findNoteCurves(*clip_, n.id);
-    if (!nc) continue;
+    if (!nc || nc->pitch.empty()) continue;
     // As ops::resizeNotes: the other edge stays, the note keeps at least one tick.
     const Ticks end = n.start + n.length;
     Ticks start = n.start, length = std::max<Ticks>(1, n.length + delta);
@@ -563,7 +516,7 @@ doc::ops::EditResult RollState::resizeEdit(doc::ops::NoteEdge edge, Ticks delta)
         if (k.id == n.id) start = k.start;  // where the op put it
       length = end - start;
     }
-    Pts pts = retimeCurve(nc->pitch, n.length, length, start - n.start);
+    Pts pts = retimeCurve(nc->pitch, length, start - n.start);
     if (pts != nc->pitch) batch->commands.push_back(doc::SetNoteCurve{ref_, doc::NoteKey{start, n.id}, std::move(pts)});
   }
   return e;
@@ -596,196 +549,6 @@ doc::ops::EditResult RollState::detuneEdit(Ticks dt, double cents) const {
   return batchOf("Detune Notes", std::move(commands), ref_, std::move(keys));
 }
 
-// --- vibrato ----------------------------------------------------------------------------------------------------------
-
-double RollState::defaultVibratoRate(Ticks at) const {
-  const Grid g = grid();
-  if (!g.enabled()) return 6.0;
-  const TickRange cell = g.cellAt(at);
-  const double len = static_cast<double>(std::max<Ticks>(1, cell.end - cell.start));
-  double hz = ticksPerSecond(at) / len;  // one cycle per grid cell …
-  if (!(hz > 0.0) || !std::isfinite(hz)) return 6.0;
-  const double lo = 3.0 * std::numbers::sqrt2;  // … folded by octaves into 4.24 … 8.49 Hz (around 6)
-  while (hz < lo) hz *= 2.0;
-  while (hz >= 2.0 * lo) hz *= 0.5;
-  return hz;
-}
-
-std::string RollState::vibratoText(double depthCents, double rateHz) {
-  return "Vibrato " + number(depthCents) + " \xC2\xA2 \xC2\xB7 " + number(rateHz) + " Hz";
-}
-
-bool RollState::parseVibrato(std::string_view text, double& depthCents, double& rateHz, std::string& error) {
-  double found[2] = {0.0, 0.0};
-  int count = 0;
-  for (size_t i = 0; i < text.size() && count < 2;) {
-    const char ch = text[i];
-    if ((ch >= '0' && ch <= '9') || ch == '.') {
-      double v = 0.0;
-      const auto r = std::from_chars(text.data() + i, text.data() + text.size(), v);
-      if (r.ec != std::errc()) {
-        error = "type the depth in cents and the rate in Hz, such as 30 6";
-        return false;
-      }
-      found[count++] = v;
-      i = static_cast<size_t>(r.ptr - text.data());
-    } else {
-      ++i;
-    }
-  }
-  if (count == 0) {
-    error = "type the depth in cents and the rate in Hz, such as 30 6";
-    return false;
-  }
-  if (!(found[0] >= 0.0 && found[0] <= 1200.0)) {
-    error = "the depth is 0 to 1200 cents";
-    return false;
-  }
-  if (count == 2 && !(found[1] >= 0.1 && found[1] <= 30.0)) {
-    error = "the rate is 0.1 to 30 Hz";
-    return false;
-  }
-  depthCents = found[0];
-  if (count == 2) rateHz = found[1];
-  return true;
-}
-
-bool RollState::addVibratoToSelection(double depthCents, double rateHz) {
-  if (!clip_ || sel_.empty() || !(rateHz > 0.0)) return false;
-  std::vector<doc::Command> commands;
-  bool tooShort = false;
-  for (const doc::Note& n : clip_->notes) {
-    if (!selected(n.id)) continue;
-    const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, n.id) : nullptr;
-    const Span old = nc ? Span(nc->pitch) : Span();
-    const Ticks out = bendLength(n.id, 1);
-    const Ticks from = bendLength(n.id, -1), to = n.length - out;
-    if (to <= from) continue;
-    const Pts fresh = vibratoPoints(from, to, depthCents, ticksPerSecond(n.start) / rateHz, kMaxVibratoPoints);
-    if (fresh.empty() && depthCents > 0.0) {
-      tooShort = true;
-      continue;
-    }
-    Pts pts = replaceRegion(old, from, to, fresh, out > 0);
-    if (!std::equal(pts.begin(), pts.end(), old.begin(), old.end())) commands.push_back(doc::SetNoteCurve{ref_, doc::keyOf(n), std::move(pts)});
-  }
-  if (commands.empty()) {
-    if (tooShort) ctx.setStatus("Vibrato: the note is shorter than one cycle at " + number(rateHz) + " Hz");
-    return false;
-  }
-  if (depthCents > 0.0) vibratoDepth_ = depthCents;
-  const bool ok = apply(batchOf("Add Vibrato", std::move(commands), ref_, selectionKeys()), "Add Vibrato");
-  if (ok) ctx.setStatus(vibratoText(depthCents, rateHz));
-  return ok;
-}
-
-std::optional<RollState::Vibrato> RollState::vibratoAt(const CurveTarget& t, Ticks offset) const {
-  const std::span<const doc::Breakpoint> p = curvePoints(t);
-  Ticks start = 0, length = 0;
-  if (p.size() < 5 || !curveSpan(t, start, length)) return std::nullopt;
-  // The swings: points where the curve turns.
-  std::vector<size_t> turns;
-  for (size_t i = 1; i + 1 < p.size(); ++i)
-    if ((p[i].value - p[i - 1].value) * (p[i + 1].value - p[i].value) < 0.0f && p[i].value != 0.0f) turns.push_back(i);
-  if (turns.size() < 2) return std::nullopt;
-  // The swing nearest the tick, then its neighbours while they alternate at about the same size and spacing.
-  size_t seed = 0;
-  for (size_t k = 1; k < turns.size(); ++k)
-    if (std::abs(p[turns[k]].tick - offset) < std::abs(p[turns[seed]].tick - offset)) seed = k;
-  auto alike = [&](size_t a, size_t b, Ticks spacing) {
-    const double va = p[turns[a]].value, vb = p[turns[b]].value;
-    if (va * vb >= 0.0) return false;
-    const double r = std::fabs(va) / std::fabs(vb);
-    if (r < 0.6 || r > 1.0 / 0.6) return false;
-    if (spacing <= 0) return true;
-    const double s = static_cast<double>(std::abs(p[turns[a]].tick - p[turns[b]].tick)) / static_cast<double>(spacing);
-    return s > 0.6 && s < 1.0 / 0.6;
-  };
-  size_t lo = seed, hi = seed;
-  Ticks spacing = 0;
-  if (seed + 1 < turns.size() && alike(seed, seed + 1, 0)) spacing = p[turns[seed + 1]].tick - p[turns[seed]].tick;
-  else if (seed > 0 && alike(seed - 1, seed, 0)) spacing = p[turns[seed]].tick - p[turns[seed - 1]].tick;
-  if (spacing <= 0) return std::nullopt;
-  while (hi + 1 < turns.size() && alike(hi, hi + 1, spacing)) ++hi;
-  while (lo > 0 && alike(lo - 1, lo, spacing)) --lo;
-  if (hi == lo) return std::nullopt;
-  // It starts on the last zero before its first swing and ends on the first zero after its last.
-  size_t a = turns[lo], b = turns[hi];
-  while (a > 0 && p[a].value != 0.0f) --a;
-  while (b + 1 < p.size() && p[b].value != 0.0f) ++b;
-  if (p[a].value != 0.0f || p[b].value != 0.0f) return std::nullopt;
-  Vibrato v;
-  v.from = p[a].tick;
-  v.to = p[b].tick;
-  if (offset < v.from || offset > v.to || v.to <= v.from) return std::nullopt;
-  const size_t swings = hi - lo + 1;
-  for (size_t k = lo; k <= hi; ++k) v.depth += std::fabs(p[turns[k]].value) / static_cast<double>(swings);
-  const double period = 2.0 * static_cast<double>(v.to - v.from) / static_cast<double>(swings);
-  v.rateHz = ticksPerSecond(start + v.from) / period;
-  return v;
-}
-
-bool RollState::setVibrato(const CurveTarget& t, const Vibrato& was, double depthCents, double rateHz) {
-  Ticks start = 0, length = 0;
-  if (!clip_ || !curveSpan(t, start, length) || !(rateHz > 0.0)) return false;
-  const std::span<const doc::Breakpoint> old = curvePoints(t);
-  const Pts fresh = vibratoPoints(was.from, was.to, depthCents, ticksPerSecond(start + was.from) / rateHz, kMaxVibratoPoints);
-  if (fresh.empty() && depthCents > 0.0) {
-    ctx.setStatus("Vibrato: under one cycle fits there at " + number(rateHz) + " Hz");
-    return false;
-  }
-  if (depthCents > 0.0) vibratoDepth_ = depthCents;
-  const bool ok = commitCurve(t, replaceRegion(old, was.from, was.to, fresh, true), "Edit Vibrato");
-  if (ok) ctx.setStatus(vibratoText(depthCents, rateHz));
-  return ok;
-}
-
-ui::TextEdit* RollState::openVibratoEntry() {
-  if (!clip_ || sel_.empty()) return nullptr;
-  const doc::Note* first = nullptr;
-  for (const doc::Note& n : clip_->notes)
-    if (selected(n.id)) {
-      first = &n;
-      break;
-    }
-  if (!first) return nullptr;
-  const double rate = defaultVibratoRate(first->start);
-  const std::string initial = number(vibratoDepth_) + " \xC2\xA2 \xC2\xB7 " + number(rate) + " Hz";
-  const ui::IRect anchor = onPath(*first, first->pitch) ? pathBox(*first, first->start, first->length, first->pitch)
-                                                        : screenRectOf(first->start, first->length, first->pitch);
-  return openJiField("vibrato", "Add Vibrato: depth in cents, rate in Hz",
-                     "The selected notes get a vibrato between their bends: its depth (cents, the swing each way) and its rate (Hz).", initial,
-                     anchor, [rate](RollState& s, const std::string& text, std::string& error) {
-                       double depth = s.vibratoDepth(), hz = rate;
-                       if (!parseVibrato(text, depth, hz, error)) return false;
-                       if (!s.addVibratoToSelection(depth, hz)) {
-                         error = depth > 0.0 ? "the notes are shorter than one cycle" : "there is no vibrato to remove";
-                         return false;
-                       }
-                       return true;
-                     });
-}
-
-ui::TextEdit* RollState::openVibratoEdit(const CurveTarget& t, const Vibrato& v) {
-  Ticks start = 0, length = 0;
-  if (!clip_ || !curveSpan(t, start, length)) return nullptr;
-  const std::string initial = number(v.depth) + " \xC2\xA2 \xC2\xB7 " + number(v.rateHz) + " Hz";
-  const float x = xOfTick(static_cast<double>(start + v.from));
-  const std::optional<double> base = curveBase(t, static_cast<double>(v.from));
-  const ui::IRect anchor{static_cast<int32_t>(x), static_cast<int32_t>(base ? yOfCents(*base) : static_cast<float>(area().y)) - 8,
-                         std::max(8, static_cast<int32_t>(xOfTick(static_cast<double>(start + v.to)) - x)), 16};
-  return openJiField("vibrato", "Vibrato: depth in cents, rate in Hz", "This vibrato's depth (cents, the swing each way) and rate (Hz); depth 0 removes it.",
-                     initial, anchor, [t, v](RollState& s, const std::string& text, std::string& error) {
-                       double depth = v.depth, hz = v.rateHz;
-                       if (!parseVibrato(text, depth, hz, error)) return false;
-                       if (!s.setVibrato(t, v, depth, hz)) {
-                         error = "nothing changed (under one cycle fits there at that rate)";
-                         return false;
-                       }
-                       return true;
-                     });
-}
-
 // --- pen --------------------------------------------------------------------------------------------------------------
 
 void RollState::beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool vibrato) {
@@ -808,7 +571,9 @@ void RollState::beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool v
   d.strokeLast = off;
   d.curvePts.assign(old.begin(), old.end());
   if (vibrato) {
-    d.vibRate = defaultVibratoRate(start + off);
+    const doc::NoteVibrato have = vibratoOf(t.note);
+    d.vibrato.push_back({t.note, have, std::max<Ticks>(length, 1)});
+    d.vibRate = have.set() && have.unit == doc::NoteVibrato::RateUnit::Hz ? static_cast<double>(have.rate) : defaultVibratoRate(start + off);
     d.vibDepth = vibratoDepth_;
   }
 }
@@ -818,20 +583,24 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
   Ticks start = 0, length = 0;
   if (!clip_ || !curveSpan(d.curve, start, length)) return;
   const Ticks off = std::clamp<Ticks>(static_cast<Ticks>(std::llround(tickAtX(p.x))) - start, 0, length);
-  // The document's curve (the preview shows this gesture's result).
+  // The document's free curve (the preview shows this gesture's result).
   Span old;
-  if (d.curve.note.valid()) {
-    if (const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, d.curve.note) : nullptr) old = nc->pitch;
-  }
+  if (const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, d.curve.note) : nullptr) old = nc->pitch;
   const double px2 = std::fabs(centsAtScreenY(p.y) - centsAtScreenY(p.y + 2.0f));  // two pixels, in cents
   if (d.kind == DragKind::PenVibrato) {
+    // T7.14: the note's vibrato property over the dragged span (nothing is baked).
     const Ticks ta = std::min(d.pressTick, off), tb = std::max(d.pressTick, off);
     d.cents = std::max(d.cents, std::fabs(centsAtScreenY(p.y) - centsAtScreenY(d.press.y)));
-    d.vibDepth = d.cents > 1.5 * px2 ? std::min(d.cents, 1200.0) : vibratoDepth_;  // a flat stroke: the last depth
-    const Pts fresh = vibratoPoints(ta, tb, d.vibDepth, ticksPerSecond(start + ta) / d.vibRate, kMaxVibratoPoints);
-    if (fresh.empty()) d.curvePts.assign(old.begin(), old.end());
-    else d.curvePts = replaceRegion(old, ta, fresh.back().tick, fresh, true);
-    setCurvePreview(d.curve, d.curvePts);
+    d.vibDepth = d.cents > 1.5 * px2 ? std::min(std::round(d.cents), static_cast<double>(doc::kMaxVibratoCents)) : vibratoDepth_;  // a flat stroke: the last depth
+    doc::NoteVibrato v;
+    v.depthCents = static_cast<float>(d.vibDepth);
+    v.rate = static_cast<float>(std::clamp(d.vibRate, static_cast<double>(doc::kMinVibratoHz), static_cast<double>(doc::kMaxVibratoHz)));
+    v.unit = doc::NoteVibrato::RateUnit::Hz;
+    v.onset = std::min(ta, std::max<Ticks>(length - 1, 0));
+    v.end = tb >= length ? 0 : std::max(tb, v.onset + 1);
+    previewRecord(d.curve.note).vibrato = tb > ta ? v : d.vibrato.front().base;
+    markNotesDirty();
+    ctx.setStatus(vibratoText(d.vibDepth, d.vibRate));
     return;
   }
   const std::optional<double> base = curveBase(d.curve, static_cast<double>(off));
@@ -951,15 +720,25 @@ bool RollState::deleteCurvePoint(const CurveHit& h) {
 
 void paintCurveHandles(PaintContext& ctx, RollState& s, const IRect& vis) {
   if (!ctx.res.theme || !s.hasClip()) return;
+  const Theme& th = *ctx.res.theme;
+  const float sc = ctx.scale.factor;
+  const DragState& d = s.drag;
+  // T7.14: the notes an Alt + edge drag bends from / to, outlined while it runs.
+  if (d.bend && (d.kind == DragKind::ResizeStart || d.kind == DragKind::ResizeEnd))
+    for (const auto& [id, other] : d.bendPicks) {
+      (void)id;
+      const doc::Note* m = s.findNote(other);
+      if (!m) continue;
+      const IRect r = s.onPath(*m, m->pitch) ? s.pathBox(*m, m->start, m->length, m->pitch) : s.screenRectOf(m->start, m->length, m->pitch);
+      if (r.empty() || intersect(r, vis).empty()) continue;
+      ctx.dl.addRoundedRectStroke(r.toRect(), 3.0f * sc, th.accent.primary, std::max(1.0f, std::round(1.5f * sc)));
+    }
   static std::vector<CurveTarget> targets;  // UI thread only; reused across frames
   static std::vector<RollState::CurveHandle> handles;
   s.shownCurves(targets);
   if (targets.empty()) return;
-  const Theme& th = *ctx.res.theme;
-  const float sc = ctx.scale.factor;
   const float x0 = static_cast<float>(vis.x) - 8.0f * sc, x1 = static_cast<float>(vis.right()) + 8.0f * sc;
   const float y0 = static_cast<float>(vis.y) - 8.0f * sc, y1 = static_cast<float>(vis.bottom()) + 8.0f * sc;
-  const DragState& d = s.drag;
   for (const CurveTarget& t : targets) {
     s.curveHandles(t, handles);
     const Rgba ring = s.colours().selBorder;

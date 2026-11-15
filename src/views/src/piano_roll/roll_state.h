@@ -30,6 +30,7 @@
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/color.h"
@@ -69,6 +70,13 @@ enum class DragKind : uint8_t {
   PenVibrato,  // the same with Alt: vibrato over the dragged span (depth from the stroke's height)
   CurvePoint,  // one breakpoint by (ticks, cents)
   CurveBow,    // the curvature of the segment after a breakpoint
+  // T7.14 (roll_vibrato.cpp, roll_groups.cpp)
+  Vibrato,        // the ~ grip of a note: up / down = depth, left / right = rate
+  VibratoCorner,  // one corner of a vibrato's envelope, sideways (DragState::corner)
+  WarpNew,        // from a frame's corner grip inward: a new warp of the group at the pointer
+  WarpMove,       // a warp marker, sideways
+  WarpGlide,      // a warp's glide grip: the glide's length
+  ProportionBox,  // the proportion tool (J): the box the typed proportion fills
 };
 
 enum class BraceEdge : uint8_t { Start, End, Both };
@@ -99,6 +107,7 @@ struct NoteLabel {
   ui::Rgba fill;
   int64_t num, den;   // num 0: the anchor note of a JI group, labelled with its number only
   uint32_t harmonic;  // its harmonic number in its JI group / over the virtual fundamental (0: not one)
+  uint8_t group = 0;  // T7.14: 1 a numbered member of a JI group, 2 its anchor: the number alone, in the group's colours
 };
 
 // T7.6: the curve a pen / breakpoint gesture edits: a note's pitch curve.
@@ -141,12 +150,29 @@ struct DragState {
   ui::IRect damage{};
   // T7.6: Move with Shift: free cents instead of rows (the notes become Cents).
   double cents = 0.0;
-  // T7.6. ResizeStart / ResizeEnd with Alt: the edge stays and the note glides in from the previous note / out to the
-  // next one over |dt| (`bendDelta`: per selected note, sorted by id, how far away that neighbour is in cents; found
-  // once, when the gesture first bends).
+  // T7.6 / T7.14. ResizeStart / ResizeEnd with Alt: the edge stays and the note glides in from the previous note / out
+  // to the next one over |dt| (`bendPicks`: per selected note, sorted by id, the neighbour it bends from / to; found
+  // once, when the gesture first bends; the neighbours are highlighted while it runs).
   bool bend = false;
   bool bendFound = false;
-  std::vector<std::pair<uint32_t, double>> bendDelta;
+  std::vector<std::pair<uint32_t, doc::NoteId>> bendPicks;
+  float travel = 0.0f;  // the farthest the pointer got from the press (device px): a pen stroke shorter than
+                        // kMinPenStroke is a click (M7 review M7)
+  // T7.14 vibrato grips: the notes the drag changes with what they had at the press (sorted by id), the corner
+  // (0 onset, 1 end of the fade-in, 2 start of the fade-out, 3 end), what the status line shows.
+  struct VibratoTarget {
+    doc::NoteId note;
+    doc::NoteVibrato base;
+    Ticks length = 1;
+  };
+  std::vector<VibratoTarget> vibrato;
+  int corner = -1;
+  // T7.14 warps: the group, the warp's index in `warps` (the list the release stores; group ticks), the group's start.
+  doc::JiGroupId group;
+  int32_t warpIndex = -1;
+  std::vector<doc::JiWarp> warps;
+  Ticks groupStart = 0, groupEnd = 0;
+  bool fromLeft = false;  // WarpNew: from the left corner
   // Pen and breakpoint gestures: the curve, the point (CurvePoint / CurveBow), the curve as the release will store it,
   // the stroke so far (PenDraw: ticks from the target's start, curve value in cents; sorted by tick), what the pointer
   // holds (`penHold`: pointer cents + penHold − base = the value), the vibrato being painted.
@@ -158,6 +184,7 @@ struct DragState {
   double penHold = 0.0;
   float bow0 = 0.0f;
   float bx = 0.0f;  // CurvePoint: the handle's x offset from the pointer (it keeps it through the drag)
+  float grabY = 0.0f;  // Move: the pressed note's line minus the pointer's y at the press (T7.14: harmonic snapping)
   double vibDepth = 0.0, vibRate = 0.0;
   bool curveAdded = false;     // CurvePoint: the press added the point (a release without a drag still commits)
   bool deleteOnClick = false;  // PenDraw on a note: a click (no drag) deletes it, as Draw Mode always did
@@ -165,7 +192,7 @@ struct DragState {
   ui::Mods pressMods = 0;
 };
 
-// A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve.
+// A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve, a bend, a vibrato or a warp.
 struct CurveNote {
   const doc::Note* note;
   Ticks start, length;
@@ -214,6 +241,34 @@ struct NoteLine {
   float x0, x1, y0, y1, yc;
   ui::Rgba fill, head;  // head: the start cap (the theme's offGrid colour for a pitch between rows)
   uint16_t key = 0;     // z, + 256 when selected (selected notes always on top, as mos-roll.js drawOrder)
+};
+
+// T7.14: what the roll knows of one JI group per clip snapshot (RollState::groupInfos): its numbering and its notes.
+struct GroupInfo {
+  const doc::JiGroup* group = nullptr;
+  const doc::Note* anchor = nullptr;
+  int64_t anchorNumber = 1;
+  std::vector<int64_t> proportion;        // distinct numbers, ascending
+  std::vector<const doc::Note*> notes;    // the anchor and the members, in clip order
+  Ticks start = 0, end = 0;               // doc::groupSpan
+  bool tuned = false;                     // a member remembers what it was written as (Tune to JI made it)
+  std::string proportionText;             // "4:5:6:7" (long ones elided)
+  std::string header;                     // that, or with warps "12-EDO \u2192 4:5:6"
+};
+
+// T7.14: where a group's frame and its parts are on screen (device px). Corner grips, markers and glide grips are
+// centred on the frame's bottom border; the header sits above the frame, the warp labels under it.
+struct GroupFrame {
+  ui::Rect box{};
+  ui::Rect header{};      // the whole header text
+  ui::Rect proportion{};  // the proportion inside the header (a click opens the chooser of a tuned group)
+};
+enum class GroupPart : uint8_t { None, Header, Proportion, LeftGrip, RightGrip, Marker, GlideGrip };
+struct GroupHit {
+  GroupPart part = GroupPart::None;
+  doc::JiGroupId group;
+  int32_t warp = -1;
+  bool valid() const noexcept { return part != GroupPart::None; }
 };
 
 class RollState {
@@ -303,7 +358,10 @@ public:
   std::optional<int64_t> rowDegreeOf(const tuning::PitchId& p) const;
   // The topmost note under a device point (the last drawn), or nullptr. `zone`: −1 left edge, +1 right edge, 0 body.
   const doc::Note* noteAt(ui::Vec2 p, int* zone = nullptr) const;
-  const doc::Note* findNote(doc::NoteId id) const noexcept;
+  // O(1) after the first lookup of an id in a clip snapshot (the first is a scan of the clip).
+  const doc::Note* findNote(doc::NoteId id) const;
+  // The selected notes (≤ 64) looked up in ONE pass over the clip, for the per-frame code that asks for each.
+  void cacheSelectedNotes() const;
   // Calls f(const Note&) for every note that may intersect content ticks [from, to) (by chunk; f culls exactly).
   template <class F>
   void forNotesIn(Ticks from, Ticks to, F&& f) const {
@@ -361,14 +419,19 @@ public:
     tuning::Rational ratio{1};
   };
   std::optional<Harmonics> harmonics() const;
-  // T7.13 (the seam for the group UI): the JI group the guides, the plain draw and "Remove JI Group" act on — the
-  // group of the first selected note (in clip order) that is an anchor or a member, else the group that was active
-  // last (so a click on empty space keeps it), else the clip's newest group; nullptr: none. Cached per clip snapshot
-  // and selection.
+  // The JI group the guides, the plain draw, the walk and "Remove JI Group" act on (T7.14): the group of the first
+  // selected note (in clip order) that is an anchor or a member; with nothing selected the group that was active
+  // last (a click on empty space or a deleted note keeps it, so the next note still lands on its guides). Selecting
+  // notes of no group, or Esc (forgetActiveGroup), puts it away: the guides go and the roll draws on the tuning's
+  // rows again. nullptr: none. Cached per clip snapshot and selection.
   const doc::JiGroup* activeJiGroup() const;
+  // Esc: no group stays active.
+  void forgetActiveGroup() noexcept;
   // A note's harmonic number: in its JI group (its anchor, a numbered member), else — a reference-anchored Ratio —
   // over the virtual fundamental. nullopt: none. O(log members) after the first call for a clip snapshot.
   std::optional<uint64_t> harmonicOf(const doc::Note& n) const;
+  // T7.14: 2 the anchor of a JI group, 1 a member of one, 0 neither. O(log groups).
+  int groupRole(const doc::Note& n) const;
   void addNotes(const std::vector<DrawnNote>& notes);
   // How a draw gesture with these modifiers picks its pitch (with an active JI group the plain draw is Ratio and
   // Shift the rows).
@@ -448,13 +511,13 @@ public:
   PaintStats paintStats;
   std::vector<ui::Vec2> linePts;      // T7.4: one polyline being built
 
-  // --- declaring JI (T7.13; roll_ji.cpp). The group UI (frames, Tune to JI + chooser, warp markers, walk, the
-  // proportion tool, Add Note at Ratio) is T7.14's; these are what the roll keeps meanwhile. ---
+  // --- JI groups (T7.13 / T7.14; roll_ji.cpp, roll_groups.cpp) ---
   // "8:9:10:12:15" (spaces allowed): strictly ascending whole terms. An error says what is wrong.
   static Result<std::vector<int64_t>> parseProportion(std::string_view text);
   // "Is Harmonic N": `note` becomes the frozen anchor of a JI group with index n (ops::makeJiGroup; a note that
-  // already anchors one: its index). Its pitch does not change; it sits exactly on guide n. Notes drawn afterwards
-  // are exact ratios to it, and the numbering is derived (doc::groupHarmonics). The selection is kept.
+  // already anchors one: its index). Its pitch does not change; it sits exactly on guide n. A note that already is a
+  // MEMBER of a group becomes that group's anchor with index n (ops::reanchorJiGroup, Q297 b): every note keeps its
+  // pitch, the numbers re-derive. The selection is kept.
   bool declareHarmonic(doc::NoteId note, uint32_t n, std::string* error = nullptr);
   // Removes the active JI group (ops::removeJiGroup: its members keep sounding where they are). False: none.
   bool removeActiveJiGroup();
@@ -463,6 +526,80 @@ public:
   ui::TextEdit* openJiField(std::string_view name, std::string_view title, std::string_view info, std::string_view initial,
                             ui::IRect anchor, std::function<bool(RollState&, const std::string&, std::string&)> commit);
   ui::TextEdit* openHarmonicEntry(doc::NoteId note);  // "Is Harmonic…"
+  // The clip's groups whose anchor is there, by group id (per clip snapshot; O(groups · notes) once).
+  const std::vector<GroupInfo>& groupInfos() const;
+  const GroupInfo* groupInfo(doc::JiGroupId id) const;
+  // The tuning's short name in a header / under a warp marker: "12-EDO", else the named tuning's name.
+  std::string tuningLabel() const;
+  // Where the group's frame is now (a warp drag's preview included). Empty box: its notes cannot be placed.
+  GroupFrame groupFrame(const GroupInfo& g) const;
+  // The group's warps as shown (a gesture's preview, else the document's).
+  std::span<const doc::JiWarp> shownWarps(const GroupInfo& g) const;
+  // The device x of a warp's marker and of its glide grip (the glide's end, kept kWarpGripGap from the marker so
+  // both can be grabbed), the y of the frame's bottom border they are centred on.
+  float warpX(const GroupInfo& g, const doc::JiWarp& w) const;
+  float warpGlideX(const GroupInfo& g, const doc::JiWarp& w) const;
+  // The group part under a device point: the header, a corner grip (tuned groups), a warp marker or glide grip.
+  GroupHit groupPartAt(ui::Vec2 p) const;
+  // Whether the frame's corner grips are shown: the group is tuned and active (or hovered).
+  bool gripsShown(const GroupInfo& g) const;
+  // Selects the group's notes (a click on its header).
+  void selectGroup(doc::JiGroupId id);
+  // "Tune to JI" (Ctrl+Shift+J): the selected notes become one group read as the best candidate proportion
+  // (ops::tuneToJi), or — when they already are (in) one tuned group — go back exactly to what was written
+  // (ops::untuneJiGroup). The same notes before and after: the selection is kept. One undo step. `chooser`: open the
+  // candidate list afterwards when there are several readings.
+  bool toggleTuneToJi(bool chooser = true);
+  // The readings of a tuned group as written (ops::tuneToJiCandidates of its notes).
+  std::vector<doc::ops::JiCandidate> groupCandidates(doc::JiGroupId id) const;
+  // Re-tunes the group to `terms` (one of its candidates). One undo step.
+  bool retuneGroup(doc::JiGroupId id, const std::vector<int64_t>& terms);
+  // The chooser: a list of the group's candidates (proportion, total error) under its header; the current one is
+  // ticked. Click or Up / Down + Enter picks; Esc keeps. nullptr: nothing to choose from.
+  ui::Menu* openJiChooser(doc::JiGroupId id);
+  // Walk (Alt+Up / Alt+Down): every number of the active group ± 1 with the anchor's pitch fixed (ops::walkJiGroup).
+  bool walkActiveGroup(int32_t steps);
+  // Warps (group ticks). insertWarpAt: the menu's "Back to Tuning Here" / "Into JI Here" at a content tick (the next
+  // transition moves there, or a new one is added). setWarpShape / removeWarp: a marker's menu, Delete.
+  bool insertWarpAt(doc::JiGroupId id, Ticks contentTick);
+  bool setWarpShape(doc::JiGroupId id, int32_t index, doc::GlideShape::Kind kind);
+  bool removeWarp(doc::JiGroupId id, int32_t index);
+  // How far a member with a written identity is from JI at a content tick of the group: 0 JI, 1 written.
+  double warpStateAt(const GroupInfo& g, Ticks contentTick) const;
+  // The selected warp marker (a click on it; Delete removes it). Cleared by any note selection.
+  struct WarpSel {
+    doc::JiGroupId group;
+    int32_t index = -1;
+    bool valid() const noexcept { return group.valid() && index >= 0; }
+  };
+  const WarpSel& selectedWarp() const noexcept { return warpSel_; }
+  void selectWarp(WarpSel w);
+  bool removeSelectedWarp();
+  // Warp gestures (the note area calls them).
+  void beginWarpDrag(const GroupHit& h, ui::Vec2 p);
+  void warpDragTo(ui::Vec2 p, ui::Mods mods);
+  bool commitWarpDrag(DragState& d);
+  // The proportion tool: J arms it for one box drag on empty space (Esc disarms); the release opens the field.
+  bool proportionArmed() const noexcept { return proportionArmed_; }
+  void armProportionTool(bool on);
+  // The field: "8:9:10:12:15" + Enter puts regular notes over [start, start + length) as one group, the lowest the
+  // anchor on row `bottomDegree` (ops::proportionNotes).
+  ui::TextEdit* openProportionEntry(Ticks start, Ticks length, int64_t bottomDegree, ui::IRect anchor);
+  bool insertProportion(Ticks start, Ticks length, int64_t bottomDegree, const std::vector<int64_t>& terms, std::string* error = nullptr);
+  // "Add Note at Ratio…" on a note of a group: "3/2" or "7:4" (a ratio to THAT note) or "5" (harmonic 5 of the
+  // group) adds a member at the note's time and length (ops::addGroupNote).
+  ui::TextEdit* openRatioEntry(doc::NoteId note);
+  bool addNoteAtRatio(doc::NoteId note, std::string_view text, std::string* error = nullptr);
+  // A member dragged vertically: the harmonic steps that bring the pressed note's number to the harmonic nearest
+  // the pointer's pitch. nullopt: the pressed note is no numbered member.
+  std::optional<int32_t> harmonicDragSteps(const doc::Note& pressed, float y) const;
+  // The frame the pointer is over (its grips are shown); 0: none.
+  doc::JiGroupId groupFrameAt(ui::Vec2 p) const;
+  void setHoverGroup(doc::JiGroupId id);
+  doc::JiGroupId hoverGroup() const noexcept { return hoverGroup_; }
+  inline static constexpr float kWarpGrip = 11.0f;     // marker / grip size (logical px)
+  inline static constexpr float kWarpGripGap = 13.0f;  // the glide grip's least distance from its marker
+
   // A point on a note drawn along a path, `frac` of the way through it (tests, anchors); nullopt: not on a path.
   std::optional<ui::Vec2> pathPoint(const doc::Note& n, double frac) const;
   // The device box of an on-path note (its path's extent plus its thickness).
@@ -470,24 +607,22 @@ public:
   // Half the drawn thickness of a path note (device px).
   float pathHalfThickness() const noexcept;
 
-  // --- bends, pen modes, breakpoints, vibrato (T7.6; roll_pen.cpp) ---
-  // A note's pitch curve is baked breakpoints (NoteCurves::pitch; what plays). Two parts of it are recognised by
-  // their form, so every gesture finds them again without extra stored state:
-  //   lead-in   the curve from tick 0 (value ≠ 0) to its first point of value 0: the note glides IN to its own pitch;
-  //   lead-out  from its last point of value 0 to its last point (value ≠ 0): it glides OUT.
-  // Alt + a note's left / right edge writes them (bendEdit): the value is the neighbour's pitch minus the note's
-  // (bendNeighbour: the note ending nearest before this one's start / starting nearest after its end, nearest in pitch
-  // when several), computed when the gesture is made and not followed afterwards (Q?-T7.6-a).
-  // The points of a curve as shown: a gesture's preview, else the document's. Empty: none.
+  // --- bends, pen modes, breakpoints (T7.6, on the derived API since T7.14; roll_pen.cpp) ---
+  // A bend is a property of the note (doc::NoteBend: the neighbour's id, a length, a shape): Alt + a note's left /
+  // right edge and Ctrl+G write it, and its far end follows the neighbour from then on. The free curve
+  // (NoteCurves::pitch: pen strokes, breakpoints) is never read as a bend (M7 review H4).
+  // The note's curve record as shown: a gesture's preview, else the document's. nullptr: none.
+  const doc::NoteCurves* curveRecord(doc::NoteId note) const;
+  // The points of the FREE curve as shown. Empty: none.
   std::span<const doc::Breakpoint> curvePoints(const CurveTarget& t) const;
-  // The pitch the curve is added to, `offset` ticks into its note (its identity's pitch), in cents. nullopt:
-  // unresolvable.
+  // The pitch the free curve is added to, `offset` ticks into its note, in cents: the note's pitch where it starts
+  // plus its bends and its group's warp there (not its vibrato). nullopt: unresolvable.
   std::optional<double> curveBase(const CurveTarget& t, double offset) const;
   // The target's start and length in content ticks (false: no such note).
   bool curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) const;
   // Breakpoint handles (device px): a dot per point, a diamond in the middle of a segment wide enough to bend. Shown
   // for the selected notes and, in Draw Mode, the note under the pointer; a curve of more
-  // than kMaxCurveHandles points (a free-drawn stroke, a vibrato) shows none.
+  // than kMaxCurveHandles points (a free-drawn stroke) shows none.
   struct CurveHandle {
     int32_t index = -1;  // the point, or the segment's first point (mid)
     bool mid = false;
@@ -506,42 +641,25 @@ public:
   CurveHit curveHandleAt(ui::Vec2 p) const;
   // The curves whose handles are shown now (see curveHandles).
   void shownCurves(std::vector<CurveTarget>& out) const;
-  // The edit an Alt + edge drag in state `d` commits (one SetNoteCurve per selected note that has such a neighbour).
+  // The neighbour a bend of `n`'s start (edge −1) / end (+1) glides from / to (M7 review M9): of the notes that end
+  // nearest before its start (start nearest after its end) — those within one grid step of the nearest — the one
+  // nearest in pitch that is not at the note's own pitch. nullptr: none (`samePitch`: there is a neighbour, at the
+  // note's own pitch).
+  const doc::Note* bendNeighbour(const doc::Note& n, int edge, bool* samePitch = nullptr) const;
+  // The edit an Alt + edge drag in state `d` commits (one SetNoteCurves for every selected note with a neighbour).
   doc::ops::EditResult bendEdit(DragState& d) const;
   void updateBendPreview();
-  // The neighbour's pitch minus the note's own, in cents (edge −1: the note before, +1: the note after). nullopt: none.
-  std::optional<double> bendNeighbour(const doc::Note& n, int edge) const;
-  // The length of a note's lead-in / lead-out (0: none) and how far it bends (cents).
-  Ticks bendLength(doc::NoteId note, int edge, float* cents = nullptr) const;
+  // The length of a note's bend in (edge −1) / out (+1); 0: none.
+  Ticks bendLength(doc::NoteId note, int edge) const;
   // Ctrl+G: every selected note glides out into the next selected one over one grid step. One undo step.
   bool glideSelection();
-  // The lead-in (edge −1) / lead-out (+1) of the selected notes redrawn Straight or as an S-curve (same length and depth).
+  // The bend in (edge −1) / out (+1) of the selected notes Straight or as an S-curve.
   bool setBendShape(int edge, doc::GlideShape::Kind kind);
   bool bendIsStraight(doc::NoteId note, int edge) const;
-  // Removes the selected notes' pitch curves (one undo step).
+  // Removes the selected notes' bends, drawn curves and vibratos (one undo step).
   bool clearBends();
-  // Vibrato: a sine of `depth` cents (peak) at `rateHz`, whole half cycles, baked into breakpoints. On the selected
-  // notes it fills each note between its lead-in and lead-out. defaultVibratoRate: one cycle per grid cell, folded by
-  // octaves into 4 … 8 Hz at the clip's tempo (6 Hz without a grid).
-  bool addVibratoToSelection(double depthCents, double rateHz);
-  double defaultVibratoRate(Ticks at) const;
   // Ticks per second at a content tick where the clip plays it (120 bpm without a timeline).
   double ticksPerSecond(Ticks contentTick) const;
-  double vibratoDepth() const noexcept { return vibratoDepth_; }
-  // The vibrato in a curve around `offset` (alternating, evenly spaced swings of one size), as painted: where it
-  // starts and ends (ticks from the target's start), its depth and its rate. nullopt: none there.
-  struct Vibrato {
-    Ticks from = 0, to = 0;
-    double depth = 0.0, rateHz = 0.0;
-  };
-  std::optional<Vibrato> vibratoAt(const CurveTarget& t, Ticks offset) const;
-  // Rewrites that vibrato with another depth / rate over the same span (one undo step).
-  bool setVibrato(const CurveTarget& t, const Vibrato& was, double depthCents, double rateHz);
-  static std::string vibratoText(double depthCents, double rateHz);  // "Vibrato 30 ¢ · 6 Hz"
-  // "30 6", "30 ¢ · 6 Hz": depth 0 … 1200 ¢, rate 0.1 … 30 Hz (the rate may be left out: `rateHz` is kept).
-  static bool parseVibrato(std::string_view text, double& depthCents, double& rateHz, std::string& error);
-  ui::TextEdit* openVibratoEntry();                                       // "Add Vibrato…" (the selection)
-  ui::TextEdit* openVibratoEdit(const CurveTarget& t, const Vibrato& v);  // "Edit Vibrato…"
   // Pen gestures (the note area calls them; each previews the curve the release stores).
   void beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool vibrato);
   void penTo(ui::Vec2 p, ui::Mods mods);
@@ -550,37 +668,114 @@ public:
   void beginCurveHandle(const CurveHit& h, ui::Vec2 p);
   void curveHandleTo(ui::Vec2 p, ui::Mods mods);
   bool deleteCurvePoint(const CurveHit& h);
-  // Stores a note's curve (SetNoteCurve), one undo step; the selection is kept.
+  // Stores a note's free curve (SetNoteCurve), one undo step; the selection is kept.
   bool commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what);
   // A pitch in cents snapped for a breakpoint drag: the nearest row, harmonic guide (when shown) or `own` (the pitch
   // the curve is added to: value 0).
   double snapCurveCents(double cents, double own) const;
   // The pitch under device y, not rounded (the inverse of yOfCents).
   double centsAtScreenY(float y) const noexcept;
-  // A resized note's curve: its lead-in stays on its start and its lead-out on its end, what lies between keeps its
-  // place in time (cut where the note no longer reaches). `startDelta`: how far the start moved.
-  static std::vector<doc::Breakpoint> retimeCurve(std::span<const doc::Breakpoint> pts, Ticks oldLength, Ticks newLength, Ticks startDelta);
-  // A resize of the selected notes (ops::resizeNotes) with their curves retimed in the same undo step.
+  // A resized note's free curve: it keeps its place in time and is cut where the note no longer reaches.
+  // `startDelta`: how far the start moved.
+  static std::vector<doc::Breakpoint> retimeCurve(std::span<const doc::Breakpoint> pts, Ticks newLength, Ticks startDelta);
+  // A resize of the selected notes (ops::resizeNotes) with their free curves retimed in the same undo step (bends
+  // and vibratos are properties: they need nothing).
   doc::ops::EditResult resizeEdit(doc::ops::NoteEdge edge, Ticks delta) const;
-  bool hasCurvePreview() const noexcept { return !curvePreview_.empty(); }
+  bool hasCurvePreview() const noexcept { return !curvePreview_.empty() || warpPreview_.valid(); }
   // A Shift + body drag: the selected notes `cents` away as Cents notes, `dt` later (one undo step).
   doc::ops::EditResult detuneEdit(Ticks dt, double cents) const;
   inline static constexpr size_t kMaxCurveHandles = 24;
   inline static constexpr size_t kMaxPenPoints = 512;  // a stroke's points after thinning
-  inline static constexpr size_t kMaxVibratoPoints = 4096;
+  inline static constexpr float kMinPenStroke = 8.0f;  // logical px: a shorter pen drag is a click (it erases the note)
+  inline static constexpr float kDetuneDeadZone = 6.0f;  // logical px before a Shift drag detunes (M7 review H5)
   void clearCurvePreview();
 
-  // --- pitch paths (T7.4) ---
+  // --- vibrato by dragging (T7.14, plan M7 V1–V3; roll_vibrato.cpp) ---
+  // Vibrato is a property of the note (doc::NoteVibrato); nothing is typed and nothing is baked.
+  //   the ~ grip   above the right end of the hovered note and of every selected note: drag up / down = depth (the
+  //                wave grows on the note), left / right = rate (right: longer waves); Shift = fine; double-click
+  //                removes it. With several notes selected the drag applies to all of them.
+  //   corners      once a note vibrates, the four corners of its amplitude envelope are grips under the note: onset,
+  //                end of the fade-in, start of the fade-out, end. They drag sideways (grid snap; Shift: free); the
+  //                two inner ones can meet (a swell).
+  // Separation from the other gestures: the ~ grip lies ABOVE the line and kVibratoGripInset inside the note's end,
+  // clear of the resize / Alt-bend zone (the last kEdgeGrab px of the note's band); the corner grips lie UNDER the
+  // line (under the envelope), clear of the labels above and of the breakpoints on the line.
+  enum class VibratoPart : uint8_t { None, Grip, Corner };
+  struct VibratoHit {
+    VibratoPart part = VibratoPart::None;
+    doc::NoteId note;
+    int corner = -1;
+    bool valid() const noexcept { return part != VibratoPart::None; }
+  };
+  VibratoHit vibratoPartAt(ui::Vec2 p) const;
+  // Where a note's ~ grip and its envelope's corner grips are (device px); nullopt: the note is not placed / has no
+  // vibrato.
+  std::optional<ui::Vec2> vibratoGripPos(const doc::Note& n) const;
+  std::optional<ui::Vec2> vibratoCornerPos(const doc::Note& n, int corner) const;
+  // The notes whose grips are shown: the hovered one, and the selected ones while they are at most
+  // kMaxVibratoGripNotes and each wide enough for a grip (or vibrating already).
+  void vibratoNotes(std::vector<const doc::Note*>& out) const;
+  // The vibrato of a note as shown (a gesture's preview first); !set(): none.
+  doc::NoteVibrato vibratoOf(doc::NoteId note) const;
+  void beginVibratoDrag(const VibratoHit& h, ui::Vec2 p);
+  void vibratoDragTo(ui::Vec2 p, ui::Mods mods);
+  bool commitVibratoDrag(DragState& d);
+  // Removes the vibrato of the note (and of the selection when the note is in it). One undo step.
+  bool removeVibrato(doc::NoteId note);
+  // Sets the selected notes' vibrato depth and rate (Hz), keeping each note's envelope (scenes, tests).
+  bool setSelectionVibrato(double depthCents, double rateHz);
+  // The default rate of a new vibrato: one cycle per grid cell, folded by octaves into 4.2 … 8.5 Hz at the clip's
+  // tempo (6 Hz without a grid).
+  double defaultVibratoRate(Ticks at) const;
+  double vibratoDepth() const noexcept { return vibratoDepth_; }
+  static std::string vibratoText(double depthCents, double rateHz);  // "Vibrato 30 ¢ · 6 Hz"
+  inline static constexpr size_t kMaxVibratoGripNotes = 16;  // a larger selection shows the hovered note's grips only
+  inline static constexpr float kVibratoGrip = 12.0f;       // grip size (logical px; hit boxes are this big)
+  inline static constexpr float kVibratoGripInset = 12.0f;  // the ~ grip's centre from the note's end
+  inline static constexpr float kVibratoGripRise = 12.0f;   // … and above / the corners below the line
+
+  // --- pitch paths (T7.4; T7.14: the effective curve, cached) ---
   // Device y of a pitch in cents, not rounded.
   float yOfCents(double cents) const noexcept;
-  // Whether a note is drawn along a path: it has a pitch curve. O(1) for a clip without curves.
-  bool onPath(const doc::Note& n, const tuning::PitchId& pitch) const noexcept;
+  // Whether a note is drawn along a path instead of on its row: it has a curve record (a drawn curve, a bend, a
+  // vibrato) or its group's warps move it. O(1) for a clip without curves and warps.
+  bool onPath(const doc::Note& n, const tuning::PitchId& pitch) const;
+  // A path note as it is drawn and hit: `base` = the pitch it resolves to at its start in cents (a warped member:
+  // its written pitch, its JI pitch or the point of the glide), `pts` = doc::effectiveNoteCurve (the free curve, the
+  // bends, the warps and the vibrato; cents over ticks from the note's start; empty: straight) flattened to
+  // kPathToleranceCents. Cached (M7 review M14): a paint walks the cached points and evaluates nothing. An entry
+  // stands until what it was flattened from changes: the note (start, length, identity), its curve record (compared
+  // by value when the clip's curve list is replaced), the tuning or the timeline; an entry that read the clip's
+  // resolved pitches (a bend's neighbour, a warp, a note anchor) is rebuilt for every new clip snapshot. So moving
+  // one note of a clip of 2,000 vibrating notes re-flattens none of the others. A note a gesture previews is
+  // evaluated per call into a scratch entry (valid until the next call). nullptr: not a path note, or its pitch
+  // does not resolve.
+  struct NotePath {
+    double base = 0.0;
+    std::vector<doc::Breakpoint> pts;
+    bool ok = false;
+    bool curved = false;  // a point has a curvature (the stored free curve as it is): segments are not straight
+    float lo = 0.0f, hi = 0.0f;  // the extent of `pts` in cents (0 … 0 when empty): what a note too narrow for its wave is drawn as
+    // What it was flattened from (the cache keeps an entry across clip snapshots while these stand).
+    const doc::NoteCurves* rec = nullptr;
+    Ticks start = 0, length = 0;
+    tuning::PitchId pitch;
+    bool usedIndex = false;  // it read the clip's resolved pitches (a bend's neighbour, a warp, a note anchor)
+  };
+  const NotePath* pathOf(const doc::Note& n) const;
+  inline static constexpr double kPathToleranceCents = 1.0;
+  // The resolved pitches of the shown clip and their index (built once per clip snapshot / tuning / timeline, only
+  // when a note needs them).
+  const doc::NotePitchIndex& pitchIndex() const;
   // The pitch in cents of a note `offset` ticks after its start, when it starts at `start` with identity `pitch` (a
-  // drag preview may differ from the note): the identity's pitch plus the note's own pitch curve. nullopt:
-  // unresolvable. The seam hit-testing and curve editing go along.
+  // drag preview may differ from the note): where it starts plus its effective curve. nullopt: unresolvable. The seam
+  // hit-testing and drawing go along.
   std::optional<double> pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const;
-  // The same without the note's own curve (T7.6: what a curve's values are added to).
-  std::optional<double> pathBaseCents(Ticks start, const tuning::PitchId& pitch, double offset) const;
+  // Where a note sounds when it starts, in cents (a path note: NotePath::base; else its identity's pitch).
+  std::optional<double> startCents(const doc::Note& n) const;
+  // How many path entries were flattened since the roll was made (tests: a repaint of an unchanged clip adds none).
+  uint64_t pathBuilds() const noexcept { return pathBuilds_; }
 
   // --- row labels (T3.19) ---
   RowLabels rowLabels() const noexcept { return rowLabels_; }
@@ -668,6 +863,8 @@ private:
   std::vector<int64_t> used_;
   NoteColours colours_{};
   std::vector<uint8_t> scaleMask_;
+  mutable std::unordered_map<uint32_t, const doc::Note*> noteCache_;  // findNote's answers for noteCacheFor_
+  mutable const doc::NoteClip* noteCacheFor_ = nullptr;
   mutable std::unordered_map<uint32_t, const doc::Note*> anchorIndex_;
   mutable bool anchorIndexValid_ = false;
 
@@ -706,11 +903,52 @@ private:
   std::vector<doc::NoteCurves> clipboardCurves_;  // T7.4: the copied notes' pitch curves (keyed by the source ids)
   std::vector<doc::JiGroup> clipboardGroups_;     // T7.13: the JI groups whose anchor was copied (source ids)
   std::vector<doc::NoteWritten> clipboardWritten_;  // and the copied members' written identities
-  // T7.6: the curves a gesture in progress shows instead of the document's (sorted by note id; an empty curve = the
-  // note shown without one), and the depth of the last vibrato painted (the default of the next).
+  // T7.6 / T7.14: the curve records a gesture in progress shows instead of the document's (whole records, sorted by
+  // note id; an empty record = the note shown without one), and the depth of the last vibrato made (the default of
+  // the next pen vibrato).
   std::vector<doc::NoteCurves> curvePreview_;
   double vibratoDepth_ = 30.0;
   void setCurvePreview(const CurveTarget& t, const std::vector<doc::Breakpoint>& pts);
+  // The preview record of a note (made from the document's when the gesture has none yet).
+  doc::NoteCurves& previewRecord(doc::NoteId note);
+  // T7.14: a warp gesture's preview: the group's warps as the release would store them, the clip with them and its
+  // resolved pitches (the members' start pitches move with the warps).
+  struct WarpPreview {
+    doc::JiGroupId group;
+    std::vector<doc::JiWarp> warps;
+    std::shared_ptr<const doc::NoteClip> clip;
+    doc::ClipPitches pitches;
+    doc::NotePitchIndex index;
+    bool valid() const noexcept { return group.valid(); }
+  };
+  WarpPreview warpPreview_;
+  void setWarpPreview(doc::JiGroupId group, std::vector<doc::JiWarp> warps);
+  bool applyWarps(doc::JiGroupId group, std::vector<doc::JiWarp> warps, std::string_view what);
+  WarpSel warpSel_;
+  bool proportionArmed_ = false;
+  doc::JiGroupId hoverGroup_;
+  // The path cache (pathOf).
+  struct PathCache {
+    const doc::NoteClip* clip = nullptr;
+    const void* timeline = nullptr;
+    uint64_t tuningGen = 0;
+    bool resolved = false;
+    bool anyWarp = false;
+    std::shared_ptr<const doc::NoteCurveList> curves;  // the list the entries' records point into (kept alive)
+    doc::ClipPitches pitches;
+    doc::NotePitchIndex index;
+    std::unordered_map<uint32_t, NotePath> notes;
+  };
+  mutable PathCache paths_;
+  mutable NotePath scratchPath_;
+  mutable uint64_t pathBuilds_ = 0;
+  uint64_t tuningGen_ = 1;  // bumped whenever tuning_ changes (a rebuild or an in-place morph)
+  void syncPaths() const;
+  bool previewTouches(const doc::Note& n) const;
+  mutable std::vector<GroupInfo> groupInfos_;
+  mutable const doc::NoteClip* groupInfosFor_ = nullptr;
+  mutable uint64_t groupInfosGen_ = 0;
+  mutable std::string groupInfosTuning_;
   mutable std::vector<CurveHandle> handleScratch_;
   mutable std::vector<CurveTarget> targetScratch_;
   RowLabels rowLabels_ = RowLabels::Auto;

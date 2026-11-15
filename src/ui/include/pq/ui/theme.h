@@ -108,9 +108,10 @@ struct Theme {
         harmonic,
         // scale / MOS layouts (T3.12): step-class keys, the proportional pitch line, the background EDO overlay
         keyTonic, keyLarge, keySmall, keyExtra, pitchLine, edoLine, edoEquave,
-        // JI objects (T7.4): the box over an object's span and pitch range, its dashed border, the voice lines, the
-        // header / harmonic / stop labels, the dotted stop markers, the ride curve, the selected object's border
-        jiFill, jiBorder, jiLine, jiText, jiStop, jiRide, jiSelected;
+        // JI groups (T7.4 / T7.14): the frame over a group's span and pitch range, its dashed border, the warp
+        // markers and grips, the header / harmonic-number / warp labels, the faint line where a glide ends, the
+        // active group's border and the frozen note's number
+        jiFill, jiBorder, jiLine, jiText, jiStop, jiSelected;
     // T7.12 (metrics, logical px): a note is a line along its pitch: its body thickness, the height and length of the
     // thicker head at its start, and the opacity (0..255) of the faint band over the row it is grabbed in
     float noteLine = 0, noteLineHead = 0, noteLineHeadWidth = 0, noteLineBand = 0;

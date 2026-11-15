@@ -1,4 +1,5 @@
-// T7.13 piano roll: what the roll keeps of JI after the box object went (the group UI is T7.14). Every gesture goes
+// T7.13 piano roll: declaring JI on notes (the group UI — frames, Tune to JI, warps, walk, proportions, ratios — is
+// test_piano_roll_groups.cpp). Every gesture goes
 // through the real shell, pointer and key dispatch (TestDriver → UiTree → the note area / the keymap / the menus /
 // the inline field), one undo step each:
 //   "Is Harmonic…" in a note's menu (the note becomes the anchor of a JI group; the guides, the derived numbering,
@@ -240,7 +241,8 @@ TEST_CASE("roll JI: Is Harmonic… — the note sits exactly on guide N, drawn n
 
   Menu* menu = r.rightClick(r.view->notePoint(e, 0.5));
   CHECK(Ji::itemOf(menu, "Is Subharmonic") < 0);  // not offered
-  CHECK(Ji::itemOf(menu, "Tune to JI") < 0);      // T7.14's
+  REQUIRE(Ji::itemOf(menu, "Tune to JI") >= 0);  // T7.14: a switch for a chord; one note has nothing to tune to
+  CHECK_FALSE(menu->items()[static_cast<size_t>(Ji::itemOf(menu, "Tune to JI"))].enabled);
   REQUIRE(Ji::itemOf(menu, "Remove JI Group") >= 0);
   CHECK_FALSE(menu->items()[static_cast<size_t>(Ji::itemOf(menu, "Remove JI Group"))].enabled);
   r.choose(menu, "Is Harmonic");
@@ -276,6 +278,11 @@ TEST_CASE("roll JI: Is Harmonic… — the note sits exactly on guide N, drawn n
   r.d.step();
   (void)r.d.press("B");
   CHECK(r.history() == h + 3);
+  // T7.14: the row note drawn last is selected and belongs to no group: no group is active (no guides). A click on
+  // a note of the group brings its guides back.
+  CHECK_FALSE(r.view->activeJiGroup().valid());
+  r.d.click(r.view->notePoint(e, 0.5));
+  REQUIRE(r.view->activeJiGroup() == group);
   doc::NoteId six;
   int tempered = 0;
   for (const doc::Note& n : r.clip().notes) {
@@ -290,6 +297,8 @@ TEST_CASE("roll JI: Is Harmonic… — the note sits exactly on guide N, drawn n
 
   // A note 3/2 above the anchor falls between the harmonics: the fundamental halves, everything renumbers.
   const doc::NoteId fifth = r.addNotes({Ji::plain(4 * kQ, kQ, PitchId::fromRatio(Rational(3, 2), tuning::AnchorKind::Note, e.value))})[0];
+  r.d.click(r.view->notePoint(e, 0.5));  // T7.14: the guides are the selected note's group's (the row note drawn last has none)
+  REQUIRE(r.view->activeJiGroup() == group);
   CHECK(r.view->harmonicOf(e) == 10u);
   CHECK(r.view->harmonicOf(fifth) == 15u);
   CHECK(r.view->harmonicOf(six) == 12u);
@@ -369,11 +378,32 @@ TEST_CASE("roll JI: two groups — the guides and the plain draw follow the sele
   for (const doc::Note& n : r.clip().notes)
     found = found || n.pitch == PitchId::fromRatio(Rational(5, 4), tuning::AnchorKind::Note, ids[0].value);
   CHECK(found);
-  // Nothing selected: the group that was active last.
-  (void)r.d.press("Escape");
+  // A click on empty space deselects; the group stays active (its guides stay), so the next double-click still lands
+  // on its series.
+  r.d.click(r.at(10.5 * static_cast<double>(kQ), 12));
   r.d.step();
   REQUIRE(r.view->selection().empty());
   CHECK(r.view->activeJiGroup() == a->id);
+  // T7.14: Esc puts the group away: no guides, the roll is back on the tuning's rows — a double-click adds a plain
+  // Degree note. (T7.13 kept the last group active for ever; then nothing but Shift could leave JI.)
+  CHECK(r.d.press("Escape") == KeyResult::Action);
+  r.d.step();
+  REQUIRE(r.view->selection().empty());
+  CHECK_FALSE(r.view->activeJiGroup().valid());
+  r.d.doubleClick(r.at(8.5 * static_cast<double>(kQ), 5));
+  r.d.step();
+  bool row = false;
+  for (const doc::Note& n : r.clip().notes) row = row || (n.start == 8 * kQ && n.pitch == PitchId::fromDegree(5, 0));
+  CHECK(row);
+  // A note of a group deleted (an edit, not a deselect): its group stays active for the next note.
+  r.d.click(r.view->notePoint(ids[1], 0.5));
+  REQUIRE(r.view->activeJiGroup() == b->id);
+  const doc::NoteId extra = r.addNotes({Ji::plain(6 * kQ, kQ, PitchId::fromRatio(Rational(4, 3), tuning::AnchorKind::Note, ids[1].value))})[0];
+  r.d.click(r.view->notePoint(extra, 0.5));
+  CHECK(r.d.press("Delete") == KeyResult::Action);
+  r.d.step();
+  REQUIRE(r.view->selection().empty());
+  CHECK(r.view->activeJiGroup() == b->id);
 }
 
 TEST_CASE("roll JI: copy / paste carries a note's pitch curve; an anchor pastes with its members as a new group, a member alone as the pitch it had") {

@@ -211,15 +211,17 @@ TEST_CASE("affordances: a note hover change damages only the two notes' boxes; i
   r.d.move(r.body(100));
   REQUIRE(r.view->noteHover().note == 100);
   CHECK(damageMeets(r.d.tree(), r.rect(100)));
-  CHECK(damageWithin(r.d.tree(), notes, grow(r.rect(100), 2)));
+  // T7.14: the box and the room for its vibrato grips (the ~ above its end, the envelope's corners under it).
+  constexpr int kGrips = 28;
+  CHECK(damageWithin(r.d.tree(), notes, grow(r.rect(100), kGrips)));
   r.d.advance(0.1);
   // From one note to another: both boxes, nothing else in the note area.
   r.d.move(r.body(116));
   REQUIRE(r.view->noteHover().note == 116);
   CHECK(damageMeets(r.d.tree(), r.rect(100)));
   CHECK(damageMeets(r.d.tree(), r.rect(116)));
-  IRect both = grow(r.rect(100), 2);
-  const IRect b2 = grow(r.rect(116), 2);
+  IRect both = grow(r.rect(100), kGrips);
+  const IRect b2 = grow(r.rect(116), kGrips);
   const int32_t x0 = std::min(both.x, b2.x), y0 = std::min(both.y, b2.y);
   both = {x0, y0, std::max(both.right(), b2.right()) - x0, std::max(both.bottom(), b2.bottom()) - y0};
   CHECK(damageWithin(r.d.tree(), notes, both));

@@ -85,6 +85,12 @@ public:
     return get(i, 0, hit);
   }
 
+  // Where the note with this id starts; nullopt: no such note. O(log notes).
+  std::optional<Ticks> startOf(NoteId id) const noexcept {
+    const int32_t i = indexOf(id);
+    return i >= 0 ? std::optional<Ticks>(notes_[static_cast<size_t>(i)]->start) : std::nullopt;
+  }
+
 private:
   // `hit`: the smallest depth of a note still being resolved that this resolution ran into (a cycle). A note on a
   // cycle of anchors does not resolve (as before). T7.11a: a cycle can also run through a bend — the bend's neighbour
@@ -409,6 +415,15 @@ ClipPitches resolveClip(const Project& p, const TrackPath& path, const NoteClip&
       cp.notes.push_back(np);
     }
     cp.warped = r.takeWarped();
+    // T7.14: the vibrato periods (sorted by note id, as the curve list is). O(vibratos · log notes) through the
+    // resolver's id index (never a scan of the clip per record).
+    for (const NoteCurves& nc : noteCurvesOf(clip)) {
+      if (!nc.vibrato.set()) continue;
+      const std::optional<Ticks> start = r.startOf(nc.note);
+      if (!start) continue;
+      if (const double period = vibratoPeriodTicks(nc.vibrato, clipTicksPerSecond(p, clip, *start)); period > 0.0)
+        cp.vibrato.emplace_back(nc.note, period);
+    }
   } else {
     for (const Note& n : clip.notes) cp.notes.push_back(NotePitch{n.id, std::nullopt, {}, PitchFollow::Static, 0, 0});
   }

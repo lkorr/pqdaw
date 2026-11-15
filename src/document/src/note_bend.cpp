@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <span>
 
 #include "pq/document/automation_curve.h"
@@ -63,9 +64,52 @@ struct Warp {
   }
 };
 
+// vibrato(t): the note's vibrato as note_bend.h defines it.
+struct Vib {
+  double depth = 0.0, period = 0.0;
+  double on = 0.0, stop = 0.0, fadeIn = 0.0, fadeOut = 0.0;
+  Vib(const NoteCurves& c, Ticks noteLength, double periodTicks) noexcept {
+    const NoteVibrato& v = c.vibrato;
+    if (!v.set() || !(periodTicks > 0.0)) return;
+    const Ticks e = vibratoStop(v, noteLength);
+    if (e <= v.onset) return;
+    depth = static_cast<double>(v.depthCents);
+    period = std::max(periodTicks, kMinVibratoPeriodTicks);
+    on = static_cast<double>(v.onset);
+    stop = static_cast<double>(e);
+    fadeIn = static_cast<double>(std::max<Ticks>(v.fadeIn, 0));
+    fadeOut = static_cast<double>(std::max<Ticks>(v.fadeOut, 0));
+  }
+  bool any() const noexcept { return depth > 0.0; }
+  double at(double t) const noexcept {
+    if (depth <= 0.0 || t <= on || t >= stop) return 0.0;
+    double a = 1.0;
+    if (fadeIn > 0.0) a = std::min(a, (t - on) / fadeIn);
+    if (fadeOut > 0.0) a = std::min(a, (stop - t) / fadeOut);
+    return depth * a * std::sin(2.0 * std::numbers::pi * (t - on) / period);
+  }
+};
+
 }  // namespace
 
-NotePitchIndex::NotePitchIndex(const ClipPitches& pitches) : warped_(pitches.warped) {
+double vibratoPeriodTicks(const NoteVibrato& v, double ticksPerSecond) noexcept {
+  if (!v.set() || !(v.rate > 0.0f)) return 0.0;
+  const double p = v.unit == NoteVibrato::RateUnit::Beats ? static_cast<double>(kPpq) / static_cast<double>(v.rate)
+                                                          : ticksPerSecond / static_cast<double>(v.rate);
+  return std::isfinite(p) && p > 0.0 ? std::max(p, kMinVibratoPeriodTicks) : 0.0;
+}
+
+double clipTicksPerSecond(const Project& p, const NoteClip& clip, Ticks contentTick) noexcept {
+  const double bpm = p.timeline ? p.timeline->tempoMap.bpmAt(std::max<Ticks>(clip.start + (contentTick - clip.contentStart), 0)) : 120.0;
+  return bpm / 60.0 * static_cast<double>(kPpq);
+}
+
+Ticks vibratoStop(const NoteVibrato& v, Ticks noteLength) noexcept {
+  const Ticks L = std::max<Ticks>(noteLength, 1);
+  return v.end > 0 ? std::min(v.end, L) : L;
+}
+
+NotePitchIndex::NotePitchIndex(const ClipPitches& pitches) : warped_(pitches.warped), vibrato_(pitches.vibrato) {
   byId_.reserve(pitches.notes.size());
   for (const NotePitch& np : pitches.notes) byId_.emplace_back(np.note.value, np.hz ? *np.hz : 0.0);
   std::sort(byId_.begin(), byId_.end());
@@ -84,6 +128,12 @@ NoteWarp NotePitchIndex::warp(const NoteClip& clip, NoteId note) const noexcept 
   return g != nullptr ? NoteWarp{g->warps, s->offset, s->cents} : NoteWarp{};
 }
 
+double NotePitchIndex::vibratoPeriod(NoteId note) const noexcept {
+  const auto it = std::lower_bound(vibrato_.begin(), vibrato_.end(), note,
+                                   [](const std::pair<NoteId, double>& s, NoteId id) noexcept { return s.first < id; });
+  return it != vibrato_.end() && it->first == note ? it->second : 0.0;
+}
+
 std::optional<double> NotePitchIndex::hz(NoteId note) const noexcept {
   const auto it = std::lower_bound(byId_.begin(), byId_.end(), std::pair<uint32_t, double>{note.value, 0.0});
   if (it == byId_.end() || it->first != note.value || !(it->second > 0.0)) return std::nullopt;
@@ -99,9 +149,12 @@ NoteBendTargets noteBendTargets(const NoteCurves& c, std::optional<double> noteH
 }
 
 NoteBendTargets noteBendTargets(const NoteCurves& c, const NotePitchIndex& pitches) noexcept {
-  if (!c.bendIn.set() && !c.bendOut.set()) return {};
-  return noteBendTargets(c, pitches.hz(c.note), c.bendIn.set() ? pitches.hz(c.bendIn.other) : std::nullopt,
-                         c.bendOut.set() ? pitches.hz(c.bendOut.other) : std::nullopt);
+  NoteBendTargets t;
+  if (c.bendIn.set() || c.bendOut.set())
+    t = noteBendTargets(c, pitches.hz(c.note), c.bendIn.set() ? pitches.hz(c.bendIn.other) : std::nullopt,
+                        c.bendOut.set() ? pitches.hz(c.bendOut.other) : std::nullopt);
+  if (c.vibrato.set()) t.vibratoPeriod = pitches.vibratoPeriod(c.note);
+  return t;
 }
 
 double noteCurveCents(const NoteCurves* c, Ticks noteLength, const NoteBendTargets& targets, const NoteWarp& warp,
@@ -109,7 +162,8 @@ double noteCurveCents(const NoteCurves* c, Ticks noteLength, const NoteBendTarge
   const NoteCurves& nc = c != nullptr ? *c : kNoCurves;
   const Bends bends(nc, noteLength, targets);
   tick = std::clamp(tick, 0.0, static_cast<double>(bends.length));
-  return evalAutomation(std::span<const Breakpoint>(nc.pitch), tick, 0.0) + bends.at(tick) + Warp(warp).at(tick);
+  return evalAutomation(std::span<const Breakpoint>(nc.pitch), tick, 0.0) + bends.at(tick) + Warp(warp).at(tick) +
+         Vib(nc, bends.length, targets.vibratoPeriod).at(tick);
 }
 
 std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteLength, const NoteBendTargets& targets,
@@ -117,7 +171,8 @@ std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteL
   const NoteCurves& c = record != nullptr ? *record : kNoCurves;
   const Bends bends(c, noteLength, targets);
   const Warp warp(noteWarp);
-  if (bends.none() && !warp.any()) return c.pitch;
+  const Vib vib(c, bends.length, targets.vibratoPeriod);
+  if (bends.none() && !warp.any() && !vib.any()) return c.pitch;
   const std::span<const Breakpoint> free(c.pitch);
   const Ticks L = bends.length;
   // Knots: where a piece of the curve begins or ends. Between two neighbours it is smooth.
@@ -132,15 +187,31 @@ std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteL
     for (const JiWarp& w : noteWarp.warps)
       for (const Ticks t : {w.at - noteWarp.offset, w.at + w.glide - noteWarp.offset})
         if (t > 0 && t < L) knots.push_back(t);
+  if (vib.any()) {
+    // The envelope's corners and every quarter cycle (the zeros and the swings), at most kMaxVibratoKnots of them (a
+    // longer vibrato is still evaluated, from sparser knots).
+    constexpr double kMaxVibratoKnots = 1 << 16;
+    for (const double t : {vib.on, vib.on + vib.fadeIn, vib.stop - vib.fadeOut, vib.stop})
+      if (t > 0.0 && t < static_cast<double>(L)) knots.push_back(static_cast<Ticks>(std::llround(t)));
+    const double quarter = 0.25 * vib.period;
+    const double count = std::min(std::floor((vib.stop - vib.on) / quarter), kMaxVibratoKnots);
+    knots.reserve(knots.size() + static_cast<size_t>(count));
+    for (double k = 1.0; k <= count; k += 1.0) {
+      const Ticks t = static_cast<Ticks>(std::llround(vib.on + k * quarter));
+      if (t > 0 && t < L) knots.push_back(t);
+    }
+  }
   std::sort(knots.begin(), knots.end());
   knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
 
-  auto inside = [&](double t) { return evalAutomation(free, t, 0.0) + bends.at(t) + warp.at(t); };
+  auto inside = [&](double t) { return evalAutomation(free, t, 0.0) + bends.at(t) + warp.at(t) + vib.at(t); };
   auto from = [&](Ticks t) {
-    return automationValueAt(free, t, 0.0) + bends.at(static_cast<double>(t)) + warp.at(static_cast<double>(t));
+    const double x = static_cast<double>(t);
+    return automationValueAt(free, t, 0.0) + bends.at(x) + warp.at(x) + vib.at(x);
   };
   auto upTo = [&](Ticks t) {
-    return automationValueBefore(free, t, 0.0) + bends.at(static_cast<double>(t)) + warp.at(static_cast<double>(t), true);
+    const double x = static_cast<double>(t);
+    return automationValueBefore(free, t, 0.0) + bends.at(x) + warp.at(x, true) + vib.at(x);
   };
   const double tol = std::max(toleranceCents, 1e-6);
   std::vector<Breakpoint> out;
@@ -177,7 +248,7 @@ std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteL
     if (i + 1 < knots.size()) span(span, t, at, knots[i + 1], upTo(knots[i + 1]), 0);
   }
   // A warp that does not reach the note (it starts and stays in one state): no curve at all.
-  if (bends.none() && c.pitch.empty() && std::ranges::all_of(out, [](const Breakpoint& b) { return b.value == 0.0f; })) out.clear();
+  if (bends.none() && !vib.any() && c.pitch.empty() && std::ranges::all_of(out, [](const Breakpoint& b) { return b.value == 0.0f; })) out.clear();
   return out;
 }
 

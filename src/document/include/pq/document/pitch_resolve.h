@@ -25,6 +25,7 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "pq/core/result.h"
@@ -86,6 +87,9 @@ struct ClipPitches {
   EffectiveTuning tuning;
   std::vector<NotePitch> notes;  // in the clip's note order (start, id)
   std::vector<NoteWarpState> warped;  // T7.13: the resolved members a warp moves (note_bend.h), sorted by note id
+  // T7.14: (note, its vibrato's period in ticks — vibratoPeriodTicks at the tempo where the note starts) for every
+  // note with a vibrato, sorted by note id.
+  std::vector<std::pair<NoteId, double>> vibrato;
 };
 
 struct TrackPitches {

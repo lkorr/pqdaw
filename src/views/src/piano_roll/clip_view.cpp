@@ -40,8 +40,9 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   help_->setFocusable(false);
   help_->setTooltip("Help: every control of the note editor");
   help_->setInfo("Piano Roll Help", "Opens a panel that lists every control and command of the note editor: notes, bends "
-                                    "between notes, pitch curves and vibrato, detune, harmonics, tuning and just "
-                                    "intonation. Click again, press Esc or click outside to close it.");
+                                    "between notes, pitch curves, vibrato, detune, harmonics, tuning and just "
+                                    "intonation (tuning a chord to JI and back, warps, walking, proportions). Click "
+                                    "again, press Esc or click outside to close it.");
   help_->onToggle = [this](bool) {
     // The click took the focus away from the roll (the button holds none): give it to the note area, so the roll has
     // its keys again when the panel closes (the overlay restores the focus it found).
@@ -73,13 +74,34 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   ctx_.setViewAction("pianoroll.nudgeFineRight", [this] { state_->nudgeSelectionFine(1); }, [this] { return hasClip(); });
   ctx_.setViewAction("pianoroll.shorten", [this] { state_->lengthenSelection(-1); }, [this] { return hasClip(); });
   ctx_.setViewAction("pianoroll.lengthen", [this] { state_->lengthenSelection(1); }, [this] { return hasClip(); });
-  // Only with a selection: else Esc falls through (Q27).
-  ctx_.setViewAction("pianoroll.deselect", [this] { state_->clearSelection(); },
-                     [this] { return hasClip() && !state_->selection().empty(); });
+  // Only with a selection (or a selected warp marker / the armed proportion tool, T7.14): else Esc falls through (Q27).
+  ctx_.setViewAction("pianoroll.deselect",
+                     [this] {
+                       state_->armProportionTool(false);
+                       state_->selectWarp({});
+                       state_->clearSelection();
+                       state_->forgetActiveGroup();  // the guides go: the roll draws on the tuning's rows again
+                       state_->markAllDirty();       // (the clip box's JI switch too)
+                     },
+                     [this] {
+                       return hasClip() && (!state_->selection().empty() || state_->selectedWarp().valid() || state_->proportionArmed() ||
+                                            state_->activeJiGroup() != nullptr);
+                     });
   // T7.6: Ctrl+G: each selected note glides out into the next selected one (two or more notes; else the chord falls
   // through).
   ctx_.setViewAction("pianoroll.glide", [this] { (void)state_->glideSelection(); },
                      [this] { return hasClip() && state_->selection().size() >= 2; });
+
+  // T7.14: Tune to JI and back (a selection), walk the active group (a note of a group selected), the proportion
+  // tool (J arms it for one box; again disarms).
+  ctx_.setViewAction("pianoroll.tuneToJi", [this] { (void)state_->toggleTuneToJi(); },
+                     [this] { return hasClip() && !state_->selection().empty(); });
+  ctx_.setViewAction("pianoroll.walkUp", [this] { (void)state_->walkActiveGroup(1); },
+                     [this] { return hasClip() && state_->activeJiGroup() != nullptr; });
+  ctx_.setViewAction("pianoroll.walkDown", [this] { (void)state_->walkActiveGroup(-1); },
+                     [this] { return hasClip() && state_->activeJiGroup() != nullptr; });
+  ctx_.setViewAction("pianoroll.proportionTool", [this] { state_->armProportionTool(!state_->proportionArmed()); },
+                     [this] { return hasClip(); });
 
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) { onDocument(); });
   viewSub_ = ctx_.observe([this](uint32_t bits) { onView(bits); });
@@ -318,6 +340,64 @@ Vec2 ClipView::notePoint(doc::NoteId id, double frac) const {
   const roll::NotePlace pl = s.place(n->pitch);
   if (!pl.ok) return {-1.0f, -1.0f};
   return {s.xOfTick(static_cast<double>(n->start) + frac * static_cast<double>(n->length)), static_cast<float>(s.screenY((pl.top + pl.bottom) / 2))};
+}
+
+// --- T7.14: groups, warps, vibrato (tests script the pointer with these) ----------------------------------------------
+
+bool ClipView::toggleTuneToJi() { return state_->toggleTuneToJi(); }
+bool ClipView::walkActiveGroup(int32_t steps) { return state_->walkActiveGroup(steps); }
+bool ClipView::insertProportion(Ticks start, Ticks length, int64_t bottomDegree, const std::vector<int64_t>& terms) {
+  return state_->insertProportion(start, length, bottomDegree, terms);
+}
+bool ClipView::addNoteAtRatio(doc::NoteId note, std::string_view text) { return state_->addNoteAtRatio(note, text); }
+bool ClipView::proportionArmed() const noexcept { return state_->proportionArmed(); }
+
+ClipView::GroupGeometry ClipView::groupGeometry(doc::JiGroupId id) const {
+  GroupGeometry out;
+  const roll::GroupInfo* g = state_->groupInfo(id);
+  if (!g) return out;
+  const roll::GroupFrame f = state_->groupFrame(*g);
+  if (f.box.x1 <= f.box.x0) return out;
+  const float half = 0.5f * RollState::kWarpGrip * (tree() ? tree()->scale() : 1.0f);
+  out.valid = true;
+  out.box = f.box;
+  out.header = f.header;
+  out.proportion = {0.5f * (f.proportion.x0 + f.proportion.x1), 0.5f * (f.proportion.y0 + f.proportion.y1)};
+  out.leftGrip = {f.box.x0 + half, f.box.y1};
+  out.rightGrip = {f.box.x1 - half, f.box.y1};
+  out.headerText = g->header;
+  out.proportionText = g->proportionText;
+  out.tuned = g->tuned;
+  out.gripsShown = state_->gripsShown(*g);
+  for (const doc::JiWarp& w : state_->shownWarps(*g)) {
+    out.markers.push_back({state_->warpX(*g, w), f.box.y1});
+    out.glideGrips.push_back({state_->warpGlideX(*g, w), f.box.y1});
+  }
+  return out;
+}
+
+int32_t ClipView::selectedWarp() const noexcept { return state_->selectedWarp().valid() ? state_->selectedWarp().index : -1; }
+
+std::optional<Vec2> ClipView::vibratoGrip(doc::NoteId id) const {
+  const doc::Note* n = state_->findNote(id);
+  return n ? state_->vibratoGripPos(*n) : std::nullopt;
+}
+std::optional<Vec2> ClipView::vibratoCorner(doc::NoteId id, int corner) const {
+  const doc::Note* n = state_->findNote(id);
+  return n ? state_->vibratoCornerPos(*n, corner) : std::nullopt;
+}
+std::optional<double> ClipView::noteCentsAt(doc::NoteId id, double frac) const {
+  const doc::Note* n = state_->findNote(id);
+  if (!n) return std::nullopt;
+  return state_->pathCents(*n, n->start, n->pitch, std::clamp(frac, 0.0, 1.0) * static_cast<double>(n->length));
+}
+float ClipView::yOfCents(double cents) const noexcept { return state_->yOfCents(cents); }
+uint64_t ClipView::pathBuilds() const noexcept { return state_->pathBuilds(); }
+std::vector<doc::NoteId> ClipView::bendHighlights() const {
+  std::vector<doc::NoteId> out;
+  if (state_->drag.bend)
+    for (const auto& [id, other] : state_->drag.bendPicks) out.push_back(other);
+  return out;
 }
 
 ClipView& installClipView(Shell& shell) {
