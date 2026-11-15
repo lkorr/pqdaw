@@ -814,3 +814,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 ## 2026-11-15 · M7 rework -Full · main (ae88e5db)
 - Verified: `build.ps1 -Full` (default + slow) 86/86 passed, pq_tests_pqmeter_diff skipped (the user's in-progress PQ Meter tree; PQ_METER_SOURCE_DIR pointed nowhere). The user's release pqdaw.exe rebuilt from ae88e5db.
 - Notes/blockers: T7.15 review of the rework running (the first attempt died at a usage limit with no output).
+
+## 2026-11-15 · T7.16a merged · main (93b84485)
+- Did: review fixes for groups and the roll: drawn notes join a group only inside its time span and with the JI switch on (H1, H3); Up / Down / drag transposes a tuned chord (H2); warp grips beat vibrato corners, Alt-bend edge = outer quarter ≥ 6 px (H4, M13); consolidate re-anchors (H6); Back to Tuning is a group state keeping reading + warps (M1, M3); bends start at the neighbour's actual pitch (M2); Alt + double-click between harmonics adds a member (M5); Ctrl+Shift+J splits a selection into chords (M6); warps relative to the anchor (M7); toolbar clicks keep the roll's keys (M10); path cache fixes (M15, M16); Quick start in the `?` help.
+- Verified (worker, after the rebase): `build.ps1 -Affected` 24/24 (incl. pq_tests_app, pq_tests_document, pq_tests_views); pq_tests_document 300/300. Orchestrator looked at pianoroll-group-warp.
+- Perf / CPU-efficiency check (release pq_bench_piano_roll): vibrato grip drag, 150 selected 35.6 → 2.93 ms/frame; MOS morph with 2000 vibrating notes 16.5 → 8.5 ms; one-note edit with a warped group 32.2 → 23.0 ms (12.99 without a warp; remainder untraced).
+- Notes/blockers: Q307–Q310.
