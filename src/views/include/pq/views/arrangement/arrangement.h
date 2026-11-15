@@ -522,8 +522,10 @@ public:
     uint32_t rowsPainted = 0;        // last lanes paint
     uint32_t clipsPainted = 0;
     uint32_t noteRectsEmitted = 0;
-    // bug-curve-render, last lanes paint: the vertices of the moving notes' strokes (over tiles and direct alike).
+    // bug-curve-render: the vertices of the moving notes' strokes drawn directly (last lanes paint) and rasterised into
+    // preview tiles (total).
     uint32_t pathVertices = 0;
+    uint64_t tilePathVertices = 0;
     uint64_t playheadReads = 0;      // TransportPort::playhead() calls made by the view
     uint32_t previewsDeferred = 0;   // last lanes paint: clips drawn without a preview (build budget / zooming)
     uint64_t previewsEvicted = 0;

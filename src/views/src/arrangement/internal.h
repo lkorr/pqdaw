@@ -312,8 +312,7 @@ public:
   // Overlay geometry (fade curves, crossfades, handles) of clips whose waveform is a queued tile: appended to the
   // draw list by flushTiles after the quads. Untextured geometry only.
   ui::DrawList overlay;
-  // bug-curve-render: the moving notes' strokes of clips drawn from tiles, appended by flushTiles after the quads.
-  ui::DrawList previewStrokes;
+  ui::DrawList pathScratch;  // bug-curve-render: a tile's moving-note strokes before they are rasterised into it
 
   // Clip-name colour per clip colour (clipTextFor is not for per-frame use).
   ui::Rgba clipTextColour(const ui::Theme& th, ui::Rgba fill);

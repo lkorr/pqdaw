@@ -46,8 +46,8 @@ void emitRects(ui::DrawList& dl, std::span<const Model::RectOut> rs);
 // through their curves, simplified in device px (views/common/pitch_path.h), as thick as a steady note's rows; a
 // vibrato whose cycle is shorter than kVibratoBandPx (or two strokes) at this zoom as its band around the rest of the
 // curve. The passes of a clip drawn at `start` with `timing`'s length, content start and loop, over the tick window
-// [from, to) — as the steady notes' runs. Never rasterised into a preview tile: the GPU draws them over the tile or over
-// the direct path's rects alike (the two stay pixel-identical). Returns the vertices emitted.
+// [from, to) — as the steady notes' runs. A preview tile has them rasterised into its coverage (cx0 = by0 = 0, white;
+// pq/ui/raster.h), the direct path draws them onto the frame: the same geometry. Returns the vertices emitted.
 struct PreviewStroke {
   double k = 0.0;          // device px per tick
   int32_t bodyH = 0;       // rows of the body

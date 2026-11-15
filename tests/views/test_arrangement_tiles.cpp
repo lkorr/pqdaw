@@ -148,8 +148,11 @@ struct Rig {
     CHECK_MESSAGE(diff.pixelsOverTolerance == 0, what << ": " << diff.pixelsOverTolerance << " px differ");
   }
   // A full repaint from tiles against one with the notes drawn directly (no tile atlas).
-  // expectTiles: false where every clip is wider than a tile (drawn directly in both paints).
-  void compareDirect(const std::string& what, bool expectTiles = true) {
+  // expectTiles: false where every clip is wider than a tile (drawn directly in both paints). channelTol (bug-curve-
+  // render): 0 — rects are the same pixels either way; a few levels where moving notes are anti-aliased strokes, which
+  // a tile has rasterised on the CPU (pq/ui/raster.h) and the direct path draws on the GPU: the feathered edge pixels of
+  // the same geometry may round a few levels apart.
+  void compareDirect(const std::string& what, bool expectTiles = true, uint32_t channelTol = 0) {
     const Image a = drawFull(*full, res);
     const auto st = arr->stats();
     if (expectTiles) CHECK_MESSAGE(st.tilesDrawn > 0, what);
@@ -158,7 +161,7 @@ struct Rig {
     const Image b = drawFull(*partial, resNoTiles);
     CHECK_MESSAGE(arr->stats().tilesDrawn == 0, what);
     CHECK_MESSAGE(arr->stats().noteRectsEmitted > 0, what);
-    const ImageDiff diff = compareImages(a, b, 0);
+    const ImageDiff diff = compareImages(a, b, channelTol);
     if (diff.pixelsOverTolerance != 0) {
       (void)writePng(what + ".tiles.png", a);
       (void)writePng(what + ".direct.png", b);
@@ -250,12 +253,12 @@ TEST_CASE("render: a clip's preview shows its notes' pitch movement — a drawn 
   MESSAGE("changed in the clip: " << changed << " px over rows [" << top << ", " << bottom << ")");
   CHECK(changed > 20);
   CHECK(bottom > top + 6u);
-  // bug-curve-render: the moving notes are anti-aliased strokes, drawn over the tile or over the direct path's rects;
-  // the two paints are the same pixels.
-  CHECK(arr.stats().pathVertices > 0);
+  // bug-curve-render: the moving notes are anti-aliased strokes, rasterised into the tile and drawn directly without
+  // one; the two agree up to rounding at the strokes' edges.
+  CHECK(arr.stats().tilePathVertices > 0);
   (void)rig.drawFull(*rig.partial, rig.resNoTiles);
   CHECK(arr.stats().pathVertices > 0);
-  rig.compareDirect("tiles-vs-direct-curves");
+  rig.compareDirect("tiles-vs-direct-curves", true, 8);
   CHECK(rig.gpu->validationErrorCount() == 0);
 }
 

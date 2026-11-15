@@ -619,7 +619,7 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   const Theme& th = *ctx.res.theme;
   const NoteColours& col = s.colours();
   const LineStyle style = lineStyle(th, s, ctx.scale.factor);
-  s.fitPathTolerance(0.5f * kPathPxTolerance);
+  s.fitPathTolerance(kPathPxTolerance);
   const float step = std::max(1.0f, kPathSampleStep * ctx.scale.factor);
   const float lane = static_cast<float>(std::max(1, s.rows().laneHeight()));
   const float thick = std::min(style.thick, std::clamp(lane - 2.0f, std::min(2.0f, lane), lane));  // as drawNoteLine
@@ -629,7 +629,7 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
   const double bandPeriodPx = std::max(static_cast<double>(kVibratoBandPx * ctx.scale.factor), 2.0 * (static_cast<double>(thick) + 2.0 * ctx.scale.factor));
   std::vector<Vec2>& pts = s.linePts;
   static thread_local std::vector<Vec2> up, dn;
-  static thread_local std::vector<double> ticks;
+  static thread_local std::vector<double> ticks, knots;
   for (const CurveNote& c : s.curveNotes) {
     const float x0 = s.xOfTick(static_cast<double>(c.start));
     const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
@@ -664,8 +664,8 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
     }
     if (pts.size() < 2) pts.push_back({xAt(tb), pts.empty() ? s.yOfCents(*base) : pts.back().y});
     if (band) {
-      // The envelope around the rest of the curve, sampled every ~1.5 px and at the envelope's corners.
-      bandSpan(up, dn, ticks, curve, p->vib, ta, tb, 1.5 * ctx.scale.factor / std::max(ppt, 1e-12), 0.5f * thick, xAt, yAt);
+      // The envelope around the rest of the curve.
+      bandSpan(up, dn, ticks, knots, curve, p->restCurved, p->vib, ta, tb, 1.5 * ctx.scale.factor / std::max(ppt, 1e-12), chunk, 0.5f * thick, xAt, yAt);
       smoothBand(ctx.dl, up.data(), dn.data(), static_cast<uint32_t>(up.size()), mulAlpha(fill, kVibratoBandAlpha));
     }
     if (x1 - x0 < kPathSmallPx * ctx.scale.factor) {

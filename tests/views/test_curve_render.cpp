@@ -105,6 +105,16 @@ TEST_CASE("pitch paths: a vibrato's envelope (doc::VibratoEnvelope) is the swing
     touch = std::max(touch, std::fabs(w));
   }
   CHECK(touch == doctest::Approx(40.0).epsilon(0.01));
+  // within(): the band's amplitude over [onset, stop], its ends included — a vibrato without fades starts and stops
+  // at full depth there (at() is 0 at both ends).
+  doc::NoteVibrato plain = v;
+  plain.fadeIn = plain.fadeOut = 0;
+  const doc::VibratoEnvelope p(plain, 2000);
+  CHECK(p.at(100.0) == 0.0);
+  CHECK(p.within(100.0) == 40.0);
+  CHECK(p.within(1000.0) == 40.0);
+  CHECK(e.within(100.0) == 0.0);
+  CHECK(e.within(250.0) == doctest::Approx(20.0));
   // A swell: the fades overlap and meet in one corner.
   v.fadeIn = 600;
   v.fadeOut = 600;

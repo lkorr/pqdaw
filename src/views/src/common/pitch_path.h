@@ -104,13 +104,26 @@ private:
   bool pending_ = false;
 };
 
-// A pitch path's stroke: ui::smoothPolylineCols in one colour — its joins bevel past a 120° turn (and miter at most
-// 2×) where smoothPolyline's 2.5× miters stick out of a zoomed-out wave's or a glide's sharp corners as spikes.
+// A pitch path's stroke. Where it turns by more than 60° somewhere (a zoomed-out wave's tips, a glide's corners),
+// ui::smoothPolylineCols in one colour: its joins are mitred on the two segments' own normals (≤ 2×) and bevel past
+// 120°, where smoothPolyline's joins (normals from the neighbours' chord, miters up to 2.5×) stick out as spikes at
+// such corners; else the cheaper smoothPolyline.
 inline void strokePath(ui::DrawList& dl, std::span<const ui::Vec2> pts, ui::Rgba col, float thickness) {
-  if (pts.size() < 2) return;
+  const size_t n = pts.size();
+  if (n < 2) return;
+  bool sharp = false;
+  for (size_t i = 1; i + 1 < n && !sharp; ++i) {
+    const float ax = pts[i].x - pts[i - 1].x, ay = pts[i].y - pts[i - 1].y, bx = pts[i + 1].x - pts[i].x, by = pts[i + 1].y - pts[i].y;
+    const float dot = ax * bx + ay * by;
+    sharp = dot <= 0.0f || dot * dot < 0.25f * (ax * ax + ay * ay) * (bx * bx + by * by);  // cos(turn) < ½
+  }
+  if (!sharp) {
+    ui::smoothPolyline(dl, pts, col, thickness);
+    return;
+  }
   static thread_local std::vector<ui::Rgba> cols;
-  cols.assign(pts.size(), col);
-  ui::smoothPolylineCols(dl, pts.data(), cols.data(), static_cast<uint32_t>(pts.size()), thickness);
+  cols.assign(n, col);
+  ui::smoothPolylineCols(dl, pts.data(), cols.data(), static_cast<uint32_t>(n), thickness);
 }
 
 // A paint walks a note's path in whole chunks of kPathChunkPx device px counted from the note's start, restarting the
@@ -187,18 +200,47 @@ void addPathSpan(PxPolyline& line, std::span<const doc::Breakpoint> curve, bool 
 }
 
 // The edges of a vibrato's band over [ta, tb]: the rest of the curve (`rest`, values; empty: 0) ± the envelope `vib`,
-// widened by `halfThick` px each way, sampled at the multiples of `stepTicks` and the envelope's corners. Overwrites
-// up / dn (same x per index, for ui::smoothBand); `ticks` is scratch.
+// widened by `halfThick` px each way. Both are straight between the envelope's corners and rest's points, so the edges
+// are sampled there only (exact, a few samples a note) — or, `restCurved` (a stored free curve's bowed segments), also
+// at the multiples of `stepTicks`; and at the chunk starts (`chunkTicks`, ≤ 0: none). Overwrites up / dn (same x per index, for ui::smoothBand); `ticks` and `knots` are
+// scratch.
 template <class X, class Y>
-void bandSpan(std::vector<ui::Vec2>& up, std::vector<ui::Vec2>& dn, std::vector<double>& ticks, std::span<const doc::Breakpoint> rest,
-              const doc::VibratoEnvelope& vib, double ta, double tb, double stepTicks, float halfThick, X&& x, Y&& y) {
-  double corners[5];
-  const int nc = vib.corners(corners);
-  bandTicks(ta, tb, stepTicks, std::span<const double>(corners, static_cast<size_t>(nc)), ticks);
+void bandSpan(std::vector<ui::Vec2>& up, std::vector<ui::Vec2>& dn, std::vector<double>& ticks, std::vector<double>& knots,
+              std::span<const doc::Breakpoint> rest, bool restCurved, const doc::VibratoEnvelope& vib, double ta, double tb, double stepTicks,
+              double chunkTicks, float halfThick, X&& x, Y&& y) {
   up.clear();
   dn.clear();
+  // Only where the vibrato is (its onset to its stop; a fade of 0 ticks starts or ends it at full depth).
+  const double t0 = std::max(ta, vib.on), t1 = std::min(tb, vib.stop);
+  if (!vib.any() || !(t1 > t0)) {
+    ticks.clear();
+    return;
+  }
+  double corners[5];
+  const int nc = vib.corners(corners);
+  knots.clear();
+  auto it = std::upper_bound(rest.begin(), rest.end(), t0, [](double t, const doc::Breakpoint& b) { return t < static_cast<double>(b.tick); });
+  int c = 0;
+  while (c < nc && corners[c] <= t0) ++c;
+  for (; it != rest.end() && static_cast<double>(it->tick) < t1; ++it) {
+    const double t = static_cast<double>(it->tick);
+    for (; c < nc && corners[c] < t; ++c) knots.push_back(corners[c]);
+    if (knots.empty() || t > knots.back()) knots.push_back(t);
+  }
+  for (; c < nc && corners[c] < t1; ++c)
+    if (knots.empty() || corners[c] > knots.back()) knots.push_back(corners[c]);
+  // The chunk starts inside (addPathSpan's): samples there too, so a walk that starts at one draws what one passing it does.
+  if (chunkTicks > 0.0) {
+    const size_t before = knots.size();
+    for (double b = std::max(1.0, std::floor((t0 - 0.5) / chunkTicks) + 1.0) * chunkTicks + 0.5; b < t1; b += chunkTicks) knots.push_back(b);
+    if (knots.size() != before) {
+      std::inplace_merge(knots.begin(), knots.begin() + static_cast<std::ptrdiff_t>(before), knots.end());
+      knots.erase(std::unique(knots.begin(), knots.end()), knots.end());
+    }
+  }
+  bandTicks(t0, t1, restCurved ? stepTicks : 1e300, knots, ticks);  // (no grid: the knots and both ends)
   for (const double t : ticks) {
-    const double r = rest.empty() ? 0.0 : pq::evalAutomation(rest, t), a = vib.at(t);
+    const double r = rest.empty() ? 0.0 : pq::evalAutomation(rest, t), a = vib.within(t);
     const float px = x(t), ya = y(r + a), yb = y(r - a);
     up.push_back({px, std::min(ya, yb) - halfThick});
     dn.push_back({px, std::max(ya, yb) + halfThick});

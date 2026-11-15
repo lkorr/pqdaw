@@ -159,14 +159,11 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
     }
   const bool curves = resolved && (clip->curves || index.anyWarp());
 
-  // Pass 1: cents per note (kept in the y field's place via a scratch vector), and each moving note's curve.
+  // Pass 1: cents per note (kept in the y field's place via a scratch vector).
   std::vector<double>& cents = centsScratch_;
   cents.clear();
   cents.reserve(seq.size());
   double lo = INFINITY, hi = -INFINITY;
-  std::vector<uint8_t>& moving = movingScratch_;
-  moving.assign(seq.size(), 0);
-  size_t i = 0;
   for (const doc::Note& n : seq) {
     double c = pitchCents(n.pitch, t, refHz);
     if (resolved)
@@ -174,11 +171,20 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
     cents.push_back(c);
     lo = std::min(lo, c);
     hi = std::max(hi, c);
-    if (curves) {
-      // bug-curve-render: a moving note is a path (drawn as an anti-aliased stroke, paintPreviewPaths). First at 2 ¢,
-      // for the clip's pitch range; flattened again below to a fraction of a pixel of the tallest body.
-      std::vector<doc::Breakpoint> pts = doc::effectiveNoteCurve(*clip, n, index, 2.0);
+  }
+  // Pass 2 (bug-curve-render): each moving note's curve, a path drawn as an anti-aliased stroke (paintPreviewPaths),
+  // flattened once to ~0.25 px of the tallest body (kMaxTrackHeight at 2×, ~960 px) over the notes' range (at least
+  // 100 ¢: a clip of one pitch is as tall as its curves), 2 ¢ at most; a vibrato's note also keeps its envelope and the
+  // curve without it, for the band a zoom too far out for its cycles draws.
+  std::vector<uint8_t>& moving = movingScratch_;
+  moving.assign(seq.size(), 0);
+  if (curves) {
+    const double tol = std::clamp(std::max(hi - lo, 100.0) / 4000.0, 1.0 / 64.0, 2.0);
+    size_t i = 0;
+    for (const doc::Note& n : seq) {
+      std::vector<doc::Breakpoint> pts = doc::effectiveNoteCurve(*clip, n, index, tol);
       if (!pts.empty()) {
+        const double c = cents[i];
         for (const doc::Breakpoint& b : pts) {
           lo = std::min(lo, c + static_cast<double>(b.value));
           hi = std::max(hi, c + static_cast<double>(b.value));
@@ -188,11 +194,26 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
         path.end = n.start + n.length;
         path.cents = c;
         path.pts = std::move(pts);
+        path.curved = std::any_of(path.pts.begin(), path.pts.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
         path.flags = n.enabled() ? 0 : kPreviewDisabled;
+        const doc::NoteCurves* rec = clip->curves ? doc::findNoteCurves(*clip, n.id) : nullptr;
+        const double period = rec && rec->vibrato.set() ? index.vibratoPeriod(n.id) : 0.0;
+        if (period > 0.0) {
+          const Ticks L = std::max<Ticks>(n.length, 1);
+          path.vib = doc::VibratoEnvelope(rec->vibrato, L);
+          if (path.vib.any()) {
+            path.vibPeriod = std::max(period, doc::kMinVibratoPeriodTicks);
+            doc::NoteCurves still = *rec;
+            still.vibrato = {};
+            const doc::NoteWarp warp = index.anyWarp() ? index.warp(*clip, n.id) : doc::NoteWarp{};
+            path.rest = doc::effectiveNoteCurve(&still, L, doc::noteBendTargets(still, index), warp, tol);
+            path.restCurved = std::any_of(path.rest.begin(), path.rest.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
+          }
+        }
         moving[i] = 1;
       }
+      ++i;
     }
-    ++i;
   }
   // Row height: one row per tuning step over the range (Live: one per semitone of the clip's note range), but
   // never thicker than a quarter of the body.
@@ -208,38 +229,12 @@ Preview* Model::preview(const doc::ClipPtr& clip, const doc::TuningDef* tuningDe
     const double yNorm = range > 1e-9 ? (hi - c) / range : 0.5;
     return static_cast<uint16_t>(std::lround(std::clamp(yNorm, 0.0, 1.0) * 65535.0));
   };
+  // Pass 3: the steady notes.
   pv.notes.reserve(seq.size() - std::min(seq.size(), pv.paths.size()));
-  i = 0;
-  size_t next = 0;  // the next path (pv.paths is in note order)
+  size_t i = 0;
   for (const doc::Note& n : seq) {
     pv.maxLength = std::max(pv.maxLength, n.length);
-    if (moving[i]) {
-      PreviewPath& path = pv.paths[next++];  // (made in note order)
-      // Flattened to ~1/8 px of the tallest body (kMaxTrackHeight at 2×: ~1000 px over the range), and its vibrato's
-      // envelope and the curve without it, for the band a zoom too far out for the cycles draws.
-      const double tol = std::clamp(range / 8000.0, 1.0 / 64.0, 2.0);
-      const doc::NoteCurves* rec = clip->curves ? doc::findNoteCurves(*clip, n.id) : nullptr;
-      if (tol < 2.0) path.pts = doc::effectiveNoteCurve(*clip, n, index, tol);
-      path.curved = std::any_of(path.pts.begin(), path.pts.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
-      const double period = rec && rec->vibrato.set() ? index.vibratoPeriod(n.id) : 0.0;
-      if (period > 0.0) {
-        const Ticks L = std::max<Ticks>(n.length, 1);
-        path.vib = doc::VibratoEnvelope(rec->vibrato, L);
-        if (path.vib.any()) {
-          path.vibPeriod = std::max(period, doc::kMinVibratoPeriodTicks);
-          doc::NoteCurves still = *rec;
-          still.vibrato = {};
-          const doc::NoteWarp warp = index.anyWarp() ? index.warp(*clip, n.id) : doc::NoteWarp{};
-          doc::NoteBendTargets targets = doc::noteBendTargets(still, index);
-          path.rest = doc::effectiveNoteCurve(&still, L, targets, warp, tol);
-          path.restCurved = std::any_of(path.rest.begin(), path.rest.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });
-        }
-      }
-      ++i;
-      continue;
-    }
-    const uint16_t y = yOf(cents[i]);
-    pv.notes.push_back({n.start, n.start + n.length, y, static_cast<uint16_t>(n.enabled() ? 0 : kPreviewDisabled)});
+    if (!moving[i]) pv.notes.push_back({n.start, n.start + n.length, yOf(cents[i]), static_cast<uint16_t>(n.enabled() ? 0 : kPreviewDisabled)});
     ++i;
   }
   pv.maxPathLength = 0;

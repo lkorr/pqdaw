@@ -101,6 +101,14 @@ struct VibratoEnvelope {
     if (fadeOut > 0.0) a = std::min(a, (stop - t) / fadeOut);
     return depth * a;
   }
+  // A(t) inside [onset, stop] with its ends included (where a fade of 0 ticks makes A jump: the full depth there, not
+  // 0) — what a band over that span is drawn with. Not clamped to the span.
+  double within(double t) const noexcept {
+    double a = 1.0;
+    if (fadeIn > 0.0) a = std::min(a, (t - on) / fadeIn);
+    if (fadeOut > 0.0) a = std::min(a, (stop - t) / fadeOut);
+    return depth * std::max(a, 0.0);
+  }
   // The ticks where A(t) bends (onset, the fade-in's end, the fade-out's start, stop, and where two overlapping fades
   // meet), ascending, inside [onset, stop]; returns how many of `out` it wrote (0 without a vibrato).
   int corners(double (&out)[5]) const noexcept;

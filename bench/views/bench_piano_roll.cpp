@@ -402,16 +402,16 @@ int main() {
     const double first = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - a0).count();
     std::printf("%s: %zu curved notes; first paint after the edit %.3f ms, %u vertices\n", name, count, first, static_cast<unsigned>(dl.vertices().size()));
     pq::bench::reportStats(name, pq::bench::measure(paintOnce, 1), "ns/frame");
-    // bug-curve-render: the same notes zoomed out 16× (the 2,000 curved notes now in a sixteenth of the width, among
-    // ~16× the straight notes): the paint and its vertices.
-    {
+    // bug-curve-render: the same view zoomed out 16× (every curved note narrower than its level of detail) and in 8×
+    // (a few hundred of them, each tens of px wide: the waves drawn): the paint and its vertices.
+    for (const double f : {1.0 / 16.0, 8.0}) {
       const double z = view->pxPerTick(), at = view->scrollTick();
-      view->setZoom(z / 16.0, at);
+      view->setZoom(z * f, at);
       tree.update(2.2);
       paintOnce();
-      std::printf("%s, zoomed out 16x: %u vertices\n", name, static_cast<unsigned>(dl.vertices().size()));
-      const std::string far = std::string(name) + ", zoomed out 16x";
-      pq::bench::reportStats(far.c_str(), pq::bench::measure(paintOnce, 1), "ns/frame");
+      const std::string zoomed = std::string(name) + (f < 1.0 ? ", zoomed out 16x" : ", zoomed in 8x");
+      std::printf("%s: %u vertices\n", zoomed.c_str(), static_cast<unsigned>(dl.vertices().size()));
+      pq::bench::reportStats(zoomed.c_str(), pq::bench::measure(paintOnce, 1), "ns/frame");
       view->setZoom(z, at);
       view->scrollToTick(at);
       tree.update(2.3);

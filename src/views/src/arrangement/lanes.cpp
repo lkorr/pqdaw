@@ -13,6 +13,7 @@
 #include "internal.h"
 #include "lane_paint.h"
 #include "pq/ui/lines.h"
+#include "pq/ui/raster.h"
 
 namespace pq::views::arrangement {
 
@@ -85,7 +86,7 @@ uint32_t paintPreviewPaths(DrawList& dl, const Preview& pv, const doc::NoteClip&
   const double bandPeriodPx = std::max(static_cast<double>(kVibratoBandPx * st.scale), 2.0 * (static_cast<double>(st.noteH) + 2.0 * st.scale));
   const double stepTicks = 1.5 * static_cast<double>(st.scale) / std::max(k, 1e-12);
   static thread_local std::vector<Vec2> pts, up, dn;
-  static thread_local std::vector<double> ticks;
+  static thread_local std::vector<double> ticks, knots;
   doc::forEachClipSegment(timing, start, std::min(start + length, to), [&](const doc::ClipSegment& seg) {
     const Ticks segEnd = seg.at + (seg.contentTo - seg.contentFrom);
     if (segEnd < from) return;
@@ -123,7 +124,7 @@ uint32_t paintPreviewPaths(DrawList& dl, const Preview& pv, const doc::NoteClip&
       pts.front().x = x0;
       pts.back().x = x1;
       if (band) {
-        bandSpan(up, dn, ticks, curve, n.vib, ta, tb, stepTicks, 0.5f * thick, xAt, yAt);
+        bandSpan(up, dn, ticks, knots, curve, n.restCurved, n.vib, ta, tb, stepTicks, 0.0, 0.5f * thick, xAt, yAt);
         up.front().x = dn.front().x = x0;
         up.back().x = dn.back().x = x1;
         smoothBand(dl, up.data(), dn.data(), static_cast<uint32_t>(up.size()), mulAlpha(col, kVibratoBandAlpha));
@@ -240,7 +241,7 @@ bool wantsTile(const TileAtlas& tiles, size_t notes, int32_t width, int32_t body
 
 // Rasterises the clip's preview at (k, bodyH) into a new tile (the clip's own geometry). False when the atlas has
 // no room this frame (the tile is then marked Failed for this key and the clip is drawn directly).
-bool buildTile(TileAtlas& tiles, Preview& pv, const doc::NoteClip& clip, double k, int32_t bodyH, Model& m) {
+bool buildTile(TileAtlas& tiles, Preview& pv, const doc::NoteClip& clip, double k, int32_t bodyH, float scale, Model& m) {
   PreviewTile& t = pv.tile;
   const RunGeom geo = runGeom(pv, clip.length, k, bodyH);
   t = PreviewTile{};
@@ -269,6 +270,18 @@ bool buildTile(TileAtlas& tiles, Preview& pv, const doc::NoteClip& clip, double 
                      else blend(p, n, kind == RunKind::Disabled ? kDisabledAlpha : kSeamAlpha);
                    }
                  });
+  // bug-curve-render: the moving notes' strokes rasterised into the same coverage (once per zoom, as the runs): the
+  // geometry the direct path draws, rasterised on the CPU (pq/ui/raster.h) — the two agree up to rounding at the
+  // strokes' feathered edges, so a clip whose tile is missing and that has moving notes counts as drawn
+  // approximately until its tile is there (paintNotes).
+  if (!pv.paths.empty()) {
+    DrawList& sd = m.pathScratch;
+    sd.reset(static_cast<uint32_t>(geo.width), static_cast<uint32_t>(bodyH));
+    const Rgba white = rgba(255, 255, 255);
+    const PreviewStroke st{k, bodyH, geo.noteH, 0.0f, 0.0f, 0.0f, static_cast<float>(geo.width), white, withAlpha(white, kDisabledAlpha), scale};
+    m.stats.tilePathVertices += paintPreviewPaths(sd, pv, clip, clip.start, clip.length, clip.start, clip.start + clip.length, st);
+    rasterizeCoverage(sd, base, static_cast<uint32_t>(geo.width), static_cast<uint32_t>(bodyH), pitch, {0.0f, 0.0f});
+  }
   t.tile = tile;
   t.state = PreviewTile::State::Ready;
   ++m.stats.tilesBuilt;
@@ -435,7 +448,7 @@ bool LaneCanvas::buildAhead() {
       return true;
     const size_t area = static_cast<size_t>(localWidth(clip->length, k) + 2) * static_cast<size_t>(bodyH + 2);
     if (builtTile && texels + area > am::kTileBuildTexelsPerFrame) return false;
-    (void)buildTile(*tiles, *pv, *clip, k, bodyH, m);
+    (void)buildTile(*tiles, *pv, *clip, k, bodyH, tree() ? tree()->scale() : 1.0f, m);
     texels += area;
     builtTile = true;
     return true;
@@ -592,25 +605,6 @@ void paintGrid(LanePaint& lp, float y0, float y1) {
 
 namespace {
 
-// bug-curve-render: a clip's moving notes (Preview::paths) into `dl`, as anti-aliased strokes over its steady notes —
-// never into its tile: the GPU draws the same strokes over a tile as over the direct path's rects, so the two (and a
-// partial repaint and a full one) stay pixel-identical. Clipped like the rects to the clip and the canvas.
-void strokes(LanePaint& lp, DrawList& dl, const Preview& pv, const doc::NoteClip& timing, const ClipGeom& g, float cx0, float cx1, float by0,
-             int32_t bodyH, Rgba noteCol) {
-  if (pv.paths.empty()) return;
-  const RunGeom geo = runGeom(pv, g.length, lp.k, bodyH);
-  const float lo = std::max(cx0, static_cast<float>(lp.r.x)), hi = std::min(cx1, static_cast<float>(lp.r.right()));
-  const PreviewStroke st{lp.k, bodyH, geo.noteH, cx0, by0, lo, hi, noteCol, withAlpha(noteCol, kDisabledAlpha), lp.ctx.scale.factor};
-  lp.m.stats.pathVertices += paintPreviewPaths(dl, pv, timing, g.start, g.length, lp.from, lp.to, st);
-}
-
-// A clip drawn from its tile: its strokes wait for the tile quads (flushTiles draws them after the quads, before the
-// clips' borders).
-void queueStrokes(LanePaint& lp, const Preview& pv, const doc::NoteClip& timing, const ClipGeom& g, float cx0, float cx1, float by0,
-                  int32_t bodyH, Rgba noteCol) {
-  strokes(lp, lp.m.previewStrokes, pv, timing, g, cx0, cx1, by0, bodyH, noteCol);
-}
-
 // The preview drawn directly: one rect per note run, clipped to the clip's visible part [vx0, vx1] (the painted
 // region plus a pixel) and the canvas. Returns the note rects emitted.
 uint32_t paintDirect(LanePaint& lp, const Preview& pv, const doc::NoteClip& timing, const ClipGeom& g, float cx0, float cx1,
@@ -636,8 +630,9 @@ uint32_t paintDirect(LanePaint& lp, const Preview& pv, const doc::NoteClip& timi
   });
   emitRects(lp.ctx.dl, out);
   lp.m.stats.noteRectsEmitted += emitted;
-  // bug-curve-render: the moving notes, over the rects.
-  strokes(lp, lp.ctx.dl, pv, timing, g, cx0, cx1, by0, bodyH, noteCol);
+  // bug-curve-render: the moving notes, over the rects (as buildTile rasterises them over the runs).
+  const PreviewStroke st{lp.k, bodyH, geo.noteH, cx0, by0, lo, hi, noteCol, offCol, lp.ctx.scale.factor};
+  lp.m.stats.pathVertices += paintPreviewPaths(lp.ctx.dl, pv, timing, g.start, g.length, lp.from, lp.to, st);
   return emitted;
 }
 
@@ -728,7 +723,7 @@ void paintClipBorder(LanePaint& lp, const ClipCols& cc, float top, float bottom,
 // audio clips (fades, crossfades, handles).
 void flushTiles(LanePaint& lp) {
   Model& m = lp.m;
-  if (m.tileQuads.empty() && m.deferredRects.empty() && m.overlay.empty() && m.previewStrokes.vertices().empty()) return;
+  if (m.tileQuads.empty() && m.deferredRects.empty() && m.overlay.empty()) return;
   DrawList& dl = lp.ctx.dl;
   const TextureId prev = dl.texture();
   for (uint32_t page = 0; page < kMaxTilePages; ++page) {
@@ -769,7 +764,6 @@ void flushTiles(LanePaint& lp) {
     }
     src.reset(dl.targetWidth(), dl.targetHeight());
   };
-  append(m.previewStrokes);  // bug-curve-render: the moving notes of the tiled clips, over their tiles
   emitRects(dl, m.deferredRects);
   if (!m.overlay.empty()) append(m.overlay);
   m.tileQuads.clear();
@@ -797,7 +791,6 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
     if (t && t->matches(lp.k, bodyH)) {
       if (ready) {
         queueTile(lp, *tiles, *t, cx0, vx0, vx1, by0, bodyH, noteCol);
-        queueStrokes(lp, *pv, timing, g, cx0, cx1, by0, bodyH, noteCol);
         tiles->touch(t->tile.page);
         ++m.stats.tilesDrawn;
         m.stats.tileNotes += static_cast<uint32_t>(clip.notes.size());
@@ -813,7 +806,6 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
     if (lp.zooming()) m.tilesAfterZoom = true;
     if (ready) {
       queueTile(lp, *tiles, *t, cx0, vx0, vx1, by0, bodyH, noteCol);
-      queueStrokes(lp, *pv, timing, g, cx0, cx1, by0, bodyH, noteCol);
       tiles->touch(t->tile.page);
       ++m.stats.tilesStale;
       m.approxDrawn = true;
@@ -823,6 +815,7 @@ bool paintNotes(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& cl
       if (!pv) pv = m.preview(clipPtr, tdef, &lp.p, row.id);  // nullptr: over this paint's build budget
       if (pv) {
         m.fallbackRects += paintDirect(lp, *pv, timing, g, cx0, cx1, vx0, vx1, by0, bodyH, noteCol);
+        if (!pv->paths.empty()) m.approxDrawn = true;  // its strokes, until its tile draws them (buildTile)
         return false;
       }
     }
@@ -1034,7 +1027,6 @@ void LaneCanvas::paint(PaintContext& ctx) {
   m.tileQuads.clear();
   m.deferredRects.clear();
   m.overlay.reset(ctx.dl.targetWidth(), ctx.dl.targetHeight());  // T5.6: audio overlays of this paint
-  m.previewStrokes.reset(ctx.dl.targetWidth(), ctx.dl.targetHeight());  // bug-curve-render: the tiled clips' strokes
   if (c.empty()) return;
   if (newFrame) {
     m.beginPaint(previewBudget_);

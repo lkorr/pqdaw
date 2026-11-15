@@ -474,12 +474,12 @@ int main() {
         }
       }
       for (auto& [ref, recs] : edits) (void)ctx.store().dispatch(doc::SetNoteCurves{ref, recs});
-      std::vector<double> cold;
-      for (int i = 0; i < 400 && (i == 0 || tree.needsFrame()); ++i) cold.push_back(timed([] {}));
+      std::vector<double> coldFrames;
+      for (int i = 0; i < 400 && (i == 0 || tree.needsFrame()); ++i) coldFrames.push_back(timed([] {}));
       double coldSum = 0.0;
-      for (const double c : cold) coldSum += c;
+      for (const double c : coldFrames) coldSum += c;
       std::printf("  moving notes: %zu clips, %zu curved notes; %zu cold frames, %.2f ms CPU in all\n", edits.size(), curvedNotes,
-                  cold.size(), coldSum * 1e-6);
+                  coldFrames.size(), coldSum * 1e-6);
       settle();
       paintFull();
       std::printf("  moving notes, settled: %u clips painted, %u note rects, %u vertices\n", st.clipsPainted, st.noteRectsEmitted,
