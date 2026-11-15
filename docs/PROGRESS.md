@@ -847,3 +847,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): `build.ps1 -Affected` 23/25 → pq_tests_document fixed (test asserted the old anchor rule) 1/1; pq_tests_timeline preview-player race passes 3/3 alone (load-sensitive, outside the diff); pq_tests_views 848 cases green.
 - Perf / CPU-efficiency check: one extra pass over moved notes; a re-anchor per anchor-moved-alone, on the edit only.
 - Notes/blockers: Q312, Q313. The real OS Caps Lock path was not driven live.
+## 2026-11-15 · bug-curve-render merged · main (d5993115)
+- Did: roll curves simplified in device pixels (≤ 0.2 px, `views/src/common/pitch_path.h`), fixed 256 px chunks, bevelled corners at sharp turns; vibratos under 8 px per cycle drawn as their envelope band (`doc::VibratoEnvelope`); arrangement / lane-window previews draw curved notes as anti-aliased strokes (tile-rasterised once per zoom), the rect-per-column path deleted. Goldens: + pianoroll-curves-far, -curves-mid, arrangement-curve-preview; re-recorded pianoroll-vibrato, -bends, -curve-notes, -group-warp, -group-31edo. Orchestrator looked at curves-far and curve-preview.
+- Verified (worker): pq_tests_document, pq_tests_app pass; pq_tests_views passed on re-run after two NVIDIA-driver SIGSEGVs in GPU tests (known flake, unproven); `-Affected` blocked by pq_tests_pqmeter_diff (user's PQ Meter tree).
+- Perf / CPU-efficiency check (release, noisy): 2,000 curved notes at 8× 203k → 167k vertices, 0.85 → 1.05 ms paint; one-note edit with warped group 56–62 → 43–48 ms; arrangement settled paint unchanged, cold build of 14,400 curved notes 1.8× slower (spread over 4–5 frames).
+- Notes/blockers: REVIEW asks about the 45 % band weight and the 8 px switch.
