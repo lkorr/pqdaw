@@ -746,6 +746,7 @@ TEST_CASE("roll pen: curve arithmetic — retiming on a resize, parsing a typed 
   CHECK(RollState::vibratoText(30.0, 6.0) == "Vibrato 30 \xC2\xA2 \xC2\xB7 6 Hz");
 }
 
+TEST_CASE("render: pianoroll-note-lines (T7.12: repeated 16ths, a selected run, soft / deactivated / Cents / Ratio notes as lines) matches the golden image") { checkGolden("pianoroll-note-lines"); }
 TEST_CASE("render: pianoroll-bends (a melody gliding between its notes, a straight scoop with its breakpoints) matches the golden image") { checkGolden("pianoroll-bends"); }
 TEST_CASE("render: pianoroll-vibrato (a 30 ¢ / 6 Hz vibrato, a scoop into a 60 ¢ / 4 Hz one) matches the golden image") { checkGolden("pianoroll-vibrato"); }
 TEST_CASE("render: pianoroll-ride (ride curves on JI objects: breakpoints on the lowest voice, a vibrato) matches the golden image") { checkGolden("pianoroll-ride"); }

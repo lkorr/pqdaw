@@ -1722,3 +1722,20 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Decide (QUESTIONS Q?-T7.6-a/b/c): a bend is baked — it does not follow its neighbour if that note moves later
   (repeat the gesture); there is no Bezier bend with handles; Ctrl+G bends the END of the earlier note (say if the
   glide should sit at the start of the later note instead); Shift + drag on a note is now detune.
+
+## 2026-11-14 · T7.12 · piano roll: every note is a line along its pitch 👁
+- What changed: notes are no longer row-high bars. Each note is a 5 px line centred on its exact pitch with round
+  ends and a pill-shaped head at its start (13 × 9 px), over a faint row-high band (the area you grab: hit testing is
+  unchanged). Straight notes, notes with bends / vibrato and notes on JI voices are painted by the same routine.
+- A Ratio / Cents note off the grid sits between the rows (no more triangle); its head is cyan. Ratio labels
+  ("7/4 · 7") moved out of the note: after the head, above the line, in the note's colour.
+- States: velocity = colour as before; selected = near-white; deactivated = grey line with a dark head; hover =
+  the band brightens, the trim edge marked over the band's height.
+- Look at: `tests/views/golden/pianoroll-note-lines.png` (new: repeated 16ths, a selected run, soft / deactivated /
+  Cents / Ratio notes), `pianoroll-12edo.png` (chords), `pianoroll-bends.png` and `pianoroll-vibrato.png` (curved and
+  straight notes side by side), `pianoroll-ratios.png` (labels), `pianoroll-5L2s-near-collapse.png` (MOS rows).
+- Tune it in `assets/themes/ableton-dark.json`: `roll.noteLine`, `roll.noteLineHead`, `roll.noteLineHeadWidth`,
+  `roll.noteLineBand` (band opacity 0..255; 0 = no band).
+- Decide: is the always-visible faint band wanted, or should it show on hover only (`roll.noteLineBand` 0)? Are the
+  heads the right size, or would you rather have a plain gap between repeated notes? JI objects are not restyled
+  (their code goes in T7.13 / T7.14).

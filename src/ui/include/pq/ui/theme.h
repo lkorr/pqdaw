@@ -111,6 +111,9 @@ struct Theme {
         // JI objects (T7.4): the box over an object's span and pitch range, its dashed border, the voice lines, the
         // header / harmonic / stop labels, the dotted stop markers, the ride curve, the selected object's border
         jiFill, jiBorder, jiLine, jiText, jiStop, jiRide, jiSelected;
+    // T7.12 (metrics, logical px): a note is a line along its pitch: its body thickness, the height and length of the
+    // thicker head at its start, and the opacity (0..255) of the faint band over the row it is grabbed in
+    float noteLine = 0, noteLineHead = 0, noteLineHeadWidth = 0, noteLineBand = 0;
     bool operator==(const Roll&) const = default;
   } roll{};
   struct MosChart {  // MOS wheel region chart (T3.13): surfaces from the Live 12 look, data colours from mos-explorer

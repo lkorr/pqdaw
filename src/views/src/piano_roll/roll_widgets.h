@@ -180,7 +180,7 @@ void paintHarmonicLabels(ui::PaintContext& ctx, const RollState& s, const ui::IR
 void paintOverlay(ui::PaintContext& ctx, const RollState& s, const ui::IRect& vis, float x0, float x1);
 // T7.4 (roll_ji.cpp): the JI objects of the clip (labels = false: box, markers, ride, voices, the box being drawn,
 // under the notes; labels = true: harmonic numbers, header, stop labels, over the notes); and the
-// notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint).
+// notes drawn along a pitch path (RollState::curveNotes, filled by the note area's paint); T7.12: roll_paint.cpp, the same line as every note).
 // T7.5: inside an entered object the rest of the roll is dimmed, so the note area paints in two layers: everything
 // but the entered object and its notes (NotEntered), the dim, then the entered object (EnteredOnly).
 enum class JiPass : uint8_t { All, NotEntered, EnteredOnly };

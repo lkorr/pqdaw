@@ -1017,6 +1017,7 @@ NotePlace RollState::place(const tuning::PitchId& p) const {
     if (const PitchRow* row = rows_.rowOfDegree(d)) {
       r.top = row->top;
       r.bottom = row->bottom;
+      r.centre = row->centre;
       r.z = row->z;
       r.ok = true;
       return r;
@@ -1030,6 +1031,7 @@ NotePlace RollState::place(const tuning::PitchId& p) const {
   const CentsPlacement cp = rows_.placeCents(cents);
   r.top = cp.top;
   r.bottom = cp.bottom;
+  r.centre = cp.centre;
   r.z = cp.z;
   r.ok = true;
   if (p.kind() != tuning::PitchKind::Degree && std::fabs(cp.offsetCents) > kOnGridToleranceCents)
@@ -1517,6 +1519,16 @@ ui::IRect RollState::screenRectOf(Ticks start, Ticks length, const tuning::Pitch
   return {static_cast<int32_t>(x0) - 1, screenY(pl.top) - 1, static_cast<int32_t>(x1 - x0) + 2, pl.bottom - pl.top + 2};
 }
 
+ui::IRect RollState::paintRectOf(Ticks start, Ticks length, const tuning::PitchId& pitch) const {
+  ui::IRect r = screenRectOf(start, length, pitch);
+  if (r.empty()) return r;
+  const float scale = (noteArea && noteArea->tree()) ? noteArea->tree()->scale() : 1.0f;
+  const int32_t rise = static_cast<int32_t>(kNoteLabelRise * scale);
+  r.y -= rise;
+  r.h += rise;
+  return r;
+}
+
 void RollState::damageDrag() {
   ui::UiTree* tree = noteArea ? noteArea->tree() : nullptr;
   if (!tree || !drag.trackDamage) {
@@ -1534,10 +1546,10 @@ void RollState::damageDrag() {
   };
   ui::IRect box{};
   for (const doc::Note& n : drag.tracked) {
-    box = unite(box, screenRectOf(n.start, n.length, n.pitch));
-    if (const std::optional<Preview> p = preview(n)) box = unite(box, screenRectOf(p->start, p->length, p->pitch));
+    box = unite(box, paintRectOf(n.start, n.length, n.pitch));
+    if (const std::optional<Preview> p = preview(n)) box = unite(box, paintRectOf(p->start, p->length, p->pitch));
   }
-  for (const DrawnNote& d : drag.drawn) box = unite(box, screenRectOf(d.start, d.length, drawnPitch(d)));
+  for (const DrawnNote& d : drag.drawn) box = unite(box, paintRectOf(d.start, d.length, drawnPitch(d)));
   const ui::IRect all = unite(box, drag.damage);
   drag.damage = box;
   if (all.empty()) return;

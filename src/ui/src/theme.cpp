@@ -122,6 +122,7 @@ const MetricToken kMetrics[] = {
     PQ_METRIC(radius, control), PQ_METRIC(radius, panel), PQ_METRIC(radius, menu), PQ_METRIC(radius, clip),
     PQ_METRIC(size, control), PQ_METRIC(size, row), PQ_METRIC(size, menuItem), PQ_METRIC(size, scrollbar),
     PQ_METRIC(size, knob), PQ_METRIC(size, meter), PQ_METRIC(size, gutter),
+    PQ_METRIC(roll, noteLine), PQ_METRIC(roll, noteLineHead), PQ_METRIC(roll, noteLineHeadWidth), PQ_METRIC(roll, noteLineBand),
 };
 #undef PQ_METRIC
 

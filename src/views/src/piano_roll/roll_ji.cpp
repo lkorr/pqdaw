@@ -9,7 +9,7 @@
 //   - a dotted marker at every later stop with the stop's proportion under the box (a tuning stop: the tuning's name),
 //   - the ride curve as a line under the lowest voice.
 // Every note with a pitch curve, and every note that follows an object, is drawn along its pitch path instead of on
-// a row (paintCurveNotes).
+// a row (roll_paint.cpp paintCurveNotes: the same line as every other note, T7.12).
 //
 // CPU: nothing is evaluated per frame that can be evaluated per document change. RollState::rebuildJiViews (refresh(),
 // off the paint path) flattens every object once with doc::jiVoicePlan — the evaluation the playback lowering uses — to
@@ -953,47 +953,6 @@ void paintJiObjects(PaintContext& ctx, RollState& s, const IRect& vis, bool labe
       if (fill.x1 > fill.x0 && fill.y1 > fill.y0) ctx.dl.addRectFilled(fill, th.roll.jiFill);
       boxBorder(ctx.dl, b, th.roll.jiSelected, std::round(4.0f * sc), std::round(3.0f * sc), vis);
     }
-  }
-}
-
-void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis, JiPass pass) {
-  if (!ctx.res.theme || s.curveNotes.empty()) return;
-  const doc::JiObjectId entered = s.jiEntered();
-  const NoteColours& col = s.colours();
-  const float sc = ctx.scale.factor;
-  const float step = std::max(1.0f, kJiSampleStep * sc);
-  const float lane = static_cast<float>(std::max(1, s.rows().laneHeight()));
-  const float thick = std::clamp(0.55f * lane, 3.0f * sc, 9.0f * sc);
-  const float vx0 = static_cast<float>(vis.x) - 2.0f * step, vx1 = static_cast<float>(vis.right()) + 2.0f * step;
-  std::vector<Vec2>& pts = s.linePts;
-  for (const CurveNote& c : s.curveNotes) {
-    if (pass != JiPass::All && (doc::jiObjectOf(c.pitch) == entered) != (pass == JiPass::EnteredOnly)) continue;
-    const float x0 = s.xOfTick(static_cast<double>(c.start));
-    const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
-    const float xa = std::max(x0, vx0), xb = std::min(x1, vx1);
-    if (xb <= xa) continue;
-    pts.clear();
-    const int n = std::clamp(static_cast<int>(std::ceil((xb - xa) / step)), 1, 8192);
-    bool ok = true;
-    for (int k = 0; k <= n && ok; ++k) {
-      const float x = xa + (xb - xa) * static_cast<float>(k) / static_cast<float>(n);
-      const double off = std::clamp(s.tickAtX(x) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
-      const std::optional<double> cents = s.pathCents(*c.note, c.start, c.pitch, off);
-      if (!cents) ok = false;
-      else pts.push_back({x, s.yOfCents(*cents)});
-    }
-    if (!ok || pts.size() < 2) continue;
-    Rgba fill, border;
-    if (!c.note->enabled()) {
-      fill = col.disabledFill;
-      border = col.disabledBorder;
-    } else {
-      const int v = std::clamp(static_cast<int>(std::lround(c.note->velocity)), 1, 127);
-      fill = c.selected ? col.selFill[v] : col.fill[v];
-      border = c.selected ? col.selBorder : col.border[v];
-    }
-    smoothPolyline(ctx.dl, pts, border, thick + 2.0f);
-    smoothPolyline(ctx.dl, pts, fill, thick);
   }
 }
 

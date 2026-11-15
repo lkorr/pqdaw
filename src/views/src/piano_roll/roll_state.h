@@ -105,7 +105,8 @@ struct DrawnNote {
 
 // A Ratio note's label waiting to be drawn over the notes (T3.19): its box and the colour it sits on.
 struct NoteLabel {
-  float x0, x1, y0, y1;
+  float x0, x1, y0, y1;  // the note's band (device px)
+  float yc;              // T7.12: its pitch line at the note's start
   ui::Rgba fill;
   int64_t num, den;   // num 0 (T7.5b): the declared harmonic's anchor note, labelled with its number only
   uint32_t harmonic;  // its harmonic number over the virtual fundamental (0: not one)
@@ -298,17 +299,23 @@ struct NoteColours {
 // Where a note is drawn (content y; x is computed from ticks at paint).
 struct NotePlace {
   int32_t top = 0, bottom = 0;
+  int32_t centre = 0;  // T7.12: the pitch itself (the row's pitch line; between rows for an off-grid pitch)
   int8_t offGrid = 0;  // 0 on its row; +1 above / −1 below the nearest row (marked)
   bool ok = false;     // false: the pitch cannot be placed (Harmonic, JI-fundamental anchors: no JI objects yet)
   uint8_t z = 0;       // the row's z (scale layouts: notes on larger steps paint over smaller ones)
 };
 
-// One note waiting to be painted in z order (Proportional layout: rows may overlap).
-struct ZNote {
-  float x0, x1, y0, y1;
-  ui::Rgba fill, border;
-  int8_t offGrid;
-  uint16_t key;  // z, + 256 when selected (selected notes always on top, as mos-roll.js drawOrder)
+// T7.12: how far above its band a note's label may reach (logical px): the label sits above the line, and the
+// note's damage rect (RollState::paintRectOf) covers it.
+inline constexpr float kNoteLabelRise = 12.0f;
+
+// T7.12: one note as it is painted: a line along its pitch (roll_paint.cpp drawNoteLine). [y0, y1) is its row band
+// (the faint grab area), yc the pitch the line is centred on; a note with a pitch path gets its polyline at paint.
+// Also the entry of the z-ordered pass (Proportional layout: rows may overlap).
+struct NoteLine {
+  float x0, x1, y0, y1, yc;
+  ui::Rgba fill, head;  // head: the start cap (the theme's offGrid colour for a pitch between rows)
+  uint16_t key = 0;     // z, + 256 when selected (selected notes always on top, as mos-roll.js drawOrder)
 };
 
 class RollState {
@@ -473,6 +480,8 @@ public:
   // Damages exactly what the preview changed since the last call (or everything for an untracked drag).
   void damageDrag();
   ui::IRect screenRectOf(Ticks start, Ticks length, const tuning::PitchId& pitch) const;
+  // T7.12: everything the note paints: that rect and the room above its band its label may take (damage).
+  ui::IRect paintRectOf(Ticks start, Ticks length, const tuning::PitchId& pitch) const;
   void cancelDrag();
   // The user abandoned the drag (Esc, capture or window focus lost): cancelDrag, and a rubber band puts back the
   // selection from before its press (T3.x-fix-edit, M3 review L19).
@@ -525,7 +534,7 @@ public:
   bool pitchOnlyChange() const noexcept { return pitchOnlyChange_; }
 
   // Paint scratch (the note area's z-ordered notes, the ratio labels), reused across frames.
-  std::vector<ZNote> zNotes, zSorted;
+  std::vector<NoteLine> zNotes, zSorted;
   std::vector<NoteLabel> noteLabels;
   std::vector<CurveNote> curveNotes;  // T7.4: the visible notes drawn along a path
   // T7.4: wall-clock time of the note area's last paint and of its JI part (tests: the 200-object budget).

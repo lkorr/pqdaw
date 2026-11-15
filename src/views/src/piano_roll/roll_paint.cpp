@@ -2,9 +2,11 @@
 // PaintContext::clip: rows by binary search, grid lines and notes by the visible tick range (note chunks outside it
 // are skipped without touching their notes), so a partial redraw of a few rows costs a few rows.
 //
-// Notes are two crisp quads each (border, then the fill inset by 1 device px), colours from a per-clip table
-// indexed by velocity; off-grid Ratio / Cents notes get the theme's offGrid border and a small triangle pointing to
-// the side of the row their true pitch lies on.
+// T7.12: every note is a line along its pitch, painted by one routine (drawNoteLine): a faint band over the row it
+// is grabbed in, a body a few px thick centred on the exact pitch (between rows for a Ratio / Cents pitch off the
+// grid, along the pitch path for a note with a curve or on a JI voice), round ends, and a thicker head at its start
+// so repeated notes on one pitch read as separate notes. Colours from a per-clip table indexed by velocity; the head
+// of an off-grid note takes the theme's offGrid colour. Metrics: the theme's roll.noteLine* tokens.
 
 #include <algorithm>
 #include <charconv>
@@ -15,6 +17,7 @@
 #include "../common/labels.h"
 #include "../common/paint.h"
 #include "pq/tuning/ji.h"
+#include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
 #include "roll_widgets.h"
 
@@ -29,27 +32,59 @@ Rect frect(float x0, float y0, float x1, float y1) noexcept { return {x0, y0, x1
 // Velocity table index.
 int velIndex(float v) noexcept { return std::clamp(static_cast<int>(std::lround(v)), 1, 127); }
 
-struct NoteDraw {
-  float x0, x1;
-  float y0, y1;
-  Rgba fill, border;
-  int8_t offGrid;
+// The line metrics at this UI scale (theme tokens roll.noteLine*, logical px).
+struct LineStyle {
+  float thick;     // body thickness
+  float headH;     // head (start cap) height
+  float headW;     // head length
+  float pathBand;  // the grab band of a note on a pitch path (its hit thickness)
+  uint8_t bandAlpha;
 };
 
-void drawNote(DrawList& dl, const NoteDraw& d, Rgba offGridCol) {
-  const Rgba border = d.offGrid ? offGridCol : d.border;
-  dl.addRectFilled(frect(d.x0, d.y0, d.x1, d.y1), border);
-  if (d.x1 - d.x0 > 2.0f && d.y1 - d.y0 > 2.0f) dl.addRectFilled(frect(d.x0 + 1, d.y0 + 1, d.x1 - 1, d.y1 - 1), d.fill);
-  if (d.offGrid && d.y1 - d.y0 >= 5.0f && d.x1 - d.x0 >= 8.0f) {
-    // A small triangle at the note's start pointing towards the true pitch (up: above the row's pitch).
-    const float h = std::min(d.y1 - d.y0 - 2.0f, 6.0f);
-    const float cx = d.x0 + 2.0f + h * 0.5f;
-    const float cy = (d.y0 + d.y1) * 0.5f;
-    const float s = d.offGrid > 0 ? -1.0f : 1.0f;
-    dl.addTriangleFilled({cx - h * 0.5f, cy - s * h * 0.35f}, {cx + h * 0.5f, cy - s * h * 0.35f}, {cx, cy + s * h * 0.45f},
-                         offGridCol);
+LineStyle lineStyle(const Theme& th, const RollState& s, float scale) noexcept {
+  return {std::max(1.0f, std::round(th.roll.noteLine * scale)), std::max(1.0f, std::round(th.roll.noteLineHead * scale)),
+          std::max(1.0f, std::round(th.roll.noteLineHeadWidth * scale)), 2.0f * s.pathHalfThickness(),
+          static_cast<uint8_t>(std::clamp(th.roll.noteLineBand, 0.0f, 255.0f))};
+}
+
+// One note: band, body, head. `path` (≥ 2 points, device px, left to right) is the pitch path of a note that has
+// one; without it the note is straight at d.yc. No allocation: a handful of draw-list primitives per note, and a
+// note narrower than its thickness is two crisp quads (a zoomed-out clip stays cheap).
+void drawNoteLine(DrawList& dl, const LineStyle& st, const NoteLine& d, std::span<const Vec2> path = {}) {
+  const float w = d.x1 - d.x0, rowH = d.y1 - d.y0;
+  if (w <= 0.0f || rowH <= 0.0f) return;
+  // Never thicker than the row: small rows keep a px of air on each side while there is room for it.
+  const float t = std::min(st.thick, std::clamp(rowH - 2.0f, std::min(2.0f, rowH), rowH));
+  const float hh = std::min(st.headH, rowH);
+  const float hw = std::min(st.headW, w);
+  const bool head = hh >= t + 2.0f;
+  if (path.size() >= 2) {
+    if (st.bandAlpha) smoothPolyline(dl, path, withAlpha(d.fill, st.bandAlpha), st.pathBand);
+    smoothPolyline(dl, path, d.fill, t);
+    const Vec2 a = path.front(), b = path.back();
+    if (b.x >= d.x1 - 0.5f) dl.addCircleFilled(b, 0.5f * t, d.fill);
+    if (a.x <= d.x0 + 0.5f) {  // the note's start is in view
+      if (head) dl.addRoundedRectFilled(frect(a.x, a.y - 0.5f * hh, a.x + hw, a.y + 0.5f * hh), 0.5f * std::min(hw, hh), d.head);
+      else dl.addCircleFilled(a, 0.5f * t, d.fill);
+    }
+    return;
+  }
+  if (st.bandAlpha) dl.addRectFilled(frect(d.x0, d.y0, d.x1, d.y1), withAlpha(d.fill, st.bandAlpha));
+  const float top = std::round(d.yc - 0.5f * t);
+  const bool tiny = w < t + 2.0f || t < 3.0f;  // no room for round ends
+  if (!(head && hw >= w)) {
+    if (tiny) dl.addRectFilled(frect(d.x0, top, d.x1, top + t), d.fill);
+    else dl.addRoundedRectFilled(frect(d.x0, top, d.x1, top + t), 0.5f * t, d.fill);
+  }
+  if (head) {
+    const float htop = std::round(d.yc - 0.5f * hh);
+    if (tiny) dl.addRectFilled(frect(d.x0, htop, d.x0 + hw, htop + hh), d.head);
+    else dl.addRoundedRectFilled(frect(d.x0, htop, d.x0 + hw, htop + hh), 0.5f * std::min(hw, hh), d.head);
   }
 }
+
+// Px between samples along a pitch path (logical).
+constexpr float kPathSampleStep = 2.0f;
 
 // Visible content tick range of a device x span.
 std::pair<Ticks, Ticks> tickSpan(const RollState& s, int32_t x0, int32_t x1) {
@@ -294,14 +329,17 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   const Ticks lookFrom = shifting ? std::min(from, from - dr.dt) : from;
   const Ticks lookTo = shifting ? std::max(to, to - dr.dt) : to;
   const NoteColours& col = s_.colours();
+  const LineStyle style = lineStyle(*th, s_, ctx.scale.factor);
   const bool anySelected = !s_.selection().empty();
   const bool velPreview = dr.kind == DragKind::Velocity && !s_.showChance();
   const float vx0 = static_cast<float>(vis.x) - 4.0f, vx1 = static_cast<float>(vis.right()) + 4.0f;
+  const float cutPad = style.headW + style.thick + 4.0f;
+  const float cx0 = static_cast<float>(r.x) - cutPad, cx1 = static_cast<float>(r.right()) + cutPad;
   // Proportional rows may overlap (a collapsing MOS): notes are painted by their row's z, small steps under large
   // ones, selected notes on top (mos-roll.js drawOrder), each z in time order. A counting sort over the visible notes
   // into reused buffers; the other layouts cannot overlap and paint directly.
   const bool zOrder = s_.rows().layout() == RowLayout::Proportional;
-  std::vector<ZNote>& zNotes = s_.zNotes;
+  std::vector<NoteLine>& zNotes = s_.zNotes;
   zNotes.clear();
   // T3.19: Ratio notes carry their ratio (and harmonic number over the virtual fundamental), drawn after every note.
   std::vector<NoteLabel>& labels = s_.noteLabels;
@@ -315,27 +353,41 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
     if (x1 <= vx0 || x0 >= vx1) return;
-    if (anyPath && s_.onPath(n, pitch)) {
-      curved.push_back({&n, start, length, pitch, sel});
-      return;
+    NoteLine d{x0, x1, 0, 0, 0, 0, 0, 0};
+    const bool path = anyPath && s_.onPath(n, pitch);
+    if (path) {
+      // Its label sits at its start: the pitch there, the lane as its band.
+      const std::optional<double> c0 = s_.pathCents(n, start, pitch, 0.0);
+      if (!c0) return;
+      const float lane = static_cast<float>(std::max(1, s_.rows().laneHeight()));
+      d.yc = s_.yOfCents(*c0);
+      d.y0 = d.yc - 0.5f * lane;
+      d.y1 = d.yc + 0.5f * lane;
+    } else {
+      const NotePlace pl = s_.place(pitch);
+      if (!pl.ok) return;
+      d.y0 = static_cast<float>(s_.screenY(pl.top));
+      d.y1 = static_cast<float>(s_.screenY(pl.bottom));
+      if (d.y1 <= vy0 || d.y0 >= vy1) return;
+      d.yc = static_cast<float>(s_.screenY(pl.centre));
+      // Cut far outside the widget only (float range), and by the widget, not by this paint's clip: the round ends
+      // and the head stay where the note's are, and a partial repaint emits the same geometry as a full one.
+      d.x0 = std::max(x0, cx0);
+      d.x1 = std::min(x1, cx1);
+      d.key = static_cast<uint16_t>(pl.z + (sel ? 256 : 0));
+      if (pl.offGrid) d.head = th->roll.offGrid;
     }
-    const NotePlace pl = s_.place(pitch);
-    if (!pl.ok) return;
-    const float y0 = static_cast<float>(s_.screenY(pl.top)), y1 = static_cast<float>(s_.screenY(pl.bottom));
-    if (y1 <= vy0 || y0 >= vy1) return;
-    x0 = std::max(x0, vx0);
-    x1 = std::min(x1, vx1);
-    NoteDraw d{x0, x1, y0, y1, 0, 0, pl.offGrid};
-    if (!n.enabled()) {
+    if (!n.enabled()) {  // deactivated: grey, with a dark head (a soft note is grey too, but its head is its own colour)
       d.fill = col.disabledFill;
-      d.border = col.disabledBorder;
+      d.head = col.disabledBorder;
     } else {
       const int v = velIndex(velPreview && sel ? s_.previewValue(n) : n.velocity);
       d.fill = sel ? col.selFill[v] : col.fill[v];
-      d.border = sel ? col.selBorder : col.border[v];
     }
-    if (zOrder) zNotes.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, d.border, d.offGrid, static_cast<uint16_t>(pl.z + (sel ? 256 : 0))});
-    else drawNote(dl, d, th->roll.offGrid);
+    if (d.head == 0) d.head = d.fill;
+    if (path) curved.push_back({&n, start, length, pitch, sel});
+    else if (zOrder) zNotes.push_back(d);
+    else drawNoteLine(dl, style, d);
     if (pitch.kind() == tuning::PitchKind::Ratio) {
       const tuning::Rational r = pitch.ratio();
       uint32_t k = 0;
@@ -344,11 +396,11 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
                                                    : pitch.anchorKind() == tuning::AnchorKind::Reference);
       if (related)
         if (const std::optional<uint64_t> h = tuning::harmonicNumber(r, H->ratio); h && *h <= 99999) k = static_cast<uint32_t>(*h);
-      labels.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, r.num(), r.den(), k});
+      labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, r.num(), r.den(), k});
     } else if (H && H->anchor.valid() && n.id == H->anchor) {
       // T7.5b: the anchor note of a declared harmonic carries its (derived) number.
       if (const std::optional<uint64_t> h = tuning::harmonicNumber(tuning::Rational(1), H->ratio); h && *h <= 99999)
-        labels.push_back({d.x0, d.x1, d.y0, d.y1, d.fill, 0, 1, static_cast<uint32_t>(*h)});
+        labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, 0, 1, static_cast<uint32_t>(*h)});
     }
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
@@ -368,15 +420,15 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   });
   if (zOrder && !zNotes.empty()) {
     uint32_t count[513] = {};
-    for (const ZNote& z : zNotes) ++count[z.key + 1];
+    for (const NoteLine& z : zNotes) ++count[z.key + 1];
     for (size_t k = 1; k < 513; ++k) count[k] += count[k - 1];
-    std::vector<ZNote>& sorted = s_.zSorted;
+    std::vector<NoteLine>& sorted = s_.zSorted;
     sorted.resize(zNotes.size());
-    for (const ZNote& z : zNotes) sorted[count[z.key]++] = z;  // stable: time order within one z
-    for (const ZNote& z : sorted) drawNote(dl, {z.x0, z.x1, z.y0, z.y1, z.fill, z.border, z.offGrid}, th->roll.offGrid);
+    for (const NoteLine& z : zNotes) sorted[count[z.key]++] = z;  // stable: time order within one z
+    for (const NoteLine& z : sorted) drawNoteLine(dl, style, z);
   }
-  // T4.16b: the part of the note a press would grab (Live): the note brightened (inside its border,
-  // under its label), the edge it would trim marked.
+  // T4.16b: the part of the note a press would grab (Live): the note's band brightened, the edge it would trim
+  // marked over the band's height.
   if (const RollState::HoverPart& hp = s_.hoverPart(); hp.note != 0 && dr.kind == DragKind::None)
     if (const doc::Note* n = s_.findNote(doc::NoteId{hp.note}); n && !s_.onPath(*n, n->pitch))
       if (const NotePlace pl = s_.place(n->pitch); pl.ok) {
@@ -384,7 +436,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
         const float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(n->start + n->length))));
         const float y0 = static_cast<float>(s_.screenY(pl.top)), y1 = static_cast<float>(s_.screenY(pl.bottom));
         if (x1 > vx0 && x0 < vx1 && y1 > vy0 && y0 < vy1) {
-          if (x1 - x0 > 2.0f && y1 - y0 > 2.0f) dl.addRectFilled(frect(x0 + 1, y0 + 1, x1 - 1, y1 - 1), withAlpha(th->text.primary, 40));
+          dl.addRectFilled(frect(x0, y0, x1, y1), withAlpha(th->text.primary, 40));
           if (hp.zone != 0) {
             const float w = std::min(std::max(2.0f, std::round(2.0f * ctx.scale.factor)), (x1 - x0) * 0.5f);
             const float ex = hp.zone > 0 ? x1 - w : x0;
@@ -393,7 +445,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
         }
       }
 
-  if (!curved.empty()) paintCurveNotes(ctx, s_, vis, under);
+  if (!curved.empty()) paintCurveNotes(ctx, s_, vis, under);  // the same lines, along their paths
   if (!s_.jiViews().empty()) {  // T7.4: the objects' text, over the notes
     const PaintClock::time_point t0 = PaintClock::now();
     paintJiObjects(ctx, s_, vis, true, under);
@@ -429,9 +481,9 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
       if (!pl.ok) continue;
       const float x0 = std::round(s_.xOfTick(static_cast<double>(dn.start)));
       const float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(dn.start + dn.length))));
-      drawNote(dl, {x0, x1, static_cast<float>(s_.screenY(pl.top)), static_cast<float>(s_.screenY(pl.bottom)),
-                    col.selFill[100], col.selBorder, pl.offGrid},
-               th->roll.offGrid);
+      drawNoteLine(dl, style,
+                   {x0, x1, static_cast<float>(s_.screenY(pl.top)), static_cast<float>(s_.screenY(pl.bottom)),
+                    static_cast<float>(s_.screenY(pl.centre)), col.selFill[100], pl.offGrid ? th->roll.offGrid : col.selFill[100], 0});
     }
 
   // Outside the played region (before the start / loop start, after the end / loop end): dimmed, notes included.
@@ -450,18 +502,21 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   dl.popClip();
 }
 
-// Ratio labels (T3.19, SPEC §4.3 "notes with Ratio identity show their ratio"; M3 review UI §2): "7/4" in the note's
-// top-left once the note is ≥ 24 logical px wide and as tall as the small font, with " · 7" (its harmonic number over
-// the clip's virtual fundamental) when that fits too. Text in the clip-text colour that reads on the note's fill.
+// Ratio labels (T3.19, SPEC §4.3 "notes with Ratio identity show their ratio"; M3 review UI §2): "7/4" once the note
+// is ≥ 24 logical px wide and its row as tall as the small font, with " · 7" (its harmonic number over the clip's
+// virtual fundamental) when that fits too. T7.12: at the note's left end, after its head and above its line, in the
+// note's colour lifted towards the text colour (it sits on the roll, not on the note).
 void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
   const Theme& th = *ctx.res.theme;
   TextSystem* ts = ctx.res.text;
   const ThemeFonts* fonts = ctx.res.uiFonts;
   if (!ts || !fonts) return;
   const FontId font = fonts->small;
+  const LineStyle style = lineStyle(th, s_, ctx.scale.factor);
   const float minW = ctx.scale.exact(24.0f);
-  const float minH = static_cast<float>(ts->metrics(font).pixelSize) + 1.0f;
-  const int32_t pad = ctx.scale.px(3);
+  const int32_t px = static_cast<int32_t>(ts->metrics(font).pixelSize);
+  const float minH = static_cast<float>(px) + 1.0f;
+  const int32_t pad = ctx.scale.px(2);
   char buf[48];
   for (const NoteLabel& l : s_.noteLabels) {
     const float w = l.x1 - l.x0, h = l.y1 - l.y0;
@@ -469,15 +524,56 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
     int n = l.num == 0 ? std::snprintf(buf, sizeof buf, "%u", l.harmonic)  // the anchor: its harmonic number
                        : std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(l.num), static_cast<long long>(l.den));
     if (n <= 0) continue;
-    const int32_t avail = static_cast<int32_t>(w) - 2 * pad;
+    const int32_t left = static_cast<int32_t>(l.x0 + std::min(style.headW, w)) + pad;
+    const int32_t avail = static_cast<int32_t>(l.x1) - left - pad;
     std::string_view text(buf, static_cast<size_t>(n));
     if (ts->measure(font, text) > avail) continue;
     if (l.harmonic && l.num != 0) {
       const int m = std::snprintf(buf + n, sizeof buf - static_cast<size_t>(n), " \xC2\xB7 %u", l.harmonic);
       if (m > 0 && ts->measure(font, std::string_view(buf, static_cast<size_t>(n + m))) <= avail) text = std::string_view(buf, static_cast<size_t>(n + m));
     }
-    const IRect box{static_cast<int32_t>(l.x0), static_cast<int32_t>(l.y0), static_cast<int32_t>(w), static_cast<int32_t>(std::min(h, minH + 3.0f))};
-    paint::text(ctx, font, box, text, clipTextFor(th, l.fill), TextAlign::Left, pad, pad);
+    const float t = std::min(style.thick, std::max(1.0f, h - 2.0f));
+    const int32_t bottom = static_cast<int32_t>(std::round(l.yc - 0.5f * t)) - 1;
+    // Not higher above the band than the note's damage rect reaches (RollState::paintRectOf).
+    const int32_t top = std::max(bottom - px, static_cast<int32_t>(l.y0) - static_cast<int32_t>(kNoteLabelRise * ctx.scale.factor));
+    const IRect box{left, top, avail, bottom - top};
+    paint::text(ctx, font, box, text, lerp(l.fill, th.text.primary, 0.45f), TextAlign::Left);
+  }
+}
+
+// The notes drawn along a pitch path (a pitch curve, a JI object's voice; RollState::curveNotes, filled by the note
+// area's paint): the path sampled every kPathSampleStep px into the shared scratch polyline, then the same line.
+void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis, JiPass pass) {
+  if (!ctx.res.theme || s.curveNotes.empty()) return;
+  const Theme& th = *ctx.res.theme;
+  const doc::JiObjectId entered = s.jiEntered();
+  const NoteColours& col = s.colours();
+  const LineStyle style = lineStyle(th, s, ctx.scale.factor);
+  const float step = std::max(1.0f, kPathSampleStep * ctx.scale.factor);
+  const float lane = static_cast<float>(std::max(1, s.rows().laneHeight()));
+  const float vx0 = static_cast<float>(vis.x) - 2.0f * step, vx1 = static_cast<float>(vis.right()) + 2.0f * step;
+  std::vector<Vec2>& pts = s.linePts;
+  for (const CurveNote& c : s.curveNotes) {
+    if (pass != JiPass::All && (doc::jiObjectOf(c.pitch) == entered) != (pass == JiPass::EnteredOnly)) continue;
+    const float x0 = s.xOfTick(static_cast<double>(c.start));
+    const float x1 = std::max(x0 + 3.0f, s.xOfTick(static_cast<double>(c.start + c.length)));
+    const float xa = std::max(x0, vx0), xb = std::min(x1, vx1);
+    if (xb <= xa) continue;
+    pts.clear();
+    const int n = std::clamp(static_cast<int>(std::ceil((xb - xa) / step)), 1, 8192);
+    bool ok = true;
+    for (int k = 0; k <= n && ok; ++k) {
+      const float x = xa + (xb - xa) * static_cast<float>(k) / static_cast<float>(n);
+      const double off = std::clamp(s.tickAtX(x) - static_cast<double>(c.start), 0.0, static_cast<double>(c.length));
+      const std::optional<double> cents = s.pathCents(*c.note, c.start, c.pitch, off);
+      if (!cents) ok = false;
+      else pts.push_back({x, s.yOfCents(*cents)});
+    }
+    if (!ok || pts.size() < 2) continue;
+    const bool on = c.note->enabled();
+    const Rgba fill = on ? (c.selected ? col.selFill : col.fill)[velIndex(c.note->velocity)] : col.disabledFill;
+    const float y = pts.front().y;
+    drawNoteLine(ctx.dl, style, {x0, x1, y - 0.5f * lane, y + 0.5f * lane, y, fill, on ? fill : col.disabledBorder, 0}, pts);
   }
 }
 

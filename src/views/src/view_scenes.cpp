@@ -1064,6 +1064,41 @@ Status setupPianoRollBends(Shell& shell) {
   return Ok{};
 }
 
+// T7.12: notes as lines along their pitch. Repeated 16ths on one pitch with alternating velocities (each start must
+// read: the heads), repeated quarters end to end, a selected run of 16ths, a held note with a deactivated one over it,
+// soft notes, a Cents note between two rows and a Ratio note with its label.
+Status setupPianoRollNoteLines(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Lines", 16, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-note-lines: building the clip failed", {}};
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  const Ticks q = kPpq, s16 = kPpq / 4;
+  std::vector<doc::Note> notes;
+  for (int i = 0; i < 32; ++i) notes.push_back(scnNote(i * s16, s16, PitchId::fromDegree(0, 1), i % 4 == 0 ? 120.0f : (i % 2 == 0 ? 90.0f : 55.0f)));
+  for (int i = 0; i < 4; ++i) notes.push_back(scnNote(i * q, q, PitchId::fromDegree(9, 0)));
+  for (int i = 0; i < 4; ++i) notes.push_back(scnNote(4 * q + i * q, q / 2, PitchId::fromDegree(9, 0)));
+  for (int i = 0; i < 8; ++i) notes.push_back(scnNote(i * s16, s16, PitchId::fromDegree(7, 0)));  // selected below
+  notes.push_back(scnNote(3 * q, 5 * q, PitchId::fromRatio(tuning::Rational(7, 4))));
+  notes.push_back(scnNote(0, 4 * q, PitchId::fromCents(350.0)));
+  notes.push_back(scnNote(4 * q, 2 * q, PitchId::fromDegree(4, 0), 20.0f));
+  notes.push_back(scnNote(6 * q, 2 * q, PitchId::fromDegree(3, 0), 45.0f));
+  doc::Note off = scnNote(2 * q, 4 * q, PitchId::fromDegree(2, 0));
+  off.flags |= doc::kNoteDisabled;
+  notes.push_back(off);
+  notes.push_back(scnNote(0, 8 * q, PitchId::fromDegree(0, 0)));
+  for (int i = 0; i < 16; ++i) notes.push_back(scnNote(i * q / 2, q / 2, PitchId::fromDegree(-3, 0), 70.0f + 3.0f * static_cast<float>(i)));
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
+    return Error{ErrorCode::Unknown, "pianoroll-note-lines: addNotes", {}};
+  shell.tree().layoutNow();
+  std::vector<doc::NoteId> run;
+  for (int i = 0; i < 8; ++i)
+    if (const doc::Note* n = sceneNote(shell.context(), *sc->view, PitchId::fromDegree(7, 0), i * s16)) run.push_back(n->id);
+  if (run.size() != 8) return Error{ErrorCode::NotFound, "pianoroll-note-lines: the run", {}};
+  sc->view->select(run);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // Vibrato: a long note with 30 ¢ at 6 Hz ("Add Vibrato…"), one that scoops in from the note before it and then
 // swings 60 ¢ at 4 Hz, a plain note under them.
 Status setupPianoRollVibrato(Shell& shell) {
@@ -3656,6 +3691,7 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-tune-to-ji-31edo", 1280, 800, setupPianoRollTuneToJi31},
     {"pianoroll-fundamental-lock", 1280, 800, setupPianoRollFundamentalLock},
     {"pianoroll-bends", 1280, 800, setupPianoRollBends},
+    {"pianoroll-note-lines", 1280, 800, setupPianoRollNoteLines},  // T7.12
     {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
     {"pianoroll-ride", 1280, 800, setupPianoRollRide},
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},

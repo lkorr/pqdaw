@@ -290,7 +290,11 @@
     "size.scrollbar": 10,
     "size.knob": 34,
     "size.meter": 14,
-    "size.gutter": 6
+    "size.gutter": 6,
+    "roll.noteLine": 5,
+    "roll.noteLineHead": 9,
+    "roll.noteLineHeadWidth": 13,
+    "roll.noteLineBand": 40
   },
   "clipPalette": [
     "#EF7B7B", "#EB805F", "#E68632", "#CF921A", "#B39E16", "#90A815", "#4BB416", "#16B64C", "#16B293", "#18ADC4", "#46A5E8", "#8499F0", "#BB86F0", "#C4C4C4",
