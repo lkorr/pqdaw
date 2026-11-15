@@ -61,6 +61,8 @@ int digitOf(const ui::KeyEvent& e) noexcept {
 
 bool sameClip(const doc::ClipRef& a, const doc::ClipRef& b) noexcept { return a.track == b.track && a.clip == b.clip; }
 
+bool samePos(ui::Vec2 a, ui::Vec2 b) noexcept { return a.x == b.x && a.y == b.y; }
+
 }  // namespace
 
 struct MacroMode::Anchor {
@@ -82,7 +84,10 @@ bool MacroMode::active() const noexcept {
 
 void MacroMode::setOn(bool on) {
   if (on == on_) return;
-  if (on) ctx_.computerKeyboard().setActive(false);  // one key listener at a time
+  if (on) {
+    keyboardWasOn_ = ctx_.computerKeyboard().active();
+    ctx_.computerKeyboard().setActive(false);  // one key listener at a time
+  }
   on_ = on;
   lockPending_ = false;
   lockDigits_.clear();
@@ -103,6 +108,8 @@ void MacroMode::setOn(bool on) {
     resetState();
     if (!presetError.empty()) {
       ctx_.setStatus("Macro mode on with the built-in keys: preset " + presetError);
+    } else if (active() && !takingKeys()) {
+      ctx_.setStatus("Macro mode on: click the notes of the clip view (or point at them) to type intervals there");
     } else if (active()) {
       const std::string place = preset_.keyLabel(MacroOp::Place), layer = preset_.keyLabel(MacroOp::Layer);
       ctx_.setStatus("Macro mode on (" + std::string(layer_ == Layer::Ji ? "JI" : "tempered") + "): interval keys compose, " +
@@ -113,7 +120,12 @@ void MacroMode::setOn(bool on) {
     }
   } else {
     ctx_.setStatus("Macro mode off");
+    // Review L14: the computer MIDI keyboard comes back when macro mode took it over.
+    const bool restore = keyboardWasOn_;
+    keyboardWasOn_ = false;
+    if (restore) ctx_.computerKeyboard().setActive(true);
   }
+  taking_ = takingKeys();
   changed();
 }
 
@@ -129,6 +141,7 @@ void MacroMode::setLayer(Layer l) {
 void MacroMode::resetState() {
   s_ = {};
   seenHover_ = seenSel_ = 0;
+  seenPointer_ = {-1e9f, -1e9f};
   if (!roll_ || !roll_->hasClip()) return;
   ringClip_ = roll_->clipRef();
   // A free cursor at the start of what plays, on the row in the middle of the view; then the pointer / selection rule.
@@ -137,7 +150,7 @@ void MacroMode::resetState() {
     const ui::IRect a = roll_->area();
     s_.anchorDegree = roll_->rows().row(roll_->rows().indexAtY(roll_->contentY(static_cast<float>(a.y + a.h / 2)))).degree;
   }
-  (void)applySync(s_, seenHover_, seenSel_);
+  (void)applySync(s_, seenHover_, seenSel_, seenPointer_);
 }
 
 void MacroMode::changed() {
@@ -178,7 +191,8 @@ void MacroMode::rollChanged() {
     return;
   }
   if (s_.anchor.valid() && !roll_->findNote(s_.anchor)) s_.anchor = {};  // deleted (Ctrl+Z, the roll): a free cursor on its row
-  (void)applySync(s_, seenHover_, seenSel_);
+  (void)applySync(s_, seenHover_, seenSel_, seenPointer_);
+  taking_ = takingKeys();
   changed();
 }
 
@@ -203,9 +217,15 @@ void MacroMode::adopt(State& s, const doc::Note& n) const {
                        : roll_->nearestDegree(c.value_or(0.0));
 }
 
-bool MacroMode::applySync(State& s, uint32_t& seenHover, uint32_t& seenSel) const {
+bool MacroMode::applySync(State& s, uint32_t& seenHover, uint32_t& seenSel, ui::Vec2& seenPointer) const {
   if (!active()) return false;
-  const uint32_t h = hoveredNote(), sel = selectedNote();
+  const uint32_t sel = selectedNote();
+  // Review H8: only a REAL pointer move brings a new note under it. A note that a scroll slid under the resting pointer
+  // is not seen at all (so the first real move onto it, even inside it, is an arrival).
+  const ui::UiTree* tree = roll_->noteArea ? roll_->noteArea->tree() : nullptr;
+  const ui::Vec2 pos = tree ? tree->pointerPos() : seenPointer;
+  const bool moved = !samePos(pos, seenPointer);
+  const uint32_t h = moved ? hoveredNote() : seenHover;
   bool ch = false;
   if (s.factors.empty() && s.rowOffset == 0 && !lockPending_) {
     // The pointer arriving on a note wins; else a note becoming the single selection.
@@ -219,23 +239,67 @@ bool MacroMode::applySync(State& s, uint32_t& seenHover, uint32_t& seenSel) cons
   }
   seenHover = h;
   seenSel = sel;
+  seenPointer = pos;
   return ch;
 }
 
 bool MacroMode::sync() {
-  if (inStep_ || !applySync(s_, seenHover_, seenSel_)) return false;
+  if (inStep_) return false;
+  checkTaking();
+  if (!applySync(s_, seenHover_, seenSel_, seenPointer_)) return false;
   changed();  // no scrolling here: the view must not move under a pointer that is choosing a note
   return true;
 }
 
 bool MacroMode::syncPending() const {
   if (inStep_ || !active()) return false;
+  if (takingKeys() != taking_) return true;
   State s = s_;
   uint32_t h = seenHover_, sel = seenSel_;
-  return applySync(s, h, sel);
+  ui::Vec2 p = seenPointer_;
+  return applySync(s, h, sel, p);
+}
+
+void MacroMode::markSeen() {
+  seenHover_ = hoveredNote();
+  seenSel_ = selectedNote();
+  if (roll_ && roll_->noteArea)
+    if (const ui::UiTree* t = roll_->noteArea->tree()) seenPointer_ = t->pointerPos();
+}
+
+// --- focus (review M11) -------------------------------------------------------------------------------------
+
+bool MacroMode::inClipView(const ui::Widget* w) const noexcept {
+  if (!w || !roll_ || !roll_->noteArea) return false;
+  const ui::Widget* view = roll_->noteArea->parent();  // the ClipView
+  if (!view) view = roll_->noteArea;
+  return w == view || view->isAncestorOf(*w);
+}
+
+bool MacroMode::takingKeys() const {
+  if (!active() || blocked()) return false;
+  const ui::UiTree* t = roll_->noteArea->tree();
+  return inClipView(t->focus()) || inClipView(t->hovered());
+}
+
+void MacroMode::checkTaking() {
+  if (!on_) return;
+  const bool now = takingKeys();
+  if (now == taking_) return;
+  taking_ = now;
+  changed();
+}
+
+void MacroMode::onHoverChanged(ui::Widget*) { checkTaking(); }
+
+bool MacroMode::dragging() const {
+  if (ctx_.store().inGesture()) return true;
+  const ui::UiTree* t = roll_ && roll_->noteArea ? roll_->noteArea->tree() : nullptr;
+  return t && (t->captured() != nullptr || t->dragging());
 }
 
 void MacroMode::onPointerDown(ui::Vec2 pos) {
+  if (on_ && frameWidget_) frameWidget_->requestFrame();  // the press may move the focus: the lamp looks again next frame
   if (!active() || !roll_->noteArea || roll_->rows().empty()) return;
   const ui::UiTree* t = roll_->noteArea->tree();
   if (!t || t->hovered() != roll_->noteArea) return;  // a popup over the roll, another widget
@@ -377,6 +441,7 @@ std::string MacroMode::compositionText() const {
 }
 
 std::string MacroMode::detailText() const {
+  if (lockPending_ && lockDigits_ == "0") return "Remove the JI group: Enter";
   if (lockPending_) return "Is Harmonic " + lockDigits_ + "_";
   const Target t = targetOf(s_);
   if (!t.ok) return "cannot place a note here";
@@ -396,6 +461,7 @@ std::string MacroMode::detailText() const {
 
 std::string MacroMode::lampText() const {
   if (!active()) return "MACRO";
+  if (!takingKeys()) return "MACRO (click the notes)";
   if (layer_ == Layer::Ji) return "MACRO" + std::string(kDot) + "JI";
   // An EDO by its size (whatever the project calls the tuning); a MOS / scale by its name.
   std::string name;
@@ -489,18 +555,36 @@ bool MacroMode::blocked() const {
 bool MacroMode::onTreeKey(const ui::KeyEvent& e) {
   if (!e.down || !on_) return false;
   if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper | ui::mod::kShift)) != 0) return false;
-  if (!active() || blocked()) return false;
+  checkTaking();
+  if (!taking_) {  // review M11: the focus and the pointer are elsewhere (or a field / popup has the keys)
+    if (lockPending_) {
+      lockPending_ = false;
+      lockDigits_.clear();
+      changed();
+    }
+    return false;
+  }
+  const bool enter = e.key == ui::key::kReturn || e.scancode == ui::Scancode::KpEnter;
+  const MacroBinding* b = preset_.find(e);
+  // Review M19: nothing macro mode does may join a drag's undo entry (Esc on the drag would take it away too).
+  if (dragging() && (b || (lockPending_ && (digitOf(e) >= 0 || enter)))) {
+    ctx_.setStatus("Macro: finish the drag first");
+    return true;
+  }
   (void)sync();
   if (lockPending_) {
     if (const int d = digitOf(e); d >= 0) {
-      if (lockDigits_.size() < 4 && !(lockDigits_.empty() && d == 0)) lockDigits_ += static_cast<char>('0' + d);
+      // Review L10: a leading 0 means "remove the group" (b 0 Enter); at most four digits, said when refused.
+      if (lockDigits_ == "0") ctx_.setStatus("Is Harmonic: Enter removes the group, Esc cancels");
+      else if (lockDigits_.size() >= 4) ctx_.setStatus("Is Harmonic: at most four digits (up to " + std::to_string(doc::kMaxHarmonicIndex) + ")");
+      else lockDigits_ += static_cast<char>('0' + d);
       changed();
       return true;
     }
-    const MacroBinding* b = preset_.find(e);
     const bool cancel = e.key == ui::key::kEscape || (b && b->op == MacroOp::Lock) || (b && b->op == MacroOp::Back && lockDigits_.empty());
     if (cancel) {
       lockPending_ = false;
+      lockDigits_.clear();
       ctx_.setStatus("Is Harmonic: cancelled");
       changed();
       return true;
@@ -510,10 +594,16 @@ bool MacroMode::onTreeKey(const ui::KeyEvent& e) {
       changed();
       return true;
     }
-    commitLock();  // Enter, or the next other key (which then acts as usual)
-    if (e.key == ui::key::kReturn || e.scancode == ui::Scancode::KpEnter) return true;
+    if (!enter && !b) {  // review L10: a key macro mode does not bind cancels the number and goes on as usual
+      lockPending_ = false;
+      lockDigits_.clear();
+      ctx_.setStatus("Is Harmonic: cancelled");
+      changed();
+      return false;
+    }
+    commitLock();  // Enter, or the next macro key (which then acts as usual)
+    if (enter) return true;
   }
-  const MacroBinding* b = preset_.find(e);
   if (!b) return false;
   run(*b, e.repeat);
   return true;
@@ -528,8 +618,7 @@ void MacroMode::step(F&& f) {
   inStep_ = false;
   if (s_.anchor.valid() && roll_ && !roll_->findNote(s_.anchor)) s_.anchor = {};
   // What this step itself put under the pointer or selected is no new pointer / selection anchor.
-  seenHover_ = hoveredNote();
-  seenSel_ = selectedNote();
+  markSeen();
   const bool edit = ctx_.doc() != docBefore;
   if (s_ == before && !edit) return;
   ring_.resize(ringPos_);
@@ -557,8 +646,12 @@ void MacroMode::run(const MacroBinding& b, bool repeat) {
     case MacroOp::Right: moveTime(1); break;
     case MacroOp::Up: movePitch(1); break;
     case MacroOp::Down: movePitch(-1); break;
-    case MacroOp::Undo: undo(); break;
-    case MacroOp::Redo: redo(); break;
+    case MacroOp::Undo:  // review L11: no auto-repeat (a held key would unwind placements fast)
+      if (!repeat) undo();
+      break;
+    case MacroOp::Redo:
+      if (!repeat) redo();
+      break;
     case MacroOp::Layer:
       if (!repeat) setLayer(layer_ == Layer::Ji ? Layer::Tempered : Layer::Ji);
       break;
@@ -743,8 +836,7 @@ void MacroMode::undo() {
   --ringPos_;
   s_ = st.before;
   if (s_.anchor.valid() && !roll_->findNote(s_.anchor)) s_.anchor = {};
-  seenHover_ = hoveredNote();
-  seenSel_ = selectedNote();
+  markSeen();
   changed();
   afterMove(false);
 }
@@ -764,47 +856,60 @@ void MacroMode::redo() {
   ++ringPos_;
   s_ = st.after;
   if (s_.anchor.valid() && !roll_->findNote(s_.anchor)) s_.anchor = {};
-  seenHover_ = hoveredNote();
-  seenSel_ = selectedNote();
+  markSeen();
   changed();
   afterMove(false);
 }
 
 void MacroMode::pressLock() {
-  if (locked()) {  // `b` on a note of a declared group: the declaration goes (the members keep their pitch)
-    const Anchor a = resolve(s_);
-    step([&] { (void)dispatch(macro::undeclareHarmonic(*ctx_.doc(), roll_->clipRef(), *roll_->clip(), *a.note), "Macro: Unlock"); });
-    ctx_.setStatus("Is Harmonic: removed");
-    return;
-  }
+  // Review H7: `b` never removes anything by itself; it always waits for the number (b 0 Enter removes the group).
   if (!resolve(s_).note) {
     ctx_.setStatus("Is Harmonic needs an anchor note: point at a note, select one, or place one first");
     return;
   }
   lockPending_ = true;
   lockDigits_.clear();
-  ctx_.setStatus("Is Harmonic: type the number, then Enter (no number: " + std::to_string(lastIndex_) + ")");
+  ctx_.setStatus("Is Harmonic: type the number, then Enter (no number: " + std::to_string(lastIndex_) + "; 0: remove the group)");
   changed();
 }
 
 void MacroMode::commitLock() {
   lockPending_ = false;
+  const bool remove = lockDigits_ == "0";
   uint32_t index = lastIndex_;
-  if (!lockDigits_.empty()) index = static_cast<uint32_t>(std::stoul(lockDigits_));
+  if (!remove && !lockDigits_.empty()) index = static_cast<uint32_t>(std::stoul(lockDigits_));
   lockDigits_.clear();
   const Anchor a = resolve(s_);
+  if (remove) {
+    if (!a.note || !a.ji || !a.ji->group.valid()) {
+      ctx_.setStatus("Remove JI group: the anchor note is in no JI group");
+      changed();
+      return;
+    }
+    bool done = false;
+    step([&] { done = dispatch(macro::undeclareHarmonic(*ctx_.doc(), roll_->clipRef(), *roll_->clip(), *a.note), "Remove JI Group"); });
+    if (done) ctx_.setStatus("Removed the JI group: its notes keep their pitches (- or Ctrl+Z brings it back)");
+    changed();
+    return;
+  }
   if (!a.note || index < 1 || index > doc::kMaxHarmonicIndex) {
     ctx_.setStatus("Is Harmonic: needs an anchor note and a number from 1 to " + std::to_string(doc::kMaxHarmonicIndex));
     changed();
     return;
   }
-  const doc::NoteKey key = doc::keyOf(*a.note);
+  const bool grouped = a.ji && a.ji->group.valid();
+  const bool member = grouped && a.ji->root.note != a.note->id;
+  const doc::Note note = *a.note;
   bool done = false;
-  step([&] { done = dispatch(macro::declareHarmonic(*ctx_.doc(), ctx_.store().ids(), roll_->clipRef(), key, index), "Is Harmonic"); });
+  step([&] {
+    done = dispatch(macro::declareHarmonic(*ctx_.doc(), ctx_.store().ids(), roll_->clipRef(), *roll_->clip(), note, index), "Is Harmonic");
+  });
   if (done) {
     lastIndex_ = index;
-    ctx_.setStatus("Is Harmonic " + std::to_string(index) + ": the anchor is harmonic " + std::to_string(index) +
-                   "; Up / Down step the harmonics, notes placed from it are just");
+    const std::string n = std::to_string(index);
+    ctx_.setStatus(member    ? "Is Harmonic " + n + ": this note is its group's anchor now, harmonic " + n + "; every note keeps its pitch"
+                   : grouped ? "Is Harmonic " + n + ": the group's anchor is harmonic " + n + " now; every note keeps its pitch"
+                             : "Is Harmonic " + n + ": the anchor is harmonic " + n + "; Up / Down step the harmonics, notes placed from it are just");
   }
   changed();
 }

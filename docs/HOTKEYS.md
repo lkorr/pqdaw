@@ -335,9 +335,11 @@ A release ends the note its press started. A note outside the keyboard's range (
 
 ## Macro mode (T8.1, SPEC §6.2; the tree's key listener `views::MacroMode`, not the keymap)
 
-`macro.toggle` (`Ctrl+CapsLock`, or the MACRO lamp in the control bar) switches it. While it is on and a note clip is open
-in the clip view, the keys below belong to it; keys with Ctrl / Alt / Super / Shift, keys its preset does not bind
-(Space), a focused text field and an open menu or popup are not touched. It takes the computer MIDI keyboard's place as
+`macro.toggle` (`Ctrl+CapsLock`, or the MACRO lamp in the control bar) switches it. While it is on, a note clip is open
+in the clip view and the clip view has the keyboard focus or the pointer, the keys below belong to it (T7.16b; elsewhere
+they act as usual and the lamp, unlit with an accent outline, says "MACRO (click the notes)"); keys with Ctrl / Alt /
+Super / Shift, keys its preset does not bind (Space), a focused text field and an open menu or popup are not touched.
+During a pointer drag its keys are refused ("finish the drag first"), so nothing joins the drag's undo step. It takes the computer MIDI keyboard's place as
 the key listener: turning one on turns the other off. The keys are data: `assets/macro/<preset>.json`, chosen in
 Preferences → MIDI → Macro Mode (`trainer` = this table, the default; `ahk-numpad` = the AHK macro's keypad slots,
 matched by scancode).
@@ -353,8 +355,9 @@ matched by scancode).
 | `S` / `D` | cursor up / down: one row in the tempered layer, the next harmonic where the note would be just |
 | `-` / `=` | macro undo / redo (the last macro step, with its document edit while the document is still as that step left it) |
 | `G` | layer: Tempered ↔ JI |
-| `B` digits `Enter` | "Is Harmonic N" on the anchor note (the next non-digit key also commits; no digits: the last number); `B` on a declared anchor removes it; `S` / `D` then step that series |
-| pointer onto a note, a single selected note | with nothing composed: that note is the anchor, the cursor at its start |
+| `B` digits `Enter` | "Is Harmonic N" on the anchor note (the next macro key also commits; no digits: the last number; at most four digits; Esc or a key macro mode does not bind cancels); on a member of a JI group the group is renumbered from that note (it becomes the anchor; every note keeps its pitch); `S` / `D` then step that series. `B` alone never removes anything (T7.16b) |
+| `B` `0` `Enter` | remove the anchor note's JI group (its notes keep sounding where they are) |
+| pointer onto a note, a single selected note | with nothing composed: that note is the anchor, the cursor at its start (only a real pointer move: a note a scroll slides under a resting pointer is not adopted, T7.16b) |
 | click on empty space | a free cursor in that grid cell on that row |
 
 Layers: **Tempered** (default; the lamp shows the tuning) places a Degree note on the tuning's step for the composed

@@ -44,9 +44,12 @@ std::optional<JiMembership> jiMembership(const doc::NoteClip& clip, const doc::N
 doc::ops::EditResult placeJustNote(const doc::Project& p, doc::IdSource& ids, doc::ClipRef clip, const doc::NoteClip& notes,
                                    const JiRoot& root, const tuning::Rational& ratio, Ticks start, Ticks length, float velocity);
 
-// 3. "Is Harmonic N" on a note, as the roll's menu does it (ops::makeJiGroup), and its release: the group `note` is
-// in is removed (ops::removeJiGroup: its members keep their pitch). One undo step each.
-doc::ops::EditResult declareHarmonic(const doc::Project& p, doc::IdSource& ids, doc::ClipRef clip, doc::NoteKey note, uint32_t index);
+// 3. "Is Harmonic N" on a note, as the roll's menu does it: a note outside every group or a group's anchor
+// (ops::makeJiGroup: a new group, or the anchor's index set), a member of a group (ops::reanchorJiGroup: it becomes that
+// group's anchor with index N; every note keeps its pitch, the group its id and warps). And the release: the group
+// `note` is in is removed (ops::removeJiGroup: its members keep their pitch). One undo step each.
+doc::ops::EditResult declareHarmonic(const doc::Project& p, doc::IdSource& ids, doc::ClipRef clip, const doc::NoteClip& notes,
+                                     const doc::Note& note, uint32_t index);
 doc::ops::EditResult undeclareHarmonic(const doc::Project& p, doc::ClipRef clip, const doc::NoteClip& notes, const doc::Note& note);
 
 }  // namespace pq::views::macro

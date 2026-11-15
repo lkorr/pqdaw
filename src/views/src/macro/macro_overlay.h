@@ -11,7 +11,9 @@
 //                   ("→ 11 steps, −11.7 ¢", "just · harmonic 6").
 //   MacroKeyLabels  over the keys: the cursor's row marked, and on every row the fewest keys that reach it from the
 //                   anchor (the trainer's breadth-first search; EDOs).
-//   MacroLamp       the control bar's switch: "MACRO", lit with the layer while on ("MACRO · JI", "MACRO · 12-EDO").
+//   MacroLamp       the control bar's switch: "MACRO", lit with the layer while on ("MACRO · JI", "MACRO · 12-EDO");
+//                   on while the keys go elsewhere (the focus and the pointer out of the clip view): an unlit accent
+//                   outline, "MACRO (click the notes)". A text too long for the lamp is said shorter, never cut first.
 
 #include <string>
 
@@ -28,6 +30,7 @@ class RollState;
 class MacroOverlay : public ui::Widget {
 public:
   explicit MacroOverlay(roll::RollState& s);
+  ~MacroOverlay() override;
   void paint(ui::PaintContext& ctx) override;
   void onFrame(double now) override;
   // The cursor's box as drawn (device px; empty: off or out of view). Tests.
@@ -35,6 +38,7 @@ public:
 
 private:
   roll::RollState& s_;
+  ViewContext& ctx_;
 };
 
 class MacroKeyLabels : public ui::Widget {
@@ -61,6 +65,7 @@ private:
   ViewContext& ctx_;
   std::string text_;
   bool on_ = false;
+  bool idle_ = false;  // on, but the keys go elsewhere (MacroMode::takingKeys false)
 };
 
 }  // namespace pq::views

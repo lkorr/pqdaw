@@ -55,8 +55,13 @@ doc::ops::EditResult placeJustNote(const doc::Project& p, doc::IdSource& ids, do
   return doc::ops::addNotes(p, ids, clip, std::vector<doc::Note>{n});
 }
 
-doc::ops::EditResult declareHarmonic(const doc::Project& p, doc::IdSource& ids, doc::ClipRef clip, doc::NoteKey note, uint32_t index) {
-  return doc::ops::makeJiGroup(p, ids, clip, note, index);
+doc::ops::EditResult declareHarmonic(const doc::Project& p, doc::IdSource& ids, doc::ClipRef clip, const doc::NoteClip& notes,
+                                     const doc::Note& note, uint32_t index) {
+  // A member of a group becomes that group's anchor (the menu's rule, Q297 b): no second, chained group.
+  if (!doc::findJiGroupByAnchor(notes, note.id))
+    if (const doc::JiGroup* of = doc::jiGroupOfNote(notes, note))
+      return doc::ops::reanchorJiGroup(p, clip, of->id, doc::keyOf(note), index);
+  return doc::ops::makeJiGroup(p, ids, clip, doc::keyOf(note), index);
 }
 
 doc::ops::EditResult undeclareHarmonic(const doc::Project& p, doc::ClipRef clip, const doc::NoteClip& notes, const doc::Note& note) {

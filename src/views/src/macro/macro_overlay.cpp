@@ -34,7 +34,13 @@ IRect cursorBox(const roll::RollState& s, const MacroMode& m, const MacroMode::T
 
 // --- MacroOverlay -------------------------------------------------------------------------------------------
 
-MacroOverlay::MacroOverlay(roll::RollState& s) : Widget("macro-overlay"), s_(s) { setHittable(false); }
+MacroOverlay::MacroOverlay(roll::RollState& s) : Widget("macro-overlay"), s_(s), ctx_(s.ctx) {
+  setHittable(false);
+  ctx_.macro().setFrameWidget(this);  // review M11: a click may move the focus; the lamp looks again on our frame
+}
+
+// The roll state may be gone already (the clip view's members go before its children): only the context is used.
+MacroOverlay::~MacroOverlay() { ctx_.macro().setFrameWidget(nullptr); }
 
 void MacroOverlay::onFrame(double) { (void)s_.ctx.macro().sync(); }
 
@@ -211,11 +217,15 @@ MacroLamp::MacroLamp(ViewContext& ctx) : Control("macro"), ctx_(ctx) {
 void MacroLamp::refresh() {
   const MacroMode& m = ctx_.macro();
   std::string text = m.lampText();
-  const bool on = m.on();
-  if (text == text_ && on == on_) return;
+  const bool on = m.on(), idle = on && !m.takingKeys();
+  if (text == text_ && on == on_ && idle == idle_) return;
   text_ = std::move(text);
   on_ = on;
-  setTooltip(on ? "Macro mode is on: click to turn it off" : "Macro mode: interval entry from the keyboard");
+  idle_ = idle;
+  setTooltip(!on   ? "Macro mode: interval entry from the keyboard"
+             : idle ? "Macro mode is on, but the keys go elsewhere: click the notes of the clip view (or point at them) to "
+                      "type intervals there. Click to turn it off"
+                    : "Macro mode is on: click to turn it off");
   markDirty();
 }
 
@@ -238,13 +248,30 @@ void MacroLamp::paint(PaintContext& ctx) {
   if (!th) return;
   const VisualState v = visualState();
   const IRect r = rect();
-  Rgba fill = on_ ? th->accent.primary : th->surface.panel;
-  if (v.pressed) fill = on_ ? paint::pressOf(fill) : th->control.fill;
-  else if (v.hover) fill = on_ ? paint::hoverOf(fill) : th->surface.raised;
-  paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), fill, th->control.border);
+  // On and taking keys: lit. On while the keys go elsewhere (review M11): an accent outline, unlit.
+  const bool lit = on_ && !idle_;
+  Rgba fill = lit ? th->accent.primary : th->surface.panel;
+  if (v.pressed) fill = lit ? paint::pressOf(fill) : th->control.fill;
+  else if (v.hover) fill = lit ? paint::hoverOf(fill) : th->surface.raised;
+  paint::box(ctx.dl, r, ctx.scale.exact(th->radius.control), fill, idle_ ? th->accent.primary : th->control.border);
   const ThemeFonts* fonts = ctx.res.uiFonts;
   if (!fonts) return;
-  paint::text(ctx, fonts->small, r, text_, on_ ? th->text.onAccent : th->text.secondary, TextAlign::Center, ctx.scale.px(4), ctx.scale.px(4));
+  // Review L6: the lamp keeps its width (nothing in the control bar moves); a text that does not fit is said shorter
+  // ("MACRO · 12-EDO" → "MACRO 12-EDO", "MACRO (click the notes)" → "MACRO (click)") before it is cut.
+  const int32_t pad = ctx.scale.px(4);
+  std::string_view shown = text_;
+  std::string compact;
+  if (ctx.res.text && ctx.res.text->measure(fonts->small, text_) > r.w - 2 * pad) {
+    if (idle_) {
+      compact = "MACRO (click)";
+    } else {
+      compact = text_;
+      if (const size_t dot = compact.find(" \xC2\xB7 "); dot != std::string::npos) compact.replace(dot, 4, " ");
+    }
+    shown = compact;
+  }
+  const Rgba ink = lit ? th->text.onAccent : idle_ ? th->accent.primary : th->text.secondary;
+  paint::text(ctx, fonts->small, r, shown, ink, TextAlign::Center, pad, pad);
 }
 
 }  // namespace pq::views

@@ -351,8 +351,9 @@ constexpr HelpEntry kMacro[] = {
     {"{macro.toggle}\nthe MACRO lamp (top bar)",
      "Turn macro mode on or off",
      "While it is on, the roll has an orange frame and a cursor: a box where the next note will land. The keys below "
-     "then belong to macro mode; everything with Ctrl or Alt, and Space, works as always. The computer MIDI keyboard "
-     "is switched off while macro mode is on."},
+     "then belong to macro mode while the note editor has the focus or the mouse pointer (elsewhere they work as "
+     "always, and the lamp says MACRO (click the notes)); everything with Ctrl or Alt, and Space, works as always. "
+     "The computer MIDI keyboard is switched off while macro mode is on, and back on when it goes off."},
     {"[1] [2] [3] [4] [5] [6] [7] [8] [9] [0]",
      "Go up by a just interval",
      "Multiplies by 2/1, 3/2, 5/4, 7/4, 11/8, 13/8, 17/16, 19/16, 23/16, 29/16: the cursor jumps that far above where "
@@ -392,11 +393,13 @@ constexpr HelpEntry kMacro[] = {
      "In either layer, when the anchor is a ratio note or a note you declared a harmonic, the new note is an exact "
      "ratio in the same group. So in 12-EDO, 3/2 from an ordinary note lands seven rows up, and 3/2 from a just note "
      "lands exactly a just fifth above it."},
-    {"[B] number [Enter]",
-     "Is Harmonic N",
+    {"[B] number [Enter]\n[B] [0] [Enter]",
+     "Is Harmonic N, or remove the group",
      "Says that the anchor note is harmonic number N of a series (B 5 Enter: the fifth harmonic), the same as Is "
      "Harmonic\xE2\x80\xA6" " in a note's menu. S and D then step the cursor through that series, and notes placed from it "
-     "are just. B without a number uses the last number; B on a declared note removes the declaration."},
+     "are just. On a note of a JI group it renumbers that group from this note (it becomes the group's anchor); every "
+     "note keeps its pitch. B without a number uses the last number. B 0 Enter removes the anchor note's group: its "
+     "notes stay where they sound. Esc, or a key that is not a macro key, cancels the number."},
     {"[-] / [=]",
      "Macro undo and redo",
      "Step back and forward through what you did in macro mode: cursor moves, intervals and placed notes. Undo "

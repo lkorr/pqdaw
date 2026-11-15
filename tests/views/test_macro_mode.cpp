@@ -7,7 +7,10 @@
 //   JI layer: the same keys place exact Ratio notes anchored to the anchor note;
 //   the user's rule: in the TEMPERED layer, pointing at a JI note makes the next note just, in that note's group;
 //   reciprocals, Tab chaining, both Backspaces, the pointer / selection anchor, a click on empty space, a s d f;
-//   b + number = Is Harmonic N on the anchor, then s / d step the harmonics; b again removes it;
+//   b + number = Is Harmonic N on the anchor, then s / d step the harmonics; b 0 Enter removes the group (T7.16b: b on
+//   a member renumbers its group from it, nothing is ever removed by b alone);
+//   T7.16b: the pointer anchor follows only real pointer moves; keys only with the clip view focused / hovered (the
+//   lamp says so); keys refused during a drag; the computer MIDI keyboard comes back;
 //   macro undo / redo against Ctrl+Z; Ctrl+S, Space and unbound keys pass through; a text field keeps its keys;
 //   presets (the keypad preset by scancode, load errors in the status line, the built-in table = trainer.json);
 //   the fewest-keypress table equals the trainer's own search (tools/fixtures/macro_bfs.mjs), built once per
@@ -16,6 +19,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <sstream>
@@ -25,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pq/document/commands.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/overlay.h"
@@ -253,10 +258,15 @@ TEST_CASE("macro mode: without a note clip open it is on but takes no key, and s
   CHECK(lamp->text() == "MACRO");
   CHECK(f.d.press("2") == KeyResult::Unhandled);
   CHECK(f.d.press("`") == KeyResult::Unhandled);
-  // The clip opened: active, a fresh cursor.
+  // The clip opened: active, a fresh cursor; the keys are macro's once the notes have the focus (T7.16b, review M11).
   f.ctx.setDetailClip(f.ref);
   f.d.step();
   CHECK(f.m().active());
+  CHECK(lamp->text() == "MACRO (click the notes)");
+  CHECK(f.d.press("2") != KeyResult::Widget);
+  f.d.click(f.d.center(kNotes));
+  f.d.move({2.0f, 2.0f});
+  f.d.step();
   CHECK(lamp->text() == "MACRO \xC2\xB7 12-EDO");
   CHECK(f.d.press("2") == KeyResult::Widget);
 }
@@ -631,7 +641,7 @@ TEST_CASE("macro mode: the anchor follows the pointer and the selection only whi
   CHECK(f.m().anchorNote() == root->id);
 }
 
-TEST_CASE("macro mode: b + number = Is Harmonic N on the anchor; s / d then step its harmonics and notes from it are just; b again removes it") {
+TEST_CASE("macro mode: b + number = Is Harmonic N on the anchor; s / d then step its harmonics and notes from it are just; b 0 Enter removes it") {
   Macro f;
   const doc::NoteId c = f.add(PitchId::fromDegree(0, 0));
   f.on();
@@ -667,26 +677,54 @@ TEST_CASE("macro mode: b + number = Is Harmonic N on the anchor; s / d then step
   f.keys({"2"});
   CHECK(f.m().target().pitch == PitchId::fromRatio(Rational(3, 2), tuning::AnchorKind::Note, c.value));
   f.keys({"Backspace"});
-  // b on the declared anchor: the declaration goes.
+  // T7.16b (review H7): b on the declared anchor removes nothing; it waits for the number. b 0 Enter removes the group.
+  const doc::JiGroupId first = f.group(c)->id;
   f.keys({"b"});
+  CHECK(f.m().lockPending());
+  REQUIRE(f.group(c) != nullptr);
+  f.keys({"0"});
+  CHECK(f.m().detailText() == "Remove the JI group: Enter");
+  f.keys({"7"});  // nothing follows a 0
+  CHECK(f.m().detailText() == "Remove the JI group: Enter");
+  REQUIRE(f.group(c) != nullptr);
+  f.keys({"Enter"});
   CHECK(f.group(c) == nullptr);
   CHECK_FALSE(f.m().locked());
+  CHECK(f.ctx.status().find("Removed the JI group") != std::string::npos);
 
-  // Several digits, committed by the next other key, which then acts: b 1 5 s = harmonic 15, then up to 16.
+  // Several digits, committed by the next macro key, which then acts: b 1 5 s = harmonic 15, then up to 16.
   f.keys({"b", "1", "5", "s"});
   REQUIRE(f.group(c) != nullptr);
   CHECK(f.group(c)->index == 15);
   CHECK(f.m().composition() == Rational(16, 15));
-  f.keys({"Backspace", "b"});  // unlock
-  CHECK(f.group(c) == nullptr);
-  // b alone reuses the last index.
-  f.keys({"b", "Enter"});
+  // b 3 Enter on the declared anchor re-declares it: the same group, the new number.
+  const doc::JiGroupId again = f.group(c)->id;
+  f.keys({"Backspace", "b", "3", "Enter"});
   REQUIRE(f.group(c) != nullptr);
-  CHECK(f.group(c)->index == 15);
-  f.keys({"b"});
-  // b then b: cancelled.
+  CHECK(f.group(c)->id == again);
+  CHECK(f.group(c)->index == 3);
+  CHECK(again != first);
+  // b alone reuses the last index.
+  f.keys({"b", "0", "Enter", "b", "Enter"});
+  REQUIRE(f.group(c) != nullptr);
+  CHECK(f.group(c)->index == 3);
+  // b then b: cancelled, nothing changed.
   f.keys({"b", "b"});
   CHECK_FALSE(f.m().lockPending());
+  REQUIRE(f.group(c) != nullptr);
+  CHECK(f.group(c)->index == 3);
+  // Review L10: a fifth digit is refused (said so); a key macro mode does not bind cancels the number and then does
+  // its own work (Space plays), nothing is declared.
+  f.keys({"b", "1", "2", "3", "4", "5"});
+  CHECK(f.m().detailText() == "Is Harmonic 1234_");
+  CHECK(f.ctx.status().find("at most four digits") != std::string::npos);
+  CHECK(f.d.press("Space") == KeyResult::Action);
+  CHECK_FALSE(f.m().lockPending());
+  CHECK(f.group(c)->index == 3);
+  REQUIRE_FALSE(f.port.calls.empty());
+  CHECK(f.port.calls.back().call == FakeTransport::Call::Play);
+  CHECK(f.d.press("Space") == KeyResult::Action);
+  f.keys({"b", "0", "Enter"});
   CHECK(f.group(c) == nullptr);
   // No anchor note: refused with a hint.
   const IRect a = f.d.rect(kNotes);
@@ -696,6 +734,208 @@ TEST_CASE("macro mode: b + number = Is Harmonic N on the anchor; s / d then step
   f.keys({"b"});
   CHECK_FALSE(f.m().lockPending());
   CHECK(f.ctx.status().find("needs an anchor note") != std::string::npos);
+}
+
+TEST_CASE("macro mode (T7.16b, review H7): b 1 0 Enter over a member of a tuned 12-EDO chord renumbers the group from that note; every pitch and the group stay") {
+  Macro f;
+  std::vector<doc::Note> chord;
+  for (const int32_t d : {0, 4, 7}) {
+    doc::Note n;
+    n.start = 0;
+    n.length = 2 * kQ;
+    n.pitch = PitchId::fromDegree(d, 0);
+    chord.push_back(n);
+  }
+  auto added = doc::ops::addNotes(*f.ctx.doc(), f.ctx.store().ids(), f.ref, chord);
+  REQUIRE(added.ok());
+  REQUIRE(f.ctx.store().dispatch(added->command).ok());
+  auto tuned = doc::ops::tuneToJi(*f.ctx.doc(), f.ctx.store().ids(), f.ref, added->notes, doc::ops::TuneToJiOptions{});
+  REQUIRE(tuned.ok());
+  REQUIRE(f.ctx.store().dispatch(tuned->command).ok());
+  f.d.step();
+  REQUIRE(doc::jiGroupsOf(f.clip()).size() == 1);
+  const doc::JiGroup g0 = doc::jiGroupsOf(f.clip())[0];
+  auto hzOf = [&] {
+    auto cp = doc::resolveClipPitches(*f.ctx.doc(), f.ref.track, f.ref.clip);
+    REQUIRE(cp.ok());
+    std::vector<std::pair<uint32_t, double>> out;
+    for (const doc::NotePitch& np : cp->notes) out.emplace_back(np.note.value, np.hz.value_or(-1.0));
+    std::sort(out.begin(), out.end());
+    return out;
+  };
+  const auto before = hzOf();
+  REQUIRE(before.size() == 3);
+  // The E: a member (not the group's anchor).
+  const doc::NoteId e = added->notes.at(1).id;
+  REQUIRE(g0.anchor != e);
+  f.on();
+  f.hover(e);
+  REQUIRE(f.m().anchorNote() == e);
+  const size_t base = f.ctx.store().history().cursor();
+  f.keys({"b", "1", "0", "Enter"});
+  // One group still, the same id; the E is its anchor, harmonic 10; every note is in it; nothing moved.
+  REQUIRE(doc::jiGroupsOf(f.clip()).size() == 1);
+  const doc::JiGroup& g1 = doc::jiGroupsOf(f.clip())[0];
+  CHECK(g1.id == g0.id);
+  CHECK(g1.anchor == e);
+  CHECK(g1.index == 10);
+  for (const doc::Note& n : f.clip().notes) {
+    const doc::JiGroup* of = doc::jiGroupOfNote(f.clip(), n);
+    REQUIRE(of != nullptr);
+    CHECK(of->id == g0.id);
+  }
+  const auto after = hzOf();
+  REQUIRE(after.size() == before.size());
+  for (size_t i = 0; i < after.size(); ++i) {
+    CHECK(after[i].first == before[i].first);
+    CHECK(after[i].second == doctest::Approx(before[i].second).epsilon(1e-12));
+  }
+  CHECK(f.ctx.store().history().cursor() == base + 1);  // one undo step
+  CHECK(f.ctx.status().find("its group's anchor now, harmonic 10") != std::string::npos);
+  // A habitual b, then Esc: nothing about the group changed.
+  f.keys({"b"});
+  CHECK(f.d.press("Escape") == KeyResult::Widget);
+  REQUIRE(doc::jiGroupsOf(f.clip()).size() == 1);
+  CHECK(doc::jiGroupsOf(f.clip())[0].index == 10);
+}
+
+TEST_CASE("macro mode (T7.16b, review H8): a note the cursor's auto-scroll slides under a resting pointer does not become the anchor; a real move does") {
+  Macro f;
+  f.view->setZoom(120.0 / static_cast<double>(kQ), 0.0);
+  f.view->scrollToTick(-0.5 * static_cast<double>(kQ));
+  f.d.tree().layoutNow();
+  // A row of quarter notes on C over the whole clip.
+  std::vector<doc::NoteId> row;
+  for (Ticks k = 0; k < 16; ++k) row.push_back(f.add(PitchId::fromDegree(0, 0), k * kQ, kQ));
+  f.on();
+  f.hover(row[1]);
+  REQUIRE(f.m().anchorNote() == row[1]);
+  REQUIRE(f.m().tick() == kQ);
+  const float x0 = f.view->xOfTick(static_cast<double>(kQ));
+  const Vec2 parked = f.d.tree().pointerPos();
+  // f f f …: the cursor walks right; the view scrolls to keep it in sight, sliding later notes under the pointer.
+  for (int i = 0; i < 12; ++i) f.keys({"f"});
+  CHECK(f.d.tree().pointerPos().x == parked.x);
+  REQUIRE(f.view->xOfTick(static_cast<double>(kQ)) < x0 - 130.0f);  // it scrolled by more than a note
+  f.d.step();
+  f.d.step();
+  CHECK(f.m().anchorNote() == row[1]);
+  CHECK(f.m().tick() == 13 * kQ);
+  // The wheel slides notes under it too: still no new anchor.
+  f.d.wheel(parked, 0.0f, -1.0f);
+  f.d.step();
+  CHECK(f.m().anchorNote() == row[1]);
+  // A real pointer move (one pixel, inside the note now under it) adopts that note.
+  f.d.move({parked.x + 1.0f, parked.y});
+  f.d.step();
+  CHECK(f.m().anchorNote().valid());
+  CHECK(f.m().anchorNote() != row[1]);
+}
+
+TEST_CASE("macro mode (T7.16b, review M11): keys act only while the clip view has the focus or the pointer; the lamp says when they do not") {
+  Macro f;
+  const doc::NoteId c = f.add(PitchId::fromDegree(0, 0));
+  f.on();
+  auto* lamp = dynamic_cast<MacroLamp*>(f.d.find(kLamp));
+  REQUIRE(lamp != nullptr);
+  CHECK(lamp->text() == "MACRO \xC2\xB7 12-EDO");
+  CHECK(f.m().takingKeys());
+  // A click in the arrangement: the focus and the pointer are there. Digits, ` and q pass through, Tab is the focus
+  // traversal again; nothing is placed.
+  const IRect ar = f.d.rect("main/body/top/track-area/arrangement/tracks");
+  REQUIRE_FALSE(ar.empty());
+  const Vec2 inArrangement{static_cast<float>(ar.x + ar.w / 3), static_cast<float>(ar.bottom()) - 10.0f};
+  f.d.click(inArrangement);
+  f.d.step();
+  f.d.step();
+  REQUIRE(f.d.tree().hovered() != nullptr);
+  CHECK(f.d.tree().hovered()->path().find("clip-view") == std::string::npos);
+  CHECK_FALSE(f.m().takingKeys());
+  CHECK(f.m().on());
+  CHECK(lamp->text() == "MACRO (click the notes)");
+  for (const char* k : {"2", "`", "q"}) {
+    CAPTURE(k);
+    CHECK(f.d.press(k) != KeyResult::Widget);
+  }
+  Widget* before = f.d.tree().focus();
+  CHECK(f.d.press("Tab") != KeyResult::Widget);
+  CHECK(f.d.tree().focus() != before);  // traversal moved it
+  CHECK_FALSE(f.m().composing());
+  CHECK(f.noteCount() == 1);
+  f.d.click(inArrangement);
+  f.d.step();
+  // The pointer over the roll (the focus still in the arrangement): the keys are macro's.
+  f.d.move(f.d.center(kNotes));
+  f.d.step();
+  CHECK(f.m().takingKeys());
+  CHECK(lamp->text() == "MACRO \xC2\xB7 12-EDO");
+  f.keys({"2"});
+  CHECK(f.m().composing());
+  f.keys({"Backspace"});
+  // The pointer leaves again: passed through.
+  f.d.move({2.0f, 2.0f});
+  f.d.step();
+  CHECK(lamp->text() == "MACRO (click the notes)");
+  CHECK(f.d.press("2") != KeyResult::Widget);
+  CHECK_FALSE(f.m().composing());
+  // A click on the notes gives the roll the focus: the keys stay macro's wherever the pointer goes.
+  f.hover(c);
+  f.d.click(f.view->notePoint(c, 0.5));
+  f.d.move({2.0f, 2.0f});
+  f.d.step();
+  CHECK(f.m().takingKeys());
+  CHECK(lamp->text() == "MACRO \xC2\xB7 12-EDO");
+  f.keys({"2", "`"});
+  CHECK(f.noteCount() == 2);
+}
+
+TEST_CASE("macro mode (T7.16b, review M19): a macro key during a pointer drag is refused, so Esc on the drag leaves the document as it was") {
+  Macro f;
+  const doc::NoteId c = f.add(PitchId::fromDegree(0, 0));
+  f.on();
+  f.hover(c);
+  const size_t base = f.ctx.store().history().cursor();
+  const Vec2 p = f.view->notePoint(c, 0.5);
+  f.d.down(p);
+  f.d.move({p.x + 70.0f, p.y});
+  f.d.move({p.x + 130.0f, p.y});
+  f.d.step();
+  // Mid-drag: the keys are taken (they must not reach the keymap either) but do nothing.
+  CHECK(f.d.press("2") == KeyResult::Widget);
+  CHECK(f.d.press("`") == KeyResult::Widget);
+  CHECK(f.d.press("b") == KeyResult::Widget);
+  CHECK_FALSE(f.m().composing());
+  CHECK_FALSE(f.m().lockPending());
+  CHECK(f.ctx.status() == "Macro: finish the drag first");
+  CHECK(f.noteCount() == 1);
+  // Esc cancels the drag: the note is back, no history entry.
+  CHECK(f.d.press("Escape") == KeyResult::Widget);
+  f.d.up({p.x + 130.0f, p.y});
+  f.d.step();
+  CHECK(f.noteCount() == 1);
+  REQUIRE(f.clip().notes.findById(c) != nullptr);
+  CHECK(f.clip().notes.findById(c)->start == 0);
+  CHECK(f.ctx.store().history().cursor() == base);
+  // After the drag the keys work again.
+  f.keys({"2", "`"});
+  CHECK(f.noteCount() == 2);
+}
+
+TEST_CASE("macro mode (review L14): turning it off gives the computer MIDI keyboard back when it had taken it over") {
+  Macro f;
+  ComputerKeyboard& kb = f.ctx.computerKeyboard();
+  kb.setActive(true);
+  f.on();
+  CHECK_FALSE(kb.active());
+  CHECK(f.d.press("Ctrl+CapsLock") == KeyResult::Action);
+  CHECK_FALSE(f.m().on());
+  CHECK(kb.active());
+  CHECK(f.d.tree().keyListener() == &kb);
+  // It was off: it stays off.
+  kb.setActive(false);
+  f.on();
+  CHECK(f.d.press("Ctrl+CapsLock") == KeyResult::Action);
+  CHECK_FALSE(kb.active());
 }
 
 TEST_CASE("macro mode: - / = undo and redo macro steps with their edits; Ctrl+Z stays the document's undo") {
@@ -820,7 +1060,10 @@ TEST_CASE("macro mode and the computer MIDI keyboard exclude each other: one key
   CHECK(f.d.tree().keyListener() == &f.m());
   f.d.keyUp('a');
   f.d.keyUp(key::kCapsLock, mod::kCtrl);
-  // The letters are macro keys now: A moves the cursor, it plays no note.
+  // The letters are macro keys now (the pointer over the roll: the click on the button took the focus): A moves the
+  // cursor, it plays no note.
+  f.d.move(f.d.center(kNotes));
+  f.d.step();
   const size_t calls = f.port.calls.size();
   f.keys({"f", "a"});
   for (size_t i = calls; i < f.port.calls.size(); ++i) CHECK(f.port.calls[i].call != FakeTransport::Call::LiveKey);

@@ -878,6 +878,7 @@ Status setupPianoRollMacroTempered(Shell& shell) {
   if (!c) return Error{ErrorCode::NotFound, "pianoroll-macro-tempered: the anchor", {}};
   const doc::NoteId id = c->id;
   sc->view->select(std::span<const doc::NoteId>(&id, 1));
+  shell.tree().setFocus(sc->view->find("notes"));  // T7.16b (review M11): macro keys go to the focused note editor
   MacroMode& m = shell.context().macro();
   m.setOn(true);
   if (!m.active() || m.anchorNote() != id) return Error{ErrorCode::Unknown, "pianoroll-macro-tempered: the mode", {}};
@@ -911,6 +912,7 @@ Status setupPianoRollMacroJi(Shell& shell) {
   if (!fifth) return Error{ErrorCode::NotFound, "pianoroll-macro-ji: the anchor", {}};
   const doc::NoteId id = fifth->id;
   sc->view->select(std::span<const doc::NoteId>(&id, 1));
+  shell.tree().setFocus(sc->view->find("notes"));  // T7.16b (review M11): macro keys go to the focused note editor
   MacroMode& m = shell.context().macro();
   m.setOn(true);
   m.setLayer(MacroMode::Layer::Ji);

@@ -20,11 +20,18 @@
 //   undo / redo (- / =)   macro-level: the last macro step, with its document edit when the document is still as that
 //                         step left it (a ring of kUndoRing steps)
 //   layer (g)       Tempered ↔ JI
-//   lock (b)        `b` + digits (Enter or the next other key commits; no digits: the last index) = "Is Harmonic N" on
-//                   the anchor note; `b` on a declared anchor removes the declaration
+//   lock (b)        `b` + digits (Enter or the next macro key commits; no digits: the last index) = "Is Harmonic N" on
+//                   the anchor note, whatever it is: a note outside every group gets a group, a group's anchor its new
+//                   index, a MEMBER becomes its group's anchor with index N (ops::reanchorJiGroup; every note keeps its
+//                   pitch). `b` `0` `Enter` removes the anchor note's group (its notes keep their pitch). A key macro
+//                   mode does not bind cancels the number and goes on as usual (T7.16b, review H7 / L10).
 // Only keys the preset binds are taken, and only without Ctrl / Alt / Super / Shift: everything else passes through
-// (Ctrl+S saves, Space plays). A focused text field and an open popup keep their keys. Without a note clip open in the
-// clip view nothing is taken.
+// (Ctrl+S saves, Space plays). Keys are taken only while the clip view (the note area or anything in it) has the
+// keyboard focus or the pointer (T7.16b, review M11): with the focus in the arrangement, the browser, a text field, an
+// open popup or the help panel and the pointer elsewhere they pass through, and the lamp says "MACRO (click the
+// notes)". While a pointer drag is in progress (a widget holds the pointer, or the document is in a gesture) macro keys
+// are refused with a status, so nothing joins the drag's undo entry (review M19). Without a note clip open in the clip
+// view nothing is taken.
 //
 // Layers (M1):
 //   Tempered (default)  the placed note is a Degree note on the tuning's step for the composed interval measured from
@@ -35,8 +42,10 @@
 //   In EITHER layer, when the anchor is a JI note (macro_doc.h: a Ratio note, or the note declared "harmonic N") the
 //   placed note is just: a Ratio in that note's group, the composed ratio from it.
 // The anchor follows the pointer and the selection (M2): with nothing composed, moving the pointer onto a note (else
-// selecting a single note) makes it the anchor and puts the cursor at its start. A click on empty space puts a free
-// cursor there (grid cell, row).
+// selecting a single note) makes it the anchor and puts the cursor at its start. Only a real pointer move counts
+// (T7.16b, review H8): a note that a scroll (the cursor's auto-scroll, the wheel) slides under a resting pointer is not
+// adopted, so keyboard cursor moves win until the mouse moves. A click on empty space puts a free cursor there (grid
+// cell, row).
 //
 // It is the UiTree's key listener while on (the Shell swaps it with the computer MIDI keyboard: turning one on turns
 // the other off) and a TreeObserver for the click. The clip view owns the overlay (macro_overlay.h) and tells it when
@@ -86,8 +95,11 @@ public:
   bool on() const noexcept { return on_; }
   void setOn(bool on);
   void toggle() { setOn(!on_); }
-  // On, and a note clip is open in the clip view: keys are taken.
+  // On, and a note clip is open in the clip view (the overlays show).
   bool active() const noexcept;
+  // Active, and the clip view has the keyboard focus or the pointer, no text field is focused and no popup is open:
+  // macro keys are taken (review M11).
+  bool takingKeys() const;
   Layer layer() const noexcept { return layer_; }
   void setLayer(Layer l);
 
@@ -109,7 +121,7 @@ public:
   // "→ 11 steps, −11.7 ¢" (tempered), "just · harmonic 6" / "just" (a Ratio), "exact" (a Cents note); while `b` waits
   // for its number: "Is Harmonic 15_".
   std::string detailText() const;
-  // "MACRO" (off, or no clip), "MACRO · JI", "MACRO · 12-EDO".
+  // "MACRO" (off, or no clip), "MACRO · JI", "MACRO · 12-EDO"; on but not taking keys: "MACRO (click the notes)".
   std::string lampText() const;
 
   // --- presets ---
@@ -141,9 +153,14 @@ public:
   // The absolute degree of the anchor's row (the fewest-keypress labels count from it).
   int64_t anchorRow() const;
 
+  // The clip view's overlay: asked for a frame after a click, when the focus may have moved (the lamp re-reads
+  // takingKeys() then). nullptr: none.
+  void setFrameWidget(ui::Widget* w) noexcept { frameWidget_ = w; }
+
   // ui::KeyListener / ui::TreeObserver
   bool onTreeKey(const ui::KeyEvent& e) override;
   void onPointerDown(ui::Vec2 pos) override;
+  void onHoverChanged(ui::Widget* hovered) override;
 
   // Called after anything the lamp, the overlay or the key listener choice shows changed.
   std::function<void()> onChanged;
@@ -173,11 +190,15 @@ private:
 
   Anchor resolve(const State& s) const;
   Target targetOf(const State& s) const;
-  bool applySync(State& s, uint32_t& seenHover, uint32_t& seenSel) const;
+  bool applySync(State& s, uint32_t& seenHover, uint32_t& seenSel, ui::Vec2& seenPointer) const;
   uint32_t hoveredNote() const;
   uint32_t selectedNote() const;
   void adopt(State& s, const doc::Note& n) const;
   bool blocked() const;  // a text field has the focus, or a popup is open
+  bool inClipView(const ui::Widget* w) const noexcept;
+  bool dragging() const;  // a widget holds the pointer, or the document is in a gesture
+  void checkTaking();     // takingKeys() flipped: changed()
+  void markSeen();        // what is under the pointer and selected now is no new anchor
 
   template <class F>
   void step(F&& f);
@@ -203,6 +224,10 @@ private:
   Layer layer_ = Layer::Tempered;
   State s_;
   uint32_t seenHover_ = 0, seenSel_ = 0;
+  ui::Vec2 seenPointer_{-1e9f, -1e9f};  // the pointer where the anchor rule last looked (a real move changes it)
+  bool taking_ = false;                 // takingKeys() when the lamp was last told
+  bool keyboardWasOn_ = false;          // the computer MIDI keyboard was on when macro mode took over (review L14)
+  ui::Widget* frameWidget_ = nullptr;
   bool inStep_ = false;
   bool lockPending_ = false;
   std::string lockDigits_;
