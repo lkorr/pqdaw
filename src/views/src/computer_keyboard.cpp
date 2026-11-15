@@ -18,7 +18,7 @@ int32_t indexIn(std::string_view row, ui::Key k) noexcept {
 // Live's piano layout: the semitone each key plays (the white keys A S D F G H J K L ; on 0 2 4 5 7 9 11 12 14 16).
 constexpr std::string_view kPiano = "awsedftgyhujkolp;";
 // The mos-explorer's rows (music-website mos-explorer index.html KBD_HOME / BOTTOM / UPPER / TOP, KBD_ABOVE / BELOW).
-// A space keeps a position whose key does something else here (M: the keyboard toggle).
+// A space keeps a position whose key does something else here (M: the toggle's key until KB.help; its place is still free).
 constexpr std::string_view kHome = "asdfghjkl;'";
 constexpr std::string_view kBottom = "zxcvbn ,./";
 constexpr std::string_view kUpper = "qwertyuiop[]\\";

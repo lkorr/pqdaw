@@ -3658,7 +3658,7 @@ TEST_CASE("KB.1: with the computer keyboard on, every note key plays whichever m
   REQUIRE(clip.ok());
   REQUIRE(u.ctx.store().dispatch(clip->command).ok());
   u.arrangement().selectTrack(keys, mod::kNone);  // auto-armed (nothing is armed by hand): its layout
-  u.d.press("M");
+  REQUIRE(u.ctx.actions().invoke(u.ctx.actions().find("keyboard.toggleComputerMidi")));  // KB.help: no default key
   REQUIRE(kb.active());
   const ComputerKeyboard::Layout layout = u.ctx.keyboardLayout();
   std::vector<Key> notes;
@@ -3717,7 +3717,7 @@ TEST_CASE("KB.1: with the computer keyboard on, every note key plays whichever m
   findChain(u.shell->slot(ShellSlot::DeviceDetail));
   playAll("device chain", chain);
   // Off: the keys are the views' again (F fits the focused patch view, no note).
-  u.d.press("M");
+  REQUIRE(u.ctx.actions().invoke(u.ctx.actions().find("keyboard.toggleComputerMidi")));  // KB.help: no default key
   REQUIRE_FALSE(kb.active());
   const auto n0 = liveKeys();
   u.d.keyDown('a');

@@ -77,6 +77,12 @@ public:
   void setFold(bool on);
   bool scaleHighlight() const noexcept;
   void setScaleHighlight(bool on);
+  // KB.help: the help panel (the `?` button left of Fold / Scale, at the right end of the clip box's title bar: the
+  // keys' gutter has no room for a third button; roll_help.h): every control of the note editor, its
+  // text a table (roll_help_content.cpp), its keys read from the loaded keymap. toggleHelp() is the button's click:
+  // opens it over the roll, or closes it; returns whether it is open now.
+  bool toggleHelp();
+  bool helpOpen() const;
   bool showChance() const noexcept;
   void setShowChance(bool on);
   // Scale / MOS layouts (T3.12): Proportional (default) or Equidistant rows for MOS and Scala tunings (EDOs are
@@ -220,6 +226,8 @@ private:
   ViewContext& ctx_;
   std::unique_ptr<roll::RollState> state_;
   ViewContext::Subscription docSub_, viewSub_;
+  ui::Toggle* help_ = nullptr;  // KB.help: `?`; lit while the panel is open
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // the panel's close callback may outlive the view
 };
 
 // Adds the clip view to the shell's ClipDetail slot and installs its pianoroll actions (one line in

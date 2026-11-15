@@ -207,6 +207,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_piano_roll_ji.cpp  # T7.4: JI objects in the roll (real dispatch: tool drag -> field, move, resize, delete, duplicate, undo), copy / paste of curves, goldens, perf
     views/test_piano_roll_ji_edit.cpp  # T7.5: the inner roll, stops, transitions, walks, Tune to JI, Is Harmonic, object copy / paste (real dispatch), goldens
     views/test_piano_roll_pen.cpp  # T7.6: bends between notes, Ctrl+G, pen strokes, breakpoints, vibrato, ride curves, detune, Clear Bends (real dispatch), goldens
+    views/test_piano_roll_help.cpp  # KB.help: the ? button and the help panel (real dispatch: open / close, keys, scroll, keys from the loaded keymap), goldens
     views/test_mos_chart.cpp
     views/test_mixer.cpp
     views/test_mos_wheel.cpp
@@ -260,7 +261,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_meta_envelope_face.cpp  # TMM.11: the Envelope face (goldens with voices, gestures, scenes, paint cost)
     views/test_meta_wavetable_edit.cpp  # TMM.9: its harmonic editor and draw tools (math, gestures, goldens, paint cost)
     views/test_meta_devices.cpp  # TMM.10: chain meta devices in the Device view (face panels, menus, presets, goldens)
-    views/test_live_input_views.cpp  # T6.4: the computer MIDI keyboard (M) and the mixer strip's input section, by real dispatch
+    views/test_live_input_views.cpp  # T6.4: the computer MIDI keyboard and the mixer strip's input section, by real dispatch
     views/test_recording_views.cpp  # T6.7: the audio strip's input chooser + arm, the arrangement's live recording overlay
   DEPS pq_views nlohmann_json::nlohmann_json)
 # T3.7: the shell window idling over the empty fixture: 0 frames in 10 s at < 0.1 % CPU (exit 77 = no display).

@@ -473,7 +473,7 @@ public:
 
   // --- transport ---
   TransportPort& transport() noexcept { return transport_; }
-  // T6.4: the computer MIDI keyboard (`M`: action keyboard.toggleComputerMidi; the Shell makes it the tree's key
+  // T6.4: the computer MIDI keyboard (action keyboard.toggleComputerMidi, the control bar's keyboard button; no default key since KB.help; the Shell makes it the tree's key
   // listener). Its state changes name themselves in the status line.
   ComputerKeyboard& computerKeyboard() noexcept { return computerKeyboard_; }
   // KB.1: the track whose tuning lays out the computer keyboard: the auto-armed track, else the selected track when it

@@ -936,7 +936,7 @@ void ClipBoxPanel::paint(PaintContext& ctx) {
   const IRect title{r.x, r.y, r.w, ctx.scale.px(20)};
   dl.addRectFilled(title.toRect(), clipCol);
   paint::text(ctx, f->bodyStrong, title, c->name.empty() ? std::string_view("MIDI Clip") : std::string_view(c->name),
-              clipTextFor(*th, clipCol), TextAlign::Left, pad, pad);
+              clipTextFor(*th, clipCol), TextAlign::Left, pad, ctx.scale.px(kHelpButton + 4.0f));  // KB.help: the ? button
   // The first rows are widgets: the tuning chip (T3.14), then for scale tunings layout / EDO grid / generator (T3.12).
   int32_t y = title.bottom() + ctx.scale.px(4) + lh;
   for (size_t i = 0; i < childCount(); ++i) {

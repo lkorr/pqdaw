@@ -356,7 +356,8 @@ TEST_CASE("keymap: the default file parses, chords are unique per scope, actions
   CHECK(has("global", "Ctrl+Alt+B", "view.toggleBrowser"));
   CHECK(has("global", "Shift+Tab", "view.toggleClipDevice"));
   CHECK(has("arrangement", "Ctrl+Shift+M", "arrangement.insertMidiClip"));
-  CHECK(has("global", "M", "keyboard.toggleComputerMidi"));
+  // KB.help: the computer MIDI keyboard has no default key (its control-bar button and its action stay).
+  CHECK(std::none_of(k->entries.begin(), k->entries.end(), [](const KeymapEntry& e) { return e.action == "keyboard.toggleComputerMidi"; }));
   CHECK(has("pianoroll", "Up", "pianoroll.stepUp"));
   CHECK(has("pianoroll", "Shift+Up", "pianoroll.equaveUp"));
 

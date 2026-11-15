@@ -7,4 +7,6 @@ set(PQ_VIEWS_PIANO_ROLL_SOURCES
   src/piano_roll/roll_ji.cpp
   src/piano_roll/roll_ji_edit.cpp
   src/piano_roll/roll_pen.cpp
+  src/piano_roll/roll_help.cpp          # KB.help: the ? panel (layout, painting)
+  src/piano_roll/roll_help_content.cpp  # KB.help: its text (the table of sections and entries)
   src/piano_roll/clip_view.cpp)

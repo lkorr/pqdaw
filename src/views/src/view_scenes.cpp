@@ -37,6 +37,7 @@
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "piano_roll/roll_state.h"  // T7.4: the JI scenes create objects as the JI tool does
+#include "piano_roll/roll_help.h"   // KB.help: the help panel scenes
 #include "pq/views/mos_wheel/mos_chart.h"
 #include "pq/views/mos_wheel/mos_circle.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
@@ -865,6 +866,39 @@ Status setupPianoRollCurveNotes(Shell& shell) {
     return Error{ErrorCode::Unknown, "pianoroll-curve-notes: setNoteCurve", {}};
   const doc::NoteId sel = vib->id;
   sc->view->select(std::span<const doc::NoteId>(&sel, 1));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// ---- KB.help: the piano roll's help panel ------------------------------------------------------------------------
+
+namespace {
+// A clip with a short melody, the help panel open over the roll (the `?` button lit).
+roll::RollHelpPopover* openHelpScene(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Melody", 14, 6);
+  if (!sc) return nullptr;
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 2 * q, PitchId::fromDegree(0, 0)), scnNote(2 * q, q, PitchId::fromDegree(4, 0)),
+                                        scnNote(3 * q, q, PitchId::fromDegree(7, 0)), scnNote(4 * q, 4 * q, PitchId::fromDegree(5, 0))};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes))) return nullptr;
+  if (!sc->view->toggleHelp()) return nullptr;
+  shell.tree().layoutNow();
+  return roll::openRollHelpPopover(*sc->view);
+}
+}  // namespace
+
+Status setupPianoRollHelp(Shell& shell) {
+  if (!openHelpScene(shell)) return Error{ErrorCode::Unknown, "pianoroll-help: opening the panel failed", {}};
+  return Ok{};
+}
+
+// The same panel scrolled to "Harmonics and the virtual fundamental" (a click on its name in the section list).
+Status setupPianoRollHelpScrolled(Shell& shell) {
+  roll::RollHelpPopover* help = openHelpScene(shell);
+  if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-scrolled: opening the panel failed", {}};
+  help->showSection(4);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3694,6 +3728,8 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-note-lines", 1280, 800, setupPianoRollNoteLines},  // T7.12
     {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
     {"pianoroll-ride", 1280, 800, setupPianoRollRide},
+    {"pianoroll-help", 1280, 800, setupPianoRollHelp},                   // KB.help
+    {"pianoroll-help-scrolled", 1280, 800, setupPianoRollHelpScrolled},  // KB.help
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},

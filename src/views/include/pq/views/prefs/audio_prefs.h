@@ -47,7 +47,7 @@
 //   │         │   Arturia KeyStep 37                       [On]   [±2 st ▾]      │
 //   │         │   loopMIDI Port                            [Off]  [±2 st ▾]      │
 //   │         │   Launchkey 49 (not connected)             [On]   [±12 st ▾]     │
-//   │         │ Computer MIDI Keyboard: M (A W S E D … play degrees; Z / X equave; C / V velocity)
+//   │         │ Computer MIDI Keyboard: the control bar's button (A W S E D … play degrees; Z / X equave; C / V velocity)
 //
 // T6.8: a Warp tab (with a ViewContext; Live's Record, Warp & Launch → Warp): ViewPrefs::autoWarpLongSamples and
 // ::defaultWarpMode, applied at once, kept by the app in its settings file:

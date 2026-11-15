@@ -729,10 +729,11 @@ void PreferencesWindow::buildMidiTab(Widget& body) {
   list.setGap(3);
   list.setHeight(Length::fixed(kRowHeight));
   section(page, "keyboard-section", "Computer MIDI Keyboard");
-  const char* info = "With M on, the letter rows play the armed tracks that listen to All Ins or to the Computer Keyboard, "
+  const char* info = "With the computer MIDI keyboard on, the letter rows play the armed tracks that listen to All Ins or to the "
+                     "Computer Keyboard, "
                      "in each track's tuning (Keys) or as Hz (Hz).";
-  for (const auto& [name, text] : {std::pair<const char*, const char*>{"keyboard-keys", "M turns it on and off. A W S E D F T G Y H U J K O L P ; "
-                                                                                         "play degrees 0 to 16 of the track's tuning."},
+  for (const auto& [name, text] : {std::pair<const char*, const char*>{"keyboard-keys", "Its control-bar button turns it on. A W S E D F T G Y H U J K O L P ; "
+                                                                                         "play degrees 0 to 16."},
                                    {"keyboard-shift", "Z / X: an equave down / up.   C / V: velocity \xE2\x88\x92" "20 / +20."}}) {
     auto& note = page.add<Label>(name, text, FontRoleId::Small, TextTone::Secondary);
     note.setHeight(Length::fixed(kRowHeight));

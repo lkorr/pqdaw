@@ -5,7 +5,7 @@
 // and nothing else in the window.
 //
 //   ┌ clip-box ┐┌ corner ┬ ruler: loop brace, start / end markers, bar numbers ──────────────────┐
-//   │ name     ││ Fold   │                                                                      │
+//   │ name   ? ││ Fold   │                                                                      │
 //   │ tuning   │├ keys ──┼ notes: rows, grid, notes, rubber band, draw preview ─────────────────┤
 //   │ loop …   ││ C3     │                                                                      │
 //   │          │├ lane-  ┼ velocity: stems (or chance) ──────────────────────────────────────────┤
@@ -29,6 +29,7 @@ inline constexpr float kBraceHeight = 13.0f;  // top strip of the ruler: loop br
 inline constexpr float kLaneHeight = 72.0f;
 inline constexpr float kEdgeGrab = 4.0f;      // note edge resize zone
 inline constexpr float kStemGrab = 5.0f;      // velocity stem hit width (each side)
+inline constexpr float kHelpButton = 16.0f;   // KB.help: the ? button at the right end of the clip box's title bar
 
 class ClipBoxPanel : public ui::Widget {
 public:

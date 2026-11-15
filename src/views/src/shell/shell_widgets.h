@@ -133,7 +133,7 @@ private:
   TransportButton* loop_ = nullptr;
   TransportButton* metronome_ = nullptr;      // T6.6
   TransportButton* metronomeMenu_ = nullptr;  // T6.6: ▾
-  TransportButton* keyboard_ = nullptr;      // KB.1: the computer MIDI keyboard (M)
+  TransportButton* keyboard_ = nullptr;      // KB.1: the computer MIDI keyboard
   TransportButton* keyboardMenu_ = nullptr;  // KB.1: ▾
   ui::Label* keyboardReadout_ = nullptr;     // KB.1: equave and velocity while on
   struct KeyboardShown {  // KB.1: what the button shows (refreshKeyboard skips an unchanged state)

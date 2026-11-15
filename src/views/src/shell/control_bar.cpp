@@ -577,7 +577,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   grid_->setInfo("Grid", "The editing grid of the arrangement and the clip view. Ctrl+1 / Ctrl+2 make it narrower / "
                          "wider, Ctrl+3 triplet, Ctrl+4 snap, Ctrl+5 fixed or adaptive; right-click an editor for "
                          "the grid menu.");
-  // KB.1: the computer MIDI keyboard (Live keeps its switch at the top right): a click toggles it (the same state as M);
+  // KB.1: the computer MIDI keyboard (Live keeps its switch at the top right): a click toggles it (action keyboard.toggleComputerMidi; no default key since KB.help);
   // the arrow or a right click opens its menu; while on, the readout beside it shows the equave offset and velocity.
   gap(*this, 6);
   keyboardReadout_ = &sized(add<Label>("keyboard-readout", "", FontRoleId::Small, TextTone::Secondary, TextAlign::Right), 52);
@@ -638,9 +638,9 @@ void ControlBar::refreshKeyboard() {
     readout = "E" + std::string(k.equave() > 0 ? "+" : "") + std::to_string(k.equave()) + " V" + std::to_string(k.velocity());
   keyboardReadout_->setText(readout);
   const std::string name = ComputerKeyboard::layoutName(l, k.scaleMode());
-  keyboard_->setTooltip("Computer MIDI Keyboard (M): " + name);
-  keyboard_->setInfo("Computer MIDI Keyboard (M): " + name,
-                     "Plays the armed MIDI tracks (the selected one is armed while no track is armed by hand) from the "
+  keyboard_->setTooltip("Computer MIDI Keyboard: " + name);
+  keyboard_->setInfo("Computer MIDI Keyboard: " + name,
+                     "Click to turn it on or off. Plays the armed MIDI tracks (the selected one is armed while no track is armed by hand) from the "
                      "computer keyboard, in the layout of their tuning. " +
                          ComputerKeyboard::layoutKeys(l, k.scaleMode()) +
                          " Right-click or use the arrow beside it for the layout mode, equave and velocity.");

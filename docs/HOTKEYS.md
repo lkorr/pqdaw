@@ -42,7 +42,6 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the project's default tuning (TU.3: it edits the named tuning the clip resolves to); pressed again: closes it, keeping the change) |
 | `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window: Audio tab, and the Library tab (T5.x-library-prefs); pressed again: closes it) |
-| `keyboard.toggleComputerMidi` | `M` | global | Key/MIDI Map Commands | implemented (T6.4: the computer MIDI keyboard, below; M8's macro mode will replace its scope when active) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
 | `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
 | `arrangement.zoomToSelection` | `Z` | arrangement | Arrangement View Commands | implemented (T3.8; the time selection, T3.9, else the whole arrangement) |
@@ -91,6 +90,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.delete` | `Delete` | pianoroll | Editing | implemented (T3.11) |
 | `pianoroll.quantize` | `Ctrl+U` | pianoroll | MIDI Note Editor | implemented (T3.11) |
 | `pianoroll.quantizeSettings` | `Ctrl+Shift+U` | pianoroll | MIDI Note Editor | M10 (quantize settings) |
+| — (note editor, not a keymap action) | click the `?` button left of Fold / Scale (the right end of the clip box's title bar) | pianoroll | — (pqdaw; user 2026-11-14) | implemented (KB.help: the help panel over the roll — every control and command for notes, bends, pitch curves and vibrato, detune, harmonics, tuning and JI, grouped, gesture beside description; the keys shown are read from the loaded keymap ("unbound" when an action has none). A second click, `Esc` or a click outside closes it; open, the wheel, `Up` / `Down`, `Page Up` / `Page Down`, `Home` / `End` scroll it and a click in its section list jumps. Text: `src/views/src/piano_roll/roll_help_content.cpp`) |
 | `pianoroll.stepUp` | `Up` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
 | `pianoroll.nudgeLeft` | `Left` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; the selected notes one grid cell earlier, one undo step) |
 | `pianoroll.nudgeRight` | `Right` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; one grid cell later) |
@@ -103,7 +103,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.equaveUp` | `Shift+Up` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.equaveDown` | `Shift+Down` | pianoroll | MIDI Note Editor (octave → equave) | implemented (T3.11) |
 | `pianoroll.toggleActive` | `0` | pianoroll | MIDI Note Editor | implemented (T3.11) |
-| `pianoroll.toggleJiTool` | `J` | pianoroll | — (pqdaw; SPEC §5) | implemented (T7.4: the JI tool on / off — drag a box in the note editor, then type a proportion (`8:9:10:12:15`, undertone `1/4:1/5:1/6`) and press Enter: a JI object whose lowest voice sits on the box's bottom row. Turning it on leaves Draw Mode and the other way round. With the computer MIDI keyboard on (`M`), `J` plays a note instead, as every letter key does) |
+| `pianoroll.toggleJiTool` | `J` | pianoroll | — (pqdaw; SPEC §5) | implemented (T7.4: the JI tool on / off — drag a box in the note editor, then type a proportion (`8:9:10:12:15`, undertone `1/4:1/5:1/6`) and press Enter: a JI object whose lowest voice sits on the box's bottom row. Turning it on leaves Draw Mode and the other way round. With the computer MIDI keyboard on, `J` plays a note instead, as every letter key does) |
 | `pianoroll.tuneToJi` | `Ctrl+Shift+J` | pianoroll | — (pqdaw; SPEC §5, M7 A2) | implemented (T7.5: Tune to JI — the selected notes become the inner notes of a JI object that glides, over one grid step, from the chord as written in the active tuning to the nearest just proportion; also in the notes' right-click menu. Only with notes selected. "Remove JI Tuning" in the object's menu / Delete gives the plain notes back) |
 | `pianoroll.jiTuningStop` | `T` | pianoroll | — (pqdaw; M7 A1 / A2) | implemented (T7.5: back to the tuning — a tuning stop on the entered / selected JI object at the pointer (the playhead when the pointer is elsewhere). Only with an object entered or selected; with the computer MIDI keyboard on, `T` plays a note) |
 | `pianoroll.jiWalkUp` / `pianoroll.jiWalkDown` | `Alt+Up` / `Alt+Down` | pianoroll | — (pqdaw; SPEC §5) | implemented (T7.5: walks the selected harmonic number of a JI object one term up / down (click the number at a voice's left end to select it); the lowest voice keeps its pitch. Only with a harmonic selected) |
@@ -293,7 +293,7 @@ A device's "Open in Circuit View" (its menu, a double-click on its title, the pr
 
 ## Computer MIDI keyboard (T6.4, KB.1; the tree's key listener `views::ComputerKeyboard`, not the keymap)
 
-While `M` (or the keyboard button at the control bar's top right) has it on, these keys play notes into the armed MIDI
+While the keyboard button at the control bar's top right (action `keyboard.toggleComputerMidi`; no default key since KB.help, `M` before) has it on, these keys play notes into the armed MIDI
 tracks that listen to All Ins or the Computer Keyboard, each track in its own tuning (Keys = degrees, Hz = their Hz):
 the tuning of the clip open in the clip view when it is on that track, else of its clip under the playhead (stopped:
 under the start marker), else the track's own tuning. MIDI keys from a port play in the same tuning.
@@ -322,13 +322,13 @@ letter is a note here, so the shift keys are the navigation cluster.
 | `A S D F G H J K L ; '` | degrees 0 … 10 | degrees 0 … 10 |
 | `Q W E R T Y U I O P [ ] \` | degrees 0 … 12 an equave up | degrees 11 … 23 |
 | `1 2 3 4 5 6 7 8 9 0 - =` | degrees 0 … 11 two equaves up | degrees 24 … 35 |
-| `Z X C V B N , . /` | degrees 0 … 9 an equave down (`M`'s place stays the toggle) | `/` = 1 below `A`, `.` 2, `,` 3, `N` 5 … `Z` 10 below |
+| `Z X C V B N , . /` | degrees 0 … 9 an equave down (`M`'s place plays nothing: it was the toggle's key until KB.help) | `/` = 1 below `A`, `.` 2, `,` 3, `N` 5 … `Z` 10 below |
 | `Page Down` / `Page Up` | equave offset down / up (−3 … +3) | same |
 | `End` / `Home` | velocity −20 / +20 | same |
 
 | Keys | What |
 |---|---|
-| `M` | on / off (every held note ends); the control bar's keyboard button is the same switch (right-click or ▾: 1Row / Continuous, Equave, Velocity) |
+| the control bar's keyboard button (click) | on / off (every held note ends); right-click or ▾: 1Row / Continuous, Equave, Velocity. `M` no longer toggles it (KB.help, user 2026-11-14) |
 
 A release ends the note its press started. A note outside the keyboard's range (equave ±3) plays nothing.
 
@@ -365,6 +365,7 @@ A release ends the note its press started. A note outside the keyboard's range (
 ## Not bound yet
 
 - Wiring (T4.7): `view.cycleCables` and `wire.delete` have no default chord (Live has none); the View menu and the badge run them.
+- Computer MIDI keyboard (KB.help, user 2026-11-14): `keyboard.toggleComputerMidi` is a registered action without a default chord (`M` until then; Live's `M`); the control bar's keyboard button runs it.
 - Piano roll (T3.11): `pianoroll.fold` (fold to used notes / scale) and `pianoroll.toggleScale` (scale highlighting) are registered actions without a default chord (Live has none); the clip view's Fold and Scale buttons trigger them.
 - Macro mode toggle `Ctrl+CapsLock` (SPEC §6.2): CapsLock is a lock key, which a keymap chord cannot use as its key (T3.1); M8 handles it in the macro-mode scope.
 - Live shortcuts outside M3–M10 scope (Session View, racks, plug-in windows) are not listed.

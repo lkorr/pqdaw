@@ -1,6 +1,6 @@
 #pragma once
 
-// The computer MIDI keyboard (T6.4; docs/plans/M6.md "Decisions taken": Live's letter rows, M toggles it; KB.1: the
+// The computer MIDI keyboard (T6.4; docs/plans/M6.md "Decisions taken": Live's letter rows; toggled by the control bar's button / action keyboard.toggleComputerMidi; KB.1: the
 // layout follows the target track's tuning, the control bar's keyboard button).
 //
 // While on, the letter rows play notes into the armed tracks that listen to it (each track in its own tuning and note
@@ -26,7 +26,7 @@
 //       two above.
 //     Continuous: A … ' then Q … \ then 1 … = are 35 consecutive degrees from A up; / . , N B V C X Z the 9 below A
 //       (/ = one below).
-//   M stays the toggle in both modes, so the bottom row's M key plays nothing (1Row: degree 6 an equave down;
+//   M was the toggle until KB.help (unbound by default now); the bottom row's M key still plays nothing (1Row: degree 6 an equave down;
 //   Continuous: 4 below A).
 //   Every letter is a note here: Page Up / Page Down move the equave offset, Home / End the velocity (they work in
 //   the piano layout too).

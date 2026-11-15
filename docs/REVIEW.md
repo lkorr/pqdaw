@@ -1739,3 +1739,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Decide: is the always-visible faint band wanted, or should it show on hover only (`roll.noteLineBand` 0)? Are the
   heads the right size, or would you rather have a plain gap between repeated notes? JI objects are not restyled
   (their code goes in T7.13 / T7.14).
+
+## KB.help 👁 · `M` no longer toggles the computer keyboard; the piano roll's `?` help panel (2026-11-14)
+- `M` does nothing now. The computer-MIDI-keyboard button (control bar, top right) still toggles it by click; the action
+  `keyboard.toggleComputerMidi` stays for a keymap that wants a key.
+- `?` sits at the right end of the clip's title bar, directly left of Fold / Scale (the keys' gutter is 76 px: Fold and
+  Scale fill it, a third button there cut "Scale" to "Sc…"). Click it: a panel opens over the roll. A second click,
+  Esc or a click outside closes it; the wheel, the arrows, Page Up / Down scroll; the list on the left jumps to a section.
+- Look at: `tests/views/golden/pianoroll-help.png` (top) and `pianoroll-help-scrolled.png` (Harmonics).
+- Sections: Notes, Bends between notes, Free pitch curves and vibrato, Detune, Harmonics and the virtual fundamental,
+  Tuning, JI groups (today's box objects; rewritten when the notes-first groups land).
+- Keys shown are read from the loaded keymap. The text is one table: `src/views/src/piano_roll/roll_help_content.cpp`.
+- Decide: is the `?` in the right place, or would you rather widen the keys' gutter by ~16 px so it sits right of
+  Scale? Is the wording at the right level (anything too long, anything missing)?

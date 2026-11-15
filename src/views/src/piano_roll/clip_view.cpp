@@ -7,6 +7,7 @@
 #include <cmath>
 
 #include "pq/ui/theme.h"
+#include "roll_help.h"
 #include "roll_widgets.h"
 
 namespace pq::views {
@@ -26,6 +27,20 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   s.noteArea = &add<roll::NoteAreaWidget>(s);
   s.laneHeaderView = &add<roll::LaneHeaderWidget>(s);
   s.laneView = &add<roll::VelocityLaneWidget>(s);
+  // KB.help: the help panel over the roll. A press outside the open panel (this button included) closes it, so a
+  // second click on `?` closes; the button is lit while the panel is open. After the clip box (drawn over its title).
+  help_ = &add<Toggle>("help", "?", ToggleStyle::Accent);
+  help_->setFocusable(false);
+  help_->setTooltip("Help: every control of the note editor");
+  help_->setInfo("Piano Roll Help", "Opens a panel that lists every control and command of the note editor: notes, bends "
+                                    "between notes, pitch curves and vibrato, detune, harmonics, tuning and just "
+                                    "intonation. Click again, press Esc or click outside to close it.");
+  help_->onToggle = [this](bool) {
+    // The click took the focus away from the roll (the button holds none): give it to the note area, so the roll has
+    // its keys again when the panel closes (the overlay restores the focus it found).
+    if (UiTree* t = tree(); t && !t->focus() && state_->noteArea) t->setFocus(state_->noteArea);
+    (void)toggleHelp();
+  };
 
   auto bind = [this](std::string_view id, auto fn) {
     ctx_.setViewAction(id, [this, fn] { fn(*this); }, [this] { return hasClip(); });
@@ -150,6 +165,8 @@ void ClipView::arrange(LayoutPass& pass) {
   const int32_t laneY = notesY + notesH + gap;
   RollState& s = *state_;
   pass.place(*s.boxPanel, {r.x, r.y, boxW, r.h});
+  const int32_t hb = pass.px(roll::kHelpButton);  // KB.help: in the box's 20-px title bar, beside the corner's Fold
+  pass.place(*help_, {r.x + boxW - hb - pass.px(2), r.y + pass.px(2), hb, hb});
   pass.place(*s.cornerPanel, {ex, r.y, std::min(keysW, ew), rulerH});
   pass.place(*s.rulerView, {gx, r.y, gw, rulerH});
   pass.place(*s.keysView, {ex, notesY, std::min(keysW, ew), notesH});
@@ -195,6 +212,15 @@ bool ClipView::fold() const noexcept { return state_->fold(); }
 void ClipView::setFold(bool on) { state_->setFold(on); }
 bool ClipView::scaleHighlight() const noexcept { return state_->scaleHighlight(); }
 void ClipView::setScaleHighlight(bool on) { state_->setScaleHighlight(on); }
+bool ClipView::toggleHelp() {
+  const IRect over = state_->noteArea ? state_->noteArea->rect() : rect();
+  const roll::RollHelpPopover* open = roll::toggleRollHelp(*this, ctx_, over, [this, alive = std::weak_ptr<bool>(alive_)] {
+    if (alive.lock()) help_->setOn(false);
+  });
+  help_->setOn(open != nullptr);
+  return open != nullptr;
+}
+bool ClipView::helpOpen() const { return roll::openRollHelpPopover(*this) != nullptr; }
 bool ClipView::showChance() const noexcept { return state_->showChance(); }
 void ClipView::setShowChance(bool on) { state_->setShowChance(on); }
 roll::RowLayout ClipView::scaleLayout() const noexcept { return state_->scaleLayout(); }

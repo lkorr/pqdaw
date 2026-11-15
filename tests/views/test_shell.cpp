@@ -486,7 +486,7 @@ TEST_CASE("render: shell over tests/views/fixtures/empty matches the golden imag
   MESSAGE("shell: " << pq::ui::test::describe(d));
 }
 
-TEST_CASE("shell + KB.1: the computer keyboard button at the top right (click, M, its menu, the readout and tooltip)") {
+TEST_CASE("shell + KB.1: the computer keyboard button at the top right (click, M does nothing (KB.help), its action, its menu, the readout and tooltip)") {
   Fixture f;
   const std::string kKb = "main/control-bar/computer-keyboard";
   auto& btn = f.get<shell::TransportButton>(kKb);
@@ -494,22 +494,29 @@ TEST_CASE("shell + KB.1: the computer keyboard button at the top right (click, M
   ComputerKeyboard& kb = f.ctx.computerKeyboard();
   CHECK_FALSE(btn.on());
   CHECK(readout.text().empty());
-  CHECK(btn.tooltip() == "Computer MIDI Keyboard (M): Piano (12 degrees)");
+  CHECK(btn.tooltip() == "Computer MIDI Keyboard: Piano (12 degrees)");
   CHECK(btn.info().body.find("W E T Y U O P") != std::string::npos);
   // At the right end of the bar (right of the grid readout).
   const IRect bar = f.get<Widget>("main/control-bar").rect();
   CHECK(btn.rect().right() > f.get<Widget>("main/control-bar/grid").rect().right());
   CHECK(bar.right() - f.get<Widget>("main/control-bar/computer-keyboard-menu").rect().right() <= 12);
-  // A click: on (the same state as M), lit, the readout.
+  // KB.help: M is not bound any more: the key leaves the keyboard off (and, once on, on).
+  CHECK(f.d.press("M") == KeyResult::Unhandled);
+  CHECK_FALSE(kb.active());
+  CHECK_FALSE(btn.on());
+  // A click: on, lit, the readout.
   f.d.click(f.d.center(kKb));
   CHECK(kb.active());
   CHECK(btn.on());
   CHECK(readout.text() == "E0 V100");
-  f.d.press("M");
+  CHECK(f.d.press("M") == KeyResult::Unhandled);
+  CHECK(kb.active());
+  // The action (the button's switch; a user keymap may bind it) and a second click turn it off / on again.
+  REQUIRE(f.ctx.actions().invoke(f.ctx.actions().find("keyboard.toggleComputerMidi")));
   CHECK_FALSE(kb.active());
   CHECK_FALSE(btn.on());
   CHECK(readout.text().empty());
-  f.d.press("M");
+  f.d.click(f.d.center(kKb));
   CHECK(btn.on());
   // The arrow: 1Row / Continuous, Equave ▸, Velocity ▸.
   f.d.click(f.d.center(kKb + "-menu"));

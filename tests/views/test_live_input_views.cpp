@@ -64,6 +64,8 @@ struct Fixture {
     REQUIRE(e.ok());
     REQUIRE(ctx.store().dispatch(e->command).ok());
   }
+  // KB.help: the computer MIDI keyboard has no default key (M until then): a click on its control-bar button.
+  void toggleKeyboard() { d.click(d.center("main/control-bar/computer-keyboard")); }
   Vec2 centre(const Widget& w) const {
     const IRect r = w.rect();
     return {static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)};
@@ -85,15 +87,18 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("computer keyboard: M toggles it; letters play degrees, a release ends its own note, Z X C V move it") {
+TEST_CASE("computer keyboard: its button toggles it (M does nothing: KB.help); letters play degrees, a release ends its own note, Z X C V move it") {
   Fixture f;
   f.armOnly("Drums");  // KB.1: the keyboard plays the armed 12-EDO track: Live's piano layout
   ComputerKeyboard& kb = f.ctx.computerKeyboard();
   f.d.keyDown('a');  // off: no note
   f.d.keyUp('a');
   CHECK(f.keys().empty());
-  f.d.keyDown('m');
+  f.d.keyDown('m');  // KB.help: M is not bound any more
   f.d.keyUp('m');
+  CHECK_FALSE(kb.active());
+  CHECK(f.keys().empty());
+  f.toggleKeyboard();  // the control bar's button
   CHECK(kb.active());
   CHECK(f.ctx.status().find("Computer MIDI Keyboard on") != std::string::npos);
   f.d.keyDown('a');
@@ -125,8 +130,14 @@ TEST_CASE("computer keyboard: M toggles it; letters play degrees, a release ends
   f.d.keyDown('s', mod::kCtrl);
   f.d.keyUp('s', mod::kCtrl);
   CHECK(f.keys().size() == before);
-  // M again: off, and every held note (; and W) ends.
+  // M does nothing while it is on either (it plays no note: its place in the layout is free).
+  const size_t beforeM = f.keys().size();
   f.d.keyDown('m');
+  f.d.keyUp('m');
+  CHECK(kb.active());
+  CHECK(f.keys().size() == beforeM);
+  // The button again: off, and every held note (; and W) ends.
+  f.toggleKeyboard();
   CHECK_FALSE(kb.active());
   CHECK(kb.heldKeys() == 0);
   const auto k = f.keys();
@@ -313,7 +324,7 @@ TEST_CASE("KB.1 computer keyboard: 12 degrees per equave play Live's piano layou
   // the others.
   const std::vector<uint8_t> natural = roll::defaultHighlightScale(tuning::Tuning{});  // 12-EDO
   REQUIRE(natural.size() == 12);
-  f.d.press("M");
+  f.toggleKeyboard();
   REQUIRE(kb.active());
   int32_t last = -1;
   for (const char c : std::string_view("asdfghjkl;")) {
@@ -351,7 +362,7 @@ TEST_CASE("KB.1 computer keyboard: other sizes play the mos-explorer layout (1Ro
   ComputerKeyboard& kb = f.ctx.computerKeyboard();
   f.armOnly("Pad");  // a private 22-EDO
   CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{false, 22});
-  f.d.press("M");
+  f.toggleKeyboard();
   REQUIRE(kb.active());
   CHECK(kb.scaleMode() == ComputerKeyboard::ScaleMode::OneRow);
   SUBCASE("1Row over 22-EDO: home row = degrees, the bottom row an equave down, the upper one up, the number row two up") {
@@ -377,10 +388,13 @@ TEST_CASE("KB.1 computer keyboard: other sizes play the mos-explorer layout (1Ro
     f.d.press("PageDown");
     CHECK(kb.equave() == -3);
     CHECK_FALSE(play(f, 'z').has_value());  // equave −4: out of range, no note (and no view action)
-    // M still toggles (off: every held note ends).
+    // The button still toggles (off: every held note ends); KB.help: M itself does nothing any more.
     f.d.keyDown('a');
     CHECK(kb.heldKeys() == 1);
     f.d.press("M");
+    CHECK(kb.active());
+    CHECK(kb.heldKeys() == 1);
+    f.toggleKeyboard();
     CHECK_FALSE(kb.active());
     CHECK(kb.heldKeys() == 0);
   }
@@ -462,7 +476,7 @@ TEST_CASE("KB.2 computer keyboard: plays its track's live clip's tuning (the cli
   REQUIRE(f.ctx.store().dispatch(doc::SetClipTuning{{drums, a}, doc::TuningAssignment::mainTuning(t22)}).ok());
   // Nothing open, the start marker over no clip of these: the track's 12-EDO.
   CHECK(f.ctx.keyboardLayout() == ComputerKeyboard::Layout{true, 12});
-  f.d.press("M");
+  f.toggleKeyboard();
   REQUIRE(f.ctx.computerKeyboard().active());
   CHECK(play(f, 'f') == KN{0, 5});  // the piano layout
 
