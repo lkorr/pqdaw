@@ -1882,3 +1882,9 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   shorter and the next `` ` `` places a note that long; it stays until changed.
 - `Ctrl+CapsLock` several times in a row: macro mode toggles on every press and Caps Lock stays as it was. Not tried on
   a real keyboard by the agent (tests feed the guard the event orders; nothing was injected into the OS).
+
+## 2026-11-15 · bug-curve-render · bent notes clean at every zoom 👁
+- Roll: zoom far out over glides, drawn curves and vibratos: shapes stay the same, no spikes / fuzz / combs. A vibrato whose cycle gets shorter than ~8 px turns into a soft band (its envelope, fades included) around a solid line; zoom back in and the wave returns. Is the band's weight (45 % of the note colour) right, and is 8 px the right point to switch?
+- Arrangement / lane windows: bent notes in clip previews are smooth anti-aliased lines (no stair steps); make a track tall and zoom in to judge.
+- Look at: `tests/views/golden/pianoroll-curves-far.png`, `pianoroll-curves-mid.png`, `arrangement-curve-preview.png`.
+
