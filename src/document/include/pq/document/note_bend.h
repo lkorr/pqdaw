@@ -23,8 +23,9 @@
 // A note anchored to a vibrating note (pitch_resolve) takes its anchor's pitch WITHOUT the vibrato: an ornament is
 // not a pitch to tune to.
 // `in` / `out` are the bend TARGETS: where the neighbour (NoteBend::other) is relative to the note, in cents:
-// 1200 · log2(other's resolved Hz / the note's resolved Hz), both as pitch_resolve resolves them NOW (NotePitch::hz:
-// each note's pitch at its own start, without its own curve). Nothing is stored but the neighbour's id, so moving or
+// 1200 · log2(other's Hz / the note's resolved Hz), both as pitch_resolve resolves them NOW (the note's NotePitch::hz,
+// its pitch at its own start; the neighbour's pitch where the two notes meet, along its free curve and its warps:
+// NoteBendEnds, T7.16a). Nothing is stored but the neighbour's id, so moving or
 // retuning either note, or changing the tuning, moves the glide. A bend without a target — `other` is not in the clip,
 // or one of the two notes does not resolve — contributes nothing.
 //
@@ -43,17 +44,29 @@ namespace pq::doc {
 
 struct ClipPitches;  // pitch_resolve.h
 
-// What pitch_resolve records for a group member that has a written identity in a group with warps
-// (ClipPitches::warped, sorted by note id): the two pitches it moves between and where it starts in group ticks. Its
-// NotePitch::hz is the pitch at its start: writtenHz, jiHz, or the point of a glide between them.
+// What pitch_resolve records for a group member that has a written identity in a group with warps — or in a group
+// Back to Tuning, where its anchor too when that has one (model.h effectiveJiWarps) — (ClipPitches::warped, sorted by
+// note id): the two pitches it moves between and where it starts in group ticks. Its NotePitch::hz is the pitch at
+// its start: writtenHz, jiHz, or the point of a glide between them.
 struct NoteWarpState {
   NoteId note;
   JiGroupId group;
-  Ticks offset = 0;        // the note's start in group ticks (note.start − the group's start)
+  Ticks offset = 0;        // the note's start in group ticks (note.start − the anchor's start; may be negative)
   double jiHz = 0.0;       // anchor × ratio
   double writtenHz = 0.0;  // the written identity in the clip's tuning
   double cents = 0.0;      // 1200 · log2(writtenHz / jiHz)
   friend bool operator==(const NoteWarpState&, const NoteWarpState&) noexcept = default;
+};
+
+// T7.16a (M7 review M2): where a note's bends end, as pitch_resolve finds them (ClipPitches::bends, sorted by note
+// id): the neighbour's pitch at the tick the two notes meet — the note's start for bendIn, its end for bendOut,
+// clamped to the neighbour's span — along the neighbour's free curve and its group's warps (not its own bends or its
+// vibrato: one level, so two notes that bend into each other cannot recurse). 0 Hz: no such bend / unresolved.
+struct NoteBendEnds {
+  NoteId note;
+  NoteId inOther, outOther;  // the neighbours they were found for (a gesture's preview may name others)
+  double inHz = 0.0, outHz = 0.0;
+  friend bool operator==(const NoteBendEnds&, const NoteBendEnds&) noexcept = default;
 };
 
 // The targets of a note's two bends in cents relative to the note's own pitch; nullopt: that bend does nothing.
@@ -94,14 +107,19 @@ public:
   bool anyWarp() const noexcept { return !warped_.empty(); }
   // T7.14: the period in ticks of the note's vibrato; 0: it has none.
   double vibratoPeriod(NoteId note) const noexcept;
+  // T7.16a: where the note's bends end (NoteBendEnds); nullptr: none recorded.
+  const NoteBendEnds* bendEnds(NoteId note) const noexcept;
 
 private:
   std::vector<std::pair<uint32_t, double>> byId_;  // (note id, Hz; 0: unresolved), sorted by id
   std::vector<NoteWarpState> warped_;              // sorted by note id
   std::vector<std::pair<NoteId, double>> vibrato_;  // sorted by note id
+  std::vector<NoteBendEnds> bends_;                 // sorted by note id
 };
 
-// The targets of `c`'s bends from the clip's resolved pitches (see above) and its vibrato's period. O(log notes).
+// The targets of `c`'s bends from the clip's resolved pitches (see above: the neighbour's pitch where the two notes
+// meet, NotePitchIndex::bendEnds, when it was recorded for that neighbour; else its resolved pitch) and its vibrato's
+// period. O(log notes).
 NoteBendTargets noteBendTargets(const NoteCurves& c, const NotePitchIndex& pitches) noexcept;
 // The same from Hz values the caller has: the note's own and its neighbours' (nullopt / not positive: no target).
 // The vibrato period is left 0 (the caller sets it when it wants the vibrato evaluated).

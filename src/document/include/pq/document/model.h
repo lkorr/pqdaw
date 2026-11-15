@@ -242,14 +242,21 @@ struct ClipFundamental {
 //
 // WARPS (R4): "play a tempered chord, then warp it into JI" and back. A member may remember what it was WRITTEN as
 // before it was tuned (NoteClip::written: Degree, Cents or a reference-anchored Ratio). A group's warps are points in
-// GROUP TICKS — ticks from the group's start, the earliest start among its anchor and members (groupSpan) — sorted,
-// alternating in direction and not overlapping:
+// GROUP TICKS — ticks from the ANCHOR's start (T7.16a, M7 review M7: so deleting, splitting off or resizing any other
+// note never moves them; they move with the anchor, and a builder that changes the anchor shifts them by the same
+// amount); they may be negative (a member that starts before the anchor) — sorted, alternating in direction and not
+// overlapping:
 //   toJi    before `at` such a member sounds at its written pitch; it glides over [at, at + glide] (shape) and sounds
 //           at its JI pitch (anchor × ratio) from at + glide on;
 //   !toJi   the reverse: JI before `at`, written from at + glide on.
 // No warps: JI throughout. Members without a written identity and the anchor do not move. A note that spans a warp
 // glides mid-note; a note that starts after it starts on the target pitch (pitch_resolve.h resolves a note's Hz at its
 // start with the warp state there; note_bend.h is the ONE evaluation of the curve from there on).
+//
+// TUNED (T7.16a, M7 review M1 / M3): Tune to JI is a state the group keeps. `tuned` false ("Back to Tuning"): every
+// note of the group that has a written identity — the members, and an anchor that has one (it was a tuned member made
+// the anchor by "Is Harmonic") — sounds as written throughout; the reading (the members' ratios) and the warps stay
+// stored and come back with `tuned` true. effectiveJiWarps is what the evaluation reads.
 inline constexpr uint32_t kMaxJiWarps = 1024;  // per group
 inline constexpr uint32_t kMaxCurvePoints = 1u << 16;  // per note curve
 inline constexpr float kMaxCurveCents = 1200.0f * 16;  // |value| of a note-curve point
@@ -269,7 +276,7 @@ struct GlideShape {
 double glideShapeValue(const GlideShape& shape, double u) noexcept;
 
 struct JiWarp {
-  Ticks at = 0;     // group ticks, 0 … kMaxTicks: where the glide starts
+  Ticks at = 0;     // group ticks (from the anchor's start), −kMaxTicks … kMaxTicks: where the glide starts
   Ticks glide = 0;  // ≥ 0; 0 = a jump at `at`. The glide ends at at + glide, at or before the next warp's `at`
   GlideShape shape;
   bool toJi = true;  // true: written → JI; false: JI → written
@@ -280,11 +287,15 @@ struct JiGroup {
   NoteId anchor;       // a note of the clip (any identity); the anchor of this group only
   uint32_t index = 1;  // the harmonic the anchor is declared to be, 1 … kMaxHarmonicIndex
   std::vector<JiWarp> warps;  // ≤ kMaxJiWarps; `at` strictly ascending, toJi alternating, glides not overlapping
+  bool tuned = true;          // false: Back to Tuning (see TUNED above); the warps are kept but not applied
   friend bool operator==(const JiGroup&, const JiGroup&) noexcept = default;
 };
+// The warps the evaluation applies: the group's own, or — not tuned — one jump to the written state at group tick
+// −kMaxTicks (written throughout). RT-safe.
+std::span<const JiWarp> effectiveJiWarps(const JiGroup& g) noexcept;
 // What a tuned member was written as (Degree, Cents or a reference-anchored Ratio), so "Back to Tuning" restores it
-// exactly and a warp knows the tempered pitch. Only records of notes that are members of a group mean anything; the
-// builders drop the others.
+// exactly and a warp knows the tempered pitch. Only records of notes that are members — or anchors — of a group mean
+// anything; the builders drop the others.
 struct NoteWritten {
   NoteId note;
   tuning::PitchId written;
@@ -410,10 +421,11 @@ struct GroupFundamental {
   tuning::Rational fundamental{1};
 };
 std::optional<GroupFundamental> groupFundamental(const NoteClip& clip, const JiGroup& group) noexcept;
-// A group's span in content ticks: [earliest start, latest end) over its anchor and members; warps count from
-// `start`. nullopt: the anchor is not a note of the clip. O(notes).
+// A group's span in content ticks: [earliest start, latest end) over its anchor and members; `origin` is the anchor's
+// start, where its warps count from. nullopt: the anchor is not a note of the clip. O(notes).
 struct GroupSpan {
   Ticks start = 0, end = 0;
+  Ticks origin = 0;
 };
 std::optional<GroupSpan> groupSpan(const NoteClip& clip, const JiGroup& group) noexcept;
 // How far a member with a written identity is from its JI pitch at group tick `tick`: 0 = JI, 1 = written, between

@@ -109,7 +109,7 @@ Ticks vibratoStop(const NoteVibrato& v, Ticks noteLength) noexcept {
   return v.end > 0 ? std::min(v.end, L) : L;
 }
 
-NotePitchIndex::NotePitchIndex(const ClipPitches& pitches) : warped_(pitches.warped), vibrato_(pitches.vibrato) {
+NotePitchIndex::NotePitchIndex(const ClipPitches& pitches) : warped_(pitches.warped), vibrato_(pitches.vibrato), bends_(pitches.bends) {
   byId_.reserve(pitches.notes.size());
   for (const NotePitch& np : pitches.notes) byId_.emplace_back(np.note.value, np.hz ? *np.hz : 0.0);
   std::sort(byId_.begin(), byId_.end());
@@ -125,7 +125,7 @@ NoteWarp NotePitchIndex::warp(const NoteClip& clip, NoteId note) const noexcept 
   const NoteWarpState* s = warped_.empty() ? nullptr : warped(note);
   if (s == nullptr) return {};
   const JiGroup* g = findJiGroup(clip, s->group);
-  return g != nullptr ? NoteWarp{g->warps, s->offset, s->cents} : NoteWarp{};
+  return g != nullptr ? NoteWarp{effectiveJiWarps(*g), s->offset, s->cents} : NoteWarp{};
 }
 
 double NotePitchIndex::vibratoPeriod(NoteId note) const noexcept {
@@ -148,11 +148,24 @@ NoteBendTargets noteBendTargets(const NoteCurves& c, std::optional<double> noteH
   return t;
 }
 
+const NoteBendEnds* NotePitchIndex::bendEnds(NoteId note) const noexcept {
+  const auto it = std::lower_bound(bends_.begin(), bends_.end(), note,
+                                   [](const NoteBendEnds& s, NoteId id) noexcept { return s.note < id; });
+  return it != bends_.end() && it->note == note ? &*it : nullptr;
+}
+
 NoteBendTargets noteBendTargets(const NoteCurves& c, const NotePitchIndex& pitches) noexcept {
   NoteBendTargets t;
-  if (c.bendIn.set() || c.bendOut.set())
-    t = noteBendTargets(c, pitches.hz(c.note), c.bendIn.set() ? pitches.hz(c.bendIn.other) : std::nullopt,
-                        c.bendOut.set() ? pitches.hz(c.bendOut.other) : std::nullopt);
+  if (c.bendIn.set() || c.bendOut.set()) {
+    const NoteBendEnds* e = pitches.bendEnds(c.note);
+    auto far = [&](const NoteBend& b, NoteId found, double hz) -> std::optional<double> {
+      if (!b.set()) return std::nullopt;
+      if (e != nullptr && found == b.other) return hz > 0.0 ? std::optional<double>(hz) : std::nullopt;
+      return pitches.hz(b.other);  // not recorded for this neighbour (a gesture's preview): its resolved pitch
+    };
+    t = noteBendTargets(c, pitches.hz(c.note), far(c.bendIn, e ? e->inOther : NoteId{}, e ? e->inHz : 0.0),
+                        far(c.bendOut, e ? e->outOther : NoteId{}, e ? e->outHz : 0.0));
+  }
   if (c.vibrato.set()) t.vibratoPeriod = pitches.vibratoPeriod(c.note);
   return t;
 }

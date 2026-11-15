@@ -359,8 +359,37 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
     NoteCurveList curves;
     JiGroupList jiGroups;     // T7.13
     NoteWrittenList written;
-    for (const NoteClip* c : merge) {
-      forEachClipSegment(*c, c->start, clipEnd(*c), [&](const ClipSegment& seg) {
+    const std::optional<TrackPath> path = findTrack(p, g.track->id);
+    for (const NoteClip* clip : merge) {
+      bool anchored = false;  // a note of the clip is anchored to another note
+      if (path)
+        for (const Note& n : clip->notes) anchored = anchored || noteAnchorOf(n.pitch).valid();
+      forEachClipSegment(*clip, clip->start, clipEnd(*clip), [&](const ClipSegment& seg) {
+        // T7.16a (M7 review H6, the T7.11a rule): a note of this pass anchored to a note the pass leaves out (a hidden
+        // anchor before the start marker, a member outside the loop) keeps its pitch — re-anchored exactly, a group
+        // promoting a member — in a working copy of what the pass plays.
+        const NoteClip* c = clip;
+        NoteClip visible;
+        if (anchored) {
+          std::vector<Note> in;
+          for (auto [it, end] = clip->notes.range(seg.contentFrom, seg.contentTo); it != end; ++it) in.push_back(*it);
+          if (in.size() != clip->notes.size()) {
+            std::vector<NoteId> kept, gone;
+            for (const Note& n : in) kept.push_back(n.id);
+            std::sort(kept.begin(), kept.end());
+            for (const Note& n : clip->notes)
+              if (!std::binary_search(kept.begin(), kept.end(), n.id)) gone.push_back(n.id);
+            std::sort(gone.begin(), gone.end());
+            Reanchored r = reanchorWithout(p, *path, *clip, gone);
+            if (!r.empty()) {
+              visible = withNotes(*clip, seqOf(std::move(in)));
+              applyReanchored(visible, std::move(r));
+              pruneCurves(visible);
+              pruneJi(visible);
+              c = &visible;
+            }
+          }
+        }
         NoteIdMap noteMap;  // T7.11a: this pass's notes that got fresh ids (old → new)
         std::vector<NoteId> pass;  // T7.13: the source ids of this pass's notes (a group needs its anchor in the pass)
         const size_t firstCurve = curves.size(), firstNote = notes.size();

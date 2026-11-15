@@ -232,7 +232,7 @@ Status checkJiGroup(const JiGroup& g) {
   if (g.warps.size() > kMaxJiWarps) return invalid("a JI group has too many warps");
   for (size_t i = 0; i < g.warps.size(); ++i) {
     const JiWarp& w = g.warps[i];
-    if (w.at < 0 || w.at > kMaxTicks) return invalid("JI warp out of range");
+    if (w.at < -kMaxTicks || w.at > kMaxTicks) return invalid("JI warp out of range");  // from the anchor's start
     if (w.glide < 0 || w.glide > kMaxTicks) return invalid("JI warp glide out of range");
     PQ_DOC_TRY(checkGlideShape(w.shape));
     if (i == 0) continue;

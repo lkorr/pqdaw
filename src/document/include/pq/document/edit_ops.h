@@ -411,9 +411,12 @@ std::optional<tuning::PitchId> stepPitch(const tuning::PitchId& pitch, int32_t s
 // step keeps its pitch (it still moves in time).
 // Both step reference-anchored Ratio notes on the clip's virtual fundamental (doc::virtualFundamental) and record in
 // the same Batch (SetClipFundamental) the fundamental each stepped note was on when that is finer than its new
-// reduced denominator (a HarmonicStep), so 5/4 → 3/2 → 7/4 keeps 1/4 (T3.6-fix1, Q40). T7.13: a member of a JI group
-// steps on its group's harmonics; a member whose pitch a step changes loses its written identity (it is no longer
-// the note that was written; SetNotesWritten in the same Batch).
+// reduced denominator (a HarmonicStep), so 5/4 → 3/2 → 7/4 keeps 1/4 (T3.6-fix1, Q40). T7.16a (M7 review H2 / M4):
+// JI groups move as chords — a member whose anchor moves too keeps its ratio (it follows the anchor) and its written
+// identity steps by the same amount, as does an anchor's own; a member stepped without its anchor goes to the next
+// harmonic of its group and is re-written as the tuning's nearest step to its new pitch (a group Back to Tuning: it
+// is the tempered note it sounds as, its written identity stepped, and leaves the group). SetNotesWritten in the same
+// Batch.
 EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps = 0,
                      const tuning::Edo* displayGrid = nullptr);
 // Up/Down (unit Grid) and Shift+Up/Down (unit Equave), using the clip's effective tuning.
@@ -471,18 +474,25 @@ double ratioSnapTolerance(const tuning::Tuning& t, double cents) noexcept;
 EditResult makeJiGroup(const Project& p, IdSource& ids, ClipRef clip, NoteKey anchorNote, uint32_t index);
 // T7.14 ("Is Harmonic N" on a note that already is a MEMBER; QUESTIONS Q297 b): `member` becomes the group's anchor
 // with index `index`. Every note keeps the pitch it has in JI: the member is frozen at its JI pitch (the exact
-// reference-anchored Ratio when the old anchor's pitch is one, else Cents; its written identity is dropped), the old
-// anchor becomes a member (the inverse ratio; what it was — Degree / Cents / reference Ratio — is remembered as its
-// written identity, so Back to Tuning restores it) and the other members are re-expressed against the new anchor
-// (ratio / the member's ratio). The group keeps its id and warps; the numbers re-derive (groupHarmonics). Errors:
+// reference-anchored Ratio when the old anchor's pitch is one, else Cents; it keeps its written identity, which a
+// group Back to Tuning plays: T7.16a M4), the old anchor becomes a member (the inverse ratio; what it was — Degree /
+// Cents / reference Ratio — is remembered as its written identity, so Back to Tuning restores it) and the other
+// members are re-expressed against the new anchor (ratio / the member's ratio). The group keeps its id and its warps
+// (where they are in the clip: shifted to count from the new anchor); the numbers re-derive (groupHarmonics). Errors:
 // NotFound (the group, the note), InvalidArgument (the index, the note is not a member of the group, a ratio out of
 // range, a pitch that does not resolve).
 EditResult reanchorJiGroup(const Project& p, ClipRef clip, JiGroupId group, NoteKey member, uint32_t index);
-// Removes the group; its members keep sounding where they are (their JI pitch): the exact reference-anchored Ratio
-// when the anchor's pitch is one, else Cents. Their written identities are dropped.
+// Removes the group; its members keep sounding where they are: in JI (a tuned group) the exact reference-anchored
+// Ratio when the anchor's pitch is one, else Cents; in a group Back to Tuning what they are written as (the anchor
+// too). Their written identities are dropped.
 EditResult removeJiGroup(const Project& p, ClipRef clip, JiGroupId group);
-// "Back to Tuning": every member with a written identity gets it back, exactly (the others as removeJiGroup), and
-// the group is removed.
+// T7.16a (M7 review M1 / M3): Tune to JI as a state the group keeps (model.h JiGroup::tuned). tuned = false ("Back
+// to Tuning"): every note of the groups with a written identity sounds as written, exactly; a member without one
+// (drawn on the guides, typed as a proportion, added at a ratio) is given the tuning's nearest step to its JI pitch as
+// its written identity; the reading (the members' ratios, the index) and the warps stay. tuned = true: the same
+// reading and warps sound again. Edit::jiGroups = the groups, Edit::notes = their notes. Errors: NotFound.
+EditResult setJiGroupsTuned(const Project& p, ClipRef clip, std::span<const JiGroupId> groups, bool tuned);
+// setJiGroupsTuned(p, clip, {group}, false).
 EditResult untuneJiGroup(const Project& p, ClipRef clip, JiGroupId group);
 
 // A reading of a chord as a proportion: one term per distinct pitch, ascending (the lowest first), in lowest terms.
@@ -521,11 +531,17 @@ Result<std::vector<JiCandidate>> tuneToJiCandidates(const Project& p, ClipRef cl
 // and remembers what it was written as (NoteClip::written; a note that already had a written identity keeps it, a
 // note that already was an exact ratio to the anchor has none and stays as it is). The group's index is the anchor's
 // term. The lowest note's own group, when it has one, is the group (its id and warps are kept: choosing another
-// proportion re-tunes it). Without options.proportion: the best candidate, else each note's simplest ratio within
-// ratioSnapTolerance. Errors: NotFound, InvalidArgument (no notes, a proportion of another size or not ascending, a
-// lowest term beyond kMaxHarmonicIndex, no proportion found).
+// proportion re-tunes it; it is tuned again, T7.16a). Without options.proportion: the best candidate, else each
+// note's simplest ratio within ratioSnapTolerance. Two notes on one chain of note anchors keep their exact ratio (M9).
+// Errors: NotFound, InvalidArgument (no notes, a proportion of another size or not ascending, a lowest term beyond
+// kMaxHarmonicIndex, no proportion found).
 EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
                     const TuneToJiOptions& options = {});
+// T7.16a (M7 review M6): several chords at once (Ctrl+A over a progression), one undo step. Each chord of two or more
+// notes that are not all of one group is tuned as tuneToJi with its best reading; a chord whose notes all belong to
+// one group Back to Tuning tunes that group again (its own reading and warps, setJiGroupsTuned); one whose notes all
+// belong to one tuned group stays as it is. The chords' notes must be distinct.
+EditResult tuneChordsToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<const std::vector<NoteKey>> chords);
 
 // Where a new member goes: an exact ratio to the anchor, or (harmonic > 0) that harmonic of the group as it is
 // numbered now (groupHarmonics: harmonic / the anchor's number).
@@ -547,7 +563,8 @@ EditResult walkJiGroup(const Project& p, ClipRef clip, JiGroupId group, int32_t 
 inline constexpr size_t kMaxProportionTerms = 64;
 EditResult proportionNotes(const Project& p, IdSource& ids, ClipRef clip, Ticks start, Ticks length,
                            const tuning::PitchId& bottomPitch, std::span<const int64_t> terms, float velocity = 100.0f);
-// Replaces the group's warps (model.h JiWarp: group ticks, strictly ascending, alternating, glides not overlapping).
+// Replaces the group's warps (model.h JiWarp: group ticks from the anchor's start, strictly ascending, alternating,
+// glides not overlapping).
 EditResult setJiWarps(const Project& p, ClipRef clip, JiGroupId group, std::vector<JiWarp> warps);
 
 // Sets (empty: removes) a note's pitch curve: cents offsets over ticks from the note's start (NoteCurves).

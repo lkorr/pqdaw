@@ -227,15 +227,31 @@ TEST_CASE("tune to JI: a 12-EDO major triad becomes 4:5:6 — the lowest note's 
   // Tuning again changes nothing (the notes are read as they were written).
   CHECK(ops::tuneToJi(f.doc(), ids, f.ref, JiFix::keysOf(triad))->empty());
 
-  // Back to Tuning: the written Degree identities, bit for bit; the group is gone; one undo step.
+  // Back to Tuning (T7.16a, M7 review M1: a state the group keeps): every member sounds as written, bit for bit; the
+  // reading (ratios, index) and the written identities stay; one undo step.
   const Snapshot wasTuned = commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, id));
-  CHECK(f.noteOf(e.id).pitch == PitchId::fromDegree(4));
-  CHECK(f.noteOf(g.id).pitch == PitchId::fromDegree(7));
+  CHECK_FALSE(f.group(id).tuned);
+  CHECK(f.group(id).index == 4);
+  CHECK(f.noteOf(e.id).pitch == PitchId::fromRatio(Rational(5, 4), AnchorKind::Note, c.id.value));
+  CHECK(f.hz(c.id) == hzC);
   CHECK(f.hz(e.id) == hzE);
   CHECK(f.hz(g.id) == hzG);
+  CHECK(notesWrittenOf(f.clip()).size() == 2);
+  f.roundTrips();  // "tuned": false is saved
+  // The same toggle again: the same reading, exactly; and Remove JI Group on a group Back to Tuning keeps what sounds.
+  const Snapshot untuned = commit(f.store, ops::setJiGroupsTuned(f.doc(), f.ref, std::vector<JiGroupId>{id}, true));
+  CHECK(f.group(id).tuned);
+  CHECK(f.hz(e.id) == hzC * 1.25);
+  CHECK(f.hz(g.id) == hzC * 1.5);
+  REQUIRE(f.store.undo());
+  CHECK(f.store.current() == untuned);
+  commit(f.store, ops::removeJiGroup(f.doc(), f.ref, id));
+  CHECK(f.noteOf(e.id).pitch == PitchId::fromDegree(4));
+  CHECK(f.noteOf(g.id).pitch == PitchId::fromDegree(7));
   CHECK(f.clip().groups == nullptr);
   CHECK(f.clip().written == nullptr);
   CHECK(f.clip() == *written->tracks.back()->clips[0].clip);  // the clip as it was written
+  REQUIRE(f.store.undo());
   REQUIRE(f.store.undo());
   CHECK(f.store.current() == wasTuned);
 }
@@ -328,6 +344,7 @@ TEST_CASE("tune to JI: the candidates — a dominant seventh reads 4:5:6:7 befor
     const Note seventh = f.add(0, PitchId::fromRatio(Rational(7, 4)));   // exact: 7/4 in every reading
     const Note third = f.add(0, PitchId::fromDegree(4));                 // tempered
     const std::vector<NoteKey> keys = {keyOf(root), keyOf(seventh), keyOf(third)};
+    const double thirdHz = f.hz(third.id);
     auto cands = ops::tuneToJiCandidates(f.doc(), f.ref, keys);
     REQUIRE(cands.ok());
     REQUIRE(!cands->empty());
@@ -336,10 +353,15 @@ TEST_CASE("tune to JI: the candidates — a dominant seventh reads 4:5:6:7 befor
     auto tuned = ops::tuneToJi(f.doc(), ids, f.ref, keys);
     commit(f.store, tuned);
     CHECK(f.noteOf(seventh.id).pitch == PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, root.id.value));
-    CHECK(findNoteWritten(f.clip(), seventh.id) == nullptr);  // nothing to remember: it was exact
+    // T7.16a: the exact one remembers it too (Back to Tuning is a state: it plays what is written).
+    CHECK(findNoteWritten(f.clip(), seventh.id)->written == PitchId::fromRatio(Rational(7, 4)));
     CHECK(findNoteWritten(f.clip(), third.id)->written == PitchId::fromDegree(4));
-    // Back to Tuning: the tempered note is a degree again, the exact one an exact reference ratio.
+    const double seventhHz = f.hz(seventh.id);
+    // Back to Tuning: the tempered note sounds as its degree again, the exact one at its exact reference ratio.
     commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, tuned->jiGroups[0]));
+    CHECK(f.hz(third.id) == thirdHz);
+    CHECK(f.hz(seventh.id) == seventhHz);
+    commit(f.store, ops::removeJiGroup(f.doc(), f.ref, tuned->jiGroups[0]));
     CHECK(f.noteOf(third.id).pitch == PitchId::fromDegree(4));
     CHECK(f.noteOf(seventh.id).pitch == PitchId::fromRatio(Rational(7, 4)));
   }
@@ -457,7 +479,7 @@ TEST_CASE("warps: a triad written in 12-EDO sounds tempered before a toJi warp, 
   CHECK(f.pitches(f.clip()).warped.empty());
 }
 
-TEST_CASE("warps: group ticks count from the group's earliest note; shapes; a note anchored to a warped member; validation") {
+TEST_CASE("warps: group ticks count from the anchor's start (T7.16a, M7 review M7); shapes; a note anchored to a warped member; validation") {
   JiFix f;
   IdSource& ids = f.store.ids();
   const std::vector<Note> triad = f.chord({0, 4, 7}, 3 * kPpq, 4 * kPpq);
@@ -493,18 +515,31 @@ TEST_CASE("warps: group ticks count from the group's earliest note; shapes; a no
   const NoteCurves* nc = findNoteCurves(f.clip(), triad[1].id);
   REQUIRE(nc != nullptr);
   CHECK(noteCurveCents(nc, 4 * kPpq, {}, w, 3.0 * kPpq) == doctest::Approx(25.0 - D).epsilon(1e-12));
-  // Moving the group's earliest note moves its start, and the warps with it.
+  // T7.16a (M7 review M7): group ticks count from the ANCHOR's start. Moving the anchor moves the warps with it …
   commit(f.store, ops::moveNotes(f.doc(), f.ref, std::vector<NoteKey>{keyOf(f.noteOf(triad[0].id))}, -kPpq));
   CHECK(groupSpan(f.clip(), f.group(id))->start == 2 * kPpq);
+  CHECK(groupSpan(f.clip(), f.group(id))->origin == 2 * kPpq);
   CHECK(NotePitchIndex(f.pitches(f.clip())).warped(triad[1].id)->offset == kPpq);
+  // … any other note leaving or moving earlier does not: a member moved before the anchor starts at a negative tick.
+  commit(f.store, ops::moveNotes(f.doc(), f.ref, std::vector<NoteKey>{keyOf(f.noteOf(triad[2].id))}, -3 * kPpq));
+  CHECK(groupSpan(f.clip(), f.group(id))->start == 0);
+  CHECK(groupSpan(f.clip(), f.group(id))->origin == 2 * kPpq);
+  CHECK(NotePitchIndex(f.pitches(f.clip())).warped(triad[1].id)->offset == kPpq);
+  CHECK(NotePitchIndex(f.pitches(f.clip())).warped(triad[2].id)->offset == -2 * kPpq);
+  commit(f.store, ops::deleteNotes(f.doc(), f.ref, std::vector<NoteKey>{keyOf(f.noteOf(triad[2].id))}));
+  CHECK(f.group(id).warps[0].at == kPpq);
+  CHECK(NotePitchIndex(f.pitches(f.clip())).warped(triad[1].id)->offset == kPpq);
+  REQUIRE(f.store.undo());
+  REQUIRE(f.store.undo());
 
   // Validation: ascending, alternating, no glide into the next warp, ranges, shapes.
   auto refused = [&](std::vector<JiWarp> warps) { CHECK_FALSE(ops::setJiWarps(f.doc(), f.ref, id, std::move(warps)).ok()); };
   refused({JiWarp{0, 0, GlideShape{}, true}, JiWarp{0, 0, GlideShape{}, false}});        // not ascending
   refused({JiWarp{0, 0, GlideShape{}, true}, JiWarp{kPpq, 0, GlideShape{}, true}});      // not alternating
   refused({JiWarp{0, kPpq, GlideShape{}, true}, JiWarp{kPpq - 1, 0, GlideShape{}, false}});  // inside the glide before it
-  refused({JiWarp{-1, 0, GlideShape{}, true}});
+  refused({JiWarp{-kMaxTicks - 1, 0, GlideShape{}, true}});  // (negative group ticks are fine: before the anchor)
   refused({JiWarp{0, -1, GlideShape{}, true}});
+  CHECK(ops::setJiWarps(f.doc(), f.ref, id, {JiWarp{-kPpq, 0, GlideShape{}, true}}).ok());
   refused({JiWarp{0, 0, GlideShape{GlideShape::Bezier, 1.5f, 0.0f, 0.5f, 1.0f}, true}});
   CHECK(ops::setJiWarps(f.doc(), f.ref, id, {JiWarp{0, kPpq, GlideShape{}, false}, JiWarp{kPpq, 0, GlideShape{}, true}}).ok());
   CHECK_FALSE(ops::setJiWarps(f.doc(), f.ref, JiGroupId{999999}, {}).ok());
@@ -600,7 +635,7 @@ TEST_CASE("proportionNotes: 8:9:10:12:15 is five regular notes in one group, the
   f.roundTrips();
 }
 
-TEST_CASE("steps: Up / Down on a member is the next / previous harmonic of its group; a stepped member forgets what it was written as") {
+TEST_CASE("steps: Up / Down on a member is the next / previous harmonic of its group; a stepped member is re-written as the nearest step (M4)") {
   JiFix f;
   IdSource& ids = f.store.ids();
   const std::vector<Note> triad = f.chord({0, 4, 7});
@@ -611,10 +646,14 @@ TEST_CASE("steps: Up / Down on a member is the next / previous harmonic of its g
   commit(f.store, ops::transposeNotes(f.doc(), f.ref, g, 1, ops::StepUnit::Grid));  // 6 → 7; one undo step
   CHECK(f.noteOf(triad[2].id).pitch == PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, triad[0].id.value));
   CHECK(f.harmonics(id).proportion == terms({4, 5, 7}));
-  CHECK(findNoteWritten(f.clip(), triad[2].id) == nullptr);  // no longer the note that was written
-  CHECK(findNoteWritten(f.clip(), triad[1].id) != nullptr);
+  // T7.16a (M7 review M4): re-written as the tuning's nearest step to its new pitch (7/4 = 968.8 ¢: the minor seventh),
+  // so Back to Tuning puts it on a row.
+  REQUIRE(findNoteWritten(f.clip(), triad[2].id) != nullptr);
+  CHECK(findNoteWritten(f.clip(), triad[2].id)->written == PitchId::fromDegree(10));
+  CHECK(findNoteWritten(f.clip(), triad[1].id)->written == PitchId::fromDegree(4));
   commit(f.store, ops::moveNotes(f.doc(), f.ref, g, 0, -3));  // a vertical drag: 7 → 4
   CHECK(f.noteOf(triad[2].id).pitch == PitchId::fromRatio(Rational(1), AnchorKind::Note, triad[0].id.value));
+  CHECK(findNoteWritten(f.clip(), triad[2].id)->written == PitchId::fromDegree(0));
   // The anchor steps as its own identity does; the members follow it.
   const NoteKey c[] = {keyOf(f.noteOf(triad[0].id))};
   commit(f.store, ops::transposeNotes(f.doc(), f.ref, c, 2, ops::StepUnit::Grid));
@@ -626,11 +665,214 @@ TEST_CASE("steps: Up / Down on a member is the next / previous harmonic of its g
   commit(f.store, moved);
   CHECK(findNoteWritten(f.clip(), triad[1].id) != nullptr);
   commit(f.store, ops::setNotesPitch(f.doc(), f.ref, moved->notes, PitchId::fromCents(400.0)));
-  CHECK(f.clip().written == nullptr);
+  CHECK(findNoteWritten(f.clip(), triad[1].id) == nullptr);
+  f.roundTrips();
+}
+
+TEST_CASE("steps (T7.16a, M7 review H2): Up / Shift+Up / a vertical drag on a whole tuned chord transpose the chord — the anchor steps, the members follow with their ratios, the written identities step with them") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const std::vector<Note> triad = f.chord({0, 4, 7});
+  const double hz[3] = {f.hz(triad[0].id), f.hz(triad[1].id), f.hz(triad[2].id)};
+  auto tuned = ops::tuneToJi(f.doc(), ids, f.ref, JiFix::keysOf(triad));
+  commit(f.store, tuned);
+  const JiGroupId id = tuned->jiGroups[0];
+  auto keys = [&] {
+    std::vector<NoteKey> k;
+    for (const Note& n : triad) k.push_back(keyOf(f.noteOf(n.id)));
+    return k;
+  };
+  auto ratiosKept = [&] {
+    CHECK(f.harmonics(id).proportion == terms({4, 5, 6}));
+    CHECK(f.hz(triad[1].id) == f.hz(triad[0].id) * 1.25);
+    CHECK(f.hz(triad[2].id) == f.hz(triad[0].id) * 1.5);
+  };
+  // Up: one step of the tuning.
+  commit(f.store, ops::transposeNotes(f.doc(), f.ref, keys(), 1, ops::StepUnit::Grid));
+  CHECK(f.noteOf(triad[0].id).pitch == PitchId::fromDegree(1));
+  ratiosKept();
+  CHECK(findNoteWritten(f.clip(), triad[1].id)->written == PitchId::fromDegree(5));
+  CHECK(findNoteWritten(f.clip(), triad[2].id)->written == PitchId::fromDegree(8));
+  // Shift+Up: an equave.
+  commit(f.store, ops::transposeNotes(f.doc(), f.ref, keys(), 1, ops::StepUnit::Equave));
+  CHECK(f.noteOf(triad[0].id).pitch == PitchId::fromDegree(1, 1));
+  ratiosKept();
+  CHECK(findNoteWritten(f.clip(), triad[2].id)->written == PitchId::fromDegree(8, 1));
+  // A vertical drag of the chord, two rows down (and a beat later).
+  commit(f.store, ops::moveNotes(f.doc(), f.ref, keys(), kPpq, -2));
+  CHECK(f.noteOf(triad[0].id).pitch == PitchId::fromDegree(11, 0));
+  ratiosKept();
+  CHECK(f.noteOf(triad[1].id).start == kPpq);
+  // Back to Tuning restores the TRANSPOSED written chord, exactly: 11 + 12 = 23 → degrees 11, 15, 18 of the equave.
+  commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, id));
+  CHECK(f.hz(triad[0].id) == doctest::Approx(hz[0] * std::exp2(11.0 / 12.0)).epsilon(1e-12));
+  CHECK(f.hz(triad[1].id) == doctest::Approx(hz[1] * std::exp2(11.0 / 12.0)).epsilon(1e-12));
+  CHECK(f.hz(triad[2].id) == doctest::Approx(hz[2] * std::exp2(11.0 / 12.0)).epsilon(1e-12));
+  // In a group Back to Tuning a member stepped alone is the tempered note it sounds as: it steps on the rows and
+  // leaves the group.
+  commit(f.store, ops::transposeNotes(f.doc(), f.ref, std::vector<NoteKey>{keyOf(f.noteOf(triad[2].id))}, 1, ops::StepUnit::Grid));
+  CHECK(f.noteOf(triad[2].id).pitch == PitchId::fromDegree(7, 1));
+  CHECK(findNoteWritten(f.clip(), triad[2].id) == nullptr);
+  CHECK(f.harmonics(id).proportion == terms({4, 5}));
   f.roundTrips();
 }
 
 // ---- Anchor loss ------------------------------------------------------------------------------------------------------
+
+TEST_CASE("Back to Tuning (T7.16a, M7 review M3): a chord built in JI goes to the tuning's nearest steps and back to its exact ratios") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const int64_t t[] = {4, 5, 6, 7};
+  auto made = ops::proportionNotes(f.doc(), ids, f.ref, 0, kPpq, PitchId::fromDegree(0), t);
+  commit(f.store, made);
+  const JiGroupId id = made->jiGroups[0];
+  const double root = f.hz(made->notes[0].id);
+  CHECK(f.clip().written == nullptr);
+  commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, id));
+  CHECK_FALSE(f.group(id).tuned);
+  CHECK(findNoteWritten(f.clip(), made->notes[1].id)->written == PitchId::fromDegree(4));
+  CHECK(findNoteWritten(f.clip(), made->notes[2].id)->written == PitchId::fromDegree(7));
+  CHECK(findNoteWritten(f.clip(), made->notes[3].id)->written == PitchId::fromDegree(10));
+  CHECK(f.hz(made->notes[1].id) == f.degreeHz(4));
+  CHECK(f.hz(made->notes[3].id) == f.degreeHz(10));
+  CHECK(f.hz(made->notes[0].id) == root);
+  f.roundTrips();
+  commit(f.store, ops::setJiGroupsTuned(f.doc(), f.ref, std::vector<JiGroupId>{id}, true));
+  CHECK(f.hz(made->notes[1].id) == root * 1.25);
+  CHECK(f.hz(made->notes[3].id) == root * 1.75);
+  CHECK(f.harmonics(id).proportion == terms({4, 5, 6, 7}));
+  // A member drawn on the guides of a tuned chord later (no written identity) goes to its nearest step too.
+  auto drawn = ops::addGroupNote(f.doc(), ids, f.ref, id, ops::GroupNotePitch{{}, 9}, 0, kPpq);
+  commit(f.store, drawn);
+  commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, id));
+  CHECK(f.hz(drawn->notes[0].id) == f.degreeHz(14));  // 9/4 = 1403.9 ¢: the 14th step
+  CHECK_FALSE(ops::setJiGroupsTuned(f.doc(), f.ref, std::vector<JiGroupId>{JiGroupId{999999}}, true).ok());
+}
+
+TEST_CASE("tuneChordsToJi (T7.16a, M7 review M6): a progression is tuned chord by chord in one step; chords Back to Tuning get their own reading back") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const std::vector<Note> one = f.chord({0, 4, 7}, 0, 2 * kPpq);        // C major
+  const std::vector<Note> two = f.chord({4, 7, 11}, 2 * kPpq, 2 * kPpq);  // E minor
+  const std::vector<Note> three = f.chord({2, 5, 9}, 4 * kPpq, 2 * kPpq);  // D minor
+  const std::vector<NoteKey> chords[] = {JiFix::keysOf(one), JiFix::keysOf(two), JiFix::keysOf(three)};
+  const size_t h = f.store.history().cursor();
+  auto tuned = ops::tuneChordsToJi(f.doc(), ids, f.ref, chords);
+  commit(f.store, tuned);
+  CHECK(f.store.history().cursor() == h + 1);
+  REQUIRE(jiGroupsOf(f.clip()).size() == 3);
+  const JiGroup* ga = findJiGroupByAnchor(f.clip(), one[0].id);
+  const JiGroup* gb = findJiGroupByAnchor(f.clip(), two[0].id);
+  const JiGroup* gc = findJiGroupByAnchor(f.clip(), three[0].id);
+  REQUIRE((ga && gb && gc));
+  CHECK(groupHarmonics(f.clip(), *ga)->proportion == terms({4, 5, 6}));
+  CHECK(groupHarmonics(f.clip(), *gb)->proportion == terms({10, 12, 15}));
+  CHECK(groupHarmonics(f.clip(), *gc)->proportion == terms({10, 12, 15}));
+  CHECK(f.hz(three[0].id) == f.degreeHz(2));  // each chord's own root is frozen: no 680-cent fifth
+  CHECK(f.hz(three[2].id) == f.hz(three[0].id) * 1.5);
+  // Again: nothing (they are tuned). Back to Tuning on the second only, then the progression again: the second gets its
+  // own reading back, the others stay.
+  CHECK(ops::tuneChordsToJi(f.doc(), ids, f.ref, chords)->empty());
+  const JiGroupId second = gb->id;
+  ops::TuneToJiOptions other;
+  other.proportion = {20, 24, 30};  // 10:12:15 named as 20:24:30: the index 20
+  commit(f.store, ops::tuneToJi(f.doc(), ids, f.ref, chords[1], other));
+  commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, second));
+  commit(f.store, ops::tuneChordsToJi(f.doc(), ids, f.ref, chords));
+  CHECK(f.group(second).tuned);
+  CHECK(f.group(second).index == 20);  // its own reading, not a new best one
+  CHECK(jiGroupsOf(f.clip()).size() == 3);
+}
+
+TEST_CASE("anchor loss (T7.16a, M7 review M8): a vibrato on the anchor and on every member does not dissolve the group") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const std::vector<Note> triad = f.chord({0, 4, 7});
+  auto tuned = ops::tuneToJi(f.doc(), ids, f.ref, JiFix::keysOf(triad));
+  commit(f.store, tuned);
+  const JiGroupId id = tuned->jiGroups[0];
+  NoteVibrato v;
+  v.depthCents = 20.0f;
+  v.rate = 6.0f;
+  std::vector<ops::NoteVibratoEdit> edits;
+  for (const Note& n : triad) edits.push_back({keyOf(f.noteOf(n.id)), v});
+  commit(f.store, ops::setNoteVibrato(f.doc(), f.ref, edits));
+  const double he = f.hz(triad[1].id), hg = f.hz(triad[2].id);
+  commit(f.store, ops::deleteNotes(f.doc(), f.ref, std::vector<NoteKey>{keyOf(f.noteOf(triad[0].id))}));
+  REQUIRE(jiGroupsOf(f.clip()).size() == 1);
+  CHECK(f.group(id).anchor == triad[1].id);
+  CHECK(f.noteOf(triad[2].id).pitch == PitchId::fromRatio(Rational(6, 5), AnchorKind::Note, triad[1].id.value));
+  CHECK(f.hz(triad[1].id) == doctest::Approx(he).epsilon(1e-13));
+  CHECK(f.hz(triad[2].id) == doctest::Approx(hg).epsilon(1e-13));
+  CHECK(findNoteWritten(f.clip(), triad[2].id)->written == PitchId::fromDegree(7));
+}
+
+TEST_CASE("tune to JI (T7.16a, M7 review M9): two members of one anchor tuned without it keep their exact ratio") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const Note d = f.add(0, PitchId::fromDegree(2), 4 * kPpq);
+  commit(f.store, ops::makeJiGroup(f.doc(), ids, f.ref, keyOf(d), 8));
+  const Note a = f.add(0, PitchId::fromRatio(Rational(5, 4), AnchorKind::Note, d.id.value), 4 * kPpq);
+  const Note b = f.add(0, PitchId::fromRatio(Rational(45, 32), AnchorKind::Note, d.id.value), 4 * kPpq);
+  auto cands = ops::tuneToJiCandidates(f.doc(), f.ref, std::vector<NoteKey>{keyOf(a), keyOf(b)});
+  REQUIRE(cands.ok());
+  REQUIRE(!cands->empty());
+  for (const ops::JiCandidate& c : *cands) CHECK(c.terms[1] * 8 == c.terms[0] * 9);  // 9/8 in every reading
+  commit(f.store, ops::tuneToJi(f.doc(), ids, f.ref, std::vector<NoteKey>{keyOf(a), keyOf(b)}));
+  CHECK(f.noteOf(b.id).pitch == PitchId::fromRatio(Rational(9, 8), AnchorKind::Note, a.id.value));
+  CHECK(f.hz(b.id) == doctest::Approx(f.hz(a.id) * 1.125).epsilon(1e-13));
+}
+
+TEST_CASE("consolidate (T7.16a, M7 review H6): members whose anchor lies before the clip's start marker keep sounding") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const Note anchor = f.add(0, PitchId::fromDegree(0), kPpq);
+  commit(f.store, ops::makeJiGroup(f.doc(), ids, f.ref, keyOf(anchor), 4));
+  std::vector<Note> melody;
+  for (int i = 0; i < 4; ++i) {
+    const int64_t h[] = {5, 6, 7, 8};
+    melody.push_back(f.add(kBar + i * kPpq, PitchId::fromRatio(Rational(h[i], 4), AnchorKind::Note, anchor.id.value), kPpq));
+  }
+  std::vector<double> hz;
+  for (const Note& n : melody) hz.push_back(f.hz(n.id));
+  // The clip's start trimmed to bar 2: the anchor is hidden, and still drives the melody.
+  const NoteClip& c = f.clip();
+  REQUIRE(f.store.dispatch(SetClipBounds{f.ref, c.start + kBar, c.length - kBar, c.contentStart + kBar}).ok());
+  CHECK(f.hz(melody[0].id) == hz[0]);
+  const ClipRef sel[] = {f.ref};
+  commit(f.store, ops::consolidateClips(f.doc(), ids, sel));
+  const NoteClip& m = *f.track(f.bass).clips.at(0).clip;
+  REQUIRE(m.notes.size() == 4);
+  size_t i = 0;
+  for (const Note& n : m.notes) {
+    const std::optional<double> v = f.hzIn(m, n.id);
+    REQUIRE(v.has_value());
+    CHECK(*v == doctest::Approx(hz[i++]).epsilon(1e-12));
+  }
+  REQUIRE(jiGroupsOf(m).size() == 1);  // the group lives on: its lowest member promoted
+  CHECK(groupHarmonics(m, jiGroupsOf(m)[0])->proportion == terms({5, 6, 7, 8}));
+  CHECK(validateClipJi(m).ok());
+}
+
+TEST_CASE("bends (T7.16a, M7 review M2): a bend from a note whose group warps starts where that note IS at the hand-over, not where it started") {
+  JiFix f;
+  IdSource& ids = f.store.ids();
+  const std::vector<Note> triad = f.chord({0, 4, 7}, 0, 4 * kPpq);
+  auto tuned = ops::tuneToJi(f.doc(), ids, f.ref, JiFix::keysOf(triad));
+  commit(f.store, tuned);
+  // JI at the start, back to 12-EDO at beat 2.
+  commit(f.store, ops::setJiWarps(f.doc(), f.ref, tuned->jiGroups[0], {JiWarp{2 * kPpq, 0, GlideShape{}, false}}));
+  const Note fNote = f.add(4 * kPpq, PitchId::fromDegree(5), 2 * kPpq);
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(fNote), ops::NoteEdge::Start, kPpq, GlideShape{}, triad[1].id));
+  const NotePitchIndex index(f.pitches(f.clip()));
+  const NoteBendTargets t = noteBendTargets(*findNoteCurves(f.clip(), fNote.id), index);
+  REQUIRE(t.in.has_value());
+  // The E ends at its written 400 ¢, so the F (500 ¢) glides in from 100 ¢ below; its start pitch (386.3 ¢) is not it.
+  CHECK(*t.in == doctest::Approx(-100.0).epsilon(1e-9));
+  const std::vector<Breakpoint> curve = f.effective(f.clip(), f.noteOf(fNote.id));
+  REQUIRE(!curve.empty());
+  CHECK(curve.front().value == doctest::Approx(-100.0f).epsilon(1e-5));
+}
 
 TEST_CASE("anchor loss: deleting the anchor promotes the lowest remaining member — every member keeps its Hz and its number") {
   JiFix f;
@@ -656,7 +898,8 @@ TEST_CASE("anchor loss: deleting the anchor promotes the lowest remaining member
     CHECK(f.hz(chord[1].id) == doctest::Approx(h5).epsilon(1e-13));
     CHECK(f.hz(chord[2].id) == doctest::Approx(h6).epsilon(1e-13));
     CHECK(f.hz(chord[3].id) == doctest::Approx(h7).epsilon(1e-13));
-    CHECK(findNoteWritten(f.clip(), chord[1].id) == nullptr);  // an anchor does not warp
+    // T7.16a: the new anchor keeps what it was written as (an anchor does not warp; Back to Tuning plays it).
+    CHECK(findNoteWritten(f.clip(), chord[1].id)->written == PitchId::fromDegree(4));
     CHECK(findNoteWritten(f.clip(), chord[2].id)->written == PitchId::fromDegree(7));
     f.roundTrips();
     REQUIRE(f.store.undo());
@@ -759,7 +1002,9 @@ TEST_CASE("copies: clone, split, duplicate, paste and consolidate re-point group
     CHECK(right.notes.findById(g.id)->pitch == PitchId::fromRatio(Rational(6, 5), AnchorKind::Note, e.id.value));
     CHECK(*f.hzIn(left, c.id) == hc);
     CHECK(*f.hzIn(right, g.id) == doctest::Approx(hg).epsilon(1e-13));
-    CHECK(findNoteWritten(right, e.id) == nullptr);  // the new anchor does not warp
+    CHECK(findNoteWritten(right, e.id)->written == PitchId::fromDegree(4));  // kept by the new anchor (T7.16a)
+    CHECK(jiGroupsOf(right)[0].warps.empty() != jiGroupsOf(right)[1].warps.empty());
+    CHECK(promoted->warps[0].at == warps[0].at - kBar);  // where they were in the clip, from the new anchor (M7)
     CHECK(findNoteWritten(right, g.id) != nullptr);
     CHECK(validateClipJi(left).ok());
     CHECK(validateClipJi(right).ok());

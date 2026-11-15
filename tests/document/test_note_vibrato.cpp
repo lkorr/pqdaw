@@ -277,6 +277,7 @@ TEST_CASE("Is Harmonic N on a member: it becomes the group's anchor — every no
   for (const int32_t d : {0, 4, 7}) triad.push_back(f.add(0, PitchId::fromDegree(d), 4 * kPpq));
   std::vector<NoteKey> keys;
   for (const Note& n : triad) keys.push_back(keyOf(n));
+  const double e12 = f.hz(triad[1].id), g12 = f.hz(triad[2].id);  // as written
   auto tuned = ops::tuneToJi(f.doc(), ids, f.ref, keys);
   commit(f.store, tuned);
   const JiGroupId group = tuned->jiGroups.at(0);
@@ -304,7 +305,9 @@ TEST_CASE("Is Harmonic N on a member: it becomes the group's anchor — every no
   CHECK(f.hz(triad[2].id) == doctest::Approx(hz2).epsilon(1e-12));
   const Note& third = *f.clip().notes.findById(triad[1].id);
   CHECK(third.pitch.kind() == PitchKind::Cents);  // frozen at its JI pitch (the old anchor is a 12-EDO degree)
-  CHECK(findNoteWritten(f.clip(), triad[1].id) == nullptr);
+  // T7.16a (M7 review M4): it keeps what it was written as, which a group Back to Tuning plays.
+  REQUIRE(findNoteWritten(f.clip(), triad[1].id) != nullptr);
+  CHECK(findNoteWritten(f.clip(), triad[1].id)->written == PitchId::fromDegree(4));
   const Note& root = *f.clip().notes.findById(triad[0].id);
   CHECK(root.pitch == PitchId::fromRatio(Rational(4, 5), AnchorKind::Note, triad[1].id.value));
   REQUIRE(findNoteWritten(f.clip(), triad[0].id) != nullptr);
@@ -312,6 +315,12 @@ TEST_CASE("Is Harmonic N on a member: it becomes the group's anchor — every no
   CHECK(f.clip().notes.findById(triad[2].id)->pitch == PitchId::fromRatio(Rational(6, 5), AnchorKind::Note, triad[1].id.value));
   CHECK(findNoteWritten(f.clip(), triad[2].id)->written == PitchId::fromDegree(7));
   f.roundTrips();
+  // Back to Tuning after it: every note as written, exactly — the new anchor too (M4).
+  commit(f.store, ops::untuneJiGroup(f.doc(), f.ref, group));
+  CHECK(f.hz(triad[0].id) == hz0);
+  CHECK(f.hz(triad[1].id) == e12);
+  CHECK(f.hz(triad[2].id) == g12);
+  REQUIRE(f.store.undo());
 
   // Refused: not a member (the anchor itself, a stranger), a bad index.
   CHECK_FALSE(ops::reanchorJiGroup(f.doc(), f.ref, group, keyOf(third), 5).ok());

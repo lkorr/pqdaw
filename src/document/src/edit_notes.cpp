@@ -6,6 +6,7 @@
 #include <numeric>
 
 #include "edit_common.h"
+#include "pq/document/pitch_resolve.h"
 #include "pq/tuning/ji.h"
 
 namespace pq::doc::ops {
@@ -389,20 +390,85 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
   const std::vector<GroupStepFundamental> groups =
       steps != 0 && f->clip->groups ? groupStepFundamentals(*f->clip) : std::vector<GroupStepFundamental>{};
   const PitchStepContext ctx{tun ? &*tun : nullptr, displayGrid, fundamental, groups};
+  const NoteClip& c = *f->clip;
+  // T7.16a (M7 review H2, M4): JI groups move as chords. A member whose anchor is stepped too keeps its ratio (it
+  // follows its anchor) and its written identity steps with it, so Back to Tuning restores the transposed chord. A
+  // member stepped without its anchor: in a tuned group it goes to its next harmonic and is re-written as the
+  // tuning's nearest step there; in a group Back to Tuning it is the tempered note it sounds as — its written
+  // identity stepped, out of the group. An anchor's own written identity steps with it.
+  std::vector<NoteId> moving;
+  if (steps != 0 && (c.groups || c.written)) {
+    moving.reserve(notes.size());
+    for (const NoteKey& k : notes)
+      if (const Note* n = c.notes.locate(k)) moving.push_back(n->id);
+    std::sort(moving.begin(), moving.end());
+  }
+  auto isMoving = [&](NoteId id) { return std::binary_search(moving.begin(), moving.end(), id); };
+  std::vector<std::pair<NoteId, const JiGroup*>> byAnchor;  // O(log groups) per note
+  for (const JiGroup& g : jiGroupsOf(c)) byAnchor.emplace_back(g.anchor, &g);
+  std::sort(byAnchor.begin(), byAnchor.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+  auto groupAnchoredBy = [&](NoteId id) -> const JiGroup* {
+    const auto it = std::lower_bound(byAnchor.begin(), byAnchor.end(), id, [](const auto& x, NoteId v) { return x.first < v; });
+    return it != byAnchor.end() && it->first == id ? it->second : nullptr;
+  };
+  std::vector<std::pair<NoteId, std::optional<PitchId>>> rewritten;  // (note, its written identity now; none: dropped)
+  std::vector<std::pair<NoteId, Rational>> harmonics;                // tuned members on a new harmonic (re-written below)
   std::vector<std::pair<NoteId, Rational>> stepped;
   EditResult e = updateNotes(p, clip, notes, std::move(label), [&](Note& n) -> Status {
     move(n);
     if (steps == 0) return ok();
+    const NoteId anchor = noteAnchorOf(n.pitch);
+    const JiGroup* g = anchor.valid() ? groupAnchoredBy(anchor) : nullptr;
+    const NoteWritten* w = c.written ? findNoteWritten(c, n.id) : nullptr;
+    auto stepWritten = [&] {
+      if (w == nullptr) return;
+      if (std::optional<PitchId> sw = stepPitch(w->written, steps, unit, ctx)) rewritten.emplace_back(n.id, *sw);
+    };
+    if (g != nullptr && isMoving(anchor)) {  // follows its anchor
+      stepWritten();
+      return ok();
+    }
+    if (g != nullptr && !g->tuned && w != nullptr) {  // a tempered note leaving its group
+      const std::optional<PitchId> sw = stepPitch(w->written, steps, unit, ctx);
+      n.pitch = sw ? *sw : w->written;
+      rewritten.emplace_back(n.id, std::nullopt);
+      return ok();
+    }
     if (auto np = stepPitch(n.pitch, steps, unit, ctx)) {
       n.pitch = *np;
       if (referenceRatio(n.pitch)) stepped.emplace_back(n.id, n.pitch.ratio());
+      if (g != nullptr && w != nullptr) harmonics.emplace_back(n.id, n.pitch.ratio());
+      else if (g == nullptr && groupAnchoredBy(n.id) != nullptr) stepWritten();  // an anchor
+      else if (w != nullptr && g == nullptr) rewritten.emplace_back(n.id, std::nullopt);  // no member: means nothing
     }
     return ok();
   });
   if (!e || steps == 0) return e;
-  if (std::optional<ClipFundamental> mem = steppedMemory(*f->clip, fundamental, stepped))
+  if (std::optional<ClipFundamental> mem = steppedMemory(c, fundamental, stepped))
     batchOf(*e).commands.push_back(SetClipFundamental{clip, std::move(*mem)});
-  dropRepitchedWritten(batchOf(*e), clip, *f->clip);
+  if (!harmonics.empty() && tun) {
+    // The nearest step to the member's new JI pitch (its anchor's pitch × its ratio): Back to Tuning puts it on a row.
+    const ClipPitches cp = resolveClipPitches(p, f->path, c);
+    const NotePitchIndex hz(cp);
+    for (const auto& [id, ratio] : harmonics) {
+      const Note* n = c.notes.findById(id);
+      const std::optional<double> a = n ? hz.hz(noteAnchorOf(n->pitch)) : std::nullopt;
+      std::optional<PitchId> near;
+      if (a && *a > 0.0) near = nearestDegreePitch(*tun, 1200.0 * std::log2(*a / tun->referenceHz()) + tuning::cents(ratio));
+      rewritten.emplace_back(id, near);
+    }
+  }
+  if (!rewritten.empty()) {
+    std::sort(rewritten.begin(), rewritten.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+    NoteWrittenList list;
+    for (const NoteWritten& w : notesWrittenOf(c)) {
+      const auto it = std::lower_bound(rewritten.begin(), rewritten.end(), w.note, [](const auto& x, NoteId id) { return x.first < id; });
+      if (it == rewritten.end() || it->first != w.note) list.push_back(w);
+      else if (it->second) list.push_back(NoteWritten{w.note, *it->second});
+    }
+    if (!std::ranges::equal(list, notesWrittenOf(c)))
+      batchOf(*e).commands.push_back(SetNotesWritten{clip, std::move(list)});
+  }
   return e;
 }
 

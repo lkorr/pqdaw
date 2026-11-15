@@ -63,8 +63,8 @@ std::optional<tuning::PitchId> nearestDegreePitch(const tuning::Tuning& t, doubl
 // Drops the curves of notes that are not in c.notes (after notes left the clip), and the bends to notes that are not
 // (T7.11a). O(notes + curves) when it has curves.
 void pruneCurves(NoteClip& c);
-// T7.13: drops the JI groups whose anchor is not in c.notes and the written identities of notes that are not members
-// of a group of the clip. O(notes log notes) when it has either.
+// T7.13: drops the JI groups whose anchor is not in c.notes and the written identities of notes that are neither
+// members nor anchors of a group of the clip. O(notes log notes) when it has either.
 void pruneJi(NoteClip& c);
 // T7.11a: old → new ids of copied notes (sources[i] was copied to copies[i]), sorted by old id.
 using NoteIdMap = std::vector<std::pair<NoteId, NoteId>>;
@@ -93,28 +93,35 @@ struct CopiedJi {
 Result<CopiedJi> copyJi(ClipRef clip, const NoteClip& target, const JiSource& source, std::span<const NoteId> sources,
                         std::span<Note> copies, IdSource& ids);
 // A note's pitch as an exact ratio to the reference: a chain of note anchors (≤ 8 links) that ends on a
-// reference-anchored Ratio, none of its notes with a curve record or a warp (they move what is anchored to them:
-// pitch_resolve.h). nullopt: it is not one (also for n == nullptr). O(links · notes).
+// reference-anchored Ratio, none of its notes with a free curve, a bend or a warp (they move what is anchored to
+// them: pitch_resolve.h; a vibrato does not, T7.16a M8). nullopt: it is not one (also for n == nullptr). O(links · notes).
 std::optional<tuning::Rational> exactReferenceRatio(const NoteClip& clip, const NotePitchIndex& hz, const Note* n);
-// T7.13: a group's warps when its start moves `by` ticks later (by > 0): the same points in the clip. Warps that are
-// over before the new start are dropped (the state they left is what the first remaining warp comes from); one that
-// is still gliding keeps the rest of its glide from tick 0; a group left in its written state keeps that as a jump at
-// 0; one left in JI has no warps.
+// T7.16a (M7 review M9): a note's pitch as an exact ratio to the ROOT of its chain of note anchors (≤ 8 links; the
+// first note on it that is not anchored to a note — itself when it is not), none of the notes on the way nor the root
+// with a free curve, a bend or a warp. Two notes with one root are an exact ratio apart. nullopt: none.
+struct RootedRatio {
+  NoteId root;
+  tuning::Rational ratio{1};
+};
+std::optional<RootedRatio> rootedRatio(const NoteClip& clip, const NotePitchIndex& hz, const Note* n);
+// T7.16a (M7 review M7): a group's warps when its anchor's start moves `by` ticks later (a new anchor): the same
+// points in the clip (group ticks count from the anchor's start and may be negative).
 std::vector<JiWarp> shiftedWarps(std::span<const JiWarp> warps, Ticks by);
 // T7.11a (M7 review H3): what keeps the remaining notes of `clip` (a clip of the track at `path`, or a working copy of
 // one) sounding at the same pitch when the notes `gone` (sorted ids) leave it — deleted, or parted from them by a
 // split. A note anchored to a leaving note is re-anchored:
 //   - the anchor's pitch is an exact ratio to the reference (a chain of note anchors ending on a reference-anchored
 //     Ratio, no curve on the way): the exact reference-anchored Ratio;
-//   - else, when the anchor sounds at one pitch for all its dependants (no curve record, no warp) and there are
-//     several: the LOWEST dependant without a curve carries the pitch as Cents and the others are anchored to it by
-//     their exact ratios to it;
+//   - else, when the anchor sounds at one pitch for all its dependants (no free curve or bend, no warp; a vibrato is
+//     no pitch to them, T7.16a M8) and there are several: the LOWEST dependant without such a curve carries the pitch
+//     as Cents and the others are anchored to it by their exact ratios to it;
 //   - else Cents at the pitch it resolves to now.
 // T7.13: when the leaving note is the anchor of a JI group, the group lives on — its lowest remaining member (without
 // a curve) is promoted to anchor in either of the first two cases (it carries the pitch: the exact reference Ratio,
 // else Cents at its JI pitch), the others keep their exact ratios to it, and the group's index becomes the number the
 // new anchor had, so every member keeps its number and its Hz. Its warps stay where they are in the clip (shifted by
-// how far the group's start moved: shiftedWarps); the new anchor's written identity is dropped (an anchor does not warp). A group that finds no member to
+// how far the anchor's start moved: shiftedWarps); the new anchor keeps its written identity (an anchor does not
+// warp; a group Back to Tuning plays it as written). A group that finds no member to
 // promote goes with its anchor. Harmonic steps of leaving notes are dropped. A note that does not resolve is left as
 // it is. Nothing to do costs one pass over the notes (no resolution).
 struct Reanchored {

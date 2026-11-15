@@ -655,6 +655,12 @@ double glideShapeValue(const GlideShape& shape, double u) noexcept {  // RT-safe
   return u;
 }
 
+std::span<const JiWarp> effectiveJiWarps(const JiGroup& g) noexcept {  // RT-safe
+  // Written from the earliest tick a note can start at in group ticks on: written throughout.
+  static const JiWarp kUntuned[1] = {JiWarp{-kMaxTicks, 0, GlideShape{}, false}};
+  return g.tuned ? std::span<const JiWarp>(g.warps) : std::span<const JiWarp>(kUntuned);
+}
+
 double jiWarpWritten(std::span<const JiWarp> warps, double tick, bool before) noexcept {  // RT-safe
   if (warps.empty()) return 0.0;
   // The last warp that has begun at `tick` (before: strictly before it).
@@ -724,6 +730,7 @@ std::optional<GroupSpan> groupSpan(const NoteClip& c, const JiGroup& g) noexcept
     const bool isAnchor = n.id == g.anchor;
     if (!isAnchor && noteAnchorOf(n.pitch) != g.anchor) continue;
     anchor = anchor || isAnchor;
+    if (isAnchor) s.origin = n.start;
     const Ticks end = n.start + std::max<Ticks>(n.length, 1);
     s.start = any ? std::min(s.start, n.start) : n.start;
     s.end = any ? std::max(s.end, end) : end;

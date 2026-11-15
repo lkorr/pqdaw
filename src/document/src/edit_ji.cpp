@@ -93,11 +93,13 @@ std::optional<PitchId> detached(const Note& n, const std::optional<Rational>& an
   return r.centsAt(r.jiHz(n.id));
 }
 
-// removeJiGroup / untuneJiGroup.
-EditResult dissolve(const Project& p, ClipRef clip, JiGroupId group, bool restoreWritten, const char* label) {
+// removeJiGroup: the notes keep sounding where they are — in JI (a tuned group), or as written (T7.16a: a group Back
+// to Tuning; its anchor too when it has a written identity).
+EditResult dissolve(const Project& p, ClipRef clip, JiGroupId group, const char* label) {
   Result<GroupFound> f = findGroup(p, clip, group);
   if (!f) return std::move(f).error();
   const NoteClip& c = *f->clip.clip;
+  const bool restoreWritten = !f->group->tuned;
   Edit e = groupEdit(label, clip);
   UpdateNotes u{clip, {}};
   std::optional<Resolved> r;  // resolved for the first member that needs a pitch
@@ -105,7 +107,15 @@ EditResult dissolve(const Project& p, ClipRef clip, JiGroupId group, bool restor
   std::vector<NoteId> members;
   for (const Note& n : c.notes) {
     if (noteAnchorOf(n.pitch) != f->group->anchor) {
-      if (n.id == f->group->anchor) e.notes.push_back(keyOf(n));
+      if (n.id == f->group->anchor) {
+        e.notes.push_back(keyOf(n));
+        members.push_back(n.id);  // its written identity goes with the group
+        if (const NoteWritten* w = restoreWritten ? findNoteWritten(c, n.id) : nullptr; w && !(w->written == n.pitch)) {
+          Note m = n;
+          m.pitch = w->written;
+          u.updates.push_back({keyOf(n), m});
+        }
+      }
       continue;
     }
     members.push_back(n.id);
@@ -196,9 +206,15 @@ Result<Chord> chordOf(const Project& p, const ClipRef& clip, std::span<const Not
   // The anchor's pitch as an exact ratio of the reference (not for one that goes back to a written identity).
   const std::optional<Rational> anchorExact =
       writtenOf(c, *ch.anchor) ? std::nullopt : exactReferenceRatio(c, ch.r.hz, ch.anchor);
+  // M9 (T7.16a): two notes on one chain of note anchors are an exact ratio apart, whatever the root is.
+  const std::optional<RootedRatio> anchorRooted =
+      writtenOf(c, *ch.anchor) ? std::nullopt : rootedRatio(c, ch.r.hz, ch.anchor);
   auto exactTo = [&](const Note& n) -> std::optional<Rational> {
     if (&n == ch.anchor || writtenOf(c, n)) return std::nullopt;
     if (noteAnchorOf(n.pitch) == ch.anchor->id) return n.pitch.ratio();
+    if (anchorRooted)
+      if (const std::optional<RootedRatio> own = rootedRatio(c, ch.r.hz, &n); own && own->root == anchorRooted->root)
+        if (const std::optional<Rational> q = tuning::div(own->ratio, anchorRooted->ratio); q && q->isPositive()) return q;
     if (!anchorExact) return std::nullopt;
     const std::optional<Rational> own = exactReferenceRatio(c, ch.r.hz, &n);
     const std::optional<Rational> q = own ? tuning::div(*own, *anchorExact) : std::nullopt;
@@ -324,7 +340,8 @@ EditResult reanchorJiGroup(const Project& p, ClipRef clip, JiGroupId group, Note
   e.jiGroups.push_back(group);
   UpdateNotes u{clip, {}};
   NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
-  std::erase_if(written, [&](const NoteWritten& w) { return w.note == m->id || w.note == f->anchor->id; });
+  // T7.16a (M7 review M4): the new anchor keeps what it was written as (Back to Tuning plays it as written).
+  std::erase_if(written, [&](const NoteWritten& w) { return w.note == f->anchor->id; });
   for (const Note& n : c.notes) {
     Note w = n;
     if (n.id == m->id) {
@@ -333,7 +350,8 @@ EditResult reanchorJiGroup(const Project& p, ClipRef clip, JiGroupId group, Note
       const std::optional<Rational> inv = Rational::tryMake(mr.den(), mr.num());
       if (!inv || !inv->isPositive()) return invalid("ratio out of range");
       w.pitch = PitchId::fromRatio(*inv, tuning::AnchorKind::Note, m->id.value);
-      if (plainPitch(n.pitch)) written.push_back(NoteWritten{n.id, n.pitch});
+      if (const NoteWritten* was = findNoteWritten(c, n.id)) written.push_back(*was);  // it was a member made the anchor
+      else if (plainPitch(n.pitch)) written.push_back(NoteWritten{n.id, n.pitch});
     } else if (noteAnchorOf(n.pitch) == f->anchor->id) {
       const std::optional<Rational> q = tuning::div(n.pitch.ratio(), mr);
       if (!q || !q->isPositive()) return invalid("ratio out of range");
@@ -347,18 +365,61 @@ EditResult reanchorJiGroup(const Project& p, ClipRef clip, JiGroupId group, Note
   JiGroup g = *f->group;
   g.anchor = m->id;
   g.index = index;
+  g.warps = shiftedWarps(g.warps, m->start - f->anchor->start);  // they count from the anchor's start (M7)
   if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
   pushGroups(e, clip, c, groupsWith(c, g));
   pushWritten(e, clip, c, std::move(written));
   return e;
 }
 
-EditResult removeJiGroup(const Project& p, ClipRef clip, JiGroupId group) {
-  return dissolve(p, clip, group, false, "Remove JI Group");
+EditResult removeJiGroup(const Project& p, ClipRef clip, JiGroupId group) { return dissolve(p, clip, group, "Remove JI Group"); }
+
+EditResult setJiGroupsTuned(const Project& p, ClipRef clip, std::span<const JiGroupId> groups, bool tuned) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  const NoteClip& c = *f->clip;
+  Edit e = groupEdit(tuned ? "Tune to JI" : "Back to Tuning", clip);
+  JiGroupList list(jiGroupsOf(c).begin(), jiGroupsOf(c).end());
+  NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
+  std::optional<Resolved> r;  // resolved for the first member that has no written identity
+  std::vector<NoteId> anchors;
+  for (const JiGroupId id : groups) {
+    const auto it = std::find_if(list.begin(), list.end(), [&](const JiGroup& g) { return g.id == id; });
+    if (it == list.end()) return notFound("JI group not found");
+    if (c.notes.findById(it->anchor) == nullptr) return notFound("the JI group's anchor is not in the clip");
+    it->tuned = tuned;
+    e.jiGroups.push_back(id);
+    anchors.push_back(it->anchor);
+  }
+  std::sort(anchors.begin(), anchors.end());
+  for (const Note& n : c.notes) {
+    const bool anchor = std::binary_search(anchors.begin(), anchors.end(), n.id);
+    const NoteId of = noteAnchorOf(n.pitch);
+    if (!anchor && !(of.valid() && std::binary_search(anchors.begin(), anchors.end(), of))) continue;
+    e.notes.push_back(keyOf(n));
+    if (tuned || anchor || findNoteWritten(c, n.id) != nullptr) continue;
+    // M3: a member that was never written tempered (drawn on the guides, typed as a proportion, added at a ratio)
+    // goes to the tuning's nearest step to its JI pitch, which it remembers as what it is written as.
+    if (!r) {
+      Result<Resolved> res = resolveFor(p, *f);
+      if (!res) return std::move(res).error();
+      r = std::move(res).value();
+    }
+    const std::optional<double> hz = r->jiHz(n.id);
+    if (!hz || !(*hz > 0.0)) continue;  // it does not sound: nothing to go back to
+    const double cents = 1200.0 * std::log2(*hz / r->tuning.referenceHz());
+    std::optional<PitchId> step = nearestDegreePitch(r->tuning, cents);
+    if (!step) step = r->centsAt(hz);  // a tuning without steps: it stays where it is
+    if (step) written.push_back(NoteWritten{n.id, *step});
+  }
+  pushGroups(e, clip, c, std::move(list));
+  pushWritten(e, clip, c, std::move(written));
+  return e;
 }
 
 EditResult untuneJiGroup(const Project& p, ClipRef clip, JiGroupId group) {
-  return dissolve(p, clip, group, true, "Back to Tuning");
+  const JiGroupId one[] = {group};
+  return setJiGroupsTuned(p, clip, one, false);
 }
 
 Result<std::vector<JiCandidate>> tuneToJiCandidates(const Project& p, ClipRef clip, std::span<const NoteKey> notes) {
@@ -367,11 +428,11 @@ Result<std::vector<JiCandidate>> tuneToJiCandidates(const Project& p, ClipRef cl
   return candidatesOf(*ch);
 }
 
-EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
-                    const TuneToJiOptions& options) {
-  Result<Chord> chord = chordOf(p, clip, notes);
-  if (!chord) return std::move(chord).error();
-  const Chord& ch = *chord;
+namespace {
+
+// One chord of tuneToJi / tuneChordsToJi, applied to the working lists (`groups`, `written`) and `u`.
+Status tuneChord(const Chord& ch, const TuneToJiOptions& options, IdSource& ids, Edit& e, UpdateNotes& u,
+                 JiGroupList& groups, NoteWrittenList& written) {
   const NoteClip& c = *ch.clip.clip;
   const size_t n = ch.pitches.size();
   std::vector<int64_t> terms = options.proportion;
@@ -402,9 +463,6 @@ EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<con
   }
   PQ_DOC_TRY(checkTerms(terms));
 
-  Edit e = groupEdit("Tune to JI", clip);
-  UpdateNotes u{clip, {}};
-  NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
   auto unwrite = [&](NoteId id) { std::erase_if(written, [&](const NoteWritten& w) { return w.note == id; }); };
   // The anchor: frozen where it is written. One that hung on another note is detached (what it was written as, else
   // its exact pitch), so no member can be its own anchor's anchor.
@@ -421,8 +479,9 @@ EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<con
     Note m = a;
     m.pitch = *pitch;
     u.updates.push_back({keyOf(a), m});
+    unwrite(a.id);
   }
-  unwrite(a.id);
+  // (An anchor's own written identity — a tuned member made the anchor, reanchorJiGroup — is kept: Back to Tuning.)
   e.notes.push_back(keyOf(a));
   for (size_t i = 0; i < n; ++i) {
     const std::optional<Rational> ratio = Rational::tryMake(terms[i], terms[0]);
@@ -434,31 +493,98 @@ EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<con
       const PitchId pitch = PitchId::fromRatio(*ratio, tuning::AnchorKind::Note, a.id.value);
       if (pitch == note.pitch) continue;  // already this exact ratio to the anchor
       if (writtenOf(c, note) == nullptr) {
-        // What it was written as. An exact ratio of the reference that the proportion keeps needs no memory.
-        const bool kept = member.exact && *ch.pitches[i].exact == *ratio && noteAnchorOf(note.pitch) != a.id;
+        // What it was written as (T7.16a: an exact ratio of the reference too, so Back to Tuning, a state of the
+        // group, gives it back exactly).
+        const NoteWritten* own = findNoteWritten(c, note.id);  // an anchor's (reanchorJiGroup): what it was written as
+        const std::optional<PitchId> was = own ? std::optional<PitchId>(own->written)
+                                               : plainPitch(note.pitch) ? std::optional<PitchId>(note.pitch)
+                                                                        : ch.r.centsAt(ch.r.hz.hz(note.id));
         unwrite(note.id);
-        if (!kept) {
-          std::optional<PitchId> was = plainPitch(note.pitch) ? std::optional<PitchId>(note.pitch) : ch.r.centsAt(ch.r.hz.hz(note.id));
-          if (!was) return invalid("a note's pitch cannot be resolved");
-          written.push_back(NoteWritten{note.id, *was});
-        }
+        if (!was) return invalid("a note's pitch cannot be resolved");
+        written.push_back(NoteWritten{note.id, *was});
       }
       Note m = note;
       m.pitch = pitch;
       u.updates.push_back({keyOf(note), m});
     }
   }
-  JiGroup g;
-  if (const JiGroup* have = findJiGroupByAnchor(c, a.id)) {
-    g = *have;
-  } else {
+  const auto have = std::find_if(groups.begin(), groups.end(), [&](const JiGroup& g) { return g.anchor == a.id; });
+  if (have == groups.end()) {
+    JiGroup g;
     g.id = ids.jiGroup();
     g.anchor = a.id;
+    g.index = static_cast<uint32_t>(terms[0]);
+    e.jiGroups.push_back(g.id);
+    groups.push_back(std::move(g));
+  } else {
+    have->index = static_cast<uint32_t>(terms[0]);
+    have->tuned = true;  // T7.16a: tuning is the JI state
+    e.jiGroups.push_back(have->id);
   }
-  g.index = static_cast<uint32_t>(terms[0]);
-  e.jiGroups.push_back(g.id);
+  return ok();
+}
+
+// The group every one of the chord's notes belongs to (its anchor or a member); nullptr: none, or several.
+const JiGroup* oneGroupOf(const NoteClip& c, std::span<const NoteKey> keys) {
+  const JiGroup* one = nullptr;
+  for (const NoteKey& k : keys) {
+    const Note* n = c.notes.locate(k);
+    const JiGroup* g = n ? jiGroupOfNote(c, *n) : nullptr;
+    if (!g || (one && g != one)) return nullptr;
+    one = g;
+  }
+  return one;
+}
+
+}  // namespace
+
+EditResult tuneToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<const NoteKey> notes,
+                    const TuneToJiOptions& options) {
+  Result<Chord> chord = chordOf(p, clip, notes);
+  if (!chord) return std::move(chord).error();
+  const NoteClip& c = *chord->clip.clip;
+  Edit e = groupEdit("Tune to JI", clip);
+  UpdateNotes u{clip, {}};
+  JiGroupList groups(jiGroupsOf(c).begin(), jiGroupsOf(c).end());
+  NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
+  PQ_DOC_TRY(tuneChord(*chord, options, ids, e, u, groups, written));
   if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
-  pushGroups(e, clip, c, groupsWith(c, g));
+  pushGroups(e, clip, c, std::move(groups));
+  pushWritten(e, clip, c, std::move(written));
+  return e;
+}
+
+EditResult tuneChordsToJi(const Project& p, IdSource& ids, ClipRef clip, std::span<const std::vector<NoteKey>> chords) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  const NoteClip& c = *f->clip;
+  Edit e = groupEdit("Tune to JI", clip);
+  UpdateNotes u{clip, {}};
+  JiGroupList groups(jiGroupsOf(c).begin(), jiGroupsOf(c).end());
+  NoteWrittenList written(notesWrittenOf(c).begin(), notesWrittenOf(c).end());
+  std::vector<JiGroupId> back;  // groups Back to Tuning whose notes are a chord: their own reading comes back
+  for (const std::vector<NoteKey>& keys : chords) {
+    if (keys.empty()) continue;
+    if (const JiGroup* g = oneGroupOf(c, keys)) {
+      if (!g->tuned && std::find(back.begin(), back.end(), g->id) == back.end()) back.push_back(g->id);
+      continue;  // a tuned group's notes are tuned already
+    }
+    if (keys.size() < 2) continue;
+    Result<Chord> chord = chordOf(p, clip, keys);
+    if (!chord) return std::move(chord).error();
+    PQ_DOC_TRY(tuneChord(*chord, {}, ids, e, u, groups, written));
+  }
+  for (const JiGroupId id : back)
+    for (JiGroup& g : groups)
+      if (g.id == id) {
+        g.tuned = true;
+        e.jiGroups.push_back(id);
+      }
+  for (const std::vector<NoteKey>& keys : chords)
+    for (const NoteKey& k : keys)
+      if (const Note* n = c.notes.locate(k)) e.notes.push_back(keyOf(*n));
+  if (!u.updates.empty()) batchOf(e).commands.push_back(std::move(u));
+  pushGroups(e, clip, c, std::move(groups));
   pushWritten(e, clip, c, std::move(written));
   return e;
 }

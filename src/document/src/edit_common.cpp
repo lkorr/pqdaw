@@ -115,6 +115,10 @@ NoteSeq seqOf(std::vector<Note> notes) {
 }
 
 namespace {
+// T7.16a (M7 review M8): a curve record that moves the pitch a note anchored to it takes (a free curve, a bend); a
+// vibrato alone does not (pitch_resolve: an ornament is not a pitch to tune to).
+bool movesPitch(const NoteCurves* c) noexcept { return c != nullptr && (!c->pitch.empty() || c->bendIn.set() || c->bendOut.set()); }
+
 Ticks floorMod(Ticks a, Ticks m) {
   const Ticks r = a % m;
   return r < 0 ? r + m : r;
@@ -340,10 +344,11 @@ void pruneJi(NoteClip& c) {
     c.groups = kept.empty() ? nullptr : std::make_shared<const JiGroupList>(std::move(kept));
   }
   if (c.written) {
-    // A written identity means something for a member of a group only.
+    // A written identity means something for a member or an anchor of a group only (T7.16a: an anchor's plays while
+    // its group is Back to Tuning).
     auto member = [&](const NoteWritten& w) {
       const auto* e = find(w.note);
-      return e != nullptr && e->second.valid() && findJiGroupByAnchor(c, e->second) != nullptr;
+      return e != nullptr && ((e->second.valid() && findJiGroupByAnchor(c, e->second) != nullptr) || findJiGroupByAnchor(c, w.note) != nullptr);
     };
     if (!std::ranges::all_of(*c.written, member)) {
       NoteWrittenList kept;
@@ -418,7 +423,7 @@ NoteClip cloneClip(const NoteClip& c, IdSource& ids, bool onlyPlaying) {
 std::optional<tuning::Rational> exactReferenceRatio(const NoteClip& clip, const NotePitchIndex& hz, const Note* n) {
   tuning::Rational r{1};
   for (int link = 0; n != nullptr && link <= 8; ++link) {
-    if (n->pitch.kind() != tuning::PitchKind::Ratio || findNoteCurves(clip, n->id) != nullptr || hz.warped(n->id) != nullptr)
+    if (n->pitch.kind() != tuning::PitchKind::Ratio || movesPitch(findNoteCurves(clip, n->id)) || hz.warped(n->id) != nullptr)
       return std::nullopt;
     const std::optional<tuning::Rational> m = tuning::mul(r, n->pitch.ratio());
     if (!m || !m->isPositive()) return std::nullopt;
@@ -429,21 +434,26 @@ std::optional<tuning::Rational> exactReferenceRatio(const NoteClip& clip, const 
   return std::nullopt;
 }
 
-std::vector<JiWarp> shiftedWarps(std::span<const JiWarp> warps, Ticks by) {
-  std::vector<JiWarp> out;
-  for (size_t i = 0; i < warps.size(); ++i) {
-    JiWarp w = warps[i];
-    w.at -= by;
-    if (w.at + w.glide <= 0 && i + 1 < warps.size() && warps[i + 1].at - by <= 0) continue;  // over before the start, and so is the next
-    if (w.at < 0) {  // the last one that began before the start: what is left of its glide, from the start
-      w.glide = std::max<Ticks>(w.at + w.glide, 0);
-      w.at = 0;
-      // A jump at the start says nothing the warps after it do not (they alternate), nor does "JI from here on".
-      if (w.glide == 0 && (w.toJi || i + 1 < warps.size())) continue;
-    }
-    out.push_back(w);
+std::optional<RootedRatio> rootedRatio(const NoteClip& clip, const NotePitchIndex& hz, const Note* n) {
+  tuning::Rational r{1};
+  for (int link = 0; n != nullptr && link <= 8; ++link) {
+    if (movesPitch(findNoteCurves(clip, n->id)) || hz.warped(n->id) != nullptr) return std::nullopt;
+    if (!noteAnchorOf(n->pitch).valid()) return RootedRatio{n->id, r};
+    const std::optional<tuning::Rational> m = tuning::mul(r, n->pitch.ratio());
+    if (!m || !m->isPositive()) return std::nullopt;
+    r = *m;
+    n = clip.notes.findById(noteAnchorOf(n->pitch));
   }
-  if (out.size() == 1 && out[0].at == 0 && out[0].glide == 0 && out[0].toJi) out.clear();
+  return std::nullopt;
+}
+
+std::vector<JiWarp> shiftedWarps(std::span<const JiWarp> warps, Ticks by) {
+  std::vector<JiWarp> out(warps.begin(), warps.end());
+  if (by == 0) return out;
+  for (JiWarp& w : out) w.at = std::clamp<Ticks>(w.at - by, -kMaxTicks, kMaxTicks);
+  // (Clamped only at the ends of the timeline, where two warps could meet: keep the order valid.)
+  for (size_t i = 1; i < out.size(); ++i)
+    if (out[i].at < out[i - 1].at + std::max<Ticks>(out[i - 1].glide, 1)) out[i].at = std::min<Ticks>(out[i - 1].at + std::max<Ticks>(out[i - 1].glide, 1), kMaxTicks);
   return out;
 }
 
@@ -481,7 +491,7 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
     auto exactRatio = [&](const Note* n) -> std::optional<tuning::Rational> {
       tuning::Rational r{1};
       for (int link = 0; n != nullptr && link <= 8; ++link) {
-        if (n->pitch.kind() != tuning::PitchKind::Ratio || findNoteCurves(clip, n->id) != nullptr || hz.warped(n->id) != nullptr)
+        if (n->pitch.kind() != tuning::PitchKind::Ratio || movesPitch(findNoteCurves(clip, n->id)) || hz.warped(n->id) != nullptr)
           return std::nullopt;
         const std::optional<tuning::Rational> m = tuning::mul(r, n->pitch.ratio());
         if (!m || !m->isPositive()) return std::nullopt;
@@ -504,11 +514,12 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
       return hz.hz(id);
     };
     std::vector<NoteId> unwritten;  // notes whose written identity no longer applies
-    auto set = [&](const Note& n, const tuning::PitchId& pitch) {
+    // `anchors`: the note becomes its group's anchor (it keeps its written identity: T7.16a).
+    auto set = [&](const Note& n, const tuning::PitchId& pitch, bool anchors) {
       Note m = n;
       m.pitch = pitch;
       out.updates.push_back(m);
-      if (!noteAnchorOf(pitch).valid() && findNoteWritten(clip, n.id) != nullptr) unwritten.push_back(n.id);
+      if (!anchors && !noteAnchorOf(pitch).valid() && findNoteWritten(clip, n.id) != nullptr) unwritten.push_back(n.id);
     };
     JiGroupList groups(jiGroupsOf(clip).begin(), jiGroupsOf(clip).end());
     bool groupsChanged = false;
@@ -522,7 +533,7 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
       JiGroup* group = git != groups.end() ? &*git : nullptr;
       const std::optional<tuning::Rational> exact = exactRatio(anchor);
       // The anchor sounds at one pitch for all of them: no curve record, no warp of its own.
-      const bool constant = anchor != nullptr && findNoteCurves(clip, anchorId) == nullptr && hz.warped(anchorId) == nullptr;
+      const bool constant = anchor != nullptr && !movesPitch(findNoteCurves(clip, anchorId)) && hz.warped(anchorId) == nullptr;
       // The LEADER takes the anchor's place: the lowest remaining dependant without a curve of its own. It carries the
       // pitch (the exact reference Ratio when the anchor's pitch is one, else Cents) and the others keep their exact
       // ratios to it. For a JI group: always (T7.13: the group lives on, the leader its anchor). Without a group: only
@@ -531,7 +542,7 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
       if ((exact || constant) && (group != nullptr || (!exact && j - i > 1)))
         for (size_t k = i; k < j; ++k) {
           const Note& n = *lost[k];
-          if (findNoteCurves(clip, n.id) != nullptr || (!exact && !(jiHz(n.id) && tun))) continue;
+          if (movesPitch(findNoteCurves(clip, n.id)) || (!exact && !(jiHz(n.id) && tun))) continue;
           if (leader == nullptr || n.pitch.ratio() < leader->pitch.ratio()) leader = &n;
         }
       for (size_t k = i; k < j; ++k) {
@@ -547,7 +558,7 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
           pitch = centsAt(jiHz(n.id));
         }
         if (!pitch) pitch = centsAt(hz.hz(n.id));
-        if (pitch) set(n, *pitch);
+        if (pitch) set(n, *pitch, group != nullptr && &n == leader);
       }
       if (group != nullptr && leader != nullptr) {
         // The group's numbering stays: the leader keeps the number it had (the anchor's × its ratio); reduced by what
@@ -563,18 +574,12 @@ Reanchored reanchorWithout(const Project& p, const TrackPath& path, const NoteCl
           if (own > static_cast<int64_t>(kMaxHarmonicIndex) && shared > 0) own /= shared;
           if (own >= 1 && own <= static_cast<int64_t>(kMaxHarmonicIndex)) index = own;
         }
-        // The warps stay where they are in the clip: group ticks count from the group's start, which moves when the
-        // notes that leave started before the ones that stay.
-        if (!group->warps.empty()) {
-          const std::optional<GroupSpan> was = groupSpan(clip, *group);
-          Ticks start = leader->start;
-          for (size_t k = i; k < j; ++k) start = std::min(start, lost[k]->start);
-          if (was && start > was->start) group->warps = shiftedWarps(group->warps, start - was->start);
-        }
+        // The warps stay where they are in the clip: group ticks count from the anchor's start (M7 review M7).
+        if (!group->warps.empty() && anchor != nullptr) group->warps = shiftedWarps(group->warps, leader->start - anchor->start);
         group->anchor = leader->id;
         group->index = static_cast<uint32_t>(index);
         groupsChanged = true;
-        if (findNoteWritten(clip, leader->id) != nullptr) unwritten.push_back(leader->id);  // an anchor does not warp
+        // (The leader keeps its written identity: an anchor does not warp, but Back to Tuning plays it as written.)
       }
       i = j;
     }

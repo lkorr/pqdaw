@@ -90,6 +90,8 @@ struct ClipPitches {
   // T7.14: (note, its vibrato's period in ticks — vibratoPeriodTicks at the tempo where the note starts) for every
   // note with a vibrato, sorted by note id.
   std::vector<std::pair<NoteId, double>> vibrato;
+  // T7.16a: where every bend of the clip ends (note_bend.h NoteBendEnds), sorted by note id.
+  std::vector<NoteBendEnds> bends;
 };
 
 struct TrackPitches {

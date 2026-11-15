@@ -156,41 +156,38 @@ private:
     return it != byId_.end() && it->first == id.value ? static_cast<int32_t>(it->second) : -1;
   }
 
-  // T7.13 (model.h "JI groups"): the members with a written identity in a group that has warps. One pass over the
-  // notes for the groups' starts, one for the members; nothing for a clip without warps.
+  // T7.13 (model.h "JI groups"): the members with a written identity in a group that has warps (effectiveJiWarps:
+  // T7.16a, a group Back to Tuning is written throughout, its anchor too when it has a written identity). Group ticks
+  // count from the anchor's start. One lookup per anchor, one pass over the notes; nothing for a clip without warps.
   void findWarped() {
     if (!clip_.written) return;
     struct G {
       uint32_t anchor;
       const JiGroup* group;
-      Ticks start;
-      bool any;
+      Ticks origin;
     };
     std::vector<G> groups;
     for (const JiGroup& g : jiGroupsOf(clip_))
-      if (!g.warps.empty()) groups.push_back({g.anchor.value, &g, 0, false});
+      if (!effectiveJiWarps(g).empty())
+        if (const int32_t ai = indexOf(g.anchor); ai >= 0) groups.push_back({g.anchor.value, &g, notes_[static_cast<size_t>(ai)]->start});
     if (groups.empty()) return;
     std::sort(groups.begin(), groups.end(), [](const G& a, const G& b) { return a.anchor < b.anchor; });
-    auto groupOf = [&](NoteId anchor) -> G* {
+    auto groupOf = [&](NoteId anchor) -> const G* {
       const auto it = std::lower_bound(groups.begin(), groups.end(), anchor.value, [](const G& g, uint32_t id) { return g.anchor < id; });
       return it != groups.end() && it->anchor == anchor.value ? &*it : nullptr;
     };
-    for (const Note* n : notes_) {
-      G* g = groupOf(n->id);
-      if (g == nullptr) g = groupOf(noteAnchorOf(n->pitch));
-      if (g == nullptr) continue;
-      g->start = g->any ? std::min(g->start, n->start) : n->start;
-      g->any = true;
-    }
     for (uint32_t i = 0; i < notes_.size(); ++i) {
       const Note& n = *notes_[i];
       const G* g = groupOf(noteAnchorOf(n.pitch));
-      if (g == nullptr) continue;
+      if (g == nullptr) {
+        g = groupOf(n.id);  // an anchor moves only while its group is Back to Tuning
+        if (g == nullptr || g->group->tuned) continue;
+      }
       const NoteWritten* w = findNoteWritten(clip_, n.id);
       if (w == nullptr) continue;
       if (warpOf_.empty()) warpOf_.assign(notes_.size(), -1);
       warpOf_[i] = static_cast<int32_t>(warped_.size());
-      warped_.push_back(Warped{g->group, w->written, NoteWarpState{n.id, g->group->id, n.start - g->start, 0.0, 0.0, 0.0}});
+      warped_.push_back(Warped{g->group, w->written, NoteWarpState{n.id, g->group->id, n.start - g->origin, 0.0, 0.0, 0.0}});
     }
   }
 
@@ -206,7 +203,7 @@ private:
       w.state.jiHz = w.state.writtenHz = w.state.cents = 0.0;
       return;
     }
-    const double s = jiWarpWritten(w.group->warps, static_cast<double>(w.state.offset));
+    const double s = jiWarpWritten(effectiveJiWarps(*w.group), static_cast<double>(w.state.offset));
     if (s == 0.0) return;  // JI: anchor × ratio, exactly
     if (s == 1.0) {        // written: the Hz of the note as written, exactly; it follows the tuning as written
       r.hz = *written;
@@ -224,7 +221,7 @@ private:
   NoteWarp warpFor(uint32_t i) const noexcept {
     if (warpOf_.empty() || warpOf_[i] < 0) return {};
     const Warped& w = warped_[static_cast<size_t>(warpOf_[i])];
-    return w.state.jiHz > 0.0 ? NoteWarp{w.group->warps, w.state.offset, w.state.cents} : NoteWarp{};
+    return w.state.jiHz > 0.0 ? NoteWarp{effectiveJiWarps(*w.group), w.state.offset, w.state.cents} : NoteWarp{};
   }
 
   // The pitch of note `ai` (resolved: `hz` at its own start) at content tick `tick`, clamped to the note's span: its
@@ -236,16 +233,52 @@ private:
     const NoteCurves* nc = findNoteCurves(clip_, a.id);
     const NoteWarp warp = warpFor(ai);
     if (nc == nullptr && !warp.any()) return hz;
-    auto neighbour = [&](const NoteBend& b) -> std::optional<double> {
+    auto neighbour = [&](const NoteBend& b, Ticks meet) -> std::optional<double> {
       if (!b.set()) return std::nullopt;
       const int32_t k = indexOf(b.other);
-      return k < 0 ? std::nullopt : get(static_cast<uint32_t>(k), depth + 1, hit).hz;
+      if (k < 0) return std::nullopt;
+      const std::optional<double> h = get(static_cast<uint32_t>(k), depth + 1, hit).hz;
+      return h ? std::optional<double>(farPitch(static_cast<uint32_t>(k), *h, meet)) : std::nullopt;
     };
     const NoteBendTargets targets =
-        nc != nullptr ? noteBendTargets(*nc, hz, neighbour(nc->bendIn), neighbour(nc->bendOut)) : NoteBendTargets{};
+        nc != nullptr ? noteBendTargets(*nc, hz, neighbour(nc->bendIn, a.start), neighbour(nc->bendOut, a.start + a.length)) : NoteBendTargets{};
     const double cents = noteCurveCents(nc, a.length, targets, warp, static_cast<double>(at - a.start));
     return cents == 0.0 ? hz : hz * std::exp2(cents / 1200.0);
   }
+
+public:
+  // T7.16a (M7 review M2; note_bend.h NoteBendEnds): the pitch of note `k` (resolved: `hz` at its start) at content
+  // tick `tick`, clamped to its span, along its free curve and its group's warps — not its bends, not its vibrato.
+  double farPitch(uint32_t k, double hz, Ticks tick) const noexcept {
+    const Note& a = *notes_[k];
+    const NoteCurves* nc = findNoteCurves(clip_, a.id);
+    const NoteWarp warp = warpFor(k);
+    if ((nc == nullptr || nc->pitch.empty()) && !warp.any()) return hz;
+    const Ticks at = std::clamp<Ticks>(tick, a.start, a.start + std::max<Ticks>(a.length, 1));
+    // No bend targets and no vibrato period: the free curve and the warp only.
+    const double cents = noteCurveCents(nc, a.length, NoteBendTargets{}, warp, static_cast<double>(at - a.start));
+    return cents == 0.0 ? hz : hz * std::exp2(cents / 1200.0);
+  }
+  // Where the bends of the note with this record end (NoteBendEnds). Resolves the neighbours.
+  NoteBendEnds bendEnds(const NoteCurves& nc) {
+    NoteBendEnds e;
+    e.note = nc.note;
+    const int32_t self = indexOf(nc.note);
+    if (self < 0) return e;
+    const Note& n = *notes_[static_cast<size_t>(self)];
+    auto far = [&](const NoteBend& b, Ticks meet, NoteId& other, double& hz) {
+      if (!b.set()) return;
+      other = b.other;
+      const int32_t k = indexOf(b.other);
+      if (k < 0) return;
+      if (const std::optional<double> h = get(static_cast<uint32_t>(k)).hz) hz = farPitch(static_cast<uint32_t>(k), *h, meet);
+    };
+    far(nc.bendIn, n.start, e.inOther, e.inHz);
+    far(nc.bendOut, n.start + n.length, e.outOther, e.outHz);
+    return e;
+  }
+
+private:
 
   const NoteClip& clip_;
   const tuning::Tuning& t_;
@@ -418,6 +451,7 @@ ClipPitches resolveClip(const Project& p, const TrackPath& path, const NoteClip&
     // T7.14: the vibrato periods (sorted by note id, as the curve list is). O(vibratos · log notes) through the
     // resolver's id index (never a scan of the clip per record).
     for (const NoteCurves& nc : noteCurvesOf(clip)) {
+      if (nc.bendIn.set() || nc.bendOut.set()) cp.bends.push_back(r.bendEnds(nc));  // T7.16a: sorted by note id
       if (!nc.vibrato.set()) continue;
       const std::optional<Ticks> start = r.startOf(nc.note);
       if (!start) continue;

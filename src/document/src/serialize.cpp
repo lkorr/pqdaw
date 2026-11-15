@@ -1318,6 +1318,10 @@ private:
       w_.integer(g.anchor.value);
       w_.key("index");
       w_.integer(g.index);
+      if (!g.tuned) {  // T7.16a: Back to Tuning (the reading and the warps are kept)
+        w_.key("tuned");
+        w_.boolean(false);
+      }
       if (!g.warps.empty()) {
         w_.key("warps");
         w_.beginArray(false);
@@ -3329,10 +3333,10 @@ private:
     shape.x2 = h[2];
     shape.y2 = h[3];
   }
-  // [{"id": id, "anchor": note id, "index": N, "warps": [{"at": t, "glide": t, "shape": "linear" | "s" | "bezier",
-  // "handles": [x1, y1, x2, y2], "toJi": bool}]}]; warps and handles optional.
+  // [{"id": id, "anchor": note id, "index": N, "tuned": bool, "warps": [{"at": t, "glide": t, "shape": "linear" | "s" |
+  // "bezier", "handles": [x1, y1, x2, y2], "toJi": bool}]}]; tuned (default true), warps and handles optional.
   JiGroupList jiGroups(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"id", "anchor", "index", "warps"};
+    static constexpr std::string_view K[] = {"id", "anchor", "index", "warps", "tuned"};
     static constexpr std::string_view W[] = {"at", "glide", "shape", "handles", "toJi"};
     JiGroupList list;
     r_.beginArray(at);
@@ -3345,6 +3349,7 @@ private:
         if (k == 0) g.id = JiGroupId{defineId(f)};
         if (k == 1) g.anchor = NoteId{ref(f)};
         if (k == 2) g.index = u32(f);
+        if (k == 4) g.tuned = r_.readBool(f);
         if (k == 3) {
           r_.beginArray(f);
           for (size_t q = 0; r_.nextElement(f); ++q) {
