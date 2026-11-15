@@ -167,6 +167,8 @@ A popover (hotkey TBD, also on the clip's tuning chip) that ports mos-explorer's
 
 ## 5. JI objects (after Zheanna Erose)
 
+> **Superseded in part (user 2026-11-14, §15 "JI is notes-first"; built in M7, docs/plans/M7.md "Rework").** There is no separate JI object: a JI group is an anchor note declared harmonic N plus the regular notes tied to it by exact ratios, framed in the roll; Tune to JI, warps (tempered ↔ JI), walk, typed proportions, bends and vibrato act on notes. Morph = notes + bends between notes. Pulse arpeggiator, chord sets and phase-locked unisons of notes are not built yet. The text below is the original idea.
+
 A **JI object** is a region in a note clip, drawn as a box over the global roll, that holds a proportional chord and its own inner timeline.
 
 - **Definition**: a proportion `a:b:c:…` (e.g. `8:9:10:12:15`) plus a fundamental, given as an absolute pitch or anchored to a note/degree. An **overtone/undertone flag** on the same object type switches to subharmonic proportions (`1/a : 1/b : …`). Morph, walk, arp and chord sets all work in both modes.

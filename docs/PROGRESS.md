@@ -826,3 +826,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, rebased on dca7fcc1): `build.ps1 -Affected -Slow` 86/87, the failure = two help goldens, re-recorded, then pq_tests_views help + macro cases 39/39; ship pq_bench_dsp links.
 - Perf / CPU-efficiency check (release): one-note edit in 100 groups × 8 notes lowering 0.285 → 0.19 ms, a neighbouring clip's edit 0.0008 ms; `busy/16ths x64` 100.95 → 101.94 ns/block (+1.0 %, noise); RtScope clean.
 - Notes/blockers: Q311 (MIDI pitch-bend export). The real Caps Lock SendInput was not exercised by tests.
+
+## 2026-11-15 · M7 run closed · main (3dbc1760)
+- Did: notes-first JI (T7.11a–T7.16b), macro mode (T8.1), `?` help + `M` unbound (KB.help) merged; SPEC §5 marked superseded by the notes-first decision; worktrees pqdaw-w1 / w2 removed, sccache cleaned; the user's release pqdaw.exe rebuilt from 3dbc1760.
+- Open: Q311 (MIDI pitch-bend export), unison phase-lock for notes, pulse arp / chord sets, T8.3 / T8.4 mappings, the review's remaining lows; nothing has been auditioned or driven in the live app by the agents.
