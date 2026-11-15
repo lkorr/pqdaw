@@ -844,17 +844,22 @@ InfoText KeysWidget::info() const {
 // --- ruler ----------------------------------------------------------------------------------------------
 
 RulerWidget::RulerWidget(RollState& s) : Control("ruler"), s_(s) {
-  setInfo("Clip Ruler", "Click to play from there (while playing: jump there), snapped to the grid; Alt: exactly "
-                        "where you click. Drag sideways to scrub, up or down to zoom (then sideways to scroll). Drag "
-                        "the loop brace or its ends to move or resize the loop, the flags to move the clip's start "
-                        "and end.");
+  setInfo("Clip Ruler", "The thin strip above the bar numbers: click to play from there (while playing: jump there), "
+                        "snapped to the grid, Alt: exactly where you click; drag to scrub. The numbers: drag up or "
+                        "down to zoom, sideways to scroll. Drag the loop brace or its ends to move or resize the "
+                        "loop, the flags to move the clip's start and end.");
 }
 
 RulerWidget::Hit RulerWidget::hitAt(Vec2 p) const {
   Hit h;
   const float scale = tree() ? tree()->scale() : 1.0f;
   const float grab = 5.0f * scale;
-  if (p.y >= static_cast<float>(rect().y) + kBraceHeight * scale) return h;  // under the brace strip: zoom / scroll
+  const float braceBottom = static_cast<float>(rect().y) + kBraceHeight * scale;
+  if (p.y >= braceBottom + kScrubHeight * scale) return h;  // the numbers row: zoom / scroll
+  if (p.y >= braceBottom) {  // bug-paused-playhead: the scrub strip
+    h.kind = DragKind::RulerScrub;
+    return h;
+  }
   const doc::ClipLoop loop = s_.shownLoop();
   const float sx = s_.xOfTick(static_cast<double>(s_.shownContentStart()));
   const float ex = s_.xOfTick(static_cast<double>(s_.shownContentStart() + s_.shownLength()));
@@ -881,8 +886,8 @@ RulerWidget::Hit RulerWidget::hitAt(Vec2 p) const {
   return h;
 }
 
-// The flags and the brace's ends drag sideways (↔), the whole brace moves; elsewhere (the scrub area) a click plays
-// from there and a drag scrubs (sideways first) or zooms (↕; then sideways it scrolls).
+// The flags and the brace's ends drag sideways (↔), the whole brace moves; the scrub strip plays from the press and
+// scrubs; the numbers row zooms (↕) and scrolls sideways.
 Cursor RulerWidget::cursorAt(Vec2 p) const {
   if (!s_.hasClip()) return Cursor::Inherit;
   DragKind kind = DragKind::None;
@@ -899,7 +904,7 @@ Cursor RulerWidget::cursorAt(Vec2 p) const {
     case DragKind::StartMarker:
     case DragKind::EndMarker: return Cursor::ResizeEW;
     case DragKind::LoopBrace: return brace == BraceEdge::Both ? Cursor::Move : Cursor::ResizeEW;
-    case DragKind::RulerScrub: return Cursor::ResizeEW;
+    case DragKind::RulerScrub: return Cursor::Pointer;
     default: return Cursor::ResizeNS;
   }
 }
@@ -924,6 +929,8 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
         d.zoomTick = s_.tickAtX(e.pos.x);
         d.pressScrollTick = s_.scrollTick();
       }
+      // bug-paused-playhead: the scrub strip plays from the press (Live), then follows the drag.
+      if (d.kind == DragKind::RulerScrub) d.scrubSong = roll::scrubAt(s_, s_.tickAtX(e.pos.x), e.mods);
       return true;
     }
     case PointerType::Move: {
@@ -931,9 +938,6 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
       if (!d.moved) {
         if (!moreThanSlop(e.pos, d.press, scale)) return true;
         d.moved = true;
-        // bug-roll-playhead: off the brace and the flags (the scrub area) a drag that starts sideways scrubs; one that
-        // starts up or down zooms (and then scrolls sideways).
-        if (d.kind == DragKind::RulerZoom && std::fabs(e.pos.x - d.press.x) > std::fabs(e.pos.y - d.press.y)) d.kind = DragKind::RulerScrub;
       }
       if (d.kind == DragKind::RulerScrub) {
         d.scrubSong = roll::scrubAt(s_, s_.tickAtX(e.pos.x), e.mods, d.scrubSong);
@@ -957,13 +961,6 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
     }
     case PointerType::Up: {
       if (e.button != PointerButton::Left) return false;
-      if (d.kind == DragKind::RulerZoom && !d.moved) {  // bug-roll-playhead: a click in the scrub area plays from there
-        const Mods mods = d.pressMods | e.mods;
-        const double at = s_.tickAtX(d.press.x);
-        d = {};
-        (void)roll::scrubAt(s_, at, mods);
-        return true;
-      }
       if (d.kind == DragKind::RulerZoom || d.kind == DragKind::RulerScrub || !d.moved) {
         d = {};
         return true;

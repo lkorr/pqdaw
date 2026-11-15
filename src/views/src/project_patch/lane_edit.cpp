@@ -353,8 +353,7 @@ void ProjectPatchView::placeStartAt(float deviceX) {
   const double pxPerTick = static_cast<double>(r.x1 - r.x0) / span / static_cast<double>(us);  // logical, as the ruler's
   const auto raw = static_cast<Ticks>(std::floor(laneTickAt(deviceX)));
   const Ticks tick = std::max<Ticks>(0, Grid(ctx_.grid(), ctx_.doc()->timeline->sigMap, pxPerTick).snap(std::max<Ticks>(0, raw)));
-  ctx_.setStartMarker(tick);
-  if (!ctx_.transport().playhead().playing) ctx_.transport().locate(tick);
+  ctx_.placeStart(tick);
 }
 
 bool ProjectPatchView::lanePointer(const ui::PointerEvent& e) {
@@ -836,8 +835,7 @@ public:
     ViewContext& ctx = v_.context();
     tick = std::max<Ticks>(0, tick);
     if (snap) tick = std::max<Ticks>(0, Grid(ctx.grid(), ctx.doc()->timeline->sigMap, pxPerTick()).snap(tick));
-    ctx.setStartMarker(tick);
-    ctx.transport().locate(tick);
+    ctx.jumpTo(tick);
   }
   std::optional<Ticks> playhead() const override { return v_.lanePlayhead(); }
   ui::Widget* focusTarget() override { return &v_.canvas(); }

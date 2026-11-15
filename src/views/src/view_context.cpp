@@ -965,6 +965,18 @@ void ViewContext::setStartMarker(Ticks t) {
   notify(view_change::kTransport);
 }
 
+void ViewContext::placeStart(Ticks t) {
+  startMarker_ = std::max<Ticks>(0, t);
+  if (!transport_.playhead().playing) transport_.locate(startMarker_);
+  notify(view_change::kTransport);
+}
+
+void ViewContext::jumpTo(Ticks t) {
+  startMarker_ = std::max<Ticks>(0, t);
+  transport_.locate(startMarker_);
+  notify(view_change::kTransport);
+}
+
 void ViewContext::playFrom(Ticks t) {
   startMarker_ = std::max<Ticks>(0, t);
   if (transport_.playhead().playing) transport_.locate(startMarker_);

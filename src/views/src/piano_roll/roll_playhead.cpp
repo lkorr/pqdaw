@@ -89,7 +89,9 @@ void ClipView::refreshPlayhead() {
     ph = ctx_.transport().playhead();
   }
   if (!on || !ph.playing) {
-    showPlayhead(std::nullopt);
+    // bug-paused-playhead (user 2026-11-15): stopped, the line stays where playback stopped / was placed (where
+    // Shift+Space resumes), so the roll shows where the song is; read once per notification, no timer.
+    showPlayhead(on ? roll::contentAtSong(*s.clip(), ph.tick) : std::nullopt);
     if (playheadTimer_) {
       cancelTimer(playheadTimer_);
       playheadTimer_ = 0;

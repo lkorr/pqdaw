@@ -16,8 +16,14 @@ constexpr const char* kNotes = "main/body/bottom/detail/clip/clip-view/notes";
 constexpr Ticks kBar = kTicksPerWhole;
 using Call = FakeTransport::Call;
 
-// A point in the ruler's scrub area (its numbers row, under the brace strip) at content tick t.
+// A point in the ruler's scrub strip (bug-paused-playhead: 7 px under the 13 px brace strip, scale 1) at content tick t.
 Vec2 scrubPoint(Roll& r, double t) {
+  const IRect ru = r.d.rect(kRuler);
+  return {r.view->xOfTick(t) + 0.25f, static_cast<float>(ru.y) + 16.5f};
+}
+
+// A point in the numbers row under it.
+Vec2 numbersPoint(Roll& r, double t) {
   const IRect ru = r.d.rect(kRuler);
   return {r.view->xOfTick(t) + 0.25f, static_cast<float>(ru.bottom()) - 6.0f};
 }
@@ -100,12 +106,32 @@ TEST_CASE("pianoroll playhead: drawn in clip time while the song position is ins
   r.d.advance(0.2);
   CHECK(r.view->playheadTick() == std::optional<Ticks>(kBar + 3 * kQ));
 
-  CHECK(r.d.press("Space") == KeyResult::Action);  // stop: gone, and idle again
+  // bug-paused-playhead: stop: the line stays where playback stopped, and the roll is idle again (no reads).
+  CHECK(r.d.press("Space") == KeyResult::Action);
   r.d.advance(0.2);
-  CHECK_FALSE(r.view->playheadTick().has_value());
+  CHECK(r.view->playheadTick() == std::optional<Ticks>(kBar + 3 * kQ));
   const uint64_t reads2 = r.view->playheadReads();
   r.d.advance(5.0);
   CHECK(r.view->playheadReads() == reads2);
+  CHECK(r.view->playheadTick() == std::optional<Ticks>(kBar + 3 * kQ));
+}
+
+TEST_CASE("pianoroll playhead: stopped, it follows where the start marker is placed; Stop again returns it to 0") {
+  Roll r;
+  moveClip(r, 2 * kBar);
+  r.d.advance(0.2);
+  CHECK_FALSE(r.view->playheadTick().has_value());  // stopped at 0: before the clip
+  // A press on empty lane space places the start marker and, stopped, the transport's position, before the views hear.
+  r.ctx.placeStart(2 * kBar + kQ);
+  CHECK(r.port.last(Call::Locate)->tick == 2 * kBar + kQ);
+  r.d.step();
+  CHECK(r.view->playheadTick() == std::optional<Ticks>(kQ));
+  r.ctx.jumpTo(2 * kBar + 2 * kQ);
+  r.d.step();
+  CHECK(r.view->playheadTick() == std::optional<Ticks>(2 * kQ));
+  r.ctx.stopButton();  // stopped: back to the beginning (before the clip): hidden
+  r.d.step();
+  CHECK_FALSE(r.view->playheadTick().has_value());
 }
 
 TEST_CASE("pianoroll ruler: a click plays from there when stopped, jumps there when playing; snapped, Alt unsnapped") {
@@ -155,7 +181,7 @@ TEST_CASE("pianoroll ruler: a click plays from there when stopped, jumps there w
   CHECK(r.port.last(Call::Play)->tick == 2 * kBar + kQ);
 }
 
-TEST_CASE("pianoroll ruler: a sideways drag scrubs (the position follows the pointer), an up / down drag zooms") {
+TEST_CASE("pianoroll ruler: a drag in the scrub strip scrubs (the position follows the pointer); the numbers row zooms and scrolls") {
   Roll r;
   r.port.calls.clear();  // opening the project located
   const double z0 = r.view->pxPerTick(), s0 = r.view->scrollTick();
@@ -172,10 +198,18 @@ TEST_CASE("pianoroll ruler: a sideways drag scrubs (the position follows the poi
     if (r.port.calls[i].call == Call::Locate && r.port.calls[i - 1].call == Call::Locate) CHECK(r.port.calls[i].tick != r.port.calls[i - 1].tick);
   CHECK(r.ctx.startMarker() == 5 * kQ);
 
-  // Up / down: zooms, the transport untouched.
+  // The numbers row: a click does nothing to the transport; up / down zooms; sideways scrolls.
   const size_t calls = r.port.calls.size();
-  r.d.drag(a, {a.x, a.y + 40.0f}, 6);
-  CHECK(r.view->pxPerTick() > z0 * 1.2);
+  const Vec2 n = numbersPoint(r, static_cast<double>(kQ));
+  r.d.click(n);
+  r.d.drag(n, {n.x, n.y + 40.0f}, 6);
+  const double z1 = r.view->pxPerTick();
+  CHECK(z1 > z0 * 1.2);
+  const double s1 = r.view->scrollTick();
+  const Vec2 n2 = numbersPoint(r, static_cast<double>(2 * kQ));
+  r.d.drag(n2, {n2.x - 60.0f, n2.y}, 6);
+  CHECK(r.view->pxPerTick() == doctest::Approx(z1));
+  CHECK(r.view->scrollTick() > s1);
   CHECK(r.port.calls.size() == calls);
 }
 

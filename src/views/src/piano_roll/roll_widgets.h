@@ -26,6 +26,9 @@ inline constexpr float kClipBoxWidth = 148.0f;
 inline constexpr float kKeysWidth = 76.0f;
 inline constexpr float kRulerHeight = 34.0f;
 inline constexpr float kBraceHeight = 13.0f;  // top strip of the ruler: loop brace and markers
+// bug-paused-playhead (user 2026-11-15, Live's scrub area): the strip under the brace, above the bar numbers: a press
+// plays from there (playing: jumps), a drag scrubs. The numbers row under it zooms (↕) and scrolls (↔).
+inline constexpr float kScrubHeight = 7.0f;
 inline constexpr float kLaneHeight = 72.0f;
 inline constexpr float kEdgeGrab = 4.0f;      // note edge resize zone
 inline constexpr float kStemGrab = 5.0f;      // velocity stem hit width (each side)

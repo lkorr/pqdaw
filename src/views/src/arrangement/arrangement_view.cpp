@@ -1065,8 +1065,7 @@ void ArrangementView::locateAt(Ticks tick, bool snapToGrid) {
     const Grid g(ctx_.grid(), model_->shown->timeline->sigMap, pxPerTick_);
     tick = std::max<Ticks>(0, g.snap(tick));
   }
-  ctx_.setStartMarker(tick);
-  ctx_.transport().locate(tick);
+  ctx_.jumpTo(tick);
 }
 
 // Called on transport notifications (play/stop requested, start marker moved): the only reads while stopped.

@@ -549,6 +549,11 @@ public:
   void stopButton();
   Ticks startMarker() const noexcept { return startMarker_; }
   void setStartMarker(Ticks t);
+  // bug-paused-playhead: a press that places the start marker (empty lane space, automation lanes): the marker goes to
+  // `t` and, while stopped, the transport locates there too (where Shift+Space resumes and the stopped playhead is
+  // drawn), before the views hear kTransport. jumpTo also locates while playing (the arrangement's locateAt).
+  void placeStart(Ticks t);
+  void jumpTo(Ticks t);
   // bug-roll-playhead: the scrub areas (Live's): a click or drag in a time ruler — the arrangement's, the lanes' compact
   // ones, the clip view's — plays from there: the start marker goes to `t` (clamped at 0); stopped, playback starts
   // there; playing, it jumps there.

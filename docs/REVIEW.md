@@ -1899,3 +1899,8 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - `Ctrl+Shift+F` (View > Follow, now shown ticked) turns paging off for the arrangement, the lanes and the roll
   together. Scroll the roll away from the line while it plays: it stays where you put it.
 - The `?` panel has a new last section, "Playback and the playhead".
+
+## 2026-11-15 · bug-paused-playhead · 👁
+- Stop playback inside a clip: the roll's playhead line stays where it stopped (and moves when you click an empty spot of the arrangement / lanes, which places the start marker). Stop again: back to the beginning.
+- The roll's ruler has a thin scrub strip between the loop brace and the bar numbers (hand pointer): press = play from there (playing: jump), drag = scrub, Alt = off the grid. The numbers row is back to zoom (drag up / down) and scroll (sideways); a click there does nothing.
+- Is the strip visible enough (surface.raised, 7 px)?

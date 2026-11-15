@@ -177,7 +177,8 @@ Every part shows the cursor of what a press there does (the same hit test the pr
 | Keys | Pointer | — | click auditions, selects the row (horizontal drag zooms: ↔ while dragging) |
 | Clip ruler: start / end flag, loop brace ends | ↔ | — | drag moves it |
 | Clip ruler: loop brace | Move | — | drag moves the loop |
-| Clip ruler: lower strip (and the brace strip off the brace / flags) | ↕ (↔ while scrubbing) | — | bug-roll-playhead, Live's scrub area: click plays from there (playing: jumps there; snapped to the roll's grid, `Alt` unsnapped; mapped into the clip's song time, a looped clip's current pass); a drag that starts sideways scrubs (the transport follows the pointer, cell by cell); one that starts up / down zooms (then sideways scrolls) |
+| Clip ruler: scrub strip (the thin bar between the brace strip and the numbers) | hand | — | bug-paused-playhead, Live's scrub area: a press plays from there (playing: jumps there; snapped to the roll's grid, `Alt` unsnapped; mapped into the clip's song time, a looped clip's current pass); a drag scrubs (the transport follows the pointer, cell by cell). Stopped, the roll's playhead line stays where playback stopped / was placed |
+| Clip ruler: numbers (and the brace strip off the brace / flags) | ↕ | — | drag up / down zooms, sideways scrolls; a click does nothing |
 | Clip title strip | Move | strip brightened | drag moves (Alt copies) |
 | Clip start / end | ↔ | the edge marked | drag trims |
 | Clip body, empty lane | Arrow | — | a time selection (Live) |

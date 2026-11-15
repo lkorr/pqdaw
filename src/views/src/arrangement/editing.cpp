@@ -689,8 +689,7 @@ void Editor::press(const PointerEvent& e) {
 }
 
 void Editor::placeStart(Ticks t) {
-  ctx_.setStartMarker(t);
-  if (!ctx_.transport().playhead().playing) ctx_.transport().locate(t);
+  ctx_.placeStart(t);
 }
 
 bool Editor::frozenTrack(doc::TrackId id) const {

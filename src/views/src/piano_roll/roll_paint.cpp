@@ -897,6 +897,11 @@ void RulerWidget::paint(PaintContext& ctx) {
     dl.addTriangleFilled({ex, top + 1.0f}, {ex, top + 1.0f + fh}, {ex - fh * 0.8f, top + 1.0f + fh * 0.5f}, th->text.primary);
   }
 
+  // bug-paused-playhead: the scrub strip (Live's scrub area) between the brace and the numbers.
+  const float scrubBottom = braceBottom + static_cast<float>(ctx.scale.px(kScrubHeight));
+  dl.addRectFilled(frect(static_cast<float>(vis.x), braceBottom, static_cast<float>(vis.right()), scrubBottom), th->surface.raised);
+  dl.addRectFilled(frect(static_cast<float>(vis.x), scrubBottom - 1.0f, static_cast<float>(vis.right()), scrubBottom), th->surface.divider);
+
   // Time ruler: ticks from the editing grid, numbers on a coarser adaptive grid so labels never collide.
   const auto [from, to] = tickSpan(s_, vis.x, vis.right());
   const Grid g = s_.grid();
@@ -904,7 +909,7 @@ void RulerWidget::paint(PaintContext& ctx) {
   if (g.enabled())
     for (const GridLine& line : g.lines(from, to)) {
       const float x = std::round(s_.xOfTick(static_cast<double>(line.tick)));
-      const float h = line.strength == GridStrength::Bar    ? bottom - braceBottom
+      const float h = line.strength == GridStrength::Bar    ? bottom - scrubBottom
                       : line.strength == GridStrength::Beat ? std::round(6.0f * scale)
                                                             : std::round(3.0f * scale);
       dl.addRectFilled(frect(x, bottom - h, x + 1.0f, bottom), th->text.disabled);
@@ -913,12 +918,13 @@ void RulerWidget::paint(PaintContext& ctx) {
   if (fonts && ctx.res.text) {
     const Grid labels = Grid::adaptive(56.0, s_.sigs(), s_.pxPerTick() / static_cast<double>(scale));
     char buf[kRulerLabelMaxChars];
-    const int32_t labelH = r.bottom() - (r.y + braceH);
+    const int32_t labelY = static_cast<int32_t>(scrubBottom);
+    const int32_t labelH = r.bottom() - labelY;
     for (const GridLine& line : labels.lines(from - kTicksPerWhole, to)) {
       const float x = std::round(s_.xOfTick(static_cast<double>(line.tick)));
-      dl.addRectFilled(frect(x, braceBottom, x + 1.0f, bottom), th->text.disabled);
+      dl.addRectFilled(frect(x, scrubBottom, x + 1.0f, bottom), th->text.disabled);
       const size_t n = formatRulerPosition(rulerPosition(line), buf);
-      paint::text(ctx, fonts->small, {static_cast<int32_t>(x) + ctx.scale.px(3), r.y + braceH, ctx.scale.px(60), labelH},
+      paint::text(ctx, fonts->small, {static_cast<int32_t>(x) + ctx.scale.px(3), labelY, ctx.scale.px(60), labelH},
                   std::string_view(buf, n), th->text.secondary, TextAlign::Left);
     }
   }
