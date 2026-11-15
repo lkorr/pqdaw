@@ -67,19 +67,19 @@ bool sameNote(const engine::NoteDesc& a, const engine::NoteDesc& b) {
          a.gainCurve == b.gainCurve;  // T7.3
 }
 
-bool sameDesc(const engine::TrackSequenceDesc& a, const engine::TrackSequenceDesc& b) {
-  if (a.id != b.id || a.clips.size() != b.clips.size()) return false;
-  for (size_t i = 0; i < a.clips.size(); ++i) {
-    const engine::ClipDesc& x = a.clips[i];
-    const engine::ClipDesc& y = b.clips[i];
-    if (x.id != y.id || x.start != y.start || x.length != y.length || x.contentStart != y.contentStart ||
-        x.loopEnabled != y.loopEnabled || x.loopStart != y.loopStart || x.loopEnd != y.loopEnd ||
-        x.active != y.active || x.notes.size() != y.notes.size())
-      return false;
-    for (size_t j = 0; j < x.notes.size(); ++j)
-      if (!sameNote(x.notes[j], y.notes[j])) return false;
-  }
+bool sameClipDesc(const engine::ClipDesc& x, const engine::ClipDesc& y) {
+  if (x.id != y.id || x.start != y.start || x.length != y.length || x.contentStart != y.contentStart ||
+      x.loopEnabled != y.loopEnabled || x.loopStart != y.loopStart || x.loopEnd != y.loopEnd || x.active != y.active ||
+      x.notes.size() != y.notes.size())
+    return false;
+  for (size_t j = 0; j < x.notes.size(); ++j)
+    if (!sameNote(x.notes[j], y.notes[j])) return false;
   return true;
+}
+
+// The tuning-signal part of a sequenceKey (before its first null: the separator).
+std::span<const void* const> signalPart(const std::vector<const void*>& key) noexcept {
+  return {key.data(), static_cast<size_t>(std::find(key.begin(), key.end(), nullptr) - key.begin())};
 }
 
 // Every active MIDI track with its path (main tree; deactivated groups hide their members).
@@ -143,8 +143,13 @@ std::optional<ProjectLink::TableKey> ProjectLink::tableKey(const doc::TuningDef&
 // becomes its per-note pitch curve; the notes of a JI group carry their harmonic numbers. Notes keep their ids, so a
 // re-lowering after an edit keeps the sounding voices (the timeline's swap retunes them and re-synchronises their
 // curves).
-engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const doc::TrackPath& path,
-                                                  const doc::Track& track) {
+// T7.16b (review M17): `desc` holds the track's previous description (`hadOld`) and receives the new one. A played
+// clip whose key (its clip node, the definition it resolves in, and — when its lowering reads it — the timeline node)
+// is in `oldKeys` keeps its previous ClipDesc (moved, not lowered again); only the others are resolved and lowered: a
+// note edit lowers the one clip it is in. Returns whether the description changed.
+bool ProjectLink::lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& track,
+                             std::span<const SeqClipKey> keys, std::span<const SeqClipKey> oldKeys,
+                             engine::TrackSequenceDesc& desc, bool hadOld) {
   ++stats_.trackLowerings;
   const double lowerFrom = nowSeconds();
   engine::TrackSequenceDesc d;
@@ -156,8 +161,30 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
     const EntryPtr* e = tuningEntry(id, def);  // held: alive while this (UI) thread lowers
     return e != nullptr && (*e)->built ? &*(*e)->built : nullptr;
   };
-  auto pitches = doc::resolveTrackPitches(p, track.id, ro);
   const std::vector<doc::ClipSlot>& clips = doc::playedClips(track);  // T6.1: the audition take's, else the main lane
+  // Which clips keep their description (index into desc.clips), which are lowered again.
+  std::vector<int32_t> kept(clips.size(), -1);
+  size_t fresh = 0;
+  for (size_t ci = 0; ci < clips.size(); ++ci) {
+    if (ci < keys.size() && hadOld) {
+      const size_t n = std::min(oldKeys.size(), desc.clips.size());
+      if (ci < n && oldKeys[ci] == keys[ci]) {
+        kept[ci] = static_cast<int32_t>(ci);
+      } else {
+        for (size_t j = 0; j < n; ++j)
+          if (oldKeys[j] == keys[ci]) {
+            kept[ci] = static_cast<int32_t>(j);
+            break;
+          }
+      }
+    }
+    fresh += kept[ci] < 0 ? 1u : 0u;
+  }
+  // Every clip new: the track's pitches at once (one tuning build per definition); else only the new clips'.
+  std::optional<doc::TrackPitches> all;
+  if (fresh == clips.size() && fresh != 0)
+    if (auto r = doc::resolveTrackPitches(p, track.id, ro); r.ok()) all = std::move(r.value());
+  bool changed = !hadOld || desc.clips.size() != clips.size();
   // How a note follows its tuning node (PitchSource), from what the document resolved.
   auto setFollow = [&](engine::NoteDesc& nd, const doc::NotePitch& np) {
     if (np.follow == doc::PitchFollow::Static) return;
@@ -174,7 +201,21 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
   };
   const bool tempoMoves = p.timeline->tempo.size() > 1;
   for (size_t ci = 0; ci < clips.size(); ++ci) {
+    if (kept[ci] >= 0) {
+      changed |= kept[ci] != static_cast<int32_t>(ci);
+      d.clips.push_back(std::move(desc.clips[static_cast<size_t>(kept[ci])]));
+      continue;
+    }
+    ++stats_.clipLowerings;
     const doc::NoteClip& c = *clips[ci].clip;
+    std::optional<doc::ClipPitches> one;
+    const doc::ClipPitches* cpp = nullptr;
+    if (all) {
+      cpp = &all->clips[ci];
+    } else {
+      one = doc::resolveClipPitches(p, path, c, ro);
+      cpp = &*one;
+    }
     engine::ClipDesc cd;
     cd.id = c.id.value;
     cd.start = c.start;
@@ -184,8 +225,8 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
     cd.loopStart = c.loop.start;
     cd.loopEnd = c.loop.end;
     cd.active = c.active;
-    if (pitches.ok()) {
-      const doc::ClipPitches& cp = pitches.value().clips[ci];
+    {
+      const doc::ClipPitches& cp = *cpp;
       // T7.13: the clip's note curves, bends, warps and harmonic numbers (project_link_ji.h).
       std::optional<ClipCurveLowering> curves;
       if (ClipCurveLowering::needed(c)) curves.emplace(c, p.timeline->tempoMap, tempoMoves, cp);
@@ -214,10 +255,15 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
         cd.notes.push_back(std::move(nd));
       }
     }
+    if (!changed) {  // the clip's previous description (same id; a kept one was moved out and has another id)
+      const auto old = std::find_if(desc.clips.begin(), desc.clips.end(), [&](const engine::ClipDesc& o) { return o.id == cd.id; });
+      changed = old == desc.clips.end() || !sameClipDesc(*old, cd);
+    }
     d.clips.push_back(std::move(cd));
   }
+  desc = std::move(d);
   stats_.lowerMs += (nowSeconds() - lowerFrom) * 1000.0;
-  return d;
+  return changed;
 }
 
 // What a track's lowered sequence depends on besides the track node itself (T2.6-fix3, M3 review H5): per clip the
@@ -225,8 +271,12 @@ engine::TrackSequenceDesc ProjectLink::lowerTrack(const doc::Project& p, const d
 // unique while the cache keys on it) for a clip following a tuning signal, else the effective TuningDef — and the
 // track's tuning signals (node numbers). A tuning param change replaces the tuning slot but not its table, so tracks
 // whose notes follow the node are not re-lowered.
+// T7.16b (review H5): and, per clip whose lowering reads the tempo map (ClipCurveLowering::readsTempo: a Hz vibrato's
+// period in ticks, the 1 ms thinning, the cuts inside tempo ramps), the timeline node: a tempo or signature change lowers
+// exactly those clips again (other clips play ticks the engine converts itself).
 std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const doc::TrackPath& path,
-                                                  const doc::Track& t, std::vector<EntryPtr>* tables) const {
+                                                  const doc::Track& t, std::vector<EntryPtr>* tables,
+                                                  std::vector<SeqClipKey>* clipKeys) const {
   std::vector<const void*> key;
   for (const doc::TuningId id : doc::trackTuningSignals(p, path))
     key.push_back(reinterpret_cast<const void*>(static_cast<uintptr_t>(id.value)));
@@ -241,6 +291,9 @@ std::vector<const void*> ProjectLink::sequenceKey(const doc::Project& p, const d
         if (tables) tables->push_back(*entry);
       }
     key.push_back(k);
+    const void* tempo = c.clip && ClipCurveLowering::readsTempo(*c.clip) ? static_cast<const void*>(p.timeline.get()) : nullptr;
+    key.push_back(tempo);
+    if (clipKeys) clipKeys->push_back(SeqClipKey{c.clip.get(), k, tempo});
   }
   return key;
 }
@@ -895,11 +948,21 @@ void ProjectLink::writeLinked(const std::string& key, float value) {
 }
 
 void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
-  std::vector<engine::TrackSequenceDesc> descs;
+  const double publishFrom = nowSeconds();
+  struct Timed {
+    LinkStats& s;
+    double from;
+    ~Timed() { s.sequenceMs += (nowSeconds() - from) * 1000.0; }
+  } timed{stats_, publishFrom};
+  seqTimeline_ = p.timeline.get();
   std::unordered_map<uint32_t, SeqCacheEntry> next;
+  next.reserve(seqCache_.size());
   bool changed = false;
   uint32_t withoutSlot = 0;
   std::string firstWithout;
+  // T7.16b (review M17): the descriptions live in seqDescs_ by slot (a cached track's is not copied per publish).
+  std::vector<uint8_t> used(seqDescs_.size(), 0);
+  size_t slots = 0;
   forEachMidi(p, [&](const doc::TrackPath& path, const doc::Track& t) {
     const uint32_t slot = slotForTrack(t.id);
     if (slot == kNone) {
@@ -907,23 +970,36 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
       return;
     }
     std::vector<EntryPtr> tables;
-    std::vector<const void*> key = sequenceKey(p, path, t, &tables);
+    std::vector<SeqClipKey> clipKeys;
+    std::vector<const void*> key = sequenceKey(p, path, t, &tables, &clipKeys);
+    if (seqDescs_.size() <= slot) seqDescs_.resize(slot + 1);
+    if (used.size() <= slot) used.resize(slot + 1, 0);
+    used[slot] = 1;
+    slots = std::max<size_t>(slots, slot + 1);
     SeqCacheEntry e;
     auto it = seqCache_.find(t.id.value);
-    if (it != seqCache_.end() && it->second.track == &t && it->second.key == key) {
-      e = std::move(it->second);
+    SeqCacheEntry* old = it != seqCache_.end() && it->second.slot == slot ? &it->second : nullptr;  // seqDescs_[slot] is its
+    if (old != nullptr && old->track == &t && old->key == key) {
+      e = std::move(*old);
     } else {
       e.track = &t;
       e.key = std::move(key);
       e.from = current_;
       e.tables = std::move(tables);
-      e.desc = lowerTrack(p, path, t);
-      changed |= it == seqCache_.end() || !sameDesc(it->second.desc, e.desc);
+      e.slot = slot;
+      e.clips = std::move(clipKeys);
+      // A clip keeps its description only under the same tuning signals (their node numbers are in every note).
+      const bool reuse = old != nullptr && std::ranges::equal(signalPart(old->key), signalPart(e.key));
+      changed |= lowerTrack(p, path, t, e.clips, reuse ? std::span<const SeqClipKey>(old->clips) : std::span<const SeqClipKey>(),
+                            seqDescs_[slot], old != nullptr);
     }
-    if (descs.size() <= slot) descs.resize(slot + 1);
-    descs[slot] = e.desc;
     next.emplace(t.id.value, std::move(e));
   });
+  for (size_t s = 0; s < seqDescs_.size(); ++s)  // slots no track plays now
+    if ((s >= used.size() || used[s] == 0) && (seqDescs_[s].id != 0 || !seqDescs_[s].clips.empty())) {
+      seqDescs_[s] = {};
+      changed = true;
+    }
   changed |= next.size() != seqCache_.size();
   seqCache_ = std::move(next);
   if (withoutSlot != stats_.tracksWithoutSlot) {  // M3 review M5: a visible limit, not a silent track
@@ -939,7 +1015,7 @@ void ProjectLink::publishSequences(const doc::Project& p, bool onlyIfChanged) {
   if (onlyIfChanged && !changed) return;  // e.g. a tuning param that only the tuning nodes follow
   engine::SequenceBuildOptions so;
   so.seed = cfg_.chanceSeed;
-  auto img = engine::SequenceImage::build(descs, so);
+  auto img = engine::SequenceImage::build(std::span<const engine::TrackSequenceDesc>(seqDescs_.data(), slots), so);
   if (!img.ok()) {
     setError(img.error().message);
     return;
@@ -1190,6 +1266,8 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
   if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only
+  // T7.16b (review H5): a new tempo map / signatures lowers the clips whose lowering reads it (sequenceKey) again.
+  else if (c.has(doc::kChangeTimeline) && p.timeline.get() != seqTimeline_) publishSequences(p, true);
   // T6.4: arm / monitor (Param), MIDI input and note input (Meta), tunings, slots: the live routes (published only when
   // one changed).
   if (reset) capture_.clear();  // T6.9: another project's notes are not this one's

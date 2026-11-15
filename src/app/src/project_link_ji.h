@@ -42,9 +42,20 @@ class ClipCurveLowering {
 public:
   // True when the clip has anything to lower here (a curve record, a group): lowerTrack skips the rest otherwise.
   static bool needed(const doc::NoteClip& clip) noexcept { return clip.curves != nullptr || clip.groups != nullptr; }
+  // T7.16b (review H5): whether what this lowers for the clip depends on the tempo map — a curve record (a Hz vibrato's
+  // period in ticks, the 1 ms thinning, the cuts inside tempo ramps) or a group with warps (thinned and cut likewise).
+  // ProjectLink::sequenceKey keys such clips on the timeline node.
+  static bool readsTempo(const doc::NoteClip& clip) noexcept {
+    if (clip.curves != nullptr) return true;
+    for (const doc::JiGroup& g : doc::jiGroupsOf(clip))
+      if (!g.warps.empty()) return true;
+    return false;
+  }
 
   // `tempoMoves`: the tempo map is not one constant tempo. `pitches`: the clip's resolved pitches (what its notes'
   // bends aim at and its members' warps move between); it must outlive this object.
+  // The harmonic numbers of every group come from one pass over the clip's notes (T7.16b, review M17: the members
+  // bucketed by their anchor; the numbers are doc::groupHarmonics', group by group).
   ClipCurveLowering(const doc::NoteClip& clip, const TempoMap& tempo, bool tempoMoves, const doc::ClipPitches& pitches);
 
   // The effective pitch curve of clip note `n` into nd.pitchCurve (nd.start must be set), and for a note of a JI

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
+#include <span>
 
 #include "pq/core/automation_curve.h"
 #include "pq/document/pitch_resolve.h"
@@ -55,13 +57,47 @@ void flatten(const std::vector<doc::Breakpoint>& pts, Ticks origin, std::vector<
 ClipCurveLowering::ClipCurveLowering(const doc::NoteClip& clip, const TempoMap& tempo, bool tempoMoves,
                                      const doc::ClipPitches& pitches)
     : clip_(clip), tempo_(tempo), tempoMoves_(tempoMoves), pitches_(pitches) {
-  // voice.harmonic: every numbered note of every group, once per clip.
-  for (const doc::JiGroup& g : doc::jiGroupsOf(clip)) {
-    const std::optional<doc::GroupHarmonics> gh = doc::groupHarmonics(clip, g);
-    if (!gh) continue;
-    harmonics_.emplace_back(g.anchor, gh->anchor);
-    for (const doc::GroupMember& m : gh->members)
-      if (m.harmonic > 0) harmonics_.emplace_back(m.note, m.harmonic);
+  // voice.harmonic: every numbered note of every group, once per clip. One pass over the notes for all groups
+  // (T7.16b, review M17; was doc::groupHarmonics per group: a pass over the clip each). The same arithmetic as
+  // model.cpp's deriveGroup, in the same note order per group: the group's m is the lcm of its members' reduced
+  // denominators over gcd(d, N), capped (a member too fine for any numbering leaves m as it was); anchor = N · m, a
+  // member's number = N · m · its ratio when that is whole.
+  const std::span<const doc::JiGroup> groups = doc::jiGroupsOf(clip);
+  if (groups.empty()) return;
+  struct G {
+    uint32_t anchor;
+    uint32_t index;  // into groups
+  };
+  std::vector<G> byAnchor;
+  byAnchor.reserve(groups.size());
+  for (uint32_t i = 0; i < groups.size(); ++i)
+    if (groups[i].index >= 1 && clip.notes.findById(groups[i].anchor) != nullptr) byAnchor.push_back({groups[i].anchor.value, i});
+  std::stable_sort(byAnchor.begin(), byAnchor.end(), [](const G& a, const G& b) { return a.anchor < b.anchor; });
+  auto groupOf = [&](doc::NoteId anchor) -> const G* {
+    const auto it = std::lower_bound(byAnchor.begin(), byAnchor.end(), anchor.value, [](const G& g, uint32_t id) { return g.anchor < id; });
+    return it != byAnchor.end() && it->anchor == anchor.value ? &*it : nullptr;
+  };
+  std::vector<int64_t> m(groups.size(), 1);
+  std::vector<std::pair<const doc::Note*, uint32_t>> members;  // (member, group index), in note order
+  for (const doc::Note& n : clip.notes) {
+    const doc::NoteId a = doc::noteAnchorOf(n.pitch);
+    if (!a.valid() || a == n.id) continue;
+    const G* g = groupOf(a);
+    if (g == nullptr) continue;
+    const int64_t N = groups[g->index].index;
+    const tuning::Rational q = n.pitch.ratio();
+    if (q.isPositive()) {
+      const int64_t need = q.den() / std::gcd(q.den(), N);
+      const int64_t next = doc::lcmCapped(m[g->index], need, doc::kMaxFundamentalDenominator / N);
+      if (next > 0) m[g->index] = next;
+    }
+    members.emplace_back(&n, g->index);
+  }
+  harmonics_.reserve(byAnchor.size() + members.size());
+  for (const G& g : byAnchor) harmonics_.emplace_back(groups[g.index].anchor, static_cast<int64_t>(groups[g.index].index) * m[g.index]);
+  for (const auto& [n, gi] : members) {
+    const std::optional<tuning::Rational> h = tuning::mul(tuning::Rational(static_cast<int64_t>(groups[gi].index) * m[gi]), n->pitch.ratio());
+    if (h && h->den() == 1 && h->num() >= 1) harmonics_.emplace_back(n->id, h->num());
   }
   std::sort(harmonics_.begin(), harmonics_.end());
 }

@@ -12,12 +12,15 @@
 //                at the next block; only tracks whose notes keep static pitches in that tuning are lowered again,
 //                and republished only if one of them changed (held notes then retuned by Pitch events, not cut).
 //   Sequence     the note sequences of the touched tracks are lowered again (a per-track cache keyed by the
-//                track's snapshot node and the definitions its clips resolve in: sequenceKey), the SequenceImage is
-//                rebuilt and published at
+//                track's snapshot node and the definitions its clips resolve in: sequenceKey; T7.16b: inside a
+//                touched track only the clips whose node / definition changed are lowered, the others keep their
+//                descriptions), the SequenceImage is rebuilt and published at
 //                once (Timeline::publishSequence): a moved note or a velocity change plays from the next block,
 //                with no compile.
 //   Automation   the AutomationImage is rebuilt and published (targets = project param slots).
-//   Timeline     the TempoImage is published (the loop reaches the transport through TransportPort::setLoop).
+//   Timeline     the TempoImage is published (the loop reaches the transport through TransportPort::setLoop). T7.16b:
+//                clips whose lowering reads the tempo map (curves: a Hz vibrato's period in ticks, the 1 ms
+//                thinning) are keyed on the timeline node, so a tempo / signature change lowers those clips again.
 //   Structural   a debounced (≈ 50 ms, SPEC §7.5) compile on the compile worker thread: doc::lower → the tracks
 //                whose generated patch text changed → ProjectCompiler::update (only those tracks' units, hot swap
 //                per unit, T1.9) or, when the partition / buses changed (a track added, removed or re-routed),
@@ -308,6 +311,8 @@ struct LinkStats {
   uint64_t unitPublishes = 0;
   uint64_t sequencePublishes = 0, automationPublishes = 0, tempoPublishes = 0;
   uint64_t trackLowerings = 0;     // tracks whose note sequence was lowered again (the per-track cache missed)
+  uint64_t clipLowerings = 0;      // T7.16b: clips of those tracks lowered again (the per-clip cache missed)
+  double sequenceMs = 0.0;         // T7.16b: time in publishSequences (keys, lowering, the image build and publish)
   double lowerMs = 0.0;            // T7.3: time spent in them (notes, curves, JI objects → engine descriptions)
   uint64_t tablesExhausted = 0;    // tunings left without a node table (every Resources::tunings slot in use)
   uint64_t paramWrites = 0;
@@ -677,12 +682,20 @@ private:
     dsp::TuningTable table;                // its view points at live_[slot]
   };
   using EntryPtr = std::shared_ptr<const TuningTableEntry>;
+  // T7.16b (review M17): what one played clip's description was lowered from.
+  struct SeqClipKey {
+    const doc::NoteClip* clip = nullptr;
+    const void* tuning = nullptr;  // sequenceKey's per-clip definition / node table
+    const void* tempo = nullptr;   // the timeline node when the clip's lowering reads the tempo map (H5); else null
+    friend bool operator==(const SeqClipKey&, const SeqClipKey&) noexcept = default;
+  };
   struct SeqCacheEntry {
     const doc::Track* track = nullptr;
     std::vector<const void*> key;  // sequenceKey: the definitions (or node tables) its clips resolve in
     doc::Snapshot from;  // keeps `track` and the keyed definitions alive, so no address can be reused by a later node
     std::vector<EntryPtr> tables;  // … and the keyed tables
-    engine::TrackSequenceDesc desc;
+    std::vector<SeqClipKey> clips;  // per played clip, aligned with seqDescs_[slot].clips
+    uint32_t slot = 0;              // its description is seqDescs_[slot]
   };
   struct MeterState {
     float peakDb[2] = {-200.0f, -200.0f};
@@ -704,9 +717,11 @@ private:
   void publishSequences(const doc::Project& p, bool onlyIfChanged = false);
   void publishLiveRoutes(const doc::Project& p, bool force = false);  // T6.4 (project_link_input.cpp)
   bool armed(const doc::Track& t) const noexcept;  // KB.1: armed by hand, or the auto-armed MIDI track
-  engine::TrackSequenceDesc lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t);
+  bool lowerTrack(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t, std::span<const SeqClipKey> keys,
+                  std::span<const SeqClipKey> oldKeys, engine::TrackSequenceDesc& desc, bool hadOld);
   std::vector<const void*> sequenceKey(const doc::Project& p, const doc::TrackPath& path, const doc::Track& t,
-                                       std::vector<EntryPtr>* tables = nullptr) const;
+                                       std::vector<EntryPtr>* tables = nullptr,
+                                       std::vector<SeqClipKey>* clipKeys = nullptr) const;
   // UI thread: the tables of the snapshot's signal tunings become the held set (`fresh`: a Reset, build new ones even
   // for an unchanged key); true when one was built (its index is new: a compile).
   bool updateTuningTables(const doc::Project& p, bool fresh = false);
@@ -1026,6 +1041,8 @@ private:
   std::vector<float> written_;                   // per param slot: the value last written (NaN: never)
   std::vector<uint8_t> automated_;               // per param slot: an automation lane drives it
   std::unordered_map<uint32_t, SeqCacheEntry> seqCache_;  // track id
+  std::vector<engine::TrackSequenceDesc> seqDescs_;        // by event slot (T7.16b: published without a copy)
+  const doc::Timeline* seqTimeline_ = nullptr;             // the timeline node the sequences were last published with
   const void* tempoTimeline_ = nullptr;
   views::ViewContext* ctx_ = nullptr;
   views::ViewContext::Subscription sub_;

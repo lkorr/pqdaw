@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -616,5 +617,150 @@ TEST_CASE("ji playback: lowering 100 groups x 8 notes x 32 warps (CPU)") {
   MESSAGE("lowering 100 groups x 8 notes x 32 warps: " << best << " ms (best of 5), " << points << " curve points");
 #if PQ_OPTIMIZED
   CHECK(best < 25.0);  // the bound survives a loaded machine
+#endif
+}
+
+namespace {
+// The rate of a vibrato in Hz from the probe's output: upward crossings of the note's own pitch (interpolated) over
+// [from, to) seconds. `K` and `hz`: the probe's scale and the note's steady Hz.
+double vibratoRate(const std::vector<float>& out, double K, double hz, double from, double to) {
+  std::vector<double> ups;
+  for (size_t n = at(from) + 1; n < std::min(at(to), out.size()); ++n) {
+    const double a = static_cast<double>(out[n - 1]) / K - hz, b = static_cast<double>(out[n]) / K - hz;
+    if (a < 0.0 && b >= 0.0) ups.push_back(static_cast<double>(n - 1) + a / (a - b));
+  }
+  if (ups.size() < 2) return 0.0;
+  return static_cast<double>(ups.size() - 1) / ((ups.back() - ups.front()) / kRate);
+}
+}  // namespace
+
+TEST_CASE("ji playback (T7.16b, review H5): a tempo change re-lowers a Hz vibrato — it keeps its rate in Hz and plays as the roll draws it (probe)") {
+  Rig r(true);
+  const Note n = playback_fixture::note(r.store.ids(), 0, 16 * kQ, 12);
+  auto added = ops::addNotes(r.doc(), r.store.ids(), r.ref, std::vector<Note>{n});
+  test_blocks::dispatchEdit(r.store, added);
+  const ops::NoteVibratoEdit edits[] = {{added->notes.front(), vibrato(30.0f, 6.0f, kQ)}};  // 6 Hz from a beat in
+  test_blocks::dispatchEdit(r.store, ops::setNoteVibrato(r.doc(), r.ref, edits));
+  REQUIRE(findNoteCurves(r.clip(), added->notes.front().id)->vibrato.unit == NoteVibrato::RateUnit::Hz);
+  auto link = makeLink(r.store.current());
+  [[maybe_unused]] const ListenerId sub = r.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  const double hz = kRef * 2.0;
+  {
+    const std::vector<float> out = render(*link, 3.2);
+    const double K = static_cast<double>(out[at(0.25)]) / hz;  // before the onset (0.5 s at 120 BPM)
+    const double rate = vibratoRate(out, K, hz, 0.7, 3.1);
+    CHECK(rate == doctest::Approx(6.0).epsilon(0.01));
+    MESSAGE("120 BPM: " << rate << " Hz");
+  }
+  // 60 BPM: the vibrato still swings 6 times a second (the roll draws it so); the sequence was lowered again.
+  const app::LinkStats before = link->stats();
+  REQUIRE(r.store.dispatch(SetTempoMap{std::vector<TempoPoint>{TempoPoint{0, 60.0, TempoCurve::Step}}}).ok());
+  link->flush();
+  CHECK(link->stats().sequencePublishes == before.sequencePublishes + 1);
+  const std::vector<float> out = render(*link, 4.2);
+  const double K = static_cast<double>(out[at(0.5)]) / hz;  // before the onset (1 s at 60 BPM)
+  const double rate = vibratoRate(out, K, hz, 1.2, 4.1);
+  CHECK(rate == doctest::Approx(6.0).epsilon(0.01));
+  // What plays is the document's own evaluation at the new tempo (what the roll draws).
+  const ClipSum want(r);
+  const double ticksPerSample = static_cast<double>(kPpq) / kRate;  // 60 BPM: a quarter is one second
+  double worst = 0.0;
+  for (size_t i = at(0.3); i < at(4.1); i += 7) {
+    const double w = want(static_cast<double>(i) * ticksPerSample);
+    worst = std::max(worst, std::fabs(static_cast<double>(out[i]) / K - w) / w);
+  }
+  CHECK(cents(worst) < 2.0);
+  MESSAGE("60 BPM: " << rate << " Hz; within " << cents(worst) << " c of the roll's curve");
+  // Back to 120 BPM (undo): 6 Hz again.
+  REQUIRE(r.store.undo());
+  link->flush();
+  const std::vector<float> back = render(*link, 3.2);
+  CHECK(vibratoRate(back, static_cast<double>(back[at(0.25)]) / hz, hz, 0.7, 3.1) == doctest::Approx(6.0).epsilon(0.01));
+}
+
+TEST_CASE("ji playback (T7.16b, review M17): a one-note edit re-lowers only the clip it is in; a clip of 100 tuned groups in one pass (CPU)") {
+  Rig r(true, {}, 100 * 16 * kQ);
+  IdSource& ids = r.store.ids();
+  const int32_t written[8] = {0, 2, 4, 5, 7, 8, 10, 11};
+  AddNotes add{r.ref, {}};
+  SetJiGroups groups{r.ref, {}};
+  SetNotesWritten was{r.ref, {}};
+  for (int i = 0; i < 100; ++i) {
+    const NoteId anchor = ids.note();
+    for (int k = 0; k < 8; ++k) {
+      Note n;
+      n.id = k == 0 ? anchor : ids.note();
+      n.start = static_cast<Ticks>(i) * 16 * kQ;
+      n.length = 16 * kQ;
+      n.pitch = k == 0 ? PitchId::fromDegree(i % 12) : PitchId::fromRatio(Rational(8 + k, 8), pq::tuning::AnchorKind::Note, anchor.value);
+      if (k > 0) was.written.push_back({n.id, PitchId::fromDegree(i % 12 + written[k])});
+      add.notes.push_back(n);
+    }
+    JiGroup g;
+    g.id = ids.jiGroup();
+    g.anchor = anchor;
+    g.index = 8 + static_cast<uint32_t>(i % 5);
+    groups.groups.push_back(std::move(g));
+  }
+  // A second, small clip on the same track after the big one.
+  const ClipPtr small = playback_fixture::clip(ids, 100 * 16 * kQ, 4 * kQ, {playback_fixture::note(ids, 0, kQ, 7)}, "small");
+  const ClipRef smallRef{r.track, small->id};
+  Batch all{"groups", {}};
+  all.commands.push_back(std::move(add));
+  all.commands.push_back(std::move(groups));
+  all.commands.push_back(std::move(was));
+  all.commands.push_back(AddClip{r.track, small});
+  REQUIRE(r.store.dispatch(all).ok());
+  REQUIRE(jiGroupsOf(r.clip()).size() == 100);
+  auto link = makeLink(r.store.current());
+  [[maybe_unused]] const ListenerId sub = r.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  // The lowering's harmonic numbers are the document's (doc::groupHarmonics), group by group.
+  {
+    (void)render(*link, 0.01);
+    const engine::SequenceImage* img = link->engine().timeline().sequence();
+    REQUIRE(img != nullptr);
+    std::vector<std::pair<uint32_t, float>> got;
+    for (const auto& sn : img->notes()) got.emplace_back(sn.id, sn.harmonic);
+    std::sort(got.begin(), got.end());
+    size_t checked = 0;
+    for (const JiGroup& g : jiGroupsOf(r.clip())) {
+      const std::optional<GroupHarmonics> gh = groupHarmonics(r.clip(), g);
+      REQUIRE(gh);
+      auto harmonicOf = [&](NoteId id) {
+        const auto it = std::lower_bound(got.begin(), got.end(), std::pair<uint32_t, float>{id.value, -1e30f});
+        return it != got.end() && it->first == id.value ? it->second : -1.0f;
+      };
+      CHECK(harmonicOf(g.anchor) == static_cast<float>(gh->anchor));
+      for (const GroupMember& m : gh->members) CHECK(harmonicOf(m.note) == static_cast<float>(m.harmonic));
+      checked += 1 + gh->members.size();
+    }
+    CHECK(checked == 800);
+  }
+  auto moveOne = [&](ClipRef ref, const NoteClip& c, size_t index, Ticks dt) {
+    const Note& n = *std::next(c.notes.begin(), static_cast<std::ptrdiff_t>(index));
+    const NoteKey key = keyOf(n);
+    test_blocks::dispatchEdit(r.store, ops::moveNotes(r.doc(), ref, std::span<const NoteKey>(&key, 1), dt));
+    link->flush();
+  };
+  auto smallClip = [&]() -> const NoteClip& { return *findTrackPtr(r.doc(), r.track)->clips.back().clip; };
+  // An edit in the small clip: the big one is not lowered again.
+  const app::LinkStats s0 = link->stats();
+  for (int i = 0; i < 10; ++i) moveOne(smallRef, smallClip(), 0, i % 2 == 0 ? kQ / 4 : -kQ / 4);
+  CHECK(link->stats().trackLowerings == s0.trackLowerings + 10);
+  CHECK(link->stats().clipLowerings == s0.clipLowerings + 10);
+  CHECK(link->stats().sequencePublishes == s0.sequencePublishes + 10);
+  MESSAGE("one-note edit in the small clip beside it: " << (link->stats().lowerMs - s0.lowerMs) / 10.0 << " ms lowering, "
+                                                         << (link->stats().sequenceMs - s0.sequenceMs) / 10.0 << " ms publishing in all, per edit");
+  // One-note edits in the big clip: timed (release: before / after in the PROGRESS entry).
+  const app::LinkStats s1 = link->stats();
+  constexpr int kEdits = 20;
+  for (int i = 0; i < kEdits; ++i) moveOne(r.ref, r.clip(), 400, i % 2 == 0 ? kQ / 4 : -kQ / 4);
+  const app::LinkStats s2 = link->stats();
+  CHECK(s2.clipLowerings == s1.clipLowerings + kEdits);
+  const double perEdit = (s2.lowerMs - s1.lowerMs) / kEdits;
+  MESSAGE("one-note edit in a clip of 100 groups x 8 notes (+ a second clip): " << perEdit << " ms lowering, "
+                                                                                 << (s2.sequenceMs - s1.sequenceMs) / kEdits << " ms publishing in all, per edit");
+#if PQ_OPTIMIZED
+  CHECK(perEdit < 5.0);  // a bound that survives a loaded machine
 #endif
 }
