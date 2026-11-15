@@ -820,3 +820,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, after the rebase): `build.ps1 -Affected` 24/24 (incl. pq_tests_app, pq_tests_document, pq_tests_views); pq_tests_document 300/300. Orchestrator looked at pianoroll-group-warp.
 - Perf / CPU-efficiency check (release pq_bench_piano_roll): vibrato grip drag, 150 selected 35.6 → 2.93 ms/frame; MOS morph with 2000 vibrating notes 16.5 → 8.5 ms; one-note edit with a warped group 32.2 → 23.0 ms (12.99 without a warp; remainder untraced).
 - Notes/blockers: Q307–Q310.
+
+## 2026-11-15 · T7.16b merged · main (ea64bde1)
+- Did: review fixes for macro mode and playback: tempo / signature changes re-lower tempo-dependent clips (H5); `b` N renumbers, `b 0 Enter` removes (H7); the anchor follows only real mouse moves (H8); macro keys only with the note editor focused or hovered, lamp shows "MACRO (click)" otherwise (M11); Ctrl+CapsLock restores Caps Lock (M12, `pq/ui/chord_lock.h`); one-pass group harmonics and per-clip re-lowering (M17); note-ons displace curve events at the per-block cap (M18); keys refused during drags (M19); MIDI export reports pitch curves it drops (M21).
+- Verified (worker, rebased on dca7fcc1): `build.ps1 -Affected -Slow` 86/87, the failure = two help goldens, re-recorded, then pq_tests_views help + macro cases 39/39; ship pq_bench_dsp links.
+- Perf / CPU-efficiency check (release): one-note edit in 100 groups × 8 notes lowering 0.285 → 0.19 ms, a neighbouring clip's edit 0.0008 ms; `busy/16ths x64` 100.95 → 101.94 ns/block (+1.0 %, noise); RtScope clean.
+- Notes/blockers: Q311 (MIDI pitch-bend export). The real Caps Lock SendInput was not exercised by tests.
