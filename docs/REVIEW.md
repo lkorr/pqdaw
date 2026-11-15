@@ -1866,3 +1866,9 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - The piano roll's help is now a movable window (ui::FloatingWindow in the overlay layer): drag its title, resize from any edge / corner (min 360 x 220), x / ? / Esc-in-it close; a click outside no longer closes it and the roll keeps its clicks and keys. Narrow: no section list, then one column. Place, size and section kept for the session.
 - Look at: `tests/views/golden/pianoroll-help.png` (first opening, as before plus title bar and x) and `pianoroll-help-moved.png` (moved top right, narrow, one column).
 - First opening still covers most of the roll (same place as before); move it once and it stays there for the session.
+
+## 2026-11-15 · bug 2026-11-15_10-23-50 (JI roll) 👁
+- Draw a slow pitch curve: it should be smooth, not stepped. Bend a group's anchor, then draw a harmonic on its (now curved) guide lines mid-bend and draw a curve on that note: it stays put.
+- Drag the ~ sideways (smooth rate), and down past the note (inverted vibrato; ~ goes under, squares above). New vibratos start at 6 Hz.
+- Alt-drag the edge of a chord note up/down (no neighbour): a slide from/to that pitch.
+- Arrangement clips show bends, drawn curves and vibrato; JI chords sit at their true heights.
