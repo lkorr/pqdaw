@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -151,6 +152,28 @@ int morphBench(const PaintResources& res, SceneTextures& tex) {
   frameBench("pianoroll.morph frame: 24-degree MOS, crossing an interval every frame (rebuild)", true, true);
   frameBench("pianoroll.morph refresh only (no paint): in place", false, false);
   frameBench("pianoroll.morph refresh only (no paint): rebuild", true, false);
+  // T7.16a (M7 review M16): the same morph with 2000 of the notes vibrating (their paths must not all be re-flattened
+  // per frame: only where they start moves).
+  {
+    std::vector<doc::NoteCurves> recs;
+    for (const doc::Note& n : ctx.doc()->tracks[0]->clips[0].clip->notes) {
+      if (recs.size() >= 2000) break;
+      doc::NoteCurves r;
+      r.note = n.id;
+      r.vibrato.depthCents = 35.0f;
+      r.vibrato.rate = 6.0f;
+      recs.push_back(r);
+    }
+    std::sort(recs.begin(), recs.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+    if (!ctx.store().dispatch(doc::SetNoteCurves{c->clips[0], recs})) return 1;
+    tree.update(now += 0.5);
+    tex.text->beginFrame();
+    dl.reset(w, h);
+    tree.paint(dl, res, now);
+    const uint64_t built0 = view->pathBuilds();
+    frameBench("pianoroll.morph frame, 2000 of the notes vibrating (in place)", false, true);
+    std::printf("  %llu paths flattened in all\n", static_cast<unsigned long long>(view->pathBuilds() - built0));
+  }
   tree.update(now + 1.0);
   tree.setRoot(std::make_unique<Widget>());
   return 0;
@@ -318,7 +341,18 @@ int main() {
   // that exists before and after T7.14), and as the note's vibrato PROPERTY (T7.14: flattened once per clip snapshot
   // into the roll's path cache, RollState::pathOf). Reported: a repaint of the unchanged clip (the cache is warm) and
   // the first paint after an edit (every visible path is flattened again).
-  auto curveBench = [&](const char* name, bool property) {
+  auto curveBench = [&](const char* name, bool property, bool warp = false) {
+    // T7.16a (M7 review M16): with `warp`, the clip also holds a small JI group with a warp (far from the view): an
+    // edit must still re-flatten only what it touched.
+    std::optional<doc::JiGroupId> warped;
+    if (warp) {
+      const int64_t terms[] = {4, 5, 6};
+      auto made = doc::ops::proportionNotes(*ctx.doc(), st.ids(), c->clips[0], 900 * kTicksPerWhole, kTicksPerWhole, tuning::PitchId::fromDegree(0), terms);
+      if (!made || !st.dispatch(made->command)) return;
+      warped = made->jiGroups.at(0);
+      auto wp = doc::ops::setJiWarps(*ctx.doc(), c->clips[0], *warped, {doc::JiWarp{kPpq, kPpq, doc::GlideShape{}, true}});
+      if (!wp || !st.dispatch(wp->command)) return;
+    }
     const doc::NoteClip& clip = *ctx.doc()->tracks[0]->clips[0].clip;
     const double t0 = view->scrollTick(), t1 = t0 + static_cast<double>(area.w) / view->pxPerTick();
     std::vector<doc::NoteCurves> recs;
@@ -396,10 +430,81 @@ int main() {
                              "ns/edit");
     }
     (void)st.dispatch(doc::SetNoteCurves{c->clips[0], none});
+    if (warped) (void)st.undo(), (void)st.undo();  // the group and its warp
     tree.update(3.0);
   };
   curveBench("pianoroll.paint, 2000 notes with a baked 35 c / 6 Hz curve (16 points per cycle)", false);
   curveBench("pianoroll.paint, 2000 notes with a vibrato property (35 c / 6 Hz, fade-in)", true);
+  curveBench("pianoroll.paint, 2000 notes with a vibrato property, a JI group with a warp in the clip", true, true);
+
+  // T7.16a (M7 review M15): a ~ grip drag over N selected vibrating notes. One frame = a pointer move (every selected
+  // note's vibrato previewed) + update + the repaint of the damage.
+  auto vibratoDragBench = [&](const char* name, size_t count) {
+    const doc::NoteClip& clip = *ctx.doc()->tracks[0]->clips[0].clip;
+    const double t0 = view->scrollTick() + 2.0 * kPpq, t1 = view->scrollTick() + static_cast<double>(area.w) / view->pxPerTick() - 2.0 * kPpq;
+    std::vector<doc::NoteCurves> recs;
+    std::vector<doc::NoteId> ids;
+    for (const doc::Note& n : clip.notes) {
+      if (recs.size() >= count) break;
+      if (static_cast<double>(n.start) < t0 || static_cast<double>(n.start) >= t1 || n.length < kPpq / 2) continue;
+      doc::NoteCurves rec;
+      rec.note = n.id;
+      rec.vibrato.depthCents = 35.0f;
+      rec.vibrato.rate = 6.0f;
+      recs.push_back(rec);
+      ids.push_back(n.id);
+    }
+    std::sort(recs.begin(), recs.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+    if (recs.empty() || !st.dispatch(doc::SetNoteCurves{c->clips[0], recs})) return;
+    view->select(ids);
+    tree.update(4.0);
+    const doc::NoteId first = ids.front();
+    const Vec2 body = view->notePoint(first, 0.5);
+    PointerEvent e;
+    e.type = PointerType::Move;
+    e.pos = body;
+    tree.dispatchPointer(e);
+    const std::optional<Vec2> grip = view->vibratoGrip(first);
+    if (!grip) return;
+    e.pos = *grip;
+    tree.dispatchPointer(e);
+    e.type = PointerType::Down;
+    e.button = PointerButton::Left;
+    e.clickCount = 1;
+    tree.dispatchPointer(e);
+    double now = 4.0;
+    int i = 0;
+    const uint64_t built0 = view->pathBuilds();
+    uint64_t frames = 0;
+    pq::bench::reportStats(name,
+                           pq::bench::measure(
+                               [&] {
+                                 PointerEvent m;
+                                 m.type = PointerType::Move;
+                                 m.pos = {grip->x + ((++i & 1) ? 30.0f : 12.0f), grip->y - ((i & 1) ? 20.0f : 10.0f)};
+                                 tree.dispatchPointer(m);
+                                 now += 1.0 / 144.0;
+                                 tree.update(now);
+                                 const IRect box = bounds(tree.damage().rects());
+                                 tex->text->beginFrame();
+                                 dl.reset(w, h);
+                                 tree.paint(dl, res, now, box);
+                                 ++frames;
+                               },
+                               1),
+                           "ns/frame");
+    std::printf("  %zu vibrating notes selected, %.1f paths flattened per frame\n", recs.size(),
+                frames ? static_cast<double>(view->pathBuilds() - built0) / static_cast<double>(frames) : 0.0);
+    e.type = PointerType::Up;
+    tree.dispatchPointer(e);
+    view->select({});
+    std::vector<doc::NoteCurves> none;
+    for (const doc::NoteCurves& r : recs) none.push_back(doc::NoteCurves{r.note, {}, {}, {}, {}});
+    (void)st.dispatch(doc::SetNoteCurves{c->clips[0], none});
+    tree.update(now + 1.0);
+  };
+  vibratoDragBench("pianoroll.vibrato grip drag frame: 16 vibrating notes selected", 16);
+  vibratoDragBench("pianoroll.vibrato grip drag frame: 150 vibrating notes selected", 150);
 
   tree.setRoot(std::make_unique<Widget>());
   return morphBench(res, *tex);
