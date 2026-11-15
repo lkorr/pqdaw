@@ -22,7 +22,6 @@ constexpr size_t kMaxZoomStack = 32;
 
 constexpr std::string_view kActionIds[] = {
     "arrangement.zoomToSelection", "arrangement.zoomBack", "arrangement.zoomIn", "arrangement.zoomOut",
-    "view.toggleFollow",
     // T3.9
     "arrangement.selectAll", "arrangement.copy", "arrangement.cut", "arrangement.paste", "arrangement.duplicate",
     "arrangement.delete", "arrangement.split", "arrangement.consolidate", "arrangement.loopSelection",
@@ -145,7 +144,6 @@ void ArrangementView::registerActions() {
   set(kActionIds[1], [this] { (void)zoomBack(); });
   set(kActionIds[2], [this] { zoomIn(); });
   set(kActionIds[3], [this] { zoomOut(); });
-  set(kActionIds[4], [this] { setFollow(!follow_); });
   // T3.9 editing. A disabled action's chord falls through (Q27), e.g. Delete with nothing selected.
   arrangement::Editor* const ed = editor_.get();
   auto edit = [&](std::string_view id, std::function<void()> h, std::function<bool()> en) {
@@ -1059,7 +1057,7 @@ void ArrangementView::onFocusChanged(bool focused) {
 
 // --- follow and playhead ----------------------------------------------------------------------------------
 
-void ArrangementView::setFollow(bool on) { follow_ = on; }
+void ArrangementView::setFollow(bool on) { ctx_.setFollow(on); }
 
 void ArrangementView::locateAt(Ticks tick, bool snapToGrid) {
   tick = std::max<Ticks>(0, tick);
@@ -1187,7 +1185,7 @@ void ArrangementView::readPlayhead() {
     return;
   }
   const IRect lv = lanesViewport();
-  if (follow_ && lv.w > 0) {
+  if (ctx_.follow() && lv.w > 0) {
     const float x = xOfTick(static_cast<double>(ph.tick));
     if (x < static_cast<float>(lv.x) || x >= static_cast<float>(lv.right() - 1)) {
       // Page: the playhead goes to the left edge (Live's Follow scrolls in pages).

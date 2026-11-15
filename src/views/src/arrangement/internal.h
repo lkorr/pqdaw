@@ -772,8 +772,9 @@ private:
   void updateHover();
 };
 
-// Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Click locates,
-// drag zooms (vertical) and scrolls (horizontal). T4.16b: the loop brace's ends and the brace itself, and the
+// Loop brace, bar numbers, ticks, locators, tempo / signature markers, start marker, playhead. Off the brace and the
+// locators it is the scrub area (bug-roll-playhead, Live's): a click plays from there (playing: jumps there), a drag
+// that starts sideways scrubs, one that starts up or down zooms (then sideways scrolls); snapped to the grid, Alt not. T4.16b: the loop brace's ends and the brace itself, and the
 // locators, drag (snapped relative to the grid, previewed, one undo step on release; Esc cancels).
 // TL.1: what a ruler draws on and acts on — the arrangement's lanes, or the project patch view's band lanes (one time
 // window: ViewContext::timeWindow). x0() is the device x of origin(); range() the device rect of the lanes it labels
@@ -822,7 +823,7 @@ public:
   // TL.4: COMPACT — the bar-number row alone (ticks, numbers, the start marker, the playhead; no loop brace, no marker
   // row): the thin scrub ruler along the top of every band lane. One compact ruler serves every lane: the canvas paints
   // it into a lane's strip (paintStrip) and hands it a press there and the gesture after it (pointerStrip); a click
-  // locates, a drag zooms / scrolls, the wheel zooms / scrolls, exactly as the full ruler.
+  // plays from there, a drag scrubs or zooms / scrolls, the wheel zooms / scrolls, exactly as the full ruler.
   void setCompact(bool on) noexcept { compact_ = on; }
   bool compact() const noexcept { return compact_; }
   void paintStrip(ui::PaintContext& ctx, const ui::IRect& strip);
@@ -860,6 +861,11 @@ private:
   ui::Vec2 pressPos_{};
   double pressTick_ = 0;
   double pressZoom_ = 0;
+  // bug-roll-playhead: a Zoom press that went sideways first scrubs (ViewContext::playFrom on every new snapped tick).
+  bool scrubbing_ = false;
+  Ticks scrubTick_ = -1;
+  ui::Mods pressMods_ = 0;
+  void scrubAt(double tick, ui::Mods mods);
 };
 
 // Minutes:seconds under the tracks (Live's time ruler), from the tempo map.

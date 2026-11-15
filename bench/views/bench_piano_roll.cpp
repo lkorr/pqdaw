@@ -262,6 +262,50 @@ int main() {
                              1),
                          "ns/frame");
 
+  // bug-roll-playhead: a playhead frame while playing over the same view. The transport moves ~1.5 device px per frame:
+  // timers (the roll's, the arrangement's, the control bar's readout) → their reads → the damage (the line's old and new
+  // columns in the roll and the arrangement, the readout) → a partial paint per damage rect, as the window loop does.
+  {
+    Ticks t = 400 * kTicksPerWhole + 10 * kTicksPerWhole;
+    ctx.playFrom(t);
+    double now = 0.5;
+    tree.update(now);
+    tex->text->beginFrame();
+    dl.reset(w, h);
+    tree.paint(dl, res, now);
+    const Ticks step = std::max<Ticks>(1, static_cast<Ticks>(std::llround(1.5 / view->pxPerTick())));
+    std::vector<IRect> rects;
+    uint64_t verts = 0, frames = 0, px = 0;
+    pq::bench::reportStats("pianoroll.playhead frame: the line moves ~1.5 px (timers, reads, column damage, per-rect paint), ~3000 notes in view",
+                           pq::bench::measure(
+                               [&] {
+                                 t += step;
+                                 if (t > 428 * kTicksPerWhole) t = 402 * kTicksPerWhole;  // stays in view: no Follow page
+                                 port.setPlayheadTick(t);
+                                 now += 0.1;
+                                 tree.update(now);
+                                 rects.clear();
+                                 for (const ClipRect& r : tree.damage().rects()) {
+                                   rects.push_back({r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0});
+                                   px += static_cast<uint64_t>(r.x1 - r.x0) * static_cast<uint64_t>(r.y1 - r.y0);
+                                 }
+                                 tex->text->beginFrame();
+                                 dl.reset(w, h);
+                                 tree.paint(dl, res, now, rects);
+                                 verts += dl.vertices().size();
+                                 ++frames;
+                               },
+                               1),
+                           "ns/frame");
+    std::printf("  %.0f vertices, %.0f damaged px per frame; playhead at content tick %lld
+",
+                frames ? static_cast<double>(verts) / static_cast<double>(frames) : 0.0,
+                frames ? static_cast<double>(px) / static_cast<double>(frames) : 0.0,
+                static_cast<long long>(view->playheadTick().value_or(-1)));
+    ctx.togglePlay();  // stop
+    tree.update(now + 1.0);
+  }
+
   // Drag frames: press a visible note, then alternate the pointer between two positions; each iteration is one
   // event dispatch + update (layout, damage) + partial paint of the damage, as the window loop does.
   auto dragBench = [&](const char* name, bool all) {

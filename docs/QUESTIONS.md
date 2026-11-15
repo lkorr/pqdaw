@@ -1878,3 +1878,23 @@ note macro mode places next, a grid step at a time (from its end, as the roll's 
 grid step (a 16th with the grid off); in macro mode these keys are the cursor's, not the selection's. The length is
 kept in MacroMode for the app session (every clip, macro mode off and on) and is not a macro undo step; before it is
 first set a note is as long as the anchor note, else a grid step. Status: decided (reversible).
+
+## Q?-bug-roll-playhead-a · 2026-11-15 · bug-roll-playhead · Scrub versus zoom in the time rulers
+Context: the user asked for Live's scrub area (click plays from there, drag scrubs) in the piano roll's header and the
+same in the arrangement / project view. In every one of these rulers the strip off the brace and the flags already
+zoomed on a vertical drag and scrolled on a horizontal one (Live's beat-time ruler); the roll has no free strip for a
+separate scrub area (its brace strip is the loop brace and the flags). Options: (a) a separate scrub strip (taller
+rulers, a new zone to learn); (b) the direction of the drag's first move decides: sideways = scrub, up / down = zoom,
+then sideways scrolls as before; (c) a modifier for one of them. Choice (b), in all three rulers alike, with a click
+(no move) playing from there — stopped: Play, playing: a jump; the start marker goes there too (as the old click
+located), snapped to the grid, Alt unsnapped. Lost: scrolling by a purely sideways ruler drag (the wheel, Shift + wheel,
+the overview and a down-then-sideways drag still scroll). Locator clicks still only jump (Live), a click on the
+arrangement's loop brace now plays from there (it located before), the roll's brace / flags keep their drags.
+Status: decided (reversible: Ruler::onPointer, RulerWidget::onPointer).
+
+## Q?-bug-roll-playhead-b · 2026-11-15 · bug-roll-playhead · Where a click in a looped clip's ruler plays from
+Context: in a looped clip one content position plays once per pass, and positions before the start marker / outside
+the loop never play. Choice: the pass the transport is in when it plays that position, else the first pass that does;
+content outside what plays is clamped into it (an unlooped clip: start marker … its end; looped: from the earlier of
+the start marker and the loop start to the loop end), so the line always lands inside the clip. Status: decided
+(reversible: roll::songAtContent).

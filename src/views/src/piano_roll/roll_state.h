@@ -63,7 +63,8 @@ enum class DragKind : uint8_t {
   LoopBrace,    // ruler: the loop brace (start, end or both) by dt
   StartMarker,  // ruler: the clip's start marker
   EndMarker,    // ruler: the clip's end (unlooped clips)
-  RulerZoom,    // ruler: vertical drag zooms, horizontal drag scrolls
+  RulerZoom,    // ruler: vertical drag zooms, horizontal drag scrolls (a click plays from there: roll_playhead.h)
+  RulerScrub,   // bug-roll-playhead: ruler, a drag that started sideways: the transport follows the pointer
   KeysZoom,     // keys: horizontal drag zooms the rows
   // T7.6 (roll_pen.cpp): a pitch curve of a note (DragState::curve)
   PenDraw,     // Draw Mode on a note: the stroke is the curve
@@ -143,6 +144,7 @@ struct DragState {
   double zoomTick = 0.0;       // RulerZoom: content tick kept under the pointer
   int32_t zoomRowPx = 0;
   double pressScrollTick = 0.0;
+  Ticks scrubSong = -1;        // RulerScrub: the song tick it last played from
   std::vector<uint32_t> base;  // Rubber: the selection the band adds to
   std::vector<uint32_t> pressSelection;  // Rubber: the selection before the press (abortDrag restores it)
   // Damage tracking (Move / Copy / Resize / Velocity / Draw): the dragged notes as they were at the press, and the
@@ -296,6 +298,10 @@ public:
   RollState& operator=(const RollState&) = delete;
 
   ViewContext& ctx;
+
+  // bug-roll-playhead: the content tick the transport plays now, as the roll draws it (nullopt: stopped, outside the
+  // clip, or the view hidden). ClipView keeps it (roll_playhead.cpp).
+  std::optional<Ticks> playhead;
 
   // Child widgets (set by ClipView when it builds them).
   ClipBoxPanel* boxPanel = nullptr;

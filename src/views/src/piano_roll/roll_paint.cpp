@@ -21,6 +21,7 @@
 #include "pq/tuning/ji.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
+#include "roll_playhead.h"
 #include "roll_widgets.h"
 
 namespace pq::views::roll {
@@ -95,7 +96,9 @@ constexpr float kPathSmallPx = 20.0f;
 
 // Visible content tick range of a device x span.
 std::pair<Ticks, Ticks> tickSpan(const RollState& s, int32_t x0, int32_t x1) {
-  const double a = s.tickAtX(static_cast<float>(x0)), b = s.tickAtX(static_cast<float>(x1));
+  // A pixel either side: lines are drawn at round(x), so one up to half a pixel left of x0 still lands in it
+  // (bug-roll-playhead: a playhead column's partial repaint dropped the grid line at its edge).
+  const double a = s.tickAtX(static_cast<float>(x0 - 1)), b = s.tickAtX(static_cast<float>(x1 + 1));
   return {static_cast<Ticks>(std::floor(a)) - 1, static_cast<Ticks>(std::ceil(b)) + 1};
 }
 
@@ -683,6 +686,7 @@ void NoteAreaWidget::paintOver(PaintContext& ctx) {
   if (intersect(r, ctx.clip).empty()) return;
   ctx.dl.pushClip(r.toRect());
   paintHarmonicLabels(ctx, s_, r);
+  paintPlayhead(ctx, s_, r);  // bug-roll-playhead: over everything
   ctx.dl.popClip();
 }
 
@@ -919,6 +923,7 @@ void RulerWidget::paint(PaintContext& ctx) {
     }
   }
   dl.addRectFilled(frect(static_cast<float>(vis.x), bottom - 1.0f, static_cast<float>(vis.right()), bottom), th->surface.divider);
+  paintPlayhead(ctx, s_, r);  // bug-roll-playhead
   dl.popClip();
 }
 
@@ -1011,6 +1016,7 @@ void VelocityLaneWidget::paint(PaintContext& ctx) {
     stem(n, start, sel);
   });
   dl.addRectFilled(frect(x0, static_cast<float>(r.y), x1, static_cast<float>(r.y) + 1.0f), th->surface.divider);
+  paintPlayhead(ctx, s_, r);  // bug-roll-playhead
   dl.popClip();
 }
 

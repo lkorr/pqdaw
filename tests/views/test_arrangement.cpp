@@ -200,31 +200,41 @@ TEST_CASE("arrangement: Z / X round trip (and = / - zoom around the centre)") {
   CHECK(f.arr->pxPerTick() == doctest::Approx(z0));
 }
 
-TEST_CASE("arrangement: a ruler click sets the start marker and locates via the port (snapped)") {
+TEST_CASE("arrangement: a ruler click plays from there (snapped; playing: jumps there) and sets the start marker") {
+  // bug-roll-playhead: the ruler is Live's scrub area (it located without playing before).
   Fixture f;
   const IRect ruler = f.d.rect(kRuler);
   // Bar 3 plus a little: the adaptive grid (1/4 at the default zoom) snaps it to 3.1.1.
   const float x = f.arr->xOfTick(static_cast<double>(2 * kBar + kPpq / 5));
   f.d.click({x, static_cast<float>(ruler.y + ruler.h / 2)});
-  REQUIRE(f.port.count(FakeTransport::Call::Locate) == 1);
+  REQUIRE(f.port.count(FakeTransport::Call::Play) == 1);
   CHECK(f.port.calls.back().tick == 2 * kBar);
   CHECK(f.ctx.startMarker() == 2 * kBar);
-  // With snapping off it lands on the clicked tick.
+  CHECK(f.port.count(FakeTransport::Call::Locate) == 0);
+  // Playing, with snapping off: it jumps to the clicked tick.
   GridSpec g = f.ctx.grid();
   g.snap = false;
   f.ctx.setGrid(g);
   const Ticks t = 5 * kBar + 1234;
   f.d.click({f.arr->xOfTick(static_cast<double>(t)) + 0.5f, static_cast<float>(ruler.y + 5)});
-  REQUIRE(f.port.count(FakeTransport::Call::Locate) == 2);
+  REQUIRE(f.port.count(FakeTransport::Call::Locate) == 1);
+  CHECK(f.port.count(FakeTransport::Call::Play) == 1);
   CHECK(std::abs(f.port.calls.back().tick - t) <= static_cast<Ticks>(1.0 / f.arr->devicePxPerTick()) + 1);
-  // Space then plays from there.
+  CHECK(f.ctx.startMarker() == f.port.calls.back().tick);
+  // Alt with snapping on: unsnapped too.
+  g.snap = true;
+  f.ctx.setGrid(g);
+  f.d.click({f.arr->xOfTick(static_cast<double>(t)) + 0.5f, static_cast<float>(ruler.y + 5)}, mod::kAlt);
+  CHECK(std::abs(f.port.calls.back().tick - t) <= static_cast<Ticks>(1.0 / f.arr->devicePxPerTick()) + 1);
+  // Space stops; Space then plays from the start marker the click left.
+  f.d.press("Space");
   f.port.calls.clear();
   f.d.press("Space");
   REQUIRE(f.port.count(FakeTransport::Call::Play) == 1);
   CHECK(f.port.calls.back().tick == f.ctx.startMarker());
 }
 
-TEST_CASE("arrangement: a ruler drag zooms (vertical) around the pressed tick and does not locate") {
+TEST_CASE("arrangement: a ruler drag up / down zooms around the pressed tick (then sideways scrolls); sideways first scrubs") {
   Fixture f;
   f.arr->setTimeView(4.0 * kBar, f.arr->pxPerTick());
   const IRect ruler = f.d.rect(kRuler);
@@ -234,14 +244,28 @@ TEST_CASE("arrangement: a ruler drag zooms (vertical) around the pressed tick an
   f.d.drag(from, {from.x, from.y + 80.0f}, 8);  // down = zoom in
   CHECK(f.arr->pxPerTick() > z0 * 1.5);
   CHECK(std::abs(f.arr->xOfTick(t0) - from.x) <= 1.0f);
-  CHECK(f.port.count(FakeTransport::Call::Locate) == 0);
-  // Horizontal drag scrolls: the pressed tick follows the pointer.
-  const double z1 = f.arr->pxPerTick();
+  CHECK(f.port.calls.empty());
+  // Started up / down, then sideways: scrolls (the pressed tick follows the pointer), the transport untouched.
   const Vec2 a{static_cast<float>(ruler.x + 500), static_cast<float>(ruler.y + 10)};
   const double ta = f.arr->tickAtX(a.x);
-  f.d.drag(a, {a.x - 200.0f, a.y}, 6);
-  CHECK(f.arr->pxPerTick() == doctest::Approx(z1));
+  f.d.down(a);
+  f.d.move({a.x, a.y + 6.0f});
+  f.d.move({a.x - 100.0f, a.y + 6.0f});
+  f.d.move({a.x - 200.0f, a.y + 6.0f});
+  f.d.up({a.x - 200.0f, a.y + 6.0f});
   CHECK(std::abs(f.arr->xOfTick(ta) - (a.x - 200.0f)) <= 1.0f);
+  CHECK(f.port.calls.empty());
+  // Sideways first: scrubs — the view stays, the transport follows the pointer (snapped), the start marker with it.
+  const double z1 = f.arr->pxPerTick(), o1 = f.arr->originTick();
+  const Vec2 b{static_cast<float>(ruler.x + 300), static_cast<float>(ruler.y + 10)};
+  f.d.drag(b, {b.x + 240.0f, b.y}, 8);
+  CHECK(f.arr->pxPerTick() == doctest::Approx(z1));
+  CHECK(f.arr->originTick() == doctest::Approx(o1));
+  REQUIRE(f.port.count(FakeTransport::Call::Play) == 1);
+  CHECK(f.port.count(FakeTransport::Call::Locate) >= 2);
+  const Ticks end = f.port.calls.back().tick;
+  CHECK(std::abs(f.arr->xOfTick(static_cast<double>(end)) - (b.x + 240.0f)) <= static_cast<float>(f.arr->devicePxPerTick() * kPpq) + 1.0f);
+  CHECK(f.ctx.startMarker() == end);
 }
 
 TEST_CASE("arrangement: wheel scrolls the tracks vertically, Shift+wheel scrolls time") {

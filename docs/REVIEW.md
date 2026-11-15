@@ -1888,3 +1888,14 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Arrangement / lane windows: bent notes in clip previews are smooth anti-aliased lines (no stair steps); make a track tall and zoom in to judge.
 - Look at: `tests/views/golden/pianoroll-curves-far.png`, `pianoroll-curves-mid.png`, `arrangement-curve-preview.png`.
 
+## 2026-11-15 · bug-roll-playhead · the playhead in the piano roll, rulers as scrub areas 👁
+- Open a MIDI clip that sits later in the song (drag it to bar 3), press Space: when the song reaches the clip a line
+  runs through the roll's ruler, notes and velocity lane, in the clip's own time; it jumps back with the clip's loop and
+  disappears after the clip. Zoom the roll in: when the line runs off the right edge the roll turns the page.
+- Click the roll's ruler numbers: playback starts there (on the grid; Alt: exactly there); while playing a click jumps.
+  Drag sideways along the numbers: playback follows the pointer. Drag down instead: it zooms (then sideways scrolls).
+- The arrangement's ruler and the project view's thin lane rulers do the same (this changes them: a plain sideways drag
+  there used to scroll). A click in an empty lane still only moves the start marker; Space plays from it.
+- `Ctrl+Shift+F` (View > Follow, now shown ticked) turns paging off for the arrangement, the lanes and the roll
+  together. Scroll the roll away from the line while it plays: it stays where you put it.
+- The `?` panel has a new last section, "Playback and the playhead".

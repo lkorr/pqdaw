@@ -286,7 +286,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       v.push_back(act("Zoom to Selection", "arrangement.zoomToSelection"));
       v.push_back(act("Zoom Back", "arrangement.zoomBack"));
       v.push_back(MenuItem::sep());
-      v.push_back(act("Follow", "view.toggleFollow"));
+      v.push_back(check(act("Follow", "view.toggleFollow"), ctx_.follow()));
       v.push_back(act("Automation Mode", "arrangement.toggleAutomationMode"));
       break;
     case 4:  // Options

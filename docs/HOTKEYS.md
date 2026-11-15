@@ -30,7 +30,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `view.toggleMixer` | `Ctrl+Alt+M` | global | Showing and Hiding Views | implemented (T3.10; the mixer view takes the track area while shown, Q89) |
 | `view.togglePatch` | `Ctrl+Alt+P` | global | — (pqdaw; SPEC §15 2026-10-24) | implemented (T4.13; the project patch view takes the track area while shown, morphing from the arrangement and back; View > Arrangement / Project Patch) |
 | `view.trackCircuit` | `Ctrl+Alt+C` | global | — (pqdaw) | implemented (T5.x-circuit-chain; T5.x-one-circuit: the project patch view with the selected track's band opened; View > Track Circuit, the track header's menu) |
-| `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; the arrangement owns the switch until the piano roll follows too) |
+| `view.toggleFollow` | `Ctrl+Shift+F` | global | Arrangement View Commands | implemented (T3.8; bug-roll-playhead: the context's switch (`ViewContext::follow`, default on, View > Follow shows it checked): the arrangement, the project patch view's lanes and the piano roll page when the playhead leaves them — the roll not while a gesture runs or after you scrolled away from the playhead) |
 | `grid.narrow` | `Ctrl+1` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.widen` | `Ctrl+2` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
 | `grid.toggleTriplet` | `Ctrl+3` | global | Arrangement View Commands; MIDI Note Editor | implemented (T3.11) |
@@ -177,14 +177,14 @@ Every part shows the cursor of what a press there does (the same hit test the pr
 | Keys | Pointer | — | click auditions, selects the row (horizontal drag zooms: ↔ while dragging) |
 | Clip ruler: start / end flag, loop brace ends | ↔ | — | drag moves it |
 | Clip ruler: loop brace | Move | — | drag moves the loop |
-| Clip ruler: lower strip | ↕ | — | drag zooms (sideways scrolls) |
+| Clip ruler: lower strip (and the brace strip off the brace / flags) | ↕ (↔ while scrubbing) | — | bug-roll-playhead, Live's scrub area: click plays from there (playing: jumps there; snapped to the roll's grid, `Alt` unsnapped; mapped into the clip's song time, a looped clip's current pass); a drag that starts sideways scrubs (the transport follows the pointer, cell by cell); one that starts up / down zooms (then sideways scrolls) |
 | Clip title strip | Move | strip brightened | drag moves (Alt copies) |
 | Clip start / end | ↔ | the edge marked | drag trims |
 | Clip body, empty lane | Arrow | — | a time selection (Live) |
 | Beat ruler: loop brace ends | ↔ | — | drag moves the loop start / end (one undo step; Esc cancels) |
 | Beat ruler: loop brace | Move | — | drag moves the loop |
 | Beat ruler: locator flag | ↔ | — | drag moves the locator; click jumps there |
-| Beat ruler: numbers / elsewhere | ↕ | — | click locates; drag zooms (sideways scrolls) |
+| Beat ruler: numbers / elsewhere (also the project patch view's compact lane rulers) | ↕ | — | bug-roll-playhead, Live's scrub area: click plays from there and moves the start marker (playing: jumps there; snapped, `Alt` unsnapped); a drag that starts sideways scrubs; one that starts up / down zooms (then sideways scrolls). A click in an empty lane only moves the start marker (TL.4); `Space` plays from it, `Shift+Space` continues where playback stopped |
 | Overview | Move | — | click / drag moves the view |
 | Track header / lane header bottom edge | ↕ | — | drag resizes the row / lane |
 | Fold triangle, lanes toggle, parameter choosers, lane + / −, Re-enable Automation | Pointer | (their own) | click |

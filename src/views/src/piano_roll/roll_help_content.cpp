@@ -425,6 +425,27 @@ constexpr HelpEntry kMacro[] = {
      "that row from the anchor: 23 means press 2, then 3."},
 };
 
+// ---- Playback and the playhead (bug-roll-playhead) ---------------------------------------------------------------
+constexpr HelpEntry kPlayback[] = {
+    {"click the ruler's numbers\n[Alt] + click",
+     "Play from here",
+     "Playback starts where you click (while it plays, it jumps there), on the grid; with Alt exactly where you click. "
+     "The arrangement's ruler works the same way."},
+    {"drag sideways along the numbers",
+     "Scrub",
+     "Playback follows the pointer, one grid cell at a time. Drag up or down instead to zoom; after that, sideways "
+     "scrolls."},
+    {"{transport.playStop}\n{transport.continue}",
+     "Play, stop, continue",
+     "Plays from the start marker (where you last clicked a ruler, or an empty spot of the arrangement) or stops; the "
+     "second key continues from where playback stopped."},
+    {"{view.toggleFollow}",
+     "Follow",
+     "While the song plays this clip, a line shows where it is, in the clip's own time: it jumps back with the loop. "
+     "With Follow on the roll turns the page when the line runs off it; scroll away and it stays where you are. The "
+     "same switch as View > Follow."},
+};
+
 constexpr HelpSection kSections[] = {
     {"Quick start",
      "Just intonation in five moves. Each is described in full in its section below. This window stays open while you "
@@ -465,6 +486,9 @@ constexpr HelpSection kSections[] = {
      "Enter notes from the computer keyboard by interval, without the mouse: the number row goes up by just "
      "intervals, the row under it goes down, and one key places the note.",
      kMacro},
+    {"Playback and the playhead",
+     "The ruler along the top is where you play from, as in the arrangement.",
+     kPlayback},
 };
 
 }  // namespace

@@ -370,8 +370,9 @@ public:
   void zoomOut();          // - : ×½ around the centre
 
   // ---- follow ------------------------------------------------------------------------------------------------
-  // While playing with follow on, the view pages so the playhead stays visible (Live's Follow, Ctrl+Shift+F).
-  bool follow() const noexcept { return follow_; }
+  // While playing with follow on, the view pages so the playhead stays visible (Live's Follow, Ctrl+Shift+F). The
+  // switch is the context's (ViewContext::follow: every timeline view obeys it).
+  bool follow() const noexcept { return ctx_.follow(); }
   void setFollow(bool on);
 
   // ---- rows and headers --------------------------------------------------------------------------------------
@@ -635,7 +636,6 @@ private:
     double origin, pxPerTick;
   };
   std::vector<SavedView> zoomStack_;
-  bool follow_ = true;
   std::optional<Ticks> playhead_;
   uint32_t playheadTimer_ = 0;
   RecordingOverlay recording_;  // T6.7

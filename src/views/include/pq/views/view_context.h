@@ -80,7 +80,7 @@ namespace pq::views {
 
 // Bits passed to ctx.observe() callbacks: which part of the view state changed.
 namespace view_change {
-inline constexpr uint32_t kTransport = 1u << 0;  // play state requested, start marker moved
+inline constexpr uint32_t kTransport = 1u << 0;  // play state requested, start marker moved, follow switched
 inline constexpr uint32_t kGrid = 1u << 1;       // grid spec or the focused editor's resolved division
 inline constexpr uint32_t kLayout = 1u << 2;     // detail view shown/hidden or switched clip ↔ device, browser
 inline constexpr uint32_t kProject = 1u << 3;    // project directory, name or unsaved-changes state
@@ -549,6 +549,15 @@ public:
   void stopButton();
   Ticks startMarker() const noexcept { return startMarker_; }
   void setStartMarker(Ticks t);
+  // bug-roll-playhead: the scrub areas (Live's): a click or drag in a time ruler — the arrangement's, the lanes' compact
+  // ones, the clip view's — plays from there: the start marker goes to `t` (clamped at 0); stopped, playback starts
+  // there; playing, it jumps there.
+  void playFrom(Ticks t);
+  // Follow (view.toggleFollow, Ctrl+Shift+F; View > Follow): while playing, every timeline view (the arrangement, the
+  // project patch view's lanes, the clip view) pages when the playhead leaves it. View state, default on, not saved;
+  // a switch notifies kTransport.
+  bool follow() const noexcept { return follow_; }
+  void setFollow(bool on);
 
   // --- the visible time range (TL.1, SPEC §15 2026-11-08 "track lanes in the circuit view") ---
   // ONE time window for every timeline view: the arrangement's lanes and the project patch view's band lanes show the
@@ -774,7 +783,7 @@ public:
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
       "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples",
-      "view.toggleBrowser", "macro.toggle"};
+      "view.toggleBrowser", "macro.toggle", "view.toggleFollow"};
 
 private:
   void notify(uint32_t bits);
@@ -843,6 +852,7 @@ private:
   ViewPrefs viewPrefs_;
   std::function<void(const ViewPrefs&)> viewPrefsListener_;
   Ticks startMarker_ = 0;
+  bool follow_ = true;   // bug-roll-playhead (was the arrangement's)
   TimeWindow window_{};  // TL.1
   GridSpec grid_{};
   std::optional<GridDivision> resolvedGrid_;

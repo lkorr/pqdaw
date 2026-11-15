@@ -1,6 +1,7 @@
 // The arrangement's ruler (T3.8): loop brace, bar numbers and ticks, locators, tempo / time-signature markers, the
-// start marker and the playhead. A click locates; a drag zooms (vertical) and scrolls (horizontal) around the
-// pressed tick, like Live's beat-time ruler. T4.16b: the loop brace's ends, the brace itself and the locators drag
+// start marker and the playhead. bug-roll-playhead: a click plays from there (Live's scrub area; playing: jumps there),
+// a drag that starts sideways scrubs; one that starts up or down zooms (vertical) and scrolls (horizontal) around the
+// pressed tick, like Live's beat-time ruler. Snapped to the grid, Alt unsnapped. T4.16b: the loop brace's ends, the brace itself and the locators drag
 // (relative to the grid; previewed in the ruler, one SetLoop / UpdateLocator on release; a click on a locator jumps
 // there); the cursor shows which.
 
@@ -63,9 +64,10 @@ Ruler::Ruler(ArrangementView& view) : Ruler(std::make_unique<ArrangementAxis>(vi
 
 Ruler::Ruler(std::unique_ptr<RulerAxis> axis, std::string name) : Control(std::move(name)), ax_(std::move(axis)) {
   setInfo("Beat Time Ruler",
-          "Click to set the start marker and jump there (snapped to the grid). Drag up or down to zoom around the "
-          "pressed position, left or right to scroll. Drag the loop brace or its ends to move or resize the loop, a "
-          "locator to move it. Ctrl+wheel zooms, the wheel scrolls. Z zooms to the selection, X zooms back.");
+          "Click to play from there (while playing: jump there), snapped to the grid; Alt: exactly where you click. "
+          "Drag sideways to scrub. Drag up or down to zoom around the pressed position, then sideways to scroll. Drag "
+          "the loop brace or its ends to move or resize the loop, a locator to move it. Ctrl+wheel zooms, the wheel "
+          "scrolls. Z zooms to the selection, X zooms back.");
 }
 
 Ruler::Hit Ruler::hitAt(Vec2 p) const {
@@ -74,7 +76,7 @@ Ruler::Hit Ruler::hitAt(Vec2 p) const {
   if (!proj) return h;
   const doc::Project& pr = *proj;
   const UiScale s = tree() ? tree()->uiScale() : UiScale{};
-  if (compact_) return h;  // TL.4: numbers only: a press zooms / scrolls, a click locates
+  if (compact_) return h;  // TL.4: numbers only: a press scrubs or zooms / scrolls, a click plays from there
   const float loopY = static_cast<float>(area().y + s.px(am::kRulerNumberRow));
   const float markY = loopY + static_cast<float>(s.px(am::kRulerLoopRow));
   const float grab = static_cast<float>(s.px(4.0f));
@@ -142,17 +144,27 @@ Cursor Ruler::cursorAt(Vec2 p) const {
     case Grab::Loop: return Cursor::Move;
     case Grab::Zoom: break;
   }
-  return Cursor::ResizeNS;  // a drag zooms (sideways: scrolls); a click locates
+  return Cursor::ResizeNS;  // a drag zooms or scrubs; a click plays from there
 }
 
 bool Ruler::cancelDrag() {
   const bool was = pressed_ && dragging_ && grab_.grab != Grab::Zoom;
-  pressed_ = dragging_ = false;
+  pressed_ = dragging_ = scrubbing_ = false;
   grab_ = {};
   dt_ = 0;
   newLo_ = newHi_ = 0;
   if (was) markDirty();
   return was;
+}
+
+// bug-roll-playhead: the scrub area's click and drag: play from `tick` (snapped to the grid unless Alt), once per new
+// position while a scrub runs.
+void Ruler::scrubAt(double tick, Mods mods) {
+  Ticks t = std::max<Ticks>(0, static_cast<Ticks>(std::floor(tick)));
+  if (!(mods & mod::kAlt)) t = std::max<Ticks>(0, Grid(ax_->context().grid(), ax_->project().timeline->sigMap, ax_->pxPerTick()).snap(t));
+  if (scrubbing_ && t == scrubTick_) return;
+  scrubTick_ = t;
+  ax_->context().playFrom(t);
 }
 
 void Ruler::paintStrip(PaintContext& ctx, const IRect& strip) {
@@ -345,7 +357,9 @@ bool Ruler::onPointer(const PointerEvent& e) {
     case PointerType::Down:
       if (e.button != PointerButton::Left) return false;
       pressed_ = true;
-      dragging_ = false;
+      dragging_ = scrubbing_ = false;
+      scrubTick_ = -1;
+      pressMods_ = e.mods;
       pressPos_ = e.pos;
       pressTick_ = tickAt(e.pos.x);
       pressZoom_ = ax_->pxPerTick();
@@ -356,8 +370,17 @@ bool Ruler::onPointer(const PointerEvent& e) {
     case PointerType::Move: {
       if (!pressed_) return false;
       const float dx = e.pos.x - pressPos_.x, dy = e.pos.y - pressPos_.y;
-      if (!dragging_ && std::max(std::abs(dx), std::abs(dy)) < kClickSlop * scale) return true;
-      dragging_ = true;
+      if (!dragging_) {
+        if (std::max(std::abs(dx), std::abs(dy)) < kClickSlop * scale) return true;
+        dragging_ = true;
+        // bug-roll-playhead: off the brace and the locators a drag that starts sideways scrubs (Live's scrub area);
+        // one that starts up or down zooms (and then scrolls sideways).
+        scrubbing_ = grab_.grab == Grab::Zoom && std::abs(dx) > std::abs(dy);
+      }
+      if (scrubbing_) {
+        scrubAt(tickAt(e.pos.x), e.mods);
+        return true;
+      }
       if (grab_.grab != Grab::Zoom) {
         // A brace / locator drag: relative snap from the dragged edge (Live), kept in range.
         const doc::Project& p = ax_->project();
@@ -439,11 +462,11 @@ bool Ruler::onPointer(const PointerEvent& e) {
       }
       const bool click = !dragging_;
       const Hit g = grab_;
-      pressed_ = dragging_ = false;
+      pressed_ = dragging_ = scrubbing_ = false;
       grab_ = {};
-      // A click on a locator jumps there (Live); elsewhere it locates at the pointer.
+      // A click on a locator jumps there (Live); elsewhere it plays from the pointer (playing: jumps there).
       if (click && g.grab == Grab::Locator) ax_->locateAt((*p.locators)[g.locator].tick, false);
-      else if (click) ax_->locateAt(static_cast<Ticks>(std::floor(pressTick_)));
+      else if (click) scrubAt(pressTick_, pressMods_ | e.mods);
       return true;
     }
     case PointerType::Wheel:

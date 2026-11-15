@@ -210,6 +210,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_piano_roll_groups.cpp  # T7.14: JI groups (Tune to JI switch + chooser, frames, warps, walk, proportion tool, Add Note at Ratio; real dispatch), goldens
     views/test_curve_render.cpp  # bug-curve-render: moving notes drawn cleanly at every zoom (roll paths in device px, vibrato bands, AA clip previews), goldens
     views/test_piano_roll_vibrato.cpp  # T7.14: vibrato by dragging (the ~ grip, the envelope's corners; real dispatch), the path cache, golden
+    views/test_piano_roll_playhead.cpp  # bug-roll-playhead: the transport's playhead in clip time, the ruler's scrub area, Follow (real dispatch), golden
     views/test_piano_roll_help.cpp  # KB.help: the ? button and the help panel (real dispatch: open / close, keys, scroll, keys from the loaded keymap), goldens
     views/test_macro_mode.cpp  # T8.1: macro mode (real dispatch: toggle chord, layers, the just-from-a-JI-note rule, pointer anchor, lock, undo ring, presets, the trainer's BFS fixture), goldens
     views/test_mos_chart.cpp

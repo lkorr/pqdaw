@@ -1213,6 +1213,33 @@ Status setupArrangementCurvePreview(Shell& shell) {
   return Ok{};
 }
 
+// bug-roll-playhead: the transport's line in the roll. A two-bar clip placed at bar 3, looped over beats 3 … 6 of its
+// content, a melody, playing in the loop's first repeat: the line at content beat 3.5 through the ruler, the notes and
+// the velocity lane (the arrangement's at the song position above).
+Status setupPianoRollPlayhead(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Playhead", 14, 6);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-playhead: building the clip failed", {}};
+  ViewContext& ctx = shell.context();
+  quarterGrid(ctx);
+  doc::DocumentStore& store = ctx.store();
+  using tuning::PitchId;
+  const Ticks q = kPpq, bar = kTicksPerWhole;
+  const std::vector<doc::Note> notes = {scnNote(0, 2 * q, PitchId::fromDegree(0, 0)), scnNote(2 * q, q, PitchId::fromDegree(4, 0)),
+                                        scnNote(3 * q, q, PitchId::fromDegree(7, 0)), scnNote(4 * q, 2 * q, PitchId::fromDegree(5, 0), 70.0f),
+                                        scnNote(6 * q, 2 * q, PitchId::fromDegree(2, 0), 50.0f)};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
+    return Error{ErrorCode::Unknown, "pianoroll-playhead: addNotes", {}};
+  doc::ClipLoop loop;
+  loop.enabled = true;
+  loop.start = 2 * q;
+  loop.end = 6 * q;
+  if (!store.dispatch(doc::MoveClip{sc->clip, sc->clip.track, 2 * bar}).ok() || !store.dispatch(doc::SetClipLoop{sc->clip, loop}).ok())
+    return Error{ErrorCode::Unknown, "pianoroll-playhead: placing the clip", {}};
+  ctx.playFrom(2 * bar + 6 * q + 3 * q / 2);  // the first pass is content 0 … 6 beats; then 1.5 beats into the loop
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // ---- T7.14: JI groups as frames --------------------------------------------------------------------------------------
 
 namespace {
@@ -3929,6 +3956,7 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-curves-far", 1280, 800, [](Shell& s) { return setupPianoRollCurves(s, 32.0); }},  // bug-curve-render
     {"pianoroll-curves-mid", 1280, 800, [](Shell& s) { return setupPianoRollCurves(s, 8.0); }},
     {"arrangement-curve-preview", 1280, 800, setupArrangementCurvePreview},
+    {"pianoroll-playhead", 1280, 800, setupPianoRollPlayhead},  // bug-roll-playhead
     // T7.14: JI groups as frames
     {"pianoroll-group-triad", 1280, 800, setupPianoRollGroupTriad},
     {"pianoroll-group-chooser", 1280, 800, setupPianoRollGroupChooser},

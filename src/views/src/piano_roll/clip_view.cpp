@@ -111,9 +111,11 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   s.markAllDirty();
   ctx_.macro().attachRoll(state_.get());  // T8.1
   refreshMacro();
+  refreshPlayhead();  // bug-roll-playhead: built while playing
 }
 
 ClipView::~ClipView() {
+  if (playheadTimer_) cancelTimer(playheadTimer_);
   ctx_.macro().detachRoll(state_.get());
   for (std::string_view id : ViewContext::kPianoRollActions) ctx_.clearViewAction(id);
 }
@@ -131,6 +133,7 @@ void ClipView::onDocument() {
     setVisible(s.hasClip());
     s.markAllDirty();
     s.refreshHoverPart();  // the notes moved under a still pointer (an arrow key, undo)
+    if (playheadTimer_ || s.playhead) refreshPlayhead();  // bug-roll-playhead: the clip moved, its loop changed
   }
   ctx_.macro().rollChanged();  // T8.1: the anchor note may be gone, the tuning another
 }
@@ -166,6 +169,8 @@ void ClipView::onView(uint32_t bits) {
   if (bits & (view_change::kDetailClip | view_change::kGrid | view_change::kLayout)) ctx_.macro().rollChanged();
   if (bits & view_change::kInfo) (void)ctx_.macro().sync();
   if (bits & view_change::kMacro) refreshMacro();
+  // bug-roll-playhead: play / stop / a jump, another clip, the detail view shown or hidden.
+  if (bits & (view_change::kTransport | view_change::kDetailClip | view_change::kLayout)) refreshPlayhead();
 }
 
 void ClipView::paint(PaintContext& ctx) {

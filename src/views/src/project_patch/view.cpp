@@ -1289,8 +1289,8 @@ void ProjectPatchView::readPlayhead() {
   const ViewContext::TimeWindow tw = ctx_.timeWindow();
   const double end = tw.start + tw.span, at = static_cast<double>(ph.tick);
   const bool wasIn = playhead_ && static_cast<double>(*playhead_) >= tw.start && static_cast<double>(*playhead_) < end;
-  if (wasIn && (at >= end || at < tw.start) && tw.span > 0.0) {
-    // Follow (as the arrangement's): the shared window pages on, the playhead at its left edge.
+  if (ctx_.follow() && wasIn && (at >= end || at < tw.start) && tw.span > 0.0) {
+    // Follow (as the arrangement's, the same switch): the shared window pages on, the playhead at its left edge.
     playhead_ = ph.tick;
     ctx_.setTimeWindow(at, tw.span);  // the lanes repaint (timeWindowChanged), the arrangement follows
     if (!playheadTimer_) schedulePlayhead();

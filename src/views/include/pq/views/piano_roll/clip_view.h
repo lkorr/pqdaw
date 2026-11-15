@@ -223,6 +223,20 @@ public:
   // A point `frac` of the way through a note where it is drawn (on its row, or along its path). {−1, −1}: none.
   ui::Vec2 notePoint(doc::NoteId id, double frac) const;
 
+  // --- the playhead and the scrub area (bug-roll-playhead; roll_playhead.cpp) ---
+  // While playing, the transport's position is drawn through the ruler, the notes and the velocity lane in clip time
+  // (the clip's start, its start marker, the loop's wrap) whenever the song position is inside the clip; hidden
+  // outside it. Read from the port only while playing and shown, on a timer due when the line next moves a device
+  // pixel; each move damages the line's old and new columns only. With Follow on (ViewContext::follow) the roll pages
+  // (the playhead to the left edge) when the playhead leaves the view or enters the clip outside it — not while you
+  // drag, nor once you scrolled away from it yourself.
+  // The ruler off the brace and the flags is the scrub area: a click plays from there (playing: jumps there), a drag
+  // that starts sideways scrubs; snapped to the roll's grid, Alt unsnapped.
+  // The content tick drawn (nullopt: none) and how many times the port was read (tests).
+  std::optional<Ticks> playheadTick() const noexcept;
+  uint64_t playheadReads() const noexcept { return playheadReads_; }
+  void onTimer(uint32_t id) override;
+
   // --- macro mode (T8.1; pq/views/macro/macro_mode.h, ViewContext::macro()) ---
   // While macro mode is on, the roll shows its cursor, anchor and composition (macro_overlay.h) and the keys show the
   // fewest keys to each row. The cursor's box as drawn (device px; empty: off, or out of view).
@@ -234,6 +248,13 @@ private:
   void onDocument();
   void refreshMacro();  // T8.1: the overlays follow the mode (shown only while it is active)
   void onView(uint32_t bits);
+  // bug-roll-playhead (roll_playhead.cpp).
+  bool shownNow() const noexcept;
+  void refreshPlayhead();
+  void readPlayhead();
+  void schedulePlayhead(Ticks song);
+  void showPlayhead(std::optional<Ticks> content);
+  void damagePlayhead(Ticks content);
 
   ViewContext& ctx_;
   std::unique_ptr<roll::RollState> state_;
@@ -242,6 +263,8 @@ private:
   MacroOverlay* macroOverlay_ = nullptr;  // T8.1: over the note area
   MacroKeyLabels* macroKeys_ = nullptr;   // T8.1: over the keys
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // the panel's close callback may outlive the view
+  uint32_t playheadTimer_ = 0;
+  uint64_t playheadReads_ = 0;
 };
 
 // Adds the clip view to the shell's ClipDetail slot and installs its pianoroll actions (one line in

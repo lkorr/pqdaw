@@ -965,6 +965,19 @@ void ViewContext::setStartMarker(Ticks t) {
   notify(view_change::kTransport);
 }
 
+void ViewContext::playFrom(Ticks t) {
+  startMarker_ = std::max<Ticks>(0, t);
+  if (transport_.playhead().playing) transport_.locate(startMarker_);
+  else transport_.play(startMarker_);
+  notify(view_change::kTransport);
+}
+
+void ViewContext::setFollow(bool on) {
+  if (on == follow_) return;
+  follow_ = on;
+  notify(view_change::kTransport);
+}
+
 void ViewContext::setTimeWindow(double start, double span) {
   if (!std::isfinite(start) || !std::isfinite(span)) return;
   TimeWindow w{std::clamp(start, 0.0, static_cast<double>(doc::kMaxTicks / 2)), std::clamp(span, kMinTimeSpan, kMaxTimeSpan)};
@@ -1556,6 +1569,7 @@ void ViewContext::registerGlobalActions() {
   };
   add("transport.playStop", [this] { togglePlay(); });
   add("transport.continue", [this] { continuePlayback(); });
+  add("view.toggleFollow", [this] { setFollow(!follow_); });  // bug-roll-playhead: every timeline view follows
   add("transport.record", [this] { record(); });  // T6.6 / T6.7: Record (F9)
   add("transport.captureMidi", [this] { captureMidi(); });  // T6.9: Capture MIDI (Ctrl+Shift+C)
   add("transport.panic", [this] {  // M6 review L16: all notes off, bends reset (Ctrl+Shift+Space)

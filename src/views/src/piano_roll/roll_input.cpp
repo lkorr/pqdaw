@@ -41,6 +41,7 @@
 #include "pq/tuning/ji.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/theme.h"
+#include "roll_playhead.h"
 #include "roll_widgets.h"
 
 namespace pq::views::roll {
@@ -843,8 +844,10 @@ InfoText KeysWidget::info() const {
 // --- ruler ----------------------------------------------------------------------------------------------
 
 RulerWidget::RulerWidget(RollState& s) : Control("ruler"), s_(s) {
-  setInfo("Clip Ruler", "Drag the loop brace or its ends to move or resize the loop, the flags to move the clip's "
-                        "start and end. Drag up/down elsewhere to zoom, left/right to scroll.");
+  setInfo("Clip Ruler", "Click to play from there (while playing: jump there), snapped to the grid; Alt: exactly "
+                        "where you click. Drag sideways to scrub, up or down to zoom (then sideways to scroll). Drag "
+                        "the loop brace or its ends to move or resize the loop, the flags to move the clip's start "
+                        "and end.");
 }
 
 RulerWidget::Hit RulerWidget::hitAt(Vec2 p) const {
@@ -878,8 +881,8 @@ RulerWidget::Hit RulerWidget::hitAt(Vec2 p) const {
   return h;
 }
 
-// The flags and the brace's ends drag sideways (↔), the whole brace moves; elsewhere a drag zooms (↕; sideways it
-// scrolls).
+// The flags and the brace's ends drag sideways (↔), the whole brace moves; elsewhere (the scrub area) a click plays
+// from there and a drag scrubs (sideways first) or zooms (↕; then sideways it scrolls).
 Cursor RulerWidget::cursorAt(Vec2 p) const {
   if (!s_.hasClip()) return Cursor::Inherit;
   DragKind kind = DragKind::None;
@@ -896,6 +899,7 @@ Cursor RulerWidget::cursorAt(Vec2 p) const {
     case DragKind::StartMarker:
     case DragKind::EndMarker: return Cursor::ResizeEW;
     case DragKind::LoopBrace: return brace == BraceEdge::Both ? Cursor::Move : Cursor::ResizeEW;
+    case DragKind::RulerScrub: return Cursor::ResizeEW;
     default: return Cursor::ResizeNS;
   }
 }
@@ -914,6 +918,7 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
       d.kind = h.kind;
       d.brace = h.brace;
       d.originTick = h.origin;
+      d.pressMods = e.mods;
       if (d.kind == DragKind::RulerZoom) {
         d.zoomPxPerTick = s_.pxPerTick();
         d.zoomTick = s_.tickAtX(e.pos.x);
@@ -923,8 +928,17 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
     }
     case PointerType::Move: {
       if (!captured() || d.kind == DragKind::None) return false;
-      d.moved = d.moved || moreThanSlop(e.pos, d.press, scale);
-      if (!d.moved) return true;
+      if (!d.moved) {
+        if (!moreThanSlop(e.pos, d.press, scale)) return true;
+        d.moved = true;
+        // bug-roll-playhead: off the brace and the flags (the scrub area) a drag that starts sideways scrubs; one that
+        // starts up or down zooms (and then scrolls sideways).
+        if (d.kind == DragKind::RulerZoom && std::fabs(e.pos.x - d.press.x) > std::fabs(e.pos.y - d.press.y)) d.kind = DragKind::RulerScrub;
+      }
+      if (d.kind == DragKind::RulerScrub) {
+        d.scrubSong = roll::scrubAt(s_, s_.tickAtX(e.pos.x), e.mods, d.scrubSong);
+        return true;
+      }
       if (d.kind == DragKind::RulerZoom) {
         // Down zooms in (Live): ×2 per 60 logical px, around the tick under the press; sideways scrolls.
         const double factor = std::exp2(static_cast<double>(e.pos.y - d.press.y) / (60.0 * scale));
@@ -943,7 +957,14 @@ bool RulerWidget::onPointer(const PointerEvent& e) {
     }
     case PointerType::Up: {
       if (e.button != PointerButton::Left) return false;
-      if (d.kind == DragKind::RulerZoom || !d.moved) {
+      if (d.kind == DragKind::RulerZoom && !d.moved) {  // bug-roll-playhead: a click in the scrub area plays from there
+        const Mods mods = d.pressMods | e.mods;
+        const double at = s_.tickAtX(d.press.x);
+        d = {};
+        (void)roll::scrubAt(s_, at, mods);
+        return true;
+      }
+      if (d.kind == DragKind::RulerZoom || d.kind == DragKind::RulerScrub || !d.moved) {
         d = {};
         return true;
       }
