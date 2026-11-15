@@ -111,7 +111,7 @@ doc::ClipSlot cloneFresh(const doc::ClipSlot& slot, doc::IdSource& ids, Ticks st
     out.audio = std::make_shared<const doc::AudioClip>(std::move(a));
     return out;
   }
-  doc::NoteClip nc = doc::ops::cloneNoteClip(*slot.clip, ids);  // T7.2: JI objects and note curves copied with it
+  doc::NoteClip nc = doc::ops::cloneNoteClip(*slot.clip, ids);  // JI groups, written identities and note curves copied with it
   nc.start = start;
   out.id = nc.id;
   out.clip = std::make_shared<const doc::NoteClip>(std::move(nc));

@@ -15,6 +15,30 @@ namespace pq::views::roll {
 
 namespace {
 
+// ---- Quick start (T7.16a): the five most useful JI actions, in the order a first session meets them ------------------
+constexpr HelpEntry kQuickStart[] = {
+    {"1. select a chord,\n{pianoroll.tuneToJi}",
+     "Tune a chord to JI and back",
+     "Drag a rectangle around the notes of a chord and press the key: the chord becomes just, inside a dashed frame "
+     "named by its proportion, such as 4:5:6. Press it again to hear it in the tuning, and again for the same just "
+     "chord: the reading and its warps are kept. Select several chords at once and each is tuned on its own."},
+    {"2. drag the frame's bottom-left\ncorner inward",
+     "Play it tempered, then glide into JI",
+     "Up to where you let go the chord plays as you wrote it; from there it glides into just intonation. The "
+     "bottom-right corner glides it back out."},
+    {"3. click the chord's header,\n{pianoroll.stepUp} / {pianoroll.stepDown} or drag",
+     "Transpose a just chord",
+     "A click on the proportion above the frame selects the whole chord; Up, Down or a drag moves it by steps of the "
+     "tuning and it stays just. Up or Down on one note of the chord moves that note to the next harmonic instead."},
+    {"4. drag the ~ above a note's end",
+     "Vibrato",
+     "Up for width, sideways for speed; the four small squares under a vibrating note fade it in and out."},
+    {"5. right-click a note > Is Harmonic\xE2\x80\xA6" " 5,\n[Alt] + double-click between the lines",
+     "Build on a harmonic",
+     "Declare a note harmonic 5, then hold Alt over its time: the lines between its harmonics appear. Double-click "
+     "the one a fifth above (it is numbered 15): the note is added and the series reads 10:15."},
+};
+
 // ---- Notes -----------------------------------------------------------------------------------------------
 constexpr HelpEntry kNotes[] = {
     {"double-click",
@@ -77,8 +101,9 @@ constexpr HelpEntry kBends[] = {
     {"[Alt] + drag a note's left edge",
      "Bend in",
      "The note starts on the pitch of the note before it and slides into its own pitch; how far you drag sets how long "
-     "the slide takes. The note it comes from is outlined while you drag: of the notes that end just before this one, "
-     "the nearest in pitch."},
+     "the slide takes. With Alt held the edge is the outer quarter of the note (at least a few pixels), so even a short "
+     "note can be bent; Alt on its middle drags a copy. The note it comes from is outlined while you drag: of the notes "
+     "that end just before this one, the nearest in pitch."},
     {"[Alt] + drag a note's right edge",
      "Bend out",
      "The end of the note slides to the pitch of the note that starts next, over the length you drag. With several "
@@ -123,8 +148,8 @@ constexpr HelpEntry kCurves[] = {
     {"double-click a breakpoint",
      "Delete a breakpoint",
      "Removes that point; the line joins its neighbours."},
-    {"right-click a selected note >\nClear Bends",
-     "Clear Bends",
+    {"right-click a selected note >\nClear Curves",
+     "Clear Curves",
      "Removes every bend, drawn curve and vibrato from the selected notes: they are plain steady notes again."},
 };
 
@@ -185,12 +210,18 @@ constexpr HelpEntry kHarmonics[] = {
      "above it are its just major third, fifth and harmonic seventh. The note is frozen: the series hangs on it."},
     {"draw \xC2\xB7" " double-click",
      "Notes snap to the harmonics",
-     "While the guide lines show, the notes you add land on the nearest line instead of a row. Each is kept as an "
-     "exact ratio to the frozen note, so a chord built this way is perfectly in tune with it."},
+     "Inside the time of a series (its notes' span; the guide lines are drawn there) the notes you add land on the "
+     "nearest line instead of a row and join the series, each an exact ratio to the frozen note. Anywhere else they "
+     "go on the rows of the tuning as usual, so the next chord you write is an ordinary chord."},
+    {"[Alt] + draw \xC2\xB7" " [Alt] + double-click",
+     "Between the harmonics",
+     "Hold Alt over a series and the lines between its harmonics appear (the series counted twice as fine). A note "
+     "drawn on one renumbers the series so that it gets a whole number: a fifth above harmonic 5 is 15, and the 5 "
+     "reads 10."},
     {"[Shift] + draw",
      "Draw on the rows instead",
-     "With the guide lines showing, hold Shift to put an ordinary note on a row of the tuning. With no guide lines "
-     "it is the other way round: Shift draws a just note, at the simplest ratio near the pointer."},
+     "Inside a series, hold Shift to put an ordinary note on a row of the tuning. Elsewhere it is the other way round: "
+     "Shift draws a just note, at the simplest ratio near the pointer."},
     {"right-click a note of the series >\nAdd Note at Ratio\xE2\x80\xA6",
      "Add a note at a ratio",
      "Type 3/2 (or 7:4) and press Enter for a note that far above the note you clicked; 2/3 puts it below. A whole "
@@ -202,13 +233,13 @@ constexpr HelpEntry kHarmonics[] = {
      "fifth (3/2) above it: 7.5 is not a harmonic, so both double and now read 10 and 15. No note changes pitch; only "
      "the numbers and the lines do."},
     {"{pianoroll.deselect}",
-     "Back to the tuning's rows",
-     "The guide lines belong to the note you selected last. Esc puts them away: new notes land on the rows of the "
-     "tuning again. Click any note of a series to bring its lines back."},
+     "Put the guide lines away",
+     "The guide lines show for the series under the pointer, or the one of the note you selected last. Esc puts the "
+     "selected one's away. Click any note of a series to bring its lines back."},
     {"Harmonics: JI\n(the box left of the roll)",
-     "Show or hide the guide lines",
-     "The JI switch appears once the clip has a harmonic series. It shows or hides the guide lines and their "
-     "numbers."},
+     "Draw on the harmonics, or not",
+     "The JI switch appears once the clip has a harmonic series. On, notes drawn inside a series snap to its "
+     "harmonics and join it; off, every note goes on the rows of the tuning and no guide lines show."},
     {"right-click > Remove JI Group",
      "Remove the declaration",
      "Forgets which note was frozen. Every note keeps its pitch (the notes that were tied to it become fixed "
@@ -240,7 +271,8 @@ constexpr HelpEntry kTuning[] = {
     {"[Alt] + draw",
      "Draw on the background EDO",
      "For a scale or MOS tuning the box at the left can show an EDO grid behind the rows. With the grid showing, Alt "
-     "draws a note on its nearest line, as a fixed cents pitch."},
+     "draws a note on its nearest line, as a fixed cents pitch (inside a harmonic series Alt draws between its "
+     "harmonics instead)."},
 };
 
 // ---- JI groups -----------------------------------------------------------------------------------------------
@@ -251,13 +283,16 @@ constexpr HelpEntry kJiGroups[] = {
      "Tune a chord to JI, and back",
      "Select the notes of a chord and press the key: the lowest note stays where it is and the others move to the "
      "nearest simple just intervals above it. They are the same notes, now inside a dashed frame headed by the chord's "
-     "proportion. Press the key again with them selected and they go back exactly to what you wrote. Also in the "
-     "right-click menu, as Tune to JI and Back to Tuning."},
-    {"click the proportion\nabove the frame",
+     "proportion. Press the key again with them selected and they play exactly what you wrote; the frame stays, "
+     "headed for example 12-EDO (4:5:6), and the next press brings back the same reading and warps. A chord you "
+     "built in JI goes to the nearest rows of the tuning and back. With several chords selected (Ctrl+A over a "
+     "progression) each chord is tuned on its own. Also in the right-click menu, as Tune to JI and Back to Tuning."},
+    {"double-click the proportion\nabove the frame",
      "Other readings of the chord",
      "A tempered chord can be heard as more than one just chord: C E G B\xE2\x99\xAD as 4:5:6:7, or as 20:25:30:36. The "
-     "list shows each reading with how many cents the notes move in total. Click one, or use Up / Down and Enter; Esc "
-     "keeps the ticked one. The list also opens by itself right after tuning."},
+     "double-click opens the list (a single click only selects the chord): each reading with how many cents the "
+     "notes move in total. Click one, or use Up / Down and Enter; Esc keeps the ticked one. The list also opens by "
+     "itself right after tuning, and as Other Readings\xE2\x80\xA6" " in the right-click menu."},
     {"drag the frame's bottom-left\ncorner inward",
      "Warp: play it tempered, then glide into JI",
      "The frame of the selected group has a small arrow on each bottom corner. Drag the left one into the chord: up to "
@@ -281,7 +316,8 @@ constexpr HelpEntry kJiGroups[] = {
      "Next or previous harmonic",
      "A note of a group moves along the group's harmonics instead of the rows: up from the 6 of 4:5:6 is the 7. "
      "Dragged, it snaps to the harmonic nearest the pointer. The frozen note itself moves row by row and takes its "
-     "whole group with it."},
+     "whole group with it; so does the whole chord selected (a click on its header): it moves by steps and stays the "
+     "same just chord, and Back to Tuning gives the chord where it now is."},
     {"{pianoroll.walkUp} / {pianoroll.walkDown}",
      "Walk the chord",
      "With a note of a group selected, every number of the group goes up or down by one while the frozen note stays "
@@ -372,6 +408,9 @@ constexpr HelpEntry kMacro[] = {
 };
 
 constexpr HelpSection kSections[] = {
+    {"Quick start",
+     "Just intonation in five moves. Each is described in full in its section below.",
+     kQuickStart},
     {"Notes",
      "Every note is a line along its pitch. The rows are the steps of the clip's tuning; the grid divides the time.",
      kNotes},

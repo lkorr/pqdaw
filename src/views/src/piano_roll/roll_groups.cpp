@@ -7,11 +7,14 @@
 //              header above it is the proportion ("4:5:6:7"; with warps the states in order: "12-EDO → 4:5:6");
 //              every note carries its harmonic number at its left end (roll_paint.cpp; the anchor's with a diamond).
 //              The frame takes no clicks: inside it notes and empty space behave as everywhere. Its HEADER is
-//              clickable (selects the group's notes; on a tuned group the proportion opens the chooser), and so are
-//              the grips on its bottom border.
-//   Tune to JI Ctrl+Shift+J / the menu on selected notes: ops::tuneToJi with the best reading; on notes that already
-//              are one tuned group: ops::untuneJiGroup (exactly what was written). The chooser lists
-//              ops::tuneToJiCandidates (proportion, total error in cents).
+//              clickable (selects the group's notes; a double-click on a tuned group's proportion opens the chooser,
+//              T7.16a: a single click leaves the arrow keys to the selected chord), and so are the grips on its
+//              bottom border.
+//   Tune to JI Ctrl+Shift+J / the menu on selected notes, split into chords by overlapping time (T7.16a M6): one
+//              chord → ops::tuneToJi with the best reading; several, or a group Back to Tuning →
+//              ops::tuneChordsToJi; notes that all are (in) groups in JI → ops::setJiGroupsTuned(false): Back to
+//              Tuning, a STATE the group keeps (M1: the reading and the warps come back with the next press; the frame
+//              stays, headed "12-EDO (4:5:6)"). The chooser lists ops::tuneToJiCandidates (proportion, total error).
 //   warps      "play a tempered chord, then warp it into JI": drag from the frame's bottom-left corner grip inward:
 //              before the marker the members sound (and are drawn) as written, then glide into JI; from the
 //              bottom-right corner: back to the tuning. A marker is a dotted line through the frame with a diamond on
@@ -172,6 +175,8 @@ const std::vector<GroupInfo>& RollState::groupInfos() const {
     info.proportion = gh->proportion;
     info.start = span->start;
     info.end = span->end;
+    info.origin = span->origin;
+    info.inJi = g.tuned;
     for (const doc::Note& n : clip_->notes) {
       const bool member = doc::noteAnchorOf(n.pitch) == g.anchor;
       if (!member && n.id != g.anchor) continue;
@@ -179,7 +184,8 @@ const std::vector<GroupInfo>& RollState::groupInfos() const {
       if (member && clip_->written && doc::findNoteWritten(*clip_, n.id) != nullptr) info.tuned = true;
     }
     info.proportionText = proportionString(info.proportion);
-    info.header = headerOf(info.proportionText, tuning, g.warps);
+    // T7.16a: Back to Tuning keeps the group: its header names the tuning it plays in and the reading it keeps.
+    info.header = g.tuned ? headerOf(info.proportionText, tuning, g.warps) : tuning + " (" + info.proportionText + ")";
     groupInfos_.push_back(std::move(info));
   }
   return groupInfos_;
@@ -197,7 +203,8 @@ std::span<const doc::JiWarp> RollState::shownWarps(const GroupInfo& g) const {
 }
 
 double RollState::warpStateAt(const GroupInfo& g, Ticks contentTick) const {
-  return doc::jiWarpWritten(shownWarps(g), static_cast<double>(contentTick - g.start));
+  if (!g.inJi) return 1.0;  // Back to Tuning: written throughout
+  return doc::jiWarpWritten(shownWarps(g), static_cast<double>(contentTick - g.origin));
 }
 
 GroupFrame RollState::groupFrame(const GroupInfo& g) const {
@@ -209,21 +216,36 @@ GroupFrame RollState::groupFrame(const GroupInfo& g) const {
     lo = std::min(lo, *c);
     hi = std::max(hi, *c);
   };
-  const bool warped = !shownWarps(g).empty();
+  const bool warped = !shownWarps(g).empty() && g.inJi;
+  const float sc = scaleOf(*this);
+  const float lane = static_cast<float>(std::max(1, rows_.laneHeight()));
+  float bottom = -1e30f;  // device y of the frame's bottom border
   for (const doc::Note* n : g.notes) {
-    take(startCents(*n));
+    const std::optional<double> c = startCents(*n);
+    take(c);
+    if (c) {
+      float below = 0.5f * lane + 5.0f * sc;
+      // T7.16a (M7 review H4): under a vibrating note the frame's bottom (where the warp and corner grips sit) goes
+      // below the envelope's corner grips, so the two never share a spot.
+      if (const doc::NoteVibrato v = vibratoOf(n->id); v.set()) {
+        const float depth = std::fabs(yOfCents(*c + static_cast<double>(v.depthCents)) - yOfCents(*c));
+        below = std::max(below, std::max(depth, kVibratoGripRise * sc) + (kVibratoGrip + 2.0f) * sc);
+      }
+      bottom = std::max(bottom, yOfCents(*c) + below);
+    }
     if (!warped || !g.tuned || n == g.anchor) continue;
     // A member a warp moves: both the pitch it was written at and its JI pitch are inside the frame.
     take(centsOf(n->pitch));
-    if (const doc::NoteWritten* w = doc::findNoteWritten(*clip_, n->id)) take(centsOf(w->written));
+    if (const doc::NoteWritten* w = doc::findNoteWritten(*clip_, n->id)) {
+      take(centsOf(w->written));
+      if (const std::optional<double> wc = centsOf(w->written)) bottom = std::max(bottom, yOfCents(*wc) + 0.5f * lane + 5.0f * sc);
+    }
   }
   if (lo > hi) return f;
-  const float sc = scaleOf(*this);
-  const float lane = static_cast<float>(std::max(1, rows_.laneHeight()));
   const float x0 = std::round(xOfTick(static_cast<double>(g.start))) - std::round(7.0f * sc);
   const float x1 = std::round(xOfTick(static_cast<double>(g.end))) + std::round(7.0f * sc);
   const float y0 = std::round(yOfCents(hi) - 0.5f * lane - 15.0f * sc);  // room for the numbers above the top note
-  const float y1 = std::round(yOfCents(lo) + 0.5f * lane + 5.0f * sc);
+  const float y1 = std::round(std::max(bottom, yOfCents(lo) + 0.5f * lane + 5.0f * sc));
   f.box = {x0, y0, std::max(x1, x0 + 8.0f), y1};
   const float hh = std::round(15.0f * sc);
   const bool preview = warpPreview_.valid() && warpPreview_.group == g.group->id;
@@ -241,16 +263,16 @@ GroupFrame RollState::groupFrame(const GroupInfo& g) const {
 }
 
 float RollState::warpX(const GroupInfo& g, const doc::JiWarp& w) const {
-  return std::round(xOfTick(static_cast<double>(g.start + w.at)));
+  return std::round(xOfTick(static_cast<double>(g.origin + w.at)));
 }
 
 float RollState::warpGlideX(const GroupInfo& g, const doc::JiWarp& w) const {
   const float x = warpX(g, w);
-  return std::max(std::round(xOfTick(static_cast<double>(g.start + w.at + w.glide))), x + std::round(kWarpGripGap * scaleOf(*this)));
+  return std::max(std::round(xOfTick(static_cast<double>(g.origin + w.at + w.glide))), x + std::round(kWarpGripGap * scaleOf(*this)));
 }
 
 bool RollState::gripsShown(const GroupInfo& g) const {
-  if (!g.tuned) return false;
+  if (!g.tuned || !g.inJi) return false;  // (Back to Tuning: no warps apply until it is tuned again)
   const doc::JiGroupId id = g.group->id;
   if (hoverGroup_ == id || drag.group == id) return true;
   const doc::JiGroup* active = activeJiGroup();
@@ -287,7 +309,7 @@ GroupHit RollState::groupPartAt(ui::Vec2 p) const {
     const bool nearX = static_cast<double>(g.end) + 0.0 >= t0 - 1.0 && static_cast<double>(g.start) <= t1 + 1.0;
     if (nearX || (p.x >= f.box.x0 - 2.0f * half && p.x <= f.box.x1 + 2.0f * half)) {
       if (std::fabs(p.y - f.box.y1) <= half) {
-        const std::span<const doc::JiWarp> warps = shownWarps(g);
+        const std::span<const doc::JiWarp> warps = g.inJi ? shownWarps(g) : std::span<const doc::JiWarp>();
         for (size_t i = 0; i < warps.size(); ++i)
           if (std::fabs(p.x - warpX(g, warps[i])) <= half) return {GroupPart::Marker, id, static_cast<int32_t>(i)};
         for (size_t i = 0; i < warps.size(); ++i)
@@ -330,30 +352,86 @@ bool RollState::toggleTuneToJi(bool chooser) {
     ctx.setStatus("Tune to JI: select the notes of a chord first");
     return false;
   }
-  // Notes that already are (in) one tuned group: back to what was written.
-  const doc::JiGroup* one = nullptr;
-  bool same = true;
-  for (const doc::Note& n : clip_->notes) {
-    if (!selected(n.id)) continue;
-    const doc::JiGroup* g = doc::jiGroupOfNote(*clip_, n);
-    if (!g || (one && g != one)) same = false;
-    one = one ? one : g;
+  // T7.16a (M7 review H1 / M6): the selection as chords — notes that overlap in time (through each other) are one
+  // chord — and what each chord is: all of one group (in JI or Back to Tuning), or notes to tune.
+  std::vector<const doc::Note*> notes;
+  notes.reserve(keys.size());
+  for (const doc::Note& n : clip_->notes)  // in start order
+    if (selected(n.id)) notes.push_back(&n);
+  std::vector<std::vector<doc::NoteKey>> chords;
+  Ticks chordEnd = 0;
+  for (const doc::Note* n : notes) {
+    if (chords.empty() || n->start >= chordEnd) chords.emplace_back();
+    chords.back().push_back(doc::keyOf(*n));
+    chordEnd = chords.back().size() == 1 ? n->start + n->length : std::max(chordEnd, n->start + n->length);
+  }
+  auto groupOfChord = [&](const std::vector<doc::NoteKey>& ch) -> const doc::JiGroup* {
+    const doc::JiGroup* one = nullptr;
+    for (const doc::NoteKey& k : ch) {
+      const doc::Note* n = clip_->notes.locate(k);
+      const doc::JiGroup* g = n ? doc::jiGroupOfNote(*clip_, *n) : nullptr;
+      if (!g || (one && g != one)) return nullptr;
+      one = g;
+    }
+    return one;
+  };
+  // A melody (no two notes overlap) of notes in no group is read as one chord, as it always was.
+  bool melody = chords.size() > 1;
+  for (const std::vector<doc::NoteKey>& ch : chords) melody = melody && ch.size() == 1 && groupOfChord(ch) == nullptr;
+  if (melody) {
+    chords.assign(1, {});
+    for (const doc::Note* n : notes) chords[0].push_back(doc::keyOf(*n));
+  }
+  // Every chord is (in) a group in JI: Back to Tuning, for all of them; the groups keep their reading and warps (M1).
+  std::vector<doc::JiGroupId> back;
+  bool allInJi = true;
+  for (const std::vector<doc::NoteKey>& ch : chords) {
+    const doc::JiGroup* g = groupOfChord(ch);
+    if (!g || !g->tuned) {
+      allInJi = false;
+      break;
+    }
+    if (std::find(back.begin(), back.end(), g->id) == back.end()) back.push_back(g->id);
   }
   const std::vector<uint32_t> keep = sel_;
-  if (same && one) {
-    const GroupInfo* info = groupInfo(one->id);
-    if (info && info->tuned) {
-      const std::string was = info->proportionText;
-      if (!apply(doc::ops::untuneJiGroup(*ctx.doc(), ref_, one->id), "Back to Tuning")) return false;
-      select(keep);
-      forgetActiveGroup();
-      ctx.setStatus("Back to " + tuningLabel() + ": the notes are exactly what was written (" + was + " is gone; Ctrl+Shift+J tunes them again)");
-      return true;
-    }
+  if (allInJi && !back.empty()) {
+    const GroupInfo* info = groupInfo(back.front());
+    const std::string was = back.size() == 1 && info ? info->proportionText : std::to_string(back.size()) + " chords";
+    if (!apply(doc::ops::setJiGroupsTuned(*ctx.doc(), ref_, back, false), "Back to Tuning")) return false;
+    select(keep);
+    ctx.setStatus("Back to " + tuningLabel() + ": the notes play as written; " + was + " is kept with its warps (Ctrl+Shift+J: JI again)");
+    return true;
   }
-  if (keys.size() < 2) {
+  const bool one = chords.size() == 1;
+  const doc::JiGroup* oneGroup = one ? groupOfChord(chords[0]) : nullptr;
+  if (one && keys.size() < 2 && !(oneGroup && !oneGroup->tuned)) {
     ctx.setStatus("Tune to JI: select two or more notes (one note: right-click it > Is Harmonic\xE2\x80\xA6)");
     return false;
+  }
+  if (!one || oneGroup) {
+    // Several chords, or a group Back to Tuning: one step for all (each chord its best reading; a group its own).
+    const doc::ops::EditResult e = doc::ops::tuneChordsToJi(*ctx.doc(), ctx.store().ids(), ref_, chords);
+    if (!e) {
+      ctx.setStatus("Tune to JI: " + e.error().message);
+      return false;
+    }
+    if (e->empty()) {
+      ctx.setStatus("Tune to JI: the chords already are in JI");
+      return false;
+    }
+    if (!apply(e, "Tune to JI")) return false;
+    select(keep);
+    setShowHarmonics(true);
+    std::string list;
+    size_t n = 0;
+    for (const doc::JiGroupId id : e->jiGroups)
+      if (const GroupInfo* info = groupInfo(id); info && list.find(info->proportionText) == std::string::npos) {
+        list += (n++ ? ", " : "") + info->proportionText;
+        if (n == 4) break;
+      }
+    ctx.setStatus(one ? "Tuned to " + list + " again (its reading and warps) \xC2\xB7 Ctrl+Shift+J: back"
+                      : "Tuned " + std::to_string(chords.size()) + " chords to JI: " + list + " \xC2\xB7 Ctrl+Shift+J: back");
+    return true;
   }
   const doc::ops::EditResult e = doc::ops::tuneToJi(*ctx.doc(), ctx.store().ids(), ref_, keys);
   if (!e) {
@@ -372,7 +450,7 @@ bool RollState::toggleTuneToJi(bool chooser) {
   const size_t readings = info ? groupCandidates(id).size() : 0;
   ctx.setStatus("Tuned to " + (info ? info->proportionText : std::string("JI")) + " (just throughout). Drag the frame's bottom-left corner inward to start in " +
                 tuningLabel() + " and warp into JI \xC2\xB7 Ctrl+Shift+J: back" +
-                (readings > 1 ? " \xC2\xB7 click the header: " + std::to_string(readings - 1) + " other reading" + (readings > 2 ? "s" : "") : std::string()));
+                (readings > 1 ? " \xC2\xB7 double-click the header: " + std::to_string(readings - 1) + " other reading" + (readings > 2 ? "s" : "") : std::string()));
   if (chooser && readings > 1) (void)openJiChooser(id);
   return true;
 }
@@ -429,7 +507,7 @@ ui::Menu* RollState::openJiChooser(doc::JiGroupId id) {
   int32_t current = -1;
   for (const doc::ops::JiCandidate& c : cands) {
     char err[32];
-    std::snprintf(err, sizeof err, "%.0f \xC2\xA2", c.error);
+    std::snprintf(err, sizeof err, "moves %.0f \xC2\xA2", c.error);  // L4: the notes' total move, labelled
     ui::MenuItem m = ui::MenuItem::item(proportionString(c.terms, 16), [alive, id, terms = c.terms] {
       if (*alive) (void)(*alive)->retuneGroup(id, terms);
     }, err);
@@ -490,6 +568,7 @@ void RollState::setWarpPreview(doc::JiGroupId group, std::vector<doc::JiWarp> wa
   if (const std::optional<doc::TrackPath> path = doc::findTrack(*snap_, ref_.track))
     warpPreview_.pitches = doc::resolveClipPitches(*snap_, *path, *warpPreview_.clip);
   warpPreview_.index = doc::NotePitchIndex(warpPreview_.pitches);
+  touchPreview();
   markNotesDirty();
 }
 
@@ -545,7 +624,12 @@ bool RollState::insertWarpAt(doc::JiGroupId id, Ticks contentTick) {
     ctx.setStatus("Warp: this group has no tempered pitches to go back to (its notes were placed as exact ratios)");
     return false;
   }
-  const Ticks t = std::clamp<Ticks>(contentTick - g->start, 0, std::max<Ticks>(g->end - g->start, 0));
+  if (!g->inJi) {
+    ctx.setStatus("Warp: the group is back in the tuning; Ctrl+Shift+J tunes it again (its warps come back with it)");
+    return false;
+  }
+  // Group ticks count from the anchor's start (M7).
+  const Ticks t = std::clamp<Ticks>(contentTick - g->origin, g->start - g->origin, std::max<Ticks>(g->end - g->origin, g->start - g->origin));
   std::vector<doc::JiWarp> warps = g->group->warps;
   const double state = doc::jiWarpWritten(warps, static_cast<double>(t));
   if (state != 0.0 && state != 1.0) {
@@ -563,7 +647,7 @@ bool RollState::insertWarpAt(doc::JiGroupId id, Ticks contentTick) {
   w.toJi = state == 1.0;
   // The next transition moves here (it has this direction); else a new one.
   if (at < warps.size()) warps.erase(warps.begin() + static_cast<std::ptrdiff_t>(at));
-  const Ticks room = (at < warps.size() ? warps[at].at : std::max<Ticks>(g->end - g->start, t)) - t;
+  const Ticks room = (at < warps.size() ? warps[at].at : std::max<Ticks>(g->end - g->origin, t)) - t;
   Ticks glide = kPpq / 2;
   if (const Grid gr = grid(); gr.enabled()) {
     const TickRange cell = gr.cellAt(contentTick);
@@ -585,7 +669,8 @@ void RollState::beginWarpDrag(const GroupHit& h, ui::Vec2 p) {
   DragState& d = drag;
   d.press = d.last = p;
   d.group = h.group;
-  d.groupStart = g->start;
+  d.groupStart = g->origin;
+  d.groupFirst = g->start;
   d.groupEnd = g->end;
   d.warps = g->group->warps;
   d.warpIndex = h.warp;
@@ -608,7 +693,9 @@ void RollState::warpDragTo(ui::Vec2 p, ui::Mods mods) {
   const GroupInfo* g = groupInfo(d.group);
   if (!g) return;
   const std::vector<doc::JiWarp>& base = g->group->warps;
-  const Ticks span = std::max<Ticks>(d.groupEnd - d.groupStart, 1);
+  // Group ticks from the anchor's start (M7): the group's notes span [first, span].
+  const Ticks first = std::min<Ticks>(d.groupFirst - d.groupStart, 0);
+  const Ticks span = std::max<Ticks>(d.groupEnd - d.groupStart, first + 1);
   const Grid gr = grid();
   auto snapped = [&](float x) {
     Ticks t = static_cast<Ticks>(std::llround(tickAtX(x)));
@@ -627,15 +714,15 @@ void RollState::warpDragTo(ui::Vec2 p, ui::Mods mods) {
     if (d.fromLeft) {
       // A new first warp: what follows keeps its states, so it leads INTO the state the group started in.
       const Ticks hi = base.empty() ? span : base.front().at - 1;
-      if (hi < 0) return;
-      w.at = std::clamp<Ticks>(snapped(p.x), 0, hi);
+      if (hi < first) return;
+      w.at = std::clamp<Ticks>(snapped(p.x), first, hi);
       w.toJi = base.empty() || !base.front().toJi;
       w.glide = std::clamp<Ticks>(cell, 0, (base.empty() ? span : base.front().at) - w.at);
       warps.insert(warps.begin(), w);
       index = 0;
     } else {
       // A new last warp: it leaves the state the group ended in.
-      const Ticks lo = base.empty() ? 0 : base.back().at + std::max<Ticks>(base.back().glide, 1);
+      const Ticks lo = base.empty() ? first : base.back().at + std::max<Ticks>(base.back().glide, 1);
       if (lo > span) return;
       w.at = std::clamp<Ticks>(snapped(p.x), lo, span);
       w.toJi = !base.empty() && !base.back().toJi;
@@ -649,7 +736,7 @@ void RollState::warpDragTo(ui::Vec2 p, ui::Mods mods) {
     const bool last = static_cast<size_t>(index) + 1 == warps.size();
     const Ticks next = last ? std::max(span, w.at + w.glide) : warps[static_cast<size_t>(index) + 1].at;
     if (d.kind == DragKind::WarpMove) {
-      const Ticks lo = index > 0 ? warps[static_cast<size_t>(index) - 1].at + std::max<Ticks>(warps[static_cast<size_t>(index) - 1].glide, 1) : 0;
+      const Ticks lo = index > 0 ? warps[static_cast<size_t>(index) - 1].at + std::max<Ticks>(warps[static_cast<size_t>(index) - 1].glide, 1) : first;
       const Ticks hi = last ? std::max<Ticks>(span, lo) : next - std::max<Ticks>(w.glide, 1);
       w.at = std::clamp<Ticks>(w.at + dt, lo, std::max(lo, hi));
     } else {
@@ -668,6 +755,7 @@ void RollState::warpDragTo(ui::Vec2 p, ui::Mods mods) {
 
 bool RollState::commitWarpDrag(DragState& d) {
   warpPreview_ = {};
+  touchPreview();
   if (!d.group.valid()) return false;
   const doc::JiGroupId id = d.group;
   const int32_t index = d.warpIndex;
@@ -779,6 +867,8 @@ std::optional<int32_t> RollState::harmonicDragSteps(const doc::Note& pressed, fl
   if (!clip_ || !clip_->groups) return std::nullopt;
   const doc::NoteId anchorId = doc::noteAnchorOf(pressed.pitch);
   if (!anchorId.valid()) return std::nullopt;
+  if (selected(anchorId)) return std::nullopt;  // T7.16a (H2): the whole chord moves, by rows
+  if (const doc::JiGroup* g = doc::findJiGroupByAnchor(*clip_, anchorId); g && !g->tuned) return std::nullopt;  // tempered
   const doc::JiGroup* g = doc::findJiGroupByAnchor(*clip_, anchorId);
   const GroupInfo* info = g ? groupInfo(g->id) : nullptr;
   const std::optional<uint64_t> own = harmonicOf(pressed);
@@ -845,7 +935,8 @@ void paintGroupOverlays(PaintContext& ctx, RollState& s, const IRect& vis) {
   const std::string tuning = s.tuningLabel();
   const RollState::WarpSel& sel = s.selectedWarp();
   for (const GroupInfo& g : s.groupInfos()) {
-    const std::span<const doc::JiWarp> warps = s.shownWarps(g);
+    // (Back to Tuning: the warps are kept but do not apply, so they are not drawn; the header names the state.)
+    const std::span<const doc::JiWarp> warps = g.inJi ? s.shownWarps(g) : std::span<const doc::JiWarp>();
     const bool grips = s.gripsShown(g);
     if (warps.empty() && !grips) continue;
     const GroupFrame f = s.groupFrame(g);
@@ -866,7 +957,7 @@ void paintGroupOverlays(PaintContext& ctx, RollState& s, const IRect& vis) {
       for (size_t i = 0; i < warps.size(); ++i) {
         const doc::JiWarp& w = warps[i];
         const float x = s.warpX(g, w);
-        const float xe = std::round(s.xOfTick(static_cast<double>(g.start + w.at + w.glide)));
+        const float xe = std::round(s.xOfTick(static_cast<double>(g.origin + w.at + w.glide)));
         const float gx = s.warpGlideX(g, w);
         const bool selected = (sel.group == g.group->id && sel.index == static_cast<int32_t>(i)) || (d.group == g.group->id && d.warpIndex == static_cast<int32_t>(i));
         const Rgba ink = selected ? th.roll.jiSelected : th.roll.jiLine;

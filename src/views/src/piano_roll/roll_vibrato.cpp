@@ -18,7 +18,8 @@
 // Each drag previews the record its release stores (RollState::curvePreview_) and is one undo step
 // (ops::setNoteVibrato: one SetNoteCurves for every note).
 //
-// Cost: a drag frame re-flattens the dragged notes' paths (RollState::pathOf's scratch entry); paint adds the grips
+// Cost: a drag frame re-flattens each dragged note's path once (RollState::pathOf's preview entries, T7.16a M15: not
+// once per query — the grips, the envelope and the paint all read the same entry); paint adds the grips
 // of at most 64 selected notes.
 
 #include <algorithm>
@@ -104,10 +105,9 @@ doc::NoteVibrato RollState::vibratoOf(doc::NoteId note) const {
 void RollState::vibratoNotes(std::vector<const doc::Note*>& out) const {
   out.clear();
   if (!clip_) return;
-  auto add = [&](uint32_t id) {
+  auto add = [&](uint32_t id) {  // (deduplicated once at the end: a drag over many notes stays O(k log k), M15)
     if (id == 0) return;
-    const doc::Note* n = findNote(doc::NoteId{id});
-    if (n && std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    if (const doc::Note* n = findNote(doc::NoteId{id})) out.push_back(n);
   };
   // The selected notes, while they are few and wide enough to carry a grip each (a selected run of 16ths stays
   // clean); the note under the pointer always.
@@ -119,6 +119,8 @@ void RollState::vibratoNotes(std::vector<const doc::Note*>& out) const {
   }
   add(hoverPart_.note);
   for (const DragState::VibratoTarget& t : drag.vibrato) add(t.note.value);
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
 }
 
 // The note's pitch `off` ticks in without its vibrato, as a device y (the centre the wave swings around).

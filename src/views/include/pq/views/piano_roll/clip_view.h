@@ -189,6 +189,7 @@ public:
     std::vector<ui::Vec2> markers, glideGrips;  // one per warp
     std::string headerText, proportionText;
     bool tuned = false;       // a member remembers what it was written as
+    bool inJi = true;         // T7.16a: the group's state (false: Back to Tuning)
     bool gripsShown = false;  // the corner grips (a tuned group that is active or under the pointer)
   };
   GroupGeometry groupGeometry(doc::JiGroupId id) const;

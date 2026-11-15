@@ -23,7 +23,7 @@
 //                      degrees takes the nearest one (counted: `snapped`). Round-trips with a Keys import (MF.2) into a
 //                      track of the same tuning (key map Tuning / Consecutive).
 //   A note whose key falls outside 0 … 127 (or a degree no .kbm key plays) is skipped (`outOfRange`); an unresolvable
-//   pitch (pitch_resolve.h: a missing anchor, a Harmonic identity) is skipped (`unresolved`).
+//   pitch (pitch_resolve.h: a missing anchor, a cycle of anchors) is skipped (`unresolved`).
 //
 // Cost: linear in the played notes plus a sort (O(n log n)); MPE allocation O(n · 15). Not RT code (UI thread).
 

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "piano_roll_fix.h"
+#include "pq/tuning/mos.h"
 
 using namespace roll_fix;
 using pq::tuning::AnchorKind;
@@ -89,7 +90,7 @@ TEST_CASE("roll groups: Tune to JI is a switch — Ctrl+Shift+J tunes the select
   REQUIRE(chooser->items().size() >= 2);
   CHECK(chooser->items()[0].label == "4:5:6:7");
   CHECK(chooser->items()[0].checked);
-  CHECK(chooser->items()[0].shortcut == "47 \xC2\xA2");
+  CHECK(chooser->items()[0].shortcut == "moves 47 \xC2\xA2");  // (T7.16a L4: the column is labelled)
   CHECK(chooser->items()[1].label == "20:25:30:36");
   CHECK_FALSE(chooser->items()[1].checked);
   (void)r.d.press("Escape");
@@ -110,25 +111,27 @@ TEST_CASE("roll groups: Tune to JI is a switch — Ctrl+Shift+J tunes the select
   CHECK(r.view->harmonicOf(ids[0]) == 4u);
   CHECK(r.view->harmonicOf(ids[3]) == 7u);
 
-  // The same key again: back to the tuning, exactly (identities, Hz), in one step; the notes stay selected.
+  // The same key again: back to the tuning — the notes play exactly what was written (Hz), in one step; the notes
+  // stay selected. T7.16a (M7 review M1): a state the group keeps — the frame stays, named by the tuning and the
+  // reading it keeps, with no grips; the notes are drawn on their rows without harmonic numbers.
   CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
   r.d.step();
   CHECK(r.history() == h + 2);
-  CHECK(r.clip().groups == nullptr);
-  CHECK(r.clip().written == nullptr);
-  for (size_t i = 0; i < 4; ++i) {
-    CHECK(r.note(ids[i]).pitch.kind() == PitchKind::Degree);
-    CHECK(r.hzOf(ids[i]) == hz[i]);
-  }
+  CHECK_FALSE(r.onlyGroup().tuned);
+  for (size_t i = 0; i < 4; ++i) CHECK(r.hzOf(ids[i]) == hz[i]);
+  CHECK(r.cents(ids[2], 0.0) - r.cents(ids[0], 0.0) == doctest::Approx(700.0).epsilon(1e-9));
+  CHECK_FALSE(r.view->harmonicOf(ids[3]).has_value());
   CHECK(r.view->selection().size() == 4);
   CHECK(*doc::findNoteCurves(r.clip(), ids[1]) == curves);
-  CHECK_FALSE(r.view->groupGeometry(group).valid);
+  CHECK(r.view->groupGeometry(group).headerText == "12-EDO (4:5:6:7)");
+  CHECK_FALSE(r.view->groupGeometry(group).gripsShown);
   CHECK(r.shell->overlay().openCount() == 0);
   CHECK(r.ctx.status().find("Back to 12-EDO") != std::string::npos);
   // Undo / redo walk the two states.
   REQUIRE(r.ctx.undo());
   r.d.step();
   CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{4, 5, 6, 7});
+  CHECK(r.onlyGroup().tuned);
   REQUIRE(r.ctx.undo());
   r.d.step();
   CHECK(r.clip().groups == nullptr);
@@ -147,8 +150,9 @@ TEST_CASE("roll groups: Tune to JI is a switch — Ctrl+Shift+J tunes the select
   CHECK(r.view->selection().size() == 4);
   g = r.view->groupGeometry(r.onlyGroup().id);
   CHECK(g.headerText == "20:25:30:36");
-  // A click on the header's proportion opens the chooser again; Up + Enter picks the reading above.
-  r.d.click(g.proportion);
+  // A double-click on the header's proportion opens the chooser again (T7.16a: a click only selects the chord);
+  // Up + Enter picks the reading above.
+  r.d.doubleClick(g.proportion);
   r.d.step();
   chooser = r.topMenu();
   REQUIRE(chooser != nullptr);
@@ -166,13 +170,13 @@ TEST_CASE("roll groups: Tune to JI is a switch — Ctrl+Shift+J tunes the select
   CHECK(Roll::itemOf(menu, "Tune to JI") < 0);
   (void)r.d.press("Escape");
   r.d.step();
-  r.d.click(r.view->groupGeometry(r.onlyGroup().id).proportion);
+  r.d.doubleClick(r.view->groupGeometry(r.onlyGroup().id).proportion);
   r.d.step();
   REQUIRE(r.topMenu() != nullptr);
   (void)r.d.press("Ctrl+Shift+J");
   r.d.step();
   CHECK(r.shell->overlay().openCount() == 0);
-  CHECK(r.clip().groups == nullptr);
+  CHECK_FALSE(r.onlyGroup().tuned);
   CHECK(r.history() == h + 4);
   for (size_t i = 0; i < 4; ++i) CHECK(r.hzOf(ids[i]) == hz[i]);
 }
@@ -238,12 +242,16 @@ TEST_CASE("roll groups: a frame takes no clicks — inside it a double-click add
   CHECK(std::binary_search(r.view->selection().begin(), r.view->selection().end(), lone[0].value));
   CHECK(std::binary_search(r.view->selection().begin(), r.view->selection().end(), five.value));
   CHECK(r.view->activeJiGroup() == declared->id);
-  // The tuned group's header is its proportion: the click selects its notes and opens the chooser.
+  // The tuned group's header is its proportion: a click selects its notes (the arrow keys then transpose the chord:
+  // no menu takes them, T7.16a); a double-click opens the chooser.
   r.d.click(g.proportion);
   r.d.step();
-  CHECK(r.topMenu() != nullptr);
+  CHECK(r.topMenu() == nullptr);
   CHECK(r.view->selection().size() == 4);
   CHECK(r.view->activeJiGroup() == group);
+  r.d.doubleClick(g.proportion);
+  r.d.step();
+  CHECK(r.topMenu() != nullptr);
 }
 
 TEST_CASE("roll groups: Is Harmonic… on a member makes it the group's frozen note — every pitch stays, the numbers re-derive, no second group (Q297)") {
@@ -649,6 +657,452 @@ TEST_CASE("roll groups: several groups in one clip each have their frame; the gu
   r.d.move(mid(fb.box));
   r.d.step();
   CHECK(r.view->groupGeometry(gb->id).gripsShown);
+}
+
+// ---- T7.16a: the review's dead ends (docs/reviews/M7-rework.md), each walked as the user meets it --------------------
+
+namespace {
+const std::string kView = "main/body/bottom/detail/clip/clip-view/";
+}  // namespace
+
+TEST_CASE("roll groups (T7.16a, M7 review H1): after Tune to JI the next chord drawn two bars later is on the rows, and tuning it makes a NEW group — the first stays intact") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> first = r.chord({0, 4, 7}, 0, 4 * kQ);
+  r.select(first);
+  tune(r);
+  const doc::JiGroupId one = r.onlyGroup().id;
+  // A click on empty space, then D, F and A double-clicked two bars later (in the cells under the pointer).
+  r.d.click(r.at(12.0 * kQ, 12));
+  r.d.step();
+  REQUIRE(r.view->selection().empty());
+  std::vector<doc::NoteId> next;
+  for (const int64_t deg : {2, 5, 9}) {
+    r.d.doubleClick(r.at(8.3 * kQ, deg));
+    r.d.step();
+    REQUIRE(r.view->selection().size() == 1);
+    next.push_back(doc::NoteId{r.view->selection()[0]});
+    const doc::Note& n = r.note(next.back());
+    CHECK(n.pitch == PitchId::fromDegree(static_cast<int32_t>(deg), 0));  // on its row: no harmonic of the first chord
+    CHECK_FALSE(doc::noteAnchorOf(n.pitch).valid());
+  }
+  CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{4, 5, 6});
+  // Ctrl+Shift+J on the new chord: a second group; the first is not untuned.
+  r.select(next);
+  tune(r);
+  REQUIRE(doc::jiGroupsOf(r.clip()).size() == 2);
+  const doc::JiGroup* a = doc::findJiGroup(r.clip(), one);
+  REQUIRE(a != nullptr);
+  CHECK(a->tuned);
+  CHECK(r.proportion(*a) == std::vector<int64_t>{4, 5, 6});
+  CHECK(r.note(first[1]).pitch == PitchId::fromRatio(Rational(5, 4), AnchorKind::Note, first[0].value));
+  const doc::JiGroup* b = doc::findJiGroupByAnchor(r.clip(), next[0]);
+  REQUIRE(b != nullptr);
+  CHECK(r.proportion(*b) == std::vector<int64_t>{10, 12, 15});
+  // Inside a group's span the plain draw still lands on its harmonics (and joins it).
+  r.select({first[0]});
+  r.d.doubleClick(r.at(2.1 * kQ, 10));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(doc::noteAnchorOf(r.note(doc::NoteId{r.view->selection()[0]}).pitch) == first[0]);
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review H3 / M10): the clip box's Harmonics: JI switch decides snapping; a click on it, Fold, Scale or Loop gives the keys back to the notes") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.chord({0, 4, 7}, 0, 4 * kQ);
+  r.select(ids);
+  // M10: the toolbar's switches, then the roll's keys at once.
+  for (const char* part : {"corner/fold", "corner/scale", "clip-box/loop"}) {
+    for (int twice = 0; twice < 2; ++twice) {
+      r.d.click(mid(r.d.rect(kView + part)));
+      r.d.step();
+      CHECK_MESSAGE(r.d.tree().focus() == r.d.find(kView + "notes"), part);
+    }
+  }
+  r.select(ids);
+  size_t h = r.history();
+  CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
+  r.d.step();
+  if (r.topMenu()) (void)r.d.press("Escape");
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  REQUIRE(!doc::jiGroupsOf(r.clip()).empty());
+  // H3: the switch off: inside the group's span a drawn note goes on its row; the guides are gone.
+  const IRect sw = r.d.rect(kView + "clip-box/ji-row/ji");
+  REQUIRE_FALSE(sw.empty());
+  r.d.click(mid(sw));
+  r.d.step();
+  CHECK_FALSE(r.view->showHarmonics());
+  CHECK(r.d.tree().focus() == r.d.find(kView + "notes"));
+  r.d.doubleClick(r.at(2.1 * kQ, 2));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.note(doc::NoteId{r.view->selection()[0]}).pitch == PitchId::fromDegree(2, 0));
+  // On: the harmonics of the group under the pointer.
+  r.d.click(mid(sw));
+  r.d.step();
+  CHECK(r.view->showHarmonics());
+  r.d.doubleClick(r.at(2.1 * kQ, 10));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  const doc::Note& m = r.note(doc::NoteId{r.view->selection()[0]});
+  CHECK(m.pitch == PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, ids[0].value));
+  // The keys still work after the switch (Ctrl+Shift+J on the group's notes: back to the tuning).
+  r.select(ids);
+  h = r.history();
+  CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review H2 / M14): Up, Shift+Up and a vertical drag of a whole tuned chord transpose it; the members follow their anchor in the drag preview; Back to Tuning restores the transposed chord") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.chord({0, 4, 7}, 0, 4 * kQ);
+  const double hz[3] = {r.hzOf(ids[0]), r.hzOf(ids[1]), r.hzOf(ids[2])};
+  r.select(ids);
+  tune(r);
+  const doc::JiGroupId group = r.onlyGroup().id;
+  auto same = [&] {
+    CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{4, 5, 6});
+    CHECK(r.hzOf(ids[1]) == doctest::Approx(r.hzOf(ids[0]) * 1.25).epsilon(1e-12));
+    CHECK(r.hzOf(ids[2]) == doctest::Approx(r.hzOf(ids[0]) * 1.5).epsilon(1e-12));
+  };
+  // The header selects the chord (as the user does), Up: a step of the tuning for the whole chord.
+  r.d.click(mid(r.view->groupGeometry(group).header));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 3);
+  size_t h = r.history();
+  CHECK(r.d.press("Up") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(1, 0));
+  same();
+  CHECK(r.d.press("Shift+Up") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(1, 1));
+  same();
+  (void)r.d.press("Shift+Down");
+  r.d.step();
+  // A vertical drag of the chord by a member: rows, not harmonics; the preview draws the whole chord moved.
+  const Vec2 from = r.view->notePoint(ids[1], 0.5);
+  const double c1 = r.cents(ids[1], 0.5), c2 = r.cents(ids[2], 0.5);
+  REQUIRE(r.d.down(from));
+  r.d.move({from.x, from.y - kRow});
+  r.d.move({from.x, from.y - 2.0f * kRow});
+  r.d.step();
+  // (The members are drawn where their anchor's preview puts them: two rows up, not on the harmonics.)
+  CHECK(r.cents(ids[1], 0.5) == doctest::Approx(c1 + 200.0).epsilon(1e-9));
+  CHECK(r.cents(ids[2], 0.5) == doctest::Approx(c2 + 200.0).epsilon(1e-9));
+  r.d.up({from.x, from.y - 2.0f * kRow});
+  r.d.step();
+  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(3, 0));
+  same();
+  // M14: the anchor dragged alone: its members are drawn following it while the drag runs.
+  r.d.click(r.view->notePoint(ids[0], 0.5));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  const Vec2 a = r.view->notePoint(ids[0], 0.5);
+  const double e0 = r.cents(ids[1], 0.5);
+  REQUIRE(r.d.down(a));
+  r.d.move({a.x, a.y + kRow});
+  r.d.move({a.x, a.y + 2.0f * kRow});
+  r.d.step();
+  CHECK(r.cents(ids[1], 0.5) == doctest::Approx(e0 - 200.0).epsilon(1e-9));
+  r.d.up({a.x, a.y + 2.0f * kRow});
+  r.d.step();
+  CHECK(r.cents(ids[1], 0.5) == doctest::Approx(e0 - 200.0).epsilon(1e-9));
+  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(1, 0));
+  // Back to Tuning: the written chord, transposed with it (one step up from where it was written).
+  r.select(ids);
+  (void)r.d.press("Ctrl+Shift+J");
+  r.d.step();
+  for (size_t i = 0; i < 3; ++i) CHECK(r.hzOf(ids[i]) == doctest::Approx(hz[i] * std::exp2(1.0 / 12.0)).epsilon(1e-12));
+  // Up on ONE member of a tuned group is still its next harmonic.
+  (void)r.d.press("Ctrl+Shift+J");
+  r.d.step();
+  r.d.click(r.view->notePoint(ids[2], 0.5));
+  r.d.step();
+  (void)r.d.press("Up");
+  r.d.step();
+  CHECK(r.note(ids[2]).pitch == PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, ids[0].value));
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review M1 / M3): Back to Tuning keeps the group — the chosen reading and the warps come back; a chord typed in JI goes to the rows and back") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.chord({0, 4, 7, 10});
+  const double hz[4] = {r.hzOf(ids[0]), r.hzOf(ids[1]), r.hzOf(ids[2]), r.hzOf(ids[3])};
+  r.select(ids);
+  CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
+  r.d.step();
+  r.choose(r.topMenu(), "20:25:30:36");
+  const doc::JiGroupId group = r.onlyGroup().id;
+  // A warp from the bottom-left corner.
+  ClipView::GroupGeometry g = r.view->groupGeometry(group);
+  REQUIRE(g.gripsShown);
+  r.d.drag(g.leftGrip, {r.view->xOfTick(1.0 * kQ), g.leftGrip.y}, 5);
+  r.d.step();
+  REQUIRE(r.onlyGroup().warps.size() == 1);
+  const doc::JiWarp warp = r.onlyGroup().warps[0];
+  r.select(ids);
+  (void)r.d.press("Ctrl+Shift+J");
+  r.d.step();
+  CHECK_FALSE(r.onlyGroup().tuned);
+  for (size_t i = 0; i < 4; ++i) CHECK(r.hzOf(ids[i]) == hz[i]);
+  CHECK(r.ctx.status().find("Back to 12-EDO") != std::string::npos);
+  g = r.view->groupGeometry(group);
+  REQUIRE(g.valid);  // the frame stays, naming the remembered reading
+  CHECK(g.headerText.find("20:25:30:36") != std::string::npos);
+  CHECK_FALSE(g.gripsShown);
+  const double rows[4] = {0, 4, 7, 10};  // drawn on their rows again
+  for (size_t i = 1; i < 4; ++i) CHECK(r.cents(ids[i], 0.5) - r.cents(ids[0], 0.5) == doctest::Approx(100.0 * rows[i]).epsilon(1e-9));
+  (void)r.d.press("Ctrl+Shift+J");
+  r.d.step();
+  if (r.topMenu()) (void)r.d.press("Escape");
+  r.d.step();
+  CHECK(r.onlyGroup().tuned);
+  CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{20, 25, 30, 36});
+  REQUIRE(r.onlyGroup().warps.size() == 1);
+  CHECK(r.onlyGroup().warps[0] == warp);
+
+  // M3: a proportion typed as JI (no written identities) goes to the nearest rows and back.
+  r.choose(r.rightClick(r.at(9.3 * kQ, 2)), "Insert Proportion");
+  r.typeEnter("4:5:6:7");
+  REQUIRE(doc::jiGroupsOf(r.clip()).size() == 2);
+  const std::vector<uint32_t> typed(r.view->selection().begin(), r.view->selection().end());  // ids ascend in term order
+  std::vector<doc::NoteId> typedIds;
+  for (const uint32_t v : typed) typedIds.push_back(doc::NoteId{v});
+  const doc::JiGroup* tg = doc::findJiGroupByAnchor(r.clip(), typedIds[0]);
+  REQUIRE(tg != nullptr);
+  const double root = r.hzOf(typedIds[0]);
+  CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.ctx.status().find("Back to 12-EDO") != std::string::npos);
+  CHECK(r.hzOf(typedIds[3]) == doctest::Approx(root * std::exp2(10.0 / 12.0)).epsilon(1e-12));  // 7/4 → the minor seventh
+  (void)r.d.press("Ctrl+Shift+J");
+  r.d.step();
+  CHECK(r.hzOf(typedIds[3]) == doctest::Approx(root * 1.75).epsilon(1e-12));
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review M6): Ctrl+A, Ctrl+Shift+J tunes a progression chord by chord; again goes back for all") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> a = r.chord({0, 4, 7}, 0, 2 * kQ);
+  const std::vector<doc::NoteId> b = r.chord({2, 5, 9}, 2 * kQ, 2 * kQ);
+  (void)r.d.press("Ctrl+A");
+  const size_t h = r.history();
+  CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  REQUIRE(doc::jiGroupsOf(r.clip()).size() == 2);
+  CHECK(r.shell->overlay().openCount() == 0);  // several chords: no chooser
+  CHECK(r.proportion(*doc::findJiGroupByAnchor(r.clip(), a[0])) == std::vector<int64_t>{4, 5, 6});
+  CHECK(r.proportion(*doc::findJiGroupByAnchor(r.clip(), b[0])) == std::vector<int64_t>{10, 12, 15});
+  CHECK(r.ctx.status().find("2 chords") != std::string::npos);
+  CHECK(r.d.press("Ctrl+Shift+J") == KeyResult::Action);
+  r.d.step();
+  for (const doc::JiGroup& g : doc::jiGroupsOf(r.clip())) CHECK_FALSE(g.tuned);
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review M5): 3/2 above harmonic 5 by mouse — Alt over the group shows the finer series, a double-click there adds it and the group reads 10:15") {
+  Roll r;
+  r.focusNotes();
+  const doc::NoteId e = r.addNotes({Roll::plain(0, 4 * kQ, 4)})[0];
+  REQUIRE(r.view->declareHarmonic(e, 5));
+  r.d.step();
+  const double fifth = r.cents(e, 0.5) + 1200.0 * std::log2(1.5);
+  const Vec2 at{r.view->xOfTick(1.1 * kQ), r.view->yOfCents(fifth) + 1.0f};
+  // Without Alt the nearest whole harmonic of 5 is 7 (or 8): not the fifth.
+  r.d.move(at, mod::kAlt);
+  r.d.step();
+  REQUIRE(r.view->harmonicGuideY(15).has_value());  // the finer series, numbered as the group will read
+  r.d.doubleClick(at, mod::kAlt);
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  const doc::NoteId added{r.view->selection()[0]};
+  CHECK(r.note(added).pitch == PitchId::fromRatio(Rational(3, 2), AnchorKind::Note, e.value));
+  CHECK(r.view->harmonicOf(e) == 10u);
+  CHECK(r.view->harmonicOf(added) == 15u);
+  CHECK(r.view->groupGeometry(r.onlyGroup().id).headerText == "10:15");
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review H4 / M13): warp grips win over vibrato corners, which never sit on them; Alt + a note's outer quarter bends, Alt + its middle copies") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.chord({0, 4, 7, 10});
+  doc::NoteVibrato vib;
+  vib.depthCents = 25.0f;
+  vib.rate = 6.0f;
+  vib.fadeIn = kQ;
+  REQUIRE(r.ctx.store().dispatch(doc::SetNoteCurves{r.ref, {doc::NoteCurves{ids[0], {}, {}, {}, vib}}}).ok());
+  r.d.step();
+  r.select(ids);
+  tune(r);
+  r.select(ids);
+  const ClipView::GroupGeometry g = r.view->groupGeometry(r.onlyGroup().id);
+  REQUIRE(g.gripsShown);
+  for (int c = 0; c < 4; ++c) {
+    const std::optional<Vec2> k = r.view->vibratoCorner(ids[0], c);
+    REQUIRE(k.has_value());
+    for (const Vec2 grip : {g.leftGrip, g.rightGrip})
+      CHECK((std::fabs(k->x - grip.x) > 12.0f || std::fabs(k->y - grip.y) > 12.0f));
+  }
+  // The left grip dragged inward: a warp; the C's vibrato is untouched.
+  r.d.drag(g.leftGrip, {r.view->xOfTick(1.0 * kQ), g.leftGrip.y}, 5);
+  r.d.step();
+  CHECK(r.onlyGroup().warps.size() == 1);
+  CHECK(doc::findNoteCurves(r.clip(), ids[0])->vibrato == vib);
+  const ClipView::GroupGeometry g2 = r.view->groupGeometry(r.onlyGroup().id);
+  r.d.drag(g2.rightGrip, {r.view->xOfTick(3.0 * kQ), g2.rightGrip.y}, 5);
+  r.d.step();
+  CHECK(r.onlyGroup().warps.size() == 2);
+  CHECK(doc::findNoteCurves(r.clip(), ids[0])->vibrato == vib);
+
+  // M13: two notes in a row; Alt + 5 px inside the first one's end (past the plain 4 px edge) bends it out.
+  const doc::NoteId n = r.addNotes({Roll::plain(8 * kQ, 2 * kQ, 2)})[0];
+  const doc::NoteId m = r.addNotes({Roll::plain(10 * kQ, 2 * kQ, 5)})[0];
+  const size_t notes = r.noteCount();
+  const Vec2 end{r.view->xOfTick(10.0 * kQ) - 5.0f, r.view->notePoint(n, 0.5).y};
+  r.d.drag(end, {end.x - kBeat, end.y}, 5, mod::kAlt);
+  r.d.step();
+  CHECK(r.noteCount() == notes);
+  REQUIRE(doc::findNoteCurves(r.clip(), n) != nullptr);
+  CHECK(doc::findNoteCurves(r.clip(), n)->bendOut.other == m);
+  // The middle: a copy.
+  const Vec2 body = r.view->notePoint(m, 0.5);
+  r.d.drag(body, {body.x + 2.0f * kBeat, body.y}, 5, mod::kAlt);
+  r.d.step();
+  CHECK(r.noteCount() == notes + 1);
+  // A 32nd note can be bent too (its outer quarter is the 6 px minimum).
+  const doc::NoteId s = r.addNotes({Roll::plain(5 * kQ, kQ / 8, 2), Roll::plain(5 * kQ + kQ / 8, kQ, 4)})[0];
+  const Vec2 sEnd{r.view->xOfTick(5.0 * kQ + kQ / 8.0) - 2.0f, r.view->notePoint(s, 0.5).y};
+  r.d.drag(sEnd, {sEnd.x - 40.0f, sEnd.y}, 5, mod::kAlt);  // (the drag snaps to whole grid cells)
+  r.d.step();
+  REQUIRE(doc::findNoteCurves(r.clip(), s) != nullptr);
+  CHECK(doc::findNoteCurves(r.clip(), s)->bendOut.set());
+}
+
+TEST_CASE("roll gestures (T7.16a, M7 review M20): Esc mid-drag leaves the document alone — pen, bend, vibrato, detune") {
+  Roll r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.addNotes({Roll::plain(0, 2 * kQ, 2), Roll::plain(2 * kQ, 2 * kQ, 5)});
+  auto escaped = [&](Vec2 from, Vec2 to, Mods mods) {
+    const size_t h = r.history();
+    REQUIRE(r.d.down(from, PointerButton::Left, mods));
+    r.d.move({0.5f * (from.x + to.x), 0.5f * (from.y + to.y)}, mods);
+    r.d.move(to, mods);
+    (void)r.d.press("Escape");
+    r.d.up(to, PointerButton::Left, mods);
+    r.d.step();
+    CHECK(r.history() == h);
+    CHECK(r.noteCount() == 2);
+    CHECK(doc::findNoteCurves(r.clip(), ids[0]) == nullptr);
+    CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(2, 0));
+  };
+  const Vec2 mid0 = r.view->notePoint(ids[0], 0.5);
+  // Detune (Shift + the body, past the dead zone).
+  r.select({ids[0]});
+  escaped(mid0, {mid0.x, mid0.y - 30.0f}, mod::kShift);
+  // A bend (Alt + the right edge).
+  const Vec2 edge{r.view->xOfTick(2.0 * kQ) - 3.0f, mid0.y};
+  escaped(edge, {edge.x - kBeat, edge.y}, mod::kAlt);
+  // The vibrato grip.
+  r.d.move(mid0);
+  r.d.step();
+  const std::optional<Vec2> grip = r.view->vibratoGrip(ids[0]);
+  REQUIRE(grip.has_value());
+  r.d.move(*grip);
+  escaped(*grip, {grip->x, grip->y - 20.0f}, mod::kNone);
+  // The pen (Draw Mode on a note).
+  (void)r.d.press("B");
+  REQUIRE(r.ctx.drawMode());
+  escaped(r.view->notePoint(ids[0], 0.2), {r.view->notePoint(ids[0], 0.8).x, mid0.y - 20.0f}, mod::kNone);
+  (void)r.d.press("B");
+}
+
+TEST_CASE("roll groups (T7.16a, M7 review M20): Tune to JI in an Equidistant MOS roll — the members are drawn and hit at their pitch, Up steps the harmonics") {
+  Roll r;
+  tuning::MosParams p;
+  p.generator = 1200.0 * 18 / 31;
+  p.n = 7;
+  p.period = 1200.0;
+  p.rotation = 4;
+  p.region = tuning::RegionHint{7, 1200.0 * 4 / 7, 720.0};
+  doc::TuningDef def;
+  def.system = p;
+  REQUIRE(r.ctx.store().dispatch(doc::SetTuningDef{r.ctx.doc()->defaultTuning, def}).ok());
+  r.d.step();
+  r.view->setScaleLayout(roll::RowLayout::Equidistant);
+  r.view->centreOnDegree(4);
+  r.d.tree().layoutNow();
+  r.focusNotes();
+  // C E G of the scale (degrees 0, 2, 4): 0, 387, 697 cents.
+  const std::vector<doc::NoteId> ids = r.addNotes({Roll::plain(kQ, 4 * kQ, 0), Roll::plain(kQ, 4 * kQ, 2), Roll::plain(kQ, 4 * kQ, 4)});
+  r.select(ids);
+  tune(r);
+  CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{4, 5, 6});
+  CHECK(r.cents(ids[1], 0.5) - r.cents(ids[0], 0.5) == doctest::Approx(1200.0 * std::log2(1.25)).epsilon(1e-9));
+  // The E is drawn at 5/4 (a hair off its row in meantone) and a click there selects it.
+  r.d.click(r.view->notePoint(ids[1], 0.5));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.view->selection()[0] == ids[1].value);
+  (void)r.d.press("Up");
+  r.d.step();
+  CHECK(r.note(ids[1]).pitch == PitchId::fromRatio(Rational(6, 4), AnchorKind::Note, ids[0].value));
+  // Back to Tuning: on the scale's degrees again, exactly.
+  r.select(ids);
+  (void)r.d.press("Ctrl+Shift+J");
+  r.d.step();
+  CHECK_FALSE(r.onlyGroup().tuned);
+}
+
+TEST_CASE("roll groups perf (T7.16a, M7 review M20): 200 tuned chords, half of them warped, a fifth vibrating, paint within 2 ms" * doctest::test_suite("perf")) {
+  Roll r;
+  doc::DocumentStore& st = r.ctx.store();
+  REQUIRE(r.d.enableGpu().ok());
+  for (int i = 0; i < 200; ++i) {
+    const Ticks start = (i % 50) * 2 * kQ;
+    const int32_t root = (i / 50) * 3;
+    const std::vector<doc::NoteId> chord = r.chord({root, root + 4, root + 7}, start, 2 * kQ - kQ / 8);
+    std::vector<doc::NoteKey> keys;
+    for (const doc::NoteId id : chord) keys.push_back(doc::keyOf(r.note(id)));
+    auto e = doc::ops::tuneToJi(*r.ctx.doc(), st.ids(), r.ref, keys);
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+    if (i % 2 == 0) {
+      auto w = doc::ops::setJiWarps(*r.ctx.doc(), r.ref, e->jiGroups.at(0), {doc::JiWarp{kQ / 2, kQ / 2, doc::GlideShape{}, true}});
+      REQUIRE(w.ok());
+      REQUIRE(st.dispatch(w->command).ok());
+    }
+    if (i % 5 == 0) {
+      doc::NoteVibrato v;
+      v.depthCents = 20.0f;
+      v.rate = 6.0f;
+      auto vb = doc::ops::setNoteVibrato(*r.ctx.doc(), r.ref, std::vector<doc::ops::NoteVibratoEdit>{{doc::keyOf(r.note(chord[1])), v}});
+      REQUIRE(vb.ok());
+      REQUIRE(st.dispatch(vb->command).ok());
+    }
+  }
+  r.view->setRowHeight(5);
+  r.view->centreOnDegree(12);
+  r.view->setZoom(30.0 / static_cast<double>(kQ), 0.0);
+  r.view->scrollToTick(0.0);
+  r.d.tree().layoutNow();
+  for (int i = 0; i < 20 && r.d.tree().needsFrame(); ++i) r.d.step();
+  Widget* notes = r.d.find(kView + "notes");
+  REQUIRE(notes != nullptr);
+  std::vector<double> ms;
+  for (int i = 0; i < 60; ++i) {
+    notes->markDirty();
+    r.d.step();
+    ms.push_back(r.view->paintStats().notesMs);
+  }
+  std::sort(ms.begin(), ms.end());
+  MESSAGE("200 tuned chords (100 warped, 40 vibrating): median " << ms[ms.size() / 2] << " ms, worst " << ms.back() << " ms");
+  CHECK(ms[ms.size() / 2] < 2.0);
 }
 
 TEST_CASE("render: pianoroll-group-triad (a tuned triad: its frame, header 4:5:6, numbers, guides) matches the golden image") { checkGolden("pianoroll-group-triad"); }

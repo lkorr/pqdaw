@@ -86,9 +86,10 @@ enum class DrawPitch : uint8_t {
   Row,      // a Degree note on the row
   Overlay,  // Alt (T3.12): a Cents note on the background EDO line nearest the pointer
   Ratio,    // Shift (T3.19): a Ratio note on the virtual fundamental's nearest harmonic (no fundamental: the row's
-            // pitch snapped to the simplest ratio, ops::simplestRatioNear). With an active JI group (T7.13: "Is
-            // Harmonic N") this is the plain draw — a member on the group's nearest harmonic — and Shift draws on
-            // the rows.
+            // pitch snapped to the simplest ratio, ops::simplestRatioNear). Where a note drawn JOINS a JI group
+            // (T7.16a, M7 review H1 / H3: inside the group's time span, the clip box's Harmonics switch on:
+            // RollState::captureGroupAt) this is the plain draw — a member on the group's nearest harmonic, with Alt
+            // of the next finer series (M5) — and Shift draws on the rows.
 };
 
 struct DrawnNote {
@@ -97,7 +98,8 @@ struct DrawnNote {
   int64_t degree = 0;  // the row (a Degree note), or the nearest row of a Cents / Ratio note
   DrawPitch mode = DrawPitch::Row;
   double cents = 0.0;     // Overlay
-  tuning::Rational ratio{1};  // Ratio (to the reference, or to the active JI group's anchor)
+  tuning::Rational ratio{1};  // Ratio (to the reference, or to `anchor`)
+  doc::NoteId anchor;         // Ratio: the anchor of the JI group the note joins (invalid: the reference)
 };
 
 // A Ratio note's label waiting to be drawn over the notes (T3.19): its box and the colour it sits on.
@@ -171,7 +173,8 @@ struct DragState {
   doc::JiGroupId group;
   int32_t warpIndex = -1;
   std::vector<doc::JiWarp> warps;
-  Ticks groupStart = 0, groupEnd = 0;
+  Ticks groupStart = 0, groupEnd = 0;  // the anchor's start (where group ticks count from), the group's end
+  Ticks groupFirst = 0;                 // the group's earliest start
   bool fromLeft = false;  // WarpNew: from the left corner
   // Pen and breakpoint gestures: the curve, the point (CurvePoint / CurveBow), the curve as the release will store it,
   // the stroke so far (PenDraw: ticks from the target's start, curve value in cents; sorted by tick), what the pointer
@@ -190,6 +193,9 @@ struct DragState {
   bool deleteOnClick = false;  // PenDraw on a note: a click (no drag) deletes it, as Draw Mode always did
   bool toggleOnClick = false;  // Shift on a selected note: a click deselects it, a drag detunes freely
   ui::Mods pressMods = 0;
+  // T7.16a (M7 review M14): a Move with pitch steps moves a note other notes are anchored to: those are drawn
+  // following its preview (RollState::centsOf), so the whole area repaints.
+  bool movesAnchors = false;
 };
 
 // A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve, a bend, a vibrato or a warp.
@@ -251,9 +257,11 @@ struct GroupInfo {
   std::vector<int64_t> proportion;        // distinct numbers, ascending
   std::vector<const doc::Note*> notes;    // the anchor and the members, in clip order
   Ticks start = 0, end = 0;               // doc::groupSpan
-  bool tuned = false;                     // a member remembers what it was written as (Tune to JI made it)
+  Ticks origin = 0;                       // the anchor's start: where the warps count from (T7.16a, M7 review M7)
+  bool tuned = false;                     // a member remembers what it was written as: warps and other readings apply
+  bool inJi = true;                       // T7.16a: the group's state (doc::JiGroup::tuned; false: Back to Tuning)
   std::string proportionText;             // "4:5:6:7" (long ones elided)
-  std::string header;                     // that, or with warps "12-EDO \u2192 4:5:6"
+  std::string header;                     // that, with warps "12-EDO \u2192 4:5:6", Back to Tuning "12-EDO (4:5:6)"
 };
 
 // T7.14: where a group's frame and its parts are on screen (device px). Corner grips, markers and glide grips are
@@ -357,7 +365,10 @@ public:
   // The row a note is edited on (its own row, or the nearest row of an off-grid pitch).
   std::optional<int64_t> rowDegreeOf(const tuning::PitchId& p) const;
   // The topmost note under a device point (the last drawn), or nullptr. `zone`: −1 left edge, +1 right edge, 0 body.
-  const doc::Note* noteAt(ui::Vec2 p, int* zone = nullptr) const;
+  // The edges are the last kEdgeGrab px of a note wide enough; `alt` (T7.16a, M7 review M13: Alt held, an edge
+  // bends) widens them to max(kAltEdgeGrab px, a quarter of the note) for any width, the nearer edge winning.
+  const doc::Note* noteAt(ui::Vec2 p, int* zone = nullptr, bool alt = false) const;
+  inline static constexpr float kAltEdgeGrab = 6.0f;  // logical px
   // O(1) after the first lookup of an id in a clip snapshot (the first is a scan of the clip).
   const doc::Note* findNote(doc::NoteId id) const;
   // The selected notes (≤ 64) looked up in ONE pass over the clip, for the per-frame code that asks for each.
@@ -409,21 +420,45 @@ public:
   // The clip's virtual fundamental as a denominator D (fundamental = reference / D; 0 = none), see the rule at its
   // definition (Q40). Ratio Up/Down and vertical drags step on its harmonics; the note area draws it (SPEC §4.3).
   std::optional<tuning::Rational> virtualFundamental() const;
-  // The fundamental the roll draws and snaps to: `ratio` times the pitch at `baseCents`. With an active JI group
-  // (T7.13): its anchor note where it sounds now and the group's derived fundamental 1 / (index · m)
-  // (doc::groupFundamental), so the guides follow the anchor. Else the clip's reference (anchor invalid, 0 cents) and
-  // the virtual fundamental. nullopt: none.
+  // The fundamental the roll draws and snaps to: `ratio` times the pitch at `baseCents`. With a guide group (T7.13 /
+  // T7.16a: guideGroup()): its anchor note where it sounds now and the group's derived fundamental 1 / (index · m)
+  // (doc::groupFundamental) — with Alt held over it the next finer series, 1 / (2 · index · m) (M5) — drawn over the
+  // group's time span only (`from` … `to`), where a drawn note joins it. Else the clip's reference (anchor invalid, 0
+  // cents) and the virtual fundamental, across the roll. nullopt: none.
   struct Harmonics {
     doc::NoteId anchor;
     double baseCents = 0.0;
     tuning::Rational ratio{1};
+    Ticks from = 0, to = 0;  // a group's: the content ticks the guides cover (from = to: everywhere)
   };
   std::optional<Harmonics> harmonics() const;
-  // The JI group the guides, the plain draw, the walk and "Remove JI Group" act on (T7.14): the group of the first
-  // selected note (in clip order) that is an anchor or a member; with nothing selected the group that was active
-  // last (a click on empty space or a deleted note keeps it, so the next note still lands on its guides). Selecting
-  // notes of no group, or Esc (forgetActiveGroup), puts it away: the guides go and the roll draws on the tuning's
-  // rows again. nullptr: none. Cached per clip snapshot and selection.
+  // The same for one group (`finer`: the next finer series).
+  std::optional<Harmonics> groupHarmonicsOf(const doc::JiGroup& g, bool finer = false) const;
+  // The reference's virtual fundamental (Shift-draw away from any group).
+  std::optional<Harmonics> referenceHarmonics() const;
+  // T7.16a (M7 review H1 / H3): the JI group a note drawn at content tick `t` (pointer at device y `y`) joins: with
+  // the clip box's Harmonics switch on, a group whose time span [start − kGroupCaptureTicks, end) holds t — the
+  // active group first, else the one whose frame holds y, else the newest. nullptr: the note goes on the rows.
+  const doc::JiGroup* captureGroupAt(Ticks t, float y) const;
+  inline static constexpr Ticks kGroupCaptureTicks = kPpq / 8;
+  // The group whose guides show: the one under the pointer (captureGroupAt at its last position), else the active
+  // group. nullptr: none (or the switch is off).
+  const doc::JiGroup* guideGroup() const;
+  // Alt held over a group (the finer series shows and the plain draw lands on it, M5).
+  bool finerGuides() const noexcept { return finer_; }
+  void setFinerGuides(bool on);
+  // T7.16a (M7 review M10): a toolbar control took the press: the keys go back to the note area.
+  void focusNotes();
+  // The modifiers of the last pointer event (or Alt key) over the note area: the cursor, the hover's edge zones and
+  // the finer series follow Alt (M13, M5).
+  ui::Mods pointerMods() const noexcept { return pointerMods_; }
+  void setPointerMods(ui::Mods m);
+  // The JI group the walk, "Remove JI Group" and the corner grips act on, whose guides show when no group is under the
+  // pointer (T7.14): the group of the first selected note (in clip order) that is an anchor or a member; with nothing
+  // selected the group that was active last (a click on empty space or a deleted note keeps it). Selecting notes of
+  // no group, or Esc (forgetActiveGroup), puts it away. T7.16a: it no longer decides where drawn notes go — a note
+  // joins a group only inside that group's time span (captureGroupAt). nullptr: none. Cached per clip snapshot and
+  // selection.
   const doc::JiGroup* activeJiGroup() const;
   // Esc: no group stays active.
   void forgetActiveGroup() noexcept;
@@ -432,10 +467,12 @@ public:
   std::optional<uint64_t> harmonicOf(const doc::Note& n) const;
   // T7.14: 2 the anchor of a JI group, 1 a member of one, 0 neither. O(log groups).
   int groupRole(const doc::Note& n) const;
+  // T7.16a: the note is of a group Back to Tuning (it plays and is labelled as written). O(log groups).
+  bool untunedMember(const doc::Note& n) const;
   void addNotes(const std::vector<DrawnNote>& notes);
-  // How a draw gesture with these modifiers picks its pitch (with an active JI group the plain draw is Ratio and
-  // Shift the rows).
-  DrawPitch drawPitchFor(ui::Mods m) const noexcept;
+  // How a draw gesture with these modifiers at content tick `t`, device y `y` picks its pitch (where the note joins a
+  // group, captureGroupAt, the plain draw is Ratio — Alt too, on the finer series — and Shift the rows).
+  DrawPitch drawPitchFor(ui::Mods m, Ticks t, float y) const;
   // The pitch of a note in a cell of row `degree` (a Degree identity).
   tuning::PitchId degreePitch(int64_t degree) const noexcept;
 
@@ -488,7 +525,6 @@ public:
   void beginGeneratorMorph();
   void morphGenerator(double generatorCents);
   void endGeneratorMorph(bool commit);
-  bool morphingGenerator() const noexcept { return morphBase_.has_value(); }
   // How refresh() followed tuning changes: in place from the MosLinearTable interval (linear) or by a full rebuild
   // (buildMOSScale, at region / interval crossings and for anything but a generator change).
   struct MorphStats {
@@ -545,10 +581,12 @@ public:
   bool gripsShown(const GroupInfo& g) const;
   // Selects the group's notes (a click on its header).
   void selectGroup(doc::JiGroupId id);
-  // "Tune to JI" (Ctrl+Shift+J): the selected notes become one group read as the best candidate proportion
-  // (ops::tuneToJi), or — when they already are (in) one tuned group — go back exactly to what was written
-  // (ops::untuneJiGroup). The same notes before and after: the selection is kept. One undo step. `chooser`: open the
-  // candidate list afterwards when there are several readings.
+  // "Tune to JI" (Ctrl+Shift+J), T7.16a: the selection split into chords (notes overlapping in time); when every chord
+  // is (in) a group in JI, Back to Tuning for those groups (ops::setJiGroupsTuned: they play as written and keep their
+  // reading and warps); else one chord becomes one group read as the best candidate (ops::tuneToJi), several chords
+  // or a group Back to Tuning go through ops::tuneChordsToJi. A selection with no group never untunes another group.
+  // The same notes before and after: the selection is kept. One undo step. `chooser`: open the candidate list
+  // afterwards when one chord was tuned and it has several readings.
   bool toggleTuneToJi(bool chooser = true);
   // The readings of a tuned group as written (ops::tuneToJiCandidates of its notes).
   std::vector<doc::ops::JiCandidate> groupCandidates(doc::JiGroupId id) const;
@@ -596,7 +634,6 @@ public:
   // The frame the pointer is over (its grips are shown); 0: none.
   doc::JiGroupId groupFrameAt(ui::Vec2 p) const;
   void setHoverGroup(doc::JiGroupId id);
-  doc::JiGroupId hoverGroup() const noexcept { return hoverGroup_; }
   inline static constexpr float kWarpGrip = 11.0f;     // marker / grip size (logical px)
   inline static constexpr float kWarpGripGap = 13.0f;  // the glide grip's least distance from its marker
 
@@ -728,7 +765,6 @@ public:
   // The default rate of a new vibrato: one cycle per grid cell, folded by octaves into 4.2 … 8.5 Hz at the clip's
   // tempo (6 Hz without a grid).
   double defaultVibratoRate(Ticks at) const;
-  double vibratoDepth() const noexcept { return vibratoDepth_; }
   static std::string vibratoText(double depthCents, double rateHz);  // "Vibrato 30 ¢ · 6 Hz"
   inline static constexpr size_t kMaxVibratoGripNotes = 16;  // a larger selection shows the hovered note's grips only
   inline static constexpr float kVibratoGrip = 12.0f;       // grip size (logical px; hit boxes are this big)
@@ -762,6 +798,8 @@ public:
     Ticks start = 0, length = 0;
     tuning::PitchId pitch;
     bool usedIndex = false;  // it read the clip's resolved pitches (a bend's neighbour, a warp, a note anchor)
+    uint64_t baseGen = 0;    // the tuningGen_ `base` is for (T7.16a M16: a tuning change re-derives only `base`)
+    uint64_t previewGen = 0;  // a preview entry: the preview it was built for
   };
   const NotePath* pathOf(const doc::Note& n) const;
   inline static constexpr double kPathToleranceCents = 1.0;
@@ -774,6 +812,9 @@ public:
   std::optional<double> pathCents(const doc::Note& n, Ticks start, const tuning::PitchId& pitch, double offset) const;
   // Where a note sounds when it starts, in cents (a path note: NotePath::base; else its identity's pitch).
   std::optional<double> startCents(const doc::Note& n) const;
+  // T7.16a (M7 review M14): how far a note anchored to a note a Move drag steps is shown moved with it (cents; 0:
+  // not one). For the cached paths, whose base is the document's.
+  double anchorPreviewShift(const doc::Note& n) const;
   // How many path entries were flattened since the roll was made (tests: a repaint of an unchanged clip adds none).
   uint64_t pathBuilds() const noexcept { return pathBuilds_; }
 
@@ -795,8 +836,9 @@ public:
   // A typed pitch: "7/4" or "7:4" (a ratio over the reference), "386.3c" / "386.3¢" (cents), "4\22" or "4\22+1"
   // (degree 4, equave +1, of the clip's tuning: the size must match). nullopt when unparsable.
   std::optional<tuning::PitchId> parsePitch(std::string_view text) const;
-  // Shift-draw: the reference-anchored ratio a drawn note on row `degree` with the pointer at `cents` gets.
-  tuning::Rational ratioFor(int64_t degree, double cents) const;
+  // A drawn note's ratio on row `degree` with the pointer at `cents`: the harmonic of `H` nearest the pointer (to its
+  // base: the reference, or a group's anchor), else (no H) the row's pitch snapped to the simplest ratio.
+  tuning::Rational ratioFor(int64_t degree, double cents, const std::optional<Harmonics>& H) const;
 
   // --- hover readout (T3.19, M3 review UI §2) ---
   // The pointer at device `p` over the note area (keys = false) or the keys: re-formats the readout when the row or
@@ -940,11 +982,20 @@ private:
     std::unordered_map<uint32_t, NotePath> notes;
   };
   mutable PathCache paths_;
-  mutable NotePath scratchPath_;
+  // T7.16a (M7 review M15): a gesture's preview paths by note id, valid while previewGen_ stands (bumped whenever
+  // curvePreview_ or warpPreview_ changes), so a drag frame flattens each previewed note once, not per query.
+  mutable std::unordered_map<uint32_t, NotePath> previewPaths_;
+  uint64_t previewGen_ = 1;
+  bool finer_ = false;  // Alt over a group: its finer series (M5)
+  ui::Mods pointerMods_ = 0;
+  doc::JiGroupId hoverGuide_;  // the group under the pointer whose guides show (captureGroupAt at the pointer)
+  // M14: while a Move drag steps notes others are anchored to, centsOf follows their preview pitch (`shown`).
+  std::optional<double> centsOfImpl(const tuning::PitchId& p, bool shown) const;
   mutable uint64_t pathBuilds_ = 0;
   uint64_t tuningGen_ = 1;  // bumped whenever tuning_ changes (a rebuild or an in-place morph)
   void syncPaths() const;
   bool previewTouches(const doc::Note& n) const;
+  void touchPreview();  // curvePreview_ / warpPreview_ changed: the preview paths go (previewGen_)
   mutable std::vector<GroupInfo> groupInfos_;
   mutable const doc::NoteClip* groupInfosFor_ = nullptr;
   mutable uint64_t groupInfosGen_ = 0;
@@ -966,6 +1017,7 @@ private:
   // the active group for the current selection (activeJiGroup()).
   mutable std::vector<std::pair<uint32_t, int64_t>> groupNumbers_;
   mutable std::vector<uint32_t> groupAnchors_;
+  mutable std::vector<uint32_t> untunedAnchors_;  // the anchors of groups Back to Tuning (sorted)
   mutable bool activeGroupValid_ = false;
   mutable const doc::JiGroup* activeGroup_ = nullptr;
   mutable doc::JiGroupId lastActiveGroup_;

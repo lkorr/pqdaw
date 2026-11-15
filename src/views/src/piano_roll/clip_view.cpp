@@ -368,8 +368,10 @@ ClipView::GroupGeometry ClipView::groupGeometry(doc::JiGroupId id) const {
   out.headerText = g->header;
   out.proportionText = g->proportionText;
   out.tuned = g->tuned;
+  out.inJi = g->inJi;
   out.gripsShown = state_->gripsShown(*g);
-  for (const doc::JiWarp& w : state_->shownWarps(*g)) {
+  if (g->inJi)
+    for (const doc::JiWarp& w : state_->shownWarps(*g)) {
     out.markers.push_back({state_->warpX(*g, w), f.box.y1});
     out.glideGrips.push_back({state_->warpGlideX(*g, w), f.box.y1});
   }

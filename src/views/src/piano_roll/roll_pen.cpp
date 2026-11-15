@@ -26,7 +26,8 @@
 // Every gesture previews the record its release stores (curvePreview_) and is one undo step.
 //
 // Cost: nothing here runs per audio block. A drag frame re-thins one stroke (O(points · log)) or rebuilds one record
-// per selected note (and the roll flattens those notes' paths once per frame: RollState::pathOf's scratch entry); the
+// per selected note (and the roll flattens each of those notes' paths once per frame: RollState::pathOf's preview
+// entries, T7.16a M15); the
 // neighbour search of a bend runs once per gesture (two passes over the clip's notes per selected note). Paint adds
 // the handles of at most 64 selected notes, each of at most kMaxCurveHandles points.
 
@@ -173,6 +174,7 @@ double RollState::ticksPerSecond(Ticks contentTick) const {
 }
 
 doc::NoteCurves& RollState::previewRecord(doc::NoteId note) {
+  touchPreview();  // the caller changes the record
   const auto it = std::lower_bound(curvePreview_.begin(), curvePreview_.end(), note,
                                    [](const doc::NoteCurves& c, doc::NoteId id) { return c.note < id; });
   if (it != curvePreview_.end() && it->note == note) return *it;
@@ -190,6 +192,7 @@ void RollState::setCurvePreview(const CurveTarget& t, const std::vector<doc::Bre
 void RollState::clearCurvePreview() {
   curvePreview_.clear();
   warpPreview_ = {};
+  touchPreview();
 }
 
 bool RollState::commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what) {
@@ -388,6 +391,7 @@ doc::ops::EditResult RollState::bendEdit(DragState& d) const {
 
 void RollState::updateBendPreview() {
   curvePreview_.clear();
+  touchPreview();
   if (!drag.bend || (drag.kind != DragKind::ResizeStart && drag.kind != DragKind::ResizeEnd)) return;
   const doc::ops::EditResult e = bendEdit(drag);
   if (!e) return;
@@ -473,7 +477,7 @@ bool RollState::clearBends() {
   if (set.curves.empty()) return false;
   std::vector<doc::Command> commands;
   commands.push_back(std::move(set));
-  return apply(batchOf("Clear Bends", std::move(commands), ref_, selectionKeys()), "Clear Bends");
+  return apply(batchOf("Clear Curves", std::move(commands), ref_, selectionKeys()), "Clear Curves");
 }
 
 // --- resize, detune ---------------------------------------------------------------------------------------------------

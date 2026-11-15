@@ -836,7 +836,7 @@ Status setupPianoRollHelp(Shell& shell) {
 Status setupPianoRollHelpScrolled(Shell& shell) {
   roll::RollHelpPopover* help = openHelpScene(shell);
   if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-scrolled: opening the panel failed", {}};
-  help->showSection(5);  // (T7.14: Vibrato is a section of its own before it)
+  help->showSection(6);  // Harmonics and the virtual fundamental (T7.14: Vibrato, T7.16a: Quick start come before it)
   shell.tree().layoutNow();
   return Ok{};
 }

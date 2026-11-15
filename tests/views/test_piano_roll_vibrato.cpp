@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "piano_roll_fix.h"
+#include "pq/tuning/edo.h"
 
 using namespace roll_fix;
 
@@ -341,15 +342,81 @@ TEST_CASE("roll paint: note paths are flattened once per clip snapshot — a rep
   r.d.move(r.view->notePoint(ids[20], 0.5));
   r.d.advance(0.1);
   CHECK(r.view->pathBuilds() == built);
-  // An edit of one note makes a new snapshot: the paths are rebuilt once, then cached again.
+  // An edit of one note makes a new snapshot: that note's path is rebuilt (T7.16a, M7 review M20: not the other 39;
+  // the old bound, built + 45, held even if every path were rebuilt), then cached again.
   r.d.click(r.view->notePoint(ids[20], 0.5));
   (void)r.d.press("Up");
   r.d.advance(0.1);
   const uint64_t rebuilt = r.view->pathBuilds();
   CHECK(rebuilt > built);
-  CHECK(rebuilt <= built + 45);
+  CHECK(rebuilt <= built + 2);
   r.d.advance(0.3);
   CHECK(r.view->pathBuilds() == rebuilt);
+
+  // T7.16a (M7 review M16): a JI group with a warp elsewhere in the clip: an edit still rebuilds only what it touched.
+  {
+    const int64_t terms[] = {4, 5, 6};
+    auto made = doc::ops::proportionNotes(*r.ctx.doc(), r.ctx.store().ids(), r.ref, 12 * kQ, kQ, PitchId::fromDegree(0, 0), terms);
+    REQUIRE(made.ok());
+    REQUIRE(r.ctx.store().dispatch(made->command).ok());
+    auto w = doc::ops::setJiWarps(*r.ctx.doc(), r.ref, made->jiGroups.at(0), {doc::JiWarp{kQ / 2, 0, doc::GlideShape{}, true}});
+    REQUIRE(w.ok());
+    REQUIRE(r.ctx.store().dispatch(w->command).ok());
+  }
+  r.d.advance(0.1);
+  const uint64_t warped = r.view->pathBuilds();
+  r.d.click(r.view->notePoint(ids[21], 0.5));
+  (void)r.d.press("Up");
+  r.d.advance(0.1);
+  CHECK(r.view->pathBuilds() <= warped + 2);
+  // … and a change of the tuning (a MOS morph frame does the same) re-derives where the paths start, flattening none.
+  const doc::TuningId tid = r.ctx.doc()->defaultTuning;
+  const doc::TuningSlot* slot = doc::findTuning(*r.ctx.doc(), tid);
+  REQUIRE(slot != nullptr);
+  doc::TuningDef def = slot->def;
+  CHECK(r.cents(ids[5], 0.0) == doctest::Approx(500.0).epsilon(1e-9));
+  def.system = *tuning::Edo::make(19);  // degree 5 of 19-EDO: 315.8 cents
+  const uint64_t before = r.view->pathBuilds();
+  REQUIRE(r.ctx.store().dispatch(doc::SetTuningDef{tid, def}).ok());
+  r.d.advance(0.1);
+  CHECK(r.view->pathBuilds() == before);
+  CHECK(r.cents(ids[5], 0.0) == doctest::Approx(1200.0 * 5.0 / 19.0).epsilon(1e-9));
+}
+
+TEST_CASE("roll vibrato (T7.16a, M7 review M15): a ~ drag over many selected notes flattens each previewed note once per frame") {
+  Roll r;
+  REQUIRE(r.d.enableGpu().ok());
+  r.focusNotes();
+  std::vector<doc::Note> notes;
+  for (int i = 0; i < 40; ++i) notes.push_back(Roll::plain(i * (kQ / 4), 2 * kQ, i % 12));
+  const std::vector<doc::NoteId> ids = r.addNotes(notes);
+  std::vector<doc::NoteCurves> curves;
+  doc::NoteVibrato v;
+  v.depthCents = 20.0f;
+  v.rate = 6.0f;
+  for (const doc::NoteId id : ids) curves.push_back(doc::NoteCurves{id, {}, {}, {}, v});
+  std::sort(curves.begin(), curves.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+  REQUIRE(r.ctx.store().dispatch(doc::SetNoteCurves{r.ref, curves}).ok());
+  r.select(ids);
+  r.d.advance(0.1);
+  r.d.move(r.view->notePoint(ids[0], 0.5));
+  r.d.advance(0.05);
+  const std::optional<Vec2> grip = r.view->vibratoGrip(ids[0]);
+  REQUIRE(grip.has_value());
+  r.d.move(*grip);
+  REQUIRE(r.d.down(*grip));
+  r.d.move({grip->x, grip->y - 10.0f});
+  r.d.advance(0.05);
+  const uint64_t b0 = r.view->pathBuilds();
+  r.d.move({grip->x, grip->y - 14.0f});
+  r.d.advance(0.05);
+  const uint64_t perFrame = r.view->pathBuilds() - b0;
+  MESSAGE("40 selected vibrating notes: " << perFrame << " paths flattened in a drag frame");
+  CHECK(perFrame >= 40);       // every selected note's wave changes …
+  CHECK(perFrame <= 40 + 4);   // … and is flattened once (it was ~26 times per note per frame)
+  r.d.up({grip->x, grip->y - 14.0f});
+  r.d.step();
+  CHECK(doc::findNoteCurves(r.clip(), ids[39])->vibrato.depthCents > 20.0f);
 }
 
 TEST_CASE("render: pianoroll-vibrato (vibrato with fades: the wave, its envelope and the grips) matches the golden image") { checkGolden("pianoroll-vibrato"); }

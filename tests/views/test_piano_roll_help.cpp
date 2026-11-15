@@ -327,8 +327,10 @@ TEST_CASE("roll help: every entry shows the key its action has in the loaded key
       }
     }
   };
+  // An action's own entry (T7.16a: the Quick start section, first, repeats gestures of the sections after it).
+  REQUIRE(sections[0].title == std::string_view("Quick start"));
   auto shownFor = [&](RollHelpPopover& p, std::string_view action) -> std::string {
-    for (size_t si = 0; si < sections.size(); ++si)
+    for (size_t si = 1; si < sections.size(); ++si)
       for (size_t ei = 0; ei < sections[si].entries.size(); ++ei)
         if (sections[si].entries[ei].gesture.find("{" + std::string(action) + "}") != std::string_view::npos) return p.gestureText(si, ei);
     FAIL("no entry for " << action);

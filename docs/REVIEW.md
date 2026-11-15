@@ -1826,3 +1826,25 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   `pianoroll-group-warp.png` (tempered → JI → tempered), `pianoroll-group-two.png`, `pianoroll-group-walk.png`,
   `pianoroll-group-proportion.png`, `pianoroll-group-ratio.png` (5 → 10 / 15), `pianoroll-group-31edo.png`,
   `pianoroll-bends.png`, `pianoroll-vibrato.png` (fades and grips).
+
+## T7.16a 👁 · JI chords that do not trap you: the review's dead ends (2026-11-15)
+- What changed for you (try in this order; the `?` panel now opens on a five-step **Quick start**):
+  1. Write a chord, select it, `Ctrl+Shift+J`: JI. Press it again: the chord plays as written but stays framed
+     ("12-EDO (4:5:6)"); again: the same reading and warps come back. Works for a chord you typed as a proportion too.
+  2. Write the NEXT chord anywhere after the first one: it lands on the rows (it used to snap onto chord 1's harmonics and
+     join it). Inside a chord's time the notes you draw still snap to its harmonics; the clip box's `JI` switch turns
+     that off (and hides the guides, which are now drawn only over the chord's time).
+  3. Click a chord's header (one click: it only selects now; double-click opens the other readings), then `Up` /
+     `Down` / a drag: the whole chord moves by steps and stays the same just chord. `Ctrl+A` + `Ctrl+Shift+J` tunes a
+     progression chord by chord.
+  4. Give the lowest note a vibrato, then drag the frame's bottom corners: the warp grips win; the frame's bottom moves
+     below the vibrato's squares.
+  5. Declare a note harmonic 5, hold `Alt` over it: the lines between its harmonics appear; `Alt` + double-click a fifth
+     above: the group reads 10:15.
+  6. `Alt` + the outer quarter of a note bends it (also a 32nd note); `Alt` + its middle copies.
+  7. A click on Fold, Scale, Loop or the JI switch no longer takes the keys away from the roll.
+- Decide / tell me: is "Alt = the finer series" the right gesture inside a chord (outside, Alt still draws on the
+  background EDO)? Is double-click right for the readings list? Should the guides follow the pointer between chords?
+  Questions Q?-T7.16a-a … d.
+- Look at: `tests/views/golden/pianoroll-group-two.png` (guides only over the active chord), `pianoroll-group-chooser.png`
+  ("moves 47 ¢"), `pianoroll-help.png` (Quick start), `pianoroll-group-proportion.png`.

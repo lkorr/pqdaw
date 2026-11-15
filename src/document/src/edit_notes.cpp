@@ -414,6 +414,7 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
   std::vector<std::pair<NoteId, std::optional<PitchId>>> rewritten;  // (note, its written identity now; none: dropped)
   std::vector<std::pair<NoteId, Rational>> harmonics;                // tuned members on a new harmonic (re-written below)
   std::vector<std::pair<NoteId, Rational>> stepped;
+  std::vector<NoteId> movedAnchors;  // group anchors stepped: their members' written identities step too
   EditResult e = updateNotes(p, clip, notes, std::move(label), [&](Note& n) -> Status {
     move(n);
     if (steps == 0) return ok();
@@ -438,7 +439,10 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
       n.pitch = *np;
       if (referenceRatio(n.pitch)) stepped.emplace_back(n.id, n.pitch.ratio());
       if (g != nullptr && w != nullptr) harmonics.emplace_back(n.id, n.pitch.ratio());
-      else if (g == nullptr && groupAnchoredBy(n.id) != nullptr) stepWritten();  // an anchor
+      else if (g == nullptr && groupAnchoredBy(n.id) != nullptr) {  // an anchor: what hangs on it moves with it
+        stepWritten();
+        movedAnchors.push_back(n.id);
+      }
       else if (w != nullptr && g == nullptr) rewritten.emplace_back(n.id, std::nullopt);  // no member: means nothing
     }
     return ok();
@@ -446,6 +450,17 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
   if (!e || steps == 0) return e;
   if (std::optional<ClipFundamental> mem = steppedMemory(c, fundamental, stepped))
     batchOf(*e).commands.push_back(SetClipFundamental{clip, std::move(*mem)});
+  if (!movedAnchors.empty() && c.written) {
+    // The members of a stepped anchor that were not stepped themselves follow it in JI: what they are written as
+    // follows too (so Back to Tuning restores the chord where it now is).
+    std::sort(movedAnchors.begin(), movedAnchors.end());
+    for (const Note& n : c.notes) {
+      const NoteId a = noteAnchorOf(n.pitch);
+      if (!a.valid() || isMoving(n.id) || !std::binary_search(movedAnchors.begin(), movedAnchors.end(), a)) continue;
+      if (const NoteWritten* w = findNoteWritten(c, n.id))
+        if (std::optional<PitchId> sw = stepPitch(w->written, steps, unit, ctx)) rewritten.emplace_back(n.id, *sw);
+    }
+  }
   if (!harmonics.empty() && tun) {
     // The nearest step to the member's new JI pitch (its anchor's pitch × its ratio): Back to Tuning puts it on a row.
     const ClipPitches cp = resolveClipPitches(p, f->path, c);

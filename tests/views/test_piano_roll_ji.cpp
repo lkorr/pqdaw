@@ -10,8 +10,9 @@
 //
 // Deleted with the JI object (T7.13): the JI tool (J, box, proportion field), undertone objects, moving / resizing /
 // deleting / duplicating an object, the inner roll (enter / leave, voices as rows), stops, transitions, bezier
-// handles, walking a term, the roll's Tune to JI / Back to Tuning, object copy / paste, the 200-object paint budget,
-// and the goldens pianoroll-ji-morph, -ji-undertone, -ji-tuning, -ji-entered, -tune-to-ji, -tune-to-ji-31edo.
+// handles, walking a term, object copy / paste, and the goldens pianoroll-ji-morph, -ji-undertone, -ji-tuning,
+// -ji-entered, -tune-to-ji, -tune-to-ji-31edo. Tune to JI (in an Equidistant MOS roll too) and a paint budget for
+// tuned chords are notes-first tests in test_piano_roll_groups.cpp (T7.16a).
 
 #include <doctest/doctest.h>
 
@@ -269,12 +270,13 @@ TEST_CASE("roll JI: Is Harmonic… — the note sits exactly on guide N, drawn n
   CHECK(std::fabs(*r.view->harmonicGuideY(5) - r.view->yOfDegree(4)) <= 0.5f);
   CHECK(r.view->harmonicOf(e) == 5u);
 
-  // Drawing snaps to the series: a click on guide 6 is an exact 6/5 of the anchor (a member); Shift: the row.
+  // Drawing snaps to the series inside its time (T7.16a, M7 review H1: the note's span): a click on guide 6 is an
+  // exact 6/5 of the anchor (a member); Shift: the row.
   REQUIRE(r.notesFocused());
   CHECK(r.d.press("B") == KeyResult::Action);
-  r.d.click({r.view->xOfTick(4.5 * static_cast<double>(kQ)), *r.view->harmonicGuideY(6)});
+  r.d.click({r.view->xOfTick(2.5 * static_cast<double>(kQ)), *r.view->harmonicGuideY(6)});
   r.d.step();
-  r.d.click(r.at(6.5 * static_cast<double>(kQ), 7), mod::kShift);
+  r.d.click(r.at(1.5 * static_cast<double>(kQ), 7), mod::kShift);
   r.d.step();
   (void)r.d.press("B");
   CHECK(r.history() == h + 3);
@@ -286,8 +288,8 @@ TEST_CASE("roll JI: Is Harmonic… — the note sits exactly on guide N, drawn n
   doc::NoteId six;
   int tempered = 0;
   for (const doc::Note& n : r.clip().notes) {
-    if (n.pitch == PitchId::fromRatio(Rational(6, 5), tuning::AnchorKind::Note, e.value) && n.start == 4 * kQ) six = n.id;
-    if (n.pitch == PitchId::fromDegree(7, 0) && n.start == 6 * kQ) ++tempered;
+    if (n.pitch == PitchId::fromRatio(Rational(6, 5), tuning::AnchorKind::Note, e.value) && n.start == 2 * kQ) six = n.id;
+    if (n.pitch == PitchId::fromDegree(7, 0) && n.start == kQ) ++tempered;
   }
   REQUIRE(six.valid());
   CHECK(tempered == 1);
@@ -369,9 +371,9 @@ TEST_CASE("roll JI: two groups — the guides and the plain draw follow the sele
   CHECK(std::fabs(*r.view->harmonicGuideY(4) - r.view->yOfDegree(0)) <= 0.5f);
   CHECK(r.view->harmonicOf(ids[0]) == 4u);  // every group's notes carry their numbers, active or not
   CHECK(r.view->harmonicOf(ids[1]) == 3u);
-  // A double-click on guide 5 of the first group's series adds a member of THAT group.
+  // A double-click on guide 5 of the first group's series, inside its time, adds a member of THAT group.
   const size_t h = r.history();
-  r.d.doubleClick({r.view->xOfTick(2.5 * static_cast<double>(kQ)), *r.view->harmonicGuideY(5)});
+  r.d.doubleClick({r.view->xOfTick(1.5 * static_cast<double>(kQ)), *r.view->harmonicGuideY(5)});
   r.d.step();
   CHECK(r.history() == h + 1);
   bool found = false;

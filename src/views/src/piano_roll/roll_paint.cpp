@@ -205,7 +205,12 @@ void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, con
   if (!F || !s.showHarmonics() || s.rows().empty()) return;
   (void)r;
   const Theme& th = *ctx.res.theme;
-  const float x0 = static_cast<float>(vis.x), x1 = static_cast<float>(vis.right());
+  float x0 = static_cast<float>(vis.x), x1 = static_cast<float>(vis.right());
+  if (F->from != F->to) {  // T7.16a (H1 / H3): a group's guides cover its time span, where a drawn note joins it
+    x0 = std::max(x0, std::round(s.xOfTick(static_cast<double>(F->from))));
+    x1 = std::min(x1, std::round(s.xOfTick(static_cast<double>(F->to))));
+    if (x1 <= x0) return;
+  }
   forEachHarmonic(s, *F, s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())), static_cast<float>(vis.y),
                   static_cast<float>(vis.bottom()), [&](double k, float y) {
                     if (k == 1.0) ctx.dl.addRectFilled({x0, y - 1.0f, x1, y + 1.0f}, th.roll.fundamental);
@@ -384,11 +389,13 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     else drawNoteLine(dl, style, d);
     // T7.14: a note of a JI group carries its harmonic number alone (the anchor's marked), in the group's colours.
     if (anyGroup && pitch == n.pitch)
-      if (const int role = s_.groupRole(n); role != 0)
+      if (const int role = s_.groupRole(n); role != 0) {
+        if (s_.untunedMember(n)) return;  // T7.16a: Back to Tuning: it reads as the tempered note it plays as
         if (const std::optional<uint64_t> h = s_.harmonicOf(n); h && *h <= 99999) {
           labels.push_back({d.x0, d.x1, d.y0, d.y1, d.yc, d.fill, 0, 1, static_cast<uint32_t>(*h), static_cast<uint8_t>(role)});
           return;
         }
+      }
     if (pitch.kind() == tuning::PitchKind::Ratio) {
       const tuning::Rational r = pitch.ratio();
       uint32_t k = 0;
@@ -563,7 +570,7 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
     const float xa = std::max(x0, vx0), xb = std::min(x1, vx1);
     if (xb <= xa) continue;
     const RollState::NotePath* p = s.pathOf(*c.note);
-    const std::optional<double> base = p && c.pitch == c.note->pitch ? std::optional<double>(p->base) : s.centsOf(c.pitch);
+    const std::optional<double> base = p && c.pitch == c.note->pitch ? std::optional<double>(p->base + s.anchorPreviewShift(*c.note)) : s.centsOf(c.pitch);
     if (!base) continue;
     const bool on = c.note->enabled();
     const Rgba fill = on ? (c.selected ? col.selFill : col.fill)[velIndex(c.note->velocity)] : col.disabledFill;

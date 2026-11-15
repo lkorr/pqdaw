@@ -1815,3 +1815,34 @@ dropped in the middle would have to be followed by a second one to keep the rest
 (3) Only groups with written identities (Tune to JI made them) get corner grips and warp entries: a group drawn as
 exact ratios has no tempered pitch to go to. (4) Delete with a marker selected removes the marker even when notes
 are selected too (the marker was clicked last). Status: decided (reversible).
+
+## Q?-T7.16a-a · 2026-11-15 · T7.16a · Back to Tuning as a state of the group (M7 review M1 / M3)
+Context: "switch cleanly between an EDO and JI" must keep the chosen reading and the warps. Options: (a) a flag on the
+group (`JiGroup::tuned`): the notes stay Ratio members, resolution plays every note with a written identity as written
+(`effectiveJiWarps`), so the lowering needs no change; (b) give the notes back their written identities and store the
+reading on the group. Choice (a). Consequences, all reversible: while back in the tuning a member stepped alone is the
+tempered note it plays as (its written identity stepped, out of the group); drawing never joins such a group; Remove JI
+Group keeps what plays (written); a chord typed or drawn in JI gets the nearest step as its written identity when it
+first goes back (M3); an anchor keeps a written identity it had as a member (Is Harmonic on a tuned member, promotion).
+Status: decided (reversible).
+
+## Q?-T7.16a-b · 2026-11-15 · T7.16a · Which drawn notes join a group, and the header click (M7 review H1 / H3 / H2)
+Choices: a note joins a group only when it STARTS inside the group's time span [first start − a 32nd, last end) and the
+clip box's Harmonics switch is on; the guides are drawn over that span only, for the group under the pointer (else the
+active one). Off: rows everywhere, no guides. A click on a group's header only selects the chord (so Up / Down transpose
+it); a DOUBLE-click on the proportion opens the readings (an open chooser would take the arrow keys). Ctrl+Shift+J on a
+selection splits it into chords by overlapping time; a selection that holds no group note never untunes a group.
+Status: decided (reversible).
+
+## Q?-T7.16a-c · 2026-11-15 · T7.16a · The mouse path to "3/2 above harmonic 5" (M7 review M5)
+Options: (a) Alt over a group shows the next finer series (×2) and the draw / double-click lands on it, renumbering the
+group (5 → 10, the fifth = 15); (b) snap to the simplest ratios n/d (d ≤ 4) of the hovered note between the harmonics
+(the reviewer's sketch). Choice (a): one predictable set of lines the user sees before clicking; repeated (a note on the
+finer series makes the whole group finer) it reaches any n/2^k. Inside a group Alt no longer draws on the background EDO
+(outside it still does). Status: decided (reversible).
+
+## Q?-T7.16a-d · 2026-11-15 · T7.16a · Warps count from the anchor's start (M7 review M7)
+Choice: group ticks are ticks from the anchor's start (negative for a member that starts earlier); deleting, splitting
+off, quantizing or start-resizing any other note leaves the warps where they are in the clip, and the builders that
+change the anchor (promotion, Is Harmonic on a member) shift them. Moving the anchor ALONE in time moves the warps with
+it. No file migration (no compatibility: an old file's warps are read as anchor-relative). Status: decided (reversible).

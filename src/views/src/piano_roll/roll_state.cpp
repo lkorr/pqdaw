@@ -59,6 +59,7 @@ bool RollState::refresh() {
     drag = {};
     curvePreview_.clear();
     warpPreview_ = {};
+    touchPreview();
     warpSel_ = {};
     hoverGroup_ = {};
     proportionArmed_ = false;
@@ -424,11 +425,10 @@ double RollState::nearestOverlayCents(double cents) const noexcept {
 tuning::PitchId RollState::drawnPitch(const DrawnNote& d) const noexcept {
   switch (d.mode) {
     case DrawPitch::Overlay: return tuning::PitchId::fromCents(d.cents);
-    case DrawPitch::Ratio: {
-      // T7.13: with an active JI group the note is a member: an exact ratio to the group's anchor note.
-      if (const doc::JiGroup* g = activeJiGroup()) return tuning::PitchId::fromRatio(d.ratio, tuning::AnchorKind::Note, g->anchor.value);
+    case DrawPitch::Ratio:
+      // T7.13 / T7.16a: a note that joins a JI group is a member: an exact ratio to the group's anchor note.
+      if (d.anchor.valid()) return tuning::PitchId::fromRatio(d.ratio, tuning::AnchorKind::Note, d.anchor.value);
       return tuning::PitchId::fromRatio(d.ratio);
-    }
     case DrawPitch::Row: break;
   }
   return degreePitch(d.degree);
@@ -573,8 +573,8 @@ ui::TextEdit* RollState::openPitchEntry() {
   return &edit;
 }
 
-tuning::Rational RollState::ratioFor(int64_t degree, double cents) const {
-  if (const std::optional<Harmonics> H = harmonics()) {
+tuning::Rational RollState::ratioFor(int64_t degree, double cents, const std::optional<Harmonics>& H) const {
+  if (H) {
     // The harmonic k·F nearest the pointer in pitch (log distance), k ≥ 1; the ratio is to the fundamental's base
     // (the reference, or the active JI group's anchor note).
     const tuning::Rational& F = H->ratio;
@@ -704,6 +704,17 @@ void RollState::setHoverPart(HoverPart h) {
 void RollState::hoverPartAt(ui::Vec2 p) {
   hoverPartPos_ = p;
   setHoverGroup(groupFrameAt(p));
+  // T7.16a (H3): the guides are those of the group a note drawn here would join.
+  {
+    const doc::JiGroup* g = drag.kind == DragKind::None ? captureGroupAt(static_cast<Ticks>(std::llround(tickAtX(p.x))), p.y) : nullptr;
+    const doc::JiGroupId id = g ? g->id : doc::JiGroupId{};
+    const bool finer = g != nullptr && (pointerMods_ & ui::mod::kAlt) != 0;
+    if (id != hoverGuide_ && (g != nullptr || drag.kind == DragKind::None)) {
+      hoverGuide_ = id;
+      if (noteArea) noteArea->markDirty();
+    }
+    setFinerGuides(finer);
+  }
   // T7.14: over a vibrato grip of the hovered note the note stays hovered (the grips lie outside its band).
   if (const VibratoHit vh = vibratoPartAt(p); vh.valid() && vh.note.value == hoverPart_.note) return;
   int zone = 0;
@@ -720,6 +731,11 @@ void RollState::clearHoverPart() {
   hoverPartPos_.reset();
   setHoverGroup({});
   setHoverPart({});
+  if (hoverGuide_.valid()) {
+    hoverGuide_ = {};
+    if (noteArea) noteArea->markDirty();
+  }
+  setFinerGuides(false);
 }
 
 void RollState::refreshHoverPart() {
@@ -942,7 +958,9 @@ void RollState::setShowChance(bool on) {
 
 // --- notes ----------------------------------------------------------------------------------------------
 
-std::optional<double> RollState::centsOf(const tuning::PitchId& p) const {
+std::optional<double> RollState::centsOf(const tuning::PitchId& p) const { return centsOfImpl(p, true); }
+
+std::optional<double> RollState::centsOfImpl(const tuning::PitchId& p, bool shown) const {
   switch (p.kind()) {
     case tuning::PitchKind::Degree: return degreeCents(tuning_, absoluteDegree(tuning_, p.degree(), p.equave()));
     case tuning::PitchKind::Cents: return p.cents();
@@ -950,15 +968,18 @@ std::optional<double> RollState::centsOf(const tuning::PitchId& p) const {
       const double rc = tuning::cents(p.ratio());
       if (p.anchorKind() == tuning::AnchorKind::Reference) return rc;
       if (!anchorIndexValid_) buildAnchorIndex();
-      // Follow the anchor chain (bounded: a cycle or a missing anchor leaves the note unplaced).
+      // Follow the anchor chain (bounded: a cycle or a missing anchor leaves the note unplaced). T7.16a (M7 review
+      // M14): while a Move drag steps an anchor, what hangs on it is shown on the anchor's preview pitch.
+      const bool follow = shown && drag.movesAnchors && drag.kind == DragKind::Move;
       double total = rc;
       uint32_t id = p.anchorId();
       for (int depth = 0; depth < 16; ++depth) {
         auto it = anchorIndex_.find(id);
         if (it == anchorIndex_.end()) return std::nullopt;
-        const tuning::PitchId& a = it->second->pitch;
+        std::optional<Preview> pv = follow ? previewOf(drag, *it->second) : std::nullopt;
+        const tuning::PitchId& a = pv ? pv->pitch : it->second->pitch;
         if (a.kind() != tuning::PitchKind::Ratio) {
-          const std::optional<double> base = centsOf(a);
+          const std::optional<double> base = centsOfImpl(a, shown);
           if (!base) return std::nullopt;
           return total + *base;
         }
@@ -1059,7 +1080,7 @@ void RollState::cacheSelectedNotes() const {
     if (selected(n.id)) noteCache_[n.id.value] = &n;
 }
 
-const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
+const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone, bool alt) const {
   if (!clip_ || pxPerTick_ <= 0.0) return nullptr;
   const float scale = (noteArea && noteArea->tree()) ? noteArea->tree()->scale() : 1.0f;
   const float grab = kEdgeGrab * scale;
@@ -1094,8 +1115,17 @@ const doc::Note* RollState::noteAt(ui::Vec2 p, int* zone) const {
     hit = &n;
     const float w = x1 - x0;
     hitZone = 0;
-    if (p.x >= x1 - grab && w >= 2.0f * grab) hitZone = 1;
-    else if (p.x < x0 + grab && w >= 3.0f * grab) hitZone = -1;
+    if (alt) {
+      // M13 (T7.16a): with Alt an edge bends: its zone is the outer quarter of the note (at least kAltEdgeGrab px),
+      // for a note of any width; the middle copies.
+      const float z = std::max(kAltEdgeGrab * scale, 0.25f * w);
+      if (p.x >= x1 - z && x1 - p.x <= p.x - x0) hitZone = 1;
+      else if (p.x < x0 + z) hitZone = -1;
+    } else if (p.x >= x1 - grab && w >= 2.0f * grab) {
+      hitZone = 1;
+    } else if (p.x < x0 + grab && w >= 3.0f * grab) {
+      hitZone = -1;
+    }
   });
   if (zone) *zone = hitZone;
   return hit;
@@ -1253,8 +1283,16 @@ std::optional<tuning::Rational> RollState::virtualFundamental() const {
   vf_ = doc::virtualFundamental(*clip_, D);
   groupNumbers_.clear();
   groupAnchors_.clear();
+  untunedAnchors_.clear();
   activeGroupValid_ = false;
   for (const doc::JiGroup& g : doc::jiGroupsOf(*clip_)) {
+    if (!g.tuned) {  // T7.16a: Back to Tuning: its notes play (and read) as written, no numbers
+      if (clip_->notes.findById(g.anchor)) {
+        groupAnchors_.push_back(g.anchor.value);
+        untunedAnchors_.push_back(g.anchor.value);
+      }
+      continue;
+    }
     const std::optional<doc::GroupHarmonics> gh = doc::groupHarmonics(*clip_, g);
     if (!gh) continue;
     groupAnchors_.push_back(g.anchor.value);
@@ -1264,7 +1302,17 @@ std::optional<tuning::Rational> RollState::virtualFundamental() const {
   }
   std::sort(groupNumbers_.begin(), groupNumbers_.end());
   std::sort(groupAnchors_.begin(), groupAnchors_.end());
+  std::sort(untunedAnchors_.begin(), untunedAnchors_.end());
   return vf_;
+}
+
+bool RollState::untunedMember(const doc::Note& n) const {
+  if (!clip_ || !clip_->groups) return false;
+  (void)virtualFundamental();  // fills the per-snapshot cache
+  if (untunedAnchors_.empty()) return false;
+  const doc::NoteId a = doc::noteAnchorOf(n.pitch);
+  return std::binary_search(untunedAnchors_.begin(), untunedAnchors_.end(), n.id.value) ||
+         (a.valid() && std::binary_search(untunedAnchors_.begin(), untunedAnchors_.end(), a.value));
 }
 
 const doc::JiGroup* RollState::activeJiGroup() const {
@@ -1300,17 +1348,77 @@ const doc::JiGroup* RollState::activeJiGroup() const {
   return activeGroup_;
 }
 
+std::optional<RollState::Harmonics> RollState::groupHarmonicsOf(const doc::JiGroup& g, bool finer) const {
+  if (!clip_) return std::nullopt;
+  const doc::Note* anchor = findNote(g.anchor);
+  const std::optional<doc::GroupFundamental> f = anchor ? doc::groupFundamental(*clip_, g) : std::nullopt;
+  if (!f) return std::nullopt;
+  // Where the anchor note sounds now (the tuning may have moved under it).
+  const std::optional<double> c = pathCents(*anchor, anchor->start, anchor->pitch, 0.0);
+  if (!c) return std::nullopt;
+  Harmonics h{g.anchor, *c, f->fundamental, 0, 0};
+  if (finer)
+    if (const std::optional<tuning::Rational> half = tuning::Rational::tryMake(f->fundamental.num(), 2 * f->fundamental.den())) h.ratio = *half;
+  if (const GroupInfo* info = groupInfo(g.id)) {
+    h.from = info->start - kGroupCaptureTicks;
+    h.to = info->end;
+  }
+  return h;
+}
+
+std::optional<RollState::Harmonics> RollState::referenceHarmonics() const {
+  const std::optional<tuning::Rational> f = clip_ ? virtualFundamental() : std::nullopt;
+  if (!f) return std::nullopt;
+  return Harmonics{{}, 0.0, *f, 0, 0};
+}
+
 std::optional<RollState::Harmonics> RollState::harmonics() const {
   if (!clip_) return std::nullopt;
-  if (const doc::JiGroup* g = activeJiGroup()) {
-    // Where the anchor note sounds now (the tuning may have moved under it).
-    const std::optional<double> c = pathCents(*activeAnchor_, activeAnchor_->start, activeAnchor_->pitch, 0.0);
-    if (!c) return std::nullopt;
-    return Harmonics{g->anchor, *c, activeFundamental_};
+  if (const doc::JiGroup* g = guideGroup()) return groupHarmonicsOf(*g, finer_);
+  return referenceHarmonics();
+}
+
+const doc::JiGroup* RollState::captureGroupAt(Ticks t, float y) const {
+  if (!clip_ || !clip_->groups || !harmonics_) return nullptr;
+  const doc::JiGroup* active = activeJiGroup();
+  const doc::JiGroup* framed = nullptr;
+  const doc::JiGroup* newest = nullptr;
+  for (const GroupInfo& g : groupInfos()) {
+    if (!g.inJi || t < g.start - kGroupCaptureTicks || t >= g.end) continue;  // (Back to Tuning: on the rows)
+    if (g.group == active) return active;
+    const GroupFrame f = groupFrame(g);
+    if (y >= f.box.y0 && y <= f.box.y1) framed = g.group;
+    newest = g.group;  // sorted by id: the last one in time span is the newest
   }
-  const std::optional<tuning::Rational> f = virtualFundamental();
-  if (!f) return std::nullopt;
-  return Harmonics{{}, 0.0, *f};
+  return framed ? framed : newest;
+}
+
+const doc::JiGroup* RollState::guideGroup() const {
+  if (!clip_ || !clip_->groups || !harmonics_) return nullptr;
+  if (hoverGuide_.valid())
+    if (const doc::JiGroup* g = doc::findJiGroup(*clip_, hoverGuide_)) return g;
+  const doc::JiGroup* a = activeJiGroup();
+  return a && a->tuned ? a : nullptr;  // a group Back to Tuning has no guides (its notes are on the rows)
+}
+
+void RollState::setFinerGuides(bool on) {
+  if (on == finer_) return;
+  finer_ = on;
+  if (noteArea) noteArea->markDirty();
+}
+
+void RollState::setPointerMods(ui::Mods m) {
+  pointerMods_ = m;
+  if (hoverPartPos_) {
+    const doc::JiGroup* g = captureGroupAt(static_cast<Ticks>(std::llround(tickAtX(hoverPartPos_->x))), hoverPartPos_->y);
+    setFinerGuides((m & ui::mod::kAlt) != 0 && g != nullptr);
+  } else {
+    setFinerGuides(false);
+  }
+}
+
+void RollState::focusNotes() {
+  if (ui::UiTree* t = noteArea ? noteArea->tree() : nullptr; t && t->focus() != noteArea) t->setFocus(noteArea);
 }
 
 int RollState::groupRole(const doc::Note& n) const {
@@ -1495,6 +1603,16 @@ void RollState::updatePreviewPitches() {
     for (uint32_t i = 0; i < c.count; ++i) {
       const doc::Note& n = c.notes[i];
       if (n.pitch.kind() == tuning::PitchKind::Degree || !selected(n.id)) continue;
+      // T7.16a (H2), as ops::moveNotes: a member whose anchor moves too follows it (centsOf shows it there); one of a
+      // group Back to Tuning moves as the tempered note it sounds as (its written identity, stepped).
+      const doc::NoteId anchor = doc::noteAnchorOf(n.pitch);
+      if (anchor.valid() && selected(anchor) && clip_->groups && doc::findJiGroupByAnchor(*clip_, anchor)) continue;
+      if (const doc::JiGroup* g = anchor.valid() && clip_->groups ? doc::findJiGroupByAnchor(*clip_, anchor) : nullptr; g && !g->tuned)
+        if (const doc::NoteWritten* w = doc::findNoteWritten(*clip_, n.id)) {
+          const std::optional<tuning::PitchId> p = doc::ops::stepPitch(w->written, drag.steps, doc::ops::StepUnit::Grid, pc);
+          drag.previewPitch.emplace_back(n.id.value, p ? *p : w->written);
+          continue;
+        }
       const std::optional<tuning::PitchId> p = doc::ops::stepPitch(n.pitch, drag.steps, doc::ops::StepUnit::Grid, pc);
       drag.previewPitch.emplace_back(n.id.value, p ? *p : n.pitch);
     }

@@ -659,6 +659,8 @@ TEST_CASE("steps: Up / Down on a member is the next / previous harmonic of its g
   commit(f.store, ops::transposeNotes(f.doc(), f.ref, c, 2, ops::StepUnit::Grid));
   CHECK(f.noteOf(triad[0].id).pitch == PitchId::fromDegree(2));
   CHECK(f.hz(triad[1].id) == f.degreeHz(2) * 1.25);
+  // T7.16a: what the members (not stepped themselves) are written as follows the anchor too.
+  CHECK(findNoteWritten(f.clip(), triad[1].id)->written == PitchId::fromDegree(6));
   // Moving a member in time keeps its written identity; a typed pitch drops it.
   const NoteKey e[] = {keyOf(f.noteOf(triad[1].id))};
   auto moved = ops::moveNotes(f.doc(), f.ref, e, kPpq);

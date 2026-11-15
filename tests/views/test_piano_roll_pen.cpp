@@ -356,7 +356,7 @@ TEST_CASE("roll pen: Ctrl+G glides each selected note into the next selected one
   CHECK(r.history() == h);
 
   // The menu of the selection.
-  r.choose(r.rightClick(r.view->notePoint(ids[0], 0.2)), "Clear Bends");
+  r.choose(r.rightClick(r.view->notePoint(ids[0], 0.2)), "Clear Curves");
   CHECK(r.history() == h + 1);
   CHECK(r.clip().curves == nullptr);
 }

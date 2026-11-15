@@ -63,14 +63,18 @@ float RollState::yOfCents(double cents) const noexcept {
 
 void RollState::syncPaths() const {
   const void* tl = snap_ && snap_->timeline ? static_cast<const void*>(snap_->timeline.get()) : nullptr;
-  const bool world = paths_.timeline != tl || paths_.tuningGen != tuningGen_;
-  if (paths_.clip == clip_.get() && !world) return;
-  if (world || !clip_ || paths_.notes.size() > (size_t{1} << 16)) {
-    paths_.notes.clear();  // every pitch or every tick moved
+  const bool timeline = paths_.timeline != tl;
+  const bool tuning = paths_.tuningGen != tuningGen_;
+  if (paths_.clip == clip_.get() && !timeline && !tuning) return;
+  previewPaths_.clear();  // (built against the old snapshot)
+  if (timeline || !clip_ || paths_.notes.size() > (size_t{1} << 16)) {
+    paths_.notes.clear();  // every tick moved (a vibrato's period in ticks)
   } else {
-    // A new snapshot of the clip: an entry stays while what it was flattened from stands. Entries that read the
-    // resolved pitches go (a neighbour may have moved); when the curve list was replaced, an entry stays if its
-    // record is equal in the new list (the old list is still alive here: paths_.curves holds it).
+    // A new snapshot of the clip or a new tuning: an entry stays while what it was flattened from stands. Entries
+    // that read the resolved pitches go (a neighbour may have moved); when the curve list was replaced, an entry stays
+    // if its record is equal in the new list (the old list is still alive here: paths_.curves holds it). T7.16a (M7
+    // review M16): a tuning change (a MOS morph frame) keeps the other entries' points — they are cents over the
+    // note, the tuning does not enter them — and only their `base` is derived again (pathOf, baseGen).
     const bool listChanged = clip_->curves.get() != paths_.curves.get();
     for (auto it = paths_.notes.begin(); it != paths_.notes.end();) {
       NotePath& e = it->second;
@@ -90,7 +94,12 @@ void RollState::syncPaths() const {
   paths_.resolved = false;
   paths_.anyWarp = false;
   if (clip_)
-    for (const doc::JiGroup& g : doc::jiGroupsOf(*clip_)) paths_.anyWarp = paths_.anyWarp || !g.warps.empty();
+    for (const doc::JiGroup& g : doc::jiGroupsOf(*clip_)) paths_.anyWarp = paths_.anyWarp || !doc::effectiveJiWarps(g).empty();
+}
+
+void RollState::touchPreview() {
+  ++previewGen_;
+  previewPaths_.clear();
 }
 
 const doc::NotePitchIndex& RollState::pitchIndex() const {
@@ -123,7 +132,7 @@ bool RollState::onPath(const doc::Note& n, const tuning::PitchId&) const {
   if (previewTouches(n)) return true;
   if (clip_->curves && doc::findNoteCurves(*clip_, n.id) != nullptr) return true;
   syncPaths();
-  return paths_.anyWarp && pitchIndex().warped(n.id) != nullptr;
+  return paths_.anyWarp && (doc::noteAnchorOf(n.pitch).valid() || groupRole(n) == 2) && pitchIndex().warped(n.id) != nullptr;
 }
 
 const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
@@ -142,6 +151,7 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
     out.length = n.length;
     out.pitch = n.pitch;
     out.usedIndex = index != nullptr;
+    out.baseGen = tuningGen_;
     std::optional<double> base;
     if (const std::optional<double> hz = index ? index->hz(n.id) : std::nullopt; hz && tuning_.referenceHz() > 0.0) base = 1200.0 * std::log2(*hz / tuning_.referenceHz());
     else base = centsOf(n.pitch);
@@ -161,19 +171,35 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
     ++pathBuilds_;
   };
   syncPaths();
-  const bool needIndex = paths_.anyWarp || (rec && (rec->bendIn.set() || rec->bendOut.set())) || doc::noteAnchorOf(n.pitch).valid();
+  // T7.16a (M7 review M16): per note — a warp in the clip makes only the notes it moves read the index.
+  // (Only a member or an anchor can be warped: a plain note costs no resolve of the clip.)
+  const bool warpedNote = paths_.anyWarp && (doc::noteAnchorOf(n.pitch).valid() || groupRole(n) == 2) && pitchIndex().warped(n.id) != nullptr;
+  const bool needIndex = warpedNote || (rec && (rec->bendIn.set() || rec->bendOut.set())) || doc::noteAnchorOf(n.pitch).valid();
   if (preview) {
-    const bool warped = warpPreview_.valid() && warpPreview_.clip != nullptr;
-    build(warped ? *warpPreview_.clip : *clip_, warped ? &warpPreview_.index : needIndex ? &pitchIndex() : nullptr, scratchPath_);
-    return scratchPath_.ok ? &scratchPath_ : nullptr;
+    // One flattening per note and preview (M15): the entry stands until the preview changes (previewGen_).
+    NotePath& e = previewPaths_[n.id.value];
+    if (e.previewGen != previewGen_ || e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.baseGen != tuningGen_) {
+      const bool warped = warpPreview_.valid() && warpPreview_.clip != nullptr;
+      const bool index = needIndex || (warped && warpPreview_.index.warped(n.id) != nullptr);
+      build(warped ? *warpPreview_.clip : *clip_, warped ? &warpPreview_.index : index ? &pitchIndex() : nullptr, e);
+      e.previewGen = previewGen_;
+    }
+    return e.ok ? &e : nullptr;
   }
-  if (!rec && !(paths_.anyWarp && pitchIndex().warped(n.id) != nullptr)) return nullptr;
+  if (!rec && !warpedNote) return nullptr;
   auto it = paths_.notes.find(n.id.value);
   if (it == paths_.notes.end()) {
     it = paths_.notes.emplace(n.id.value, NotePath{}).first;
     build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);
   } else if (const NotePath& e = it->second; e.rec != rec || e.start != n.start || e.length != n.length || !(e.pitch == n.pitch) || e.usedIndex != needIndex) {
     build(*clip_, needIndex ? &pitchIndex() : nullptr, it->second);  // the note changed under a kept entry
+  } else if (e.baseGen != tuningGen_) {
+    // Only the tuning moved (M16): the points stand, the pitch it starts on is derived again.
+    NotePath& k = it->second;
+    const std::optional<double> base = centsOf(n.pitch);
+    k.ok = base && std::isfinite(*base);
+    if (k.ok) k.base = *base;
+    k.baseGen = tuningGen_;
   }
   return it->second.ok ? &it->second : nullptr;
 }
@@ -183,6 +209,12 @@ std::optional<double> RollState::startCents(const doc::Note& n) const {
   return clip_ ? centsOf(n.pitch) : std::nullopt;
 }
 
+double RollState::anchorPreviewShift(const doc::Note& n) const {
+  if (!drag.movesAnchors || drag.kind != DragKind::Move || !doc::noteAnchorOf(n.pitch).valid()) return 0.0;
+  const std::optional<double> shown = centsOfImpl(n.pitch, true), doc = centsOfImpl(n.pitch, false);
+  return shown && doc ? *shown - *doc : 0.0;
+}
+
 std::optional<double> RollState::pathCents(const doc::Note& n, Ticks, const tuning::PitchId& pitch, double offset) const {
   if (!clip_) return std::nullopt;
   const NotePath* p = pathOf(n);
@@ -190,6 +222,7 @@ std::optional<double> RollState::pathCents(const doc::Note& n, Ticks, const tuni
   // A drag's preview pitch: its identity's pitch, with the note's curve.
   std::optional<double> base = pitch == n.pitch ? std::optional<double>(p->base) : centsOf(pitch);
   if (!base) return std::nullopt;
+  if (pitch == n.pitch) *base += anchorPreviewShift(n);  // M14 (T7.16a): its anchor is being dragged
   if (!p->pts.empty()) *base += pq::evalAutomation(std::span<const doc::Breakpoint>(p->pts), offset);
   return base;
 }
@@ -219,10 +252,12 @@ ui::IRect RollState::pathBox(const doc::Note& n, Ticks start, Ticks length, cons
 
 // --- declaring JI -----------------------------------------------------------------------------------------------
 
-DrawPitch RollState::drawPitchFor(ui::Mods m) const noexcept {
-  if (m & mod::kAlt) return DrawPitch::Overlay;
-  // With an active JI group drawing snaps to its harmonics; Shift then draws on the rows.
-  const bool group = activeJiGroup() != nullptr;
+DrawPitch RollState::drawPitchFor(ui::Mods m, Ticks t, float y) const {
+  // T7.16a (M7 review H1 / H3 / M5): a note drawn where it joins a group (inside the group's time span, the Harmonics
+  // switch on) snaps to the group's harmonics — with Alt to the finer series between them — and Shift then draws on
+  // the rows. Elsewhere the plain draw is on the rows, Shift draws a reference ratio, Alt on the background EDO.
+  const bool group = captureGroupAt(t, y) != nullptr;
+  if (m & mod::kAlt) return group ? DrawPitch::Ratio : DrawPitch::Overlay;
   return (((m & mod::kShift) != 0) != group) ? DrawPitch::Ratio : DrawPitch::Row;
 }
 
@@ -272,7 +307,7 @@ bool RollState::declareHarmonic(doc::NoteId note, uint32_t n, std::string* error
   if (const doc::JiGroup* g = activeJiGroup(); !g || g->anchor != note) selectOnly(note);  // its group is the active one
   setShowHarmonics(true);
   char buf[160];
-  std::snprintf(buf, sizeof buf, "The note is harmonic %u: it stays where it is; draw on the guide lines to add notes of its series (Shift: the rows)", n);
+  std::snprintf(buf, sizeof buf, "The note is harmonic %u: it stays where it is; draw on the guide lines over it to add notes of its series (Alt: between them; Shift: the rows)", n);
   ctx.setStatus(buf);
   return true;
 }
@@ -343,9 +378,9 @@ ui::TextEdit* RollState::openHarmonicEntry(doc::NoteId note) {
   ui::IRect anchor = onPath(*n, n->pitch) ? pathBox(*n, n->start, n->length, n->pitch) : screenRectOf(n->start, n->length, n->pitch);
   return openJiField("harmonic-entry", "This note is harmonic number:",
                      "Type N and press Enter: this note becomes harmonic N of a series and stays exactly where it is. The "
-                     "series is drawn as guide lines; notes you draw snap to it as exact ratios to this note (Shift draws on "
-                     "the rows). A note placed between the lines renumbers the series (5 and a 3/2 above it read 10 and "
-                     "15). On a note that already belongs to a group, that note becomes the group's frozen note and the "
+                     "series is drawn as guide lines over its time; notes you draw there snap to it as exact ratios to this "
+                     "note (Shift draws on the rows; Alt shows the lines between the harmonics). A note placed between the "
+                     "lines renumbers the series (5 and a 3/2 above it read 10 and 15). On a note that already belongs to a group, that note becomes the group's frozen note and the "
                      "others keep their pitches. Remove JI Group is in the same menu. Esc closes.",
                      "", anchor, [note](RollState& s, const std::string& text, std::string& why) {
                        const std::string_view t = trimmed(text);

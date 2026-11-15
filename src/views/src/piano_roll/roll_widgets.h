@@ -126,7 +126,7 @@ private:
   void pressEmpty(const ui::PointerEvent& e);
   bool pressPen(const ui::PointerEvent& e);                    // T7.6: Draw Mode on a note
   void dragTo(ui::Vec2 p, ui::Mods mods);
-  DrawnNote cellNote(TickRange c, ui::Vec2 p, DrawPitch mode) const;
+  DrawnNote cellNote(TickRange c, ui::Vec2 p, DrawPitch mode, ui::Mods mods) const;
   void paintNoteLabels(ui::PaintContext& ctx);
   RollState& s_;
 };

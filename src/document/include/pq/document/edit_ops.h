@@ -413,7 +413,8 @@ std::optional<tuning::PitchId> stepPitch(const tuning::PitchId& pitch, int32_t s
 // the same Batch (SetClipFundamental) the fundamental each stepped note was on when that is finer than its new
 // reduced denominator (a HarmonicStep), so 5/4 → 3/2 → 7/4 keeps 1/4 (T3.6-fix1, Q40). T7.16a (M7 review H2 / M4):
 // JI groups move as chords — a member whose anchor moves too keeps its ratio (it follows the anchor) and its written
-// identity steps by the same amount, as does an anchor's own; a member stepped without its anchor goes to the next
+// identity steps by the same amount, as does an anchor's own and those of its members that were not selected (they
+// follow it in JI); a member stepped without its anchor goes to the next
 // harmonic of its group and is re-written as the tuning's nearest step to its new pitch (a group Back to Tuning: it
 // is the tempered note it sounds as, its written identity stepped, and leaves the group). SetNotesWritten in the same
 // Batch.
