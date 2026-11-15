@@ -830,3 +830,8 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 ## 2026-11-15 · M7 run closed · main (3dbc1760)
 - Did: notes-first JI (T7.11a–T7.16b), macro mode (T8.1), `?` help + `M` unbound (KB.help) merged; SPEC §5 marked superseded by the notes-first decision; worktrees pqdaw-w1 / w2 removed, sccache cleaned; the user's release pqdaw.exe rebuilt from 3dbc1760.
 - Open: Q311 (MIDI pitch-bend export), unison phase-lock for notes, pulse arp / chord sets, T8.3 / T8.4 mappings, the review's remaining lows; nothing has been auditioned or driven in the live app by the agents.
+
+## 2026-11-15 · KB.help2 merged · main (f6c3c87c)
+- Did: the `?` help is a movable, resizable floating window (`ui::FloatingWindow`, `Placement::Free`); it stays open while the roll keeps focus, clicks and keys; × / `?` close, Esc only when it has focus; position / size / section kept for the session. Goldens: pianoroll-help, -help-scrolled re-recorded, + pianoroll-help-moved.
+- Verified (worker): `build.ps1 -Target pq_tests_views -TestRegex pq_tests_views` 1/1, `-Target pq_tests_ui -TestRegex pq_tests_ui` 1/1; help cases 12/12 through real dispatch.
+- Perf / CPU-efficiency check: nothing while idle; one popup re-placed per pointer move.
