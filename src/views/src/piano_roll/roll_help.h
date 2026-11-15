@@ -1,10 +1,16 @@
 #pragma once
 
-// KB.help: the piano roll's help panel (the `?` button left of Fold / Scale; private to pq_views).
+// KB.help: the piano roll's help window (the `?` button left of Fold / Scale; private to pq_views).
 //
 // The text is DATA (roll_help_content.cpp): sections -> entries {gesture, title, text}. The widget here only lays it
 // out (gesture | description, a section list on the left, scrollable) and never names a feature, so a task that
 // changes what the roll does edits the table and nothing else.
+//
+// KB.help2: a floating window (ui::FloatingWindow) the user keeps open while working in the roll: dragged by its
+// title anywhere over the main window, resized from its edges / corner, closed by ×, `?` or (when it has the focus)
+// Esc. Clicks and keys outside it reach the roll as if it were not there. Narrower than kNarrow it drops the section
+// list; narrower still, each entry's gesture goes above its description (one column). Its place, size, open state and
+// section are session view state (ViewContext::rollHelpView), not saved with the project.
 //
 // Gesture markup (HelpEntry::gesture):
 //   {action.id}   the key that action has in the LOADED keymap, drawn as key caps ("Ctrl" + "G"); "unbound" when the
@@ -67,46 +73,50 @@ std::string helpActionKeys(std::string_view action, const ui::Keymap& keymap);
 class HelpContent;
 class HelpRail;
 
-class RollHelpPopover : public ui::Popover {
+class RollHelpWindow : public ui::FloatingWindow {
 public:
-  static constexpr float kWidth = 860.0f;      // logical px (less in a narrow window)
-  static constexpr float kMaxHeight = 640.0f;  // logical px (less when the panels are shorter)
+  // Logical px. The first opening: kWidth × kHeight (less when the panels are smaller), its bottom-left corner on the
+  // roll's note area.
+  static constexpr float kWidth = 860.0f, kHeight = 640.0f;
+  static constexpr float kMinW = 360.0f, kMinH = 220.0f;
+  static constexpr float kNarrow = 600.0f;  // narrower: no section list
 
-  // `within`: the widget it must stay inside (null: the layer); `left`: its left edge (device px; it is as wide as
-  // the room from there to the right edge allows, up to kWidth).
-  RollHelpPopover(const ui::Keymap& keymap, const ui::Widget* within, int32_t left);
+  explicit RollHelpWindow(const ui::Keymap& keymap);
 
   size_t sectionCount() const noexcept;
   size_t entryCount(size_t section) const noexcept;
   // The gesture of an entry as shown (helpGestureText).
   std::string gestureText(size_t section, size_t entry) const;
-  // Scrolls so that the section's heading is at the top (as a click on its name in the list does).
+  // Scrolls so that the section's heading is at the top (as a click on its name in the list does). Before the first
+  // layout: once laid out.
   void showSection(size_t section);
+  // The section at the top of the view (the one the list marks).
+  size_t currentSection() const noexcept;
   int32_t scrollY() const noexcept;
   int32_t maxScrollY() const noexcept;
   void scrollToY(int32_t y);
+  bool sectionListShown() const noexcept;
+  // The text in one column (each gesture above its description), from the last layout.
+  bool singleColumn() const noexcept;
 
-  ui::ISize contentExtent(ui::ISize viewport) const override;
-  void arrange(ui::LayoutPass& pass) override;
   bool onKey(const ui::KeyEvent& e) override;
-  bool onPointer(const ui::PointerEvent& e) override;
   ui::InfoText info() const override;
 
+protected:
+  void arrangeBody(ui::LayoutPass& pass, const ui::IRect& body) override;
+
 private:
-  const ui::Widget* within_;
-  int32_t left_;
-  ui::Label* title_ = nullptr;
-  ui::Label* hint_ = nullptr;
   HelpRail* rail_ = nullptr;
   ui::ScrollView* scroll_ = nullptr;
   HelpContent* content_ = nullptr;
   ui::Scrollbar* bar_ = nullptr;
+  int32_t pendingSection_ = -1;
 };
 
-// The open help panel of `from`'s tree (null: closed).
-RollHelpPopover* openRollHelpPopover(const ui::Widget& from);
-// Opens the panel over the roll (`roll`: the clip view, its bottom edge and the note area's left edge place it);
-// when it is already open, closes it and returns null. `onClosed` runs once when it closes, for any reason.
-RollHelpPopover* toggleRollHelp(ui::Widget& from, ViewContext& ctx, const ui::IRect& over, std::function<void()> onClosed);
+// The open help window of `from`'s tree (null: closed).
+RollHelpWindow* openRollHelpWindow(const ui::Widget& from);
+// Opens the window (where the session last had it, at the section it showed; the first time over the roll, `over`:
+// the note area); when it is open, closes it and returns null. `onClosed` runs once when it closes, for any reason.
+RollHelpWindow* toggleRollHelp(ui::Widget& from, ViewContext& ctx, const ui::IRect& over, std::function<void()> onClosed);
 
 }  // namespace pq::views::roll

@@ -1861,3 +1861,8 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   4. `Ctrl+CapsLock` twice, then rename a track: no capitals (the app puts Caps Lock back).
   5. Hz vibratos at 120 BPM, then set 60 BPM and play: they still swing at the same speed (they did at half before).
 - Look at: `tests/views/golden/pianoroll-macro-tempered.png` (the lit lamp now reads "MACRO 12-EDO" in full).
+
+## 2026-11-15 · KB.help2 · the ? help is a floating window
+- The piano roll's help is now a movable window (ui::FloatingWindow in the overlay layer): drag its title, resize from any edge / corner (min 360 x 220), x / ? / Esc-in-it close; a click outside no longer closes it and the roll keeps its clicks and keys. Narrow: no section list, then one column. Place, size and section kept for the session.
+- Look at: `tests/views/golden/pianoroll-help.png` (first opening, as before plus title bar and x) and `pianoroll-help-moved.png` (moved top right, narrow, one column).
+- First opening still covers most of the roll (same place as before); move it once and it stays there for the session.

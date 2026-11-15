@@ -94,6 +94,7 @@ IRect placeRect(const IRect& vp, const IRect& a, Placement p, ISize sz) {
       if (x + sz.w > vp.right() && a.x - sz.w >= vp.x) x = a.x - sz.w;
       if (y + sz.h > vp.bottom() && a.y - sz.h >= vp.y) y = a.y - sz.h;
       break;
+    case Placement::Free: break;  // clamped below, never flipped
   }
   x = std::clamp(x, vp.x, std::max(vp.x, vp.right() - sz.w));
   y = std::clamp(y, vp.y, std::max(vp.y, vp.bottom() - sz.h));
@@ -272,7 +273,11 @@ void OverlayLayer::onHoverChanged(Widget* hovered) {
   }
   if (hovered != tooltipFor_) hideTooltip();
   tooltipFor_ = nullptr;
-  if (!hovered || hovered == this || !entries_.empty()) return;
+  if (!hovered || hovered == this) return;
+  // No tooltips while a menu or a popover is open. A floating window (no focus taken, no outside dismiss: KB.help2)
+  // leaves the app under it working, its tooltips included.
+  for (const Entry& e : entries_)
+    if (e.options.takeFocus || e.options.dismissOnOutsideClick) return;
   if (hovered->tooltip().empty()) return;
   tooltipFor_ = hovered;
   tooltipTimer_ = requestTimer(tooltipDelay_);
@@ -631,5 +636,188 @@ bool Popover::onKey(const KeyEvent& e) {
 }
 
 bool Popover::onPointer(const PointerEvent& e) { return e.type == PointerType::Down || (e.type == PointerType::Up && captured()); }
+
+// --- FloatingWindow -------------------------------------------------------------------------------------
+
+FloatingWindow::FloatingWindow(std::string name, std::string title, float minW, float minH)
+    : Popover(std::move(name)), title_(std::move(title)), minW_(minW), minH_(minH) {
+  setLayout(LayoutKind::Custom);
+  setPadding({});
+  close_ = &add<Button>("close", "\xC3\x97");  // ×
+  close_->setFocusable(false);
+  close_->setTooltip("Close");
+  close_->onClick = [this] {
+    if (OverlayLayer* layer = OverlayLayer::of(*this)) layer->close(*this);
+  };
+}
+
+void FloatingWindow::setTitle(std::string t) {
+  if (t == title_) return;
+  title_ = std::move(t);
+  markDirty();
+}
+
+OverlayOptions FloatingWindow::floatingOptions(const Geometry& g, float scale) {
+  OverlayOptions o;
+  o.anchor = {static_cast<int32_t>(std::lround(g.x * scale)), static_cast<int32_t>(std::lround(g.y * scale)), 0, 0};
+  o.placement = Placement::Free;
+  o.dismissOnOutsideClick = false;
+  o.takeFocus = false;
+  return o;
+}
+
+void FloatingWindow::setGeometry(const Geometry& g) {
+  geo_ = g;
+  geo_.w = std::max(g.w, minW_);
+  geo_.h = std::max(g.h, minH_);
+  const float sc = tree() ? tree()->scale() : 1.0f;
+  if (OverlayLayer* layer = OverlayLayer::of(*this))
+    (void)layer->move(*this, {static_cast<int32_t>(std::lround(geo_.x * sc)), static_cast<int32_t>(std::lround(geo_.y * sc)), 0, 0},
+                      Placement::Free);
+  if (parent()) parent()->invalidateArrange();  // a new size: the layer re-places it
+}
+
+void FloatingWindow::place(const IRect& d) {
+  const float sc = tree() ? tree()->scale() : 1.0f;
+  geo_ = {static_cast<float>(d.x) / sc, static_cast<float>(d.y) / sc, static_cast<float>(d.w) / sc, static_cast<float>(d.h) / sc};
+  if (OverlayLayer* layer = OverlayLayer::of(*this)) (void)layer->move(*this, {d.x, d.y, 0, 0}, Placement::Free);
+  if (parent()) parent()->invalidateArrange();
+}
+
+ISize FloatingWindow::contentExtent(ISize viewport) const {
+  const float sc = tree() ? tree()->scale() : 1.0f;
+  auto dev = [sc](float v) { return static_cast<int32_t>(std::lround(v * sc)); };
+  return {std::min(viewport.w, std::max(dev(minW_), dev(geo_.w))), std::min(viewport.h, std::max(dev(minH_), dev(geo_.h)))};
+}
+
+IRect FloatingWindow::body() const noexcept {
+  const IRect r = rect();
+  const int32_t th = static_cast<int32_t>(std::lround(kTitleH * (tree() ? tree()->scale() : 1.0f)));
+  return {r.x, r.y + th, r.w, std::max(0, r.h - th)};
+}
+
+void FloatingWindow::arrange(LayoutPass& pass) {
+  const IRect r = rect();
+  const int32_t th = pass.px(kTitleH), b = pass.px(18.0f);
+  pass.place(*close_, {r.right() - pass.px(5.0f) - b, r.y + (th - b) / 2, b, b});
+  arrangeBody(pass, body());
+}
+
+void FloatingWindow::paint(PaintContext& ctx) {
+  Popover::paint(ctx);  // shadow, fill, border
+  const Theme* th = ctx.res.theme;
+  if (!th) return;
+  const IRect r = rect();
+  const int32_t tb = ctx.scale.px(kTitleH);
+  const bool active = tree() && inSubtree(*this, tree()->focus());
+  const float rad = ctx.scale.exact(th->radius.menu);
+  // The title bar: the raised surface while the window has the focus.
+  const Rect bar{static_cast<float>(r.x) + 1.0f, static_cast<float>(r.y) + 1.0f, static_cast<float>(r.right()) - 1.0f, static_cast<float>(r.y + tb)};
+  ctx.dl.addRoundedRectFilled(bar, std::max(0.0f, rad - 1.0f), active ? th->surface.raised : th->surface.panel);
+  ctx.dl.addRectFilled({bar.x0, bar.y1 - std::min(rad, static_cast<float>(tb) / 2.0f), bar.x1, bar.y1}, active ? th->surface.raised : th->surface.panel);
+  ctx.dl.addHLine(static_cast<float>(r.x) + 1.0f, static_cast<float>(r.right()) - 1.0f, static_cast<float>(r.y + tb), th->menu.border);
+  if (const ThemeFonts* f = ctx.res.uiFonts) {
+    const IRect tr{r.x, r.y, std::max(0, close_->rect().x - r.x), tb};
+    detail::drawText(ctx, f->bodyStrong, tr, title_, th->text.primary, TextAlign::Left, ctx.scale.px(10), ctx.scale.px(8));
+  }
+}
+
+void FloatingWindow::paintOver(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  if (!th) return;
+  // The bottom-right grip: a triangle of six dots.
+  const IRect r = rect();
+  const float dot = std::max(1.0f, std::round(2.0f * ctx.scale.factor)), step = std::round(4.0f * ctx.scale.factor);
+  const float x1 = static_cast<float>(r.right()) - std::round(3.0f * ctx.scale.factor), y1 = static_cast<float>(r.bottom()) - std::round(3.0f * ctx.scale.factor);
+  const Rgba c = mulAlpha(th->text.secondary, 0.6f);
+  for (int a = 0; a < 3; ++a)
+    for (int b = 0; a + b < 3; ++b) {
+      const float x = x1 - static_cast<float>(a) * step, y = y1 - static_cast<float>(b) * step;
+      ctx.dl.addRectFilled({x - dot, y - dot, x, y}, c);
+    }
+}
+
+uint8_t FloatingWindow::zoneAt(Vec2 p) const noexcept {
+  const IRect r = rect();
+  if (!r.contains(p)) return 0;
+  const float sc = tree() ? tree()->scale() : 1.0f;
+  const float e = kEdge * sc, g = kGrip * sc;
+  const float l = p.x - static_cast<float>(r.x), rt = static_cast<float>(r.right()) - p.x;
+  const float t = p.y - static_cast<float>(r.y), bt = static_cast<float>(r.bottom()) - p.y;
+  uint8_t z = 0;
+  if (l < e) z |= kLeft;
+  else if (rt <= e) z |= kRight;
+  if (t < e) z |= kTop;
+  else if (bt <= e) z |= kBottom;
+  // Near a corner along an edge: the corner.
+  if ((z & (kLeft | kRight)) && !(z & (kTop | kBottom))) z |= t < g ? kTop : bt <= g ? kBottom : 0;
+  if ((z & (kTop | kBottom)) && !(z & (kLeft | kRight))) z |= l < g ? kLeft : rt <= g ? kRight : 0;
+  if (rt <= g && bt <= g) z = kRight | kBottom;  // the grip
+  if (z) return z;
+  return t < kTitleH * sc ? kMove : 0;
+}
+
+bool FloatingWindow::onPointer(const PointerEvent& e) {
+  if (e.type == PointerType::Down && e.button == PointerButton::Left) {
+    drag_ = zoneAt(e.pos);
+    press_ = e.pos;
+    pressRect_ = rect();
+    if (drag_ != 0) return true;
+  }
+  if (e.type == PointerType::Move && drag_ != 0) {
+    const OverlayLayer* layer = OverlayLayer::of(*this);
+    const IRect vp = layer ? layer->rect() : IRect{0, 0, pressRect_.right(), pressRect_.bottom()};
+    const float sc = tree() ? tree()->scale() : 1.0f;
+    const int32_t dx = static_cast<int32_t>(std::lround(e.pos.x - press_.x)), dy = static_cast<int32_t>(std::lround(e.pos.y - press_.y));
+    const IRect p = pressRect_;
+    IRect n = p;
+    if (drag_ == kMove) {
+      n.x = std::clamp(p.x + dx, vp.x, std::max(vp.x, vp.right() - p.w));
+      n.y = std::clamp(p.y + dy, vp.y, std::max(vp.y, vp.bottom() - p.h));
+    } else {
+      // Each moved edge stays inside the layer and at least the minimum size from the opposite one (the minimum wins
+      // when the layer is smaller than it).
+      const int32_t mw = static_cast<int32_t>(std::lround(minW_ * sc)), mh = static_cast<int32_t>(std::lround(minH_ * sc));
+      auto within = [](int32_t v, int32_t lo, int32_t hi) { return std::max(lo, std::min(v, hi)); };
+      int32_t x0 = p.x, x1 = p.right(), y0 = p.y, y1 = p.bottom();
+      if (drag_ & kLeft) x0 = std::min(within(p.x + dx, vp.x, x1 - mw), x1 - mw);
+      if (drag_ & kRight) x1 = within(p.right() + dx, x0 + mw, vp.right());
+      if (drag_ & kTop) y0 = std::min(within(p.y + dy, vp.y, y1 - mh), y1 - mh);
+      if (drag_ & kBottom) y1 = within(p.bottom() + dy, y0 + mh, vp.bottom());
+      n = {x0, y0, x1 - x0, y1 - y0};
+    }
+    if (n != rect()) place(n);
+    return true;
+  }
+  if (e.type == PointerType::Up && drag_ != 0) {
+    drag_ = 0;
+    if (rect() != pressRect_ && onGeometry) onGeometry(*this);
+    return true;
+  }
+  if (e.type == PointerType::Wheel) return true;  // nothing under the window scrolls
+  return Popover::onPointer(e);
+}
+
+void FloatingWindow::onCaptureLost() {
+  if (drag_ == 0) return;
+  drag_ = 0;
+  if (rect() != pressRect_ && onGeometry) onGeometry(*this);  // where the user left it
+}
+
+Cursor FloatingWindow::cursorAt(Vec2 p) const {
+  const uint8_t z = drag_ != 0 ? drag_ : zoneAt(p);
+  switch (z) {
+    case kMove: return Cursor::Move;
+    case kLeft:
+    case kRight: return Cursor::ResizeEW;
+    case kTop:
+    case kBottom: return Cursor::ResizeNS;
+    case kLeft | kTop:
+    case kRight | kBottom: return Cursor::ResizeNWSE;
+    case kRight | kTop:
+    case kLeft | kBottom: return Cursor::ResizeNESW;
+    default: return Popover::cursorAt(p);
+  }
+}
 
 }  // namespace pq::ui

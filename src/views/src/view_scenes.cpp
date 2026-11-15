@@ -808,11 +808,11 @@ Status setupPianoRollCurveNotes(Shell& shell) {
   return Ok{};
 }
 
-// ---- KB.help: the piano roll's help panel ------------------------------------------------------------------------
+// ---- KB.help: the piano roll's help window (KB.help2: floating) ---------------------------------------------------
 
 namespace {
-// A clip with a short melody, the help panel open over the roll (the `?` button lit).
-roll::RollHelpPopover* openHelpScene(Shell& shell) {
+// A clip with a short melody, the help window open where it first opens, over the roll (the `?` button lit).
+roll::RollHelpWindow* openHelpScene(Shell& shell) {
   const std::optional<JiScene> sc = buildJiScene(shell, "Melody", 14, 6);
   if (!sc) return nullptr;
   doc::DocumentStore& store = shell.context().store();
@@ -823,20 +823,32 @@ roll::RollHelpPopover* openHelpScene(Shell& shell) {
   if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes))) return nullptr;
   if (!sc->view->toggleHelp()) return nullptr;
   shell.tree().layoutNow();
-  return roll::openRollHelpPopover(*sc->view);
+  return roll::openRollHelpWindow(*sc->view);
 }
 }  // namespace
 
 Status setupPianoRollHelp(Shell& shell) {
-  if (!openHelpScene(shell)) return Error{ErrorCode::Unknown, "pianoroll-help: opening the panel failed", {}};
+  if (!openHelpScene(shell)) return Error{ErrorCode::Unknown, "pianoroll-help: opening the window failed", {}};
   return Ok{};
 }
 
-// The same panel scrolled to "Harmonics and the virtual fundamental" (a click on its name in the section list).
+// The same window scrolled to "Harmonics and the virtual fundamental" (a click on its name in the section list).
 Status setupPianoRollHelpScrolled(Shell& shell) {
-  roll::RollHelpPopover* help = openHelpScene(shell);
-  if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-scrolled: opening the panel failed", {}};
+  roll::RollHelpWindow* help = openHelpScene(shell);
+  if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-scrolled: opening the window failed", {}};
   help->showSection(6);  // Harmonics and the virtual fundamental (T7.14: Vibrato, T7.16a: Quick start come before it)
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// KB.help2: the window moved to the top right (over the arrangement and the control bar) and made narrow: no section
+// list, each gesture above its description; the roll's notes in view beside it.
+Status setupPianoRollHelpMoved(Shell& shell) {
+  roll::RollHelpWindow* help = openHelpScene(shell);
+  if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-moved: opening the window failed", {}};
+  help->setGeometry({830.0f, 30.0f, 430.0f, 600.0f});
+  shell.tree().layoutNow();  // (the text laid out at the new width first)
+  help->showSection(4);      // Vibrato
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3818,6 +3830,7 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-group-31edo", 1280, 800, setupPianoRollGroup31Edo},
     {"pianoroll-help", 1280, 800, setupPianoRollHelp},                   // KB.help
     {"pianoroll-help-scrolled", 1280, 800, setupPianoRollHelpScrolled},  // KB.help
+    {"pianoroll-help-moved", 1280, 800, setupPianoRollHelpMoved},        // KB.help2
     {"pianoroll-macro-tempered", 1280, 800, setupPianoRollMacroTempered},  // T8.1
     {"pianoroll-macro-ji", 1280, 800, setupPianoRollMacroJi},              // T8.1
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},

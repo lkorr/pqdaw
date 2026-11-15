@@ -114,7 +114,7 @@ namespace {
 
 // Logical px.
 constexpr float kPadX = 14.0f, kPadTop = 8.0f, kPadBottom = 14.0f;
-constexpr float kGestureWidth = 200.0f, kColumnGap = 18.0f;
+constexpr float kGestureWidth = 200.0f, kColumnGap = 18.0f, kMinDescWidth = 240.0f;
 constexpr float kSectionGap = 22.0f, kEntryGap = 11.0f, kCapPadX = 6.0f, kCapGap = 4.0f, kLineGap = 3.0f;
 constexpr float kRailWidth = 238.0f, kHeaderHeight = 24.0f, kRailRow = 24.0f;
 
@@ -181,6 +181,7 @@ public:
     layout(width);
     return height_;
   }
+  bool stacked() const noexcept { return stacked_; }
 
   ISize contentExtent(ISize viewport) const override { return {viewport.w, heightFor(viewport.w)}; }
 
@@ -255,8 +256,11 @@ private:
       if (ts && f) return ts->metrics(fontOf(*f, role)).lineHeight;
       return s.px(16);
     };
-    const int32_t padX = s.px(kPadX), gestureW = s.px(kGestureWidth);
-    const int32_t descX = padX + gestureW + s.px(kColumnGap), descW = std::max(s.px(80), width - descX - padX);
+    // KB.help2: too narrow for both columns, each gesture goes above its description (one column).
+    const int32_t padX = s.px(kPadX);
+    stacked_ = width < s.px(2.0f * kPadX + kGestureWidth + kColumnGap + kMinDescWidth);
+    const int32_t gestureW = stacked_ ? std::max(s.px(80), width - 2 * padX) : s.px(kGestureWidth);
+    const int32_t descX = stacked_ ? padX : padX + gestureW + s.px(kColumnGap), descW = std::max(s.px(80), width - descX - padX);
     const int32_t lhSmall = lineHeight(FontRoleId::Small), lhBody = lineHeight(FontRoleId::Body), lhTitle = lineHeight(FontRoleId::Title);
     const int32_t capH = lhSmall + s.px(4), capPad = s.px(kCapPadX), capGap = s.px(kCapGap), rowH = capH + s.px(kLineGap);
     const int32_t space = std::max(1, measure(FontRoleId::Small, "n n") - measure(FontRoleId::Small, "nn"));
@@ -332,8 +336,9 @@ private:
           i = j;
         }
         const int32_t gestureBottom = e.gesture.empty() ? y : gy + capH;
-        // The description column: the title on the first gesture line, the text wrapped under it.
-        int32_t dy = y;
+        // The description column: the title on the first gesture line, the text wrapped under it (one column: under
+        // the gesture).
+        int32_t dy = stacked_ && !e.gesture.empty() ? gestureBottom + s.px(4) : y;
         texts_.push_back({{descX, dy, descW, capH}, e.title, FontRoleId::BodyStrong, Tone::Primary, false});
         dy += capH + s.px(1);
         wrapText(e.text, descW, [&](std::string_view v) { return measure(FontRoleId::Body, v); }, [&](std::string_view line) {
@@ -354,6 +359,7 @@ private:
   mutable std::vector<Block> blocks_;
   mutable std::vector<int32_t> sectionY_;
   mutable int32_t width_ = -1, height_ = 0;
+  mutable bool stacked_ = false;
   mutable float scale_ = 0.0f;
   mutable FontId font_ = kNoFont;
   mutable TextSystem* text_ = nullptr;
@@ -362,7 +368,7 @@ private:
 // The section list on the left: a click scrolls to that section; the section at the top of the view is marked.
 class HelpRail : public Control, private ScrollView::Dependent {
 public:
-  HelpRail(RollHelpPopover& owner, ScrollView& view, const HelpContent& content)
+  HelpRail(RollHelpWindow& owner, ScrollView& view, const HelpContent& content)
       : Control("sections"), owner_(owner), view_(&view), content_(content) {
     setFocusable(false);
     view.linkDependent(this);
@@ -394,11 +400,12 @@ public:
   void paint(PaintContext& ctx) override {
     const Theme* th = ctx.res.theme;
     const ThemeFonts* f = ctx.res.uiFonts;
-    if (!th || !f) return;
+    if (!th || !f || rect().w <= 0) return;  // (a narrow window shows no list: an empty rect)
     const size_t cur = current();
     const int32_t pad = ctx.scale.px(8);
     for (size_t i = 0; i < content_.sections().size(); ++i) {
       const IRect row = rowRect(i);
+      if (row.bottom() > rect().bottom()) break;  // a short window: the rows that fit
       const bool on = i == cur;
       if (on) paint::box(ctx.dl, row, ctx.scale.exact(3.0f), th->selection.fill, 0);
       else if (static_cast<int32_t>(i) == hover_) paint::box(ctx.dl, row, ctx.scale.exact(3.0f), th->control.fillHover, 0);
@@ -434,54 +441,60 @@ public:
 private:
   int32_t rowAt(Vec2 p) const noexcept {
     for (size_t i = 0; i < content_.sections().size(); ++i)
-      if (rowRect(i).contains(p)) return static_cast<int32_t>(i);
+      if (const IRect row = rowRect(i); row.contains(p) && row.bottom() <= rect().bottom()) return static_cast<int32_t>(i);
     return -1;
   }
   void onScrollChanged() noexcept override { markDirty(); }
   void onScrollViewGone() noexcept override { view_ = nullptr; }
 
-  RollHelpPopover& owner_;
+  RollHelpWindow& owner_;
   ScrollView* view_;
   const HelpContent& content_;
   int32_t hover_ = -1;
 };
 
-// --- the popover ----------------------------------------------------------------------------------------
+// --- the window -----------------------------------------------------------------------------------------
 
-RollHelpPopover::RollHelpPopover(const Keymap& keymap, const Widget* within, int32_t left)
-    : Popover("roll-help"), within_(within), left_(left) {
-  setLayout(LayoutKind::Custom);
-  title_ = &add<Label>("title", "Piano Roll Help: pitch, bends and just intonation", FontRoleId::Title, TextTone::Primary);
-  hint_ = &add<Label>("hint", "Esc or a click outside closes", FontRoleId::Small, TextTone::Secondary, TextAlign::Right);
-  title_->setHittable(false);
-  hint_->setHittable(false);
+RollHelpWindow::RollHelpWindow(const Keymap& keymap)
+    : FloatingWindow("roll-help", "Piano Roll Help: pitch, bends and just intonation", kMinW, kMinH) {
   scroll_ = &add<ScrollView>("scroll", false, true);
   content_ = &scroll_->add<HelpContent>(keymap);
   rail_ = &add<HelpRail>(*this, *scroll_, *content_);
   bar_ = &add<Scrollbar>("vscroll", *scroll_, Scrollbar::Axis::Vertical);
+  closeButton().setTooltip("Close the help (? or Esc in it closes it too)");
 }
 
-size_t RollHelpPopover::sectionCount() const noexcept { return content_->sections().size(); }
-size_t RollHelpPopover::entryCount(size_t section) const noexcept {
+size_t RollHelpWindow::sectionCount() const noexcept { return content_->sections().size(); }
+size_t RollHelpWindow::entryCount(size_t section) const noexcept {
   return section < content_->sections().size() ? content_->sections()[section].entries.size() : 0;
 }
-std::string RollHelpPopover::gestureText(size_t section, size_t entry) const {
+std::string RollHelpWindow::gestureText(size_t section, size_t entry) const {
   if (entry >= entryCount(section)) return {};
   return helpGestureText(content_->sections()[section].entries[entry].gesture);
 }
 
-void RollHelpPopover::showSection(size_t section) {
+void RollHelpWindow::showSection(size_t section) {
+  if (section >= sectionCount()) return;
   const int32_t y = content_->sectionY(section);
-  if (y < 0) return;
+  if (y < 0 || scroll_->rect().w <= 0) {  // not laid out yet: at the next layout
+    pendingSection_ = static_cast<int32_t>(section);
+    invalidateArrange();
+    return;
+  }
   const float sc = tree() ? tree()->scale() : 1.0f;
   scrollToY(std::max(0, y - static_cast<int32_t>(std::lround(kPadTop * sc))));
 }
-int32_t RollHelpPopover::scrollY() const noexcept { return scroll_->scrollY(); }
-int32_t RollHelpPopover::maxScrollY() const noexcept { return std::max(0, scroll_->contentSize().h - scroll_->rect().h); }
-void RollHelpPopover::scrollToY(int32_t y) { scroll_->scrollTo(0, y); }
+size_t RollHelpWindow::currentSection() const noexcept {
+  return pendingSection_ >= 0 ? static_cast<size_t>(pendingSection_) : rail_->current();
+}
+int32_t RollHelpWindow::scrollY() const noexcept { return scroll_->scrollY(); }
+int32_t RollHelpWindow::maxScrollY() const noexcept { return std::max(0, scroll_->contentSize().h - scroll_->rect().h); }
+void RollHelpWindow::scrollToY(int32_t y) { scroll_->scrollTo(0, y); }
+bool RollHelpWindow::sectionListShown() const noexcept { return rail_->rect().w > 0; }
+bool RollHelpWindow::singleColumn() const noexcept { return content_->stacked(); }
 
 namespace {
-constexpr float kFrame = 10.0f, kGap = 8.0f, kMargin = 8.0f, kScrollbarFallback = 10.0f;
+constexpr float kFrame = 10.0f, kGap = 8.0f, kScrollbarFallback = 10.0f;
 
 float scrollbarWidth(const UiTree* tree) {
   const PaintResources* res = tree ? tree->resources() : nullptr;
@@ -489,36 +502,29 @@ float scrollbarWidth(const UiTree* tree) {
 }
 }  // namespace
 
-// As wide as kWidth and as tall as the text needs, both capped by the room over the panels (`within`).
-ISize RollHelpPopover::contentExtent(ISize viewport) const {
-  const UiScale s(tree() ? tree()->scale() : 1.0f);
-  const int32_t right = within_ ? std::min(viewport.w, within_->rect().right()) : viewport.w;
-  const int32_t roomW = right - left_ - s.px(kMargin);
-  const int32_t roomH = (within_ ? std::min(viewport.h, within_->rect().h) : viewport.h) - 2 * s.px(kMargin);
-  const int32_t w = std::max(s.px(360), std::min(s.px(kWidth), roomW));
-  const int32_t contentW = w - 2 * s.px(kFrame) - s.px(kRailWidth) - s.px(kGap) - s.px(scrollbarWidth(tree()));
-  const int32_t chrome = 2 * s.px(kFrame) + s.px(kHeaderHeight) + s.px(kGap);
-  const int32_t wanted = chrome + content_->heightFor(contentW);
-  return {w, std::max(s.px(160), std::min({wanted, s.px(kMaxHeight), roomH}))};
-}
-
-void RollHelpPopover::arrange(LayoutPass& pass) {
-  const IRect r = rect();
-  const int32_t fr = pass.px(kFrame), gap = pass.px(kGap), head = pass.px(kHeaderHeight), rail = pass.px(kRailWidth);
-  const int32_t sb = pass.px(scrollbarWidth(tree()));
-  const int32_t innerW = std::max(0, r.w - 2 * fr);
-  const int32_t hintW = std::min(innerW / 3, pass.px(220));
-  pass.place(*title_, {r.x + fr, r.y + fr, innerW - hintW, head});
-  pass.place(*hint_, {r.x + fr + innerW - hintW, r.y + fr, hintW, head});
-  const int32_t by = r.y + fr + head + gap, bh = std::max(0, r.bottom() - fr - by);
-  pass.place(*rail_, {r.x + fr, by, rail, bh});
-  const int32_t sx = r.x + fr + rail + gap;
-  const int32_t sw = std::max(0, r.right() - fr - sb - sx);
+// Under the title bar: the section list (when the window is wide and tall enough for all of it), the text, its
+// scrollbar.
+void RollHelpWindow::arrangeBody(LayoutPass& pass, const IRect& body) {
+  const int32_t fr = pass.px(kFrame), gap = pass.px(kGap), sb = pass.px(scrollbarWidth(tree()));
+  const int32_t by = body.y + gap, bh = std::max(0, body.bottom() - fr - by);
+  const bool list = body.w >= pass.px(kNarrow) && bh >= static_cast<int32_t>(sectionCount()) * pass.px(kRailRow);
+  const int32_t railW = list ? pass.px(kRailWidth) : 0;
+  pass.place(*rail_, {body.x + fr, by, railW, list ? bh : 0});
+  const int32_t sx = body.x + fr + (list ? railW + gap : 0);
+  const int32_t sw = std::max(0, body.right() - fr - sb - sx);
   pass.place(*scroll_, {sx, by, sw, bh});
+  if (pendingSection_ >= 0 && sw > 0) {  // (showSection before the first layout, a reopened window)
+    // After the scroll view is laid out (it clamps to the content it knows): it re-places its content.
+    const size_t s = static_cast<size_t>(pendingSection_);
+    pendingSection_ = -1;
+    scroll_->scrollTo(0, std::max(0, content_->sectionY(s) - pass.px(kPadTop)));
+    pass.place(*scroll_, {sx, by, sw, bh});
+  }
   pass.place(*bar_, {sx + sw, by, sb, bh});
 }
 
-bool RollHelpPopover::onKey(const KeyEvent& e) {
+// With the focus (a click in the window): the arrows, Page Up / Down, Home and End scroll; Esc closes.
+bool RollHelpWindow::onKey(const KeyEvent& e) {
   if (!e.down) return false;
   const UiScale s(tree() ? tree()->scale() : 1.0f);
   const int32_t page = std::max(s.px(40), scroll_->rect().h - s.px(40));
@@ -529,44 +535,72 @@ bool RollHelpPopover::onKey(const KeyEvent& e) {
   else if (e.key == key::kPageUp) y -= page;
   else if (e.key == key::kHome) y = 0;
   else if (e.key == key::kEnd) y = maxScrollY();
-  else return Popover::onKey(e);  // Esc closes
+  else return FloatingWindow::onKey(e);  // Esc closes
   scrollToY(y);
   return true;
 }
 
-// The panel takes every press and wheel notch over it (nothing under it scrolls or is clicked through).
-bool RollHelpPopover::onPointer(const PointerEvent& e) { return e.type == PointerType::Wheel || Popover::onPointer(e); }
-
-InfoText RollHelpPopover::info() const {
-  return {"Piano Roll Help", "Every control and command for pitch work in the note editor. Click a section on the left to jump "
-                             "to it; the mouse wheel, the arrow keys and Page Up / Down scroll. Keys are shown as they are "
-                             "bound in the current keymap. Esc or a click outside closes."};
+InfoText RollHelpWindow::info() const {
+  return {"Piano Roll Help", "Every control and command for pitch work in the note editor; the roll works as usual while "
+                             "it is open. Click a section on the left to jump to it; the mouse wheel scrolls (and, after a "
+                             "click in the window, the arrow keys and Page Up / Down). Drag the title to move the window, "
+                             "an edge or corner to resize it. Keys are shown as they are bound in the current keymap. "
+                             "\xC3\x97, ? or Esc (in the window) closes."};
 }
 
-RollHelpPopover* openRollHelpPopover(const Widget& from) {
-  OverlayLayer* layer = OverlayLayer::of(from);
-  return layer ? dynamic_cast<RollHelpPopover*>(layer->top()) : nullptr;
-}
-
-RollHelpPopover* toggleRollHelp(Widget& from, ViewContext& ctx, const IRect& over, std::function<void()> onClosed) {
+RollHelpWindow* openRollHelpWindow(const Widget& from) {
   OverlayLayer* layer = OverlayLayer::of(from);
   if (!layer) return nullptr;
-  if (RollHelpPopover* open = openRollHelpPopover(from)) {
+  for (size_t i = layer->childCount(); i-- > 0;)  // (menus opened later sit above it)
+    if (auto* w = dynamic_cast<RollHelpWindow*>(&layer->child(i)); w && layer->isOpen(*w)) return w;
+  return nullptr;
+}
+
+RollHelpWindow* toggleRollHelp(Widget& from, ViewContext& ctx, const IRect& over, std::function<void()> onClosed) {
+  OverlayLayer* layer = OverlayLayer::of(from);
+  if (!layer) return nullptr;
+  if (RollHelpWindow* open = openRollHelpWindow(from)) {
     layer->close(*open);
     return nullptr;
   }
   UiTree* tree = layer->tree();
-  const Widget* body = tree ? tree->find("main/body") : nullptr;  // L17: kept off the control bar and the status bar
-  OverlayOptions o;
-  // Its bottom-left corner on the roll's (`over`), growing upwards over the roll and, when it is taller, the panels
-  // above: AtPoint flips a popup that does not fit below the point to above it.
-  o.anchor = OverlayLayer::anchorRect(from, {over.x, over.bottom(), 0, 0});
-  auto pop = std::make_unique<RollHelpPopover>(ctx.keymap(), body, o.anchor.x);
-  RollHelpPopover* raw = pop.get();
-  o.placement = Placement::AtPoint;
-  o.within = body;
-  o.onClosed = std::move(onClosed);
-  layer->open(std::move(pop), std::move(o));
+  const float sc = tree ? tree->scale() : 1.0f;
+  RollHelpView& view = ctx.rollHelpView();
+  FloatingWindow::Geometry g{view.x, view.y, view.w, view.h};
+  if (g.w <= 0.0f || g.h <= 0.0f) {
+    // The first time: its bottom-left corner on the note area's, growing upwards over the roll (and the panels above
+    // when it is taller), inside the panels (L17: off the control bar and the status bar).
+    const IRect a = OverlayLayer::anchorRect(from, over);
+    const Widget* bodyW = tree ? tree->find("main/body") : nullptr;
+    const IRect body = bodyW ? bodyW->rect() : layer->rect();
+    const float margin = 8.0f;
+    const float left = static_cast<float>(std::max(a.x, body.x)) / sc;
+    g.w = std::max(RollHelpWindow::kMinW, std::min(RollHelpWindow::kWidth, static_cast<float>(body.right()) / sc - left - margin));
+    g.h = std::max(RollHelpWindow::kMinH, std::min(RollHelpWindow::kHeight, static_cast<float>(body.h) / sc - 2.0f * margin));
+    g.x = std::max(0.0f, std::min(left, static_cast<float>(body.right()) / sc - g.w));
+    g.y = std::max(static_cast<float>(body.y) / sc + margin, std::min(static_cast<float>(a.bottom()) / sc, static_cast<float>(body.bottom()) / sc) - g.h);
+  }
+  auto win = std::make_unique<RollHelpWindow>(ctx.keymap());
+  RollHelpWindow* raw = win.get();
+  raw->setGeometry(g);
+  raw->showSection(std::min<size_t>(view.section, raw->sectionCount() - 1));
+  // The session keeps where the user left it and the section it showed (ViewContext::rollHelpView).
+  ViewContext* c = &ctx;
+  raw->onGeometry = [c](FloatingWindow& w) {
+    const FloatingWindow::Geometry& now = w.geometry();
+    RollHelpView& v = c->rollHelpView();
+    v.x = now.x, v.y = now.y, v.w = now.w, v.h = now.h;
+  };
+  OverlayOptions o = FloatingWindow::floatingOptions(g, sc);
+  o.onClosed = [c, raw, onClosed = std::move(onClosed)] {
+    RollHelpView& v = c->rollHelpView();
+    v.open = false;
+    v.section = static_cast<uint32_t>(raw->currentSection());  // (raw is destroyed at the next frame, not before)
+    if (onClosed) onClosed();
+  };
+  layer->open(std::move(win), std::move(o));
+  view.open = true;
+  view.x = g.x, view.y = g.y, view.w = g.w, view.h = g.h;
   return raw;
 }
 

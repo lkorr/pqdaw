@@ -36,6 +36,7 @@ enum class Placement : uint8_t {
   Below,    // under the anchor, left-aligned (flips above when there is no room)
   Right,    // to the right of the anchor, top-aligned (submenus; flips to the left)
   AtPoint,  // top-left at anchor.x, anchor.y (context menus; shifted to stay inside)
+  Free,     // top-left at anchor.x, anchor.y, clamped inside, never flipped (floating windows, KB.help2)
 };
 
 struct OverlayOptions {
@@ -185,6 +186,69 @@ public:
   void paint(PaintContext& ctx) override;
   bool onKey(const KeyEvent& e) override;
   bool onPointer(const PointerEvent& e) override;  // presses inside are consumed (never reach the layer)
+};
+
+// --- floating window ------------------------------------------------------------------------------------
+// KB.help2: a movable, resizable window over the app, in the overlay layer, while the app under it works as if it
+// were not there. Open it with floatingOptions(): no dismiss on an outside press, no focus taken, Placement::Free; so
+// presses and keys outside it reach what is under them (menus opened later go over it). A press inside focuses it;
+// with the focus, Esc closes it (Popover).
+//   title bar   its title and × (closes); dragging the title moves the window, kept wholly inside the layer.
+//   edges       a press within kEdge of an edge resizes from that edge, near a corner (kGrip) from the corner (the
+//               bottom-right one has a grip); at least the minimum size, inside the layer.
+// Place and size are logical px (top-left from the layer's top-left), the owner's view state: `onGeometry` runs at
+// the end of each move / resize. The layer keeps the window on screen when it shrinks (Placement::Free clamps the
+// place, the size is capped at the layer's). Subclasses lay out their content in arrangeBody (under the title bar).
+// CPU: nothing runs while idle; a drag re-places one popup per move.
+class FloatingWindow : public Popover {
+public:
+  static constexpr float kTitleH = 26.0f, kEdge = 5.0f, kGrip = 14.0f;  // logical px
+  struct Geometry {
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;  // logical px
+    bool operator==(const Geometry&) const = default;
+  };
+
+  FloatingWindow(std::string name, std::string title, float minW, float minH);
+  const std::string& title() const noexcept { return title_; }
+  void setTitle(std::string t);
+  float minWidth() const noexcept { return minW_; }
+  float minHeight() const noexcept { return minH_; }
+  // The place and size asked for (logical px; shown clamped to the layer). setGeometry re-places the window (no
+  // onGeometry); at the end of a gesture the geometry is what is shown.
+  const Geometry& geometry() const noexcept { return geo_; }
+  void setGeometry(const Geometry& g);
+  std::function<void(FloatingWindow&)> onGeometry;
+  // Options that open it at `g` as a floating window (`scale`: the tree's).
+  static OverlayOptions floatingOptions(const Geometry& g, float scale);
+  // The × button; the content area under the title bar (device px, from the last layout).
+  Button& closeButton() const noexcept { return *close_; }
+  IRect body() const noexcept;
+  bool moving() const noexcept { return drag_ == kMove; }
+  bool resizing() const noexcept { return drag_ != 0 && drag_ != kMove; }
+
+  ISize contentExtent(ISize viewport) const override;
+  void arrange(LayoutPass& pass) final;
+  void paint(PaintContext& ctx) override;
+  void paintOver(PaintContext& ctx) override;  // the bottom-right grip
+  bool onPointer(const PointerEvent& e) override;
+  void onCaptureLost() override;
+  Cursor cursorAt(Vec2 p) const override;
+
+protected:
+  // Place the content inside `body` (device px).
+  virtual void arrangeBody(LayoutPass& /*pass*/, const IRect& /*body*/) {}
+
+private:
+  enum : uint8_t { kLeft = 1, kRight = 2, kTop = 4, kBottom = 8, kMove = 16 };
+  uint8_t zoneAt(Vec2 p) const noexcept;
+  void place(const IRect& device);  // re-places in the layer (device px) and keeps geo_ in logical px
+  std::string title_;
+  float minW_, minH_;
+  Geometry geo_;
+  Button* close_ = nullptr;
+  uint8_t drag_ = 0;
+  Vec2 press_{0.0f, 0.0f};
+  IRect pressRect_{};
 };
 
 }  // namespace pq::ui

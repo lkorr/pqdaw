@@ -221,6 +221,17 @@ struct ViewPrefs {
   bool operator==(const ViewPrefs&) const = default;
 };
 
+// KB.help2: the piano roll's help window as the session last had it (views/src/piano_roll/roll_help.h): open or not,
+// its place over the main window and size (logical px from the window's top-left; w, h 0: not placed yet, the first
+// opening places it over the roll) and the section it showed. Session view state: not saved with the project (the help
+// is not part of it), not undoable.
+struct RollHelpView {
+  bool open = false;
+  float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+  uint32_t section = 0;
+  bool operator==(const RollHelpView&) const = default;
+};
+
 class ViewContext {
 public:
   // A new default project (doc::makeDefaultProject). `transport` must outlive the context.
@@ -369,6 +380,9 @@ public:
   // Ctrl+V pastes a fresh copy). One per session, shared by every project patch view (the main one, group panels).
   void setBlockClipboard(doc::BlockSet blocks) { blockClipboard_ = std::move(blocks); }
   const doc::BlockSet& blockClipboard() const noexcept { return blockClipboard_; }
+  // KB.help2: the piano roll's help window, per session (RollHelpView).
+  RollHelpView& rollHelpView() noexcept { return rollHelp_; }
+  const RollHelpView& rollHelpView() const noexcept { return rollHelp_; }
   // T4.7: where the modulated knobs' live rings read their sweeps (the playback link; null: no rings move). Must
   // outlive its use. Notifies kModulation.
   void setModulationSource(ModulationSource* source);
@@ -803,6 +817,7 @@ private:
   RenderEditPort* renderEdits_ = nullptr;  // FZ.4
   const doc::DeviceLibrary* devices_ = nullptr;
   doc::BlockSet blockClipboard_;  // GU.2
+  RollHelpView rollHelp_;         // KB.help2
   ModulationSource* modulation_ = nullptr;
   std::unique_ptr<devices::AnalysisHub> analysis_;  // TX.spectrum
   double sampleRate_ = 48000.0;                       // EQ.4

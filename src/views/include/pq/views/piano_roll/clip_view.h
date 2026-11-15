@@ -80,10 +80,11 @@ public:
   void setFold(bool on);
   bool scaleHighlight() const noexcept;
   void setScaleHighlight(bool on);
-  // KB.help: the help panel (the `?` button left of Fold / Scale, at the right end of the clip box's title bar: the
+  // KB.help: the help window (the `?` button left of Fold / Scale, at the right end of the clip box's title bar: the
   // keys' gutter has no room for a third button; roll_help.h): every control of the note editor, its
-  // text a table (roll_help_content.cpp), its keys read from the loaded keymap. toggleHelp() is the button's click:
-  // opens it over the roll, or closes it; returns whether it is open now.
+  // text a table (roll_help_content.cpp), its keys read from the loaded keymap. KB.help2: a floating window over the
+  // main window that the roll keeps working under. toggleHelp() is the button's click: opens it (where the session
+  // last had it), or closes it; returns whether it is open now.
   bool toggleHelp();
   bool helpOpen() const;
   bool showChance() const noexcept;

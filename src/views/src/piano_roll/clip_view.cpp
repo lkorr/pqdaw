@@ -34,15 +34,16 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   macroKeys_ = &add<MacroKeyLabels>(s);
   macroOverlay_->setVisible(false);
   macroKeys_->setVisible(false);
-  // KB.help: the help panel over the roll. A press outside the open panel (this button included) closes it, so a
-  // second click on `?` closes; the button is lit while the panel is open. After the clip box (drawn over its title).
+  // KB.help: the help window. KB.help2: a floating window the roll keeps working under; `?` opens and closes it, lit
+  // while it is open. After the clip box (drawn over its title).
   help_ = &add<Toggle>("help", "?", ToggleStyle::Accent);
   help_->setFocusable(false);
   help_->setTooltip("Help: every control of the note editor");
-  help_->setInfo("Piano Roll Help", "Opens a panel that lists every control and command of the note editor: notes, bends "
+  help_->setInfo("Piano Roll Help", "Opens a window that lists every control and command of the note editor: notes, bends "
                                     "between notes, pitch curves, vibrato, detune, harmonics, tuning and just "
-                                    "intonation (tuning a chord to JI and back, warps, walking, proportions). Click "
-                                    "again, press Esc or click outside to close it.");
+                                    "intonation (tuning a chord to JI and back, warps, walking, proportions). It stays "
+                                    "open while you work in the roll: drag its title to move it, an edge to resize it. "
+                                    "Click again or its \xC3\x97 to close it.");
   help_->onToggle = [this](bool) {
     // The click took the focus away from the roll (the button holds none): give it to the note area, so the roll has
     // its keys again when the panel closes (the overlay restores the focus it found).
@@ -240,13 +241,16 @@ bool ClipView::scaleHighlight() const noexcept { return state_->scaleHighlight()
 void ClipView::setScaleHighlight(bool on) { state_->setScaleHighlight(on); }
 bool ClipView::toggleHelp() {
   const IRect over = state_->noteArea ? state_->noteArea->rect() : rect();
-  const roll::RollHelpPopover* open = roll::toggleRollHelp(*this, ctx_, over, [this, alive = std::weak_ptr<bool>(alive_)] {
-    if (alive.lock()) help_->setOn(false);
+  const roll::RollHelpWindow* open = roll::toggleRollHelp(*this, ctx_, over, [this, alive = std::weak_ptr<bool>(alive_)] {
+    if (!alive.lock()) return;
+    help_->setOn(false);
+    // Closed from inside (× or Esc there): the focus it had goes back to the roll.
+    if (UiTree* t = tree(); t && !t->focus() && state_->noteArea) t->setFocus(state_->noteArea);
   });
   help_->setOn(open != nullptr);
   return open != nullptr;
 }
-bool ClipView::helpOpen() const { return roll::openRollHelpPopover(*this) != nullptr; }
+bool ClipView::helpOpen() const { return roll::openRollHelpWindow(*this) != nullptr; }
 bool ClipView::showChance() const noexcept { return state_->showChance(); }
 void ClipView::setShowChance(bool on) { state_->setShowChance(on); }
 roll::RowLayout ClipView::scaleLayout() const noexcept { return state_->scaleLayout(); }

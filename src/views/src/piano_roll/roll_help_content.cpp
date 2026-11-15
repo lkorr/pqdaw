@@ -1,5 +1,5 @@
-// KB.help: the text of the piano roll's help panel. DATA ONLY: sections -> entries {gesture, title, text}; the widget
-// (roll_help.cpp) lays out whatever is here. To change what the panel says, edit this table and nothing else.
+// KB.help: the text of the piano roll's help window. DATA ONLY: sections -> entries {gesture, title, text}; the widget
+// (roll_help.cpp) lays out whatever is here. To change what the window says, edit this table and nothing else.
 //
 // Rules for an entry:
 //   - gesture: `{action.id}` for a key the keymap owns (the panel shows the key that action has in the LOADED keymap,
@@ -412,7 +412,8 @@ constexpr HelpEntry kMacro[] = {
 
 constexpr HelpSection kSections[] = {
     {"Quick start",
-     "Just intonation in five moves. Each is described in full in its section below.",
+     "Just intonation in five moves. Each is described in full in its section below. This window stays open while you "
+     "try them in the roll: drag its title to move it, an edge to resize it; \xC3\x97 or ? closes it.",
      kQuickStart},
     {"Notes",
      "Every note is a line along its pitch. The rows are the steps of the clip's tuning; the grid divides the time.",
