@@ -810,3 +810,7 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, rebased on e26b9c8a): `build.ps1 -Affected -Slow` 87/87 (pqmeter_diff skipped), ship pq_bench_dsp links; render test: vibrato within 1.0 ¢, warped chord within 0.16 ¢ of the effective curve, interpreter == JIT. Orchestrator looked at the warp, ratio and vibrato goldens.
 - Perf / CPU-efficiency check (release pq_bench_piano_roll, median): full paint ~3000 notes 0.48 → 0.47 ms; 2,000 curved notes 2.15 → 0.92 ms (227k → 69k vertices); 64 vibrating notes ≤ 128 events per block (limit 256).
 - Notes/blockers: Q303–Q306. Not used in the live app by anyone yet.
+
+## 2026-11-15 · M7 rework -Full · main (ae88e5db)
+- Verified: `build.ps1 -Full` (default + slow) 86/86 passed, pq_tests_pqmeter_diff skipped (the user's in-progress PQ Meter tree; PQ_METER_SOURCE_DIR pointed nowhere). The user's release pqdaw.exe rebuilt from ae88e5db.
+- Notes/blockers: T7.15 review of the rework running (the first attempt died at a usage limit with no output).
