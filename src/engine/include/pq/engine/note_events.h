@@ -158,10 +158,12 @@ struct EventList {
 
 // Preallocated event storage for one block. Construct off the audio thread; push/clear are RT-safe.
 //
-// Overflow (a full buffer) never loses a note-off (M1 review M7: a lost NoteOff is a stuck note):
-//   1. an incoming NoteOn is dropped;
-//   2. otherwise the newest NoteOn in the buffer is dropped to make room (its note never starts);
-//   3. an incoming expression event (Pitch, Gain, Sync) is dropped; otherwise the newest one in the buffer is dropped;
+// Overflow (a full buffer) never loses a note-off (M1 review M7: a lost NoteOff is a stuck note), and expression goes
+// before notes (T7.16b, M7 review L16 / old L4: a note that never starts is worse than a missed glide step):
+//   1. an incoming expression event (Pitch, Gain, Sync) is dropped;
+//   2. an incoming NoteOn takes the place of the newest expression event in the buffer, else it is dropped;
+//   3. an incoming off takes the place of the newest expression event, else of the newest NoteOn (its note never
+//      starts);
 //   4. the buffer holds only offs (NoteOff / AllNotesOff / AllSoundOff) and another off arrives: if an All* event at
 //      or before its frame already covers it, it is redundant (no NoteOn is in the block, so every held note is
 //      released by it); otherwise the newest event and the incoming one are merged into one AllNotesOff (AllSoundOff
@@ -180,16 +182,16 @@ public:
       return false;
     }
     if (list_.count >= capacity_) {
-      if (e.kind == NoteEventKind::NoteOn) {
+      if (expression(e.kind)) {
         ++dropped_;
         return false;
       }
-      if (removeNewest(false)) {
+      if (removeNewest(true)) {
         ++dropped_;
-      } else if (expression(e.kind)) {
+      } else if (e.kind == NoteEventKind::NoteOn) {
         ++dropped_;
         return false;
-      } else if (removeNewest(true)) {
+      } else if (removeNewest(false)) {
         ++dropped_;
       } else {
         mergeOff(e);

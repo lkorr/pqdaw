@@ -56,6 +56,10 @@
 // are not chased by a swap (an edit under the playhead does not start notes).
 // Capacities: maxSoundingPerTrack (beyond it the earliest-ending note is cut early, counted) and maxEventsPerTrack
 // per block (a note-on is only emitted while room remains for every pending note-off; dropped ons are counted).
+// T7.16b (review M18): note-ons go before expression — when the list is too full for a note-on and its off, the
+// block's newest plain curve events (Pitch / Gain ramps and steps; never a Sync, a conditional Gain or a retune) are
+// dropped to make room (counted as droppedCurveEvents; they heal at the next breakpoint, see "Note curves"). Only
+// when no such event is left is the note-on dropped.
 //
 // ---- Chase (T7.3, Q278: every note, as Live's "Chase MIDI Notes") ------------------------------------------------
 // When the playhead JUMPS into the middle of a note while playing — Play / Record at a tick, Continue, a Locate while
@@ -90,7 +94,8 @@
 // curves changed (or it is retuned and has a pitch curve: the retune carries the curve's value) it is
 // re-synchronised at frame 0: a step to the new curve's value at the playhead (the block's first sample, as a
 // fractional tick) and a ramp to the next breakpoint. A new tempo map re-sends the running ramps with their new
-// lengths. Capacity: curve events are only emitted while room remains for every pending note-off; a dropped one
+// lengths. Capacity: curve events are only emitted while room remains for every pending note-off, and a note-on
+// (with its off) displaces the block's newest ones (T7.16b, see "Capacities"); a dropped one
 // (TimelineStats::droppedCurveEvents) leaves the voice on its last ramp until the next breakpoint, whose ramp ends on
 // the right value again. More than 4 · maxEventsPerTrack breakpoints and note-ons on one track in one block: the
 // rest of the block's breakpoints collapse into one step per note at the block's last frame (bounded audio-thread
@@ -436,6 +441,9 @@ private:
   void computeSnapshot() noexcept;
   // Event output.
   bool pushEvent(uint32_t track, const NoteEvent& e) noexcept;
+  // T7.16b: drops this block's newest plain curve events until a note-on and every pending off (`sounding` + 1) fit.
+  // False: not enough of them (the note-on is dropped). Out of line: only on overflow.
+  bool roomForNoteOn(uint32_t track, uint32_t sounding) noexcept;
   void emitOff(uint32_t track, const Sounding& s, uint32_t frame) noexcept;
   static void setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept;  // ratio, harmonic, tuning identity
   // T7.1: note curves (see "Note curves").

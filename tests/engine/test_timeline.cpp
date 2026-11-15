@@ -1847,6 +1847,61 @@ TEST_CASE("timeline: curves at the event-volume limit — dropped curve events a
   }
 }
 
+TEST_CASE("timeline (T7.16b, review M18): note-ons take precedence over curve events in a full event list — the block's newest curve events make room") {
+  // A dense vibrato on every sounding note: pitch and gain breakpoints every 100 samples (as above), so in 512-frame
+  // blocks the track's list is full of curve events (only the room for the pending offs is kept).
+  const Ticks step = kPpq / 240;
+  auto dense = [&](uint32_t id, Ticks start, Ticks length, float hz) {
+    std::vector<e::CurvePoint> p, g;
+    for (Ticks k = 0; k * step < length; ++k) {
+      p.push_back({k * step, k % 2 == 0 ? -20.0f : 20.0f});
+      g.push_back({k * step, k % 2 == 0 ? 0.8f : 1.0f});
+    }
+    return curved(note(id, start, length, hz), p, g);
+  };
+  SUBCASE("16 notes start together in the middle of the storm of 48 vibratos") {
+    std::vector<e::NoteDesc> notes;
+    for (uint32_t i = 0; i < 48; ++i) notes.push_back(dense(1 + i, 0, 2 * kPpq, 100.0f + static_cast<float>(i)));
+    for (uint32_t i = 0; i < 16; ++i) notes.push_back(note(100 + i, kPpq, kPpq, 300.0f + static_cast<float>(i)));
+    CurveRig r(kGate, config(), 64, e::voiceGroupsFor(64));
+    REQUIRE(config().maxEventsPerTrack == 512);
+    REQUIRE(r.tl.publishSequence(image({{1, {clip(1, 0, 2 * kBar, notes)}}})));
+    r.tl.apply(cmd(e::TransportCommandKind::Play, 0));
+    uint32_t maxEvents = 0;
+    r.run(2 * kQ + 4096, 512, [](int64_t) {}, [&](int64_t, uint32_t) { maxEvents = std::max(maxEvents, r.tl.events(0).count); });
+    const e::TimelineStats& st = r.tl.stats();
+    CHECK(st.droppedCurveEvents > 0);  // the storm is still more than the list holds
+    CHECK(st.droppedNoteOns == 0);     // … but every note starts
+    CHECK(st.noteOns == 64);
+    CHECK(st.noteOffs == 64);
+    uint32_t onsAtQuarter = 0;
+    for (const Ev& ev : r.events)
+      if (ev.e.kind == e::NoteEventKind::NoteOn) onsAtQuarter += ev.t == kQ ? 1u : 0u;
+    CHECK(onsAtQuarter == 16);  // on time, at their sample
+    CHECK(maxEvents <= 512);
+    CHECK(r.ve.stats().droppedEvents == 0);
+    CHECK(r.ve.liveVoices() == 0);
+    CHECK(r.rtViolations == 0);
+    MESSAGE("curve events " << st.curveEvents << ", dropped " << st.droppedCurveEvents);
+  }
+  SUBCASE("a locate into 48 vibratos chases every one of them into a small list") {
+    e::TimelineConfig cfg = config();
+    cfg.maxEventsPerTrack = 128;  // each chased note: its on, a pitch and a gain ramp, and room for its off
+    std::vector<e::NoteDesc> notes;
+    for (uint32_t i = 0; i < 48; ++i) notes.push_back(dense(1 + i, 0, 4 * kPpq, 100.0f + static_cast<float>(i)));
+    CurveRig r(kGate, cfg, 64, e::voiceGroupsFor(64));
+    REQUIRE(r.tl.publishSequence(image({{1, {clip(1, 0, 2 * kBar, notes)}}})));
+    r.tl.apply(cmd(e::TransportCommandKind::Play, kPpq));
+    r.run(3 * kQ + 4096, 512, [](int64_t) {}, [](int64_t, uint32_t) {});
+    const e::TimelineStats& st = r.tl.stats();
+    CHECK(st.chasedNotes == 48);
+    CHECK(st.droppedNoteOns == 0);
+    CHECK(st.noteOffs == 48);
+    CHECK(r.ve.liveVoices() == 0);
+    CHECK(r.rtViolations == 0);
+  }
+}
+
 TEST_CASE("timeline: RtScope-clean with curved notes on 8 tracks under loops, swaps, locates and tempo changes (T7.1)") {
   auto descs = [](uint32_t variant) {
     std::vector<e::TrackSequenceDesc> tracks(8);

@@ -685,7 +685,8 @@ __declspec(noinline) void Timeline::chase(uint32_t track, Ticks t, uint32_t fram
       ++stats_.chanceSkips;
       continue;
     }
-    if (eventCount_[track] + 2 + ts.heapSize > cfg_.maxEventsPerTrack || ts.heapSize >= cfg_.maxSoundingPerTrack) {
+    if ((eventCount_[track] + 2 + ts.heapSize > cfg_.maxEventsPerTrack && !roomForNoteOn(track, ts.heapSize)) ||
+        ts.heapSize >= cfg_.maxSoundingPerTrack) {
       ++stats_.droppedNoteOns;
       continue;
     }
@@ -898,6 +899,31 @@ void Timeline::resyncCurvesToTempo() noexcept {  // RT-safe
   }
 }
 
+__declspec(noinline) bool Timeline::roomForNoteOn(uint32_t track, uint32_t sounding) noexcept {  // RT-safe
+  const uint32_t cap = cfg_.maxEventsPerTrack;
+  uint32_t& n = eventCount_[track];
+  if (n + 2 + sounding <= cap) return true;
+  const uint32_t need = n + 2 + sounding - cap;
+  NoteEvent* ev = events_.data() + static_cast<size_t>(track) * cap;
+  auto plain = [](const NoteEvent& e) noexcept {
+    return (e.kind == NoteEventKind::Pitch || e.kind == NoteEventKind::Gain) && e.flags == 0;
+  };
+  // The `need` newest plain curve events lie in [first, n); every plain one there goes.
+  uint32_t first = n, found = 0;
+  for (uint32_t i = n; i-- > 0 && found < need;)
+    if (plain(ev[i])) {
+      ++found;
+      first = i;
+    }
+  if (found < need) return false;
+  uint32_t w = first;
+  for (uint32_t i = first; i < n; ++i)
+    if (!plain(ev[i])) ev[w++] = ev[i];
+  n = w;
+  stats_.droppedCurveEvents += need;
+  return true;
+}
+
 bool Timeline::pushEvent(uint32_t track, const NoteEvent& e) noexcept {  // RT-safe
   uint32_t& n = eventCount_[track];
   if (n >= cfg_.maxEventsPerTrack) return false;
@@ -996,7 +1022,8 @@ void Timeline::playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint
     const NoteRandom r = noteRandom(seq_->seed() ^ (playbackPass_ * 0x9E3779B97F4A7C15ull), n.id, c.pass);
     if (!(r.chance < n.chance)) {
       ++stats_.chanceSkips;
-    } else if (eventCount_[track] + 2 + tr.heapSize > cap) {  // keep room for every pending note-off
+    } else if (eventCount_[track] + 2 + tr.heapSize > cap && !roomForNoteOn(track, tr.heapSize)) {
+      // keep room for every pending note-off (T7.16b: curve events of the block make room first)
       ++stats_.droppedNoteOns;
     } else {
       const uint32_t f = frameOf(on);

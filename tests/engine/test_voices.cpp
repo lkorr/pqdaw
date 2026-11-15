@@ -198,8 +198,9 @@ TEST_CASE("voices: EventBuffer keeps frame order (stable); overflow drops note-o
     CHECK(l.events[2].noteId == 2);
     CHECK(l.events[3].noteId == 3);
   }
-  CHECK(b.push(eng::notePitch(20, 2, 200.0f)));  // the last note-on (id 2) makes room for a pitch event
-  CHECK(b.push(eng::noteOff(30, 6)));            // no note-on left: the pitch event makes room for an off
+  // T7.16b (M7 review L16): an incoming expression event never displaces a note-on; it is dropped.
+  CHECK_FALSE(b.push(eng::notePitch(20, 2, 200.0f)));
+  CHECK(b.push(eng::noteOff(30, 6)));  // no expression in the buffer: the last note-on (id 2) makes room for an off
   CHECK(b.dropped() == 4);
   CHECK(b.list().events[3].noteId == 6);
   CHECK(b.list().events[3].kind == eng::NoteEventKind::NoteOff);
@@ -220,6 +221,23 @@ TEST_CASE("voices: EventBuffer keeps frame order (stable); overflow drops note-o
           b.clear();
           b.push(eng::noteOn(1, 9, 1.0f, 1.0f));
         }) == 0);
+}
+
+TEST_CASE("voices (T7.16b, M7 review L16): a full EventBuffer drops expression before notes") {
+  eng::EventBuffer b(2);
+  CHECK(b.push(eng::notePitch(0, 1, 100.0f)));
+  CHECK(b.push(eng::noteGain(1, 1, 0.5f)));
+  CHECK(b.push(eng::noteOn(2, 2, 100.0f, 1.0f)));  // the newest expression event (the gain) makes room
+  CHECK(b.dropped() == 1);
+  REQUIRE(b.size() == 2);
+  CHECK(b.list().events[0].kind == eng::NoteEventKind::Pitch);
+  CHECK(b.list().events[1].kind == eng::NoteEventKind::NoteOn);
+  CHECK_FALSE(b.push(eng::notePitch(3, 2, 200.0f)));  // expression never displaces a note
+  CHECK(b.push(eng::noteOff(4, 1)));                  // an off: the remaining pitch event goes first
+  REQUIRE(b.size() == 2);
+  CHECK(b.list().events[0].kind == eng::NoteEventKind::NoteOn);
+  CHECK(b.list().events[1].kind == eng::NoteEventKind::NoteOff);
+  CHECK(b.dropped() == 3);
 }
 
 TEST_CASE("voices: an event at frame k takes effect at sample k, for every block size") {
