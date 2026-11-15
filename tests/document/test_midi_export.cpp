@@ -328,3 +328,38 @@ TEST_CASE("midi export: errors — no clips, an audio clip, a bad division") {
   CHECK_FALSE(exportMidi(d.doc(), std::vector<ClipRef>{ClipRef{d.keys, ClipId{999999}}}).ok());
   CHECK(exportMidi(d.doc(), std::vector<ClipRef>{c}).ok());
 }
+
+TEST_CASE("midi export (T7.16b, review M21): notes whose pitch moves (vibrato, a drawn curve) are counted and the status line says they lost it") {
+  Doc d;
+  const Note plain = d.note(0, kPpq, tuning::PitchId::fromDegree(0));  // stays put
+  const Note wobbly = d.note(kPpq, kPpq, tuning::PitchId::fromDegree(4));
+  const Note drawn = d.note(2 * kPpq, kPpq, tuning::PitchId::fromDegree(7));
+  const ClipRef c = d.clip(d.keys, 0, kBar, {plain, wobbly, drawn});
+  auto at = [&](Ticks start) {
+    const Track& t = d.track(d.keys);
+    const NoteClip& nc = *t.clips[static_cast<size_t>(findClipIndex(t, c.clip))].clip;
+    for (const Note& n : nc.notes)
+      if (n.start == start) return keyOf(n);
+    FAIL("no note at " << start);
+    return NoteKey{};
+  };
+  NoteVibrato v;
+  v.depthCents = 30.0f;
+  v.rate = 6.0f;
+  const ops::NoteVibratoEdit edits[] = {{at(wobbly.start), v}};
+  d.edit(ops::setNoteVibrato(d.doc(), c, edits));
+  d.edit(ops::setNoteCurve(d.doc(), c, at(drawn.start), {{0, 0.0f, 0.0f, {}}, {kPpq / 2, 50.0f, 0.0f, {}}}));
+  for (const MidiExportMode mode : {MidiExportMode::Mpe, MidiExportMode::TwelveEdo, MidiExportMode::Degrees}) {
+    CAPTURE(static_cast<int>(mode));
+    const Exported e = exportAndRead(d.doc(), {c}, mode);
+    CHECK(e.report.notes == 3);
+    CHECK(e.report.curvesDropped == 2);
+    const std::string s = describeMidiExport(e.report, mode);
+    CHECK(s.find("2 notes lost their pitch movement") != std::string::npos);
+  }
+  // Without curves: nothing is said.
+  const ClipRef still = d.clip(d.keys, 2 * kBar, kBar, {d.note(0, kPpq, tuning::PitchId::fromDegree(0))});
+  const Exported e = exportAndRead(d.doc(), {still}, MidiExportMode::Mpe);
+  CHECK(e.report.curvesDropped == 0);
+  CHECK(describeMidiExport(e.report, MidiExportMode::Mpe).find("pitch movement") == std::string::npos);
+}

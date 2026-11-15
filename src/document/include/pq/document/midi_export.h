@@ -23,7 +23,9 @@
 //                      degrees takes the nearest one (counted: `snapped`). Round-trips with a Keys import (MF.2) into a
 //                      track of the same tuning (key map Tuning / Consecutive).
 //   A note whose key falls outside 0 … 127 (or a degree no .kbm key plays) is skipped (`outOfRange`); an unresolvable
-//   pitch (pitch_resolve.h: a missing anchor, a cycle of anchors) is skipped (`unresolved`).
+//   pitch (pitch_resolve.h: a missing anchor, a cycle of anchors) is skipped (`unresolved`). A note whose pitch moves
+//   (vibrato, a drawn curve, bends, a JI warp's glide) is written at its start pitch and counted (`curvesDropped`; the
+//   status line says so): the movement is not exported (T7.16b).
 //
 // Cost: linear in the played notes plus a sort (O(n log n)); MPE allocation O(n · 15). Not RT code (UI thread).
 
@@ -59,6 +61,10 @@ struct ExportMidiReport {
   uint32_t outOfRange = 0;   // skipped: key outside 0 … 127 (Degrees: a degree no key plays)
   uint32_t snapped = 0;      // Degrees: notes between degrees, moved to the nearest
   uint32_t stolen = 0;       // MPE: notes ended early because > 15 sounded at once
+  // T7.16b (review M21): notes written whose pitch moves while they sound (a vibrato, a drawn curve, a bend, a JI
+  // warp's glide: doc::effectiveNoteCurve not flat): the file has their start pitch only. Pitch-bend export: not yet
+  // (QUESTIONS, T7.16b).
+  uint32_t curvesDropped = 0;
   uint32_t maxVoices = 0;    // MPE: the most notes sounding at once (before stealing)
   uint32_t tempoEvents = 0;
   uint32_t signatures = 0;
@@ -70,7 +76,7 @@ struct ExportMidiReport {
 Result<std::vector<uint8_t>> exportMidi(const Project& p, std::span<const ClipRef> clips,
                                         const ExportMidiOptions& options = {}, ExportMidiReport* report = nullptr);
 
-// The status line's text for a finished export: "Exported 12 notes (MPE)" plus what was skipped / stolen.
+// The status line's text for a finished export: "Exported 12 notes (MPE)" plus what was skipped / stolen / lost.
 std::string describeMidiExport(const ExportMidiReport& r, MidiExportMode mode);
 
 }  // namespace pq::doc

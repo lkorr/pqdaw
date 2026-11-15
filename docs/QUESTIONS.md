@@ -1850,3 +1850,11 @@ Choice: group ticks are ticks from the anchor's start (negative for a member tha
 off, quantizing or start-resizing any other note leaves the warps where they are in the clip, and the builders that
 change the anchor (promotion, Is Harmonic on a member) shift them. Moving the anchor ALONE in time moves the warps with
 it. No file migration (no compatibility: an old file's warps are read as anchor-relative). Status: decided (reversible).
+## Q?-T7.16b-a · 2026-11-15 · T7.16b · MIDI export of pitch movement (vibrato, curves, bends, JI glides)
+Context: review M21. `exportMidi` writes every note at its start pitch; since T7.16b it counts the notes whose pitch
+moves (`ExportMidiReport::curvesDropped`, doc::effectiveNoteCurve not flat) and the status line says "N notes lost their
+pitch movement". Options: (a) leave it reported; (b) MPE mode: per-channel pitch bend following each note's effective
+curve (flattened as the lowering does, kJiPitchTolerance, ≤ 1000 events / s per note), so MPE synths play the glides and
+vibratos; 12edo / Degrees modes keep the static note (one channel cannot bend notes independently); (c) also write
+a vibrato as CC1 + a fixed-rate hint. Choice: (a) for now (full pitch-bend export was out of T7.16b's scope); (b) is
+the natural next step and needs no new data. Status: open.

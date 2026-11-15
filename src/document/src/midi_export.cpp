@@ -13,6 +13,7 @@
 #include "pq/document/clip_time.h"
 #include "pq/document/input_map.h"
 #include "pq/document/midi_file.h"
+#include "pq/document/note_bend.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/tuning/scala.h"
 
@@ -147,6 +148,18 @@ Result<std::vector<uint8_t>> exportMidi(const Project& p, std::span<const ClipRe
     const NoteClip& c = *found[ci].f.clip;
     const ClipPitches& cp = found[ci].pitches;
     const DegreeKeys degreeKeys(opt.mode == MidiExportMode::Degrees ? cp.tuning.def : nullptr);
+    // T7.16b (review M21): which notes move while they sound (only notes with a curve record or a warp are looked at).
+    std::optional<NotePitchIndex> index;
+    auto moves = [&](const Note& n) {
+      const auto w = std::lower_bound(cp.warped.begin(), cp.warped.end(), n.id,
+                                      [](const NoteWarpState& x, NoteId id) { return x.note < id; });
+      const bool warped = w != cp.warped.end() && w->note == n.id;
+      if (!warped && findNoteCurves(c, n.id) == nullptr) return false;
+      if (!index) index.emplace(cp);
+      for (const Breakpoint& b : effectiveNoteCurve(c, n, *index, 0.5))
+        if (std::fabs(b.value) > 0.5f) return true;
+      return false;
+    };
     std::vector<const Note*> order;  // the clip's note order (start, id) = cp.notes' order
     order.reserve(c.notes.size());
     for (const Note& n : c.notes) order.push_back(&n);
@@ -197,6 +210,7 @@ Result<std::vector<uint8_t>> exportMidi(const Project& p, std::span<const ClipRe
         o.velocity = clamp7(n.velocity, 1);
         o.release = clamp7(n.releaseVelocity, 0);
         notes.push_back(o);
+        if (moves(n)) ++rep.curvesDropped;
       }
     });
   }
@@ -309,6 +323,9 @@ std::string describeMidiExport(const ExportMidiReport& r, MidiExportMode mode) {
   add(r.outOfRange, "out of the key range");
   add(r.unresolved, "without a pitch");
   add(r.skippedSignatures, "signatures MIDI cannot hold");
+  if (r.curvesDropped)  // T7.16b (review M21)
+    s += ", " + std::to_string(r.curvesDropped) + (r.curvesDropped == 1 ? " note lost its" : " notes lost their") +
+         " pitch movement (vibrato, curves, bends, JI glides: written at the start pitch)";
   return s;
 }
 
