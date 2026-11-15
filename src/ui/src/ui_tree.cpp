@@ -673,8 +673,8 @@ KeyResult UiTree::dispatchKey(const KeyEvent& e) {
   }
   // T6.4: with a text field focused, the keys it left (non-printable, unhandled) to the key listener before every scope.
   if (keyListener_ && e.down && typing && keyListener_->onTreeKey(e)) return KeyResult::Widget;
-  // Key releases and lone modifier presses are never chords.
-  if (!e.down || isModifierKey(e.key)) return KeyResult::Unhandled;
+  // Key releases and lone modifier presses are never chords (T8.1: Caps Lock pressed with Ctrl / Alt / Super is one).
+  if (!e.down || !isChordKey(e.key, e.mods)) return KeyResult::Unhandled;
   KeyResult r = KeyResult::Unhandled;
   // 2. Modal scopes (macro mode, modal dialogs), newest first.
   for (uint32_t i = modalCount_; i-- > 0;)

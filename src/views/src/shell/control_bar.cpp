@@ -561,8 +561,18 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
     return doc::SetLoop{l};
   });
 
-  spring(*this);
-
+  // T8.1: macro mode's lamp (click = action macro.toggle, Ctrl+CapsLock; lit with the layer while on) sits at the right
+  // end of the spring between the transport and the right-hand group, so nothing else moves (the spring keeps room for it).
+  {
+    auto& sp = add<Widget>();  // unnamed: transparent in widget paths
+    sp.setLayout(LayoutKind::Row);
+    sp.setAlign(Align::End, Align::Center);
+    sp.setWidth(Length::flex(1, 100));
+    sp.setHeight(Length::fixed(20));
+    sp.setHittable(false);
+    macroLamp_ = &sized(sp.add<MacroLamp>(ctx_), 96, 17);
+    gap(sp, 4);
+  }
   // Right: the selected track's tuning (tunings are first-class: a chip like the header's), the CPU meter and the grid.
   auto& chip = sized(add<TuningChip>("tuning", ctx_), 132, 17);
   chip.setInfo("Tuning of the Selected Track", "The named tuning the selected track plays in (with no track selected: the "
@@ -597,6 +607,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
   docSub_ = ctx_.subscribe([this](const doc::StoreEvent&) {
     refreshDocument();
     refreshKeyboard();  // KB.1: the keyboard track's tuning may have changed size
+    macroLamp_->refresh();  // T8.1: the open clip's tuning names the tempered layer
   });
   viewSub_ = ctx_.observe([this](uint32_t what) {
     if (what & view_change::kTransport) {
@@ -605,6 +616,7 @@ ControlBar::ControlBar(ViewContext& ctx) : Widget("control-bar"), ctx_(ctx) {
     }
     if (what & view_change::kGrid) grid_->setText(ctx_.gridLabel());
     if (what & (view_change::kSelection | view_change::kProject)) refreshTuningChip();
+    if (what & (view_change::kMacro | view_change::kDetailClip | view_change::kLayout)) macroLamp_->refresh();  // T8.1
     // KB.2: the layout follows the keyboard track's live clip (the clip view's clip, the start marker / playhead).
     if (what & (view_change::kSelection | view_change::kProject | view_change::kKeyboard | view_change::kDetailClip |
                 view_change::kLayout | view_change::kTransport))

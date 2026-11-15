@@ -16,6 +16,7 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
 #include "pq/ui/widget.h"
+#include "../macro/macro_overlay.h"  // T8.1: MacroLamp
 #include "pq/views/view_context.h"
 
 namespace pq::views::shell {
@@ -136,6 +137,7 @@ private:
   TransportButton* keyboard_ = nullptr;      // KB.1: the computer MIDI keyboard
   TransportButton* keyboardMenu_ = nullptr;  // KB.1: ▾
   ui::Label* keyboardReadout_ = nullptr;     // KB.1: equave and velocity while on
+  MacroLamp* macroLamp_ = nullptr;           // T8.1: macro mode's switch ("MACRO · 12-EDO" while on)
   struct KeyboardShown {  // KB.1: what the button shows (refreshKeyboard skips an unchanged state)
     ComputerKeyboard::Layout layout;
     ComputerKeyboard::ScaleMode mode;

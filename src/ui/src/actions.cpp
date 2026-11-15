@@ -56,7 +56,7 @@ ScopeId Keymap::findScope(std::string_view name) const noexcept {
 
 Status Keymap::bind(ScopeId scope, Chord chord, std::string actionId) {
   if (scope >= scopes_.size()) return Error{ErrorCode::InvalidArgument, "unknown keymap scope", {}};
-  if (isModifierKey(chord.key) || chord.key == key::kUnknown)
+  if (!isChordKey(chord.key, chord.mods) || chord.key == key::kUnknown)
     return Error{ErrorCode::InvalidArgument, "chord '" + formatChord(chord) + "' has no non-modifier key", {}};
   chord.mods = static_cast<Mods>(chord.mods & mod::kChordMask);
   for (const Binding& b : bindings_)

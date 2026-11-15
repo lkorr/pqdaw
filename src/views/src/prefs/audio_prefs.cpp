@@ -12,6 +12,7 @@
 #include "pq/ui/theme.h"
 #include "pq/views/audio_clip/audio_clip_view.h"  // T6.8: kWarpModeNames
 #include "pq/views/browser/library.h"
+#include "pq/views/macro/macro_preset.h"  // T8.1: the MIDI tab's macro preset chooser
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
@@ -738,6 +739,26 @@ void PreferencesWindow::buildMidiTab(Widget& body) {
     auto& note = page.add<Label>(name, text, FontRoleId::Small, TextTone::Secondary);
     note.setHeight(Length::fixed(kRowHeight));
     note.setInfo("Computer MIDI Keyboard", info);
+  }
+  // T8.1: macro mode's key preset (assets/macro/*.json).
+  if (ctx_) {
+    section(page, "macro-section", "Macro Mode");
+    auto& r = row(page, "macro-preset", "Key Preset");
+    macroPresets_ = listMacroPresets();
+    macroPreset_ = &r.add<Dropdown>("chooser", macroPresets_, 0);
+    macroPreset_->setWidth(Length::fixed(140));
+    macroPreset_->setInfo("Macro Mode Key Preset",
+                          "Which keys macro mode uses (Ctrl+CapsLock, or the MACRO lamp in the control bar). trainer: the "
+                          "number row multiplies by 2/1 3/2 5/4 7/4 11/8 13/8 \xE2\x80\xA6" " and Q to P by their reciprocals. "
+                          "ahk-numpad: the AHK macro's keypad slots. The presets are files in assets/macro.");
+    macroPreset_->onChange = [this](int32_t i) {
+      if (i < 0 || static_cast<size_t>(i) >= macroPresets_.size()) return;
+      ViewPrefs p = ctx_->viewPrefs();
+      p.macroPreset = macroPresets_[static_cast<size_t>(i)];
+      ctx_->setViewPrefs(p);
+    };
+    const auto at = std::find(macroPresets_.begin(), macroPresets_.end(), ctx_->viewPrefs().macroPreset);
+    if (at != macroPresets_.end()) macroPreset_->setIndex(static_cast<int32_t>(at - macroPresets_.begin()));
   }
   updateMidi();
 }

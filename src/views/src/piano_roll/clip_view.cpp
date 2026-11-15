@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <cmath>
 
+#include "../macro/macro_overlay.h"
 #include "pq/ui/theme.h"
+#include "pq/views/macro/macro_mode.h"
 #include "roll_help.h"
 #include "roll_widgets.h"
 
@@ -27,6 +29,11 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   s.noteArea = &add<roll::NoteAreaWidget>(s);
   s.laneHeaderView = &add<roll::LaneHeaderWidget>(s);
   s.laneView = &add<roll::VelocityLaneWidget>(s);
+  // T8.1: macro mode's overlays (over the note area and the keys; hidden while the mode is off).
+  macroOverlay_ = &add<MacroOverlay>(s);
+  macroKeys_ = &add<MacroKeyLabels>(s);
+  macroOverlay_->setVisible(false);
+  macroKeys_->setVisible(false);
   // KB.help: the help panel over the roll. A press outside the open panel (this button included) closes it, so a
   // second click on `?` closes; the button is lit while the panel is open. After the clip box (drawn over its title).
   help_ = &add<Toggle>("help", "?", ToggleStyle::Accent);
@@ -79,9 +86,12 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   (void)s.refresh();
   setVisible(s.hasClip());
   s.markAllDirty();
+  ctx_.macro().attachRoll(state_.get());  // T8.1
+  refreshMacro();
 }
 
 ClipView::~ClipView() {
+  ctx_.macro().detachRoll(state_.get());
   for (std::string_view id : ViewContext::kPianoRollActions) ctx_.clearViewAction(id);
 }
 
@@ -92,13 +102,28 @@ void ClipView::onDocument() {
       if (s.keysView) s.keysView->markDirty();
       if (s.noteArea) s.noteArea->markDirty();
       if (s.boxPanel) s.boxPanel->refresh();
+      ctx_.macro().rollChanged();
       return;
     }
     setVisible(s.hasClip());
     s.markAllDirty();
     s.refreshHoverPart();  // the notes moved under a still pointer (an arrow key, undo)
   }
+  ctx_.macro().rollChanged();  // T8.1: the anchor note may be gone, the tuning another
 }
+
+// T8.1: the overlays are shown only while macro mode takes keys; they repaint whole (a key press, not a frame).
+void ClipView::refreshMacro() {
+  const bool on = ctx_.macro().active();
+  macroOverlay_->setVisible(on);
+  macroKeys_->setVisible(on);
+  if (on) {
+    macroOverlay_->markDirty();
+    macroKeys_->markDirty();
+  }
+}
+
+IRect ClipView::macroCursorRect() const { return macroOverlay_->cursorRect(); }
 
 void ClipView::onView(uint32_t bits) {
   RollState& s = *state_;
@@ -114,6 +139,10 @@ void ClipView::onView(uint32_t bits) {
   }
   if ((bits & view_change::kTool) && s.cornerPanel) s.cornerPanel->markDirty();
   if (bits & view_change::kTool) s.refreshHoverPart();  // Draw Mode shows no edges
+  // T8.1: macro mode follows the clip shown, the grid and the pointer (each a branch while it is off).
+  if (bits & (view_change::kDetailClip | view_change::kGrid | view_change::kLayout)) ctx_.macro().rollChanged();
+  if (bits & view_change::kInfo) (void)ctx_.macro().sync();
+  if (bits & view_change::kMacro) refreshMacro();
 }
 
 void ClipView::paint(PaintContext& ctx) {
@@ -144,6 +173,8 @@ void ClipView::arrange(LayoutPass& pass) {
   pass.place(*s.rulerView, {gx, r.y, gw, rulerH});
   pass.place(*s.keysView, {ex, notesY, std::min(keysW, ew), notesH});
   pass.place(*s.noteArea, {gx, notesY, gw, notesH});
+  pass.place(*macroKeys_, {ex, notesY, std::min(keysW, ew), notesH});  // T8.1
+  pass.place(*macroOverlay_, {gx, notesY, gw, notesH});
   s.laneHeaderView->setVisible(laneH > 0);
   s.laneView->setVisible(laneH > 0);
   if (laneH > 0) {

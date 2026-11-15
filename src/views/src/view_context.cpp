@@ -20,6 +20,7 @@
 #include "pq/views/browser/library.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
+#include "pq/views/macro/macro_mode.h"
 #include "pq/views/panel/group_responses.h"
 #include "pq/views/render_edit_port.h"
 #include "pq/views/sample_analysis.h"
@@ -81,6 +82,8 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   storeListener_ = store_.subscribe([this](const doc::StoreEvent& e) { onStoreEvent(e); });
   // Scopes of the default keymap, interned now so views can set them before the keymap file is applied.
   for (std::string_view s : {"arrangement", "pianoroll"}) (void)scope(s);
+  macro_ = std::make_unique<MacroMode>(*this);  // T8.1 (before the actions: macro.toggle)
+  macro_->onChanged = [this] { notify(view_change::kMacro); };
   registerGlobalActions();
   declareViewActions(kPianoRollActions);
   declareViewActions(kMosWheelActions);
@@ -1457,6 +1460,14 @@ std::optional<ViewContext::ShowAutomationRequest> ViewContext::takeShowAutomatio
   return r;
 }
 
+void ViewContext::setViewPrefs(const ViewPrefs& p) {
+  if (p == viewPrefs_) return;
+  const bool preset = p.macroPreset != viewPrefs_.macroPreset;
+  viewPrefs_ = p;
+  if (preset) (void)macro_->usePreset(viewPrefs_.macroPreset);  // T8.1
+  if (viewPrefsListener_) viewPrefsListener_(viewPrefs_);
+}
+
 // --- actions --------------------------------------------------------------------------------------------
 
 void ViewContext::declareViewActions(std::span<const std::string_view> ids) {
@@ -1534,7 +1545,10 @@ void ViewContext::registerGlobalActions() {
   add("keyboard.toggleComputerMidi", [this] { computerKeyboard_.setActive(!computerKeyboard_.active()); });
   computerKeyboard_.layoutSource = [this] { return keyboardLayout(); };  // KB.1
   computerKeyboard_.onNotes = [this](const ComputerKeyboard&) { notify(view_change::kLiveNotes); };  // TU.2
+  // T8.1: macro mode (Ctrl+CapsLock; the control bar's MACRO lamp).
+  add("macro.toggle", [this] { macro_->toggle(); });
   computerKeyboard_.onChanged = [this](const ComputerKeyboard& k) {
+    if (k.active()) macro_->setOn(false);  // T8.1: one key listener at a time
     notify(view_change::kKeyboard);  // KB.1: the control bar's button
     if (!k.active()) {
       setStatus("Computer MIDI Keyboard off");

@@ -1754,3 +1754,30 @@ else the one active last, else the newest); "Remove JI Group" replaced "Unlock F
 (exact ratio / Cents) instead of leaving them anchored. Warps exist in the model and play, but the roll does not draw
 them yet (members are drawn at their JI pitch) and has no gesture for Tune to JI, walk, proportions or warps.
 Status: open until T7.14.
+
+## Q?-T8.1-a · 2026-11-14 · T8.1 · `Ctrl+CapsLock` toggles the OS Caps Lock state too
+Context: the window gets the key after the OS has flipped the lock (the AHK macro suppresses it with a system hook; SDL
+has no such hook). Key codes do not change with the lock, so macro keys and shortcuts are unaffected; text typed into a
+field afterwards is upper case until Caps Lock is pressed again.
+Options: (a) leave it; (b) the app sends a synthetic Caps Lock press after the chord (Windows `SendInput`; an `app`
+change, platform code); (c) another default chord.
+Choice: (a): the chord is SPEC §6.2's and is data in the keymap. Status: open.
+
+## Q?-T8.1-b · 2026-11-14 · T8.1 · What the tempered layer measures with, and what Up / Down mean
+Choice: an EDO maps the composed interval by a val applied to its monzo (the patent val; a preset may list another
+per EDO, SPEC §6.2), so every key always moves the same number of steps and 81/80 is 0 steps in 31-EDO; a MOS / scale
+takes the degree nearest to anchor + interval. The error shown is composed − mapped (15/8 in 12-EDO: −11.7 ¢).
+`s` / `d`: rows on top of the composed interval in the tempered layer (kept until the note is placed, as the trainer's
+cursor), the next harmonic where the placed note would be a Ratio (of the group's fundamental when it has one, else of
+the cursor's own denominator: the roll's Up / Down on a Ratio note). SPEC §6.2's separate "scale steps" layer (keys =
+generator / L / s / period moves) is not built: the task's two layers replace it. Status: decided (reversible).
+
+## Q?-T8.1-c · 2026-11-14 · T8.1 · The JI layer from a free cursor (no anchor note)
+Context: an exact ratio needs something to hang on. Choice: with nothing composed `` ` `` places a Degree note on the
+row and makes it the anchor (the root); with a composition, the note is a Ratio over the reference when the row is the
+reference in some equave, else a Cents note at the exact pitch (labelled "exact"). Status: decided (reversible).
+
+## Q?-T8.1-d · 2026-11-14 · T8.1 · No "preview" preference exists in the roll
+Context: the task says the cursor audition should respect the roll's preview preference; the roll has none (clicks and
+draws always audition through `RollState::audition`). Choice: every cursor pitch move and every placement auditions
+through the same call. A preview switch would be one flag checked there. Status: open.

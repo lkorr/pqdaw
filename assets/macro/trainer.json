@@ -1,0 +1,40 @@
+{
+  "name": "Trainer",
+  "about": "SPEC 6.2's table = the JI composition trainer's default keys (data/keyMappings.js): the number row multiplies by a prime harmonic, the row under it by its reciprocal.",
+  "primeLimit": 13,
+  "intervals": [
+    {"key": "1", "ratio": "2/1"},
+    {"key": "2", "ratio": "3/2"},
+    {"key": "3", "ratio": "5/4"},
+    {"key": "4", "ratio": "7/4"},
+    {"key": "5", "ratio": "11/8"},
+    {"key": "6", "ratio": "13/8"},
+    {"key": "7", "ratio": "17/16"},
+    {"key": "8", "ratio": "19/16"},
+    {"key": "9", "ratio": "23/16"},
+    {"key": "0", "ratio": "29/16"},
+    {"key": "q", "ratio": "1/2"},
+    {"key": "w", "ratio": "2/3"},
+    {"key": "e", "ratio": "4/5"},
+    {"key": "r", "ratio": "4/7"},
+    {"key": "t", "ratio": "8/11"},
+    {"key": "y", "ratio": "8/13"},
+    {"key": "u", "ratio": "16/17"},
+    {"key": "i", "ratio": "16/19"},
+    {"key": "o", "ratio": "16/23"},
+    {"key": "p", "ratio": "16/29"}
+  ],
+  "keys": {
+    "place": "`",
+    "placeChain": "Tab",
+    "back": "Backspace",
+    "left": "a",
+    "right": "f",
+    "up": "s",
+    "down": "d",
+    "undo": "-",
+    "redo": "=",
+    "layer": "g",
+    "lock": "b"
+  }
+}

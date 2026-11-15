@@ -474,6 +474,59 @@ TEST_CASE("widgets: chords parse and print") {
   CHECK(reg.find("nope") == kNoAction);
 }
 
+// T8.1: Ctrl+CapsLock toggles macro mode (SPEC §6.2): Caps Lock pressed with Ctrl / Alt / Super ends a chord; on its
+// own, or with Shift only, it stays the lock key and is never a chord.
+TEST_CASE("widgets: Caps Lock is a chord key only with Ctrl, Alt or Super") {
+  CHECK(isChordKey(key::kCapsLock, mod::kCtrl));
+  CHECK(isChordKey(key::kCapsLock, mod::kAlt));
+  CHECK(isChordKey(key::kCapsLock, static_cast<Mods>(mod::kCtrl | mod::kShift)));
+  CHECK_FALSE(isChordKey(key::kCapsLock, mod::kNone));
+  CHECK_FALSE(isChordKey(key::kCapsLock, mod::kShift));
+  CHECK_FALSE(isChordKey(key::kLCtrl, mod::kCtrl));
+  CHECK(isChordKey('b', mod::kNone));
+
+  Keymap km;
+  CHECK_FALSE(km.bind(kGlobalScope, Chord{key::kCapsLock, mod::kNone}, "macro.toggle").ok());
+  CHECK_FALSE(km.bind(kGlobalScope, Chord{key::kCapsLock, mod::kShift}, "macro.toggle").ok());
+  REQUIRE(km.bind("global", "Ctrl+CapsLock", "macro.toggle").ok());
+  ActionRegistry reg;
+  int toggles = 0;
+  REQUIRE(reg.add("macro.toggle", [&] { ++toggles; }).ok());
+  struct Listener final : KeyListener {
+    int capsPresses = 0;
+    bool onTreeKey(const KeyEvent& e) override {
+      if (e.down && e.key == key::kCapsLock) ++capsPresses;
+      return false;
+    }
+  } listener;
+  TestDriver d(320, 200);
+  auto& root = d.tree().emplaceRoot<Widget>("root");
+  (void)root;
+  d.tree().setKeymap(&reg, &km);
+  d.tree().setKeyListener(&listener);
+  // Alone (also with the lock state set), with Shift: no chord, nothing runs.
+  CHECK(d.press(Chord{key::kCapsLock, mod::kNone}) == KeyResult::Unhandled);
+  CHECK(d.press(Chord{key::kCapsLock, mod::kCapsLock}) == KeyResult::Unhandled);
+  CHECK(d.press(Chord{key::kCapsLock, mod::kShift}) == KeyResult::Unhandled);
+  CHECK(toggles == 0);
+  // With Ctrl: the binding runs (the lock-state bit is no part of the chord).
+  CHECK(d.press(Chord{key::kCapsLock, mod::kCtrl}) == KeyResult::Action);
+  CHECK(toggles == 1);
+  CHECK(d.press(Chord{key::kCapsLock, static_cast<Mods>(mod::kCtrl | mod::kCapsLock)}) == KeyResult::Action);
+  CHECK(toggles == 2);
+  CHECK(d.press("Ctrl+CapsLock") == KeyResult::Action);
+  CHECK(toggles == 3);
+  // A held chord does not re-fire a toggle; Ctrl+Shift+CapsLock is another (unbound) chord.
+  CHECK(d.press(Chord{key::kCapsLock, mod::kCtrl}, true) == KeyResult::Action);
+  CHECK(toggles == 3);
+  CHECK(d.press(Chord{key::kCapsLock, static_cast<Mods>(mod::kCtrl | mod::kShift)}) == KeyResult::Unhandled);
+  CHECK(toggles == 3);
+  CHECK(listener.capsPresses == 8);  // the key listener still sees every press first
+  // Releases and the other modifiers are no chords, as before.
+  CHECK(d.press(Chord{key::kLCtrl, mod::kCtrl}) == KeyResult::Unhandled);
+  d.tree().setKeyListener(nullptr);
+}
+
 TEST_CASE("widgets: paths and lookup") {
   TestDriver d(400, 300);
   Widget& root = d.setRoot<Widget>();

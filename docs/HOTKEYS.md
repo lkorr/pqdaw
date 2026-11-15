@@ -42,6 +42,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.newReturn` | `Ctrl+Alt+T` | global | Commands for Tracks | implemented (T3.10) |
 | `tuning.openMosWheel` | `Ctrl+Shift+W` | global | — (pqdaw; Q15 provisional) | implemented (T3.14; the MOS wheel for the clip in the clip view, else the project's default tuning (TU.3: it edits the named tuning the clip resolves to); pressed again: closes it, keeping the change) |
 | `app.preferences` | `Ctrl+,` | global | Accessing Menus (Options → Preferences) | implemented (T3.18; the preferences window: Audio tab, and the Library tab (T5.x-library-prefs); pressed again: closes it) |
+| `macro.toggle` | `Ctrl+CapsLock` | global | — (pqdaw; SPEC §6.2) | implemented (T8.1: macro mode, also the control bar's MACRO lamp; Caps Lock pressed with Ctrl / Alt / Super is a chord key, alone it is not) |
 | `mapping.toggleMidiMap` | `Ctrl+M` | global | Key/MIDI Map Commands | M8 |
 | `mapping.toggleKeyMap` | `Ctrl+K` | global | Key/MIDI Map Commands | M8 |
 | `arrangement.zoomToSelection` | `Z` | arrangement | Arrangement View Commands | implemented (T3.8; the time selection, T3.9, else the whole arrangement) |
@@ -326,6 +327,38 @@ letter is a note here, so the shift keys are the navigation cluster.
 
 A release ends the note its press started. A note outside the keyboard's range (equave ±3) plays nothing.
 
+## Macro mode (T8.1, SPEC §6.2; the tree's key listener `views::MacroMode`, not the keymap)
+
+`macro.toggle` (`Ctrl+CapsLock`, or the MACRO lamp in the control bar) switches it. While it is on and a note clip is open
+in the clip view, the keys below belong to it; keys with Ctrl / Alt / Super / Shift, keys its preset does not bind
+(Space), a focused text field and an open menu or popup are not touched. It takes the computer MIDI keyboard's place as
+the key listener: turning one on turns the other off. The keys are data: `assets/macro/<preset>.json`, chosen in
+Preferences → MIDI → Macro Mode (`trainer` = this table, the default; `ahk-numpad` = the AHK macro's keypad slots,
+matched by scancode).
+
+| Keys (preset `trainer`) | Does |
+|---|---|
+| `1 2 3 4 5 6 7 8 9 0` | multiply the composition by 2/1 3/2 5/4 7/4 11/8 13/8 17/16 19/16 23/16 29/16; the cursor moves and is auditioned |
+| `Q W E R T Y U I O P` | multiply by the reciprocals (1/2 2/3 4/5 4/7 …) |
+| `` ` `` | place a note at the cursor (length: the anchor note's, else one grid step), clear the composition, return to the anchor; from a free cursor with nothing composed the new note becomes the anchor |
+| `Tab` | place a note and make it the anchor (chaining) |
+| `Backspace` | clear the composition; with nothing composed, delete the note at the cursor |
+| `A` / `F` | cursor one grid step earlier / later |
+| `S` / `D` | cursor up / down: one row in the tempered layer, the next harmonic where the note would be just |
+| `-` / `=` | macro undo / redo (the last macro step, with its document edit while the document is still as that step left it) |
+| `G` | layer: Tempered ↔ JI |
+| `B` digits `Enter` | "Is Harmonic N" on the anchor note (the next non-digit key also commits; no digits: the last number); `B` on a declared anchor removes it; `S` / `D` then step that series |
+| pointer onto a note, a single selected note | with nothing composed: that note is the anchor, the cursor at its start |
+| click on empty space | a free cursor in that grid cell on that row |
+
+Layers: **Tempered** (default; the lamp shows the tuning) places a Degree note on the tuning's step for the composed
+interval from the anchor: an EDO by its val (the patent val; a preset may list another per EDO), a MOS / scale by the
+nearest degree; the overlay shows the error (3/2 · 5/4 = 15/8 → 11 steps, −11.7 ¢ in 12-EDO). **JI** places an exact
+Ratio anchored to the anchor note. In either layer, when the anchor is a JI note (a Ratio note, or the note declared a
+harmonic) the placed note is a Ratio in that note's group. While macro mode is on in an EDO, the keys show the fewest
+interval keys that reach each row from the anchor (the JI trainer's breadth-first search: prime limit 13, ≤ 6 presses,
+±2 equaves).
+
 ## Metronome and Track Delay (T6.6, handled by the controls, not the keymap)
 
 | Where | Gesture | What |
@@ -361,5 +394,4 @@ A release ends the note its press started. A note outside the keyboard's range (
 - Wiring (T4.7): `view.cycleCables` and `wire.delete` have no default chord (Live has none); the View menu and the badge run them.
 - Computer MIDI keyboard (KB.help, user 2026-11-14): `keyboard.toggleComputerMidi` is a registered action without a default chord (`M` until then; Live's `M`); the control bar's keyboard button runs it.
 - Piano roll (T3.11): `pianoroll.fold` (fold to used notes / scale) and `pianoroll.toggleScale` (scale highlighting) are registered actions without a default chord (Live has none); the clip view's Fold and Scale buttons trigger them.
-- Macro mode toggle `Ctrl+CapsLock` (SPEC §6.2): CapsLock is a lock key, which a keymap chord cannot use as its key (T3.1); M8 handles it in the macro-mode scope.
 - Live shortcuts outside M3–M10 scope (Session View, racks, plug-in windows) are not listed.

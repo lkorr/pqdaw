@@ -1,5 +1,7 @@
 #include "pq/views/view_scenes.h"
 
+#include "pq/views/macro/macro_mode.h"
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -835,6 +837,85 @@ Status setupPianoRollHelpScrolled(Shell& shell) {
   roll::RollHelpPopover* help = openHelpScene(shell);
   if (!help) return Error{ErrorCode::Unknown, "pianoroll-help-scrolled: opening the panel failed", {}};
   help->showSection(4);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// ---- T8.1: macro mode ---------------------------------------------------------------------------------------------
+
+namespace {
+// A macro key as the tree's key listener gets it.
+bool macroKey(Shell& shell, ui::Key k) {
+  ui::KeyEvent e;
+  e.key = k;
+  return shell.context().macro().onTreeKey(e);
+}
+// Quarter notes: the cursor's time step and the length of a note placed from a free cursor.
+void macroSceneGrid(ViewContext& ctx) {
+  GridSpec g;
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 2;
+  ctx.setGrid(g);
+}
+}  // namespace
+
+// The tempered layer in 12-EDO: a C major triad's notes, C selected (the anchor: ringed and outlined), `2` `3` pressed:
+// the cursor on B (15/8 = 11 steps) with the composition and its tempering error beside it, the fewest keys to every
+// row on the keys, the frame and the "MACRO · 12-EDO" tab, the lamp lit in the control bar.
+Status setupPianoRollMacroTempered(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Macro", 14, 8);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-macro-tempered: building the clip failed", {}};
+  macroSceneGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 2 * q, PitchId::fromDegree(0, 0)), scnNote(0, 2 * q, PitchId::fromDegree(4, 0)),
+                                        scnNote(2 * q, 2 * q, PitchId::fromDegree(7, 0))};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
+    return Error{ErrorCode::Unknown, "pianoroll-macro-tempered: addNotes", {}};
+  shell.tree().layoutNow();
+  const doc::Note* c = sceneNote(shell.context(), *sc->view, PitchId::fromDegree(0, 0), 0);
+  if (!c) return Error{ErrorCode::NotFound, "pianoroll-macro-tempered: the anchor", {}};
+  const doc::NoteId id = c->id;
+  sc->view->select(std::span<const doc::NoteId>(&id, 1));
+  MacroMode& m = shell.context().macro();
+  m.setOn(true);
+  if (!m.active() || m.anchorNote() != id) return Error{ErrorCode::Unknown, "pianoroll-macro-tempered: the mode", {}};
+  if (!macroKey(shell, '2') || !macroKey(shell, '3')) return Error{ErrorCode::Unknown, "pianoroll-macro-tempered: the keys", {}};
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The JI layer on a declared series: C is harmonic 4 with 5/4 and 3/2 above it (4:5:6); the 3/2 note is the anchor, the
+// cursor one harmonic up (7) and two grid steps later: "7/6", "just · harmonic 7", the tab "MACRO · JI · harmonic lock".
+Status setupPianoRollMacroJi(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Macro JI", 14, 8);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-macro-ji: building the clip failed", {}};
+  macroSceneGrid(shell.context());
+  doc::DocumentStore& store = shell.context().store();
+  using tuning::PitchId;
+  using tuning::Rational;
+  const Ticks q = kPpq;
+  const auto root = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip,
+                                                      std::vector<doc::Note>{scnNote(0, 4 * q, PitchId::fromDegree(0, 0))}));
+  if (!root || root->notes.empty()) return Error{ErrorCode::Unknown, "pianoroll-macro-ji: the root", {}};
+  const doc::NoteKey rootKey = root->notes[0];
+  const auto on = [&](int64_t n, int64_t d) { return PitchId::fromRatio(Rational(n, d), tuning::AnchorKind::Note, rootKey.id.value); };
+  const auto members = runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip,
+                                                         std::vector<doc::Note>{scnNote(0, 4 * q, on(5, 4)), scnNote(0, 2 * q, on(3, 2))}));
+  if (!members || members->notes.size() != 2) return Error{ErrorCode::Unknown, "pianoroll-macro-ji: the members", {}};
+  if (!runEdit(store, doc::ops::makeJiGroup(*store.current(), store.ids(), sc->clip, rootKey, 4)))
+    return Error{ErrorCode::Unknown, "pianoroll-macro-ji: Is Harmonic 4", {}};
+  shell.tree().layoutNow();
+  const doc::Note* fifth = sceneNote(shell.context(), *sc->view, on(3, 2), 0);
+  if (!fifth) return Error{ErrorCode::NotFound, "pianoroll-macro-ji: the anchor", {}};
+  const doc::NoteId id = fifth->id;
+  sc->view->select(std::span<const doc::NoteId>(&id, 1));
+  MacroMode& m = shell.context().macro();
+  m.setOn(true);
+  m.setLayer(MacroMode::Layer::Ji);
+  if (!m.active() || m.anchorNote() != id) return Error{ErrorCode::Unknown, "pianoroll-macro-ji: the mode", {}};
+  if (!macroKey(shell, 's') || !macroKey(shell, 'f') || !macroKey(shell, 'f')) return Error{ErrorCode::Unknown, "pianoroll-macro-ji: the keys", {}};
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -3538,6 +3619,8 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-vibrato", 1280, 800, setupPianoRollVibrato},
     {"pianoroll-help", 1280, 800, setupPianoRollHelp},                   // KB.help
     {"pianoroll-help-scrolled", 1280, 800, setupPianoRollHelpScrolled},  // KB.help
+    {"pianoroll-macro-tempered", 1280, 800, setupPianoRollMacroTempered},  // T8.1
+    {"pianoroll-macro-ji", 1280, 800, setupPianoRollMacroJi},              // T8.1
     {"circuit-symbols", 1280, 800, setupCircuitSymbols},
     {"circuit", 1280, 800, nullptr, setupCircuit},
     {"circuit-svf", 1280, 800, nullptr, setupCircuitSvf},

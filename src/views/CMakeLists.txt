@@ -7,6 +7,7 @@
 #   include/pq/views/arrangement/  src/arrangement/   arrangement, track headers, automation lanes (T3.8–T3.10, T3.15)
 #   include/pq/views/mixer/        src/mixer/         mixer view (T3.10)
 #   include/pq/views/piano_roll/   src/piano_roll/    clip view / piano roll (T3.11, T3.12)
+#   include/pq/views/macro/        src/macro/         macro mode: keyboard interval entry into the piano roll (T8.1)
 #   include/pq/views/audio_clip/   src/audio_clip/    the audio clip view (T5.6)
 #   include/pq/views/browser/      src/browser/       the browser panel, its data and the preview port (T5.10)
 #   include/pq/views/mos_wheel/    src/mos_wheel/     MOS wheel chart, circle, popover (T3.13, T3.14)
@@ -40,7 +41,7 @@ set(PQ_VIEWS_SOURCES
   src/shell/panels.cpp
   src/shell/default_content.cpp
   src/shell/recover_recordings.cpp)
-foreach(sub arrangement audio_clip browser mixer piano_roll mos_wheel prefs tunings circuit devices device_chain project_patch bug_report meta panel export)
+foreach(sub arrangement audio_clip browser mixer piano_roll macro mos_wheel prefs tunings circuit devices device_chain project_patch bug_report meta panel export)
   include(${CMAKE_CURRENT_SOURCE_DIR}/src/${sub}/sources.cmake OPTIONAL)
   string(TOUPPER ${sub} _sub)
   list(APPEND PQ_VIEWS_SOURCES ${PQ_VIEWS_${_sub}_SOURCES})

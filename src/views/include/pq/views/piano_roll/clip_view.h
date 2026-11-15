@@ -40,6 +40,8 @@ namespace pq::views {
 namespace roll {
 class RollState;
 }
+class MacroOverlay;    // T8.1 (src/macro/macro_overlay.h)
+class MacroKeyLabels;
 
 class ClipView : public ui::Widget {
 public:
@@ -179,16 +181,24 @@ public:
   // A point `frac` of the way through a note where it is drawn (on its row, or along its path). {−1, −1}: none.
   ui::Vec2 notePoint(doc::NoteId id, double frac) const;
 
+  // --- macro mode (T8.1; pq/views/macro/macro_mode.h, ViewContext::macro()) ---
+  // While macro mode is on, the roll shows its cursor, anchor and composition (macro_overlay.h) and the keys show the
+  // fewest keys to each row. The cursor's box as drawn (device px; empty: off, or out of view).
+  ui::IRect macroCursorRect() const;
+
   roll::RollState& state() noexcept { return *state_; }
 
 private:
   void onDocument();
+  void refreshMacro();  // T8.1: the overlays follow the mode (shown only while it is active)
   void onView(uint32_t bits);
 
   ViewContext& ctx_;
   std::unique_ptr<roll::RollState> state_;
   ViewContext::Subscription docSub_, viewSub_;
   ui::Toggle* help_ = nullptr;  // KB.help: `?`; lit while the panel is open
+  MacroOverlay* macroOverlay_ = nullptr;  // T8.1: over the note area
+  MacroKeyLabels* macroKeys_ = nullptr;   // T8.1: over the keys
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);  // the panel's close callback may outlive the view
 };
 

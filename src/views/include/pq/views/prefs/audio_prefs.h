@@ -341,6 +341,7 @@ public:
   // T6.7b: the Record tab's offset box (ms; null without a context).
   ui::DragBox* recordOffsetBox() const noexcept { return recordOffset_; }
   ui::Toggle* autosaveToggle() const noexcept { return autosave_; }  // AS.1
+  ui::Dropdown* macroPresetChooser() const noexcept { return macroPreset_; }  // T8.1 (the MIDI tab)
   // The selected row of the Places list (-1 none).
   int32_t selectedFolder() const noexcept;
   void selectFolder(int32_t row);
@@ -394,6 +395,8 @@ private:
   ui::Widget* recordPage_ = nullptr;
   ui::DragBox* recordOffset_ = nullptr;
   ui::Toggle* autosave_ = nullptr;  // AS.1
+  ui::Dropdown* macroPreset_ = nullptr;      // T8.1: macro mode's key preset (ViewPrefs::macroPreset)
+  std::vector<std::string> macroPresets_;    // the ids in assets/macro, as listed
   ViewContext::Subscription librarySub_;
   uint32_t timer_ = 0;
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

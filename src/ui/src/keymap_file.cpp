@@ -68,7 +68,7 @@ Result<KeymapFile> parseKeymapFile(std::string_view text) {
     auto chord = parseChord(e.keys);
     if (!chord) return keymapError(where + ": chord \"" + e.keys + "\": " + chord.error().message);
     e.chord = *chord;
-    if (isModifierKey(e.chord.key)) return keymapError(where + ": chord \"" + e.keys + "\" has no key");
+    if (!isChordKey(e.chord.key, e.chord.mods)) return keymapError(where + ": chord \"" + e.keys + "\" has no key");
     if (!validStatus(e.status))
       return keymapError(where + ": status \"" + e.status + "\" must be \"implemented\" or \"deferred:M<n>\"");
     const uint64_t k = (uint64_t(e.chord.mods) << 32) | e.chord.key;

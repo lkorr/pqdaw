@@ -46,6 +46,9 @@ enum class Scancode : uint16_t {
   F1 = 58, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,  // 58..69
   Insert = 73, Home = 74, PageUp = 75, Delete = 76, End = 77, PageDown = 78,
   Right = 79, Left = 80, Down = 81, Up = 82,
+  // T8.1: the keypad (macro presets bind its keys by scancode: the key codes change with Num Lock).
+  NumLock = 83, KpDivide = 84, KpMultiply = 85, KpMinus = 86, KpPlus = 87, KpEnter = 88,
+  Kp1 = 89, Kp2, Kp3, Kp4, Kp5, Kp6, Kp7, Kp8, Kp9, Kp0 = 98, KpPeriod = 99,
   LCtrl = 224, LShift = 225, LAlt = 226, LSuper = 227, RCtrl = 228, RShift = 229, RAlt = 230, RSuper = 231,
 };
 
@@ -85,6 +88,12 @@ inline constexpr Key kRSuper = keyFromScancode(Scancode::RSuper);
 // Ctrl/Shift/Alt/Super (either side) and Caps Lock: keys that are never a chord on their own.
 constexpr bool isModifierKey(Key k) noexcept {
   return (k >= key::kLCtrl && k <= key::kRSuper) || k == key::kCapsLock;
+}
+// T8.1: a key that can end a chord: every non-modifier key, and Caps Lock while Ctrl, Alt or Super is held
+// (`Ctrl+CapsLock` toggles macro mode, SPEC §6.2). Caps Lock alone, or with Shift only, is never a chord.
+constexpr bool isChordKey(Key k, Mods mods) noexcept {
+  if (k == key::kCapsLock) return (mods & (mod::kCtrl | mod::kAlt | mod::kSuper)) != 0;
+  return !isModifierKey(k);
 }
 
 // --- pointer cursor -------------------------------------------------------------------------------------

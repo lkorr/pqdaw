@@ -1,0 +1,32 @@
+{
+  "name": "AHK Numpad",
+  "about": "The AHK interval macro's midi_config.ini [Preset_Default]: slots 3/2 5/4 7/4 11/8 13/8 2/1 on the keypad (the Up key multiplies, the Down key divides; slot 7 = 1/1 is disabled there and left out), NumpadSub / NumpadAdd undo / redo. Its EDO setting is not needed: the clip's tuning is used. The other commands keep the trainer's keys.",
+  "primeLimit": 13,
+  "intervals": [
+    {"key": "NumpadDiv", "ratio": "3/2"},
+    {"key": "NumpadMult", "ratio": "2/3"},
+    {"key": "Numpad8", "ratio": "5/4"},
+    {"key": "Numpad9", "ratio": "4/5"},
+    {"key": "Numpad5", "ratio": "7/4"},
+    {"key": "Numpad6", "ratio": "4/7"},
+    {"key": "Numpad2", "ratio": "11/8"},
+    {"key": "Numpad3", "ratio": "8/11"},
+    {"key": "Numpad0", "ratio": "13/8"},
+    {"key": "NumpadDot", "ratio": "8/13"},
+    {"key": "NumLock", "ratio": "2/1"},
+    {"key": "Numpad7", "ratio": "1/2"}
+  ],
+  "keys": {
+    "undo": "NumpadSub",
+    "redo": "NumpadAdd",
+    "place": "`",
+    "placeChain": "Tab",
+    "back": "Backspace",
+    "left": "a",
+    "right": "f",
+    "up": "s",
+    "down": "d",
+    "layer": "g",
+    "lock": "b"
+  }
+}

@@ -207,6 +207,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_piano_roll_ji.cpp  # T7.13: Is Harmonic (JI groups: guides, numbering, members, the active group), curve hit test, copy / paste of curves and groups (real dispatch), goldens
     views/test_piano_roll_pen.cpp  # T7.6: bends between notes, Ctrl+G, pen strokes, breakpoints, vibrato, detune, Clear Bends (real dispatch), goldens
     views/test_piano_roll_help.cpp  # KB.help: the ? button and the help panel (real dispatch: open / close, keys, scroll, keys from the loaded keymap), goldens
+    views/test_macro_mode.cpp  # T8.1: macro mode (real dispatch: toggle chord, layers, the just-from-a-JI-note rule, pointer anchor, lock, undo ring, presets, the trainer's BFS fixture), goldens
     views/test_mos_chart.cpp
     views/test_mixer.cpp
     views/test_mos_wheel.cpp

@@ -54,6 +54,7 @@ class TapRing;  // pq/core/tap_ring.h (TX.spectrum: the analysis taps)
 namespace pq::views {
 
 class AudioPrefsPort;  // pq/views/prefs/audio_prefs.h
+class MacroMode;       // pq/views/macro/macro_mode.h (T8.1)
 class RenderEditPort;  // pq/views/render_edit_port.h (FZ.4)
 struct RenderEditJob;
 class Waveforms;       // pq/views/waveforms.h (T5.5)
@@ -108,6 +109,7 @@ inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI pla
                                                       // or a hardware MIDI-in note (TransportPort::liveMidiNotes)
 inline constexpr uint32_t kWireErrors = 1u << 23;     // WI.2: the wires the playback link cut from its compile changed
 inline constexpr uint32_t kFreeze = 1u << 24;         // FZ.3: a frozen track's render status (or its slot) changed
+inline constexpr uint32_t kMacro = 1u << 25;          // T8.1: macro mode (on / off, layer, cursor, anchor, composition)
 }  // namespace view_change
 
 // FZ.3 (docs/plans/RB.md FZ.3): what the views show of a frozen track's render (the playback link's FreezeStatus,
@@ -214,6 +216,8 @@ struct ViewPrefs {
   ExportPrefs exportAudio;
   // MF.3: the last MIDI export mode chosen in the clip menu (Export MIDI); MIDI clips dragged out use it.
   doc::MidiExportMode midiExportMode = doc::MidiExportMode::Mpe;
+  // T8.1 (Preferences → MIDI → Macro mode): the macro-mode key preset, the stem of a file in assets/macro.
+  std::string macroPreset = "trainer";
   bool operator==(const ViewPrefs&) const = default;
 };
 
@@ -451,11 +455,7 @@ public:
   // T4.15: view preferences the app keeps in its user settings (the "views" section, pq/app/user_settings.h). A change
   // calls the listener (the app saves them); tests and scenes have none.
   const ViewPrefs& viewPrefs() const noexcept { return viewPrefs_; }
-  void setViewPrefs(const ViewPrefs& p) {
-    if (p == viewPrefs_) return;
-    viewPrefs_ = p;
-    if (viewPrefsListener_) viewPrefsListener_(viewPrefs_);
-  }
+  void setViewPrefs(const ViewPrefs& p);  // T8.1: a new macroPreset is loaded (an error: the status line, the old keys stay)
   void setViewPrefsListener(std::function<void(const ViewPrefs&)> fn) { viewPrefsListener_ = std::move(fn); }
   // What file.new / file.open / file.save / file.saveAs do: ask about unsaved changes, pick a path, then call the
   // explicit-path functions above. `then` runs after a successful operation (e.g. quit after "save and quit").
@@ -476,6 +476,11 @@ public:
   // T6.4: the computer MIDI keyboard (action keyboard.toggleComputerMidi, the control bar's keyboard button; no default key since KB.help; the Shell makes it the tree's key
   // listener). Its state changes name themselves in the status line.
   ComputerKeyboard& computerKeyboard() noexcept { return computerKeyboard_; }
+  // T8.1: macro mode (SPEC §6.2; pq/views/macro/macro_mode.h): action macro.toggle (Ctrl+CapsLock), the control bar's
+  // MACRO lamp. While on it is the tree's key listener in the computer keyboard's place (the Shell swaps them on
+  // kMacro); turning one on turns the other off.
+  MacroMode& macro() noexcept { return *macro_; }
+  const MacroMode& macro() const noexcept { return *macro_; }
   // KB.1: the track whose tuning lays out the computer keyboard: the auto-armed track, else the selected track when it
   // is an armed MIDI track, else the first armed MIDI track (document order), else the selected MIDI track; invalid:
   // none (several armed tracks in different tunings each play in their own tuning, through this one's layout).
@@ -753,7 +758,7 @@ public:
       "file.open",          "file.save",          "file.saveAs", "view.toggleClipDevice", "view.toggleDetail",
       "edit.toggleDrawMode", "grid.narrow",        "grid.widen",  "grid.toggleTriplet", "grid.toggleSnap",
       "grid.toggleFixed",   "view.toggleTunings", "file.collectAllAndSave", "file.relinkSamples",
-      "view.toggleBrowser"};
+      "view.toggleBrowser", "macro.toggle"};
 
 private:
   void notify(uint32_t bits);
@@ -776,6 +781,7 @@ private:
 
   TransportPort& transport_;
   ComputerKeyboard computerKeyboard_{transport_};  // T6.4
+  std::unique_ptr<MacroMode> macro_;                // T8.1
   Audition lastAudition_;                           // TU.2
   doc::DocumentStore store_;
   doc::Snapshot saved_;  // the snapshot last saved or loaded (dirty() compares pointers)

@@ -1,6 +1,7 @@
 #include "pq/views/shell/shell.h"
 
 #include "pq/ui/theme.h"
+#include "pq/views/macro/macro_mode.h"
 #include "shell_widgets.h"
 
 namespace pq::views {
@@ -38,10 +39,11 @@ struct Shell::Impl {
 Shell::Shell(UiTree& tree, ViewContext& ctx) : tree_(tree), ctx_(ctx), impl_(std::make_unique<Impl>()) {}
 
 Shell::~Shell() {
-  if (tree_.keyListener() == &ctx_.computerKeyboard()) {  // T6.4
+  if (tree_.keyListener() == &ctx_.computerKeyboard() || tree_.keyListener() == &ctx_.macro()) {  // T6.4, T8.1
     ctx_.computerKeyboard().releaseAll();
     tree_.setKeyListener(nullptr);
   }
+  tree_.removeObserver(&ctx_.macro());
 }
 
 Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, const ShellOptions& options) {
@@ -109,8 +111,13 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
     impl->tunings->setVisible(ctx.tuningsVisible());
   };
   applyLayout();
-  m.layoutSub = ctx.observe([applyLayout](uint32_t what) {
+  m.layoutSub = ctx.observe([applyLayout, &tree, &ctx](uint32_t what) {
     if (what & view_change::kLayout) applyLayout();
+    // T8.1: macro mode takes the computer keyboard's place as the tree's key listener while it is on.
+    if (what & view_change::kMacro) {
+      ui::KeyListener* want = ctx.macro().on() ? static_cast<ui::KeyListener*>(&ctx.macro()) : &ctx.computerKeyboard();
+      if (tree.keyListener() != want) tree.setKeyListener(want);
+    }
   });
 
   if (options.installContent) installDefaultContent(*s);
@@ -118,7 +125,8 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   Status bound = options.keymap ? ctx.applyKeymap(*options.keymap) : ctx.applyDefaultKeymap();
   if (!bound) return std::move(bound).error();
   tree.setKeymap(&ctx.actions(), &ctx.keymap());
-  tree.setKeyListener(&ctx.computerKeyboard());  // T6.4: the computer MIDI keyboard
+  tree.setKeyListener(ctx.macro().on() ? static_cast<ui::KeyListener*>(&ctx.macro()) : &ctx.computerKeyboard());  // T6.4, T8.1
+  tree.addObserver(&ctx.macro());  // T8.1: a click on empty space in the roll puts the macro cursor there
   m.info->attachTo(tree);
   tree.layoutNow();
   return s;

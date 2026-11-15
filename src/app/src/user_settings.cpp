@@ -246,6 +246,8 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
     for (size_t i = 0; i < doc::kMidiExportModeNames.size(); ++i)
       if (m == doc::kMidiExportModeNames[i]) prefs.midiExportMode = static_cast<doc::MidiExportMode>(i);
   }
+  if (const auto f = it->find("macroPreset"); f != it->end() && f->is_string() && !f->get<std::string>().empty())  // T8.1
+    prefs.macroPreset = f->get<std::string>();
   return prefs;
 }
 
@@ -262,6 +264,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["autosave"] = prefs.autosave;              // AS.1
   v["export"] = exportPrefsJson(prefs.exportAudio);  // EX.2
   v["midiExportMode"] = std::string(doc::kMidiExportModeNames[static_cast<size_t>(prefs.midiExportMode)]);  // MF.3
+  v["macroPreset"] = prefs.macroPreset;  // T8.1
   return saveSection(path, "views", std::move(v));
 }
 

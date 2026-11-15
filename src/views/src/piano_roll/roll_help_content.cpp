@@ -227,6 +227,68 @@ constexpr HelpEntry kJiGroups[] = {
      "The lowest remaining note of the group takes its place: every note keeps its pitch and its number."},
 };
 
+// ---- Macro mode (T8.1) -------------------------------------------------------------------------------------
+// The keys are the default preset's (assets/macro/trainer.json); Preferences > MIDI > Macro Mode picks another.
+constexpr HelpEntry kMacro[] = {
+    {"{macro.toggle}\nthe MACRO lamp (top bar)",
+     "Turn macro mode on or off",
+     "While it is on, the roll has an orange frame and a cursor: a box where the next note will land. The keys below "
+     "then belong to macro mode; everything with Ctrl or Alt, and Space, works as always. The computer MIDI keyboard "
+     "is switched off while macro mode is on."},
+    {"[1] [2] [3] [4] [5] [6] [7] [8] [9] [0]",
+     "Go up by a just interval",
+     "Multiplies by 2/1, 3/2, 5/4, 7/4, 11/8, 13/8, 17/16, 19/16, 23/16, 29/16: the cursor jumps that far above where "
+     "it was and you hear the pitch. Presses add up: 2 then 3 is a fifth plus a third, 15/8. The label beside the "
+     "cursor shows what you have built."},
+    {"[Q] [W] [E] [R] [T] [Y] [U] [I] [O] [P]",
+     "Go down by the same intervals",
+     "The key under each number divides by its interval: Q is an octave down, W a fifth down, E a major third down."},
+    {"[`]",
+     "Place a note",
+     "Puts a note at the cursor, as long as the grid step (or as long as the anchor note). The cursor then returns "
+     "to the anchor, so the next interval is measured from the same note again: good for stacking a chord."},
+    {"[Tab]",
+     "Place a note and continue from it",
+     "Puts a note at the cursor and makes it the new anchor: the next interval is measured from the note you just "
+     "placed. Good for melodies and chains of fifths."},
+    {"[Backspace]",
+     "Clear, or delete",
+     "Throws away the interval you are building and returns the cursor to the anchor. With nothing built, deletes "
+     "the note at the cursor."},
+    {"[A] / [F]\n[S] / [D]",
+     "Move the cursor",
+     "A and F move it one grid step earlier or later. S and D move it up or down: by one row in the tempered layer, "
+     "to the next harmonic when the note would be just."},
+    {"point at a note\nclick a note \xC2\xB7" " click empty space",
+     "Choose the anchor",
+     "The anchor is the note intervals are measured from; it has a ring on it. With nothing built, the note under "
+     "the mouse pointer becomes the anchor (or the note you select), and the cursor goes to its start. A click on "
+     "empty space puts the cursor there instead."},
+    {"[G]",
+     "Switch the layer: tempered or JI",
+     "Tempered (the lamp shows the tuning's name): the note goes to the tuning's step for the interval, and the "
+     "label shows how far the just interval lies from that step: 3/2 in 12-EDO is 7 steps, +2.0 cents (just is 2 "
+     "cents higher). JI: the note is the exact ratio above the anchor, whatever the rows are."},
+    {"anchor on a JI note",
+     "From a just note, the next note is just",
+     "In either layer, when the anchor is a ratio note or a note you declared a harmonic, the new note is an exact "
+     "ratio in the same group. So in 12-EDO, 3/2 from an ordinary note lands seven rows up, and 3/2 from a just note "
+     "lands exactly a just fifth above it."},
+    {"[B] number [Enter]",
+     "Is Harmonic N",
+     "Says that the anchor note is harmonic number N of a series (B 5 Enter: the fifth harmonic), the same as Is "
+     "Harmonic\xE2\x80\xA6" " in a note's menu. S and D then step the cursor through that series, and notes placed from it "
+     "are just. B without a number uses the last number; B on a declared note removes the declaration."},
+    {"[-] / [=]",
+     "Macro undo and redo",
+     "Step back and forward through what you did in macro mode: cursor moves, intervals and placed notes. Undo "
+     "and redo of the whole program still work as usual."},
+    {"labels on the keys",
+     "Fewest keys to each row",
+     "While macro mode is on in an EDO, each key at the left shows the shortest run of interval keys that reaches "
+     "that row from the anchor: 23 means press 2, then 3."},
+};
+
 constexpr HelpSection kSections[] = {
     {"Notes",
      "Every note is a line along its pitch. The rows are the steps of the clip's tuning; the grid divides the time.",
@@ -255,6 +317,10 @@ constexpr HelpSection kSections[] = {
      "in tune with each other. A note's number is its harmonic in the group, so a group reads as a proportion such as "
      "4:5:6:7.",
      kJiGroups},
+    {"Macro mode",
+     "Enter notes from the computer keyboard by interval, without the mouse: the number row goes up by just "
+     "intervals, the row under it goes down, and one key places the note.",
+     kMacro},
 };
 
 }  // namespace

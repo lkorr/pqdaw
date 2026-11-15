@@ -1763,3 +1763,31 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   proportions, Back to Tuning, warps (tempered → JI and back, gliding), walking a group, typed proportions.
 - Look at: `tests/views/golden/pianoroll-fundamental-lock.png` (a group: guides, numbered members),
   `pianoroll-note-menu.png` (the note menu without the object entries).
+
+
+## T8.1 👁 · Macro mode: interval entry from the keyboard, in the piano roll (2026-11-14)
+- `Ctrl+CapsLock` (or the new MACRO lamp in the control bar, left of the tuning chip) turns it on. The roll gets an
+  orange frame and a tab ("MACRO · 12-EDO" / "MACRO · JI"), an orange cursor box where the next note lands (with a line
+  along its pitch and one down its start), a ring on the anchor, and a label with what you are building
+  ("3/2 · 5/4 = 15/8", "→ 11 steps, −11.7 ¢"). The keys at the left show the fewest keys to each row ("23").
+- Look at: `tests/views/golden/pianoroll-macro-tempered.png` and `pianoroll-macro-ji.png`.
+- Try this (12-EDO clip open in the clip view):
+  1. Draw a C, press `Ctrl+CapsLock`, point at the C: the ring sits on it. Press `2`: the cursor jumps 7 rows up and
+     you hear the G; the label says "3/2 → 7 steps, +2.0 ¢". Press `` ` ``: a G is placed, the cursor is back on C.
+  2. Press `2` `3` `` ` ``: 15/8 = 11 steps, a B. Press `q` `` ` ``: an octave below. `Backspace` on the anchor's row
+     with nothing composed deletes the note under the cursor; `-` / `=` step back and forward through what you did.
+  3. Press `2` `Tab`, `f`, `2` `Tab`, `f`, `2` `Tab`: a chain of fifths, each measured from the note before
+     (`a` / `f` move in time, `s` / `d` in pitch).
+  4. Press `g` (the tab reads "MACRO · JI"), point at the C, press `3` `` ` `` and `2` `` ` ``: an exact 5/4 and 3/2 on
+     C (they sit between the rows, labelled). Press `g` again: tempered.
+  5. The rule you asked for: still in the tempered layer, point at the just 5/4 and press `2` `` ` ``: the new note is
+     an exact 15/8 over C (in the same group), not the B row. Point at the plain C and press `2` `` ` ``: the G row.
+  6. Point at the C, press `b` `4` `Enter`: C is harmonic 4 (the guides appear). `s` / `d` now walk the harmonics
+     (5, 6, 7 …) and `` ` `` places them as just notes. `b` again removes the declaration.
+- Preferences → MIDI → Macro Mode picks the key preset: `trainer` (the table above) or `ahk-numpad` (your AHK
+  [Preset_Default] slots on the keypad, NumpadSub / NumpadAdd = undo / redo). The files are `assets/macro/*.json`.
+- Decide: (1) `Ctrl+CapsLock` also flips the keyboard's Caps Lock light, as any app without a system hook does
+  (Q?-T8.1-a): acceptable, or do you want another default chord? (2) The pointer anchor only re-triggers when the
+  pointer arrives on a note (so Tab chaining survives a resting mouse): right, or should a resting pointer always win
+  after `` ` ``? (3) In the tempered layer `s` / `d` move rows on top of the composed interval and `` ` `` returns to
+  the anchor (the trainer's save point): is that the feel you want? (4) Is the overlay loud enough / too loud?

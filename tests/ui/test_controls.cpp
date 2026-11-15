@@ -358,6 +358,7 @@ TEST_CASE("keymap: the default file parses, chords are unique per scope, actions
   CHECK(has("arrangement", "Ctrl+Shift+M", "arrangement.insertMidiClip"));
   // KB.help: the computer MIDI keyboard has no default key (its control-bar button and its action stay).
   CHECK(std::none_of(k->entries.begin(), k->entries.end(), [](const KeymapEntry& e) { return e.action == "keyboard.toggleComputerMidi"; }));
+  CHECK(has("global", "Ctrl+CapsLock", "macro.toggle"));  // T8.1: macro mode (SPEC §6.2)
   CHECK(has("pianoroll", "Up", "pianoroll.stepUp"));
   CHECK(has("pianoroll", "Shift+Up", "pianoroll.equaveUp"));
 
