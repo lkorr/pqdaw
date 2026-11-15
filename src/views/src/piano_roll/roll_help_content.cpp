@@ -108,6 +108,12 @@ constexpr HelpEntry kBends[] = {
      "Bend out",
      "The end of the note slides to the pitch of the note that starts next, over the length you drag. With several "
      "notes selected each one bends to its own neighbour."},
+    {"[Alt] + drag an edge\nup or down",
+     "Bend from or to any pitch",
+     "A note with no note before it (or after it) to glide with bends to the pitch you drag to: up or down sets the "
+     "pitch, sideways how long the slide takes (just up or down: one grid cell). It snaps to the rows, the harmonic "
+     "lines and the note's own pitch; Shift goes by single cents. The slide is written into the note's pitch curve, "
+     "so its points can be moved afterwards."},
     {"move or retune\nthe other note",
      "A bend follows its notes",
      "A bend remembers which note it leads from or to, not a fixed pitch. Move that note, retune it or change the "
@@ -159,11 +165,12 @@ constexpr HelpEntry kVibrato[] = {
      "Vibrato: how wide",
      "Point at a note (or select it) and a small ~ appears above its right end. Drag it up and the note starts to "
      "waver; the further up, the wider the swing. You see the wave grow on the note, and the status line reads its "
-     "width in cents. Drag it back down to nothing to turn the vibrato off."},
+     "width in cents. Drag it back down to nothing to turn the vibrato off; keep going below the note and the vibrato "
+     "turns upside down (it swings down first), the ~ following under the line."},
     {"drag the ~ left or right",
      "Vibrato: how fast",
-     "To the right the waves stretch out (slower), to the left they squeeze together (faster); the status line reads "
-     "the speed in Hz. A small sideways slip while you set the width changes nothing."},
+     "To the right the waves stretch out (slower), to the left they squeeze together (faster), smoothly; the status line "
+     "reads the speed in Hz. A new vibrato starts at 6 Hz. A small sideways slip while you set the width changes nothing."},
     {"drag the small squares\nunder a vibrating note",
      "Fade in, fade out, start and end",
      "A note with vibrato shows four squares under it, the corners of the vibrato's outline: where it starts, where it "
@@ -172,7 +179,7 @@ constexpr HelpEntry kVibrato[] = {
      "fade-out. Pull the two inner ones together for a swell that rises and falls. They snap to the grid."},
     {"[Shift] + drag the ~\n[Shift] + drag a square",
      "Fine adjustment",
-     "With Shift the ~ moves the width by tenths of a cent and the speed by hundredths of a Hz, and a square goes "
+     "With Shift the ~ moves the width by tenths of a cent and the speed ten times more slowly, and a square goes "
      "anywhere instead of onto the grid."},
     {"several notes selected,\ndrag the ~ of one",
      "Vibrato on several notes",

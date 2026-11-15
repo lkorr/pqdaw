@@ -214,9 +214,10 @@ public:
   PaintStats paintStats() const noexcept;
   // The harmonic number the roll shows on a note (the anchor of a JI group, a numbered member, a reference Ratio over
   // the virtual fundamental); the screen y of harmonic k's guide line (the active group's series, else the virtual
-  // fundamental's). nullopt: none.
+  // fundamental's) at content tick `tick` (a group's guides follow its anchor's pitch; nullopt: at the anchor's
+  // start). nullopt: none.
   std::optional<uint64_t> harmonicOf(doc::NoteId note) const;
-  std::optional<float> harmonicGuideY(uint64_t k) const;
+  std::optional<float> harmonicGuideY(uint64_t k, std::optional<double> tick = std::nullopt) const;
   // A point `frac` of the way through a note where it is drawn (on its row, or along its path). {−1, −1}: none.
   ui::Vec2 notePoint(doc::NoteId id, double frac) const;
 

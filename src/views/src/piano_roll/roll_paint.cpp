@@ -211,11 +211,54 @@ void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, con
     x1 = std::min(x1, std::round(s.xOfTick(static_cast<double>(F->to))));
     if (x1 <= x0) return;
   }
-  forEachHarmonic(s, *F, s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())), static_cast<float>(vis.y),
-                  static_cast<float>(vis.bottom()), [&](double k, float y) {
-                    if (k == 1.0) ctx.dl.addRectFilled({x0, y - 1.0f, x1, y + 1.0f}, th.roll.fundamental);
-                    else ctx.dl.addRectFilled({x0, y, x1, y + 1.0f}, th.roll.harmonic);
-                  });
+  // A group's guides follow its anchor's pitch (its drawn curve, bends, warps): a note drawn on one starts where it
+  // sounds (pitch_resolve: a note takes its anchor's pitch where it starts). Sampled every 3 px; flat runs collapse.
+  static std::vector<float> xs, shift;  // UI thread only; reused
+  xs.clear();
+  shift.clear();
+  bool moves = false;
+  if (F->anchor.valid()) {
+    const float stepPx = 3.0f * ctx.scale.factor;
+    for (float x = x0;; x = std::min(x + stepPx, x1)) {
+      const double sh = s.harmonicsShift(*F, s.tickAtX(x));
+      moves = moves || sh != 0.0;
+      const size_t n = shift.size();
+      if (n >= 2 && shift[n - 1] == static_cast<float>(sh) && shift[n - 2] == static_cast<float>(sh)) xs[n - 1] = x;  // flat: extend
+      else {
+        xs.push_back(x);
+        shift.push_back(static_cast<float>(sh));
+      }
+      if (x >= x1) break;
+    }
+  }
+  if (!moves) {
+    forEachHarmonic(s, *F, s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())), static_cast<float>(vis.y),
+                    static_cast<float>(vis.bottom()), [&](double k, float y) {
+                      if (k == 1.0) ctx.dl.addRectFilled({x0, y - 1.0f, x1, y + 1.0f}, th.roll.fundamental);
+                      else ctx.dl.addRectFilled({x0, y, x1, y + 1.0f}, th.roll.harmonic);
+                    });
+    return;
+  }
+  // Every harmonic in view somewhere along the span (from the series at the highest shift to the one at the lowest),
+  // skipping a line closer than 3 px to the previous one (measured at the lowest shift) as forEachHarmonic does.
+  const RowModel& rows = s.rows();
+  const auto [first, last] = rows.rowsIn(s.contentY(static_cast<float>(vis.y)), s.contentY(static_cast<float>(vis.bottom())) + 1);
+  if (first >= last) return;
+  const auto [lo, hi] = std::minmax_element(shift.begin(), shift.end());
+  const double fund = F->baseCents + tuning::cents(F->ratio);
+  const double kLo = std::max(1.0, std::ceil(std::exp2((rows.row(last - 1).cents - 100.0 - fund - static_cast<double>(*hi)) / 1200.0)));
+  const double kHi = std::min(std::floor(std::exp2((rows.row(first).cents + 100.0 - fund - static_cast<double>(*lo)) / 1200.0)), kLo + 4096.0);
+  static std::vector<Vec2> line;  // UI thread only; reused
+  float lastY = 1e30f;
+  for (double k = kLo; k <= kHi; k += 1.0) {
+    const double c = fund + 1200.0 * std::log2(k);
+    const float y = s.yOfCents(c + static_cast<double>(*lo));
+    if (k != 1.0 && std::fabs(lastY - y) < 3.0f) continue;
+    lastY = y;
+    line.clear();
+    for (size_t i = 0; i < xs.size(); ++i) line.push_back({xs[i], s.yOfCents(c + static_cast<double>(shift[i]))});
+    smoothPolyline(ctx.dl, std::span<const Vec2>(line), k == 1.0 ? th.roll.fundamental : th.roll.harmonic, k == 1.0 ? 2.0f : 1.0f);
+  }
 }
 
 // The labels of those lines: the harmonic numbers (2, 3, … and F itself as "1/4") in a strip along the right edge of
@@ -223,9 +266,12 @@ void paintFundamental(PaintContext& ctx, const RollState& s, const IRect& r, con
 // LabelSpace over the whole widget (partial and full repaints place the same ones). When F's own line is out of view a
 // chip pins it to the corner it lies beyond: "F = 1/4 · 65.41 Hz" (bottom-left when F is below, top-left when above).
 void paintHarmonicLabels(PaintContext& ctx, const RollState& s, const IRect& r) {
-  const std::optional<RollState::Harmonics> H = s.harmonics();
+  std::optional<RollState::Harmonics> H = s.harmonics();
   const std::optional<tuning::Rational> F = H ? std::optional<tuning::Rational>(H->ratio) : std::nullopt;
   const bool anchored = H && H->anchor.valid();  // T7.5b: F hangs on a note, not on the reference: it reads "F"
+  // Guides that follow a moving anchor are labelled where they reach the strip (or end before it).
+  if (anchored && H->from != H->to)
+    H->baseCents += s.harmonicsShift(*H, std::clamp(s.tickAtX(static_cast<float>(r.right())), static_cast<double>(H->from), static_cast<double>(H->to)));
   TextSystem* ts = ctx.res.text;
   const ThemeFonts* fonts = ctx.res.uiFonts;
   if (!F || !s.showHarmonics() || s.rows().empty() || !ts || !fonts || r.empty()) return;
@@ -463,13 +509,21 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)
     for (const DrawnNote& dn : dr.drawn) {
-      const NotePlace pl = s_.place(s_.drawnPitch(dn));
+      const tuning::PitchId pitch = s_.drawnPitch(dn);
+      const NotePlace pl = s_.place(pitch);
       if (!pl.ok) continue;
       const float x0 = std::round(s_.xOfTick(static_cast<double>(dn.start)));
       const float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(dn.start + dn.length))));
+      // A note joining a group whose anchor moves is shown where it will sound (on the guide it was drawn on).
+      float dy = 0.0f;
+      if (dn.anchor.valid())
+        if (const std::optional<double> c = s_.centsOf(pitch)) {
+          const double sh = s_.harmonicsShift(RollState::Harmonics{dn.anchor}, static_cast<double>(dn.start));
+          if (sh != 0.0) dy = s_.yOfCents(*c + sh) - s_.yOfCents(*c);
+        }
       drawNoteLine(dl, style,
-                   {x0, x1, static_cast<float>(s_.screenY(pl.top)), static_cast<float>(s_.screenY(pl.bottom)),
-                    static_cast<float>(s_.screenY(pl.centre)), col.selFill[100], pl.offGrid ? th->roll.offGrid : col.selFill[100], 0});
+                   {x0, x1, static_cast<float>(s_.screenY(pl.top)) + dy, static_cast<float>(s_.screenY(pl.bottom)) + dy,
+                    static_cast<float>(s_.screenY(pl.centre)) + dy, col.selFill[100], pl.offGrid ? th->roll.offGrid : col.selFill[100], 0});
     }
 
   // Outside the played region (before the start / loop start, after the end / loop end): dimmed, notes included.

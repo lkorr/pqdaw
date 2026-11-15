@@ -780,12 +780,12 @@ EditResult setNoteVibrato(const Project& p, ClipRef clip, std::span<const NoteVi
     e.notes.push_back(keyOf(*n));
     NoteVibrato v = ed.vibrato;
     if (!std::isfinite(v.depthCents) || !std::isfinite(v.rate)) return invalid("a vibrato's depth and rate are finite numbers");
-    if (!(v.depthCents > 0.0f)) {
+    if (v.depthCents == 0.0f) {
       v = {};
     } else {
       const bool beats = v.unit == NoteVibrato::RateUnit::Beats;
       const Ticks L = std::max<Ticks>(n->length, 1);
-      v.depthCents = std::min(v.depthCents, kMaxVibratoCents);
+      v.depthCents = std::clamp(v.depthCents, -kMaxVibratoCents, kMaxVibratoCents);
       v.rate = std::clamp(v.rate, beats ? kMinVibratoBeats : kMinVibratoHz, beats ? kMaxVibratoBeats : kMaxVibratoHz);
       v.onset = std::clamp<Ticks>(v.onset, 0, L - 1);
       if (v.end >= L || v.end <= v.onset) v.end = 0;

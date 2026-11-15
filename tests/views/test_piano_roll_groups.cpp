@@ -928,6 +928,58 @@ TEST_CASE("roll groups (T7.16a, M7 review M5): 3/2 above harmonic 5 by mouse —
   CHECK(r.view->groupGeometry(r.onlyGroup().id).headerText == "10:15");
 }
 
+TEST_CASE("roll groups: a group whose anchor bends — the guides follow it, a note drawn on one sounds and is drawn there, and bending that note does not move it (bug report 2026-11-15)") {
+  Roll r;
+  r.focusNotes();
+  const doc::NoteId e = r.addNotes({Roll::plain(0, 8 * kQ, 0)})[0];
+  REQUIRE(r.view->declareHarmonic(e, 4));
+  r.d.step();
+  const double root = r.cents(e, 0.0);
+  // The anchor's drawn curve falls 100 ¢ a beat: 400 ¢ down at beat 4.
+  const std::vector<doc::Breakpoint> fall{{0, 0.0f, 0.0f, {}}, {8 * kQ, -800.0f, 0.0f, {}}};
+  REQUIRE(r.ctx.store().dispatch(doc::SetNoteCurves{r.ref, {doc::NoteCurves{e, fall, {}, {}, {}}}}).ok());
+  r.d.step();
+  r.d.click(r.view->notePoint(e, 0.1));
+  REQUIRE(r.view->activeJiGroup().valid());
+  // The guides follow the anchor: harmonic 7 at beat 4 is 400 ¢ below where it is at the start.
+  const std::optional<float> g0 = r.view->harmonicGuideY(7), g4 = r.view->harmonicGuideY(7, 4.0 * kQ);
+  REQUIRE(g0.has_value());
+  REQUIRE(g4.has_value());
+  CHECK(*g4 == doctest::Approx(*g0 + 4.0f * kRow).epsilon(1e-4));
+  CHECK(*g4 == doctest::Approx(r.view->yOfCents(root - 400.0 + kSeventh)).epsilon(1e-4));
+
+  // A double-click on that guide at beat 4 adds harmonic 7 there: it sounds there and is drawn there.
+  (void)r.d.press("Escape");  // (the anchor not selected: the double-click adds a note)
+  r.d.step();
+  const Vec2 at{r.view->xOfTick(4.1 * kQ), *g4};
+  r.d.move(at);
+  r.d.doubleClick(at);
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  const doc::NoteId seven{r.view->selection()[0]};
+  CHECK(r.note(seven).pitch == PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, e.value));
+  CHECK(r.note(seven).start == 4 * kQ);
+  const double sounds = 1200.0 * std::log2(r.hzOf(seven) / r.hzOf(e)) + root;  // where pitch_resolve puts it
+  CHECK(sounds == doctest::Approx(root - 400.0 + kSeventh).epsilon(1e-6));
+  CHECK(r.cents(seven, 0.0) == doctest::Approx(sounds).epsilon(1e-6));
+  CHECK(std::fabs(r.view->notePoint(seven, 0.5).y - *g4) <= 1.0f);
+
+  // Bending it (a vibrato, then a drawn curve) leaves where it starts alone: it used to jump by the anchor's bend.
+  const float y0 = r.view->notePoint(seven, 0.0).y;
+  doc::NoteVibrato vib;
+  vib.depthCents = 20.0f;
+  vib.rate = 6.0f;
+  REQUIRE(r.ctx.store().dispatch(doc::SetNoteCurves{r.ref, {doc::NoteCurves{seven, {}, {}, {}, vib}}}).ok());
+  r.d.step();
+  CHECK(r.cents(seven, 0.0) == doctest::Approx(sounds).epsilon(1e-6));
+  CHECK(r.view->notePoint(seven, 0.0).y == doctest::Approx(y0).epsilon(1e-4));
+  const std::vector<doc::Breakpoint> up{{0, 0.0f, 0.0f, {}}, {kQ, 100.0f, 0.0f, {}}};
+  REQUIRE(r.ctx.store().dispatch(doc::SetNoteCurves{r.ref, {doc::NoteCurves{seven, up, {}, {}, {}}}}).ok());
+  r.d.step();
+  CHECK(r.cents(seven, 0.0) == doctest::Approx(sounds).epsilon(1e-6));
+  CHECK(r.cents(seven, 1.0) == doctest::Approx(sounds + 100.0).epsilon(1e-6));
+}
+
 TEST_CASE("roll groups (T7.16a, M7 review H4 / M13): warp grips win over vibrato corners, which never sit on them; Alt + a note's outer quarter bends, Alt + its middle copies") {
   Roll r;
   r.focusNotes();

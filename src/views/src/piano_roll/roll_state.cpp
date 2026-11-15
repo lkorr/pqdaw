@@ -1783,11 +1783,14 @@ void RollState::commitDrag() {
       if (d.bend) {  // T7.6 (A3): Alt = the note glides in from the previous note / out to the next one
         const bool in = d.kind == DragKind::ResizeStart;
         const doc::ops::EditResult e = bendEdit(d);
-        if (d.bendPicks.empty()) {
+        if (d.bendPicks.empty() && (!e || e->batch().commands.empty())) {
+          // (A note with no neighbour there bends from / to the dragged pitch: this one was not dragged up or down.)
           bool same = false;
           if (const doc::Note* pressed = findNote(d.pressed)) (void)bendNeighbour(*pressed, in ? -1 : 1, &same);
-          ctx.setStatus(same ? (in ? "Bend In: the note before this one is at the same pitch" : "Bend Out: the note after this one is at the same pitch")
-                             : (in ? "Bend In: no note before this one to glide from" : "Bend Out: no note after this one to glide to"));
+          ctx.setStatus(same ? (in ? "Bend In: the note before this one is at the same pitch; drag up or down to bend from another"
+                                   : "Bend Out: the note after this one is at the same pitch; drag up or down to bend to another")
+                             : (in ? "Bend In: no note before this one; drag up or down for the pitch it comes from"
+                                   : "Bend Out: no note after this one; drag up or down for the pitch it goes to"));
         } else {
           const std::vector<uint32_t> keep = sel_;
           if (apply(e, in ? "Bend In" : "Bend Out")) select(keep);

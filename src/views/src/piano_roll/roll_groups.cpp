@@ -875,7 +875,9 @@ std::optional<int32_t> RollState::harmonicDragSteps(const doc::Note& pressed, fl
   if (!info || !own || *own == 0) return std::nullopt;
   const std::optional<double> anchor = startCents(*info->anchor);
   if (!anchor) return std::nullopt;
-  const double fundamental = *anchor - 1200.0 * std::log2(static_cast<double>(info->anchorNumber));
+  // (Where the anchor is at the member's start: the guides it is drawn against follow a moving anchor.)
+  const double fundamental = *anchor + harmonicsShift(Harmonics{info->anchor->id}, static_cast<double>(pressed.start)) -
+                             1200.0 * std::log2(static_cast<double>(info->anchorNumber));
   const double k = std::max(1.0, std::round(std::exp2((centsAtScreenY(y) - fundamental) / 1200.0)));
   const double steps = std::clamp(k - static_cast<double>(*own), -1.0e6, 1.0e6);
   return static_cast<int32_t>(steps);

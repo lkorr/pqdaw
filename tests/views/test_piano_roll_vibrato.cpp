@@ -64,14 +64,14 @@ TEST_CASE("roll vibrato: the ~ grip — hover a note, drag the grip up for depth
   r.d.move({grip->x, grip->y - 5.0f});
   r.d.step();
   CHECK(r.history() == h);
-  CHECK(r.ctx.status() == "Vibrato 36 \xC2\xA2 \xC2\xB7 8 Hz");
+  CHECK(r.ctx.status() == "Vibrato 36 \xC2\xA2 \xC2\xB7 6 Hz");
   CHECK(swing(r, n, base, 0.0, 1.0) == doctest::Approx(36.0).epsilon(0.03));  // the wave is on the note already
   r.d.up({grip->x, grip->y - 5.0f});
   r.d.step();
   CHECK(r.history() == h + 1);
   doc::NoteVibrato v = vibratoOf(r, n);
   CHECK(v.depthCents == 36.0f);
-  CHECK(v.rate == 8.0f);  // one cycle per quarter-note cell at 120 bpm is 2 Hz: folded by octaves into 4.2 … 8.5
+  CHECK(v.rate == 6.0f);  // a new vibrato's rate, whatever the grid
   CHECK(v.unit == doc::NoteVibrato::RateUnit::Hz);
   CHECK(v.onset == 0);
   CHECK(v.end == 0);
@@ -79,7 +79,7 @@ TEST_CASE("roll vibrato: the ~ grip — hover a note, drag the grip up for depth
   CHECK(v.fadeOut == 0);
   CHECK(doc::findNoteCurves(r.clip(), n)->pitch.empty());  // a property: nothing baked
   CHECK(swing(r, n, base, 0.0, 1.0) == doctest::Approx(36.0).epsilon(0.03));
-  // 8 Hz at 120 bpm: four cycles per beat, 32 over the note: 64 zero crossings.
+  // 6 Hz at 120 bpm: three cycles per beat, 24 over the note: 48 zero crossings.
   int crossings = 0;
   double last = r.cents(n, 0.0005) - base;
   for (int i = 1; i <= 4000; ++i) {
@@ -87,32 +87,44 @@ TEST_CASE("roll vibrato: the ~ grip — hover a note, drag the grip up for depth
     if ((c > 0.0) != (last > 0.0)) ++crossings;
     last = c;
   }
-  CHECK(crossings >= 62);
-  CHECK(crossings <= 64);
+  CHECK(crossings >= 46);
+  CHECK(crossings <= 48);
 
-  // Sideways: the rate. 8 px of dead zone, then 120 px to the right doubles the wavelength: 4 Hz. The depth stays.
+  // Sideways: the rate. 8 px of dead zone, then 120 px to the right doubles the wavelength: 3 Hz. The depth stays.
   std::optional<Vec2> g2 = r.view->vibratoGrip(n);
   REQUIRE(g2.has_value());
   CHECK(g2->y < grip->y);  // the grip rose with the crest
   h = r.history();
   REQUIRE(r.d.down(*g2));
   r.d.move({g2->x + 6.0f, g2->y});
-  CHECK(r.ctx.status() == "Vibrato 36 \xC2\xA2 \xC2\xB7 8 Hz");  // inside the dead zone
+  CHECK(r.ctx.status() == "Vibrato 36 \xC2\xA2 \xC2\xB7 6 Hz");  // inside the dead zone
+  // Continuous, not in steps: every pixel past the dead zone changes the rate (the status line reads it to 0.01 Hz).
+  double prev = 6.0;
+  for (int px = 9; px <= 20; ++px) {
+    r.d.move({g2->x + static_cast<float>(px), g2->y});
+    const std::string s = r.ctx.status();
+    const size_t dot = s.rfind("\xC2\xB7 ");
+    REQUIRE(dot != std::string::npos);
+    const double now = std::stod(s.substr(dot + 3));
+    CHECK(now < prev);
+    CHECK(now == doctest::Approx(6.0 * std::exp2(-(px - 8) / 120.0)).epsilon(0.001));
+    prev = now;
+  }
   r.d.move({g2->x + 128.0f, g2->y});
-  CHECK(r.ctx.status() == "Vibrato 36 \xC2\xA2 \xC2\xB7 4 Hz");
+  CHECK(r.ctx.status() == "Vibrato 36 \xC2\xA2 \xC2\xB7 3 Hz");
   r.d.up({g2->x + 128.0f, g2->y});
   r.d.step();
   CHECK(r.history() == h + 1);
   v = vibratoOf(r, n);
-  CHECK(v.rate == 4.0f);
+  CHECK(v.rate == 3.0f);
   CHECK(v.depthCents == 36.0f);
-  // To the left: faster. Shift = fine (a tenth of the travel, 0.1 ¢ and 0.01 Hz steps). (The grip is the hovered
-  // note's: the pointer comes back to the note first.)
+  // To the left: faster. Shift = fine (a tenth of the travel, 0.1 ¢ steps). (The grip is the hovered note's: the
+  // pointer comes back to the note first.)
   r.d.move(r.view->notePoint(n, 0.5));
   g2 = r.view->vibratoGrip(n);
   r.d.drag(*g2, {g2->x - 68.0f, g2->y}, 5);
   r.d.step();
-  CHECK(vibratoOf(r, n).rate == doctest::Approx(4.0 * std::sqrt(2.0)).epsilon(0.02));
+  CHECK(vibratoOf(r, n).rate == doctest::Approx(3.0 * std::sqrt(2.0)).epsilon(1e-5));
   r.d.move(r.view->notePoint(n, 0.5));
   g2 = r.view->vibratoGrip(n);
   h = r.history();
@@ -121,16 +133,50 @@ TEST_CASE("roll vibrato: the ~ grip — hover a note, drag the grip up for depth
   CHECK(r.history() == h + 1);
   CHECK(vibratoOf(r, n).depthCents == doctest::Approx(46.0).epsilon(0.001));
 
-  // Down past zero: off (the record is gone). Undo brings it back.
+  // Down to zero: off (the record is gone). Undo brings it back.
   r.d.move(r.view->notePoint(n, 0.5));
   g2 = r.view->vibratoGrip(n);
-  r.d.drag(*g2, {g2->x, g2->y + 40.0f}, 5);
+  r.d.drag(*g2, {g2->x, g2->y + 46.0f * 14.0f / 100.0f}, 5);
   r.d.step();
   CHECK(doc::findNoteCurves(r.clip(), n) == nullptr);
   CHECK(r.ctx.status() == "Vibrato off");
   REQUIRE(r.ctx.undo());
   r.d.step();
-  CHECK(vibratoOf(r, n).set());
+  CHECK(vibratoOf(r, n).depthCents == doctest::Approx(46.0).epsilon(0.001));
+  // Further down, below the note: the vibrato inverts (a negative depth: it falls first). The ~ follows under the
+  // line, the corners go over it; the wave is the same size.
+  r.d.move(r.view->notePoint(n, 0.5));
+  g2 = r.view->vibratoGrip(n);
+  h = r.history();
+  REQUIRE(r.d.down(*g2));
+  r.d.move({g2->x, g2->y + 20.0f});
+  r.d.move({g2->x, g2->y + 40.0f});  // 46 − 285.7 ¢
+  r.d.step();
+  CHECK(r.ctx.status() == "Vibrato -240 \xC2\xA2 \xC2\xB7 4.24 Hz");
+  r.d.up({g2->x, g2->y + 40.0f});
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  v = vibratoOf(r, n);
+  CHECK(v.depthCents == -240.0f);
+  CHECK(r.cents(n, 0.01) < base - 100.0);  // the first swing goes down
+  CHECK(swing(r, n, base, 0.0, 1.0) == doctest::Approx(240.0).epsilon(0.03));
+  r.d.move(r.view->notePoint(n, 0.5));
+  const std::optional<Vec2> under = r.view->vibratoGrip(n);
+  REQUIRE(under.has_value());
+  const float line = r.view->yOfDegree(4);
+  CHECK(under->y > line + 10.0f);
+  const std::optional<Vec2> corner = r.view->vibratoCorner(n, 0);
+  REQUIRE(corner.has_value());
+  CHECK(corner->y < line - 10.0f);
+  // Back up through zero: upright again.
+  r.d.drag(*under, {under->x, under->y - 40.0f}, 5);
+  r.d.step();
+  CHECK(vibratoOf(r, n).depthCents == 46.0f);
+  REQUIRE(r.ctx.undo());
+  r.d.step();
+  REQUIRE(r.ctx.undo());
+  r.d.step();
+  CHECK(vibratoOf(r, n).depthCents == doctest::Approx(46.0).epsilon(0.001));
   // A double-click on the grip removes it.
   r.d.move(r.view->notePoint(n, 0.5));
   g2 = r.view->vibratoGrip(n);

@@ -80,9 +80,9 @@ struct Vib {
     fadeIn = static_cast<double>(std::max<Ticks>(v.fadeIn, 0));
     fadeOut = static_cast<double>(std::max<Ticks>(v.fadeOut, 0));
   }
-  bool any() const noexcept { return depth > 0.0; }
+  bool any() const noexcept { return depth != 0.0; }
   double at(double t) const noexcept {
-    if (depth <= 0.0 || t <= on || t >= stop) return 0.0;
+    if (depth == 0.0 || t <= on || t >= stop) return 0.0;
     double a = 1.0;
     if (fadeIn > 0.0) a = std::min(a, (t - on) / fadeIn);
     if (fadeOut > 0.0) a = std::min(a, (stop - t) / fadeOut);

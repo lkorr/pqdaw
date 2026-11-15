@@ -316,7 +316,8 @@ struct NoteBend {
   friend bool operator==(const NoteBend&, const NoteBend&) noexcept = default;
 };
 // A note's vibrato (T7.14; plan M7 V1–V3): a PROPERTY of the note, not baked breakpoints. A sine of `depthCents`
-// (peak, each way) added to the note's pitch from `onset` (note ticks; phase 0 there, rising first) to its end, with
+// (peak, each way) added to the note's pitch from `onset` (note ticks; phase 0 there, rising first — falling first when
+// the depth is negative: the inverted vibrato) to its end, with
 // an amplitude envelope of four corners: 0 at `onset`, the full depth from onset + fadeIn, the full depth until
 // stop − fadeOut, 0 at stop — stop = `end`, or the note's end when `end` is 0 (so a resize keeps "to the end") or lies
 // beyond it. The two inner corners may meet (a swell); where the fades overlap the smaller of the two wins.
@@ -327,14 +328,14 @@ inline constexpr float kMinVibratoHz = 0.1f, kMaxVibratoHz = 30.0f;        // Ra
 inline constexpr float kMinVibratoBeats = 1.0f / 64, kMaxVibratoBeats = 64.0f;  // RateUnit::Beats (cycles per quarter)
 struct NoteVibrato {
   enum class RateUnit : uint8_t { Hz, Beats };
-  float depthCents = 0.0f;  // 0: no vibrato (then every other field is its default); else (0, kMaxVibratoCents]
+  float depthCents = 0.0f;  // 0: no vibrato (then every other field is its default); else 0 < |depth| ≤ kMaxVibratoCents
   float rate = 0.0f;
   RateUnit unit = RateUnit::Hz;
   Ticks onset = 0;    // note ticks ≥ 0
   Ticks fadeIn = 0;   // ≥ 0
   Ticks end = 0;      // note ticks; 0: the note's end; else > onset
   Ticks fadeOut = 0;  // ≥ 0
-  bool set() const noexcept { return depthCents > 0.0f; }
+  bool set() const noexcept { return depthCents != 0.0f; }
   friend bool operator==(const NoteVibrato&, const NoteVibrato&) noexcept = default;
 };
 // A note's own curves (SPEC §3.1). pitch: the FREE curve (drawn curves) — a cents offset added to the note's

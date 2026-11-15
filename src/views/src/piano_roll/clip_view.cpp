@@ -331,10 +331,11 @@ std::optional<uint64_t> ClipView::harmonicOf(doc::NoteId note) const {
   const doc::Note* n = state_->findNote(note);
   return n ? state_->harmonicOf(*n) : std::nullopt;
 }
-std::optional<float> ClipView::harmonicGuideY(uint64_t k) const {
+std::optional<float> ClipView::harmonicGuideY(uint64_t k, std::optional<double> tick) const {
   const std::optional<RollState::Harmonics> h = state_->harmonics();
   if (!h || k < 1) return std::nullopt;
-  return state_->yOfCents(h->baseCents + tuning::cents(h->ratio) + 1200.0 * std::log2(static_cast<double>(k)));
+  const double shift = tick ? state_->harmonicsShift(*h, *tick) : 0.0;
+  return state_->yOfCents(h->baseCents + shift + tuning::cents(h->ratio) + 1200.0 * std::log2(static_cast<double>(k)));
 }
 Vec2 ClipView::notePoint(doc::NoteId id, double frac) const {
   const RollState& s = *state_;

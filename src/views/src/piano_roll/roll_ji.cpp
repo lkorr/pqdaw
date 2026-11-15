@@ -132,7 +132,17 @@ bool RollState::onPath(const doc::Note& n, const tuning::PitchId&) const {
   if (previewTouches(n)) return true;
   if (clip_->curves && doc::findNoteCurves(*clip_, n.id) != nullptr) return true;
   syncPaths();
+  if (anchorMoved(n)) return true;
   return paths_.anyWarp && (doc::noteAnchorOf(n.pitch).valid() || groupRole(n) == 2) && pitchIndex().warped(n.id) != nullptr;
+}
+
+bool RollState::anchorMoved(const doc::Note& n) const {
+  // (Only a curve or a warp somewhere in the clip can move an anchor.)
+  if (!clip_ || !(clip_->curves || paths_.anyWarp) || !doc::noteAnchorOf(n.pitch).valid()) return false;
+  const std::optional<double> hz = pitchIndex().hz(n.id);
+  const std::optional<double> still = centsOfImpl(n.pitch, false);  // its anchor chain standing still (no drag preview)
+  if (!hz || !still || !(tuning_.referenceHz() > 0.0)) return false;
+  return std::fabs(1200.0 * std::log2(*hz / tuning_.referenceHz()) - *still) > 1e-6;
 }
 
 const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
@@ -186,7 +196,9 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
     }
     return e.ok ? &e : nullptr;
   }
-  if (!rec && !warpedNote) return nullptr;
+  // A note anchored to a note whose curve moved it (Q293: it starts where that note's curve is) is drawn where it
+  // sounds, on a path with no points of its own.
+  if (!rec && !warpedNote && !anchorMoved(n)) return nullptr;
   auto it = paths_.notes.find(n.id.value);
   if (it == paths_.notes.end()) {
     it = paths_.notes.emplace(n.id.value, NotePath{}).first;
@@ -225,6 +237,21 @@ std::optional<double> RollState::pathCents(const doc::Note& n, Ticks, const tuni
   if (pitch == n.pitch) *base += anchorPreviewShift(n);  // M14 (T7.16a): its anchor is being dragged
   if (!p->pts.empty()) *base += pq::evalAutomation(std::span<const doc::Breakpoint>(p->pts), offset);
   return base;
+}
+
+double RollState::harmonicsShift(const Harmonics& h, double t) const {
+  const doc::Note* a = h.anchor.valid() && clip_ ? findNote(h.anchor) : nullptr;
+  if (!a || !onPath(*a, a->pitch)) return 0.0;  // a steady anchor: the guides are straight
+  const CurveTarget ct{a->id};
+  const std::span<const doc::Breakpoint> free = curvePoints(ct);
+  auto steady = [&](double off) -> std::optional<double> {
+    std::optional<double> c = curveBase(ct, off);  // its bends and warp there
+    if (c && !free.empty()) *c += pq::evalAutomation(free, off);
+    return c;
+  };
+  const double len = static_cast<double>(std::max<Ticks>(a->length, 1));
+  const std::optional<double> at = steady(std::clamp(t - static_cast<double>(a->start), 0.0, len)), at0 = steady(0.0);
+  return at && at0 ? *at - *at0 : 0.0;
 }
 
 std::optional<ui::Vec2> RollState::pathPoint(const doc::Note& n, double frac) const {

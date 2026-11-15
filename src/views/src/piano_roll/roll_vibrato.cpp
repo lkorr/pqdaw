@@ -6,11 +6,14 @@
 // wave that plays. Nothing is typed and nothing is baked into breakpoints.
 //
 //   the ~ grip      above the right end of the hovered note and of every selected note. Drag up / down: the depth
-//                   (1 ¢ steps, the wave grows on the note; down to 0 = off). Drag left / right (past a dead zone,
-//                   so setting the depth does not change it): the rate — right stretches the waves (slower), left
-//                   squeezes them (faster). Shift = fine. Double-click: off. With the note in a selection the drag
-//                   applies to every selected note (each keeps its own envelope).
-//   the corners     once a note vibrates: four square grips under the note at the corners of its amplitude envelope —
+//                   (1 ¢ steps, the wave grows on the note; at 0 = off; further down the vibrato inverts — a negative
+//                   depth, falling first — and the grip goes under the line). Drag left / right (past a dead zone,
+//                   so setting the depth does not change it): the rate, continuously — right stretches the waves
+//                   (slower), left squeezes them (faster). A new vibrato starts at kDefaultVibratoHz. Shift = fine.
+//                   Double-click: off. With the note in a selection the drag applies to every selected note (each
+//                   keeps its own envelope).
+//   the corners     once a note vibrates: four square grips under the note (over it when inverted: opposite the ~) at
+//                   the corners of its amplitude envelope —
 //                   onset, end of the fade-in, start of the fade-out, end. Drag sideways (grid snap; Shift: free).
 //                   Each stays between its neighbours; the two inner ones can meet (a swell). Two corners on one
 //                   tick (no fade yet): the drag's direction picks which one moves.
@@ -84,19 +87,6 @@ std::string RollState::vibratoText(double depthCents, double rateHz) {
   return "Vibrato " + number(depthCents) + " \xC2\xA2 \xC2\xB7 " + number(rateHz, 2) + " Hz";
 }
 
-double RollState::defaultVibratoRate(Ticks at) const {
-  const Grid g = grid();
-  if (!g.enabled()) return 6.0;
-  const TickRange cell = g.cellAt(at);
-  const double len = static_cast<double>(std::max<Ticks>(1, cell.end - cell.start));
-  double hz = ticksPerSecond(at) / len;  // one cycle per grid cell …
-  if (!(hz > 0.0) || !std::isfinite(hz)) return 6.0;
-  const double lo = 3.0 * std::numbers::sqrt2;  // … folded by octaves into 4.24 … 8.49 Hz (around 6)
-  while (hz < lo) hz *= 2.0;
-  while (hz >= 2.0 * lo) hz *= 0.5;
-  return std::round(hz * 10.0) / 10.0;
-}
-
 doc::NoteVibrato RollState::vibratoOf(doc::NoteId note) const {
   const doc::NoteCurves* rec = curveRecord(note);
   return rec ? rec->vibrato : doc::NoteVibrato{};
@@ -132,6 +122,10 @@ static std::optional<float> steadyY(const RollState& s, const doc::Note& n, doub
   return s.yOfCents(*c);
 }
 
+// The side of the line the ~ grip is on, as a device-y sign: up (−1) — down (+1) for an inverted vibrato, whose wave
+// falls first. The corners are on the other side.
+static float gripSide(const doc::NoteVibrato& v) { return v.depthCents < 0.0f ? 1.0f : -1.0f; }
+
 // A depth in cents as device px at the note's pitch.
 static float depthPx(const RollState& s, const doc::Note& n, double cents) {
   const std::optional<double> c = s.startCents(n);
@@ -147,10 +141,10 @@ std::optional<ui::Vec2> RollState::vibratoGripPos(const doc::Note& n) const {
   const double off = std::clamp(tickAtX(x) - static_cast<double>(n.start), 0.0, static_cast<double>(n.length));
   const std::optional<float> y = steadyY(*this, n, off);
   if (!y) return std::nullopt;
-  // Above the line, and above the wave's crest there: the grip rises as the depth grows.
+  // Above the line (under it when inverted), beyond the wave's crest there: the grip moves out as the depth grows.
   const doc::NoteVibrato v = vibratoOf(n.id);
   const float crest = v.set() ? depthPx(*this, n, static_cast<double>(v.depthCents) * envelopeAt(v, n.length, off)) : 0.0f;
-  return ui::Vec2{x, *y - kVibratoGripRise * sc - crest};
+  return ui::Vec2{x, *y + gripSide(v) * (kVibratoGripRise * sc + crest)};
 }
 
 std::optional<ui::Vec2> RollState::vibratoCornerPos(const doc::Note& n, int corner) const {
@@ -163,8 +157,9 @@ std::optional<ui::Vec2> RollState::vibratoCornerPos(const doc::Note& n, int corn
   if (!y) return std::nullopt;
   const float sc = scaleOf(*this);
   const float a = depthPx(*this, n, static_cast<double>(v.depthCents) * envelopeAt(v, n.length, off));
-  // Under the line, on the envelope's lower edge (never nearer the line than the rise, so it stays clear of it).
-  return ui::Vec2{xOfTick(static_cast<double>(n.start) + off), *y + std::max(a, kVibratoGripRise * sc)};
+  // Opposite the ~ (under the line, over it when inverted), on the envelope's edge (never nearer the line than the
+  // rise, so it stays clear of it).
+  return ui::Vec2{xOfTick(static_cast<double>(n.start) + off), *y - gripSide(v) * std::max(a, kVibratoGripRise * sc)};
 }
 
 RollState::VibratoHit RollState::vibratoPartAt(ui::Vec2 p) const {
@@ -231,7 +226,7 @@ void RollState::beginVibratoDrag(const VibratoHit& h, ui::Vec2 p) {
   } else {
     const doc::NoteVibrato v = vibratoOf(h.note);
     d.vibDepth = v.set() ? static_cast<double>(v.depthCents) : 0.0;
-    d.vibRate = v.set() ? static_cast<double>(v.rate) : defaultVibratoRate(pressed->start);
+    d.vibRate = v.set() ? static_cast<double>(v.rate) : kDefaultVibratoHz;
   }
 }
 
@@ -246,26 +241,26 @@ void RollState::vibratoDragTo(ui::Vec2 p, ui::Mods mods) {
                                      [](const DragState::VibratoTarget& t, doc::NoteId id) { return t.note < id; });
   if (base == d.vibrato.end() || base->note != d.pressed) return;
   if (d.kind == DragKind::Vibrato) {
-    // Up / down: the depth, in the roll's own pitch scale (the crest follows the pointer). Left / right: the rate.
+    // Up / down: the depth, in the roll's own pitch scale (the crest follows the pointer); through 0 (off) it goes
+    // negative: the inverted vibrato. Left / right: the rate, continuous (the wave stretches smoothly, no steps).
     double dc = centsAtScreenY(p.y) - centsAtScreenY(d.press.y);
     if (fine) dc *= 0.1;
     const double depth0 = base->base.set() ? static_cast<double>(base->base.depthCents) : 0.0;
     const double step = fine ? 0.1 : 1.0;
-    const double depth = std::clamp(std::round((depth0 + dc) / step) * step, 0.0, static_cast<double>(doc::kMaxVibratoCents));
+    const double maxDepth = static_cast<double>(doc::kMaxVibratoCents);
+    const double depth = std::clamp(std::round((depth0 + dc) / step) * step, -maxDepth, maxDepth);
     const float dead = 8.0f * sc;
     float dx = p.x - d.press.x;
     dx = std::fabs(dx) <= dead ? 0.0f : dx - std::copysign(dead, dx);
     const bool beats = base->base.set() && base->base.unit == doc::NoteVibrato::RateUnit::Beats;
-    const double rate0 = base->base.set() ? static_cast<double>(base->base.rate) : defaultVibratoRate(pressed->start);
+    const double rate0 = base->base.set() ? static_cast<double>(base->base.rate) : kDefaultVibratoHz;
     const double lo = beats ? doc::kMinVibratoBeats : doc::kMinVibratoHz, hi = beats ? doc::kMaxVibratoBeats : doc::kMaxVibratoHz;
-    const double rstep = fine ? 0.01 : 0.1;
-    double rate = rate0 * std::exp2(-static_cast<double>(dx) / (static_cast<double>(fine ? 1200.0f : 120.0f) * sc));
-    rate = dx == 0.0f ? rate0 : std::clamp(std::round(rate / rstep) * rstep, lo, hi);
+    const double rate = std::clamp(rate0 * std::exp2(-static_cast<double>(dx) / (static_cast<double>(fine ? 1200.0f : 120.0f) * sc)), lo, hi);
     d.vibDepth = depth;
     d.vibRate = rate;
     for (const DragState::VibratoTarget& t : d.vibrato) {
       doc::NoteVibrato v = t.base;
-      if (depth <= 0.0) {
+      if (depth == 0.0) {
         v = {};
       } else {
         v.depthCents = static_cast<float>(depth);
@@ -274,7 +269,7 @@ void RollState::vibratoDragTo(ui::Vec2 p, ui::Mods mods) {
       }
       previewRecord(t.note).vibrato = v;
     }
-    if (depth <= 0.0) ctx.setStatus("Vibrato off");
+    if (depth == 0.0) ctx.setStatus("Vibrato off");
     else if (beats) ctx.setStatus("Vibrato " + number(depth) + " \xC2\xA2 \xC2\xB7 " + number(rate, 2) + " per beat");
     else ctx.setStatus(vibratoText(depth, rate));
     markNotesDirty();
@@ -335,7 +330,7 @@ bool RollState::commitVibratoDrag(DragState& d) {
   std::vector<uint32_t> keep = sel_;
   const bool ok = apply(e, "Vibrato");
   select(std::move(keep));
-  if (ok && d.kind == DragKind::Vibrato && d.vibDepth > 0.0) vibratoDepth_ = d.vibDepth;
+  if (ok && d.kind == DragKind::Vibrato && d.vibDepth != 0.0) vibratoDepth_ = std::fabs(d.vibDepth);
   return ok;
 }
 
@@ -414,7 +409,9 @@ void paintVibratoGrips(PaintContext& ctx, RollState& s, const IRect& vis) {
         for (int c = 0; c < 4; ++c) {
           const std::optional<Vec2> k = s.vibratoCornerPos(*n, c);
           if (!k || !inView(*k)) continue;
-          if (std::fabs(k->y - dn[c].y) > 1.0f) ctx.dl.addRectFilled({k->x - 0.5f * px, dn[c].y, k->x + 0.5f * px, k->y}, withAlpha(ink, 150));
+          const float edge = gripSide(v) < 0.0f ? dn[c].y : up[c].y;  // the envelope's edge on the corners' side
+          if (std::fabs(k->y - edge) > 1.0f)
+            ctx.dl.addRectFilled({k->x - 0.5f * px, std::min(edge, k->y), k->x + 0.5f * px, std::max(edge, k->y)}, withAlpha(ink, 150));
           const bool grabbed = held && d.kind == DragKind::VibratoCorner && d.corner == c;
           const float r = (grabbed ? 0.5f : 0.42f) * RollState::kVibratoGrip * sc;
           ctx.dl.addRectFilled({k->x - r, k->y - r, k->x + r, k->y + r}, dark);

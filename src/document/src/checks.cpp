@@ -289,7 +289,7 @@ Status checkNoteBend(const NoteBend& b, NoteId note) {
 
 Status checkNoteVibrato(const NoteVibrato& v) {
   if (!v.set()) return v == NoteVibrato{} ? ok() : invalid("a vibrato without a depth has no other setting");
-  if (!std::isfinite(v.depthCents) || v.depthCents > kMaxVibratoCents) return invalid("vibrato depth out of range (0 to 1200 cents)");
+  if (!std::isfinite(v.depthCents) || std::fabs(v.depthCents) > kMaxVibratoCents) return invalid("vibrato depth out of range (-1200 to 1200 cents)");
   const bool beats = v.unit == NoteVibrato::RateUnit::Beats;
   if (v.unit != NoteVibrato::RateUnit::Hz && !beats) return invalid("unknown vibrato rate unit");
   const float lo = beats ? kMinVibratoBeats : kMinVibratoHz, hi = beats ? kMaxVibratoBeats : kMaxVibratoHz;

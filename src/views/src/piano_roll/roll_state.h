@@ -155,9 +155,14 @@ struct DragState {
   // T7.6 / T7.14. ResizeStart / ResizeEnd with Alt: the edge stays and the note glides in from the previous note / out
   // to the next one over |dt| (`bendPicks`: per selected note, sorted by id, the neighbour it bends from / to; found
   // once, when the gesture first bends; the neighbours are highlighted while it runs).
+  // A selected note with no such neighbour (`bendFree`, sorted) bends in from / out to the pitch the pointer is dragged
+  // to instead (`bendCents` from its own pitch at that edge; snapped to the rows, the harmonic guides and its own pitch,
+  // Shift: free) — written into its free curve.
   bool bend = false;
   bool bendFound = false;
   std::vector<std::pair<uint32_t, doc::NoteId>> bendPicks;
+  std::vector<uint32_t> bendFree;
+  double bendCents = 0.0;
   float travel = 0.0f;  // the farthest the pointer got from the press (device px): a pen stroke shorter than
                         // kMinPenStroke is a click (M7 review M7)
   // T7.14 vibrato grips: the notes the drag changes with what they had at the press (sorted by id), the corner
@@ -683,9 +688,13 @@ public:
   // nearest in pitch that is not at the note's own pitch. nullptr: none (`samePitch`: there is a neighbour, at the
   // note's own pitch).
   const doc::Note* bendNeighbour(const doc::Note& n, int edge, bool* samePitch = nullptr) const;
-  // The edit an Alt + edge drag in state `d` commits (one SetNoteCurves for every selected note with a neighbour).
+  // The edit an Alt + edge drag in state `d` commits (one SetNoteCurves for every selected note it bends: to its
+  // neighbour, or — none there — from / to d.bendCents in its free curve).
   doc::ops::EditResult bendEdit(DragState& d) const;
   void updateBendPreview();
+  // An Alt + edge drag's pitch for a note with no neighbour there: the pointer's travel up / down in cents from the
+  // pressed note's pitch at that edge, snapped to the rows, the harmonic guides and that pitch (Shift: whole cents).
+  double freeBendCents(ui::Vec2 p, ui::Mods mods) const;
   // The length of a note's bend in (edge −1) / out (+1); 0: none.
   Ticks bendLength(doc::NoteId note, int edge) const;
   // Ctrl+G: every selected note glides out into the next selected one over one grid step. One undo step.
@@ -707,9 +716,9 @@ public:
   bool deleteCurvePoint(const CurveHit& h);
   // Stores a note's free curve (SetNoteCurve), one undo step; the selection is kept.
   bool commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what);
-  // A pitch in cents snapped for a breakpoint drag: the nearest row, harmonic guide (when shown) or `own` (the pitch
-  // the curve is added to: value 0).
-  double snapCurveCents(double cents, double own) const;
+  // A pitch in cents snapped for a breakpoint drag at content tick `tick`: the nearest row, harmonic guide (when
+  // shown; where it is at that tick) or `own` (the pitch the curve is added to: value 0).
+  double snapCurveCents(double cents, double own, double tick) const;
   // The pitch under device y, not rounded (the inverse of yOfCents).
   double centsAtScreenY(float y) const noexcept;
   // A resized note's free curve: it keeps its place in time and is cut where the note no longer reaches.
@@ -762,21 +771,27 @@ public:
   bool removeVibrato(doc::NoteId note);
   // Sets the selected notes' vibrato depth and rate (Hz), keeping each note's envelope (scenes, tests).
   bool setSelectionVibrato(double depthCents, double rateHz);
-  // The default rate of a new vibrato: one cycle per grid cell, folded by octaves into 4.2 … 8.5 Hz at the clip's
-  // tempo (6 Hz without a grid).
-  double defaultVibratoRate(Ticks at) const;
   static std::string vibratoText(double depthCents, double rateHz);  // "Vibrato 30 ¢ · 6 Hz"
+  inline static constexpr double kDefaultVibratoHz = 6.0;    // the rate of a new vibrato
   inline static constexpr size_t kMaxVibratoGripNotes = 16;  // a larger selection shows the hovered note's grips only
   inline static constexpr float kVibratoGrip = 12.0f;       // grip size (logical px; hit boxes are this big)
   inline static constexpr float kVibratoGripInset = 12.0f;  // the ~ grip's centre from the note's end
-  inline static constexpr float kVibratoGripRise = 12.0f;   // … and above / the corners below the line
+  inline static constexpr float kVibratoGripRise = 12.0f;   // … and above / the corners below the line (mirrored for
+                                                            // an inverted vibrato: the grip on the side it swings first)
 
   // --- pitch paths (T7.4; T7.14: the effective curve, cached) ---
   // Device y of a pitch in cents, not rounded.
   float yOfCents(double cents) const noexcept;
   // Whether a note is drawn along a path instead of on its row: it has a curve record (a drawn curve, a bend, a
-  // vibrato) or its group's warps move it. O(1) for a clip without curves and warps.
+  // vibrato), its group's warps move it, or anchorMoved. O(1) for a clip without curves and warps.
   bool onPath(const doc::Note& n, const tuning::PitchId& pitch) const;
+  // A note anchored to a note whose curve (free curve, bends, warps) has moved it where this one starts: it sounds
+  // there (pitch_resolve, Q293), not where its anchor chain stands still, so it is drawn on a path at that pitch.
+  bool anchorMoved(const doc::Note& n) const;
+  // The pitch in cents of a group's anchor at content tick `t` as a note starting there resolves against it (its
+  // free curve, bends and warps, not its vibrato; clamped to its span) minus its pitch at its start: how far the
+  // harmonic guides of `h` (drawn along the anchor) are moved there. 0 for the reference's guides.
+  double harmonicsShift(const Harmonics& h, double t) const;
   // A path note as it is drawn and hit: `base` = the pitch it resolves to at its start in cents (a warped member:
   // its written pitch, its JI pitch or the point of the glide), `pts` = doc::effectiveNoteCurve (the free curve, the
   // bends, the warps and the vibrato; cents over ticks from the note's start; empty: straight) flattened to

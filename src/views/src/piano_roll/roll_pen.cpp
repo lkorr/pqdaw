@@ -12,9 +12,13 @@
 //   Alt + a note's left / right edge   the note glides in from the previous note / out to the next one over the
 //                                      dragged length (S-curve; "Bend In / Out ▸ Straight" in the note's menu); back to
 //                                      the edge removes it. Every selected note bends, each to its own neighbour
-//                                      (bendNeighbour); the neighbours are outlined while the drag runs.
+//                                      (bendNeighbour); the neighbours are outlined while the drag runs. A note with
+//                                      no neighbour there bends from / to the pitch dragged to (up / down; snapped
+//                                      as a breakpoint, Shift free; a plain vertical drag glides over a grid cell),
+//                                      written into its free curve.
 //   Ctrl+G                             each selected note glides out into the next selected one over one grid step.
-//   Draw Mode (B) on a note            drag: the stroke is the note's pitch curve from there on (thinned to 0.5 ¢, at
+//   Draw Mode (B) on a note            drag: the stroke is the note's pitch curve from there on (smoothed over
+//                                      kPenSmoothPx each way, then thinned to 0.5 ¢, at
 //                                      most kMaxPenPoints points; a drag under kMinPenStroke px is a click);
 //                                      Alt + drag: vibrato over the dragged span (the note's vibrato property: depth
 //                                      = the stroke's height); Ctrl + click: a breakpoint (drag it on); a click
@@ -57,6 +61,7 @@ using Pts = std::vector<doc::Breakpoint>;
 using Span = std::span<const doc::Breakpoint>;
 constexpr double kThinCents = 0.5;  // a stroke stays this close to what was drawn
 constexpr double kSamePitchCents = 0.5;  // a neighbour nearer than this is "at the note's own pitch"
+constexpr float kPenSmoothPx = 6.0f;     // a stroke is smoothed over this many logical px each way
 
 Error invalid(std::string message) { return Error{ErrorCode::InvalidArgument, std::move(message), {}}; }
 
@@ -72,6 +77,34 @@ double valueBefore(Span p, Ticks t) { return p.empty() ? 0.0 : doc::automationVa
 void push(Pts& out, const doc::Breakpoint& b) {
   if (!out.empty() && out.back().tick == b.tick && out.back().value == b.value) return;
   out.push_back(b);
+}
+
+// The pointer arrives on whole device pixels, so a slow stroke is a staircase of one-pixel steps (7 ¢ on 14 px rows)
+// with the hand's jitter on top. Each inner sample becomes the triangle-weighted mean of the samples within `radius`
+// ticks of it: the steps turn into slopes, a deliberate move stays (it is wider than the window). Near the ends the
+// window shrinks to stay symmetric (a straight stroke stays straight), and the two ends keep their values (they join
+// the curve that was there). O(samples · samples in a window).
+void smoothStroke(Pts& p, double radius, std::vector<float>& scratch) {
+  if (p.size() < 3 || !(radius > 0.0)) return;
+  scratch.resize(p.size());
+  const double t0 = static_cast<double>(p.front().tick), t1 = static_cast<double>(p.back().tick);
+  size_t lo = 0, hi = 0;  // (both window edges only move right: t − r and t + r never decrease)
+  for (size_t i = 0; i < p.size(); ++i) {
+    const double t = static_cast<double>(p[i].tick);
+    const double r = std::min({radius, t - t0, t1 - t});
+    scratch[i] = p[i].value;
+    if (!(r > 0.0)) continue;
+    while (static_cast<double>(p[lo].tick) < t - r) ++lo;
+    while (hi + 1 < p.size() && static_cast<double>(p[hi + 1].tick) <= t + r) ++hi;
+    double sw = 0.0, sv = 0.0;
+    for (size_t j = lo; j <= hi; ++j) {
+      const double w = 1.0 - std::fabs(static_cast<double>(p[j].tick) - t) / r;
+      sw += w;
+      sv += w * static_cast<double>(p[j].value);
+    }
+    scratch[i] = sw > 0.0 ? static_cast<float>(sv / sw) : p[i].value;
+  }
+  for (size_t i = 1; i + 1 < p.size(); ++i) p[i].value = scratch[i];
 }
 
 // A curve that is 0 everywhere is no curve.
@@ -275,7 +308,7 @@ RollState::CurveHit RollState::curveHandleAt(ui::Vec2 p) const {
   return hit;
 }
 
-double RollState::snapCurveCents(double cents, double own) const {
+double RollState::snapCurveCents(double cents, double own, double tick) const {
   double best = own;
   auto offer = [&](double c) {
     if (std::fabs(c - cents) < std::fabs(best - cents)) best = c;
@@ -284,7 +317,7 @@ double RollState::snapCurveCents(double cents, double own) const {
     if (const PitchRow* row = rows_.rowOfDegree(rows_.placeCents(cents).nearestDegree)) offer(row->cents);
   if (harmonics_)
     if (const std::optional<Harmonics> h = harmonics()) {
-      const double f = h->baseCents + tuning::cents(h->ratio);
+      const double f = h->baseCents + harmonicsShift(*h, tick) + tuning::cents(h->ratio);  // the guides at that tick
       const double k = std::max(1.0, std::round(std::exp2((cents - f) / 1200.0)));
       offer(f + 1200.0 * std::log2(k));
     }
@@ -360,29 +393,68 @@ doc::ops::EditResult RollState::bendEdit(DragState& d) const {
   if (!d.bendFound) {
     d.bendFound = true;
     d.bendPicks.clear();
+    d.bendFree.clear();
     for (const doc::Note& n : clip_->notes) {
       if (!selected(n.id)) continue;
       // A bend that is there keeps its neighbour (the drag changes its length); a new one finds it.
       const doc::NoteCurves* have = docRecord(n.id);
       if (have && bendOf(*have, edge).set() && findNote(bendOf(*have, edge).other)) d.bendPicks.emplace_back(n.id.value, bendOf(*have, edge).other);
       else if (const doc::Note* other = bendNeighbour(n, edge)) d.bendPicks.emplace_back(n.id.value, other->id);
+      else d.bendFree.push_back(n.id.value);
     }
     std::sort(d.bendPicks.begin(), d.bendPicks.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::sort(d.bendFree.begin(), d.bendFree.end());
   }
   doc::SetNoteCurves set{ref_, {}};
-  for (const auto& [id, other] : d.bendPicks) {
-    const doc::Note* n = findNote(doc::NoteId{id});
-    if (!n) continue;
+  // Inward from the edge, as far as the bend on the other edge leaves room. A free bend dragged only up or down glides
+  // over one grid cell.
+  const Grid g = grid();
+  auto lengthOf = [&](const doc::Note& n, const doc::NoteCurves& rec, bool free) {
+    const doc::NoteBend& opposite = bendOf(rec, -edge);
+    const Ticks room = n.length - (opposite.set() ? std::min(opposite.length, n.length) : 0);
+    Ticks want = edge < 0 ? d.dt : -d.dt;
+    if (free && d.dt == 0) {
+      want = kPpq / 4;
+      if (g.enabled()) {
+        const TickRange cell = g.cellAt(edge < 0 ? n.start : std::max<Ticks>(n.start + n.length - 1, 0));
+        want = std::max<Ticks>(1, cell.end - cell.start);
+      }
+    }
+    return std::clamp<Ticks>(want, 0, std::max<Ticks>(room, 0));
+  };
+  auto bent = [&](doc::NoteId id) -> std::optional<doc::NoteCurves> {
+    const doc::Note* n = findNote(id);
+    if (!n) return std::nullopt;
     const doc::NoteCurves* have = docRecord(n->id);
     doc::NoteCurves rec = have ? *have : doc::NoteCurves{n->id, {}, {}, {}, {}};
-    doc::NoteBend& b = bendOf(rec, edge);
-    // Inward from the edge, as far as the bend on the other edge leaves room.
-    const doc::NoteBend& opposite = bendOf(rec, -edge);
-    const Ticks room = n->length - (opposite.set() ? std::min(opposite.length, n->length) : 0);
-    const Ticks length = std::clamp<Ticks>(edge < 0 ? d.dt : -d.dt, 0, std::max<Ticks>(room, 0));
-    if (length <= 0) b = {};
-    else b = doc::NoteBend{length, b.set() ? b.shape : doc::GlideShape{}, other};
-    if (have ? !(*have == rec) : !rec.empty()) set.curves.push_back(std::move(rec));
+    const bool free = std::binary_search(d.bendFree.begin(), d.bendFree.end(), id.value);
+    const Ticks length = lengthOf(*n, rec, free);
+    if (const auto pick = std::lower_bound(d.bendPicks.begin(), d.bendPicks.end(), id.value, [](const auto& p, uint32_t v) { return p.first < v; });
+        pick != d.bendPicks.end() && pick->first == id.value) {
+      doc::NoteBend& b = bendOf(rec, edge);
+      if (length <= 0) b = {};
+      else b = doc::NoteBend{length, b.set() ? b.shape : doc::GlideShape{}, pick->second};
+    } else if (length > 0 && d.bendCents != 0.0) {
+      // No neighbour: a glide in its free curve from / to the dragged pitch, joining what the curve does there.
+      const Span old = rec.pitch;
+      const Ticks L = std::max<Ticks>(n->length, 1);
+      if (edge < 0) {
+        const Pts fresh{bp(0, valueAt(old, 0) + d.bendCents), bp(length, valueAt(old, length))};
+        rec.pitch = replaceRegion(old, 0, length, fresh, true);
+      } else {
+        const Pts fresh{bp(L - length, valueAt(old, L - length)), bp(L, valueBefore(old, L) + d.bendCents)};
+        rec.pitch = replaceRegion(old, L - length, L, fresh, false);
+      }
+    }
+    if (have ? *have == rec : rec.empty()) return std::nullopt;
+    return rec;
+  };
+  // Both lists are sorted by id: merged, the records stay in note order.
+  size_t i = 0, j = 0;
+  while (i < d.bendPicks.size() || j < d.bendFree.size()) {
+    const bool pick = j == d.bendFree.size() || (i < d.bendPicks.size() && d.bendPicks[i].first < d.bendFree[j]);
+    const doc::NoteId id{pick ? d.bendPicks[i++].first : d.bendFree[j++]};
+    if (std::optional<doc::NoteCurves> rec = bent(id)) set.curves.push_back(std::move(*rec));
   }
   std::vector<doc::Command> commands;
   if (!set.curves.empty()) commands.push_back(std::move(set));
@@ -398,6 +470,28 @@ void RollState::updateBendPreview() {
   for (const doc::Command& c : e->batch().commands)
     if (const doc::SetNoteCurves* set = std::get_if<doc::SetNoteCurves>(&c.v)) curvePreview_ = set->curves;
   std::sort(curvePreview_.begin(), curvePreview_.end(), [](const doc::NoteCurves& a, const doc::NoteCurves& b) { return a.note < b.note; });
+  if (!drag.bendFree.empty()) {
+    const bool in = drag.kind == DragKind::ResizeStart;
+    char buf[96];
+    if (drag.bendCents == 0.0) std::snprintf(buf, sizeof buf, "%s: drag up or down for the pitch it %s", in ? "Bend In" : "Bend Out", in ? "comes from" : "goes to");
+    else std::snprintf(buf, sizeof buf, "%s %s %+.0f \xC2\xA2", in ? "Bend In" : "Bend Out", in ? "from" : "to", drag.bendCents);
+    ctx.setStatus(buf);
+  }
+}
+
+double RollState::freeBendCents(ui::Vec2 p, ui::Mods mods) const {
+  const DragState& d = drag;
+  const double dc = centsAtScreenY(p.y) - centsAtScreenY(d.press.y);
+  const doc::Note* n = clip_ ? findNote(d.pressed) : nullptr;
+  if (!n || (mods & mod::kShift)) return std::round(dc);
+  // The pitch the pressed note has at that edge; the dragged pitch snaps as a breakpoint does.
+  const double off = d.kind == DragKind::ResizeStart ? 0.0 : static_cast<double>(n->length);
+  const std::optional<double> base = curveBase(CurveTarget{n->id}, off);
+  if (!base) return std::round(dc);
+  Span free;  // the document's (the preview holds this gesture's result)
+  if (const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, n->id) : nullptr) free = nc->pitch;
+  const double own = *base + (free.empty() ? 0.0 : pq::evalAutomation(free, off));
+  return snapCurveCents(own + dc, own, static_cast<double>(n->start) + off) - own;
 }
 
 bool RollState::glideSelection() {
@@ -577,7 +671,7 @@ void RollState::beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool v
   if (vibrato) {
     const doc::NoteVibrato have = vibratoOf(t.note);
     d.vibrato.push_back({t.note, have, std::max<Ticks>(length, 1)});
-    d.vibRate = have.set() && have.unit == doc::NoteVibrato::RateUnit::Hz ? static_cast<double>(have.rate) : defaultVibratoRate(start + off);
+    d.vibRate = have.set() && have.unit == doc::NoteVibrato::RateUnit::Hz ? static_cast<double>(have.rate) : kDefaultVibratoHz;
     d.vibDepth = vibratoDepth_;
   }
 }
@@ -622,6 +716,8 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
     Pts raw;
     raw.reserve(d.stroke.size());
     for (const auto& [t, value] : d.stroke) raw.push_back(bp(t, value));
+    static std::vector<float> smoothScratch;  // UI thread only; reused
+    if (pxPerTick_ > 0.0) smoothStroke(raw, static_cast<double>(kPenSmoothPx * scaleOf(*this)) / pxPerTick_, smoothScratch);
     const Ticks ta = raw.front().tick, tb = raw.back().tick;
     // Where the stroke begins and ends on the curve that was there (within two pixels), it joins it exactly.
     if (ta > 0 && std::fabs(raw.front().value - valueBefore(old, ta)) <= px2) raw.front().value = static_cast<float>(valueBefore(old, ta));
@@ -706,7 +802,7 @@ void RollState::curveHandleTo(ui::Vec2 p, ui::Mods mods) {
     const std::optional<double> base = curveBase(d.curve, static_cast<double>(off));
     if (!base) return;
     double cents = centsAtScreenY(p.y) + d.penHold;
-    if (!(mods & mod::kShift)) cents = snapCurveCents(cents, *base);  // rows, harmonic guides, the note's own pitch
+    if (!(mods & mod::kShift)) cents = snapCurveCents(cents, *base, static_cast<double>(start + off));  // rows, harmonic guides, own pitch
     pts[i] = bp(off, cents - *base, pts[i].curve);
   }
   setCurvePreview(d.curve, pts);

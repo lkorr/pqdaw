@@ -197,6 +197,30 @@ TEST_CASE("vibrato: a swell (the inner corners meet), end 0 follows a resize, va
   NoteVibrato bad = good;
   bad.depthCents = 1201.0f;
   refused(bad);
+  bad.depthCents = -1201.0f;
+  refused(bad);
+  // A negative depth is the inverted vibrato (it falls first): valid, clamped like a positive one, the mirror wave.
+  NoteVibrato inverted = good;
+  inverted.depthCents = -10.0f;
+  REQUIRE(f.store.dispatch(SetNoteCurves{f.ref, {NoteCurves{a.id, {}, {}, {}, inverted}}}).ok());
+  CHECK(findNoteCurves(f.clip(), a.id)->vibrato.set());
+  {
+    const std::vector<Breakpoint> down = f.effective(f.clip(), *f.clip().notes.findById(a.id));
+    REQUIRE(f.store.dispatch(SetNoteCurves{f.ref, {NoteCurves{a.id, {}, {}, {}, good}}}).ok());
+    const std::vector<Breakpoint> up = f.effective(f.clip(), *f.clip().notes.findById(a.id));
+    REQUIRE(down.size() == up.size());
+    for (size_t i = 0; i < up.size(); ++i) {
+      CHECK(down[i].tick == up[i].tick);
+      CHECK(down[i].value == doctest::Approx(-up[i].value).epsilon(1e-6));
+    }
+    CHECK(polyline(down, kPpq / 8.0) < 0.0);  // the first swing goes down
+  }
+  inverted.depthCents = -5000.0f;
+  const ops::NoteVibratoEdit inv[] = {{keyOf(longer), inverted}};
+  commit(f.store, ops::setNoteVibrato(f.doc(), f.ref, inv));
+  CHECK(findNoteCurves(f.clip(), a.id)->vibrato.depthCents == -kMaxVibratoCents);
+  f.roundTrips();  // (the negative depth survives save and load)
+  REQUIRE(f.store.dispatch(SetNoteCurves{f.ref, {NoteCurves{a.id, {}, {}, {}, good}}}).ok());
   bad = good;
   bad.rate = 31.0f;
   refused(bad);

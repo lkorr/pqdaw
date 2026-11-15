@@ -329,6 +329,100 @@ TEST_CASE("roll pen: Alt + a note's right edge glides it out to the next note �
   CHECK(doc::findNoteCurves(r.clip(), rep[0]) == nullptr);
 }
 
+TEST_CASE("roll pen: Alt + the edge of a note with no neighbour there bends from / to the pitch dragged to — snapped, Shift free, a plain vertical drag over one grid cell; written into its free curve") {
+  Pen r;
+  r.focusNotes();
+  // A chord: no note before or after any of them (the bug report's 4:5:6).
+  const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 4 * kQ, 0), Pen::plain(0, 4 * kQ, 4), Pen::plain(0, 4 * kQ, 7)});
+  const doc::NoteId n = ids[1];
+  r.d.click(r.view->notePoint(n, 0.5));
+  REQUIRE(r.view->selection().size() == 1);
+  const double own = *r.view->noteCentsAt(n, 0.5);
+
+  // The left edge: a beat inward and two rows (and a bit) up: it slides in from two rows above, snapped to the row.
+  size_t h = r.history();
+  const Vec2 edge{r.view->xOfTick(0.0) + 1.5f, r.view->yOfDegree(4)};
+  REQUIRE(r.d.down(edge, PointerButton::Left, mod::kAlt));
+  r.d.move({edge.x + 0.5f * kBeat, edge.y - kRow}, mod::kAlt);
+  r.d.move({edge.x + kBeat, edge.y - 2.0f * kRow - 3.0f}, mod::kAlt);
+  r.d.step();
+  CHECK(r.history() == h);  // a preview so far
+  CHECK(r.ctx.status() == "Bend In from +200 \xC2\xA2");
+  CHECK(*r.view->noteCentsAt(n, 0.0) == doctest::Approx(own + 200.0).epsilon(1e-9));  // … of what the release stores
+  r.d.up({edge.x + kBeat, edge.y - 2.0f * kRow - 3.0f}, PointerButton::Left, mod::kAlt);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  const doc::NoteCurves* rec = doc::findNoteCurves(r.clip(), n);
+  REQUIRE(rec != nullptr);
+  CHECK_FALSE(rec->bendIn.set());  // no neighbour to name: a free curve
+  REQUIRE(rec->pitch.size() == 2);
+  CHECK(rec->pitch[0].tick == 0);
+  CHECK(rec->pitch[0].value == 200.0f);
+  CHECK(rec->pitch[1].tick == kQ);
+  CHECK(rec->pitch[1].value == 0.0f);
+  CHECK(r.note(n).start == 0);  // the edge did not move
+  CHECK(r.note(n).length == 4 * kQ);
+  CHECK(*r.view->noteCentsAt(n, 0.125) == doctest::Approx(own + 100.0).epsilon(1e-9));
+  CHECK(*r.view->noteCentsAt(n, 0.5) == doctest::Approx(own).epsilon(1e-9));
+
+  // The right edge, only down (Shift once the drag runs: free cents, 5 px = 36 ¢; Shift on the press would toggle
+  // the selection): it slides out over one grid cell (a beat here).
+  h = r.history();
+  const Vec2 end{r.view->xOfTick(4.0 * kQ) - 2.0f, r.view->yOfDegree(4)};
+  REQUIRE(r.d.down(end, PointerButton::Left, mod::kAlt));
+  r.d.move({end.x, end.y + 3.0f}, mod::kAlt | mod::kShift);
+  r.d.move({end.x, end.y + 5.0f}, mod::kAlt | mod::kShift);
+  r.d.up({end.x, end.y + 5.0f}, PointerButton::Left, mod::kAlt | mod::kShift);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  rec = doc::findNoteCurves(r.clip(), n);
+  REQUIRE(rec != nullptr);
+  CHECK(rec->pitch.front().value == 200.0f);  // the bend in stays
+  CHECK(rec->pitch.back().tick == 4 * kQ);
+  CHECK(rec->pitch.back().value == -36.0f);
+  CHECK(*r.view->noteCentsAt(n, 0.75) == doctest::Approx(own).epsilon(1e-9));  // the slide starts a beat before the end
+  CHECK(*r.view->noteCentsAt(n, 1.0) == doctest::Approx(own - 36.0).epsilon(1e-6));
+  CHECK(r.note(n).length == 4 * kQ);
+
+  // Alt + an edge dragged only sideways: still nothing to glide with, and the status says what to do.
+  h = r.history();
+  const Vec2 low{r.view->xOfTick(0.0) + 1.5f, r.view->yOfDegree(0)};
+  r.d.click(r.view->notePoint(ids[0], 0.5));
+  r.d.drag(low, {low.x + kBeat, low.y}, 4, mod::kAlt);
+  r.d.step();
+  CHECK(r.history() == h);
+  CHECK(r.ctx.status().find("drag up or down") != std::string::npos);
+}
+
+TEST_CASE("roll pen: a slow stroke is smoothed — the one-pixel steps of the pointer become a slope, the ends stay where they were drawn") {
+  Pen r;
+  r.focusNotes();
+  const doc::NoteId n = r.addNotes({Pen::plain(0, 4 * kQ, 0)})[0];
+  r.drawMode(true);
+  // 125 px to the right, one pixel up every 10 px (then level): a staircase of twelve 7 ¢ steps.
+  const Vec2 p0 = r.at(0.5 * kQ, 0);
+  REQUIRE(r.d.down(p0));
+  for (int i = 1; i <= 125; ++i) r.d.move({p0.x + static_cast<float>(i), p0.y - static_cast<float>(std::min(i / 10, 12))});
+  r.d.up({p0.x + 125.0f, p0.y - 12.0f});
+  r.d.step();
+  const double step = 100.0 / kRow;  // one pixel in cents
+  const Ticks px = kQ / static_cast<Ticks>(kBeat);
+  const Ticks t0 = kQ / 2;
+  CHECK(r.curveAt(n, t0) == doctest::Approx(0.0).epsilon(1e-6));                      // where it was pressed
+  CHECK(r.curveAt(n, t0 + 125 * px) == doctest::Approx(12.0 * step).epsilon(1e-4));  // where it was let go
+  // Nowhere a pixel's step at once: over any 1 px the curve rises well under a step, and it never falls.
+  double prev = r.curveAt(n, t0);
+  double steepest = 0.0;
+  for (int i = 1; i <= 125; ++i) {
+    const double v = r.curveAt(n, t0 + i * px);
+    CHECK(v >= prev - 0.6);  // (thinning keeps it within 0.5 ¢)
+    steepest = std::max(steepest, v - prev);
+    prev = v;
+  }
+  MESSAGE("steepest rise over 1 px: " << steepest << " cents (a raw step: " << step << ")");
+  CHECK(steepest < 0.5 * step);
+}
+
 TEST_CASE("roll pen: Ctrl+G glides each selected note into the next selected one over a grid step; Clear Bends removes them") {
   Pen r;
   r.focusNotes();
@@ -503,16 +597,15 @@ TEST_CASE("roll pen: breakpoints — Ctrl + click adds one, drag snaps to rows (
   CHECK(r.noteCount() == 1);
 }
 
-TEST_CASE("roll pen: Alt paints vibrato in Draw Mode — the note's vibrato property over the dragged span (depth from the stroke's height, rate from the grid), nothing baked, no menu entry") {
+TEST_CASE("roll pen: Alt paints vibrato in Draw Mode — the note's vibrato property over the dragged span (depth from the stroke's height, 6 Hz), nothing baked, no menu entry") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 8 * kQ, 0), Pen::plain(0, 8 * kQ, 7)});
   const doc::NoteId n = ids[0];
   r.drawMode(true);
   size_t h = r.history();
-  const double rate = r.st().defaultVibratoRate(kQ);
-  CHECK(rate >= 4.2);
-  CHECK(rate < 8.5);
+  const double rate = RollState::kDefaultVibratoHz;
+  CHECK(rate == 6.0);
 
   // From beat 1 to beat 5, half a row high.
   const Vec2 from = r.at(1.0 * kQ, 0);

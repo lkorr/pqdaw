@@ -130,8 +130,9 @@ DrawnNote NoteAreaWidget::cellNote(TickRange c, Vec2 p, DrawPitch mode, Mods mod
     // T7.16a: the group the note joins here (its harmonics; with Alt the finer series, M5), else the reference's.
     const doc::JiGroup* g = s_.captureGroupAt(c.start, p.y);
     const bool shift = (mods & mod::kShift) != 0;
-    const std::optional<RollState::Harmonics> h =
+    std::optional<RollState::Harmonics> h =
         g && !shift ? s_.groupHarmonicsOf(*g, (mods & mod::kAlt) != 0) : s_.referenceHarmonics();  // the ratio is to its base
+    if (h) h->baseCents += s_.harmonicsShift(*h, static_cast<double>(c.start));  // the guides there (a moving anchor)
     dn.ratio = s_.ratioFor(row, rows.centsAtY(static_cast<double>(cy)), h);
     if (h && h->anchor.valid()) dn.anchor = h->anchor;
     dn.degree = rows.placeCents(tuning::cents(dn.ratio) + (h ? h->baseCents : 0.0)).nearestDegree;
@@ -228,6 +229,7 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
       d.bend = (mods & mod::kAlt) != 0;
       if (d.bend) {
         d.trackDamage = false;
+        d.bendCents = s_.freeBendCents(p, mods);  // a note with no neighbour there bends from / to the pointer's pitch
         s_.updateBendPreview();
       } else {
         s_.clearCurvePreview();
