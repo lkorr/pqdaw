@@ -207,6 +207,7 @@ void ProjectLink::setAutoArm(uint32_t trackId) {  // UI thread (KB.1)
 }
 
 bool ProjectLink::armed(const doc::Track& t) const noexcept {
+  if (t.frozen) return false;  // FZ.3: its instrument is not lowered, so the notes would reach nothing
   return t.mixer.arm || (autoArm_ != 0 && t.id.value == autoArm_ && t.kind == doc::TrackKind::Midi);
 }
 

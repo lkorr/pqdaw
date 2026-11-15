@@ -1061,15 +1061,30 @@ void ViewContext::setSelectedTrack(doc::TrackId t) {
 
 // --- KB.1: the computer keyboard's track, layout and Live's arm on select ---------------------------------
 
+namespace {
+// The MIDI tracks live input can reach: active, under active groups (ProjectLink routes no others) and not frozen
+// (FZ.3: a frozen track records nothing). An arm anywhere else listens to nothing, so it neither takes the keyboard
+// nor stops auto-arm (a bounce switches its source off and leaves it selected).
+template <class F>
+void eachListening(const std::vector<doc::TrackPtr>& list, F& f) {
+  for (const doc::TrackPtr& t : list) {
+    if (!t->active) continue;
+    if (t->kind == doc::TrackKind::Midi && !t->frozen) f(*t);
+    if (t->kind == doc::TrackKind::Group) eachListening(t->children, f);
+  }
+}
+}  // namespace
+
 void ViewContext::syncAutoArm() {
   const doc::Project& p = *store_.current();
   doc::TrackId want;
-  if (const doc::Track* sel = selectedTrack_.valid() ? doc::findTrackPtr(p, selectedTrack_) : nullptr;
-      sel && sel->kind == doc::TrackKind::Midi && !sel->frozen) {  // FZ.3: a frozen track records nothing
-    bool anyArmed = false;
-    doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { anyArmed = anyArmed || t.mixer.arm; });
-    if (!anyArmed) want = sel->id;
-  }
+  bool selListens = false, anyArmed = false;
+  auto visit = [&](const doc::Track& t) {
+    selListens = selListens || t.id == selectedTrack_;
+    anyArmed = anyArmed || t.mixer.arm;
+  };
+  eachListening(p.tracks, visit);
+  if (selListens && !anyArmed) want = selectedTrack_;
   if (want == autoArm_) return;
   autoArm_ = want;
   transport_.setAutoArm(want.value);
@@ -1080,11 +1095,15 @@ doc::TrackId ViewContext::keyboardTrack() const {
   if (autoArm_.valid()) return autoArm_;
   const doc::Project& p = *store_.current();
   const doc::Track* sel = selectedTrack_.valid() ? doc::findTrackPtr(p, selectedTrack_) : nullptr;
-  if (sel && sel->kind == doc::TrackKind::Midi && sel->mixer.arm) return sel->id;
   doc::TrackId first;
-  doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    if (!first.valid() && t.kind == doc::TrackKind::Midi && t.mixer.arm) first = t.id;
-  });
+  bool selArmed = false;
+  auto visit = [&](const doc::Track& t) {
+    if (!t.mixer.arm) return;
+    selArmed = selArmed || t.id == selectedTrack_;
+    if (!first.valid()) first = t.id;
+  };
+  eachListening(p.tracks, visit);
+  if (selArmed) return selectedTrack_;
   if (first.valid()) return first;
   return sel && sel->kind == doc::TrackKind::Midi ? sel->id : doc::TrackId{};
 }
