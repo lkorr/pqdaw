@@ -1782,7 +1782,7 @@ Context: the task says the cursor audition should respect the roll's preview pre
 draws always audition through `RollState::audition`). Choice: every cursor pitch move and every placement auditions
 through the same call. A preview switch would be one flag checked there. Status: open.
 
-## Q?-T7.14-a · 2026-11-14 · T7.14 · When a JI group stays "active" (its guides, drawing on its harmonics)
+## Q303 · 2026-11-14 · T7.14 · When a JI group stays "active" (its guides, drawing on its harmonics)
 Context: T7.13 kept the last group active for ever (else the newest), so after one Tune to JI every later plain draw
 became a Ratio member of that group and only Shift could draw on the rows.
 Choice: active = the selected note's group; with nothing selected the group used last stays (a click on empty space
@@ -1790,7 +1790,7 @@ or a deleted note does not drop it, so double-click / Draw Mode keep adding to i
 Esc with nothing selected, puts it away (guides gone = rows). Alternative: drop it on any click on empty space
 (then a double-click can never add a member, since its first click is one). Status: decided (reversible).
 
-## Q?-T7.14-b · 2026-11-14 · T7.14 · Shift + drag on a member: detune, not "rows"
+## Q304 · 2026-11-14 · T7.14 · Shift + drag on a member: detune, not "rows"
 Context: the task's item 5 says "dragging a member vertically snaps to the group's harmonics (Shift: rows)", item 7
 says Shift + drag is the free detune (with a dead zone).
 Choice: Shift + drag is the free detune for every note, members included (one meaning per modifier); a member goes
@@ -1798,7 +1798,7 @@ back onto the tuning's rows with Ctrl+Shift+J (the group) or the menu's Degree c
 DRAWING (Shift + draw / double-click puts a Degree note on a row while a group is active). Status: open (say if a
 member should snap to rows with another modifier).
 
-## Q?-T7.14-c · 2026-11-14 · T7.14 · Vibrato: the rate in Hz uses the tempo where the note starts; left / right
+## Q305 · 2026-11-14 · T7.14 · Vibrato: the rate in Hz uses the tempo where the note starts; left / right
 Choices: (1) a Hz vibrato's period in ticks is taken from the tempo at the note's start and kept for the note (one
 number per note in pitch_resolve; under a tempo ramp inside a long note the rate drifts with the tempo). The Beats
 unit is in the model and evaluated; the roll writes Hz. (2) Dragging the ~ grip RIGHT stretches the waves (slower),
@@ -1807,7 +1807,7 @@ selected notes show their grips only while they are ≤ 16 and each ≥ 36 px wi
 always. (4) A new vibrato starts with no fades over the whole note; `end` 0 means "the note's end" so a resize keeps
 it. Status: decided (reversible).
 
-## Q?-T7.14-d · 2026-11-14 · T7.14 · Warps: which way a new marker points, and "Here" from the menu
+## Q306 · 2026-11-14 · T7.14 · Warps: which way a new marker points, and "Here" from the menu
 Choices: (1) a corner drag never changes what the rest of the group does: a new FIRST warp leads into the state the
 group started in (no warps: tempered → JI), a new LAST one leaves the state it ended in (no warps: JI → tempered).
 (2) "Back to Tuning Here" / "Into JI Here" moves the NEXT transition to the pointer when there is one (a single warp

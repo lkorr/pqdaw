@@ -804,3 +804,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, rebased on 6013f53f): `build.ps1 -Affected` 45/45; 17 macro cases through real dispatch.
 - Perf / CPU-efficiency check: off = one branch per key press; keypress table once per (EDO, preset), ≤ 0.04 ms.
 - Notes/blockers: Q299–Q302; gaps listed in TASKS.
+
+## 2026-11-14 · T7.14 merged · main (4fdc6feb)
+- Did: the roll on notes-first groups: group frames (header = proportion, harmonic numbers, anchor mark, active-group guides), Tune to JI as a switch (Ctrl+Shift+J) with a candidate chooser, warps by dragging the frame's bottom corners (markers, glide grips, Straight / S-Curve), walk (Alt+Up / Down), proportion tool (J / Insert Proportion…), Add Note at Ratio…, Is Harmonic on a member = re-anchor (`ops::reanchorJiGroup`), bends on `ops::setNoteBend` (follow the neighbour), detune dead zone + status, `NoteVibrato` set by dragging the `~` grip and four envelope corners (no typed values), cached note paths, help / HOTKEYS / keymap rewritten. Goldens: + pianoroll-group-{triad,chooser,warp,two,walk,proportion,ratio,31edo}; 11 re-recorded.
+- Verified (worker, rebased on e26b9c8a): `build.ps1 -Affected -Slow` 87/87 (pqmeter_diff skipped), ship pq_bench_dsp links; render test: vibrato within 1.0 ¢, warped chord within 0.16 ¢ of the effective curve, interpreter == JIT. Orchestrator looked at the warp, ratio and vibrato goldens.
+- Perf / CPU-efficiency check (release pq_bench_piano_roll, median): full paint ~3000 notes 0.48 → 0.47 ms; 2,000 curved notes 2.15 → 0.92 ms (227k → 69k vertices); 64 vibrating notes ≤ 128 events per block (limit 256).
+- Notes/blockers: Q303–Q306. Not used in the live app by anyone yet.
