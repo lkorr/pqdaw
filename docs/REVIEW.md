@@ -1848,3 +1848,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
   Questions Q?-T7.16a-a … d.
 - Look at: `tests/views/golden/pianoroll-group-two.png` (guides only over the active chord), `pianoroll-group-chooser.png`
   ("moves 47 ¢"), `pianoroll-help.png` (Quick start), `pianoroll-group-proportion.png`.
+## T7.16b · macro mode and JI playback review fixes (2026-11-15)
+- Try (macro mode, `Ctrl+CapsLock`):
+  1. Tune a chord to JI (`Ctrl+Shift+J`), point at its E, type `b 1 0 Enter`: the chord stays a group and nothing
+     moves; the E is now the group's anchor, harmonic 10 (the status line says so). `b` on its own never removes a
+     group any more; `b 0 Enter` does.
+  2. Click in the arrangement: the MACRO lamp goes unlit with an orange outline ("MACRO (click)"; its tooltip and the
+     roll's tab say "MACRO (click the notes)") and the number keys work as usual there. Point at the notes, or click
+     them, and the keys are macro's again.
+  3. Rest the pointer on a note, then walk the cursor with `f` until the roll scrolls: the anchor stays where it was;
+     move the mouse and the note under it becomes the anchor.
+  4. `Ctrl+CapsLock` twice, then rename a track: no capitals (the app puts Caps Lock back).
+  5. Hz vibratos at 120 BPM, then set 60 BPM and play: they still swing at the same speed (they did at half before).
+- Look at: `tests/views/golden/pianoroll-macro-tempered.png` (the lit lamp now reads "MACRO 12-EDO" in full).

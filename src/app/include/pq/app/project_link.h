@@ -313,7 +313,7 @@ struct LinkStats {
   uint64_t trackLowerings = 0;     // tracks whose note sequence was lowered again (the per-track cache missed)
   uint64_t clipLowerings = 0;      // T7.16b: clips of those tracks lowered again (the per-clip cache missed)
   double sequenceMs = 0.0;         // T7.16b: time in publishSequences (keys, lowering, the image build and publish)
-  double lowerMs = 0.0;            // T7.3: time spent in them (notes, curves, JI objects → engine descriptions)
+  double lowerMs = 0.0;            // T7.3: time spent in them (notes, curves, JI groups → engine descriptions)
   uint64_t tablesExhausted = 0;    // tunings left without a node table (every Resources::tunings slot in use)
   uint64_t paramWrites = 0;
   uint64_t compileErrors = 0;

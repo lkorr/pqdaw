@@ -1,7 +1,7 @@
 #pragma once
 
 // Note events of one engine block (T1.8, SPEC §7.1 "event" rate). Producers — the timeline sequencer (T3.16),
-// MIDI input, JI objects (§5), `pqdaw --play`'s test sequence — push them into an EventBuffer on the audio thread
+// MIDI input, the computer keyboard, `pqdaw --play`'s test sequence — push them into an EventBuffer on the audio thread
 // before the block; the VoiceEngine (voices.h) turns them into voice allocations and per-sample voice.* buffers.
 // The ProgramImage itself never reads events (ProcessContext::events is informational for it).
 //
@@ -67,12 +67,12 @@ struct NoteEvent {
   uint32_t frame = 0;             // sample offset in the block
   NoteEventKind kind = NoteEventKind::NoteOn;
   uint8_t flags = 0;              // kNoteEventRetune
-  uint16_t unisonCount = 1;       // NoteOn: voice.unisonCount (JI object voices at one pitch; SPEC §5)
+  uint16_t unisonCount = 1;       // NoteOn: voice.unisonCount (voices sounding one pitch together; 1 if none)
   uint32_t noteId = 0;            // the producer's handle for this note (note-off and expression find it by id)
   float hz = 0.0f;                // NoteOn: initial Hz (> 0); Pitch: target Hz (> 0)
   float velocity = 0.0f;          // NoteOn: velocity 0..1; NoteOff: release velocity 0..1
   float ratio = 1.0f;             // NoteOn: voice.ratio (pitch as a ratio of its anchor; 1 if none)
-  float harmonic = 0.0f;          // NoteOn: voice.harmonic (harmonic number of a Harmonic identity; 0 if none)
+  float harmonic = 0.0f;          // NoteOn: voice.harmonic (the note's number in its JI group; 0 if none)
   uint16_t unisonIndex = 0;       // NoteOn: voice.index (index within its unison group)
   uint16_t pad2_ = 0;
   union {
