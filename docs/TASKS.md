@@ -869,7 +869,8 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **T7.15 Review of the rework + `-Full`** *(docs/reviews/M7-rework.md: 0 C / 8 H / 21 M / 18 L, 6 reproduced; -Full 86/86 on ae88e5db)*
 - [x] **T7.16a Rework fixes: groups and the roll** 👁 *(merged 93b84485; H1–H4, H6, M1–M3, M5–M10, M13–M16 fixed with tests; M4 three of four; Back to Tuning keeps the group (reading + warps); warps count from the anchor; Alt shows the finer series between harmonics; Quick start in the help; Q307–Q310; open: L5, L7–L9, a one-note edit with a warped group costs ~10 ms more than without (untraced); tests written with the fixes, not seen failing first)*
 - [x] **T7.16b Rework fixes: macro mode and playback** *(merged ea64bde1; H5, H7, H8, M11, M12, M17–M19, M21 fixed with tests; `b 0 Enter` removes a group, `b` N renumbers; Ctrl+CapsLock restores Caps Lock (`ChordLockGuard`, real SendInput untested); note-ons displace curve events at the block cap; MIDI export reports moving pitches (Q311: pitch-bend export); open: O(groups × notes) stepping in edit_notes.cpp)*
-- [ ] Deferred: phase-locked unisons for notes that bend into each other (engine Sync exists); MIDI export of curves (M3); arrangement thumbnails (M4)
+- [ ] Deferred: MIDI export of curves (M3, Q311); arrangement thumbnails (M4)
+- [ ] **PH Phase-locked unisons + per-note phase (phase mode sliders, note-scoped automation, drawn in the note)** — idea logged 2026-11-15, plan docs/plans/PH.md; not scheduled, refine with the user first
 - [ ] T7.8 pulse arpeggiator + chord sets, T7.9 flatten: deferred
 
 ## M5 onward (outline: refine into tasks before starting; most need user review)
