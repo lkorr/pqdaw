@@ -861,7 +861,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **T7.10 Review** *(docs/reviews/M7.md on task/T7.10-review: 0 C / 5 H / 19 M / 20 L; -Full 85/87, pq_tests_library load flake, pqmeter_diff skipped)*
 - **Rework: notes-first JI (user 2026-11-14; plan "Rework" R1–R6): the box object goes away, JI groups are regular notes tied to an anchor note**
 - [~] **T7.11a Review fixes that survive the rework**: H2 (clone remaps anchors), H3 (anchor deleted / split away), M5, M13, derived bends (bendIn / bendOut follow the neighbour)
-- [~] **T7.12 Look: every note as a line along its pitch** 👁 (R6, notes only)
+- [x] **T7.12 Look: every note as a line along its pitch** 👁 *(merged b7d8335f; one routine `drawNoteLine`: 5 px line on the exact pitch, pill head at each start, label above the line, faint row band; 23 roll goldens re-recorded + pianoroll-note-lines; full paint of 3009 notes 0.42 → 0.52 ms min (+25 %, 71k → 89k vertices); for the user: band always visible or hover-only, head size vs a gap)* (R6, notes only)
 - [ ] **T7.13 Groups + warps model, object removal, lowering** (R1–R4; after T7.11a)
 - [ ] **T7.14 Roll: groups, Tune to JI toggle + chooser, warp markers, walk, proportion tool, Add Note at Ratio, bends** 👁 (R3–R6; review H4, H5, M7–M11; after T7.12, T7.13)
 - [ ] **T7.15 Review of the rework + `-Full`**
