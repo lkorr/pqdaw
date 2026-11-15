@@ -798,3 +798,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker, rebased on ee337147): `build.ps1 -Affected -Slow` 85/87, the two failures pass on re-run (pqdaw_idle_shell SEGFAULT at 1.8 s; pq_tests_playback_slow EX.1 `temp_directory_path: not a directory`); ship pq_bench_dsp links; pq_tests_document 290/290.
 - Perf / CPU-efficiency check: clips without groups / warps pay nothing new; lowering 100 groups × 8 notes × 32 warps 12.9 ms (check, bound 25 ms).
 - Notes/blockers: Q295–Q298. The roll has only "Is Harmonic…" groups until T7.14.
+
+## 2026-11-14 · T8.1 merged · main (5e7c583c)
+- Did: macro mode (`MacroMode` key listener, `src/views/src/macro/`): Ctrl+CapsLock / MACRO lamp, cursor + anchor + composition, interval keys 1…0 / q…p, backtick / Tab / Backspace / a s d f / - =, layers tempered (the tuning's step for the composed interval, error shown) and JI (`g`), just whenever the anchor is a JI note (group anchor, member or Ratio note → `ops::addGroupNote`), anchor from the pointer / selection, `b` + N = makeJiGroup, presets trainer / ahk-numpad, fewest-keypress labels (EDOs), overlay, help section. 109 goldens re-recorded for the lamp; + pianoroll-macro-tempered, pianoroll-macro-ji.
+- Verified (worker, rebased on 6013f53f): `build.ps1 -Affected` 45/45; 17 macro cases through real dispatch.
+- Perf / CPU-efficiency check: off = one branch per key press; keypress table once per (EDO, preset), ≤ 0.04 ms.
+- Notes/blockers: Q299–Q302; gaps listed in TASKS.
