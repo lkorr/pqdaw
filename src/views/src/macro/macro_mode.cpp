@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <numeric>
 
+#include "../common/drag.h"
 #include "../piano_roll/roll_widgets.h"
 #include "macro_doc.h"
 #include "pq/tuning/monzo.h"
@@ -412,6 +413,7 @@ std::optional<double> MacroMode::anchorCents() const {
 int64_t MacroMode::anchorRow() const { return resolve(s_).degree; }
 
 Ticks MacroMode::noteLength() const {
+  if (length_ > 0) return length_;  // bug-ji-input: set with Shift + left / right
   const Anchor a = resolve(s_);
   if (a.note) return std::max<Ticks>(1, a.note->length);
   if (!roll_) return kNoGridStep;
@@ -552,9 +554,22 @@ bool MacroMode::blocked() const {
   return false;
 }
 
+// bug-ji-input: Shift + the preset's left / right keys (Shift+A / Shift+F) or Shift + the arrow keys: -1 / +1 (the next
+// note's length); 0: not a length key.
+int MacroMode::lengthKey(const ui::KeyEvent& e) const {
+  if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper | ui::mod::kShift)) != ui::mod::kShift) return 0;
+  if (e.key == ui::key::kLeft) return -1;
+  if (e.key == ui::key::kRight) return 1;
+  ui::KeyEvent plain = e;  // the preset's keys are case-insensitive letters: Shift+A may arrive as 'A'
+  if (plain.key >= 'A' && plain.key <= 'Z') plain.key = static_cast<ui::Key>(plain.key + ('a' - 'A'));
+  const MacroBinding* b = preset_.find(plain);
+  return b && b->op == MacroOp::Left ? -1 : b && b->op == MacroOp::Right ? 1 : 0;
+}
+
 bool MacroMode::onTreeKey(const ui::KeyEvent& e) {
   if (!e.down || !on_) return false;
-  if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper | ui::mod::kShift)) != 0) return false;
+  const int lengthDir = lengthKey(e);
+  if (lengthDir == 0 && (e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper | ui::mod::kShift)) != 0) return false;
   checkTaking();
   if (!taking_) {  // review M11: the focus and the pointer are elsewhere (or a field / popup has the keys)
     if (lockPending_) {
@@ -565,13 +580,18 @@ bool MacroMode::onTreeKey(const ui::KeyEvent& e) {
     return false;
   }
   const bool enter = e.key == ui::key::kReturn || e.scancode == ui::Scancode::KpEnter;
-  const MacroBinding* b = preset_.find(e);
+  const MacroBinding* b = lengthDir != 0 ? nullptr : preset_.find(e);
   // Review M19: nothing macro mode does may join a drag's undo entry (Esc on the drag would take it away too).
-  if (dragging() && (b || (lockPending_ && (digitOf(e) >= 0 || enter)))) {
+  if (dragging() && (b || lengthDir != 0 || (lockPending_ && (digitOf(e) >= 0 || enter)))) {
     ctx_.setStatus("Macro: finish the drag first");
     return true;
   }
   (void)sync();
+  if (lengthDir != 0) {
+    if (lockPending_) commitLock();  // the next macro key commits the number
+    changeLength(lengthDir);         // held: every auto-repeat
+    return true;
+  }
   if (lockPending_) {
     if (const int d = digitOf(e); d >= 0) {
       // Review L10: a leading 0 means "remove the group" (b 0 Enter); at most four digits, said when refused.
@@ -705,6 +725,28 @@ void MacroMode::moveTime(int dir) {
   t = std::max<Ticks>(0, t);
   step([&] { s_.tick = t; });
   afterMove(false);
+}
+
+void MacroMode::changeLength(int dir) {
+  if (!roll_ || !roll_->hasClip()) return;
+  // One grid step at the note's end (as the roll's Shift+Left / Right measure a selection), never shorter than one
+  // grid step at the cursor (the grid off: kGridOffStep, a 16th).
+  const Grid g = roll_->grid();
+  const Ticks len = noteLength();
+  const TickRange cell = g.enabled() ? g.cellAt(s_.tick) : TickRange{s_.tick, s_.tick + drag::kGridOffStep};
+  const Ticks shortest = std::max<Ticks>(1, cell.end - cell.start);
+  const Ticks next = std::max(shortest, drag::stepByCells(g, s_.tick + len, dir) - s_.tick);
+  if (next == len) {
+    ctx_.setStatus("Macro: the next note is as short as the grid step");
+    return;
+  }
+  length_ = next;
+  char buf[96];
+  const double beats = static_cast<double>(next) / static_cast<double>(kPpq);
+  std::snprintf(buf, sizeof buf, "Macro: the next note is %.4g beat%s long", beats, beats == 1.0 ? "" : "s");
+  ctx_.setStatus(buf);
+  reveal();
+  changed();
 }
 
 void MacroMode::movePitch(int dir) {

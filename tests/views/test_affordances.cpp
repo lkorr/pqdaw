@@ -277,10 +277,23 @@ TEST_CASE("affordances: piano roll keys — Shift+arrows change the length by a 
   CHECK(r.note(100).length == n0.length + kTicksPerWhole / 16);
   CHECK(r.note(100).start == n0.start);
   CHECK(r.history() == h + 1);
+  // bug-ji-input: held, the keys repeat (each auto-repeat a cell more, one undo step each).
+  CHECK(r.d.press(Chord{key::kRight, mod::kShift}, true) == KeyResult::Action);
+  CHECK(r.d.press(Chord{key::kRight, mod::kShift}, true) == KeyResult::Action);
+  CHECK(r.note(100).length == n0.length + 3 * (kTicksPerWhole / 16));
+  CHECK(r.d.press(Chord{key::kLeft, mod::kShift}, true) == KeyResult::Action);
+  CHECK(r.d.press(Chord{key::kLeft, mod::kShift}, true) == KeyResult::Action);
+  CHECK(r.note(100).length == n0.length + kTicksPerWhole / 16);
+  CHECK(r.history() == h + 5);
   CHECK(r.d.press("Shift+Left") == KeyResult::Action);
   CHECK(r.d.press("Shift+Left") == KeyResult::Action);
   CHECK(r.note(100).length == n0.length - kTicksPerWhole / 16);
-  CHECK(r.history() == h + 3);
+  CHECK(r.history() == h + 7);
+  // … and so do Left / Right (the nudge).
+  CHECK(r.d.press(Chord{key::kRight, mod::kNone}, true) == KeyResult::Action);
+  CHECK(r.note(100).start == n0.start + kTicksPerWhole / 16);
+  CHECK(r.d.press(Chord{key::kLeft, mod::kNone}, true) == KeyResult::Action);
+  CHECK(r.note(100).start == n0.start);
   // Shortening stops at one step: with a whole-bar grid the note (shorter than two bars) cannot shrink.
   fixedGrid(r.ctx, 0);
   h = r.history();

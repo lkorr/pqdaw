@@ -97,7 +97,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `pianoroll.nudgeRight` | `Right` | pianoroll | MIDI Note Editor | implemented (T3.x-fix-look; one grid cell later) |
 | `pianoroll.nudgeFineLeft` | `Alt+Left` | pianoroll | MIDI Note Editor | implemented (T4.16b; the selected notes a 1/128 note earlier, off the grid; one undo step) |
 | `pianoroll.nudgeFineRight` | `Alt+Right` | pianoroll | MIDI Note Editor | implemented (T4.16b; a 1/128 note later) |
-| `pianoroll.shorten` | `Shift+Left` | pianoroll | MIDI Note Editor | implemented (T4.16b; the selected notes' ends one grid cell earlier, measured at the earliest note's end; the shortest keeps at least one cell; one undo step) |
+| `pianoroll.shorten` | `Shift+Left` | pianoroll | MIDI Note Editor | implemented (T4.16b; the selected notes' ends one grid cell earlier, measured at the earliest note's end; the shortest keeps at least one cell; one undo step; bug-ji-input: repeats while held, as every arrow-key step does — Up / Down, Left / Right, Prev / Next; in macro mode the key is the next note's length) |
 | `pianoroll.lengthen` | `Shift+Right` | pianoroll | MIDI Note Editor | implemented (T4.16b; one grid cell longer) |
 | `pianoroll.deselect` | `Escape` | pianoroll | — (pqdaw; Live has no binding) | implemented (T4.16b; with nothing selected Esc falls through) |
 | `pianoroll.stepDown` | `Down` | pianoroll | MIDI Note Editor (microtonal: SPEC §6.1) | implemented (T3.11) |
@@ -114,7 +114,7 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | — (note editor, Draw Mode `B`) | drag on a note · `Alt` + drag · `Ctrl` + click | pianoroll | — (pqdaw; SPEC §3.1) | implemented (T7.6; T7.14: the pen on an existing note — a drag draws its pitch curve from there on (a drag under 8 px is a click), `Alt` + drag sets the note's vibrato over the dragged span (depth = the stroke's height, a flat stroke repeats the last depth; the note's vibrato property, nothing baked), `Ctrl` + click adds a breakpoint and drags it. A click deletes the note. `Alt` / `Shift` on EMPTY space still draw Cents / Ratio notes.) |
 | — (note editor, not a keymap action) | drag / `Shift` + drag / double-click a breakpoint | pianoroll | — (pqdaw; SPEC §3.1) | implemented (T7.6: the breakpoints of the selected notes' curves — a drag snaps to the rows, the harmonic guides and the note's own pitch, and in time to the grid; `Shift`: free; a double-click deletes the point; the diamond between two points bends that segment) |
 | — (note editor, not a keymap action) | drag the `~` grip above a note's right end · drag the squares under a vibrating note | pianoroll | — (pqdaw; M7 V1–V3) | implemented (T7.14: vibrato by dragging, nothing typed — the `~` of the hovered / selected note: up / down = depth in cents (0 = off), left / right (past 8 px) = rate (right: longer waves); `Shift` = fine; double-click removes; a selection changes together. The four squares under a vibrating note are its envelope's corners (onset, end of the fade-in, start of the fade-out, end): drag sideways, grid snap, `Shift` free; the inner two can meet) |
-| — (note editor, not a keymap action) | a JI group's frame: header · bottom corners · warp diamond · round grip | pianoroll | — (pqdaw; M7 R4, R6) | implemented (T7.14: a click on the header selects the group's notes (on a tuned group's proportion: the chooser of readings); dragging a bottom corner inward adds a warp (left: tempered up to there, then a glide into JI; right: back to the tuning); a warp's diamond drags to move it, its round grip sets the glide's length, a click selects it (`Delete` removes it), right-click: Straight / S-Curve / Remove Warp. The frame itself takes no clicks) |
+| — (note editor, not a keymap action) | a JI group's frame: header · bottom corners · warp diamond · round grip | pianoroll | — (pqdaw; M7 R4, R6) | implemented (T7.14: a click on the header selects the group's notes (on a tuned group's proportion: the chooser of readings); dragging a bottom corner inward adds a warp (left: tempered up to there, then a glide into JI; right: back to the tuning); a warp's diamond drags to move it, its round grip sets the glide's length, a click selects it (`Delete` removes it), right-click: Straight / S-Curve / Remove Warp. The frame itself takes no clicks. bug-ji-input: the frozen note (the anchor) dragged or stepped without the rest of its group moves alone, as a member does — on the group's harmonics; the other notes keep their pitch, the lowest of them becomes the frozen note; in time alone the warps stay put — while the whole group selected (the header click) moves as a chord) |
 | `device.delete` | `Delete` | devices | Editing | implemented (T4.1: deletes the selected devices) |
 | `device.copy` | `Ctrl+C` | devices | Editing | implemented (T4.1) |
 | `device.cut` | `Ctrl+X` | devices | Editing | implemented (T4.1) |
@@ -338,10 +338,12 @@ A release ends the note its press started. A note outside the keyboard's range (
 `macro.toggle` (`Ctrl+CapsLock`, or the MACRO lamp in the control bar) switches it. While it is on, a note clip is open
 in the clip view and the clip view has the keyboard focus or the pointer, the keys below belong to it (T7.16b; elsewhere
 they act as usual and the lamp, unlit with an accent outline, says "MACRO (click the notes)"); keys with Ctrl / Alt /
-Super / Shift, keys its preset does not bind (Space), a focused text field and an open menu or popup are not touched.
+Super / Shift (except the length keys below), keys its preset does not bind (Space), a focused text field and an open
+menu or popup are not touched.
 During a pointer drag its keys are refused ("finish the drag first"), so nothing joins the drag's undo step.
 `Ctrl+CapsLock` leaves the OS Caps Lock as it was (T7.16b: the app taps the lock back after any Ctrl / Alt / Win +
-Caps Lock chord, `pq/ui/chord_lock.h`). It takes the computer MIDI keyboard's place as
+Caps Lock chord, `pq/ui/chord_lock.h`; bug-ji-input: the tap goes out when the chord's Caps Lock comes up, so every
+press toggles macro mode). It takes the computer MIDI keyboard's place as
 the key listener: turning one on turns the other off. The keys are data: `assets/macro/<preset>.json`, chosen in
 Preferences → MIDI → Macro Mode (`trainer` = this table, the default; `ahk-numpad` = the AHK macro's keypad slots,
 matched by scancode).
@@ -350,10 +352,11 @@ matched by scancode).
 |---|---|
 | `1 2 3 4 5 6 7 8 9 0` | multiply the composition by 2/1 3/2 5/4 7/4 11/8 13/8 17/16 19/16 23/16 29/16; the cursor moves and is auditioned |
 | `Q W E R T Y U I O P` | multiply by the reciprocals (1/2 2/3 4/5 4/7 …) |
-| `` ` `` | place a note at the cursor (length: the anchor note's, else one grid step), clear the composition, return to the anchor; from a free cursor with nothing composed the new note becomes the anchor |
+| `` ` `` | place a note at the cursor (length: the one set with `Shift+A` / `Shift+F`, else the anchor note's, else one grid step), clear the composition, return to the anchor; from a free cursor with nothing composed the new note becomes the anchor |
 | `Tab` | place a note and make it the anchor (chaining) |
 | `Backspace` | clear the composition; with nothing composed, delete the note at the cursor |
-| `A` / `F` | cursor one grid step earlier / later |
+| `A` / `F` | cursor one grid step earlier / later (held: repeats) |
+| `Shift+A` / `Shift+F`, `Shift+Left` / `Shift+Right` | the next note one grid step shorter / longer (bug-ji-input; held: repeats; shown by the cursor's box; kept for the session; at least one grid step, a 16th with the grid off). In macro mode these take the place of the roll's `pianoroll.shorten` / `lengthen` |
 | `S` / `D` | cursor up / down: one row in the tempered layer, the next harmonic where the note would be just |
 | `-` / `=` | macro undo / redo (the last macro step, with its document edit while the document is still as that step left it) |
 | `G` | layer: Tempered ↔ JI |

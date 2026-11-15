@@ -487,18 +487,101 @@ EditResult stepNotes(const Project& p, ClipRef clip, std::span<const NoteKey> no
   return e;
 }
 
+// bug-ji-input (the user: "dragging the anchor must move only that note"): a JI group's anchor moved without every
+// member of its group moves ALONE, as a member would — the notes that stay keep their pitch, their number and their
+// group, and the fundamental stays. In pitch the group is first re-anchored (reanchorJiGroup) onto its lowest staying
+// member with that member's own number, so the moved note IS a member when `build` steps it: on the group's
+// harmonics in a tuned group, as the tempered note it sounds as (leaving the group) in one Back to Tuning. In time
+// alone nothing is re-anchored; the group's warps are shifted so they stay where they are in the clip. A group all of
+// whose notes move is a chord moving (T7.16a H2): untouched. `build(project)` makes the move on the given project.
+// Cost: one pass over the notes when no anchor moves alone; else per such group one re-anchoring (a resolve of the
+// clip) and its commands applied to a scratch snapshot.
+template <class Build>
+EditResult moveAnchorsAlone(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps, Build&& build) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f || !f->clip->groups || (dt == 0 && steps == 0)) return build(p);
+  const NoteClip& c = *f->clip;
+  std::vector<NoteId> moving;
+  moving.reserve(notes.size());
+  for (const NoteKey& k : notes)
+    if (const Note* n = c.notes.locate(k)) moving.push_back(n->id);
+  std::sort(moving.begin(), moving.end());
+  auto isMoving = [&](NoteId id) { return std::binary_search(moving.begin(), moving.end(), id); };
+  std::vector<NoteId> alone;  // moving anchors with a member that stays
+  for (const Note& n : c.notes)
+    if (const NoteId a = noteAnchorOf(n.pitch); a.valid() && isMoving(a) && !isMoving(n.id)) alone.push_back(a);
+  std::sort(alone.begin(), alone.end());
+  alone.erase(std::unique(alone.begin(), alone.end()), alone.end());
+  std::vector<JiGroupId> groups;
+  for (const JiGroup& g : jiGroupsOf(c))
+    if (std::binary_search(alone.begin(), alone.end(), g.anchor)) groups.push_back(g.id);
+  if (groups.empty()) return build(p);
+  if (steps == 0) {
+    EditResult e = build(p);
+    if (!e) return e;
+    JiGroupList list(jiGroupsOf(c).begin(), jiGroupsOf(c).end());
+    bool shifted = false;
+    for (JiGroup& g : list)
+      if (std::binary_search(alone.begin(), alone.end(), g.anchor) && !g.warps.empty()) {
+        g.warps = shiftedWarps(g.warps, dt);  // the same points in the clip, counted from the anchor's new start
+        shifted = true;
+      }
+    if (shifted) batchOf(*e).commands.push_back(SetJiGroups{clip, std::move(list)});
+    e->jiGroups.insert(e->jiGroups.end(), groups.begin(), groups.end());
+    return e;
+  }
+  Snapshot scratch(Snapshot{}, &p);  // non-owning: p outlives this call
+  std::vector<Command> first;
+  for (const JiGroupId id : groups) {
+    Result<ClipFound> now = findClip(*scratch, clip);
+    if (!now) return std::move(now).error();
+    const NoteClip& cc = *now->clip;
+    const JiGroup* g = nullptr;
+    for (const JiGroup& x : jiGroupsOf(cc))
+      if (x.id == id) g = &x;
+    const std::optional<GroupHarmonics> gh = g ? groupHarmonics(cc, *g) : std::nullopt;
+    if (!gh) return invalid("the JI group's anchor is not in the clip");
+    const GroupMember* carrier = nullptr;  // the lowest staying member with a number
+    for (const GroupMember& m : gh->members)
+      if (!isMoving(m.note) && m.harmonic >= 1 && m.harmonic <= static_cast<int64_t>(kMaxHarmonicIndex) &&
+          (carrier == nullptr || m.harmonic < carrier->harmonic))
+        carrier = &m;
+    const Note* cn = carrier ? cc.notes.findById(carrier->note) : nullptr;
+    if (cn == nullptr) return invalid("the notes that stay in the JI group have no harmonic number to carry it; move the whole chord");
+    EditResult r = reanchorJiGroup(*scratch, clip, id, keyOf(*cn), static_cast<uint32_t>(carrier->harmonic));
+    if (!r) return r;
+    for (const Command& cmd : r->batch().commands) {
+      ChangeSet cs;
+      Result<Snapshot> next = apply(scratch, cmd, cs);
+      if (!next) return std::move(next).error();
+      scratch = std::move(*next);
+      first.push_back(cmd);
+    }
+  }
+  EditResult e = build(*scratch);
+  if (!e) return e;
+  Batch& b = batchOf(*e);
+  b.commands.insert(b.commands.begin(), first.begin(), first.end());
+  e->jiGroups.insert(e->jiGroups.end(), groups.begin(), groups.end());
+  return e;
+}
+
 }  // namespace
 
 EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps,
                      const tuning::Edo* displayGrid) {
-  return stepNotes(p, clip, notes, notes.size() == 1 ? "Move Note" : "Move Notes", steps, StepUnit::Grid, displayGrid,
-                   [&](Note& n) { n.start += dt; });
+  return moveAnchorsAlone(p, clip, notes, dt, steps, [&](const Project& q) {
+    return stepNotes(q, clip, notes, notes.size() == 1 ? "Move Note" : "Move Notes", steps, StepUnit::Grid, displayGrid,
+                     [&](Note& n) { n.start += dt; });
+  });
 }
 
 EditResult transposeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, int32_t steps, StepUnit unit,
                           const tuning::Edo* displayGrid) {
-  return stepNotes(p, clip, notes, unit == StepUnit::Equave ? "Transpose Equave" : "Transpose", steps, unit,
-                   displayGrid, [](Note&) {});
+  return moveAnchorsAlone(p, clip, notes, 0, steps, [&](const Project& q) {
+    return stepNotes(q, clip, notes, unit == StepUnit::Equave ? "Transpose Equave" : "Transpose", steps, unit,
+                     displayGrid, [](Note&) {});
+  });
 }
 
 EditResult resizeNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, NoteEdge edge, Ticks delta) {

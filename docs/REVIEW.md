@@ -1872,3 +1872,13 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Drag the ~ sideways (smooth rate), and down past the note (inverted vibrato; ~ goes under, squares above). New vibratos start at 6 Hz.
 - Alt-drag the edge of a chord note up/down (no neighbour): a slide from/to that pitch.
 - Arrangement clips show bends, drawn curves and vibrato; JI chords sit at their true heights.
+
+## 2026-11-15 · bug-ji-input · JI anchors, Shift+arrows, macro lengths, Ctrl+CapsLock 👁
+- Tune a chord (`Ctrl+Shift+J`), click its bottom note and drag it down: only it moves, onto the group's harmonics (the
+  lines); the others stay where they sound, the next lowest becomes the diamond, the header reads e.g. 3:5:6. `Ctrl+Z`
+  puts it back. Drag it sideways: only it moves. Click the proportion above the frame, then drag: the whole chord moves.
+- Hold `Shift+Right` on a selected note: it keeps getting longer (also `Left` / `Right` nudges held).
+- Macro mode: `Shift+F` / `Shift+A` (or `Shift+Right` / `Shift+Left`), also held: the cursor's box gets longer /
+  shorter and the next `` ` `` places a note that long; it stays until changed.
+- `Ctrl+CapsLock` several times in a row: macro mode toggles on every press and Caps Lock stays as it was. Not tried on
+  a real keyboard by the agent (tests feed the guard the event orders; nothing was injected into the OS).

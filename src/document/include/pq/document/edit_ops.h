@@ -417,7 +417,11 @@ std::optional<tuning::PitchId> stepPitch(const tuning::PitchId& pitch, int32_t s
 // follow it in JI); a member stepped without its anchor goes to the next
 // harmonic of its group and is re-written as the tuning's nearest step to its new pitch (a group Back to Tuning: it
 // is the tempered note it sounds as, its written identity stepped, and leaves the group). SetNotesWritten in the same
-// Batch.
+// Batch. bug-ji-input: a group's ANCHOR moved without every member of its group moves alone, as a member: in pitch the
+// group is first re-anchored (reanchorJiGroup, same Batch) onto its lowest staying member with that member's number —
+// every staying note keeps its pitch, number and group, the fundamental stays — and the moved note then steps as a
+// member does (the next harmonics; Back to Tuning: rows, out of the group); in time alone the group's warps stay where
+// they are in the clip (shiftedWarps). InvalidArgument when no staying member has a number to carry the group.
 EditResult moveNotes(const Project& p, ClipRef clip, std::span<const NoteKey> notes, Ticks dt, int32_t steps = 0,
                      const tuning::Edo* displayGrid = nullptr);
 // Up/Down (unit Grid) and Shift+Up/Down (unit Equave), using the clip's effective tuning.

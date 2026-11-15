@@ -202,6 +202,8 @@ public:
   // The pitch the roll draws a note at, `frac` of the way through it, in cents from the reference (its effective
   // curve: bends, warps, vibrato, drawn curve); the device y of a pitch.
   std::optional<double> noteCentsAt(doc::NoteId id, double frac) const;
+  // The start pitch a running drag previews the note at (its own pitch when the drag does not move it). Tests.
+  std::optional<double> notePreviewCents(doc::NoteId id) const;
   float yOfCents(double cents) const noexcept;
   // How many note paths were flattened so far (a repaint of an unchanged clip adds none: M7 review M14).
   uint64_t pathBuilds() const noexcept;

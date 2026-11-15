@@ -799,26 +799,12 @@ TEST_CASE("roll groups (T7.16a, M7 review H2 / M14): Up, Shift+Up and a vertical
   r.d.step();
   CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(3, 0));
   same();
-  // M14: the anchor dragged alone: its members are drawn following it while the drag runs.
-  r.d.click(r.view->notePoint(ids[0], 0.5));
-  r.d.step();
-  REQUIRE(r.view->selection().size() == 1);
-  const Vec2 a = r.view->notePoint(ids[0], 0.5);
-  const double e0 = r.cents(ids[1], 0.5);
-  REQUIRE(r.d.down(a));
-  r.d.move({a.x, a.y + kRow});
-  r.d.move({a.x, a.y + 2.0f * kRow});
-  r.d.step();
-  CHECK(r.cents(ids[1], 0.5) == doctest::Approx(e0 - 200.0).epsilon(1e-9));
-  r.d.up({a.x, a.y + 2.0f * kRow});
-  r.d.step();
-  CHECK(r.cents(ids[1], 0.5) == doctest::Approx(e0 - 200.0).epsilon(1e-9));
-  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(1, 0));
-  // Back to Tuning: the written chord, transposed with it (one step up from where it was written).
+  // (bug-ji-input: the anchor dragged ALONE moves alone — the next test case.)
+  // Back to Tuning: the written chord, transposed with it (three steps up from where it was written).
   r.select(ids);
   (void)r.d.press("Ctrl+Shift+J");
   r.d.step();
-  for (size_t i = 0; i < 3; ++i) CHECK(r.hzOf(ids[i]) == doctest::Approx(hz[i] * std::exp2(1.0 / 12.0)).epsilon(1e-12));
+  for (size_t i = 0; i < 3; ++i) CHECK(r.hzOf(ids[i]) == doctest::Approx(hz[i] * std::exp2(3.0 / 12.0)).epsilon(1e-12));
   // Up on ONE member of a tuned group is still its next harmonic.
   (void)r.d.press("Ctrl+Shift+J");
   r.d.step();
@@ -827,6 +813,88 @@ TEST_CASE("roll groups (T7.16a, M7 review H2 / M14): Up, Shift+Up and a vertical
   (void)r.d.press("Up");
   r.d.step();
   CHECK(r.note(ids[2]).pitch == PitchId::fromRatio(Rational(7, 4), AnchorKind::Note, ids[0].value));
+}
+
+TEST_CASE("roll groups (bug-ji-input): the frozen note dragged alone moves alone — the others stay where they sound (drawn and after), it snaps to the group's harmonics, the lowest staying note becomes the frozen one; a drag in time moves only it; the proportion click selects the chord and a drag then moves it whole") {
+  Roll r(2);  // C low in the view: the harmonics below it are on screen
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.chord({0, 4, 7}, 0, 4 * kQ);
+  r.select(ids);
+  tune(r);
+  const doc::JiGroupId group = r.onlyGroup().id;
+  const double F = r.hzOf(ids[0]) / 4.0, hzE = r.hzOf(ids[1]), hzG = r.hzOf(ids[2]);
+  const double cC = r.cents(ids[0], 0.5), cE = r.cents(ids[1], 0.5), cG = r.cents(ids[2], 0.5);
+  // The bottom note pressed (only it selected) and dragged down to where harmonic 3 lies.
+  r.d.click(r.view->notePoint(ids[0], 0.5));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  const std::optional<float> y3 = r.view->harmonicGuideY(3);
+  REQUIRE(y3.has_value());
+  const Vec2 a = r.view->notePoint(ids[0], 0.5);
+  size_t h = r.history();
+  REQUIRE(r.d.down(a));
+  r.d.move({a.x, a.y + kRow});
+  r.d.move({a.x, *y3 + 2.0f});
+  r.d.step();
+  // While it runs the other notes are drawn where they are; the dragged one on harmonic 3.
+  CHECK(r.cents(ids[1], 0.5) == doctest::Approx(cE).epsilon(1e-9));
+  CHECK(r.cents(ids[2], 0.5) == doctest::Approx(cG).epsilon(1e-9));
+  REQUIRE(r.view->notePreviewCents(ids[0]).has_value());
+  CHECK(*r.view->notePreviewCents(ids[0]) == doctest::Approx(cC + 1200.0 * std::log2(3.0 / 4.0)).epsilon(1e-6));
+  r.d.up({a.x, *y3 + 2.0f});
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.hzOf(ids[0]) == doctest::Approx(F * 3.0).epsilon(1e-12));
+  CHECK(r.hzOf(ids[1]) == doctest::Approx(hzE).epsilon(1e-12));
+  CHECK(r.hzOf(ids[2]) == doctest::Approx(hzG).epsilon(1e-12));
+  CHECK(r.note(ids[0]).start == 0);
+  CHECK(r.onlyGroup().anchor == ids[1]);  // the lowest note that stayed (harmonic 5) is the frozen one now
+  CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{3, 5, 6});
+  CHECK(r.ctx.status().find("alone") != std::string::npos);
+  CHECK(std::fabs(r.view->notePoint(ids[0], 0.5).y - *y3) <= 1.0f);
+  // Ctrl+Z: one step back.
+  CHECK(r.d.press("Ctrl+Z") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.onlyGroup().anchor == ids[0]);
+  CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{4, 5, 6});
+  // Up on the frozen note alone: its next harmonic (4 → 5), the others stay.
+  r.d.click(r.view->notePoint(ids[0], 0.5));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.d.press("Up") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.hzOf(ids[0]) == doctest::Approx(F * 5.0).epsilon(1e-12));
+  CHECK(r.hzOf(ids[2]) == doctest::Approx(hzG).epsilon(1e-12));
+  CHECK(r.d.press("Ctrl+Z") == KeyResult::Action);
+  r.d.step();
+  // A drag in time moves only the frozen note: the others keep their starts and pitches, it stays the frozen one.
+  r.d.click(r.view->notePoint(ids[0], 0.5));
+  r.d.step();
+  const Vec2 b = r.view->notePoint(ids[0], 0.5);
+  h = r.history();
+  r.d.drag(b, {b.x + kBeat, b.y}, 6);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.note(ids[0]).start == kQ);
+  CHECK(r.note(ids[1]).start == 0);
+  CHECK(r.note(ids[2]).start == 0);
+  CHECK(r.onlyGroup().anchor == ids[0]);
+  CHECK(r.hzOf(ids[0]) == doctest::Approx(F * 4.0).epsilon(1e-12));
+  CHECK(r.hzOf(ids[1]) == doctest::Approx(hzE).epsilon(1e-12));
+  CHECK(r.d.press("Ctrl+Z") == KeyResult::Action);
+  r.d.step();
+  // The proportion above the frame selects the whole chord; a drag of its bottom note then moves the chord by rows.
+  r.d.click(r.view->groupGeometry(group).proportion);
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 3);
+  const Vec2 c0 = r.view->notePoint(ids[0], 0.5);
+  r.d.drag(c0, {c0.x, c0.y - 2.0f * kRow}, 6);
+  r.d.step();
+  CHECK(r.note(ids[0]).pitch == PitchId::fromDegree(2, 0));
+  CHECK(r.onlyGroup().anchor == ids[0]);
+  CHECK(r.proportion(r.onlyGroup()) == std::vector<int64_t>{4, 5, 6});
+  CHECK(r.hzOf(ids[1]) == doctest::Approx(r.hzOf(ids[0]) * 1.25).epsilon(1e-12));
+  CHECK(r.hzOf(ids[2]) == doctest::Approx(r.hzOf(ids[0]) * 1.5).epsilon(1e-12));
 }
 
 TEST_CASE("roll groups (T7.16a, M7 review M1 / M3): Back to Tuning keeps the group — the chosen reading and the warps come back; a chord typed in JI goes to the rows and back") {

@@ -329,12 +329,16 @@ TEST_CASE("roll JI: Is Harmonic… — the note sits exactly on guide N, drawn n
   CHECK(r.note(six).pitch == PitchId::fromRatio(Rational(7, 5), tuning::AnchorKind::Note, e.value));
   CHECK(r.view->harmonicOf(six) == 7u);
   CHECK(r.view->harmonicOf(e) == 5u);
-  // The anchor moved a row up: the series and the member follow it.
+  // bug-ji-input: Up on the anchor ALONE moves only it, to its next harmonic (5 -> 6); the member keeps its pitch and
+  // carries the group now (the series stays). (The whole group selected moves as a chord: test_piano_roll_groups.)
+  const double sevenHz = r.hzOf(six);
   r.d.click(r.view->notePoint(e, 0.5));
   CHECK(r.d.press("Up") == KeyResult::Action);
-  CHECK(r.note(e).pitch == PitchId::fromDegree(5, 0));
-  CHECK(std::fabs(*r.view->harmonicGuideY(5) - r.view->yOfDegree(5)) <= 0.5f);
-  CHECK(r.hzOf(six) == doctest::Approx(r.hzOf(e) * 7.0 / 5.0).epsilon(1e-12));
+  CHECK(r.hzOf(six) == doctest::Approx(sevenHz).epsilon(1e-12));
+  CHECK(r.hzOf(e) == doctest::Approx(sevenHz * 6.0 / 7.0).epsilon(1e-12));
+  CHECK(doc::jiGroupsOf(r.clip())[0].anchor == six);
+  CHECK(r.view->harmonicOf(e) == 6u);
+  CHECK(r.view->harmonicOf(six) == 7u);
   CHECK(r.history() == h + 2);
 
   // Remove JI Group, from the same menu: the member keeps sounding where it is; undo brings the group back.

@@ -201,6 +201,10 @@ struct DragState {
   // T7.16a (M7 review M14): a Move with pitch steps moves a note other notes are anchored to: those are drawn
   // following its preview (RollState::centsOf), so the whole area repaints.
   bool movesAnchors = false;
+  // bug-ji-input (Move): the selected group anchors whose whole group is selected - their members follow them
+  // (movesAnchors) - and those moving ALONE (ops::moveNotes re-anchors their group onto a staying member; in a tuned
+  // group they snap to the group's harmonics and are previewed there). Sorted note ids.
+  std::vector<uint32_t> followAnchors, aloneAnchors;
 };
 
 // A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve, a bend, a vibrato or a warp.
@@ -636,6 +640,11 @@ public:
   // A member dragged vertically: the harmonic steps that bring the pressed note's number to the harmonic nearest
   // the pointer's pitch. nullopt: the pressed note is no numbered member.
   std::optional<int32_t> harmonicDragSteps(const doc::Note& pressed, float y) const;
+  // bug-ji-input: every note of the group `anchor` anchors (the anchor and its members) is selected: a move moves the
+  // chord; otherwise a selected anchor moves alone. A note anchoring no group: whether it is selected.
+  bool groupSelectedWhole(doc::NoteId anchor) const;
+  // bug-ji-input: `id` is an anchor the Move `d` drags alone, of a tuned group (it moves on the group's harmonics).
+  bool aloneTuned(const DragState& d, uint32_t id) const;
   // The frame the pointer is over (its grips are shown); 0: none.
   doc::JiGroupId groupFrameAt(ui::Vec2 p) const;
   void setHoverGroup(doc::JiGroupId id);

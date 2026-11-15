@@ -865,9 +865,12 @@ ui::TextEdit* RollState::openRatioEntry(doc::NoteId note) {
 
 std::optional<int32_t> RollState::harmonicDragSteps(const doc::Note& pressed, float y) const {
   if (!clip_ || !clip_->groups) return std::nullopt;
-  const doc::NoteId anchorId = doc::noteAnchorOf(pressed.pitch);
+  // bug-ji-input: the group's anchor dragged without all its members snaps to the harmonics as a member does (the
+  // edit re-anchors the group onto a staying member). A Copy copies the group with any of its members (rows).
+  const bool move = drag.kind == DragKind::Move;
+  const doc::NoteId anchorId = move && groupRole(pressed) == 2 ? pressed.id : doc::noteAnchorOf(pressed.pitch);
   if (!anchorId.valid()) return std::nullopt;
-  if (selected(anchorId)) return std::nullopt;  // T7.16a (H2): the whole chord moves, by rows
+  if (move ? groupSelectedWhole(anchorId) : selected(anchorId)) return std::nullopt;  // T7.16a (H2): the chord, by rows
   if (const doc::JiGroup* g = doc::findJiGroupByAnchor(*clip_, anchorId); g && !g->tuned) return std::nullopt;  // tempered
   const doc::JiGroup* g = doc::findJiGroupByAnchor(*clip_, anchorId);
   const GroupInfo* info = g ? groupInfo(g->id) : nullptr;

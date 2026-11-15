@@ -1494,9 +1494,11 @@ void ViewContext::declareViewActions(std::span<const std::string_view> ids) {
   for (std::string_view id : ids) {
     const size_t i = viewActions_.size();
     viewActions_.push_back({std::string(id), {}, {}});
-    // Steps repeat while the key is held (Live nudges notes on auto-repeat).
+    // Steps repeat while the key is held (Live nudges notes on auto-repeat): the arrow-key steps up / down, left /
+    // right, previous / next, and the note lengths (bug-ji-input: Shift+Left / Right held kept extending only once).
     ui::ActionOptions opt;
-    opt.repeatable = id.ends_with("Up") || id.ends_with("Down");
+    opt.repeatable = id.ends_with("Up") || id.ends_with("Down") || id.ends_with("Left") || id.ends_with("Right") ||
+                     id.ends_with("Prev") || id.ends_with("Next") || id == "pianoroll.shorten" || id == "pianoroll.lengthen";
     [[maybe_unused]] auto r = actions_.add(
         std::string(id),
         [this, i] {

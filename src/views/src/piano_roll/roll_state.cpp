@@ -976,7 +976,10 @@ std::optional<double> RollState::centsOfImpl(const tuning::PitchId& p, bool show
       for (int depth = 0; depth < 16; ++depth) {
         auto it = anchorIndex_.find(id);
         if (it == anchorIndex_.end()) return std::nullopt;
-        std::optional<Preview> pv = follow ? previewOf(drag, *it->second) : std::nullopt;
+        // (bug-ji-input: only an anchor dragged with its whole group; one dragged alone leaves its members where they are.)
+        std::optional<Preview> pv = follow && std::binary_search(drag.followAnchors.begin(), drag.followAnchors.end(), id)
+                                        ? previewOf(drag, *it->second)
+                                        : std::nullopt;
         const tuning::PitchId& a = pv ? pv->pitch : it->second->pitch;
         if (a.kind() != tuning::PitchKind::Ratio) {
           const std::optional<double> base = centsOfImpl(a, shown);
@@ -1603,10 +1606,16 @@ void RollState::updatePreviewPitches() {
     for (uint32_t i = 0; i < c.count; ++i) {
       const doc::Note& n = c.notes[i];
       if (n.pitch.kind() == tuning::PitchKind::Degree || !selected(n.id)) continue;
+      if (aloneTuned(drag, n.id.value)) continue;  // below
       // T7.16a (H2), as ops::moveNotes: a member whose anchor moves too follows it (centsOf shows it there); one of a
-      // group Back to Tuning moves as the tempered note it sounds as (its written identity, stepped).
+      // group Back to Tuning moves as the tempered note it sounds as (its written identity, stepped). bug-ji-input:
+      // a Move follows only an anchor dragged with its whole group (else the member steps on the harmonics); a Copy
+      // copies the group with any of its members.
       const doc::NoteId anchor = doc::noteAnchorOf(n.pitch);
-      if (anchor.valid() && selected(anchor) && clip_->groups && doc::findJiGroupByAnchor(*clip_, anchor)) continue;
+      const bool follows = drag.kind == DragKind::Copy
+                               ? selected(anchor)
+                               : std::binary_search(drag.followAnchors.begin(), drag.followAnchors.end(), anchor.value);
+      if (anchor.valid() && follows && clip_->groups && doc::findJiGroupByAnchor(*clip_, anchor)) continue;
       if (const doc::JiGroup* g = anchor.valid() && clip_->groups ? doc::findJiGroupByAnchor(*clip_, anchor) : nullptr; g && !g->tuned)
         if (const doc::NoteWritten* w = doc::findNoteWritten(*clip_, n.id)) {
           const std::optional<tuning::PitchId> p = doc::ops::stepPitch(w->written, drag.steps, doc::ops::StepUnit::Grid, pc);
@@ -1617,8 +1626,34 @@ void RollState::updatePreviewPitches() {
       drag.previewPitch.emplace_back(n.id.value, p ? *p : n.pitch);
     }
   }
+  // bug-ji-input: an anchor dragged alone in a tuned group is its group's harmonic n + steps (the fundamental stays),
+  // as ops::moveNotes makes it by re-anchoring the group onto a staying member and stepping it as a member.
+  for (const uint32_t id : drag.aloneAnchors) {
+    if (!aloneTuned(drag, id)) continue;
+    const doc::Note* n = findNote(doc::NoteId{id});
+    const std::optional<uint64_t> own = n ? harmonicOf(*n) : std::nullopt;
+    const std::optional<double> c = n ? centsOf(n->pitch) : std::nullopt;
+    if (!own || *own == 0 || !c || static_cast<int64_t>(*own) + drag.steps < 1) continue;  // it cannot go there: it stays
+    const double ratio = static_cast<double>(static_cast<int64_t>(*own) + drag.steps) / static_cast<double>(*own);
+    drag.previewPitch.emplace_back(id, tuning::PitchId::fromCents(*c + 1200.0 * std::log2(ratio)));
+  }
   std::sort(drag.previewPitch.begin(), drag.previewPitch.end(),
             [](const auto& a, const auto& b) { return a.first < b.first; });  // previewOf binary-searches by id
+}
+
+bool RollState::aloneTuned(const DragState& d, uint32_t id) const {
+  if (d.kind != DragKind::Move || !std::binary_search(d.aloneAnchors.begin(), d.aloneAnchors.end(), id)) return false;
+  const doc::JiGroup* g = clip_ && clip_->groups ? doc::findJiGroupByAnchor(*clip_, doc::NoteId{id}) : nullptr;
+  return g && g->tuned;
+}
+
+bool RollState::groupSelectedWhole(doc::NoteId anchor) const {
+  const doc::JiGroup* g = clip_ && clip_->groups ? doc::findJiGroupByAnchor(*clip_, anchor) : nullptr;
+  const GroupInfo* info = g ? groupInfo(g->id) : nullptr;
+  if (!info) return selected(anchor);
+  for (const doc::Note* n : info->notes)
+    if (!selected(n->id)) return false;
+  return true;
 }
 
 std::optional<RollState::Preview> RollState::previewOf(const DragState& d, const doc::Note& n) const {
@@ -1638,13 +1673,13 @@ std::optional<RollState::Preview> RollState::previewOf(const DragState& d, const
       if (d.cents != 0.0) {  // T7.6: Shift = free detune
         if (const std::optional<double> c = centsOf(n.pitch)) p.pitch = tuning::PitchId::fromCents(*c + d.cents);
       } else if (d.steps != 0) {
-        if (n.pitch.kind() == tuning::PitchKind::Degree) {
+        // (Listed: a non-Degree note, or bug-ji-input's anchor dragged alone on the harmonics; else a Degree note on
+        // the rows. An anchor dragged alone that cannot go to its harmonic stays, as the edit leaves it.)
+        auto it = std::lower_bound(d.previewPitch.begin(), d.previewPitch.end(), n.id.value,
+                                   [](const auto& e, uint32_t id) { return e.first < id; });
+        if (it != d.previewPitch.end() && it->first == n.id.value) p.pitch = it->second;
+        else if (n.pitch.kind() == tuning::PitchKind::Degree && !aloneTuned(d, n.id.value))
           p.pitch = degreePitch(absoluteDegree(tuning_, n.pitch.degree(), n.pitch.equave()) + d.steps);
-        } else {
-          auto it = std::lower_bound(d.previewPitch.begin(), d.previewPitch.end(), n.id.value,
-                                     [](const auto& e, uint32_t id) { return e.first < id; });
-          if (it != d.previewPitch.end() && it->first == n.id.value) p.pitch = it->second;
-        }
       }
       break;
     case DragKind::ResizeEnd:
@@ -1751,7 +1786,8 @@ void RollState::commitDrag() {
       } else if (d.dt != 0 || d.steps != 0) {
         // Ratio notes moved by rows step by harmonics of their fundamental, exactly as Up/Down does.
         const std::vector<doc::NoteKey> keys = selectionKeys();
-        (void)apply(doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, overlay()), "Move Notes");
+        if (apply(doc::ops::moveNotes(p, ref_, keys, d.dt, d.steps, overlay()), "Move Notes") && !d.aloneAnchors.empty() && d.steps != 0)
+          ctx.setStatus("Moved the frozen note alone: the chord's other notes stayed where they sound (click the frame's header to move the whole chord)");
       }
       break;
     case DragKind::Copy: {

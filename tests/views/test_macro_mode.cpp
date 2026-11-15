@@ -563,6 +563,65 @@ TEST_CASE("macro mode: q w e go down by the reciprocals; Tab places and chains; 
   CHECK(f.m().tick() == 0);
 }
 
+TEST_CASE("macro mode (bug-ji-input): Shift+F / Shift+A and Shift+Right / Shift+Left make the next note a grid step longer / shorter, held too; the cursor's box, the placed note and its audition follow; never below a step; the selected note keeps its length") {
+  Macro f;
+  const doc::NoteId c = f.add(PitchId::fromDegree(0, 0), 0, kQ);
+  f.on();
+  f.hover(c);
+  f.view->select(std::span<const doc::NoteId>(&c, 1));  // selected in the roll too: in macro mode the keys are the cursor's
+  f.d.step();
+  Widget* overlay = f.d.find(std::string(kView) + "/macro-overlay");
+  REQUIRE(overlay != nullptr);
+  auto boxWidth = [&] { return static_cast<float>(dynamic_cast<MacroOverlay&>(*overlay).cursorRect().w); };
+  CHECK(f.m().noteLength() == kQ);  // the anchor note's
+  const float w1 = boxWidth();
+  // The default place first: its audition is the reference length.
+  f.keys({"2", "`"});
+  const doc::Note* g1 = f.find(PitchId::fromDegree(7, 0), 0);
+  REQUIRE(g1 != nullptr);
+  CHECK(g1->length == kQ);
+  REQUIRE(f.lastAudition() != nullptr);
+  const float ms1 = f.lastAudition()->durationMs;
+  const size_t h = f.ctx.store().history().cursor();
+  CHECK(f.d.press("Shift+F") == KeyResult::Widget);
+  CHECK(f.m().noteLength() == 2 * kQ);
+  CHECK(f.d.press(Chord{'f', mod::kShift}, true) == KeyResult::Widget);  // held: auto-repeat
+  CHECK(f.m().noteLength() == 3 * kQ);
+  CHECK(f.d.press(Chord{'F', mod::kShift}, true) == KeyResult::Widget);  // as the platform may name it
+  CHECK(f.m().noteLength() == 4 * kQ);
+  CHECK(f.d.press(Chord{key::kLeft, mod::kShift}, true) == KeyResult::Widget);
+  CHECK(f.d.press("Shift+A") == KeyResult::Widget);
+  CHECK(f.m().noteLength() == 2 * kQ);
+  CHECK(f.d.press("Shift+Right") == KeyResult::Widget);
+  CHECK(f.d.press(Chord{key::kLeft, mod::kShift}) == KeyResult::Widget);
+  CHECK(f.m().noteLength() == 2 * kQ);
+  f.d.step();
+  CHECK(boxWidth() == doctest::Approx(2.0f * w1).epsilon(0.05));
+  CHECK(f.ctx.status().find("2 beats") != std::string::npos);
+  CHECK(f.ctx.store().history().cursor() == h);  // no edit: the selected note keeps its length
+  CHECK(f.clip().notes.findById(c)->length == kQ);
+  CHECK(f.m().tick() == 0);  // the cursor did not move
+  // Placed and auditioned with it, and kept for the next notes.
+  f.keys({"3", "`"});
+  const doc::Note* e = f.find(PitchId::fromDegree(4, 0), 0);
+  REQUIRE(e != nullptr);
+  CHECK(e->length == 2 * kQ);
+  CHECK(f.lastAudition()->durationMs == doctest::Approx(2.0f * ms1).epsilon(1e-3));
+  CHECK(f.m().noteLength() == 2 * kQ);
+  // Never shorter than one grid step.
+  for (int i = 0; i < 4; ++i) (void)f.d.press(Chord{'a', mod::kShift}, true);
+  CHECK(f.m().noteLength() == kQ);
+  CHECK(f.ctx.status().find("short") != std::string::npos);
+  // Off: Shift+Right is the roll's again (the selected note gets longer).
+  CHECK(f.d.press("Ctrl+CapsLock") == KeyResult::Action);
+  f.d.step();
+  REQUIRE_FALSE(f.m().on());
+  f.view->select(std::span<const doc::NoteId>(&c, 1));
+  f.d.step();
+  CHECK(f.d.press("Shift+Right") == KeyResult::Action);
+  CHECK(f.clip().notes.findById(c)->length == 2 * kQ);
+}
+
 TEST_CASE("macro mode: Backspace clears the composition, or deletes the note at the cursor when nothing is composed") {
   Macro f;
   const doc::NoteId c = f.add(PitchId::fromDegree(0, 0));

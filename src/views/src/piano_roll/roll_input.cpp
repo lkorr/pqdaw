@@ -101,11 +101,14 @@ void NoteAreaWidget::pressNote(const PointerEvent& e, const doc::Note& n, int zo
   d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
   if (!s_.rows().empty()) d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
   s_.beginDragTracking();
-  // T7.16a (M7 review M14): a group's anchor among the dragged notes: its members follow it in the preview.
+  // T7.16a (M7 review M14): a group's anchor dragged with its whole group: its members follow it in the preview.
+  // bug-ji-input: an anchor dragged without all its members moves alone (as a member: the harmonics), they stay.
   if (d.kind == DragKind::Move && s_.clip()->groups) {
     s_.cacheSelectedNotes();
-    for (const uint32_t id : s_.selection())
-      if (const doc::Note* m = s_.findNote(doc::NoteId{id}); m && s_.groupRole(*m) == 2) d.movesAnchors = true;
+    for (const uint32_t id : s_.selection())  // sorted: so are the two lists
+      if (const doc::Note* m = s_.findNote(doc::NoteId{id}); m && s_.groupRole(*m) == 2)
+        (s_.groupSelectedWhole(m->id) ? d.followAnchors : d.aloneAnchors).push_back(id);
+    d.movesAnchors = !d.followAnchors.empty();
     if (d.movesAnchors) d.trackDamage = false;  // the members repaint too
   }
   s_.audition(n.pitch, n.velocity, n.start, n.length);

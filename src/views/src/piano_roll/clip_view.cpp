@@ -398,6 +398,12 @@ std::optional<double> ClipView::noteCentsAt(doc::NoteId id, double frac) const {
   if (!n) return std::nullopt;
   return state_->pathCents(*n, n->start, n->pitch, std::clamp(frac, 0.0, 1.0) * static_cast<double>(n->length));
 }
+std::optional<double> ClipView::notePreviewCents(doc::NoteId id) const {
+  const doc::Note* n = state_->findNote(id);
+  if (!n) return std::nullopt;
+  const std::optional<roll::RollState::Preview> pv = state_->preview(*n);
+  return state_->centsOf(pv ? pv->pitch : n->pitch);
+}
 float ClipView::yOfCents(double cents) const noexcept { return state_->yOfCents(cents); }
 uint64_t ClipView::pathBuilds() const noexcept { return state_->pathBuilds(); }
 std::vector<doc::NoteId> ClipView::bendHighlights() const {

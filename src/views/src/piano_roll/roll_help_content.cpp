@@ -29,7 +29,8 @@ constexpr HelpEntry kQuickStart[] = {
     {"3. click the chord's header,\n{pianoroll.stepUp} / {pianoroll.stepDown} or drag",
      "Transpose a just chord",
      "A click on the proportion above the frame selects the whole chord; Up, Down or a drag moves it by steps of the "
-     "tuning and it stays just. Up or Down on one note of the chord moves that note to the next harmonic instead."},
+     "tuning and it stays just. Up, Down or a drag on one note of the chord, the bottom one too, moves only that "
+     "note, to the next harmonic."},
     {"4. drag the ~ above a note's end",
      "Vibrato",
      "Up for width, sideways for speed; the four small squares under a vibrating note fade it in and out."},
@@ -67,7 +68,7 @@ constexpr HelpEntry kNotes[] = {
     {"drag a note's left or right end\n{pianoroll.shorten} / {pianoroll.lengthen}",
      "Resize",
      "Drag an end of a note to change where it starts or stops. The keys make the selected notes one grid cell "
-     "shorter or longer."},
+     "shorter or longer; hold them to keep going."},
     {"{pianoroll.stepUp} / {pianoroll.stepDown}",
      "Up or down by a step",
      "Moves the selected notes to the next step of the tuning: one row. In 12-EDO that is a semitone, in 31-EDO a "
@@ -322,9 +323,10 @@ constexpr HelpEntry kJiGroups[] = {
     {"{pianoroll.stepUp} / {pianoroll.stepDown}\ndrag a note of a group up or down",
      "Next or previous harmonic",
      "A note of a group moves along the group's harmonics instead of the rows: up from the 6 of 4:5:6 is the 7. "
-     "Dragged, it snaps to the harmonic nearest the pointer. The frozen note itself moves row by row and takes its "
-     "whole group with it; so does the whole chord selected (a click on its header): it moves by steps and stays the "
-     "same just chord, and Back to Tuning gives the chord where it now is."},
+     "Dragged, it snaps to the harmonic nearest the pointer. The frozen note (the diamond) does the same on its own: "
+     "the other notes stay where they sound, and the lowest of them becomes the frozen one. To move the chord, "
+     "select all of it (a click on its header): it moves by steps and stays the same just chord, and Back to Tuning "
+     "gives the chord where it now is."},
     {"{pianoroll.walkUp} / {pianoroll.walkDown}",
      "Walk the chord",
      "With a note of a group selected, every number of the group goes up or down by one while the frozen note stays "
@@ -371,7 +373,8 @@ constexpr HelpEntry kMacro[] = {
      "The key under each number divides by its interval: Q is an octave down, W a fifth down, E a major third down."},
     {"[`]",
      "Place a note",
-     "Puts a note at the cursor, as long as the grid step (or as long as the anchor note). The cursor then returns "
+     "Puts a note at the cursor, as long as the grid step (or as long as the anchor note, or the length set with "
+     "Shift+A / Shift+F). The cursor then returns "
      "to the anchor, so the next interval is measured from the same note again: good for stacking a chord."},
     {"[Tab]",
      "Place a note and continue from it",
@@ -385,6 +388,11 @@ constexpr HelpEntry kMacro[] = {
      "Move the cursor",
      "A and F move it one grid step earlier or later. S and D move it up or down: by one row in the tempered layer, "
      "to the next harmonic when the note would be just."},
+    {"[Shift]+[A] / [Shift]+[F]\n[Shift]+[Left] / [Shift]+[Right]",
+     "Shorter or longer next note",
+     "Makes the note the cursor will place one grid step shorter or longer (hold the keys to keep going); the "
+     "cursor's box shows the length. It stays for every note you place until you change it again, and is never "
+     "shorter than one grid step."},
     {"point at a note\nclick a note \xC2\xB7" " click empty space",
      "Choose the anchor",
      "The anchor is the note intervals are measured from; it has a ring on it. With nothing built, the note under "

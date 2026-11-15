@@ -16,6 +16,10 @@
 //   placeChain (Tab) the same, and the new note becomes the anchor
 //   back (Backspace) clears the composition; with nothing composed deletes the note at the cursor
 //   left / right (a / f)  the cursor one grid step earlier / later
+//   Shift + left / right (Shift+A / Shift+F, and Shift+Left / Shift+Right)  the next note one grid step shorter /
+//                         longer (bug-ji-input; held: auto-repeat). The length is kept for the session (every clip, on
+//                         and off) until changed again; never shorter than one grid step (with the grid off: a 16th).
+//                         Before the first change a note is as long as the anchor note, else one grid step.
 //   up / down (s / d)     one display step: a row in the tempered layer, the next harmonic where the note would be just
 //   undo / redo (- / =)   macro-level: the last macro step, with its document edit when the document is still as that
 //                         step left it (a ring of kUndoRing steps)
@@ -25,8 +29,9 @@
 //                   index, a MEMBER becomes its group's anchor with index N (ops::reanchorJiGroup; every note keeps its
 //                   pitch). `b` `0` `Enter` removes the anchor note's group (its notes keep their pitch). A key macro
 //                   mode does not bind cancels the number and goes on as usual (T7.16b, review H7 / L10).
-// Only keys the preset binds are taken, and only without Ctrl / Alt / Super / Shift: everything else passes through
-// (Ctrl+S saves, Space plays). Keys are taken only while the clip view (the note area or anything in it) has the
+// Only keys the preset binds are taken, and only without Ctrl / Alt / Super / Shift (Shift: only the length keys above):
+// everything else passes through (Ctrl+S saves, Space plays; in macro mode Shift+Left / Right are the next note's
+// length, not the selected notes'). Keys are taken only while the clip view (the note area or anything in it) has the
 // keyboard focus or the pointer (T7.16b, review M11): with the focus in the arrangement, the browser, a text field, an
 // open popup or the help panel and the pointer elsewhere they pass through, and the lamp says "MACRO (click the
 // notes)". While a pointer drag is in progress (a widget holds the pointer, or the document is in a gesture) macro keys
@@ -110,9 +115,12 @@ public:
   const tuning::Rational& composition() const noexcept { return s_.comp; }
   bool composing() const noexcept { return !s_.factors.empty() || s_.rowOffset != 0; }
   Target target() const;
-  // The anchor's pitch in cents from the reference and the length a placed note gets.
+  // The anchor's pitch in cents from the reference and the length a placed note gets (placed, auditioned, the cursor's
+  // box): the length set with Shift + left / right, else the anchor note's, else the grid step at the cursor.
   std::optional<double> anchorCents() const;
   Ticks noteLength() const;
+  // The length set with Shift + left / right (0: none set yet). Kept for the session.
+  Ticks setLength() const noexcept { return length_; }
   // Whether the anchor is a note declared "harmonic N" or a member of its group (Up / Down then step its harmonics).
   bool locked() const;
   bool lockPending() const noexcept { return lockPending_; }
@@ -205,6 +213,8 @@ private:
   void run(const MacroBinding& b, bool repeat);
   void pressInterval(const tuning::Rational& r);
   void moveTime(int dir);
+  void changeLength(int dir);
+  int lengthKey(const ui::KeyEvent& e) const;
   void movePitch(int dir);
   void place(bool chain);
   void back();
@@ -223,6 +233,7 @@ private:
   bool on_ = false;
   Layer layer_ = Layer::Tempered;
   State s_;
+  Ticks length_ = 0;  // bug-ji-input: the next note's length set with Shift + left / right (0: the default)
   uint32_t seenHover_ = 0, seenSel_ = 0;
   ui::Vec2 seenPointer_{-1e9f, -1e9f};  // the pointer where the anchor rule last looked (a real move changes it)
   bool taking_ = false;                 // takingKeys() when the lamp was last told
