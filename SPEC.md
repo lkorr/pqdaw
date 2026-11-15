@@ -474,7 +474,7 @@ Ableton's layout: control bar (top), browser (left), track area (centre), detail
 ### 9.7 Control mapping
 - **MIDI Map mode** (Ctrl+M) and **Key Map mode** (Ctrl+K), as in Ableton: click a parameter, then move a controller or press a key. Per mapping: min/max, takeover mode (pickup/value scaling/none), toggle/momentary for keys and buttons.
 - Mappings are signals too, so a controller knob can be an audio-rate-smoothed modulation source.
-- Computer MIDI keyboard (M), with octave/equave and velocity keys, mapped into the current tuning.
+- Computer MIDI keyboard (control-bar button; no default key, user 2026-11-14), with octave/equave and velocity keys, mapped into the current tuning.
 
 ### 9.8 Render, export & project management
 - **Export audio** (Ctrl+Shift+R): master or **all tracks individually (stems)**, a selected time range or the loop. WAV/FLAC/MP3, bit depth, sample rate, normalize, dither (TPDF/noise-shaped), include return/master effects, render as loop (tail wraps into the start). Offline faster than realtime, using the same Program.

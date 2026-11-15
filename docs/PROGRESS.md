@@ -786,3 +786,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker on 18a9e65f `build.ps1 -Affected -Slow` 87/87 (pqmeter_diff skipped), ship pq_bench_dsp links; orchestrator after the rebase onto 072ebc1e: pq_tests_views, pq_tests_document pass.
 - Perf / CPU-efficiency check: duplicating 2000 curved notes 846.6 → 3.56 ms (check); resolve unchanged for notes without note anchors; no engine change.
 - Notes/blockers: Q292–Q294. Review items H1, M1, M2, M6, M12, M15, M16 are object-specific and die with the rework (T7.13).
+
+## 2026-11-14 · KB.help merged · main (3536aa28)
+- Did: the `M` binding of `keyboard.toggleComputerMidi` removed (button and action stay; tests in test_shell, test_live_input_views, test_project_patch, test_controls changed to click / invoke); `?` button in the clip title bar opens a scrollable help panel over the roll (sections | gesture | description; Esc / click outside closes), content in `roll_help_content.cpp` with keys read from the loaded keymap. Goldens: + pianoroll-help, pianoroll-help-scrolled; 28 re-recorded for the button / the prefs line.
+- Verified (worker, after the rebase): `build.ps1 -Target pq_tests_views,pq_tests_ui -TestRegex "pq_tests_views|pq_tests_ui"` 2/2. Orchestrator looked at pianoroll-help; rebased onto the doc-only commits since.
+- Perf / CPU-efficiency check: nothing runs while the panel is closed; layout cached per width / scale.
+- Notes/blockers: T7.13 must drop the help entries of the actions it deletes (the stale-action test will fail otherwise). SPEC §9.7 wording updated for `M`.
