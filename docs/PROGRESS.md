@@ -1070,3 +1070,18 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   Waterfall 2.3 ms steady, 2.9 moving; worker per second of stereo 8.9 (waterfall) / 46.9 ms (cloud, check).
 - Notes: Q?-VZ.7-a (no camera LFO bank, colour pickers, palette track; waterfall long window 4× not PQ's 8×; zoom
   Alt+wheel). Goldens added: waterfall-{spec,side,top,3d}, stereospectrogram-{spec,image,pan,3d}.
+
+## 2026-11-16 · VZ.10 merged · main
+- Did: a colour row kind in option_sheet.h (Opt::Colour, one number: −1 = the face's own colour resolved at paint
+  like PQ's ColorSlot, else 0xRRGGBB, the face's alpha kept); a COLOURS tab with an in-sheet picker (SV square, hue
+  strip, new / old swatches, hex entry; drag = live, release = one undo step; Esc restores; double-click / RESET =
+  own colour; SAVE DEFAULT carries it) via sheet::PickerHost (AnalyserFace, Spectrum, Spectrogram). Wired: Custom stop
+  colours (Spectrum, Spectrogram — makes VZ.2's fade-to-Silence visible —, Stereo Image, Waterfall, Stereo
+  Spectrogram), solid colours, every loudness / band / lane / stereo trace colour PQ had.
+- Verified (worker): real-dispatch picker test (open, drag + undo, Esc mid-drag, hex, SAVE DEFAULT, reset); paint
+  tests for loudness / stereo / band-wave colours; pq_tests_views default tier with every golden unchanged; -Affected
+  22/22. Merged as tested (main unmoved).
+- Perf / CPU-efficiency check: closed sheet = one load + branch per colour per paint; picker meshes only while open;
+  gradients cached on keys including the colours.
+- Notes: Q?-VZ.10-a (storage, no alpha strip, COLOURS tab, still-fixed colours: Oscilloscope traces, Stereo
+  Spectrogram band ramp). Golden added: vz10-colour-picker. No runtime test of the Spectrogram / 3D stop colours.
