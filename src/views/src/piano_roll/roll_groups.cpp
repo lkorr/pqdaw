@@ -10,7 +10,8 @@
 //              clickable (selects the group's notes; a double-click on a tuned group's proportion opens the chooser,
 //              T7.16a: a single click leaves the arrow keys to the selected chord), and so are the grips on its
 //              bottom border.
-//   Tune to JI Ctrl+Shift+J / the menu on selected notes, split into chords by overlapping time (T7.16a M6): one
+//   Tune to JI Ctrl+Shift+J / the menu on selected notes, split into chords by overlapping time (T7.16a M6; a
+//              lone note among them makes the whole selection one chord: a melody is one group): one
 //              chord → ops::tuneToJi with the best reading; several, or a group Back to Tuning →
 //              ops::tuneChordsToJi; notes that all are (in) groups in JI → ops::setJiGroupsTuned(false): Back to
 //              Tuning, a STATE the group keeps (M1: the reading and the warps come back with the next press; the frame
@@ -375,10 +376,13 @@ bool RollState::toggleTuneToJi(bool chooser) {
     }
     return one;
   };
-  // A melody (no two notes overlap) of notes in no group is read as one chord, as it always was.
-  bool melody = chords.size() > 1;
-  for (const std::vector<doc::NoteKey>& ch : chords) melody = melody && ch.size() == 1 && groupOfChord(ch) == nullptr;
-  if (melody) {
+  // A melody is one group: when any of the chords is a lone note in no group (it has no chord of its own to be
+  // tuned as), the whole selection is read as one chord — a tune with a chord in it, a tuned chord and the notes
+  // around it (bug 2026-11-15: only the opening chord was tuned). Chords of two or more notes each stay a
+  // progression, tuned chord by chord.
+  bool melody = false;
+  for (const std::vector<doc::NoteKey>& ch : chords) melody = melody || (ch.size() == 1 && groupOfChord(ch) == nullptr);
+  if (melody && chords.size() > 1) {
     chords.assign(1, {});
     for (const doc::Note* n : notes) chords[0].push_back(doc::keyOf(*n));
   }

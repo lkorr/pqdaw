@@ -369,3 +369,22 @@ TEST_CASE("Is Harmonic N on a member: it becomes the group's anchor — every no
   CHECK(g2->proportion == std::vector<int64_t>{4, 5, 6});  // 6 declared 3 → m = 2: still 4:5:6
   CHECK(g2->anchor == 6);
 }
+
+TEST_CASE("vibrato (bug 2026-11-15): one that runs to the note's end ends on its swing there, with no step back to the note's pitch") {
+  BendFix f;
+  const Ticks L = 4 * kPpq;
+  const Note a = f.add(0, PitchId::fromDegree(0), L);
+  NoteVibrato v;
+  v.depthCents = 40.0f;
+  v.rate = 1.0625f;  // 4.25 cycles over the note: it ends on a crest
+  v.unit = NoteVibrato::RateUnit::Beats;
+  const ops::NoteVibratoEdit one[] = {edit(a, v)};
+  commit(f.store, ops::setNoteVibrato(f.doc(), f.ref, one));
+  const std::vector<Breakpoint> pts = f.effective(f.clip(), *f.clip().notes.findById(a.id), 0.05);
+  REQUIRE(pts.size() > 8);
+  CHECK(pts.back().tick == L);
+  CHECK(pts[pts.size() - 2].tick < L);  // one point at the end, not a jump
+  CHECK(pts.back().value == doctest::Approx(40.0).epsilon(0.01));
+  CHECK(noteCurveCents(*findNoteCurves(f.clip(), a.id), L, NoteBendTargets{std::nullopt, std::nullopt, static_cast<double>(kPpq) / 1.0625}, static_cast<double>(L)) ==
+        doctest::Approx(40.0).epsilon(0.01));
+}

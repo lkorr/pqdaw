@@ -104,7 +104,7 @@ struct Theme {
   } arrangement{};
   struct Roll {  // piano roll (T3.11): keys, row shading, equave markers, area outside the clip, off-grid notes,
                  // the virtual fundamental and its harmonic guide lines (SPEC §4.3)
-    Rgba keyWhite, keyBlack, keyText, rowNatural, rowAccidental, rowScale, rowLine, equave, outside, offGrid, fundamental,
+    Rgba keyWhite, keyBlack, keyText, rowNatural, rowAccidental, rowScale, rowLine, equave, outside, fundamental,
         harmonic,
         // scale / MOS layouts (T3.12): step-class keys, the proportional pitch line, the background EDO overlay
         keyTonic, keyLarge, keySmall, keyExtra, pitchLine, edoLine, edoEquave,
@@ -114,7 +114,7 @@ struct Theme {
         jiFill, jiBorder, jiLine, jiText, jiStop, jiSelected;
     // T7.12 (metrics, logical px): a note is a line along its pitch: its body thickness, the height and length of the
     // thicker head at its start, and the opacity (0..255) of the faint band over the row it is grabbed in
-    float noteLine = 0, noteLineHead = 0, noteLineHeadWidth = 0, noteLineBand = 0;
+    float noteLine = 0, noteLineBand = 0;
     bool operator==(const Roll&) const = default;
   } roll{};
   struct MosChart {  // MOS wheel region chart (T3.13): surfaces from the Live 12 look, data colours from mos-explorer

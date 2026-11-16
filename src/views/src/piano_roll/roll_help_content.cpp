@@ -294,7 +294,7 @@ constexpr HelpEntry kJiGroups[] = {
      "proportion. Press the key again with them selected and they play exactly what you wrote; the frame stays, "
      "headed for example 12-EDO (4:5:6), and the next press brings back the same reading and warps. A chord you "
      "built in JI goes to the nearest rows of the tuning and back. With several chords selected (Ctrl+A over a "
-     "progression) each chord is tuned on its own. Also in the right-click menu, as Tune to JI and Back to Tuning."},
+     "progression) each chord is tuned on its own; a melody, or a tune with a chord in it, becomes one group. Also in the right-click menu, as Tune to JI and Back to Tuning."},
     {"double-click the proportion\nabove the frame",
      "Other readings of the chord",
      "A tempered chord can be heard as more than one just chord: C E G B\xE2\x99\xAD as 4:5:6:7, or as 20:25:30:36. The "

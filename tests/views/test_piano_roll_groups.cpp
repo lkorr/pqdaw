@@ -707,6 +707,42 @@ TEST_CASE("roll groups (T7.16a, M7 review H1): after Tune to JI the next chord d
   CHECK(doc::noteAnchorOf(r.note(doc::NoteId{r.view->selection()[0]}).pitch) == first[0]);
 }
 
+TEST_CASE("roll groups (bug 2026-11-15): a melody with a chord in it is one group — every note tied to the lowest; again over a tuned chord, that chord is absorbed") {
+  Roll r;
+  r.focusNotes();
+  // C + E together, then G, B♭ and the low G one after another.
+  const std::vector<doc::NoteId> both = r.chord({0, 4}, 0, kQ);
+  std::vector<doc::NoteId> ids = both;
+  for (const auto& [deg, at] : {std::pair<int32_t, Ticks>{7, kQ}, {10, 2 * kQ}, {-5, 3 * kQ}}) ids.push_back(r.chord({deg}, at, kQ)[0]);
+  const doc::NoteId low = ids.back();
+
+  SUBCASE("all at once") {
+    r.select(ids);
+    tune(r);
+    REQUIRE(doc::jiGroupsOf(r.clip()).size() == 1);
+    CHECK(r.onlyGroup().anchor == low);
+    for (const doc::NoteId id : ids)
+      if (id != low) CHECK(doc::noteAnchorOf(r.note(id).pitch) == low);
+    CHECK(r.proportion(r.onlyGroup()).size() == 5);
+  }
+  SUBCASE("the chord first, then the whole tune") {
+    r.select(both);
+    tune(r);
+    REQUIRE(doc::jiGroupsOf(r.clip()).size() == 1);
+    CHECK(r.onlyGroup().anchor == both[0]);
+    r.select(ids);
+    tune(r);
+    REQUIRE(doc::jiGroupsOf(r.clip()).size() == 1);  // the chord's group is absorbed: its anchor is a member now
+    CHECK(r.onlyGroup().anchor == low);
+    for (const doc::NoteId id : ids)
+      if (id != low) CHECK(doc::noteAnchorOf(r.note(id).pitch) == low);
+    // Again: Back to Tuning, the notes as written.
+    tune(r);
+    CHECK_FALSE(r.onlyGroup().tuned);
+    CHECK(r.cents(ids[2], 0.0) - r.cents(ids[0], 0.0) == doctest::Approx(700.0).epsilon(1e-9));
+  }
+}
+
 TEST_CASE("roll groups (T7.16a, M7 review H3 / M10): the clip box's Harmonics: JI switch decides snapping; a click on it, Fold, Scale or Loop gives the keys back to the notes") {
   Roll r;
   r.focusNotes();

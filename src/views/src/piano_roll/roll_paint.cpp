@@ -4,9 +4,9 @@
 //
 // T7.12: every note is a line along its pitch, painted by one routine (drawNoteLine): a faint band over the row it
 // is grabbed in, a body a few px thick centred on the exact pitch (between rows for a Ratio / Cents pitch off the
-// grid, along the pitch path for a note with a curve), round ends, and a thicker head at its start
-// so repeated notes on one pitch read as separate notes. Colours from a per-clip table indexed by velocity; the head
-// of an off-grid note takes the theme's offGrid colour. Metrics: the theme's roll.noteLine* tokens.
+// grid, along the pitch path for a note with a curve) and round ends; nothing else (bug 2026-11-15: the thicker head
+// at the start read as a lump). A straight note stops a couple of px short of its end, so back-to-back repeats on one
+// pitch stay apart. Colours from a per-clip table indexed by velocity. Metrics: the theme's roll.noteLine* tokens.
 
 #include <algorithm>
 #include <charconv>
@@ -38,19 +38,17 @@ int velIndex(float v) noexcept { return std::clamp(static_cast<int>(std::lround(
 // The line metrics at this UI scale (theme tokens roll.noteLine*, logical px).
 struct LineStyle {
   float thick;     // body thickness
-  float headH;     // head (start cap) height
-  float headW;     // head length
+  float gap;       // px left free at a note's end, so back-to-back notes on one pitch read as separate notes
   float pathBand;  // the grab band of a note on a pitch path (its hit thickness)
   uint8_t bandAlpha;
 };
 
 LineStyle lineStyle(const Theme& th, const RollState& s, float scale) noexcept {
-  return {std::max(1.0f, std::round(th.roll.noteLine * scale)), std::max(1.0f, std::round(th.roll.noteLineHead * scale)),
-          std::max(1.0f, std::round(th.roll.noteLineHeadWidth * scale)), 2.0f * s.pathHalfThickness(),
+  return {std::max(1.0f, std::round(th.roll.noteLine * scale)), std::max(1.0f, std::round(2.0f * scale)), 2.0f * s.pathHalfThickness(),
           static_cast<uint8_t>(std::clamp(th.roll.noteLineBand, 0.0f, 255.0f))};
 }
 
-// One note: band, body, head. `path` (≥ 2 points, device px, left to right) is the pitch path of a note that has
+// One note: band and body. `path` (≥ 2 points, device px, left to right) is the pitch path of a note that has
 // one; without it the note is straight at d.yc. No allocation: a handful of draw-list primitives per note, and a
 // note narrower than its thickness is two crisp quads (a zoomed-out clip stays cheap).
 void drawNoteLine(DrawList& dl, const LineStyle& st, const NoteLine& d, std::span<const Vec2> path = {}) {
@@ -58,39 +56,27 @@ void drawNoteLine(DrawList& dl, const LineStyle& st, const NoteLine& d, std::spa
   if (w <= 0.0f || rowH <= 0.0f) return;
   // Never thicker than the row: small rows keep a px of air on each side while there is room for it.
   const float t = std::min(st.thick, std::clamp(rowH - 2.0f, std::min(2.0f, rowH), rowH));
-  const float hh = std::min(st.headH, rowH);
-  const float hw = std::min(st.headW, w);
-  const bool head = hh >= t + 2.0f;
   if (path.size() >= 2) {
     if (st.bandAlpha) strokePath(dl, path, withAlpha(d.fill, st.bandAlpha), st.pathBand);
     strokePath(dl, path, d.fill, t);
     const Vec2 a = path.front(), b = path.back();
     if (b.x >= d.x1 - 0.5f) dl.addCircleFilled(b, 0.5f * t, d.fill);
-    if (a.x <= d.x0 + 0.5f) {  // the note's start is in view
-      if (head) dl.addRoundedRectFilled(frect(a.x, a.y - 0.5f * hh, a.x + hw, a.y + 0.5f * hh), 0.5f * std::min(hw, hh), d.head);
-      else dl.addCircleFilled(a, 0.5f * t, d.fill);
-    }
+    if (a.x <= d.x0 + 0.5f) dl.addCircleFilled(a, 0.5f * t, d.fill);  // the note's start is in view
     return;
   }
   if (st.bandAlpha) dl.addRectFilled(frect(d.x0, d.y0, d.x1, d.y1), withAlpha(d.fill, st.bandAlpha));
   const float top = std::round(d.yc - 0.5f * t);
-  const bool tiny = w < t + 2.0f || t < 3.0f;  // no room for round ends
-  if (!(head && hw >= w)) {
-    if (tiny) dl.addRectFilled(frect(d.x0, top, d.x1, top + t), d.fill);
-    else dl.addRoundedRectFilled(frect(d.x0, top, d.x1, top + t), 0.5f * t, d.fill);
-  }
-  if (head) {
-    const float htop = std::round(d.yc - 0.5f * hh);
-    if (tiny) dl.addRectFilled(frect(d.x0, htop, d.x0 + hw, htop + hh), d.head);
-    else dl.addRoundedRectFilled(frect(d.x0, htop, d.x0 + hw, htop + hh), 0.5f * std::min(hw, hh), d.head);
-  }
+  const float x1 = w > st.gap + t ? d.x1 - st.gap : d.x1;  // a note too short for the gap keeps its length
+  const bool tiny = x1 - d.x0 < t + 2.0f || t < 3.0f;      // no room for round ends
+  if (tiny) dl.addRectFilled(frect(d.x0, top, x1, top + t), d.fill);
+  else dl.addRoundedRectFilled(frect(d.x0, top, x1, top + t), 0.5f * t, d.fill);
 }
 
 // Px between samples along a stored free curve with bowed segments (logical); every other path is its cached
 // straight segments.
 constexpr float kPathSampleStep = 2.0f;
 // A path note narrower than kPathTinyPx is one quad over its wave's extent; narrower than kPathSmallPx its line
-// alone (no grab band, no round ends, no head). Logical px.
+// alone (no grab band, no round ends). Logical px.
 constexpr float kPathTinyPx = 10.0f;
 constexpr float kPathSmallPx = 20.0f;
 
@@ -380,7 +366,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   const bool anySelected = !s_.selection().empty();
   const bool velPreview = dr.kind == DragKind::Velocity && !s_.showChance();
   const float vx0 = static_cast<float>(vis.x) - 4.0f, vx1 = static_cast<float>(vis.right()) + 4.0f;
-  const float cutPad = style.headW + style.thick + 4.0f;
+  const float cutPad = style.thick + 4.0f;
   const float cx0 = static_cast<float>(r.x) - cutPad, cx1 = static_cast<float>(r.right()) + cutPad;
   // Proportional rows may overlap (a collapsing MOS): notes are painted by their row's z, small steps under large
   // ones, selected notes on top (mos-roll.js drawOrder), each z in time order. A counting sort over the visible notes
@@ -402,7 +388,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
     float x0 = std::round(s_.xOfTick(static_cast<double>(start)));
     float x1 = std::max(x0 + 3.0f, std::round(s_.xOfTick(static_cast<double>(start + length))));
     if (x1 <= vx0 || x0 >= vx1) return;
-    NoteLine d{x0, x1, 0, 0, 0, 0, 0, 0};
+    NoteLine d{x0, x1, 0, 0, 0, 0, 0};
     const bool path = anyPath && s_.onPath(n, pitch);
     if (path) {
       // Its label sits at its start: the pitch there, the lane as its band.
@@ -420,20 +406,17 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
       if (d.y1 <= vy0 || d.y0 >= vy1) return;
       d.yc = static_cast<float>(s_.screenY(pl.centre));
       // Cut far outside the widget only (float range), and by the widget, not by this paint's clip: the round ends
-      // and the head stay where the note's are, and a partial repaint emits the same geometry as a full one.
+      // stay where the note's are, and a partial repaint emits the same geometry as a full one.
       d.x0 = std::max(x0, cx0);
       d.x1 = std::min(x1, cx1);
       d.key = static_cast<uint16_t>(pl.z + (sel ? 256 : 0));
-      if (pl.offGrid) d.head = th->roll.offGrid;
     }
-    if (!n.enabled()) {  // deactivated: grey, with a dark head (a soft note is grey too, but its head is its own colour)
+    if (!n.enabled()) {  // deactivated: grey
       d.fill = col.disabledFill;
-      d.head = col.disabledBorder;
     } else {
       const int v = velIndex(velPreview && sel ? s_.previewValue(n) : n.velocity);
       d.fill = sel ? col.selFill[v] : col.fill[v];
     }
-    if (d.head == 0) d.head = d.fill;
     if (path) curved.push_back({&n, start, length, pitch, sel});
     else if (zOrder) zNotes.push_back(d);
     else drawNoteLine(dl, style, d);
@@ -527,7 +510,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
         }
       drawNoteLine(dl, style,
                    {x0, x1, static_cast<float>(s_.screenY(pl.top)) + dy, static_cast<float>(s_.screenY(pl.bottom)) + dy,
-                    static_cast<float>(s_.screenY(pl.centre)) + dy, col.selFill[100], pl.offGrid ? th->roll.offGrid : col.selFill[100], 0});
+                    static_cast<float>(s_.screenY(pl.centre)) + dy, col.selFill[100], 0});
     }
 
   // Outside the played region (before the start / loop start, after the end / loop end): dimmed, notes included.
@@ -590,7 +573,7 @@ void NoteAreaWidget::paintNoteLabels(PaintContext& ctx) {
     int n = l.num == 0 ? std::snprintf(buf, sizeof buf, "%u", l.harmonic)  // the anchor: its harmonic number
                        : std::snprintf(buf, sizeof buf, "%lld/%lld", static_cast<long long>(l.num), static_cast<long long>(l.den));
     if (n <= 0) continue;
-    const int32_t left = static_cast<int32_t>(l.x0 + std::min(style.headW, w)) + pad;
+    const int32_t left = static_cast<int32_t>(l.x0) + pad;
     const int32_t avail = static_cast<int32_t>(l.x1) - left - pad;
     std::string_view text(buf, static_cast<size_t>(n));
     if (ts->measure(font, text) > avail) continue;
@@ -676,7 +659,7 @@ void paintCurveNotes(PaintContext& ctx, RollState& s, const IRect& vis) {
       continue;
     }
     const float y = pts.front().y;
-    drawNoteLine(ctx.dl, style, {x0, x1, y - 0.5f * lane, y + 0.5f * lane, y, fill, on ? fill : col.disabledBorder, 0}, pts);
+    drawNoteLine(ctx.dl, style, {x0, x1, y - 0.5f * lane, y + 0.5f * lane, y, fill, 0}, pts);
   }
 }
 

@@ -84,7 +84,6 @@
     "roll.rowLine": "#0000003A",
     "roll.equave": "#0D1317C8",
     "roll.outside": "#0000004D",
-    "roll.offGrid": "#62D4E8",
     "roll.fundamental": "#62D4E88C",
     "roll.harmonic": "#62D4E826",
     "roll.keyTonic": "#F2C77E",
@@ -291,8 +290,6 @@
     "size.meter": 14,
     "size.gutter": 6,
     "roll.noteLine": 5,
-    "roll.noteLineHead": 9,
-    "roll.noteLineHeadWidth": 13,
     "roll.noteLineBand": 40
   },
   "clipPalette": [

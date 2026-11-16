@@ -73,8 +73,10 @@ struct Vib : VibratoEnvelope {
     sign = c.vibrato.depthCents < 0.0f ? -1.0 : 1.0;
     period = std::max(periodTicks, kMinVibratoPeriodTicks);
   }
-  double at(double t) const noexcept {
-    const double a = VibratoEnvelope::at(t);
+  // before: the limit from the left — at the stop, the swing it ends on (not 0: a vibrato to the note's end ends
+  // where it is, the drawn line does not drop back to the note's pitch).
+  double at(double t, bool before = false) const noexcept {
+    const double a = before && t == stop && t > on ? within(t) : VibratoEnvelope::at(t);
     return a == 0.0 ? 0.0 : sign * a * std::sin(2.0 * std::numbers::pi * (t - on) / period);
   }
 };
@@ -192,7 +194,7 @@ double noteCurveCents(const NoteCurves* c, Ticks noteLength, const NoteBendTarge
   const Bends bends(nc, noteLength, targets);
   tick = std::clamp(tick, 0.0, static_cast<double>(bends.length));
   return evalAutomation(std::span<const Breakpoint>(nc.pitch), tick, 0.0) + bends.at(tick) + Warp(warp).at(tick) +
-         Vib(nc, bends.length, targets.vibratoPeriod).at(tick);
+         Vib(nc, bends.length, targets.vibratoPeriod).at(tick, tick >= static_cast<double>(bends.length));  // the end: where it arrives
 }
 
 std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteLength, const NoteBendTargets& targets,
@@ -240,7 +242,7 @@ std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteL
   };
   auto upTo = [&](Ticks t) {
     const double x = static_cast<double>(t);
-    return automationValueBefore(free, t, 0.0) + bends.at(x) + warp.at(x, true) + vib.at(x);
+    return automationValueBefore(free, t, 0.0) + bends.at(x) + warp.at(x, true) + vib.at(x, true);
   };
   const double tol = std::max(toleranceCents, 1e-6);
   std::vector<Breakpoint> out;
@@ -268,7 +270,9 @@ std::vector<Breakpoint> effectiveNoteCurve(const NoteCurves* record, Ticks noteL
   for (size_t i = 0; i < knots.size(); ++i) {
     const Ticks t = knots[i];
     const double before = upTo(t), at = from(t);
-    if (i == 0 || before != at) {
+    if (i > 0 && i + 1 == knots.size()) {
+      push(t, before);  // the note's end: where it arrives (bug 2026-11-15: no step back to its pitch after it)
+    } else if (i == 0 || before != at) {
       if (i > 0) push(t, before);
       push(t, at);
     } else {

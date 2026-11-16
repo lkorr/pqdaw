@@ -157,7 +157,7 @@ NoteBendTargets noteBendTargets(const NoteCurves& c, std::optional<double> noteH
                                 std::optional<double> outHz) noexcept;
 
 // curve(t) of a note `noteLength` ticks long at note tick `tick` (clamped to [0, noteLength]; at a jump of the free
-// curve or of a warp the value from that tick on). `c` null: no curve record (a warp only). O(log points + log
+// curve or of a warp the value from that tick on; at the note's end a vibrato's last swing, not 0). `c` null: no curve record (a warp only). O(log points + log
 // warps). Allocation-free.
 double noteCurveCents(const NoteCurves* c, Ticks noteLength, const NoteBendTargets& targets, const NoteWarp& warp,
                       double tick) noexcept;
@@ -170,7 +170,9 @@ inline double noteCurveCents(const NoteCurves& c, Ticks noteLength, const NoteBe
 //     the note has none);
 //   - else: straight segments (Breakpoint::curve 0) within `toleranceCents` of curve(t), from tick 0 to at least
 //     `noteLength` (free-curve points beyond the note are kept); the glides' shapes and curved free segments are
-//     subdivided until they are that close, straight spans cost two points. Two points on one tick are a jump. A
+//     subdivided until they are that close, straight spans cost two points. Two points on one tick are a jump, except
+//     at the last knot: one point, where the curve arrives (a vibrato running to the note's end does not drop back
+//     to the note's pitch there). A
 //     note its group's warps do not move (it starts and stays in one state) and that has no curve record: empty.
 //     A vibrato has a knot on every quarter cycle (its zeros and swings are exact) and is subdivided between them
 //     to the tolerance: about π · sqrt(depth / (2 · tolerance)) points per cycle (35 ¢ at 1 ¢: 16).

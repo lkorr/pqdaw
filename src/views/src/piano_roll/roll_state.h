@@ -256,8 +256,8 @@ inline constexpr float kNoteLabelRise = 12.0f;
 // Also the entry of the z-ordered pass (Proportional layout: rows may overlap).
 struct NoteLine {
   float x0, x1, y0, y1, yc;
-  ui::Rgba fill, head;  // head: the start cap (the theme's offGrid colour for a pitch between rows)
-  uint16_t key = 0;     // z, + 256 when selected (selected notes always on top, as mos-roll.js drawOrder)
+  ui::Rgba fill;
+  uint16_t key = 0;  // z, + 256 when selected (selected notes always on top, as mos-roll.js drawOrder)
 };
 
 // T7.14: what the roll knows of one JI group per clip snapshot (RollState::groupInfos): its numbering and its notes.

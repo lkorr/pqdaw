@@ -53,7 +53,7 @@ const ColorToken kColors[] = {
     PQ_COLOR(arrangement, loopOffEdge), PQ_COLOR(arrangement, playhead), PQ_COLOR(arrangement, startMarker), PQ_COLOR(arrangement, overviewFrame),
     PQ_COLOR(roll, keyWhite), PQ_COLOR(roll, keyBlack), PQ_COLOR(roll, keyText), PQ_COLOR(roll, rowNatural),
     PQ_COLOR(roll, rowAccidental), PQ_COLOR(roll, rowScale), PQ_COLOR(roll, rowLine), PQ_COLOR(roll, equave),
-    PQ_COLOR(roll, outside), PQ_COLOR(roll, offGrid), PQ_COLOR(roll, fundamental), PQ_COLOR(roll, harmonic),
+    PQ_COLOR(roll, outside), PQ_COLOR(roll, fundamental), PQ_COLOR(roll, harmonic),
     PQ_COLOR(roll, keyTonic), PQ_COLOR(roll, keyLarge), PQ_COLOR(roll, keySmall), PQ_COLOR(roll, keyExtra),
     PQ_COLOR(roll, pitchLine), PQ_COLOR(roll, edoLine), PQ_COLOR(roll, edoEquave),
     PQ_COLOR(roll, jiFill), PQ_COLOR(roll, jiBorder), PQ_COLOR(roll, jiLine), PQ_COLOR(roll, jiText), PQ_COLOR(roll, jiStop),
@@ -122,7 +122,7 @@ const MetricToken kMetrics[] = {
     PQ_METRIC(radius, control), PQ_METRIC(radius, panel), PQ_METRIC(radius, menu), PQ_METRIC(radius, clip),
     PQ_METRIC(size, control), PQ_METRIC(size, row), PQ_METRIC(size, menuItem), PQ_METRIC(size, scrollbar),
     PQ_METRIC(size, knob), PQ_METRIC(size, meter), PQ_METRIC(size, gutter),
-    PQ_METRIC(roll, noteLine), PQ_METRIC(roll, noteLineHead), PQ_METRIC(roll, noteLineHeadWidth), PQ_METRIC(roll, noteLineBand),
+    PQ_METRIC(roll, noteLine), PQ_METRIC(roll, noteLineBand),
 };
 #undef PQ_METRIC
 

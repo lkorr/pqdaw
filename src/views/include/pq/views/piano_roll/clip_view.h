@@ -10,8 +10,7 @@
 // selected"). EDO mode: one row per step of the clip's tuning; MOS / Scala: one row per degree, Proportional or
 // Equidistant with step-class keys, an optional background EDO and a live generator morph (T3.12; row_model.h);
 // equave markers, Q2 labels, scale highlighting, fold to used notes / scale. Ratio and Cents notes sit at their true pitch between
-// rows and are marked off-grid (the theme's roll.offGrid border and a triangle pointing to the side of the nearest row
-// the pitch lies on). The grid is the context's shared GridSpec at this editor's zoom.
+// rows. The grid is the context's shared GridSpec at this editor's zoom.
 //
 // Every gesture (draw, move, copy, resize, velocity / chance drag, brace drag) is previewed while it runs and
 // dispatched as one edit when it ends: one undo step each. Keys (scope "pianoroll", docs/HOTKEYS.md): Up / Down

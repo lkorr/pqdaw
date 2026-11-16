@@ -508,6 +508,23 @@ Status tuneChord(const Chord& ch, const TuneToJiOptions& options, IdSource& ids,
       u.updates.push_back({keyOf(note), m});
     }
   }
+  // bug 2026-11-15 (a melody around a tuned chord): another group whose anchor is now a member is absorbed, when all
+  // of its notes are in the chord; a member cannot anchor a group of its own.
+  auto inChord = [&](NoteId id) {
+    for (const Chord::Pitch& p : ch.pitches)
+      for (const Chord::Pitch::Member& m : p.notes)
+        if (m.note->id == id) return true;
+    return false;
+  };
+  for (auto g = groups.begin(); g != groups.end();) {
+    if (g->anchor == a.id || !inChord(g->anchor)) {
+      ++g;
+      continue;
+    }
+    for (const Note& other : c.notes)
+      if (noteAnchorOf(other.pitch) == g->anchor && !inChord(other.id)) return invalid("the notes take in part of a JI group: select all of it, or none");
+    g = groups.erase(g);
+  }
   const auto have = std::find_if(groups.begin(), groups.end(), [&](const JiGroup& g) { return g.anchor == a.id; });
   if (have == groups.end()) {
     JiGroup g;
