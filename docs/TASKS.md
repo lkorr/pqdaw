@@ -894,4 +894,5 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **VZ.4 Loudness: Level Meter, LUFS Meter, Loudness History** 👁 (plan §VZ.4)
 - [ ] **VZ.5 Stereo: Stereo Field, Stereo Image, Phase Scope** 👁 (plan §VZ.5; after VZ.2)
 - [ ] **VZ.6 Band Levels and Waveform** 👁 (plan §VZ.6)
-- [ ] Deferred (ask the user): Kick/Sub Phase + Align (two-input analyser), Tonal Reference, Waterfall + Stereo Spectrogram (3D), spectrogram kick/sub ticks
+- [ ] **VZ.7 Waterfall and Stereo Spectrogram (3D)** 👁 (plan §VZ.7; CPU projection / splat as PQ Meter does, through DrawList and the texture pool)
+- [ ] Deferred (ask the user): Kick/Sub Phase + Align (two-input analyser), Tonal Reference, spectrogram kick/sub ticks

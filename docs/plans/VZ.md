@@ -112,12 +112,28 @@ REVIEW entry.
   `dsp/scope.h` ScopeBeat slots where they fit.
 Accept: band-split tests (a sine lands in its band; the crossovers sum flat), goldens, perf, REVIEW entry.
 
+## VZ.7 Waterfall and Stereo Spectrogram (3D) 👁 (user 2026-11-15: port them the way PQ Meter renders them)
+
+Both render on the CPU in PQ Meter, so they port directly:
+- **Waterfall** (PQ `modules/waterfall.cpp`, 1.9k lines): SE(3) camera, the terrain projected on the CPU into 2D
+  triangles (`PrimReserve` quad strips, :70-120). In pqdaw: the same projection into DrawList / FacePainter triangles
+  (add an indexed-mesh call to FacePainter if strips don't fit). All its options: FFT / hop, window, multi-resolution,
+  channel mono / L / R / M / S, slope, scale (VZ.2's shared axis), filled / wireframe, lit shading, cage / grid /
+  labels, free camera + snap views, colour (VZ.2's colour stops).
+- **Stereo Spectrogram** (PQ `modules/stereo_spectrogram.cpp`, 3.7k lines): the reassigned stereo STFT point cloud
+  (time, freq, pan, power) splatted on the CPU into an RGBA canvas, uploaded as a texture and drawn as an image
+  (:2140-2246). In pqdaw: the Spectrogram face's texture path (`views/src/meta/spectrogram_face.cpp`, ui texture pool)
+  in place of raw GL; its render modes, detail, camera snaps (yaw 0 = spectrogram, 90 = stereo image heat map, pitch
+  90 = pan over time), fade, heat decay, colour, grid / cage / labels. Reuse VZ.5's cross-spectrum where it fits.
+Camera drags orbit, double-click snaps; idle = no frames when the signal is silent and the camera rests.
+Accept: projection tests (known points land where expected for the snap views), goldens at each snap view, perf (UI
+frame per face at 1440p, ship numbers; canvas upload only of changed rows where possible), REVIEW entry.
+
 ## Deferred (not in this run; ask the user)
 - Kick/Sub Phase and Align (PQ kicksub_phase / kicksub_align): need a two-input analyser (a second tap slot from a
   cable), new plumbing.
 - Tonal Reference (reference-file library + decode).
-- Waterfall and Stereo Spectrogram (3D): need a mesh / point renderer pqdaw's FacePainter lacks.
 - PQ Spectrogram kick/sub collision ticks.
 
 ## Lanes
-w-vz1: VZ.2 → VZ.3 → VZ.6. w-vz2: VZ.4 → VZ.5 (VZ.5 starts after VZ.2 is merged).
+w-vz1: VZ.2 → VZ.3 → VZ.6. w-vz2: VZ.4 → VZ.5 (after VZ.2 is merged) → VZ.7.
