@@ -1085,3 +1085,20 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   gradients cached on keys including the colours.
 - Notes: Q?-VZ.10-a (storage, no alpha strip, COLOURS tab, still-fixed colours: Oscilloscope traces, Stereo
   Spectrogram band ramp). Golden added: vz10-colour-picker. No runtime test of the Spectrogram / 3D stop colours.
+
+## 2026-11-16 · VZ.9 merged · main
+- Did: every finding of docs/reviews/VZ.md: C1 (Stereo Image tracker buffers rebuilt on any size change; a test walks
+  every settings pair of all eight analysis stages against a fresh stage), H1 (faces sync their feed before options,
+  requests only to a held feed, feeds told apart by serial — incl. Spectrum / Spectrogram / Scope / SpectrumPlot),
+  H2 (tone tables keep the fundamental), M1–M11 (glide in double, ramps from the current gain, worker flushes
+  denormals, SAVE DEFAULT via the catalog, one undo per Alt+wheel run, cloud ring store, glow as one texture, chips hit
+  only where drawn, double biquads, off-grid max momentary, GPU scroll-path test), L1–L17, tighter tolerances, UI pass
+  (LabelGuard: no label collisions, lit active snap chip, faint points fade, SIDE dB scale / TOP legend, zoomed-out
+  summaries below 6 px text).
+- Verified: worker single exes (dsp VZ 58/58, views VZ green; C1 / H1 / H2 tests fail with the fix reverted); its
+  -Affected -Slow was OOM-killed while compiling, re-run by the orchestrator on 9f8e5cff: 88/88. Merged as tested.
+- Perf / CPU-efficiency check: removed work (M6 no per-point allocation, M7 one upload + quad instead of ≤ 32 k rects,
+  no per-paint allocations, exp2 only while gliding); added: double biquads (same scalar cost), 10 ms loudness grid
+  (~34 k adds / s).
+- Notes: Q?-VZ.9-a (double-click on choice rows), Q?-VZ.9-b (6 px text threshold). 21 goldens re-recorded (the VZ.4–
+  VZ.7 faces). Not done: Spectrum / Spectrogram / Scope keep their own 6 px chips; Level Meter column width.
