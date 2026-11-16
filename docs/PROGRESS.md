@@ -1023,3 +1023,20 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   tuning pitches cached per document.
 - Notes: the first press after an idle-suspended stream is silent until the device's pre-roll ends (existing
   cold-start behaviour). No goldens changed.
+
+## 2026-11-16 · VZ.5 merged · main
+- Did: Stereo Field (goniometer, correlation, 3-band LR4 mode; raw L/R history, per-sample work on the UI thread over
+  new frames only), Stereo Image (Ribbon / Glow / Heat map, palettes, Custom dB stops via LevelAxis) and Phase Scope
+  (mono gain / loss per frequency, coherence-gated, mono-warn band) over one dsp::CrossSpectrum on a new kWantStereo
+  worker stage (ported from PQ Meter). Shared face frame src/views/src/meta/analyser_face.h (loudness faces moved on
+  it, goldens identical; a pure-virtual call in its destructor fixed).
+- Verified (worker): dsp stereo* + loudness* 16/16 (panned sine p ± 0.02, identical width < 0.02 and +3.01 dB mono,
+  L = −R < −60 dB at every point, noise coherence 0.055, heat tracker, rests on silence, no allocation); -Affected
+  39/45, failures green alone except below. Orchestrator after the merge: dsp 1.51 M assertions, views stereo / phase /
+  loudness / tone / elements green.
+- Perf / CPU-efficiency check: worker ms per second of stereo: Stereo Image ribbon 11.9, glow 18.1, heat map 45.2
+  (two FFT pairs / 256 samples, as PQ), Phase Scope 2.6; Stereo Field 1.5 on the UI thread; hidden = 0.
+- Notes: Q?-VZ.5-a (no colour pickers; Hann + Kaiser only of PQ's six windows; no group delay: PQ never draws it).
+  Pre-existing flake, not from VZ: pq_tests_timeline "preview player: play() during the previous preview's first
+  callback…" times out under load (failed 2 of 3 runs, PreviewPlayer unchanged since 11-10). Goldens added:
+  device-meta-stereo, module-stereofield / stereoimage / phasescope-panel.
