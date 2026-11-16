@@ -1917,3 +1917,11 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Piano roll: double-click empty space and keep the button down on the second click, then drag right: the new note
   stretches (snapped to the grid). Undo removes the note and the stretch together.
 - Macro mode: press 2 (3/2) then w (2/3): the composition line goes back to 1/1 instead of "3/2 · 2/3 = 1/1".
+
+## 2026-11-15 · bug-roll-vzoom · row zoom strip left of the keys 👁
+- A 9 px bar at the left of the roll's keys (↕ mark at its middle, lit on hover): drag **down** to make the rows taller
+  (zoom in on the pitches; same direction as the ruler's numbers, Live), up to flatten them, ×2 per 60 px; the pitch you
+  pressed stays under the press. It never plays or selects a key. Double-click: rows fit the clip's notes.
+- Rows can now be up to 160 px tall (was 48): a few semitones can fill the roll. Ctrl + wheel / dragging the keys
+  sideways still zoom too. The keys are 9 px narrower (the strip takes that from the keys column).
+- Is the strip findable enough (surface.sunken with a small ↕), and is down = zoom in the right feel?

@@ -44,7 +44,8 @@ constexpr HelpEntry kQuickStart[] = {
 constexpr HelpEntry kNotes[] = {
     {"double-click",
      "Add or delete a note",
-     "Double-click an empty spot to put a note there; double-click a note to delete it."},
+     "Double-click an empty spot to put a note there (hold the second click and drag to stretch it); double-click a "
+     "note to delete it."},
     {"{edit.toggleDrawMode}",
      "Draw Mode (the pencil)",
      "Turns the pencil on or off; a coloured bar under the Fold and Scale buttons shows that it is on. With it on, a click adds a "
@@ -95,6 +96,10 @@ constexpr HelpEntry kNotes[] = {
      "Scroll and zoom",
      "The wheel scrolls up and down through the pitches, with Shift along the time. Ctrl + wheel zooms the time, "
      "Ctrl + Alt + wheel makes the rows taller or flatter: tall rows help when notes are only a few cents apart."},
+    {"drag the bar left of the keys\ndouble-click the bar",
+     "Zoom the rows",
+     "Down makes the rows taller (a few notes can fill the roll), up flatter; the pitch you pressed stays where it is. "
+     "A double-click fits the rows to the clip's notes. Dragging the keys sideways zooms the rows too."},
 };
 
 // ---- Bends between notes -----------------------------------------------------------------------------------

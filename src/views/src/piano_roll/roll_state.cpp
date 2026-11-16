@@ -6,6 +6,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <numeric>
 
 #include "../common/drag.h"
@@ -32,7 +33,8 @@ constexpr int64_t kMaxHarmonicDenominator = doc::kMaxFundamentalDenominator;
 constexpr double kMinPxPerTick = 1e-5;  // ≈ 1 px per bar
 constexpr double kMaxPxPerTick = 0.5;   // ≈ 870 px per 1/64 note
 constexpr int32_t kMinRowPx = 3;
-constexpr int32_t kMaxRowPx = 48;
+// bug-roll-vzoom: tall enough that a few rows fill the roll (12edo: well under an octave in a usual detail view).
+constexpr int32_t kMaxRowPx = 160;
 // Drags of more notes than this repaint the whole note area and lane instead of tracking their rects.
 constexpr size_t kMaxTrackedDragNotes = 256;
 
@@ -831,6 +833,48 @@ void RollState::setRowHeight(int32_t logicalPx) {
   if (logicalPx == rowPxLogical_) return;
   rowPxLogical_ = logicalPx;
   rebuildRows();
+  if (keysView) keysView->markDirty();
+  markNotesDirty();
+}
+
+void RollState::setRowHeight(int32_t logicalPx, double anchorCents, float anchorScreenY) {
+  logicalPx = std::clamp(logicalPx, kMinRowPx, kMaxRowPx);
+  if (logicalPx == rowPxLogical_) return;
+  rowPxLogical_ = logicalPx;
+  rebuildRows();
+  if (!rows_.empty()) {
+    // Exactly: the anchor pitch back under the anchor y (rebuildRows kept the centre's row, a pixel off at most).
+    const int32_t at = static_cast<int32_t>(std::lround(rows_.yOfCents(anchorCents)));
+    scrollY_ = at - (static_cast<int32_t>(std::floor(anchorScreenY)) - area().y);
+    scrollByPx(0, 0);  // clamp
+  }
+  if (keysView) keysView->markDirty();
+  markNotesDirty();
+}
+
+void RollState::fitRows() {
+  const ui::IRect a = area();
+  if (!clip_ || a.h <= 0 || rows_.empty()) return;
+  // The pitch span of every note (Degree, ratio and cents notes alike; a double-click, so one pass is fine).
+  double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+  for (const doc::Note& note : clip_->notes)
+    if (const std::optional<double> c = centsOf(note.pitch)) {
+      lo = std::min(lo, *c);
+      hi = std::max(hi, *c);
+    }
+  if (lo > hi) {
+    const int32_t n = std::max(1, degreesPerEquave(tuning_));
+    setRowHeight(std::clamp(static_cast<int32_t>(std::lround(240.0 / n)), kMinRowPx + 2, tuning_.edo() ? 14 : kMaxRowPx));
+    centreOnDegree(densestDegree(a.h));
+    return;
+  }
+  // Content px scale with the row height (the rows' centres, every layout): measure the notes' span at the current
+  // rows, a row of margin above and below, and scale the rows so that fills the area.
+  const double span = std::abs(rows_.yOfCents(hi) - rows_.yOfCents(lo)) + 3.0 * rows_.laneHeight();
+  const double k = static_cast<double>(a.h) / std::max(1.0, span);
+  setRowHeight(std::clamp(static_cast<int32_t>(std::floor(rowPxLogical_ * k)), kMinRowPx + 2, kMaxRowPx));
+  scrollY_ = static_cast<int32_t>(std::lround(rows_.yOfCents(0.5 * (lo + hi)))) - a.h / 2;
+  scrollByPx(0, 0);
   if (keysView) keysView->markDirty();
   markNotesDirty();
 }
@@ -1965,6 +2009,7 @@ void RollState::markAllDirty() {
   markNotesDirty();
   if (rulerView) rulerView->markDirty();
   if (keysView) keysView->markDirty();
+  if (zoomStrip) zoomStrip->markDirty();
   if (boxPanel) boxPanel->refresh();
   if (cornerPanel) cornerPanel->refresh();
   if (laneHeaderView) laneHeaderView->refresh();

@@ -749,6 +749,32 @@ void KeysWidget::paint(PaintContext& ctx) {
   dl.popClip();
 }
 
+// --- row zoom strip (bug-roll-vzoom) -----------------------------------------------------------------------------
+
+// A sunken bar (lit while hovered / dragged) with a ↕ mark at its middle; a divider toward the keys.
+void RowZoomStrip::paint(PaintContext& ctx) {
+  const Theme* th = ctx.res.theme;
+  if (!th) return;
+  const IRect r = rect();
+  const IRect vis = intersect(r, ctx.clip);
+  if (vis.empty()) return;
+  DrawList& dl = ctx.dl;
+  if (!s_.hasClip()) {
+    dl.addRectFilled(vis.toRect(), th->surface.panel);
+    return;
+  }
+  const VisualState v = visualState();
+  dl.addRectFilled(vis.toRect(), v.pressed ? th->control.fillPressed : v.hover ? th->control.fillHover : th->surface.sunken);
+  const float x0 = static_cast<float>(r.x), x1 = static_cast<float>(r.right());
+  dl.addRectFilled(frect(x1 - 1.0f, static_cast<float>(vis.y), x1, static_cast<float>(vis.bottom())), th->surface.divider);
+  const float cx = std::round((x0 + x1 - 1.0f) * 0.5f), cy = std::round(static_cast<float>(r.y) + static_cast<float>(r.h) * 0.5f);
+  const float hw = static_cast<float>(ctx.scale.px(3)), h = static_cast<float>(ctx.scale.px(3)),
+              gap = static_cast<float>(ctx.scale.px(2));
+  const Rgba c = v.hover || v.pressed ? th->text.primary : th->text.secondary;
+  dl.addTriangleFilled({cx, cy - gap - h}, {cx + hw, cy - gap}, {cx - hw, cy - gap}, c);
+  dl.addTriangleFilled({cx - hw, cy + gap}, {cx + hw, cy + gap}, {cx, cy + gap + h}, c);
+}
+
 // --- scale keys (T3.12) ------------------------------------------------------------------------------------------
 
 void stepClassColours(const Theme& th, std::span<const StepClass> classes, double hardness, std::vector<Rgba>& out) {

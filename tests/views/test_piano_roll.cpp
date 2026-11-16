@@ -681,6 +681,78 @@ TEST_CASE("clip view: copy / paste, fold to used notes, keys click selects a row
   CHECK(r.clip().loop.end == loop.end - kTicksPerWhole);
 }
 
+// bug-roll-vzoom: the bar left of the keys zooms the rows (down = taller), holding the pitch under the press; a
+// double-click fits the rows to the notes; it never auditions or selects. The keys' own sideways zoom still works.
+TEST_CASE("clip view: the row zoom strip zooms the rows around the press; double-click fits the notes (bug-roll-vzoom)") {
+  Roll r("pianoroll-12edo");
+  const std::string cv = "main/body/bottom/detail/clip/clip-view";
+  const IRect strip = r.d.rect(cv + "/row-zoom"), keys = r.d.rect(cv + "/keys");
+  REQUIRE_FALSE(strip.empty());
+  CHECK(strip.right() == keys.x);  // at the left of the keys, as tall
+  CHECK(strip.y == keys.y);
+  CHECK(strip.h == keys.h);
+  r.view->select({});
+  // The row nearest the strip's middle: the press holds its pitch there.
+  const float mid = static_cast<float>(strip.y) + static_cast<float>(strip.h) * 0.5f;
+  int64_t deg = 0;
+  float best = 1e9f;
+  for (const roll::PitchRow& row : r.view->rows().rows()) {
+    const float y = r.view->yOfDegree(row.degree);
+    if (std::abs(y - mid) < best) {
+      best = std::abs(y - mid);
+      deg = row.degree;
+    }
+  }
+  const Vec2 p{static_cast<float>(strip.x) + static_cast<float>(strip.w) * 0.5f, r.view->yOfDegree(deg)};
+  r.d.move(p);
+  CHECK(r.d.tree().cursor() == Cursor::ResizeNS);
+  const int32_t row0 = r.view->rowHeight();
+  REQUIRE(row0 == 14);  // the 12edo fit
+
+  // Down 60 px: rows twice as tall; the pressed pitch stays under the press.
+  r.d.down(p);
+  r.d.move({p.x, p.y + 30.0f});
+  r.d.move({p.x, p.y + 60.0f});
+  CHECK(r.view->rowHeight() == 2 * row0);
+  CHECK(std::abs(r.view->yOfDegree(deg) - p.y) <= 1.0f);
+  // Further: past the old 48 px limit (a few rows fill the roll).
+  r.d.move({p.x, p.y + 200.0f});
+  CHECK(r.view->rowHeight() > 48);
+  CHECK(std::abs(r.view->yOfDegree(deg) - p.y) <= 1.0f);
+  CHECK(r.d.tree().cursor() == Cursor::ResizeNS);
+  r.d.up({p.x, p.y + 200.0f});
+  CHECK(r.port.count(FakeTransport::Call::Audition) == 0);
+  CHECK(r.view->selection().empty());
+
+  // Up flattens.
+  const int32_t tall = r.view->rowHeight();
+  r.d.drag(p, {p.x, p.y - 120.0f}, 6);
+  CHECK(r.view->rowHeight() < tall / 3);
+  CHECK(std::abs(r.view->yOfDegree(deg) - p.y) <= 1.0f);
+
+  // Double-click: the rows fit the clip's notes (the lowest and highest note rows in view).
+  r.d.doubleClick(p);
+  int64_t lo = INT64_MAX, hi = INT64_MIN;
+  for (const doc::Note& n : r.clip().notes)
+    if (n.pitch.kind() == tuning::PitchKind::Degree) {
+      lo = std::min<int64_t>(lo, 12LL * n.pitch.equave() + n.pitch.degree());
+      hi = std::max<int64_t>(hi, 12LL * n.pitch.equave() + n.pitch.degree());
+    }
+  REQUIRE(lo <= hi);
+  for (const int64_t d : {lo, hi}) {
+    CHECK(r.view->yOfDegree(d) > static_cast<float>(keys.y));
+    CHECK(r.view->yOfDegree(d) < static_cast<float>(keys.bottom()));
+  }
+  CHECK(r.port.count(FakeTransport::Call::Audition) == 0);
+  CHECK(r.view->selection().empty());
+
+  // The keys' sideways drag still zooms the rows (6 logical px per row px).
+  const int32_t before = r.view->rowHeight();
+  const Vec2 k{static_cast<float>(keys.x) + 10.0f, p.y};
+  r.d.drag(k, {k.x + 36.0f, k.y}, 4);
+  CHECK(r.view->rowHeight() == before + 6);
+}
+
 TEST_CASE("clip view: a note drag damages only the note area and the velocity lane; idle draws nothing") {
   Roll r("pianoroll-12edo");
   r.d.advance(0.1);

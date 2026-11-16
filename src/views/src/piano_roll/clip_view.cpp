@@ -26,6 +26,7 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
   s.cornerPanel = &add<roll::CornerPanel>(s);
   s.rulerView = &add<roll::RulerWidget>(s);
   s.keysView = &add<roll::KeysWidget>(s);
+  s.zoomStrip = &add<roll::RowZoomStrip>(s);  // bug-roll-vzoom
   s.noteArea = &add<roll::NoteAreaWidget>(s);
   s.laneHeaderView = &add<roll::LaneHeaderWidget>(s);
   s.laneView = &add<roll::VelocityLaneWidget>(s);
@@ -199,9 +200,13 @@ void ClipView::arrange(LayoutPass& pass) {
   pass.place(*help_, {r.x + boxW - hb - pass.px(2), r.y + pass.px(2), hb, hb});
   pass.place(*s.cornerPanel, {ex, r.y, std::min(keysW, ew), rulerH});
   pass.place(*s.rulerView, {gx, r.y, gw, rulerH});
-  pass.place(*s.keysView, {ex, notesY, std::min(keysW, ew), notesH});
+  // bug-roll-vzoom: the zoom strip takes the left of the keys column; the keys the rest.
+  const int32_t stripW = std::min(pass.px(roll::kZoomStripWidth), std::min(keysW, ew));
+  const int32_t kx = ex + stripW, kw = std::max(0, std::min(keysW, ew) - stripW);
+  pass.place(*s.zoomStrip, {ex, notesY, stripW, notesH});
+  pass.place(*s.keysView, {kx, notesY, kw, notesH});
   pass.place(*s.noteArea, {gx, notesY, gw, notesH});
-  pass.place(*macroKeys_, {ex, notesY, std::min(keysW, ew), notesH});  // T8.1
+  pass.place(*macroKeys_, {kx, notesY, kw, notesH});  // T8.1
   pass.place(*macroOverlay_, {gx, notesY, gw, notesH});
   s.laneHeaderView->setVisible(laneH > 0);
   s.laneView->setVisible(laneH > 0);

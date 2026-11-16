@@ -23,7 +23,8 @@ namespace pq::views::roll {
 
 // Layout constants (logical px).
 inline constexpr float kClipBoxWidth = 148.0f;
-inline constexpr float kKeysWidth = 76.0f;
+inline constexpr float kKeysWidth = 76.0f;      // the keys column (the zoom strip at its left included)
+inline constexpr float kZoomStripWidth = 9.0f;  // bug-roll-vzoom: the row zoom strip left of the keys
 inline constexpr float kRulerHeight = 34.0f;
 inline constexpr float kBraceHeight = 13.0f;  // top strip of the ruler: loop brace and markers
 // bug-paused-playhead (user 2026-11-15, Live's scrub area): the strip under the brace, above the bar numbers: a press
@@ -105,6 +106,25 @@ private:
   void paintScaleKeys(ui::PaintContext& ctx, const ui::IRect& r, const ui::IRect& vis);  // T3.12
   RollState& s_;
   std::vector<ui::Rgba> classColours_;  // scratch: one colour per step class
+};
+
+// bug-roll-vzoom (Live's zoom strips): a narrow bar left of the keys. Dragging it down makes the rows taller (zooms
+// in), up flatter, ×2 per 60 logical px like the ruler's numbers, with the pitch under the press held at the press;
+// a double-click fits the rows to the clip's notes (RollState::fitRows). It never auditions or selects.
+class RowZoomStrip : public ui::Control {
+public:
+  explicit RowZoomStrip(RollState& s);
+  void paint(ui::PaintContext& ctx) override;
+  bool onPointer(const ui::PointerEvent& e) override;
+  void onCaptureLost() override;
+  ui::Cursor cursorAt(ui::Vec2 p) const override;  // ↕
+
+private:
+  RollState& s_;
+  bool dragging_ = false;
+  float pressY_ = 0.0f;         // device px
+  int32_t pressRowPx_ = 0;      // logical px
+  double pressCents_ = 0.0;     // the pitch under the press, held there
 };
 
 class NoteAreaWidget : public ui::Control {

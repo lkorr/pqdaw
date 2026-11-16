@@ -46,6 +46,7 @@ class ClipBoxPanel;
 class CornerPanel;
 class RulerWidget;
 class KeysWidget;
+class RowZoomStrip;
 class NoteAreaWidget;
 class LaneHeaderWidget;
 class VelocityLaneWidget;
@@ -311,6 +312,7 @@ public:
   CornerPanel* cornerPanel = nullptr;
   RulerWidget* rulerView = nullptr;
   KeysWidget* keysView = nullptr;
+  RowZoomStrip* zoomStrip = nullptr;  // bug-roll-vzoom
   NoteAreaWidget* noteArea = nullptr;
   LaneHeaderWidget* laneHeaderView = nullptr;
   VelocityLaneWidget* laneView = nullptr;
@@ -352,6 +354,11 @@ public:
   void scrollToTick(double t);
   void scrollByPx(float dx, float dy);
   void setRowHeight(int32_t logicalPx);   // rebuilds the rows, keeps the centre pitch
+  // bug-roll-vzoom: the same, but pitch `anchorCents` lands at device y `anchorScreenY` (the zoom strip's press).
+  void setRowHeight(int32_t logicalPx, double anchorCents, float anchorScreenY);
+  // bug-roll-vzoom (the zoom strip's double-click): rows as tall as fits the span of the clip's notes, centred on it;
+  // no notes: the default row height (fitToClip's).
+  void fitRows();
   void centreOnDegree(int64_t degree);
   // The degree a fresh view centres on: the middle of the densest view-tall band of notes (M3 review M14).
   int64_t densestDegree(int32_t viewHeightPx) const;

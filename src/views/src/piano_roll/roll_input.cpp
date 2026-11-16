@@ -788,7 +788,7 @@ MenuItem rowLabelsMenu(RollState& s) {
 
 KeysWidget::KeysWidget(RollState& s) : Control("keys"), s_(s) {
   setInfo("Keys", "Click a key to hear its pitch and select the notes on its row (Shift adds). Drag left/right to zoom "
-                  "the rows; the mouse wheel scrolls.");
+                  "the rows (or drag the bar at their left up / down); the mouse wheel scrolls.");
 }
 
 bool KeysWidget::onPointer(const PointerEvent& e) {
@@ -854,6 +854,61 @@ void KeysWidget::onHoverChanged(bool hovered) {
 InfoText KeysWidget::info() const {
   if (!s_.hovering()) return Control::info();
   return {s_.hoverTitle(), s_.hoverBody()};
+}
+
+// --- row zoom strip (bug-roll-vzoom) --------------------------------------------------------------------------
+
+RowZoomStrip::RowZoomStrip(RollState& s) : Control("row-zoom"), s_(s) {
+  setInfo("Row Zoom", "Drag down to make the rows taller (zoom in on the pitches), up to make them flatter; the pitch "
+                      "you pressed stays put. Double-click to fit the rows to the clip's notes.");
+}
+
+bool RowZoomStrip::onPointer(const PointerEvent& e) {
+  if (!s_.hasClip() || s_.rows().empty()) return false;
+  switch (e.type) {
+    case PointerType::Down: {
+      if (e.button != PointerButton::Left) return false;
+      if (s_.noteArea && tree()) tree()->setFocus(s_.noteArea);
+      if (e.clickCount >= 2) {
+        dragging_ = false;
+        s_.fitRows();
+        return true;
+      }
+      dragging_ = true;
+      pressY_ = e.pos.y;
+      pressRowPx_ = s_.rowPx();
+      pressCents_ = s_.centsAtScreenY(e.pos.y);
+      setPressed(true);
+      return true;
+    }
+    case PointerType::Move:
+      if (captured() && dragging_) {
+        // Down zooms in (Live, and the ruler's numbers): ×2 per 60 logical px.
+        const float scale = tree() ? tree()->scale() : 1.0f;
+        const double factor = std::exp2(static_cast<double>(e.pos.y - pressY_) / (60.0 * static_cast<double>(scale)));
+        const auto px = static_cast<int32_t>(std::lround(static_cast<double>(pressRowPx_) * factor));
+        s_.setRowHeight(px, pressCents_, pressY_);
+      }
+      return captured();
+    case PointerType::Up:
+      dragging_ = false;
+      setPressed(false);
+      return true;
+    case PointerType::Wheel:  // as on the keys
+      if (e.mods & mod::kCtrl) s_.setRowHeight(s_.rowPx() + static_cast<int32_t>(std::lround(e.wheel.y)));
+      else s_.scrollByPx(0.0f, -e.wheel.y * 3.0f * static_cast<float>(s_.rows().laneHeight()));
+      return true;
+    default: return false;
+  }
+}
+
+void RowZoomStrip::onCaptureLost() {
+  dragging_ = false;
+  setPressed(false);
+}
+
+Cursor RowZoomStrip::cursorAt(Vec2) const {
+  return s_.hasClip() && !s_.rows().empty() ? Cursor::ResizeNS : Cursor::Inherit;
 }
 
 // --- ruler ----------------------------------------------------------------------------------------------
