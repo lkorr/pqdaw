@@ -4,7 +4,7 @@
 //            unwired clock folds away), interpreter == JIT bit for bit; the blocks run under RtScope
 //   sync     Clock Sync at the project's tempo: a new value on every 1/16 line (6000 frames at 120 bpm), none between
 //   restart  On play: a second playback from the start repeats the first bit for bit; Free: it does not
-//   panel    the module's display reads the engine's voice tap: its values while it plays (in [−1, 1])
+//   panel    the module's display reads the engine's voice tap: the output after the Range, as heard (signed)
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -174,4 +174,41 @@ TEST_CASE("NZ.1 Noise module: the display reads the engine's voice tap while it 
   CHECK(v[0].phase >= -1.0f);
   CHECK(v[0].phase <= 1.0f);
   CHECK(v[0].sampleCount > 0);
+}
+
+TEST_CASE("NZ.1 Noise module: the display shows what is heard — the output after the Range, negative values as they are") {
+  // bug-small-fixes: the face drew frac(value) (the views reader wrapped every tap value as a phase: −0.3 drew at +0.7)
+  // and tapped the value before the Range (Min / Max did not show). The tap is the output now, read as it is.
+  for (const bool lower : {true, false}) {
+    CAPTURE(lower);
+    Rig r;
+    r.param(lower ? "max" : "min", 0.0);  // the output in [−1, 0] or [0, 1]
+    auto link = makeLink(r.store.current(), false);
+    app::FaceVoiceHub hub(*link);
+    views::VoiceTapReader* reader = hub.voices(r.engine, "");
+    REQUIRE(reader != nullptr);
+    std::array<views::FaceVoice, 16> v{};
+    (void)reader->read(v);
+    link->play(0);
+    int64_t t = 0;
+    float lo = 1.0f, hi = -1.0f;
+    uint32_t samples = 0;
+    for (uint32_t b = 0; b < 400; ++b) {
+      (void)run(*link, t, 1);
+      if (b % 8 != 7 || reader->read(v) == 0) continue;
+      for (uint32_t k = 0; k < v[0].sampleCount; ++k) {
+        lo = std::min(lo, v[0].samples[k]);
+        hi = std::max(hi, v[0].samples[k]);
+        ++samples;
+      }
+    }
+    REQUIRE(samples > 100);
+    if (lower) {
+      CHECK(hi <= 0.0f);
+      CHECK(lo < -0.5f);
+    } else {
+      CHECK(lo >= 0.0f);
+      CHECK(hi > 0.5f);
+    }
+  }
 }

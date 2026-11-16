@@ -23,7 +23,7 @@
 //                     and its rate start there), 1 Shared (the atom is `shared(…)`: one stream for all voices; Note
 //                     clock and On note restart on any voice's note-on, voice_sum(voice.trigger))
 //   output   out
-//   tap      voice_tap(v) into VoiceTap request 0 (v ∈ [−1, 1], before the Range): the face's trace and dots
+//   tap      voice_tap(out) into VoiceTap request 0 (the output, after the Range: what is heard): the face's trace and dots
 // Out of a voice context (a main path, an audio track) Note clock and On note have no notes: the value holds.
 // Cost: the atom's (bench/RESULTS.md NZ.1) plus the Range's multiply-add; everything else is param rate.
 

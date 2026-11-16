@@ -8,7 +8,7 @@
 //   Phase Accumulator   a group: In → [hz + Frequency] → × 2^(Pitch/1200) (cents_to_hz(Pitch, 1)) → phasor → + Phase
 //                       → frac → × Amplitude → Out. The value blocks carry the old params' curves: Frequency 0 … 20 kHz
 //                       exp0 (k 14), SIGNED (a wire may take it below 0: the phase runs backwards); Phase 0 … 1, WRAP;
-//                       Amplitude 0 … 4; Pitch ±4800 cents (GU.5b: ±1200 over the middle half of the travel, as the
+//                       Amplitude 0 … 4; Pitch ±9600 cents (GU.5b: ±1200 over the middle half of the travel, as the
 //                       old face's arc); and a constant 1 (the ratio's reference). Its panel (GU.5b): the old face — a
 //                       body circle, four `arc` elements round it and the `orbit` in the middle. Phase modulation is
 //                       a wire into Phase (its curve wraps).
@@ -221,7 +221,7 @@ inline constexpr std::string_view kBandChainSetting = "bandChain";  // a chain g
 // Band solo (ops::setBandSolo): the soloed band carries kBandSoloSetting = 1, each other band of its chain the active
 // state it had (kSoloRestoreSetting 0 / 1) while it is held off.
 inline constexpr std::string_view kBandSoloSetting = "bandSolo", kSoloRestoreSetting = "soloRestore";
-inline constexpr const char* kBandTypeItems = "High Cut|Low Cut|Band Pass|Notch|Bell|Low Shelf|High Shelf|All Pass";
+inline constexpr const char* kBandTypeItems = "Low Pass|High Pass|Band Pass|Notch|Bell|Low Shelf|High Shelf|All Pass";
 inline constexpr const char* kEqModeItems = "Stereo|L/R|M/S";
 inline constexpr const char* kOversampleItems = "1×|2×|4×|8×";  // TX.group-oversample: a group's `oversample` (model.h)
 inline constexpr uint32_t kMaxBandsPerChain = 32;
@@ -332,7 +332,7 @@ BlockSet delayTapBlocks(IdSource& ids, const DelayTapOptions& o = {}, DelayTapRo
 // `follow` kernel):
 //   detector  det = mux(Sidechain, In, lerp(In, SC, SC Mix)) — SC is the child group "Sidechain" (its In is where a cable
 //             from another track lands: a compensated sidechain, lower.h "Sidechains"; inside: an EQ Band child group
-//             (Low Cut 100 Hz) chosen by "EQ On" (off), then a smoothed Gain); Sidechain is set to 1 by the cablesource
+//             (High Pass 100 Hz) chosen by "EQ On" (off), then a smoothed Gain); Sidechain is set to 1 by the cablesource
 //             picker when a source is picked (0 at None)
 //   level     Detector 0 Peak: max(|L|, |R|) (linked); 1 RMS: sqrt(window(max(L², R²), 5 ms, mean)) (Q261: the
 //             detector and the law are two switches, so RMS expansion works)

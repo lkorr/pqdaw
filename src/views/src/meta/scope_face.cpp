@@ -9,8 +9,9 @@
 //   trace      Catmull-Rom through the samples at two points per device px, then the screen-space spline, glow passes
 //              under the core (scopeTrace); more than 4 samples per px: the min / max envelope (scopeEnvelope);
 //              stereo lanes L (green) and R (salmon) in two half-height lanes; persistence: up to 24 earlier traces
-//              fading; auto gain (0.72 of the visible peak, eased 0.08 per frame) or a fixed gain; log amplitude
-//              (−60 … 0 dB, sign kept)
+//              fading; a fixed gain (the default) or auto gain: 0.9 of the larger of the visible peak and the peak of
+//              the last 4 s of the traced signal (a slow wave's whole cycle, not the slice in view), down at once (no
+//              point is ever pushed off the plot), up eased 0.08 per frame; log amplitude (−60 … 0 dB, sign kept)
 //   grid       the centre line, ± half scale, 10 time divisions (Beat: beat rules, bars brighter)
 //   readouts   bottom-left: the pitch, cycles, span and gain (Fixed: ms/div; Beat: span, tempo, "stopped"), bottom-right
 //              the note name with cents (C3 = 261.626 Hz naming; faded by the clarity; "note": the voice's own pitch)
@@ -62,6 +63,11 @@ constexpr float kLabelMinDevicePx = 6.0f;  // below this the text and chips are 
 constexpr int kMaxTrails = 24;
 constexpr uint32_t kTrailPoints = 256;
 constexpr double kEnvelopeSpp = 4.0;       // more samples per px than this: the min / max envelope
+// Auto gain: the peak scaled to this share of the half height, over the visible samples and the last kPeakSeconds of
+// the traced signal (kPeakBins bins of its |peak|, filled from the samples each poll reads new).
+constexpr float kAutoFit = 0.9f;
+constexpr double kPeakSeconds = 4.0;
+constexpr uint32_t kPeakBins = 64;
 
 enum Part : int32_t { kPlotPart = 0, kTbPart = 1, kChPart = 2, kFreezePart = 3, kSetPart = 4, kSheetPart = 5, kRowBase = 100 };
 
@@ -95,7 +101,7 @@ constexpr const char* kTrigNames[] = {"Off", "Rising", "Falling"};
 constexpr const char* kTbLong[] = {"Fixed", "Pitch", "Beat"};
 constexpr const char* kChLong[] = {"Mid", "Left", "Right", "Side", "L / R lanes"};
 // PQ Meter's defaults (its kDefault* constants): a constant 52.2 ms span aligned by the pitch, 20 … 7770 Hz, clarity
-// 0.80, a 1.4 px line, glow 0.35, auto gain.
+// 0.80, a 1.4 px line, glow 0.35; a fixed gain of 1 (bug-small-fixes: auto gain is opt-in).
 const Opt kOpts[oCount] = {
     {"tb", "Timebase", 1, 0, 2, Opt::Choice, kTbLong},
     {"lock", "Pitch lock", 2, 0, 2, Opt::Choice, kLockNames},
@@ -110,7 +116,7 @@ const Opt kOpts[oCount] = {
     {"hys", "Hysteresis", 0.02, 0.001, 0.2, Opt::LogNumber, nullptr, "%.3f"},
     {"span", "Span", 2, 0, 4, Opt::Choice, kBeatSpanNames},
     {"ch", "Channel", 0, 0, 4, Opt::Choice, kChLong},
-    {"agc", "Auto gain", 1, 0, 1, Opt::Toggle, kOnOff},
+    {"agc", "Auto gain", 0, 0, 1, Opt::Toggle, kOnOff},
     {"gain", "Gain", 1, 0.1, 32, Opt::LogNumber, nullptr, "%.2fx"},
     {"log", "Log amplitude", 0, 0, 1, Opt::Toggle, kOnOff},
     {"pers", "Persistence", 0, 0, 1, Opt::Number, nullptr, "%.2f"},
@@ -654,6 +660,8 @@ private:
       hasFrame_ = false;
       tracker_.reset();
       beat_.clear();
+      peakBins_.fill(0.0f);
+      hasPeakBin_ = false;
     }
     return feed_ != nullptr;
   }
@@ -741,6 +749,12 @@ private:
     shownA_.assign(bufA_.begin() + static_cast<std::ptrdiff_t>(s0), bufA_.begin() + static_cast<std::ptrdiff_t>(s1));
     if (ch == Ch::Stereo) shownB_.assign(bufR_.begin() + static_cast<std::ptrdiff_t>(s0), bufR_.begin() + static_cast<std::ptrdiff_t>(s1));
     else shownB_.clear();
+    // The samples new since the last poll into the auto gain's peak memory (the whole read the first time; kept with
+    // auto gain off too, so turning it on finds the recent past: ≈ 800 compares a frame).
+    if (const uint64_t fresh = std::max(lastEnd_, from); fresh < end) {
+      const auto i0 = static_cast<size_t>(fresh - from);
+      notePeaks(fresh, bufA_.data() + i0, ch == Ch::Stereo ? bufR_.data() + i0 : nullptr, n - i0, sr);
+    }
     lastEnd_ = end;
     const bool first = !hasFrame_;
     hasFrame_ = true;
@@ -770,23 +784,49 @@ private:
         for (size_t c = 0; c < colOk_.size(); ++c)
           if (colOk_[c]) peak = std::max({peak, std::fabs(colMn_[c]), std::fabs(colMx_[c])});
       }
-      if (peak <= 1e-4f) return;
-      const float target = std::clamp(0.85f / peak, 0.1f, 40.0f);  // PQ Meter's beat view: 0.85
-      gain_ = snap || !hasGain_ ? target : gain_ + (target - gain_) * 0.08f;
-      hasGain_ = true;
-      return;
+    } else {
+      size_t vs = 0, vn = 0;
+      visible(vs, vn);
+      for (size_t i = vs; i < vs + vn; ++i) {
+        peak = std::max(peak, std::fabs(shownA_[i]));
+        if (!shownB_.empty()) peak = std::max(peak, std::fabs(shownB_[i]));
+      }
+      // bug-small-fixes: and the recent past's peak — the visible slice of a slow wave is a sliver of its cycle; scaled
+      // to that alone the gain pumped (×1.2 … ×18 on a 0.5 Hz sine) and, lagging, pushed the trace past ±1 off the plot.
+      for (const float b : peakBins_) peak = std::max(peak, b);
     }
-    size_t vs = 0, vn = 0;
-    visible(vs, vn);
-    for (size_t i = vs; i < vs + vn; ++i) {
-      peak = std::max(peak, std::fabs(shownA_[i]));
-      if (!shownB_.empty()) peak = std::max(peak, std::fabs(shownB_[i]));
-    }
-    // 0.72, not 0.9: the gain lags, so a transient louder than the recent past is on screen before it moves (PQ Meter).
     if (peak <= 1e-4f) return;  // nothing visible: the gain holds (the first sound sets it at once)
-    const float target = std::clamp(0.72f / peak, 0.1f, 40.0f);
-    gain_ = snap || !hasGain_ ? target : gain_ + (target - gain_) * 0.08f;
+    const float target = std::clamp(kAutoFit / peak, 0.1f, 40.0f);
+    // Down at once (a louder signal is never drawn past the plot's edge), up eased.
+    gain_ = snap || !hasGain_ || target < gain_ ? target : gain_ + (target - gain_) * 0.08f;
     hasGain_ = true;
+  }
+  // |peak| per bin of kPeakSeconds / kPeakBins of absolute sample time, over n samples from absolute frame `at` (lane b
+  // may be null). A bin entered anew starts empty; a jump back or past the whole memory clears it.
+  void notePeaks(uint64_t at, const float* a, const float* b, size_t n, double sr) {
+    const auto len = static_cast<uint64_t>(std::max(1.0, sr * kPeakSeconds / kPeakBins));
+    if (len != peakBinLen_) {
+      peakBinLen_ = len;
+      peakBins_.fill(0.0f);
+      hasPeakBin_ = false;
+    }
+    size_t i = 0;
+    while (i < n) {
+      const uint64_t bin = (at + i) / len;
+      if (!hasPeakBin_ || bin < peakBin_ || bin - peakBin_ >= kPeakBins) peakBins_.fill(0.0f);
+      else
+        for (uint64_t k = peakBin_ + 1; k <= bin; ++k) peakBins_[k % kPeakBins] = 0.0f;
+      peakBin_ = bin;
+      hasPeakBin_ = true;
+      const size_t m = std::min<size_t>(n - i, static_cast<size_t>((bin + 1) * len - (at + i)));
+      float pk = peakBins_[bin % kPeakBins];
+      for (size_t k = i; k < i + m; ++k) {
+        pk = std::max(pk, std::fabs(a[k]));
+        if (b != nullptr) pk = std::max(pk, std::fabs(b[k]));
+      }
+      peakBins_[bin % kPeakBins] = pk;
+      i += m;
+    }
   }
   uint32_t beatChannel() const noexcept {
     switch (opts_.channel()) {
@@ -1153,6 +1193,9 @@ private:
   bool hasFrame_ = false, hasGain_ = false, frozen_ = false, sheet_ = false, hostOver_ = false;
   sheet::Sheet panel_{{kPlot.x0 + 1.0f, kChipY + kChipH + 3.0f, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 6.0f};
   float gain_ = 1.0f;
+  std::array<float, kPeakBins> peakBins_{};  // auto gain's peak memory (notePeaks)
+  uint64_t peakBin_ = 0, peakBinLen_ = 0;
+  bool hasPeakBin_ = false;
   std::vector<float> bufL_, bufR_, bufA_, bufBeat_, bufNote_, shownA_, shownB_;
   std::vector<std::vector<Vec2>> trailsA_, trailsB_;
 

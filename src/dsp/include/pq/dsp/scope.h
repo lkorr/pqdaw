@@ -11,15 +11,18 @@
 //   Pitch     the period of the signal's pitch holds the trace still. The period comes from the NOTE when one is given
 //             (ScopeInput::noteHz > 0 and PitchSource::Auto: the module runs per voice and a voice sounds — the exact
 //             pitch pqdaw plays, no estimate; the lowest sounding voice when several do), else from the detector:
-//               detector   McLeod's normalised square difference over a window of the newest samples (two real FFTs:
-//                          the autocorrelation as the transform of the power spectrum, the normalisation from an energy
-//                          prefix sum), the first peak ≥ 0.9 × the tallest (the fundamental, not a harmonic), walked down
+//               detector   McLeod's normalised square difference over a window of the newest samples, its mean removed
+//                          (two real FFTs: the autocorrelation as the transform of the power spectrum, the normalisation
+//                          from an energy prefix sum); only peaks past its first fall below 0 count (McLeod's key maxima:
+//                          a slow or constant signal has none), the first ≥ 0.9 × the tallest of them (the fundamental,
+//                          not a harmonic), walked down
 //                          while the halved lag is still such a peak (no octave-low reading of a pure tone), parabolic
 //                          interpolation; nothing below `clarity` (unpitched) or below −60 dBFS RMS. The window is 2.5
 //                          periods of `minHz` until a period is known, then 6 of its own periods (≥ 2048 samples: vibrato
 //                          does not smear the peak), with a retry over a third of it when that finds nothing.
 //               smoothing  a one-pole toward each estimate (0.25 inside ±18 %, 0.06 outside); a move outside ±18 %
-//                          held for 6 frames is a new note (taken at once); a lost pitch is held for 30 frames.
+//                          held for 6 frames is a new note (taken at once); a lost pitch is held for 30 frames, then
+//                          dropped (Stable keeps it: its span would rescale).
 //             How far the period may move the span is the lock:
 //               Constant   the span is `windowMs`, always (the pitch only aligns the phase and feeds the readout)
 //               Stable     the span is `cycles` periods, re-derived only when the period sat ≥ 8 % away for 12 frames

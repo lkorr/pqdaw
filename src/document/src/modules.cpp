@@ -180,13 +180,14 @@ dsp::Curve phaseAccumulatorCurve(std::string_view control) {
     return c;
   }
   if (control == kPaPitch) {
-    // GU.5b: the old face's pitch arc scale — ±12 semitones over the middle half of the travel, the rest of ±4 octaves
-    // over the outer quarters (straight segments: a wire still adds in cents).
-    dsp::Curve c = withUnit(dsp::curvePreset(dsp::CurvePreset::Linear, -4800.0, 4800.0), dsp::CurveUnit::Cents);
+    // GU.5b: the old face's pitch arc scale — ±12 semitones over the middle half of the travel, the rest of ±96
+    // semitones (±8 octaves) over the outer quarters (straight segments: a wire still adds in cents). The points hold
+    // shares of the ±9600 range: ∓1200 cents = 0.5 ∓ 1200 / 19200.
+    dsp::Curve c = withUnit(dsp::curvePreset(dsp::CurvePreset::Linear, -9600.0, 9600.0), dsp::CurveUnit::Cents);
     c.segments = 3;
     c.points[0] = {0.0, 0.0};
-    c.points[1] = {0.25, 0.375};
-    c.points[2] = {0.75, 0.625};
+    c.points[1] = {0.25, 0.4375};
+    c.points[2] = {0.75, 0.5625};
     c.points[3] = {1.0, 1.0};
     c.shapes[0] = c.shapes[1] = c.shapes[2] = {dsp::CurveShape::Linear, 0.0};
     c.preset = dsp::CurvePreset::Custom;
@@ -255,7 +256,7 @@ BlockSet phaseAccumulatorBlocks(IdSource& ids, const PhaseAccumulatorOptions& o,
   a.setField(styleText("ticks", "1|2|3"));
   PanelElement p = arc(4, r.pitch, 36.0, -72.0, 315.0, 43.0, "vertical");
   p.setField(styleNumber("origin", 0.5));
-  p.setField(styleText("ticks", "-3600|-2400|-1200|0|1200|2400|3600"));
+  p.setField(styleText("ticks", "-7200|-4800|-2400|-1200|0|1200|2400|4800|7200"));  // 0, ±1, ±2, ±4, ±6 octaves
   {
     std::string minor;
     for (int st = -11; st <= 11; ++st)
@@ -1715,7 +1716,7 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o) {
     EqBandOptions bo;
     bo.inGroup = g;
     bo.name = "EQ";
-    bo.type = 1;  // Low Cut
+    bo.type = 1;  // High Pass
     bo.freqHz = 100.0;
     BlockSet band = eqBandBlocks(ids, bo);
     const BandInfo bi = bandOfSet(band);

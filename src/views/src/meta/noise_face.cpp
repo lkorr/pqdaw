@@ -1,7 +1,7 @@
 // The Noise engine's face (NZ.1, docs/plans/NZ.md "Panel"): its display, the panel's rich `noise` element. Label-free,
 // the Envelope's visual family:
 //
-//   trace   a scrolling trace of the output (before the Range: −1 at the bottom, +1 at the top) of the first sounding
+//   trace   a scrolling trace of the output (after the Range, as heard: −1 at the bottom, +1 at the top) of the first sounding
 //           voice, newest at the right: each poll (≤ 60 Hz) appends the values the voice tap sampled since the last one
 //           (up to four, evenly picked), so a slow random walk draws its shape and audio-rate noise a dense band
 //   voices  every sounding voice a glowing dot at the right edge at its newest value (they fade in and out over 80 ms)
@@ -142,7 +142,7 @@ public:
   void describe(int32_t part, std::string& title, std::string& body) const override {
     if (part == kFrame || part == kNone) {
       title = "Noise";
-      body = "The output's last moments (−1 … +1, before Min / Max) and each sounding voice's value; the small line is the "
+      body = "The output's last moments (−1 … +1, after Min / Max: as heard) and each sounding voice's value; the small line is the "
              "colour's slope (brown, pink, white, blue, violet).";
       return;
     }

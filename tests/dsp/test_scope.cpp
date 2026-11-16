@@ -122,6 +122,56 @@ TEST_CASE("scope: the detector reads sines and bright waves within 0.2 %, nothin
   CHECK(t.detectPitch(x, x.size(), kSr).period == 0.0);
 }
 
+TEST_CASE("scope: no pitch in a slow wave or a slowly moving level; a tone on an offset keeps its pitch (bug-small-fixes)") {
+  // Before: the NSDF's lag-0 lobe spans every lag of a slow signal and its float ripple read as a 6 - 8 kHz pitch.
+  ScopeTracker t;
+  t.setSettings(pitchSettings());
+  std::vector<float> x(12000);
+  for (const double hz : {0.2, 0.5, 2.0}) {
+    for (const double at : {0.0, 0.1, 0.25, 0.4}) {  // windows at every part of the cycle (crossing, rising, the top)
+      CAPTURE(hz);
+      CAPTURE(at);
+      for (size_t i = 0; i < x.size(); ++i)
+        x[i] = static_cast<float>(std::sin(2.0 * kPi * (at + hz * static_cast<double>(i) / kSr)));
+      CHECK(t.detectPitch(x, x.size(), kSr).period == 0.0);
+    }
+  }
+  for (size_t i = 0; i < x.size(); ++i) x[i] = static_cast<float>(0.2 + 0.05 * static_cast<double>(i) / kSr);  // a level
+  CHECK(t.detectPitch(x, x.size(), kSr).period == 0.0);
+  std::fill(x.begin(), x.end(), 0.6f);
+  CHECK(t.detectPitch(x, x.size(), kSr).period == 0.0);
+  // A 0 … 1 ramp at 220 Hz (a Phase Accumulator's output): its mean is removed, the pitch stays.
+  for (size_t i = 0; i < x.size(); ++i) {
+    const double ph = 220.0 * static_cast<double>(i) / kSr;
+    x[i] = static_cast<float>(ph - std::floor(ph));
+  }
+  const auto p = t.detectPitch(x, x.size(), kSr);
+  REQUIRE(p.period > 0.0);
+  CHECK(kSr / p.period == doctest::Approx(220.0).epsilon(0.002));
+}
+
+TEST_CASE("scope: Constant drops a lost pitch after the hold (no stale shape lock on what follows); Stable keeps it") {
+  for (const auto lock : {ScopeSettings::Lock::Constant, ScopeSettings::Lock::Stable}) {
+    CAPTURE(static_cast<int>(lock));
+    ScopeTracker t;
+    t.setSettings(pitchSettings(lock));
+    const auto sine = [](double hz) {
+      return [hz](size_t i) { return static_cast<float>(0.5 * std::sin(2.0 * kPi * hz * static_cast<double>(i) / kSr)); };
+    };
+    const auto tone = sine(220.0), slow = sine(0.5);
+    const auto none = [](size_t) { return 0.0; };
+    Run a = play(t, tone, none, 30);
+    REQUIRE(a.frames.back().pitchHz == doctest::Approx(220.0f).epsilon(0.01));
+    Run b = play(t, slow, none, 60, 0.0f, 96000 + 30 * kHop);
+    if (lock == ScopeSettings::Lock::Constant) {
+      CHECK(b.frames.back().pitchHz == 0.0f);
+      CHECK(b.frames.back().period == 0.0);
+    } else {
+      CHECK(b.frames.back().pitchHz == doctest::Approx(220.0f).epsilon(0.01));
+    }
+  }
+}
+
 TEST_CASE("scope: pitch timebase holds sine, bright, noisy, low and high tones still") {
   struct Case {
     const char* name;

@@ -92,19 +92,30 @@ ScopeTracker::Pitch ScopeTracker::detectPitch(std::span<const float> src, size_t
   const int minLag = std::max(2, static_cast<int>(std::floor(sr / std::max(1.0f, s_.maxHz))) - 1);
   const int maxLag = std::min(static_cast<int>(n / 2), static_cast<int>(std::ceil(sr / std::max(1.0f, s_.minHz))));
   if (maxLag <= minLag + 2) return out;
-  double energy = 0.0;
-  for (size_t i = 0; i < n; ++i) energy += static_cast<double>(x[i]) * x[i];
-  if (energy / static_cast<double>(n) < 1e-6) return out;  // below −60 dBFS RMS: no pitch (and no FFTs)
-
-  // ac(lag) = ifft(|X|²)(lag), linear when the padding covers n + maxLag. |X|² is real and even, so its inverse is its
-  // forward transform's real part over L: two forward transforms of L.
+  // bug-small-fixes: the window's mean removed first (a tone riding on an offset — a 0 … 1 ramp — keeps its pitch; a
+  // constant has none), and peaks only past the NSDF's first fall below 0 (McLeod's key maxima): before it the curve
+  // is the lag-0 lobe, which a slow or near-constant signal stretches over every lag (float ripple on it read as a
+  // 6 – 8 kHz pitch for a 0.5 Hz sine or a slowly moving level, and the shape lock then jittered the trace).
+  double mean = 0.0;
+  for (size_t i = 0; i < n; ++i) mean += x[i];
+  mean /= static_cast<double>(n);
   uint32_t L = 8;
   while (L < n + static_cast<size_t>(maxLag) + 1) L <<= 1;
   L = std::min<uint32_t>(L, 65536);
   if (n + static_cast<size_t>(maxLag) + 1 > L) return out;
-  RealFft& fft = fftOf(L);
   pad_.assign(L, 0.0f);
-  std::copy(x, x + n, pad_.begin());
+  cum_.resize(n + 1);
+  cum_[0] = 0.0;
+  for (size_t i = 0; i < n; ++i) {
+    const auto v = static_cast<float>(static_cast<double>(x[i]) - mean);
+    pad_[i] = v;
+    cum_[i + 1] = cum_[i] + static_cast<double>(v) * v;
+  }
+  if (cum_[n] / static_cast<double>(n) < 1e-6) return out;  // below −60 dBFS RMS (about its mean): no pitch, no FFTs
+
+  // ac(lag) = ifft(|X|²)(lag), linear when the padding covers n + maxLag. |X|² is real and even, so its inverse is its
+  // forward transform's real part over L: two forward transforms of L.
+  RealFft& fft = fftOf(L);
   re_.resize(L / 2 + 1);
   im_.resize(L / 2 + 1);
   fft.forward(pad_.data(), re_.data(), im_.data());
@@ -112,24 +123,26 @@ ScopeTracker::Pitch ScopeTracker::detectPitch(std::span<const float> src, size_t
   for (uint32_t k = 1; k < L / 2; ++k) pad_[L - k] = pad_[k];
   fft.forward(pad_.data(), re_.data(), im_.data());  // re_[lag] = L · ac(lag)
 
-  cum_.resize(n + 1);
-  cum_[0] = 0.0;
-  for (size_t i = 0; i < n; ++i) cum_[i + 1] = cum_[i] + static_cast<double>(x[i]) * x[i];
   nsdf_.assign(static_cast<size_t>(maxLag) + 1, 0.0f);
   const double scale = 1.0 / static_cast<double>(L);
-  for (int lag = minLag; lag <= maxLag; ++lag) {
+  int cross = -1;  // the first lag where the NSDF is below 0
+  for (int lag = 1; lag <= maxLag; ++lag) {
     const double ac = static_cast<double>(re_[static_cast<size_t>(lag)]) * scale;
     const double sq = cum_[n - static_cast<size_t>(lag)] + (cum_[n] - cum_[static_cast<size_t>(lag)]);
-    nsdf_[static_cast<size_t>(lag)] = sq > 1e-12 ? static_cast<float>(2.0 * ac / sq) : 0.0f;
+    const float v = sq > 1e-12 ? static_cast<float>(2.0 * ac / sq) : 0.0f;
+    nsdf_[static_cast<size_t>(lag)] = v;
+    if (cross < 0 && v < 0.0f) cross = lag;
   }
+  if (cross < 0) return out;  // never below 0: no period in the window
+  const int from = std::max(minLag, cross);
   const auto at = [&](int lag) { return nsdf_[static_cast<size_t>(lag)]; };
 
   float best = 0.0f;
-  for (int lag = minLag; lag <= maxLag; ++lag) best = std::max(best, at(lag));
+  for (int lag = from; lag <= maxLag; ++lag) best = std::max(best, at(lag));
   if (best < s_.clarity) return out;
   const float thresh = 0.9f * best;
   int pick = -1;
-  for (int lag = minLag + 1; lag < maxLag; ++lag)
+  for (int lag = from + 1; lag < maxLag; ++lag)
     if (at(lag) > at(lag - 1) && at(lag) >= at(lag + 1) && at(lag) >= thresh) {
       pick = lag;
       break;
@@ -137,9 +150,9 @@ ScopeTracker::Pitch ScopeTracker::detectPitch(std::span<const float> src, size_t
   if (pick < 0) return out;
   // The rule above only ever moves to a shorter lag; a pure tone's sub-octave peak can still be the first one seen
   // (its true lag below minLag's neighbourhood): walk down the octaves while the halved lag is a strong peak.
-  for (int half = pick / 2; half >= minLag; half = pick / 2) {
+  for (int half = pick / 2; half >= from; half = pick / 2) {
     int cand = -1;
-    const int lo = std::max(minLag, half - 2), hi = std::min(maxLag - 1, half + 2);
+    const int lo = std::max(from, half - 2), hi = std::min(maxLag - 1, half + 2);
     for (int lag = lo; lag <= hi; ++lag)
       if (cand < 0 || at(lag) > at(cand)) cand = lag;
     if (cand <= 0 || at(cand) < thresh) break;
@@ -330,7 +343,10 @@ ScopeFrame ScopeTracker::frame(std::span<const float> x, double sr, float noteHz
         clarityLast_ = pit.clarity;
         holdFrames_ = kPitchHoldFrames;
       } else if (holdFrames_ > 0 && --holdFrames_ == 0) {
-        if (!pinned) {  // a pinned span never gives the period up (that would rescale: the flash it exists to prevent)
+        // Stable's pinned span never gives the period up (that would rescale: the flash it exists to prevent). Constant's
+        // span does not depend on it: a period kept there would go on aligning whatever follows (a slow LFO after a
+        // note) to a stale shape, the start jumping by up to that period every frame (bug-small-fixes).
+        if (s_.lock != ScopeSettings::Lock::Stable) {
           periodSmoothed_ = 0.0;
           shapeValid_ = false;
         }

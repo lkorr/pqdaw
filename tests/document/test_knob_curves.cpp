@@ -302,6 +302,10 @@ TEST_CASE("control curves: the built-in modules' neutral values are detents (TX.
   REQUIRE(dsp::curveDetents(pitch, at) == 1);
   CHECK(dsp::evalCurve(pitch, at[0]) == 0.0);
   CHECK(dsp::evalCurve(pitch, 0.25) == doctest::Approx(-1200.0));  // GU.5b's scale kept
+  CHECK(dsp::evalCurve(pitch, 0.75) == doctest::Approx(1200.0));
+  CHECK(dsp::evalCurve(pitch, 0.0) == doctest::Approx(-9600.0));  // bug-small-fixes: the ends at ±96 semitones
+  CHECK(dsp::evalCurve(pitch, 1.0) == doctest::Approx(9600.0));
+  CHECK(dsp::evalCurve(pitch, 0.5) == 0.0);
   // The VCA: x0, x1, x-1, x2, x-2 (TX.reset-default added x0 and x+-2), each exactly its value.
   {
     const dsp::Curve vca = vcaCurve();

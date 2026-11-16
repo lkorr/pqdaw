@@ -239,9 +239,7 @@ TEST_CASE("scope face: held while painted, a still trace from the detected pitch
     d -= std::round(d);
     CHECK(std::fabs(d) * kSr / 220.0 <= 1.0);  // the start sits on the same phase (≤ 1 sample)
   }
-  float peak = 0.0f;
-  for (const float v : s.samples) peak = std::max(peak, std::fabs(v));
-  CHECK(s.gain == doctest::Approx(0.72f / peak).epsilon(0.05));  // auto gain: 0.72 of the visible peak
+  CHECK(s.gain == 1.0f);  // auto gain is off by default (bug-small-fixes): the fixed gain, 1
   // The note (the module per voice): its exact period, Tracking two cycles.
   REQUIRE(scopeTestControl(*rig.face, "lock", 1.0));
   REQUIRE(scopeTestControl(*rig.face, "cyc", 2.0));
@@ -455,4 +453,73 @@ TEST_CASE("scope face: pointer — chips cycle, a row drag is one step, Alt+whee
   CHECK(ev(FacePointer::Kind::Up, 80.0f, 80.0f));
   CHECK(ev(FacePointer::Kind::Down, 100.0f, 80.0f, ui::mod::kNone, 2));
   CHECK_FALSE(ev(FacePointer::Kind::Down, 100.0f, 80.0f));  // not zoomed: the host's (select, move)
+}
+
+
+namespace {
+float gAmp = 1.0f;
+double sine220(double t) { return gAmp * std::sin(2.0 * kPi * 220.0 * t); }
+double slow05(double t) { return std::sin(2.0 * kPi * 0.5 * t); }
+double slowLevel(double t) { return 0.2 + 0.05 * t; }
+// The largest displayed |value| (gain applied) of a frame.
+float shownPeak(const ScopeShown& s) {
+  float pk = 0.0f;
+  for (const float v : s.samples) pk = std::max(pk, std::fabs(v) * s.gain);
+  return pk;
+}
+}  // namespace
+
+TEST_CASE("scope face: auto gain — off by default; on, a ±1 wave fits, a jump up is never drawn off the plot (bug-small-fixes)") {
+  FaceRig rig;
+  rig.paint();
+  REQUIRE(scopeTestControl(*rig.face, "ch", 1.0));  // L: the wave as written
+  gAmp = 1.0f;
+  ScopeShown s = rig.play(0.2, 0.0f, sine220);
+  CHECK(s.gain == 1.0f);  // the default: a fixed ×1, a ±1 wave exactly full scale
+  REQUIRE(scopeTestControl(*rig.face, "agc", 1.0));
+  for (int k = 0; k < 30; ++k) {
+    s = rig.play(1.0 / 60.0, 0.0f, sine220);
+    CHECK(shownPeak(s) <= 0.9f + 1e-4f);  // the ±1 peaks inside the plot, a 10 % margin
+  }
+  CHECK(shownPeak(s) == doctest::Approx(0.9f).epsilon(0.01));
+  // Quiet for 5 s (the peak memory forgets the loud past), then four times louder: drawn inside at once.
+  gAmp = 0.25f;
+  for (int k = 0; k < 300; ++k) s = rig.play(1.0 / 60.0, 0.0f, sine220);
+  CHECK(s.gain == doctest::Approx(3.6f).epsilon(0.02));
+  gAmp = 1.0f;
+  for (int k = 0; k < 10; ++k) {
+    s = rig.play(1.0 / 60.0, 0.0f, sine220);
+    CHECK(shownPeak(s) <= 0.9f + 1e-4f);  // (before: the gain eased down from ×4: the wave ran off the plot)
+  }
+}
+
+TEST_CASE("scope face: a slow wave — one steady gain, no phantom pitch, the newest samples shown (bug-small-fixes)") {
+  // Before: a 0.5 Hz sine read as a 6 – 7 kHz pitch (the trace shape-locked to it, a note readout of nonsense), and auto
+  // gain scaled the 52 ms in view to 0.72 every frame — ×1.2 … ×18, lagging, the trace up to ±3.8 (off the plot).
+  for (const int agc : {0, 1}) {
+    CAPTURE(agc);
+    FaceRig rig;
+    rig.paint();
+    REQUIRE(scopeTestControl(*rig.face, "ch", 1.0));
+    REQUIRE(scopeTestControl(*rig.face, "trig", 0.0));  // free running: every frame ends at the newest sample
+    REQUIRE(scopeTestControl(*rig.face, "agc", agc));
+    ScopeShown s;
+    float lo = 1e9f, hi = 0.0f;
+    for (int k = 0; k < 300; ++k) {  // 5 s: two and a half cycles
+      s = rig.play(1.0 / 60.0, 0.0f, slow05);
+      CHECK(s.pitchHz == 0.0f);
+      CHECK(s.start + s.span == rig.at);
+      CHECK(shownPeak(s) <= (agc ? 0.9f : 1.0f) + 1e-4f);
+      if (k >= 60) {  // past the first second: a whole half-cycle seen
+        lo = std::min(lo, s.gain);
+        hi = std::max(hi, s.gain);
+      }
+    }
+    CHECK(hi <= lo * 1.001f);  // one gain over the cycles
+    if (agc) CHECK(hi == doctest::Approx(0.9f).epsilon(0.01));
+  }
+  // A slowly moving level: no pitch either (with auto gain it sits at 0.9 — the level is all there is to scale).
+  FaceRig rig;
+  rig.paint();
+  for (int k = 0; k < 60; ++k) CHECK(rig.play(1.0 / 60.0, 0.0f, slowLevel).pitchHz == 0.0f);
 }

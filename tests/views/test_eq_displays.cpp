@@ -14,7 +14,7 @@
 //   EQ.4d      the delay area: a 23-stage Q 5.16 allpass's group delay is the analytic one everywhere (no fold; the
 //              unwrapped phase keeps every turn), 0 ms at the floor, a cut's true negative delay below it; the three
 //              areas open / close by their title chips (real dispatch), all 8 combinations stacked in order
-//   goldens    (2x) eq-default, eq-eight-bands (a 16-stage low cut, a Q 40 bell, a spectrum behind, a band selected),
+//   goldens    (2x) eq-default, eq-eight-bands (a 16-stage high pass, a Q 40 bell, a spectrum behind, a band selected),
 //              eq-lr-mode (chain B translucent behind A), eq-phase-delay (magnitude and delay open, phase closed),
 //              eq-all-views (all three areas: the 23-stage allpass and a cut bell), eq-band-response (a lone band's)
 //   perf       a drag on a 31-band EQ re-evaluates and redraws the curve within a frame (< 2 ms, optimised builds); the
@@ -460,7 +460,7 @@ TEST_CASE("EQ.4b response: the curve stays after the EQ is opened and closed in 
 TEST_CASE("EQ.4b phase: wrapped to ±180° by default; WRAP / UNWRAP unwraps (auto-scaled); the delay area apart (EQ.4d)") {
   EqUi u;
   const doc::EqInfo e = u.info();
-  // A 16-stage low cut at 60 Hz: thousands of degrees unwrapped.
+  // A 16-stage high pass at 60 Hz: thousands of degrees unwrapped.
   run(u.st(), doc::ops::setBandType(u.doc(), e.bands[0][0].group, 1));
   run(u.st(), doc::ops::setBandStages(u.doc(), e.bands[0][0].group, 16));
   setUnits(u.st(), e.bands[0][0].frequency, 60.0);
@@ -692,7 +692,7 @@ TEST_CASE("EQ.4 response: a node drags frequency and gain (one undo step); Shift
   CHECK(std::log(f2 / 400.0) < 0.25 * std::log(f1 / 400.0));
   CHECK(g2 < 0.25 * g1);
   REQUIRE(u.ctx.undo());
-  // A Low Cut (no gain): y turns Q, the gain stays.
+  // A High Pass (no gain): y turns Q, the gain stays.
   doc::BandInfo low = u.info().bands[0][0];
   run(u.st(), doc::ops::setBandType(u.doc(), low.group, 1));
   const double q0 = units(u.doc(), low.q), lg0 = units(u.doc(), low.gain);
@@ -717,7 +717,7 @@ TEST_CASE("EQ.4 response: wheel → Q (a run = one step), Alt + wheel → Stages
   CHECK(units(u.doc(), bell.q) > q0);
   u.d.advance(panel::PanelHost::kWheelRunSeconds + 0.1);
   CHECK(u.history() == h0 + 1);
-  // Alt + wheel on a Low Cut: one more stage per notch (structural: one step each).
+  // Alt + wheel on a High Pass: one more stage per notch (structural: one step each).
   doc::BandInfo low = u.info().bands[0][0];
   run(u.st(), doc::ops::setBandType(u.doc(), low.group, 1));
   const size_t h1 = u.history();
@@ -1085,7 +1085,7 @@ TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-al
     a.show();
     checkImage("eq-default", a.render());
   }
-  {  // Eight varied bands: a 16-stage low cut, a Q 40 bell, a notch, a 2-stage high cut; a spectrum behind; one selected.
+  {  // Eight varied bands: a 16-stage high pass, a Q 40 bell, a notch, a 2-stage low pass; a spectrum behind; one selected.
     Alone a;
     doc::DocumentStore& st = a.st();
     for (const auto& [type, hz, db] : std::vector<std::tuple<uint32_t, double, double>>{{1, 40.0, 0.0}, {4, 1200.0, 8.0}, {3, 3200.0, 0.0}, {0, 17000.0, 0.0}})
@@ -1125,7 +1125,7 @@ TEST_CASE("render: eq-default, eq-eight-bands, eq-lr-mode, eq-phase-delay, eq-al
     a.show();
     checkImage("eq-lr-mode", a.render());
   }
-  {  // The delay area open, the phase closed (a 16-stage low cut: its delay peak), the bell selected.
+  {  // The delay area open, the phase closed (a 16-stage high pass: its delay peak), the bell selected.
     Alone a;
     doc::DocumentStore& st = a.st();
     const doc::EqInfo e = a.info();

@@ -122,9 +122,10 @@ Status body(Builder& bld) {
   const P mn = bld.param(kNoiseMin), mx = bld.param(kNoiseMax);
   const P half = b.op("mul", {b.op("sub", {mx, mn}), b.k(0.5)});
   const P mid = b.op("mul", {b.op("add", {mx, mn}), b.k(0.5)});
-  bld.output(0, b.op("muladd", {v, half, mid}));
-  // The face's trace: v, into the instance's voice tap.
-  b.named(bld.atom("voice_tap", {v, bld.slot(0)}, kTap), "tap");
+  const P out = b.op("muladd", {v, half, mid});
+  bld.output(0, out);
+  // The face's trace: the output (after the Range: what is heard), into the instance's voice tap.
+  b.named(bld.atom("voice_tap", {out, bld.slot(0)}, kTap), "tap");
   return Ok{};
 }
 

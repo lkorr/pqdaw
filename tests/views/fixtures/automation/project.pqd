@@ -76,7 +76,7 @@
               {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
               {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 8, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
               {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 10, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
-              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 11, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 11, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-7200|-4800|-2400|-1200|0|1200|2400|4800|7200"}},
               {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 9, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
               {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 18, "name": "out"}, {"kind": "control", "device": 10, "name": "value"}]}
             ]
@@ -92,7 +92,7 @@
             "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
         {"id": 11, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 7, "params": {"value": 0.5}, "default": 0.5, "curves": {
-            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
+            "value": {"min": -9600.0, "max": 9600.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
         {"id": 12, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 7, "params": {"value": 1.0}, "default": 1.0, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -207,7 +207,7 @@
               {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
               {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 50, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
               {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 52, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
-              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 53, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 53, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-7200|-4800|-2400|-1200|0|1200|2400|4800|7200"}},
               {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 51, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
               {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 60, "name": "out"}, {"kind": "control", "device": 52, "name": "value"}]}
             ]
@@ -223,7 +223,7 @@
             "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
         {"id": 53, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 49, "params": {"value": 0.5}, "default": 0.5, "curves": {
-            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
+            "value": {"min": -9600.0, "max": 9600.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
         {"id": 54, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 49, "params": {"value": 1.0}, "default": 1.0, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -383,7 +383,7 @@
                   {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
                   {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 92, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
                   {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 94, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
-                  {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 95, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+                  {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 95, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-7200|-4800|-2400|-1200|0|1200|2400|4800|7200"}},
                   {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 93, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
                   {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 102, "name": "out"}, {"kind": "control", "device": 94, "name": "value"}]}
                 ]
@@ -399,7 +399,7 @@
                 "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
               }},
             {"id": 95, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 91, "params": {"value": 0.5}, "default": 0.5, "curves": {
-                "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
+                "value": {"min": -9600.0, "max": 9600.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
               }},
             {"id": 96, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 91, "params": {"value": 1.0}, "default": 1.0, "curves": {
                 "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -528,7 +528,7 @@
                   {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
                   {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 134, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
                   {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 136, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
-                  {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 137, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+                  {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 137, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-7200|-4800|-2400|-1200|0|1200|2400|4800|7200"}},
                   {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 135, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
                   {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 144, "name": "out"}, {"kind": "control", "device": 136, "name": "value"}]}
                 ]
@@ -544,7 +544,7 @@
                 "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
               }},
             {"id": 137, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 133, "params": {"value": 0.5}, "default": 0.5, "curves": {
-                "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
+                "value": {"min": -9600.0, "max": 9600.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
               }},
             {"id": 138, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 133, "params": {"value": 1.0}, "default": 1.0, "curves": {
                 "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}
@@ -682,7 +682,7 @@
               {"id": 1, "kind": "shape", "rect": [12.0, 16.0, 96.0, 96.0], "style": {"fill": "body", "shape": "circle", "stroke": "frame", "thickness": 1.25}},
               {"id": 2, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 176, "name": "value"}], "style": {"drag": "vertical", "hitFrom": 140.0, "hitTo": 246.0, "start": 150.0, "sweep": 90.0, "ticks": "100|1000|10000"}},
               {"id": 3, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 178, "name": "value"}], "style": {"drag": "diagonal", "hitFrom": 246.0, "hitTo": 299.0, "start": 252.0, "sweep": 40.0, "ticks": "1|2|3"}},
-              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 179, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-3600|-2400|-1200|0|1200|2400|3600"}},
+              {"id": 4, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 179, "name": "value"}], "style": {"drag": "vertical", "dragPx": 300.0, "hitFrom": 315.0, "hitTo": 43.0, "minor": "-1100|-1000|-900|-800|-700|-600|-500|-400|-300|-200|-100|100|200|300|400|500|600|700|800|900|1000|1100", "origin": 0.5, "readout": "corner", "start": 36.0, "sweep": -72.0, "ticks": "-7200|-4800|-2400|-1200|0|1200|2400|4800|7200"}},
               {"id": 5, "kind": "arc", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "control", "device": 177, "name": "value"}], "style": {"drag": "horizontal", "hitFrom": 43.0, "hitTo": 140.0, "start": 130.0, "sweep": -80.0, "ticks": "0.25|0.5|0.75"}},
               {"id": 6, "kind": "orbit", "rect": [0.0, 0.0, 120.0, 120.0], "bind": [{"kind": "signal", "device": 186, "name": "out"}, {"kind": "control", "device": 178, "name": "value"}]}
             ]
@@ -698,7 +698,7 @@
             "value": {"min": 0.0, "max": 4.0, "preset": "custom", "points": [[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0]], "detents": [1]}
           }},
         {"id": 179, "patch": "Value", "kind": "audioEffect", "name": "Pitch", "group": 175, "params": {"value": 0.5}, "default": 0.5, "curves": {
-            "value": {"min": -4800.0, "max": 4800.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [0.75, 0.625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
+            "value": {"min": -9600.0, "max": 9600.0, "unit": "cents", "preset": "custom", "points": [[0.0, 0.0], [0.25, 0.4375], [0.5, 0.5], [0.75, 0.5625], [1.0, 1.0]], "shapes": [["linear", 0.0], ["linear", 0.0], ["linear", 0.0], ["linear", 0.0]], "detents": [2]}
           }},
         {"id": 180, "patch": "Value", "kind": "audioEffect", "name": "1", "group": 175, "params": {"value": 1.0}, "default": 1.0, "curves": {
             "value": {"min": 1.0, "max": 1.0, "preset": "linear", "points": [[0.0, 0.0], [1.0, 1.0]], "shapes": [["linear", 0.0]]}

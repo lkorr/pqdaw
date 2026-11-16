@@ -142,7 +142,9 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
     }
     FaceVoice& f = out[n++];
     f.slot = s;
-    f.phase = v.value - std::floor(v.value);
+    // The values as sampled (bug-small-fixes: not wrapped here — a phase writer, wavetable_pos, stores frac(x) itself;
+    // a signal tap such as the Noise's holds negative values that a frac() drew in the upper half).
+    f.phase = v.value;
     f.position = v.position;
     f.increment = v.increment;
     f.rate = rateF;
@@ -152,7 +154,7 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
     const auto want = static_cast<uint32_t>(std::min<uint64_t>(records * kVoiceTapSamples, FaceVoice::kMaxSamples));
     const uint32_t got = reader_->history(s, std::span<float>(hist_.data(), want));
     f.sampleCount = got;
-    for (uint32_t i = 0; i < got; ++i) f.samples[i] = hist_[i] - std::floor(hist_[i]);
+    std::copy_n(hist_.begin(), got, f.samples.begin());
   }
   active_ = n != 0;
   return n;

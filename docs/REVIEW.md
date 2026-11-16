@@ -1944,3 +1944,16 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - How to hear it: loop a bar with a long held note, play, then drag its vibrato grip up and down, or a bend node, or
   draw over it with B (Draw Mode) in front of the playhead — the sound follows the drag with no clicks or stepping (the
   engine glides ~5 ms onto each change). Esc during the drag snaps back to how it was; the release is one undo step.
+
+## bug-small-fixes · task/bug-small-fixes
+- **Phase Accumulator Pitch**: the knob now reaches ±96 semitones at its ends (±12 st over the middle half, the 0 detent
+  kept); the arc's ticks at 0, ±1, ±2, ±4, ±6 octaves. Check: drag Pitch to the ends; the readout shows ±9600 c.
+- **EQ band types**: "Low Pass | High Pass | Band Pass | …" (were High Cut / Low Cut; same order and behaviour).
+- **Oscilloscope**: auto gain is off by default (a fixed ×1: a ±1 wave is exactly full scale). When on, it scales the
+  larger of the visible peak and the last 4 s's peak to 0.9 and drops at once, so nothing is drawn past the plot; a slow
+  LFO keeps one gain instead of pumping. Slow signals and slowly moving levels no longer read as a 6–8 kHz "pitch" (the
+  note readout no longer shows nonsense, the trace no longer shape-locks to it); with Constant lock a lost pitch is
+  dropped after its hold. Check: scope a 0.5 Hz LFO with auto gain on and off.
+- **Noise module display**: the trace and dots now show the output as heard: negative values below the centre line (the
+  voice-tap reader used to wrap every value into 0 … 1 like a phase, so −0.3 drew at +0.7) and after Min / Max. Check:
+  set Max to 0: the whole trace sits in the lower half, as on a scope after it.
