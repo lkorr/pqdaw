@@ -895,3 +895,13 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: UI only; node hit-test over shown notes (≤ 64 selected + hovered), one cached point each.
 - Notes: Draw Mode test's "last pitch holds to the end" assertion inverted (the behaviour the user asked to remove);
   node vs vibrato grip: nearer wins.
+
+## 2026-11-15 · bug-loop-offset merged · main
+- Did: bug 2026-11-15_18-48-20: a clip whose loop brace sat a 16th after its start marker looked "late" (the roll lit
+  the clip from the loop start). A start marker on the loop start now moves with the brace (doc::ops::setClipLoop,
+  contentStartAfterLoop: roll brace drag + preview, Loop Selection, setAudioClipLoop); the roll lights looped content
+  from min(start marker, loop start). Playhead / playback were already right.
+- Verified (worker): test_edit_ops setClipLoop cases; real-dispatch brace test in test_piano_roll_playhead; -Affected
+  21/24 with 3 unrelated (views driver SIGSEGV flake, two timing limits; both re-run green alone).
+- Perf / CPU-efficiency check: one compare per loop edit, one min per paint; nothing on the audio thread.
+- Notes: pianoroll-playhead re-recorded. Open: flag and loop-start grab zones overlap when they coincide (pre-existing).
