@@ -21,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 26> kModules = {{
+constexpr std::array<ModuleInfo, 28> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -62,6 +62,11 @@ constexpr std::array<ModuleInfo, 26> kModules = {{
      "The lows, mids and highs (3, 4 or 5 bands) as RMS levels over time; changes nothing."},
     {ModuleKind::Waveform, "waveform", "Waveform",
      "The scrolling peak and RMS envelope (mid / side or L / R), or a loop locked to the beat; changes nothing."},
+    // VZ.7: the 3D analysers (pq/meta/view3d.h).
+    {ModuleKind::Waterfall, "waterfall", "Waterfall",
+     "Frequency x level x time as a lit 3D terrain; drag to orbit, double-click to snap to a view; changes nothing."},
+    {ModuleKind::StereoSpectrogram, "stereo_spectrogram", "Stereo Spectrogram",
+     "Time x frequency x pan: every partial of both channels as a point in 3D (or the stereo ribbon); changes nothing."},
     {ModuleKind::WavetableSynth, "wavetable_synth", "Wavetable Synth",
      "An instrument built from the modules: Phase Accumulator → Wavetable → Envelope per note, with two LFOs (each a "
      "Phase Accumulator into a Wavetable) on the wavetable position and the pitch. Tabs for the oscillator, the "
@@ -346,6 +351,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::PhaseScope: return "phase_scope";
     case ModuleKind::BandLevels: return "band_levels";
     case ModuleKind::Waveform: return "waveform";
+    case ModuleKind::Waterfall: return "waterfall";
+    case ModuleKind::StereoSpectrogram: return "stereo_spectrogram";
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
     case ModuleKind::WavetableSynth:
@@ -511,6 +518,15 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
       p.height = 160.0f;
       p.elements.push_back(plate(p.width, p.height, 10.0));
       p.elements.push_back(rich(2, k == ModuleKind::BandLevels ? "bandlevels" : "waveform", 0, 0, p.width, p.height));
+      break;
+    }
+    case ModuleKind::Waterfall:
+    case ModuleKind::StereoSpectrogram: {  // VZ.7: the display fills the panel (320 x 190, 300 x 200)
+      const bool wf = k == ModuleKind::Waterfall;
+      p.width = wf ? 320.0f : 300.0f;
+      p.height = wf ? 190.0f : 200.0f;
+      p.elements.push_back(plate(p.width, p.height, 10.0));
+      p.elements.push_back(rich(2, wf ? "waterfall" : "stereospectrogram", 0, 0, p.width, p.height));
       break;
     }
     case ModuleKind::PhaseAccumulator:

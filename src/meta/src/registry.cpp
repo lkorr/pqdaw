@@ -12,6 +12,7 @@
 #include "pq/meta/spectrogram.h"
 #include "pq/meta/spectrum.h"
 #include "pq/meta/stereo.h"
+#include "pq/meta/view3d.h"
 #include "pq/meta/wavetable.h"
 
 namespace pq::meta {
@@ -45,6 +46,8 @@ struct Registry {
     types.push_back(&phaseScopeType());       // VZ.5
     types.push_back(&bandLevelsType());       // VZ.6
     types.push_back(&waveformType());         // VZ.6
+    types.push_back(&waterfallType());          // VZ.7
+    types.push_back(&stereoSpectrogramType());  // VZ.7
   }
 };
 

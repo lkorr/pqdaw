@@ -2044,3 +2044,12 @@ Field Multiband. Not carried over: colour pickers, four of PQ's six FFT windows 
   free-running loop of N seconds). DISPLAY: lanes (M/S, L/R, mono, overlay), swap, gain / auto gain, dB scale, colour
   (theme / level heat / brightness) and colormap, body, fill, outline, glow, edge fade, grid, ruler, labels, readout,
   clip marks. Worth checking: Loop with the transport playing a loop — the picture should sit still on the bar.
+
+## 2026-11-16 · VZ.7 · Waterfall and Stereo Spectrogram (3D) 👁
+Two new visualisers (Visualisers; modules `waterfall`, `stereo_spectrogram`), PQ Meter's 3D views rendered on the CPU as
+PQ does: the waterfall's lit terrain (solid with walls and floor, or wireframe; six colour modes) and the stereo
+spectrogram's reassigned point cloud (or ribbon) splatted into a texture. Look at: `tests/views/golden/waterfall-{spec,
+side,top,3d}.png` and `stereospectrogram-{spec,image,pan,3d}.png` (a 3 s mix: centred kick + bass, a lead left with
+vibrato, a wide detuned pad, wide hats). Try: drag to orbit (Shift pan, Ctrl roll), Alt+wheel zoom, double-click to snap,
+the SPEC / SIDE / TOP / 3D (IMAGE / PAN) chips; SET → DISPLAY for wireframe, perspective, free camera, colour modes, the
+Ribbon mode. Not carried over: LFO modulation of the camera, colour pickers, four of PQ's windows (Q?-VZ.7-a).

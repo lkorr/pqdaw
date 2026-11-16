@@ -39,7 +39,8 @@ constexpr double kRate = 48000.0;
 // The chord's notes end at 30000 … 39000 frames; the Envelope's release (0.25 s by default) ends inside the render.
 constexpr uint32_t kFrames = 72000;
 constexpr const char* kAnalysers[] = {"oscilloscope", "spectrum", "spectrogram", "level_meter", "lufs_meter", "loudness_history",
-                                       "stereo_field", "stereo_image", "phase_scope", "band_levels", "waveform"};
+                                       "stereo_field", "stereo_image", "phase_scope", "band_levels", "waveform",
+                                       "waterfall", "stereo_spectrogram"};
 
 const DeviceLibrary& library() {
   static auto lib = app::loadDeviceLibrary();

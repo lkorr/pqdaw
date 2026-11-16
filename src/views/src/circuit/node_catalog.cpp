@@ -74,6 +74,8 @@ std::string_view metaDescription(std::string_view id) noexcept {
   if (id == "band_levels") return "The lows, mids and highs of what passes through it as RMS levels over time (the signal is unchanged).";
   if (id == "waveform") return "The scrolling peak and RMS envelope of what passes through it, or a loop locked to the beat (the signal is unchanged).";
   if (id == "phase_scope") return "What each frequency of what passes through it gains or loses summed to mono (the signal is unchanged).";
+  if (id == "waterfall") return "A 3D waterfall of the spectrum of what passes through it: frequency, level and time as a lit terrain (the signal is unchanged).";
+  if (id == "stereo_spectrogram") return "A 3D stereo spectrogram of what passes through it: every partial by time, frequency and pan (the signal is unchanged).";
   if (id == "loudness_history") return "Momentary, short-term and integrated loudness of what passes through it over time, against a target (the signal is unchanged).";
   return {};
 }
@@ -112,7 +114,8 @@ bool visualiser(std::string_view metaId) noexcept {
   return metaId == "spectrum" || metaId == "oscilloscope" || metaId == "spectrogram" || metaId == "level_meter" ||
          metaId == "lufs_meter" || metaId == "loudness_history" ||  // VZ.4
          metaId == "stereo_field" || metaId == "stereo_image" || metaId == "phase_scope" ||  // VZ.5
-         metaId == "band_levels" || metaId == "waveform";                                    // VZ.6
+         metaId == "band_levels" || metaId == "waveform" ||                                    // VZ.6
+         metaId == "waterfall" || metaId == "stereo_spectrogram";  // VZ.7
 }
 
 // Atoms that make a free device on their own at the project level: none that needs a voice, the transport's

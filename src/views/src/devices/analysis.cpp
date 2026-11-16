@@ -111,8 +111,23 @@ void SpectrumFeed::acquire(uint32_t wants) {
     makeWave();
     wantWave_.fetch_add(1, std::memory_order_relaxed);
   }
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo | kWantBands | kWantWave)) == 0)
-    noOutput_.fetch_add(1, std::memory_order_relaxed);
+  if (wants & (kWantWaterfall | kWantCloud)) {  // VZ.7: the published rings, allocated by the first consumer
+    std::lock_guard lock(wfMutex_);
+    if ((wants & kWantWaterfall) && wfRing_.empty()) {
+      wfRing_.assign(static_cast<size_t>(dsp::WaterfallAnalyzer::kMaxSlices) * dsp::WaterfallAnalyzer::kPoints, -140.0f);
+      wfLive_.assign(dsp::WaterfallAnalyzer::kPoints, -140.0f);
+    }
+    if ((wants & kWantCloud) && clRing_.empty()) {
+      clRing_.assign(kCloudRing, dsp::CloudPoint{});
+      clSliceRing_.assign(kCloudSlices, dsp::StereoCloud::RibSlice{});
+    }
+  }
+  if (wants & kWantWaterfall) wantWf_.fetch_add(1, std::memory_order_relaxed);
+  if (wants & kWantCloud) wantCloud_.fetch_add(1, std::memory_order_relaxed);
+  // A consumer of the history, the columns, the loudness, the cross-spectrum, the waterfall or the cloud only: no spectrum
+  // is computed for it.
+  constexpr uint32_t kOwnWork = kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo | kWantBands | kWantWave | kWantWaterfall | kWantCloud;
+  if (wants != 0 && (wants & ~kOwnWork) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -134,8 +149,10 @@ void SpectrumFeed::release(uint32_t wants) {
   if (wants & kWantStereo) wantStereo_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantBands) wantBands_.fetch_sub(1, std::memory_order_relaxed);  // VZ.6
   if (wants & kWantWave) wantWave_.fetch_sub(1, std::memory_order_relaxed);
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo | kWantBands | kWantWave)) == 0)
-    noOutput_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants & kWantWaterfall) wantWf_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants & kWantCloud) wantCloud_.fetch_sub(1, std::memory_order_relaxed);
+  constexpr uint32_t kOwnWork = kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo | kWantBands | kWantWave | kWantWaterfall | kWantCloud;
+  if (wants != 0 && (wants & ~kOwnWork) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
@@ -153,6 +170,8 @@ uint32_t SpectrumFeed::wants() const noexcept {
   if (wantStereo_.load(std::memory_order_relaxed) > 0) w |= kWantStereo;
   if (wantBands_.load(std::memory_order_acquire) > 0) w |= kWantBands;  // VZ.6 (acquire: the stage made before the count)
   if (wantWave_.load(std::memory_order_acquire) > 0) w |= kWantWave;
+  if (wantWf_.load(std::memory_order_relaxed) > 0) w |= kWantWaterfall;
+  if (wantCloud_.load(std::memory_order_relaxed) > 0) w |= kWantCloud;
   if (tap_.channels() >= 4) {
     if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
     if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
@@ -546,6 +565,126 @@ void SpectrumFeed::stereoPublish() {
   ++stereoSeq_;
 }
 
+// ---- VZ.7: the waterfall and the stereo cloud ------------------------------------------------------------------------
+
+void SpectrumFeed::setWaterfall(const dsp::WaterfallConfig& c) {
+  {
+    std::lock_guard lock(wfMutex_);
+    dsp::WaterfallConfig want = c;
+    want.sampleRate = cfg_.sampleRate;
+    if (want == wfWant_ && (wf_ || wfDirty_)) return;
+    wfWant_ = want;
+    wfDirty_ = true;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;
+  }
+  cv_.notify_all();
+}
+
+void SpectrumFeed::setCloud(const dsp::StereoCloudConfig& c) {
+  {
+    std::lock_guard lock(wfMutex_);
+    dsp::StereoCloudConfig want = c;
+    want.sampleRate = cfg_.sampleRate;
+    if (want == clWant_ && (cloud_ || clDirty_)) return;
+    clWant_ = want;
+    clDirty_ = true;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;
+  }
+  cv_.notify_all();
+}
+
+uint64_t SpectrumFeed::waterfallRead(uint64_t seq, WaterfallState& st, std::vector<float>& live, bool& settled) const {
+  {
+    std::lock_guard lock(mutex_);
+    settled = settled_;
+  }
+  std::lock_guard lock(wfMutex_);
+  if (seq != wfSeq_) {
+    st = wfPub_;
+    live.assign(wfLive_.begin(), wfLive_.end());
+  }
+  return wfSeq_;
+}
+
+uint32_t SpectrumFeed::waterfallSlices(uint64_t from, uint32_t n, float* out) const {
+  constexpr uint32_t P = dsp::WaterfallAnalyzer::kPoints, M = dsp::WaterfallAnalyzer::kMaxSlices;
+  std::lock_guard lock(wfMutex_);
+  const uint64_t end = wfPub_.slices, oldest = end > M ? end - M : 0;
+  if (wfRing_.empty() || from < oldest || from >= end) return 0;
+  const auto k = static_cast<uint32_t>(std::min<uint64_t>(n, end - from));
+  for (uint32_t i = 0; i < k; ++i)
+    std::copy_n(wfRing_.begin() + static_cast<std::ptrdiff_t>(((from + i) % M) * P), P, out + static_cast<size_t>(i) * P);
+  return k;
+}
+
+uint64_t SpectrumFeed::cloudRead(uint64_t seq, CloudState& st, bool& settled) const {
+  {
+    std::lock_guard lock(mutex_);
+    settled = settled_;
+  }
+  std::lock_guard lock(wfMutex_);
+  if (seq != clSeq_) st = clPub_;
+  return clSeq_;
+}
+
+uint32_t SpectrumFeed::cloudPoints(uint64_t from, uint32_t n, dsp::CloudPoint* out) const {
+  std::lock_guard lock(wfMutex_);
+  const uint64_t end = clPub_.points, oldest = end > kCloudRing ? end - kCloudRing : 0;
+  if (clRing_.empty() || from < oldest || from >= end) return 0;
+  const auto k = static_cast<uint32_t>(std::min<uint64_t>(n, end - from));
+  for (uint32_t i = 0; i < k; ++i) out[i] = clRing_[static_cast<size_t>((from + i) % kCloudRing)];
+  return k;
+}
+
+uint32_t SpectrumFeed::cloudSlices(uint64_t from, uint32_t n, dsp::StereoCloud::RibSlice* out) const {
+  std::lock_guard lock(wfMutex_);
+  const uint64_t end = clPub_.slices, oldest = end > kCloudSlices ? end - kCloudSlices : 0;
+  if (clSliceRing_.empty() || from < oldest || from >= end) return 0;
+  const auto k = static_cast<uint32_t>(std::min<uint64_t>(n, end - from));
+  for (uint32_t i = 0; i < k; ++i) out[i] = clSliceRing_[static_cast<size_t>((from + i) % kCloudSlices)];
+  return k;
+}
+
+void SpectrumFeed::wfPublish() {
+  constexpr uint32_t P = dsp::WaterfallAnalyzer::kPoints, M = dsp::WaterfallAnalyzer::kMaxSlices;
+  std::lock_guard lock(wfMutex_);
+  const uint64_t end = wf_->slices();
+  if (wfPub_.generation != wf_->generation()) wfCopied_ = 0;
+  for (uint64_t s = std::max(wfCopied_, end > M ? end - M : 0); s < end; ++s)
+    if (const float* src = wf_->slice(s)) std::copy_n(src, P, wfRing_.begin() + static_cast<std::ptrdiff_t>((s % M) * P));
+  wfCopied_ = end;
+  const auto live = wf_->live();
+  std::copy(live.begin(), live.end(), wfLive_.begin());
+  wfPub_.config = wf_->config();
+  wfPub_.slices = end;
+  wfPub_.generation = wf_->generation();
+  wfPub_.pitch = wf_->slicePitch();
+  wfPub_.phase = wf_->phase();
+  ++wfSeq_;
+}
+
+void SpectrumFeed::clPublish() {
+  std::lock_guard lock(wfMutex_);
+  if (clPub_.generation != cloud_->generation()) {
+    clPub_.points = clPub_.slices = 0;  // a restart: the old cloud is gone (the face clears on the generation)
+  }
+  for (const dsp::CloudPoint& p : clStage_) clRing_[static_cast<size_t>(clPub_.points++ % kCloudRing)] = p;
+  for (const auto& s : clStageSlices_) clSliceRing_[static_cast<size_t>(clPub_.slices++ % kCloudSlices)] = s;
+  clPub_.config = cloud_->config();
+  clPub_.head = cloud_->head();
+  clPub_.generation = cloud_->generation();
+  clPub_.hop = cloud_->hop();
+  ++clSeq_;
+  clStage_.clear();  // (capacity kept)
+  clStageSlices_.clear();
+}
+
 void SpectrumFeed::hold() {
   std::lock_guard lock(mutex_);
   settled_ = true;
@@ -695,6 +834,52 @@ uint32_t SpectrumFeed::work(double now) {
     if (resets & 2u) loud_->resetClips();
     loudPublishNow = config.has_value() || resets != 0;
   }
+  const bool wfOn = (want & kWantWaterfall) != 0, clOn = (want & kWantCloud) != 0;
+  bool wfPublishNow = false, clPublishNow = false;
+  if (wfOn || clOn) {  // VZ.7: new requests (re)configure the analysers (worker-owned; made outside the lock)
+    std::optional<dsp::WaterfallConfig> wc;
+    std::optional<dsp::StereoCloudConfig> cc;
+    {
+      std::lock_guard lock(wfMutex_);
+      if (wfOn && (wfDirty_ || !wf_)) {
+        wfDirty_ = false;
+        wfWant_.sampleRate = cfg_.sampleRate;
+        wc = wfWant_;
+      }
+      if (clOn && (clDirty_ || !cloud_)) {
+        clDirty_ = false;
+        clWant_.sampleRate = cfg_.sampleRate;
+        cc = clWant_;
+      }
+    }
+    if (wc) {
+      if (!wf_) wf_ = std::make_unique<dsp::WaterfallAnalyzer>(*wc);
+      else wf_->configure(*wc);
+      wfPublishNow = true;
+    }
+    if (cc) {
+      if (!cloud_) {
+        cloud_ = std::make_unique<dsp::StereoCloud>(*cc);
+        clStage_.reserve(kCloudRing / 2);
+        clStageSlices_.reserve(kCloudSlices);
+      } else {
+        cloud_->configure(*cc);
+      }
+      clPublishNow = true;
+    }
+  }
+  auto cloudPush = [&](const float* l, const float* r, uint32_t n) {
+    cloud_->push(
+        l, r, n,
+        [&](const dsp::CloudPoint* p, uint32_t k) {
+          const size_t room = clStage_.capacity() - clStage_.size();
+          clStage_.insert(clStage_.end(), p, p + std::min<size_t>(k, room));
+        },
+        [&](const dsp::StereoCloud::RibSlice& s) {
+          if (clStageSlices_.size() < clStageSlices_.capacity()) clStageSlices_.push_back(s);
+        });
+    clPublishNow = true;
+  };
   const bool stereo = (want & kWantStereo) != 0;
   bool stereoPublishNow = false;
   if (stereo) {  // VZ.5: a new request (re)configures the analyser (worker-owned; made outside the lock)
@@ -772,6 +957,11 @@ uint32_t SpectrumFeed::work(double now) {
     if (stereo && stereo_->push(ch_[oL].data(), ch_[oR].data(), k) > 0) stereoPublishNow = true;
     if (bands != nullptr) bands->push(ch_[oL].data(), ch_[oR].data(), k);  // VZ.6
     if (wave != nullptr) wave->push(four ? ch_[0].data() : nullptr, ch_[oL].data(), ch_[oR].data(), k);
+    if (wfOn) {
+      wf_->push(ch_[oL].data(), ch_[oR].data(), k);
+      wfPublishNow = true;
+    }
+    if (clOn) cloudPush(ch_[oL].data(), ch_[oR].data(), k);
     if (want & kWantOutput) ran += out_->push(mono_.data(), k);
     if (want & kWantInput) in_->push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
@@ -785,7 +975,8 @@ uint32_t SpectrumFeed::work(double now) {
               (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate) ||
               (gram && gramQuiet_ < gramCols_) || (loud && !loud_->atRest()) ||
               (stereo && !stereo_->atRest()) || (bands != nullptr && !bands->atRest()) ||
-              (wave != nullptr && wave->quietFrames() < waveRestFrames_.load(std::memory_order_relaxed)))) {
+              (wave != nullptr && wave->quietFrames() < waveRestFrames_.load(std::memory_order_relaxed)) ||
+              (wfOn && !wf_->atRest()) || (clOn && !cloud_->atRest()))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -808,6 +999,11 @@ uint32_t SpectrumFeed::work(double now) {
       if (stereo && stereo_->push(mono_.data(), mono_.data(), frames) > 0) stereoPublishNow = true;  // fades in time
       if (bands != nullptr) bands->pushSilence(frames);  // VZ.6: the levels fall, the picture scrolls on in time
       if (wave != nullptr) wave->pushSilence(frames);
+      if (wfOn) {  // the history scrolls on in time
+        wf_->push(mono_.data(), mono_.data(), frames);
+        wfPublishNow = true;
+      }
+      if (clOn) cloudPush(mono_.data(), mono_.data(), frames);
       if (want & kWantOutput) ran += out_->push(mono_.data(), frames);
       if (want & kWantInput) in_->push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
@@ -824,9 +1020,12 @@ uint32_t SpectrumFeed::work(double now) {
                     (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate) &&
                     (!gram || gramQuiet_ >= gramCols_) && (!loud || loud_->atRest()) &&
                     (!stereo || stereo_->atRest()) && (bands == nullptr || bands->atRest()) &&
-                    (wave == nullptr || wave->quietFrames() >= waveRestFrames_.load(std::memory_order_relaxed));
+                    (wave == nullptr || wave->quietFrames() >= waveRestFrames_.load(std::memory_order_relaxed)) &&
+                    (!wfOn || wf_->atRest()) && (!clOn || cloud_->atRest());
   if (loudPublishNow) loudPublish();
   if (stereoPublishNow) stereoPublish();
+  if (wfPublishNow) wfPublish();
+  if (clPublishNow) clPublish();
   const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);
   bool post = false;
   if (ran > 0 || settledNow != wasSettled) {

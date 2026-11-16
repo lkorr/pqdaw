@@ -106,6 +106,11 @@ public:
   void fillUnder(std::span<const Vec2> curve, float baseY, Rgba top, Rgba bottom);
   void convex(std::span<const Vec2> pts, Rgba col);
   void triangle(Vec2 a, Vec2 b, Vec2 c, Rgba col);
+  // VZ.7: an indexed triangle mesh with a colour per vertex (the 3D faces' terrain strips and walls, written straight
+  // into the draw list: no anti-aliasing fringe). Positions in world units; idx: triples into pts (all < pts.size()).
+  void mesh(std::span<const Vec2> pts, std::span<const Rgba> cols, std::span<const uint32_t> idx);
+  // The same with positions already in DEVICE px (a face that projects its own geometry per vertex).
+  void meshDevice(std::span<const Vec2> pts, std::span<const Rgba> cols, std::span<const uint32_t> idx);
   void roundedRect(const Rect& r, float radius, Rgba col);
   // An additive glow sprite of radius r (the atlas blob): call between beginGlow() / endGlow() to batch the blend.
   void glow(Vec2 c, float r, Rgba col);

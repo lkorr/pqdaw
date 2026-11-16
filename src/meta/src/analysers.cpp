@@ -2,6 +2,7 @@
 // and the stereo modules (VZ.5, pq/meta/stereo.h).
 #include "pq/meta/loudness.h"
 #include "pq/meta/stereo.h"
+#include "pq/meta/view3d.h"
 
 #include <array>
 #include <cmath>
@@ -82,6 +83,15 @@ const Type& stereoImageType() noexcept {
 }
 const Type& phaseScopeType() noexcept {
   static const Type t = makeType("phase_scope", "Phase Scope");
+  return t;
+}
+
+const Type& waterfallType() noexcept {
+  static const Type t = makeType("waterfall", "Waterfall");
+  return t;
+}
+const Type& stereoSpectrogramType() noexcept {
+  static const Type t = makeType("stereo_spectrogram", "Stereo Spectrogram");
   return t;
 }
 

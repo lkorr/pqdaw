@@ -147,6 +147,26 @@ void FacePainter::convex(std::span<const Vec2> pts, Rgba col) {
   dl_.addConvexPolyFilled(d, c(col));
 }
 
+void FacePainter::mesh(std::span<const Vec2> pts, std::span<const Rgba> cols, std::span<const uint32_t> idx) {
+  ++count_;
+  if (pts.empty() || idx.empty() || cols.size() < pts.size()) return;
+  dl_.primReserve(static_cast<uint32_t>(idx.size()), static_cast<uint32_t>(pts.size()));
+  const uint32_t base = dl_.vtxCurrentIdx();
+  const Vec2 uv = dl_.whiteUv();
+  for (size_t i = 0; i < pts.size(); ++i) dl_.primWriteVtx(t_.map(pts[i]), uv, c(cols[i]));
+  for (const uint32_t i : idx) dl_.primWriteIdx(base + i);
+}
+
+void FacePainter::meshDevice(std::span<const Vec2> pts, std::span<const Rgba> cols, std::span<const uint32_t> idx) {
+  ++count_;
+  if (pts.empty() || idx.empty() || cols.size() < pts.size()) return;
+  dl_.primReserve(static_cast<uint32_t>(idx.size()), static_cast<uint32_t>(pts.size()));
+  const uint32_t base = dl_.vtxCurrentIdx();
+  const Vec2 uv = dl_.whiteUv();
+  for (size_t i = 0; i < pts.size(); ++i) dl_.primWriteVtx(pts[i], uv, c(cols[i]));
+  for (const uint32_t i : idx) dl_.primWriteIdx(base + i);
+}
+
 void FacePainter::triangle(Vec2 a, Vec2 b, Vec2 cc, Rgba col) {
   ++count_;
   if (invisible(col)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
