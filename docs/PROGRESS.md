@@ -996,3 +996,16 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Notes: 10 goldens re-recorded (slider look, Generator lane range). Q?-bug-mos-sister-a (mode across the crossing:
   chain position kept). Open: MosChart::onCaptureLost has the same Esc-commits bug; SPEC §4.2 wording not edited.
   Rebased by the orchestrator onto VZ.4 (append-only conflicts in QUESTIONS / REVIEW).
+
+## 2026-11-16 · bug-spawn-resize merged · main
+- Did: causes: the layout packed blocks by their scaled size (a resize shifted every later block, the band's line and
+  height); the overlap push counted the 12-unit gap as contact (one overlap spread through the band); an animating
+  push rewrote whole nudges (stale scale); Tab / Z on a cable spawned at the cable's midpoint; a spawn onto a block went
+  through the push (the new block shoved far). Now: blocks laid out at their own size, scale applied in place; the push
+  separates only real overlaps, the resized block holds; a spawn lands at the pointer or the nearest free spot,
+  nothing else moves; spawn scale 1 / zoom clamped 0.05–3 on every spawn path (paste keeps sizes).
+- Verified (worker): pq_tests_views after rebase 889/889 (one ctest run hit the NVIDIA-driver flake); new
+  test_spawn_resize 6 cases through real dispatch; 5 old asserts that encoded the old behaviour updated.
+- Perf / CPU-efficiency check: one re-layout per drag step as before; free-spot search once per spawn.
+- Notes: project-patch-resize, project-block-drag re-recorded. Q?-bug-spawn-resize-a (reference zoom 1, max 3×);
+  -b open: positions are offsets from layout slots, so delete / move-to-track / undo of a spawn still shift later blocks.
