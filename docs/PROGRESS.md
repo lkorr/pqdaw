@@ -916,3 +916,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: one live frame, 8 tracks × 500 notes: 1.43 ms UI thread (0.69 lowering, ~half the rest
   the sequence image build); left as is.
 - Notes: old commit* helpers replaced by edit builders + commitLive; timeline swap subcases now assert the glide.
+
+## 2026-11-15 · bug-small-fixes merged · main
+- Did: Phase Accumulator Pitch to ±96 st (±12 st over the middle half, 0 detent kept; arc ticks 0/±1/±2/±4/±6 oct);
+  EQ band types Low Pass / High Pass (names only). Scope: auto gain off by default and fixed (scales max(visible peak,
+  4 s peak) to 0.9, falls at once, rises slowly: no clipping, no pumping on slow LFOs); the pitch detector removes the
+  mean and starts at the first negative NSDF zero (slow signals no longer read as 6–8 kHz); Constant lock drops a lost
+  period after its hold. Noise face: the tap reader no longer wraps values to 0…1 (−0.3 drew at +0.7); the face shows
+  the output after Min/Max.
+- Verified (worker): -Affected 34/38, then the 4 (fixture re-saves, noise text round-trip fix, a JI lowering timing
+  limit that passed on re-run) green: pq_tests_meta + playback 5/5.
+- Perf / CPU-efficiency check: auto gain ~800 compares per frame on new samples only; nothing on the audio thread.
+- Notes: 24 goldens re-recorded (2 scope gain, 22 the Pitch arc ticks); playback fixtures re-saved, audio WAVs unchanged.
