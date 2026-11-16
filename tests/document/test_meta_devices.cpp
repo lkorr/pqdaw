@@ -492,8 +492,18 @@ TEST_CASE("meta devices (fix2): the note source's Hz wired to a meta param of it
   CHECK(statusOf(*lp, w) == WireStatus::Lowered);
   const std::string text = patchText(*lp->patches[trackIndex(*lp, c.track)]);
   CAPTURE(text);
-  // No reducer anywhere: the Wavetable runs per voice, so the param the note drives is per voice.
-  for (const char* r : {"voice_last(", "voice_highest(", "voice_lowest(", "voice_loudest("}) CHECK(text.find(r) == std::string::npos);
+  // No reducer on the signal path: the Wavetable runs per voice, so the param the note drives is per voice. The one
+  // reducer is the param's tap (bug-mod-ghost: its ring and ghost read the newest voice's, voice_last).
+  for (const char* r : {"voice_highest(", "voice_lowest(", "voice_loudest("}) CHECK(text.find(r) == std::string::npos);
+  size_t at = 0, lasts = 0;
+  while ((at = text.find("voice_last(", at)) != std::string::npos) {
+    const size_t line = text.rfind('\n', at) + 1;
+    const std::string tap = "  export tap_d" + std::to_string(c.wt.value) + "_position = ";
+    CHECK(text.compare(line, tap.size(), tap) == 0);
+    ++lasts;
+    ++at;
+  }
+  CHECK(lasts == 1);
   CHECK(pinType(*lp, c.track, c.wt, "position").poly == pq::graph::Poly::Voice);
   // The wire's amount is a param (an amount drag never recompiles); the modulated param has its tap (the live ring).
   const std::string amount = "wire" + std::to_string(w.value) + ":amount";
