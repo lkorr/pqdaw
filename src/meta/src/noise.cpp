@@ -122,7 +122,7 @@ Status body(Builder& bld) {
   const P mn = bld.param(kNoiseMin), mx = bld.param(kNoiseMax);
   const P half = b.op("mul", {b.op("sub", {mx, mn}), b.k(0.5)});
   const P mid = b.op("mul", {b.op("add", {mx, mn}), b.k(0.5)});
-  const P out = b.op("muladd", {v, half, mid});
+  const P out = b.named(b.op("muladd", {v, half, mid}), "ranged");  // (named: two readers, the text form binds it once)
   bld.output(0, out);
   // The face's trace: the output (after the Range: what is heard), into the instance's voice tap.
   b.named(bld.atom("voice_tap", {out, bld.slot(0)}, kTap), "tap");
