@@ -289,7 +289,7 @@ TEST_CASE("mod-all: Shape mode's live path at static values matches its baked cu
     const DeviceId shaper = s->meta("wavetable");
     s->edit(ops::setMetaSetting(s->doc(), shaper, "", "wavetable", "mode", 1.0));
     s->edit(ops::setMetaParamValue(s->doc(), shaper, "", "wavetable", "warp", 0.5));
-    s->edit(ops::setMetaParamValue(s->doc(), shaper, "", "wavetable", "fold", 0.3));
+    s->edit(ops::setMetaParamValue(s->doc(), shaper, "", "wavetable", "fold", 0.1));  // θ = 1.2π (TX.mod-all's fold 0.3)
     s->notes(2 * kPpq);
     if (live) {
       const DeviceId zero = s->modulator(0.0);
@@ -325,7 +325,7 @@ TEST_CASE("mod-all: Shape mode's live path at static values matches its baked cu
     }
   }
   const double raw = 20.0 * std::log10(std::max(rmsDiff(sa, sb), 1e-12) / rms(sa));
-  MESSAGE("Shape mode, warp 0.5 + fold 0.3 on a 261.6 Hz sine: live vs baked " << raw << " dB re the signal; aligned by "
+  MESSAGE("Shape mode, warp 0.5 + fold 0.1 on a 261.6 Hz sine: live vs baked " << raw << " dB re the signal; aligned by "
                                                                                << bestDelay << " samples " << best << " dB");
   CHECK(rms(sa) > 0.05);
   CHECK(bestDelay > 0.5);

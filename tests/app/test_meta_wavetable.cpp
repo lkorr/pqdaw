@@ -1392,7 +1392,7 @@ void pictureMatchesSound(bool sweep) {
   d.frames = 16;  // (a bake of 16 dense frames builds in tens of ms in the check preset; previews still apply)
   s.data(wt, meta::wavetableData(d));
   s.param(wt, "position", 0.6);
-  s.param(wt, "fold", 0.55);
+  s.param(wt, "fold", 0.55 / 3.0);  // (TMM.16's fold 0.55: θ = 2.2π — bug-wavetable tripled the range)
   s.param(wt, "warp", -0.45);
   s.setting(wt, "warpMode", 1.0);
   auto link = makeLink(s.store.current());

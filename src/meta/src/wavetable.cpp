@@ -312,7 +312,10 @@ DataPtr wavetableData(const WavetableData& d) {
   std::vector<DataValue> keys;
   keys.reserve(d.keyframes.size());
   for (const WavetableKeyframe& k : d.keyframes) {
-    std::vector<std::pair<std::string, DataValue>> f{{"pos", DataValue::num(k.position)}, {"cycle", DataValue::floatArray(k.cycle)}};
+    std::vector<std::pair<std::string, DataValue>> f;  // (emplaced: an initializer list would copy the cycle)
+    f.reserve(3);
+    f.emplace_back("pos", DataValue::num(k.position));
+    f.emplace_back("cycle", DataValue::floatArray(k.cycle));
     if (!k.nodes.empty()) f.emplace_back("nodes", DataValue::floatArray(k.nodes));
     keys.push_back(DataValue::record(std::move(f)));
   }

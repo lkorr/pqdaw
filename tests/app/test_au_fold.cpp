@@ -68,6 +68,13 @@ struct FoldSong {
   }
   const Project& doc() const { return *store.current(); }
   void fold(double v) { control("fold", v); }
+  // bug-wavetable: fold's declared knob curve is exponential; a linear one here keeps a lane's steps (positions) the
+  // same values as the drag's (so the live staircase is AU.fold's reference, step for step).
+  void linearKnob(const char* name) {
+    auto e = ops::setParamCurvePreset(doc(), playback_fixture::unitsLibrary(), wt, name, dsp::CurvePreset::Linear);
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    if (!e->empty()) raw(e->command);
+  }
   void control(const char* name, double v) { edit(ops::setMetaParamValue(doc(), wt, "", "wavetable", name, v)); }
   void lane(const char* name, std::vector<Breakpoint> points) {
     auto l = std::make_shared<AutomationLane>();
@@ -212,7 +219,8 @@ TEST_CASE("AU.fold: a knob drag of a baked control (fold, warp, sync) is as smoo
   constexpr int kSteps = 36;
   constexpr uint32_t kStepBlocks = 25, kLead = 100;
   auto tickAt = [](double samples) { return static_cast<Ticks>(samples / kRate * 2.0 * kPpq); };  // 120 bpm
-  for (const Case c : {Case{-3, "fold", 0.2, 0.8, -44.0}, Case{21, "fold", 0.2, 0.8, -44.0},
+  // (bug-wavetable: fold's θ is 12π·fold now — the sweeps keep AU.fold's θ, 0.8π … 3.2π)
+  for (const Case c : {Case{-3, "fold", 0.2 / 3.0, 0.8 / 3.0, -44.0}, Case{21, "fold", 0.2 / 3.0, 0.8 / 3.0, -44.0},
                        Case{-3, "warp", -0.5, 0.5, -50.0}, Case{-3, "sync", 0.1, 0.5, -34.0}}) {
     const int32_t d = c.degree;
     const double f0 = degreeHz(d);
@@ -222,6 +230,7 @@ TEST_CASE("AU.fold: a knob drag of a baked control (fold, warp, sync) is as smoo
     std::vector<float> drag, stairs, ramp;
     {
       FoldSong s(d, 2.0);
+      s.linearKnob(c.control);
       s.control(c.control, c.from);
       auto link = makeLink(s.store.current());
       [[maybe_unused]] const ListenerId sub = s.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
@@ -243,6 +252,7 @@ TEST_CASE("AU.fold: a knob drag of a baked control (fold, warp, sync) is as smoo
     // long) and the continuous ramp.
     auto laneRender = [&](std::vector<Breakpoint> points) {
       FoldSong s(d, 2.0);
+      s.linearKnob(c.control);
       s.lane(c.control, std::move(points));
       auto link = makeLink(s.store.current());
       link->flush();

@@ -107,7 +107,7 @@ patch Midi4 {
 patch meta_wavetable__d49__88b3f5e4926dcb56 {
   param phase = 0 [0..1] @label("Phase") @wrap
   param position = 0 [0..1] @label("Position")
-  param fold = 0 [0..1] @label("Fold")
+  param fold = 0 [0..1] @label("Fold") @curve(exponential, 1.3862943611198906)
   param warp = 0 [-1..1] @label("Warp")
   param sync = 0 [0..1] @label("Sync")
   in x : audio = -0
