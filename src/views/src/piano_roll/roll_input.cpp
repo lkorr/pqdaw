@@ -383,13 +383,28 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         if (gh.part == GroupPart::Proportion && e.clickCount >= 2) (void)s_.openJiChooser(gh.group);
         else if (gh.part == GroupPart::Proportion) s_.ctx.setStatus("The chord is selected: Up / Down or a drag transposes it; double-click its proportion for its other readings");
       } else if (e.clickCount >= 2 && !s_.ctx.drawMode()) {
-        // Double-click on empty space: one note in the grid cell.
+        // Double-click on empty space: one note in the grid cell. bug-roll-dblclick: held, the same press drags the new
+        // note's end (Live), in the add's undo step.
         s_.drag = {};
         const Grid g = s_.grid();
         const TickRange c = drawCell(g, roundTicks(s_.tickAtX(e.pos.x)));
         if (!s_.rows().empty()) {
           const DrawnNote dn = cellNote(c, e.pos, s_.drawPitchFor(e.mods, c.start, e.pos.y), e.mods);
-          s_.addNotes({dn});
+          static uint64_t addCount = 0;
+          const uint64_t key = 0x524F4C4C41000000ull + ++addCount;  // "ROLLA" + n: one double-click's add and resize
+          if (s_.addNotes({dn}, key) && s_.selection().size() == 1) {
+            DragState& d = s_.drag;
+            d.kind = DragKind::ResizeEnd;
+            d.pressed = doc::NoteId{s_.selection().front()};
+            d.pressedWasSelected = true;
+            d.pressMods = e.mods;
+            d.press = d.last = e.pos;
+            d.originTick = dn.start + dn.length;
+            d.pressTick = roundTicks(s_.tickAtX(e.pos.x));
+            d.pressDegree = s_.rows().row(s_.rows().indexAtY(s_.contentY(e.pos.y))).degree;
+            d.joinKey = key;
+            s_.beginDragTracking();
+          }
           s_.audition(s_.drawnPitch(dn), 100.0f, dn.start, c.end - c.start);
           s_.auditionHeld = true;  // AU.voices: released on pointer up
         }

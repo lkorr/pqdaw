@@ -199,6 +199,9 @@ struct DragState {
   bool curveAdded = false;     // CurvePoint: the press added the point (a release without a drag still commits)
   bool deleteOnClick = false;  // PenDraw on a note: a click (no drag) deletes it, as Draw Mode always did
   bool toggleOnClick = false;  // Shift on a selected note: a click deselects it, a drag detunes freely
+  // bug-roll-dblclick: ResizeEnd from a double-click on empty space (the press added the note): the resize joins the
+  // add's undo step under this key (DocumentStore::dispatchCoalescing). 0: an ordinary resize.
+  uint64_t joinKey = 0;
   ui::Mods pressMods = 0;
   // T7.16a (M7 review M14): a Move with pitch steps moves a note other notes are anchored to: those are drawn
   // following its preview (RollState::centsOf), so the whole area repaints.
@@ -414,7 +417,8 @@ public:
   std::vector<doc::NoteKey> selectionKeys() const;
 
   // --- edits (each = one dispatch = one undo step) ---
-  bool apply(const doc::ops::EditResult& e, std::string_view what);  // dispatch + adopt the selection
+  // Dispatch + adopt the selection. `coalesceKey` ≠ 0: an edit under the same key right after joins this one's undo step.
+  bool apply(const doc::ops::EditResult& e, std::string_view what, uint64_t coalesceKey = 0);
   void deleteSelection();
   void duplicateSelection();
   void quantizeSelection();
@@ -484,7 +488,7 @@ public:
   int groupRole(const doc::Note& n) const;
   // T7.16a: the note is of a group Back to Tuning (it plays and is labelled as written). O(log groups).
   bool untunedMember(const doc::Note& n) const;
-  void addNotes(const std::vector<DrawnNote>& notes);
+  bool addNotes(const std::vector<DrawnNote>& notes, uint64_t coalesceKey = 0);  // false: nothing added
   // How a draw gesture with these modifiers at content tick `t`, device y `y` picks its pitch (where the note joins a
   // group, captureGroupAt, the plain draw is Ratio — Alt too, on the finer series — and Shift the rows).
   DrawPitch drawPitchFor(ui::Mods m, Ticks t, float y) const;

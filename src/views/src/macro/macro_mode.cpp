@@ -64,6 +64,22 @@ bool sameClip(const doc::ClipRef& a, const doc::ClipRef& b) noexcept { return a.
 
 bool samePos(ui::Vec2 a, ui::Vec2 b) noexcept { return a.x == b.x && a.y == b.y; }
 
+// bug-macro-cancel: `r` joins the listed factors (their product is `comp` after it). A factor cancelling one already
+// listed (3/2 then 2/3) removes that one (the latest) instead; a composition back at 1/1 lists nothing.
+void pushFactor(std::vector<Rational>& factors, const Rational& r, const Rational& comp) {
+  if (comp == Rational{1}) {
+    factors.clear();
+    return;
+  }
+  for (size_t i = factors.size(); i-- > 0;) {
+    if (const std::optional<Rational> p = tuning::mul(factors[i], r); p && *p == Rational{1}) {
+      factors.erase(factors.begin() + static_cast<std::ptrdiff_t>(i));
+      return;
+    }
+  }
+  factors.push_back(r);
+}
+
 }  // namespace
 
 struct MacroMode::Anchor {
@@ -711,7 +727,7 @@ void MacroMode::pressInterval(const Rational& r) {
     return;
   }
   step([&] {
-    s_.factors.push_back(r);
+    pushFactor(s_.factors, r, *c);
     s_.comp = *c;
   });
   afterMove(true);
@@ -779,7 +795,7 @@ void MacroMode::movePitch(int dir) {
   const std::optional<Rational> comp = factor ? tuning::mul(s_.comp, *factor) : std::nullopt;
   if (!comp) return;
   step([&] {
-    s_.factors.push_back(*factor);
+    pushFactor(s_.factors, *factor, *comp);
     s_.comp = *comp;
   });
   afterMove(true);

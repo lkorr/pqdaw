@@ -508,6 +508,29 @@ TEST_CASE("macro mode: in the TEMPERED layer, 3/2 from a tempered note goes 7 st
   CHECK(f.find(PitchId::fromDegree(10, 0), 0) == nullptr);
 }
 
+TEST_CASE("macro mode: a key cancelling a listed factor takes it off the list (bug-macro-cancel)") {
+  Macro f;
+  const doc::NoteId c = f.add(PitchId::fromDegree(0, 0), 0, kQ);
+  f.on();
+  f.hover(c);
+  f.keys({"2", "w"});  // 3/2 then 2/3
+  CHECK_FALSE(f.m().composing());
+  CHECK(f.m().compositionText() == "1/1");
+  CHECK(f.m().target().pitch == PitchId::fromDegree(0, 0));
+  f.keys({"2", "3", "w"});  // 3/2 · 5/4 · 2/3: the fifth goes, the third stays
+  CHECK(f.m().compositionText() == "5/4");
+  CHECK(f.m().composition() == Rational(5, 4));
+  f.keys({"2", "2", "w"});  // only one of the two fifths cancels
+  CHECK(f.m().compositionText() == "5/4 \xC2\xB7 3/2 = 15/8");
+  f.keys({"Backspace", "2", "w", "1", "q"});  // 3/2 · 2/3 · 2/1 · 1/2: the list never grows past one
+  CHECK(f.m().compositionText() == "1/1");
+  // Macro-level undo steps back to the list before the cancelling key.
+  f.keys({"2", "3", "w"});
+  REQUIRE(f.m().compositionText() == "5/4");
+  f.keys({"-"});
+  CHECK(f.m().compositionText() == "3/2 \xC2\xB7 5/4 = 15/8");
+}
+
 TEST_CASE("macro mode: q w e go down by the reciprocals; Tab places and chains; a f s d move the cursor") {
   Macro f;
   const doc::NoteId c = f.add(PitchId::fromDegree(0, 0), 0, kQ);
@@ -522,7 +545,8 @@ TEST_CASE("macro mode: q w e go down by the reciprocals; Tab places and chains; 
   f.keys({"Backspace", "e"});
   CHECK(f.m().target().pitch == PitchId::fromDegree(8, -1));  // a major third down
   f.keys({"Backspace", "1", "q"});
-  CHECK(f.m().compositionText() == "2/1 \xC2\xB7 1/2 = 1/1");
+  CHECK(f.m().compositionText() == "1/1");  // bug-macro-cancel: an octave up and down cancel out
+  CHECK_FALSE(f.m().composing());
   CHECK(f.m().target().pitch == PitchId::fromDegree(0, 0));
   f.keys({"Backspace"});
 

@@ -316,6 +316,47 @@ TEST_CASE("clip view: move, resize, Alt-drag copy, delete, rubber band — each 
   CHECK(*r.note(100) == n100);
 }
 
+TEST_CASE("clip view: a double-click held on empty space drags the new note's end, in the add's undo step (bug-roll-dblclick)") {
+  Roll r("pianoroll-12edo");
+  r.setGrid(4, 1);  // 1/16
+  r.d.click(r.centreOf(100));  // the note area has the keys
+  r.d.press("Ctrl+A");
+  r.d.press("Delete");
+  REQUIRE(r.clip().notes.empty());
+  const Ticks cell = kQ / 4;
+  const float px = static_cast<float>(r.view->pxPerTick());
+
+  // A double-click: one cell-long note, selected.
+  size_t h = r.history();
+  const Vec2 p = r.at(4.5 * static_cast<double>(cell), 0);
+  r.d.doubleClick(p);
+  REQUIRE(r.clip().notes.size() == 1);
+  CHECK(r.clip().notes.begin()->start == 4 * cell);
+  CHECK(r.clip().notes.begin()->length == cell);
+  CHECK(r.history() == h + 1);
+
+  // Held on the second press and dragged right: the same note stretches (snapped), one undo step for both.
+  REQUIRE(r.ctx.undo());
+  REQUIRE(r.clip().notes.empty());
+  h = r.history();
+  r.d.click(p);
+  r.d.down(p, PointerButton::Left, mod::kNone, 2);
+  REQUIRE(r.clip().notes.size() == 1);
+  const doc::NoteId id = r.clip().notes.begin()->id;
+  for (int i = 1; i <= 5; ++i) r.d.move({p.x + static_cast<float>(i) * (3.2f * static_cast<float>(cell) * px) / 5.0f, p.y});
+  CHECK(r.view->selection().size() == 1);
+  r.d.up({p.x + 3.2f * static_cast<float>(cell) * px, p.y}, PointerButton::Left, mod::kNone, 2);
+  REQUIRE(r.clip().notes.size() == 1);
+  CHECK(r.clip().notes.begin()->id == id);
+  CHECK(r.clip().notes.begin()->start == 4 * cell);
+  CHECK(r.clip().notes.begin()->length == 4 * cell);
+  CHECK(r.history() == h + 1);
+  REQUIRE(r.ctx.undo());
+  CHECK(r.clip().notes.empty());  // the add and the stretch went together
+  REQUIRE(r.ctx.redo());
+  CHECK(r.clip().notes.begin()->length == 4 * cell);
+}
+
 TEST_CASE("clip view: an Alt-drag copy that ends at offset zero adds nothing (M3 review M10)") {
   Roll r("pianoroll-12edo");
   r.setGrid(4, 1);  // 1/16

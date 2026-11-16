@@ -1209,13 +1209,13 @@ std::vector<doc::NoteKey> RollState::selectionKeys() const {
 
 // --- edits ----------------------------------------------------------------------------------------------
 
-bool RollState::apply(const doc::ops::EditResult& e, std::string_view what) {
+bool RollState::apply(const doc::ops::EditResult& e, std::string_view what, uint64_t coalesceKey) {
   if (!e) {
     ctx.setStatus(std::string(what) + ": " + e.error().message);
     return false;
   }
   if (e->empty()) return false;
-  if (Status s = ctx.store().dispatch(e->command); !s) {
+  if (Status s = coalesceKey ? ctx.store().dispatchCoalescing(e->command, coalesceKey) : ctx.store().dispatch(e->command); !s) {
     ctx.setStatus(std::string(what) + ": " + s.error().message);
     return false;
   }
@@ -1568,8 +1568,8 @@ tuning::PitchId RollState::degreePitch(int64_t degree) const noexcept {
   return tuning::PitchId::fromDegree(static_cast<int32_t>(degree - e * n), static_cast<int32_t>(e));
 }
 
-void RollState::addNotes(const std::vector<DrawnNote>& drawn) {
-  if (!clip_ || drawn.empty()) return;
+bool RollState::addNotes(const std::vector<DrawnNote>& drawn, uint64_t coalesceKey) {
+  if (!clip_ || drawn.empty()) return false;
   std::vector<doc::Note> notes;
   notes.reserve(drawn.size());
   for (const DrawnNote& d : drawn) {
@@ -1580,8 +1580,8 @@ void RollState::addNotes(const std::vector<DrawnNote>& drawn) {
     n.pitch = drawnPitch(d);
     notes.push_back(n);
   }
-  if (notes.empty()) return;
-  (void)apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes), "Add Notes");
+  if (notes.empty()) return false;
+  return apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes), "Add Notes", coalesceKey);
 }
 
 // --- drag ------------------------------------------------------------------------------------------------
@@ -1833,7 +1833,8 @@ void RollState::commitDrag() {
         }
       } else if (d.dt != 0) {
         // T7.6: the notes' free curves are retimed in the same step (bends and vibratos are properties).
-        (void)apply(resizeEdit(d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start, d.dt), "Resize Notes");
+        (void)apply(resizeEdit(d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start, d.dt), "Resize Notes",
+                    d.joinKey);
       }
       break;
     // T7.14: the pen's Alt stroke writes the note's vibrato property; the ~ grip and the envelope's corners too.

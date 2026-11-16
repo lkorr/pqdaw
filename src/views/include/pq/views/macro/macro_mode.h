@@ -10,7 +10,8 @@
 //
 // Keys come from a preset (macro_preset.h; default: SPEC §6.2's table):
 //   interval keys   multiply the composition (`1`…`0` = 2/1 3/2 5/4 7/4 11/8 13/8 17/16 19/16 23/16 29/16, `q`…`p` the
-//                   reciprocals); the cursor moves and is auditioned
+//                   reciprocals); the cursor moves and is auditioned. A key cancelling a listed factor (3/2 then
+//                   2/3) takes that factor off the list; back at 1/1 nothing is composed
 //   place (`)       a note at the cursor; the composition is cleared and the cursor returns to the anchor. From a free
 //                   position with nothing composed the new note becomes the anchor.
 //   placeChain (Tab) the same, and the new note becomes the anchor
