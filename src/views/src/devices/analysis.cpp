@@ -71,6 +71,8 @@ SpectrumFeed::~SpectrumFeed() {
   cv_.notify_all();
   if (thread_.joinable()) thread_.join();
   for (uint32_t c = consumers_.load(); c > 0; --c) tap_.removeReader();
+  delete bands_.load();
+  delete wave_.load();
 }
 
 void SpectrumFeed::acquire(uint32_t wants) {
@@ -101,7 +103,16 @@ void SpectrumFeed::acquire(uint32_t wants) {
   }
   if (wants & kWantStereo) wantStereo_.fetch_add(1, std::memory_order_relaxed);  // VZ.5
   // A consumer of the history, the columns, the loudness or the cross-spectrum only: no spectrum is computed for it.
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo)) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
+  if (wants & kWantBands) {  // VZ.6: the stages exist before the worker can see them wanted
+    makeBands();
+    wantBands_.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (wants & kWantWave) {
+    makeWave();
+    wantWave_.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo | kWantBands | kWantWave)) == 0)
+    noOutput_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -121,7 +132,10 @@ void SpectrumFeed::release(uint32_t wants) {
   if (wants & kWantSpectrogram) wantGram_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantLoudness) wantLoud_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantStereo) wantStereo_.fetch_sub(1, std::memory_order_relaxed);
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo)) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants & kWantBands) wantBands_.fetch_sub(1, std::memory_order_relaxed);  // VZ.6
+  if (wants & kWantWave) wantWave_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo | kWantBands | kWantWave)) == 0)
+    noOutput_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
@@ -137,6 +151,8 @@ uint32_t SpectrumFeed::wants() const noexcept {
   if (wantGram_.load(std::memory_order_relaxed) > 0) w |= kWantSpectrogram;
   if (wantLoud_.load(std::memory_order_relaxed) > 0) w |= kWantLoudness;
   if (wantStereo_.load(std::memory_order_relaxed) > 0) w |= kWantStereo;
+  if (wantBands_.load(std::memory_order_acquire) > 0) w |= kWantBands;  // VZ.6 (acquire: the stage made before the count)
+  if (wantWave_.load(std::memory_order_acquire) > 0) w |= kWantWave;
   if (tap_.channels() >= 4) {
     if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
     if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
@@ -420,6 +436,49 @@ uint64_t SpectrumFeed::loudnessRead(dsp::LoudnessReadings& r, bool& settled, uin
   return loudSeq_;
 }
 
+// ---- VZ.6: Band Levels and the Waveform's capture ---------------------------------------------------------------------
+
+void SpectrumFeed::makeBands() {
+  if (bands_.load(std::memory_order_acquire) != nullptr) return;
+  dsp::BandLevelsConfig c;
+  c.sampleRate = cfg_.sampleRate;
+  bands_.store(new dsp::BandLevels(c), std::memory_order_release);
+}
+
+void SpectrumFeed::makeWave() {
+  if (wave_.load(std::memory_order_acquire) != nullptr) return;
+  dsp::WaveConfig c;
+  c.sampleRate = cfg_.sampleRate;
+  wave_.store(new dsp::WaveCapture(c), std::memory_order_release);
+}
+
+void SpectrumFeed::setBands(const dsp::BandLevelsConfig& c) {
+  makeBands();
+  dsp::BandLevelsConfig want = c;
+  want.sampleRate = cfg_.sampleRate;
+  dsp::BandLevels* b = bands_.load(std::memory_order_acquire);
+  if (b->config() == want) return;
+  b->configure(want);
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;  // the worker shows it at its next step
+  }
+  cv_.notify_all();
+}
+
+void SpectrumFeed::setWave(const dsp::WaveConfig& c, float restSeconds) {
+  makeWave();
+  dsp::WaveConfig want = c;
+  want.sampleRate = cfg_.sampleRate;
+  wave_.load(std::memory_order_acquire)->configure(want);
+  waveRestFrames_.store(static_cast<uint64_t>(std::max(0.5f, restSeconds) * cfg_.sampleRate), std::memory_order_relaxed);
+}
+
+bool SpectrumFeed::settled() const {
+  std::lock_guard lock(mutex_);
+  return settled_;
+}
+
 void SpectrumFeed::loudPush(const float* l, const float* r, uint32_t n) {
   if (loud_) loud_->push(l, r, n);  // (analysis: no lock)
 }
@@ -574,7 +633,10 @@ uint32_t SpectrumFeed::work(double now) {
   const bool readMonoIn = four && (want & (kWantInput | kWantResponse)) != 0;
   const bool gram = (want & kWantSpectrogram) != 0;
   // A scope keeps every channel of the tap; a spectrogram reads the beat in channel 0 (TX.spectrogram).
-  const bool readIn = readMonoIn || (four && (scope || gram));
+  // VZ.6: the Waveform's loop reads the beat (channel 0) too.
+  dsp::BandLevels* bands = (want & kWantBands) != 0 ? bands_.load(std::memory_order_acquire) : nullptr;
+  dsp::WaveCapture* wave = (want & kWantWave) != 0 ? wave_.load(std::memory_order_acquire) : nullptr;
+  const bool readIn = readMonoIn || (four && (scope || gram || wave != nullptr));
   if ((want & kWantResponse) && four && !transfer_) {  // made when first wanted (a scope's feed never needs it)
     dsp::TransferConfig tc;
     tc.sampleRate = cfg_.sampleRate;
@@ -708,6 +770,8 @@ uint32_t SpectrumFeed::work(double now) {
       loudPublishNow = true;
     }
     if (stereo && stereo_->push(ch_[oL].data(), ch_[oR].data(), k) > 0) stereoPublishNow = true;
+    if (bands != nullptr) bands->push(ch_[oL].data(), ch_[oR].data(), k);  // VZ.6
+    if (wave != nullptr) wave->push(four ? ch_[0].data() : nullptr, ch_[oL].data(), ch_[oR].data(), k);
     if (want & kWantOutput) ran += out_->push(mono_.data(), k);
     if (want & kWantInput) in_->push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
@@ -720,7 +784,8 @@ uint32_t SpectrumFeed::work(double now) {
              (((want & kWantOutput) && !out_->allBelow(kSettledDb)) ||
               (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate) ||
               (gram && gramQuiet_ < gramCols_) || (loud && !loud_->atRest()) ||
-              (stereo && !stereo_->atRest()))) {
+              (stereo && !stereo_->atRest()) || (bands != nullptr && !bands->atRest()) ||
+              (wave != nullptr && wave->quietFrames() < waveRestFrames_.load(std::memory_order_relaxed)))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -741,6 +806,8 @@ uint32_t SpectrumFeed::work(double now) {
         loudPublishNow = true;
       }
       if (stereo && stereo_->push(mono_.data(), mono_.data(), frames) > 0) stereoPublishNow = true;  // fades in time
+      if (bands != nullptr) bands->pushSilence(frames);  // VZ.6: the levels fall, the picture scrolls on in time
+      if (wave != nullptr) wave->pushSilence(frames);
       if (want & kWantOutput) ran += out_->push(mono_.data(), frames);
       if (want & kWantInput) in_->push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
@@ -756,7 +823,8 @@ uint32_t SpectrumFeed::work(double now) {
                     (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident()) &&
                     (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate) &&
                     (!gram || gramQuiet_ >= gramCols_) && (!loud || loud_->atRest()) &&
-                    (!stereo || stereo_->atRest());
+                    (!stereo || stereo_->atRest()) && (bands == nullptr || bands->atRest()) &&
+                    (wave == nullptr || wave->quietFrames() >= waveRestFrames_.load(std::memory_order_relaxed));
   if (loudPublishNow) loudPublish();
   if (stereoPublishNow) stereoPublish();
   const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);

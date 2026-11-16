@@ -20,6 +20,7 @@
 #include "pq/ui/renderer.h"
 #include "pq/ui/scene_textures.h"
 #include "pq/media/probe.h"
+#include "pq/meta/band_wave.h"
 #include "pq/meta/envelope.h"
 #include "pq/document/modules.h"
 #include "pq/views/arrangement/arrangement.h"
@@ -4125,6 +4126,112 @@ Status setupDeviceMetaStereo(Shell& shell) {
   return Ok{};
 }
 
+// ---- VZ.6: Band Levels and Waveform -------------------------------------------------------------------------------------
+
+// An audio track "Mix" with a Band Levels (4 bands, crossovers 120 / 800 / 5000 Hz) and a Waveform (Scroll, 10 s, mid
+// / side), both on 12 s of the loudness scenes' mix (its intro, verse and the start of the chorus) with the transport's
+// beat (120 bpm) in the tap's channel 0. Each tap is analysed now by a manual feed asking for what its face draws,
+// then held (deterministic).
+struct BandWaveIds {
+  doc::TrackId track;
+  doc::DeviceId bands, wave;
+  meta::DataPtr dBands, dWave;
+};
+
+Status buildBandWaveProject(doc::DocumentStore& store, BandWaveIds& ids) {
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Mix",
+                                                      doc::Colour{0x3FA9F5}));
+  if (!t || t->tracks.empty()) return Error{ErrorCode::Unknown, "band / wave scene: no track", {}};
+  ids.track = t->tracks[0];
+  auto add = [&](const char* type, std::vector<std::pair<std::string, double>> opts, meta::DataPtr& data) -> doc::DeviceId {
+    const auto e = runEdit(store, doc::ops::addMetaDevice(*store.current(), store.ids(), ids.track, type));
+    if (!e || e->devices.empty()) return {};
+    std::vector<std::pair<std::string, meta::DataValue>> f;
+    for (auto& [k, val] : opts) f.emplace_back(k, meta::DataValue::num(val));
+    data = std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
+    (void)runEdit(store, doc::ops::setMetaData(*store.current(), e->devices[0], "", type, data));
+    return e->devices[0];
+  };
+  ids.bands = add("band_levels", {{"bands", 1.0}}, ids.dBands);
+  ids.wave = add("waveform", {}, ids.dWave);
+  if (!ids.bands.valid() || !ids.wave.valid()) return Error{ErrorCode::Unknown, "band / wave scene: no module", {}};
+  return Ok{};
+}
+
+ScopeSource makeBandWaveSource(const meta::Type& type, const meta::DataPtr& data, bool bands) {
+  ScopeSource s;
+  s.tap = std::make_shared<TapRing>(4, 32768, 4096);
+  s.feed = std::make_shared<devices::SpectrumFeed>(*s.tap, devices::AnalysisHub::config(48000.0), devices::SpectrumFeed::Manual{});
+  dsp::BandLevelsConfig bc;
+  dsp::WaveConfig wc;
+  float rest = 10.0f;
+  bandWaveRequest(type.id, data.get(), bc, wc, rest);  // what the face asks for
+  if (bands) s.feed->setBands(bc);
+  else s.feed->setWave(wc, rest);
+  s.feed->acquire(bands ? devices::kWantBands : devices::kWantWave);
+  constexpr uint32_t kFrames = 12 * 48000, kChunk = 4096;
+  std::vector<float> l(kChunk), r(kChunk), beat(kChunk), zero(kChunk, 0.0f);
+  for (uint32_t i = 0; i < kFrames; i += kChunk) {
+    const uint32_t n = std::min(kChunk, kFrames - i);
+    for (uint32_t k = 0; k < n; ++k) {
+      loudMix(i + k, l[k], r[k]);
+      beat[k] = static_cast<float>(static_cast<double>(i + k) * 2.0 / 48000.0);
+    }
+    const float* p[4] = {beat.data(), zero.data(), l.data(), r.data()};
+    s.tap->write(p, 4, n);
+    s.feed->step(1.0 + static_cast<double>(i) / 48000.0);
+  }
+  s.feed->hold();
+  return s;
+}
+
+Status adoptBandWaveFeeds(ViewContext& ctx, const BandWaveIds& ids) {
+  ScopeSource a = makeBandWaveSource(meta::bandLevelsType(), ids.dBands, true), b = makeBandWaveSource(meta::waveformType(), ids.dWave, false);
+  const doc::DeviceId da = ids.bands, db = ids.wave;
+  ctx.setAnalysisSource([da, db, at = a.tap, bt = b.tap](doc::DeviceId d) -> std::shared_ptr<TapRing> { return d == da ? at : d == db ? bt : nullptr; },
+                        48000.0);
+  if (ctx.analysisHub() == nullptr) return Error{ErrorCode::Unknown, "band / wave scene: no analysis hub", {}};
+  ctx.analysisHub()->adopt(da, a.tap, a.feed);
+  ctx.analysisHub()->adopt(db, b.tap, b.feed);
+  return Ok{};
+}
+
+// The Device view of "Mix": the two faces side by side.
+Status setupDeviceMetaBandWave(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  BandWaveIds ids;
+  if (Status s = buildBandWaveProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptBandWaveFeeds(ctx, ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-bandwave: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same project in the project patch view: the band of "Mix", its two faces as blocks.
+Status setupProjectMetaBandWave(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  BandWaveIds ids;
+  if (Status s = buildBandWaveProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptBandWaveFeeds(ctx, ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-bandwave: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  closeModules(*v);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.track, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
 // whose knob positions a modulation spreads.
 Status setupProjectMetaVca(Shell& shell) {
@@ -4271,6 +4378,8 @@ constexpr SceneEntry kScenes[] = {
     {"device-meta-loudness", 1280, 800, setupDeviceMetaLoudness},          // VZ.4
     {"project-meta-loudness", 1280, 800, setupProjectMetaLoudness},        // VZ.4
     {"device-meta-stereo", 1280, 800, setupDeviceMetaStereo},              // VZ.5
+    {"device-meta-bandwave", 1280, 800, setupDeviceMetaBandWave},          // VZ.6
+    {"project-meta-bandwave", 1280, 800, setupProjectMetaBandWave},        // VZ.6
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

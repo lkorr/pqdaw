@@ -21,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 24> kModules = {{
+constexpr std::array<ModuleInfo, 26> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -57,6 +57,11 @@ constexpr std::array<ModuleInfo, 24> kModules = {{
      "Where each frequency sits between left and right and how wide it is (ribbon, glow or heat map); changes nothing."},
     {ModuleKind::PhaseScope, "phase_scope", "Phase Scope",
      "What each frequency gains or loses when the channels are summed to mono; changes nothing."},
+    // VZ.6 (pq/meta/band_wave.h).
+    {ModuleKind::BandLevels, "band_levels", "Band Levels",
+     "The lows, mids and highs (3, 4 or 5 bands) as RMS levels over time; changes nothing."},
+    {ModuleKind::Waveform, "waveform", "Waveform",
+     "The scrolling peak and RMS envelope (mid / side or L / R), or a loop locked to the beat; changes nothing."},
     {ModuleKind::WavetableSynth, "wavetable_synth", "Wavetable Synth",
      "An instrument built from the modules: Phase Accumulator → Wavetable → Envelope per note, with two LFOs (each a "
      "Phase Accumulator into a Wavetable) on the wavetable position and the pitch. Tabs for the oscillator, the "
@@ -339,6 +344,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::StereoField: return "stereo_field";
     case ModuleKind::StereoImage: return "stereo_image";
     case ModuleKind::PhaseScope: return "phase_scope";
+    case ModuleKind::BandLevels: return "band_levels";
+    case ModuleKind::Waveform: return "waveform";
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
     case ModuleKind::WavetableSynth:
@@ -496,6 +503,14 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
       p.height = k == ModuleKind::PhaseScope ? 150.0f : 170.0f;
       p.elements.push_back(plate(p.width, p.height, 10.0));
       p.elements.push_back(rich(2, kind, 0, 0, p.width, p.height));
+      break;
+    }
+    case ModuleKind::BandLevels:
+    case ModuleKind::Waveform: {  // VZ.6: the display fills the panel (300 × 160)
+      p.width = 300.0f;
+      p.height = 160.0f;
+      p.elements.push_back(plate(p.width, p.height, 10.0));
+      p.elements.push_back(rich(2, k == ModuleKind::BandLevels ? "bandlevels" : "waveform", 0, 0, p.width, p.height));
       break;
     }
     case ModuleKind::PhaseAccumulator:

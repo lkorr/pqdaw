@@ -214,7 +214,8 @@ TEST_CASE("GU.7 modules: the Wavetable and the Envelope modules render bit for b
 TEST_CASE("GU.7 modules: engineModuleBlocks is a group around one engine — In → chain input, out → Out — with its panel") {
   for (const ModuleKind k : {ModuleKind::Wavetable, ModuleKind::Envelope, ModuleKind::Oscilloscope, ModuleKind::Spectrum,
                              ModuleKind::Spectrogram, ModuleKind::LevelMeter, ModuleKind::LufsMeter, ModuleKind::LoudnessHistory,
-                             ModuleKind::StereoField, ModuleKind::StereoImage, ModuleKind::PhaseScope}) {
+                             ModuleKind::StereoField, ModuleKind::StereoImage, ModuleKind::PhaseScope, ModuleKind::BandLevels,
+                             ModuleKind::Waveform}) {
     const std::string_view type = moduleEngineType(k);
     CAPTURE(type);
     IdSource ids;

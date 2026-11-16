@@ -1995,3 +1995,16 @@ Phase Scope mono / coherence colours and six FFT windows; it also computes a gro
 no colour row (Q?-VZ.4-a). Choice: PQ's palettes as fixed choices (the Stereo Image's six ribbon palettes with their
 crossovers editable, the ten colormaps + Custom stops in dB on VZ.2's LevelAxis), Hann / Kaiser windows only, no group
 delay. Status: open (reversible: Opt rows; dsp::CrossSpectrum can add the delay from its bins).
+
+
+## Q?-VZ.6-a · 2026-11-16 · VZ.6 · What of PQ Meter's Band Levels / Waveform was left out, and the crossover tree
+- Context: PQ Meter's multiband RMS and waveform have colour pickers (per band; the waveform's two lane colours and its
+  clip colour), saved colormaps / a palette track, and the waveform's DAW link (bar numbers from the host's clock).
+- Done: the colours are PQ's defaults (its per-count band ramp; its theme lane colours; the clip red), the waveform's
+  "Custom" colour source is folded into "Theme" (no picker in the sheet: the same reason as Q?-VZ.2-a); the loop's
+  clock is the transport's beat on the tap (pqdaw's own, so no link); bar numbers on the scroll are not drawn.
+- Crossovers: PQ's bands are each HP(lower) · LP(upper) (no all-pass compensation); pqdaw's is the full LR tree (band k
+  = HP(x0 … xk−1) · LP(xk)), whose levels are the same to within the extra high-passes' passband (inaudible on a level
+  reading) and whose bands, with each band's all-pass compensation, sum flat (tested; the meter skips the all-passes:
+  they change no band's level). Choice: keep the tree (reversible: one function).
+- Options for the pickers: as Q?-VZ.2-a (a colour popover for the sheet) or leave the colours fixed.

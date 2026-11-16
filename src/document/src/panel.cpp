@@ -235,7 +235,8 @@ ElementTap elementTap(std::string_view kind) noexcept {
   if (kind == "orbit") return ElementTap::Voice;
   if (kind == "scope" || kind == "spectrum" || kind == "spectrogram" || kind == "meter" || kind == "response" || kind == "transfer" ||
       kind == "levelmeter" || kind == "lufsmeter" || kind == "loudnesshistory" ||  // VZ.4
-      kind == "stereofield" || kind == "stereoimage" || kind == "phasescope")      // VZ.5
+      kind == "stereofield" || kind == "stereoimage" || kind == "phasescope" ||    // VZ.5
+      kind == "bandlevels" || kind == "waveform")                                   // VZ.6
     return ElementTap::Signal;
   return ElementTap::None;
 }

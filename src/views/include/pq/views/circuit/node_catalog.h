@@ -8,7 +8,7 @@
 //                 beside them the value block
 //   meta modules  every registered meta-module type with a face (pq/meta/registry.h); the analysers (Spectrum,
 //                 Oscilloscope, Spectrogram; VZ.4 Level Meter, LUFS Meter, Loudness History; VZ.5 Stereo Field,
-//                 Stereo Image, Phase Scope) under Visualisers
+//                 Stereo Image, Phase Scope; VZ.6 Band Levels, Waveform) under Visualisers
 //   modules       the built-in modules (doc::moduleInfos: group presets), the two racks
 //   user library  the User Library's saved presets and racks (the browser's index: Library::index())
 //

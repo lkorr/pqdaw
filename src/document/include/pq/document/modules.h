@@ -47,7 +47,8 @@ enum class ModuleKind : uint8_t {
   Compressor,                         // DY.4
   Limiter,                            // DY.6
   LevelMeter, LufsMeter, LoudnessHistory,  // VZ.4: the loudness analysers
-  StereoField, StereoImage, PhaseScope      // VZ.5: the stereo analysers
+  StereoField, StereoImage, PhaseScope,     // VZ.5: the stereo analysers
+  BandLevels, Waveform                      // VZ.6
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -111,7 +112,7 @@ dsp::Curve vcaCurve(double min = -20000.0, double max = 20000.0, double zone = 0
 //   Envelope     "envelope" (the shape with its breakpoints and bends) bound to the engine's data; the amount slider a
 //                generic slider
 //   analysers    "scope" / "spectrum" / "spectrogram" / "levelmeter" / "lufsmeter" / "loudnesshistory" / "stereofield" / "stereoimage" /
-//                "phasescope" filling the panel, bound to the engine's data (the display
+//                "phasescope" / VZ.6 "bandlevels" / "waveform" filling the panel, bound to the engine's data (the display
 //                state: saved, undoable); the engine's own tap feeds them
 //   Noise        NZ.1 (docs/plans/NZ.md): "noise" (the trace of the output, the voices' dots, the colour's slope line)
 //                bound to the engine's data; generic knobs Rate (shown in Rate clock) or a Sync menu (Sync clock: the

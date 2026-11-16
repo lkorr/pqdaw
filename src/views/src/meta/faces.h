@@ -24,6 +24,8 @@ std::unique_ptr<MetaFace> makeLoudnessHistoryFace(const meta::Type& t);  // VZ.4
 std::unique_ptr<MetaFace> makeStereoFieldFace(const meta::Type& t);      // VZ.5
 std::unique_ptr<MetaFace> makeStereoImageFace(const meta::Type& t);      // VZ.5
 std::unique_ptr<MetaFace> makePhaseScopeFace(const meta::Type& t);       // VZ.5
+std::unique_ptr<MetaFace> makeBandLevelsFace(const meta::Type& t);       // VZ.6
+std::unique_ptr<MetaFace> makeWaveformFace(const meta::Type& t);         // VZ.6
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 
@@ -84,6 +86,26 @@ bool stereoShown(const MetaFace& f, StereoShown& out);
 bool stereoTestControl(MetaFace& f, std::string_view key, double value);
 // The analysis a Stereo Image / Phase Scope face with these options asks its feed for (scenes).
 dsp::CrossSpectrumConfig stereoRequest(std::string_view type, const meta::DataValue* data);
+
+// VZ.6 (tests): a Band Levels / Waveform face as its last poll left it. False: neither.
+struct BandWaveShown {
+  bool acquired = false;
+  uint64_t columns = 0;                        // Band Levels: columns copied
+  float levels[dsp::BandLevels::kBands] = {};  // the newest column (dB)
+  dsp::BandLevelsConfig bands;                 // its analysis options
+  uint64_t bins = 0;                           // Waveform: bins copied
+  dsp::WaveConfig wave;
+  dsp::WaveLoopState loop;
+};
+bool bandWaveShown(const MetaFace& f, BandWaveShown& out);
+// Sets one option by its data key, or "freeze" / "sheet" (view state), "hover" (the pointer at world x).
+bool bandWaveTestControl(MetaFace& f, std::string_view key, double value);
+// The analysis a Band Levels / Waveform face with these options (its data) asks its feed for (scenes: a manual feed
+// analyses before the face first paints); `rest`: the waveform's settle time. Defaults for another type.
+void bandWaveRequest(std::string_view type, const meta::DataValue* data, dsp::BandLevelsConfig& bands, dsp::WaveConfig& wave,
+                     float& rest);
+// The Waveform face's columns of `channel` (0 L, 1 R, 2 mid, 3 side) `cols` wide, as it draws them (Scroll).
+bool waveColumns(MetaFace& f, int cols, int channel, std::vector<float>& mn, std::vector<float>& mx, std::vector<float>& rms);
 
 // VZ.1 (tests): the Spectrum face's plot style (its DISPLAY options). False: not a Spectrum face.
 bool spectrumStyle(const MetaFace& f, devices::SpectrumPlotStyle& out);

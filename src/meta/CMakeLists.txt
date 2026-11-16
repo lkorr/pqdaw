@@ -13,6 +13,7 @@ pq_add_module(pq_meta
     src/oscilloscope.cpp
     src/spectrogram.cpp
     src/analysers.cpp       # VZ.4 / VZ.5: the L / R pass-through analysers (loudness, stereo)
+    src/band_wave.cpp       # VZ.6: Band Levels, Waveform
     src/user_defaults.cpp   # VZ.1: saved defaults for new instances
     src/wavetable.cpp
   DEPS pq_core pq_graph pq_dsp)

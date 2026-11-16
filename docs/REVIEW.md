@@ -2030,3 +2030,17 @@ FREEZE). Look at: `tests/views/golden/device-meta-stereo.png` (a centred kick an
 wide hats, a 150 Hz tone in antiphase: the red dip in the Phase Scope), `module-stereofield/stereoimage/phasescope-panel.png`
 (empty). Try: Stereo Image SET → DISPLAY → Mode Heat map / Glow, Colour mode Intensity with the Custom colormap; Stereo
 Field Multiband. Not carried over: colour pickers, four of PQ's six FFT windows (Q?-VZ.5-a).
+
+
+## 2026-11-16 · VZ.6 · Band Levels and Waveform 👁
+- Two new visualisers (Visualisers in the node menu, or the modules list): **Band Levels** and **Waveform**, PQ Meter's
+  multiband RMS and waveform. Scenes: device-meta-bandwave, project-meta-bandwave.
+- Band Levels: the lows / mids / highs as RMS lines over time (fills under them). SET → ANALYSIS: 3 / 4 / 5 bands,
+  Split (3 bands: Independent LP / BP / HP as PQ's default, or Crossovers), the crossovers, channel, VU / Peak /
+  Custom, resolution, history. DISPLAY: range, the warped scale (knee, strip, curve), fill, line, grid, labels, which
+  bands show.
+- Waveform: the peak envelope with its RMS body (mid / side lanes by default), coloured by brightness through Magma.
+  ANALYSIS: Scroll (window 1 – 60 s) or Loop (locked to the transport's beat: 1 beat … 4 bars; while nothing plays a
+  free-running loop of N seconds). DISPLAY: lanes (M/S, L/R, mono, overlay), swap, gain / auto gain, dB scale, colour
+  (theme / level heat / brightness) and colormap, body, fill, outline, glow, edge fade, grid, ruler, labels, readout,
+  clip marks. Worth checking: Loop with the transport playing a loop — the picture should sit still on the bar.
