@@ -866,3 +866,13 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_document, pq_tests_views 859 cases, pq_tests_ui, pq_tests_timeline, pq_tests_playback 4/4, pq_tests_app pass (check preset); pq_tests_pqmeter_diff skipped (user's PQ Meter tree).
 - Perf / CPU-efficiency check: a note paints one primitive fewer (no head); the path flattening has one point fewer at the end; Tune to JI's absorb pass is O(groups × chord + notes) on the edit only.
 - Notes/blockers: bug report 2026-11-15_15-30-06.
+
+## 2026-11-15 · bug-roll-dblclick-macro · main
+- Did: roll: a double-click on empty space adds the cell note and, held, the same press becomes a ResizeEnd drag of
+  it (Live); the resize joins the add's undo step (RollState::apply/addNotes take a coalesce key →
+  DocumentStore::dispatchCoalescing). Macro mode: a pressed (or Up/Down harmonic) factor that cancels a listed one
+  removes the latest such factor; a composition back at 1/1 lists nothing (3/2 then 2/3 → "1/1", not composing).
+- Verified: pq_tests_views default tier: passed (new: "a double-click held on empty space…", "a key cancelling a
+  listed factor…"; the "q w e" test's 2/1·1/2 expectation updated to the new behaviour).
+- Perf / CPU-efficiency check: UI-thread only; cancellation is a reverse scan of a handful of factors per key press.
+- Notes/blockers: help text line for the hold-to-stretch goes with bug-roll-vzoom (shares the help goldens).

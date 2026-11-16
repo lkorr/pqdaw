@@ -1912,3 +1912,8 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Every note is a plain line with round ends: the thicker "head" at the start is gone (straight and bent notes alike).
   Repeated notes on one row are told apart by the round ends and the gap only; off-grid notes no longer get a cyan head.
 - Give a note a vibrato that runs to its end: the line ends where the wave is, with no vertical drop back to the row.
+
+## 2026-11-15 · bug-roll-dblclick-macro
+- Piano roll: double-click empty space and keep the button down on the second click, then drag right: the new note
+  stretches (snapped to the grid). Undo removes the note and the stretch together.
+- Macro mode: press 2 (3/2) then w (2/3): the composition line goes back to 1/1 instead of "3/2 · 2/3 = 1/1".
