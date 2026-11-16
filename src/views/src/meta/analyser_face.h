@@ -47,7 +47,7 @@ public:
 
 // ---- the shared frame: options and their sheet, the feed, the chips, polling --------------------------------------------
 
-class AnalyserFace : public MetaFace {
+class AnalyserFace : public MetaFace, private sheet::PickerHost {
 public:
   ~AnalyserFace() override { letGo(); }
 
@@ -167,6 +167,8 @@ public:
       case K::Down: {
         if (e.button != ui::PointerButton::Left) return false;
         const int32_t part = hitTest(e.local, e.pxPerUnit);
+        if (sheet::isPicker(part)) return sheet::pickerDown(panel_, opts_, *this, part, e.local);
+        panel_.closePicker();  // (a press anywhere else keeps the colour)
         if (part == kFreezePart) {
           frozen_ = !frozen_;
           if (!frozen_ && acquired_) (void)read(clockNow());
@@ -187,8 +189,8 @@ public:
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
-        if (part == sheet::kTabBase || part == sheet::kTabBase + 1) {
-          panel_.tab = part - sheet::kTabBase;
+        if (sheet::isTab(part)) {
+          panel_.tab = sheet::tabOf(part);
           rows(panel_.tab, rows_);
           return true;
         }
@@ -205,6 +207,7 @@ public:
         return ownDown(part, e);
       }
       case K::Move: {
+        if (sheet::pickerMove(panel_, opts_, *this, e.local)) return true;
         if (drag_) {
           const Opt& op = table_[dragOpt_];
           const double k = ((e.mods & ui::mod::kShift) ? 0.1 : 1.0) / 160.0;
@@ -222,6 +225,7 @@ public:
         hover_ = {-1.0f, -1.0f};
         return true;
       case K::Up: {
+        if (sheet::pickerUp(panel_, *this)) return true;
         if (lineDrag_) ownUp();
         const bool was = drag_ || lineDrag_;
         drag_ = lineDrag_ = false;
@@ -236,8 +240,9 @@ public:
     return false;
   }
   void endWheel() override { ownEndWheel(); }
-  bool dragging() const noexcept override { return drag_ || lineDrag_; }
+  bool dragging() const noexcept override { return drag_ || lineDrag_ || panel_.picking(); }
   void cancelDrag() override {
+    if (sheet::pickerCancel(panel_, *this)) return;
     if ((drag_ || lineDrag_) && editing_) {
       target().cancel();
       editing_ = false;
@@ -246,17 +251,22 @@ public:
     drag_ = lineDrag_ = false;
   }
   bool onKey(const ui::KeyEvent& e) override {
+    if (sheet_ && sheet::pickerKey(panel_, opts_, *this, e)) return true;
     if (!e.down || e.key != ui::key::kEscape || !sheet_) return false;
     sheet_ = false;
     return true;
   }
+  bool onText(const ui::TextEvent& e) override { return sheet_ && panel_.typeText(e.text()); }
+  bool wantsText() const noexcept override { return sheet_ && panel_.typing(); }
+  void focusLost() override { panel_.closePicker(); }
   ui::Cursor cursor(int32_t part) const noexcept override {
     if (part >= kRowBase) {
       const auto i = static_cast<size_t>(part - kRowBase);
       return i < rows_.size() && sheet::numeric(table_[rows_[i]]) ? ui::Cursor::ResizeNS : ui::Cursor::Pointer;
     }
-    if (part >= kOwnBase && part < sheet::kTabBase) return ownCursor(part);
-    if (part == kSetPart || part == kClearPart || part == kFreezePart || (part >= sheet::kTabBase && part <= sheet::kReset))
+    if (part >= kOwnBase && part < sheet::kColoursTab) return ownCursor(part);
+    if (sheet::isPicker(part)) return part == sheet::kPickBox ? ui::Cursor::Inherit : ui::Cursor::Pointer;
+    if (part == kSetPart || part == kClearPart || part == kFreezePart || sheet::isHead(part))
       return ui::Cursor::Pointer;
     return ui::Cursor::Inherit;
   }
@@ -284,6 +294,10 @@ public:
         title = "Display";
         body = "Only how it looks.";
         return;
+      case sheet::kColoursTab:
+        title = "Colours";
+        body = "Every colour this display paints (each follows the theme or the colormap until it is chosen).";
+        return;
       case sheet::kSave:
         title = "Save as default";
         body = std::string("New ") + std::string(type().name) + "s start with these options. Existing ones keep theirs.";
@@ -296,10 +310,12 @@ public:
         if (part >= kRowBase && static_cast<size_t>(part - kRowBase) < rows_.size()) {
           const Opt& op = table_[rows_[static_cast<size_t>(part - kRowBase)]];
           title = op.label;
-          body = sheet::numeric(op) ? "Drag up / down to set (Shift: fine); double-click resets."
-                                    : "Click to change (Shift: back); double-click resets.";
+          body = op.kind == Opt::Colour ? "Click to choose the colour; double-click: back to the display's own."
+                 : sheet::numeric(op)   ? "Drag up / down to set (Shift: fine); double-click resets."
+                                        : "Click to change (Shift: back); double-click resets.";
           return;
         }
+        if (sheet::pickerDescribe(part, title, body)) return;
         if (ownDescribe(part, title, body)) return;
         MetaFace::describe(part, title, body);
     }
@@ -316,6 +332,9 @@ public:
   void loadForTest(const meta::DataValue* d) { opts_.load(d); }
   void hoverForTest(Vec2 l) { hover_ = l; }
   void setSheetForTest(bool s) { sheet_ = s; }
+  const sheet::Sheet& sheetForTest() const noexcept { return panel_; }
+  const sheet::Values& optionsForTest() const noexcept { return opts_; }
+  const std::vector<uint32_t>& rowsForTest() const noexcept { return rows_; }
   void pressForTest(int32_t part) {
     FacePointer e;
     e.kind = FacePointer::Kind::Down;
@@ -326,7 +345,9 @@ public:
 protected:
   AnalyserFace(const meta::Type& t, float w, float h, std::span<const Opt> table)
       : MetaFace(t), w_(w), h_(h), table_(table), opts_(table),
-        panel_{{8.0f, 23.0f, w - 8.0f, h - 8.0f}, 6.0f} {}
+        panel_{{8.0f, 23.0f, w - 8.0f, h - 8.0f}, 6.0f} {
+    panel_.tabs = sheet::hasColours(table) ? 3 : 2;
+  }
 
   // ---- what a face defines ----
   virtual uint32_t wantFlags() const noexcept = 0;                  // what it acquires (devices::kWant*)
@@ -439,12 +460,31 @@ private:
       setOption(o, sheet::cycled(opts_, o, (e.mods & ui::mod::kShift) ? -1 : 1));
       return true;
     }
+    if (op.kind == Opt::Colour) {
+      panel_.openPicker(o, row, rows_.size(), opts_);
+      return true;
+    }
     drag_ = true;
     dragOpt_ = o;
     pressY_ = e.device.y;
     pressTravel_ = sheet::toTravel(op, opts_[o]);
     beginEdit(op.label);
     return true;
+  }
+
+  // ---- the picker's edits ----
+  void pickSet(uint32_t o, double v) override { setOption(o, v); }
+  void pickBegin(const char* label) override { beginEdit(label); }
+  void pickEnd() override {
+    if (!editing_) return;
+    target().end();
+    editing_ = false;
+  }
+  void pickCancel() override {
+    if (!editing_) return;
+    target().cancel();
+    editing_ = false;
+    syncOptions(true);
   }
 
   bool syncFeed() {

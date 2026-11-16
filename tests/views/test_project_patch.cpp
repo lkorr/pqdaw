@@ -22,6 +22,8 @@
 #include "pq/document/serialize.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/envelope.h"
+#include "pq/meta/spectrum.h"
+#include "pq/meta/user_defaults.h"
 #include "pq/meta/wavetable.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
@@ -35,6 +37,7 @@
 #include "pq/views/computer_keyboard.h"
 #include "pq/views/device_chain/device_chain.h"
 #include "pq/views/device_chain/wiring.h"
+#include "pq/views/devices/spectrum_plot.h"
 #include "pq/views/panel/group_panel_face.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/mixer/mixer.h"
@@ -4032,6 +4035,171 @@ TEST_CASE("project patch (BR.ui): a Spectrum's SET opens its sheet beside the fa
   REQUIRE(pl.has_value());
   CHECK(pl->x1 <= 0.0f);
   CHECK(c.rect().contains(dev(h, {pl->x0, pl->y0})));
+}
+
+// VZ.10: the settings sheet's colour rows and picker, through real dispatch on the canvas, on a Spectrum on Custom: the
+// COLOURS tab lists the Custom ramp's stop colours; a click on one opens the picker inside the sheet; a drag on its SV
+// square previews live (the plot's ramp follows) and is one undo step on release; Esc mid-drag undoes the drag; Esc
+// with the picker open restores the colour it opened with and closes it; the hex field types a colour (Enter: one undo
+// step); a double-click on the row returns it to the ramp's own; SAVE DEFAULT carries the colour to a new instance.
+// The golden: the sheet with the picker open (vz10-colour-picker).
+TEST_CASE("project patch (VZ.10): the sheet's colour picker — open, drag, Esc, hex, reset, SAVE DEFAULT (real dispatch)") {
+  Ui u(false);
+  project_patch::MetaSpectrumIds ids;
+  REQUIRE(buildSpectrumProject(u.ctx.store(), &ids).ok());
+  doc::DocumentStore& st = u.ctx.store();
+  {  // Colormap: Custom (the stop colours show)
+    auto e = doc::ops::setMetaData(*st.current(), ids.spectrum, "", "spectrum",
+                                   std::make_shared<const meta::DataValue>(meta::DataValue::record({{"map", meta::DataValue::num(10)}})));
+    REQUIRE(e.ok());
+    REQUIRE(st.dispatch(e->command).ok());
+  }
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& c = v.canvas();
+  const uint32_t mn = u.pp().nodeOf(ids.spectrum);
+  REQUIRE(mn != kNone);
+  {  // the face at the canvas's left, zoomed in
+    const circuit::SceneNode& sn = c.scene()->nodes[v.scene().sceneNode[mn]];
+    const IRect cr = c.rect();
+    const double us = static_cast<double>(u.d.tree().scale()), zoom = 1.6;
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = zoom;
+    cv.x = static_cast<double>(sn.x) - 0.08 * static_cast<double>(cr.w) / (zoom * us);
+    cv.y = static_cast<double>(sn.y) - 0.2 * static_cast<double>(cr.h) / (zoom * us);
+    c.setView(cv);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  auto face = [&] {
+    MetaFace* f = c.faceOn(v.scene().sceneNode[mn]);
+    REQUIRE(f != nullptr);
+    return f;
+  };
+  auto dev = [&](Vec2 l) {
+    const circuit::SceneNode& sn = c.scene()->nodes[v.scene().sceneNode[mn]];
+    const float s = sn.scale > 0.0f ? sn.scale : 1.0f;
+    return c.toDevice({sn.x + l.x * s, sn.y + l.y * s});
+  };
+  // The face-local bounds of part `part` inside `r` (empty: none).
+  auto bounds = [&](int32_t part, const Rect& r) {
+    Rect b{1e9f, 1e9f, -1e9f, -1e9f};
+    for (float y = r.y0; y <= r.y1; y += 0.5f)
+      for (float x = r.x0; x <= r.x1; x += 0.5f)
+        if (face()->hitTest({x, y}, 1.0f) == part) b = {std::min(b.x0, x), std::min(b.y0, y), std::max(b.x1, x), std::max(b.y1, y)};
+    REQUIRE_MESSAGE(b.x0 <= b.x1, "no part " << part);
+    return b;
+  };
+  auto mid = [](const Rect& r) { return Vec2{0.5f * (r.x0 + r.x1), 0.5f * (r.y0 + r.y1)}; };
+  auto style = [&] {
+    devices::SpectrumPlotStyle s;
+    REQUIRE(spectrumStyle(*face(), s));
+    return s;
+  };
+  const Vec2 fs = face()->worldSize();
+  u.d.click(dev(mid(bounds(3, {0.0f, 0.0f, fs.x, fs.y}))));  // SET (spectrum_face.cpp kSetPart)
+  u.d.step();
+  const std::optional<Rect> pr = face()->popupRect();
+  REQUIRE(pr.has_value());
+  u.d.click(dev(mid(bounds(89, *pr))));  // the COLOURS tab (sheet::kColoursTab)
+  u.d.step();
+  // The row titled "Stop 1 colour".
+  int32_t stopRow = -1;
+  for (int32_t part = 100; part < 130 && stopRow < 0; ++part) {
+    std::string title, body;
+    face()->describe(part, title, body);
+    if (title == "Stop 1 colour") stopRow = part;
+  }
+  REQUIRE(stopRow >= 0);
+  const Vec2 rowAt = mid(bounds(stopRow, *pr));
+  const size_t h0 = u.history();
+  CHECK(style().customColours.set == 0);
+  u.d.click(dev(rowAt));
+  u.d.step();
+  CHECK(u.history() == h0);  // opening changes nothing
+  const Rect sv = bounds(95, *pr);  // the picker's SV square (sheet::kPickSv)
+  CHECK(sv.x1 - sv.x0 > 10.0f);
+  // The golden: the sheet with the picker open (the face, the sheet beside it).
+  {
+    REQUIRE(u.d.enableGpu().ok());
+    u.d.step();
+    auto img = u.d.render();
+    REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+    const Vec2 a = dev({0.0f, 0.0f}), b = dev({pr->x1, pr->y1});
+    const auto x0 = static_cast<uint32_t>(std::max(0.0f, a.x - 4.0f)), y0 = static_cast<uint32_t>(std::max(0.0f, a.y - 4.0f));
+    const uint32_t x1 = std::min(img->width, static_cast<uint32_t>(b.x + 6.0f)), y1 = std::min(img->height, static_cast<uint32_t>(b.y + 6.0f));
+    REQUIRE(x1 > x0);
+    REQUIRE(y1 > y0);
+    Image crop;
+    crop.width = x1 - x0;
+    crop.height = y1 - y0;
+    crop.rgba.resize(static_cast<size_t>(crop.width) * crop.height * 4);
+    for (uint32_t y = 0; y < crop.height; ++y)
+      std::copy_n(img->pixel(x0, y0 + y), static_cast<size_t>(crop.width) * 4, crop.rgba.data() + static_cast<size_t>(y) * crop.width * 4);
+    const std::string name = "vz10-colour-picker";
+    auto ref = readPng(std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + name + ".png");
+    if (!ref) (void)writePng(name + ".actual.png", crop);
+    REQUIRE_MESSAGE(ref.ok(), "no golden " << name << ": wrote " << name << ".actual.png");
+    ImageDiff d;
+    CHECK(pq::ui::test::matchesGolden(name, crop, *ref, true, &d));
+  }
+  // A drag on the square: the colour follows live, one undo step on release.
+  const Vec2 svA = dev({sv.x0 + 0.8f * (sv.x1 - sv.x0), sv.y0 + 0.2f * (sv.y1 - sv.y0)});
+  const Vec2 svB = dev({sv.x0 + 0.9f * (sv.x1 - sv.x0), sv.y0 + 0.1f * (sv.y1 - sv.y0)});
+  u.d.move(svA);
+  u.d.down(svA);
+  u.d.move(svB);
+  CHECK((style().customColours.set & 1u) != 0);  // live, before the release
+  u.d.up(svB);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  const ui::Rgba dragged = style().customColours.c[0];
+  // Esc in the middle of another drag: that drag is undone (the colour of the first stays).
+  u.d.move(svA);
+  u.d.down(svA);
+  u.d.move(dev({sv.x0 + 0.2f * (sv.x1 - sv.x0), sv.y0 + 0.7f * (sv.y1 - sv.y0)}));
+  CHECK(style().customColours.c[0] != dragged);
+  (void)u.d.keyDown(ui::key::kEscape);
+  u.d.keyUp(ui::key::kEscape);
+  u.d.up(svA);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(style().customColours.c[0] == dragged);
+  // Esc with the picker open: the colour it opened with (the ramp's own), the picker closed (the sheet stays).
+  (void)u.d.keyDown(ui::key::kEscape);
+  u.d.keyUp(ui::key::kEscape);
+  u.d.step();
+  CHECK(style().customColours.set == 0);
+  CHECK(u.history() == h0 + 2);
+  CHECK(face()->hitTest(mid(sv), 1.0f) != 95);
+  REQUIRE(face()->popupRect().has_value());
+  // The hex field: a click, "#3a7", Enter — one undo step.
+  u.d.click(dev(rowAt));
+  u.d.step();
+  u.d.click(dev(mid(bounds(98, *pr))));  // sheet::kPickHex
+  u.d.step();
+  CHECK(u.d.type("#3a7"));
+  (void)u.d.keyDown(ui::key::kReturn);
+  u.d.keyUp(ui::key::kReturn);
+  u.d.step();
+  CHECK(u.history() == h0 + 3);
+  CHECK((style().customColours.set & 1u) != 0);
+  CHECK(style().customColours.c[0] == ui::rgba(0x33, 0xAA, 0x77));
+  // SAVE DEFAULT: a new Spectrum starts with the colour.
+  CHECK(meta::userDefaultData("spectrum") == nullptr);
+  u.d.click(dev(mid(bounds(92, *pr))));
+  u.d.step();
+  const doc::MetaInstance fresh = doc::defaultMetaInstance(meta::spectrumType());
+  REQUIRE(fresh.data != nullptr);
+  const meta::DataValue* c1 = fresh.data->field("c1");
+  REQUIRE(c1 != nullptr);
+  CHECK(c1->number == doctest::Approx(static_cast<double>(0x33AA77)));
+  meta::setUserDefaultData("spectrum", nullptr);
+  // A double-click on the row: the ramp's own colour again (one undo step).
+  u.d.doubleClick(dev(rowAt));
+  u.d.step();
+  CHECK(style().customColours.set == 0);
+  CHECK(u.history() == h0 + 4);
 }
 
 // VZ.3 (PQ Meter b721058 / 5dab446): the tone preview through real dispatch on the canvas. A press on a Spectrum's plot

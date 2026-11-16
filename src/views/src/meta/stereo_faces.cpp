@@ -60,6 +60,11 @@ Col widthGlow(Col c, float width, float floor, float amount) noexcept {
   const float over = std::clamp(gain - 1.0f, 0.0f, 1.0f);
   return {c.r + (1.0f - c.r) * over, c.g + (1.0f - c.g) * over, c.b + (1.0f - c.b) * over};
 }
+// VZ.10: colour option o, `def` (exact) while it is the face's own.
+Col colOpt(const sheet::Values& v, uint32_t o, Col def) noexcept {
+  const Rgba c = v.colour(o, rgbF(def.r, def.g, def.b));
+  return v[o] < 0.0 ? def : ofRgba(c);
+}
 Col lineTint(Col c) noexcept { return {c.r + (1.0f - c.r) * 0.45f, c.g + (1.0f - c.g) * 0.45f, c.b + (1.0f - c.b) * 0.45f}; }
 
 // PQ's band colours (Theme bandLow / bandMid / bandHigh).
@@ -85,7 +90,7 @@ void noteText(float hz, char* out, size_t n) {
 // ---- the Stereo Field (PQ stereo_field) ------------------------------------------------------------------------------
 
 enum FieldOpt : uint32_t { fTrace, fCorrWin, fBands, fX0, fX1, fAuto, fGain, fDraw, fLine, fAlpha, fScaled, fUni, fBar, fGrid,
-                           fLabels, fCount };
+                           fLabels, fColTrace, fColPos, fColNeg, fColLow, fColMid, fColHigh, fCount };
 constexpr const char* kDrawAs[] = {"Lines", "Dots"};
 const Opt kFieldOpts[fCount] = {
     {"trace", "Trace length", 60, 10, 200, Opt::LogNumber, nullptr, "%.0f ms"},
@@ -103,6 +108,13 @@ const Opt kFieldOpts[fCount] = {
     {"bar", "Correlation bar", 1, 0, 1, Opt::Toggle, kOnOff},
     {"grid", "Grid", 1, 0, 1, Opt::Toggle, kOnOff},
     {"labels", "Labels", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.10: PQ stereo_field's colour slots.
+    sheet::colourOpt("ctrace", "Trace"),
+    sheet::colourOpt("cpos", "Correlation +"),
+    sheet::colourOpt("cneg", "Correlation -"),
+    sheet::colourOpt("clow", "Low band"),
+    sheet::colourOpt("cmid", "Mid band"),
+    sheet::colourOpt("chigh", "High band"),
 };
 
 class StereoFieldFace final : public AnalyserFace {
@@ -123,8 +135,10 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis)
       for (uint32_t i = fTrace; i <= fGain; ++i) out.push_back(i);
+    else if (tab == sheet::kColours)
+      for (uint32_t i = fColTrace; i < fCount; ++i) out.push_back(i);
     else
-      for (uint32_t i = fDraw; i < fCount; ++i) out.push_back(i);
+      for (uint32_t i = fDraw; i < fColTrace; ++i) out.push_back(i);
   }
   void optionSet(uint32_t) override { configured_ = false; }
   void feedChanged() override {
@@ -254,7 +268,7 @@ protected:
         }
       }
     };
-    const Col bandCol[3] = {kBandLow, kBandMid, kBandHigh};
+    const Col bandCol[3] = {colOpt(opts_, fColLow, kBandLow), colOpt(opts_, fColMid, kBandMid), colOpt(opts_, fColHigh, kBandHigh)};
     p.drawList().pushClip(deviceRect(p, {8.0f, plotT - 4.0f, kW - 8.0f, plotB + 4.0f}));
     if (bands) {
       for (uint32_t b = 0; b < 3; ++b) {
@@ -263,12 +277,12 @@ protected:
         trace(bandL_[b], bandR_[b], bandCol[b], g);
       }
     } else {
-      trace(trL_, trR_, ofRgba(kWaveform), gainAll);
+      trace(trL_, trR_, ofRgba(opts_.colour(fColTrace, kWaveform)), gainAll);
     }
     p.drawList().popClip();
     if (rows == 0) return;
     static const char* const kBandNames[3] = {"Low", "Mid", "High"};
-    const Rgba pos = kAccent, neg = ui::rgba(224, 82, 82, 235);
+    const Rgba pos = opts_.colour(fColPos, kAccent), neg = opts_.colour(fColNeg, ui::rgba(224, 82, 82, 235));
     for (int k = 0; k < rows; ++k) {
       const float c = bands ? state_.bandCorrelation(static_cast<uint32_t>(k)) : state_.correlation();
       const float y1 = kH - 10.0f - static_cast<float>(rows - 1 - k) * (barH + rowGap), y0 = y1 - barH;
@@ -339,7 +353,8 @@ private:
 enum ImageOpt : uint32_t {
   iWin, iPeakWin, iAtt, iRel, iCoh, iHold, iHeatAtt, iHeatDecay, iScale, iFMin, iFMax, iAfter, iAfterDb, iAfterS,
   iMode, iWidth, iZoom, iSmoothY, iFill, iLine, iDot, iGlowR, iGlowS, iFloor, iCeil, iColour, iPalette, iX1, iX2, iX3,
-  iMap, iBase, iS2, iS3, iS4, iS5, iGamma, iWGlow, iWFloor, iWAmount, iPosLine, iGrid, iLabels, iNote, iCount
+  iMap, iBase, iS2, iS3, iS4, iS5, iGamma, iWGlow, iWFloor, iWAmount, iPosLine, iGrid, iLabels, iNote, iColR1, iColR2, iColR3,
+  iColR4, iColR5, iColS1, iColS2, iColS3, iColS4, iColS5, iColS6, iColLine, iCount
 };
 constexpr const char* kModeNames[] = {"Ribbon", "Glow", "Heat map"};
 constexpr const char* kColourModes[] = {"Mono", "Band", "Intensity", "Colormap"};
@@ -405,6 +420,20 @@ const Opt kImageOpts[iCount] = {
     {"grid", "Grid", 1, 0, 1, Opt::Toggle, kOnOff},
     {"labels", "Labels", 1, 0, 1, Opt::Toggle, kOnOff},
     {"note", "Note readout", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.10: PQ stereo_image's colour slots — the ribbon's five (over the chosen palette's), the line — and the Custom
+    // ramp's six stop colours.
+    sheet::colourOpt("r1", "Ribbon low"),
+    sheet::colourOpt("r2", "Ribbon low-mid"),
+    sheet::colourOpt("r3", "Ribbon mid"),
+    sheet::colourOpt("r4", "Ribbon mid-high"),
+    sheet::colourOpt("r5", "Ribbon high"),
+    sheet::colourOpt("c1", "Stop 1 colour"),
+    sheet::colourOpt("c2", "Stop 2 colour"),
+    sheet::colourOpt("c3", "Stop 3 colour"),
+    sheet::colourOpt("c4", "Stop 4 colour"),
+    sheet::colourOpt("c5", "Stop 5 colour"),
+    sheet::colourOpt("c6", "Stop 6 colour"),
+    sheet::colourOpt("cline", "Position line"),
 };
 
 class StereoImageFace final : public SpectralFace {
@@ -463,6 +492,16 @@ protected:
       return;
     }
     const int mode = opts_.choice(iMode), col = opts_.choice(iColour);
+    if (tab == sheet::kColours) {  // the colours the colour mode paints with
+      out.push_back(iColour);
+      if (col == 1) out.insert(out.end(), {iPalette, iColR1, iColR2, iColR3, iColR4, iColR5});
+      if (col >= 2) {
+        out.push_back(iMap);
+        if (opts_.choice(iMap) == ui::Gradient::kCustomIndex) out.insert(out.end(), {iBase, iColS1, iColS2, iColS3, iColS4, iColS5, iColS6});
+      }
+      if (mode == 0) out.push_back(iColLine);
+      return;
+    }
     out.push_back(iMode);
     if (mode == 0) out.insert(out.end(), {iWidth, iZoom, iSmoothY, iFill, iLine, iPosLine});
     else if (mode == 1) out.insert(out.end(), {iWidth, iZoom, iFill});
@@ -524,7 +563,8 @@ protected:
     p.line({cx, plotT}, {cx, plotB}, 0.5f, ui::rgba(255, 255, 255, 45));  // the centre: the reference
     // Colour.
     const int colMode = opts_.choice(iColour), map = opts_.choice(iMap);
-    const Palette& pal = kPalettes[std::clamp(opts_.choice(iPalette), 0, 5)];
+    Palette pal = kPalettes[std::clamp(opts_.choice(iPalette), 0, 5)];
+    for (uint32_t i = 0; i < 5; ++i) pal.stop[i] = colOpt(opts_, iColR1 + i, pal.stop[i]);
     float at[5] = {0.0f, 0, 0, 0, 1.0f};
     for (int i = 0; i < 3; ++i) at[i + 1] = std::clamp(axis.unit(static_cast<float>(opts_[iX1 + static_cast<uint32_t>(i)])), 0.0f, 1.0f);
     const ui::LevelAxis lax = levelAxis();
@@ -533,7 +573,8 @@ protected:
       if (map == ui::Gradient::kCustomIndex) {
         float stops[4];
         for (int i = 0; i < 4; ++i) stops[i] = static_cast<float>(opts_[iS2 + static_cast<uint32_t>(i)]);
-        ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(iBase), 0, ui::kColormapCount - 1)), stops, lax);
+        const ui::StopColours own = sheet::stopColours(opts_, iColS1, opts_.choice(iBase));
+        ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(iBase), 0, ui::kColormapCount - 1)), stops, lax, &own);
         lut = &custom_.lut;
       } else {
         lut = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(map, 0, ui::kColormapCount - 1)));
@@ -663,12 +704,14 @@ protected:
       }
       if (opts_.on(iPosLine)) {
         const float lw = static_cast<float>(opts_[iLine]) * 0.6f;
+        const Col lc = colOpt(opts_, iColLine, lineTint(fillAt(0.5f)));  // (its own: every segment; else the ramp's tint)
+        const bool ownLine = opts_[iColLine] >= 0.0;
         for (size_t i = 0; i + 1 < n; ++i) {
           const auto& a = shown_[i];
           const auto& b = shown_[i + 1];
           const float aA = levelA(a.db), bA = levelA(b.db);
           if (aA < 0.004f && bA < 0.004f) continue;
-          const Col c = lineTint(colMode == 2 ? byLevel(0.5f * (a.db + b.db)) : fillAt((static_cast<float>(i) + 0.5f) / static_cast<float>(n - 1)));
+          const Col c = ownLine ? lc : lineTint(colMode == 2 ? byLevel(0.5f * (a.db + b.db)) : fillAt((static_cast<float>(i) + 0.5f) / static_cast<float>(n - 1)));
           p.line({xOf(a.pos), yOfT(tOf(i))}, {xOf(b.pos), yOfT(tOf(i + 1))}, lw, rgbF(c.r, c.g, c.b, 0.5f * (aA + bA)));
         }
       }
@@ -699,7 +742,9 @@ private:
 
 // ---- the Phase Scope (PQ phase_scope) --------------------------------------------------------------------------------
 
-enum PhaseOpt : uint32_t { qFft, qWin, qAvg, qFloor, qScale, qFMin, qFMax, qRange, qWarn, qSmooth, qLine, qCoh, qGrid, qLabels, qCount };
+enum PhaseOpt : uint32_t {
+  qFft, qWin, qAvg, qFloor, qScale, qFMin, qFMax, qRange, qWarn, qSmooth, qLine, qCoh, qGrid, qLabels, qColMono, qColCoh, qColWarn, qCount
+};
 const Opt kPhaseOpts[qCount] = {
     {"fft", "FFT size", 13, 9, 14, Opt::Pow2},
     {"win", "Window", 0, 0, 1, Opt::Choice, kWinNames},
@@ -715,6 +760,10 @@ const Opt kPhaseOpts[qCount] = {
     {"coh", "Coherence ribbon", 0, 0, 1, Opt::Toggle, kOnOff},
     {"grid", "Grid", 1, 0, 1, Opt::Toggle, kOnOff},
     {"labels", "Labels", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.10: PQ phase_scope's colour slots (and the warning's).
+    sheet::colourOpt("cmono", "Mono loss"),
+    sheet::colourOpt("ccoh", "Coherence"),
+    sheet::colourOpt("cwarn", "Warning"),
 };
 constexpr Rgba kMonoCol = ui::rgba(210, 165, 255), kCohCol = ui::rgba(150, 235, 190), kWarnCol = ui::rgba(255, 90, 90);
 
@@ -744,8 +793,10 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis)
       for (uint32_t i = qFft; i <= qFMax; ++i) out.push_back(i);
+    else if (tab == sheet::kColours)
+      for (uint32_t i = qColMono; i < qCount; ++i) out.push_back(i);
     else
-      for (uint32_t i = qRange; i < qCount; ++i) out.push_back(i);
+      for (uint32_t i = qRange; i < qColMono; ++i) out.push_back(i);
   }
   int32_t ownHit(Vec2 l) const noexcept override { return inside(well(), l) ? kPlotPart : kNone; }
   bool ownDescribe(int32_t part, std::string& title, std::string& body) const override {
@@ -776,6 +827,7 @@ protected:
   }
 
   void paintBody(ui::FacePainter& p, const ui::Theme&, bool labels) override {
+    const Rgba monoCol = opts_.colour(qColMono, kMonoCol), cohCol = opts_.colour(qColCoh, kCohCol), warnCol = opts_.colour(qColWarn, kWarnCol);
     using namespace ui::signal_theme;
     const auto& pts = snap_.points;
     const dsp::CrossSpectrumConfig& cc = snap_.config;
@@ -818,7 +870,7 @@ protected:
         p.textAligned({plotL - 3.0f, y}, lab, 5.0f, kGridLabel, 1.0f);
       }
     }
-    p.line({plotL, yOf(warn)}, {plotR, yOf(warn)}, 0.5f, ui::mulAlpha(kWarnCol, 0.35f));
+    p.line({plotL, yOf(warn)}, {plotR, yOf(warn)}, 0.5f, ui::mulAlpha(warnCol, 0.35f));
     p.drawList().pushClip(deviceRect(p, {plotL, lt, plotR, lb}));
     // The area to the 0 dB line, one strip per run of visible points of one state (normal / past the warn level: red),
     // then the curve segment by segment at its level's opacity.
@@ -828,7 +880,7 @@ protected:
     pts_.clear();
     auto flush = [&] {
       if (pts_.size() >= 2) {
-        const Rgba c = ui::mulAlpha(runWarn ? kWarnCol : kMonoCol, 0.18f * runA / static_cast<float>(pts_.size()));
+        const Rgba c = ui::mulAlpha(runWarn ? warnCol : monoCol, 0.18f * runA / static_cast<float>(pts_.size()));
         p.fillUnder(pts_, yZero, c, c);
       }
       pts_.clear();
@@ -854,7 +906,7 @@ protected:
       pts_.push_back(cur);
       runA += a;
       if (have && std::min(prevA, a) > 0.01f)
-        p.line(prev, cur, lw, ui::mulAlpha(v < warn && prevV < warn ? kWarnCol : kMonoCol, std::min(prevA, a)));
+        p.line(prev, cur, lw, ui::mulAlpha(v < warn && prevV < warn ? warnCol : monoCol, std::min(prevA, a)));
       prev = cur, prevA = a, prevV = v, have = true;
     }
     flush();
@@ -865,8 +917,8 @@ protected:
       for (const auto& pt : pts)
         if (pt.hz >= cc.fMin && pt.hz <= cc.fMax) pts_.push_back({xOf(pt.hz), rb - std::clamp(pt.coherence, 0.0f, 1.0f) * ribH});
       if (pts_.size() >= 2) {
-        p.fillUnder(pts_, rb, ui::mulAlpha(kCohCol, 0.10f), ui::mulAlpha(kCohCol, 0.10f));
-        p.polyline(pts_, 0.6f, ui::mulAlpha(kCohCol, 0.45f));
+        p.fillUnder(pts_, rb, ui::mulAlpha(cohCol, 0.10f), ui::mulAlpha(cohCol, 0.10f));
+        p.polyline(pts_, 0.6f, ui::mulAlpha(cohCol, 0.45f));
       }
     }
     if (!showLabels) return;

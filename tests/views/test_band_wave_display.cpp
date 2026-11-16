@@ -322,5 +322,42 @@ TEST_CASE("band / wave: the worker's cost and the UI frame per face (5 bands; a 
   CHECK(fb > 0.0);
 }
 
+// VZ.10: the colour options reach the paint (each chosen colour's RGB in the draw list; −1: gone again).
+TEST_CASE("band / wave faces (VZ.10): a chosen colour is painted; −1 is the face's own") {
+  constexpr double kPick = 0x0A141E;  // rgb(10, 20, 30): nothing else paints it
+  auto painted = [](const DrawList& dl) {
+    for (const Vertex& v : dl.vertices())
+      if (ui::redOf(v.col) == 10 && ui::greenOf(v.col) == 20 && ui::blueOf(v.col) == 30 && ui::alphaOf(v.col) > 0) return true;
+    return false;
+  };
+  auto check = [&](FaceRig& rig, auto control, const std::string& key, const std::vector<std::pair<std::string, double>>& needs) {
+    CAPTURE(key);
+    for (const auto& [k, v] : needs) REQUIRE(control(*rig.face, k, v));
+    if (!needs.empty()) (void)rig.play(0.5);  // (what the option shows, read)
+    rig.paint();
+    CHECK_FALSE(painted(rig.dl));
+    REQUIRE(control(*rig.face, key, kPick));
+    rig.paint();
+    CHECK(painted(rig.dl));
+    REQUIRE(control(*rig.face, key, -1.0));
+    rig.paint();
+    CHECK_FALSE(painted(rig.dl));
+  };
+  auto control = [](MetaFace& f, std::string_view k, double v) { return bandWaveTestControl(f, k, v); };
+  {
+    FaceRig rig(meta::bandLevelsType());
+    rig.paint();
+    (void)rig.play(1.0);
+    check(rig, control, "c1", {});
+    check(rig, control, "c3", {});
+  }
+  {
+    FaceRig rig(meta::waveformType());
+    rig.paint();
+    (void)rig.play(1.0);
+    check(rig, control, "ca", {{"col", 0}});
+  }
+}
+
 TEST_CASE("render: device-meta-bandwave matches the golden image") { checkScene("device-meta-bandwave"); }
 TEST_CASE("render: project-meta-bandwave matches the golden image") { checkScene("project-meta-bandwave"); }

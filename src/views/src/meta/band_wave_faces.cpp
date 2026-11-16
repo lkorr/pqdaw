@@ -129,7 +129,7 @@ constexpr const char* kBallisticsNames[] = {"VU", "Peak", "Custom"};
 enum BandOpt : uint32_t {
   bCount, bSplit, bLowHz, bMidHz, bHighHz, bWidth, bX3a, bX3b, bX4a, bX4b, bX4c, bX5a, bX5b, bX5c, bX5d, bChannel, bBal,
   bAttack, bRelease, bRate, bSpan, bFloor, bCeil, bWarp, bKnee, bFrac, bExp, bFill, bLine, bGrid, bLabels, bShow1, bShow2,
-  bShow3, bShow4, bShow5, bCountOpts
+  bShow3, bShow4, bShow5, bCol1, bCol2, bCol3, bCol4, bCol5, bCountOpts
 };
 // PQ Meter's defaults: 3 bands as independent low / band / high (100 Hz, 550 Hz ± 1 octave, 5 kHz), its crossover sets
 // per band count, mono, VU, 60 columns a second over 6 s, −72 … 0 dB warped at −45 dB (18 %, exponent 2.2).
@@ -170,6 +170,12 @@ const Opt kBandOpts[bCountOpts] = {
     {"s3", "Show band 3", 1, 0, 1, Opt::Toggle, kOnOff},
     {"s4", "Show band 4", 1, 0, 1, Opt::Toggle, kOnOff},
     {"s5", "Show band 5", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.10: PQ multiband_rms's per-band colours (over its ramp for the band count).
+    sheet::colourOpt("c1", "Band 1"),
+    sheet::colourOpt("c2", "Band 2"),
+    sheet::colourOpt("c3", "Band 3"),
+    sheet::colourOpt("c4", "Band 4"),
+    sheet::colourOpt("c5", "Band 5"),
 };
 
 const char* const* bandNames(int n) noexcept {
@@ -212,6 +218,8 @@ public:
     return c;
   }
   uint64_t shownColumns() const noexcept { return read_; }
+  // VZ.10: band b's colour (its own, else PQ's ramp for n bands).
+  Rgba bandCol(int n, int b) const noexcept { return opts_.colour(bCol1 + static_cast<uint32_t>(b), bandColour(n, b)); }
   float shownLevel(int b) const noexcept { return read_ > 0 ? col(read_ - 1)[b] : dsp::BandLevels::kFloorDb; }
 
 protected:
@@ -241,6 +249,11 @@ protected:
       }
       out.push_back(bRate);
       out.push_back(bSpan);
+      return;
+    }
+    if (tab == sheet::kColours) {
+      const int n = 3 + std::clamp(opts_.choice(bCount), 0, 2);
+      for (int b = 0; b < n; ++b) out.push_back(bCol1 + static_cast<uint32_t>(b));
       return;
     }
     for (const uint32_t i : {bFloor, bCeil, bWarp}) out.push_back(i);
@@ -333,7 +346,7 @@ protected:
       if (fillA > 0.001f) {
         for (int b = 0; b < nBands; ++b) {
           if (!show[b]) continue;
-          const Rgba c = ui::setAlpha(bandColour(nBands, b), fillA);
+          const Rgba c = ui::setAlpha(bandCol(nBands, b), fillA);
           const uint32_t segs = static_cast<uint32_t>(nCols - 1);
           const ui::DrawList::PrimSpan sp = dl.primReserveSpan(segs * 6, segs * 4);
           const Vec2 uv = dl.whiteUv();
@@ -362,7 +375,7 @@ protected:
       const float lw = std::max(0.5f, static_cast<float>(opts_[bLine]) * sc * 0.5f);
       for (int b = 0; b < nBands; ++b) {
         if (!show[b]) continue;
-        const Rgba c = bandColour(nBands, b);
+        const Rgba c = bandCol(nBands, b);
         pts_.clear();
         auto flush = [&] {
           if (pts_.size() == 1) dl.addRectFilled({pts_[0].x - lw * 0.5f, pts_[0].y - lw * 0.5f, pts_[0].x + lw * 0.5f, pts_[0].y + lw * 0.5f}, c);
@@ -386,7 +399,7 @@ protected:
         char buf[40];
         if (cur <= dsp::BandLevels::kFloorDb + 1.0f) std::snprintf(buf, sizeof buf, "%-5s  -inf", names[b]);
         else std::snprintf(buf, sizeof buf, "%-5s %6.1f dB", names[b], static_cast<double>(cur));
-        label(p, {kWell.x0 + 4.0f, ty}, buf, bandColour(nBands, b));
+        label(p, {kWell.x0 + 4.0f, ty}, buf, bandCol(nBands, b));
         ty += kLabelPx + 2.0f;
       }
     }
@@ -408,7 +421,7 @@ protected:
       for (int b = 0; b < nBands; ++b) {
         if (!show[b]) continue;
         std::snprintf(buf, sizeof buf, "%-5s %6.1f", names[b], static_cast<double>(c[b]));
-        label(p, {lx, ty}, buf, bandColour(nBands, b));
+        label(p, {lx, ty}, buf, bandCol(nBands, b));
         ty += kLabelPx + 2.0f;
       }
     }
@@ -431,7 +444,7 @@ constexpr const char* kColourNames[] = {"Theme", "Level heat", "Brightness"};
 constexpr const char* kMapNames[] = {"Magma", "Inferno", "Viridis", "Grayscale", "Ice", "Gold", "Silver", "Pastel", "Neon", "Copper"};
 enum WaveOpt : uint32_t {
   wPlayhead, wWindow, wLoop, wLoopSec, wView, wSwap, wGain, wAuto, wDb, wColour, wMap, wSmooth, wBody, wFill, wOutline, wGlow,
-  wFade, wGrid, wRuler, wLanes, wReadout, wClip, wClipDb, wCountOpts
+  wFade, wGrid, wRuler, wLanes, wReadout, wClip, wClipDb, wColA, wColB, wColClip, wCountOpts
 };
 // PQ Meter's defaults: Scroll over 10 s, the loop 1 bar (2 s free run), mid / side, gain ×1, brightness through Magma
 // smoothed 0.5, the RMS body, fill 0.4, the outline, glow 0.4, the edge fade, grid, ruler, lane labels and the readout.
@@ -459,6 +472,10 @@ const Opt kWaveOpts[wCountOpts] = {
     {"ro", "Readout", 1, 0, 1, Opt::Toggle, kOnOff},
     {"clip", "Clip marks", 0, 0, 1, Opt::Toggle, kOnOff},
     {"clipdb", "Clip level", -0.1, -12, 0, Opt::Number, nullptr, "%.1f dB", 0.1},
+    // VZ.10: PQ waveform's lane colours (Colour by Theme) and its clip colour.
+    sheet::colourOpt("ca", "First lane"),
+    sheet::colourOpt("cb", "Second lane"),
+    sheet::colourOpt("cclip", "Clip colour"),
 };
 constexpr Rgba kLaneA = ui::rgba(120, 219, 161), kLaneB = ui::rgba(255, 150, 120);  // PQ Theme::waveform / waveformR
 constexpr Rgba kClip = ui::rgba(255, 56, 56);
@@ -567,6 +584,10 @@ protected:
       }
       return;
     }
+    if (tab == sheet::kColours) {  // (the lanes' colours paint the trace under Colour by Theme, and the lane labels)
+      for (const uint32_t i : {wColour, wColA, wColB, wColClip}) out.push_back(i);
+      return;
+    }
     for (const uint32_t i : {wView, wSwap, wGain, wAuto, wDb, wColour}) out.push_back(i);
     if (opts_.choice(wColour) != 0) {
       out.push_back(wMap);
@@ -606,6 +627,7 @@ protected:
   }
 
   void paintPlot(ui::FacePainter& p, const Rect& r, const ui::Theme&, bool labels) override {
+    laneA_ = opts_.colour(wColA, kLaneA), laneB_ = opts_.colour(wColB, kLaneB), clip_ = opts_.colour(wColClip, kClip);
     const float w = r.width(), h = r.height();
     const float sc = p.transform().scale;
     ui::DrawList& dl = p.drawList();
@@ -664,7 +686,7 @@ protected:
         for (int lane = 0; lane < lanes; ++lane)
           for (int s = -1; s <= 1; s += 2) {
             const float y = std::round(laneMid(lane) - static_cast<float>(s) * tc * (laneH * 0.5f - 2.0f));
-            dl.addRectFilled({r.x0, y, r.x1, y + 1.0f}, ui::setAlpha(kClip, 0.3f));
+            dl.addRectFilled({r.x0, y, r.x1, y + 1.0f}, ui::setAlpha(clip_, 0.3f));
           }
     }
     const float windowSec = static_cast<float>(opts_[wWindow]);
@@ -778,7 +800,7 @@ protected:
       if (clipOn)
         for (int c = 0; c < cols; ++c) {
           const ColAgg& a = col[static_cast<size_t>(c)];
-          if (a.valid && std::max(std::fabs(a.mn), std::fabs(a.mx)) >= clipLin) cA_[static_cast<size_t>(c)] = kClip;
+          if (a.valid && std::max(std::fabs(a.mn), std::fabs(a.mx)) >= clipLin) cA_[static_cast<size_t>(c)] = clip_;
         }
       yA_.resize(static_cast<size_t>(cols));
       yB_.resize(static_cast<size_t>(cols));
@@ -827,8 +849,8 @@ protected:
     };
     const bool canSwap = lanes == 2 && chB >= 0;
     const int laneA = canSwap && opts_.on(wSwap) ? 1 : 0, laneB = canSwap ? 1 - laneA : 0;
-    drawTrace(colA_, laneA, kLaneA, overlay ? 0.72f : 1.0f);
-    if (chB >= 0) drawTrace(colB_, laneB, kLaneB, overlay ? 0.72f : 1.0f);
+    drawTrace(colA_, laneA, laneA_, overlay ? 0.72f : 1.0f);
+    if (chB >= 0) drawTrace(colB_, laneB, laneB_, overlay ? 0.72f : 1.0f);
     // The playhead: Loop's sweeping line (dim while the clock stands), Scroll's live right edge.
     if (loopMode) {
       if (loop_.phase >= 0.0) {
@@ -843,8 +865,8 @@ protected:
     const char* nameB = view == 0 ? "SIDE" : "R";
     if (opts_.on(wLanes)) {
       auto laneLabelY = [&](int lane) { return lane == 0 ? kWell.y0 + 4.0f + 0.5f * kLabelPx : kWell.y0 + (kWell.y1 - kWell.y0) * 0.5f + 4.0f + 0.5f * kLabelPx; };
-      label(p, {kWell.x0 + 4.0f, laneLabelY(laneA)}, nameA, ui::mulAlpha(kLaneA, 0.8f));
-      if (chB >= 0) label(p, {kWell.x0 + (overlay ? 16.0f : 4.0f), laneLabelY(overlay ? laneA : laneB)}, nameB, ui::mulAlpha(kLaneB, 0.8f));
+      label(p, {kWell.x0 + 4.0f, laneLabelY(laneA)}, nameA, ui::mulAlpha(laneA_, 0.8f));
+      if (chB >= 0) label(p, {kWell.x0 + (overlay ? 16.0f : 4.0f), laneLabelY(overlay ? laneA : laneB)}, nameB, ui::mulAlpha(laneB_, 0.8f));
     }
     if (opts_.on(wReadout)) {
       char info[96];
@@ -887,12 +909,13 @@ protected:
         }
         label(p, {lx, ty}, buf, colr);
       };
-      laneLine(colA_[static_cast<size_t>(c)], nameA, kLaneA);
-      if (chB >= 0) laneLine(colB_[static_cast<size_t>(c)], nameB, kLaneB);
+      laneLine(colA_[static_cast<size_t>(c)], nameA, laneA_);
+      if (chB >= 0) laneLine(colB_[static_cast<size_t>(c)], nameB, laneB_);
     }
   }
 
 private:
+  Rgba laneA_ = kLaneA, laneB_ = kLaneB, clip_ = kClip;  // VZ.10: as painted (the options over PQ's)
   double sampleRate() const noexcept { return feed_ != nullptr ? feed_->config().sampleRate : 48000.0; }
   // The scroll's columns: the window's bins cut on an ABSOLUTE grid (multiples of a fixed stride from bin 0), so a bin
   // keeps its column while on screen; the newest column absorbs the bins past the grid and the partial one (PQ).

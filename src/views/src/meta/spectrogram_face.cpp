@@ -110,7 +110,7 @@ enum O : uint32_t {
   oSpan, oFft, oChannel, oReassign, oMaxDev, oConsensus, oPlayhead, oLoopSpan, oFloor, oCeil, oGamma, oFade, oTilt,
   oGate, oDepth, oThresh, oKnee, oExpand, oScale, oFMin, oFMax, oMap, oSource, oGrid, oRuler, oNote, oKeys, oTuning,
   oKeysW, oKeysOpacity, oKeysTintC, oBase, oStop2, oStop3, oStop4, oStop5, oSilence, oPlayKeys, oCtrlTone, oToneSnap,
-  oToneDb, oToneWave, oCount
+  oToneDb, oToneWave, oColS1, oColS2, oColS3, oColS4, oColS5, oColS6, oCount
 };
 // PQ Meter's defaults (the power user's tuned analysis, the MiniMeters-calibrated level mapping, the gate on): a 2048
 // window, reassignment, 3.5 bins, consensus 0.5, floor −100 / ceiling −24 dB, gamma 1.57, fade 0.4, tilt 4.5 dB/oct,
@@ -164,6 +164,14 @@ const Opt kOpts[oCount] = {
     {"tsnap", "Tone snap", 2, 0, 2, Opt::Choice, kToneSnapNames},
     {"tdb", "Tone level", -18, -60, 0, Opt::Number, nullptr, "%.0f dBFS", 1.0},
     {"twave", "Tone shape", 0, 0, 2, Opt::Choice, dsp::kToneWaveNames},
+    // VZ.10: the Custom ramp's stop colours (over its base's; stop 1 is the Silence colour under Colour by Level: G1's
+    // fade blends toward it).
+    sheet::colourOpt("c1", "Silence colour"),
+    sheet::colourOpt("c2", "Stop 2 colour"),
+    sheet::colourOpt("c3", "Stop 3 colour"),
+    sheet::colourOpt("c4", "Stop 4 colour"),
+    sheet::colourOpt("c5", "Stop 5 colour"),
+    sheet::colourOpt("c6", "Stop 6 colour"),
 };
 
 struct Options : sheet::Values {
@@ -193,6 +201,13 @@ struct Options : sheet::Values {
 // re-reads), DISPLAY how the columns are coloured and what is drawn over them (recoloured from the cache).
 void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   out.clear();
+  if (tab == sheet::kColours) {  // the colormap and the Custom ramp's colours
+    out.push_back(oMap);
+    if (o.custom())
+      for (const uint32_t i : {oBase, oColS1, oColS2, oColS3, oColS4, oColS5, oColS6}) out.push_back(i);
+    out.push_back(oSource);
+    return;
+  }
   if (tab == sheet::kAnalysis) {
     for (const uint32_t i : {oSpan, oFft, oChannel, oReassign}) out.push_back(i);
     if (o.on(oReassign)) {
@@ -283,6 +298,7 @@ struct Tone {  // what the colouring of a texel depends on (a change recolours f
   int map = 0, source = 0;
   int base = 0;                                  // Custom: its colours' colormap
   float stops[4] = {-69.0f, -51.0f, -37.0f, -29.0f};  // Custom: the middle stops (dB)
+  ui::StopColours colours;                       // VZ.10: Custom: the stops' own colours
   float silence = 1.0f;                          // the Silence colour's opacity (Level)
   FreqScale scale = FreqScale::Log;
   float fMin = 0, fMax = 24000;
@@ -367,7 +383,7 @@ public:
     if (t.map >= ui::Gradient::kCustomIndex) {
       // X2: the Custom ramp, its middle stops at their dB on floor … ceiling raised to Gamma (the texel's own t).
       ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(t.base, 0, ui::kColormapCount - 1)), t.stops,
-                        ui::LevelAxis{t.floorDb, t.ceilDb, t.gamma});
+                        ui::LevelAxis{t.floorDb, t.ceilDb, t.gamma}, &t.colours);
       lut_ = &custom_.lut;
     } else {
       lut_ = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(t.map, 0, ui::kColormapCount - 1)));
@@ -697,11 +713,12 @@ private:
 
 // ---- the face --------------------------------------------------------------------------------------------------------
 
-class SpectrogramFace final : public MetaFace {
+class SpectrogramFace final : public MetaFace, private sheet::PickerHost {
 public:
   explicit SpectrogramFace(const meta::Type& t) : MetaFace(t) {
     static uint32_t made = 0;  // UI thread: faces made so far (their gate estimates land on different columns)
     pic_.setPhase(made++ * 3u);
+    panel_.tabs = 3;
     visibleRows(opts_, panel_.tab, rows_);
     applyTone();
   }
@@ -858,6 +875,8 @@ public:
         if (e.button != ui::PointerButton::Left) return false;
         if (bound_) syncOptions();  // (an option changed elsewhere since the last paint)
         const int32_t part = hitTest(e.local, e.pxPerUnit);
+        if (sheet::isPicker(part)) return sheet::pickerDown(panel_, opts_, *this, part, e.local);
+        panel_.closePicker();  // (a press anywhere else keeps the colour)
         if (part == kChPart || part == kScalePart || part == kMapPart) {
           const uint32_t o = part == kChPart ? oChannel : part == kScalePart ? oScale : oMap;
           setOption(o, sheet::cycled(opts_, o, shift ? -1 : 1));
@@ -879,8 +898,8 @@ public:
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
-        if (part == sheet::kTabBase || part == sheet::kTabBase + 1) {
-          panel_.tab = part - sheet::kTabBase;
+        if (sheet::isTab(part)) {
+          panel_.tab = sheet::tabOf(part);
           visibleRows(opts_, panel_.tab, rows_);
           return true;
         }
@@ -907,6 +926,7 @@ public:
           hover_ = {std::clamp(e.local.x, kPlot.x0, kPlot.x1), std::clamp(e.local.y, kPlot.y0, kPlot.y1)};
           return true;
         }
+        if (sheet::pickerMove(panel_, opts_, *this, e.local)) return true;
         if (drag_) {
           const Opt& op = kOpts[dragOpt_];
           const double k = (shift ? 0.1 : 1.0) / 160.0;
@@ -923,6 +943,7 @@ public:
           stopTone();
           return true;
         }
+        if (sheet::pickerUp(panel_, *this)) return true;
         const bool was = drag_;
         drag_ = false;
         if (was && editing_) {
@@ -939,9 +960,10 @@ public:
     }
     return false;
   }
-  bool dragging() const noexcept override { return drag_ || tone_.held(); }
+  bool dragging() const noexcept override { return drag_ || tone_.held() || panel_.picking(); }
   void cancelDrag() override {
     stopTone();
+    if (sheet::pickerCancel(panel_, *this)) return;
     if (drag_ && editing_) {
       target().cancel();
       editing_ = false;
@@ -949,7 +971,11 @@ public:
     }
     drag_ = false;
   }
+  bool onText(const ui::TextEvent& e) override { return sheet_ && panel_.typeText(e.text()); }
+  bool wantsText() const noexcept override { return sheet_ && panel_.typing(); }
+  void focusLost() override { panel_.closePicker(); }
   bool onKey(const ui::KeyEvent& e) override {
+    if (sheet_ && sheet::pickerKey(panel_, opts_, *this, e)) return true;
     if (!e.down || e.key != ui::key::kEscape || !sheet_) return false;
     sheet_ = false;
     return true;
@@ -961,7 +987,8 @@ public:
       if (i < rows_.size() && sheet::numeric(kOpts[rows_[i]])) return ui::Cursor::ResizeNS;
       return ui::Cursor::Pointer;
     }
-    if (part >= sheet::kTabBase && part <= sheet::kReset) return ui::Cursor::Pointer;
+    if (sheet::isPicker(part)) return part == sheet::kPickBox ? ui::Cursor::Inherit : ui::Cursor::Pointer;
+    if (sheet::isHead(part)) return ui::Cursor::Pointer;
     return ui::Cursor::Inherit;
   }
 
@@ -1009,6 +1036,11 @@ public:
         title = "Display";
         body = "Only how it looks: level range, gamma, fade, tilt, the visual gate, colours, grid, ruler, keyboard.";
         return;
+      case sheet::kColoursTab:
+        title = "Colours";
+        body = "The colormap and the Custom ramp's stop colours (each its base's until chosen; the Silence colour is what "
+               "the fade blends toward).";
+        return;
       case sheet::kSave:
         title = "Save as default";
         body = "New Spectrograms start with these options (every tab). Saved with pqdaw's settings; existing ones keep theirs.";
@@ -1021,11 +1053,12 @@ public:
         if (part >= kRowBase && static_cast<size_t>(part - kRowBase) < rows_.size()) {
           const Opt& op = kOpts[rows_[static_cast<size_t>(part - kRowBase)]];
           title = op.label;
-          body = sheet::numeric(op)
-                     ? "Drag up / down to set (Shift: fine); double-click resets."
-                     : "Click to change (Shift: back); double-click resets.";
+          body = op.kind == Opt::Colour ? "Click to choose the colour; double-click: back to the display's own."
+                 : sheet::numeric(op)   ? "Drag up / down to set (Shift: fine); double-click resets."
+                                        : "Click to change (Shift: back); double-click resets.";
           return;
         }
+        if (sheet::pickerDescribe(part, title, body)) return;
         MetaFace::describe(part, title, body);
     }
   }
@@ -1072,6 +1105,9 @@ public:
   void setSheetForTest(bool s) { sheet_ = s; }
   void setHoverForTest(Vec2 l) { hover_ = l; }
   const ToneGesture& tone() const noexcept { return tone_; }
+  const sheet::Sheet& sheetForTest() const noexcept { return panel_; }
+  const sheet::Values& optionsForTest() const noexcept { return opts_; }
+  const std::vector<uint32_t>& rowsForTest() const noexcept { return rows_; }
 
 private:
   // ---- options ----
@@ -1110,6 +1146,7 @@ private:
     t.source = opts_.choice(oSource);
     t.base = opts_.choice(oBase);
     for (int i = 0; i < 4; ++i) t.stops[i] = static_cast<float>(opts_[oStop2 + static_cast<uint32_t>(i)]);
+    t.colours = sheet::stopColours(opts_, oColS1, t.base);
     t.silence = static_cast<float>(opts_[oSilence]);
     t.scale = opts_.scale();
     // The axis the analysis maps (its fMax is clamped to the Nyquist frequency): the rows' frequencies.
@@ -1151,6 +1188,10 @@ private:
       setOption(o, sheet::cycled(opts_, o, (e.mods & ui::mod::kShift) ? -1 : 1));
       return true;
     }
+    if (op.kind == Opt::Colour) {
+      panel_.openPicker(o, row, rows_.size(), opts_);
+      return true;
+    }
     drag_ = true;
     dragOpt_ = o;
     pressY_ = e.device.y;
@@ -1160,6 +1201,26 @@ private:
       editing_ = true;
     }
     return true;
+  }
+
+  // ---- the picker's edits ----
+  void pickSet(uint32_t o, double v) override { setOption(o, v); }
+  void pickBegin(const char* label) override {
+    if (hasTarget() && target().editable()) {
+      target().begin(label);
+      editing_ = true;
+    }
+  }
+  void pickEnd() override {
+    if (!editing_) return;
+    target().end();
+    editing_ = false;
+  }
+  void pickCancel() override {
+    if (!editing_) return;
+    target().cancel();
+    editing_ = false;
+    syncOptions(true);
   }
 
   // ---- the feed ----
