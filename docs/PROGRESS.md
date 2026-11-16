@@ -968,3 +968,17 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Notes: Q?-VZ.2-a (no colour picker: Custom stops take colours from a map; SPEC §11.1 "3-pass glow" now one optional
   pass). Goldens: device/project-meta-spectrum, module-spectrum-panel, panel-rich-elements, eq-eight-bands,
   eq-band-response, eq-lr-mode, ui lines.
+
+## 2026-11-15 · VZ.4 merged · main
+- Did: Level Meter, LUFS Meter, Loudness History (meta types level_meter / lufs_meter / loudness_history, modules, rich
+  elements, Visualisers) over one front end pq/dsp/loudness.h (ported from PQ Meter: K-weighting, M / S / I with the
+  −70 / −10 gates, LRA histogram, 300 ms correlation + RMS, maxima, quiet auto-reset, level ballistics + clip latch,
+  history); true peak = the truepeak atom's arithmetic. New feed stage kWantLoudness on the worker (integrated needs
+  every frame since the reset, which the 5.5 s scope history can't give). PQ's options in the VZ.1 sheet.
+- Verified (worker): pq_tests_dsp loudness* 11/11 (EBU 3341 cases 1–5 ±0.1, 3342 LRA 1–4 ±1 LU, TP = atom within
+  1e-6, correlation ±1 / ~0, RtScope); -Affected after rebase green except load-timing checks and the views driver
+  flake. Orchestrator after the merge onto VZ.2: views loudness / spectrum / spectrogram / elements 38/38, dsp 29/29.
+- Perf / CPU-efficiency check: worker ≈ 0.31–0.39 ms per second of stereo per face (check preset); hidden or resting
+  = 0 (tested); K-weighting L+R in one SSE2 pair, TP AVX2 × 8 frames.
+- Notes: Q?-VZ.4-a (PQ's custom colour pickers not carried: no colour row in the sheet), Q?-VZ.4-b (history pauses in
+  a long silence). Goldens added: device/project-meta-loudness, module-levelmeter / lufsmeter / loudnesshistory-panel.
