@@ -41,6 +41,12 @@
 //              consumer computes no spectrum; it settles when the analyser rests (everything drawn under its floor).
 //              (The Stereo Field reads the raw history, kWantScope, and runs its goniometer state on the UI thread over
 //              only the new frames.)
+//   Bands/Wave VZ.6: Band Levels (pq/dsp/band_levels.h: the LR split, each band's RMS columns) and the Waveform's
+//              capture (pq/dsp/waveform.h: 128-frame bins of L / R / M / S, the loop slots on the tap's beat) — each a
+//              stage object made on the UI thread by the first request or acquire (setBands / setWave) and fed by the
+//              worker; the UI reads only what is new through the object's own lock (columns, bins, the loop slots written
+//              since its stamp). A bands / wave-only consumer costs no spectrum; they settle when every band rests /
+//              when the display's window has been silent.
 //
 // Costs nothing while hidden: with no consumer the worker blocks on a condition variable and the tap has no reader, so
 // the audio thread's write is one relaxed load. Shown: the worker runs at the display's rate (60 Hz) while the levels
@@ -70,11 +76,13 @@
 
 #include "pq/core/tap_ring.h"
 #include "pq/document/ids.h"
+#include "pq/dsp/band_levels.h"
 #include "pq/dsp/loudness.h"
 #include "pq/dsp/spectrogram.h"
 #include "pq/dsp/spectrum.h"
 #include "pq/dsp/stereo.h"
 #include "pq/dsp/transfer.h"
+#include "pq/dsp/waveform.h"
 
 namespace pq::views::devices {
 
@@ -82,6 +90,7 @@ namespace pq::views::devices {
 inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u, kWantSpectrogram = 16u,
                           kWantLoudness = 32u,  // VZ.4
                           kWantStereo = 64u;    // VZ.5
+inline constexpr uint32_t kWantBands = 1u << 8, kWantWave = 1u << 9;  // VZ.6
 
 // VZ.1: the output spectrum's analysis a display may tune (the Spectrum face's ANALYSIS tab; setTuning). The point
 // count, the hop and the sample rate stay the feed's. VZ.2: the axis (scale, fMin, fMax: the points lie evenly on it)
@@ -236,6 +245,18 @@ public:
   // UI thread: copies the newest state into out when it is newer than `seq`; returns its sequence. settled: as scopeEnd's.
   uint64_t stereoRead(uint64_t seq, StereoSnapshot& out, bool& settled) const;
 
+  // ---- VZ.6: Band Levels (kWantBands) and the Waveform's capture (kWantWave) ----
+  // UI thread: what a display asks for (its sampleRate is replaced by the feed's; the newest call decides). The stage
+  // is made by the first call or acquire (never on the worker) and lives as long as the feed; `restSeconds`: the
+  // waveform settles once this long has been silent (its window).
+  void setBands(const dsp::BandLevelsConfig& c);
+  void setWave(const dsp::WaveConfig& c, float restSeconds);
+  // The stages (null until made). Their reads are thread-safe (each holds its own lock).
+  const dsp::BandLevels* bands() const noexcept { return bands_.load(std::memory_order_acquire); }
+  const dsp::WaveCapture* wave() const noexcept { return wave_.load(std::memory_order_acquire); }
+  // Whether the worker has nothing more to show (as scopeEnd's `settled`). Any thread.
+  bool settled() const;
+
   // Tests: runs the worker's step synchronously instead of the thread (the thread is not started).
   struct Manual {};
   SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual);
@@ -275,6 +296,7 @@ private:
   bool decaying_ = false;
   uint32_t ranWants_ = 0;  // what the worker computed last (a new want restarts its analyser)
   std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, wantLoud_{0}, wantStereo_{0}, noOutput_{0};
+  std::atomic<uint32_t> wantBands_{0}, wantWave_{0};  // VZ.6
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
   std::function<void()> wakePost_;
@@ -329,6 +351,12 @@ private:
   uint64_t stereoSeq_ = 0;
   std::unique_ptr<dsp::CrossSpectrum> stereo_;  // worker
   void stereoPublish();                         // the worker (takes stereoMutex_)
+  // VZ.6: the stages (owned: made on the UI thread before the first want of them is counted; deleted with the feed).
+  std::atomic<dsp::BandLevels*> bands_{nullptr};
+  std::atomic<dsp::WaveCapture*> wave_{nullptr};
+  std::atomic<uint64_t> waveRestFrames_{48000 * 10};
+  void makeBands();
+  void makeWave();
   bool quit_ = false;
   std::thread thread_;
 };

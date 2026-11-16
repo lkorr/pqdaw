@@ -18,6 +18,8 @@ pq_add_module(pq_dsp
     src/stereo.cpp  # VZ.5: the cross-spectrum (Stereo Image, Phase Scope) and the goniometer state (Stereo Field)
     src/loudness.cpp  # VZ.4: the loudness front end (Level Meter, LUFS Meter, Loudness History)
     src/tone_preview.cpp
+    src/band_levels.cpp  # VZ.6: Band Levels (the LR crossover tree, band RMS over time)
+    src/waveform.cpp  # VZ.6: the Waveform capture (bins, the beat-locked loop)
     src/resample.cpp
     src/frame_table.cpp
     src/frame_table_read.cpp

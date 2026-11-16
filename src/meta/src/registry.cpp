@@ -4,6 +4,7 @@
 #include <mutex>
 
 #include "pq/graph/patch_file.h"
+#include "pq/meta/band_wave.h"
 #include "pq/meta/envelope.h"
 #include "pq/meta/loudness.h"
 #include "pq/meta/noise.h"
@@ -42,6 +43,8 @@ struct Registry {
     types.push_back(&stereoFieldType());      // VZ.5
     types.push_back(&stereoImageType());      // VZ.5
     types.push_back(&phaseScopeType());       // VZ.5
+    types.push_back(&bandLevelsType());       // VZ.6
+    types.push_back(&waveformType());         // VZ.6
   }
 };
 

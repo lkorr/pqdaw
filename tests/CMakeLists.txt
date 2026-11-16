@@ -194,6 +194,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_spectrogram_display.cpp  # TX.spectrogram: the feed's columns, the Spectrogram face, its ring texture, scenes, 4-spectrogram frame
     views/test_stereo_display.cpp  # VZ.5: the feed's cross-spectrum stage, the Stereo Field / Stereo Image / Phase Scope faces, the scene
     views/test_loudness_display.cpp  # VZ.4: the feed's loudness stage, the Level Meter / LUFS Meter / Loudness History faces, scenes
+    views/test_band_wave_display.cpp  # VZ.6: the feed's band / wave stages, the Band Levels and Waveform faces, scenes
     views/test_bug_report.cpp  # T5.x-bugreport: report.md round trip, the writer, the input ring, the pointer crop
     views/test_samples_ui.cpp  # T5.8: missing samples, relink, Collect All and Save through the ViewContext
     views/test_waveforms.cpp  # T5.5: the views' waveform overviews (sync / worker + poster, caches, windows)
@@ -452,6 +453,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_spectrogram.cpp  # TX.spectrogram: the reassigned spectrogram's columns (sine, sweep, chord, sub, impulse, sequence)
     dsp/test_stereo.cpp  # VZ.5: the cross-spectrum (pan, width, mono loss, coherence, tracker, rest) and the goniometer state
     dsp/test_loudness.cpp  # VZ.4: the loudness front end (EBU 3341 / 3342, true peak vs the atom, correlation, levels, history, rest)
+    dsp/test_band_wave.cpp  # VZ.6: Band Levels (a sine in its band, the LR tree sums flat, ballistics) and the Waveform capture (bins, the beat loop)
     dsp/test_silence.cpp
     dsp/test_resample.cpp
     dsp/test_frame_table.cpp
