@@ -905,3 +905,14 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   21/24 with 3 unrelated (views driver SIGSEGV flake, two timing limits; both re-run green alone).
 - Perf / CPU-efficiency check: one compare per loop edit, one min per paint; nothing on the audio thread.
 - Notes: pianoroll-playhead re-recorded. Open: flag and loop-start grab zones overlap when they coincide (pre-existing).
+
+## 2026-11-15 · bug-live-shape merged · main
+- Did: roll shape drags edit the document live inside one store gesture (DocumentStore::dispatchReplacing, ≤ 1 dispatch
+  per UI frame via NoteAreaWidget::onFrame → RollState::flushLive): bend node, Alt edge-bends, vibrato grips / pen
+  vibrato, pen strokes (+ lengthening), breakpoint / bow drags, JI warp drags, ResizeEnd. One undo step; Esc / capture
+  loss cancel exactly. Move / Copy / ResizeStart / velocity stay on release. Timeline::swapGlide: a kept note whose
+  curve or pitch changes glides 5 ms instead of stepping.
+- Verified: -Affected -Slow on the rebased branch (run by the orchestrator after the worker's run was OOM-killed): 63/63.
+- Perf / CPU-efficiency check: one live frame, 8 tracks × 500 notes: 1.43 ms UI thread (0.69 lowering, ~half the rest
+  the sequence image build); left as is.
+- Notes: old commit* helpers replaced by edit builders + commitLive; timeline swap subcases now assert the glide.
