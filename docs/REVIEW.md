@@ -1966,3 +1966,13 @@ node) where the modulation has it. Check it in the Device view, a floating panel
 (group panels and native faces: Envelope breakpoints, Wavetable position, Noise). Goldens: panel-mod-ghosts,
 eq-mod-ghost. Judge the opacity (0.42) and whether the ghost reads as "modulation" next to the cyan rings. Number boxes
 and menus show no ghost (text only).
+
+## 2026-11-15 · bug-wire-cut (behaviour)
+- **X cuts a cable**: hover a cable in the project patch view and press X: it is cut, both halves hang on the pointer
+  (from the old output and from the old input). Click an input / param pin / knob: the output's half plugs in there;
+  click an output: the input's half is fed from it; either order. Empty canvas (or right click) lets go of what still
+  hangs; Esc puts the original cable back. Ctrl+Z undoes the whole cut in one step. Check: cut the LFO → gain cable,
+  plug the LFO into something else, feed the gain from another block, Ctrl+Z.
+- **Z over a port**: hover an input that several cables go into (a mixer's input, a knob) and press Z: one VCA takes all
+  of them and feeds the port (beside it on its input side; moved aside when a block is in the way). Z over a cable is
+  unchanged; Z over a port with no cable says so in the status line.

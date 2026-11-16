@@ -1907,3 +1907,23 @@ value an alias, no cost), for the ring too. Several ghosts are a later option (a
 element's ghost is painted OVER it (translucent: its plate, a display's grid would cover a ghost under it), a native
 engine face's UNDER its live layer (its solid paint stays the last, so its hit-test layout is the knob's). Status: decided
 (reversible: lower.cpp kTVoice / kTUVoice; GroupPanelFace::paintLive; the hosts' paintGhosts order).
+
+## Q?-bug-wire-cut-a · 2026-11-15 · bug-wire-cut · What a cut half does on a block's body, a right click, focus loss
+Context: X cuts a cable into two hanging halves; the user named inputs, outputs and empty canvas. Options for a click on
+a block's body (no pin or control): (a) the source half opens the block's param menu as a drag does, the target half
+takes its main output as W's backwards cable does; (b) nothing but a status line. Choice (b): a menu would open inside
+the cut's store gesture and its pick come later, and a body click choosing one of the two halves is a guess. A right
+click lets go like empty canvas (the held-cable rule); a middle drag and the wheel still pan and zoom. The canvas
+losing focus cancels as Esc does (a store gesture must not stay open while another view starts its own). A re-plugged
+half is a new cable (default law, amount, reducer): the old wire's settings are not carried over. Status: decided
+(reversible: ProjectCanvas::cutPress, onFocusChanged).
+
+## Q?-bug-wire-cut-b · 2026-11-15 · bug-wire-cut · Z over a port: which cable stays a path, where the VCA goes
+Context: Z over an input with several cables puts one VCA in front of it. Choice: the cable spliced through the VCA is
+a main-path link if one is among them (else a main input's, else the first), so the path stays a path; the others are
+deleted and re-wired into the VCA's main input (Add law, the old wire's law / amount on a modulated param is not kept on
+them: the VCA → port cable is the spliced one's). The VCA goes into the innermost group holding all those cables (each
+one's doc::wireContainer), its output 40 world units out from the port on its input side; where that overlaps a block
+(a gain right after an instrument) the overlap rule moves it aside. A port wins over a cable that passes over it; a
+port without cables falls back to the cable under the pointer, then to a status line. Status: decided (reversible:
+ProjectPatchView::insertVcaAtPort, ProjectCanvas::onKey).

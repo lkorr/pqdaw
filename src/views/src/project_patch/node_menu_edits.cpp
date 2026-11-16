@@ -126,6 +126,9 @@ doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdS
   return Error{ErrorCode::InvalidArgument, "nothing to place", {}};
 }
 
+// bug-wire-cut: Z on a port puts the VCA's output this far (world units) out from the port.
+constexpr float kVcaGap = 40.0f;
+
 bool choiceIsInstrument(ViewContext& ctx, const ProjectPatchView::NodeChoice& c) {
   (void)ctx;
   if (c.item == circuit::NodeItem::Rack) return c.id == doc::kInstrumentRack;
@@ -645,6 +648,125 @@ bool ProjectPatchView::insertVca(uint32_t edge) {
   c.id = "vca";
   c.name = "VCA";
   return insertImpl(edge, c, true);
+}
+
+std::vector<doc::WireId> ProjectPatchView::cablesInto(uint32_t node, uint32_t port) const {
+  std::vector<doc::WireId> out;
+  for (const Edge& e : patch_.edges) {
+    if (e.to != node || e.toPort != port || !e.wire.valid() || (e.kind != EdgeKind::Chain && e.kind != EdgeKind::Modulation)) continue;
+    if (std::find(out.begin(), out.end(), e.wire) == out.end()) out.push_back(e.wire);  // (one wire may be drawn in stretches)
+  }
+  return out;
+}
+
+bool ProjectPatchView::insertVcaAtPort(uint32_t node, uint32_t port) {
+  sync();
+  if (node >= patch_.nodes.size() || port >= patch_.nodes[node].inputs.size()) return false;
+  const Node target = patch_.nodes[node];
+  const std::vector<doc::WireId> ids = cablesInto(node, port);
+  const std::string portName = target.inputs[port].label.empty() ? target.inputs[port].name : target.inputs[port].label;
+  if (ids.empty()) {
+    ctx_.setStatus("Z: no cable goes into " + portName);
+    return false;
+  }
+  const doc::Snapshot start = ctx_.doc();
+  const doc::Project& p = *start;
+  std::vector<doc::Wire> olds;
+  for (const doc::WireId id : ids)
+    if (const doc::Wire* w = doc::findWire(p, id)) olds.push_back(*w);
+  if (olds.empty()) return false;
+  // Where the VCA goes: the innermost group holding every one of those cables (each one's doc::wireContainer, as an
+  // insert on it would go; they share the target, so its track).
+  const doc::WireContainer first = doc::wireContainer(p, olds.front());
+  if (!first.track.valid()) {
+    ctx_.setStatus("Insert VCA: the port's track is gone");
+    return false;
+  }
+  const doc::TrackId track = first.track;
+  const doc::Track* tp = doc::findTrackPtr(p, track);
+  if (tp == nullptr) return false;
+  auto holds = [&](doc::DeviceId outer, doc::DeviceId inner) {  // the track's top level holds everything
+    return !outer.valid() || outer == inner || (inner.valid() && doc::groupContains(tp->devices, outer, inner));
+  };
+  std::vector<doc::DeviceId> groups;
+  for (const doc::Wire& w : olds) {
+    const doc::WireContainer c = doc::wireContainer(p, w);
+    groups.push_back(c.track == track ? c.group : doc::DeviceId{});
+  }
+  doc::DeviceId group = groups.front();
+  for (uint32_t guard = 0; group.valid() && guard <= doc::kMaxGroupDepth; ++guard) {
+    if (std::all_of(groups.begin(), groups.end(), [&](doc::DeviceId g) { return holds(group, g); })) break;
+    const doc::Device* d = doc::findDevice(p, group).device;
+    group = d != nullptr ? d->group : doc::DeviceId{};  // outwards until it holds them all
+  }
+  NodeChoice c;
+  c.item = circuit::NodeItem::Module;  // GU.4: the VCA module (its knob at 0.7: × 1), as Z on a cable
+  c.id = "vca";
+  c.name = "VCA";
+  const std::string label = "Insert VCA";
+  Composer k(start, ctx_.store().ids());
+  doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, doc::ops::kOffPath, true);
+  if (!add || add->devices.empty()) {
+    ctx_.setStatus(label + ": " + (add ? std::string("nothing was added") : add.error().message));
+    return false;
+  }
+  const doc::DeviceId id = add->devices.front();
+  if (!k.add(add) || (group.valid() && !k.add(doc::SetDeviceGroup{id, group}))) {
+    ctx_.setStatus(label + ": " + k.why);
+    return false;
+  }
+  // One cable is spliced (its source → the VCA → the port: a main-path link stays a path, through the VCA), the others
+  // go into the VCA's main input instead of the port.
+  size_t spliced = 0;
+  for (size_t i = 0; i < olds.size(); ++i)
+    if (olds[i].chain || (olds[i].param.empty() && !olds[i].toMixer())) {
+      spliced = i;
+      break;
+    }
+  if (!k.add(doc::ops::spliceIntoWire(k.doc(), k.ids(), ctx_.deviceLibrary(), id, olds[spliced].id))) {
+    ctx_.setStatus(label + ": " + k.why);
+    return false;
+  }
+  for (size_t i = 0; i < olds.size(); ++i) {
+    if (i == spliced) continue;
+    const doc::Wire& o = olds[i];
+    const doc::WireId gone[1] = {o.id};
+    if (!k.add(doc::ops::deleteWires(k.doc(), gone)) ||
+        !wire(k, ctx_.deviceLibrary(), o.from, o.noteSource, o.port, id, std::string(doc::kMainPort), o.tap)) {
+      ctx_.setStatus(label + ": " + k.why);
+      return false;
+    }
+  }
+  if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
+  // Beside the port on its input side: the VCA's output a little way out from the port (an orbiting port: along its
+  // direction from its block's centre; else to its left); the overlap rule makes room.
+  sync();
+  const uint32_t n = patch_.nodeOf(id);
+  graph::Point2 at{target.x - kVcaGap, target.y + target.h * 0.5f};
+  if (const ProjectCanvas::PinHit t = [&] {  // the port again, by identity (the rebuild renumbered the nodes)
+        for (uint32_t i = 0; i < patch_.nodes.size(); ++i)
+          if (patch_.nodes[i].kind == target.kind && patch_.nodes[i].device == target.device && patch_.nodes[i].band == target.band) {
+            const int32_t q = patch_.nodes[i].input(target.inputs[port].name);
+            if (q >= 0) return ProjectCanvas::PinHit{i, static_cast<uint32_t>(q), true};
+          }
+        return ProjectCanvas::PinHit{};
+      }();
+      t.valid()) {
+    const Node& tnode = patch_.nodes[t.node];
+    const graph::Point2 pw = canvas_->portWorld(t.node, t.port, true);
+    if (portOrbits(tnode, t.port, true)) {
+      const float cx = tnode.x + tnode.w * 0.5f, cy = tnode.y + tnode.h * 0.5f;
+      const float dx = pw.x - cx, dy = pw.y - cy, len = std::max(1e-3f, std::hypot(dx, dy));
+      at = {pw.x + dx / len * kVcaGap, pw.y + dy / len * kVcaGap};
+    } else {
+      at = {std::min(pw.x, tnode.x) - kVcaGap, pw.y};
+    }
+  }
+  if (n != kNone) {
+    const circuit::MainPorts mp = mainPorts(id);
+    placeAt(id, at, {}, mp.out);
+  }
+  return true;
 }
 
 // ---- splice, dissolve -------------------------------------------------------------------------------------------------

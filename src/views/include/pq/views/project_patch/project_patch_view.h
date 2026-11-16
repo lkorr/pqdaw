@@ -81,6 +81,11 @@
 //                               menu and inserts the chosen node there (a chain cable: as a device of the chain at that
 //                               place; a wire: the wire becomes source → main in, main out → target; a node without an
 //                               input or output connects only what it has). Notes, routes and sends are not cut.
+//                               bug-wire-cut: X CUTS the cable (any document wire): its two halves hang on the pointer —
+//                               a click on an input / control plugs the half from the old output there, on an output the
+//                               half into the old input; empty canvas lets go, Esc restores (ProjectCanvas::startCut).
+//                over a port    bug-wire-cut: Z over an input (a pin, a control, a mixer's input) with cables into it:
+//                               one VCA takes them all and feeds the port (insertVcaAtPort); without cables, nothing.
 //                Shift-drag     a block with a main input and output dragged with Shift held over a cable highlights it;
 //                               releasing splices the block in (as an insert does; a chain block onto its own chain moves).
 //                Ctrl+Delete    dissolves the selected block (it needs a main input and output): it goes, and what fed its
@@ -240,6 +245,10 @@ public:
     bool valid() const noexcept { return node != kNone; }
   };
   PinHit pinAt(ui::Vec2 device) const;
+  // bug-wire-cut: wireRefusal's rules for a cable from output pin `from` (a device's, a terminal's, a track source's)
+  // onto model node `to` (`onPin`: onto its input pin `port`, else its body / a control), without the declared-type
+  // check (doc::declaredWireClash, which connectEnds applies).
+  const char* dropRefusal(const PinHit& from, uint32_t to, bool onPin, uint32_t port) const;
   // The model node under a device point (an expanded device's frame counts), kNone: none.
   uint32_t nodeAt(ui::Vec2 device) const;
   // The band under a device point, kNone: none.
@@ -253,9 +262,10 @@ public:
   // TX.orbit-ports: Port (an orbiting main port dragged along its block's edge: pinned there on release).
   // TX.mixer-look: MaybeMoveMixer / MoveMixer (a mixer pressed outside its controls, then dragged: placed where it is
   // dropped, ProjectPatchView::placeMixer); its controls are its face's (MixerFace: the canvas's face routing).
+  // bug-wire-cut: Cut (a cable cut with X: its halves hang on the pointer, no button held).
   enum class Drag : uint8_t {
     None, Wire, MaybeMoveDevice, MoveDevice, Nudge, MaybeMoveMixer, MoveMixer, Resize, Lane, BackWire, MaybeSplice, Splice, Port,
-    LaneSize, Tap, LaneRuler, Stretch
+    LaneSize, Tap, LaneRuler, Stretch, Cut
   };
   Drag drag() const noexcept { return drag_; }
   // TX.lane-edit: the last press was in a lane (the arrangement's edit chords act there: laneKey).
@@ -307,6 +317,23 @@ public:
   static constexpr float kPortBandPx = 8.0f, kPortSlidePx = 20.0f, kPortLeavePx = 28.0f;
   // TX.node-menu: a cable is held on the pointer after a Ctrl-release (no button held; a click wires the next target).
   bool stickyWire() const noexcept { return sticky_; }
+  // bug-wire-cut: X over a cable (a document wire: not a route or a send) CUTS it at the pointer — the wire goes at once
+  // (a store gesture "Cut Cable" opens) and its two halves hang from their ports to the pointer (no button held, the
+  // loose cable's look, slots kCutSourceSlot / kCutTargetSlot): the SOURCE half (out of the old output: it wants an
+  // input) and the TARGET half (into the old input, param or mixer: it wants an output). A left click on an input pin,
+  // a face's / panel's control or a mixer connects the source half there (a cable dragged from that output: its rules
+  // and refusals; refused, it keeps hanging and the status line says why); on an output pin it connects the target half
+  // from that output (a cable dragged into that input: the same rules). Either order; when both are connected the cut
+  // ends. A click on empty canvas (or a right click) lets whatever still hangs go (not connected). Esc, a lost capture or
+  // focus: the original wire back exactly. The whole cut and its reconnections are ONE undo step.
+  static constexpr ui::Key kCutKey = 'x';
+  static constexpr uint32_t kCutSourceSlot = 1, kCutTargetSlot = 2;
+  bool cutting() const noexcept { return drag_ == Drag::Cut; }
+  bool cutSourceHanging() const noexcept { return cutting() && cutSrc_; }
+  bool cutTargetHanging() const noexcept { return cutting() && cutDst_; }
+  bool startCut(uint32_t edge, ui::Vec2 at);  // false: nothing there to cut (a route, a send; a gesture running)
+  void onFocusChanged(bool focused) override;
+  void onFrame(double now) override;  // (a cut's halves stay on their ports while those slide: an orbiting port)
   // The model edge of the cable under a device point (the canvas's wire hit test: TX.cables' curves), kNone: none.
   uint32_t edgeAt(ui::Vec2 device) const;
   // TX.node-menu-fix1: a node can go into model edge `edge` (Z, Tab, a splice): a chain cable or a wire (not notes,
@@ -484,6 +511,21 @@ private:
   doc::TrackId keepBand_;
   std::string keepFromPort_;
   bool keepFromInput_ = false;
+
+  // bug-wire-cut (startCut): the cut wire as it was (each half keeps its end), which halves still hang, where each hangs
+  // from (world: found again by identity after every rebuild — cutResolve; a port that went with the wire keeps the
+  // last place), the cable's look. from_ is the source half's output pin while it resolves.
+  doc::Wire cutWire_;
+  bool cutSrc_ = false, cutDst_ = false;
+  graph::Point2 cutSrcAt_{0, 0}, cutDstAt_{0, 0};
+  circuit::WireStyle cutStyle_{};
+  PinHit cutEnd(bool source) const;  // the model pin of the cut wire's source / target end (invalid: not in the model)
+  void cutResolve();
+  void updateCut(ui::Vec2 pos);
+  void cutPress(ui::Vec2 pos);
+  bool cutConnectSource(ui::Vec2 pos);  // the source half onto what is at `pos` (true: connected)
+  bool cutConnectTarget(const PinHit& out);  // the target half from output `out`
+  void endCut(bool keep);  // keep: the gesture's edits stay (one undo step), what still hangs goes; else all undone
 };
 
 class ProjectPatchView : public ui::Widget {
@@ -838,6 +880,14 @@ public:
   // Over a cable (a model edge): `c` between its ends; Z: a VCA at 1.
   bool insertOnEdge(uint32_t edge, const NodeChoice& c);
   bool insertVca(uint32_t edge);
+  // bug-wire-cut: Z over an input port (model node `node`'s input `port`: a pin, a face's / panel's control, a mixer's
+  // input) with cables into it: ONE VCA module (at 1) beside the port on its input side (its output there; the overlap
+  // rule makes room), every cable that went into the port now goes into the VCA's main input, the VCA's output into the
+  // port (a main-path cable among them stays a path through the VCA). In the innermost group holding all those cables
+  // (doc::wireContainer). One undo step. False: nothing done (no cable into it: the status line says so).
+  bool insertVcaAtPort(uint32_t node, uint32_t port);
+  // The document wires of the cables into model node `node`'s input `port` a node can go into (Z, Tab), once each.
+  std::vector<doc::WireId> cablesInto(uint32_t node, uint32_t port) const;
   // Shift-splice: `device` (a main input and output) into the cable.
   bool spliceIntoEdge(doc::DeviceId device, uint32_t edge);
   // Ctrl+Delete: `device` goes, its main input's sources wired to its main output's targets.

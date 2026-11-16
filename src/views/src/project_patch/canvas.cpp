@@ -707,6 +707,16 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
       }
     }
   }
+  // bug-wire-cut: a hanging half snapped onto what a click connects it to: the same soft ring.
+  if (drag_ == Drag::Cut)
+    for (const uint32_t slot : {kCutSourceSlot, kCutTargetSlot}) {
+      const std::span<const graph::Point2> lp = looseCablePoints(slot);
+      if (!looseCableSnapped(slot) || lp.empty()) continue;
+      const float cw = std::clamp(6.0f * s, 1.5f * us, 16.0f * us);
+      const Vec2 c = toDevice(lp.back());
+      dl.addCircleFilled(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(th.circuit.selected, 0.16f));
+      dl.addCircleStroke(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(th.circuit.selected, 0.85f), std::max(1.0f, std::round(1.5f * us)));
+    }
   if (drag_ == Drag::Splice && dragNode_ != kNone && dragNode_ < pp.nodes.size()) {
     const Node& n = pp.nodes[dragNode_];
     const Rect r = deviceRect(n.x, n.y, n.w, n.h);
@@ -782,6 +792,28 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
     pointer_ = e.pos;
   }
   if (!scene()) return CircuitCanvas::onPointer(e);
+  // bug-wire-cut: a cut cable's halves hang on the pointer (no button held): a left click connects one (or, on empty
+  // canvas, lets go), a right click lets go; the moves draw them; the wheel and a middle drag still zoom and pan.
+  if (drag_ == Drag::Cut) {
+    if (e.type == ui::PointerType::Down && (e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right)) {
+      swallowUp_ = true;
+      last_ = e.pos;
+      if (e.button == ui::PointerButton::Left) cutPress(e.pos);
+      else endCut(true);
+      return true;
+    }
+    if (e.type == ui::PointerType::Up && swallowUp_) {
+      swallowUp_ = false;
+      return true;
+    }
+    const bool taken = CircuitCanvas::onPointer(e);
+    if (e.type == ui::PointerType::Move || e.type == ui::PointerType::Wheel) {
+      last_ = e.pos;
+      updateCut(e.pos);
+      markDirty();  // (the snap ring, as a drawn-out cable's)
+    }
+    return taken || e.type == ui::PointerType::Move;
+  }
   // TX.resize: S + a left press on a block resizes it (before its face's controls: S-drag over a knob scales the block);
   // S + double-click gives it its own size again.
   if (drag_ == Drag::None && e.type == ui::PointerType::Down && e.button == ui::PointerButton::Left &&
@@ -1212,6 +1244,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::LaneSize:  // TL.1: laneEdgePointer's
         case Drag::Tap:
         case Drag::LaneRuler:  // TL.4: laneRulerPointer's
+        case Drag::Cut:        // bug-wire-cut: (handled first)
         case Drag::None: break;
       }
       return true;
@@ -1341,6 +1374,7 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
         case Drag::LaneSize:  // TL.1: laneEdgePointer's
         case Drag::Tap:
         case Drag::LaneRuler:  // TL.4: laneRulerPointer's
+        case Drag::Cut:        // bug-wire-cut: (handled first)
         case Drag::None: break;
       }
       // TX.orbit-ports: the base canvas's press state ends too (a click's Down went to it to select: until its Up it
@@ -1374,22 +1408,8 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
     const PinHit h = pinAt(pos);
     const uint32_t to = h.valid() && h.input ? h.node : nodeAt(pos);
     if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
-    const Node& t = pp.nodes[to];
-    if (!wireEnd(t)) return "Wire: drop it on a device's parameter or input (or a group's Out, a track's mixer)";
-    const bool onPin = h.valid() && h.input && h.node == to && h.port < t.inputs.size();
-    const bool notes = isTrackSource(a) && isNoteSource(pp, a);  // a MIDI track's note source
-    // TX.all-free-fix1: another track's mixer takes a block's output or a track's own audio (a send-like route).
-    if (notes && t.kind == NodeKind::Mixer && t.band != a.band)
-      return "Wire: a track's notes go into blocks (an instrument's notes, a meta module's input); another track's mixer takes audio";
-    if (notes && t.kind == NodeKind::Mixer && from_.port != 0)
-      return "Wire: a mixer takes audio (a block's output); a note output goes onto a parameter";
-    // The notes (output 0) onto a pin that is not a main input, or onto a block's body (it would mean its param menu).
-    if (notes && from_.port == 0 && t.kind != NodeKind::Mixer && (onPin ? t.inputs[h.port].param : !onPin))
-      return "Wire: the notes go into a main input (an instrument's notes, a meta module's input); a parameter takes a note output (Hz, gate, velocity)";
-    // An instrument's notes input takes notes: a MIDI track's source (output 0) — TX.cross-track (SPEC §15 2026-11-03
-    // "tracks are not walls"): any track's, which then plays it with its voices — no audio, no other output.
-    if (onPin && t.inputs[h.port].name == "notes" && !(notes && from_.port == 0))
-      return "Wire: an instrument's notes input takes a MIDI track's notes (from a track's source)";
+    const bool onPin = h.valid() && h.input && h.node == to && h.port < pp.nodes[to].inputs.size();
+    if (const char* why = dropRefusal(from_, to, onPin, h.port)) return why;
     // WI.3: the two ends' declared types clash (a real output onto a bool input, event vs non-event).
     if (const doc::WireClash c = typeClashAt(pos); c != doc::WireClash::None) return doc::wireClashText(c).data();
     return nullptr;
@@ -1406,6 +1426,31 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   const bool itsReturn = tb.kind == doc::TrackKind::Return && port.size() > 1 && port[0] == 's' &&
                          port.substr(1) == std::to_string(tb.track.value);
   return itsReturn ? nullptr : "Send: drop it on its return's input";
+}
+
+const char* ProjectCanvas::dropRefusal(const PinHit& from, uint32_t to, bool onPin, uint32_t port) const {
+  const ProjectPatch& pp = view_.patch();
+  if (!from.valid() || from.input || from.node >= pp.nodes.size() || to >= pp.nodes.size()) return nullptr;
+  const Node& a = pp.nodes[from.node];
+  if (!(a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)))
+    return "Wire: a mixer's output is a route or a send (a cable starts at a block's output)";
+  const Node& t = pp.nodes[to];
+  if (!wireEnd(t)) return "Wire: drop it on a device's parameter or input (or a group's Out, a track's mixer)";
+  onPin = onPin && port < t.inputs.size();
+  const bool notes = isTrackSource(a) && isNoteSource(pp, a);  // a MIDI track's note source
+  // TX.all-free-fix1: another track's mixer takes a block's output or a track's own audio (a send-like route).
+  if (notes && t.kind == NodeKind::Mixer && t.band != a.band)
+    return "Wire: a track's notes go into blocks (an instrument's notes, a meta module's input); another track's mixer takes audio";
+  if (notes && t.kind == NodeKind::Mixer && from.port != 0)
+    return "Wire: a mixer takes audio (a block's output); a note output goes onto a parameter";
+  // The notes (output 0) onto a pin that is not a main input, or onto a block's body (it would mean its param menu).
+  if (notes && from.port == 0 && t.kind != NodeKind::Mixer && (onPin ? t.inputs[port].param : !onPin))
+    return "Wire: the notes go into a main input (an instrument's notes, a meta module's input); a parameter takes a note output (Hz, gate, velocity)";
+  // An instrument's notes input takes notes: a MIDI track's source (output 0) — TX.cross-track (SPEC §15 2026-11-03
+  // "tracks are not walls"): any track's, which then plays it with its voices — no audio, no other output.
+  if (onPin && t.inputs[port].name == "notes" && !(notes && from.port == 0))
+    return "Wire: an instrument's notes input takes a MIDI track's notes (from a track's source)";
+  return nullptr;
 }
 
 doc::WireClash ProjectCanvas::typeClashAt(Vec2 pos) const {
@@ -1550,6 +1595,7 @@ ui::Cursor ProjectCanvas::cursorAt(Vec2 pos) const {
     case Drag::Tap: return ui::Cursor::ResizeEW;
     case Drag::LaneRuler: return ui::Cursor::ResizeNS;  // TL.4: a drag zooms (sideways: scrolls), as the ruler's
     case Drag::Stretch: return ui::Cursor::ResizeEW;  // DT.3
+    case Drag::Cut: return ui::Cursor::Crosshair;     // bug-wire-cut
     case Drag::None: break;
   }
   // TL.1: over a lane's edges (what a press there grabs).
@@ -1907,6 +1953,11 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
     onInteractionCancelled();
     return true;
   }
+  // bug-wire-cut: while a cut's halves hang, no other edit joins its gesture (Delete, the Ctrl chords); Esc ends it.
+  if (drag_ == Drag::Cut && (e.key == ui::key::kDelete || e.key == ui::key::kBackspace || (mods & ui::mod::kCtrl))) {
+    view_.context().setStatus("Cut: plug the halves in, click empty canvas to let go, or Esc to put the cable back");
+    return true;
+  }
   // TX.lane-edit: after a press in a window, the arrangement's edit chords act there (Ctrl+Shift+M, Delete, Ctrl+D …).
   if (laneFocus_ && view_.laneKey(e)) return true;
   // TX.node-menu: Esc drops a held cable; Tab opens the node menu at the pointer (over a cable: insert there); Z over a
@@ -1919,6 +1970,12 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
     markDirty();
     return true;
   }
+  // bug-wire-cut: X over a cable cuts it (its halves on the pointer).
+  if (drag_ == Drag::None && !sticky_ && mods == ui::mod::kNone && e.key == kCutKey && rect().contains(pointer_))
+    if (const uint32_t edge = edgeAt(pointer_); edge != kNone) {
+      (void)startCut(edge, pointer_);
+      return true;
+    }
   if (drag_ == Drag::None && mods == ui::mod::kNone && (e.key == ui::key::kTab || e.key == 'z')) {
     Vec2 at = pointer_;
     if (!rect().contains(at)) at = {static_cast<float>(rect().x + rect().w / 2), static_cast<float>(rect().y + rect().h / 2)};
@@ -1927,9 +1984,39 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
     // canvas (it did nothing but a status line).
     if (e.key == ui::key::kTab && edge != kNone && !cuttableEdge(edge)) edge = kNone;
     if (e.key == 'z') {
-      if (edge == kNone) return CircuitCanvas::onKey(e);
-      (void)view_.insertVca(edge);
-      return true;
+      // bug-wire-cut: over an input port (a pin, a control, a mixer's input) with cables into it, one VCA takes them all
+      // (the port before a cable that passes over it); over a port without cables, nothing.
+      const ProjectPatch& pp = view_.patch();
+      uint32_t node = kNone, port = 0;
+      if (const PinHit pin = pinAt(at); pin.valid() && pin.input) {
+        node = pin.node;
+        port = pin.port;
+      } else if (const FaceParamHit fh = faceParamAt(at); !fh.param.empty() && fh.node < view_.scene().modelNode.size()) {
+        const uint32_t mn = view_.scene().modelNode[fh.node];
+        if (mn < pp.nodes.size()) {
+          int32_t k = pp.nodes[mn].input(fh.param);
+          if (k < 0 && pp.nodes[mn].groupPanel)  // GU.5: a closed group's panel element: the control inside it
+            if (const doc::Binding b = panel::GroupPanelFace::controlOfKey(pp.nodes[mn].device, fh.param); b.bound())
+              k = pp.nodes[mn].input(b.name + "@" + std::to_string(b.device.value));
+          if (k >= 0) node = mn, port = static_cast<uint32_t>(k);
+        }
+      }
+      const bool cabled = node != kNone && !view_.cablesInto(node, port).empty();
+      if (cabled) {
+        (void)view_.insertVcaAtPort(node, port);
+        return true;
+      }
+      if (edge != kNone) {
+        (void)view_.insertVca(edge);
+        return true;
+      }
+      if (node != kNone) {
+        const Port& q = pp.nodes[node].inputs[port];
+        view_.context().setStatus("Z: no cable goes into " + (q.label.empty() ? q.name : q.label) +
+                                  " (Z over a cable, or over a port with cables, inserts a VCA)");
+        return true;
+      }
+      return CircuitCanvas::onKey(e);
     }
     if (edge != kNone) (void)view_.openInsertMenu(edge, at);
     else (void)view_.openSpawnMenu(at);
@@ -2306,6 +2393,11 @@ void ProjectCanvas::updateGrow() {
 }
 
 void ProjectCanvas::onCaptureLost() {
+  if (drag_ == Drag::Cut) {  // bug-wire-cut: as Esc — the cable back
+    endCut(false);
+    CircuitCanvas::onCaptureLost();
+    return;
+  }
   endLift();  // TX.block-drag: back in place
   if (drag_ == Drag::Port && portPin_ != kNone) releasePort(portPin_);  // TX.orbit-ports: unpinned, as it was
   portPin_ = kNone;
@@ -2327,6 +2419,7 @@ void ProjectCanvas::onCaptureLost() {
 }
 
 void ProjectCanvas::onInteractionCancelled() {
+  if (drag_ == Drag::Cut) endCut(false);  // bug-wire-cut: Esc — the cut cable back exactly, nothing else changed
   endLift();  // TX.block-drag: the blocks back in place, their cables swing back
   if (drag_ == Drag::Port && portPin_ != kNone) releasePort(portPin_);  // TX.orbit-ports: Esc: where it was
   portPin_ = kNone;
@@ -2458,6 +2551,20 @@ void ProjectCanvas::afterRebuild() {
   liftModel_.clear();
   liftScene_.clear();
   if (liftDragging()) liftDrag();
+  // bug-wire-cut: the halves' ports found again (by the wire's ends); a cut whose gesture went (a reset) ends.
+  if (drag_ == Drag::Cut) {
+    if (!view_.context().store().inGesture()) {
+      clearLooseCable(kCutSourceSlot);
+      clearLooseCable(kCutTargetSlot);
+      drag_ = Drag::None;
+      cutSrc_ = cutDst_ = false;
+      from_ = {};
+      markDirty();
+      return;
+    }
+    cutResolve();
+    updateCut(pointer_);
+  }
 }
 
 bool ProjectCanvas::cuttableEdge(uint32_t edge) const noexcept {
@@ -2673,7 +2780,304 @@ void ProjectCanvas::endSplice(bool apply, Vec2 pos) {
   markDirty();
 }
 
+// ---- bug-wire-cut: X cuts a cable, its halves hang on the pointer ----------------------------------------------------
+
+ProjectCanvas::PinHit ProjectCanvas::cutEnd(bool source) const {
+  // The model's own reading of a wire's ends (model.cpp: the edges), so a half hangs where the cable was drawn.
+  const ProjectPatch& pp = view_.patch();
+  const doc::Wire& w = cutWire_;
+  auto key = [](const Node& n, doc::DeviceId d, const std::string& port) {  // a closed group's member: "<port>@<id>"
+    return n.device == d ? port : port + "@" + std::to_string(d.value);
+  };
+  if (source) {
+    uint32_t a = kNone;
+    int32_t k = -1;
+    if (w.fromNoteSource()) {
+      const uint32_t b = pp.bandOf(w.noteSource);
+      if (b == kNone || pp.bands[b].source == kNone) return {};
+      a = pp.bands[b].source;
+      k = w.port.empty() ? 0 : pp.nodes[a].output(w.port);
+    } else {
+      a = pp.nodeOf(w.from);
+      if (a == kNone) return {};
+      if (pp.nodes[a].group && pp.nodes[a].device == w.from && w.port == doc::kGroupInPort && pp.nodes[a].groupOpen) a = pp.nodes[a].groupIn;
+      if (a == kNone || a >= pp.nodes.size()) return {};
+      k = w.port.empty() && pp.nodes[a].device == w.from ? 0 : pp.nodes[a].output(key(pp.nodes[a], w.from, w.port));
+    }
+    if (k < 0 || static_cast<size_t>(k) >= pp.nodes[a].outputs.size()) return {};
+    return {a, static_cast<uint32_t>(k), false};
+  }
+  if (w.toMixer()) {
+    const uint32_t b = pp.bandOf(w.mixer);
+    if (b == kNone || pp.bands[b].mixer == kNone) return {};
+    return {pp.bands[b].mixer, 0, true};
+  }
+  uint32_t b = pp.nodeOf(w.to);
+  if (b == kNone) return {};
+  if (pp.nodes[b].group && pp.nodes[b].device == w.to && w.param == doc::kGroupOutPort && pp.nodes[b].groupOpen) b = pp.nodes[b].groupOut;
+  if (b == kNone || b >= pp.nodes.size()) return {};
+  const Node& n = pp.nodes[b];
+  const int32_t k = w.param.empty() && n.device == w.to ? n.mainIn : n.input(key(n, w.to, w.param));
+  if (k < 0 || static_cast<size_t>(k) >= n.inputs.size()) return {};
+  return {b, static_cast<uint32_t>(k), true};
+}
+
+void ProjectCanvas::cutResolve() {
+  const ProjectPatch& pp = view_.patch();
+  const PinHit s = cutEnd(true);
+  from_ = cutSrc_ ? s : PinHit{};  // the source half's output (wireRefusal, finishWire read it)
+  // (TL.1: a lane's cable leaves its top edge where it was drawn: that place is kept)
+  if (s.valid() && pp.nodes[s.node].kind != NodeKind::Lane) cutSrcAt_ = portWorld(s.node, s.port, false);
+  if (const PinHit t = cutEnd(false); t.valid() && t.port < pp.nodes[t.node].inputs.size()) {
+    const Port& q = pp.nodes[t.node].inputs[t.port];
+    std::optional<graph::Point2> c;
+    const uint32_t sn = t.node < view_.scene().sceneNode.size() ? view_.scene().sceneNode[t.node] : kNone;
+    if (q.anchored && sn != kNone) c = faceControlPoint(sn, q.name, toWorld(pointer_));  // a face's control: its rim
+    cutDstAt_ = c ? *c : portWorld(t.node, t.port, true);
+  }
+}
+
+bool ProjectCanvas::startCut(uint32_t edge, Vec2 at) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  if (drag_ != Drag::None || sticky_ || edge >= pp.edges.size()) return false;
+  const Edge& e = pp.edges[edge];
+  const doc::Wire* w = e.wire.valid() ? doc::findWire(*v.context().doc(), e.wire) : nullptr;
+  if (w == nullptr || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) {
+    v.context().setStatus("Cut: a route or a send is a bus into a mix (X cuts a cable between blocks)");
+    return false;
+  }
+  doc::DocumentStore& st = v.context().store();
+  if (st.inGesture() || !st.beginGesture("Cut Cable")) return false;
+  cutWire_ = *w;
+  cutStyle_ = {};
+  if (const ProjectScene& ps = v.scene(); ps.scene)
+    for (uint32_t i = 0; i < ps.modelEdge.size() && i < ps.scene->wires.size(); ++i)
+      if (ps.modelEdge[i] == edge) {
+        cutStyle_ = ps.scene->wires[i].style;  // both halves look like the cable they were
+        break;
+      }
+  cutSrcAt_ = e.points.empty() ? toWorld(at) : e.points.front();  // (where the cable was drawn: until its ports resolve)
+  cutDstAt_ = e.points.empty() ? toWorld(at) : e.points.back();
+  pointer_ = last_ = at;
+  if (tree()) tree()->setFocus(this);
+  drag_ = Drag::Cut;
+  cutSrc_ = cutDst_ = true;
+  cutResolve();  // (the ports while the wire still holds them: a closed group's member port goes with it)
+  const doc::WireId one[1] = {cutWire_.id};
+  if (!v.apply(doc::ops::deleteWires(*v.context().doc(), one), "Cut")) {
+    drag_ = Drag::None;
+    cutSrc_ = cutDst_ = false;
+    from_ = {};
+    (void)st.cancelGesture();
+    return false;
+  }
+  v.sync();  // (afterRebuild: cutResolve on the model without the wire)
+  updateCut(at);
+  v.context().setStatus("Cut: click an input or a control for the cable from its output, an output for the cable into its input "
+                        "(either order); empty canvas lets go of what still hangs; Esc puts the cable back");
+  markDirty();
+  return true;
+}
+
+void ProjectCanvas::updateCut(Vec2 pos) {
+  if (drag_ != Drag::Cut) return;
+  const ProjectPatch& pp = view_.patch();
+  const graph::Point2 w = toWorld(pos);
+  graph::Point2 srcTo = w, dstTo = w;
+  bool srcSnap = false, dstSnap = false;
+  const PinHit pin = pinAt(pos);
+  // The target half onto an output it may be driven from (a cable dragged into its input: dropRefusal's rules).
+  if (cutDst_ && pin.valid() && !pin.input && pin.node < pp.nodes.size()) {
+    const PinHit t = cutEnd(false);
+    const bool onPin = t.valid() && t.port < pp.nodes[t.node].inputs.size() && !pp.nodes[t.node].inputs[t.port].anchored;
+    if (!t.valid() || dropRefusal(pin, t.node, onPin, t.port) == nullptr) {
+      const Node& a = pp.nodes[pin.node];
+      if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) {
+        dstTo = portWorld(pin.node, pin.port, false);
+        dstSnap = true;
+      }
+    }
+  }
+  // The source half onto what a click connects it to: an input pin, a face's / panel's control (as updateLoose).
+  if (cutSrc_ && from_.valid() && !(pin.valid() && !pin.input) && wireRefusal(pos) == nullptr) {
+    if (pin.valid() && pin.input && pin.node < pp.nodes.size() && pin.node != from_.node && wireEnd(pp.nodes[pin.node]) &&
+        wireTarget(pp.nodes[pin.node], pin.port) != nullptr) {
+      srcTo = portWorld(pin.node, pin.port, true);
+      srcSnap = true;
+    } else if (const FaceParamHit fh = faceParamAt(pos); !fh.param.empty() && fh.node < view_.scene().modelNode.size() &&
+                                                         view_.scene().modelNode[fh.node] != from_.node) {
+      if (const std::optional<graph::Point2> c = faceControlPoint(fh.node, fh.param, cutSrcAt_)) {
+        srcTo = *c;
+        srcSnap = true;
+      }
+    }
+  }
+  // (each damages its own box; a snap's change repaints: setLooseCable)
+  if (cutSrc_) setLooseCable(cutSrcAt_, srcTo, cutStyle_, srcSnap, kCutSourceSlot);
+  if (cutDst_) setLooseCable(cutDstAt_, dstTo, cutStyle_, dstSnap, kCutTargetSlot);
+}
+
+bool ProjectCanvas::cutConnectSource(Vec2 pos) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  const doc::Snapshot before = v.context().doc();
+  // As a cable dragged from that output and released here: its rules and refusals (with the status line's reason).
+  if (from_.valid())
+    if (const char* why = wireRefusal(pos)) {
+      v.context().setStatus(why);
+      return false;
+    }
+  const PinHit pin = pinAt(pos);
+  if (from_.valid() && pin.valid() && pin.input) {
+    // Onto an input pin: finishWire's own connection (a main input, an instrument's notes, a closed group's member).
+    if (cutWire_.fromNoteSource() && cutWire_.tap)  // TL.1: it leaves the lane where it did
+      if (const uint32_t b = pp.bandOf(cutWire_.noteSource); b != kNone)
+        v.pendingTap_ = ProjectPatchView::PendingTap{cutWire_.noteSource, pp.bands[b].x0 + *cutWire_.tap};
+    menuFromDrop_ = false;
+    finishWire(pos);
+    v.pendingTap_.reset();
+  } else {
+    // A mixer or a control (wireTargetAt: finishWire's targets, never its param menu), or an input pin while the
+    // source's port is not in the model (a closed group's member port shows only while a cable leaves it): the wire
+    // from the document's own source end.
+    doc::Wire nw;
+    nw.from = cutWire_.from;
+    nw.noteSource = cutWire_.noteSource;
+    nw.port = cutWire_.port;
+    nw.tap = cutWire_.tap;
+    if (const uint32_t to = nodeAt(pos); to != kNone && pp.nodes[to].kind == NodeKind::Mixer) {
+      nw.mixer = pp.bands[pp.nodes[to].band].track;
+    } else {
+      const ProjectPatchView::WireTarget t = v.wireTargetAt(pos);
+      if (!t.device.valid()) {
+        v.context().setStatus("Cut: drop the cable on a device's parameter or input (or a group's Out, a track's mixer)");
+        return false;
+      }
+      nw.to = t.device;
+      nw.param = t.param;
+    }
+    (void)v.connectEnds(std::move(nw));
+  }
+  v.sync();
+  return v.context().doc() != before;
+}
+
+bool ProjectCanvas::cutConnectTarget(const PinHit& out) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  if (!out.valid() || out.input || out.node >= pp.nodes.size() || out.port >= pp.nodes[out.node].outputs.size()) return false;
+  const Node& a = pp.nodes[out.node];
+  // As a cable dragged into the old input from that output: the same rules (dropRefusal), then the declared types
+  // (connectEnds).
+  const PinHit t = cutEnd(false);
+  const bool onPin = t.valid() && t.port < pp.nodes[t.node].inputs.size() && !pp.nodes[t.node].inputs[t.port].anchored;
+  const char* why = t.valid() ? dropRefusal(out, t.node, onPin, t.port) : nullptr;
+  if (why == nullptr && !(a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)))
+    why = "Wire: a mixer's output is a route or a send (a cable starts at a block's output)";
+  if (why != nullptr) {
+    v.context().setStatus(why);
+    return false;
+  }
+  doc::Wire nw;
+  nw.to = cutWire_.to;
+  nw.param = cutWire_.param;
+  nw.mixer = cutWire_.mixer;
+  nw.port = isTrackSource(a) && out.port == 0 ? std::string() : a.outputs[out.port].name;  // a track's own signal: kMainPort
+  if (isTrackSource(a)) {
+    nw.noteSource = pp.bands[a.band].track;
+  } else {
+    nw.from = a.device;
+    if (const size_t at = nw.port.rfind('@'); a.group && at != std::string::npos) {  // a closed group's member
+      nw.from = doc::DeviceId{static_cast<uint32_t>(std::stoul(nw.port.substr(at + 1)))};
+      nw.port.resize(at);
+    }
+  }
+  const doc::Snapshot before = v.context().doc();
+  (void)v.connectEnds(std::move(nw));
+  v.sync();
+  return v.context().doc() != before;
+}
+
+void ProjectCanvas::cutPress(Vec2 pos) {
+  ProjectPatchView& v = view_;
+  const ProjectPatch& pp = v.patch();
+  const PinHit pin = pinAt(pos);
+  const uint32_t node = nodeAt(pos);
+  const bool output = pin.valid() && !pin.input;
+  const bool input = !output && ((pin.valid() && pin.input) || !faceParamAt(pos).param.empty() ||
+                                 (node != kNone && pp.nodes[node].kind == NodeKind::Mixer));
+  const bool body = node != kNone && !(pp.nodes[node].group && pp.nodes[node].groupOpen);  // (an opened capsule: space)
+  if (!output && !input && !body) {  // empty canvas: what still hangs goes
+    endCut(true);
+    return;
+  }
+  v.context().setStatus("");  // (a refusal below says why)
+  bool made = false;
+  if (output) {
+    if (!cutDst_) {
+      v.context().setStatus("Cut: the cable from the output is waiting for an input — click an input, a param pin or a control");
+    } else if (cutConnectTarget(pin)) {
+      cutDst_ = false;
+      dropLooseCable(kCutTargetSlot);  // the new cable takes its motion over
+      made = true;
+    }
+  } else if (input) {
+    if (!cutSrc_) {
+      v.context().setStatus("Cut: the cable into the input is waiting for an output — click an output port");
+    } else if (cutConnectSource(pos)) {
+      cutSrc_ = false;
+      dropLooseCable(kCutSourceSlot);
+      made = true;
+    }
+  } else {
+    v.context().setStatus("Cut: click a port or a control to connect a half, empty canvas to let go");
+  }
+  if (!made && (output || input) && v.context().status().empty())
+    v.context().setStatus("Cut: that does not take this cable (it keeps hanging)");
+  if (!cutSrc_ && !cutDst_) {
+    endCut(true);
+    return;
+  }
+  cutResolve();
+  updateCut(pos);
+}
+
+void ProjectCanvas::endCut(bool keep) {
+  if (drag_ != Drag::Cut) return;
+  drag_ = Drag::None;
+  // Halves still hanging go at once (a connected one was dropped: its new cable took its motion over).
+  if (cutSrc_) clearLooseCable(kCutSourceSlot);
+  if (cutDst_) clearLooseCable(kCutTargetSlot);
+  cutSrc_ = cutDst_ = false;
+  from_ = {};
+  // keep: one undo step (the cut and what its halves connected); Esc: the cable back as it was, nothing else changed.
+  doc::DocumentStore& st = view_.context().store();
+  if (st.inGesture()) (void)(keep ? st.commitGesture() : st.cancelGesture());
+  view_.sync();
+  hoverCursor_ = pressCursor(pointer_);
+  markDirty();
+}
+
+void ProjectCanvas::onFrame(double now) {
+  CircuitCanvas::onFrame(now);
+  if (drag_ == Drag::Cut) {  // an orbiting port turns to its remaining cables after the cut: its half follows it
+    cutResolve();
+    updateCut(last_);
+  }
+}
+
+void ProjectCanvas::onFocusChanged(bool focused) {
+  CircuitCanvas::onFocusChanged(focused);
+  if (!focused && drag_ == Drag::Cut) endCut(false);  // focus went elsewhere: as Esc (a gesture must not stay open)
+}
+
 ui::InfoText ProjectCanvas::info() const {
+  if (drag_ == Drag::Cut)  // bug-wire-cut
+    return {"Cut cable",
+            "Click an input, a param pin or a control: the half from the old output connects there. Click an output: the half "
+            "into the old input connects from it. Either order. Empty canvas (or a right click) lets go of what still hangs; "
+            "Esc puts the cable back. One undo step."};
   if (drag_ == Drag::Resize || (drag_ == Drag::None && resizeHeld() && resizableAt(pointer_) != kNone)) {  // TX.resize
     const ProjectPatch& pp = view_.patch();
     const uint32_t at = drag_ == Drag::Resize ? (resizeTrack_.valid() ? kNone : pp.nodeOf(resizeDevice_)) : resizableAt(pointer_);
@@ -2695,8 +3099,17 @@ ui::InfoText ProjectCanvas::info() const {
   const ProjectPatchView::Readout& ro = view_.readout();
   if (ro.edge != kNone) {
     // TX.node-menu-fix1: what the keys do on this cable (the hover halo shows which one).
-    if (!cuttableEdge(ro.edge)) return {ro.title, ro.value};
-    infoTitle_ = ro.value + "  ·  Z inserts a VCA at x1, Tab inserts a node, a block Shift-dragged onto it is spliced in.";
+    if (!cuttableEdge(ro.edge)) {
+      const ProjectPatch& pp = view_.patch();
+      const bool wire = ro.edge < pp.edges.size() && pp.edges[ro.edge].wire.valid() && pp.edges[ro.edge].kind != EdgeKind::Route &&
+                        pp.edges[ro.edge].kind != EdgeKind::Send;
+      if (!wire) return {ro.title, ro.value};
+      infoTitle_ = ro.value + "  ·  X cuts it (its two halves on the pointer, to re-plug).";
+      return {ro.title, infoTitle_};
+    }
+    infoTitle_ = ro.value +
+                 "  ·  X cuts it (its two halves on the pointer, to re-plug), Z inserts a VCA at x1, Tab inserts a node, a block "
+                 "Shift-dragged onto it is spliced in.";
     return {ro.title, infoTitle_};
   }
   // TL.1: a lane's edges — its cables' ends, its port chips (a MIDI lane's notes and note outputs), its bottom edge.

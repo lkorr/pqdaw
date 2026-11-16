@@ -237,13 +237,19 @@ public:
   // with the selection halo). Call it on every move; frames run only while it moves. dropLooseCable(): released — the
   // new scene's cable from the same port whose other end is nearest its free end takes its motion over (no pop to the
   // rest shape); if none does, it goes at the next frame. clearLooseCable(): gone at once (a cancelled drag).
-  void setLooseCable(graph::Point2 from, graph::Point2 to, const WireStyle& style, bool snapped);
-  void dropLooseCable();
+  // bug-wire-cut: kLooseSlots of them at once (`slot`; a cut cable's two halves hang on slots 1 and 2). Slot 0 is taken
+  // over by any new scene's fitting cable; the others only when dropped (dropLooseCable, against the scene as it is
+  // then), so a half still hanging is never taken by the cable the other half just made. clearLooseCable() with no
+  // slot clears them all.
+  static constexpr uint32_t kLooseSlots = 3;
+  void setLooseCable(graph::Point2 from, graph::Point2 to, const WireStyle& style, bool snapped, uint32_t slot = 0);
+  void dropLooseCable(uint32_t slot = 0);
   void clearLooseCable();
-  bool looseCable() const noexcept;
-  bool looseCableSnapped() const noexcept;
-  bool looseCableMoving() const noexcept;
-  std::span<const graph::Point2> looseCablePoints() const noexcept;
+  void clearLooseCable(uint32_t slot);
+  bool looseCable(uint32_t slot = 0) const noexcept;
+  bool looseCableSnapped(uint32_t slot = 0) const noexcept;
+  bool looseCableMoving(uint32_t slot = 0) const noexcept;
+  std::span<const graph::Point2> looseCablePoints(uint32_t slot = 0) const noexcept;
   // The glow: the host fills `levels` (0 = silent … 1) for the listed scene wires from its live sources; whether any
   // may be non-zero now (the transport plays, a source is active). wakeCables(): a source may have become live — poll
   // now, and keep polling while it is live and once after.
