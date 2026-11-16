@@ -49,7 +49,7 @@ enum SsOpt : uint32_t {
   sFft, sReassign, sConsensus, sLo, sRibAtt, sRibRel, sRibCoh, sScale, sSpan,
   sMode, sYaw, sPitch, sRoll, sZoom, sPanX, sPanY, sFree, sPersp, sFade, sDecay, sAngle, sDot, sGlow, sGlowR, sDetail,
   sRibFill, sRibWidth, sRibLine, sGate, sPrec, sSmoothY, sGrid, sCentre, sLabels, sCage, sFloor, sCeil, sGamma, sCFade,
-  sAgeFade, sSource, sMap, sBase, sS2, sS3, sS4, sS5, sCount
+  sAgeFade, sSource, sMap, sBase, sS2, sS3, sS4, sS5, sColS1, sColS2, sColS3, sColS4, sColS5, sColS6, sCount
 };
 constexpr const char* kLoNames[] = {"1x (fastest)", "2x", "4x", "8x (finest)"};
 constexpr const char* kModeNames[] = {"Point cloud", "Ribbon"};
@@ -107,6 +107,13 @@ const Opt kSsOpts[sCount] = {
     {"s3", "Stop 3", -70, -140, 12, Opt::Number, nullptr, "%.0f dB", 1},
     {"s4", "Stop 4", -55, -140, 12, Opt::Number, nullptr, "%.0f dB", 1},
     {"s5", "Stop 5", -35, -140, 12, Opt::Number, nullptr, "%.0f dB", 1},
+    // VZ.10: the Custom ramp's stop colours.
+    sheet::colourOpt("c1", "Stop 1 colour"),
+    sheet::colourOpt("c2", "Stop 2 colour"),
+    sheet::colourOpt("c3", "Stop 3 colour"),
+    sheet::colourOpt("c4", "Stop 4 colour"),
+    sheet::colourOpt("c5", "Stop 5 colour"),
+    sheet::colourOpt("c6", "Stop 6 colour"),
 };
 const cam3d::NamedView kViews[4] = {{"SPEC", 0.0f, 0.0f}, {"IMAGE", 90.0f, 0.0f}, {"PAN", 0.0f, 90.0f}, {"3D", 45.0f, 15.0f}};
 enum SsPart : int32_t { kSnap0 = kOwnBase, kCamPart = kOwnBase + 4 };
@@ -181,6 +188,15 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis) {
       for (uint32_t i = sFft; i <= sSpan; ++i) out.push_back(i);
+      return;
+    }
+    if (tab == sheet::kColours) {
+      out.push_back(sSource);
+      if (opts_.choice(sSource) != kBandRamp) {
+        out.push_back(sMap);
+        if (opts_.choice(sMap) == ui::Gradient::kCustomIndex)
+          out.insert(out.end(), {sBase, sColS1, sColS2, sColS3, sColS4, sColS5, sColS6});
+      }
       return;
     }
     for (uint32_t i = sMode; i <= sAngle; ++i) out.push_back(i);
@@ -408,7 +424,8 @@ private:
     if (opts_.choice(sMap) == ui::Gradient::kCustomIndex) {
       float st[4];
       for (int i = 0; i < 4; ++i) st[i] = static_cast<float>(opts_[sS2 + static_cast<uint32_t>(i)]);
-      ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(sBase), 0, ui::kColormapCount - 1)), st, levelAxis());
+      const ui::StopColours own = sheet::stopColours(opts_, sColS1, opts_.choice(sBase));
+      ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(sBase), 0, ui::kColormapCount - 1)), st, levelAxis(), &own);
       return custom_.lut;
     }
     return ui::colormapLut(static_cast<ui::Colormap>(std::clamp(opts_.choice(sMap), 0, ui::kColormapCount - 1)));

@@ -43,7 +43,8 @@ using sheet::kOnOff;
 enum WfOpt : uint32_t {
   wFft, wMulti, wChan, wSlope, wScale, wAtt, wRel, wSpan,
   wYaw, wPitch, wRoll, wZoom, wPanX, wPanY, wFree, wPersp, wFade, wHeight, wSolid, wShade, wLine, wGlow, wGlowAmt, wGrid,
-  wLabels, wCage, wFloor, wCeil, wGamma, wColour, wMap, wBase, wS2, wS3, wS4, wS5, wSat, wHue, wCount
+  wLabels, wCage, wFloor, wCeil, wGamma, wColour, wMap, wBase, wS2, wS3, wS4, wS5, wSat, wHue, wColS1, wColS2, wColS3, wColS4,
+  wColS5, wColS6, wColCurve, wCount
 };
 constexpr const char* kChanNames[] = {"Mono (L+R)", "Left", "Right", "Mid", "Side"};
 constexpr const char* kSlopeNames[] = {"Off", "3 dB/oct", "4.5 dB/oct", "6 dB/oct"};
@@ -90,6 +91,14 @@ const Opt kWfOpts[wCount] = {
     {"s5", "Stop 5", -12, -140, 12, Opt::Number, nullptr, "%.0f dB", 1},
     {"sat", "Saturation", 1, 0, 1, Opt::Number, nullptr, "%.2f", 0.01},
     {"hue", "Hue rotate", 0, -180, 180, Opt::Number, nullptr, "%.0f deg", 1},
+    // VZ.10: the Custom ramp's stop colours, PQ waterfall's curve colour (Colour by Solid).
+    sheet::colourOpt("c1", "Stop 1 colour"),
+    sheet::colourOpt("c2", "Stop 2 colour"),
+    sheet::colourOpt("c3", "Stop 3 colour"),
+    sheet::colourOpt("c4", "Stop 4 colour"),
+    sheet::colourOpt("c5", "Stop 5 colour"),
+    sheet::colourOpt("c6", "Stop 6 colour"),
+    sheet::colourOpt("ccurve", "Solid colour"),
 };
 const cam3d::NamedView kViews[4] = {{"SPEC", 0.0f, 0.0f}, {"SIDE", 90.0f, 0.0f}, {"TOP", 0.0f, 90.0f}, {"3D", 45.0f, 15.0f}};
 enum WfPart : int32_t { kSnap0 = kOwnBase, kCamPart = kOwnBase + 4 };
@@ -167,6 +176,17 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis) {
       for (uint32_t i = wFft; i <= wSpan; ++i) out.push_back(i);
+      return;
+    }
+    if (tab == sheet::kColours) {
+      out.push_back(wColour);
+      const int col = opts_.choice(wColour);
+      if (col <= 1) {
+        out.push_back(wMap);
+        if (opts_.choice(wMap) == ui::Gradient::kCustomIndex)
+          for (uint32_t i = wBase; i <= wColS6; i = i == wBase ? wColS1 : i + 1) out.push_back(i);
+      }
+      if (col == 5) out.push_back(wColCurve);
       return;
     }
     for (uint32_t i = wYaw; i <= wSolid; ++i) out.push_back(i);
@@ -371,6 +391,7 @@ void WaterfallFace::rebuildPalette() {
   constexpr int kPalF = 64, kPalL = 64;
   std::vector<double> key = {opts_[wColour], opts_[wMap], opts_[wBase], opts_[wS2], opts_[wS3], opts_[wS4], opts_[wS5],
                              opts_[wFloor], opts_[wCeil], opts_[wGamma], opts_[wSat], opts_[wHue]};
+  for (uint32_t i = wColS1; i <= wColCurve; ++i) key.push_back(opts_[i]);
   if (key == palKey_ && pal_.size() == static_cast<size_t>(kPalF) * kPalL) return;
   palKey_ = key;
   pal_.resize(static_cast<size_t>(kPalF) * kPalL);
@@ -379,12 +400,15 @@ void WaterfallFace::rebuildPalette() {
   if (map == ui::Gradient::kCustomIndex) {
     float st[4];
     for (int i = 0; i < 4; ++i) st[i] = static_cast<float>(opts_[wS2 + static_cast<uint32_t>(i)]);
-    ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(wBase), 0, ui::kColormapCount - 1)), st, levelAxis());
+    const ui::StopColours own = sheet::stopColours(opts_, wColS1, opts_.choice(wBase));
+    ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(wBase), 0, ui::kColormapCount - 1)), st, levelAxis(), &own);
     lut = &custom_.lut;
   } else {
     lut = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(map, 0, ui::kColormapCount - 1)));
   }
-  const Rgb curve{0.43f, 0.85f, 1.0f};
+  Rgb curve{0.43f, 0.85f, 1.0f};
+  if (const Rgba cc = opts_.colour(wColCurve, ui::rgba(110, 217, 255)); opts_[wColCurve] >= 0.0)
+    curve = {ui::redOf(cc) / 255.0f, ui::greenOf(cc) / 255.0f, ui::blueOf(cc) / 255.0f};
   const float rot = static_cast<float>(opts_[wHue]) / 360.0f, sat = static_cast<float>(opts_[wSat]);
   auto fromLut = [&](float t) {
     const Rgba c = ui::lutAt(*lut, t);

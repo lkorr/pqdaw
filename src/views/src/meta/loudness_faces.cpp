@@ -56,11 +56,18 @@ bool valid(float v) noexcept { return v > -119.0f; }
 constexpr Rgba kUnder = ui::rgba(104, 176, 255), kOn = ui::rgba(116, 214, 150), kOver = ui::rgba(255, 116, 96);
 constexpr Rgba kMomentary = ui::rgba(150, 190, 235), kShortTerm = ui::rgba(120, 225, 175), kIntegrated = ui::rgba(255, 205, 120);
 constexpr Rgba kPlate = ui::rgba(10, 12, 16, 200);
-// The under / on / over blend: ±1 LU reads fully on target, beyond ±3 LU fully under / over.
-Rgba stateColour(float deltaLu) noexcept {
-  if (deltaLu >= 0.0f) return ui::lerp(kOn, kOver, std::clamp((deltaLu - 1.0f) * 0.5f, 0.0f, 1.0f));
-  return ui::lerp(kOn, kUnder, std::clamp((-deltaLu - 1.0f) * 0.5f, 0.0f, 1.0f));
-}
+// The under / on / over colours (VZ.10: each an option; PQ's until chosen) and their blend: ±1 LU reads fully on target,
+// beyond ±3 LU fully under / over.
+struct StatePal {
+  Rgba under = kUnder, on = kOn, over = kOver;
+  StatePal() = default;
+  StatePal(const sheet::Values& o, uint32_t first) noexcept
+      : under(o.colour(first, kUnder)), on(o.colour(first + 1, kOn)), over(o.colour(first + 2, kOver)) {}
+  Rgba state(float deltaLu) const noexcept {
+    if (deltaLu >= 0.0f) return ui::lerp(on, over, std::clamp((deltaLu - 1.0f) * 0.5f, 0.0f, 1.0f));
+    return ui::lerp(on, under, std::clamp((-deltaLu - 1.0f) * 0.5f, 0.0f, 1.0f));
+  }
+};
 void fmtLufs(float v, char* out, size_t n) {
   if (!valid(v)) std::snprintf(out, n, "--.-");
   else std::snprintf(out, n, "%.1f", v);
@@ -125,7 +132,10 @@ private:
 
 // ---- the Level Meter (PQ level_meter) -------------------------------------------------------------------------------
 
-enum LevelOpt : uint32_t { lRms, lFall, lHold, lInf, lClip, lClipReset, lFloor, lReadouts, lZones, lCount };
+enum LevelOpt : uint32_t {
+  lRms, lFall, lHold, lInf, lClip, lClipReset, lFloor, lReadouts, lZones, lColL, lColR, lColWarn, lColHot, lColCap, lColClip,
+  lCount
+};
 const Opt kLevelOpts[lCount] = {
     {"rms", "RMS window", 300, 50, 1000, Opt::LogNumber, nullptr, "%.0f ms"},
     {"fall", "Peak fall", 20, 5, 60, Opt::LogNumber, nullptr, "%.0f dB/s"},
@@ -136,6 +146,13 @@ const Opt kLevelOpts[lCount] = {
     {"floor", "Floor", -60, -90, -24, Opt::Number, nullptr, "%.0f dB", 1.0},
     {"ro", "Readouts", 1, 0, 1, Opt::Toggle, kOnOff},
     {"zones", "Zone colours", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.10: PQ level_meter's colour slots (the theme's until chosen).
+    sheet::colourOpt("cl", "Left bar"),
+    sheet::colourOpt("cr", "Right bar"),
+    sheet::colourOpt("cwarn", "Zone over -18"),
+    sheet::colourOpt("chot", "Zone over -6"),
+    sheet::colourOpt("ccap", "Peak cap"),
+    sheet::colourOpt("cclip", "Clip lamp"),
 };
 
 class LevelMeterFace final : public LoudnessFace {
@@ -160,8 +177,10 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis)
       for (uint32_t i = lRms; i <= lClipReset; ++i) out.push_back(i);
+    else if (tab == sheet::kColours)
+      for (uint32_t i = lColL; i < lCount; ++i) out.push_back(i);
     else
-      for (uint32_t i = lFloor; i < lCount; ++i) out.push_back(i);
+      for (uint32_t i = lFloor; i < lColL; ++i) out.push_back(i);
   }
   bool hasClear() const noexcept override { return false; }  // the lamps are the reset (PQ)
 
@@ -202,9 +221,11 @@ protected:
     const bool readouts = opts_.on(lReadouts) && labels, zones = opts_.on(lZones);
     const float span = -floorDb;
     auto frac = [&](float db) { return std::clamp((db - floorDb) / span, 0.0f, 1.0f); };
+    const Rgba hot = opts_.colour(lColHot, kMeterHot), warn = opts_.colour(lColWarn, kMeterWarn);
+    const Rgba cap = opts_.colour(lColCap, kMeterPeakCap), lampOn = opts_.colour(lColClip, kMeterLampOn);
     auto zone = [&](float db, Rgba base, uint32_t alpha) {
-      if (zones && db > kMeterHotDb) return ui::withAlpha(kMeterHot, alpha);
-      if (zones && db > kMeterWarnDb) return ui::withAlpha(kMeterWarn, alpha);
+      if (zones && db > kMeterHotDb) return ui::withAlpha(hot, alpha);
+      if (zones && db > kMeterWarnDb) return ui::withAlpha(warn, alpha);
       return ui::withAlpha(base, alpha);
     };
     const Rect lamps = lampRow();
@@ -212,7 +233,7 @@ protected:
     const float w = kW - 16.0f, gap = std::clamp(w * 0.18f, 10.0f, 18.0f);
     const float barW = (w - gap - 4.0f) * 0.5f;
     const float x0[2] = {10.0f, 10.0f + barW + gap};
-    const Rgba body[2] = {kWaveform, kWaveformR};
+    const Rgba body[2] = {opts_.colour(lColL, kWaveform), opts_.colour(lColR, kWaveformR)};
     // dB rules across both bars every 6 dB, labelled every 12 in the centre gap.
     for (float g = 0.0f; g >= floorDb - 0.01f; g -= 6.0f) {
       const float y = bot - frac(g) * (bot - top);
@@ -230,14 +251,14 @@ protected:
         p.roundedRect({well.x0, bot - frac(r_.rmsDb[c]) * (bot - top), well.x1, bot}, 1.5f, zone(r_.rmsDb[c], body[c], kMeterBodyAlpha));
       if (valid(r_.peakDb[c]) && r_.peakDb[c] > floorDb) {
         const float y = bot - frac(r_.peakDb[c]) * (bot - top);
-        p.roundedRect({well.x0, y - 0.75f, well.x1, y + 0.75f}, 0.0f, zone(r_.peakDb[c], kMeterPeakCap, 255));
+        p.roundedRect({well.x0, y - 0.75f, well.x1, y + 0.75f}, 0.0f, zone(r_.peakDb[c], cap, 255));
       }
       if (valid(r_.holdDb[c]) && r_.holdDb[c] > floorDb) {
         const float y = bot - frac(r_.holdDb[c]) * (bot - top);
         p.roundedRect({well.x0, y - 0.75f, well.x1, y}, 0.0f, kMeterHold);
       }
       const Rect lamp{well.x0, lamps.y0, well.x1, lamps.y1};
-      p.roundedRect(lamp, 1.5f, r_.clip[c] ? kMeterLampOn : kMeterLampOff);
+      p.roundedRect(lamp, 1.5f, r_.clip[c] ? lampOn : kMeterLampOff);
       if (labels && r_.clip[c] && r_.clipCount[c] > 1) {
         char n[8];
         std::snprintf(n, sizeof n, "%u", std::min<uint32_t>(r_.clipCount[c], 99));
@@ -248,7 +269,7 @@ protected:
         if (valid(r_.peakDb[c])) std::snprintf(buf, sizeof buf, "%.1f", std::max(r_.peakDb[c], -99.9f));
         else std::snprintf(buf, sizeof buf, "-inf");
         const float cx = 0.5f * (well.x0 + well.x1);
-        p.text({cx, bot + 6.0f}, buf, 6.0f, r_.clip[c] ? kMeterLampOn : th.device.displayText);
+        p.text({cx, bot + 6.0f}, buf, 6.0f, r_.clip[c] ? lampOn : th.device.displayText);
         p.text({cx, bot + 14.0f}, c == 0 ? "L" : "R", 5.0f, kGridLabel);
       }
     }
@@ -257,7 +278,9 @@ protected:
 
 // ---- the LUFS Meter (PQ lufs_meter) ---------------------------------------------------------------------------------
 
-enum LufsOpt : uint32_t { uPreset, uTarget, uTruePeak, uAuto, uAutoLu, uAutoSec, uLo, uHi, uTrace, uHistory, uCount };
+enum LufsOpt : uint32_t {
+  uPreset, uTarget, uTruePeak, uAuto, uAutoLu, uAutoSec, uLo, uHi, uTrace, uHistory, uColUnder, uColOn, uColOver, uColTrace, uCount
+};
 const Opt kLufsOpts[uCount] = {
     {"preset", "Target preset", 0, 0, 4, Opt::Choice, kPresetNames},
     {"target", "Target", -8, -36, 0, Opt::Number, nullptr, "%.1f LUFS", 0.5},
@@ -269,6 +292,11 @@ const Opt kLufsOpts[uCount] = {
     {"hi", "Scale top", 0, -20, 6, Opt::Number, nullptr, "%.0f LUFS", 1.0},
     {"trace", "History trace", 1, 0, 1, Opt::Toggle, kOnOff},
     {"hist", "Trace length", 60, 10, 180, Opt::Number, nullptr, "%.0f s", 5.0},
+    // VZ.10: PQ lufs_meter's colour slots.
+    sheet::colourOpt("cunder", "Under target"),
+    sheet::colourOpt("con", "On target"),
+    sheet::colourOpt("cover", "Over target"),
+    sheet::colourOpt("ctrace", "History trace"),
 };
 
 // The target options shared by the LUFS Meter and the History: a preset sets the target, a target edit leaves the
@@ -302,8 +330,10 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis)
       for (uint32_t i = uPreset; i <= uAutoSec; ++i) out.push_back(i);
+    else if (tab == sheet::kColours)
+      for (uint32_t i = uColUnder; i < uCount; ++i) out.push_back(i);
     else
-      for (uint32_t i = uLo; i < uCount; ++i) out.push_back(i);
+      for (uint32_t i = uLo; i < uColUnder; ++i) out.push_back(i);
   }
   uint32_t historyPoints() const noexcept override { return opts_.on(uTrace) ? static_cast<uint32_t>(opts_[uHistory] * 10.0) : 0u; }
   void cleared() override { anim_.primed = false; }
@@ -344,6 +374,7 @@ protected:
   }
 
   void paintBody(ui::FacePainter& p, const ui::Theme& th, bool labels) override {
+    pal_ = StatePal(opts_, uColUnder);
     const float target = targetLufs(), lo_ = lo(), hi_ = hi();
     const Rect t = tank();
     auto yOf = [&](float v) { return t.y1 - std::clamp((v - lo_) / (hi_ - lo_), 0.0f, 1.0f) * (t.y1 - t.y0); };
@@ -357,9 +388,9 @@ protected:
         const float v = hist_[i].shortTerm;
         pts_.push_back({t.x1 - static_cast<float>(hist_.size() - 1 - i) / maxN * (t.x1 - t.x0), yOf(valid(v) ? v : lo_)});
       }
-      p.polyline(pts_, 0.8f, ui::rgba(255, 255, 255, 105));
+      p.polyline(pts_, 0.8f, opts_.colour(uColTrace, ui::rgba(255, 255, 255, 105)));
     }
-    const Rgba fill = stateColour(anim_.momentary - target);
+    const Rgba fill = pal_.state(anim_.momentary - target);
     if (valid(anim_.momentary) && anim_.momentary > lo_) {
       const float fy = yOf(anim_.momentary);
       if (t.y1 - fy > 0.5f) {
@@ -377,9 +408,9 @@ protected:
     }
     {
       const float zy = std::min(yOf(0.0f) + 0.5f, t.y1 - 0.5f);  // 0 LUFS (often the top: nudged inside)
-      p.line({t.x0, zy}, {t.x1, zy}, 0.75f, ui::mulAlpha(kOver, 0.7f));
+      p.line({t.x0, zy}, {t.x1, zy}, 0.75f, ui::mulAlpha(pal_.over, 0.7f));
       const float ty = yOf(target);
-      if (ty > t.y0 && ty < t.y1) p.line({t.x0, ty}, {t.x1, ty}, 1.2f, ui::mulAlpha(kOn, 0.95f));
+      if (ty > t.y0 && ty < t.y1) p.line({t.x0, ty}, {t.x1, ty}, 1.2f, ui::mulAlpha(pal_.on, 0.95f));
       if (valid(r_.maxShortTerm) && r_.maxShortTerm > lo_) {
         const float my = yOf(r_.maxShortTerm);
         const float inset = 0.2f * (t.x1 - t.x0);
@@ -389,7 +420,7 @@ protected:
     const float cx = 0.5f * (t.x0 + t.x1);
     const bool head = valid(anim_.shortTerm);
     const float delta = head ? anim_.shortTerm - target : 0.0f;
-    const Rgba stCol = head ? stateColour(delta) : ui::rgba(150, 150, 165, 200);
+    const Rgba stCol = head ? pal_.state(delta) : ui::rgba(150, 150, 165, 200);
     if (labels) {
       char buf[24];
       fmtLufs(valid(anim_.momentary) && anim_.momentary > lo_ ? anim_.momentary : kNoLoudness, buf, sizeof buf);
@@ -411,7 +442,7 @@ protected:
         p.text({cx, yy + 3.75f}, buf, 5.5f, ui::rgba(255, 255, 255, 220));
       }
     }
-    if (r_.truePeakDb > -1.0f) p.disc({t.x1 - 3.5f, t.y0 + 3.5f}, 1.8f, kOver);  // over −1 dBTP
+    if (r_.truePeakDb > -1.0f) p.disc({t.x1 - 3.5f, t.y0 + 3.5f}, 1.8f, pal_.over);  // over −1 dBTP
     // ---- the numbers (far out, where the small text is left out, the short-term headline stays) ----
     const float x0 = 68.0f, x1 = kW - 12.0f;
     char big[16], line[40];
@@ -432,27 +463,27 @@ protected:
     const Rgba text = th.device.displayText;
     char v[24];
     fmtLufs(r_.momentary, v, sizeof v);
-    row(68.0f, "M", v, valid(r_.momentary) ? stateColour(r_.momentary - target) : text);
+    row(68.0f, "M", v, valid(r_.momentary) ? pal_.state(r_.momentary - target) : text);
     fmtLufs(anim_.integrated, v, sizeof v);
-    row(79.0f, "I", v, valid(anim_.integrated) ? stateColour(anim_.integrated - target) : text);
+    row(79.0f, "I", v, valid(anim_.integrated) ? pal_.state(anim_.integrated - target) : text);
     std::snprintf(v, sizeof v, "%.1f LU", r_.lra);
     row(90.0f, "LRA", v, text);
     const bool tp = opts_.on(uTruePeak);
     if (valid(r_.truePeakDb)) std::snprintf(v, sizeof v, "%+.1f %s", r_.truePeakDb, tp ? "dBTP" : "dB");
     else std::snprintf(v, sizeof v, "--.-");
-    row(101.0f, tp ? "TP" : "PEAK", v, r_.truePeakDb > -1.0f ? kOver : text);
+    row(101.0f, tp ? "TP" : "PEAK", v, r_.truePeakDb > -1.0f ? pal_.over : text);
     fmtLufs(r_.maxMomentary, v, sizeof v);
     row(112.0f, "MAX M", v, text);
     fmtLufs(r_.maxShortTerm, v, sizeof v);
     row(123.0f, "MAX S", v, text);
     std::snprintf(v, sizeof v, "%+.2f", r_.correlation);
-    row(134.0f, "CORR", v, r_.correlation < 0.0f ? kOver : text);
+    row(134.0f, "CORR", v, r_.correlation < 0.0f ? pal_.over : text);
     // The correlation bar: −1 … +1, filled from the centre (red where the channels oppose).
     const Rect bar{x0, 140.0f, x1, 144.0f};
     p.roundedRect(bar, 1.0f, ui::rgba(255, 255, 255, 16));
     const float mid = 0.5f * (bar.x0 + bar.x1), cxv = mid + std::clamp(r_.correlation, -1.0f, 1.0f) * 0.5f * (bar.x1 - bar.x0);
     if (std::fabs(cxv - mid) > 0.25f)
-      p.roundedRect({std::min(mid, cxv), bar.y0, std::max(mid, cxv), bar.y1}, 1.0f, r_.correlation < 0.0f ? ui::mulAlpha(kOver, 0.85f) : ui::mulAlpha(kOn, 0.85f));
+      p.roundedRect({std::min(mid, cxv), bar.y0, std::max(mid, cxv), bar.y1}, 1.0f, r_.correlation < 0.0f ? ui::mulAlpha(pal_.over, 0.85f) : ui::mulAlpha(pal_.on, 0.85f));
     p.line({mid, bar.y0 - 1.0f}, {mid, bar.y1 + 1.0f}, 0.5f, ui::rgba(255, 255, 255, 120));
   }
 
@@ -463,11 +494,15 @@ private:
     bool primed = false;
   } anim_;
   std::vector<Vec2> pts_;
+  StatePal pal_;
 };
 
 // ---- the Loudness History (PQ loudness_graph) -----------------------------------------------------------------------
 
-enum HistOpt : uint32_t { hPreset, hTarget, hTol, hAuto, hAutoLu, hAutoSec, hWindow, hScale, hLo, hHi, hM, hS, hI, hBand, hGrid, hReadouts, hCount };
+enum HistOpt : uint32_t {
+  hPreset, hTarget, hTol, hAuto, hAutoLu, hAutoSec, hWindow, hScale, hLo, hHi, hM, hS, hI, hBand, hGrid, hReadouts, hColM, hColS,
+  hColI, hColUnder, hColOn, hColOver, hCount
+};
 constexpr const char* kScaleNames[] = {"Manual", "Auto", "Target"};
 const Opt kHistOpts[hCount] = {
     {"preset", "Target preset", 0, 0, 4, Opt::Choice, kPresetNames},
@@ -486,6 +521,13 @@ const Opt kHistOpts[hCount] = {
     {"band", "Tolerance band", 1, 0, 1, Opt::Toggle, kOnOff},
     {"grid", "Grid", 1, 0, 1, Opt::Toggle, kOnOff},
     {"ro", "Readouts", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.10: PQ loudness_graph's colour slots.
+    sheet::colourOpt("cm", "Momentary trace"),
+    sheet::colourOpt("cs", "Short-term trace"),
+    sheet::colourOpt("ci", "Integrated trace"),
+    sheet::colourOpt("cunder", "Under target"),
+    sheet::colourOpt("con", "On target"),
+    sheet::colourOpt("cover", "Over target"),
 };
 
 class LoudnessHistoryFace final : public LoudnessFace {
@@ -511,8 +553,10 @@ protected:
     out.clear();
     if (tab == sheet::kAnalysis)
       for (uint32_t i = hPreset; i <= hAutoSec; ++i) out.push_back(i);
+    else if (tab == sheet::kColours)
+      for (uint32_t i = hColM; i < hCount; ++i) out.push_back(i);
     else
-      for (uint32_t i = hWindow; i < hCount; ++i) out.push_back(i);
+      for (uint32_t i = hWindow; i < hColM; ++i) out.push_back(i);
   }
   uint32_t historyPoints() const noexcept override { return static_cast<uint32_t>(seconds()) * 10u; }
 
@@ -634,6 +678,8 @@ protected:
   }
 
   void paintBody(ui::FacePainter& p, const ui::Theme& th, bool labels) override {
+    pal_ = StatePal(opts_, hColUnder);
+    colM_ = opts_.colour(hColM, kMomentary), colS_ = opts_.colour(hColS, kShortTerm), colI_ = opts_.colour(hColI, kIntegrated);
     const Scale s = scale();
     const float target = targetLufs(), tol = static_cast<float>(opts_[hTol]), cut = cutoff();
     const bool readouts = opts_.on(hReadouts) && labels;
@@ -641,7 +687,7 @@ protected:
     const float plotL = s.plotL, plotR = s.plotR, plotT = s.plotT, plotB = s.plotB;
     const Rgba grid = ui::signal_theme::kGrid, gridLabel = ui::signal_theme::kGridLabel;
     if (opts_.on(hBand) && tol > 0.01f)
-      p.roundedRect({plotL, s.y(target + tol), plotR, s.y(target - tol)}, 0.0f, ui::mulAlpha(kOn, 0.10f));
+      p.roundedRect({plotL, s.y(target + tol), plotR, s.y(target - tol)}, 0.0f, ui::mulAlpha(pal_.on, 0.10f));
     if (opts_.on(hGrid)) {
       // Rules every 1 / 2 / 5 / 10 / 20 LU, the first with ≥ 14 units between (sized on the dense part of a warped
       // scale); a rule within 6 units of the last drawn is dropped, a label within a text height of the last one too.
@@ -676,10 +722,10 @@ protected:
     }
     const bool hotT = hovered_ == kTargetLine || (lineDrag_ && !dragCut_);
     const bool hotC = hovered_ == kCutLine || (lineDrag_ && dragCut_);
-    p.line({plotL, s.y(target)}, {plotR, s.y(target)}, hotT ? 1.6f : 1.0f, ui::mulAlpha(kOn, hotT ? 1.0f : 0.75f));
+    p.line({plotL, s.y(target)}, {plotR, s.y(target)}, hotT ? 1.6f : 1.0f, ui::mulAlpha(pal_.on, hotT ? 1.0f : 0.75f));
     if (opts_.on(hAuto) && (lineDrag_ && dragCut_ ? true : cutShown(s))) {
       const Vec2 cl[2] = {{plotL, s.y(cut)}, {plotR, s.y(cut)}};
-      p.dashed(cl, hotC ? 1.6f : 1.0f, 3.5f, 2.5f, ui::mulAlpha(kOver, hotC ? 1.0f : 0.6f));
+      p.dashed(cl, hotC ? 1.6f : 1.0f, 3.5f, 2.5f, ui::mulAlpha(pal_.over, hotC ? 1.0f : 0.6f));
     }
     // ---- the traces: the newest at the right edge, a partial history starts partway (constant scroll rate) ----
     const size_t cap = static_cast<size_t>(secs) * 10;
@@ -710,9 +756,9 @@ protected:
       }
       flush();
     };
-    if (opts_.on(hM)) trace(&dsp::LoudnessPoint::momentary, ui::mulAlpha(kMomentary, 0.55f), 0.7f, false);
-    if (opts_.on(hS)) trace(&dsp::LoudnessPoint::shortTerm, kShortTerm, 1.2f, true);
-    if (opts_.on(hI)) trace(&dsp::LoudnessPoint::integrated, ui::mulAlpha(kIntegrated, 0.9f), 1.0f, false);
+    if (opts_.on(hM)) trace(&dsp::LoudnessPoint::momentary, ui::mulAlpha(colM_, 0.55f), 0.7f, false);
+    if (opts_.on(hS)) trace(&dsp::LoudnessPoint::shortTerm, colS_, 1.2f, true);
+    if (opts_.on(hI)) trace(&dsp::LoudnessPoint::integrated, ui::mulAlpha(colI_, 0.9f), 1.0f, false);
     p.drawList().popClip();
     p.line({plotR - 0.5f, plotT}, {plotR - 0.5f, plotB}, 0.5f, ui::mulAlpha(th.face.value, frozen_ ? 0.10f : 0.25f));  // the live edge
     if (!labels) return;
@@ -733,7 +779,7 @@ protected:
         p.roundedRect({bx, by, bx + boxW, by + boxH}, 2.0f, kPlate);
         const char* names[3] = {"M", "S", "I"};
         const float vals[3] = {pt.momentary, pt.shortTerm, pt.integrated};
-        const Rgba cols[3] = {ui::mulAlpha(kMomentary, 0.9f), kShortTerm, kIntegrated};
+        const Rgba cols[3] = {ui::mulAlpha(colM_, 0.9f), colS_, colI_};
         for (int i = 0; i < 3; ++i) {
           fmtLufs(vals[i], num, sizeof num);
           std::snprintf(buf, sizeof buf, "%s %s", names[i], num);
@@ -745,10 +791,10 @@ protected:
     }
     if (hotT) {
       std::snprintf(buf, sizeof buf, "target %.1f", target);
-      paintTag(p, buf, s.y(target), kOn, plotL, plotR, plotT);
+      paintTag(p, buf, s.y(target), pal_.on, plotL, plotR, plotT);
     } else if (hotC) {
       std::snprintf(buf, sizeof buf, "reset below %.1f", cut);
-      paintTag(p, buf, s.y(cut), kOver, plotL, plotR, plotT);
+      paintTag(p, buf, s.y(cut), pal_.over, plotL, plotR, plotT);
     }
     if (!readouts) return;
     // The header: S, M, I and the integrated's distance from the target (the number a mastering pass steers).
@@ -763,12 +809,12 @@ protected:
       p.textAligned({x, y}, buf, 6.0f, col, 0.0f);
       x += tw + 7.0f;
     };
-    if (opts_.on(hS)) chipText("S", last.shortTerm, kShortTerm);
-    if (opts_.on(hM)) chipText("M", last.momentary, ui::mulAlpha(kMomentary, 0.9f));
-    if (opts_.on(hI)) chipText("I", last.integrated, kIntegrated);
+    if (opts_.on(hS)) chipText("S", last.shortTerm, colS_);
+    if (opts_.on(hM)) chipText("M", last.momentary, ui::mulAlpha(colM_, 0.9f));
+    if (opts_.on(hI)) chipText("I", last.integrated, colI_);
     if (valid(last.integrated)) {
       std::snprintf(buf, sizeof buf, "%+.1f LU", last.integrated - target);
-      if (x + 3.6f * static_cast<float>(std::strlen(buf)) <= chipX) p.textAligned({x, y}, buf, 6.0f, stateColour(last.integrated - target), 0.0f);
+      if (x + 3.6f * static_cast<float>(std::strlen(buf)) <= chipX) p.textAligned({x, y}, buf, 6.0f, pal_.state(last.integrated - target), 0.0f);
     }
     // The footer: the window, the target and the short-term range.
     const float fy = plotB + 5.0f;
@@ -776,7 +822,7 @@ protected:
     else std::snprintf(buf, sizeof buf, "%d s", secs);
     p.textAligned({plotL + 4.0f, fy}, buf, 5.5f, gridLabel, 0.0f);
     std::snprintf(buf, sizeof buf, "target %.1f", target);
-    p.textAligned({0.5f * (plotL + plotR), fy}, buf, 5.5f, ui::mulAlpha(kOn, 0.8f), 0.5f);
+    p.textAligned({0.5f * (plotL + plotR), fy}, buf, 5.5f, ui::mulAlpha(pal_.on, 0.8f), 0.5f);
     if (valid(r_.minShortTerm) && valid(r_.maxShortTerm)) {
       std::snprintf(buf, sizeof buf, "S %.1f ... %.1f", r_.minShortTerm, r_.maxShortTerm);
       p.textAligned({plotR - 4.0f, fy}, buf, 5.5f, gridLabel, 1.0f);
@@ -794,6 +840,8 @@ private:
   bool dragCut_ = false;
   float dragBase_ = 0.0f, dragY_ = 0.0f, dragSlope_ = 0.0f;
   std::vector<Vec2> pts_;
+  StatePal pal_;
+  Rgba colM_ = kMomentary, colS_ = kShortTerm, colI_ = kIntegrated;
 };
 
 LoudnessFace* asLoudness(MetaFace& f) { return dynamic_cast<LoudnessFace*>(&f); }

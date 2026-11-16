@@ -369,6 +369,44 @@ TEST_CASE("loudness faces: options read back by a new face; every option and sta
   }
 }
 
+// VZ.10: the colour options reach the paint — each chosen colour (sheet::colourOpt, 0xRRGGBB) is painted (its RGB in
+// the draw list, the face's alpha kept) with a loud signal (over full scale: the hot zone, the lamps, over target), and
+// back on the face's own (−1) it is gone; the defaults paint as before (the goldens).
+TEST_CASE("loudness faces (VZ.10): a chosen colour is painted; −1 is the face's own") {
+  constexpr double kPick = 0x0A141E;  // rgb(10, 20, 30): nothing else paints it
+  auto painted = [](const DrawList& dl) {
+    for (const Vertex& v : dl.vertices())
+      if (ui::redOf(v.col) == 10 && ui::greenOf(v.col) == 20 && ui::blueOf(v.col) == 30 && ui::alphaOf(v.col) > 0) return true;
+    return false;
+  };
+  for (const meta::Type* t : kTypes) {
+    CAPTURE(t->id);
+    FaceRig rig(*t);
+    rig.paint();
+    (void)rig.play(4.0, {.db = 1.0});
+    std::vector<std::pair<std::string, std::vector<std::pair<std::string, double>>>> cases;  // key, the options it needs
+    if (t == &meta::levelMeterType())
+      cases = {{"chot", {}}, {"cclip", {}}, {"cl", {{"zones", 0}}}, {"cr", {{"zones", 0}}}, {"ccap", {{"zones", 0}}}};
+    else if (t == &meta::lufsMeterType())
+      cases = {{"cover", {}}, {"ctrace", {}}};
+    else
+      cases = {{"cm", {}}, {"cs", {}}, {"ci", {}}, {"cover", {}}, {"con", {}}};
+    for (const auto& [key, needs] : cases) {
+      CAPTURE(key);
+      for (const auto& [k, v] : needs) REQUIRE(loudnessTestControl(*rig.face, k, v));
+      rig.paint();
+      CHECK_FALSE(painted(rig.dl));
+      REQUIRE(loudnessTestControl(*rig.face, key, kPick));
+      rig.paint();
+      CHECK(painted(rig.dl));
+      REQUIRE(loudnessTestControl(*rig.face, key, -1.0));
+      for (const auto& [k, v] : needs) REQUIRE(loudnessTestControl(*rig.face, k, k == "zones" ? 1.0 : 0.0));
+      rig.paint();
+      CHECK_FALSE(painted(rig.dl));
+    }
+  }
+}
+
 TEST_CASE("render: device-meta-loudness matches the golden image") { checkScene("device-meta-loudness"); }
 
 TEST_CASE("render: project-meta-loudness matches the golden image") { checkScene("project-meta-loudness"); }

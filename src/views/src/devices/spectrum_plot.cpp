@@ -77,8 +77,9 @@ Rgb unpack(ui::Rgba c) noexcept {
 // What the palette depends on.
 bool samePalette(const SpectrumPlotStyle& a, const SpectrumPlotStyle& b) noexcept {
   if (a.colour != b.colour || a.colormap != b.colormap) return false;
+  if (a.colour == SpectrumColour::Solid && (a.ownSolid != b.ownSolid || a.solid != b.solid)) return false;
   if (a.colormap < ui::Gradient::kCustomIndex) return true;
-  if (a.customBase != b.customBase || a.colourFollow != b.colourFollow) return false;
+  if (a.customBase != b.customBase || a.colourFollow != b.colourFollow || !(a.customColours == b.customColours)) return false;
   if (a.colourFollow ? (a.floorDb != b.floorDb || a.ceilDb != b.ceilDb) : a.colourLoDb != b.colourLoDb) return false;
   for (int i = 0; i < 4; ++i)
     if (a.stopsDb[i] != b.stopsDb[i]) return false;
@@ -269,7 +270,7 @@ void SpectrumPlot::rebuildPalette() const {
   const ui::ColorLut* lut = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(style_.colormap, 0, ui::kColormapCount - 1)));
   if (style_.colormap >= ui::Gradient::kCustomIndex) {
     ui::LevelAxis ax{style_.colourFollow ? style_.floorDb : style_.colourLoDb, style_.colourFollow ? style_.ceilDb : 0.0f, 1.0f};
-    ui::levelGradient(custom, static_cast<ui::Colormap>(std::clamp(style_.customBase, 0, ui::kColormapCount - 1)), style_.stopsDb, ax);
+    ui::levelGradient(custom, static_cast<ui::Colormap>(std::clamp(style_.customBase, 0, ui::kColormapCount - 1)), style_.stopsDb, ax, &style_.customColours);
     lut = &custom.lut;
   }
   for (int fi = 0; fi < kPalF; ++fi) {
@@ -280,7 +281,8 @@ void SpectrumPlot::rebuildPalette() const {
       switch (style_.colour) {
         case SpectrumColour::Solid: {
           const float k = 0.55f + 0.45f * l;  // a little level lift: not a dead flat stripe
-          c = {kCurveR * k, kCurveG * k, kCurveB * k};
+          const Rgb base = style_.ownSolid ? unpack(style_.solid) : Rgb{kCurveR, kCurveG, kCurveB};
+          c = {base.r * k, base.g * k, base.b * k};
           break;
         }
         case SpectrumColour::Spectral: c = hsv(0.92f + f * 0.80f, 0.72f, 0.55f + 0.45f * l); break;

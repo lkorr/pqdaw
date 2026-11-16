@@ -48,6 +48,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/ui/colormap.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/theme.h"
 #include "pq/views/devices/analysis.h"
@@ -79,6 +80,9 @@ struct SpectrumPlotStyle {
   int colormap = 4;                        // ui::Colormap (Ice), or ui::Gradient::kCustomIndex
   int customBase = 4;                      // Custom: the colormap its stop colours come from
   float stopsDb[4] = {-60.0f, -40.0f, -20.0f, -8.0f};  // Custom: the middle stops (dB)
+  ui::StopColours customColours;           // VZ.10: Custom: the stops' own colours (none: the base's)
+  bool ownSolid = false;                   // VZ.10: Solid paints `solid` (else PQ Meter's curve colour)
+  ui::Rgba solid = 0;
   bool colourFollow = false;               // the colours span floor … ceiling (else colourLoDb … 0 dBFS)
   float colourLoDb = -80.0f;
   bool average = false;                    // the average line (when the snapshot has one)

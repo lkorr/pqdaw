@@ -88,7 +88,22 @@ struct LevelAxis {
 // The Custom ramp of a level display: the six stops' colours are `base` sampled at the default positions (so the
 // default stops paint exactly `base`), the four middle stops placed at their dB values `stopsDb` on `axis` (kept
 // inside the ramp, ordered, 0.01 apart). Stops live in dB: moving an end of the axis keeps them where they are.
-void levelGradient(Gradient& g, Colormap base, const float* stopsDb, const LevelAxis& axis) noexcept;
+// VZ.10: `own` (null: none) gives stops their own colours (bit i of `own->set`: stop i paints `own->c[i]`, its alpha
+// ignored), the others keep `base`'s.
+struct StopColours {
+  Rgba c[Gradient::kStops] = {};
+  uint8_t set = 0;
+  bool operator==(const StopColours& o) const noexcept {
+    if (set != o.set) return false;
+    for (int i = 0; i < Gradient::kStops; ++i)
+      if ((set >> i & 1u) != 0 && c[i] != o.c[i]) return false;
+    return true;
+  }
+};
+void levelGradient(Gradient& g, Colormap base, const float* stopsDb, const LevelAxis& axis,
+                   const StopColours* own = nullptr) noexcept;
+// The colour stop i (0..5) of a Custom ramp takes from `base` (its default position's), alpha 255.
+Rgba levelStopColour(Colormap base, int i) noexcept;
 // The fence of middle stop i (0..3) of `stopsDb` on `axis`: [the lower neighbour + 1 dB, the upper neighbour − 1 dB],
 // the ends being the axis' (a stop halts at its neighbours; PQ sliderFloatBounded).
 void stopFence(const float* stopsDb, int i, const LevelAxis& axis, float& lo, float& hi) noexcept;

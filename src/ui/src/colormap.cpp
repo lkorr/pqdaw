@@ -116,11 +116,27 @@ float LevelAxis::dbOf(float pos) const noexcept {
   return loDb + span() * (gamma == 1.0f ? p : std::pow(p, 1.0f / std::clamp(gamma, 0.05f, 20.0f)));
 }
 
-void levelGradient(Gradient& g, Colormap base, const float* stopsDb, const LevelAxis& axis) noexcept {
-  constexpr float kDefault[Gradient::kStops] = {0.0f, 0.25f, 0.5f, 0.75f, 0.9f, 1.0f};
+namespace {
+constexpr float kLevelStopPos[Gradient::kStops] = {0.0f, 0.25f, 0.5f, 0.75f, 0.9f, 1.0f};
+}  // namespace
+
+Rgba levelStopColour(Colormap base, int i) noexcept {
+  const ColorF c = sampleRamp(colormapStops(base), kLevelStopPos[std::clamp(i, 0, Gradient::kStops - 1)]);
+  auto q = [](float v) { return static_cast<uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+  return rgba(q(c.r), q(c.g), q(c.b));
+}
+
+void levelGradient(Gradient& g, Colormap base, const float* stopsDb, const LevelAxis& axis, const StopColours* own) noexcept {
   const auto stops = colormapStops(base);
   for (int i = 0; i < Gradient::kStops; ++i) {
-    const ColorF c = sampleRamp(stops, kDefault[i]);
+    if (own != nullptr && (own->set >> i & 1u) != 0) {
+      const Rgba o = own->c[i];
+      g.colors[i][0] = static_cast<float>(redOf(o)) / 255.0f;
+      g.colors[i][1] = static_cast<float>(greenOf(o)) / 255.0f;
+      g.colors[i][2] = static_cast<float>(blueOf(o)) / 255.0f;
+      continue;
+    }
+    const ColorF c = sampleRamp(stops, kLevelStopPos[i]);
     g.colors[i][0] = c.r;
     g.colors[i][1] = c.g;
     g.colors[i][2] = c.b;

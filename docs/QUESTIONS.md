@@ -2017,3 +2017,19 @@ Waterfall agree at yaw 0); no modulation bank (pqdaw's own modulation system is 
 Custom stops in dB (VZ.2's LevelAxis) instead of pickers / palette track; Alt+wheel zooms (the plain wheel pans the
 circuit / panel host). The Stereo Spectrogram's cloud keeps PQ's stray sidelobe points (≤ −57 dB under a tone, measured).
 Status: open (reversible: an analyser window option; a modulation hookup; Opt rows).
+
+## Q?-VZ.10-a · 2026-11-16 · VZ.10 · The colour row: storage, alpha, where the rows live, what is still fixed
+- Storage: one number per colour, −1 = the face's own (follows the theme / colormap, as PQ's ColorSlot), else 0xRRGGBB;
+  only chosen colours are written to the data. Alpha is the face's (its fades, tints and level opacities keep working),
+  so the picker has no alpha strip (PQ's slots have none either). Options: add an alpha strip per row where a colour is
+  painted flat. Choice: none (reversible: a flag on Opt and a strip in the picker).
+- Rows: a third tab, COLOURS, on faces with colours (the colormap / colour-mode rows repeated there, the Custom stop
+  colours when the colormap is Custom; DISPLAY unchanged). Options: the colour rows inside DISPLAY (crowded: the
+  Spectrum's DISPLAY already wraps to 3–4 columns). Choice: the tab (reversible).
+- Wired: Custom stop colours (Spectrum, Spectrogram — stop 1 is the Silence colour, so G1's fade now shows —, Stereo
+  Image, Waterfall, Stereo Spectrogram), Spectrum / Waterfall Solid colour, Level Meter (L, R, both zones, peak cap,
+  clip lamp), LUFS Meter (under / on / over, history trace), Loudness History (M / S / I traces, under / on / over),
+  Band Levels (bands 1–5), Waveform (two lanes, clip), Stereo Field (trace, correlation + / −, three bands), Stereo
+  Image (five ribbon colours over the palette, position line), Phase Scope (mono, coherence, warning). Still fixed: the
+  Oscilloscope's traces (PQ cTraceA/B; its face has its own sheet code), the Stereo Spectrogram's band-ramp colours, the
+  Spectrum's L/R/M/S (those channel modes were left out, Q?-VZ.2-a). Status: open.

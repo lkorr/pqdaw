@@ -2053,3 +2053,11 @@ side,top,3d}.png` and `stereospectrogram-{spec,image,pan,3d}.png` (a 3 s mix: ce
 vibrato, a wide detuned pad, wide hats). Try: drag to orbit (Shift pan, Ctrl roll), Alt+wheel zoom, double-click to snap,
 the SPEC / SIDE / TOP / 3D (IMAGE / PAN) chips; SET → DISPLAY for wireframe, perspective, free camera, colour modes, the
 Ribbon mode. Not carried over: LFO modulation of the camera, colour pickers, four of PQ's windows (Q?-VZ.7-a).
+
+## VZ.10 · Colour rows in the analysers' settings sheet 👁
+- Open any analyser's SET: a third tab, COLOURS, lists the colours it paints (Spectrum / Spectrogram / Stereo Image /
+  3D views: set Colormap to Custom for the six stop colours; the Spectrogram's stop 1 is the Silence colour).
+- Click a swatch: a picker opens inside the sheet (SV square, hue strip, new / old, hex field). Drag = live; release =
+  one undo step; Esc puts back the colour it opened with; click "old" likewise; click the hex field and type #RGB /
+  #RRGGBB + Enter. Double-click a row: back to the display's own colour. SAVE DEFAULT carries the colours.
+- Golden: tests/views/golden/vz10-colour-picker.png. Check the look of the picker and the swatch rows.

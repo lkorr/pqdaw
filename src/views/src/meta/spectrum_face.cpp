@@ -58,7 +58,8 @@ using sheet::Opt;
 enum O : uint32_t {
   oFft, oSharpLows, oSmooth, oAttack, oRelease, oTilt, oHold, oFall, oScale, oFMin, oFMax, oAvg, oAvgSec,
   oPeaks, oFloor, oCeil, oDraw, oColour, oMap, oBase, oStop2, oStop3, oStop4, oStop5, oFollow, oQuiet, oFill, oGlow,
-  oLine, oBands, oGrid, oLabels, oSlope, oTiltTag, oTone, oToneSnap, oToneDb, oToneWave, oCount
+  oLine, oBands, oGrid, oLabels, oSlope, oTiltTag, oTone, oToneSnap, oToneDb, oToneWave, oColS1, oColS2, oColS3, oColS4, oColS5,
+  oColS6, oColSolid, oCount
 };
 constexpr const char* kSmoothNames[] = {"Off", "1/24 oct", "1/12 oct", "1/6 oct", "1/3 oct"};
 constexpr float kSmoothOct[] = {0.0f, 1.0f / 24.0f, 1.0f / 12.0f, 1.0f / 6.0f, 1.0f / 3.0f};
@@ -111,6 +112,14 @@ const Opt kOpts[oCount] = {
     {"tsnap", "Tone snap", 2, 0, 2, Opt::Choice, kToneSnapNames},
     {"tdb", "Tone level", -18, -60, 0, Opt::Number, nullptr, "%.0f dBFS", 1.0},
     {"twave", "Tone shape", 0, 0, 2, Opt::Choice, dsp::kToneWaveNames},
+    // VZ.10: the Custom ramp's stop colours (over its base's), PQ Meter's curve colour (Solid).
+    sheet::colourOpt("c1", "Stop 1 colour"),
+    sheet::colourOpt("c2", "Stop 2 colour"),
+    sheet::colourOpt("c3", "Stop 3 colour"),
+    sheet::colourOpt("c4", "Stop 4 colour"),
+    sheet::colourOpt("c5", "Stop 5 colour"),
+    sheet::colourOpt("c6", "Stop 6 colour"),
+    sheet::colourOpt("csolid", "Solid colour"),
 };
 
 struct Options : sheet::Values {
@@ -150,6 +159,9 @@ struct Options : sheet::Values {
     s.colormap = std::clamp(choice(oMap), 0, ui::Gradient::kCustomIndex);
     s.customBase = std::clamp(choice(oBase), 0, ui::kColormapCount - 1);
     for (int i = 0; i < 4; ++i) s.stopsDb[i] = static_cast<float>((*this)[oStop2 + static_cast<uint32_t>(i)]);
+    s.customColours = sheet::stopColours(*this, oColS1, s.customBase);
+    s.ownSolid = (*this)[oColSolid] >= 0.0;
+    s.solid = colour(oColSolid, ui::rgba(110, 217, 255));  // (PQ Meter's 0.43 / 0.85 / 1.0)
     s.colourFollow = on(oFollow);
     s.colourLoDb = static_cast<float>((*this)[oQuiet]);
     s.fill = static_cast<float>((*this)[oFill]);
@@ -186,6 +198,16 @@ void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
     if (o.on(oAvg)) out.push_back(oAvgSec);
     return;
   }
+  if (tab == sheet::kColours) {  // the colours the colour mode paints with
+    out.push_back(oColour);
+    if (o.usesMap()) {
+      out.push_back(oMap);
+      if (o.custom())
+        for (const uint32_t i : {oBase, oColS1, oColS2, oColS3, oColS4, oColS5, oColS6}) out.push_back(i);
+    }
+    if (o.choice(oColour) == static_cast<int>(devices::SpectrumColour::Solid)) out.push_back(oColSolid);
+    return;
+  }
   for (const uint32_t i : {oPeaks, oFloor, oCeil, oDraw, oColour}) out.push_back(i);
   if (o.usesMap()) {
     out.push_back(oMap);
@@ -209,9 +231,10 @@ public:
   bool live_ = false;
 };
 
-class SpectrumFace final : public MetaFace {
+class SpectrumFace final : public MetaFace, private sheet::PickerHost {
 public:
   explicit SpectrumFace(const meta::Type& t) : MetaFace(t) {
+    panel_.tabs = 3;
     visibleRows(opts_, panel_.tab, rows_);
     applyOptions();
   }
@@ -360,6 +383,8 @@ public:
         if (e.button != ui::PointerButton::Left) return false;
         syncOptions();  // (an option changed elsewhere since the last paint)
         const int32_t part = hitTest(e.local, e.pxPerUnit);
+        if (sheet::isPicker(part)) return sheet::pickerDown(panel_, opts_, *this, part, e.local);
+        panel_.closePicker();  // (a press anywhere else keeps the colour)
         if (part == kPeak) {
           setOption(oPeaks, opts_.on(oPeaks) ? 0.0 : 1.0);
           return true;
@@ -374,8 +399,8 @@ public:
           return true;
         }
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
-        if (part == sheet::kTabBase || part == sheet::kTabBase + 1) {
-          panel_.tab = part - sheet::kTabBase;
+        if (sheet::isTab(part)) {
+          panel_.tab = sheet::tabOf(part);
           visibleRows(opts_, panel_.tab, rows_);
           return true;
         }
@@ -402,6 +427,7 @@ public:
           hoverX_ = std::clamp(e.local.x, kPlot.x0, kPlot.x1 - 0.01f);
           return true;
         }
+        if (sheet::pickerMove(panel_, opts_, *this, e.local)) return true;
         if (drag_) {
           const Opt& op = kOpts[dragOpt_];
           const double k = ((e.mods & ui::mod::kShift) ? 0.1 : 1.0) / 160.0;
@@ -422,6 +448,7 @@ public:
           stopTone();
           return true;
         }
+        if (sheet::pickerUp(panel_, *this)) return true;
         const bool was = drag_;
         drag_ = false;
         if (was && editing_) {
@@ -434,9 +461,10 @@ public:
     }
     return false;
   }
-  bool dragging() const noexcept override { return drag_ || tone_.held(); }
+  bool dragging() const noexcept override { return drag_ || tone_.held() || panel_.picking(); }
   void cancelDrag() override {
     stopTone();
+    if (sheet::pickerCancel(panel_, *this)) return;
     if (drag_ && editing_) {
       target().cancel();
       editing_ = false;
@@ -444,7 +472,11 @@ public:
     }
     drag_ = false;
   }
+  bool onText(const ui::TextEvent& e) override { return sheet_ && panel_.typeText(e.text()); }
+  bool wantsText() const noexcept override { return sheet_ && panel_.typing(); }
+  void focusLost() override { panel_.closePicker(); }
   bool onKey(const ui::KeyEvent& e) override {
+    if (sheet_ && sheet::pickerKey(panel_, opts_, *this, e)) return true;
     if (!e.down || e.key != ui::key::kEscape || !sheet_) return false;
     sheet_ = false;
     return true;
@@ -454,8 +486,8 @@ public:
       const auto i = static_cast<size_t>(part - kRowBase);
       return i < rows_.size() && sheet::numeric(kOpts[rows_[i]]) ? ui::Cursor::ResizeNS : ui::Cursor::Pointer;
     }
-    if (part == kPeak || part == kFreeze || part == kSetPart || (part >= sheet::kTabBase && part <= sheet::kReset))
-      return ui::Cursor::Pointer;
+    if (sheet::isPicker(part)) return part == sheet::kPickBox ? ui::Cursor::Inherit : ui::Cursor::Pointer;
+    if (part == kPeak || part == kFreeze || part == kSetPart || sheet::isHead(part)) return ui::Cursor::Pointer;
     return ui::Cursor::Inherit;
   }
 
@@ -491,6 +523,11 @@ public:
         title = "Reset";
         body = "Every option back to the factory default.";
         return;
+      case sheet::kColoursTab:
+        title = "Colours";
+        body = "The colours the colour mode paints with: the colormap, the Custom ramp's stop colours (each its base's until "
+               "chosen), the Solid colour.";
+        return;
       case kFreeze:
         title = "Freeze";
         body = frozen_ ? "Frozen: the picture holds (the signal still passes). Click to follow the signal again."
@@ -511,8 +548,9 @@ public:
         if (part >= kRowBase && static_cast<size_t>(part - kRowBase) < rows_.size()) {
           const Opt& op = kOpts[rows_[static_cast<size_t>(part - kRowBase)]];
           title = op.label;
-          body = sheet::numeric(op) ? "Drag up / down to set (Shift: fine); double-click resets."
-                                    : "Click to change (Shift: back); double-click resets.";
+          body = op.kind == Opt::Colour ? "Click to choose the colour; double-click: back to the display's own."
+                 : sheet::numeric(op)   ? "Drag up / down to set (Shift: fine); double-click resets."
+                                        : "Click to change (Shift: back); double-click resets.";
           if (&op >= &kOpts[oStop2] && &op <= &kOpts[oStop5])
             body = "The level (dB) this colour of the Custom ramp paints. Drag up / down: it halts 1 dB from its "
                    "neighbours; moving the colour floor leaves it where it is. Double-click resets.";
@@ -520,6 +558,7 @@ public:
             body = "The level the colour ramp starts at (the top is fixed at 0 dBFS). Drag up / down; double-click resets.";
           return;
         }
+        if (sheet::pickerDescribe(part, title, body)) return;
         MetaFace::describe(part, title, body);
     }
   }
@@ -529,6 +568,9 @@ public:
   // Tests: the plot (its shown state, its style).
   devices::SpectrumPlot& plot() noexcept { return plot_; }
   const devices::SpectrumPlotStyle& style() const noexcept { return plot_.style(); }
+  const sheet::Sheet& sheetForTest() const noexcept { return panel_; }
+  const sheet::Values& optionsForTest() const noexcept { return opts_; }
+  const std::vector<uint32_t>& rowsForTest() const noexcept { return rows_; }
 
 private:
   // ---- VZ.3: the tone preview ----
@@ -607,6 +649,10 @@ private:
       setOption(o, sheet::cycled(opts_, o, (e.mods & ui::mod::kShift) ? -1 : 1));
       return true;
     }
+    if (op.kind == Opt::Colour) {
+      panel_.openPicker(o, row, rows_.size(), opts_);
+      return true;
+    }
     drag_ = true;
     dragOpt_ = o;
     pressY_ = e.device.y;
@@ -616,6 +662,26 @@ private:
       editing_ = true;
     }
     return true;
+  }
+
+  // ---- the picker's edits ----
+  void pickSet(uint32_t o, double v) override { setOption(o, v); }
+  void pickBegin(const char* label) override {
+    if (hasTarget() && target().editable()) {
+      target().begin(label);
+      editing_ = true;
+    }
+  }
+  void pickEnd() override {
+    if (!editing_) return;
+    target().end();
+    editing_ = false;
+  }
+  void pickCancel() override {
+    if (!editing_) return;
+    target().cancel();
+    editing_ = false;
+    syncOptions(true);
   }
 
   // The feed the source gives now (it appears once the instance's unit is compiled); true when there is one.

@@ -276,4 +276,48 @@ TEST_CASE("stereo faces: every option and state paints") {
   }
 }
 
+// VZ.10: the colour options reach the paint (each chosen colour's RGB in the draw list; −1: gone again).
+TEST_CASE("stereo faces (VZ.10): a chosen colour is painted; −1 is the face's own") {
+  constexpr double kPick = 0x0A141E;  // rgb(10, 20, 30): nothing else paints it
+  auto painted = [](const DrawList& dl) {
+    for (const Vertex& v : dl.vertices())
+      if (ui::redOf(v.col) == 10 && ui::greenOf(v.col) == 20 && ui::blueOf(v.col) == 30 && ui::alphaOf(v.col) > 0) return true;
+    return false;
+  };
+  auto check = [&](FaceRig& rig, auto control, const std::string& key, const std::vector<std::pair<std::string, double>>& needs) {
+    CAPTURE(key);
+    for (const auto& [k, v] : needs) REQUIRE(control(*rig.face, k, v));
+    if (!needs.empty()) (void)rig.play(0.5);  // (what the option shows, read)
+    rig.paint();
+    CHECK_FALSE(painted(rig.dl));
+    REQUIRE(control(*rig.face, key, kPick));
+    rig.paint();
+    CHECK(painted(rig.dl));
+    REQUIRE(control(*rig.face, key, -1.0));
+    rig.paint();
+    CHECK_FALSE(painted(rig.dl));
+  };
+  auto control = [](MetaFace& f, std::string_view k, double v) { return stereoTestControl(f, k, v); };
+  {
+    FaceRig rig(meta::stereoFieldType());
+    rig.paint();
+    (void)rig.play(1.0);
+    check(rig, control, "ctrace", {});
+    check(rig, control, "cpos", {});
+    check(rig, control, "clow", {{"bands", 1}});
+  }
+  {
+    FaceRig rig(meta::stereoImageType());
+    rig.paint();
+    (void)rig.play(1.0);
+    check(rig, control, "cline", {});
+  }
+  {
+    FaceRig rig(meta::phaseScopeType());
+    rig.paint();
+    (void)rig.play(1.0);
+    check(rig, control, "cmono", {});
+  }
+}
+
 TEST_CASE("render: device-meta-stereo matches the golden image") { checkScene("device-meta-stereo"); }
