@@ -342,23 +342,56 @@ TEST_CASE("3D faces: held while painted; the request; the pose as data (one step
   }
 }
 
-TEST_CASE("Stereo Spectrogram: the canvas re-splats on new data or a camera move, and uploads only the lit rows") {
+TEST_CASE("Stereo Spectrogram: the canvas scrolls (new points splatted once, leavers repaired, touched texels uploaded), exactly") {
   FaceRig rig(meta::stereoSpectrogramType());
   rig.paint();
   rig.play(1.0);
   REQUIRE(stereoSpectrogramTestControl(*rig.face, "zoom", 0.3));  // the picture shrinks to the middle third of the rows
-  rig.play(0.1);  // (this re-splat uploads the union of the old and the new lit rows)
   StereoSpectrogramShown a, b;
+  // (the camera moved: rebuilds — at most ~30 a second while it moves, unscrolled — then the first update after it, to
+  // scroll; each uploads the union of the old and the new lit rows)
+  for (int k = 0; k < 4; ++k) rig.play(1.0 / 60.0);
   REQUIRE(stereoSpectrogramShown(*rig.face, a));
-  rig.paint();  // nothing new: no re-splat
+  REQUIRE(a.scrolling);
+  rig.paint();  // nothing new: no update
   REQUIRE(stereoSpectrogramShown(*rig.face, b));
   CHECK(b.redraws == a.redraws);
-  rig.play(0.2);
+  for (int k = 0; k < 12; ++k) rig.play(1.0 / 60.0);
   REQUIRE(stereoSpectrogramShown(*rig.face, b));
   CHECK(b.redraws > a.redraws);
-  const uint64_t rows = b.uploadedRows - a.uploadedRows, redraws = b.redraws - a.redraws;
-  MESSAGE(rows << " rows uploaded over " << redraws << " re-splats of a canvas " << 2 * 184 << " rows tall");
-  CHECK(rows < redraws * 2 * 184);
+  CHECK(b.rebuilds == a.rebuilds);  // new data scrolls, never re-splats
+  const uint64_t rows = b.uploadedRows - a.uploadedRows, updates = b.redraws - a.redraws;
+  MESSAGE(rows << " rows uploaded over " << updates << " updates of a canvas " << 2 * 184 << " rows tall");
+  CHECK(rows < updates * 2 * 184 / 2);
+  // Exact: with the span turning over every frame (leavers cleared and their tiles re-splatted), the canvas is what a
+  // fresh splat of the live points gives — the default colours, then the age fade and the Time colours (a gain and a
+  // reference time that move every texel).
+  for (const auto& [k, v] : std::vector<std::pair<const char*, double>>{{"zoom", 1.0}, {"span", 2.0}, {"fade", 0.5}, {"src", 3}}) {
+    CAPTURE(k);
+    REQUIRE(stereoSpectrogramTestControl(*rig.face, k, v));
+    for (int f = 0; f < 4; ++f) rig.play(1.0 / 60.0);  // (after a camera move the first update re-splats to scroll)
+    REQUIRE(stereoSpectrogramShown(*rig.face, a));
+    REQUIRE(a.scrolling);
+    for (int f = 0; f < 150; ++f) rig.play(1.0 / 60.0);  // 2.5 s: past the span
+    REQUIRE(stereoSpectrogramShown(*rig.face, b));
+    CHECK(b.rebuilds == a.rebuilds);
+    CHECK(stereoSpectrogramCanvasCheck(*rig.face) == 0);
+  }
+  // A camera move rebuilds; perspective and glow rebuild every update (no scrolling).
+  REQUIRE(stereoSpectrogramTestControl(*rig.face, "yaw", 30.0));
+  rig.play(1.0 / 60.0);
+  REQUIRE(stereoSpectrogramShown(*rig.face, b));
+  CHECK(b.rebuilds == a.rebuilds + 1);
+  CHECK_FALSE(b.scrolling);  // (a moving camera: unscrolled)
+  rig.play(1.0 / 60.0);
+  REQUIRE(stereoSpectrogramShown(*rig.face, b));
+  CHECK(b.scrolling);
+  REQUIRE(stereoSpectrogramTestControl(*rig.face, "persp", 0.5));
+  rig.play(1.0 / 60.0);
+  rig.play(1.0 / 60.0);
+  REQUIRE(stereoSpectrogramShown(*rig.face, b));
+  CHECK_FALSE(b.scrolling);
+  REQUIRE(stereoSpectrogramTestControl(*rig.face, "persp", 0.0));
   // Every option paints (no crash), both modes.
   for (const auto& [k, v] : std::vector<std::pair<const char*, double>>{
            {"mode", 1}, {"sy", 0.6}, {"prec", 0.5}, {"gate", 20}, {"src", 4}, {"src", 2}, {"age", 0}, {"mode", 0}, {"glow", 0.8},
@@ -476,10 +509,10 @@ TEST_CASE("3D faces: the UI frame per face at 1440p (a face ~1000 x 600 device p
     rig.paint();
     rig.play(4.0);
     const bool wf = t == &meta::waterfallType();
-    double total = 0.0;
-    constexpr int kFrames = 30;
-    for (int k = 0; k < kFrames; ++k) {
-      stream(rig.tap, rig.feed, 1.0 / 60.0, rig.at, rig.clock);  // new data every frame: the canvas re-splats
+    // One frame: a 60th of a second of new data, the poll, the paint (`yaw`: the camera moving, as in a drag).
+    auto frame = [&](double yaw) {
+      if (yaw != 0.0) REQUIRE((wf ? waterfallTestControl(*rig.face, "yaw", yaw) : stereoSpectrogramTestControl(*rig.face, "yaw", yaw)));
+      stream(rig.tap, rig.feed, 1.0 / 60.0, rig.at, rig.clock);
       Clock::now() += 1.0 / 60.0;
       const auto t0 = std::chrono::steady_clock::now();
       (void)rig.face->pollVoices();
@@ -489,8 +522,14 @@ TEST_CASE("3D faces: the UI frame per face at 1440p (a face ~1000 x 600 device p
       env.uiScale = 1.0f;
       FacePainter p(rig.dl, {{10.0f, 10.0f}, 3.2f});
       rig.face->paintLive(p, env);
-      total += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-    }
-    MESSAGE(std::string(wf ? "Waterfall" : "Stereo Spectrogram") << " (3D view): " << total / kFrames << " ms per UI frame at scale 3.2");
+      return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    };
+    (void)frame(0.0);  // (the new size)
+    constexpr int kFrames = 60;
+    double steady = 0.0, drag = 0.0;
+    for (int k = 0; k < kFrames; ++k) steady += frame(0.0);
+    for (int k = 0; k < kFrames; ++k) drag += frame(45.0 + 0.5 * (k + 1));
+    MESSAGE(std::string(wf ? "Waterfall" : "Stereo Spectrogram") << " (3D view), ms per UI frame at scale 3.2: " << steady / kFrames
+                                                                 << " with data arriving, " << drag / kFrames << " while the camera moves");
   }
 }

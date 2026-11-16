@@ -121,7 +121,9 @@ struct StereoSpectrogramShown {
   bool acquired = false, frozen = false;
   float yaw = 0, pitch = 0, roll = 0, zoom = 1;
   size_t cloud = 0, ribbon = 0;            // points / ribbon slices held
-  uint64_t uploadedRows = 0, redraws = 0;  // canvas rows handed to the texture pool; canvas re-splats
+  uint64_t uploadedRows = 0, redraws = 0;  // canvas rows handed to the texture pool; canvas updates
+  uint64_t rebuilds = 0;                   // full re-splats (camera / option / size changes, or every update unscrolled)
+  bool scrolling = false;                  // the canvas scrolls (new points splatted once)
   dsp::StereoCloudConfig config;
 };
 bool stereoSpectrogramShown(const MetaFace& f, StereoSpectrogramShown& out);
@@ -130,6 +132,8 @@ bool waterfallTestControl(MetaFace& f, std::string_view key, double value);
 bool stereoSpectrogramTestControl(MetaFace& f, std::string_view key, double value);
 dsp::WaterfallConfig waterfallRequest(const meta::DataValue* data);
 dsp::StereoCloudConfig stereoSpectrogramRequest(const meta::DataValue* data);
+// The scrolling canvas against a fresh splat of its live points: the texels that differ (0 when unscrolled).
+size_t stereoSpectrogramCanvasCheck(MetaFace& f);
 // Where the canvas splat puts a point (time age u 0 … 1, frequency unit 0 … 1, pan −1 … 1) on a w × h canvas, autofit,
 // orthographic, roll 0, zoom 1 (projection tests).
 ui::Vec2 stereoSpectrogramCanvasAt(float yaw, float pitch, float u, float fUnit, float pan, int w, int h);
