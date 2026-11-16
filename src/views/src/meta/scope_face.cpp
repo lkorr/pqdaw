@@ -229,8 +229,9 @@ public:
 
   bool pollVoices() override {
     bound_ = true;  // MetaFace::bind sets the target, then polls
+    const bool bound = syncFeed();  // the feed before the options (VZ.9 H1: never a request to a freed feed)
     syncOptions();
-    if (!syncFeed()) return true;  // no tap yet: one repaint (the host asks again at its next wake)
+    if (!bound) return true;  // no tap yet: one repaint (the host asks again at its next wake)
     const double now = clockNow();
     if (now - lastPaint_ > 0.5) {  // not painted lately: its host is hidden — after one unanswered repaint, let go
       if (probe_ == 0.0) {
@@ -268,8 +269,8 @@ public:
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
     const ui::Theme& th = *env.theme;
+    syncFeed();  // (before the options: see pollVoices)
     syncOptions();
-    syncFeed();
     lastPaint_ = clockNow();
     probe_ = 0.0;
     if (feed_ != nullptr && !acquired_) {
@@ -653,7 +654,10 @@ private:
   // ---- the feed ----
   bool syncFeed() {
     devices::SpectrumFeed* f = feedOf_ ? feedOf_() : nullptr;
-    if (f != feed_) {
+    // By serial too: a new feed can be allocated where the released, freed one was (a held feed is never freed).
+    const uint64_t serial = f != nullptr ? f->serial() : 0;
+    if (f != feed_ || serial != feedSerial_) {
+      feedSerial_ = serial;
       letGo();
       feed_ = f;
       lastEnd_ = 0;
@@ -1176,6 +1180,7 @@ private:
   bool acquired_ = false, settled_ = true;
   mutable FeedFrames frames_;
   std::function<devices::SpectrumFeed*()> feedOf_;
+  uint64_t feedSerial_ = 0;
   std::function<void()> wakeHost_;
   double lastPaint_ = 0.0, probe_ = 0.0, rate_ = 0.0;
   bool bound_ = false;

@@ -23,6 +23,7 @@
 //                  (8192 Hann, a quarter hop). 280 × 150.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -34,6 +35,8 @@
 #include "pq/dsp/stereo.h"
 #include "pq/meta/registry.h"
 #include "pq/ui/colormap.h"
+#include "pq/ui/renderer.h"
+#include "pq/ui/texture_pool.h"
 #include "pq/ui/theme.h"
 
 namespace pq::views {
@@ -440,6 +443,9 @@ class StereoImageFace final : public SpectralFace {
 public:
   static constexpr float kW = 220.0f, kH = 170.0f;
   explicit StereoImageFace(const meta::Type& t) : SpectralFace(t, kW, kH, kImageOpts) {}
+  ~StereoImageFace() override {
+    if (tex_ != 0 && pool_) pool_->destroy(tex_);
+  }
 
 protected:
   float sheetW() const noexcept override { return 380.0f; }
@@ -549,14 +555,16 @@ protected:
     if (opts_.on(iGrid)) {
       dsp::FreqGridLine grid[10];
       const int n = dsp::freqGridLines(cc.scale, cc.fMin, cc.fMax, grid, 10);
-      float lastLab = -1e9f;
+      analyser::LabelGuard guard;  // (VZ.9: none under the chips, none on another, none past the edge)
+      reserveChips(guard);
       for (int i = 0; i < n; ++i) {
         const float y = yOfT(axis.unit(grid[i].hz));
         p.line({plotL, y}, {plotR, y}, 0.5f, kGrid);
-        if (showLabels && y > plotT + 3.0f && y < plotB - 3.0f && std::fabs(y - lastLab) >= 7.0f) {
-          p.textAligned({plotR - 1.0f, y - 3.0f}, grid[i].label, 5.0f, kGridLabel, 1.0f);
-          lastLab = y;
-        }
+        if (!showLabels) continue;
+        const Vec2 at{plotR - 1.5f, y - 3.0f};
+        const Rect box = analyser::labelBox(p, at, grid[i].label, 5.0f, 1.0f);
+        if (guard.place({box.x0, box.y0 - 1.0f, box.x1, box.y1 + 1.0f}, {plotL, plotT, plotR, plotB}))
+          p.textAligned(at, grid[i].label, 5.0f, kGridLabel, 1.0f);
       }
       for (const float g : {-1.0f, -0.5f, 0.5f, 1.0f}) p.line({xOf(g), plotT}, {xOf(g), plotB}, 0.5f, kGrid);
     }
@@ -573,8 +581,13 @@ protected:
       if (map == ui::Gradient::kCustomIndex) {
         float stops[4];
         for (int i = 0; i < 4; ++i) stops[i] = static_cast<float>(opts_[iS2 + static_cast<uint32_t>(i)]);
-        const ui::StopColours own = sheet::stopColours(opts_, iColS1, opts_.choice(iBase));
-        ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(iBase), 0, ui::kColormapCount - 1)), stops, lax, &own);
+        std::array<double, 14> k = {opts_[iBase], stops[0], stops[1], stops[2], stops[3], opts_[iFloor], opts_[iCeil], opts_[iGamma]};
+        for (uint32_t i = 0; i < 6; ++i) k[8 + i] = opts_[iColS1 + i];
+        if (k != customKey_) {  // rebuilt when its stops or their colours change, not every paint (L11)
+          customKey_ = k;
+          const ui::StopColours own = sheet::stopColours(opts_, iColS1, opts_.choice(iBase));
+          ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(iBase), 0, ui::kColormapCount - 1)), stops, lax, &own);
+        }
         lut = &custom_.lut;
       } else {
         lut = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(map, 0, ui::kColormapCount - 1)));
@@ -620,6 +633,45 @@ protected:
       const auto& heat = snap_.heat;
       constexpr uint32_t kCols = dsp::CrossSpectrum::kHeatCols;
       if (n == 0 || heat.size() != n * kCols) return;
+      // M7: one texture (a texel a cell, linear filtering) and one quad, not up to 32 k overlapping rects a frame.
+      if (ui::TexturePool* pool = p.images(); pool != nullptr && pool->attached()) {
+        if (pool_.get() != pool) {
+          if (tex_ != 0 && pool_) pool_->destroy(tex_);
+          tex_ = 0;
+          pool_ = pool->share();
+        }
+        if (tex_ == 0 || texRows_ != n) {
+          if (tex_ != 0) pool_->destroy(tex_);
+          tex_ = 0;
+          if (auto t = pool_->create(kCols, static_cast<uint32_t>(n), ui::TextureFilter::Linear)) tex_ = *t;
+          texRows_ = n;
+        }
+        if (tex_ != 0) {
+          texels_.resize(n * kCols);
+          for (size_t r = 0; r < n; ++r) {
+            const Col base = fillAt(tOf(r));
+            uint32_t* row = texels_.data() + (n - 1 - r) * kCols;  // texture row 0: the top (fMax)
+            for (uint32_t c = 0; c < kCols; ++c) {
+              const float h = heat[r * kCols + c];
+              if (h < 0.004f) {
+                row[c] = 0;
+                continue;
+              }
+              Col col = colMode == 2 ? byLevel(floorDb + h * span) : base;
+              if (wglow) col = widthGlow(col, h, wFloor, wAmt);
+              row[c] = rgbF(col.r, col.g, col.b, std::clamp(fillA * h * h * alphaScale, 0.0f, 1.0f));
+            }
+          }
+          (void)pool_->update(tex_, ui::TextureRect{0, 0, kCols, static_cast<uint32_t>(n)},
+                              {reinterpret_cast<const uint8_t*>(texels_.data()), texels_.size() * 4});
+          // Texel centres on the cells' centres: row r at the axis' t = r / (n - 1), column c at (c + 0.5) / kCols.
+          const float half = n > 1 ? 0.5f * plotH / static_cast<float>(n - 1) : 0.5f * plotH;
+          const Vec2 a = p.transform().map({plotL, yOfT(1.0f) - half}), b = p.transform().map({plotR, yOfT(0.0f) + half});
+          p.drawList().addImage(tex_, {a.x, a.y, b.x, b.y}, {0.0f, 0.0f}, {1.0f, 1.0f});
+          return;
+        }
+      }
+      // (No texture pool: the cells as rects.)
       const float cellH = plotH / static_cast<float>(n), cellW = (plotR - plotL) / static_cast<float>(kCols);
       const size_t stride = std::max<size_t>(1, static_cast<size_t>(1.0f / std::max(0.05f, cellH * pxPerUnit)));
       for (size_t r0 = 0; r0 < n; r0 += stride) {
@@ -737,6 +789,11 @@ protected:
 
 private:
   ui::Gradient custom_;
+  std::array<double, 14> customKey_{-1.0};
+  std::shared_ptr<ui::TexturePool> pool_;  // the glow / heat grid's texture (M7)
+  ui::TextureId tex_ = 0;
+  size_t texRows_ = 0;
+  std::vector<uint32_t> texels_;
   std::vector<dsp::StereoPoint> shown_;
 };
 

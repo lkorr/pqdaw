@@ -14,7 +14,7 @@
 //   width     1 − coherence, eased on coherenceMs, damped while the position moves (PQ: moving content keeps its shape)
 //   monoDb    10 log10((avg|L|² + avg|R|² + 2 Re avg L·conj(R)) / (avg|L|² + avg|R|²)): what the band gains (+3 dB:
 //             identical channels) or loses (→ −∞: R = −L) summed to mono; not gated by coherence
-//   phaseDeg  the angle of the averaged cross-spectrum (R relative to L)
+//   phaseDeg  the angle of the averaged cross-spectrum L·conj(R): φL − φR (positive: L leads)
 // and optionally (parts):
 //   Glow       a points × kHeatCols grid where the tracked position ± width deposits its level (heat attack / decay)
 //   Particles  PQ's heat-map tracker on its own SHORT window (`peakFft`): prominent spectral peaks (9 dB over their
@@ -144,13 +144,13 @@ public:
   void bandRead(uint32_t b, uint64_t from, uint32_t n, float* l, float* r) const noexcept;
 
 private:
-  struct Biquad {
-    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
+  struct Biquad {  // double: a float section loses a low crossover at high rates (1 + a1 + a2 cancels)
+    double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0, z1 = 0, z2 = 0;
     float run(float x) noexcept {
-      const float y = b0 * x + z1;
+      const double y = b0 * x + z1;
       z1 = b1 * x - a1 * y + z2;
       z2 = b2 * x - a2 * y;
-      return y;
+      return static_cast<float>(y);
     }
   };
   struct Band {

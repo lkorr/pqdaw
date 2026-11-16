@@ -4,6 +4,7 @@
 #include "pq/dsp/stereo.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 #include <cstring>
 
@@ -114,16 +115,9 @@ void CrossSpectrum::configure(const CrossSpectrumConfig& c) {
     std::fill(heat_.begin(), heat_.end(), 0.0f);
     for (StereoParticle& p : parts_) p = StereoParticle{};
   }
-  if (peakRestart && (cfg_.parts & kStereoParticles)) {
-    peakFft_ = std::make_unique<RealFft>(cfg_.peakFft);
-    window(cfg_.peakFft, peakWin_, peakWinSum_, peakEnbw_);
-    const uint32_t bins = cfg_.peakFft / 2 + 1;
-    for (int ch = 0; ch < 2; ++ch) {
-      pre_[ch].assign(bins, 0.0f);
-      pim_[ch].assign(bins, 0.0f);
-    }
-    power_.assign(bins, 0.0f);
-  } else if ((added & kStereoParticles) && !peakFft_) {
+  // The tracker's window is built while Particles is on and whenever its size no longer matches: a size changed while
+  // Particles was off (C1: Particles → Glow → window 4096 → Particles ran 4096 over 2048-sized buffers).
+  if ((cfg_.parts & kStereoParticles) && (peakRestart || !peakFft_ || peakWin_.size() != cfg_.peakFft)) {
     peakFft_ = std::make_unique<RealFft>(cfg_.peakFft);
     window(cfg_.peakFft, peakWin_, peakWinSum_, peakEnbw_);
     const uint32_t bins = cfg_.peakFft / 2 + 1;
@@ -258,6 +252,7 @@ void CrossSpectrum::frame() noexcept {
 // PQ Meter's heat-map tracker (stereo_image.cpp frame(), drawMode 2), with its numbers.
 void CrossSpectrum::track(float hopSec) noexcept {
   const uint32_t M = cfg_.peakFft, bins = M / 2 + 1;
+  assert(peakWin_.size() == M && power_.size() == bins && in_.size() >= M && hist_[0].size() >= M);
   for (int ch = 0; ch < 2; ++ch) {
     const uint32_t start = (at_ - M) & mask_;
     for (uint32_t i = 0; i < M; ++i) in_[i] = hist_[ch][(start + i) & mask_] * peakWin_[i];
@@ -435,14 +430,17 @@ bool CrossSpectrum::atRest() const noexcept {
 // ---- StereoFieldState (PQ stereo_field) ------------------------------------------------------------------------------
 
 namespace {
-void butterworth(float fc, float sr, bool high, float& b0, float& b1, float& b2, float& a1, float& a2) noexcept {
-  const float w0 = 2.0f * static_cast<float>(kPi) * std::clamp(fc, 1.0f, sr * 0.49f) / sr;
-  const float cs = std::cos(w0), alpha = std::sin(w0) / (2.0f * 0.70710678f), a0 = 1.0f + alpha;
-  b0 = (high ? (1.0f + cs) : (1.0f - cs)) * 0.5f / a0;
-  b1 = (high ? -(1.0f + cs) : (1.0f - cs)) / a0;
+// Designed in double (1 − cos w0 = 2 sin²(w0 / 2)) and run in double: float sections lose a low crossover at high rates.
+void butterworth(double fc, double sr, bool high, double& b0, double& b1, double& b2, double& a1, double& a2) noexcept {
+  const double w0 = 2.0 * kPi * std::clamp(fc, 1.0, sr * 0.49) / sr;
+  const double h = std::sin(0.5 * w0), omc = 2.0 * h * h, cs = std::cos(w0);
+  const double alpha = std::sin(w0) / (2.0 * 0.70710678118654752), a0 = 1.0 + alpha;
+  const double num = high ? 2.0 - omc : omc;  // 1 + cos w0, or 1 − cos w0
+  b0 = num * 0.5 / a0;
+  b1 = (high ? -num : num) / a0;
   b2 = b0;
-  a1 = -2.0f * cs / a0;
-  a2 = (1.0f - alpha) / a0;
+  a1 = -2.0 * cs / a0;
+  a2 = (1.0 - alpha) / a0;
 }
 }  // namespace
 
@@ -454,8 +452,8 @@ void StereoFieldState::configure(double sampleRate, float corrWindowMs, bool ban
   const bool turnedOn = bands && !bands_;
   bands_ = bands;
   if (!bands) return;
-  const float sr = static_cast<float>(sampleRate);
-  const float x0 = std::min(xoverLow, xoverHigh * 0.95f), x1 = std::max(xoverHigh, x0 * 1.05f);
+  const double sr = sampleRate;
+  const double x0 = std::min<double>(xoverLow, xoverHigh * 0.95), x1 = std::max<double>(xoverHigh, x0 * 1.05);
   for (uint32_t b = 0; b < kBands; ++b) {
     Band& bs = band_[b];
     bs.useHp = b > 0;

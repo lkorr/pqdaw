@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cmath>
 
+#include "pq/core/denormal_guard.h"
+
 namespace pq::views::devices {
 
 namespace {
@@ -39,6 +41,8 @@ bool silent(const float* x, uint32_t n) noexcept {
 SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual)
     : tap_(tap), cfg_(config), out_(std::make_unique<dsp::SpectrumAnalyzer>(config)),
       in_(std::make_unique<dsp::SpectrumAnalyzer>(tap.channels() >= 4 ? config : axisOnly(config))), axis_(axisOnly(config)) {
+  static std::atomic<uint64_t> serials{0};
+  serial_ = serials.fetch_add(1, std::memory_order_relaxed) + 1;
   const uint32_t nch = std::min<uint32_t>(4, tap_.channels());
   for (uint32_t c = 0; c < nch; ++c) ch_[c].resize(kChunk);
   mono_.resize(std::max<uint32_t>(kChunk, cfg_.hop * 32));
@@ -320,9 +324,12 @@ void SpectrumFeed::pickGram() {
   if (best == nullptr) return;
   SpectrogramRequest want = *best;
   want.config.sampleRate = cfg_.sampleRate;
-  if (!(want == gramWant_) || !gram_) {
+  // (Against the last request, never the worker's stage: gram_ is the worker's, written outside the lock. Until the
+  // stage is made the worker takes gramWant_ anyway.)
+  if (!(want == gramWant_) || !gramAsked_) {
     gramWant_ = want;
     gramDirty_ = true;
+    gramAsked_ = true;
   }
 }
 
@@ -394,6 +401,11 @@ void SpectrumFeed::gramPush(const float* mono, const float* beat, uint32_t n) {
 }
 
 // ---- VZ.4: the loudness ----------------------------------------------------------------------------------------------
+
+dsp::LoudnessConfig SpectrumFeed::loudnessRequest() const {
+  std::lock_guard lock(loudMutex_);
+  return loudWant_;
+}
 
 void SpectrumFeed::setLoudness(const dsp::LoudnessConfig& c) {
   {
@@ -528,9 +540,9 @@ void SpectrumFeed::setStereo(const dsp::CrossSpectrumConfig& c) {
     std::lock_guard lock(stereoMutex_);
     dsp::CrossSpectrumConfig want = c;
     want.sampleRate = cfg_.sampleRate;
-    if (want == stereoWant_ && (stereo_ || stereoDirty_)) return;
+    if (want == stereoWant_ && stereoAsked_) return;  // (stereo_ is the worker's: never read here)
     stereoWant_ = want;
-    stereoDirty_ = true;
+    stereoDirty_ = stereoAsked_ = true;
   }
   {
     std::lock_guard lock(mutex_);
@@ -572,9 +584,9 @@ void SpectrumFeed::setWaterfall(const dsp::WaterfallConfig& c) {
     std::lock_guard lock(wfMutex_);
     dsp::WaterfallConfig want = c;
     want.sampleRate = cfg_.sampleRate;
-    if (want == wfWant_ && (wf_ || wfDirty_)) return;
+    if (want == wfWant_ && wfAsked_) return;  // (wf_ is the worker's: never read here)
     wfWant_ = want;
-    wfDirty_ = true;
+    wfDirty_ = wfAsked_ = true;
   }
   {
     std::lock_guard lock(mutex_);
@@ -588,9 +600,9 @@ void SpectrumFeed::setCloud(const dsp::StereoCloudConfig& c) {
     std::lock_guard lock(wfMutex_);
     dsp::StereoCloudConfig want = c;
     want.sampleRate = cfg_.sampleRate;
-    if (want == clWant_ && (cloud_ || clDirty_)) return;
+    if (want == clWant_ && clAsked_) return;  // (cloud_ is the worker's: never read here)
     clWant_ = want;
-    clDirty_ = true;
+    clDirty_ = clAsked_ = true;
   }
   {
     std::lock_guard lock(mutex_);
@@ -872,11 +884,19 @@ uint32_t SpectrumFeed::work(double now) {
     cloud_->push(
         l, r, n,
         [&](const dsp::CloudPoint* p, uint32_t k) {
-          const size_t room = clStage_.capacity() - clStage_.size();
-          clStage_.insert(clStage_.end(), p, p + std::min<size_t>(k, room));
+          // Full (a long stall before the next publish): the oldest quarter goes, the newest stay (in place, no
+          // allocation; a quarter at a time so a stall moves the stage a few times, not at every hop).
+          const size_t cap = clStage_.capacity(), take = std::min<size_t>(k, cap);
+          if (clStage_.size() + take > cap) {
+            const size_t drop = std::min(clStage_.size(), std::max(clStage_.size() + take - cap, cap / 4));
+            clStage_.erase(clStage_.begin(), clStage_.begin() + static_cast<std::ptrdiff_t>(drop));
+          }
+          clStage_.insert(clStage_.end(), p + (k - take), p + k);
         },
         [&](const dsp::StereoCloud::RibSlice& s) {
-          if (clStageSlices_.size() < clStageSlices_.capacity()) clStageSlices_.push_back(s);
+          if (clStageSlices_.size() == clStageSlices_.capacity())
+            clStageSlices_.erase(clStageSlices_.begin(), clStageSlices_.begin() + static_cast<std::ptrdiff_t>(clStageSlices_.size() / 4));
+          clStageSlices_.push_back(s);
         });
     clPublishNow = true;
   };
@@ -1069,6 +1089,9 @@ uint32_t SpectrumFeed::work(double now) {
 }
 
 void SpectrumFeed::run() {
+  // The stages' recursive state (biquads, ballistics, decays) runs into subnormals over played silence: flush them on
+  // this thread as on the audio threads (CLAUDE.md rule 3).
+  const pq::DenormalGuard denormals;
   std::unique_lock lock(mutex_);
   while (!quit_) {
     // Hidden, or nothing more to show: block (no periodic work at all). A watched feed keeps looking (slowly).

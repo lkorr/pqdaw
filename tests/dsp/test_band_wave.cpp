@@ -63,43 +63,59 @@ TEST_CASE("band levels: a sine lands in its band (crossovers 3 / 4 / 5 and the i
     for (size_t i = 0; i < k.xo.size(); ++i) c.crossovers[i] = k.xo[i];
     BandLevels b(c);
     const auto lv = levels(b, sine(k.hz, 1.0, 96000));
-    // A full-scale sine's RMS is −3.01 dB: its band reads it (the independent band-pass at its centre: unity peak; the
-    // others well inside their passband); every other band at least 15 dB under (the independent mode's 12 dB/oct
-    // filters overlap by design: at least 10 dB).
-    CHECK(std::fabs(lv[k.band] + 3.01f) < 1.2f);  // (a two-octave LR band reads a tone between its crossovers ~1 dB down)
+    // A full-scale sine's RMS is −3.01 dB less what its band's filters take at that frequency: an LR4 section is
+    // |H| = 1 / (1 + (f/fc)^4) (low-pass; high-pass with fc/f), band k is the high-passes of every crossover under it
+    // and its own low-pass; the independent band-pass is unity at its centre, its Butterworth low / high-pass
+    // 1 / sqrt(1 + (f/fc)^4); f/fc through the bilinear map (tan(pi f / fs) / tan(pi fc / fs): the designs are
+    // pre-warped at fc). Every other band at least 15 dB under (independent: overlapping 12 dB/oct, at least 10).
+    double expect = -3.0103;
+    auto db = [](double g) { return 20.0 * std::log10(g); };
+    auto ratio = [](double f, double fc) { return std::tan(kPi * f / kSr) / std::tan(kPi * fc / kSr); };
+    if (k.indep) {
+      if (k.band == 0) expect += db(1.0 / std::sqrt(1.0 + std::pow(ratio(k.hz, 100.0), 4.0)));
+      if (k.band == 2) expect += db(1.0 / std::sqrt(1.0 + std::pow(ratio(5000.0, k.hz), 4.0)));
+    } else {
+      for (int j = 0; j < k.band; ++j) expect += db(1.0 / (1.0 + std::pow(ratio(k.xo[static_cast<size_t>(j)], k.hz), 4.0)));
+      if (k.band < k.bands - 1) expect += db(1.0 / (1.0 + std::pow(ratio(k.hz, k.xo[static_cast<size_t>(k.band)]), 4.0)));
+    }
+    CHECK(std::fabs(lv[k.band] - expect) < 0.1);
     for (int o = 0; o < k.bands; ++o)
       if (o != k.band) CHECK(lv[o] < lv[k.band] - (k.indep ? 10.0f : 15.0f));
     for (int o = k.bands; o < BandLevels::kBands; ++o) CHECK(lv[o] == BandLevels::kFloorDb);
   }
 }
 
-TEST_CASE("band levels: the crossover tree sums to an all-pass (flat magnitude) at 3, 4 and 5 bands") {
-  for (int n : {3, 4, 5}) {
-    CAPTURE(n);
-    BandLevelsConfig c;
-    c.bands = n;
-    c.independent3 = false;
-    const float xo[3][4] = {{250, 4000}, {120, 800, 5000}, {60, 250, 2000, 8000}};
-    for (int i = 0; i < n - 1; ++i) c.crossovers[i] = xo[n - 3][i];
-    BandSplit split;
-    split.configure(c, /*compensate=*/true);
-    constexpr uint32_t N = 16384;
-    std::vector<float> h(N);
-    float out[BandSplit::kBands];
-    for (uint32_t i = 0; i < N; ++i) {
-      split.process(i == 0 ? 1.0f : 0.0f, out);
-      float s = 0.0f;
-      for (int b = 0; b < n; ++b) s += out[b];
-      h[i] = s;
+TEST_CASE("band levels: the crossover tree sums to an all-pass (flat magnitude) at 3, 4 and 5 bands, 48 – 192 kHz") {
+  for (const double sr : {48000.0, 96000.0, 192000.0})
+    for (int n : {3, 4, 5}) {
+      CAPTURE(sr);
+      CAPTURE(n);
+      BandLevelsConfig c;
+      c.sampleRate = sr;
+      c.bands = n;
+      c.independent3 = false;
+      const float xo[3][4] = {{250, 4000}, {120, 800, 5000}, {60, 250, 2000, 8000}};
+      for (int i = 0; i < n - 1; ++i) c.crossovers[i] = xo[n - 3][i];
+      BandSplit split;
+      split.configure(c, /*compensate=*/true);
+      const auto N = static_cast<uint32_t>(16384 * (sr / 48000.0));  // the 60 Hz sections' tails at every rate
+      std::vector<float> h(N);
+      float out[BandSplit::kBands];
+      for (uint32_t i = 0; i < N; ++i) {
+        split.process(i == 0 ? 1.0f : 0.0f, out);
+        float s = 0.0f;
+        for (int b = 0; b < n; ++b) s += out[b];
+        h[i] = s;
+      }
+      RealFft fft(N);
+      std::vector<float> pw(N / 2 + 1);
+      fft.power(h.data(), pw.data());
+      float worst = 0.0f;
+      const auto top = static_cast<uint32_t>(20000.0 / sr * N);  // the audible band (the top's float tail aside)
+      for (uint32_t k = 1; k < top; ++k) worst = std::max(worst, std::fabs(10.0f * std::log10(pw[k])));
+      MESSAGE(n << " bands at " << sr << " Hz: the sum's magnitude within " << worst << " dB of flat");
+      CHECK(worst < 0.01f);  // double sections (M9: float ones were several % off at 192 kHz, 60 Hz)
     }
-    RealFft fft(N);
-    std::vector<float> pw(N / 2 + 1);
-    fft.power(h.data(), pw.data());
-    float worst = 0.0f;
-    for (uint32_t k = 1; k < N / 2 - N / 20; ++k) worst = std::max(worst, std::fabs(10.0f * std::log10(pw[k])));
-    MESSAGE(n << " bands: the sum's magnitude within " << worst << " dB of flat");
-    CHECK(worst < 0.05f);  // (float biquads: the 60 Hz sections at 48 kHz are what is left)
-  }
 }
 
 TEST_CASE("band levels: ballistics (VU 300 ms both ways, Peak fast up and slow down), silence falls, rest") {
@@ -108,7 +124,7 @@ TEST_CASE("band levels: ballistics (VU 300 ms both ways, Peak fast up and slow d
   BandLevels b(c);
   (void)levels(b, sine(550.0, 1.0, 24000));
   const float up = b.level(1);
-  CHECK(up == doctest::Approx(-3.01f).epsilon(0.1));
+  CHECK(std::fabs(up + 3.01f) < 0.1f);  // the band-pass is unity at its centre
   b.pushSilence(48000 / 4);  // 250 ms: Peak falls slowly (650 ms)
   const float peakFall = b.level(1);
   c.ballistics = BandLevelsConfig::Ballistics::Vu;
@@ -225,6 +241,24 @@ TEST_CASE("waveform capture: the loop locks to the tap's beat (a slot per phase)
   CHECK_FALSE(st.clocked);
   CHECK(st.spanSamples == doctest::Approx(2.0 * kSr));
   CHECK(std::count(filled.begin(), filled.end(), uint8_t{1}) > 0);
+}
+
+TEST_CASE("waveform capture: the tempo late in a song (beat 4000, a float beat lane) reads within 0.05 %") {
+  for (const double bpm : {120.0, 87.5}) {
+    CAPTURE(bpm);
+    WaveConfig c;
+    c.loop = true;
+    WaveCapture w(c);
+    const uint32_t n = 48000 * 3;
+    std::vector<float> beat(n), x(n, 0.1f);
+    for (uint32_t i = 0; i < n; ++i) beat[i] = static_cast<float>(4000.0 + static_cast<double>(i) * bpm / 60.0 / kSr);
+    for (uint32_t at = 0; at < n; at += 512) w.push(beat.data() + at, x.data() + at, x.data() + at, std::min(512u, n - at));
+    std::vector<WaveBin> slots(WaveCapture::kLoopSlots);
+    std::vector<uint8_t> filled(WaveCapture::kLoopSlots);
+    WaveLoopState st;
+    (void)w.readLoop(0, slots.data(), filled.data(), st);
+    CHECK(st.bpm == doctest::Approx(bpm).epsilon(5e-4));  // (one chunk's float difference: ~1 %, L10)
+  }
 }
 
 TEST_CASE("waveform capture: push never allocates (the worker, RtScope)") {

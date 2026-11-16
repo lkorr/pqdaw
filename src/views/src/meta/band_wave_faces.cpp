@@ -54,7 +54,7 @@ using sheet::Opt;
 
 constexpr float kW = 300.0f, kH = 160.0f;
 constexpr float kLabelPx = 6.0f;           // world units
-constexpr float kLabelMinDevicePx = 5.0f;  // below this the text is left out
+constexpr float kLabelMinDevicePx = 6.0f;  // below this the text is left out (as the analyser frame)
 constexpr Rect kWell{6.0f, 6.0f, kW - 6.0f, kH - 6.0f};
 constexpr Rgba kGrid = ui::signal_theme::kGrid, kGridLabel = ui::signal_theme::kGridLabel;
 constexpr Rgba kFrozen = ui::rgba(255, 180, 90, 230);
@@ -312,7 +312,7 @@ protected:
           std::snprintf(lb, sizeof lb, "%.0f", db);
           const Vec2 wl = world(r.x1 - 3.0f * sc, y);
           if (wl.y - 0.5f * kLabelPx > kWell.y0 + 1.0f && wl.y + 0.5f * kLabelPx < kWell.y1 - kLabelPx - 1.0f)
-            label(p, wl, lb, kGridLabel, 1.0f);
+            axisLabels_.push_back({wl, lb, 1.0f});
         }
       };
       for (float db = std::floor(ceilDb / 6.0f) * 6.0f; db >= floorDb; db -= 6.0f) rule(db, false);
@@ -332,7 +332,7 @@ protected:
           char lb[16];
           std::snprintf(lb, sizeof lb, "-%ds", s);
           const Vec2 wl = world(x + 2.0f * sc, r.y1);
-          if (wl.x + 3.0f * kLabelPx < kWell.x1 - 2.0f) label(p, {wl.x, kWell.y1 - 0.5f * kLabelPx - 1.5f}, lb, kGridLabel);
+          if (wl.x + 3.0f * kLabelPx < kWell.x1 - 2.0f) axisLabels_.push_back({{wl.x, kWell.y1 - 0.5f * kLabelPx - 1.5f}, lb, 0.0f});
         }
       }
     }
@@ -390,6 +390,19 @@ protected:
         flush();
       }
     }
+    // The scale's labels over the traces (VZ.9: a trace along the floor ran over the time labels), each on a dark
+    // backing, the chips and the edges kept clear.
+    {
+      analyser::LabelGuard guard;
+      reserveChips(guard);
+      for (const AxisLabel& a : axisLabels_) {
+        const Rect b = analyser::labelBox(p, a.at, a.text, kLabelPx, a.align);
+        if (!guard.place(b, {kWell.x0 + 1.0f, kWell.y0 + 1.0f, kWell.x1 - 1.0f, kWell.y1 - 1.0f})) continue;
+        p.roundedRect({b.x0 - 1.0f, b.y0 - 0.5f, b.x1 + 1.0f, b.y1 + 0.5f}, 1.5f, ui::rgba(10, 14, 18, 150));
+        label(p, a.at, a.text, kGridLabel, a.align);
+      }
+      axisLabels_.clear();
+    }
     if (labels && opts_.on(bLabels)) {  // the current level per band, top left, in its colour
       const char* const* names = bandNames(nBands);
       float ty = kWell.y0 + 4.0f + 0.5f * kLabelPx;
@@ -430,6 +443,12 @@ protected:
 private:
   const float* col(uint64_t c) const noexcept { return ring_.data() + static_cast<size_t>(c % dsp::BandLevels::kHistory) * kBands; }
   std::vector<float> ring_;  // the stage's columns, column c at c % kHistory
+  struct AxisLabel {
+    Vec2 at;
+    std::string text;
+    float align;
+  };
+  std::vector<AxisLabel> axisLabels_;  // the scale's labels, drawn after the traces
   uint64_t read_ = 0;        // columns copied so far
   std::vector<Vec2> pts_;
 };
@@ -569,6 +588,20 @@ protected:
     std::fill(filled_.begin(), filled_.end(), uint8_t{0});
   }
   bool moving() const noexcept override { return opts_.choice(wPlayhead) == 1 && loop_.moving; }
+  // The auto gain eases toward the window's peak with a 0.2 s time constant (held while frozen).
+  bool animate(float dt, bool) override {
+    bool easing = false;
+    if (opts_.on(wAuto) && !frozen_ && gainPrimed_) {
+      const float d = targetGain_ - autoGain_;
+      if (std::fabs(d) > 0.005f * targetGain_) {
+        autoGain_ += d * (1.0f - std::exp(-dt / 0.2f));
+        easing = true;
+      } else {
+        autoGain_ = targetGain_;
+      }
+    }
+    return moving() || easing;
+  }
   const char* plotHelp() const noexcept override {
     return "The signal's envelope (peak, with its RMS body inside). Point at it for the time and the levels there.";
   }
@@ -654,8 +687,9 @@ protected:
         if (chB >= 0 && colB_[static_cast<size_t>(c)].valid)
           peak = std::max({peak, std::fabs(colB_[static_cast<size_t>(c)].mn), std::fabs(colB_[static_cast<size_t>(c)].mx)});
       }
-      const float targetGain = std::clamp(0.92f / peak, 0.25f, 24.0f);
-      if (!frozen_) autoGain_ += (targetGain - autoGain_) * 0.08f;
+      // The target here; the easing in animate (time-based, not per paint: L12).
+      targetGain_ = std::clamp(0.92f / peak, 0.25f, 24.0f);
+      if (!gainPrimed_) autoGain_ = targetGain_, gainPrimed_ = true;
       gain = autoGain_;
     }
     const bool db = opts_.on(wDb);
@@ -978,7 +1012,8 @@ private:
   std::vector<uint8_t> filled_;
   uint64_t stamp_ = 0;
   dsp::WaveLoopState loop_;
-  float autoGain_ = 1.0f;
+  float autoGain_ = 1.0f, targetGain_ = 1.0f;
+  bool gainPrimed_ = false;
   std::vector<ColAgg> colA_, colB_, other_;
   std::vector<float> xs_, yA_, yB_, tMin_, tMax_, tRms_, aCol_, tMaxD_, tMinD_, tRmsS_, tRaw_, wRaw_;
   std::vector<Rgba> cA_, cB_, zero_;

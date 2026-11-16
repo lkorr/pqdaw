@@ -112,14 +112,21 @@ protected:
     const uint64_t seq = f.loudnessRead(r, settled);
     if (seq == seq_) return false;
     seq_ = seq;
-    r_ = r;
     if (const uint32_t want = historyPoints(); want > 0) {
-      const uint64_t start = std::max(r.historyStart, r.points > want ? r.points - want : 0);
-      hist_.resize(static_cast<size_t>(r.points - start));
-      uint32_t got = 0;
-      (void)f.loudnessRead(r, settled, start, static_cast<uint32_t>(hist_.size()), hist_.data(), &got);
-      hist_.resize(got);
+      // The readings and the window from one publish (L16): a point published between the two reads reads again.
+      for (int tries = 0; tries < 3; ++tries) {
+        const uint64_t start = std::max(r.historyStart, r.points > want ? r.points - want : 0);
+        hist_.resize(static_cast<size_t>(r.points - start));
+        uint32_t got = 0;
+        dsp::LoudnessReadings again;
+        (void)f.loudnessRead(again, settled, start, static_cast<uint32_t>(hist_.size()), hist_.data(), &got);
+        hist_.resize(got);
+        const bool same = again.points == r.points && again.historyStart == r.historyStart;
+        r = again;
+        if (same) break;
+      }
     }
+    r_ = r;
     return true;
   }
 
@@ -264,6 +271,12 @@ protected:
         std::snprintf(n, sizeof n, "%u", std::min<uint32_t>(r_.clipCount[c], 99));
         p.text({0.5f * (lamp.x0 + lamp.x1), 0.5f * (lamp.y0 + lamp.y1)}, n, 5.0f, ui::rgba(255, 255, 255));
       }
+      if (!labels)  // zoomed out: three brighter ticks (0, -12, -24) at the bar's outer edge
+        for (const float g : {0.0f, -12.0f, -24.0f})
+          if (g >= floorDb) {
+            const float y = bot - frac(g) * (bot - top), xe = c == 0 ? well.x0 : well.x1;
+            p.line({xe - (c == 0 ? 3.0f : 0.0f), y}, {xe + (c == 0 ? 0.0f : 3.0f), y}, 1.0f, ui::rgba(220, 225, 235, 200));
+          }
       if (readouts) {
         char buf[16];
         if (valid(r_.peakDb[c])) std::snprintf(buf, sizeof buf, "%.1f", std::max(r_.peakDb[c], -99.9f));
@@ -272,6 +285,13 @@ protected:
         p.text({cx, bot + 6.0f}, buf, 6.0f, r_.clip[c] ? lampOn : th.device.displayText);
         p.text({cx, bot + 14.0f}, c == 0 ? "L" : "R", 5.0f, kGridLabel);
       }
+    }
+    if (!labels && !coversBody()) {  // zoomed out: the louder peak, legible
+      const float pk = std::max(r_.peakDb[0], r_.peakDb[1]);
+      char buf[16];
+      if (valid(pk) && pk > floorDb) std::snprintf(buf, sizeof buf, "%.1f", std::max(pk, -99.9f));
+      else std::snprintf(buf, sizeof buf, "-inf");
+      summary(p, {0.5f * kW, top + 0.22f * (bot - top)}, buf, "dB peak", r_.clip[0] || r_.clip[1] ? lampOn : th.device.displayText, 0.5f, 16.0f);
     }
   }
 };
@@ -447,8 +467,8 @@ protected:
     const float x0 = 68.0f, x1 = kW - 12.0f;
     char big[16], line[40];
     fmtLufs(anim_.shortTerm, big, sizeof big);
-    if (!labels) {
-      if (!coversBody() && 20.0f * p.transform().scale >= 12.0f) p.textAligned({x0, 70.0f}, big, 20.0f, stCol, 0.0f);
+    if (!labels) {  // zoomed out: the short-term headline with its unit, legible
+      if (!coversBody()) summary(p, {x0, 64.0f}, big, "LUFS S", stCol, 0.0f, 20.0f);
       return;
     }
     p.textAligned({x0, 38.0f}, big, 20.0f, stCol, 0.0f);
@@ -466,7 +486,8 @@ protected:
     row(68.0f, "M", v, valid(r_.momentary) ? pal_.state(r_.momentary - target) : text);
     fmtLufs(anim_.integrated, v, sizeof v);
     row(79.0f, "I", v, valid(anim_.integrated) ? pal_.state(anim_.integrated - target) : text);
-    std::snprintf(v, sizeof v, "%.1f LU", r_.lra);
+    if (r_.hasLra) std::snprintf(v, sizeof v, "%.1f LU", r_.lra);
+    else std::snprintf(v, sizeof v, "--.-");  // (L17: none yet, as the other rows)
     row(90.0f, "LRA", v, text);
     const bool tp = opts_.on(uTruePeak);
     if (valid(r_.truePeakDb)) std::snprintf(v, sizeof v, "%+.1f %s", r_.truePeakDb, tp ? "dBTP" : "dB");
@@ -761,7 +782,14 @@ protected:
     if (opts_.on(hI)) trace(&dsp::LoudnessPoint::integrated, ui::mulAlpha(colI_, 0.9f), 1.0f, false);
     p.drawList().popClip();
     p.line({plotR - 0.5f, plotT}, {plotR - 0.5f, plotB}, 0.5f, ui::mulAlpha(th.face.value, frozen_ ? 0.10f : 0.25f));  // the live edge
-    if (!labels) return;
+    if (!labels) {  // zoomed out: the short-term now, legible
+      if (!coversBody()) {
+        char now[16];
+        fmtLufs(r_.shortTerm, now, sizeof now);
+        summary(p, {plotL + 4.0f, plotT + 12.0f}, now, "LUFS S", colS_, 0.0f, 18.0f);
+      }
+      return;
+    }
     char buf[48], num[16];
     // The hover inspector: a hairline and the three values there (whatever traces are shown) and its age.
     if (hover_.x >= plotL && hover_.x <= plotR && hover_.y >= plotT && hover_.y <= plotB && !hist_.empty() && !hotT && !hotC) {

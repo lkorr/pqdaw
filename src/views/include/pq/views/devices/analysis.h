@@ -192,6 +192,9 @@ public:
   SpectrumFeed& operator=(const SpectrumFeed&) = delete;
 
   const dsp::SpectrumConfig& config() const noexcept { return cfg_; }
+  // Unique per feed made in this process (never reused, unlike an address): a display tells a new feed from the one it
+  // had even when the new one was allocated where the old one was freed.
+  uint64_t serial() const noexcept { return serial_; }
   // VZ.1: tunes the output (and input) spectrum: the analysers are remade with it at the worker's next step and start
   // from silence. The newest call decides (every display of an instance shows the same options). UI thread.
   void setTuning(const SpectrumTuning& t);
@@ -255,6 +258,7 @@ public:
   // UI thread: the analysis a loudness display asks for (its sampleRate is replaced by the feed's; an unchanged request
   // is ignored). The newest call decides.
   void setLoudness(const dsp::LoudnessConfig& c);
+  dsp::LoudnessConfig loudnessRequest() const;  // the newest request (tests)
   // UI thread: the readings and the history points [from, from + n) ∩ the held ones into out (null: none; from its
   // start); returns the sequence of the readings (bumps at each publish) and sets `copied`. settled: as scopeEnd's.
   uint64_t loudnessRead(dsp::LoudnessReadings& r, bool& settled, uint64_t from = 0, uint32_t n = 0, dsp::LoudnessPoint* out = nullptr,
@@ -337,6 +341,7 @@ private:
   std::atomic<uint32_t> wantWf_{0}, wantCloud_{0};  // VZ.7
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
+  uint64_t serial_ = 0;
   std::function<void()> wakePost_;
   std::map<const void*, std::function<void()>> wakers_;  // UI thread
   mutable std::mutex mutex_;  // snap_, seq_, settled_; and the worker's sleep
@@ -356,6 +361,7 @@ private:
   mutable std::mutex gramMutex_;
   std::map<const void*, SpectrogramRequest> gramRequests_;
   SpectrogramRequest gramWant_;  // the deciding request
+  bool gramAsked_ = false;       // gramMutex_: a request was made (the worker makes the stage from it)
   bool gramDirty_ = false;
   std::vector<float> gramRows_;      // the ring (gramMutex_)
   std::vector<GramColumn> gramInfo_;
@@ -384,6 +390,7 @@ private:
   // VZ.5: the cross-spectrum (the worker's alone), its request and what it published (stereoMutex_).
   mutable std::mutex stereoMutex_;
   dsp::CrossSpectrumConfig stereoWant_;
+  bool stereoAsked_ = false;  // stereoMutex_
   bool stereoDirty_ = false;
   StereoSnapshot stereoPub_;
   uint64_t stereoSeq_ = 0;
@@ -398,6 +405,7 @@ private:
   // VZ.7: the waterfall and the cloud (the analysers the worker's; requests and published rings under wfMutex_).
   mutable std::mutex wfMutex_;
   dsp::WaterfallConfig wfWant_;
+  bool wfAsked_ = false, clAsked_ = false;  // wfMutex_
   dsp::StereoCloudConfig clWant_;
   bool wfDirty_ = false, clDirty_ = false;
   WaterfallState wfPub_;

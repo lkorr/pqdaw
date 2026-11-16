@@ -2033,3 +2033,17 @@ Status: open (reversible: an analyser window option; a modulation hookup; Opt ro
   Image (five ribbon colours over the palette, position line), Phase Scope (mono, coherence, warning). Still fixed: the
   Oscilloscope's traces (PQ cTraceA/B; its face has its own sheet code), the Stereo Spectrogram's band-ramp colours, the
   Spectrum's L/R/M/S (those channel modes were left out, Q?-VZ.2-a). Status: open.
+
+## Q?-VZ.9-a · Double-click on a Choice / Toggle row of an analyser sheet
+- Context: review L1: the first click of a double-click cycles the row (one undo step), the second reset it (a second step).
+- Options: (a) the double-click's second press does nothing on a choice (one change, one step); (b) merge the reset into
+  the first click's step (needs an undo-merge API); (c) keep the reset as a second step.
+- Choice: (a). Numeric rows still reset on double-click; Colour rows reset (their first click only opens the picker). The
+  hint text no longer promises a reset on choices. Reversible: one branch in `AnalyserFace::rowDown`. Status: open.
+
+## Q?-VZ.9-b · When an analyser face leaves its small text out
+- Context: UI note 4: at project-patch zoom the faces drew 6-unit labels at ~5 px (the threshold was 5 device px).
+- Options: keep 5 px; 6 px (as the Oscilloscope and Spectrogram already use); scale the text up instead.
+- Choice: 6 px, and where the text goes a face shows one legible summary (`AnalyserFace::summary`, ~12 device px): Level
+  Meter the louder peak + ticks at 0 / -12 / -24, LUFS Meter the short-term with its unit, Loudness History the
+  short-term now. Band Levels and Waveform show only their traces zoomed out. Reversible: one constant. Status: open.

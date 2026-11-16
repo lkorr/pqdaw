@@ -274,6 +274,7 @@ private:
   std::atomic<uint32_t> toneInc_{0};
   uint32_t tonePhase_ = 0;  // audio thread
   dsp::TonePreview tonePreview_;  // VZ.3 (its tables are built with the output, off the audio thread)
+  uint32_t tonePair_ = UINT32_MAX;  // audio thread: the first channel the tone was last added into (a move crossfades)
 };
 
 // The sine table the tone reads (2048 points + 1 guard, built once). Exposed for the RT test.

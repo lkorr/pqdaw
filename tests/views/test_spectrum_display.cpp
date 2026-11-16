@@ -18,6 +18,7 @@
 #include "../ui/golden_check.h"
 #include "pq/document/devices.h"
 #include "pq/document/meta.h"
+#include "pq/document/modules.h"
 #include "pq/meta/user_defaults.h"
 #include "pq/meta/spectrum.h"
 #include "pq/ui/colormap.h"
@@ -420,6 +421,16 @@ TEST_CASE("spectrum face: SET — DISPLAY options reach the plot, ANALYSIS the f
   const doc::MetaInstance fresh = doc::defaultMetaInstance(meta::spectrumType());
   REQUIRE(fresh.data != nullptr);
   CHECK(*fresh.data == *saved);
+  // … and so does a module placed from the catalog (moduleBlocks: the node menu, the browser, the Create menu; M4).
+  {
+    const doc::BlockSet blocks = doc::moduleBlocks(doc::ModuleKind::Spectrum);
+    const doc::MetaInstance* placed = nullptr;
+    for (const doc::DevicePtr& d : blocks.devices)
+      if (d->patch == std::string(doc::kMetaDevicePrefix) + "spectrum") placed = d->metaAt("");
+    REQUIRE(placed != nullptr);
+    REQUIRE(placed->data != nullptr);
+    CHECK(*placed->data == *saved);
+  }
   // RESET: the factory options (the saved default stays).
   const int before = t->steps;
   CHECK(ev(FacePointer::Kind::Down, find(93)));

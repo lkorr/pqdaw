@@ -6,6 +6,8 @@
 
 #include <doctest/doctest.h>
 
+#include <new>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -135,7 +137,28 @@ struct FaceRig {
     env.uiScale = 1.0f;
     FacePainter p(dl, {{10.0f, 10.0f}, 2.0f});
     face->paintLive(p, env);
+    // VZ.9: nothing is drawn outside the face (a label past an edge, a chip, a summary): every triangle not clipped
+    // to the face lies within it, give or take the antialiasing fringe. (Not with an in-face sheet open: the
+    // sheet is wider than a narrow face by design.)
+    if (!boundsChecked) return;
+    const Vec2 sz = face->worldSize();
+    const float s = 2.0f, x1 = 10.0f + sz.x * s, y1 = 10.0f + sz.y * s;
+    size_t outside = 0;
+    const auto vtx = dl.vertices();
+    const auto idx = dl.indices();
+    for (const DrawCmd& c : dl.commands()) {
+      if (c.clip.x0 >= 7 && c.clip.y0 >= 7 && static_cast<float>(c.clip.x1) <= x1 + 3.0f && static_cast<float>(c.clip.y1) <= y1 + 3.0f)
+        continue;  // clipped to the face
+      for (uint32_t k = c.idxOffset; k < c.idxOffset + c.idxCount; ++k) {
+        const Vec2 q = vtx[idx[k]].pos;
+        if (q.x < 7.0f || q.y < 7.0f || q.x > x1 + 3.0f || q.y > y1 + 3.0f) {
+          if (outside++ == 0) MESSAGE("outside at " << q.x << ", " << q.y << " (the face to " << x1 << ", " << y1 << ")");
+        }
+      }
+    }
+    CHECK(outside == 0);
   }
+  bool boundsChecked = true;
   void play(double seconds, bool silent = false) {
     stream(tap, feed, seconds, at, clock, silent);
     Clock::now() += 1.0 / 60.0;
@@ -342,6 +365,69 @@ TEST_CASE("3D faces: held while painted; the request; the pose as data (one step
   }
 }
 
+TEST_CASE("analyser faces: a new feed where the freed one was is another feed (serial, H1) — the face starts over on it") {
+  // The hub frees a feed nothing holds when its tap or the rate changes; the next one can land at the same address. A
+  // face compared addresses: it kept the old feed's read position and skipped the new one's slices until its count
+  // passed the old (and held the old picture meanwhile).
+  TapRing tap(4, 32768, 4096);
+  alignas(SpectrumFeed) unsigned char storage[sizeof(SpectrumFeed)];
+  auto* feed = new (storage) SpectrumFeed(tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{});
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  MetaFace::setClock(+[]() -> double { return Clock::now(); });
+  auto face = makeFace(meta::waterfallType());
+  face->bind(std::make_unique<DataTarget>(meta::waterfallType()), nullptr);
+  face->setAnalysis([&] { return feed; }, [] {});
+  DrawList dl;
+  auto paint = [&] {
+    dl.reset(1200, 800);
+    FaceEnv env;
+    env.theme = &*theme;
+    env.uiScale = 1.0f;
+    FacePainter p(dl, {{10.0f, 10.0f}, 2.0f});
+    face->paintLive(p, env);
+  };
+  auto frame = [&] {
+    Clock::now() += 1.0 / 60.0;
+    (void)face->pollVoices();
+    paint();
+  };
+  uint64_t at = 0;
+  double clock = 1.0;
+  paint();
+  stream(tap, *feed, 3.0, at, clock);
+  frame();
+  WaterfallShown s;
+  REQUIRE(waterfallShown(*face, s));
+  const size_t before = s.slices;
+  CHECK(before > 100);
+  // Hidden: it lets go; the feed is freed and another is made in its place.
+  Clock::now() += 1.0;
+  (void)face->pollVoices();
+  Clock::now() += 0.1;
+  (void)face->pollVoices();
+  REQUIRE(waterfallShown(*face, s));
+  REQUIRE_FALSE(s.acquired);
+  REQUIRE(feed->consumers() == 0);
+  feed->~SpectrumFeed();
+  feed = new (storage) SpectrumFeed(tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{});
+  paint();  // shown again: it holds the new feed
+  stream(tap, *feed, 1.0, at, clock, /*silent=*/true);
+  frame();
+  WaterfallState ws;
+  std::vector<float> live;
+  bool settled = false;
+  (void)feed->waterfallRead(0, ws, live, settled);
+  REQUIRE(waterfallShown(*face, s));
+  CHECK(s.acquired);
+  CHECK(ws.slices > 0);
+  CHECK(s.slices == ws.slices);
+  CHECK(s.newestMaxDb < -100.0f);  // the new feed's silence, not the old feed's music left in the face's ring
+  face.reset();
+  feed->~SpectrumFeed();
+  MetaFace::setClock(nullptr);
+}
+
 TEST_CASE("Stereo Spectrogram: the canvas scrolls (new points splatted once, leavers repaired, touched texels uploaded), exactly") {
   FaceRig rig(meta::stereoSpectrogramType());
   rig.paint();
@@ -532,4 +618,117 @@ TEST_CASE("3D faces: the UI frame per face at 1440p (a face ~1000 x 600 device p
     MESSAGE(std::string(wf ? "Waterfall" : "Stereo Spectrogram") << " (3D view), ms per UI frame at scale 3.2: " << steady / kFrames
                                                                  << " with data arriving, " << drag / kFrames << " while the camera moves");
   }
+}
+
+// VZ.9 (review M11): the scrolling canvas's draw path — the period drawn offset by the scroll in up to four quads — on the
+// GPU, against a forced full re-splat of the same state. (The FaceRig tests have no texture pool: they prove the
+// accumulator's repair, not where a scrolled texture lands.)
+TEST_CASE("Stereo Spectrogram: the scrolled canvas, drawn, matches a full re-splat of the same points (GPU)") {
+  FakeTransport port;
+  ViewContext ctx{port};
+  ctx.setDeviceLibrary(&devLib());
+  doc::DocumentStore& st = ctx.store();
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(st.dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::TrackId track = run(doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, {}, "3D")).tracks.at(0);
+  doc::IdSource local;
+  doc::EngineRoles l;
+  const doc::ops::Edit pe = run(doc::ops::pasteBlocks(*st.current(), st.ids(), track,
+                                                      doc::engineModuleBlocks(local, doc::ModuleKind::StereoSpectrogram, {}, &l)));
+  const doc::EngineRoles roles{pe.devices.at(l.group.value - 1), pe.devices.at(l.engine.value - 1)};
+  auto tap = std::make_shared<TapRing>(4, 32768, 4096);
+  auto feed = std::make_shared<SpectrumFeed>(*tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{});
+  const doc::DeviceId eng = roles.engine;
+  ctx.setAnalysisSource([eng, tap](doc::DeviceId d) -> std::shared_ptr<TapRing> { return d == eng ? tap : nullptr; }, kSr);
+  REQUIRE(ctx.analysisHub() != nullptr);
+  ctx.analysisHub()->adopt(eng, tap, feed);
+  auto view = [&](double gamma) {  // SPEC (orthographic, no glow): the canvas scrolls; gamma: a key change, a re-splat
+    auto data = std::make_shared<const meta::DataValue>(meta::DataValue::record(
+        {{"yaw", meta::DataValue::num(0.0)}, {"pitch", meta::DataValue::num(0.0)}, {"gamma", meta::DataValue::num(gamma)}}));
+    run(doc::ops::setMetaData(*st.current(), roles.engine, "", "stereo_spectrogram", data));
+  };
+  view(1.57);  // (the default gamma)
+  const doc::PanelPtr p = doc::findDevice(*ctx.doc(), roles.group).device->panel;
+  REQUIRE(p != nullptr);
+  TestDriver d(static_cast<uint32_t>(p->width * 2.0f), static_cast<uint32_t>(p->height * 2.0f), 2.0f);
+  panel::PanelHost* host = nullptr;
+  auto face = std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx, roles.group),
+                                                      panel::makeDocPanelTarget(ctx, roles.group, [&host]() -> Widget* { return host; }));
+  host = &d.setRoot<panel::PanelHost>("panel", std::move(face));
+  d.tree().layoutNow();
+  REQUIRE(d.enableGpu().ok());
+  uint64_t at = 0;
+  double clock = 1.0;
+  d.advance(0.1);  // painted: the face acquires the feed
+  stream(*tap, *feed, 0.25, at, clock);
+  feed->runWakers();  // (the hub's poster would: sound arrived, the face asks for frames)
+  d.advance(0.05);
+  (void)d.render();
+  auto first = d.render();
+  REQUIRE(first.ok());
+  for (int k = 0; k < 12; ++k) {  // 12 updates of 0.25 s: the canvas scrolls (and wraps) between them
+    stream(*tap, *feed, 0.25, at, clock);
+    feed->runWakers();
+    d.advance(0.05);
+    (void)d.render();
+  }
+  feed->hold();
+  d.advance(0.1);
+  auto scrolled = d.render();
+  REQUIRE(scrolled.ok());
+  CHECK(compareImages(*first, *scrolled, 3).pixelsOverTolerance > 1000);  // (the picture moved: points arrived, scrolled)
+  view(1.6);  // a re-splat of every point ...
+  d.advance(0.1);
+  (void)d.render();
+  view(1.57);  // ... and back: a full re-splat of the same state
+  d.advance(0.1);
+  (void)d.render();
+  d.advance(0.1);
+  auto fresh = d.render();
+  REQUIRE(fresh.ok());
+  // The scroll moves the texture by whole texels and a re-splat places every point exactly: they agree to within a
+  // texel along time (each pixel matched by the other image's at x - 1, x or x + 1). A quad placed wrong (the wrap,
+  // the uv) shows as a band of misses.
+  REQUIRE(scrolled->width == fresh->width);
+  REQUIRE(scrolled->height == fresh->height);
+  const uint32_t W = fresh->width, H = fresh->height;
+  uint64_t misses = 0;
+  uint32_t worst = 0;
+  std::vector<uint32_t> perCol(W / 16 + 1, 0), perRow(H / 16 + 1, 0);
+  for (uint32_t y = 0; y < H; ++y)
+    for (uint32_t x = 0; x < W; ++x) {
+      uint32_t best = 255;
+      for (int dx = -1; dx <= 1; ++dx) {
+        const int xx = static_cast<int>(x) + dx;
+        if (xx < 0 || xx >= static_cast<int>(W)) continue;
+        const uint8_t* a = scrolled->pixel(x, y);
+        const uint8_t* b = fresh->pixel(static_cast<uint32_t>(xx), y);
+        uint32_t m = 0;
+        for (int ch = 0; ch < 3; ++ch) m = std::max<uint32_t>(m, static_cast<uint32_t>(std::abs(a[ch] - b[ch])));
+        best = std::min(best, m);
+      }
+      worst = std::max(worst, best);
+      if (best > 24) {
+        ++misses;
+        ++perCol[x / 16];
+        ++perRow[y / 16];
+      }
+    }
+  const uint32_t colMax = *std::max_element(perCol.begin(), perCol.end()), rowMax = *std::max_element(perRow.begin(), perRow.end());
+  MESSAGE("scrolled vs re-splat (within a texel): worst " << worst << ", " << misses << " px off; most in a 16 px column "
+                                                          << colMax << ", in a 16 px row " << rowMax);
+  // (Measured: ~0.4 % scattered, each point's footprint splatted a sub-texel apart; a quad in the wrong place would miss
+  // most of a strip.)
+  const bool ok = misses <= W * H / 200 && colMax <= 16 * H / 10 && rowMax <= 16 * W / 10;
+  if (!ok) {
+    (void)writePng("scroll-scrolled.actual.png", *scrolled);
+    (void)writePng("scroll-resplat.actual.png", *fresh);
+  }
+  CHECK(misses <= W * H / 200);
+  CHECK(colMax <= 16 * H / 10);
+  CHECK(rowMax <= 16 * W / 10);
+  d.tree().setRoot(std::make_unique<Widget>());
 }

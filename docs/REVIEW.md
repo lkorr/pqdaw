@@ -2061,3 +2061,14 @@ Ribbon mode. Not carried over: LFO modulation of the camera, colour pickers, fou
   one undo step; Esc puts back the colour it opened with; click "old" likewise; click the hex field and type #RGB /
   #RRGGBB + Enter. Double-click a row: back to the display's own colour. SAVE DEFAULT carries the colours.
 - Golden: tests/views/golden/vz10-colour-picker.png. Check the look of the picker and the swatch rows.
+
+## VZ.9 · analyser review fixes (look)
+- Chips on every analyser are opaque and larger (7.5 units); the 3D views' snap chip for the view shown is lit.
+- Stereo Spectrogram: faint points fade into the well instead of printing black specks (compare stereospectrogram-image).
+- Labels no longer collide: Waterfall frequency labels, the Stereo Image right axis (nothing under SET / FREEZE), the
+  Stereo Spectrogram's L / C / R (L moves below the chips, on a dark backing), Band Levels' scale over the traces.
+- Waterfall SIDE has a dB scale, TOP a colour legend (top right).
+- Zoomed out (project patch): Level Meter peak + ticks, LUFS Meter short-term with "LUFS S", Loudness History its
+  short-term; text under 6 px is left out (Q?-VZ.9-b).
+- Goldens: waterfall-*, stereospectrogram-*, device/project-meta-{loudness,bandwave}, device-meta-stereo, module-*-panel
+  for the ten analysers.

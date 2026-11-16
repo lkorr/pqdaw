@@ -246,6 +246,8 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
   const uint32_t outs = std::min(b.numOut, o.engineOuts_);
   auto silence = [&] {
     for (uint32_t c = 0; c < b.numOut; ++c) std::memset(b.out[c], 0, sizeof(float) * b.frames);
+    o.tonePreview_.mute();  // VZ.9 (L6): a release under the mute ends (the stream may suspend)
+    o.tonePair_ = UINT32_MAX;
   };
   // AU.stream: the cold-start pre-roll. Silence (the engine is not run: it is audioOffline, so its transport waits)
   // until the driver has taken enough clean buffers; then the engine goes online and runs from the next buffer.
@@ -358,9 +360,38 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
     if (first + 2 > b.numOut) first = 0;
     const uint32_t n = b.numOut > first + 1 ? 2u : 1u;
     float* pair[2] = {b.out[first], b.out[first + n - 1]};
-    o.tonePreview_.render(pair, n, b.frames, o.engine_.load(std::memory_order_relaxed)->config().sampleRate);
+    const double rate = o.engine_.load(std::memory_order_relaxed)->config().sampleRate;
+    uint32_t done = 0;
+    const uint32_t from = o.tonePair_;
+    if (from != UINT32_MAX && from != first && from + 2 <= b.numOut) {
+      // VZ.9 (L5): the monitor pair moved under a sounding tone: a 5 ms crossfade from the old pair to the new (a
+      // step out of one and into the other would click), rendered a stack chunk at a time.
+      const uint32_t m = b.numOut > from + 1 ? 2u : 1u;
+      float* old[2] = {b.out[from], b.out[from + m - 1]};
+      const uint32_t len = std::min<uint32_t>(b.frames, static_cast<uint32_t>(0.005 * rate) + 1);
+      float tmp[64];
+      float* tp[1] = {tmp};
+      for (; done < len;) {
+        const uint32_t k = std::min<uint32_t>(64, len - done);
+        std::fill_n(tmp, k, 0.0f);
+        o.tonePreview_.render(tp, 1, k, rate);
+        for (uint32_t f = 0; f < k; ++f) {
+          const float g = static_cast<float>(done + f + 1) / static_cast<float>(len);
+          for (uint32_t c = 0; c < m; ++c) old[c][done + f] = std::clamp(old[c][done + f] + (1.0f - g) * tmp[f], -1.0f, 1.0f);
+          for (uint32_t c = 0; c < n; ++c) pair[c][done + f] += g * tmp[f];
+        }
+        done += k;
+      }
+    }
+    if (done < b.frames) {
+      float* rest[2] = {pair[0] + done, pair[1] + done};
+      o.tonePreview_.render(rest, n, b.frames - done, rate);
+    }
+    o.tonePair_ = first;
     for (uint32_t c = 0; c < n; ++c)
       for (uint32_t f = 0; f < b.frames; ++f) pair[c][f] = std::clamp(pair[c][f], -1.0f, 1.0f);
+  } else {
+    o.tonePair_ = UINT32_MAX;
   }
   // AU.stream: a requested fade-out: a linear ramp to 0 over fadeLen_ frames (across buffers), then silence.
   if (o.fade_.load(std::memory_order_acquire) == kFadeRequested) {

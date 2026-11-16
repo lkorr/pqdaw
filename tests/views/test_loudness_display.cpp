@@ -148,7 +148,28 @@ struct FaceRig {
     env.uiScale = 1.0f;
     FacePainter p(dl, {{10.0f, 10.0f}, scale});
     face->paintLive(p, env);
+    // VZ.9: nothing is drawn outside the face (a label past an edge, a chip, a summary): every triangle not clipped
+    // to the face lies within it, give or take the antialiasing fringe. (Not with an in-face sheet open: the
+    // sheet is wider than a narrow face by design.)
+    if (!boundsChecked) return;
+    const Vec2 sz = face->worldSize();
+    const float s = scale, x1 = 10.0f + sz.x * s, y1 = 10.0f + sz.y * s;
+    size_t outside = 0;
+    const auto vtx = dl.vertices();
+    const auto idx = dl.indices();
+    for (const DrawCmd& c : dl.commands()) {
+      if (c.clip.x0 >= 7 && c.clip.y0 >= 7 && static_cast<float>(c.clip.x1) <= x1 + 3.0f && static_cast<float>(c.clip.y1) <= y1 + 3.0f)
+        continue;  // clipped to the face
+      for (uint32_t k = c.idxOffset; k < c.idxOffset + c.idxCount; ++k) {
+        const Vec2 q = vtx[idx[k]].pos;
+        if (q.x < 7.0f || q.y < 7.0f || q.x > x1 + 3.0f || q.y > y1 + 3.0f) {
+          if (outside++ == 0) MESSAGE("outside at " << q.x << ", " << q.y << " (the face to " << x1 << ", " << y1 << ")");
+        }
+      }
+    }
+    CHECK(outside == 0);
   }
+  bool boundsChecked = true;
   LoudnessShown play(double seconds, const Signal& s = {}) {
     stream(tap, feed, seconds, s, at, clock);
     Clock::now() += 1.0 / 60.0;
@@ -305,6 +326,43 @@ TEST_CASE("loudness faces: held while painted, the feed's readings shown, the re
   }
 }
 
+TEST_CASE("analyser faces: a face that let go sends nothing to the feed it had (H1) — the options go to the one bound now") {
+  // The hub frees a feed nothing holds when its tap or the rate changes. A hidden face (let go) whose instance's data
+  // changed (undo, or its other face's edit) sent the new options to the cached, freed feed on its next poll / paint.
+  // Here the old feed stays alive (the test holds it) so what reaches it is visible.
+  FaceRig rig(meta::lufsMeterType());
+  SpectrumFeed other{rig.tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{}};
+  SpectrumFeed* bound = &rig.feed;
+  rig.face->setAnalysis([&] { return bound; }, [&] { ++rig.wakes; });
+  rig.paint();
+  REQUIRE(rig.feed.consumers() == 1);
+  Clock::now() += 1.0;  // hidden: it lets go
+  (void)rig.face->pollVoices();
+  Clock::now() += 0.1;
+  (void)rig.face->pollVoices();
+  REQUIRE(rig.feed.consumers() == 0);
+  const dsp::LoudnessConfig before = rig.feed.loudnessRequest();
+  // The instance's data changes elsewhere: a new target.
+  meta::DataPtr edited;
+  {
+    FaceRig elsewhere(meta::lufsMeterType());
+    elsewhere.paint();
+    REQUIRE(loudnessTestControl(*elsewhere.face, "target", -16.5));
+    edited = elsewhere.target->data_;
+  }
+  MetaFace::setClock(+[]() -> double { return Clock::now(); });  // (the other rig's destructor cleared it)
+  rig.target->data_ = edited;
+  bound = &other;  // the feed it had is replaced (the hub would free it now)
+  (void)rig.face->pollVoices();
+  CHECK(rig.feed.loudnessRequest() == before);
+  rig.paint();
+  CHECK(rig.feed.loudnessRequest() == before);  // nothing reached the old feed
+  CHECK(rig.feed.consumers() == 0);
+  CHECK(other.consumers() == 1);
+  CHECK(other.loudnessRequest().targetLufs == -16.5f);
+  rig.face.reset();  // (it holds `other`, which goes first)
+}
+
 TEST_CASE("loudness faces: the LUFS Meter's true peak option, the Level Meter's lamps and its analysis options") {
   {
     FaceRig rig(meta::lufsMeterType());
@@ -359,6 +417,7 @@ TEST_CASE("loudness faces: options read back by a new face; every option and sta
       rig.paint();
     }
     REQUIRE(loudnessTestControl(*rig.face, "sheet", 1.0));
+    rig.boundsChecked = false;
     rig.paint();
     rig.scale = 0.4f;  // far out: no text, the bars and traces stay
     rig.paint();

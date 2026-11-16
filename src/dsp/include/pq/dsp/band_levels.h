@@ -40,21 +40,23 @@ struct BandLevelsConfig {
   bool operator==(const BandLevelsConfig&) const = default;
 };
 
-// A biquad section (transposed direct form II; RBJ designs through the bilinear transform).
+// A biquad section (transposed direct form II; RBJ designs through the bilinear transform), designed and run in double:
+// float coefficients lose the low crossovers at high rates (1 + a1 + a2 ≈ w0² cancels: at 192 kHz, 60 Hz a float
+// section's DC gain is several % off and the bands stop summing flat). Scalar double costs what float does here.
 struct Biquad {
-  float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
-  float z1 = 0, z2 = 0;
-  float process(float x) noexcept {
-    const float y = b0 * x + z1;
+  double b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+  double z1 = 0, z2 = 0;
+  double process(double x) noexcept {
+    const double y = b0 * x + z1;
     z1 = b1 * x - a1 * y + z2;
     z2 = b2 * x - a2 * y;
     return y;
   }
-  void reset() noexcept { z1 = z2 = 0.0f; }
-  void lowpass(float fc, float sr, float q = 0.70710678f) noexcept;
-  void highpass(float fc, float sr, float q = 0.70710678f) noexcept;
-  void bandpass(float fc, float sr, float q) noexcept;  // constant peak gain: unity at fc whatever Q
-  void allpass(float fc, float sr, float q = 0.70710678f) noexcept;
+  void reset() noexcept { z1 = z2 = 0.0; }
+  void lowpass(double fc, double sr, double q = 0.70710678118654752) noexcept;
+  void highpass(double fc, double sr, double q = 0.70710678118654752) noexcept;
+  void bandpass(double fc, double sr, double q) noexcept;  // constant peak gain: unity at fc whatever Q
+  void allpass(double fc, double sr, double q = 0.70710678118654752) noexcept;
 };
 
 // The filter bank alone (the meter's split; tests).
@@ -70,7 +72,7 @@ public:
 private:
   struct Lr4 {
     Biquad a, b;
-    float process(float x) noexcept { return b.process(a.process(x)); }
+    double process(double x) noexcept { return b.process(a.process(x)); }
     void reset() noexcept {
       a.reset();
       b.reset();

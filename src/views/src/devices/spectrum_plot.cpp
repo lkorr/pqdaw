@@ -103,7 +103,10 @@ SpectrumPlot::~SpectrumPlot() { release(); }
 
 void SpectrumPlot::setFeed(SpectrumFeed* f, std::function<void()> requestFrame) {
   requestFrame_ = std::move(requestFrame);
-  if (f == feed_) return;
+  // By serial too: a new feed can be allocated where the released, freed one was (a held feed is never freed).
+  const uint64_t serial = f != nullptr ? f->serial() : 0;
+  if (f == feed_ && serial == feedSerial_) return;
+  feedSerial_ = serial;
   release();
   feed_ = f;
   seq_ = 0;

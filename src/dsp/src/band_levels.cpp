@@ -10,14 +10,16 @@ namespace pq::dsp {
 
 namespace {
 
-constexpr float kPi = 3.14159265358979f;
+constexpr double kPi = 3.14159265358979323846;
 
+// 1 − cos w0 as 2 sin²(w0 / 2): no cancellation at low w0.
 struct Rbj {
-  float cs, alpha;
+  double cs, omc, alpha;
 };
-Rbj rbj(float fc, float sr, float q) noexcept {
-  const float w0 = 2.0f * kPi * std::clamp(fc, 1.0f, sr * 0.49f) / sr;
-  return {std::cos(w0), std::sin(w0) / (2.0f * std::max(0.05f, q))};
+Rbj rbj(double fc, double sr, double q) noexcept {
+  const double w0 = 2.0 * kPi * std::clamp(fc, 1.0, sr * 0.49) / sr;
+  const double h = std::sin(0.5 * w0);
+  return {std::cos(w0), 2.0 * h * h, std::sin(w0) / (2.0 * std::max(0.05, q))};
 }
 
 float ampToDb(double meanSquare) noexcept {
@@ -26,39 +28,39 @@ float ampToDb(double meanSquare) noexcept {
 
 }  // namespace
 
-void Biquad::lowpass(float fc, float sr, float q) noexcept {
+void Biquad::lowpass(double fc, double sr, double q) noexcept {
   const Rbj r = rbj(fc, sr, q);
-  const float a0 = 1.0f + r.alpha;
-  b0 = (1.0f - r.cs) * 0.5f / a0;
-  b1 = (1.0f - r.cs) / a0;
+  const double a0 = 1.0 + r.alpha;
+  b0 = r.omc * 0.5 / a0;
+  b1 = r.omc / a0;
   b2 = b0;
-  a1 = -2.0f * r.cs / a0;
-  a2 = (1.0f - r.alpha) / a0;
+  a1 = -2.0 * r.cs / a0;
+  a2 = (1.0 - r.alpha) / a0;
 }
-void Biquad::highpass(float fc, float sr, float q) noexcept {
+void Biquad::highpass(double fc, double sr, double q) noexcept {
   const Rbj r = rbj(fc, sr, q);
-  const float a0 = 1.0f + r.alpha;
-  b0 = (1.0f + r.cs) * 0.5f / a0;
-  b1 = -(1.0f + r.cs) / a0;
+  const double a0 = 1.0 + r.alpha;
+  b0 = (2.0 - r.omc) * 0.5 / a0;
+  b1 = -(2.0 - r.omc) / a0;
   b2 = b0;
-  a1 = -2.0f * r.cs / a0;
-  a2 = (1.0f - r.alpha) / a0;
+  a1 = -2.0 * r.cs / a0;
+  a2 = (1.0 - r.alpha) / a0;
 }
-void Biquad::bandpass(float fc, float sr, float q) noexcept {
+void Biquad::bandpass(double fc, double sr, double q) noexcept {
   const Rbj r = rbj(fc, sr, q);
-  const float a0 = 1.0f + r.alpha;
+  const double a0 = 1.0 + r.alpha;
   b0 = r.alpha / a0;
-  b1 = 0.0f;
+  b1 = 0.0;
   b2 = -r.alpha / a0;
-  a1 = -2.0f * r.cs / a0;
-  a2 = (1.0f - r.alpha) / a0;
+  a1 = -2.0 * r.cs / a0;
+  a2 = (1.0 - r.alpha) / a0;
 }
-void Biquad::allpass(float fc, float sr, float q) noexcept {
+void Biquad::allpass(double fc, double sr, double q) noexcept {
   const Rbj r = rbj(fc, sr, q);
-  const float a0 = 1.0f + r.alpha;
-  b0 = (1.0f - r.alpha) / a0;
-  b1 = -2.0f * r.cs / a0;
-  b2 = 1.0f;  // (1 + α) / a0
+  const double a0 = 1.0 + r.alpha;
+  b0 = (1.0 - r.alpha) / a0;
+  b1 = -2.0 * r.cs / a0;
+  b2 = 1.0;  // (1 + α) / a0
   a1 = b1;
   a2 = b0;
 }
@@ -66,25 +68,25 @@ void Biquad::allpass(float fc, float sr, float q) noexcept {
 // ---- BandSplit ----------------------------------------------------------------------------------------------------
 
 void BandSplit::configure(const BandLevelsConfig& c, bool compensate) noexcept {
-  const auto sr = static_cast<float>(c.sampleRate > 1000.0 ? c.sampleRate : 48000.0);
+  const double sr = c.sampleRate > 1000.0 ? c.sampleRate : 48000.0;
   n_ = std::clamp(c.bands, 3, kBands);
   indep_ = n_ == 3 && c.independent3;
   compensate_ = compensate && !indep_;
   if (indep_) {
     // The mid's width in octaves (the band-pass's −3 dB points); the low-pass and high-pass stay Butterworth (a Q from
     // the width would sag their passbands: PQ Meter's note).
-    const float oct = std::clamp(c.indepOctaves, 0.1f, 6.0f);
-    const float p = std::exp2(oct);
-    ind_[0].lowpass(std::clamp(c.indepHz[0], 20.0f, sr * 0.48f), sr);
-    ind_[1].bandpass(std::clamp(c.indepHz[1], 20.0f, sr * 0.48f), sr, std::sqrt(p) / (p - 1.0f));
-    ind_[2].highpass(std::clamp(c.indepHz[2], 20.0f, sr * 0.48f), sr);
+    const double oct = std::clamp(static_cast<double>(c.indepOctaves), 0.1, 6.0);
+    const double p = std::exp2(oct);
+    ind_[0].lowpass(std::clamp<double>(c.indepHz[0], 20.0, sr * 0.48), sr);
+    ind_[1].bandpass(std::clamp<double>(c.indepHz[1], 20.0, sr * 0.48), sr, std::sqrt(p) / (p - 1.0));
+    ind_[2].highpass(std::clamp<double>(c.indepHz[2], 20.0, sr * 0.48), sr);
   } else {
     // The crossovers ascending and inside the usable range (an inverted pair would silence a band).
-    float prev = 20.0f;
+    double prev = 20.0;
     const int nx = n_ - 1;
     for (int i = 0; i < nx; ++i) {
-      const float ceiling = sr * 0.48f * std::pow(0.95f, static_cast<float>(nx - 1 - i));
-      const float x = std::clamp(c.crossovers[i], prev * 1.05f, std::max(prev * 1.05f, ceiling));
+      const double ceiling = sr * 0.48 * std::pow(0.95, static_cast<double>(nx - 1 - i));
+      const double x = std::clamp<double>(c.crossovers[i], prev * 1.05, std::max(prev * 1.05, ceiling));
       prev = x;
       lp_[i].a.lowpass(x, sr);
       lp_[i].b.lowpass(x, sr);
@@ -107,18 +109,18 @@ void BandSplit::reset() noexcept {
 
 void BandSplit::process(float x, float* out) noexcept {  // RT-safe
   if (indep_) {
-    for (int b = 0; b < 3; ++b) out[b] = ind_[b].process(x);
+    for (int b = 0; b < 3; ++b) out[b] = static_cast<float>(ind_[b].process(x));
     return;
   }
-  float s = x;
+  double s = x;
   for (int k = 0; k < n_ - 1; ++k) {
-    float v = lp_[k].process(s);
+    double v = lp_[k].process(s);
     if (compensate_)
       for (int j = k + 1; j < n_ - 1; ++j) v = ap_[k][j].process(v);
-    out[k] = v;
+    out[k] = static_cast<float>(v);
     s = hp_[k].process(s);
   }
-  out[n_ - 1] = s;
+  out[n_ - 1] = static_cast<float>(s);
 }
 
 // ---- BandLevels -------------------------------------------------------------------------------------------------------

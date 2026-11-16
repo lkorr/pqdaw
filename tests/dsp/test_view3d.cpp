@@ -105,17 +105,21 @@ TEST_CASE("stereo cloud: a panned tone's points sit at its frequency and pan; re
   // bins all reassign to the frame's centre) — every one at least 50 dB under the tone (measured: ≤ −57 dB).
   // (The switch-on — a step from silence, genuinely broadband — is left out: steady state from the third window on.)
   const double settle = 2.0 * s.config().fftSize;
-  double near = 0.0, total = 0.0, strongest = 0.0;
+  double near = 0.0, onPitch = 0.0, total = 0.0, strongest = 0.0;
   for (const CloudPoint& p : pts) {
     if (p.tSamples < settle) continue;
     total += p.power;
     strongest = std::max(strongest, static_cast<double>(p.power));
+    if (std::fabs(p.freqHz - 1000.0f) < 1.0f) onPitch += p.power;
     if (std::fabs(p.freqHz - 1000.0f) < 10.0f) {
       near += p.power;
       CHECK(std::fabs(p.pan - 0.5f) < 0.02f);
     }
   }
   CHECK(near / total > 0.9999);
+  // Reassigned onto the tone's frequency (bins are 23 Hz apart): over 99 % of the power within 1 Hz (measured 99.3 %:
+  // the mainlobe's outer bins land a few Hz off; the sampled analytic window derivative, as PQ's).
+  CHECK(onPitch / total > 0.99);
   for (const CloudPoint& p : pts)
     if (p.tSamples >= settle && std::fabs(p.freqHz - 1000.0f) >= 10.0f) CHECK(10.0 * std::log10(p.power / strongest) < -50.0);
   CHECK(std::fabs(pts.back().tSamples - s.head()) < s.config().fftSize * 0.5);
@@ -144,6 +148,31 @@ TEST_CASE("stereo cloud: a panned tone's points sit at its frequency and pan; re
   for (const CloudPoint& p : pts) late += p.tSamples > static_cast<double>(t) - 5.0 * kSr ? 1 : 0;
   CHECK(late == 0);
   CHECK(s.atRest());
+}
+
+TEST_CASE("stereo cloud: time reassignment puts an impulse's points at its sample (± 2), whichever frame holds it") {
+  pq::DenormalGuard dg;
+  for (const uint64_t n0 : {uint64_t{30000}, uint64_t{30077}, uint64_t{30500}}) {
+    CAPTURE(n0);
+    StereoCloud s;
+    std::vector<CloudPoint> pts;
+    auto push = [&](const float* l, const float* r, uint32_t n) {
+      s.push(l, r, n, [&](const CloudPoint* p, uint32_t k) { pts.insert(pts.end(), p, p + k); },
+             [](const StereoCloud::RibSlice&) {});
+    };
+    uint64_t t = 0;
+    run(push, 1.0, [&](uint64_t i, float& l, float& r) { l = r = i == n0 ? 0.8f : 0.0f; }, t);
+    REQUIRE(!pts.empty());
+    double strongest = 0.0;
+    for (const CloudPoint& p : pts) strongest = std::max(strongest, static_cast<double>(p.power));
+    size_t counted = 0;
+    for (const CloudPoint& p : pts) {
+      if (p.power < strongest * 1e-3) continue;  // within 30 dB of the strongest
+      ++counted;
+      CHECK(std::fabs(p.tSamples - static_cast<double>(n0)) < 2.0);
+    }
+    CHECK(counted > 8);
+  }
 }
 
 TEST_CASE("3D analysers: push is allocation-free (RtScope); worker cost per face per second of stereo") {

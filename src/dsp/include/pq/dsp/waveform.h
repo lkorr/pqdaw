@@ -87,6 +87,8 @@ private:
   double stream_ = 0.0;  // frames pushed (the free run's clock)
   float lastBeat_ = 0.0f;
   bool haveLast_ = false;
+  bool anchored_ = false;  // the tempo's baseline: a beat and the frame it was at
+  double anchorFrame_ = 0.0, anchorBeat_ = 0.0;
   uint64_t quiet_ = 0;
 };
 
