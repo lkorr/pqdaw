@@ -47,6 +47,7 @@ public:
   // TX.spectrogram: the degrees of the effective tuning of the track holding the device (doc::effectiveTuning).
   void pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out) const override;
   uint64_t guidesKey() const override;
+  TonePort* tonePort() const override;  // VZ.3: the context's (ViewContext::tonePort)
   const dsp::Curve* curve(size_t param) const override;  // GU.1: a chain meta device's own (path ""); nested: null
   bool showPosition(size_t param, std::optional<double> position) override;  // TL.6
   // bug-mod-ghost: the instance's params as live modulation has them (ViewContext::liveModulation; a chain meta device

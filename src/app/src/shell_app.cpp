@@ -343,6 +343,9 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
         app->link_->samplePool(), app->link_->engine().config().sampleRate, &app->audio_->output(),
         [type = app->userEvent_](std::function<void()> fn) { pushUser(type, kRunOnUi, new std::function<void()>(std::move(fn))); });
     app->ctx_->library().setPreview(app->browserPreview_.get());
+    // VZ.3: the Spectrum's / Spectrogram's tone preview, out of the output's monitor pair (never the project).
+    app->tone_ = std::make_unique<ToneService>(app->audio_->output());
+    app->ctx_->setTonePort(app->tone_.get());
     // T5.7: files a drag brings in start loading into the link's pool while they hover.
     ProjectLink* link = app->link_.get();
     app->ctx_->setSamplePreloader([link](const std::string& path) { link->preloadSample(path); });
@@ -458,6 +461,8 @@ ShellApp::~ShellApp() {
     ctx_->library().setIndexer(nullptr);
   }
   browserPreview_.reset();
+  if (ctx_) ctx_->setTonePort(nullptr);  // VZ.3
+  tone_.reset();
   indexer_.reset();
   if (audio_) audio_->setMidi(nullptr);
   midi_.reset();   // T6.4: the ports close (no callback pushes into the link's rings afterwards)

@@ -445,6 +445,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_gain.cpp
     dsp/test_param_ramp.cpp  # TX.smooth: the param_ramp kernel
     dsp/test_spectrum.cpp
+    dsp/test_tone_preview.cpp
     dsp/test_transfer.cpp  # TX.spectrum: the transfer-function estimate
     dsp/test_scope.cpp  # TX.scope: the oscilloscope's trigger, pitch lock and beat slots
     dsp/test_spectrogram.cpp  # TX.spectrogram: the reassigned spectrogram's columns (sine, sweep, chord, sub, impulse, sequence)

@@ -22,6 +22,7 @@
 #include "pq/app/os_drop.h"
 #include "pq/app/patch_preview.h"
 #include "pq/app/preview_service.h"
+#include "pq/app/tone_service.h"
 #include "pq/library/indexer.h"
 #include "pq/app/project_link.h"
 #include "pq/app/sim_transport.h"
@@ -96,6 +97,7 @@ private:
   std::unique_ptr<AudioDeviceManager> audio_;  // T3.18: the device manager (owns the audio output; Ctrl+, prefs)
   std::unique_ptr<MidiInputService> midi_;     // T6.4: MIDI input ports (after audio_: closed first)
   std::unique_ptr<PreviewService> browserPreview_;  // T5.10: the browser's preview (the output's cue source)
+  std::unique_ptr<ToneService> tone_;               // VZ.3: the displays' tone preview (the output's monitor tone)
   std::unique_ptr<library::Indexer> indexer_;      // T5.10: the browser index of the places
   std::unique_ptr<views::ViewContext> ctx_;
   std::unique_ptr<ExportService> export_;  // EX.2: the Export Audio job (its worker); destroyed before the context

@@ -16,6 +16,7 @@ pq_add_module(pq_dsp
     src/scope.cpp
     src/spectrogram.cpp
     src/loudness.cpp  # VZ.4: the loudness front end (Level Meter, LUFS Meter, Loudness History)
+    src/tone_preview.cpp
     src/resample.cpp
     src/frame_table.cpp
     src/frame_table_read.cpp

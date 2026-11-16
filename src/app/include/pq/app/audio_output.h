@@ -51,6 +51,7 @@
 
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/result.h"
+#include "pq/dsp/tone_preview.h"
 #include "pq/engine/audio_device.h"
 #include "pq/engine/block_adapter.h"
 #include "pq/engine/callback_stats.h"
@@ -157,6 +158,11 @@ public:
   // clamped there. While one is set the stream is not suspended. Same handshake as setExtraSource. Any non-audio thread.
   void setCueSource(const engine::AudioCallback* cb);
   void setCuePair(uint32_t pair) noexcept { cuePair_.store(pair, std::memory_order_relaxed); }
+  // VZ.3: the displays' tone preview (pq/dsp/tone_preview.h), added at the device's buffer into the cue pair after the
+  // cue source (never into the engine: no track, recording or render hears it). While it sounds (held or fading) the
+  // stream is not suspended. hold / release on the UI thread, then tonePreviewChanged() (wakes a suspended stream).
+  dsp::TonePreview& tonePreview() noexcept { return tonePreview_; }
+  void tonePreviewChanged();
   uint32_t cuePair() const noexcept { return cuePair_.load(std::memory_order_relaxed); }
   // ASIO: the driver's control panel. Errors when no ASIO stream is open.
   Status controlPanel();
@@ -267,6 +273,7 @@ private:
   std::atomic<float> toneGain_{0.0f};
   std::atomic<uint32_t> toneInc_{0};
   uint32_t tonePhase_ = 0;  // audio thread
+  dsp::TonePreview tonePreview_;  // VZ.3 (its tables are built with the output, off the audio thread)
 };
 
 // The sine table the tone reads (2048 points + 1 guard, built once). Exposed for the RT test.
