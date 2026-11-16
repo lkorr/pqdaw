@@ -1925,6 +1925,7 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Rows can now be up to 160 px tall (was 48): a few semitones can fill the roll. Ctrl + wheel / dragging the keys
   sideways still zoom too. The keys are 9 px narrower (the strip takes that from the keys column).
 - Is the strip findable enough (surface.sunken with a small ↕), and is down = zoom in the right feel?
+
 ## 2026-11-15 · bug-bend-shape · a node on every bend; pen strokes only change what they cover 👁
 - Four notes with Bend Out into one long note: select them. Each slide shows a small dot (yellow core) where it is half
   way. Drag one dot up: every selected slide gets longer (gentler), snapped to the grid (half a cell, a cell, …; Shift:
