@@ -2003,3 +2003,4 @@ through a long silence (Q?-VZ.4-b).
   colours) without a jump; ticks are L:s = 4:3 … 4:1 of each half's MOS, mirrored; the middle notch is the EDO.
 - A Generator automation lane now spans the same range (collapsed to collapsed) instead of one region ± 25 %.
 - Goldens re-recorded: mos-circle-5L2s, -modmos, -lit, mos-wheel-popover (+1.5x), project-patch-tuning(-wheel).
+- Also re-recorded: automation-lanes, automation-mode-over-clips, tunings-panel (the 5L 2s Generator lane's new range: the envelope sits differently).
