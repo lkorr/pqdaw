@@ -928,3 +928,18 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   limit that passed on re-run) green: pq_tests_meta + playback 5/5.
 - Perf / CPU-efficiency check: auto gain ~800 compares per frame on new samples only; nothing on the audio thread.
 - Notes: 24 goldens re-recorded (2 scope gain, 22 the Pitch arc ticks); playback fixtures re-saved, audio WAVs unchanged.
+
+## 2026-11-15 · bug-mod-ghost merged · main
+- Did: modulation ghosts: every param-bound control (knob: arc + needle, slider: handle, curve editor marker, Envelope
+  breakpoints, Wavetable position) draws a translucent copy at the modulated value; response displays (EQ, transfer
+  curves) a silhouette at the modulated values over the solid curve at the knobs. In the shared panel-element layer
+  (ARCHITECTURE "Modulation ghosts"): any element bound to a param gets it with no code of its own (tested with a new
+  element kind). Engine: each modulation tap stores the newest voice's last sample per block (the range ring used the
+  voice sum: chords swept it ×4 too far); views::LiveModulation reads all hosts once per UI frame.
+- Verified (worker): pq_tests_views 100 %; playback wires* 8/8; after rebase every affected exe -Slow 51/52 then the
+  one (a document assertion forbidding voice_last, narrowed to the tap) 2/2. pq_tests_pqmeter_diff does not compile
+  against the PQ Meter tree (pre-existing).
+- Perf / CPU-efficiency check: one relaxed store per tap channel per block on the audio thread; one read per UI frame
+  only while live and a modulated control is shown; only moved ghosts repaint; solid and silhouette curves cached apart.
+- Notes: new goldens panel-mod-ghosts, eq-mod-ghost. No ghost on number boxes / menus (text), mixer / tuning faces.
+  Q?-bug-mod-ghost-a (newest voice vs. a ghost per voice). No multi-voice test yet.
