@@ -876,3 +876,11 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   listed factor…"; the "q w e" test's 2/1·1/2 expectation updated to the new behaviour).
 - Perf / CPU-efficiency check: UI-thread only; cancellation is a reverse scan of a handful of factors per key press.
 - Notes/blockers: help text line for the hold-to-stretch goes with bug-roll-vzoom (shares the help goldens).
+
+## 2026-11-15 · bug-roll-vzoom merged · main
+- Did: 9 px row-zoom bar left of the roll's keys (drag down = taller rows around the press point, ×2 per 60 px;
+  double-click fits the clip's notes; no audition / row select); row max 48 → 160 px; help entry "Zoom the rows" and
+  the double-click-hold-to-stretch line.
+- Verified (worker): pq_tests_views default tier 100 % after rebase; new TestDriver test 32/32; pqdaw compiles.
+- Perf / CPU-efficiency check: rows rebuild only when integer rowPx changes; the bar's paint is independent of rows.
+- Notes: 36 roll goldens re-recorded (33 keys-column only, 3 help). Down = zoom in (ruler / Live); flip is one sign.
