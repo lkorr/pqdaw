@@ -21,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 21> kModules = {{
+constexpr std::array<ModuleInfo, 24> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -50,6 +50,13 @@ constexpr std::array<ModuleInfo, 21> kModules = {{
     {ModuleKind::LoudnessHistory, "loudness_history", "Loudness History",
      "Momentary, short-term and integrated loudness over time against the target and its tolerance band; changes "
      "nothing."},
+    // VZ.5: the stereo analysers (pq/meta/stereo.h).
+    {ModuleKind::StereoField, "stereo_field", "Stereo Field",
+     "A goniometer (mid up, side across) with the L / R correlation, optionally in three bands; changes nothing."},
+    {ModuleKind::StereoImage, "stereo_image", "Stereo Image",
+     "Where each frequency sits between left and right and how wide it is (ribbon, glow or heat map); changes nothing."},
+    {ModuleKind::PhaseScope, "phase_scope", "Phase Scope",
+     "What each frequency gains or loses when the channels are summed to mono; changes nothing."},
     {ModuleKind::WavetableSynth, "wavetable_synth", "Wavetable Synth",
      "An instrument built from the modules: Phase Accumulator → Wavetable → Envelope per note, with two LFOs (each a "
      "Phase Accumulator into a Wavetable) on the wavetable position and the pitch. Tabs for the oscillator, the "
@@ -329,6 +336,9 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::LevelMeter: return "level_meter";
     case ModuleKind::LufsMeter: return "lufs_meter";
     case ModuleKind::LoudnessHistory: return "loudness_history";
+    case ModuleKind::StereoField: return "stereo_field";
+    case ModuleKind::StereoImage: return "stereo_image";
+    case ModuleKind::PhaseScope: return "phase_scope";
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
     case ModuleKind::WavetableSynth:
@@ -474,6 +484,16 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
       const char* kind = k == ModuleKind::LevelMeter ? "levelmeter" : k == ModuleKind::LufsMeter ? "lufsmeter" : "loudnesshistory";
       p.width = k == ModuleKind::LevelMeter ? 100.0f : k == ModuleKind::LufsMeter ? 200.0f : 300.0f;
       p.height = 160.0f;
+      p.elements.push_back(plate(p.width, p.height, 10.0));
+      p.elements.push_back(rich(2, kind, 0, 0, p.width, p.height));
+      break;
+    }
+    case ModuleKind::StereoField:
+    case ModuleKind::StereoImage:
+    case ModuleKind::PhaseScope: {  // VZ.5: the display fills the panel (180 × 170, 220 × 170, 280 × 150)
+      const char* kind = k == ModuleKind::StereoField ? "stereofield" : k == ModuleKind::StereoImage ? "stereoimage" : "phasescope";
+      p.width = k == ModuleKind::StereoField ? 180.0f : k == ModuleKind::StereoImage ? 220.0f : 280.0f;
+      p.height = k == ModuleKind::PhaseScope ? 150.0f : 170.0f;
       p.elements.push_back(plate(p.width, p.height, 10.0));
       p.elements.push_back(rich(2, kind, 0, 0, p.width, p.height));
       break;

@@ -21,6 +21,9 @@ std::unique_ptr<MetaFace> makeNoiseFace(const meta::Type& t);        // NZ.1
 std::unique_ptr<MetaFace> makeLevelMeterFace(const meta::Type& t);       // VZ.4
 std::unique_ptr<MetaFace> makeLufsMeterFace(const meta::Type& t);        // VZ.4
 std::unique_ptr<MetaFace> makeLoudnessHistoryFace(const meta::Type& t);  // VZ.4
+std::unique_ptr<MetaFace> makeStereoFieldFace(const meta::Type& t);      // VZ.5
+std::unique_ptr<MetaFace> makeStereoImageFace(const meta::Type& t);      // VZ.5
+std::unique_ptr<MetaFace> makePhaseScopeFace(const meta::Type& t);       // VZ.5
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 
@@ -63,6 +66,24 @@ bool loudnessTestControl(MetaFace& f, std::string_view key, double value);
 // The analysis a loudness face of type `type` with these options (its data) asks its feed for (scenes: a manual feed
 // measures before the face first paints). Defaults for an unknown type.
 dsp::LoudnessConfig loudnessRequest(std::string_view type, const meta::DataValue* data);
+
+// VZ.5 (tests): a stereo face (Stereo Field, Stereo Image, Phase Scope) as its last poll left it. False: not one.
+struct StereoShown {
+  bool acquired = false, frozen = false;
+  dsp::CrossSpectrumConfig config;       // Stereo Image / Phase Scope: the analysis its options ask for
+  std::vector<dsp::StereoPoint> points;  // ... the newest it read
+  size_t particles = 0;                  // ... live heat-map particles
+  bool heat = false;                     // ... a glow grid was published
+  std::vector<float> mono;               // Phase Scope: the eased mono curve it draws
+  float correlation = 0.0f;              // Stereo Field: broadband and per band
+  float bandCorrelation[3] = {0.0f, 0.0f, 0.0f};
+  size_t tracePoints = 0;                // Stereo Field: points of the (broadband) trace
+};
+bool stereoShown(const MetaFace& f, StereoShown& out);
+// Sets one option by its data key, or "freeze" / "sheet" (view state), "hoverx" (the pointer at that face x).
+bool stereoTestControl(MetaFace& f, std::string_view key, double value);
+// The analysis a Stereo Image / Phase Scope face with these options asks its feed for (scenes).
+dsp::CrossSpectrumConfig stereoRequest(std::string_view type, const meta::DataValue* data);
 
 // VZ.1 (tests): the Spectrum face's plot style (its DISPLAY options). False: not a Spectrum face.
 bool spectrumStyle(const MetaFace& f, devices::SpectrumPlotStyle& out);

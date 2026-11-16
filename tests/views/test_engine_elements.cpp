@@ -62,7 +62,8 @@ void checkImage(const std::string& name, const Image& img) {
 
 constexpr doc::ModuleKind kKinds[] = {doc::ModuleKind::Wavetable, doc::ModuleKind::Envelope, doc::ModuleKind::Oscilloscope,
                                       doc::ModuleKind::Spectrum, doc::ModuleKind::Spectrogram, doc::ModuleKind::LevelMeter,
-                                      doc::ModuleKind::LufsMeter, doc::ModuleKind::LoudnessHistory};
+                                      doc::ModuleKind::LufsMeter, doc::ModuleKind::LoudnessHistory, doc::ModuleKind::StereoField,
+                                      doc::ModuleKind::StereoImage, doc::ModuleKind::PhaseScope};
 
 // A MIDI track holding one module of each engine kind (pasted as the node menu does).
 struct EngineDoc {
@@ -198,6 +199,10 @@ TEST_CASE("render: the engine modules' closed panels — the old faces from rich
   checkImage("module-levelmeter-panel", panelImage(ctx, m.of(doc::ModuleKind::LevelMeter).group, nullptr, 1.0f));
   checkImage("module-lufsmeter-panel", panelImage(ctx, m.of(doc::ModuleKind::LufsMeter).group, nullptr, 1.0f));
   checkImage("module-loudnesshistory-panel", panelImage(ctx, m.of(doc::ModuleKind::LoudnessHistory).group, nullptr, 1.0f));
+  // VZ.5: the same (empty states).
+  checkImage("module-stereofield-panel", panelImage(ctx, m.of(doc::ModuleKind::StereoField).group, nullptr, 1.0f));
+  checkImage("module-stereoimage-panel", panelImage(ctx, m.of(doc::ModuleKind::StereoImage).group, nullptr, 1.0f));
+  checkImage("module-phasescope-panel", panelImage(ctx, m.of(doc::ModuleKind::PhaseScope).group, nullptr, 1.0f));
 }
 
 TEST_CASE("render: panel-rich-elements — every rich element alone on a panel, bound to an engine") {

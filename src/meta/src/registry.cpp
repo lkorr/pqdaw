@@ -10,6 +10,7 @@
 #include "pq/meta/oscilloscope.h"
 #include "pq/meta/spectrogram.h"
 #include "pq/meta/spectrum.h"
+#include "pq/meta/stereo.h"
 #include "pq/meta/wavetable.h"
 
 namespace pq::meta {
@@ -38,6 +39,9 @@ struct Registry {
     types.push_back(&levelMeterType());       // VZ.4
     types.push_back(&lufsMeterType());        // VZ.4
     types.push_back(&loudnessHistoryType());  // VZ.4
+    types.push_back(&stereoFieldType());      // VZ.5
+    types.push_back(&stereoImageType());      // VZ.5
+    types.push_back(&phaseScopeType());       // VZ.5
   }
 };
 

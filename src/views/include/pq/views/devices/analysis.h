@@ -34,6 +34,13 @@
 //              worker (≈ 0.3 – 0.4 ms of a core per second of stereo, tests/dsp/test_loudness.cpp) and hands the UI one
 //              small struct. A consumer that wants only the loudness costs no spectrum analysis; it settles when the
 //              meter is at rest (dsp::LoudnessMeter::atRest).
+//   Stereo     VZ.5: the cross-spectrum of the tap's L and R (pq/dsp/stereo.h, PQ Meter's Stereo Image / Phase Scope
+//              analysis) with the consumer's configuration (setStereo; the newest decides). The worker owns the analyser
+//              and publishes the per-point state (pan, width, level, coherence, mono gain, phase), the glow grid and the
+//              particle pool after each step that analysed a frame (stereoRead copies them when newer). A stereo-only
+//              consumer computes no spectrum; it settles when the analyser rests (everything drawn under its floor).
+//              (The Stereo Field reads the raw history, kWantScope, and runs its goniometer state on the UI thread over
+//              only the new frames.)
 //
 // Costs nothing while hidden: with no consumer the worker blocks on a condition variable and the tap has no reader, so
 // the audio thread's write is one relaxed load. Shown: the worker runs at the display's rate (60 Hz) while the levels
@@ -66,13 +73,15 @@
 #include "pq/dsp/loudness.h"
 #include "pq/dsp/spectrogram.h"
 #include "pq/dsp/spectrum.h"
+#include "pq/dsp/stereo.h"
 #include "pq/dsp/transfer.h"
 
 namespace pq::views::devices {
 
 // What a consumer of a feed draws (acquire's flags).
 inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u, kWantSpectrogram = 16u,
-                          kWantLoudness = 32u;  // VZ.4
+                          kWantLoudness = 32u,  // VZ.4
+                          kWantStereo = 64u;    // VZ.5
 
 // VZ.1: the output spectrum's analysis a display may tune (the Spectrum face's ANALYSIS tab; setTuning). The point
 // count, the hop and the sample rate stay the feed's. VZ.2: the axis (scale, fMin, fMax: the points lie evenly on it)
@@ -118,6 +127,15 @@ struct GramState {
   uint32_t hop = 0, fft = 0, lowFft = 0;
   float fMin = 0.0f, fMax = 0.0f;
   bool settled = true, running = false;  // running: a spectrogram is computed
+};
+
+// VZ.5: one published state of the cross-spectrum (stereoRead).
+struct StereoSnapshot {
+  dsp::CrossSpectrumConfig config;            // what it was computed with
+  std::vector<dsp::StereoPoint> points;       // config.points, low frequency first
+  std::vector<float> heat;                    // points x CrossSpectrum::kHeatCols (empty: no glow / particles)
+  std::vector<dsp::StereoParticle> particles; // (empty: no particles)
+  uint64_t frames = 0;                        // frames analysed so far
 };
 
 // One published state of a feed (per point of the analyser's axis).
@@ -211,6 +229,13 @@ public:
   void resetLoudness();
   void resetClips();
 
+  // ---- VZ.5: the cross-spectrum (kWantStereo) ----
+  // UI thread: the analysis a stereo display asks for (its sampleRate is replaced by the feed's; an unchanged one is
+  // ignored). The newest call decides.
+  void setStereo(const dsp::CrossSpectrumConfig& c);
+  // UI thread: copies the newest state into out when it is newer than `seq`; returns its sequence. settled: as scopeEnd's.
+  uint64_t stereoRead(uint64_t seq, StereoSnapshot& out, bool& settled) const;
+
   // Tests: runs the worker's step synchronously instead of the thread (the thread is not started).
   struct Manual {};
   SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual);
@@ -249,7 +274,7 @@ private:
   double lastData_ = 0.0, lastSilence_ = 0.0;
   bool decaying_ = false;
   uint32_t ranWants_ = 0;  // what the worker computed last (a new want restarts its analyser)
-  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, wantLoud_{0}, noOutput_{0};
+  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, wantLoud_{0}, wantStereo_{0}, noOutput_{0};
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
   std::function<void()> wakePost_;
@@ -296,6 +321,14 @@ private:
   uint64_t loudCopied_ = 0;                   // worker: points copied into the ring
   void loudPush(const float* l, const float* r, uint32_t n);  // the worker
   void loudPublish();                                         // the worker (takes loudMutex_)
+  // VZ.5: the cross-spectrum (the worker's alone), its request and what it published (stereoMutex_).
+  mutable std::mutex stereoMutex_;
+  dsp::CrossSpectrumConfig stereoWant_;
+  bool stereoDirty_ = false;
+  StereoSnapshot stereoPub_;
+  uint64_t stereoSeq_ = 0;
+  std::unique_ptr<dsp::CrossSpectrum> stereo_;  // worker
+  void stereoPublish();                         // the worker (takes stereoMutex_)
   bool quit_ = false;
   std::thread thread_;
 };

@@ -1989,3 +1989,9 @@ buses sit right of the tracks' slots, so a block placed far right or added to a 
 for blocks never placed): nothing moves a placed block but a push or the user, undo included — a format change of
 the view state and every nudge writer. Choice (a) for this task (scope); (b) is the general fix if those shifts show.
 Status: open.
+## Q?-VZ.5-a · 2026-11-15 · VZ.5 · What the stereo faces leave out of PQ Meter
+Context: PQ's Stereo Image has per-stop colour pickers and a line colour, the Stereo Field per-trace / bar colours, the
+Phase Scope mono / coherence colours and six FFT windows; it also computes a group delay it never draws. pqdaw's sheet has
+no colour row (Q?-VZ.4-a). Choice: PQ's palettes as fixed choices (the Stereo Image's six ribbon palettes with their
+crossovers editable, the ten colormaps + Custom stops in dB on VZ.2's LevelAxis), Hann / Kaiser windows only, no group
+delay. Status: open (reversible: Opt rows; dsp::CrossSpectrum can add the delay from its bins).

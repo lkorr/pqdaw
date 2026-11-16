@@ -2022,3 +2022,11 @@ through a long silence (Q?-VZ.4-b).
   picture), the same snap / level / shape rows.
 - The tone plays on the cue output (Cue Out in Audio settings; 1/2 when there is none), never in the project or a render.
   Listen for clicks on press, release and fast drags (there should be none).
+## 2026-11-16 · VZ.5 · Stereo: Stereo Field, Stereo Image, Phase Scope 👁
+Three new visualisers (node menu → Visualisers; modules `stereo_field`, `stereo_image`, `phase_scope`): PQ Meter's
+goniometer + correlation bar (and three LR4 bands), its stereo image (pan and width per frequency: Ribbon, Glow, Heat map;
+six palettes, colormaps with Custom dB stops) and its phase / mono-compatibility scope, in the analyser frame (SET sheet,
+FREEZE). Look at: `tests/views/golden/device-meta-stereo.png` (a centred kick and bass, a lead panned left, a wide pad,
+wide hats, a 150 Hz tone in antiphase: the red dip in the Phase Scope), `module-stereofield/stereoimage/phasescope-panel.png`
+(empty). Try: Stereo Image SET → DISPLAY → Mode Heat map / Glow, Colour mode Intensity with the Custom colormap; Stereo
+Field Multiband. Not carried over: colour pickers, four of PQ's six FFT windows (Q?-VZ.5-a).

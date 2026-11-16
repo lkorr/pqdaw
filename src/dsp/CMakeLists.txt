@@ -15,6 +15,7 @@ pq_add_module(pq_dsp
     src/transfer.cpp
     src/scope.cpp
     src/spectrogram.cpp
+    src/stereo.cpp  # VZ.5: the cross-spectrum (Stereo Image, Phase Scope) and the goniometer state (Stereo Field)
     src/loudness.cpp  # VZ.4: the loudness front end (Level Meter, LUFS Meter, Loudness History)
     src/tone_preview.cpp
     src/resample.cpp

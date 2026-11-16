@@ -99,8 +99,9 @@ void SpectrumFeed::acquire(uint32_t wants) {
     }
     wantLoud_.fetch_add(1, std::memory_order_relaxed);
   }
-  // A consumer of the history, the columns or the loudness only: no spectrum is computed for it.
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness)) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
+  if (wants & kWantStereo) wantStereo_.fetch_add(1, std::memory_order_relaxed);  // VZ.5
+  // A consumer of the history, the columns, the loudness or the cross-spectrum only: no spectrum is computed for it.
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo)) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -119,7 +120,8 @@ void SpectrumFeed::release(uint32_t wants) {
   }
   if (wants & kWantSpectrogram) wantGram_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantLoudness) wantLoud_.fetch_sub(1, std::memory_order_relaxed);
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness)) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants & kWantStereo) wantStereo_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness | kWantStereo)) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
@@ -134,6 +136,7 @@ uint32_t SpectrumFeed::wants() const noexcept {
   if (wantScope_.load(std::memory_order_relaxed) > 0) w |= kWantScope;
   if (wantGram_.load(std::memory_order_relaxed) > 0) w |= kWantSpectrogram;
   if (wantLoud_.load(std::memory_order_relaxed) > 0) w |= kWantLoudness;
+  if (wantStereo_.load(std::memory_order_relaxed) > 0) w |= kWantStereo;
   if (tap_.channels() >= 4) {
     if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
     if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
@@ -440,6 +443,50 @@ void SpectrumFeed::loudPublish() {
   loudCopied_ = end;
 }
 
+// ---- VZ.5: the cross-spectrum ----------------------------------------------------------------------------------------
+
+void SpectrumFeed::setStereo(const dsp::CrossSpectrumConfig& c) {
+  {
+    std::lock_guard lock(stereoMutex_);
+    dsp::CrossSpectrumConfig want = c;
+    want.sampleRate = cfg_.sampleRate;
+    if (want == stereoWant_ && (stereo_ || stereoDirty_)) return;
+    stereoWant_ = want;
+    stereoDirty_ = true;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;  // the worker applies it at its next step
+  }
+  cv_.notify_all();
+}
+
+uint64_t SpectrumFeed::stereoRead(uint64_t seq, StereoSnapshot& out, bool& settled) const {
+  {
+    std::lock_guard lock(mutex_);
+    settled = settled_;
+  }
+  std::lock_guard lock(stereoMutex_);
+  if (seq != stereoSeq_) {
+    out.config = stereoPub_.config;
+    out.points.assign(stereoPub_.points.begin(), stereoPub_.points.end());  // (capacity kept: no allocation once warm)
+    out.heat.assign(stereoPub_.heat.begin(), stereoPub_.heat.end());
+    out.particles.assign(stereoPub_.particles.begin(), stereoPub_.particles.end());
+    out.frames = stereoPub_.frames;
+  }
+  return stereoSeq_;
+}
+
+void SpectrumFeed::stereoPublish() {
+  std::lock_guard lock(stereoMutex_);
+  stereoPub_.config = stereo_->config();
+  stereoPub_.points.assign(stereo_->points().begin(), stereo_->points().end());
+  stereoPub_.heat.assign(stereo_->heat().begin(), stereo_->heat().end());
+  stereoPub_.particles.assign(stereo_->particles().begin(), stereo_->particles().end());
+  stereoPub_.frames = stereo_->frames();
+  ++stereoSeq_;
+}
+
 void SpectrumFeed::hold() {
   std::lock_guard lock(mutex_);
   settled_ = true;
@@ -586,6 +633,24 @@ uint32_t SpectrumFeed::work(double now) {
     if (resets & 2u) loud_->resetClips();
     loudPublishNow = config.has_value() || resets != 0;
   }
+  const bool stereo = (want & kWantStereo) != 0;
+  bool stereoPublishNow = false;
+  if (stereo) {  // VZ.5: a new request (re)configures the analyser (worker-owned; made outside the lock)
+    std::optional<dsp::CrossSpectrumConfig> config;
+    {
+      std::lock_guard lock(stereoMutex_);
+      if (stereoDirty_ || !stereo_) {
+        stereoDirty_ = false;
+        stereoWant_.sampleRate = cfg_.sampleRate;
+        config = stereoWant_;
+      }
+    }
+    if (config) {
+      if (!stereo_) stereo_ = std::make_unique<dsp::CrossSpectrum>(*config);
+      else stereo_->configure(*config);
+      stereoPublishNow = true;
+    }
+  }
   bool wasSettled;
   {
     std::lock_guard lock(mutex_);
@@ -642,6 +707,7 @@ uint32_t SpectrumFeed::work(double now) {
       loudPush(ch_[oL].data(), ch_[oR].data(), k);
       loudPublishNow = true;
     }
+    if (stereo && stereo_->push(ch_[oL].data(), ch_[oR].data(), k) > 0) stereoPublishNow = true;
     if (want & kWantOutput) ran += out_->push(mono_.data(), k);
     if (want & kWantInput) in_->push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
@@ -653,7 +719,8 @@ uint32_t SpectrumFeed::work(double now) {
   } else if (now - lastData_ > kNoDataSeconds &&
              (((want & kWantOutput) && !out_->allBelow(kSettledDb)) ||
               (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate) ||
-              (gram && gramQuiet_ < gramCols_) || (loud && !loud_->atRest()))) {
+              (gram && gramQuiet_ < gramCols_) || (loud && !loud_->atRest()) ||
+              (stereo && !stereo_->atRest()))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -673,6 +740,7 @@ uint32_t SpectrumFeed::work(double now) {
         loudPush(mono_.data(), mono_.data(), frames);
         loudPublishNow = true;
       }
+      if (stereo && stereo_->push(mono_.data(), mono_.data(), frames) > 0) stereoPublishNow = true;  // fades in time
       if (want & kWantOutput) ran += out_->push(mono_.data(), frames);
       if (want & kWantInput) in_->push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
@@ -687,8 +755,10 @@ uint32_t SpectrumFeed::work(double now) {
                     (!(want & kWantInput) || in_->allBelow(kSettledDb)) &&
                     (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident()) &&
                     (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate) &&
-                    (!gram || gramQuiet_ >= gramCols_) && (!loud || loud_->atRest());
+                    (!gram || gramQuiet_ >= gramCols_) && (!loud || loud_->atRest()) &&
+                    (!stereo || stereo_->atRest());
   if (loudPublishNow) loudPublish();
+  if (stereoPublishNow) stereoPublish();
   const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);
   bool post = false;
   if (ran > 0 || settledNow != wasSettled) {
