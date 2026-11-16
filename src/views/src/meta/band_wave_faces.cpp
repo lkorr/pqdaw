@@ -569,6 +569,20 @@ protected:
     std::fill(filled_.begin(), filled_.end(), uint8_t{0});
   }
   bool moving() const noexcept override { return opts_.choice(wPlayhead) == 1 && loop_.moving; }
+  // The auto gain eases toward the window's peak with a 0.2 s time constant (held while frozen).
+  bool animate(float dt, bool) override {
+    bool easing = false;
+    if (opts_.on(wAuto) && !frozen_ && gainPrimed_) {
+      const float d = targetGain_ - autoGain_;
+      if (std::fabs(d) > 0.005f * targetGain_) {
+        autoGain_ += d * (1.0f - std::exp(-dt / 0.2f));
+        easing = true;
+      } else {
+        autoGain_ = targetGain_;
+      }
+    }
+    return moving() || easing;
+  }
   const char* plotHelp() const noexcept override {
     return "The signal's envelope (peak, with its RMS body inside). Point at it for the time and the levels there.";
   }
@@ -654,8 +668,9 @@ protected:
         if (chB >= 0 && colB_[static_cast<size_t>(c)].valid)
           peak = std::max({peak, std::fabs(colB_[static_cast<size_t>(c)].mn), std::fabs(colB_[static_cast<size_t>(c)].mx)});
       }
-      const float targetGain = std::clamp(0.92f / peak, 0.25f, 24.0f);
-      if (!frozen_) autoGain_ += (targetGain - autoGain_) * 0.08f;
+      // The target here; the easing in animate (time-based, not per paint: L12).
+      targetGain_ = std::clamp(0.92f / peak, 0.25f, 24.0f);
+      if (!gainPrimed_) autoGain_ = targetGain_, gainPrimed_ = true;
       gain = autoGain_;
     }
     const bool db = opts_.on(wDb);
@@ -978,7 +993,8 @@ private:
   std::vector<uint8_t> filled_;
   uint64_t stamp_ = 0;
   dsp::WaveLoopState loop_;
-  float autoGain_ = 1.0f;
+  float autoGain_ = 1.0f, targetGain_ = 1.0f;
+  bool gainPrimed_ = false;
   std::vector<ColAgg> colA_, colB_, other_;
   std::vector<float> xs_, yA_, yB_, tMin_, tMax_, tRms_, aCol_, tMaxD_, tMinD_, tRmsS_, tRaw_, wRaw_;
   std::vector<Rgba> cA_, cB_, zero_;

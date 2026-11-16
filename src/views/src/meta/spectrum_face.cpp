@@ -255,8 +255,9 @@ public:
   VoiceTapReader* voices() const noexcept override { return feedOf_ ? &frames_ : nullptr; }
   bool animating() const noexcept override { return frames_.live_; }
   bool pollVoices() override {
+    const bool bound = syncFeed();  // the feed before the options (VZ.9 H1: never a request to a freed feed)
     syncOptions();
-    if (!syncFeed()) return true;  // no tap yet: one repaint (the host asks again at its next wake)
+    if (!bound) return true;  // no tap yet: one repaint (the host asks again at its next wake)
     const double now = clockNow();
     // Painted lately: shown. Not painted since the last repaint it asked for: its host is hidden — let go.
     if (now - lastPaint_ > 0.5) {
@@ -298,8 +299,8 @@ public:
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
     const ui::Theme& th = *env.theme;
+    syncFeed();  // (before the options: see pollVoices)
     syncOptions();
-    syncFeed();
     lastPaint_ = clockNow();
     probe_ = 0.0;
     const ui::FaceTransform& t = p.transform();

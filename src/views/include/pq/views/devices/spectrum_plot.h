@@ -173,6 +173,7 @@ private:
   float colourT(float db) const noexcept;
 
   SpectrumFeed* feed_ = nullptr;
+  uint64_t feedSerial_ = 0;
   std::function<void()> requestFrame_;
   SpectrumPlotStyle style_;
   bool acquired_ = false;

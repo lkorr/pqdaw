@@ -13,9 +13,11 @@
 #include <utility>
 #include <vector>
 
+#include "pq/document/meta.h"
 #include "pq/document/panel.h"
 #include "pq/meta/noise.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/user_defaults.h"
 
 namespace pq::doc {
 
@@ -552,6 +554,13 @@ BlockSet engineModuleBlocks(IdSource& ids, ModuleKind k, const EngineModuleOptio
   r.group = o.id.valid() ? o.id : ids.device();
   Builder b{ids, {}, r.group};
   r.engine = b.add(std::string(kMetaDevicePrefix) + std::string(type), t != nullptr ? std::string(t->name) : std::string(type));
+  // VZ.9 (M4): the user's SAVE DEFAULT for the type, as a new instance's data (without one the instance is the type's
+  // factory state, which a missing instance already reads as).
+  if (t != nullptr && meta::userDefaultData(t->id) != nullptr) {
+    auto d = std::make_shared<Device>(*b.set.devices.back());
+    d->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", defaultMetaInstance(*t)}});
+    b.set.devices.back() = std::move(d);
+  }
   if (t != nullptr && t->chainInput >= 0) b.wire(r.group, kGroupInPort, r.engine, t->inputs[static_cast<size_t>(t->chainInput)].name);
   b.wire(r.engine, "out", r.group, kGroupOutPort);
   const ModuleInfo* info = nullptr;

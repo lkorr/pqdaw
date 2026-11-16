@@ -191,6 +191,32 @@ TEST_CASE("tone service: a held tone sounds in the cue pair, not through the eng
   CHECK_FALSE(r.out->tonePreview().sounding());
 }
 
+// VZ.9 (L5): the monitor pair moved under a sounding tone crossfades: no step out of the old pair or into the new.
+TEST_CASE("tone service: moving the cue pair under a sounding tone does not click") {
+  Rig r(4);
+  ToneService tone(*r.out);
+  int owner = 0;
+  tone.hold(&owner, 440.0f, -12.0f, dsp::ToneWave::Sine);
+  for (int i = 0; i < 20; ++i) (void)r.callback(0);
+  const float last0 = r.dev->null().output(0)[127];
+  r.out->setCuePair(1);
+  (void)r.callback(0);
+  const float* a = r.dev->null().output(0);
+  const float* b = r.dev->null().output(2);
+  const float slope = static_cast<float>(2.0 * 3.14159265358979 * 440.0 / 48000.0) * std::pow(10.0f, -12.0f / 20.0f);
+  float worstA = std::fabs(a[0] - last0), worstB = std::fabs(b[0]);
+  for (uint32_t i = 1; i < 128; ++i) {
+    worstA = std::max(worstA, std::fabs(a[i] - a[i - 1]));
+    worstB = std::max(worstB, std::fabs(b[i] - b[i - 1]));
+  }
+  CHECK(worstA < 1.5f * slope + 0.25f / 64.0f);  // the tone's own slope and the fade's
+  CHECK(worstB < 1.5f * slope + 0.25f / 64.0f);
+  CHECK(std::fabs(a[127]) < 0.01f);  // out of the old pair by the block's end
+  CHECK(r.callback(2) > 0.1f);
+  CHECK(r.callback(0) == 0.0f);
+  tone.release(&owner);
+}
+
 TEST_CASE("preview service: a cold WAV start within 30 ms" * doctest::test_suite("perf")) {
   Rig r;
   PreviewService svc(r.link->samplePool(), r.link->engine().config().sampleRate, r.out.get());

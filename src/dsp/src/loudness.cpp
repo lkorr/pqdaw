@@ -459,6 +459,7 @@ LoudnessReadings LoudnessMeter::readings() const noexcept {
     if (m30 >= 0.0) r.shortTerm = static_cast<float>(loudnessOf(m30));
     r.integrated = integrated_;
     r.lra = lraLu_;
+    r.hasLra = lra_ != nullptr && lra_->count() >= 3;
     r.samplePeakDb = peakDb(samplePeak_);
     r.truePeakDb = r.samplePeakDb;
     r.correlation = correlation_;

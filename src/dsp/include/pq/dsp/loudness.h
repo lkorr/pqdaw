@@ -62,6 +62,7 @@ struct LoudnessReadings {
   // Loudness (LUFS / LU / dBFS / dBTP; −120: nothing).
   float momentary = kNoLoudness, shortTerm = kNoLoudness, integrated = kNoLoudness;
   float lra = 0.0f;                    // LU (0 until 3 short-term blocks survive the gate)
+  bool hasLra = false;                 // ... they have: lra is a measurement (a steady tone's 0.0 too)
   float samplePeakDb = kNoLoudness;    // max |x| since the reset
   float truePeakDb = kNoLoudness;      // max true peak since the reset (TruePeak off: the sample peak)
   float truePeakNowDb = kNoLoudness;   // the falling true peak

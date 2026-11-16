@@ -370,6 +370,7 @@ struct CircuitCanvas::Impl final : FaceHost {
   std::unordered_map<uint64_t, ui::LayerTile> faceTiles;  // static layers by (type, layer), at one scale each
   bool facesShown = true;
   int32_t faceCapture = -1;  // the face a press went to (its drag runs until Up)
+  int32_t faceWheel = -1;    // VZ.9: the face a wheel run went to (any other pointer event ends it: one undo step)
   int32_t faceHover = -1;
   uint32_t faceTimer = 0;
   std::vector<ui::Rect> faceRects;
@@ -422,7 +423,8 @@ struct CircuitCanvas::Impl final : FaceHost {
       return i >= 0 && static_cast<size_t>(i) < old.size() ? old[static_cast<size_t>(i)].face.get() : nullptr;
     };
     const Face *capture = ptrAt(faceCapture), *hoverFace = ptrAt(faceHover), *focus = ptrAt(faceFocus);
-    faceCapture = faceHover = faceFocus = -1;
+    Face* wheelFace = faceWheel >= 0 && static_cast<size_t>(faceWheel) < old.size() ? old[static_cast<size_t>(faceWheel)].face.get() : nullptr;
+    faceCapture = faceHover = faceFocus = faceWheel = -1;
     faceOf.assign(scene ? scene->nodes.size() : 0, -1);
     controlWires.clear();
     for (uint32_t w = 0; scene && w < scene->wires.size(); ++w)
@@ -483,6 +485,8 @@ struct CircuitCanvas::Impl final : FaceHost {
     // TX.panel-faces: a retired face is kept alive (a handler of its may be running) but leaves the host.
     for (const std::unique_ptr<Face>& f : retired) f->attach(nullptr);
     faceCapture = indexOf(capture);
+    faceWheel = indexOf(wheelFace);
+    if (wheelFace != nullptr && faceWheel < 0) wheelFace->endWheel();  // (retired: its run ends now)
     faceHover = indexOf(hoverFace);
     faceFocus = indexOf(focus);
     bindFaces(false);
@@ -3629,6 +3633,10 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
   Impl& m = *impl_;
   if (!m.facesShown || m.faces.empty() || !m.scene) return false;
   using K = FacePointer::Kind;
+  if (e.type != ui::PointerType::Wheel && m.faceWheel >= 0) {  // a wheel run ends at the next other event
+    if (static_cast<size_t>(m.faceWheel) < m.faces.size()) m.faces[static_cast<size_t>(m.faceWheel)].face->endWheel();
+    m.faceWheel = -1;
+  }
   switch (e.type) {
     case ui::PointerType::Down: {
       // Any press moves the key focus; a face's control takes it below (TX.panel-faces: the old face's type-in commits).
@@ -3704,7 +3712,11 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
     }
     case ui::PointerType::Wheel: {
       const int32_t i = m.faceUnder(e.pos);
-      return i >= 0 && m.faces[static_cast<size_t>(i)].face->onPointer(m.pointerOf(i, e, K::Wheel));
+      if (m.faceWheel >= 0 && m.faceWheel != i && static_cast<size_t>(m.faceWheel) < m.faces.size())
+        m.faces[static_cast<size_t>(m.faceWheel)].face->endWheel();
+      const bool used = i >= 0 && m.faces[static_cast<size_t>(i)].face->onPointer(m.pointerOf(i, e, K::Wheel));
+      m.faceWheel = used ? i : -1;
+      return used;
     }
     case ui::PointerType::Leave: {
       if (m.faceHover >= 0 && static_cast<size_t>(m.faceHover) < m.faces.size() &&

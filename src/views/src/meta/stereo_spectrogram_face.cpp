@@ -21,10 +21,10 @@
 // still — asks for no frames. 300 × 200.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <span>
 #include <string>
 #include <vector>
@@ -124,6 +124,56 @@ constexpr uint32_t kRibMaxSlices = 480, kRibTargetSlices = 360;
 // PQ's band ramp: the theme's low / mid / high band colours, two stops interpolated, at 200 / 1k / 5k Hz.
 constexpr float kBandStops[5][3] = {{0.95f, 0.36f, 0.25f}, {0.975f, 0.575f, 0.245f}, {1.00f, 0.79f, 0.24f},
                                     {0.715f, 0.82f, 0.62f}, {0.43f, 0.85f, 1.00f}};
+
+// A FIFO in one power-of-two block (M6: std::deque allocated a block per point here, and freed one per point pruned,
+// thousands a second on the UI thread; a rebuild walked scattered nodes). It doubles when full (warm-up only: the
+// prune keeps it under its cap) and indexes from the front.
+template <class T>
+class Ring {
+public:
+  size_t size() const noexcept { return n_; }
+  bool empty() const noexcept { return n_ == 0; }
+  T& operator[](size_t i) noexcept { return buf_[(head_ + i) & mask_]; }
+  const T& operator[](size_t i) const noexcept { return buf_[(head_ + i) & mask_]; }
+  T& front() noexcept { return (*this)[0]; }
+  T& back() noexcept { return (*this)[n_ - 1]; }
+  void push_back(const T& v) {
+    if (n_ == buf_.size()) grow();
+    buf_[(head_ + n_) & mask_] = v;
+    ++n_;
+  }
+  void pop_front() noexcept {
+    head_ = (head_ + 1) & mask_;
+    --n_;
+  }
+  void clear() noexcept { head_ = n_ = 0; }
+  template <class R, class V>
+  struct It {
+    R* r;
+    size_t i;
+    V& operator*() const noexcept { return (*r)[i]; }
+    It& operator++() noexcept {
+      ++i;
+      return *this;
+    }
+    bool operator!=(const It& o) const noexcept { return i != o.i; }
+  };
+  It<Ring, T> begin() noexcept { return {this, 0}; }
+  It<Ring, T> end() noexcept { return {this, n_}; }
+  It<const Ring, const T> begin() const noexcept { return {this, 0}; }
+  It<const Ring, const T> end() const noexcept { return {this, n_}; }
+
+private:
+  void grow() {
+    std::vector<T> b(std::max<size_t>(64, buf_.size() * 2));
+    for (size_t i = 0; i < n_; ++i) b[i] = (*this)[i];
+    buf_.swap(b);
+    head_ = 0;
+    mask_ = buf_.size() - 1;
+  }
+  std::vector<T> buf_;
+  size_t head_ = 0, n_ = 0, mask_ = 0;
+};
 
 struct CloudPt {
   double tSamples;
@@ -303,12 +353,13 @@ protected:
 
   // ---- the camera (as the Waterfall's) ----
   Rect snapChip(int i) const noexcept {
-    const float x0 = 10.0f + static_cast<float>(i) * 27.0f;
-    return {x0, 10.0f, x0 + 25.0f, 20.0f};
+    const float x0 = 10.0f + static_cast<float>(i) * 31.0f;
+    return {x0, kChipY0, x0 + 29.0f, kChipY1};
   }
   int32_t ownHit(Vec2 l) const noexcept override {
-    for (int i = 0; i < 4; ++i)
-      if (inside(snapChip(i), l)) return kSnap0 + i;
+    if (chipsShown())  // (drawn only where labels are legible: M8)
+      for (int i = 0; i < 4; ++i)
+        if (inside(snapChip(i), l)) return kSnap0 + i;
     return inside(well(), l) ? kCamPart : kNone;
   }
   bool ownDown(int32_t part, const FacePointer& e) override {
@@ -351,6 +402,7 @@ protected:
   }
   bool ownWheel(const FacePointer& e) override {
     if (!(e.mods & ui::mod::kAlt) || !inside(well(), e.local)) return false;
+    wheelEdit("Camera Zoom");  // a run of notches: one undo step (M5)
     orbit_.wheel(e.wheel.y);
     writePose();
     return true;
@@ -374,8 +426,8 @@ protected:
 
   void paintBody(ui::FacePainter& p, const ui::Theme& th, bool labels) override {
     paintScene(p, th, labels);
-    if (labels)  // over the picture: the named views stay reachable from every angle
-      for (int i = 0; i < 4; ++i) chipAt(p, snapChip(i), kViews[i].chip, false, th);
+    if (labels)  // over the picture: the named views stay reachable from every angle; the one shown is lit (L14)
+      for (int i = 0; i < 4; ++i) chipAt(p, snapChip(i), kViews[i].chip, cam3d::atView(orbit_, kViews[i]), th);
   }
   void paintScene(ui::FacePainter& p, const ui::Theme& th, bool labels);
 
@@ -424,8 +476,13 @@ private:
     if (opts_.choice(sMap) == ui::Gradient::kCustomIndex) {
       float st[4];
       for (int i = 0; i < 4; ++i) st[i] = static_cast<float>(opts_[sS2 + static_cast<uint32_t>(i)]);
-      const ui::StopColours own = sheet::stopColours(opts_, sColS1, opts_.choice(sBase));
-      ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(sBase), 0, ui::kColormapCount - 1)), st, levelAxis(), &own);
+      std::array<double, 14> k = {opts_[sBase], st[0], st[1], st[2], st[3], opts_[sFloor], opts_[sCeil], opts_[sGamma]};
+      for (uint32_t i = 0; i < 6; ++i) k[8 + i] = opts_[sColS1 + i];
+      if (k != customKey_) {  // rebuilt when its stops or their colours change, not every paint (L11)
+        customKey_ = k;
+        const ui::StopColours own = sheet::stopColours(opts_, sColS1, opts_.choice(sBase));
+        ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(opts_.choice(sBase), 0, ui::kColormapCount - 1)), st, levelAxis(), &own);
+      }
       return custom_.lut;
     }
     return ui::colormapLut(static_cast<ui::Colormap>(std::clamp(opts_.choice(sMap), 0, ui::kColormapCount - 1)));
@@ -487,12 +544,13 @@ private:
   uint32_t gen_ = ~0u;
   int smoothed_ = 0;
   double rate_ = 48000.0, head_ = -1.0;
-  std::deque<CloudPt> cloud_;
+  Ring<CloudPt> cloud_;
   float cloudMax_ = 0.0f;
-  std::deque<dsp::StereoCloud::RibSlice> ribbon_, ribbonRaw_;
+  Ring<dsp::StereoCloud::RibSlice> ribbon_, ribbonRaw_;
   std::vector<dsp::CloudPoint> scratch_;
   std::vector<dsp::StereoCloud::RibSlice> sliceBuf_;
   ui::Gradient custom_;
+  std::array<double, 14> customKey_{-1.0};
   // The canvas: the window (the plot's device px), the period (the window + margins: the texture's texels that scroll),
   // the accumulator (accW_ / perW_ cells a texel, exactly: the period's cells).
   std::shared_ptr<ui::TexturePool> pool_;
@@ -508,7 +566,7 @@ private:
   bool valid_ = false, scrolling_ = false, canvasStale_ = false;
   double rebuiltAt_ = -1e9;
   static constexpr double kMovingRebuild = 0.030;  // s between re-splats while the camera moves
-  std::vector<double> drawnKey_;
+  std::vector<double> drawnKey_, keyNow_;
   double drawnHead_ = -1.0;
   // The splat's constants (fixed between rebuilds).
   cam3d::Projector proj_;
@@ -576,8 +634,14 @@ uint32_t StereoSpectrogramFace::Shade::colour(float best, float bestA, float bes
     const float s = hasC ? t * cf : cf;
     rr = ui::redOf(c) / 255.0f * s, gg = ui::greenOf(c) / 255.0f * s, bb = ui::blueOf(c) / 255.0f * s;
   }
-  return ui::rgba(static_cast<uint8_t>(rr * 255.0f + 0.5f), static_cast<uint8_t>(gg * 255.0f + 0.5f), static_cast<uint8_t>(bb * 255.0f + 0.5f),
-                  static_cast<uint8_t>(alpha));
+  // As if added onto black (PQ's ground): the brightest channel is the coverage, the colour that over it. On black it is
+  // the same picture; on the teal well the colormap's dark floor fades into the well instead of printing black specks
+  // (L15). (Straight alpha: the colour un-premultiplied by the coverage.)
+  const float cov = std::max({rr, gg, bb});
+  if (cov <= 1.0f / 512.0f) return emptyOut;
+  const float inv = 1.0f / cov;
+  return ui::rgba(static_cast<uint8_t>(std::min(1.0f, rr * inv) * 255.0f + 0.5f), static_cast<uint8_t>(std::min(1.0f, gg * inv) * 255.0f + 0.5f),
+                  static_cast<uint8_t>(std::min(1.0f, bb * inv) * 255.0f + 0.5f), static_cast<uint8_t>(static_cast<float>(alpha) * cov + 0.5f));
 }
 
 void StereoSpectrogramFace::shadeFor(const ui::ColorLut& lut, Shade& s) {
@@ -603,8 +667,7 @@ void StereoSpectrogramFace::shadeFor(const ui::ColorLut& lut, Shade& s) {
   s.gain = fadeK_ > 0.0 ? static_cast<float>(std::exp(-fadeK_ * rel)) : 1.0f;
   s.headRel = static_cast<float>(rel / rate_);
   s.invSpan = static_cast<float>(1.0 / spanSec_);
-  const uint32_t empty = lut[0];
-  s.emptyOut = sepAmp_ ? (empty & 0x00FFFFFFu) : empty;
+  s.emptyOut = lut[0] & 0x00FFFFFFu;  // nothing there: the well shows through (as coverage 0, below)
 }
 
 // The window w × h texels; the period: the smallest ≥ the window + the margins with an exact cell ratio (else the
@@ -1267,7 +1330,8 @@ void StereoSpectrogramFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th
       }
     }
     const float timeDepth = std::min(1.0f, std::fabs(R[6]));
-    std::vector<double> key = {orbit_.pose.yaw, orbit_.pose.pitch, orbit_.pose.roll, orbit_.pose.zoom, orbit_.pose.panX, orbit_.pose.panY};
+    std::vector<double>& key = keyNow_;  // (a member: no allocation per paint once warm; L11)
+    key.assign({orbit_.pose.yaw, orbit_.pose.pitch, orbit_.pose.roll, orbit_.pose.zoom, orbit_.pose.panX, orbit_.pose.panY});
     for (uint32_t o = sSpan; o < sCount; ++o) key.push_back(opts_[o]);
     const uint64_t end = frontSeq_ + cloud_.size();
     // A moving camera rebuilds unscrolled (no tile lists to fill each frame); the first update after it stops scrolls.
@@ -1281,7 +1345,7 @@ void StereoSpectrogramFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th
         rebuild(colours, timeDepth, !moving);
         rebuiltAt_ = now;
         canvasStale_ = false;
-        drawnKey_ = std::move(key);
+        drawnKey_.assign(key.begin(), key.end());
         valid_ = true;
       }
     } else if (head_ != drawnHead_ || splatSeq_ != end || !expiring_.empty()) {

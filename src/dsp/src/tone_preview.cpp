@@ -84,6 +84,13 @@ const float* TonePreview::table(ToneWave w, float hz) const noexcept {
   return tables_ + static_cast<size_t>(1 + (w == ToneWave::Triangle ? kBands : 0) + b) * kStride;
 }
 
+void TonePreview::mute() noexcept {  // RT-safe
+  if (gate_.load(std::memory_order_acquire)) return;
+  gain_ = hz_ = 0.0f;
+  goal_ = step_ = 0.0f;
+  active_.store(false, std::memory_order_relaxed);
+}
+
 void TonePreview::render(float* const* out, uint32_t channels, uint32_t frames, double sampleRate) noexcept {  // RT-safe
   const bool gate = gate_.load(std::memory_order_acquire);
   if (!gate && gain_ <= 0.0f) {

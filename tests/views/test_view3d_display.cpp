@@ -6,6 +6,8 @@
 
 #include <doctest/doctest.h>
 
+#include <new>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -340,6 +342,68 @@ TEST_CASE("3D faces: held while painted; the request; the pose as data (one step
     }
     CHECK_FALSE(rig.face->animating());
   }
+}
+
+TEST_CASE("analyser faces: a new feed where the freed one was is another feed (serial, H1) — the face starts over on it") {
+  // The hub frees a feed nothing holds when its tap or the rate changes; the next one can land at the same address. A
+  // face compared addresses: it kept the old feed's read position and skipped the new one's slices until its count
+  // passed the old (and held the old picture meanwhile).
+  TapRing tap(4, 32768, 4096);
+  alignas(SpectrumFeed) unsigned char storage[sizeof(SpectrumFeed)];
+  auto* feed = new (storage) SpectrumFeed(tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{});
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  MetaFace::setClock(+[]() -> double { return Clock::now(); });
+  auto face = makeFace(meta::waterfallType());
+  face->bind(std::make_unique<DataTarget>(meta::waterfallType()), nullptr);
+  face->setAnalysis([&] { return feed; }, [] {});
+  DrawList dl;
+  auto paint = [&] {
+    dl.reset(1200, 800);
+    FaceEnv env;
+    env.theme = &*theme;
+    env.uiScale = 1.0f;
+    FacePainter p(dl, {{10.0f, 10.0f}, 2.0f});
+    face->paintLive(p, env);
+  };
+  auto frame = [&] {
+    Clock::now() += 1.0 / 60.0;
+    (void)face->pollVoices();
+    paint();
+  };
+  uint64_t at = 0;
+  double clock = 1.0;
+  paint();
+  stream(tap, *feed, 3.0, at, clock);
+  frame();
+  WaterfallShown s;
+  REQUIRE(waterfallShown(*face, s));
+  const size_t before = s.slices;
+  CHECK(before > 100);
+  // Hidden: it lets go; the feed is freed and another is made in its place.
+  Clock::now() += 1.0;
+  (void)face->pollVoices();
+  Clock::now() += 0.1;
+  (void)face->pollVoices();
+  REQUIRE(waterfallShown(*face, s));
+  REQUIRE_FALSE(s.acquired);
+  REQUIRE(feed->consumers() == 0);
+  feed->~SpectrumFeed();
+  feed = new (storage) SpectrumFeed(tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{});
+  paint();  // shown again: it holds the new feed
+  stream(tap, *feed, 1.0, at, clock);
+  frame();
+  WaterfallState ws;
+  std::vector<float> live;
+  bool settled = false;
+  (void)feed->waterfallRead(0, ws, live, settled);
+  REQUIRE(waterfallShown(*face, s));
+  CHECK(s.acquired);
+  CHECK(ws.slices > 0);
+  CHECK(s.slices == ws.slices);  // what the new feed has, not the old picture
+  face.reset();
+  feed->~SpectrumFeed();
+  MetaFace::setClock(nullptr);
 }
 
 TEST_CASE("Stereo Spectrogram: the canvas scrolls (new points splatted once, leavers repaired, touched texels uploaded), exactly") {

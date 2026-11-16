@@ -74,16 +74,26 @@ struct Projector {
   float depth(float a, float b, float c) const noexcept { return R[6] * a + R[7] * b + R[8] * c; }
 };
 
+// An angle in degrees into [-180, 180) (yaw and roll turn all the way round).
+inline float wrap180(float a) noexcept { return a - 360.0f * std::floor((a + 180.0f) / 360.0f); }
+
 // The camera's motion: drags, the wheel, snaps (eased). Times in seconds.
 class Orbit {
 public:
   enum class Drag { None, Orbit, Pan, Roll };
   Pose pose;
   bool snapping() const noexcept { return snap_; }
+  const Pose& target() const noexcept { return target_; }  // where a snap eases to
   bool dragging() const noexcept { return drag_ != Drag::None; }
+  // A named view: the angles and the default framing (zoom 1, no pan).
   void snapTo(float yaw, float pitch, float roll = 0.0f) noexcept {
     snap_ = true;
     target_ = {yaw, pitch, roll, 1.0f, 0.0f, 0.0f};
+  }
+  // The release snap: only the angles (the zoom and pan the user set stay).
+  void snapAngles(float yaw, float pitch, float roll = 0.0f) noexcept {
+    snap_ = true;
+    target_ = {yaw, pitch, roll, pose.zoom, pose.panX, pose.panY};
   }
   void stopSnap() noexcept { snap_ = false; }
   void begin(Drag d, ui::Vec2 at) noexcept {
@@ -97,14 +107,14 @@ public:
     last_ = at;
     switch (drag_) {
       case Drag::Orbit:
-        pose.yaw = std::clamp(pose.yaw + dx * 0.4f, -180.0f, 180.0f);
+        pose.yaw = wrap180(pose.yaw + dx * 0.4f);  // round and round (pitch stops at the poles)
         pose.pitch = std::clamp(pose.pitch + dy * 0.4f, -90.0f, 90.0f);
         break;
       case Drag::Pan:
         pose.panX = std::clamp(pose.panX + dx / std::max(1.0f, 0.5f * w), -1.5f, 1.5f);
         pose.panY = std::clamp(pose.panY - dy / std::max(1.0f, 0.5f * h), -1.5f, 1.5f);
         break;
-      case Drag::Roll: pose.roll = std::clamp(pose.roll + dx * 0.4f, -180.0f, 180.0f); break;
+      case Drag::Roll: pose.roll = wrap180(pose.roll + dx * 0.4f); break;
       case Drag::None: break;
     }
   }
@@ -112,9 +122,9 @@ public:
   void end() noexcept {
     if (drag_ == Drag::Orbit || drag_ == Drag::Roll) {
       const bool flat = std::fabs(pose.pitch) < 6.0f && std::fabs(pose.roll) < 6.0f;
-      if (flat && std::fabs(pose.yaw) < 5.0f) snapTo(0.0f, 0.0f);
-      else if (flat && std::fabs(pose.yaw - 90.0f) < 5.0f) snapTo(90.0f, 0.0f);
-      else if (std::fabs(pose.pitch) > 84.0f && std::fabs(pose.roll) < 6.0f) snapTo(pose.yaw, pose.pitch < 0.0f ? -90.0f : 90.0f);
+      if (flat && std::fabs(pose.yaw) < 5.0f) snapAngles(0.0f, 0.0f);
+      else if (flat && std::fabs(pose.yaw - 90.0f) < 5.0f) snapAngles(90.0f, 0.0f);
+      else if (std::fabs(pose.pitch) > 84.0f && std::fabs(pose.roll) < 6.0f) snapAngles(pose.yaw, pose.pitch < 0.0f ? -90.0f : 90.0f);
     }
     drag_ = Drag::None;
   }
@@ -127,7 +137,7 @@ public:
     int best = 0;
     float bestD = 1e30f;
     for (int i = 0; i < n; ++i) {
-      const float d = std::fabs(pose.yaw - views[i].yaw) + std::fabs(pose.pitch - views[i].pitch);
+      const float d = std::fabs(wrap180(pose.yaw - views[i].yaw)) + std::fabs(pose.pitch - views[i].pitch);
       if (d < bestD) bestD = d, best = i;
     }
     if (bestD < 0.5f && std::fabs(pose.roll) < 0.5f) best = n - 1;
@@ -137,15 +147,15 @@ public:
   bool tick(float dt) noexcept {
     if (!snap_) return false;
     const float a = 1.0f - std::exp(-std::clamp(dt, 0.0f, 0.1f) / 0.05f);
-    pose.yaw += (target_.yaw - pose.yaw) * a;
+    pose.yaw = wrap180(pose.yaw + wrap180(target_.yaw - pose.yaw) * a);  // the short way round
     pose.pitch += (target_.pitch - pose.pitch) * a;
-    pose.roll += (target_.roll - pose.roll) * a;
-    pose.zoom += (1.0f - pose.zoom) * a;
-    pose.panX -= pose.panX * a;
-    pose.panY -= pose.panY * a;
-    if (std::fabs(pose.yaw - target_.yaw) < 0.05f && std::fabs(pose.pitch - target_.pitch) < 0.05f &&
-        std::fabs(pose.roll - target_.roll) < 0.05f && std::fabs(pose.zoom - 1.0f) < 0.003f && std::fabs(pose.panX) < 0.002f &&
-        std::fabs(pose.panY) < 0.002f) {
+    pose.roll = wrap180(pose.roll + wrap180(target_.roll - pose.roll) * a);
+    pose.zoom += (target_.zoom - pose.zoom) * a;
+    pose.panX += (target_.panX - pose.panX) * a;
+    pose.panY += (target_.panY - pose.panY) * a;
+    if (std::fabs(wrap180(pose.yaw - target_.yaw)) < 0.05f && std::fabs(pose.pitch - target_.pitch) < 0.05f &&
+        std::fabs(wrap180(pose.roll - target_.roll)) < 0.05f && std::fabs(pose.zoom - target_.zoom) < 0.003f &&
+        std::fabs(pose.panX - target_.panX) < 0.002f && std::fabs(pose.panY - target_.panY) < 0.002f) {
       pose = target_;
       snap_ = false;
     }
@@ -158,5 +168,11 @@ private:
   bool snap_ = false;
   Pose target_;
 };
+
+// The view a snap chip names is the one shown (or the one a snap is easing to): its angles within half a degree.
+inline bool atView(const Orbit& o, const NamedView& v) noexcept {
+  const Pose& p = o.snapping() ? o.target() : o.pose;
+  return std::fabs(wrap180(p.yaw - v.yaw)) < 0.5f && std::fabs(p.pitch - v.pitch) < 0.5f && std::fabs(wrap180(p.roll)) < 0.5f;
+}
 
 }  // namespace pq::views::cam3d

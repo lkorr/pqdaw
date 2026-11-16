@@ -305,6 +305,43 @@ TEST_CASE("loudness faces: held while painted, the feed's readings shown, the re
   }
 }
 
+TEST_CASE("analyser faces: a face that let go sends nothing to the feed it had (H1) — the options go to the one bound now") {
+  // The hub frees a feed nothing holds when its tap or the rate changes. A hidden face (let go) whose instance's data
+  // changed (undo, or its other face's edit) sent the new options to the cached, freed feed on its next poll / paint.
+  // Here the old feed stays alive (the test holds it) so what reaches it is visible.
+  FaceRig rig(meta::lufsMeterType());
+  SpectrumFeed other{rig.tap, AnalysisHub::config(kSr), SpectrumFeed::Manual{}};
+  SpectrumFeed* bound = &rig.feed;
+  rig.face->setAnalysis([&] { return bound; }, [&] { ++rig.wakes; });
+  rig.paint();
+  REQUIRE(rig.feed.consumers() == 1);
+  Clock::now() += 1.0;  // hidden: it lets go
+  (void)rig.face->pollVoices();
+  Clock::now() += 0.1;
+  (void)rig.face->pollVoices();
+  REQUIRE(rig.feed.consumers() == 0);
+  const dsp::LoudnessConfig before = rig.feed.loudnessRequest();
+  // The instance's data changes elsewhere: a new target.
+  meta::DataPtr edited;
+  {
+    FaceRig elsewhere(meta::lufsMeterType());
+    elsewhere.paint();
+    REQUIRE(loudnessTestControl(*elsewhere.face, "target", -16.5));
+    edited = elsewhere.target->data_;
+  }
+  MetaFace::setClock(+[]() -> double { return Clock::now(); });  // (the other rig's destructor cleared it)
+  rig.target->data_ = edited;
+  bound = &other;  // the feed it had is replaced (the hub would free it now)
+  (void)rig.face->pollVoices();
+  CHECK(rig.feed.loudnessRequest() == before);
+  rig.paint();
+  CHECK(rig.feed.loudnessRequest() == before);  // nothing reached the old feed
+  CHECK(rig.feed.consumers() == 0);
+  CHECK(other.consumers() == 1);
+  CHECK(other.loudnessRequest().targetLufs == -16.5f);
+  rig.face.reset();  // (it holds `other`, which goes first)
+}
+
 TEST_CASE("loudness faces: the LUFS Meter's true peak option, the Level Meter's lamps and its analysis options") {
   {
     FaceRig rig(meta::lufsMeterType());

@@ -112,14 +112,21 @@ protected:
     const uint64_t seq = f.loudnessRead(r, settled);
     if (seq == seq_) return false;
     seq_ = seq;
-    r_ = r;
     if (const uint32_t want = historyPoints(); want > 0) {
-      const uint64_t start = std::max(r.historyStart, r.points > want ? r.points - want : 0);
-      hist_.resize(static_cast<size_t>(r.points - start));
-      uint32_t got = 0;
-      (void)f.loudnessRead(r, settled, start, static_cast<uint32_t>(hist_.size()), hist_.data(), &got);
-      hist_.resize(got);
+      // The readings and the window from one publish (L16): a point published between the two reads reads again.
+      for (int tries = 0; tries < 3; ++tries) {
+        const uint64_t start = std::max(r.historyStart, r.points > want ? r.points - want : 0);
+        hist_.resize(static_cast<size_t>(r.points - start));
+        uint32_t got = 0;
+        dsp::LoudnessReadings again;
+        (void)f.loudnessRead(again, settled, start, static_cast<uint32_t>(hist_.size()), hist_.data(), &got);
+        hist_.resize(got);
+        const bool same = again.points == r.points && again.historyStart == r.historyStart;
+        r = again;
+        if (same) break;
+      }
     }
+    r_ = r;
     return true;
   }
 
@@ -466,7 +473,8 @@ protected:
     row(68.0f, "M", v, valid(r_.momentary) ? pal_.state(r_.momentary - target) : text);
     fmtLufs(anim_.integrated, v, sizeof v);
     row(79.0f, "I", v, valid(anim_.integrated) ? pal_.state(anim_.integrated - target) : text);
-    std::snprintf(v, sizeof v, "%.1f LU", r_.lra);
+    if (r_.hasLra) std::snprintf(v, sizeof v, "%.1f LU", r_.lra);
+    else std::snprintf(v, sizeof v, "--.-");  // (L17: none yet, as the other rows)
     row(90.0f, "LRA", v, text);
     const bool tp = opts_.on(uTruePeak);
     if (valid(r_.truePeakDb)) std::snprintf(v, sizeof v, "%+.1f %s", r_.truePeakDb, tp ? "dBTP" : "dB");

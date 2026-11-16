@@ -49,6 +49,9 @@ public:
   // Adds `frames` of the tone at `sampleRate` into out[0 … channels − 1] (the same signal in each).
   // RT-safe
   void render(float* const* out, uint32_t channels, uint32_t frames, double sampleRate) noexcept;
+  // The output is muted (a pre-roll, a rate mismatch, a fade): a release in progress ends now (nothing would be heard of
+  // it) so sounding() clears and the stream may suspend; a held tone stays (it wants the stream). RT-safe.
+  void mute() noexcept;
   // The oscillator's state (tests: the audio thread's own reads).
   float currentHz() const noexcept { return hz_; }
   float currentGain() const noexcept { return gain_; }

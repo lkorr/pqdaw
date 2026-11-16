@@ -20,6 +20,7 @@
 // feed at rest, the camera still — asks for no frames. 320 × 190.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <span>
@@ -265,13 +266,14 @@ protected:
 
   // ---- the camera ----
   int32_t ownHit(Vec2 l) const noexcept override {
-    for (int i = 0; i < 4; ++i)
-      if (inside(snapChip(i), l)) return kSnap0 + i;
+    if (chipsShown())  // (drawn only where labels are legible: M8)
+      for (int i = 0; i < 4; ++i)
+        if (inside(snapChip(i), l)) return kSnap0 + i;
     return inside(well(), l) ? kCamPart : kNone;
   }
   Rect snapChip(int i) const noexcept {
-    const float x0 = 10.0f + static_cast<float>(i) * 25.0f;
-    return {x0, 10.0f, x0 + 23.0f, 20.0f};
+    const float x0 = 10.0f + static_cast<float>(i) * 28.0f;
+    return {x0, kChipY0, x0 + 26.0f, kChipY1};
   }
   bool ownDown(int32_t part, const FacePointer& e) override {
     if (part >= kSnap0 && part < kSnap0 + 4) {
@@ -313,6 +315,7 @@ protected:
   }
   bool ownWheel(const FacePointer& e) override {
     if (!(e.mods & ui::mod::kAlt) || !inside(well(), e.local)) return false;
+    wheelEdit("Camera Zoom");  // a run of notches: one undo step (M5)
     orbit_.wheel(e.wheel.y);
     writePose();
     return true;
@@ -337,8 +340,8 @@ protected:
 
   void paintBody(ui::FacePainter& p, const ui::Theme& th, bool labels) override {
     paintScene(p, th, labels);
-    if (labels)  // over the picture: the named views stay reachable from every angle
-      for (int i = 0; i < 4; ++i) chipAt(p, snapChip(i), kViews[i].chip, false, th);
+    if (labels)  // over the picture: the named views stay reachable from every angle; the one shown is lit (L14)
+      for (int i = 0; i < 4; ++i) chipAt(p, snapChip(i), kViews[i].chip, cam3d::atView(orbit_, kViews[i]), th);
   }
   void paintScene(ui::FacePainter& p, const ui::Theme& th, bool labels);
 
@@ -377,7 +380,8 @@ private:
   double rate_ = 48000.0;
   // The palette and its key.
   std::vector<Rgba> pal_;
-  std::vector<double> palKey_;
+  static constexpr size_t kPalKey = 12 + (wColCurve - wColS1 + 1);
+  std::array<double, kPalKey> palKey_{};
   ui::Gradient custom_;
   // Paint scratch.
   std::vector<Vec2> pts_, prevPts_, botPts_, ridge_, mv_;
@@ -389,9 +393,10 @@ private:
 
 void WaterfallFace::rebuildPalette() {
   constexpr int kPalF = 64, kPalL = 64;
-  std::vector<double> key = {opts_[wColour], opts_[wMap], opts_[wBase], opts_[wS2], opts_[wS3], opts_[wS4], opts_[wS5],
-                             opts_[wFloor], opts_[wCeil], opts_[wGamma], opts_[wSat], opts_[wHue]};
-  for (uint32_t i = wColS1; i <= wColCurve; ++i) key.push_back(opts_[i]);
+  // (A fixed array, compared in place: no allocation per paint; L11.)
+  std::array<double, kPalKey> key = {opts_[wColour], opts_[wMap], opts_[wBase], opts_[wS2], opts_[wS3], opts_[wS4], opts_[wS5],
+                                     opts_[wFloor], opts_[wCeil], opts_[wGamma], opts_[wSat], opts_[wHue]};
+  for (uint32_t i = wColS1; i <= wColCurve; ++i) key[12 + (i - wColS1)] = opts_[i];
   if (key == palKey_ && pal_.size() == static_cast<size_t>(kPalF) * kPalL) return;
   palKey_ = key;
   pal_.resize(static_cast<size_t>(kPalF) * kPalL);

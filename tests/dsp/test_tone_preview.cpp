@@ -177,6 +177,23 @@ TEST_CASE("tone preview: a gain change ramps in its ramp time whatever the dista
   CHECK(t.currentGain() == doctest::Approx(1.0f));
 }
 
+TEST_CASE("tone preview: a mute (pre-roll, rate mismatch) ends a release at once; a held tone stays (L6)") {
+  TonePreview t;
+  int o = 0;
+  t.hold(&o, 440.0f, -6.0f, ToneWave::Sine);
+  (void)run(t, 4800);
+  t.mute();
+  CHECK(t.sounding());  // held: it still wants the stream
+  t.release(&o);
+  CHECK(t.sounding());  // fading
+  t.mute();             // the output went silent mid-release: nothing would be heard of the rest
+  CHECK_FALSE(t.sounding());
+  t.hold(&o, 440.0f, -6.0f, ToneWave::Sine);  // and a new press starts cleanly
+  const auto x = run(t, 4800);
+  CHECK(peak(x, 0, 24) < 0.2f);
+  CHECK(pitchOf(x, 960) == doctest::Approx(440.0).epsilon(1e-4));
+}
+
 TEST_CASE("tone preview: render never allocates (audio thread, RtScope)") {
   TonePreview t;
   int o = 0;
