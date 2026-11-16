@@ -982,3 +982,17 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   = 0 (tested); K-weighting L+R in one SSE2 pair, TP AVX2 × 8 frames.
 - Notes: Q?-VZ.4-a (PQ's custom colour pickers not carried: no colour row in the sheet), Q?-VZ.4-b (history pauses in
   a long silence). Goldens added: device/project-meta-loudness, module-levelmeter / lufsmeter / loudnesshistory-panel.
+
+## 2026-11-15 · bug-mos-sister merged · main
+- Did: the MOS circle's slider spans a MOS and its sister: collapsed – equalized (the EDO, a centre snap) – collapsed,
+  in generator order, mirrored hardness ticks, both names under their halves; crossing selects the sister with no
+  generator jump (tuning::mosSisterSpan / regionEndCents / setMosGenerator, checked against the explorer's sister
+  scales). SetTuningParam(MosGenerator) moves the region hint; the tuning node's hint is the sister span, so generator
+  automation runs collapsed → collapsed continuously; the Generator lane spans the pair. Esc on a canvas slider drag
+  now cancels (it committed).
+- Verified (worker): pq_tests_tuning 89/89; engine tuning signal* 9/9 (new all-modes automation test fails without the
+  fix); -Affected after rebase: timing-limit failures green on re-run, 3 lane-range goldens re-recorded.
+- Perf / CPU-efficiency check: nothing new on the audio thread; the hint is computed at tuning-table build.
+- Notes: 10 goldens re-recorded (slider look, Generator lane range). Q?-bug-mos-sister-a (mode across the crossing:
+  chain position kept). Open: MosChart::onCaptureLost has the same Esc-commits bug; SPEC §4.2 wording not edited.
+  Rebased by the orchestrator onto VZ.4 (append-only conflicts in QUESTIONS / REVIEW).
