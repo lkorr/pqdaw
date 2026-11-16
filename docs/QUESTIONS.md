@@ -1956,3 +1956,13 @@ silence and resume with the sound: the silence shows as a ~4 – 6 s gap, not it
 through silence. Options: keep stepping the meter (and the worker, and the UI's repaint) at 10 Hz while a history face is
 shown; or pause. Choice: pause (a silent DAW costs nothing). Status: decided (reversible: atRest's condition in
 pq/dsp/loudness.h, or the feed's rest test for kWantLoudness).
+
+## Q?-bug-mos-sister-a · 2026-11-15 · bug-mos-sister · The mode across the sister crossing; the slider's mapping
+Context: the MOS circle's slider (and a Generator automation lane) now run xL ys collapsed – equalized – yL xs
+collapsed on one generator line. Options for the mode past the equalized middle: keep the root's chain position (the
+explorer's transferModeRotation: the same rotation index, the same note-by-note scale moving continuously, its pattern
+with L and s swapped, so 5L 2s Lydian LLLsLLs becomes 2L 5s sssLssL, its darkest mode; the GMN mode number is unchanged,
+the explorer numbers both sisters along the fifths) or keep the brightness (Lydian → the brightest 2L 5s: pitches jump at
+the crossing). Choice: the chain position (the only one without a jump; automation needs it). The slider is linear in
+1 − s/L per half (as the old one: its ticks are the hardness ratios), not linear in cents. Status: decided
+(reversible: MosCircle::applyPosition, tuning::setMosGenerator).

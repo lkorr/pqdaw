@@ -59,7 +59,9 @@ struct TuningLiveInputs {
   const float* reference = nullptr;
 };
 
-// A region hint (tuning::RegionHint): the selected region's notes per period and its generator range in cents.
+// A region hint (tuning::RegionHint): the selected region's notes per period and its generator range in cents, widened
+// to the region and its sister MOS (tuning::mosSisterSpan, bug-mos-sister: both collapsed ends of a sweep across the
+// equalized generator take the side inside the span).
 struct TuningHint {
   int32_t perPeriodSize = 0;
   double lowCents = 0.0;

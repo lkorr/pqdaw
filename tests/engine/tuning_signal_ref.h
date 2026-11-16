@@ -8,6 +8,7 @@
 #include <optional>
 
 #include "pq/tuning/mos.h"
+#include "pq/tuning/mos_regions.h"
 #include "pq/tuning/mos_tuning.h"
 #include "pq/tuning/tuning.h"
 
@@ -27,15 +28,13 @@ inline bool ambiguousGenerator(const pq::tuning::MosParams& p, double g) {
   return false;
 }
 
-// The MOS `p` (its mode defined at p.generator) at generator g, as the explorer has it after moving the generator
-// there: the mode carried by transferModeRotation (T2.6-fix2), buildMOSScale with the region hint (boundaries
-// nudged). nullopt at an ambiguous generator (above).
+// The MOS `p` (its mode defined at p.generator) at generator g, as the document has it after the generator edit there
+// (tuning::setMosGenerator): the mode carried by transferModeRotation (T2.6-fix2), the region hint moved into the
+// sister region past the equalized end (bug-mos-sister), buildMOSScale with that hint (boundaries nudged). nullopt at
+// an ambiguous generator (above).
 inline std::optional<pq::tuning::Mos> mosAt(pq::tuning::MosParams p, double g) {
+  pq::tuning::setMosGenerator(p, g);
   if (ambiguousGenerator(p, g)) return std::nullopt;
-  const pq::tuning::RegionHint* hint = p.region ? &*p.region : nullptr;
-  if (p.n > 1 && p.genSequence.empty())
-    p.rotation = pq::tuning::transferModeRotation(p.generator, p.n, p.rotation, g, p.n, p.period, hint);
-  p.generator = g;
   auto m = pq::tuning::Mos::make(std::move(p));
   if (!m.ok()) return std::nullopt;
   return std::move(m.value());

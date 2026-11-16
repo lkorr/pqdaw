@@ -57,6 +57,44 @@ RegionEnd equalizedEnd(const MosRegion& region, double period);
 int32_t findAdjacentRegion(std::span<const MosRegion> regions, const MosRegion& sel, double cents, int32_t minSize,
                            int32_t maxSize);
 
+// ---- Sister MOSes (bug-mos-sister) -------------------------------------------------------------------------------
+//
+// xL ys and yL xs with the same n notes per period meet at an equalized generator e = k·P/n (L = s: step k of the
+// n-EDO). Their regions [c₁, e] and [e, c₂] lie on one generator line: c₁ = p₁/q₁ and c₂ = p₂/q₂ are Farey neighbours
+// of order n − 1 with q₁ + q₂ = n (each side collapses where its s reaches 0: q L steps at p/q), and no p/q with q < n
+// lies between them. So the chain's sorted order, every degree's linear form (k·g − m·P, MosLinearTable: e is not a
+// boundary) and the mode's root (transferModeRotation keeps its chain position: the rotation index is unchanged) are
+// the same on both sides: a generator moving across e changes the scale continuously, and the step classes trade
+// names (the old L steps shrink into the new s, the old s grow into the new L; the mode's pattern is the same with L
+// and s swapped, so the brightest mode of one is the darkest of the other). The span c₁ … e … c₂ is what the MOS
+// circle's slider and a Generator automation lane cover (collapsed – equalized – collapsed).
+struct MosSisterSpan {
+  int32_t n = 0;                                            // notes per period
+  std::array<int32_t, 2> lowFrac{}, equalFrac{}, highFrac{};  // of the period, in lowest terms (turns excluded)
+  double lowCents = 0.0, equalCents = 0.0, highCents = 0.0;  // regionEndCents + turns·P
+  RegionHint lowHint() const noexcept { return {n, lowCents, equalCents}; }
+  RegionHint highHint() const noexcept { return {n, equalCents, highCents}; }
+  RegionHint hint() const noexcept { return {n, lowCents, highCents}; }  // both regions (the tuning node's hint)
+};
+
+// p/q of the period in cents exactly as buildMosRegions computes a region end: (p/q)·P up to the half period, past it
+// P − ((q − p)/q)·P (a mirror region's ends), so a span's halves equal the regions' hints bit for bit. RT-safe.
+double regionEndCents(int32_t p, int32_t q, double period) noexcept;
+
+// The span holding generator g (cents, any finite value: reduced into [0, P) and shifted back by whole periods) for n
+// notes per period. On a span end (a collapsed generator p/q, q < n, where two spans may meet): the side of `hint`
+// when it is an n-region holding g (±1e-6 ¢), else the side that is an n-note MOS, the upper when both are
+// (buildMOSScale's half-open rule). nullopt: n < 2, a bad period / generator, or no n-note MOS at g (three step sizes).
+std::optional<MosSisterSpan> mosSisterSpan(double genCents, int32_t n, double period, const RegionHint* hint = nullptr);
+// The span whose half `region` is (an n-region's hint as buildMosRegions makes it, within 1e-6 ¢); nullopt otherwise.
+std::optional<MosSisterSpan> mosSisterSpan(const RegionHint& region, double period);
+
+// The generator edit (SetTuningParam(MosGenerator), the MOS circle's slider, the clip box's Generator): the mode carried
+// to `genCents` (transferModeRotation; a generator sequence keeps its rotation), then the region hint moved to the sister
+// region when the generator lies in it (the hint decides the far collapsed end's degenerate side: the region the
+// generator moved into). Outside the hint's span the hint is kept.
+void setMosGenerator(MosParams& m, double genCents);
+
 // ---- Linear form per region (T2.6) ------------------------------------------------------------------------------
 //
 // For a fixed chain length n, the sorted order of the chain pitches i·g mod P changes only where i·g − j·g or i·g

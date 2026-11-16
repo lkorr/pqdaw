@@ -9,6 +9,7 @@
 #include "pq/document/pitch_resolve.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/tuning/mos_regions.h"
 
 namespace pq::views {
 
@@ -164,18 +165,21 @@ ParamDisplay paramDisplay(const doc::Project& p, const doc::ParamRef& r, const d
     case doc::ParamKind::TuningReference: return {S::Log, 20.0, 20000.0};
     case doc::ParamKind::TuningEquave: return {S::Linear, 600.0, 2400.0};
     case doc::ParamKind::MosGenerator: {
-      // The MOS's region around its generator (where the step pattern holds, between the Farey neighbours of order n
-      // of g / period: 5L 2s spans 4\7 … 3\5), widened by a quarter on each side so a sweep into the neighbouring
-      // regions stays visible. One period when the definition is unusable.
+      // bug-mos-sister: the MOS and its sister around the generator, collapsed – equalized – collapsed (tuning::
+      // mosSisterSpan: 5L 2s and 2L 5s span 1\2 … 4\7 … 3\5), as the MOS circle's slider: a lane sweeps through both
+      // and the tuning plays the sister past the equalized middle. The Farey neighbours of order n − 1 when g has no
+      // n-note MOS; one period when the definition is unusable.
       const doc::TuningSlot* s = doc::findTuning(p, doc::TuningId{r.owner});
       const tuning::MosParams* m = s ? s->def.mos() : nullptr;
       if (!m || !(m->period > 0.0) || m->n < 2 || !std::isfinite(m->generator)) return {S::Linear, 0.0, 1200.0};
+      if (const auto sp = tuning::mosSisterSpan(m->generator, m->n, m->period, m->region ? &*m->region : nullptr))
+        return {S::Linear, sp->lowCents, sp->highCents};
       const double turns = std::floor(m->generator / m->period);
       const double x = m->generator / m->period - turns;  // in [0, 1)
       int64_t a = 0, b = 1, c = 1, d = 1;                 // a/b ≤ x ≤ c/d, Farey neighbours (Stern–Brocot descent)
       for (int i = 0; i < 4096; ++i) {
         const int64_t mn = a + c, md = b + d;
-        if (md > m->n) break;
+        if (md >= m->n) break;
         const double mid = static_cast<double>(mn) / static_cast<double>(md);
         if (x < mid) {
           c = mn;
@@ -187,10 +191,8 @@ ParamDisplay paramDisplay(const doc::Project& p, const doc::ParamRef& r, const d
           break;
         }
       }
-      const double lo = (turns + static_cast<double>(a) / static_cast<double>(b)) * m->period;
-      const double hi = (turns + static_cast<double>(c) / static_cast<double>(d)) * m->period;
-      const double pad = 0.25 * (hi - lo);
-      return {S::Linear, lo - pad, hi + pad};
+      return {S::Linear, (turns + static_cast<double>(a) / static_cast<double>(b)) * m->period,
+              (turns + static_cast<double>(c) / static_cast<double>(d)) * m->period};
     }
     case doc::ParamKind::MosPeriod: return {S::Linear, 600.0, 2400.0};
     case doc::ParamKind::MosStretch: return {S::Linear, -100.0, 100.0};

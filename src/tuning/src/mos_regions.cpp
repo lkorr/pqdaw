@@ -102,6 +102,110 @@ int32_t findAdjacentRegion(std::span<const MosRegion> regions, const MosRegion& 
   return candidates[0];
 }
 
+// ---- Sister MOSes ------------------------------------------------------------------------------------------------
+
+double regionEndCents(int32_t p, int32_t q, double period) noexcept {
+  // buildMosRegions: a direct region (in [0, 1/2]) has ends (p/q)·P, its mirror P − (that).
+  if (2 * static_cast<int64_t>(p) <= q) return (static_cast<double>(p) / q) * period;
+  return period - (static_cast<double>(q - p) / q) * period;
+}
+
+std::optional<MosSisterSpan> mosSisterSpan(double genCents, int32_t n, double period, const RegionHint* hint) {
+  if (n < 2 || !(period > 0.0) || !std::isfinite(period) || !std::isfinite(genCents)) return std::nullopt;
+  constexpr double kTol = 1e-6;  // cents: buildMOSScale's degenerate window and the hint's slack
+  const double turns = std::floor(genCents / period);
+  const double x = genCents / period - turns;
+  auto cents = [&](int64_t p, int64_t q) {
+    return turns * period + regionEndCents(static_cast<int32_t>(p), static_cast<int32_t>(q), period);
+  };
+  // Stern–Brocot descent to the Farey neighbours of order n − 1 around x: a/b ≤ x ≤ c/d.
+  int64_t a = 0, b = 1, c = 1, d = 1;
+  for (int i = 0; i < 4096; ++i) {
+    const int64_t mp = a + c, mq = b + d;
+    if (mq >= n) break;
+    if (std::fabs(genCents - cents(mp, mq)) <= kTol) {  // a collapsed generator p/q (q < n): two spans may meet here
+      // Below it the span is [a + k·m, m] (denominator sum b + (k + 1)·q), above it [m, c + k·m]: an n-note MOS where
+      // that sum can be exactly n.
+      const bool lowMos = (n - b) % mq == 0 && n - b >= mq, highMos = (n - d) % mq == 0 && n - d >= mq;
+      bool up = highMos;
+      if (hint != nullptr && hint->perPeriodSize == n && genCents >= hint->lowCents - kTol &&
+          genCents <= hint->highCents + kTol)
+        up = (hint->lowCents + hint->highCents) / 2.0 >= genCents ? highMos || !lowMos : !lowMos;
+      if (!lowMos && !highMos) return std::nullopt;
+      if (up) {
+        const int64_t k = (n - d) / mq - 1;
+        a = mp;
+        b = mq;
+        c += k * mp;
+        d += k * mq;
+      } else {
+        const int64_t k = (n - b) / mq - 1;
+        a += k * mp;
+        b += k * mq;
+        c = mp;
+        d = mq;
+      }
+      break;
+    }
+    if (x < static_cast<double>(mp) / static_cast<double>(mq)) {
+      c = mp;
+      d = mq;
+    } else {
+      a = mp;
+      b = mq;
+    }
+  }
+  if (b + d != n) return std::nullopt;  // three step sizes: no n-note MOS at this generator
+  MosSisterSpan s;
+  s.n = n;
+  s.lowFrac = {static_cast<int32_t>(a), static_cast<int32_t>(b)};
+  s.highFrac = {static_cast<int32_t>(c), static_cast<int32_t>(d)};
+  s.equalFrac = {static_cast<int32_t>(a + c), static_cast<int32_t>(b + d)};
+  s.lowCents = cents(a, b);
+  s.highCents = cents(c, d);
+  s.equalCents = cents(a + c, b + d);
+  return s;
+}
+
+std::optional<MosSisterSpan> mosSisterSpan(const RegionHint& region, double period) {
+  constexpr double kTol = 1e-6;
+  if (!(region.highCents > region.lowCents)) return std::nullopt;
+  const std::optional<MosSisterSpan> s =
+      mosSisterSpan((region.lowCents + region.highCents) / 2.0, region.perPeriodSize, period, nullptr);
+  if (!s) return std::nullopt;
+  const bool low = std::fabs(region.lowCents - s->lowCents) <= kTol && std::fabs(region.highCents - s->equalCents) <= kTol;
+  const bool high = std::fabs(region.lowCents - s->equalCents) <= kTol && std::fabs(region.highCents - s->highCents) <= kTol;
+  if (!low && !high) return std::nullopt;
+  return s;
+}
+
+void setMosGenerator(MosParams& m, double genCents) {
+  constexpr double kTol = 1e-6;
+  // The hint after the edit: the sister half when the generator moved into it.
+  std::optional<RegionHint> next = m.region;
+  std::optional<double> via;  // the equalized generator between the two halves (never degenerate)
+  if (m.region && m.region->perPeriodSize == m.n) {
+    const RegionHint& h = *m.region;
+    if (!(genCents >= h.lowCents - kTol && genCents <= h.highCents + kTol))
+      if (const std::optional<MosSisterSpan> s = mosSisterSpan(h, m.period)) {
+        if (genCents >= s->lowCents - kTol && genCents <= s->equalCents) next = s->lowHint();
+        else if (genCents >= s->equalCents && genCents <= s->highCents + kTol) next = s->highHint();
+        if (!(next->lowCents == h.lowCents && next->highCents == h.highCents)) via = s->equalCents;
+      }
+  }
+  if (m.n > 1 && m.genSequence.empty()) {
+    const RegionHint* from = m.region ? &*m.region : nullptr;
+    if (via) {  // each generator's chain read with its own hint (the far collapsed end's side is the new hint's)
+      m.rotation = transferModeRotation(m.generator, m.n, m.rotation, *via, m.n, m.period, from);
+      m.rotation = transferModeRotation(*via, m.n, m.rotation, genCents, m.n, m.period, &*next);
+    } else {
+      m.rotation = transferModeRotation(m.generator, m.n, m.rotation, genCents, m.n, m.period, from);
+    }
+  }
+  m.generator = genCents;
+  m.region = next;
+}
+
 // ---- Linear form -------------------------------------------------------------------------------------------------
 
 MosLinearTable::MosLinearTable(int32_t n) : n_(n) {

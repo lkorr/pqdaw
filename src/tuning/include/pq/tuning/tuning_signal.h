@@ -63,7 +63,7 @@ struct LinearTuningForm {
   int32_t n = 12;                 // the shape's n
   int32_t periodsPerEquave = 1;   // EDO: 1
   int32_t rootChain = 0;          // chain position of the mode's root at the definition's generator (EDO: 0)
-  std::optional<RegionHint> hint; // the definition's region hint (MOS)
+  std::optional<RegionHint> hint; // the definition's region hint (MOS), widened to its sister span (mosSisterSpan)
   // The definition's continuous parameters (the tuning node's unmodulated inputs, in double precision).
   double generator = 100.0;       // cents (EDO: equave / n)
   double period = 1200.0;         // cents (EDO: the equave)

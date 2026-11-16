@@ -5,7 +5,8 @@
 // leftward, its Wheel button growing it further left to the full wheel with the circle where it was (real dispatch;
 // saved; the chart's click as one undo step), the circle's hardness drag as one undo step on the track's tuning, Z on
 // its out cable inserting on the lane's link, the track's own notes lighting it (not another track's on the same
-// tuning). Goldens: project-patch-tuning, project-patch-tuning-wheel.
+// tuning); bug-mos-sister: the slider dragged across equalized makes the track's tuning the sister MOS live, one undo
+// step, Esc restores it. Goldens: project-patch-tuning, project-patch-tuning-wheel.
 
 #include <doctest/doctest.h>
 
@@ -492,6 +493,96 @@ TEST_CASE("tuning block: the circle's hardness drag edits the track's tuning liv
   const Ui::Link l2 = u.notesLink("Keys");
   REQUIRE(l2.out != kNone);
   CHECK(u.pp().nodes[u.pp().edges[l2.out].to].device == path.blocks[0]->id);
+}
+
+TEST_CASE("tuning block: the circle's slider crosses equalized into the sister MOS live (bug-mos-sister), one undo step; Esc cancels") {
+  Ui u;
+  const doc::TrackId keys = u.track("Keys");
+  const TuningTarget target = TuningTarget::forTrack(keys);
+  // Keys plays 5L 2s at 696 cents in mode 1 with the chart's region hint (685.7 ... 720).
+  {
+    const doc::TuningDef* cur = targetTuning(*u.ctx.doc(), target);
+    REQUIRE(cur != nullptr);
+    tuning::MosParams m;
+    m.n = 7;
+    m.generator = 696.0;
+    m.rotation = 1;
+    m.region = tuning::RegionHint{7, tuning::regionEndCents(4, 7, 1200.0), 720.0};
+    doc::TuningDef def;
+    def.system = m;
+    def.referenceHz = cur->referenceHz;
+    REQUIRE(u.ctx.store().dispatch(doc::SetTuningDef{targetTuningId(*u.ctx.doc(), target), def}).ok());
+  }
+  u.view().setTuningOpen(keys, true);
+  u.frame("Keys");
+  u.d.step();
+  Face* f = u.tuningFace("Keys");
+  REQUIRE(f != nullptr);
+  MosCircle* c = tuningFaceCircle(*f);
+  REQUIRE(c != nullptr);
+  REQUIRE(c->selection().has_value());
+  CHECK(c->selection()->perPeriodKey == tuning::MosKey{5, 2});
+  const Node& t = u.pp().nodes[u.band("Keys").tuning];
+  const Vec2 o = u.dev(t.x, t.y);
+  auto onCanvas = [&](float px, float py) { return Vec2{std::round(o.x) + px, std::round(o.y) + py}; };
+  const MosCircle::Geometry& g = c->geometry();
+  const float sy = static_cast<float>(g.slider.y) + static_cast<float>(g.slider.h) * 0.5f;
+  const double e = tuning::regionEndCents(4, 7, 1200.0);
+  auto mosOf = [&] {
+    const doc::TuningDef* d = targetTuning(*u.ctx.doc(), target);
+    REQUIRE(d != nullptr);
+    REQUIRE(d->mos() != nullptr);
+    return *d->mos();
+  };
+  // From L/s = 2 of 5L 2s (right of the middle) to a point left of it (2L 5s), through the middle.
+  const Vec2 from = onCanvas(c->sliderXOfHardness(2.0), sy), mid = onCanvas(c->sliderXOfPosition(0.5), sy),
+             to = onCanvas(c->sliderXOfPosition(0.18), sy);
+  const size_t h0 = u.history();
+  const doc::Snapshot start = u.ctx.doc();
+  u.d.down(from);
+  u.d.move({(from.x + mid.x) * 0.5f, from.y});
+  CHECK(mosOf().generator > e);  // live, still 5L 2s
+  u.d.move({mid.x - 2.0f, from.y});
+  u.d.move(to);
+  {  // Live: the track's tuning is already the sister (its generator below the equalized one, its hint the 2L 5s region)
+    const tuning::MosParams live = mosOf();
+    CHECK(live.n == 7);
+    CHECK(live.generator < e);
+    CHECK(live.generator > 600.0);
+    REQUIRE(live.region.has_value());
+    CHECK(live.region->lowCents == 600.0);
+    CHECK(live.region->highCents == doctest::Approx(e).epsilon(1e-12));
+    CHECK(live.rotation == 1);  // the same chain position: the same mode index (L and s swapped)
+  }
+  u.d.up(to);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(mosOf().generator < e);
+  REQUIRE(c->selection().has_value());
+  CHECK(c->selection()->perPeriodKey == tuning::MosKey{2, 5});
+  CHECK(c->sisterKey() == tuning::MosKey{5, 2});
+  REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc() == start);
+  u.d.step();
+  CHECK(c->selection()->perPeriodKey == tuning::MosKey{5, 2});
+
+  // Esc during a drag across: the document is back where the drag began, no undo step.
+  const size_t h1 = u.history();
+  const doc::Snapshot before = u.ctx.doc();
+  const Vec2 from2 = onCanvas(c->sliderXOfHardness(2.0), sy), to2 = onCanvas(c->sliderXOfPosition(0.18), sy);
+  u.d.down(from2);
+  u.d.move({(from2.x + to2.x) * 0.5f, from2.y});
+  u.d.move(to2);
+  CHECK(mosOf().generator < e);
+  u.d.press("Escape");
+  u.d.up(to2);
+  u.d.step();
+  CHECK(u.history() == h1);
+  CHECK(mosOf().generator == 696.0);
+  CHECK(mosOf().region->lowCents == tuning::regionEndCents(4, 7, 1200.0));
+  CHECK(*targetTuning(*u.ctx.doc(), target) == *targetTuning(*before, target));
+  REQUIRE(c->selection().has_value());
+  CHECK(c->selection()->perPeriodKey == tuning::MosKey{5, 2});
 }
 
 TEST_CASE("tuning block: the track's own notes light its degrees, not another track's on the same tuning") {

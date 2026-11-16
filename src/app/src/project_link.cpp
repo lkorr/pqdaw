@@ -28,6 +28,7 @@
 #include "pq/meta/registry.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/engine/tuning_signal.h"
+#include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
 #include "pq/ui/theme.h"
 #include "project_link_ji.h"
@@ -126,9 +127,11 @@ std::optional<ProjectLink::TableKey> ProjectLink::tableKey(const doc::TuningDef&
   const tuning::RegionHint* hint = m.region ? &*m.region : nullptr;
   if (m.n > 1 && m.rotation >= 0 && m.rotation < m.n)
     k.rootChain = tuning::generatorChain(m.generator, m.n, m.period, hint)[static_cast<size_t>(m.rotation)];
-  if (hint) {
+  if (hint) {  // the table's hint: the region and its sister (tuning::linearTuningForm), the same on both sides of it
+    tuning::RegionHint h = *hint;
+    if (const std::optional<tuning::MosSisterSpan> s = tuning::mosSisterSpan(h, m.period)) h = s->hint();
     k.hasHint = true;
-    k.hint = dsp::TuningHint{hint->perPeriodSize, hint->lowCents, hint->highCents};
+    k.hint = dsp::TuningHint{h.perPeriodSize, h.lowCents, h.highCents};
   }
   return k;
 }

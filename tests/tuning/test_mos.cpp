@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <random>
 #include <vector>
@@ -331,4 +332,127 @@ TEST_CASE("mos tuning: invalid parameters") {
   p.octaveStretch = 0.0;
   p.n = 0;
   CHECK_FALSE(Mos::make(p).ok());
+}
+
+// bug-mos-sister: xL ys and yL xs meet at the equalized generator on one generator line.
+namespace {
+MosKey stepCounts(double g, int32_t n, double period, const RegionHint* hint) {  // (#L, #s) of the n-chain at g
+  const MosScale sc = buildMosScale(g, n, period, hint);
+  const double hi = *std::max_element(sc.steps.begin(), sc.steps.end());
+  MosKey k;
+  for (double st : sc.steps) (std::fabs(st - hi) < 1e-6 ? k.nL : k.nS) += 1;
+  return k;
+}
+}  // namespace
+
+TEST_CASE("mos sister span: the two regions of n notes meeting at an equalized generator (bug-mos-sister)") {
+  // 5L 2s (diatonic, 685.7 … 720) and 2L 5s (antidiatonic, 600 … 685.7): the explorer's sister scales.
+  const std::optional<MosSisterSpan> d = mosSisterSpan(696.0, 7, 1200.0);
+  REQUIRE(d.has_value());
+  CHECK(d->lowFrac == std::array<int32_t, 2>{1, 2});
+  CHECK(d->equalFrac == std::array<int32_t, 2>{4, 7});
+  CHECK(d->highFrac == std::array<int32_t, 2>{3, 5});
+  CHECK(d->lowCents == 600.0);
+  CHECK(d->highCents == 720.0);
+  CHECK(d->equalCents == doctest::Approx(1200.0 * 4.0 / 7.0));
+  CHECK(stepCounts(650.0, 7, 1200.0, nullptr) == MosKey{2, 5});
+  CHECK(stepCounts(700.0, 7, 1200.0, nullptr) == MosKey{5, 2});
+  // A collapsed end: 720 has one 7-note span (above 3/5 the 7-chain has three step sizes); 600 has two (2L 5s on both
+  // sides): the upper without a hint, the hint's side with one.
+  CHECK(mosSisterSpan(720.0, 7, 1200.0)->lowCents == 600.0);
+  CHECK(mosSisterSpan(600.0, 7, 1200.0)->highCents == 720.0);
+  const RegionHint below{7, 1200.0 * 3.0 / 7.0, 600.0};
+  const std::optional<MosSisterSpan> m = mosSisterSpan(600.0, 7, 1200.0, &below);
+  REQUIRE(m.has_value());
+  CHECK(m->lowCents == 480.0);
+  CHECK(m->highCents == 600.0);
+  CHECK_FALSE(mosSisterSpan(696.0, 6, 1200.0).has_value());  // 6 notes of a fifth: three step sizes
+  CHECK_FALSE(mosSisterSpan(696.0, 1, 1200.0).has_value());
+  // Whole periods away: the same span shifted.
+  CHECK(mosSisterSpan(696.0 + 2400.0, 7, 1200.0)->lowCents == 3000.0);
+
+  // Every region of buildMosRegions (direct and mirror, one and two periods per equave) is one half of a span whose
+  // halves are its regions bit for bit: the region and its sister with the counts swapped, the sister's collapsed end
+  // across the region's equalized one.
+  for (const double period : {1200.0, 600.0, 1901.955}) {
+    const MosRegionSet rs = buildMosRegions(16, 16, period, 1);
+    int checked = 0;
+    for (const MosRegion& r : rs.regions) {
+      const std::optional<MosSisterSpan> s = mosSisterSpan(r.hint(), period);
+      REQUIRE_MESSAGE(s.has_value(), r.perPeriodKey.nL << "L" << r.perPeriodKey.nS << "s [" << r.lowCents << ", " << r.highCents << "]");
+      const bool lowHalf = s->lowCents == r.lowCents && s->equalCents == r.highCents;
+      const bool highHalf = s->equalCents == r.lowCents && s->highCents == r.highCents;
+      CHECK((lowHalf || highHalf));
+      CHECK(s->equalFrac[1] == r.perPeriodSize);
+      CHECK(s->lowFrac[1] + s->highFrac[1] == r.perPeriodSize);
+      const RegionHint other = lowHalf ? s->highHint() : s->lowHint();
+      int found = 0;
+      for (const MosRegion& q : rs.regions)
+        if (q.perPeriodSize == r.perPeriodSize && q.lowCents == other.lowCents && q.highCents == other.highCents) {
+          ++found;
+          CHECK(q.perPeriodKey == MosKey{r.perPeriodKey.nS, r.perPeriodKey.nL});
+        }
+      CHECK(found == 1);
+      // Equalized in the middle, collapsed at both ends.
+      {
+        const MosScale eq = buildMosScale(s->equalCents, r.perPeriodSize, period);
+        const auto [mn, mx] = std::minmax_element(eq.steps.begin(), eq.steps.end());
+        CHECK(*mx - *mn < 1e-9);
+      }
+      ++checked;
+    }
+    CHECK(checked > 60);
+  }
+}
+
+TEST_CASE("mos sister span: a generator edit moves the hint into the sister; the scale is continuous across it") {
+  for (const RegionHint start : {RegionHint{7, regionEndCents(4, 7, 1200.0), 720.0}, RegionHint{7, 480.0, regionEndCents(3, 7, 1200.0)}}) {
+    const std::optional<MosSisterSpan> span = mosSisterSpan(start, 1200.0);
+    REQUIRE(span.has_value());
+    const bool startsHigh = start.lowCents == span->equalCents;
+    for (int32_t rot = 0; rot < 7; ++rot) {
+      MosParams p;
+      p.n = 7;
+      p.rotation = rot;
+      p.region = start;
+      p.generator = startsHigh ? span->highCents : span->lowCents;  // the region's collapsed end
+      // Sweep to the sister's collapsed end in small steps: every degree moves by at most its chain multiple × Δg
+      // (|k| ≤ 6), the rotation never changes, the hint is the half holding the generator, past the middle the step
+      // counts are the sister's.
+      const int kSteps = 2000;
+      std::vector<double> prev = buildFullScale(p).pitches;
+      double maxJump = 0.0;
+      for (int i = 1; i <= kSteps; ++i) {
+        const double t = static_cast<double>(i) / kSteps;
+        const double g = startsHigh ? span->highCents + (span->lowCents - span->highCents) * t
+                                    : span->lowCents + (span->highCents - span->lowCents) * t;
+        setMosGenerator(p, i == kSteps ? (startsHigh ? span->lowCents : span->highCents) : g);
+        CHECK(p.rotation == rot);
+        REQUIRE(p.region.has_value());
+        const bool inLow = p.generator < span->equalCents;
+        if (p.generator != span->equalCents) {
+          CHECK(p.region->lowCents == (inLow ? span->lowCents : span->equalCents));
+          CHECK(p.region->highCents == (inLow ? span->equalCents : span->highCents));
+        }
+        const std::vector<double> now = buildFullScale(p).pitches;
+        REQUIRE(now.size() == prev.size());
+        for (size_t j = 0; j < now.size(); ++j) maxJump = std::max(maxJump, std::fabs(now[j] - prev[j]));
+        prev = now;
+      }
+      const double dg = (span->highCents - span->lowCents) / kSteps;
+      CHECK(maxJump <= 6.0 * dg + 1e-6);
+      // Past the middle it is the sister: the counts swapped.
+      const MosKey a = stepCounts(startsHigh ? span->highCents - 1.0 : span->lowCents + 1.0, 7, 1200.0, nullptr);
+      const MosKey b = stepCounts(startsHigh ? span->lowCents + 1.0 : span->highCents - 1.0, 7, 1200.0, nullptr);
+      CHECK(b == MosKey{a.nS, a.nL});
+    }
+  }
+  // Outside the span the hint stays (it only decides degenerate generators of its own span).
+  MosParams p;
+  p.n = 7;
+  p.generator = 700.0;
+  p.region = RegionHint{7, 1200.0 * 4.0 / 7.0, 720.0};
+  setMosGenerator(p, 750.0);
+  CHECK(p.region->lowCents == 1200.0 * 4.0 / 7.0);
+  CHECK(p.generator == 750.0);
 }

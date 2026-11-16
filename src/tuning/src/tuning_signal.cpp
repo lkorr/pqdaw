@@ -54,7 +54,12 @@ Result<LinearTuningForm> linearTuningForm(const Tuning& tuning) {
   f.generator = p.generator;
   f.period = p.period;
   f.stretch = p.octaveStretch;
+  // bug-mos-sister: the hint widened to the region and its sister (tuning::mosSisterSpan): automation that sweeps the
+  // generator across the equalized end takes the far collapsed end from inside the span, as a generator edit that moved
+  // the hint into the sister does (setMosGenerator); inside the region itself the side is the region hint's.
   f.hint = p.region;
+  if (p.region)
+    if (const std::optional<MosSisterSpan> s = mosSisterSpan(*p.region, p.period)) f.hint = s->hint();
   // The explorer's oldChain[rotation] (transferModeRotation): the root's position in the generator chain at the
   // definition's (nudged) generator.
   if (p.n > 1) {

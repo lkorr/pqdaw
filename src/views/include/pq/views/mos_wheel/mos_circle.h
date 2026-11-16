@@ -6,8 +6,9 @@
 //
 //            5L 2s  2.00 (2:1)  Mode 4 · 5|1  Ionian            title (drops UDP / mode name / tags to fit)
 //      [◀ gen ▶]           LLsLLLs           [◀ step ▶]         mode rotation by generator / by step
-//      ( ════════════●──────────────────────── )                hardness slider (equalized ↔ collapsed)
-//        equalized        ·    ·   ·          collapsed          ticks at L/s = 4:3, 3:2, 2, 5:2, 3, 4
+//      ( ·  · · ·  ·  ·  ┃══════●· · ·  ·  · )                sister slider: collapsed ↔ equalized ↔ collapsed
+//      collapsed        equalized         collapsed          ticks at L/s = 4:3, 3:2, 5:3, 2, 5:2, 3, 4 per half
+//             2L 5s                  5L 2s                    the MOS of each half (the current one bright)
 //      ▲ 4L 1s       ╭──── 0 ────╮         7L 5s ▼               parent / child arrows (findParentMos / childMoses)
 //                  ╱  L    │    L ╲                              step slices (L / s / M…), degree spokes and dots
 //                 │ s ─── ● ─── L │  degree cents outside        with cents, the tonic in red, JI markers inside
@@ -19,10 +20,17 @@
 // a MODMOS dot is dragged, Commit for a release / button / arrow, Cancel when Esc (or a right click) ends a drag.
 // The circle has no document dependency (the popover, pq/views/mos_wheel/mos_wheel.h, turns values into commands).
 //
-//   - Hardness slider: the thumb sits at u = 1 − s/L (0 at the equalized end, 1 at the collapsed end; L/s = 2 is
-//     the middle), oriented like the explorer (its equalized end on the region's equalized side). Dragging sets the
-//     generator for that hardness (generatorForHardnessIn: generatorForHardness's semantics, solved exactly). It snaps
-//     to the tick ratios within kHardnessSnapPx; Alt bypasses.
+//   - Sister slider (bug-mos-sister; was the explorer's one-region hardness slider): one continuous slider over the
+//     MOS and its sister — xL ys and yL xs, the same n notes on the two sides of the equalized generator, one
+//     generator line (tuning::MosSisterSpan) — left to right in generator order: the low region's collapsed end (0),
+//     the equalized EDO (0.5), the high region's collapsed end (1). In each half the thumb sits at 0.5 ± 0.5·u, u =
+//     1 − s/L of that half's MOS (L/s = 2 a quarter in), so its ticks are the explorer's hardness ratios mirrored:
+//     L:s of the low half's MOS on the left, of the high half's on the right — in terms of one MOS's step classes,
+//     L:s on its own side and s:L on the other (its L steps shrink into the sister's s). Dragging sets the generator
+//     for that half's hardness (generatorForHardnessIn: generatorForHardness's semantics, solved exactly); crossing
+//     the middle selects the sister region (its name, step pattern, colours) with no jump in the generator, the mode
+//     carried by transferModeRotation (the same chain position: the same rotation index, its pattern with L and s
+//     swapped). It snaps to the ticks and the equalized middle within kHardnessSnapPx; Alt bypasses.
 //   - Mode buttons: tuning::applyModeAction (rotation by step / by generator, MODMOS carried to the same notes).
 //   - Arrows: the parent / child region containing the generator (the explorer's navigateToParent /
 //     navigateToChild), the mode carried by tuning::transferModeRotation.
@@ -75,7 +83,8 @@ inline constexpr float kModeBtnW = 18.0f, kModeBtnH = 14.0f, kModeBtnGap = 3.0f,
 inline constexpr float kSliderY = 52.0f;         // hardness slider top
 inline constexpr float kSliderH = 14.0f;
 inline constexpr float kSliderPad = 6.0f;        // hit slop (hitSlider)
-inline constexpr float kSliderLabelY = 76.0f;    // "equalized" / "collapsed" centre
+inline constexpr float kSliderLabelY = 76.0f;    // "collapsed" / "equalized" / "collapsed" centre
+inline constexpr float kSliderNameY = 90.0f;     // the two halves' MOS names
 inline constexpr float kCircleTop = 112.0f;      // circle top (cy − r) at the smallest layout
 inline constexpr float kBottom = 36.0f;          // below the circle (labels + the all-intervals button)
 inline constexpr float kSideMargin = 45.0f;      // each side of the circle (degree labels)
@@ -128,6 +137,10 @@ public:
   bool navigateToChild();
   // Generator for L/s = ratio in the selected region (generatorForHardnessIn). Emits `g`.
   bool setHardness(double ratio, MosGesture g = MosGesture::Commit);
+  // The sister slider (see the file comment): position 0 … 0.5 … 1 = the low region's collapsed end … equalized … the
+  // high region's collapsed end. Setting a position in the other half selects the sister region. Emits `g`.
+  bool setSliderPosition(double pos, MosGesture g = MosGesture::Commit);
+  double sliderPosition() const;  // the selection's (0.5 without one)
   void resetModmos();  // emits Commit if there were alterations
   void setShowAllIntervals(bool on);
   bool showAllIntervals() const noexcept { return showAll_; }
@@ -136,6 +149,8 @@ public:
   std::optional<tuning::MosKey> parentKey() const;  // findParentMos of the selected (whole-scale) key
   std::optional<tuning::MosKey> childKey() const;   // the child the arrow names (the one containing the generator)
   double hardness() const;                          // exactHardness of the selection (+∞ collapsed)
+  // The MOS on the slider's other half (whole-scale key: yL xs for xL ys); nullopt without a selection.
+  std::optional<tuning::MosKey> sisterKey() const;
   bool dragging() const noexcept { return drag_ != Drag::None; }
 
   // --- geometry (device px, from the last layout) ---
@@ -148,8 +163,9 @@ public:
     ui::IRect allIntervals{}, reset{};  // reset: {} without MODMOS
   };
   const Geometry& geometry() const;
-  // Device x of the slider thumb for L/s = ratio.
+  // Device x of the slider thumb for L/s = ratio in the selected region's half, and for a slider position.
   float sliderXOfHardness(double ratio) const;
+  float sliderXOfPosition(double pos) const;
   // Position of displayed degree i's dot (i < degreeCount()).
   ui::Vec2 dotPos(int32_t degree) const;
   int32_t degreeCount() const;
@@ -190,6 +206,7 @@ public:
   bool onPointer(const ui::PointerEvent& e) override;
   bool onKey(const ui::KeyEvent& e) override;
   void onCaptureLost() override;
+  void onInteractionCancelled() override;  // a drag ends as Esc ends it (Cancel)
   void onHoverChanged(bool hovered) override;
   void onFrame(double now) override;
   ui::InfoText info() const override;
@@ -218,10 +235,12 @@ private:
   void ensureGeometry() const;
   void ensureJi() const;
   void emit(MosGesture g);
+  MosSelection inRegion(int32_t region, double gen, int32_t rotation) const;
   void selectRegion(int32_t region, double gen, int32_t rotation);
-  double hardnessAtSliderX(float x, bool snap) const;
+  int32_t sisterRegion() const noexcept;  // the region across the selected one's equalized end (−1: none)
+  double positionAtSliderX(float x, bool snap) const;
   bool applyHardness(double ratio, MosGesture g, bool emitUnchanged);
-  double sliderU(double ratio) const noexcept;  // 0 equalized … 1 collapsed → slider fraction (left → right)
+  bool applyPosition(double pos, MosGesture g, bool emitUnchanged);
   void dragModmos(ui::Vec2 p);
   void cancelDrag();
   int32_t dotAt(ui::Vec2 p) const;

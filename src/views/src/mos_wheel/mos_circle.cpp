@@ -165,9 +165,10 @@ struct MosCircle::Model {
   std::string modStepStr;
   std::optional<tu::MosKey> parent, child;
   std::string parentLabel, childLabel;
-  bool eqLow = true;
-  double u = 0.0;  // hardness position: 0 equalized … 1 collapsed
+  double pos = 0.5;  // sister slider: 0 the low region collapsed … 0.5 equalized … 1 the high region collapsed
+  bool highHalf = true;  // the selection is the slider's high half (its equalized end is its low end)
   Rgba sliderColour = 0;
+  std::string lowName, highName;  // the halves' MOS (the sister's empty when it has no region)
   std::vector<double> extra;  // all-intervals overlay (cents), when shown
 };
 
@@ -246,8 +247,8 @@ void MosCircle::setShowAllIntervals(bool on) {
   invalidate();
 }
 
-// The selection moves to `region` (index into regions_) at `gen`, with `rotation`.
-void MosCircle::selectRegion(int32_t region, double gen, int32_t rotation) {
+// The selection as it would be in `region` (index into regions_) at `gen`, with `rotation`.
+MosSelection MosCircle::inRegion(int32_t region, double gen, int32_t rotation) const {
   const tu::MosRegion& r = regions_.regions[static_cast<size_t>(region)];
   MosSelection s = *sel_;
   s.key = r.key;
@@ -263,9 +264,36 @@ void MosCircle::selectRegion(int32_t region, double gen, int32_t rotation) {
       s.edo = MosSelection::Edo{e.step, e.edo};
       break;
     }
-  sel_ = s;
+  return s;
+}
+
+// The selection moves to `region` (index into regions_) at `gen`, with `rotation`.
+void MosCircle::selectRegion(int32_t region, double gen, int32_t rotation) {
+  sel_ = inRegion(region, gen, rotation);
   region_ = region;
   invalidate();
+}
+
+// bug-mos-sister: the region of the same notes per period on the other side of the selection's equalized end (xL ys ↔
+// yL xs: tuning::MosSisterSpan's other half).
+int32_t MosCircle::sisterRegion() const noexcept {
+  if (!sel_) return -1;
+  const MosSelection& S = *sel_;
+  const bool eqLow = equalizedLow(S);
+  const double e = eqLow ? S.regionLow : S.regionHigh;
+  constexpr double kTol = 1e-6;
+  for (size_t i = 0; i < regions_.regions.size(); ++i) {
+    const tu::MosRegion& r = regions_.regions[i];
+    if (static_cast<int32_t>(i) == region_ || r.perPeriodSize != S.notesPerPeriod()) continue;
+    if (eqLow ? std::fabs(r.highCents - e) <= kTol : std::fabs(r.lowCents - e) <= kTol) return static_cast<int32_t>(i);
+  }
+  return -1;
+}
+
+std::optional<tu::MosKey> MosCircle::sisterKey() const {
+  const int32_t i = sisterRegion();
+  if (i < 0) return std::nullopt;
+  return regions_.regions[static_cast<size_t>(i)].key;
 }
 
 bool MosCircle::modeAction(tu::ModeAction a) {
@@ -359,6 +387,48 @@ bool MosCircle::applyHardness(double ratio, MosGesture g, bool emitUnchanged) {
 }
 
 double MosCircle::hardness() const { return sel_ ? exactHardness(*sel_) : 1.0; }
+
+bool MosCircle::setSliderPosition(double pos, MosGesture g) { return applyPosition(pos, g, true); }
+
+double MosCircle::sliderPosition() const {
+  ensureModel();
+  return model_->valid ? model_->pos : 0.5;
+}
+
+// The sister slider: a position in the selection's own half is a hardness there (applyHardness); one in the other half
+// moves the selection into the sister region at that half's hardness, the mode carried (transferModeRotation: the
+// root keeps its chain position, which across the equalized end keeps the rotation index).
+bool MosCircle::applyPosition(double pos, MosGesture g, bool emitUnchanged) {
+  if (!sel_ || std::isnan(pos)) return false;
+  pos = std::clamp(pos, 0.0, 1.0);
+  const double u = std::fabs(pos - 0.5) * 2.0;
+  const double ratio = u >= 1.0 ? kInf : 1.0 / (1.0 - u);
+  const bool high = equalizedLow(*sel_);  // the selection is the high half
+  if (pos == 0.5 || (pos > 0.5) == high) return applyHardness(ratio, g, emitUnchanged);
+  const int32_t sis = sisterRegion();
+  if (sis < 0) return applyHardness(1.0, g, emitUnchanged);  // no sister region (not for n >= 2): stop at equalized
+  const MosSelection there = inRegion(sis, sel_->generatorCents, 0);
+  std::optional<double> gen = generatorForHardnessIn(there, ratio);
+  if (!gen) return false;
+  for (const tu::EdoGenerator& e : edos_)  // an EDO generator within 1e-6 cents is taken exactly (as applyHardness)
+    if (std::fabs(e.cents - *gen) < 1e-6 && e.cents >= there.regionLow && e.cents <= there.regionHigh) {
+      gen = e.cents;
+      break;
+    }
+  // Through the equalized generator (never degenerate), each side's chain read with its own region's hint (a
+  // collapsed end's side is its region's), as tuning::setMosGenerator does.
+  const tu::RegionHint hint = sel_->hint(), sisHint = there.hint();
+  const int32_t n = sel_->notesPerPeriod();
+  const double e = high ? sel_->regionLow : sel_->regionHigh;
+  int32_t rot = 0;
+  if (n > 1) {
+    rot = tu::transferModeRotation(sel_->generatorCents, n, sel_->modeRotation, e, n, sel_->period, &hint);
+    rot = tu::transferModeRotation(e, n, rot, *gen, n, sel_->period, &sisHint);
+  }
+  selectRegion(sis, *gen, rot);
+  emit(g);
+  return true;
+}
 
 void MosCircle::resetModmos() {
   const bool had = tu::hasModmos(modmos_);
@@ -552,11 +622,16 @@ void MosCircle::ensureModel() const {
   if (m.parent) m.parentLabel = tu::mosDisplayLabel(*m.parent);
   if (m.child) m.childLabel = tu::mosDisplayLabel(*m.child);
 
-  // Hardness slider.
-  m.eqLow = equalizedLow(S);
+  // Sister slider: this region's half at its hardness, the other half the sister's.
+  m.highHalf = equalizedLow(S);
   const auto [xL, xS] = exactSteps(gen, m.n, m.P, hint);
-  m.u = xL > 0.0 ? std::clamp(1.0 - xS / xL, 0.0, 1.0) : 0.0;
-  m.sliderColour = lerpHex(equalized, collapsed, m.u);
+  const double u = xL > 0.0 ? std::clamp(1.0 - xS / xL, 0.0, 1.0) : 0.0;
+  m.pos = m.highHalf ? 0.5 + 0.5 * u : 0.5 - 0.5 * u;
+  m.sliderColour = lerpHex(equalized, collapsed, u);
+  const int32_t sis = sisterRegion();
+  const std::string sisLabel = sis >= 0 ? tu::mosDisplayLabel(regions_.regions[static_cast<size_t>(sis)].key) : std::string();
+  m.lowName = m.highHalf ? sisLabel : label;
+  m.highName = m.highHalf ? label : sisLabel;
 
   // All-intervals overlay: every interval between two notes of the scale that is not a degree of this mode.
   if (showAll_) {
@@ -656,28 +731,41 @@ const MosCircle::Geometry& MosCircle::geometry() const {
   return geo_;
 }
 
-double MosCircle::sliderU(double u) const noexcept {
-  const bool eqLow = model_ && model_->valid ? model_->eqLow : true;
-  return eqLow ? u : 1.0 - u;
+float MosCircle::sliderXOfPosition(double pos) const {
+  ensureGeometry();
+  return static_cast<float>(geo_.slider.x) + static_cast<float>(std::clamp(pos, 0.0, 1.0)) * static_cast<float>(geo_.slider.w);
 }
 
 float MosCircle::sliderXOfHardness(double ratio) const {
   ensureModel();
-  ensureGeometry();
   const double u = std::isinf(ratio) ? 1.0 : std::clamp(1.0 - 1.0 / ratio, 0.0, 1.0);
-  return static_cast<float>(geo_.slider.x) + static_cast<float>(sliderU(u)) * static_cast<float>(geo_.slider.w);
+  const bool high = !model_->valid || model_->highHalf;
+  return sliderXOfPosition(high ? 0.5 + 0.5 * u : 0.5 - 0.5 * u);
 }
 
-double MosCircle::hardnessAtSliderX(float x, bool snap) const {
-  ensureModel();
+// The slider position under device x; with `snap`, the equalized middle or a hardness tick of either half within
+// kHardnessSnapPx (the nearest).
+double MosCircle::positionAtSliderX(float x, bool snap) const {
   ensureGeometry();
-  const UiScale s(geoScale_);
-  if (snap)
-    for (double t : kHardnessTicks)
-      if (std::fabs(sliderXOfHardness(t) - x) <= s.exact(mcc::kHardnessSnapPx)) return t;
-  const double t = std::clamp(static_cast<double>(x - static_cast<float>(geo_.slider.x)) / std::max(1, geo_.slider.w), 0.0, 1.0);
-  const double u = sliderU(t);  // the mapping is its own inverse
-  return u >= 1.0 ? kInf : 1.0 / (1.0 - u);
+  if (snap) {
+    const float within = UiScale(geoScale_).exact(mcc::kHardnessSnapPx);
+    double best = -1.0;
+    float bestD = within;
+    auto consider = [&](double p) {
+      const float d = std::fabs(sliderXOfPosition(p) - x);
+      if (d <= bestD) {
+        bestD = d;
+        best = p;
+      }
+    };
+    consider(0.5);
+    for (double t : kHardnessTicks) {
+      consider(0.5 + 0.5 * (1.0 - 1.0 / t));
+      consider(0.5 - 0.5 * (1.0 - 1.0 / t));
+    }
+    if (best >= 0.0) return best;
+  }
+  return std::clamp(static_cast<double>(x - static_cast<float>(geo_.slider.x)) / std::max(1, geo_.slider.w), 0.0, 1.0);
 }
 
 int32_t MosCircle::degreeCount() const {
@@ -857,7 +945,7 @@ bool MosCircle::onPointer(const PointerEvent& e) {
           e.pos.y >= static_cast<float>(g.slider.y) - sp && e.pos.y <= static_cast<float>(g.slider.bottom()) + sp) {
         drag_ = Drag::Slider;
         pressSel_ = sel_;
-        setHardness(hardnessAtSliderX(e.pos.x, (e.mods & mod::kAlt) == 0), MosGesture::Live);
+        setSliderPosition(positionAtSliderX(e.pos.x, (e.mods & mod::kAlt) == 0), MosGesture::Live);
         return true;
       }
       if (g.allIntervals.contains(e.pos)) {
@@ -904,7 +992,7 @@ bool MosCircle::onPointer(const PointerEvent& e) {
     }
     case PointerType::Move: {
       if (drag_ == Drag::Slider) {
-        applyHardness(hardnessAtSliderX(e.pos.x, (e.mods & mod::kAlt) == 0), MosGesture::Live, false);
+        applyPosition(positionAtSliderX(e.pos.x, (e.mods & mod::kAlt) == 0), MosGesture::Live, false);
         return true;
       }
       if (drag_ == Drag::Modmos) {
@@ -947,6 +1035,12 @@ bool MosCircle::onKey(const KeyEvent& e) {
   return true;
 }
 
+void MosCircle::onInteractionCancelled() {
+  // The drag is abandoned (a host's Esc, e.g. the project patch canvas over the tuning block; the window lost focus):
+  // back to the press, as Esc on the circle itself.
+  if (drag_ == Drag::Slider || drag_ == Drag::Modmos) cancelDrag();
+}
+
 void MosCircle::onCaptureLost() {
   // As a release: the dragged value stays.
   const Drag d = drag_;
@@ -978,8 +1072,10 @@ InfoText MosCircle::info() const {
   }
   return {"MOS Circle",
           "The selected MOS around one equave: step slices, degree spokes with cents, JI ratios inside the rim. The slider "
-          "sets the hardness L/s (snaps to 4:3 … 4:1, Alt bypasses); gen / step rotate the mode; the arrows go to the "
-          "parent or child MOS; drag a dot to alter it (MODMOS)."};
+          "runs collapsed \xE2\x80\x93 equalized \xE2\x80\x93 collapsed through the MOS and its sister (5L 2s and 2L 5s: the "
+          "same notes, one generator line), setting the hardness L/s of each half (snaps to equalized and 4:3 \xE2\x80\xA6 4:1, "
+          "Alt bypasses); gen / step rotate the mode; the arrows go to the parent or child MOS; drag a dot to alter it "
+          "(MODMOS)."};
 }
 
 // --- motion (TU.2) -------------------------------------------------------------------------------------------------
@@ -1223,24 +1319,37 @@ void MosCircle::paint(PaintContext& ctx) {
     }
   }
 
-  // --- hardness slider ---
+  // --- sister slider (collapsed – equalized – collapsed) ---
   {
     const Rect tr = g.slider.toRect();
     const float rr = tr.height() / 2.0f;
+    const float mid = std::round((tr.x0 + tr.x1) / 2.0f);
     dl.addRoundedRectFilled(tr, rr, T.sliderTrack);
-    const bool eqLow = m.valid ? m.eqLow : true;
     const float ly = Y(mcc::kSliderLabelY);
-    centred(fSmall, "equalized", tr.x0 + tr.width() * (eqLow ? 0.15f : 0.85f), ly, T.dimText);
-    centred(fSmall, "collapsed", tr.x0 + tr.width() * (eqLow ? 0.85f : 0.15f), ly, T.dimText);
+    const float collapsedW = text ? static_cast<float>(ts->measure(fSmall, "collapsed")) : 0.0f;
+    centred(fSmall, "collapsed", tr.x0 + collapsedW / 2.0f, ly, T.dimText);
+    centred(fSmall, "equalized", mid, ly, T.dimText);
+    centred(fSmall, "collapsed", tr.x1 - collapsedW / 2.0f, ly, T.dimText);
     if (m.valid) {
-      const float thumbX = tr.x0 + static_cast<float>(sliderU(m.u)) * tr.width();
-      const float fillW = eqLow ? thumbX - tr.x0 : tr.x1 - thumbX;
-      if (fillW > px1) {
-        const Rect f = eqLow ? Rect{tr.x0, tr.y0, thumbX, tr.y1} : Rect{thumbX, tr.y0, tr.x1, tr.y1};
-        dl.addRoundedRectFilled(f, rr, setAlpha(m.sliderColour, 0.4f));
+      const float thumbX = tr.x0 + static_cast<float>(m.pos) * tr.width();
+      // Filled from the equalized middle to the thumb.
+      if (std::fabs(thumbX - mid) > px1)
+        dl.addRoundedRectFilled(Rect{std::min(thumbX, mid), tr.y0, std::max(thumbX, mid), tr.y1}, rr, setAlpha(m.sliderColour, 0.4f));
+      // Notches at the named hardnesses (4:3 … 4:1) of each half, mirrored about the equalized middle (a longer
+      // notch): the slider's snap targets.
+      for (double t : kHardnessTicks)
+        for (const double side : {-1.0, 1.0})
+          dl.addVLine(sliderXOfPosition(0.5 + side * 0.5 * (1.0 - 1.0 / t)), tr.y0 + s.pxf(4.0f), tr.y1 - s.pxf(4.0f),
+                      setAlpha(T.dimText, 0.7f), 1.0f);
+      dl.addVLine(mid, tr.y0 + s.pxf(1.0f), tr.y1 - s.pxf(1.0f), T.dimText, std::max(1.0f, std::round(px1)));
+      // The two halves' MOS under them: the selection's in the degree colour, its sister dim.
+      const float ny = Y(mcc::kSliderNameY);
+      const float halfW = tr.width() / 2.0f;
+      for (const bool high : {false, true}) {
+        const std::string& name = high ? m.highName : m.lowName;
+        if (!text || name.empty() || static_cast<float>(ts->measure(fSmall, name)) > halfW - s.exact(8.0f)) continue;
+        centred(fSmall, name, tr.x0 + halfW * (high ? 1.5f : 0.5f), ny, high == m.highHalf ? T.degreeText : T.dimText);
       }
-      // Notches at the named hardnesses (4:3 … 4:1), the slider's snap targets.
-      for (double t : kHardnessTicks) dl.addVLine(sliderXOfHardness(t), tr.y0 + s.pxf(4.0f), tr.y1 - s.pxf(4.0f), setAlpha(T.dimText, 0.7f), 1.0f);
       const Vec2 tc{thumbX, (tr.y0 + tr.y1) / 2.0f};
       dl.addCircleFilled(tc, rr + s.exact(2.0f), m.sliderColour);
       dl.addCircleStroke(tc, rr + s.exact(2.0f), T.sliderThumbEdge, s.exact(1.5f));

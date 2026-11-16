@@ -284,17 +284,17 @@ void openTuningMenu(Widget& from, ViewContext& ctx, const TuningTarget& target, 
 namespace {
 
 // For a main tuning: the generator `def` differs from `current` by, when nothing else changes but what
-// SetTuningParam(MosGenerator) changes with it (the mode, carried by transferModeRotation) and a region hint that is
-// not needed (the generator is not at an end of the hint's region, where only the hint decides the degenerate side).
+// SetTuningParam(MosGenerator) changes with it (tuning::setMosGenerator: the mode, carried by transferModeRotation, and
+// the region hint moved into the sister region past the equalized end) and a region hint that is not needed (the
+// generator is not at an end of the hint's region, where only the hint decides the degenerate side).
 std::optional<double> generatorOnly(const doc::TuningDef& current, const doc::TuningDef& def) {
   const tu::MosParams* a = current.mos();
   const tu::MosParams* b = def.mos();
   if (!a || !b || current.referenceHz != def.referenceHz || a->generator == b->generator) return std::nullopt;
   doc::TuningDef c = current;
   tu::MosParams& m = std::get<tu::MosParams>(c.system);
-  if (m.n > 1 && m.genSequence.empty())
-    m.rotation = tu::transferModeRotation(m.generator, m.n, m.rotation, b->generator, m.n, m.period, m.region ? &*m.region : nullptr);
-  m.generator = b->generator;
+  tu::setMosGenerator(m, b->generator);
+  if (c == def) return b->generator;
   if (b->region) {
     constexpr double kEdge = 1e-6;  // buildMOSScale's degenerate window is 1e-6/q ¢: at an end of the hint's region
     if (std::fabs(b->generator - b->region->lowCents) < kEdge || std::fabs(b->generator - b->region->highCents) < kEdge)

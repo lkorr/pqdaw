@@ -578,6 +578,86 @@ TEST_CASE("tuning signal: a 5L2s mode carried across 720 cents matches the explo
   CHECK(carried > 0);
 }
 
+TEST_CASE("tuning signal: a generator automation across the equalized end plays the sister MOS, continuous to both collapsed ends") {
+  // bug-mos-sister: the MOS circle's slider and a Generator lane span xL ys collapsed – equalized – collapsed yL xs. An
+  // audio-rate generator (what an automation lane writes into the node's live input) sweeping that span plays the
+  // sister past the equalized middle with no jump anywhere: the chain order is the same on both sides, and at the far
+  // collapsed end the table's hint (the region widened to its sister span) takes the side inside the span, as the
+  // document's hint after a generator edit there does (tuning::setMosGenerator; tuning_ref::mosAt). The direct 5L 2s
+  // (480 … 514.3) ends its sister 2L 5s at 600, where both sides are 2L 5s: with the region's own hint the table took the
+  // other side there (in most modes some degrees jumping 600 cents); the mirror (685.7 … 720) ends it at the same 600
+  // from above. Every mode.
+  for (const bool mirror : {false, true})
+  for (int32_t rot = 0; rot < 7; ++rot) {
+    CAPTURE(mirror);
+    CAPTURE(rot);
+    tun::MosParams p = mos(7, 1200.0, 1, rot, 0.0, mirror ? 700.0 : 500.0);
+    p.region = mirror ? tun::RegionHint{7, tun::regionEndCents(4, 7, 1200.0), 720.0}
+                      : tun::RegionHint{7, 480.0, tun::regionEndCents(3, 7, 1200.0)};
+    const std::optional<tun::MosSisterSpan> span = tun::mosSisterSpan(*p.region, 1200.0);
+    REQUIRE(span.has_value());
+    const double from = mirror ? span->highCents : span->lowCents, to = mirror ? span->lowCents : span->highCents;
+    const dsp::TuningTable tab = table(mosTuning(p));
+    // Lanes: degrees 0 … 6 and the next period's tonic (its steps are the scale's).
+    const int32_t deg[8] = {0, 1, 2, 3, 4, 5, 6, 0};
+    const int32_t eqv[8] = {0, 0, 0, 0, 0, 0, 0, 1};
+    Pattern pd(0.0f), pe(0.0f);
+    const tun::Mos defMos = tun::Mos::make(p).value();
+    constexpr uint32_t kHold = 300, kRamp = 4000, kFrames = kHold + kRamp + kHold, kBlock = 128;
+    std::vector<float> gen(kFrames * 8), fallHz(kFrames * 8), fallC(kFrames * 8);
+    for (uint32_t l = 0; l < 8; ++l) {
+      pd.v[l] = static_cast<float>(deg[l]);
+      pe.v[l] = static_cast<float>(eqv[l]);
+    }
+    for (uint32_t t = 0; t < kFrames; ++t) {
+      const double x = t < kHold ? from : t >= kHold + kRamp ? to : from + (to - from) * (t - kHold) / (kRamp - 1.0);
+      for (uint32_t l = 0; l < 8; ++l) {
+        gen[t * 8 + l] = static_cast<float>(x);
+        fallHz[t * 8 + l] = static_cast<float>(kRef * std::exp2(defMos.centsOf(deg[l], eqv[l]) / 1200.0));
+        fallC[t * 8 + l] = static_cast<float>(defMos.centsOf(deg[l], eqv[l]));
+      }
+    }
+    const Pattern pp(1200.0f), pst(0.0f), pr(static_cast<float>(kRef));
+    std::vector<float> hz(kFrames * 8), cents(kFrames * 8);
+    for (uint32_t b = 0; b < kFrames; b += kBlock) {
+      const uint32_t n = std::min(kBlock, kFrames - b);
+      const KIn in[8] = {{pd.v, true}, {pe.v, true}, {fallHz.data() + b * 8, false}, {fallC.data() + b * 8, false},
+                         {gen.data() + b * 8, false}, {pp.v, true}, {pst.v, true}, {pr.v, true}};
+      runKernel(8, &tab.view(), in, n, hz.data() + b * 8, cents.data() + b * 8);
+    }
+    uint64_t bad = 0, jumps = 0, checked = 0;
+    std::optional<tun::Mos> ref;
+    for (uint32_t t = 0; t < kFrames; ++t) {
+      const double g = static_cast<double>(gen[t * 8]);
+      if (t == 0 || gen[t * 8] != gen[(t - 1) * 8]) ref = tuning_ref::mosAt(p, g);
+      REQUIRE_MESSAGE(ref.has_value(), "no reference at " << g);
+      for (uint32_t l = 0; l < 8; ++l) {
+        bad += !tuning_ref::withinTolerance(hz[t * 8 + l], kRef * std::exp2(ref->centsOf(deg[l], eqv[l]) / 1200.0));
+        if (t > 0) jumps += std::fabs(1200.0 * std::log2(hz[t * 8 + l] / hz[(t - 1) * 8 + l])) > 0.5;
+        ++checked;
+      }
+    }
+    CHECK(bad == 0);
+    CHECK(jumps == 0);
+    // What plays: this MOS's step counts before the equalized middle, the sister's (swapped) after it.
+    auto countsAt = [&](uint32_t t) {
+      double st[7], hi = 0.0;
+      for (uint32_t l = 0; l < 7; ++l) {
+        st[l] = 1200.0 * std::log2(static_cast<double>(hz[t * 8 + l + 1]) / hz[t * 8 + l]);
+        hi = std::max(hi, st[l]);
+      }
+      tun::MosKey k;
+      for (const double x : st) (std::fabs(x - hi) < 1e-3 ? k.nL : k.nS) += 1;
+      return k;
+    };
+    CHECK(countsAt(kHold + kRamp / 4) == tun::MosKey{5, 2});
+    CHECK(countsAt(kHold + 3 * kRamp / 4) == tun::MosKey{2, 5});
+    if (rot == 0)
+      MESSAGE((mirror ? "mirror" : "direct") << " 5L 2s → 2L 5s, " << from << " → " << to << " cents: " << checked
+                                              << " voice-samples per mode");
+  }
+}
+
 TEST_CASE("tuning signal: glides and note ratios compose with a modulated node; select / node; reference lanes") {
   // T2.6-fix3 (M3 review M9, H4): a Degree lane's hz input over its static degree pitch (a Pitch-event glide, or a
   // Ratio note's ratio to its root Degree note) multiplies the node's pitch; with node ≥ 1 a lane is this node's only

@@ -14,6 +14,8 @@
 //   keyboard and auditions in the target's tuning.
 //   TU.2b: the chart's band colours are the circle's L colours (one explorer palette); hardware MIDI-in notes
 //   (TransportPort::liveMidiNotes) light the circle when their track plays in the target's tuning.
+//   bug-mos-sister: the slider spans the MOS and its sister (collapsed - equalized - collapsed), continuous and
+//   monotonic in the generator, the selection the sister past the middle, the mode index kept; real-event drag and Esc.
 //   Goldens: mos-circle-5L2s, mos-circle-modmos, mos-circle-lit, mos-wheel-popover.
 
 #include <doctest/doctest.h>
@@ -202,6 +204,114 @@ TEST_CASE("mos circle: hardness r gives the exact step ratio L/s = r within 1e-6
     t.d.press("Escape");
     t.d.up({static_cast<float>(sl.x) + sl.w * 0.7f, y});
     CHECK(t.c->selection()->generatorCents == 690.0);
+    CHECK(t.events.back().gesture == MosGesture::Cancel);
+  }
+}
+
+namespace {
+std::string swapLs(std::string p) {
+  for (char& ch : p) ch = ch == 'L' ? 's' : ch == 's' ? 'L' : ch;
+  return p;
+}
+}  // namespace
+
+TEST_CASE("mos circle: the slider spans the MOS and its sister, collapsed - equalized - collapsed (bug-mos-sister)") {
+  Circle t;
+  const double e = tu::regionEndCents(4, 7, 1200.0);  // 4\7: 7-EDO, where 5L 2s and 2L 5s meet
+  for (const int32_t rot : {0, 3, 6}) {
+    CAPTURE(rot);
+    t.set(selectionFor({5, 2}, 696.0, rot));
+    CHECK(t.c->sliderPosition() > 0.5);  // 5L 2s is the high half (600 ... 685.7 ... 720)
+    CHECK(t.c->sisterKey() == tu::MosKey{2, 5});
+    // The ends are the two collapsed scales, the middle the equalized 7-EDO.
+    REQUIRE(t.c->setSliderPosition(0.0));
+    CHECK(t.c->selection()->perPeriodKey == tu::MosKey{2, 5});
+    CHECK(t.c->selection()->generatorCents == 600.0);
+    CHECK(t.c->hardness() > 1e5);  // collapsed (s is buildMOSScale's 1e-7-cent nudge)
+    CHECK(t.c->sisterKey() == tu::MosKey{5, 2});
+    REQUIRE(t.c->setSliderPosition(1.0));
+    CHECK(t.c->selection()->perPeriodKey == tu::MosKey{5, 2});
+    CHECK(t.c->selection()->generatorCents == 720.0);
+    CHECK(t.c->hardness() > 1e5);  // collapsed (s is buildMOSScale's 1e-7-cent nudge)
+    REQUIRE(t.c->setSliderPosition(0.5));
+    CHECK(std::fabs(t.c->selection()->generatorCents - e) < 1e-9);
+    CHECK(t.c->hardness() == doctest::Approx(1.0));
+    CHECK(t.c->sliderPosition() == doctest::Approx(0.5).epsilon(1e-12));
+    // A sweep over the whole slider: the generator rises continuously and monotonically through both regions, the
+    // position reads back, the selection is the sister past the middle, the mode index never changes.
+    t.set(selectionFor({5, 2}, 696.0, rot));
+    double prev = -1.0, maxStep = 0.0;
+    for (int i = 0; i <= 400; ++i) {
+      const double pos = i / 400.0;
+      REQUIRE(t.c->setSliderPosition(pos, MosGesture::Live));
+      const MosSelection& s = *t.c->selection();
+      CHECK(s.generatorCents > prev);
+      if (prev >= 0.0) maxStep = std::max(maxStep, s.generatorCents - prev);
+      prev = s.generatorCents;
+      CHECK(std::fabs(t.c->sliderPosition() - pos) < 1e-8);
+      if (pos < 0.5) CHECK(s.perPeriodKey == tu::MosKey{2, 5});
+      if (pos > 0.5) CHECK(s.perPeriodKey == tu::MosKey{5, 2});
+      CHECK(s.modeRotation == rot);
+      CHECK(s.generatorCents >= 600.0);
+      CHECK(s.generatorCents <= 720.0);
+    }
+    CHECK(maxStep < 3.0);  // 120 cents over 400 positions, denser near the middle (the hardness mapping)
+    // Mirrored ticks: L/s = 2 a quarter in on each side; the same mode's pattern with L and s swapped.
+    REQUIRE(t.c->setSliderPosition(0.75));
+    CHECK(t.c->hardness() == doctest::Approx(2.0).epsilon(1e-9));
+    CHECK(t.c->selection()->generatorCents == 700.0);  // 7\12
+    const std::string high = t.c->stepPatternText();
+    REQUIRE(t.c->setSliderPosition(0.25));
+    CHECK(t.c->hardness() == doctest::Approx(2.0).epsilon(1e-9));
+    CHECK(std::fabs(t.c->selection()->generatorCents - 2000.0 / 3.0) < 1e-9);  // 5\9
+    CHECK(t.c->stepPatternText() == swapLs(high));
+  }
+
+  // Every region of sizes 2 ... 12 (direct, mirror): a sister with the counts swapped; position 0 and 1 the collapsed ends
+  // of the two halves, 0.5 the equalized end they share, in generator order.
+  int checked = 0;
+  for (const tu::MosRegion& r : t.c->regionSet().regions) {
+    if (r.perPeriodSize > 12) continue;
+    t.set(selectionFor(r.perPeriodKey, (r.lowCents + r.highCents) / 2.0));
+    REQUIRE(t.c->sisterKey().has_value());
+    CHECK(*t.c->sisterKey() == tu::MosKey{r.key.nS, r.key.nL});
+    const std::optional<tu::MosSisterSpan> span = tu::mosSisterSpan(r.hint(), 1200.0);
+    REQUIRE(span.has_value());
+    REQUIRE(t.c->setSliderPosition(0.0));  // (a collapsed end on an EDO generator is that generator exactly)
+    CHECK(std::fabs(t.c->selection()->generatorCents - span->lowCents) < 1e-9);
+    REQUIRE(t.c->setSliderPosition(1.0));
+    CHECK(std::fabs(t.c->selection()->generatorCents - span->highCents) < 1e-9);
+    REQUIRE(t.c->setSliderPosition(0.5));
+    CHECK(std::fabs(t.c->selection()->generatorCents - span->equalCents) < 1e-6);
+    ++checked;
+  }
+  CHECK(checked > 40);
+
+  SUBCASE("a drag across the middle (real events): Live steps into the sister, one Commit; Esc goes back") {
+    t.set(selectionFor({5, 2}, 696.0, 1));
+    const IRect sl = t.c->geometry().slider;
+    const float y = static_cast<float>(sl.y) + sl.h / 2.0f;
+    const float from = t.c->sliderXOfHardness(2.0), to = t.c->sliderXOfPosition(0.25);
+    CHECK(to < t.c->sliderXOfPosition(0.5));
+    CHECK(from > t.c->sliderXOfPosition(0.5));
+    t.d.drag({from, y}, {to, y}, 12);
+    REQUIRE(t.c->selection().has_value());
+    CHECK(t.c->selection()->perPeriodKey == tu::MosKey{2, 5});
+    CHECK(t.c->hardness() == doctest::Approx(2.0).epsilon(1e-9));  // snapped to the 2:1 tick of the left half
+    CHECK(t.c->selection()->modeRotation == 1);
+    REQUIRE(!t.events.empty());
+    CHECK(std::count_if(t.events.begin(), t.events.end(), [](const CircleEvent& ev) { return ev.gesture == MosGesture::Commit; }) == 1);
+    CHECK(t.events.back().gesture == MosGesture::Commit);
+    CHECK(t.events.back().sel->perPeriodKey == tu::MosKey{2, 5});
+    // Esc during a drag across: back to 5L 2s at 696, Cancel.
+    t.set(selectionFor({5, 2}, 696.0, 1));
+    t.d.down({from, y});
+    t.d.move({to, y});
+    CHECK(t.c->selection()->perPeriodKey == tu::MosKey{2, 5});
+    t.d.press("Escape");
+    t.d.up({to, y});
+    CHECK(t.c->selection()->perPeriodKey == tu::MosKey{5, 2});
+    CHECK(t.c->selection()->generatorCents == 696.0);
     CHECK(t.events.back().gesture == MosGesture::Cancel);
   }
 }

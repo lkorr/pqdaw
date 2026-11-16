@@ -589,7 +589,8 @@ public:
       if (!title.empty()) return;
     }
     title = "Tuning";
-    body = open_ ? "The track's tuning on the MOS circle: drag the hardness slider, step through its modes, type an EDO; Wheel "
+    body = open_ ? "The track's tuning on the MOS circle: drag its slider (collapsed \xE2\x80\x93 equalized \xE2\x80\x93 collapsed, through the MOS "
+                   "and its sister), step through its modes, type an EDO; Wheel "
                    "opens the region chart beside it. Its degrees light as the track's notes sound. Double-click the header "
                    "to close it."
                  : "The track's tuning: its notes pass through here to the instrument. Double-click to open its MOS circle.";

@@ -21,6 +21,7 @@
 #include "pq/meta/registry.h"
 #include "checks.h"
 #include "pq/document/racks.h"
+#include "pq/tuning/mos_regions.h"
 
 namespace pq::doc {
 
@@ -1869,12 +1870,9 @@ Res apply_(const Snapshot& s, const SetTuningParam& c, ChangeSet& cs) {
     case ParamKind::MosGenerator: {
       // The mode follows the generator as in the explorer (transferModeRotation: the root keeps its chain position),
       // which is also what the tuning node does when automation moves the generator (T2.6-fix2), so a live edit and
-      // a reload of it play the same mode.
-      tuning::MosParams& m = std::get<tuning::MosParams>(d.system);
-      if (m.n > 1 && m.genSequence.empty())
-        m.rotation = tuning::transferModeRotation(m.generator, m.n, m.rotation, c.value, m.n, m.period,
-                                                  m.region ? &*m.region : nullptr);
-      m.generator = c.value;
+      // a reload of it play the same mode. bug-mos-sister: past the equalized end of its region the hint becomes the
+      // sister region's (xL ys → yL xs on the same generator line), which decides that region's collapsed end.
+      tuning::setMosGenerator(std::get<tuning::MosParams>(d.system), c.value);
       break;
     }
     case ParamKind::MosPeriod: std::get<tuning::MosParams>(d.system).period = c.value; break;

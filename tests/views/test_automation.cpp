@@ -21,6 +21,7 @@
 #include "pq/core/automation_curve.h"
 #include "pq/document/automation_curve.h"
 #include "pq/document/serialize.h"
+#include "pq/tuning/mos_regions.h"
 #include "pq/ui/image.h"
 #include "pq/ui/offscreen.h"
 #include "pq/ui/overlay.h"
@@ -319,6 +320,19 @@ TEST_CASE("automation: lanes show and hide under a track; the chooser offers mix
   CHECK(find(doc::ParamKind::TuningEquave, "Tuning A") != nullptr);
   CHECK(find(doc::ParamKind::MosStretch, "5L 2s") != nullptr);
   CHECK(paramName(*f.ctx.doc(), find(doc::ParamKind::MosGenerator, "5L 2s")->param) == "5L 2s: Generator");
+  {  // bug-mos-sister: the generator lane spans the MOS and its sister (5L 2s and 2L 5s), collapsed - equalized - collapsed
+    const doc::ParamRef gr = find(doc::ParamKind::MosGenerator, "5L 2s")->param;
+    const tuning::MosParams& m = *doc::findTuning(*f.ctx.doc(), doc::TuningId{gr.owner})->def.mos();
+    const ParamDisplay d = paramDisplay(*f.ctx.doc(), gr);
+    const std::optional<tuning::MosSisterSpan> span = tuning::mosSisterSpan(m.generator, m.n, m.period, m.region ? &*m.region : nullptr);
+    REQUIRE(span.has_value());
+    CHECK(d.lo == span->lowCents);
+    CHECK(d.hi == span->highCents);
+    CHECK(span->lowFrac[1] + span->highFrac[1] == 7);
+    CHECK(d.lo < span->equalCents);
+    CHECK(span->equalCents < d.hi);
+    CHECK((d.lo == 600.0 || d.hi == 600.0));  // 2L 5s collapses at the half period (one end of either sister pair)
+  }
 
   // A lane shows another parameter through the chooser; a tuning parameter automated on Piano shows its envelope
   // under Drums too (one lane per parameter in the project).
