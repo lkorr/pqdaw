@@ -268,25 +268,70 @@ void smoothCurve(DrawList& dl, std::span<const Vec2> pts, Rgba col, float thickn
 
 void gradientPolyline(DrawList& dl, const Vec2* pts, const Rgba* cols, uint32_t n, float thickness) {
   if (n < 2 || thickness <= 0.0f) return;
+  // VZ.2 S4 (PQ Meter 3f6be9d): an antialiased stroke — a solid core thickness − 1 px wide flanked by a one-pixel
+  // fringe fading to alpha 0, the vertices shared between segments along the mitred normal (no stair-steps on steep
+  // flanks, no wedges at peaks). Thinner than the fringe the stroke is the bare fringe pair, coverage carried by
+  // alpha. The mitre is capped at twice the half-width: a spectrum is full of near-reversals where a true mitre would
+  // shoot a spur past the peak. Device px coordinates: the fringe is 1 px (ImGui's _FringeScale at scale 1).
+  constexpr float aa = 1.0f;
+  const float inner = std::max(0.0f, (thickness - aa) * 0.5f);
+  const float outer = inner + aa;
+  const float aScale = std::min(1.0f, thickness / aa);
+  constexpr float kMiterMax = 2.0f;
   const uint32_t segs = n - 1;
-  const DrawList::PrimSpan sp = dl.primReserveSpan(segs * 6, segs * 4);
+  const DrawList::PrimSpan sp = dl.primReserveSpan(segs * 18, n * 4);
   const Vec2 uv = dl.whiteUv();
-  const float hw = thickness * 0.5f;
+  auto segNormal = [&](uint32_t i, float& nx, float& ny) {
+    const float dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len > 1e-6f) {
+      nx = -dy / len;
+      ny = dx / len;
+    } else {
+      nx = 0.0f;
+      ny = 1.0f;
+    }
+  };
   Vertex* v = sp.v;
-  uint32_t* ix = sp.i;
-  uint32_t base = sp.base;
-  for (uint32_t i = 0; i < segs; ++i) {
-    const Vec2 a = pts[i], b = pts[i + 1];
-    const Vec2 nn = unitNormal(a, b);
-    const float nx = nn.x * hw, ny = nn.y * hw;
-    v[0] = {{a.x + nx, a.y + ny}, uv, cols[i]};
-    v[1] = {{b.x + nx, b.y + ny}, uv, cols[i + 1]};
-    v[2] = {{b.x - nx, b.y - ny}, uv, cols[i + 1]};
-    v[3] = {{a.x - nx, a.y - ny}, uv, cols[i]};
-    writeQuadIdx(ix, base, 0, 1, 2, 3);
+  float pnx = 0.0f, pny = 1.0f;
+  segNormal(0, pnx, pny);
+  for (uint32_t i = 0; i < n; ++i) {
+    float nnx = pnx, nny = pny;
+    if (i < segs) segNormal(i, nnx, nny);
+    // The bisector of the two segment normals, stretched to 1 / cos of the half-angle (capped).
+    float mx = 0.5f * (pnx + nnx), my = 0.5f * (pny + nny);
+    const float m2 = mx * mx + my * my;
+    if (m2 > 1e-6f) {
+      const float sc = std::min(1.0f / m2, kMiterMax / std::sqrt(m2));
+      mx *= sc;
+      my *= sc;
+    } else {  // a full reversal has no bisector: either normal will do
+      mx = pnx;
+      my = pny;
+    }
+    pnx = nnx;
+    pny = nny;
+    const Rgba c = aScale < 1.0f ? mulAlpha(cols[i], aScale) : cols[i];
+    const Rgba c0 = c & 0x00FFFFFFu;
+    const Vec2 p = pts[i];
+    v[0] = {{p.x + mx * outer, p.y + my * outer}, uv, c0};
+    v[1] = {{p.x + mx * inner, p.y + my * inner}, uv, c};
+    v[2] = {{p.x - mx * inner, p.y - my * inner}, uv, c};
+    v[3] = {{p.x - mx * outer, p.y - my * outer}, uv, c0};
     v += 4;
-    ix += 6;
-    base += 4;
+  }
+  uint32_t* ix = sp.i;
+  for (uint32_t i = 0; i < segs; ++i) {  // three quads per segment: fringe, core, fringe
+    const uint32_t a = sp.base + i * 4, b = a + 4;
+    for (uint32_t k = 0; k < 3; ++k) {
+      ix[0] = a + k;
+      ix[1] = b + k;
+      ix[2] = b + k + 1;
+      ix[3] = a + k;
+      ix[4] = b + k + 1;
+      ix[5] = a + k + 1;
+      ix += 6;
+    }
   }
 }
 
@@ -413,29 +458,23 @@ void spectrumCurve(DrawList& dl, const Vec2* poly, const Rgba* cols, const float
     gradientBand(dl, poly, t, yBottom, st.gradientFill ? 0.0f : 1.0f, n);
   }
 
-  // 2. Bloom: three stacked passes of decreasing width and rising alpha approximate a blur; each vertex's
-  //    alpha is scaled by its level cubed so only the loud parts glow.
+  // 2. Bloom (VZ.2 S5, PQ 3f6be9d): one tight halo pass, each vertex's alpha scaled by its level cubed so only the
+  //    loud parts glow (three passes out to 7x the width blurred neighbouring partials together).
   if (st.glow && st.glowAmount > 0.01f) {
-    struct Layer {
-      float mul, alpha;
-    };
-    constexpr Layer kLayers[3] = {{7.0f, 0.070f}, {4.0f, 0.110f}, {2.2f, 0.170f}};
+    for (uint32_t s = 0; s < n; ++s) {
+      const float k = levelT[s] * levelT[s] * levelT[s];
+      t[s] = mulAlpha(cols[s], 0.20f * st.glowAmount * (0.15f + 0.85f * k));
+    }
     const BlendMode prev = dl.blend();
     dl.setBlend(st.glowBlend);
-    for (const Layer& L : kLayers) {
-      for (uint32_t s = 0; s < n; ++s) {
-        const float k = levelT[s] * levelT[s] * levelT[s];
-        t[s] = mulAlpha(cols[s], L.alpha * st.glowAmount * (0.15f + 0.85f * k));
-      }
-      gradientPolyline(dl, poly, t, n, std::max(1.0f, st.lineWidth * L.mul));
-    }
+    gradientPolyline(dl, poly, t, n, std::max(1.0f, st.lineWidth * 2.2f) + 1.0f);
     dl.setBlend(prev);
   }
 
-  // 3. The curve: a soft body at the requested width, then a thin brighter core on top (what the eye tracks).
-  gradientPolyline(dl, poly, cols, n, std::max(1.0f, st.lineWidth * 1.9f));
+  // 3. The curve: one antialiased stroke at exactly the requested width, in the brightened colours (the wider body
+  //    pass under it only hid the old stroke's aliasing).
   for (uint32_t s = 0; s < n; ++s) t[s] = brighten(cols[s], 0.30f + 0.45f * levelT[s]);
-  gradientPolyline(dl, poly, t, n, std::max(0.8f, st.lineWidth * 0.85f));
+  gradientPolyline(dl, poly, t, n, std::max(0.5f, st.lineWidth));
 }
 
 }  // namespace pq::ui

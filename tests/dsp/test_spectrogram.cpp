@@ -31,8 +31,7 @@ struct Collect final : Spectrogram::Sink {
 
 // The row a frequency lands on (row 0 = fMax).
 float rowOf(const Spectrogram& g, float hz) {
-  const SpectrogramConfig& c = g.config();
-  return (1.0f - gramUnit(c.scale, hz, g.fMin(), g.fMax())) * static_cast<float>(kRows - 1);
+  return (1.0f - g.axis().unit(hz)) * static_cast<float>(kRows - 1);
 }
 
 uint32_t argmax(const std::vector<float>& c, uint32_t lo = 0, uint32_t hi = kRows) {
@@ -215,7 +214,7 @@ TEST_CASE("spectrogram: the column sequence continues across reconfiguration; a 
   CHECK(g.mapping() == m0);
   CHECK(g.hop() == 256);
   pushAll(g, x, out);
-  cfg.scale = GramScale::Mel;  // a new row mapping
+  cfg.scale = FreqScale::Mel;  // a new row mapping
   g.configure(cfg, out);
   CHECK(g.mapping() == m0 + 1);
   pushAll(g, x, out);

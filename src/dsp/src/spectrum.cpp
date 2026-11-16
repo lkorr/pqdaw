@@ -1,4 +1,4 @@
-// Spectrum analyser (pq/dsp/spectrum.h). Behaviour after PQ Meter's spectrum module (SPEC §11.1); our own code.
+// Spectrum analyser (pq/dsp/spectrum.h). Ported from PQ Meter's spectrum module and dsp/spectrum_grid.h (SPEC §11.1).
 
 #include "pq/dsp/spectrum.h"
 
@@ -16,7 +16,8 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr float kCrossLoHz = 353.55339f;   // 500 / √2
 constexpr float kCrossHiHz = 707.10678f;   // 500 · √2
-constexpr float kLinearCornerHz = 40.0f;   // hybrid axis (fMin = 0)
+constexpr float kNodeUnset = 1e30f;        // a dense-read node not read yet this hop
+constexpr float kSoundPower = 1e-10f;      // a bin above this (−100 dBFS amplitude): the hop counts for the average
 }  // namespace
 
 // One FFT size. Powers are scaled so that amplitude = √power is |X|·2/Σw.
@@ -39,6 +40,7 @@ struct SpectrumAnalyzer::Window {
     p.resize(bins + 2);
     prefix.resize(bins + 1);
     crest.resize(bins);
+    node.resize(bins);
     half = static_cast<int32_t>(std::ceil(std::max(6.0f, 1.5f * noiseBins)));
   }
 
@@ -47,13 +49,17 @@ struct SpectrumAnalyzer::Window {
     for (uint32_t i = 0; i < n; ++i) frame[i] = x[i] * w[i];
     fft.power(frame.data(), p.data());
     double acc = 0.0;
+    float mx = 0.0f;
     prefix[0] = 0.0;
     for (uint32_t k = 0; k < bins; ++k) {
       p[k] *= scale;
       acc += p[k];
+      mx = std::max(mx, p[k]);
       prefix[k + 1] = acc;
     }
+    maxPower = mx;
     std::fill(crest.begin(), crest.end(), -1.0f);
+    std::fill(node.begin(), node.end(), kNodeUnset);
   }
 
   float P(int32_t k) const noexcept { return k < 0 || k >= static_cast<int32_t>(bins) ? 0.0f : p[static_cast<size_t>(k)]; }
@@ -112,50 +118,74 @@ struct SpectrumAnalyzer::Window {
     }
   }
 
-  // The power reading of point `pt`.
+  // The crest weight of the ≥ 13-bin window round bin kc, memoised for the hop.
+  float crestAt(int32_t kc) noexcept {
+    if (kc < 0 || kc >= static_cast<int32_t>(bins)) return 0.0f;
+    float& c = crest[static_cast<size_t>(kc)];
+    if (c < 0.0f) c = crestWeight(kc - half, kc + half);
+    return c;
+  }
+
+  // The reading AT bin centre b as log2 power, memoised for the hop (PQ spectrum_grid.h nodeLn): the point reader's
+  // noise / tone blend, the tone being the bin lifted by the 3-bin correction of the lobe it sits on.
+  float nodeLog(int32_t b) noexcept {
+    b = std::clamp(b, 0, static_cast<int32_t>(bins) - 1);
+    float& memo = node[static_cast<size_t>(b)];
+    if (memo != kNodeUnset) return memo;
+    const float fb = static_cast<float>(b);
+    const float noise = noiseBins <= 1.0f ? P(b) : noiseBins * meanPower(fb - 0.5f * noiseBins, fb + 0.5f * noiseBins);
+    float r = noise;
+    const float wt = crestAt(b);
+    if (wt > 0.0f) {
+      const int32_t last = static_cast<int32_t>(bins) - 1;
+      int32_t pk = b;
+      for (int k = 0; k < 3 && pk < last && P(pk + 1) > P(pk); ++k) ++pk;
+      for (int k = 0; k < 3 && pk > 0 && P(pk - 1) > P(pk); ++k) --pk;
+      const float pp = P(pk);
+      const float corr = pp > 0.0f ? std::clamp(sum3(pk) / peak3 / pp, 1.0f, 2.0f) : 1.0f;
+      const float tone = P(b) * corr;
+      r = wt >= 1.0f ? tone : noise + wt * (tone - noise);
+    }
+    // 1e-30 (−300 dB): under any floor, and keeps the log finite through digital silence.
+    memo = fastLog2(std::max(r, 1e-30f));
+    return memo;
+  }
+
+  // A point between bin centres (points denser than bins): a monotone cubic (Fritsch–Carlson PCHIP) through the node
+  // readings in log power — C1, no overshoot, and every bin centre reads its node exactly (PQ denseRead). It replaces
+  // the linear join of the two neighbouring bins (an elbow at every bin, a step where the nearest bin changed).
+  float denseRead(float bc) noexcept {
+    const int32_t i0 = std::clamp(static_cast<int32_t>(std::floor(bc)), 0, static_cast<int32_t>(bins) - 2);
+    const float t = std::clamp(bc - static_cast<float>(i0), 0.0f, 1.0f);
+    const float lm = nodeLog(i0 - 1), l0 = nodeLog(i0), l1 = nodeLog(i0 + 1), l2 = nodeLog(i0 + 2);
+    auto slope = [](float a, float b) { return a * b <= 0.0f ? 0.0f : 2.0f * a * b / (a + b); };
+    const float d0 = slope(l0 - lm, l1 - l0), d1 = slope(l1 - l0, l2 - l1);
+    const float t2 = t * t, t3 = t2 * t;
+    const float l = (2.0f * t3 - 3.0f * t2 + 1.0f) * l0 + (t3 - 2.0f * t2 + t) * d0 + (3.0f * t2 - 2.0f * t3) * l1 +
+                    (t3 - t2) * d1;
+    return fastExp2(std::max(l, -126.0f));
+  }
+
+  // The power reading of point `pt` (PQ SpectrumGrid::readPoint).
   float read(uint32_t pt) noexcept {
     const float blo = geo[pt].blo, bhi = geo[pt].bhi, bc = geo[pt].bc;
     const float width = bhi - blo;
-    // Noise level.
-    float noise;
-    if (width >= noiseBins) noise = noiseBins * meanPower(blo, bhi);
-    else if (noiseBins <= 1.0f) {
-      const int32_t k = static_cast<int32_t>(std::floor(bc));
-      const float f = bc - static_cast<float>(k);
-      noise = P(k) + (P(k + 1) - P(k)) * f;
-    } else noise = noiseBins * meanPower(bc - 0.5f * noiseBins, bc + 0.5f * noiseBins);
-    // Tone level.
-    float tone;
-    const int32_t k0 = static_cast<int32_t>(std::ceil(blo)), k1 = static_cast<int32_t>(std::floor(bhi));
-    if (k1 >= k0) {
-      int32_t k = k0;
-      for (int32_t i = k0 + 1; i <= k1; ++i)
-        if (P(i) > P(k)) k = i;
-      tone = P(k - 1) <= P(k) && P(k + 1) <= P(k) ? sum3(k) / peak3 : P(k);
-    } else {
-      const int32_t k = static_cast<int32_t>(std::floor(bc));
-      const float f = bc - static_cast<float>(k);
-      const float m = std::sqrt(P(k)) + (std::sqrt(P(k + 1)) - std::sqrt(P(k))) * f;
-      tone = m * m;
-      int32_t pk = static_cast<int32_t>(std::lround(bc));
-      for (int s = 0; s < 3; ++s) {
-        if (P(pk + 1) > P(pk)) ++pk;
-        else if (P(pk - 1) > P(pk)) --pk;
-        else break;
-      }
-      const float pp = P(pk);
-      if (pp > 1e-30f) tone *= std::clamp(sum3(pk) / peak3 / pp, 1.0f, 2.0f);
-    }
+    if (width < 1.0f) return denseRead(bc);
+    // Noise: the mean per reference bin over the span, or over one reference bin round the point when narrower.
+    const float noise = width >= noiseBins ? noiseBins * meanPower(blo, bhi)
+                                           : noiseBins * meanPower(bc - 0.5f * noiseBins, bc + 0.5f * noiseBins);
+    // Tone: the strongest bin inside the span, 3-bin corrected when it is a lobe peak.
+    const int32_t k0 = std::max(0, static_cast<int32_t>(std::ceil(blo)));
+    const int32_t k1 = std::min(static_cast<int32_t>(bins) - 1, static_cast<int32_t>(std::floor(bhi)));
+    if (k1 < k0) return denseRead(bc);  // (only the clamps at the grid's ends empty a span of a bin or more)
+    int32_t k = k0;
+    for (int32_t i = k0 + 1; i <= k1; ++i)
+      if (P(i) > P(k)) k = i;
+    const float tone = P(k - 1) <= P(k) && P(k + 1) <= P(k) ? sum3(k) / peak3 : P(k);
     // Tone or noise?
-    float wgt;
-    const int32_t kc = static_cast<int32_t>(std::lround(bc));
-    if (width > static_cast<float>(2 * half + 1)) {
-      wgt = crestWeight(static_cast<int32_t>(std::floor(blo)), static_cast<int32_t>(std::ceil(bhi)));
-    } else if (kc >= 0 && kc < static_cast<int32_t>(bins)) {
-      float& c = crest[static_cast<size_t>(kc)];
-      if (c < 0.0f) c = crestWeight(kc - half, kc + half);
-      wgt = c;
-    } else wgt = 0.0f;
+    const float wgt = width > static_cast<float>(2 * half + 1)
+                          ? crestWeight(static_cast<int32_t>(std::floor(blo)), static_cast<int32_t>(std::ceil(bhi)))
+                          : crestAt(static_cast<int32_t>(std::lround(bc)));
     return noise + wgt * (tone - noise);
   }
 
@@ -163,10 +193,10 @@ struct SpectrumAnalyzer::Window {
   RealFft fft;
   float binHz;
   float noiseBins;
-  float scale = 1.0f, peak3 = 1.5f;
+  float scale = 1.0f, peak3 = 1.5f, maxPower = 0.0f;
   uint32_t bins = 0;
   int32_t half = 6;
-  std::vector<float> w, frame, p, crest, thresholds;
+  std::vector<float> w, frame, p, crest, node, thresholds;
   std::vector<double> prefix;
 };
 
@@ -186,10 +216,8 @@ SpectrumAnalyzer::SpectrumAnalyzer(const SpectrumConfig& config) : cfg_(config) 
   }
   histN_ = lowN_ ? lowN_ : cfg_.fftSize;
   hist_.assign(2 * static_cast<size_t>(histN_), 0.0f);
-  if (cfg_.fMin <= 0.0f) {
-    axisL_ = std::log2(cfg_.fMax / kLinearCornerHz);
-    axisA_ = 1.0f / (1.0f + 0.69314718f * axisL_);
-  }
+  cfg_.fMin = std::clamp(cfg_.fMin, 0.0f, 0.5f * cfg_.fMax);
+  axis_ = FreqAxis(cfg_.scale, cfg_.fMin, cfg_.fMax);
   const uint32_t P = cfg_.points;
   pointHz_.resize(P);
   spanLo_.resize(P);
@@ -215,10 +243,49 @@ SpectrumAnalyzer::SpectrumAnalyzer(const SpectrumConfig& config) : cfg_(config) 
   peaks_.resize(P);
   peakAge_.resize(P);
   reading_.resize(P);
+  avgPow_.resize(P);
   hopSec_ = static_cast<float>(cfg_.hop / sr);
+  applyLive();
+  reset();
+}
+
+void SpectrumAnalyzer::applyLive() noexcept {
   attackA_ = 1.0f - std::exp(-hopSec_ / std::max(1e-6f, cfg_.attackMs * 1e-3f));
   releaseA_ = 1.0f - std::exp(-hopSec_ / std::max(1e-6f, cfg_.releaseMs * 1e-3f));
-  reset();
+  avgA_ = cfg_.averageSeconds > 1e-4f ? 1.0f - std::exp(-hopSec_ / cfg_.averageSeconds) : 1.0f;
+}
+
+void SpectrumAnalyzer::setLive(const SpectrumLive& l) noexcept {
+  const bool avgStarts = l.average && !cfg_.average;
+  if (l.peakHold && !cfg_.peakHold) {  // the hold starts from what is shown now
+    std::copy(levels_.begin(), levels_.end(), peaks_.begin());
+    std::fill(peakAge_.begin(), peakAge_.end(), 0.0f);
+  }
+  cfg_.attackMs = l.attackMs;
+  cfg_.releaseMs = l.releaseMs;
+  cfg_.peakHold = l.peakHold;
+  cfg_.holdSeconds = l.holdSeconds;
+  cfg_.fallDbPerSecond = l.fallDbPerSecond;
+  cfg_.average = l.average;
+  cfg_.averageSeconds = l.averageSeconds;
+  applyLive();
+  if (avgStarts) {
+    std::fill(avgPow_.begin(), avgPow_.end(), 0.0f);
+    avgWeight_ = 0.0f;
+  }
+}
+
+void SpectrumAnalyzer::averageDb(float* out) const noexcept {
+  const uint32_t P = cfg_.points;
+  if (avgWeight_ <= 1e-6f) {
+    std::fill_n(out, P, cfg_.floorDb);
+    return;
+  }
+  const float inv = 1.0f / avgWeight_;
+  for (uint32_t p = 0; p < P; ++p) {
+    const float pw = avgPow_[p] * inv;
+    out[p] = pw > 1e-14f ? std::max(3.0102999566f * fastLog2(pw), cfg_.floorDb) : cfg_.floorDb;
+  }
 }
 
 SpectrumAnalyzer::~SpectrumAnalyzer() = default;
@@ -233,20 +300,9 @@ void SpectrumAnalyzer::reset() noexcept {
   std::fill(peaks_.begin(), peaks_.end(), cfg_.floorDb);
   std::fill(peakAge_.begin(), peakAge_.end(), 0.0f);
   std::fill(reading_.begin(), reading_.end(), cfg_.floorDb);
+  std::fill(avgPow_.begin(), avgPow_.end(), 0.0f);
+  avgWeight_ = 0.0f;
   hops_ = 0;
-}
-
-float SpectrumAnalyzer::axisHz(float t) const noexcept {
-  t = std::clamp(t, 0.0f, 1.0f);
-  if (cfg_.fMin > 0.0f) return cfg_.fMin * std::pow(cfg_.fMax / cfg_.fMin, t);
-  if (t <= axisA_) return kLinearCornerHz * t / axisA_;
-  return kLinearCornerHz * std::exp2((t - axisA_) / (1.0f - axisA_) * axisL_);
-}
-
-float SpectrumAnalyzer::axisT(float hz) const noexcept {
-  if (cfg_.fMin > 0.0f) return std::log(std::max(hz, 1e-6f) / cfg_.fMin) / std::log(cfg_.fMax / cfg_.fMin);
-  if (hz <= kLinearCornerHz) return hz / kLinearCornerHz * axisA_;
-  return axisA_ + (1.0f - axisA_) * std::log2(hz / kLinearCornerHz) / axisL_;
 }
 
 bool SpectrumAnalyzer::allBelow(float db) const noexcept {
@@ -285,6 +341,9 @@ void SpectrumAnalyzer::analyse() noexcept {
   }
   const uint32_t P = cfg_.points;
   const float smoothHalf = 0.5f * cfg_.smoothingOct;
+  // The average counts hops with something in them (a pause between songs must not sink it).
+  const bool avgOn = cfg_.average && main_->maxPower > kSoundPower;
+  if (avgOn) avgWeight_ += (1.0f - avgWeight_) * avgA_;
   for (uint32_t p = 0; p < P; ++p) {
     const float f = pointHz_[p];
     const float lw = useLow ? lowWeight_[p] : 0.0f;
@@ -309,6 +368,8 @@ void SpectrumAnalyzer::analyse() noexcept {
     // 10·log10 through the fast log2 (4.5e-6 absolute in log2: 1.4e-5 dB, far below what a display shows).
     const float db = power > 1e-14f ? std::max(3.0102999566f * fastLog2(power) + tilt_[p], cfg_.floorDb) : cfg_.floorDb;
     reading_[p] = db;
+    // The average in power, not dB: a dB mean reads a band with sparse hits low. 10^(db / 10) = 2^(db · 0.3322).
+    if (avgOn) avgPow_[p] += ((db > cfg_.floorDb ? fastExp2(db * 0.33219281f) : 0.0f) - avgPow_[p]) * avgA_;
     float& cur = levels_[p];
     cur += (db - cur) * (db > cur ? attackA_ : releaseA_);
     if (cfg_.peakHold) {

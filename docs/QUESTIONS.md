@@ -1898,3 +1898,19 @@ the loop never play. Choice: the pass the transport is in when it plays that pos
 content outside what plays is clamped into it (an unlooped clip: start marker … its end; looped: from the earlier of
 the start marker and the loop start to the loop end), so the line always lands inside the clip. Status: decided
 (reversible: roll::songAtContent).
+
+## Q?-VZ.2-a · 2026-11-15 · VZ.2 · Custom colour stops: their colours, and what PQ Meter has that VZ.2 left out
+- Context: PQ Meter's Custom ramp has a colour picker per stop. pqdaw's settings sheet has text rows only (drag a number,
+  click a choice); there is no colour picker a face can open.
+- Done: Custom = six stops whose colours are a chosen colormap ("Custom colours") sampled at the default stop positions,
+  the four middle stops placed in dB (fenced 1 dB from their neighbours; moving the colour floor / the Spectrogram's
+  floor keeps them). With the default stops a Custom ramp paints exactly its base colormap. Because every preset starts
+  at black, G1 (the fade blends toward the Silence colour instead of black) is implemented but not visible until a stop
+  colour can differ from its preset.
+- Left out (not in the plan's list): PQ's Spectrum Saturation / Hue rotate, saved colormaps, the palette track (LFO),
+  the L/R and M/S overlay channel modes, note tracking.
+- Options: (a) a small colour-picker popover for the sheet (rows "Silence colour", "Stop 2 colour" …), stored as numbers
+  (0xRRGGBB) in the instance data; (b) leave stop colours to the colormap. Choice for now: (b) (reversible: (a) adds
+  rows and fields without changing the existing ones).
+- SPEC §11.1 still says "level-weighted 3-pass glow, body, bright core"; the Spectrum now follows PQ Meter 1.0.21 (one
+  optional glow pass, off by default, then the core). SPEC left untouched (decisions are the user's): please confirm.

@@ -1,5 +1,5 @@
 // The Spectrogram's analysis (pq/dsp/spectrogram.h). Ported from PQ Meter's spectrogram.cpp (analyzeFrame, analyzeChain,
-// splat, the axis helpers and the window derivation of applyScrollSpeed / rebuildAnalysis), with its constants; the
+// splat and the window derivation of applyScrollSpeed / rebuildAnalysis), with its constants; the
 // points go straight into open columns here instead of a list the UI splats.
 
 #include "pq/dsp/spectrogram.h"
@@ -14,14 +14,10 @@ namespace pq::dsp {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr float kAxisCornerHz = 40.0f;   // the hybrid log axis: linear below, log above
 constexpr float kLowCrossHz = 200.0f;    // the low chain owns everything below
 constexpr float kLowWindowSec = 0.085f;  // the low chain's window duration (MiniMeters' 85 ms)
 constexpr uint32_t kFifo = 1u << 16;     // ≥ 2 · kMaxFft + a chunk
 
-inline float hzToMel(float f) noexcept { return 2595.0f * std::log10(1.0f + f / 700.0f); }
-inline float melToHz(float m) noexcept { return 700.0f * (std::pow(10.0f, m / 2595.0f) - 1.0f); }
-inline bool fromZero(float fMin) noexcept { return fMin < 0.5f; }
 
 // Kaiser β = 6.2 (the window PQ Meter and MiniMeters ship; fixed: PQ Meter's clarity probe chose it) and its analytic
 // derivative with respect to the sample index, periodic: x = 2i/N − 1.
@@ -59,46 +55,6 @@ WindowSample kaiser(uint32_t i, uint32_t n) {
 }
 
 }  // namespace
-
-float gramUnit(GramScale scale, float f, float fMin, float fMax) noexcept {
-  switch (scale) {
-    case GramScale::Linear: return (f - fMin) / std::max(1e-6f, fMax - fMin);
-    case GramScale::Mel: {
-      const float m0 = hzToMel(fMin), m1 = hzToMel(fMax);
-      return (hzToMel(f) - m0) / std::max(1e-6f, m1 - m0);
-    }
-    case GramScale::Log:
-    default:
-      if (fromZero(fMin)) {
-        const float l = std::log2(fMax / kAxisCornerHz);
-        const float a = 1.0f / (1.0f + 0.6931472f * l);
-        const float fc = std::clamp(f, 0.0f, fMax);
-        if (fc <= kAxisCornerHz) return a * fc / kAxisCornerHz;
-        return a + (1.0f - a) * std::log2(fc / kAxisCornerHz) / l;
-      }
-      return std::log2(std::max(f, 1e-6f) / fMin) / std::log2(fMax / fMin);
-  }
-}
-
-float gramHz(GramScale scale, float t, float fMin, float fMax) noexcept {
-  switch (scale) {
-    case GramScale::Linear: return fMin + t * (fMax - fMin);
-    case GramScale::Mel: {
-      const float m0 = hzToMel(fMin), m1 = hzToMel(fMax);
-      return melToHz(m0 + t * (m1 - m0));
-    }
-    case GramScale::Log:
-    default:
-      if (fromZero(fMin)) {
-        const float l = std::log2(fMax / kAxisCornerHz);
-        const float a = 1.0f / (1.0f + 0.6931472f * l);
-        const float tc = std::clamp(t, 0.0f, 1.0f);
-        if (tc <= a) return kAxisCornerHz * tc / a;
-        return kAxisCornerHz * std::exp2((tc - a) / (1.0f - a) * l);
-      }
-      return fMin * std::pow(fMax / fMin, t);
-  }
-}
 
 Spectrogram::Spectrogram(const SpectrogramConfig& config) : cfg_(config) {
   fifo_.assign(kFifo, 0.0f);
@@ -159,6 +115,7 @@ void Spectrogram::build() {
   ahead_ = sp / (2 * hop_) + 1;
   fMaxEff_ = std::max(1.0f, std::min(cfg_.fMax, static_cast<float>(sr * 0.5)));
   fMinEff_ = std::clamp(cfg_.fMin, 0.0f, fMaxEff_ * 0.5f);
+  axis_ = FreqAxis(cfg_.scale, fMinEff_, fMaxEff_);
   buildChain(main_, fft_);
   if (lowFft_ > 0) buildChain(low_, lowFft_);
   frame_.resize(sp);
@@ -360,7 +317,7 @@ void Spectrogram::splat(double t, float hz, float power) noexcept {
   const double colF = t / static_cast<double>(hop_) + static_cast<double>(offset_);
   const auto cBase = static_cast<int64_t>(std::floor(colF));
   const auto cf = static_cast<float>(colF - static_cast<double>(cBase));
-  const float u = std::clamp(gramUnit(cfg_.scale, std::max(hz, fMinEff_), fMinEff_, fMaxEff_), 0.0f, 1.0f);
+  const float u = std::clamp(axis_.unit(std::max(hz, fMinEff_)), 0.0f, 1.0f);
   const float rowF = (1.0f - u) * static_cast<float>(kRows - 1);
   const auto rBase = static_cast<int32_t>(std::floor(rowF));
   const float rf = rowF - static_cast<float>(rBase);

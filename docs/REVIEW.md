@@ -1957,3 +1957,15 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - **Noise module display**: the trace and dots now show the output as heard: negative values below the centre line (the
   voice-tap reader used to wrap every value into 0 … 1 like a phase, so −0.3 drew at +0.7) and after Min / Max. Check:
   set Max to 0: the whole trace sits in the lower half, as on a scope after it.
+
+## 2026-11-15 · VZ.2 · Spectrum / Spectrogram parity with PQ Meter 1.0.21 👁
+- Spectrum: the curve is one crisp antialiased stroke (no fat body), glow off by default (SET → DISPLAY → Glow > 0 for
+  one tight pass); colours are Ice by level over −80 … 0 dBFS (untied from Floor / Ceiling: "Colours follow scale").
+  Try DISPLAY → Style Bars / Both, Colour mode (Colormap by level / frequency, Blend, Spectral, Heat, Solid), Colormap →
+  Custom (Stop 2 … 5 in dB: they halt at their neighbours), Slope guide; ANALYSIS → Frequency scale Mel / Linear, Min
+  / Max frequency (under 20 Hz the log axis gets its linear foot, no jump), Average line (amber, 0.5 – 60 s).
+- A "tilt +4.5 dB/oct" tag top left whenever Tilt is not 0.
+- EQ Eight / Auto Filter analysers: the same crisper stroke (their colours follow their own range).
+- Spectrogram: Colormap → Custom (stops in dB, Gamma folded in), Silence opacity (Level) lets the backdrop through the
+  quiet parts. Goldens: device-/project-meta-spectrum, module-spectrum-panel, panel-rich-elements, eq-eight-bands,
+  eq-band-response, eq-lr-mode, lines.

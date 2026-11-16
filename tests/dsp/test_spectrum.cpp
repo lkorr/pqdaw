@@ -2,9 +2,12 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <random>
+#include <string>
 #include <vector>
 
 #include "pq/core/alloc_trap.h"
@@ -184,4 +187,170 @@ TEST_CASE("spectrum: push never allocates (analysis thread, RtScope)") {
   const auto x = sine(440.0, 0.5, 48000.0, 20000);
   CHECK(pq::alloc_trap::countRtViolations([&] { a.push(x.data(), static_cast<uint32_t>(x.size())); }) == 0);
   CHECK(a.hops() > 0);
+}
+
+TEST_CASE("spectrum: analysis cost per hop (1024 points, sharp lows, music-like input)" * doctest::test_suite("perf")) {
+  SpectrumConfig cfg;  // the hub's: FFT 2048, hop 512, the 4x low window, 1024 points
+  SpectrumAnalyzer a(cfg);
+  std::mt19937 rng(7);
+  std::normal_distribution<float> g(0.0f, 0.05f);
+  std::vector<float> x(static_cast<size_t>(cfg.hop) * 400);
+  for (size_t i = 0; i < x.size(); ++i) {
+    const double t = static_cast<double>(i) / cfg.sampleRate;
+    x[i] = g(rng) + static_cast<float>(0.3 * std::sin(2.0 * kPi * 55.0 * t) + 0.2 * std::sin(2.0 * kPi * 440.0 * t) +
+                                       0.1 * std::sin(2.0 * kPi * 3150.0 * t));
+  }
+  a.push(x.data(), cfg.hop * 40);  // warm
+  const auto t0 = std::chrono::steady_clock::now();
+  const uint32_t hops = a.push(x.data() + cfg.hop * 40, static_cast<uint32_t>(x.size()) - cfg.hop * 40);
+  const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / hops;
+  MESSAGE("spectrum analysis: " << us << " us per hop (" << hops << " hops)");
+  CHECK(hops > 300);
+}
+
+// ---- VZ.2: the shared frequency axis, the dense read, the average ----------------------------------------------------
+
+TEST_CASE("freq axis: every scale round-trips; the hybrid log axis is continuous in fMin (8f6b6ef)") {
+  using pq::dsp::FreqAxis;
+  using pq::dsp::FreqScale;
+  for (FreqScale sc : {FreqScale::Log, FreqScale::Mel, FreqScale::Linear})
+    for (float fMin : {0.0f, 1.0f, 5.0f, 10.0f, 19.9f, 20.0f, 30.0f, 200.0f}) {
+      const FreqAxis a(sc, fMin, 20000.0f);
+      CAPTURE(static_cast<int>(sc));
+      CAPTURE(fMin);
+      CHECK(a.unit(fMin) == doctest::Approx(0.0f).scale(1.0f).epsilon(1e-4));
+      CHECK(a.unit(20000.0f) == doctest::Approx(1.0f).epsilon(1e-4));
+      for (float u : {0.1f, 0.37f, 0.5f, 0.9f}) CHECK(a.unit(a.hz(u)) == doctest::Approx(u).epsilon(1e-3));
+    }
+  // Under 20 Hz the hybrid applies with its corner at 40 − fMin; at 20 it is the plain log axis: no jump at 0 → 1 Hz
+  // (the old axis switched to pure log at 1 Hz and moved 1 kHz a quarter of the panel) nor at 20 Hz.
+  auto at1k = [](float fMin) { return FreqAxis(FreqScale::Log, fMin, 20000.0f).unit(1000.0f); };
+  CHECK(FreqAxis(FreqScale::Log, 0.0f, 20000.0f).hybrid());
+  CHECK(FreqAxis(FreqScale::Log, 19.0f, 20000.0f).hybrid());
+  CHECK(!FreqAxis(FreqScale::Log, 20.0f, 20000.0f).hybrid());
+  CHECK(std::fabs(at1k(1.0f) - at1k(0.0f)) < 0.01f);
+  CHECK(std::fabs(at1k(19.99f) - at1k(20.0f)) < 0.001f);
+  for (float f = 0.0f; f < 30.0f; f += 0.5f) CHECK(std::fabs(at1k(f + 0.5f) - at1k(f)) < 0.01f);
+  // Slope-continuous at the corner (no kink between the linear foot and the log part).
+  const FreqAxis h(FreqScale::Log, 0.0f, 20000.0f);
+  const float fc = h.hybridShape().fc, d = 0.01f;
+  const float below = (h.unit(fc) - h.unit(fc - d)) / d, above = (h.unit(fc + d) - h.unit(fc)) / d;
+  CHECK(below == doctest::Approx(above).epsilon(0.01));
+}
+
+TEST_CASE("freq axis: the Linear grid is even (2 kHz on 20 kHz); Log / Mel take the decade ladder first") {
+  using pq::dsp::FreqGridLine;
+  using pq::dsp::FreqScale;
+  FreqGridLine g[24];
+  const int n = pq::dsp::freqGridLines(FreqScale::Linear, 0.0f, 20000.0f, g, 24);
+  REQUIRE(n == 9);  // 2k … 18k (0 is the edge, 20k past 98 %)
+  std::vector<float> hz;
+  for (int i = 0; i < n; ++i) hz.push_back(g[i].hz);
+  std::sort(hz.begin(), hz.end());
+  for (int i = 0; i < n; ++i) CHECK(hz[static_cast<size_t>(i)] == doctest::Approx(2000.0f * static_cast<float>(i + 1)));
+  const int m = pq::dsp::freqGridLines(FreqScale::Log, 10.0f, 22000.0f, g, 24);
+  REQUIRE(m >= 4);
+  CHECK(g[0].hz == 20.0f);
+  CHECK(g[1].hz == 100.0f);
+  CHECK(std::string(g[2].label) == "1k");
+}
+
+TEST_CASE("spectrum: Mel and Linear axes space the points evenly on themselves and read tones at level") {
+  for (pq::dsp::FreqScale sc : {pq::dsp::FreqScale::Mel, pq::dsp::FreqScale::Linear}) {
+    SpectrumConfig cfg = flatConfig();
+    cfg.scale = sc;
+    cfg.fMin = 0.0f;
+    cfg.fMax = 20000.0f;
+    SpectrumAnalyzer a(cfg);
+    CHECK(a.axisT(a.pointHz(300)) == doctest::Approx(300.0f / 1023.0f).epsilon(1e-3));
+    for (double hz : {440.0, 3150.0, 12000.0}) {
+      SpectrumAnalyzer b(cfg);
+      const auto x = sine(hz, 0.5, cfg.sampleRate, 48000);
+      b.push(x.data(), static_cast<uint32_t>(x.size()));
+      INFO("scale " << static_cast<int>(sc) << " hz " << hz);
+      CHECK(std::fabs(maxAround(b, static_cast<float>(hz)) + 6.02f) < 0.5f);
+    }
+  }
+}
+
+TEST_CASE("spectrum: the dense read (points denser than bins) is a smooth single lobe through the bin readings") {
+  SpectrumConfig cfg = flatConfig();
+  SpectrumAnalyzer a(cfg);
+  const auto x = sine(97.3, 1.0, cfg.sampleRate, 48000);  // between the long window's bins
+  a.push(x.data(), static_cast<uint32_t>(x.size()));
+  const auto r = a.lastReadingDb();
+  // Around the tone the 8192 window's bins (5.86 Hz) span several points: a monotone cubic through their readings has
+  // one maximum, at level, and no flat runs or elbows (no point is a local extremum except the peak).
+  uint32_t p0 = pointAt(a, 80.0f), p1 = pointAt(a, 115.0f);
+  REQUIRE(p1 > p0 + 20);
+  int maxima = 0;
+  float peak = -1000.0f;
+  for (uint32_t p = p0 + 1; p < p1; ++p) {
+    if (r[p] > r[p - 1] && r[p] >= r[p + 1]) ++maxima;
+    peak = std::max(peak, r[p]);
+  }
+  CHECK(maxima == 1);
+  CHECK(std::fabs(peak) < 0.6f);
+  // C1: the slope changes gradually from point to point on the lobe's flanks (a linear join kinks at every bin).
+  float worstKink = 0.0f;
+  for (uint32_t p = p0 + 1; p < p1; ++p) {
+    if (r[p] < -40.0f || r[p - 1] < -40.0f || r[p + 1] < -40.0f) continue;
+    worstKink = std::max(worstKink, std::fabs((r[p + 1] - r[p]) - (r[p] - r[p - 1])));
+  }
+  CHECK(worstKink < 3.0f);
+}
+
+TEST_CASE("spectrum: the average line is an unbiased power mean that skips silence and restarts on reset") {
+  SpectrumConfig cfg = flatConfig();
+  cfg.average = true;
+  cfg.averageSeconds = 2.0f;
+  SpectrumAnalyzer a(cfg);
+  std::vector<float> avg(cfg.points);
+  a.averageDb(avg.data());
+  CHECK(avg[pointAt(a, 1000.0f)] == cfg.floorDb);  // nothing counted yet
+  // Unbiased from the first hops: a steady tone averages at its level at once (the weight corrects the EMA's start).
+  const auto loud = sine(1000.0, 1.0, cfg.sampleRate, 4800);
+  a.push(loud.data(), static_cast<uint32_t>(loud.size()));
+  a.averageDb(avg.data());
+  const uint32_t p = pointAt(a, 1000.0f);
+  CHECK(std::fabs(avg[p] - a.lastReadingDb()[p]) < 0.5f);
+  // Silence does not sink it (once the window has left the tone: the hops that still hold part of it count).
+  std::vector<float> quiet(48000, 0.0f);
+  a.push(quiet.data(), cfg.fftSize + cfg.hop);
+  a.averageDb(avg.data());
+  const float before = avg[p];
+  a.push(quiet.data(), static_cast<uint32_t>(quiet.size()));
+  a.averageDb(avg.data());
+  CHECK(avg[p] == doctest::Approx(before).epsilon(1e-3));
+  // A power mean: equal time at 0 dB and −20 dB reads 10·log10((1 + 0.01) / 2) = −2.97 dB, not the dB mean (−10).
+  SpectrumConfig c2 = cfg;
+  c2.averageSeconds = 30.0f;
+  SpectrumAnalyzer b(c2);
+  const auto quietTone = sine(1000.0, 0.1, cfg.sampleRate, 2400);
+  const auto loudTone = sine(1000.0, 1.0, cfg.sampleRate, 2400);
+  for (int i = 0; i < 40; ++i) {
+    b.push(loudTone.data(), static_cast<uint32_t>(loudTone.size()));
+    b.push(quietTone.data(), static_cast<uint32_t>(quietTone.size()));
+  }
+  b.averageDb(avg.data());
+  CHECK(avg[pointAt(b, 1000.0f)] == doctest::Approx(-2.97f).epsilon(0.25));
+  // reset() restarts it.
+  b.reset();
+  b.averageDb(avg.data());
+  CHECK(avg[pointAt(b, 1000.0f)] == c2.floorDb);
+  // setLive keeps the analysis running (no restart of the levels) and an average switched on starts empty.
+  SpectrumConfig c3 = flatConfig();
+  SpectrumAnalyzer c(c3);
+  c.push(loud.data(), static_cast<uint32_t>(loud.size()));
+  const float lvl = c.levelsDb()[p];
+  pq::dsp::SpectrumLive live;
+  live.average = true;
+  live.releaseMs = 1000.0f;
+  c.setLive(live);
+  CHECK(c.levelsDb()[p] == lvl);
+  c.averageDb(avg.data());
+  CHECK(avg[p] == c3.floorDb);
+  c.push(loud.data(), static_cast<uint32_t>(loud.size()));
+  c.averageDb(avg.data());
+  CHECK(avg[p] > -3.0f);
 }

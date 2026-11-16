@@ -737,6 +737,7 @@ private:
       s.bands = s.grid = s.freqLabels = s.dbLabels = false;
       s.floorDb = -90.0f;
       s.ceilDb = -6.0f;
+      s.colourFollow = true;  // VZ.2: the EQ's dim analyser keeps its colours on its own window (not −80 … 0 dBFS)
       s.glow = 0.7f;
       s.fill = 0.45f;
       s.alpha = 0.6f;

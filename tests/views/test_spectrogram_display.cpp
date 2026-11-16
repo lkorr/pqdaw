@@ -207,7 +207,7 @@ uint32_t luma(Rgba c) { return redOf(c) + greenOf(c) + blueOf(c); }
 
 // The texel row the analysis row of `hz` falls in (the face's reduce: row r covers texel y = r · texRows / 1024).
 uint32_t texelRowOf(float hz, uint32_t texRows, float fMax) {
-  const float r = (1.0f - dsp::gramUnit(dsp::GramScale::Log, hz, 0.0f, fMax)) * 1023.0f;
+  const float r = (1.0f - dsp::FreqAxis(dsp::FreqScale::Log, 0.0f, fMax).unit(hz)) * 1023.0f;
   return static_cast<uint32_t>(std::lround(r)) * texRows / 1024u;
 }
 
@@ -346,7 +346,7 @@ TEST_CASE("spectrogram face: colours recolour from the cache, a new axis starts 
   const uint32_t mapping = s.mapping;
   REQUIRE(gramTestControl(*rig.face, "scale", 1.0));  // mel
   s = rig.play(0.3, chord);
-  CHECK(s.request.config.scale == dsp::GramScale::Mel);
+  CHECK(s.request.config.scale == dsp::FreqScale::Mel);
   CHECK(s.mapping == mapping + 1);
   REQUIRE(gramTexel(*rig.face, col, y, raised, db, row));
   CHECK(row == -1);  // the old column was cleared
@@ -641,4 +641,47 @@ TEST_CASE("spectrogram face: a zoom stretches the picture, rebuilt once after th
   CHECK(s.texRows >= std::min<uint32_t>(1024, static_cast<uint32_t>(154.0f * rig.scale)));
   CHECK(s.cols > cols0);
   CHECK(s.read > 0);
+}
+
+TEST_CASE("spectrogram face: VZ.2 — Custom stops in dB (fenced by their neighbours), Silence opacity un-blends the ground") {
+  auto target = std::make_unique<DataTarget>();
+  DataTarget* t = target.get();
+  FaceRig rig(std::move(target));
+  rig.paint();
+  REQUIRE(gramTestControl(*rig.face, "gate", 0.0));
+  GramShown s = rig.play(1.5, chord);
+  const uint32_t y = texelRowOf(220.0f, s.texRows, 24000.0f);
+  const uint64_t col = s.read - 8;
+  Rgba magma = 0, custom = 0, see = 0, empty = 0;
+  float db = 0.0f;
+  int row = -1;
+  REQUIRE(gramTexel(*rig.face, col, y, magma, db, row));
+  // Custom with its default stops (Magma's own positions on −100 … −24 dB at gamma 1.57) paints Magma again.
+  REQUIRE(gramTestControl(*rig.face, "map", 10.0));
+  rig.paint();
+  REQUIRE(gramTexel(*rig.face, col, y, custom, db, row));
+  for (const uint32_t ch : {redOf(custom) - redOf(magma), greenOf(custom) - greenOf(magma), blueOf(custom) - blueOf(magma)})
+    CHECK((static_cast<int32_t>(ch) >= -4 && static_cast<int32_t>(ch) <= 4));
+  // A stop halts 1 dB from its neighbours: Stop 3 dragged up past Stop 4 (−37) stays at −38.
+  REQUIRE(gramTestControl(*rig.face, "s3", -10.0));
+  REQUIRE(t->data_ != nullptr);
+  const meta::DataValue* s3 = t->data_->field("s3");
+  REQUIRE(s3 != nullptr);
+  CHECK(s3->number == doctest::Approx(-38.0));
+  // Moving the floor keeps the stops' dB (they are stored in dB).
+  REQUIRE(gramTestControl(*rig.face, "floor", -120.0));
+  CHECK(t->data_->field("s3")->number == doctest::Approx(-38.0));
+  REQUIRE(gramTestControl(*rig.face, "floor", -100.0));
+  // Silence opacity under 1: silence is transparent (the ground is drawn under it at that opacity), signal opaque-ish.
+  REQUIRE(gramTestControl(*rig.face, "map", 0.0));
+  REQUIRE(gramTestControl(*rig.face, "sil", 0.5));
+  rig.paint();
+  REQUIRE(gramTexel(*rig.face, col, y, see, db, row));
+  CHECK(alphaOf(see) > 0u);
+  REQUIRE(gramTexel(*rig.face, col, 0, empty, db, row));  // the top row (24 kHz): nothing there
+  CHECK(alphaOf(empty) == 0u);
+  REQUIRE(gramTestControl(*rig.face, "sil", 1.0));
+  rig.paint();
+  REQUIRE(gramTexel(*rig.face, col, 0, empty, db, row));
+  CHECK(alphaOf(empty) == 255u);
 }

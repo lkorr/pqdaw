@@ -3,9 +3,10 @@
 // Minimal stand-in for <imgui.h>, for the PQ Meter differential test only (T0.9-fix1,
 // tests/ui/test_pqmeter_diff.cpp). It is NOT Dear ImGui: it declares just the surface PQ Meter's line helpers
 // touch (src/ui/smooth_line.h and the helper block of src/modules/spectrum.cpp), with ImGui's semantics:
-//   - ImVec2, ImVec4, ImU32, IM_COL32 / IM_COL32_*_SHIFT (default RGBA packing: R in the low byte)
+//   - ImVec2, ImVec4, ImU32, IM_COL32 / IM_COL32_*_SHIFT / IM_COL32_A_MASK (default RGBA packing: R in the low byte)
 //   - ImDrawIdx = unsigned int (PQ Meter builds ImGui with ImDrawIdx=unsigned int, see its CMakeLists.txt)
-//   - ImDrawList::PrimReserve / PrimWriteVtx / PrimWriteIdx / _VtxCurrentIdx, recording into plain vectors
+//   - ImDrawList::PrimReserve / PrimWriteVtx / PrimWriteIdx / _VtxCurrentIdx, recording into plain vectors;
+//     _FringeScale (ImGui: 1 / framebuffer scale; 1 here: one device px, what pq::ui's stroke uses)
 //   - ImGui::GetFontTexUvWhitePixel (set by the test to pq::ui's white-texel uv, so uvs compare exactly)
 //   - ImGui::ColorConvertFloat4ToU32 (ImGui's IM_F32_TO_INT8_SAT rounding)
 
@@ -19,6 +20,7 @@ using ImDrawIdx = unsigned int;
 #define IM_COL32_G_SHIFT 8
 #define IM_COL32_B_SHIFT 16
 #define IM_COL32_A_SHIFT 24
+#define IM_COL32_A_MASK 0xFF000000
 #define IM_COL32(R, G, B, A)                                                                                     \
   (((ImU32)(A) << IM_COL32_A_SHIFT) | ((ImU32)(B) << IM_COL32_B_SHIFT) | ((ImU32)(G) << IM_COL32_G_SHIFT) | \
    ((ImU32)(R) << IM_COL32_R_SHIFT))
@@ -45,6 +47,7 @@ struct ImDrawList {
   std::vector<ImDrawVert> VtxBuffer;
   std::vector<ImDrawIdx> IdxBuffer;
   unsigned int _VtxCurrentIdx = 0;
+  float _FringeScale = 1.0f;
   ImDrawVert* _VtxWritePtr = nullptr;
   ImDrawIdx* _IdxWritePtr = nullptr;
 

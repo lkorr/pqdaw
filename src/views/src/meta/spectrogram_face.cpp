@@ -52,7 +52,7 @@ namespace {
 using ui::Rect;
 using ui::Rgba;
 using ui::Vec2;
-using dsp::GramScale;
+using dsp::FreqScale;
 using devices::SpectrumFeed;
 
 constexpr float kW = 300.0f, kH = 170.0f;
@@ -87,23 +87,23 @@ bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x <= r.x1 
 
 constexpr const char* kChLong[] = {"Mid", "Left", "Right", "Side"};
 constexpr const char* kChShort[] = {"MID", "L", "R", "SIDE"};
-constexpr const char* kScaleLong[] = {"Logarithmic", "Mel", "Linear"};
-constexpr const char* kScaleShort[] = {"LOG", "MEL", "LIN"};
-constexpr const char* kMapNames[] = {"Magma", "Inferno", "Viridis", "Grayscale", "Ice", "Gold", "Silver", "Pastel", "Neon", "Copper"};
-constexpr const char* kMapShort[] = {"MAGMA", "INFERNO", "VIRIDIS", "GRAY", "ICE", "GOLD", "SILVER", "PASTEL", "NEON", "COPPER"};
+constexpr const char* kMapNames[] = {"Magma", "Inferno", "Viridis", "Grayscale", "Ice", "Gold", "Silver", "Pastel", "Neon", "Copper",
+                                     "Custom"};
+constexpr const char* kMapShort[] = {"MAGMA", "INFERNO", "VIRIDIS", "GRAY", "ICE", "GOLD", "SILVER", "PASTEL", "NEON", "COPPER",
+                                     "CUSTOM"};
 constexpr const char* kSourceNames[] = {"Level", "Frequency", "Brightness"};
 constexpr const char* kPlayheadNames[] = {"Scroll", "Loop"};
 constexpr double kBeatSpans[] = {1.0, 2.0, 4.0, 8.0, 16.0};
 constexpr const char* kBeatSpanNames[] = {"1 beat", "2 beats", "1 bar", "2 bars", "4 bars"};
 constexpr const char* kKeysNames[] = {"Off", "Left", "Right"};
-static_assert(std::size(kMapNames) == static_cast<size_t>(ui::kColormapCount));
+static_assert(std::size(kMapNames) == static_cast<size_t>(ui::Gradient::kCustomIndex + 1));
 
 using sheet::Opt;
 using sheet::kOnOff;
 enum O : uint32_t {
   oSpan, oFft, oChannel, oReassign, oMaxDev, oConsensus, oPlayhead, oLoopSpan, oFloor, oCeil, oGamma, oFade, oTilt,
   oGate, oDepth, oThresh, oKnee, oExpand, oScale, oFMin, oFMax, oMap, oSource, oGrid, oRuler, oNote, oKeys, oTuning,
-  oKeysW, oKeysOpacity, oKeysTintC, oCount
+  oKeysW, oKeysOpacity, oKeysTintC, oBase, oStop2, oStop3, oStop4, oStop5, oSilence, oCount
 };
 // PQ Meter's defaults (the power user's tuned analysis, the MiniMeters-calibrated level mapping, the gate on): a 2048
 // window, reassignment, 3.5 bins, consensus 0.5, floor −100 / ceiling −24 dB, gamma 1.57, fade 0.4, tilt 4.5 dB/oct,
@@ -128,10 +128,10 @@ const Opt kOpts[oCount] = {
     {"gthr", "Gate threshold", -6, -6, 24, Opt::Number, nullptr, "%+.0f dB", 1.0},
     {"gknee", "Gate knee", 40, 1, 40, Opt::Number, nullptr, "%.0f dB", 1.0},
     {"gexp", "Gate expand", 1.31, 1.0, 4.0, Opt::Number, nullptr, "%.2fx", 0.01},
-    {"scale", "Frequency scale", 0, 0, 2, Opt::Choice, kScaleLong},
+    {"scale", "Frequency scale", 0, 0, 2, Opt::Choice, dsp::kFreqScaleNames},
     {"fmin", "Min frequency", 0, 0, 500, Opt::Number, nullptr, "%.0f Hz", 1.0},
     {"fmax", "Max frequency", 24000, 1000, 24000, Opt::LogNumber, nullptr, "%.0f Hz", 10.0},
-    {"map", "Colormap", 0, 0, 9, Opt::Choice, kMapNames},
+    {"map", "Colormap", 0, 0, 10, Opt::Choice, kMapNames},
     {"src", "Colour by", 0, 0, 2, Opt::Choice, kSourceNames},
     {"grid", "Frequency grid", 1, 0, 1, Opt::Toggle, kOnOff},
     {"ruler", "Time ruler", 1, 0, 1, Opt::Toggle, kOnOff},
@@ -142,11 +142,31 @@ const Opt kOpts[oCount] = {
     {"kw", "Keyboard width", 22, 8, 60, Opt::Number, nullptr, "%.0f", 1.0},
     {"kop", "Keyboard opacity", 0.85, 0.1, 1.0, Opt::Number, nullptr, "%.2f", 0.01},
     {"kc", "Tint the Cs", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.2 X2 / G2 (PQ Meter 5c9b3f9, f6bbc4a, b4528b7): the Custom ramp — its colours from a colormap, its four
+    // middle stops in dB (Gamma folded in: the level that paints each colour; the defaults are Magma's own stop
+    // positions on the default −100 … −24 dB, gamma 1.57) — and how much of the Silence colour covers the panel.
+    {"base", "Custom colours", 0, 0, 9, Opt::Choice, kMapNames},
+    {"s2", "Stop 2", -69, -140, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"s3", "Stop 3", -51, -140, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"s4", "Stop 4", -37, -140, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"s5", "Stop 5", -29, -140, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"sil", "Silence opacity", 1.0, 0.0, 1.0, Opt::Number, nullptr, "%.2f", 0.01},
 };
 
 struct Options : sheet::Values {
   Options() : Values(kOpts) {}
-  GramScale scale() const noexcept { return static_cast<GramScale>(std::clamp(choice(oScale), 0, 2)); }
+  FreqScale scale() const noexcept { return dsp::freqScaleOf(choice(oScale)); }
+  bool custom() const noexcept { return choice(oMap) >= ui::Gradient::kCustomIndex; }
+  ui::LevelAxis levelAxis() const noexcept { return {floorDb(), ceilDb(), static_cast<float>((*this)[oGamma])}; }
+  // VZ.2 X2: a Custom stop halts 1 dB from its neighbours (the floor / ceiling for the outer ones).
+  double fenced(uint32_t o, double v) const noexcept {
+    if (o < oStop2 || o > oStop5) return v;
+    float st[4];
+    for (int i = 0; i < 4; ++i) st[i] = static_cast<float>((*this)[oStop2 + static_cast<uint32_t>(i)]);
+    float lo = 0.0f, hi = 0.0f;
+    ui::stopFence(st, static_cast<int>(o - oStop2), levelAxis(), lo, hi);
+    return std::clamp(v, static_cast<double>(lo), static_cast<double>(hi));
+  }
   bool loop() const noexcept { return choice(oPlayhead) == 1; }
   // The level range (the ceiling at least 10 dB over the floor, as PQ Meter's sliders keep it).
   float floorDb() const noexcept { return static_cast<float>((*this)[oFloor]); }
@@ -174,7 +194,12 @@ void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   for (const uint32_t i : {oFloor, oCeil, oGamma, oFade, oTilt, oGate}) out.push_back(i);
   if (o.on(oGate))
     for (const uint32_t i : {oDepth, oThresh, oKnee, oExpand}) out.push_back(i);
-  for (const uint32_t i : {oMap, oSource, oGrid, oRuler, oNote, oTuning, oKeys}) out.push_back(i);
+  out.push_back(oMap);
+  if (o.custom())
+    for (const uint32_t i : {oBase, oStop2, oStop3, oStop4, oStop5}) out.push_back(i);
+  out.push_back(oSource);
+  if (o.choice(oSource) == 0) out.push_back(oSilence);  // Level: the one source whose low stop IS silence
+  for (const uint32_t i : {oGrid, oRuler, oNote, oTuning, oKeys}) out.push_back(i);
   if (o.choice(oKeys) != 0)
     for (const uint32_t i : {oKeysW, oKeysOpacity, oKeysTintC}) out.push_back(i);
 }
@@ -239,7 +264,10 @@ struct Tone {  // what the colouring of a texel depends on (a change recolours f
   bool gate = true;
   float depth = 1, thresh = -6, knee = 40, expand = 1.31f;
   int map = 0, source = 0;
-  GramScale scale = GramScale::Log;
+  int base = 0;                                  // Custom: its colours' colormap
+  float stops[4] = {-69.0f, -51.0f, -37.0f, -29.0f};  // Custom: the middle stops (dB)
+  float silence = 1.0f;                          // the Silence colour's opacity (Level)
+  FreqScale scale = FreqScale::Log;
   float fMin = 0, fMax = 24000;
   bool operator==(const Tone&) const = default;
 };
@@ -287,12 +315,14 @@ public:
   void setTone(const Tone& t) {
     if (t == tone_ && lut_ != nullptr) return;
     const bool first = lut_ == nullptr;
-    const bool axis = first || t.scale != tone_.scale || t.fMin != tone_.fMin || t.fMax != tone_.fMax || t.tilt != tone_.tilt;
+    const bool axisMoved = first || t.scale != tone_.scale || t.fMin != tone_.fMin || t.fMax != tone_.fMax || t.tilt != tone_.tilt;
     const bool level = t.floorDb != tone_.floorDb || t.ceilDb != tone_.ceilDb || t.gate != tone_.gate ||
                        t.depth != tone_.depth || t.thresh != tone_.thresh || t.knee != tone_.knee || t.expand != tone_.expand;
     const bool source = t.source != tone_.source;
     tone_ = t;
-    if (axis) {
+    if (axisMoved) {
+      axis_ = dsp::FreqAxis(t.scale, t.fMin, t.fMax);
+      const dsp::FreqAxis& axis = axis_;
       tilt_.resize(kRows);
       for (uint32_t r = 0; r < kRows; ++r) {
         if (t.tilt == 0.0f) {
@@ -300,7 +330,7 @@ public:
           continue;
         }
         const float u = 1.0f - static_cast<float>(r) / static_cast<float>(kRows - 1);
-        const float f = dsp::gramHz(t.scale, u, t.fMin, t.fMax);
+        const float f = axis.hz(u);
         tilt_[r] = t.tilt * std::log2(std::max(f, 1.0f) / 1000.0f);  // +tilt dB/oct about 1 kHz
       }
     }
@@ -317,11 +347,24 @@ public:
       gammaLut_[i] = std::pow(x, t.gamma);
       expandLut_[i] = std::pow(x, 1.0f / std::max(1.0f, t.expand));
     }
-    lut_ = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(t.map, 0, ui::kColormapCount - 1)));
+    if (t.map >= ui::Gradient::kCustomIndex) {
+      // X2: the Custom ramp, its middle stops at their dB on floor … ceiling raised to Gamma (the texel's own t).
+      ui::levelGradient(custom_, static_cast<ui::Colormap>(std::clamp(t.base, 0, ui::kColormapCount - 1)), t.stops,
+                        ui::LevelAxis{t.floorDb, t.ceilDb, t.gamma});
+      lut_ = &custom_.lut;
+    } else {
+      lut_ = &ui::colormapLut(static_cast<ui::Colormap>(std::clamp(t.map, 0, ui::kColormapCount - 1)));
+    }
+    // G1 / G2: what an empty texel paints — the Silence colour under Level (the ramp's bottom), black otherwise.
+    ground_ = t.source == 0 ? ui::withAlpha((*lut_)[0], 255) : ui::rgba(0, 0, 0);
     if (source) std::fill(dirty_.begin(), dirty_.end(), uint8_t{1});  // brightness is computed at the reduce
     ++rev_;  // recolour everything at the next colour()
   }
   const Tone& tone() const noexcept { return tone_; }
+  const dsp::FreqAxis& axis() const noexcept { return axis_; }
+  ui::Rgba ground() const noexcept { return ground_; }
+  // G2: the ground is drawn see-through (Silence opacity under 1, Level): the texels carry their own alpha.
+  bool seeThrough() const noexcept { return tone_.source == 0 && tone_.silence < 0.999f; }
 
   // One analysis column into slot `slot` (reduced by max into the texel rows; its level and source row cached).
   void put(uint32_t slot, const float* rows) {
@@ -332,7 +375,7 @@ public:
       std::fill_n(crow, texRows_, int16_t{-1});
     } else {
       if (tone_.source == 2) {  // brightness: the energy above 700 Hz over the whole column (PQ Meter: the Waveform's split)
-        const float u = dsp::gramUnit(tone_.scale, 700.0f, tone_.fMin, tone_.fMax);
+        const float u = axis_.unit(700.0f);
         const auto split = static_cast<uint32_t>(std::clamp((1.0f - u) * static_cast<float>(kRows - 1), 0.0f, static_cast<float>(kRows - 1)));
         double lo = 0.0, hi = 0.0;
         for (uint32_t r = 0; r < split; ++r) hi += rows[r];
@@ -543,8 +586,11 @@ public:
 
 private:
   // A texel's colour: its cached level, tilted (the source row's), gated (this row's applied floor), mapped to 0 … 1
-  // between floor and ceiling, gamma, then the colormap by level (fade toward black at the quiet end) or by the
-  // attribute with the level as brightness.
+  // between floor and ceiling, gamma, then the colormap by level (G1: the fade blends toward the Silence colour, not
+  // black — the presets start at black, so for them it is the same picture; a Custom ramp's Silence is honoured) or
+  // by the attribute with the level as brightness. G2: see-through, the colour is un-blended from the ground
+  // (colour-to-alpha: drawn over the ground it is exactly the opaque colour; silence is alpha 0, its rgb the ground's
+  // so the texture's linear filtering does not fringe the edges dark).
   uint32_t texelColour(float level, int16_t br, uint32_t y, uint32_t s) const noexcept {
     float t = 0.0f;
     if (br >= 0) {
@@ -558,7 +604,14 @@ private:
     Rgba c;
     if (tone_.source == 0) {
       c = ui::lutAt(*lut_, t);
-      if (tone_.fade > 0.0f) c = ui::scaleRgb(c, fa);
+      if (tone_.fade > 0.0f && fa < 1.0f) {
+        const ui::Rgba g = ground_;
+        auto mix = [fa](uint32_t a, uint32_t b) {
+          return static_cast<uint32_t>(static_cast<float>(a) + (static_cast<float>(b) - static_cast<float>(a)) * fa + 0.5f);
+        };
+        c = ui::rgba(mix(ui::redOf(g), ui::redOf(c)), mix(ui::greenOf(g), ui::greenOf(c)), mix(ui::blueOf(g), ui::blueOf(c)));
+      }
+      if (tone_.silence < 0.999f) return toAlpha(c);
     } else {
       // Hue from the attribute (the peak's own row: one hue along a reassigned line; or the column's brightness),
       // level as brightness: an empty texel comes out black either way.
@@ -566,6 +619,24 @@ private:
       c = ui::scaleRgb(ui::lutAt(*lut_, std::clamp(attr, 0.0f, 1.0f)), t * fa);
     }
     return ui::withAlpha(c, 255);
+  }
+
+  // Colour-to-alpha against the ground: the least alpha that reaches c from the ground, per channel.
+  uint32_t toAlpha(Rgba c) const noexcept {
+    const float pc[3] = {static_cast<float>(ui::redOf(c)), static_cast<float>(ui::greenOf(c)), static_cast<float>(ui::blueOf(c))};
+    const float gc[3] = {static_cast<float>(ui::redOf(ground_)), static_cast<float>(ui::greenOf(ground_)),
+                         static_cast<float>(ui::blueOf(ground_))};
+    float a = 0.0f;
+    for (int k = 0; k < 3; ++k) {
+      const float d = pc[k] - gc[k];
+      if (d > 0.0f) a = std::max(a, d / (255.0f - gc[k]));
+      else if (d < 0.0f) a = std::max(a, -d / gc[k]);
+    }
+    const auto ai = static_cast<uint32_t>(std::min(1.0f, a) * 255.0f + 0.5f);
+    if (ai == 0) return ui::withAlpha(ground_, 0);
+    const float inv = 255.0f / static_cast<float>(ai);
+    auto ch = [&](int k) { return static_cast<uint32_t>(std::clamp(gc[k] + (pc[k] - gc[k]) * inv + 0.5f, 0.0f, 255.0f)); };
+    return ui::rgba(ch(0), ch(1), ch(2), ai);
   }
 
   // PQ Meter's applyGate: below the knee (noise + threshold) down by depth · 60 dB over the knee width; above it the
@@ -595,6 +666,9 @@ private:
   Tone tone_;
   std::vector<float> tilt_ = std::vector<float>(kRows, 0.0f), gammaLut_, expandLut_;
   const ui::ColorLut* lut_ = nullptr;
+  ui::Gradient custom_;
+  Rgba ground_ = ui::rgba(0, 0, 0);
+  dsp::FreqAxis axis_;
   std::vector<float> noise_, applied_, rowDb_, vals_, target_, nb_;
   std::vector<uint32_t> counts_, take_, changedRows_;
   std::vector<uint8_t> pending_, rowHit_;
@@ -711,8 +785,8 @@ public:
     paintOverlays(p, labels && !coversPlot());
     if (labels) {
       chip(p, leftChip(kChChip), kChShort[std::clamp(opts_.choice(oChannel), 0, 3)], false, th);
-      chip(p, leftChip(kScaleChip), kScaleShort[static_cast<int>(opts_.scale())], false, th);
-      chip(p, leftChip(kMapChip), kMapShort[std::clamp(opts_.choice(oMap), 0, 9)], false, th);
+      chip(p, leftChip(kScaleChip), dsp::kFreqScaleShort[static_cast<int>(opts_.scale())], false, th);
+      chip(p, leftChip(kMapChip), kMapShort[std::clamp(opts_.choice(oMap), 0, ui::Gradient::kCustomIndex)], false, th);
       chip(p, kFreezeChip, "FREEZE", frozen_, th, frozen_ ? kFrozen : 0);
       chip(p, kSetChip, "SET", sheet_, th);
       if (coversPlot()) paintSheet(p, th);
@@ -997,6 +1071,9 @@ private:
     t.expand = static_cast<float>(opts_[oExpand]);
     t.map = opts_.choice(oMap);
     t.source = opts_.choice(oSource);
+    t.base = opts_.choice(oBase);
+    for (int i = 0; i < 4; ++i) t.stops[i] = static_cast<float>(opts_[oStop2 + static_cast<uint32_t>(i)]);
+    t.silence = static_cast<float>(opts_[oSilence]);
     t.scale = opts_.scale();
     // The axis the analysis maps (its fMax is clamped to the Nyquist frequency): the rows' frequencies.
     t.fMin = state_.running ? state_.fMin : opts_.fMin();
@@ -1004,7 +1081,7 @@ private:
     pic_.setTone(t);
   }
   void setOption(uint32_t o, double v) {
-    opts_.set(o, v);
+    opts_.set(o, opts_.fenced(o, v));
     if (bound_ && target().editable()) {
       data_ = opts_.data();
       target().setData(data_);
@@ -1298,7 +1375,8 @@ private:
   // ---- painting ----
   void paintPicture(ui::DrawList& dl, const Rect& r, bool texHere) {
     if (!pic_.sized() || !state_.running) return;
-    dl.addRectFilled(r, ui::lutAt(ui::colormapLut(static_cast<ui::Colormap>(std::clamp(opts_.choice(oMap), 0, 9))), 0.0f));  // the ground: silence
+    // The ground: silence (G2: at the Silence opacity; the see-through texels are un-blended from it).
+    dl.addRectFilled(r, pic_.seeThrough() ? ui::setAlpha(pic_.ground(), pic_.tone().silence) : pic_.ground());
     if (tex_ == 0 || !texHere) return;
     const uint32_t texCols = pic_.texCols();
     const float tw = static_cast<float>(texCols);
@@ -1326,12 +1404,13 @@ private:
 
   float yOf(float hz) const noexcept {
     const Tone& t = pic_.tone();
-    const float u = dsp::gramUnit(t.scale, std::clamp(hz, t.fMin, t.fMax), t.fMin, t.fMax);
+    const float u = pic_.axis().unit(std::clamp(hz, t.fMin, t.fMax));
     return kPlot.y1 - u * (kPlot.y1 - kPlot.y0);
   }
   float hzAt(float y) const noexcept {
     const Tone& t = pic_.tone();
-    return dsp::gramHz(t.scale, (kPlot.y1 - y) / (kPlot.y1 - kPlot.y0), t.fMin, t.fMax);
+    (void)t;
+    return pic_.axis().hz((kPlot.y1 - y) / (kPlot.y1 - kPlot.y0));
   }
 
   void paintOverlays(ui::FacePainter& p, bool labels) {
@@ -1342,35 +1421,18 @@ private:
     // The frequency rules and labels: the decade ladder on log / mel (on a short plot only 100, 1k, 5k labelled),
     // round steps on linear.
     if (opts_.on(oGrid)) {
-      float f[16];
-      char lab[16][8];
-      int n = 0;
-      if (tone.scale == GramScale::Linear) {
-        const float span = std::max(1.0f, tone.fMax - tone.fMin);
-        static const float kSteps[] = {100, 200, 500, 1000, 2000, 5000, 10000};
-        float step = kSteps[6];
-        for (const float s : kSteps)
-          if (span / s <= 9.0f) {
-            step = s;
-            break;
-          }
-        for (float x = std::ceil(tone.fMin / step) * step; x <= tone.fMax && n < 16; x += step) {
-          f[n] = x;
-          if (x >= 1000.0f) std::snprintf(lab[n], 8, "%gk", x / 1000.0f);
-          else std::snprintf(lab[n], 8, "%g", x);
-          ++n;
-        }
-      } else {
-        static const float kDec[] = {10, 20, 30, 50, 100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000, 15000, 20000};
-        static const char* const kDecL[] = {"10", "20", "30", "50", "100", "200", "300", "500", "1k", "2k", "3k", "5k", "10k", "15k", "20k"};
-        for (int i = 0; i < 15; ++i) {
-          f[n] = kDec[i];
-          std::snprintf(lab[n], 8, "%s", kDecL[i]);
-          ++n;
-        }
+      // The shared ladder (pq/dsp/freq_axis.h freqGridLines), in frequency order here (the sparse test walks it).
+      dsp::FreqGridLine gl[24];
+      const int n = dsp::freqGridLines(tone.scale, tone.fMin, tone.fMax, gl, 24);
+      std::sort(gl, gl + n, [](const dsp::FreqGridLine& x, const dsp::FreqGridLine& y) { return x.hz < y.hz; });
+      float f[24];
+      const char* lab[24];
+      for (int i = 0; i < n; ++i) {
+        f[i] = gl[i].hz;
+        lab[i] = gl[i].label;
       }
       bool sparse = false;
-      if (tone.scale != GramScale::Linear) {
+      if (tone.scale != FreqScale::Linear) {
         float prev = -1e9f;
         for (int i = n - 1; i >= 0; --i) {
           if (f[i] < tone.fMin * 1.02f || f[i] > tone.fMax * 0.98f) continue;

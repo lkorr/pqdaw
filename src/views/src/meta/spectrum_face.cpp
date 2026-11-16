@@ -2,7 +2,9 @@
 // the reusable spectrum plot (pq/views/devices/spectrum_plot.h, PQ Meter's look: Ice by level, fill, glow, peak hold,
 // grid and labels) filling it; the signal enters on the left and leaves on the right unchanged. Three small chips in
 // the top-right corner: SET (VZ.1: the settings sheet, option_sheet.h — ANALYSIS: window, low-end window, smoothing,
-// attack / release, tilt, peak hold time and fall; DISPLAY: range, fill, glow, line, bands, grid, labels, peak line),
+// attack / release, tilt, peak hold time and fall, VZ.2: frequency scale and range, the average line; DISPLAY: peak
+// line, range, style (curve / bars / both), colour mode, colormap (Custom: stops in dB, fenced by their neighbours),
+// the colour window, fill, glow, line, bands, grid, labels, slope guide, tilt tag),
 // PEAK (the peak hold line) and FREEZE (the picture holds while the analysis keeps running, as PQ Meter's freeze). The
 // options are the instance's data. The pointer shows its frequency, nearest note and level. Labels appear from a
 // readable zoom up; far out the face is a faithful miniature of the curve. World units 240 × 150.
@@ -15,11 +17,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <iterator>
 #include <string>
 #include <vector>
 
 #include "faces.h"
 #include "option_sheet.h"
+#include "pq/ui/colormap.h"
 #include "pq/views/devices/spectrum_plot.h"
 
 namespace pq::views {
@@ -47,12 +51,21 @@ bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x <= r.x1 
 using sheet::kOnOff;
 using sheet::Opt;
 enum O : uint32_t {
-  oFft, oSharpLows, oSmooth, oAttack, oRelease, oTilt, oHold, oFall,
-  oPeaks, oFloor, oCeil, oFill, oGlow, oLine, oBands, oGrid, oLabels, oCount
+  oFft, oSharpLows, oSmooth, oAttack, oRelease, oTilt, oHold, oFall, oScale, oFMin, oFMax, oAvg, oAvgSec,
+  oPeaks, oFloor, oCeil, oDraw, oColour, oMap, oBase, oStop2, oStop3, oStop4, oStop5, oFollow, oQuiet, oFill, oGlow,
+  oLine, oBands, oGrid, oLabels, oSlope, oTiltTag, oCount
 };
 constexpr const char* kSmoothNames[] = {"Off", "1/24 oct", "1/12 oct", "1/6 oct", "1/3 oct"};
 constexpr float kSmoothOct[] = {0.0f, 1.0f / 24.0f, 1.0f / 12.0f, 1.0f / 6.0f, 1.0f / 3.0f};
-// The analysis defaults are AnalysisHub::config's (dsp::SpectrumConfig: SPEC §11.1), the look SpectrumPlotStyle's.
+constexpr const char* kDrawNames[] = {"Curve", "Bars", "Both"};
+constexpr const char* kColourNames[] = {"Colormap (level)", "Colormap (freq)", "Blend", "Spectral", "Heat", "Solid"};
+constexpr const char* kMapNames[] = {"Magma", "Inferno", "Viridis", "Grayscale", "Ice", "Gold", "Silver", "Pastel", "Neon",
+                                     "Copper", "Custom"};
+static_assert(std::size(kColourNames) == static_cast<size_t>(devices::kSpectrumColourCount));
+static_assert(std::size(kMapNames) == static_cast<size_t>(ui::Gradient::kCustomIndex + 1));
+constexpr float kColourMinSpan = 12.0f;  // the colour window: Quiet at least 12 dB under 0 dBFS (PQ f6bbc4a)
+// The analysis defaults are AnalysisHub::config's (dsp::SpectrumConfig: SPEC §11.1), the look SpectrumPlotStyle's
+// (PQ Meter 1.0.21: glow off, colours Ice by level over −80 … 0 dBFS, untied from the scale).
 const Opt kOpts[oCount] = {
     {"fft", "Window", 11, 10, 14, Opt::Pow2},
     {"lows", "Long low window", 1, 0, 1, Opt::Toggle, kOnOff},
@@ -62,19 +75,40 @@ const Opt kOpts[oCount] = {
     {"tilt", "Tilt", 4.5, -6.0, 9.0, Opt::Number, nullptr, "%.1f dB/oct", 0.1},
     {"hold", "Peak hold", 1.5, 0.1, 10.0, Opt::LogNumber, nullptr, "%.1f s"},
     {"fall", "Peak fall", 12, 1, 60, Opt::LogNumber, nullptr, "%.0f dB/s"},
+    {"scale", "Frequency scale", 0, 0, 2, Opt::Choice, dsp::kFreqScaleNames},
+    {"fmin", "Min frequency", 10, 0, 500, Opt::Number, nullptr, "%.0f Hz", 1.0},
+    {"fmax", "Max frequency", 22000, 1000, 24000, Opt::LogNumber, nullptr, "%.0f Hz", 10.0},
+    {"avg", "Average line", 0, 0, 1, Opt::Toggle, kOnOff},
+    {"avgs", "Average time", 8, 0.5, 60, Opt::LogNumber, nullptr, "%.1f s"},
     {"peaks", "Peak line", 1, 0, 1, Opt::Toggle, kOnOff},
     {"floor", "Floor", -78, -140, -30, Opt::Number, nullptr, "%.0f dB", 1.0},
     {"ceil", "Ceiling", 0, -40, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"draw", "Style", 0, 0, 2, Opt::Choice, kDrawNames},
+    {"col", "Colour mode", 0, 0, 5, Opt::Choice, kColourNames},
+    {"map", "Colormap", 4, 0, 10, Opt::Choice, kMapNames},
+    {"base", "Custom colours", 4, 0, 9, Opt::Choice, kMapNames},
+    {"s2", "Stop 2", -60, -140, 0, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"s3", "Stop 3", -40, -140, 0, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"s4", "Stop 4", -20, -140, 0, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"s5", "Stop 5", -8, -140, 0, Opt::Number, nullptr, "%.0f dB", 1.0},
+    {"follow", "Colours follow scale", 0, 0, 1, Opt::Toggle, kOnOff},
+    {"quiet", "Colour floor", -80, -140, -kColourMinSpan, Opt::Number, nullptr, "%.0f dB", 1.0},
     {"fill", "Fill", 0.5, 0.0, 1.0, Opt::Number, nullptr, "%.2f", 0.01},
-    {"glow", "Glow", 1.0, 0.0, 2.0, Opt::Number, nullptr, "%.2f", 0.01},
+    {"glow", "Glow", 0.0, 0.0, 2.0, Opt::Number, nullptr, "%.2f", 0.01},
     {"lw", "Line width", 1.6, 0.5, 4.0, Opt::Number, nullptr, "%.1f", 0.1},
     {"bands", "Band backdrop", 1, 0, 1, Opt::Toggle, kOnOff},
     {"grid", "Grid", 1, 0, 1, Opt::Toggle, kOnOff},
     {"labels", "Labels", 1, 0, 1, Opt::Toggle, kOnOff},
+    {"slope", "Slope guide", 0, 0, 1, Opt::Toggle, kOnOff},
+    {"ttag", "Tilt tag", 1, 0, 1, Opt::Toggle, kOnOff},
 };
 
 struct Options : sheet::Values {
   Options() : Values(kOpts) {}
+  float fMin() const noexcept { return static_cast<float>((*this)[oFMin]); }
+  float fMax() const noexcept { return std::max(static_cast<float>((*this)[oFMax]), 2.0f * fMin()); }
+  bool custom() const noexcept { return choice(oMap) >= ui::Gradient::kCustomIndex; }
+  bool usesMap() const noexcept { return choice(oColour) <= 1; }
   devices::SpectrumTuning tuning() const noexcept {
     devices::SpectrumTuning t;
     t.fftSize = 1u << std::clamp(choice(oFft), 10, 14);
@@ -85,27 +119,72 @@ struct Options : sheet::Values {
     t.tiltDbPerOct = static_cast<float>((*this)[oTilt]);
     t.holdSeconds = static_cast<float>((*this)[oHold]);
     t.fallDbPerSecond = static_cast<float>((*this)[oFall]);
+    t.scale = dsp::freqScaleOf(choice(oScale));
+    t.fMin = fMin();
+    t.fMax = fMax();
+    t.average = on(oAvg);
+    t.averageSeconds = static_cast<float>((*this)[oAvgSec]);
     return t;
   }
-  // The look (the ceiling at least 10 dB over the floor).
-  void style(devices::SpectrumPlotStyle& s) const noexcept {
+  // The colour window (Loud pinned at 0 dBFS unless the colours follow the scale).
+  ui::LevelAxis colourAxis(float floorDb, float ceilDb) const noexcept {
+    return on(oFollow) ? ui::LevelAxis{floorDb, ceilDb, 1.0f} : ui::LevelAxis{static_cast<float>((*this)[oQuiet]), 0.0f, 1.0f};
+  }
+  // The look (the ceiling at least 10 dB over the floor). `nyquist`: the analysis' top (the axis' fMax is clamped there).
+  void style(devices::SpectrumPlotStyle& s, float nyquist) const noexcept {
     s.peaks = on(oPeaks);
     s.floorDb = static_cast<float>((*this)[oFloor]);
     s.ceilDb = std::max(static_cast<float>((*this)[oCeil]), s.floorDb + 10.0f);
+    s.draw = static_cast<devices::SpectrumDraw>(std::clamp(choice(oDraw), 0, 2));
+    s.colour = static_cast<devices::SpectrumColour>(std::clamp(choice(oColour), 0, devices::kSpectrumColourCount - 1));
+    s.colormap = std::clamp(choice(oMap), 0, ui::Gradient::kCustomIndex);
+    s.customBase = std::clamp(choice(oBase), 0, ui::kColormapCount - 1);
+    for (int i = 0; i < 4; ++i) s.stopsDb[i] = static_cast<float>((*this)[oStop2 + static_cast<uint32_t>(i)]);
+    s.colourFollow = on(oFollow);
+    s.colourLoDb = static_cast<float>((*this)[oQuiet]);
     s.fill = static_cast<float>((*this)[oFill]);
     s.glow = static_cast<float>((*this)[oGlow]);
     s.lineWidth = static_cast<float>((*this)[oLine]);
     s.bands = on(oBands);
     s.grid = on(oGrid);
+    s.average = on(oAvg);
+    s.slopeGuide = on(oSlope);
+    s.tiltTag = on(oTiltTag);
+    s.tiltDbPerOct = static_cast<float>((*this)[oTilt]);
+    const float fMax = nyquist > 0.0f ? std::min(this->fMax(), nyquist) : this->fMax();
+    s.axis = dsp::FreqAxis(dsp::freqScaleOf(choice(oScale)), std::min(fMin(), 0.5f * fMax), fMax);
+  }
+  // The value o may take (VZ.2 X2, PQ f6bbc4a): a Custom stop halts 1 dB from its neighbours (the window's ends for
+  // the outer ones); the colour floor stays 12 dB under 0 dBFS and, on Custom, 1 dB under Stop 2.
+  double fenced(uint32_t o, double v) const noexcept {
+    if (o >= oStop2 && o <= oStop5) {
+      float st[4];
+      for (int i = 0; i < 4; ++i) st[i] = static_cast<float>((*this)[oStop2 + static_cast<uint32_t>(i)]);
+      float lo = 0.0f, hi = 0.0f;
+      ui::stopFence(st, static_cast<int>(o - oStop2), colourAxis(static_cast<float>((*this)[oFloor]), static_cast<float>((*this)[oCeil])), lo, hi);
+      return std::clamp(v, static_cast<double>(lo), static_cast<double>(hi));
+    }
+    if (o == oQuiet && custom()) return std::min(v, (*this)[oStop2] - 1.0);
+    return v;
   }
 };
 
-void visibleRows(int tab, std::vector<uint32_t>& out) {
+void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   out.clear();
-  if (tab == sheet::kAnalysis)
-    for (uint32_t i = oFft; i <= oFall; ++i) out.push_back(i);
-  else
-    for (uint32_t i = oPeaks; i < oCount; ++i) out.push_back(i);
+  if (tab == sheet::kAnalysis) {
+    for (uint32_t i = oFft; i <= oAvg; ++i) out.push_back(i);
+    if (o.on(oAvg)) out.push_back(oAvgSec);
+    return;
+  }
+  for (const uint32_t i : {oPeaks, oFloor, oCeil, oDraw, oColour}) out.push_back(i);
+  if (o.usesMap()) {
+    out.push_back(oMap);
+    if (o.custom())
+      for (const uint32_t i : {oBase, oStop2, oStop3, oStop4, oStop5}) out.push_back(i);
+  }
+  out.push_back(oFollow);
+  if (!o.on(oFollow)) out.push_back(oQuiet);
+  for (const uint32_t i : {oFill, oGlow, oLine, oBands, oGrid, oLabels, oSlope, oTiltTag}) out.push_back(i);
 }
 
 // The hosts poll a face's voice reader; this one stands for the feed's frames.
@@ -121,7 +200,7 @@ public:
 class SpectrumFace final : public MetaFace {
 public:
   explicit SpectrumFace(const meta::Type& t) : MetaFace(t) {
-    visibleRows(panel_.tab, rows_);
+    visibleRows(opts_, panel_.tab, rows_);
     applyOptions();
   }
 
@@ -278,7 +357,7 @@ public:
         if (part >= kRowBase) return rowDown(static_cast<uint32_t>(part - kRowBase), e);
         if (part == sheet::kTabBase || part == sheet::kTabBase + 1) {
           panel_.tab = part - sheet::kTabBase;
-          visibleRows(panel_.tab, rows_);
+          visibleRows(opts_, panel_.tab, rows_);
           return true;
         }
         if (part == sheet::kSave) {
@@ -357,16 +436,18 @@ public:
       case kSetPart:
         title = "Settings";
         body = sheet_ ? "Click to close the settings."
-                      : "Click for every option: window, smoothing, attack / release, tilt, peak hold; range, fill, glow, "
-                        "line, bands, grid, labels.";
+                      : "Click for every option: window, smoothing, attack / release, tilt, peak hold, frequency scale, "
+                        "the average line; range, style, colours, fill, glow, line, bands, grid, labels, guides.";
         return;
       case sheet::kTabBase:
         title = "Analysis";
-        body = "The options of what is analysed: window, long low window, smoothing, attack / release, tilt, peak hold.";
+        body = "The options of what is analysed: window, long low window, smoothing, attack / release, tilt, peak hold, "
+               "the frequency scale and range, the long-term average.";
         return;
       case sheet::kTabBase + 1:
         title = "Display";
-        body = "Only how it looks: peak line, level range, fill, glow, line width, band backdrop, grid, labels.";
+        body = "Only how it looks: peak line, level range, curve / bars, colour mode and colormap, the colour window, "
+               "fill, glow, line width, band backdrop, grid, labels, slope guide, tilt tag.";
         return;
       case sheet::kSave:
         title = "Save as default";
@@ -396,6 +477,11 @@ public:
           title = op.label;
           body = sheet::numeric(op) ? "Drag up / down to set (Shift: fine); double-click resets."
                                     : "Click to change (Shift: back); double-click resets.";
+          if (&op >= &kOpts[oStop2] && &op <= &kOpts[oStop5])
+            body = "The level (dB) this colour of the Custom ramp paints. Drag up / down: it halts 1 dB from its "
+                   "neighbours; moving the colour floor leaves it where it is. Double-click resets.";
+          else if (&op == &kOpts[oQuiet])
+            body = "The level the colour ramp starts at (the top is fixed at 0 dBFS). Drag up / down; double-click resets.";
           return;
         }
         MetaFace::describe(part, title, body);
@@ -430,9 +516,10 @@ private:
     applyOptions();
   }
   void applyOptions() {
-    visibleRows(panel_.tab, rows_);
+    visibleRows(opts_, panel_.tab, rows_);
     devices::SpectrumPlotStyle s = plot_.style();
-    opts_.style(s);
+    devices::SpectrumFeed* f = plot_.feed();
+    opts_.style(s, f != nullptr ? static_cast<float>(0.5 * f->config().sampleRate) : 0.0f);
     plot_.setStyle(s);
     sendTuning();
   }
@@ -441,7 +528,7 @@ private:
     if (f != nullptr) f->setTuning(opts_.tuning());  // (the feed ignores an unchanged tuning)
   }
   void setOption(uint32_t o, double v) {
-    opts_.set(o, v);
+    opts_.set(o, opts_.fenced(o, v));
     writeOptions();
   }
   void writeOptions() {
@@ -486,7 +573,7 @@ private:
         frames_.live_ = true;
         if (!polling_ && !painting_ && wakeHost_) wakeHost_();  // the host's own poll / paint keeps going by itself
       });
-      sendTuning();
+      applyOptions();  // (the axis' top is the feed's Nyquist frequency)
     }
     return f != nullptr;
   }

@@ -5,17 +5,29 @@
 // panels), the plain "spectrum" panel display, the Spectrum meta module's face. PQ Meter's spectrum is the style guide
 // (pq meter/src/modules/spectrum.cpp, ported in look and behaviour, our own code):
 //
-//   axis        log frequency 10 Hz … 22 kHz (the analyser's axis; SpectrumAxis), dB window floor … ceiling
-//   backdrop    three faint tinted columns (low / mid / high: edges at 250 Hz and 4 kHz, the palette's hue at each
-//               third, α 0.055) that fade out toward the bottom rows
-//   grid        vertical rules at 20 30 50 100 200 300 500 1k 2k 3k 5k 10k 20k (decades stronger), horizontal rules
-//               every 12 dB with their dB labels at the right edge (where the panel is wide enough)
+//   axis        the style's frequency axis (VZ.2: pq/dsp/freq_axis.h, Log / Mel / Linear, fMin … fMax; default log
+//               10 Hz … 22 kHz; SpectrumAxis), dB window floor … ceiling. The snapshot carries the axis its points lie
+//               on; the plot reads them through it, so a display on another axis (the EQ's) resamples
+//   backdrop    three faint tinted columns (low / mid / high: edges at 250 Hz and 4 kHz, the palette at each third,
+//               α 0.055) that fade out toward the bottom rows
+//   grid        vertical rules from freqGridLines (the decade ladder on Log / Mel, even steps on Linear), horizontal
+//               rules every 12 dB with their dB labels at the right edge (where the panel is wide enough)
 //   input       optional: the device's INPUT spectrum as a faint grey curve behind (no glow) — what the device got
-//   spectrum    the output: colour per vertex from the Ice colormap by level, a gradient fill fading to the bottom, a
-//               level-weighted 3-pass bloom (level³), the body and a brightened core (ui::spectrumCurve); a vertex
-//               fades out over the lowest 4 % of the range, so silence draws nothing (not a line along the floor)
+//   colour      PQ Meter's modes (VZ.2 S8): Colormap by level (default: Ice), Colormap by frequency (level as
+//               brightness), Blend, Spectral, Heat, Solid, through a 64 × 128 (frequency × level) palette built when
+//               the colour options change; the ten colormaps plus Custom (ui::levelGradient: stops in dB). Level is
+//               normalised over the COLOUR window: its own Quiet … 0 dBFS (Loud pinned), or floor … ceiling while
+//               the colours follow the scale
+//   spectrum    the output (draw: Curve / Bars / Both). Curve: a gradient fill fading to the bottom, one optional glow
+//               pass (level³; off by default), the antialiased core (ui::spectrumCurve); a vertex fades out over the
+//               lowest 4 % of the range, so silence draws nothing. Bars (S11): every pixel column through the palette
+//               by its own level, straight (no gamma), fading in over the 12 dB above the colour window's bottom; Both
+//               stops them at the curve
 //   peaks       optional: the peak hold through the knot spline (8 px knots), faded where it sits on the curve and
-//               where it decays to the floor, rising instantly, falling eased
+//               where it decays to the floor, rising instantly, falling eased (curve styles only)
+//   average     optional (S6): the long-term average, amber, 1.8 px
+//   guides      optional: the slope guide (dashed: a straight line on Log, the curve a dB/oct tilt is on Mel /
+//               Linear, pivoted at 1 kHz on the middle of the range); the tilt tag top left (S7)
 //   response    optional: the MEASURED response (|H| from the cross spectra, pq/dsp/transfer.h) on the response axis
 //               (`respTopDb … respBottomDb`), violet, each vertex's alpha its confidence: no curve on silence, on
 //               bands the input does not excite, or where the output does not follow the input
@@ -42,19 +54,37 @@
 
 namespace pq::views::devices {
 
-// The displays' frequency axis: log, 10 Hz … 22 kHz across [x0, x1] (device px). EQ.4: with `offsetHz` > 0 the
-// response displays' axis instead: x ∝ log(1 + f / offsetHz) over 0 … topHz (0 Hz at x0; near-linear below offsetHz).
+// The displays' frequency axis across [x0, x1] (device px): `freq` (default log 10 Hz … 22 kHz). EQ.4: with
+// `offsetHz` > 0 the response displays' axis instead: x ∝ log(1 + f / offsetHz) over 0 … topHz (0 Hz at x0).
 struct SpectrumAxis {
   static constexpr float kLoHz = 10.0f, kHiHz = 22000.0f;
   float x0 = 0, x1 = 1;
   float offsetHz = 0.0f, topHz = kHiHz;
+  dsp::FreqAxis freq{dsp::FreqScale::Log, kLoHz, kHiHz};
   float x(float hz) const noexcept;
   float hz(float px) const noexcept;
 };
 
+// VZ.2 S8: how a point picks its colour (PQ Meter's menu order). APPEND-ONLY (instance data stores the index).
+enum class SpectrumColour : uint8_t { Colormap, ColormapFreq, Blend, Spectral, Heat, Solid };
+inline constexpr int kSpectrumColourCount = 6;
+enum class SpectrumDraw : uint8_t { Curve, Bars, Both };
+
 struct SpectrumPlotStyle {
   float floorDb = -78.0f, ceilDb = 0.0f;  // SPEC §11.1
-  float glow = 1.0f, fill = 0.5f;          // PQ Meter's glow amount and fill alpha
+  float glow = 0.0f, fill = 0.5f;          // PQ Meter's glow amount (0: off, its default) and fill alpha
+  dsp::FreqAxis axis;                      // paintAll's frequency axis
+  SpectrumDraw draw = SpectrumDraw::Curve;
+  SpectrumColour colour = SpectrumColour::Colormap;
+  int colormap = 4;                        // ui::Colormap (Ice), or ui::Gradient::kCustomIndex
+  int customBase = 4;                      // Custom: the colormap its stop colours come from
+  float stopsDb[4] = {-60.0f, -40.0f, -20.0f, -8.0f};  // Custom: the middle stops (dB)
+  bool colourFollow = false;               // the colours span floor … ceiling (else colourLoDb … 0 dBFS)
+  float colourLoDb = -80.0f;
+  bool average = false;                    // the average line (when the snapshot has one)
+  bool slopeGuide = false;
+  bool tiltTag = true;
+  float tiltDbPerOct = 0.0f;               // the analysis' tilt (the tag and the guide)
   float lineWidth = 1.6f;                  // logical px
   bool bands = true;                       // the low / mid / high backdrop
   bool grid = true;                        // frequency + 12 dB rules
@@ -128,11 +158,15 @@ public:
 
   // Tests: feeds the eased state directly (no feed).
   void setShownForTest(SpectrumSnapshot s, float pointCount);
+  // The colour of a point at axis fraction ft and level db (the palette; alpha 255).
+  ui::Rgba colourAt(float ft, float db) const noexcept;
 
 private:
   uint32_t wants() const noexcept;
   float sampleAt(const std::vector<float>& v, float hz) const noexcept;
   void acquire();
+  void rebuildPalette() const;
+  float colourT(float db) const noexcept;
 
   SpectrumFeed* feed_ = nullptr;
   std::function<void()> requestFrame_;
@@ -142,13 +176,16 @@ private:
   uint64_t seq_ = 0;
   double last_ = 0.0;
   SpectrumSnapshot target_, shown_;
-  // The axis the snapshot's points are on (the feed's; tests: log 10 Hz … 22 kHz).
-  std::function<float(float)> axisT_;
-  uint32_t points_ = 0;
+  // The palette (64 frequencies × 128 levels) and what it was built for.
+  static constexpr int kPalF = 64, kPalL = 128;
+  mutable std::vector<ui::Rgba> palette_;
+  mutable SpectrumPlotStyle palFor_;
+  mutable bool palValid_ = false;
   // Scratch.
   std::vector<ui::Vec2> poly_;
   std::vector<ui::Rgba> cols_;
-  std::vector<float> lvl_, vis_, pk_, pkSm_;
+  std::vector<float> lvl_, vis_, pk_, pkSm_, db_;
+  std::vector<ui::Rgba> tmp_;
 };
 
 }  // namespace pq::views::devices

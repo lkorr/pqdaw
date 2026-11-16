@@ -11,17 +11,19 @@
 // refSpectrumCurve) and drive the compiled helpers above:
 //   oscilloscope.cpp 860-892 (inside the drawWithTrails lambda of Oscilloscope's draw member: needs the
 //     module's members, trails and ImGui state) → pq::ui::scopeTrace / scopeEnvelope
-//   spectrum.cpp 1328-1395 (inside Spectrum's draw member loop) → pq::ui::spectrumCurve
+//   spectrum.cpp 1450-1515 (1.0.21; inside Spectrum's draw member loop: fill, one glow pass, the core) →
+//     pq::ui::spectrumCurve
 //
 // Results, asserted below for every input:
 //   - bit-identical: the colour helpers (smoothAlphaMul, withAlpha = mulAlpha, setAlpha, scaleRgb, brighten
 //     for amounts ≥ 0, the flat-fill colour), catmullRom, smoothBand, gradientBand.
 //   - every geometry function: identical vertex and index counts, identical index buffers, identical vertex
-//     colours and uvs. Vertex POSITIONS (and splinePath points, splineSmooth values) differ by float rounding
+//     colours and uvs (gradientPolyline, VZ.2: PQ Meter's antialiased stroke — shared vertices, mitre capped at 2x
+//     the half-width, a 1 px fringe — with the shim's _FringeScale 1). Vertex POSITIONS (and splinePath points, splineSmooth values) differ by float rounding
 //     only, because the port multiplies by a reciprocal where PQ Meter divides (1/len for normals, 1/target in
 //     splinePath, 1/steps and 1/knotStep for the spline parameter). Asserted: |Δ| ≤ kMaxPosDiff (1/256 px,
-//     one rasteriser sub-pixel step). Measured on this machine: smoothPolyline, gradientPolyline,
-//     spectrumCurve, scopeEnvelope ≤ 6.1e-5 px (1–2 ulp); smoothPolylineCols 1.2e-4 px; splinePath 3.7e-4 px;
+//     one rasteriser sub-pixel step). Measured on this machine (VZ.2, PQ Meter 1.0.21): gradientPolyline and
+//     spectrumCurve bit-identical; smoothPolyline, scopeEnvelope ≤ 6.1e-5 px (1–2 ulp); smoothPolylineCols 1.2e-4 px; splinePath 3.7e-4 px;
 //     smoothCurve 7.9e-4 px and scopeTrace 1.8e-3 px (the splinePath difference fed through near-degenerate
 //     segments' normals); splineSmooth 5.7e-6 dB (bit-identical for power-of-two knot steps). 96–100 % of
 //     coordinates are bit-identical (see the MESSAGE lines).
@@ -282,7 +284,8 @@ void refScopeEnvelope(ImDrawList* dl, const std::vector<ImVec2>& up, const std::
   pqui::smoothPolyline(dl, dn, color, ew);
 }
 
-// spectrum.cpp 1328-1395 for one curve (no overlay, curve style without bars, something above the floor).
+// spectrum.cpp 1450-1515 (1.0.21) for one curve (no overlay, curve style without bars, something above the floor):
+// the fill, one tight glow pass, one antialiased core stroke.
 void refSpectrumCurve(ImDrawList* dl, const std::vector<ImVec2>& poly, const std::vector<ImU32>& cols,
                       const std::vector<float>& lvlT, float yBottom, const pq::ui::SpectrumCurveStyle& st) {
   const int steps = static_cast<int>(poly.size());
@@ -300,20 +303,14 @@ void refSpectrumCurve(ImDrawList* dl, const std::vector<ImVec2>& poly, const std
     pqm::gradientBand(dl, poly.data(), tmp.data(), yBottom, st.gradientFill ? 0.0f : 1.0f, steps);
   }
   if (st.glow && st.glowAmount > 0.01f) {
-    const struct {
-      float mul, alpha;
-    } layers[3] = {{7.0f, 0.070f}, {4.0f, 0.110f}, {2.2f, 0.170f}};
-    for (const auto& L : layers) {
-      for (int s = 0; s < steps; ++s) {
-        const float k = lvlT[s] * lvlT[s] * lvlT[s];
-        tmp[s] = pqm::withAlpha(cols[s], L.alpha * st.glowAmount * (0.15f + 0.85f * k));
-      }
-      pqm::gradientPolyline(dl, poly.data(), tmp.data(), steps, std::max(1.0f, st.lineWidth * L.mul));
+    for (int s = 0; s < steps; ++s) {
+      const float k = lvlT[s] * lvlT[s] * lvlT[s];
+      tmp[s] = pqm::withAlpha(cols[s], 0.20f * st.glowAmount * (0.15f + 0.85f * k));
     }
+    pqm::gradientPolyline(dl, poly.data(), tmp.data(), steps, std::max(1.0f, st.lineWidth * 2.2f) + 1.0f);
   }
-  pqm::gradientPolyline(dl, poly.data(), cols.data(), steps, std::max(1.0f, st.lineWidth * 1.9f));
   for (int s = 0; s < steps; ++s) tmp[s] = pqm::brighten(cols[s], 0.30f + 0.45f * lvlT[s]);
-  pqm::gradientPolyline(dl, poly.data(), tmp.data(), steps, std::max(0.8f, st.lineWidth * 0.85f));
+  pqm::gradientPolyline(dl, poly.data(), tmp.data(), steps, std::max(0.5f, st.lineWidth));
 }
 
 // The spectrum inputs of the lines scene (pink tilt, harmonics, bump, smoothed noise, roll-off; Ice-like
