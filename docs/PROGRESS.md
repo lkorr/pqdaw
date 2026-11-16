@@ -1053,3 +1053,20 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   0.81 ms; UI frame 0.075 / 0.20 ms; hidden = 0, settles at rest.
 - Notes: Q?-VZ.6-a (no colour pickers; PQ's DAW link not needed, no bar numbers on the scroll; LR tree sums flat to
   0.034 dB). Goldens added: device/project-meta-bandwave, module-bandlevels / waveform-panel.
+
+## 2026-11-16 · VZ.7 merged · main
+- Did: Waterfall (dsp::WaterfallAnalyzer on VZ.2's spectrum analysis, mono / L / R / M / S, 300-slice ring, kWantWaterfall)
+  and Stereo Spectrogram (dsp::StereoCloud: PQ's reassigned stereo STFT point cloud + ribbon slices, kWantCloud), CPU
+  rendered as in PQ Meter: shared camera3d.h (orbit / pan / roll, release snap, snap chips, pose saved as data, one
+  undo step per gesture); Waterfall = lit indexed mesh (new FacePainter::mesh / meshDevice); Stereo Spectrogram =
+  splat into an accumulator resolved into a TexturePool texture, now a scrolling wrap-around canvas: new points
+  splatted once, expiring ones cleared + their tiles' live points re-splatted (exact = full re-splat, tested), age
+  fade as a resolve gain, only changed texels resolved / uploaded. Idle = no frames.
+- Verified (worker): dsp 3D 3/3; views 3D 6/6 (projection at each snap view, drags, rest) and after rebasing onto
+  VZ.6: views VZ.5–VZ.7 + engine elements 23/23, playback pass-through / engine modules 8/8; -Affected before the
+  rebase 41/45 (preview player, driver SIGSEGV, two wavetable timings: green alone). Merged as tested (main unmoved).
+- Perf / CPU-efficiency check (release, 1440p-sized face): Stereo Spectrogram with data arriving 9.0 → 0.21 ms, camera
+  moving 6.2 ms (full re-splats throttled to ~30 / s; perspective / glow / zoom past the window still full re-splat);
+  Waterfall 2.3 ms steady, 2.9 moving; worker per second of stereo 8.9 (waterfall) / 46.9 ms (cloud, check).
+- Notes: Q?-VZ.7-a (no camera LFO bank, colour pickers, palette track; waterfall long window 4× not PQ's 8×; zoom
+  Alt+wheel). Goldens added: waterfall-{spec,side,top,3d}, stereospectrogram-{spec,image,pan,3d}.
