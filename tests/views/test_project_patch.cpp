@@ -2706,8 +2706,9 @@ void sDrag(Ui& u, doc::DeviceId dev, float dx, float dy, Mods m = mod::kNone) {
 
 // SPEC §15 2026-11-01 "resize, groups, and the free-device rack" (the user: "holding down s while hovering over a module
 // should let you resize it"): S over a block shows ⤡; a drag scales it uniformly, its top-left kept, its bottom-right
-// corner on the pointer along the diagonal; 0.5× … 3× with a detent at 1×, Shift in steps of 25 %; Esc cancels; the
-// layout makes room; S + double-click resets. View state: no undo step, but the project is dirty.
+// corner on the pointer along the diagonal; 0.5× … 3× with a detent at 1×, Shift in steps of 25 %; Esc cancels; what
+// it comes to overlap is pushed aside on the release; S + double-click resets. View state: no undo step, but the project
+// is dirty.
 TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clamps, Shift steps, Esc, reset, room made") {
   Ui u;
   REQUIRE(u.d.enableGpu().ok());
@@ -2743,6 +2744,7 @@ TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clam
   CHECK_FALSE(cv.resizeHeld());
   // Half the block's diagonal outwards: 1.5×.
   sDrag(u, wt, n0.w * z * 0.5f, n0.h * z * 0.5f);
+  u.d.advance(1.0);  // (the push of what it now overlaps glides)
   CHECK(v.blockScale(wt) == doctest::Approx(1.5f));
   CHECK(u.history() == h0);  // view state: no undo step …
   CHECK(u.ctx.dirty());      // … but saved
@@ -2774,11 +2776,15 @@ TEST_CASE("project patch (TX.resize): S + drag scales a block uniformly — clam
         CHECK(circuit::outlineDistance(n.outline, p) == doctest::Approx((circuit::kOrbitPortR + circuit::kOrbitGap) * 1.5f).epsilon(0.01));
       }
     CHECK(chains == 2);
-    // Room made: the filter after it moved right by the growth, the band grew; the scene node draws the face at 1.5.
+    // Room made (bug-spawn-resize: by the overlap rule, not the layout): the filter after it, which it now overlapped,
+    // pushed right to the gap on the release (the resized block holds its place), level as it was; the band holds
+    // everything; the scene node draws the face at 1.5.
     const Node& f = u.pp().nodes[u.deviceNode(r.filter)];
-    CHECK(f.x == doctest::Approx(f0.x + n0.w * 0.5f));
-    CHECK(f.x >= n.x + n.w + metrics::kNodeGap - 0.01f);
-    CHECK(u.pp().bands[n.band].h > bandH0);
+    CHECK(f.x >= n.x + n.w + ProjectPatchView::kPushGap - 1.0f);
+    CHECK(f.x <= n.x + n.w + ProjectPatchView::kPushGap + 1.0f);
+    CHECK(f.y == doctest::Approx(f0.y));
+    CHECK(u.pp().bands[n.band].h >= bandH0);
+    CHECK(u.pp().bands[n.band].y + u.pp().bands[n.band].h >= n.y + n.h + metrics::kBandPad);
     CHECK(v.scene().scene->nodes[v.scene().sceneNode[u.deviceNode(wt)]].scale == doctest::Approx(1.5f));
     CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
     for (const Edge& e : u.pp().edges) CHECK(routedAsDrawn(e));

@@ -252,10 +252,26 @@ struct Builder {
   // (pinOffset) and its controls' anchors all `scale` times their own (what is drawn on it follows: SceneNode::scale).
   // An opened device keeps its size (its frame holds the atoms at the canvas's zoom). TX.group-resize: an opened group's
   // stored scale scales its contents instead (scaleCapsule).
+  // bug-spawn-resize: the scale is only noted here (Node::pendingScale) and applied once the block has its place
+  // (applyScale: layout() for a band's blocks, groupNode after its circuit layout for a capsule's members): every place
+  // is laid out at the blocks' own sizes, so resizing one moves no other block (its neighbours are pushed only where it
+  // comes to overlap them; its band grows only where it reaches past its edge).
   Node scaled(Node n) const {
+    if (n.expanded || (n.group && n.groupOpen)) return n;
+    n.pendingScale = storedScale(n.device);
+    return n;
+  }
+  // At once (a closed group's miniature: its boxes are its members at their sizes).
+  Node scaledNow(Node n) const {
     if (n.expanded || (n.group && n.groupOpen)) return n;
     if (const float k = storedScale(n.device); k != 1.0f) scaleBy(n, k);
     return n;
+  }
+  static void applyScale(Node& n) {
+    if (n.pendingScale == 1.0f) return;
+    const float k = n.pendingScale;
+    n.pendingScale = 1.0f;
+    scaleBy(n, k);
   }
   // A device's stored scale (its nudge's; 1: none), clamped.
   float storedScale(doc::DeviceId d) const {
@@ -784,7 +800,7 @@ struct Builder {
             b.h = m::kClosedGroupH;
             kids.push_back(std::move(b));
           } else {
-            kids.push_back(scaled(deviceNode(band, *d, tp)));
+            kids.push_back(scaledNow(deviceNode(band, *d, tp)));
           }
         }
         kids.push_back(terminal(false));
@@ -918,6 +934,8 @@ struct Builder {
       else if (i + 1 == kids.size()) cn.groupOut = kids[i];
       else cn.members.push_back(kids[i]);
     }
+    // bug-spawn-resize: the members at their stored scales now, in place (the circuit was laid out at their own sizes).
+    for (const uint32_t k : cn.members) applyScale(out.nodes[k]);
     if (const float k = storedScale(g.id); k != 1.0f) scaleCapsule(ci, k);  // TX.group-resize
     return ci;
   }
@@ -947,15 +965,18 @@ struct Builder {
     n.w = expanded ? m::kMixerWideW : m::kMixerW;  // TX.mixer-look: expanded, longer send faders and their levels
     n.h = sends == 0 ? m::kMixerH : roundUp4(m::kMixerSendTop + m::kPinPitch * static_cast<float>(sends - 1) + 9.0f);
     n.expanded = expanded;
-    // TL.4: its scale (the default 2×, times the track's stored factor), the whole face in proportion.
-    float k = m::kMixerScale;
+    // TL.4: its scale (the default 2×, times the track's stored factor), the whole face in proportion. bug-spawn-resize:
+    // laid out at the default, the factor applied in place afterwards (Node::pendingScale), as for a block.
+    const float k0 = std::clamp(m::kMixerScale, doc::kMinPatchScale, doc::kMaxPatchScale);
+    float k = k0;
     if (opt.nudges != nullptr)
       if (const auto it = opt.nudges->find(t.id.value); it != opt.nudges->end() && std::isfinite(it->second.scale))
         k *= it->second.scale;
     k = std::clamp(k, doc::kMinPatchScale, doc::kMaxPatchScale);
-    n.scale = k;
-    n.w *= k;
-    n.h *= k;
+    n.scale = k0;
+    n.w *= k0;
+    n.h *= k0;
+    n.pendingScale = k / k0;
     return n;
   }
 
@@ -1560,8 +1581,31 @@ struct Builder {
         }
       // TL.1: the lane under the circuit (a folded band: its title strip and its lane only).
       b.h = (b.folded ? m::kTitle : roundUp4(bottom + m::kBandPad - y)) + laneBlock(b);
+      // bug-spawn-resize: the blocks at their stored scales now, each in place — a block on the spine keeps its main pin
+      // there (never over the title strip), any other its top-left; the mixer like a spine block, the master's Out on its
+      // output. Every place and the band above were laid out at their own sizes: a resize moves nothing else (the band
+      // grows below only where a block now reaches past it; the push separates what it comes to overlap).
+      auto applyAt = [&](uint32_t n, bool spineHeld) {
+        Node& nd = out.nodes[n];
+        if (nd.pendingScale == 1.0f) return;
+        const float s0 = spineOf(nd);
+        applyScale(nd);
+        if (spineHeld) nd.y = std::max(b.y + m::kTitle, nd.y + s0 - spineOf(nd));
+      };
+      for (const uint32_t d : b.devices) applyAt(d, !out.nodes[d].offPath && stackUnder.count(d) == 0);
+      if (b.mixer != kNone && out.nodes[b.mixer].pendingScale != 1.0f) {
+        const float right0 = out.nodes[b.mixer].x + out.nodes[b.mixer].w;
+        applyAt(b.mixer, true);
+        if (b.output != kNone) {
+          const Node& mx = out.nodes[b.mixer];
+          Node& o = out.nodes[b.output];
+          o.x += mx.x + mx.w - right0;
+          o.y = mx.y + spineOf(mx) - spineOf(o);
+        }
+      }
       y += b.h + m::kBandGap;
     }
+    for (Node& n : out.nodes) applyScale(n);  // (any other node noted: in place)
     // TX.groups: an opened group's contents where its capsule is.
     for (const Capsule& c : capsules)
       for (const auto& [k, r] : c.rel) {
@@ -1655,7 +1699,10 @@ struct Builder {
       for (uint32_t j = 0; j < out.bands.size(); ++j)
         if (j != i && out.bands[j].y >= oldBottom) out.bands[j].y += grow;
       for (Node& n : out.nodes)
-        if (n.band != i && n.band < out.bands.size() && out.bands[n.band].y >= oldBottom + grow) n.y += grow;
+        if (n.band != i && n.band < out.bands.size() && out.bands[n.band].y >= oldBottom + grow) {
+          n.y += grow;
+          n.frameY0 += grow, n.frameY1 += grow;  // (a capsule's frame before it grew: with it)
+        }
     }
     // Bands reach their nodes (a nudged block stays inside its band's strip horizontally).
     for (Band& b : out.bands) {

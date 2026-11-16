@@ -513,8 +513,9 @@ TEST_CASE("cables: a block drag swings its cables; the canvas stops requesting f
 }
 
 // TX.node-menu's push-apart glides blocks (a re-layout per frame): the cables of a gliding block swing with it, then all
-// of it settles and the canvas goes idle.
-TEST_CASE("cables: a block pushed apart by a spawn glides, its cables swing; then idle") {
+// of it settles and the canvas goes idle. (bug-spawn-resize: a spawn onto a block goes to the nearest free spot and
+// pushes nothing; a block moved onto it pushes it.)
+TEST_CASE("cables: a block pushed apart by a block moved onto it glides, its cables swing; then idle") {
   Ui u(fixture());
   doc::TrackId midi;
   doc::forEachTrack(*u.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
@@ -532,9 +533,16 @@ TEST_CASE("cables: a block pushed apart by a spawn glides, its cables swing; the
   const doc::DeviceId vcaId = u.pp().nodes[vca].device;
   const graph::Point2 on{u.pp().nodes[vca].x + u.pp().nodes[vca].w * 0.5f, u.pp().nodes[vca].y + u.pp().nodes[vca].h * 0.5f};
   const float x0 = u.pp().nodes[vca].x, y0 = u.pp().nodes[vca].y;
-  u.view().setPushAnimated(true);
   const doc::DeviceId spawned = u.view().spawnNode(ProjectPatchView::specChoice("tanh"), on);
   REQUIRE(spawned.valid());
+  CHECK_FALSE(u.view().pushing());  // (at its free spot)
+  CHECK(u.pp().nodes[u.pp().nodeOf(vcaId)].x == x0);
+  CHECK(u.pp().nodes[u.pp().nodeOf(vcaId)].y == y0);
+  u.view().setPushAnimated(true);
+  {
+    const Node& s = u.pp().nodes[u.pp().nodeOf(spawned)];
+    u.view().nudge(spawned.value, on.x - (s.x + s.w * 0.5f), on.y - (s.y + s.h * 0.5f));
+  }
   REQUIRE(u.view().pushing());
   bool swung = false;
   for (int i = 0; i < 30 && !swung; ++i) {

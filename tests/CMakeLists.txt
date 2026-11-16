@@ -245,6 +245,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_wavetable_synth_panel.cpp  # GU.8: the Wavetable Synth panel on each tab (goldens), a tab click in the patch view
     views/test_groups_view.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G in the circuit, capsules, the Device view group panel, goldens
     views/test_node_menu.cpp  # TX.node-menu: catalog, search, the menu, spawn / insert / Z / splice / dissolve / Ctrl-release / push-apart, golden, perf
+    views/test_spawn_resize.cpp  # bug-spawn-resize: a resize / stretch moves only what it overlaps; spawns at the pointer (nearest free spot), camera-sized on every path (real dispatch)
     views/test_wire_cut.cpp  # bug-wire-cut: X cuts a cable (both halves re-plugged in either order, empty click, Esc, refusal), Z on a port (real dispatch)
     views/test_cables.cpp  # TX.cables: hanging cables (rest shape, rope sim, drag swing, hit tests on the curve, glow, goldens)
     views/test_orbit_ports.cpp  # TX.orbit-ports: orbiting main ports, the round VCA's floating panel, Delete on a hovered cable

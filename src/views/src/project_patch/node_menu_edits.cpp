@@ -227,6 +227,7 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     ctx_.setStatus("Add: " + c.name + " takes the notes: place it on the band, not inside a group");
     return {};
   }
+  const std::vector<Place> before = places();  // bug-spawn-resize
   Composer k(start, ctx_.store().ids());
   doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, doc::ops::kOffPath, false);
   if (!add || add->devices.empty()) {
@@ -261,18 +262,46 @@ doc::DeviceId ProjectPatchView::spawnNode(const NodeChoice& c, graph::Point2 at,
     }
   }
   const std::string label = "Add " + c.name;
-  if (!dispatchSteps(label.c_str(), std::move(k.steps))) return {};
+  setSpawnScale(id);   // bug-spawn-resize: its size on screen as at zoom 1 (the dispatch's re-layout has it)
+  settleHeld_ = true;  // the overlap rule once it is placed (finishSpawn)
+  if (!dispatchSteps(label.c_str(), std::move(k.steps))) {
+    settleHeld_ = false;
+    ctx_.store().view().patchNudges.erase(id.value);
+    return {};
+  }
   if (c.item == circuit::NodeItem::LibraryFile && libraryItemOf(c.id) == LibraryItem::Preset) {
     std::string stem = c.id.substr(c.id.find_last_of("\\/") + 1);
     if (const size_t dot = stem.rfind('.'); dot != std::string::npos) stem.resize(dot);
     ctx_.library().setPresetName(id, stem);
   }
   if (!note.empty()) ctx_.setStatus(note);
-  placeAt(id, at, inAt, outAt);  // TX.block-drag: the nudge's re-layout settles any overlap (the new block gives way most)
+  finishSpawn(before, id, at, inAt, outAt);
   return id;
 }
 
-void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::string_view inPort, std::string_view outPort) {
+float ProjectPatchView::spawnScale() const noexcept {
+  const double z = canvas_->view().zoom;
+  if (!(z > 0.0) || !std::isfinite(z)) return 1.0f;
+  return clampBlockScale(static_cast<float>(kSpawnRefZoom / z), false);
+}
+
+void ProjectPatchView::setSpawnScale(doc::DeviceId device) {
+  const float k = spawnScale();
+  if (k == 1.0f || !device.valid()) return;
+  ctx_.store().view().patchNudges[device.value].scale = k;  // (a fresh id: a fresh entry)
+}
+
+void ProjectPatchView::finishSpawn(const std::vector<Place>& before, doc::DeviceId device, graph::Point2 at,
+                                   std::string_view inPort, std::string_view outPort) {
+  settleHeld_ = true;
+  (void)keepPlaces(before);
+  placeAt(device, at, inPort, outPort, true);
+  settleHeld_ = false;
+  (void)settleOverlaps();  // what is left (a capsule the block went into grown into its neighbours)
+}
+
+void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::string_view inPort, std::string_view outPort,
+                               bool freeSpot) {
   sync();
   const uint32_t n = patch_.nodeOf(device);
   if (n == kNone) return;
@@ -304,11 +333,65 @@ void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::stri
     graph::Point2 pin;
     if (const int32_t k = inPort.empty() ? -1 : b.input(inPort); k >= 0 && !b.inputs[static_cast<size_t>(k)].anchored) pin = inPortPoint(b, static_cast<size_t>(k));
     else if (const int32_t o = outPort.empty() ? -1 : b.output(outPort); o >= 0) pin = outPortPoint(b, static_cast<size_t>(o));
-    else return;
+    else break;
     const float rx = at.x - pin.x, ry = at.y - pin.y;
-    if (std::fabs(rx) < 0.75f && std::fabs(ry) < 0.75f) return;
+    if (std::fabs(rx) < 0.75f && std::fabs(ry) < 0.75f) break;
     nudge(device.value, rx, ry);
   }
+  if (!freeSpot) return;
+  // bug-spawn-resize: overlapping a block there, it goes to the nearest free spot (nothing else moves for it).
+  sync();
+  const uint32_t m = patch_.nodeOf(device);
+  if (m == kNone) return;
+  const graph::Point2 to = freeSpotFor(m);
+  const float ex = to.x - patch_.nodes[m].x, ey = to.y - patch_.nodes[m].y;
+  if (std::fabs(ex) >= 0.5f || std::fabs(ey) >= 0.5f) nudge(device.value, ex, ey);
+}
+
+graph::Point2 ProjectPatchView::freeSpotFor(uint32_t node) const {
+  const Node& nd = patch_.nodes[node];
+  const graph::Point2 at{nd.x, nd.y};
+  if (nd.band >= patch_.bands.size()) return at;
+  std::vector<Push::Body> all;
+  collectBodies(all, false);
+  const uint32_t level = nd.band * 65536u + (nd.capsule == kNone ? 65535u : std::min<uint32_t>(nd.capsule, 65534u));
+  const float minY = nd.capsule == kNone && !patch_.scoped ? patch_.bands[nd.band].y + metrics::kTitle : -1e9f;
+  struct Rect {
+    float x, y, w, h;
+  };
+  std::vector<Rect> others;
+  for (const Push::Body& b : all)
+    if (b.level == level && !(b.device.valid() && b.device == nd.device)) others.push_back({b.x, b.y, b.w, b.h});
+  const float w = nd.w, h = nd.h;
+  auto clear = [&](float x, float y) {
+    if (y < minY - 0.5f) return false;
+    for (const Rect& o : others)
+      if (x < o.x + o.w && o.x < x + w && y < o.y + o.h && o.y < y + h) return false;
+    return true;
+  };
+  if (clear(at.x, at.y)) return at;
+  std::vector<float> xs{at.x}, ys{std::max(at.y, minY)};
+  for (const Rect& o : others) {
+    xs.push_back(o.x - w - kPushGap);
+    xs.push_back(o.x + o.w + kPushGap);
+    ys.push_back(o.y - h - kPushGap);
+    ys.push_back(o.y + o.h + kPushGap);
+  }
+  struct Spot {
+    float d2;
+    graph::Point2 p;
+  };
+  std::vector<Spot> spots;
+  spots.reserve(xs.size() * ys.size());
+  for (const float x : xs)
+    for (const float y : ys)
+      if (y >= minY - 0.5f) spots.push_back({(x - at.x) * (x - at.x) + (y - at.y) * (y - at.y), {x, y}});
+  std::sort(spots.begin(), spots.end(), [](const Spot& a, const Spot& b) { return a.d2 < b.d2; });
+  for (const Spot& s : spots)
+    if (clear(s.p.x, s.p.y)) return s.p;
+  float bottom = minY;  // (unreachable: below every body is free)
+  for (const Rect& o : others) bottom = std::max(bottom, o.y + o.h + kPushGap);
+  return {at.x, bottom};
 }
 
 // ---- push-apart (TX.block-drag: blocks never overlap) -----------------------------------------------------------------
@@ -351,7 +434,8 @@ void ProjectPatchView::collectBodies(std::vector<Push::Body>& out, bool onlyOver
     if (device) {
       b.mass = std::max(1.0f, n.w * n.h);
       if (listed(moved_, n.device.value)) b.mass *= 0.25f;   // the one just placed gives way most
-      if (listed(resized_, n.device.value)) b.mass *= 4.0f;  // a resized one holds its place (its neighbours make room)
+      // A resized one holds its place: only what it comes to overlap makes room (bug-spawn-resize; ×4 before).
+      if (listed(resized_, n.device.value)) b.mass *= kResizedMass;
       if (const auto it = nudges.find(n.device.value); it != nudges.end()) b.base = it->second;
     } else {
       b.mass = 0.0f;
@@ -416,10 +500,15 @@ bool ProjectPatchView::startPush() {
   std::vector<Push::Body> bs;
   collectBodies(bs, true);
   if (bs.empty()) return false;
-  // Where they end: overlapping pairs (closer than kPushGap) are separated along their axis of least overlap - shared by
-  // mass between two blocks, all of it on the block against a standing body - until none overlaps (the band's title
-  // strip is a wall: a pair it blocks vertically separates sideways). Each pass walks each level's pairs.
+  // Where they end: overlapping pairs (their rects share area: closer than kPushDetect) are separated to kPushGap along
+  // their axis of least overlap - shared by mass between two blocks, all of it on the block against a standing body -
+  // until none overlaps (the band's title strip is a wall: a pair it blocks vertically separates sideways). Each pass
+  // walks each level's pairs. bug-spawn-resize: only blocks in contact move — a pair is separated when it overlaps, or
+  // when both were pushed and are nearer than the gap (they part as a pushed pair does); a block nearer than the gap to
+  // one but apart stays where it is (and the pushed one may end that near it). Before, every pair of a level nearer
+  // than the gap was pushed apart once anything at that level overlapped.
   for (Push::Body& b : bs) b.ty = b.movable ? std::max(0.0f, b.minY - b.y) : 0.0f;
+  auto pushed = [](const Push::Body& b) noexcept { return b.tx != 0.0f || b.ty != 0.0f; };
   for (int iter = 0; iter < 256; ++iter) {
     bool overlap = false;
     for (size_t i = 0; i < bs.size(); ++i)
@@ -428,9 +517,11 @@ bool ProjectPatchView::startPush() {
         Push::Body& v = bs[j];
         if (!u.movable && !v.movable) continue;
         const float ux = u.x + u.tx, uy = u.y + u.ty, vx = v.x + v.tx, vy = v.y + v.ty;
-        const float ox = std::min(ux + u.w + kPushGap - vx, vx + v.w + kPushGap - ux);
-        const float oy = std::min(uy + u.h + kPushGap - vy, vy + v.h + kPushGap - uy);
+        const float rx = std::min(ux + u.w - vx, vx + v.w - ux), ry = std::min(uy + u.h - vy, vy + v.h - uy);
+        const float ox = rx + kPushGap, oy = ry + kPushGap;
         if (ox <= 0.0f || oy <= 0.0f) continue;
+        const bool contact = rx > kPushDetect && ry > kPushDetect;
+        if (!contact && !(u.movable && v.movable && pushed(u) && pushed(v))) continue;  // near, apart: both stay
         overlap = true;
         float su = 0.0f, sv = 0.0f;  // each one's share of the separation
         if (u.movable && v.movable) {
@@ -448,7 +539,8 @@ bool ProjectPatchView::startPush() {
         if (iter >= 64) {
           // Not settled sideways (blocks squeezed between standing ones): from here every overlap is resolved downwards
           // (bands grow down: always room there), which ends.
-          if (low.movable) low.ty += oy + 0.5f;
+          // The lighter one goes below the other (a just-resized block holds its place here too).
+          if (low.movable && (!up.movable || low.mass <= up.mass)) low.ty += oy + 0.5f;
           else up.ty += (low.y + low.ty + low.h + kPushGap) - (up.y + up.ty) + 0.5f;
         } else {
           bool vertical = oy < ox;
@@ -519,11 +611,13 @@ void ProjectPatchView::applyPush() {
   bool changed = false;
   for (const Push::Body& b : push_.bodies) {
     if (!b.movable) continue;
-    doc::PatchNudge n = b.base;
-    n.dx = std::round(b.base.dx + b.dx);
-    n.dy = std::round(b.base.dy + b.dy);
     auto it = nudges.find(b.device.value);
     const doc::PatchNudge now = it != nudges.end() ? it->second : doc::PatchNudge{};
+    // Only its place: the rest of its entry as it is now (bug-spawn-resize: a scale set while the push glides — a
+    // resize, the next block's — was put back to the push's start).
+    doc::PatchNudge n = now;
+    n.dx = std::round(b.base.dx + b.dx);
+    n.dy = std::round(b.base.dy + b.dy);
     if (now == n) continue;
     changed = true;
     if (n.empty()) nudges.erase(b.device.value);
@@ -550,9 +644,11 @@ void ProjectPatchView::finishPushNow() {
 
 // ---- inserting on a cable ------------------------------------------------------------------------------------------
 
-bool ProjectPatchView::insertOnEdge(uint32_t edge, const NodeChoice& c) { return insertImpl(edge, c, false); }
+bool ProjectPatchView::insertOnEdge(uint32_t edge, const NodeChoice& c, std::optional<graph::Point2> at) {
+  return insertImpl(edge, c, false, at);
+}
 
-bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) {
+bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca, std::optional<graph::Point2> at) {
   sync();
   if (edge >= patch_.edges.size()) return false;
   const Edge e = patch_.edges[edge];
@@ -560,12 +656,17 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
   const doc::Project& p = *start;
   const std::string& name = c.name;
   const std::string label = "Insert " + name;
+  // bug-spawn-resize: where Tab / Z was pressed on the cable (before: the middle between its ends, far from the pointer
+  // on a long cable); without a point, that middle.
   graph::Point2 mid{0.0f, 0.0f};
-  if (!e.points.empty()) {
+  if (at && std::isfinite(at->x) && std::isfinite(at->y)) {
+    mid = *at;
+  } else if (!e.points.empty()) {
     const graph::Point2& a = e.points.front();
     const graph::Point2& b = e.points.back();
     mid = {(a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f};
   }
+  const std::vector<Place> before = places();
   // TX.all-free: every cable between blocks is a document wire (the main path's links too); routes and sends are buses.
   const doc::Wire* w = e.wire.valid() ? doc::findWire(p, e.wire) : nullptr;
   if (w == nullptr || e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) {
@@ -636,18 +737,24 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca) 
       }
     }
   }
-  if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
+  setSpawnScale(id);  // bug-spawn-resize
+  settleHeld_ = true;
+  if (!dispatchSteps(label.c_str(), std::move(k.steps))) {
+    settleHeld_ = false;
+    ctx_.store().view().patchNudges.erase(id.value);
+    return false;
+  }
   if (!hasIn || !hasOut) ctx_.setStatus(name + (!hasIn ? " has no input: only its output is wired" : " has no output: only its input is wired"));
-  placeAt(id, mid);
+  finishSpawn(before, id, mid, {}, {});
   return true;
 }
 
-bool ProjectPatchView::insertVca(uint32_t edge) {
+bool ProjectPatchView::insertVca(uint32_t edge, std::optional<graph::Point2> at) {
   NodeChoice c;
   c.item = circuit::NodeItem::Module;  // GU.4: the VCA module (its knob at 0.7: × 1)
   c.id = "vca";
   c.name = "VCA";
-  return insertImpl(edge, c, true);
+  return insertImpl(edge, c, true, at);
 }
 
 std::vector<doc::WireId> ProjectPatchView::cablesInto(uint32_t node, uint32_t port) const {
@@ -671,6 +778,7 @@ bool ProjectPatchView::insertVcaAtPort(uint32_t node, uint32_t port) {
   }
   const doc::Snapshot start = ctx_.doc();
   const doc::Project& p = *start;
+  const std::vector<Place> before = places();  // bug-spawn-resize
   std::vector<doc::Wire> olds;
   for (const doc::WireId id : ids)
     if (const doc::Wire* w = doc::findWire(p, id)) olds.push_back(*w);
@@ -737,12 +845,20 @@ bool ProjectPatchView::insertVcaAtPort(uint32_t node, uint32_t port) {
       return false;
     }
   }
-  if (!dispatchSteps(label.c_str(), std::move(k.steps))) return false;
+  setSpawnScale(id);  // bug-spawn-resize
+  settleHeld_ = true;
+  if (!dispatchSteps(label.c_str(), std::move(k.steps))) {
+    settleHeld_ = false;
+    ctx_.store().view().patchNudges.erase(id.value);
+    return false;
+  }
   // Beside the port on its input side: the VCA's output a little way out from the port (an orbiting port: along its
-  // direction from its block's centre; else to its left); the overlap rule makes room.
-  sync();
+  // direction from its block's centre; else to its left; the gap at the VCA's scale); if a block is there, the nearest
+  // free spot (bug-spawn-resize: the blocks that were there kept in place first).
+  (void)keepPlaces(before);
   const uint32_t n = patch_.nodeOf(id);
-  graph::Point2 at{target.x - kVcaGap, target.y + target.h * 0.5f};
+  const float gap = kVcaGap * spawnScale();
+  graph::Point2 at{target.x - gap, target.y + target.h * 0.5f};
   if (const ProjectCanvas::PinHit t = [&] {  // the port again, by identity (the rebuild renumbered the nodes)
         for (uint32_t i = 0; i < patch_.nodes.size(); ++i)
           if (patch_.nodes[i].kind == target.kind && patch_.nodes[i].device == target.device && patch_.nodes[i].band == target.band) {
@@ -757,15 +873,13 @@ bool ProjectPatchView::insertVcaAtPort(uint32_t node, uint32_t port) {
     if (portOrbits(tnode, t.port, true)) {
       const float cx = tnode.x + tnode.w * 0.5f, cy = tnode.y + tnode.h * 0.5f;
       const float dx = pw.x - cx, dy = pw.y - cy, len = std::max(1e-3f, std::hypot(dx, dy));
-      at = {pw.x + dx / len * kVcaGap, pw.y + dy / len * kVcaGap};
+      at = {pw.x + dx / len * gap, pw.y + dy / len * gap};
     } else {
-      at = {std::min(pw.x, tnode.x) - kVcaGap, pw.y};
+      at = {std::min(pw.x, tnode.x) - gap, pw.y};
     }
   }
-  if (n != kNone) {
-    const circuit::MainPorts mp = mainPorts(id);
-    placeAt(id, at, {}, mp.out);
-  }
+  if (n != kNone) finishSpawn({}, id, at, {}, mainPorts(id).out);
+  else settleHeld_ = false;
   return true;
 }
 
@@ -899,14 +1013,15 @@ circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
     canvas_->select(nodes, wires);
     canvas_->markDirty();
   };
-  spawnMark_ = canvas_->toWorld(at);
-  o.onPick = [this, alive, resolve](const circuit::NodeEntry& en) {
+  const graph::Point2 world = canvas_->toWorld(at);  // bug-spawn-resize: the node goes where Tab was pressed
+  spawnMark_ = world;
+  o.onPick = [this, alive, resolve, world](const circuit::NodeEntry& en) {
     if (alive.expired()) return;
-    if (const uint32_t i = resolve(); i != kNone) (void)insertOnEdge(i, choiceOf(en));
+    if (const uint32_t i = resolve(); i != kNone) (void)insertOnEdge(i, choiceOf(en), world);
   };
-  o.onSpec = [this, alive, resolve](const std::string& s) {
+  o.onSpec = [this, alive, resolve, world](const std::string& s) {
     if (alive.expired()) return;
-    if (const uint32_t i = resolve(); i != kNone) (void)insertOnEdge(i, specChoice(s));
+    if (const uint32_t i = resolve(); i != kNone) (void)insertOnEdge(i, specChoice(s), world);
   };
   circuit::NodeMenu* m = circuit::openNodeMenu(*canvas_, at, std::move(o));
   if (m == nullptr) {  // no overlay: nothing to show it in

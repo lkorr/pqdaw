@@ -2004,3 +2004,12 @@ through a long silence (Q?-VZ.4-b).
 - A Generator automation lane now spans the same range (collapsed to collapsed) instead of one region ± 25 %.
 - Goldens re-recorded: mos-circle-5L2s, -modmos, -lit, mos-wheel-popover (+1.5x), project-patch-tuning(-wheel).
 - Also re-recorded: automation-lanes, automation-mode-over-clips, tunings-panel (the 5L 2s Generator lane's new range: the envelope sits differently).
+
+## 2026-11-15 · bug-spawn-resize · resize and spawn in the circuit view
+- S-resize a block next to others that it does not touch: nothing else moves (not the blocks after it on the row or the
+  path, not the band below). Grow it into a neighbour: on release only that one is pushed aside, a gap from it; the
+  resized block stays put. A Delay Tap's edge stretch: the row after it stays.
+- Zoom far in (and far out), Tab, pick a module: it appears at the pointer at the same size on screen as at zoom 1
+  (zoomed out past 1/3 it stops growing: 3× is the largest). Tab on a block: it lands right beside it, nothing pushed.
+- Tab / Z over a long cable: the new block is where the pointer was, not halfway between the cable's ends.
+- A pasted block keeps the copied block's size.

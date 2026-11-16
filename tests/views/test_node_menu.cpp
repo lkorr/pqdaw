@@ -1235,6 +1235,10 @@ TEST_CASE("node menu: Tab over a cable inserts the chosen node — in and out, o
   CHECK(u.wired(s2, mp.out, u.util, "g"));
   CHECK(doc::findWire(*u.ctx.doc(), u.lfoWire) == nullptr);
   CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // (bug-spawn-resize: it lands where Tab was pressed, at its size on screen; moved down out of the way, its cable into g
+  // has a clear stretch for the next Tab.)
+  u.view().nudge(s2.value, 0.0f, 300.0f);
+  u.view().sync();
   // Output only: a Value block put into the cable Saturator → g: the value drives g, the Saturator's wire goes.
   doc::WireId into;
   for (const doc::Wire& w : u.wires())
@@ -1469,7 +1473,8 @@ TEST_CASE("node menu: a cable released with Ctrl held keeps a new one on the poi
   CHECK(u.history() == h0);
 }
 
-TEST_CASE("node menu: push-apart — a spawn onto a block pushes them apart (settled, animated: frames stop); bands grow") {
+TEST_CASE("node menu: push-apart — a spawn onto a block lands beside it, a block moved onto it pushes them apart (settled, "
+          "animated: frames stop); bands grow") {
   Ui u;
   auto rectOf = [&](doc::DeviceId id) {
     const Node& n = u.pp().nodes[u.node(id)];
@@ -1480,17 +1485,26 @@ TEST_CASE("node menu: push-apart — a spawn onto a block pushes them apart (set
     return ra[2] + ProjectPatchView::kPushGap - 1.0f <= rb[0] || rb[2] + ProjectPatchView::kPushGap - 1.0f <= ra[0] ||
            ra[3] + ProjectPatchView::kPushGap - 1.0f <= rb[1] || rb[3] + ProjectPatchView::kPushGap - 1.0f <= ra[1];
   };
-  // Onto the free LFO: both move apart (settled at once while animations are off).
+  // Onto the free LFO (bug-spawn-resize): the new block at the nearest free spot, a gap from it; the LFO stays.
   const Node& ln = u.pp().nodes[u.node(u.lfo)];
   const graph::Point2 onLfo{ln.x + ln.w * 0.5f, ln.y + ln.h * 0.5f};
+  const std::array<float, 4> lfo0 = rectOf(u.lfo);
   const doc::DeviceId a = u.view().spawnNode(ProjectPatchView::specChoice("tanh"), onLfo);
   REQUIRE(a.valid());
   CHECK_FALSE(u.view().pushing());
   CHECK(apart(a, u.lfo));
-  // Animated: frames while it moves, none once it has settled.
+  CHECK(rectOf(u.lfo) == lfo0);
+  CHECK(u.view().overlappingBlocks().empty());
+  // Animated: a block moved onto the LFO pushes them apart — frames while they move, none once settled.
   u.view().setPushAnimated(true);
-  const doc::DeviceId b = u.view().spawnNode(ProjectPatchView::specChoice("tanh"), onLfo);
+  const doc::DeviceId b = u.view().spawnNode(ProjectPatchView::specChoice("tanh"), u.emptyWorld());
   REQUIRE(b.valid());
+  CHECK_FALSE(u.view().pushing());
+  {
+    const Node& bn = u.pp().nodes[u.node(b)];
+    const Node& l = u.pp().nodes[u.node(u.lfo)];
+    u.view().nudge(b.value, l.x + l.w * 0.5f - (bn.x + bn.w * 0.5f), l.y + l.h * 0.5f - (bn.y + bn.h * 0.5f));
+  }
   CHECK(u.view().pushing());
   const uint64_t f0 = u.d.framesDrawn();
   u.d.advance(2.0);
@@ -1713,7 +1727,17 @@ TEST_CASE("TL.7: an empty audio track is one long, nearly straight cable from it
     u.d.step();
   }
   const size_t h0 = u.history();
-  u.d.move(u.onCable(cable));
+  // The pointer on the cable halfway along (bug-spawn-resize: Z places the VCA at the pointer).
+  Vec2 halfway{-1.0f, -1.0f};
+  {
+    const Edge& ce = u.pp().edges[cable];
+    const float mx = (ce.points.front().x + ce.points.back().x) * 0.5f;
+    for (float y = ce.points.front().y - 80.0f; y <= ce.points.front().y + 80.0f && halfway.x < 0.0f; y += 1.0f)
+      if (const Vec2 p = u.dev({mx, y}); u.view().canvas().edgeAt(p) == cable && u.clear(p)) halfway = p;
+  }
+  REQUIRE(halfway.x >= 0.0f);
+  const graph::Point2 pointer = u.view().canvas().toWorld(halfway);
+  u.d.move(halfway);
   u.d.keyDown('z');
   u.d.keyUp('z');
   u.view().sync();
@@ -1732,6 +1756,8 @@ TEST_CASE("TL.7: an empty audio track is one long, nearly straight cable from it
     CHECK(mx.x + mx.w == doctest::Approx(q.laneX1 + metrics::kLaneInset - 12.0f));  // the mixer stayed at the end
     CHECK(vca.y >= lb.y + metrics::kTitle);  // in its band (Z places it where the cable was, on the pointer)
     CHECK(vca.y + vca.h <= lb.laneY);
+    CHECK(std::fabs(vca.x + vca.w * 0.5f - pointer.x) < 1.0f);  // nothing there: at the pointer
+    CHECK(std::fabs(vca.y + vca.h * 0.5f - pointer.y) < 1.0f);
     // The lane's cable now into the VCA, still from the lane's left end.
     bool found = false;
     for (const Edge& f : q.edges)
@@ -1996,7 +2022,23 @@ TEST_CASE("node menu (TX.ports-always): an Envelope placed in an opened group wi
   const doc::DeviceId vca = u.newest();
   REQUIRE(vca != env);
   checkMainPorts(u, vca, "VCA");
-  u.fit();
+  // The view round the three blocks the cables join (bug-spawn-resize: placed at the pointer at their size on screen,
+  // the Envelope may reach left of the band's start, which fit() does not show).
+  {
+    float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+    for (const doc::DeviceId id : {env, vca, u.lfo}) {
+      const Node& n = u.pp().nodes[u.node(id)];
+      x0 = std::min(x0, n.x), y0 = std::min(y0, n.y), x1 = std::max(x1, n.x + n.w), y1 = std::max(y1, n.y + n.h);
+    }
+    const ui::IRect r = u.view().canvas().rect();
+    CircuitCanvas::View v;
+    v.zoom = std::min({1.0, static_cast<double>(r.w) / (x1 - x0 + 160.0f), static_cast<double>(r.h) / (y1 - y0 + 160.0f)});
+    v.x = x0 - 80.0f;
+    v.y = y0 - 80.0f;
+    u.view().canvas().setView(v);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
   const std::string envIn = u.view().mainPorts(env).in, envOut = u.view().mainPorts(env).out;
   const std::string vcaIn = u.view().mainPorts(vca).in, lfoOut = u.view().mainPorts(u.lfo).out;
 

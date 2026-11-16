@@ -1548,7 +1548,12 @@ void ProjectCanvas::stretchDrag(Vec2 pos) {
   Face* f = node != kNone ? stretchFace(node) : nullptr;
   if (f == nullptr) return;
   const float dx = (pos.x - press_.x) / std::max(deviceScale(), 1e-6f) / stretchK_;
-  if (!f->stretchTo(stretchW0_ + (stretchLeft_ ? -dx : dx)) || !stretchLeft_) return;  // (f may be gone: a new size)
+  // bug-spawn-resize: the other blocks keep their places (a wider block on the path or a capsule's circuit shifts the
+  // slots after it); the block itself its top-left.
+  const std::vector<ProjectPatchView::Place> before = v.places();
+  if (!f->stretchTo(stretchW0_ + (stretchLeft_ ? -dx : dx))) return;  // (f may be gone: a new size)
+  (void)v.keepPlaces(before);
+  if (!stretchLeft_) return;
   // The left edge: the right one stays where it was at the press (the block moves left as it widens).
   node = v.patch().nodeOf(stretchDevice_);
   if (node == kNone) return;
@@ -1559,7 +1564,9 @@ void ProjectCanvas::stretchDrag(Vec2 pos) {
 void ProjectCanvas::endStretch(bool commit) {
   ProjectPatchView& v = view_;
   doc::DocumentStore& st = v.context().store();
+  const std::vector<ProjectPatchView::Place> before = v.places();
   if (st.inGesture()) (void)(commit ? st.commitGesture() : st.cancelGesture());
+  if (!commit) (void)v.keepPlaces(before);  // bug-spawn-resize: back to the press's width, the others where they are
   if (!commit && stretchLeft_) {  // back where it was
     const auto& nudges = st.view().patchNudges;
     const auto it = nudges.find(stretchDevice_.value);
@@ -2007,7 +2014,7 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
         return true;
       }
       if (edge != kNone) {
-        (void)view_.insertVca(edge);
+        (void)view_.insertVca(edge, toWorld(at));  // bug-spawn-resize: at the pointer
         return true;
       }
       if (node != kNone) {

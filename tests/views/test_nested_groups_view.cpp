@@ -212,12 +212,42 @@ TEST_CASE("nested groups view (PF.2): an opened group's cached layout follows ed
   a.d.step();
   CHECK(a.view().layoutCache().hits > hits0);
   CHECK(inner(a) == before);
-  // View state: a block inside the capsule scaled. The layout is made again (a miss), as a fresh view makes it.
-  const uint64_t misses0 = a.view().layoutCache().misses;
+  // View state: a block inside the capsule scaled. bug-spawn-resize: the circuit is laid out at its blocks' own sizes
+  // (the scale is applied in place afterwards), so the cached layout stays (no miss): the block keeps its top-left at
+  // twice its size, and a fresh view makes the same.
+  const uint64_t misses0 = a.view().layoutCache().misses, hits1 = a.view().layoutCache().hits;
   REQUIRE(a.view().setBlockScale(a.ids.env, 2.0f));
   a.d.step();
-  CHECK(a.view().layoutCache().misses > misses0);
+  CHECK(a.view().layoutCache().misses == misses0);
+  CHECK(a.view().layoutCache().hits > hits1);
   CHECK(inner(a) != before);
+  {
+    const std::vector<Placed> now = inner(a);
+    const auto envOf = [&](const std::vector<Placed>& v) {
+      for (const Placed& p : v)
+        if (p.device == a.ids.env.value && p.kind == static_cast<uint8_t>(NodeKind::Device)) return p;
+      FAIL("no env block");
+      return Placed{};
+    };
+    const Placed e0 = envOf(before), e1 = envOf(now);
+    CHECK(e1.w == doctest::Approx(e0.w * 2.0f));
+    CHECK(e1.h == doctest::Approx(e0.h * 2.0f));
+    // Every other block it does not come to overlap where it was beside it (the capsule's frame may grow round a block
+    // the push moved: so relative to the grown block, which holds its place).
+    uint32_t kept = 0;
+    for (const Placed& p : before) {
+      if (p.device == e0.device || p.kind != static_cast<uint8_t>(NodeKind::Device)) continue;
+      const bool hit = p.x < e0.x + e1.w && e0.x < p.x + p.w && p.y < e0.y + e1.h && e0.y < p.y + p.h;
+      if (hit) continue;
+      for (const Placed& q : now)
+        if (q.device == p.device && q.kind == p.kind) {
+          CHECK(q.x - e1.x == doctest::Approx(p.x - e0.x));
+          CHECK(q.y - e1.y == doctest::Approx(p.y - e0.y));
+          ++kept;
+        }
+    }
+    CHECK(kept >= 1);
+  }
   {
     Ui b;
     REQUIRE(b.view().setBlockScale(b.ids.env, 2.0f));

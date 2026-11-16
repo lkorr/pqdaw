@@ -171,6 +171,10 @@ struct Node {
   // TX.group-resize: inside an opened group whose own scale is not 1 (an opened group's nudge scale scales its contents,
   // its capsule keeps 1), times that group's (and each enclosing opened group's): a terminal's too.
   float scale = 1.0f;
+  // bug-spawn-resize: while the model is built, the stored scale still to apply (1 once applied: always 1 in a built
+  // model). The base layout places every block at its own size and scales it in place afterwards, so a block's size
+  // never moves another one (only an overlap does, through the push).
+  float pendingScale = 1.0f;
   // TX.groups (doc::Device "Groups"): a group device is a CAPSULE. Opened (`groupOpen`, the default): the block is the
   // capsule's frame around its contents — `members` (free device blocks placed freely inside) and its two terminal nodes
   // `groupIn` / `groupOut` (NodeKind::Terminal: BR.patch-io the inner side of its frame sockets) — not a scene node of its

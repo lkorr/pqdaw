@@ -1966,3 +1966,26 @@ the explorer numbers both sisters along the fifths) or keep the brightness (Lydi
 the crossing). Choice: the chain position (the only one without a jump; automation needs it). The slider is linear in
 1 − s/L per half (as the old one: its ticks are the hardness ratios), not linear in cents. Status: decided
 (reversible: MosCircle::applyPosition, tuning::setMosGenerator).
+
+## Q?-bug-spawn-resize-a · 2026-11-15 · bug-spawn-resize · Spawn size by zoom: reference and clamps
+Context: a spawned block's world size follows the camera (the user chose this, knowing same-type blocks then differ in
+world size). Choice: reference zoom 1 (ProjectPatchView::kSpawnRefZoom: today's default sizes were made at zoom 1;
+CircuitCanvas zoom is logical px per world unit), scale = 1 / zoom clamped to the resize range doc::kMinPatchScale …
+kMaxPatchScale (0.05 … 3) and rounded as an S-resize is (whole percent, the detent at 1×). So the on-screen size is
+equal from zoom 1/3 to the canvas's 8×; zoomed out further a spawn is 3× (at zoom 0.25 it shows at 75 %), never bigger
+than a block can be resized to (raising kMaxPatchScale would change the saved-file range too). Applies to Tab, a
+dropped cable, Tab / Z on a cable, Z on a port; a paste keeps the copied blocks' scales (top-level blocks: a pasted
+group's members get scale 1). Status: decided (reversible: spawnScale).
+
+## Q?-bug-spawn-resize-b · 2026-11-15 · bug-spawn-resize · Nudges are offsets from layout slots: what still shifts
+Context: a block's place is its slot in the layout (the main path's series, the free row in list order, a capsule's
+circuit) plus its nudge, so any change to a block before it shifts it. This task removed the shifts a resize causes
+(the layout uses the blocks' own sizes) and holds the blocks in place around a spawn and an edge stretch
+(ProjectPatchView::keepPlaces). Still shifting: blocks after a deleted one on the free row or the path, after a block
+moved to another track, and the shifts of a spawn or stretch come back on its undo (nudges are view state, not undone).
+Also by design (TL.7 / bus layout, not blocks): the mixers follow the lanes' right end and the returns' / master's
+buses sit right of the tracks' slots, so a block placed far right or added to a row moves those. Options: (a) as now;
+(b) store a placed block's position relative to its band / capsule (a `placed` flag in doc::PatchNudge, the slot only
+for blocks never placed): nothing moves a placed block but a push or the user, undo included — a format change of
+the view state and every nudge writer. Choice (a) for this task (scope); (b) is the general fix if those shifts show.
+Status: open.

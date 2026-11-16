@@ -873,13 +873,34 @@ public:
     std::optional<float> tap;  // TL.1: with `notes`, where the cable leaves its lane (band-local; doc::Wire::tap)
   };
   // Places `c` at world point `at` (see "node menu" above), wired by `link`. The new device (invalid: refused).
+  // bug-spawn-resize (every spawn: here, insertOnEdge / insertVca, insertVcaAtPort): the new block is the same size on
+  // screen at any zoom (spawnScale), lands at `at` — if it would overlap a block there, at the nearest free spot
+  // (freeSpotFor), nothing else moves for it — and the blocks already there keep their places (keepPlaces: a block that
+  // joins the main path or a capsule's circuit shifts no other block's slot).
   doc::DeviceId spawnNode(const NodeChoice& c, graph::Point2 at, const SpawnLink& link = {});
+  // A spawned block's scale: its own size at zoom 1 (kSpawnRefZoom), so the same size on screen at the zoom now —
+  // kSpawnRefZoom / zoom, clamped to doc::kMinPatchScale … kMaxPatchScale (0.05 … 3: from zoom 1/3 down a spawn is 3×,
+  // the largest a block can be resized to) and rounded as clampBlockScale (whole percent, the detent at 1).
+  float spawnScale() const noexcept;
+  static constexpr double kSpawnRefZoom = 1.0;
+  // Where each device block is relative to what holds it: a band's block from the band's top-left (Band::x0, y), a
+  // capsule's member from the capsule's frame before it grew (Node::frameX0 / Y0); an opened capsule by that frame too.
+  struct Place {
+    uint32_t device = 0;
+    float x = 0.0f, y = 0.0f;
+  };
+  std::vector<Place> places() const;
+  // After a change that shifts the layout's slots (a block of the main path or of a capsule's circuit added, a face
+  // stretched): every block of `before` still there back where it was relative to its holder, through its nudge (whole
+  // units; view state), one re-layout (no overlap check in it). True: some moved back.
+  bool keepPlaces(const std::vector<Place>& before);
   // Where a block placed at world point `at` goes: its track, the capsule (innermost opened one under it; the group
   // panel's group) and the band. False: no track to place it on.
   bool placeTarget(graph::Point2 at, doc::TrackId& track, doc::DeviceId& group, uint32_t& band) const;
-  // Over a cable (a model edge): `c` between its ends; Z: a VCA at 1.
-  bool insertOnEdge(uint32_t edge, const NodeChoice& c);
-  bool insertVca(uint32_t edge);
+  // Over a cable (a model edge): `c` between its ends; Z: a VCA at 1. bug-spawn-resize: at world point `at` (where Tab
+  // or Z was pressed: the pointer on the cable), else at the middle between the cable's ends.
+  bool insertOnEdge(uint32_t edge, const NodeChoice& c, std::optional<graph::Point2> at = {});
+  bool insertVca(uint32_t edge, std::optional<graph::Point2> at = {});
   // bug-wire-cut: Z over an input port (model node `node`'s input `port`: a pin, a face's / panel's control, a mixer's
   // input) with cables into it: ONE VCA module (at 1) beside the port on its input side (its output there; the overlap
   // rule makes room), every cable that went into the port now goes into the VCA's main input, the VCA's output into the
@@ -903,7 +924,8 @@ public:
   // spawn, a resize, a nudge, a layout change: each rebuild of the model; not while a block is being dragged or resized,
   // whose release settles), blocks of one level (a band's blocks outside capsules; an opened capsule's members) that
   // overlap (closer than kPushDetect: 0, their rects share area; touching is not overlapping) are separated to kPushGap (solved at once along each pair's axis of least overlap, shared by mass:
-  // a block's area, a just-moved / spawned block a quarter of it so it gives way most, a just-resized one four times;
+  // a block's area, a just-moved block a quarter of it so it gives way most, a just-resized one kResizedMass times: it
+  // holds its place; only overlapping pairs move — two blocks nearer than the gap but apart stay (bug-spawn-resize);
   // the band's source, mixer, Out and a capsule's terminals stand, its title strip is a wall) and each glides there as a
   // critically damped spring (≈ 0.3 s; nudges, view state), one re-layout per frame while it runs. A capsule or band
   // that grows into others is settled by the next round (at most kPushCascade rounds after one change). Then no frames.
@@ -915,6 +937,7 @@ public:
   static constexpr float kPushGap = 12.0f;     // world units between blocks pushed apart
   static constexpr float kPushDetect = 0.0f;   // closer than this is an overlap (well under the gap: no re-push)
   static constexpr uint32_t kPushCascade = 4;
+  static constexpr float kResizedMass = 1.0e6f;  // a just-resized block's mass factor (its share of a separation ≈ 0)
   uint64_t pushFrames() const noexcept { return push_.frames; }
   uint64_t pushes() const noexcept { return push_.count; }  // pushes started (tests)
   // The rule's check now (a gesture that deferred it ends: an S-resize's release); true: a push started.
@@ -1288,9 +1311,25 @@ private:
   void finishPushNow();
   // Moves a free block to world point `at`: its centre there, or (TX.node-menu-fix1) with `inPort` its input pin there
   // (a cable dropped from an output: the cable reaches the block where it was dropped), with `outPort` its output pin.
-  void placeAt(doc::DeviceId device, graph::Point2 at, std::string_view inPort = {}, std::string_view outPort = {});
+  // bug-spawn-resize: `freeSpot` (a spawn): then, if it overlaps a block of its level, to the nearest free spot
+  // (freeSpotFor) — nothing else moves.
+  void placeAt(doc::DeviceId device, graph::Point2 at, std::string_view inPort = {}, std::string_view outPort = {},
+               bool freeSpot = false);
+  // bug-spawn-resize: where model node `node`'s top-left goes so that it overlaps no other body of its level (a band's
+  // blocks with its source, mixer and Out; a capsule's members and terminals), at kPushGap from those it then meets,
+  // never above its band's title strip: the nearest such place (itself when it overlaps nothing). Candidates are its
+  // place and each body's four sides (a nearest free point lies on a body's edge, or at a corner of two): O(n²) places
+  // checked nearest first, O(n) each, once per spawn.
+  graph::Point2 freeSpotFor(uint32_t node) const;
+  // bug-spawn-resize: a block just added (`device`, before the edit that adds it is dispatched): its scale for the zoom
+  // now (spawnScale; view state, no re-layout here).
+  void setSpawnScale(doc::DeviceId device);
+  // The spawn edits' common ending: the blocks that were there kept in place (keepPlaces), then `device` placed at
+  // `at` (placeAt, its free spot), then the overlap rule. The re-layouts in between do not settle.
+  void finishSpawn(const std::vector<Place>& before, doc::DeviceId device, graph::Point2 at, std::string_view inPort,
+                   std::string_view outPort);
   bool dispatchSteps(const char* label, std::vector<doc::Command> steps);
-  bool insertImpl(uint32_t edge, const NodeChoice& c, bool plain);  // plain: Z's VCA (no default preset)
+  bool insertImpl(uint32_t edge, const NodeChoice& c, bool plain, std::optional<graph::Point2> at);  // plain: Z's VCA
 
   struct ViewAnim {
     bool active = false;

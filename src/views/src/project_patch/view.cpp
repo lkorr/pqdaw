@@ -1852,14 +1852,32 @@ bool ProjectPatchView::pasteAt(graph::Point2 at) {
     ctx_.setStatus(e.error().message);
     return false;
   }
-  // The top-level blocks of the copy come first in Edit::devices (the rest are inside them).
+  // The top-level blocks of the copy come first in Edit::devices (the rest are inside them), in the copy's order.
   size_t count = 0;
-  for (const doc::DevicePtr& d : clip.devices) count += d->group.valid() ? 0 : 1;
+  std::vector<uint32_t> copied;  // the top-level blocks' ids where they were copied from
+  for (const doc::DevicePtr& d : clip.devices)
+    if (!d->group.valid()) ++count, copied.push_back(d->id.value);
   const std::vector<doc::DeviceId> top(e->devices.begin(), e->devices.begin() + static_cast<std::ptrdiff_t>(std::min(count, e->devices.size())));
-  if (!apply(e, "Paste")) return false;
+  // bug-spawn-resize: a paste keeps the copied blocks' sizes (not the zoom's), and the blocks already there their places.
+  auto& nudges = ctx_.store().view().patchNudges;
+  for (size_t i = 0; i < top.size() && i < copied.size(); ++i)
+    if (const auto it = nudges.find(copied[i]); it != nudges.end() && it->second.scale != 1.0f) {
+      const float k = it->second.scale;  // (the insertion below may rehash)
+      nudges[top[i].value].scale = k;
+    }
+  const std::vector<Place> before = places();
+  settleHeld_ = true;
+  if (!apply(e, "Paste")) {
+    settleHeld_ = false;
+    for (const doc::DeviceId d : top) nudges.erase(d.value);
+    return false;
+  }
+  (void)keepPlaces(before);
   // Each at the pointer, a step apart (the overlap rule then gives them room).
   for (size_t i = 0; i < top.size(); ++i)
     placeAt(top[i], {at.x + 24.0f * static_cast<float>(i), at.y + 24.0f * static_cast<float>(i)}, {}, {});
+  settleHeld_ = false;
+  (void)settleOverlaps();
   canvas_->clearSelection();
   if (top.size() == 1 && doc::isGroupDevice(*doc::findDevice(*ctx_.doc(), top.front()).device)) selectGroup(top.front());
   ctx_.setStatus("Pasted " + std::to_string(e->devices.size()) + (e->devices.size() == 1 ? " block" : " blocks"));
@@ -1974,6 +1992,50 @@ void ProjectPatchView::nudge(std::span<const uint32_t> entities, float dx, float
   ctx_.viewStateChanged();
   stale_ = true;
   sync();
+}
+
+// bug-spawn-resize: a nudge is an offset from the block's slot in the layout (its place in the main path's series, on the
+// row under it, in its capsule's circuit), and a slot moves when a block before it changes (one added to the path or the
+// circuit, a face stretched). keepPlaces writes that shift back into the nudges of the blocks that were there.
+std::vector<ProjectPatchView::Place> ProjectPatchView::places() const {
+  std::vector<Place> out;
+  out.reserve(patch_.nodes.size());
+  for (const Node& n : patch_.nodes) {
+    if (n.kind != NodeKind::Device || !n.device.valid() || n.band >= patch_.bands.size()) continue;
+    graph::Point2 o{patch_.bands[n.band].x0, patch_.bands[n.band].y};
+    if (n.capsule != kNone && n.capsule < patch_.nodes.size()) o = {patch_.nodes[n.capsule].frameX0, patch_.nodes[n.capsule].frameY0};
+    const bool capsule = n.group && n.groupOpen;
+    out.push_back({n.device.value, (capsule ? n.frameX0 : n.x) - o.x, (capsule ? n.frameY0 : n.y) - o.y});
+  }
+  return out;
+}
+
+bool ProjectPatchView::keepPlaces(const std::vector<Place>& before) {
+  sync();
+  if (before.empty()) return false;
+  std::unordered_map<uint32_t, graph::Point2> was;
+  was.reserve(before.size());
+  for (const Place& p : before) was.emplace(p.device, graph::Point2{p.x, p.y});
+  auto& nudges = ctx_.store().view().patchNudges;
+  bool moved = false;
+  for (const Place& now : places()) {
+    const auto it = was.find(now.device);
+    if (it == was.end()) continue;
+    const float dx = it->second.x - now.x, dy = it->second.y - now.y;
+    if (std::fabs(dx) < 0.5f && std::fabs(dy) < 0.5f) continue;
+    doc::PatchNudge& n = nudges[now.device];
+    n.dx = std::round(n.dx + dx);
+    n.dy = std::round(n.dy + dy);
+    if (n.empty()) nudges.erase(now.device);
+    moved = true;
+  }
+  if (!moved) return false;
+  ctx_.viewStateChanged();
+  const bool held = settleHeld_;
+  settleHeld_ = true;  // (the caller's change settles once it is done)
+  relayout();
+  settleHeld_ = held;
+  return true;
 }
 
 void ProjectPatchView::resetLayout() {
