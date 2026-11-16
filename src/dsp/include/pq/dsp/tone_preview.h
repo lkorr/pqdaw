@@ -12,9 +12,10 @@
 // The oscillator: uint32 phase (2^32 = one cycle) reading 2048-point tables with linear interpolation — a sine, and
 // for Semisine (a half-wave rectified sine without its DC: the pitch with its even harmonics, audible on small
 // speakers) and Triangle (odd harmonics at −12 dB/oct) ten band-limited tables, one per octave of fundamental (40 Hz
-// … 20.48 kHz tops), every harmonic faded out between 18 and 20 kHz (PQ Meter's 2 kHz fade under its cut). The
+// … 20.48 kHz tops), every harmonic above the fundamental faded out between 18 and 20 kHz (PQ Meter's 2 kHz fade under its cut). The
 // frequency glides in pitch (12 ms time constant, log2 domain); the gain ramps linearly (5 ms attack, 30 ms release,
-// a retune at the held level does not ramp), so no press, drag or release clicks. Tables are built once (the
+// each ramp spans the distance from the current gain to the new goal; a retune at the
+// held level does not ramp), so no press, drag or release clicks. Tables are built once (the
 // constructor, off the audio thread).
 
 #include <atomic>
@@ -64,7 +65,9 @@ private:
   const void* owner_ = nullptr;  // UI thread
   // Audio thread.
   uint32_t phase_ = 0;
-  float hz_ = 0.0f, log2Hz_ = 0.0f, gain_ = 0.0f;
+  float hz_ = 0.0f, gain_ = 0.0f;
+  double log2Hz_ = 0.0;  // the glide's position (double: a float glide parks short of its target)
+  float goal_ = 0.0f, step_ = 0.0f;  // the gain's ramp: set when the goal changes, |goal − gain| over the ramp time
   // The shared tables (built once, process-wide): [0] the sine; then kBands semisine; then kBands triangle
   // (kTableSize + 1 each: a guard point).
   const float* tables_ = nullptr;

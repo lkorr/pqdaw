@@ -107,6 +107,9 @@ void WaveCapture::push(const float* beat, const float* l, const float* r, uint32
       }
     still = std::isfinite(b0) && b0 == b1 && (!haveLast_ || lastBeat_ == b1);
   }
+  // The loop's phase: b mod beats (floor, not fmod: per frame), or the free run's stream position stepped per frame.
+  const double invBeats = 1.0 / beats, invFree = 1.0 / freeSpan;
+  double freeAt = stream_ - freeSpan * std::floor(stream_ * invFree);
   for (uint32_t i = 0; i < n; ++i) {
     double phase = -1.0;
     if (cfg_.loop && !still) {
@@ -115,22 +118,22 @@ void WaveCapture::push(const float* beat, const float* l, const float* r, uint32
         clocked = true;
         if (first == n) first = i;
         last = i;
-        double ph = std::fmod(static_cast<double>(b), beats);
-        if (ph < 0.0) ph += beats;
-        phase = ph / beats;
+        const double bd = b;
+        phase = std::clamp((bd - beats * std::floor(bd * invBeats)) * invBeats, 0.0, std::nextafter(1.0, 0.0));
       } else {
-        double ph = std::fmod(stream_ + static_cast<double>(i), freeSpan);
-        if (ph < 0.0) ph += freeSpan;
-        phase = ph / freeSpan;
+        phase = freeAt * invFree;
       }
     }
+    if (++freeAt >= freeSpan) freeAt -= freeSpan;
     addFrame(l[i], r[i], phase);
   }
+  const double chunkStart = stream_;
   stream_ += n;
   if (!cfg_.loop) return;
   if (still) {
     state_.clocked = true;
     state_.moving = false;
+    anchored_ = false;  // the tempo's baseline restarts when the clock moves again
     return;
   }
   state_.clocked = clocked;
@@ -138,15 +141,30 @@ void WaveCapture::push(const float* beat, const float* l, const float* r, uint32
     state_.bpm = 0.0;
     state_.spanSamples = freeSpan;
     state_.moving = n > 0;
-    haveLast_ = false;
+    haveLast_ = anchored_ = false;
     return;
   }
-  // The tempo the clock moved at (ScopeBeat's estimate: over the chunk, or since the previous chunk when short).
+  // The tempo the clock moved at (ScopeBeat's estimate: over the chunk, or since the previous chunk when short) …
   const float b0 = last - first >= 64 ? beat[first] : (haveLast_ ? lastBeat_ : beat[first]);
   const size_t frames = last - first >= 64 ? last - first : (haveLast_ ? last + 1 : last - first);
   const float d = beat[last] - b0;
   state_.moving = d != 0.0f;
   if (frames >= 64 && d > 0.0f && d < 4.0f) state_.bpm = static_cast<double>(d) / static_cast<double>(frames) * sr * 60.0;
+  // … refined over a baseline of 0.25 – 1 s once there is one: the beat lane is float, so a difference over one chunk
+  // late in a song is coarse (beat 4000: an ulp of 2.4e-4 beats, ~1 % of a chunk's 0.02 beats).
+  const double nowFrame = chunkStart + static_cast<double>(last);
+  const double span = nowFrame - anchorFrame_, db = static_cast<double>(beat[last]) - anchorBeat_;
+  if (!anchored_ || span <= 0.0 || db < 0.0 || db / span * sr * 60.0 > 1000.0) {  // started, relocated, or a jump
+    anchored_ = true;
+    anchorFrame_ = nowFrame;
+    anchorBeat_ = beat[last];
+  } else if (span >= 0.25 * sr) {
+    if (db > 0.0) state_.bpm = db / span * sr * 60.0;
+    if (span >= sr) {  // slide the baseline (a tempo change shows within a second)
+      anchorFrame_ = nowFrame;
+      anchorBeat_ = beat[last];
+    }
+  }
   state_.spanSamples = state_.bpm > 0.0 ? beats * 60.0 / state_.bpm * sr : 0.0;
   lastBeat_ = beat[last];
   haveLast_ = true;

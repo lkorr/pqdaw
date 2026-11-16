@@ -6,6 +6,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <functional>
 #include <string>
 #include <random>
@@ -370,4 +371,151 @@ TEST_CASE("loudness: worker cost per second of stereo audio, by face (Level Mete
     MESSAGE(std::string(f.name) << ": " << ms << " ms of worker time per second of audio (" << ms / 10.0 << " % of one core)");
     CHECK(ms < 50.0);  // a loose bound (unoptimised builds); the optimised figures are in the PROGRESS entry
   }
+}
+
+// ---- VZ.9 (docs/reviews/VZ.md: Tests, M10, L7) -------------------------------------------------------------------
+
+namespace {
+
+// |H(f)| in dB of a biquad cascade (b0 b1 b2 a1 a2 per section) at fs.
+double responseDb(const double (&s)[5], const double (&h)[5], double f, double fs) {
+  const std::complex<double> z = std::polar(1.0, -2.0 * kPi * f / fs);  // z⁻¹
+  auto sec = [&](const double (&c)[5]) {
+    return (c[0] + c[1] * z + c[2] * z * z) / (1.0 + c[3] * z + c[4] * z * z);
+  };
+  return 20.0 * std::log10(std::abs(sec(s) * sec(h)));
+}
+
+// Feeds seconds of gen at sr in blocks of 512.
+void feedAt(LoudnessMeter& m, double sr, double seconds, const std::function<void(uint64_t, float&, float&)>& gen,
+            uint64_t& t) {
+  std::vector<float> l(512), r(512);
+  const auto total = static_cast<uint64_t>(seconds * sr + 0.5);
+  for (uint64_t done = 0; done < total;) {
+    const auto n = static_cast<uint32_t>(std::min<uint64_t>(512, total - done));
+    for (uint32_t i = 0; i < n; ++i) gen(t + i, l[i], r[i]);
+    m.push(l.data(), r.data(), n);
+    t += n;
+    done += n;
+  }
+}
+
+}  // namespace
+
+TEST_CASE("loudness: the K-weighting — BS.1770's 48 kHz coefficients to 1e-9; its response at other rates") {
+  double s[5], h[5];
+  kWeighting(48000.0, s, h);
+  // ITU-R BS.1770-4, Table 1 (pre-filter) and Table 2 (RLB high-pass).
+  CHECK(std::fabs(s[0] - 1.53512485958697) < 1e-9);
+  CHECK(std::fabs(s[1] + 2.69169618940638) < 1e-9);
+  CHECK(std::fabs(s[2] - 1.19839281085285) < 1e-9);
+  CHECK(std::fabs(s[3] + 1.69065929318241) < 1e-9);
+  CHECK(std::fabs(s[4] - 0.73248077421585) < 1e-9);
+  CHECK(h[0] == 1.0);
+  CHECK(h[1] == -2.0);
+  CHECK(h[2] == 1.0);
+  CHECK(std::fabs(h[3] + 1.99004745483398) < 1e-9);
+  CHECK(std::fabs(h[4] - 0.99007225036621) < 1e-9);
+  // 1 kHz: +0.691 dB (the −0.691 of the loudness formula cancels it); the curve's shape at 25 / 100 Hz (the high-pass)
+  // and 10 kHz (the shelf), the same at every rate within 0.05 dB (pre-warped at f0; the bilinear map elsewhere).
+  CHECK(std::fabs(responseDb(s, h, 1000.0, 48000.0) - 0.691) < 0.01);  // (+0.697: the 0.691 is BS.1770's rounding)
+  for (const double fs : {44100.0, 96000.0, 192000.0}) {
+    double s2[5], h2[5];
+    kWeighting(fs, s2, h2);
+    for (const double f : {25.0, 100.0, 1000.0, 10000.0}) {
+      CAPTURE(fs);
+      CAPTURE(f);
+      CHECK(std::fabs(responseDb(s2, h2, f, fs) - responseDb(s, h, f, 48000.0)) < 0.05);
+    }
+  }
+  CHECK(responseDb(s, h, 25.0, 48000.0) < -5.0);   // the RLB high-pass
+  CHECK(responseDb(s, h, 10000.0, 48000.0) > 3.5);  // the +4 dB shelf
+}
+
+TEST_CASE("loudness: EBU Tech 3341 cases 1, 2 at 44.1 and 96 kHz") {
+  pq::DenormalGuard dg;
+  for (const double sr : {44100.0, 96000.0})
+    for (const double db : {-23.0, -33.0}) {
+      CAPTURE(sr);
+      CAPTURE(db);
+      LoudnessConfig c = cfg(kLoudLoudness);
+      c.sampleRate = sr;
+      LoudnessMeter m(c);
+      const double a = std::pow(10.0, db / 20.0);
+      uint64_t t = 0;
+      feedAt(m, sr, 20.0, [&](uint64_t i, float& l, float& r) {
+        l = r = static_cast<float>(a * std::sin(2.0 * kPi * 1000.0 * static_cast<double>(i) / sr));
+      }, t);
+      const LoudnessReadings rd = m.readings();
+      CHECK(std::fabs(rd.momentary - db) <= 0.1);
+      CHECK(std::fabs(rd.shortTerm - db) <= 0.1);
+      CHECK(std::fabs(rd.integrated - db) <= 0.1);
+    }
+}
+
+// Modelled on Tech 3341's short-term / momentary cases: alternations whose every window means −23 LUFS (constant
+// short-term / momentary), and bursts of exactly one window at −23 LUFS placed off the 100 ms grid (the maxima, M10).
+TEST_CASE("loudness: Tech 3341-style S / M cases — constant S and M of alternations; max S and M of off-grid bursts") {
+  pq::DenormalGuard dg;
+  auto alternating = [](double aSec, double aDb, double bSec, double bDb) {
+    const double ga = std::pow(10.0, aDb / 20.0), gb = std::pow(10.0, bDb / 20.0), period = aSec + bSec;
+    return [=](uint64_t i, float& l, float& r) {
+      const double ts = static_cast<double>(i) / kSr;
+      const double g = std::fmod(ts, period) < aSec ? ga : gb;
+      l = r = static_cast<float>(g * std::sin(2.0 * kPi * 1000.0 * ts));
+    };
+  };
+  {  // 1.34 s at −20, 1.66 s at −30 dBFS: every 3 s window means −23.0 LUFS.
+    LoudnessMeter m(cfg(kLoudLoudness | kLoudHistory));
+    uint64_t t = 0;
+    feed(m, 30.0, alternating(1.34, -20.0, 1.66, -30.0), t);
+    std::vector<LoudnessPoint> p(300);
+    REQUIRE(m.history(0, 300, p.data()) == 300);
+    for (size_t k = 40; k < 300; ++k) CHECK(std::fabs(p[k].shortTerm + 23.0f) <= 0.1f);
+  }
+  {  // (the same for the momentary) 0.18 s at −20, 0.22 s at −30: every 400 ms window means −23.0.
+    LoudnessMeter m(cfg(kLoudLoudness | kLoudHistory));
+    uint64_t t = 0;
+    feed(m, 10.0, alternating(0.18, -20.0, 0.22, -30.0), t);
+    std::vector<LoudnessPoint> p(100);
+    REQUIRE(m.history(0, 100, p.data()) == 100);
+    for (size_t k = 5; k < 100; ++k) CHECK(std::fabs(p[k].momentary + 23.0f) <= 0.1f);
+  }
+  // One burst of exactly the window (3 s / 0.4 s) at −23 LUFS in silence, starting anywhere against the grid:
+  // the max reads −23 ± 0.1 (on a 100 ms grid a 0.4 s burst 50 ms off read −23.58).
+  for (const double win : {3.0, 0.4})
+    for (const double off : {0.0, 0.013, 0.031, 0.05, 0.067, 0.089}) {
+      CAPTURE(win);
+      CAPTURE(off);
+      LoudnessMeter m(cfg(kLoudLoudness));
+      uint64_t t = 0;
+      feed(m, 1.0 + off, silence, t);
+      const uint64_t start = t;
+      const double a = std::pow(10.0, -23.0 / 20.0);
+      feed(m, win, [&](uint64_t i, float& l, float& r) {
+        l = r = static_cast<float>(a * std::sin(2.0 * kPi * 1000.0 * static_cast<double>(i - start) / kSr));
+      }, t);
+      feed(m, 4.0, silence, t);
+      const LoudnessReadings r = m.readings();
+      CHECK(std::fabs((win > 1.0 ? r.maxShortTerm : r.maxMomentary) + 23.0f) <= 0.1f);
+    }
+}
+
+TEST_CASE("loudness: after a reset the gate and LRA take only audio from after it (L7)") {
+  pq::DenormalGuard dg;
+  // 10 s loud, reset, then −40: the first 400 ms block after the reset must not carry the loud audio into the gate.
+  LoudnessMeter m(cfg(kLoudLoudness));
+  uint64_t t = 0;
+  feed(m, 10.0, tone(-10.0), t);
+  m.resetMeasurement();
+  feed(m, 0.3, tone(-40.0), t);
+  CHECK(m.readings().integrated == kNoLoudness);  // 3 sub-blocks since the reset: no 400 ms block of its own yet
+  CHECK(std::fabs(m.readings().momentary + 16.0f) < 0.3f);  // the live momentary runs across it: (0.1 + 3e-4) / 4
+  feed(m, 6.1, tone(-40.0), t);
+  const LoudnessReadings r2 = m.readings();
+  CHECK(std::fabs(r2.integrated + 40.0f) <= 0.1f);
+  // The K-filter's own memory of the loud tone (a few ms of its tail) is in the first window after the reset: within
+  // 0.5 LU. (Before L7 the first windows held up to 300 ms / 2.9 s of the -10 audio: maxima near -16.)
+  CHECK(std::fabs(r2.maxMomentary + 40.0f) <= 0.5f);
+  CHECK(std::fabs(r2.maxShortTerm + 40.0f) <= 0.5f);
 }

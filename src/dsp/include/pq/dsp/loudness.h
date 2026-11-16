@@ -15,7 +15,9 @@
 //              = the last 30 (3 s); integrated = every 400 ms block (75 % overlap) gated at −70 LUFS and −10 LU below
 //              their mean (LoudnessHistogram: bounded, the mean of exact powers); EBU R128 LRA = the 3 s blocks on a 1 s
 //              grid gated at −20 LU, 95th − 10th percentile (from 3 blocks). Unweighted RMS and the L/R correlation over
-//              300 ms windows. Sample peak max since the reset. Session max momentary / short-term. Auto-reset: the
+//              300 ms windows. Sample peak max since the reset. Session max momentary / short-term on a 10 ms grid (a
+//              burst off the 100 ms grid reads its level; Tech 3341). After a reset a block counts once it holds
+//              only audio from after it. Auto-reset: the
 //              momentary ≤ target − `autoResetBelowLu` for `autoResetSec` clears the integrated measurement only.
 //   TruePeak   the ITU-R BS.1770-4 Annex 2 4× estimate — the same filter and arithmetic as the `truepeak` atom (pq/dsp/
 //              atoms.h, DY.5; tests compare them): the max since the reset, and a falling value (0.6 s).
@@ -136,6 +138,7 @@ public:
 
 private:
   void subBlock() noexcept;
+  void fineBlock() noexcept;
   void pushLevels(const float* l, const float* r, uint32_t n) noexcept;
   void pushLoudness(const float* l, const float* r, uint32_t n) noexcept;
   void pushTruePeak(const float* x, uint32_t n, uint32_t c) noexcept;
@@ -156,7 +159,15 @@ private:
   double blockSum_ = 0.0;
   std::array<double, 30> sub_{};
   uint32_t subCount_ = 0, subHead_ = 0;  // sub-blocks made (saturates at 30 for the window), the next slot
-  uint64_t stCounter_ = 0;
+  uint64_t stCounter_ = 0;  // sub-blocks since the measurement (re)started: a block joins the gate / LRA when it holds
+                            // only audio from after it
+  // The session maxima are evaluated on a finer, 10 ms grid (EBU Tech 3341: a 0.4 s burst 50 ms off the 100 ms grid
+  // read 0.58 LU low): the last 300 10 ms energies, their count since the reset.
+  uint32_t fineLen_ = 480, finePos_ = 0;
+  double fineSum_ = 0.0;
+  std::array<double, 300> fine_{};
+  uint32_t fineCount_ = 0, fineHead_ = 0;
+  uint64_t fineSinceReset_ = 0;
   std::unique_ptr<LoudnessHistogram> gated_, lra_;
   float integrated_ = kNoLoudness, lraLu_ = 0.0f;  // cached at each sub-block
   double corrLR_ = 0.0, corrLL_ = 0.0, corrRR_ = 0.0;

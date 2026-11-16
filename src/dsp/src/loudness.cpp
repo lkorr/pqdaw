@@ -192,6 +192,7 @@ void LoudnessMeter::configure(const LoudnessConfig& c) {
   if (restart) {
     kWeighting(sr, shelf_, hp_);
     blockLen_ = std::max<uint32_t>(1, static_cast<uint32_t>(sr / 10.0));
+    fineLen_ = std::max<uint32_t>(1, static_cast<uint32_t>(sr / 100.0));
     corrLen_ = std::max<uint32_t>(1, static_cast<uint32_t>(sr * 0.3));
     quietFrames_ = 0;
     points_ = histStart_ = 0;
@@ -214,6 +215,10 @@ void LoudnessMeter::configure(const LoudnessConfig& c) {
     blockSum_ = 0.0;
     sub_.fill(0.0);
     subCount_ = subHead_ = 0;
+    finePos_ = 0;
+    fineSum_ = 0.0;
+    fine_.fill(0.0);
+    fineCount_ = fineHead_ = 0;
     corrLR_ = corrLL_ = corrRR_ = 0.0;
     corrCount_ = 0;
     correlation_ = 0.0f;
@@ -301,7 +306,7 @@ void LoudnessMeter::pushLoudness(const float* l, const float* r, uint32_t n) noe
   uint32_t i = 0;
   while (i < n) {
     // Up to the next sub-block or correlation boundary.
-    const uint32_t k = std::min({n - i, blockLen_ - blockPos_, corrLen_ - corrCount_});
+    const uint32_t k = std::min({n - i, blockLen_ - blockPos_, corrLen_ - corrCount_, fineLen_ - finePos_});
     __m128d acc = _mm_setzero_pd();
     double lr = 0.0, ll = 0.0, rr = 0.0;
     for (uint32_t j = i; j < i + k; ++j) {
@@ -322,12 +327,15 @@ void LoudnessMeter::pushLoudness(const float* l, const float* r, uint32_t n) noe
     alignas(16) double a[2];
     _mm_store_pd(a, acc);
     blockSum_ += a[0] + a[1];
+    fineSum_ += a[0] + a[1];
     corrLR_ += lr;
     corrLL_ += ll;
     corrRR_ += rr;
     blockPos_ += k;
+    finePos_ += k;
     corrCount_ += k;
     i += k;
+    if (finePos_ >= fineLen_) fineBlock();
     if (corrCount_ >= corrLen_) {  // unweighted RMS and correlation over 300 ms
       const double den = std::sqrt(corrLL_ * corrRR_);
       correlation_ = den > 1e-12 ? static_cast<float>(corrLR_ / den) : 0.0f;
@@ -358,6 +366,29 @@ double LoudnessMeter::meanOfLast(uint32_t n) const noexcept {
   return s / static_cast<double>(n);
 }
 
+void LoudnessMeter::fineBlock() noexcept {
+  fine_[fineHead_] = fineSum_;
+  fineHead_ = (fineHead_ + 1) % 300;
+  fineCount_ = std::min<uint32_t>(300, fineCount_ + 1);
+  ++fineSinceReset_;
+  fineSum_ = 0.0;
+  finePos_ = 0;
+  // The maxima over every 400 ms / 3 s window ending on this 10 ms step that holds only audio since the reset.
+  auto meanOf = [&](uint32_t n) {
+    double s = 0.0;
+    for (uint32_t k = 1; k <= n; ++k) s += fine_[(fineHead_ + 300 - k) % 300];
+    return s / (static_cast<double>(n) * fineLen_);
+  };
+  if (fineCount_ >= 40 && fineSinceReset_ >= 40) {
+    const auto m = static_cast<float>(loudnessOf(meanOf(40)));
+    if (m > kNoLoudness) maxM_ = std::max(maxM_, m);
+  }
+  if (fineCount_ >= 300 && fineSinceReset_ >= 300) {
+    const auto st = static_cast<float>(loudnessOf(meanOf(300)));
+    if (st > kNoLoudness) maxS_ = std::max(maxS_, st);
+  }
+}
+
 void LoudnessMeter::subBlock() noexcept {
   sub_[subHead_] = blockSum_ / static_cast<double>(blockLen_);
   subHead_ = (subHead_ + 1) % 30;
@@ -381,21 +412,16 @@ void LoudnessMeter::subBlock() noexcept {
       armed_ = !gated_->empty();
     }
   }
-  if (m4 >= 0.0) gated_->add(m4);  // a 400 ms block every 100 ms (the histogram applies the −70 LUFS gate)
   ++stCounter_;
-  if (m30 >= 0.0 && stCounter_ % 10 == 0) {  // LRA: the 3 s blocks on a 1 s grid
+  // A block joins the gate (400 ms every 100 ms, the histogram applies the −70 LUFS gate) and the LRA (3 s on a 1 s grid)
+  // only once it holds nothing from before a reset.
+  if (m4 >= 0.0 && stCounter_ >= 4) gated_->add(m4);
+  if (m30 >= 0.0 && stCounter_ >= 30 && stCounter_ % 10 == 0) {
     lra_->add(m30);
     lraLu_ = lra_->count() >= 3 ? lra_->loudnessRange() : 0.0f;
   }
-  if (mom > kNoLoudness) maxM_ = std::max(maxM_, mom);
-  float st = kNoLoudness;
-  if (m30 >= 0.0) {
-    st = static_cast<float>(loudnessOf(m30));
-    if (st > kNoLoudness) {
-      maxS_ = std::max(maxS_, st);
-      minS_ = minS_ <= kNoLoudness ? st : std::min(minS_, st);
-    }
-  }
+  const float st = m30 >= 0.0 ? static_cast<float>(loudnessOf(m30)) : kNoLoudness;
+  if (st > kNoLoudness && stCounter_ >= 30) minS_ = minS_ <= kNoLoudness ? st : std::min(minS_, st);
   integrated_ = gated_->gatedLoudness(10.0);
   if (cfg_.parts & kLoudHistory) {
     hist_[static_cast<size_t>(points_ % kHistory)] = {mom, st, integrated_};
@@ -468,6 +494,7 @@ void LoudnessMeter::resetMeasurement() noexcept {  // RT-safe
   truePeak_ = 0.0f;
   maxM_ = maxS_ = minS_ = kNoLoudness;
   stCounter_ = 0;
+  fineSinceReset_ = 0;
   quietFor_ = 0.0f;
   armed_ = false;
   histStart_ = points_;  // the history starts again

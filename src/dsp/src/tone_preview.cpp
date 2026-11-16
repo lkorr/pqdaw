@@ -27,11 +27,13 @@ std::vector<float> buildTables() {
   auto at = [&](int table, uint32_t i) -> float& { return t[static_cast<size_t>(table) * kStride + i]; };
   for (uint32_t i = 0; i <= N; ++i) at(0, i) = static_cast<float>(std::sin(2.0 * kPi * i / N));
   for (int b = 0; b < TonePreview::kBands; ++b) {
-    const double fb = bandTop(b);  // the band's highest fundamental: its harmonics are weighted there
+    // The band's highest fundamental: its harmonics are weighted there. The fundamental itself always sounds at full
+    // level (it is the pitch asked for, at most 20 kHz); only the harmonics k ≥ 2 fade out under the cut.
+    const double fb = bandTop(b);
     for (uint32_t i = 0; i <= N; ++i) {
       const double th = 2.0 * kPi * i / N;
       // Semisine (a half-wave rectified sine, DC removed): ½ sin θ − (2/π) Σ cos(2kθ) / (4k² − 1), peak-normalised.
-      double semi = 0.5 * std::sin(th) * weight(fb);
+      double semi = 0.5 * std::sin(th);
       for (int k = 1; k <= kMaxTerms; ++k) {
         const double w = weight(2.0 * k * fb);
         if (w <= 0.0) break;
@@ -42,7 +44,7 @@ std::vector<float> buildTables() {
       double tri = 0.0;
       for (int n = 0; n < kMaxTerms; ++n) {
         const int k = 2 * n + 1;
-        const double w = weight(k * fb);
+        const double w = k == 1 ? 1.0 : weight(k * fb);
         if (w <= 0.0) break;
         tri += ((n & 1) ? -1.0 : 1.0) * w * std::sin(k * th) / (static_cast<double>(k) * k);
       }
@@ -94,29 +96,44 @@ void TonePreview::render(float* const* out, uint32_t channels, uint32_t frames, 
   const float tGain = targetGain_.load(std::memory_order_relaxed);
   const auto wave = static_cast<ToneWave>(wave_.load(std::memory_order_relaxed));
   const float goal = gate ? tGain : 0.0f;
-  const float span = std::max(tGain, 1e-6f);
-  const auto aStep = static_cast<float>(span / (kAttackSeconds * sr));
-  const auto rStep = static_cast<float>(span / (kReleaseSeconds * sr));
-  const auto glide = static_cast<float>(1.0 - std::exp(-1.0 / (kGlideSeconds * sr)));
-  const float lt = std::log2(std::max(tHz, 1.0f));
+  if (goal != goal_) {  // a new goal: ramp there from where the gain is, in the attack or release time
+    goal_ = goal;
+    step_ = std::fabs(goal - gain_) / static_cast<float>((goal > gain_ ? kAttackSeconds : kReleaseSeconds) * sr);
+  }
+  const float step = std::max(step_, 1e-9f);
+  const double glide = 1.0 - std::exp(-1.0 / (kGlideSeconds * sr));
+  const double lt = std::log2(static_cast<double>(std::max(tHz, 1.0f)));
   if (gain_ <= 0.0f || hz_ <= 0.0f) log2Hz_ = lt;  // a fresh press starts on its pitch (no glide up from nothing)
   // One table for the block: the band of the higher of where the glide is and where it goes (band-limited for both).
-  const float* tbl = table(wave, std::max(fastExp2(log2Hz_), tHz));
+  const float* tbl = table(wave, std::max(fastExp2(static_cast<float>(log2Hz_)), tHz));
   const auto incPerHz = static_cast<float>(4294967296.0 / sr);
   constexpr uint32_t kFracBits = 32 - kTableBits;
   constexpr float kFrac = 1.0f / static_cast<float>(1u << kFracBits);
+  // The glide runs in double (in float it parked where the step fell under an ulp of log2 Hz: -0.66 cent at 96 kHz)
+  // and snaps onto the target within 1e-5 octave (0.012 cent). On pitch, the increment is the target's, exp2 not run.
+  constexpr double kSnap = 1e-5;
   uint32_t ph = phase_;
-  float l2 = log2Hz_, g = gain_, hz = hz_;
+  double l2 = log2Hz_;
+  float g = gain_, hz = l2 == lt ? tHz : fastExp2(static_cast<float>(l2));
+  auto inc = static_cast<uint32_t>(hz * incPerHz);
   for (uint32_t f = 0; f < frames; ++f) {
-    l2 += (lt - l2) * glide;  // glide in pitch, not Hz
-    hz = fastExp2(l2);
-    if (g < goal) g = std::min(goal, g + aStep);
-    else if (g > goal) g = std::max(goal, g - rStep);
+    if (l2 != lt) {
+      l2 += (lt - l2) * glide;  // glide in pitch, not Hz
+      if (std::fabs(lt - l2) < kSnap) {
+        l2 = lt;
+        hz = tHz;
+      } else {
+        hz = fastExp2(static_cast<float>(l2));
+      }
+      inc = static_cast<uint32_t>(hz * incPerHz);
+    }
+    if (g < goal) g = std::min(goal, g + step);
+    else if (g > goal) g = std::max(goal, g - step);
     const uint32_t i = ph >> kFracBits;
     const float fr = static_cast<float>(ph & ((1u << kFracBits) - 1u)) * kFrac;
     const float v = g * (tbl[i] + fr * (tbl[i + 1] - tbl[i]));
     for (uint32_t c = 0; c < channels; ++c) out[c][f] += v;
-    ph += static_cast<uint32_t>(hz * incPerHz);
+    ph += inc;
   }
   phase_ = ph;
   log2Hz_ = l2;

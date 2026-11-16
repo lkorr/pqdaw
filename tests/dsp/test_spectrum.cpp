@@ -322,18 +322,31 @@ TEST_CASE("spectrum: the average line is an unbiased power mean that skips silen
   a.push(quiet.data(), static_cast<uint32_t>(quiet.size()));
   a.averageDb(avg.data());
   CHECK(avg[p] == doctest::Approx(before).epsilon(1e-3));
-  // A power mean: equal time at 0 dB and −20 dB reads 10·log10((1 + 0.01) / 2) = −2.97 dB, not the dB mean (−10).
+  // A power mean: equal time at 0 dB and -20 dB reads 10 log10((1 + 0.01) / 2) = -2.97 dB, not the dB mean (-10). The
+  // segments are long against the window (a frame straddling a step mixes amplitudes, not powers: with 2400-sample
+  // segments almost every frame does and the mean reads -3.44); the time constant long against the run.
   SpectrumConfig c2 = cfg;
-  c2.averageSeconds = 30.0f;
+  c2.averageSeconds = 600.0f;
   SpectrumAnalyzer b(c2);
-  const auto quietTone = sine(1000.0, 0.1, cfg.sampleRate, 2400);
-  const auto loudTone = sine(1000.0, 1.0, cfg.sampleRate, 2400);
-  for (int i = 0; i < 40; ++i) {
+  const auto quietTone = sine(1000.0, 0.1, cfg.sampleRate, 48000);
+  const auto loudTone = sine(1000.0, 1.0, cfg.sampleRate, 48000);
+  for (int i = 0; i < 10; ++i) {
     b.push(loudTone.data(), static_cast<uint32_t>(loudTone.size()));
     b.push(quietTone.data(), static_cast<uint32_t>(quietTone.size()));
   }
   b.averageDb(avg.data());
-  CHECK(avg[pointAt(b, 1000.0f)] == doctest::Approx(-2.97f).epsilon(0.25));
+  // Against the analyser's own steady readings of the two levels (a full-scale tone need not read exactly 0 dB).
+  const uint32_t p1k = pointAt(b, 1000.0f);
+  auto steady = [&](const std::vector<float>& x) {
+    SpectrumAnalyzer s(cfg);
+    s.push(x.data(), static_cast<uint32_t>(x.size()));
+    return static_cast<double>(s.lastReadingDb()[p1k]);
+  };
+  const double lo = steady(quietTone), hi = steady(loudTone);
+  const double powerMean = 10.0 * std::log10(0.5 * (std::pow(10.0, hi / 10.0) + std::pow(10.0, lo / 10.0)));
+  MESSAGE("power mean: " << avg[p1k] << " (expected " << powerMean << "; readings " << hi << ", " << lo << ")");
+  CHECK(std::fabs(avg[p1k] - powerMean) < 0.1);
+  CHECK(std::fabs(powerMean - (hi - 3.0103 + 10.0 * std::log10(1.01))) < 0.01);
   // reset() restarts it.
   b.reset();
   b.averageDb(avg.data());
