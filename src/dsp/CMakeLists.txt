@@ -16,6 +16,8 @@ pq_add_module(pq_dsp
     src/scope.cpp
     src/spectrogram.cpp
     src/stereo.cpp  # VZ.5: the cross-spectrum (Stereo Image, Phase Scope) and the goniometer state (Stereo Field)
+    src/waterfall.cpp     # VZ.7: the waterfall analysis (slices of the spectrum analysis)
+    src/stereo_cloud.cpp  # VZ.7: the stereo spectrogram analysis (reassigned stereo STFT, ribbon)
     src/loudness.cpp  # VZ.4: the loudness front end (Level Meter, LUFS Meter, Loudness History)
     src/tone_preview.cpp
     src/band_levels.cpp  # VZ.6: Band Levels (the LR crossover tree, band RMS over time)

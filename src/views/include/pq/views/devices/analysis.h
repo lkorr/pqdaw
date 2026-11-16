@@ -47,6 +47,14 @@
 //              worker; the UI reads only what is new through the object's own lock (columns, bins, the loop slots written
 //              since its stamp). A bands / wave-only consumer costs no spectrum; they settle when every band rests /
 //              when the display's window has been silent.
+//   Waterfall  VZ.7: dsp::WaterfallAnalyzer (VZ.2's spectrum analysis on the channel asked for, slices committed at the
+//              span's pitch) with the consumer's configuration (setWaterfall); the worker copies the new slices into a
+//              ring of WaterfallAnalyzer::kMaxSlices and publishes the live curve and the scroll phase (waterfallRead,
+//              waterfallSlices). Settles when the curve rests at the floor and the history is silence.
+//   Cloud      VZ.7: dsp::StereoCloud (PQ's reassigned stereo STFT: points (time, Hz, pan, power), ≤ 64 a hop, and a ribbon
+//              slice a hop) with the consumer's configuration (setCloud); the worker appends the hop's points to a ring of
+//              kCloudRing and the slices to a ring of kCloudSlices (cloudRead, cloudPoints, cloudSlices); the UI keeps its
+//              own cloud of the span. Settles once the input has been silent for the span.
 //
 // Costs nothing while hidden: with no consumer the worker blocks on a condition variable and the tap has no reader, so
 // the audio thread's write is one relaxed load. Shown: the worker runs at the display's rate (60 Hz) while the levels
@@ -81,6 +89,8 @@
 #include "pq/dsp/spectrogram.h"
 #include "pq/dsp/spectrum.h"
 #include "pq/dsp/stereo.h"
+#include "pq/dsp/stereo_cloud.h"
+#include "pq/dsp/waterfall.h"
 #include "pq/dsp/transfer.h"
 #include "pq/dsp/waveform.h"
 
@@ -91,6 +101,7 @@ inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u,
                           kWantLoudness = 32u,  // VZ.4
                           kWantStereo = 64u;    // VZ.5
 inline constexpr uint32_t kWantBands = 1u << 8, kWantWave = 1u << 9;  // VZ.6
+inline constexpr uint32_t kWantWaterfall = 1u << 10, kWantCloud = 1u << 11;  // VZ.7
 
 // VZ.1: the output spectrum's analysis a display may tune (the Spectrum face's ANALYSIS tab; setTuning). The point
 // count, the hop and the sample rate stay the feed's. VZ.2: the axis (scale, fMin, fMax: the points lie evenly on it)
@@ -136,6 +147,21 @@ struct GramState {
   uint32_t hop = 0, fft = 0, lowFft = 0;
   float fMin = 0.0f, fMax = 0.0f;
   bool settled = true, running = false;  // running: a spectrogram is computed
+};
+
+// VZ.7: the published state of the waterfall analysis (waterfallRead) and of the stereo cloud (cloudRead).
+struct WaterfallState {
+  dsp::WaterfallConfig config;
+  uint64_t slices = 0;        // committed so far (free-running; waterfallSlices copies the held ones)
+  uint32_t generation = 0;    // bumps at a restart (the slices before it are gone)
+  uint32_t pitch = 1024;      // samples per slice
+  float phase = 0.0f;         // the sub-slice scroll, 0 … 1
+};
+struct CloudState {
+  dsp::StereoCloudConfig config;
+  uint64_t points = 0, slices = 0;  // appended so far (free-running)
+  double head = -1.0;               // the newest frame's centre (stream samples)
+  uint32_t generation = 0, hop = 256;
 };
 
 // VZ.5: one published state of the cross-spectrum (stereoRead).
@@ -256,6 +282,17 @@ public:
   const dsp::WaveCapture* wave() const noexcept { return wave_.load(std::memory_order_acquire); }
   // Whether the worker has nothing more to show (as scopeEnd's `settled`). Any thread.
   bool settled() const;
+  // ---- VZ.7: the waterfall (kWantWaterfall) and the stereo cloud (kWantCloud) ----
+  static constexpr uint32_t kCloudRing = 1u << 17, kCloudSlices = 1024;
+  void setWaterfall(const dsp::WaterfallConfig& c);  // UI thread; the newest decides (sampleRate is the feed's)
+  // UI thread: the state and the live curve (WaterfallAnalyzer::kPoints) when newer than `seq`; returns its sequence.
+  uint64_t waterfallRead(uint64_t seq, WaterfallState& st, std::vector<float>& live, bool& settled) const;
+  // Slices [from, from + n) ∩ the held ones into out (kPoints each, from its start); returns the slices copied.
+  uint32_t waterfallSlices(uint64_t from, uint32_t n, float* out) const;
+  void setCloud(const dsp::StereoCloudConfig& c);
+  uint64_t cloudRead(uint64_t seq, CloudState& st, bool& settled) const;
+  uint32_t cloudPoints(uint64_t from, uint32_t n, dsp::CloudPoint* out) const;
+  uint32_t cloudSlices(uint64_t from, uint32_t n, dsp::StereoCloud::RibSlice* out) const;
 
   // Tests: runs the worker's step synchronously instead of the thread (the thread is not started).
   struct Manual {};
@@ -297,6 +334,7 @@ private:
   uint32_t ranWants_ = 0;  // what the worker computed last (a new want restarts its analyser)
   std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, wantLoud_{0}, wantStereo_{0}, noOutput_{0};
   std::atomic<uint32_t> wantBands_{0}, wantWave_{0};  // VZ.6
+  std::atomic<uint32_t> wantWf_{0}, wantCloud_{0};  // VZ.7
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
   std::function<void()> wakePost_;
@@ -357,6 +395,24 @@ private:
   std::atomic<uint64_t> waveRestFrames_{48000 * 10};
   void makeBands();
   void makeWave();
+  // VZ.7: the waterfall and the cloud (the analysers the worker's; requests and published rings under wfMutex_).
+  mutable std::mutex wfMutex_;
+  dsp::WaterfallConfig wfWant_;
+  dsp::StereoCloudConfig clWant_;
+  bool wfDirty_ = false, clDirty_ = false;
+  WaterfallState wfPub_;
+  CloudState clPub_;
+  std::vector<float> wfRing_, wfLive_;  // kMaxSlices x kPoints; kPoints
+  std::vector<dsp::CloudPoint> clRing_;
+  std::vector<dsp::StereoCloud::RibSlice> clSliceRing_;
+  uint64_t wfSeq_ = 0, clSeq_ = 0;
+  std::unique_ptr<dsp::WaterfallAnalyzer> wf_;  // worker
+  std::unique_ptr<dsp::StereoCloud> cloud_;     // worker
+  uint64_t wfCopied_ = 0;                       // worker
+  std::vector<dsp::CloudPoint> clStage_;        // worker: this step's points
+  std::vector<dsp::StereoCloud::RibSlice> clStageSlices_;
+  void wfPublish();
+  void clPublish();
   bool quit_ = false;
   std::thread thread_;
 };

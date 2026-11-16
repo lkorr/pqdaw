@@ -26,6 +26,8 @@ std::unique_ptr<MetaFace> makeStereoImageFace(const meta::Type& t);      // VZ.5
 std::unique_ptr<MetaFace> makePhaseScopeFace(const meta::Type& t);       // VZ.5
 std::unique_ptr<MetaFace> makeBandLevelsFace(const meta::Type& t);       // VZ.6
 std::unique_ptr<MetaFace> makeWaveformFace(const meta::Type& t);         // VZ.6
+std::unique_ptr<MetaFace> makeWaterfallFace(const meta::Type& t);          // VZ.7
+std::unique_ptr<MetaFace> makeStereoSpectrogramFace(const meta::Type& t);  // VZ.7
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 
@@ -106,6 +108,31 @@ void bandWaveRequest(std::string_view type, const meta::DataValue* data, dsp::Ba
                      float& rest);
 // The Waveform face's columns of `channel` (0 L, 1 R, 2 mid, 3 side) `cols` wide, as it draws them (Scroll).
 bool waveColumns(MetaFace& f, int cols, int channel, std::vector<float>& mn, std::vector<float>& mx, std::vector<float>& rms);
+// VZ.7 (tests): the 3D faces as their last poll / paint left them. False: not one.
+struct WaterfallShown {
+  bool acquired = false, frozen = false;
+  float yaw = 0, pitch = 0, roll = 0, zoom = 1;  // the camera drawn
+  size_t slices = 0;                             // slices held
+  uint32_t vertices = 0;                         // mesh vertices the last paint emitted
+  dsp::WaterfallConfig config;                   // the analysis its options ask for
+};
+bool waterfallShown(const MetaFace& f, WaterfallShown& out);
+struct StereoSpectrogramShown {
+  bool acquired = false, frozen = false;
+  float yaw = 0, pitch = 0, roll = 0, zoom = 1;
+  size_t cloud = 0, ribbon = 0;            // points / ribbon slices held
+  uint64_t uploadedRows = 0, redraws = 0;  // canvas rows handed to the texture pool; canvas re-splats
+  dsp::StereoCloudConfig config;
+};
+bool stereoSpectrogramShown(const MetaFace& f, StereoSpectrogramShown& out);
+// Option keys, or "freeze" / "sheet", or "view" (snap to named view 0 … 3 at once).
+bool waterfallTestControl(MetaFace& f, std::string_view key, double value);
+bool stereoSpectrogramTestControl(MetaFace& f, std::string_view key, double value);
+dsp::WaterfallConfig waterfallRequest(const meta::DataValue* data);
+dsp::StereoCloudConfig stereoSpectrogramRequest(const meta::DataValue* data);
+// Where the canvas splat puts a point (time age u 0 … 1, frequency unit 0 … 1, pan −1 … 1) on a w × h canvas, autofit,
+// orthographic, roll 0, zoom 1 (projection tests).
+ui::Vec2 stereoSpectrogramCanvasAt(float yaw, float pitch, float u, float fUnit, float pan, int w, int h);
 
 // VZ.1 (tests): the Spectrum face's plot style (its DISPLAY options). False: not a Spectrum face.
 bool spectrumStyle(const MetaFace& f, devices::SpectrumPlotStyle& out);

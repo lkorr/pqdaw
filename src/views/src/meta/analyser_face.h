@@ -222,6 +222,7 @@ public:
         hover_ = {-1.0f, -1.0f};
         return true;
       case K::Up: {
+        if (lineDrag_) ownUp();
         const bool was = drag_ || lineDrag_;
         drag_ = lineDrag_ = false;
         if (was && editing_) {
@@ -230,10 +231,11 @@ public:
         }
         return was;
       }
-      case K::Wheel: return false;
+      case K::Wheel: return ownWheel(e);
     }
     return false;
   }
+  void endWheel() override { ownEndWheel(); }
   bool dragging() const noexcept override { return drag_ || lineDrag_; }
   void cancelDrag() override {
     if ((drag_ || lineDrag_) && editing_) {
@@ -340,6 +342,9 @@ protected:
   virtual bool ownDown(int32_t /*part*/, const FacePointer& /*e*/) { return false; }
   virtual bool ownDrag(const FacePointer& /*e*/) { return false; }
   virtual bool ownDescribe(int32_t, std::string&, std::string&) const { return false; }
+  virtual void ownUp() {}                                          // a face's own drag (lineDrag_) ends
+  virtual bool ownWheel(const FacePointer& /*e*/) { return false; }
+  virtual void ownEndWheel() {}
   virtual bool animate(float /*dt*/, bool /*fresh*/) { return false; }  // true while easing
   virtual void cleared() {}
   virtual bool hasClear() const noexcept { return true; }

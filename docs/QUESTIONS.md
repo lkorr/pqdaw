@@ -2008,3 +2008,12 @@ delay. Status: open (reversible: Opt rows; dsp::CrossSpectrum can add the delay 
   reading) and whose bands, with each band's all-pass compensation, sum flat (tested; the meter skips the all-passes:
   they change no band's level). Choice: keep the tree (reversible: one function).
 - Options for the pickers: as Q?-VZ.2-a (a colour popover for the sheet) or leave the colours fixed.
+
+## Q?-VZ.7-a · 2026-11-16 · VZ.7 · What the 3D faces leave out of PQ Meter
+Context: PQ's Waterfall offers six FFT windows and an 8x long window; both 3D modules carry a modulation bank (LFOs on
+yaw / pitch / zoom / fade …), a palette track and colour pickers; the plain wheel zooms. Choice: the Waterfall's analysis
+is VZ.2's spectrum analysis (its window, its 4x long window, its tilt: one analyser in pqdaw, the Spectrum and the
+Waterfall agree at yaw 0); no modulation bank (pqdaw's own modulation system is the place for camera LFOs); colormaps +
+Custom stops in dB (VZ.2's LevelAxis) instead of pickers / palette track; Alt+wheel zooms (the plain wheel pans the
+circuit / panel host). The Stereo Spectrogram's cloud keeps PQ's stray sidelobe points (≤ −57 dB under a tone, measured).
+Status: open (reversible: an analyser window option; a modulation hookup; Opt rows).

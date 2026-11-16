@@ -12,5 +12,7 @@ set(PQ_VIEWS_META_SOURCES
   src/meta/loudness_faces.cpp   # VZ.4: the Level Meter, LUFS Meter and Loudness History faces (PQ Meter's)
   src/meta/stereo_faces.cpp     # VZ.5: the Stereo Field, Stereo Image and Phase Scope faces (PQ Meter's)
   src/meta/band_wave_faces.cpp  # VZ.6: the Band Levels and Waveform faces (PQ Meter's multiband RMS and waveform)
+  src/meta/waterfall_face.cpp   # VZ.7: the Waterfall face (PQ Meter's 3D waterfall, CPU-projected meshes)
+  src/meta/stereo_spectrogram_face.cpp  # VZ.7: the Stereo Spectrogram face (PQ Meter's: the splat canvas, the ribbon)
   src/meta/wavetable_edit.cpp   # TMM.9: its harmonic editor and draw tools (the math)
   src/meta/wavetable_model.cpp) # TMM.7: its display frames (keyframe spectra, dense frames, the bake at display resolution)

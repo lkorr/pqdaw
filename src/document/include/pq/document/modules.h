@@ -48,7 +48,8 @@ enum class ModuleKind : uint8_t {
   Limiter,                            // DY.6
   LevelMeter, LufsMeter, LoudnessHistory,  // VZ.4: the loudness analysers
   StereoField, StereoImage, PhaseScope,     // VZ.5: the stereo analysers
-  BandLevels, Waveform                      // VZ.6
+  BandLevels, Waveform,                    // VZ.6
+  Waterfall, StereoSpectrogram              // VZ.7: the 3D analysers
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -102,7 +103,7 @@ dsp::Curve vcaCurve(double min = -20000.0, double max = 20000.0, double zone = 0
 
 // ---- GU.7: modules around a NATIVE ENGINE (docs/plans/GU.md "Phases" 7, "One hierarchy") ----
 // The Wavetable, the Envelope and the analysers (Oscilloscope, Spectrum, Spectrogram; VZ.4 Level Meter, LUFS Meter,
-// Loudness History; VZ.5 Stereo Field, Stereo Image, Phase Scope) are groups holding one native
+// Loudness History; VZ.5 Stereo Field, Stereo Image, Phase Scope; VZ.7 Waterfall, Stereo Spectrogram) are groups holding one native
 // engine — a meta device (`meta:<type>`, a leaf: its expansion is its DSP; the analysers' is their tap) — wired
 // In → the engine's chain input, its `out` → Out, with a panel that reproduces the engine's old face from elements:
 //   Wavetable    the rich elements "drawtools" (mode switch, draw tools, basic shapes), "harmonics" (the harmonic
@@ -112,7 +113,8 @@ dsp::Curve vcaCurve(double min = -20000.0, double max = 20000.0, double zone = 0
 //   Envelope     "envelope" (the shape with its breakpoints and bends) bound to the engine's data; the amount slider a
 //                generic slider
 //   analysers    "scope" / "spectrum" / "spectrogram" / "levelmeter" / "lufsmeter" / "loudnesshistory" / "stereofield" / "stereoimage" /
-//                "phasescope" / VZ.6 "bandlevels" / "waveform" filling the panel, bound to the engine's data (the display
+//                "phasescope" / VZ.6 "bandlevels" / "waveform" / VZ.7 "waterfall" / "stereospectrogram" filling the panel,
+//                bound to the engine's data (the display
 //                state: saved, undoable); the engine's own tap feeds them
 //   Noise        NZ.1 (docs/plans/NZ.md): "noise" (the trace of the output, the voices' dots, the colour's slope line)
 //                bound to the engine's data; generic knobs Rate (shown in Rate clock) or a Sync menu (Sync clock: the

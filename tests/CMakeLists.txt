@@ -192,6 +192,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_spectrum_display.cpp  # TX.spectrum: the analysis feed, the spectrum plot, the Spectrum face, scenes, 8-display frame
     views/test_scope_display.cpp  # TX.scope: the feed's scope history, the Oscilloscope face, scenes, 4-scope frame
     views/test_spectrogram_display.cpp  # TX.spectrogram: the feed's columns, the Spectrogram face, its ring texture, scenes, 4-spectrogram frame
+    views/test_view3d_display.cpp  # VZ.7: the 3D camera's projection, the waterfall / cloud stages, the faces, goldens at each view
     views/test_stereo_display.cpp  # VZ.5: the feed's cross-spectrum stage, the Stereo Field / Stereo Image / Phase Scope faces, the scene
     views/test_loudness_display.cpp  # VZ.4: the feed's loudness stage, the Level Meter / LUFS Meter / Loudness History faces, scenes
     views/test_band_wave_display.cpp  # VZ.6: the feed's band / wave stages, the Band Levels and Waveform faces, scenes
@@ -451,6 +452,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_transfer.cpp  # TX.spectrum: the transfer-function estimate
     dsp/test_scope.cpp  # TX.scope: the oscilloscope's trigger, pitch lock and beat slots
     dsp/test_spectrogram.cpp  # TX.spectrogram: the reassigned spectrogram's columns (sine, sweep, chord, sub, impulse, sequence)
+    dsp/test_view3d.cpp  # VZ.7: the waterfall and stereo cloud analyses (tone level / frequency / pan, pitch, caps, rest, cost)
     dsp/test_stereo.cpp  # VZ.5: the cross-spectrum (pan, width, mono loss, coherence, tracker, rest) and the goniometer state
     dsp/test_loudness.cpp  # VZ.4: the loudness front end (EBU 3341 / 3342, true peak vs the atom, correlation, levels, history, rest)
     dsp/test_band_wave.cpp  # VZ.6: Band Levels (a sine in its band, the LR tree sums flat, ballistics) and the Waveform capture (bins, the beat loop)

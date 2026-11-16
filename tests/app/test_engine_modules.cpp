@@ -215,7 +215,7 @@ TEST_CASE("GU.7 modules: engineModuleBlocks is a group around one engine — In 
   for (const ModuleKind k : {ModuleKind::Wavetable, ModuleKind::Envelope, ModuleKind::Oscilloscope, ModuleKind::Spectrum,
                              ModuleKind::Spectrogram, ModuleKind::LevelMeter, ModuleKind::LufsMeter, ModuleKind::LoudnessHistory,
                              ModuleKind::StereoField, ModuleKind::StereoImage, ModuleKind::PhaseScope, ModuleKind::BandLevels,
-                             ModuleKind::Waveform}) {
+                             ModuleKind::Waveform, ModuleKind::Waterfall, ModuleKind::StereoSpectrogram}) {
     const std::string_view type = moduleEngineType(k);
     CAPTURE(type);
     IdSource ids;
