@@ -26,8 +26,9 @@
 //   proportion J, drag a box, type "8:9:10:12:15", Enter: ops::proportionNotes (also "Insert Proportion…" in the
 //              empty-space menu).
 //   ratio      "Add Note at Ratio…" on a note of a group: "3/2", "7:4" or a harmonic number: ops::addGroupNote.
-// Every edit is one doc::ops builder dispatched once (one undo step); a warp drag previews the warps it will store
-// (the members are re-resolved with them: RollState::WarpPreview).
+// Every edit is one doc::ops builder dispatched once (one undo step); a warp drag previews the warps it stores
+// (the members are re-resolved with them: RollState::WarpPreview) and dispatches them live every frame once past the
+// click slop (bug-live-shape, roll_live.cpp: the sounding chord follows), one undo step on release.
 //
 // Cost: groupInfos() is rebuilt once per clip snapshot (O(groups · notes)); a paint visits the groups in view and
 // their notes (frame bounds), nothing per note of the clip.
@@ -757,21 +758,9 @@ void RollState::warpDragTo(ui::Vec2 p, ui::Mods mods) {
   setWarpPreview(d.group, std::move(warps));
 }
 
-bool RollState::commitWarpDrag(DragState& d) {
-  warpPreview_ = {};
-  touchPreview();
-  if (!d.group.valid()) return false;
-  const doc::JiGroupId id = d.group;
-  const int32_t index = d.warpIndex;
-  const bool fresh = d.kind == DragKind::WarpNew;
-  if (!applyWarps(id, std::move(d.warps), fresh ? "Add Warp" : d.kind == DragKind::WarpMove ? "Move Warp" : "Warp Glide")) {
-    markNotesDirty();
-    return false;
-  }
-  selectWarp({id, index});
-  if (fresh)
-    ctx.setStatus("Warp added: drag the marker to move it, the round grip for the glide's length; right-click it for its shape, Delete removes it");
-  return true;
+doc::ops::EditResult RollState::warpEdit(const DragState& d) const {
+  if (!d.group.valid()) return noEdit();
+  return doc::ops::setJiWarps(*snap_, ref_, d.group, d.warps);  // (the warps as they are: an empty edit)
 }
 
 // --- proportions, ratios ------------------------------------------------------------------------------------------

@@ -1631,22 +1631,54 @@ TEST_CASE("timeline: an image swap keeps curve cursors by note id; changed curve
     CHECK(std::memcmp(r.hz.data(), base.hz.data(), sizeof(float) * r.hz.size()) == 0);
     CHECK(r.rtViolations == 0);
   }
-  SUBCASE("a changed pitch curve: a step to the new curve at the playhead, then its ramp") {
+  // bug-live-shape: a kept note glides onto a changed curve — kSwapGlideSeconds, here the rest of the 64-frame block
+  // (63 frames) — and then follows it (the curve's ramp from the glide's end, an event of the same block).
+  const int64_t g = std::min<int64_t>(static_cast<int64_t>(kSr * e::kSwapGlideSeconds), 63);
+  REQUIRE(g == 63);
+  // No sample of the glide moves further than its slope: the voice's pitch is continuous across the swap.
+  auto glidesFrom = [&](const CurveRig& r, double fromCents, double toCents, double base) {
+    const double step = std::fabs(toCents - fromCents) / static_cast<double>(g);
+    double worst = 0.0;
+    for (int64_t t = swapAt; t <= swapAt + g; ++t)
+      worst = std::max(worst, std::fabs(cents(r.hz[static_cast<size_t>(t)], base) - cents(r.hz[static_cast<size_t>(t - 1)], base)) - step);
+    return worst;
+  };
+  SUBCASE("a changed pitch curve: a glide onto the new curve, then its ramp") {
     const std::vector<e::CurvePoint> half = {{start, 0.0f}, {start + 2 * kPpq, 600.0f}, {start + 4 * kPpq, 0.0f}};
     CurveRig r(kGate);
     runSwap(r, image(tracks(curved(n, half))));
     CHECK(r.tl.stats().curveResyncs == 1);
     CHECK(r.tl.stats().keptOnSwap == 1);
-    const auto got = flat(r.events, swapAt, swapAt + 1);
+    const auto got = flat(r.events, swapAt, swapAt + 64);
     REQUIRE(got.size() == 2);
-    const double c = 600.0 * static_cast<double>(swapAt - kQ / 2) / static_cast<double>(2 * kQ);  // at the block's first sample
+    const double c = 600.0 * static_cast<double>(swapAt + g - kQ / 2) / static_cast<double>(2 * kQ);  // where the glide ends
+    CHECK(got[0].t == swapAt);
     CHECK(got[0].kind == K::Pitch);
-    CHECK(got[0].ramp == 0);
+    CHECK(got[0].ramp == static_cast<uint32_t>(g));
     CHECK(got[0].hz == doctest::Approx(220.0 * std::exp2(c / 1200.0)).epsilon(1e-7));
-    CHECK(got[1] == Flat{swapAt, K::Pitch, hzAt(220.0f, 600.0f), 0.0f, static_cast<uint32_t>(60000 - swapAt)});
+    CHECK(got[1] == Flat{swapAt + g, K::Pitch, hzAt(220.0f, 600.0f), 0.0f, static_cast<uint32_t>(60000 - swapAt - g)});
     CHECK(r.worstHzCents(12000, swapAt, upS, 220.0) <= 0.01);
-    CHECK(r.worstHzCents(swapAt, 156000, {{0.5 * kQ, 0.0}, {2.5 * kQ, 600.0}, {4.5 * kQ, 0.0}}, 220.0) <= 0.01);
+    const double was = 1200.0 * static_cast<double>(swapAt - kQ / 2) / static_cast<double>(2 * kQ);  // the old curve there
+    CHECK(glidesFrom(r, was, c, 220.0) <= 1e-3);
+    CHECK(r.worstHzCents(swapAt + g, 156000, {{0.5 * kQ, 0.0}, {2.5 * kQ, 600.0}, {4.5 * kQ, 0.0}}, 220.0) <= 0.01);
     CHECK(r.hz[60000] == hzAt(220.0f, 600.0f));
+    CHECK(r.rtViolations == 0);
+  }
+  SUBCASE("a changed curve whose next point comes within the glide: the glide goes to that point, the playback on from it") {
+    // The new curve turns 20 samples after the swap block's start.
+    const Ticks turn = tm.firstTickAtOrAfterSample(swapAt + 20, kSr);
+    const int64_t turnAt = tm.ticksToSamples(turn, kSr);
+    const std::vector<e::CurvePoint> kink = {{start, 0.0f}, {turn, 300.0f}, {start + 4 * kPpq, 0.0f}};
+    CurveRig r(kGate);
+    runSwap(r, image(tracks(curved(n, kink))));
+    const auto got = flat(r.events, swapAt, swapAt + 64);
+    REQUIRE(got.size() == 2);
+    REQUIRE(turnAt - swapAt < g);
+    CHECK(got[0].t == swapAt);
+    CHECK(got[0].ramp == static_cast<uint32_t>(turnAt - swapAt));
+    CHECK(got[0].hz == doctest::Approx(hzAt(220.0f, 300.0f)).epsilon(1e-5));
+    CHECK(got[1] == Flat{turnAt, K::Pitch, 220.0f, 0.0f, static_cast<uint32_t>(108000 - turnAt)});  // the playback's ramp
+    CHECK(r.hz[static_cast<size_t>(turnAt)] == doctest::Approx(hzAt(220.0f, 300.0f)).epsilon(1e-5));
     CHECK(r.rtViolations == 0);
   }
   SUBCASE("a gain curve appears, the pitch curve goes away") {
@@ -1655,34 +1687,39 @@ TEST_CASE("timeline: an image swap keeps curve cursors by note id; changed curve
     CHECK(r.tl.stats().curveResyncs == 1);
     const auto got = flat(r.events, swapAt, swapAt + 1);
     REQUIRE(got.size() == 3);
-    CHECK(got[0] == Flat{swapAt, K::Pitch, 220.0f, 0.0f, 0});  // no pitch curve any more: back to the note's Hz
+    // No pitch curve any more: back to the note's Hz (a glide, bug-live-shape); the gain steps (T7.7 keys gain steps).
+    CHECK(got[0] == Flat{swapAt, K::Pitch, 220.0f, 0.0f, static_cast<uint32_t>(g)});
     CHECK(got[1].kind == K::Gain);
     CHECK(got[1].ramp == 0);
     CHECK(got[2] == Flat{swapAt, K::Gain, 0.0f, 0.0f, static_cast<uint32_t>(108000 - swapAt)});
-    for (int64_t t = swapAt; t < 156000; ++t) REQUIRE(r.hz[static_cast<size_t>(t)] == 220.0f);
+    CHECK(glidesFrom(r, 1200.0 * static_cast<double>(swapAt - kQ / 2) / static_cast<double>(2 * kQ), 0.0, 220.0) <= 1e-3);
+    for (int64_t t = swapAt + g; t < 156000; ++t) REQUIRE(r.hz[static_cast<size_t>(t)] == 220.0f);
     CHECK(r.worstGainDb(swapAt, 108000 - 2000, {{0.5 * kQ, 1.0}, {4.5 * kQ, 0.0}}) <= 0.01);  // (the last samples near 0: below)
     for (int64_t t = 108000 - 2000; t < 108000; ++t)
       REQUIRE(r.gain[static_cast<size_t>(t)] == doctest::Approx(static_cast<double>(108000 - t) / (4.0 * kQ)).epsilon(1e-4));
     CHECK(r.gain[108000] == 0.0f);
     CHECK(flat(r.events, swapAt + 1).size() == 1);  // only the note-off: the new curves have no later breakpoint with work
   }
-  SUBCASE("the note is re-pitched (same curve): one retune at the curve's value, then the ramp from there") {
+  SUBCASE("the note is re-pitched (same curve): one retune gliding to the curve's value, then the ramp from there") {
     e::NoteDesc hi = n;
     hi.hz = 330.0f;
     CurveRig r(kGate);
     runSwap(r, image(tracks(hi)));
     CHECK(r.tl.stats().retunedOnSwap == 1);
     CHECK(r.tl.stats().curveResyncs == 1);
-    const double c = 1200.0 * static_cast<double>(swapAt - kQ / 2) / static_cast<double>(2 * kQ);
+    const double c = 1200.0 * static_cast<double>(swapAt + g - kQ / 2) / static_cast<double>(2 * kQ);
     size_t at = 0;
     while (at < r.events.size() && r.events[at].t < swapAt) ++at;
     REQUIRE(at + 1 < r.events.size());
+    CHECK(r.events[at].t == swapAt);
     CHECK(r.events[at].e.kind == K::Pitch);
-    CHECK((r.events[at].e.flags & e::kNoteEventRetune) != 0);
-    CHECK(r.events[at].e.rampFrames == 0);
+    CHECK((r.events[at].e.flags & e::kNoteEventRetune) != 0);  // the identity at once, the Hz over the glide
+    CHECK(r.events[at].e.rampFrames == static_cast<uint32_t>(g));
     CHECK(r.events[at].e.hz == doctest::Approx(330.0 * std::exp2(c / 1200.0)).epsilon(1e-7));
-    CHECK(flat(r.events, swapAt, swapAt + 1)[1] == Flat{swapAt, K::Pitch, 660.0f, 0.0f, static_cast<uint32_t>(60000 - swapAt)});
-    CHECK(r.worstHzCents(swapAt, 156000, upS, 330.0) <= 0.01);
+    CHECK(flat(r.events, swapAt, swapAt + 64)[1] == Flat{swapAt + g, K::Pitch, 660.0f, 0.0f, static_cast<uint32_t>(60000 - swapAt - g)});
+    const double from = cents(r.hz[static_cast<size_t>(swapAt - 1)], 220.0), to = cents(330.0 * std::exp2(c / 1200.0), 220.0);
+    CHECK(glidesFrom(r, from, to, 220.0) <= 1e-3);
+    CHECK(r.worstHzCents(swapAt + g, 156000, upS, 330.0) <= 0.01);
   }
   SUBCASE("a new tempo map: the running ramp is re-sent with its new length") {
     CurveRig r(kGate);

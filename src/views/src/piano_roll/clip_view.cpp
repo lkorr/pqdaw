@@ -116,6 +116,7 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
 }
 
 ClipView::~ClipView() {
+  if (state_->liveOpen()) state_->abortDrag();  // bug-live-shape: a live drag's gesture goes with the view
   if (playheadTimer_) cancelTimer(playheadTimer_);
   ctx_.macro().detachRoll(state_.get());
   for (std::string_view id : ViewContext::kPianoRollActions) ctx_.clearViewAction(id);

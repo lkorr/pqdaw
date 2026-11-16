@@ -473,24 +473,12 @@ void Timeline::swapSequence(const SequenceImage* next) noexcept {  // RT-safe
           s.curve = nc.begin;
           s.pitchCount = nc.pitchCount;
           s.gainCount = nc.gainCount;
-          if (retune) {  // at the curve's value at the block's first sample
-            const float cents =
-                hasPitch ? SequenceImage::curveValueAt(next->pitchCurve(*n),
-                                                       tempo_->tempo().samplesToTicks(pos_, cfg_.sampleRate) -
-                                                           static_cast<double>(s.shift),
-                                                       0.0f)
-                         : 0.0f;
-            NoteEvent e = notePitch(0, s.instance, cents != 0.0f ? curveHz(n->hz, cents) : n->hz);
-            e.flags = kNoteEventRetune;
-            setIdentity(e, *n);
-            if (pushEvent(j, e)) ++stats_.retunedOnSwap;
-            s.hz = n->hz;
-          }
           const CurveOut out{next, j, 0, src.heapSize, pos_, src.heap, src.heapSize};
           const bool syncPitch = retune ? hasPitch : curvesChanged && (hadPitch || hasPitch);
           const bool syncGain = curvesChanged && (hadGain || hasGain);
-          // After a retune only the ramp is missing (the retune stepped); else a step onto the new curve first.
-          if (syncPitch) curveSync(out, s, CurveKind::Pitch, retune ? CurveSync::Resume : CurveSync::Step, now);
+          // bug-live-shape: a new pitch (a retune) or pitch curve is glided onto, not stepped to (a drag that edits a
+          // sounding note sends a stream of these).
+          if (retune || syncPitch) swapGlide(out, s, *n, retune, now);
           if (syncGain) curveSync(out, s, CurveKind::Gain, CurveSync::Step, now);
           if (syncPitch || syncGain) ++stats_.curveResyncs;
           if (hasPitch || hasGain) nextCurve = std::min(nextCurve, nextCurveTick(*next, s));
@@ -848,6 +836,75 @@ void Timeline::curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSy
   }
   if (step) pushCurveEvent(o, pitch ? notePitch(o.frame, s.instance, curveHz(s.hz, value)) : noteGain(o.frame, s.instance, value));
   curveRamp(o, s, kind, value);
+}
+
+__declspec(noinline) void Timeline::swapGlide(const CurveOut& o, Sounding& s, const SequenceImage::Note& n, bool retune,
+                                              Ticks at) noexcept {  // RT-safe
+  // The glide's frames: kSwapGlideSeconds, inside this block (the curve's own ramp follows as an event of the block,
+  // so no note needs state for it), and no further than the curve's next point (the playback takes over there).
+  const uint32_t room = blockFrames_ > 1 ? blockFrames_ - 1 : 0;
+  SampleTime g = std::min<SampleTime>(static_cast<SampleTime>(cfg_.sampleRate * kSwapGlideSeconds), room);
+  (void)curveLocate(*o.image, s, CurveKind::Pitch, at, INT64_MIN);  // the cursor: pitchNext = the first point after `at`
+  const bool point = s.pitchNext < s.pitchCount;
+  SampleTime toNext = INT64_MAX;
+  if (point) {
+    const CurvePoint& p = o.image->curves()[s.curve + 1 + s.pitchNext];
+    toNext = tempo_->tempo().ticksToSamples(p.tick + s.shift, cfg_.sampleRate) - o.sample;
+  }
+  g = std::clamp<SampleTime>(std::min(g, toNext), 0, g);
+  // The follow-up waits for the block's end (deferred_: the track's events must stay in frame order); none left: the
+  // step of before.
+  if (point && g < toNext && deferredCount_ >= kMaxDeferred) g = 0;
+  // Where the new curve is when the glide ends (the note's own Hz without a curve).
+  const float cents =
+      s.pitchCount != 0
+          ? SequenceImage::curveValueAt(o.image->pitchCurve(n),
+                                        tempo_->tempo().samplesToTicks(o.sample + g, cfg_.sampleRate) - static_cast<double>(s.shift), 0.0f)
+          : 0.0f;
+  const float hz = cents != 0.0f ? curveHz(n.hz, cents) : n.hz;
+  NoteEvent e = notePitch(o.frame, s.instance, hz, static_cast<uint32_t>(g));
+  if (retune) {  // the identity moves at once, the Hz glides
+    e.flags = kNoteEventRetune;
+    setIdentity(e, n);
+    if (pushEvent(o.track, e)) ++stats_.retunedOnSwap;
+    s.hz = n.hz;
+  } else {
+    pushCurveEvent(o, e);
+  }
+  // From the glide's end on, the curve's own ramp to its next point (when that is later: else the playback's
+  // breakpoint at it continues). At frame 0 (no glide) it goes out now, after the step.
+  if (!point || g >= toNext) return;
+  if (g == 0) {
+    curveRamp(o, s, CurveKind::Pitch, cents);
+    return;
+  }
+  const CurvePoint& p = o.image->curves()[s.curve + 1 + s.pitchNext];
+  if (std::bit_cast<uint32_t>(p.value) == std::bit_cast<uint32_t>(cents)) return;  // flat from there: the glide holds it
+  const SampleTime d = tempo_->tempo().ticksToSamples(p.tick + s.shift, cfg_.sampleRate) - (o.sample + g);
+  deferred_[deferredCount_++] = {o.track, notePitch(o.frame + static_cast<uint32_t>(g), s.instance, curveHz(s.hz, p.value),
+                                                    static_cast<uint32_t>(std::clamp<SampleTime>(d, 0, 0xFFFFFFFFll)))};
+}
+
+void Timeline::insertDeferred() noexcept {  // RT-safe
+  for (uint32_t i = 0; i < deferredCount_; ++i) {
+    const Deferred& df = deferred_[i];
+    uint32_t& n = eventCount_[df.track];
+    if (n >= cfg_.maxEventsPerTrack) {  // (the voice holds the glide's end until the next breakpoint: it heals there)
+      ++stats_.droppedCurveEvents;
+      continue;
+    }
+    NoteEvent* ev = events_.data() + static_cast<size_t>(df.track) * cfg_.maxEventsPerTrack;
+    uint32_t at = n;
+    while (at > 0 && ev[at - 1].frame > df.e.frame) {  // after every event of its frame or earlier
+      ev[at] = ev[at - 1];
+      --at;
+    }
+    ev[at] = df.e;
+    ++n;
+    anyEvents_ = true;
+    ++stats_.curveEvents;
+  }
+  deferredCount_ = 0;
 }
 
 // Out of line (as playCurves): the sequencer's loop over notes without curves stays as small as it was.
@@ -1246,6 +1303,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
   if (sampleTime == lastSampleTime_) return;  // this block was processed already (another hook)
   lastSampleTime_ = sampleTime;
   frames = std::min(frames, cfg_.maxBlockFrames);
+  blockFrames_ = frames;
   if (anyEvents_) {
     std::memset(eventCount_.data(), 0, sizeof(uint32_t) * eventCount_.size());
     anyEvents_ = false;
@@ -1328,6 +1386,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
       }
     }
   }
+  if (deferredCount_ != 0) insertDeferred();  // bug-live-shape: a swap's glides hand over to their curves
   clips_->endBlock();
   framesSinceReport_ += frames;
   ++stats_.blocks;

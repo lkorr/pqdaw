@@ -49,7 +49,8 @@
 // Image swap (sequence): sounding notes follow their track id. A sounding note that is still in the new image (same
 // id, same start; findOccurrence) keeps sounding, with its note-off recomputed from the new length; if its pitch
 // changed (Hz, PitchSource, ratio, harmonic: a tuning edit re-resolved it, or it was re-pitched) it is retuned at
-// frame 0 by a Pitch step carrying its new identity (kNoteEventRetune, T2.6-fix3), never cut. One that was removed
+// frame 0 by a Pitch event carrying its new identity (kNoteEventRetune, T2.6-fix3; bug-live-shape: its Hz glides, see
+// "Note curves"), never cut. One that was removed
 // gets a note-off at frame 0 of the first block of the new image. Notes of a track
 // that disappeared are dropped (counted: its instrument goes away with the recompile). Cursors re-seek at the
 // current tick: notes starting from it on play from the new image; notes that started earlier and are not sounding
@@ -91,10 +92,15 @@
 // starts after the new position starts mid-curve when its curve began earlier. Clip-loop passes replay the note and
 // its curve.
 // Image swap: a kept note (same id and start) whose curves are unchanged keeps its cursor and gets no event; if its
-// curves changed (or it is retuned and has a pitch curve: the retune carries the curve's value) it is
-// re-synchronised at frame 0: a step to the new curve's value at the playhead (the block's first sample, as a
-// fractional tick) and a ramp to the next breakpoint. A new tempo map re-sends the running ramps with their new
-// lengths. Capacity: curve events are only emitted while room remains for every pending note-off, and a note-on
+// curves changed it is re-synchronised at frame 0. Its PITCH glides (bug-live-shape: a drag that edits a sounding
+// note's bend, vibrato or drawn curve sends a stream of swaps, one per UI frame; steps would staircase): a Pitch ramp
+// from wherever the voice is to the new curve's value g samples on, g = kSwapGlideSeconds (5 ms) bounded by the rest
+// of the block and by the curve's next point, then — when that point is later — the curve's own ramp from there to it
+// as an event of the same block (frame g, put among the track's events in frame order at the block's end; past
+// kMaxDeferred of them in one block the rest step as before), so no note keeps glide state; a retune (kNoteEventRetune: the identity
+// moves at frame 0) glides the same way, with or without a curve. Its GAIN steps to the new curve's value at the
+// playhead and ramps to the next breakpoint (T7.7's synced unisons key gain steps). A new tempo map re-sends the
+// running ramps with their new lengths. Capacity: curve events are only emitted while room remains for every pending note-off, and a note-on
 // (with its off) displaces the block's newest ones (T7.16b, see "Capacities"); a dropped one
 // (TimelineStats::droppedCurveEvents) leaves the voice on its last ramp until the next breakpoint, whose ramp ends on
 // the right value again. More than 4 · maxEventsPerTrack breakpoints and note-ons on one track in one block: the
@@ -246,6 +252,12 @@ struct TransportReport {
   bool recording = false;
   uint32_t recordSession = 0;
 };
+
+// bug-live-shape (see "Image swap"): how long a kept note glides onto its new pitch / pitch curve after a swap, at
+// most (the rest of the block, the curve's next point bound it). 5 ms: a step becomes a slope too short to hear as a
+// portamento, and the voice is on the edited curve well within one UI frame (16.7 ms), so a drag's stream of edits
+// does not lag behind the pointer.
+inline constexpr double kSwapGlideSeconds = 0.005;
 
 struct TimelineConfig {
   double sampleRate = 48000.0;
@@ -471,6 +483,19 @@ private:
   // The ramp from `value` (the curve at the playhead) to the cursor's breakpoint, if there is one and it differs.
   void curveRamp(const CurveOut& o, const Sounding& s, CurveKind kind, float value) noexcept;
   void curveSync(const CurveOut& o, Sounding& s, CurveKind kind, CurveSync mode, Ticks at) noexcept;
+  // bug-live-shape (see "Image swap"): a kept note's new pitch — a changed pitch curve, a retune (`retune`: the event
+  // also carries `n`'s identity) — as a glide from where the voice is to the new curve at the glide's end, then the
+  // curve's ramp from there. `at`: the playhead tick.
+  void swapGlide(const CurveOut& o, Sounding& s, const SequenceImage::Note& n, bool retune, Ticks at) noexcept;
+  // The glides' follow-up ramps (frame g of the swap's block), put into their tracks' events in frame order once the
+  // block's events are all out (a track's events are written in time order). kMaxDeferred per block; past it a note
+  // steps as before the glide existed.
+  struct Deferred {
+    uint32_t track;
+    NoteEvent e;
+  };
+  static constexpr uint32_t kMaxDeferred = 256;
+  void insertDeferred() noexcept;
   // T7.7: the gain point the cursor of `s` landed on: its `sync` note (0: none) and, when it is the second point of
   // a jump, the first point's (0: none).
   struct SyncAt {
@@ -572,6 +597,9 @@ private:
   Ticks offTick(Ticks on, Ticks off) const noexcept;
   bool tickLazy_ = false;        // nextTick_ is firstTickAtOrAfterSample(pos_), not computed yet
   int64_t lastSampleTime_ = INT64_MIN;
+  uint32_t blockFrames_ = 0;  // bug-live-shape: the frames of the block being processed (a swap's glide stays inside it)
+  std::unique_ptr<Deferred[]> deferred_ = std::make_unique<Deferred[]>(kMaxDeferred);  // (allocated with the timeline)
+  uint32_t deferredCount_ = 0;
   TransportSnapshot snapshot_;
   Ticks barStartTick_ = 0, barEndTick_ = 0;  // the bar containing the last snapshot's tick
   double beatsPerBar_ = 4.0;

@@ -30,7 +30,8 @@
 //                                      guides / the note's own pitch; Shift: free), double-click deletes, the diamond
 //                                      between two points bends the segment.
 //   Shift + a note's body              free detune (after a dead zone): the selected notes become Cents notes.
-// Every gesture previews the record its release stores (curvePreview_) and is one undo step.
+// Every gesture previews the record it stores (curvePreview_) and is one undo step; the drags (an Alt bend, a pen
+// stroke, a breakpoint or bow) dispatch it live every frame once past the click slop (bug-live-shape, roll_live.cpp).
 //
 // Cost: nothing here runs per audio block. A drag frame re-thins one stroke (O(points · log)) or rebuilds one record
 // per selected note (and the roll flattens each of those notes' paths once per frame: RollState::pathOf's preview
@@ -231,15 +232,20 @@ void RollState::clearCurvePreview() {
   touchPreview();
 }
 
-bool RollState::commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what) {
-  if (!clip_) return false;
+doc::ops::EditResult RollState::curveEdit(const CurveTarget& t, std::vector<doc::Breakpoint> pts) const {
+  if (!clip_) return invalid("no clip");
   normalise(pts);
   const doc::Note* n = t.note.valid() ? findNote(t.note) : nullptr;
-  if (!n) return false;
-  const doc::NoteCurves* have = clip_->curves ? doc::findNoteCurves(*clip_, t.note) : nullptr;
-  if (have ? have->pitch == pts : pts.empty()) return false;  // nothing changed: no undo step
+  if (!n) return invalid("the note is gone");
+  return doc::ops::setNoteCurve(*snap_, ref_, doc::keyOf(*n), std::move(pts));  // (the same curve: an empty edit)
+}
+
+bool RollState::commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what) {
+  if (!clip_ || !t.note.valid() || !findNote(t.note)) return false;
+  const doc::ops::EditResult e = curveEdit(t, std::move(pts));
+  if (e && e->empty()) return false;  // nothing changed: no undo step
   std::vector<uint32_t> keep = sel_;
-  const bool ok = apply(doc::ops::setNoteCurve(*ctx.doc(), ref_, doc::keyOf(*n), std::move(pts)), what);
+  const bool ok = apply(e, what);
   if (ok) select(std::move(keep));
   return ok;
 }
@@ -600,7 +606,7 @@ std::vector<doc::Breakpoint> RollState::retimeCurve(std::span<const doc::Breakpo
 
 doc::ops::EditResult RollState::resizeEdit(doc::ops::NoteEdge edge, Ticks delta) const {
   if (!clip_) return invalid("no clip");
-  doc::ops::EditResult e = doc::ops::resizeNotes(*ctx.doc(), ref_, selectionKeys(), edge, delta);
+  doc::ops::EditResult e = doc::ops::resizeNotes(*snap_, ref_, selectionKeys(), edge, delta);  // (clip_'s snapshot)
   if (!e || e->empty() || !clip_->curves) return e;
   doc::Batch* batch = std::get_if<doc::Batch>(&e->command.v);
   if (!batch) return e;
@@ -780,27 +786,21 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
   }
 }
 
-bool RollState::commitPen(DragState& d) {
+doc::ops::EditResult RollState::penEdit(const DragState& d) const {
   const doc::Note* n = clip_ && d.curve.note.valid() ? findNote(d.curve.note) : nullptr;
-  if (!n) return false;
-  if (d.penLength <= n->length) return commitCurve(d.curve, std::move(d.curvePts), "Draw Pitch Curve");
+  if (!n) return invalid("the note is gone");
+  if (d.penLength <= n->length) return curveEdit(d.curve, d.curvePts);
   // The stroke went past the note's end: the note grows and takes the stroke as its curve, in one undo step.
-  Pts pts = std::move(d.curvePts);
+  Pts pts = d.curvePts;
   normalise(pts);
   const doc::NoteKey key = doc::keyOf(*n);
-  doc::ops::EditResult e = doc::ops::resizeNotes(*ctx.doc(), ref_, std::span<const doc::NoteKey>(&key, 1), doc::ops::NoteEdge::End, d.penLength - n->length);
-  if (!e) {
-    ctx.setStatus("Draw Pitch Curve: " + e.error().message);
-    return false;
-  }
+  doc::ops::EditResult e = doc::ops::resizeNotes(*snap_, ref_, std::span<const doc::NoteKey>(&key, 1), doc::ops::NoteEdge::End, d.penLength - n->length);
+  if (!e) return e;
   std::vector<doc::Command> commands;
   if (doc::Batch* b = std::get_if<doc::Batch>(&e->command.v)) commands = std::move(b->commands);
   else commands.push_back(std::move(e->command));
   commands.push_back(doc::SetNoteCurve{ref_, key, std::move(pts)});  // (a lengthening keeps its start: the key stands)
-  std::vector<uint32_t> keep = sel_;
-  const bool ok = apply(batchOf("Draw Pitch Curve", std::move(commands), ref_, {key}), "Draw Pitch Curve");
-  if (ok) select(std::move(keep));
-  return ok;
+  return batchOf("Draw Pitch Curve", std::move(commands), ref_, {key});
 }
 
 bool RollState::beginCurvePoint(const CurveTarget& t, ui::Vec2 p) {

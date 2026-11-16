@@ -17,7 +17,8 @@
 //   status line   "Bend Out 0.5 beats · turns at 30%" while dragging.
 // With the note in a selection the drag shapes the same edge's bend of every selected note that has one: each
 // length by the same factor (then snapped), one shape once the drag went sideways (else each keeps its own). The drag
-// previews through curvePreview_; the release is one ops::shapeNoteBends (one SetNoteCurves, one undo step).
+// previews through curvePreview_ and, once past the click slop, dispatches ops::shapeNoteBends live every frame
+// (bug-live-shape, roll_live.cpp: a sounding note follows); the release commits it as one undo step.
 // Separation: without Alt a node is grabbed before the note's edge (a short glide's node sits near the edge); Alt +
 // the edge is the Alt bend as before.
 //
@@ -223,11 +224,7 @@ void RollState::bendShapeTo(ui::Vec2 p, ui::Mods mods) {
   markNotesDirty();
 }
 
-bool RollState::commitBendShape(DragState& d) {
-  if (!clip_ || d.bends.empty()) {
-    clearCurvePreview();
-    return false;
-  }
+doc::ops::EditResult RollState::bendShapeEdit(const DragState& d) const {
   std::vector<doc::ops::NoteBendShapeEdit> edits;
   const doc::ops::NoteEdge edge = d.bendEdge < 0 ? doc::ops::NoteEdge::Start : doc::ops::NoteEdge::End;
   for (const DragState::BendTarget& t : d.bends) {
@@ -237,11 +234,7 @@ bool RollState::commitBendShape(DragState& d) {
     const doc::NoteBend& b = bendOf(*rec, d.bendEdge);
     edits.push_back({doc::keyOf(*n), edge, b.length, b.shape});
   }
-  clearCurvePreview();
-  std::vector<uint32_t> keep = sel_;
-  const bool ok = apply(doc::ops::shapeNoteBends(*ctx.doc(), ref_, edits), "Bend Shape");
-  select(std::move(keep));
-  return ok;
+  return doc::ops::shapeNoteBends(*snap_, ref_, edits);  // (a record as it is adds nothing)
 }
 
 bool RollState::resetBendShape(const BendNodeHit& h) {

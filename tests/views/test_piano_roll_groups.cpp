@@ -309,6 +309,8 @@ TEST_CASE("roll groups: warps — drag the frame's corner inward and the chord p
   r.d.step();
   CHECK(r.history() == h);
   CHECK(r.cents(ids[1], 0.0) - root == doctest::Approx(400.0));  // the preview already draws the E on its row
+  REQUIRE(r.onlyGroup().warps.size() == 1);  // bug-live-shape: and the chord already plays it (no undo step yet)
+  CHECK(r.ctx.store().inGesture());
   CHECK(r.ctx.status().find("Warp into 4:5:6:7") != std::string::npos);
   r.d.up(to);
   r.d.step();
@@ -1140,7 +1142,7 @@ TEST_CASE("roll groups (T7.16a, M7 review H4 / M13): warp grips win over vibrato
   CHECK(doc::findNoteCurves(r.clip(), s)->bendOut.set());
 }
 
-TEST_CASE("roll gestures (T7.16a, M7 review M20): Esc mid-drag leaves the document alone — pen, bend, vibrato, detune") {
+TEST_CASE("roll gestures (T7.16a, M7 review M20; bug-live-shape): Esc mid-drag leaves the document as it was — pen, bend, vibrato (live), detune") {
   Roll r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Roll::plain(0, 2 * kQ, 2), Roll::plain(2 * kQ, 2 * kQ, 5)});
@@ -1149,7 +1151,9 @@ TEST_CASE("roll gestures (T7.16a, M7 review M20): Esc mid-drag leaves the docume
     REQUIRE(r.d.down(from, PointerButton::Left, mods));
     r.d.move({0.5f * (from.x + to.x), 0.5f * (from.y + to.y)}, mods);
     r.d.move(to, mods);
+    r.d.step();  // bug-live-shape: a shape drag has edited the document by now (a live gesture)
     (void)r.d.press("Escape");
+    CHECK_FALSE(r.ctx.store().inGesture());
     r.d.up(to, PointerButton::Left, mods);
     r.d.step();
     CHECK(r.history() == h);

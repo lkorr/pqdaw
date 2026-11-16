@@ -5,9 +5,13 @@
 // progress. The child widgets (roll_widgets.h) paint from it and turn input into edits through it; it is the only
 // place that dispatches commands.
 //
-// Edits are pq::doc::ops builders dispatched once per user gesture (one history entry each). A drag never edits the
-// document while it runs: the widgets paint a preview (DragState) and the edit is dispatched on release, so a drag
-// frame costs a repaint of the damaged area and nothing else (the 1 ms drag-frame budget).
+// Edits are pq::doc::ops builders dispatched once per user gesture (one history entry each). The widgets paint a
+// drag's preview (DragState, curvePreview_, warpPreview_). A drag that moves notes in time (Move, Copy, ResizeStart),
+// the velocity lane, the ruler and Draw are dispatched on release, so their frames cost a repaint of the damaged area
+// and nothing else (the 1 ms drag-frame budget). The shape drags (bend nodes, Alt bends, vibrato grips and corners,
+// pen strokes, breakpoints, warps, ResizeEnd) also dispatch their edit LIVE, once per frame inside one store gesture
+// (bug-live-shape, roll_live.cpp), so a sounding note follows; the roll keeps showing the press-time clip plus the
+// preview, which is what was dispatched.
 //
 // Caches, all rebuilt off the paint path when their input changes (pointer compares):
 //   - tuning (built from the clip's effective TuningDef) and the RowModel (tuning, row height, fold, used degrees);
@@ -230,6 +234,13 @@ struct DragState {
   // group they snap to the group's harmonics and are previewed there). Sorted note ids.
   std::vector<uint32_t> followAnchors, aloneAnchors;
 };
+
+// An edit that changes nothing (an empty Batch).
+inline doc::ops::Edit noEdit() {
+  doc::ops::Edit e;
+  e.command = doc::Command{doc::Batch{}};
+  return e;
+}
 
 // A note drawn along a pitch path instead of on a row (T7.4): it has a pitch curve, a bend, a vibrato or a warp.
 struct CurveNote {
@@ -524,6 +535,33 @@ public:
   // --- drag (preview; committed on release) ---
   DragState drag;
   void commitDrag();
+
+  // --- live shape drags (bug-live-shape; roll_live.cpp) ---
+  // A drag of these kinds edits the document while it runs: past its click slop (a pen stroke: past kMinPenStroke)
+  // every change of its preview marks it dirty (liveChanged: one frame request) and the note area's next frame
+  // dispatches the edit the release would make (flushLive) — at most once per UI frame, and not at all when it equals
+  // the last one — inside ONE store gesture opened by the first dispatch. Each dispatch replaces the previous one
+  // (DocumentStore::dispatchReplacing: the edit is rebuilt from the press-time clip), so the ProjectLink re-lowers the
+  // clip and the engine's swap carries the sounding notes onto the new curves (timeline.h "Image swap": a glide).
+  // The release commits the gesture (ONE undo step, the kind's label); Esc / capture loss / the view going cancel it
+  // (the document exactly as at the press). While the gesture is open, refresh() keeps the press-time clip and
+  // snapshot (the edit builders and the preview read them; the preview IS what was dispatched, so nothing is shown
+  // twice and the roll's caches are not rebuilt per frame). Kinds: BendShape, Vibrato, VibratoCorner, PenVibrato,
+  // PenDraw (its lengthening too), CurvePoint, CurveBow, the warps, ResizeEnd (not the one a double-click's add
+  // joins: that coalesces with the add on release) and ResizeStart / ResizeEnd with Alt (a bend: the edge stays).
+  // Move, Copy and a plain ResizeStart stay release-only (a moved start cuts the sounding note).
+  static bool liveKind(const DragState& d) noexcept;
+  bool liveOpen() const noexcept { return liveOpen_; }
+  void liveChanged();
+  void flushLive();
+  // The edit the drag in state `d` makes (relative to the press-time clip); an empty edit when it changes nothing.
+  // `label`: its undo step's name.
+  doc::ops::EditResult liveEdit(DragState& d, std::string& label) const;
+  struct LiveStats {
+    uint64_t dispatches = 0;  // live dispatches (tests: once per frame at most)
+    double ms = 0.0;          // their UI-thread time: the edit, the store, every listener (ProjectLink's lowering)
+  };
+  const LiveStats& liveStats() const noexcept { return liveStats_; }
   // At a drag's start (after the selection is final): remember the dragged notes for damageDrag().
   void beginDragTracking();
   // Damages exactly what the preview changed since the last call (or everything for an untracked drag).
@@ -661,7 +699,7 @@ public:
   // Warp gestures (the note area calls them).
   void beginWarpDrag(const GroupHit& h, ui::Vec2 p);
   void warpDragTo(ui::Vec2 p, ui::Mods mods);
-  bool commitWarpDrag(DragState& d);
+  doc::ops::EditResult warpEdit(const DragState& d) const;  // the warps the drag stores (ops::setJiWarps)
   // The proportion tool: J arms it for one box drag on empty space (Esc disarms); the release opens the field.
   bool proportionArmed() const noexcept { return proportionArmed_; }
   void armProportionTool(bool on);
@@ -757,10 +795,10 @@ public:
   // there (by more than two px), it returns to it over kPenRampTicks (or what is left of the note) along a curved
   // segment, so the rest of the note keeps its pitch; a stroke that goes past the note's end lengthens the note to
   // the end of the grid cell it ends in (to where it ends without grid snapping), never into the next note on the
-  // same pitch, holding its last value there — the length and the curve in one undo step (commitPen).
+  // same pitch, holding its last value there — the length and the curve in one undo step (penEdit).
   void beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool vibrato);
   void penTo(ui::Vec2 p, ui::Mods mods);
-  bool commitPen(DragState& d);
+  doc::ops::EditResult penEdit(const DragState& d) const;  // PenDraw's edit: the curve (and the lengthening)
   inline static constexpr Ticks kPenRampTicks = kPpq / 8;  // a 32nd note
   inline static constexpr float kPenRampCurve = 0.5f;      // its curvature (automation curve law): eased into the note
   // Ctrl+click in Draw Mode: a breakpoint on the curve at the pointer (the press then drags it).
@@ -768,8 +806,10 @@ public:
   void beginCurveHandle(const CurveHit& h, ui::Vec2 p);
   void curveHandleTo(ui::Vec2 p, ui::Mods mods);
   bool deleteCurvePoint(const CurveHit& h);
-  // Stores a note's free curve (SetNoteCurve), one undo step; the selection is kept.
+  // Stores a note's free curve (SetNoteCurve), one undo step; the selection is kept. curveEdit: that edit (empty: the
+  // curve it has).
   bool commitCurve(const CurveTarget& t, std::vector<doc::Breakpoint> pts, std::string_view what);
+  doc::ops::EditResult curveEdit(const CurveTarget& t, std::vector<doc::Breakpoint> pts) const;
   // A pitch in cents snapped for a breakpoint drag at content tick `tick`: the nearest row, harmonic guide (when
   // shown; where it is at that tick) or `own` (the pitch the curve is added to: value 0).
   double snapCurveCents(double cents, double own, double tick) const;
@@ -820,7 +860,7 @@ public:
   doc::NoteVibrato vibratoOf(doc::NoteId note) const;
   void beginVibratoDrag(const VibratoHit& h, ui::Vec2 p);
   void vibratoDragTo(ui::Vec2 p, ui::Mods mods);
-  bool commitVibratoDrag(DragState& d);
+  doc::ops::EditResult vibratoEdit(const DragState& d) const;  // the vibratos the drag stores (ops::setNoteVibrato)
   // Removes the vibrato of the note (and of the selection when the note is in it). One undo step.
   bool removeVibrato(doc::NoteId note);
   // Sets the selected notes' vibrato depth and rate (Hz), keeping each note's envelope (scenes, tests).
@@ -859,7 +899,7 @@ public:
   void bendNodeNotes(std::vector<const doc::Note*>& out) const;
   void beginBendShape(const BendNodeHit& h, ui::Vec2 p);
   void bendShapeTo(ui::Vec2 p, ui::Mods mods);
-  bool commitBendShape(DragState& d);
+  doc::ops::EditResult bendShapeEdit(const DragState& d) const;  // the shapes the drag stores (ops::shapeNoteBends)
   // Double-click on a node: that edge's bend of the note (and of the selection when the note is in it) back to the
   // default S-curve. One undo step.
   bool resetBendShape(const BendNodeHit& h);
@@ -1008,6 +1048,25 @@ public:
   void markAllDirty();
 
 private:
+  // bug-live-shape (roll_live.cpp). commitLive: the release of a live kind (moves `drag` out); cancelLive: the
+  // gesture goes (the document as at the press), the drag stays.
+  void commitLive();
+  void cancelLive();
+  bool liveOpen_ = false;   // this roll's store gesture is open
+  bool liveDirty_ = false;  // the preview moved since the last dispatch
+  // What the last dispatch was made from (a frame whose drag state is the same dispatches nothing).
+  struct LiveKey {
+    std::vector<doc::NoteCurves> records;
+    std::vector<doc::JiWarp> warps;
+    Ticks dt = 0, penLength = 0;
+    bool bend = false;
+    DragKind kind = DragKind::None;
+    friend bool operator==(const LiveKey&, const LiveKey&) = default;
+  };
+  LiveKey liveKey() const;
+  LiveKey liveLast_;
+  LiveStats liveStats_;
+
   void rebuildRows();
   bool morphInPlace(const doc::TuningDef& def);
   void rebuildChunks();

@@ -12,6 +12,8 @@
 // bug-bend-shape: a bend's shape node (length up / down on the whole selection, the turn sideways, double-click: the
 // S-curve); a pen stroke changes only what it covers (it eases back into the old curve) and lengthens the note past
 // its end (to the grid cell, never into the next note on its pitch; one undo step).
+// bug-live-shape: the shape drags edit the document while they run (once per frame, one gesture, one undo step; Esc
+// restores the press's snapshot; a Move waits for the release).
 // Goldens: pianoroll-bends, pianoroll-note-lines. Vibrato by dragging: test_piano_roll_vibrato.cpp.
 
 #include <doctest/doctest.h>
@@ -937,8 +939,10 @@ TEST_CASE("roll pen: a stroke past the note's end lengthens it to the grid cell 
   for (int i = 1; i <= 20; ++i) r.d.move({from.x + 3.0f * static_cast<float>(i), from.y});
   for (int i = 1; i <= 12; ++i) r.d.move({from.x + 60.0f + 3.0f * static_cast<float>(i), from.y - kRow * static_cast<float>(i) / 12.0f});
   r.d.step();
-  CHECK(r.history() == h);  // a preview so far: the note drawn to the end of the cell the stroke reached
-  const std::optional<RollState::Preview> pv = r.st().preview(r.note(n));
+  CHECK(r.history() == h);  // no undo step yet: the note drawn to the end of the cell the stroke reached
+  // (bug-live-shape: the document already plays it; the roll previews it on its press-time note.)
+  CHECK(r.note(n).length == 3 * kQ);
+  const std::optional<RollState::Preview> pv = r.st().preview(*r.st().findNote(n));
   REQUIRE(pv.has_value());
   CHECK(pv->length == 3 * kQ);
   CHECK(r.ctx.status().find("grows to 3 beats") != std::string::npos);
@@ -966,6 +970,160 @@ TEST_CASE("roll pen: a stroke past the note's end lengthens it to the grid cell 
   CHECK(r.note(n).length == 4 * kQ);
   CHECK(r.note(ids[1]).start == 4 * kQ);
   CHECK(r.note(ids[1]).length == kQ);
+}
+
+// bug-live-shape (the user: "if im changing the shape of a note, bending it, applying vibrato etc and its actively
+// playing it should be following along with whats changing in real time"): the shape drags edit the document while
+// they run — at the next frame, once per frame — inside one store gesture; the release is one undo step, Esc puts
+// the document back exactly, a Move still edits only on release.
+TEST_CASE("roll live (bug-live-shape): bend-node, vibrato, pen and end-resize drags edit the document while they run, once per frame; the release is one undo step; Esc restores it; Move waits for the release") {
+  Pen r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids =
+      r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(2 * kQ, 4 * kQ, 4), Pen::plain(8 * kQ, 4 * kQ, 0)});
+  const doc::NoteId a = ids[0], b = ids[1], c = ids[2];
+  {
+    auto e = doc::ops::setNoteBend(*r.ctx.doc(), r.ref, doc::keyOf(r.note(a)), doc::ops::NoteEdge::End, kQ / 8, doc::GlideShape{}, b);
+    REQUIRE(e.ok());
+    REQUIRE(r.ctx.store().dispatch(e->command).ok());
+  }
+  r.d.step();
+  doc::DocumentStore& store = r.ctx.store();
+  auto record = [&](doc::NoteId id) {
+    const doc::NoteCurves* nc = doc::findNoteCurves(r.clip(), id);
+    return nc ? *nc : doc::NoteCurves{};
+  };
+  auto lastLabel = [&] { return store.history().entries().at(store.history().cursor() - 1).label; };
+  auto dispatches = [&] { return r.st().liveStats().dispatches; };
+
+  // A bend node, up two octaves of the drag: nothing before the frame (the moves coalesce), the document at the
+  // frame — one dispatch — and again only when the drag changes.
+  r.d.click(r.view->notePoint(a, 0.3));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  size_t h = r.history();
+  const doc::Snapshot press = r.ctx.doc();
+  const Vec2 n0 = *r.st().bendNodePos(r.note(a), 1);
+  REQUIRE(r.d.down(n0));
+  for (int i = 1; i <= 8; ++i) r.d.move({n0.x, n0.y - 10.0f * static_cast<float>(i)});
+  CHECK(record(a).bendOut.length == kQ / 8);
+  const uint64_t d0 = dispatches();
+  r.d.step();
+  CHECK(dispatches() == d0 + 1);
+  CHECK(record(a).bendOut.length == kQ / 2);  // what plays now
+  CHECK(store.inGesture());
+  CHECK(r.history() == h);
+  CHECK(r.st().bendLength(a, 1) == kQ / 2);  // the roll shows the same, once (the preview is what was dispatched)
+  r.d.move({n0.x, n0.y - 80.0f});
+  r.d.step();
+  CHECK(dispatches() == d0 + 1);  // the same edit: nothing dispatched
+  r.d.up({n0.x, n0.y - 80.0f});
+  r.d.step();
+  CHECK_FALSE(store.inGesture());
+  CHECK(r.history() == h + 1);
+  CHECK(lastLabel() == "Bend Shape");
+  CHECK(record(a).bendOut == doc::NoteBend{kQ / 2, doc::GlideShape{}, b});
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.view->selection()[0] == a.value);
+  REQUIRE(store.undo());
+  r.d.step();
+  CHECK(r.ctx.doc() == press);
+
+  // Dragged and brought back to where it was pressed: the document is the press's again, and nothing is recorded.
+  h = r.history();
+  REQUIRE(r.d.down(n0));
+  r.d.move({n0.x, n0.y - 40.0f});
+  r.d.step();
+  CHECK(record(a).bendOut.length == kQ / 4);
+  r.d.move(n0);
+  r.d.step();
+  CHECK(r.ctx.doc() == press);
+  r.d.up(n0);
+  r.d.step();
+  CHECK(r.history() == h);
+  CHECK_FALSE(store.inGesture());
+
+  // Esc in the middle: the document exactly as at the press, no history, the drag gone.
+  REQUIRE(r.d.down(n0));
+  r.d.move({n0.x, n0.y + 40.0f});
+  r.d.step();
+  CHECK(record(a).bendOut.length == kQ / 16);
+  CHECK(r.d.press("Escape") != KeyResult::Unhandled);
+  r.d.step();
+  CHECK(r.ctx.doc() == press);
+  CHECK(r.history() == h);
+  CHECK_FALSE(store.inGesture());
+  CHECK(r.st().drag.kind == roll::DragKind::None);
+  r.d.up({n0.x, n0.y + 40.0f});
+  r.d.step();
+  CHECK(r.ctx.doc() == press);
+
+  // The ~ grip of b: the vibrato plays while it is dragged.
+  r.d.click(r.view->notePoint(b, 0.3));
+  r.d.step();
+  h = r.history();
+  const std::optional<Vec2> grip = r.st().vibratoGripPos(r.note(b));
+  REQUIRE(grip.has_value());
+  REQUIRE(r.d.down(*grip));
+  for (int i = 1; i <= 4; ++i) r.d.move({grip->x, grip->y - 5.0f * static_cast<float>(i)});
+  r.d.step();
+  CHECK(record(b).vibrato.set());
+  CHECK(record(b).vibrato.depthCents > 0.0f);
+  CHECK(r.history() == h);
+  r.d.up({grip->x, grip->y - 20.0f});
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(lastLabel() == "Vibrato");
+  CHECK(record(b).vibrato.set());
+
+  // c's end, a beat later: its length follows during the drag (its start stays: a sounding note keeps sounding).
+  r.d.click(r.view->notePoint(c, 0.3));
+  r.d.step();
+  h = r.history();
+  const Vec2 end = r.view->notePoint(c, 0.996);
+  REQUIRE(r.d.down(end));
+  for (int i = 1; i <= 6; ++i) r.d.move({end.x + kBeat * static_cast<float>(i) / 6.0f, end.y});
+  r.d.step();
+  CHECK(r.note(c).length == 5 * kQ);
+  CHECK(r.history() == h);
+  const std::optional<RollState::Preview> pv = r.st().preview(*r.st().findNote(c));  // (the roll's press-time note)
+  REQUIRE(pv.has_value());
+  CHECK(pv->length == 5 * kQ);
+  r.d.up({end.x + kBeat, end.y});
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(lastLabel() == "Resize Notes");
+  CHECK(r.note(c).length == 5 * kQ);
+
+  // A Move: the preview runs, the document waits for the release.
+  h = r.history();
+  const doc::Snapshot beforeMove = r.ctx.doc();
+  const Vec2 body = r.view->notePoint(c, 0.4);
+  REQUIRE(r.d.down(body));
+  for (int i = 1; i <= 6; ++i) r.d.move({body.x + kBeat * static_cast<float>(i) / 6.0f, body.y});
+  r.d.step();
+  CHECK(r.ctx.doc() == beforeMove);
+  CHECK_FALSE(store.inGesture());
+  r.d.up({body.x + kBeat, body.y});
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.note(c).start == 9 * kQ);
+
+  // A pen stroke on c (Draw Mode): its curve plays as it is drawn.
+  r.drawMode(true);
+  h = r.history();
+  const Vec2 from = r.at(10.0 * kQ, 0);
+  REQUIRE(r.d.down(from));
+  for (int i = 1; i <= 20; ++i) r.d.move({from.x + 3.0f * static_cast<float>(i), from.y - kRow * static_cast<float>(i) / 10.0f});
+  r.d.step();
+  CHECK(r.history() == h);
+  CHECK(store.inGesture());
+  CHECK(r.curveAt(c, 2 * kQ - 4) > 100.0);
+  r.d.up({from.x + 60.0f, from.y - 2.0f * kRow});
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(lastLabel() == "Draw Pitch Curve");
+  CHECK(r.noteCount() == 3);
 }
 
 TEST_CASE("render: pianoroll-note-lines (T7.12: repeated 16ths, a selected run, soft / deactivated / Cents / Ratio notes as lines) matches the golden image") { checkGolden("pianoroll-note-lines"); }

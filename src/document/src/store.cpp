@@ -94,6 +94,39 @@ Status DocumentStore::dispatch(const Command& c) {
   return Ok{};
 }
 
+Status DocumentStore::dispatchReplacing(const Command& c) {
+  if (!gesture_) return Error{ErrorCode::InvalidArgument, "no gesture in progress", {}};
+  coalesceKey_ = 0;
+  Gesture& g = *gesture_;
+  const bool replace = g.replacing && current_ == g.stepResult;  // nothing else was dispatched since the last step
+  step_.clear();
+  last_ = &empty_;
+  Result<Snapshot> r = apply(replace ? g.stepBase : current_, c, step_);
+  if (!r) return std::move(r).error();
+  Snapshot next = std::move(r).value();
+  if (!replace) {
+    g.stepBase = current_;
+    g.stepChanges.clear();
+  }
+  g.replacing = true;
+  // What listeners must look at: this step's changes and those of the step it undoes.
+  ChangeSet touched = g.stepChanges;
+  touched.merge(step_);
+  touched.normalize();
+  g.stepChanges = std::move(step_);
+  step_.clear();
+  g.stepResult = next;
+  if (next == current_) return Ok{};
+  if (g.label.empty()) g.label = std::string(label(c));
+  g.changes.merge(touched);
+  step_ = std::move(touched);
+  last_ = &step_;
+  Snapshot before = std::move(current_);
+  current_ = std::move(next);
+  notify(StoreEventKind::Dispatch, before, current_, step_);
+  return Ok{};
+}
+
 Status DocumentStore::beginGesture(std::string label) {
   coalesceKey_ = 0;
   if (gesture_) return Error{ErrorCode::InvalidArgument, "a gesture is already in progress", {}};
@@ -194,7 +227,11 @@ void DocumentStore::relocateSamples(std::span<const SampleRef> updated) {
   Snapshot before = current_;
   current_ = remap(current_);
   history_.remap(remap);
-  if (gesture_) gesture_->base = remap(gesture_->base);
+  if (gesture_) {
+    gesture_->base = remap(gesture_->base);
+    gesture_->stepBase = remap(gesture_->stepBase);  // (memoised: the step's result stays current_ when it was)
+    gesture_->stepResult = remap(gesture_->stepResult);
+  }
   if (current_ == before) return;
   // Its own ChangeSet: a relocation may run inside another notification (a listener resolving a dropped sample), whose
   // event still refers to step_; lastChanges() keeps describing the last dispatch.

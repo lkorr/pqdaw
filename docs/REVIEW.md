@@ -1936,3 +1936,11 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Keep drawing past a note's end: the note grows while you draw (to the end of the grid cell you stop in) and never
   into the next note on the same pitch. Undo takes back the length and the curve together.
 - Is the dot clear enough next to the ~ vibrato grip (when they meet, the nearer one is grabbed)?
+
+## 2026-11-15 · bug-live-shape (audible)
+- Shape drags in the piano roll now play while you drag: bend nodes, Alt + edge bends, the vibrato ~ grip and its
+  corners, Draw Mode strokes (also past the note's end), breakpoints / bows, JI warp markers and grips, and dragging a
+  note's END. Moving a note, copying it or dragging its START still applies on release (a moved start would cut it).
+- How to hear it: loop a bar with a long held note, play, then drag its vibrato grip up and down, or a bend node, or
+  draw over it with B (Draw Mode) in front of the playhead — the sound follows the drag with no clicks or stepping (the
+  engine glides ~5 ms onto each change). Esc during the drag snaps back to how it was; the release is one undo step.

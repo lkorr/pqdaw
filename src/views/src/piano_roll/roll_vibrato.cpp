@@ -18,8 +18,9 @@
 //                   Each stays between its neighbours; the two inner ones can meet (a swell). Two corners on one
 //                   tick (no fade yet): the drag's direction picks which one moves.
 //   status line     "Vibrato 35 ¢ · 5.5 Hz" while the grip is dragged; the corner's position while a corner is.
-// Each drag previews the record its release stores (RollState::curvePreview_) and is one undo step
-// (ops::setNoteVibrato: one SetNoteCurves for every note).
+// Each drag previews the record it stores (RollState::curvePreview_), dispatches it live every frame once past the
+// click slop (bug-live-shape, roll_live.cpp: a sounding note follows) and is one undo step (ops::setNoteVibrato: one
+// SetNoteCurves for every note).
 //
 // Cost: a drag frame re-flattens each dragged note's path once (RollState::pathOf's preview entries, T7.16a M15: not
 // once per query — the grips, the envelope and the paint all read the same entry); paint adds the grips
@@ -314,24 +315,14 @@ void RollState::vibratoDragTo(ui::Vec2 p, ui::Mods mods) {
   markNotesDirty();
 }
 
-bool RollState::commitVibratoDrag(DragState& d) {
-  if (!clip_ || d.vibrato.empty()) {
-    curvePreview_.clear();
-    return false;
-  }
+doc::ops::EditResult RollState::vibratoEdit(const DragState& d) const {
   std::vector<doc::ops::NoteVibratoEdit> edits;
   for (const DragState::VibratoTarget& t : d.vibrato) {
     const doc::Note* n = findNote(t.note);
     if (!n) continue;
     edits.push_back({doc::keyOf(*n), vibratoOf(t.note)});  // what the preview shows
   }
-  curvePreview_.clear();
-  const doc::ops::EditResult e = doc::ops::setNoteVibrato(*ctx.doc(), ref_, edits);
-  std::vector<uint32_t> keep = sel_;
-  const bool ok = apply(e, "Vibrato");
-  select(std::move(keep));
-  if (ok && d.kind == DragKind::Vibrato && d.vibDepth != 0.0) vibratoDepth_ = std::fabs(d.vibDepth);
-  return ok;
+  return doc::ops::setNoteVibrato(*snap_, ref_, edits);  // (a record as it is adds nothing)
 }
 
 bool RollState::removeVibrato(doc::NoteId note) {

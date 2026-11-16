@@ -53,7 +53,17 @@ bool RollState::refresh() {
   const doc::Snapshot& cur = ctx.doc();
   const doc::ClipRef want = ctx.detailClip();
   bool changed = false;
-  if (want.track != ref_.track || want.clip != ref_.clip) {
+  // bug-live-shape: while a shape drag's live gesture runs, the roll keeps the press-time clip (its edit builders read
+  // it; the preview shows what the gesture dispatched).
+  const bool sameClip = want.track == ref_.track && want.clip == ref_.clip;
+  if (liveOpen_ && sameClip) return false;
+  if (!sameClip) {
+    if (liveOpen_) {  // another clip while a live drag runs: the drag goes, the document as at its press
+      liveOpen_ = false;
+      liveDirty_ = false;
+      liveLast_ = {};
+      if (ctx.store().inGesture()) (void)ctx.store().cancelGesture();
+    }
     ref_ = want;
     clip_.reset();
     sel_.clear();
@@ -1839,6 +1849,11 @@ void RollState::damageDrag() {
 }
 
 void RollState::commitDrag() {
+  if (liveKind(drag)) {  // bug-live-shape: the shape drags (roll_live.cpp)
+    commitLive();
+    return;
+  }
+  if (liveOpen_) cancelLive();  // the drag left its live mode (Alt let go of a start bend): the document as at the press
   DragState d = std::move(drag);
   drag = {};
   if (!clip_) return;
@@ -1881,58 +1896,17 @@ void RollState::commitDrag() {
                   "Copy Notes");
       break;
     }
+    // (The shape drags — Alt bends, the vibrato grips, pen strokes, breakpoints, warps, bend nodes, ResizeEnd — commit
+    // their live gesture above.) A start moved, or the end of a double-click's held add (joining its undo step).
     case DragKind::ResizeEnd:
     case DragKind::ResizeStart:
       curvePreview_.clear();
-      if (d.bend) {  // T7.6 (A3): Alt = the note glides in from the previous note / out to the next one
-        const bool in = d.kind == DragKind::ResizeStart;
-        const doc::ops::EditResult e = bendEdit(d);
-        if (d.bendPicks.empty() && (!e || e->batch().commands.empty())) {
-          // (A note with no neighbour there bends from / to the dragged pitch: this one was not dragged up or down.)
-          bool same = false;
-          if (const doc::Note* pressed = findNote(d.pressed)) (void)bendNeighbour(*pressed, in ? -1 : 1, &same);
-          ctx.setStatus(same ? (in ? "Bend In: the note before this one is at the same pitch; drag up or down to bend from another"
-                                   : "Bend Out: the note after this one is at the same pitch; drag up or down to bend to another")
-                             : (in ? "Bend In: no note before this one; drag up or down for the pitch it comes from"
-                                   : "Bend Out: no note after this one; drag up or down for the pitch it goes to"));
-        } else {
-          const std::vector<uint32_t> keep = sel_;
-          if (apply(e, in ? "Bend In" : "Bend Out")) select(keep);
-        }
-      } else if (d.dt != 0) {
+      if (d.dt != 0) {
         // T7.6: the notes' free curves are retimed in the same step (bends and vibratos are properties).
         (void)apply(resizeEdit(d.kind == DragKind::ResizeEnd ? doc::ops::NoteEdge::End : doc::ops::NoteEdge::Start, d.dt), "Resize Notes",
                     d.joinKey);
       }
       break;
-    // T7.14: the pen's Alt stroke writes the note's vibrato property; the ~ grip and the envelope's corners too.
-    case DragKind::PenVibrato:
-    case DragKind::Vibrato:
-    case DragKind::VibratoCorner:
-      if (commitVibratoDrag(d) && d.kind == DragKind::PenVibrato) {
-        vibratoDepth_ = d.vibDepth;
-        ctx.setStatus(vibratoText(d.vibDepth, d.vibRate) + " (drag the ~ grip above the note's end to change it)");
-      }
-      break;
-    case DragKind::WarpNew:
-    case DragKind::WarpMove:
-    case DragKind::WarpGlide: (void)commitWarpDrag(d); break;
-    // T7.6: pen strokes (bug-bend-shape: one past the note's end lengthens it in the same step), breakpoints (a
-    // note's free pitch curve)
-    case DragKind::PenDraw:
-      curvePreview_.clear();
-      (void)commitPen(d);
-      break;
-    case DragKind::BendShape: (void)commitBendShape(d); break;  // bug-bend-shape
-    case DragKind::CurvePoint:
-    case DragKind::CurveBow: {
-      curvePreview_.clear();
-      const char* what = d.kind == DragKind::CurveBow ? "Bend Segment"
-                         : d.curveAdded               ? "Add Bend Point"
-                                                      : "Move Bend Point";
-      (void)commitCurve(d.curve, std::move(d.curvePts), what);
-      break;
-    }
     case DragKind::Velocity:
       if (d.dValue != 0.0f) {
         const std::vector<uint32_t> keep = sel_;
@@ -1984,6 +1958,7 @@ void RollState::cancelDrag() {
   if (drag.kind == DragKind::None) return;
   drag = {};
   clearCurvePreview();  // T7.6 / T7.14: a curve record's or a warp's preview
+  cancelLive();         // bug-live-shape: the document as at the press
   markAllDirty();
 }
 

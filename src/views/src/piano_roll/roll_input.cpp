@@ -301,6 +301,7 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
   } else {
     s_.damageDrag();
   }
+  s_.liveChanged();  // bug-live-shape: a shape drag dispatches its edit at the next frame
 }
 
 bool NoteAreaWidget::onPointer(const PointerEvent& e) {
@@ -562,6 +563,8 @@ void NoteAreaWidget::onCaptureLost() {
   s_.releaseAudition();
   s_.abortDrag();
 }
+
+void NoteAreaWidget::onFrame(double) { s_.flushLive(); }
 
 void NoteAreaWidget::onHoverChanged(bool hovered) {
   Control::onHoverChanged(hovered);

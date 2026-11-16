@@ -172,6 +172,13 @@ public:
   Status commitGesture();
   Status cancelGesture();
   bool inGesture() const noexcept { return gesture_.has_value(); }
+  // bug-live-shape: a dispatch inside a gesture that REPLACES the gesture's previous dispatchReplacing step instead of
+  // adding to it: `c` is applied to the document as it was before that step (for the first one: as it is now), so a
+  // drag that rebuilds its whole edit from the press every frame leaves exactly that edit, whatever its earlier frames
+  // dispatched (a length it no longer changes, a mode it left). A command that is a no-op there puts that document
+  // back. When another dispatch came in since the replaced step, `c` applies on top of it (nothing is lost). Listeners
+  // hear Dispatch with what this step and the one it replaced touched. Outside a gesture: an error.
+  Status dispatchReplacing(const Command& c);
 
   // Undo/redo restore the stored snapshot pointer. Both return false when there is nothing to do or a gesture is
   // in progress (commit or cancel it first).
@@ -195,6 +202,10 @@ private:
     std::string label;
     Snapshot base;
     ChangeSet changes;
+    // dispatchReplacing: the document before its last step, what that step made, what it touched.
+    bool replacing = false;
+    Snapshot stepBase, stepResult;
+    ChangeSet stepChanges;
   };
 
   void notify(StoreEventKind kind, const Snapshot& before, const Snapshot& after, const ChangeSet& changes);

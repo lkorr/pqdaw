@@ -137,6 +137,7 @@ public:
   void onCaptureLost() override;
   void onFocusChanged(bool focused) override;
   void onHoverChanged(bool hovered) override;
+  void onFrame(double now) override;  // bug-live-shape: a live shape drag's dispatch (RollState::flushLive)
   ui::InfoText info() const override;  // the pitch readout under the pointer (T3.19)
   // T4.16b: the part a press would grab (RollState::noteAt, as pressNote): body = Move, start / end = ResizeEW, empty
   // space = Arrow (selection rectangle); Draw Mode = Crosshair everywhere; a drag keeps its own.

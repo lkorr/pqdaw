@@ -17,6 +17,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <iterator>
@@ -762,5 +763,87 @@ TEST_CASE("ji playback (T7.16b, review M17): a one-note edit re-lowers only the 
                                                                                  << (s2.sequenceMs - s1.sequenceMs) / kEdits << " ms publishing in all, per edit");
 #if PQ_OPTIMIZED
   CHECK(perEdit < 5.0);  // a bound that survives a loaded machine
+#endif
+}
+
+// bug-live-shape: what one frame of a live shape drag costs the UI thread — the store's apply and every listener (the
+// ProjectLink's re-lowering of the edited clip and the sequence image of the whole project) — on 8 tracks x 500 notes
+// (every fourth vibrating), the depth of four notes' vibrato changed per frame through DocumentStore::dispatchReplacing
+// inside one gesture, as the piano roll's ~ drag does.
+TEST_CASE("ji playback (bug-live-shape): a live drag frame on a 4000-note project re-lowers only the edited clip; its UI-thread cost (CPU)") {
+  Rig r(true, {}, 128 * kQ);
+  IdSource& ids = r.store.ids();
+  std::vector<TrackId> tracks{r.track};
+  for (int k = 1; k < 8; ++k) {
+    const TrackId t = ids.track();
+    Batch b{"track", {}};
+    b.commands.push_back(AddTrack{playback_fixture::track(t, TrackKind::Midi, "T" + std::to_string(k)), {}, kAppend});
+    b.commands.push_back(AddClip{t, playback_fixture::clip(ids, 0, 128 * kQ, {}, "C")});
+    REQUIRE(r.store.dispatch(b).ok());
+    (void)test_blocks::addProbeInstrument(r.store, t);
+    tracks.push_back(t);
+  }
+  std::vector<ClipRef> refs;
+  for (const TrackId t : tracks) {
+    const ClipSlot& slot = findTrackPtr(r.doc(), t)->clips.front();
+    const ClipRef ref{t, slot.clip->id};
+    refs.push_back(ref);
+    AddNotes add{ref, {}};
+    SetNoteCurves vib{ref, {}};
+    for (int i = 0; i < 500; ++i) {
+      add.notes.push_back(playback_fixture::note(ids, static_cast<Ticks>(i / 4) * kQ, kQ, i % 12 + 3 * (i % 4)));
+      if (i % 4 == 0) {
+        NoteVibrato v;
+        v.depthCents = 25.0f;
+        v.rate = 6.0f;
+        vib.curves.push_back(NoteCurves{add.notes.back().id, {}, {}, {}, v});
+      }
+    }
+    Batch b{"notes", {}};
+    b.commands.push_back(std::move(add));
+    b.commands.push_back(std::move(vib));
+    REQUIRE(r.store.dispatch(b).ok());
+  }
+  auto link = makeLink(r.store.current());
+  [[maybe_unused]] const ListenerId sub = r.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  (void)render(*link, 0.01);
+  // The drag: the first four vibrating notes of track 3's clip, a cent deeper every frame.
+  const ClipRef ref = refs[3];
+  const Snapshot press = r.store.current();
+  std::vector<NoteKey> keys;
+  for (const Note& n : findTrackPtr(*press, ref.track)->clips.front().clip->notes)
+    if (keys.size() < 4 && n.start % (4 * kQ) == 0 && findNoteCurves(*findTrackPtr(*press, ref.track)->clips.front().clip, n.id)) keys.push_back(keyOf(n));
+  REQUIRE(keys.size() == 4);
+  REQUIRE(r.store.beginGesture("Vibrato").ok());
+  const app::LinkStats s0 = link->stats();
+  auto nowMs = [] { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+  constexpr int kFrames = 30;
+  double wallMs = 0.0;
+  for (int f = 0; f < kFrames; ++f) {
+    std::vector<ops::NoteVibratoEdit> edits;
+    for (const NoteKey& k : keys) {
+      NoteVibrato v;
+      v.depthCents = 26.0f + static_cast<float>(f);
+      v.rate = 6.0f;
+      edits.push_back({k, v});
+    }
+    const ops::EditResult e = ops::setNoteVibrato(*press, ref, edits);  // (from the press, as the roll builds it)
+    REQUIRE(e.ok());
+    const double t0 = nowMs();
+    REQUIRE(r.store.dispatchReplacing(e->command).ok());
+    wallMs += nowMs() - t0;
+  }
+  REQUIRE(r.store.commitGesture().ok());
+  const app::LinkStats s1 = link->stats();
+  CHECK(s1.trackLowerings == s0.trackLowerings + kFrames);  // one track per frame
+  CHECK(s1.clipLowerings == s0.clipLowerings + kFrames);    // one clip per frame
+  CHECK(s1.sequencePublishes == s0.sequencePublishes + kFrames);
+  CHECK(link->engine().timeline().sequence() != nullptr);
+  const double perFrame = wallMs / kFrames;
+  MESSAGE("live drag frame on 8 x 500 notes: " << perFrame << " ms on the UI thread in all (" << (s1.lowerMs - s0.lowerMs) / kFrames
+                                               << " ms lowering the clip, " << (s1.sequenceMs - s0.sequenceMs) / kFrames
+                                               << " ms in publishSequences: keys, lowering, the image build and publish)");
+#if PQ_OPTIMIZED
+  CHECK(perFrame < 8.0);  // half a 60 Hz frame; a bound that survives a loaded machine
 #endif
 }

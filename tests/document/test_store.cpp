@@ -120,6 +120,59 @@ TEST_CASE("store: a cancelled gesture restores the base snapshot and leaves no h
   CHECK(f.store.history().entries().size() == h);
 }
 
+// bug-live-shape: a drag that rebuilds its whole edit from the press every frame (the piano roll's shape drags).
+TEST_CASE("store: dispatchReplacing replaces the gesture's previous step (from the document before it), keeps what came between, and commits as one step") {
+  Fixture f;
+  const Snapshot base = f.store.current();
+  const size_t h = f.store.history().cursor();
+  auto track = [&] { return *findTrackPtr(*f.store.current(), f.lead); };
+  const float pan0 = track().mixer.pan, vol0 = track().mixer.volumeDb;
+  CHECK_FALSE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.3f}).ok());  // outside a gesture
+  std::vector<ChangeSet> heard;
+  f.store.subscribe([&](const StoreEvent& e) {
+    if (e.kind == StoreEventKind::Dispatch) heard.push_back(e.changes);
+  });
+  REQUIRE(f.store.beginGesture("Drag").ok());
+  REQUIRE(f.store.dispatchReplacing(Batch{"both", {SetTrackPan{f.lead, 0.3f}, SetTrackVolume{f.lead, -6.0f}}}).ok());
+  CHECK(track().mixer.pan == 0.3f);
+  CHECK(track().mixer.volumeDb == -6.0f);
+  // The next frame changes only the pan: the volume the last frame set is gone again (not cumulative).
+  REQUIRE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.5f}).ok());
+  CHECK(track().mixer.pan == 0.5f);
+  CHECK(track().mixer.volumeDb == vol0);
+  REQUIRE(heard.size() == 2);
+  CHECK(heard[1].has(kChangeParam));  // (what both steps touched: the volume went back too)
+  // The same edit again: the same content (in a new snapshot: the roll skips such frames itself, its liveKey).
+  REQUIRE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.5f}).ok());
+  CHECK(track().mixer.pan == 0.5f);
+  CHECK(track().mixer.volumeDb == vol0);
+  // A no-op from the base puts the base back, pointer and all.
+  REQUIRE(f.store.dispatchReplacing(Batch{}).ok());
+  CHECK(f.store.current() == base);
+  // A dispatch in between stays: the next replacing step applies on top of it.
+  REQUIRE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.2f}).ok());
+  REQUIRE(f.store.dispatch(SetTrackVolume{f.lead, -3.0f}).ok());
+  REQUIRE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.4f}).ok());
+  CHECK(track().mixer.pan == 0.4f);
+  CHECK(track().mixer.volumeDb == -3.0f);
+  REQUIRE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.1f}).ok());
+  CHECK(track().mixer.volumeDb == -3.0f);
+  REQUIRE(f.store.commitGesture().ok());
+  CHECK(f.store.history().cursor() == h + 1);
+  CHECK(f.store.history().undoLabel() == "Drag");
+  REQUIRE(f.store.undo());
+  CHECK(f.store.current() == base);
+  CHECK(track().mixer.pan == pan0);
+  // Back where it began: no history at all.
+  REQUIRE(f.store.beginGesture("Drag").ok());
+  REQUIRE(f.store.dispatchReplacing(SetTrackPan{f.lead, 0.7f}).ok());
+  REQUIRE(f.store.dispatchReplacing(Batch{}).ok());
+  REQUIRE(f.store.commitGesture().ok());
+  CHECK(f.store.history().cursor() == h);
+  CHECK(f.store.history().canRedo());  // (nothing was recorded over the undone step)
+  CHECK(f.store.current() == base);
+}
+
 TEST_CASE("store: listeners get before/after and can unsubscribe") {
   Fixture f;
   int calls = 0;
