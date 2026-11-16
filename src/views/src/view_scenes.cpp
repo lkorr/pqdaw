@@ -4010,6 +4010,121 @@ Status setupProjectMetaLoudness(Shell& shell) {
   return Ok{};
 }
 
+// ---- VZ.5: the stereo analysers ----------------------------------------------------------------------------------------
+
+// An audio track "Stereo" with a Stereo Field, a Stereo Image and a Phase Scope on one 4 s mix: a centred kick and 55 Hz
+// bass, a lead panned left, a wide pad (each channel detuned its own way: decorrelated), wide hats (independent noise per
+// channel) and a 150 Hz tone in antiphase (it cancels in mono). The Phase Scope shows its coherence ribbon. Each module's
+// tap is analysed now by a manual feed (the Stereo Field's raw history; the others' cross-spectrum), then held.
+struct StereoIds {
+  doc::TrackId track;
+  doc::DeviceId field, image, phase;
+  meta::DataPtr dField, dImage, dPhase;
+};
+
+Status buildStereoProject(doc::DocumentStore& store, StereoIds& ids) {
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Stereo",
+                                                      doc::Colour{0x5B8CFF}));
+  if (!t || t->tracks.empty()) return Error{ErrorCode::Unknown, "stereo scene: no track", {}};
+  ids.track = t->tracks[0];
+  auto add = [&](const char* type, std::vector<std::pair<std::string, double>> opts, meta::DataPtr& data) -> doc::DeviceId {
+    const auto e = runEdit(store, doc::ops::addMetaDevice(*store.current(), store.ids(), ids.track, type));
+    if (!e || e->devices.empty()) return {};
+    std::vector<std::pair<std::string, meta::DataValue>> f;
+    for (auto& [k, val] : opts) f.emplace_back(k, meta::DataValue::num(val));
+    data = std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
+    (void)runEdit(store, doc::ops::setMetaData(*store.current(), e->devices[0], "", type, data));
+    return e->devices[0];
+  };
+  ids.field = add("stereo_field", {}, ids.dField);
+  ids.image = add("stereo_image", {}, ids.dImage);
+  ids.phase = add("phase_scope", {{"coh", 1.0}}, ids.dPhase);
+  if (!ids.field.valid() || !ids.image.valid() || !ids.phase.valid()) return Error{ErrorCode::Unknown, "stereo scene: no module", {}};
+  return Ok{};
+}
+
+// The mix at sample i (48 kHz).
+struct StereoMix {
+  uint32_t a = 0x1234567u, b = 0x7654321u;
+  float noise(uint32_t& s) {
+    s = s * 1664525u + 1013904223u;
+    return static_cast<float>(s >> 8) / 8388608.0f - 1.0f;
+  }
+  void operator()(uint32_t i, float& l, float& r) {
+    const double t = i / 48000.0, tau = 2.0 * kScenePi;
+    const double beat = std::fmod(t, 0.5);
+    const double kick = 0.5 * std::exp(-beat / 0.12) * std::sin(tau * (48.0 * beat + 70.0 * 0.03 * (1.0 - std::exp(-beat / 0.03))));
+    const double bass = 0.18 * std::sin(tau * 55.0 * t);
+    double lead = 0.0;
+    for (int k = 1; k <= 5; ++k) lead += std::sin(tau * 660.0 * k * t) / k;
+    lead *= 0.08;
+    double padL = 0.0, padR = 0.0;
+    for (const double f : {330.0, 440.0, 554.37}) {
+      padL += std::sin(tau * f * 1.004 * t + 0.3 * std::sin(tau * 0.7 * t));
+      padR += std::sin(tau * f * 0.996 * t + 0.3 * std::sin(tau * 0.9 * t + 1.0));
+    }
+    const double hatEnv = std::exp(-std::fmod(t + 0.25, 0.5) / 0.03);
+    const double side = 0.06 * std::sin(tau * 150.0 * t);
+    l = static_cast<float>(kick + bass + 0.9 * lead + 0.04 * padL + 0.05 * hatEnv * noise(a) + side);
+    r = static_cast<float>(kick + bass + 0.3 * lead + 0.04 * padR + 0.05 * hatEnv * noise(b) - side);
+  }
+};
+
+ScopeSource makeStereoSource(uint32_t wants, const dsp::CrossSpectrumConfig* cfg) {
+  ScopeSource s;
+  s.tap = std::make_shared<TapRing>(4, 32768, 4096);
+  s.feed = std::make_shared<devices::SpectrumFeed>(*s.tap, devices::AnalysisHub::config(48000.0), devices::SpectrumFeed::Manual{});
+  if (cfg != nullptr) s.feed->setStereo(*cfg);
+  s.feed->acquire(wants);
+  StereoMix mix;
+  constexpr uint32_t kFrames = 4 * 48000, kChunk = 4096;
+  std::vector<float> l(kChunk), r(kChunk);
+  for (uint32_t i = 0; i < kFrames; i += kChunk) {
+    const uint32_t n = std::min(kChunk, kFrames - i);
+    for (uint32_t k = 0; k < n; ++k) mix(i + k, l[k], r[k]);
+    const float* p[4] = {l.data(), r.data(), l.data(), r.data()};
+    s.tap->write(p, 4, n);
+    s.feed->step(1.0 + static_cast<double>(i) / 48000.0);
+  }
+  s.feed->hold();
+  return s;
+}
+
+Status adoptStereoFeeds(ViewContext& ctx, const StereoIds& ids) {
+  const dsp::CrossSpectrumConfig ci = stereoRequest("stereo_image", ids.dImage.get()), cp = stereoRequest("phase_scope", ids.dPhase.get());
+  ScopeSource a = makeStereoSource(devices::kWantScope, nullptr), b = makeStereoSource(devices::kWantStereo, &ci),
+              c = makeStereoSource(devices::kWantStereo, &cp);
+  const doc::DeviceId da = ids.field, db = ids.image, dc = ids.phase;
+  ctx.setAnalysisSource(
+      [da, db, dc, at = a.tap, bt = b.tap, ct = c.tap](doc::DeviceId d) -> std::shared_ptr<TapRing> {
+        return d == da ? at : d == db ? bt : d == dc ? ct : nullptr;
+      },
+      48000.0);
+  if (ctx.analysisHub() == nullptr) return Error{ErrorCode::Unknown, "stereo scene: no analysis hub", {}};
+  ctx.analysisHub()->adopt(da, a.tap, a.feed);
+  ctx.analysisHub()->adopt(db, b.tap, b.feed);
+  ctx.analysisHub()->adopt(dc, c.tap, c.feed);
+  return Ok{};
+}
+
+// The Device view of "Stereo": the three faces side by side.
+Status setupDeviceMetaStereo(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  StereoIds ids;
+  if (Status s = buildStereoProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptStereoFeeds(ctx, ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-stereo: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
 // whose knob positions a modulation spreads.
 Status setupProjectMetaVca(Shell& shell) {
@@ -4155,6 +4270,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
     {"device-meta-loudness", 1280, 800, setupDeviceMetaLoudness},          // VZ.4
     {"project-meta-loudness", 1280, 800, setupProjectMetaLoudness},        // VZ.4
+    {"device-meta-stereo", 1280, 800, setupDeviceMetaStereo},              // VZ.5
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

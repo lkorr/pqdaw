@@ -129,6 +129,9 @@ constexpr Section kSections[] = {
     {"levelmeter", "Level Meter", "level_meter", {0.0f, 0.0f, 100.0f, 160.0f}, true},            // VZ.4
     {"lufsmeter", "LUFS Meter", "lufs_meter", {0.0f, 0.0f, 200.0f, 160.0f}, true},               // VZ.4
     {"loudnesshistory", "Loudness History", "loudness_history", {0.0f, 0.0f, 300.0f, 160.0f}, true},  // VZ.4
+    {"stereofield", "Stereo Field", "stereo_field", {0.0f, 0.0f, 180.0f, 170.0f}, true},          // VZ.5
+    {"stereoimage", "Stereo Image", "stereo_image", {0.0f, 0.0f, 220.0f, 170.0f}, true},          // VZ.5
+    {"phasescope", "Phase Scope", "phase_scope", {0.0f, 0.0f, 280.0f, 150.0f}, true},             // VZ.5
 };
 const Section* sectionOf(std::string_view kind) noexcept {
   for (const Section& s : kSections)
@@ -464,10 +467,11 @@ bool showMeter(Element& e, float a, float b) {
 
 void registerEngineElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                         float, float, ElementFactory)) {
-  static_assert(std::size(kSections) == 12);
+  static_assert(std::size(kSections) == 15);
   constexpr ElementFactory kMake[] = {&makeSection<0>, &makeSection<1>, &makeSection<2>, &makeSection<3>, &makeSection<4>,
                                       &makeSection<5>, &makeSection<6>, &makeSection<7>, &makeSection<8>, &makeSection<9>,
-                                      &makeSection<10>, &makeSection<11>};
+                                      &makeSection<10>, &makeSection<11>, &makeSection<12>, &makeSection<13>,
+                                      &makeSection<14>};
   for (size_t i = 0; i < std::size(kSections); ++i) {
     const Section& s = kSections[i];
     reg(s.kind, s.label, {}, s.display ? std::span<const std::string_view>(kSignalSlot) : std::span<const std::string_view>(kEngineSlot),

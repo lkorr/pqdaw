@@ -1966,3 +1966,10 @@ the explorer numbers both sisters along the fifths) or keep the brightness (Lydi
 the crossing). Choice: the chain position (the only one without a jump; automation needs it). The slider is linear in
 1 − s/L per half (as the old one: its ticks are the hardness ratios), not linear in cents. Status: decided
 (reversible: MosCircle::applyPosition, tuning::setMosGenerator).
+
+## Q?-VZ.5-a · 2026-11-15 · VZ.5 · What the stereo faces leave out of PQ Meter
+Context: PQ's Stereo Image has per-stop colour pickers and a line colour, the Stereo Field per-trace / bar colours, the
+Phase Scope mono / coherence colours and six FFT windows; it also computes a group delay it never draws. pqdaw's sheet has
+no colour row (Q?-VZ.4-a). Choice: PQ's palettes as fixed choices (the Stereo Image's six ribbon palettes with their
+crossovers editable, the ten colormaps + Custom stops in dB on VZ.2's LevelAxis), Hann / Kaiser windows only, no group
+delay. Status: open (reversible: Opt rows; dsp::CrossSpectrum can add the delay from its bins).

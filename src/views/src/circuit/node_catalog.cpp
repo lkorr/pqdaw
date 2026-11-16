@@ -69,6 +69,9 @@ std::string_view metaDescription(std::string_view id) noexcept {
   if (id == "spectrogram") return "A scrolling spectrogram of what passes through it (the signal is unchanged).";
   if (id == "level_meter") return "Peak and RMS level bars of what passes through it, with peak hold and clip lamps (the signal is unchanged).";
   if (id == "lufs_meter") return "Momentary, short-term and integrated LUFS, LRA, true peak and correlation of what passes through it (the signal is unchanged).";
+  if (id == "stereo_field") return "A goniometer and correlation meter of what passes through it, optionally in three bands (the signal is unchanged).";
+  if (id == "stereo_image") return "Where each frequency of what passes through it sits between left and right, and how wide (the signal is unchanged).";
+  if (id == "phase_scope") return "What each frequency of what passes through it gains or loses summed to mono (the signal is unchanged).";
   if (id == "loudness_history") return "Momentary, short-term and integrated loudness of what passes through it over time, against a target (the signal is unchanged).";
   return {};
 }
@@ -105,7 +108,8 @@ std::string_view atomAliases(std::string_view name) noexcept {
 
 bool visualiser(std::string_view metaId) noexcept {
   return metaId == "spectrum" || metaId == "oscilloscope" || metaId == "spectrogram" || metaId == "level_meter" ||
-         metaId == "lufs_meter" || metaId == "loudness_history";  // VZ.4
+         metaId == "lufs_meter" || metaId == "loudness_history" ||  // VZ.4
+         metaId == "stereo_field" || metaId == "stereo_image" || metaId == "phase_scope";  // VZ.5
 }
 
 // Atoms that make a free device on their own at the project level: none that needs a voice, the transport's

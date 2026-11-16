@@ -1,5 +1,7 @@
-// The loudness meta modules (VZ.4): pq/meta/loudness.h.
+// The pass-through analysers that share one body (an L / R signal tap): the loudness modules (VZ.4, pq/meta/loudness.h)
+// and the stereo modules (VZ.5, pq/meta/stereo.h).
 #include "pq/meta/loudness.h"
+#include "pq/meta/stereo.h"
 
 #include <array>
 #include <cmath>
@@ -34,9 +36,9 @@ std::vector<ResourceRequest> resources(std::span<const double>) { return {Resour
 // The display state: a record of numbers (an empty one by default: every option at its default).
 DataPtr defaultData() { return std::make_shared<const DataValue>(DataValue::record({})); }
 std::string dataProblem(const DataValue& v) {
-  if (v.kind != DataValue::Kind::Record) return "a loudness meter's data is a record of numbers";
+  if (v.kind != DataValue::Kind::Record) return "an analyser's data is a record of numbers";
   for (const auto& [name, f] : v.fields)
-    if (f.kind != DataValue::Kind::Number || !std::isfinite(f.number)) return "a loudness meter's '" + name + "' is not a number";
+    if (f.kind != DataValue::Kind::Number || !std::isfinite(f.number)) return "an analyser's '" + name + "' is not a number";
   return {};
 }
 
@@ -67,6 +69,19 @@ const Type& lufsMeterType() noexcept {
 }
 const Type& loudnessHistoryType() noexcept {
   static const Type t = makeType("loudness_history", "Loudness History");
+  return t;
+}
+
+const Type& stereoFieldType() noexcept {
+  static const Type t = makeType("stereo_field", "Stereo Field");
+  return t;
+}
+const Type& stereoImageType() noexcept {
+  static const Type t = makeType("stereo_image", "Stereo Image");
+  return t;
+}
+const Type& phaseScopeType() noexcept {
+  static const Type t = makeType("phase_scope", "Phase Scope");
   return t;
 }
 

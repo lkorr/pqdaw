@@ -12,7 +12,7 @@ pq_add_module(pq_meta
     src/spectrum.cpp
     src/oscilloscope.cpp
     src/spectrogram.cpp
-    src/loudness.cpp        # VZ.4: Level Meter, LUFS Meter, Loudness History
+    src/analysers.cpp       # VZ.4 / VZ.5: the L / R pass-through analysers (loudness, stereo)
     src/user_defaults.cpp   # VZ.1: saved defaults for new instances
     src/wavetable.cpp
   DEPS pq_core pq_graph pq_dsp)

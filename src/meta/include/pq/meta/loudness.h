@@ -1,6 +1,6 @@
 #pragma once
 
-// The loudness meta modules (VZ.4; docs/plans/VZ.md "VZ.4"): three pass-through analysers over one front end
+// The loudness meta modules (VZ.4; docs/plans/VZ.md "VZ.4"; defined in src/analysers.cpp): three pass-through analysers over one front end
 // (pq/dsp/loudness.h, ported from PQ Meter), each drawing the signal passing through it on its face (pq/views/meta
 // loudness_faces.cpp) and changing nothing:
 //   `level_meter`       Level Meter: L / R RMS bars, the peak cap, the hold tick, the latched clip lamps (sample peak)
