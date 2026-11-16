@@ -114,6 +114,7 @@ struct WaterfallShown {
   float yaw = 0, pitch = 0, roll = 0, zoom = 1;  // the camera drawn
   size_t slices = 0;                             // slices held
   uint32_t vertices = 0;                         // mesh vertices the last paint emitted
+  float newestMaxDb = -140.0f;                   // the loudest point of the newest slice held
   dsp::WaterfallConfig config;                   // the analysis its options ask for
 };
 bool waterfallShown(const MetaFace& f, WaterfallShown& out);

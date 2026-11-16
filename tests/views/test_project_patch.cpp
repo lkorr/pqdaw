@@ -4341,3 +4341,92 @@ TEST_CASE("project patch (VZ.3): Spectrum / Spectrogram tone preview — press, 
   CHECK_FALSE(tone.sounding());
   u.ctx.setTonePort(nullptr);
 }
+
+// VZ.9 (review M5, M8, L14): an analyser's chips and camera through real dispatch on the canvas. The chips work where
+// they are drawn and are not there zoomed out (a click there froze the face or snapped its camera invisibly); a snap
+// chip, a drag and a run of Alt+wheel notches are one undo step each.
+TEST_CASE("project patch (VZ.9): a Waterfall's chips, orbit and Alt+wheel zoom — one undo step each; no chips zoomed out") {
+  Ui u(false);
+  project_patch::MetaSpectrumIds ids;
+  REQUIRE(buildSpectrumProject(u.ctx.store(), &ids).ok());
+  doc::DocumentStore& st = u.ctx.store();
+  auto e = doc::ops::addMetaDevice(*st.current(), st.ids(), ids.keys, "waterfall");
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+  const doc::DeviceId wf = e->devices.at(0);
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& c = v.canvas();
+  auto node = [&](circuit::SceneNode& sn) -> MetaFace* {
+    const uint32_t n = u.pp().nodeOf(wf);
+    REQUIRE(n != kNone);
+    const uint32_t sv = v.scene().sceneNode[n];
+    sn = c.scene()->nodes[sv];
+    return c.faceOn(sv);
+  };
+  auto zoomTo = [&](double z) {
+    circuit::SceneNode sn;
+    (void)node(sn);
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = z;
+    cv.x = static_cast<double>(sn.x) - 20.0;
+    cv.y = static_cast<double>(sn.y) - 20.0;
+    c.setView(cv);
+    u.d.tree().layoutNow();
+    u.d.step();
+  };
+  auto dev = [&](Vec2 l) {
+    circuit::SceneNode sn;
+    (void)node(sn);
+    const float s = sn.scale > 0.0f ? sn.scale : 1.0f;
+    return c.toDevice({sn.x + l.x * s, sn.y + l.y * s});
+  };
+  auto shown = [&] {
+    circuit::SceneNode sn;
+    MetaFace* f = node(sn);
+    REQUIRE(f != nullptr);
+    WaterfallShown s;
+    REQUIRE(waterfallShown(*f, s));
+    return s;
+  };
+  constexpr float kW = 320.0f;
+  const Vec2 freeze{kW - 30.0f, 15.0f}, side{51.0f, 15.0f}, plot{160.0f, 110.0f};
+  zoomTo(1.5);
+  // FREEZE through the canvas: frozen, and back.
+  u.d.click(dev(freeze));
+  u.d.step();
+  CHECK(shown().frozen);
+  u.d.click(dev(freeze));
+  u.d.step();
+  CHECK_FALSE(shown().frozen);
+  // A snap chip: one undo step; the view it names is the one shown (lit).
+  size_t h = u.history();
+  u.d.click(dev(side));
+  u.d.advance(1.0);
+  CHECK(u.history() == h + 1);
+  {
+    const doc::MetaInstance* m = doc::findDevice(*st.current(), wf).device->metaAt("");
+    REQUIRE(m != nullptr);
+    REQUIRE(m->data != nullptr);
+    REQUIRE(m->data->field("yaw") != nullptr);
+    CHECK(m->data->field("yaw")->number == doctest::Approx(90.0));
+  }
+  // An orbit drag: one undo step.
+  h = u.history();
+  u.d.drag(dev(plot), dev({plot.x + 20.0f, plot.y + 10.0f}), 6);
+  u.d.step();
+  CHECK(u.history() == h + 1);
+  // A run of Alt+wheel notches: one undo step (M5), ended by the next other event.
+  h = u.history();
+  const float zoom0 = shown().zoom;
+  for (int i = 0; i < 4; ++i) u.d.wheel(dev(plot), 1.0f, 0.0f, mod::kAlt);
+  u.d.move(dev({plot.x + 1.0f, plot.y}));
+  u.d.step();
+  CHECK(u.history() == h + 1);
+  CHECK(shown().zoom > zoom0 * 1.5f);
+  // Zoomed out the chips are not drawn: a click where FREEZE was does not freeze (M8).
+  zoomTo(0.8);  // (the face still drawn, its 6-unit labels under 6 px)
+  u.d.click(dev(freeze));
+  u.d.step();
+  CHECK_FALSE(shown().frozen);
+}

@@ -555,14 +555,16 @@ protected:
     if (opts_.on(iGrid)) {
       dsp::FreqGridLine grid[10];
       const int n = dsp::freqGridLines(cc.scale, cc.fMin, cc.fMax, grid, 10);
-      float lastLab = -1e9f;
+      analyser::LabelGuard guard;  // (VZ.9: none under the chips, none on another, none past the edge)
+      reserveChips(guard);
       for (int i = 0; i < n; ++i) {
         const float y = yOfT(axis.unit(grid[i].hz));
         p.line({plotL, y}, {plotR, y}, 0.5f, kGrid);
-        if (showLabels && y > plotT + 3.0f && y < plotB - 3.0f && std::fabs(y - lastLab) >= 7.0f) {
-          p.textAligned({plotR - 1.0f, y - 3.0f}, grid[i].label, 5.0f, kGridLabel, 1.0f);
-          lastLab = y;
-        }
+        if (!showLabels) continue;
+        const Vec2 at{plotR - 1.5f, y - 3.0f};
+        const Rect box = analyser::labelBox(p, at, grid[i].label, 5.0f, 1.0f);
+        if (guard.place({box.x0, box.y0 - 1.0f, box.x1, box.y1 + 1.0f}, {plotL, plotT, plotR, plotB}))
+          p.textAligned(at, grid[i].label, 5.0f, kGridLabel, 1.0f);
       }
       for (const float g : {-1.0f, -0.5f, 0.5f, 1.0f}) p.line({xOf(g), plotT}, {xOf(g), plotB}, 0.5f, kGrid);
     }

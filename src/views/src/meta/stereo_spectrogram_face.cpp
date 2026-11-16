@@ -1383,19 +1383,30 @@ void StereoSpectrogramFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th
     }
   }
   const dsp::FreqAxis axis(st_.config.scale, st_.config.fMin, st_.config.fMax);
+  // VZ.9: labels collide with nothing (the chips, each other) and stay inside the plot.
+  LabelGuard guard;
+  reserveChips(guard);
+  if (chipsShown())
+    for (int i = 0; i < 4; ++i) {
+      const Rect c = snapChip(i);
+      guard.reserve({c.x0 - 2.0f, c.y0 - 2.0f, c.x1 + 2.0f, c.y1 + 2.0f});
+    }
+  auto labelAt = [&](Vec2 at, const char* s, float px, Rgba col, float align, bool backing = false) {
+    const Rect b = labelBox(p, at, s, px, align);
+    if (!guard.place({b.x0 - 1.0f, b.y0, b.x1 + 1.0f, b.y1}, plotW)) return false;
+    if (backing) p.roundedRect({b.x0 - 1.5f, b.y0 - 1.0f, b.x1 + 1.5f, b.y1 + 1.0f}, 1.5f, ui::rgba(8, 10, 14, 190));
+    p.textAligned(at, s, px, col, align);
+    return true;
+  };
   if (opts_.on(sGrid) && freqPure > 0.05f) {
     dsp::FreqGridLine grid[16];
     const int ng = dsp::freqGridLines(st_.config.scale, st_.config.fMin, st_.config.fMax, grid, 16);
     const Rgba gc = ui::mulAlpha(kGrid, freqPure), lc = ui::mulAlpha(kGridLabel, freqPure);
-    float lastY = -1e9f;
     for (int i = 0; i < ng; ++i) {
       const float y = at(0.0f, 0.0f, axis.unit(grid[i].hz)).y;
       if (y < plotW.y0 || y > plotW.y1) continue;
       p.line({plotW.x0, y}, {plotW.x1, y}, 0.5f, gc);
-      if (labels && std::fabs(y - lastY) >= 7.0f && y - 4.0f > plotW.y0 + 12.0f) {
-        p.textAligned({plotW.x0 + 2.0f, y - 3.5f}, grid[i].label, 5.0f, lc, 0.0f);
-        lastY = y;
-      }
+      if (labels) (void)labelAt({plotW.x0 + 2.0f, y - 3.5f}, grid[i].label, 5.0f, lc, 0.0f);
     }
   }
   if (opts_.on(sCentre) && panVis > 0.01f) p.line(at(0.0f, 0.0f, 0.0f), at(0.0f, 0.0f, 1.0f), 0.5f, ui::rgba(255, 255, 255, static_cast<uint8_t>(70.0f * panVis)));
@@ -1411,7 +1422,7 @@ void StereoSpectrogramFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th
         if (!inside(plotW, a0)) continue;
         char lbl[16];
         std::snprintf(lbl, sizeof lbl, "-%.2gs", t);
-        p.textAligned({a0.x + 1.5f, std::min(a0.y - 3.0f, plotW.y1 - 4.0f)}, lbl, 5.0f, ui::rgba(190, 195, 210, static_cast<uint8_t>(255.0f * ta)), 0.0f);
+        (void)labelAt({a0.x + 1.5f, std::min(a0.y - 3.0f, plotW.y1 - 4.0f)}, lbl, 5.0f, ui::rgba(190, 195, 210, static_cast<uint8_t>(255.0f * ta)), 0.0f);
       }
     }
     const float pa = 0.8f * panVis * panVis;
@@ -1419,8 +1430,10 @@ void StereoSpectrogramFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th
       const char* const kPanL[3] = {"L", "C", "R"};
       for (int i = 0; i < 3; ++i) {
         const Vec2 a0 = at(0.0f, static_cast<float>(i - 1), 0.0f);
-        p.textAligned({std::clamp(a0.x, plotW.x0 + 3.0f, plotW.x1 - 3.0f), std::min(a0.y - 4.0f, plotW.y1 - 4.0f)}, kPanL[i], 5.5f,
-                      ui::rgba(200, 205, 220, static_cast<uint8_t>(255.0f * pa)), 0.5f);
+        // (Under the chips, as L at the top in PAN, it moves down out of their way.)
+        const Rgba col = ui::rgba(200, 205, 220, static_cast<uint8_t>(255.0f * pa));
+        Vec2 q{std::clamp(a0.x, plotW.x0 + 4.0f, plotW.x1 - 4.0f), std::clamp(a0.y - 4.0f, plotW.y0 + 4.0f, plotW.y1 - 4.0f)};
+        for (int k = 0; k < 6 && !labelAt(q, kPanL[i], 5.5f, col, 0.5f, true); ++k) q.y += 5.0f;
       }
     }
   }

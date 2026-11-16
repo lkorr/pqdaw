@@ -143,6 +143,11 @@ public:
   // Tests.
   const cam3d::Pose& pose() const noexcept { return orbit_.pose; }
   size_t heldSlices() const noexcept { return static_cast<size_t>(std::min<uint64_t>(end_ - begin_, kMax)); }
+  float newestMaxDb() const noexcept {
+    if (end_ == begin_ || ring_.empty()) return -140.0f;
+    const float* s = ring_.data() + static_cast<size_t>((end_ - 1) % kMax) * kP;
+    return *std::max_element(s, s + kP);
+  }
   dsp::WaterfallConfig configForTest() const { return wfConfig(); }
   dsp::WaterfallConfig configFor(const meta::DataValue* d) {
     loadForTest(d);
@@ -709,6 +714,31 @@ void WaterfallFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th*/, bool
     }
   }
   const dsp::FreqAxis axis(st_.config.scale, dsp::WaterfallAnalyzer::kFMin, dsp::WaterfallAnalyzer::kFMax);
+  // VZ.9: labels collide with nothing (the chips, the dB scale, each other) and stay inside the plot.
+  LabelGuard guard;
+  reserveChips(guard);
+  if (chipsShown())
+    for (int i = 0; i < 4; ++i) {
+      const Rect c = snapChip(i);
+      guard.reserve({c.x0 - 2.0f, c.y0 - 2.0f, c.x1 + 2.0f, c.y1 + 2.0f});
+    }
+  auto labelAt = [&](Vec2 at, const char* s, Rgba col, float align) {
+    const Rect b = labelBox(p, at, s, 5.0f, align);
+    if (guard.place({b.x0 - 1.0f, b.y0, b.x1 + 1.0f, b.y1}, plotW)) p.textAligned(at, s, 5.0f, col, align);
+  };
+  // The level scale first (it wins a collision): on the newest slice's rules, or, edge-on to the frequency axis (SIDE:
+  // time across, level up), down the plot's right edge.
+  if (labels && opts_.on(wGrid) && levelVis > 0.3f) {
+    const Rgba lc = ui::mulAlpha(kGridLabel, std::min(1.0f, levelVis));
+    for (float db = std::ceil(floorDb / 12.0f) * 12.0f; db <= ceilDb; db += 12.0f) {
+      const float H = (2.0f * levelT(db) - 1.0f) * Hs;
+      const Vec2 r = world(P(1.0f, 1.0f, H));
+      char lbl[12];
+      std::snprintf(lbl, sizeof lbl, "%.0f", db);
+      if (freqVis > 0.3f) labelAt({r.x - 2.0f, r.y - 3.0f}, lbl, lc, 1.0f);
+      else labelAt({plotW.x1 - 2.0f, r.y}, lbl, lc, 1.0f);
+    }
+  }
   if (opts_.on(wGrid) && freqVis > 0.05f) {
     dsp::FreqGridLine grid[16];
     const int ng = dsp::freqGridLines(st_.config.scale, dsp::WaterfallAnalyzer::kFMin, dsp::WaterfallAnalyzer::kFMax, grid, 16);
@@ -717,18 +747,27 @@ void WaterfallFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th*/, bool
       const float F = 2.0f * axis.unit(grid[i].hz) - 1.0f;
       const Vec2 bot = world(P(1.0f, F, -Hs)), top = world(P(1.0f, F, Hs));
       p.line(bot, top, 0.5f, gc);
-      if (labels && inside(plotW, bot)) p.textAligned({bot.x + 1.5f, bot.y - 4.0f}, grid[i].label, 5.0f, lc, 0.0f);
+      if (labels) labelAt({bot.x + 1.5f, bot.y - 4.0f}, grid[i].label, lc, 0.0f);
     }
     for (float db = std::ceil(floorDb / 12.0f) * 12.0f; db <= ceilDb; db += 12.0f) {
       const float H = (2.0f * levelT(db) - 1.0f) * Hs;
-      const Vec2 l = world(P(1.0f, -1.0f, H)), r = world(P(1.0f, 1.0f, H));
-      p.line(l, r, 0.5f, gc);
-      if (labels && levelVis > 0.3f && inside(plotW, r)) {  // (edge-on, every rule lands on one line)
-        char lbl[12];
-        std::snprintf(lbl, sizeof lbl, "%.0f", db);
-        p.textAligned({r.x - 2.0f, r.y - 3.0f}, lbl, 5.0f, lc, 1.0f);
-      }
+      p.line(world(P(1.0f, -1.0f, H)), world(P(1.0f, 1.0f, H)), 0.5f, gc);
     }
+  }
+  // TOP (the level only as colour): a colour legend, floor to ceiling, top right under the chips.
+  if (labels && levelVis < 0.3f && opts_.on(wLabels)) {
+    const float x1 = plotW.x1 - 4.0f, x0 = x1 - 60.0f, y0 = kChipY1 + 12.0f, y1 = y0 + 4.0f;
+    constexpr int kSteps = 30;
+    for (int i = 0; i < kSteps; ++i) {
+      const float u0 = static_cast<float>(i) / kSteps, u1 = static_cast<float>(i + 1) / kSteps;
+      p.roundedRect({x0 + u0 * (x1 - x0), y0, x0 + u1 * (x1 - x0), y1}, 0.0f, palAt(0.5f, levelT(floorDb + 0.5f * (u0 + u1) * (ceilDb - floorDb))));
+    }
+    char lo[12], hi[12];
+    std::snprintf(lo, sizeof lo, "%.0f", floorDb);
+    std::snprintf(hi, sizeof hi, "%.0f dB", ceilDb);
+    guard.reserve({x0 - 1.0f, y0 - 1.0f, x1 + 1.0f, y1 + 1.0f});
+    labelAt({x0, y1 + 4.5f}, lo, kGridLabel, 0.0f);
+    labelAt({x1, y1 + 4.5f}, hi, kGridLabel, 1.0f);
   }
   if (labels && opts_.on(wLabels)) {
     const float ta = 0.75f * timeVis * timeVis;
@@ -742,7 +781,7 @@ void WaterfallFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th*/, bool
         if (!inside(plotW, a0)) continue;
         char lbl[16];
         std::snprintf(lbl, sizeof lbl, "-%.2gs", t);
-        p.textAligned({a0.x + 1.5f, a0.y - 3.0f}, lbl, 5.0f, ui::rgba(190, 195, 210, static_cast<uint8_t>(255.0f * ta)), 0.0f);
+        labelAt({a0.x + 1.5f, a0.y - 3.0f}, lbl, ui::rgba(190, 195, 210, static_cast<uint8_t>(255.0f * ta)), 0.0f);
       }
     }
   }
@@ -760,6 +799,7 @@ bool waterfallShown(const MetaFace& f, WaterfallShown& out) {
   const cam3d::Pose& q = w->pose();
   out.yaw = q.yaw, out.pitch = q.pitch, out.roll = q.roll, out.zoom = q.zoom;
   out.slices = w->heldSlices();
+  out.newestMaxDb = w->newestMaxDb();
   out.vertices = w->lastVertices();
   out.config = w->configForTest();
   return true;

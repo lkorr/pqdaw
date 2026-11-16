@@ -29,13 +29,48 @@ using sheet::Opt;
 
 inline constexpr float kRadius = 10.0f;
 inline constexpr float kLabelPx = 6.0f;          // world units
-inline constexpr float kLabelMinDevicePx = 5.0f;  // below this the text is left out (the bars and traces stay)
+inline constexpr float kLabelMinDevicePx = 6.0f;  // below this the text is left out (the bars and traces stay; VZ.9: 5
+                                                  // drew 5 px labels at project zoom, illegible)
 inline constexpr float kChipText = 7.5f;          // the chips' labels (world units; VZ.9: 6 read as ~5 px)
 inline constexpr float kChipY0 = 9.0f, kChipY1 = 21.0f;
 enum Part : int32_t { kSetPart = 1, kClearPart = 2, kFreezePart = 3, kSheetPart = 4, kPlotPart = 5, kOwnBase = 10,
                       kRowBase = sheet::kRowBase };
 
 inline bool inside(const Rect& r, Vec2 p) noexcept { return p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 && p.y <= r.y1; }
+
+// VZ.9: the box a label takes (world units) at the size it is really drawn (text has a legible floor in device px, so
+// zoomed out a label is wider than its nominal size says); `align` as FacePainter::textAligned.
+inline Rect labelBox(const ui::FacePainter& p, Vec2 anchor, std::string_view s, float px, float align) noexcept {
+  const uint32_t d = p.textPixels(px);
+  const float sc = std::max(1e-6f, p.transform().scale);
+  const float e = d > 0 ? static_cast<float>(d) / sc : px;
+  const float w = e * 0.58f * static_cast<float>(s.size()), h = e * 0.8f;
+  return {anchor.x - w * align, anchor.y - 0.5f * h, anchor.x + w * (1.0f - align), anchor.y + 0.5f * h};
+}
+// Plot labels that collide with nothing placed before them (each other, the chips while drawn, a scale): a label that
+// would is left out (or moved by its caller).
+class LabelGuard {
+public:
+  void reserve(const Rect& r) noexcept {
+    if (n_ < kMax) r_[n_++] = r;
+  }
+  bool free(const Rect& r) const noexcept {
+    for (int i = 0; i < n_; ++i)
+      if (r.x0 < r_[i].x1 && r.x1 > r_[i].x0 && r.y0 < r_[i].y1 && r.y1 > r_[i].y0) return false;
+    return true;
+  }
+  // Inside `within` and over nothing placed: placed (true: draw it).
+  bool place(const Rect& r, const Rect& within) noexcept {
+    if (r.x0 < within.x0 || r.x1 > within.x1 || r.y0 < within.y0 || r.y1 > within.y1 || !free(r)) return false;
+    reserve(r);
+    return true;
+  }
+
+private:
+  static constexpr int kMax = 64;
+  Rect r_[kMax];
+  int n_ = 0;
+};
 
 // The hosts poll a face's voice reader; this one stands for the feed's readings.
 class FeedFrames final : public VoiceTapReader {
@@ -393,8 +428,12 @@ protected:
     const float x1 = (hasClear() ? clearChip().x0 : freezeChip().x0) - 3.0f;
     return {x1 - 26.0f, kChipY0, x1, kChipY1};
   }
-  // The chips' band (a face's plot labels keep out of it while the chips are drawn).
-  float chipLeft() const noexcept { return setChip().x0 - 2.0f; }
+  // The chips a face's plot labels keep out of while they are drawn.
+  void reserveChips(LabelGuard& g) const noexcept {
+    if (!chipsShown_) return;
+    const Rect l = setChip(), r = freezeChip();  // (CLEAR, when there is one, lies between them)
+    g.reserve({l.x0 - 2.0f, l.y0 - 2.0f, r.x1 + 2.0f, r.y1 + 2.0f});
+  }
   bool coversBody() const noexcept { return sheet_ && !panel_.beside(); }
   static Rect deviceRect(const ui::FacePainter& p, const Rect& r) {
     const Vec2 a = p.transform().map({r.x0, r.y0}), b = p.transform().map({r.x1, r.y1});
@@ -443,6 +482,20 @@ protected:
   double lastWheel_ = 0.0;
   mutable FeedFrames frames_;
   std::function<void()> wakeHost_;
+
+  // VZ.9: zoomed out (the small text left out), a face's one legible summary: `big` at about 12 device px (at most
+  // `maxPx` world units) with `unit` under it at about 8, on a dark backing; anchored at `at` (align as textAligned).
+  static void summary(ui::FacePainter& p, Vec2 at, const char* big, const char* unit, Rgba col, float align, float maxPx) {
+    const float sc = std::max(1e-6f, p.transform().scale);
+    const float bp = std::min(maxPx, 12.0f / sc), up = std::min(0.6f * maxPx, 8.0f / sc);
+    if (bp * sc < 7.0f) return;  // too small even at its largest: the picture alone
+    const Vec2 uAt{at.x, at.y + 0.5f * bp + 0.6f * up + 1.0f};
+    const Rect b = labelBox(p, at, big, bp, align);
+    const Rect u = unit != nullptr ? labelBox(p, uAt, unit, up, align) : b;
+    p.roundedRect({std::min(b.x0, u.x0) - 2.0f, b.y0 - 1.5f, std::max(b.x1, u.x1) + 2.0f, u.y1 + 1.5f}, 2.0f, ui::rgba(8, 10, 14, 170));
+    p.textAligned(at, big, bp, col, align);
+    if (unit != nullptr) p.textAligned(uAt, unit, up, ui::mulAlpha(col, 0.75f), align);
+  }
 
   // A chip: an opaque backing (over a plot it reads as a control, not as part of the picture), lit when on.
   static void chipAt(ui::FacePainter& p, const Rect& r, const char* label, bool on, const ui::Theme& th) {

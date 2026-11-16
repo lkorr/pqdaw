@@ -137,7 +137,28 @@ struct FaceRig {
     env.uiScale = 1.0f;
     FacePainter p(dl, {{10.0f, 10.0f}, scale});
     face->paintLive(p, env);
+    // VZ.9: nothing is drawn outside the face (a label past an edge, a chip, a summary): every triangle not clipped
+    // to the face lies within it, give or take the antialiasing fringe. (Not with an in-face sheet open: the
+    // sheet is wider than a narrow face by design.)
+    if (!boundsChecked) return;
+    const Vec2 sz = face->worldSize();
+    const float s = scale, x1 = 10.0f + sz.x * s, y1 = 10.0f + sz.y * s;
+    size_t outside = 0;
+    const auto vtx = dl.vertices();
+    const auto idx = dl.indices();
+    for (const DrawCmd& c : dl.commands()) {
+      if (c.clip.x0 >= 7 && c.clip.y0 >= 7 && static_cast<float>(c.clip.x1) <= x1 + 3.0f && static_cast<float>(c.clip.y1) <= y1 + 3.0f)
+        continue;  // clipped to the face
+      for (uint32_t k = c.idxOffset; k < c.idxOffset + c.idxCount; ++k) {
+        const Vec2 q = vtx[idx[k]].pos;
+        if (q.x < 7.0f || q.y < 7.0f || q.x > x1 + 3.0f || q.y > y1 + 3.0f) {
+          if (outside++ == 0) MESSAGE("outside at " << q.x << ", " << q.y << " (the face to " << x1 << ", " << y1 << ")");
+        }
+      }
+    }
+    CHECK(outside == 0);
   }
+  bool boundsChecked = true;
   StereoShown play(double seconds, const Signal& s = {}) {
     stream(tap, feed, seconds, s, at, clock);
     Clock::now() += 1.0 / 60.0;
@@ -266,6 +287,7 @@ TEST_CASE("stereo faces: every option and state paints") {
     REQUIRE(stereoTestControl(*rig.face, "hoverx", 100.0));
     rig.paint();
     REQUIRE(stereoTestControl(*rig.face, "sheet", 1.0));
+    rig.boundsChecked = false;
     rig.paint();
     rig.scale = 0.4f;
     rig.paint();
