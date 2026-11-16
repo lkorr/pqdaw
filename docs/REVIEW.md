@@ -1904,7 +1904,7 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Stop playback inside a clip: the roll's playhead line stays where it stopped (and moves when you click an empty spot of the arrangement / lanes, which places the start marker). Stop again: back to the beginning.
 - The roll's ruler has a thin scrub strip between the loop brace and the bar numbers (hand pointer): press = play from there (playing: jump), drag = scrub, Alt = off the grid. The numbers row is back to zoom (drag up / down) and scroll (sideways); a click there does nothing.
 - Is the strip visible enough (surface.raised, 7 px)?
-/^>>>>>>> ff869d06/d
+
 ## 2026-11-15 · bug-ji-melody-bends · melodies tune as one group, clean note lines, bends keep their end 👁
 - Draw a chord of two notes, then three single notes after it, select all, `Ctrl+Shift+J`: one frame around all five
   (every note numbered on one series), not just the opening chord. Tune the chord first and then the whole tune: the
@@ -1912,4 +1912,3 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Every note is a plain line with round ends: the thicker "head" at the start is gone (straight and bent notes alike).
   Repeated notes on one row are told apart by the round ends and the gap only; off-grid notes no longer get a cyan head.
 - Give a note a vibrato that runs to its end: the line ends where the wave is, with no vertical drop back to the row.
->>>>>>> ff869d06 (bug-ji-melody-bends: Tune to JI reads a melody (any lone ungrouped note among the chords) as one group and absorbs a group whose anchor becomes a member; a vibrato running to the note's end ends on its swing (no drop back to the note's pitch); note lines lose the start head (theme roll.noteLineHead*, roll.offGrid removed), straight notes stop 2 px short so repeats stay apart; help, REVIEW; 34 roll goldens re-recorded)
