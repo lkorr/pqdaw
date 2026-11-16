@@ -262,6 +262,13 @@ TEST_CASE("wavetable face model: dense frames follow the builder's rules; the ba
   REQUIRE(plain.update(meta::wavetableData(one), {}));
   for (uint32_t i = 0; i < wt::kPoints; i += 8)
     CHECK(f.frame(0)[i] == doctest::Approx(dsp::foldValue(static_cast<double>(plain.frame(0)[i]), 0.4)).epsilon(1e-5).scale(1.0));
+  // bug-wavetable: at the knob's top (θ = 12π) too — the face's bake reads the same formula the table's bake does.
+  wt::Model top;
+  wt::Bake bt;
+  bt.fold = 1.0f;
+  REQUIRE(top.update(meta::wavetableData(one), bt));
+  for (uint32_t i = 0; i < wt::kPoints; i += 4)
+    CHECK(top.frame(0)[i] == doctest::Approx(std::sin(12.0 * std::numbers::pi * plain.frame(0)[i])).epsilon(1e-5).scale(1.0));
   // A louder-than-full-scale bake is drawn to fit.
   CHECK(f.gain() <= 1.0f);
 }
@@ -568,7 +575,9 @@ TEST_CASE("wavetable face: position, phase and knob drags at zoom 0.1 and 1.5 �
     a = u.at(38.0f, 212.0f);
     u.d.drag(a, {a.x, a.y - 30.0f}, 6);
     CHECK(u.history() == h0 + 1);
-    CHECK(u.value("fold") == doctest::Approx(30.0 / span(60.0f)).epsilon(1e-4));
+    // (bug-wavetable: fold's knob is exponential — half the travel is fold 1/3: the knob moved 30 px of travel)
+    CHECK(u.value("fold") ==
+          doctest::Approx(meta::travelToValue(meta::wavetableType().params[meta::kWtFold], 30.0 / span(60.0f))).epsilon(1e-4));
     a = u.at(89.0f, 212.0f);
     u.d.drag(a, {a.x, a.y + 20.0f}, 6);
     CHECK(u.value("warp") == doctest::Approx(0.3 - 2.0 * 20.0 / span(60.0f)).epsilon(1e-4));

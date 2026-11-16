@@ -19,6 +19,8 @@
 #include "pq/meta/registry.h"
 #include "pq/meta/table_builder.h"
 #include "pq/meta/wavetable.h"
+#include "pq/dsp/tables.h"
+#include "pq/dsp/wave_warp.h"
 #include "pq/pqc/pqc.h"
 
 using namespace pq;
@@ -76,6 +78,67 @@ TEST_CASE("wavetable: registered; controls, inputs, settings as planned") {
   CHECK(t.chainInput == static_cast<int32_t>(kWtInX));  // TMM.10-fix1: the chain feeds x in every form
   CHECK(t.inputs[kWtInX].reads == Reads::Phase);           // the note source gives it the note's phase
   CHECK(prelude()->find("wavetable") != nullptr);
+}
+
+TEST_CASE("wavetable (bug-wavetable): fold's knob — 0 is the identity, half the travel is the old full range (θ = 4π), "
+          "the top 12π") {
+  const ParamSpec& f = wavetableType().params[kWtFold];
+  CHECK(paramCurve(f).preset == dsp::CurvePreset::Exponential);
+  CHECK(travelToValue(f, 0.0) == 0.0);
+  CHECK(travelToValue(f, 1.0) == doctest::Approx(1.0));
+  CHECK(travelToValue(f, 0.5) == doctest::Approx(1.0 / 3.0).epsilon(1e-9));  // TMM.1's fold 1
+  CHECK(valueToTravel(f, 1.0 / 3.0) == doctest::Approx(0.5).epsilon(1e-9));
+  CHECK(dsp::foldShape(travelToValue(f, 0.5)).theta == doctest::Approx(4.0 * 3.14159265358979323846).epsilon(1e-9));
+  CHECK(dsp::foldShape(1.0).theta == doctest::Approx(12.0 * 3.14159265358979323846));
+  // The lower half is the old range on half the travel, finest at the start: the slope at 0 is 2·ln 2 / 3 ≈ 0.46 of
+  // the range per travel (the old linear knob, in these units: 1/3), 0.92 at the middle; no step of 5 % jumps.
+  double prev = 0.0;
+  for (int i = 1; i <= 10; ++i) {
+    const double v = travelToValue(f, 0.05 * i);
+    CHECK(v > prev);
+    CHECK(v - prev <= 0.05);
+    if (i == 1) CHECK(v <= 0.025);
+    prev = v;
+  }
+  for (const double v : {-1.0, -0.4, 0.0, 0.3, 1.0}) CHECK(dsp::foldValue(v, 0.0) == v);
+}
+
+TEST_CASE("wavetable (bug-wavetable): a keyframe's nodes — stored with it, validated, read back; never part of the table") {
+  WavetableData d;
+  const AlignedBuffer<float> sine = dsp::basicCycle(dsp::BasicCycle::Sine);
+  d.keyframes.push_back({0.0f, std::vector<float>(sine.span().begin(), sine.span().end())});
+  dsp::Curve c;
+  c.min = -1.0;
+  c.max = 1.0;
+  c.segments = 2;
+  c.points[0] = {0.0, 0.5};
+  c.points[1] = {0.3, 1.0};
+  c.points[2] = {1.0, 0.5};
+  c.shapes[0] = {dsp::CurveShape::Power, 1.0};
+  c.shapes[1] = {dsp::CurveShape::SCurve, -2.0};
+  d.keyframes[0].nodes = wavetableNodeData(c);
+  const DataPtr v = wavetableData(d);
+  CHECK(wavetableDataProblem(*v).empty());
+  auto back = parseWavetableData(*v);
+  REQUIRE(back.ok());
+  CHECK((*back).keyframes[0].nodes == d.keyframes[0].nodes);
+  const std::optional<dsp::Curve> r = wavetableNodeCurve((*back).keyframes[0].nodes);
+  REQUIRE(r.has_value());
+  CHECK(r->segments == 2);
+  CHECK(r->shapes[1].shape == dsp::CurveShape::SCurve);
+  CHECK(r->points[1].t == doctest::Approx(0.3));
+  // Without nodes the field is absent (the same data as before the field existed).
+  WavetableData plain = d;
+  plain.keyframes[0].nodes.clear();
+  CHECK(wavetableData(plain)->field("keyframes")->items[0].fields.size() == 2u);
+  // Malformed nodes are refused.
+  WavetableData bad = d;
+  bad.keyframes[0].nodes.resize(6);
+  CHECK_FALSE(wavetableDataProblem(*wavetableData(bad)).empty());
+  // The table job never reads them: the same spec cycles with and without.
+  const TableJob a = jobFor(v, {}), b = jobFor(wavetableData(plain), {});
+  REQUIRE(a.keys.size() == 1u);
+  CHECK(std::equal(a.keys[0].cycle.begin(), a.keys[0].cycle.end(), b.keys[0].cycle.begin(), b.keys[0].cycle.end()));
 }
 
 TEST_CASE("wavetable: data round trip, validation, the default") {

@@ -6,6 +6,7 @@
 //   wavelive/atom os 4 (bend only, no corr)  the phase up and the kernel at ×4 frames (no decimation): warp modulated,
 //                                            no sync, no corrections
 //   wavelive/atom os 4 (fold only)           the same with fold modulated (two sines per sample)
+//   wavelive/atom os 8 (fold 1)              bug-wavetable: fold held at 1 (the knob's top) at ×8 (auto for fold)
 //   wavelive/shape region os 2 (ADAA)        Shape mode's region at ×2: oversample_up, wavetable_shape, oversample_down
 //   wavelive/shape atom (ADAA)               wavetable_shape alone at the base rate
 //   wavelive/shaper atom (plain, no ADAA)    the plain `shaper` atom at the base rate (a 1025-point curve), for scale
@@ -80,7 +81,7 @@ void addWaveLiveBenches(pq::bench::Runner& runner) {
         for (uint32_t l = 0; l < 8; ++l) {
           const double t = static_cast<double>(i) / os / kRate;
           w[i * 8 + l] = static_cast<float>(std::sin(2.0 * 3.14159265 * 2000.0 * t + l));
-          f[i * 8 + l] = static_cast<float>(what == 2 ? 0.5 + 0.5 * std::sin(2.0 * 3.14159265 * 1500.0 * t + l) : 0.2);
+          f[i * 8 + l] = static_cast<float>(what == 3 ? 1.0 : what == 2 ? 0.5 + 0.5 * std::sin(2.0 * 3.14159265 * 1500.0 * t + l) : 0.2);
           s[i * 8 + l] = static_cast<float>(0.3 + 0.3 * std::sin(2.0 * 3.14159265 * 900.0 * t + l));
         }
       alignas(32) float factor[8], zero[8] = {}, modeV[8], corrV[8], pos[8];
@@ -91,9 +92,9 @@ void addWaveLiveBenches(pq::bench::Runner& runner) {
         pos[l] = 0.13f + 0.097f * l;
       }
       Kernel phUp(Atom::OversamplePhase, 2u, kRate), down(Atom::OversampleDown, 2u, kRate);
-      // what 0: warp + sync + fold per sample (Spl mask: position, mode, corr); 1: warp only; 2: fold only.
+      // what 0: warp + sync + fold per sample (Spl mask: position, mode, corr); 1: warp only; 2: fold only; 3: fold at 1.
       const uint32_t mask = (1u << 1) | (1u << 5) | (1u << 6) | (what == 1 ? (1u << 3) | (1u << 4) : 0u) |
-                            (what == 2 ? (1u << 2) | (1u << 4) : 0u);
+                            (what >= 2 ? (1u << 2) | (1u << 4) : 0u);
       Kernel live(Atom::WavetableLive, mask, kRate * os);
       const bool full = what == 0;
       uint32_t blk = 0;
@@ -105,7 +106,7 @@ void addWaveLiveBenches(pq::bench::Runner& runner) {
               float* uo[1] = {up.data()};
               phUp.fn(pq::dsp::KernelArgs{ui, uo, phUp.state.data(), nullptr, m, 2, 1, 2u});
             }
-            const float* li[7] = {up.data(), pos, what == 2 ? zero : w.data(), what == 1 ? zero : f.data(),
+            const float* li[7] = {up.data(), pos, what >= 2 ? zero : w.data(), what == 1 ? zero : f.data(),
                                   what == 0 ? s.data() : zero, modeV, corrV};
             float* lo[1] = {y.data()};
             live.fn(pq::dsp::KernelArgs{li, lo, live.state.data(), phaseSlot, m, 7, 1, mask});
@@ -126,6 +127,7 @@ void addWaveLiveBenches(pq::bench::Runner& runner) {
   runner.add("wavelive/region os 16 (pw + sync + fold)", region(16, 0));
   runner.add("wavelive/atom os 4 (bend only, no corr)", region(4, 1));
   runner.add("wavelive/atom os 4 (fold only)", region(4, 2));
+  runner.add("wavelive/atom os 8 (fold 1)", region(8, 3));
 
   auto shape = [](int what) {
     return [what](pq::bench::Context& c) {

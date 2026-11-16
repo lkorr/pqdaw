@@ -10,7 +10,8 @@
 //   out = foldValue(v, fold)
 // Every control's 0 is the identity (exactly, in any precision): warp 0 → t.a = ψ, t.mixB = 0; fold 0 → v; sync 0
 // → φ. The ranges keep the read phase's slope ≤ 16 per control (sync ≤ 16×, pulse width ≤ 16×, bend ≤ 4×), which is
-// what the builder's 16× bake resolution is sized for (combinations multiply: frameBakeResolution).
+// what the builder's 16× bake resolution is sized for (combinations multiply, and the fold's spread θ too:
+// frameBakeResolution).
 //
 // T is the phase / value type (double, float, the builder's jets); the control amounts are plain scalars (they are
 // constant over a bake and per block on the live path). Formulas only use + − × ÷, comparisons, floor and sin, found
@@ -27,8 +28,11 @@
 //                           and reaches the identity at 0 cannot have a bounded slope, so Mirror crossfades two reads.)
 //               PulseWidth  the half-cycles squeezed to w and 1 − w: a = ψ·½/w below w, ½ + (ψ − w)·½/(1 − w) above;
 //                           w = ½·(1 − (15/16)·warp) ∈ [1/32, 31/32]. Continuous.
-//   foldValue   fold ∈ [0, 1], θ = 4π·fold: v → sin(θ·v)/sin(θ) while θ < π/2 (a soft saturation that keeps ±1 at ±1
-//               and tends to v as θ → 0), sin(θ·v) above (folding: up to 8 folds of a full-scale input at fold = 1).
+//   foldValue   fold ∈ [0, 1], θ = 12π·fold: v → sin(θ·v)/sin(θ) while θ < π/2 (a soft saturation that keeps ±1 at
+//               ±1 and tends to v as θ → 0), sin(θ·v) above (folding: up to 24 folds of a full-scale input at fold = 1;
+//               bug-wavetable: 3× TMM.1's 4π — the param's knob curve puts the old range in the lower half,
+//               pq/meta/wavetable.h). Every consumer reads kFoldMaxTheta: the builder's bake (its resolution grows
+//               with θ: frameBakeResolution), the live kernel and its band (1 + θ: kernels_wave_live.cpp), the face.
 
 #include <cmath>
 #include <cstdint>
@@ -42,7 +46,7 @@ inline constexpr uint32_t kWarpModeCount = 3;
 inline constexpr double kSyncMaxRatio = 16.0;      // s at sync = 1
 inline constexpr double kBendMaxSlope = 4.0;       // c at warp = −1 (1/c at +1)
 inline constexpr double kPulseMinWidth = 1.0 / 32.0;
-inline constexpr double kFoldMaxTheta = 4.0 * std::numbers::pi;
+inline constexpr double kFoldMaxTheta = 12.0 * std::numbers::pi;
 
 template <class T>
 struct WarpTaps {

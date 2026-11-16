@@ -29,8 +29,10 @@
 //            live path's table (the same curve T(clamp(u)), the modulated controls applied per sample; the band
 //            follows |Δu|; no ADAA, so the clamp's corner for |x| > 1 is not corrected). The atoms write the slot's
 //            voice tap (the face's dots)
-//   data     WavetableData (below): 1 … 256 keyframes (position + a 2048-sample cycle), a gap mode per gap, the dense
-//            frame count, removeDc, normalise. Default: one sine keyframe.
+//            bug-wavetable: fold's knob is @curve(exponential, 2·ln 2) (kWtFoldCurveK): half the travel is fold 1/3,
+//            the old full range (θ = 4π), the top half reaches fold 1 (θ = 12π, ≈ 24 folds of a full-scale input)
+//   data     WavetableData (below): 1 … 256 keyframes (position + a 2048-sample cycle + optionally the node tool's
+//            nodes), a gap mode per gap, the dense frame count, removeDc, normalise. Default: one sine keyframe.
 //   chain    any position: the chain's signal is x (the note's phase, a voice signal, audio); ops::addMetaDevice
 //            starts one that receives audio in Shape mode (TMM.8).
 //
@@ -39,11 +41,13 @@
 // the memory for nothing).
 
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "pq/core/result.h"
+#include "pq/dsp/curve.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/data.h"
 #include "pq/meta/type.h"
@@ -68,11 +72,14 @@ inline constexpr uint8_t kWtLiveFold = 1, kWtLiveWarp = 2, kWtLiveSync = 4;
 uint8_t wavetableLiveControls(std::span<const double> settings, std::span<const uint8_t> modulated) noexcept;
 
 // The data in C++ form (the face's editing tools build it; the file keeps it as a DataValue record):
-//   {"keyframes": [{"pos": 0.0, "cycle": {"$f32": …}}, …], "gaps": ["spectral" | "crossfade", …], "frames": 64,
+//   {"keyframes": [{"pos": 0.0, "cycle": {"$f32": …}[, "nodes": {"$f32": …}]}, …], "gaps": ["spectral" | "crossfade", …], "frames": 64,
 //    "removeDc": 0, "normalise": 0}
 struct WavetableKeyframe {
   float position = 0.0f;     // [0, 1], non-decreasing along the list
   std::vector<float> cycle;  // dsp::kKeyframeCycle samples
+  // bug-wavetable: the node tool's form of the cycle (wavetableNodeData; empty: none) — an editing aid only: the
+  // cycle is what sounds (the table never reads it), and every edit but the node tool's drops it.
+  std::vector<float> nodes;
 };
 struct WavetableData {
   std::vector<WavetableKeyframe> keyframes;  // 1 … 256
@@ -82,6 +89,13 @@ struct WavetableData {
   bool normalise = false;
 };
 DataPtr wavetableData(const WavetableData& d);
+// bug-wavetable: a keyframe's nodes — a dsp::Curve over [−1, 1] (t the phase, y the value's share (v + 1)/2, its first
+// and last points' y equal: the cycle is periodic) as floats: n (the segments, 1 … 16), t_0 … t_n, y_0 … y_n,
+// shape_0 … shape_(n−1) (dsp::CurveShape codes, Joined excluded), bend_0 … bend_(n−1): 4n + 3 values. The curve read
+// back is the one the tool renders the cycle from (rounded to float).
+std::vector<float> wavetableNodeData(const dsp::Curve& c);
+std::optional<dsp::Curve> wavetableNodeCurve(std::span<const float> nodes) noexcept;
+inline constexpr double kWtFoldCurveK = 1.3862943611198906;  // 2·ln 2: travel ½ → fold ⅓ (θ = 4π)
 Result<WavetableData> parseWavetableData(const DataValue& v);
 std::string wavetableDataProblem(const DataValue& v);  // "" = valid
 // The default data: one sine keyframe at position 0.

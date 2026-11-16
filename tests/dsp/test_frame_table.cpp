@@ -18,6 +18,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/dsp/frame_table.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/wave_warp.h"
 #include "../../src/dsp/src/fft_mixed.h"  // the builder's private mixed-radix FFT
 
 using namespace pq::dsp;
@@ -284,7 +285,7 @@ TEST_CASE("frame table builder: normalise, removeDc, holds before the first and 
   }
 }
 
-TEST_CASE("frame table builder: a bake at 16× is within −110 dB of one at 64× (each control)") {
+TEST_CASE("frame table builder: a bake at the builder's resolution is within −110 dB of one at twice it (each control)") {
   const auto cycles = bakeCycles();
   struct Case {
     const char* name;
@@ -294,15 +295,18 @@ TEST_CASE("frame table builder: a bake at 16× is within −110 dB of one at 64�
       {"bend +0.7", {WarpMode::Bend, 0.7f, 0, 0}},           {"bend -1", {WarpMode::Bend, -1.0f, 0, 0}},
       {"mirror 0.4", {WarpMode::Mirror, 0.4f, 0, 0}},         {"mirror -1", {WarpMode::Mirror, -1.0f, 0, 0}},
       {"pulse width 0.6", {WarpMode::PulseWidth, 0.6f, 0, 0}}, {"pulse width 1", {WarpMode::PulseWidth, 1.0f, 0, 0}},
-      {"fold 0.05", {WarpMode::Bend, 0, 0.05f, 0}},           {"fold 1", {WarpMode::Bend, 0, 1.0f, 0}},
+      {"fold 0.05", {WarpMode::Bend, 0, 0.05f, 0}},           {"fold 1/3", {WarpMode::Bend, 0, 1.0f / 3.0f, 0}},
+      {"fold 1", {WarpMode::Bend, 0, 1.0f, 0}},
       {"sync 0.55", {WarpMode::Bend, 0, 0, 0.55f}},           {"sync 1", {WarpMode::Bend, 0, 0, 1.0f}},
   };
   for (const Case& c : cases) {
     const std::string name = c.name;
     CAPTURE(name);
-    CHECK(resolutionFor(c.bake) == 16);  // single controls never raise the resolution
-    const double db = bakeDifferenceDb(cycles, c.bake);
-    MESSAGE("bake 16x vs 64x, " << name << ": " << db << " dB");
+    // Single controls stay at 16× except a fold past θ = 16 (bug-wavetable: θ up to 12π; fold 1 takes 64×).
+    const uint32_t r = resolutionFor(c.bake);
+    CHECK(r == (c.bake.fold == 1.0f ? 64u : 16u));
+    const double db = bakeDifferenceDb(cycles, c.bake, r, std::max(64u, 2 * r));
+    MESSAGE("bake " << r << "x vs " << std::max(64u, 2 * r) << "x, " << name << ": " << db << " dB");
     CHECK(db <= -110.0);
   }
 }
@@ -312,7 +316,8 @@ TEST_CASE("frame table builder: bake sweeps of every control, and combinations" 
   double worstSingle = -400;
   std::string worstName;
   auto single = [&](const char* what, FrameBake b, float v) {
-    const double db = bakeDifferenceDb(cycles, b);
+    const uint32_t r = resolutionFor(b);  // (16× but for a fold past θ = 16: bug-wavetable)
+    const double db = bakeDifferenceDb(cycles, b, r, std::max(64u, 2 * r));
     if (db > worstSingle) worstSingle = db, worstName = std::string(what) + " " + std::to_string(v);
     CHECK(db <= -110.0);
   };
@@ -345,7 +350,10 @@ TEST_CASE("frame table builder: bake sweeps of every control, and combinations" 
       {"pw 0.5 + fold 0.5", {WarpMode::PulseWidth, 0.5f, 0.5f, 0}, true},
       {"mirror 0.5 + fold 0.3 + sync 0.3", {WarpMode::Mirror, 0.5f, 0.3f, 0.3f}, true},
       {"sync 1 + pw 1", {WarpMode::PulseWidth, 1.0f, 0, 1.0f}, false},
-      {"sync 0.5 + fold 1", {WarpMode::Bend, 0, 1.0f, 0.5f}, true},
+      // bug-wavetable: TMM.1's fold 1 (θ = 4π) is fold 1/3 now; fold 1 (12π) on a sync of 8.5× needs ≈ 320× (recorded
+      // only, as sync 1 + pw 1: the 64× cap; Phase mode bakes through the live band instead, not this path).
+      {"sync 0.5 + fold 1/3", {WarpMode::Bend, 0, 1.0f / 3.0f, 0.5f}, true},
+      {"sync 0.5 + fold 1", {WarpMode::Bend, 0, 1.0f, 0.5f}, false},
   };
   for (const Combo& c : combos) {
     const std::string name = c.name;
@@ -353,6 +361,36 @@ TEST_CASE("frame table builder: bake sweeps of every control, and combinations" 
     const double db = bakeDifferenceDb(cycles, c.bake, 16, 128);
     MESSAGE("bake combination " << name << ": resolution " << resolutionFor(c.bake) << "x, vs 128x: " << db << " dB");
     if (c.bounded) CHECK(db <= -110.0);
+  }
+}
+
+TEST_CASE("frame table builder: a baked fold of a sine matches its Bessel series (bug-wavetable: θ = 12π at fold 1)") {
+  // sin(θ·sin x) = 2 Σ_(k odd) J_k(θ) sin(kx): harmonic k's coefficient is −i·J_k(θ) (θ ≥ π/2: no normalisation).
+  // Fold 1/3 is TMM.1's fold 1 (θ = 4π, 8 folds); fold 1 three times that.
+  for (const float fold : {1.0f / 3.0f, 0.75f, 1.0f}) {
+    const double theta = foldShape(fold).theta;
+    CHECK(theta == doctest::Approx(12.0 * kPi * fold));
+    FrameTableBuilder b;
+    ftfix::SpecHolder spec({ftfix::basic(BasicCycle::Sine)}, 48000, 1);
+    spec.spec.bake.fold = fold;
+    (void)buildOrFail(b, spec.spec);
+    const auto c = b.frameSpectrum(0);
+    double worst = 0;
+    for (uint32_t h = 0; h < c.size(); ++h) {
+      // (J_k(θ) for k > 200 is below 1e-100 at θ ≤ 12π: 0)
+      const std::complex<double> want(0.0, h % 2 == 1 && h <= 200 ? -std::cyl_bessel_j(static_cast<double>(h), theta) : 0.0);
+      REQUIRE(std::isfinite(want.imag()));
+      worst = std::max(worst, 2.0 * std::abs(c[h] - want));
+    }
+    const double db = 20.0 * std::log10(worst);
+    MESSAGE("fold " << fold << " (theta " << theta / kPi << " pi, resolution " << resolutionFor(spec.spec.bake)
+                    << "x) of a sine vs its Bessel series: " << db << " dB");
+    CHECK(db <= -110.0);
+  }
+  // 0 is the identity, exactly; fold 1/3 is the old fold-1 shape sin(4π·v).
+  for (const double v : {-1.0, -0.37, 0.0, 0.2, 1.0}) {
+    CHECK(foldValue(v, 0.0) == v);
+    CHECK(foldValue(v, 1.0 / 3.0) == doctest::Approx(std::sin(4.0 * kPi * v)).epsilon(1e-12).scale(1.0));
   }
 }
 
@@ -450,9 +488,10 @@ TEST_CASE("frame table builder: buildInto allocates nothing once sized; readers 
   const auto fixture = ftfix::drawnFixture(16);
   FrameTableBuilder b;
   ftfix::SpecHolder s(fixture, 48000, 64);
-  s.spec.bake = {WarpMode::Mirror, 0.5f, 0.2f, 0.25f};
+  // (folds of θ = 0.8π / π: bug-wavetable's fold range is 3× TMM.1's)
+  s.spec.bake = {WarpMode::Mirror, 0.5f, 0.2f / 3.0f, 0.25f};
   FrameTable t = buildOrFail(b, s.spec);  // sizes the arenas
-  s.spec.bake.fold = 0.25f;               // a different bake value at the same resolution: same arenas
+  s.spec.bake.fold = 0.25f / 3.0f;        // a different bake value at the same resolution: same arenas
   REQUIRE(frameBakeResolution(s.spec) == 16);
   CHECK(pq::alloc_trap::countRtViolations([&] { CHECK(b.buildInto(s.spec, t).ok()); }) == 0);
   s.spec.bake = {};

@@ -88,6 +88,232 @@ void HarmonicWriter::write(std::span<const float> base, const Spectrum1& baseSpe
   for (uint32_t i = 0; i < len; ++i) out[i] = static_cast<float>(static_cast<double>(base[i]) + re_[i]);
 }
 
+// ---- smoothing, symmetry, actions ----
+
+void smoothCycle(std::span<float> cycle, uint32_t width, std::vector<double>& scratch) {
+  const auto n = static_cast<int64_t>(cycle.size());
+  if (n < 3 || width <= 1) return;
+  int64_t w = static_cast<int64_t>(width | 1u);
+  if (w >= n) w = (n - 1) | 1;
+  if (w >= n) w -= 2;
+  if (w <= 1) return;
+  const int64_t h = w / 2;
+  // Prefix sums over the cycle extended by h on each side (circular): b[i] = (P[i + w] − P[i]) / w. (Prefix sums, not
+  // a running sum: over a stretch of zeros both ends hold the same sum, so the result is exactly 0 there.)
+  scratch.resize(static_cast<size_t>(3 * n + w + 1));
+  double* a = scratch.data();
+  double* b = a + n;
+  double* p = b + n;
+  for (int64_t i = 0; i < n; ++i) a[i] = cycle[static_cast<size_t>(i)];
+  const double inv = 1.0 / static_cast<double>(w);
+  for (int pass = 0; pass < 3; ++pass) {
+    p[0] = 0.0;
+    for (int64_t j = 0; j < n + w; ++j) p[j + 1] = p[j] + a[((j - h) % n + n) % n];
+    for (int64_t i = 0; i < n; ++i) b[i] = (p[i + w] - p[i]) * inv;
+    std::swap(a, b);
+  }
+  for (int64_t i = 0; i < n; ++i) cycle[static_cast<size_t>(i)] = static_cast<float>(a[i]);
+}
+
+void applySymmetry(std::span<float> cycle, Symmetry s, float from) noexcept {
+  const size_t n = cycle.size(), half = n / 2;
+  if (n < 4 || s == Symmetry::Off) return;
+  const bool first = from < 0.5f;
+  if (s == Symmetry::Mirror) {
+    for (size_t i = 1; i < half; ++i) {
+      if (first) cycle[n - i] = cycle[i];
+      else cycle[i] = cycle[n - i];
+    }
+    return;
+  }
+  for (size_t i = 0; i < half; ++i) {
+    if (first) cycle[i + half] = -cycle[i];
+    else cycle[i] = -cycle[i + half];
+  }
+}
+
+void invertCycle(std::span<float> cycle) noexcept {
+  for (float& v : cycle) v = -v;
+}
+
+void reverseCycle(std::span<float> cycle) noexcept {
+  const size_t n = cycle.size();
+  for (size_t i = 1; i < n - i; ++i) std::swap(cycle[i], cycle[n - i]);
+}
+
+void rotateCycle(std::span<float> cycle, int32_t samples) noexcept {
+  const auto n = static_cast<int64_t>(cycle.size());
+  if (n == 0) return;
+  const int64_t k = ((static_cast<int64_t>(samples) % n) + n) % n;
+  if (k == 0) return;
+  std::rotate(cycle.begin(), cycle.begin() + static_cast<std::ptrdiff_t>(n - k), cycle.end());
+}
+
+// ---- nodes ----
+
+dsp::Curve flatNodes(double v) noexcept {
+  dsp::Curve c;
+  c.min = -1.0;
+  c.max = 1.0;
+  c.preset = dsp::CurvePreset::Custom;
+  c.segments = 1;
+  const double y = std::clamp((v + 1.0) * 0.5, 0.0, 1.0);
+  c.points[0] = {0.0, y};
+  c.points[1] = {1.0, y};
+  c.shapes[0] = {dsp::CurveShape::Linear, 0.0};
+  return c;
+}
+
+double nodeValue(const dsp::Curve& c, double x) noexcept { return dsp::evalCurveUnits(c, x); }
+
+void renderNodes(const dsp::Curve& c, std::span<float> cycle) noexcept {
+  const auto n = static_cast<uint32_t>(std::min<size_t>(cycle.size(), kCycleLen));
+  for (uint32_t i = 0; i < n; ++i) cycle[i] = static_cast<float>(dsp::evalCurveUnits(c, static_cast<double>(i) / kCycleLen));
+}
+
+bool validNodes(const dsp::Curve& c) noexcept {
+  return dsp::validCurve(c) && c.min == -1.0 && c.max == 1.0 && c.segments >= 1 && c.step == 0.0 &&
+         c.mode == dsp::CurveMode::Clip && c.output == dsp::CurveOutput::None &&
+         c.points[0].y == c.points[c.segments].y;
+}
+
+namespace {
+
+// fitNodes' candidate segment shapes (a coarse grid per family; the best is then refined along its bend).
+struct FitShape {
+  dsp::CurveShape shape;
+  double bend;
+};
+constexpr FitShape kFitGrid[] = {
+    {dsp::CurveShape::Linear, 0.0},
+    {dsp::CurveShape::Power, 0.5}, {dsp::CurveShape::Power, -0.5}, {dsp::CurveShape::Power, 1.0},
+    {dsp::CurveShape::Power, -1.0}, {dsp::CurveShape::Power, 1.5}, {dsp::CurveShape::Power, -1.5},
+    {dsp::CurveShape::Power, 2.5}, {dsp::CurveShape::Power, -2.5},
+    {dsp::CurveShape::SCurve, 1.5}, {dsp::CurveShape::SCurve, -1.5}, {dsp::CurveShape::SCurve, 3.0},
+    {dsp::CurveShape::SCurve, -3.0}, {dsp::CurveShape::SCurve, 5.0}, {dsp::CurveShape::SCurve, -5.0},
+    {dsp::CurveShape::SCurve, 8.0}, {dsp::CurveShape::SCurve, -8.0},
+    {dsp::CurveShape::Exp, 1.5}, {dsp::CurveShape::Exp, -1.5}, {dsp::CurveShape::Exp, 3.0},
+    {dsp::CurveShape::Exp, -3.0}, {dsp::CurveShape::Exp, 6.0}, {dsp::CurveShape::Exp, -6.0},
+};
+
+struct FitSeg {
+  dsp::CurveSegment shape{};
+  double err = 0.0;    // the largest |error| over the segment's samples (< 0: cannot be split further)
+  int64_t worst = -1;  // where
+};
+
+// The segment from (ta, ya) to (tb, yb) (shares) fitted to `want`: the grid's best shape by its largest error over
+// every 2nd sample, its bend refined by a golden-section search (same sign, ±1.5; Power ±0.6), then measured exactly.
+FitSeg fitSegment(std::span<const double> want, double ta, double ya, double tb, double yb) {
+  constexpr int64_t kN = kCycleLen;
+  const auto n0 = static_cast<int64_t>(std::ceil(ta * kN));
+  const int64_t n1 = tb >= 1.0 ? kN - 1 : std::min<int64_t>(kN - 1, static_cast<int64_t>(std::floor(tb * kN)));
+  const double w = tb - ta;
+  dsp::Curve k;  // a one-segment curve over [0, 1]: its value is the segment's share g(u)
+  k.preset = dsp::CurvePreset::Custom;
+  auto errOf = [&](dsp::CurveSegment sg, int64_t stride, int64_t* worst) {
+    k.shapes[0] = sg;
+    double e = 0.0;
+    for (int64_t n = n0; n <= n1; n += stride) {
+      const double u = (static_cast<double>(n) / kN - ta) / w;
+      const double v = -1.0 + 2.0 * (ya + (yb - ya) * dsp::evalCurveUnits(k, u));
+      const double d = std::fabs(v - want[static_cast<size_t>(n)]);
+      if (d > e) {
+        e = d;
+        if (worst) *worst = n;
+      }
+    }
+    return e;
+  };
+  FitSeg best;
+  double bestErr = 1e300;
+  for (const FitShape& f : kFitGrid) {
+    const double e = errOf({f.shape, f.bend}, 2, nullptr);
+    if (e < bestErr - 1e-12) bestErr = e, best.shape = {f.shape, f.bend};
+  }
+  if (best.shape.shape != dsp::CurveShape::Linear) {
+    const double r = best.shape.shape == dsp::CurveShape::Power ? 0.6 : 1.5, k0 = best.shape.bend;
+    double lo = k0 - r, hi = k0 + r;
+    if (k0 > 0.0) lo = std::max(lo, 0.05);
+    else hi = std::min(hi, -0.05);
+    const double g = 0.5 * (std::sqrt(5.0) - 1.0);
+    double c = hi - g * (hi - lo), d = lo + g * (hi - lo);
+    double fc = errOf({best.shape.shape, c}, 2, nullptr), fd = errOf({best.shape.shape, d}, 2, nullptr);
+    for (int it = 0; it < 24; ++it) {
+      if (fc < fd) {
+        hi = d, d = c, fd = fc;
+        c = hi - g * (hi - lo);
+        fc = errOf({best.shape.shape, c}, 2, nullptr);
+      } else {
+        lo = c, c = d, fc = fd;
+        d = lo + g * (hi - lo);
+        fd = errOf({best.shape.shape, d}, 2, nullptr);
+      }
+    }
+    const double kb = fc < fd ? c : d, eb = std::min(fc, fd);
+    if (eb < bestErr) best.shape.bend = static_cast<float>(kb);  // (as the data stores it)
+  }
+  best.err = errOf(best.shape, 1, &best.worst);
+  return best;
+}
+
+}  // namespace
+
+dsp::Curve fitNodes(std::span<const float> cycle) {
+  constexpr int64_t kN = kCycleLen;
+  std::vector<double> want(kN, 0.0);
+  for (int64_t i = 0; i < kN && i < static_cast<int64_t>(cycle.size()); ++i)
+    want[static_cast<size_t>(i)] = std::clamp(static_cast<double>(cycle[static_cast<size_t>(i)]), -1.0, 1.0);
+  dsp::Curve c = flatNodes(want[0]);
+  std::vector<FitSeg> segs(1);
+  auto fit = [&](uint32_t i) {
+    segs[i] = fitSegment(want, c.points[i].t, c.points[i].y, c.points[i + 1].t, c.points[i + 1].y);
+    c.shapes[i] = segs[i].shape;
+  };
+  fit(0);
+  // Greedy: the worst sample of the worst segment becomes a point, until every sample is within the tolerance.
+  while (c.segments < kFitSegments) {
+    uint32_t i = 0;
+    for (uint32_t k = 1; k < c.segments; ++k)
+      if (segs[k].err > segs[i].err) i = k;
+    if (!(segs[i].err > kFitTolerance) || segs[i].worst < 0) break;
+    const double t = static_cast<double>(segs[i].worst) / kN;
+    if (t - c.points[i].t < kNodeGap * 0.999 || c.points[i + 1].t - t < kNodeGap * 0.999) {
+      segs[i].err = -1.0;  // the worst sample hugs a point: leave this segment as it is
+      continue;
+    }
+    for (uint32_t k = c.segments; k > i; --k) c.points[k + 1] = c.points[k];
+    for (uint32_t k = c.segments; k > i + 1; --k) c.shapes[k] = c.shapes[k - 1];
+    c.points[i + 1] = {t, (want[static_cast<size_t>(segs[i].worst)] + 1.0) * 0.5};
+    c.segments = static_cast<uint8_t>(c.segments + 1);
+    segs.insert(segs.begin() + i + 1, FitSeg{});
+    fit(i);
+    fit(i + 1);
+  }
+  // Then fewer: a point goes while the merged segment stays within the error reached (greedy splits cluster).
+  double reached = kFitTolerance;
+  for (const FitSeg& sg : segs) reached = std::max(reached, sg.err);
+  while (c.segments > 1) {
+    uint32_t drop = 0;
+    FitSeg merged;
+    merged.err = 1e300;
+    for (uint32_t i = 1; i < c.segments; ++i) {
+      const FitSeg m = fitSegment(want, c.points[i - 1].t, c.points[i - 1].y, c.points[i + 1].t, c.points[i + 1].y);
+      if (m.err <= reached && m.err < merged.err) drop = i, merged = m;
+    }
+    if (drop == 0) break;
+    for (uint32_t k = drop; k < c.segments; ++k) c.points[k] = c.points[k + 1];
+    for (uint32_t k = drop; k + 1 < c.segments; ++k) c.shapes[k] = c.shapes[k + 1];
+    c.points[c.segments] = {};
+    c.shapes[c.segments - 1] = {};
+    c.segments = static_cast<uint8_t>(c.segments - 1);
+    segs.erase(segs.begin() + drop);
+    segs[drop - 1] = merged;
+    c.shapes[drop - 1] = merged.shape;
+  }
+  return c;
+}
+
 // ---- strokes ----
 
 void Stroke::snap(Tool tool, uint32_t grid, float& x, float& v) noexcept {
@@ -99,19 +325,27 @@ void Stroke::snap(Tool tool, uint32_t grid, float& x, float& v) noexcept {
   if (tool != Tool::Pencil) x = std::round(x * static_cast<float>(grid)) / static_cast<float>(grid);
 }
 
-void Stroke::begin(std::span<const float> base, Tool tool, uint32_t grid, float x, float v) {
-  tool_ = tool == Tool::None ? Tool::Pencil : tool;
+void Stroke::begin(std::span<const float> base, Tool tool, uint32_t grid, float x, float v, uint32_t smooth) {
+  tool_ = tool == Tool::None || tool == Tool::Nodes ? Tool::Pencil : tool;
   grid_ = grid;
+  smooth_ = tool_ == Tool::Pencil && grid_ == 0 ? smooth : 0u;
   base_.assign(base.begin(), base.end());
   base_.resize(kCycleLen, 0.0f);
   cycle_ = base_;
+  if (smooth_ > 1) mask_.assign(kCycleLen, 0.0f);
   snap(tool_, grid_, x, v);
   last_ = anchor_ = {x, v};
   pts_.clear();
   pts_.push_back({x, v});
   if (tool_ == Tool::Pencil) {
-    if (grid_ > 0) fillColumns(x, v, x, v);
-    else cycle_[std::min(kCycleLen - 1, static_cast<uint32_t>(std::lround(x * kCycleLen)) % kCycleLen)] = v;
+    if (grid_ > 0) {
+      fillColumns(x, v, x, v);
+    } else {
+      const uint32_t n = std::min(kCycleLen - 1, static_cast<uint32_t>(std::lround(x * kCycleLen)) % kCycleLen);
+      cycle_[n] = v;
+      touch(n, n);
+      smoothOut();
+    }
   } else if (tool_ == Tool::Line) {
     segment(x, v, x, v);
   } else {
@@ -129,12 +363,33 @@ void Stroke::segment(float xa, float va, float xb, float vb) {
   if (n1 < n0) {  // within one sample interval: the nearer sample takes the newer value
     const auto n = std::clamp<int64_t>(std::lround(static_cast<double>(xb) * kCycleLen), 0, kCycleLen - 1);
     cycle_[static_cast<size_t>(n)] = vb;
+    touch(n, n);
     return;
   }
   const double w = static_cast<double>(xb) - xa;
   for (int64_t n = std::max<int64_t>(n0, 0); n <= std::min<int64_t>(n1, kCycleLen - 1); ++n) {
     const double t = w > 0.0 ? (static_cast<double>(n) / kCycleLen - xa) / w : 1.0;
     cycle_[static_cast<size_t>(n)] = static_cast<float>(va + std::clamp(t, 0.0, 1.0) * (static_cast<double>(vb) - va));
+  }
+  touch(n0, n1);
+}
+
+void Stroke::touch(int64_t n0, int64_t n1) noexcept {
+  if (smooth_ <= 1) return;
+  for (int64_t n = std::max<int64_t>(n0, 0); n <= std::min<int64_t>(n1, kCycleLen - 1); ++n) mask_[static_cast<size_t>(n)] = 1.0f;
+}
+
+void Stroke::smoothOut() {
+  if (smooth_ <= 1) return;
+  // The raw stroke blurred, blended in where the stroke drew (the mask blurred alike, doubled: full inside, fading
+  // to nothing within about half the box outside), so its ends join the cycle that was there.
+  out_ = cycle_;
+  smoothCycle(out_, smooth_, scratch_);
+  blur_ = mask_;
+  smoothCycle(blur_, smooth_, scratch_);
+  for (uint32_t i = 0; i < kCycleLen; ++i) {
+    const float m = std::min(1.0f, 2.0f * blur_[i]);
+    out_[i] = cycle_[i] + m * (out_[i] - cycle_[i]);
   }
 }
 
@@ -157,10 +412,12 @@ void Stroke::to(float x, float v) {
   snap(tool_, grid_, x, v);
   switch (tool_) {
     case Tool::None:
+    case Tool::Nodes:
     case Tool::Pencil:
       if (grid_ > 0) fillColumns(last_.x, last_.v, x, v);
       else segment(last_.x, last_.v, x, v);
       last_ = {x, v};
+      smoothOut();
       return;
     case Tool::Line:
       std::copy(base_.begin(), base_.end(), cycle_.begin());

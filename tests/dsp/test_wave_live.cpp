@@ -43,13 +43,16 @@ struct Static {
   WarpMode mode;
   double warp, fold, sync;
 };
+// bug-wavetable: fold's θ is 12π·fold now (3× TMM.1's): the cases TMM.8 measured keep their θ (fold / 3), and the
+// knob's top joins them.
 const Static kStatics[] = {
     {"bend 0.6", WarpMode::Bend, 0.6, 0, 0},
     {"mirror 0.6", WarpMode::Mirror, 0.6, 0, 0},
     {"pulse width -0.6", WarpMode::PulseWidth, -0.6, 0, 0},
-    {"fold 0.3", WarpMode::Bend, 0, 0.3, 0},
+    {"fold 0.1 (theta 1.2 pi)", WarpMode::Bend, 0, 0.1, 0},
     {"sync 0.37", WarpMode::Bend, 0, 0, 0.37},
-    {"pw 0.4 + sync 0.2 + fold 0.1", WarpMode::PulseWidth, 0.4, 0.1, 0.2},
+    {"pw 0.4 + sync 0.2 + fold 1/30", WarpMode::PulseWidth, 0.4, 0.1 / 3.0, 0.2},
+    {"fold 1 (theta 12 pi)", WarpMode::Bend, 0, 1.0, 0},
 };
 
 double staticAgreement(const Static& c, const std::vector<ftfix::Cycle>& cycles, uint32_t os, uint32_t k0, uint32_t N,
@@ -79,8 +82,11 @@ std::vector<AliasCase> aliasCases(double fm) {
       {"bend", WarpMode::Bend, sine(1.0, 0.0, fm), constant(0), constant(0), true},
       {"mirror", WarpMode::Mirror, sine(1.0, 0.0, fm), constant(0), constant(0), true},
       {"pulse width", WarpMode::PulseWidth, sine(1.0, 0.0, fm), constant(0), constant(0), true},
-      {"fold", WarpMode::Bend, constant(0), sine(0.5, 0.5, fm), constant(0), false},
+      // (TMM.8's fold case: θ swept over 0 … 4π, TMM.1's whole range — bug-wavetable: fold 0 … 1/3)
+      {"fold", WarpMode::Bend, constant(0), sine(1.0 / 6.0, 1.0 / 6.0, fm), constant(0), false},
       {"sync", WarpMode::Bend, constant(0), constant(0), sine(0.5, 0.5, fm), true},
+      // bug-wavetable: the whole new range (θ 0 … 12π) swept at audio rate
+      {"fold 0-1", WarpMode::Bend, constant(0), sine(0.5, 0.5, fm), constant(0), false},
   };
 }
 
@@ -294,7 +300,11 @@ void aliasSuite(double sr, uint32_t N, std::vector<uint32_t> pitches, std::vecto
 TEST_CASE("wavetable_live: the alias proof against the 64x reference (48 kHz, 1760 Hz, a 2 kHz modulator)") {
   aliasSuite(kSr, 1u << 14, {601u}, {2001.0}, {4u, 8u},
              {{"bend", 4, -79}, {"mirror", 4, -88}, {"pulse width", 4, -77}, {"fold", 4, -74}, {"sync", 4, -58},
-              {"bend", 8, -87}, {"mirror", 8, -107}, {"pulse width", 8, -84}, {"fold", 8, -89}, {"sync", 8, -65}});
+              {"bend", 8, -87}, {"mirror", 8, -107}, {"pulse width", 8, -84}, {"fold", 8, -89}, {"sync", 8, -65},
+              // bug-wavetable: a full-depth 2 kHz sweep of θ over 0 … 12π spreads past 8·48 kHz: the live path equals
+              // the reference sampled at ×4 / ×8 (−64 / −75 dBFS: that sampling's own folding — QUESTIONS
+              // Q?-bug-wavetable-a); the bound guards the kernel against it
+              {"fold 0-1", 4, -63}, {"fold 0-1", 8, -74}});
 }
 
 TEST_CASE("wavetable_live (TMM.18): a backward phase (negative frequency) is the time-reversed output, corrections included") {

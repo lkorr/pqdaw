@@ -386,9 +386,11 @@ TEST_CASE("meta wavetable: automating fold switches to the live path and back (o
   d.run(200);
   const double stepBaked = maxStep(d.out, d.out.size() - 8192, d.out.size());
   const std::vector<double> before = spectrumDb(d.out, d.out.size() - 8192, 8192);
-  // A lane holding 0.4: one structural compile onto the live path, in a new slot whose table bakes no fold.
+  // A lane holding 0.4: one structural compile onto the live path, in a new slot whose table bakes no fold. (A lane
+  // holds the knob's position: bug-wavetable's fold knob is exponential, so the position that gives 0.4.)
   const app::LinkStats s0 = link->stats();
-  s.lane(0, wt, "fold", {Breakpoint{0, 0.4f, 0.0f, {}}, Breakpoint{64 * kPpq, 0.4f, 0.0f, {}}});
+  const auto lane04 = static_cast<float>(meta::valueToTravel(meta::wavetableType().params[meta::kWtFold], 0.4));
+  s.lane(0, wt, "fold", {Breakpoint{0, lane04, 0.0f, {}}, Breakpoint{64 * kPpq, lane04, 0.0f, {}}});
   const size_t at1 = d.out.size();
   link->flush();
   REQUIRE(link->lastError().empty());
@@ -581,7 +583,7 @@ TEST_CASE("meta wavetable: golden wavetable-morph (saw -> square spectral sweep,
   }
   const DeviceId fs1 = s.track({{2 * q + 3 * (q / 2), q / 2, 0}});
   s.data(fs1, oneCycle(dsp::BasicCycle::Saw));
-  s.param(fs1, "fold", 0.4);
+  s.param(fs1, "fold", 0.4 / 3.0);  // (TMM.1's fold 0.4, θ = 1.6π: bug-wavetable tripled the range)
   s.param(fs1, "sync", 0.3);
   constexpr double kSeconds = 2.0, kRate = 48000.0;
   auto link = makeLink(s.store.current());
@@ -1348,10 +1350,10 @@ private:
 };
 
 // Face-local geometry (wavetable_face.cpp's layout, world units).
-ui::Vec2 toolAt(int i) { return {57.5f + 14.5f * static_cast<float>(i), 24.0f}; }
+ui::Vec2 toolAt(int i) { return {54.0f + 13.5f * static_cast<float>(i), 24.0f}; }
 ui::Vec2 modeAt(int i) { return {21.0f + 15.5f * static_cast<float>(i), 24.0f}; }
 ui::Vec2 shapeAt(int i) {
-  return {188.0f - 13.0f * static_cast<float>(6 - i) - 1.5f * static_cast<float>(5 - i) + 6.5f, 24.0f};
+  return {188.0f - 12.5f * static_cast<float>(6 - i) - 1.5f * static_cast<float>(5 - i) + 6.25f, 24.0f};
 }
 ui::Vec2 warpModeAt(int i) { return {74.5f + 14.5f * static_cast<float>(i), 233.0f}; }
 ui::Vec2 optAt(int i) { return {25.0f + 13.5f * static_cast<float>(i), 85.5f}; }
@@ -1695,13 +1697,15 @@ void pictureMatchesSound(bool sweep) {
   click("leave draw mode (Shape mode)", toolAt(0));
   settingClick("Phase mode", modeAt(0));
   // The live path: fold automated (a lane holding the knob's value): the table bakes no fold, the kernel applies it.
+  // (A lane holds the knob's position: bug-wavetable's fold knob is exponential.)
+  const meta::ParamSpec& foldSpec = meta::wavetableType().params[meta::kWtFold];
   const double fold = metaParamValue(*findDevice(s.doc(), wt).device, "", meta::wavetableType(), meta::kWtFold);
-  s.lane(0, wt, "fold",
-         {Breakpoint{0, static_cast<float>(fold), 0.0f, {}}, Breakpoint{64 * kPpq, static_cast<float>(fold), 0.0f, {}}});
+  const auto foldAt = static_cast<float>(meta::valueToTravel(foldSpec, fold));
+  s.lane(0, wt, "fold", {Breakpoint{0, foldAt, 0.0f, {}}, Breakpoint{64 * kPpq, foldAt, 0.0f, {}}});
   link->flush();
   REQUIRE(link->lastError().empty());
   audio.run(4);
-  liveFold = static_cast<double>(static_cast<float>(fold));
+  liveFold = meta::travelToValue(foldSpec, static_cast<double>(foldAt));
   settled("live fold");
   click("line tool (live path)", toolAt(1));
   drag("line (live path)", {drawAt(0.2f, 0.9f), drawAt(0.5f, -0.7f), drawAt(0.8f, 0.3f)});

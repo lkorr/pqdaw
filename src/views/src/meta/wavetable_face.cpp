@@ -2,8 +2,8 @@
 // the display after Live's Wavetable). Label-free, in the Phase accumulator's language (the same theme tokens: a dark
 // body, quiet tracks and frame, values in the accent, voices as neon-blue glowing dots).
 //
-//   top        the Phase / Shape mode switch by the input jack; the draw tools (pencil, line, smooth curve: TMM.9);
-//              the Basic Shapes chooser (replaces the edited keyframe's cycle)
+//   top        the Phase / Shape mode switch by the input jack; the draw tools (pencil, line, smooth curve: TMM.9;
+//              nodes: bug-wavetable); the Basic Shapes chooser (replaces the edited keyframe's cycle)
 //   harmonics  TMM.9, Serum-like: the edited keyframe's harmonics as two rows of bars — amplitude (linear, 1 = full
 //              height; Alt shows dB, −60 … 0) and phase about a centre line (relative to a sine) —, 32 visible at first;
 //              the wheel scrolls, Ctrl+wheel zooms (8 … all 1024: DC and harmonics 1 … 1023), a thin scrollbar below
@@ -14,7 +14,18 @@
 //              frame where it is heard (the position when edits follow it, else the keyframe's own position), fold /
 //              warp / sync, normalise, remove DC and the band limit included — over the raw drawing as a faint guide,
 //              with the snap grid / normalise / remove-DC options in its corner; drag to draw — see wavetable_edit.h;
-//              click the lit tool or Esc to leave)
+//              click the lit tool or Esc to leave). bug-wavetable: beside them the stroke's options — the pencil's
+//              smoothing (off and three amounts) and symmetry (off, mirror, half-wave: the half a stroke starts in
+//              drives the other) — and the cycle's actions, one undo step per click: Smooth (a periodic blur step),
+//              Invert, Reverse, Shift (a sixteenth of the cycle later; Shift-click: earlier). The NODE tool shows
+//              the cycle as nodes (wavetable_edit.h "Nodes": the keyframe's stored nodes while they still render its
+//              cycle, else nodes fitted to the drawing, dashed until the first node edit applies them):
+//              a click on the line adds a node (and drags it), a node drags (its phase between its neighbours; the
+//              two ends are one node, tying the cycle's start to its end), a segment's middle handle drags up / down
+//              to bend it as the knob-curve editor does (a straight segment becomes a power curve), double-click a
+//              node or Delete removes it, double-click a handle straightens a bent segment (a straight one becomes
+//              an S-curve). Snapped to the grid when it is on. Hovering the display reads the phase and the values
+//              there.
 //              the table's dense frames as offset lines receding up-right (a static layer keyed by the instance's
 //              data and baked values), the frame at the position highlighted in the accent with a fill; with no voice,
 //              a dashed line at the phase slider's read phase; per sounding voice a glowing dot on its own frame at
@@ -80,9 +91,9 @@ constexpr float kRadius = 12.0f;
 // top row: the mode switch by the input jack, the draw tools, the Basic Shapes chooser at the right
 constexpr float kRowY0 = 17.0f, kRowY1 = 31.0f;
 constexpr float kModeX0 = 14.0f, kCell = 14.0f, kCellGap = 1.5f;
-constexpr float kSmallCell = 13.0f;  // tools and shapes
-constexpr float kToolX0 = 51.0f;
-constexpr uint32_t kToolCount = 3;
+constexpr float kToolCell = 12.0f, kShapeCell = 12.5f;  // tools, shapes (bug-wavetable: four tools in the row)
+constexpr float kToolX0 = 48.0f;
+constexpr uint32_t kToolCount = 4;
 constexpr float kShapeX1 = 188.0f;
 constexpr uint32_t kShapeCount = 6;
 // harmonic rows and their scrollbar
@@ -93,7 +104,10 @@ constexpr float kScrollY = 73.7f, kScrollHalfH = 0.75f;
 constexpr uint32_t kMinBars = 8, kDefaultBars = 32;
 // draw mode: the cycle's place in the display, the option cells in its corner
 constexpr float kDrawX0 = 20.0f, kDrawW = 138.0f, kDrawCy = 129.0f, kDrawA = 35.0f;
-constexpr float kOptX0 = 19.0f, kOptW = 12.0f, kOptY0 = 80.5f, kOptY1 = 90.5f;
+constexpr float kOptW = 12.0f, kOptY0 = 80.5f, kOptY1 = 90.5f;
+// The option cells: the table's (grid, normalise, remove DC), the stroke's (smoothing, symmetry), the actions.
+enum Opt : uint32_t { kOptGrid, kOptNorm, kOptDc, kOptSmooth, kOptSym, kOptSmoothNow, kOptInvert, kOptReverse, kOptShift, kOptCount };
+constexpr float kOptX[kOptCount] = {19.0f, 32.5f, 46.0f, 62.0f, 75.5f, 92.0f, 105.5f, 119.0f, 132.5f};
 // display
 constexpr Rect kDisp{16.0f, 78.0f, 162.0f, 172.0f};
 // position slider (right of the display), its markers and gap glyphs
@@ -125,12 +139,18 @@ enum Part : int32_t {
   kHarmAmp = 40,     // the amplitude row
   kHarmPhase = 41,   // the phase row
   kHarmScroll = 42,  // the harmonic view's scrollbar
-  kTool0 = 50,       // + tool − 1 (pencil, line, curve)
+  kTool0 = 50,       // + tool − 1 (pencil, line, curve, nodes)
   kDrawPart = 60,    // the display in draw mode
   kGridPart = 61,
   kNormPart = 62,
   kDcPart = 63,
   kOsPart = 64,     // TMM.8-fix: the oversampling setting
+  kSmoothAmtPart = 65,  // bug-wavetable: the pencil's smoothing, symmetry, the cycle's actions
+  kSymPart = 66,
+  kSmoothNowPart = 67,
+  kInvertPart = 68,
+  kReversePart = 69,
+  kShiftPart = 70,
   kKeyBase = 1000,  // + keyframe
   kGapBase = 3000,  // + gap
 };
@@ -141,17 +161,15 @@ Rect modeCell(uint32_t i) noexcept {
 }
 Rect shapeCell(uint32_t i) noexcept {
   const float x0 =
-      kShapeX1 - static_cast<float>(kShapeCount - i) * kSmallCell - static_cast<float>(kShapeCount - 1 - i) * kCellGap;
-  return {x0, kRowY0, x0 + kSmallCell, kRowY1};
+      kShapeX1 - static_cast<float>(kShapeCount - i) * kShapeCell - static_cast<float>(kShapeCount - 1 - i) * kCellGap;
+  return {x0, kRowY0, x0 + kShapeCell, kRowY1};
 }
 Rect toolCell(uint32_t i) noexcept {
-  const float x0 = kToolX0 + static_cast<float>(i) * (kSmallCell + kCellGap);
-  return {x0, kRowY0, x0 + kSmallCell, kRowY1};
+  const float x0 = kToolX0 + static_cast<float>(i) * (kToolCell + kCellGap);
+  return {x0, kRowY0, x0 + kToolCell, kRowY1};
 }
-Rect optCell(uint32_t i) noexcept {
-  const float x0 = kOptX0 + static_cast<float>(i) * (kOptW + kCellGap);
-  return {x0, kOptY0, x0 + kOptW, kOptY1};
-}
+Rect optCell(uint32_t i) noexcept { return {kOptX[i], kOptY0, kOptX[i] + kOptW, kOptY1}; }
+constexpr int32_t optPart(uint32_t i) noexcept { return i < kOptSmooth ? kGridPart + static_cast<int32_t>(i) : kSmoothAmtPart + static_cast<int32_t>(i - kOptSmooth); }
 Rect warpCell(uint32_t i) noexcept {
   const float total = 3.0f * kWarpCellW + 2.0f * kCellGap;
   const float x0 = kKnobX[1] - total * 0.5f + static_cast<float>(i) * (kWarpCellW + kCellGap);
@@ -178,7 +196,8 @@ struct FrameGeom {
 // ---- glyphs (drawn into a cell: centre c, half-width hw, half-height hh) ----
 enum class Glyph : uint8_t {
   Sine, Triangle, Saw, Square, Pulse, Noise, PhaseMode, ShapeMode, Bend, Mirror, PulseWidth, Fold, Sync,
-  Pencil, Line, Curve, Normalise, RemoveDc  // TMM.9 (the grid glyph: gridGlyph)
+  Pencil, Line, Curve, Normalise, RemoveDc,  // TMM.9 (the grid glyph: gridGlyph)
+  Nodes, SmoothNow, Invert, Reverse, Shift    // bug-wavetable (smoothing and symmetry: smoothGlyph, symmetryGlyph)
 };
 
 class Glyphs {
@@ -257,6 +276,89 @@ public:
         for (int i = 0; i <= 16; ++i) at(i / 16.0f, 0.75f * std::sin(2.0f * kPi * i / 16.0f));
         break;
       }
+      case Glyph::Nodes: {  // straight and bent segments between dotted nodes
+        static constexpr float kN[][2] = {{0.06f, -0.55f}, {0.36f, 0.7f}, {0.64f, -0.25f}, {0.94f, 0.55f}};
+        at(kN[0][0], kN[0][1]), at(kN[1][0], kN[1][1]);
+        for (int i = 1; i <= 8; ++i) {  // the middle segment bent
+          const float u = i / 8.0f;
+          at(kN[1][0] + (kN[2][0] - kN[1][0]) * u, kN[1][1] + (kN[2][1] - kN[1][1]) * u * u);
+        }
+        at(kN[3][0], kN[3][1]);
+        p.polyline(pts_, th, col);
+        for (const auto& q : kN) p.disc({c.x - hw + 2.0f * hw * q[0], c.y - hh * q[1]}, th * 1.2f, col);
+        return;
+      }
+      case Glyph::SmoothNow: {  // jagged on the left, smooth on the right
+        static constexpr float kJ[][2] = {{0.0f, 0.0f}, {0.08f, 0.7f}, {0.16f, -0.5f}, {0.24f, 0.8f}, {0.32f, -0.3f}, {0.4f, 0.5f}};
+        for (const auto& q : kJ) at(q[0], q[1]);
+        for (int i = 1; i <= 12; ++i) {
+          const float x = 0.4f + 0.6f * i / 12.0f;
+          at(x, 0.5f * std::cos(kPi * (x - 0.4f) / 0.6f * 1.5f));
+        }
+        break;
+      }
+      case Glyph::Invert: {  // a wave over its upside-down copy
+        for (int i = 0; i <= 12; ++i) at(i / 12.0f, 0.8f * std::sin(2.0f * kPi * i / 12.0f));
+        p.polyline(pts_, th, col);
+        pts_.clear();
+        for (int i = 0; i <= 12; ++i) at(i / 12.0f, -0.8f * std::sin(2.0f * kPi * i / 12.0f));
+        p.polyline(pts_, th * 0.7f, ui::mulAlpha(col, 0.55f));
+        return;
+      }
+      case Glyph::Reverse: {  // a ramp and a double-headed arrow below it
+        at(0.1f, 0.0f), at(0.9f, 0.9f), at(0.9f, 0.0f);
+        p.polyline(pts_, th, col);
+        const float y = c.y + hh * 0.65f, x0 = c.x - hw * 0.9f, x1 = c.x + hw * 0.9f, a = hh * 0.35f;
+        p.line({x0, y}, {x1, y}, th * 0.9f, col);
+        p.line({x0, y}, {x0 + a, y - a}, th * 0.9f, col);
+        p.line({x0, y}, {x0 + a, y + a}, th * 0.9f, col);
+        p.line({x1, y}, {x1 - a, y - a}, th * 0.9f, col);
+        p.line({x1, y}, {x1 - a, y + a}, th * 0.9f, col);
+        return;
+      }
+      case Glyph::Shift: {  // a wave with an arrow head at its right end
+        for (int i = 0; i <= 12; ++i) at(0.75f * i / 12.0f, 0.7f * std::sin(2.0f * kPi * i / 12.0f));
+        at(1.0f, 0.0f);
+        p.polyline(pts_, th, col);
+        const Vec2 tip = pts_.back();
+        p.line(tip, {tip.x - hw * 0.35f, tip.y - hh * 0.4f}, th, col);
+        p.line(tip, {tip.x - hw * 0.35f, tip.y + hh * 0.4f}, th, col);
+        return;
+      }
+    }
+    p.polyline(pts_, th, col);
+  }
+  // bug-wavetable: the pencil's smoothing — off: a jagged scribble; on: a smooth hump over 1 … 3 level ticks.
+  void smoothGlyph(ui::FacePainter& p, Vec2 c, float hw, float hh, float th, uint32_t level, Rgba col) {
+    pts_.clear();
+    auto at = [&](float x, float y) { pts_.push_back({c.x - hw + 2.0f * hw * x, c.y - hh * y}); };
+    if (level == 0) {
+      static constexpr float kJ[][2] = {{0.0f, -0.3f}, {0.15f, 0.5f}, {0.3f, -0.1f}, {0.45f, 0.8f}, {0.6f, 0.1f}, {0.75f, 0.6f}, {0.9f, -0.2f}, {1.0f, 0.2f}};
+      for (const auto& q : kJ) at(q[0], q[1]);
+      p.polyline(pts_, th, col);
+      return;
+    }
+    for (int i = 0; i <= 12; ++i) at(i / 12.0f, 0.9f * std::sin(kPi * i / 12.0f) - 0.2f);
+    p.polyline(pts_, th, col);
+    for (uint32_t k = 0; k < level; ++k) {
+      const float x = c.x + (static_cast<float>(k) - 0.5f * static_cast<float>(level - 1)) * hw * 0.55f;
+      p.disc({x, c.y + hh * 0.78f}, th * 0.75f, col);
+    }
+  }
+  // bug-wavetable: symmetry — off: one stroke left of a dashed centre; mirror: the stroke and its mirror image;
+  // half-wave: a hump up on the left and the same hump down on the right.
+  void symmetryGlyph(ui::FacePainter& p, Vec2 c, float hw, float hh, float th, wt::Symmetry s, Rgba col) {
+    const Vec2 mid[2] = {{c.x, c.y - hh}, {c.x, c.y + hh}};
+    p.dashed(mid, th * 0.7f, 1.0f, 1.0f, col);
+    pts_.clear();
+    auto at = [&](float x, float y) { pts_.push_back({c.x - hw + 2.0f * hw * x, c.y - hh * y}); };
+    for (int i = 0; i <= 8; ++i) at(0.45f * i / 8.0f, 0.8f * std::sin(kPi * i / 8.0f) * (1.0f - 0.6f * i / 8.0f));
+    p.polyline(pts_, th, col);
+    if (s == wt::Symmetry::Off) return;
+    for (Vec2& q : pts_) {
+      const float dx = q.x - c.x;
+      q.x = s == wt::Symmetry::Mirror ? c.x - dx : q.x + hw * 1.1f;
+      if (s == wt::Symmetry::HalfWave) q.y = 2.0f * c.y - q.y;
     }
     p.polyline(pts_, th, col);
   }
@@ -419,11 +521,17 @@ public:
       if (l.y > kPhY1 + 0.9f && l.y <= kScrollY + 1.8f) return kHarmScroll;
     }
     if (tool_ != wt::Tool::None) {
-      for (uint32_t i = 0; i < 3; ++i)
-        if (inside(optCell(i), l, slack * 0.5f)) return kGridPart + static_cast<int32_t>(i);
+      for (uint32_t i = 0; i < kOptCount; ++i)
+        if (optShown(i) && inside(optCell(i), l, slack * 0.5f)) return optPart(i);
       if (inside(kDisp, l, 2.0f)) return kDrawPart;
     }
     return kFrame;
+  }
+  // bug-wavetable: the smoothing cell is the pencil's, symmetry the strokes' (not the node tool's).
+  bool optShown(uint32_t i) const noexcept {
+    if (i == kOptSmooth) return tool_ == wt::Tool::Pencil;
+    if (i == kOptSym) return tool_ != wt::Tool::Nodes;
+    return true;
   }
 
   bool onPointer(const FacePointer& e) override {
@@ -436,6 +544,7 @@ public:
         if (begun_) target().end();
         drag_ = kNone;
         begun_ = false;
+        nodeDrag_ = NodeGrab::None;
         return true;
       }
       case K::Wheel: return wheel(e);
@@ -449,6 +558,7 @@ public:
     if (drag_ != kNone && begun_) target().cancel();
     drag_ = kNone;
     begun_ = false;
+    nodeDrag_ = NodeGrab::None;
   }
 
   bool onKey(const ui::KeyEvent& e) override {
@@ -456,6 +566,12 @@ public:
     if ((e.mods & ui::mod::kChordMask) != ui::mod::kNone) return false;
     if (e.key == ui::key::kEscape && tool_ != wt::Tool::None && drag_ == kNone) {  // leave draw mode
       tool_ = wt::Tool::None;
+      return true;
+    }
+    if ((e.key == ui::key::kDelete || e.key == ui::key::kBackspace) && !markerFocus_ && tool_ == wt::Tool::Nodes &&
+        drag_ == kNone) {  // bug-wavetable: Delete removes the selected node
+      ensureNodes();
+      if (nodeSel_ > 0 && nodeSel_ < static_cast<int32_t>(nodes_.segments)) removeNode(static_cast<uint32_t>(nodeSel_));
       return true;
     }
     if (!markerFocus_ || (e.key != ui::key::kDelete && e.key != ui::key::kBackspace)) return false;
@@ -484,6 +600,11 @@ public:
     if (part == kPhasePart) return ui::Cursor::ResizeEW;
     if (part == kPositionPart || (part >= kKeyBase && part < kGapBase) || (part >= kFoldPart && part <= kSyncPart))
       return ui::Cursor::ResizeNS;
+    if (part == kDrawPart && tool_ == wt::Tool::Nodes) {
+      const NodeGrab k = nodeDrag_ != NodeGrab::None ? nodeDrag_ : nodeHoverKind_;
+      if (k == NodeGrab::Point) return ui::Cursor::Move;
+      if (k == NodeGrab::Bend) return ui::Cursor::ResizeNS;
+    }
     if (part == kHarmAmp || part == kHarmPhase || part == kDrawPart) return ui::Cursor::Crosshair;
     if (part == kHarmScroll) return ui::Cursor::ResizeEW;
     if (part >= kWarpMode0) return ui::Cursor::Pointer;  // switches, shapes, tools, options, gap glyphs
@@ -815,9 +936,9 @@ private:
     static constexpr Glyph kShapes[kShapeCount] = {Glyph::Sine, Glyph::Triangle, Glyph::Saw, Glyph::Square, Glyph::Pulse, Glyph::Noise};
     glyphs_.draw(p, Glyph::PhaseMode, centreOf(modeCell(0)), 4.0f, 3.5f, 1.0f, w);
     glyphs_.draw(p, Glyph::ShapeMode, centreOf(modeCell(1)), 4.0f, 3.5f, 1.0f, w);
-    for (uint32_t i = 0; i < kShapeCount; ++i) glyphs_.draw(p, kShapes[i], centreOf(shapeCell(i)), 3.9f, 3.5f, 1.0f, w);
-    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
-    for (uint32_t i = 0; i < kToolCount; ++i) glyphs_.draw(p, kTools[i], centreOf(toolCell(i)), 4.0f, 3.6f, 1.0f, w);
+    for (uint32_t i = 0; i < kShapeCount; ++i) glyphs_.draw(p, kShapes[i], centreOf(shapeCell(i)), 3.7f, 3.5f, 1.0f, w);
+    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve, Glyph::Nodes};
+    for (uint32_t i = 0; i < kToolCount; ++i) glyphs_.draw(p, kTools[i], centreOf(toolCell(i)), 3.6f, 3.6f, 1.0f, w);
     static constexpr Glyph kWarps[3] = {Glyph::Bend, Glyph::Mirror, Glyph::PulseWidth};
     for (uint32_t i = 0; i < 3; ++i) glyphs_.draw(p, kWarps[i], centreOf(warpCell(i)), 3.8f, 3.2f, 1.0f, w);
     glyphs_.draw(p, Glyph::Fold, {kKnobX[0], kGlyphY}, 5.0f, 3.2f, 1.0f, w);
@@ -858,10 +979,10 @@ private:
     static constexpr Glyph kShapes[kShapeCount] = {Glyph::Sine, Glyph::Triangle, Glyph::Saw, Glyph::Square, Glyph::Pulse, Glyph::Noise};
     const int32_t sh = virtual_ ? -1 : model_.shapeOf(static_cast<uint32_t>(selected_));
     for (uint32_t i = 0; i < kShapeCount; ++i)
-      cell(shapeCell(i), sh == static_cast<int32_t>(i), kShape0 + static_cast<int32_t>(i), kShapes[i], 3.9f, 3.5f);
-    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve};
+      cell(shapeCell(i), sh == static_cast<int32_t>(i), kShape0 + static_cast<int32_t>(i), kShapes[i], 3.7f, 3.5f);
+    static constexpr Glyph kTools[kToolCount] = {Glyph::Pencil, Glyph::Line, Glyph::Curve, Glyph::Nodes};
     for (uint32_t i = 0; i < kToolCount; ++i)
-      cell(toolCell(i), static_cast<uint32_t>(tool_) == i + 1, kTool0 + static_cast<int32_t>(i), kTools[i], 4.0f, 3.6f);
+      cell(toolCell(i), static_cast<uint32_t>(tool_) == i + 1, kTool0 + static_cast<int32_t>(i), kTools[i], 3.6f, 3.6f);
     {  // TMM.8-fix: the oversampling setting as text ("os" = auto, else the factor)
       const auto os = static_cast<int32_t>(std::round(target().setting(meta::kWtOversampling)));
       const bool hov = hovered_ == kOsPart;
@@ -1037,30 +1158,79 @@ private:
       p.polyline(curve_, 1.5f, th.face.value);
       p.dashed(curve_, 1.3f, 3.0f, 2.0f, 0);
     }
-    // The options: snap grid (off / 8 / 16 / 32), normalise, remove DC (table flags), on a body-coloured backing.
+    if (tool_ == wt::Tool::Nodes && (drag_ == kNone || drag_ == kDrawPart)) paintNodes(p, th, n);
+    // The options, on a body-coloured backing: snap grid (off / 8 / 16 / 32), normalise, remove DC (table flags); the
+    // pencil's smoothing and the strokes' symmetry (view state); the cycle's actions (one undo step per click).
     const meta::WavetableData& d = model_.data();
-    const bool on[3] = {grid_ > 0, d.normalise, d.removeDc};
-    for (uint32_t i = 0; i < 3; ++i) {
+    for (uint32_t i = 0; i < kOptCount; ++i) {
+      if (!optShown(i)) continue;
       const Rect r = optCell(i);
-      const int32_t part = kGridPart + static_cast<int32_t>(i);
+      const int32_t part = optPart(i);
+      const bool on = i == kOptGrid ? grid_ > 0
+                    : i == kOptNorm ? d.normalise
+                    : i == kOptDc   ? d.removeDc
+                    : i == kOptSmooth ? smooth_ > 0
+                    : i == kOptSym  ? sym_ != wt::Symmetry::Off
+                                    : false;
       const bool hov = hovered_ == part;
       p.roundedRect({r.x0 - 0.5f, r.y0 - 0.5f, r.x1 + 0.5f, r.y1 + 0.5f}, 3.0f, th.face.body);
-      p.roundedRect(r, 2.5f, on[i] ? ui::mulAlpha(th.face.value, 0.22f) : (hov ? th.face.hover : th.face.track));
-      const Rgba gc = on[i] ? th.face.value : (hov ? th.face.handle : th.face.frame);
+      p.roundedRect(r, 2.5f, on ? ui::mulAlpha(th.face.value, 0.22f) : (hov ? th.face.hover : th.face.track));
+      const Rgba gc = on ? th.face.value : (hov ? th.face.handle : th.face.frame);
       const Vec2 c = centreOf(r);
-      if (i == 0) Glyphs::gridGlyph(p, c, 3.4f, 3.0f, 0.8f, grid_, gc);
-      else glyphs_.draw(p, i == 1 ? Glyph::Normalise : Glyph::RemoveDc, c, 3.6f, 3.0f, 0.9f, gc);
+      switch (i) {
+        case kOptGrid: Glyphs::gridGlyph(p, c, 3.4f, 3.0f, 0.8f, grid_, gc); break;
+        case kOptNorm: glyphs_.draw(p, Glyph::Normalise, c, 3.6f, 3.0f, 0.9f, gc); break;
+        case kOptDc: glyphs_.draw(p, Glyph::RemoveDc, c, 3.6f, 3.0f, 0.9f, gc); break;
+        case kOptSmooth: glyphs_.smoothGlyph(p, c, 3.6f, 3.0f, 0.9f, smooth_, gc); break;
+        case kOptSym: glyphs_.symmetryGlyph(p, c, 3.6f, 3.0f, 0.9f, sym_, gc); break;
+        case kOptSmoothNow: glyphs_.draw(p, Glyph::SmoothNow, c, 3.6f, 3.0f, 0.9f, gc); break;
+        case kOptInvert: glyphs_.draw(p, Glyph::Invert, c, 3.6f, 3.0f, 0.9f, gc); break;
+        case kOptReverse: glyphs_.draw(p, Glyph::Reverse, c, 3.6f, 3.0f, 0.9f, gc); break;
+        default: glyphs_.draw(p, Glyph::Shift, c, 3.6f, 3.0f, 0.9f, gc); break;
+      }
     }
-    // Where the pointer draws (snapped): a ring and faint cross hairs.
-    const bool show = hovered_ == kDrawPart && drag_ == kNone;
+    // Where the pointer draws (snapped): a ring and faint cross hairs (the node tool: only where a click adds a node).
+    const bool show = hovered_ == kDrawPart && drag_ == kNone && (tool_ != wt::Tool::Nodes || nodeHoverKind_ == NodeGrab::None);
     float x = 0.0f, v = 0.0f;
     drawCoords(hoverLocal_, x, v);
-    wt::Stroke::snap(tool_, grid_, x, v);
+    wt::Stroke::snap(tool_ == wt::Tool::Nodes ? wt::Tool::Line : tool_, grid_, x, v);
     const Vec2 at = drawPoint(x, v);
     const Rgba hair = show ? ui::mulAlpha(th.face.handle, 0.3f) : 0;
     p.line({at.x, kDrawCy - kDrawA - 3.0f}, {at.x, kDrawCy + kDrawA + 3.0f}, 0.6f, hair);
     p.line({kDrawX0, at.y}, {kDrawX0 + kDrawW, at.y}, 0.6f, hair);
     p.ring(at, 2.2f, 0.9f, show ? th.face.handle : 0);
+  }
+  // bug-wavetable: the node tool's overlay — the node cycle (dashed while it is only fitted to the drawing), the bend
+  // handles at the segments' middles, the nodes (the selected one ringed). `n`: the line's points.
+  void paintNodes(ui::FacePainter& p, const ui::Theme& th, uint32_t n) {
+    ensureNodes();
+    curve_.clear();
+    for (uint32_t i = 0; i <= n; ++i) {
+      const float x = static_cast<float>(i) / static_cast<float>(n);
+      curve_.push_back(drawPoint(x, nodeCycle_[(static_cast<size_t>(i) * wt::kCycleLen / n) % wt::kCycleLen]));
+    }
+    const Rgba line = ui::mulAlpha(th.face.handle, 0.85f);
+    if (nodesStored_) {
+      p.polyline(curve_, 1.0f, line);
+      p.dashed(curve_, 0.9f, 2.5f, 1.8f, 0);
+    } else {
+      p.polyline(curve_, 1.0f, 0);
+      p.dashed(curve_, 0.9f, 2.5f, 1.8f, line);
+    }
+    const dsp::Curve& c = nodes_;
+    for (uint32_t i = 0; i < c.segments; ++i) {
+      const bool hot = (nodeDrag_ == NodeGrab::Bend && nodeIndex_ == i) || (nodeHoverKind_ == NodeGrab::Bend && nodeHoverIndex_ == i);
+      p.ring(handleAt(c, i), hot ? 2.6f : 2.0f, 0.9f, hot ? th.face.handle : ui::mulAlpha(th.face.handle, 0.7f));
+    }
+    for (uint32_t i = 0; i <= c.segments; ++i) {
+      const Vec2 q = drawPoint(static_cast<float>(c.points[i].t), static_cast<float>(2.0 * c.points[i].y - 1.0));
+      const uint32_t id = i == c.segments ? 0u : i;  // the ends are one node
+      const bool hot = (nodeDrag_ == NodeGrab::Point && nodeIndex_ == id) || (nodeHoverKind_ == NodeGrab::Point && nodeHoverIndex_ == id);
+      const bool sel = nodeSel_ == static_cast<int32_t>(id);
+      p.disc(q, hot ? 3.4f : 2.8f, ui::mulAlpha(th.face.body, 0.9f));
+      p.disc(q, hot ? 2.6f : 2.0f, hot || sel ? th.face.handle : th.face.value);
+      p.ring(q, 3.8f, 0.8f, sel ? th.face.handle : 0);
+    }
   }
   void paintSliders(ui::FacePainter& p, const FaceEnv& env) {
     const ui::Theme& th = *env.theme;
@@ -1252,6 +1422,19 @@ private:
   bool harmonicDown(const FacePointer& e, int32_t part);
   void harmonicMove(Vec2 l);
   bool drawDown(const FacePointer& e);
+  void publishStroke();  // the stroke's cycle (symmetry applied) -> the edited keyframe
+  // bug-wavetable: the node tool
+  enum class NodeGrab : uint8_t { None, Point, Bend };
+  void ensureNodes() const;
+  static Vec2 handleAt(const dsp::Curve& c, uint32_t i) noexcept;
+  void nodeGrab(Vec2 l, float ppu, NodeGrab& kind, uint32_t& index) const;
+  static double bendSign(const dsp::Curve& c, uint32_t i) noexcept;
+  void publishNodes();
+  template <class F>
+  void nodeOnce(const char* label, F&& edit);
+  void removeNode(uint32_t i);
+  bool nodeDown(const FacePointer& e);
+  void nodeMove(const FacePointer& e);
   void commitData(const char* label, const meta::WavetableData& d) {
     if (!target().editable()) return;
     target().begin(label);
@@ -1274,7 +1457,9 @@ private:
   }
   // Starts an edit of the edited keyframe's cycle (one undo step until Up): dragData_ holds the data, editK_ the
   // keyframe (made from the blended frame first when the position lies between keyframes), editBase_ its cycle.
-  bool beginEdit(const char* label) {
+  // bug-wavetable: every edit but the node tool's (`keepNodes`) drops the keyframe's nodes (they no longer describe
+  // its cycle).
+  bool beginEdit(const char* label, bool keepNodes = false) {
     refresh();
     MetaTarget& tg = target();
     if (!model_.ok() || !tg.editable()) return false;
@@ -1293,6 +1478,7 @@ private:
     editBase_ = dragData_.keyframes[editK_].cycle;
     editBase_.resize(wt::kCycleLen, 0.0f);
     dragData_.keyframes[editK_].cycle = editBase_;
+    if (!keepNodes) dragData_.keyframes[editK_].nodes.clear();
     tg.begin(label);
     begun_ = true;
     return true;
@@ -1345,6 +1531,21 @@ private:
   float anchorVal_ = 0.0f, lastVal_ = 0.0f;
   wt::HarmonicWriter writer_;
   wt::Stroke stroke_;
+  float strokeFrom_ = 0.0f;                     // bug-wavetable: where the stroke began (symmetry's driving half)
+  uint32_t smooth_ = 0;                         // the pencil's smoothing level (wt::kSmoothWidths)
+  wt::Symmetry sym_ = wt::Symmetry::Off;
+  std::vector<double> smoothScratch_;
+  // the node tool: the nodes shown (stored or fitted: nodesStored_), the cycle they render, the key they were made for
+  mutable dsp::Curve nodes_ = wt::flatNodes();
+  mutable std::vector<float> nodeCycle_ = std::vector<float>(wt::kCycleLen, 0.0f);
+  mutable uint64_t nodesKey_ = 0;
+  mutable bool nodesStored_ = false;
+  dsp::Curve nodeEdit_ = wt::flatNodes();       // a node edit's curve
+  NodeGrab nodeDrag_ = NodeGrab::None, nodeHoverKind_ = NodeGrab::None;
+  uint32_t nodeIndex_ = 0, nodeHoverIndex_ = 0;
+  int32_t nodeSel_ = -1;                        // the selected node (Delete removes it), -1: none
+  float startDevY_ = 0.0f;
+  double startBend_ = 0.0;
   float scrollGrab_ = 0.0f;  // the scrollbar drag: where on the thumb it was taken (in harmonics)
 };
 
@@ -1395,7 +1596,7 @@ bool WavetableFace::down(const FacePointer& e) {
   if (right && part != kHarmAmp && part != kHarmPhase) return false;  // the host's menu
   markerFocus_ = part == kPositionPart || (part >= kKeyBase && part < kGapBase);
   keyFocus_ = markerFocus_ || part == kDrawPart || (part >= kTool0 && part < kTool0 + static_cast<int32_t>(kToolCount)) ||
-              (part >= kGridPart && part <= kDcPart);
+              (part >= kGridPart && part <= kShiftPart);
   if (part < 0) return false;
   MetaTarget& tg = target();
   const meta::WavetableData& d = model_.data();
@@ -1430,6 +1631,7 @@ bool WavetableFace::down(const FacePointer& e) {
   if (part >= kKeyBase && part < kGapBase) {
     selected_ = part - kKeyBase;
     atPosition_ = false;
+    nodeSel_ = -1;  // (another keyframe's nodes)
     if (!model_.ok()) return true;
     drag_ = part;
     dragData_ = d;
@@ -1487,10 +1689,35 @@ bool WavetableFace::down(const FacePointer& e) {
     // A tool: draw mode with it (the lit one again: back to the stacked frames). View state: no undo step.
     const auto t = static_cast<wt::Tool>(part - kTool0 + 1);
     tool_ = tool_ == t ? wt::Tool::None : t;
+    nodeSel_ = -1;
+    nodeHoverKind_ = NodeGrab::None;
     return true;
   }
   if (part == kGridPart) {
     grid_ = grid_ == 0 ? 8u : (grid_ >= 32 ? 0u : grid_ * 2);
+    return true;
+  }
+  if (part == kSmoothAmtPart) {  // bug-wavetable: the pencil's smoothing, off → 1 → 2 → 3 → off (view state)
+    smooth_ = (smooth_ + 1) % wt::kSmoothLevels;
+    return true;
+  }
+  if (part == kSymPart) {  // off → mirror → half-wave → off (view state)
+    sym_ = static_cast<wt::Symmetry>((static_cast<uint32_t>(sym_) + 1) % wt::kSymmetryCount);
+    return true;
+  }
+  if (part >= kSmoothNowPart && part <= kShiftPart) {  // the cycle's actions: one undo step per click
+    static constexpr const char* kLabels[] = {"Smooth Cycle", "Invert Cycle", "Reverse Cycle", "Shift Cycle"};
+    if (!beginEdit(kLabels[part - kSmoothNowPart])) return true;
+    std::vector<float>& c = dragData_.keyframes[editK_].cycle;
+    switch (part) {
+      case kSmoothNowPart: wt::smoothCycle(c, wt::kSmoothStep, smoothScratch_); break;
+      case kInvertPart: wt::invertCycle(c); break;
+      case kReversePart: wt::reverseCycle(c); break;
+      default: wt::rotateCycle(c, static_cast<int32_t>(wt::kCycleLen / 16) * ((e.mods & ui::mod::kShift) ? -1 : 1)); break;
+    }
+    publishEdit();
+    tg.end();
+    begun_ = false;
     return true;
   }
   if (part == kNormPart || part == kDcPart) {
@@ -1573,16 +1800,219 @@ void WavetableFace::harmonicMove(Vec2 l) {
 }
 
 bool WavetableFace::drawDown(const FacePointer& e) {
-  static constexpr const char* kLabels[] = {"Draw", "Draw", "Draw Line", "Draw Curve"};
+  if (tool_ == wt::Tool::Nodes) return nodeDown(e);
+  static constexpr const char* kLabels[] = {"Draw", "Draw", "Draw Line", "Draw Curve", "Draw"};
   if (!beginEdit(kLabels[static_cast<size_t>(tool_)])) return true;
   float x = 0.0f, v = 0.0f;
   drawCoords(e.local, x, v);
-  stroke_.begin(editBase_, tool_, grid_, x, v);
-  const auto c = stroke_.cycle();
-  dragData_.keyframes[editK_].cycle.assign(c.begin(), c.end());
-  publishEdit();
+  strokeFrom_ = std::clamp(x, 0.0f, 1.0f);
+  stroke_.begin(editBase_, tool_, grid_, x, v, wt::kSmoothWidths[smooth_]);
+  publishStroke();
   drag_ = kDrawPart;
   return true;
+}
+
+void WavetableFace::publishStroke() {
+  const auto c = stroke_.cycle();
+  std::vector<float>& out = dragData_.keyframes[editK_].cycle;
+  out.assign(c.begin(), c.end());
+  wt::applySymmetry(out, sym_, strokeFrom_);
+  publishEdit();
+}
+
+// ---- the node tool (bug-wavetable) ----
+
+void WavetableFace::ensureNodes() const {
+  refresh();
+  if (nodesKey_ == targetKey_) return;
+  nodesKey_ = targetKey_;
+  nodeCycle_.resize(wt::kCycleLen);
+  nodesStored_ = false;
+  const auto& keys = model_.data().keyframes;
+  if (!virtual_ && selected_ >= 0 && static_cast<size_t>(selected_) < keys.size()) {
+    // The stored nodes, while they still render the keyframe's cycle (any other edit drops them; this also refuses
+    // nodes another writer left behind).
+    if (const std::optional<dsp::Curve> c = meta::wavetableNodeCurve(keys[static_cast<size_t>(selected_)].nodes)) {
+      wt::renderNodes(*c, nodeCycle_);
+      bool same = targetCycle_.size() == nodeCycle_.size();
+      for (size_t i = 0; same && i < nodeCycle_.size(); ++i) same = nodeCycle_[i] == targetCycle_[i];
+      if (same) {
+        nodes_ = *c;
+        nodesStored_ = true;
+        return;
+      }
+    }
+  }
+  // Fitted to the drawing, rounded as the data stores it (the curve shown is the one the first edit applies).
+  nodes_ = wt::fitNodes(targetCycle_);
+  if (const std::optional<dsp::Curve> r = meta::wavetableNodeCurve(meta::wavetableNodeData(nodes_))) nodes_ = *r;
+  wt::renderNodes(nodes_, nodeCycle_);
+}
+
+Vec2 WavetableFace::handleAt(const dsp::Curve& c, uint32_t i) noexcept {
+  const double tm = 0.5 * (c.points[i].t + c.points[i + 1].t);
+  return drawPoint(static_cast<float>(tm), static_cast<float>(wt::nodeValue(c, tm)));
+}
+
+// The node or handle under local point l (about 7 device px of reach; nodes first). The two ends are one node (0).
+void WavetableFace::nodeGrab(Vec2 l, float ppu, NodeGrab& kind, uint32_t& index) const {
+  const dsp::Curve& c = nodes_;
+  const float lim = std::clamp(7.0f / std::max(ppu, 1e-3f), 2.0f, 8.0f);
+  float best = lim;
+  kind = NodeGrab::None;
+  index = 0;
+  for (uint32_t i = 0; i <= c.segments; ++i) {
+    const Vec2 q = drawPoint(static_cast<float>(c.points[i].t), static_cast<float>(2.0 * c.points[i].y - 1.0));
+    const float d = std::hypot(q.x - l.x, q.y - l.y);
+    if (d <= best) best = d, kind = NodeGrab::Point, index = i == c.segments ? 0u : i;
+  }
+  if (kind == NodeGrab::Point) return;
+  for (uint32_t i = 0; i < c.segments; ++i) {
+    const Vec2 h = handleAt(c, i);
+    const float d = std::hypot(h.x - l.x, h.y - l.y);
+    if (d <= best) best = d, kind = NodeGrab::Bend, index = i;
+  }
+}
+
+// +1 when a larger bend raises segment i's middle, -1 when it lowers it (the knob-curve editor's rule).
+double WavetableFace::bendSign(const dsp::Curve& c, uint32_t i) noexcept {
+  dsp::Curve a = c, b = c;
+  a.shapes[i].bend -= 0.05;
+  b.shapes[i].bend += 0.05;
+  const double tm = 0.5 * (c.points[i].t + c.points[i + 1].t);
+  return wt::nodeValue(b, tm) >= wt::nodeValue(a, tm) ? 1.0 : -1.0;
+}
+
+// nodeEdit_ -> the edited keyframe: its nodes (rounded as stored) and the cycle they render.
+void WavetableFace::publishNodes() {
+  meta::WavetableKeyframe& k = dragData_.keyframes[editK_];
+  k.nodes = meta::wavetableNodeData(nodeEdit_);
+  const std::optional<dsp::Curve> c = meta::wavetableNodeCurve(k.nodes);
+  if (!c) {  // (every edit keeps the curve valid; never store nodes that do not read back)
+    k.nodes.clear();
+    return;
+  }
+  k.cycle.resize(wt::kCycleLen);
+  wt::renderNodes(*c, k.cycle);
+  publishEdit();
+}
+
+// A one-step node edit (remove, shape): `edit` changes nodeEdit_ (false: nothing to do).
+template <class F>
+void WavetableFace::nodeOnce(const char* label, F&& edit) {
+  ensureNodes();
+  nodeEdit_ = nodes_;
+  if (!edit(nodeEdit_) || !wt::validNodes(nodeEdit_)) return;
+  if (!beginEdit(label, true)) return;
+  publishNodes();
+  target().end();
+  begun_ = false;
+}
+
+void WavetableFace::removeNode(uint32_t i) {
+  nodeOnce("Remove Node", [&](dsp::Curve& n) {
+    if (i == 0 || i >= n.segments) return false;  // the ends stay (they tie the cycle's start to its end)
+    const dsp::Curve c = n;
+    for (uint32_t k = i; k < c.segments; ++k) n.points[k] = c.points[k + 1];
+    for (uint32_t k = i; k + 1 < c.segments; ++k) n.shapes[k] = c.shapes[k + 1];
+    n.points[c.segments] = {};
+    n.shapes[c.segments - 1] = {};
+    n.segments = static_cast<uint8_t>(c.segments - 1);
+    return true;
+  });
+  nodeSel_ = -1;
+  nodeHoverKind_ = NodeGrab::None;
+}
+
+bool WavetableFace::nodeDown(const FacePointer& e) {
+  ensureNodes();
+  NodeGrab kind = NodeGrab::None;
+  uint32_t i = 0;
+  nodeGrab(e.local, e.pxPerUnit, kind, i);
+  if (e.clicks >= 2) {
+    // (On empty space the double-click's first click has already added a node there: this one removes it again.)
+    if (kind == NodeGrab::Point) {
+      if (i == 0) target().notice("The cycle's ends are one node: it stays");
+      else removeNode(i);
+    } else if (kind == NodeGrab::Bend) {
+      nodeOnce("Segment Shape", [&](dsp::Curve& n) {
+        dsp::CurveSegment& sg = n.shapes[i];
+        const bool straight = sg.shape == dsp::CurveShape::Linear || sg.bend == 0.0;
+        sg = straight ? dsp::CurveSegment{dsp::CurveShape::SCurve, 3.0} : dsp::CurveSegment{dsp::CurveShape::Linear, 0.0};
+        return true;
+      });
+    }
+    return true;
+  }
+  nodeEdit_ = nodes_;
+  startDevY_ = e.device.y;
+  if (kind == NodeGrab::None) {
+    // A click on the line adds a node at the pointer, splitting the segment it lands in (both halves keep its shape),
+    // and drags it.
+    float x = 0.0f, v = 0.0f;
+    drawCoords(e.local, x, v);
+    wt::Stroke::snap(wt::Tool::Line, grid_, x, v);
+    dsp::Curve& n = nodeEdit_;
+    if (n.segments >= dsp::kMaxCurveSegments) {
+      target().notice("A node cycle has at most 16 segments");
+      return true;
+    }
+    uint32_t seg = 0;
+    while (seg + 1 < n.segments && x > n.points[seg + 1].t) ++seg;
+    const double t = x;
+    if (t - n.points[seg].t < wt::kNodeGap || n.points[seg + 1].t - t < wt::kNodeGap) return true;  // on a node's phase
+    if (!beginEdit("Add Node", true)) return true;
+    for (uint32_t k = n.segments; k > seg; --k) n.points[k + 1] = n.points[k];
+    for (uint32_t k = n.segments; k > seg; --k) n.shapes[k] = n.shapes[k - 1];
+    n.points[seg + 1] = {t, std::clamp((static_cast<double>(v) + 1.0) * 0.5, 0.0, 1.0)};
+    n.segments = static_cast<uint8_t>(n.segments + 1);
+    publishNodes();
+    nodeDrag_ = NodeGrab::Point;
+    nodeIndex_ = seg + 1;
+    nodeSel_ = static_cast<int32_t>(seg + 1);
+    drag_ = kDrawPart;
+    return true;
+  }
+  // A node or a handle: its drag begins (the undo step) with the first move.
+  nodeDrag_ = kind;
+  nodeIndex_ = i;
+  if (kind == NodeGrab::Point) nodeSel_ = static_cast<int32_t>(i);
+  startBend_ = kind == NodeGrab::Bend && nodeEdit_.shapes[i].shape != dsp::CurveShape::Linear ? nodeEdit_.shapes[i].bend : 0.0;
+  drag_ = kDrawPart;
+  begun_ = false;
+  return true;
+}
+
+void WavetableFace::nodeMove(const FacePointer& e) {
+  if (nodeDrag_ == NodeGrab::None) return;
+  if (!begun_ && !beginEdit(nodeDrag_ == NodeGrab::Point ? "Move Node" : "Bend Segment", true)) {
+    nodeDrag_ = NodeGrab::None;
+    drag_ = kNone;
+    return;
+  }
+  dsp::Curve& n = nodeEdit_;
+  const uint32_t i = nodeIndex_;
+  if (nodeDrag_ == NodeGrab::Point) {
+    float x = 0.0f, v = 0.0f;
+    drawCoords(e.local, x, v);
+    wt::Stroke::snap(wt::Tool::Line, grid_, x, v);
+    const double y = std::clamp((static_cast<double>(v) + 1.0) * 0.5, 0.0, 1.0);
+    if (i == 0) {  // the ends: one node (its value; its phase stays at the cycle's start)
+      n.points[0].y = n.points[n.segments].y = y;
+    } else {
+      n.points[i].t = std::clamp(static_cast<double>(x), n.points[i - 1].t + wt::kNodeGap, n.points[i + 1].t - wt::kNodeGap);
+      n.points[i].y = y;
+    }
+  } else {
+    // The knob-curve editor's bend: a straight segment becomes a power curve; the middle follows the pointer.
+    dsp::CurveSegment& sg = n.shapes[i];
+    if (sg.shape == dsp::CurveShape::Linear) sg.shape = dsp::CurveShape::Power;
+    const double up = -(static_cast<double>(e.device.y) - startDevY_) / (30.0 * std::max(e.uiScale, 1e-3f));
+    const double gain = sg.shape == dsp::CurveShape::Power ? 0.5 : 1.5;
+    sg.bend = startBend_;
+    sg.bend = std::clamp(startBend_ + bendSign(n, i) * up * gain, -24.0, 24.0);
+  }
+  if (wt::validNodes(n)) publishNodes();
 }
 
 bool WavetableFace::hover(const FacePointer& e) {
@@ -1593,6 +2023,16 @@ bool WavetableFace::hover(const FacePointer& e) {
   bool changed = alt != alt_ || (overRows && bar != hoverBar_);
   if (tool_ != wt::Tool::None && (hovered_ == kDrawPart || e.local.x != hoverLocal_.x || e.local.y != hoverLocal_.y))
     changed = changed || hovered_ == kDrawPart;
+  // bug-wavetable: the node or handle under the pointer (highlighted; the cursor and the info follow it).
+  NodeGrab nk = NodeGrab::None;
+  uint32_t ni = 0;
+  if (tool_ == wt::Tool::Nodes && hovered_ == kDrawPart) {
+    ensureNodes();
+    nodeGrab(e.local, e.pxPerUnit, nk, ni);
+  }
+  changed = changed || nk != nodeHoverKind_ || ni != nodeHoverIndex_;
+  nodeHoverKind_ = nk;
+  nodeHoverIndex_ = ni;
   alt_ = alt;
   if (overRows) hoverBar_ = bar;
   hoverLocal_ = e.local;
@@ -1633,14 +2073,16 @@ bool WavetableFace::move(const FacePointer& e) {
     return true;
   }
   if (drag_ == kDrawPart) {
+    hoverLocal_ = e.local;
+    if (tool_ == wt::Tool::Nodes) {
+      nodeMove(e);
+      return true;
+    }
     if (!begun_) return true;
     float x = 0.0f, v = 0.0f;
     drawCoords(e.local, x, v);
     stroke_.to(x, v);
-    const auto c = stroke_.cycle();
-    dragData_.keyframes[editK_].cycle.assign(c.begin(), c.end());
-    publishEdit();
-    hoverLocal_ = e.local;
+    publishStroke();
     return true;
   }
   if (drag_ == kHarmScroll) {
@@ -1705,7 +2147,10 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
                   value(meta::kWtPosition));
   } else if (part == kFoldPart) {
     title = "Fold";
-    std::snprintf(buf, sizeof buf, "%.3f: a sine wavefolder, baked into the table (live when modulated). Drag up / down; double-click resets.", value(meta::kWtFold));
+    std::snprintf(buf, sizeof buf,
+                  "%.3f: a sine wavefolder, theta %.1f pi (up to 24 folds at 1; half the knob is 1/3, 8 folds). Baked into "
+                  "the table (live when modulated). Drag up / down; double-click resets.",
+                  value(meta::kWtFold), dsp::foldShape(value(meta::kWtFold)).theta / kPi);
   } else if (part == kWarpPart) {
     title = "Warp";
     std::snprintf(buf, sizeof buf, "%+.3f, baked into the table, live when modulated (the switch below picks bend / mirror / pulse width). Double-click resets.",
@@ -1749,13 +2194,72 @@ void WavetableFace::describe(int32_t part, std::string& title, std::string& body
                   virtual_ ? "Blended frame:" : (std::string("Keyframe ") + std::to_string(selected_ + 1) + ":").c_str(), amp,
                   ph, hFirst_, hFirst_ + hCount_ - 1);
   } else if (part >= kTool0 && part < kTool0 + static_cast<int32_t>(kToolCount)) {
-    static constexpr const char* kNames[] = {"Pencil", "Line", "Smooth curve"};
+    static constexpr const char* kNames[] = {"Pencil", "Line", "Smooth curve", "Nodes"};
     title = std::string("Draw: ") + kNames[part - kTool0];
-    std::snprintf(buf, sizeof buf, "Draws the edited keyframe's cycle in the display. Click again (or Esc) for the frames.");
+    if (part - kTool0 == 3)
+      std::snprintf(buf, sizeof buf, "Edits the edited keyframe's cycle as nodes with bendable segments (fitted to the "
+                                     "drawing). Click again (or Esc) for the frames.");
+    else
+      std::snprintf(buf, sizeof buf, "Draws the edited keyframe's cycle in the display. Click again (or Esc) for the frames.");
   } else if (part == kDrawPart) {
-    title = virtual_ ? "Draw (a new keyframe)" : "Draw keyframe " + std::to_string(selected_ + 1);
-    std::snprintf(buf, sizeof buf, "Drag to draw; each stroke is one undo step.%s",
-                  virtual_ ? " The first stroke makes a keyframe here from the blended frame." : "");
+    // bug-wavetable: the readout at the pointer — the phase, the drawing's value and the sounding value there.
+    float x = 0.0f, v = 0.0f;
+    drawCoords(hoverLocal_, x, v);
+    x = std::clamp(x, 0.0f, 1.0f);
+    const float drawn = targetCycle_.empty() ? 0.0f : targetCycle_[std::min<size_t>(static_cast<size_t>(x * wt::kCycleLen), wt::kCycleLen - 1)];
+    const float heard = sound_[std::min<size_t>(static_cast<size_t>(std::lround(x * wt::kSoundPoints)), wt::kSoundPoints)];
+    char at[96];
+    std::snprintf(at, sizeof at, "Phase %.3f: drawn %+.3f, heard %+.3f. ", x, drawn, heard);
+    const std::string where = virtual_ ? std::string(" The first edit makes a keyframe here from the blended frame.") : std::string();
+    if (tool_ == wt::Tool::Nodes) {
+      ensureNodes();
+      const dsp::Curve& c = nodes_;
+      title = virtual_ ? "Nodes (a new keyframe)" : "Nodes of keyframe " + std::to_string(selected_ + 1);
+      if (nodeHoverKind_ == NodeGrab::Point && nodeHoverIndex_ <= c.segments) {
+        const dsp::CurvePoint& q = c.points[nodeHoverIndex_];
+        std::snprintf(buf, sizeof buf, "%sNode %u at phase %.3f, %+.3f. Drag moves it%s; double-click or Delete removes it.",
+                      at, nodeHoverIndex_ + 1, q.t, 2.0 * q.y - 1.0,
+                      nodeHoverIndex_ == 0 ? " (the cycle's ends: one node, its value only)" : "");
+      } else if (nodeHoverKind_ == NodeGrab::Bend && nodeHoverIndex_ < c.segments) {
+        static constexpr const char* kShapes[] = {"straight", "exponential", "logarithmic", "power", "S-curve", "joined"};
+        const dsp::CurveSegment& sg = c.shapes[nodeHoverIndex_];
+        std::snprintf(buf, sizeof buf, "%sSegment %u: %s, bend %+.2f. Drag up / down bends it; double-click %s.", at,
+                      nodeHoverIndex_ + 1, kShapes[std::min<size_t>(static_cast<size_t>(sg.shape), 5)], sg.bend,
+                      sg.shape == dsp::CurveShape::Linear || sg.bend == 0.0 ? "makes it an S-curve" : "straightens it");
+      } else {
+        std::snprintf(buf, sizeof buf, "%s%u node%s%s. A click on the display adds a node (drag to place it); each edit is "
+                                       "one undo step.%s",
+                      at, static_cast<uint32_t>(c.segments), c.segments == 1 ? "" : "s", nodesStored_ ? "" : ", fitted to the drawing (dashed: the first edit applies them)",
+                      where.c_str());
+      }
+    } else {
+      title = virtual_ ? "Draw (a new keyframe)" : "Draw keyframe " + std::to_string(selected_ + 1);
+      std::snprintf(buf, sizeof buf, "%sDrag to draw; each stroke is one undo step.%s", at,
+                    virtual_ ? " The first stroke makes a keyframe here from the blended frame." : "");
+    }
+  } else if (part == kSmoothAmtPart) {
+    title = "Pencil smoothing";
+    static constexpr const char* kLevels[] = {"Off: the raw pencil", "Light", "Medium", "Strong"};
+    std::snprintf(buf, sizeof buf, "%s. Click for the next (off, light, medium, strong): a freehand stroke is smoothed as "
+                                   "you draw (off the snap grid).", kLevels[std::min<uint32_t>(smooth_, 3)]);
+  } else if (part == kSymPart) {
+    title = "Symmetry";
+    static constexpr const char* kModes[] = {"Off", "Mirror: the cycle reads the same backwards",
+                                             "Half-wave: the second half is the first upside down (odd harmonics only)"};
+    std::snprintf(buf, sizeof buf, "%s. Click for the next. A stroke's half drives the other.",
+                  kModes[std::min<uint32_t>(static_cast<uint32_t>(sym_), 2)]);
+  } else if (part == kSmoothNowPart) {
+    title = "Smooth";
+    std::snprintf(buf, sizeof buf, "Smooths the whole cycle a step (periodic: the wrap stays seamless). One undo step per click.");
+  } else if (part == kInvertPart) {
+    title = "Invert";
+    std::snprintf(buf, sizeof buf, "Turns the cycle upside down. One undo step.");
+  } else if (part == kReversePart) {
+    title = "Reverse";
+    std::snprintf(buf, sizeof buf, "Reads the cycle backwards. One undo step.");
+  } else if (part == kShiftPart) {
+    title = "Shift";
+    std::snprintf(buf, sizeof buf, "Moves the cycle a sixteenth later (Shift-click: earlier). One undo step per click.");
   } else if (part == kGridPart) {
     title = "Snap grid";
     if (grid_ == 0) std::snprintf(buf, sizeof buf, "Off. Click: 8, 16, 32 columns (values in steps of 2/n), off.");

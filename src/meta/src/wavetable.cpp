@@ -21,7 +21,9 @@ constexpr std::array<InputSpec, 2> kInputs = {{
 constexpr std::array<ParamSpec, 5> kParams = {{
     {"phase", "Phase", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, true, false},
     {"position", "Position", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
-    {"fold", "Fold", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true},
+    // bug-wavetable: 3× the folds (wave_warp.h kFoldMaxTheta = 12π) on an exponential knob: half the travel is the old
+    // full range (fold ⅓), fine at the low end as before.
+    {"fold", "Fold", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Exponential, kWtFoldCurveK, false, true},
     {"warp", "Warp", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true},
     {"sync", "Sync", 0.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, true},
 }};
@@ -175,11 +177,15 @@ std::string readRefs(const DataValue& v, DataRefs& out) {
   for (size_t i = 0; i < keys->items.size(); ++i) {
     const DataValue& k = keys->items[i];
     const std::string at = "keyframe " + std::to_string(i);
-    if (k.kind != DataValue::Kind::Record || k.fields.size() != 2) return at + " must be {pos, cycle}";
+    const DataValue* nodes = k.kind == DataValue::Kind::Record ? k.field("nodes") : nullptr;
+    if (k.kind != DataValue::Kind::Record || k.fields.size() != (nodes != nullptr ? 3u : 2u))
+      return at + " must be {pos, cycle[, nodes]}";
     const DataValue* pos = k.field("pos");
     const DataValue* cyc = k.field("cycle");
     if (pos == nullptr || pos->kind != DataValue::Kind::Number || cyc == nullptr || cyc->kind != DataValue::Kind::Floats)
       return at + " must be {pos: number, cycle: floats}";
+    if (nodes != nullptr && (nodes->kind != DataValue::Kind::Floats || !wavetableNodeCurve(nodes->floats)))
+      return at + ": nodes must be a node curve (pq/meta/wavetable.h wavetableNodeData)";
     if (!(pos->number >= 0.0 && pos->number <= 1.0)) return at + ": pos must be in [0, 1]";
     if (pos->number < prev) return at + ": keyframe positions must not decrease";
     prev = pos->number;
@@ -305,8 +311,11 @@ const Type& wavetableType() noexcept {
 DataPtr wavetableData(const WavetableData& d) {
   std::vector<DataValue> keys;
   keys.reserve(d.keyframes.size());
-  for (const WavetableKeyframe& k : d.keyframes)
-    keys.push_back(DataValue::record({{"pos", DataValue::num(k.position)}, {"cycle", DataValue::floatArray(k.cycle)}}));
+  for (const WavetableKeyframe& k : d.keyframes) {
+    std::vector<std::pair<std::string, DataValue>> f{{"pos", DataValue::num(k.position)}, {"cycle", DataValue::floatArray(k.cycle)}};
+    if (!k.nodes.empty()) f.emplace_back("nodes", DataValue::floatArray(k.nodes));
+    keys.push_back(DataValue::record(std::move(f)));
+  }
   std::vector<std::pair<std::string, DataValue>> f;
   f.emplace_back("keyframes", DataValue::list(std::move(keys)));
   if (d.keyframes.size() > 1) {
@@ -326,8 +335,11 @@ Result<WavetableData> parseWavetableData(const DataValue& v) {
   DataRefs refs;
   if (std::string e = readRefs(v, refs); !e.empty()) return Error{ErrorCode::InvalidArgument, std::move(e), {}};
   WavetableData d;
-  for (const DataValue* k : refs.keys)
-    d.keyframes.push_back({static_cast<float>(k->field("pos")->number), k->field("cycle")->floats});
+  for (const DataValue* k : refs.keys) {
+    const DataValue* nodes = k->field("nodes");
+    d.keyframes.push_back({static_cast<float>(k->field("pos")->number), k->field("cycle")->floats,
+                           nodes != nullptr ? nodes->floats : std::vector<float>{}});
+  }
   d.gaps.assign(d.keyframes.size() - 1, dsp::GapMode::Spectral);
   if (refs.gaps != nullptr)
     for (size_t i = 0; i < refs.gaps->items.size(); ++i)
@@ -350,6 +362,37 @@ std::string wavetableDataProblem(const DataValue& v) {
         return "keyframe " + std::to_string(i) + ": cycle sample " + std::to_string(j) + " is beyond ±64 (a cycle is audio)";
   }
   return {};
+}
+
+std::vector<float> wavetableNodeData(const dsp::Curve& c) {
+  const uint32_t n = std::clamp<uint32_t>(c.segments, 1, dsp::kMaxCurveSegments);
+  std::vector<float> f;
+  f.reserve(4 * n + 3);
+  f.push_back(static_cast<float>(n));
+  for (uint32_t i = 0; i <= n; ++i) f.push_back(static_cast<float>(c.points[i].t));
+  for (uint32_t i = 0; i <= n; ++i) f.push_back(static_cast<float>(c.points[i].y));
+  for (uint32_t i = 0; i < n; ++i) f.push_back(static_cast<float>(c.shapes[i].shape));
+  for (uint32_t i = 0; i < n; ++i) f.push_back(static_cast<float>(c.shapes[i].bend));
+  return f;
+}
+
+std::optional<dsp::Curve> wavetableNodeCurve(std::span<const float> f) noexcept {
+  if (f.size() < 7 || (f.size() - 3) % 4 != 0) return std::nullopt;
+  const size_t n = (f.size() - 3) / 4;
+  if (n < 1 || n > dsp::kMaxCurveSegments || f[0] != static_cast<float>(n)) return std::nullopt;
+  dsp::Curve c;
+  c.min = -1.0;
+  c.max = 1.0;
+  c.preset = dsp::CurvePreset::Custom;
+  c.segments = static_cast<uint8_t>(n);
+  for (size_t i = 0; i <= n; ++i) c.points[i] = {f[1 + i], f[2 + n + i]};
+  for (size_t i = 0; i < n; ++i) {
+    const float s = f[3 + 2 * n + i];
+    if (!(s >= 0.0f && s < static_cast<float>(dsp::CurveShape::Joined)) || s != std::floor(s)) return std::nullopt;
+    c.shapes[i] = {static_cast<dsp::CurveShape>(static_cast<int>(s)), f[3 + 3 * n + i]};
+  }
+  if (c.points[0].t != 0.0 || c.points[n].t != 1.0 || c.points[0].y != c.points[n].y || !dsp::validCurve(c)) return std::nullopt;
+  return c;
 }
 
 DataPtr wavetableDefaultData() {

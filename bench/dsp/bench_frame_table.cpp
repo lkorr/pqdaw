@@ -8,6 +8,7 @@
 //   frametable/build 64 frames          the 64-keyframe drawn fixture → 64 dense frames, no bake; ms per build
 //   frametable/build 64 frames + bake   the same with one baked control (fold 0.5; 16×); ms per build
 //   frametable/build 64 frames + bake3  Mirror 0.5, fold 0.3 and sync 0.3 together (the builder raises it to 32×)
+//   frametable/build … (fold 1)         bug-wavetable: the live-band bake at fold 1 (the knob's top)
 // Builds run on one thread (the caller's), into a preallocated table (the builder's arenas sized by a first build).
 // TMM.2: the atoms over a live slot, through findKernel as the interpreter calls them (64-frame blocks):
 //   atom/wavetable_pos L1 | L8           the reads above plus the slot's acquire load, the state copy and the tap test;
@@ -166,6 +167,10 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
         spec.bake = {pq::dsp::WarpMode::Mirror, 0.5f, 0.3f, 0.3f};
         spec.liveBand = true;
       }
+      if (bake == 6) {  // bug-wavetable: the live-band bake at the fold knob's top (θ = 12π: the builder's 64×)
+        spec.bake = {pq::dsp::WarpMode::Bend, 0.0f, 1.0f, 0.0f};
+        spec.liveBand = true;
+      }
       pq::dsp::FrameTableBuilder b;
       auto t = b.build(spec).value();  // sizes the arenas
       std::vector<double> ms;
@@ -317,4 +322,5 @@ void addFrameTableBenches(pq::bench::Runner& runner) {
   runner.add("frametable/build 64 frames + bake3", build(3));
   runner.add("frametable/build 64 frames + live-band bake", build(4));
   runner.add("frametable/build 64 frames + live-band bake3", build(5));
+  runner.add("frametable/build 64 frames + live-band bake (fold 1)", build(6));
 }

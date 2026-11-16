@@ -14,6 +14,8 @@
 #include <filesystem>
 #include <memory>
 #include <numbers>
+#include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -164,6 +166,146 @@ TEST_CASE("wavetable edit: strokes — pencil linear between pointer samples, li
   CHECK(v == 0.5f);
 }
 
+// bug-wavetable: the pencil's smoothing, symmetry, the cycle's actions, the node tool's math.
+
+namespace {
+
+double roughness(std::span<const float> c, uint32_t n0, uint32_t n1) {  // Σ |second difference| over n0 … n1
+  double r = 0.0;
+  for (uint32_t i = n0 + 1; i < n1; ++i) r += std::fabs(double(c[i - 1]) - 2.0 * c[i] + c[i + 1]);
+  return r;
+}
+
+double maxDiff(std::span<const float> a, std::span<const float> b) {
+  double m = 0.0;
+  for (size_t i = 0; i < a.size() && i < b.size(); ++i) m = std::max(m, std::fabs(double(a[i]) - b[i]));
+  return m;
+}
+
+}  // namespace
+
+TEST_CASE("wavetable edit: smoothing — periodic, DC kept; a smoothed pencil differs from the raw one and joins across the wrap") {
+  // smoothCycle: a constant stays; the mean (DC) is kept; a step at the wrap is smoothed on both sides of it.
+  std::vector<double> scratch;
+  std::vector<float> flat(wt::kCycleLen, 0.3f);
+  wt::smoothCycle(flat, 25, scratch);
+  for (const float v : flat) CHECK(v == doctest::Approx(0.3f).epsilon(1e-6));
+  std::vector<float> saw = basic(dsp::BasicCycle::Saw);
+  double mean0 = 0.0, mean1 = 0.0;
+  for (const float v : saw) mean0 += v;
+  std::vector<float> sm = saw;
+  wt::smoothCycle(sm, wt::kSmoothStep, scratch);
+  for (const float v : sm) mean1 += v;
+  CHECK(mean1 / wt::kCycleLen == doctest::Approx(mean0 / wt::kCycleLen).epsilon(1e-6).scale(1.0));
+  CHECK(maxDiff(sm, saw) > 0.05);  // the saw's jump is softened
+  CHECK(std::fabs(double(sm[0]) - sm[wt::kCycleLen - 1]) < std::fabs(double(saw[0]) - saw[wt::kCycleLen - 1]));
+  // The pencil at smoothing 0 is the raw pencil, sample for sample.
+  const std::vector<float> zero(wt::kCycleLen, 0.0f);
+  wt::Stroke raw, smooth;
+  raw.begin(zero, wt::Tool::Pencil, 0, 0.85f, 0.8f, 0);
+  smooth.begin(zero, wt::Tool::Pencil, 0, 0.85f, 0.8f, wt::kSmoothWidths[2]);
+  for (int i = 1; i <= 15; ++i) {  // a zigzag up to the cycle's end
+    const float x = 0.85f + 0.01f * static_cast<float>(i), v = i % 2 ? 0.4f : 0.8f;
+    raw.to(x, v);
+    smooth.to(x, v);
+  }
+  CHECK(std::equal(raw.cycle().begin(), raw.cycle().end(), raw.raw().begin()));
+  CHECK(std::equal(smooth.raw().begin(), smooth.raw().end(), raw.raw().begin()));  // the same raw stroke under it
+  CHECK(maxDiff(smooth.cycle(), raw.cycle()) > 0.05);
+  CHECK(roughness(smooth.cycle(), 1741, 2047) < 0.5 * roughness(raw.cycle(), 1741, 2047));
+  // Periodic: the raw stroke ends at the wrap with a jump to the untouched start; smoothed, the wrap is joined (the
+  // blur carries across it) and the start moved towards the stroke.
+  const auto c = smooth.cycle();
+  CHECK(std::fabs(double(raw.cycle()[2047]) - raw.cycle()[0]) > 0.35);
+  CHECK(std::fabs(double(c[2047]) - c[0]) < 0.1);
+  CHECK(c[0] > 0.1f);
+  // Far from the stroke nothing changed.
+  CHECK(c[1000] == 0.0f);
+  // Symmetry: mirror (v(1 − x) = v(x)) and half-wave (v(x + ½) = −v(x): no even harmonics), the stroke's half driving.
+  std::vector<float> m = saw;
+  wt::applySymmetry(m, wt::Symmetry::Mirror, 0.2f);
+  for (uint32_t i = 1; i < 1024; ++i) CHECK(m[2048 - i] == m[i]);
+  CHECK(m[100] == saw[100]);  // the driving half is kept
+  std::vector<float> h = saw;
+  wt::applySymmetry(h, wt::Symmetry::HalfWave, 0.7f);
+  for (uint32_t i = 0; i < 1024; ++i) CHECK(h[i] == -h[i + 1024]);
+  CHECK(h[1500] == saw[1500]);
+  wt::Spectrum1 sp;
+  wt::cycleSpectrum(h, sp);
+  for (uint32_t k = 2; k < 64; k += 2) CHECK(wt::harmonicAmp(sp, k) < 1e-6f);
+  // The actions: invert, reverse (sample 0 stays), rotate (wrapping).
+  std::vector<float> a = saw;
+  wt::invertCycle(a);
+  for (uint32_t i = 0; i < wt::kCycleLen; i += 7) CHECK(a[i] == -saw[i]);
+  a = saw;
+  wt::reverseCycle(a);
+  for (uint32_t i = 0; i < wt::kCycleLen; ++i) REQUIRE(a[i] == saw[(wt::kCycleLen - i) % wt::kCycleLen]);
+  a = saw;
+  wt::rotateCycle(a, 128);
+  for (uint32_t i = 0; i < wt::kCycleLen; ++i) REQUIRE(a[i] == saw[(i + wt::kCycleLen - 128) % wt::kCycleLen]);
+  wt::rotateCycle(a, -128);
+  CHECK(a == saw);
+}
+
+TEST_CASE("wavetable edit: nodes — a node cycle renders periodic; fitted nodes follow a drawing with a few segments; the stored form reads back") {
+  // A flat cycle; then three points with a straight, a power and an S-curve segment.
+  dsp::Curve c = wt::flatNodes(0.0);
+  CHECK(wt::validNodes(c));
+  std::vector<float> r(wt::kCycleLen);
+  wt::renderNodes(c, r);
+  for (const float v : r) CHECK(v == 0.0f);
+  c.segments = 3;
+  c.points[0] = {0.0, 0.5};
+  c.points[1] = {0.25, 1.0};
+  c.points[2] = {0.75, 0.0};
+  c.points[3] = {1.0, 0.5};
+  c.shapes[0] = {dsp::CurveShape::Linear, 0.0};
+  c.shapes[1] = {dsp::CurveShape::SCurve, 3.0};
+  c.shapes[2] = {dsp::CurveShape::Power, 1.0};
+  REQUIRE(wt::validNodes(c));
+  wt::renderNodes(c, r);
+  CHECK(r[0] == doctest::Approx(0.0f).scale(1.0f));
+  CHECK(r[512] == doctest::Approx(1.0f));
+  CHECK(r[1024] == doctest::Approx(0.0f).scale(1.0f));  // the S-curve's middle
+  CHECK(r[1536] == doctest::Approx(-1.0f));
+  CHECK(std::fabs(double(r[2047]) - r[0]) < 0.01);  // tied ends: periodic
+  CHECK(r[256] == doctest::Approx(0.5f).epsilon(1e-3));  // straight
+  // The stored form: floats that read back as the same curve (rounded to float).
+  const std::vector<float> f = meta::wavetableNodeData(c);
+  CHECK(f.size() == 4u * 3u + 3u);
+  const std::optional<dsp::Curve> back = meta::wavetableNodeCurve(f);
+  REQUIRE(back.has_value());
+  std::vector<float> r2(wt::kCycleLen);
+  wt::renderNodes(*back, r2);
+  CHECK(maxDiff(r, r2) < 1e-6);
+  std::vector<float> bad = f;
+  bad[1 + 4 + 3] = 0.3f;  // (n, t_0 … t_3, y_0 … y_3): the last y ≠ the first: not periodic
+  CHECK_FALSE(meta::wavetableNodeCurve(bad).has_value());
+  CHECK_FALSE(meta::wavetableNodeCurve(std::vector<float>(5, 0.0f)).has_value());
+  // Fitting: a sine in a few S-curve-like segments; a square exactly (its jumps as point pairs); noise in ≤ 12.
+  for (const auto shape : {dsp::BasicCycle::Sine, dsp::BasicCycle::Square, dsp::BasicCycle::Triangle, dsp::BasicCycle::Saw}) {
+    CAPTURE(static_cast<int>(shape));
+    const std::vector<float> want = basic(shape);
+    const auto t0 = std::chrono::steady_clock::now();
+    const dsp::Curve fit = wt::fitNodes(want);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    REQUIRE(wt::validNodes(fit));
+    std::vector<float> got(wt::kCycleLen);
+    wt::renderNodes(fit, got);
+    std::vector<float> clamped = want;
+    for (float& v : clamped) v = std::clamp(v, -1.0f, 1.0f);
+    MESSAGE("fit: " << int(fit.segments) << " segments, worst " << maxDiff(got, clamped) << ", " << ms << " ms");
+    CHECK(fit.segments <= wt::kFitSegments);
+    CHECK(maxDiff(got, clamped) <= wt::kFitTolerance + 1e-6);
+    if (shape == dsp::BasicCycle::Sine) CHECK(fit.segments <= 8);
+    if (shape == dsp::BasicCycle::Square || shape == dsp::BasicCycle::Triangle) CHECK(fit.segments <= 4);
+  }
+  const std::vector<float> noise = basic(dsp::BasicCycle::Noise);
+  const dsp::Curve nf = wt::fitNodes(noise);
+  CHECK(wt::validNodes(nf));
+  CHECK(nf.segments <= wt::kFitSegments);
+}
+
 // ---- gestures through the project patch view -------------------------------------------------------------------
 
 namespace {
@@ -189,8 +331,13 @@ float barX(uint32_t h, uint32_t first = 1, uint32_t count = 32) {  // the centre
 float ampY(float a) { return kAmpY1 - 0.5f - a * (kAmpY1 - kAmpY0 - 1.0f); }
 float phaseY(float p) { return 0.5f * (kPhY0 + kPhY1) - p / static_cast<float>(kPi) * (0.5f * (kPhY1 - kPhY0) - 0.5f); }
 float posY(float u) { return 172.0f - 94.0f * u; }
-Vec2 toolAt(uint32_t i) { return {51.0f + static_cast<float>(i) * 14.5f + 6.5f, 24.0f}; }
-Vec2 optAt(uint32_t i) { return {19.0f + static_cast<float>(i) * 13.5f + 6.0f, 85.5f}; }
+Vec2 toolAt(uint32_t i) { return {48.0f + static_cast<float>(i) * 13.5f + 6.0f, 24.0f}; }  // pencil, line, curve, nodes
+// The draw-mode option cells: grid, normalise, remove DC, smoothing, symmetry, Smooth, Invert, Reverse, Shift.
+Vec2 optAt(uint32_t i) {
+  constexpr float kX[] = {19.0f, 32.5f, 46.0f, 62.0f, 75.5f, 92.0f, 105.5f, 119.0f, 132.5f};
+  return {kX[i] + 6.0f, 85.5f};
+}
+enum : uint32_t { kOptGrid, kOptNorm, kOptDc, kOptSmooth, kOptSym, kOptSmoothNow, kOptInvert, kOptReverse, kOptShift };
 Vec2 drawAt(float x, float v) { return {kDrawX0 + kDrawW * x, kDrawCy - kDrawA * v}; }
 
 struct WtUi {
@@ -409,6 +556,175 @@ TEST_CASE("wavetable face: draw tools — pencil, line, curve on the selected ke
   u.d.click(u.at(toolAt(0)));
   CHECK(u.d.keyDown(key::kEscape));
   CHECK(u.infoAt(drawAt(0.5f, 0.0f)).rfind("Wavetable |", 0) == 0);
+}
+
+TEST_CASE("wavetable face: Smooth / Invert / Reverse / Shift — one undo step per click, exact, undone byte-equal") {
+  WtUi u;
+  u.d.click(u.at(toolAt(0)));  // the pencil: draw mode with its options
+  const std::vector<float> saw = u.data().keyframes[0].cycle;
+  size_t h0 = u.history();
+  u.d.click(u.at(optAt(kOptSmoothNow)));
+  CHECK(u.history() == h0 + 1);
+  const std::vector<float> s1 = u.data().keyframes[0].cycle;
+  std::vector<float> want = saw;
+  std::vector<double> scratch;
+  wt::smoothCycle(want, wt::kSmoothStep, scratch);
+  CHECK(s1 == want);
+  u.d.click(u.at(optAt(kOptSmoothNow)));  // a second step: smoother still
+  CHECK(u.history() == h0 + 2);
+  CHECK(roughness(u.data().keyframes[0].cycle, 0, 2047) < roughness(s1, 0, 2047));
+  REQUIRE(u.ctx.undo());
+  REQUIRE(u.ctx.undo());
+  CHECK(u.data().keyframes[0].cycle == saw);
+  h0 = u.history();
+  u.d.click(u.at(optAt(kOptInvert)));
+  u.d.click(u.at(optAt(kOptReverse)));
+  u.d.click(u.at(optAt(kOptShift)));
+  CHECK(u.history() == h0 + 3);
+  want = saw;
+  wt::invertCycle(want);
+  wt::reverseCycle(want);
+  wt::rotateCycle(want, 128);
+  CHECK(u.data().keyframes[0].cycle == want);
+  u.d.click(u.at(optAt(kOptShift)), mod::kShift);  // Shift-click: back a sixteenth
+  wt::rotateCycle(want, -128);
+  CHECK(u.data().keyframes[0].cycle == want);
+  CHECK(u.infoAt(optAt(kOptShift)).rfind("Shift |", 0) == 0);
+  CHECK(u.data().keyframes[1].cycle == basic(dsp::BasicCycle::Square));  // other keyframes untouched
+  while (u.data().keyframes[0].cycle != saw) REQUIRE(u.ctx.undo());
+}
+
+TEST_CASE("wavetable face: the pencil's smoothing and symmetry options — a smoothed stroke differs from the raw one; mirror and half-wave strokes") {
+  WtUi u;
+  u.d.click(u.at(toolAt(0)));
+  // A zigzag stroke, raw (smoothing off).
+  auto zigzag = [&] {
+    u.d.down(u.at(drawAt(0.1f, 0.0f)));
+    for (int i = 1; i <= 30; ++i) u.d.move(u.at(drawAt(0.1f + 0.01f * static_cast<float>(i), i % 2 ? 0.7f : -0.2f)));
+    u.d.up(u.at(drawAt(0.4f, 0.0f)));
+  };
+  size_t h0 = u.history();
+  zigzag();
+  CHECK(u.history() == h0 + 1);
+  const std::vector<float> raw = u.data().keyframes[0].cycle;
+  REQUIRE(u.ctx.undo());
+  // Smoothing: off → light → medium (view state: no undo step); the same stroke, smoothed.
+  h0 = u.history();
+  u.d.click(u.at(optAt(kOptSmooth)));
+  u.d.click(u.at(optAt(kOptSmooth)));
+  CHECK(u.history() == h0);
+  CHECK(u.infoAt(optAt(kOptSmooth)).find("Medium") != std::string::npos);
+  zigzag();
+  CHECK(u.history() == h0 + 1);
+  const std::vector<float> smooth = u.data().keyframes[0].cycle;
+  CHECK(maxDiff(smooth, raw) > 0.05);
+  CHECK(roughness(smooth, 205, 819) < 0.5 * roughness(raw, 205, 819));
+  CHECK(smooth[1800] == raw[1800]);  // far from the stroke: the saw, untouched
+  REQUIRE(u.ctx.undo());
+  // The smoothing cell is the pencil's: the line tool hides it (a click there is the display's).
+  u.d.click(u.at(toolAt(1)));
+  CHECK(u.infoAt(optAt(kOptSmooth)).find("Pencil smoothing") == std::string::npos);
+  u.d.click(u.at(toolAt(0)));
+  // Symmetry: mirror — a stroke in the first half writes its mirror image into the second.
+  u.d.click(u.at(optAt(kOptSmooth)));  // (smoothing: strong)
+  u.d.click(u.at(optAt(kOptSmooth)));  // off
+  u.d.click(u.at(optAt(kOptSym)));
+  CHECK(u.infoAt(optAt(kOptSym)).find("Mirror") != std::string::npos);
+  h0 = u.history();
+  u.d.drag(u.at(drawAt(0.1f, 0.6f)), u.at(drawAt(0.3f, -0.4f)), 6);
+  CHECK(u.history() == h0 + 1);
+  std::vector<float> c = u.data().keyframes[0].cycle;
+  for (uint32_t i = 1; i < 1024; ++i) REQUIRE(c[2048 - i] == c[i]);
+  CHECK(c[static_cast<size_t>(0.2 * 2048)] == doctest::Approx(0.1f).epsilon(0.05).scale(1.0f));
+  // Half-wave: a stroke in the second half; the first half is its negative (odd harmonics only).
+  u.d.click(u.at(optAt(kOptSym)));
+  u.d.drag(u.at(drawAt(0.6f, 0.5f)), u.at(drawAt(0.9f, 0.5f)), 6);
+  c = u.data().keyframes[0].cycle;
+  for (uint32_t i = 0; i < 1024; ++i) REQUIRE(c[i] == -c[i + 1024]);
+  CHECK(c[static_cast<size_t>(0.75 * 2048)] == doctest::Approx(0.5f));
+  CHECK(c[static_cast<size_t>(0.25 * 2048)] == doctest::Approx(-0.5f));
+}
+
+TEST_CASE("wavetable face: the node tool — fitted on entry; add / move / bend / straighten / ends / delete, one undo step each") {
+  WtUi u;
+  // A flat cycle first (the line tool across the whole cycle at 0).
+  u.d.click(u.at(toolAt(1)));
+  u.d.drag(u.at(drawAt(-0.01f, 0.0f)), u.at(drawAt(1.01f, 0.0f)), 6);  // (clamped to 0 … 1)
+  for (const float v : u.data().keyframes[0].cycle) REQUIRE(v == doctest::Approx(0.0f).scale(1.0f));
+  // The node tool: one segment fitted to it (view state: nothing recorded).
+  size_t h0 = u.history();
+  u.d.click(u.at(toolAt(3)));
+  CHECK(u.history() == h0);
+  std::string info = u.infoAt(drawAt(0.6f, 0.6f));
+  CHECK_MESSAGE(info.find("1 node, fitted to the drawing") != std::string::npos, info);
+  CHECK(u.data().keyframes[0].nodes.empty());
+  // A click adds a node at the pointer: (0, 0) - (0.25, 0.5) - (1, 0), straight; the keyframe keeps its nodes.
+  u.d.click(u.at(drawAt(0.25f, 0.5f)));
+  CHECK(u.history() == h0 + 1);
+  std::vector<float> c = u.data().keyframes[0].cycle;
+  CHECK(c[512] == doctest::Approx(0.5f).epsilon(0.01));
+  CHECK(c[256] == doctest::Approx(0.25f).epsilon(0.01));
+  CHECK(c[1280] == doctest::Approx(0.25f).epsilon(0.01));
+  REQUIRE_FALSE(u.data().keyframes[0].nodes.empty());
+  std::optional<dsp::Curve> n = meta::wavetableNodeCurve(u.data().keyframes[0].nodes);
+  REQUIRE(n.has_value());
+  CHECK(n->segments == 2);
+  info = u.infoAt(drawAt(0.6f, 0.6f));
+  CHECK_MESSAGE(info.find("2 nodes.") != std::string::npos, info);  // stored now: no longer "fitted"
+  // Drag it to (0.5, -0.5).
+  h0 = u.history();
+  u.d.drag(u.at(drawAt(0.25f, 0.5f)), u.at(drawAt(0.5f, -0.5f)), 6);
+  CHECK(u.history() == h0 + 1);
+  c = u.data().keyframes[0].cycle;
+  CHECK(c[1024] == doctest::Approx(-0.5f).epsilon(0.01));
+  CHECK(c[512] == doctest::Approx(-0.25f).epsilon(0.01));
+  const std::vector<float> straight = c;
+  // Bend segment 0 by its middle handle (at phase 0.25, -0.25): dragged up, the middle rises (a power curve).
+  CHECK(u.infoAt(drawAt(0.25f, -0.25f)).find("Segment 1: straight") != std::string::npos);
+  h0 = u.history();
+  const Vec2 hd = u.at(drawAt(0.25f, -0.25f));
+  u.d.drag(hd, {hd.x, hd.y - 30.0f * static_cast<float>(u.d.tree().scale())}, 6);
+  CHECK(u.history() == h0 + 1);
+  c = u.data().keyframes[0].cycle;
+  CHECK(c[512] > -0.25f + 0.03f);
+  CHECK(c[1024] == doctest::Approx(-0.5f).epsilon(0.01));  // the nodes stay
+  n = meta::wavetableNodeCurve(u.data().keyframes[0].nodes);
+  REQUIRE(n.has_value());
+  CHECK(n->shapes[0].shape == dsp::CurveShape::Power);
+  // Double-click its handle (where the bent middle is now): straight again.
+  const double tm = 0.5 * (n->points[0].t + n->points[1].t);
+  h0 = u.history();
+  u.d.doubleClick(u.at(drawAt(static_cast<float>(tm), static_cast<float>(wt::nodeValue(*n, tm)))));
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.data().keyframes[0].cycle == straight);
+  // The ends are one node: moving it moves the cycle's start and end together (periodic).
+  h0 = u.history();
+  u.d.drag(u.at(drawAt(0.0f, 0.0f)), u.at(drawAt(0.0f, 0.4f)), 4);
+  CHECK(u.history() == h0 + 1);
+  c = u.data().keyframes[0].cycle;
+  CHECK(c[0] == doctest::Approx(0.4f).epsilon(0.01));
+  CHECK(std::fabs(double(c[2047]) - c[0]) < 0.01);
+  // Select the middle node (a click without a move records nothing) and Delete it: the cycle is flat at 0.4.
+  h0 = u.history();
+  u.d.click(u.at(drawAt(0.5f, -0.5f)));
+  CHECK(u.history() == h0);
+  CHECK(u.d.keyDown(key::kDelete));
+  CHECK(u.history() == h0 + 1);
+  c = u.data().keyframes[0].cycle;
+  for (uint32_t i = 0; i < wt::kCycleLen; i += 64) CHECK(c[i] == doctest::Approx(c[0]).epsilon(1e-6));
+  // Double-clicking a node removes it too; another tool's edit drops the nodes (they no longer describe the cycle).
+  u.d.click(u.at(drawAt(0.7f, 0.0f)));  // add one
+  REQUIRE(meta::wavetableNodeCurve(u.data().keyframes[0].nodes)->segments == 2);
+  h0 = u.history();
+  u.d.doubleClick(u.at(drawAt(0.7f, 0.0f)));
+  CHECK(u.history() == h0 + 1);
+  CHECK(meta::wavetableNodeCurve(u.data().keyframes[0].nodes)->segments == 1);
+  u.d.click(u.at(toolAt(0)));
+  u.d.drag(u.at(drawAt(0.1f, 0.6f)), u.at(drawAt(0.2f, 0.6f)), 3);
+  CHECK(u.data().keyframes[0].nodes.empty());
+  // Undo walks back every step to the flat zero cycle.
+  for (int i = 0; i < 9; ++i) REQUIRE(u.ctx.undo());
+  for (const float v : u.data().keyframes[0].cycle) REQUIRE(v == doctest::Approx(0.0f).scale(1.0f));
 }
 
 TEST_CASE("wavetable face: after a position drag, edits follow the position; between keyframes the first one makes a keyframe") {
@@ -634,6 +950,26 @@ TEST_CASE("wavetable face: golden meta-wavetable-draw — the pencil on a 16-col
     rig.send(PointerType::Move, drawAt(0.3f, 0.45f));  // the cursor where the next stroke would start
     rig.settle();
     checkImage(std::string("meta-wavetable-draw-") + (scale == 1.0f ? "1x" : "2x"), rig.draw());
+  }
+}
+
+TEST_CASE("wavetable face: golden meta-wavetable-nodes — the node tool, a node added (the fitted nodes applied), a handle hovered") {
+  for (const float scale : {1.0f, 2.0f}) {
+    Rig rig(scale);
+    rig.settle();
+    rig.send(PointerType::Down, toolAt(3));
+    rig.send(PointerType::Up, toolAt(3));
+    rig.send(PointerType::Down, drawAt(0.62f, -0.55f));  // adds a node there (and applies the fitted ones)
+    rig.send(PointerType::Up, drawAt(0.62f, -0.55f));
+    rig.settle();
+    const auto parsed = meta::parseWavetableData(*rig.bound->d);
+    REQUIRE(parsed.ok());
+    const std::optional<dsp::Curve> n = meta::wavetableNodeCurve((*parsed).keyframes[0].nodes);
+    REQUIRE(n.has_value());
+    const double tm = 0.5 * (n->points[0].t + n->points[1].t);
+    rig.send(PointerType::Move, drawAt(static_cast<float>(tm), static_cast<float>(wt::nodeValue(*n, tm))));  // the first handle
+    rig.settle();
+    checkImage(std::string("meta-wavetable-nodes-") + (scale == 1.0f ? "1x" : "2x"), rig.draw());
   }
 }
 

@@ -2047,3 +2047,23 @@ Status: open (reversible: an analyser window option; a modulation hookup; Opt ro
 - Choice: 6 px, and where the text goes a face shows one legible summary (`AnalyserFace::summary`, ~12 device px): Level
   Meter the louder peak + ticks at 0 / -12 / -24, LUFS Meter the short-term with its unit, Loudness History the
   short-term now. Band Levels and Waveform show only their traces zoomed out. Reversible: one constant. Status: open.
+## Q?-bug-wavetable-a · 2026-11-16 · bug-wavetable · Fold ×3: the knob's law, and the bake past the old range
+Context: fold now reaches θ = 12π (`dsp::kFoldMaxTheta`, ≈ 24 folds of a full-scale input), 3× TMM.1's 4π. The knob
+had to keep the old range usable. Options: a linear knob (the old range on the first third: 3× as twitchy), a
+two-segment custom curve (linear to 1/3 at half travel, then steeper: `meta::ParamSpec` declares presets only), or one
+exponential segment. Choice: `@curve(exponential, 2·ln 2)` — half the travel is fold 1/3 (exactly the old fold 1), the
+start finer than before per unit of θ, the middle ≈ 2.8× the old knob's sensitivity. As every curved param, a wire into
+fold now adds in knob travel (the generic rule), so an LFO into fold is finest at the low end. Also: Shape mode's
+static bake (the only path still using `frameBakeResolution`; Phase mode bakes through the live band) needs ≈ 320× for
+sync 0.5 + fold 1 and is capped at 64× (−72 dB vs 128×, recorded beside sync 1 + pw 1); fold alone at 1 is −189 dB,
+and everything up to the old range is unchanged. Status: decided (reversible: the fold ParamSpec's curve;
+kMaxAutoBakeResolution).
+
+## Q?-bug-wavetable-b · 2026-11-16 · bug-wavetable · "Per band bending"; how nodes persist
+Context: the request says "apply nodes and per band bending". Read as a bend per segment (band) between nodes, the
+knob-curve editor's gesture; a spectral reading (bending a band of harmonics) is a different feature, not built.
+Nodes are stored per keyframe (`nodes`, a dsp::Curve as floats) only as an editing aid: the 2048 samples stay what
+sounds; any other edit drops them, and stored nodes that no longer render the cycle are ignored (refitted). Entering
+the node tool fits nodes to the drawing (≤ 12 segments, 3 % of full scale; noisy cycles hit the cap), shown dashed until
+the first node edit applies them — rather than a default shape, so entering never changes the sound. Status: decided
+(reversible: the face's ensureNodes / fitNodes).

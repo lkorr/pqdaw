@@ -676,8 +676,8 @@ uint32_t frameBakeResolution(const FrameTableSpec& spec) noexcept {
   const FrameBake& b = spec.bake;
   if (!b.active()) return spec.bakeResolution;
   // Estimated bandwidth of the composed read, in harmonics: 1023 × the read phase's largest slope × the fold's
-  // spread (θ, its FM-like index for a full-scale input). The bake needs M ≥ 2·B (the 16× default covers every
-  // single control at any value: sync 16×, pulse width 16×, fold θ = 4π).
+  // spread (θ, its FM-like index for a full-scale input). The bake needs M ≥ 2·B (the 16× default covers sync 16×,
+  // pulse width 16× and fold up to θ = 16, ⅓ of its range; bug-wavetable: fold 1, θ = 12π ≈ 37.7, takes 64×).
   double slope = 1.0 + (kSyncMaxRatio - 1.0) * b.sync;
   if (b.warp != 0.0f) {
     if (b.warpMode == WarpMode::Bend) {

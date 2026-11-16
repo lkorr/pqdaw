@@ -2072,3 +2072,18 @@ Ribbon mode. Not carried over: LFO modulation of the camera, colour pickers, fou
   short-term; text under 6 px is left out (Q?-VZ.9-b).
 - Goldens: waterfall-*, stereospectrogram-*, device/project-meta-{loudness,bandwave}, device-meta-stereo, module-*-panel
   for the ten analysers.
+## bug-wavetable · 2026-11-16 · the Wavetable editor: smoothing, nodes, actions, fold ×3
+Try (open a Wavetable, pick a draw tool):
+- Pencil: the new option cell right of remove-DC sets smoothing (off / light / medium / strong); draw a shaky stroke.
+- The symmetry cell (mirror, half-wave): draw in one half, the other follows (half-wave = odd harmonics only).
+- Actions (right group): Smooth (a step per click), Invert, Reverse, Shift (Shift-click: back). One undo each.
+- The 4th tool (dotted zigzag) is NODES: the drawing is fitted to nodes (dashed until you edit); click adds a node,
+  drag moves it, drag a segment's middle ring up / down to bend it, double-click a ring to straighten / S-curve it,
+  double-click a node or Delete removes it. The two ends are one node (the cycle stays seamless).
+- Hover the display: the info line reads phase, drawn value and heard value.
+- Fold: half the knob is the old full range; the top half goes to 3× the folds (≈ 24).
+Look at: the top row is denser (four tools); the option row is longer in draw mode; the node glyphs and colours.
+Goldens re-recorded (61): every view showing a Wavetable face or panel (meta-wavetable-*, module-wavetable-panel,
+wavetable-synth-*, panel-*, device-*, project-* scenes with the default instrument): the top row (four tools) and the
+draw-mode option row only; project-cables(-far/-glow) and project-orbit-ports also fold further (their fold is swept by
+a cable: θ is 3×). New: meta-wavetable-nodes-1x/2x.
