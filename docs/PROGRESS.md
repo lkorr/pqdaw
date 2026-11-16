@@ -955,3 +955,16 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: UI thread only; nothing runs unless a cut is active; frames only while a half moves.
 - Notes: Q?-bug-wire-cut-a / -b (block-body click does nothing; re-plugged halves are new cables, old law / amount not
   carried; VCA placement falls back to the overlap rule next to an instrument).
+
+## 2026-11-15 · VZ.2 merged · main
+- Did: Spectrum / Spectrogram at PQ Meter 1.0.21: shared pq/dsp/freq_axis.h (Log / Mel / Linear, continuous log foot
+  below 20 Hz), Spectrum scale + Min / Max, monotone-cubic dense read, PQ's AA stroke + one optional glow (off), average
+  line, tilt tag, six colour modes + Custom (stops in dB, fenced), honest Bars; Spectrogram fade toward Silence +
+  Silence opacity. pqmeter_diff compiles against today's PQ Meter again (gradientPolyline / spectrumCurve bit-identical).
+- Verified (worker): -Affected after rebase 37/40, the 3 (playback ji tolerance, media disk timing, views waveform)
+  green alone under load; orchestrator after the merge: pq_tests_views spectrum / spectrogram / EQ / ghost cases 82/82.
+- Perf / CPU-efficiency check: 8 Spectrum faces UI frame median ~1.0 → ~0.8 ms (release); analysis per hop ~115 →
+  ~119 µs (noise level).
+- Notes: Q?-VZ.2-a (no colour picker: Custom stops take colours from a map; SPEC §11.1 "3-pass glow" now one optional
+  pass). Goldens: device/project-meta-spectrum, module-spectrum-panel, panel-rich-elements, eq-eight-bands,
+  eq-band-response, eq-lr-mode, ui lines.

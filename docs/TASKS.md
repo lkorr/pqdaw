@@ -889,7 +889,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **T6.x-fix-ui-b WASAPI capture discontinuities** (docs/reviews/M6.md M7): on a CaptureFifo drop or underflow, split the take (new segment / clip) at that point instead of silently jumping or inserting silence; or a fractional resampler tracking drift between two WASAPI devices. *(merged 73f8b9fd; Q?-T6.x-fix-ui-b-a; drift-tracking resampler (PI loop, ±1000 ppm, 64-tap sinc) engaged only past 0.5 ms delay error, bit-exact otherwise; ±200 ppm × 10 min 0 drops / 0 underflows; +2.3 ms capture latency reserve; beyond ±1000 ppm drops remain unmarked)*
 
 ## VZ: Visualisers — PQ Meter parity + production modules (user 2026-11-15; plan: docs/plans/VZ.md)
-- [ ] **VZ.2 Spectrum / Spectrogram parity with PQ Meter 1.0.21** 👁 (plan §VZ.2: shared axis Log/Mel/Linear + continuous low end, dense read, AA stroke + one glow, average line, tilt tag, colour modes + Bars, dB colour stops with fenced sliders, Silence colour / opacity, pqmeter_diff updated)
+- [x] **VZ.2 Spectrum / Spectrogram parity with PQ Meter 1.0.21** 👁 *(merged fe648436; Q?-VZ.2-a)* (plan §VZ.2: shared axis Log/Mel/Linear + continuous low end, dense read, AA stroke + one glow, average line, tilt tag, colour modes + Bars, dB colour stops with fenced sliders, Silence colour / opacity, pqmeter_diff updated)
 - [ ] **VZ.3 Tone preview on the Spectrum and Spectrogram** 👁 (plan §VZ.3; snap to the active tuning)
 - [ ] **VZ.4 Loudness: Level Meter, LUFS Meter, Loudness History** 👁 (plan §VZ.4)
 - [ ] **VZ.5 Stereo: Stereo Field, Stereo Image, Phase Scope** 👁 (plan §VZ.5; after VZ.2)
