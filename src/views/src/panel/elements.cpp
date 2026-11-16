@@ -87,8 +87,26 @@ uint64_t Element::liveKey(const PanelTarget& t) const {
     h = mix(h, t.driven(b) ? 1u : 0u);
     if (const ui::ModulationRing* m = t.modulation(b))
       for (const float x : {m->lo, m->hi, m->current, m->liveLo, m->liveHi}) h = mix(h, std::bit_cast<uint32_t>(x));
+    if (b.kind == doc::BindingKind::Control)  // bug-mod-ghost: a ghost that moved repaints the element
+      if (const std::optional<double> g = t.ghostPosition(b)) h = mix(h, std::bit_cast<uint64_t>(*g));
   }
   return h == kAnyChange ? h - 1 : h;
+}
+
+std::optional<double> PanelTarget::ghostPosition(const doc::Binding& b) const {
+  const ui::ModulationRing* m = modulation(b);
+  if (m == nullptr || !m->active || m->current < 0.0f) return std::nullopt;
+  const double c = std::clamp(static_cast<double>(m->current), 0.0, 1.0);
+  if (std::fabs(c - std::clamp(position(b), 0.0, 1.0)) < 1e-5) return std::nullopt;
+  return c;
+}
+
+bool Element::ghosted(const PanelTarget& t) const {
+  for (const doc::Binding& b : desc_.bindings)  // every slot (an XY pad's x and y)
+    if (b.bound() && b.kind == doc::BindingKind::Control && t.ghostPosition(b)) return true;
+  bool any = false;
+  visitControls([&](const doc::Binding& b, const Rect&) { any = any || t.ghostPosition(b).has_value(); });
+  return any;
 }
 
 void Element::visitControls(const ControlVisitor& fn) const {
@@ -391,16 +409,17 @@ public:
       p.line(g.c, polar(g.c, g.r, a), 1.5f, th.face.handle);
     } else if (ptr == "arc") {
       if (a > g.a0 + 1e-4f) p.arc(g.c, g.r, g.a0, a, track(), accent, ui::LineCap::Round);
-      p.disc(g.c, std::max(1.0f, g.r - track() - 1.5f), ui::lerp(th.face.body, th.face.track, 0.5f));
+      // (bug-mod-ghost: a ghost is its arc and needle; its body would dim the solid needle under it)
+      if (!env.ghost) p.disc(g.c, std::max(1.0f, g.r - track() - 1.5f), ui::lerp(th.face.body, th.face.track, 0.5f));
       p.line(polar(g.c, std::max(0.0f, g.r * 0.25f), a), polar(g.c, g.r - track() * 0.5f - 1.0f, a), hot ? 2.0f : 1.6f, th.face.handle);
     } else if (ptr == "dot") {
       p.disc(polar(g.c, g.r, a), track() * 0.5f + 1.6f, accent);
     } else {  // line
-      p.disc(g.c, std::max(1.0f, g.r - track() * 0.5f - 1.0f), ui::lerp(th.face.body, th.face.track, 0.45f));
+      if (!env.ghost) p.disc(g.c, std::max(1.0f, g.r - track() * 0.5f - 1.0f), ui::lerp(th.face.body, th.face.track, 0.45f));
       p.line(g.c, polar(g.c, g.r, a), std::max(1.2f, track() * 0.6f), accent);
     }
     // TX.knob-curves / GU.13: a knob switched off its declared curve shows that curve, boxed beside the arc's lower right.
-    if (binding() != nullptr && g.r >= 8.0f)
+    if (binding() != nullptr && g.r >= 8.0f && !env.ghost)
       if (const BoundInfo& bi = t.info(*binding()); bi.curveSwitched) paintCurveGlyph(p, g, bi.curve, th);
     const std::string& label = labelText(t);
     if (!label.empty()) p.text({desc_.w * 0.5f, g.labelY}, label, kLabelPx, th.face.ink);
@@ -533,7 +552,7 @@ private:
       const float l0 = ang(m.liveLo), l1 = ang(m.liveHi);
       if (l1 - l0 > 1e-4f) p.arc(g.c, mr, l0, l1, 2.0f, ui::withAlpha(ui::signal_theme::kAccent, 235), ui::LineCap::Round);
     }
-    if (m.current >= 0.0f) p.disc(polar(g.c, mr, ang(m.current)), 2.0f, ui::signal_theme::kAccent);
+    // (bug-mod-ghost: where the modulation has it now is the knob's ghost, not a dot on the ring)
   }
   void paintCurveGlyph(ui::FacePainter& p, const G& g, const dsp::Curve& c, const ui::Theme& th) const {
     const float bw = 10.0f, bh = 8.0f;
@@ -687,6 +706,8 @@ public:
       {"prefix", StyleSpec::Type::Text, 0, ""},
       {"suffix", StyleSpec::Type::Text, 0, ""},
   };
+  // bug-mod-ghost: a number's value is its text, and a ghost draws no text: no ghost (its box would only dim the text).
+  void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
   bool interactive() const noexcept override { return true; }
   uint32_t staticLayerCount() const noexcept override { return 2; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
@@ -813,6 +834,11 @@ public:
       {"colour", StyleSpec::Type::Token, 0, "value"},
       {"text", StyleSpec::Type::Text, 0, ""},
   };
+  // bug-mod-ghost: a ghost only while the modulation has it in the other state (on / off): the same state drawn again
+  // would only dim its label.
+  void paintGhost(ui::FacePainter& p, const ElementEnv& env) override {
+    if ((pos(*env.target) >= 0.5) != shownOn_) paintLive(p, env);
+  }
   bool interactive() const noexcept override { return true; }
   uint32_t staticLayerCount() const noexcept override { return 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return th.face.track; }
@@ -828,6 +854,7 @@ public:
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
     const bool on = pos(t) >= 0.5;
+    if (!env.ghost) shownOn_ = on;
     const bool ok = editable(t);
     const Rgba accent = ok ? colour(th, "colour", "value", th.face.value) : ui::lerp(th.face.track, th.face.value, 0.35f);
     std::string label(txt("text", ""));
@@ -885,6 +912,7 @@ private:
     return {0.5f, y0, 0.5f + w, y0 + h};
   }
   std::string hint() const override { return momentary_ ? " Press: on while held." : " Click to switch."; }
+  bool shownOn_ = false;  // bug-mod-ghost: the state the solid pass drew
   bool momentary_ = false;
 };
 
@@ -912,6 +940,8 @@ public:
       {"items", StyleSpec::Type::Text, 0, ""},
       {"label", StyleSpec::Type::Text, 0, ""},
   };
+  // bug-mod-ghost: a menu's value is its text: no ghost (as a number box).
+  void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
   bool interactive() const noexcept override { return true; }
   uint32_t staticLayerCount() const noexcept override { return 2; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
@@ -1147,6 +1177,10 @@ public:
       {"default", StyleSpec::Type::Number, 0.0, {}, {}, 0.0, 64.0},
   };
   explicit Tabs(doc::PanelElement d) : ValueElement(std::move(d)) { local_ = std::max(0.0, std::round(num("default", 0.0))); }
+  // bug-mod-ghost: a ghost only while the modulation selects another tab.
+  void paintGhost(ui::FacePainter& p, const ElementEnv& env) override {
+    if (selection(*env.target).value_or(0.0) != shownSel_) paintLive(p, env);
+  }
   bool interactive() const noexcept override { return true; }
   uint32_t staticLayerCount() const noexcept override { return 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return ui::lerp(th.face.body, th.face.track, 0.6f); }
@@ -1158,6 +1192,7 @@ public:
     const ui::Theme& th = *env.theme;
     const std::vector<std::string> it = items();
     const size_t sel = static_cast<size_t>(selection(*env.target).value_or(0.0));
+    if (!env.ghost) shownSel_ = selection(*env.target).value_or(0.0);
     const Rgba accent = colour(th, "colour", "value", th.face.value);
     for (size_t k = 0; k < it.size(); ++k) {
       const Rect c = cell(k, it.size());
@@ -1211,6 +1246,7 @@ private:
   }
   std::string hint() const override { return " Click a tab."; }
   double local_ = 0.0;
+  double shownSel_ = 0.0;  // bug-mod-ghost: the tab the solid pass drew
   int32_t hoverCell_ = -1;
 };
 

@@ -252,6 +252,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_circuit_legibility.cpp  # T4.15: node tooltips, inactive branches, recognised constants, goldens
     views/test_device_affordances.cpp  # T4.16c: Device view keys (arrows, Shift, Ctrl, Home / End, chains), cursors, rename
     views/test_eq_displays.cpp  # EQ.4: the response / phase displays and the EQ panel (curve = GroupResponse, real-dispatch gestures, goldens, perf)
+    views/test_mod_ghost.cpp  # bug-mod-ghost: modulation ghosts on any param-bound element (a kind with no ghost code), polling, meta faces, goldens
     views/test_transfer_display.cpp  # DY.3: the transfer curve display and the reduction meter (curve = GroupTransfer, eval counts, goldens)
     views/test_reset_default.cpp  # TX.reset-default: a reset goes to a value block's default (Delete, double-click, macros); VCA / EQ Q detents
     views/test_panel_gestures.cpp  # GU.13: one panel system: a leaf's and a group's knob take the same gestures (wheel, type-in, menu, map mode) through real dispatch

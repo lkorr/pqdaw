@@ -1957,3 +1957,12 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - **Noise module display**: the trace and dots now show the output as heard: negative values below the centre line (the
   voice-tap reader used to wrap every value into 0 … 1 like a phase, so −0.3 drew at +0.7) and after Min / Max. Check:
   set Max to 0: the whole trace sits in the lower half, as on a scope after it.
+
+## 2026-11-15 · bug-mod-ghost · modulation ghosts and silhouettes
+Play something with an LFO (or an envelope) cabled into a few params, then look at the controls: each modulated knob
+shows a translucent second arc and needle, each slider a translucent second handle, moving with the modulation while the
+solid control stays at your setting; a modulated EQ band draws a translucent silhouette of the whole curve (and a ghost
+node) where the modulation has it. Check it in the Device view, a floating panel window and the project patch canvas
+(group panels and native faces: Envelope breakpoints, Wavetable position, Noise). Goldens: panel-mod-ghosts,
+eq-mod-ghost. Judge the opacity (0.42) and whether the ghost reads as "modulation" next to the cyan rings. Number boxes
+and menus show no ghost (text only).

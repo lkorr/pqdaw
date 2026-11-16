@@ -18,6 +18,9 @@ namespace pq::views::panel::test {
 bool showSpectrum(Element& e, devices::SpectrumSnapshot s);
 // The total curve's dB drawn at element x (the nearest grid point; NaN: no curve), nullopt: not a response.
 std::optional<float> drawnDb(const Element& e, float x);
+// bug-mod-ghost: the SILHOUETTE's dB at element x as its last ghost pass drew it (the total at the modulated values;
+// NaN: none drawn), nullopt: not a response.
+std::optional<float> ghostDb(const Element& e, float x);
 // The frequency grid every display evaluates at, and grid point k's x on `e`.
 uint32_t responsePoints() noexcept;
 double responseHz(uint32_t k) noexcept;

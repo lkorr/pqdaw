@@ -83,14 +83,17 @@ public:
       const double x = static_cast<double>(i) / kSamples;
       pts[i] = toLocal(x, shareAt(c, x));
     }
-    p.fillUnder(pts, r.y1, ui::mulAlpha(accent, 0.28f), ui::mulAlpha(accent, 0.02f));
-    p.polyline(pts, 1.6f, accent);
+    if (!env.ghost) {  // (bug-mod-ghost: a ghost is the knob's position on the curve, the curve stays one)
+      p.fillUnder(pts, r.y1, ui::mulAlpha(accent, 0.28f), ui::mulAlpha(accent, 0.02f));
+      p.polyline(pts, 1.6f, accent);
+    }
     // The knob's position on it.
     const double kp = std::clamp(t.position(*b), 0.0, 1.0);
     const Vec2 at = toLocal(kp, shareAt(c, kp));
     const std::array<Vec2, 2> drop = {Vec2{at.x, r.y1}, at};
     p.dashed(drop, 0.8f, 2.0f, 2.0f, ui::mulAlpha(th.face.handle, 0.6f));
     p.disc(at, 2.4f, th.face.handle);
+    if (env.ghost) return;
     // Points and bend handles.
     for (uint32_t i = 0; i < c.segments; ++i) {
       const Vec2 h = handleAt(c, i);

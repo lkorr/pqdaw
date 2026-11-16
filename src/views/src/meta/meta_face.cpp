@@ -86,6 +86,7 @@ void paintFace(MetaFace& f, ui::FacePainter& p, const FaceEnv& env) {
     f.paintStatic(s, layer);
   }
   f.paintJacks(p, env);
+  f.paintGhosts(p, env);  // bug-mod-ghost: under the live layer
   f.paintLive(p, env);
 }
 
@@ -183,6 +184,80 @@ bool MetaFace::pollVoices() {
   const uint32_t before = voiceCount_;
   voiceCount_ = voices_->read(voiceBuf_);
   return voicesPolled(voiceCount_ != 0 || before != 0);
+}
+
+// ---- bug-mod-ghost: the ghosts ------------------------------------------------------------------------------------
+
+namespace {
+// The ghost pass's target: param i at its ghost position (through the inner target's curve), everything else the
+// inner target's; it edits nothing.
+class GhostMetaTarget final : public MetaTarget {
+public:
+  GhostMetaTarget(const MetaTarget& inner, const meta::Type& type) : in_(inner), type_(type) {}
+  double value(size_t i) const override {
+    if (const std::optional<double> g = in_.ghostPosition(i); g && i < type_.params.size()) return faceTravelToValue(in_, type_, i, *g);
+    return in_.value(i);
+  }
+  bool editable() const noexcept override { return in_.editable(); }
+  void begin(const char*) override {}
+  void set(size_t, double) override {}
+  void end() override {}
+  void cancel() override {}
+  void reset(size_t) override {}
+  double setting(size_t i) const override { return in_.setting(i); }
+  meta::DataPtr data() const override { return in_.data(); }
+  const meta::Type* targetType() const noexcept override { return in_.targetType(); }
+  void pitchGuides(float lo, float hi, std::vector<PitchGuide>& out) const override { in_.pitchGuides(lo, hi, out); }
+  uint64_t guidesKey() const override { return in_.guidesKey(); }
+  const dsp::Curve* curve(size_t i) const override { return in_.curve(i); }
+  std::optional<double> ghostPosition(size_t i) const override { return in_.ghostPosition(i); }
+  bool modulated(size_t i) const override { return in_.modulated(i); }
+
+private:
+  const MetaTarget& in_;
+  const meta::Type& type_;
+};
+}  // namespace
+
+bool MetaFace::hasGhost() const {
+  if (target_ == nullptr) return false;
+  for (size_t i = 0; i < type_->params.size(); ++i)
+    if (target_->ghostPosition(i)) return true;
+  return false;
+}
+
+bool MetaFace::ghostsLive() const {
+  if (target_ == nullptr || !target_->modulationLive()) return false;
+  for (size_t i = 0; i < type_->params.size(); ++i)
+    if (target_->modulated(i)) return true;
+  return false;
+}
+
+bool MetaFace::pollGhosts() {
+  if (target_ == nullptr) return false;
+  bool any = false;
+  for (size_t i = 0; i < type_->params.size() && !any; ++i) any = target_->modulated(i);
+  if (!any) return false;
+  const uint64_t s = target_->modulationSerial();
+  if (s == ghostSerial_) return false;
+  ghostSerial_ = s;
+  return true;
+}
+
+void MetaFace::paintGhosts(ui::FacePainter& p, const FaceEnv& env) {
+  if (ghost_ != nullptr || !hasGhost()) return;
+  GhostMetaTarget g(*target_, *type_);
+  ui::FacePainter q = p.at(p.transform());
+  q.setGhost(kGhostOpacity);
+  FaceEnv ge = env;
+  ge.ghost = true;
+  ge.hovered = ge.selected = false;
+  const int32_t hovered = hovered_;
+  hovered_ = kNone;  // (no hover highlight on a ghost)
+  ghost_ = &g;
+  paintLive(q, ge);
+  ghost_ = nullptr;
+  hovered_ = hovered;
 }
 
 std::string MetaFace::paramAt(ui::Vec2 local) const {

@@ -176,7 +176,7 @@ void FacePainter::text(Vec2 centre, std::string_view utf8, float px, Rgba col0) 
 
 void FacePainter::textAligned(Vec2 centre, std::string_view utf8, float px, Rgba col0, float align) {
   ++count_;
-  if (invisible(col0)) return;  // TMM.7: counted (the same primitives at every value), nothing emitted
+  if (ghosted_ || invisible(col0)) return;  // bug-mod-ghost: a ghost draws no text  // TMM.7: counted (the same primitives at every value), nothing emitted
   const Rgba col = c(col0);
   if (utf8.empty()) return;
   const uint32_t dpx = textPixels(px);

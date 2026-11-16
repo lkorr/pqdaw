@@ -235,6 +235,7 @@ struct ProjectProgram::BusStore {
   uint64_t accN = 0;
   std::atomic<float> pubPeak[2] = {0.0f, 0.0f};
   std::atomic<float> pubMs[2] = {0.0f, 0.0f};
+  std::atomic<float> pubLast[2] = {0.0f, 0.0f};  // bug-mod-ghost: the latest block's last sample (one store per block)
   float* channel(uint16_t c) noexcept { return data.data() + static_cast<size_t>(c) * stride; }
   bool silent = false;  // audio thread: its producer is idle and zeroed it (idle units)
 };
@@ -853,11 +854,26 @@ void ProjectProgram::readMeters(std::span<const uint32_t> buses, std::span<BusLe
       for (uint32_t c = 0; c < l.channels; ++c) {
         l.peak[c] = s.pubPeak[c].load(std::memory_order_relaxed);
         l.meanSquare[c] = s.pubMs[c].load(std::memory_order_relaxed);
+        l.last[c] = s.pubLast[c].load(std::memory_order_relaxed);
       }
     }
     out[i] = l;
   }
   meterGen_.fetch_add(1, std::memory_order_release);
+}
+
+void ProjectProgram::readLatest(std::span<const uint32_t> buses, std::span<BusLevel> out) const {
+  std::lock_guard lock(mutex_);
+  for (size_t i = 0; i < buses.size() && i < out.size(); ++i) {
+    BusLevel l;
+    const uint32_t b = buses[i];
+    if (b < stores_.size() && stores_[b]->metered) {
+      const BusStore& s = *stores_[b];
+      l.channels = static_cast<uint8_t>(std::min<uint16_t>(s.width, 2));
+      for (uint32_t c = 0; c < l.channels; ++c) l.last[c] = s.pubLast[c].load(std::memory_order_relaxed);
+    }
+    out[i] = l;
+  }
 }
 
 // RT-safe (audio thread, inside process() before the reclaimer hears that this reader is quiescent: after that, a
@@ -1752,6 +1768,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
       for (uint16_t c = 0; c < ch; ++c) {
         b.pubPeak[c].store(b.accPeak[c], std::memory_order_relaxed);
         b.pubMs[c].store(static_cast<float>(b.accSq[c] * inv), std::memory_order_relaxed);
+        if (n > 0) b.pubLast[c].store(b.channel(c)[n - 1], std::memory_order_relaxed);  // bug-mod-ghost
       }
     }
     for (uint32_t c = 0; c < numOut; ++c) {

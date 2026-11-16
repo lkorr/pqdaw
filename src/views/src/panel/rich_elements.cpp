@@ -223,6 +223,14 @@ public:
     p.line(polar(kRingR - kRingW * 0.5f - 1.0f, a), polar(kRingR + kRingW * 0.5f + 2.5f, a), 1.2f * s, ui::mulAlpha(w, 0.8f));
   }
 
+  // bug-mod-ghost: the ghost pass paints the dial at the modulated position; the solid one's cached position stays.
+  void paintGhost(ui::FacePainter& p, const ElementEnv& env) override {
+    const double keep = pos_;
+    const int32_t hot = hot_;
+    paintLive(p, env);
+    pos_ = keep;
+    hot_ = hot;
+  }
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
@@ -258,6 +266,7 @@ public:
     p.ring(at(kC), (kHubR - 0.5f) * s, 1.0f * s, ui::mulAlpha(th.face.handle, 0.8f));
     // GU.5: a cable drives it — the modulation ring just outside the body's rim.
     if (driven) p.ring(at(kO), (kBodyR - 3.0f) * s, 1.5f * s, ui::mulAlpha(th.face.valueDriven, 0.8f));
+    if (env.ghost) return;  // (bug-mod-ghost: a ghost is the value's arc, wedge and hand)
     // The readout (a marker's place being typed shows here while the popup is closed).
     const bool markTyping = isMark(edit_) && !open_, typing = edit_ == kValueText || markTyping;
     const bool readoutHot = hot_ == kValueText || edit_ == kValueText;

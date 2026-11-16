@@ -318,8 +318,11 @@ TEST_CASE("EQ.4 response: the drawn total is the chain's GroupResponse; a drag n
   CHECK(gr.lowerings() == n0 + 1);
 }
 
-TEST_CASE("TX.mod-bands response: a band whose Frequency an LFO cable drives keeps its curve; its live ring moves the node "
-          "and the curve (no lowering), exactly as the knob there would") {
+// bug-mod-ghost (replaces TX.mod-bands' "the live ring moves the node and the curve"): the solid curve and node stay at
+// the knob; the SILHOUETTE (the display's ghost pass) is the same response at the modulated value, exactly the curve the
+// knob there would draw.
+TEST_CASE("bug-mod-ghost response: a band whose Frequency an LFO cable drives keeps its curve at the knob; its silhouette "
+          "is the response where the modulation has it (no lowering), exactly as the knob there would draw") {
   Alone a;
   const doc::EqInfo e = a.info();
   const doc::BandInfo band = e.bands[0][1];  // the 400 Hz bell
@@ -329,10 +332,11 @@ TEST_CASE("TX.mod-bands response: a band whose Frequency an LFO cable drives kee
   a.show(1.0f);
   panel::Element& r = a.element("response");
   const uint32_t n = panel::test::responsePoints();
-  auto drawn = [&] {
+  auto drawn = [&](bool ghost) {
     std::vector<float> v(n);
     for (uint32_t k = 0; k < n; ++k) {
-      const std::optional<float> got = panel::test::drawnDb(a.element("response"), panel::test::responseX(r, k));
+      const float x = panel::test::responseX(r, k);
+      const std::optional<float> got = ghost ? panel::test::ghostDb(a.element("response"), x) : panel::test::drawnDb(a.element("response"), x);
       REQUIRE(got.has_value());
       v[k] = *got;
     }
@@ -341,11 +345,13 @@ TEST_CASE("TX.mod-bands response: a band whose Frequency an LFO cable drives kee
   auto peakHz = [&](const std::vector<float>& v) {
     return panel::test::responseHz(static_cast<uint32_t>(std::max_element(v.begin(), v.end()) - v.begin()));
   };
-  // The cable no longer blanks the curve: drawn, at the knob (no live ring), equal to the band's own response there.
-  const std::vector<float> still = drawn();
+  // The cable no longer blanks the curve: drawn, at the knob (no live modulation), equal to the band's own response
+  // there; no ghost pass.
+  const std::vector<float> still = drawn(false);
   for (const float x : still) REQUIRE(std::isfinite(x));
   CHECK(*std::max_element(still.begin(), still.end()) == doctest::Approx(9.0).epsilon(0.02));
   CHECK(peakHz(still) == doctest::Approx(400.0).epsilon(0.03));
+  CHECK(a.face().stats().ghosts == 0);
   std::vector<double> hz;
   for (const uint32_t k : {0u, 200u, 400u, 523u, n - 1}) hz.push_back(panel::test::responseHz(k));
   const std::vector<double> want = groupDb(*a.ctx.doc(), e.chain[0], hz, a.ctx.sampleRate());
@@ -356,7 +362,8 @@ TEST_CASE("TX.mod-bands response: a band whose Frequency an LFO cable drives kee
   }
   const float w = r.desc().w;
   CHECK(panel::test::nodeOf(r, band.group)->x == doctest::Approx(panel::test::axisT(400.0) * w).epsilon(0.01));
-  // The host's live ring puts the modulated Frequency at 2.5 kHz: the node and the curve's peak go there.
+  // The host's live ring has the modulated Frequency at 2.5 kHz: the silhouette's peak goes there; the solid curve and
+  // node stay at the knob's 400 Hz.
   GroupResponses& gr = a.ctx.groupResponses();
   const uint32_t lowerings = gr.lowerings();
   const dsp::Curve fc = *dev(*a.ctx.doc(), band.frequency).curve(doc::kValueParam);
@@ -370,25 +377,31 @@ TEST_CASE("TX.mod-bands response: a band whose Frequency an LFO cable drives kee
   CHECK(a.face().target().setModulation(fb, ring));
   a.host->notifyChanged();
   a.d->step();
-  const std::vector<float> moved = drawn();
-  CHECK(peakHz(moved) == doctest::Approx(2500.0).epsilon(0.03));
-  CHECK(*std::max_element(moved.begin(), moved.end()) == doctest::Approx(9.0).epsilon(0.02));
-  CHECK(panel::test::nodeOf(a.element("response"), band.group)->x == doctest::Approx(panel::test::axisT(2500.0) * w).epsilon(0.01));
-  // It sweeps on: another live position, still no lowering (values only).
+  CHECK(a.face().stats().ghosts >= 1);
+  const std::vector<float> ghost = drawn(true);
+  CHECK(peakHz(ghost) == doctest::Approx(2500.0).epsilon(0.03));
+  CHECK(*std::max_element(ghost.begin(), ghost.end()) == doctest::Approx(9.0).epsilon(0.02));
+  CHECK(peakHz(drawn(false)) == doctest::Approx(400.0).epsilon(0.03));
+  CHECK(panel::test::nodeOf(a.element("response"), band.group)->x == doctest::Approx(panel::test::axisT(400.0) * w).epsilon(0.01));
+  // It sweeps on: another live position, still no lowering (values only); the solid curve is not evaluated again.
+  const uint64_t evals = gr.evaluations();
   ring.current = posOf(800.0);
   CHECK(a.face().target().setModulation(fb, ring));
   a.host->notifyChanged();
   a.d->step();
-  CHECK(peakHz(drawn()) == doctest::Approx(800.0).epsilon(0.03));
+  CHECK(peakHz(drawn(true)) == doctest::Approx(800.0).epsilon(0.03));
+  CHECK(peakHz(drawn(false)) == doctest::Approx(400.0).epsilon(0.03));
   CHECK(gr.lowerings() == lowerings);
-  // The live curve at 800 Hz is exactly the curve with the knob itself at 800 Hz (the ring gone: stopped).
-  const std::vector<float> live = drawn();
+  CHECK(gr.evaluations() == evals + 1);  // (the silhouette's band; the solid curve is the cached one)
+  // The silhouette at 800 Hz is exactly the curve with the knob itself at 800 Hz (the ring gone: stopped).
+  const std::vector<float> live = drawn(true);
   setUnits(a.st(), band.frequency, 800.0);
   ring.active = false;
   CHECK(a.face().target().setModulation(fb, ring));
   a.host->notifyChanged();
   a.d->step();
-  const std::vector<float> knob = drawn();
+  CHECK(a.face().stats().ghosts == 0);
+  const std::vector<float> knob = drawn(false);
   for (uint32_t k = 0; k < n; k += 7) CHECK(knob[k] == doctest::Approx(live[k]).epsilon(1e-4).scale(1.0));
 }
 

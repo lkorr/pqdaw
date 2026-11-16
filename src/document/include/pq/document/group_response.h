@@ -16,8 +16,9 @@
 //
 // TX.mod-bands: a DRIVEN control (a wire, an automation lane or a macro mapping on it) is a set port of the response
 // (graph::LinearResponse "SET PORTS"; its final value, doc::CurveSite::value), held at the control's curve at a
-// position: the LIVE MODULATED one a display gives (setLive: the ModulationRing's current), else the knob's. So a band
-// an LFO sweeps keeps its curve, drawn where the modulation has it, whatever the modulator is.
+// position: the LIVE MODULATED one a display gives (setLive: bug-mod-ghost, the ghost pass's — the position live
+// modulation has it at now), else the knob's. So a band an LFO sweeps keeps its curve at the knob and its ghost's
+// silhouette where the modulation has it, whatever the modulator is.
 //
 // DY.3: GroupTransfer is the same binding around graph::StaticTransfer (the static curve Out = f(In) of a memoryless
 // group); both share GroupEvaluator (prepare, update, the driven controls).
@@ -58,8 +59,10 @@ public:
   // The controls' current values from `project` (the same structural revision as prepared).
   void update(const Project& project) noexcept;
   // EQ.4: changes whenever prepare() ran or update() changed a value the evaluator reads (a display re-evaluates only
-  // then: a drag on one band leaves the other bands' curves as they are).
-  uint64_t stamp() const noexcept { return stamp_; }
+  // then: a drag on one band leaves the other bands' curves as they are). bug-mod-ghost: the live positions held
+  // (setLive) are part of it by VALUE — the same positions give the same stamp — so a display that caches per stamp
+  // keeps the knob's curve and the modulated one (the ghost's silhouette) apart, re-evaluating neither while they stay.
+  uint64_t stamp() const noexcept;
   // TX.mod-bands: the driven controls the evaluator reads, as Control bindings (a display looks up their live rings).
   std::span<const Binding> driven() const noexcept { return drivenBindings_; }
   // The live modulated position of driven()[i] (in [0, 1]); < 0 or NaN: none (the knob's own). Allocation-free; true

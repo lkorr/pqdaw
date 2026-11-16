@@ -74,6 +74,14 @@ public:
   bool animating() const noexcept override;
   bool frameTick() override;  // DT.1: the elements' frameTick
   bool ticking() const noexcept override;
+  // bug-mod-ghost (Face): the elements' MODULATION GHOSTS. paintLive paints each element whose value (or response)
+  // live modulation moves, then its ghost over it (Element::ghosted / paintGhost) with a ghost target (each control at
+  // its ghost position, no edits; PanelTarget::ghostPass) and a ghost painter. pollGhosts: the target's modulation serial
+  // moved while the panel shows a modulated control (a wire drives one; a display read a ghost); ghostsLive: such a
+  // control is shown and the modulation is live. paintGhosts: nothing (they are in paintLive).
+  bool pollGhosts() override;
+  bool ghostsLive() const override;
+  bool tickElements();  // DT.1: the elements' frameTick alone (frameTick is it)
 
   // ---- interaction ----
   int32_t hitTest(ui::Vec2 local, float pxPerUnit) const noexcept override;
@@ -136,6 +144,7 @@ public:
   // Stats of the last paint (the bench, tests): elements drawn, static layers from tiles / drawn directly.
   struct Stats {
     uint32_t drawn = 0, fromTiles = 0, direct = 0, tilesBuilt = 0;
+    uint32_t ghosts = 0;  // bug-mod-ghost: elements whose ghost was painted
   };
   const Stats& stats() const noexcept { return stats_; }
 
@@ -156,6 +165,14 @@ private:
   float tilesWanted_ = 0.0f;  // the scale the last paint missed tiles at (0: none missing)
   Stats stats_;
   std::vector<uint64_t> liveKeys_;  // GU.13: per element, its live key at the last changedRects (0: hidden)
+  // bug-mod-ghost: whether a control on the panel is modulated (cached per target revision and panel), whether the last
+  // paint's displays read a ghost, the modulation serial at the last pollGhosts.
+  bool modulatedControls() const;
+  mutable uint64_t modulatedRev_ = ~0ull;
+  mutable doc::PanelPtr modulatedPanel_;
+  mutable bool modulated_ = false;
+  bool displayGhost_ = false;
+  uint64_t ghostSerial_ = 0;
   doc::DeviceId owner_;
   // GU.5: the mod source whose cable is on the pointer (-1: none), the pointer (panel units), the control under it.
   int32_t cable_ = -1, cableTarget_ = -1;
@@ -257,6 +274,7 @@ public:
 
 private:
   FacePointer pointerOf(const ui::PointerEvent& e) const;
+  void ghostTick();  // bug-mod-ghost
   std::unique_ptr<Face> face_;
   int32_t hover_ = Face::kNone;
   bool captured_ = false;

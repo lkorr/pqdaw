@@ -168,6 +168,8 @@ struct BusLevel {
   uint8_t channels = 0;  // 0: not metered / no such bus
   float peak[2] = {0.0f, 0.0f};
   float meanSquare[2] = {0.0f, 0.0f};
+  // bug-mod-ghost: the last sample of the latest block (signed, not accumulated): where a modulation tap is now.
+  float last[2] = {0.0f, 0.0f};
 };
 
 // One image for one unit, with its bindings (pq/engine/project_compile.h makes them).
@@ -305,6 +307,9 @@ public:
   // Non-RT (one reader thread): the levels of buses of the last published layout since the previous call, then a reset
   // request (the audio thread restarts the accumulation at its next block).
   void readMeters(std::span<const uint32_t> buses, std::span<BusLevel> out);
+  // Non-RT (bug-mod-ghost): only `channels` and `last` of the same buses, read without the reset request (any number of
+  // readers: it changes no accumulation). The rest of each BusLevel stays zero.
+  void readLatest(std::span<const uint32_t> buses, std::span<BusLevel> out) const;
   // RT-safe (audio thread): after the last process(), no unit was fading, no image or topology was waiting and no
   // voice was live in any running unit. Computed inside process() before the program tells its reclaimer that the
   // audio thread is quiescent (T3.17-fix1, M3 review C1): read after that, the units of the current topology's dead

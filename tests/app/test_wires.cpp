@@ -480,6 +480,60 @@ TEST_CASE("wires: deleting a block deletes its wires, in one undo step") {
   CHECK(drawnWires(*store.current()).size() == 1);  // one undo step restores the block and its wire
 }
 
+// bug-mod-ghost: the tap's latest value (ProjectProgram::readLatest: the last sample of the latest block, one relaxed
+// store per tap channel per block) — where the modulation has the param NOW, what the ghosts draw. Read any number of
+// times without consuming the rings' sweeps.
+TEST_CASE("wires (bug-mod-ghost): while playing, the tap reports the modulated param's current value, signed; reading it "
+          "consumes no sweep") {
+  ThreeTracks f;
+  auto link = makeLink(f.store.current());
+  [[maybe_unused]] const ListenerId sub = f.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  Driver d{*link};
+  auto e = ops::connectTravelWire(*f.store.current(), f.store.ids(), f.lfo, "y", f.gain, std::string(kValueParam), 0.6);
+  REQUIRE(e.ok());
+  REQUIRE(f.store.dispatch(e->command).ok());
+  link->flush();
+  REQUIRE(link->lastError().empty());
+  const views::ModTarget tgt{f.gain, std::string(kValueParam)};
+  views::ModSweep now, sw;
+  // Stopped: known, 0.
+  link->readModulationNow(std::span(&tgt, 1), std::span(&now, 1));
+  CHECK(now.known);
+  CHECK(now.now == 0.0f);
+  link->play(0);
+  d.run(static_cast<uint32_t>(0.5 * kRate / kBlock));
+  link->readModulation(std::span(&tgt, 1), std::span(&sw, 1));  // (the rings' read: their sweep starts here)
+  // 3 Hz, ±0.6 of the travel: sampled every ~23 ms over a second it goes well up and well down, never past 0.6.
+  float lo = 0.0f, hi = 0.0f;
+  for (int k = 0; k < 40; ++k) {
+    d.run(static_cast<uint32_t>(0.025 * kRate / kBlock));
+    link->readModulationNow(std::span(&tgt, 1), std::span(&now, 1));
+    REQUIRE(now.known);
+    CHECK(now.up == 0.0f);  // (only the value: no sweep)
+    CHECK(std::fabs(now.now) <= 0.6f + 1e-4f);
+    lo = std::min(lo, now.now);
+    hi = std::max(hi, now.now);
+    // The rings' read sees the same value now (the same block), with its sweep since its last read.
+    if (k % 10 == 9) {
+      views::ModSweep r;
+      link->readModulation(std::span(&tgt, 1), std::span(&r, 1));
+      CHECK(r.now == now.now);
+      CHECK(r.up + r.down > 0.3f);  // (the reads in between consumed nothing)
+      CHECK(r.now <= r.up + 1e-6f);
+      CHECK(-r.now <= r.down + 1e-6f);
+    }
+  }
+  MESSAGE("tap now over 1 s: " << lo << " … " << hi);
+  CHECK(hi > 0.3f);
+  CHECK(lo < -0.3f);
+  // The wire's amount at 0: the param is at its knob, the tap reads exactly 0.
+  REQUIRE(f.store.dispatch(ops::setWireAmount(*f.store.current(), drawnWires(*f.store.current()).at(0).id, 0.0)->command).ok());
+  link->flush();
+  d.run(static_cast<uint32_t>(0.1 * kRate / kBlock));
+  link->readModulationNow(std::span(&tgt, 1), std::span(&now, 1));
+  CHECK(now.now == 0.0f);
+}
+
 // T1.x-silence: a modulation source on another track keeps the target's unit running (and its ring moving) while it is
 // non-zero, through the bus-silence flags; the tap is zero exactly when the modulation is.
 TEST_CASE("wires: a cross-track modulation keeps the target unit awake while it is non-zero") {

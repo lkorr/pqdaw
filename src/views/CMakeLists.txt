@@ -27,6 +27,7 @@
 # which is included below once it exists.
 set(PQ_VIEWS_SOURCES
   src/view_context.cpp
+  src/live_modulation.cpp  # bug-mod-ghost: where live modulation has each param now (every host's ghosts)
   src/computer_keyboard.cpp
   src/view_scenes.cpp
   src/waveforms.cpp

@@ -20,6 +20,7 @@
 //
 // UI thread only. Painting allocates nothing once the draw list and the dash scratch have grown.
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -61,6 +62,13 @@ public:
   // The colour a primitive drawn in `col` gets (the tint applied): for faces that write the draw list directly
   // (TX.panel-faces: a device panel's recorded triangles as static layers).
   Rgba colour(Rgba col) const noexcept { return c(col); }
+  // bug-mod-ghost: a GHOST painter — every colour's alpha times `opacity` (after the tint) and no text at all (a ghost
+  // shows where a value is, never a second readout over the first). A painter made by at() keeps it.
+  void setGhost(float opacity) noexcept {
+    ghost_ = std::clamp(opacity, 0.0f, 1.0f);
+    ghosted_ = true;
+  }
+  bool ghost() const noexcept { return ghosted_; }
   // Text needs a text system and a face (face 0: the UI's regular face, as FontRole's default).
   void setText(TextSystem* text, uint32_t face = 0) noexcept {
     text_ = text;
@@ -79,6 +87,8 @@ public:
     p.images_ = images_;
     p.tint_ = tint_;
     p.tinted_ = tinted_;
+    p.ghost_ = ghost_;
+    p.ghosted_ = ghosted_;
     return p;
   }
 
@@ -119,10 +129,13 @@ private:
   uint32_t count_ = 0;
   Rgba tint_ = 0;
   bool tinted_ = false;
+  float ghost_ = 1.0f;
+  bool ghosted_ = false;
   // A colour that draws nothing (alpha 0 after the tint): the primitive is counted but emits no vertices.
   bool invisible(Rgba col) const noexcept { return alphaOf(c(col)) == 0; }
   Rgba c(Rgba col) const noexcept {
-    return tinted_ ? withAlpha(tint_, (alphaOf(tint_) * alphaOf(col) + 127u) / 255u) : col;
+    const Rgba t = tinted_ ? withAlpha(tint_, (alphaOf(tint_) * alphaOf(col) + 127u) / 255u) : col;
+    return ghosted_ ? withAlpha(t, static_cast<uint32_t>(static_cast<float>(alphaOf(t)) * ghost_ + 0.5f)) : t;
   }
 };
 

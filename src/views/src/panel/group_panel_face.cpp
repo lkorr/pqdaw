@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <optional>
 #include <span>
 #include <cmath>
 #include <string>
@@ -15,6 +16,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
 #include "pq/ui/theme.h"
+#include "pq/views/panel/group_responses.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views::panel {
@@ -52,6 +54,58 @@ ElementTiles& elementTiles() {
   static ElementTiles t;
   return t;
 }
+
+// ---- bug-mod-ghost: the ghost pass's target --------------------------------------------------------------------------
+// What an element's ghost is painted with: each control at its ghost position (the stored one where it has none), its
+// responses held at the ghost positions (GroupResponses::usePositions), everything else the panel's; it edits nothing.
+class GhostTarget final : public PanelTarget {
+public:
+  explicit GhostTarget(PanelTarget& in) : in_(in) {}
+  ~GhostTarget() override {
+    if (used_ != nullptr) used_->releasePositions(this);
+  }
+  const BoundInfo& info(const doc::Binding& b) const override { return in_.info(b); }
+  double position(const doc::Binding& b) const override {
+    if (b.kind == doc::BindingKind::Control)
+      if (const std::optional<double> g = in_.ghostPosition(b)) return *g;
+    return in_.position(b);
+  }
+  std::string format(const doc::Binding& b, double position) const override { return in_.format(b, position); }
+  std::optional<double> parse(const doc::Binding& b, std::string_view text) const override { return in_.parse(b, text); }
+  void begin(const doc::Binding&, const char*) override {}
+  void setPosition(const doc::Binding&, double) override {}
+  void setCurve(const doc::Binding&, const dsp::Curve&) override {}
+  void end() override {}
+  void cancel() override {}
+  void setOnce(const doc::Binding&, double, const char*) override {}
+  void reset(const doc::Binding&) override {}
+  uint64_t revision() const override { return in_.revision(); }
+  ui::Widget* menuHost() const noexcept override { return nullptr; }
+  VoiceTapReader* voices(const doc::Binding& b) override { return in_.voices(b); }
+  doc::PanelPtr childPanel(const doc::Binding& b) const override { return in_.childPanel(b); }
+  std::shared_ptr<MetaFace> engineFace(const doc::Binding& b, std::string_view typeId, FaceHost* host) override {
+    return in_.engineFace(b, typeId, host);
+  }
+  devices::SpectrumFeed* signalFeed(const doc::Binding& b) override { return in_.signalFeed(b); }
+  std::optional<double> ghostPosition(const doc::Binding& b) const override { return in_.ghostPosition(b); }
+  bool modulationLive() const override { return in_.modulationLive(); }
+  bool ghostPass() const noexcept override { return true; }
+  double tempoBpm() const override { return in_.tempoBpm(); }
+  bool transportPlaying() const override { return in_.transportPlaying(); }
+  double sampleRate() const override { return in_.sampleRate(); }
+  const doc::Project* project() const override { return in_.project(); }
+  const doc::DeviceLibrary* deviceLibrary() const override { return in_.deviceLibrary(); }
+  GroupResponses* responses() override {
+    GroupResponses* r = in_.responses();  // (the panel's target sets its own positions: ours after it)
+    if (r != nullptr) r->usePositions(this, true);
+    used_ = r;
+    return r;
+  }
+
+private:
+  PanelTarget& in_;
+  GroupResponses* used_ = nullptr;
+};
 
 }  // namespace
 
@@ -220,16 +274,46 @@ bool GroupPanelFace::pollVoices() {
   return changed;
 }
 
-bool GroupPanelFace::frameTick() {
-  bool changed = false;
-  for (const std::unique_ptr<Element>& e : elements_) changed = e->frameTick(*target_) || changed;
-  return changed;
-}
+bool GroupPanelFace::frameTick() { return tickElements(); }
 
 bool GroupPanelFace::ticking() const noexcept {
   for (const std::unique_ptr<Element>& e : elements_)
     if (e->ticking()) return true;
   return false;
+}
+
+// ---- bug-mod-ghost --------------------------------------------------------------------------------------------------
+
+bool GroupPanelFace::modulatedControls() const {
+  const uint64_t rev = target_->revision();
+  if (rev == modulatedRev_ && panel_ == modulatedPanel_) return modulated_ || displayGhost_;
+  modulatedRev_ = rev;
+  modulatedPanel_ = panel_;
+  bool any = false;
+  for (const std::unique_ptr<Element>& e : elements_) {
+    for (const doc::Binding& b : e->desc().bindings)
+      any = any || (b.bound() && b.kind == doc::BindingKind::Control && target_->driven(b));
+    if (!any) e->visitControls([&](const doc::Binding& b, const Rect&) { any = any || target_->driven(b); });
+    if (any) break;
+  }
+  modulated_ = any;
+  return modulated_ || displayGhost_;
+}
+
+bool GroupPanelFace::ghostsLive() const { return modulatedControls() && target_->modulationLive(); }
+
+bool GroupPanelFace::pollGhosts() {
+  if (!modulatedControls()) return false;
+  const uint64_t s = target_->modulationSerial();
+  if (s == ghostSerial_) return false;
+  ghostSerial_ = s;
+  return true;
+}
+
+bool GroupPanelFace::tickElements() {
+  bool changed = false;
+  for (const std::unique_ptr<Element>& e : elements_) changed = e->frameTick(*target_) || changed;
+  return changed;
 }
 
 bool GroupPanelFace::animating() const noexcept {
@@ -359,6 +443,10 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   ee.theme = &th;
   ee.target = target_.get();
   ee.uiScale = env.uiScale;
+  // bug-mod-ghost: the ghost pass's target (made at the first ghost) and the responses whose reads tell a display's ghost.
+  std::optional<GhostTarget> ghost;
+  GroupResponses* responses = standIn ? nullptr : target_->responses();
+  displayGhost_ = false;
   for (size_t i = 0; i < elements_.size(); ++i) {
     if (!shownNow(i, memo)) continue;
     Element& e = *elements_[i];
@@ -398,8 +486,24 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
     ui::FacePainter q = p.at({o, sc});
     ee.hovered = hovered_ == static_cast<int32_t>(i);
     ee.focused = focus_ == static_cast<int32_t>(i);
+    if (responses != nullptr) responses->clearSawGhost();
     e.paintLive(q, ee);
+    // bug-mod-ghost: the element's ghost over it, where live modulation has its values (or its response) now.
+    const bool sawGhost = responses != nullptr && responses->sawGhost();
+    displayGhost_ = displayGhost_ || sawGhost;
+    if (sawGhost || e.ghosted(*target_)) {
+      if (!ghost) ghost.emplace(*target_);
+      ui::FacePainter g = p.at({o, sc});
+      g.setGhost(Element::kGhostOpacity);
+      ElementEnv ge = ee;
+      ge.target = &*ghost;
+      ge.hovered = ge.focused = false;
+      ge.ghost = true;
+      e.paintGhost(g, ge);
+      ++stats_.ghosts;
+    }
   }
+  if (responses != nullptr) responses->usePositions(target_.get(), false);  // (the ghost target goes now)
   // GU.5: a mod source's cable on the pointer: a hanging curve from its handle, the control a release wires outlined.
   if (cable_ >= 0 && static_cast<size_t>(cable_) < elements_.size()) {
     const Element& src = *elements_[static_cast<size_t>(cable_)];
@@ -826,14 +930,25 @@ void PanelHost::endWheel() {
 
 void PanelHost::wake() {
   markDirty();
-  (void)face_->frameTick();  // DT.1 (the dirty mark above repaints it anyway)
-  if (voiceTimer_ == 0 && (face_->voices() != nullptr || face_->ticking()) && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+  (void)face_->frameTick();   // DT.1 (the dirty mark above repaints it anyway)
+  (void)face_->pollGhosts();  // bug-mod-ghost (likewise)
+  if (voiceTimer_ == 0 && (face_->voices() != nullptr || face_->ticking() || face_->ghostsLive()) && tree() != nullptr)
+    voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 
 void PanelHost::transportChanged() {
   if (!visible()) return;
   if (face_->frameTick()) markDirty();
-  if (voiceTimer_ == 0 && face_->ticking() && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+  ghostTick();
+  if (voiceTimer_ == 0 && (face_->ticking() || face_->ghostsLive()) && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+}
+
+// bug-mod-ghost: a ghost that moved repaints only the controls whose ghost moved (a group panel: notifyChanged's live
+// keys hold the ghost positions); another face its whole rect.
+void PanelHost::ghostTick() {
+  if (!face_->pollGhosts()) return;
+  if (panelFace() != nullptr) notifyChanged();
+  else markDirty();
 }
 
 void PanelHost::onTimer(uint32_t id) {
@@ -848,8 +963,10 @@ void PanelHost::onTimer(uint32_t id) {
   VoiceTapReader* v = face_->voices();
   if (!visible()) return;
   if (face_->frameTick()) markDirty();  // DT.1: a tempo slider while the transport plays
+  ghostTick();                          // bug-mod-ghost
   if (v != nullptr && face_->pollVoices()) markDirty();
-  if ((v != nullptr && (v->live() || face_->animating())) || face_->ticking()) voiceTimer_ = requestTimer(1.0 / 60.0);
+  if ((v != nullptr && (v->live() || face_->animating())) || face_->ticking() || face_->ghostsLive())
+    voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 
 ui::FaceTransform PanelHost::transform() const noexcept {
@@ -936,12 +1053,14 @@ void PanelHost::paint(ui::PaintContext& ctx) {
   ui::FacePainter p(ctx.dl, tr);
   p.setText(ctx.res.text);
   p.setImages(ctx.res.images);
+  face_->paintGhosts(p, env);  // bug-mod-ghost: under the live layer (a group panel's are inside its paintLive)
   face_->paintLive(p, env);
-  face_->paintPopup(p, env);  // GU.13: an element's floating popup (the dial's range and curve), over the panel
+  face_->paintPopup(p, env);   // GU.13: an element's floating popup (the dial's range and curve), over the panel
   if (face_->needsPrepare(tr.scale)) requestFrame();
   // GU.13: voices (an engine face's dots, a phase orbit): polled while live (as the old device panel's faces were).
   if (voiceTimer_ == 0)
-    if (VoiceTapReader* v = face_->voices(); (v != nullptr && (v->live() || face_->animating())) || face_->ticking())
+    if (VoiceTapReader* v = face_->voices();
+        (v != nullptr && (v->live() || face_->animating())) || face_->ticking() || face_->ghostsLive())
       voiceTimer_ = requestTimer(1.0 / 60.0);
 }
 

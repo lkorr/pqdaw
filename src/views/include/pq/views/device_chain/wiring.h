@@ -31,6 +31,9 @@
 // audio thread like a track meter) at 30 Hz while the source is live and a modulated knob is shown. Nothing polls
 // otherwise.
 //
+// bug-mod-ghost: ModSweep::now is where the modulation has the param now (the latest block's value of its tap); the
+// ghosts (views::LiveModulation, pq/views/live_modulation.h) read it with readModulationNow for every host.
+//
 // UI thread only.
 
 #include <cstdint>
@@ -49,7 +52,8 @@ namespace pq::views {
 
 class Shell;
 
-// A modulated param, and how far its modulation swept it since the previous read (knob-travel units, ≥ 0).
+// A modulated param, and how far its modulation swept it since the previous read (in its tap's domain,
+// doc::ModulationTap::Domain: knob travel for a Travel wire, the curve's or the DSP units for an added one; ≥ 0).
 struct ModTarget {
   doc::DeviceId device;
   std::string param;
@@ -58,6 +62,9 @@ struct ModSweep {
   bool known = false;  // false: no tap for it (not lowered yet, or no source)
   float up = 0.0f;     // the farthest it went above the knob
   float down = 0.0f;   // … below the knob
+  // bug-mod-ghost: where the modulation has it NOW, relative to the knob (the latest block's last sample of the tap:
+  // up − down, same domain; per voice the newest sounding voice's). 0 while nothing runs. The ghosts draw it.
+  float now = 0.0f;
 };
 
 // Where the rings' levels come from (the app implements it over the engine's tap buses; plain data in and out).
@@ -68,6 +75,9 @@ public:
   virtual bool modulationLive() const noexcept = 0;
   // Sweeps since this consumer's previous read, for `targets` into `out` (same size).
   virtual void readModulation(std::span<const ModTarget> targets, std::span<ModSweep> out) noexcept = 0;
+  // bug-mod-ghost: only `known` and `now` for `targets` (the sweeps left 0), consuming nothing: any number of readers
+  // (views::LiveModulation, the ghosts of every host) leave the rings' sweeps to readModulation.
+  virtual void readModulationNow(std::span<const ModTarget> targets, std::span<ModSweep> out) noexcept = 0;
 };
 
 // Fixed sweeps (tests, scenes); zero while not live, as the engine's while it sleeps.
@@ -77,7 +87,9 @@ public:
   void setLive(bool live) noexcept { live_ = live; }
   bool modulationLive() const noexcept override { return live_; }
   void readModulation(std::span<const ModTarget> targets, std::span<ModSweep> out) noexcept override;
+  void readModulationNow(std::span<const ModTarget> targets, std::span<ModSweep> out) noexcept override;
   uint64_t reads() const noexcept { return reads_; }
+  uint64_t nowReads() const noexcept { return nowReads_; }
 
 private:
   struct Entry {
@@ -87,7 +99,7 @@ private:
   };
   std::vector<Entry> entries_;
   bool live_ = false;
-  uint64_t reads_ = 0;
+  uint64_t reads_ = 0, nowReads_ = 0;
 };
 
 enum class CableMode : uint8_t { Show, Fade, Hide };

@@ -64,6 +64,7 @@ class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 class VoiceTapReader;    // pq/views/meta/meta_face.h
 class GroupResponses;    // pq/views/panel/group_responses.h (EQ.4)
+class LiveModulation;    // pq/views/live_modulation.h (bug-mod-ghost)
 namespace devices {
 class AnalysisHub;  // pq/views/devices/analysis.h (TX.spectrum)
 class SpectrumFeed;
@@ -387,6 +388,9 @@ public:
   // outlive its use. Notifies kModulation.
   void setModulationSource(ModulationSource* source);
   ModulationSource* modulationSource() const noexcept { return modulation_; }
+  // bug-mod-ghost: the modulated params' values now, read from the source at most once per UI frame for every host's
+  // ghosts (pq/views/live_modulation.h).
+  LiveModulation& liveModulation();
   // TX.spectrum: the project's analysis feeds (devices::AnalysisHub: one per device with an analysis tap). The app gives
   // the source of the taps (the playback link's, at its sample rate); without one there are no feeds (the displays show
   // their grid). analysisFeed: the device's feed, or null.
@@ -851,6 +855,7 @@ private:
   uint64_t freezeSerial_ = 0;
   StatusAction statusAction_;
   std::unique_ptr<GroupResponses> responses_;         // EQ.4
+  std::unique_ptr<LiveModulation> liveModulation_;     // bug-mod-ghost
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7
   CircuitOpener circuitOpener_;

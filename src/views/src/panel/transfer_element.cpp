@@ -136,6 +136,22 @@ public:
     dl.popClip();
   }
 
+  // bug-mod-ghost: the SILHOUETTE — the transfer at the driven controls' ghost positions (the ghost pass's
+  // responses() holds them there), translucent over the solid curve; its own derived points.
+  void paintGhost(ui::FacePainter& p, const ElementEnv& env) override {
+    if (env.target == nullptr || env.theme == nullptr) return;
+    if (!derive(*env.target, ghostVersion_, ghostOut_, ghostPts_)) return;
+    const Rect r = plot();
+    const ui::FaceTransform& ft = p.transform();
+    ui::DrawList& dl = p.drawList();
+    dl.pushClip({ft.origin.x + r.x0 * ft.scale, ft.origin.y + r.y0 * ft.scale, ft.origin.x + r.x1 * ft.scale,
+                 ft.origin.y + r.y1 * ft.scale});
+    const Rgba c = env.theme->device.curve;
+    p.polyline(ghostPts_, 3.0f, ui::mulAlpha(c, 0.3f));
+    p.polyline(ghostPts_, 1.3f, c);
+    dl.popClip();
+  }
+
   VoiceTapReader* voiceReader(PanelTarget& t) const override { return dotOn() ? window_.reader(t, binding()) : nullptr; }
   bool pollVoices(PanelTarget& t) override {
     if (!dotOn() || !window_.poll(t, binding())) return false;
@@ -184,32 +200,35 @@ private:
     return level_;
   }
   // The curve from the group's transfer (re-derived only when its evaluation is new).
-  void refresh(PanelTarget& t) {
+  void refresh(PanelTarget& t) { curveValid_ = derive(t, version_, outDb_, pts_); }
+  // The transfer through `t` (bug-mod-ghost: the ghost pass's target gives the modulated one) into out / pts, kept while
+  // `version` is its evaluation's. False: no curve.
+  bool derive(PanelTarget& t, uint64_t& version, std::vector<double>& outDb, std::vector<Vec2>& pts) {
     GroupResponses* r = t.responses();
     const doc::Binding* b = binding();
     const GroupResponses::TransferCurve* c =
         r != nullptr && b != nullptr && b->device.valid() ? r->transferCurve(b->device, grid(), gridKey()) : nullptr;
     if (c == nullptr || c->kind == graph::ResponseKind::Unavailable) {
-      curveValid_ = false;
-      version_ = 0;
-      return;
+      version = 0;
+      return false;
     }
-    if (c->version == version_) return;
-    version_ = c->version;
+    if (c->version == version) return !pts.empty() && finite_[&version == &version_ ? 0 : 1];
+    version = c->version;
     const bool reduction = reductionOut(), db = unitsDb();
-    outDb_.resize(kPoints);
-    pts_.clear();
+    outDb.resize(kPoints);
+    pts.clear();
     bool finite = true;
     for (uint32_t k = 0; k < kPoints; ++k) {
       const double x = inDbAt(k), y = c->y[static_cast<size_t>(k) * c->out];
       const double out = reduction ? x - y : db ? y : 20.0 * std::log10(std::max(std::fabs(y), 1e-9));
       finite = finite && std::isfinite(out);
-      outDb_[k] = out;
+      outDb[k] = out;
       // (far outside the plot: held just past its edge, so the clipped line keeps its slope into the edge)
       const double span = maxDb() - minDb();
-      pts_.push_back({xOf(x), yOf(std::clamp(out, minDb() - span, maxDb() + span))});
+      pts.push_back({xOf(x), yOf(std::clamp(out, minDb() - span, maxDb() + span))});
     }
-    curveValid_ = finite;
+    finite_[&version == &version_ ? 0 : 1] = finite;
+    return finite;
   }
   // The In values the curve is evaluated at: kPoints uniform in input dB (as amplitudes for units linear).
   const std::vector<float>& grid() {
@@ -235,6 +254,10 @@ private:
   std::vector<Vec2> pts_;
   uint64_t version_ = 0;
   bool curveValid_ = false;
+  bool finite_[2] = {false, false};  // the solid curve's, the ghost's (derive)
+  uint64_t ghostVersion_ = 0;        // bug-mod-ghost: the silhouette's evaluation, values and points
+  std::vector<double> ghostOut_;
+  std::vector<Vec2> ghostPts_;
   double level_ = std::numeric_limits<double>::quiet_NaN();
 };
 

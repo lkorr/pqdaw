@@ -154,6 +154,8 @@ public:
   ui::InfoText info() const override;
   // The document changed: the panel repaints, the inspector follows the selected elements.
   void documentChanged();
+  // bug-mod-ghost / KB.3: the engine is active again: the panel's voices and modulation ghosts poll (PanelHost::wake).
+  void wakePanel();
   // (the grip's drag)
   bool gripPointer(const ui::PointerEvent& e);
   void linksChanged();

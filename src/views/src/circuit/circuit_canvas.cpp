@@ -563,8 +563,8 @@ struct CircuitCanvas::Impl final : FaceHost {
     for (Hosted& h : faces) {
       VoiceTapReader* rd = h.face->voices();
       if (!faceVisible(h)) continue;
-      const bool ticked = h.face->frameTick();  // DT.1: what follows the transport without voices (a compare)
-      live = live || h.face->ticking();
+      const bool ticked = h.face->frameTick() | h.face->pollGhosts();  // DT.1, bug-mod-ghost: a compare each
+      live = live || h.face->ticking() || h.face->ghostsLive();
       if (rd == nullptr && !ticked) continue;
       if ((ticked | (rd != nullptr && h.face->pollVoices())) && tr != nullptr) {
         SceneNode n = scene->nodes[h.node];
@@ -640,6 +640,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       p.setText(ctx.res.text);
       p.setImages(ctx.res.images);  // TX.spectrogram: a face with its own texture
       f.paintJacks(p, env);
+      f.paintGhosts(p, env);  // bug-mod-ghost: under the live layer (a group panel's are in its paintLive)
       f.paintLive(p, env);
       if (h.panel) {
         ++stats.panelsPainted;  // TX.panel-faces
@@ -647,7 +648,7 @@ struct CircuitCanvas::Impl final : FaceHost {
         stats.facePrimitives += p.primitives();
         ++stats.facesPainted;
       }
-      wantTimer = wantTimer || f.ticking() || (f.voices() != nullptr && (f.voices()->live() || f.animating()));
+      wantTimer = wantTimer || f.ticking() || f.ghostsLive() || (f.voices() != nullptr && (f.voices()->live() || f.animating()));
     }
     if (wantTimer && faceTimer == 0) faceTimer = self.requestTimer(kFaceFrameSeconds);
   }

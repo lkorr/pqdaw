@@ -19,6 +19,12 @@
 //              responses with the same lifetime: prepared the first time a display asks at a structural revision (its
 //              own inference: a transfer display is one per panel, not 67), its controls re-read per snapshot, its curve
 //              re-evaluated only when its stamp moves.
+//   ghost      bug-mod-ghost: the DRIVEN controls (doc::GroupEvaluator::driven: a wire, a lane, a mapping on them) are
+//              held at the knob, or — while a ghost pass's target is in use (usePositions(t, true): its responses()) —
+//              at their ghost positions (PanelTarget::ghostPosition: where live modulation has them now). The two are
+//              cached apart (by stamp, which holds the live positions by value), so a display's solid curve and its
+//              silhouette are each evaluated only when their own values move. sawGhost(): a get() since the last
+//              clearSawGhost() read a driven control that has a ghost (the face then paints the display's ghost).
 //
 // UI thread only. Not RT code.
 
@@ -37,6 +43,9 @@
 namespace pq::views {
 
 class ViewContext;
+namespace panel {
+class PanelTarget;  // pq/views/panel/element.h
+}
 
 class GroupResponses {
 public:
@@ -89,6 +98,23 @@ public:
   const TransferCurve* transferCurve(doc::DeviceId group, std::span<const float> xs, uint64_t key);
   // Tests: transfer evaluations so far.
   uint64_t transferEvaluations() const noexcept { return transferEvaluations_; }
+  // Tests: response evaluations so far (bug-mod-ghost: the solid curve and the silhouette are each evaluated only when
+  // their own values move).
+  uint64_t evaluations() const noexcept { return evaluations_; }
+
+  // bug-mod-ghost (see the file comment): whose ghost positions the driven controls read (null: none: the knobs), and
+  // whether they are held there (a ghost pass) or at the knob. A target calls it in its responses(); release(t) when
+  // `t` goes away (the next use sets it again).
+  void usePositions(const panel::PanelTarget* t, bool ghost) noexcept {
+    positions_ = t;
+    ghost_ = ghost && t != nullptr;
+  }
+  void releasePositions(const panel::PanelTarget* t) noexcept {
+    if (positions_ == t) usePositions(nullptr, false);
+  }
+  bool ghostMode() const noexcept { return ghost_; }
+  bool sawGhost() const noexcept { return sawGhost_; }
+  void clearSawGhost() noexcept { sawGhost_ = false; }
 
   // The current document (null: none) and the rate the displays evaluate at.
   const doc::Snapshot& doc() const;
@@ -105,7 +131,8 @@ private:
     size_t points = 0;
     double rate = 0.0;  // (the rate it was evaluated at)
   };
-  static constexpr size_t kKeys = 2;  // grids per group: the displays' grid and the delay area's shifted one
+  // Grids per group: the displays' grid and the delay area's shifted one, each at the knob and at the ghost positions.
+  static constexpr size_t kKeys = 4;
   struct Entry {
     doc::DeviceId group;
     std::unique_ptr<doc::GroupResponse> response;
@@ -118,10 +145,12 @@ private:
     std::unique_ptr<doc::GroupTransfer> transfer;
     std::string error;      // empty: prepared
     doc::Snapshot updated;  // the snapshot its controls were read from
-    TransferCurve curve;
-    uint64_t stamp = 0, key = 0;
-    size_t points = 0;
-    double rate = 0.0;
+    struct Cached {
+      TransferCurve curve;
+      uint64_t stamp = 0, key = 0;
+      size_t points = 0;
+      double rate = 0.0;
+    } cached[2];  // at the knob, at the ghost positions (bug-mod-ghost)
   };
   struct Series {
     doc::DeviceId name;
@@ -134,6 +163,10 @@ private:
   // Without an app: the document lowered here (once per structural revision); false: no lowering (lowerError_).
   bool lowerHere();
   Entry* find(doc::DeviceId g) noexcept;
+  // bug-mod-ghost: the driven controls held at the knob or at their ghost positions (see usePositions).
+  void holdDriven(doc::GroupEvaluator& e) noexcept;
+  // The series cache's key of grid `key` in the current mode (a series' product is kept per mode).
+  uint64_t modeKey(uint64_t key) const noexcept { return ghost_ ? key ^ 0x6A09E667F3BCC909ull : key; }
 
   ViewContext& ctx_;
   uint64_t revision_ = 0;
@@ -149,7 +182,9 @@ private:
   std::vector<const Curve*> scratchCurves_;
   std::vector<std::complex<double>> scratchH_, scratchNext_;
   uint32_t lowerings_ = 0;
-  uint64_t transferEvaluations_ = 0;
+  uint64_t transferEvaluations_ = 0, evaluations_ = 0;
+  const panel::PanelTarget* positions_ = nullptr;
+  bool ghost_ = false, sawGhost_ = false;
   uint64_t versions_ = 0, uses_ = 0;
 };
 

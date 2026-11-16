@@ -12,6 +12,10 @@
 //   interaction    pointer events in element-local world units (FacePointer: drags measured in device px, so a control
 //                  travels the same per pointer pixel at every zoom; Shift: fine; double-click: reset), keys and text
 //                  while it holds the face's key focus (a number being typed into), its cursor and info text.
+//   ghost          (bug-mod-ghost) while live modulation moves a value the element shows, the face paints a translucent
+//                  GHOST of the element at the modulated value over it (Element::paintGhost below): no code in an
+//                  element — its value is what it reads from the target, and the ghost pass's target reads the
+//                  modulated values; a response it evaluates through the target is the modulated response.
 //   binding        through a PanelTarget (below): what the bound control / setting is (label, curve, choices) and where it
 //                  is (its knob position), and the edits — a control dragged in one store gesture (one undo step, param
 //                  writes, no compile), a setting committed once at the end of its gesture (one recompile), a curve
@@ -125,6 +129,19 @@ public:
   // A position SHOWN instead of the stored one (an automated control follows its envelope at the playhead while the
   // transport plays); nullopt: the stored one again. Returns whether it changed.
   virtual bool showPosition(const doc::Binding& /*b*/, std::optional<double> /*position*/) { return false; }
+  // ---- bug-mod-ghost: the MODULATION GHOST (pq/views/live_modulation.h) ----
+  // Where live modulation has control `b` NOW, as a knob position in [0, 1] (per voice: the newest voice's); nullopt:
+  // no ghost (not modulated, idle, at its knob). Default: the host's live ring's `current` (setModulation).
+  virtual std::optional<double> ghostPosition(const doc::Binding& b) const;
+  // Reads the modulation (shared: at most one read per UI frame for every target) and returns a serial that moves
+  // whenever a ghost may have moved. The host calls it at its frame ticks (GroupPanelFace::pollGhosts).
+  virtual uint64_t modulationSerial() { return 0; }
+  // Whether ghosts may show or move now (the host keeps ticking while one of its controls is modulated).
+  virtual bool modulationLive() const { return false; }
+  // True only for the target a GHOST PASS paints with (ElementEnv::ghost): its position() is each control's ghost
+  // position (the stored one where none), it edits nothing, and its responses() evaluates the driven controls at their
+  // ghost positions (the silhouette of a response display).
+  virtual bool ghostPass() const noexcept { return false; }
   // DT.1: the project's tempo where the playhead is (while playing; else at the start marker), in BPM — what a tempo
   // slider's note markings are placed by. Cheap (one tempo-map lookup). 120 without a document.
   virtual double tempoBpm() const { return 120.0; }
@@ -166,6 +183,9 @@ struct ElementEnv {
   bool hovered = false;
   bool focused = false;  // holds the face's key focus
   float uiScale = 1.0f;  // DT.3: device px per logical px (the painter's scale / uiScale: logical px per panel unit)
+  // bug-mod-ghost: this is the element's ghost pass (target->ghostPass(); the painter is translucent and draws no text,
+  // hovered / focused are false). An element may leave out what is not its value (a knob's body, a display's grid).
+  bool ghost = false;
 };
 
 // One style field of a kind (registry schema).
@@ -209,6 +229,16 @@ public:
   // Kind + style + size: the static layers' shared tile key (computed once).
   uint64_t staticKey() const noexcept { return staticKey_; }
   virtual void paintLive(ui::FacePainter& p, const ElementEnv& env) = 0;
+  // ---- bug-mod-ghost: the MODULATION GHOST ----
+  // Whether the element has a ghost now: a control it shows (visitControls) has a ghost position, or (the face checks
+  // it too) a response it drew read a modulated driven control (GroupResponses::sawGhost). The face then paints
+  // paintGhost over the element's live layer with a ghost target (PanelTarget::ghostPass) and a ghost painter
+  // (FacePainter::setGhost: kGhostOpacity, no text). Default paintGhost: paintLive — a new element kind gets its ghost
+  // with no code. One whose live layer draws more than its value (a display's plate, grid and labels; an embedded
+  // panel or an engine face, which ghost their own controls) overrides it to draw only what shows the value.
+  virtual bool ghosted(const PanelTarget& t) const;
+  virtual void paintGhost(ui::FacePainter& p, const ElementEnv& env) { paintLive(p, env); }
+  static constexpr float kGhostOpacity = 0.42f;
   // GU.13: a key of what the live layer shows from the target (its bindings' positions, resolutions, rings): a document
   // change repaints only the elements whose key changed (the old device panel's rule: a value change damages only its
   // control). kAnyChange: it cannot tell (an engine's face, an embedded panel, a display): repainted on every change.

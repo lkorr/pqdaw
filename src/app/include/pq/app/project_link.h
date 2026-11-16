@@ -637,6 +637,7 @@ public:
   // Both consumers read the program's meters through one path (readLevels), so neither steals the other's peaks.
   bool modulationLive() const noexcept override;
   void readModulation(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept override;
+  void readModulationNow(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept override;
 
   // ---- views::project_patch::DeviceCostSource (UI thread; T4.13, src/app/src/project_link_cost.cpp) ----
   // One engine::CostMeter per unit schedule, bound to each of its images (interpreter, JIT) as it is published; off
@@ -1061,6 +1062,7 @@ private:
     float peak[2] = {0.0f, 0.0f};
     double msTime[2] = {0.0, 0.0};  // Σ mean square × seconds
     double seconds = 0.0;
+    float last[2] = {0.0f, 0.0f};  // bug-mod-ghost: the latest read's (not accumulated)
     uint8_t channels = 0;
   };
   std::unordered_map<uint32_t, LevelAcc> pendingLevels_[2];  // per consumer, by bus (UI thread)

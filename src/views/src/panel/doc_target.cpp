@@ -16,6 +16,8 @@
 //             controls are indexed once per snapshot (a scan of the wires; racks resolved for macro wires only).
 //   shown     (GU.13) the host's per-control overrides: a live modulation ring, a position shown instead of the stored
 //             one (an automated control at the playhead).
+//   ghost     (bug-mod-ghost) where live modulation has a control now (ViewContext::liveModulation: the tap of its param
+//             through its curve), for every host the panel is drawn in; the responses' driven controls read it.
 
 #include <algorithm>
 #include <cmath>
@@ -33,6 +35,7 @@
 #include "pq/document/modules.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
+#include "pq/views/live_modulation.h"
 #include "pq/document/panel.h"
 #include "pq/document/racks.h"
 #include "pq/views/meta/face_targets.h"
@@ -102,7 +105,10 @@ class DocPanelTarget final : public PanelTarget {
 public:
   DocPanelTarget(ViewContext& ctx, doc::DeviceId group, std::function<ui::Widget*()> host)
       : ctx_(ctx), group_(group), host_(std::move(host)) {}
-  ~DocPanelTarget() override { cancel(); }
+  ~DocPanelTarget() override {
+    cancel();
+    if (usedResponses_) ctx_.groupResponses().releasePositions(this);
+  }
 
   const BoundInfo& info(const doc::Binding& b) const override { return resolved(b).info; }
 
@@ -389,7 +395,25 @@ public:
     return std::binary_search(driven_.begin(), driven_.end(), std::pair<uint32_t, std::string>(b.device.value, b.name));
   }
 
-  GroupResponses* responses() override { return &ctx_.groupResponses(); }
+  GroupResponses* responses() override {
+    GroupResponses& r = ctx_.groupResponses();
+    r.usePositions(this, false);  // bug-mod-ghost: the driven controls at the knob; sawGhost() tells a ghost
+    usedResponses_ = true;
+    return &r;
+  }
+
+  // bug-mod-ghost: a block's control as live modulation has it now (the shown position — a macro's, an automated one's
+  // — moved by its param's tap through the control's curve); else the host's ring (setModulation).
+  std::optional<double> ghostPosition(const doc::Binding& b) const override {
+    if (b.kind != doc::BindingKind::Control || !b.meta.empty()) return PanelTarget::ghostPosition(b);
+    const LiveModulation& lm = ctx_.liveModulation();
+    if (!lm.now(b.device, b.name)) return PanelTarget::ghostPosition(b);  // (a host's ring, when it set one)
+    const Resolved& r = resolved(b);
+    if (!r.info.valid || r.how != How::Param) return std::nullopt;
+    return lm.ghostPosition(b.device, b.name, std::clamp(position(b), 0.0, 1.0), r.info.curve, &r.param);
+  }
+  uint64_t modulationSerial() override { return ctx_.liveModulation().refresh(); }
+  bool modulationLive() const override { return ctx_.liveModulation().live(); }
   const doc::Project* project() const override { return ctx_.doc().get(); }  // DY.2
   const doc::DeviceLibrary* deviceLibrary() const override { return ctx_.deviceLibrary(); }
 
@@ -692,6 +716,7 @@ private:
   };
   std::vector<Engine> engines_;
   std::vector<std::pair<doc::Binding, ui::ModulationRing>> rings_;    // GU.13: the host's live rings
+  bool usedResponses_ = false;                                        // bug-mod-ghost (release at the end)
   std::vector<std::pair<doc::Binding, double>> shown_;                // GU.13: positions shown instead of the stored
   mutable const doc::WireList* mappedOf_ = nullptr;
   mutable doc::Snapshot mappedSnap_;

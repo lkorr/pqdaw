@@ -78,6 +78,8 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
     if (bits & view_change::kAnalysis) wakeFaces();  // TX.spectrum: a Spectrum face's tap appeared
     if (bits & view_change::kSignal) {  // KB.3: the engine is active again (a key, MIDI in): the glow, faces, costs poll
       wakeFaces();
+      for (panel::PanelWindow* w : windows_)  // bug-mod-ghost: the panel windows' voices and ghosts too
+        if (w->visible()) w->wakePanel();
       if (costSource_ != nullptr && showCosts_ && shown() && !costTimer_) pollCosts();
     }
     if (bits & view_change::kWireErrors) {  // WI.2: the link cut (or restored) a wire: its look

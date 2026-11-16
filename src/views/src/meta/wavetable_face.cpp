@@ -1176,7 +1176,7 @@ private:
     const Vec2 bar[2] = {{bp.x, g.cy - g.a - 2.0f}, {bp.x, g.cy + g.a + 2.0f}};
     p.dashed(bar, 0.9f, 2.5f, 2.0f, quiet ? ui::mulAlpha(th.face.handle, 0.45f) : 0);
     p.disc(bp, 1.8f, quiet ? th.face.handle : 0);
-    paintVoices(p, env, now);
+    if (!env.ghost) paintVoices(p, env, now);  // (bug-mod-ghost: a ghost is the controls, not the voices)
   }
 
   void paintVoices(ui::FacePainter& p, const FaceEnv& env, double now) {

@@ -21,6 +21,7 @@
 #include "pq/views/devices/analysis.h"
 #include "pq/views/file_probes.h"
 #include "pq/views/macro/macro_mode.h"
+#include "pq/views/live_modulation.h"
 #include "pq/views/panel/group_responses.h"
 #include "pq/views/render_edit_port.h"
 #include "pq/views/sample_analysis.h"
@@ -204,6 +205,11 @@ void ViewContext::setSignalTapSource(std::function<std::shared_ptr<TapRing>(doc:
 devices::SpectrumFeed* ViewContext::analysisFeed(doc::DeviceId device, std::string_view path) {
   if (!analysis_) return nullptr;
   return analysis_->feed(device, path);
+}
+
+LiveModulation& ViewContext::liveModulation() {
+  if (!liveModulation_) liveModulation_ = std::make_unique<LiveModulation>(*this);
+  return *liveModulation_;
 }
 
 GroupResponses& ViewContext::groupResponses() {

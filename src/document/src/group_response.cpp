@@ -2,6 +2,8 @@
 
 #include "pq/document/group_response.h"
 
+#include <bit>
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -233,8 +235,17 @@ bool GroupEvaluator::setLive(uint32_t i, double position) noexcept {
   c.live = live;
   bool changed = false;
   hold(c, changed);
-  if (changed) ++stamp_;
-  return changed;
+  return changed;  // (stamp() reads the live positions themselves)
+}
+
+uint64_t GroupEvaluator::stamp() const noexcept {
+  uint64_t h = stamp_;
+  for (size_t i = 0; i < driven_.size(); ++i)
+    if (driven_[i].live >= 0.0) {
+      h ^= std::bit_cast<uint64_t>(driven_[i].live) + 0x9E3779B97F4A7C15ull + (static_cast<uint64_t>(i) << 6) + (h >> 2);
+      h *= 0x100000001B3ull;
+    }
+  return h;
 }
 
 void GroupEvaluator::update(const Project& project) noexcept {
@@ -262,9 +273,15 @@ void GroupEvaluator::update(const Project& project) noexcept {
   for (DrivenControl& c : driven_) {
     const DeviceLoc l = findDevice(project, c.device);
     if (l.device == nullptr) continue;
-    c.curve = controlCurve(*l.device, c.param, c.decl);
-    c.knob = paramPosition(*l.device, c.param, c.decl);
-    hold(c, changed);
+    // bug-mod-ghost: the KNOB's state is what stamp_ counts (stamp() adds the live positions by value), so a knob or
+    // curve change moves it even while a live position holds the control elsewhere.
+    const dsp::Curve curve = controlCurve(*l.device, c.param, c.decl);
+    const double knob = paramPosition(*l.device, c.param, c.decl);
+    if (!c.held || knob != c.knob || !(curve == c.curve)) changed = true;
+    c.curve = curve;
+    c.knob = knob;
+    bool held = false;
+    hold(c, held);
   }
   if (changed) ++stamp_;
 }

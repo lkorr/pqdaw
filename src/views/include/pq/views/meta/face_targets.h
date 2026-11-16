@@ -49,6 +49,12 @@ public:
   uint64_t guidesKey() const override;
   const dsp::Curve* curve(size_t param) const override;  // GU.1: a chain meta device's own (path ""); nested: null
   bool showPosition(size_t param, std::optional<double> position) override;  // TL.6
+  // bug-mod-ghost: the instance's params as live modulation has them (ViewContext::liveModulation; a chain meta device
+  // itself, path "": a nested call's params are not wire targets).
+  std::optional<double> ghostPosition(size_t param) const override;
+  bool modulated(size_t param) const override;
+  uint64_t modulationSerial() override;
+  bool modulationLive() const override;
   doc::DeviceId device() const noexcept { return device_; }
   const std::string& path() const noexcept { return path_; }
 

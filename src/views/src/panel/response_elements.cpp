@@ -123,9 +123,7 @@ struct BandRef {
   doc::Binding freq, q, gain, stages, type;  // the role blocks' values (unbound: the band has none)
   uint32_t index = 0;                        // its place in its chain: its colour and number
   bool off = false, solo = false;
-  double hz = 1000.0, db = 0.0;
-  // TX.mod-bands: where the node is drawn — the modulated frequency / gain while a live ring has them, else hz / db.
-  double shownHz = 1000.0, shownDb = 0.0;
+  double hz = 1000.0, db = 0.0;  // at the knobs (the node; bug-mod-ghost: the ghost pass draws it where modulation has it)
   uint32_t typeV = 4, stagesV = 1;
   bool hasGain() const noexcept { return gain.bound() && (!type.bound() || doc::bandTypeHasGain(typeV)); }
   bool hasStages() const noexcept { return stages.bound() && (!type.bound() || doc::bandTypeHasStages(typeV)); }
@@ -459,6 +457,54 @@ public:
     return hoverMag_ ? ui::Cursor::Crosshair : ui::Cursor::Inherit;
   }
 
+  // bug-mod-ghost: the SILHOUETTE. In the ghost pass t.responses() holds the driven controls where live modulation has
+  // them (GroupResponses::usePositions), so the same total, evaluated there, is the modulated response: drawn
+  // translucent over the solid curve (at the knobs), with each band's node where the modulation has it. Its own derived
+  // curves: the solid ones stay as they are (re-derived only when an evaluation is new).
+  void paintGhost(ui::FacePainter& p, const ElementEnv& env) override {
+    PanelTarget& t = *env.target;
+    GroupResponses* r = t.responses();
+    if (r == nullptr || binding() == nullptr || !area_[kMag].open || env.theme == nullptr) return;
+    const ui::Theme& th = *env.theme;
+    const std::vector<double>& hz = grid();
+    const uint32_t act = shown_.active;
+    deriveDb(shown_.total(*r, act, hz, kGridKey), ghostTotal_);
+    const Span& A = area_[kMag];
+    ui::DrawList& dl = p.drawList();
+    dl.pushClip(devRect(p, A));
+    const Rgba m = th.device.response;
+    if (ghostTotal_.valid()) {
+      curvePoints(ghostTotal_.v, 0, kPoints, pts_);
+      p.fillUnder(pts_, yOf(0.0), ui::mulAlpha(m, 0.30f), ui::mulAlpha(m, 0.04f));
+      p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.25f));
+      p.polyline(pts_, 1.3f, m);
+    }
+    const auto& bands = shown_.bands[act];
+    ghostBand_.resize(bands.size());
+    for (size_t i = 0; i < bands.size(); ++i) {
+      const BandRef& b = *bands[i];
+      const bool f = b.freq.bound() && t.ghostPosition(b.freq).has_value();
+      const bool g = b.hasGain() && t.ghostPosition(b.gain).has_value();
+      if (b.off || (!f && !g && !(b.q.bound() && t.ghostPosition(b.q)))) continue;
+      const double ghz = b.freq.bound() ? dsp::evalCurveUnits(t.info(b.freq).curve, std::clamp(t.position(b.freq), 0.0, 1.0)) : b.hz;
+      const float x = xOf(ghz);
+      float y = yOf(0.0);
+      if (b.hasGain()) {
+        y = yOf(dsp::evalCurveUnits(t.info(b.gain).curve, std::clamp(t.position(b.gain), 0.0, 1.0)));
+      } else {  // on its own modulated curve, as the solid node on its own
+        deriveDb(r->curve(b.group, hz, kGridKey), ghostBand_[i]);
+        if (ghostBand_[i].valid()) {
+          const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
+          y = std::clamp(yOf(ghostBand_[i].v[static_cast<size_t>(std::lround(k))]), A.y0 + 4.0f, A.y1 - 4.0f);
+        }
+      }
+      const Rgba col = bandColour(b.index);
+      p.disc({x, y}, 5.4f, th.device.display);
+      p.disc({x, y}, 4.4f, col);
+    }
+    dl.popClip();
+  }
+
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
@@ -607,6 +653,11 @@ public:
     if (!d.valid()) return std::numeric_limits<float>::quiet_NaN();
     const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
     return d.v[static_cast<size_t>(std::lround(k))];
+  }
+  float ghostDb(float x) const {
+    if (!ghostTotal_.valid()) return std::numeric_limits<float>::quiet_NaN();
+    const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
+    return ghostTotal_.v[static_cast<size_t>(std::lround(k))];
   }
   float pointX(uint32_t k) const noexcept { return desc_.w * static_cast<float>(k) / (kPoints - 1); }
   std::optional<Vec2> nodeOf(doc::DeviceId g) const {
@@ -771,8 +822,8 @@ private:
   const BandRef& band(int32_t i) const { return *shown_.bands[shown_.active][static_cast<size_t>(i)]; }
   // A node: at its gain for the gain types, else on its own curve at its frequency.
   Vec2 nodePos(const BandRef& b, uint32_t chain = ~0u) const {
-    const float x = xOf(b.shownHz);
-    if (b.hasGain()) return {x, yOf(b.shownDb)};
+    const float x = xOf(b.hz);
+    if (b.hasGain()) return {x, yOf(b.db)};
     if (chain == ~0u || chain == shown_.active)
       if (b.index < band_.size() && band_[b.index].valid()) {
         const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
@@ -810,7 +861,6 @@ private:
     shown_.sync(r->doc(), b->device);
     shown_.groups(want_, true);
     r->want(want_);
-    follow(*r, t);
     const std::vector<double>& hz = grid();
     const uint32_t act = shown_.active;
     // Only what an open area draws is derived (a closed area costs nothing).
@@ -841,27 +891,6 @@ private:
       derivePhase(tot, unwrap, &delayTotal_, phaseTotal_);
       derivePhase(one, unwrap, &delaySel_, phaseSel_);
     }
-  }
-
-  // TX.mod-bands: the live modulation. Every drawn response's driven controls are held where their rings say the
-  // modulation has them now (GroupResponse::setLive: a curve moves only when a value does), and each node is drawn at
-  // its modulated frequency / gain. A control without a live ring (stopped, no knob of it on a panel) is at its knob.
-  // Polyphonic modulation: the ring's (the tap's newest voice). Called once per paint / gesture; allocation-free.
-  void follow(GroupResponses& r, PanelTarget& t) {
-    auto liveAt = [&](const doc::Binding& x) -> double {
-      const ui::ModulationRing* m = x.bound() ? t.modulation(x) : nullptr;
-      return m != nullptr && m->active && m->current >= 0.0f ? static_cast<double>(m->current) : -1.0;
-    };
-    for (const doc::DeviceId g : want_)
-      if (doc::GroupResponse* gr = r.get(g))
-        for (uint32_t i = 0; i < gr->driven().size(); ++i) (void)gr->setLive(i, liveAt(gr->driven()[i]));
-    for (auto& chain : shown_.bands)
-      for (const auto& bp : chain) {
-        BandRef& b = *bp;
-        const double f = liveAt(b.freq), d = b.hasGain() ? liveAt(b.gain) : -1.0;
-        b.shownHz = f >= 0.0 ? dsp::evalCurveUnits(t.info(b.freq).curve, std::clamp(f, 0.0, 1.0)) : b.hz;
-        b.shownDb = d >= 0.0 ? dsp::evalCurveUnits(t.info(b.gain).curve, std::clamp(d, 0.0, 1.0)) : b.db;
-      }
   }
 
   // ---- the areas ----
@@ -1198,20 +1227,12 @@ private:
       const Rgba col = th.face.valueDriven;
       if (horizontal) p.line({a, c.y}, {z, c.y}, 2.0f, col);
       else p.line({c.x, a}, {c.x, z}, 2.0f, col);
-      if (m->current >= 0.0f) {
-        const float q = at(m->current);
-        p.disc(horizontal ? Vec2{q, c.y} : Vec2{c.x, q}, 2.0f, th.face.value);
-      }
+      // (bug-mod-ghost: where the modulation has it now is the node's ghost)
     };
     live(b.freq, true);
     if (b.hasGain()) live(b.gain, false);
     else if (b.q.bound()) any = any || t.driven(b.q);
     if (any) p.ring(c, 9.0f, 1.2f, th.face.valueDriven);
-    // TX.mod-bands: the node moved with the modulation: a faint ring where the knob has it.
-    if (b.shownHz != b.hz || (b.hasGain() && b.shownDb != b.db)) {
-      const Vec2 k{xOf(b.hz), b.hasGain() ? yOf(b.db) : c.y};
-      if (std::fabs(k.x - c.x) + std::fabs(k.y - c.y) > 1.0f) p.ring(k, 3.0f, 0.9f, ui::mulAlpha(th.face.valueDriven, 0.7f));
-    }
   }
   void paintReadout(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
     int32_t i = drag_.on ? drag_.band : hover_;
@@ -1345,6 +1366,8 @@ private:
   Span area_[kAreas];
   Derived total_[2];
   std::vector<Derived> band_;
+  Derived ghostTotal_;               // bug-mod-ghost: the silhouette (the active chain's total at the ghost positions)
+  std::vector<Derived> ghostBand_;   // a modulated band's own curve there (its node rides on it)
   Derived phaseTotal_, phaseSel_, delayTotal_, delaySel_;  // the phase / delay areas: the total, the selected band
   Rgba selColour_ = 0;
   double phaseLo_ = -180.0, phaseHi_ = 180.0, delayLo_ = 0.0, delayHi_ = 1.0;  // their scales (last paint)
@@ -1475,6 +1498,12 @@ float responseX(const Element& e, uint32_t k) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
   return r != nullptr ? r->pointX(k) : 0.0f;
 }
+std::optional<float> ghostDb(const Element& e, float x) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  if (r == nullptr) return std::nullopt;
+  return r->ghostDb(x);
+}
+
 std::optional<ui::Vec2> nodeOf(const Element& e, doc::DeviceId band) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
   return r != nullptr ? r->nodeOf(band) : std::nullopt;

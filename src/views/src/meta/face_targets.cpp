@@ -2,6 +2,8 @@
 
 #include "pq/views/meta/face_targets.h"
 
+#include "pq/views/live_modulation.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -58,6 +60,24 @@ bool DocTarget::showPosition(size_t param, std::optional<double> position) {
   shown_.emplace_back(param, *position);
   return true;
 }
+
+std::optional<double> DocTarget::ghostPosition(size_t param) const {
+  if (!path_.empty() || param >= type_.params.size()) return std::nullopt;
+  const doc::Device* d = dev();
+  if (d == nullptr) return std::nullopt;
+  const LiveModulation& lm = ctx_.liveModulation();
+  const std::string_view name = type_.params[param].name;
+  if (!lm.now(device_, name)) return std::nullopt;
+  const double pos = faceValueToTravel(*this, type_, param, value(param));
+  return lm.ghostPosition(device_, name, pos, doc::metaParamCurve(*d, path_, type_, param));
+}
+
+bool DocTarget::modulated(size_t param) const {
+  return path_.empty() && param < type_.params.size() && ctx_.liveModulation().modulated(device_, type_.params[param].name);
+}
+
+uint64_t DocTarget::modulationSerial() { return ctx_.liveModulation().refresh(); }
+bool DocTarget::modulationLive() const { return ctx_.liveModulation().live(); }
 
 bool DocTarget::editable() const noexcept { return dev() != nullptr; }
 

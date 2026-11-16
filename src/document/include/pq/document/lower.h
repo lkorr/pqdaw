@@ -293,9 +293,11 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //          when delayed, arriving as the root `in m<wire>` / leaving as the root `export m<wire>` across tracks)
 //   p    = clip(pk + s, 0, 1);  value = lo + p·(hi − lo)  (Linear)  or  lo·e^(p·ln(hi/lo))  (Log: @curve(exp), dB
 //          gains with a positive floor), rounded for @steps params → the device's param pin
-//   tap  = export tap_d<id>_<name> = (max(p − pk, 0), max(pk − p, 0)): how far the modulation moved the param up and
-//          down; a metered bus (LoweredProject::taps) the views read for the knob's live ring. Zero exactly when the
-//          modulation is, so a silent modulation keeps its unit idle.
+//   tap  = export tap_d<id>_<name> = voice_last((max(p − pk, 0), max(pk − p, 0))): how far the modulation moved the
+//          param up and down (bug-mod-ghost: per voice the newest sounding voice's; on a global value voice_last is an
+//          alias); a metered bus (LoweredProject::taps) the views read for the knob's live ring (its sweep) and its
+//          ghost (the latest block's value). Zero exactly when the modulation is, so a silent modulation keeps its unit
+//          idle.
 // TMM.10-fix2: a wire from a MIDI track's NOTE SOURCE (Wire::noteSource; its port a model.h kNoteOutputs entry) is the
 // same math with src = that track's voice terminal (NodeRole::Wire slot kWNote): "hz" the pitch the devices hear (the
 // last tuning node's `hz` when the patch has tuning nodes, else voice.hz), "gate" gate_to_real(voice.gate) (kWNoteReal),

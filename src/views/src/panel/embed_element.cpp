@@ -54,6 +54,9 @@ public:
   }
   devices::SpectrumFeed* signalFeed(const doc::Binding& b) override { return t_.signalFeed(b); }
   const ui::ModulationRing* modulation(const doc::Binding& b) const override { return t_.modulation(b); }
+  std::optional<double> ghostPosition(const doc::Binding& b) const override { return t_.ghostPosition(b); }  // bug-mod-ghost
+  uint64_t modulationSerial() override { return t_.modulationSerial(); }
+  bool modulationLive() const override { return t_.modulationLive(); }
   bool setModulation(const doc::Binding& b, const ui::ModulationRing& r) override { return t_.setModulation(b, r); }
   bool showPosition(const doc::Binding& b, std::optional<double> p) override { return t_.showPosition(b, p); }
   double tempoBpm() const override { return t_.tempoBpm(); }
@@ -100,6 +103,8 @@ public:
     fe.uiScale = env.uiScale;
     face_->paintLive(q, fe);
   }
+  // bug-mod-ghost: the child panel paints its own elements' ghosts (its paintLive), so the embed has none of its own.
+  bool ghosted(const PanelTarget& /*t*/) const override { return false; }
   bool needsPrepare(float px) const noexcept override { return face_ != nullptr && face_->needsPrepare(px * fit().k); }
   bool prepare(float px) override { return face_ != nullptr && face_->prepare(px * fit().k); }
 

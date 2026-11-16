@@ -1898,3 +1898,12 @@ the loop never play. Choice: the pass the transport is in when it plays that pos
 content outside what plays is clamped into it (an unlooped clip: start marker … its end; looped: from the earlier of
 the start marker and the loop start to the loop end), so the line always lands inside the clip. Status: decided
 (reversible: roll::songAtContent).
+
+## Q?-bug-mod-ghost-a · 2026-11-15 · bug-mod-ghost · Which voice a polyphonic ghost shows; above or under the control
+Context: a per-voice modulation (an envelope per note into a filter) has one value per sounding voice; the old tap
+summed them over the voices (a 4-note chord swept the ring 4× too far). Options: one ghost of the newest voice; one ghost
+per voice (≤ 16 translucent handles); the sum. Choice: the newest sounding voice's (`voice_last` on every tap; on a global
+value an alias, no cost), for the ring too. Several ghosts are a later option (a tap per voice lane). Also: a panel
+element's ghost is painted OVER it (translucent: its plate, a display's grid would cover a ghost under it), a native
+engine face's UNDER its live layer (its solid paint stays the last, so its hit-test layout is the knob's). Status: decided
+(reversible: lower.cpp kTVoice / kTUVoice; GroupPanelFace::paintLive; the hosts' paintGhosts order).

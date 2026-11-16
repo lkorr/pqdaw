@@ -168,7 +168,7 @@ public:
     // Selection / hover of the block.
     outline(p, 0.75f, env.selected ? 1.75f : 1.25f,
             env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0));
-    paintVoices(p, th, now);
+    if (!env.ghost) paintVoices(p, th, now);  // (bug-mod-ghost: a ghost is the shape, not the voices on it)
     // The breakpoints last (TMM.13-fix2, MM review "UI and aesthetic" 11): a voice's dot on one glows under it, so the
     // handle stays a handle (drawn under the dots, the peak's turned blue and read as a voice).
     for (int h = 0; h < 3; ++h) {

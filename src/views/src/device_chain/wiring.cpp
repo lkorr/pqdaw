@@ -37,7 +37,19 @@ void FixedModulationSource::readModulation(std::span<const ModTarget> targets, s
     for (const Entry& e : entries_)
       if (e.device == targets[i].device && e.param == targets[i].param) {
         out[i] = e.sweep;
-        if (!live_) out[i].up = out[i].down = 0.0f;  // as the engine: nothing sweeps while it sleeps
+        if (!live_) out[i].up = out[i].down = out[i].now = 0.0f;  // as the engine: nothing sweeps while it sleeps
+      }
+  }
+}
+
+void FixedModulationSource::readModulationNow(std::span<const ModTarget> targets, std::span<ModSweep> out) noexcept {
+  ++nowReads_;
+  for (size_t i = 0; i < targets.size() && i < out.size(); ++i) {
+    out[i] = ModSweep{};
+    for (const Entry& e : entries_)
+      if (e.device == targets[i].device && e.param == targets[i].param) {
+        out[i].known = e.sweep.known;
+        out[i].now = live_ ? e.sweep.now : 0.0f;
       }
   }
 }

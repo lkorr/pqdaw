@@ -1297,6 +1297,8 @@ void PanelWindow::documentChanged() {
   markDirty();
 }
 
+void PanelWindow::wakePanel() { host_->wake(); }
+
 ui::FaceTransform PanelWindow::panelTransform() const noexcept { return host_->transform(); }
 
 bool PanelWindow::panelPoint(Vec2 device, Vec2& out) const noexcept {

@@ -94,6 +94,15 @@ public:
   // param follows its envelope at the playhead (pq/views/arrangement/automation_follow.h); value() then reads it
   // through the param's curve. nullopt: the stored one again. Returns whether it changed. Default: not supported.
   virtual bool showPosition(size_t /*param*/, std::optional<double> /*position*/) { return false; }
+  // ---- bug-mod-ghost: the MODULATION GHOST (pq/views/live_modulation.h; panel::PanelTarget has the same four) ----
+  // Where live modulation has param i NOW, as a knob position in [0, 1] (faceValueToTravel's); nullopt: no ghost.
+  virtual std::optional<double> ghostPosition(size_t /*param*/) const { return std::nullopt; }
+  // Whether a wire drives param i (a ghost may appear on it).
+  virtual bool modulated(size_t /*param*/) const { return false; }
+  // Reads the modulation (shared, at most once per UI frame) and returns a serial that moves whenever a ghost may have.
+  virtual uint64_t modulationSerial() { return 0; }
+  // Whether ghosts may show or move now.
+  virtual bool modulationLive() const { return false; }
 };
 
 // GU.1: a face control's position t in [0, 1] ↔ param i's value on the target's curve (the declared one:
@@ -172,6 +181,9 @@ struct FaceEnv {
   bool selected = false;
   bool hovered = false;        // the node is the canvas's hovered item
   std::span<const FaceJack> jacks;
+  // bug-mod-ghost: this paint is the face's GHOST pass (Face::paintGhosts: its target reads the modulated values, the
+  // painter is translucent and draws no text). A face may leave out what is not a value (its voice dots).
+  bool ghost = false;
 };
 
 struct FacePointer {
@@ -306,6 +318,18 @@ public:
   // ≤ 60 Hz poll while ticking() — a compare per element, true: the live layer changed (the host damages liveRects).
   virtual bool frameTick() { return false; }
   virtual bool ticking() const noexcept { return false; }
+  // ---- bug-mod-ghost: the MODULATION GHOSTS (pq/views/live_modulation.h) ----
+  // While live modulation moves a param the face shows, the face draws a translucent ghost of that control at the
+  // modulated value (a knob's pointer, a slider's handle, a breakpoint, a response's silhouette); the solid control
+  // stays at the knob. The host, at its frame ticks: pollGhosts() (reads the modulation — shared, at most once per UI
+  // frame — and returns whether a ghost moved: damage the face's liveRects, or a PanelHost only the controls whose ghost
+  // moved), keeps ticking while ghostsLive(), and calls paintGhosts() right BEFORE paintLive (the ghost under the solid
+  // controls; the solid paint is the last one, so what a face lays out in it — a breakpoint a press hits — is the
+  // knob's). A group panel draws its elements' ghosts inside paintLive and does nothing here. Nothing is read while no
+  // shown param is modulated or the engine sleeps.
+  virtual bool pollGhosts() { return false; }
+  virtual bool ghostsLive() const { return false; }
+  virtual void paintGhosts(ui::FacePainter& /*p*/, const FaceEnv& /*env*/) {}
   // TX.spectrum: where the face finds the analysis of its instance's signal (a Spectrum module's face: asked at every poll
   // and paint, since the tap appears once the unit is compiled; null: none) and how it asks its host to poll it again
   // (sound arrived while it rested). Faces that show no analysis ignore it (wantsAnalysis false).
@@ -379,11 +403,20 @@ public:
   const meta::Type& type() const noexcept { return *type_; }
   const meta::Type* metaType() const noexcept override { return type_; }
   void bind(std::unique_ptr<MetaTarget> target, VoiceTapReader* voices);
-  MetaTarget& target() const noexcept { return *target_; }
+  // (bug-mod-ghost: during paintGhosts, the ghost pass's target — the modulated values, no edits.)
+  MetaTarget& target() const noexcept { return ghost_ != nullptr ? *ghost_ : *target_; }
   bool hasTarget() const noexcept { return target_ != nullptr; }  // TX.knob-curves
   VoiceTapReader* voices() const noexcept override { return voices_; }
 
   bool animating() const noexcept override { return voiceCount_ > 0; }
+  // bug-mod-ghost (Face): every face's ghost, with no code in it — paintGhosts paints paintLive again over itself with
+  // a target whose value(i) is param i at its ghost position (MetaTarget::ghostPosition), FaceEnv::ghost set and a
+  // ghost painter (FacePainter::setGhost: kGhostOpacity, no text). Only while some param has a ghost.
+  bool pollGhosts() override;
+  bool ghostsLive() const override;
+  void paintGhosts(ui::FacePainter& p, const FaceEnv& env) override;
+  bool hasGhost() const;  // a param has a ghost now
+  static constexpr float kGhostOpacity = 0.42f;
   // Reads the voice reader into the face (the host calls it at most once per displayed frame, never from paint, so a
   // partial repaint of several rects draws one state); true when what the face shows changed (new records, or a face's
   // own animation still running: voicesPolled).
@@ -420,6 +453,8 @@ protected:
 private:
   const meta::Type* type_;
   std::unique_ptr<MetaTarget> target_;
+  MetaTarget* ghost_ = nullptr;  // bug-mod-ghost: the ghost pass's target while paintGhosts runs
+  uint64_t ghostSerial_ = 0;
   VoiceTapReader* voices_ = nullptr;
 };
 

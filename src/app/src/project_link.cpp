@@ -2770,6 +2770,7 @@ void ProjectLink::readLevels(int who, std::span<const uint32_t> buses, std::span
       for (int c = 0; c < 2; ++c) {
         a.peak[c] = std::max(a.peak[c], levels[i].peak[c]);
         a.msTime[c] += static_cast<double>(levels[i].meanSquare[c]) * dt;
+        a.last[c] = levels[i].last[c];
       }
       a.seconds += dt;
     }
@@ -2781,6 +2782,7 @@ void ProjectLink::readLevels(int who, std::span<const uint32_t> buses, std::span
       for (int c = 0; c < 2; ++c) {
         l.peak[c] = it->second.peak[c];
         l.meanSquare[c] = it->second.seconds > 0.0 ? static_cast<float>(it->second.msTime[c] / it->second.seconds) : 0.0f;
+        l.last[c] = it->second.last[c];
       }
       pendingLevels_[who].erase(it);
     }
@@ -2808,7 +2810,29 @@ void ProjectLink::readModulation(std::span<const views::ModTarget> targets, std:
     if (s.known && !asleep && levels[i].channels >= 2) {  // tap = (up, down) ≥ 0: the peaks are the sweep
       s.up = levels[i].peak[0];
       s.down = levels[i].peak[1];
+      s.now = levels[i].last[0] - levels[i].last[1];  // bug-mod-ghost: the latest block's
     }
+    out[i] = s;
+  }
+}
+
+// bug-mod-ghost: the taps' latest values only (ProjectProgram::readLatest: no reset, no accumulation), for the ghosts.
+void ProjectLink::readModulationNow(std::span<const views::ModTarget> targets, std::span<views::ModSweep> out) noexcept {
+  const size_t n = std::min(targets.size(), out.size());
+  std::vector<uint32_t> buses(n, kNone);
+  std::vector<engine::BusLevel> levels(n);
+  {
+    std::lock_guard lock(mutex_);  // (the map and the program's published layout change together)
+    for (size_t i = 0; i < n; ++i)
+      if (auto it = tapBus_.find(std::to_string(targets[i].device.value) + ":" + targets[i].param); it != tapBus_.end())
+        buses[i] = it->second;
+    if (engine::ProjectProgram* program = engine_->program(); program != nullptr) program->readLatest(buses, levels);
+  }
+  const bool asleep = engine_->asleep();
+  for (size_t i = 0; i < n; ++i) {
+    views::ModSweep s;
+    s.known = buses[i] != kNone;
+    if (s.known && !asleep && levels[i].channels >= 2) s.now = levels[i].last[0] - levels[i].last[1];
     out[i] = s;
   }
 }

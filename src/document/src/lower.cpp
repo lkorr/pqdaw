@@ -2532,12 +2532,14 @@ enum WireK : uint32_t {
 enum TargetK : uint32_t {
   kTKnob, kTPosA, kTPosB, kTCurve, kTAdd, kTClip, kTMapA, kTMapB, kTConv, kTRoundAdd, kTFloor,
   kTUpSub, kTUpMax, kTDownSub, kTDownMax, kTPack, kTExport,
-  kTRoundMul, kTRoundStep, kTSpare19,
+  kTRoundMul, kTRoundStep,
+  kTVoice,  // bug-mod-ghost: the position tap's voice_last (per voice: the newest voice's; a global value: an alias)
   // the added stage's nodes (keyed by the stage's first wire): TX.patching's units law, GU.1's add-in-units stage
   kTUAdd, kTUClip, kTURoundAdd, kTUFloor, kTUUpSub, kTUUpMax, kTUDownSub, kTUDownMax, kTUPack, kTUExport,
   kTUConv,  // GU.1: the output conversion after an add-in-units stage (db_to_gain)
+  kTUVoice,  // bug-mod-ghost: the stage tap's voice_last
 };
-static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTUConv) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
+static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTUVoice) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
 
 std::string_view reducerAtom(WireReducer r) noexcept {
   switch (r) {
@@ -2809,7 +2811,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         const PortRef up = ir.atom("max", {ir.atom("sub", {x, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
         const PortRef down = ir.atom("max", {ir.atom("sub", {centre, x}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
         const std::string port = tapPort(d.device->id, name);
-        ir.exportPort(port, ir.atom("pack", {up, down}, tid(kTUPack), 2), tid(kTUExport));
+        // bug-mod-ghost: per voice the newest voice's (voice_last; on a global value an alias), not the sum over them.
+        const PortRef packed = ir.atom("pack", {up, down}, tid(kTUPack), 2);
+        ir.exportPort(port, ir.atom("voice_last", {packed}, tid(kTUVoice)), tid(kTUExport));
         if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, domain});
       }
       v = x;
@@ -2860,7 +2864,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, sid(kTUpSub)), b.c0()}, sid(kTUpMax));
       const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, sid(kTDownSub)), b.c0()}, sid(kTDownMax));
       const std::string port = tapPort(d.device->id, name);
-      ir.exportPort(port, ir.atom("pack", {up, down}, sid(kTPack), 2), sid(kTExport));
+      const PortRef packed = ir.atom("pack", {up, down}, sid(kTPack), 2);
+      ir.exportPort(port, ir.atom("voice_last", {packed}, sid(kTVoice)), sid(kTExport));  // bug-mod-ghost (as above)
       if (taps != nullptr) taps->push_back(ModulationTap{d.device->id, name, track, port, ModulationTap::Domain::Position});
     }
     if (!added.empty()) {

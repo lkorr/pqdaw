@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include "pq/document/devices.h"
+#include "pq/views/panel/element.h"
 #include "pq/views/view_context.h"
 
 namespace pq::views {
@@ -128,7 +129,17 @@ doc::GroupResponse* GroupResponses::get(doc::DeviceId group) {
     e->response->update(*snap);
     e->updated = snap;
   }
+  holdDriven(*e->response);
   return e->response.get();
+}
+
+void GroupResponses::holdDriven(doc::GroupEvaluator& e) noexcept {
+  const std::span<const doc::Binding> driven = e.driven();
+  for (uint32_t i = 0; i < driven.size(); ++i) {
+    const std::optional<double> g = positions_ != nullptr ? positions_->ghostPosition(driven[i]) : std::nullopt;
+    sawGhost_ = sawGhost_ || g.has_value();
+    (void)e.setLive(i, ghost_ && g ? *g : -1.0);
+  }
 }
 
 const GroupResponses::Curve* GroupResponses::curve(doc::DeviceId group, std::span<const double> hz, uint64_t key) {
@@ -136,23 +147,25 @@ const GroupResponses::Curve* GroupResponses::curve(doc::DeviceId group, std::spa
   if (r == nullptr) return nullptr;
   Entry& e = *find(group);
   const double rate = sampleRate();
-  // The slot of this key (else the least recently used one).
+  // The slot of this key at these values (bug-mod-ghost: the stamp holds the live positions by value, so the knob's
+  // curve and the ghost's are two slots of one key, and a group no ghost moves shares one), else the least recently
+  // used one.
+  const uint64_t stamp = r->stamp();
   Cached* c = &e.cached[0];
   for (Cached& x : e.cached)
-    if (x.curve.version != 0 && x.key == key) {
-      c = &x;
-      break;
+    if (x.curve.version != 0 && x.key == key && x.stamp == stamp && x.points == hz.size() && x.rate == rate) {
+      x.used = ++uses_;
+      return &x.curve;
     } else if (x.used < c->used) {
       c = &x;
     }
   c->used = ++uses_;
-  if (c->curve.version != 0 && c->key == key && c->stamp == r->stamp() && c->points == hz.size() && c->rate == rate)
-    return &c->curve;
   Curve& out = c->curve;
   out.in = std::max<uint16_t>(1, r->inChannels());
   out.out = std::max<uint16_t>(1, r->outChannels());
   out.h.resize(hz.size() * out.in * out.out);
   out.kind = r->evaluate(hz, rate, out.h);
+  ++evaluations_;
   out.version = ++versions_;
   c->stamp = r->stamp();
   c->key = key;
@@ -168,8 +181,9 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
   cs.clear();
   vs.clear();
   Series* s = nullptr;
+  const uint64_t skey = modeKey(key);  // bug-mod-ghost
   for (Series& x : series_)
-    if (x.name == name && x.key == key) s = &x;
+    if (x.name == name && x.key == skey) s = &x;
   for (size_t i = 0; i < members.size(); ++i) {
     const Curve* c = curve(members[i], hz, key);
     if (c == nullptr && !(i < passes.size() && passes[i] != 0)) {
@@ -189,7 +203,7 @@ const GroupResponses::Curve* GroupResponses::series(doc::DeviceId name, std::spa
     series_.push_back({});
     s = &series_.back();
     s->name = name;
-    s->key = key;
+    s->key = skey;
   }
   Curve& out = s->curve;
   if (out.version != 0 && s->versions == vs && out.h.size() == hz.size() * out.in * out.out) return &out;
@@ -279,6 +293,7 @@ doc::GroupTransfer* GroupResponses::transfer(doc::DeviceId group) {
     e->transfer->update(*snap);
     e->updated = snap;
   }
+  holdDriven(*e->transfer);
   return e->transfer.get();
 }
 
@@ -295,18 +310,19 @@ const GroupResponses::TransferCurve* GroupResponses::transferCurve(doc::DeviceId
   for (TransferEntry& x : transfers_)
     if (x.group == group) e = &x;
   const double rate = sampleRate();
-  if (e->curve.version != 0 && e->stamp == t->stamp() && e->key == key && e->points == xs.size() && e->rate == rate)
-    return &e->curve;
-  TransferCurve& c = e->curve;
+  TransferEntry::Cached& m = e->cached[ghost_ ? 1 : 0];  // bug-mod-ghost: the knob's and the ghost's apart
+  if (m.curve.version != 0 && m.stamp == t->stamp() && m.key == key && m.points == xs.size() && m.rate == rate)
+    return &m.curve;
+  TransferCurve& c = m.curve;
   c.out = std::max<uint16_t>(1, t->outChannels());
   c.y.resize(xs.size() * c.out);
   c.kind = t->evaluate(xs, rate, c.y);
   c.version = ++versions_;
   ++transferEvaluations_;
-  e->stamp = t->stamp();
-  e->key = key;
-  e->points = xs.size();
-  e->rate = rate;
+  m.stamp = t->stamp();
+  m.key = key;
+  m.points = xs.size();
+  m.rate = rate;
   return &c;
 }
 

@@ -1992,7 +1992,12 @@ void DeviceChainView::refreshRings() {
               ring.liveLo = std::clamp(pk - sw.down, 0.0f, 1.0f);
               ring.liveHi = std::clamp(pk + sw.up, 0.0f, 1.0f);
             }
-            ring.current = 0.5f * (ring.liveLo + ring.liveHi);
+          }
+          // bug-mod-ghost: where the modulation has it now (the tap's latest value, not the middle of the sweep).
+          if (sw.known && sw.now != 0.0f) {
+            const double at = m.ringUnits[i] != 0 ? devices::sweptPosition(info, pk, sw.now, ringDomain(m.ringUnits[i], info))
+                                                  : static_cast<double>(pk + sw.now);
+            ring.current = static_cast<float>(std::clamp(at, 0.0, 1.0));
           }
         }
       }

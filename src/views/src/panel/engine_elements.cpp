@@ -148,7 +148,11 @@ public:
   }
 
   // ---- painting ----
-  void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
+  // bug-mod-ghost: the native face's own ghosts (MetaFace::paintGhosts: its controls at their modulated values) under
+  // its live layer, in this section's window — so the section has no ghost pass of its own.
+  void paintLive(ui::FacePainter& p, const ElementEnv& env) override { paintSection(p, env); }
+  bool ghosted(const PanelTarget& /*t*/) const override { return false; }
+  void paintSection(ui::FacePainter& p, const ElementEnv& env) {
     if (!face_) {
       paintMissing(p, env);
       return;
@@ -175,6 +179,7 @@ public:
     fe.theme = env.theme;
     fe.hovered = env.hovered;
     fe.uiScale = env.uiScale;
+    face_->paintGhosts(q, fe);
     face_->paintLive(q, fe);
     dl.popClip();
   }
