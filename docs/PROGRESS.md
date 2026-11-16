@@ -1040,3 +1040,16 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   Pre-existing flake, not from VZ: pq_tests_timeline "preview player: play() during the previous preview's first
   callback…" times out under load (failed 2 of 3 runs, PreviewPlayer unchanged since 11-10). Goldens added:
   device-meta-stereo, module-stereofield / stereoimage / phasescope-panel.
+
+## 2026-11-16 · VZ.6 merged · main
+- Did: Band Levels (pq/dsp/band_levels.h: 3 / 4 / 5 bands, PQ's independent split by default or a Linkwitz–Riley
+  tree, mono / L / R / M / S, VU / Peak / Custom ballistics, 4096-column history) and Waveform (pq/dsp/waveform.h:
+  128-frame L / R / M / S bins of peak, energy, brightness; loop placed by the tap's beat, free-run without a clock)
+  on new worker stages kWantBands / kWantWave; faces on VZ.5's AnalyserFace with PQ's options and look.
+- Verified (worker): -Affected 45/45 before VZ.5 landed; after rebasing onto VZ.5: dsp band / waveform 8/8, views
+  VZ.5 + VZ.6 + engine elements + rich elements 32/32 (goldens unchanged), playback pass-through + GU.7 modules 9/9
+  (one NVIDIA-driver SIGSEGV in an EQ case, green alone). Merged as tested (main unmoved).
+- Perf / CPU-efficiency check (check preset): worker per second of stereo: Band Levels 5 bands 1.5 ms, Waveform
+  0.81 ms; UI frame 0.075 / 0.20 ms; hidden = 0, settles at rest.
+- Notes: Q?-VZ.6-a (no colour pickers; PQ's DAW link not needed, no bar numbers on the scroll; LR tree sums flat to
+  0.034 dB). Goldens added: device/project-meta-bandwave, module-bandlevels / waveform-panel.
