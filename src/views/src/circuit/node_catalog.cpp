@@ -67,6 +67,9 @@ std::string_view metaDescription(std::string_view id) noexcept {
   if (id == "spectrum") return "A spectrum analyser of what passes through it (the signal is unchanged).";
   if (id == "oscilloscope") return "An oscilloscope locked to the pitch of what passes through it (the signal is unchanged).";
   if (id == "spectrogram") return "A scrolling spectrogram of what passes through it (the signal is unchanged).";
+  if (id == "level_meter") return "Peak and RMS level bars of what passes through it, with peak hold and clip lamps (the signal is unchanged).";
+  if (id == "lufs_meter") return "Momentary, short-term and integrated LUFS, LRA, true peak and correlation of what passes through it (the signal is unchanged).";
+  if (id == "loudness_history") return "Momentary, short-term and integrated loudness of what passes through it over time, against a target (the signal is unchanged).";
   return {};
 }
 std::string_view deviceDescription(std::string_view patch) noexcept {
@@ -100,7 +103,10 @@ std::string_view atomAliases(std::string_view name) noexcept {
   return {};
 }
 
-bool visualiser(std::string_view metaId) noexcept { return metaId == "spectrum" || metaId == "oscilloscope" || metaId == "spectrogram"; }
+bool visualiser(std::string_view metaId) noexcept {
+  return metaId == "spectrum" || metaId == "oscilloscope" || metaId == "spectrogram" || metaId == "level_meter" ||
+         metaId == "lufs_meter" || metaId == "loudness_history";  // VZ.4
+}
 
 // Atoms that make a free device on their own at the project level: none that needs a voice, the transport's
 // sample position, sample data, an engine I/O or is internal; no structure atoms (channels and voice reducers belong

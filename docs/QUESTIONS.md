@@ -1942,3 +1942,17 @@ ProjectPatchView::insertVcaAtPort, ProjectCanvas::onKey).
   rows and fields without changing the existing ones).
 - SPEC §11.1 still says "level-weighted 3-pass glow, body, bright core"; the Spectrum now follows PQ Meter 1.0.21 (one
   optional glow pass, off by default, then the core). SPEC left untouched (decisions are the user's): please confirm.
+## Q?-VZ.4-a · 2026-11-15 · VZ.4 · The loudness faces' custom colours
+Context: PQ Meter's three loudness modules have colour pickers (ColorSlot: L / R bars, zone tints, peak cap, clip lamp;
+under / on / over target; the M / S / I traces). pqdaw's option sheet (option_sheet.h) has number, choice and toggle rows,
+no colour row. Options: add a colour row type (a picker in the sheet) for these and the other analysers; or keep PQ's
+default palette fixed. Choice: the fixed palette (PQ's defaults, `ui::signal_theme` for the level meter) for now; a colour
+row would serve every analyser and belongs with VZ.2's colour work. Status: open (reversible: an Opt kind + rows).
+
+## Q?-VZ.4-b · 2026-11-15 · VZ.4 · The history across a long silence
+Context: the feed stops feeding the loudness meter once it rests (3.5 s of silence and every falling level under −100 dB:
+the worker idles, the CPU rule), so the Loudness History's (and the LUFS trace's) 100 ms points stop during a long
+silence and resume with the sound: the silence shows as a ~4 – 6 s gap, not its full length. PQ Meter's graph scrolls
+through silence. Options: keep stepping the meter (and the worker, and the UI's repaint) at 10 Hz while a history face is
+shown; or pause. Choice: pause (a silent DAW costs nothing). Status: decided (reversible: atRest's condition in
+pq/dsp/loudness.h, or the feed's rest test for kWantLoudness).

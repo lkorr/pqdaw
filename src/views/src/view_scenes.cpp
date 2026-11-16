@@ -3885,6 +3885,131 @@ Status setupProjectMetaSpectrogram(Shell& shell) {
   return Ok{};
 }
 
+// ---- VZ.4: the loudness analysers --------------------------------------------------------------------------------------
+
+// An audio track "Master" with a Level Meter, a LUFS Meter and a Loudness History, all on one 24 s mix: a quiet intro
+// (a pad), a verse with a kick, a chorus over the −14 target and a hot ending whose left channel clips (the Level
+// Meter's lamp; true peak over 0 dBTP). The LUFS Meter and the History target −14 (the streaming preset). Each module's
+// tap is analysed now by a manual feed asking for what its face draws, then held (deterministic).
+struct LoudIds {
+  doc::TrackId track;
+  doc::DeviceId levels, lufs, history;
+  meta::DataPtr dLevels, dLufs, dHistory;
+};
+
+Status buildLoudProject(doc::DocumentStore& store, LoudIds& ids) {
+  const auto t = runEdit(store, doc::ops::createTrack(*store.current(), store.ids(), doc::TrackKind::Audio, {}, "Master",
+                                                      doc::Colour{0x4FC3A1}));
+  if (!t || t->tracks.empty()) return Error{ErrorCode::Unknown, "loudness scene: no track", {}};
+  ids.track = t->tracks[0];
+  auto add = [&](const char* type, std::vector<std::pair<std::string, double>> opts, meta::DataPtr& data) -> doc::DeviceId {
+    const auto e = runEdit(store, doc::ops::addMetaDevice(*store.current(), store.ids(), ids.track, type));
+    if (!e || e->devices.empty()) return {};
+    std::vector<std::pair<std::string, meta::DataValue>> f;
+    for (auto& [k, val] : opts) f.emplace_back(k, meta::DataValue::num(val));
+    data = std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(f)));
+    (void)runEdit(store, doc::ops::setMetaData(*store.current(), e->devices[0], "", type, data));
+    return e->devices[0];
+  };
+  ids.levels = add("level_meter", {}, ids.dLevels);
+  ids.lufs = add("lufs_meter", {{"preset", 1.0}, {"target", -14.0}}, ids.dLufs);
+  ids.history = add("loudness_history", {{"preset", 1.0}, {"target", -14.0}}, ids.dHistory);
+  if (!ids.levels.valid() || !ids.lufs.valid() || !ids.history.valid())
+    return Error{ErrorCode::Unknown, "loudness scene: no loudness module", {}};
+  return Ok{};
+}
+
+// The mix at sample i (48 kHz): l and r.
+void loudMix(uint32_t i, float& l, float& r) {
+  constexpr double kSr = 48000.0;
+  const double t = i / kSr;
+  const double pad = 0.5 * (std::sin(2.0 * kScenePi * 220.0 * t) + 0.6 * std::sin(2.0 * kScenePi * 277.18 * t + 0.4) +
+                            0.5 * std::sin(2.0 * kScenePi * 329.63 * t + 1.1));
+  const double beat = std::fmod(t, 0.5);
+  const double kick = std::exp(-beat / 0.12) * std::sin(2.0 * kScenePi * (48.0 * beat + 70.0 * 0.03 * (1.0 - std::exp(-beat / 0.03))));
+  const double hat = std::exp(-std::fmod(t + 0.25, 0.5) / 0.01) * std::sin(2.0 * kScenePi * 7900.0 * t);
+  double g = 0.0, k = 0.0;
+  if (t < 6.0) g = 0.06 + 0.02 * t / 6.0;  // intro
+  else if (t < 14.0) g = 0.12, k = 0.35;   // verse
+  else if (t < 21.0) g = 0.22, k = 0.6;    // chorus
+  else g = 0.32, k = 0.85;                 // the hot ending
+  const double side = 0.25 * std::sin(2.0 * kScenePi * 0.3 * t);
+  const double a = g * pad + k * kick + (k > 0.0 ? 0.08 : 0.0) * hat;
+  l = static_cast<float>(a * (1.0 + side) * (t >= 21.0 ? 1.25 : 1.0));
+  r = static_cast<float>(a * (1.0 - side) + 0.05 * g * std::sin(2.0 * kScenePi * 440.0 * t));
+}
+
+ScopeSource makeLoudSource(std::string_view type, const meta::DataPtr& data) {
+  ScopeSource s;
+  s.tap = std::make_shared<TapRing>(4, 32768, 4096);
+  s.feed = std::make_shared<devices::SpectrumFeed>(*s.tap, devices::AnalysisHub::config(48000.0), devices::SpectrumFeed::Manual{});
+  s.feed->setLoudness(loudnessRequest(type, data.get()));
+  s.feed->acquire(devices::kWantLoudness);
+  constexpr uint32_t kFrames = 24 * 48000, kChunk = 4096;
+  std::vector<float> l(kChunk), r(kChunk);
+  for (uint32_t i = 0; i < kFrames; i += kChunk) {
+    const uint32_t n = std::min(kChunk, kFrames - i);
+    for (uint32_t k = 0; k < n; ++k) loudMix(i + k, l[k], r[k]);
+    const float* p[4] = {l.data(), r.data(), l.data(), r.data()};
+    s.tap->write(p, 4, n);
+    s.feed->step(1.0 + static_cast<double>(i) / 48000.0);
+  }
+  s.feed->hold();
+  return s;
+}
+
+Status adoptLoudFeeds(ViewContext& ctx, const LoudIds& ids) {
+  ScopeSource a = makeLoudSource("level_meter", ids.dLevels), b = makeLoudSource("lufs_meter", ids.dLufs),
+              c = makeLoudSource("loudness_history", ids.dHistory);
+  const doc::DeviceId da = ids.levels, db = ids.lufs, dc = ids.history;
+  ctx.setAnalysisSource(
+      [da, db, dc, at = a.tap, bt = b.tap, ct = c.tap](doc::DeviceId d) -> std::shared_ptr<TapRing> {
+        return d == da ? at : d == db ? bt : d == dc ? ct : nullptr;
+      },
+      48000.0);
+  if (ctx.analysisHub() == nullptr) return Error{ErrorCode::Unknown, "loudness scene: no analysis hub", {}};
+  ctx.analysisHub()->adopt(da, a.tap, a.feed);
+  ctx.analysisHub()->adopt(db, b.tap, b.feed);
+  ctx.analysisHub()->adopt(dc, c.tap, c.feed);
+  return Ok{};
+}
+
+// The Device view of "Master": the three faces side by side.
+Status setupDeviceMetaLoudness(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  LoudIds ids;
+  if (Status s = buildLoudProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptLoudFeeds(ctx, ids); !s) return s;
+  DeviceChainView* v = findDeviceChain(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "device-meta-loudness: the Device view is not installed", {}};
+  ctx.setSelectedTrack(ids.track);
+  ctx.setDetailVisible(true);
+  ctx.setDetailMode(DetailMode::Device);
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  shell.tree().layoutNow();
+  v->rebuild();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// The same project in the project patch view: the band of "Master", its three faces as blocks.
+Status setupProjectMetaLoudness(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  LoudIds ids;
+  if (Status s = buildLoudProject(ctx.store(), ids); !s) return s;
+  if (Status s = adoptLoudFeeds(ctx, ids); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-meta-loudness: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  closeModules(*v);
+  shell.tree().layoutNow();
+  v->rebindFaces();
+  v->focusBand(ids.track, false);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // The same project in the project patch view, "Trem" opened in place: acc1 → wt1 → vca1 (Bend 0 … 2), four voices
 // whose knob positions a modulation spreads.
 Status setupProjectMetaVca(Shell& shell) {
@@ -4028,6 +4153,8 @@ constexpr SceneEntry kScenes[] = {
     {"project-vca-panel", 1600, 900, [](Shell& s) { return setupProjectOrbitPorts(s, true); }},  // GU.4: the VCA module's panel, near
     {"device-meta-spectrogram", 1280, 800, setupDeviceMetaSpectrogram},    // TX.spectrogram
     {"project-meta-spectrogram", 1280, 800, setupProjectMetaSpectrogram},  // TX.spectrogram
+    {"device-meta-loudness", 1280, 800, setupDeviceMetaLoudness},          // VZ.4
+    {"project-meta-loudness", 1280, 800, setupProjectMetaLoudness},        // VZ.4
     {"audio-rack", 1280, 800, setupAudioRack},              // T4.8
     {"instrument-rack", 1280, 800, setupInstrumentRack},    // T4.8
     {"device-automation", 1600, 900, setupDeviceAutomation},  // T4.18 (wider: the filter and the rack side by side)

@@ -24,6 +24,16 @@
 //              the transport's beat, for its Loop playhead). The UI reads only the columns it has not seen (gramRead),
 //              colours and uploads them. A consumer that wants only the spectrogram costs no spectrum analysis; it
 //              settles once as many silent columns as its display shows have passed.
+//   Loudness   VZ.4: the loudness front end (pq/dsp/loudness.h, ported from PQ Meter) on the tap's L and R: levels,
+//              BS.1770 loudness, true peak, the 100 ms history — the parts the consumer's request asks for (setLoudness;
+//              the newest request decides: every display of one instance shows the same options). The worker publishes
+//              its readings and copies the new history points into a ring of dsp::LoudnessMeter::kHistory; the UI reads
+//              them (loudnessRead). Chosen over the raw scope history (kWantScope) by cost: a scope consumer copies
+//              every frame into a 4-channel ring and re-reads it on the UI thread, and the integrated measurement needs
+//              every frame since the reset, which a 5.5 s history cannot replay; this stage reads the tap once on the
+//              worker (≈ 0.3 – 0.4 ms of a core per second of stereo, tests/dsp/test_loudness.cpp) and hands the UI one
+//              small struct. A consumer that wants only the loudness costs no spectrum analysis; it settles when the
+//              meter is at rest (dsp::LoudnessMeter::atRest).
 //
 // Costs nothing while hidden: with no consumer the worker blocks on a condition variable and the tap has no reader, so
 // the audio thread's write is one relaxed load. Shown: the worker runs at the display's rate (60 Hz) while the levels
@@ -53,6 +63,7 @@
 
 #include "pq/core/tap_ring.h"
 #include "pq/document/ids.h"
+#include "pq/dsp/loudness.h"
 #include "pq/dsp/spectrogram.h"
 #include "pq/dsp/spectrum.h"
 #include "pq/dsp/transfer.h"
@@ -60,7 +71,8 @@
 namespace pq::views::devices {
 
 // What a consumer of a feed draws (acquire's flags).
-inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u, kWantSpectrogram = 16u;
+inline constexpr uint32_t kWantOutput = 1u, kWantInput = 2u, kWantResponse = 4u, kWantScope = 8u, kWantSpectrogram = 16u,
+                          kWantLoudness = 32u;  // VZ.4
 
 // VZ.1: the output spectrum's analysis a display may tune (the Spectrum face's ANALYSIS tab; setTuning). The point
 // count, the hop and the sample rate stay the feed's. VZ.2: the axis (scale, fMin, fMax: the points lie evenly on it)
@@ -185,6 +197,20 @@ public:
   // info (null: skipped), from its start; returns the columns copied (from < oldest copies nothing).
   uint32_t gramRead(uint64_t from, uint32_t n, float* rows, GramColumn* info) const;
 
+  // ---- VZ.4: the loudness (kWantLoudness) ----
+  static constexpr uint32_t kLoudRing = dsp::LoudnessMeter::kHistory;
+  // UI thread: the analysis a loudness display asks for (its sampleRate is replaced by the feed's; an unchanged request
+  // is ignored). The newest call decides.
+  void setLoudness(const dsp::LoudnessConfig& c);
+  // UI thread: the readings and the history points [from, from + n) ∩ the held ones into out (null: none; from its
+  // start); returns the sequence of the readings (bumps at each publish) and sets `copied`. settled: as scopeEnd's.
+  uint64_t loudnessRead(dsp::LoudnessReadings& r, bool& settled, uint64_t from = 0, uint32_t n = 0, dsp::LoudnessPoint* out = nullptr,
+                        uint32_t* copied = nullptr) const;
+  // UI thread: the measurement (integrated, LRA, peaks, maxima, history) / the clip lamps and holds start again at the
+  // worker's next step (it is woken).
+  void resetLoudness();
+  void resetClips();
+
   // Tests: runs the worker's step synchronously instead of the thread (the thread is not started).
   struct Manual {};
   SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manual);
@@ -223,7 +249,7 @@ private:
   double lastData_ = 0.0, lastSilence_ = 0.0;
   bool decaying_ = false;
   uint32_t ranWants_ = 0;  // what the worker computed last (a new want restarts its analyser)
-  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, noOutput_{0};
+  std::atomic<uint32_t> consumers_{0}, wantIn_{0}, wantResp_{0}, wantScope_{0}, wantGram_{0}, wantLoud_{0}, noOutput_{0};
   std::atomic<bool> live_{false}, watch_{false};
   std::atomic<uint64_t> hops_{0}, wakeups_{0}, posts_{0};
   std::function<void()> wakePost_;
@@ -257,6 +283,19 @@ private:
   std::vector<uint64_t> gramStageIndex_;
   uint64_t gramQuiet_ = 0;  // columns since the last one with anything in it (worker)
   void gramPublish();       // the worker: the stage into the ring, gramPub_ (takes gramMutex_)
+  // VZ.4: the loudness meter (the worker's alone), its request (loudMutex_) and what it published (loudMutex_).
+  mutable std::mutex loudMutex_;
+  dsp::LoudnessConfig loudWant_;
+  bool loudDirty_ = false;
+  uint32_t loudResets_ = 0;  // loudMutex_: 1 measurement, 2 clips
+  dsp::LoudnessReadings loudPub_;
+  std::vector<dsp::LoudnessPoint> loudRing_;  // kLoudRing (loudMutex_; allocated by the first loudness consumer)
+  uint64_t loudSeq_ = 0;
+  std::unique_ptr<dsp::LoudnessMeter> loud_;  // worker
+  std::vector<dsp::LoudnessPoint> loudStage_; // worker: the new points of one publish
+  uint64_t loudCopied_ = 0;                   // worker: points copied into the ring
+  void loudPush(const float* l, const float* r, uint32_t n);  // the worker
+  void loudPublish();                                         // the worker (takes loudMutex_)
   bool quit_ = false;
   std::thread thread_;
 };

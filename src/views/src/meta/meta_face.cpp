@@ -28,7 +28,10 @@ struct Registry {
                                                                      {"spectrum", &makeSpectrumFace},  // TX.spectrum
                                                                      {"oscilloscope", &makeScopeFace},  // TX.scope
                                                                      {"spectrogram", &makeSpectrogramFace},  // TX.spectrogram
-                                                                     {"noise", &makeNoiseFace}};  // NZ.1
+                                                                     {"noise", &makeNoiseFace},  // NZ.1
+                                                                     {"level_meter", &makeLevelMeterFace},  // VZ.4
+                                                                     {"lufs_meter", &makeLufsMeterFace},    // VZ.4
+                                                                     {"loudness_history", &makeLoudnessHistoryFace}};  // VZ.4
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
   std::vector<std::pair<std::string, ui::Vec2>> captions;  // TMM.13-fix2: captionAt per type id

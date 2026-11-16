@@ -5,6 +5,7 @@
 
 #include "pq/graph/patch_file.h"
 #include "pq/meta/envelope.h"
+#include "pq/meta/loudness.h"
 #include "pq/meta/noise.h"
 #include "pq/meta/oscilloscope.h"
 #include "pq/meta/spectrogram.h"
@@ -34,6 +35,9 @@ struct Registry {
     types.push_back(&oscilloscopeType());  // TX.scope
     types.push_back(&spectrogramType());   // TX.spectrogram
     types.push_back(&noiseType());         // NZ.1
+    types.push_back(&levelMeterType());       // VZ.4
+    types.push_back(&lufsMeterType());        // VZ.4
+    types.push_back(&loudnessHistoryType());  // VZ.4
   }
 };
 

@@ -1987,3 +1987,11 @@ and menus show no ghost (text only).
 - Spectrogram: Colormap → Custom (stops in dB, Gamma folded in), Silence opacity (Level) lets the backdrop through the
   quiet parts. Goldens: device-/project-meta-spectrum, module-spectrum-panel, panel-rich-elements, eq-eight-bands,
   eq-band-response, eq-lr-mode, lines.
+## 2026-11-15 · VZ.4 · Loudness: Level Meter, LUFS Meter, Loudness History 👁
+Three new visualisers (node menu → Visualisers; modules `level_meter`, `lufs_meter`, `loudness_history`), PQ Meter's
+level meter, LUFS meter and loudness graph in pqdaw's face frame (SET sheet with ANALYSIS / DISPLAY, CLEAR, FREEZE).
+Look at: `tests/views/golden/device-meta-loudness.png` (all three on a 24 s mix that ends hot: the left lamp lit, TP over
+0 dBTP), `project-meta-loudness.png`, `module-*meter-panel.png` / `module-loudnesshistory-panel.png` (empty states).
+Try: drag the History's green target line and its dotted auto-reset line; click the Level Meter's lamps; the LUFS
+Meter's target presets (SET → ANALYSIS). Not carried over: PQ's custom colour pickers (Q?-VZ.4-a); the history pauses
+through a long silence (Q?-VZ.4-b).
