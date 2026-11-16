@@ -884,3 +884,14 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified (worker): pq_tests_views default tier 100 % after rebase; new TestDriver test 32/32; pqdaw compiles.
 - Perf / CPU-efficiency check: rows rebuild only when integer rowPx changes; the bar's paint is independent of rows.
 - Notes: 36 roll goldens re-recorded (33 keys-column only, 3 help). Down = zoom in (ruler / Live); flip is one sign.
+
+## 2026-11-15 · bug-bend-shape merged · main
+- Did: a shape node on every bend (selected / hovered notes): drag up = longer glide, down = shorter (×2 per 40 px,
+  grid-snapped, Shift free), sideways = where it turns (monotonic S), double-click = S-curve; the whole selection's
+  same-edge bends together, one undo step (ops::shapeNoteBends). Pen: a stroke changes only the span it covers and eases
+  back over a 32nd; drawing past the end lengthens the note (grid cell; never into the next same-pitch note), one step.
+- Verified (worker): pq_tests_document *bend* 15/15; roll pen 14/14 (3 new, real dispatch); -Affected after rebase
+  green after re-recording pianoroll-bends + 3 help goldens (scrollbar thumb).
+- Perf / CPU-efficiency check: UI only; node hit-test over shown notes (≤ 64 selected + hovered), one cached point each.
+- Notes: Draw Mode test's "last pitch holds to the end" assertion inverted (the behaviour the user asked to remove);
+  node vs vibrato grip: nearer wins.
