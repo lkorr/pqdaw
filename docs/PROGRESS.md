@@ -1009,3 +1009,17 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: one re-layout per drag step as before; free-spot search once per spawn.
 - Notes: project-patch-resize, project-block-drag re-recorded. Q?-bug-spawn-resize-a (reference zoom 1, max 3×);
   -b open: positions are offsets from layout slots, so delete / move-to-track / undo of a spawn still shift later blocks.
+## 2026-11-16 · VZ.3 merged · main
+- Did: tone preview (PQ Meter b721058 / 5dab446): pq/dsp/tone_preview.h (one app-wide tone, uint32 phase, band-limited
+  sine / semisine / triangle, 12 ms glide, 5 / 30 ms ramps) mixed by AudioOutput into the cue pair after the browser
+  preview, never through the engine; views::TonePort → app::ToneService. Spectrum "Tone on click" (press / drag /
+  release; Alt still goes to the host), Spectrogram "Play keys" + "Ctrl+click tone"; snap Off / 12-EDO / Tuning
+  (default: the track's tuning), level, shape, an amber rule at the sounding pitch.
+- Verified (worker): dsp tone 4/4 (incl. RtScope), audio tone / preview service 4/4 (allocation trap on every
+  callback), views real-dispatch 1/1; -Affected -Slow after rebase 87/88 (playback_s0 lowering time 25.7 vs 25 ms
+  under load, passes alone). Orchestrator after the merge: dsp, audio, views tone / loudness / spectrum / spectrogram
+  green (views: 1 failure on the first run under load, 3 clean reruns).
+- Perf / CPU-efficiency check: one table read + fast exp2 + ramps per sample while sounding, nothing otherwise;
+  tuning pitches cached per document.
+- Notes: the first press after an idle-suspended stream is silent until the device's pre-roll ends (existing
+  cold-start behaviour). No goldens changed.
