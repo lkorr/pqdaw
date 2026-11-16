@@ -61,7 +61,8 @@ void checkImage(const std::string& name, const Image& img) {
 }
 
 constexpr doc::ModuleKind kKinds[] = {doc::ModuleKind::Wavetable, doc::ModuleKind::Envelope, doc::ModuleKind::Oscilloscope,
-                                      doc::ModuleKind::Spectrum, doc::ModuleKind::Spectrogram};
+                                      doc::ModuleKind::Spectrum, doc::ModuleKind::Spectrogram, doc::ModuleKind::LevelMeter,
+                                      doc::ModuleKind::LufsMeter, doc::ModuleKind::LoudnessHistory};
 
 // A MIDI track holding one module of each engine kind (pasted as the node menu does).
 struct EngineDoc {
@@ -193,6 +194,10 @@ TEST_CASE("render: the engine modules' closed panels — the old faces from rich
   checkImage("module-scope-panel", panelImage(ctx, m.of(doc::ModuleKind::Oscilloscope).group, nullptr, 1.0f));
   checkImage("module-spectrum-panel", panelImage(ctx, m.of(doc::ModuleKind::Spectrum).group, nullptr, 1.0f));
   checkImage("module-spectrogram-panel", panelImage(ctx, m.of(doc::ModuleKind::Spectrogram).group, nullptr, 1.0f));
+  // VZ.4: no tap here (nothing measured yet): the faces' empty states.
+  checkImage("module-levelmeter-panel", panelImage(ctx, m.of(doc::ModuleKind::LevelMeter).group, nullptr, 1.0f));
+  checkImage("module-lufsmeter-panel", panelImage(ctx, m.of(doc::ModuleKind::LufsMeter).group, nullptr, 1.0f));
+  checkImage("module-loudnesshistory-panel", panelImage(ctx, m.of(doc::ModuleKind::LoudnessHistory).group, nullptr, 1.0f));
 }
 
 TEST_CASE("render: panel-rich-elements — every rich element alone on a panel, bound to an engine") {

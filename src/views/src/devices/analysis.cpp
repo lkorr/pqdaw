@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <utility>
 #include <chrono>
 #include <cmath>
 
@@ -88,8 +89,15 @@ void SpectrumFeed::acquire(uint32_t wants) {
     }
     wantGram_.fetch_add(1, std::memory_order_relaxed);
   }
-  // A consumer of the history or the columns only: no spectrum is computed for it.
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram)) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
+  if (wants & kWantLoudness) {  // VZ.4
+    {
+      std::lock_guard lock(loudMutex_);
+      if (loudRing_.empty()) loudRing_.assign(kLoudRing, dsp::LoudnessPoint{});  // allocated by the first loudness consumer
+    }
+    wantLoud_.fetch_add(1, std::memory_order_relaxed);
+  }
+  // A consumer of the history, the columns or the loudness only: no spectrum is computed for it.
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness)) == 0) noOutput_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_add(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_add(1, std::memory_order_relaxed);
   if (consumers_.fetch_add(1, std::memory_order_relaxed) == 0) {
@@ -107,7 +115,8 @@ void SpectrumFeed::release(uint32_t wants) {
     wantScope_.fetch_sub(1, std::memory_order_relaxed);
   }
   if (wants & kWantSpectrogram) wantGram_.fetch_sub(1, std::memory_order_relaxed);
-  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram)) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants & kWantLoudness) wantLoud_.fetch_sub(1, std::memory_order_relaxed);
+  if (wants != 0 && (wants & ~(kWantScope | kWantSpectrogram | kWantLoudness)) == 0) noOutput_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantInput) wantIn_.fetch_sub(1, std::memory_order_relaxed);
   if (wants & kWantResponse) wantResp_.fetch_sub(1, std::memory_order_relaxed);
   if (consumers_.fetch_sub(1, std::memory_order_relaxed) == 1) {
@@ -121,6 +130,7 @@ uint32_t SpectrumFeed::wants() const noexcept {
   uint32_t w = consumers_.load(std::memory_order_relaxed) > noOutput_.load(std::memory_order_relaxed) ? kWantOutput : 0u;
   if (wantScope_.load(std::memory_order_relaxed) > 0) w |= kWantScope;
   if (wantGram_.load(std::memory_order_relaxed) > 0) w |= kWantSpectrogram;
+  if (wantLoud_.load(std::memory_order_relaxed) > 0) w |= kWantLoudness;
   if (tap_.channels() >= 4) {
     if (wantIn_.load(std::memory_order_relaxed) > 0) w |= kWantInput;
     if (wantResp_.load(std::memory_order_relaxed) > 0) w |= kWantResponse;
@@ -340,6 +350,91 @@ void SpectrumFeed::gramPush(const float* mono, const float* beat, uint32_t n) {
   gramPublish();
 }
 
+// ---- VZ.4: the loudness ----------------------------------------------------------------------------------------------
+
+void SpectrumFeed::setLoudness(const dsp::LoudnessConfig& c) {
+  {
+    std::lock_guard lock(loudMutex_);
+    dsp::LoudnessConfig want = c;
+    want.sampleRate = cfg_.sampleRate;
+    if (want == loudWant_) return;
+    loudWant_ = want;
+    loudDirty_ = true;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;  // the worker applies it (and publishes) at its next step
+  }
+  cv_.notify_all();
+}
+
+void SpectrumFeed::resetLoudness() {
+  {
+    std::lock_guard lock(loudMutex_);
+    loudResets_ |= 1u;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;
+  }
+  cv_.notify_all();
+}
+
+void SpectrumFeed::resetClips() {
+  {
+    std::lock_guard lock(loudMutex_);
+    loudResets_ |= 2u;
+  }
+  {
+    std::lock_guard lock(mutex_);
+    settled_ = false;
+  }
+  cv_.notify_all();
+}
+
+uint64_t SpectrumFeed::loudnessRead(dsp::LoudnessReadings& r, bool& settled, uint64_t from, uint32_t n, dsp::LoudnessPoint* out,
+                                    uint32_t* copied) const {
+  {
+    std::lock_guard lock(mutex_);
+    settled = settled_;
+  }
+  std::lock_guard lock(loudMutex_);
+  r = loudPub_;
+  uint32_t k = 0;
+  if (out != nullptr && !loudRing_.empty()) {
+    const uint64_t end = loudPub_.points, oldest = end > kLoudRing ? end - kLoudRing : 0;
+    if (from >= oldest && from < end) {
+      k = static_cast<uint32_t>(std::min<uint64_t>(n, end - from));
+      for (uint32_t i = 0; i < k; ++i) out[i] = loudRing_[static_cast<size_t>((from + i) % kLoudRing)];
+    }
+  }
+  if (copied != nullptr) *copied = k;
+  return loudSeq_;
+}
+
+void SpectrumFeed::loudPush(const float* l, const float* r, uint32_t n) {
+  if (loud_) loud_->push(l, r, n);  // (analysis: no lock)
+}
+
+void SpectrumFeed::loudPublish() {
+  const dsp::LoudnessReadings r = loud_->readings();
+  loudStage_.clear();  // (capacity kLoudRing: no allocation once warm)
+  const uint64_t end = r.points;
+  uint64_t from = std::max(loudCopied_, end > kLoudRing ? end - kLoudRing : 0);
+  if (end > from) {
+    loudStage_.resize(static_cast<size_t>(end - from));
+    (void)loud_->history(from, static_cast<uint32_t>(end - from), loudStage_.data());
+  }
+  {
+    std::lock_guard lock(loudMutex_);
+    if (!loudRing_.empty())
+      for (size_t i = 0; i < loudStage_.size(); ++i) loudRing_[static_cast<size_t>((from + i) % kLoudRing)] = loudStage_[i];
+    loudPub_ = r;
+    ++loudSeq_;
+  }
+  loudCopied_ = end;
+}
+
 void SpectrumFeed::hold() {
   std::lock_guard lock(mutex_);
   settled_ = true;
@@ -431,6 +526,32 @@ uint32_t SpectrumFeed::work(double now) {
       gramPublish();
     }
   }
+  const bool loud = (want & kWantLoudness) != 0;
+  bool loudPublishNow = false;
+  if (loud) {  // VZ.4: a new request (re)configures the meter (the measurement continues); resets apply here
+    std::optional<dsp::LoudnessConfig> config;
+    uint32_t resets = 0;
+    {
+      std::lock_guard lock(loudMutex_);
+      if (loudDirty_ || !loud_) {
+        loudDirty_ = false;
+        loudWant_.sampleRate = cfg_.sampleRate;
+        config = loudWant_;
+      }
+      resets = std::exchange(loudResets_, 0u);
+    }
+    if (config) {  // (outside the lock: the worker's meter)
+      if (!loud_) {
+        loud_ = std::make_unique<dsp::LoudnessMeter>(*config);
+        loudStage_.reserve(kLoudRing);
+      } else {
+        loud_->configure(*config);
+      }
+    }
+    if (resets & 1u) loud_->resetMeasurement();
+    if (resets & 2u) loud_->resetClips();
+    loudPublishNow = config.has_value() || resets != 0;
+  }
   bool wasSettled;
   {
     std::lock_guard lock(mutex_);
@@ -483,6 +604,10 @@ uint32_t SpectrumFeed::work(double now) {
       }
       gramPush(src, four ? ch_[0].data() : nullptr, k);
     }
+    if (loud) {
+      loudPush(ch_[oL].data(), ch_[oR].data(), k);
+      loudPublishNow = true;
+    }
     if (want & kWantOutput) ran += out_->push(mono_.data(), k);
     if (want & kWantInput) in_->push(monoIn_.data(), k);
     if ((want & kWantResponse) && transfer_) transfer_->push(monoIn_.data(), mono_.data(), k);
@@ -494,7 +619,7 @@ uint32_t SpectrumFeed::work(double now) {
   } else if (now - lastData_ > kNoDataSeconds &&
              (((want & kWantOutput) && !out_->allBelow(kSettledDb)) ||
               (scope && static_cast<double>(scopeQuiet_) < kScopeRestSeconds * cfg_.sampleRate) ||
-              (gram && gramQuiet_ < gramCols_))) {
+              (gram && gramQuiet_ < gramCols_) || (loud && !loud_->atRest()))) {
     // No input: silence paced in real time, so the release falls as it would on a silent signal.
     if (!decaying_) {
       decaying_ = true;
@@ -510,6 +635,10 @@ uint32_t SpectrumFeed::work(double now) {
         scopeAppend(sc, frames, true);
       }
       if (gram) gramPush(mono_.data(), nullptr, frames);  // the picture scrolls on in time (no clock: no beat)
+      if (loud) {  // the levels fall and the windows empty in time
+        loudPush(mono_.data(), mono_.data(), frames);
+        loudPublishNow = true;
+      }
       if (want & kWantOutput) ran += out_->push(mono_.data(), frames);
       if (want & kWantInput) in_->push(mono_.data(), frames);
       if ((want & kWantResponse) && transfer_) {
@@ -524,7 +653,8 @@ uint32_t SpectrumFeed::work(double now) {
                     (!(want & kWantInput) || in_->allBelow(kSettledDb)) &&
                     (!(want & kWantResponse) || !transfer_ || !transfer_->anyConfident()) &&
                     (!scope || static_cast<double>(scopeQuiet_) >= kScopeRestSeconds * cfg_.sampleRate) &&
-                    (!gram || gramQuiet_ >= gramCols_);
+                    (!gram || gramQuiet_ >= gramCols_) && (!loud || loud_->atRest());
+  if (loudPublishNow) loudPublish();
   const bool settledNow = !sound && rest && (data || now - lastData_ > kNoDataSeconds);
   bool post = false;
   if (ran > 0 || settledNow != wasSettled) {

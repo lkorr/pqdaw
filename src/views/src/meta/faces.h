@@ -18,6 +18,9 @@ std::unique_ptr<MetaFace> makeSpectrumFace(const meta::Type& t);   // TX.spectru
 std::unique_ptr<MetaFace> makeScopeFace(const meta::Type& t);      // TX.scope
 std::unique_ptr<MetaFace> makeSpectrogramFace(const meta::Type& t);  // TX.spectrogram
 std::unique_ptr<MetaFace> makeNoiseFace(const meta::Type& t);        // NZ.1
+std::unique_ptr<MetaFace> makeLevelMeterFace(const meta::Type& t);       // VZ.4
+std::unique_ptr<MetaFace> makeLufsMeterFace(const meta::Type& t);        // VZ.4
+std::unique_ptr<MetaFace> makeLoudnessHistoryFace(const meta::Type& t);  // VZ.4
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 
@@ -45,6 +48,21 @@ bool gramTestHover(MetaFace& f, ui::Vec2 local);  // the pointer over the plot (
 // The analysis request a Spectrogram face with these options (its data) sends for a plot `plotDevicePx` wide (scenes:
 // a manual feed computes the columns before the face first paints). The plot is 284 world units wide.
 devices::SpectrogramRequest gramRequest(const meta::DataValue* data, float plotDevicePx, double sampleRate);
+
+// VZ.4 (tests): a loudness face (Level Meter, LUFS Meter, Loudness History) as its last poll left it. False: not one.
+struct LoudnessShown {
+  dsp::LoudnessReadings readings;  // what it shows
+  dsp::LoudnessConfig config;      // the analysis its options ask for
+  size_t points = 0;               // history points held for drawing
+  bool acquired = false, frozen = false;
+};
+bool loudnessShown(const MetaFace& f, LoudnessShown& out);
+// Sets one option by its data key ("target", "floor", …), or "freeze" / "sheet" (view state), "clear" (the CLEAR chip),
+// "lamps" (a click on the Level Meter's lamps).
+bool loudnessTestControl(MetaFace& f, std::string_view key, double value);
+// The analysis a loudness face of type `type` with these options (its data) asks its feed for (scenes: a manual feed
+// measures before the face first paints). Defaults for an unknown type.
+dsp::LoudnessConfig loudnessRequest(std::string_view type, const meta::DataValue* data);
 
 // VZ.1 (tests): the Spectrum face's plot style (its DISPLAY options). False: not a Spectrum face.
 bool spectrumStyle(const MetaFace& f, devices::SpectrumPlotStyle& out);

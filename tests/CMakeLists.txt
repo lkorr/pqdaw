@@ -192,6 +192,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_spectrum_display.cpp  # TX.spectrum: the analysis feed, the spectrum plot, the Spectrum face, scenes, 8-display frame
     views/test_scope_display.cpp  # TX.scope: the feed's scope history, the Oscilloscope face, scenes, 4-scope frame
     views/test_spectrogram_display.cpp  # TX.spectrogram: the feed's columns, the Spectrogram face, its ring texture, scenes, 4-spectrogram frame
+    views/test_loudness_display.cpp  # VZ.4: the feed's loudness stage, the Level Meter / LUFS Meter / Loudness History faces, scenes
     views/test_bug_report.cpp  # T5.x-bugreport: report.md round trip, the writer, the input ring, the pointer crop
     views/test_samples_ui.cpp  # T5.8: missing samples, relink, Collect All and Save through the ViewContext
     views/test_waveforms.cpp  # T5.5: the views' waveform overviews (sync / worker + poster, caches, windows)
@@ -444,6 +445,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_transfer.cpp  # TX.spectrum: the transfer-function estimate
     dsp/test_scope.cpp  # TX.scope: the oscilloscope's trigger, pitch lock and beat slots
     dsp/test_spectrogram.cpp  # TX.spectrogram: the reassigned spectrogram's columns (sine, sweep, chord, sub, impulse, sequence)
+    dsp/test_loudness.cpp  # VZ.4: the loudness front end (EBU 3341 / 3342, true peak vs the atom, correlation, levels, history, rest)
     dsp/test_silence.cpp
     dsp/test_resample.cpp
     dsp/test_frame_table.cpp

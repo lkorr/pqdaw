@@ -138,11 +138,13 @@ public:
 
   int tab = kDisplay;  // opens on the look: what a user changes most
 
-  // BR.ui: placed over the plot (the area it was made with) or beside a face `faceW` × `faceH`, as wide as the face.
-  void place(Place where, float faceW, float faceH) noexcept {
+  // BR.ui: placed over the plot (the area it was made with) or beside a face `faceW` × `faceH`, as wide as the face
+  // (VZ.4: or `panelW` wide, for a narrow face such as the Level Meter's).
+  void place(Place where, float faceW, float faceH, float panelW = 0.0f) noexcept {
     place_ = where;
-    if (where == Place::Right) area_ = {faceW + kSideGap, 0.0f, 2.0f * faceW + kSideGap, faceH};
-    else if (where == Place::Left) area_ = {-kSideGap - faceW, 0.0f, -kSideGap, faceH};
+    const float pw = panelW > 0.0f ? panelW : faceW;
+    if (where == Place::Right) area_ = {faceW + kSideGap, 0.0f, faceW + kSideGap + pw, faceH};
+    else if (where == Place::Left) area_ = {-kSideGap - pw, 0.0f, -kSideGap, faceH};
     else area_ = over_;
   }
   Place placed() const noexcept { return place_; }

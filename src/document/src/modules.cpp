@@ -21,7 +21,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 18> kModules = {{
+constexpr std::array<ModuleInfo, 21> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -41,6 +41,15 @@ constexpr std::array<ModuleInfo, 18> kModules = {{
     {ModuleKind::Spectrum, "spectrum", "Spectrum", "Shows the spectrum of the signal passing through it; changes nothing."},
     {ModuleKind::Spectrogram, "spectrogram", "Spectrogram",
      "Shows the signal passing through it as a scrolling spectrogram; changes nothing."},
+    // VZ.4: the loudness analysers (pq/meta/loudness.h).
+    {ModuleKind::LevelMeter, "level_meter", "Level Meter",
+     "L / R peak and RMS bars with peak hold and latched clip lamps (sample peak, dBFS); changes nothing."},
+    {ModuleKind::LufsMeter, "lufs_meter", "LUFS Meter",
+     "Momentary, short-term and integrated loudness (ITU-R BS.1770-4), LRA, true peak and correlation against a target; "
+     "changes nothing."},
+    {ModuleKind::LoudnessHistory, "loudness_history", "Loudness History",
+     "Momentary, short-term and integrated loudness over time against the target and its tolerance band; changes "
+     "nothing."},
     {ModuleKind::WavetableSynth, "wavetable_synth", "Wavetable Synth",
      "An instrument built from the modules: Phase Accumulator → Wavetable → Envelope per note, with two LFOs (each a "
      "Phase Accumulator into a Wavetable) on the wavetable position and the pitch. Tabs for the oscillator, the "
@@ -317,6 +326,9 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Spectrum: return "spectrum";
     case ModuleKind::Spectrogram: return "spectrogram";
     case ModuleKind::Noise: return "noise";
+    case ModuleKind::LevelMeter: return "level_meter";
+    case ModuleKind::LufsMeter: return "lufs_meter";
+    case ModuleKind::LoudnessHistory: return "loudness_history";
     case ModuleKind::PhaseAccumulator:
     case ModuleKind::Vca:
     case ModuleKind::WavetableSynth:
@@ -454,6 +466,16 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
       chips(17, 8, 224, 120, "restart", "Play|Free|Note");
       caption(18, 132, 212, 96, "Voices");
       chips(19, 132, 224, 96, "voices", "Voice|Shared");
+      break;
+    }
+    case ModuleKind::LevelMeter:
+    case ModuleKind::LufsMeter:
+    case ModuleKind::LoudnessHistory: {  // VZ.4: the display fills the panel (100 × 160, 200 × 160, 300 × 160)
+      const char* kind = k == ModuleKind::LevelMeter ? "levelmeter" : k == ModuleKind::LufsMeter ? "lufsmeter" : "loudnesshistory";
+      p.width = k == ModuleKind::LevelMeter ? 100.0f : k == ModuleKind::LufsMeter ? 200.0f : 300.0f;
+      p.height = 160.0f;
+      p.elements.push_back(plate(p.width, p.height, 10.0));
+      p.elements.push_back(rich(2, kind, 0, 0, p.width, p.height));
       break;
     }
     case ModuleKind::PhaseAccumulator:

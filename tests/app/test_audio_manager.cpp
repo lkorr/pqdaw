@@ -316,6 +316,7 @@ TEST_CASE("settings: the metaDefaults section (VZ.1) round-trips; unknown types 
   const meta::DataValue rec = meta::DataValue::record({{"map", meta::DataValue::num(2.0)}, {"gamma", meta::DataValue::num(1.2)}});
   REQUIRE(saveMetaDefault(path, "spectrogram", rec).ok());
   REQUIRE(saveMetaDefault(path, "oscilloscope", meta::DataValue::record({{"lw", meta::DataValue::num(2.5)}})).ok());
+  REQUIRE(saveMetaDefault(path, "lufs_meter", meta::DataValue::record({{"target", meta::DataValue::num(-14.0)}})).ok());  // VZ.4
   CHECK(loadAudioSettings(path).ok());  // the other sections stay
   {  // a type that does not exist and a field that is not a number
     std::ifstream in(path);
@@ -338,7 +339,10 @@ TEST_CASE("settings: the metaDefaults section (VZ.1) round-trips; unknown types 
   REQUIRE(sp != nullptr);
   CHECK(sp->fields.size() == 1);
   CHECK(meta::userDefaultData("nosuchtype") == nullptr);
-  for (const char* t : {"spectrogram", "oscilloscope", "spectrum"}) meta::setUserDefaultData(t, nullptr);
+  const meta::DataPtr lu = meta::userDefaultData("lufs_meter");
+  REQUIRE(lu != nullptr);
+  CHECK(lu->field("target")->number == -14.0);
+  for (const char* t : {"spectrogram", "oscilloscope", "spectrum", "lufs_meter"}) meta::setUserDefaultData(t, nullptr);
 }
 
 TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audio section; defaults when absent") {
