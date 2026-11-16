@@ -205,6 +205,8 @@ void paintCurveNotes(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 void paintCurveHandles(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 // T7.14 (roll_vibrato.cpp): the ~ grips and the envelope corners of the hovered and the selected notes.
 void paintVibratoGrips(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
+// bug-bend-shape (roll_bend.cpp): the shape nodes of the shown notes' bends.
+void paintBendNodes(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);
 // T7.14 (roll_groups.cpp): the groups' frames and headers (under the notes); warp markers, grips and labels, the
 // proportion tool's box (over them).
 void paintGroupFrames(ui::PaintContext& ctx, RollState& s, const ui::IRect& vis);

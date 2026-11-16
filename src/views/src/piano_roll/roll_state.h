@@ -79,6 +79,9 @@ enum class DragKind : uint8_t {
   WarpMove,       // a warp marker, sideways
   WarpGlide,      // a warp's glide grip: the glide's length
   ProportionBox,  // the proportion tool (J): the box the typed proportion fills
+  // bug-bend-shape (roll_bend.cpp): a bend's shape node (DragState::bends): up / down = the glide's length, sideways
+  // = where in the glide it turns
+  BendShape,
 };
 
 enum class BraceEdge : uint8_t { Start, End, Both };
@@ -197,6 +200,21 @@ struct DragState {
   float bx = 0.0f;  // CurvePoint: the handle's x offset from the pointer (it keeps it through the drag)
   float grabY = 0.0f;  // Move: the pressed note's line minus the pointer's y at the press (T7.14: harmonic snapping)
   double vibDepth = 0.0, vibRate = 0.0;
+  // bug-bend-shape. PenDraw: how long the note may grow (note ticks: up to the next note on its pitch; set at the
+  // press) and the length the release gives it (0: as it is; > its length: the stroke went past its end).
+  Ticks penLimit = 0, penLength = 0;
+  // BendShape: the edge (−1 bend in, +1 bend out), every note the drag shapes with its bend at the press and the room
+  // it has (its length less the other bend), the pressed note's turn at the press, whether the drag moved sideways
+  // past its dead zone (then every note takes the pressed note's new shape; else each keeps its own).
+  struct BendTarget {
+    doc::NoteId note;
+    doc::NoteBend base;
+    Ticks room = 1;
+  };
+  std::vector<BendTarget> bends;
+  int bendEdge = 0;
+  double turn0 = 0.5;
+  bool turned = false;
   bool curveAdded = false;     // CurvePoint: the press added the point (a release without a drag still commits)
   bool deleteOnClick = false;  // PenDraw on a note: a click (no drag) deletes it, as Draw Mode always did
   bool toggleOnClick = false;  // Shift on a selected note: a click deselects it, a drag detunes freely
@@ -685,7 +703,8 @@ public:
   std::span<const doc::Breakpoint> curvePoints(const CurveTarget& t) const;
   // The pitch the free curve is added to, `offset` ticks into its note, in cents: the note's pitch where it starts
   // plus its bends and its group's warp there (not its vibrato). nullopt: unresolvable.
-  std::optional<double> curveBase(const CurveTarget& t, double offset) const;
+  // `length` > 0: as if the note were that long (a pen stroke lengthening it: its bend out moves to the new end).
+  std::optional<double> curveBase(const CurveTarget& t, double offset, Ticks length = 0) const;
   // The target's start and length in content ticks (false: no such note).
   bool curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) const;
   // Breakpoint handles (device px): a dot per point, a diamond in the middle of a segment wide enough to bend. Shown
@@ -733,8 +752,16 @@ public:
   // Ticks per second at a content tick where the clip plays it (120 bpm without a timeline).
   double ticksPerSecond(Ticks contentTick) const;
   // Pen gestures (the note area calls them; each previews the curve the release stores).
+  // bug-bend-shape: a stroke replaces the curve only over the span it covers. Where it leaves the curve that was
+  // there (by more than two px), it returns to it over kPenRampTicks (or what is left of the note) along a curved
+  // segment, so the rest of the note keeps its pitch; a stroke that goes past the note's end lengthens the note to
+  // the end of the grid cell it ends in (to where it ends without grid snapping), never into the next note on the
+  // same pitch, holding its last value there — the length and the curve in one undo step (commitPen).
   void beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool vibrato);
   void penTo(ui::Vec2 p, ui::Mods mods);
+  bool commitPen(DragState& d);
+  inline static constexpr Ticks kPenRampTicks = kPpq / 8;  // a 32nd note
+  inline static constexpr float kPenRampCurve = 0.5f;      // its curvature (automation curve law): eased into the note
   // Ctrl+click in Draw Mode: a breakpoint on the curve at the pointer (the press then drags it).
   bool beginCurvePoint(const CurveTarget& t, ui::Vec2 p);
   void beginCurveHandle(const CurveHit& h, ui::Vec2 p);
@@ -804,6 +831,45 @@ public:
   inline static constexpr float kVibratoGripInset = 12.0f;  // the ~ grip's centre from the note's end
   inline static constexpr float kVibratoGripRise = 12.0f;   // … and above / the corners below the line (mirrored for
                                                             // an inverted vibrato: the grip on the side it swings first)
+
+  // --- bend shape nodes (bug-bend-shape; roll_bend.cpp) ---
+  // Every bend (doc::NoteBend) of the hovered note and of the selected notes (while ≤ kMaxBendNodeNotes) shows a
+  // node on its path where the glide turns (doc::glideShapeTurn: where it is half way). Drag it down: steeper (a
+  // shorter glide), up: gentler (longer) — the length ×2 per kBendNodePxPerOctave px, snapped to the grid's musical
+  // lengths (whole cells, or a cell halved; Shift: free), within [1 tick, the note's length less its other bend]; a
+  // bend out keeps its end on the note's end, a bend in its start on the note's start. Sideways (past a dead zone):
+  // where in the glide it turns (doc::glideShapeTurningAt: an S that stays monotonic, no overshoot). Double-click:
+  // the default S-curve (the length stays). With the note in a selection the drag shapes the same edge's bend of every
+  // selected note: each length by the same factor, one shape. One undo step (ops::shapeNoteBends); the drag previews
+  // through curvePreview_. Without Alt the node is grabbed before the note's edge (Alt + an edge still bends).
+  struct BendNodeHit {
+    doc::NoteId note;
+    int8_t edge = 0;  // −1 bend in, +1 bend out; 0: none
+    bool valid() const noexcept { return edge != 0 && note.valid(); }
+  };
+  BendNodeHit bendNodeAt(ui::Vec2 p) const;
+  // What a press at `p` grabs of the nodes (the press, the cursor and the hover ask it): bendNodeAt, unless a vibrato
+  // grip there is nearer (the two can meet where stacked notes glide past each other's ends) or Alt is held (the
+  // edges are the Alt bend's).
+  BendNodeHit bendNodeOver(ui::Vec2 p, ui::Mods mods) const;
+  // Where the node of `n`'s bend in (edge −1) / out (+1) is drawn (device px); nullopt: no such bend / unplaced.
+  std::optional<ui::Vec2> bendNodePos(const doc::Note& n, int edge) const;
+  // The notes whose nodes are shown (see above), sorted, without duplicates.
+  void bendNodeNotes(std::vector<const doc::Note*>& out) const;
+  void beginBendShape(const BendNodeHit& h, ui::Vec2 p);
+  void bendShapeTo(ui::Vec2 p, ui::Mods mods);
+  bool commitBendShape(DragState& d);
+  // Double-click on a node: that edge's bend of the note (and of the selection when the note is in it) back to the
+  // default S-curve. One undo step.
+  bool resetBendShape(const BendNodeHit& h);
+  // A glide length snapped to a grid of `step` ticks: whole steps from one step up, below it the step halved until it
+  // is nearest. `step` ≤ 0: unsnapped.
+  static Ticks snapBendLength(double length, Ticks step);
+  static std::string bendShapeText(int edge, Ticks length, double turn);  // "Bend Out 0.5 beats · turns at 25%"
+  inline static constexpr float kBendNode = 12.0f;               // the node's hit box (logical px)
+  inline static constexpr float kBendNodePxPerOctave = 40.0f;    // vertical drag per doubling / halving of the length
+  inline static constexpr float kBendNodeDeadZone = 6.0f;        // sideways, before the turn moves (logical px)
+  inline static constexpr size_t kMaxBendNodeNotes = 64;         // a larger selection shows the hovered note's only
 
   // --- pitch paths (T7.4; T7.14: the effective curve, cached) ---
   // Device y of a pitch in cents, not rounded.
@@ -1066,6 +1132,7 @@ private:
   int64_t hoverRow_ = -1;   // the row index the readout is for (−1: none)
   uint32_t hoverNote_ = 0;  // the note id it is for (0: none)
   bool hoverKeys_ = false;
+  int8_t hoverBend_ = 0;  // bug-bend-shape: the edge of the bend node it is for (0: none)
   const void* hoverSnap_ = nullptr;  // the snapshot it was formatted for
   std::string hoverTitle_, hoverBody_;
   HoverPart hoverPart_;

@@ -582,6 +582,18 @@ EditResult setNoteCurve(const Project& p, ClipRef clip, NoteKey note, std::vecto
 // an invalid shape).
 EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge edge, Ticks length, GlideShape shape,
                        NoteId other);
+// bug-bend-shape: the length and shape of bends that are there (the roll's bend shape node), on any number of notes:
+// each keeps its neighbour (`other`); the length is clamped to [1, the note's length]. An edit of a note with no bend
+// on that edge does nothing; both edges of one note may be named (one record). One SetNoteCurves: one undo step.
+// Edit::notes = the notes named. Errors: NotFound (a note), InvalidArgument (an invalid shape, a note + edge named
+// twice).
+struct NoteBendShapeEdit {
+  NoteKey note;
+  NoteEdge edge = NoteEdge::End;
+  Ticks length = 1;
+  GlideShape shape;
+};
+EditResult shapeNoteBends(const Project& p, ClipRef clip, std::span<const NoteBendShapeEdit> edits);
 // T7.14 (model.h NoteVibrato): sets each note's vibrato (depth 0: removes it); the free curve and the bends are
 // untouched. Values are clamped to their ranges (depth to ±kMaxVibratoCents, negative = inverted; the rate to its unit's range, the
 // onset to [0, the note's length − 1], an end at or beyond the note's end is stored as 0 = "the note's end", the

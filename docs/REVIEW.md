@@ -1925,3 +1925,13 @@ Goldens: `tests/views/golden/module-delay-tap-panel.png`, `-sync.png` (re-record
 - Rows can now be up to 160 px tall (was 48): a few semitones can fill the roll. Ctrl + wheel / dragging the keys
   sideways still zoom too. The keys are 9 px narrower (the strip takes that from the keys column).
 - Is the strip findable enough (surface.sunken with a small ↕), and is down = zoom in the right feel?
+## 2026-11-15 · bug-bend-shape · a node on every bend; pen strokes only change what they cover 👁
+- Four notes with Bend Out into one long note: select them. Each slide shows a small dot (yellow core) where it is half
+  way. Drag one dot up: every selected slide gets longer (gentler), snapped to the grid (half a cell, a cell, …; Shift:
+  free); down: shorter, steeper. Sideways: the turn moves earlier / later in the slide (it never overshoots). One undo
+  step per drag; double-click a dot: back to the plain S-curve. Hovering an unselected bent note shows its dots too.
+- Draw Mode: draw a rise in the middle of a long note. After the stroke the pitch eases back to the note within a 32nd
+  (no longer held to the end); a stroke drawn right-to-left eases in from the note the same way.
+- Keep drawing past a note's end: the note grows while you draw (to the end of the grid cell you stop in) and never
+  into the next note on the same pitch. Undo takes back the length and the curve together.
+- Is the dot clear enough next to the ~ vibrato grip (when they meet, the nearer one is grabbed)?

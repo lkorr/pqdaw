@@ -185,7 +185,9 @@ const RollState::NotePath* RollState::pathOf(const doc::Note& n) const {
     doc::NoteBendTargets targets = rec && index ? doc::noteBendTargets(*rec, *index) : doc::NoteBendTargets{};
     if (rec && rec->vibrato.set()) targets.vibratoPeriod = doc::vibratoPeriodTicks(rec->vibrato, ticksPerSecond(n.start));
     const doc::NoteWarp warp = index && index->anyWarp() ? index->warp(clip, n.id) : doc::NoteWarp{};
-    const Ticks L = std::max<Ticks>(n.length, 1);
+    // bug-bend-shape: a pen stroke lengthening the note previews the curve over its new length (its bend out there).
+    const bool grows = preview && drag.kind == DragKind::PenDraw && drag.curve.note == n.id && drag.penLength > n.length;
+    const Ticks L = std::max<Ticks>(grows ? drag.penLength : n.length, 1);
     out.tol = pathTol_;
     if (rec || warp.any()) out.pts = doc::effectiveNoteCurve(rec, L, targets, warp, pathTol_);
     out.curved = std::any_of(out.pts.begin(), out.pts.end(), [](const doc::Breakpoint& b) { return b.curve != 0.0f; });

@@ -274,6 +274,14 @@ struct GlideShape {
 };
 // s(u) of a glide shape, u clamped to [0, 1]; s(0) = 0, s(1) = 1. RT-safe.
 double glideShapeValue(const GlideShape& shape, double u) noexcept;
+// bug-bend-shape: where a glide TURNS — the u at which s(u) = 1/2, its inflection for the S shapes (1/2 for LogLinear
+// and SCurve; a Bezier by bisection, to 1e-9) — and the S-shaped glide that turns at `u` (clamped to
+// [kMinGlideTurn, 1 − kMinGlideTurn]): a Bezier with y1 = 0, y2 = 1 (it leaves and arrives flat; monotonic, no
+// overshoot) whose handles x1 + x2 = (u − 1/8) / (3/8) put y = 1/2 at x = u, moving linearly from the default
+// (0.42, 0.58) at u = 1/2 towards (0, 0) / (1, 1). glideShapeTurn(glideShapeTurningAt(u)) = u. RT-safe.
+inline constexpr double kMinGlideTurn = 0.15;
+double glideShapeTurn(const GlideShape& shape) noexcept;
+GlideShape glideShapeTurningAt(double u) noexcept;
 
 struct JiWarp {
   Ticks at = 0;     // group ticks (from the anchor's start), −kMaxTicks … kMaxTicks: where the glide starts

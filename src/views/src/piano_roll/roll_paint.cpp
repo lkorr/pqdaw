@@ -450,10 +450,10 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   };
   s_.forNotesIn(lookFrom, lookTo, [&](const doc::Note& n) {
     const bool sel = anySelected && s_.selected(n.id);
-    if (sel && dr.kind != DragKind::None) {
+    if ((sel || dr.kind == DragKind::PenDraw) && dr.kind != DragKind::None) {  // (a pen stroke may lengthen its note)
       if (const std::optional<RollState::Preview> pv = s_.preview(n)) {
         if (dr.kind == DragKind::Copy) emit(n, n.start, n.length, n.pitch, false);  // the original stays
-        emit(n, pv->start, pv->length, pv->pitch, true);
+        emit(n, pv->start, pv->length, pv->pitch, sel);
         return;
       }
     }
@@ -492,6 +492,7 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
   paintGroupOverlays(ctx, s_, vis);  // T7.14: warp markers, grips, labels; the proportion tool's box
   paintCurveHandles(ctx, s_, vis);   // T7.6: the breakpoints of the curves being edited
   paintVibratoGrips(ctx, s_, vis);   // T7.14: the ~ grips and the envelope corners
+  paintBendNodes(ctx, s_, vis);      // bug-bend-shape: where each shown bend turns
 
   // Draw-mode preview: the notes the drag will add.
   if (dr.kind == DragKind::Draw)

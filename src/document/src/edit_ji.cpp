@@ -763,6 +763,43 @@ EditResult setNoteBend(const Project& p, ClipRef clip, NoteKey note, NoteEdge ed
   return e;
 }
 
+EditResult shapeNoteBends(const Project& p, ClipRef clip, std::span<const NoteBendShapeEdit> edits) {
+  Result<ClipFound> f = findClip(p, clip);
+  if (!f) return std::move(f).error();
+  Edit e = curveEdit("Bend Shape", clip);
+  // Grouped by note (one record each), in note-id order.
+  std::vector<std::pair<const Note*, const NoteBendShapeEdit*>> byNote;
+  byNote.reserve(edits.size());
+  for (const NoteBendShapeEdit& ed : edits) {
+    const Note* n = f->clip->notes.locate(ed.note);
+    if (!n) return notFound("note not found");
+    byNote.emplace_back(n, &ed);
+  }
+  std::stable_sort(byNote.begin(), byNote.end(), [](const auto& a, const auto& b) { return a.first->id < b.first->id; });
+  SetNoteCurves set{clip, {}};
+  for (size_t i = 0; i < byNote.size();) {
+    const Note& n = *byNote[i].first;
+    e.notes.push_back(keyOf(n));
+    const NoteCurves* have = findNoteCurves(*f->clip, n.id);
+    NoteCurves rec = have ? *have : NoteCurves{n.id, {}, {}, {}, {}};
+    bool seen[2] = {false, false};
+    for (; i < byNote.size() && byNote[i].first->id == n.id; ++i) {
+      const NoteBendShapeEdit& ed = *byNote[i].second;
+      const int side = ed.edge == NoteEdge::Start ? 0 : 1;
+      if (seen[side]) return invalid("a bend named twice");
+      seen[side] = true;
+      NoteBend& b = side == 0 ? rec.bendIn : rec.bendOut;
+      if (!b.set()) continue;
+      b.length = std::clamp<Ticks>(ed.length, 1, std::max<Ticks>(n.length, 1));
+      b.shape = ed.shape;
+    }
+    PQ_DOC_TRY(checkNoteCurveRecord(rec));
+    if (have && !(*have == rec)) set.curves.push_back(std::move(rec));
+  }
+  if (!set.curves.empty()) batchOf(e).commands.push_back(std::move(set));
+  return e;
+}
+
 EditResult clearNoteBends(const Project& p, ClipRef clip, std::span<const NoteKey> notes) {
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();

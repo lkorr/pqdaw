@@ -655,6 +655,32 @@ double glideShapeValue(const GlideShape& shape, double u) noexcept {  // RT-safe
   return u;
 }
 
+double glideShapeTurn(const GlideShape& shape) noexcept {  // RT-safe
+  if (shape.kind != GlideShape::Bezier) return 0.5;
+  // s is monotonic for the shapes the roll makes; for one with overshoot this finds a crossing of 1/2.
+  double lo = 0.0, hi = 1.0;
+  for (int i = 0; i < 32; ++i) {
+    const double m = 0.5 * (lo + hi);
+    if (glideShapeValue(shape, m) < 0.5) lo = m;
+    else hi = m;
+  }
+  return 0.5 * (lo + hi);
+}
+
+GlideShape glideShapeTurningAt(double u) noexcept {  // RT-safe
+  u = std::clamp(std::isfinite(u) ? u : 0.5, kMinGlideTurn, 1.0 - kMinGlideTurn);
+  // y(p) = 3p² − 2p³ is 1/2 at p = 1/2, where x = 3/8 · (x1 + x2) + 1/8.
+  const double s = (u - 0.125) / 0.375;  // x1 + x2, in (0, 2)
+  constexpr double a = 0.42, b = 0.58;   // the default handles (s = 1)
+  GlideShape g;
+  g.kind = GlideShape::Bezier;
+  g.x1 = static_cast<float>(s <= 1.0 ? a * s : a + b * (s - 1.0));
+  g.x2 = static_cast<float>(s <= 1.0 ? b * s : b + a * (s - 1.0));
+  g.y1 = 0.0f;
+  g.y2 = 1.0f;
+  return g;
+}
+
 std::span<const JiWarp> effectiveJiWarps(const JiGroup& g) noexcept {  // RT-safe
   // Written from the earliest tick a note can start at in group ticks on: written throughout.
   static const JiWarp kUntuned[1] = {JiWarp{-kMaxTicks, 0, GlideShape{}, false}};

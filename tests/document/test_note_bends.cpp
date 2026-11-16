@@ -189,6 +189,65 @@ TEST_CASE("bend commands: validation, one record per note, removing a bend") {
   CHECK(ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::Start, 0, GlideShape{}, NoteId{})->empty());
 }
 
+TEST_CASE("bug-bend-shape: a glide's turn; shapeNoteBends changes the length and shape of several notes' bends in one step, and the curve plays them") {
+  // The turn: 1/2 for the built-in shapes; glideShapeTurningAt is an S (flat ends, monotonic, within [0, 1]) turning
+  // where asked, clamped.
+  CHECK(glideShapeTurn(GlideShape{}) == 0.5);
+  for (const double u : {0.15, 0.25, 0.5, 0.7, 0.85}) {
+    const GlideShape g = glideShapeTurningAt(u);
+    CHECK(g.kind == GlideShape::Bezier);
+    CHECK(glideShapeValue(g, u) == doctest::Approx(0.5).epsilon(1e-6));
+    CHECK(glideShapeTurn(g) == doctest::Approx(u).epsilon(1e-6));
+    double prev = 0.0;
+    for (int k = 1; k <= 200; ++k) {
+      const double v = glideShapeValue(g, k / 200.0);
+      CHECK(v >= prev - 1e-12);
+      CHECK(v <= 1.0 + 1e-12);
+      prev = v;
+    }
+  }
+  CHECK(glideShapeTurn(glideShapeTurningAt(0.0)) == doctest::Approx(kMinGlideTurn).epsilon(1e-6));
+  CHECK(glideShapeTurningAt(0.5).x1 == doctest::Approx(GlideShape{}.x1));
+  CHECK(glideShapeTurningAt(0.5).x2 == doctest::Approx(GlideShape{}.x2));
+
+  BendFix f;
+  const Note a = f.add(0, PitchId::fromDegree(0), 2 * kPpq);
+  const Note b = f.add(0, PitchId::fromDegree(4), 2 * kPpq);
+  const Note c = f.add(2 * kPpq, PitchId::fromDegree(7), 2 * kPpq);
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(a), ops::NoteEdge::End, kPpq / 8, GlideShape{}, c.id));
+  commit(f.store, ops::setNoteBend(f.doc(), f.ref, keyOf(b), ops::NoteEdge::End, kPpq / 8, GlideShape{}, c.id));
+  const size_t before = f.store.history().cursor();
+  // Both notes' bends four times as long, turning a quarter of the way in; a note without a bend in is left alone.
+  const GlideShape early = glideShapeTurningAt(0.25);
+  const ops::NoteBendShapeEdit edits[] = {{keyOf(b), ops::NoteEdge::End, kPpq / 2, early},
+                                          {keyOf(a), ops::NoteEdge::End, kPpq / 2, early},
+                                          {keyOf(a), ops::NoteEdge::Start, kPpq, GlideShape{}}};
+  const ops::EditResult e = ops::shapeNoteBends(f.doc(), f.ref, edits);
+  REQUIRE(e.ok());
+  CHECK(countCommands(*e, [](const Command& x) { return std::holds_alternative<SetNoteCurves>(x.v); }) == 1);
+  commit(f.store, e);
+  CHECK(f.store.history().cursor() == before + 1);
+  for (const Note& n : {a, b}) {
+    const NoteCurves* nc = findNoteCurves(f.clip(), n.id);
+    REQUIRE(nc != nullptr);
+    CHECK(nc->bendOut == NoteBend{kPpq / 2, early, c.id});
+    CHECK_FALSE(nc->bendIn.set());
+  }
+  // What plays: note a glides 700 ¢ to c over its last half beat, half way a quarter of the way in.
+  const std::vector<Breakpoint> eff = f.effective(f.clip(), a);
+  const Ticks L = 2 * kPpq, g0 = L - kPpq / 2;
+  CHECK(polyline(eff, static_cast<double>(g0 - 1)) == doctest::Approx(0.0).epsilon(1e-6));
+  CHECK(polyline(eff, static_cast<double>(g0 + kPpq / 8)) == doctest::Approx(350.0).epsilon(1e-3));
+  CHECK(polyline(eff, static_cast<double>(L)) == doctest::Approx(700.0).epsilon(1e-6));
+  // Longer than the note: clamped to it. Named twice: refused.
+  const ops::NoteBendShapeEdit tooLong[] = {{keyOf(a), ops::NoteEdge::End, 100 * kPpq, GlideShape{}}};
+  commit(f.store, ops::shapeNoteBends(f.doc(), f.ref, tooLong));
+  CHECK(findNoteCurves(f.clip(), a.id)->bendOut.length == L);
+  const ops::NoteBendShapeEdit twice[] = {{keyOf(a), ops::NoteEdge::End, kPpq, GlideShape{}}, {keyOf(a), ops::NoteEdge::End, kPpq, GlideShape{}}};
+  CHECK_FALSE(ops::shapeNoteBends(f.doc(), f.ref, twice).ok());
+  f.roundTrips();
+}
+
 TEST_CASE("deleting a bend's neighbour drops the bend in the same edit") {
   BendFix f;
   const Note a = f.add(0, PitchId::fromDegree(0));

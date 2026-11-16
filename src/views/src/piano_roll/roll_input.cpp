@@ -245,6 +245,7 @@ void NoteAreaWidget::dragTo(Vec2 p, Mods mods) {
     case DragKind::CurveBow: s_.curveHandleTo(p, mods); break;
     case DragKind::Vibrato:
     case DragKind::VibratoCorner: s_.vibratoDragTo(p, mods); break;
+    case DragKind::BendShape: s_.bendShapeTo(p, mods); break;
     case DragKind::WarpNew:
     case DragKind::WarpMove:
     case DragKind::WarpGlide: s_.warpDragTo(p, mods); break;
@@ -330,6 +331,18 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
       if (gh.part == GroupPart::Marker || gh.part == GroupPart::GlideGrip || gh.part == GroupPart::LeftGrip || gh.part == GroupPart::RightGrip) {
         s_.setHoverPart({});
         s_.beginWarpDrag(gh, e.pos);
+        return true;
+      }
+      // bug-bend-shape: a bend's shape node (where the glide turns): before the note's edge it may lie next to, and
+      // before a vibrato grip that is not nearer (bendNodeOver); Alt leaves the edges to the Alt bend.
+      if (const RollState::BendNodeHit bh = s_.bendNodeOver(e.pos, e.mods); bh.valid()) {
+        s_.setHoverPart({});
+        if (e.clickCount >= 2) {
+          s_.drag = {};
+          (void)s_.resetBendShape(bh);
+        } else {
+          s_.beginBendShape(bh, e.pos);
+        }
         return true;
       }
       // T7.14: a vibrato grip (they lie outside the note's band: above its end, under its envelope).
@@ -455,13 +468,16 @@ bool NoteAreaWidget::onPointer(const PointerEvent& e) {
         return true;
       }
       if (!d.moved && (d.kind == DragKind::Vibrato || d.kind == DragKind::VibratoCorner || d.kind == DragKind::WarpNew || d.kind == DragKind::WarpGlide ||
-                       d.kind == DragKind::WarpMove)) {
+                       d.kind == DragKind::WarpMove || d.kind == DragKind::BendShape)) {
         const DragState was = d;
         s_.cancelDrag();
         if (was.kind == DragKind::WarpMove) s_.selectWarp({was.group, was.warpIndex});  // a click selects the marker (Delete removes it)
         else if (was.kind == DragKind::WarpNew) s_.ctx.setStatus(was.fromLeft ? "Drag this corner inward: the chord plays as written up to there, then glides into JI"
                                                                                : "Drag this corner inward: from there the chord glides back to the tuning");
         else if (was.kind == DragKind::Vibrato) s_.ctx.setStatus("Vibrato: drag this grip up for depth, sideways for speed; double-click removes it");
+        else if (was.kind == DragKind::BendShape)
+          s_.ctx.setStatus(std::string(was.bendEdge < 0 ? "Bend In" : "Bend Out") +
+                           ": drag this node down for a steeper glide, up for a gentler one, sideways for where it turns; double-click: S-curve");
         s_.hoverPartAt(e.pos);
         return true;
       }
@@ -568,7 +584,8 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
       case DragKind::CurvePoint: return Cursor::Move;
       case DragKind::CurveBow: return Cursor::ResizeNS;
       case DragKind::Rubber: return Cursor::Arrow;
-      case DragKind::Vibrato: return Cursor::Move;
+      case DragKind::Vibrato:
+      case DragKind::BendShape: return Cursor::Move;
       case DragKind::VibratoCorner:
       case DragKind::WarpNew:
       case DragKind::WarpMove:
@@ -580,6 +597,7 @@ Cursor NoteAreaWidget::cursorAt(Vec2 p) const {
   if (s_.proportionArmed()) return Cursor::Crosshair;
   const GroupHit gh = s_.groupPartAt(p);
   if (gh.part == GroupPart::Marker || gh.part == GroupPart::GlideGrip || gh.part == GroupPart::LeftGrip || gh.part == GroupPart::RightGrip) return Cursor::ResizeEW;
+  if (s_.bendNodeOver(p, s_.pointerMods()).valid()) return Cursor::Move;  // bug-bend-shape
   if (const RollState::VibratoHit vh = s_.vibratoPartAt(p); vh.valid()) return vh.part == RollState::VibratoPart::Grip ? Cursor::Move : Cursor::ResizeEW;
   // T7.6: a breakpoint (drag it), the diamond between two (bend the segment); a note's edge comes first, as the press.
   if (const RollState::CurveHit ch = s_.curveHandleAt(p); ch.valid()) {

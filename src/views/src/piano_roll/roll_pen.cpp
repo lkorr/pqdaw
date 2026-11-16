@@ -17,9 +17,12 @@
 //                                      as a breakpoint, Shift free; a plain vertical drag glides over a grid cell),
 //                                      written into its free curve.
 //   Ctrl+G                             each selected note glides out into the next selected one over one grid step.
-//   Draw Mode (B) on a note            drag: the stroke is the note's pitch curve from there on (smoothed over
+//   Draw Mode (B) on a note            drag: the stroke is the note's pitch curve where it is drawn (smoothed over
 //                                      kPenSmoothPx each way, then thinned to 0.5 ¢, at
-//                                      most kMaxPenPoints points; a drag under kMinPenStroke px is a click);
+//                                      most kMaxPenPoints points; a drag under kMinPenStroke px is a click); off
+//                                      the old curve at its ends it returns to it over kPenRampTicks (bug-bend-shape:
+//                                      the rest of the note keeps its pitch); past the note's end it lengthens the
+//                                      note (to the grid cell's end, never into the next note on its pitch);
 //                                      Alt + drag: vibrato over the dragged span (the note's vibrato property: depth
 //                                      = the stroke's height); Ctrl + click: a breakpoint (drag it on); a click
 //                                      deletes the note.
@@ -177,7 +180,7 @@ bool RollState::curveSpan(const CurveTarget& t, Ticks& start, Ticks& length) con
   return true;
 }
 
-std::optional<double> RollState::curveBase(const CurveTarget& t, double offset) const {
+std::optional<double> RollState::curveBase(const CurveTarget& t, double offset, Ticks length) const {
   const doc::Note* n = clip_ && t.note.valid() ? findNote(t.note) : nullptr;
   if (!n) return std::nullopt;
   std::optional<double> base = startCents(*n);
@@ -189,7 +192,7 @@ std::optional<double> RollState::curveBase(const CurveTarget& t, double offset) 
   if (!rec && !warp.any()) return base;
   doc::NoteBendTargets targets = rec ? doc::noteBendTargets(*rec, index) : doc::NoteBendTargets{};
   targets.vibratoPeriod = 0.0;
-  const Ticks len = std::max<Ticks>(n->length, 1);
+  const Ticks len = std::max<Ticks>(length > 0 ? length : n->length, 1);
   const double tick = std::clamp(offset, 0.0, static_cast<double>(len));
   *base += doc::noteCurveCents(rec, len, targets, warp, tick);
   if (rec && !rec->pitch.empty()) *base -= pq::evalAutomation(std::span<const doc::Breakpoint>(rec->pitch), tick);
@@ -668,6 +671,20 @@ void RollState::beginPen(const CurveTarget& t, ui::Vec2 p, ui::Mods mods, bool v
   d.stroke.emplace_back(off, static_cast<float>(v0));
   d.strokeLast = off;
   d.curvePts.assign(old.begin(), old.end());
+  // bug-bend-shape: how far a stroke past its end may lengthen the note — up to the next note on its pitch (one that
+  // starts at or after its end: the same identity, or within kSamePitchCents where they start). Once per gesture.
+  if (const doc::Note* n = findNote(t.note); n && !vibrato) {
+    const std::optional<double> own = startCents(*n);
+    Ticks limit = doc::kMaxTicks - start;
+    for (const doc::Note& m : clip_->notes) {
+      if (m.id == n->id || m.start < start + length || m.start - start >= limit) continue;
+      bool same = m.pitch == n->pitch;
+      if (!same && own)
+        if (const std::optional<double> c = startCents(m)) same = std::fabs(*c - *own) <= kSamePitchCents;
+      if (same) limit = m.start - start;
+    }
+    d.penLimit = std::max(limit, length);
+  }
   if (vibrato) {
     const doc::NoteVibrato have = vibratoOf(t.note);
     d.vibrato.push_back({t.note, have, std::max<Ticks>(length, 1)});
@@ -680,7 +697,9 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
   DragState& d = drag;
   Ticks start = 0, length = 0;
   if (!clip_ || !curveSpan(d.curve, start, length)) return;
-  const Ticks off = std::clamp<Ticks>(static_cast<Ticks>(std::llround(tickAtX(p.x))) - start, 0, length);
+  // (A stroke may run past the note's end, up to penLimit; the vibrato stays on the note.)
+  const Ticks off = std::clamp<Ticks>(static_cast<Ticks>(std::llround(tickAtX(p.x))) - start, 0,
+                                      d.kind == DragKind::PenDraw ? std::max(d.penLimit, length) : length);
   // The document's free curve (the preview shows this gesture's result).
   Span old;
   if (const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, d.curve.note) : nullptr) old = nc->pitch;
@@ -701,7 +720,16 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
     ctx.setStatus(vibratoText(d.vibDepth, d.vibRate));
     return;
   }
-  const std::optional<double> base = curveBase(d.curve, static_cast<double>(off));
+  // bug-bend-shape: the note's length as a stroke reaching note tick `tb` leaves it (0: as it is): past its end, to
+  // the end of the grid cell it reaches (where it reaches without grid snapping), never beyond penLimit.
+  auto grownTo = [&](Ticks tb) -> Ticks {
+    if (tb <= length) return 0;
+    Ticks end = tb;
+    if (const Grid g = grid(); g.snapping()) end = std::max(tb, g.cellAt(start + tb - 1).end - start);
+    return std::min(end, std::max(d.penLimit, length));
+  };
+  // (Past the end, the pitch the curve is added to is the lengthened note's: its bend out moves to the new end.)
+  const std::optional<double> base = curveBase(d.curve, static_cast<double>(off), grownTo(std::max(off, d.stroke.empty() ? off : d.stroke.back().first)));
   if (!base) return;
   const float v = bp(off, centsAtScreenY(p.y) + d.penHold - *base).value;
   // The stroke is a function of time: what the pointer passes over again is redrawn.
@@ -710,6 +738,7 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
   d.stroke.insert(std::lower_bound(d.stroke.begin(), d.stroke.end(), off, [](const std::pair<Ticks, float>& s, Ticks t) { return s.first < t; }),
                   {off, v});
   d.strokeLast = off;
+  d.penLength = grownTo(d.stroke.back().first);
   if (d.stroke.size() < 2) {
     d.curvePts.assign(old.begin(), old.end());
   } else {
@@ -720,16 +749,58 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
     if (pxPerTick_ > 0.0) smoothStroke(raw, static_cast<double>(kPenSmoothPx * scaleOf(*this)) / pxPerTick_, smoothScratch);
     const Ticks ta = raw.front().tick, tb = raw.back().tick;
     // Where the stroke begins and ends on the curve that was there (within two pixels), it joins it exactly.
-    if (ta > 0 && std::fabs(raw.front().value - valueBefore(old, ta)) <= px2) raw.front().value = static_cast<float>(valueBefore(old, ta));
-    const bool joins = std::fabs(raw.back().value - valueAt(old, tb)) <= px2;
-    if (joins) raw.back().value = static_cast<float>(valueAt(old, tb));
+    const bool headJoins = ta == 0 || std::fabs(raw.front().value - valueBefore(old, ta)) <= px2;
+    if (ta > 0 && headJoins) raw.front().value = static_cast<float>(valueBefore(old, ta));
+    const bool past = tb >= length;  // it reaches the note's end (or goes on): nothing after it to return to
+    const bool tailJoins = !past && std::fabs(raw.back().value - valueAt(old, tb)) <= px2;
+    if (tailJoins) raw.back().value = static_cast<float>(valueAt(old, tb));
     double tolerance = kThinCents;
     Pts fresh = doc::ops::thinAutomation(raw, tolerance);
     while (fresh.size() > kMaxPenPoints) fresh = doc::ops::thinAutomation(raw, tolerance *= 2.0);
-    // A stroke that comes back to the curve keeps what follows; one that ends elsewhere holds its last pitch.
-    d.curvePts = replaceRegion(old, ta, tb, fresh, joins);
+    // bug-bend-shape: the stroke replaces only what it covers. Where it ends off the curve that was there, the pitch
+    // returns to that curve over kPenRampTicks (eased: it leaves the stroke fast and settles into the note); where it
+    // begins off it (a stroke drawn leftwards), it comes from it the same way. The rest of the note keeps its pitch.
+    Ticks ra = ta, rb = tb;
+    if (!headJoins) {
+      ra = ta - std::min(kPenRampTicks, ta);
+      fresh.insert(fresh.begin(), bp(ra, valueBefore(old, ra), kPenRampCurve));
+    }
+    if (!past && !tailJoins) {
+      rb = tb + std::min(kPenRampTicks, length - tb);
+      fresh.back().curve = -kPenRampCurve;
+      fresh.push_back(bp(rb, valueAt(old, rb)));
+    }
+    d.curvePts = replaceRegion(old, ra, rb, fresh, !past);
   }
   setCurvePreview(d.curve, d.curvePts);
+  if (d.penLength > length) {
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "Draw Pitch Curve: the note grows to %.4g beats", static_cast<double>(d.penLength) / static_cast<double>(kPpq));
+    ctx.setStatus(buf);
+  }
+}
+
+bool RollState::commitPen(DragState& d) {
+  const doc::Note* n = clip_ && d.curve.note.valid() ? findNote(d.curve.note) : nullptr;
+  if (!n) return false;
+  if (d.penLength <= n->length) return commitCurve(d.curve, std::move(d.curvePts), "Draw Pitch Curve");
+  // The stroke went past the note's end: the note grows and takes the stroke as its curve, in one undo step.
+  Pts pts = std::move(d.curvePts);
+  normalise(pts);
+  const doc::NoteKey key = doc::keyOf(*n);
+  doc::ops::EditResult e = doc::ops::resizeNotes(*ctx.doc(), ref_, std::span<const doc::NoteKey>(&key, 1), doc::ops::NoteEdge::End, d.penLength - n->length);
+  if (!e) {
+    ctx.setStatus("Draw Pitch Curve: " + e.error().message);
+    return false;
+  }
+  std::vector<doc::Command> commands;
+  if (doc::Batch* b = std::get_if<doc::Batch>(&e->command.v)) commands = std::move(b->commands);
+  else commands.push_back(std::move(e->command));
+  commands.push_back(doc::SetNoteCurve{ref_, key, std::move(pts)});  // (a lengthening keeps its start: the key stands)
+  std::vector<uint32_t> keep = sel_;
+  const bool ok = apply(batchOf("Draw Pitch Curve", std::move(commands), ref_, {key}), "Draw Pitch Curve");
+  if (ok) select(std::move(keep));
+  return ok;
 }
 
 bool RollState::beginCurvePoint(const CurveTarget& t, ui::Vec2 p) {

@@ -132,6 +132,12 @@ constexpr HelpEntry kBends[] = {
      "Shape of a bend",
      "S-Curve (the default) leaves the first pitch gently and settles into the second; Straight slides at an even "
      "speed, like a slide on a string."},
+    {"drag the dot on a bend\ndouble-click it",
+     "Stretch or steepen a bend",
+     "A selected note shows a dot on each of its bends, where the slide is half way. Drag it down for a steeper, "
+     "shorter slide, up for a gentler, longer one; it snaps to the grid (Shift: free). Drag it sideways to move where "
+     "the slide turns, earlier or later. With several notes selected, all their slides change together. Double-click "
+     "the dot for the plain S-curve again."},
     {"[Alt] + drag the edge back",
      "Remove a bend",
      "Alt + drag the bent edge back to where the note starts (or ends) and let go: the note is steady again. Clear "
@@ -142,9 +148,11 @@ constexpr HelpEntry kBends[] = {
 constexpr HelpEntry kCurves[] = {
     {"Draw Mode {edit.toggleDrawMode}\ndrag along a note",
      "Draw a pitch curve",
-     "The line you draw becomes the pitch of the note from that point on: a scoop, a fall, a slow drift to another "
-     "pitch. Start the stroke where the change should begin. (A drag of only a few pixels counts as a click: it "
-     "deletes the note, as a click in Draw Mode does.)"},
+     "The line you draw becomes the pitch of the note where you draw it: a scoop, a fall, a slow drift to another "
+     "pitch. Where the stroke ends the note eases back to its own pitch, so only the part you drew changes. Keep "
+     "drawing past the note's end and the note grows to where you stop (to the end of that grid cell, never into "
+     "the next note on the same pitch). (A drag of only a few pixels counts as a click: it deletes the note, as a "
+     "click in Draw Mode does.)"},
     {"Draw Mode {edit.toggleDrawMode}\n[Ctrl] + click on a note",
      "Add a breakpoint",
      "Puts one point on the note's pitch line at the pointer; keep the button down to drag it into place. Use it to "

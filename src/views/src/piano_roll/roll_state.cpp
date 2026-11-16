@@ -627,15 +627,24 @@ void RollState::hoverAt(ui::Vec2 p, bool keys) {
   const int64_t idx = static_cast<int64_t>(rows_.indexAtY(contentY(p.y)));
   const doc::Note* n = keys ? nullptr : noteAt(p);
   const uint32_t nid = n ? n->id.value : 0;
-  if (idx == hoverRow_ && nid == hoverNote_ && keys == hoverKeys_ && snap_.get() == hoverSnap_) return;
+  // bug-bend-shape: over a bend's shape node the readout says what dragging it does.
+  const BendNodeHit node = keys ? BendNodeHit{} : bendNodeOver(p, pointerMods_);
+  if (idx == hoverRow_ && nid == hoverNote_ && keys == hoverKeys_ && snap_.get() == hoverSnap_ && node.edge == hoverBend_) return;
   hoverRow_ = idx;
   hoverNote_ = nid;
   hoverKeys_ = keys;
   hoverSnap_ = snap_.get();
+  hoverBend_ = node.edge;
   const PitchRow& row = rows_.row(static_cast<size_t>(idx));
   const std::string& label = rows_.label(static_cast<size_t>(idx));
   char buf[96];
-  if (n) {
+  if (node.valid()) {
+    const bool in = node.edge < 0;
+    hoverTitle_ = in ? "Bend In: its shape" : "Bend Out: its shape";
+    hoverBody_ = std::string("Drag down for a steeper glide (shorter), up for a gentler one (longer); sideways moves where it turns. "
+                             "Snaps to the grid (Shift: free). Double-click: back to the S-curve. With several notes selected, "
+                             "their ") + (in ? "bends in" : "bends out") + " change together.";
+  } else if (n) {
     // The note: its identity, then its pitch.
     const tuning::PitchId& id = n->pitch;
     int len = 0;
@@ -725,6 +734,8 @@ void RollState::hoverPartAt(ui::Vec2 p) {
   if (n) {
     h.note = n->id.value;
     h.zone = static_cast<int8_t>(ctx.drawMode() ? 0 : zone);  // Draw Mode: a press deletes the note (no edges)
+    // bug-bend-shape: on a bend's node (it may lie by the edge) a press shapes the bend, not the edge.
+    if (h.zone != 0 && bendNodeOver(p, pointerMods_).valid()) h.zone = 0;
   }
   setHoverPart(h);
 }
@@ -1706,6 +1717,9 @@ std::optional<RollState::Preview> RollState::previewOf(const DragState& d, const
     case DragKind::Copy:
     case DragKind::ResizeEnd:
     case DragKind::ResizeStart: break;
+    case DragKind::PenDraw:  // bug-bend-shape: a stroke past the note's end lengthens it (selected or not)
+      if (n.id == d.curve.note && d.penLength > n.length) return Preview{n.start, d.penLength, n.pitch};
+      return std::nullopt;
     default: return std::nullopt;
   }
   if (!selected(n.id)) return std::nullopt;
@@ -1893,15 +1907,19 @@ void RollState::commitDrag() {
     case DragKind::WarpNew:
     case DragKind::WarpMove:
     case DragKind::WarpGlide: (void)commitWarpDrag(d); break;
-    // T7.6: pen strokes, breakpoints (a note's free pitch curve)
+    // T7.6: pen strokes (bug-bend-shape: one past the note's end lengthens it in the same step), breakpoints (a
+    // note's free pitch curve)
     case DragKind::PenDraw:
+      curvePreview_.clear();
+      (void)commitPen(d);
+      break;
+    case DragKind::BendShape: (void)commitBendShape(d); break;  // bug-bend-shape
     case DragKind::CurvePoint:
     case DragKind::CurveBow: {
       curvePreview_.clear();
-      const char* what = d.kind == DragKind::PenDraw    ? "Draw Pitch Curve"
-                         : d.kind == DragKind::CurveBow ? "Bend Segment"
-                         : d.curveAdded                 ? "Add Bend Point"
-                                                        : "Move Bend Point";
+      const char* what = d.kind == DragKind::CurveBow ? "Bend Segment"
+                         : d.curveAdded               ? "Add Bend Point"
+                                                      : "Move Bend Point";
       (void)commitCurve(d.curve, std::move(d.curvePts), what);
       break;
     }
