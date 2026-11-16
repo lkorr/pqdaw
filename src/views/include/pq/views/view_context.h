@@ -65,6 +65,7 @@ class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 class VoiceTapReader;    // pq/views/meta/meta_face.h
 class GroupResponses;    // pq/views/panel/group_responses.h (EQ.4)
 class LiveModulation;    // pq/views/live_modulation.h (bug-mod-ghost)
+class TonePort;          // pq/views/tone_port.h (VZ.3)
 namespace devices {
 class AnalysisHub;  // pq/views/devices/analysis.h (TX.spectrum)
 class SpectrumFeed;
@@ -714,6 +715,9 @@ public:
   using SamplePreloader = std::function<void(const std::string& absPath)>;
   void setSamplePreloader(SamplePreloader fn) { preload_ = std::move(fn); }
   const SamplePreloader& samplePreloader() const noexcept { return preload_; }
+  // VZ.3: the displays' tone preview (the app: AudioOutput's monitor tone; null: none). Must outlive its use.
+  void setTonePort(TonePort* p) noexcept { tone_ = p; }
+  TonePort* tonePort() const noexcept { return tone_; }
 
   // --- the browser's data (T5.10; pq/views/browser/library.h) ---
   Library& library() noexcept { return *library_; }
@@ -907,6 +911,7 @@ private:
   std::unique_ptr<FileProbes> probes_;    // T5.7
   std::unique_ptr<Library> library_;      // T5.10
   SamplePreloader preload_;
+  TonePort* tone_ = nullptr;
   struct CollectJob;
   std::unique_ptr<CollectJob> collectWorker_;
   std::shared_ptr<char> life_ = std::make_shared<char>();  // posted work checks it (the context may be gone)

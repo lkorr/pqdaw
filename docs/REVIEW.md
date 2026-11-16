@@ -1987,3 +1987,12 @@ and menus show no ghost (text only).
 - Spectrogram: Colormap → Custom (stops in dB, Gamma folded in), Silence opacity (Level) lets the backdrop through the
   quiet parts. Goldens: device-/project-meta-spectrum, module-spectrum-panel, panel-rich-elements, eq-eight-bands,
   eq-band-response, eq-lr-mode, lines.
+
+## 2026-11-15 · VZ.3 · Tone preview on the Spectrum and Spectrogram 👁
+- Spectrum: SET → DISPLAY → "Tone on click" On, then press and hold on the plot: you hear that frequency (drag to sweep;
+  an amber rule marks it). "Tone snap" Off / 12-EDO / Tuning (the track's tuning: try a 22-EDO track), "Tone level"
+  (−18 dBFS default: start low), "Tone shape" Sine / Semisine / Triangle. Alt+drag still moves the face.
+- Spectrogram: "Play keys" (with the Keyboard shown, press a key) and "Ctrl+click tone" (Ctrl+press anywhere on the
+  picture), the same snap / level / shape rows.
+- The tone plays on the cue output (Cue Out in Audio settings; 1/2 when there is none), never in the project or a render.
+  Listen for clicks on press, release and fast drags (there should be none).

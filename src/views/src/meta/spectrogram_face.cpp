@@ -24,6 +24,11 @@
 //
 // Options are the instance's data (a record of numbers: pq/meta/spectrogram.h), saved, undoable, never recompiling; a
 // read-only target keeps them for the face's life. Freeze and the sheet are view state. World units 300 × 170.
+//
+// VZ.3 tone preview (PQ Meter b721058 / 5dab446): with "Play keys" a press on the keyboard's keys plays the pitch under
+// the pointer; with "Ctrl+click tone" Ctrl+press anywhere on the picture does (keyboard shown or not). Snapped (off /
+// 12-EDO / the track's tuning), held while the button is down, a drag glides it, the release stops it; a rule marks
+// the sounding pitch. Through the target's TonePort: the monitor output, never the project.
 
 #include <algorithm>
 #include <array>
@@ -39,6 +44,7 @@
 
 #include "faces.h"
 #include "option_sheet.h"
+#include "tone_gesture.h"
 #include "pq/dsp/spectrogram.h"
 #include "pq/ui/colormap.h"
 #include "pq/ui/renderer.h"
@@ -103,7 +109,8 @@ using sheet::kOnOff;
 enum O : uint32_t {
   oSpan, oFft, oChannel, oReassign, oMaxDev, oConsensus, oPlayhead, oLoopSpan, oFloor, oCeil, oGamma, oFade, oTilt,
   oGate, oDepth, oThresh, oKnee, oExpand, oScale, oFMin, oFMax, oMap, oSource, oGrid, oRuler, oNote, oKeys, oTuning,
-  oKeysW, oKeysOpacity, oKeysTintC, oBase, oStop2, oStop3, oStop4, oStop5, oSilence, oCount
+  oKeysW, oKeysOpacity, oKeysTintC, oBase, oStop2, oStop3, oStop4, oStop5, oSilence, oPlayKeys, oCtrlTone, oToneSnap,
+  oToneDb, oToneWave, oCount
 };
 // PQ Meter's defaults (the power user's tuned analysis, the MiniMeters-calibrated level mapping, the gate on): a 2048
 // window, reassignment, 3.5 bins, consensus 0.5, floor −100 / ceiling −24 dB, gamma 1.57, fade 0.4, tilt 4.5 dB/oct,
@@ -151,6 +158,12 @@ const Opt kOpts[oCount] = {
     {"s4", "Stop 4", -37, -140, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
     {"s5", "Stop 5", -29, -140, 12, Opt::Number, nullptr, "%.0f dB", 1.0},
     {"sil", "Silence opacity", 1.0, 0.0, 1.0, Opt::Number, nullptr, "%.2f", 0.01},
+    // VZ.3: the tone preview (PQ Meter's tone_preview / tone_ctrl_click / tone_snap / tone_db / tone_wave).
+    {"tkeys", "Play keys", 0, 0, 1, Opt::Toggle, kOnOff},
+    {"tctrl", "Ctrl+click tone", 0, 0, 1, Opt::Toggle, kOnOff},
+    {"tsnap", "Tone snap", 2, 0, 2, Opt::Choice, kToneSnapNames},
+    {"tdb", "Tone level", -18, -60, 0, Opt::Number, nullptr, "%.0f dBFS", 1.0},
+    {"twave", "Tone shape", 0, 0, 2, Opt::Choice, dsp::kToneWaveNames},
 };
 
 struct Options : sheet::Values {
@@ -202,6 +215,10 @@ void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   for (const uint32_t i : {oGrid, oRuler, oNote, oTuning, oKeys}) out.push_back(i);
   if (o.choice(oKeys) != 0)
     for (const uint32_t i : {oKeysW, oKeysOpacity, oKeysTintC}) out.push_back(i);
+  out.push_back(oPlayKeys);
+  out.push_back(oCtrlTone);
+  if (o.on(oPlayKeys) || o.on(oCtrlTone))
+    for (const uint32_t i : {oToneSnap, oToneDb, oToneWave}) out.push_back(i);
 }
 
 // The nearest 12-EDO note of hz (C3 = 261.626 Hz, the spectrum display's naming) and its cents.
@@ -689,6 +706,7 @@ public:
     applyTone();
   }
   ~SpectrogramFace() override {
+    stopTone();
     letGo();
     dropTexture();
   }
@@ -718,6 +736,7 @@ public:
         return true;
       }
       if (lastPaint_ < probe_ && now - probe_ > 0.05) {
+        stopTone();
         letGo();
         dropTexture();
         frames_.live_ = false;
@@ -837,6 +856,7 @@ public:
     switch (e.kind) {
       case K::Down: {
         if (e.button != ui::PointerButton::Left) return false;
+        if (bound_) syncOptions();  // (an option changed elsewhere since the last paint)
         const int32_t part = hitTest(e.local, e.pxPerUnit);
         if (part == kChPart || part == kScalePart || part == kMapPart) {
           const uint32_t o = part == kChPart ? oChannel : part == kScalePart ? oScale : oMap;
@@ -873,9 +893,20 @@ public:
           return true;
         }
         if (part == kSheetPart) return true;
+        // VZ.3: the keys (Play keys) or, with Ctrl, the whole picture (Ctrl+click tone) play their pitch while held.
+        if (part == kPlotPart && !(e.mods & ui::mod::kAlt) && !coversPlot() && tonePort() != nullptr &&
+            ((opts_.on(oPlayKeys) && onKeys(e.local)) || (opts_.on(oCtrlTone) && (e.mods & ui::mod::kCtrl) != 0))) {
+          playAt(e.local.y);
+          return true;
+        }
         return false;  // the plot: the host's (select, move)
       }
       case K::Move: {
+        if (tone_.held()) {  // the drag steers the tone (clamped to the plot's ends past them)
+          playAt(e.local.y);
+          hover_ = {std::clamp(e.local.x, kPlot.x0, kPlot.x1), std::clamp(e.local.y, kPlot.y0, kPlot.y1)};
+          return true;
+        }
         if (drag_) {
           const Opt& op = kOpts[dragOpt_];
           const double k = (shift ? 0.1 : 1.0) / 160.0;
@@ -888,6 +919,10 @@ public:
         return true;
       }
       case K::Up: {
+        if (tone_.held()) {
+          stopTone();
+          return true;
+        }
         const bool was = drag_;
         drag_ = false;
         if (was && editing_) {
@@ -904,8 +939,9 @@ public:
     }
     return false;
   }
-  bool dragging() const noexcept override { return drag_; }
+  bool dragging() const noexcept override { return drag_ || tone_.held(); }
   void cancelDrag() override {
+    stopTone();
     if (drag_ && editing_) {
       target().cancel();
       editing_ = false;
@@ -1035,6 +1071,7 @@ public:
   void setFrozenForTest(bool f) { frozen_ = f; }
   void setSheetForTest(bool s) { sheet_ = s; }
   void setHoverForTest(Vec2 l) { hover_ = l; }
+  const ToneGesture& tone() const noexcept { return tone_; }
 
 private:
   // ---- options ----
@@ -1402,6 +1439,25 @@ private:
     }
   }
 
+  // ---- VZ.3: the tone preview ----
+  TonePort* tonePort() const noexcept { return hasTarget() ? target().tonePort() : nullptr; }
+  bool onKeys(Vec2 l) const noexcept {
+    const float kw = opts_.keysW();
+    if (kw <= 0.0f || l.y < kPlot.y0 || l.y > kPlot.y1) return false;
+    return opts_.choice(oKeys) == 1 ? l.x >= kPlot.x0 && l.x <= kPlot.x0 + kw : l.x >= kPlot.x1 - kw && l.x <= kPlot.x1;
+  }
+  void playAt(float localY) {
+    tone_.hold(tonePort(), this, hasTarget() ? &target() : nullptr, static_cast<ToneSnap>(std::clamp(opts_.choice(oToneSnap), 0, 2)),
+               hzAt(std::clamp(localY, kPlot.y0, kPlot.y1)), static_cast<float>(opts_[oToneDb]),
+               static_cast<dsp::ToneWave>(std::clamp(opts_.choice(oToneWave), 0, dsp::kToneWaveCount - 1)));
+    if (wakeHost_) wakeHost_();
+  }
+  void stopTone() {
+    if (!tone_.held()) return;
+    tone_.release(tonePort(), this);
+    if (wakeHost_) wakeHost_();
+  }
+
   float yOf(float hz) const noexcept {
     const Tone& t = pic_.tone();
     const float u = pic_.axis().unit(std::clamp(hz, t.fMin, t.fMax));
@@ -1521,6 +1577,10 @@ private:
         p.roundedRect({x + 0.5f, textY - 0.5f * kLabelPx - 1.0f, x + 3.5f + tw, textY + 0.5f * kLabelPx + 1.0f}, 2.0f, kPad);
         p.textAligned({x + 2.0f, textY}, buf, kLabelPx, ui::rgba(255, 255, 255, 120), 0.0f);
       }
+    }
+    if (tone_.held()) {  // VZ.3: the sounding pitch
+      const float y = yOf(tone_.hz());
+      p.line({kPlot.x0, y}, {kPlot.x1, y}, 1.0f / std::max(1e-3f, p.transform().scale), ui::rgba(255, 200, 120, 210));
     }
     // The keyboard (12-EDO keys at their pitch on this axis; the hovered key lit).
     const bool hovering = hover_.x >= 0.0f;
@@ -1687,6 +1747,7 @@ private:
   bool frozen_ = false, sheet_ = false, hostOver_ = false;
   sheet::Sheet panel_{{kPlot.x0 + 1.0f, kChipY + kChipH + 3.0f, kPlot.x1 - 1.0f, kPlot.y1 - 1.0f}, 5.5f};
   Vec2 hover_{-1.0f, -1.0f};
+  ToneGesture tone_;  // VZ.3
   bool drag_ = false, editing_ = false;
   uint32_t dragOpt_ = 0;
   float pressY_ = 0.0f;

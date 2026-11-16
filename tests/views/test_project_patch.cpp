@@ -44,6 +44,9 @@
 #include "../../src/views/src/shell/shell_widgets.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
+#include "../../src/views/src/meta/faces.h"
+#include "pq/tuning/edo.h"
+#include "pq/views/tone_port.h"
 
 using namespace pq;
 using namespace pq::ui;
@@ -4023,4 +4026,144 @@ TEST_CASE("project patch (BR.ui): a Spectrum's SET opens its sheet beside the fa
   REQUIRE(pl.has_value());
   CHECK(pl->x1 <= 0.0f);
   CHECK(c.rect().contains(dev(h, {pl->x0, pl->y0})));
+}
+
+// VZ.3 (PQ Meter b721058 / 5dab446): the tone preview through real dispatch on the canvas. A press on a Spectrum's plot
+// holds the tone at the frequency under the pointer (snap Off: that frequency; 12-EDO: the nearest semitone; Tuning:
+// the nearest pitch of the track's tuning), a drag retunes it, the release stops it; on a Spectrogram the keyboard's
+// keys play (Play keys) and Ctrl+click anywhere plays (Ctrl+click tone), a plain press off the keys stays the host's.
+// The tone goes to the context's TonePort (the app: the monitor output) — the document never changes.
+TEST_CASE("project patch (VZ.3): Spectrum / Spectrogram tone preview — press, drag, release, snap (real dispatch)") {
+  Ui u(false);
+  project_patch::MetaSpectrumIds ids;
+  REQUIRE(buildSpectrumProject(u.ctx.store(), &ids).ok());
+  doc::DocumentStore& st = u.ctx.store();
+  auto run = [&](doc::ops::EditResult e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(st.dispatch(e->command).ok());
+    return *e;
+  };
+  const doc::DeviceId gram = run(doc::ops::addMetaDevice(*st.current(), st.ids(), ids.keys, "spectrogram")).devices.at(0);
+  RecordingTonePort tone;
+  u.ctx.setTonePort(&tone);
+  auto data = [&](doc::DeviceId dev, const char* type, std::vector<std::pair<std::string, double>> f) {
+    std::vector<std::pair<std::string, meta::DataValue>> fields;
+    for (auto& [k, v] : f) fields.emplace_back(k, meta::DataValue::num(v));
+    (void)run(doc::ops::setMetaData(*st.current(), dev, "", type,
+                                    std::make_shared<const meta::DataValue>(meta::DataValue::record(std::move(fields)))));
+  };
+  data(ids.spectrum, "spectrum", {{"tone", 1.0}, {"tsnap", 0.0}, {"tdb", -24.0}, {"twave", 2.0}});
+  data(gram, "spectrogram", {{"tkeys", 1.0}, {"keys", 1.0}, {"tsnap", 2.0}});
+  u.show();
+  ProjectPatchView& v = u.view();
+  ProjectCanvas& c = v.canvas();
+  auto face = [&](doc::DeviceId dev, circuit::SceneNode& sn) -> MetaFace* {
+    const uint32_t n = u.pp().nodeOf(dev);
+    REQUIRE(n != kNone);
+    const uint32_t sv = v.scene().sceneNode[n];
+    sn = c.scene()->nodes[sv];
+    return c.faceOn(sv);
+  };
+  auto focus = [&](doc::DeviceId dev) {  // the face in view at zoom 1.5
+    circuit::SceneNode sn;
+    (void)face(dev, sn);
+    circuit::CircuitCanvas::View cv;
+    cv.zoom = 1.5;
+    cv.x = static_cast<double>(sn.x) - 20.0;
+    cv.y = static_cast<double>(sn.y) - 20.0;
+    c.setView(cv);
+    u.d.tree().layoutNow();
+    u.d.step();
+  };
+  auto dev = [&](doc::DeviceId d, Vec2 l) {
+    circuit::SceneNode sn;
+    (void)face(d, sn);
+    const float s = sn.scale > 0.0f ? sn.scale : 1.0f;
+    return c.toDevice({sn.x + l.x * s, sn.y + l.y * s});
+  };
+  const size_t h0 = u.history();
+
+  // ---- the Spectrum: snap off — the frequency under the pointer ----
+  focus(ids.spectrum);
+  circuit::SceneNode sn;
+  MetaFace* sf = face(ids.spectrum, sn);
+  REQUIRE(sf != nullptr);
+  devices::SpectrumPlotStyle style;
+  REQUIRE(spectrumStyle(*sf, style));
+  auto hzAtX = [&](float x) { return style.axis.hz(std::clamp((x - 8.0f) / 224.0f, 0.0f, 1.0f)); };  // kPlot 8 … 232
+  u.d.move(dev(ids.spectrum, {120.0f, 90.0f}));
+  u.d.down(dev(ids.spectrum, {120.0f, 90.0f}));
+  u.d.step();
+  CHECK(tone.holds == 1);
+  CHECK(tone.sounding());
+  CHECK(tone.hz == doctest::Approx(hzAtX(120.0f)).epsilon(5e-3));
+  CHECK(tone.dbfs == doctest::Approx(-24.0f));
+  CHECK(tone.wave == dsp::ToneWave::Triangle);
+  // The drag glides it (every move retunes), even past the plot's end (clamped there).
+  u.d.move(dev(ids.spectrum, {170.0f, 60.0f}));
+  u.d.step();
+  CHECK(tone.holds >= 2);
+  CHECK(tone.hz == doctest::Approx(hzAtX(170.0f)).epsilon(5e-3));
+  u.d.move(dev(ids.spectrum, {400.0f, 60.0f}));
+  CHECK(tone.hz == doctest::Approx(style.axis.fMax()).epsilon(5e-3));
+  u.d.up(dev(ids.spectrum, {400.0f, 60.0f}));
+  u.d.step();
+  CHECK_FALSE(tone.sounding());
+  CHECK(tone.releases == 1);
+  CHECK(u.history() == h0 + 0);  // nothing entered the document (the face did not move either)
+  // Alt+press: the host's (no tone).
+  const int holdsAfterAlt = tone.holds;
+  u.d.down(dev(ids.spectrum, {120.0f, 90.0f}), PointerButton::Left, mod::kAlt);
+  u.d.up(dev(ids.spectrum, {120.0f, 90.0f}), PointerButton::Left, mod::kAlt);
+  u.d.step();
+  CHECK(tone.holds == holdsAfterAlt);
+  CHECK_FALSE(tone.sounding());
+  // 12-EDO: the nearest A4 = 440 Hz semitone.
+  data(ids.spectrum, "spectrum", {{"tone", 1.0}, {"tsnap", 1.0}});
+  u.d.step();
+  u.d.down(dev(ids.spectrum, {131.0f, 90.0f}));
+  CHECK(tone.holds == holdsAfterAlt + 1);
+  const double semis = 12.0 * std::log2(tone.hz / 440.0);
+  CHECK(semis == doctest::Approx(std::round(semis)).epsilon(1e-4));
+  CHECK(std::fabs(semis - 12.0 * std::log2(hzAtX(131.0f) / 440.0)) <= 0.5 + 1e-4);
+  u.d.up(dev(ids.spectrum, {131.0f, 90.0f}));
+  CHECK_FALSE(tone.sounding());
+
+  // ---- the Spectrogram: its keys play, snapped to the track's tuning (22-EDO) ----
+  doc::TuningDef edo22;
+  edo22.system = *tuning::Edo::make(22);
+  const doc::TuningId t22 = run(doc::ops::addMainTuning(*st.current(), st.ids(), "22edo", edo22, doc::Colour{0xE0A43C})).tunings.at(0);
+  REQUIRE(st.dispatch(doc::SetDefaultTuning{t22}).ok());  // (the audio track plays in the project's default)
+  focus(gram);
+  u.d.step();
+  const int before = tone.holds;
+  u.d.down(dev(gram, {15.0f, 80.0f}));  // on the keys (left, 22 units wide)
+  u.d.step();
+  CHECK(tone.holds == before + 1);
+  REQUIRE(tone.sounding());
+  const double steps22 = 22.0 * std::log2(tone.hz / 261.6256);
+  CHECK(steps22 == doctest::Approx(std::round(steps22)).epsilon(1e-3));
+  const float first = tone.hz;
+  u.d.move(dev(gram, {15.0f, 40.0f}));  // up the keys: higher
+  u.d.step();
+  CHECK(tone.hz > first);
+  u.d.up(dev(gram, {15.0f, 40.0f}));
+  u.d.step();
+  CHECK_FALSE(tone.sounding());
+  // Off the keys a plain press is the host's; Ctrl+click tone on: Ctrl+press anywhere plays.
+  const int beforeCtrl = tone.holds;
+  u.d.down(dev(gram, {150.0f, 80.0f}));
+  u.d.up(dev(gram, {150.0f, 80.0f}));
+  u.d.step();
+  CHECK(tone.holds == beforeCtrl);
+  data(gram, "spectrogram", {{"tctrl", 1.0}, {"tsnap", 0.0}});
+  u.d.step();
+  u.d.down(dev(gram, {150.0f, 80.0f}), PointerButton::Left, mod::kCtrl);
+  u.d.step();
+  CHECK(tone.holds == beforeCtrl + 1);
+  CHECK(tone.sounding());
+  u.d.up(dev(gram, {150.0f, 80.0f}), PointerButton::Left, mod::kCtrl);
+  u.d.step();
+  CHECK_FALSE(tone.sounding());
+  u.ctx.setTonePort(nullptr);
 }

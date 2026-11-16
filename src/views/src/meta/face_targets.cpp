@@ -187,6 +187,8 @@ const dsp::Curve* DocTarget::curve(size_t param) const {  // GU.1
   return d != nullptr ? d->curve(type_.params[param].name) : nullptr;
 }
 
+TonePort* DocTarget::tonePort() const { return ctx_.tonePort(); }
+
 uint64_t DocTarget::guidesKey() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx_.doc().get())); }
 
 void DocTarget::notice(std::string_view message) { ctx_.setStatus(std::string(message)); }

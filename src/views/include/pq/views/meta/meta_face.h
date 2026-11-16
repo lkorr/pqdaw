@@ -59,6 +59,8 @@ struct PitchGuide {
 };
 
 // What a face reads and edits: one instance's params (in meta::Type::params order).
+class TonePort;
+
 class MetaTarget {
 public:
   virtual ~MetaTarget() = default;
@@ -87,6 +89,8 @@ public:
   // no track known, the default); guidesKey() changes whenever they may have (the face asks again).
   virtual void pitchGuides(float /*loHz*/, float /*hiHz*/, std::vector<PitchGuide>& out) const { out.clear(); }
   virtual uint64_t guidesKey() const { return 0; }
+  // VZ.3: where a display's tone preview plays (null: nowhere — the play surface does nothing; pq/views/tone_port.h).
+  virtual TonePort* tonePort() const { return nullptr; }
   // GU.1: param i's own curve (doc::Device::curves of a chain meta device; null: the declared one, meta::paramCurve).
   // The face's controls travel along it (faceTravelToValue / faceValueToTravel).
   virtual const dsp::Curve* curve(size_t /*param*/) const { return nullptr; }

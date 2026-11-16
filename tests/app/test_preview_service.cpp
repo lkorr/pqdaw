@@ -18,6 +18,7 @@
 #include "pq/app/audio_output.h"
 #include "pq/app/preview_service.h"
 #include "pq/app/project_link.h"
+#include "pq/app/tone_service.h"
 #include "pq/app/user_settings.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/document/model.h"
@@ -164,6 +165,30 @@ TEST_CASE("preview service: a cold start (no selection first) and the cue pair")
   svc.stop();
   (void)r.callback(2);
   (void)svc.playing();
+}
+
+// VZ.3: the displays' tone preview goes out of the output's monitor (cue) pair, at the device's buffer — never through
+// the engine — RT-clean (Rig::callback counts allocations / locks), and fades out after the release.
+TEST_CASE("tone service: a held tone sounds in the cue pair, not through the engine; the release fades it out") {
+  Rig r(4);
+  ToneService tone(*r.out);
+  int owner = 0;
+  CHECK(r.callback(0) == 0.0f);
+  tone.hold(&owner, 440.0f, -12.0f, dsp::ToneWave::Sine);
+  CHECK(r.out->tonePreview().sounding());
+  float pk = 0.0f;
+  for (int i = 0; i < 20; ++i) pk = std::max(pk, r.callback(0));
+  CHECK(pk == doctest::Approx(std::pow(10.0f, -12.0f / 20.0f)).epsilon(0.02));
+  // Cue Out 3/4: the tone moves to the monitor pair and the master (the engine's mix, what a render or a recording
+  // hears) is silent: the tone never went through the engine.
+  r.out->setCuePair(1);
+  (void)r.callback(0);
+  CHECK(r.callback(0) == 0.0f);
+  CHECK(r.callback(2) > 0.1f);
+  tone.release(&owner);
+  for (int i = 0; i < 16; ++i) (void)r.callback(2);  // 30 ms = 1440 frames < 16 × 128
+  CHECK(r.callback(2) == 0.0f);
+  CHECK_FALSE(r.out->tonePreview().sounding());
 }
 
 TEST_CASE("preview service: a cold WAV start within 30 ms" * doctest::test_suite("perf")) {

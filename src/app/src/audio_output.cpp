@@ -212,6 +212,14 @@ bool AudioOutput::prepareAdapter(uint32_t deviceIns, uint32_t deviceOuts, uint32
   return adapter_.prepare({&AudioOutput::onEngine, this}, engineIns_, engineOuts_ + clickOuts_, blockFrames, deviceFrames);
 }
 
+void AudioOutput::tonePreviewChanged() {
+  {
+    std::lock_guard lock(mutex_);
+    wakeRequest_ = wakeRequest_ || tonePreview_.sounding();  // a suspended stream starts for the tone
+  }
+  cv_.notify_all();
+}
+
 void AudioOutput::setCueSource(const engine::AudioCallback* cb) {
   cue_.store(cb);
   while (inCue_.load() != 0) std::this_thread::yield();  // a callback still using the previous source finishes
@@ -344,6 +352,16 @@ void AudioOutput::onDevice(void* self, const engine::AudioBlock& b) noexcept {  
       for (uint32_t f = 0; f < b.frames; ++f) pair[c][f] = std::clamp(pair[c][f], -1.0f, 1.0f);
   }
   o.inCue_.store(0, std::memory_order_release);
+  // VZ.3: the tone preview, into the same pair (after the cue: the monitor output, never the engine's mix).
+  if (o.tonePreview_.sounding()) {
+    uint32_t first = 2 * o.cuePair_.load(std::memory_order_relaxed);
+    if (first + 2 > b.numOut) first = 0;
+    const uint32_t n = b.numOut > first + 1 ? 2u : 1u;
+    float* pair[2] = {b.out[first], b.out[first + n - 1]};
+    o.tonePreview_.render(pair, n, b.frames, o.engine_.load(std::memory_order_relaxed)->config().sampleRate);
+    for (uint32_t c = 0; c < n; ++c)
+      for (uint32_t f = 0; f < b.frames; ++f) pair[c][f] = std::clamp(pair[c][f], -1.0f, 1.0f);
+  }
   // AU.stream: a requested fade-out: a linear ramp to 0 over fadeLen_ frames (across buffers), then silence.
   if (o.fade_.load(std::memory_order_acquire) == kFadeRequested) {
     const float inv = 1.0f / static_cast<float>(o.fadeLen_);
@@ -469,7 +487,8 @@ void AudioOutput::fadeOut(bool deviceRunning) {
       prerolling_.load(std::memory_order_acquire) || silence_.load(std::memory_order_relaxed))
     return;
   engine::Engine& eng = *engine_.load();
-  if (eng.asleep() && !toneOn_.load(std::memory_order_relaxed) && extra_.load() == nullptr && cue_.load() == nullptr)
+  if (eng.asleep() && !toneOn_.load(std::memory_order_relaxed) && extra_.load() == nullptr && cue_.load() == nullptr &&
+      !tonePreview_.sounding())
     return;  // nothing sounds
   // One fade at a time (the control thread's stop and an ASIO reset's hook may race): claim it.
   uint32_t idle = kFadeNone;
@@ -760,7 +779,7 @@ void AudioOutput::controlMain() {
       cv_.wait(lock, [&] {
         return quit_ || closeRequest_ || pending_.has_value() || hwChanged_ || panelRequest_ || wakeRequest_ ||
                toneOn_.load(std::memory_order_relaxed) || extra_.load(std::memory_order_relaxed) != nullptr ||
-               cue_.load(std::memory_order_relaxed) != nullptr;
+               cue_.load(std::memory_order_relaxed) != nullptr || tonePreview_.sounding();
       });
       if (quit_ || closeRequest_ || pending_ || hwChanged_ || panelRequest_) continue;
       wakeRequest_ = false;
@@ -811,7 +830,7 @@ void AudioOutput::controlMain() {
     // window in the background.
     if (foreground_ || wakeRequest_ || toneOn_.load(std::memory_order_relaxed) ||
         extra_.load(std::memory_order_relaxed) != nullptr || cue_.load(std::memory_order_relaxed) != nullptr ||
-        keepRunning_.load(std::memory_order_relaxed) ||
+        tonePreview_.sounding() || keepRunning_.load(std::memory_order_relaxed) ||
         !engine_.load()->asleep()) {
       wakeRequest_ = false;
       wasIdle = false;

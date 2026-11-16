@@ -4,9 +4,12 @@
 // the top-right corner: SET (VZ.1: the settings sheet, option_sheet.h — ANALYSIS: window, low-end window, smoothing,
 // attack / release, tilt, peak hold time and fall, VZ.2: frequency scale and range, the average line; DISPLAY: peak
 // line, range, style (curve / bars / both), colour mode, colormap (Custom: stops in dB, fenced by their neighbours),
-// the colour window, fill, glow, line, bands, grid, labels, slope guide, tilt tag),
+// the colour window, fill, glow, line, bands, grid, labels, slope guide, tilt tag, VZ.3 the tone preview),
 // PEAK (the peak hold line) and FREEZE (the picture holds while the analysis keeps running, as PQ Meter's freeze). The
-// options are the instance's data. The pointer shows its frequency, nearest note and level. Labels appear from a
+// options are the instance's data. The pointer shows its frequency, nearest note and level. VZ.3 (PQ Meter b721058):
+// with "Tone on click" a press on the plot plays the frequency under the pointer (snapped: off / 12-EDO / the track's
+// tuning) through the target's TonePort — the monitor output, never the project — a drag glides it, the release stops
+// it; a rule marks the sounding pitch. Alt+press stays the host's (select / move). Labels appear from a
 // readable zoom up; far out the face is a faithful miniature of the curve. World units 240 × 150.
 //
 // The analysis: the host binds the instance's feed (Face::setAnalysis: a chain Spectrum device's own tap; a nested
@@ -23,6 +26,7 @@
 
 #include "faces.h"
 #include "option_sheet.h"
+#include "tone_gesture.h"
 #include "pq/ui/colormap.h"
 #include "pq/views/devices/spectrum_plot.h"
 
@@ -41,6 +45,7 @@ constexpr Rect kSetChip{kW - 109.0f, 12.0f, kW - 83.0f, 22.0f};
 constexpr Rect kPeakChip{kW - 80.0f, 12.0f, kW - 48.0f, 22.0f};
 constexpr Rect kFreezeChip{kW - 45.0f, 12.0f, kW - 12.0f, 22.0f};
 constexpr float kLabelPx = 8.0f;          // world units
+constexpr Rgba kToneRule = ui::rgba(255, 200, 120, 210);  // VZ.3: the sounding pitch
 constexpr float kLabelMinDevicePx = 7.0f;  // below this the labels are left out (the curve stays)
 enum Part : int32_t { kPlotPart = 0, kPeak = 1, kFreeze = 2, kSetPart = 3, kSheetPart = 4, kRowBase = sheet::kRowBase };
 
@@ -53,7 +58,7 @@ using sheet::Opt;
 enum O : uint32_t {
   oFft, oSharpLows, oSmooth, oAttack, oRelease, oTilt, oHold, oFall, oScale, oFMin, oFMax, oAvg, oAvgSec,
   oPeaks, oFloor, oCeil, oDraw, oColour, oMap, oBase, oStop2, oStop3, oStop4, oStop5, oFollow, oQuiet, oFill, oGlow,
-  oLine, oBands, oGrid, oLabels, oSlope, oTiltTag, oCount
+  oLine, oBands, oGrid, oLabels, oSlope, oTiltTag, oTone, oToneSnap, oToneDb, oToneWave, oCount
 };
 constexpr const char* kSmoothNames[] = {"Off", "1/24 oct", "1/12 oct", "1/6 oct", "1/3 oct"};
 constexpr float kSmoothOct[] = {0.0f, 1.0f / 24.0f, 1.0f / 12.0f, 1.0f / 6.0f, 1.0f / 3.0f};
@@ -101,6 +106,11 @@ const Opt kOpts[oCount] = {
     {"labels", "Labels", 1, 0, 1, Opt::Toggle, kOnOff},
     {"slope", "Slope guide", 0, 0, 1, Opt::Toggle, kOnOff},
     {"ttag", "Tilt tag", 1, 0, 1, Opt::Toggle, kOnOff},
+    // VZ.3: the tone preview (PQ Meter's tone_preview / tone_snap / tone_db / tone_wave; snap adds the track's tuning).
+    {"tone", "Tone on click", 0, 0, 1, Opt::Toggle, kOnOff},
+    {"tsnap", "Tone snap", 2, 0, 2, Opt::Choice, kToneSnapNames},
+    {"tdb", "Tone level", -18, -60, 0, Opt::Number, nullptr, "%.0f dBFS", 1.0},
+    {"twave", "Tone shape", 0, 0, 2, Opt::Choice, dsp::kToneWaveNames},
 };
 
 struct Options : sheet::Values {
@@ -184,7 +194,9 @@ void visibleRows(const Options& o, int tab, std::vector<uint32_t>& out) {
   }
   out.push_back(oFollow);
   if (!o.on(oFollow)) out.push_back(oQuiet);
-  for (const uint32_t i : {oFill, oGlow, oLine, oBands, oGrid, oLabels, oSlope, oTiltTag}) out.push_back(i);
+  for (const uint32_t i : {oFill, oGlow, oLine, oBands, oGrid, oLabels, oSlope, oTiltTag, oTone}) out.push_back(i);
+  if (o.on(oTone))
+    for (const uint32_t i : {oToneSnap, oToneDb, oToneWave}) out.push_back(i);
 }
 
 // The hosts poll a face's voice reader; this one stands for the feed's frames.
@@ -203,6 +215,7 @@ public:
     visibleRows(opts_, panel_.tab, rows_);
     applyOptions();
   }
+  ~SpectrumFace() override { stopTone(); }
 
   Vec2 worldSize() const noexcept override { return {kW, kH}; }
   float inputY(size_t, size_t) const noexcept override { return 0.5f * kH; }
@@ -229,6 +242,7 @@ public:
         return true;  // ask for one repaint
       }
       if (lastPaint_ < probe_ && now - probe_ > 0.05) {
+        stopTone();
         plot_.release();
         frames_.live_ = false;
         probe_ = 0.0;
@@ -289,6 +303,10 @@ public:
     plot_.setStyle(s);
     plot_.paintAll(dl, r, th, scale, text, hoverX_ >= 0.0f ? t.map({hoverX_, 0.0f}).x : -1.0f);
     dl.popClip();
+    if (tone_.held()) {  // VZ.3: the sounding pitch
+      const float x = kPlot.x0 + (kPlot.x1 - kPlot.x0) * std::clamp(plot_.style().axis.unit(tone_.hz()), 0.0f, 1.0f);
+      p.line({x, kPlot.y0 + 1.0f}, {x, kPlot.y1 - 1.0f}, 1.0f, kToneRule);
+    }
     if (labels) {
       chip(p, kSetChip, "SET", sheet_, th);
       chip(p, kPeakChip, "PEAK", opts_.on(oPeaks), th);
@@ -340,6 +358,7 @@ public:
     switch (e.kind) {
       case K::Down: {
         if (e.button != ui::PointerButton::Left) return false;
+        syncOptions();  // (an option changed elsewhere since the last paint)
         const int32_t part = hitTest(e.local, e.pxPerUnit);
         if (part == kPeak) {
           setOption(oPeaks, opts_.on(oPeaks) ? 0.0 : 1.0);
@@ -370,9 +389,19 @@ public:
           return true;
         }
         if (part == kSheetPart) return true;
+        // VZ.3: the plot plays its frequency while held (Alt: the host's chord, select / move).
+        if (part == kPlotPart && opts_.on(oTone) && !(e.mods & ui::mod::kAlt) && !coversPlot() && tonePort() != nullptr) {
+          playAt(e.local.x);
+          return true;
+        }
         return false;  // the plot: the host's (select, move)
       }
       case K::Move: {
+        if (tone_.held()) {  // the drag steers the tone (clamped to the plot's ends past them)
+          playAt(e.local.x);
+          hoverX_ = std::clamp(e.local.x, kPlot.x0, kPlot.x1 - 0.01f);
+          return true;
+        }
         if (drag_) {
           const Opt& op = kOpts[dragOpt_];
           const double k = ((e.mods & ui::mod::kShift) ? 0.1 : 1.0) / 160.0;
@@ -389,6 +418,10 @@ public:
         hoverX_ = -1.0f;
         return true;
       case K::Up: {
+        if (tone_.held()) {
+          stopTone();
+          return true;
+        }
         const bool was = drag_;
         drag_ = false;
         if (was && editing_) {
@@ -401,8 +434,9 @@ public:
     }
     return false;
   }
-  bool dragging() const noexcept override { return drag_; }
+  bool dragging() const noexcept override { return drag_ || tone_.held(); }
   void cancelDrag() override {
+    stopTone();
     if (drag_ && editing_) {
       target().cancel();
       editing_ = false;
@@ -465,8 +499,10 @@ public:
       case kPlotPart: {
         title = "Spectrum";
         body = plot_.feed() != nullptr
-                   ? "The spectrum of the signal passing through (it is not changed). Point at it for the frequency, "
-                     "its nearest note and the level there."
+                   ? (opts_.on(oTone) ? "The spectrum of the signal passing through. Press and hold to hear the frequency "
+                                        "under the pointer (drag to sweep; SET: snap, level, shape); Alt+drag moves the face."
+                                      : "The spectrum of the signal passing through (it is not changed). Point at it for the "
+                                        "frequency, its nearest note and the level there.")
                    : "The spectrum of the signal passing through (it is not changed). Shown when the module plays in a "
                      "track's chain.";
         return;
@@ -488,11 +524,28 @@ public:
     }
   }
 
+  // Tests: the tone gesture.
+  const ToneGesture& tone() const noexcept { return tone_; }
   // Tests: the plot (its shown state, its style).
   devices::SpectrumPlot& plot() noexcept { return plot_; }
   const devices::SpectrumPlotStyle& style() const noexcept { return plot_.style(); }
 
 private:
+  // ---- VZ.3: the tone preview ----
+  TonePort* tonePort() const noexcept { return hasTarget() ? target().tonePort() : nullptr; }
+  void playAt(float localX) {
+    const float u = std::clamp((localX - kPlot.x0) / (kPlot.x1 - kPlot.x0), 0.0f, 1.0f);
+    tone_.hold(tonePort(), this, hasTarget() ? &target() : nullptr, static_cast<ToneSnap>(std::clamp(opts_.choice(oToneSnap), 0, 2)),
+               plot_.style().axis.hz(u), static_cast<float>(opts_[oToneDb]),
+               static_cast<dsp::ToneWave>(std::clamp(opts_.choice(oToneWave), 0, dsp::kToneWaveCount - 1)));
+    if (wakeHost_) wakeHost_();
+  }
+  void stopTone() {
+    if (!tone_.held()) return;
+    tone_.release(tonePort(), this);
+    if (wakeHost_) wakeHost_();
+  }
+
   // ---- the settings sheet (BR.ui: beside the face where the host has room) ----
   bool coversPlot() const noexcept { return sheet_ && !panel_.beside(); }
   void toggleSheet(const FacePointer& e) {
@@ -601,6 +654,7 @@ private:
   float pressY_ = 0.0f;
   double pressTravel_ = 0.0;
   float hoverX_ = -1.0f;  // world x of the pointer over the plot (−1: none)
+  ToneGesture tone_;
   double lastPaint_ = 0.0, probe_ = 0.0;
   bool polling_ = false, painting_ = false;
 };

@@ -36,6 +36,7 @@ pq_add_module(pq_app
     src/os_drag.cpp
     src/clip_export.cpp
     src/preview_service.cpp
+    src/tone_service.cpp
     src/bug_reporter.cpp
     src/build_info.cpp
   DEPS pq_core pq_ui pq_ui_scenes pq_views pq_doc pq_engine pq_compile nlohmann_json::nlohmann_json
