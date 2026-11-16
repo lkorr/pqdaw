@@ -887,3 +887,11 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 - [x] **PF.4b audio/64 rate-1 playback back to ≤ M5** (Q?-T6.x-fix-warp-b): 14.0 µs at M5 → 16.7–16.8 µs; PF.4 accounts for ≈ 1.6 µs in the JIT unit loop with byte-identical machine code (suspected code placement / alignment), M6 ≈ 0.76 µs (runUnit bookkeeping ≈ 0.4, clip-player voice state ≈ 0.3). After T6.x-fix-pdc. *(merged ef7d3d43; cause: CRT heap placement varied with JIT compile threads → pq/core/rt_heap.h private heap for images, tables and packets; hot fields first; runUnit no per-block fade-context zero fill; ship 16.3 → 14.0 µs (M5 13.6–13.8), release 16.6 → 14.4; ~0.3 µs over M5 left unprofiled (no HW counters))*
 - [x] **T6.x-fix-ui-b WASAPI capture discontinuities** (docs/reviews/M6.md M7): on a CaptureFifo drop or underflow, split the take (new segment / clip) at that point instead of silently jumping or inserting silence; or a fractional resampler tracking drift between two WASAPI devices. *(merged 73f8b9fd; Q?-T6.x-fix-ui-b-a; drift-tracking resampler (PI loop, ±1000 ppm, 64-tap sinc) engaged only past 0.5 ms delay error, bit-exact otherwise; ±200 ppm × 10 min 0 drops / 0 underflows; +2.3 ms capture latency reserve; beyond ±1000 ppm drops remain unmarked)*
+
+## VZ: Visualisers — PQ Meter parity + production modules (user 2026-11-15; plan: docs/plans/VZ.md)
+- [ ] **VZ.2 Spectrum / Spectrogram parity with PQ Meter 1.0.21** 👁 (plan §VZ.2: shared axis Log/Mel/Linear + continuous low end, dense read, AA stroke + one glow, average line, tilt tag, colour modes + Bars, dB colour stops with fenced sliders, Silence colour / opacity, pqmeter_diff updated)
+- [ ] **VZ.3 Tone preview on the Spectrum and Spectrogram** 👁 (plan §VZ.3; snap to the active tuning)
+- [ ] **VZ.4 Loudness: Level Meter, LUFS Meter, Loudness History** 👁 (plan §VZ.4)
+- [ ] **VZ.5 Stereo: Stereo Field, Stereo Image, Phase Scope** 👁 (plan §VZ.5; after VZ.2)
+- [ ] **VZ.6 Band Levels and Waveform** 👁 (plan §VZ.6)
+- [ ] Deferred (ask the user): Kick/Sub Phase + Align (two-input analyser), Tonal Reference, Waterfall + Stereo Spectrogram (3D), spectrogram kick/sub ticks
