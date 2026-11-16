@@ -367,9 +367,42 @@ TEST_CASE("edit ops: delete clips, loop selection (Ctrl+L)") {
 
   commit(f.store, ops::loopClipToSelection(f.doc(), {f.lead, f.clipB}, pq::kPpq, 3 * pq::kPpq));
   CHECK(f.clip(f.lead, f.clipB).loop == ClipLoop{true, pq::kPpq, 3 * pq::kPpq});
+  CHECK(f.clip(f.lead, f.clipB).contentStart == 0);  // the loop was off: the start marker stays
   commit(f.store, ops::loopArrangementToSelection(f.doc(), 2 * kBar, 6 * kBar));
   CHECK(f.doc().loop == LoopRegion{2 * kBar, 6 * kBar, true});
   CHECK_FALSE(ops::loopArrangementToSelection(f.doc(), 6 * kBar, 2 * kBar).ok());
+}
+
+// bug-loop-offset: a looped clip's start marker on the loop start moves with the loop start (one undo step); one the
+// user parted from it, or a loop switched on / off, leaves the start marker alone.
+TEST_CASE("edit ops: setClipLoop moves a start marker that sits on the loop start") {
+  Fixture f;
+  const ClipRef b{f.lead, f.clipB};
+  const Ticks s16 = pq::kPpq / 4;
+  commit(f.store, ops::setClipLoop(f.doc(), b, ClipLoop{true, 0, kBar}));  // switched on: the marker stays
+  REQUIRE(f.clip(f.lead, f.clipB).contentStart == 0);
+  const size_t h = f.store.history().cursor();
+  commit(f.store, ops::setClipLoop(f.doc(), b, ClipLoop{true, s16, kBar + s16}));  // the whole brace a 16th later
+  CHECK(f.clip(f.lead, f.clipB).loop == ClipLoop{true, s16, kBar + s16});
+  CHECK(f.clip(f.lead, f.clipB).contentStart == s16);
+  CHECK(f.clip(f.lead, f.clipB).start == 8 * kBar);
+  CHECK(f.store.history().cursor() == h + 1);
+  REQUIRE(f.store.undo());
+  CHECK(f.clip(f.lead, f.clipB).contentStart == 0);
+  CHECK(f.clip(f.lead, f.clipB).loop == ClipLoop{true, 0, kBar});
+  commit(f.store, ops::setClipLoop(f.doc(), b, ClipLoop{true, 0, 2 * kBar}));  // only the end: the marker stays
+  CHECK(f.clip(f.lead, f.clipB).contentStart == 0);
+
+  // Parted (the start marker a beat in): the brace moves alone.
+  REQUIRE(f.store.dispatch(SetClipBounds{b, 8 * kBar, kBar, pq::kPpq}).ok());
+  commit(f.store, ops::setClipLoop(f.doc(), b, ClipLoop{true, s16, 2 * kBar}));
+  CHECK(f.clip(f.lead, f.clipB).contentStart == pq::kPpq);
+  // Switched off, then moved: the marker stays.
+  REQUIRE(f.store.dispatch(SetClipBounds{b, 8 * kBar, kBar, s16}).ok());
+  commit(f.store, ops::setClipLoop(f.doc(), b, ClipLoop{false, s16, 2 * kBar}));
+  commit(f.store, ops::setClipLoop(f.doc(), b, ClipLoop{false, 2 * s16, 2 * kBar}));
+  CHECK(f.clip(f.lead, f.clipB).contentStart == s16);
+  CHECK_FALSE(ops::setClipLoop(f.doc(), b, ClipLoop{true, kBar, kBar}).ok());
 }
 
 // ---- Notes ---------------------------------------------------------------------------------------------------------

@@ -462,14 +462,27 @@ EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const Cli
   return e;
 }
 
-EditResult loopClipToSelection(const Project& p, ClipRef clip, Ticks contentStart, Ticks contentEnd) {
-  PQ_DOC_TRY(checkRange(contentStart, contentEnd));
+namespace {
+EditResult clipLoopEdit(const Project& p, ClipRef clip, ClipLoop loop, std::string label) {
+  PQ_DOC_TRY(checkLoop(loop));
   Result<ClipFound> f = findClip(p, clip);
   if (!f) return std::move(f).error();
-  Edit e = makeEdit("Loop Selection");
-  batchOf(e).commands.push_back(SetClipLoop{clip, ClipLoop{true, contentStart, contentEnd}});
+  const NoteClip& c = *f->clip;
+  Edit e = makeEdit(std::move(label));
+  if (loop == c.loop) return e;
+  batchOf(e).commands.push_back(SetClipLoop{clip, loop});
+  if (const Ticks cs = contentStartAfterLoop(c.contentStart, c.loop, loop); cs != c.contentStart)
+    batchOf(e).commands.push_back(SetClipBounds{clip, c.start, c.length, cs});
   e.clips.push_back(clip);
   return e;
+}
+}  // namespace
+
+EditResult setClipLoop(const Project& p, ClipRef clip, ClipLoop loop) { return clipLoopEdit(p, clip, loop, "Clip Loop"); }
+
+EditResult loopClipToSelection(const Project& p, ClipRef clip, Ticks contentStart, Ticks contentEnd) {
+  PQ_DOC_TRY(checkRange(contentStart, contentEnd));
+  return clipLoopEdit(p, clip, ClipLoop{true, contentStart, contentEnd}, "Loop Selection");
 }
 
 EditResult loopArrangementToSelection(const Project&, Ticks start, Ticks end) {

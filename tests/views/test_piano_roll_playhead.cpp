@@ -3,6 +3,7 @@
 // Follow paging, through the real window dispatch with FakeTransport; the golden.
 
 #include "piano_roll_fix.h"
+#include "../../src/views/src/piano_roll/roll_state.h"
 
 #include <cmath>
 #include <optional>
@@ -248,6 +249,70 @@ TEST_CASE("pianoroll follow: the roll pages when the playhead leaves the view; C
   r.port.setPlayheadTick(15 * kQ + kQ / 2);
   r.d.advance(0.2);
   CHECK(r.view->scrollTick() == static_cast<double>(15 * kQ + kQ / 2));
+  CHECK(r.d.press("Space") == KeyResult::Action);
+}
+
+// bug-loop-offset (user 2026-11-15: "the playhead and piano roll box doesn't start exactly on the 1, it starts a
+// fraction of a note late"). The report's clip: start marker on the 1, loop brace a 16th in, its one note on the 1.
+// Only a ruler brace drag makes that state (the whole brace moved a 16th, the start marker left behind). Now a start
+// marker on the loop start moves with the brace; and a start marker before the loop start lights the roll from there
+// (the first pass plays from it), with the playhead on the 1 when the song plays from the 1.
+TEST_CASE("pianoroll loop brace: the start marker on the loop start moves with the brace; the lit region starts where playback does (bug-loop-offset)") {
+  Roll r;
+  GridSpec g;
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 4;  // 1/16
+  r.ctx.setGrid(g);
+  r.d.step();
+  const Ticks s16 = kQ / 4;
+  REQUIRE(r.clip().contentStart == 0);
+  REQUIRE(r.clip().loop == doc::ClipLoop{true, 0, 4 * kBar});
+  const float y = static_cast<float>(r.d.rect(kRuler).y) + 5.0f;  // the brace strip
+  const float px16 = static_cast<float>(static_cast<double>(s16) * r.view->pxPerTick());
+
+  // The brace's body (beat 2, past the start flag) dragged a 16th right: the brace and the start marker, one step.
+  const float x = r.view->xOfTick(static_cast<double>(kQ));
+  const size_t h = r.history();
+  r.d.drag({x, y}, {x + px16, y}, 6);
+  CHECK(r.history() == h + 1);
+  CHECK(r.clip().loop == doc::ClipLoop{true, s16, 4 * kBar + s16});
+  CHECK(r.clip().contentStart == s16);
+  CHECK(r.view->state().regionStart() == s16);
+  REQUIRE(r.ctx.store().undo());
+  r.d.step();
+  CHECK(r.clip().contentStart == 0);
+  CHECK(r.clip().loop.start == 0);
+
+  // The start flag dragged a beat right parts them; the brace then moves alone.
+  const float sx = r.view->xOfTick(0.0) + 2.0f;
+  r.d.drag({sx, y}, {sx + 4.0f * px16, y}, 6);
+  REQUIRE(r.clip().contentStart == kQ);
+  REQUIRE(r.clip().loop.start == 0);
+  const float bx = r.view->xOfTick(static_cast<double>(2 * kQ));
+  r.d.drag({bx, y}, {bx + px16, y}, 6);
+  CHECK(r.clip().loop == doc::ClipLoop{true, s16, 4 * kBar + s16});
+  CHECK(r.clip().contentStart == kQ);
+
+  // The report's state (as loaded: start marker 0, brace [1/16, …), a note on the 1): the lit region and the
+  // playhead start on the 1, where playback starts.
+  REQUIRE(r.ctx.store().dispatch(doc::SetClipBounds{r.ref, 0, 4 * kBar, 0}).ok());
+  doc::Note one;
+  one.start = 0;
+  one.length = kQ / 2;
+  one.pitch = PitchId::fromDegree(0, 0);
+  (void)r.addNotes({one});
+  REQUIRE(r.clip().contentStart == 0);
+  REQUIRE(r.clip().loop.start == s16);
+  CHECK(r.view->state().regionStart() == 0);
+  CHECK(r.view->state().regionEnd() == 4 * kBar + s16);
+  CHECK(r.d.press("Space") == KeyResult::Action);
+  CHECK(r.port.last(Call::Play)->tick == 0);
+  r.port.setPlayheadTick(0);
+  r.d.advance(0.2);
+  CHECK(r.view->playheadTick() == std::optional<Ticks>(0));
+  r.port.setPlayheadTick(s16 / 2);  // before the loop start: still the first pass
+  r.d.advance(0.2);
+  CHECK(r.view->playheadTick() == std::optional<Ticks>(s16 / 2));
   CHECK(r.d.press("Space") == KeyResult::Action);
 }
 

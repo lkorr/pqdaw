@@ -935,7 +935,7 @@ RulerWidget::RulerWidget(RollState& s) : Control("ruler"), s_(s) {
   setInfo("Clip Ruler", "The thin strip above the bar numbers: click to play from there (while playing: jump there), "
                         "snapped to the grid, Alt: exactly where you click; drag to scrub. The numbers: drag up or "
                         "down to zoom, sideways to scroll. Drag the loop brace or its ends to move or resize the "
-                        "loop, the flags to move the clip's start and end.");
+                        "loop (a start flag on the loop's start moves with it), the flags to move the clip's start and end.");
 }
 
 RulerWidget::Hit RulerWidget::hitAt(Vec2 p) const {

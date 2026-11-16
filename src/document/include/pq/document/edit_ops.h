@@ -170,7 +170,10 @@ EditResult duplicateClips(const Project& p, IdSource& ids, std::span<const ClipR
 // cut them (clip end, loop wrap); notes of deactivated clips come in deactivated. The first occurrence of a note
 // keeps its id, repeats get fresh ids. Refused if the clips' tuning assignments differ.
 EditResult consolidateClips(const Project& p, IdSource& ids, std::span<const ClipRef> clips);
-// Ctrl+L in the clip view: loop brace = content [start, end), loop on.
+// A note clip's loop brace (the clip view's ruler brace and Loop switch). bug-loop-offset: a start marker on the loop
+// start moves with it while the loop stays on (clip_time.h contentStartAfterLoop): one undo step.
+EditResult setClipLoop(const Project& p, ClipRef clip, ClipLoop loop);
+// Ctrl+L in the clip view: loop brace = content [start, end), loop on (setClipLoop's start marker rule).
 EditResult loopClipToSelection(const Project& p, ClipRef clip, Ticks contentStart, Ticks contentEnd);
 // Ctrl+L in the arrangement: arrangement loop = [start, end), on.
 EditResult loopArrangementToSelection(const Project& p, Ticks start, Ticks end);

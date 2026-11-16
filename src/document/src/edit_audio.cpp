@@ -163,6 +163,7 @@ EditResult setAudioClipLoop(const Project& p, ClipRef clip, ClipLoop loop) {
   PQ_DOC_TRY(checkLoop(loop));
   return editAudioClips(p, std::span<const ClipRef>(&clip, 1), "Clip Loop", [&](const ClipFound&, AudioClip& c) -> Status {
     if (!isWarped(c.warp)) return invalid("only warped clips loop");
+    c.contentStart = contentStartAfterLoop(c.contentStart, c.loop, loop);  // bug-loop-offset: as a note clip's
     c.loop = loop;
     return ok();
   });

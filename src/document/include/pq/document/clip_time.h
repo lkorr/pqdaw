@@ -29,6 +29,14 @@ inline Ticks clipEnd(const NoteClip& c) noexcept { return c.start + c.length; }
 
 inline bool clipLooped(const NoteClip& c) noexcept { return contentLooped(contentLoop(c)); }
 
+// bug-loop-offset: the start marker after a clip's loop brace changes from `before` to `after` (note and warped audio
+// clips). A start marker on the loop start (every new clip's) moves with it while the loop stays on, so moving the
+// brace or its start keeps the clip playing from its loop start; a start marker the user parted from the loop start
+// stays where it is.
+inline Ticks contentStartAfterLoop(Ticks contentStart, const ClipLoop& before, const ClipLoop& after) noexcept {
+  return before.enabled && after.enabled && contentStart == before.start ? after.start : contentStart;
+}
+
 // Content tick that plays `offset` ticks after the clip start (0 ≤ offset; offsets past the clip end continue the
 // same pattern).
 inline Ticks clipContentAt(const NoteClip& c, Ticks offset) noexcept {

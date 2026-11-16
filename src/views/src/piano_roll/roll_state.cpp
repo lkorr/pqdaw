@@ -11,6 +11,7 @@
 
 #include "../common/drag.h"
 #include "pq/document/automation_curve.h"
+#include "pq/document/clip_time.h"
 #include "pq/document/commands.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/tuning/ji.h"
@@ -762,19 +763,25 @@ void RollState::buildAnchorIndex() const {
   anchorIndexValid_ = true;
 }
 
+namespace {
+// The loop brace with a ruler brace drag's offset applied (the preview and the commit).
+doc::ClipLoop shownLoopOf(doc::ClipLoop l, const DragState& d) noexcept {
+  if (d.kind != DragKind::LoopBrace) return l;
+  if (d.brace != BraceEdge::End) l.start += d.dt;
+  if (d.brace != BraceEdge::Start) l.end += d.dt;
+  if (l.end <= l.start) l.end = l.start + 1;
+  return l;
+}
+}  // namespace
+
 doc::ClipLoop RollState::shownLoop() const noexcept {
   if (!clip_) return {};
-  doc::ClipLoop l = clip_->loop;
-  if (drag.kind == DragKind::LoopBrace) {
-    if (drag.brace != BraceEdge::End) l.start += drag.dt;
-    if (drag.brace != BraceEdge::Start) l.end += drag.dt;
-    if (l.end <= l.start) l.end = l.start + 1;
-  }
-  return l;
+  return shownLoopOf(clip_->loop, drag);
 }
 
 Ticks RollState::shownContentStart() const noexcept {
   if (!clip_) return 0;
+  if (drag.kind == DragKind::LoopBrace) return doc::contentStartAfterLoop(clip_->contentStart, clip_->loop, shownLoop());
   return clip_->contentStart + (drag.kind == DragKind::StartMarker ? drag.dt : 0);
 }
 
@@ -786,7 +793,10 @@ Ticks RollState::shownLength() const noexcept {
 Ticks RollState::regionStart() const noexcept {
   if (!clip_) return 0;
   const doc::ClipLoop l = shownLoop();
-  return l.enabled ? l.start : shownContentStart();
+  if (!l.enabled) return shownContentStart();
+  // bug-loop-offset: the first pass plays from the start marker (folded into the loop when at or past its end), so a
+  // start marker before the loop start lights the content from there.
+  return std::min(l.start, pq::clipContentAt(shownContentStart(), {l.enabled, l.start, l.end}, 0));
 }
 
 Ticks RollState::regionEnd() const noexcept {
@@ -1935,11 +1945,11 @@ void RollState::commitDrag() {
     case DragKind::Draw: addNotes(d.drawn); break;
     case DragKind::LoopBrace:
       if (d.dt != 0) {
-        doc::ClipLoop l = clip_->loop;
-        if (d.brace != BraceEdge::End) l.start += d.dt;
-        if (d.brace != BraceEdge::Start) l.end += d.dt;
-        if (l.end <= l.start) l.end = l.start + 1;
-        if (Status s = ctx.store().dispatch(doc::SetClipLoop{ref_, l}); !s) ctx.setStatus("Loop: " + s.error().message);
+        // bug-loop-offset: a start marker on the loop start moves with it (doc::ops::setClipLoop), one undo step.
+        const doc::ClipLoop l = shownLoopOf(clip_->loop, d);
+        const std::vector<uint32_t> keep = sel_;
+        (void)apply(doc::ops::setClipLoop(p, ref_, l), "Loop");
+        select(keep);
       }
       break;
     case DragKind::StartMarker:

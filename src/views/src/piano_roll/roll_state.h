@@ -353,7 +353,8 @@ public:
   doc::ClipLoop shownLoop() const noexcept;
   Ticks shownContentStart() const noexcept;
   Ticks shownLength() const noexcept;
-  // [start, end) of the clip content that plays: the loop when looped, else start marker … start marker + length.
+  // [start, end) of the clip content that plays: looped, from the earlier of the start marker (folded into the loop)
+  // and the loop start to the loop end (bug-loop-offset); else start marker … start marker + length.
   Ticks regionStart() const noexcept;
   Ticks regionEnd() const noexcept;
 
