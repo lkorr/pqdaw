@@ -943,3 +943,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   only while live and a modulated control is shown; only moved ghosts repaint; solid and silhouette curves cached apart.
 - Notes: new goldens panel-mod-ghosts, eq-mod-ghost. No ghost on number boxes / menus (text), mixer / tuning faces.
   Q?-bug-mod-ghost-a (newest voice vs. a ghost per voice). No multi-voice test yet.
+
+## 2026-11-15 · bug-wire-cut merged · main
+- Did: project patch canvas: X over a cable (between blocks; not routes / sends) cuts it: both halves hang on the
+  pointer; an input / control / mixer takes the source half, an output feeds the input half, either order; a refusal
+  keeps the half hanging (status line); empty canvas or right-click drops what hangs; Esc / capture or focus loss
+  restores the wire exactly; one undo step. Z over an input port with cables: one VCA takes them all and feeds the port
+  (a main-path cable stays on the path through it), one undo step. Three loose-cable slots on the canvas.
+- Verified (worker): test_wire_cut 8/8 through window → canvas dispatch; pq_tests_views after rebase green (two earlier
+  runs hit the NVIDIA-driver SIGSEGV flake in unrelated GPU tests; each passed alone).
+- Perf / CPU-efficiency check: UI thread only; nothing runs unless a cut is active; frames only while a half moves.
+- Notes: Q?-bug-wire-cut-a / -b (block-body click does nothing; re-plugged halves are new cables, old law / amount not
+  carried; VCA placement falls back to the overlap rule next to an instrument).
