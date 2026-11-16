@@ -75,6 +75,24 @@ struct Gradient {
   ColorF sample(float t) const noexcept;
 };
 
+// VZ.2 X2 (PQ Meter ui/gradient.h LevelAxis, 5c9b3f9 / f6bbc4a): where a level-coloured ramp sits in dB — the levels its
+// two ends stand for and the gamma the display raises the normalised level to before the lookup (1: none), folded in
+// so a stop's dB is the level that paints it.
+struct LevelAxis {
+  float loDb = -80.0f, hiDb = 0.0f, gamma = 1.0f;
+  float span() const noexcept { return std::max(1.0f, hiDb - loDb); }
+  float posOf(float db) const noexcept;   // ramp position of a level
+  float dbOf(float pos) const noexcept;   // the level a ramp position stands for
+};
+
+// The Custom ramp of a level display: the six stops' colours are `base` sampled at the default positions (so the
+// default stops paint exactly `base`), the four middle stops placed at their dB values `stopsDb` on `axis` (kept
+// inside the ramp, ordered, 0.01 apart). Stops live in dB: moving an end of the axis keeps them where they are.
+void levelGradient(Gradient& g, Colormap base, const float* stopsDb, const LevelAxis& axis) noexcept;
+// The fence of middle stop i (0..3) of `stopsDb` on `axis`: [the lower neighbour + 1 dB, the upper neighbour − 1 dB],
+// the ends being the axis' (a stop halts at its neighbours; PQ sliderFloatBounded).
+void stopFence(const float* stopsDb, int i, const LevelAxis& axis, float& lo, float& hi) noexcept;
+
 // Interpolation between whole colormaps along a 0..1 track (PQ Meter's PaletteTrack). Waypoints pin a
 // colormap at a position; a track position resolves to the blend of the two bracketing waypoints' LUTs,
 // entry by entry (blending the resolved tables blends the functions, whatever their stop layouts), clamped

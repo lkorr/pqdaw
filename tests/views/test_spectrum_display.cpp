@@ -20,6 +20,7 @@
 #include "pq/document/meta.h"
 #include "pq/meta/user_defaults.h"
 #include "pq/meta/spectrum.h"
+#include "pq/ui/colormap.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/face_painter.h"
 #include "pq/ui/image.h"
@@ -430,6 +431,122 @@ TEST_CASE("spectrum face: SET — DISPLAY options reach the plot, ANALYSIS the f
   const doc::MetaInstance plain = doc::defaultMetaInstance(meta::spectrumType());
   REQUIRE(plain.data != nullptr);
   CHECK(plain.data->fields.empty());
+}
+
+TEST_CASE("spectrum face: VZ.2 — scale, range and the average reach the feed; a Custom stop halts at its neighbour") {
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  TapRing tap(4, 32768, 1024);
+  SpectrumFeed feed(tap, AnalysisHub::config(48000.0), SpectrumFeed::Manual{});
+  std::unique_ptr<MetaFace> face = makeFace(meta::spectrumType());
+  REQUIRE(face != nullptr);
+  auto owned = std::make_unique<SpectrumData>();
+  SpectrumData* t = owned.get();
+  face->bind(std::move(owned), nullptr);
+  face->setAnalysis([&] { return &feed; }, [] {});
+  FaceEnv env;
+  env.theme = &*theme;
+  env.uiScale = 1.0f;
+  DrawList dl;
+  auto paint = [&] {
+    dl.reset(800, 400);
+    FacePainter p(dl, {{10.0f, 10.0f}, 2.0f});
+    face->paintLive(p, env);
+  };
+  paint();
+  auto find = [&](int32_t part) {
+    float sx = 0.0f, sy = 0.0f;
+    int n = 0;
+    for (float y = 0.0f; y < 150.0f; y += 0.5f)
+      for (float x = 0.0f; x < 500.0f; x += 0.5f)
+        if (face->hitTest({x, y}, 2.0f) == part) {
+          sx += x;
+          sy += y;
+          ++n;
+        }
+    REQUIRE_MESSAGE(n > 0, "part " << part);
+    return Vec2{sx / static_cast<float>(n), sy / static_cast<float>(n)};
+  };
+  auto ev = [&](FacePointer::Kind k, Vec2 at, uint8_t clicks = 1, ui::Mods mods = 0) {
+    FacePointer e;
+    e.kind = k;
+    e.button = PointerButton::Left;
+    e.local = at;
+    e.device = {at.x * 2.0f, at.y * 2.0f};
+    e.pxPerUnit = 2.0f;
+    e.clicks = clicks;
+    e.mods = mods;
+    return face->onPointer(e);
+  };
+  CHECK(ev(FacePointer::Kind::Down, find(3)));  // SET
+  paint();
+  // ANALYSIS: … Frequency scale (row 8) → Mel; Average line (row 11) on: the feed's tuning.
+  CHECK(ev(FacePointer::Kind::Down, find(90)));
+  CHECK(ev(FacePointer::Kind::Down, find(108)));
+  CHECK(feed.tuning().scale == dsp::FreqScale::Mel);
+  CHECK(ev(FacePointer::Kind::Down, find(111)));
+  CHECK(feed.tuning().average);
+  writeTap(tap, 1.0, [](float x) { return 0.5f * x; });
+  CHECK(feed.step(1.0) > 0);
+  SpectrumSnapshot snap;
+  bool settled = false;
+  (void)feed.snapshot(0, snap, settled);
+  CHECK(snap.axis.scale() == dsp::FreqScale::Mel);  // the new axis is what the points are on
+  CHECK(snap.average.size() == snap.out.size());
+  SpectrumPlotStyle st;
+  REQUIRE(spectrumStyle(*face, st));
+  CHECK(st.axis.scale() == dsp::FreqScale::Mel);
+  CHECK(st.average);
+  // DISPLAY: Colormap (row 5) Shift-clicked back from Ice (4) to Custom (10): the stop rows appear; Stop 3 (row 8)
+  // dragged far up halts 1 dB under Stop 4 (−20).
+  CHECK(ev(FacePointer::Kind::Down, find(91)));
+  for (int i = 0; i < 5; ++i) CHECK(ev(FacePointer::Kind::Down, find(105), 1, ui::mod::kShift));
+  REQUIRE(spectrumStyle(*face, st));
+  CHECK(st.colormap == ui::Gradient::kCustomIndex);
+  paint();
+  const Vec2 s3 = find(108);
+  CHECK(ev(FacePointer::Kind::Down, s3));
+  CHECK(ev(FacePointer::Kind::Move, {s3.x, s3.y - 80.0f}));
+  CHECK(ev(FacePointer::Kind::Up, {s3.x, s3.y - 80.0f}));
+  REQUIRE(t->data_ != nullptr);
+  REQUIRE(t->data_->field("s3") != nullptr);
+  CHECK(t->data_->field("s3")->number == doctest::Approx(-21.0));
+  REQUIRE(spectrumStyle(*face, st));
+  CHECK(st.stopsDb[1] == doctest::Approx(-21.0f));
+}
+
+TEST_CASE("spectrum plot: VZ.2 — bars paint the columns (no curve, no peaks); the colour window is 0 dBFS-pinned") {
+  auto theme = loadTheme(defaultThemePath());
+  REQUIRE(theme.ok());
+  const uint32_t P = 256;
+  SpectrumSnapshot s;
+  s.out.assign(P, -30.0f);
+  s.peaks.assign(P, -20.0f);
+  SpectrumPlot plot;
+  SpectrumPlotStyle st;
+  st.peaks = true;
+  st.draw = SpectrumDraw::Bars;
+  plot.setStyle(st);
+  plot.setShownForTest(s, static_cast<float>(P));
+  DrawList dl;
+  dl.reset(800, 400);
+  const Rect r{10, 10, 610, 210};
+  const SpectrumAxis ax{r.x0, r.x1};
+  plot.paintSpectrum(dl, r, ax, 1.0f);
+  const uint32_t steps = 600;
+  CHECK(dl.vtxCurrentIdx() == (steps - 1) * 4);  // one quad per column, nothing else
+  // Ice by level over −80 … 0 dBFS: −30 dB sits 5/8 up the ramp whatever the floor and ceiling (the palette holds
+  // 128 levels).
+  auto ice = [](float lt) {
+    return withAlpha(lutAt(colormapLut(Colormap::Ice), std::floor(lt * 127.0f + 0.5f) / 127.0f), 255);
+  };
+  CHECK(plot.colourAt(0.5f, -30.0f) == ice(50.0f / 80.0f));
+  st.floorDb = -60.0f;
+  plot.setStyle(st);
+  CHECK(plot.colourAt(0.5f, -30.0f) == ice(50.0f / 80.0f));
+  st.colourFollow = true;  // following the scale: −30 is half way up −60 … 0
+  plot.setStyle(st);
+  CHECK(plot.colourAt(0.5f, -30.0f) == ice(0.5f));
 }
 
 TEST_CASE("spectrum meta module: pass-through, a signal tap of request 0") {

@@ -6,7 +6,7 @@
 //   ui/smooth_line.h             kSmoothFeather, smoothAlphaMul, catmullRom, splinePath, smoothPolyline,
 //                                smoothPolylineCols, smoothBand, smoothCurve
 //   modules/spectrum.cpp 200-325 gradientPolyline, gradientBand, splineSmooth
-//   modules/spectrum.cpp 1340-1405 the curve layering (fill, 3-pass bloom, body, bright core) → spectrumCurve
+//   modules/spectrum.cpp 1450-1515 the curve layering (fill, one glow pass, the core; 1.0.21) → spectrumCurve
 //   modules/oscilloscope.cpp 860-892 the scope's glow underlay + core / envelope band → scopeTrace, scopeEnvelope
 //
 // The numbers are PQ Meter's: 0.75 px feather, miter clamped at 2.5× (smoothPolyline), bevel past a 120° turn
@@ -78,8 +78,9 @@ void smoothBand(DrawList& dl, const Vec2* up, const Vec2* dn, uint32_t n, Rgba c
 void smoothCurve(DrawList& dl, std::span<const Vec2> pts, Rgba col, float thickness, float maxSegPx = 1.5f,
                  float feather = kSmoothFeather);
 
-// Per-vertex-coloured quad strip, no joins, no feather (spectrum.cpp gradientPolyline): the spectrum's
-// stacked passes hide the seams. 4 vertices / 6 indices per segment.
+// Per-vertex-coloured antialiased stroke (spectrum.cpp gradientPolyline, 1.0.21): shared vertices on the mitred
+// normal (mitre capped at 2x the half-width), a solid core thickness − 1 px wide and a 1 px fringe to alpha 0 on
+// each side. 4 vertices per point, 18 indices per segment.
 void gradientPolyline(DrawList& dl, const Vec2* pts, const Rgba* cols, uint32_t n, float thickness);
 
 // Vertical fill under a curve, one quad per column: top edge in the curve's colours, bottom edge at yBottom
@@ -107,14 +108,13 @@ struct SpectrumCurveStyle {
   float lineWidth = 1.6f;   // spectrum.h defaults
   float fillAlpha = 0.5f;
   bool gradientFill = true;
-  bool glow = true;
+  bool glow = false;        // PQ Meter 1.0.17: off by default
   float glowAmount = 1.0f;  // 0..2
   BlendMode glowBlend = BlendMode::Alpha;
 };
 
-// Spectrum curve (spectrum.cpp, single-curve path): 1. fill under the curve to yBottom, 2. three bloom passes
-// (7×/4×/2.2× width at α .07/.11/.17, weighted by level³), 3. the body at 1.9× width, then a brightened core at
-// 0.85×. `cols` already carry the floor fade in their alpha; `levelT` is each vertex's level in [0, 1].
+// Spectrum curve (spectrum.cpp 1.0.21, single-curve path): 1. fill under the curve to yBottom, 2. one glow pass
+// (2.2× width + 1 px, α 0.2·glowAmount weighted by level³), 3. the brightened core at lineWidth. `cols` already carry the floor fade in their alpha; `levelT` is each vertex's level in [0, 1].
 void spectrumCurve(DrawList& dl, const Vec2* poly, const Rgba* cols, const float* levelT, uint32_t n, float yBottom,
                    const SpectrumCurveStyle& style = {});
 

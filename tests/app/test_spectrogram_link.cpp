@@ -125,7 +125,7 @@ TEST_CASE("spectrogram link: the tap carries the beat and the signal; unwatched 
   CHECK(info[7].beat > info[0].beat);
   const float* col = rows.data() + 4 * views::devices::SpectrumFeed::kGramRows;
   auto rowOf = [&](float hz) {
-    return static_cast<uint32_t>(std::lround((1.0f - dsp::gramUnit(dsp::GramScale::Log, hz, st.fMin, st.fMax)) * 1023.0f));
+    return static_cast<uint32_t>(std::lround((1.0f - dsp::FreqAxis(dsp::FreqScale::Log, st.fMin, st.fMax).unit(hz)) * 1023.0f));
   };
   auto near = [&](float hz) {
     float m = 0.0f;

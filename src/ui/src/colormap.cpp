@@ -105,6 +105,40 @@ void buildLut(std::span<const RampStop> stops, ColorLut& out) noexcept {
   }
 }
 
+// --- LevelAxis (VZ.2) -------------------------------------------------------------------------------------
+
+float LevelAxis::posOf(float db) const noexcept {
+  const float t = std::clamp((db - loDb) / span(), 0.0f, 1.0f);
+  return gamma == 1.0f ? t : std::pow(t, std::clamp(gamma, 0.05f, 20.0f));
+}
+float LevelAxis::dbOf(float pos) const noexcept {
+  const float p = std::clamp(pos, 0.0f, 1.0f);
+  return loDb + span() * (gamma == 1.0f ? p : std::pow(p, 1.0f / std::clamp(gamma, 0.05f, 20.0f)));
+}
+
+void levelGradient(Gradient& g, Colormap base, const float* stopsDb, const LevelAxis& axis) noexcept {
+  constexpr float kDefault[Gradient::kStops] = {0.0f, 0.25f, 0.5f, 0.75f, 0.9f, 1.0f};
+  const auto stops = colormapStops(base);
+  for (int i = 0; i < Gradient::kStops; ++i) {
+    const ColorF c = sampleRamp(stops, kDefault[i]);
+    g.colors[i][0] = c.r;
+    g.colors[i][1] = c.g;
+    g.colors[i][2] = c.b;
+  }
+  g.pos[0] = 0.0f;
+  g.pos[Gradient::kStops - 1] = 1.0f;
+  for (int k = 1; k < Gradient::kStops - 1; ++k) g.pos[k] = std::clamp(axis.posOf(stopsDb[k - 1]), 0.01f, 0.99f);
+  for (int k = 1; k < Gradient::kStops - 1; ++k) g.pos[k] = std::max(g.pos[k], g.pos[k - 1] + 0.01f);
+  for (int k = Gradient::kStops - 2; k > 0; --k) g.pos[k] = std::min(g.pos[k], g.pos[k + 1] - 0.01f);
+  g.rebuild();
+}
+
+void stopFence(const float* stopsDb, int i, const LevelAxis& axis, float& lo, float& hi) noexcept {
+  lo = (i > 0 ? stopsDb[i - 1] : axis.loDb) + 1.0f;
+  hi = (i < 3 ? stopsDb[i + 1] : axis.hiDb) - 1.0f;
+  if (lo > hi) lo = hi = 0.5f * (lo + hi);
+}
+
 // --- Gradient --------------------------------------------------------------------------------------------
 
 void Gradient::seed(Colormap preset) noexcept {

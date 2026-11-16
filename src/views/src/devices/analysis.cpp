@@ -42,10 +42,13 @@ SpectrumFeed::SpectrumFeed(TapRing& tap, const dsp::SpectrumConfig& config, Manu
   for (uint32_t c = 0; c < nch; ++c) ch_[c].resize(kChunk);
   mono_.resize(std::max<uint32_t>(kChunk, cfg_.hop * 32));
   if (tap_.channels() >= 4) monoIn_.resize(mono_.size());  // the transfer analyser: made when first wanted (work)
+  snap_.axis = out_->axis();
   snap_.out.assign(cfg_.points, cfg_.floorDb);
   snap_.peaks.assign(cfg_.points, cfg_.floorDb);
   tuning_ = {config.fftSize, config.sharpLows, config.tiltDbPerOct, config.smoothingOct, config.attackMs, config.releaseMs,
-             config.holdSeconds, config.fallDbPerSecond};
+             config.holdSeconds, config.fallDbPerSecond, config.scale, config.fMin, config.fMax, config.average,
+             config.averageSeconds};
+  ranTuning_ = tuning_;
   runFft_ = config.fftSize;
 }
 
@@ -158,8 +161,10 @@ uint64_t SpectrumFeed::snapshot(uint64_t seq, SpectrumSnapshot& out, bool& settl
   std::lock_guard lock(mutex_);
   settled = settled_;
   if (seq != seq_) {
+    out.axis = snap_.axis;
     out.out = snap_.out;
     out.peaks = snap_.peaks;
+    out.average = snap_.average;
     out.in = snap_.in;
     out.response = snap_.response;
     out.confidence = snap_.confidence;
@@ -372,7 +377,7 @@ uint32_t SpectrumFeed::work(double now) {
         t = tuning_;
       }
     }
-    if (t) {
+    if (t && t->structural(ranTuning_)) {
       dsp::SpectrumConfig c = cfg_;
       c.fftSize = t->fftSize;
       c.sharpLows = t->sharpLows;
@@ -382,10 +387,39 @@ uint32_t SpectrumFeed::work(double now) {
       c.releaseMs = t->releaseMs;
       c.holdSeconds = t->holdSeconds;
       c.fallDbPerSecond = t->fallDbPerSecond;
+      c.scale = t->scale;
+      c.fMin = t->fMin;
+      c.fMax = t->fMax;
+      c.average = t->average;
+      c.averageSeconds = t->averageSeconds;
       out_ = std::make_unique<dsp::SpectrumAnalyzer>(c);
       in_ = std::make_unique<dsp::SpectrumAnalyzer>(tap_.channels() >= 4 ? c : axisOnly(c));
+      transfer_.reset();  // its points were the old axis' (made again when wanted)
       runFft_ = c.fftSize;
+      // The displays see the new axis at once (from silence), not the old picture until the next hop.
+      std::lock_guard lock(mutex_);
+      snap_.axis = out_->axis();
+      snap_.out.assign(c.points, c.floorDb);
+      snap_.peaks.assign(c.points, c.floorDb);
+      snap_.in.clear();
+      snap_.average.clear();
+      snap_.response.clear();
+      snap_.confidence.clear();
+      ++seq_;
+    } else if (t) {
+      dsp::SpectrumLive l;
+      l.attackMs = t->attackMs;
+      l.releaseMs = t->releaseMs;
+      l.peakHold = out_->config().peakHold;
+      l.holdSeconds = t->holdSeconds;
+      l.fallDbPerSecond = t->fallDbPerSecond;
+      l.average = t->average;
+      l.averageSeconds = t->averageSeconds;
+      out_->setLive(l);
+      l.average = false;
+      in_->setLive(l);
     }
+    if (t) ranTuning_ = *t;
   }
   const uint32_t want = wants();
   // A newly wanted analysis starts from silence (what it held is stale).
@@ -403,7 +437,7 @@ uint32_t SpectrumFeed::work(double now) {
     dsp::TransferConfig tc;
     tc.sampleRate = cfg_.sampleRate;
     std::vector<float> hz(cfg_.points);
-    for (uint32_t p = 0; p < cfg_.points; ++p) hz[p] = std::max(axis_.pointHz(p), 1.0f);
+    for (uint32_t p = 0; p < cfg_.points; ++p) hz[p] = std::max(out_->pointHz(p), 1.0f);
     transfer_ = std::make_unique<dsp::TransferAnalyzer>(tc, hz);
   }
   if (gram) {  // TX.spectrogram: a new request (re)configures the analyser; the column sequence continues
@@ -531,6 +565,13 @@ uint32_t SpectrumFeed::work(double now) {
     hops_.fetch_add(ran, std::memory_order_relaxed);
     std::lock_guard lock(mutex_);
     if (ran > 0) {
+      snap_.axis = out_->axis();
+      if (out_->config().average) {
+        snap_.average.resize(cfg_.points);
+        out_->averageDb(snap_.average.data());
+      } else {
+        snap_.average.clear();
+      }
       const auto lv = out_->levelsDb();
       snap_.out.assign(lv.begin(), lv.end());
       const auto pk = out_->peaksDb();

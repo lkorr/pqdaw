@@ -149,11 +149,18 @@ TEST_CASE("lines: smoothBand, gradientPolyline, gradientBand geometry") {
   const Rgba cols[3] = {rgba(255, 0, 0), rgba(0, 255, 0), rgba(0, 0, 255)};
   gradientPolyline(dl, pts, cols, 3, 4.0f);
   v = dl.vertices();
-  REQUIRE(v.size() == 8);
-  CHECK(v[0].pos.y == doctest::Approx(12.0f));  // horizontal segment: ±2 in y
-  CHECK(v[1].col == cols[1]);
-  CHECK(v[4].pos.x == doctest::Approx(8.0f));   // vertical segment (down): normal (-1, 0) · 2
-  CHECK(v[6].col == cols[2]);
+  // VZ.2: shared vertices, 4 per point (fringe, core, core, fringe: the core 4 − 1 px wide, a 1 px fringe to alpha 0).
+  REQUIRE(v.size() == 12);
+  CHECK(dl.indices().size() == 2 * 18);
+  CHECK(v[0].pos.y == doctest::Approx(12.5f));  // first point, horizontal segment: the outer fringe at +2.5 in y
+  CHECK(v[1].pos.y == doctest::Approx(11.5f));  // the core's edge at +1.5
+  CHECK(alphaOf(v[0].col) == 0);
+  CHECK(v[1].col == cols[0]);
+  CHECK(v[8].pos.x == doctest::Approx(7.5f));   // last point, vertical segment (down): normal (-1, 0) · 2.5
+  CHECK(v[9].col == cols[2]);
+  // The corner's mitre: the bisector of (0, 1) and (-1, 0), stretched to 1 / cos 45° (under the 2x cap).
+  CHECK(v[4].pos.x == doctest::Approx(10.0f - 2.5f));
+  CHECK(v[4].pos.y == doctest::Approx(10.0f + 2.5f));
 
   dl.reset(100, 100);
   const Rgba top[2] = {rgba(10, 10, 10, 200), rgba(20, 20, 20, 100)};
@@ -203,9 +210,13 @@ TEST_CASE("lines: glow passes use the requested blend mode and restore the previ
   std::vector<float> lvl(pts.size(), 0.8f);
   SpectrumCurveStyle st;
   spectrumCurve(dl, pts.data(), cols.data(), lvl.data(), 50, 100.0f, st);
-  // fill + 3 bloom + body + core, all quad strips of 4 vertices per segment.
-  CHECK(dl.vertices().size() == 6 * 49 * 4);
+  // VZ.2: the fill (4 vertices per segment) and the core stroke (4 per point); the glow is off by default.
+  CHECK(dl.vertices().size() == 49 * 4 + 50 * 4);
   CHECK(dl.commands().size() == 1);
+  st.glow = true;  // one glow pass
+  dl.reset(200, 100);
+  spectrumCurve(dl, pts.data(), cols.data(), lvl.data(), 50, 100.0f, st);
+  CHECK(dl.vertices().size() == 49 * 4 + 2 * 50 * 4);
   st.glowBlend = BlendMode::Additive;
   dl.reset(200, 100);
   spectrumCurve(dl, pts.data(), cols.data(), lvl.data(), 50, 100.0f, st);

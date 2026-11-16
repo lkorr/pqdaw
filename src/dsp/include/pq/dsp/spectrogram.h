@@ -14,8 +14,8 @@
 //              (`maxBinDev` bins, half a window), the consensus test (a neighbour reassigns to the same frequency OR the
 //              same time, `consensus` bins / hops), the display floor
 //   splat      each point into a separable tent (1.1 columns × 0.6 rows), peak-normalised, combined by MAX (a cell is
-//              the loudest thing that landed in it), on kRows rows of the display axis (log with a linear 0 … 40 Hz
-//              foot when fMin is 0, mel or linear; row 0 = fMax at the top)
+//              the loudest thing that landed in it), on kRows rows of the display axis (pq/dsp/freq_axis.h: log, the
+//              hybrid linear foot under 20 Hz, mel or linear; row 0 = fMax at the top)
 //   columns    column c = floor(t / hop) + offset; a column is final once the newest frame's column is more than
 //              `ahead` = span / (2 hop) + 1 past it (no later frame can reach it), and is handed to the sink in order.
 //              Columns are a sequence that continues across reconfigurations (the open ones are flushed), so a display
@@ -29,15 +29,10 @@
 #include <vector>
 
 #include "pq/dsp/fft.h"
+#include "pq/dsp/freq_axis.h"
 
 namespace pq::dsp {
 
-enum class GramScale : uint8_t { Log, Mel, Linear };
-
-// The display axis: the normalised height of `hz` in [fMin, fMax] (0 bottom … 1 top; PQ Meter's freqToUnit), and its
-// inverse. Log with fMin < 0.5 Hz is the hybrid axis: linear 0 … 40 Hz, log above, slope-continuous at the corner.
-float gramUnit(GramScale scale, float hz, float fMin, float fMax) noexcept;
-float gramHz(GramScale scale, float unit, float fMin, float fMax) noexcept;
 
 struct SpectrogramConfig {
   double sampleRate = 48000.0;
@@ -47,7 +42,7 @@ struct SpectrogramConfig {
   float maxBinDev = 3.5f;   // bins
   float consensus = 0.5f;   // bins (frequency) / hops (time); 0: off
   float floorDb = -100.0f;  // points a quarter below it are dropped
-  GramScale scale = GramScale::Log;
+  FreqScale scale = FreqScale::Log;  // the rows' axis (pq/dsp/freq_axis.h: row 0 = fMax)
   float fMin = 0.0f, fMax = 24000.0f;  // fMax is clamped to the Nyquist frequency
   bool operator==(const SpectrogramConfig&) const = default;
 };
@@ -82,6 +77,7 @@ public:
   uint32_t mapping() const noexcept { return mapping_; }
   float fMin() const noexcept { return fMinEff_; }
   float fMax() const noexcept { return fMaxEff_; }
+  const FreqAxis& axis() const noexcept { return axis_; }
 
   // Mono samples; every finished column goes to `sink`.
   void push(const float* x, uint32_t n, Sink& sink) noexcept;
@@ -113,7 +109,8 @@ private:
 
   SpectrogramConfig cfg_;
   uint32_t fft_ = 2048, lowFft_ = 0, hop_ = 256, ahead_ = 5, mapping_ = 0;
-  float fMinEff_ = 0.0f, fMaxEff_ = 24000.0f;  // the range the rows map (fMax ≤ Nyquist, fMin ≤ fMax / 2)
+  float fMinEff_ = 0.0f, fMaxEff_ = 24000.0f;
+  FreqAxis axis_;  // the range the rows map (fMax ≤ Nyquist, fMin ≤ fMax / 2)
   Chain main_, low_;
   // The input FIFO (stream-indexed: position i lives at i & mask).
   std::vector<float> fifo_;
