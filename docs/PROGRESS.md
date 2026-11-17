@@ -1102,3 +1102,16 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   (~34 k adds / s).
 - Notes: Q?-VZ.9-a (double-click on choice rows), Q?-VZ.9-b (6 px text threshold). 21 goldens re-recorded (the VZ.4–
   VZ.7 faces). Not done: Spectrum / Spectrogram / Scope keep their own 6 px chips; Level Meter column width.
+
+## 2026-11-16 · bug-wavetable merged · main
+- Did: Wavetable editor: pencil smoothing (off / light / medium / strong; off = the old pencil), Smooth / Invert /
+  Reverse / Shift actions, symmetry drawing (mirror, half-wave), hover readout; a node tool (knob-curve segment shapes
+  and bend gesture, tied ends, nodes stored per keyframe, fitted to the drawing on entry). Fold reaches 12π (≈ 24
+  folds, one constant shared by bake, live block and face) on an exponential knob (half travel = the old maximum).
+- Verified (worker): -Affected -Slow 73/77, then the expected failures fixed and green on re-run (goldens, lowering
+  golden, playback fold strengths); still flaky under load: document 20 ms save+load limit, playback_s3 click-free
+  swap (3/3 alone). Ship pq_bench_dsp links. Orchestrator re-check of the rebased branch killed for low memory;
+  merged at the user's request (rebases onto VZ.5 / VZ.9 had append-only doc conflicts).
+- Perf / CPU-efficiency check: release A/B live fold ×8 775–832 vs 789–800 ns/frame, Phase bake 239–285 vs 237–252 ms
+  (noise); node fit 5–30 ms once per entry. Aliasing at the old strengths unchanged.
+- Notes: 63 goldens re-recorded (tool row), new meta-wavetable-nodes-1x/2x. Q?-bug-wavetable-a / -b.
