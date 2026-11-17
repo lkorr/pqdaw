@@ -2087,3 +2087,9 @@ Goldens re-recorded (61): every view showing a Wavetable face or panel (meta-wav
 wavetable-synth-*, panel-*, device-*, project-* scenes with the default instrument): the top row (four tools) and the
 draw-mode option row only; project-cables(-far/-glow) and project-orbit-ports also fold further (their fold is swept by
 a cable: θ is 3×). New: meta-wavetable-nodes-1x/2x.
+
+## bug-wavetable-look · wavetable curve resolution
+The display's and draw mode's curves are now drawn from the full sounding cycle at the zoom shown (min/max per pixel
+zoomed out, a smooth spline zoomed in) with a thinner stroke (≤ 2.25 px). Look at: a dense wave (many harmonics, high
+sync / fold) at high canvas zoom; peaks such as the sync spike now reach their true height. Goldens re-recorded (62):
+every view showing a Wavetable face.

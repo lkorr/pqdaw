@@ -1115,3 +1115,12 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: release A/B live fold ×8 775–832 vs 789–800 ns/frame, Phase bake 239–285 vs 237–252 ms
   (noise); node fit 5–30 ms once per entry. Aliasing at the old strengths unchanged.
 - Notes: 63 goldens re-recorded (tool row), new meta-wavetable-nodes-1x/2x. Q?-bug-wavetable-a / -b.
+
+## 2026-11-16 · bug-wavetable-look · bug-wavetable-look
+- Did: Wavetable display and draw-mode curves are traced from the full-resolution cycle at the scale they are drawn:
+  per-px-column min/max when the data is denser than the screen, every sample up to 1.5 px apart, a periodic
+  Catmull-Rom spline beyond that (zoomed in). Replaces 64–128 box-averaged points (which flattened peaks and clumped
+  dense waves). Main stroke capped at 2.25 device px (was 1.5 world units = 4 px at 2.7×). Bug report 2026-11-16_22-09-02.
+- Verified: pq_tests_views default tier: passed (after re-recording 62 goldens, all moved inside wavetable displays).
+- Perf / CPU-efficiency check: one pass over the 1024-sample cycle per paint (min/max: compares only), ≤ 2 points per
+  device px; primitive count per paint unchanged.
