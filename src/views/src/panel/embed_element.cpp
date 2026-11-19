@@ -53,6 +53,7 @@ public:
     return t_.engineFace(b, typeId, host);
   }
   devices::SpectrumFeed* signalFeed(const doc::Binding& b) override { return t_.signalFeed(b); }
+  devices::SpectrumFeed* traceFeed(const doc::PanelElement& e) override { return t_.traceFeed(e); }
   const ui::ModulationRing* modulation(const doc::Binding& b) const override { return t_.modulation(b); }
   std::optional<double> ghostPosition(const doc::Binding& b) const override { return t_.ghostPosition(b); }  // bug-mod-ghost
   uint64_t modulationSerial() override { return t_.modulationSerial(); }

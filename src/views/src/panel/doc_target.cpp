@@ -350,6 +350,12 @@ public:
     if (b.kind == doc::BindingKind::Data && b.meta.empty()) return ctx_.analysisFeed(b.device);
     return nullptr;
   }
+  devices::SpectrumFeed* traceFeed(const doc::PanelElement& e) override {
+    const doc::Binding* b = e.binding(0);
+    if (b == nullptr || b->kind != doc::BindingKind::Signal) return nullptr;
+    const std::string path = doc::traceTapPath(e);
+    return path.empty() ? nullptr : ctx_.analysisFeed(b->device, path);
+  }
   std::shared_ptr<MetaFace> engineFace(const doc::Binding& b, std::string_view typeId, FaceHost* host) override {
     const bool signal = b.kind == doc::BindingKind::Signal;
     if (!signal && b.kind != doc::BindingKind::Data) return nullptr;

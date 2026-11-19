@@ -7,7 +7,8 @@
 //                grid), the position slider with the keyframe markers and the gap glyphs
 //   warpmode     the warp-mode glyph switch and the oversampling cell (with the fold / sync glyphs of that row)
 //   envelope     the envelope editor: the shape, its breakpoints and bends, the voices' dots
-//   scope        the oscilloscope (chips, trace, measurement, settings sheet)
+//   scope        the oscilloscope (chips, trace, measurement, settings sheet); bound to several signals: the trace scope
+//                (MX.3, trace_element.cpp)
 //   spectrum     the spectrum display
 //   spectrogram  the scrolling spectrogram
 //   meter        a level meter (new): the signal's peak and RMS per channel, from its analysis tap; DY.3: or a gain-
@@ -108,6 +109,7 @@ namespace {
 
 constexpr std::array<std::string_view, 1> kEngineSlot = {"engine"};
 constexpr std::array<std::string_view, 1> kSignalSlot = {"signal"};
+constexpr std::array<std::string_view, 3> kScopeSlots = {"signal", "trace 2", "trace 3"};  // MX.3: 2, 3: a trace scope
 
 // A kind's section of its type's face (face units) and whether its whole rect reacts (an analyser's plot is
 // interactive though the face calls it its frame).
@@ -333,6 +335,8 @@ private:
 
 template <size_t I>
 std::unique_ptr<Element> makeSection(const doc::PanelElement& d) {
+  // MX.3: a scope bound to several signals is a trace scope (trace_element.cpp: one tap of them all).
+  if (kSections[I].kind == "scope" && !doc::elementTraces(d).empty()) return makeTraceScope(d);
   return std::make_unique<EngineSection>(d, kSections[I]);
 }
 
@@ -478,7 +482,10 @@ void registerEngineElements(void (*reg)(std::string_view, std::string_view, std:
                                       &makeSection<14>, &makeSection<15>, &makeSection<16>, &makeSection<17>, &makeSection<18>};
   for (size_t i = 0; i < std::size(kSections); ++i) {
     const Section& s = kSections[i];
-    reg(s.kind, s.label, {}, s.display ? std::span<const std::string_view>(kSignalSlot) : std::span<const std::string_view>(kEngineSlot),
+    const bool scope = s.kind == "scope";  // MX.3: its trace slots and style (a trace scope's)
+    reg(s.kind, s.label, scope ? traceScopeStyle() : std::span<const StyleSpec>{},
+        scope ? std::span<const std::string_view>(kScopeSlots)
+              : s.display ? std::span<const std::string_view>(kSignalSlot) : std::span<const std::string_view>(kEngineSlot),
         s.r.width(), s.r.height(), kMake[i]);
   }
   reg("meter", "Meter", Meter::kStyle, kSignalSlot, 24, 96, &makeMeter);

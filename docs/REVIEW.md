@@ -2105,3 +2105,16 @@ it yet). Look at the goldens `tests/ui/golden/radial-{closed,level1,level2,filte
 Judge: bubble sizes (categories ~70 px, ops ~50 px at 100 %), the 18 px symbols vs the 12 px names, the halo, the
 120 ms grow-and-fade on open. Known: in a window corner too tight for a long arc, its bubbles are clamped inside the
 window and may overlap.
+
+## MX.3 · 2026-11-18 · the Math face
+The Math module now spawns closed as its face (300 × 194). Look at `tests/views/golden/math-face-{gt,clip,eq}-{1x,2x}.png`
+(signals flowing: A a 110 Hz sine, B a 27.5 Hz sine, Out the op's result):
+- top: "In A" / "In B" with jacks in the corners and their typed values below (drag, or double-click and type); the
+  output scope is the wide box in the middle.
+- the op circle: the symbol large (amber), its category small under it; click it for the radial menu (hover a
+  category, click an op, or type: "hyp", "!=", ">=" …). One undo step per pick.
+- the A (green) and B (salmon) scopes left and right, the output (blue) on top — all from one tap, on one time base
+  aligned to A, so the edges line up. A compare / logic op draws the output as a 0 / 1 gate between two rules.
+- Tolerance (4 decimals) appears under the A scope only for == and ≠; Oversample sits under the B scope.
+Judge: the ~52 ms span (≈ 6 cycles of a 110 Hz A in a 72-unit box) — dense at 1×; the jack dots are markers only (the
+real pins stay on the node's edges, see QUESTIONS Q?-MX.3-a); the "==" glyph spacing.

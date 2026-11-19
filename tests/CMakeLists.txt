@@ -240,6 +240,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_lane_edit.cpp  # TX.lane-edit: the lane windows as the arrangement's editing surface (gestures, keys, automation), golden, perf
     views/test_nested_groups_view.cpp  # GU.2: capsules in capsules, the instrument group's look, nest / unnest, copy / paste, group presets from the node menu (real dispatch), golden
     views/test_group_panels.cpp  # GU.3: element goldens, a group drawn as its panel (circuit, Device view + inspector), every element edit through real dispatch
+    views/test_math_face.cpp  # MX.3: the Math face (op circle → radial menu → op swap, typed values, visibility, one tap consumer) by real dispatch, goldens
     views/test_module_faces.cpp  # GU.5b: the modules' old faces from rich elements (dial markers as curve points), an opened group as a circuit, goldens
     views/test_cable_source.cpp  # DY.2: the cablesource picker by real dispatch (pick / clear = one step; a hand-drawn cable shows)
     views/test_delay_tap_face.cpp  # DT.1: the Delay Tap's tempo slider (gravity, magnet, ms / note switch, sync steps) by real dispatch, goldens

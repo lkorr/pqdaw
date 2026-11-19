@@ -129,6 +129,13 @@ void registerCableSource(void (*reg)(std::string_view kind, std::string_view lab
 void registerTransferElement(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
                                          std::span<const std::string_view> slots, float w, float h, ElementFactory f));
 
+// MX.3: the Math module's op circle (math_element.cpp, kind "mathop").
+void registerMathElement(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                     std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+// MX.3: a "scope" bound to several signals (doc::elementTraces) is a trace scope (trace_element.cpp); its style fields.
+std::span<const StyleSpec> traceScopeStyle() noexcept;
+std::unique_ptr<Element> makeTraceScope(const doc::PanelElement& desc);
+
 // The curve editor (curve_element.cpp).
 std::span<const StyleSpec> curveElementStyle() noexcept;
 std::unique_ptr<Element> makeCurveElement(const doc::PanelElement& desc);

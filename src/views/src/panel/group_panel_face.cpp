@@ -87,6 +87,7 @@ public:
     return in_.engineFace(b, typeId, host);
   }
   devices::SpectrumFeed* signalFeed(const doc::Binding& b) override { return in_.signalFeed(b); }
+  devices::SpectrumFeed* traceFeed(const doc::PanelElement& e) override { return in_.traceFeed(e); }
   std::optional<double> ghostPosition(const doc::Binding& b) const override { return in_.ghostPosition(b); }
   bool modulationLive() const override { return in_.modulationLive(); }
   bool ghostPass() const noexcept override { return true; }

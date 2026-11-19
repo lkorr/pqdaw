@@ -3642,6 +3642,8 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
       // Any press moves the key focus; a face's control takes it below (TX.panel-faces: the old face's type-in commits).
       const int32_t before = m.faceFocus;
       m.faceFocus = -1;
+      // MX.3: a popup the face opens on the press (the Math op's radial menu) takes the key focus: keep it there.
+      const ui::Widget* focus0 = tree() ? tree()->focus() : nullptr;
       // Left presses, and right presses a face uses (TMM.9: resetting harmonic bars); Alt+Left pans.
       bool taken = false;
       Face* fp0 = nullptr;
@@ -3663,7 +3665,7 @@ bool CircuitCanvas::facePointer(const ui::PointerEvent& e) {
         m.syncTextInput();
         return false;
       }
-      if (tree()) tree()->setFocus(this);
+      if (tree() && (tree()->focus() == focus0 || tree()->focus() == nullptr)) tree()->setFocus(this);
       // The face's edit may have rebuilt the scene (TMM.7): find it again (it lives on, kept or retired).
       const int32_t now = m.indexOf(fp0);
       m.faceFocus = now;

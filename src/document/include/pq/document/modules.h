@@ -437,7 +437,12 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o = {});
 // The group's `oversample` setting (TX.group-oversample, 0 Off / 1 2× / 2 4× on the face) runs it in a region.
 // SCOPES: the panel's "scope" element bound to THREE signals — A's, B's and the Math group's output (slots 0, 1, 2) — is
 // one trace tap (panel.h "Trace taps"): one ring, sample-aligned, so the face triggers and times all three from A.
-// Its minimal panel (MX.3 draws the face): the trace scope, the A / Tolerance / B knobs, the Oversample menu.
+// Its face (MX.3; 300 × 194): "In A" / "In B" top corners with their typed values (number boxes: drag or type) below,
+// the output scope the wide top box, the A and B scopes left and right of the op circle (a "mathop" element on the
+// kMathOpSetting setting: its symbol; a click opens the radial menu of mathOpInfos, a pick is ops::setMathOp), Out
+// bottom centre, Tolerance (shown while the op reads it) and Oversample under the scopes. Every scope element is bound
+// to A, B and Out (one trace tap) and draws one of them (style `trace`); the output's is two elements shown by the op's
+// code: `scale` gate (0 / 1) while the op gives a gate, auto otherwise.
 enum class MathCategory : uint8_t { Compare, Logic, Arithmetic, Range, Geometry };
 struct MathOpInfo {
   std::string_view key;     // "gt", "hypot" … (the op's name in code and tests)

@@ -2255,20 +2255,49 @@ BlockSet mathBlocks(IdSource& ids, const MathOptions& o, MathRoles* roles) {
     k.b.set.devices.push_back(std::move(d));
   }
   for (Wire& w : ops.wires) k.b.set.wires.push_back(std::move(w));
-  // The minimal panel (MX.3 draws the face): the trace scope (A, B, Out on one time base), the A / Tolerance / B knobs
-  // and the oversampling.
+  // MX.3: the face (docs/plans/MX.md "Layout"; modules.h "the Math module"): In A / In B top corners with their typed
+  // values below, the output scope the wide top box, the A and B scopes left and right of the op circle (one trace tap:
+  // every scope is bound to A, B and Out and shows one of them), Out bottom centre; Tolerance only while == or ≠, the
+  // output drawn as a 0 / 1 gate while the op gives a gate (both by the op element's value: its op's code).
   Panel p;
-  p.width = 220.0f;
-  p.height = 176.0f;
+  p.width = 300.0f;
+  p.height = 194.0f;
   p.elements.push_back(plate(p.width, p.height, 10.0));
-  PanelElement scope = element(2, "scope", 8, 8, 204, 72, signalBinding(r.inA, "y"));
-  scope.bindings.push_back(signalBinding(r.inB, "y"));
-  scope.bindings.push_back(signalBinding(r.group, "y"));
-  p.elements.push_back(std::move(scope));
-  p.elements.push_back(control(3, "knob", 8, 88, 52, 58, Sig{r.a, std::string(kValueOutput)}));
-  p.elements.push_back(control(4, "knob", 84, 88, 52, 58, tol));
-  p.elements.push_back(control(5, "knob", 160, 88, 52, 58, Sig{r.b, std::string(kValueOutput)}));
-  p.elements.push_back(menu(element(6, "menu", 74, 152, 72, 18, settingBinding(r.group, std::string(kGroupOversample))), "Off|2×|4×"));
+  std::vector<double> gateCodes, levelCodes, toleranceCodes;
+  for (const MathOpInfo& m : mathOpInfos()) {
+    (m.gate ? gateCodes : levelCodes).push_back(static_cast<double>(m.code));
+    if (m.tolerance) toleranceCodes.push_back(static_cast<double>(m.code));
+  }
+  constexpr uint32_t kOpElement = 7;
+  auto trace = [&](uint32_t id, float x, float y, float w, float h, const char* show, const char* scale) {
+    PanelElement e = element(id, "scope", x, y, w, h, signalBinding(r.inA, "y"));
+    e.bindings.push_back(signalBinding(r.inB, "y"));
+    e.bindings.push_back(signalBinding(r.group, "y"));
+    return styled(std::move(e), {styleText("trace", show), styleText("scale", scale)});
+  };
+  auto jack = [&](uint32_t id, float x, float y) {
+    PanelElement e = element(id, "shape", x, y, 8, 8, {});
+    e.bindings.clear();
+    return styled(std::move(e), {styleText("shape", "circle"), styleText("fill", "track"), styleText("stroke", "frame"),
+                                 styleNumber("thickness", 1.2)});
+  };
+  p.elements.push_back(shownWhen(trace(2, 88, 8, 124, 58, "third", "auto"), kOpElement, levelCodes));
+  p.elements.push_back(control(3, "number", 8, 22, 72, 18, Sig{r.a, std::string(kValueOutput)}));
+  p.elements.push_back(shownWhen(styled(control(4, "number", 8, 120, 72, 28, tol), {styleText("label", "Tolerance"), styleNumber("decimals", 4)}), kOpElement,
+                                 toleranceCodes));
+  p.elements.push_back(control(5, "number", 220, 22, 72, 18, Sig{r.b, std::string(kValueOutput)}));
+  p.elements.push_back(styled(menu(element(6, "menu", 220, 120, 72, 28, settingBinding(r.group, std::string(kGroupOversample))), "Off|2×|4×"),
+                              {styleText("label", "Oversample")}));
+  p.elements.push_back(element(kOpElement, "mathop", 110, 72, 80, 80, settingBinding(r.group, std::string(kMathOpSetting))));
+  p.elements.push_back(shownWhen(trace(8, 88, 8, 124, 58, "third", "gate"), kOpElement, gateCodes));
+  p.elements.push_back(trace(9, 8, 46, 72, 66, "first", "auto"));
+  p.elements.push_back(trace(10, 220, 46, 72, 66, "second", "auto"));
+  p.elements.push_back(jack(11, 9, 9));
+  p.elements.push_back(caption(12, 21, 7, 40, 12, "In A"));
+  p.elements.push_back(jack(13, 283, 9));
+  p.elements.push_back(styled(caption(14, 239, 7, 40, 12, "In B"), {styleText("align", "right")}));
+  p.elements.push_back(styled(caption(15, 130, 158, 40, 12, "Out"), {styleText("align", "centre")}));
+  p.elements.push_back(jack(16, 146, 174));
   DevicePtr g = groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Math") : o.name, o.active, std::move(p));
   auto gd = std::make_shared<Device>(*g);
   gd->settings.push_back(DeviceValue{std::string(kMathOpSetting), static_cast<double>(op->code)});

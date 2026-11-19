@@ -2097,3 +2097,22 @@ capped at ±FLT_MAX and mod / wrap / fold stay in range when the quotient overfl
 plain float arithmetic: with |A|, |B| beyond ≈ 1e19 (hypot, ×) or ≈ 1.7e38 (+, −) they reach ±inf as any float
 product does. Capping them would cost a clamp per sample on the commonest ops for inputs no audio signal reaches.
 Status: open (cheap to add a final clip per op if wanted).
+
+## Q?-MX.3-a · 2026-11-18 · MX.3 · The face's In A / In B / Out terminals are markers, not pins
+Context: the sketch puts In A / In B in the top corners and Out bottom centre. A closed group's pins are placed by the
+project patch on the node's edges (crossing ports; a wire into a control lands on the element showing it), and B's
+input is the child group "B"'s main input, which has no pin on the closed node until a wire crosses into it. Options:
+(1) captions + jack dots on the face, pins unchanged; (2) a new "input jack" element that the project patch anchors
+pins to (a general mechanism like the control anchors); (3) give B a group-level input port. Chosen: (1), the most
+reversible — nothing in the patch model changes. Wiring into B today: open the module and cable into B's In. (2) is
+the natural follow-up if the user wants to plug B on the closed face. Status: open.
+
+## Q?-MX.3-b · 2026-11-18 · MX.3 · A multi-signal "scope" element is the trace scope, not the Oscilloscope section
+Context: MX.2 made a `scope` element bound to 2–3 Signals one trace tap; the views drew every `scope` as the
+Oscilloscope face's section, which reads a single "#signal:" tap (beat, note, L, R). Chosen: the `scope` factory makes
+a trace scope when `doc::elementTraces` is non-empty (style `trace` = which slot, `scale` auto / gate), fed by the new
+`PanelTarget::traceFeed(element)`; every trace scope of one feed shares one window and one ScopeTracker frame on slot 0
+(the alignment). The full Oscilloscope options (timebases, freeze, measure) are not on the trace scope. Also fixed on
+the way: the circuit canvas took the key focus back after a face's press even when the press had opened a popup that
+took it (the radial menu then got no typing); it now keeps a focus the press moved. Status: decided (reversible:
+trace_element.cpp, engine_elements.cpp makeSection).

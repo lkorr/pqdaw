@@ -120,6 +120,9 @@ public:
   // GU.7: the analysis feed a meter reads: a Signal binding's tap (the lowering's), or a Data binding's analyser
   // engine's own tap. Null: none yet.
   virtual devices::SpectrumFeed* signalFeed(const doc::Binding& /*b*/) { return nullptr; }
+  // MX.3: the feed of a TRACE element's one tap (pq/document/panel.h "Trace taps": a scope bound to several signals,
+  // requested as doc::traceTapPath(e) under slot 0's device; channels beat, s0, s1, s2). Null: none yet / not one.
+  virtual devices::SpectrumFeed* traceFeed(const doc::PanelElement& /*e*/) { return nullptr; }
   // ---- GU.13: what a host shows on the controls (the Device view: pq/views/device_chain/device_chain.h) ----
   // The LIVE MODULATION RING of a control (the range its wires sweep, what they swept since the last poll, where the
   // modulation puts it), drawn by a knob instead of the static driven() ring; null: none set. setModulation returns
