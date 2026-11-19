@@ -899,3 +899,8 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **VZ.8 Review** *(docs/reviews/VZ.md on task/VZ.8-review: 1 C / 2 H / 11 M / 17 L; C1, H1, H2, M1 reproduced)*
 - [x] **VZ.9 Review fixes** *(merged; -Affected -Slow 88/88; Q?-VZ.9-a, b)* (docs/reviews/VZ.md: C1, H1, H2, M1–M11, the Lows, the Tests section (a settings-sequence test per DSP stage; real-dispatch gestures; tighter tolerances), the UI / aesthetic section (faint points as specks on the teal ground, active snap chip, label collisions, zoomed-out readouts, 6 px chips))
 - [x] **VZ.10 Colour row in the option sheet** 👁 *(merged c52db5dc; Q?-VZ.10-a)* (review gap 1; Q?-VZ.2-a, VZ.4-a … VZ.7-a): one colour-picker row type in option_sheet.h serving all 15 analyser faces — Custom stop colours (Spectrum, Spectrogram, Stereo Image), PQ's per-band / per-lane / per-trace colours (loudness, Band Levels, Waveform, 3D); saved in instance data and SAVE DEFAULT
+
+## MX: Math module + radial menu (user 2026-11-18; plan: docs/plans/MX.md)
+- [ ] **MX.1 Radial menu widget** 👁 (plan §MX.1; general nested bubble menu in `ui`, type-to-filter, real-dispatch tests)
+- [ ] **MX.2 Math module: preset, ops, atan2** (plan §MX.2; group preset `module:math`, op catalogue as atom subgraphs, op swap edit, atan2 atom)
+- [ ] **MX.3 Math face** 👁 (plan §MX.3; after MX.1 + MX.2: value boxes, op circle → radial menu, three scopes sharing a trigger, oversample selector)
