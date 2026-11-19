@@ -904,3 +904,4 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **MX.1 Radial menu widget** 👁 *(merged cb8ea0c4)* (plan §MX.1; general nested bubble menu in `ui`, type-to-filter, real-dispatch tests)
 - [x] **MX.2 Math module: preset, ops, atan2** *(merged bd8034e4; Q?-MX.2-a, b, c)* (plan §MX.2; group preset `module:math`, op catalogue as atom subgraphs, op swap edit, atan2 atom)
 - [x] **MX.3 Math face** 👁 *(merged 45b13c3c; Q?-MX.3-a open: closed-face B jack is a marker)* (plan §MX.3; after MX.1 + MX.2: value boxes, op circle → radial menu, three scopes sharing a trigger, oversample selector)
+- [ ] **MX.4 Face jacks: plug A / B / Out on the closed Math face** 👁 (Q?-MX.3-a option 2; user 2026-11-18: "wiring into b is absolutely necessary"): a general panel jack element the project patch anchors real pins to
