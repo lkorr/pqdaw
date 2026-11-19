@@ -1124,3 +1124,13 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier: passed (after re-recording 62 goldens, all moved inside wavetable displays).
 - Perf / CPU-efficiency check: one pass over the 1024-sample cycle per paint (min/max: compares only), ≤ 2 points per
   device px; primitive count per paint unchanged.
+
+## 2026-11-18 · MX.1 merged · main
+- Did: general nested radial "bubble" menu in ui (`pq/ui/radial_menu.h`, `openRadialMenu`; category ring, child arcs
+  rotated/clamped to fit, type-to-filter results ring, keyboard, 120 ms open animation, `SceneFonts::symbol`).
+- Verified (worker): pq_tests_ui and pq_tests_views default tiers passed after rebase (11 real-dispatch radial tests
+  incl. rebuild + reopen inside the pick handler); 8 new goldens radial-* (1×/2×), none changed.
+- Perf / CPU-efficiency check: layout once per open / state change into reserved storage; paint allocates nothing
+  (countRtViolations 0); no frames after the animation.
+- Notes: stale `.ninja_deps` caused SIGSEGVs in views goldens until deleted (SceneFonts layout changed). Tight-corner
+  arcs can overlap (REVIEW).
