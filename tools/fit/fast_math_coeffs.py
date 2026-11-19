@@ -193,6 +193,21 @@ def fit_tanh(np_, nq, clamp):
         print(f"  q{j+1} (x^{2*j+2}) = {np.float32(v)!r:>18}  ({v:.17g})")
     return p, q
 
+def fit_atan(deg):
+    # MX.2: atan(t) = t * P(t^2), t in [0, 1] (atan2's octant-reduced argument); fit P in u = t^2 with weight t:
+    # the ABSOLUTE error in radians (the atom's bound is absolute).
+    def g(u):
+        t = np.sqrt(u)
+        out = np.ones_like(u)
+        nz = t > 1e-4
+        out[nz] = np.arctan(t[nz]) / t[nz]
+        out[~nz] = 1 - u[~nz] / 3 + u[~nz] ** 2 / 5
+        return out
+    basis = [lambda u, i=i: u ** i for i in range(deg)]
+    c, e = remez(g, basis, lambda u: np.sqrt(np.maximum(u, 1e-12)), 1e-8, 1.0)
+    show(f"atan: t*P(t^2), P deg {deg - 1} (abs)", c, e)
+    return c
+
 
 if __name__ == "__main__":
     for d in (4, 5):
@@ -205,3 +220,5 @@ if __name__ == "__main__":
         fit_tan(d)
     for (a, b, c) in ((4, 4, 9.0), (5, 4, 9.0)):
         fit_tanh(a, b, c)
+    for d in (5, 6, 7):
+        fit_atan(d)

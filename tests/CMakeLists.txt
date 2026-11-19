@@ -151,6 +151,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_delay_tap.cpp  # DT.1: the Delay Tap renders (impulse at the time, half samples, stereo, sync at the tempo, a VCA feedback loop, a glide)
     app/test_eq_render.cpp  # EQ.3: a band == a plain svf bit for bit per type; the EQ's L/R and M/S == Stereo with equal chains; chain B costs nothing in Stereo
     app/test_compressor_module.cpp  # DY.4: the Compressor (static curve vs the formula, attack / release, lookahead latency, a sidechain ducking a pad; interp == JIT)
+    app/test_math_module.cpp  # MX.2: every Math op vs its reference through the trace tap (interp + JIT), oversample region, (perf) off-screen cost
     app/test_limiter_module.cpp  # DY.6: the Limiter (no sample over the ceiling at every lookahead, true peak, release law, L-R, latency L + 6; interp == JIT)
     app/test_project_patch_cost.cpp  # T4.13: per-device CPU cost through the link (meters per unit schedule, attribution)
     app/test_voice_smooth.cpp  # AU.voices: no clicks at Play / note on / note off; voices end on time
@@ -523,6 +524,7 @@ pq_add_test(pq_tests_document
     document/test_group_response.cpp  # EQ.2: a group's analytic In -> Out response (lowered once, knobs re-read)
     document/test_group_transfer.cpp  # DY.3: a group's static In -> Out curve (exact vs scalar, z1 -> none, knobs re-read)
     document/test_delay_tap.cpp  # DT.1: the Delay Tap's time law, note values, its group
+    document/test_math_module.cpp  # MX.2: the Math module (ops table, roles, op swap one undo step + save / load, the trace tap's lowering)
     document/test_eq_modules.cpp  # EQ.3: the band and EQ modules (roles, const inputs), their ops (one undo step, save / load), the EQ's response matrix
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
     document/test_cut_wires.cpp  # WI.2: a cut wire lowers as the project without it (Refused / Type), a cut main link breaks the path, wire ends

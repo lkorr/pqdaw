@@ -2067,3 +2067,33 @@ sounds; any other edit drops them, and stored nodes that no longer render the cy
 the node tool fits nodes to the drawing (≤ 12 segments, 3 % of full scale; noisy cycles hit the cap), shown dashed until
 the first node edit applies them — rather than a default shape, so entering never changes the sound. Status: decided
 (reversible: the face's ensureNodes / fitNodes).
+
+## Q?-MX.2-a · 2026-11-18 · MX.2 · How the Math module stores its op and builds its inputs
+Context: the plan's semantics name a string setting `math.op` and "A wire ADDS to the typed value (the wire law)".
+Device settings are numbers and names may not hold a '.', so the group setting is `mathOp` holding the op's stable
+`code` (MathOpInfo::code; never reused). A and B are child groups ("A": In + value A; "B": its own In — the module's
+second input, a cable into the child group — + value B) summed by one `add` each, not wires into the value blocks: the
+value block's wire law clamps to the knob's range and costs the curve stage and a modulation tap per sample, the `add`
+keeps ±1e18 and costs one op. The op subgraph is the group's direct atoms and unroled value blocks; a hand-edited
+circuit keeps showing the stored op (no recognition pass), and picking an op rebuilds it. Logic is written on reals
+(min / max / compares): a wire into a bool input lowers Invalid, so `and` = min(A, B) > 0 etc. Status: decided
+(reversible: modules.h mathBlocks / mathOpBlocks).
+
+## Q?-MX.2-b · 2026-11-18 · MX.2 · One trace tap instead of three scope engines
+Context: the plan asks for three oscilloscopes (A, B, Out) sharing one trigger and timebase, the mechanism the worker's
+call. Chosen: a general panel mechanism — a `scope` element bound to two or three Signals is one signal_tap of beat and
+channel 0 of each signal (panel.h "Trace taps"): one ring, so the traces are the same samples and one trigger / time
+base derived from A applies to all; no Oscilloscope engine devices in the group (an unwatched tap costs one relaxed
+load per block plus its inputs: measured equal to an off-screen Oscilloscope). Consequences for MX.3: the views'
+signal feed must request `traceTapPath(element)` (today they request "#signal:<port>" for slot 0: the minimal panel's
+scope stays empty until MX.3 binds it); traces are mono (channel 0: a stereo A shows its left); the trace tap has no
+note channel, so a pitch-locked timebase uses the detector, never the note; in an oversampled Math module the tapped
+A and B cross the region edge, so their half-band downsamplers run even unwatched. Status: decided (reversible:
+panelTaps / panelTapsOf).
+
+## Q?-MX.2-c · 2026-11-18 · MX.2 · "No NaN / Inf out" and huge inputs
+Context: the plan's edge rules (÷, mod, pow, wrap / fold / clip with B = 0) are implemented and tested at ±1e18; pow is
+capped at ±FLT_MAX and mod / wrap / fold stay in range when the quotient overflows. A × B, A + B, A − B and hypot are
+plain float arithmetic: with |A|, |B| beyond ≈ 1e19 (hypot, ×) or ≈ 1.7e38 (+, −) they reach ±inf as any float
+product does. Capping them would cost a clamp per sample on the commonest ops for inputs no audio signal reaches.
+Status: open (cheap to add a final clip per op if wanted).

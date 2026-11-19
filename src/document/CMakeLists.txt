@@ -29,6 +29,7 @@ pq_add_module(pq_doc
     src/edit_cables.cpp  # DY.2: cable sources (the sidechain picker)
     src/edit_racks.cpp
     src/edit_eq.cpp
+    src/edit_math.cpp
     src/racks.cpp
     src/edit_groups.cpp
     src/edit_blocks.cpp

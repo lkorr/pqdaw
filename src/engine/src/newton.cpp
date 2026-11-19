@@ -96,7 +96,7 @@ TangentStepFn scalarTangentStep(Atom a) noexcept {
     PQ_TAN(Sin) PQ_TAN(SinFast) PQ_TAN(Tan) PQ_TAN(TanFast) PQ_TAN(Tanh) PQ_TAN(TanhFast) PQ_TAN(DbToGain)
     PQ_TAN(DbToGainFast) PQ_TAN(GainToDb) PQ_TAN(GainToDbFast) PQ_TAN(Const) PQ_TAN(Clip) PQ_TAN(Lerp) PQ_TAN(Select)
     PQ_TAN(MulAdd) PQ_TAN(And) PQ_TAN(Or) PQ_TAN(Xor) PQ_TAN(Nand) PQ_TAN(Nor) PQ_TAN(Not) PQ_TAN(Gt) PQ_TAN(Lt)
-    PQ_TAN(Ge) PQ_TAN(Le) PQ_TAN(Eq) PQ_TAN(Ne) PQ_TAN(GateToReal) PQ_TAN(Mux) PQ_TAN(Demux) PQ_TAN(SinePhase)
+    PQ_TAN(Ge) PQ_TAN(Le) PQ_TAN(Eq) PQ_TAN(Ne) PQ_TAN(GateToReal) PQ_TAN(Mux) PQ_TAN(Demux) PQ_TAN(SinePhase) PQ_TAN(Atan2)
 #undef PQ_TAN
     default: return nullptr;
   }
@@ -113,7 +113,7 @@ bool hasTangent(Atom a) noexcept {
     case Atom::Clip: case Atom::Lerp: case Atom::Select: case Atom::MulAdd: case Atom::And: case Atom::Or:
     case Atom::Xor: case Atom::Nand: case Atom::Nor: case Atom::Not: case Atom::Gt: case Atom::Lt: case Atom::Ge:
     case Atom::Le: case Atom::Eq: case Atom::Ne: case Atom::GateToReal: case Atom::Mux: case Atom::Demux:
-    case Atom::SinePhase:
+    case Atom::SinePhase: case Atom::Atan2:
       return true;
     default:
       return false;

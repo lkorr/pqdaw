@@ -1,6 +1,6 @@
 #pragma once
 
-// Fast float32 approximations of exp2, log2, sin, tan and tanh, scalar and AVX2 8-wide (SPEC §7.2 `fast_` atoms).
+// Fast float32 approximations of exp2, log2, sin, tan, tanh and atan2, scalar and AVX2 8-wide (SPEC §7.2 `fast_` atoms).
 //
 // One implementation serves both widths: each kernel is a template over a tiny ops struct (SSE 4-wide for the
 // scalar entry points, AVX2 8-wide for __m256), so scalar and SIMD results are bit-identical (tested). Every
@@ -12,8 +12,8 @@
 // less than an audible or measurable error in pitch (cents) or filter cutoff. Bounds below are verified by
 // sweep tests against double-precision std:: references (tests/core/test_fast_math.cpp).
 //
-// Special values are honest (no "no-NaN" assumptions): NaN in gives NaN out for every function; behaviour for
-// infinities and out-of-domain input is documented per function and tested. Nothing here reads or changes
+// Special values are honest (no "no-NaN" assumptions): NaN in gives NaN out for every function but atan2 (always
+// finite); behaviour for infinities and out-of-domain input is documented per function and tested. Nothing here reads or changes
 // MXCSR, so results are the same with or without FTZ/DAZ, except that denormal results can be flushed.
 //
 // All functions are RT-safe: no allocation, no locks, no syscalls, no exceptions.
@@ -58,6 +58,13 @@ inline constexpr float kFastTanMaxRelErr = 4.0e-7f;  // measured 3.0e-7
 //              Odd, |result| ≤ 1 exactly, ±inf → ±1, tanh(±0) = ±0. Uses one division.
 inline constexpr float kFastTanhMaxAbsErr = 4.0e-7f;  // measured 3.3e-7
 inline constexpr float kFastTanhMaxRelErr = 5.5e-7f;  // measured 4.4e-7
+//
+// fastAtan2(y, x)  MX.2: the angle of (x, y) in [−π, π], domain all floats: max absolute error kFastAtan2MaxAbsErr
+//              rad against atan2(double y, double x). Signed zeros as std::atan2 (atan2(±0, +0) = ±0,
+//              atan2(±0, −0) = ±π); ±inf as std::atan2 (atan2(±inf, ±inf) = ±π/4, ±3π/4). The result is always
+//              finite: NaN in gives some value in [−π, π] (unspecified), never NaN (an audio signal must not blow up).
+//              One division.
+inline constexpr float kFastAtan2MaxAbsErr = 3.0e-6f;  // the polynomial 1.93e-6 plus the octant's float rounding
 
 namespace detail::fm {
 
@@ -233,6 +240,32 @@ inline typename S::F tanh(typename S::F x) noexcept {  // RT-safe
   return S::bor(r, sign);
 }
 
+// atan2(y, x) (MX.2). Octant reduction: t = min(|x|, |y|) / max(|x|, |y|) in [0, 1]; atan(t) = t·P(t²), P degree 5
+// (minimax absolute on [0, 1], 1.93e-6 rad: tools/fit/fast_math_coeffs.py fit_atan(6)); then π/2 − r when |y| > |x|,
+// π − r when x's sign bit is set, and y's sign bit on the result. The denominator is at least FLT_MIN (0 / 0 → 0) and a
+// NaN quotient (inf / inf, or a NaN operand) is taken as 1 (min returns its second operand on NaN), so no NaN leaves.
+template <class S>
+inline typename S::F atan2(typename S::F y, typename S::F x) noexcept {  // RT-safe
+  const auto signMask = S::set(-0.0f);
+  const auto ax = S::andnot(signMask, x);
+  const auto ay = S::andnot(signMask, y);
+  const auto mn = S::min(ax, ay);
+  const auto mx = S::max(ax, ay);
+  auto t = S::div(mn, S::max(mx, S::set(1.17549435e-38f)));
+  t = S::min(t, S::set(1.0f));  // NaN → 1
+  const auto u = S::mul(t, t);
+  auto p = S::set(-0.0118034445f);
+  p = S::fma(p, u, S::set(0.0529150886f));
+  p = S::fma(p, u, S::set(-0.116729694f));
+  p = S::fma(p, u, S::set(0.193688283f));
+  p = S::fma(p, u, S::set(-0.332651888f));
+  p = S::fma(p, u, S::set(0.999978798f));
+  auto r = S::mul(t, p);
+  r = S::blend(r, S::sub(S::set(1.57079637f), r), S::lt(ax, ay));
+  r = S::blend(r, S::sub(S::set(3.14159274f), r), S::asF(S::template sar<31>(S::asI(x))));
+  return S::bor(r, S::band(signMask, y));
+}
+
 }  // namespace detail::fm
 
 // ---- Scalar ----------------------------------------------------------------------------------------------------
@@ -242,6 +275,9 @@ inline float fastLog2(float x) noexcept { return _mm_cvtss_f32(detail::fm::log2<
 inline float fastSin(float x) noexcept { return _mm_cvtss_f32(detail::fm::sin<detail::fm::V4>(_mm_set_ss(x))); }
 inline float fastTan(float x) noexcept { return _mm_cvtss_f32(detail::fm::tan<detail::fm::V4>(_mm_set_ss(x))); }
 inline float fastTanh(float x) noexcept { return _mm_cvtss_f32(detail::fm::tanh<detail::fm::V4>(_mm_set_ss(x))); }
+inline float fastAtan2(float y, float x) noexcept {
+  return _mm_cvtss_f32(detail::fm::atan2<detail::fm::V4>(_mm_set_ss(y), _mm_set_ss(x)));
+}
 
 // ---- AVX2 8-wide -------------------------------------------------------------------------------------------------
 // RT-safe. One voice (or sample) per lane.
@@ -250,5 +286,6 @@ inline __m256 fastLog2(__m256 x) noexcept { return detail::fm::log2<detail::fm::
 inline __m256 fastSin(__m256 x) noexcept { return detail::fm::sin<detail::fm::V8>(x); }
 inline __m256 fastTan(__m256 x) noexcept { return detail::fm::tan<detail::fm::V8>(x); }
 inline __m256 fastTanh(__m256 x) noexcept { return detail::fm::tanh<detail::fm::V8>(x); }
+inline __m256 fastAtan2(__m256 y, __m256 x) noexcept { return detail::fm::atan2<detail::fm::V8>(y, x); }
 
 }  // namespace pq

@@ -60,7 +60,8 @@ TEST_CASE("newton: every tangent rule matches a central difference of its dsp ke
       {Atom::Clip, {0.3f, -0.5f, 0.5f}}, {Atom::Clip, {0.9f, -0.5f, 0.5f}}, {Atom::Clip, {-0.9f, -0.5f, 0.5f}},
       {Atom::Lerp, {0.2f, 0.9f, 0.3f}}, {Atom::Select, {t, 0.3f, 0.7f}}, {Atom::Select, {0.0f, 0.3f, 0.7f}},
       {Atom::MulAdd, {0.3f, 1.2f, -0.4f}}, {Atom::Mux, {1.4f, 0.1f, 0.2f, 0.3f}}, {Atom::Mux, {7.0f, 0.1f, 0.2f, 0.3f}},
-      {Atom::Demux, {1.0f, 0.6f}, 3}, {Atom::Demux, {-4.0f, 0.6f}, 3}};
+      {Atom::Demux, {1.0f, 0.6f}, 3}, {Atom::Demux, {-4.0f, 0.6f}, 3},
+      {Atom::Atan2, {0.7f, -0.4f}}, {Atom::Atan2, {-0.3f, 1.1f}}};  // MX.2
   newton::ScalarOps ops;
   uint32_t checked = 0;
   for (const Case& c : cases) {

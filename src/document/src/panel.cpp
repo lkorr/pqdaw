@@ -246,10 +246,44 @@ std::string tapPath(ElementTap kind, std::string_view port) {
   return std::string(kind == ElementTap::Voice ? "#voice:" : "#signal:") + std::string(port);
 }
 
+std::vector<std::pair<DeviceId, std::string>> elementTraces(const PanelElement& e) {
+  std::vector<std::pair<DeviceId, std::string>> out;
+  if (e.kind != "scope") return out;
+  auto signal = [&](size_t slot) {
+    const Binding* b = e.binding(slot);
+    return b != nullptr && b->kind == BindingKind::Signal && b->device.valid() && !b->name.empty() ? b : nullptr;
+  };
+  if (signal(0) == nullptr) return out;
+  for (size_t slot = 1; slot < 3; ++slot) {
+    const Binding* b = signal(slot);
+    if (b == nullptr) break;
+    out.emplace_back(b->device, b->name);
+  }
+  return out;
+}
+
+std::string traceTapPath(const PanelTap& t) {
+  if (t.traces.empty()) return {};
+  std::string path = "#trace:" + t.port;
+  for (const auto& [d, port] : t.traces) path += "|" + std::to_string(d.value) + ":" + port;
+  return path;
+}
+
+std::string traceTapPath(const PanelElement& e) {
+  const Binding* b = e.binding(0);
+  if (b == nullptr) return {};
+  return traceTapPath(PanelTap{b->device, b->name, ElementTap::Signal, elementTraces(e)});
+}
+
 std::vector<PanelTap> panelTaps(const Panel& p) {
   std::vector<PanelTap> out;
   for (const PanelElement& e : p.elements) {
     const ElementTap k = elementTap(e.kind);
+    // MX.2: a trace element (several signals on one time base) is one tap of them all.
+    if (std::vector<std::pair<DeviceId, std::string>> traces = elementTraces(e); !traces.empty()) {
+      out.push_back(PanelTap{e.binding(0)->device, e.binding(0)->name, ElementTap::Signal, std::move(traces)});
+      continue;
+    }
     // (EQ.4: a response display's analyser also shows its input spectrum: slot 1)
     for (size_t slot = 0; slot < (e.kind == "response" ? 2u : 1u); ++slot) {
       const Binding* b = e.binding(slot);
@@ -260,7 +294,8 @@ std::vector<PanelTap> panelTaps(const Panel& p) {
   std::sort(out.begin(), out.end(), [](const PanelTap& a, const PanelTap& b) {
     if (a.device != b.device) return a.device < b.device;
     if (a.kind != b.kind) return a.kind < b.kind;
-    return a.port < b.port;
+    if (a.port != b.port) return a.port < b.port;
+    return a.traces < b.traces;
   });
   out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;

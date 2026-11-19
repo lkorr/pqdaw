@@ -129,6 +129,7 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // DY.5 (kernels_dynamics.cpp): x Blk only (a param-rate true peak is the value itself: the scheduler fills a
     // block); it reads x behind its output, so no in-place output.
     {"truepeak", 1, 1, false, false, 0, 0, 0, 0, sizeof(TruePeakState), Resource::None, false},
+    bin("atan2"),  // MX.2 (kernels_math.cpp)
 };
 
 bool isDelay(Atom a) noexcept {
@@ -510,6 +511,10 @@ bool rangeOf(Atom a, const ValueRange* in, uint32_t numIn, ValueRange& out) noex
     case Atom::DbToGainFast:
       if (!need(1)) return false;
       o = {fromDb(in[0].lo, false), fromDb(in[0].hi, true)};
+      break;
+    case Atom::Atan2:  // MX.2: [−π, π] (the float constants round up: π's float is above π)
+      if (!need(2)) return false;
+      o = {-3.14159274f, 3.14159274f};
       break;
     default: return false;
   }

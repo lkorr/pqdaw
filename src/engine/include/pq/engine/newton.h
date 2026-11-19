@@ -148,6 +148,10 @@ PQ_NEWTON_INLINE void tangentOp(O& o, dsp::Atom atom, uint32_t numIn, uint32_t n
     case Atom::HzToCentsFast:  // y = 1200·log2(hz/ref)
       dy[0] = tmul(tsub(tdiv(d[0], a[0]), tdiv(d[1], a[1])), o.c(k1200OverLn2));
       return;
+    case Atom::Atan2:  // MX.2: θ = atan2(y, x): dθ = (x·dy − y·dx) / (x² + y²) (+ 1e-30: finite at the origin)
+      dy[0] = tdiv(tsub(tmul(d[0], a[1]), tmul(d[1], a[0])),
+                   o.add(o.add(o.mul(a[0], a[0]), o.mul(a[1], a[1])), o.c(1e-30f)));
+      return;
     case Atom::Neg: dy[0] = tneg(d[0]); return;
     case Atom::Abs: dy[0] = tsel(o.lt(a[0], o.c(0.0f)), tneg(d[0]), d[0]); return;
     case Atom::Frac:

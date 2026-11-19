@@ -52,6 +52,7 @@ PQ_BINARY(PowFastOp, S::fastExp2(S::mul(b, S::fastLog2(a))))
 PQ_BINARY(CentsToHzOp, S::exactCentsToHz(a, b))
 PQ_BINARY(CentsToHzFastOp, S::mul(b, S::fastExp2(S::mul(a, S::set(1.0f / 1200.0f)))))
 PQ_BINARY(HzToCentsOp, S::exactHzToCents(a, b))
+PQ_BINARY(Atan2Op, S::fastAtan2(a, b))  // MX.2: atan2(y = a, x = b)
 PQ_BINARY(HzToCentsFastOp, S::mul(S::set(1200.0f), S::fastLog2(S::div(a, b))))
 
 PQ_UNARY(NegOp, S::neg(x))
@@ -109,6 +110,7 @@ KernelFn findMathKernel(Atom a, uint32_t lanes, uint32_t m) noexcept {
     case Atom::CentsToHzFast: return pick<Ew<CentsToHzFastOp>>(lanes, m);
     case Atom::HzToCents: return pick<Ew<HzToCentsOp>>(lanes, m);
     case Atom::HzToCentsFast: return pick<Ew<HzToCentsFastOp>>(lanes, m);
+    case Atom::Atan2: return pick<Ew<Atan2Op>>(lanes, m);
     case Atom::Neg: return pick<Ew<NegOp>>(lanes, m);
     case Atom::Abs: return pick<Ew<AbsOp>>(lanes, m);
     case Atom::Sign: return pick<Ew<SignOp>>(lanes, m);

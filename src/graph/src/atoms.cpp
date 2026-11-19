@@ -47,6 +47,7 @@ constexpr PortSpec pQ[] = {{"q", kBAudio}};
 
 constexpr PortSpec pX[] = {{"x", kR}};
 constexpr PortSpec pAB[] = {{"a", kR}, {"b", kR}};
+constexpr PortSpec pYX[] = {{"y", kR}, {"x", kR}};  // MX.2: atan2
 constexpr PortSpec pAnyAB[] = {{"a", kAny}, {"b", kAny}};
 constexpr PortSpec pBoolX[] = {{"x", kB}};
 constexpr PortSpec pBoolAB[] = {{"a", kB}, {"b", kB}};
@@ -244,6 +245,7 @@ const AtomSignature kAtoms[] = {
     {"exp", C::Math, pX, pOutR, 0, kMath, 0, {}, "e^x"},
     {"log", C::Math, pX, pOutR, 0, kMath, 0, {}, "natural log"},
     {"pow", C::Math, pAB, pOutR, 0, kMath, 0, {}, "a^b"},
+    {"atan2", C::Math, pYX, pOutR, 0, kMath, 0, {}, "the angle of (x, y) in [−π, π] (≤ 3e-6 rad, never NaN)"},  // MX.2
     {"sqrt", C::Math, pX, pOutR, 0, kMath, 0, {}, "√x"},
     {"sin", C::Math, pX, pOutR, 0, kMath, 0, {}, "sin(x), x in radians", rules::slopeOne},
     // Math (fast approximations; error bounds documented with the core fast-math functions, T0.4).

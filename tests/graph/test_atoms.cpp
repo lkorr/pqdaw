@@ -29,7 +29,7 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
   const char* names[] = {
       "phasor", "sine", "sine_hz", "wavetable", "noise", "noise_step",
       "add", "sub", "mul", "div", "mod", "neg", "min", "max", "clip", "abs", "sign", "floor", "frac",
-      "tan", "tanh", "exp", "log", "pow", "sqrt", "sin",
+      "tan", "tanh", "exp", "log", "pow", "sqrt", "sin", "atan2",
       "fast_tan", "fast_tanh", "fast_exp", "fast_log", "fast_pow", "fast_sqrt", "fast_sin",
       "cents_to_hz", "hz_to_cents", "db_to_gain", "gain_to_db", "select", "lerp", "gate_to_real",
       "fast_cents_to_hz", "fast_hz_to_cents", "fast_db_to_gain", "fast_gain_to_db", "muladd",

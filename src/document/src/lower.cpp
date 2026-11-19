@@ -2949,12 +2949,71 @@ void panelTapsOf(Build& b) {
   }
   if (want.empty()) return;
   std::sort(want.begin(), want.end(), [](const PanelTap& x, const PanelTap& y) {
-    return std::tie(x.device, x.kind, x.port) < std::tie(y.device, y.kind, y.port);
+    return std::tie(x.device, x.kind, x.port, x.traces) < std::tie(y.device, y.kind, y.port, y.traces);
   });
   want.erase(std::unique(want.begin(), want.end()), want.end());
   std::unordered_map<uint32_t, uint32_t> at;
   for (uint32_t k = 0; k < b.td.size(); ++k) at.emplace(b.td[k].device->id.value, k);
+  // An output of a device here that a signal tap may take (the first two), or kNone.
+  auto tappable = [&](DeviceId dev, const std::string& name, uint32_t& k, uint32_t& port) {
+    const auto it = at.find(dev.value);
+    if (it == at.end()) return PortRef{graph::kNone, 0};
+    k = it->second;
+    const LDev& d = b.td[k];
+    if (d.remote || d.callee == nullptr || b.calls[k] == graph::kNone) return PortRef{graph::kNone, 0};
+    port = signalOutput(*d.callee, name);
+    if (port == graph::kNone || port >= 2) return PortRef{graph::kNone, 0};
+    return outOf(b, k, static_cast<uint16_t>(port));
+  };
+  // Channel 0 of a tapped output: one node per (device, output), shared by its single tap and every trace tap of it.
+  std::unordered_map<uint64_t, PortRef> left;
+  auto channel0 = [&](uint32_t id, uint32_t port, const PortRef& x) {
+    const uint64_t key = (static_cast<uint64_t>(id) << 1) | port;
+    if (const auto it = left.find(key); it != left.end()) return it->second;
+    const PortRef l = b.ir.atom("channel", {x, b.c0()}, nodeIdFor(NodeRole::TuningNode, id, 6 * port));
+    left.emplace(key, l);
+    return l;
+  };
+  std::unordered_set<uint64_t> traced;  // the first signals of the trace taps made (one per first signal)
+  auto record = [&](const PanelTap& t, const std::string& path, uint32_t slot) {
+    LoweredProject::MetaResource m;
+    m.track = b.track != nullptr ? b.track->id : TrackId{};
+    m.device = t.device;
+    m.path = path;
+    m.request = meta::ResourceRequest{t.kind == ElementTap::Voice ? meta::ResourceKind::VoiceTap : meta::ResourceKind::SignalTap, 0};
+    m.slot = slot;
+    b.resources->push_back(std::move(m));
+  };
   for (const PanelTap& t : want) {
+    if (!t.traces.empty()) {  // MX.2 (panel.h "Trace taps"): signal_tap(beat, s0[0], s1[0], s2[0]) on one ring
+      uint32_t k0 = 0, p0 = 0;
+      const PortRef x0 = tappable(t.device, t.port, k0, p0);
+      if (x0.node == graph::kNone) continue;
+      const uint32_t id = t.device.value;
+      const uint64_t first = (static_cast<uint64_t>(id) << 1) | p0;
+      if (traced.count(first) != 0) continue;
+      PortRef ch[3] = {channel0(id, p0, x0), {}, {}};
+      bool ok = true;
+      for (size_t i = 0; i < t.traces.size() && ok; ++i) {
+        uint32_t ki = 0, pi = 0;
+        const PortRef xi = tappable(t.traces[i].first, t.traces[i].second, ki, pi);
+        ok = xi.node != graph::kNone;
+        if (ok) ch[i + 1] = channel0(t.traces[i].first.value, pi, xi);
+      }
+      if (!ok) continue;
+      if (t.traces.size() == 1) ch[2] = ch[1];
+      const std::string path = traceTapPath(t);
+      const uint32_t slot = b.o.metaSlotOf(t.device, path, 0);
+      if (slot == 0) continue;
+      traced.insert(first);
+      // Its own nodes: TuningNode k 12 + 2·p0 (the beat) and 13 + 2·p0 (the tap) of the first signal's device (a single
+      // tap of output p takes 6p … 6p + 5 < 12).
+      const PortRef beat = b.ir.atom("transport.beat", {}, nodeIdFor(NodeRole::TuningNode, id, 12 + 2 * p0));
+      b.ir.atom("signal_tap", {beat, ch[0], ch[1], ch[2], b.ir.literal(static_cast<double>(slot))},
+                nodeIdFor(NodeRole::TuningNode, id, 13 + 2 * p0));
+      record(t, path, slot);
+      continue;
+    }
     const auto it = at.find(t.device.value);
     if (it == at.end()) continue;
     const uint32_t k = it->second;
@@ -2973,19 +3032,13 @@ void panelTapsOf(Build& b) {
       b.ir.atom("voice_tap", {x, sl}, nodeIdFor(NodeRole::SendInput, id, port));
     } else {
       auto nid = [&](uint32_t j) { return nodeIdFor(NodeRole::TuningNode, id, 6 * port + j); };
-      const PortRef l = b.ir.atom("channel", {x, b.c0()}, nid(0)), r = b.ir.atom("channel", {x, b.c1()}, nid(1));
+      const PortRef l = channel0(id, port, x), r = b.ir.atom("channel", {x, b.c1()}, nid(1));
       const PortRef beat = b.ir.atom("transport.beat", {}, nid(2));
       // The note-locked timebase: the lowest sounding voice's pitch where the signal runs per voice.
       const PortRef note = d.voice ? b.ir.atom("voice_lowest", {b.ir.atom("voice.hz", {}, nid(3))}, nid(4)) : b.c0();
       b.ir.atom("signal_tap", {beat, note, l, r, sl}, nid(5));
     }
-    LoweredProject::MetaResource m;
-    m.track = b.track != nullptr ? b.track->id : TrackId{};
-    m.device = t.device;
-    m.path = path;
-    m.request = meta::ResourceRequest{t.kind == ElementTap::Voice ? meta::ResourceKind::VoiceTap : meta::ResourceKind::SignalTap, 0};
-    m.slot = slot;
-    b.resources->push_back(std::move(m));
+    record(t, path, slot);
   }
 }
 

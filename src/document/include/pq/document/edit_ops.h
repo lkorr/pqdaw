@@ -1023,4 +1023,11 @@ EditResult setBandBypass(const Project& p, DeviceId band, bool bypass);
 // marked (kBandSoloSetting); soloing another band unsolos the first. Unsolo restores them. Settings: undo and save keep it.
 EditResult setBandSolo(const Project& p, DeviceId band, bool solo);
 
+// ---- MX.2: the Math module (pq/document/modules.h "the Math module"; docs/plans/MX.md) -----------------------------
+// The op of Math group `math` swapped for `key` (mathOpInfos): its op blocks (direct atoms and unroled value blocks)
+// removed, mathOpBlocks placed, kMathOpSetting set — one undo step, a structural change (one recompile; the engine
+// hot-swaps click-free). A, B, Tolerance, the wires into them and from the group's Out stay. Edit::devices: the new op's
+// blocks. The same op again rebuilds it (a hand-edited circuit restored).
+EditResult setMathOp(const Project& p, IdSource& ids, DeviceId math, std::string_view key);
+
 }  // namespace pq::doc::ops

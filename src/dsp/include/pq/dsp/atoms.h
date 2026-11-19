@@ -13,6 +13,9 @@
 //   mod (a, b)                        floored: a − b·floor(a/b) (sign of b; NaN for b = 0); a result that
 //                                     rounds to exactly b (mod(−1e−9, 1)) is 0, so it lies in [0, b) for b > 0
 //   pow (a, b) / fast_pow             a^b. fast_pow = exp2(b·log2 a): a < 0 → NaN, a = 0 → 0 for b > 0
+//   atan2 (y, x)                      MX.2: the angle of (x, y) in [−π, π], pq/core/fast_math.h fastAtan2 (≤ 3e-6 rad;
+//                                     a polynomial, one division): signed zeros and ±inf as std::atan2, never NaN
+//                                     (a NaN operand gives some angle in [−π, π])
 //   cents_to_hz (cents, ref)          ref · 2^(cents/1200); exact form evaluated in double
 //   hz_to_cents (hz, ref)             1200·log2(hz/ref); exact form in double
 //   neg abs (x)                       −x, |x|
@@ -340,6 +343,8 @@ enum class Atom : uint16_t {
   Follow, Window,
   // DY.5: the BS.1770 true-peak estimator (see "Dynamics" above)
   TruePeak,
+  // MX.2: math, binary (see "Math" above; appended, not with its siblings, so no table shifts)
+  Atan2,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

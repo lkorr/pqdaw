@@ -135,6 +135,14 @@ TEST_CASE("dsp atoms: transcendental, exact and fast") {
                  Tol{1e-30, 4 * kF}));
   checkAtom(spec(Atom::PowFast, {uniform(0.01f, 10), uniform(-4, 4)},
                  ew2([](double a, double b) { return std::pow(a, b); }), Tol{1e-30, 5e-6}));
+  // MX.2: atan2(y, x), the fast polynomial (pq/core/fast_math.h kFastAtan2MaxAbsErr), over a sweep and the edges:
+  // signed zeros, ±tiny, ±huge and ±inf against std::atan2 (both lane counts, every Blk / Spl mix: checkAtom).
+  const auto at2 = ew2([](double y, double x) { return std::atan2(y, x); });
+  checkAtom(spec(Atom::Atan2, {uniform(-4, 4), uniform(-4, 4)}, at2, Tol{3e-6, 0}));
+  checkAtom(spec(Atom::Atan2, {uniform(-1e30f, 1e30f), uniform(-1e-3f, 1e-3f)}, at2, Tol{3e-6, 0}));
+  const float inf = std::numeric_limits<float>::infinity();
+  const std::vector<float> edges = {0.0f, -0.0f, 1e-30f, -1e-30f, 1e30f, -1e30f, inf, -inf, 1.0f, -1.0f, 3.0f, -0.25f};
+  checkAtom(spec(Atom::Atan2, {pickFrom(edges), pickFrom(edges)}, at2, Tol{3e-6, 0}));
   // Units. Exact forms are evaluated in double inside the kernel, so they are correctly rounded floats.
   const auto c2h = [](double c, double ref) { return ref * std::exp2(c / 1200.0); };
   const auto h2c = [](double hz, double ref) { return 1200.0 * std::log2(hz / ref); };

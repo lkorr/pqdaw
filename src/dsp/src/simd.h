@@ -127,6 +127,7 @@ struct S8 {
   static F fastSin(F x) noexcept { return pq::fastSin(x); }
   static F fastTan(F x) noexcept { return pq::fastTan(x); }
   static F fastTanh(F x) noexcept { return pq::fastTanh(x); }
+  static F fastAtan2(F y, F x) noexcept { return pq::fastAtan2(y, x); }  // MX.2
 
   // "Exact" family: MSVC SVML (float, ≤ a few ulp; verified by tests against double references).
   static F exactSin(F x) noexcept { return _mm256_sin_ps(x); }
@@ -254,6 +255,7 @@ struct S1 {
   static F fastSin(F x) noexcept { return pq::detail::fm::sin<pq::detail::fm::V4>(x); }
   static F fastTan(F x) noexcept { return pq::detail::fm::tan<pq::detail::fm::V4>(x); }
   static F fastTanh(F x) noexcept { return pq::detail::fm::tanh<pq::detail::fm::V4>(x); }
+  static F fastAtan2(F y, F x) noexcept { return pq::detail::fm::atan2<pq::detail::fm::V4>(y, x); }  // MX.2
 
   static float f0(F x) noexcept { return _mm_cvtss_f32(x); }
   // "Exact" family: the S8 (SVML) functions on lane 0 broadcast to all 8 lanes (QUESTIONS Q94), so a value is the

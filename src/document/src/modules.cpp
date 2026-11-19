@@ -23,7 +23,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 28> kModules = {{
+constexpr std::array<ModuleInfo, 29> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -112,6 +112,11 @@ constexpr std::array<ModuleInfo, 28> kModules = {{
      "A lookahead brickwall limiter: input gain, a ceiling no sample passes, release (auto: fast after a transient, slow "
      "under sustained limiting), lookahead 1.5 / 3 / 6 ms, stereo linked, left / right or mid / side, and true-peak "
      "detection (the peaks between samples, BS.1770)."},
+    // MX.2 (docs/plans/MX.md).
+    {ModuleKind::Math, "math", "Math",
+     "Two inputs, A and B, each plus a typed value, combined by one op you pick: compare (< > ≤ ≥ == ≠, giving a 0 / 1 "
+     "gate), logic (and, or, xor, nand, nor, xnor, not), arithmetic (+ − × ÷ mod pow average |A − B|), range (min, "
+     "max, clip, wrap, fold) or geometry (atan2, hypot). Scopes show A, B and the output on one time base."},
 }};
 
 struct Builder {
@@ -366,7 +371,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Eq:
     case ModuleKind::DelayTap:
     case ModuleKind::Compressor:
-    case ModuleKind::Limiter: break;
+    case ModuleKind::Limiter:
+    case ModuleKind::Math: break;
   }
   return {};
 }
@@ -542,7 +548,8 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::Eq:
     case ModuleKind::DelayTap:
     case ModuleKind::Compressor:
-    case ModuleKind::Limiter: break;
+    case ModuleKind::Limiter:
+    case ModuleKind::Math: break;
   }
   return p;
 }
@@ -711,6 +718,7 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::DelayTap) return delayTapBlocks(ids);
   if (k == ModuleKind::Compressor) return compressorBlocks(ids);
   if (k == ModuleKind::Limiter) return limiterBlocks(ids);
+  if (k == ModuleKind::Math) return mathBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 
@@ -2026,6 +2034,276 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o) {
   chips(10, kX0, 120, kCol + 52, link, "Link", "Stereo|L-R");
   chips(12, kX0 + 2 * kCol, 120, 52, truePeak, "True Peak", "Off|On");
   return k.finish(groupDevice(group, o.inGroup, o.name.empty() ? std::string("Limiter") : o.name, o.active, std::move(p)));
+}
+
+}  // namespace pq::doc
+
+// ---- MX.2: the Math module (modules.h "the Math module"; docs/plans/MX.md) -------------------------------------------
+
+namespace pq::doc {
+
+namespace {
+
+constexpr MathOpInfo kMathOps[] = {
+    {"lt", 1, MathCategory::Compare, "<", "A < B", 2, true, false},
+    {"gt", 2, MathCategory::Compare, ">", "A > B", 2, true, false},
+    {"le", 3, MathCategory::Compare, "≤", "A ≤ B", 2, true, false},
+    {"ge", 4, MathCategory::Compare, "≥", "A ≥ B", 2, true, false},
+    {"eq", 5, MathCategory::Compare, "==", "A == B", 2, true, true},
+    {"ne", 6, MathCategory::Compare, "≠", "A ≠ B", 2, true, true},
+    {"and", 10, MathCategory::Logic, "and", "A and B", 2, true, false},
+    {"or", 11, MathCategory::Logic, "or", "A or B", 2, true, false},
+    {"xor", 12, MathCategory::Logic, "xor", "A xor B", 2, true, false},
+    {"nand", 13, MathCategory::Logic, "nand", "A nand B", 2, true, false},
+    {"nor", 14, MathCategory::Logic, "nor", "A nor B", 2, true, false},
+    {"xnor", 15, MathCategory::Logic, "xnor", "A xnor B", 2, true, false},
+    {"not", 16, MathCategory::Logic, "not", "not A", 1, true, false},
+    {"add", 20, MathCategory::Arithmetic, "+", "A + B", 2, false, false},
+    {"sub", 21, MathCategory::Arithmetic, "−", "A − B", 2, false, false},
+    {"mul", 22, MathCategory::Arithmetic, "×", "A × B", 2, false, false},
+    {"div", 23, MathCategory::Arithmetic, "÷", "A ÷ B", 2, false, false},
+    {"mod", 24, MathCategory::Arithmetic, "mod", "A mod B", 2, false, false},
+    {"pow", 25, MathCategory::Arithmetic, "pow", "A pow B", 2, false, false},
+    {"avg", 26, MathCategory::Arithmetic, "avg", "average (A + B) / 2", 2, false, false},
+    {"absdiff", 27, MathCategory::Arithmetic, "|A−B|", "|A − B|", 2, false, false},
+    {"min", 30, MathCategory::Range, "min", "min(A, B)", 2, false, false},
+    {"max", 31, MathCategory::Range, "max", "max(A, B)", 2, false, false},
+    {"clip", 32, MathCategory::Range, "clip", "clip A to ±|B|", 2, false, false},
+    {"wrap", 33, MathCategory::Range, "wrap", "wrap A into ±|B|", 2, false, false},
+    {"fold", 34, MathCategory::Range, "fold", "fold A into ±|B|", 2, false, false},
+    {"atan2", 40, MathCategory::Geometry, "atan2", "atan2(A, B)", 2, false, false},
+    {"hypot", 41, MathCategory::Geometry, "hypot", "hypot(A, B)", 2, false, false},
+};
+
+constexpr double kFloatMax = 3.4028234663852886e38;
+
+}  // namespace
+
+std::span<const MathOpInfo> mathOpInfos() noexcept { return kMathOps; }
+
+const MathOpInfo* findMathOp(std::string_view key) noexcept {
+  for (const MathOpInfo& m : kMathOps)
+    if (m.key == key) return &m;
+  return nullptr;
+}
+
+const MathOpInfo* mathOpOfCode(double code) noexcept {
+  for (const MathOpInfo& m : kMathOps)
+    if (static_cast<double>(m.code) == code) return &m;
+  return nullptr;
+}
+
+std::string_view mathCategoryName(MathCategory c) noexcept {
+  switch (c) {
+    case MathCategory::Compare: return "Compare";
+    case MathCategory::Logic: return "Logic";
+    case MathCategory::Arithmetic: return "Arithmetic";
+    case MathCategory::Range: return "Range";
+    case MathCategory::Geometry: return "Geometry";
+  }
+  return {};
+}
+
+MathRole mathRole(const Device& d) noexcept {
+  const DeviceValue* v = d.setting(kMathRoleSetting);
+  if (v == nullptr || v->value < 1.0 || v->value > 3.0) return MathRole::None;
+  return static_cast<MathRole>(static_cast<uint8_t>(v->value));
+}
+
+double mathOpReference(std::string_view key, double a, double b, double tolerance) noexcept {
+  auto gate = [](bool x) { return x ? 1.0 : 0.0; };
+  auto frac = [](double x) { return x - std::floor(x); };
+  const double m = std::fabs(b);
+  const bool ta = a > 0.0, tb = b > 0.0;
+  if (key == "lt") return gate(a < b);
+  if (key == "gt") return gate(a > b);
+  if (key == "le") return gate(a <= b);
+  if (key == "ge") return gate(a >= b);
+  if (key == "eq") return gate(std::fabs(a - b) <= tolerance);
+  if (key == "ne") return gate(std::fabs(a - b) > tolerance);
+  if (key == "and") return gate(ta && tb);
+  if (key == "or") return gate(ta || tb);
+  if (key == "xor") return gate(ta != tb);
+  if (key == "nand") return gate(!(ta && tb));
+  if (key == "nor") return gate(!(ta || tb));
+  if (key == "xnor") return gate(ta == tb);
+  if (key == "not") return gate(!ta);
+  if (key == "add") return a + b;
+  if (key == "sub") return a - b;
+  if (key == "mul") return a * b;
+  if (key == "div") return m < static_cast<double>(static_cast<float>(kMathDivEpsilon)) ? 0.0 : a / b;  // (the atom's float)
+  if (key == "mod") {
+    if (b == 0.0) return a;
+    const double r = a - b * std::floor(a / b);
+    if (static_cast<float>(r) == static_cast<float>(b)) return 0.0;  // the atom's rule: the same point of the period
+    return std::clamp(r, std::min(b, 0.0), std::max(b, 0.0));
+  }
+  if (key == "pow") return a == 0.0 ? 0.0 : (a < 0.0 ? -1.0 : 1.0) * std::min(std::pow(std::fabs(a), b), kFloatMax);
+  if (key == "avg") return (a + b) / 2.0;
+  if (key == "absdiff") return std::fabs(a - b);
+  if (key == "min") return std::min(a, b);
+  if (key == "max") return std::max(a, b);
+  if (key == "clip") return std::clamp(a, -m, m);
+  if (key == "wrap") return m == 0.0 ? 0.0 : frac((a + m) / (2.0 * m)) * 2.0 * m - m;
+  if (key == "fold") return m == 0.0 ? 0.0 : m - std::fabs(4.0 * m * frac((a + m) / (4.0 * m)) - 2.0 * m);
+  if (key == "atan2") return std::atan2(a, b);
+  if (key == "hypot") return std::sqrt(a * a + b * b);
+  return 0.0;
+}
+
+BlockSet mathOpBlocks(IdSource& ids, const MathOpInfo& op, DeviceId group, DeviceId a, DeviceId b, DeviceId tolerance) {
+  Kit k(ids, group);
+  const Sig A{a, std::string(kMainPort)}, B{b, std::string(kMainPort)}, T{tolerance, std::string(kValueOutput)};
+  auto op1 = [&](std::string_view atom, std::string name, const Sig& x) { return k.op(atom, std::move(name), {{"x", x}}); };
+  auto op2 = [&](std::string_view atom, std::string name, const Sig& x, const Sig& y) {
+    return k.op(atom, std::move(name), {{"a", x}, {"b", y}});
+  };
+  const std::string_view key = op.key;
+  Sig out;
+  if (op.category == MathCategory::Compare) {
+    if (op.tolerance) {  // |A − B| ≤ Tolerance (==), > (≠)
+      const Sig d = op1("abs", "|A - B|", op2("sub", "A - B", A, B));
+      out = op2(key == "eq" ? "le" : "gt", std::string(op.symbol), d, T);
+    } else {
+      out = op2(key, std::string(op.symbol), A, B);
+    }
+  } else if (op.category == MathCategory::Logic) {
+    // Truth is > 0. A wire never carries a bool into a block (lower.h "Invalid": a bool param), so the logic is written
+    // on the reals: A ∧ B = min(A, B) > 0, A ∨ B = max(A, B) > 0, their negations ≤ 0; xor / xnor compare the two
+    // truths (each a gate reaching a real input: 0 / 1).
+    const Sig zero = k.k(0.0);
+    if (key == "not") {
+      out = op2("le", "not A", A, zero);
+    } else if (key == "and" || key == "nand") {
+      out = op2(key == "and" ? "gt" : "le", std::string(key), op2("min", "min(A, B)", A, B), zero);
+    } else if (key == "or" || key == "nor") {
+      out = op2(key == "or" ? "gt" : "le", std::string(key), op2("max", "max(A, B)", A, B), zero);
+    } else {
+      const Sig ta = op2("gt", "A > 0", A, zero), tb = op2("gt", "B > 0", B, zero);
+      out = op2(key == "xor" ? "ne" : "eq", std::string(key), ta, tb);
+    }
+  } else if (key == "add" || key == "sub" || key == "mul" || key == "min" || key == "max") {
+    out = op2(key, std::string(op.symbol), A, B);
+  } else if (key == "div") {  // |B| < 1e-9 → 0
+    const Sig small = op2("lt", "|B| < 1e-9", op1("abs", "|B|", B), k.k(kMathDivEpsilon));
+    out = k.op("mux", "÷", {{"index", small}, {"in0", op2("div", "A / B", A, B)}, {"in1", k.k(0.0)}});
+  } else if (key == "mod") {  // floored; B = 0 → A; an overflowed quotient clamped into [min(B, 0), max(B, 0)]
+    const Sig r = op2("mod", "A mod B", A, B);
+    const Sig lo = op2("min", "min(B, 0)", B, k.k(0.0)), hi = op2("max", "max(B, 0)", B, k.k(0.0));
+    const Sig c = k.op("clip", "into [B, 0]", {{"x", r}, {"lo", lo}, {"hi", hi}});
+    out = k.op("mux", "mod", {{"index", op2("eq", "B == 0", B, k.k(0.0))}, {"in0", c}, {"in1", A}});
+  } else if (key == "pow") {  // sign(A)·min(|A|^B, FLT_MAX)
+    const Sig p = op2("min", "<= FLT_MAX", op2("pow", "|A|^B", op1("abs", "|A|", A), B), k.k(kFloatMax));
+    out = op2("mul", "pow", op1("sign", "sign(A)", A), p);
+  } else if (key == "avg") {
+    out = k.op("lerp", "avg", {{"a", A}, {"b", B}, {"t", k.k(0.5)}});
+  } else if (key == "absdiff") {
+    out = op1("abs", "|A - B|", op2("sub", "A - B", A, B));
+  } else if (key == "clip") {
+    const Sig m = op1("abs", "|B|", B);
+    out = k.op("clip", "clip", {{"x", A}, {"lo", op1("neg", "-|B|", m)}, {"hi", m}});
+  } else if (key == "wrap") {  // frac((A + m) / 2m)·2m − m
+    const Sig m = op1("abs", "|B|", B);
+    const Sig d = op2("add", "2|B|", m, m);
+    const Sig f = op1("frac", "frac", op2("div", "(A + |B|) / 2|B|", op2("add", "A + |B|", A, m), d));
+    out = k.op("muladd", "wrap", {{"a", f}, {"b", d}, {"c", op1("neg", "-|B|", m)}});
+  } else if (key == "fold") {  // m − |4m·frac((A + m) / 4m) − 2m|
+    const Sig m = op1("abs", "|B|", B);
+    const Sig d = op2("mul", "4|B|", m, k.k(4.0));
+    const Sig f = op1("frac", "frac", op2("div", "(A + |B|) / 4|B|", op2("add", "A + |B|", A, m), d));
+    const Sig t = k.op("muladd", "tri", {{"a", f}, {"b", d}, {"c", op2("mul", "-2|B|", m, k.k(-2.0))}});
+    out = op2("sub", "fold", m, op1("abs", "|tri|", t));
+  } else if (key == "atan2") {
+    out = k.op("atan2", "atan2", {{"y", A}, {"x", B}});
+  } else if (key == "hypot") {
+    out = op1("sqrt", "hypot", k.op("muladd", "A^2 + B^2", {{"a", A}, {"b", A}, {"c", op2("mul", "B^2", B, B)}}));
+  }
+  k.out(out);
+  BlockSet set;
+  for (DevicePtr& d : k.b.set.devices) set.devices.push_back(std::move(d));
+  set.wires = std::move(k.b.set.wires);
+  return set;
+}
+
+BlockSet mathBlocks(IdSource& ids, const MathOptions& o, MathRoles* roles) {
+  const MathOpInfo* op = findMathOp(o.op);
+  if (op == nullptr) op = findMathOp(kMathDefaultOp);
+  MathRoles r;
+  r.group = o.id.valid() ? o.id : ids.device();
+  Kit k(ids, r.group);
+  // A and B: a child group each, In + its value (one add); the typed value on the VCA's curve.
+  auto side = [&](const char* name, MathRole role, double value, DeviceId& val, DeviceId& sum) {
+    const DeviceId g = childGroup(k, ids, name, [&](DeviceId) {
+      const Sig v = k.val(name, vcaCurve(), value);
+      val = v.dev;
+      k.setting(v.dev, std::string(kMathRoleSetting), static_cast<double>(role));
+      sum = k.block("add", std::string(name) + " + In", {{"a", k.in()}, {"b", v}});
+      k.out(Sig{sum, "out"});
+    });
+    k.setting(g, std::string(kMathRoleSetting), static_cast<double>(role));
+    return g;
+  };
+  r.inA = side("A", MathRole::A, o.a, r.a, r.sumA);
+  r.inB = side("B", MathRole::B, o.b, r.b, r.sumB);
+  k.b.wire(r.group, kGroupInPort, r.inA, kMainPort);
+  const Sig tol = k.val("Tolerance", dsp::curvePreset(dsp::CurvePreset::Exp0, 0.0, 1.0, 10.0), o.tolerance);
+  r.tolerance = tol.dev;
+  k.setting(r.tolerance, std::string(kMathRoleSetting), static_cast<double>(MathRole::Tolerance));
+  BlockSet ops = mathOpBlocks(ids, *op, r.group, r.inA, r.inB, r.tolerance);
+  for (DevicePtr& d : ops.devices) {
+    r.op.push_back(d->id);
+    k.b.set.devices.push_back(std::move(d));
+  }
+  for (Wire& w : ops.wires) k.b.set.wires.push_back(std::move(w));
+  // The minimal panel (MX.3 draws the face): the trace scope (A, B, Out on one time base), the A / Tolerance / B knobs
+  // and the oversampling.
+  Panel p;
+  p.width = 220.0f;
+  p.height = 176.0f;
+  p.elements.push_back(plate(p.width, p.height, 10.0));
+  PanelElement scope = element(2, "scope", 8, 8, 204, 72, signalBinding(r.inA, "y"));
+  scope.bindings.push_back(signalBinding(r.inB, "y"));
+  scope.bindings.push_back(signalBinding(r.group, "y"));
+  p.elements.push_back(std::move(scope));
+  p.elements.push_back(control(3, "knob", 8, 88, 52, 58, Sig{r.a, std::string(kValueOutput)}));
+  p.elements.push_back(control(4, "knob", 84, 88, 52, 58, tol));
+  p.elements.push_back(control(5, "knob", 160, 88, 52, 58, Sig{r.b, std::string(kValueOutput)}));
+  p.elements.push_back(menu(element(6, "menu", 74, 152, 72, 18, settingBinding(r.group, std::string(kGroupOversample))), "Off|2×|4×"));
+  DevicePtr g = groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Math") : o.name, o.active, std::move(p));
+  auto gd = std::make_shared<Device>(*g);
+  gd->settings.push_back(DeviceValue{std::string(kMathOpSetting), static_cast<double>(op->code)});
+  if (o.oversample > 0)
+    gd->settings.push_back(DeviceValue{std::string(kGroupOversample), static_cast<double>(std::min(o.oversample, kMaxGroupOversample))});
+  std::sort(gd->settings.begin(), gd->settings.end(), [](const DeviceValue& x, const DeviceValue& y) { return x.name < y.name; });
+  if (roles != nullptr) *roles = r;
+  return k.finish(std::move(gd));
+}
+
+std::optional<MathInfo> mathInfo(const Project& p, DeviceId group) {
+  const DeviceLoc loc = findDevice(p, group);
+  if (loc.device == nullptr || !isGroupDevice(*loc.device)) return std::nullopt;
+  MathInfo info;
+  info.roles.group = group;
+  const std::vector<DevicePtr>& list = loc.track->devices;
+  for (const Device* d : groupMembers(list, group)) {
+    const MathRole role = mathRole(*d);
+    if (isGroupDevice(*d)) {
+      if (role != MathRole::A && role != MathRole::B) continue;
+      (role == MathRole::A ? info.roles.inA : info.roles.inB) = d->id;
+      for (const Device* x : groupMembers(list, d->id)) {
+        if (isValueDevice(*x) && mathRole(*x) == role) (role == MathRole::A ? info.roles.a : info.roles.b) = x->id;
+        if (isAtomDevice(*x) && atomDeviceName(*x) == "add") (role == MathRole::A ? info.roles.sumA : info.roles.sumB) = x->id;
+      }
+    } else if (role == MathRole::Tolerance && isValueDevice(*d)) {
+      info.roles.tolerance = d->id;
+    } else if (role == MathRole::None && (isAtomDevice(*d) || isValueDevice(*d))) {
+      info.roles.op.push_back(d->id);
+    }
+  }
+  if (!info.roles.inA.valid() || !info.roles.inB.valid() || !info.roles.tolerance.valid()) return std::nullopt;
+  const DeviceValue* code = loc.device->setting(kMathOpSetting);
+  info.op = code != nullptr ? mathOpOfCode(code->value) : nullptr;
+  return info;
 }
 
 }  // namespace pq::doc

@@ -40,6 +40,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pq/core/result.h"
@@ -170,6 +171,13 @@ bool panelBinds(const Panel& p, DeviceId d) noexcept;
 //           its group's In: the live level's dot)
 // The tap's slot is LowerOptions::metaSlotOf(device, tapPath(kind, port), 0), listed in LoweredProject::metaResources
 // (type "", VoiceTap / SignalTap). Several displays of one output share one tap.
+// MX.2 TRACE TAPS: a "scope" element whose slots 0 and 1 (and 2) are all Signals shows several signals on ONE time base
+// (the Math module's A, B and Out): it gets one signal_tap(transport.beat, s0[0], s1[0], s2[0]) — channel 0 of each
+// signal (s1 again when there are two), one ring, so the frames of all traces are the same samples and the face triggers
+// and times every trace from s0. Requested under slot 0's device as traceTapPath(e) ("#trace:<port0>|<device1>:<port1>
+// …"); the outputs are those a single tap may take (the first two of their blocks). One trace tap per first signal: a
+// second element starting at the same output with other traces gets none. Unwatched it costs what one Oscilloscope's
+// tap does (one relaxed load per block).
 enum class ElementTap : uint8_t { None, Voice, Signal };
 ElementTap elementTap(std::string_view kind) noexcept;
 // The name path a tap is requested under: "#voice:<port>" / "#signal:<port>" (no meta path starts with '#').
@@ -178,8 +186,14 @@ struct PanelTap {
   DeviceId device;
   std::string port;
   ElementTap kind = ElementTap::None;
+  std::vector<std::pair<DeviceId, std::string>> traces;  // MX.2: a trace tap's further signals (slot 1, 2); else empty
   friend bool operator==(const PanelTap&, const PanelTap&) = default;
 };
+// MX.2: the further signals of a trace element (slots 1, 2 while slot 0 is a Signal too; empty: not a trace element),
+// and the path its tap is requested under (slot 0's device): "" when it is not one.
+std::vector<std::pair<DeviceId, std::string>> elementTraces(const PanelElement& e);
+std::string traceTapPath(const PanelTap& t);
+std::string traceTapPath(const PanelElement& e);
 // The taps `p`'s displays need, sorted (device, kind, port), unique.
 std::vector<PanelTap> panelTaps(const Panel& p);
 

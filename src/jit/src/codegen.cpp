@@ -96,7 +96,7 @@ bool isElementwise(Atom a) noexcept {
     case Atom::Clip: case Atom::Lerp: case Atom::Select: case Atom::MulAdd: case Atom::And: case Atom::Or:
     case Atom::Xor: case Atom::Nand: case Atom::Nor: case Atom::Not: case Atom::Gt: case Atom::Lt: case Atom::Ge:
     case Atom::Le: case Atom::Eq: case Atom::Ne: case Atom::GateToReal: case Atom::Mux: case Atom::Demux:
-    case Atom::SinePhase:
+    case Atom::SinePhase: case Atom::Atan2:
       return true;
     default:
       return false;
@@ -1512,6 +1512,7 @@ private:
       case Atom::HzToCentsFast:
         out(v.mul(v.cf(1200.0f), pq::detail::fm::log2<IrFm>(v.div(a[0], a[1]))));
         return;
+      case Atom::Atan2: out(pq::detail::fm::atan2<IrFm>(a[0], a[1])); return;  // MX.2: the dsp kernel's arithmetic
       case Atom::Neg: out(v.neg(a[0])); return;
       case Atom::Abs: out(v.abs(a[0])); return;
       case Atom::Sign:
@@ -2163,6 +2164,7 @@ private:
       case Atom::PowFast: return 45;
       case Atom::CentsToHzFast: case Atom::HzToCentsFast: case Atom::ExpFast: case Atom::LogFast: case Atom::SinFast:
       case Atom::TanFast: case Atom::TanhFast: case Atom::DbToGainFast: case Atom::GainToDbFast: case Atom::SinePhase:
+      case Atom::Atan2:
         return 22;
       case Atom::Mux: case Atom::Demux: return 2 * s_.ops[i].numIn + 2 * s_.ops[i].numOut;
       case Atom::Gain: case Atom::GainAdd: return 4;

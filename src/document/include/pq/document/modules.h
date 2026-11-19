@@ -49,7 +49,8 @@ enum class ModuleKind : uint8_t {
   LevelMeter, LufsMeter, LoudnessHistory,  // VZ.4: the loudness analysers
   StereoField, StereoImage, PhaseScope,     // VZ.5: the stereo analysers
   BandLevels, Waveform,                    // VZ.6
-  Waterfall, StereoSpectrogram              // VZ.7: the 3D analysers
+  Waterfall, StereoSpectrogram,             // VZ.7: the 3D analysers
+  Math                                      // MX.2
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -402,6 +403,89 @@ BlockSet compressorBlocks(IdSource& ids, const StockModuleOptions& o = {});
 // and its windows and followers decay; the region sleeps once the reduction has released to 2^-30 dB.
 inline constexpr double kLimiterDetectorDelay = 7.0;  // frames det runs behind src (truepeak's 6 + 1)
 BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o = {});
+
+// ---- MX.2: the Math module (docs/plans/MX.md "Semantics"; its face MX.3) ----------------------------------------------
+// A group combining two signals by one op picked from five categories. Built only from atom and value blocks:
+//   A        the child group "A": its In (wired from the Math group's In terminal) + its value block "A" (the
+//            sum: one `add` atom; a typed value with nothing wired is a constant); role kMathRoleSetting 1
+//   B        the child group "B": its In is the module's SECOND INPUT (a cable from anywhere into the child group's
+//            main input; inputBinding) + its value block "B"; role 2. Defaults A 0, B 0 (the VCA curve: fine
+//            ±1 over the middle of the knob, out to ±20000; a wire adds without a clamp: the add atom, not the
+//            value block's wire law)
+//   Tolerance a value block (role 3; 0 … 1 on an Exp0 curve, default 1e-3) read by == and ≠ only
+//   the op  the group's direct atom blocks and its unroled value blocks (constants): the op's minimal subgraph of
+//            atoms, A → … → the group's Out. Which op it is: the group setting kMathOpSetting (the op's `code`, a
+//            number: settings are numbers). ops::setMathOp swaps the subgraph (one undo step) and keeps A, B,
+//            Tolerance, the wires into them and from Out. A hand-edited circuit keeps the stored op's name (no
+//            recognition pass: QUESTIONS Q?-MX.2-a).
+// The ops (truth on audio: x > 0; compares and logic give gates, 0 / 1 where they reach a real input):
+//   Compare     A < B, A > B, A ≤ B, A ≥ B, A == B (|A − B| ≤ Tolerance), A ≠ B (|A − B| > Tolerance)
+//   Logic       and, or, xor, nand, nor, xnor (of A > 0, B > 0), not A (A ≤ 0) — on reals: and = min(A, B) > 0, or =
+//               max(A, B) > 0 (a wire never carries a bool into a block), xor / xnor compare the two truths
+//   Arithmetic  A + B, A − B, A × B, A ÷ B, A mod B, A pow B, average lerp(A, B, ½), |A − B|
+//   Range       min, max, clip A to ±|B|, wrap A into [−|B|, |B|), fold A into [−|B|, |B|]
+//   Geometry    atan2(A, B) (the atan2 atom: the angle of (x = B, y = A)), hypot(A, B) = sqrt(A² + B²)
+// NO NaN / INF OUT for finite inputs (an audio module must not blow up a mix):
+//   ÷        |B| < 1e-9 → 0, else A / B (finite while |A / B| fits a float)
+//   mod      floored (the result has B's sign: the `mod` atom); B = 0 → A; a quotient too large for a float (|A| ≫
+//            |B|) gives a value clamped into [min(B, 0), max(B, 0)]
+//   pow      sign(A)·|A|^B, capped at ±FLT_MAX: 0^anything → 0 (the sign), 0^negative too
+//   wrap     (frac((A + m) / 2m) − ½)·2m, m = |B|: B = 0 → 0; a quotient past float resolution gives some value in range
+//   fold     m − |4m·frac((A + m) / 4m) − 2m|: B = 0 → 0
+//   clip     clip(A, −|B|, |B|): B = 0 → 0
+//   atan2    never NaN (the atom); hypot, ×, +, − overflow only where float arithmetic does (|A|, |B| beyond ~1e19)
+// The group's `oversample` setting (TX.group-oversample, 0 Off / 1 2× / 2 4× on the face) runs it in a region.
+// SCOPES: the panel's "scope" element bound to THREE signals — A's, B's and the Math group's output (slots 0, 1, 2) — is
+// one trace tap (panel.h "Trace taps"): one ring, sample-aligned, so the face triggers and times all three from A.
+// Its minimal panel (MX.3 draws the face): the trace scope, the A / Tolerance / B knobs, the Oversample menu.
+enum class MathCategory : uint8_t { Compare, Logic, Arithmetic, Range, Geometry };
+struct MathOpInfo {
+  std::string_view key;     // "gt", "hypot" … (the op's name in code and tests)
+  uint8_t code = 0;         // its kMathOpSetting value (stable, never reused)
+  MathCategory category = MathCategory::Compare;
+  std::string_view symbol;  // drawn in the circle: ">", "≤", "mod", "atan2"
+  std::string_view name;    // "A > B", "A mod B", "not A"
+  uint8_t arity = 2;        // 2, or 1 (not A: B is unused)
+  bool gate = false;        // its output is a gate (0 / 1)
+  bool tolerance = false;   // it reads Tolerance (== and ≠)
+};
+std::span<const MathOpInfo> mathOpInfos() noexcept;  // in menu order: by category, then as listed above
+const MathOpInfo* findMathOp(std::string_view key) noexcept;
+const MathOpInfo* mathOpOfCode(double code) noexcept;
+std::string_view mathCategoryName(MathCategory c) noexcept;  // "Compare" …
+inline constexpr std::string_view kMathOpSetting = "mathOp", kMathRoleSetting = "mathRole";
+inline constexpr std::string_view kMathDefaultOp = "gt";
+inline constexpr double kMathDivEpsilon = 1e-9, kMathDefaultTolerance = 1e-3;
+enum class MathRole : uint8_t { None = 0, A, B, Tolerance };
+MathRole mathRole(const Device& d) noexcept;
+// The Math module's double reference of op `key` (what the atoms compute, to float rounding): the tests' reference.
+double mathOpReference(std::string_view key, double a, double b, double tolerance) noexcept;
+struct MathRoles {
+  DeviceId group;
+  DeviceId inA, inB;              // the child groups (their main output: the sum)
+  DeviceId a, b, tolerance;       // the value blocks
+  DeviceId sumA, sumB;            // the add atoms inside the child groups
+  std::vector<DeviceId> op;       // the op's blocks (atoms and constants)
+};
+struct MathOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the group it sits in, or none
+  std::string name;  // "" = "Math"
+  std::string_view op = kMathDefaultOp;
+  double a = 0.0, b = 0.0, tolerance = kMathDefaultTolerance;  // in units
+  uint32_t oversample = 0;  // the group's `oversample` exponent (0: none)
+  bool active = true;
+};
+BlockSet mathBlocks(IdSource& ids, const MathOptions& o = {}, MathRoles* roles = nullptr);
+// The op subgraph of `op` inside group `group` reading `a`, `b` (the child groups' main outputs) and `tolerance` (a value
+// block), its result wired into the group's Out terminal: what mathBlocks and ops::setMathOp place.
+BlockSet mathOpBlocks(IdSource& ids, const MathOpInfo& op, DeviceId group, DeviceId a, DeviceId b, DeviceId tolerance);
+// The Math group `group` (found by its role blocks), nullopt: not one. `op` is every direct atom / unroled value block.
+struct MathInfo {
+  MathRoles roles;
+  const MathOpInfo* op = nullptr;  // the stored op (null: the setting names none)
+};
+std::optional<MathInfo> mathInfo(const Project& p, DeviceId group);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

@@ -50,6 +50,7 @@ float opCostWeight(const Schedule& s, uint32_t op) noexcept {
     case Atom::DbToGainFast: case Atom::GainToDbFast: case Atom::CentsToHzFast: case Atom::HzToCentsFast:
     case Atom::SinePhase: case Atom::Shaper: return 8.0f;
     case Atom::PowFast: return 15.0f;
+    case Atom::Atan2: return 8.0f;  // MX.2: 6 FMAs, a division, two blends (as fast_tan)
     case Atom::Exp: case Atom::Log: case Atom::Sin: case Atom::Tan: case Atom::Tanh: case Atom::DbToGain:
     case Atom::GainToDb: case Atom::CentsToHz: case Atom::HzToCents: case Atom::Pow: case Atom::TuningHz: return 20.0f;
     case Atom::Mux: case Atom::Demux: return static_cast<float>(o.numIn + o.numOut);

@@ -260,6 +260,55 @@ TEST_CASE("fast_math: fastTanh special values and bounds") {
   }
 }
 
+// MX.2: fastAtan2 over the circle at every scale (angles × magnitudes, all four quadrants and the octant boundaries),
+// scalar against 8-wide bit for bit, then the special values.
+TEST_CASE("fast_math: fastAtan2 absolute error over the plane") {
+  double maxAbs = 0.0;
+  size_t mismatches = 0;
+  alignas(32) float ys[8], xs[8], out[8];
+  size_t n = 0;
+  auto flush = [&] {
+    _mm256_store_ps(out, pq::fastAtan2(_mm256_load_ps(ys), _mm256_load_ps(xs)));
+    for (size_t i = 0; i < n; ++i) {
+      const float s = pq::fastAtan2(ys[i], xs[i]);
+      if (std::bit_cast<uint32_t>(s) != std::bit_cast<uint32_t>(out[i])) ++mismatches;
+      maxAbs = std::max(maxAbs, std::abs(static_cast<double>(s) - std::atan2(static_cast<double>(ys[i]), static_cast<double>(xs[i]))));
+    }
+    n = 0;
+  };
+  for (const float mag : {1e-30f, 1e-6f, 0.5f, 1.0f, 3.0f, 1e6f, 1e30f})
+    for (int k = 0; k < 200000; ++k) {
+      const double th = -3.14159265358979 + 6.28318530717958 * (k + 0.5) / 200000.0;
+      ys[n] = static_cast<float>(mag * std::sin(th));
+      xs[n] = static_cast<float>(mag * std::cos(th));
+      if (++n == 8) flush();
+    }
+  for (int i = 0; i < 8; ++i) ys[i] = xs[i] = 1.0f;
+  flush();
+  MESSAGE("fastAtan2 max abs error " << maxAbs);
+  CHECK(maxAbs <= pq::kFastAtan2MaxAbsErr);
+  CHECK(mismatches == 0);
+}
+
+TEST_CASE("fast_math: fastAtan2 special values: signed zeros and infinities as std::atan2, never NaN") {
+  const float vals[] = {0.0f, -0.0f, 1e-30f, -1e-30f, 1.0f, -1.0f, 1e30f, -1e30f, kInf, -kInf};
+  for (const float y : vals)
+    for (const float x : vals) {
+      const float r = pq::fastAtan2(y, x);
+      CAPTURE(y);
+      CAPTURE(x);
+      CHECK(std::abs(static_cast<double>(r) - std::atan2(static_cast<double>(y), static_cast<double>(x))) <= pq::kFastAtan2MaxAbsErr);
+      CHECK(std::signbit(r) == std::signbit(std::atan2(y, x)));
+    }
+  CHECK(pq::fastAtan2(0.0f, 0.0f) == 0.0f);
+  CHECK(std::signbit(pq::fastAtan2(-0.0f, 0.0f)));
+  for (const float v : {kNaN, 0.0f, 1.0f, -kInf}) {
+    CHECK(std::isfinite(pq::fastAtan2(kNaN, v)));
+    CHECK(std::isfinite(pq::fastAtan2(v, kNaN)));
+    CHECK(std::abs(pq::fastAtan2(v, kNaN)) <= 3.14159274f);
+  }
+}
+
 // ---- units ------------------------------------------------------------------------------------------------------
 
 TEST_CASE("units: precise conversions") {
