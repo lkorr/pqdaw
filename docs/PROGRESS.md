@@ -1134,3 +1134,16 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   (countRtViolations 0); no frames after the animation.
 - Notes: stale `.ninja_deps` caused SIGSEGVs in views goldens until deleted (SceneFonts layout changed). Tight-corner
   arcs can overlap (REVIEW).
+
+## 2026-11-18 · MX.2 merged · main
+- Did: `module:math` (28 ops: Compare / Logic / Arithmetic / Range / Geometry as minimal atom subgraphs, `mathOpInfos`,
+  `ops::setMathOp` one undo step, inputs as child groups A / B, Tolerance, Off/2×/4×); trace taps: a scope element bound
+  to 2–3 signals shares one signal_tap ring (one trigger); `atan2` atom (fast polynomial ≤ 3e-6 rad, both backends).
+- Verified: worker single exes (dsp, document MX.2*, playback MX.2*: every op vs reference over 16×16 edge pairs, both
+  backends, RtScope). Orchestrator: -Affected -Slow on the rebased branch: 1 failure, pq_tests_playback_s1 golden
+  meta-wavetable-voices — pre-existing on main (bug-wavetable-look moved it, only views was run); re-recorded, shard
+  re-run green. Ship pq_bench_dsp links.
+- Perf / CPU-efficiency check: off-screen Math (op +) 0.70 ns/instance/frame vs bare blocks + off-screen Oscilloscope
+  0.68; only the chosen op runs.
+- Notes: op stored as numeric setting `mathOp`; logic via min/max/compares; scope element needs MX.3 to request
+  `traceTapPath`; traces mono; × + hypot can overflow above ~1e19 (Q?-MX.2-c).

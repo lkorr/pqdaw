@@ -902,5 +902,5 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## MX: Math module + radial menu (user 2026-11-18; plan: docs/plans/MX.md)
 - [x] **MX.1 Radial menu widget** 👁 *(merged cb8ea0c4)* (plan §MX.1; general nested bubble menu in `ui`, type-to-filter, real-dispatch tests)
-- [ ] **MX.2 Math module: preset, ops, atan2** (plan §MX.2; group preset `module:math`, op catalogue as atom subgraphs, op swap edit, atan2 atom)
+- [x] **MX.2 Math module: preset, ops, atan2** *(merged bd8034e4; Q?-MX.2-a, b, c)* (plan §MX.2; group preset `module:math`, op catalogue as atom subgraphs, op swap edit, atan2 atom)
 - [ ] **MX.3 Math face** 👁 (plan §MX.3; after MX.1 + MX.2: value boxes, op circle → radial menu, three scopes sharing a trigger, oversample selector)
