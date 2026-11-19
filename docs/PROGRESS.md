@@ -1147,3 +1147,14 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
   0.68; only the chosen op runs.
 - Notes: op stored as numeric setting `mathOp`; logic via min/max/compares; scope element needs MX.3 to request
   `traceTapPath`; traces mono; × + hypot can overflow above ~1e19 (Q?-MX.2-c).
+
+## 2026-11-18 · MX.3 merged · main
+- Did: Math face (300 × 194) per the sketch: A / B number boxes, Out scope on top, A / B scopes beside the op circle
+  (`mathop` element → radial menu → `ops::setMathOp`, one undo step), Tolerance only for == / ≠ via Visibility,
+  Oversample menu; multi-signal `scope` = trace scope on one `traceFeed` (shared window + trigger on A). Fixed:
+  circuit canvas stole key focus back from a popup opened by a face press.
+- Verified (worker): pq_tests_views default tier 100 %; 6 real-dispatch math-face tests; document MX.2* 4/4.
+  6 new goldens math-face-{gt,clip,eq}-{1x,2x} (looked at), none changed.
+- Perf / CPU-efficiency check: three scopes = one feed consumer, acquired only while painted (0 consumers hidden).
+- Notes: Q?-MX.3-a: In A / In B / Out on the closed face are markers; wiring into B needs the opened module.
+  Q?-MX.3-b: the trace scope has no timebase / freeze / measure.
