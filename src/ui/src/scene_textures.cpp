@@ -133,6 +133,7 @@ Status setSceneScale(SceneTextures& t, UiScale scale) {
       {&SceneFonts::titleSemi, {t.semiBold, text_size::kTitle, {}}},
       {&SceneFonts::meter, {t.semiBold, text_size::kMeter, {TextHinting::Full, true}}},
       {&SceneFonts::bodyLight, {t.regular, text_size::kBody, {TextHinting::Light, false}}},
+      {&SceneFonts::symbol, {t.semiBold, text_size::kSymbol, {}}},  // last: earlier roles keep their atlas places
   };
   SceneFonts resolved;
   for (const Want& w : wants) {

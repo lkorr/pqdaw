@@ -31,8 +31,9 @@ struct SceneFonts {
   FontId titleSemi = kNoFont;  // SemiBold 14
   FontId meter = kNoFont;      // SemiBold 24, tabular figures
   FontId bodyLight = kNoFont;  // Regular 13 with light (vertical-only) hinting, for comparison
+  FontId symbol = kNoFont;     // SemiBold 18: symbols drawn large (MX.1: radial-menu glyphs)
 };
-inline constexpr uint32_t kSceneFontRoleCount = 7;
+inline constexpr uint32_t kSceneFontRoleCount = 8;
 
 // Textures and fonts the scenes sample (created once per renderer).
 struct SceneTextures {

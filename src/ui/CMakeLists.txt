@@ -32,6 +32,7 @@ pq_add_module(pq_ui
     src/lines.cpp
     src/offscreen.cpp
     src/overlay.cpp
+    src/radial_menu.cpp
     src/raster.cpp
     src/renderer.cpp
     src/scene_textures.cpp

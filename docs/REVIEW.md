@@ -2093,3 +2093,15 @@ The display's and draw mode's curves are now drawn from the full sounding cycle 
 zoomed out, a smooth spline zoomed in) with a thinner stroke (≤ 2.25 px). Look at: a dense wave (many harmonics, high
 sync / fold) at high canvas zoom; peaks such as the sync spike now reach their true height. Goldens re-recorded (62):
 every view showing a Wavetable face.
+
+## MX.1 · 2026-11-18 · the radial (bubble) menu
+A general nested radial menu in `ui` (the Math face will open it from its op symbol in MX.3; nothing in the app opens
+it yet). Look at the goldens `tests/ui/golden/radial-{closed,level1,level2,filtered}[@2x].png`:
+- level 1: the five categories in a ring around the clicked symbol, on a dark halo; the centre shows the current op (when there is one).
+- level 2: hovering a category opens its ops as an arc outward from it (a thin spoke shows the path); the open category
+  has an amber rim, the hovered op is blue with its name in a tag outside it, the current op has an amber outer ring.
+- filtered: typing ("m") puts the matching ops from every category in one ring, best first and highlighted; categories
+  holding a match get the amber rim, the rest dim. Enter picks, Backspace edits, Esc clears the text.
+Judge: bubble sizes (categories ~70 px, ops ~50 px at 100 %), the 18 px symbols vs the 12 px names, the halo, the
+120 ms grow-and-fade on open. Known: in a window corner too tight for a long arc, its bubbles are clamped inside the
+window and may overlap.

@@ -44,6 +44,7 @@ namespace text_size {
 inline constexpr uint32_t kSection = 12;
 inline constexpr uint32_t kBody = 13;
 inline constexpr uint32_t kTitle = 14;
+inline constexpr uint32_t kSymbol = 18;  // MX.1: symbols drawn large (radial-menu glyphs)
 inline constexpr uint32_t kMeter = 24;
 }  // namespace text_size
 

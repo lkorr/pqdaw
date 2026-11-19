@@ -87,6 +87,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_pipeline_cache.cpp
     ui/test_waveform.cpp  # T5.5: drawWaveform, the waveform-lod golden
     ui/test_drag.cpp  # T5.7: drag sessions (internal, external, ghost, auto-scroll)
+    ui/test_radial_menu.cpp  # MX.1: the radial (bubble) menu through real dispatch, goldens
     ui/test_chord_lock.cpp  # T7.16b: Ctrl+CapsLock leaves the OS lock as it was (the restoring tap's events dropped)
     ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
