@@ -205,6 +205,13 @@ uint32_t ProjectCanvas::nodeAt(Vec2 d) const {
   return kNone;
 }
 
+uint32_t ProjectCanvas::wireDropAt(Vec2 d) const {
+  const uint32_t n = nodeAt(d);
+  if (n == kNone) return kNone;
+  const Node& nd = view_.patch().nodes[n];
+  return nd.kind == NodeKind::Device && nd.group && nd.groupOpen ? kNone : n;  // (its contents are hit before it)
+}
+
 uint32_t ProjectCanvas::bandAt(Vec2 d) const {
   const ProjectPatch& pp = view_.patch();
   const graph::Point2 w = toWorld(d);
@@ -694,12 +701,12 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
         const Vec2 c = toDevice(*at);
         dl.addCircleFilled(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(bad, 0.16f));
         dl.addCircleStroke(c, 1.9f * cw + 3.0f * us, ui::mulAlpha(bad, 0.9f), lw);
-      } else if (const uint32_t target = nodeAt(last_); target != kNone) {
+      } else if (const uint32_t target = wireDropAt(last_); target != kNone) {
         const Node& tn = pp.nodes[target];
         dl.addRoundedRectStroke(deviceRect(tn.x - 2.0f, tn.y - 2.0f, tn.w + 4.0f, tn.h + 4.0f), 4.0f * us, ui::mulAlpha(bad, 0.8f), lw);
       }
     } else if (drag_ == Drag::Wire && wireRefusal(last_) == nullptr) {
-      const uint32_t target = nodeAt(last_);
+      const uint32_t target = wireDropAt(last_);
       if (target != kNone && target != from_.node && pp.nodes[target].kind == NodeKind::Device) {
         const Node& tn = pp.nodes[target];
         dl.addRoundedRectStroke(deviceRect(tn.x - 2.0f, tn.y - 2.0f, tn.w + 4.0f, tn.h + 4.0f), 4.0f * us, ui::mulAlpha(th.circuit.selected, 0.7f),
@@ -1406,8 +1413,8 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) {
     // TX.orbit-ports: an input pin's block (an orbiting port sits outside it), else the block under the pointer.
     const PinHit h = pinAt(pos);
-    const uint32_t to = h.valid() && h.input ? h.node : nodeAt(pos);
-    if (to == kNone) return nullptr;  // empty canvas: the drop does nothing
+    const uint32_t to = h.valid() && h.input ? h.node : wireDropAt(pos);
+    if (to == kNone) return nullptr;  // empty canvas (or inside an opened group): the node menu
     const bool onPin = h.valid() && h.input && h.node == to && h.port < pp.nodes[to].inputs.size();
     if (const char* why = dropRefusal(from_, to, onPin, h.port)) return why;
     // WI.3: the two ends' declared types clash (a real output onto a bool input, event vs non-event).
@@ -1648,7 +1655,7 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   const Band& fromBand = pp.bands[a.band];
   // TX.node-menu: an output's cable released on empty space: the node menu (nodes with an input first); the node arrives
   // wired from that output.
-  if ((a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) && nodeAt(pos) == kNone && !pinAt(pos).valid() &&
+  if ((a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) && wireDropAt(pos) == kNone && !pinAt(pos).valid() &&
       rect().contains(pos)) {
     ProjectPatchView::SpawnLink link;
     link.kind = ProjectPatchView::SpawnLink::Kind::FromOutput;
@@ -1740,7 +1747,7 @@ void ProjectCanvas::finishWire(Vec2 pos) {
         }
       }
     }
-    const uint32_t to = nodeAt(pos);
+    const uint32_t to = wireDropAt(pos);
     if (to != kNone && pp.nodes[to].kind == NodeKind::Device) (void)v.openParamMenu(from, port, to, pos, notes);
     return;
   }
@@ -2688,7 +2695,7 @@ void ProjectCanvas::updateLoose(Vec2 pos) {
         style.notes = isNoteSource(pp, n);
         snapped = true;
       }
-    } else if (const uint32_t b = nodeAt(pos); b != kNone && pp.nodes[b].kind == NodeKind::Device && pp.nodes[b].device != backDevice_) {
+    } else if (const uint32_t b = wireDropAt(pos); b != kNone && pp.nodes[b].kind == NodeKind::Device && pp.nodes[b].device != backDevice_) {
       const Node& n = pp.nodes[b];
       const circuit::MainPorts mp = view_.mainPorts(n.device);
       if (const int32_t k = mp.out.empty() ? -1 : n.output(mp.out); k >= 0) {
@@ -2727,8 +2734,8 @@ void ProjectCanvas::finishBackWire(Vec2 pos) {
     v.context().setStatus("Wire: drop a backwards cable on a device's output");
     return;
   }
-  // Onto a block: its main output.
-  if (const uint32_t n = nodeAt(pos); n != kNone) {
+  // Onto a block: its main output (BR.B: inside an opened group, its frame is the space there).
+  if (const uint32_t n = wireDropAt(pos); n != kNone) {
     const Node& nd = pp.nodes[n];
     if (nd.kind != NodeKind::Device || nd.device == backDevice_) return;
     const circuit::MainPorts mp = v.mainPorts(nd.device);

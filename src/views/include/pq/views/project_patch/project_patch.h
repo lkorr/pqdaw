@@ -406,8 +406,20 @@ struct ModelCache {
     std::string key;                  // the layouter's inputs, serialised
     std::vector<graph::Point2> pos;   // each content's top-left from the layouter
     uint64_t used = 0;                // the build that last used it
+    // BR.B: the contents' devices (0: a terminal) and their places in the capsule (before nudges) the last build gave.
+    std::vector<uint32_t> ids;
+    std::vector<graph::Point2> rel;
   };
   std::unordered_map<uint32_t, Entry> entries;  // by group device id
+  // BR.B: a group's contents laid out again (a wire connected or removed, a block added or resized among them): how far
+  // the layouter moved each block that was there before (its old place − its new one, before nudges). The view adds
+  // these to the blocks' nudges and lays out once more, so a placed block never moves when its group is laid out again
+  // (and the document's nudges keep meaning the places shown: a reload lays the contents out as now).
+  struct Drift {
+    uint32_t device = 0;
+    float dx = 0, dy = 0;
+  };
+  std::vector<Drift> drift;
   uint64_t epoch = 0;
   uint64_t hits = 0, misses = 0;  // layouts reused / made (tests)
   std::shared_ptr<const void> snapshot, lowering;

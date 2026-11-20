@@ -1279,6 +1279,91 @@ private:
     return fn.region;
   }
 
+  // BR.B: a feedback loop (a strongly connected component of the flat patch) with nodes in an oversample region and
+  // outside it (or in two regions) runs whole in one region: every node of it moves into the region of the largest
+  // factor among its nodes (the lowest index on a tie). A loop runs at one rate (the scheduler: per sample, a rate
+  // converter inside it would alternate rates within a sample), so this is what makes an FM loop through a Wavetable's
+  // or a Math module's region, or a delay's feedback through an oversampled group, run instead of being cut; the
+  // converters then sit where the loop's signals leave and enter it, outside the loop. The loop's delay (a wire's z1,
+  // a delay line) runs at the region's rate: one inner sample. A loop through a node that must stay at the base rate
+  // (an engine node: a voice reducer, a send, a clip player; nothing else can close a loop) is left as it is — the
+  // scheduler refuses it and the playback link cuts its closing wire ("Cut wires"). O(nodes + wires), once per infer.
+  void joinLoopsToRegions(TypedPatch& tp) {
+    const Patch& p = tp.patch;
+    const uint32_t N = p.nodeCount();
+    if (N == 0 || tp.origin.size() < N) return;
+    const Adjacency adj = p.adjacency();
+    // Tarjan (iterative): component index per node, components in completion order.
+    std::vector<uint32_t> index(N, kNone), low(N, 0), comp(N, kNone);
+    std::vector<uint8_t> onStack(N, 0);
+    std::vector<NodeIndex> stack;
+    struct Frame {
+      NodeIndex n;
+      uint32_t e;
+    };
+    std::vector<Frame> call;
+    std::vector<std::vector<NodeIndex>> loops;  // components of 2+ nodes with nodes in more than one region
+    uint32_t next = 0, comps = 0;
+    for (NodeIndex root = 0; root < N; ++root) {
+      if (index[root] != kNone) continue;
+      index[root] = low[root] = next++;
+      stack.push_back(root);
+      onStack[root] = 1;
+      call.push_back({root, 0});
+      while (!call.empty()) {
+        Frame& f = call.back();
+        const std::span<const WireIndex> outs = adj.outgoing(f.n);
+        if (f.e < outs.size()) {
+          const NodeIndex v = p.wire(outs[f.e++]).to.node;
+          if (index[v] == kNone) {
+            index[v] = low[v] = next++;
+            stack.push_back(v);
+            onStack[v] = 1;
+            call.push_back({v, 0});
+          } else if (onStack[v]) {
+            low[f.n] = std::min(low[f.n], index[v]);
+          }
+          continue;
+        }
+        const NodeIndex n = f.n;
+        call.pop_back();
+        if (!call.empty()) low[call.back().n] = std::min(low[call.back().n], low[n]);
+        if (low[n] != index[n]) continue;
+        std::vector<NodeIndex> members;
+        NodeIndex m;
+        do {
+          m = stack.back();
+          stack.pop_back();
+          onStack[m] = 0;
+          comp[m] = comps;
+          members.push_back(m);
+        } while (m != n);
+        ++comps;
+        if (members.size() < 2) continue;
+        const uint16_t r0 = tp.origin[members.front()].region;
+        bool mixed = false;
+        for (const NodeIndex x : members) mixed = mixed || tp.origin[x].region != r0;
+        if (mixed) loops.push_back(std::move(members));
+      }
+    }
+    for (const std::vector<NodeIndex>& loop : loops) {
+      bool movable = true;
+      uint16_t target = 0;
+      for (const NodeIndex x : loop) {
+        const Node& nd = p.node(x);
+        const bool ok = (nd.kind == NodeKind::Atom && kernelMapping(nd.atom).lowering != Lowering::Engine) ||
+                        nd.kind == NodeKind::Const || nd.kind == NodeKind::Unknown || nd.kind == NodeKind::Equation;
+        movable = movable && ok;
+        const uint16_t r = tp.origin[x].region;
+        if (r != 0 && (target == 0 || regions_[r - 1u].factor > regions_[target - 1u].factor ||
+                       (regions_[r - 1u].factor == regions_[target - 1u].factor && r < target)))
+          target = r;
+      }
+      if (!movable || target == 0) continue;
+      for (const NodeIndex x : loop) tp.origin[x].region = target;
+    }
+  }
+
   // TMM.6: rate converters on every audio-rate wire between nodes of different regions. Out of a region: down (bool:
   // any) at the region's factor; into one: up (a listed phase input: phase; bool: hold). One converter per value
   // and region, shared by every consumer there.
@@ -1295,6 +1380,7 @@ private:
         if (src.node != kNone) fr.phaseFlat.push_back(src);
       }
     }
+    joinLoopsToRegions(tp);
     auto regionOfNode = [&](NodeIndex n) -> uint16_t { return n < tp.origin.size() ? tp.origin[n].region : 0; };
     std::vector<WireIndex> crossing;
     for (WireIndex w = 0; w < out.wireCount(); ++w) {

@@ -78,8 +78,13 @@ public:
   // The scene to show (shared: a canvas never changes it). fit = frame the whole scene at the next layout. keepTiles
   // (T4.4: an edited patch's next scene): symbol body tiles stay (a body's pixels depend only on its bodyKey and the
   // zoom), so an edit rasterises only the bodies that are new; the far-level chunks are rebuilt either way.
+  // BR.B: a host must not call it while the canvas paints (painting()): a face's paint that edits the document (a panel
+  // rebuilt under an open drag cancels its gesture) reaches the host's document handler there — the host defers its
+  // rebuild to its next frame. If one does anyway, the canvas stops that paint where it is (its faces were rebuilt
+  // under it) and paints again the next frame.
   void setScene(std::shared_ptr<const CircuitScene> scene, bool fit = true, bool keepTiles = false);
   const std::shared_ptr<const CircuitScene>& scene() const noexcept;
+  bool painting() const noexcept;
 
   struct View {
     double x = 0.0, y = 0.0;  // world point at the canvas's top-left corner

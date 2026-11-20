@@ -174,11 +174,11 @@ TEST_CASE("WI.2: an edit of a cut wire's track tries it again, another track's e
 }
 
 // BR.A (bug report 2026-11-19_19-19-59 "all visual modules seem busted"): a feedback loop through an oversampled group
-// (an FM loop through a Wavetable at 2×, here a Utility group at 2×) cannot run per sample (two rates in one loop): the
-// scheduler refuses it. That used to fail the whole project compile — every later edit, every new visualiser's tap,
-// never played. Now the loop's closing wire is cut (Refused / Type, the scheduler's words) and the rest plays exactly
-// as the project without it.
-TEST_CASE("BR.A: a feedback loop across an oversample region is cut at its closing wire; the rest plays") {
+// (an FM loop through a Wavetable at 2×, here a Utility group at 2×) used to fail the whole project compile; BR.A cut its
+// closing wire. BR.B: such a loop RUNS — infer() moves the loop's nodes outside the region into it (a loop runs at one
+// rate; the converters then sit where its signals leave and enter it), so nothing is cut, the loop is heard (the output
+// differs from the project without it) and stays finite.
+TEST_CASE("BR.B: a feedback loop across an oversample region runs (whole inside the region); nothing is cut") {
   Song s;
   const DeviceId u1 = test_blocks::appendAfter(s.store, s.a, "module:utility");
   const DeviceId u2 = test_blocks::appendAfter(s.store, s.a, "module:utility");
@@ -186,19 +186,20 @@ TEST_CASE("BR.A: a feedback loop across an oversample region is cut at its closi
   const Track& ta = *findTrackPtr(*s.store.current(), s.a);
   DeviceId value;
   for (const Device* m : groupMembers(ta.devices, u1))
-    if (isValueDevice(*m) && !value.valid()) value = m->id;
+    if (isValueDevice(*m) && m->name == "Gain") value = m->id;  // (heard: the loop moves the first Utility's gain)
   REQUIRE(value.valid());
   const WireId loop = s.must(ops::connectWire(*s.store.current(), s.store.ids(), u2, "", value, "value")).wires.at(0);
   auto link = makeLink(s.store.current());
   CHECK(link->stats().compileErrors == 0);
-  const std::string msg = link->wireError(loop);
-  MESSAGE("loop: " << msg);
-  CHECK(msg.find("oversampled part") != std::string::npos);
-  CHECK(link->stats().typeCutWires == 3);  // the loop and Song's two
+  CHECK(link->wireError(loop).empty());
+  CHECK(link->stats().typeCutWires == 2);  // Song's two only
+  const Channels heard = render(*link, 0.5);
+  for (const auto& ch : heard)
+    for (const float v : ch) REQUIRE(std::isfinite(v));
   auto ref = makeLink(s.without({s.rate, s.kind, loop}));
   CHECK(ref->stats().compileErrors == 0);
-  CHECK(ref->stats().typeCutWires == 0);
-  const Channels expected = render(*ref, 0.5);
-  CHECK(peak(expected) > 0.01f);
-  CHECK(render(*link, 0.5) == expected);
+  const Channels without = render(*ref, 0.5);
+  CHECK(peak(without) > 0.01f);
+  CHECK(peak(heard) > 0.01f);
+  CHECK(heard != without);  // the loop plays
 }

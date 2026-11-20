@@ -2116,3 +2116,144 @@ TEST_CASE("node menu (TX.ports-always): every catalog entry placed unwired — t
   CHECK(placed + refused == 2 * cat->entries.size());  // (an instrument may be refused inside another instrument)
   CHECK(placed > refused);
 }
+
+namespace {
+
+// The opened instrument group's capsule framed in the canvas (zoom ≤ 1, a margin round it).
+void frameCapsule(Ui& u) {
+  u.view().sync();
+  const Node& cap = u.pp().nodes[u.node(u.synth)];
+  const ui::IRect r = u.view().canvas().rect();
+  CircuitCanvas::View v;
+  v.zoom = std::min({1.0, static_cast<double>(r.w) / (cap.w + 160.0f), static_cast<double>(r.h) / (cap.h + 160.0f)});
+  v.x = cap.x - 80.0f;
+  v.y = cap.y - 80.0f;
+  u.view().canvas().setView(v);
+  u.d.tree().layoutNow();
+  u.d.step();
+}
+
+// Tab at a clear point inside the instrument group's capsule, `query`, Enter: the module placed there (real dispatch).
+doc::DeviceId tabInside(Ui& u, std::string_view query, std::string_view key) {
+  frameCapsule(u);
+  u.d.move(u.dev(insideCapsule(u)));
+  REQUIRE(u.d.press("Tab") == KeyResult::Widget);
+  u.d.type(query);
+  REQUIRE(u.menu() != nullptr);
+  REQUIRE(u.menu()->highlightedEntry() != nullptr);
+  CHECK(u.menu()->highlightedEntry()->key == key);
+  u.d.press("Return");
+  u.d.step();
+  u.view().sync();
+  // The newest block directly inside the instrument group (a module's own blocks are inside it).
+  doc::DeviceId d;
+  for (const doc::DevicePtr& x : doc::findTrackPtr(*u.ctx.doc(), u.keys)->devices)
+    if (x->group == u.synth && x->id.value > d.value) d = x->id;
+  REQUIRE(u.device(d) != nullptr);
+  return d;
+}
+
+// Each block's place inside the instrument group (its members at any depth), world.
+std::vector<std::pair<uint32_t, graph::Point2>> placesInGroup(const Ui& u) {
+  std::vector<std::pair<uint32_t, graph::Point2>> out;
+  const doc::Track& t = *doc::findTrackPtr(*u.ctx.doc(), u.keys);
+  for (const doc::DevicePtr& d : t.devices)
+    if (d->group == u.synth) {
+      const Node& n = u.pp().nodes[u.node(d->id)];
+      out.push_back({d->id.value, {n.x, n.y}});
+    }
+  return out;
+}
+
+void checkPlaces(const Ui& u, const std::vector<std::pair<uint32_t, graph::Point2>>& was, const std::string& when) {
+  for (const auto& [id, p] : was) {
+    const uint32_t n = u.node(doc::DeviceId{id});
+    CHECK_MESSAGE(std::fabs(u.pp().nodes[n].x - p.x) < 0.01f, when << ": block " << id << " x " << u.pp().nodes[n].x << " was " << p.x);
+    CHECK_MESSAGE(std::fabs(u.pp().nodes[n].y - p.y) < 0.01f, when << ": block " << id << " y " << u.pp().nodes[n].y << " was " << p.y);
+  }
+}
+
+}  // namespace
+
+TEST_CASE("BR.B: a cable dropped on empty space inside an opened instrument group opens the node menu there (as on the "
+          "canvas); the pick lands in the group, wired from the cable, one undo step — real dispatch") {
+  Ui u;
+  const doc::DeviceId env = tabInside(u, "enve", "module:envelope");
+  const std::string envOut = u.view().mainPorts(env).out;
+  frameCapsule(u);
+  const uint32_t ei = u.node(env);
+  const Vec2 from = u.dev(u.view().canvas().portWorld(ei, 0, false));
+  REQUIRE(u.view().canvas().rect().contains(from));
+  const Vec2 to = u.dev(insideCapsule(u));
+  const size_t h0 = u.history();
+  // Pressed on the Envelope's output, out to the right, released on the capsule's empty inside.
+  u.d.move(from);
+  u.d.down(from);
+  for (int k = 1; k <= 4; ++k) u.d.move({from.x + 12.0f * static_cast<float>(k), from.y});
+  REQUIRE(u.view().canvas().drag() == ProjectCanvas::Drag::Wire);
+  for (int k = 1; k <= 8; ++k) {
+    const float t = static_cast<float>(k) / 8.0f;
+    u.d.move({from.x + 48.0f + (to.x - from.x - 48.0f) * t, from.y + (to.y - from.y) * t});
+  }
+  u.d.up(to);
+  u.d.step();
+  NodeMenu* m = u.menu();
+  REQUIRE_MESSAGE(m != nullptr, "status: " << u.ctx.status());
+  CHECK(u.history() == h0);  // nothing yet
+  u.pick("vca", "VCA");
+  u.d.step();
+  u.view().sync();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.history() == h0 + 1);
+  doc::DeviceId vca;  // into the group the cable was dropped in: the newest block directly inside it
+  for (const doc::DevicePtr& x : doc::findTrackPtr(*u.ctx.doc(), u.keys)->devices)
+    if (x->group == u.synth && x->id.value > vca.value) vca = x->id;
+  REQUIRE(vca != env);
+  REQUIRE(u.device(vca) != nullptr);
+  CHECK(u.device(vca)->name == "VCA");
+  CHECK(u.wired(env, envOut, vca, u.view().mainPorts(vca).in));
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // Esc on a second drop: the menu closes, nothing placed.
+  const Vec2 from2 = u.dev(u.view().canvas().portWorld(u.node(env), 0, false));
+  const Vec2 to2 = u.dev(insideCapsule(u));
+  dragCable(u, from2, {1.0f, 0.0f}, to2);
+  REQUIRE(u.menu() != nullptr);
+  u.d.press("Escape");
+  u.d.step();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.ctx.undo());
+  CHECK(u.device(vca) == nullptr);
+}
+
+TEST_CASE("BR.B: connecting blocks inside an opened instrument group moves none of them (the group is not laid out "
+          "anew); closed and opened again, and after an undo, they are where they were — real dispatch") {
+  Ui u;
+  const doc::DeviceId env = tabInside(u, "enve", "module:envelope");
+  const doc::DeviceId vca = tabInside(u, "vca", "module:vca");
+  frameCapsule(u);
+  const std::string envOut = u.view().mainPorts(env).out, vcaIn = u.view().mainPorts(vca).in;
+  const auto was = placesInGroup(u);
+  REQUIRE(was.size() >= 3);  // the instrument's own blocks and the two placed
+  // The Envelope's output onto the VCA's input: a wire among the group's blocks (the layouter's input changes).
+  const uint32_t ei = u.node(env), vi = u.node(vca);
+  const Vec2 from = u.dev(u.view().canvas().portWorld(ei, 0, false));
+  const Vec2 to = u.dev(u.view().canvas().portWorld(vi, static_cast<uint32_t>(u.pp().nodes[vi].mainIn), true));
+  const size_t h0 = u.history();
+  dragCable(u, from, {1.0f, 0.0f}, to);
+  REQUIRE(u.history() == h0 + 1);
+  REQUIRE(u.wired(env, envOut, vca, vcaIn));
+  checkPlaces(u, was, "connected");
+  // Closed and opened again (its layout made afresh, with the nudges the view kept): the same places.
+  u.view().setGroupOpen(u.synth, false);
+  u.d.step();
+  u.view().setGroupOpen(u.synth, true);
+  u.d.step();
+  u.view().sync();
+  checkPlaces(u, was, "reopened");
+  REQUIRE(u.ctx.undo());
+  u.d.step();
+  u.view().sync();
+  CHECK_FALSE(u.wired(env, envOut, vca, vcaIn));
+  checkPlaces(u, was, "undone");
+}

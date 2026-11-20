@@ -655,6 +655,22 @@ struct Builder {
     const float ox = m::kCapsulePad - x0, oy = m::kCapsuleTitle + m::kCapsulePad - y0;
     rel.clear();
     for (size_t i = 0; i < n; ++i) rel.push_back({pos[i].x + ox, pos[i].y + oy});
+    // BR.B: laid out again (not the first layout of this opened group): every block that was there keeps its place —
+    // the layouter's move of it goes into its nudge (ModelCache::drift; the view applies it and builds again).
+    if (entry != nullptr) {
+      std::vector<uint32_t> ids(n, 0);
+      for (size_t i = 1; i + 1 < n; ++i) ids[i] = out.nodes[kids[i]].device.value;
+      if (!hit && !entry->ids.empty())
+        for (size_t i = 1; i + 1 < n; ++i)
+          for (size_t j = 0; j < entry->ids.size() && j < entry->rel.size(); ++j)
+            if (entry->ids[j] == ids[i] && ids[i] != 0) {
+              const float dx = entry->rel[j].x - rel[i].x, dy = entry->rel[j].y - rel[i].y;  // (exact: none piles up)
+              if (dx != 0.0f || dy != 0.0f) cache->drift.push_back({ids[i], dx, dy});
+              break;
+            }
+      entry->ids = std::move(ids);
+      entry->rel = rel;
+    }
     c.w = roundUp4(std::max(x1 - x0 + 2.0f * m::kCapsulePad, 96.0f));
     c.h = roundUp4(std::max(y1 - y0 + m::kCapsuleTitle + 2.0f * m::kCapsulePad, m::kCapsuleTitle + 48.0f));
     c.pinTop = rel[0].y + pinOffset(out.nodes[kids[0]], 0, false);

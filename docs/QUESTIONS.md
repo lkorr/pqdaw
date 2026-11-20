@@ -2151,3 +2151,22 @@ uncovered part (end or start trimmed, free curve retimed) or is removed when cov
 copy + paste in place is then a no-op (the copies replace the originals). The rule is RollState::overwriteCommands
 (general: covers + pitch). Note: no existing "drawn / moved note over a same-pitch note" rule was found in the clip
 view (moves and draws still stack); they could adopt overwriteCommands. Status: decided.
+
+## Q?-BR.B-a · 2026-11-19 · BR.B · A feedback loop across an oversample region runs inside the region
+Context: since BR.A such a loop (an FM loop through a Wavetable's or Math's region, a delay's feedback through an
+oversampled group) was cut, silent (Q?-BR.A-b). Options: (1) run the loop at the outer rate per outer sample, its
+converters inside the loop (both backends would need mixed-factor loop regions; the converters' latency and phase sit
+in the feedback path); (2) move the loop's outside nodes into the region (infer(), before the converters: a loop runs
+at one rate), so its delay — the wire's z1 or a delay line — is one INNER sample and the converters stay outside the
+loop; (3) keep the cut. Chosen: (2): no backend or kernel change, the loop sounds closer to delay-free feedback; its cost
+is the moved nodes at n× (a few ops in an FM loop; a whole delay device when its feedback runs through a 2× Math).
+Only a loop through an engine node (a voice reducer, a send, a clip player) is still cut. Status: decided (reversible:
+infer.cpp joinLoopsToRegions).
+
+## Q?-BR.B-b · 2026-11-19 · BR.B · Math's clip with B = 0 silences (bug report 2026-11-19_19-50-41)
+Context: "math breaks feedback loops with delays; just doesn't feed back at all". The report's loop (Delay Tap → EQ →
+VCA → Math → Delay Tap) compiles and runs — no oversampling in it, nothing cut. Its Math is set to `clip` (A to ±|B|)
+with B at its default 0: everything is clipped to 0, so nothing comes back. Options: (1) leave it (the op does what it
+says); (2) give clip (and other ops where B = 0 is degenerate) a B default of 1 when the op is chosen and B is still at
+the default; (3) show the clip range on the face. Chosen: (1) for now — a per-op default is a design choice for the
+user; (2) is small (`ops::setMathOp`) if wanted. Status: open.

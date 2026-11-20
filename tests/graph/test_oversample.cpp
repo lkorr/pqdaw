@@ -189,22 +189,75 @@ patch inner {
 }
 )")
             .find("oversample regions cannot be nested") != std::string::npos);
-  // A feedback loop through the boundary.
-  Front f;
-  front(f, R"(
+}
+
+// BR.B: a feedback loop through a region's boundary runs whole inside the region (a loop runs at one rate): infer()
+// moves its outside nodes in, so the converters sit where the signals leave and enter the loop — exactly the patch
+// with the loop written inside the region. (Before, the scheduler refused it and the playback link cut its wire.)
+TEST_CASE("oversample (BR.B): a feedback loop across the boundary joins the region; it schedules as the loop inside") {
+  auto build = [](Front& f, const char* src) {
+    front(f, src);
+    const ScheduleResult s = scheduleDetailed(f.typed, ScheduleOptions{});
+    REQUIRE_MESSAGE(s.ok(), diagText(s.diagnostics, ""));
+    return s;
+  };
+  Front across, inside;
+  const ScheduleResult a = build(across, R"(
 patch L {
   in x : audio
   out y : audio
-  fb = z1(v)
+  fb = z1(v) * 0.5
   oversample(2) {
     v = tanh(x + fb)
   }
   y = v
 }
 )");
-  const ScheduleResult s = scheduleDetailed(f.typed, ScheduleOptions{});
-  REQUIRE_FALSE(s.ok());
-  CHECK(diagText(s.diagnostics, "").find("crosses the boundary of an oversample region") != std::string::npos);
+  const ScheduleResult b = build(inside, R"(
+patch L {
+  in x : audio
+  out y : audio
+  oversample(2) {
+    fb = z1(v) * 0.5
+    v = tanh(x + fb)
+  }
+  y = v
+}
+)");
+  // One converter in (x), one out (v), none inside the loop; every loop node at 2× (the z1 and the gain too).
+  auto m = atomCounts(across.typed);
+  CHECK(m["oversample_up"] == 1);
+  CHECK(m["oversample_down"] == 1);
+  CHECK(atomCounts(inside.typed) == m);
+  for (const TypedPatch* tp : {&across.typed, &inside.typed})
+    for (NodeIndex n = 0; n < tp->patch.nodeCount(); ++n) {
+      const Node& nd = tp->patch.node(n);
+      if (nd.kind != NodeKind::Atom) continue;
+      const std::string_view name = atomSignature(nd.atom).name;
+      if (name == "z1" || name == "tanh" || name == "mul" || name == "add") CHECK_MESSAGE(tp->factorOf(tp->origin[n].region) == 2, name);
+    }
+  CHECK(a.schedule.ops.size() == b.schedule.ops.size());
+  CHECK(a.schedule.regions.size() == b.schedule.regions.size());
+  // Two regions (2× and 4×) in one loop: the loop runs in the faster one.
+  Front two;
+  (void)build(two, R"(
+patch T {
+  in x : audio
+  out y : audio
+  oversample(2) {
+    u = tanh(x + w * 0.5)
+  }
+  oversample(4) {
+    w = z1(u) * 0.9
+  }
+  y = u
+}
+)");
+  for (NodeIndex n = 0; n < two.typed.patch.nodeCount(); ++n) {
+    const Node& nd = two.typed.patch.node(n);
+    if (nd.kind == NodeKind::Atom && (atomSignature(nd.atom).name == "z1" || atomSignature(nd.atom).name == "tanh"))
+      CHECK(two.typed.factorOf(two.typed.origin[n].region) == 4);
+  }
 }
 
 TEST_CASE("oversample: infer inserts one converter per value and region; params, constants and n = 1 get none") {

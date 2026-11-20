@@ -359,6 +359,7 @@ void ProjectPatchView::captureArrangement() {
 }
 
 void ProjectPatchView::onFrame(double now) {
+  if (rebuildDeferred_ && shown()) sync();  // BR.B: a rebuild asked for during the canvas's paint
   // GU.5: windows whose group went (hidden at once by syncWindows) are removed here, outside any event of theirs.
   if (windowsStale_) {
     windowsStale_ = false;
@@ -524,8 +525,18 @@ void ProjectPatchView::sync() {
 }
 
 void ProjectPatchView::rebuild() {
+  // BR.B: never under the canvas's paint (a face's paint that edits the document reaches onDocument there: a group
+  // panel rebuilt under an open drag cancels the drag's gesture). Rebuilding then replaced the canvas's faces under its
+  // paintFaces loop (the 2026-11-19 crash); the next frame rebuilds instead.
+  if (canvas_->painting()) {
+    stale_ = true;
+    rebuildDeferred_ = true;
+    requestFrame();
+    return;
+  }
   const auto t0 = std::chrono::steady_clock::now();
   stale_ = false;
+  rebuildDeferred_ = false;
   const doc::Snapshot snap = ctx_.doc();
   const doc::DeviceLibrary* devlib = ctx_.deviceLibrary();
   doc::LowerOptions lo;
@@ -614,7 +625,21 @@ void ProjectPatchView::rebuild() {
         if (e.kind == EdgeKind::Modulation) selWires.push_back(e.wire);
       }
   canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
+  layoutCache_.drift.clear();
   patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
+  // BR.B: an opened group laid out again (a wire connected inside it, a block added): its blocks stay where they were —
+  // the layouter's moves go into their nudges, and the second build (its layout cached) places them there.
+  if (!layoutCache_.drift.empty()) {
+    auto& nudges = ctx_.store().view().patchNudges;
+    for (const ModelCache::Drift& d : layoutCache_.drift) {
+      doc::PatchNudge& nu = nudges[d.device];
+      nu.dx += d.dx;
+      nu.dy += d.dy;
+      if (nu.empty()) nudges.erase(d.device);
+    }
+    layoutCache_.drift.clear();
+    patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
+  }
   if (ctx_.anyWireErrors())  // WI.2: the wires the playback link cut from its compile
     for (Edge& e : patch_.edges)
       if (e.wire.valid() && ctx_.wireError(e.wire) != nullptr) {

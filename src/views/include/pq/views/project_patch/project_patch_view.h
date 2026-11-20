@@ -251,6 +251,9 @@ public:
   const char* dropRefusal(const PinHit& from, uint32_t to, bool onPin, uint32_t port) const;
   // The model node under a device point (an expanded device's frame counts), kNone: none.
   uint32_t nodeAt(ui::Vec2 device) const;
+  // BR.B: the block a cable dropped (or hovering) at a device point goes to: nodeAt, but an opened group's frame is the
+  // space inside it, not a block (a drop there opens the node menu, as on the empty canvas; its sockets are pins).
+  uint32_t wireDropAt(ui::Vec2 device) const;
   // The band under a device point, kNone: none.
   uint32_t bandAt(ui::Vec2 device) const;
   // World rect → device rect.
@@ -1161,6 +1164,7 @@ private:
   std::shared_ptr<const doc::LoweredProject> lowered_;  // ours, or (PF.2) the playback link's of the same snapshot
   const doc::DeviceLibrary* loweredWith_ = nullptr;
   ModelCache layoutCache_;  // PF.2
+  bool rebuildDeferred_ = false;  // BR.B: a rebuild was asked for during the canvas's paint (onFrame does it)
   ProjectPatch patch_;
   ProjectScene scene_;
   bool stale_ = true;

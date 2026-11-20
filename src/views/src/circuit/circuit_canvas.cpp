@@ -414,8 +414,18 @@ struct CircuitCanvas::Impl final : FaceHost {
   }
 
   bool rescaled = false;  // TX.resize: the last buildFaces kept a face whose node's scale changed
+  // BR.B: buildFaces' count, and whether the canvas is painting. A face's own call (a panel's paint that rebuilds its
+  // elements under an open drag and so cancels the drag's gesture) can reach the host's document handler, whose rebuild
+  // would rebuild `faces` under a loop over them (the 2026-11-19 crash: paintFaces read a face moved out of the old
+  // vector). Every loop that calls into faces checks the count after each face and stops when it moved; the paint then
+  // stops and paints again the next frame. The project patch view defers its rebuild while painting() instead.
+  uint64_t facesBuilt = 0;
+  uint32_t painting = 0;
+  bool facesRebuiltInPaint = false;
+  bool repaintNext = false;  // (a damage added during a paint is cleared with the paint's: onFrame adds it)
 
   void buildFaces() {
+    ++facesBuilt;
     rescaled = false;
     std::vector<Hosted> old;
     old.swap(faces);
@@ -565,13 +575,18 @@ struct CircuitCanvas::Impl final : FaceHost {
     bool live = false;
     ui::UiTree* tr = self.tree();
     const ui::IRect cr = self.rect();
-    for (Hosted& h : faces) {
+    const uint64_t built = facesBuilt;
+    for (size_t i = 0; i < faces.size() && built == facesBuilt; ++i) {
+      Hosted& h = faces[i];
       VoiceTapReader* rd = h.face->voices();
       if (!faceVisible(h)) continue;
       const bool ticked = h.face->frameTick() | h.face->pollGhosts();  // DT.1, bug-mod-ghost: a compare each
+      if (built != facesBuilt) break;  // BR.B: rebuilt by a face's call
       live = live || h.face->ticking() || h.face->ghostsLive();
       if (rd == nullptr && !ticked) continue;
-      if ((ticked | (rd != nullptr && h.face->pollVoices())) && tr != nullptr) {
+      const bool polled = rd != nullptr && h.face->pollVoices();
+      if (built != facesBuilt) break;  // BR.B
+      if ((ticked | polled) && tr != nullptr) {
         SceneNode n = scene->nodes[h.node];
         n.x += shiftOf(h.node).x, n.y += shiftOf(h.node).y;  // TX.block-drag
         faceRects.clear();
@@ -595,7 +610,9 @@ struct CircuitCanvas::Impl final : FaceHost {
     if (!facesShown || faces.empty()) return;
     const ui::Theme& th = *ctx.res.theme;
     bool wantTimer = false;
-    for (Hosted& h : faces) {
+    const uint64_t built = facesBuilt;
+    for (size_t i = 0; i < faces.size(); ++i) {
+      Hosted& h = faces[i];
       const SceneNode& n = scene->nodes[h.node];
       if (n.hidden || !showNode(h.node)) continue;  // TX.block-drag: a lifted face in the lifted pass
       const float sc = s() * h.scale;  // TX.resize: a scaled node's face at its own px per unit
@@ -635,6 +652,10 @@ struct CircuitCanvas::Impl final : FaceHost {
           ++stats.faceLayersDirect;
         }
       }
+      if (built != facesBuilt) {  // BR.B (see below)
+        facesRebuiltInPaint = true;
+        return;
+      }
       FaceEnv env;
       env.theme = &th;
       env.uiScale = ctx.scale.factor;
@@ -647,6 +668,10 @@ struct CircuitCanvas::Impl final : FaceHost {
       f.paintJacks(p, env);
       f.paintGhosts(p, env);  // bug-mod-ghost: under the live layer (a group panel's are in its paintLive)
       f.paintLive(p, env);
+      if (built != facesBuilt) {  // BR.B: the face's paint rebuilt the faces (h is gone with them): this paint stops
+        facesRebuiltInPaint = true;
+        return;
+      }
       if (h.panel) {
         ++stats.panelsPainted;  // TX.panel-faces
       } else {
@@ -712,9 +737,16 @@ struct CircuitCanvas::Impl final : FaceHost {
     if (tr == nullptr) return;
     const double now = tr->now();
     double due = std::numeric_limits<double>::infinity();
-    for (Hosted& h : faces) {
-      if (h.face->update(now) && facesShown && !scene->nodes[h.node].hidden) damageFace(h);
-      due = std::min(due, h.face->nextWake());
+    const uint64_t built = facesBuilt;
+    for (size_t i = 0; i < faces.size(); ++i) {
+      const bool changed = faces[i].face->update(now);
+      if (built != facesBuilt) {  // BR.B: a face's update rebuilt the faces: again next frame
+        pumpWanted = true;
+        self.requestFrame();
+        return;
+      }
+      if (changed && facesShown && !scene->nodes[faces[i].node].hidden) damageFace(faces[i]);
+      due = std::min(due, faces[i].face->nextWake());
     }
     if (due <= now) {
       pumpWanted = true;
@@ -730,11 +762,13 @@ struct CircuitCanvas::Impl final : FaceHost {
   bool prepareFaces() {
     if (!facesShown || !scene) return false;
     bool any = false;
-    for (Hosted& h : faces) {
+    const uint64_t built = facesBuilt;
+    for (size_t i = 0; i < faces.size() && built == facesBuilt; ++i) {
+      Hosted& h = faces[i];
       const float sc = s() * h.scale;  // TX.resize
       if (faceVisible(h) && h.face->needsPrepare(sc) && h.face->prepare(sc)) any = true;
     }
-    return any;
+    return any || built != facesBuilt;
   }
   // The focused face's text acceptance mirrored on the canvas (the host tree sends text only to a text input).
   void syncTextInput() {
@@ -1752,6 +1786,7 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
 }
 
 const std::shared_ptr<const CircuitScene>& CircuitCanvas::scene() const noexcept { return impl_->scene; }
+bool CircuitCanvas::painting() const noexcept { return impl_->painting != 0; }
 const CircuitCanvas::View& CircuitCanvas::view() const noexcept { return impl_->view; }
 
 void CircuitCanvas::setView(const View& v) {
@@ -2452,6 +2487,14 @@ void CircuitCanvas::Impl::paintPopups(ui::PaintContext& ctx) {
 void CircuitCanvas::paint(ui::PaintContext& ctx) {
   Impl& m = *impl_;
   m.retired.clear();  // TMM.7: faces a rebuild replaced (no handler of theirs runs during a paint)
+  // BR.B: painting() for the host; the scene this paint started with stays alive to its end (`sc` below).
+  struct Painting {
+    Impl& m;
+    explicit Painting(Impl& x) : m(x) { ++m.painting; }
+    ~Painting() { --m.painting; }
+  } painting(m);
+  const std::shared_ptr<const CircuitScene> held = m.scene;
+  m.facesRebuiltInPaint = false;
   const ui::Theme* theme = ctx.res.theme;
   if (!theme) return;
   const auto& C = theme->circuit;
@@ -2805,6 +2848,12 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 
   // ---- TMM.4: faces, at every level of detail ----
   m.paintFaces(ctx, clip, atlas, missing);
+  if (m.facesRebuiltInPaint) {  // BR.B: what follows reads the faces and the scene's indices: the next frame paints
+    dl.popClip();
+    m.repaintNext = true;
+    requestFrame();
+    return;
+  }
 
   // ---- TX.mod-all: wires that end on a face's control, over the face ----
   // The scene wire stops on the block's edge (its last point); from there the wire goes on, straight into the face and
@@ -3034,6 +3083,10 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
 
 void CircuitCanvas::onFrame(double now) {
   Impl& m = *impl_;
+  if (m.repaintNext) {  // BR.B: a paint stopped by a rebuild under it
+    m.repaintNext = false;
+    markDirty();
+  }
   m.stepOrbits(now);  // TX.orbit-ports: the ports' slides (frames only while one slides); before the cables' step
   m.stepCables(now);  // TX.cables: the swing (frames only while a cable is awake)
   m.stepLoose(now);   // TX.node-menu-fix1: the cable being drawn out

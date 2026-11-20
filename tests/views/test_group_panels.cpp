@@ -718,3 +718,52 @@ TEST_CASE("BR.A: a module group (a panel, not an instrument) is its panel alone 
   CHECK(u.history() == h0 + 1);
   CHECK(u.structural == s0 + 1);
 }
+
+TEST_CASE("BR.B: a closed group's panel changed under an open knob drag — its paint rebuilds the elements and cancels "
+          "the drag's gesture; the view rebuilds the next frame, never under the canvas's paint (the 2026-11-19 crash) "
+          "— real dispatch") {
+  // The crash (pqdaw.exe.8136.dmp): CircuitCanvas::paintFaces read a null face. GroupPanelFace::paintLive syncs its
+  // panel first; a new panel rebuilds its elements, and the element holding the drag cancels it (DocPanelTarget::cancel:
+  // the store's cancelGesture) — a store event during the paint, whose rebuild (ProjectPatchView::onDocument → setScene
+  // → buildFaces) replaced the faces under the paint's loop.
+  Ui u;
+  REQUIRE(u.d.enableGpu().ok());  // (a canvas paints its faces with the theme and fonts)
+  u.d.step();
+  const int32_t k = u.element("knob");
+  const int32_t s = u.element("slider");
+  const double p0 = u.position(u.ids.level);
+  const size_t n0 = u.face().elementCount();
+  const size_t h0 = u.history();
+  const Vec2 c = u.at(k);
+  const panel::GroupPanelFace* facePtr = &u.face();
+  u.d.move(c);
+  u.d.down(c);
+  for (int i = 1; i <= 4; ++i) u.d.move({c.x, c.y + 10.0f * static_cast<float>(i)});
+  REQUIRE(u.ctx.store().inGesture());
+  CHECK(u.position(u.ids.level) < p0);
+  // The panel changes while the knob is held (an element removed by an edit from elsewhere): the face learns of it in
+  // its next paint.
+  const uint32_t sid = u.face().element(static_cast<size_t>(s)).desc().id;
+  REQUIRE(u.ctx.store().dispatch(doc::ops::removePanelElements(*u.ctx.doc(), u.ids.group, std::vector<uint32_t>{sid})->command).ok());
+  const uint64_t rebuilds = u.view().stats().rebuilds;
+  // (The face still has its old elements: nothing outside a paint asked it.)
+  CHECK(u.view().canvas().panelOn(u.view().scene().sceneNode[u.view().patch().nodeOf(u.ids.group)]) == facePtr);
+  CHECK(facePtr->elementCount() == n0);
+  CHECK(u.d.step());  // the paint: the face rebuilds its elements, the drag's gesture is cancelled there
+  CHECK_FALSE(u.ctx.store().inGesture());
+  CHECK(u.view().stats().rebuilds == rebuilds);  // not under the paint
+  u.d.step();  // the next frame: the view rebuilds (the cancelled gesture took the panel edit back with it)
+  u.d.step();
+  CHECK(u.view().stats().rebuilds > rebuilds);
+  CHECK(u.position(u.ids.level) == doctest::Approx(p0));
+  CHECK(u.face().elementCount() == n0);
+  CHECK(u.history() == h0);
+  u.d.up({c.x, c.y + 40.0f});
+  u.d.step();
+  // The panel works on: a knob drag edits again, one step.
+  const Vec2 c2 = u.at(u.element("knob"));
+  u.d.drag(c2, {c2.x, c2.y + 60.0f}, 6);
+  u.d.step();
+  CHECK(u.position(u.ids.level) < p0 - 0.2);
+  CHECK(u.history() == h0 + 1);
+}
