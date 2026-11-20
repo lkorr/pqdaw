@@ -49,6 +49,8 @@ ui::Vec2 chip(const Element& e, ResponseChip c);
 // of the last paint, the x of each wrap marker the total drew (wrapped only).
 bool phaseUnwrapped(const Element& e, const PanelTarget& t);
 float phaseAt(const Element& e, float x);
+// BR.A: the phase SILHOUETTE's value at element x as its last ghost pass drew it (degrees; NaN: none).
+float ghostPhaseAt(const Element& e, float x);
 std::pair<double, double> phaseScale(const Element& e);
 std::vector<float> phaseWraps(const Element& e);
 // The delay area: the total's group delay drawn at element x (ms; NaN: none), the scale of the last paint (lo: 0, or the

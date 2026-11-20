@@ -414,9 +414,83 @@ TEST_CASE("render: eq-mod-ghost (2x) — an EQ band's Frequency modulated: its n
   };
   CHECK(peak(false) == doctest::Approx(400.0).epsilon(0.03));
   CHECK(peak(true) == doctest::Approx(2500.0).epsilon(0.03));
+  // BR.A (bug report 2026-11-19_19-35-48): the phase area follows the modulation too — a bell's phase is 0° at its
+  // centre: the solid curve's at 400 Hz, the silhouette's at 2.5 kHz (≈ −13° there at the knob).
+  const std::optional<panel::test::ResponseArea> ph = panel::test::area(*r, 1);
+  REQUIRE(ph.has_value());
+  REQUIRE(ph->open);
+  auto xAt = [&](double hz) {
+    uint32_t best = 0;
+    for (uint32_t k = 0; k < panel::test::responsePoints(); ++k)
+      if (std::fabs(std::log(panel::test::responseHz(k) / hz)) < std::fabs(std::log(panel::test::responseHz(best) / hz))) best = k;
+    return panel::test::responseX(*r, best);
+  };
+  CHECK(std::fabs(panel::test::phaseAt(*r, xAt(400.0))) < 3.0f);
+  CHECK(std::fabs(panel::test::phaseAt(*r, xAt(2500.0))) > 6.0f);
+  CHECK(std::fabs(panel::test::ghostPhaseAt(*r, xAt(2500.0))) < 3.0f);
+  CHECK(std::fabs(panel::test::ghostPhaseAt(*r, xAt(400.0))) > 6.0f);
   auto img = drv.render();
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
   checkImage("eq-mod-ghost", *img);
   drv.tree().setRoot(std::make_unique<Widget>());
   ctx.setModulationSource(nullptr);
+}
+
+TEST_CASE("BR.A: a driven band's curve follows the position its control SHOWS (an automated knob at its envelope's value "
+          "while playing), not only the stored one") {
+  FakeTransport port;
+  ViewContext ctx{port};
+  ctx.setDeviceLibrary(&devLib());
+  doc::DocumentStore& st = ctx.store();
+  const doc::TrackId track = run(st, doc::ops::createTrack(*st.current(), st.ids(), doc::TrackKind::Audio, {}, "Audio")).tracks.at(0);
+  const doc::DeviceId eq = test_blocks::addModule(st, track, "eq");
+  const std::optional<doc::EqInfo> e = doc::eqInfo(*st.current(), eq);
+  REQUIRE(e.has_value());
+  const doc::BandInfo band = e->bands[0][1];  // the 400 Hz bell
+  {
+    const doc::Device* gd = doc::findDevice(*st.current(), band.gain).device;
+    const dsp::Curve* c = gd->curve(doc::kValueParam);
+    REQUIRE(c != nullptr);
+    run(st, doc::ops::setDeviceParam(*st.current(), band.gain, std::string(doc::kValueParam), dsp::curvePosition(*c, dsp::curveOutput(*c, 9.0), 0.5)));
+  }
+  // A wire makes Frequency a driven control (as a lane does); no modulation source: no ghost.
+  const doc::DeviceId lfo = test_blocks::addModule(st, track, "lfo", doc::ops::kOffPath);
+  run(st, doc::ops::connectWire(*st.current(), st.ids(), lfo, "y", band.frequency, std::string(doc::kValueParam)));
+  const dsp::Curve fc = *doc::findDevice(*st.current(), band.frequency).device->curve(doc::kValueParam);
+  const doc::Panel* p = doc::findDevice(*st.current(), eq).device->panel.get();
+  REQUIRE(p != nullptr);
+  TestDriver drv(static_cast<uint32_t>(p->width), static_cast<uint32_t>(p->height), 1.0f);
+  panel::PanelHost* host = nullptr;
+  auto face = std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx, eq),
+                                                      panel::makeDocPanelTarget(ctx, eq, [&]() -> Widget* { return host; }));
+  host = &drv.setRoot<panel::PanelHost>("panel", std::move(face));
+  drv.tree().layoutNow();
+  REQUIRE(drv.enableGpu().ok());
+  drv.step();
+  panel::GroupPanelFace& gf = *host->panelFace();
+  const panel::Element* r = nullptr;
+  for (size_t i = 0; i < gf.elementCount(); ++i)
+    if (gf.element(i).desc().kind == "response") r = &gf.element(i);
+  REQUIRE(r != nullptr);
+  auto peak = [&] {
+    host->notifyChanged();
+    drv.advance(0.1);
+    float best = -1e9f;
+    double hz = 0.0;
+    for (uint32_t k = 0; k < panel::test::responsePoints(); ++k) {
+      const float v = *panel::test::drawnDb(*r, panel::test::responseX(*r, k));
+      if (v > best) best = v, hz = panel::test::responseHz(k);
+    }
+    return hz;
+  };
+  CHECK(peak() == doctest::Approx(400.0).epsilon(0.03));
+  doc::Binding freq;
+  freq.kind = doc::BindingKind::Control;
+  freq.device = band.frequency;
+  freq.name = std::string(doc::kValueParam);
+  CHECK(gf.target().showPosition(freq, dsp::curvePosition(fc, dsp::curveOutput(fc, 2500.0), 0.5)));
+  CHECK(peak() == doctest::Approx(2500.0).epsilon(0.03));
+  CHECK(gf.target().showPosition(freq, std::nullopt));  // the stored one again
+  CHECK(peak() == doctest::Approx(400.0).epsilon(0.03));
+  drv.tree().setRoot(std::make_unique<Widget>());
 }

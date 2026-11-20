@@ -316,7 +316,40 @@ Result<CompiledUnit> ProjectCompiler::compileUnit(const graph::ProjectGraph& g, 
   so.sleep = opt_.sleep;
   so.paramRamps = opt_.paramRamps;
   ScheduleResult sr = scheduleDetailed(opt.value(), so);
-  if (!sr.ok()) return compileError(sr.diagnostics.front().code, who + sr.diagnostics.front().message);
+  if (!sr.ok()) {
+    // BR.A: a refused loop's nodes, as the track-patch NodeIds they come from (unit root → track call → its node).
+    const TypedPatch& tp = opt.value();
+    for (size_t l = 0; l < sr.refusedLoops.size(); ++l) {
+      const std::string& msg = sr.diagnostics[std::min(l, sr.diagnostics.size() - 1)].message;
+      for (const NodeIndex m : sr.refusedLoops[l]) {
+        if (m >= tp.origin.size()) continue;
+        uint32_t inst = tp.origin[m].instance;
+        NodeIndex node = tp.origin[m].node;
+        if (inst >= tp.instances.size() || node == kNone) continue;
+        // Walk up to the instance whose caller is the unit root (the track call): its patch is the track patch.
+        while (inst != 0 && tp.instances[inst].parent != 0 && tp.instances[inst].parent != kNone) {
+          node = tp.instances[inst].callNode;
+          inst = tp.instances[inst].parent;
+        }
+        if (inst == 0 || tp.instances[inst].patch == nullptr) continue;  // a node of the unit root itself
+        const uint32_t callId = tp.instances[0].patch->node(tp.instances[inst].callNode).id.value;
+        uint32_t track = graph::kNone;
+        for (uint32_t t : partition_.units[u].tracks)
+          if (g.tracks[t].id == callId) track = t;
+        if (track == graph::kNone) continue;
+        const uint32_t id = tp.instances[inst].patch->node(node).id.value;
+        auto it = std::find_if(loopFailures_.begin(), loopFailures_.end(), [&](const UnitLoopFailure& f) {
+          return f.track == track && f.message == msg;
+        });
+        if (it == loopFailures_.end()) {
+          loopFailures_.push_back(UnitLoopFailure{track, {}, msg});
+          it = loopFailures_.end() - 1;
+        }
+        if (std::find(it->nodes.begin(), it->nodes.end(), id) == it->nodes.end()) it->nodes.push_back(id);
+      }
+    }
+    return compileError(sr.diagnostics.front().code, who + sr.diagnostics.front().message);
+  }
   CompiledUnit cu;
   for (const Diagnostic& d : sr.schedule.warnings) cu.warnings.push_back(d.message);
   cu.ops = static_cast<uint32_t>(sr.schedule.ops.size());
@@ -537,6 +570,7 @@ Result<ProjectBuild> ProjectCompiler::buildFrom(const graph::ProjectGraph& g, gr
 Result<TopologyBuild> ProjectCompiler::rebuild(const graph::ProjectGraph& g, std::span<const uint32_t> dirtyTracks,
                                                const UnitBackend* backend) {
   typeFailures_.clear();
+  loopFailures_.clear();
   if (units_.empty()) return compileError(ErrorCode::InvalidArgument, "rebuild before build");
   if (whole_) return compileError(ErrorCode::Unsupported, "rebuild of a whole-project build");
   auto part = graph::partitionProject(g);
@@ -679,6 +713,7 @@ void ProjectCompiler::adoptGraphCurves(const graph::ProjectGraph& g) {  // GU.1
 
 Result<ProjectBuild> ProjectCompiler::build(const graph::ProjectGraph& g) {
   typeFailures_.clear();
+  loopFailures_.clear();
   adoptGraphCurves(g);
   auto part = graph::partitionProject(g);
   if (!part.ok()) return part.error();
@@ -688,6 +723,7 @@ Result<ProjectBuild> ProjectCompiler::build(const graph::ProjectGraph& g) {
 
 Result<ProjectBuild> ProjectCompiler::buildWhole(const graph::ProjectGraph& g) {
   typeFailures_.clear();
+  loopFailures_.clear();
   adoptGraphCurves(g);
   auto part = graph::wholeProject(g);
   if (!part.ok()) return part.error();
@@ -698,6 +734,7 @@ Result<ProjectBuild> ProjectCompiler::buildWhole(const graph::ProjectGraph& g) {
 Result<std::vector<UnitUpdate>> ProjectCompiler::update(const graph::ProjectGraph& g, std::span<const uint32_t> tracks,
                                                         const UnitBackend* backend) {
   typeFailures_.clear();
+  loopFailures_.clear();
   adoptGraphCurves(g);  // GU.1
   if (units_.empty()) return compileError(ErrorCode::InvalidArgument, "update before build");
   // The partition only depends on tracks, wires and roles: O(tracks + wires).

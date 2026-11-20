@@ -515,6 +515,10 @@ struct ScheduleOptions {
 struct ScheduleResult {
   Schedule schedule;                    // complete only when diagnostics is empty
   std::vector<Diagnostic> diagnostics;  // errors
+  // BR.A: per feedback loop refused because it crosses the voice/global boundary or an oversample region's (the
+  // errors below), the loop's nodes (one strongly connected component): what the caller maps back to the wires that
+  // close it (engine::UnitLoopFailure, the playback link's cut wires).
+  std::vector<std::vector<NodeIndex>> refusedLoops;
   bool ok() const noexcept { return diagnostics.empty(); }
 };
 

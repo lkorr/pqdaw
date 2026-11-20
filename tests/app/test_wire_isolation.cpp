@@ -172,3 +172,33 @@ TEST_CASE("WI.2: an edit of a cut wire's track tries it again, another track's e
   CHECK(link->stats().typeRetries == retries + 2);
   CHECK(link->stats().compileErrors == 0);
 }
+
+// BR.A (bug report 2026-11-19_19-19-59 "all visual modules seem busted"): a feedback loop through an oversampled group
+// (an FM loop through a Wavetable at 2×, here a Utility group at 2×) cannot run per sample (two rates in one loop): the
+// scheduler refuses it. That used to fail the whole project compile — every later edit, every new visualiser's tap,
+// never played. Now the loop's closing wire is cut (Refused / Type, the scheduler's words) and the rest plays exactly
+// as the project without it.
+TEST_CASE("BR.A: a feedback loop across an oversample region is cut at its closing wire; the rest plays") {
+  Song s;
+  const DeviceId u1 = test_blocks::appendAfter(s.store, s.a, "module:utility");
+  const DeviceId u2 = test_blocks::appendAfter(s.store, s.a, "module:utility");
+  (void)s.must(ops::setDeviceSetting(*s.store.current(), u2, std::string(kGroupOversample), 1.0));  // 2×
+  const Track& ta = *findTrackPtr(*s.store.current(), s.a);
+  DeviceId value;
+  for (const Device* m : groupMembers(ta.devices, u1))
+    if (isValueDevice(*m) && !value.valid()) value = m->id;
+  REQUIRE(value.valid());
+  const WireId loop = s.must(ops::connectWire(*s.store.current(), s.store.ids(), u2, "", value, "value")).wires.at(0);
+  auto link = makeLink(s.store.current());
+  CHECK(link->stats().compileErrors == 0);
+  const std::string msg = link->wireError(loop);
+  MESSAGE("loop: " << msg);
+  CHECK(msg.find("oversampled part") != std::string::npos);
+  CHECK(link->stats().typeCutWires == 3);  // the loop and Song's two
+  auto ref = makeLink(s.without({s.rate, s.kind, loop}));
+  CHECK(ref->stats().compileErrors == 0);
+  CHECK(ref->stats().typeCutWires == 0);
+  const Channels expected = render(*ref, 0.5);
+  CHECK(peak(expected) > 0.01f);
+  CHECK(render(*link, 0.5) == expected);
+}

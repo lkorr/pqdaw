@@ -138,7 +138,10 @@ void GroupResponses::holdDriven(doc::GroupEvaluator& e) noexcept {
   for (uint32_t i = 0; i < driven.size(); ++i) {
     const std::optional<double> g = positions_ != nullptr ? positions_->ghostPosition(driven[i]) : std::nullopt;
     sawGhost_ = sawGhost_ || g.has_value();
-    (void)e.setLive(i, ghost_ && g ? *g : -1.0);
+    // BR.A: at the knob means where the target SHOWS it (an automated control at its envelope's value while playing, a
+    // macro-mapped one at its macro's), not the stored value: the solid curve follows automation as the knob does.
+    const double shown = positions_ != nullptr ? std::clamp(positions_->position(driven[i]), 0.0, 1.0) : -1.0;
+    (void)e.setLive(i, ghost_ && g ? *g : shown);
   }
 }
 

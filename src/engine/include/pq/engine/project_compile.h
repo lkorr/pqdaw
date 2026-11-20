@@ -174,6 +174,15 @@ struct UnitTypeFailure {
   uint32_t consumer = 0, source = 0;  // raw NodeIds in that track's patch (lowered: document::nodeIdFor)
   std::string message;            // the diagnostic (unformatted)
 };
+// BR.A: a feedback loop the scheduler refused (it crosses the voice/global boundary or an oversample region's: per
+// sample it would need two rates or the voice groups and the single part to alternate), per track of the unit it
+// passes through: the track-patch NodeIds of its nodes there (raw, as above; each node once). The playback link maps
+// them to the document wire that closes the loop and cuts it ("Cut wires").
+struct UnitLoopFailure {
+  uint32_t track = graph::kNone;  // index into graph.tracks
+  std::vector<uint32_t> nodes;    // raw NodeIds in that track's patch
+  std::string message;            // the diagnostic (unformatted)
+};
 
 // T3.17-fix2 (idle units, pq/engine/project_program.h): whether a unit's outputs are exactly zero while every root
 // input is zero and no voice sounds, and its global state then only settles: every global stateful node is a gain /
@@ -221,6 +230,8 @@ public:
   // (one per blamed edge; a type error with no edge inside a track has none). Cleared when one of them starts; filled
   // only when a unit fails inference (the returned Error is the same as without it).
   const std::vector<UnitTypeFailure>& lastTypeFailures() const noexcept { return typeFailures_; }
+  // BR.A: the refused feedback loops of the last build / buildWhole / update / rebuild (cleared with the type failures).
+  const std::vector<UnitLoopFailure>& lastLoopFailures() const noexcept { return loopFailures_; }
 
   const graph::ProjectPartition& partition() const noexcept { return partition_; }
   const CompiledUnit& unit(uint32_t u) const noexcept { return units_[u]; }
@@ -245,6 +256,7 @@ private:
   std::vector<graph::PortType> busTypes_;
   std::vector<std::string> busKeys_;
   std::vector<UnitTypeFailure> typeFailures_;
+  std::vector<UnitLoopFailure> loopFailures_;  // BR.A
   bool whole_ = false;
 };
 

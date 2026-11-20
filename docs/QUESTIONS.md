@@ -2116,3 +2116,20 @@ a trace scope when `doc::elementTraces` is non-empty (style `trace` = which slot
 the way: the circuit canvas took the key focus back after a face's press even when the press had opened a popup that
 took it (the radial menu then got no typing); it now keeps a focus the press moved. Status: decided (reversible:
 trace_element.cpp, engine_elements.cpp makeSection).
+
+## Q?-BR.A-a · 2026-11-19 · BR.A · Where a module's oversampling lives once the inspector column is gone
+Context: TX.group-oversample gave every group's Device-view frame an inspector column with an Oversample menu; on
+modules (EQ, Saturator, Utility … — groups that show their own panel) it doubled the EQ's own menu and squeezed every
+panel (bug report 2026-11-19_18-57-24). Options: (1) inspector only on instrument groups and panel-less groups; a
+module's oversampling from its panel's menu where it places one (EQ, EQ Band, Math) and from every group's title-bar
+context menu (Oversample ▸); (2) add an Oversample menu to every built module panel; (3) keep the inspector, narrower.
+Chosen: (1), the most reversible (no preset or panel changes). Saturator / Utility / LFO … now set oversampling only
+from the context menu; (2) is the follow-up if the user wants it on their faces. Status: open.
+
+## Q?-BR.A-b · 2026-11-19 · BR.A · A refused feedback loop is cut, not compiled
+Context: a feedback loop through an oversample region (an FM loop through a Wavetable at 2×) or across the voices' sum
+cannot run per sample; the scheduler refuses it, and that failed the whole project compile (bug report
+2026-11-19_19-19-59: every later edit and every new visualiser's tap never played). Options: (1) cut one wire of the
+loop as WI.2 cuts a type error (red cable, message, the rest plays); (2) run such a loop with a block of delay; (3) run
+the loop's region at the base rate. Chosen: (1) — general, no DSP change; the loop is silent until the user moves it
+inside or outside the oversampled part. (2) / (3) would make the patch play but change its sound. Status: open.

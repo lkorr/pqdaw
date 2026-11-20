@@ -667,3 +667,54 @@ TEST_CASE("group panels (TX.group-oversample): the inspector's Oversample menu (
     CHECK(spec.choices[k].find(want) != std::string_view::npos);
   }
 }
+
+TEST_CASE("BR.A: a module group (a panel, not an instrument) is its panel alone in the Device view — no inspector; its "
+          "oversampling from the title bar's menu (one step, one structural change) — real pointer dispatch") {
+  Ui u;
+  const auto add = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.ids.keys,
+                                       std::string(doc::kModuleItemPrefix) + "saturator", doc::DeviceKind::AudioEffect);
+  REQUIRE(add.ok());
+  REQUIRE(u.ctx.store().dispatch(add->command).ok());
+  const doc::DeviceId sat = add->devices.at(0);
+  u.ctx.setSelectedTrack(u.ids.keys);
+  u.ctx.setDetailVisible(true);
+  u.ctx.setDetailMode(DetailMode::Device);
+  u.d.tree().layoutNow();
+  u.d.step();
+  DeviceChainView* dv = findDeviceChain(*u.shell);
+  REQUIRE(dv != nullptr);
+  Widget* frame = dv->frameOf(sat);
+  REQUIRE(frame != nullptr);
+  CHECK(frame->find("panel[" + std::to_string(sat.value) + "]") != nullptr);
+  CHECK(frame->find("inspector[" + std::to_string(sat.value) + "]") == nullptr);  // (was: OVERSAMPLE on every module)
+  // The instrument group keeps its inspector (its polyphony).
+  CHECK(dv->frameOf(u.ids.group)->find("inspector[" + std::to_string(u.ids.group.value) + "]") != nullptr);
+  // Right-click on the title bar → Oversample ▸ 4×.
+  const IRect fr = frame->rect();
+  u.d.click({static_cast<float>(fr.x + 40), static_cast<float>(fr.y + 6)}, mod::kNone, PointerButton::Right);
+  u.d.step();
+  Menu* m = u.menu();
+  REQUIRE(m != nullptr);
+  int32_t os = -1;
+  for (size_t i = 0; i < m->items().size(); ++i)
+    if (m->items()[i].label == "Oversample") os = static_cast<int32_t>(i);
+  REQUIRE(os >= 0);
+  CHECK(m->items()[static_cast<size_t>(os)].submenu.front().checked);  // 1× now
+  const size_t h0 = u.history();
+  const int s0 = u.structural;
+  const IRect r = m->itemRect(os);
+  u.d.click({static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)});
+  u.d.step();
+  Menu* sub = m->submenu();
+  REQUIRE(sub != nullptr);
+  int32_t four = -1;
+  for (size_t i = 0; i < sub->items().size(); ++i)
+    if (sub->items()[i].label.starts_with("4\xC3\x97")) four = static_cast<int32_t>(i);
+  REQUIRE(four >= 0);
+  const IRect r4 = sub->itemRect(four);
+  u.d.click({static_cast<float>(r4.x + r4.w / 2), static_cast<float>(r4.y + r4.h / 2)});
+  u.d.step();
+  CHECK(doc::groupOversampleFactor(u.dev(sat)) == 4);
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.structural == s0 + 1);
+}

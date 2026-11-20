@@ -601,6 +601,7 @@ private:
       for (NodeIndex m : members(c))
         if (reducer_[m] || poly_[m] != poly_[first]) cross = true;
       if (cross) {
+        res_.refusedLoops.emplace_back(members(c).begin(), members(c).end());  // BR.A
         report(first, ErrorCode::Unsupported,
                "feedback loop through " + label(first) +
                    " crosses the voice/global boundary (a voice reducer inside a loop); reduce outside the loop");
@@ -611,6 +612,7 @@ private:
       for (NodeIndex m : members(c))
         if (conv_[m] || (nk_[m] == NK::Op && factor_[m] != factor_[first])) rates = true;
       if (rates) {
+        res_.refusedLoops.emplace_back(members(c).begin(), members(c).end());  // BR.A
         report(first, ErrorCode::Unsupported,
                "feedback loop through " + label(first) +
                    " crosses the boundary of an oversample region; keep the whole loop inside the region or outside it");

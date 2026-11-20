@@ -33,6 +33,7 @@
 #include "pq/views/fake_transport.h"
 #include "pq/views/panel/element.h"
 #include "pq/views/panel/group_panel_face.h"
+#include "pq/views/panel/trace_scope.h"
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "views_test_util.h"
@@ -399,4 +400,63 @@ TEST_CASE("render: math-face-gt / -clip / -eq (MX.3: a compare's gate, a range o
     checkImage("math-face-clip" + sfx, faceImage("clip", s));
     checkImage("math-face-eq" + sfx, faceImage("eq", s));
   }
+}
+
+TEST_CASE("BR.A: a trace scope shows −1 … 1; a value beyond it widens the range slowly to what it spanned over the last "
+          "~5 s, and the range relaxes back to ±1 once those extremes age out") {
+  FaceRig r("add", 1.0f);
+  (void)r.render();  // the first paint acquires the feed
+  std::vector<const panel::Element*> scopes;
+  for (size_t i = 0; i < r.face->elementCount(); ++i)
+    if (panel::test::traceRange(r.face->element(i))) scopes.push_back(&r.face->element(i));
+  REQUIRE(scopes.size() >= 3);  // (A, B, Out; an "all" scope too)
+  for (const panel::Element* e : scopes) CHECK(*panel::test::traceRange(*e) == std::pair<float, float>{-1.0f, 1.0f});
+  // A = ampA · sin(2π·110 t), B = 0.4 · sin, Out = A + B: `seconds` of it in 50 ms steps, the face painted at each.
+  auto run = [&](double ampA, double seconds) {
+    constexpr uint32_t kStep = 2400;  // 50 ms
+    std::vector<float> beat(kStep), a(kStep), b(kStep), out(kStep);
+    for (double done = 0.0; done < seconds - 1e-9; done += 0.05) {
+      for (uint32_t j = 0; j < kStep; ++j) {
+        const double t = static_cast<double>(r.at + j) / kSr;
+        a[j] = static_cast<float>(ampA * std::sin(2.0 * std::numbers::pi * 110.0 * t));
+        b[j] = static_cast<float>(0.4 * std::sin(2.0 * std::numbers::pi * 27.5 * t));
+        beat[j] = static_cast<float>(t * 2.0);
+        out[j] = a[j] + b[j];
+      }
+      const float* ch[4] = {beat.data(), a.data(), b.data(), out.data()};
+      r.tap.write(ch, 4, kStep);
+      r.at += kStep;
+      (void)r.feed.step(r.clock += 0.05);
+      Clock::now() += 0.05;
+      (void)r.face->pollVoices();  // (the host's frame tick: the feed read, a repaint asked)
+      (void)r.render();
+    }
+  };
+  auto widest = [&] {
+    std::pair<float, float> w{0.0f, 0.0f};
+    for (const panel::Element* e : scopes) {
+      const auto x = *panel::test::traceRange(*e);
+      w = {std::min(w.first, x.first), std::max(w.second, x.second)};
+    }
+    return w;
+  };
+  auto narrowest = [&] {
+    float h = 1e9f;
+    for (const panel::Element* e : scopes) h = std::min(h, panel::test::traceRange(*e)->second);
+    return h;
+  };
+  run(4.0, 0.1);  // slowly: after 0.1 s well short of the peak
+  CHECK(widest().second > 1.2f);
+  CHECK(widest().second < 3.0f);
+  run(4.0, 2.0);  // settled on the span (A's ±4, Out's ±4.4)
+  CHECK(widest().second > 3.9f);
+  CHECK(widest().second < 4.45f);
+  CHECK(widest().first < -3.9f);
+  CHECK(widest().first > -4.45f);
+  CHECK(narrowest() == doctest::Approx(1.0));  // B (±0.4) never left ±1
+  run(0.5, 3.0);  // quiet, but the loud part is still inside the 5 s window: held
+  CHECK(widest().second > 4.0f);
+  run(0.5, 14.0);  // aged out (after ~5 s), then eased back to ±1
+  CHECK(widest().second == doctest::Approx(1.0).epsilon(0.01));
+  CHECK(widest().first == doctest::Approx(-1.0).epsilon(0.01));
 }

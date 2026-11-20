@@ -2118,3 +2118,15 @@ The Math module now spawns closed as its face (300 × 194). Look at `tests/views
 - Tolerance (4 decimals) appears under the A scope only for == and ≠; Oversample sits under the B scope.
 Judge: the ~52 ms span (≈ 6 cycles of a 110 Hz A in a 72-unit box) — dense at 1×; the jack dots are markers only (the
 real pins stay on the node's edges, see QUESTIONS Q?-MX.3-a); the "==" glyph spacing.
+
+## BR.A · 2026-11-19 · device chain and visualiser fixes
+- Device view: modules (EQ, Saturator, Utility, analysers …) show their panel alone — no OVERSAMPLE column, no
+  "· 34 devices" in the title (a module's atoms are not devices). Instrument and panel-less groups keep the inspector;
+  any group: right-click its title bar → Oversample ▸. Scenes: device-chain, device-meta-spectrum, device-automation.
+- A feedback loop through an oversampled part no longer freezes the project: its closing cable turns red (hover: why),
+  everything else plays and every display updates. Try the 2026-11-19_19-19-59 project.
+- Math scopes: −1 … 1 by default; a bigger signal widens the range over ~0.4 s to what it spanned in the last 5 s, and
+  it eases back (~1 s) once that ages out.
+- EQ / filter displays: an automated band follows its envelope (solid curve), a modulated band shows the moving
+  silhouette on the PHASE and DELAY strips too (eq-mod-ghost).
+Judge: the easing speeds of the scope range; whether Saturator / Utility want an Oversample menu on their faces (Q?-BR.A-a).

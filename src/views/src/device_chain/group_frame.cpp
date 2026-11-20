@@ -5,15 +5,21 @@
 // and selects the group as any device's; its right edge drags the panel wider or narrower (view state of the session).
 // GU.3 (docs/plans/GU.md "Decided"): a group whose PANEL has elements shows its panel instead (pq/views/panel/
 // group_panel_face.h: the same face the circuit draws for the closed group, fitted to the frame's height, edited in
-// place); an empty panel keeps the mini circuit. Every group shows its INSPECTOR on the left: an instrument group's
-// polyphony (voices, mono, legato, glide, steal) and (TX.group-oversample) every group's Oversample menu as panel
-// elements bound to the group's settings (an edit: one undo step, one recompile) — what IG.4's group panel was to be.
+// place); an empty panel keeps the mini circuit. The INSPECTOR on the left: an instrument group's polyphony (voices,
+// mono, legato, glide, steal) and (TX.group-oversample) the group's Oversample menu as panel elements bound to the
+// group's settings (an edit: one undo step, one recompile) — what IG.4's group panel was to be. BR.A: only an
+// instrument group or a group without a panel (the mini circuit) shows it; a group that shows its own panel (a module:
+// EQ, Saturator, Utility …) is its panel alone — its oversampling is its panel's menu where the panel places one, and
+// every group's title-bar context menu (Oversample ▸). The title counts the group's DEVICES (members that are not atom
+// or value blocks: a module's internals are not devices) and shows no count for a module.
 #include <algorithm>
 #include <cmath>
 #include <string>
 
 #include "../common/paint.h"
 #include "internal.h"
+#include "pq/document/edit_ops.h"
+#include "pq/document/panel.h"
 #include "pq/document/racks.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/ui/theme.h"
@@ -36,7 +42,7 @@ public:
     setLayout(ui::LayoutKind::Custom);
     hasPanel_ = d.hasPanel();
     instrument_ = doc::isInstrumentGroup(*ctx.doc(), d.id);
-    {  // GU.3: the inspector (a generated panel of the group's own settings; TX.group-oversample: every group has one)
+    if (instrument_ || !hasPanel_) {  // GU.3: the inspector (a generated panel of the group's own settings)
       auto face = std::make_unique<panel::GroupPanelFace>(
           [p = std::make_shared<const doc::Panel>(panel::inspectorPanel(d.id, inspectorW(), instrument_))]() -> doc::PanelPtr { return p; },
           panel::makeDocPanelTarget(ctx, d.id, [this]() -> ui::Widget* { return inspector_; }));
@@ -141,9 +147,32 @@ public:
     ctx.dl.addRectFilled(title.toRect(), active_ ? ui::lerp(t->surface.raised, t->circuit.wireAudio, 0.25f) : t->surface.sunken);
     if (ctx.res.uiFonts == nullptr) return;
     const ui::IRect text = paint::inset(title, ctx.scale.px(6.0f));
-    const std::string label = (name_.empty() ? std::string("Group") : name_) + "  ·  " + std::to_string(members_) +
-                              (members_ == 1 ? " device" : " devices");
+    std::string label = name_.empty() ? std::string("Group") : name_;
+    if (!hasPanel_ && members_ > 0) label += "  ·  " + std::to_string(members_) + (members_ == 1 ? " device" : " devices");
     paint::text(ctx, ctx.res.uiFonts->small, text, label, active_ ? t->text.primary : t->text.secondary, ui::TextAlign::Left);
+  }
+
+  // BR.A: every group's oversampling from its title bar's menu (the inspector shows it only where there is one).
+  void contextItems(ui::Vec2 /*p*/, std::vector<ui::MenuItem>& items) override {
+    const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), id_);
+    if (l.device == nullptr) return;
+    const doc::SettingSpec& spec = doc::groupOversampleSetting();
+    const uint32_t factor = doc::groupOversampleFactor(*l.device);
+    std::vector<ui::MenuItem> sub;
+    DeviceChainView::Impl* im = &impl_;
+    ViewContext* c = &ctx_;
+    const doc::DeviceId id = id_;
+    for (size_t i = 0; i < spec.choices.size(); ++i) {
+      ui::MenuItem it = ui::MenuItem::item(std::string(spec.choices[i]), [im, c, id, i] {
+        (void)im->run(doc::ops::setDeviceSetting(*c->doc(), id, std::string(doc::kGroupOversample),
+                                                 i == 0 ? std::nullopt : std::optional<double>(static_cast<double>(i))),
+                      false);
+      });
+      it.checked = (1u << i) == factor;
+      sub.push_back(std::move(it));
+    }
+    items.push_back(ui::MenuItem::sub("Oversample", std::move(sub)));
+    items.push_back(ui::MenuItem::sep());
   }
 
   bool onPointer(const ui::PointerEvent& e) override {
@@ -180,9 +209,13 @@ public:
   }
 
 private:
+  // BR.A: the members a user calls devices (atom and value blocks are a module's or a circuit's internals).
   uint32_t countMembers() const {
     const doc::DeviceLoc l = doc::findDevice(*ctx_.doc(), id_);
-    return l.track != nullptr ? static_cast<uint32_t>(doc::groupMembers(l.track->devices, id_).size()) : 0u;
+    if (l.track == nullptr) return 0u;
+    uint32_t n = 0;
+    for (const doc::Device* m : doc::groupMembers(l.track->devices, id_)) n += doc::isAtomDevice(*m) || doc::isValueDevice(*m) ? 0u : 1u;
+    return n;
   }
 
   project_patch::ProjectPatchView* view_ = nullptr;

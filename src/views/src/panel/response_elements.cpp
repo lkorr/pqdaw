@@ -464,7 +464,9 @@ public:
   void paintGhost(ui::FacePainter& p, const ElementEnv& env) override {
     PanelTarget& t = *env.target;
     GroupResponses* r = t.responses();
-    if (r == nullptr || binding() == nullptr || !area_[kMag].open || env.theme == nullptr) return;
+    if (r == nullptr || binding() == nullptr || env.theme == nullptr) return;
+    paintGhostStrips(p, *env.theme, *r);  // BR.A: the phase and delay areas follow the modulation too
+    if (!area_[kMag].open) return;
     const ui::Theme& th = *env.theme;
     const std::vector<double>& hz = grid();
     const uint32_t act = shown_.active;
@@ -503,6 +505,33 @@ public:
       p.disc({x, y}, 4.4f, col);
     }
     dl.popClip();
+  }
+
+  // BR.A: the silhouette on the phase and delay areas — the active chain's total at the ghost positions, derived as the
+  // solid ones are (the delay from the shifted grid's second evaluation, which also gives an unwrapped phase its turns)
+  // and drawn translucent on the solid curves' scales (as laid out by the last live paint).
+  void paintGhostStrips(ui::FacePainter& p, const ui::Theme& th, GroupResponses& r) {
+    const bool phase = area_[kPhase].open, delay = area_[kDelay].open;
+    if (!phase && !delay) return;
+    const uint32_t act = shown_.active;
+    const GroupResponses::Curve* tot = shown_.total(r, act, grid(), kGridKey);
+    if (delay || unwrap_) deriveDelay(tot, tot != nullptr ? shown_.total(r, act, shiftedGrid(), kShiftedKey) : nullptr, ghostDelay_);
+    if (phase) derivePhase(tot, unwrap_, &ghostDelay_, ghostPhase_);
+    const Rgba m = th.device.response;
+    auto draw = [&](int32_t a, const Derived& d) {
+      if (!d.valid()) return;
+      const Span& A = area_[a];
+      ui::DrawList& dl = p.drawList();
+      dl.pushClip(devRect(p, A));
+      forRuns(d.v, a == kPhase && !unwrap_, [&](uint32_t x0, uint32_t x1) {
+        stripPoints(d.v, x0, x1, A, a == kDelay, pts_);
+        p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.25f));
+        p.polyline(pts_, 1.3f, m);
+      }, [](float) {});
+      dl.popClip();
+    };
+    if (phase) draw(kPhase, ghostPhase_);
+    if (delay) draw(kDelay, ghostDelay_);
   }
 
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
@@ -653,6 +682,10 @@ public:
     if (!d.valid()) return std::numeric_limits<float>::quiet_NaN();
     const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
     return d.v[static_cast<size_t>(std::lround(k))];
+  }
+  float ghostPhase(float x) const {  // BR.A
+    if (!ghostPhase_.valid()) return std::numeric_limits<float>::quiet_NaN();
+    return ghostPhase_.v[static_cast<size_t>(std::lround(std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1)))];
   }
   float ghostDb(float x) const {
     if (!ghostTotal_.valid()) return std::numeric_limits<float>::quiet_NaN();
@@ -874,6 +907,7 @@ private:
       for (size_t i = 0; i < bands.size(); ++i) deriveDb(bands[i]->off ? nullptr : r->curve(bands[i]->group, hz, kGridKey), band_[i]);
     }
     const bool phase = area_[kPhase].open, delay = area_[kDelay].open, unwrap = phase && unwrapOn(t);
+    unwrap_ = unwrap;  // (BR.A: the ghost pass's target has no view state of its own)
     if (!phase && !delay) return;
     // The selected band (of the active chain, on), faint behind the total.
     uint32_t chain = 0;
@@ -1369,7 +1403,9 @@ private:
   std::vector<Derived> band_;
   Derived ghostTotal_;               // bug-mod-ghost: the silhouette (the active chain's total at the ghost positions)
   std::vector<Derived> ghostBand_;   // a modulated band's own curve there (its node rides on it)
-  Derived phaseTotal_, phaseSel_, delayTotal_, delaySel_;  // the phase / delay areas: the total, the selected band
+  Derived phaseTotal_, phaseSel_, delayTotal_, delaySel_;
+  Derived ghostPhase_, ghostDelay_;  // BR.A: the phase / delay silhouettes
+  bool unwrap_ = false;             // the phase area unwrapped (last refresh)  // the phase / delay areas: the total, the selected band
   Rgba selColour_ = 0;
   double phaseLo_ = -180.0, phaseHi_ = 180.0, delayLo_ = 0.0, delayHi_ = 1.0;  // their scales (last paint)
   float delayFloorY_ = 0.0f;                                                    // the y of 0 ms (last paint)
@@ -1530,6 +1566,10 @@ ui::Vec2 chip(const Element& e, ResponseChip c) {
 bool phaseUnwrapped(const Element& e, const PanelTarget& t) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
   return r != nullptr && r->unwrapped(t);
+}
+float ghostPhaseAt(const Element& e, float x) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->ghostPhase(x) : std::numeric_limits<float>::quiet_NaN();
 }
 float phaseAt(const Element& e, float x) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);

@@ -8,8 +8,12 @@
 //            span, the Oscilloscope's defaults) — computed once per feed update, whichever scope polls first; the
 //            panel repaints whole after a poll, so all of them draw the same samples.
 //   style    `trace` first | second | third | all (which slot it draws; colours: slot 0 the waveform green, 1 salmon,
-//            2 the accent blue); `scale` auto (bipolar about the centre line: ±1 full height, a larger peak fits the
-//            box) | gate (a 0 / 1 trace: 0 at the bottom rule, 1 at the top rule).
+//            2 the accent blue); `scale` auto | gate (a 0 / 1 trace: 0 at the bottom rule, 1 at the top rule).
+//   range    (BR.A) auto: −1 … 1 by default; a value beyond it widens the range SLOWLY to what the drawn signals spanned
+//            over the last ~5 s (RangeTracker: the min / max of each frame shown into 20 buckets of 0.25 s, the range
+//            eased toward theirs — out with τ 0.4 s, back toward ±1 with τ 1.2 s as old extremes age out). Per frame:
+//            one pass over the shown samples (the trace walks them anyway) and 20 compares; no sort, no history of
+//            samples.
 //   costs    the feed is acquired on the first paint and let go when the scope stops being painted (a poll finds no
 //            paint for 0.5 s, asks for one, none comes: the Oscilloscope face's rule), so a panel off screen or a hidden
 //            element reads nothing; the tap then costs the audio thread one relaxed load per block. A paint draws the
@@ -28,6 +32,7 @@
 #include "pq/dsp/scope.h"
 #include "pq/ui/lines.h"
 #include "pq/views/devices/analysis.h"
+#include "pq/views/panel/trace_scope.h"
 
 namespace pq::views::panel {
 
@@ -41,6 +46,64 @@ constexpr std::string_view kTraces[] = {"first", "second", "third", "all"};
 constexpr std::string_view kScales[] = {"auto", "gate"};
 constexpr float kInset = 3.0f;    // the plot inside the box (units)
 constexpr double kEnvelopeSpp = 4.0;  // denser than this: the min / max envelope
+
+// BR.A: the auto range — −1 … 1, widened to the extremes of the last kBuckets · kBucketSeconds, eased.
+class RangeTracker {
+public:
+  static constexpr int kBuckets = 20;
+  static constexpr double kBucketSeconds = 0.25;   // 20 · 0.25 s = the 5 s window
+  static constexpr double kOutTau = 0.4, kInTau = 1.2;  // seconds: widening, relaxing
+
+  // The extremes of one frame shown at time `now` (seconds).
+  void add(float lo, float hi, double now) {
+    advance(now);
+    Bucket& b = buckets_[static_cast<size_t>(index_ % kBuckets)];
+    b.lo = std::min(b.lo, lo);
+    b.hi = std::max(b.hi, hi);
+  }
+  // Eases the range toward the window's extremes (at least −1 … 1); true: it moved visibly (a repaint is due).
+  bool step(double now) {
+    advance(now);
+    float tlo = -1.0f, thi = 1.0f;
+    for (const Bucket& b : buckets_) tlo = std::min(tlo, b.lo), thi = std::max(thi, b.hi);
+    const double dt = last_ > 0.0 ? std::clamp(now - last_, 0.0, 0.5) : 0.0;
+    last_ = now;
+    const float lo0 = lo_, hi0 = hi_;
+    auto ease = [&](float& v, float target, bool out) {
+      const double a = 1.0 - std::exp(-dt / (out ? kOutTau : kInTau));
+      v += static_cast<float>((target - v) * a);
+      if (std::fabs(v - target) < 1e-3f * std::max(1.0f, std::fabs(target))) v = target;
+    };
+    ease(lo_, tlo, tlo < lo_);
+    ease(hi_, thi, thi > hi_);
+    return std::fabs(lo_ - lo0) + std::fabs(hi_ - hi0) > 1e-4f * (hi_ - lo_);
+  }
+  bool settled() const noexcept {
+    float tlo = -1.0f, thi = 1.0f;
+    for (const Bucket& b : buckets_) tlo = std::min(tlo, b.lo), thi = std::max(thi, b.hi);
+    return lo_ == tlo && hi_ == thi;
+  }
+  float lo() const noexcept { return lo_; }
+  float hi() const noexcept { return hi_; }
+
+private:
+  struct Bucket {
+    float lo = 0.0f, hi = 0.0f;
+  };
+  void advance(double now) {
+    const auto k = static_cast<int64_t>(std::floor(now / kBucketSeconds));
+    if (index_ < 0 || k - index_ >= kBuckets) {
+      buckets_.fill(Bucket{});
+    } else {
+      for (int64_t i = index_ + 1; i <= k; ++i) buckets_[static_cast<size_t>(i % kBuckets)] = Bucket{};
+    }
+    if (k > index_) index_ = k;
+  }
+  std::array<Bucket, kBuckets> buckets_{};
+  int64_t index_ = -1;
+  double last_ = 0.0;
+  float lo_ = -1.0f, hi_ = 1.0f;
+};
 
 // The newest frames of one trace tap and the frame every trace scope of it shows.
 class TraceWindow {
@@ -132,17 +195,23 @@ public:
     }
     const Rect r = plot();
     if (gate()) {
-      for (const float v : {0.0f, 1.0f}) p.line({r.x0, yOf(v, 1.0f)}, {r.x1, yOf(v, 1.0f)}, 0.6f, white);
+      for (const float v : {0.0f, 1.0f}) p.line({r.x0, yOf(v)}, {r.x1, yOf(v)}, 0.6f, white);
       return;
     }
-    for (const float v : {-0.5f, 0.5f}) p.line({r.x0, yOf(v, 1.0f)}, {r.x1, yOf(v, 1.0f)}, 0.5f, white);
+    // The quarter rules (±0.5 at the default range; BR.A: divisions of the plot as the range widens).
+    for (const float f : {0.25f, 0.75f}) {
+      const float y = r.y0 + f * (r.y1 - r.y0);
+      p.line({r.x0, y}, {r.x1, y}, 0.5f, white);
+    }
   }
 
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     const Rect r = plot();
-    if (!gate()) p.line({r.x0, yOf(0.0f, 1.0f)}, {r.x1, yOf(0.0f, 1.0f)}, 0.7f, th.device.displayGridMajor);
-    if (env.target == nullptr || env.ghost) return;
+    if (env.target == nullptr || env.ghost) {
+      if (!gate()) p.line({r.x0, yOf(0.0f)}, {r.x1, yOf(0.0f)}, 0.7f, th.device.displayGridMajor);
+      return;
+    }
     painted_ = clock();
     probe_ = 0.0;
     if (!sync(*env.target)) return;
@@ -150,6 +219,19 @@ public:
       window_->acquire();
       held_ = true;
       (void)window_->update();  // a scope that just appeared draws its first frame complete
+    }
+    if (!gate()) {  // BR.A: the range follows what the shown traces spanned
+      if (window_->version() != ranged_) {
+        ranged_ = window_->version();
+        float lo = 0.0f, hi = 0.0f;
+        const int which = traceIndex();
+        for (int k = 0; k < 3; ++k)
+          if (which == 3 || which == k)
+            for (const float v : window_->shown(static_cast<size_t>(k))) lo = std::min(lo, v), hi = std::max(hi, v);
+        range_.add(lo, hi, painted_);
+      }
+      (void)range_.step(painted_);
+      p.line({r.x0, yOf(0.0f)}, {r.x1, yOf(0.0f)}, 0.7f, th.device.displayGridMajor);
     }
     const ui::FaceTransform& ft = p.transform();
     const Rect d{ft.origin.x + r.x0 * ft.scale, ft.origin.y + r.y0 * ft.scale, ft.origin.x + r.x1 * ft.scale,
@@ -162,6 +244,7 @@ public:
     dl.popClip();
     seen_ = window_->version();
   }
+  std::pair<float, float> range() const noexcept { return {range_.lo(), range_.hi()}; }  // (tests)
   bool ghosted(const PanelTarget& /*t*/) const override { return false; }
   void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
 
@@ -182,9 +265,9 @@ public:
       }
     }
     const bool fresh = window_->update();
-    return fresh || window_->version() != seen_;
+    return fresh || window_->version() != seen_ || !range_.settled();  // (BR.A: the range still easing)
   }
-  bool animating() const noexcept override { return held_ && window_ && window_->live(); }
+  bool animating() const noexcept override { return held_ && window_ && (window_->live() || !range_.settled()); }
   // (The host polls while a reader exists: one as soon as the target has the tap, so the first paint is followed.)
   VoiceTapReader* voiceReader(PanelTarget& t) const override {
     reader_.window = held_ ? window_.get() : nullptr;
@@ -216,12 +299,13 @@ private:
     return 0;
   }
   Rect plot() const noexcept { return {kInset, kInset, desc_.w - kInset, desc_.h - kInset}; }
-  // The y of value v (gate: 0 … 1 bottom to top; auto: ±peak about the middle), units.
-  float yOf(float v, float peak) const noexcept {
+  // The y of value v (gate: 0 … 1 bottom to top; auto: the range lo … hi bottom to top, −1 … 1 by default), units.
+  float yOf(float v) const noexcept {
     const Rect r = plot();
     if (gate()) return r.y1 - std::clamp(v, -0.1f, 1.1f) * (r.y1 - r.y0);
-    const float mid = 0.5f * (r.y0 + r.y1), half = 0.5f * (r.y1 - r.y0);
-    return mid - std::clamp(v / peak, -1.05f, 1.05f) * half;
+    const float lo = range_.lo(), hi = range_.hi();
+    const float u = (v - lo) / std::max(hi - lo, 1e-6f);  // 0 … 1
+    return r.y1 - std::clamp(u, -0.025f, 1.025f) * (r.y1 - r.y0);
   }
   // Follows the target's feed for this element (a new one: a new window). True: there is one.
   bool sync(PanelTarget& t) {
@@ -239,12 +323,9 @@ private:
   }
   void paintTrace(ui::DrawList& dl, const Rect& d, float scale, std::span<const float> x, Rgba col) {
     if (x.size() < 2) return;
-    float peak = 1.0f;
-    if (!gate())
-      for (const float v : x) peak = std::max(peak, std::fabs(v));
     const float w = d.x1 - d.x0;
     const Rect r = plot();
-    auto y = [&](float v) { return d.y0 + (yOf(v, peak) - r.y0) * scale; };
+    auto y = [&](float v) { return d.y0 + (yOf(v) - r.y0) * scale; };
     const float lw = 1.1f * scale, glow = 0.35f;
     const double spp = static_cast<double>(x.size()) / std::max(1.0f, w);
     if (spp > kEnvelopeSpp) {
@@ -282,7 +363,8 @@ private:
   std::shared_ptr<TraceWindow> window_;
   bool held_ = false;
   double painted_ = 0.0, probe_ = 0.0;
-  uint64_t seen_ = 0;
+  uint64_t seen_ = 0, ranged_ = 0;
+  RangeTracker range_;  // BR.A: the auto range
   mutable Reader reader_;
   std::vector<Vec2> up_, dn_, pts_;
 };
@@ -298,5 +380,13 @@ std::span<const StyleSpec> traceScopeStyle() noexcept {
 }
 
 std::unique_ptr<Element> makeTraceScope(const doc::PanelElement& desc) { return std::make_unique<TraceScope>(desc); }
+
+namespace test {
+std::optional<std::pair<float, float>> traceRange(const Element& e) {
+  const auto* t = dynamic_cast<const TraceScope*>(&e);
+  if (t == nullptr) return std::nullopt;
+  return t->range();
+}
+}  // namespace test
 
 }  // namespace pq::views::panel

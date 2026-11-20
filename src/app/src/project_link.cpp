@@ -1990,12 +1990,49 @@ uint32_t ProjectLink::metaSlotsInUse() const {
 bool ProjectLink::cutBlamed(const doc::Project& p, const doc::LoweredProject& lp, CutSet& cut,
                             std::vector<uint32_t>& added) const {
   const std::vector<engine::UnitTypeFailure>& fails = compiler_->lastTypeFailures();
-  if (fails.empty()) return false;
+  const std::vector<engine::UnitLoopFailure>& loops = compiler_->lastLoopFailures();
+  if (fails.empty() && loops.empty()) return false;
   auto trackOf = [&](doc::DeviceId d) {
     const doc::DeviceLoc l = doc::findDevice(p, d);
     return l.track != nullptr ? l.track->id : doc::TrackId{};
   };
+  auto cleaned = [](std::string m) {  // the diagnostic's own words: no "patch 'pqUnit': " prefix, no call path inside
+    if (m.starts_with("patch '"))
+      if (const size_t k = m.find("': "); k != std::string::npos) m.erase(0, k + 3);
+    if (const size_t k = m.find(" inside '"); k != std::string::npos) m.erase(k);
+    return m;
+  };
   bool any = false;
+  // BR.A: a refused feedback loop (across an oversample region's boundary, or the voice/global one) is cut at ONE
+  // document wire of it: the delayed one that closes it (its z⁻¹ is in the loop), else the newest wire on it.
+  for (const engine::UnitLoopFailure& f : loops) {
+    uint32_t pick = 0;
+    bool delayed = false;
+    for (const uint32_t node : f.nodes) {
+      uint32_t entity = 0, slot = 0;
+      if (!doc::nodeEntity(node, entity, slot) || doc::findWire(p, doc::WireId{entity}) == nullptr) continue;
+      if (cut.count(entity) != 0) continue;
+      bool d = false;
+      for (const doc::WireState& st : lp.wires)
+        if (st.id.value == entity) d = st.status == doc::WireStatus::Delayed;
+      if (pick == 0 || (d && !delayed) || (d == delayed && entity > pick)) pick = entity, delayed = d;
+    }
+    if (pick == 0) continue;
+    const doc::Wire* x = doc::findWire(p, doc::WireId{pick});
+    CutWire c;
+    // (the scheduler's words name a flattened node — "mul#209" — that no view shows: said in the document's terms)
+    c.message = f.message.find("oversample region") != std::string::npos
+                    ? "feedback loop through an oversampled part (an oversampled group, a Wavetable's oversampling): it would run "
+                      "at two rates; keep the whole loop inside the oversampled part or outside it"
+                : f.message.find("voice/global") != std::string::npos
+                    ? "feedback loop across the voices' sum (out of the voices and back into them); reduce outside the loop"
+                    : cleaned(f.message);
+    c.from = x->fromNoteSource() ? x->noteSource : trackOf(x->from);
+    c.to = x->toMixer() ? x->mixer : trackOf(x->to);
+    cut.emplace(pick, std::move(c));
+    added.push_back(pick);
+    any = true;
+  }
   std::vector<doc::WireId> ws;
   for (size_t i = 0; i < fails.size(); ++i) {
     const engine::UnitTypeFailure& f = fails[i];
@@ -2018,10 +2055,7 @@ bool ProjectLink::cutBlamed(const doc::Project& p, const doc::LoweredProject& lp
       const doc::Wire* x = doc::findWire(p, w);
       if (x == nullptr || cut.count(w.value) != 0) continue;
       CutWire c;
-      c.message = f.message;  // the diagnostic's own words: no "patch 'pqUnit': " prefix, no call path inside the unit
-      if (c.message.starts_with("patch '"))
-        if (const size_t k = c.message.find("': "); k != std::string::npos) c.message.erase(0, k + 3);
-      if (const size_t k = c.message.find(" inside '"); k != std::string::npos) c.message.erase(k);
+      c.message = cleaned(f.message);
       c.from = x->fromNoteSource() ? x->noteSource : trackOf(x->from);
       c.to = x->toMixer() ? x->mixer : trackOf(x->to);
       cut.emplace(w.value, std::move(c));
