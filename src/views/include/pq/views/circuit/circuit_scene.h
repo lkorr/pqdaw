@@ -110,6 +110,7 @@ struct SceneWire {
   // `control` ends on that control (its last point is the control's centre when the scene was built).
   bool cable = false;
   uint64_t cableKey = 0;
+  float cableSlack = 0.0f;  // BR.F: > 0 its rest length / chord (a loop round one block: kLoopCableSlack), else by chord
   // TX.drag-grow: an end with no pin of its own (the project patch view's chain into / out of an opened capsule's frame
   // edge): the scene node it moves with (the capsule's In / Out terminal at that edge); UINT32_MAX: its pin's node.
   uint32_t fromNode = UINT32_MAX, toNode = UINT32_MAX;

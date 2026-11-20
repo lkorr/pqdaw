@@ -229,7 +229,8 @@ void CableSim::place(Cable& c) {
     c.n = want;
   }
   Point2* R = rest_.data() + c.first;
-  cableRest(c.a, c.b, c.n, R);
+  if (c.slack > 0.0f) cableRestSolved(c.a, c.b, c.n, R, c.slack);  // BR.F: a loop round a block (a few per scene)
+  else cableRest(c.a, c.b, c.n, R);
   float longest = 0.0f;
   for (uint32_t i = 0; i + 1 < c.n; ++i) {
     const float ex = R[i + 1].x - R[i].x, ey = R[i + 1].y - R[i].y;
@@ -287,6 +288,7 @@ void CableSim::sync(std::span<const Spec> specs) {
     Cable& c = cables_[i];
     c = Cable{};
     c.key = specs[i].key;
+    c.slack = specs[i].slack;
     c.first = i * kCableMaxPoints;
     const auto it = std::lower_bound(order.begin(), order.end(), c.key, [&](uint32_t x, uint64_t k) { return old[x].key < k; });
     if (it != order.end() && old[*it].key == c.key && old[*it].n != 0) {

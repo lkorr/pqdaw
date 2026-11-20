@@ -44,6 +44,7 @@
 namespace pq::views::circuit {
 
 inline constexpr float kCableSlack = 1.06f;          // a short cable's rest length / chord: a 6 % droop (sag ≈ 0.15 × chord)
+inline constexpr float kLoopCableSlack = 1.6f;       // BR.F: a block's output into its own input hangs in a deep U under it
 inline constexpr float kCableTightChord = 260.0f;    // the chord past which a cable tightens (cableSlack)
 inline constexpr uint32_t kSlackLevels = 9;          // tabulated slacks: √(slack − 1) evenly from 0 to √(kCableSlack − 1)
 inline constexpr uint32_t kCableMinPoints = 12, kCableMaxPoints = 24;
@@ -73,8 +74,8 @@ float cableSlack(float chord) noexcept;
 void cableRest(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out) noexcept;
 // … with a given slack (from the table, clamped to 1 … kCableSlack).
 void cableRest(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out, float slack) noexcept;
-// … solved directly in double precision, any slack ≥ 1 (n ≤ 4 × kCableMaxPoints): the table's reference (tests; never
-// on a paint path).
+// … solved directly in double precision, any slack ≥ 1 (n ≤ 4 × kCableMaxPoints): the table's reference (tests), and
+// BR.F's loop cables (Spec::slack; placed when their ends move, never per paint).
 void cableRestSolved(graph::Point2 a, graph::Point2 b, uint32_t n, graph::Point2* out, float slack) noexcept;
 
 class CableSim {
@@ -83,6 +84,7 @@ public:
   struct Spec {
     uint64_t key = 0;
     graph::Point2 a, b;
+    float slack = 0.0f;  // BR.F: > 0 its rest length / chord (solved: any slack ≥ 1), else cableSlack(chord)
   };
   // The set of cables becomes `specs` (index i = specs[i]). A key seen before keeps its points and velocity and
   // moves its ends (setEnds: it swings when they moved); a new key starts asleep on its rest shape.
@@ -137,6 +139,7 @@ private:
     uint32_t first = 0, n = 0;  // into the pools
     float seg = 0.0f;           // the longest a segment may be (the rest shape's longest)
     float pull = 0.0f;          // the restoring pull per step (ω² dt², ω² = g / sag)
+    float slack = 0.0f;         // Spec::slack
     bool awake = false;
     uint32_t calm = 0, awakeSteps = 0;
     Box box, prevBox;

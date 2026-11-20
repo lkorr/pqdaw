@@ -658,3 +658,91 @@ TEST_CASE("delay tap: Repitch (the default) — a sync step 1/16 → 1/4 while a
   const auto [X, atX] = switchRender(tap, toCrossfade);
   CHECK(maxStep(X, atX - w0, atX + w1) < 1.02 * stSteady + 1e-4);
 }
+
+// BR.F (bug reports 2026-11-13_19-19-00, 2026-11-13_23-13-28, 2026-11-19_18-58-20): a block's output wired into its own
+// main input is a feedback loop like any other (its wire takes the loop's one-sample delay). A VCA at g looped into
+// itself is a one-pole: an impulse comes out as g, g², g³ … one sample apart — stable for |g| < 1, either sign. (The
+// 19-19-00 report's VCA had such a hidden loop: it made the delay's loop gain g / (1 − g), over 1 from g = 0.5.)
+TEST_CASE("delay tap (BR.F): a VCA's output into its own input — g, g², g³ one sample apart, stable for |g| < 1") {
+  const size_t b0 = baseIndex();
+  for (const double g : {0.9, 0.6, -0.9}) {
+    CAPTURE(g);
+    Song s;
+    IdSource ids;
+    Circuit c(ids);
+    const DeviceId imp = c.impulse();
+    VcaOptions vo;
+    vo.inGroup = c.group;
+    vo.value = dsp::curvePosition(vcaCurve(), g, 0.5);
+    VcaRoles vr;
+    c.take(vcaBlocks(ids, vo, &vr));
+    c.wire(imp, "out", vr.group, kMainPort);
+    c.wire(vr.group, kMainPort, vr.group, kMainPort);  // the self-loop
+    c.out(vr.group, kMainPort);
+    s.place(c.set);
+    const Rendered r = render(s, 120);
+    for (int k = 0; k < 4; ++k) {
+      CAPTURE(k);
+      CHECK(r.L[b0 + static_cast<size_t>(k)] == doctest::Approx(std::pow(g, k + 1)).epsilon(1e-4));
+    }
+    CHECK(std::fabs(r.L[b0 + 2000]) < 1e-6f);  // |g|^2001: decayed, nothing ran away
+    CHECK(std::fabs(r.L.back()) < 1e-6f);
+  }
+}
+
+// BR.F (bug report 2026-11-13_23-13-28): a Delay Tap whose output is wired into its own input repeats at full level, as
+// a loop of gain 1 does — the report's "delays forever" was such a wire, which the project patch did not draw.
+TEST_CASE("delay tap (BR.F): its output into its own input repeats an impulse at level 1 every D") {
+  const size_t b0 = baseIndex();
+  Song s;
+  IdSource ids;
+  Circuit c(ids);
+  const DeviceId tap = c.delayTap(c.impulse());
+  c.wire(tap, kMainPort, tap, kMainPort);
+  c.out(tap, kMainPort);
+  s.place(c.set);
+  s.set(s.role(DelayRole::Time), 0.05);  // 2400 samples
+  const Rendered r = render(s, 260);  // past b0 + 4 D
+  size_t at = b0;
+  for (int k = 1; k <= 4; ++k) {
+    CAPTURE(k);
+    size_t p = at + 100;  // the loudest sample within one period past the last repeat
+    for (size_t i = p; i < at + 2400 + 100 && i < r.L.size(); ++i)
+      if (std::fabs(r.L[i]) > std::fabs(r.L[p])) p = i;
+    CHECK(p == b0 + 2400 * static_cast<size_t>(k));  // the delay line holds the loop's sample: exactly D apart
+    CHECK(r.L[p] == doctest::Approx(1.0).epsilon(1e-4));
+    at = p;
+  }
+}
+
+// BR.F (bug report 2026-11-13_19-02-41, "the dry signal should be sent out the master independently from the send"): with
+// the Delay Tap on a return, a send to it leaves the track's dry signal undelayed — the impulse at 0, its echo at D. (The
+// report's Delay Tap was on the Master's path, where it delays everything: wired as shown, not a routing fault.)
+TEST_CASE("delay tap (BR.F): on a return, a send's echo comes at D and the dry signal at once") {
+  const size_t b0 = baseIndex();
+  Song s;
+  IdSource ids;
+  Circuit c(ids);
+  c.out(c.impulse(), "out");
+  s.place(c.set);
+  auto rt = ops::createTrack(*s.store.current(), s.store.ids(), TrackKind::Return, {}, "Echo");
+  REQUIRE(rt.ok());
+  REQUIRE(s.store.dispatch(rt->command).ok());
+  const TrackId ret = rt->tracks.at(0);
+  IdSource rids;
+  BlockSet tap = delayTapBlocks(rids, {});
+  auto e = ops::pasteBlocks(*s.store.current(), s.store.ids(), ret, tap);
+  REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+  REQUIRE(s.store.dispatch(e->command).ok());
+  auto p = ops::insertOnPath(*s.store.current(), s.store.ids(), e->devices.at(0), 0);
+  REQUIRE_MESSAGE(p.ok(), (p.ok() ? std::string() : p.error().message));
+  REQUIRE(s.store.dispatch(p->command).ok());
+  s.set(s.role(DelayRole::Time), 0.05);  // 2400 samples
+  REQUIRE(s.store.dispatch(SetSendLevel{s.track, ret, 0.0f}).ok());
+  const Rendered r = render(s, 120);
+  CHECK(r.L[b0] == doctest::Approx(1.0).epsilon(1e-4));         // dry, undelayed
+  CHECK(r.L[b0 + 2400] == doctest::Approx(1.0).epsilon(1e-4));  // the return's echo
+  float between = 0.0f;
+  for (size_t i = b0 + 1; i < b0 + 2400; ++i) between = std::max(between, std::fabs(r.L[i]));
+  CHECK(between < 1e-6f);
+}

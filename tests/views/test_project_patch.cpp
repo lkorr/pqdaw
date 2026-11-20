@@ -4430,3 +4430,123 @@ TEST_CASE("project patch (VZ.9): a Waterfall's chips, orbit and Alt+wheel zoom �
   u.d.step();
   CHECK_FALSE(shown().frozen);
 }
+
+// BR.F (bug reports 2026-11-13_19-19-00, 2026-11-13_23-13-28, 2026-11-19_18-58-20): a cable from a block's output dropped
+// on its own input wires a feedback loop (one undo step) and is drawn — a cable hanging under the block, its ports turned
+// down — as are a group's output into a param of a block inside it and a block inside into the group's main input. Such
+// wires played but were skipped as "inside the closed group": a hidden self-loop made a VCA a one-pole and a Delay Tap
+// repeat forever, and wiring one by hand showed nothing ("already wired" on the second try).
+TEST_CASE("project patch (BR.F): a block's output onto its own input — a feedback loop, drawn under the block (real dispatch)") {
+  Ui u(false);
+  auto t = doc::ops::createTrack(*u.ctx.doc(), u.ctx.store().ids(), doc::TrackKind::Audio, {}, "Fx");
+  REQUIRE(t.ok());
+  REQUIRE(u.ctx.store().dispatch(t->command).ok());
+  const doc::TrackId fx = t->tracks.at(0);
+  auto va = doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), fx, "module:vca", doc::DeviceKind::AudioEffect);
+  REQUIRE(va.ok());
+  REQUIRE(u.ctx.store().dispatch(va->command).ok());
+  const doc::DeviceId vca = va->devices.at(0);
+  u.show();
+  u.zoomTo("Fx");
+  u.view().canvas().setCablesAnimated(false);  // (each cable on its rest shape: the one hit below)
+  const uint32_t node = u.deviceNode(vca);
+  REQUIRE(u.pp().nodes[node].group);
+  REQUIRE_FALSE(u.pp().nodes[node].groupOpen);
+  REQUIRE(u.pp().nodes[node].mainIn >= 0);
+  auto inPin = [&](uint32_t n) {
+    return u.view().canvas().toDevice(u.view().canvas().portWorld(n, static_cast<uint32_t>(u.pp().nodes[n].mainIn), true));
+  };
+  auto edgeOf = [&](doc::WireId w) -> const Edge* {
+    for (const Edge& e : u.pp().edges)
+      if (e.wire == w) return &e;
+    return nullptr;
+  };
+  const doc::Snapshot start = u.ctx.doc();
+  const size_t h0 = u.history();
+  u.d.drag(u.view().canvas().toDevice(u.view().canvas().portWorld(node, 0, false)), inPin(node), 8);
+  u.d.step();
+  CHECK(u.openMenu() == nullptr);
+  REQUIRE(u.history() == h0 + 1);
+  const doc::Wire w = doc::wiresOf(*u.ctx.doc()).back();
+  CHECK(w.from == vca);
+  CHECK(w.port.empty());
+  CHECK(w.to == vca);
+  CHECK(w.param.empty());
+  for (const doc::WireState& st : doc::wireStates(*u.ctx.doc(), library()))
+    if (st.id == w.id) CHECK(st.status == doc::WireStatus::Delayed);  // the loop's one-sample delay
+  {
+    const uint32_t n = u.deviceNode(vca);
+    const Edge* e = edgeOf(w.id);
+    REQUIRE(e != nullptr);  // (was skipped: a closed group's own wire)
+    CHECK(e->from == n);
+    CHECK(e->to == n);
+    CHECK(e->delayed);
+    // A cable in the scene, hanging under the block: its ports turned down (out bottom right, in bottom left).
+    const Node& b = u.pp().nodes[n];
+    const ProjectScene& ps = u.view().scene();
+    bool drawn = false;
+    for (uint32_t sw = 0; sw < ps.modelEdge.size(); ++sw) {
+      if (ps.modelEdge[sw] == kNone || u.pp().edges[ps.modelEdge[sw]].wire != w.id) continue;
+      const circuit::SceneWire& x = u.view().canvas().scene()->wires[sw];
+      CHECK(x.cable);
+      CHECK_FALSE(x.hidden);
+      drawn = true;
+      CHECK(x.y1 > b.y + b.h);  // it sags below the block
+    }
+    CHECK(drawn);
+    CHECK(b.orbitOut.at.y > b.y + 0.5f * b.h);
+    CHECK(b.orbitIn.at.y > b.y + 0.5f * b.h);
+    CHECK(b.orbitOut.at.x > b.orbitIn.at.x);
+  }
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // The same drag again: already wired (and the user sees the cable it means).
+  u.d.drag(u.view().canvas().toDevice(u.view().canvas().portWorld(u.deviceNode(vca), 0, false)), inPin(u.deviceNode(vca)), 8);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.ctx.status().find("already wired") != std::string::npos);
+  // Delete with the pointer on it deletes it (one step; undone again for what follows).
+  {
+    const ProjectScene& ps = u.view().scene();
+    const circuit::CircuitScene& sc = *u.view().canvas().scene();
+    graph::Point2 low{0.0f, -1e30f};
+    for (uint32_t sw = 0; sw < ps.modelEdge.size(); ++sw) {
+      if (ps.modelEdge[sw] == kNone || u.pp().edges[ps.modelEdge[sw]].wire != w.id) continue;
+      for (uint32_t i = 0; i < sc.wires[sw].pointCount; ++i)
+        if (sc.points[sc.wires[sw].firstPoint + i].y > low.y) low = sc.points[sc.wires[sw].firstPoint + i];
+    }
+    REQUIRE(low.y > -1e29f);
+    u.d.move(u.view().canvas().toDevice(low));
+    u.d.step();
+    CHECK(u.d.press("Delete") != KeyResult::Unhandled);
+    u.d.step();
+    CHECK(u.history() == h0 + 2);
+    CHECK(doc::findWire(*u.ctx.doc(), w.id) == nullptr);
+    REQUIRE(u.ctx.undo());
+    u.d.step();
+    REQUIRE(doc::findWire(*u.ctx.doc(), w.id) != nullptr);
+  }
+  // The group's output into the param of a block inside it (the 18-58-20 report's EQ → its band's Q), and a block inside
+  // into the group's main input: each crosses the block's edge, each drawn on it.
+  const doc::Device* mul = nullptr;
+  for (const doc::DevicePtr& d : u.track("Fx").devices)
+    if (d->group == vca && doc::atomDeviceName(*d) == "mul") mul = d.get();
+  REQUIRE(mul != nullptr);
+  REQUIRE(u.view().connect(vca, "", mul->id, "b"));
+  REQUIRE(u.view().connect(mul->id, "out", vca, ""));
+  u.d.step();
+  CHECK(u.history() == h0 + 3);
+  int crossing = 0;
+  for (const doc::Wire& x : doc::wiresOf(*u.ctx.doc())) {
+    if (!((x.from == vca && x.port.empty() && x.to == mul->id) || (x.from == mul->id && x.to == vca && x.param.empty()))) continue;
+    ++crossing;
+    CAPTURE(x.id.value);
+    const Edge* e = edgeOf(x.id);
+    REQUIRE(e != nullptr);
+    CHECK(e->from == u.deviceNode(vca));
+    CHECK(e->to == u.deviceNode(vca));
+  }
+  CHECK(crossing == 2);
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  for (int i = 0; i < 3; ++i) REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc() == start);
+}

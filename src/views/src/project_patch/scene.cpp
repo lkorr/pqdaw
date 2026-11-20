@@ -404,7 +404,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       const Point2 a = e.points.front(), b = e.points.back();
       const uint32_t n = circuit::cablePointCount(std::hypot(b.x - a.x, b.y - a.y));
       cablePts.resize(n);
-      circuit::cableRest(a, b, n, cablePts.data());
+      // BR.F: a block's output into its own input: a deep U under the block (its ports turned down: model orbit()).
+      if (e.from == e.to) circuit::cableRestSolved(a, b, n, cablePts.data(), circuit::kLoopCableSlack);
+      else circuit::cableRest(a, b, n, cablePts.data());
       addWire(cablePts, style, netOf(e.net), k);
     } else {
       addWire(e.points, style, netOf(e.net), k);
@@ -412,6 +414,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     SceneWire& sw = sc.wires.back();
     sw.cable = cable;
     if (cable) sw.cableKey = cableKeyOf(pp, e);
+    if (cable && e.from == e.to) sw.cableSlack = circuit::kLoopCableSlack;
     const uint32_t a = out.sceneNode[e.from], b = out.sceneNode[e.to];
     sw.fromPin = a != kNone ? sc.nodes[a].firstPin + static_cast<uint32_t>(pp.nodes[e.from].inputs.size()) + e.fromPort : 0;
     sw.toPin = b != kNone ? sc.nodes[b].firstPin + e.toPort : 0;

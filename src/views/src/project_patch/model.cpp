@@ -746,7 +746,10 @@ struct Builder {
     for (const doc::Wire* wp : wiresOn(t)) {
       const doc::Wire& w = *wp;
       if (statusOf(w.id) == doc::WireStatus::Invalid) continue;
-      const bool from = !w.fromNoteSource() && inside(w.from), to = inside(w.to);
+      // BR.F: g's own main output / params are its outside (a wire from them back into a block inside crosses its edge,
+      // as one from a block inside into g's main input does); its In and Out terminals are inside.
+      const bool from = !w.fromNoteSource() && inside(w.from) && !(w.from == g.id && w.port != doc::kGroupInPort);
+      const bool to = !w.toMixer() && inside(w.to) && !(w.to == g.id && w.param != doc::kGroupOutPort);
       if (from == to) continue;  // inside (or outside) the group altogether
       if (to && w.to != g.id) {
         std::string key = portKey(probe, w.to, w.param);
@@ -1324,7 +1327,16 @@ struct Builder {
                                                                   : out.nodes[b].input(portKey(out.nodes[b], w.to, w.param));
       }
       if (a == kNone || b == kNone) continue;
-      if (a == b && out.nodes[a].group) continue;  // TX.groups: inside a closed group (its miniature draws it)
+      // TX.groups: inside a closed group (its miniature draws it). BR.F: not a wire that leaves the group and comes back
+      // into it (its output into its own input or a param of a block inside, a block inside into its main input): a
+      // feedback loop round the block, drawn as a cable from its output to its input (bug reports 2026-11-13_19-19-00,
+      // 23-13-28, 2026-11-19_18-58-20: such a loop played but was not drawn).
+      if (a == b && out.nodes[a].group) {
+        const doc::DeviceId g = out.nodes[a].device;
+        const bool outFrom = !w.fromNoteSource() && w.from == g && w.port != doc::kGroupInPort;
+        const bool outTo = !w.toMixer() && w.to == g && w.param != doc::kGroupOutPort;
+        if (!outFrom && !outTo) continue;
+      }
       Edge e;
       e.wire = w.id;
       e.status = st;
@@ -2073,6 +2085,13 @@ struct Builder {
     std::vector<std::pair<uint32_t, graph::Point2>> ends;
     for (const Edge& e : out.edges) {
       if (!isCable(e.kind, out.nodes[e.from].kind) || e.drawnTo != kNone) continue;  // (BR.input-port: a lane's: a trace)
+      if (e.from == e.to) {  // BR.F: a loop round one block: its ports turn down (out right, in left), the cable hangs under it
+        const Node& m = out.nodes[e.from];
+        const graph::Point2 below{m.x + 0.5f * m.w, m.y + 1.5f * m.h};
+        if (portOrbits(m, e.fromPort, false)) ends.emplace_back(e.from * 2 + 1, graph::Point2{below.x + 0.5f * m.w, below.y});
+        if (portOrbits(m, e.toPort, true)) ends.emplace_back(e.to * 2, graph::Point2{below.x - 0.5f * m.w, below.y});
+        continue;
+      }
       if (portOrbits(out.nodes[e.from], e.fromPort, false)) ends.emplace_back(e.from * 2 + 1, anchorOf(e.to, e.toPort, true, e));
       if (portOrbits(out.nodes[e.to], e.toPort, true)) ends.emplace_back(e.to * 2, anchorOf(e.from, e.fromPort, false, e));
     }

@@ -1229,6 +1229,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       c.toNode = wireEnd(*scene, sw, true);
       CableSim::Spec sp;
       sp.key = sw.cableKey != 0 ? sw.cableKey : (0xC0FFEEull << 32 | w);
+      sp.slack = sw.cableSlack;
       for (const auto& [k, g] : glowOf)
         if (k == sp.key) c.glow = g;
       cableOf[w] = static_cast<int32_t>(cables.size());
