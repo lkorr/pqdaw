@@ -1200,3 +1200,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views 1/1 after rebase, pq_tests_document 1/1; new real-dispatch test (EQ at scale 1.0, node drag via window events) + allpass dense-span test; 7 eq goldens re-recorded.
 - Perf / CPU-efficiency check: one extra response evaluation per change while the phase area is open; 32-band drag frame 1.38 ms.
 - Notes/blockers: saved EQs keep their stored panel (no migrations); other panels taller than ~181 units (Wavetable 288, Noise 248, EQ Band 228, Spectrogram 200, Math 194, Waterfall 190, Compressor 182) still draw < 1:1.
+
+## 2026-11-20 · BR.F · task/BR.F-delay-send (merged bd634630)
+- Did: a wire that leaves a closed group and comes back (output into its own input / an inner param; inner block into the group's input) is drawn as a cable hanging under the block (was skipped as "internal", so it played but was invisible and undeletable). Causes: 19-19-00 VCA self-wire (loop gain g/(1−g), > 1 from g = 0.5), 23-13-28 Delay Tap self-wire (gain-1 loop), 18-58-20 self-patch worked but wasn't drawn; 19-02-41 delay on Master's path with no dry wire (as wired).
+- Verified: real-dispatch self-wire view test (fails without the fix) + 3 engine tests (VCA self-loop, Delay Tap self-loop, return delay keeps dry undelayed); -Affected -Slow after rebase 24/24.
+- Perf / CPU-efficiency check: no DSP change; self-loop catenary solved only when its ends move.
+- Notes/blockers: how the hidden self-wires were made isn't in the logs; not checked live with audio.
