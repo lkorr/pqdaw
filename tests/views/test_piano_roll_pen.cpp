@@ -926,7 +926,10 @@ TEST_CASE("roll pen: a stroke overrides only what it covers — after it (and be
 }
 
 // bug-bend-shape (the user: "drawing free pitch mode should be able to continue a note if you just continue drawing").
-TEST_CASE("roll pen: a stroke past the note's end lengthens it to the grid cell it ends in — previewed, one undo step with the curve, never into the next note on its pitch") {
+// BR.D (bug report 2026-11-19_20-04-25: "it currently snaps to the length of the next note via the grid; it should
+// ... instead be continuous incremental lengthening at the mouse location"): the note ends at the pointer, whatever
+// the grid.
+TEST_CASE("roll pen: a stroke past the note's end lengthens it continuously to the pointer (no grid snap) — previewed, one undo step with the curve, never into the next note on its pitch") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(0, 2 * kQ, 0), Pen::plain(4 * kQ, kQ, 0), Pen::plain(2 * kQ, kQ, 5)});
@@ -935,26 +938,35 @@ TEST_CASE("roll pen: a stroke past the note's end lengthens it to the grid cell 
   size_t h = r.history();
   // From one beat in, level to the end, then a row up by 2.6 beats.
   const Vec2 from = r.at(1.0 * kQ, 0);
+  // The tick under a pointer x, as the roll maps it (the note starts at tick 0).
+  auto tickAt = [&](float x) { return static_cast<Ticks>(std::llround(r.st().tickAtX(x))); };
   REQUIRE(r.d.down(from));
   for (int i = 1; i <= 20; ++i) r.d.move({from.x + 3.0f * static_cast<float>(i), from.y});
-  for (int i = 1; i <= 12; ++i) r.d.move({from.x + 60.0f + 3.0f * static_cast<float>(i), from.y - kRow * static_cast<float>(i) / 12.0f});
-  r.d.step();
-  CHECK(r.history() == h);  // no undo step yet: the note drawn to the end of the cell the stroke reached
+  // Each step past the end lengthens the note to the pointer: not to the end of the quarter-note cell it is in.
+  for (int i = 1; i <= 12; ++i) {
+    const Vec2 p{from.x + 60.0f + 3.0f * static_cast<float>(i), from.y - kRow * static_cast<float>(i) / 12.0f};
+    r.d.move(p);
+    r.d.step();
+    CAPTURE(i);
+    CHECK(r.note(n).length == tickAt(p.x));
+  }
+  CHECK(r.history() == h);  // no undo step yet
   // (bug-live-shape: the document already plays it; the roll previews it on its press-time note.)
-  CHECK(r.note(n).length == 3 * kQ);
+  const Ticks end = tickAt(from.x + 96.0f);
+  CHECK(std::llabs(end - 13 * kQ / 5) <= 2);  // 2.6 beats, not the 3 of the grid cell
+  CHECK(r.note(n).length == end);
   const std::optional<RollState::Preview> pv = r.st().preview(*r.st().findNote(n));
   REQUIRE(pv.has_value());
-  CHECK(pv->length == 3 * kQ);
-  CHECK(r.ctx.status().find("grows to 3 beats") != std::string::npos);
+  CHECK(pv->length == end);
+  CHECK(r.ctx.status().find("grows to 2.") != std::string::npos);
   r.d.up({from.x + 96.0f, from.y - kRow});
   r.d.step();
   CHECK(r.history() == h + 1);
-  CHECK(r.note(n).length == 3 * kQ);
+  CHECK(r.note(n).length == end);
   CHECK(r.note(n).start == 0);
   CHECK(r.curveAt(n, kQ) == 0.0);
   CHECK(std::fabs(r.curveAt(n, 9 * kQ / 5)) < 0.5);  // (the stroke is smoothed over a few px: it starts rising by 2 beats)
-  CHECK(r.curveAt(n, 13 * kQ / 5) == doctest::Approx(100.0).epsilon(0.03));
-  CHECK(r.curveAt(n, 3 * kQ) == doctest::Approx(100.0).epsilon(0.03));  // held to the new end
+  CHECK(r.curveAt(n, end) == doctest::Approx(100.0).epsilon(0.03));  // at the new end
   CHECK(r.noteCount() == 3);
   // One undo step: the length and the curve together.
   REQUIRE(r.ctx.store().undo());
@@ -1129,3 +1141,60 @@ TEST_CASE("roll live (bug-live-shape): bend-node, vibrato, pen and end-resize dr
 TEST_CASE("render: pianoroll-note-lines (T7.12: repeated 16ths, a selected run, soft / deactivated / Cents / Ratio notes as lines) matches the golden image") { checkGolden("pianoroll-note-lines"); }
 TEST_CASE("render: pianoroll-bends (a melody gliding between its notes, a straight scoop with its breakpoints) matches the golden image") { checkGolden("pianoroll-bends"); }
 
+
+// BR.D (bug report 2026-11-19_20-02-29: "pasting notes seems to just duplicate it ahead of the copied note ... it should
+// be placed on the same location ala Ableton"): Ctrl+V goes to the insert marker, which Ctrl+C puts at the copied
+// notes' start; a click elsewhere moves it; a second paste goes after the first; Ctrl+D still places after the selection.
+TEST_CASE("clip view (BR.D): copy then paste lands on the copied notes; a click moves the insert marker; paste again goes after; Ctrl+D after the selection") {
+  Pen r;
+  r.focusNotes();
+  const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(kQ, kQ / 2, 0), Pen::plain(kQ + kQ / 2, kQ, 4)});
+  auto at = [&](Ticks start, int32_t degree) {
+    size_t n = 0;
+    for (const doc::Note& x : r.clip().notes)
+      if (x.start == start && x.pitch == PitchId::fromDegree(degree, 0)) ++n;
+    return n;
+  };
+  // Click the first note (selects it), copy, paste: the copy sits exactly on the original.
+  r.d.click(r.at(static_cast<double>(kQ + kQ / 4), 0));
+  r.d.step();
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.view->selection()[0] == ids[0].value);
+  CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
+  size_t h = r.history();
+  CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.noteCount() == 3);
+  CHECK(at(kQ, 0) == 2);
+  // Again: right after the pasted copy (the marker moved past it).
+  CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
+  r.d.step();
+  CHECK(at(kQ + kQ / 2, 0) == 1);
+  // Ctrl+D duplicates the selection (the last paste) after it.
+  REQUIRE(r.view->selection().size() == 1);
+  CHECK(r.d.press("Ctrl+D") == KeyResult::Action);
+  r.d.step();
+  CHECK(at(2 * kQ, 0) == 1);
+
+  // Both notes, copied together: the paste lands on both originals.
+  REQUIRE(r.ctx.store().undo());
+  REQUIRE(r.ctx.store().undo());
+  REQUIRE(r.ctx.store().undo());
+  r.d.step();
+  REQUIRE(r.noteCount() == 2);
+  r.view->select(std::span<const doc::NoteId>(ids.data(), ids.size()));
+  CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
+  CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
+  r.d.step();
+  CHECK(at(kQ, 0) == 2);
+  CHECK(at(kQ + kQ / 2, 4) == 2);
+  // Copy, then a click on empty space at beat 4 (snapped to the quarter grid): the paste goes there instead.
+  r.view->select(std::span<const doc::NoteId>(ids.data(), 1));
+  CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
+  r.d.click(r.at(static_cast<double>(3 * kQ + kQ / 4), 9));
+  r.d.step();
+  CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
+  r.d.step();
+  CHECK(at(3 * kQ, 0) == 1);
+}

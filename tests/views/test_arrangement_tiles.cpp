@@ -24,6 +24,7 @@
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/shell/shell.h"
+#include "pq/views/view_scenes.h"
 #include "arrangement_fixture.h"
 #include "views_test_util.h"
 
@@ -78,6 +79,20 @@ struct Rig {
   void install() {
     auto sh = Shell::create(tree, ctx);
     REQUIRE(sh.ok());
+    shell = std::move(*sh);
+    tree.layoutNow();
+    arr = dynamic_cast<ArrangementView*>(tree.find(kArr));
+    REQUIRE(arr != nullptr);
+    auto p = OffscreenTarget::create(*gpu, w, h, 1);
+    auto f = OffscreenTarget::create(*gpu, w, h, 1);
+    REQUIRE((p.ok() && f.ok()));
+    partial = std::move(*p);
+    full = std::move(*f);
+  }
+  // install() with a view scene's setup (pq/views/view_scenes.h) instead of the bare shell.
+  void installScene(std::string_view scene) {
+    auto sh = buildViewScene(scene, tree, ctx);
+    REQUIRE_MESSAGE(sh.ok(), (sh.ok() ? "" : sh.error().message));
     shell = std::move(*sh);
     tree.layoutNow();
     arr = dynamic_cast<ArrangementView*>(tree.find(kArr));
@@ -259,6 +274,37 @@ TEST_CASE("render: a clip's preview shows its notes' pitch movement — a drawn 
   (void)rig.drawFull(*rig.partial, rig.resNoTiles);
   CHECK(arr.stats().pathVertices > 0);
   rig.compareDirect("tiles-vs-direct-curves", true, 8);
+  CHECK(rig.gpu->validationErrorCount() == 0);
+}
+
+// BR.D (bug report 2026-11-19_19-20-33: "visual distortions on curved midi notes when playhead moves past them"): the
+// playhead's damage strips repainted each curved note cut at the strip's edge (a squared, gapped end there), leaving a
+// comb of notches behind the playhead. Its movement must never change how a note looks: with the playhead before, over
+// and after the notes, the partially repainted frame equals a full repaint.
+TEST_CASE("render: the playhead moving over curved notes leaves them as a full repaint draws them (direct preview, partial repaints)") {
+  Rig rig(1280, 800, 1.0f, "empty");
+  rig.installScene("arrangement-curve-preview");
+  ArrangementView& arr = *rig.arr;
+  rig.settle();
+  rig.comparePartial("br-d-playhead-before");
+  // The scene's clip is 32 bars, 4.2 of them across: wider than any tile, drawn directly with its curves.
+  (void)rig.drawFull(*rig.full, rig.res);
+  CHECK(arr.stats().tilesDrawn == 0);
+  CHECK(arr.stats().pathVertices > 0);
+  rig.ctx.playFrom(0);
+  const uint64_t before = rig.partialFrames;
+  const Ticks step = kPpq / 7;  // a few px a frame, as a playing transport moves it
+  int checkpoint = 0;
+  for (Ticks t = 0; t <= 4 * kTicksPerWhole; t += step) {
+    rig.port.setPlayheadTick(t);
+    rig.frame();
+    if (t >= (checkpoint + 1) * kTicksPerWhole) {
+      ++checkpoint;
+      rig.comparePartial("br-d-playhead-bar" + std::to_string(checkpoint));
+    }
+  }
+  CHECK(rig.partialFrames - before > 30);  // the playhead's strips, not full repaints
+  CHECK(checkpoint == 4);
   CHECK(rig.gpu->validationErrorCount() == 0);
 }
 

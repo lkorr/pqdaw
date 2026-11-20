@@ -2141,3 +2141,10 @@ along per-note SIGNAL inputs (not params, not past an Envelope). That also count
 (its phase), so such a voice now sounds through that Envelope's release before the 5 ms ramp (golden
 lower_meta_voice_run.txt moved). Options: (a) any signal input (chosen: general, derived from wires); (b) only inputs
 a type marks as "amplitude path" (per-type rules); (c) also params. Choice: (a). Reversible: lower.cpp endersBehind.
+
+## Q?-BR.D-a · 2026-11-19 · BR.D · A paste straight onto the copied notes stacks duplicates
+Context: Ctrl+C now puts the clip view's insert marker at the copied notes' start, so Ctrl+C, Ctrl+V lands exactly on
+the originals (bug report 2026-11-19_20-02-29, Live's behaviour). The paste adds notes; identical notes already there
+stay, so the clip then holds each note twice on top of itself. Options: (a) keep both (chosen: what addNotes does
+everywhere, nothing deleted silently); (b) a paste replaces notes of the same pitch it overlaps (Live trims what a
+paste covers); (c) refuse exact duplicates. Reversible: RollState::paste. Status: open.

@@ -85,30 +85,47 @@ uint32_t paintPreviewPaths(DrawList& dl, const Preview& pv, const doc::NoteClip&
   const float thick = std::max(0.25f, static_cast<float>(st.noteH) - kSmoothFeather);
   const double bandPeriodPx = std::max(static_cast<double>(kVibratoBandPx * st.scale), 2.0 * (static_cast<double>(st.noteH) + 2.0 * st.scale));
   const double stepTicks = 1.5 * static_cast<double>(st.scale) / std::max(k, 1e-12);
+  // BR.D (bug report 2026-11-19_19-20-33: curved notes combed where the playhead had passed): what a paint draws of a
+  // note must not depend on the region it repaints. The playhead's damage strips used to cut each note at the strip
+  // (the window [from, to) clipped the pass, so the note's walk and its squared, 1 px-gapped end sat on the strip's
+  // right edge): every strip left a notch. Now a note is walked in whole chunks from its own start (pitch_path.h
+  // chunkSpan, as the roll) over the painted columns plus `pad` px each way (more than a join's or an end's reach),
+  // its ends squared only where it really ends, and the scissor cuts the rest: a partial repaint draws the pixels a
+  // full one does.
+  const double pad = static_cast<double>(thick) + 2.0 * static_cast<double>(st.scale) + 2.0;
+  const Ticks padTicks = static_cast<Ticks>(std::ceil(pad / std::max(k, 1e-12))) + 1;
+  const double chunk = pathChunkTicks(k, st.scale);
+  // The painted columns (the window within the drawn columns), widened by pad.
+  const double xFrom = std::max(static_cast<double>(st.xLo), static_cast<double>(st.cx0) + static_cast<double>(from - start) * k) - pad;
+  const double xTo = std::min(static_cast<double>(st.xHi), static_cast<double>(st.cx0) + static_cast<double>(to - start) * k) + pad;
   static thread_local std::vector<Vec2> pts, up, dn;
   static thread_local std::vector<double> ticks, knots;
-  doc::forEachClipSegment(timing, start, std::min(start + length, to), [&](const doc::ClipSegment& seg) {
+  // The passes over the window widened by the longest note (and pad): a note meeting the window is never cut by the
+  // window's clipping of its pass, only by the pass's own ends.
+  const Ticks reach = pv.maxPathLength + padTicks;
+  doc::forEachClipSegment(timing, std::max(start, from - reach), std::min(start + length, to + reach), [&](const doc::ClipSegment& seg) {
     const Ticks segEnd = seg.at + (seg.contentTo - seg.contentFrom);
-    if (segEnd < from) return;
+    if (segEnd < from - padTicks || seg.at > to + padTicks) return;
     const double segL = static_cast<double>(st.cx0) + static_cast<double>(seg.at - start) * k;
-    const Ticks visFrom = seg.contentFrom + std::max<Ticks>(0, from - seg.at);
+    const Ticks visFrom = seg.contentFrom + std::max<Ticks>(0, from - padTicks - seg.at);
     const Ticks lookFrom = std::max(seg.contentFrom, visFrom - pv.maxPathLength);
-    const Ticks visTo = std::min(seg.contentTo, seg.contentFrom + (to - seg.at));
+    const Ticks visTo = std::min(seg.contentTo, seg.contentFrom + (to + padTicks - seg.at));
     auto it = std::lower_bound(pv.paths.begin(), pv.paths.end(), lookFrom, [](const PreviewPath& n, Ticks t) { return n.start < t; });
     for (; it != pv.paths.end() && it->start < visTo; ++it) {
       const PreviewPath& n = *it;
       const Ticks nEnd = std::min(n.end, seg.contentTo);
+      if (nEnd <= n.start) continue;
       const double noteX = segL + static_cast<double>(n.start - seg.contentFrom) * k;  // the note's start, unrounded
-      // Its columns as a steady note's (rounded, a pixel gap at the end when wide enough), within the drawn part.
-      float x0 = std::floor(static_cast<float>(noteX) + 0.5f);
+      // Its columns as a steady note's (rounded, a pixel gap at the end when wide enough).
+      const float x0 = std::floor(static_cast<float>(noteX) + 0.5f);
       float x1 = std::floor(static_cast<float>(segL + static_cast<double>(nEnd - seg.contentFrom) * k) + 0.5f);
       if (x1 - x0 >= 3.0f) x1 -= 1.0f;
-      x0 = std::max(x0, st.xLo);
-      x1 = std::min(std::max(x1, x0 + 1.0f), st.xHi);
-      if (x1 <= x0) continue;
-      const double len = static_cast<double>(n.end - n.start);
-      const double ta = std::clamp((static_cast<double>(x0) - noteX) / k, 0.0, len);
-      const double tb = std::clamp((static_cast<double>(x1) - noteX) / k, ta, len);
+      x1 = std::max(x1, x0 + 1.0f);
+      const double xa = std::max(static_cast<double>(x0), xFrom), xb = std::min(static_cast<double>(x1), xTo);
+      if (xb <= xa) continue;
+      const double len = static_cast<double>(nEnd - n.start);
+      double ta = 0.0, tb = len;
+      chunkSpan((xa - noteX) / k, (xb - noteX) / k, len, chunk, ta, tb);
       auto xAt = [&](double t) { return static_cast<float>(noteX + t * k); };
       auto yAt = [&](double v) { return static_cast<float>(yMid + yFlat + (pv.hiCents - (n.cents + v)) * yScale); };
       const bool band = n.vibPeriod > 0.0 && n.vibPeriod * k < bandPeriodPx;
@@ -116,20 +133,25 @@ uint32_t paintPreviewPaths(DrawList& dl, const Preview& pv, const doc::NoteClip&
       const Rgba col = (n.flags & kPreviewDisabled) ? st.offCol : st.noteCol;
       {
         PxPolyline line(pts);
-        addPathSpan(line, curve, band ? n.restCurved : n.curved, ta, tb, stepTicks, 0.0, xAt, yAt);
+        addPathSpan(line, curve, band ? n.restCurved : n.curved, ta, tb, stepTicks, chunk, xAt, yAt);
         line.finish();
       }
       if (pts.size() < 2) continue;
-      // The stroke's ends square on the steady notes' columns.
-      pts.front().x = x0;
-      pts.back().x = x1;
+      // The stroke's ends square on the steady notes' columns: where the note starts / ends, not where a walk does.
+      const bool head = ta <= 0.0, tail = tb >= len;
+      if (head) pts.front().x = x0;
+      if (tail) pts.back().x = x1;
       if (band) {
-        bandSpan(up, dn, ticks, knots, curve, n.restCurved, n.vib, ta, tb, stepTicks, 0.0, 0.5f * thick, xAt, yAt);
-        up.front().x = dn.front().x = x0;
-        up.back().x = dn.back().x = x1;
-        smoothBand(dl, up.data(), dn.data(), static_cast<uint32_t>(up.size()), mulAlpha(col, kVibratoBandAlpha));
+        bandSpan(up, dn, ticks, knots, curve, n.restCurved, n.vib, ta, tb, stepTicks, chunk, 0.5f * thick, xAt, yAt);
+        if (!up.empty()) {
+          if (head && ticks.front() <= 0.0) up.front().x = dn.front().x = x0;
+          if (tail && ticks.back() >= len) up.back().x = dn.back().x = x1;
+          smoothBand(dl, up.data(), dn.data(), static_cast<uint32_t>(up.size()), mulAlpha(col, kVibratoBandAlpha));
+        }
       }
-      strokePath(dl, pts, col, thick);
+      // (Joins on the segments' own normals always: strokePath chooses over the walk, which a partial repaint does
+      // not see whole.)
+      strokePathCols(dl, pts, col, thick);
     }
   });
   return static_cast<uint32_t>(dl.vertices().size() - v0);
@@ -631,8 +653,13 @@ uint32_t paintDirect(LanePaint& lp, const Preview& pv, const doc::NoteClip& timi
   emitRects(lp.ctx.dl, out);
   lp.m.stats.noteRectsEmitted += emitted;
   // bug-curve-render: the moving notes, over the rects (as buildTile rasterises them over the runs).
+  // BR.D: the strokes run past the painted columns (whole chunks); the body's columns on the canvas cut them.
   const PreviewStroke st{lp.k, bodyH, geo.noteH, cx0, by0, lo, hi, noteCol, offCol, lp.ctx.scale.factor};
-  lp.m.stats.pathVertices += paintPreviewPaths(lp.ctx.dl, pv, timing, g.start, g.length, lp.from, lp.to, st);
+  if (!pv.paths.empty() && hi > lo) {
+    lp.ctx.dl.pushClip({lo, by0, hi, by0 + static_cast<float>(bodyH)});
+    lp.m.stats.pathVertices += paintPreviewPaths(lp.ctx.dl, pv, timing, g.start, g.length, lp.from, lp.to, st);
+    lp.ctx.dl.popClip();
+  }
   return emitted;
 }
 

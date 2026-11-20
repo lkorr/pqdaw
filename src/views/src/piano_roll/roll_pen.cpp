@@ -22,7 +22,7 @@
 //                                      most kMaxPenPoints points; a drag under kMinPenStroke px is a click); off
 //                                      the old curve at its ends it returns to it over kPenRampTicks (bug-bend-shape:
 //                                      the rest of the note keeps its pitch); past the note's end it lengthens the
-//                                      note (to the grid cell's end, never into the next note on its pitch);
+//                                      note (to the pointer, not snapped; never into the next note on its pitch);
 //                                      Alt + drag: vibrato over the dragged span (the note's vibrato property: depth
 //                                      = the stroke's height); Ctrl + click: a breakpoint (drag it on); a click
 //                                      deletes the note.
@@ -727,12 +727,10 @@ void RollState::penTo(ui::Vec2 p, ui::Mods) {
     return;
   }
   // bug-bend-shape: the note's length as a stroke reaching note tick `tb` leaves it (0: as it is): past its end, to
-  // the end of the grid cell it reaches (where it reaches without grid snapping), never beyond penLimit.
+  // the stroke's end — BR.D: continuously at the pointer, not snapped to the grid — never beyond penLimit.
   auto grownTo = [&](Ticks tb) -> Ticks {
     if (tb <= length) return 0;
-    Ticks end = tb;
-    if (const Grid g = grid(); g.snapping()) end = std::max(tb, g.cellAt(start + tb - 1).end - start);
-    return std::min(end, std::max(d.penLimit, length));
+    return std::min(tb, std::max(d.penLimit, length));
   };
   // (Past the end, the pitch the curve is added to is the lengthened note's: its bend out moves to the new end.)
   const std::optional<double> base = curveBase(d.curve, static_cast<double>(off), grownTo(std::max(off, d.stroke.empty() ? off : d.stroke.back().first)));

@@ -126,6 +126,17 @@ inline void strokePath(ui::DrawList& dl, std::span<const ui::Vec2> pts, ui::Rgba
   ui::smoothPolylineCols(dl, pts.data(), cols.data(), static_cast<uint32_t>(n), thickness);
 }
 
+// strokePath always with joins on the segments' own normals (ui::smoothPolylineCols): for a walk that may cover only
+// part of a note (BR.D: the arrangement's partial repaints), where strokePath's choice, made over the walk, could
+// differ between a partial and a full paint.
+inline void strokePathCols(ui::DrawList& dl, std::span<const ui::Vec2> pts, ui::Rgba col, float thickness) {
+  const size_t n = pts.size();
+  if (n < 2) return;
+  static thread_local std::vector<ui::Rgba> cols;
+  cols.assign(n, col);
+  ui::smoothPolylineCols(dl, pts.data(), cols.data(), static_cast<uint32_t>(n), thickness);
+}
+
 // A paint walks a note's path in whole chunks of kPathChunkPx device px counted from the note's start, restarting the
 // simplification at each chunk's start (PxPolyline::restart): the vertices in a chunk depend only on the chunk, so a
 // partial repaint draws exactly what a full one does, and a long note zoomed in is walked only near the view.

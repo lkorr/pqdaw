@@ -432,7 +432,7 @@ TEST_CASE("roll JI: copy / paste carries a note's pitch curve; an anchor pastes 
   REQUIRE(r.view->selection().size() == 1);
   const doc::NoteId pasted{r.view->selection()[0]};
   CHECK(pasted != bentNote);
-  CHECK(r.note(pasted).start == 2 * kQ);  // right after the copied note
+  CHECK(r.note(pasted).start == 0);  // BR.D: on the copied note (copy puts the insert marker at its start)
   const doc::NoteCurves* pc = doc::findNoteCurves(r.clip(), pasted);
   REQUIRE(pc != nullptr);
   CHECK(pc->pitch == bend);

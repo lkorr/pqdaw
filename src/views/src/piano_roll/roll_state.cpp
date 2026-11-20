@@ -1610,9 +1610,9 @@ void RollState::copySelection() {
     if (selected(g.anchor)) clipboardGroups_.push_back(g);
   for (doc::Note& n : clipboard_) n.start -= first;
   if (!clipboard_.empty()) {
-    Ticks end = 0;
-    for (const doc::Note& n : clipboard_) end = std::max(end, n.start + n.length);
-    insertTick_ = first + end;  // paste right after the copied notes unless the user clicks elsewhere
+    // BR.D: the insert marker goes to the copied notes' start (Live): a paste lands on the originals unless the user
+    // clicks elsewhere first. (Ctrl+D duplicates after the selection.)
+    insertTick_ = first;
     ctx.setStatus(std::to_string(clipboard_.size()) + (clipboard_.size() == 1 ? " note copied" : " notes copied"));
   }
 }
