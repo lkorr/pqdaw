@@ -1164,3 +1164,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views 941/941 (27 skipped); -Affected after rebase 37/37 exes; all four report projects render.
 - Perf / CPU-efficiency check: scope range one pass over shown samples + 20 compares; ghost strips reuse cached evaluation; loop mapping only on refusal.
 - Notes/blockers: the cut loop is silent (follow-up in BR.B); #4 not checked live with audio; 15 goldens re-recorded; Q?-BR.A-a, b.
+
+## 2026-11-19 · BR.C · task/BR.C-envelope (merged 3af57705)
+- Did: any Envelope a per-note signal reaches Out through (signal inputs, any blocks) holds the note-off ramp until its done (was: only an Envelope directly before Out; else a 5 ms ramp cut every release — also the "stuck at 0 ms" report); idle units and sleeping segments write silence to watched analysis taps (the ~¼ s visualiser freeze was the feed's 150 ms no-data hold plus a period).
+- Verified: worker -Affected -Slow 62/63 then the intended golden re-recorded (pq_tests_document 1/1); orchestrator after rebase onto BR.A: pq_tests_playback 4/4 shards.
+- Perf / CPU-efficiency check: no per-sample cost except ~3 bool ops per voice-sample in groups whose Envelope isn't last; idle taps one relaxed load per block.
+- Notes/blockers: not checked in the live app; golden lower_meta_voice_run.txt re-recorded; Q?-BR.C-a.
