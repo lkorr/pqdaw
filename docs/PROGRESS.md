@@ -1206,3 +1206,10 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: real-dispatch self-wire view test (fails without the fix) + 3 engine tests (VCA self-loop, Delay Tap self-loop, return delay keeps dry undelayed); -Affected -Slow after rebase 24/24.
 - Perf / CPU-efficiency check: no DSP change; self-loop catenary solved only when its ends move.
 - Notes/blockers: how the hidden self-wires were made isn't in the logs; not checked live with audio.
+
+## 2026-11-20 · BR.H · task/BR.H-group-layout (merged 9736723c)
+- Did: a block inside a group has a stored place in the group's units (view state, saved): S-resize scales everything as one unit (top-left fixed), no re-layout moves it, the frame fits its blocks; a block or selection dropped into an opened group joins it in one undo step, keeps layout + inner wires, shrinks to fit (≥ ½, else the group grows); Device view group panel shows inner groups closed (Q?-BR.H-b).
+- Runaway growth cause: BR.B's drift correction was added by every view laying the group out (Device view open → twice per cable), other re-layouts reinterpreted old nudges, and the frame was the union with the layouter's old area so it only grew.
+- Verified: pq_tests_views 965/980 before rebase (15 intended goldens re-recorded, 1 perf paint test that fails on main too); new real-dispatch tests (random add/cable sweep, S-drag each step + Esc, selection drop); orchestrator after rebase: -Affected 24/24.
+- Perf / CPU-efficiency check: UI thread only; one pass over blocks per build; 64-track S-drag step 8.05 ms vs 8.13 ms.
+- Notes/blockers: drag preview at full size, shrinks on drop; old in-group nudges ignored (no migration); not checked live.
