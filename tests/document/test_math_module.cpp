@@ -290,8 +290,8 @@ TEST_CASE("MX.4 Math B defaults: the op's own where 0 is degenerate; a swap move
   d.step(ops::setMathOp(d.doc(), d.store.ids(), g, "add"));  // still mul's default: to add's 0
   CHECK(bUnits() == doctest::Approx(0.0).epsilon(1e-9));
   // A B the user set stays through every swap.
-  const dsp::Curve& c = *d.dev(b).curve(kValueParam);
-  d.edit(ops::setDeviceParam(d.doc(), b, std::string(kValueParam), dsp::curvePosition(c, dsp::curveOutput(c, 0.25), 0.5)));
+  const pq::dsp::Curve& c = *d.dev(b).curve(kValueParam);
+  d.edit(ops::setDeviceParam(d.doc(), b, std::string(kValueParam), pq::dsp::curvePosition(c, pq::dsp::curveOutput(c, 0.25), 0.5)));
   REQUIRE(bUnits() == doctest::Approx(0.25).epsilon(1e-6));
   for (const char* key : {"clip", "add", "atan2", "gt"}) {
     d.edit(ops::setMathOp(d.doc(), d.store.ids(), g, key));

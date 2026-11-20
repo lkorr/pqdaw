@@ -28,6 +28,7 @@
 #include "pq/document/lower.h"
 #include "pq/document/modules.h"
 #include "pq/document/panel.h"
+#include "pq/dsp/curve.h"
 #include "pq/engine/project_compile.h"
 #include "playback_fixture.h"
 
@@ -81,9 +82,15 @@ struct Doc {
     return edit(ops::addDevice(doc(), store.ids(), track, std::string(kModuleItemPrefix) + std::string(key), DeviceKind::AudioEffect,
                                ops::kOffPath)).devices.at(0);
   }
+  // Math with op `op` and B typed 0 (MX.4: picking an op may set B to its default, e.g. clip 1; the sweep wired into B adds
+  // to the typed value, so it is held at 0 to play the edge values exactly).
   DeviceId math(std::string_view op) {
     const DeviceId g = module("math");
     edit(ops::setMathOp(doc(), store.ids(), g, op));
+    const DeviceId b = mathInfo(doc(), g)->roles.b;
+    const pq::dsp::Curve& c = *findDevice(doc(), b).device->curve(kValueParam);
+    edit(ops::setDeviceParam(doc(), b, std::string(kValueParam), pq::dsp::curvePosition(c, pq::dsp::curveOutput(c, 0.0), 0.5)));
+    REQUIRE(std::fabs(valueBlockUnits(*findDevice(doc(), b).device)) < 1e-12);
     return g;
   }
   MathInfo info(DeviceId g) const {
