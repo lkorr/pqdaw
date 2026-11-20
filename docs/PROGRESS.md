@@ -1182,3 +1182,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 64/65 then pq_tests_views 944/944 after narrowing; orchestrator after rebase onto BR.D: pq_tests_views 1/1; --render 19-19-59: cut wires 1 → 0.
 - Perf / CPU-efficiency check: one Tarjan pass per infer; nodes pulled into a region run at its rate (a delay in a 2× Math loop costs 2×).
 - Notes/blockers: 19-50-41 was not an engine bug (Math clip, B = 0) → default fixed in MX.4 (Q?-BR.B-b); Q?-BR.B-a; crash's exact user action not in the log.
+
+## 2026-11-19 · BR.E · task/BR.E-audio-clips (merged 429d381c)
+- Did: follow never pages while a pointer is captured in the arrangement and stays off after the user zooms/scrolls away until the playhead is back in view (was: ruler zoom drag and follow paging fought every frame); `0` and new `R` (reverse audio) act on the part of clips a time range covers (split at its edges, MIDI + audio, across tracks, one undo step); double-clicking an audio clip keeps keys in the arrangement; one shared split-range helper.
+- Verified: worker pq_tests_views 947 cases + pq_tests_app pass, follow test fails without the fix; orchestrator after rebase onto BR.B: pq_tests_views 1/1.
+- Perf / CPU-efficiency check: follow adds one capture check when the playhead is off-view; range edits batch commands into one undo step, linear in clips.
+- Notes/blockers: not checked live; no goldens; Q?-BR.E-a lists missing hotkeys (Crop, Create Fades, warp toggle, transpose/gain) for the user.
