@@ -53,6 +53,9 @@ float phaseAt(const Element& e, float x);
 float ghostPhaseAt(const Element& e, float x);
 std::pair<double, double> phaseScale(const Element& e);
 std::vector<float> phaseWraps(const Element& e);
+// BR.G: the x0, x1 of each span where the wrapped total turns faster than once per 8 units of the axis, drawn as a
+// shaded band instead of segments (wrapped only; no wrap marker inside one).
+std::vector<std::pair<float, float>> phaseDenseSpans(const Element& e);
 // The delay area: the total's group delay drawn at element x (ms; NaN: none), the scale of the last paint (lo: 0, or the
 // most negative value drawn below the floor), the y of a value.
 float delayAt(const Element& e, float x);

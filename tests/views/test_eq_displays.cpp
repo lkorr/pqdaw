@@ -203,12 +203,14 @@ devices::SpectrumSnapshot fakeSpectrum() {
 struct EqUi {
   FakeTransport port;
   ViewContext ctx{port};
-  TestDriver d{2600, 900};
+  TestDriver d;
   std::unique_ptr<Shell> shell;
   doc::TrackId track;
   doc::DeviceId eq;
 
-  explicit EqUi(bool midi = false) {
+  // `window`, `bottom`: the window's size and the body splitter's bottom pane (< 0: the Shell's default).
+  explicit EqUi(bool midi = false, Vec2 window = {2600.0f, 900.0f}, float bottom = 300.0f)
+      : d{static_cast<uint32_t>(window.x), static_cast<uint32_t>(window.y)} {
     ctx.setDeviceLibrary(&devLib());
     doc::DocumentStore& st = ctx.store();
     track = run(st, doc::ops::createTrack(*st.current(), st.ids(), midi ? doc::TrackKind::Midi : doc::TrackKind::Audio, {}, midi ? "MIDI" : "Audio")).tracks.at(0);
@@ -216,7 +218,7 @@ struct EqUi {
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
-    dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(300.0f);
+    if (bottom >= 0.0f) dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(bottom);
     ctx.setSelectedTrack(track);
     ctx.setDetailVisible(true);
     ctx.setDetailMode(DetailMode::Device);
@@ -392,7 +394,9 @@ TEST_CASE("bug-mod-ghost response: a band whose Frequency an LFO cable drives ke
   CHECK(peakHz(drawn(true)) == doctest::Approx(800.0).epsilon(0.03));
   CHECK(peakHz(drawn(false)) == doctest::Approx(400.0).epsilon(0.03));
   CHECK(gr.lowerings() == lowerings);
-  CHECK(gr.evaluations() == evals + 1);  // (the silhouette's band; the solid curve is the cached one)
+  // (the silhouette's band, and — BR.G — its total on the shifted grid: the open wrapped phase area's dense spans need its
+  // group delay; the solid curve is the cached one)
+  CHECK(gr.evaluations() == evals + 2);
   // The silhouette at 800 Hz is exactly the curve with the knob itself at 800 Hz (the ring gone: stopped).
   const std::vector<float> live = drawn(true);
   setUnits(a.st(), band.frequency, 800.0);
@@ -718,6 +722,28 @@ TEST_CASE("EQ.4 response: a node drags frequency and gain (one undo step); Shift
   CHECK(units(u.doc(), low.gain) == doctest::Approx(lg0));
 }
 
+TEST_CASE("BR.G device view: at the Shell's default height the EQ's panel shows 1:1 (was ~0.4); a node drags (real dispatch)") {
+  // The bug report's window (1920 × 1009) and the Shell's default Device view height.
+  EqUi u(false, {1920.0f, 1009.0f}, -1.0f);
+  panel::PanelHost& h = u.host();
+  const float s = h.transform().scale;
+  MESSAGE("EQ panel scale in the Device view: " << s << ", host " << h.rect().w << " x " << h.rect().h);
+  CHECK(s >= 0.95f);
+  // The response display: at least 440 × 150 device px, and a node a comfortable target.
+  const panel::Element& r = u.element("response");
+  CHECK(r.desc().w * s >= 440.0f);
+  CHECK(r.desc().h * s >= 150.0f);
+  doc::BandInfo bell = u.info().bands[0][1];  // 400 Hz
+  const size_t h0 = u.history();
+  const Vec2 n = u.node(bell.group);
+  // Grabbed 4 px off its centre, dragged right and up: higher and louder, one undo step.
+  u.d.drag({n.x + 4.0f, n.y + 3.0f}, {n.x + 64.0f, n.y - 27.0f}, 6);
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  CHECK(units(u.doc(), bell.frequency) > 450.0);
+  CHECK(units(u.doc(), bell.gain) > 1.0);
+}
+
 TEST_CASE("EQ.4 response: wheel → Q (a run = one step), Alt + wheel → Stages, double-click a node → 0 dB") {
   EqUi u;
   doc::BandInfo bell = u.info().bands[0][1];
@@ -985,6 +1011,56 @@ TEST_CASE("EQ.4d delay: a 23-stage Q 5.16 allpass at 1.27 kHz draws its analytic
   }
   CHECK(phaseBad == 0);
   CHECK(acc * 180.0 / 3.141592653589793 < -22.0 * 360.0);  // (23 turns from DC to Nyquist: almost all of them by 20 kHz)
+}
+
+TEST_CASE("BR.G phase: wrapped, where a 23-stage allpass turns faster than once per 8 units the curve is a dense span (no segments, no wrap markers); unwrapped none") {
+  Allpass23 ap;
+  Alone& a = ap.a;
+  a.show(1.0f);
+  panel::Element& r = a.element("response");
+  panel::PanelTarget& t = a.face().target();
+  (void)a.render();
+  REQUIRE(!panel::test::phaseUnwrapped(r, t));
+  const auto spans = panel::test::phaseDenseSpans(r);
+  REQUIRE(!spans.empty());
+  const float w = r.desc().w;
+  auto inSpan = [&](float x) {
+    for (const auto& [x0, x1] : spans)
+      if (x > x0 && x < x1) return true;
+    return false;
+  };
+  // Every point whose analytic phase step (2π·Δf·τ) is well past the limit (a turn per 8 units) lies in a span; the
+  // centre (1.27 kHz) is one.
+  const dsp::SvfParams sp = ap.params();
+  const double sr = a.ctx.sampleRate();
+  const uint32_t n = panel::test::responsePoints();
+  const double dx = w / static_cast<double>(n - 1), limit = 2.0 * 3.141592653589793 * dx / 8.0;
+  uint32_t fast = 0, missed = 0;
+  for (uint32_t k = 1; k + 1 < n; ++k) {
+    const double f0 = panel::test::responseHz(k - 1), f1 = panel::test::responseHz(k);
+    const double step = 2.0 * 3.141592653589793 * (f1 - f0) * 0.5 * (svfDelayMs(sp, f0, sr) + svfDelayMs(sp, f1, sr)) * 1e-3;
+    if (step > 1.5 * limit) {
+      ++fast;
+      if (!inSpan(w * (static_cast<float>(k) - 0.5f) / static_cast<float>(n - 1))) ++missed;
+    }
+  }
+  CHECK(fast > 10);
+  CHECK(missed == 0);
+  CHECK(inSpan(static_cast<float>(panel::test::axisT(1270.0)) * w));
+  // No wrap marker inside a span; outside them neighbouring markers are at least 4 units apart (the thicket was one
+  // every unit or two).
+  std::vector<float> wraps = panel::test::phaseWraps(r);
+  CHECK(!wraps.empty());
+  std::sort(wraps.begin(), wraps.end());
+  for (size_t i = 0; i < wraps.size(); ++i) {
+    CAPTURE(wraps[i]);
+    CHECK(!inSpan(wraps[i]));
+    if (i > 0 && !inSpan(0.5f * (wraps[i - 1] + wraps[i]))) CHECK(wraps[i] - wraps[i - 1] >= 4.0f);
+  }
+  // Unwrapped: every turn drawn, no span.
+  t.setViewValue(r.id(), "unwrap", 1.0);
+  (void)a.render();
+  CHECK(panel::test::phaseDenseSpans(r).empty());
 }
 
 TEST_CASE("EQ.4d delay: a cut bell's true negative group delay is drawn below the 0 ms floor, in at most a quarter of the area") {

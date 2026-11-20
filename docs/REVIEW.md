@@ -2160,3 +2160,12 @@ Judge: play, then drag-zoom in the ruler while the playhead runs; drag a range i
   atan2 to 1, the rest 0 (your 2026-11-19 clip-in-a-feedback-loop report). A B you typed is kept.
 - 6 goldens math-face-{gt,clip,eq}-{1x,2x}: the jack holes, and clip's B box reads 1.00.
 Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to clip in a delay feedback loop.
+
+## 2026-11-20 · BR.G · EQ readable in the Device view; wrapped phase legible
+- The EQ's panel is one wide, short row now (controls | response display | band strip), 176 units tall instead of 384:
+  at the Shell's default Device view height it shows 1:1 (was ~0.4). Look at a new EQ in the Device view: can you read
+  the axis labels and grab the band nodes comfortably? (EQs already in a saved project keep their stored old panel.)
+- The response display's small text is a little larger (chips, dB / phase / delay labels 6 units); a short phase strip
+  labels only 0°.
+- Wrapped phase: where the phase turns faster than once per 8 units of the axis (a 23-stage allpass near its centre) it
+  is a shaded band over ±180° instead of a thicket of segments and wrap markers. Goldens: eq-all-views, eq-eight-bands.

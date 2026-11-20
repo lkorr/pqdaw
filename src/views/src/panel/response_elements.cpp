@@ -431,7 +431,7 @@ void paintFreqLabels(ui::FacePainter& p, const ui::Theme& th, float w, float y, 
 void chip(ui::FacePainter& p, const ui::Theme& th, const Rect& r, std::string_view text, bool on, bool hot) {
   p.roundedRect(r, 2.5f, on ? ui::mulAlpha(th.device.response, 0.22f) : ui::mulAlpha(th.device.display, 0.85f));
   outlineRect(p, r, 2.5f, 0.8f, on ? ui::mulAlpha(th.device.response, 0.7f) : ui::mulAlpha(th.device.responseGrid, hot ? 4.0f : 2.5f));
-  p.text({(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f}, text, 5.5f, on ? th.device.response : th.device.displayText);
+  p.text({(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f}, text, 6.0f, on ? th.device.response : th.device.displayText);
 }
 
 bool inside(const Rect& r, Vec2 l) noexcept { return l.x >= r.x0 && l.x <= r.x1 && l.y >= r.y0 && l.y <= r.y1; }
@@ -515,7 +515,7 @@ public:
     if (!phase && !delay) return;
     const uint32_t act = shown_.active;
     const GroupResponses::Curve* tot = shown_.total(r, act, grid(), kGridKey);
-    if (delay || unwrap_) deriveDelay(tot, tot != nullptr ? shown_.total(r, act, shiftedGrid(), kShiftedKey) : nullptr, ghostDelay_);
+    if (delay || phase) deriveDelay(tot, tot != nullptr ? shown_.total(r, act, shiftedGrid(), kShiftedKey) : nullptr, ghostDelay_);
     if (phase) derivePhase(tot, unwrap_, &ghostDelay_, ghostPhase_);
     const Rgba m = th.device.response;
     auto draw = [&](int32_t a, const Derived& d) {
@@ -523,11 +523,12 @@ public:
       const Span& A = area_[a];
       ui::DrawList& dl = p.drawList();
       dl.pushClip(devRect(p, A));
-      forRuns(d.v, a == kPhase && !unwrap_, [&](uint32_t x0, uint32_t x1) {
+      const bool wrapped = a == kPhase && !unwrap_;
+      forRuns(d.v, wrapped, wrapped ? denseSteps(ghostDelay_, dense_) : nullptr, [&](uint32_t x0, uint32_t x1) {
         stripPoints(d.v, x0, x1, A, a == kDelay, pts_);
         p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.25f));
         p.polyline(pts_, 1.3f, m);
-      }, [](float) {});
+      }, [](float) {}, [&](uint32_t k0, uint32_t k1) { paintDense(p, A, k0, k1, ui::mulAlpha(m, 0.5f), nullptr); });
       dl.popClip();
     };
     if (phase) draw(kPhase, ghostPhase_);
@@ -713,6 +714,7 @@ public:
   }
   float delayY(double ms) const noexcept { return yOfDelay(ms); }
   const std::vector<float>& wraps() const noexcept { return wraps_; }
+  const std::vector<std::pair<float, float>>& denseSpans() const noexcept { return denseSpans_; }
   Vec2 chipCentre(int32_t c) const noexcept {
     const Rect r = chipRect(c);
     return {(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f};
@@ -916,8 +918,9 @@ private:
     if (sel != nullptr) selColour_ = bandColour(sel->index);
     const GroupResponses::Curve* tot = shown_.total(*r, act, hz, kGridKey);
     const GroupResponses::Curve* one = sel != nullptr ? r->curve(sel->group, hz, kGridKey) : nullptr;
-    // The delay (the delay area, and the unwrapped phase's turn counts): the second evaluation, on the shifted grid.
-    if (delay || unwrap) {
+    // The delay (the delay area; the unwrapped phase's turn counts; BR.G: where the wrapped phase turns too fast to draw):
+    // the second evaluation, on the shifted grid.
+    if (delay || phase) {
       const std::vector<double>& sh = shiftedGrid();
       deriveDelay(tot, tot != nullptr ? shown_.total(*r, act, sh, kShiftedKey) : nullptr, delayTotal_);
       deriveDelay(one, one != nullptr ? r->curve(sel->group, sh, kShiftedKey) : nullptr, delaySel_);
@@ -1020,7 +1023,7 @@ private:
     // dB labels on the right, frequency labels along the bottom.
     for (double db = -zoom_ + step; db < zoom_ - 1e-9; db += step) {
       if (std::fmod(std::fabs(db), 2.0 * step) > 1e-9 && std::fabs(db) > 1e-9) continue;
-      p.textAligned({w - 3.0f, yOf(db) - 3.0f}, db > 0 ? fmt("+%.0f", db) : fmt("%.0f", db), 5.5f, th.device.displayText, 1.0f);
+      p.textAligned({w - 3.0f, yOf(db) - 3.0f}, db > 0 ? fmt("+%.0f", db) : fmt("%.0f", db), 6.0f, th.device.displayText, 1.0f);
     }
     paintFreqLabels(p, th, w, A.y1 - 5.5f, 5.8f);
     paintReadout(p, th, t);
@@ -1111,25 +1114,30 @@ private:
     }
     phaseLo_ = lo;
     phaseHi_ = hi;
+    // BR.G: rules closer than a label's height (a short strip) label only the inner one nearest the middle.
+    const bool roomy = std::fabs(stripY(A, lo + step, lo, hi) - stripY(A, lo, lo, hi)) >= 7.5f;
+    const double mid = lo + step * std::max(1.0, std::floor((hi - lo) / step * 0.5));
     for (double v = lo; v <= hi + 1e-9; v += step) {
       const float y = stripY(A, v, lo, hi);
       const bool zero = std::fabs(v) < 1e-9;
       p.line({0.0f, y}, {w, y}, zero ? 0.9f : 0.6f, zero ? ui::mulAlpha(th.device.responseGrid, 2.6f) : th.device.responseGrid);
-      if (v > lo + 1e-9 && v < hi - 1e-9)
-        p.textAligned({w - 3.0f, y - 2.8f}, std::fabs(v) < 1e-9 ? std::string("0\xC2\xB0") : fmt("%+.0f\xC2\xB0", v), 5.0f,
+      if (v > lo + 1e-9 && v < hi - 1e-9 && (roomy || std::fabs(v - mid) < 1e-6 * step))
+        p.textAligned({w - 3.0f, y - 3.0f}, std::fabs(v) < 1e-9 ? std::string("0\xC2\xB0") : fmt("%+.0f\xC2\xB0", v), 6.0f,
                       th.device.displayText, 1.0f);
     }
     // A wrapped curve is cut where it wraps (no vertical line across the strip); at each cut a thin dotted line in its
     // colour joins its end at one edge (±180°) to its continuation at the other (EQ.4c), at the interpolated crossing.
     const float yTop = stripY(A, 180.0, lo, hi), yBot = stripY(A, -180.0, lo, hi);
+    // BR.G: where it turns faster than that can show (denseSteps), a shaded band over the whole scale instead.
     wraps_.clear();
+    denseSpans_.clear();
     paintStripCurves(p, th, A, phaseTotal_, phaseSel_, false, [&](const std::vector<float>& v, auto&& draw, Rgba markerCol, bool total) {
-      forRuns(v, wrapped, draw, [&](float k) {
+      forRuns(v, wrapped, wrapped ? denseSteps(total ? delayTotal_ : delaySel_, dense_) : nullptr, draw, [&](float k) {
         const float x = w * k / static_cast<float>(kPoints - 1);
         if (total) wraps_.push_back(x);
         const Vec2 seg[2] = {{x, yTop}, {x, yBot}};
         p.dashed(seg, 0.7f, 1.0f, 2.0f, markerCol);
-      });
+      }, [&](uint32_t k0, uint32_t k1) { paintDense(p, A, k0, k1, markerCol, total ? &denseSpans_ : nullptr); });
     });
     chip(p, th, chipRect(4), "PHASE", true, hoverChip_ == 4);
     chip(p, th, chipRect(5), wrapped ? "WRAP" : "UNWRAP", !wrapped, hoverChip_ == 5);
@@ -1176,16 +1184,16 @@ private:
     size_t n = 0;
     auto label = [&](float y, const std::string& text, float px, Rgba col) {
       for (size_t k = 0; k < n; ++k)
-        if (std::fabs(placed[k] - y) < 6.0f) return;
+        if (std::fabs(placed[k] - y) < 7.0f) return;
       if (n < std::size(placed)) placed[n++] = y;
       p.textAligned({w - 3.0f, y}, text, px, col, 1.0f);
     };
-    label(delayFloorY_ - 2.8f, "0", 5.0f, th.device.displayText);
+    label(delayFloorY_ - 3.0f, "0", 6.0f, th.device.displayText);
     const std::string topText = fmt(f, delayHi_);
-    label(yOfDelay(delayHi_) + 3.2f, topText, 5.0f, th.device.displayText);
-    p.textAligned({w - 5.0f - 0.56f * 5.0f * static_cast<float>(topText.size()), yOfDelay(delayHi_) + 3.4f}, "ms", 4.2f,
+    label(yOfDelay(delayHi_) + 3.6f, topText, 6.0f, th.device.displayText);
+    p.textAligned({w - 5.0f - 0.56f * 6.0f * static_cast<float>(topText.size()), yOfDelay(delayHi_) + 3.8f}, "ms", 5.0f,
                   ui::mulAlpha(th.device.displayText, 0.7f), 1.0f);
-    for (int32_t i = 1; i < ticks; ++i) label(yOfDelay(step * i) - 2.8f, fmt(f, step * i), 5.0f, th.device.displayText);
+    for (int32_t i = 1; i < ticks; ++i) label(yOfDelay(step * i) - 3.0f, fmt(f, step * i), 6.0f, th.device.displayText);
     if (negative && bot - delayFloorY_ >= 5.0f)
       label((delayFloorY_ + bot) * 0.5f + 0.5f, fmt(-delayLo_ < 0.1 ? "%.3f" : -delayLo_ < 1.0 ? "%.2f" : "%.1f", delayLo_), 4.2f,
             ui::mulAlpha(th.device.displayText, 0.8f));
@@ -1200,10 +1208,25 @@ private:
   // Runs [a, b) of points to draw as one line: all of them, or (wrapped) cut where the phase wraps; each cut also
   // reports its crossing (a fractional point index): where the unwrapped phase, linear between the two points, passes
   // the odd multiple of 180° (so it does not move with the grid's resolution).
+  // BR.G: `dense` (denseSteps; null: none) marks steps drawn as a dense span [k0, k1] (point indices) instead: no line,
+  // no wrap marker inside it; the curve resumes at its last point.
   template <class F, class W>
   static void forRuns(const std::vector<float>& v, bool wrapped, F&& draw, W&& wrap) {
+    forRuns(v, wrapped, nullptr, draw, wrap, [](uint32_t, uint32_t) {});
+  }
+  template <class F, class W, class D>
+  static void forRuns(const std::vector<float>& v, bool wrapped, const std::vector<uint8_t>* dense, F&& draw, W&& wrap, D&& span) {
     uint32_t a = 0;
-    for (uint32_t k = 1; k <= kPoints; ++k)
+    for (uint32_t k = 1; k <= kPoints; ++k) {
+      if (k < kPoints && dense != nullptr && (*dense)[k] != 0) {
+        if (k - a >= 2) draw(a, k);
+        uint32_t e = k;
+        while (e < kPoints && (*dense)[e] != 0) ++e;
+        span(k - 1, e - 1);
+        a = e - 1;
+        k = e - 1;  // (the loop's ++k: the first step after the span)
+        continue;
+      }
       if (k == kPoints || (wrapped && std::fabs(v[k] - v[k - 1]) > 180.0f)) {
         if (k - a >= 2) draw(a, k);
         a = k;
@@ -1212,6 +1235,41 @@ private:
         const float edge = d > 0.0f ? 180.0f : -180.0f;
         wrap(static_cast<float>(k - 1) + (d != 0.0f ? std::clamp((edge - v[k - 1]) / d, 0.0f, 1.0f) : 0.5f));
       }
+    }
+  }
+
+  // BR.G (bug_reports/2026-11-08_12-29-32): the wrapped phase's steps that turn faster than once per kTurnUnits of the
+  // axis — the true step from the group delay tau (ms; 2 pi df tau, as the unwrapped phase counts its turns), which the
+  // wrapped values alone alias once it passes pi per point. Drawn as lines these were a thicket of short segments (a
+  // 23-stage allpass turns ~0.7 times per point near its centre). Gaps shorter than half a turn's width between two
+  // dense steps are closed so a span does not flicker apart. Null when no step is dense (or tau is unknown).
+  static constexpr float kTurnUnits = 8.0f;
+  const std::vector<uint8_t>* denseSteps(const Derived& tau, std::vector<uint8_t>& mask) const {
+    if (!tau.valid() || tau.v.size() != kPoints) return nullptr;
+    const std::vector<double>& f = grid();
+    const double dx = static_cast<double>(desc_.w) / (kPoints - 1);
+    const double limit = 2.0 * std::numbers::pi * dx / kTurnUnits;  // radians per step
+    const uint32_t gap = static_cast<uint32_t>(std::max(1.0, std::round(0.5 * kTurnUnits / std::max(dx, 1e-6))));
+    mask.assign(kPoints, 0);
+    uint32_t last = 0;  // the last dense step (0: none yet)
+    for (uint32_t k = 1; k < kPoints; ++k) {
+      const double step = 2.0 * std::numbers::pi * (f[k] - f[k - 1]) * 0.5 * (static_cast<double>(tau.v[k - 1]) + tau.v[k]) * 1e-3;
+      if (!(std::fabs(step) > limit)) continue;
+      if (last != 0 && k - last - 1 <= gap) std::fill(mask.begin() + last + 1, mask.begin() + k, uint8_t{1});
+      mask[k] = 1;
+      last = k;
+    }
+    return last != 0 ? &mask : nullptr;
+  }
+  // A dense span: the band the phase sweeps there (all of +-180 degrees), in the curve's colour, edged at its ends.
+  void paintDense(ui::FacePainter& p, const Span& A, uint32_t k0, uint32_t k1, Rgba col, std::vector<std::pair<float, float>>* out) const {
+    const float x0 = desc_.w * static_cast<float>(k0) / (kPoints - 1), x1 = desc_.w * static_cast<float>(k1) / (kPoints - 1);
+    const float yTop = stripY(A, 180.0, -180.0, 180.0), yBot = stripY(A, -180.0, -180.0, 180.0);
+    p.roundedRect({x0, yTop, x1, yBot}, 0.0f, ui::mulAlpha(col, 0.45f));
+    const Vec2 l[2] = {{x0, yTop}, {x0, yBot}}, r[2] = {{x1, yTop}, {x1, yBot}};
+    p.polyline(l, 0.8f, col);
+    p.polyline(r, 0.8f, col);
+    if (out != nullptr) out->push_back({x0, x1});
   }
 
   void paintNodes(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t) {
@@ -1410,6 +1468,8 @@ private:
   double phaseLo_ = -180.0, phaseHi_ = 180.0, delayLo_ = 0.0, delayHi_ = 1.0;  // their scales (last paint)
   float delayFloorY_ = 0.0f;                                                    // the y of 0 ms (last paint)
   std::vector<float> wraps_;  // the phase total's wrap markers' x (last paint; tests)
+  std::vector<std::pair<float, float>> denseSpans_;  // BR.G: its dense spans' x0, x1 (last paint; tests)
+  std::vector<uint8_t> dense_;                       // denseSteps' mask (reused)
   std::vector<Vec2> pts_, dev_;
   std::vector<Rgba> cols_;
   double zoom_ = 24.0;
@@ -1582,6 +1642,10 @@ std::pair<double, double> phaseScale(const Element& e) {
 std::vector<float> phaseWraps(const Element& e) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
   return r != nullptr ? r->wraps() : std::vector<float>{};
+}
+std::vector<std::pair<float, float>> phaseDenseSpans(const Element& e) {
+  const auto* r = dynamic_cast<const ResponseDisplay*>(&e);
+  return r != nullptr ? r->denseSpans() : std::vector<std::pair<float, float>>{};
 }
 float delayAt(const Element& e, float x) {
   const auto* r = dynamic_cast<const ResponseDisplay*>(&e);

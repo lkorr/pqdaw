@@ -1238,10 +1238,12 @@ PanelElement tagged(PanelElement e, std::string_view tag) {
   return e;
 }
 
-// The panel's geometry (world units): the response display (EQ.4d: its magnitude, phase and delay areas stacked in it),
-// the controls on the left and the band strip.
-constexpr float kResponseY = 8.0f, kResponseH = 198.0f;
-constexpr float kStripX = 88.0f, kColumnStep = 60.0f, kColumnW = 56.0f, kStripTop = 220.0f, kEqHeight = kStripTop + 164.0f;
+// The panel's geometry (world units): the controls on the left, the response display (EQ.4d: its magnitude, phase and
+// delay areas stacked in it), the band strip on its right. BR.G: wide and short, one row — the Device view fits a panel
+// to its height (at most 1:1), so the old 384-unit stack (display over strip) showed at ~0.4 in a default-height view.
+constexpr float kStripTop = 12.0f, kEqHeight = kStripTop + 164.0f;  // a column's plate: kStripTop − 4 … + 156
+constexpr float kResponseX = 88.0f, kResponseY = 8.0f, kResponseW = 456.0f, kResponseH = kEqHeight - 16.0f;
+constexpr float kStripX = kResponseX + kResponseW + 10.0f, kColumnStep = 60.0f, kColumnW = 56.0f;
 constexpr uint32_t kMinColumns = 6;
 
 void addRole(Kit& k, const Sig& v, std::string_view setting, double role) { k.setting(v.dev, std::string(setting), role); }
@@ -1486,7 +1488,6 @@ Panel layEqStrip(const Panel& panel, const std::vector<BandInfo> (&bands)[2]) {
       e.w = p.width;
       e.h = p.height;
     }
-    if (e.text(kEqTag, "") == kTagDisplay) e.w = p.width - 16.0f;
   }
   return p;
 }
@@ -1563,13 +1564,13 @@ BlockSet eqBlocks(IdSource& ids, const StockModuleOptions& o) {
   const DeviceId outGain = k.block("gain", "x output", {{"x", z}, {"g", output}});
   k.setting(outGain, "start", 1.0);
   k.out(Sig{outGain, "out"});
-  // The panel: the response display (the analyser on the EQ's output, its input dimmed; its magnitude, phase and delay
-  // areas), the controls on the left, the band strip.
+  // The panel: the controls on the left, the response display (the analyser on the EQ's output, its input dimmed; its
+  // magnitude, phase and delay areas), the band strip on its right.
   Panel p;
   p.width = kStripX + kColumnStep * kMinColumns + 4.0f;
   p.height = kEqHeight;
   p.elements.push_back(plate(p.width, p.height, 6.0));
-  PanelElement display = element(2, "response", 8, kResponseY, p.width - 16.0f, kResponseH, signalBinding(group, "y"));
+  PanelElement display = element(2, "response", kResponseX, kResponseY, kResponseW, kResponseH, signalBinding(group, "y"));
   display.bindings.push_back(signalBinding(group, std::string(kGroupInPort)));
   p.elements.push_back(tagged(std::move(display), kTagDisplay));
   p.elements.push_back(caption(3, 8, kStripTop - 2, 72, 12, "Mode"));
