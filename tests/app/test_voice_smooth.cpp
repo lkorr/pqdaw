@@ -34,7 +34,9 @@
 #include "pq/document/modules.h"
 #include "pq/engine/project_program.h"
 #include "pq/engine/voices.h"
+#include "pq/dsp/curve.h"
 #include "pq/meta/envelope.h"
+#include "pq/meta/type.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -329,6 +331,54 @@ TEST_CASE("AU.voices voice end: within a block of the Envelope's release reachin
       CHECK(endSeconds <= lastOff + 1.0);  // its own envelope (the module's defaults) ends it
     }
     CHECK(peak(r.y, samplesAt(endSeconds + block), r.y.size()) == 0.0);
+  }
+}
+
+TEST_CASE("BR.C voice end: an Envelope set to 0 ms and back to 200 ms releases in 200 ms again (no latched time)") {
+  // Bug 2026-11-19_19-56-21 ("envelope broke after I set it to 0 ms for a while, setting it back to 200 ms doesn't do
+  // anything"). Through the real param path (SetDeviceParam → the link's param write, no compile): attack and release at
+  // their minimum (0 ms, 1 ms) for the first note, then release 200 ms for the second. Each voice ends where its
+  // release says. (The report's project had an EQ after the Envelope: the 5 ms ramp that cut every release, whatever
+  // its time — the instrument-groups BR.C case.)
+  Song s({note(0, kPpq, 0), note(4 * kPpq, kPpq, 0)});
+  DeviceId env;
+  for (const DevicePtr& d : findTrackPtr(*s.store.current(), s.keys)->devices)
+    if (d->patch == "meta:envelope") env = d->id;
+  REQUIRE(env.valid());
+  const meta::Type& et = meta::envelopeType();
+  auto position = [&](uint32_t param, double value) {
+    return dsp::curvePosition(meta::paramCurve(et.params[param]), value, 0.0);
+  };
+  int step = 0;
+  Opts o;
+  o.stoppedBlocks = 20;
+  o.blocks = 2700;  // 3.6 s
+  o.store = &s.store;
+  o.edit = [&](DocumentStore& st) {
+    if (step++ == 0) {
+      REQUIRE(st.dispatch(SetDeviceParam{env, "attack", position(meta::kEnvAttack, 0.0)}).ok());
+      REQUIRE(st.dispatch(SetDeviceParam{env, "release", position(meta::kEnvRelease, 0.0)}).ok());
+    } else {
+      REQUIRE(st.dispatch(SetDeviceParam{env, "release", position(meta::kEnvRelease, 0.2)}).ok());
+    }
+  };
+  const double block = kBlock / kRate;
+  const auto at = [&](double seconds) { return static_cast<uint32_t>(seconds / block); };
+  o.actions = {{Action::Edit, 0}, {Action::Edit, at(1.2)}};
+  for (bool jit : {false, true}) {
+    CAPTURE(jit);
+    step = 0;
+    o.jit = jit;
+    const Render r = render(s.store.current(), o);
+    // The first note (off at 0.5 s, release 1 ms): over within two blocks.
+    CHECK(r.live[at(0.45)] == 1);
+    CHECK(r.live[at(0.5) + 2] == 0);
+    // The second (on at 2 s, off at 2.5 s from the sustain 0.6): its 200 ms release to −80 dB, then over.
+    const double rel = 0.2 * meta::envFallTime(meta::envFallLaw(0.0), 0.6, 0.0, 1.0, 1e-4);
+    CHECK(r.live[at(2.45)] == 1);
+    CHECK(r.live[at(2.5 + rel) - 2] == 1);
+    CHECK(r.live[at(2.5 + rel) + 2] == 0);
+    CHECK(peak(r.y, samplesAt(2.5 + 0.5 * rel), samplesAt(2.5 + 0.5 * rel) + 2400) > 1e-3);
   }
 }
 

@@ -18,6 +18,7 @@
 #include "pq/core/rt_scope.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/engine/project_program.h"
 #include "pq/views/devices/analysis.h"
 
 using namespace pq;
@@ -65,14 +66,14 @@ struct GramProject {
   DocumentStore store;
   TrackId track;
   DeviceId gram;
-  GramProject(bool withGram, std::vector<int32_t> degrees) {
+  GramProject(bool withGram, std::vector<int32_t> degrees, Ticks length = 64 * kPpq) {
     IdSource& ids = store.ids();
     track = ids.track();
     Batch b{"gram", {}};
     b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Keys"), {}, kAppend});
     (void)playback_fixture::instrument(b, ids, track, ids.device());
     std::vector<Note> notes;
-    for (const int32_t d : degrees) notes.push_back(playback_fixture::note(ids, 0, 64 * kPpq, d));
+    for (const int32_t d : degrees) notes.push_back(playback_fixture::note(ids, 0, length, d));
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 64 * kPpq, notes, "chord")});
     REQUIRE(store.dispatch(b).ok());
     playback_fixture::wireSeries(store);  // TX.all-free: wired in series
@@ -141,6 +142,48 @@ TEST_CASE("spectrogram link: the tap carries the beat and the signal; unwatched 
   CHECK(between < root * 1e-2f);  // 20 dB darker between the two partials
   feed.release(views::devices::kWantSpectrogram);
   CHECK_FALSE(tap->wanted());
+}
+
+TEST_CASE("BR.C spectrogram link: a note's end compiles nothing; the idle unit feeds its watched tap silence") {
+  // Bug 2026-11-19_19-55-51 ("whenever I let go of a key, visualisers freeze for a moment, like a quarter second"). The
+  // measured cause: once the released voice ended, the track's unit went idle (skipped: no voice, silent inputs) and
+  // nothing wrote its analysis tap, so every feed held its last picture for its no-data hold (kNoDataSeconds, 150 ms,
+  // + a frame and a device period) before it let the levels fall. Not a compile: the note-off compiles nothing.
+  GramProject p(true, {0}, kPpq);  // one beat (0.5 s), then the Envelope's 250 ms release
+  auto link = makeLink(p.store.current());
+  const std::shared_ptr<TapRing> tap = link->deviceAnalysisTap(p.gram);
+  REQUIRE(tap != nullptr);
+  tap->addReader();
+  Driver d{*link};
+  link->play(0);
+  link->flush();
+  const app::LinkStats before = link->stats();
+  const uint32_t blocks = 1200;  // 1.6 s: the note, its release, then ≈ 0.8 s with no voice
+  uint32_t gaps = 0;  // blocks (after the first few) that wrote nothing into the watched tap
+  for (uint32_t b = 0; b < blocks; ++b) {
+    const uint64_t w0 = tap->written();
+    d.run(1, false);
+    if (b >= 4 && tap->written() != w0 + kBlock) {
+      ++gaps;
+      MESSAGE("block " << b << " wrote " << (tap->written() - w0));
+    }
+  }
+  link->flush();
+  CHECK(link->stats().compiles == before.compiles);
+  CHECK(link->stats().unitCompiles == before.unitCompiles);
+  engine::ProjectProgram& program = *link->engine().program();
+  uint64_t idle = 0;
+  for (uint32_t u = 0; u < program.numUnits(); ++u) idle += program.unitStats(u).idleBlocks;
+  CHECK(idle > 100);  // the unit did go idle once the voice ended …
+  CHECK(gaps == 0);  // … and its tap still got every block (zeros)
+  std::vector<float> last(kBlock * 100);
+  REQUIRE(tap->read(2, tap->written() - last.size(), static_cast<uint32_t>(last.size()), last.data()) == last.size());
+  CHECK(*std::max_element(last.begin(), last.end()) == 0.0f);
+  tap->removeReader();
+  // Unwatched, the idle unit writes nothing.
+  const uint64_t w = tap->written();
+  d.run(50, false);
+  CHECK(tap->written() == w);
 }
 
 TEST_CASE("spectrogram link: the Spectrogram is bit-exact pass-through, watched or not") {

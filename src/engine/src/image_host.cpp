@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string_view>
 
+#include "pq/core/tap_ring.h"
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/dsp/oversample.h"
@@ -1188,6 +1189,22 @@ bool ImageHost::sleepLayout(const g::Schedule& s, SleepMode mode) {
     }
   }
   regionFillFirst_[s.regions.size()] = static_cast<uint32_t>(fills_.size());
+  for (uint32_t gi = 0; gi < segs_.size(); ++gi) {  // BR.C: each segment's analysis taps
+    segs_[gi].firstTap = static_cast<uint32_t>(segTaps_.size());
+    for (uint32_t r = 0; r < s.regions.size(); ++r) {
+      if (regionSeg_[r] != gi) continue;
+      for (uint32_t i = s.regions[r].firstOp; i < s.regions[r].firstOp + s.regions[r].numOps; ++i) {
+        const g::Op& op = s.ops[i];
+        if (op.kind != g::OpKind::Kernel || op.resource == g::kNone ||
+            dsp::kernelInfo(op.kernel).resource != dsp::Resource::SignalTap)
+          continue;
+        auto* t = static_cast<TapRing*>(const_cast<void*>(resource(dsp::Resource::SignalTap, op.resource)));
+        if (t != nullptr && std::find(segTaps_.begin() + segs_[gi].firstTap, segTaps_.end(), t) == segTaps_.end())
+          segTaps_.push_back(t);
+      }
+    }
+    segs_[gi].numTaps = static_cast<uint32_t>(segTaps_.size()) - segs_[gi].firstTap;
+  }
   return true;
 }
 
@@ -1363,6 +1380,10 @@ void ImageHost::decideSleep(uint32_t stage, const ProcessContext& ctx, uint32_t 
     if (g.asleep) ++sleepStats_.asleepBlocks;
     g.skip = g.asleep && sleepMode_ == SleepMode::On;
     *g.flag = g.skip ? 0xFFFFFFFFu : 0u;
+    if (g.skip) {  // BR.C: its taps get its silence (a skipped signal_tap writes nothing)
+      const float* zero = zeros_;
+      for (uint32_t k = g.firstTap; k < g.firstTap + g.numTaps; ++k) segTaps_[k]->write(&zero, 1, frames, 1u);
+    }
   }
 }
 

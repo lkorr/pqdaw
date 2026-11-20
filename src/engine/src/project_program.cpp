@@ -52,6 +52,7 @@ struct ProjectProgram::Packet : RtHeapObject {
   std::unique_ptr<VoiceBinding> binding;                  // voice units
   // Idle units (see the header).
   uint32_t idleAfter = 0;                                 // UnitImage::idleAfterBlocks
+  Table<TapRing*> signalTaps{rtHeap()};                   // BR.C: UnitImage::signalTaps (zeros while idle)
   Table<float> linked{rtHeap()};                          // the linked params' values in the last block
   uint64_t linkedGen = ~uint64_t{0};                      // the param generation `linked` was read at (L1)
   uint64_t paramsGen = ~uint64_t{0};                      // the generation `params` was last written at (T5.x-perf-audio)
@@ -460,6 +461,7 @@ Result<std::unique_ptr<ProjectProgram::Packet>> ProjectProgram::makePacket(
   p->keepAlive.assign(std::make_move_iterator(ui.keepAlive.begin()), std::make_move_iterator(ui.keepAlive.end()));
   ui.keepAlive.clear();
   p->idleAfter = ui.idleAfterBlocks;
+  p->signalTaps.assign(ui.signalTaps.begin(), ui.signalTaps.end());
   for (uint32_t k : io.clipSlots)  // T5.4
     if (k < cfg_.numClipSlots) p->clipSlots.push_back(k);
   p->linked.assign(p->paramLinks.size(), std::numeric_limits<float>::quiet_NaN());
@@ -1587,6 +1589,8 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
         U.idle = true;
       }
       if (U.voices) U.voices->advanceIdle(frames);
+      const float* zero = zeros_.data();
+      for (TapRing* t : p->signalTaps) t->write(&zero, 1, frames, 1u);  // BR.C: its silence (nothing when unwatched)
       ++U.stats.idleBlocks;
       return false;
     }

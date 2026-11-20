@@ -46,7 +46,9 @@
 //                A param ramp counts as a param change for the segments that wake on that param, for the ramp's
 //                length after the change (EX.x-fix-settle: a smoother falls asleep at its target, not mid-ramp;
 //                AU.dsp, RB-DY M1: only those segments, no longer every segment of the stage).
-//                Anything else → awake for the whole block. The backends read regionAsleep (the interpreter) or
+//                Anything else → awake for the whole block. BR.C: a skipped segment's analysis taps (signal_tap ops
+//                in its regions) get a block of zeros (nothing when unwatched), what its Z values are, so a visualiser
+//                sees the silence instead of a gap (its no-data hold froze it: bug 2026-11-19_19-55-51). The backends read regionAsleep (the interpreter) or
 //                the flag word in aux (layout().sleepOff + segment, generated code) per sleepable region and run
 //                it or zero its fill buffers instead (fillRegion), one branch per region per block. ε = kSleepEpsilon
 //                (2^-30, −180 dBFS on the state, so ≤ −120 dBFS at the output through 60 dB of gain): the tail cut a
@@ -369,6 +371,7 @@ private:
     bool settled = false;            // AU.dsp: its other states were flushed before the block that just ran
     uint32_t rampLeft = 0;           // AU.dsp (M1): frames its params' ramps still move
     uint32_t* flag = nullptr;        // in aux (the generated code's copy of `skip`)
+    uint32_t firstTap = 0, numTaps = 0;  // BR.C: into segTaps_ (its regions' analysis taps)
   };
   struct FillRun {
     float* ptr = nullptr;
@@ -487,6 +490,7 @@ private:
   Table<uint32_t> regionSeg_{rtHeap()};        // per Schedule::regions entry
   Table<uint32_t> regionFillFirst_{rtHeap()};  // per region + 1 sentinel: into fills_
   Table<FillRun> fills_{rtHeap()};
+  Table<TapRing*> segTaps_{rtHeap()};  // BR.C: per segment, the analysis taps (signal_tap) of its regions
   float* stateMem_ = nullptr;
   RtHeapArray<float> mem_;                 // buf, aux, state
   uint64_t rejected_ = 0;

@@ -69,8 +69,12 @@
 //   end       a group's voices end when every ender is done: the device whose output alone reaches Out's per-note
 //             terms (through pass-throughs: TX.scope-sound) when it is a voiceEnd meta type (the Envelope). Without
 //             an ender reaching Out the voices get the 5 ms linear release after note-off (kMetaReleaseSeconds: env =
-//             gate ? 1 : max(z1(env) − 1/(0.005·sr), 0), done = !gate && env ≤ 0) and that ends them. The track's
-//             `done` is the AND of every context lowered in its patch.
+//             hold ? 1 : max(z1(env) − 1/(0.005·sr), 0), done = !hold && env ≤ 0) and that ends them; hold = gate,
+//             or (BR.C) with enders BEHIND Out — voiceEnd members a per-note signal reaches Out from through other
+//             blocks (an EQ, a fold after the Envelope), followed back along per-note members' signal inputs, not
+//             params, not past an ender — hold = gate || !(all of them done): their release is the note's, the ramp
+//             only declicks what still sounds once they are done. The track's `done` is the AND of every context
+//             lowered in its patch.
 //   voices    a track plays voices when its notes are played or read anywhere (a context's source, a note output wire,
 //             a notes cable into a meta module, a meta module heading its path); a unit whose patch then schedules no
 //             voice stage runs as a plain unit (project_compile). Its polyphony is the largest of its groups' `voices`

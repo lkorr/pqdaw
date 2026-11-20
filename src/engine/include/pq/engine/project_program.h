@@ -65,7 +65,9 @@
 // go idle too: a silent project costs a few compares per unit per block. Any event, param change, voice, new image
 // or non-silent input runs it again at once. T5.4: a unit reading clip slots (clipPlayer atoms) is quiet only in blocks
 // where none of its slots has audio (ProjectConfig::clipActive), so an audio track sleeps while no clip is under the
-// playhead and wakes in the block its clip starts.
+// playhead and wakes in the block its clip starts. BR.C: a skipped unit's watched analysis taps (UnitImage::signalTaps)
+// get a block of zeros per block (one relaxed load per tap unwatched), as a sleeping region's probe reads 0: what it
+// would have written, so a visualiser sees the silence at once instead of waiting out its no-data hold.
 // T1.x-silence: a unit is skipped the same way while its image reported itself dormant after the last block it ran
 // (ProcessContext::dormant: every sleepable region asleep — its reverbs' and delays' tails done —, its outputs
 // silent, nothing else in it keeping state). Every run marks the buses the unit produces silent or not from its
@@ -133,6 +135,10 @@
 #include "pq/engine/state_transfer.h"
 #include "pq/engine/voices.h"
 
+namespace pq {
+class TapRing;  // pq/core/tap_ring.h
+}  // namespace pq
+
 namespace pq::engine {
 
 inline constexpr uint32_t kNoBus = 0xFFFFFFFFu;
@@ -188,6 +194,10 @@ struct UnitImage {
   // reads is silent and no voice sounds, and its state then only settles (smoothed gains); the number of such
   // blocks with unchanged params after which its state no longer changes either. 0: never skipped.
   uint32_t idleAfterBlocks = 0;
+  // BR.C: the analysis taps (signal_tap) its image writes, alive while it is (keepAlive): while the unit is skipped as
+  // idle they get its silence, a block of zeros per block, so the visualisers fall at once (bug 2026-11-19_19-55-51:
+  // they froze for their no-data hold, 150 ms, each time a note's voice ended).
+  std::vector<TapRing*> signalTaps;
 };
 
 struct ProjectConfig {

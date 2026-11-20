@@ -2182,6 +2182,10 @@ struct GroupEnd {
   uint32_t group = 0;                                // device index of the group
   std::vector<std::pair<uint32_t, uint16_t>> dones;  // (member device index, its `done` output)
   PortRef ramp{graph::kNone, 0};                     // the release ramp's `done` (none: no ramp)
+  // BR.C: the enders behind Out that are not last (a block after them): the release ramp starts once they are all done
+  // (`held`: the ramp's pending input, the AND of their `done`s; `notGate` when none of them is called).
+  std::vector<std::pair<uint32_t, uint16_t>> behind;
+  PortRef held{graph::kNone, 0}, notGate{graph::kNone, 0};
 };
 
 struct Build {
@@ -2401,6 +2405,37 @@ uint32_t doneOutput(const graph::Patch& callee) noexcept {
     }
   return graph::kNone;
 }
+// BR.C (bug 2026-11-19_20-08-09: "if anything goes after the envelope it breaks the envelope release"): the enders
+// BEHIND Out — the voiceEnd members (with their `done`) that a per-note signal reaches Out from, through any blocks (an
+// EQ, a fold, a Math module, a nested group), found back from Out's per-note terms along the signal inputs of per-note
+// members (not params: an Envelope modulating a cutoff does not shape the note's amplitude; not behind an ender: it
+// gates what feeds it). An Envelope is the note's amplitude wherever it sits, so these decide when the release ramp
+// starts (playGroup). Signal derived: nothing per type but Type::voiceEnd.
+std::vector<std::pair<uint32_t, uint16_t>> endersBehind(const Build& b, uint32_t k) {
+  std::vector<std::pair<uint32_t, uint16_t>> found;
+  std::vector<uint8_t> seen(b.td.size(), 0);
+  std::vector<uint32_t> todo{k};
+  const std::span<const uint32_t> into = b.wp->wiresInto(b.node);
+  while (!todo.empty()) {
+    const uint32_t dev = todo.back();
+    todo.pop_back();
+    for (const uint32_t wi : into) {
+      const LWire& w = b.wp->wires[wi];
+      if (w.toDev != dev || !w.input || w.outGlobal || w.broadcast || w.toMixer || w.fromTrack || w.notes != nullptr ||
+          w.fromNode != b.node || w.fromDev == k || (dev == k && w.wire->param != kGroupOutPort))
+        continue;
+      const uint32_t from = w.fromDev;
+      const LDev& d = b.td[from];
+      if (seen[from] != 0 || !d.voice || d.callee == nullptr) continue;
+      seen[from] = 1;
+      const meta::Type* t = isMetaDevice(*d.device) ? meta::findType(metaDeviceType(*d.device)) : nullptr;
+      const uint32_t o = t != nullptr && t->voiceEnd ? doneOutput(*d.callee) : graph::kNone;
+      if (o != graph::kNone) found.emplace_back(from, static_cast<uint16_t>(o));
+      else todo.push_back(from);
+    }
+  }
+  return found;
+}
 PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
   const LDev& g = b.td[k];
   const uint32_t gid = g.device->id.value;
@@ -2465,7 +2500,10 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
     else ended = false;
     if (outWidth(*d.callee) == graph::kWidthStereo) width = graph::kWidthStereo;
   }
-  if (!ended) end.dones.clear();
+  if (!ended) {
+    end.dones.clear();
+    end.behind = endersBehind(b, k);
+  }
   bool voiceTerms = false;
   for (const uint32_t wi : b.wp->wiresInto(b.node)) {
     const LWire& w = b.wp->wires[wi];
@@ -2478,10 +2516,21 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
     const PortRef step = b.ir.atom("div", {b.ir.konst(1.0 / kMetaReleaseSeconds, kRelRate), b.ir.atom("sr", {}, tid(1))}, tid(2));
     const PortRef prev = b.ir.atom("z1", {kPending}, tid(3));
     const PortRef down = b.ir.atom("max", {b.ir.atom("sub", {prev, step}, tid(4)), b.c0()}, tid(5));
-    const PortRef env = b.ir.atom("select", {gate, b.c1(), down}, tid(6));
+    const PortRef notGate = b.ir.atom("not", {gate}, tid(8));
+    // BR.C: with Envelopes behind Out (a block after them), the ramp holds 1 until they are all done (their release
+    // is the note's; the ramp only declicks what still sounds then); finishGroups wires their `done`s.
+    PortRef hold = gate, released = notGate;
+    if (!end.behind.empty()) {
+      const PortRef notDone = b.ir.atom("not", {kPending}, tid(11));
+      hold = b.ir.atom("or", {gate, notDone}, tid(12));
+      released = b.ir.atom("not", {hold}, tid(13));
+      end.held = PortRef{notDone.node, 0};
+      end.notGate = notGate;
+    }
+    const PortRef env = b.ir.atom("select", {hold, b.c1(), down}, tid(6));
     b.ir.patch().connect(env, PortRef{prev.node, 0});
     if (voiceTerms) v = b.ir.atom("mul", {y, env}, tid(7));
-    end.ramp = b.ir.atom("and", {b.ir.atom("not", {gate}, tid(8)), b.ir.atom("le", {env, b.c0()}, tid(9))}, tid(10));
+    end.ramp = b.ir.atom("and", {released, b.ir.atom("le", {env, b.c0()}, tid(9))}, tid(10));
   }
   const std::span<const uint32_t> into = b.wp->wiresInto(b.node);
   const bool globals = std::any_of(into.begin(), into.end(), [&](uint32_t wi) {
@@ -2505,7 +2554,16 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
 void finishGroups(Build& b) {
   for (const GroupEnd& e : b.ends) {
     PortRef done = e.ramp;
-    uint32_t s = 2;  // (NodeRole::SendInput slots 2 … 15 of the group: up to 14 enders)
+    uint32_t s = 2;  // (NodeRole::SendInput slots 2 … 15 of the group: up to 14 enders, last or behind)
+    if (e.held.node != graph::kNone) {  // BR.C: the enders behind Out, all done (none called: the note-off alone)
+      PortRef all{graph::kNone, 0};
+      for (const auto& [m, o] : e.behind) {
+        if (b.calls[m] == graph::kNone) continue;
+        const PortRef d{b.calls[m], o};
+        all = all.node == graph::kNone ? d : b.ir.atom("and", {all, d}, nodeIdFor(NodeRole::SendInput, b.td[e.group].device->id.value, s++));
+      }
+      b.ir.patch().connect(all.node == graph::kNone ? e.notGate : all, e.held);
+    }
     for (const auto& [m, o] : e.dones) {
       if (b.calls[m] == graph::kNone) continue;
       const PortRef d{b.calls[m], o};

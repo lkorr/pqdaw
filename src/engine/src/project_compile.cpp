@@ -462,6 +462,14 @@ Result<UnitImage> ProjectCompiler::bind(uint32_t u, std::unique_ptr<ProgramImage
       }
     if (!found) return compileError(ErrorCode::NotFound, "bind: no param '" + name + "' (a linked param must exist)");
   }
+  // BR.C: the analysis taps its ops write (a skipped idle unit writes them silence: ProjectProgram "Idle units").
+  const Resources* res = res_ != nullptr ? res_ : opt_.resources;
+  for (const graph::Op& op : cu.schedule->ops)
+    if (op.kind == graph::OpKind::Kernel && op.resource != graph::kNone && res != nullptr &&
+        dsp::kernelInfo(op.kernel).resource == dsp::Resource::SignalTap && op.resource < res->signalTaps.size())
+      if (TapRing* t = res->signalTaps[op.resource];
+          t != nullptr && std::find(ui.signalTaps.begin(), ui.signalTaps.end(), t) == ui.signalTaps.end())
+        ui.signalTaps.push_back(t);
   if (opt_.keepAlive) {  // T2.6-fix4: the owners of the tuning tables this unit's ops read; TMM.2: frame-table slots, taps
     std::vector<std::pair<dsp::Resource, uint32_t>> seen;
     for (const graph::Op& op : cu.schedule->ops) {

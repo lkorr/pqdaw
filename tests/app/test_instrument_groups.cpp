@@ -454,6 +454,50 @@ TEST_CASE("instrument groups: the Envelope last decides each voice's end; withou
   }
 }
 
+TEST_CASE("BR.C instrument groups: a block after the Envelope keeps its release (the Envelope is the note's amplitude "
+          "wherever it sits)") {
+  // Bug 2026-11-19_20-08-09 ("if anything goes after the envelope it breaks the envelope release") and 19-56-21 (an EQ
+  // after it: "stuck at 0 ms"): In → PA → Wavetable → Envelope → X → Out. X is not a pass-through, so the Envelope is
+  // not last; it used to get the 5 ms ramp at note-off. Now its done starts that ramp: the release sounds, the voice ends.
+  auto build = [](DocumentStore& s, const char* after) {
+    const TrackId t = midi(s);
+    const DeviceId g = groupOf(s, t);
+    clearGroup(s, g);
+    const DeviceId pa = paBlock(s, t, g), wt = metaBlock(s, t, "wavetable", g), env = metaBlock(s, t, "envelope", g);
+    cable(s, link(g, std::string(kGroupInPort), pa, ""));
+    cable(s, link(pa, "", wt, ""));
+    cable(s, link(wt, "", env, ""));
+    if (after == nullptr) {
+      cable(s, link(env, "", g, std::string(kGroupOutPort)));
+    } else {
+      const DeviceId x = block(s, t, after, g);
+      cable(s, link(env, "", x, ""));
+      cable(s, link(x, "", g, std::string(kGroupOutPort)));
+    }
+    return t;
+  };
+  const Notes one{{0, 12000, 220.0f, 0.8f, 0.5f}};
+  DocumentStore ref;
+  const TrackId tr = build(ref, nullptr);
+  const golden::Channels last = played(*ref.current(), Score{{{tr, one}}}, "Envelope last");
+  for (const char* after : {"module:utility", "module:eq", "module:saturator"}) {
+    CAPTURE(after);
+    DocumentStore s;
+    const TrackId t = build(s, after);
+    const golden::Channels got = played(*s.current(), Score{{{t, one}}}, std::string("Envelope → ") + after);
+    // The release (250 ms) sounds 50 … 100 ms after the note-off, about as loud relative to the held note as with the
+    // Envelope last (the ramp would have silenced it after 5 ms = 240 samples).
+    const double held = peak(got, 6000, 12000), rel = peak(got, 12000 + 2400, 12000 + 4800);
+    const double heldRef = peak(last, 6000, 12000), relRef = peak(last, 12000 + 2400, 12000 + 4800);
+    MESSAGE("held " << held << ", 50-100 ms into the release " << rel << " (Envelope last: " << heldRef << ", " << relRef << ")");
+    CHECK(held > 1e-2);
+    CHECK(rel > 1e-2);
+    CHECK(std::fabs(rel / held - relRef / heldRef) <= 0.25 * (relRef / heldRef));
+    // … and it ends: the voice is over well before the render's end (done at −80 dB, then the 5 ms declick).
+    CHECK(peak(got, 30000, kFrames) == 0.0f);
+  }
+}
+
 TEST_CASE("instrument groups: a cable leaving the group reduces its voices — sum (default), max, newest") {
   // Inside: each note's velocity (a note output, per voice) through a Utility; the Utility's output leaves the group
   // straight into the track's mixer through the cable's reducer. Out has nothing: the track plays only that cable.
