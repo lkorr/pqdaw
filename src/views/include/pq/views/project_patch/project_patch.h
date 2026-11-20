@@ -408,10 +408,10 @@ struct ModelCache {
     uint64_t used = 0;                // the build that last used it
     // BR.B: the contents' devices (0: a terminal) and their places in the capsule (before nudges) the last build gave.
     std::vector<uint32_t> ids;
-    std::vector<graph::Point2> rel;
+    std::vector<graph::Point2> rel, sizes;  // (sizes: each content's w, h)
   };
   std::unordered_map<uint32_t, Entry> entries;  // by group device id
-  // BR.B: a group's contents laid out again (a wire connected or removed, a block added or resized among them): how far
+  // BR.B: a group's contents laid out again (only the wires among its blocks changed: one connected or removed): how far
   // the layouter moved each block that was there before (its old place − its new one, before nudges). The view adds
   // these to the blocks' nudges and lays out once more, so a placed block never moves when its group is laid out again
   // (and the document's nudges keep meaning the places shown: a reload lays the contents out as now).

@@ -627,9 +627,10 @@ void ProjectPatchView::rebuild() {
   canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
   layoutCache_.drift.clear();
   patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
-  // BR.B: an opened group laid out again (a wire connected inside it, a block added): its blocks stay where they were —
-  // the layouter's moves go into their nudges, and the second build (its layout cached) places them there.
-  if (!layoutCache_.drift.empty()) {
+  // BR.B: an opened group laid out again by an edit of the wires inside it (a document change; not a view change, nor a
+  // lowering's wire states settling): its blocks stay where they were — the layouter's moves go into their nudges, and
+  // the second build (its layout cached) places them there.
+  if (!sameDoc && !layoutCache_.drift.empty()) {
     auto& nudges = ctx_.store().view().patchNudges;
     for (const ModelCache::Drift& d : layoutCache_.drift) {
       doc::PatchNudge& nu = nudges[d.device];

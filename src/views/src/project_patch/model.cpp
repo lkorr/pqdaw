@@ -655,20 +655,33 @@ struct Builder {
     const float ox = m::kCapsulePad - x0, oy = m::kCapsuleTitle + m::kCapsulePad - y0;
     rel.clear();
     for (size_t i = 0; i < n; ++i) rel.push_back({pos[i].x + ox, pos[i].y + oy});
-    // BR.B: laid out again (not the first layout of this opened group): every block that was there keeps its place —
-    // the layouter's move of it goes into its nudge (ModelCache::drift; the view applies it and builds again).
+    // BR.B: laid out again only because the wires among its blocks changed (the same blocks at the same sizes; not the
+    // first layout of this opened group): each block keeps its place — the layouter's move of it goes into its nudge
+    // (ModelCache::drift; the view applies it and builds again). A block added (a spawn: keepPlaces holds the others) or
+    // one that changed size (a nested group opened or closed, a panel's size settling) lays the group out as before.
     if (entry != nullptr) {
       std::vector<uint32_t> ids(n, 0);
+      std::vector<graph::Point2> sizes(n);
+      for (size_t i = 0; i < n; ++i) sizes[i] = {out.nodes[kids[i]].w, out.nodes[kids[i]].h};
       for (size_t i = 1; i + 1 < n; ++i) ids[i] = out.nodes[kids[i]].device.value;
-      if (!hit && !entry->ids.empty())
+      if (!hit && !entry->ids.empty()) {
+        std::vector<std::pair<size_t, size_t>> kept;  // (now, before)
+        bool sameSizes = true;
         for (size_t i = 1; i + 1 < n; ++i)
-          for (size_t j = 0; j < entry->ids.size() && j < entry->rel.size(); ++j)
+          for (size_t j = 0; j < entry->ids.size() && j < entry->rel.size() && j < entry->sizes.size(); ++j)
             if (entry->ids[j] == ids[i] && ids[i] != 0) {
-              const float dx = entry->rel[j].x - rel[i].x, dy = entry->rel[j].y - rel[i].y;  // (exact: none piles up)
-              if (dx != 0.0f || dy != 0.0f) cache->drift.push_back({ids[i], dx, dy});
+              sameSizes = sameSizes && entry->sizes[j].x == sizes[i].x && entry->sizes[j].y == sizes[i].y;
+              kept.push_back({i, j});
               break;
             }
+        if (sameSizes && kept.size() + 2 == n && entry->ids.size() == n)
+          for (const auto& [i, j] : kept) {
+            const float dx = entry->rel[j].x - rel[i].x, dy = entry->rel[j].y - rel[i].y;  // (exact: none piles up)
+            if (dx != 0.0f || dy != 0.0f) cache->drift.push_back({ids[i], dx, dy});
+          }
+      }
       entry->ids = std::move(ids);
+      entry->sizes = std::move(sizes);
       entry->rel = rel;
     }
     c.w = roundUp4(std::max(x1 - x0 + 2.0f * m::kCapsulePad, 96.0f));
