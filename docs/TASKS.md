@@ -822,6 +822,10 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **BR.D MIDI editing** 👁 *(merged adcd718b; Q?-BR.D-a: paste overwrites same-pitch notes it covers (RollState::overwriteCommands); moves/draws still stack)* (20-02-29 paste at the insert marker, copy sets it to the copied start; 20-04-25 bend drag past the note end follows the mouse, no grid snap; 19-20-33 curved notes distort under the playhead)
 - [x] **BR.E Arrangement + audio clips** 👁 *(merged 429d381c; Q?-BR.E-a: missing Crop / Create Fades / warp-toggle / transpose / gain keys not added)* (20-29-18 user zoom beats follow-playhead; 20-32-35 `0` on a partial audio selection splits and mutes only it; 20-34-17 `R` reverses selected audio, audit warp / sample hotkeys)
 
+### BR batch 2026-11-20 (user: "fix all of these"; 2 lanes)
+- [~] **BR.F Delays, sends, feedback, self-patch** (pqdaw-w1, task/BR.F-delay-send) (bug_reports/2026-11-13_19-02-41 a send with a delay delays the dry signal too; 19-19-00 send feedback loop through a VCA explodes between 0.5 and 1, decays at -1; 23-13-28 a delay repeats forever at full level with no feedback loop; 2026-11-19_18-58-20 wire a module's output straight into its own input)
+- [~] **BR.G EQ readable in the device view; wrapped phase legible** 👁 (pqdaw-w2, task/BR.G-eq-size) (bug_reports/2026-11-08_12-48-46 EQ tiny in device view; 2026-11-08_12-29-32 open residue: wrapped phase near steep allpass is a thicket of segments)
+
 ## RB: wire isolation, autosave + crash recovery, export, freeze — all tasks merged and audited 2026-11-13 (review docs/reviews/RB-DY.md; open lows L5, L8, L9, L12, L14) (plan: docs/plans/RB.md; user 2026-11-12 / 2026-11-13, SPEC §15 "finishing a song"; design approved 2026-11-13)
 ≤ 2 workers in total across RB and DY; lower.cpp (WI.2, FZ.1, DY.2) never in two workers at once. After RB and DY: an audit (critique agent + -Full), and only then M7 (docs/plans/M7.md).
 - [x] **WI.1 Inference blames the cable** *(merged 09a69c68; ProjectCompiler::lastTypeFailures; failed update() now all-or-nothing (it used to keep unpublished unit compiles))* (plan §WI.1). Replaces TX.wire-isolation with WI.2.
