@@ -1188,3 +1188,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker pq_tests_views 947 cases + pq_tests_app pass, follow test fails without the fix; orchestrator after rebase onto BR.B: pq_tests_views 1/1.
 - Perf / CPU-efficiency check: follow adds one capture check when the playhead is off-view; range edits batch commands into one undo step, linear in clips.
 - Notes/blockers: not checked live; no goldens; Q?-BR.E-a lists missing hotkeys (Crop, Create Fades, warp toggle, transpose/gain) for the user.
+
+## 2026-11-19 · MX.4 · task/MX.4-face-jacks (merged cc3195f6)
+- Did: general `jack` panel element (Input / Signal binding); the project patch anchors a closed group's pin on its jack (drawn as a socket, hit there, cables drag/drop/end on it); Math's A / B / Out markers are jacks; per-op B defaults (1 for × ÷ pow nand clip wrap fold atan2, else 0), an op swap moves B only while it is still the old op's default, one undo step.
+- Verified: pq_tests_views (6 math-face goldens re-recorded), 3 real-dispatch view tests + 1 document test; -Affected after rebase all pass except a Math sweep test that assumed B = 0 by default (helper now sets B = 0), then pq_tests_playback 4/4.
+- Perf / CPU-efficiency check: UI + document only; jacks read once per layout, static layers.
+- Notes/blockers: not checked live; Q?-MX.4-a (B reset goes to the spawn-time default; jack visibility conditions ignored).
