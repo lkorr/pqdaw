@@ -6,7 +6,9 @@
 //
 //   Panel     its size (world units: logical px at zoom 1) and its elements in paint order (later ones on top).
 //   Element   one thing on the panel: a KIND (the views' element registry key: "knob", "slider", "number", "toggle",
-//             "button", "menu", "xy", "label", "shape", "tabs", "curve", "modsource"; GU.7 adds rich kinds — the document
+//             "button", "menu", "xy", "label", "shape", "tabs", "curve", "modsource"; GU.7 adds rich kinds; MX.4 "jack":
+//             a port of the closed block, bound to an Input (a cable into it) or a Signal (a cable out of it) — the
+//             project patch puts the block's pin for that port on the jack, always there, wired or not — the document
 //             never interprets it), a RECT in the panel, STYLE fields (named values the kind reads: a knob's "pointer"
 //             arc / pie / dot / line, "track" width, "colour" a theme token, "readout" below / above / inside / none,
 //             "label"; unknown names are kept: a later kind or GU.8's style schemas may use them), BINDINGS (slot 0 the

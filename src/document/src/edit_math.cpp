@@ -1,10 +1,13 @@
 // MX.2: the Math module's op swap (pq/document/edit_ops.h "MX.2"; pq/document/modules.h "the Math module").
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
 #include "edit_common.h"
 #include "edit_paths.h"
 #include "pq/document/modules.h"
+#include "pq/dsp/curve.h"
 
 namespace pq::doc::ops {
 
@@ -27,6 +30,18 @@ EditResult setMathOp(const Project& p, IdSource& ids, DeviceId math, std::string
   }
   for (const Wire& w : set.wires) PQ_DOC_TRY(k.add(AddWire{w}));
   PQ_DOC_TRY(k.add(SetDeviceSetting{math, std::string(kMathOpSetting), static_cast<double>(op->code)}));
+  // MX.4 (Q?-BR.B-b): B's typed value follows the op's default while it is still the old op's (a value the user set is
+  // kept). Compared in units, to a hair (a position round trip through the curve is not exact).
+  if (const Device* b = info->roles.b.valid() ? findDevice(p, info->roles.b).device : nullptr;
+      b != nullptr && info->op != nullptr && info->op->bDefault != op->bDefault && b->curve(kValueParam) != nullptr) {
+    const double now = valueBlockUnits(*b), was = info->op->bDefault;
+    if (std::fabs(now - was) <= 1e-6 * std::max(1.0, std::fabs(was))) {
+      const dsp::Curve& c = *b->curve(kValueParam);
+      const DeviceValue* pos = b->param(kValueParam);
+      const double to = dsp::curvePosition(c, dsp::curveOutput(c, op->bDefault), pos != nullptr ? pos->value : 0.0);
+      PQ_DOC_TRY(k.add(SetDeviceParam{b->id, std::string(kValueParam), std::clamp(to, 0.0, 1.0)}));
+    }
+  }
   batchOf(out).commands = std::move(k.commands);
   return out;
 }

@@ -481,7 +481,8 @@ struct CircuitCanvas::Impl final : FaceHost {
         j.at = {(pin.x - n.x) / h.scale, (pin.y - n.y) / h.scale};
         j.input = pin.input;
         j.connected = pin.connected;
-        j.visible = pin.visible && !pin.orbit;  // TX.orbit-ports: the canvas draws an orbiting port (off the face)
+        j.visible = pin.visible && !pin.orbit && pin.socket == 0;  // TX.orbit-ports: the canvas draws an orbiting port (off
+                                                                    // the face); MX.4: and a socket (a panel's jack)
 
         if (pin.label != UINT32_MAX) j.name = scene->strings[pin.label];
         h.jacks.push_back(j);

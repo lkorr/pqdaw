@@ -158,6 +158,17 @@ ProjectCanvas::PinHit ProjectCanvas::pinAt(Vec2 d) const {
       for (size_t k = 0; k < ports.size(); ++k) {
         if (side == 0 && ports[k].anchored) continue;  // TX.mod-all: no pin (its wire ends on the face's control)
         if (n.kind == NodeKind::Terminal && k > 0) continue;  // BR.patch-io (above)
+        if (ports[k].jack) {  // MX.4: a panel's jack — on its socket (a port's size, at least a few px)
+          const graph::Point2 at = side == 0 ? inPortPoint(n, k) : outPortPoint(n, k);
+          const float dd = std::max(std::fabs(w.x - at.x), std::fabs(w.y - at.y));
+          const float us = tree() ? tree()->scale() : 1.0f;
+          const float jackReach = std::max(circuit::kOrbitPortR * n.scale + 1.0f / std::max(s, 1e-6f), 6.0f * us / std::max(s, 1e-6f));
+          if (dd <= jackReach && dd <= bestD) {
+            bestD = dd;
+            best = {i, static_cast<uint32_t>(k), side == 0};
+          }
+          continue;
+        }
         const float dy = std::fabs(w.y - (n.y + pinOffset(n, k, side == 0)));
         float dd = std::max(std::min(std::fabs(w.x - px), std::fabs(w.x - sx)), dy);
         // BR.patch-io: of a frame socket's two pins the one not meant is a hair farther.

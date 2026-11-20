@@ -354,6 +354,7 @@ constexpr std::array<std::string_view, 3> kAligns = {"centre", "left", "right"};
 constexpr std::array<std::string_view, 1> kValueSlot = {"value"};
 constexpr std::array<std::string_view, 2> kXySlots = {"x", "y"};
 constexpr std::array<std::string_view, 1> kSignalSlot = {"signal"};
+constexpr std::array<std::string_view, 1> kPortSlot = {"port"};  // MX.4: an input or an output
 
 class Knob final : public ValueElement {
 public:
@@ -1314,6 +1315,35 @@ private:
   float radius() const noexcept { return std::max(2.0f, std::min(desc_.w, desc_.h - 9.0f) * 0.32f); }
 };
 
+// ---- jack (MX.4) ----------------------------------------------------------------------------------------------------
+
+// A port of the closed block on the panel (an Input binding: a cable into it; a Signal binding: a cable out of it). The
+// project patch puts the block's pin for that port here (project_patch.h Port::jack) and draws it as a socket over this
+// (lit with the plugged cable's colour, its hover); the element itself is the socket's hole — what any other host of the
+// panel shows. A decoration for the pointer: a press goes through to the host's pin.
+class Jack final : public Element {
+public:
+  using Element::Element;
+  uint32_t staticLayerCount() const noexcept override { return 2; }
+  Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override { return layer == 0 ? th.face.jack : th.face.jackRing; }
+  void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
+    const Vec2 c{desc_.w * 0.5f, desc_.h * 0.5f};
+    const float r = std::max(1.5f, std::min(desc_.w, desc_.h) * 0.5f - 0.75f);
+    if (layer == 0) p.disc(c, r, ui::rgba(255, 255, 255));
+    else p.ring(c, r, 1.2f, ui::rgba(255, 255, 255));
+  }
+  void paintLive(ui::FacePainter&, const ElementEnv&) override {}  // (static only: the host's socket shows the cable)
+  uint64_t liveKey(const PanelTarget&) const override { return 0; }
+  bool hit(Vec2) const noexcept override { return false; }
+  void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
+    const doc::Binding* b = binding();
+    const bool out = b != nullptr && b->kind == doc::BindingKind::Signal;
+    title = out ? "Output jack" : "Input jack";
+    if (b != nullptr && b->bound()) title += ": " + t.info(*b).label;
+    body = out ? "Drag a cable from it to a block's input or control." : "Drop a cable on it: the signal goes into this input.";
+  }
+};
+
 // ---- placeholder (an unknown kind) ----------------------------------------------------------------------------------
 
 class Unknown final : public Element {
@@ -1370,6 +1400,7 @@ void registerGeneric() {
     reg("tabs", "Tabs", Tabs::kStyle, kValueSlot, 120, 16, &make<Tabs>);
     reg("curve", "Curve Editor", curveElementStyle(), kValueSlot, 160, 96, &makeCurveElement);
     reg("modsource", "Mod Source", ModSource::kStyle, kSignalSlot, 24, 32, &make<ModSource>);
+    reg("jack", "Jack", {}, kPortSlot, 10, 10, &make<Jack>);  // MX.4
     registerRichElements(reg);  // GU.5b
     registerEmbedElement(reg);  // GU.6
     registerEngineElements(reg);  // GU.7

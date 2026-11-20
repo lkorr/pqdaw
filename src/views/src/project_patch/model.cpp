@@ -61,9 +61,10 @@ float pinY(const Node& n, size_t i) noexcept { return pinOffset(n, i); }
 float spineOf(const Node& n) noexcept { return pinY(n, 0); }
 // TX.mod-all: the pin rows a block needs (anchored params have none) and the height they take.
 size_t pinRows(const Node& n) noexcept {
-  size_t in = 0;
-  for (const Port& q : n.inputs) in += q.anchored ? 0 : 1;
-  return std::max<size_t>({in, n.outputs.size(), 1});
+  size_t in = 0, out = 0;
+  for (const Port& q : n.inputs) in += q.anchored || q.jack ? 0 : 1;  // MX.4: nor jacks (on the panel)
+  for (const Port& q : n.outputs) out += q.jack ? 0 : 1;
+  return std::max<size_t>({in, out, 1});
 }
 float rowsHeight(const Node& n) noexcept {
   return std::max(48.0f, metrics::kPinTop + metrics::kPinPitch * static_cast<float>(pinRows(n) - 1) + 16.0f);
@@ -288,6 +289,9 @@ struct Builder {
     n.h *= k;
     for (Port& q : n.inputs)
       if (q.anchored) q.ax *= k, q.ay *= k, q.aclear *= k;
+    for (std::vector<Port>* ports : {&n.inputs, &n.outputs})  // MX.4: its jacks
+      for (Port& q : *ports)
+        if (q.jack) q.jx *= k, q.jy *= k;
     if (n.symbol) {
       auto sp = std::make_shared<circuit::SymbolSpec>(*n.symbol);
       sp->w *= k;
@@ -756,6 +760,46 @@ struct Builder {
     return cd;
   }
 
+  // MX.4 (Q?-MX.3-a option 2): closed group `c` drawn as its panel puts the pin of each port a "jack" element shows on
+  // that jack (Port::jack): an Input binding — the group's own main input ("": c's main input) or param, or an input of a
+  // block inside ("<name>@<id>", the key its crossing wires use) — or a Signal binding — the group's output ("y": output
+  // 0) or a block inside's output ("<port>@<id>"). A port no wire crosses yet is added, so the jack takes a cable. Read
+  // from the document's panel (a jack is always shown: its visibility condition is not asked).
+  void panelJacks(const doc::Device& g, Node& c) const {
+    if (!g.hasPanel()) return;
+    for (const doc::PanelElement& e : g.panel->elements) {
+      if (e.kind != "jack") continue;
+      const doc::Binding* b = e.binding(0);
+      if (b == nullptr || !b->device.valid() || !b->meta.empty()) continue;
+      const bool input = b->kind == doc::BindingKind::Input;
+      if (!input && (b->kind != doc::BindingKind::Signal || b->name.empty())) continue;
+      std::vector<Port>& ports = input ? c.inputs : c.outputs;
+      int32_t k = -1;
+      if (b->device == g.id) {
+        k = input && b->name.empty() ? c.mainIn : input ? c.input(b->name) : c.output(b->name);
+        if (k < 0 && input && !b->name.empty()) {  // a param of the group itself, not wired yet
+          ports.push_back({b->name, b->name, true});
+          k = static_cast<int32_t>(ports.size()) - 1;
+        }
+      } else {
+        const std::string key = portKey(c, b->device, b->name);
+        k = input ? c.input(key) : c.output(key);
+        if (k < 0) {
+          ports.push_back({key, b->name, input && !b->name.empty()});
+          k = static_cast<int32_t>(ports.size()) - 1;
+        }
+      }
+      if (k < 0 || static_cast<size_t>(k) >= ports.size()) continue;
+      Port& q = ports[static_cast<size_t>(k)];
+      if (input) q.param = !b->name.empty();  // a main input is a signal path (drawn solid), not a param
+      q.anchored = false;  // (a jack, not a control: its wire ends on the jack)
+      q.anchorKey.clear();
+      q.jack = true;
+      q.jx = e.x + e.w * 0.5f;
+      q.jy = e.y + e.h * 0.5f;
+    }
+  }
+
   uint32_t groupNode(uint32_t band, const doc::Device& g, const doc::Track& t, const graph::Patch* tp) {
     Node c;
     c.kind = NodeKind::Device;
@@ -904,8 +948,13 @@ struct Builder {
             q.aclear = a->clear;
             q.anchorKey = key;
           }
+      }
+      // MX.4: its panel's jacks carry their ports' pins. Anchored ports and jacks go last (no pin rows), so the pins' rows
+      // stay where they were.
+      if (g.hasPanel()) {
+        panelJacks(g, c);
         const std::string mainName = c.inputs[static_cast<size_t>(c.mainIn)].name;
-        std::stable_partition(c.inputs.begin(), c.inputs.end(), [](const Port& q) { return !q.anchored; });
+        std::stable_partition(c.inputs.begin(), c.inputs.end(), [](const Port& q) { return !q.anchored && !q.jack; });
         c.mainIn = c.input(mainName);
       }
       c.pinTop = 0.0f;
@@ -2000,8 +2049,9 @@ struct Builder {
       if (n.kind != NodeKind::Device || n.expanded || (n.group && n.groupOpen) || n.symbol) continue;
       n.outline = outlineOf(n);
       if (!n.outline.valid()) continue;
-      n.orbitIn.on = n.mainIn >= 0 && static_cast<size_t>(n.mainIn) < n.inputs.size() && !n.inputs[static_cast<size_t>(n.mainIn)].anchored;
-      n.orbitOut.on = !n.outputs.empty();
+      n.orbitIn.on = n.mainIn >= 0 && static_cast<size_t>(n.mainIn) < n.inputs.size() && !n.inputs[static_cast<size_t>(n.mainIn)].anchored &&
+                     !n.inputs[static_cast<size_t>(n.mainIn)].jack;  // MX.4: a jack stays on its panel
+      n.orbitOut.on = !n.outputs.empty() && !n.outputs[0].jack;
       if (opt.nudges != nullptr)
         if (const auto it = opt.nudges->find(n.device.value); it != opt.nudges->end()) {
           n.orbitIn.pinned = it->second.inPinned;
@@ -2017,7 +2067,7 @@ struct Builder {
       if (m.kind == NodeKind::Lane) return {e.tapX, m.y};  // TL.1: the cable's tap on the lane's top edge
       if (portOrbits(m, port, input)) return m.outline.centre();
       if (input && port < m.inputs.size() && m.inputs[port].anchored) return {m.x + m.inputs[port].ax, m.y + m.inputs[port].ay};
-      return input ? inputEntry(m, port) : graph::Point2{m.x + m.w, m.y + pinOffset(m, port, false)};
+      return input ? inputEntry(m, port) : outPortPoint(m, port);  // (not orbiting: its pin, MX.4 its jack)
     };
     // (port key = node · 2 + 0 input / 1 output, the other end), sorted by key.
     std::vector<std::pair<uint32_t, graph::Point2>> ends;
@@ -2042,7 +2092,7 @@ struct Builder {
       fixed.clear();
       for (size_t k = 0; k < n.inputs.size(); ++k)
         if (!portOrbits(n, k, true) && !n.inputs[k].anchored) fixed.push_back(inputEntry(n, k));
-      for (size_t k = 1; k < n.outputs.size(); ++k) fixed.push_back({n.x + n.w, n.y + pinOffset(n, k, false)});
+      for (size_t k = n.orbitOut.on ? 1 : 0; k < n.outputs.size(); ++k) fixed.push_back(outPortPoint(n, k));
       const bool on[2] = {n.orbitIn.on, n.orbitOut.on};
       const bool pinned[2] = {n.orbitIn.pinned, n.orbitOut.pinned};
       float angles[2] = {n.orbitIn.angle, n.orbitOut.angle};

@@ -2150,3 +2150,13 @@ Judge: play over a clip with glides and watch the lane; Ctrl+C / Ctrl+V on a sel
   the part inside is deactivated / reversed (MIDI and audio, across tracks; one undo step). Reverse is also in the
   clip menu. A double-click on an audio clip now leaves the keys with the arrangement.
 Judge: play, then drag-zoom in the ruler while the playhead runs; drag a range inside an audio clip, press `0`, then `R`.
+
+## 2026-11-19 · MX.4 · Math face jacks + per-op B defaults
+- The closed Math block's In A, In B and Out are real jacks now: drag a cable from any output onto In B (top right) and
+  it plugs into B; drag from Out (bottom centre) to another block. Existing cables end on the jacks; a jack lights in
+  the cable's colour and rings on hover, as the other ports do. The ports no longer float round the block's edge.
+- Any group panel can carry such a jack (element kind `jack`), not only Math.
+- Picking an op sets B to that op's useful default while B is untouched: clip / wrap / fold to ±1, × ÷ pow and/nand
+  atan2 to 1, the rest 0 (your 2026-11-19 clip-in-a-feedback-loop report). A B you typed is kept.
+- 6 goldens math-face-{gt,clip,eq}-{1x,2x}: the jack holes, and clip's B box reads 1.00.
+Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to clip in a delay feedback loop.

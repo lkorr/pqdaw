@@ -2051,27 +2051,27 @@ constexpr MathOpInfo kMathOps[] = {
     {"ge", 4, MathCategory::Compare, "≥", "A ≥ B", 2, true, false},
     {"eq", 5, MathCategory::Compare, "==", "A == B", 2, true, true},
     {"ne", 6, MathCategory::Compare, "≠", "A ≠ B", 2, true, true},
-    {"and", 10, MathCategory::Logic, "and", "A and B", 2, true, false},
+    {"and", 10, MathCategory::Logic, "and", "A and B", 2, true, false, 1.0},
     {"or", 11, MathCategory::Logic, "or", "A or B", 2, true, false},
     {"xor", 12, MathCategory::Logic, "xor", "A xor B", 2, true, false},
-    {"nand", 13, MathCategory::Logic, "nand", "A nand B", 2, true, false},
+    {"nand", 13, MathCategory::Logic, "nand", "A nand B", 2, true, false, 1.0},
     {"nor", 14, MathCategory::Logic, "nor", "A nor B", 2, true, false},
     {"xnor", 15, MathCategory::Logic, "xnor", "A xnor B", 2, true, false},
     {"not", 16, MathCategory::Logic, "not", "not A", 1, true, false},
     {"add", 20, MathCategory::Arithmetic, "+", "A + B", 2, false, false},
     {"sub", 21, MathCategory::Arithmetic, "−", "A − B", 2, false, false},
-    {"mul", 22, MathCategory::Arithmetic, "×", "A × B", 2, false, false},
-    {"div", 23, MathCategory::Arithmetic, "÷", "A ÷ B", 2, false, false},
+    {"mul", 22, MathCategory::Arithmetic, "×", "A × B", 2, false, false, 1.0},
+    {"div", 23, MathCategory::Arithmetic, "÷", "A ÷ B", 2, false, false, 1.0},
     {"mod", 24, MathCategory::Arithmetic, "mod", "A mod B", 2, false, false},
-    {"pow", 25, MathCategory::Arithmetic, "pow", "A pow B", 2, false, false},
+    {"pow", 25, MathCategory::Arithmetic, "pow", "A pow B", 2, false, false, 1.0},
     {"avg", 26, MathCategory::Arithmetic, "avg", "average (A + B) / 2", 2, false, false},
     {"absdiff", 27, MathCategory::Arithmetic, "|A−B|", "|A − B|", 2, false, false},
     {"min", 30, MathCategory::Range, "min", "min(A, B)", 2, false, false},
     {"max", 31, MathCategory::Range, "max", "max(A, B)", 2, false, false},
-    {"clip", 32, MathCategory::Range, "clip", "clip A to ±|B|", 2, false, false},
-    {"wrap", 33, MathCategory::Range, "wrap", "wrap A into ±|B|", 2, false, false},
-    {"fold", 34, MathCategory::Range, "fold", "fold A into ±|B|", 2, false, false},
-    {"atan2", 40, MathCategory::Geometry, "atan2", "atan2(A, B)", 2, false, false},
+    {"clip", 32, MathCategory::Range, "clip", "clip A to ±|B|", 2, false, false, 1.0},
+    {"wrap", 33, MathCategory::Range, "wrap", "wrap A into ±|B|", 2, false, false, 1.0},
+    {"fold", 34, MathCategory::Range, "fold", "fold A into ±|B|", 2, false, false, 1.0},
+    {"atan2", 40, MathCategory::Geometry, "atan2", "atan2(A, B)", 2, false, false, 1.0},
     {"hypot", 41, MathCategory::Geometry, "hypot", "hypot(A, B)", 2, false, false},
 };
 
@@ -2244,7 +2244,7 @@ BlockSet mathBlocks(IdSource& ids, const MathOptions& o, MathRoles* roles) {
     return g;
   };
   r.inA = side("A", MathRole::A, o.a, r.a, r.sumA);
-  r.inB = side("B", MathRole::B, o.b, r.b, r.sumB);
+  r.inB = side("B", MathRole::B, o.b.value_or(op->bDefault), r.b, r.sumB);  // MX.4: the op's B default
   k.b.wire(r.group, kGroupInPort, r.inA, kMainPort);
   const Sig tol = k.val("Tolerance", dsp::curvePreset(dsp::CurvePreset::Exp0, 0.0, 1.0, 10.0), o.tolerance);
   r.tolerance = tol.dev;
@@ -2275,12 +2275,9 @@ BlockSet mathBlocks(IdSource& ids, const MathOptions& o, MathRoles* roles) {
     e.bindings.push_back(signalBinding(r.group, "y"));
     return styled(std::move(e), {styleText("trace", show), styleText("scale", scale)});
   };
-  auto jack = [&](uint32_t id, float x, float y) {
-    PanelElement e = element(id, "shape", x, y, 8, 8, {});
-    e.bindings.clear();
-    return styled(std::move(e), {styleText("shape", "circle"), styleText("fill", "track"), styleText("stroke", "frame"),
-                                 styleNumber("thickness", 1.2)});
-  };
+  // MX.4: In A, In B and Out are JACKS (panel.h "jack"): the project patch puts the closed block's pins on them — In A the
+  // group's main input, In B the child group B's main input (the module's second input), Out the group's output.
+  auto jack = [&](uint32_t id, float x, float y, Binding b) { return element(id, "jack", x - 1, y - 1, 10, 10, std::move(b)); };
   p.elements.push_back(shownWhen(trace(2, 88, 8, 124, 58, "third", "auto"), kOpElement, levelCodes));
   p.elements.push_back(control(3, "number", 8, 22, 72, 18, Sig{r.a, std::string(kValueOutput)}));
   p.elements.push_back(shownWhen(styled(control(4, "number", 8, 120, 72, 28, tol), {styleText("label", "Tolerance"), styleNumber("decimals", 4)}), kOpElement,
@@ -2292,12 +2289,12 @@ BlockSet mathBlocks(IdSource& ids, const MathOptions& o, MathRoles* roles) {
   p.elements.push_back(shownWhen(trace(8, 88, 8, 124, 58, "third", "gate"), kOpElement, gateCodes));
   p.elements.push_back(trace(9, 8, 46, 72, 66, "first", "auto"));
   p.elements.push_back(trace(10, 220, 46, 72, 66, "second", "auto"));
-  p.elements.push_back(jack(11, 9, 9));
+  p.elements.push_back(jack(11, 9, 9, inputBinding(r.group)));
   p.elements.push_back(caption(12, 21, 7, 40, 12, "In A"));
-  p.elements.push_back(jack(13, 283, 9));
+  p.elements.push_back(jack(13, 283, 9, inputBinding(r.inB)));
   p.elements.push_back(styled(caption(14, 239, 7, 40, 12, "In B"), {styleText("align", "right")}));
   p.elements.push_back(styled(caption(15, 130, 158, 40, 12, "Out"), {styleText("align", "centre")}));
-  p.elements.push_back(jack(16, 146, 174));
+  p.elements.push_back(jack(16, 146, 174, signalBinding(r.group, "y")));
   DevicePtr g = groupDevice(r.group, o.inGroup, o.name.empty() ? std::string("Math") : o.name, o.active, std::move(p));
   auto gd = std::make_shared<Device>(*g);
   gd->settings.push_back(DeviceValue{std::string(kMathOpSetting), static_cast<double>(op->code)});

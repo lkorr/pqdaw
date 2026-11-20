@@ -237,6 +237,15 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
           pin.stub = 0.0f;
           pin.visible = false;
         }
+        // MX.4: a port on its panel's jack: a socket there (drawn and hit by the canvas, not the face's edge jacks).
+        if (const std::vector<Port>& ports = side == 0 ? n.inputs : n.outputs; k < ports.size() && ports[k].jack && !hidden) {
+          const Point2 at = side == 0 ? inputEntry(n, k) : outPortPoint(n, k);
+          pin.x = at.x;
+          pin.y = at.y;
+          pin.stub = 0.0f;
+          pin.visible = true;
+          pin.socket = side == 0 ? circuit::ScenePin::kSocketIn : circuit::ScenePin::kSocketOut;
+        }
         // TX.orbit-ports: a main port on the block's outline, where the layout settled it (the canvas moves it live).
         if (portOrbits(n, k, side == 0)) {
           const Node::Orbit& o = side == 0 ? n.orbitIn : n.orbitOut;

@@ -133,6 +133,13 @@ struct Port {
   // BR.patch-io: an opened capsule's frame socket (the capsule's ports, its terminals' and a band's Input): its row, the
   // offset from the node's top in world units (< 0: the node's own rows, pinOffset).
   float y = -1.0f;
+  // MX.4: a closed group's port that its panel shows as a JACK element (doc panel kind "jack": an Input binding for an
+  // input, a Signal binding for an output; Q?-MX.3-a option 2). The pin IS the jack: at (jx, jy), the jack's centre
+  // (node-local world units, scaled with the block), drawn by the canvas as a socket there and hit there; its cables
+  // start / end there (inputEntry, outPortPoint). Present wired or not (an unwired one is still pluggable); no pin row,
+  // no orbit.
+  bool jack = false;
+  float jx = 0, jy = 0;
 };
 
 struct Node {
@@ -529,6 +536,7 @@ inline float pinOffset(const Node& n, size_t i) noexcept {
 // GU.5b: input `i` (input) or output `i` of `n`: an atom block's symbol puts its inputs and outputs at their own rows.
 // BR.patch-io: a frame socket at its own row (Port::y).
 inline float pinOffset(const Node& n, size_t i, bool input) noexcept {
+  if (const std::vector<Port>& ports = input ? n.inputs : n.outputs; i < ports.size() && ports[i].jack) return ports[i].jy;  // MX.4
   if (const std::vector<Port>& ports = input ? n.inputs : n.outputs; i < ports.size() && ports[i].y >= 0.0f) return ports[i].y;
   if (n.symbol) {
     const std::vector<circuit::PinSpec>& pins = input ? n.symbol->inputs : n.symbol->outputs;
@@ -544,6 +552,7 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
   // BR.tuning-block: a tuning block's notes come up from its lane below: its input on its bottom edge, near its right
   // end (BR.tuning-outside: the side toward the lane).
   if (n.kind == NodeKind::Tuning) return {n.x + n.w - std::min(n.w * 0.5f, 16.0f), n.y + n.h};
+  if (i < n.inputs.size() && n.inputs[i].jack) return {n.x + n.inputs[i].jx, n.y + n.inputs[i].jy};  // MX.4: on its jack
   if (i < n.inputs.size() && n.inputs[i].anchored) {
     const Port& p = n.inputs[i];
     switch (entrySide(n, p)) {
@@ -558,6 +567,7 @@ inline graph::Point2 inputEntry(const Node& n, size_t i) noexcept {
 // TX.orbit-ports: where output `i` / input `i` of `n` meets its wires — an orbiting main port's settled place (Node::
 // Orbit), else its pin on the right edge / inputEntry.
 inline graph::Point2 outPortPoint(const Node& n, size_t i) noexcept {
+  if (i < n.outputs.size() && n.outputs[i].jack) return {n.x + n.outputs[i].jx, n.y + n.outputs[i].jy};  // MX.4: on its jack
   if (i == 0 && n.orbitOut.on) return n.orbitOut.at;
   if (n.kind == NodeKind::Lane) return {n.x, n.y};  // TL.1: each cable at its own tap (Edge::tapX)
   return {n.x + n.w, n.y + pinOffset(n, i, false)};

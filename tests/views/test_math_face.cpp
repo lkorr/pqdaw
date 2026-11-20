@@ -8,6 +8,9 @@
 //     otherwise.
 //   - TRACES: every scope of the face is one consumer of the one trace tap (a shared window); the feed is acquired at
 //     the first paint, never while the face is not painted, and let go when painting stops.
+//   - MX.4 JACKS: In A, In B and Out are the closed block's pins on the face's "jack" elements (present unwired, no
+//     orbit, sockets in the scene); a cable dragged onto In B wires B's input (one undo step), one from Out wires another
+//     block; the scene rebuilt under a held cable (the op swapped mid-drag) neither crashes nor loses the drop.
 //   - GOLDENS (signals flowing: A a sine, B a slower sine, Out the op's result, through a manual feed): math-face-gt
 //     (a compare: the gate trace), math-face-clip (a range op), math-face-eq (Tolerance shown), each at 1x and 2x.
 #include <doctest/doctest.h>
@@ -19,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "../support/blocks.h"
 #include "../ui/golden_check.h"
 #include "pq/core/tap_ring.h"
 #include "pq/document/devices.h"
@@ -48,6 +52,8 @@ namespace {
 constexpr double kSr = 48000.0;
 constexpr Vec2 kOpCentre{150.0f, 112.0f};  // the op circle (modules.cpp mathBlocks: 110, 72, 80 × 80)
 constexpr Vec2 kValueA{44.0f, 31.0f};      // the A box (8, 22, 72 × 18)
+// MX.4: the jacks' centres (modules.cpp mathBlocks: In A 8, 8; In B 282, 8; Out 145, 173; 10 × 10).
+constexpr Vec2 kJackA{13.0f, 13.0f}, kJackB{287.0f, 13.0f}, kJackOut{150.0f, 178.0f};
 
 const doc::DeviceLibrary& devLib() {
   static std::unique_ptr<doc::DeviceLibrary> lib = [] {
@@ -101,9 +107,12 @@ struct MathUi {
   int structural = 0;
   ViewContext::Subscription sub;
 
-  MathUi() {
+  doc::DeviceId vca;  // MX.4: a VCA off the path (withVca)
+
+  explicit MathUi(bool withVca = false) {
     ctx.setDeviceLibrary(&devLib());
     g = buildMath(ctx.store(), doc::kMathDefaultOp);
+    if (withVca) vca = test_blocks::addModule(ctx.store(), doc::findDevice(*ctx.doc(), g).track->id, "vca", doc::ops::kOffPath);
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
@@ -145,6 +154,16 @@ struct MathUi {
   }
   size_t history() const { return ctx.store().history().cursor(); }
   std::string op() const { return opOf(*ctx.doc(), g); }
+  // MX.4: where block `d`'s main input pin is now (device px), and whether it is on the canvas.
+  std::optional<Vec2> mainInput(doc::DeviceId dev, bool& docked) const {
+    const uint32_t i = view().patch().nodeOf(dev);
+    if (i == kNone || view().patch().nodes[i].mainIn < 0) return std::nullopt;
+    const Vec2 p = view().canvas().toDevice(view().canvas().portWorld(i, static_cast<uint32_t>(view().patch().nodes[i].mainIn), true));
+    const ui::IRect r = view().canvas().rect();
+    docked = p.x >= static_cast<float>(r.x) && p.y >= static_cast<float>(r.y) && p.x <= static_cast<float>(r.right()) &&
+             p.y <= static_cast<float>(r.bottom());
+    return p;
+  }
   RadialMenu* menu() const {
     OverlayLayer* o = OverlayLayer::of(view().canvas());
     return o != nullptr ? dynamic_cast<RadialMenu*>(o->top()) : nullptr;
@@ -459,4 +478,147 @@ TEST_CASE("BR.A: a trace scope shows −1 … 1; a value beyond it widens the ra
   run(0.5, 14.0);  // aged out (after ~5 s), then eased back to ±1
   CHECK(widest().second == doctest::Approx(1.0).epsilon(0.01));
   CHECK(widest().first == doctest::Approx(-1.0).epsilon(0.01));
+}
+
+// ---- MX.4: the face's jacks are the closed block's pins (Q?-MX.3-a option 2) ---------------------------------------
+
+namespace {
+size_t wiresInto(const doc::Project& p, doc::DeviceId to, std::string_view param) {
+  size_t n = 0;
+  for (const doc::Wire& w : doc::wiresOf(p)) n += !w.toMixer() && w.to == to && w.param == param ? 1 : 0;
+  return n;
+}
+const doc::Wire* wireFromTo(const doc::Project& p, doc::DeviceId from, doc::DeviceId to) {
+  for (const doc::Wire& w : doc::wiresOf(p))
+    if (!w.fromNoteSource() && !w.toMixer() && w.from == from && w.to == to) return &w;
+  return nullptr;
+}
+}  // namespace
+
+TEST_CASE("MX.4 math face: In A, In B and Out are the block's pins on its jacks — present unwired, no orbit, sockets in "
+          "the scene where the jacks are") {
+  MathUi u(true);
+  const doc::DeviceId inB = doc::mathInfo(*u.ctx.doc(), u.g)->roles.inB;
+  const Node& n = u.node();
+  REQUIRE(n.groupPanel);
+  const int32_t b = n.input("@" + std::to_string(inB.value));  // B's main input, unwired
+  REQUIRE(b >= 0);
+  CHECK(n.inputs[static_cast<size_t>(b)].jack);
+  CHECK_FALSE(n.inputs[static_cast<size_t>(b)].param);  // a signal input (drawn solid)
+  REQUIRE(n.mainIn >= 0);
+  CHECK(n.inputs[static_cast<size_t>(n.mainIn)].jack);
+  REQUIRE_FALSE(n.outputs.empty());
+  CHECK(n.outputs[0].jack);
+  CHECK_FALSE(n.orbitIn.on);
+  CHECK_FALSE(n.orbitOut.on);
+  auto near = [](graph::Point2 a, graph::Point2 e) { return std::fabs(a.x - e.x) < 0.01f && std::fabs(a.y - e.y) < 0.01f; };
+  const graph::Point2 jb{n.x + kJackB.x * n.scale, n.y + kJackB.y * n.scale};
+  CHECK(near(inPortPoint(n, static_cast<size_t>(b)), jb));
+  CHECK(near(inPortPoint(n, static_cast<size_t>(n.mainIn)), {n.x + kJackA.x * n.scale, n.y + kJackA.y * n.scale}));
+  CHECK(near(outPortPoint(n, 0), {n.x + kJackOut.x * n.scale, n.y + kJackOut.y * n.scale}));
+  // The scene draws them as sockets there (the canvas's port look: hover, the plugged cable's colour).
+  const ProjectScene& ps = u.view().scene();
+  const uint32_t sn = ps.sceneNode[u.view().patch().nodeOf(u.g)];
+  REQUIRE(sn != kNone);
+  const circuit::SceneNode& node = ps.scene->nodes[sn];
+  const circuit::ScenePin& pin = ps.scene->pins[node.firstPin + static_cast<uint32_t>(b)];
+  CHECK(pin.socket == circuit::ScenePin::kSocketIn);
+  CHECK(pin.visible);
+  CHECK(near({pin.x, pin.y}, jb));
+  CHECK(ps.scene->pins[node.firstPin + n.inputs.size()].socket == circuit::ScenePin::kSocketOut);
+  // A press there is the pin's (not the face's frame): the canvas finds it.
+  const ProjectCanvas::PinHit hit = u.view().canvas().pinAt(u.at(kJackB));
+  CHECK(hit.valid());
+  CHECK(hit.input);
+  CHECK(hit.port == static_cast<uint32_t>(b));
+}
+
+TEST_CASE("MX.4 math face: a cable dragged onto In B on the closed face is a wire into B's input (one undo step); one "
+          "from Out onto another block's input — real dispatch") {
+  MathUi u(true);
+  const doc::DeviceId inB = doc::mathInfo(*u.ctx.doc(), u.g)->roles.inB;
+  bool docked = false;
+  std::optional<Vec2> vcaOut = u.view().outputPoint(u.vca, "y", &docked);
+  if (!vcaOut || !docked) {
+    u.view().fitAll(false);
+    u.d.tree().layoutNow();
+    u.d.step();
+    vcaOut = u.view().outputPoint(u.vca, "y", &docked);
+  }
+  REQUIRE(vcaOut);
+  REQUIRE(docked);
+  const size_t h0 = u.history();
+  REQUIRE(wiresInto(*u.ctx.doc(), inB, doc::kMainPort) == 0);
+  u.d.drag(*vcaOut, u.at(kJackB), 8);
+  u.d.step();
+  CHECK(wiresInto(*u.ctx.doc(), inB, doc::kMainPort) == 1);
+  const doc::Wire* w = wireFromTo(*u.ctx.doc(), u.vca, inB);
+  REQUIRE(w != nullptr);
+  CHECK(u.history() == h0 + 1);
+  // The wire draws to the jack: its edge ends there, and the scene's cable plugs into the jack's socket.
+  const doc::WireId wid = w->id;
+  const ProjectPatch& pp = u.view().patch();
+  const Node& n = u.node();
+  bool drawn = false;
+  for (const Edge& e : pp.edges)
+    if (e.wire == wid && !e.points.empty()) {
+      drawn = true;
+      CHECK(std::fabs(e.points.back().x - (n.x + kJackB.x * n.scale)) < 0.01f);
+      CHECK(std::fabs(e.points.back().y - (n.y + kJackB.y * n.scale)) < 0.01f);
+    }
+  CHECK(drawn);
+  REQUIRE(u.ctx.store().undo());
+  u.d.step();
+  CHECK(wiresInto(*u.ctx.doc(), inB, doc::kMainPort) == 0);
+  CHECK(u.history() == h0);
+
+  // From Out onto the VCA's main input.
+  std::optional<Vec2> vcaIn = u.mainInput(u.vca, docked);
+  REQUIRE(vcaIn);
+  REQUIRE(docked);
+  REQUIRE(u.view().canvas().pinAt(u.at(kJackOut)).valid());
+  CHECK_FALSE(u.view().canvas().pinAt(u.at(kJackOut)).input);
+  REQUIRE(wireFromTo(*u.ctx.doc(), u.g, u.vca) == nullptr);
+  u.d.drag(u.at(kJackOut), *vcaIn, 8);
+  u.d.step();
+  const doc::Wire* o = wireFromTo(*u.ctx.doc(), u.g, u.vca);
+  REQUIRE(o != nullptr);
+  CHECK(o->port == doc::kMainPort);
+  CHECK(o->param == doc::kMainPort);
+  CHECK(u.history() == h0 + 1);
+}
+
+TEST_CASE("MX.4 math face: the scene rebuilt while a cable is drawn out of a jack (the op swapped mid-drag) — no crash, "
+          "the drop still wires — real dispatch") {
+  MathUi u(true);
+  bool docked = false;
+  std::optional<Vec2> vcaIn = u.mainInput(u.vca, docked);
+  if (!vcaIn || !docked) {
+    u.view().fitAll(false);
+    u.d.tree().layoutNow();
+    u.d.step();
+    vcaIn = u.mainInput(u.vca, docked);
+  }
+  REQUIRE(vcaIn);
+  REQUIRE(docked);
+  const Vec2 from = u.at(kJackOut);
+  u.d.move(from);
+  u.d.down(from);
+  u.d.move({from.x + 10.0f, from.y + 10.0f});
+  u.d.step();
+  // A structural edit under the held cable: the op's blocks replaced, the patch and scene rebuilt (deferred past paint).
+  const doc::ops::EditResult swap = doc::ops::setMathOp(*u.ctx.doc(), u.ctx.store().ids(), u.g, "clip");
+  REQUIRE(swap.ok());
+  REQUIRE(u.ctx.store().dispatch(swap->command).ok());
+  for (int i = 0; i < 3; ++i) {
+    u.d.move({from.x + 20.0f + 10.0f * static_cast<float>(i), from.y + 20.0f});
+    u.d.step();
+  }
+  vcaIn = u.mainInput(u.vca, docked);
+  REQUIRE(vcaIn);
+  u.d.move(*vcaIn);
+  u.d.up(*vcaIn);
+  u.d.step();
+  CHECK(u.op() == "clip");
+  CHECK(wireFromTo(*u.ctx.doc(), u.g, u.vca) != nullptr);
 }

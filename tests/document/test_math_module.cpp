@@ -23,6 +23,7 @@
 #include "pq/document/panel.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
+#include "pq/dsp/curve.h"
 #include "pq/graph/atoms.h"
 
 using namespace pq::doc;
@@ -252,4 +253,56 @@ TEST_CASE("MX.2 trace tap: the lowering gives the trace element one signal_tap u
     for (pq::graph::NodeIndex n = 0; n < lp->patch.nodeCount(); ++n)
       if (lp->patch.node(n).kind == pq::graph::NodeKind::Atom && pq::graph::atomSignature(lp->patch.node(n).atom).name == "signal_tap") ++sinks;
   CHECK(sinks == 1);
+}
+
+// MX.4 (QUESTIONS Q?-BR.B-b, bug report 2026-11-19_19-50-41: clip with B = 0 clipped a feedback loop to silence): each op
+// has a B default where 0 is degenerate (MathOpInfo::bDefault); picking an op moves B to it only while B is still the old
+// op's default — in the op swap's one undo step — and a B the user set is kept.
+TEST_CASE("MX.4 Math B defaults: the op's own where 0 is degenerate; a swap moves B only while it is the old op's default, "
+          "in the same undo step; a set B is kept") {
+  // The table: 1 where B = 0 makes the op a constant or near-constant, 0 elsewhere.
+  for (const MathOpInfo& op : mathOpInfos()) {
+    CAPTURE(op.key);
+    const bool one = op.key == "mul" || op.key == "div" || op.key == "pow" || op.key == "and" || op.key == "nand" ||
+                     op.key == "clip" || op.key == "wrap" || op.key == "fold" || op.key == "atan2";
+    CHECK(op.bDefault == (one ? 1.0 : 0.0));
+    // With B at its default the op is not a constant over a typical signal (−½ … ½).
+    std::set<double> outs;
+    for (const double a : {-0.5, -0.25, 0.0, 0.25, 0.5}) outs.insert(mathOpReference(op.key, a, op.bDefault, kMathDefaultTolerance));
+    CHECK(outs.size() >= 2);
+  }
+  // clip passes a ±1 signal at its default (the report's feedback loop keeps feeding back).
+  CHECK(mathOpReference("clip", 0.7, findMathOp("clip")->bDefault, 0.0) == doctest::Approx(0.7));
+
+  Doc d;
+  const DeviceId g = test_blocks::addModule(d.store, d.track, "math", 0);
+  const DeviceId b = d.info(g).roles.b;
+  auto bUnits = [&] { return valueBlockUnits(d.dev(b)); };
+  REQUIRE(bUnits() == doctest::Approx(0.0).epsilon(1e-12));  // gt: 0
+  d.step(ops::setMathOp(d.doc(), d.store.ids(), g, "clip"));  // (step: one undo step, undo gives B 0 back exactly)
+  CHECK(bUnits() == doctest::Approx(1.0).epsilon(1e-9));
+  REQUIRE(d.store.undo());
+  CHECK(bUnits() == doctest::Approx(0.0).epsilon(1e-12));
+  CHECK(d.info(g).op->key == "gt");
+  REQUIRE(d.store.redo());
+  d.step(ops::setMathOp(d.doc(), d.store.ids(), g, "mul"));  // 1 → 1: nothing to move
+  CHECK(bUnits() == doctest::Approx(1.0).epsilon(1e-9));
+  d.step(ops::setMathOp(d.doc(), d.store.ids(), g, "add"));  // still mul's default: to add's 0
+  CHECK(bUnits() == doctest::Approx(0.0).epsilon(1e-9));
+  // A B the user set stays through every swap.
+  const dsp::Curve& c = *d.dev(b).curve(kValueParam);
+  d.edit(ops::setDeviceParam(d.doc(), b, std::string(kValueParam), dsp::curvePosition(c, dsp::curveOutput(c, 0.25), 0.5)));
+  REQUIRE(bUnits() == doctest::Approx(0.25).epsilon(1e-6));
+  for (const char* key : {"clip", "add", "atan2", "gt"}) {
+    d.edit(ops::setMathOp(d.doc(), d.store.ids(), g, key));
+    CHECK(bUnits() == doctest::Approx(0.25).epsilon(1e-6));
+  }
+  // A Math spawned with an op starts at that op's B.
+  IdSource ids;
+  MathRoles r;
+  MathOptions o;
+  o.op = "clip";
+  const BlockSet set = mathBlocks(ids, o, &r);
+  for (const DevicePtr& x : set.devices)
+    if (x->id == r.b) CHECK(valueBlockUnits(*x) == doctest::Approx(1.0).epsilon(1e-9));
 }

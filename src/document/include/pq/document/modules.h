@@ -409,14 +409,15 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o = {});
 //   A        the child group "A": its In (wired from the Math group's In terminal) + its value block "A" (the
 //            sum: one `add` atom; a typed value with nothing wired is a constant); role kMathRoleSetting 1
 //   B        the child group "B": its In is the module's SECOND INPUT (a cable from anywhere into the child group's
-//            main input; inputBinding) + its value block "B"; role 2. Defaults A 0, B 0 (the VCA curve: fine
+//            main input; inputBinding) + its value block "B"; role 2. Defaults A 0, B the op's bDefault (the VCA curve: fine
 //            ±1 over the middle of the knob, out to ±20000; a wire adds without a clamp: the add atom, not the
 //            value block's wire law)
 //   Tolerance a value block (role 3; 0 … 1 on an Exp0 curve, default 1e-3) read by == and ≠ only
 //   the op  the group's direct atom blocks and its unroled value blocks (constants): the op's minimal subgraph of
 //            atoms, A → … → the group's Out. Which op it is: the group setting kMathOpSetting (the op's `code`, a
 //            number: settings are numbers). ops::setMathOp swaps the subgraph (one undo step) and keeps A, B,
-//            Tolerance, the wires into them and from Out. A hand-edited circuit keeps the stored op's name (no
+//            Tolerance, the wires into them and from Out; B's typed value becomes the new op's bDefault only while it is
+//            still the old op's (MX.4: a value the user set is kept). A hand-edited circuit keeps the stored op's name (no
 //            recognition pass: QUESTIONS Q?-MX.2-a).
 // The ops (truth on audio: x > 0; compares and logic give gates, 0 / 1 where they reach a real input):
 //   Compare     A < B, A > B, A ≤ B, A ≥ B, A == B (|A − B| ≤ Tolerance), A ≠ B (|A − B| > Tolerance)
@@ -440,7 +441,8 @@ BlockSet limiterBlocks(IdSource& ids, const StockModuleOptions& o = {});
 // Its face (MX.3; 300 × 194): "In A" / "In B" top corners with their typed values (number boxes: drag or type) below,
 // the output scope the wide top box, the A and B scopes left and right of the op circle (a "mathop" element on the
 // kMathOpSetting setting: its symbol; a click opens the radial menu of mathOpInfos, a pick is ops::setMathOp), Out
-// bottom centre, Tolerance (shown while the op reads it) and Oversample under the scopes. Every scope element is bound
+// bottom centre (MX.4: In A, In B and Out are "jack" elements — the group's main input, B's main input, the group's
+// output "y" — so a cable plugs into them on the closed block), Tolerance (shown while the op reads it) and Oversample under the scopes. Every scope element is bound
 // to A, B and Out (one trace tap) and draws one of them (style `trace`); the output's is two elements shown by the op's
 // code: `scale` gate (0 / 1) while the op gives a gate, auto otherwise.
 enum class MathCategory : uint8_t { Compare, Logic, Arithmetic, Range, Geometry };
@@ -453,6 +455,11 @@ struct MathOpInfo {
   uint8_t arity = 2;        // 2, or 1 (not A: B is unused)
   bool gate = false;        // its output is a gate (0 / 1)
   bool tolerance = false;   // it reads Tolerance (== and ≠)
+  // MX.4 (QUESTIONS Q?-BR.B-b): B's typed value when the op is new — the op's identity where B = 0 would make it
+  // degenerate (a constant or a near-constant out): 1 for ×, ÷, pow (A^1 = A), and / nand (B true), clip / wrap / fold
+  // (±1: audio passes), atan2 (atan A, a soft clip); 0 for the rest (compares against 0, +, −, mod (B = 0 → A), avg, |A − B|,
+  // min / max, or / nor / xor / xnor, hypot, not A).
+  double bDefault = 0.0;
 };
 std::span<const MathOpInfo> mathOpInfos() noexcept;  // in menu order: by category, then as listed above
 const MathOpInfo* findMathOp(std::string_view key) noexcept;
@@ -477,7 +484,8 @@ struct MathOptions {
   DeviceId inGroup;  // the group it sits in, or none
   std::string name;  // "" = "Math"
   std::string_view op = kMathDefaultOp;
-  double a = 0.0, b = 0.0, tolerance = kMathDefaultTolerance;  // in units
+  double a = 0.0, tolerance = kMathDefaultTolerance;  // in units
+  std::optional<double> b;                            // in units; none: the op's bDefault
   uint32_t oversample = 0;  // the group's `oversample` exponent (0: none)
   bool active = true;
 };

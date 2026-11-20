@@ -2106,6 +2106,9 @@ input is the child group "B"'s main input, which has no pin on the closed node u
 pins to (a general mechanism like the control anchors); (3) give B a group-level input port. Chosen: (1), the most
 reversible — nothing in the patch model changes. Wiring into B today: open the module and cable into B's In. (2) is
 the natural follow-up if the user wants to plug B on the closed face. Status: open.
+MX.4 (2026-11-19; user 2026-11-18: "wiring into b is absolutely necessary"): option (2) built — a general panel element
+`jack` (Input or Signal binding) that the project patch puts the closed block's pin on; the Math face's three markers are
+jacks. Status: resolved.
 
 ## Q?-MX.3-b · 2026-11-18 · MX.3 · A multi-signal "scope" element is the trace scope, not the Oscilloscope section
 Context: MX.2 made a `scope` element bound to 2–3 Signals one trace tap; the views drew every `scope` as the
@@ -2170,6 +2173,11 @@ with B at its default 0: everything is clipped to 0, so nothing comes back. Opti
 says); (2) give clip (and other ops where B = 0 is degenerate) a B default of 1 when the op is chosen and B is still at
 the default; (3) show the clip range on the face. Chosen: (1) for now — a per-op default is a design choice for the
 user; (2) is small (`ops::setMathOp`) if wanted. Status: open.
+MX.4 (2026-11-19): (2) built. Each op has `MathOpInfo::bDefault`: 1 where B = 0 makes it a constant or near-constant —
+×, ÷, pow (A^1 = A), and / nand (B true), clip / wrap / fold (±1: an audio signal passes), atan2 (atan A: a soft clip);
+0 for the rest (compares, +, −, mod (B = 0 → A), avg, |A − B|, min / max, or / nor / xor / xnor, hypot, not A). A Math
+spawned with an op starts at its B; `ops::setMathOp` moves B to the new op's default only while B is still the old op's
+(compared in units to 1e-6), in the swap's one undo step; a B the user set is kept. Status: resolved.
 
 ## Q?-BR.E-a · 2026-11-19 · BR.E · Clip keys in the audio clip view; missing audio clip hotkeys
 Context: a double-click on an audio clip focused the piano roll's note area, which is hidden while an audio clip is
@@ -2181,3 +2189,11 @@ audio clip view (no clip keys there). Also open, not added (each a new binding =
 (Ctrl+Shift+J — taken by pianoroll.tuneToJi), Create Fades (Ctrl+Alt+F), Quantize audio (Ctrl+U on warp markers),
 a warp on/off key, and transpose / gain nudges from the keyboard (today: the clip view's knobs, typed values and the
 lane's gain handle). Status: open.
+
+## Q?-MX.4-a · 2026-11-19 · MX.4 · Math B's reset value and jack visibility
+Context: (a) a value block's reset (double-click / TX.reset-default) goes to its `defaultPosition`, set when the module
+is spawned; no command changes it, so after an op swap B's reset still goes to the spawn op's default (0 for the default
+`>`), not the new op's. (b) The project patch reads `jack` elements from the document panel and does not evaluate their
+visibility condition. Options for (a): a SetDefaultPosition command (a new document command) so setMathOp also moves
+the reset value; or leave it. Chosen: leave both (most reversible; no new command). The jacks of the Math face have no
+condition. Status: open.
