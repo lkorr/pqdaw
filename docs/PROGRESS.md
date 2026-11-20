@@ -1176,3 +1176,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier 943/943, then 941/943 + 2 help goldens re-recorded (help subset 14/14); pq_tests_app 1/1; strip-vs-full repaint sweep test fails without the fix (206–639 px).
 - Perf / CPU-efficiency check: playhead strips walk only nearby 256 px chunks, not the whole note.
 - Notes/blockers: not checked live; 9 goldens re-recorded; Q?-BR.D-a (moves/draws onto same-pitch notes still stack); piano roll's own curve stroke may still pick its join per repaint region (unreported).
+
+## 2026-11-19 · BR.B · task/BR.B-patch-groups (merged bee0a08c)
+- Did: the project patch view never rebuilds while its canvas paints (deferred a frame; canvas aborts a paint whose faces were rebuilt) — the 19:09 paintFaces null-face crash; confirmed path: a group panel rebuilding under a held knob cancelled its undo step mid-paint; a feedback loop across an oversample region runs whole inside the region (no cut; cut stays only for engine-node / voice↔global loops); wire-only edits in an opened group keep its blocks' places (layout moves stored as nudges); a cable dropped inside an opened group's frame opens the node menu.
+- Verified: worker -Affected -Slow 64/65 then pq_tests_views 944/944 after narrowing; orchestrator after rebase onto BR.D: pq_tests_views 1/1; --render 19-19-59: cut wires 1 → 0.
+- Perf / CPU-efficiency check: one Tarjan pass per infer; nodes pulled into a region run at its rate (a delay in a 2× Math loop costs 2×).
+- Notes/blockers: 19-50-41 was not an engine bug (Math clip, B = 0) → default fixed in MX.4 (Q?-BR.B-b); Q?-BR.B-a; crash's exact user action not in the log.
