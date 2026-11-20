@@ -2133,3 +2133,11 @@ cannot run per sample; the scheduler refuses it, and that failed the whole proje
 loop as WI.2 cuts a type error (red cable, message, the rest plays); (2) run such a loop with a block of delay; (3) run
 the loop's region at the base rate. Chosen: (1) — general, no DSP change; the loop is silent until the user moves it
 inside or outside the oversampled part. (2) / (3) would make the patch play but change its sound. Status: open.
+
+## Q?-BR.C-a · 2026-11-19 · BR.C · Which Envelopes behind Out hold the release
+Context: an Envelope with a block after it (EQ, fold, Utility) used to get the group's 5 ms ramp at note-off, cutting
+its release (bugs 2026-11-19_20-08-09, 19-56-21). Now the ramp waits for every voiceEnd member found back from Out
+along per-note SIGNAL inputs (not params, not past an Envelope). That also counts an Envelope into a Wavetable's input
+(its phase), so such a voice now sounds through that Envelope's release before the 5 ms ramp (golden
+lower_meta_voice_run.txt moved). Options: (a) any signal input (chosen: general, derived from wires); (b) only inputs
+a type marks as "amplitude path" (per-type rules); (c) also params. Choice: (a). Reversible: lower.cpp endersBehind.

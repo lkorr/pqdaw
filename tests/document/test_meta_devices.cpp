@@ -215,7 +215,8 @@ TEST_CASE("meta devices: a voice run lowers per voice — calls in a row, a rele
   text += "\n" + pq::graph::print(*wt);
   checkGolden("lower_meta_voice_run.txt", text);
   // IG.1-2: the Wavetable's expansion is its free form in the voice context (per voice where the notes reach it),
-  // without a `done`; the group's release ramp ends the voices and its Out is summed.
+  // without a `done`; the group's release ramp ends the voices and its Out is summed. BR.C: the Envelope behind it (into
+  // its input) holds that ramp until it is done (`!d46.done`).
   CHECK(text.find("voice_sum") != std::string::npos);
   CHECK(text.find("200 / sr") != std::string::npos);
   CHECK_FALSE(wt->findByName("done").has_value());
