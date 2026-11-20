@@ -1582,6 +1582,7 @@ void RollState::lengthenSelection(int32_t cells) {
 
 void RollState::copySelection() {
   clipboard_.clear();
+  clipboardCents_.clear();
   clipboardCurves_.clear();
   clipboardGroups_.clear();
   clipboardWritten_.clear();
@@ -1590,6 +1591,7 @@ void RollState::copySelection() {
   for (const doc::Note& n : clip_->notes)
     if (selected(n.id)) {
       clipboard_.push_back(n);
+      clipboardCents_.push_back(centsOf(n.pitch).value_or(std::numeric_limits<double>::quiet_NaN()));  // (NaN: overwrites nothing)
       first = std::min(first, n.start);
       // T7.13: a member copied with its anchor stays a member (the paste makes them a group of their own); one
       // copied without it is copied as the pitch it has (Cents), so a paste never depends on a note the target
@@ -1601,6 +1603,7 @@ void RollState::copySelection() {
           clipboard_.back().pitch = tuning::PitchId::fromCents(*cents);
         } else {
           clipboard_.pop_back();
+          clipboardCents_.pop_back();
           continue;
         }
       }
@@ -1627,14 +1630,28 @@ void RollState::paste() {
   const Ticks at = insertTick_.value_or(0);
   std::vector<doc::Note> notes = clipboard_;
   Ticks span = 0;
-  for (doc::Note& n : notes) {
+  std::vector<NoteCover> covers;
+  covers.reserve(notes.size());
+  for (size_t i = 0; i < notes.size(); ++i) {
+    doc::Note& n = notes[i];
     span = std::max(span, n.start + n.length);
     n.start += at;
+    covers.push_back({n.start, n.start + n.length, clipboardCents_[i]});
   }
-  if (apply(doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes, clipboardCurves_,
-                               doc::ops::JiSource{clipboardGroups_, clipboardWritten_}),
-            "Paste Notes"))
-    insertTick_ = at + span;
+  doc::ops::EditResult e = doc::ops::addNotes(*ctx.doc(), ctx.store().ids(), ref_, notes, clipboardCurves_,
+                                              doc::ops::JiSource{clipboardGroups_, clipboardWritten_});
+  // BR.D: the pasted notes overwrite the notes of their pitch under them (overwriteCommands), in the same undo step.
+  std::vector<doc::Command> under;
+  if (e && !overwriteCommands(covers, under)) e = Error{ErrorCode::InvalidArgument, "the notes under the paste", {}};
+  if (e && !under.empty()) {
+    if (doc::Batch* b = std::get_if<doc::Batch>(&e->command.v)) {
+      b->commands.insert(b->commands.begin(), std::make_move_iterator(under.begin()), std::make_move_iterator(under.end()));
+    } else {
+      under.push_back(std::move(e->command));
+      e->command = doc::Command{doc::Batch{"Paste Notes", std::move(under)}};
+    }
+  }
+  if (apply(e, "Paste Notes")) insertTick_ = at + span;
 }
 
 tuning::PitchId RollState::degreePitch(int64_t degree) const noexcept {

@@ -2142,9 +2142,12 @@ along per-note SIGNAL inputs (not params, not past an Envelope). That also count
 lower_meta_voice_run.txt moved). Options: (a) any signal input (chosen: general, derived from wires); (b) only inputs
 a type marks as "amplitude path" (per-type rules); (c) also params. Choice: (a). Reversible: lower.cpp endersBehind.
 
-## Q?-BR.D-a · 2026-11-19 · BR.D · A paste straight onto the copied notes stacks duplicates
+## Q?-BR.D-a · 2026-11-19 · BR.D · A paste over notes of its pitch overwrites them
 Context: Ctrl+C now puts the clip view's insert marker at the copied notes' start, so Ctrl+C, Ctrl+V lands exactly on
-the originals (bug report 2026-11-19_20-02-29, Live's behaviour). The paste adds notes; identical notes already there
-stay, so the clip then holds each note twice on top of itself. Options: (a) keep both (chosen: what addNotes does
-everywhere, nothing deleted silently); (b) a paste replaces notes of the same pitch it overlaps (Live trims what a
-paste covers); (c) refuse exact duplicates. Reversible: RollState::paste. Status: open.
+the originals (bug report 2026-11-19_20-02-29, Live's behaviour); added as plain notes that stacked a duplicate on
+each. Options: (a) keep both; (b) a pasted note overwrites the notes of its pitch it overlaps (Live); (c) refuse exact
+duplicates. Chosen (orchestrator): (b) — an existing note within 0.5 ¢ of a pasted note's pitch keeps its first
+uncovered part (end or start trimmed, free curve retimed) or is removed when covered whole, in the paste's undo step;
+copy + paste in place is then a no-op (the copies replace the originals). The rule is RollState::overwriteCommands
+(general: covers + pitch). Note: no existing "drawn / moved note over a same-pitch note" rule was found in the clip
+view (moves and draws still stack); they could adopt overwriteCommands. Status: decided.

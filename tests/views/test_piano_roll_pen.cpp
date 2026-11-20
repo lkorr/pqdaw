@@ -1144,18 +1144,20 @@ TEST_CASE("render: pianoroll-bends (a melody gliding between its notes, a straig
 
 // BR.D (bug report 2026-11-19_20-02-29: "pasting notes seems to just duplicate it ahead of the copied note ... it should
 // be placed on the same location ala Ableton"): Ctrl+V goes to the insert marker, which Ctrl+C puts at the copied
-// notes' start; a click elsewhere moves it; a second paste goes after the first; Ctrl+D still places after the selection.
-TEST_CASE("clip view (BR.D): copy then paste lands on the copied notes; a click moves the insert marker; paste again goes after; Ctrl+D after the selection") {
+// notes' start; a click elsewhere moves it; a second paste goes after the first; Ctrl+D still places after the
+// selection. Orchestrator on Q?-BR.D-a: a paste overwrites the notes of its pitch under it (the first uncovered part
+// of each stays, nothing left: removed), so a paste in place leaves exactly one copy.
+TEST_CASE("clip view (BR.D): copy then paste lands on the copied notes and replaces them; a shifted paste trims the notes of its pitch it covers; paste again goes after; Ctrl+D after the selection") {
   Pen r;
   r.focusNotes();
   const std::vector<doc::NoteId> ids = r.addNotes({Pen::plain(kQ, kQ / 2, 0), Pen::plain(kQ + kQ / 2, kQ, 4)});
-  auto at = [&](Ticks start, int32_t degree) {
+  auto count = [&](Ticks start, Ticks length, int32_t degree) {
     size_t n = 0;
     for (const doc::Note& x : r.clip().notes)
-      if (x.start == start && x.pitch == PitchId::fromDegree(degree, 0)) ++n;
+      if (x.start == start && x.length == length && x.pitch == PitchId::fromDegree(degree, 0)) ++n;
     return n;
   };
-  // Click the first note (selects it), copy, paste: the copy sits exactly on the original.
+  // Click the first note (selects it), copy, paste: the copy replaces the original exactly, one undo step.
   r.d.click(r.at(static_cast<double>(kQ + kQ / 4), 0));
   r.d.step();
   REQUIRE(r.view->selection().size() == 1);
@@ -1165,36 +1167,73 @@ TEST_CASE("clip view (BR.D): copy then paste lands on the copied notes; a click 
   CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
   r.d.step();
   CHECK(r.history() == h + 1);
-  CHECK(r.noteCount() == 3);
-  CHECK(at(kQ, 0) == 2);
-  // Again: right after the pasted copy (the marker moved past it).
+  CHECK(r.noteCount() == 2);
+  CHECK(count(kQ, kQ / 2, 0) == 1);
+  CHECK(r.clip().notes.findById(ids[0]) == nullptr);  // (the original: overwritten by its copy)
+  REQUIRE(r.view->selection().size() == 1);
+  const doc::NoteId copy{r.view->selection()[0]};
+  // Again: right after the pasted copy (the marker moved past it); the note a third up there is another pitch: kept.
   CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
   r.d.step();
-  CHECK(at(kQ + kQ / 2, 0) == 1);
+  CHECK(r.noteCount() == 3);
+  CHECK(count(kQ, kQ / 2, 0) == 1);
+  CHECK(count(kQ + kQ / 2, kQ / 2, 0) == 1);
+  CHECK(count(kQ + kQ / 2, kQ, 4) == 1);
   // Ctrl+D duplicates the selection (the last paste) after it.
   REQUIRE(r.view->selection().size() == 1);
   CHECK(r.d.press("Ctrl+D") == KeyResult::Action);
   r.d.step();
-  CHECK(at(2 * kQ, 0) == 1);
-
-  // Both notes, copied together: the paste lands on both originals.
-  REQUIRE(r.ctx.store().undo());
+  CHECK(count(2 * kQ, kQ / 2, 0) == 1);
   REQUIRE(r.ctx.store().undo());
   REQUIRE(r.ctx.store().undo());
   r.d.step();
   REQUIRE(r.noteCount() == 2);
-  r.view->select(std::span<const doc::NoteId>(ids.data(), ids.size()));
+
+  // Both notes copied together and pasted: still two notes, on the originals.
+  const doc::NoteId both[] = {copy, ids[1]};
+  r.view->select(std::span<const doc::NoteId>(both, 2));
   CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
   CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
   r.d.step();
-  CHECK(at(kQ, 0) == 2);
-  CHECK(at(kQ + kQ / 2, 4) == 2);
-  // Copy, then a click on empty space at beat 4 (snapped to the quarter grid): the paste goes there instead.
-  r.view->select(std::span<const doc::NoteId>(ids.data(), 1));
+  CHECK(r.noteCount() == 2);
+  CHECK(count(kQ, kQ / 2, 0) == 1);
+  CHECK(count(kQ + kQ / 2, kQ, 4) == 1);
+
+  // A 16th grid; copy the low note (kQ … 1.5 kQ), click on empty space (another row) a 16th in — half the note —
+  // and paste: the original keeps its first, uncovered 16th; the paste follows it.
+  GridSpec g;
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 4;  // 1/16
+  r.ctx.setGrid(g);
+  r.d.step();
+  doc::NoteId low{};
+  for (const doc::Note& x : r.clip().notes)
+    if (x.pitch == PitchId::fromDegree(0, 0)) low = x.id;
+  REQUIRE(low.valid());
+  r.view->select(std::span<const doc::NoteId>(&low, 1));
   CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
-  r.d.click(r.at(static_cast<double>(3 * kQ + kQ / 4), 9));
+  r.d.click(r.at(static_cast<double>(kQ + kQ / 4) + 1.0, 9));
+  r.d.step();
+  h = r.history();
+  CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
+  r.d.step();
+  CHECK(r.history() == h + 1);
+  CHECK(r.noteCount() == 3);
+  CHECK(count(kQ, kQ / 4, 0) == 1);           // trimmed: its end where the paste starts
+  CHECK(count(kQ + kQ / 4, kQ / 2, 0) == 1);  // the paste
+  CHECK(count(kQ + kQ / 2, kQ, 4) == 1);      // another pitch: untouched
+  REQUIRE(r.ctx.store().undo());
+  r.d.step();
+  CHECK(r.noteCount() == 2);
+  CHECK(count(kQ, kQ / 2, 0) == 1);
+  // Half a note earlier: the original keeps its uncovered end (its start moves to where the paste ends).
+  r.view->select(std::span<const doc::NoteId>(&low, 1));
+  CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
+  r.d.click(r.at(static_cast<double>(kQ - kQ / 4) + 1.0, 9));
   r.d.step();
   CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
   r.d.step();
-  CHECK(at(3 * kQ, 0) == 1);
+  CHECK(r.noteCount() == 3);
+  CHECK(count(kQ - kQ / 4, kQ / 2, 0) == 1);  // the paste
+  CHECK(count(kQ + kQ / 4, kQ / 4, 0) == 1);  // the original's last 16th
 }

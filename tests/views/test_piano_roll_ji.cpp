@@ -33,6 +33,7 @@
 #include "pq/views/view_scenes.h"
 #include "../ui/golden_check.h"
 #include "views_test_util.h"
+#include "../../src/views/src/piano_roll/roll_state.h"
 
 using namespace pq;
 using namespace pq::ui;
@@ -425,6 +426,9 @@ TEST_CASE("roll JI: copy / paste carries a note's pitch curve; an anchor pastes 
 
   r.view->select(std::span<const doc::NoteId>(&bentNote, 1));
   CHECK(r.d.press("Ctrl+C") == KeyResult::Action);
+  // (BR.D: a paste in place overwrites the original; these pastes go after it, where nothing is.)
+  auto pasteAfter = [&](Ticks t) { r.view->state().setInsertTick(t); };
+  pasteAfter(2 * kQ);
   size_t h = r.history();
   CHECK(r.d.press("Ctrl+V") == KeyResult::Action);
   CHECK(r.history() == h + 1);
@@ -432,7 +436,7 @@ TEST_CASE("roll JI: copy / paste carries a note's pitch curve; an anchor pastes 
   REQUIRE(r.view->selection().size() == 1);
   const doc::NoteId pasted{r.view->selection()[0]};
   CHECK(pasted != bentNote);
-  CHECK(r.note(pasted).start == 0);  // BR.D: on the copied note (copy puts the insert marker at its start)
+  CHECK(r.note(pasted).start == 2 * kQ);
   const doc::NoteCurves* pc = doc::findNoteCurves(r.clip(), pasted);
   REQUIRE(pc != nullptr);
   CHECK(pc->pitch == bend);
@@ -447,6 +451,7 @@ TEST_CASE("roll JI: copy / paste carries a note's pitch curve; an anchor pastes 
   // The member alone: the paste is a Cents note at the pitch it had (it depends on nothing).
   r.view->select(std::span<const doc::NoteId>(&member, 1));
   (void)r.d.press("Ctrl+C");
+  pasteAfter(6 * kQ);
   h = r.history();
   (void)r.d.press("Ctrl+V");
   CHECK(r.history() == h + 1);
@@ -460,6 +465,7 @@ TEST_CASE("roll JI: copy / paste carries a note's pitch curve; an anchor pastes 
   const doc::NoteId both[] = {anchor, member};
   r.view->select(std::span<const doc::NoteId>(both, 2));
   (void)r.d.press("Ctrl+C");
+  pasteAfter(6 * kQ);
   h = r.history();
   (void)r.d.press("Ctrl+V");
   CHECK(r.history() == h + 1);

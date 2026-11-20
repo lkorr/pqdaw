@@ -2134,8 +2134,8 @@ Judge: the easing speeds of the scope range; whether Saturator / Utility want an
 ## BR.D · 2026-11-19 · MIDI editing (paste position, pen lengthening, curved notes under the playhead)
 - Clip view: Ctrl+C then Ctrl+V pastes exactly on the copied notes (the insert marker goes to their start); click
   somewhere first to paste there; Ctrl+V again goes after the paste; Ctrl+D still duplicates after the selection.
-  The arrangement already pasted at the selection's start (unchanged). Pasting on the originals stacks duplicates
-  (Q?-BR.D-a).
+  The arrangement already pasted at the selection's start (unchanged). A paste overwrites notes of its pitch under
+  it (trimmed to their uncovered part, or removed), so copy + paste in place changes nothing (Q?-BR.D-a).
 - Draw Mode stroke past a note's end: the note now ends at the pointer as you drag (no jump to the grid cell's end).
 - Arrangement / project-patch lanes: a curved (bent / vibrato) note no longer gets a comb of notches where the
   playhead has passed. Strokes in clip previews now always use the segment-normal joins: ends of a few notes differ

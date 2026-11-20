@@ -83,7 +83,8 @@ constexpr HelpEntry kNotes[] = {
     {"{pianoroll.copy} / {pianoroll.cut} / {pianoroll.paste}",
      "Copy, cut, paste",
      "The selected notes, with their bends and pitch curves, to and from the clipboard. A paste goes where you "
-     "last clicked; right after a copy that is where the copied notes start (a paste lands on them)."},
+     "last clicked; right after a copy that is where the copied notes start (a paste lands on them). Pasted "
+     "notes replace the notes of the same pitch they cover (a note partly covered keeps the rest)."},
     {"{pianoroll.delete}",
      "Delete",
      "Removes the selected notes."},

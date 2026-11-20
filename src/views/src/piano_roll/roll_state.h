@@ -821,6 +821,16 @@ public:
   // A resize of the selected notes (ops::resizeNotes) with their free curves retimed in the same undo step (bends
   // and vibratos are properties: they need nothing).
   doc::ops::EditResult resizeEdit(doc::ops::NoteEdge edge, Ticks delta) const;
+  // BR.D: notes placed over the clip's notes overwrite those of their pitch (Live): an existing note within
+  // kSamePitchCents of a cover's pitch that the cover overlaps keeps only its first uncovered part (trimmed, its free
+  // curve retimed as resizeEdit does), or is removed when nothing of it is left. The commands, against the current
+  // document, to run before the placed notes are added (in one Batch with them). Placing notes uses this rule
+  // (paste); nothing here is paste-specific.
+  struct NoteCover {
+    Ticks start = 0, end = 0;
+    double cents = 0.0;
+  };
+  bool overwriteCommands(std::span<const NoteCover> covers, std::vector<doc::Command>& out) const;
   bool hasCurvePreview() const noexcept { return !curvePreview_.empty() || warpPreview_.valid(); }
   // A Shift + body drag: the selected notes `cents` away as Cents notes, `dt` later (one undo step).
   doc::ops::EditResult detuneEdit(Ticks dt, double cents) const;
@@ -1126,6 +1136,7 @@ private:
   double morphRegionsPeriod_ = 0.0;
   int32_t morphRegionsReps_ = 0, morphRegionsMax_ = 0;
   std::vector<doc::Note> clipboard_;  // starts relative to the earliest copied note
+  std::vector<double> clipboardCents_;  // BR.D: the pitch each copied note had (a paste overwrites notes there)
   std::vector<doc::NoteCurves> clipboardCurves_;  // T7.4: the copied notes' pitch curves (keyed by the source ids)
   std::vector<doc::JiGroup> clipboardGroups_;     // T7.13: the JI groups whose anchor was copied (source ids)
   std::vector<doc::NoteWritten> clipboardWritten_;  // and the copied members' written identities

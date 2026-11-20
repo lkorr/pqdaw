@@ -629,6 +629,65 @@ doc::ops::EditResult RollState::resizeEdit(doc::ops::NoteEdge edge, Ticks delta)
   return e;
 }
 
+bool RollState::overwriteCommands(std::span<const NoteCover> covers, std::vector<doc::Command>& out) const {
+  if (!clip_ || covers.empty()) return true;
+  std::vector<NoteCover> sorted(covers.begin(), covers.end());
+  std::sort(sorted.begin(), sorted.end(), [](const NoteCover& a, const NoteCover& b) { return a.start < b.start; });
+  Ticks lo = INT64_MAX, hi = INT64_MIN;
+  for (const NoteCover& c : sorted) {
+    lo = std::min(lo, c.start);
+    hi = std::max(hi, c.end);
+  }
+  std::vector<doc::NoteKey> gone;
+  doc::UpdateNotes trims{ref_, {}};
+  std::vector<doc::Command> curves;
+  for (const doc::Note& n : clip_->notes) {
+    const Ticks end = n.start + n.length;
+    if (n.start >= hi) break;  // (the notes are in start order)
+    if (end <= lo) continue;
+    std::optional<double> cents;
+    // The first part of [start, end) no cover of its pitch reaches: [a, b).
+    Ticks a = n.start, b = end;
+    for (const NoteCover& c : sorted) {
+      if (c.end <= a || c.start >= end) continue;
+      if (!cents && !(cents = centsOf(n.pitch))) break;  // (unresolvable: left alone)
+      if (!(std::fabs(c.cents - *cents) <= kSamePitchCents)) continue;  // (a NaN cover: no pitch)
+      if (c.start <= a) {
+        a = std::max(a, c.end);
+      } else {
+        b = std::min(b, c.start);
+        break;
+      }
+    }
+    if (a == n.start && b == end) continue;
+    if (a >= b) {
+      gone.push_back(doc::keyOf(n));
+      continue;
+    }
+    doc::Note m = n;
+    m.start = a;
+    m.length = b - a;
+    trims.updates.push_back({doc::keyOf(n), m});
+    if (const doc::NoteCurves* nc = clip_->curves ? doc::findNoteCurves(*clip_, n.id) : nullptr; nc && !nc->pitch.empty()) {
+      Pts pts = retimeCurve(nc->pitch, m.length, a - n.start);
+      if (pts != nc->pitch) curves.push_back(doc::SetNoteCurve{ref_, doc::keyOf(m), std::move(pts)});
+    }
+  }
+  if (!gone.empty()) {
+    // As a delete: the notes anchored to a removed note keep their pitch (ops::deleteNotes).
+    doc::ops::EditResult d = doc::ops::deleteNotes(*ctx.doc(), ref_, gone);
+    if (!d) return false;
+    if (doc::Batch* bt = std::get_if<doc::Batch>(&d->command.v)) {
+      for (doc::Command& c : bt->commands) out.push_back(std::move(c));
+    } else {
+      out.push_back(std::move(d->command));
+    }
+  }
+  if (!trims.updates.empty()) out.push_back(std::move(trims));
+  for (doc::Command& c : curves) out.push_back(std::move(c));
+  return true;
+}
+
 doc::ops::EditResult RollState::detuneEdit(Ticks dt, double cents) const {
   if (!clip_) return invalid("no clip");
   Ticks first = INT64_MAX;
