@@ -1158,3 +1158,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: three scopes = one feed consumer, acquired only while painted (0 consumers hidden).
 - Notes: Q?-MX.3-a: In A / In B / Out on the closed face are markers; wiring into B needs the opened module.
   Q?-MX.3-b: the trace scope has no timebase / freeze / measure.
+
+## 2026-11-19 · BR.A · task/BR.A-device-chain (merged bd80d1d3)
+- Did: modules show only their panel (no OVERSAMPLE inspector, no atom count; Oversample ▸ in every group's title menu); a scheduler-refused feedback loop (oversample region / voice↔global) is cut at its closing wire with a red cable instead of failing the whole compile (was why all visualisers froze); Math scopes −1…1 with slow 5 s auto range; response displays follow automation and ghost phase/delay strips.
+- Verified: pq_tests_views 941/941 (27 skipped); -Affected after rebase 37/37 exes; all four report projects render.
+- Perf / CPU-efficiency check: scope range one pass over shown samples + 20 compares; ghost strips reuse cached evaluation; loop mapping only on refusal.
+- Notes/blockers: the cut loop is silent (follow-up in BR.B); #4 not checked live with audio; 15 goldens re-recorded; Q?-BR.A-a, b.
