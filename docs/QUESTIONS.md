@@ -2170,3 +2170,14 @@ with B at its default 0: everything is clipped to 0, so nothing comes back. Opti
 says); (2) give clip (and other ops where B = 0 is degenerate) a B default of 1 when the op is chosen and B is still at
 the default; (3) show the clip range on the face. Chosen: (1) for now — a per-op default is a design choice for the
 user; (2) is small (`ops::setMathOp`) if wanted. Status: open.
+
+## Q?-BR.E-a · 2026-11-19 · BR.E · Clip keys in the audio clip view; missing audio clip hotkeys
+Context: a double-click on an audio clip focused the piano roll's note area, which is hidden while an audio clip is
+shown, so every key after it (Ctrl+E, 0, R in bug report 2026-11-19_20-34-17) did nothing. The audio clip view has no
+keymap scope of its own. Options: (a) the arrangement keeps the keys after a double-click on an audio clip (its clip
+keys then act on that clip); (b) focus the audio clip view (as the project patch view's band lanes do) and give it the
+"arrangement" scope or a scope of its own. Chosen: (a), the most reversible; the project patch view still focuses the
+audio clip view (no clip keys there). Also open, not added (each a new binding = a design choice): Live's Crop Clip
+(Ctrl+Shift+J — taken by pianoroll.tuneToJi), Create Fades (Ctrl+Alt+F), Quantize audio (Ctrl+U on warp markers),
+a warp on/off key, and transpose / gain nudges from the keyboard (today: the clip view's knobs, typed values and the
+lane's gain handle). Status: open.

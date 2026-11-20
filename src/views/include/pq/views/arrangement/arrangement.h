@@ -50,7 +50,9 @@
 //   edits       Ctrl+C/X/V (in-process clipboard of clips: whole selected clips, or the part of each selected
 //               track's clips inside a time selection), Ctrl+D, Delete, Ctrl+E (at the insert marker or the time
 //               selection's edges), Ctrl+J, Ctrl+L, Ctrl+Shift+M, Ctrl+I, Ctrl+Shift+D, Ctrl+Shift+Delete, 0
-//               (deactivates / reactivates the selected clips, else toggles the selected tracks' activators; Q15).
+//               (deactivates / reactivates the selected clips, else toggles the selected tracks' activators; Q15),
+//               R (reverses the selected audio clips). BR.E: with a time range, 0 and R change only the part inside
+//               it (the clips crossing its edges are split there first, in the same undo step).
 //               Each is one pq::doc::ops edit (several chained into one Batch where needed) = one undo step.
 //   Partial redraw: a selection change damages the selected rows over the changed time span only (whole rows when
 //   the selected tracks change); a drag frame damages the dragged clips' old and new rects.
@@ -371,7 +373,10 @@ public:
 
   // ---- follow ------------------------------------------------------------------------------------------------
   // While playing with follow on, the view pages so the playhead stays visible (Live's Follow, Ctrl+Shift+F). The
-  // switch is the context's (ViewContext::follow: every timeline view obeys it).
+  // switch is the context's (ViewContext::follow: every timeline view obeys it). BR.E: the user's view wins — it pages
+  // only when the playhead leaves a view it was in (or playback just started), never while a pointer gesture in the
+  // view runs (a ruler zoom drag), and not after the user zoomed or scrolled away from the playhead: following resumes
+  // once the playhead is in the user's view again (as the piano roll's and the project patch view's follow).
   bool follow() const noexcept { return ctx_.follow(); }
   void setFollow(bool on);
 
@@ -638,6 +643,12 @@ private:
   std::vector<SavedView> zoomStack_;
   std::optional<Ticks> playhead_;
   uint32_t playheadTimer_ = 0;
+  // BR.E follow: playback just started (a page may bring the playhead into view); a page held back by a gesture (it
+  // comes when the gesture ends, unless the user changed the view meanwhile); the view change being follow's own.
+  bool followStart_ = false;
+  bool followHeld_ = false;
+  bool followPaging_ = false;
+  bool gestureInView() const noexcept;  // the pointer is captured by this view or a widget in it
   RecordingOverlay recording_;  // T6.7
   void readRecording();         // T6.7: the overlay, damaging the rows whose regions changed
   bool zooming_ = false;

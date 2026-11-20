@@ -26,7 +26,7 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.selectAll", "arrangement.copy", "arrangement.cut", "arrangement.paste", "arrangement.duplicate",
     "arrangement.delete", "arrangement.split", "arrangement.consolidate", "arrangement.loopSelection",
     "arrangement.insertMidiClip", "arrangement.insertTime", "arrangement.duplicateTime", "arrangement.deleteTime",
-    "arrangement.toggleActive",
+    "arrangement.toggleActive", "arrangement.reverse",
     // T3.x-fix-look: arrow keys
     "arrangement.markerLeft", "arrangement.markerRight", "arrangement.trackUp", "arrangement.trackDown",
     "arrangement.markerHome", "arrangement.markerEnd", "arrangement.pointsUpFine", "arrangement.pointsDownFine",
@@ -180,6 +180,7 @@ void ArrangementView::registerActions() {
   edit("arrangement.deleteTime", [ed] { (void)ed->deleteTime(); }, hasTime);
   edit("arrangement.toggleActive", [ed] { (void)ed->toggleActive(); },
        [ed] { return !ed->selection().clips.empty() || !ed->selection().tracks.empty(); });
+  edit("arrangement.reverse", [ed] { (void)ed->reverseSelection(); }, clipsOrRange);  // BR.E: R
   // T3.10 tracks. Ctrl+Shift+T / Ctrl+Alt+T are global chords (Live inserts tracks from anywhere).
   auto hasTracks = [ed] { return !ed->selection().tracks.empty(); };
   edit("track.newMidi", [ed] { (void)ed->newTrack(doc::TrackKind::Midi); }, {});
@@ -897,6 +898,9 @@ void ArrangementView::applyTimeWindow() {
   const bool zoomChanged = ppt != pxPerTick_;
   appliedStart_ = tw.start;
   pxPerTick_ = ppt;
+  // BR.E: a view change that is not follow's own page is the user's (zoom, scroll, Z / X, the other timeline view):
+  // a page held back or due at the start gives way to it (readPlayhead then pages only from a view showing the playhead).
+  if (!followPaging_) followStart_ = followHeld_ = false;
   markAxisDirty();
   if (zoomChanged) {
     reportResolvedGrid();
@@ -1075,6 +1079,7 @@ void ArrangementView::refreshTransport() {
   const PlayheadSnapshot ph = ctx_.transport().playhead();
   if (ph.recording || recording_.active) readRecording();  // T6.7: a session starting or ending
   if (ph.playing) {
+    if (!playhead_) followStart_ = true;  // BR.E: starting playback may page to the playhead
     if (!playhead_ || *playhead_ != ph.tick) {
       if (playhead_) damagePlayheadColumn(*playhead_);
       playhead_ = ph.tick;
@@ -1087,6 +1092,7 @@ void ArrangementView::refreshTransport() {
     damagePlayheadColumn(*playhead_);
     playhead_.reset();
   }
+  followStart_ = followHeld_ = false;
   if (playheadTimer_) {
     cancelTimer(playheadTimer_);
     playheadTimer_ = 0;
@@ -1184,16 +1190,30 @@ void ArrangementView::readPlayhead() {
     return;
   }
   const IRect lv = lanesViewport();
-  if (ctx_.follow() && lv.w > 0) {
-    const float x = xOfTick(static_cast<double>(ph.tick));
-    if (x < static_cast<float>(lv.x) || x >= static_cast<float>(lv.right() - 1)) {
+  auto inView = [&](Ticks t) {
+    const float x = xOfTick(static_cast<double>(t));
+    return x >= static_cast<float>(lv.x) && x < static_cast<float>(lv.right() - 1);
+  };
+  if (ctx_.follow() && lv.w > 0 && !inView(ph.tick)) {
+    // BR.E: page only when the user was watching the playhead — it was in view at the last read (judged in the view as
+    // it is now: after a zoom or scroll away from it the view stays the user's), playback just started, or a page was
+    // held back by a gesture and the view has not changed since — and never while a pointer gesture in the view runs
+    // (a ruler zoom drag fought every page: the drag put its pressed tick back under the pointer, follow paged again).
+    const bool watching = followStart_ || followHeld_ || !playhead_ || inView(*playhead_);
+    if (watching && gestureInView()) {
+      followHeld_ = true;
+    } else if (watching) {
       // Page: the playhead goes to the left edge (Live's Follow scrolls in pages).
+      followStart_ = followHeld_ = false;
       playhead_ = ph.tick;
+      followPaging_ = true;
       setTimeView(static_cast<double>(ph.tick), pxPerTick_);
+      followPaging_ = false;
       schedulePlayhead();
       return;
     }
   }
+  followStart_ = false;
   if (!playhead_ || *playhead_ != ph.tick) {
     const bool moved = !playhead_ || std::floor(xOfTick(static_cast<double>(*playhead_))) !=
                                          std::floor(xOfTick(static_cast<double>(ph.tick)));
@@ -1202,6 +1222,12 @@ void ArrangementView::readPlayhead() {
     if (moved) damagePlayheadColumn(ph.tick);
   }
   schedulePlayhead();
+}
+
+bool ArrangementView::gestureInView() const noexcept {
+  const UiTree* t = tree();
+  const Widget* c = t ? t->captured() : nullptr;
+  return c && (c == this || isAncestorOf(*c));
 }
 
 // The playhead line's pixels in the ruler and the lanes (plus a pixel either side), clipped to what is visible.
@@ -1227,10 +1253,16 @@ ArrangementView& installArrangement(Shell& shell) {
   auto& view = slot.add<ArrangementView>(shell.context());
   shell.tree().setFocus(&view);
   // Double-click on a clip: the clip view comes up (detail view shown, Clip mode) and takes the keyboard (Live).
+  // BR.E: a note clip's piano roll only — an audio clip's view has no keys of its own, so the arrangement keeps them
+  // (R, 0, Ctrl+E… act on the clip); it used to focus the hidden piano roll, where every clip key did nothing.
   view.onOpenClip = [&shell] {
     ViewContext& ctx = shell.context();
     ctx.setDetailVisible(true);
     ctx.setDetailMode(DetailMode::Clip);
+    const doc::ClipRef open = ctx.detailClip();
+    const doc::Track* t = doc::findTrackPtr(*ctx.doc(), open.track);
+    const int32_t i = t ? doc::findClipIndex(*t, open.clip) : -1;
+    if (i >= 0 && t->clips[static_cast<size_t>(i)].isAudio()) return;
     if (Widget* notes = shell.slot(ShellSlot::ClipDetail).find("clip-view/notes")) {
       shell.tree().layoutNow();
       shell.tree().setFocus(notes);

@@ -67,7 +67,8 @@ The "Live 12 manual section" column names the subsection of the Live Reference M
 | `track.group` | `Ctrl+G` | arrangement | Commands for Tracks | implemented (T3.10; any parents, nesting allowed) |
 | `track.ungroup` | `Ctrl+Shift+G` | arrangement | Commands for Tracks | implemented (T3.10) |
 | `arrangement.rename` | `Ctrl+R` | arrangement | Editing | implemented (T3.10; the selected track's title, Enter commits, Esc cancels) |
-| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | implemented (T3.9; Q15: deactivates / reactivates the selected clips, else toggles the selected tracks' activators = mute since T3.10, a Param) |
+| `arrangement.toggleActive` | `0` | arrangement | Commands for Tracks | implemented (T3.9; Q15: deactivates / reactivates the selected clips, else toggles the selected tracks' activators = mute since T3.10, a Param. BR.E: with a time range only the part inside it — MIDI and audio clips crossing its edges are split there first; one undo step) |
+| `arrangement.reverse` | `R` | arrangement | Arrangement View Commands (Reverse) | implemented (BR.E: each selected audio clip plays backwards, a reversed one forwards again; with a time range only the part inside it, split at its edges first; MIDI clips untouched; one undo step. Also in the clip menu and the audio clip view's Reverse button) |
 | `arrangement.toggleAutomationMode` | `A` | arrangement | Commands for Breakpoint Envelopes | implemented (T3.15; the chosen parameter's envelope over every track's clips, Live's Automation Mode) |
 | `arrangement.selectAll` | `Ctrl+A` | arrangement | Editing | implemented (T3.9) |
 | `arrangement.copy` | `Ctrl+C` | arrangement | Editing | implemented (T3.9) |

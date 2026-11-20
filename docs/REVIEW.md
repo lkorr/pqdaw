@@ -2141,3 +2141,12 @@ Judge: the easing speeds of the scope range; whether Saturator / Utility want an
   playhead has passed. Strokes in clip previews now always use the segment-normal joins: ends of a few notes differ
   by a pixel of anti-aliasing (6 goldens).
 Judge: play over a clip with glides and watch the lane; Ctrl+C / Ctrl+V on a selection.
+
+## BR.E · 2026-11-19 · arrangement follow and audio clip keys
+- Follow while playing no longer fights a zoom or scroll: a ruler zoom drag holds the view (it used to flip between
+  your view and the playhead's page every frame once the playhead reached the edge); after you zoom or scroll away
+  from the playhead the view stays yours; following resumes, at your zoom, once the playhead is in view again.
+- `0` and the new `R` (Reverse) with a time range over part of clips: the clips are cut at the range's edges and only
+  the part inside is deactivated / reversed (MIDI and audio, across tracks; one undo step). Reverse is also in the
+  clip menu. A double-click on an audio clip now leaves the keys with the arrangement.
+Judge: play, then drag-zoom in the ruler while the playhead runs; drag a range inside an audio clip, press `0`, then `R`.

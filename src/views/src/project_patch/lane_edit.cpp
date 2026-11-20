@@ -410,7 +410,7 @@ ui::Cursor ProjectPatchView::laneCursor(Vec2 pos, ui::Mods mods) const {
 namespace {
 // The arrangement's edit chords that act on the lanes (its keymap scope "arrangement", so a rebinding follows). TL.1: its
 // zoom chords too (Z, X, + / −: the shared time window). Not here: follow, track commands (global chords reach them).
-constexpr std::array<std::string_view, 30> kLaneActions = {
+constexpr std::array<std::string_view, 31> kLaneActions = {
     "arrangement.zoomToSelection", "arrangement.zoomBack", "arrangement.zoomIn", "arrangement.zoomOut",
     "arrangement.copy",         "arrangement.cut",           "arrangement.paste",        "arrangement.duplicate",
     "arrangement.delete",       "arrangement.split",         "arrangement.consolidate",  "arrangement.loopSelection",
@@ -418,7 +418,7 @@ constexpr std::array<std::string_view, 30> kLaneActions = {
     "arrangement.toggleActive", "arrangement.selectAll",     "arrangement.markerLeft",   "arrangement.markerRight",
     "arrangement.nudgeFineLeft", "arrangement.nudgeFineRight", "arrangement.extendLeft", "arrangement.extendRight",
     "arrangement.deselect",     "arrangement.trackUp",       "arrangement.trackDown",    "arrangement.pointsUpFine",
-    "arrangement.pointsDownFine", "arrangement.toggleAutomationMode"};
+    "arrangement.pointsDownFine", "arrangement.toggleAutomationMode", "arrangement.reverse"};
 }  // namespace
 
 bool ProjectPatchView::laneKey(const ui::KeyEvent& e) {

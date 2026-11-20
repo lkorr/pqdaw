@@ -450,6 +450,223 @@ void checkGolden(const char* scene) {
 
 }  // namespace
 
+namespace {
+
+// A real range drag over the lanes, from row `from` at tick a to row `to` at tick b (the clip bodies: a time selection).
+void rangeDrag(Fixture& f, std::string_view from, Ticks a, std::string_view to, Ticks b) {
+  const Vec2 p0 = f.lane(from, a), p1 = f.lane(to, b);
+  f.d.drag({p0.x, p0.y + 2.0f}, {p1.x, p1.y + 2.0f}, 6);
+  REQUIRE(f.arr->selection().range);
+  REQUIRE(f.arr->selection().time.has_value());
+  REQUIRE(f.arr->selection().time->start == a);
+  REQUIRE(f.arr->selection().time->end == b);
+}
+
+// The track's clips as [start, end, active, reverse] (reverse false for MIDI clips).
+struct Piece {
+  Ticks start, end;
+  bool active, reverse;
+  friend bool operator==(const Piece&, const Piece&) = default;
+};
+std::vector<Piece> pieces(const Fixture& f, std::string_view track) {
+  std::vector<Piece> out;
+  for (const doc::ClipSlot& c : f.track(track).clips) out.push_back({c.start(), c.end(), c.active(), c.audio && c.audio->reverse});
+  return out;
+}
+
+}  // namespace
+
+// BR.E (bug 2026-11-19_20-32-35): `0` with a time range over part of a clip deactivated the whole clip. Now the clips
+// crossing the range's edges are split there and only the part inside changes — audio and MIDI, across tracks; one undo
+// step with the cuts.
+TEST_CASE("arrangement audio (BR.E): 0 over a partial range splits at its edges and deactivates only the part inside") {
+  Fixture f;
+  const doc::AudioClip whole = f.get(f.clip("Drums", 0));
+  rangeDrag(f, "Drums", kBar / 4, "Drums", kBar / 2);
+  size_t h = f.history();
+  CHECK(f.d.press("0") == KeyResult::Action);
+  CHECK(f.history() == h + 1);
+  CHECK(pieces(f, "Drums") == std::vector<Piece>{{0, kBar / 4, true, false},
+                                                 {kBar / 4, kBar / 2, false, false},
+                                                 {kBar / 2, kBar, true, false},
+                                                 {kBar, 2 * kBar, true, false},
+                                                 {5 * kBar / 2, 3 * kBar, true, true}});
+  // The deactivated piece plays (would play) the frames the clip played there: a quarter bar = 0.5 s into the file.
+  const doc::AudioClip& mid = f.get(f.clip("Drums", 1));
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), mid.sample);
+  REQUIRE(s != nullptr);
+  CHECK(mid.contentStartFrame == doctest::Approx(0.5 * s->rate));
+  CHECK(mid.seconds == doctest::Approx(0.5));
+  // The range still selects what it covers: the piece. `0` again reactivates it (nothing more is cut).
+  CHECK(f.arr->selection().clips.size() == 1);
+  CHECK(f.d.press("0") == KeyResult::Action);
+  CHECK(f.track("Drums").clips.size() == 5);
+  CHECK(f.track("Drums").clips[1].active());
+  // One undo step each: back to the whole clip.
+  CHECK(f.ctx.undo());
+  CHECK(f.ctx.undo());
+  CHECK(f.track("Drums").clips.size() == 3);
+  CHECK(f.get(f.clip("Drums", 0)) == whole);
+
+  // Across tracks (Drums, Vox — Re-Pitch —, Keys — MIDI —) and across a clip boundary: every clip cut at the edges.
+  rangeDrag(f, "Drums", 3 * kBar / 4, "Keys", 5 * kBar / 4);
+  h = f.history();
+  CHECK(f.d.press("0") == KeyResult::Action);
+  CHECK(f.history() == h + 1);
+  CHECK(pieces(f, "Drums") == std::vector<Piece>{{0, 3 * kBar / 4, true, false},
+                                                 {3 * kBar / 4, kBar, false, false},
+                                                 {kBar, 5 * kBar / 4, false, false},
+                                                 {5 * kBar / 4, 2 * kBar, true, false},
+                                                 {5 * kBar / 2, 3 * kBar, true, true}});
+  CHECK(pieces(f, "Vox") == std::vector<Piece>{{kBar / 2, 3 * kBar / 4, true, false},
+                                               {3 * kBar / 4, 5 * kBar / 4, false, false},
+                                               {5 * kBar / 4, 5 * kBar / 2, true, false}});
+  CHECK(pieces(f, "Keys") == std::vector<Piece>{{0, 3 * kBar / 4, true, false}, {3 * kBar / 4, kBar, false, false}});
+  CHECK(f.ctx.undo());
+  CHECK(f.track("Vox").clips.size() == 1);
+  CHECK(f.track("Keys").clips.size() == 1);
+
+  // Whole clips selected (a click, no range): the whole clip, as before.
+  CHECK(f.d.press("Escape") == KeyResult::Action);  // (a click on a clip inside the range would keep the range)
+  f.d.click(f.title(f.clip("Drums", 1), kBar / 8));
+  REQUIRE_FALSE(f.arr->selection().range);
+  CHECK(f.d.press("0") == KeyResult::Action);
+  CHECK(f.track("Drums").clips.size() == 3);
+  CHECK_FALSE(f.track("Drums").clips[1].active());
+}
+
+// BR.E (bug 2026-11-19_20-34-17): `R` reverses the selected audio — whole clips, or with a time range only the part
+// inside it (split at its edges first); a reversed clip plays forwards again; MIDI clips are left alone. One undo step.
+TEST_CASE("arrangement audio (BR.E): R reverses the selected audio clips, or only the part a range covers") {
+  Fixture f;
+  // Whole clips: the reversed one plays forwards, the forward one backwards.
+  const doc::ClipRef rev = f.clip("Drums", 2), beat2 = f.clip("Drums", 1);
+  f.d.click(f.title(rev, kBar / 8));
+  f.d.click(f.title(beat2, kBar / 8), mod::kShift);
+  REQUIRE(f.arr->selection().clips.size() == 2);
+  size_t h = f.history();
+  CHECK(f.d.press("R") == KeyResult::Action);
+  CHECK(f.history() == h + 1);
+  CHECK_FALSE(f.get(rev).reverse);
+  CHECK(f.get(beat2).reverse);
+  CHECK(f.ctx.undo());
+  CHECK(f.get(rev).reverse);
+
+  // A range over part of the first clip and the MIDI clip under it: only the audio part inside, reversed.
+  const doc::AudioClip whole = f.get(f.clip("Drums", 0));
+  rangeDrag(f, "Drums", kBar / 4, "Keys", kBar / 2);
+  h = f.history();
+  CHECK(f.d.press("R") == KeyResult::Action);
+  CHECK(f.history() == h + 1);
+  CHECK(pieces(f, "Drums") == std::vector<Piece>{{0, kBar / 4, true, false},
+                                                 {kBar / 4, kBar / 2, true, true},
+                                                 {kBar / 2, kBar, true, false},
+                                                 {kBar, 2 * kBar, true, false},
+                                                 {5 * kBar / 2, 3 * kBar, true, true}});
+  CHECK(f.track("Keys").clips.size() == 1);  // not cut
+  CHECK(pieces(f, "Vox").size() == 1);       // between the two, but its clip starts after the range
+  // The reversed piece reads its own window (0.5 s … 1 s of the file) backwards: the same frames, mirrored in time.
+  const doc::AudioClip& mid = f.get(f.clip("Drums", 1));
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), mid.sample);
+  REQUIRE(s != nullptr);
+  CHECK(mid.contentStartFrame == doctest::Approx(0.5 * s->rate));
+  CHECK(mid.seconds == doctest::Approx(0.5));
+  CHECK(f.ctx.undo());
+  CHECK(f.get(f.clip("Drums", 0)) == whole);
+
+  // Only MIDI selected: nothing to reverse, the status says why, no undo step.
+  CHECK(f.d.press("Escape") == KeyResult::Action);
+  const IRect keys = f.arr->clipRect(f.clip("Keys", 0));
+  f.d.click({static_cast<float>(keys.x + 20), static_cast<float>(keys.y + 7)});
+  REQUIRE(f.arr->selection().clips.size() == 1);
+  h = f.history();
+  (void)f.d.press("R");
+  CHECK(f.history() == h);
+  CHECK(f.ctx.status().find("Reverse") != std::string::npos);
+}
+
+// BR.E audit: the arrangement's clip keys on audio clips with a partial range — each acts on exactly the range, every
+// piece playing what the clip played there (split Ctrl+E at both edges, copy / paste, duplicate, cut), and the clip
+// keys on whole audio clips (nudge Alt+Right, Up onto the next audio track). A double-click on an audio clip keeps the
+// keys in the arrangement (it used to focus the hidden piano roll: Ctrl+E, 0, R did nothing).
+TEST_CASE("arrangement audio (BR.E): clip keys on audio clips and partial ranges — split, copy / paste, duplicate, cut, nudge, track move") {
+  Fixture f;
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), f.get(f.clip("Drums", 0)).sample);
+  REQUIRE(s != nullptr);
+  const double rate = s->rate;
+  // Ctrl+E with a range: cut at both edges.
+  rangeDrag(f, "Drums", kBar / 4, "Drums", kBar / 2);
+  size_t h = f.history();
+  CHECK(f.d.press("Ctrl+E") == KeyResult::Action);
+  CHECK(f.history() == h + 1);
+  CHECK(f.track("Drums").clips.size() == 5);
+  CHECK(f.get(f.clip("Drums", 2)).contentStartFrame == doctest::Approx(1.0 * rate));
+  CHECK(f.ctx.undo());
+
+  // Ctrl+C over the range, Ctrl+V in the gap after bar 2: the piece plays 0.5 s … 1 s of the file.
+  rangeDrag(f, "Drums", kBar / 4, "Drums", kBar / 2);
+  CHECK(f.d.press("Ctrl+C") == KeyResult::Action);
+  CHECK(f.track("Drums").clips.size() == 3);  // copying cuts nothing
+  const Ticks at = 2 * kBar + kBar / 8;
+  f.d.click(f.lane("Drums", at));
+  REQUIRE(f.arr->selection().time.has_value());
+  REQUIRE(f.arr->selection().time->start == at);
+  CHECK(f.d.press("Ctrl+V") == KeyResult::Action);
+  REQUIRE(f.track("Drums").clips.size() == 4);
+  const doc::ClipSlot& pasted = f.track("Drums").clips[2];
+  REQUIRE(pasted.audio != nullptr);
+  CHECK(pasted.start() == at);
+  CHECK(pasted.audio->contentStartFrame == doctest::Approx(0.5 * rate));
+  CHECK(pasted.audio->seconds == doctest::Approx(0.5));
+  CHECK(f.ctx.undo());
+
+  // Ctrl+D over the range: the part right after it (overwriting what lay there), the range moved along.
+  rangeDrag(f, "Drums", kBar / 4, "Drums", kBar / 2);
+  h = f.history();
+  CHECK(f.d.press("Ctrl+D") == KeyResult::Action);
+  CHECK(f.history() == h + 1);
+  CHECK(f.arr->selection().time->start == kBar / 2);
+  bool found = false;
+  for (const doc::ClipSlot& c : f.track("Drums").clips)
+    if (c.start() == kBar / 2 && c.end() == 3 * kBar / 4) {
+      found = true;
+      CHECK(c.audio->contentStartFrame == doctest::Approx(0.5 * rate));
+    }
+  CHECK(found);
+  CHECK(f.ctx.undo());
+
+  // Ctrl+X over the range: the part removed, the rest stays where it played.
+  rangeDrag(f, "Drums", kBar / 4, "Drums", kBar / 2);
+  CHECK(f.d.press("Ctrl+X") == KeyResult::Action);
+  for (const doc::ClipSlot& c : f.track("Drums").clips) CHECK((c.end() <= kBar / 4 || c.start() >= kBar / 2));
+  CHECK(f.get(f.clip("Drums", 1)).contentStartFrame == doctest::Approx(1.0 * rate));
+  CHECK(f.ctx.undo());
+
+  // Whole audio clips: Alt+Right nudges off the grid, Up moves onto the audio track above (Drums ← Vox).
+  const doc::ClipRef rev = f.clip("Drums", 2);
+  const Ticks r0 = f.get(rev).start;
+  f.d.click(f.title(rev, kBar / 8));
+  CHECK(f.d.press("Alt+Right") == KeyResult::Action);
+  CHECK(f.get(rev).start > r0);
+  CHECK(f.ctx.undo());
+  const doc::ClipRef vox = f.clip("Vox", 0);
+  f.d.click(f.title(vox, kBar / 8));
+  CHECK(f.d.press("Up") == KeyResult::Action);
+  doc::TrackId on{};
+  REQUIRE(f.find(vox.clip, &on) != nullptr);
+  CHECK(on == f.track("Drums").id);
+  CHECK(f.ctx.undo());
+
+  // A double-click on an audio clip opens its view and leaves the keys with the arrangement: R reverses it.
+  f.d.doubleClick(f.title(rev, kBar / 8));
+  CHECK(f.view().visible());
+  const Widget* focus = f.d.tree().focus();
+  REQUIRE(focus != nullptr);
+  CHECK((focus == f.arr || f.arr->isAncestorOf(*focus)));
+  CHECK(f.d.press("R") == KeyResult::Action);
+  CHECK_FALSE(f.get(rev).reverse);
+}
+
 TEST_CASE("render: arrangement-audio (waveforms, fades, crossfade, gain, reverse, missing, MIDI between) matches the golden") {
   checkGolden("arrangement-audio");
 }

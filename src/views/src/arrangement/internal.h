@@ -507,6 +507,7 @@ public:
   bool deleteTime();
   bool loopSelection();
   bool toggleActive();
+  bool reverseSelection();  // BR.E: R
   void selectAll();
   bool hasClipboard() const noexcept { return !clipboard_.clips.empty(); }
   ui::Menu* openContextMenu(ui::Vec2 at);
@@ -580,6 +581,7 @@ private:
   void damageClip(const doc::ClipRef& ref);
   // Clips of rows r0 … r1 (with selectedTracksOnly: only the selected tracks' rows) meeting [s, e), plus `base`;
   // sorted and de-duplicated by id.
+  void adoptRangeClips();  // BR.E: the time range's clips after an edit cut them at its edges
   std::vector<doc::ClipRef> clipsMeeting(int32_t r0, int32_t r1, bool selectedTracksOnly, Ticks s, Ticks e,
                                          std::vector<doc::ClipRef> base) const;
   Grid grid() const noexcept;

@@ -79,22 +79,33 @@ struct Chain {
 
 bool overlaps(const doc::ClipSlot& c, Ticks s, Ticks e) noexcept { return c.start() < e && c.end() > s; }
 
-// Removes whatever lies in [s, e) on a MIDI or audio track (T5.6: either kind): the clips crossing the edges are split
-// there (each piece plays what the clip played), then the pieces inside are deleted. Nothing when no clip meets the range.
+// The clips of `tracks` (MIDI or audio: T5.6, either kind) that lie in [s, e) once those crossing its edges are split
+// there (in `ch`; each piece plays what the clip played): the material of a time selection as whole clips. `want`
+// (none: every clip) picks the clips taking part; the others are neither cut nor returned. Empty on an error (ch.error).
+using ClipFilter = bool (*)(const doc::ClipSlot&);
+std::vector<doc::ClipRef> cutToRange(Chain& ch, doc::IdSource& ids, std::span<const doc::TrackId> tracks, Ticks s, Ticks e,
+                                     ClipFilter want = nullptr) {
+  std::vector<doc::ClipRef> crossing, inside;
+  if (e <= s) return inside;
+  auto takes = [&](const doc::ClipSlot& c) { return overlaps(c, s, e) && (want == nullptr || want(c)); };
+  for (doc::TrackId id : tracks)
+    if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
+      for (const doc::ClipSlot& c : t->clips)
+        if (takes(c) && (c.start() < s || c.end() > e)) crossing.push_back({id, c.id});
+  const Ticks cuts[] = {s, e};
+  if (!crossing.empty() && !ch.run(doc::ops::splitClips(*ch.snap, ids, crossing, cuts))) return inside;
+  for (doc::TrackId id : tracks)
+    if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
+      for (const doc::ClipSlot& c : t->clips)
+        if (takes(c) && c.start() >= s && c.end() <= e) inside.push_back({id, c.id});
+  return inside;
+}
+
+// Removes whatever lies in [s, e) on a MIDI or audio track: the clips crossing the edges are split there, then the
+// pieces inside are deleted. Nothing when no clip meets the range.
 bool carve(Chain& ch, doc::IdSource& ids, doc::TrackId track, Ticks s, Ticks e) {
-  const doc::Track* t = doc::findTrackPtr(*ch.snap, track);
-  if (!t || (t->kind != doc::TrackKind::Midi && t->kind != doc::TrackKind::Audio) || e <= s) return true;
-  std::vector<doc::ClipRef> crossing;
-  for (const doc::ClipSlot& c : t->clips)
-    if (overlaps(c, s, e) && (c.start() < s || c.end() > e)) crossing.push_back({track, c.id});
-  if (!crossing.empty()) {
-    const Ticks cuts[] = {s, e};
-    if (!ch.run(doc::ops::splitClips(*ch.snap, ids, crossing, cuts))) return false;
-    t = doc::findTrackPtr(*ch.snap, track);
-  }
-  std::vector<doc::ClipRef> inside;
-  for (const doc::ClipSlot& c : t->clips)
-    if (c.start() >= s && c.end() <= e) inside.push_back({track, c.id});
+  const std::vector<doc::ClipRef> inside = cutToRange(ch, ids, std::span<const doc::TrackId>(&track, 1), s, e);
+  if (!ch.error.empty()) return false;
   if (inside.empty()) return true;
   return ch.run(doc::ops::deleteClips(*ch.snap, inside));
 }
@@ -124,6 +135,21 @@ const doc::ClipSlot* findClip(const doc::Project& p, const doc::ClipRef& r) noex
   const int32_t i = doc::findClipIndex(*t, r.clip);
   return i < 0 ? nullptr : &t->clips[static_cast<size_t>(i)];
 }
+
+// BR.E: what a clip edit of the selection (`0`, R) acts on — with a time range, the parts of the selected tracks' clips
+// inside it, each clip crossing an edge split there first (in `ch`: the edit then changes only the selected part, one
+// undo step with the cuts); else the selected clips. `want` picks the clips the edit applies to (others are not cut).
+std::vector<doc::ClipRef> selectedMaterial(Chain& ch, doc::IdSource& ids, const Selection& sel,
+                                           std::span<const doc::TrackId> tracks, ClipFilter want) {
+  if (sel.range && sel.time && sel.time->end > sel.time->start)
+    return cutToRange(ch, ids, tracks, sel.time->start, sel.time->end, want);
+  std::vector<doc::ClipRef> out;
+  for (const doc::ClipRef& r : sel.clips)
+    if (const doc::ClipSlot* c = findClip(*ch.snap, r); c && (want == nullptr || want(*c))) out.push_back(r);
+  return out;
+}
+
+bool isAudioClip(const doc::ClipSlot& c) { return c.isAudio(); }
 
 void collectMidi(const doc::Track& t, std::vector<doc::TrackId>& out, bool audioToo = false) {
   if (t.kind == doc::TrackKind::Midi || (audioToo && t.kind == doc::TrackKind::Audio)) {
@@ -1179,20 +1205,11 @@ bool Editor::fillClipboard(Clipboard& out) const {
     const Ticks s = sel_.time->start, e = sel_.time->end;
     Chain ch(ctx_.doc(), "Copy");
     const std::vector<doc::TrackId> tracks = clipTracks();
-    std::vector<doc::ClipRef> crossing;
-    for (doc::TrackId id : tracks)
-      if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
-        for (const doc::ClipSlot& c : t->clips)
-          if ((c.start() < s && c.end() > s) || (c.start() < e && c.end() > e)) crossing.push_back({id, c.id});
-    const Ticks cuts[] = {s, e};
-    if (!crossing.empty() && !ch.run(doc::ops::splitClips(*ch.snap, ctx_.store().ids(), crossing, cuts))) return false;
-    for (doc::TrackId id : tracks) {
-      const int32_t mi = midiIndex(id);
-      const doc::Track* t = doc::findTrackPtr(*ch.snap, id);
-      if (mi < 0 || !t) continue;
-      for (const doc::ClipSlot& c : t->clips)
-        if (c.start() >= s && c.end() <= e) src.push_back({mi, c});
-    }
+    const std::vector<doc::ClipRef> inside = cutToRange(ch, ctx_.store().ids(), tracks, s, e);
+    if (!ch.error.empty()) return false;
+    for (const doc::ClipRef& r : inside)
+      if (const int32_t mi = midiIndex(r.track); mi >= 0)
+        if (const doc::ClipSlot* c = findClip(*ch.snap, r)) src.push_back({mi, *c});
     origin = s;
     out.length = e - s;
     // Offsets from the first selected MIDI row, even if it has no clip in the range.
@@ -1418,19 +1435,11 @@ bool Editor::consolidateSelection() {
     const Ticks s = sel_.time->start, e = sel_.time->end;
     doc::IdSource& ids = ctx_.store().ids();
     Chain ch(ctx_.doc(), "Consolidate");
-    const std::vector<doc::TrackId> tracks = midiTracks();
-    std::vector<doc::ClipRef> crossing;
-    for (doc::TrackId id : tracks)
-      if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
-        for (const doc::ClipSlot& c : t->clips)
-          if ((c.start() < s && c.end() > s) || (c.start() < e && c.end() > e)) crossing.push_back({id, c.id});
-    const Ticks cuts[] = {s, e};
-    if (!crossing.empty()) (void)ch.run(doc::ops::splitClips(*ch.snap, ids, crossing, cuts));
-    std::vector<doc::ClipRef> inside;
-    for (doc::TrackId id : tracks)
-      if (const doc::Track* t = doc::findTrackPtr(*ch.snap, id))
-        for (const doc::ClipSlot& c : t->clips)
-          if (c.start() >= s && c.end() <= e) inside.push_back({id, c.id});
+    const std::vector<doc::ClipRef> inside = cutToRange(ch, ids, midiTracks(), s, e);
+    if (!ch.error.empty()) {
+      ctx_.setStatus("Consolidate: " + ch.error);
+      return false;
+    }
     if (!inside.empty()) {
       const doc::ops::EditResult r = doc::ops::consolidateClips(*ch.snap, ids, inside);
       (void)ch.run(r);
@@ -1518,20 +1527,70 @@ bool Editor::loopSelection() {
 
 // `0` (Q15): the selected clips are deactivated if any is active, else reactivated; with no clip selected, the
 // selected tracks' activators toggle the same way. A track's activator is its mute (T3.10, Q15's answer: a Param,
-// no recompile), like the activator button in its header.
+// no recompile), like the activator button in its header. BR.E: with a time range only the selected part changes —
+// the clips crossing its edges are split there first (MIDI and audio, on every selected track), one undo step.
 bool Editor::toggleActive() {
-  const doc::Project& p = *ctx_.doc();
-  if (!sel_.clips.empty()) {
+  Chain ch(ctx_.doc(), "");
+  const std::vector<doc::ClipRef> clips = selectedMaterial(ch, ctx_.store().ids(), sel_, clipTracks(), nullptr);
+  if (!ch.error.empty()) {
+    ctx_.setStatus("Deactivate: " + ch.error);
+    return false;
+  }
+  if (!clips.empty()) {
     bool anyActive = false;
-    for (const doc::ClipRef& r : sel_.clips)
-      if (const doc::ClipSlot* c = findClip(p, r)) anyActive = anyActive || c->active();
-    doc::Batch b;
-    b.label = anyActive ? "Deactivate Clips" : "Activate Clips";
-    for (const doc::ClipRef& r : sel_.clips) b.commands.push_back(doc::SetClipActive{r, !anyActive});
-    return dispatch(std::move(b), "Activate");
+    for (const doc::ClipRef& r : clips)
+      if (const doc::ClipSlot* c = findClip(*ch.snap, r)) anyActive = anyActive || c->active();
+    ch.batch.label = anyActive ? "Deactivate Clips" : "Activate Clips";
+    // Straight into the batch (not one scratch apply each: O(n) for n clips); the store checks them on dispatch.
+    for (const doc::ClipRef& r : clips) ch.batch.commands.push_back(doc::SetClipActive{r, !anyActive});
+    if (!dispatch(std::move(ch.batch), "Activate")) return false;
+    adoptRangeClips();
+    return true;
   }
   if (sel_.tracks.empty()) return false;
-  return apply(doc::ops::toggleTracksMute(p, sel_.tracks), "Track Activator", false);
+  return apply(doc::ops::toggleTracksMute(*ctx_.doc(), sel_.tracks), "Track Activator", false);
+}
+
+// BR.E: `R` (Live's Reverse) — each selected audio clip plays its audio backwards (a reversed one forwards again); with a
+// time range only the selected part: the audio clips crossing its edges are split there first. One undo step. MIDI clips
+// are left alone.
+bool Editor::reverseSelection() {
+  Chain ch(ctx_.doc(), "");
+  const std::vector<doc::ClipRef> clips = selectedMaterial(ch, ctx_.store().ids(), sel_, clipTracks(), isAudioClip);
+  if (!ch.error.empty()) {
+    ctx_.setStatus("Reverse: " + ch.error);
+    return false;
+  }
+  if (clips.empty()) {
+    ctx_.setStatus("Reverse: select audio clips, or a time range over them");
+    return false;
+  }
+  ch.batch.label = clips.size() == 1 ? "Reverse Clip" : "Reverse Clips";
+  std::vector<doc::ClipRef> fwd, back;  // to reverse / to play forwards again
+  for (const doc::ClipRef& r : clips)
+    if (const doc::ClipSlot* c = findClip(*ch.snap, r)) (c->audio->reverse ? back : fwd).push_back(r);
+  if (!fwd.empty()) (void)ch.run(doc::ops::setAudioClipsReverse(*ch.snap, fwd, true));
+  if (!back.empty()) (void)ch.run(doc::ops::setAudioClipsReverse(*ch.snap, back, false));
+  if (!ch.error.empty()) {
+    ctx_.setStatus("Reverse: " + ch.error);
+    return false;
+  }
+  if (!dispatch(std::move(ch.batch), "Reverse")) return false;
+  adoptRangeClips();
+  return true;
+}
+
+// After an edit that cut clips at the time range's edges: the range selects the clips it touches now (the pieces).
+void Editor::adoptRangeClips() {
+  if (!(sel_.range && sel_.time && sel_.time->end > sel_.time->start)) return;
+  const doc::Project& p = *ctx_.doc();
+  Selection s = sel_;
+  s.clips.clear();
+  for (doc::TrackId id : clipTracks())
+    if (const doc::Track* t = doc::findTrackPtr(p, id))
+      for (const doc::ClipSlot& c : t->clips)
+        if (overlaps(c, s.time->start, s.time->end)) s.clips.push_back({id, c.id});
+  setSelection(std::move(s), false);
 }
 
 void Editor::selectAll() {
@@ -1585,6 +1644,7 @@ Menu* Editor::openContextMenu(Vec2 at) {
   items.push_back(action("Insert MIDI Clip", "arrangement.insertMidiClip", "Ctrl+Shift+M"));
   items.push_back(action("Loop Selection", "arrangement.loopSelection", "Ctrl+L"));
   items.push_back(action("Deactivate / Activate", "arrangement.toggleActive", "0"));
+  items.push_back(action("Reverse", "arrangement.reverse", "R"));
   items.push_back(exportMidiItem());  // MF.3
   items.push_back(MenuItem::sep());
   freezeItems(items);  // FZ.3: the selected clips' tracks

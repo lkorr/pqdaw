@@ -348,6 +348,66 @@ TEST_CASE("arrangement: the playhead is read only while playing and damages only
   CHECK(f.d.framesDrawn() == frames2);
 }
 
+// BR.E (bug 2026-11-19_20-29-18): zooming in with a ruler drag while playing used to fight follow — each time the
+// playhead crossed the right edge follow paged (the playhead to the left edge), the drag's next move put its pressed tick
+// back under the pointer, and the next read paged again: the view flipped between the two every frame. The user's view
+// wins: no page while a gesture in the view runs, none after the user zoomed away from the playhead, and following
+// resumes (at the user's zoom) once the playhead is in the user's view again.
+TEST_CASE("arrangement (BR.E): follow never fights a zoom or scroll — the user's view wins, following resumes from it") {
+  Fixture f;
+  f.d.press("Space");
+  REQUIRE(f.arr->follow());
+  f.port.setPlayheadTick(kBar);
+  f.d.advance(0.2);
+  REQUIRE(f.arr->originTick() < static_cast<double>(kBar));
+  const IRect ru = f.d.rect(kRuler);
+  // A ruler drag (down = zoom in) around a tick left of the playhead, held while the transport plays on.
+  const float px = f.arr->xOfTick(static_cast<double>(kBar / 4));
+  const Vec2 p0{px, static_cast<float>(ru.y + 3)};
+  f.d.down(p0);
+  const double ppt0 = f.arr->pxPerTick();
+  for (int i = 1; i <= 16; ++i) f.d.move({p0.x, p0.y + 25.0f * static_cast<float>(i)});
+  REQUIRE(f.arr->pxPerTick() > 20.0 * ppt0);
+  const double userOrigin = f.arr->originTick();
+  const double userPpt = f.arr->pxPerTick();
+  REQUIRE(f.arr->visibleTicks().end < kBar);  // zoomed in left of the playhead: it is off to the right
+  for (int i = 1; i <= 10; ++i) {  // the playhead runs on; the pointer holds still, then moves a little
+    const double before = f.arr->originTick();
+    f.port.setPlayheadTick(kBar + i * kBar / 16);
+    f.d.advance(0.05);
+    CHECK(f.arr->originTick() == before);  // no page
+    f.d.move({p0.x, p0.y + 400.0f + static_cast<float>(i % 2)});
+    CHECK(std::abs(f.arr->originTick() - userOrigin) < static_cast<double>(kBar) / 64.0);
+  }
+  f.d.up({p0.x, p0.y + 401.0f});
+  const double o1 = f.arr->originTick();
+  // Released with the playhead out of the user's view: it stays the user's.
+  f.port.setPlayheadTick(2 * kBar);
+  f.d.advance(0.3);
+  CHECK(f.arr->originTick() == o1);
+  CHECK(f.arr->pxPerTick() == userPpt);
+  // The user brings the playhead into view: follow resumes from there at the user's zoom.
+  f.arr->setTimeView(static_cast<double>(2 * kBar) - 10.0 / f.arr->devicePxPerTick(), userPpt);
+  f.d.advance(0.1);
+  const Ticks past = f.arr->visibleTicks().end + kBar / 8;
+  f.port.setPlayheadTick(past);
+  f.d.advance(0.2);
+  CHECK(f.arr->originTick() == static_cast<double>(past));
+  CHECK(f.arr->pxPerTick() == userPpt);
+  // A gesture that does not move the view (a press held on empty lane space) holds the page back until it ends.
+  const double o2 = f.arr->originTick();
+  const Vec2 hold = f.lanePoint(0.5f, 0.95f);
+  f.d.down(hold);
+  const Ticks next = f.arr->visibleTicks().end + kBar / 8;
+  f.port.setPlayheadTick(next);
+  f.d.advance(0.2);
+  CHECK(f.arr->originTick() == o2);
+  f.d.up(hold);
+  f.d.advance(0.2);
+  CHECK(f.arr->originTick() == static_cast<double>(next));
+  f.d.press("Space");
+}
+
 TEST_CASE("arrangement: only visible clips emit geometry; previews rebuild only when the clip pointer changes") {
   Fixture f;
   REQUIRE(f.d.enableGpu().ok());
