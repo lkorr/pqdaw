@@ -851,6 +851,10 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
       resizeK0_ = mixer ? n.scale : v.blockScale(n.device);  // TX.group-resize: an opened group's is its contents' factor
       resizeW0_ = n.w;
       resizeH0_ = n.h;
+      // BR.H: an opened group's frame keeps its top-left while it scales (as a block's), its contents with it.
+      resizeFrame_ = n.group && n.groupOpen && !mixer;
+      resizeX0_ = n.x;
+      resizeY0_ = n.y;
       press_ = last_ = e.pos;
       markDirty();
       return true;
@@ -1219,7 +1223,8 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
           const float d2 = std::max(1.0f, resizeW0_ * resizeW0_ + resizeH0_ * resizeH0_);
           const float k = resizeK0_ * (1.0f + (dx * resizeW0_ + dy * resizeH0_) / d2);
           if (resizeTrack_.valid()) (void)v.setMixerScale(resizeTrack_, k);  // TL.4
-          else (void)v.setBlockScale(resizeDevice_, ProjectPatchView::clampBlockScale(k, (e.mods & ui::mod::kShift) != 0));
+          else if (v.setBlockScale(resizeDevice_, ProjectPatchView::clampBlockScale(k, (e.mods & ui::mod::kShift) != 0)) && resizeFrame_)
+            (void)v.holdFrame(resizeDevice_, {resizeX0_, resizeY0_});
           markDirty();
           break;
         }
@@ -1589,7 +1594,7 @@ void ProjectCanvas::endStretch(bool commit) {
     const auto& nudges = st.view().patchNudges;
     const auto it = nudges.find(stretchDevice_.value);
     const float now = it == nudges.end() ? 0.0f : it->second.dx;
-    v.nudge(stretchDevice_.value, stretchNudge0_ - now, 0.0f);
+    v.nudge(stretchDevice_.value, (stretchNudge0_ - now) * v.placeUnit(stretchDevice_.value), 0.0f);  // (BR.H: stored units)
   }
   drag_ = Drag::None;
   stretchDevice_ = {};
@@ -1814,6 +1819,25 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
     if (b == kNone) return;
     const doc::Track* now = doc::findDevice(*v.context().doc(), pp.nodes[dragNode_].device).track;
     if (now != nullptr && now->id == pp.bands[b].track) {
+      // BR.H: dropped into an opened group of the band (one none of them holds or is) that not all of them are in
+      // already: they join it, shrunk to fit; else they move where they were dropped.
+      uint32_t into = kNone;
+      for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
+        const Node& c = pp.nodes[i];
+        if (!c.group || !c.groupOpen || c.band != b || w.x < c.x || w.x > c.x + c.w || w.y < c.y || w.y > c.y + c.h) continue;
+        bool ours = false;
+        for (const doc::DeviceId d : dragDevices_)
+          if (const uint32_t dn = pp.nodeOf(d); dn != kNone && (dn == i || insideNode(pp, i, dn))) ours = true;
+        if (!ours) into = i;
+      }
+      const bool allIn = into != kNone && std::all_of(dragDevices_.begin(), dragDevices_.end(), [&](doc::DeviceId d) {
+                           const uint32_t dn = pp.nodeOf(d);
+                           return dn != kNone && pp.nodes[dn].capsule == into;
+                         });
+      if (into != kNone && !allIn) {
+        (void)v.moveIntoGroup(dragDevices_, pp.nodes[into].device, dx, dy);
+        return;
+      }
       v.nudge(ids, dx, dy);
       return;
     }
@@ -1846,12 +1870,14 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
           w.y >= c.y && w.y <= c.y + c.h)
         into = i;
     }
-    if (moved.capsule != kNone && into != moved.capsule) {
-      (void)v.setDeviceGroup(device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
+    if (into != kNone && into != moved.capsule) {  // BR.H: into a group: where it was dropped, fitted
+      const doc::DeviceId one[] = {device};
+      (void)v.moveIntoGroup(one, pp.nodes[into].device, w.x - start.x, w.y - start.y);
       return;
     }
-    if (moved.capsule == kNone && into != kNone) {
-      (void)v.setDeviceGroup(device, pp.nodes[into].device);
+    if (moved.capsule != kNone && into == kNone) {  // out of its group: where it was dropped
+      const graph::Point2 at{moved.x + moved.w * 0.5f + w.x - start.x, moved.y + moved.h * 0.5f + w.y - start.y};
+      if (v.setDeviceGroup(device, {})) v.placeAt(device, at);
       return;
     }
     v.nudge(device.value, w.x - start.x, w.y - start.y);
@@ -1876,13 +1902,18 @@ void ProjectCanvas::finishDeviceMove(Vec2 pos) {
       if (i != dragNode_ && !insideNode(pp, i, dragNode_) && pp.nodes[i].group && pp.nodes[i].groupOpen &&
           pp.nodes[i].band == b && under(pp.nodes[i]))
         into = i;
-    if (moved.capsule != kNone) {
-      if (into == moved.capsule) v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
-      else if (now != nullptr && now->id == band.track) (void)v.setDeviceGroup(moved.device, into != kNone ? pp.nodes[into].device : doc::DeviceId{});
+    if (moved.capsule != kNone && into == moved.capsule) {
+      v.nudge(moved.device.value, w.x - start.x, w.y - start.y);
       return;
     }
-    if (into != kNone && now != nullptr && now->id == band.track) {
-      (void)v.setDeviceGroup(moved.device, pp.nodes[into].device);
+    if (into != kNone && now != nullptr && now->id == band.track) {  // BR.H: where it was dropped, fitted
+      const doc::DeviceId one[] = {moved.device};
+      (void)v.moveIntoGroup(one, pp.nodes[into].device, w.x - start.x, w.y - start.y);
+      return;
+    }
+    if (moved.capsule != kNone) {  // out of its group: where it was dropped
+      const graph::Point2 at{moved.x + moved.w * 0.5f + w.x - start.x, moved.y + moved.h * 0.5f + w.y - start.y};
+      if (now != nullptr && now->id == band.track && v.setDeviceGroup(moved.device, {})) v.placeAt(moved.device, at);
       return;
     }
   }
@@ -2299,15 +2330,18 @@ void ProjectCanvas::updateGrow() {
     if (!c.group || !c.groupOpen) continue;
     WorldRect r{c.x, c.y, c.x + c.w, c.y + c.h};
     if (liftModel_[i] != 1 && c.band < nb && affected[c.band] != 0) {
-      r = {c.frameX0, c.frameY0, c.frameX1, c.frameY1};
+      // BR.H: the layout's rule — the frame fits what it holds (with its margins); empty, its slot.
+      WorldRect box{1e30f, 1e30f, -1e30f, -1e30f};
       auto add = [&](const WorldRect& q) {
-        r.x0 = std::min(r.x0, q.x0 - metrics::kCapsulePad), r.x1 = std::max(r.x1, q.x1 + metrics::kCapsulePad);
-        r.y0 = std::min(r.y0, q.y0 - metrics::kCapsulePad - metrics::kCapsuleTitle), r.y1 = std::max(r.y1, q.y1 + metrics::kCapsulePad);
+        box.x0 = std::min(box.x0, q.x0), box.x1 = std::max(box.x1, q.x1);
+        box.y0 = std::min(box.y0, q.y0), box.y1 = std::max(box.y1, q.y1);
       };
       for (const uint32_t k : c.members)
         if (k < nn && (growTop_[k] == 0 || capsuleOf(k) == i)) add(rectOf(k));
       for (const uint32_t t : tops)  // a block dropped into it
         if (capsuleOf(t) == i && pp.nodes[t].capsule != i) add(rectOf(t));
+      r = box.x0 <= box.x1 ? WorldRect{box.x0 - c.fitL, box.y0 - c.fitT, box.x1 + c.fitR, box.y1 + c.fitB}
+                           : WorldRect{c.frameX0, c.frameY0, c.frameX1, c.frameY1};
     }
     growFrame_[i] = r;
   }
@@ -2462,7 +2496,7 @@ void ProjectCanvas::onInteractionCancelled() {
   if (drag_ == Drag::Resize) {  // TX.resize: Esc / focus lost: back to the size at the press
     drag_ = Drag::None;
     if (resizeTrack_.valid()) (void)view_.setMixerScale(resizeTrack_, resizeK0_);  // TL.4
-    else (void)view_.setBlockScale(resizeDevice_, resizeK0_);
+    else if (view_.setBlockScale(resizeDevice_, resizeK0_) && resizeFrame_) (void)view_.holdFrame(resizeDevice_, {resizeX0_, resizeY0_});
   }
   if (drag_ != Drag::None) markDirty();
   drag_ = Drag::None;

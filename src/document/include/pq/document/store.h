@@ -65,6 +65,13 @@ inline constexpr float kMaxPatchScale = 3.0f;
 // outside its band's left edge) is OPENED to its MOS circle, and (BR.tuning-outside) whether that opened block is grown
 // to the full WHEEL (the region chart left of the circle). Saved as the entry's optional "tuningOpen" / "tuningWheel";
 // view state like the nudge (not undoable).
+// BR.H: a block inside an opened group has a PLACE there instead of a nudge: `placeIn` its group's device id, dx / dy its
+// top-left in the group's own units (from the capsule's top-left, before the group's scale), kept whatever the group's
+// layouter does later (wires, blocks added or removed, sizes); 0 = none (a block outside any group: dx / dy its nudge).
+// A place in another group than the block's (it was moved, an undo) counts as none. Saved as the entry's optional "in".
+// A group's entry keeps its SLOT as its blocks got their places (its own units; 0 = the layouter's): `pinTop` its chain
+// pins' row from its top-left (where its band's spine holds it) and slotW × slotH its size (what the blocks after it on
+// a path make room for). Saved as the optional "slot": [pinTop, w, h].
 inline constexpr float kMinPatchLaneH = 16.0f;
 inline constexpr float kMaxPatchLaneH = 1024.0f;
 struct PatchNudge {
@@ -79,9 +86,11 @@ struct PatchNudge {
   bool folded = false;  // TL.1
   bool tuningOpen = false;   // BR.tuning-block
   bool tuningWheel = false;  // BR.tuning-outside (only while tuningOpen)
+  uint32_t placeIn = 0;      // BR.H
+  float pinTop = 0.0f, slotW = 0.0f, slotH = 0.0f;  // BR.H (a group's)
   bool empty() const noexcept {
     return dx == 0.0f && dy == 0.0f && scale == 1.0f && !inPinned && !outPinned && !mixerPlaced && laneH == 0.0f && !folded &&
-           !tuningOpen && !tuningWheel;
+           !tuningOpen && !tuningWheel && placeIn == 0 && pinTop == 0.0f;
   }
   friend bool operator==(const PatchNudge&, const PatchNudge&) noexcept = default;
 };

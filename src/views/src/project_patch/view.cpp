@@ -625,21 +625,56 @@ void ProjectPatchView::rebuild() {
         if (e.kind == EdgeKind::Modulation) selWires.push_back(e.wire);
       }
   canvas_->beforeRebuild();  // TX.node-menu-fix1: a gesture's model indices, by identity
-  layoutCache_.drift.clear();
-  patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
-  // BR.B: an opened group laid out again by an edit of the wires inside it (a document change; not a view change, nor a
-  // lowering's wire states settling): its blocks stay where they were — the layouter's moves go into their nudges, and
-  // the second build (its layout cached) places them there.
-  if (!sameDoc && !layoutCache_.drift.empty()) {
-    auto& nudges = ctx_.store().view().patchNudges;
-    for (const ModelCache::Drift& d : layoutCache_.drift) {
-      doc::PatchNudge& nu = nudges[d.device];
-      nu.dx += d.dx;
-      nu.dy += d.dy;
-      if (nu.empty()) nudges.erase(d.device);
-    }
-    layoutCache_.drift.clear();
+  // BR.H: the places the build gives (ModelCache::placed). A block whose stored place is in a group it left loses it
+  // (the build ignored it). A member of a group without a place there follows its group's layouter while the layouter
+  // moves it for the view's sake (a face settling its size, a nested group opened or closed) — but a DOCUMENT change
+  // (a cable, a block added or removed, an undo; in any view) never moves it: where its new layout would, it gets the
+  // place it was shown at (stored: from then on no layouter run moves it, in any view; a second build shows it there).
+  // As BR.B: not when the group's blocks changed size (laid out afresh). A move, a push or a spawn's keepPlaces stores
+  // every place shown first (commitPlaces).
+  std::vector<ModelCache::Placed> shown = std::move(pendingPlaces_);
+  for (int pass = 0; pass < 2; ++pass) {
+    layoutCache_.placed.clear();
     patch_ = buildProjectPatch(*snap, *lowered_, devlib, opt);
+    pendingPlaces_.clear();
+    auto& nudges = ctx_.store().view().patchNudges;
+    for (const ModelCache::Placed& pl : layoutCache_.placed) {
+      if (pl.group != 0 || pl.pin) {
+        pendingPlaces_.push_back(pl);
+        continue;
+      }
+      const auto it = nudges.find(pl.device);
+      if (it == nudges.end()) continue;
+      it->second.placeIn = 0;
+      it->second.dx = it->second.dy = 0.0f;
+      if (it->second.empty()) nudges.erase(it);
+    }
+    layoutCache_.placed.clear();
+    if (pass > 0 || sameDoc || shown.empty()) break;
+    auto was = [&](const ModelCache::Placed& now) -> const ModelCache::Placed* {
+      for (const ModelCache::Placed& w : shown)
+        if (w.device == now.device && w.group == now.group && w.pin == now.pin) return &w;
+      return nullptr;
+    };
+    std::vector<uint32_t> resized;  // groups a block of which changed size
+    for (const ModelCache::Placed& now : pendingPlaces_)
+      if (!now.pin)
+        if (const ModelCache::Placed* w = was(now); w != nullptr && (w->w != now.w || w->h != now.h)) resized.push_back(now.group);
+    bool kept = false;
+    for (const ModelCache::Placed& now : pendingPlaces_) {
+      const ModelCache::Placed* w = was(now);
+      if (w == nullptr || std::find(resized.begin(), resized.end(), now.group) != resized.end()) continue;
+      doc::PatchNudge& nu = nudges[now.device];
+      if (now.pin) {
+        if (w->x == now.x && w->w == now.w && w->h == now.h) continue;
+        nu.pinTop = w->x, nu.slotW = w->w, nu.slotH = w->h;
+      } else {
+        if (w->x == now.x && w->y == now.y) continue;
+        nu.placeIn = w->group, nu.dx = w->x, nu.dy = w->y;
+      }
+      kept = true;
+    }
+    if (!kept) break;
   }
   if (ctx_.anyWireErrors())  // WI.2: the wires the playback link cut from its compile
     for (Edge& e : patch_.edges)
@@ -696,7 +731,11 @@ void ProjectPatchView::rebuild() {
   stats_.lastRebuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   // TX.block-drag: blocks never overlap — every re-layout settles (not inside a push's own re-layout, nor while a block
   // is dragged or resized: their release does). Last: a push's immediate re-layout may rebuild again from here.
-  if (!settleHeld_ && !pushing() && !blockGestureRunning()) {
+  // BR.H: a group panel or the free rack settles only what its own gestures moved — a change made in the circuit (a
+  // spawn there, before it has placed the block) is the circuit's to settle; both pushing the same blocks moved the
+  // blocks already there.
+  const bool settles = !embedded() || !moved_.empty() || !resized_.empty();
+  if (settles && !settleHeld_ && !pushing() && !blockGestureRunning()) {
     if (!moved_.empty() || !resized_.empty()) cascade_ = 0;
     if (cascade_ < kPushCascade) {
       ++cascade_;
@@ -1829,6 +1868,117 @@ bool ProjectPatchView::setDeviceGroup(doc::DeviceId device, doc::DeviceId group)
                group.valid() ? "Into Group" : "Out of Group");
 }
 
+bool ProjectPatchView::moveIntoGroup(std::span<const doc::DeviceId> devices, doc::DeviceId group, float dx, float dy) {
+  sync();
+  const uint32_t gi = patch_.nodeOf(group);
+  if (gi == kNone || patch_.nodes[gi].device != group || !patch_.nodes[gi].group || !patch_.nodes[gi].groupOpen || devices.empty()) return false;
+  // Where the drag left them (world), their box, and each one's size on screen (its scale composed with its groups').
+  struct Moved {
+    doc::DeviceId d;
+    float x = 0, y = 0, scale = 1;
+  };
+  std::vector<Moved> moved;
+  float sx0 = 1e30f, sy0 = 1e30f, sx1 = -1e30f, sy1 = -1e30f;
+  for (const doc::DeviceId d : devices) {
+    const uint32_t n = patch_.nodeOf(d);
+    if (n == kNone || patch_.nodes[n].device != d || d == group) continue;
+    const Node& nd = patch_.nodes[n];
+    if (nd.capsule == gi) continue;  // (already in it)
+    moved.push_back({d, nd.x + dx, nd.y + dy, blockScale(d) * nd.frameScale});
+    sx0 = std::min(sx0, nd.x + dx), sy0 = std::min(sy0, nd.y + dy);
+    sx1 = std::max(sx1, nd.x + dx + nd.w), sy1 = std::max(sy1, nd.y + dy + nd.h);
+  }
+  if (moved.empty()) return false;
+  // The group's inner area: where its members are (the frame less its margins); an empty group: inside its pad.
+  const Node& g = patch_.nodes[gi];
+  const bool empty = g.members.empty();
+  const float ix0 = g.x + (empty ? metrics::kCapsulePad : g.fitL), iy0 = g.y + (empty ? metrics::kCapsuleTitle + metrics::kCapsulePad : g.fitT);
+  const float ix1 = std::max(ix0 + 1.0f, g.x + g.w - (empty ? metrics::kCapsulePad : g.fitR));
+  const float iy1 = std::max(iy0 + 1.0f, g.y + g.h - (empty ? metrics::kCapsulePad : g.fitB));
+  const float sw = std::max(1.0f, sx1 - sx0), sh = std::max(1.0f, sy1 - sy0);
+  const float f = std::clamp(std::min({1.0f, (ix1 - ix0) / sw, (iy1 - iy0) / sh}), kFitMinScale, 1.0f);
+  // The scaled box centred where they were dropped, inside the area as far as it fits (its top-left inside).
+  const float bw = sw * f, bh = sh * f;
+  float bx = std::clamp((sx0 + sx1 - bw) * 0.5f, ix0, std::max(ix0, ix1 - bw));
+  float by = std::clamp((sy0 + sy1 - bh) * 0.5f, iy0, std::max(iy0, iy1 - bh));
+  // … and clear of the blocks there (the nearest free spot: the group grows where there is none inside), so no push
+  // pulls the arrangement apart.
+  {
+    float minY = !patch_.scoped ? patch_.bands[g.band].y + metrics::kTitle : -1e9f;
+    for (uint32_t c = gi; !patch_.scoped && c < patch_.nodes.size(); c = patch_.nodes[c].capsule) minY += patch_.nodes[c].fitT;
+    std::vector<doc::DeviceId> skip;
+    for (const Moved& m : moved) skip.push_back(m.d);
+    const graph::Point2 at = freeSpotRect(g.band * 65536u + std::min<uint32_t>(gi, 65534u), minY, {bx, by}, bw, bh, skip);
+    bx = at.x, by = at.y;
+  }
+  // The wires among them (a path's link between two of them is joined round them when they leave it: put back).
+  std::vector<doc::Wire> inner;
+  auto among = [&](doc::DeviceId d) {
+    return std::any_of(moved.begin(), moved.end(), [&](const Moved& m) { return m.d == d; });
+  };
+  for (const doc::Wire& w : doc::wiresOf(*ctx_.doc()))
+    if (!w.fromNoteSource() && !w.toMixer() && among(w.from) && among(w.to)) inner.push_back(w);
+  // One step: each into the group (a block of a path leaves it first), each applied to the scratch snapshot the next
+  // reads; then the wires among them that went.
+  std::vector<doc::Command> steps;
+  doc::Snapshot snap = ctx_.doc();
+  doc::ChangeSet cs;
+  auto step = [&](doc::ops::EditResult e) {
+    if (!e) {
+      (void)apply(e, "Into Group");
+      return false;
+    }
+    if (e->empty()) return true;
+    auto next = doc::apply(snap, e->command, cs);
+    if (!next) {
+      ctx_.setStatus("Into Group: " + next.error().message);
+      return false;
+    }
+    snap = *next;
+    steps.push_back(e->command);
+    return true;
+  };
+  for (const Moved& m : moved)
+    if (!step(doc::ops::setDeviceGroup(*snap, ctx_.store().ids(), ctx_.deviceLibrary(), m.d, group))) return false;
+  for (const doc::Wire& w : inner) {
+    const doc::WireList& now = doc::wiresOf(*snap);
+    if (std::none_of(now.begin(), now.end(), [&](const doc::Wire& x) {
+          return x.from == w.from && x.port == w.port && x.to == w.to && x.param == w.param;
+        }))
+      if (!step(doc::ops::connectWire(*snap, ctx_.store().ids(), w.from, w.port, w.to, w.param))) return false;
+  }
+  settleHeld_ = true;
+  if (!dispatchSteps("Into Group", std::move(steps))) {
+    settleHeld_ = false;
+    return false;
+  }
+  sync();
+  // Each at its place in the group (its own units: Node::frameScale) and its size there, the box's arrangement kept.
+  auto& nudges = ctx_.store().view().patchNudges;
+  const float ox = metrics::kCapsulePad, oy = metrics::kCapsuleTitle + metrics::kCapsulePad;
+  for (const Moved& m : moved) {
+    const uint32_t n = patch_.nodeOf(m.d);
+    if (n == kNone || patch_.nodes[n].device != m.d || patch_.nodes[n].capsule == kNone) continue;
+    const Node& nd = patch_.nodes[n];
+    const Node& cap = patch_.nodes[nd.capsule];
+    const float k = nd.frameScale > 0.0f ? nd.frameScale : 1.0f;
+    const float tx = bx + (m.x - sx0) * f, ty = by + (m.y - sy0) * f;  // world
+    doc::PatchNudge& nu = nudges[m.d.value];
+    nu.placeIn = cap.device.value;
+    nu.dx = std::round((ox + (tx - cap.frameX0 - ox) / k) * 100.0f) / 100.0f;
+    nu.dy = std::round((oy + (ty - cap.frameY0 - oy) / k) * 100.0f) / 100.0f;
+    nu.scale = std::clamp(m.scale * f / k, doc::kMinPatchScale, doc::kMaxPatchScale);
+    if (std::fabs(nu.scale - 1.0f) < 1e-4f) nu.scale = 1.0f;
+    moved_.push_back(m.d.value);  // (they give way most to the members there)
+  }
+  ctx_.viewStateChanged();
+  relayout();
+  settleHeld_ = false;
+  (void)settleOverlaps();
+  ctx_.setStatus(moved.size() == 1 ? std::string("Into the group") : "Into the group: " + std::to_string(moved.size()) + " blocks");
+  return true;
+}
+
 // ---- GU.2: copy / paste of blocks, group presets ------------------------------------------------------------------
 
 bool ProjectPatchView::copyBlocks(std::span<const doc::DeviceId> devices) {
@@ -2006,12 +2156,61 @@ void ProjectPatchView::cancelValueGesture() {
 
 void ProjectPatchView::nudge(uint32_t entity, float dx, float dy) { nudge(std::span<const uint32_t>(&entity, 1), dx, dy); }
 
-void ProjectPatchView::nudge(std::span<const uint32_t> entities, float dx, float dy) {
-  if ((dx == 0.0f && dy == 0.0f) || entities.empty()) return;
-  for (const uint32_t entity : entities) {
-    doc::PatchNudge& n = ctx_.store().view().patchNudges[entity];
+void ProjectPatchView::commitPlaces() {
+  if (pendingPlaces_.empty()) return;
+  auto& nudges = ctx_.store().view().patchNudges;
+  for (const ModelCache::Placed& pl : pendingPlaces_) {
+    doc::PatchNudge& nu = nudges[pl.device];
+    if (pl.pin) {  // a group's slot: its chain pins' row and its size
+      if (nu.pinTop == 0.0f) nu.pinTop = pl.x, nu.slotW = pl.w, nu.slotH = pl.h;
+      continue;
+    }
+    if (nu.placeIn == pl.group) continue;  // (another view stored it first)
+    nu.placeIn = pl.group;
+    nu.dx = pl.x;
+    nu.dy = pl.y;
+  }
+  pendingPlaces_.clear();
+}
+
+bool ProjectPatchView::holdFrame(doc::DeviceId group, graph::Point2 topLeft) {
+  const uint32_t n = patch_.nodeOf(group);
+  if (n == kNone || patch_.nodes[n].device != group) return false;
+  const float dx = topLeft.x - patch_.nodes[n].x, dy = topLeft.y - patch_.nodes[n].y;
+  if (std::fabs(dx) < 0.5f && std::fabs(dy) < 0.5f) return false;
+  commitPlaces();
+  const float unit = placeUnit(group.value);
+  addPlace(ctx_.store().view().patchNudges[group.value], dx, dy, unit);
+  ctx_.viewStateChanged();
+  relayout();
+  return true;
+}
+
+float ProjectPatchView::placeUnit(uint32_t entity) const noexcept {
+  for (const Node& n : patch_.nodes)
+    if (n.kind == NodeKind::Device && n.device.value == entity) return n.frameScale > 0.0f ? n.frameScale : 1.0f;
+  return 1.0f;
+}
+
+void ProjectPatchView::addPlace(doc::PatchNudge& n, float dx, float dy, float unit) {
+  // A world move: in the block's group's units (BR.H: a member's place scales with its group); whole units at 1, else
+  // hundredths (a place in a small group still lands where it was dropped).
+  if (unit == 1.0f) {
     n.dx = std::round(n.dx + dx);
     n.dy = std::round(n.dy + dy);
+    return;
+  }
+  n.dx = std::round((n.dx + dx / unit) * 100.0f) / 100.0f;
+  n.dy = std::round((n.dy + dy / unit) * 100.0f) / 100.0f;
+}
+
+void ProjectPatchView::nudge(std::span<const uint32_t> entities, float dx, float dy) {
+  if ((dx == 0.0f && dy == 0.0f) || entities.empty()) return;
+  commitPlaces();  // BR.H: a move is from where the blocks are shown
+  for (const uint32_t entity : entities) {
+    const float unit = placeUnit(entity);
+    doc::PatchNudge& n = ctx_.store().view().patchNudges[entity];
+    addPlace(n, dx, dy, unit);
     if (n.empty()) ctx_.store().view().patchNudges.erase(entity);  // TX.resize: a scaled block keeps its entry
     moved_.push_back(entity);  // TX.block-drag: it gives way most if it now overlaps a block
   }
@@ -2042,6 +2241,7 @@ bool ProjectPatchView::keepPlaces(const std::vector<Place>& before) {
   std::unordered_map<uint32_t, graph::Point2> was;
   was.reserve(before.size());
   for (const Place& p : before) was.emplace(p.device, graph::Point2{p.x, p.y});
+  commitPlaces();  // BR.H
   auto& nudges = ctx_.store().view().patchNudges;
   bool moved = false;
   for (const Place& now : places()) {
@@ -2049,9 +2249,9 @@ bool ProjectPatchView::keepPlaces(const std::vector<Place>& before) {
     if (it == was.end()) continue;
     const float dx = it->second.x - now.x, dy = it->second.y - now.y;
     if (std::fabs(dx) < 0.5f && std::fabs(dy) < 0.5f) continue;
+    const float unit = placeUnit(now.device);
     doc::PatchNudge& n = nudges[now.device];
-    n.dx = std::round(n.dx + dx);
-    n.dy = std::round(n.dy + dy);
+    addPlace(n, dx, dy, unit);
     if (n.empty()) nudges.erase(now.device);
     moved = true;
   }
@@ -2069,8 +2269,11 @@ void ProjectPatchView::resetLayout() {
   auto& nudges = ctx_.store().view().patchNudges;
   bool changed = false;
   for (auto it = nudges.begin(); it != nudges.end();) {
-    if (it->second.dx != 0.0f || it->second.dy != 0.0f || it->second.mixerPlaced) changed = true;
+    if (it->second.dx != 0.0f || it->second.dy != 0.0f || it->second.mixerPlaced || it->second.placeIn != 0) changed = true;
     it->second.dx = it->second.dy = 0.0f;
+    it->second.placeIn = 0;  // BR.H: a group's members where its layouter puts them
+    if (it->second.pinTop != 0.0f) changed = true;
+    it->second.pinTop = it->second.slotW = it->second.slotH = 0.0f;
     it->second.mixerPlaced = false;  // TX.mixer-look: back to the band's top right
     it->second.mixerX = it->second.mixerY = 0.0f;
     it = it->second.empty() ? nudges.erase(it) : std::next(it);
@@ -2360,12 +2563,13 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
       const auto it = nudges.find(d.value);
       if (it == nudges.end()) return;
       it->second.dx = it->second.dy = 0.0f;  // TX.resize: its size stays
+      it->second.placeIn = 0;                 // BR.H: in a group: where its layouter puts it
       if (it->second.empty()) nudges.erase(it);
       ctx_.viewStateChanged();
       stale_ = true;
       sync();
     });
-    reset.enabled = own != nudges0.end() && (own->second.dx != 0.0f || own->second.dy != 0.0f);
+    reset.enabled = own != nudges0.end() && (own->second.dx != 0.0f || own->second.dy != 0.0f || own->second.placeIn != 0);
     items.push_back(std::move(reset));
     // TX.resize: S-drag scales a block; this (or S + double-click) gives it its own size again.
     ui::MenuItem size = ui::MenuItem::item("Reset Size", [this, d] { (void)setBlockScale(d, 1.0f); });

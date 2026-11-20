@@ -424,6 +424,8 @@ private:
   doc::DeviceId resizeDevice_;
   doc::TrackId resizeTrack_;  // TL.4: a mixer face resized (its track; resizeDevice_ invalid)
   float resizeK0_ = 1.0f, resizeW0_ = 0.0f, resizeH0_ = 0.0f;
+  bool resizeFrame_ = false;               // BR.H: an opened group's frame (its top-left held: holdFrame)
+  float resizeX0_ = 0.0f, resizeY0_ = 0.0f;  // … where it was at the press
   // DT.3: the block whose edge is dragged, which edge, its face's width, its scale, its right edge (world) and its nudge
   // at the press.
   doc::DeviceId stretchDevice_;
@@ -897,6 +899,16 @@ public:
   // stretched): every block of `before` still there back where it was relative to its holder, through its nudge (whole
   // units; view state), one re-layout (no overlap check in it). True: some moved back.
   bool keepPlaces(const std::vector<Place>& before);
+  // BR.H: how many world units one unit of block `entity`'s stored place is (Node::frameScale; 1 for a band or a block
+  // outside any group), and a world move added to a stored place in those units.
+  float placeUnit(uint32_t entity) const noexcept;
+  // BR.H: the last build's places of group members that have none stored (pendingPlaces_) into the store — on a
+  // document change, before a move or a push: from then on they stay where they are shown.
+  void commitPlaces();
+  // BR.H: opened group `group`'s frame moved (its own place) so its top-left is at world `topLeft` again (an S-resize
+  // holds it there); re-laid out. False: it is there (within half a unit) or not shown.
+  bool holdFrame(doc::DeviceId group, graph::Point2 topLeft);
+  static void addPlace(doc::PatchNudge& n, float dx, float dy, float unit);
   // Where a block placed at world point `at` goes: its track, the capsule (innermost opened one under it; the group
   // panel's group) and the band. False: no track to place it on.
   bool placeTarget(graph::Point2 at, doc::TrackId& track, doc::DeviceId& group, uint32_t& band) const;
@@ -958,6 +970,14 @@ public:
   bool ungroupSelection();  // Ctrl+Shift+G: the selected groups (or the groups of the selected members)
   // A device into a group (invalid: out of its group; a device of the series leaves it first): one undo step.
   bool setDeviceGroup(doc::DeviceId device, doc::DeviceId group);
+  // BR.H (user 2026-11-20: "highlighting a few modules and trying to put them into the instrument group should shrink
+  // them down and try to fit them in"): blocks dropped into opened group `group` (world move dx, dy: where the drag
+  // left them) join it — one undo step — keeping their arrangement, scaled by one factor so they fit the group's inner
+  // area (its members' room: the frame less its margins), centred where they were dropped as far as that fits; never
+  // below kFitMinScale (the group grows to hold them then) nor above their own size. Their cables to blocks outside
+  // become crossings of its frame, as any cable into a group. False + the reason in the status line when refused.
+  bool moveIntoGroup(std::span<const doc::DeviceId> devices, doc::DeviceId group, float dx, float dy);
+  static constexpr float kFitMinScale = 0.5f;  // BR.H: of a dropped block's size before (Q?-BR.H-a)
   // ---- GU.2: copy / paste of blocks (doc::ops::copyBlocks / pasteBlocks; ViewContext::blockClipboard) and group
   // presets. Ctrl+C copies the selected blocks (a group with everything inside it) and the wires among them; Ctrl+V
   // pastes a fresh copy at the pointer — into the innermost opened capsule under it (or the group panel's group), else
@@ -1164,6 +1184,7 @@ private:
   std::shared_ptr<const doc::LoweredProject> lowered_;  // ours, or (PF.2) the playback link's of the same snapshot
   const doc::DeviceLibrary* loweredWith_ = nullptr;
   ModelCache layoutCache_;  // PF.2
+  std::vector<ModelCache::Placed> pendingPlaces_;  // BR.H: commitPlaces
   bool rebuildDeferred_ = false;  // BR.B: a rebuild was asked for during the canvas's paint (onFrame does it)
   ProjectPatch patch_;
   ProjectScene scene_;
@@ -1291,6 +1312,7 @@ private:
       uint32_t level = 0;                // TX.block-drag: bodies meet only within one level (a band's, a capsule's)
       bool movable = true;
       doc::PatchNudge base;              // its nudge when the push began
+      float unit = 1.0f;                 // BR.H: Node::frameScale (its place's units)
     };
     std::vector<Body> bodies;
     double last = -1.0;  // frame time of the last step
@@ -1325,6 +1347,8 @@ private:
   // place and each body's four sides (a nearest free point lies on a body's edge, or at a corner of two): O(n²) places
   // checked nearest first, O(n) each, once per spawn.
   graph::Point2 freeSpotFor(uint32_t node) const;
+  // BR.H: the same for a w × h box at `at` (its top-left) among level `level`'s bodies (none of `skip`), not above `minY`.
+  graph::Point2 freeSpotRect(uint32_t level, float minY, graph::Point2 at, float w, float h, std::span<const doc::DeviceId> skip) const;
   // bug-spawn-resize: a block just added (`device`, before the edit that adds it is dispatched): its scale for the zoom
   // now (spawnScale; view state, no re-layout here).
   void setSpawnScale(doc::DeviceId device);

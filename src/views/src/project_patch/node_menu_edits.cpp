@@ -317,9 +317,12 @@ void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::stri
     const graph::Point2 pin = outPortPoint(nd, static_cast<size_t>(o));
     dx = at.x - pin.x, dy = at.y - pin.y;
   }
-  // Never above its band's title strip (the band grows down and right to hold it, never up).
+  // Never above its band's title strip (the band grows down and right to hold it, never up). BR.H: inside groups, low
+  // enough that their frames (which fit it with their margins) stay under it too: else the wall pushed the whole group
+  // (every block in it) down.
   if (nd.band < patch_.bands.size()) {
-    const float top = patch_.bands[nd.band].y + metrics::kTitle;
+    float top = patch_.bands[nd.band].y + metrics::kTitle;
+    for (uint32_t c = nd.capsule; c < patch_.nodes.size(); c = patch_.nodes[c].capsule) top += patch_.nodes[c].fitT;
     if (nd.y + dy < top) dy = top - nd.y;
   }
   const bool orbiting = nd.orbitIn.on || nd.orbitOut.on;
@@ -352,17 +355,23 @@ graph::Point2 ProjectPatchView::freeSpotFor(uint32_t node) const {
   const Node& nd = patch_.nodes[node];
   const graph::Point2 at{nd.x, nd.y};
   if (nd.band >= patch_.bands.size()) return at;
+  const uint32_t level = nd.band * 65536u + (nd.capsule == kNone ? 65535u : std::min<uint32_t>(nd.capsule, 65534u));
+  float minY = !patch_.scoped ? patch_.bands[nd.band].y + metrics::kTitle : -1e9f;
+  for (uint32_t c = nd.capsule; !patch_.scoped && c < patch_.nodes.size(); c = patch_.nodes[c].capsule) minY += patch_.nodes[c].fitT;  // BR.H
+  const doc::DeviceId self[] = {nd.device};
+  return freeSpotRect(level, minY, at, nd.w, nd.h, self);
+}
+
+graph::Point2 ProjectPatchView::freeSpotRect(uint32_t level, float minY, graph::Point2 at, float w, float h,
+                                             std::span<const doc::DeviceId> skip) const {
   std::vector<Push::Body> all;
   collectBodies(all, false);
-  const uint32_t level = nd.band * 65536u + (nd.capsule == kNone ? 65535u : std::min<uint32_t>(nd.capsule, 65534u));
-  const float minY = nd.capsule == kNone && !patch_.scoped ? patch_.bands[nd.band].y + metrics::kTitle : -1e9f;
   struct Rect {
     float x, y, w, h;
   };
   std::vector<Rect> others;
   for (const Push::Body& b : all)
-    if (b.level == level && !(b.device.valid() && b.device == nd.device)) others.push_back({b.x, b.y, b.w, b.h});
-  const float w = nd.w, h = nd.h;
+    if (b.level == level && !(b.device.valid() && std::find(skip.begin(), skip.end(), b.device) != skip.end())) others.push_back({b.x, b.y, b.w, b.h});
   auto clear = [&](float x, float y) {
     if (y < minY - 0.5f) return false;
     for (const Rect& o : others)
@@ -437,6 +446,7 @@ void ProjectPatchView::collectBodies(std::vector<Push::Body>& out, bool onlyOver
       // A resized one holds its place: only what it comes to overlap makes room (bug-spawn-resize; ×4 before).
       if (listed(resized_, n.device.value)) b.mass *= kResizedMass;
       if (const auto it = nudges.find(n.device.value); it != nudges.end()) b.base = it->second;
+      b.unit = n.frameScale > 0.0f ? n.frameScale : 1.0f;
     } else {
       b.mass = 0.0f;
     }
@@ -500,6 +510,10 @@ bool ProjectPatchView::startPush() {
   std::vector<Push::Body> bs;
   collectBodies(bs, true);
   if (bs.empty()) return false;
+  if (!pendingPlaces_.empty()) {  // BR.H: a push moves blocks from where they are shown (their places stored first)
+    commitPlaces();
+    collectBodies(bs, true);
+  }
   // Where they end: overlapping pairs (their rects share area: closer than kPushDetect) are separated to kPushGap along
   // their axis of least overlap - shared by mass between two blocks, all of it on the block against a standing body -
   // until none overlaps (the band's title strip is a wall: a pair it blocks vertically separates sideways). Each pass
@@ -616,8 +630,9 @@ void ProjectPatchView::applyPush() {
     // Only its place: the rest of its entry as it is now (bug-spawn-resize: a scale set while the push glides — a
     // resize, the next block's — was put back to the push's start).
     doc::PatchNudge n = now;
-    n.dx = std::round(b.base.dx + b.dx);
-    n.dy = std::round(b.base.dy + b.dy);
+    n.dx = b.base.dx;
+    n.dy = b.base.dy;
+    addPlace(n, b.dx, b.dy, b.unit);  // BR.H: in its group's units
     if (now == n) continue;
     changed = true;
     if (n.empty()) nudges.erase(b.device.value);

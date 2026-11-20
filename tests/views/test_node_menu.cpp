@@ -2257,3 +2257,331 @@ TEST_CASE("BR.B: connecting blocks inside an opened instrument group moves none 
   CHECK_FALSE(u.wired(env, envOut, vca, vcaIn));
   checkPlaces(u, was, "undone");
 }
+
+// ---- BR.H: group layout ----------------------------------------------------------------------------------------------
+
+namespace {
+
+// The opened instrument group's direct members (device ids).
+std::vector<doc::DeviceId> membersOf(const Ui& u) {
+  std::vector<doc::DeviceId> out;
+  for (const doc::DevicePtr& d : doc::findTrackPtr(*u.ctx.doc(), u.keys)->devices)
+    if (d->group == u.synth) out.push_back(d->id);
+  return out;
+}
+
+// Each block's place in the instrument group: from its capsule's origin (the slot its band gives it; the overlap rule
+// may push the whole group a little when its frame grows into a neighbour — every block in it with it).
+std::vector<std::pair<uint32_t, graph::Point2>> placesInFrame(const Ui& u) {
+  std::vector<std::pair<uint32_t, graph::Point2>> out;
+  const Node& cap = u.pp().nodes[u.node(u.synth)];
+  for (const doc::DevicePtr& d : doc::findTrackPtr(*u.ctx.doc(), u.keys)->devices)
+    if (d->group == u.synth) {
+      const Node& n = u.pp().nodes[u.node(d->id)];
+      out.push_back({d->id.value, {n.x - cap.frameX0, n.y - cap.frameY0}});
+    }
+  return out;
+}
+
+void checkPlacesInFrame(const Ui& u, const std::vector<std::pair<uint32_t, graph::Point2>>& was, const std::string& when) {
+  const auto now = placesInFrame(u);
+  for (const auto& [id, p] : was)
+    for (const auto& [id2, q] : now)
+      if (id2 == id) {
+        CHECK_MESSAGE(std::fabs(q.x - p.x) < 0.5f, when << ": block " << id << " x " << q.x << " was " << p.x);
+        CHECK_MESSAGE(std::fabs(q.y - p.y) < 0.5f, when << ": block " << id << " y " << q.y << " was " << p.y);
+      }
+}
+
+// The frame fits the group's blocks (their box and its margins) wherever their places put them.
+void checkFrameFits(const Ui& u, const std::string& when) {
+  const Node& cap = u.pp().nodes[u.node(u.synth)];
+  float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+  for (const uint32_t k : cap.members) {
+    const Node& m = u.pp().nodes[k];
+    x0 = std::min(x0, m.x), y0 = std::min(y0, m.y), x1 = std::max(x1, m.x + m.w), y1 = std::max(y1, m.y + m.h);
+  }
+  INFO(when << ": frame " << cap.x << "," << cap.y << " " << cap.w << "x" << cap.h << "; blocks " << x0 << "," << y0 << " - " << x1 << "," << y1);
+  CHECK(std::fabs(cap.x - (x0 - cap.fitL)) < 0.5f);
+  CHECK(std::fabs(cap.y - (y0 - cap.fitT)) < 0.5f);
+  CHECK(std::fabs(cap.x + cap.w - (x1 + cap.fitR)) < 0.5f);
+  CHECK(std::fabs(cap.y + cap.h - (y1 + cap.fitB)) < 0.5f);
+  CHECK(cap.fitL < 200.0f);  // (margins: its terminals' room and pads, never a slot left empty)
+  CHECK(cap.fitR < 200.0f);
+  CHECK(cap.fitB < 200.0f);
+}
+
+}  // namespace
+
+// BR.H (user 2026-11-20: "instruments seem to still resize like crazy sometimes when adding modules in, or connecting
+// cables; it'll suddenly expand massively to 30x the size of the instrument group and throw the modules all over the
+// place"). The Device view shows the same instrument group (a second, scoped patch view of it), as the user had it.
+// Causes: (1) BR.B's drift (a re-layout's moves written back into the shared nudges) was applied by EVERY view laying
+// the group out — the Device view's group panel added the same correction again, so each cable inside threw the blocks
+// by the layouter's move; (2) a re-layout for any other reason (a block added or removed, a size changed) kept the old
+// nudges as offsets from new slots; (3) the frame was the union of the layouter's slot and the nudged blocks, so it held
+// the empty slot too and only grew. Now a block in a group has a PLACE there (view state) that no layouter run moves,
+// and the frame fits the blocks: random adds and cables (real dispatch) never move a block that was there.
+TEST_CASE("BR.H: blocks added to an opened instrument group and cables connected in it (its group panel shown in the "
+          "Device view too) move none of the blocks there; the frame fits them — real dispatch sweep") {
+  Ui u;
+  u.ctx.setSelectedTrack(u.keys);
+  u.ctx.setDetailVisible(true);
+  u.ctx.setDetailMode(DetailMode::Device);
+  u.d.tree().layoutNow();
+  u.d.step();
+  u.d.tree().setFocus(&u.view().canvas());
+  uint32_t rng = 0x2545F491u;
+  auto rnd = [&](uint32_t n) {
+    rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5;
+    return rng % n;
+  };
+  const std::pair<const char*, const char*> spawns[] = {{"enve", "module:envelope"}, {"vca", "module:vca"}, {"enve", "module:envelope"}, {"vca", "module:vca"}};
+  int cables = 0;
+  for (const auto& [query, key] : spawns) {
+    frameCapsule(u);
+    const auto before = placesInFrame(u);
+    const graph::Point2 slot0{u.pp().nodes[u.node(u.synth)].frameX0, u.pp().nodes[u.node(u.synth)].frameY0};
+    const doc::DeviceId added = tabInside(u, query, key);
+    checkPlacesInFrame(u, before, std::string("added ") + key);
+    {
+      const Node& cap = u.pp().nodes[u.node(u.synth)];
+      CHECK(std::fabs(cap.frameX0 - slot0.x) < 8.0f);  // (the group itself pushed a little at most)
+      CHECK(std::fabs(cap.frameY0 - slot0.y) < 8.0f);
+    }
+    checkFrameFits(u, std::string("added ") + key);
+    // Cables among its blocks (an output onto another block's main input), and one out to a block outside it.
+    for (int c = 0; c < 3; ++c) {
+      frameCapsule(u);
+      const std::vector<doc::DeviceId> ms = membersOf(u);
+      REQUIRE(ms.size() >= 2);
+      const doc::DeviceId a = c == 0 ? added : ms[rnd(static_cast<uint32_t>(ms.size()))];
+      doc::DeviceId b = ms[rnd(static_cast<uint32_t>(ms.size()))];
+      if (b == a) b = ms[static_cast<size_t>(std::find(ms.begin(), ms.end(), a) - ms.begin() + 1) % ms.size()];
+      const bool outside = c == 2;
+      const uint32_t an = u.node(a), bn = u.node(outside ? u.util : b);
+      const Node& bnode = u.pp().nodes[bn];
+      if (u.pp().nodes[an].outputs.empty() || bnode.inputs.empty()) continue;
+      const uint32_t port = outside ? static_cast<uint32_t>(std::max(0, bnode.input("g"))) : static_cast<uint32_t>(std::max(0, bnode.mainIn));
+      const Vec2 from = u.dev(u.view().canvas().portWorld(an, 0, false));
+      const Vec2 to = u.dev(u.view().canvas().portWorld(bn, port, true));
+      if (!u.view().canvas().rect().contains(from) || !u.view().canvas().rect().contains(to)) continue;
+      if (const ProjectCanvas::PinHit ph = u.view().canvas().pinAt(from); !ph.valid() || ph.input) continue;  // (covered)
+      const auto was = placesInFrame(u);
+      const graph::Point2 slot1{u.pp().nodes[u.node(u.synth)].frameX0, u.pp().nodes[u.node(u.synth)].frameY0};
+      const size_t h0 = u.history();
+      // (dragCable, but a press that does not start a cable — a port that slides — is let go and skipped)
+      u.d.move(from);
+      u.d.down(from);
+      for (int k = 1; k <= 4; ++k) u.d.move({from.x + 12.0f * static_cast<float>(k), from.y});
+      if (u.view().canvas().drag() != ProjectCanvas::Drag::Wire) {
+        u.d.press("Escape");
+        u.d.up({from.x + 48.0f, from.y});
+        u.d.step();
+        continue;
+      }
+      for (int k = 1; k <= 8; ++k) {
+        const float t = static_cast<float>(k) / 8.0f;
+        u.d.move({from.x + 48.0f + (to.x - from.x - 48.0f) * t, from.y + (to.y - from.y) * t});
+      }
+      u.d.up(to);
+      u.d.step();
+      if (u.menu() != nullptr) u.d.press("Escape");  // (a drop the cable missed: nothing placed)
+      u.d.step();
+      u.view().sync();
+      cables += u.history() > h0 ? 1 : 0;
+      const std::string when = std::string("cable ") + std::to_string(c) + " after " + key;
+      checkPlacesInFrame(u, was, when);
+      checkFrameFits(u, when);
+      const Node& cap = u.pp().nodes[u.node(u.synth)];
+      CHECK(std::fabs(cap.frameX0 - slot1.x) < 8.0f);
+      CHECK(std::fabs(cap.frameY0 - slot1.y) < 8.0f);
+      CHECK(cap.w < 4000.0f);
+      CHECK(cap.h < 4000.0f);
+    }
+  }
+  MESSAGE(cables << " cables connected");
+  CHECK(cables >= 6);
+  // Closed and opened again: the same places in it.
+  const auto was = placesInFrame(u);
+  u.view().setGroupOpen(u.synth, false);
+  u.d.step();
+  u.view().setGroupOpen(u.synth, true);
+  u.d.step();
+  u.view().sync();
+  checkPlacesInFrame(u, was, "reopened");
+}
+
+// BR.H (bug_reports/2026-11-20_06-28-24: "resizing groups changes the position of the modules in it dramatically while
+// adjusting the size; relative position of the modules to the actual group containing it should be constant so they
+// all grow and shrink together as one unit"): its blocks' nudges did not scale with the group (only the layouter's
+// slots did), and the frame held its slot as well. Now every block's place is in the group's own units: through the
+// whole S-drag each block's offset from the frame's top-left and its size are the factor times their own, and the
+// frame's top-left stays — real dispatch, S held, every step checked.
+TEST_CASE("BR.H: S-drag on an opened instrument group scales its frame and every block in it as one unit (a block moved "
+          "away from the layouter's place too), at every step of the drag; Esc restores — real dispatch") {
+  Ui u;
+  const doc::DeviceId env = tabInside(u, "enve", "module:envelope");
+  frameCapsule(u);
+  // The Envelope dragged well away (down-right) inside the group: a place the layouter never gave.
+  {
+    const Node& e = u.pp().nodes[u.node(env)];
+    const Vec2 a = u.dev({e.x + 6.0f, e.y + 6.0f});
+    u.d.move(a);
+    u.d.down(a);
+    for (int k = 1; k <= 6; ++k) u.d.move({a.x + 30.0f * static_cast<float>(k), a.y + 22.0f * static_cast<float>(k)});
+    u.d.up({a.x + 180.0f, a.y + 132.0f});
+    u.d.step();
+    u.view().sync();
+  }
+  frameCapsule(u);
+  const std::vector<doc::DeviceId> ms = membersOf(u);
+  REQUIRE(ms.size() >= 3);
+  struct Rel {
+    float x, y, w, h;
+  };
+  auto rels = [&] {
+    const Node& cap = u.pp().nodes[u.node(u.synth)];
+    std::vector<Rel> out;
+    for (const doc::DeviceId d : ms) {
+      const Node& m = u.pp().nodes[u.node(d)];
+      out.push_back({m.x - cap.x, m.y - cap.y, m.w, m.h});
+    }
+    return out;
+  };
+  const std::vector<Rel> r0 = rels();
+  const Node cap0 = u.pp().nodes[u.node(u.synth)];
+  ProjectCanvas& cv = u.view().canvas();
+  // A point on the frame (inside it, on none of its blocks, pins or cables).
+  Vec2 p{};
+  bool found = false;
+  for (float y = cap0.y + 4.0f; y < cap0.y + cap0.h && !found; y += 3.0f)
+    for (float x = cap0.x + 4.0f; x < cap0.x + cap0.w && !found; x += 3.0f)
+      if (const Vec2 q = u.dev({x, y}); cv.nodeAt(q) == u.node(u.synth) && !cv.pinAt(q).valid() && cv.edgeAt(q) == kNone) p = q, found = true;
+  REQUIRE(found);
+  const size_t h0 = u.history();
+  u.d.keyDown('s');
+  u.d.move(p);
+  u.d.down(p);
+  REQUIRE(cv.drag() == ProjectCanvas::Drag::Resize);
+  const float z = cv.deviceScale();
+  // Up-left (smaller), then down-right (larger than at the press): every block by the factor of that step.
+  const Vec2 path[] = {{-0.1f, -0.1f}, {-0.2f, -0.2f}, {-0.3f, -0.3f}, {-0.15f, -0.15f}, {0.1f, 0.1f}, {0.3f, 0.3f}};
+  for (const Vec2& t : path) {
+    u.d.move({p.x + t.x * cap0.w * z, p.y + t.y * cap0.h * z});
+    const float k = u.view().blockScale(u.synth);
+    const Node& cap = u.pp().nodes[u.node(u.synth)];
+    INFO("step " << t.x << ": factor " << k);
+    CHECK(std::fabs(cap.x - cap0.x) <= 0.5f);  // the frame's top-left stays (whole units)
+    CHECK(std::fabs(cap.y - cap0.y) <= 0.5f);
+    const std::vector<Rel> r = rels();
+    for (size_t i = 0; i < r.size(); ++i) {
+      INFO("block " << ms[i].value);
+      CHECK(r[i].w == doctest::Approx(r0[i].w * k).epsilon(0.01));
+      CHECK(r[i].h == doctest::Approx(r0[i].h * k).epsilon(0.01));
+      // Its offset from the frame's top-left: the margins' pad and title strip stay, the rest scales.
+      CHECK(std::fabs((r[i].x - cap.fitL) - (r0[i].x - cap0.fitL) * k) < 1.0f);
+      CHECK(std::fabs((r[i].y - cap.fitT) - (r0[i].y - cap0.fitT) * k) < 1.0f);
+    }
+  }
+  CHECK(u.view().blockScale(u.synth) > 1.0f);
+  // Esc: the factor and every place as at the press.
+  u.d.press("Escape");
+  u.d.up(p);
+  u.d.keyUp('s');
+  u.d.step();
+  CHECK(u.view().blockScale(u.synth) == 1.0f);
+  const std::vector<Rel> r1 = rels();
+  for (size_t i = 0; i < r1.size(); ++i) {
+    CHECK(std::fabs(r1[i].x - r0[i].x) < 0.5f);
+    CHECK(std::fabs(r1[i].y - r0[i].y) < 0.5f);
+  }
+  CHECK(std::fabs(u.pp().nodes[u.node(u.synth)].x - cap0.x) <= 0.5f);
+  CHECK(u.history() == h0);  // (view state: no undo step, as TX.group-resize decided)
+}
+
+// BR.H (user 2026-11-20: "highlighting a few modules and trying to put them into the instrument group should shrink them
+// down and try to fit them in, so one can turn effects or small groups of effects into a polyphonic thing"): a selection
+// of blocks dragged into an opened instrument group joins it — one undo step — its arrangement and the wire between them
+// kept, shrunk by one factor to fit the group's inner area; a cable from outside into one of them crosses the frame;
+// undo puts them back — real dispatch.
+TEST_CASE("BR.H: a selection dragged into an opened instrument group joins it shrunk to fit, its arrangement and wires "
+          "kept, one undo step — real dispatch") {
+  Ui u;
+  // The two blocks after the group on the Keys path, large (3x) and far apart: they cannot fit as they are.
+  REQUIRE(u.view().setBlockScale(u.util, 3.0f));
+  REQUIRE(u.view().setBlockScale(u.sat, 3.0f));
+  u.view().nudge(u.sat.value, 900.0f, 0.0f);
+  u.view().sync();
+  const doc::Snapshot before = u.ctx.doc();
+  const Node u0 = u.pp().nodes[u.node(u.util)], s0 = u.pp().nodes[u.node(u.sat)];
+  const Node cap0 = u.pp().nodes[u.node(u.synth)];
+  // Framed: the group and both blocks.
+  {
+    const ui::IRect r = u.view().canvas().rect();
+    const float x0 = cap0.x - 40.0f, x1 = s0.x + s0.w + 40.0f;
+    const float y0 = std::min({cap0.y, u0.y, s0.y}) - 40.0f, y1 = std::max({cap0.y + cap0.h, u0.y + u0.h, s0.y + s0.h}) + 40.0f;
+    CircuitCanvas::View v;
+    v.zoom = std::min(static_cast<double>(r.w) / (x1 - x0), static_cast<double>(r.h) / (y1 - y0));
+    v.x = x0;
+    v.y = y0;
+    u.view().canvas().setView(v);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  // Both selected (a click, a Ctrl+click on their bodies), then the gain block dragged into the group's frame.
+  auto body = [&](doc::DeviceId d) {
+    const Node& n = u.pp().nodes[u.node(d)];
+    for (float fy = 0.5f; fy > 0.05f; fy -= 0.1f)
+      for (float fx = 0.5f; fx > 0.05f; fx -= 0.1f)
+        if (const Vec2 q = u.dev({n.x + n.w * fx, n.y + n.h * fy}); u.view().canvas().nodeAt(q) == u.node(d) && !u.view().canvas().pinAt(q).valid())
+          return q;
+    FAIL("no body point");
+    return Vec2{};
+  };
+  const Vec2 a = body(u.util), b = body(u.sat);
+  u.d.click(a);
+  u.d.click(b, ui::mod::kCtrl);
+  u.d.step();
+  REQUIRE(u.view().selectedDevices().size() == 2);
+  const Vec2 to = u.dev(insideCapsule(u));
+  const size_t h0 = u.history();
+  u.d.move(a);
+  u.d.down(a);
+  for (int k = 1; k <= 8; ++k) {
+    const float t = static_cast<float>(k) / 8.0f;
+    u.d.move({a.x + (to.x - a.x) * t, a.y + (to.y - a.y) * t});
+  }
+  u.d.up(to);
+  u.d.step();
+  u.view().sync();
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.device(u.util)->group == u.synth);
+  REQUIRE(u.device(u.sat)->group == u.synth);
+  // Shrunk by one factor (below 1: they did not fit), their arrangement kept.
+  const Node &u1 = u.pp().nodes[u.node(u.util)], &s1 = u.pp().nodes[u.node(u.sat)];
+  const float f = u1.w / u0.w;
+  MESSAGE("fitted at " << f);
+  CHECK(f < 0.999f);
+  CHECK(f >= ProjectPatchView::kFitMinScale - 0.01f);
+  CHECK(s1.w / s0.w == doctest::Approx(f).epsilon(0.01));
+  CHECK(std::fabs((s1.x - u1.x) - (s0.x - u0.x) * f) < 2.0f);
+  CHECK(std::fabs((s1.y - u1.y) - (s0.y - u0.y) * f) < 2.0f);
+  // Inside the frame (it fits them).
+  const Node& cap = u.pp().nodes[u.node(u.synth)];
+  for (const Node* n : {&u1, &s1}) {
+    CHECK(n->x >= cap.x);
+    CHECK(n->y >= cap.y + metrics::kCapsuleTitle);
+    CHECK(n->x + n->w <= cap.x + cap.w);
+    CHECK(n->y + n->h <= cap.y + cap.h);
+  }
+  // The wire between them kept; the LFO's (outside) into the gain block's g now crosses the frame.
+  CHECK(u.wired(u.lfo, "y", u.util, "g"));
+  bool between = false;
+  for (const doc::Wire& w : u.wires()) between = between || (w.from == u.util && w.to == u.sat);
+  CHECK(between);
+  CHECK(checkAgainstGraph(u.pp(), *u.ctx.doc(), *u.view().lowered()) == "");
+  // One undo step back.
+  REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc() == before);
+}

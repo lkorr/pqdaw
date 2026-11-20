@@ -1507,6 +1507,18 @@ private:
           w_.key("tuningWheel");
           w_.boolean(true);
         }
+        if (n.placeIn != 0) {  // BR.H: dx / dy are the block's place in this group
+          w_.key("in");
+          w_.integer(n.placeIn);
+        }
+        if (n.pinTop != 0.0f) {  // BR.H: a group's slot as its blocks got their places
+          w_.key("slot");
+          w_.beginArray(false);
+          w_.number(at, n.pinTop);
+          w_.number(at, n.slotW);
+          w_.number(at, n.slotH);
+          w_.endArray();
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -3744,7 +3756,7 @@ private:
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
           static constexpr std::string_view N[] = {"id", "dx", "dy", "scale", "pinIn", "pinOut", "mixerX", "mixerY", "laneH", "folded", "tuningOpen",
-                                                   "tuningWheel"};
+                                                   "tuningWheel", "in", "slot"};
           RawNudge e{0, {}, r_.pos()};
           bool mixerSeen[2] = {false, false};
           Members em(r_, el, N);
@@ -3778,6 +3790,21 @@ private:
             if (q == 9) e.nudge.folded = r_.readBool(f);  // TL.1 (optional)
             if (q == 10) e.nudge.tuningOpen = r_.readBool(f);  // BR.tuning-block (optional)
             if (q == 11) e.nudge.tuningWheel = r_.readBool(f);  // BR.tuning-outside (optional)
+            if (q == 12) e.nudge.placeIn = ref(f);  // BR.H (optional)
+            if (q == 13) {  // BR.H (optional): [pinTop, w, h]
+              float slot[3] = {0.0f, 0.0f, 0.0f};
+              size_t count = 0;
+              r_.beginArray(f);
+              for (size_t j = 0; r_.nextElement(f); ++j) {
+                const PathSeg vf(&f, j);
+                const float x = r_.readFloat(vf);
+                if (count < 3) slot[count] = x;
+                ++count;
+              }
+              if (count != 3 || !(slot[0] > 0.0f && slot[1] > 0.0f && slot[2] > 0.0f && slot[0] <= 1.0e6f && slot[1] <= 1.0e6f && slot[2] <= 1.0e6f))
+                r_.failValue(f, "a group's slot is [pin row, width, height], each within 0 … 1e6");
+              e.nudge.pinTop = slot[0], e.nudge.slotW = slot[1], e.nudge.slotH = slot[2];
+            }
           }
           em.require({0, 1, 2});
           if (mixerSeen[0] != mixerSeen[1]) r_.failValue(el, "a placed mixer needs both mixerX and mixerY");

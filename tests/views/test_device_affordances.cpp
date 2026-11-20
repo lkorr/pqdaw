@@ -120,7 +120,8 @@ using Ids = std::vector<doc::DeviceId>;
 TEST_CASE("device keys: the selection scrolls into view") {
   Ui u;
   DeviceChainView& v = u.view();
-  for (int k = 0; k < 6; ++k) u.run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "module:saturator", doc::DeviceKind::AudioEffect));
+  // (BR.H: 10, not 6 — the instrument group's panel shows its modules closed now, as the circuit does: narrower)
+  for (int k = 0; k < 10; ++k) u.run(doc::ops::addDevice(*u.ctx.doc(), u.ctx.store().ids(), u.keys, "module:saturator", doc::DeviceKind::AudioEffect));
   u.d.tree().layoutNow();
   const doc::DeviceId last = u.chain().back();
   const IRect vp = v.chainViewport();

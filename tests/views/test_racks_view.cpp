@@ -421,7 +421,9 @@ TEST_CASE("rack view: zone and reorder drags cancel on focus loss and Esc (M4 re
     if (k == 0) u.shell->cancelInteraction();
     else CHECK(u.d.keyDown(key::kEscape) == KeyResult::Widget);
     u.d.up(to);
-    u.d.click(to);
+    // (BR.H: the chain now fits its viewport — the instrument group's panel shows its modules closed — and `to` is on
+    // its Add placeholder: the later click goes on the rack's title, which selects and moves nothing)
+    u.d.click(u.title(u.rack));
     CHECK(u.ctx.doc() == before);
     CHECK(u.history() == h0);
   }

@@ -185,12 +185,24 @@ struct Builder {
     return it == derived->trackWires.end() ? none : it->second;
   }
   bool closedGroup(doc::DeviceId g) const noexcept {
-    return !opt.scope.valid() && std::find(opt.closedGroups.begin(), opt.closedGroups.end(), g) != opt.closedGroups.end();
+    // BR.H: a group panel (scope) shows the groups inside its group as the circuit does (closed ones closed): one place
+    // per block, the same sizes round it in every view (the scope group and those holding it stay opened).
+    if (opt.scope.valid() && within(opt.scope, g)) return false;
+    return std::find(opt.closedGroups.begin(), opt.closedGroups.end(), g) != opt.closedGroups.end();
   }
-  graph::Point2 nudgeOf(doc::DeviceId d) const noexcept {
-    if (opt.nudges == nullptr) return {0.0f, 0.0f};
-    const auto it = opt.nudges->find(d.value);
-    return it == opt.nudges->end() ? graph::Point2{0.0f, 0.0f} : graph::Point2{it->second.dx, it->second.dy};
+  const doc::PatchNudge* nudgeEntry(uint32_t id) const noexcept {
+    if (opt.nudges == nullptr) return nullptr;
+    const auto it = opt.nudges->find(id);
+    return it == opt.nudges->end() ? nullptr : &it->second;
+  }
+  // BR.H: block `d`'s stored place in group `g` (its own units, from the capsule's top-left), if it has one there.
+  std::optional<graph::Point2> placeIn(doc::DeviceId d, doc::DeviceId g) const noexcept {
+    const doc::PatchNudge* n = nudgeEntry(d.value);
+    if (n == nullptr || n->placeIn != g.value || !std::isfinite(n->dx) || !std::isfinite(n->dy)) return std::nullopt;
+    return graph::Point2{n->dx, n->dy};
+  }
+  void reportPlace(doc::DeviceId d, doc::DeviceId g, graph::Point2 at) const {
+    if (opt.layoutCache != nullptr) opt.layoutCache->placed.push_back({d.value, g.value, at.x, at.y});
   }
 
   const graph::PatchLibrary* library() const noexcept { return low.graph.library; }
@@ -312,19 +324,21 @@ struct Builder {
       if (c.node == node) cap = &c;
     if (cap == nullptr || cap->rel.empty()) return;
     const float ox = m::kCapsulePad, oy = m::kCapsuleTitle + m::kCapsulePad;
-    float x1 = 0.0f, y1 = 0.0f;
     for (auto& [kid, r] : cap->rel) {
       r = {ox + (r.x - ox) * k, oy + (r.y - oy) * k};
       Node& kn = out.nodes[kid];
+      kn.frameScale *= k;  // BR.H: its place is in its group's units
       if (kn.group && kn.groupOpen) scaleCapsule(kid, k);
       else if (!kn.expanded) scaleBy(kn, k);
-      x1 = std::max(x1, r.x + out.nodes[kid].w);
-      y1 = std::max(y1, r.y + out.nodes[kid].h);
     }
     Node& c = out.nodes[node];
-    c.w = roundUp4(std::max(x1 + m::kCapsulePad, 2.0f * m::kCapsulePad + 8.0f));
-    c.h = roundUp4(std::max(y1 + m::kCapsulePad, oy + m::kCapsulePad + 8.0f));
-    c.pinTop = cap->rel.front().second.y + pinOffset(out.nodes[cap->rel.front().first], 0, false);
+    // BR.H: its slot and the frame's margins as the contents' (the pad and the title strip stay; the frame fits the
+    // contents in layout()).
+    c.w = roundUp4(std::max(ox + (c.w - ox) * k, 2.0f * m::kCapsulePad + 8.0f));
+    c.h = roundUp4(std::max(oy + (c.h - oy) * k, oy + m::kCapsulePad + 8.0f));
+    c.fitL = ox + (c.fitL - ox) * k, c.fitT = oy + (c.fitT - oy) * k;
+    c.fitR = m::kCapsulePad + (c.fitR - m::kCapsulePad) * k, c.fitB = m::kCapsulePad + (c.fitB - m::kCapsulePad) * k;
+    c.pinTop = oy + (c.pinTop - oy) * k;  // (its row's offset scaled as the contents')
   }
 
   uint32_t addNode(Node n) {
@@ -659,35 +673,6 @@ struct Builder {
     const float ox = m::kCapsulePad - x0, oy = m::kCapsuleTitle + m::kCapsulePad - y0;
     rel.clear();
     for (size_t i = 0; i < n; ++i) rel.push_back({pos[i].x + ox, pos[i].y + oy});
-    // BR.B: laid out again only because the wires among its blocks changed (the same blocks at the same sizes; not the
-    // first layout of this opened group): each block keeps its place — the layouter's move of it goes into its nudge
-    // (ModelCache::drift; the view applies it and builds again). A block added (a spawn: keepPlaces holds the others) or
-    // one that changed size (a nested group opened or closed, a panel's size settling) lays the group out as before.
-    if (entry != nullptr) {
-      std::vector<uint32_t> ids(n, 0);
-      std::vector<graph::Point2> sizes(n);
-      for (size_t i = 0; i < n; ++i) sizes[i] = {out.nodes[kids[i]].w, out.nodes[kids[i]].h};
-      for (size_t i = 1; i + 1 < n; ++i) ids[i] = out.nodes[kids[i]].device.value;
-      if (!hit && !entry->ids.empty()) {
-        std::vector<std::pair<size_t, size_t>> kept;  // (now, before)
-        bool sameSizes = true;
-        for (size_t i = 1; i + 1 < n; ++i)
-          for (size_t j = 0; j < entry->ids.size() && j < entry->rel.size() && j < entry->sizes.size(); ++j)
-            if (entry->ids[j] == ids[i] && ids[i] != 0) {
-              sameSizes = sameSizes && entry->sizes[j].x == sizes[i].x && entry->sizes[j].y == sizes[i].y;
-              kept.push_back({i, j});
-              break;
-            }
-        if (sameSizes && kept.size() + 2 == n && entry->ids.size() == n)
-          for (const auto& [i, j] : kept) {
-            const float dx = entry->rel[j].x - rel[i].x, dy = entry->rel[j].y - rel[i].y;  // (exact: none piles up)
-            if (dx != 0.0f || dy != 0.0f) cache->drift.push_back({ids[i], dx, dy});
-          }
-      }
-      entry->ids = std::move(ids);
-      entry->sizes = std::move(sizes);
-      entry->rel = rel;
-    }
     c.w = roundUp4(std::max(x1 - x0 + 2.0f * m::kCapsulePad, 96.0f));
     c.h = roundUp4(std::max(y1 - y0 + m::kCapsuleTitle + 2.0f * m::kCapsulePad, m::kCapsuleTitle + 48.0f));
     c.pinTop = rel[0].y + pinOffset(out.nodes[kids[0]], 0, false);
@@ -885,10 +870,7 @@ struct Builder {
         std::vector<graph::Point2> rel;
         innerLayout(kp, rel);
         float x0 = 0.0f, y0 = 0.0f, x1 = c.w, y1 = c.h;
-        for (size_t i = 0; i < kids.size(); ++i) {
-          const graph::Point2 nd = i == 0 || i + 1 == kids.size() ? graph::Point2{0.0f, 0.0f} : nudgeOf(kids[i].device);
-          rel[i].x += nd.x;
-          rel[i].y += nd.y;
+        for (size_t i = 0; i < kids.size(); ++i) {  // (BR.H: the row; the members' places are the opened group's)
           x0 = std::min(x0, rel[i].x - m::kCapsulePad), y0 = std::min(y0, rel[i].y - m::kCapsulePad);
           x1 = std::max(x1, rel[i].x + kids[i].w + m::kCapsulePad), y1 = std::max(y1, rel[i].y + kids[i].h + m::kCapsulePad);
         }
@@ -1014,6 +996,42 @@ struct Builder {
       if (i == 0) cn.groupIn = kids[i];
       else if (i + 1 == kids.size()) cn.groupOut = kids[i];
       else cn.members.push_back(kids[i]);
+    }
+    // BR.H (before the members' own scales: as the layouter saw them): the frame's margins round its members as the
+    // layouter left them (its terminals' room, the title strip, the pad); the frame fits the members wherever their
+    // places put them with these (layout()).
+    {
+      const float ox = m::kCapsulePad, oy = m::kCapsuleTitle + m::kCapsulePad;
+      float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+      for (size_t i = 1; i + 1 < kids.size(); ++i) {
+        const graph::Point2 r = capsules[capIndex].rel[i].second;
+        const Node& k = out.nodes[kids[i]];
+        x0 = std::min(x0, r.x), y0 = std::min(y0, r.y), x1 = std::max(x1, r.x + k.w), y1 = std::max(y1, r.y + k.h);
+      }
+      if (x0 <= x1) {
+        cn.fitL = std::max(ox, x0), cn.fitT = std::max(oy, y0);
+        cn.fitR = std::max(m::kCapsulePad, cn.w - x1), cn.fitB = std::max(m::kCapsulePad, cn.h - y1);
+      }
+    }
+    // BR.H: each member at its place in the group (kept whatever the layouter does now: wires, blocks added or removed,
+    // sizes); one without a place there gets the layouter's, and the view stores it (ModelCache::placed).
+    for (size_t i = 1; i + 1 < kids.size(); ++i) {
+      graph::Point2& r = capsules[capIndex].rel[i].second;
+      const doc::DeviceId d = out.nodes[kids[i]].device;
+      if (const std::optional<graph::Point2> at = placeIn(d, g.id)) r = *at;
+      else if (opt.layoutCache != nullptr) opt.layoutCache->placed.push_back({d.value, g.id.value, r.x, r.y, false, out.nodes[kids[i]].w, out.nodes[kids[i]].h});
+    }
+    // BR.H: its SLOT — its chain pins' row (where a band's spine holds it, so where its places are) and its size (what
+    // the blocks after it on its band's path make room for) — as when its blocks got their places: the layouter's
+    // row for its In terminal and its extent change with every re-layout (a block added, a cable), and moved the
+    // capsule with every place in it, or the blocks after it. The view stores it with them (a Placed with `pin`).
+    if (const doc::PatchNudge* gn = nudgeEntry(g.id.value);
+        gn != nullptr && gn->pinTop > 0.0f && gn->slotW > 0.0f && gn->slotH > 0.0f && std::isfinite(gn->pinTop + gn->slotW + gn->slotH)) {
+      cn.pinTop = gn->pinTop;
+      cn.w = gn->slotW;
+      cn.h = gn->slotH;
+    } else if (opt.layoutCache != nullptr) {
+      opt.layoutCache->placed.push_back({g.id.value, g.id.value, cn.pinTop, 0.0f, true, cn.w, cn.h});
     }
     // bug-spawn-resize: the members at their stored scales now, in place (the circuit was laid out at their own sizes).
     for (const uint32_t k : cn.members) applyScale(out.nodes[k]);
@@ -1744,29 +1762,41 @@ struct Builder {
       }
       for (uint32_t i = 0; i < out.nodes.size(); ++i) {
         Node& n = out.nodes[i];
-        if (n.kind == NodeKind::Device)
-          if (const auto it = opt.nudges->find(n.device.value); it != opt.nudges->end()) {
-            n.x += it->second.dx;
-            n.y += it->second.dy;
-            moveKids(i, it->second.dx, it->second.dy);  // TX.groups: its contents with it (theirs added after)
+        // BR.H: a block inside an opened group is at its place there (groupNode); a nudge is a top-level block's.
+        if (n.kind != NodeKind::Device || n.capsule != kNone) continue;
+        if (const auto it = opt.nudges->find(n.device.value); it != opt.nudges->end()) {
+          if (it->second.placeIn != 0) {  // a place in a group it is no longer in (moved out, an undo): none
+            if (it->second.dx != 0.0f || it->second.dy != 0.0f) reportPlace(n.device, {}, {0.0f, 0.0f});
+            continue;
           }
+          n.x += it->second.dx;
+          n.y += it->second.dy;
+          moveKids(i, it->second.dx, it->second.dy);  // TX.groups: its contents with it
+        }
       }
     }
-    // TX.groups: a capsule grows to hold its members wherever their nudges put them; its terminals stay at its edges and
-    // its chain pins at the height they had (pinTop follows a top edge that moved up). GU.2: inner capsules first (they
-    // come after their parent's in `capsules`), so a parent holds its nested capsules as they have grown.
+    // TX.groups: a capsule's frame holds its members wherever their places put them; its terminals stay at its edges
+    // and its chain pins at the height they had (pinTop follows its top edge). GU.2: inner capsules first (they come
+    // after their parent's in `capsules`), so a parent holds its nested capsules as they have grown. BR.H: the frame
+    // FITS its members (their box and the layouter's margins: fitL …), not its slot's box as well — members placed away
+    // from where the layouter first put them left that empty part of the frame behind, and it only ever grew.
     for (auto it = capsules.rbegin(); it != capsules.rend(); ++it) {
       const Capsule& c = *it;
       Node& cn = out.nodes[c.node];
       float x0 = cn.x, y0 = cn.y, x1 = cn.x + cn.w, y1 = cn.y + cn.h;
       cn.frameX0 = x0, cn.frameY0 = y0, cn.frameX1 = x1, cn.frameY1 = y1;  // TX.drag-grow
-      for (const uint32_t k : cn.members) {
-        const Node& mn = out.nodes[k];
-        x0 = std::min(x0, mn.x - m::kCapsulePad), x1 = std::max(x1, mn.x + mn.w + m::kCapsulePad);
-        y0 = std::min(y0, mn.y - m::kCapsulePad - m::kCapsuleTitle), y1 = std::max(y1, mn.y + mn.h + m::kCapsulePad);
+      if (!cn.members.empty()) {
+        x0 = y0 = 1e30f, x1 = y1 = -1e30f;
+        for (const uint32_t k : cn.members) {
+          const Node& mn = out.nodes[k];
+          x0 = std::min(x0, mn.x), x1 = std::max(x1, mn.x + mn.w), y0 = std::min(y0, mn.y), y1 = std::max(y1, mn.y + mn.h);
+        }
+        x0 -= cn.fitL, y0 -= cn.fitT, x1 += cn.fitR, y1 += cn.fitB;
       }
       cn.pinTop += cn.y - y0;
       cn.x = x0, cn.y = y0, cn.w = x1 - x0, cn.h = y1 - y0;
+      // (a frame fitted lower than its slot: its chain pins under its title strip at least)
+      cn.pinTop = std::clamp(cn.pinTop, m::kCapsuleTitle + 8.0f, std::max(m::kCapsuleTitle + 8.0f, cn.h - 8.0f));
       frameSockets(c.node);
     }
     // TX.node-menu (SPEC §15 2026-11-02: "the band grows to fit blocks placed at its edge"): a band grows down to hold

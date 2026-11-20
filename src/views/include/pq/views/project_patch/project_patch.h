@@ -216,6 +216,14 @@ struct Node {
   // TX.drag-grow: an opened capsule's frame before it grew to hold its members (world; the canvas grows it again live
   // from where a drag has them).
   float frameX0 = 0, frameY0 = 0, frameX1 = 0, frameY1 = 0;
+  // BR.H: an opened capsule's frame fits its members (their rects, wherever their places put them) with these margins
+  // (world units: left, top, right, bottom; the room the layouter gives its terminals and title strip, at its scale);
+  // never the empty slot the layouter's rows took (that only places the capsule on its band).
+  float fitL = 0, fitT = 0, fitR = 0, fitB = 0;
+  // BR.H: how many world units one unit of this node's place (its PatchNudge dx / dy) is — the product of the scales of
+  // the opened groups it sits in (1 outside any). A member's place is in its group's own units, so an S-resize of the
+  // group scales the places with everything else; the view divides a world move by it before storing it.
+  float frameScale = 1.0f;
   struct MiniBox {
     float x0 = 0, y0 = 0, x1 = 0, y1 = 0;  // in the block's unit square
     bool terminal = false;
@@ -413,20 +421,21 @@ struct ModelCache {
     std::string key;                  // the layouter's inputs, serialised
     std::vector<graph::Point2> pos;   // each content's top-left from the layouter
     uint64_t used = 0;                // the build that last used it
-    // BR.B: the contents' devices (0: a terminal) and their places in the capsule (before nudges) the last build gave.
-    std::vector<uint32_t> ids;
-    std::vector<graph::Point2> rel, sizes;  // (sizes: each content's w, h)
   };
   std::unordered_map<uint32_t, Entry> entries;  // by group device id
-  // BR.B: a group's contents laid out again (only the wires among its blocks changed: one connected or removed): how far
-  // the layouter moved each block that was there before (its old place − its new one, before nudges). The view adds
-  // these to the blocks' nudges and lays out once more, so a placed block never moves when its group is laid out again
-  // (and the document's nudges keep meaning the places shown: a reload lays the contents out as now).
-  struct Drift {
-    uint32_t device = 0;
-    float dx = 0, dy = 0;
+  // BR.H: the places this build gave and the store does not have yet — a member of an opened group without a place
+  // in it (laid out for the first time, or just moved in) at the layouter's place, `group` its group; `pin`: group
+  // `device`'s slot then (x its chain pins' row, w × h; PatchNudge::pinTop, slotW, slotH); a block outside any group whose stored place was in
+  // one (moved out, an undo): none (group 0, at 0, 0), which the view stores at once. It stores the others on the next
+  // document change or move (ProjectPatchView::commitPlaces): until then they follow the layouter (a face settling its
+  // size). The build already placed the blocks there: storing moves nothing, no second build.
+  struct Placed {
+    uint32_t device = 0, group = 0;
+    float x = 0, y = 0;
+    bool pin = false;
+    float w = 0, h = 0;  // `pin`: its slot's size
   };
-  std::vector<Drift> drift;
+  std::vector<Placed> placed;
   uint64_t epoch = 0;
   uint64_t hits = 0, misses = 0;  // layouts reused / made (tests)
   std::shared_ptr<const void> snapshot, lowering;

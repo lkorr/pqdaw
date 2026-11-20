@@ -703,7 +703,13 @@ TEST_CASE("project patch: nudges are view state — not undoable, saved with the
   ViewContext other(t2);
   REQUIRE(other.openProject(dir).ok());
   const auto& n = other.store().view().patchNudges;
-  REQUIRE(n.size() == 2);
+  // (BR.H: and the places of the instrument groups' members, which the view stores as it shows them)
+  REQUIRE(std::count_if(n.begin(), n.end(), [](const auto& e) { return e.second.placeIn == 0 && e.second.pinTop == 0.0f; }) == 2);
+  for (const auto& [id, e] : u.ctx.store().view().patchNudges)  // BR.H: places (and groups' pin rows) round-trip
+    if (e.placeIn != 0 || e.pinTop != 0.0f) {
+      REQUIRE(n.count(id) == 1);
+      CHECK(n.at(id) == e);
+    }
   CHECK(n.at(keys.id.value).dy == 20.0f);
   CHECK(n.at(pathAt(*u.ctx.doc(), keys, 1).value).dx == 48.0f);
   // A nudge naming no entity is a load error (strict reader).

@@ -2197,3 +2197,20 @@ is spawned; no command changes it, so after an op swap B's reset still goes to t
 visibility condition. Options for (a): a SetDefaultPosition command (a new document command) so setMathOp also moves
 the reset value; or leave it. Chosen: leave both (most reversible; no new command). The jacks of the Math face have no
 condition. Status: open.
+
+## Q?-BR.H-a · 2026-11-20 · BR.H · How small blocks dropped into a group may get, and the S-resize undo step
+Context: the user asked that a selection put into an instrument group "shrink them down and try to fit them in"; the
+task said the group grows only below "a readable minimum scale". There was no such constant. Options: the canvas's text
+threshold at the current zoom (kNearZoom / zoom: 0.75 at zoom 1, little shrinking), a fixed fraction, or none. Chosen:
+`ProjectPatchView::kFitMinScale` = 0.5 of the blocks' size before (~5.5 px text at zoom 1); below that the group grows
+round them. Also: the task asked for an S-resize to be "one undo step"; TX.group-resize (and Q240 (3) for blocks)
+decided a scale is saved view state with no undo step — kept as decided. Status: open.
+
+## Q?-BR.H-b · 2026-11-20 · BR.H · The Device view's group panel shows the groups inside as the circuit does
+Context: block places in a group are now stored once per block (view state) and every view honours them. The Device
+view's group panel opened every group inside its group (an instrument's modules showed their atoms) while the circuit
+shows a module closed as its panel, so one place served two layouts of different sizes (blocks overlapping in one view
+or the other — part of the "30x" growth). Options: per-view places (more state), places only in the circuit (moving a
+block in the Device view would then not persist), or the group panel showing closed groups closed. Chosen: the last
+(one line in `Builder::closedGroup`; the scope group and those holding it stay opened) — the panel now matches the
+circuit (11 device goldens re-recorded). Status: open.

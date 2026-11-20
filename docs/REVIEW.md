@@ -2169,3 +2169,15 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
   labels only 0°.
 - Wrapped phase: where the phase turns faster than once per 8 units of the axis (a 23-stage allpass near its centre) it
   is a shaded band over ±180° instead of a thicket of segments and wrap markers. Goldens: eq-all-views, eq-eight-bands.
+
+## 2026-11-20 · BR.H · Group layout (task/BR.H-group-layout)
+- S + drag on an opened group's frame: the frame's top-left stays and every block inside (also ones you dragged away from
+  where they first landed) scales with it as one unit through the whole drag; Esc puts it back.
+- Blocks in a group keep their place: adding modules, connecting cables (with the Device view showing the group too),
+  undo, closing and reopening never move the blocks already there. The frame hugs its blocks — no empty part left where
+  they used to be, no runaway growth.
+- Select several blocks and drag them into an opened group's frame: they join it in one undo step, shrunk together to
+  fit its inside (at most to half size; the group grows beyond that), their wires kept; cables to outside cross the frame.
+- The Device view's group panel now shows the modules inside an instrument closed (as panels), as the circuit does,
+  instead of their atoms (Q?-BR.H-b). Goldens: device-*, audio-rack, instrument-rack, project-cables*, project-orbit-ports,
+  project-vca-panel.
