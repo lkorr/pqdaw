@@ -1194,3 +1194,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views (6 math-face goldens re-recorded), 3 real-dispatch view tests + 1 document test; -Affected after rebase all pass except a Math sweep test that assumed B = 0 by default (helper now sets B = 0), then pq_tests_playback 4/4.
 - Perf / CPU-efficiency check: UI + document only; jacks read once per layout, static layers.
 - Notes/blockers: not checked live; Q?-MX.4-a (B reset goes to the spawn-time default; jack visibility conditions ignored).
+
+## 2026-11-20 · BR.G · task/BR.G-eq-size (merged 1ca3b5c7)
+- Did: the Device view fits a panel to its height; the EQ's 452×384 panel drew at ~0.4–0.5 (3–4 px text). Now one wide row 916×176 (controls | 456×160 response | band strip), 1:1 at the default height; display text ≥ 5–6 units; wrapped phase turning faster than once per 8 units draws as a shaded ±180° band (detected from group delay), unwrapped unchanged.
+- Verified: pq_tests_views 1/1 after rebase, pq_tests_document 1/1; new real-dispatch test (EQ at scale 1.0, node drag via window events) + allpass dense-span test; 7 eq goldens re-recorded.
+- Perf / CPU-efficiency check: one extra response evaluation per change while the phase area is open; 32-band drag frame 1.38 ms.
+- Notes/blockers: saved EQs keep their stored panel (no migrations); other panels taller than ~181 units (Wavetable 288, Noise 248, EQ Band 228, Spectrogram 200, Math 194, Waterfall 190, Compressor 182) still draw < 1:1.
