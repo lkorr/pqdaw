@@ -82,7 +82,8 @@ constexpr HelpEntry kNotes[] = {
      "Puts a copy of the selected notes right after them, with their bends and pitch curves."},
     {"{pianoroll.copy} / {pianoroll.cut} / {pianoroll.paste}",
      "Copy, cut, paste",
-     "The selected notes, with their bends and pitch curves, to and from the clipboard."},
+     "The selected notes, with their bends and pitch curves, to and from the clipboard. A paste goes where you "
+     "last clicked; right after a copy that is where the copied notes start (a paste lands on them)."},
     {"{pianoroll.delete}",
      "Delete",
      "Removes the selected notes."},
@@ -150,7 +151,7 @@ constexpr HelpEntry kCurves[] = {
      "Draw a pitch curve",
      "The line you draw becomes the pitch of the note where you draw it: a scoop, a fall, a slow drift to another "
      "pitch. Where the stroke ends the note eases back to its own pitch, so only the part you drew changes. Keep "
-     "drawing past the note's end and the note grows to where you stop (to the end of that grid cell, never into "
+     "drawing past the note's end and the note grows to where you stop (exactly there, never into "
      "the next note on the same pitch). (A drag of only a few pixels counts as a click: it deletes the note, as a "
      "click in Draw Mode does.)"},
     {"Draw Mode {edit.toggleDrawMode}\n[Ctrl] + click on a note",
