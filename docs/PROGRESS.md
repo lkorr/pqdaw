@@ -1170,3 +1170,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 62/63 then the intended golden re-recorded (pq_tests_document 1/1); orchestrator after rebase onto BR.A: pq_tests_playback 4/4 shards.
 - Perf / CPU-efficiency check: no per-sample cost except ~3 bool ops per voice-sample in groups whose Envelope isn't last; idle taps one relaxed load per block.
 - Notes/blockers: not checked in the live app; golden lower_meta_voice_run.txt re-recorded; Q?-BR.C-a.
+
+## 2026-11-19 · BR.D · task/BR.D-midi-edit (merged adcd718b)
+- Did: Ctrl+C sets the insert marker to the copied start, Ctrl+V pastes there (again: after), paste overwrites same-pitch notes it covers (trim/remove, one undo step); pen stroke past a note's end lengthens to the pointer, no grid snap; lane previews draw curved notes from whole chunks with one join rule, so playhead strip repaints match a full repaint (the comb was a notch per strip).
+- Verified: pq_tests_views default tier 943/943, then 941/943 + 2 help goldens re-recorded (help subset 14/14); pq_tests_app 1/1; strip-vs-full repaint sweep test fails without the fix (206–639 px).
+- Perf / CPU-efficiency check: playhead strips walk only nearby 256 px chunks, not the whole note.
+- Notes/blockers: not checked live; 9 goldens re-recorded; Q?-BR.D-a (moves/draws onto same-pitch notes still stack); piano roll's own curve stroke may still pick its join per repaint region (unreported).
