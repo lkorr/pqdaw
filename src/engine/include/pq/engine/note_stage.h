@@ -28,7 +28,11 @@
 // it at the start of the slot's next block. The chain it replaces is flushed at frame 0 of that block: its
 // generated notes get note-offs (into the voices), and the source notes its first stage still holds under a key
 // (NoteStage::flush `held`) are re-sent as note-ons into the new chain — or straight to the voices when the new chain
-// is empty — so held keys keep sounding through a structural edit. The old chain is freed by Engine::collect().
+// is empty — so held keys keep sounding through a structural edit. AP.2b: when the new chain starts with the old
+// one's stages (same device keys, same kinds) those stages ADOPT the old ones' running state instead
+// (NoteStageChain::takeOver): an arp keeps its clock, step and lane positions, held set and sounding notes through a
+// structural edit of itself (a lane switched on, a length, the seed) or of its chain's tail. The old chain is freed
+// by Engine::collect().
 // Params are not part of the handover: a stage reads its runtime params from NoteStageBlock::params (the project
 // param block) at every block start (arp.h ArpStage::map), so a knob or automation never rebuilds a chain.
 
@@ -59,6 +63,8 @@ struct StageClock {
   const TempoMap* tempo = nullptr;  // the song's tempo map (required when a segment is Song)
   double sampleRate = 48000.0;
   double bpm = 120.0;               // the free clock's tempo (the song tempo at the playhead)
+  const TimeSigMap* signatures = nullptr;  // AP.2b: the song's time signatures (null: 4/4 throughout)
+  double beatsPerBar = 4.0;                // AP.2b: the free clock's bar, in quarter notes (the bar at the playhead)
   const ClockSegment* segments = nullptr;  // in frame order, covering [0, frames); none: one Free segment
   uint32_t numSegments = 0;
 };
@@ -68,6 +74,7 @@ struct NoteStageBlock {
   uint32_t frames = 0;
   StageClock clock;
   std::span<const float> params;  // the project param block (runtime params, read at block start)
+  std::span<const float> mods;    // AP.2b: the bus values (ProjectProgram::busValuesView: the previous block's)
 };
 
 // One stage kind. The chain calls `process` once per block (in: this block's events, sorted by frame; out: cleared
@@ -76,6 +83,8 @@ struct NoteStageBlock {
 using NoteStageProcessFn = bool (*)(void* stage, const NoteStageBlock& block, const EventList& in,
                                     EventBuffer& out) noexcept;
 using NoteStageFlushFn = void (*)(void* stage, uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
+// AP.2b: `stage` takes over the running state of `old` (the same kind: same adoptFn), keeping its own structure.
+using NoteStageAdoptFn = void (*)(void* stage, void* old) noexcept;
 
 // Base of a stage object: owns the stage's state for the chain's life (destroyed off the audio thread).
 class NoteStage {
@@ -83,6 +92,10 @@ public:
   virtual ~NoteStage() = default;
   NoteStageProcessFn processFn = nullptr;
   NoteStageFlushFn flushFn = nullptr;
+  // AP.2b: a stage with a key (the document's device id; 0: none) and an adoptFn continues an old chain's stage at
+  // the same place with the same key and kind instead of restarting (NoteStageChain::takeOver).
+  NoteStageAdoptFn adoptFn = nullptr;
+  uint64_t key = 0;
   // Non-RT, called by NoteStageChain::add: the stage's place in its chain (its generated id space).
   virtual void setIndex(uint32_t index) = 0;
 };
@@ -106,6 +119,11 @@ public:
   // The handover: every stage ends its generated notes at `frame` into `out`; stage 0's key-held source notes go to
   // `held` as note-ons at `frame`. RT-safe.
   void flush(uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
+  // AP.2b, the handover with state: this chain replaces `old`. Its leading stages that match old's (same place, key
+  // and adoptFn) take over their running state (clock, held set, sounding notes: nothing ends, nothing restarts);
+  // old's stages after them are flushed (their notes end at `frame`); with no match the whole of `old` is flushed as
+  // in flush (its key-held notes into `held`). RT-safe.
+  void takeOver(NoteStageChain& old, uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
 
 private:
   std::vector<std::unique_ptr<NoteStage>> stages_;

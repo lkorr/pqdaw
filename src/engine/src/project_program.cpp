@@ -275,6 +275,7 @@ struct ProjectProgram::Topology {
   // The metered buses of this topology (ProjectLayout::busMetered), fixed when it is made: the audio thread reads
   // only this list, never BusStore::metered, which a later publishTopology() rewrites (M3 review L12).
   std::vector<BusStore*> metered;
+  std::vector<std::pair<BusStore*, uint32_t>> values;  // AP.2b: (bus, bus value index), ProjectLayout::busValue
 };
 
 namespace {
@@ -282,6 +283,7 @@ namespace {
 Error projectError(ErrorCode code, const std::string& m) { return Error{code, "project: " + m, {}}; }
 
 bool meteredBus(const ProjectLayout& l, size_t b) { return !l.busMetered.empty() && l.busMetered[b] != 0; }
+
 
 // Peak |x| and Σ x² of n samples (AVX2). RT-safe.
 void levelOf(const float* x, uint32_t n, float& peak, double& sumSq) noexcept {
@@ -389,6 +391,8 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
   t->stores = stores_;
   for (size_t b = 0; b < stores_.size(); ++b)
     if (meteredBus(layout_, b)) t->metered.push_back(stores_[b].get());
+  for (size_t b = 0; b < layout_.busValue.size() && b < t->stores.size(); ++b)  // AP.2b
+    if (layout_.busValue[b] < kMaxBusValues) t->values.emplace_back(t->stores[b].get(), layout_.busValue[b]);
   t->output = layout_.outputBus != kNoBus ? stores_[layout_.outputBus].get() : nullptr;
   topoInflight_.push_back(t);
   topo_ = t;
@@ -745,6 +749,8 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
   t->stores = stores;
   for (size_t b = 0; b < stores.size(); ++b)
     if (meteredBus(layout, b)) t->metered.push_back(stores[b].get());
+  for (size_t b = 0; b < layout.busValue.size() && b < t->stores.size(); ++b)  // AP.2b
+    if (layout.busValue[b] < kMaxBusValues) t->values.emplace_back(t->stores[b].get(), layout.busValue[b]);
   if (!info.zombiesDropped)
     for (uint32_t k = 0; k < z; ++k)
       for (float* ch : ownChannels_[zombieOld[k]])
@@ -1775,6 +1781,8 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
         if (n > 0) b.pubLast[c].store(b.channel(c)[n - 1], std::memory_order_relaxed);  // bug-mod-ghost
       }
     }
+    if (n > 0)  // AP.2b: the bus values the note stages read at the next block
+      for (const auto& [bp, i] : t.values) busValues_[i] = bp->channel(0)[n - 1];
     for (uint32_t c = 0; c < numOut; ++c) {
       float* dst = block.out[c] + off;
       BusStore* ob = t.output;

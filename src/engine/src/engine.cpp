@@ -192,7 +192,10 @@ void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer
     NoteStageChain* old = st.cur;
     st.cur = next->size() > 0 ? next : nullptr;
     if (st.cur != nullptr) st.cur->input().clear();
-    if (old != nullptr) old->flush(0, out, st.cur != nullptr ? st.cur->input() : out);
+    if (old != nullptr) {  // AP.2b: matching stages carry their running state over
+      if (st.cur != nullptr) st.cur->takeOver(*old, 0, out, st.cur->input());
+      else old->flush(0, out, out);
+    }
     if (old != nullptr) e.retiredStages_.tryPush(old);
     if (st.cur == nullptr) e.retiredStages_.tryPush(next);
   } else if (st.cur != nullptr) {
@@ -248,9 +251,14 @@ void Engine::runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frame
   b.clock.tempo = &timeline_->tempoImage().tempo();
   b.clock.sampleRate = cfg_.sampleRate;
   b.clock.bpm = timeline_->snapshot().bpm;
+  b.clock.signatures = &timeline_->tempoImage().signatures();  // AP.2b: Pulse Cycle bars
+  b.clock.beatsPerBar = timeline_->snapshot().beatsPerBar;
   b.clock.segments = segs;
   b.clock.numSegments = n;
-  if (program_ != nullptr) b.params = program_->projectParamsView();
+  if (program_ != nullptr) {
+    b.params = program_->projectParamsView();
+    b.mods = program_->busValuesView();  // AP.2b: cables into note-device params, one block late
+  }
   if (chain.run(b, out)) stagesBusy_ = true;
 }
 

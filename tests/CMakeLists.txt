@@ -381,6 +381,7 @@ pq_add_test(pq_tests_engine PERF
 pq_add_test(pq_tests_note_stage
   SOURCES
     engine/test_note_stage.cpp
+    engine/test_arp_lanes.cpp  # AP.5 step lanes, AP.2b (bars follow the signature, live degree table, adoption)
   DEPS pq_engine)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).

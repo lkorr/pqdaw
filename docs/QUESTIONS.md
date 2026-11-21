@@ -2273,6 +2273,8 @@ whole notes (4/4; no meter in the tempo map), a clock's last pulse before the re
 → Step = the same clock's previous / next pulse. (7) Layers apply in both modes (pattern and pulse), at (p/q)^L
 of the Ratio unit's p/q, gain = level × the note's gain. (8) A held-set change that moves h_ref (the lowest held)
 re-times every clock at that frame (each resumes at its first unplayed onset of the new grid). Status: open.
+Decided (AP.2b, 2026-11-20): (5) Cycle Bars follow the song's time signature (StageClock::signatures; a signature
+change: cycle c = bars c · n … (c + 1) · n − 1; free clock: the bar at the playhead). The rest stays as chosen.
 builds it); a note without a Degree identity shifts from round(noteDegree) and plays static once shifted. Status: open.
 
 ## Q?-AP.2-a · 2026-11-20 · AP.2 · Cables into a note device's params; a tuning drag republishes the chain
@@ -2284,6 +2286,12 @@ per-param bus read by the stage, or leave cables out; (2) republish per tuning c
 "tuning-table lookup under a modulated tuning"). Chosen (reversible): (1) such a cable is Inactive (drawn dim; automation,
 knob drags and type-in work); (2) the link republishes the chain on a tuning param change (the handover keeps held keys
 sounding, the pattern restarts) until AP.3's live lookup replaces it. Status: open.
+Decided (AP.2b, 2026-11-20): (1) a cable into a runtime non-bool param plays at param rate, ONE BLOCK LATE (the
+source exported as a bus, its last sample per block a bus value the stage adds in the param's units at its next block
+start; lower.h "Note devices"); settings / bools stay Inactive. (2) a tuning edit never republishes the chain: the new
+degree table goes to the running stage (ArpTableMailbox; the table of the definition the tuning node plays
+statically), sounding steps retune at once, the pattern keeps its place; a structural republish hands the running
+state to the new chain (NoteStageChain::takeOver). Status: decided.
 
 ## Q?-AP.2-b · 2026-11-20 · AP.2 · Note-device knobs are linear over the declared range
 Context: the stage reads a slot's knob POSITION and maps it with one line (value = min + position · (max − min)); a
@@ -2291,3 +2299,16 @@ custom knob curve would need the curve in the stage. Rate ms (1 … 10000) and V
 a linear knob. Options: curves in the stage; per-param exp mapping in the table; linear for now. Chosen: linear, own knob
 curves refused on a note device (checks.cpp); AP.6's panel can show ms on an exp scale by adding a curve kind to the
 table's mapping. Status: open.
+
+## Q?-AP.5-a · 2026-11-20 · AP.5 · Step lanes: readings of the lanes
+Context: AP.md "Step lanes" names the lanes but not their arithmetic. Chosen (reversible, arp.h "Step lanes"):
+(1) Velocity, Gate and Glide lanes SCALE (Velocity × 0 … 1, Gate × 0 … 2 then clamped 0.01 … 2, Glide × the glide's
+pitch distance in log Hz); velocity source Step Lane uses the lane value itself (lane off: as played). (2) Transpose
+adds integer steps of the pitch unit. (3) Skip is a rest: the pattern still advances (lanes and pattern stay on the
+grid). (4) Tie: the previous step's notes continue (same rank / layer; Pulse: the same clock), their end moves to the
+tie step's gate end; with Into on (any source) they glide to the tie step's pitch over the glide time × the Glide lane
+(0: a legato jump), Into off keeps the pitch; a tie with nothing to continue plays normally; a note waiting for a tie
+whose step does not play (chance, nothing held, Repeats) ends at that onset. (5) Lane position = grid step index mod
+length (synced: the song grid; free: the free clock), not the pattern position: lanes do not restart on a retrigger.
+(6) Lane steps are 192 rows of kArpParamInfo (runtime) read only when their step plays (ArpStage routes them to the
+core); the generic device panel lists them until AP.6's step editor. Status: open.

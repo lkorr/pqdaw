@@ -1532,6 +1532,9 @@ struct LWire {
   // broadcast to every voice — its value marked `shared` (Node::shared), so a free-running source behind it keeps one
   // instance instead of being made per voice (pq/graph/infer.h).
   bool broadcast = false;
+  // AP.2b: the target is a note device's runtime param (lower.h "Note devices"): toNode is past the plan's nodes; the
+  // source is exported as m<wire> (a bus the note stage reads one block late), nothing is wired at a target.
+  bool toNoteStage = false;
 };
 // DY.2: a wire from another track into a signal input (lower.h "Sidechains"): graph::WireKind::Sidechain, every channel.
 bool crossSidechain(const LWire& w) noexcept { return w.fromNode != w.toNode && w.signalIn && !w.toMixer; }
@@ -1616,6 +1619,9 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
           wp.remotes.push_back(WirePlan::Remote{it->second.first, it->second.second, n, k});
   if (wires.empty() && wp.remotes.empty()) return wp;
   auto isInstrumentNode = [&](uint32_t n) { return pl.nodes[n].kind == Kind::Midi && devs[n].voices; };
+  // AP.2b: the wires into note devices' runtime params (note_devices.h NoteDissolve::params).
+  const std::vector<WireId>* noteParams =
+      lib != nullptr && lib->cables != nullptr && lib->cables->notes.any ? &lib->cables->notes.params : nullptr;
   // Signal points: per node its input and output, per device its signature inputs then outputs (a remote placeholder:
   // its output).
   std::vector<uint32_t> nodeBase(nodes);
@@ -1877,6 +1883,59 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       wp.states.push_back(st);
     };
     const VoiceContext* tctx = w.toMixer() ? nullptr : ctxOf(w.to);
+    // AP.2b (lower.h "Note devices"): a cable into a note device's runtime param. The device is not in the graph: the
+    // source's first channel (reduced over voices) is exported as m<wire> on its own track, a bus whose last value
+    // the note stage adds to the param at its next block start (one block late: it never closes a cycle).
+    if (noteParams != nullptr && !w.toMixer() && std::binary_search(noteParams->begin(), noteParams->end(), w.id)) {
+      auto invalid = [&] {
+        st.status = WireStatus::Invalid;
+        wp.states.push_back(st);
+      };
+      const auto a = w.fromNoteSource() ? nodeOfTrack.find(w.noteSource.value) : nodeOfTrack.end();
+      if (w.fromNoteSource() && a == nodeOfTrack.end()) {
+        inactive();
+        continue;
+      }
+      if (w.fromNoteSource() && w.port.empty()) {  // the track's own signal
+        lw.fromTrack = true;
+        lw.fromNode = a->second;
+        lw.fromDev = graph::kNone;
+      } else if (w.fromNoteSource()) {  // a note output: the newest voice's (the wire's reducer)
+        if (pl.nodes[a->second].kind != Kind::Midi || !devs[a->second].voices) {
+          inactive();
+          continue;
+        }
+        lw.notes = findNoteOutput(w.port);
+        if (lw.notes == nullptr) {
+          invalid();
+          continue;
+        }
+        lw.fromNode = a->second;
+        lw.fromDev = graph::kNone;
+        lw.reduce = true;
+      } else {
+        const auto f = where.find(w.from.value);
+        if (f == where.end()) {
+          inactive();
+          continue;
+        }
+        std::tie(lw.fromNode, lw.fromDev) = f->second;
+        const LDev& sd = devs[lw.fromNode][lw.fromDev];
+        const uint32_t sp = signalOutput(*sd.callee, w.port);
+        if (sp == graph::kNone || (sd.bypass && sp != 0)) {
+          invalid();
+          continue;
+        }
+        lw.fromPort = static_cast<uint16_t>(sp);
+        lw.reduce = sd.voice || (isContextGroup(sd) && sp != 0);
+      }
+      lw.toNode = nodes;
+      lw.toDev = graph::kNone;
+      lw.toNoteStage = true;
+      wp.states.push_back(st);
+      wp.wires.push_back(lw);
+      continue;
+    }
     if (w.fromNoteSource() && w.port.empty()) {
       // TX.all-free: the track's own signal (not a link of its main path): into a block or the mixer of a track.
       const auto a = nodeOfTrack.find(w.noteSource.value);
@@ -4133,7 +4192,11 @@ out.wires = withLinks(wp.states, *cables, pl);
   // T4.7: cross-track wires (the partition merges their units, unless that would join two instruments: a bus), then
   // the modulation taps (buses the views meter).
   for (const LWire& w : wp.wires)
-    if (w.fromNode != w.toNode) {
+    if (w.toNoteStage) {  // AP.2b: a bus of its own (no reader in the graph), its value read by the note stage
+      const std::string m = "m" + std::to_string(w.wire->id.value);
+      out.graph.taps.push_back({w.fromNode, m});
+      out.noteMods.push_back(LoweredNoteMod{w.wire->id, w.fromNode, m});
+    } else if (w.fromNode != w.toNode) {
       const std::string m = "m" + std::to_string(w.wire->id.value);
       // (TX.all-free-fix1: a cable into another track's mixer is an audio route, as a send is)
       // (DY.2: into another track's signal input a sidechain — compensated like audio; into a param modulation)
@@ -4219,8 +4282,7 @@ std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const 
 // ---- AP.2: note chains (lower.h "Note devices") ---------------------------------------------------------------------
 
 bool LoweredNoteChain::sameStructure(const LoweredNoteChain& o) const noexcept {
-  if (track != o.track || stages.size() != o.stages.size() || degreeCents != o.degreeCents || equaveCents != o.equaveCents)
-    return false;
+  if (track != o.track || stages.size() != o.stages.size()) return false;  // (AP.2b: the degree table is not structure)
   for (size_t i = 0; i < stages.size(); ++i) {
     const LoweredNoteStage& a = stages[i];
     const LoweredNoteStage& b = o.stages[i];
@@ -4228,7 +4290,8 @@ bool LoweredNoteChain::sameStructure(const LoweredNoteChain& o) const noexcept {
       return false;
     for (size_t k = 0; k < a.runtime.size(); ++k)
       if (a.runtime[k].param != b.runtime[k].param || a.runtime[k].key != b.runtime[k].key ||
-          a.runtime[k].scale != b.runtime[k].scale || a.runtime[k].offset != b.runtime[k].offset)
+          a.runtime[k].scale != b.runtime[k].scale || a.runtime[k].offset != b.runtime[k].offset ||
+          a.runtime[k].mods != b.runtime[k].mods)
         return false;
     const NoteDeviceType* t = findNoteDeviceType(a.type);
     for (size_t k = 0; k < a.values.size(); ++k)  // the structural values (a runtime one plays its slot)
@@ -4268,6 +4331,10 @@ bool degreeTable(const TuningDef& def, std::vector<double>& cents, double& equav
 
 }  // namespace
 
+bool noteDegreeTable(const TuningDef& def, std::vector<double>& cents, double& equaveCents) {
+  return degreeTable(def, cents, equaveCents);
+}
+
 std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
   std::vector<LoweredNoteChain> out;
   bool any = false;
@@ -4288,6 +4355,9 @@ std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
       s.device = st.device->id;
       s.type = type->id;
       const std::string dev = std::to_string(st.device->id.value);
+      std::vector<const Wire*> into;  // AP.2b: the wires into its params
+      for (const Wire& w : wiresOf(p))
+        if (!w.toMixer() && w.to == st.device->id && w.param != kMainPort) into.push_back(&w);
       for (size_t k = 0; k < type->params.size(); ++k) {
         const NoteParamSpec& sp = type->params[k];
         s.values.push_back(noteDeviceValue(*st.device, sp));
@@ -4297,16 +4367,22 @@ std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
         slot.key = "dev" + dev + ":" + sp.name + std::string(kPositionKeySuffix);
         slot.scale = sp.isBool ? 1.0f : static_cast<float>(sp.max - sp.min);
         slot.offset = sp.isBool ? 0.0f : static_cast<float>(sp.min);
+        if (!sp.isBool)  // AP.2b: the cables into it (each a bus value; one that did not lower adds nothing)
+          for (const Wire* w : into)
+            if (w->param == sp.name) slot.mods.push_back(w->id);
         s.runtime.push_back(std::move(slot));
       }
       c.stages.push_back(std::move(s));
     }
     if (c.stages.empty()) return;
-    if (const std::optional<TrackPath> at = findTrack(p, t.id))
-      if (const TuningDef* def = effectiveTuning(p, *at); def != nullptr && !degreeTable(*def, c.degreeCents, c.equaveCents)) {
+    if (const std::optional<TrackPath> at = findTrack(p, t.id)) {
+      const EffectiveTuning et = effectiveTuningRef(p, *at);
+      c.tuning = et.main;
+      if (et.def != nullptr && !degreeTable(*et.def, c.degreeCents, c.equaveCents)) {
         c.degreeCents.clear();
         c.equaveCents = 1200.0;
       }
+    }
     out.push_back(std::move(c));
   };
   // The lowered MIDI tracks: active, not inside a switched-off group (lower.h: left out with their members).

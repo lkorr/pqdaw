@@ -518,6 +518,14 @@ struct ModulationTap {
   Domain domain = Domain::Position;
 };
 
+// AP.2b: a cable into a note device's param, lowered as an export `port` ("m<wire>") of graph track `track` (also in
+// graph.taps: a bus "<track id>:<port>"), whose last value per block the note stage adds to the param.
+struct LoweredNoteMod {
+  WireId wire;
+  uint32_t track = 0;  // index into graph.tracks
+  std::string port;
+};
+
 struct LoweredParam {
   std::string key;      // "<track id>:<name>"
   uint32_t track = 0;   // index into graph.tracks
@@ -571,6 +579,7 @@ struct LoweredProject {
   std::vector<WireState> wires;                               // T4.7: every wire of the project, in id order
   std::vector<WireEnd> wireEnds;                              // WI.2: "Cut wires" above
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
+  std::vector<LoweredNoteMod> noteMods;                       // AP.2b: one per lowered cable into a note-device param
   std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
   std::vector<AudioInputBinding> audioInputs;                 // T6.1: the audio tracks reading `track.in`
   std::vector<DeviceId> frozenKeep;  // FZ.1: blocks of frozen tracks lowered from their slot that still run (by id)
@@ -671,8 +680,14 @@ const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_
 // where the wire into its main input started), so the instrument after an arpeggiator reads the note source exactly as
 // without it, and a track with note devices compiles to the same IR as without them (a note device added, removed,
 // moved or switched off never recompiles its unit's graph). Wire states: the wire into a note device plays as the
-// wire it was joined into; a note device's other wires (into its params, a second input) are Inactive (no audio-rate
-// modulation of a note device's params in v1: QUESTIONS Q?-AP.2-a).
+// wire it was joined into. AP.2b (QUESTIONS Q?-AP.2-a): a CABLE INTO A RUNTIME (non-bool) PARAM of a note device
+// plays at param rate, one block late: its source's first channel (reduced over voices by the wire's reducer, as into
+// any global target) is exported on its own track as m<wire> (LoweredProject::noteMods, graph.taps: a bus), the
+// program stores that bus's last sample of every block as a BUS VALUE (ProjectLayout::busValue, an index the playback
+// link keeps per wire), and the stage adds it to the param's value (an Add wire, in the param's units:
+// value = min + position · (max − min) + Σ sources, then clamped / rounded like the param) at its next block start
+// (ArpStage::Mapping::add, NoteStageBlock::mods). It never closes a cycle (the stage reads the previous block). Its
+// other wires (into a structural setting, a bool, a second input) stay Inactive.
 // Its runtime params are project params all the same: LoweredProject::params / lowerParams list each as its knob
 // POSITION ("dev<id>:<name>@pos", position true; `track` graph::kNone: no track patch links it), so automation, a knob
 // drag and a type-in write their slot without a compile. What plays them is the track's NOTE CHAIN:
@@ -684,7 +699,10 @@ const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_
 //                     that does not build: none, the stage's 12-EDO). A track without one is not listed.
 // The playback link builds an engine::NoteStageChain from each (pq/engine/arp.h ArpStage: fixed params + mapping) and
 // publishes it to the track's event slot (Engine::setNoteStages) when its structure changed (sameStructure: everything
-// but the runtime params' current values), null for a track whose chain went away. Library-free; O(tracks + blocks).
+// but the runtime params' current values and the degree table), null for a track whose chain went away; a new degree
+// table alone goes to the running stages (engine::ArpTableMailbox: the pattern keeps its place), and a republished
+// chain's matching stages adopt the old ones' running state (NoteStageChain::takeOver). Library-free;
+// O(tracks + blocks).
 struct LoweredNoteStage {
   DeviceId device;
   std::string type;            // the NoteDeviceType id ("arpeggiator")
@@ -693,6 +711,7 @@ struct LoweredNoteStage {
     uint32_t param = 0;  // the param's index in the type
     std::string key;     // its project param ("dev<id>:<name>@pos": a knob position)
     float scale = 1.0f, offset = 0.0f;  // value = offset + scale · position
+    std::vector<WireId> mods;           // AP.2b: the cables into it (LoweredProject::noteMods), in id order
   };
   std::vector<Slot> runtime;
 };
@@ -701,9 +720,18 @@ struct LoweredNoteChain {
   std::vector<LoweredNoteStage> stages;  // in signal order (never empty)
   std::vector<double> degreeCents;       // the track tuning's degrees in one equave (degreeCents[0] = 0); empty: none
   double equaveCents = 1200.0;
+  TuningId tuning;  // AP.2b: the main tuning it was made from (the playback link takes the table of the definition
+                    // its tuning node plays statically: a live drag moves the node, not the static pitches)
+  // Everything but the runtime params' current values and the degree table (AP.2b: a tuning edit hands the running
+  // stages the new table, ArpTableMailbox; it never republishes the chain).
   bool sameStructure(const LoweredNoteChain& o) const noexcept;
+  bool sameTable(const LoweredNoteChain& o) const noexcept {
+    return degreeCents == o.degreeCents && equaveCents == o.equaveCents;
+  }
 };
 std::vector<LoweredNoteChain> lowerNoteChains(const Project& project);
+// AP.2b: the degree table of `def` (cents of each degree within one equave, the equave); false: it does not build.
+bool noteDegreeTable(const TuningDef& def, std::vector<double>& cents, double& equaveCents);
 
 // ---- Frozen tracks (FZ.1; docs/plans/RB.md D2; model.h "Frozen tracks") --------------------------------------------
 // A frozen MIDI or audio track whose render is ready (LowerOptions::frozenSlotOf gives a slot; it is active, and not a
