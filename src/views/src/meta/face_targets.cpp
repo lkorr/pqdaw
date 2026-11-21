@@ -14,7 +14,9 @@
 #include "pq/document/meta.h"
 #include "pq/dsp/curve.h"
 #include "pq/tuning/tuning.h"
+#include "pq/meta/sampler.h"
 #include "pq/views/piano_roll/row_model.h"
+#include "pq/views/sample_analysis.h"
 #include "pq/views/view_context.h"
 #include "pq/views/waveforms.h"
 
@@ -221,6 +223,54 @@ std::string DocTarget::pitchName(const PitchGuide& g) const {
   const size_t n = roll::formatRowLabel(mode == roll::RowLabels::Name ? roll::RowLabels::Degree : mode, tu, d, lbuf);
   std::snprintf(buf, sizeof buf, "%.*s %lld", static_cast<int>(n), lbuf, static_cast<long long>(eq));
   return buf;
+}
+
+// SM.12: the slicing through the document (one step, or the running gesture's). Transient needs the sample's analysis:
+// while it is not there yet the request is made and the notice says so.
+bool DocTarget::sliceSample(int by, double amount) {
+  doc::ops::SliceSpec spec;
+  spec.by = static_cast<doc::ops::SliceBy>(std::clamp(by, 0, 3));
+  spec.sensitivity = std::clamp(amount, 0.0, 1.0);
+  spec.beats = amount;
+  spec.count = static_cast<uint32_t>(std::clamp(std::lround(amount), 1L, static_cast<long>(doc::ops::kMaxSlices)));
+  const doc::Snapshot& p = ctx_.doc();
+  std::vector<double> onsets;
+  std::vector<float> strengths;
+  if (spec.by == doc::ops::SliceBy::Transient) {
+    const doc::Device* d = dev();
+    const doc::MetaInstance* m = d != nullptr ? d->metaAt(path_) : nullptr;
+    const uint32_t sample = m != nullptr ? meta::samplerSample(m->data.get()) : 0;
+    const SampleAnalysisResult* a = sample != 0 ? ctx_.sampleAnalysis().get(doc::SampleId{sample}) : nullptr;
+    if (a == nullptr || a->transients == nullptr) {
+      ctx_.setStatus(sample != 0 ? "The sample is still being analysed: slice again in a moment" : "No sample to slice");
+      return false;
+    }
+    onsets = a->transients->onsets;
+    strengths = a->transients->strengths;
+  }
+  auto e = doc::ops::sliceSampler(*p, device_, spec, onsets, strengths);
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return false;
+  }
+  if (Status s = ctx_.store().dispatch(e->command); !s) {
+    ctx_.setStatus(s.error().message);
+    return false;
+  }
+  return true;
+}
+
+bool DocTarget::sliceToNotes() {
+  auto e = doc::ops::sliceToNotes(*ctx_.doc(), ctx_.store().ids(), device_, ctx_.startMarker());
+  if (!e) {
+    ctx_.setStatus(e.error().message);
+    return false;
+  }
+  if (Status s = ctx_.store().dispatch(e->command); !s) {
+    ctx_.setStatus(s.error().message);
+    return false;
+  }
+  return true;
 }
 
 const dsp::Curve* DocTarget::curve(size_t param) const {  // GU.1

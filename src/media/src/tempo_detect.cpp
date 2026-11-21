@@ -379,6 +379,7 @@ Result<TempoPtr> loadOrDetectTempo(const TransientRequest& r, const std::atomic<
   }
   EnergyEnvelope env;
   std::vector<double> onsets;
+  std::vector<float> strengths;  // SM.12
   uint32_t rate = 0;
   int64_t frames = r.frames;
   if (r.resident != nullptr && !r.resident->streamed()) {
@@ -391,7 +392,7 @@ Result<TempoPtr> loadOrDetectTempo(const TransientRequest& r, const std::atomic<
       for (uint32_t c = 0; c < ch; ++c) p[c] = r.resident->data[c] + a;
       env.push(p, ch, static_cast<uint32_t>(std::min(kChunk, frames - a)));
     }
-    if (tr == nullptr) onsets = detectTransients(r.resident->data, ch, frames, rate);
+    if (tr == nullptr) onsets = detectTransients(r.resident->data, ch, frames, rate, {}, &strengths);
   } else {
     auto dec = Decoder::open(r.path);
     if (!dec) return std::move(dec).error();
@@ -414,13 +415,17 @@ Result<TempoPtr> loadOrDetectTempo(const TransientRequest& r, const std::atomic<
       env.push(cp, info.channels, static_cast<uint32_t>(*n));
       if (det) det->push(cp, info.channels, static_cast<uint32_t>(*n));
     }
-    if (det) onsets = det->finish();
+    if (det) {
+      onsets = det->finish();
+      strengths = det->strengths();
+    }
   }
   if (tr == nullptr) {
     auto t = std::make_shared<Transients>();
     t->contentHash = r.contentHash;
     t->frames = r.frames;
     t->onsets = std::move(onsets);
+    t->strengths = std::move(strengths);
     if (!r.cacheDir.empty()) (void)saveTransients(*t, transientCacheFile(r.cacheDir, r.contentHash, r.frames));
     tr = std::move(t);
     transientCache().put(tr);

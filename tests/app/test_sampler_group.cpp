@@ -321,3 +321,32 @@ TEST_CASE("SM.8 Sampler on an audio track: an LFO into Position scrubs the sampl
   CHECK(rms(o[0], 0.0, 2.0) > 0.02);
   fs::remove_all(dir, ec);
 }
+
+// SM.12 (docs/plans/SM.md "SM.12"): Slice to Notes writes a clip whose notes, played through the Sampler in Slice mode,
+// reproduce the sample's rhythm: clicks at irregular frames, sliced exactly there; each output click lands on the frame
+// the sample has it (from the first slice), within one sample — warp Off (seconds through the tempo map, at 97 BPM).
+TEST_CASE("SM.12 Slice to Notes: the written clip plays the sample's rhythm (onsets within 1 sample)") {
+  const std::vector<size_t> at = {2000, 9000, 15333, 26000, 33501, 42017};
+  std::vector<float> x(48000, 0.0f);
+  for (const size_t f : at)
+    for (size_t k = 0; k < 400 && f + k < x.size(); ++k) x[f + k] = static_cast<float>(0.9 * std::exp(-static_cast<double>(k) / 60.0));
+  std::vector<float> slices;
+  for (const size_t f : at) slices.push_back(static_cast<float>(f));
+  Song g("pq_sm12_notes", true, {x}, 261.63, slices);
+  run(g.store, ops::setDeviceSetting(*g.store.current(), g.engine, "mode", static_cast<double>(meta::SamplerMode::Slice)));
+  REQUIRE(g.store.dispatch(Command{SetTempoMap{{TempoPoint{0, 97.0}}}}).ok());
+  run(g.store, ops::sliceToNotes(*g.store.current(), g.store.ids(), g.group, 0));
+  const auto o = g.render(1.1);
+  const double t0 = 0.0;  // the clip at tick 0: the first slice's click at frame 0 of the output
+  for (size_t i = 0; i < at.size(); ++i) {
+    CAPTURE(i);
+    const auto expect = static_cast<int64_t>(t0 + static_cast<double>(at[i] - at[0]));
+    int64_t found = -1;
+    for (int64_t s = std::max<int64_t>(0, expect - 200); s < expect + 200 && s < static_cast<int64_t>(o[0].size()); ++s)
+      if (std::fabs(o[0][static_cast<size_t>(s)]) > 0.45f) {
+        found = s;
+        break;
+      }
+    CHECK(std::llabs(found - expect) <= 1);
+  }
+}

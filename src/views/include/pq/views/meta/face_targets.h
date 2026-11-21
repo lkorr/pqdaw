@@ -48,6 +48,8 @@ public:
   void pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out) const override;
   uint64_t guidesKey() const override;
   std::string pitchName(const PitchGuide& g) const override;  // SM.11: the piano roll's row label + equave
+  bool sliceSample(int by, double amount) override;            // SM.12
+  bool sliceToNotes() override;
   TonePort* tonePort() const override;  // VZ.3: the context's (ViewContext::tonePort)
   const media::WaveformOverview* sampleOverview(uint32_t sample) const override;  // SM.10: ViewContext::waveforms
   uint64_t overviewRevision() const override;

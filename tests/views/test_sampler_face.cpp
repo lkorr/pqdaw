@@ -634,3 +634,64 @@ TEST_CASE("render: sampler-panel-classic / -oneshot / -slice (SM.11: the expande
     }
   }
 }
+
+// ---- SM.12: the slicing row (real dispatch) ----------------------------------------------------------------------------
+
+TEST_CASE("sampler slicing (SM.12, real dispatch): Region / Beat / Manual cells re-slice (one undo step each), the amount "
+          "drag re-slices in one step, Slice to Notes writes a clip at the start marker (one step)") {
+  Expanded u;
+  setSetting(u.ctx.store(), u.ids.engine, "mode", 2.0);
+  u.d.step();
+  const uint32_t fold = u.idOf("fold", "Slices");
+  REQUIRE(u.shownEl(fold));
+  u.d.click(u.at(fold, 0.1f, 0.5f));  // open the Slices section (view state)
+  u.d.step();
+  const uint32_t row = u.idOf("sampleslice");
+  REQUIRE(u.shownEl(row));
+  // Element-local points of the row (its section 328 × 30 from face y 360: k = 1).
+  const auto local = [&](float lx, float ly) {
+    panel::GroupPanelFace& f = u.face();
+    const Rect r = f.element(static_cast<size_t>(f.indexOf(row))).rect();
+    const Node& n = u.node();
+    return u.view().canvas().toDevice({n.x + r.x0 + lx, n.y + r.y0 + ly});
+  };
+  const auto cell = [&](int k) { return local(25.0f + 50.0f * static_cast<float>(k), 8.0f); };  // Transient Beat Region Manual
+  const auto slices = [&] { return meta::samplerSlices(u.data().get()); };
+  // Region: 8 equal parts (the default count).
+  size_t h = u.cursor();
+  u.d.click(cell(2));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  REQUIRE(slices().size() == 8);
+  CHECK(slices()[1] == doctest::Approx(28800.0 / 8.0));
+  // The amount dragged up 30 px: 5 parts more, one undo step for the whole drag.
+  h = u.cursor();
+  u.d.drag(local(235.0f, 8.0f), local(235.0f, -22.0f), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(slices().size() == 13);
+  // Beat: every beat at sampleBpm 120 (24000 frames): 0.6 s holds two.
+  h = u.cursor();
+  u.d.click(cell(1));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(slices() == std::vector<float>{0.0f, 24000.0f});
+  // Manual: the slices stay, the way is Manual.
+  h = u.cursor();
+  u.d.click(cell(3));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(slices() == std::vector<float>{0.0f, 24000.0f});
+  CHECK(u.data()->field("sliceBy")->number == 0.0);
+  // Slice to Notes: a clip of two notes at the start marker.
+  u.ctx.setStartMarker(2 * kPpq);
+  h = u.cursor();
+  u.d.click(local(296.0f, 8.0f));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  const doc::Track& t = *doc::findTrackPtr(*u.ctx.doc(), u.ids.track);
+  REQUIRE(t.clips.size() == 1);
+  REQUIRE(t.clips.front().clip != nullptr);
+  CHECK(t.clips.front().clip->start == 2 * kPpq);
+  CHECK(t.clips.front().clip->notes.size() == 2);
+}

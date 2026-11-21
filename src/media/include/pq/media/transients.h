@@ -47,6 +47,9 @@ public:
   void push(const float* const* ch, uint32_t channels, uint32_t n);
   // The onsets (source frames, ascending). Ends the analysis.
   std::vector<double> finish();
+  // SM.12: each onset's STRENGTH after finish(): its flux above the local mean in units of max(the file's median flux,
+  // 0.2 % of its largest) — an onset is detected at threshold τ exactly when its strength is ≥ τ (the default τ = 5).
+  const std::vector<float>& strengths() const noexcept { return strengths_; }
   uint32_t fftSize() const noexcept { return n_; }
   uint32_t hop() const noexcept { return hop_; }
 
@@ -62,21 +65,23 @@ private:
   int64_t total_ = 0;      // frames pushed
   std::vector<float> flux_;   // per analysis frame
   std::vector<float> fine_;   // energy per kFineBlock frames
+  std::vector<float> strengths_;  // SM.12: per onset (finish)
   double fineAcc_ = 0.0;
   uint32_t fineFill_ = 0;
 };
 
-// Every onset of planar audio (`frames` frames).
+// Every onset of planar audio (`frames` frames); `strengths` (optional): each one's (TransientDetector::strengths).
 std::vector<double> detectTransients(const float* const* ch, uint32_t channels, int64_t frames, uint32_t sampleRate,
-                                     const TransientOptions& options = {});
+                                     const TransientOptions& options = {}, std::vector<float>* strengths = nullptr);
 // The same, decoding the whole file. `cancel` (optional) stops it (an error).
 Result<std::vector<double>> detectTransients(Decoder& d, const std::atomic<bool>* cancel = nullptr,
-                                             const TransientOptions& options = {});
+                                             const TransientOptions& options = {}, std::vector<float>* strengths = nullptr);
 
 struct Transients {
   uint64_t contentHash = 0;
   int64_t frames = 0;
   std::vector<double> onsets;  // source frames, ascending
+  std::vector<float> strengths;  // SM.12: per onset (TransientDetector::strengths; a Sampler's slice sensitivity)
 };
 using TransientsPtr = std::shared_ptr<const Transients>;
 

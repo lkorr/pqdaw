@@ -96,6 +96,11 @@ public:
   // SM.11: the name of a guide's degree in that tuning, as the piano roll's keys print it with its equave ("C4" on a
   // 12-compatible octave EDO, "7 3", "4 1" on a MOS / scale); "" when no tuning is known (the default).
   virtual std::string pitchName(const PitchGuide& /*g*/) const { return {}; }
+  // SM.12: a Sampler's slicing (doc::ops::sliceSampler: `by` a doc::ops::SliceBy, `amount` its sensitivity 0 … 1, beats
+  // or count; Transient reads the sample's analysis) and Slice to Notes (doc::ops::sliceToNotes at the start marker).
+  // Inside begin / end they join the gesture (one undo step); false (with a notice): not done. Default: nothing.
+  virtual bool sliceSample(int /*by*/, double /*amount*/) { return false; }
+  virtual bool sliceToNotes() { return false; }
   // VZ.3: where a display's tone preview plays (null: nowhere — the play surface does nothing; pq/views/tone_port.h).
   virtual TonePort* tonePort() const { return nullptr; }
   // SM.10: the overview of project sample `sample` (a SampleId value) a face draws (pq/views/waveforms.h; null: none,

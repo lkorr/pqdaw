@@ -2532,6 +2532,13 @@ ui::Menu* ProjectPatchView::openNodeMenu(uint32_t node, Vec2 at) {
       items.push_back(ui::MenuItem::item("Copy", [this, sel] { (void)copyBlocks(sel); }, "Ctrl+C"));
       if (n.group)
         items.push_back(ui::MenuItem::item("Save as Group Preset", [this, d] { (void)saveGroupPreset(d); }));
+      // SM.12: a Sampler's slices as a note clip at the start marker (one undo step).
+      if (doc::ops::samplerEngineOf(*ctx_.doc(), d).valid())
+        items.push_back(ui::MenuItem::item("Slice to Notes", [this, d] {
+          auto e = doc::ops::sliceToNotes(*ctx_.doc(), ctx_.store().ids(), d, ctx_.startMarker());
+          if (!e) ctx_.setStatus(e.error().message);
+          else if (Status s = ctx_.store().dispatch(e->command); !s) ctx_.setStatus(s.error().message);
+        }));
       // GU.5: the group's panel window; a control of the block (or the block's controls) onto its group's panel.
       if (n.group && !embedded()) {
         ui::MenuItem win = ui::MenuItem::item("Panel Window", [this, d] { (void)togglePanelWindow(d); });

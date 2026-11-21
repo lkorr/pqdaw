@@ -71,9 +71,22 @@ constexpr float kWaveY0 = 215.0f, kWaveY1 = 299.0f;      // the waveform (the lo
 constexpr float kLoopY1 = 221.0f;
 constexpr float kFlagY0 = 300.0f, kFlagY1 = 310.0f;      // the Start / End handles
 constexpr Rect kRoot{0.0f, 330.0f, 120.0f, 346.0f};
+// SM.12: the slicing row (`sampleslice`, 328 × 30): Transient | Beat | Region | Manual, the amount, Slice to Notes.
+constexpr Rect kSlicing{0.0f, 360.0f, 328.0f, 390.0f};
+constexpr float kSliceRowY0 = 361.0f, kSliceRowY1 = 375.0f;
+constexpr Rect kSliceAmount{208.0f, 361.0f, 262.0f, 375.0f}, kSliceNotes{266.0f, 361.0f, 327.5f, 375.0f};
+constexpr const char* kSliceByNames[4] = {"Manual", "Transient", "Beat", "Region"};  // (doc::ops::SliceBy order)
+constexpr int kSliceCellOrder[4] = {1, 2, 3, 0};  // drawn Transient | Beat | Region | Manual
+constexpr double kSliceBeats[7] = {0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0};
+constexpr const char* kSliceBeatNames[7] = {"1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars"};
+Rect sliceCell(int k) noexcept {
+  const float w = 200.0f / 4.0f;
+  return {0.5f + w * static_cast<float>(k), kSliceRowY0, w * static_cast<float>(k + 1) - 1.5f, kSliceRowY1};
+}
 constexpr Rect kRootText{0.5f, 330.5f, 82.0f, 345.5f}, kRootHz{84.0f, 330.5f, 101.0f, 345.5f}, kRootId{103.0f, 330.5f, 119.5f, 345.5f};
 enum EditPart : int32_t {
   kPStart = 0, kPEnd, kPLoopStart, kPLoopEnd, kPLoop, kPWave, kPRuler, kPRootText, kPRootHz, kPRootId,
+  kPSliceBy0 = 20, kPSliceAmount = 24, kPSliceNotes = 25,  // SM.12 (kPSliceBy0 + the drawn cell)
   kPSlice0 = 1000, kPMarker0 = 100000,
 };
 bool within(const Rect& r, Vec2 l) noexcept { return l.x >= r.x0 && l.x <= r.x1 && l.y >= r.y0 && l.y <= r.y1; }
@@ -202,6 +215,7 @@ public:
     }
     if (!env.ghost && meetsClip(p, kEditor)) paintEditor(p, th, now);  // SM.11
     if (!env.ghost && meetsClip(p, kRoot)) paintRoot(p, th);
+    if (!env.ghost && meetsClip(p, kSlicing)) paintSlicing(p, th);
   }
 
   void liveRects(std::vector<Rect>& out) const override { out.push_back({kWell.x0 - 6.0f, kWell.y0 - 4.0f, kWell.x1 + 6.0f, kWell.y1 + 4.0f}); }
@@ -211,6 +225,13 @@ public:
   int32_t hitTest(Vec2 l, float ppu) const noexcept override {
     if (within(kEditor, l)) return editorPart(l, ppu);
     if (within(kRoot, l)) return within(kRootHz, l) ? kPRootHz : within(kRootId, l) ? kPRootId : kPRootText;
+    if (within(kSlicing, l)) {  // SM.12
+      for (int k = 0; k < 4; ++k)
+        if (within(sliceCell(k), l)) return kPSliceBy0 + k;
+      if (within(kSliceAmount, l)) return kPSliceAmount;
+      if (within(kSliceNotes, l)) return kPSliceNotes;
+      return kFrame;
+    }
     return shape().contains(l) ? kFrame : kNone;
   }
   bool onPointer(const FacePointer& e) override;
@@ -233,6 +254,8 @@ public:
   ui::Cursor cursor(int32_t part) const noexcept override {
     if (part == kPStart || part == kPEnd || part == kPLoopStart || part == kPLoopEnd || part >= kPSlice0) return ui::Cursor::ResizeEW;
     if (part == kPLoop) return ui::Cursor::Move;
+    if (part == kPSliceAmount) return ui::Cursor::ResizeNS;
+    if (part >= kPSliceBy0 && part <= kPSliceNotes) return ui::Cursor::Pointer;
     if (part == kPRootText) return ui::Cursor::Text;
     if (part == kPRootHz || part == kPRootId) return ui::Cursor::Pointer;
     return MetaFace::cursor(part);
@@ -260,8 +283,21 @@ public:
         return;
       case kPRootText: title = "Root"; body = "The pitch the sample plays at rate 1. Click to type Hz or an identity (A3, 7\\31 3, +cents)."; return;
       case kPRootHz: title = "Root in Hz"; body = "Show the root as Hz."; return;
+      case kPSliceAmount:
+        title = "Slice Amount";
+        body = "Drag up / down: the transient sensitivity, the beat grid or the number of parts (re-slices; one undo step).";
+        return;
+      case kPSliceNotes:
+        title = "Slice to Notes";
+        body = "A note clip at the start marker: one note per slice, in order and timing, on its slice key.";
+        return;
       case kPRootId: title = "Root as Identity"; body = "Show the root as the nearest pitch of the track's tuning and its cents."; return;
       default: break;
+    }
+    if (part >= kPSliceBy0 && part < kPSliceBy0 + 4) {
+      title = std::string("Slice by ") + kSliceByNames[kSliceCellOrder[part - kPSliceBy0]];
+      body = "Click: make the slices this way now (Manual keeps them as drawn).";
+      return;
     }
     if (part >= kPMarker0) {
       title = "Warp Marker";
@@ -450,6 +486,15 @@ private:
   int32_t editorPart(Vec2 l, float ppu) const noexcept;
   void paintEditor(ui::FacePainter& p, const ui::Theme& th, double now);
   void paintRoot(ui::FacePainter& p, const ui::Theme& th);
+  // SM.12: the slicing row, and the data's slicing state (sliceBy: a doc::ops::SliceBy; its amounts).
+  void paintSlicing(ui::FacePainter& p, const ui::Theme& th);
+  struct Slicing {
+    int by = 1;
+    double sensitivity = 1.0, beats = 1.0, count = 8.0;
+    double amount() const noexcept { return by == 1 ? sensitivity : by == 2 ? beats : count; }
+  };
+  Slicing slicing() const;
+  std::string amountText(const Slicing& sl) const;
   void refreshWhole() const;
   std::string rootLabel() const;
   void commitRoot();
@@ -460,6 +505,9 @@ private:
   mutable Whole whole_;
   int32_t drag_ = kNone;   // the part being dragged
   double grab_ = 0.0;      // kPLoop: the pointer's offset from the loop's start (0 … 1)
+  float dragY_ = 0.0f;     // SM.12: the amount drag's start (device px) and amount
+  double dragAmount_ = 0.0, lastAmount_ = 0.0;
+  int dragBy_ = 1;
   bool typing_ = false;    // the root field takes the keys
   std::string typed_;
   mutable std::string rootCache_;
@@ -556,6 +604,25 @@ static const PitchGuide* nearestGuide(const MetaTarget& t, double hz, std::vecto
 bool SamplerFace::onPointer(const FacePointer& e) {
   using K = FacePointer::Kind;
   MetaTarget& t = target();
+  if (e.kind == K::Move && drag_ == kPSliceAmount) {
+    const double dy = static_cast<double>(dragY_ - e.device.y) / std::max(0.1, static_cast<double>(e.uiScale));
+    double a = dragAmount_;
+    if (dragBy_ == 1) {
+      a = std::clamp(std::round((dragAmount_ + dy / 150.0) * 100.0) / 100.0, 0.0, 1.0);
+    } else if (dragBy_ == 2) {
+      size_t i = 0;
+      while (i + 1 < std::size(kSliceBeats) && kSliceBeats[i] < dragAmount_ - 1e-9) ++i;
+      i = static_cast<size_t>(std::clamp<long>(static_cast<long>(i) + std::lround(dy / 12.0), 0, static_cast<long>(std::size(kSliceBeats)) - 1));
+      a = kSliceBeats[i];
+    } else {
+      a = std::clamp(std::round(dragAmount_ + dy / 6.0), 2.0, 64.0);
+    }
+    if (a != lastAmount_) {
+      lastAmount_ = a;
+      (void)t.sliceSample(dragBy_, a);
+    }
+    return true;
+  }
   if (e.kind == K::Move && drag_ != kNone) {
     dragTo(e.local.x);
     return true;
@@ -573,6 +640,27 @@ bool SamplerFace::onPointer(const FacePointer& e) {
   if (!t.editable()) return false;
   const Geometry g = geometry();
   const double u = edU(e.local.x);
+  if (part >= kPSliceBy0 && part < kPSliceBy0 + 4) {  // SM.12: slice by this way now (one step)
+    const int by = kSliceCellOrder[part - kPSliceBy0];
+    Slicing sl = slicing();
+    sl.by = by;
+    (void)t.sliceSample(by, sl.amount());
+    return true;
+  }
+  if (part == kPSliceNotes) {
+    (void)t.sliceToNotes();
+    return true;
+  }
+  if (part == kPSliceAmount) {  // a vertical drag re-slices at each new amount: one undo step
+    const Slicing sl = slicing();
+    if (sl.by == 0) return true;  // (Manual has none)
+    dragBy_ = sl.by;
+    dragAmount_ = lastAmount_ = sl.amount();
+    dragY_ = e.device.y;
+    drag_ = kPSliceAmount;
+    t.begin("Slice Amount");
+    return true;
+  }
   switch (part) {
     case kPRootText:
       if (!typing_) {
@@ -963,6 +1051,58 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
       std::snprintf(b, sizeof b, "%.3f s \xE2\x80\x93 %.3f s  of %.3f s", g.start * len, g.end * len, len);
     p.textAligned({kEdX0, kFlagY1 + 5.0f}, b, 6.0f, ui::mulAlpha(th.face.ink, 0.75f), 0.0f);
   }
+}
+
+// ---- SM.12: the slicing row --------------------------------------------------------------------------------------------
+
+SamplerFace::Slicing SamplerFace::slicing() const {
+  const meta::DataPtr d = target().data();
+  Slicing sl;
+  const auto num = [&](const char* f, double def) {
+    const meta::DataValue* x = d != nullptr ? d->field(f) : nullptr;
+    return x != nullptr && x->kind == meta::DataValue::Kind::Number ? x->number : def;
+  };
+  sl.by = std::clamp(static_cast<int>(std::lround(num("sliceBy", 1.0))), 0, 3);
+  sl.sensitivity = std::clamp(num("sensitivity", 1.0), 0.0, 1.0);
+  sl.beats = num("sliceBeats", 1.0);
+  sl.count = std::clamp(num("sliceCount", 8.0), 2.0, 64.0);
+  return sl;
+}
+
+std::string SamplerFace::amountText(const Slicing& sl) const {
+  char b[32];
+  switch (sl.by) {
+    case 1: std::snprintf(b, sizeof b, "%d %%", static_cast<int>(std::lround(sl.sensitivity * 100.0))); return b;
+    case 2:
+      for (size_t i = 0; i < std::size(kSliceBeats); ++i)
+        if (std::fabs(kSliceBeats[i] - sl.beats) < 1e-9) return kSliceBeatNames[i];
+      std::snprintf(b, sizeof b, "%.2f beats", sl.beats);
+      return b;
+    case 3: std::snprintf(b, sizeof b, "%d parts", static_cast<int>(sl.count)); return b;
+    default: return "\xE2\x80\x94";  // (Manual: none)
+  }
+}
+
+void SamplerFace::paintSlicing(ui::FacePainter& p, const ui::Theme& th) {
+  const Slicing sl = slicing();
+  const Rgba cell = ui::lerp(th.face.body, th.face.track, 0.6f);
+  for (int k = 0; k < 4; ++k) {
+    const Rect r = sliceCell(k);
+    const bool on = kSliceCellOrder[k] == sl.by;
+    p.roundedRect(r, 3.0f, on ? th.face.value : hovered_ == kPSliceBy0 + k ? ui::lerp(cell, th.face.hover, 0.35f) : cell);
+    p.text({(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f}, kSliceByNames[kSliceCellOrder[k]], 6.5f, on ? th.face.body : th.face.ink);
+  }
+  const bool hotAmount = hovered_ == kPSliceAmount || drag_ == kPSliceAmount;
+  p.roundedRect(kSliceAmount, 3.0f, ui::lerp(th.face.body, th.face.track, 0.5f));
+  const Vec2 ring[5] = {{kSliceAmount.x0, kSliceAmount.y0}, {kSliceAmount.x1, kSliceAmount.y0}, {kSliceAmount.x1, kSliceAmount.y1},
+                        {kSliceAmount.x0, kSliceAmount.y1}, {kSliceAmount.x0, kSliceAmount.y0}};
+  p.polyline(ring, 0.8f, hotAmount ? th.face.hover : th.face.frame);
+  p.text({(kSliceAmount.x0 + kSliceAmount.x1) * 0.5f, (kSliceAmount.y0 + kSliceAmount.y1) * 0.5f}, amountText(sl), 6.5f,
+         sl.by == 0 ? th.face.ink : th.face.value);
+  p.roundedRect(kSliceNotes, 3.0f, hovered_ == kPSliceNotes ? ui::lerp(cell, th.face.hover, 0.35f) : cell);
+  p.text({(kSliceNotes.x0 + kSliceNotes.x1) * 0.5f, (kSliceNotes.y0 + kSliceNotes.y1) * 0.5f}, "Slice to Notes", 6.5f, th.face.ink);
+  p.textAligned({1.0f, 383.0f}, "Slice n plays on key 36 + n. Double-click the waveform to add a slice, a line to remove it.",
+                6.0f, ui::mulAlpha(th.face.ink, 0.7f), 0.0f);
 }
 
 void SamplerFace::paintRoot(ui::FacePainter& p, const ui::Theme& th) {

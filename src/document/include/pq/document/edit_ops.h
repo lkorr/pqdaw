@@ -830,6 +830,43 @@ EditResult setMetaData(const Project& p, DeviceId device, std::string path, std:
 // Errors: NotFound (no such device or sample), InvalidArgument (not a Sampler, a slice < 0 or not finite).
 EditResult setSamplerSample(const Project& p, DeviceId sampler, SampleId sample, std::optional<double> rootHz,
                             std::vector<float> slices);
+// SM.12 (docs/plans/SM.md "SM.12"): SLICING — how a Sampler's slice table is made, a data write (no recompile). The
+// engine's data keeps the way (`sliceBy`) and its amounts (`sensitivity`, `sliceBeats`, `sliceCount`) for the panel.
+//   Manual     the slices as they are (drawn in the editor)
+//   Transient  the sample's onsets (views: the sample analysis, media::Transients) whose strength (× the file's median
+//              flux above the local mean) reaches sliceThreshold(sensitivity): sensitivity 1 keeps every detected onset
+//              (the drop's slices), 0 only those 8 × stronger
+//   Beat       every `beats` content beats (1/16 note = 0.25 … 4 bars = 16) through the data's warp markers (none: the
+//              engine's sampleBpm), as the stretch modes read the sample
+//   Region     `count` equal parts
+// Slice 1 always starts the sample (frame 0); at most kMaxSlices.
+enum class SliceBy : uint8_t { Manual = 0, Transient = 1, Beat = 2, Region = 3 };
+struct SliceSpec {
+  SliceBy by = SliceBy::Transient;
+  double sensitivity = 1.0;
+  double beats = 1.0;
+  uint32_t count = 8;
+};
+inline constexpr uint32_t kMaxSlices = 128;
+inline constexpr double kSliceBaseThreshold = 5.0;  // media::TransientOptions' default threshold (sensitivity 1)
+double sliceThreshold(double sensitivity) noexcept;
+// The slice starts (frames, ascending) of a sample of `frames` at `rate` (Manual: empty). Pure.
+std::vector<float> sliceStarts(const SliceSpec& spec, int64_t frames, double rate, std::span<const double> onsets,
+                               std::span<const float> strengths, std::span<const float> markers, double sampleBpm);
+// The Sampler's (`sampler`: the group or its engine) slices made by `spec` and the way stored, ONE undo step.
+// `onsets` / `strengths`: the sample's transients (Transient only). Errors: not a Sampler, no sample (except Manual).
+EditResult sliceSampler(const Project& p, DeviceId sampler, const SliceSpec& spec, std::span<const double> onsets = {},
+                        std::span<const float> strengths = {});
+// SLICE TO NOTES: a note clip on the Sampler's (MIDI) track at `at`, one note per slice in order, each from its slice's
+// start to the next one's (the last to the sample's end): in content beats through the markers / sampleBpm while the
+// warp is on, else in seconds from the first slice through the tempo map from `at`. Slice n's note is the identity
+// whose key is 36 + n (DegreeKeyMap::degreeOf, the inverse of doc::midiKeyOf: 12-EDO degree n − 24 without a .kbm).
+// One undo step ("Slice to Notes", overwriting what lies under the clip as a capture does). Errors: not a Sampler, not on
+// a MIDI track, no sample or no slices, a key the track's .kbm maps to no degree.
+inline constexpr int64_t kSliceKey0 = 36;
+// The meta:sampler engine of `sampler` (the Sampler group or the engine itself); invalid: not a Sampler.
+DeviceId samplerEngineOf(const Project& p, DeviceId sampler);
+EditResult sliceToNotes(const Project& p, IdSource& ids, DeviceId sampler, Ticks at);
 // ---- User library (T5.11; pq/document/library_files.h) -----------------------------------------------------------
 // Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
 // engine's state key follow it); everything inside `with` (a rack's chains, mappings, inner devices) gets fresh ids.

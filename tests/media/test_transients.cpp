@@ -195,3 +195,41 @@ TEST_CASE("transients: the decoder path equals the in-memory one; cached on disk
   pq::media::transientCache().clear();
   fs::remove_all(dir, ec);
 }
+
+TEST_CASE("transients (SM.12): each onset's strength; a higher threshold keeps exactly the onsets that strong; the "
+          "strengths survive the disk cache") {
+  const Fixture f = makeFixture();
+  const float* ch[2] = {f.ch[0].data(), f.ch[1].data()};
+  const auto n = static_cast<int64_t>(f.ch[0].size());
+  std::vector<float> st;
+  const std::vector<double> all = pq::media::detectTransients(ch, 2, n, 48000, {}, &st);
+  REQUIRE(st.size() == all.size());
+  for (const float s : st) CHECK(s >= 5.0f - 1e-3f);  // detected at the default threshold 5
+  for (const float tau : {8.0f, 15.0f, 30.0f}) {
+    CAPTURE(tau);
+    pq::media::TransientOptions o;
+    o.threshold = tau;
+    const std::vector<double> strong = pq::media::detectTransients(ch, 2, n, 48000, o);
+    std::vector<double> kept;
+    for (size_t i = 0; i < all.size(); ++i)
+      if (st[i] >= tau) kept.push_back(all[i]);
+    // (two onsets closer than the minimum gap merge differently when the weaker is not detected: allow one either way)
+    CHECK(std::fabs(static_cast<double>(kept.size()) - static_cast<double>(strong.size())) <= 1.0);
+    CHECK(strong.size() < all.size());
+  }
+  const fs::path dir = fs::temp_directory_path() / "pq_transients_strength";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  pq::media::Transients t;
+  t.contentHash = 7;
+  t.frames = n;
+  t.onsets = all;
+  t.strengths = st;
+  const fs::path file = pq::media::transientCacheFile(dir, 7, n);
+  REQUIRE(pq::media::saveTransients(t, file).ok());
+  auto back = pq::media::loadTransients(file);
+  REQUIRE(back.ok());
+  CHECK((*back)->onsets == all);
+  CHECK((*back)->strengths == st);
+  fs::remove_all(dir, ec);
+}

@@ -15,6 +15,7 @@
 #include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
+#include "pq/document/midi_key.h"
 #include "pq/document/meta.h"
 #include "pq/document/model.h"
 #include "pq/document/modules.h"
@@ -187,4 +188,118 @@ TEST_CASE("SM.3 setSamplerSample: data, slices and root in one undo step; save /
   CHECK_FALSE(ops::setSamplerSample(d.doc(), vca, s, 440.0, {}).ok());
   CHECK_FALSE(ops::setSamplerSample(d.doc(), g, SampleId{999}, 440.0, {}).ok());
   CHECK_FALSE(ops::setSamplerSample(d.doc(), g, s, 440.0, {-1.0f}).ok());
+}
+
+// ---- SM.12: slicing, Slice to Notes ------------------------------------------------------------------------------------
+
+TEST_CASE("SM.12 sliceStarts: transient by sensitivity, beat through markers / sampleBpm, region, manual") {
+  using ops::SliceBy;
+  using ops::SliceSpec;
+  const std::vector<double> onsets = {4800.0, 12000.0, 30000.0};
+  const std::vector<float> strengths = {6.0f, 41.0f, 12.0f};
+  SliceSpec s;
+  s.by = SliceBy::Transient;
+  s.sensitivity = 1.0;  // every detected onset
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, onsets, strengths, {}, 120.0) == std::vector<float>{0.0f, 4800.0f, 12000.0f, 30000.0f});
+  s.sensitivity = 0.5;  // threshold 5 · 2^1.5 ≈ 14.1
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, onsets, strengths, {}, 120.0) == std::vector<float>{0.0f, 12000.0f});
+  s.sensitivity = 0.0;  // threshold 40
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, onsets, strengths, {}, 120.0) == std::vector<float>{0.0f, 12000.0f});
+  // Beat: sampleBpm 120 at 48 kHz: 24000 frames a beat.
+  s = {};
+  s.by = SliceBy::Beat;
+  s.beats = 1.0;
+  CHECK(ops::sliceStarts(s, 96000, 48000.0, {}, {}, {}, 120.0) == std::vector<float>{0.0f, 24000.0f, 48000.0f, 72000.0f});
+  s.beats = 0.5;
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, {}, {}, {}, 120.0) == std::vector<float>{0.0f, 12000.0f, 24000.0f, 36000.0f});
+  // Through two markers: beat 0 at frame 0, beat 2 at frame 30000 (15000 frames a beat, then that slope on).
+  const std::vector<float> markers = {0.0f, 0.0f, 30000.0f, 2.0f};
+  s.beats = 1.0;
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, {}, {}, markers, 120.0) == std::vector<float>{0.0f, 15000.0f, 30000.0f, 45000.0f});
+  // Region: n equal parts.
+  s = {};
+  s.by = SliceBy::Region;
+  s.count = 4;
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, {}, {}, {}, 120.0) == std::vector<float>{0.0f, 12000.0f, 24000.0f, 36000.0f});
+  s.by = SliceBy::Manual;
+  CHECK(ops::sliceStarts(s, 48000, 48000.0, {}, {}, {}, 120.0).empty());
+}
+
+TEST_CASE("SM.12 sliceSampler: one undo step, the way kept in the data (no recompile); Manual keeps the slices") {
+  Doc d;
+  d.clearHead();
+  const DeviceId g = test_blocks::addModule(d.store, d.track, "sampler", 0);
+  const DeviceId engine = ops::samplerEngineOf(d.doc(), g);
+  REQUIRE(engine.valid());
+  CHECK(ops::samplerEngineOf(d.doc(), engine) == engine);
+  CHECK_FALSE(ops::samplerEngineOf(d.doc(), DeviceId{999999}).valid());
+  CHECK_FALSE(ops::sliceSampler(d.doc(), g, {}).ok());  // no sample yet
+  const SampleId s = d.addSample();
+  d.edit(ops::setSamplerSample(d.doc(), g, s, std::nullopt, {}));
+  const size_t cursor = d.store.history().cursor();
+  ops::SliceSpec spec;
+  spec.by = ops::SliceBy::Region;
+  spec.count = 6;
+  d.edit(ops::sliceSampler(d.doc(), g, spec));
+  CHECK(d.store.history().cursor() == cursor + 1);
+  const pq::meta::DataPtr data = d.dev(engine).metaAt("")->data;
+  CHECK(pq::meta::samplerSlices(data.get()).size() == 6);
+  CHECK(data->field("sliceBy")->number == 3.0);
+  CHECK(data->field("sliceCount")->number == 6.0);
+  spec.by = ops::SliceBy::Manual;
+  d.edit(ops::sliceSampler(d.doc(), g, spec));
+  CHECK(pq::meta::samplerSlices(d.dev(engine).metaAt("")->data.get()).size() == 6);
+  CHECK(d.dev(engine).metaAt("")->data->field("sliceBy")->number == 0.0);
+}
+
+TEST_CASE("SM.12 sliceToNotes: a clip at the marker, a note per slice on keys 36 + n, timed in seconds (warp Off, tempo "
+          "map) or beats (warp on); one undo step; refusals") {
+  Doc d;
+  d.clearHead();
+  const DeviceId g = test_blocks::addModule(d.store, d.track, "sampler", 0);
+  const DeviceId engine = ops::samplerEngineOf(d.doc(), g);
+  CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), g, 0).ok());  // no sample
+  const SampleId s = d.addSample();  // 48000 frames at 48 kHz: 1 s
+  d.edit(ops::setSamplerSample(d.doc(), g, s, std::nullopt, {6000.0f, 18000.0f, 42000.0f}));
+  const Ticks at = 4 * pq::kPpq;
+  const size_t cursor = d.store.history().cursor();
+  const ops::Edit e = d.edit(ops::sliceToNotes(d.doc(), d.store.ids(), g, at));
+  CHECK(d.store.history().cursor() == cursor + 1);
+  const Track& t = *findTrackPtr(d.doc(), d.track);
+  REQUIRE(t.clips.size() == 1);
+  REQUIRE(t.clips.front().clip != nullptr);
+  const NoteClip& c = *t.clips.front().clip;
+  CHECK(c.start == at);
+  std::vector<Note> notes;
+  for (const Note& n : c.notes) notes.push_back(n);
+  REQUIRE(notes.size() == 3);
+  // 120 BPM: 1 s = 2 beats. Slices at 0.125, 0.375, 0.875 s: notes at 0, 0.5, 1.5 beats; lengths to the next / the end.
+  const DegreeKeyMap keys(nullptr);
+  const double beat = static_cast<double>(pq::kPpq);
+  const double starts[3] = {0.0, 0.5, 1.5}, lens[3] = {0.5, 1.0, 0.25};
+  for (size_t i = 0; i < 3; ++i) {
+    CAPTURE(i);
+    CHECK(static_cast<double>(notes[i].start) == doctest::Approx(starts[i] * beat).epsilon(1e-9));
+    CHECK(static_cast<double>(notes[i].length) == doctest::Approx(lens[i] * beat).epsilon(1e-9));
+    REQUIRE(notes[i].pitch.kind() == pq::tuning::PitchKind::Degree);
+    CHECK(keys.key(notes[i].pitch.degree()) == 36 + static_cast<int64_t>(i));
+  }
+  // Warp on (Beats) with sampleBpm 60: 1 beat = 48000 frames; notes in content beats.
+  d.edit(ops::setMetaSetting(d.doc(), engine, "", "sampler", "warp", 2.0));
+  d.edit(ops::setMetaParamValue(d.doc(), engine, "", "sampler", "sampleBpm", 60.0));
+  d.edit(ops::sliceToNotes(d.doc(), d.store.ids(), g, 0));
+  const Track& t2 = *findTrackPtr(d.doc(), d.track);
+  const NoteClip* c2 = nullptr;
+  for (const ClipSlot& x : t2.clips)
+    if (x.clip != nullptr && x.clip->start == 0) c2 = x.clip.get();
+  REQUIRE(c2 != nullptr);
+  std::vector<Note> n2(c2->notes.begin(), c2->notes.end());
+  REQUIRE(n2.size() == 3);
+  CHECK(static_cast<double>(n2[1].start) == doctest::Approx(0.25 * beat).epsilon(1e-9));  // 12000 frames later
+  CHECK(static_cast<double>(n2[2].start) == doctest::Approx(0.75 * beat).epsilon(1e-9));
+  // Refused on an audio track.
+  const TrackId audio = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Audio, {}, "A")).tracks.at(0);
+  const DeviceId ga = test_blocks::addModule(d.store, audio, "sampler", 0);
+  d.edit(ops::setSamplerSample(d.doc(), ga, s, std::nullopt, {0.0f}));
+  CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), ga, 0).ok());
 }

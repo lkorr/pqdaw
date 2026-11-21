@@ -21,7 +21,7 @@ namespace {
 
 constexpr uint32_t kFineBlock = 16;  // frames per refinement energy block
 constexpr uint32_t kMagic = 0x52545150u;  // "PQTR"
-constexpr uint32_t kVersion = 1;
+constexpr uint32_t kVersion = 2;  // SM.12: + the strengths
 
 uint32_t fftSizeFor(uint32_t sr) {
   uint32_t n = 256;
@@ -122,6 +122,7 @@ std::vector<double> TransientDetector::finish() {
   }
   if (fineFill_ != 0) fine_.push_back(static_cast<float>(fineAcc_ * kFineBlock / fineFill_));
   std::vector<double> out;
+  strengths_.clear();
   const auto T = static_cast<int64_t>(flux_.size());
   if (T == 0) return out;
   std::vector<float> sorted(flux_);
@@ -132,10 +133,13 @@ std::vector<double> TransientDetector::finish() {
   // Above the local mean by `threshold` × the median flux (the material's background: most frames hold no onset), at
   // least 1 % of the largest (silence or a steady tone has a median of ~0).
   const double delta = std::max(opt_.threshold * static_cast<double>(sorted[static_cast<size_t>(T / 2)]), 0.01 * maxF);
+  // SM.12: the strength's unit (delta at the default threshold 5 is 5 units).
+  const double unit = std::max(static_cast<double>(sorted[static_cast<size_t>(T / 2)]), 0.002 * maxF);
   const auto minGap = static_cast<int64_t>(std::ceil(opt_.minGapSeconds * static_cast<float>(sr_)));
   struct Cand {
     double at;
-    float strength;
+    float strength;  // the flux peak (the larger wins within the gap)
+    float score;     // SM.12: above the local mean, in units
   };
   std::vector<Cand> picks;
   const auto E = static_cast<int64_t>(fine_.size());
@@ -218,18 +222,22 @@ std::vector<double> TransientDetector::finish() {
     }
     at = std::clamp(at, 0.0, static_cast<double>(std::max<int64_t>(frames - 1, 0)));
     if (!picks.empty() && at - picks.back().at < static_cast<double>(minGap)) {
-      if (f > picks.back().strength) picks.back() = {at, f};
+      if (f > picks.back().strength) picks.back() = {at, f, static_cast<float>((f - mean) / unit)};
       continue;
     }
-    picks.push_back({at, f});
+    picks.push_back({at, f, static_cast<float>((f - mean) / unit)});
   }
   out.reserve(picks.size());
-  for (const Cand& c : picks) out.push_back(std::round(c.at));
+  strengths_.reserve(picks.size());
+  for (const Cand& c : picks) {
+    out.push_back(std::round(c.at));
+    strengths_.push_back(c.score);
+  }
   return out;
 }
 
 std::vector<double> detectTransients(const float* const* ch, uint32_t channels, int64_t frames, uint32_t sampleRate,
-                                     const TransientOptions& options) {
+                                     const TransientOptions& options, std::vector<float>* strengths) {
   TransientDetector d(sampleRate, options);
   constexpr int64_t kChunk = 65536;
   std::vector<const float*> p(channels);
@@ -237,10 +245,13 @@ std::vector<double> detectTransients(const float* const* ch, uint32_t channels, 
     for (uint32_t c = 0; c < channels; ++c) p[c] = ch[c] + at;
     d.push(p.data(), channels, static_cast<uint32_t>(std::min(kChunk, frames - at)));
   }
-  return d.finish();
+  std::vector<double> out = d.finish();
+  if (strengths != nullptr) *strengths = d.strengths();
+  return out;
 }
 
-Result<std::vector<double>> detectTransients(Decoder& dec, const std::atomic<bool>* cancel, const TransientOptions& options) {
+Result<std::vector<double>> detectTransients(Decoder& dec, const std::atomic<bool>* cancel, const TransientOptions& options,
+                                             std::vector<float>* strengths) {
   const SampleInfo& info = dec.info();
   if (info.channels == 0) return Error{ErrorCode::InvalidArgument, "transients: no channels", {}};
   if (Status s = dec.seek(0); !s.ok()) return s.error();
@@ -256,7 +267,9 @@ Result<std::vector<double>> detectTransients(Decoder& dec, const std::atomic<boo
     if (*r == 0) break;
     d.push(reinterpret_cast<const float* const*>(dst.data()), info.channels, static_cast<uint32_t>(*r));
   }
-  return d.finish();
+  std::vector<double> out = d.finish();
+  if (strengths != nullptr) *strengths = d.strengths();
+  return out;
 }
 
 fs::path transientCacheFile(const fs::path& dir, uint64_t contentHash, int64_t frames) {
@@ -281,6 +294,9 @@ Status saveTransients(const Transients& t, const fs::path& file) {
     o.write(reinterpret_cast<const char*>(&t.frames), 8);
     o.write(reinterpret_cast<const char*>(&count), 8);
     o.write(reinterpret_cast<const char*>(t.onsets.data()), static_cast<std::streamsize>(count * sizeof(double)));
+    std::vector<float> st = t.strengths;
+    st.resize(count, 0.0f);
+    o.write(reinterpret_cast<const char*>(st.data()), static_cast<std::streamsize>(count * sizeof(float)));
     if (!o) return Error{ErrorCode::Io, "transients: write failed " + part.string(), {}};
   }
   fs::rename(part, file, ec);
@@ -306,6 +322,8 @@ Result<TransientsPtr> loadTransients(const fs::path& file) {
     return Error{ErrorCode::InvalidArgument, "transients: bad file " + file.string(), {}};
   t->onsets.resize(static_cast<size_t>(count));
   in.read(reinterpret_cast<char*>(t->onsets.data()), static_cast<std::streamsize>(count * sizeof(double)));
+  t->strengths.resize(static_cast<size_t>(count));
+  in.read(reinterpret_cast<char*>(t->strengths.data()), static_cast<std::streamsize>(count * sizeof(float)));
   if (!in) return Error{ErrorCode::InvalidArgument, "transients: truncated " + file.string(), {}};
   for (size_t i = 1; i < t->onsets.size(); ++i)
     if (!(t->onsets[i] > t->onsets[i - 1])) return Error{ErrorCode::InvalidArgument, "transients: unordered " + file.string(), {}};
@@ -354,11 +372,11 @@ Result<TransientsPtr> loadOrDetectTransients(const TransientRequest& r, const st
   t->frames = r.frames;
   if (r.resident != nullptr && !r.resident->streamed()) {
     const uint32_t ch = std::min<uint32_t>(r.resident->channels, kMaxStreamChannels);
-    t->onsets = detectTransients(r.resident->data, ch, r.resident->frames, r.resident->sampleRate);
+    t->onsets = detectTransients(r.resident->data, ch, r.resident->frames, r.resident->sampleRate, {}, &t->strengths);
   } else {
     auto dec = Decoder::open(r.path);
     if (!dec) return std::move(dec).error();
-    auto o = detectTransients(**dec, cancel);
+    auto o = detectTransients(**dec, cancel, {}, &t->strengths);
     if (!o) return std::move(o).error();
     t->onsets = std::move(*o);
   }

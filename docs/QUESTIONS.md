@@ -2519,3 +2519,17 @@ Context: SM.11 (docs/plans/SM.md "Face (👁)" Expanded). Choices (most reversib
    recomputed from the root Hz on display (the stored `rootText` only marks the identity display / keeps the name).
 6. **Warp marker drags move the frame, keep the beat** (Live's sample view); a new marker takes the beat the ruler reads
    there, so adding one never changes the sound.
+
+## Q?-SM.12-a · slicing and Slice to Notes: readings taken
+Context: SM.12 (docs/plans/SM.md "SM.12"). Choices (most reversible):
+1. **Transient sensitivity = a threshold on stored onset strengths**: media::Transients now keeps each onset's strength
+   (flux above the local mean in units of the median; the cache file version 2), sensitivity s → threshold
+   5 · 2^(3(1 − s)): 1 keeps every detected onset (the drop's slices), 0 only those 8 × stronger. No re-detection, so a
+   sensitivity drag is instant; it cannot find onsets weaker than the detector's default threshold.
+2. **Slice 1 always starts at frame 0** for Transient / Beat / Region (Live does the same); Manual keeps the table.
+3. **Slice to Notes anchors the first slice at the start marker** (leading silence before slice 1 is not reproduced);
+   warp Off: seconds through the tempo map from the marker; warp on: content beats (markers / sampleBpm), so the clip
+   follows the song tempo as the warped sample would. Notes run to the next slice (the last to the sample's end).
+4. **"Insert marker" = the start marker** (ViewContext::startMarker), the only insert position the views keep.
+5. **Transient slicing waits for the sample analysis** (SampleAnalysis): before it arrives the click says so and does
+   nothing (the analysis is requested).

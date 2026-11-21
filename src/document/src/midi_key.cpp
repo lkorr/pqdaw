@@ -30,6 +30,13 @@ int64_t DegreeKeyMap::key(int64_t absDegree) const noexcept {
   return it != keyOf_.end() && it->first == absDegree ? it->second : int64_t{tuning::kNoMidiKey};
 }
 
+std::optional<int64_t> DegreeKeyMap::degreeOf(int64_t key) const noexcept {
+  if (!kbm_) return key - 60;
+  for (const auto& [d, k] : keyOf_)
+    if (k == key) return d;
+  return std::nullopt;
+}
+
 int16_t midiKeyOf(const tuning::PitchId& id, std::optional<double> keyDegree, double hz, const DegreeKeyMap& keys) noexcept {
   if (id.kind() == tuning::PitchKind::Degree) {
     if (!keyDegree || !(std::fabs(*keyDegree) < 1e9)) return tuning::kNoMidiKey;

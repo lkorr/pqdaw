@@ -2590,18 +2590,11 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     panel.elements.push_back(when(knob("flux", "Flux", 226, t), warp, {4.0}));
     y = t + 60.0f;
   }
-  // Slices (Slice mode only): how slices are played and made (SM.12 adds the slicing).
+  // Slices (Slice mode only): the slicing row (SM.12: Transient | Beat | Region | Manual, the amount, Slice to Notes).
   header("Slices", false);
   panel.elements.back().when = Visibility{r.tabs, {2.0}, {}, false};
-  {
-    PanelElement hint = element(id++, "label", 6, y + 2, kSamplerPanelW - 12, 14, {});
-    hint.bindings.clear();
-    hint.setField(styleText("text", "Slice n plays on key 36 + n. Double-click the waveform to add a slice, a line to remove it."));
-    hint.setField(styleText("align", "left"));
-    hint.setField(styleNumber("size", 7.0));
-    panel.elements.push_back(std::move(hint));
-    y += 20.0f;
-  }
+  panel.elements.push_back(element(id++, "sampleslice", 6, y + 2, 328, 30, dataBinding(r.engine)));
+  y += 36.0f;
   // The Envelope, the Filter and the LFO: their own panels; the Filter and LFO switches beside their headers.
   const auto embedded = [&](const char* title, DeviceId group, DeviceId onOff) {
     const float head = y;

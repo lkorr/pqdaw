@@ -26,6 +26,9 @@ class DegreeKeyMap {
 public:
   explicit DegreeKeyMap(const TuningDef* def);
   int64_t key(int64_t absDegree) const noexcept;
+  // SM.12: the inverse — the absolute degree whose key() is `key` (without a .kbm key − 60; with one the degree whose
+  // lowest key it is); nullopt: none (a .kbm key that is not a degree's lowest, or maps to nothing).
+  std::optional<int64_t> degreeOf(int64_t key) const noexcept;
   bool hasKbm() const noexcept { return kbm_; }
 
 private:
