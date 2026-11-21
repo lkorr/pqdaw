@@ -2237,3 +2237,12 @@ snap); the free rack forwards it (`DeviceChainView::onRackPinsMoved`) and the ca
 cable ends in the open rack and not mid layout pass (`UiTree::inLayout`: onLayout follows). No per-frame cost at rest.
 The project patch view and opened groups draw their own cables inside the canvas (they already follow the slide); the
 Device view's group frames and panels end cables on widget rects, which move only by layout. Status: done.
+
+## Q?-AP.1-a · 2026-11-20 · AP.1 · Arp readings of Offset, Steps, the first synced step, one degree table
+Context: AP.md leaves four details open. (1) Offset: "rotate the pattern start" vs the clock's "plus Offset". (2) Steps:
+copies of the pattern or transpositions beyond the first. (3) Where the first synced step falls when a note arrives
+between grid steps. (4) Degrees needs a step table; a track patch may have several tuning nodes. Chosen (reversible, in
+arp.h): (1) Offset rotates the cycle by n steps (Live's); the grid stays at multiples of L from tick 0. (2) Steps =
+1 … 8 copies, copy j shifted j · Distance (Steps 1 = no transposition). (3) The first grid step at or after the note-on
+(stopped: the free clock starts at the note-on). (4) One `ArpDegreeTable` per stage, from the track's main tuning (AP.2
+builds it); a note without a Degree identity shifts from round(noteDegree) and plays static once shifted. Status: open.
