@@ -134,22 +134,14 @@ NoteGlideView noteGlideView(const Project& p, DeviceId device, double bpm) {
     o.offset = g.offset;
     o.cents = offsetCents(params, tables, g.offset);
     o.text = offsetText(params, g.offset);
-    o.synced = g.synced;
     o.shape = static_cast<int32_t>(g.shape);
     o.bend = g.bend;
-    o.ms = g.mode == engine::ArpGlide::Off ? 0.0 : std::min(g.synced ? g.fraction * noteMs : static_cast<double>(g.ms), noteMs);
+    o.time = g.mode == engine::ArpGlide::Off ? 0.0 : static_cast<double>(g.time);  // AP.11: of the note; additive
+    o.steps = o.time * v.gate;
+    o.ms = o.time * noteMs;
   };
   side(params.into, v.into);
   side(params.out, v.out);
-  if (v.into.ms > 0.0 && v.out.ms > 0.0 && v.into.ms + v.out.ms > noteMs) {  // both: shrunk in proportion
-    const double sum = v.into.ms + v.out.ms;
-    v.into.ms = noteMs * v.into.ms / sum;
-    v.out.ms = noteMs - v.into.ms;
-  }
-  if (v.stepMs > 0.0) {
-    v.into.steps = v.into.ms / v.stepMs;
-    v.out.steps = v.out.ms / v.stepMs;
-  }
   return v;
 }
 

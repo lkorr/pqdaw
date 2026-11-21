@@ -714,7 +714,8 @@ struct LoweredNoteStage {
   struct Slot {
     uint32_t param = 0;  // the param's index in the type
     std::string key;     // its project param ("dev<id>:<name>@pos": a knob position)
-    float scale = 1.0f, offset = 0.0f;  // value = offset + scale · position
+    float scale = 1.0f, offset = 0.0f;  // value = offset + scale · arpTaper(taper, position)
+    float taper = 0.0f;                 // AP.11: NoteParamSpec::taper (0: linear)
     std::vector<WireId> mods;           // AP.2b: the cables into it (LoweredProject::noteMods), in id order
   };
   std::vector<Slot> runtime;

@@ -46,6 +46,8 @@ struct NoteParamSpec {
   bool isBool = false;
   std::vector<std::string> choices;  // an enum's labels (index = value − min); empty: none
   bool runtime = true;   // a runtime param (else a structural setting)
+  std::string unit;      // AP.11: "%" (the value a fraction, shown × 100; the patch text's `%` literals), else ""
+  double taper = 0.0;    // AP.11: the knob's exp0 taper k (engine arpTaper; 0: linear)
 };
 
 enum class NoteStageKind : uint8_t;  // lower.h: the engine stage a type plays as

@@ -216,9 +216,9 @@ TEST_CASE("note stage render (AP.7): the offline render equals the engine's even
     r.param("intoSource", static_cast<double>(engine::ArpGlide::Step));
     r.param("outTarget", static_cast<double>(engine::ArpGlide::Offset));
     r.param("outOffset", 2.0);
-    r.param("intoMs", 30.0);
+    r.param("intoTime", 0.6);  // AP.11: of the note, overlapping the Out (added, in pieces)
     r.param("intoShape", static_cast<double>(engine::RampShape::SCurve));
-    r.param("outMs", 20.0);  // AP.10: Out its own time and shape
+    r.param("outTime", 0.7);  // AP.10: Out its own time and shape
     r.param("outShape", static_cast<double>(engine::RampShape::Overshoot));
     r.param("gate", 1.3);
     checkConfig(r);
@@ -352,7 +352,7 @@ TEST_CASE("note stage render (AP.7): flattened identities — Degree shifts, rat
   r.param("rateDen", 8.0);
   r.param("intoSource", static_cast<double>(engine::ArpGlide::Offset));
   r.param("intoOffset", -1.0);
-  r.param("intoMs", 40.0);
+  r.param("intoTime", 0.4);
   const app::TrackNoteRender off = offline(r);
   REQUIRE(off.clips.size() == 1);
   const NoteClip* src = playedClips(*findTrackPtr(r.doc(), r.track)).front().clip.get();

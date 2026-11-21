@@ -1809,7 +1809,7 @@ TEST_CASE("voices (AP.3): an arp's Into glide sampled from the VoiceEngine's Hz 
   eng::ArpParams p;
   p.rate = {true, 1, 16, 1, 1, 125.0f};  // stopped transport: steps of 6000 from the first note-on
   p.into.mode = eng::ArpGlide::Step;
-  p.into.ms = 20.0f;  // 960 frames
+  p.into.time = 0.32f;  // 960 of the 3000-frame note
   p.into.shape = eng::RampShape::Exponential;
   p.into.bend = 0.5f;
   std::vector<float> ref;
@@ -1894,7 +1894,7 @@ TEST_CASE("voices (AP.10): an arp's Into and Out glides each with their own time
   const double up = std::log2(1.5);
   SUBCASE("Into only: Step, Exponential, 960 frames; no Out") {
     eng::ArpParams p = base;
-    p.into = {eng::ArpGlide::Step, 0.0f, false, 20.0f, 0.25f, eng::RampShape::Exponential, 0.5f};
+    p.into = {eng::ArpGlide::Step, 0.0f, 0.32f, eng::RampShape::Exponential, 0.5f};
     p.out.shape = eng::RampShape::Overshoot;  // (Out is off: its shape changes nothing)
     for (const uint32_t block : {64u, 37u}) {
       const auto f = arpVoiceHz(p, block, 9000);
@@ -1906,7 +1906,7 @@ TEST_CASE("voices (AP.10): an arp's Into and Out glides each with their own time
   }
   SUBCASE("Out only: Step, Overshoot (bend 0.6), 480 frames over the gate's end; no Into") {
     eng::ArpParams p = base;
-    p.out = {eng::ArpGlide::Step, 0.0f, false, 10.0f, 0.25f, eng::RampShape::Overshoot, 0.6f};
+    p.out = {eng::ArpGlide::Step, 0.0f, 0.16f, eng::RampShape::Overshoot, 0.6f};
     p.into.shape = eng::RampShape::SCurve;  // (Into is off)
     for (const uint32_t block : {64u, 37u}) {
       const auto f = arpVoiceHz(p, block, 3200);
@@ -1919,13 +1919,75 @@ TEST_CASE("voices (AP.10): an arp's Into and Out glides each with their own time
   SUBCASE("both: Into Exponential 960, Out Offset −200 cents S-curve 480 (in cents) on the same step") {
     eng::ArpParams p = base;
     p.glideCents = true;
-    p.into = {eng::ArpGlide::Step, 0.0f, false, 20.0f, 0.25f, eng::RampShape::Exponential, 0.5f};
-    p.out = {eng::ArpGlide::Offset, -200.0f, false, 10.0f, 0.25f, eng::RampShape::SCurve, -1.0f};
+    p.into = {eng::ArpGlide::Step, 0.0f, 0.32f, eng::RampShape::Exponential, 0.5f};
+    p.out = {eng::ArpGlide::Offset, -200.0f, 0.16f, eng::RampShape::SCurve, -1.0f};
     for (const uint32_t block : {64u, 37u}) {
       const auto f = arpVoiceHz(p, block, 9000);
       CHECK(f[6480] == doctest::Approx(200.0 * std::exp2(up * shapeOf(eng::RampShape::Exponential, 64, 0.5))).epsilon(1e-6));
       CHECK(f[8520] == 300.0f);  // the hold, then Out over the last 480 frames of the gate (9000)
       CHECK(f[8760] == doctest::Approx(300.0 * std::exp2(-200.0 / 1200.0 * 0.5)).epsilon(1e-6));
+    }
+  }
+}
+
+TEST_CASE("voices (AP.11): an arp's Into / Out Time as a % of the note, past 100 %, overlapping (added), sampled") {
+  eng::ArpParams base;
+  base.rate = {true, 1, 16, 1, 1, 125.0f};  // steps of 6000 from the first note-on (200, 300, …), gate 3000
+  const double up = std::log2(1.5);
+  SUBCASE("Into Step Linear 50 %: arrived by the note's end; 150 %: still partway there") {
+    eng::ArpParams p = base;
+    p.into = {eng::ArpGlide::Step, 0.0f, 0.5f, eng::RampShape::Linear, 0.0f};
+    for (const uint32_t block : {64u, 37u}) {
+      const auto f = arpVoiceHz(p, block, 9000);
+      CHECK(f[7500] == 300.0f);
+      CHECK(f[8999] == 300.0f);
+    }
+    p.into.time = 1.5f;  // 4500 frames from 6000
+    for (const uint32_t block : {64u, 37u}) {
+      const auto f = arpVoiceHz(p, block, 9000);
+      CHECK(f[8999] == doctest::Approx(200.0 * std::exp2(up * 2999.0 / 4500.0)).epsilon(1e-5));
+      CHECK(f[8999] < 290.0f);
+    }
+  }
+  SUBCASE("Out Step Linear 150 %: the note begins a third of the way toward the next step") {
+    eng::ArpParams p = base;
+    p.out = {eng::ArpGlide::Step, 0.0f, 1.5f, eng::RampShape::Linear, 0.0f};  // 4500 ending at 3000: from −1500
+    for (const uint32_t block : {64u, 37u}) {
+      const auto f = arpVoiceHz(p, block, 3000);
+      CHECK(f[0] == doctest::Approx(200.0 * std::exp2(up / 3.0)).epsilon(1e-6));
+      CHECK(f[1500] == doctest::Approx(200.0 * std::exp2(up * 2.0 / 3.0)).epsilon(1e-5));
+      CHECK(f[2999] == doctest::Approx(200.0 * std::exp2(up * 4499.0 / 4500.0)).epsilon(1e-5));
+    }
+  }
+  SUBCASE("Into and Out overlapping add: Offsets −300 ¢ / +200 ¢, 60 % each (Linear exact; S-curve / Exponential)") {
+    eng::ArpParams p = base;
+    p.glideCents = true;
+    p.into = {eng::ArpGlide::Offset, -300.0f, 0.6f, eng::RampShape::Linear, 0.0f};  // [0, 1800)
+    p.out = {eng::ArpGlide::Offset, 200.0f, 0.6f, eng::RampShape::Linear, 0.0f};    // [1200, 3000)
+    auto want = [&](int t, eng::RampShape si, eng::RampShape so, int8_t kb) {
+      const double c = (t < 1800 ? -300.0 * (1.0 - eng::rampShapeAt(si, 0, t / 1800.0)) : 0.0) +
+                       (t >= 1200 ? 200.0 * eng::rampShapeAt(so, kb, (t - 1200) / 1800.0) : 0.0);
+      return 200.0 * std::exp2(c / 1200.0);
+    };
+    for (const uint32_t block : {64u, 37u})
+      for (const int t : {0, 600, 1200, 1500, 1799, 2400, 2999}) {
+        CAPTURE(t);
+        const auto f = arpVoiceHz(p, block, 3000);
+        CHECK(f[t] == doctest::Approx(want(t, eng::RampShape::Linear, eng::RampShape::Linear, 0)).epsilon(1e-5));
+      }
+    p.into.shape = eng::RampShape::SCurve;
+    p.out.shape = eng::RampShape::Exponential;
+    p.out.bend = 0.5f;
+    const int8_t kb = eng::rampBendOf(0.5f);
+    std::vector<float> ref;
+    for (const uint32_t block : {64u, 37u, 512u}) {
+      const auto f = arpVoiceHz(p, block, 3000);
+      for (int t = 0; t < 3000; t += 50) {
+        CAPTURE(t);  // linear-in-cents pieces (32 over the shorter curve): within 0.75 ¢ of the summed curves
+        CHECK(std::fabs(1200.0 * std::log2(f[t] / want(t, eng::RampShape::SCurve, eng::RampShape::Exponential, kb))) < 0.75);
+      }
+      if (ref.empty()) ref.assign(f.begin(), f.begin() + 3000);
+      else CHECK(std::equal(ref.begin(), ref.end(), f.begin()));
     }
   }
 }

@@ -49,15 +49,15 @@ NotePattern notePattern(const Project& p, DeviceId device, std::span<const NoteP
 
 // AP.10: the GLIDES of one step of note device `device` as its bend view draws them (its values now, at `bpm`): the
 // step's length, the note's (Gate), and each side's mode, offset (its param value, in cents, as text in the unit), time
-// (ms or a note fraction → steps, each at most the note, shrunk in proportion when Into + Out exceed it: the engine's
-// rule, arp.h "Glides"), shape and bend.
+// (AP.11: a fraction 0 … 2 of the note → steps / ms; the sides are additive and may overlap or pass the note: the
+// engine's rule, arp.h "Glides"), shape and bend.
 struct NoteGlideSide {
   int32_t mode = 0;            // 0 Off, 1 Step (Into: the previous step, Out: the next one), 2 Offset
   double offset = 0.0;         // the Offset param's value (in the unit, or cents)
   double cents = 0.0;          // the offset in cents (NaN: a rest — Harmonics below the first)
   std::string text;            // the offset as the unit reads it: "−2 deg", "+100 ¢", "h8 → h9", "× (3/2)^1"
-  bool synced = false;         // Time is a fraction of the note (else ms)
-  double steps = 0.0, ms = 0.0;  // its time, after the clamps (0: none)
+  double time = 0.0;           // its Time, a fraction of the note (0: Off)
+  double steps = 0.0, ms = 0.0;  // the same in steps / ms
   int32_t shape = 0;           // RampShape
   double bend = 0.0;           // −1 … 1
 };

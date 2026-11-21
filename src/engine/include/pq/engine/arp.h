@@ -92,10 +92,15 @@
 // run), Offset = its own pitch moved by Into offset (in the pitch unit, rounded, or in cents with Glide cents).
 // Out: over the last Time of the step's gate the note glides to a target: Step = the next step's note (already
 // sounding with a gate > 100 %, else the step the pattern plays next, as known at that frame), Offset = its own
-// pitch moved by Out offset. AP.10: each side has its own Time (ms, or synced: a fraction of the note's length; ≥ 1
-// frame), Shape (RampShape) and Bend (−1 … 1 → the byte −127 … 127, rampBendOf): the NoteEvent ramp shape
-// (note_events.h rampShapeAt), evaluated by the VoiceEngine. When Into + Out exceed the note both shrink in
-// proportion (equal times: half each). Glide cents: both offsets in cents. The source note's own
+// pitch moved by Out offset. AP.10 / AP.11: each side has its own Time (a fraction 0 … 2 of the note's sounding
+// length, the gated note: 25 % default; ≥ 1 frame), Shape (RampShape) and Bend (−1 … 1 → the byte −127 … 127,
+// rampBendOf): the NoteEvent ramp shape (note_events.h rampShapeAt), evaluated by the VoiceEngine. The two sides are
+// ADDITIVE offset curves in cents on the note's own pitch — Into: offset_in · (1 − s_in(u)) from the onset over its
+// Time, Out: offset_out · s_out(v) over the last Out Time ending at the note's end — so they overlap freely: Into
+// > 100 % is still travelling when the note ends; Out > 100 % starts before the onset (the note begins partway along
+// it). One side alone is one shaped ramp; both Linear overlapping are linear pieces (exact); otherwise the overlap (and
+// an Out begun before the onset) is sent as linear-in-cents pieces of ≥ 1 ms, 32 per the shorter curve. The Glide lane
+// scales both distances (and, on a tie, the Into time). Glide cents: both offsets in cents. The source note's own
 // bend carries over on top: the Into glide aims at the source's bend at its end (a running bend continues from
 // there); a source Pitch event during the Into glide re-aims it; during the Out glide the note goes to its target
 // (later source bends do not move it).
@@ -179,6 +184,7 @@
 
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -205,6 +211,8 @@ inline constexpr int32_t kArpMaxPulseH = 1024;    // AP.4: h and a fixed h_ref
 inline constexpr int32_t kArpMaxPulseBars = 16;   // AP.4: a Bars cycle
 inline constexpr int32_t kArpMaxLayers = 3;       // AP.4: extra copies per note
 inline constexpr int32_t kArpMaxLaneSteps = 32;   // AP.5: steps per lane
+inline constexpr float kArpMaxGlideTime = 2.0f;    // AP.11: a glide side's time, of the note's length (200 %)
+inline constexpr float kArpGlideTimeTaper = 2.0f;  // AP.11: its knob's taper (100 % at 66 % of the travel)
 
 enum class ArpStyle : uint8_t {
   Up, Down, UpDown, DownUp, UpAndDown, DownAndUp, Converge, Diverge, ConAndDiverge, PinkyUp, PinkyUpDown, ThumbUp,
@@ -228,9 +236,7 @@ enum class ArpStepKind : uint8_t { Play, Skip, Tie };
 struct ArpGlideSide {
   ArpGlide mode = ArpGlide::Off;
   float offset = 0.0f;                // −4800 … 4800: in the pitch unit (rounded) or cents (ArpParams::glideCents)
-  bool synced = false;                // Time = fraction of the note (else ms)
-  float ms = 50.0f;                   // 0 … 10000
-  float fraction = 0.25f;             // 0 … 1
+  float time = 0.25f;                 // AP.11: 0 … kArpMaxGlideTime of the note's sounding (gated) length
   RampShape shape = RampShape::Linear;
   float bend = 0.5f;                  // −1 … 1 (rampBendOf: Exponential k = 8 · bend; Overshoot spring 4 · |bend|)
   friend bool operator==(const ArpGlideSide&, const ArpGlideSide&) = default;
@@ -304,8 +310,9 @@ enum class ArpParamId : uint16_t {
   // AP.3
   HarmonicBase, WalkRange, WalkUnder, WalkOrder,
   // AP.10: the two glide sides (each its own time, shape, bend), the offsets' unit
-  IntoSource, IntoOffset, IntoSynced, IntoMs, IntoFraction, IntoShape, IntoBend,
-  OutTarget, OutOffset, OutSynced, OutMs, OutFraction, OutShape, OutBend, GlideCents,
+  // (AP.11: each side's time one param, a fraction of the note)
+  IntoSource, IntoOffset, IntoTime, IntoShape, IntoBend,
+  OutTarget, OutOffset, OutTime, OutShape, OutBend, GlideCents,
   // AP.4
   Pulse, PulseSource, PulseRef, PulseCycle, PulseBars, ProportionLen, Proportion1, Proportion2, Proportion3,
   Proportion4, Proportion5, Proportion6, Proportion7, Proportion8, Layers, LayerLevel1, LayerLevel2, LayerLevel3,
@@ -365,7 +372,20 @@ struct ArpParamInfo {
   bool isBool;
   std::string_view choices;
   bool runtime;
+  // AP.11: the display unit ("%": the value is a fraction, shown × 100) and the knob's taper k (0: linear; else
+  // value = min + (max − min) · (2^(k·t) − 1) / (2^k − 1) for knob position t: the `@curve(exp0, k)` law, arpTaper).
+  std::string_view unit = "";
+  float taper = 0.0f;
 };
+// AP.11: knob position t (0 … 1) → the fraction of the range a taper-k param reads (k ≤ 0: t). RT-safe.
+inline float arpTaper(float k, float t) noexcept {
+  if (!(k > 0.0f)) return t;
+  return (std::exp2(k * t) - 1.0f) / (std::exp2(k) - 1.0f);
+}
+inline double arpUntaper(double k, double f) noexcept {  // its inverse (fraction of the range → knob position)
+  if (!(k > 0.0)) return f;
+  return std::log2(1.0 + f * (std::exp2(k) - 1.0)) / k;
+}
 inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::Style, "style", "Style", 0, static_cast<float>(ArpStyle::Count) - 1, 0, 1, false,
      "Up|Down|UpDown|DownUp|Up & Down|Down & Up|Converge|Diverge|Con & Diverge|Pinky Up|Pinky UpDown|Thumb Up|"
@@ -403,17 +423,13 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::WalkOrder, "walkOrder", "Walk Order", 0, 3, 0, 1, false, "Up|Down|UpDown|Random", true},
     {ArpParamId::IntoSource, "intoSource", "Into", 0, 2, 0, 1, false, "Off|Step|Offset", true},
     {ArpParamId::IntoOffset, "intoOffset", "Into Offset", -4800, 4800, 0, 0, false, "", true},
-    {ArpParamId::IntoSynced, "intoSync", "Into Sync", 0, 1, 0, 1, true, "", true},
-    {ArpParamId::IntoMs, "intoMs", "Into ms", 0, 10000, 50, 0, false, "", true},
-    {ArpParamId::IntoFraction, "intoFrac", "Into Frac", 0, 1, 0.25f, 0, false, "", true},
+    {ArpParamId::IntoTime, "intoTime", "Into Time", 0, kArpMaxGlideTime, 0.25f, 0, false, "", true, "%", kArpGlideTimeTaper},
     {ArpParamId::IntoShape, "intoShape", "Into Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
      "Linear|Exponential|S-Curve|Overshoot", true},
     {ArpParamId::IntoBend, "intoBend", "Into Bend", -1, 1, 0.5f, 0, false, "", true},
     {ArpParamId::OutTarget, "outTarget", "Out", 0, 2, 0, 1, false, "Off|Step|Offset", true},
     {ArpParamId::OutOffset, "outOffset", "Out Offset", -4800, 4800, 0, 0, false, "", true},
-    {ArpParamId::OutSynced, "outSync", "Out Sync", 0, 1, 0, 1, true, "", true},
-    {ArpParamId::OutMs, "outMs", "Out ms", 0, 10000, 50, 0, false, "", true},
-    {ArpParamId::OutFraction, "outFrac", "Out Frac", 0, 1, 0.25f, 0, false, "", true},
+    {ArpParamId::OutTime, "outTime", "Out Time", 0, kArpMaxGlideTime, 0.25f, 0, false, "", true, "%", kArpGlideTimeTaper},
     {ArpParamId::OutShape, "outShape", "Out Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
      "Linear|Exponential|S-Curve|Overshoot", true},
     {ArpParamId::OutBend, "outBend", "Out Bend", -1, 1, 0.5f, 0, false, "", true},
@@ -569,6 +585,7 @@ struct ArpExact {
 struct ArpTraceNote {
   uint32_t id = 0, source = 0;
   ArpExact exact;
+  float hz = 0.0f;  // AP.11: its own pitch at the onset (the source's bend included; an Into glide's target)
 };
 
 class ArpCore {
@@ -636,6 +653,7 @@ public:
     // curve. Default: the slot holds the value itself.
     float scale = 1.0f, offset = 0.0f;
     bool add = false;  // AP.2b: adds NoteStageBlock::mods[param] (a bus value; scale / offset unused) to the id's value
+    float taper = 0.0f;  // AP.11: v goes through arpTaper(taper, v) first (ArpParamInfo::taper; add: unused)
   };
   // Mappings of lane step ids (isArpLaneStep) go to the core's lane table (read only when their step plays, not at
   // every block start; AP.8b: their add mappings too, ArpCore::modLaneStep). AP.2b: Mapping::add entries add a bus value (in the param's units: a modulation wire's

@@ -2432,8 +2432,9 @@ Context: SM.3 (docs/plans/SM.md). Choices (most reversible):
 Context: AP.10 (docs/plans/AP.md "AP.10"). Choices (most reversible):
 1. **One "Offsets in cents" switch** (`glideCents`) for both sides; time / sync / shape / bend are per side. A per-side
    unit would be two more params and a second toggle for a rare need.
-2. **Into + Out longer than the note shrink in proportion** (equal times: half each, as before) — asymmetric times keep
-   their ratio instead of being forced to halves.
+2. ~~Into + Out longer than the note shrink in proportion~~ — **AP.11: removed.** The sides are additive offset curves
+   and overlap freely; each Time is 0 – 200 % of the note (Into > 100 %: never arrives; Out > 100 %: begun before the
+   onset).
 3. **The bend view draws Previous / Next a nominal 200 ¢ away** (labelled): their real pitches depend on the step; the
    Pattern view shows the real curves. Offsets (in the unit or cents) are drawn at their true size.
 4. **The pattern view shows one cycle of at most 64 steps** (longer: the first 64, captioned) and a nominal note of the

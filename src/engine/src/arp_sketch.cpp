@@ -124,6 +124,7 @@ ArpSketch sketchArp(const ArpParams& params, const ArpLaneSteps& lanes, const Ar
           if (traced < trace.size()) {
             nn.source = trace[traced].source >= 1 ? trace[traced].source - 1 : 0;
             nn.exact = trace[traced].exact;
+            if (trace[traced].hz > 0.0f) nn.ownHz = trace[traced].hz;  // AP.11 (glides may start anywhere)
           }
           open.push_back({e.noteId, out.notes.size()});
           out.notes.push_back(nn);
@@ -140,7 +141,6 @@ ArpSketch sketchArp(const ArpParams& params, const ArpLaneSteps& lanes, const Ar
             bd.shape = e.rampShape < static_cast<uint8_t>(RampShape::Count) ? static_cast<RampShape>(e.rampShape)
                                                                               : RampShape::Linear;
             bd.bend = static_cast<int8_t>(e.rampBend);
-            if (bends[i].empty() && bd.at == nn->on && bd.len > 0.0f) nn->ownHz = bd.hz;  // the Into glide's target
             bends[i].push_back(bd);
           }
           break;

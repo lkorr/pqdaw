@@ -48,6 +48,8 @@ std::vector<NoteDeviceType> makeTypes() {
     s.isBool = r.isBool;
     s.choices = splitChoices(r.choices);
     s.runtime = r.runtime;
+    s.unit = std::string(r.unit);
+    s.taper = r.taper;
     arp.params.push_back(std::move(s));
   }
   out.push_back(std::move(arp));
@@ -110,8 +112,11 @@ std::string noteDevicePatchText(const NoteDeviceType& t) {
     if (p.isBool) {
       s += p.def > 0.5 ? "true" : "false";
     } else {
-      s += num(p.def) + " [" + num(p.min) + ".." + num(p.max) + "]";
+      const bool pct = p.unit == "%";  // AP.11: percent literals (a fraction × 100)
+      auto lit = [&](double v) { return pct ? num(v * 100.0) + "%" : num(v); };
+      s += lit(p.def) + " [" + lit(p.min) + ".." + lit(p.max) + "]";
       if (p.step > 0.0) s += " @steps(" + num(std::round((p.max - p.min) / p.step) + 1.0) + ")";
+      if (p.taper > 0.0) s += " @curve(exp0, " + num(p.taper) + ")";
     }
     s += " @label(\"" + p.label + "\")";
     if (!p.choices.empty()) {
@@ -277,33 +282,23 @@ Panel arpeggiatorPanel(DeviceId dev) {
   float y = kTop;
   k.fold(y, "Glide", true);
   y += 20.0f;
-  // One side: its source / target chips, Time Sync, then Offset (with source Offset), Time (ms or a note fraction),
-  // Bend, Shape.
-  auto side = [&](float x, A mode, A off, A sync, A ms, A frac, A shape, A bend, const char* title, const char* items) {
+  // One side: its source / target chips, then Offset (with source Offset), Time (AP.11: % of the note), Bend, Shape.
+  auto side = [&](float x, A mode, A off, A time, A shape, A bend, const char* title, const char* items) {
     const uint32_t s = k.chips(x, y, 170, mode, title, items).id;
-    const uint32_t sy = k.button(x + 178, y + 12, 62, 16, sync, "Time Sync").id;
-    size_t from = k.p.elements.size();
+    const size_t from = k.p.elements.size();
     k.ctl("knob", x, y + 34, 48, 58, off, "Offset");
     k.when(from, s, {2.0});
-    from = k.p.elements.size();
-    k.ctl("knob", x + 52, y + 34, 48, 58, ms, "Time");
-    k.when(from, sy, {0.0});
-    from = k.p.elements.size();
-    k.ctl("knob", x + 52, y + 34, 48, 58, frac, "Time");
-    k.when(from, sy, {1.0});
+    k.ctl("knob", x + 52, y + 34, 48, 58, time, "Time");
     k.ctl("knob", x + 104, y + 34, 48, 58, bend, "Bend");
     k.ctl("menu", x + 156, y + 34, 96, 28, shape, "Shape");
   };
-  side(10, A::IntoSource, A::IntoOffset, A::IntoSynced, A::IntoMs, A::IntoFraction, A::IntoShape, A::IntoBend, "Into",
-       "Off|Previous|Offset");
-  side(694, A::OutTarget, A::OutOffset, A::OutSynced, A::OutMs, A::OutFraction, A::OutShape, A::OutBend, "Out",
-       "Off|Next|Offset");
+  side(10, A::IntoSource, A::IntoOffset, A::IntoTime, A::IntoShape, A::IntoBend, "Into", "Off|Previous|Offset");
+  side(694, A::OutTarget, A::OutOffset, A::OutTime, A::OutShape, A::OutBend, "Out", "Off|Next|Offset");
   k.button(10, y + 100, 110, 16, A::GlideCents, "Offsets in cents");
   {  // The bend view: one step large, its handles drag the times / offsets / bends above (one undo step per drag).
     std::vector<Binding> b = {dataBinding(dev)};
-    for (const A id : {A::IntoSource, A::IntoOffset, A::IntoSynced, A::IntoMs, A::IntoFraction, A::IntoShape, A::IntoBend,
-                       A::OutTarget, A::OutOffset, A::OutSynced, A::OutMs, A::OutFraction, A::OutShape, A::OutBend,
-                       A::GlideCents, A::Gate})
+    for (const A id : {A::IntoSource, A::IntoOffset, A::IntoTime, A::IntoShape, A::IntoBend, A::OutTarget, A::OutOffset,
+                       A::OutTime, A::OutShape, A::OutBend, A::GlideCents, A::Gate})
       b.push_back(k.bind(id));
     k.caption(276, y, 120, "Bend");
     k.add("arpbend", 276, y + 12, 408, 112, std::move(b));
@@ -492,7 +487,8 @@ Project withoutNoteDevices(const Project& p, const NoteDissolve& how) {
 }
 
 double noteParamValue(const NoteParamSpec& s, double position) noexcept {
-  const double p = std::isfinite(position) ? std::clamp(position, 0.0, 1.0) : 0.0;
+  double p = std::isfinite(position) ? std::clamp(position, 0.0, 1.0) : 0.0;
+  if (s.taper > 0.0 && !s.isBool) p = engine::arpTaper(static_cast<float>(s.taper), static_cast<float>(p));  // AP.11
   double v = s.min + p * (s.max - s.min);
   if (s.isBool) return p > 0.5 ? 1.0 : 0.0;
   if (s.step > 0.0) v = s.min + std::round((v - s.min) / s.step) * s.step;
@@ -503,7 +499,8 @@ double noteParamPosition(const NoteParamSpec& s, double value) noexcept {
   if (s.isBool) return value > 0.5 ? 1.0 : 0.0;
   const double span = s.max - s.min;
   if (!(std::abs(span) > 0.0) || !std::isfinite(value)) return 0.0;
-  return std::clamp((value - s.min) / span, 0.0, 1.0);
+  const double f = std::clamp((value - s.min) / span, 0.0, 1.0);
+  return s.taper > 0.0 ? std::clamp(engine::arpUntaper(s.taper, f), 0.0, 1.0) : f;  // AP.11
 }
 
 double noteDeviceValue(const Device& d, const NoteParamSpec& s) noexcept {

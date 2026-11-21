@@ -374,12 +374,11 @@ TEST_CASE("render: arp-panel-degrees-bends (AP.10: Distance / Steps in Degrees w
   setValue(s.ctx, s.pr.arp, "gate", 0.85);
   setValue(s.ctx, s.pr.arp, "intoSource", 2.0);  // Offset
   setValue(s.ctx, s.pr.arp, "intoOffset", -2.0);
-  setValue(s.ctx, s.pr.arp, "intoMs", 30.0);
+  setValue(s.ctx, s.pr.arp, "intoTime", 0.3);
   setValue(s.ctx, s.pr.arp, "intoShape", 1.0);  // Exponential
   setValue(s.ctx, s.pr.arp, "intoBend", 0.7);
   setValue(s.ctx, s.pr.arp, "outTarget", 1.0);  // Next
-  setValue(s.ctx, s.pr.arp, "outSync", 1.0);
-  setValue(s.ctx, s.pr.arp, "outFrac", 0.3);
+  setValue(s.ctx, s.pr.arp, "outTime", 0.3);
   setValue(s.ctx, s.pr.arp, "outShape", 2.0);  // S-curve
   s.status = holding({degreeNote(261.63f, 0.0f), degreeNote(329.63f, 4.0f)}, 1, 1);
   s.build({"Glide"});
@@ -392,19 +391,19 @@ TEST_CASE("render: arp-panel-degrees-bends (AP.10: Distance / Steps in Degrees w
   checkImage("arp-panel-degrees-bends", img);
 }
 
-TEST_CASE("render: arp-panel-bend-view (AP.10: asymmetric Into / Out — times, shapes, offsets in cents; nothing held)") {
+TEST_CASE("render: arp-panel-bend-view (AP.10: asymmetric Into / Out — shapes, offsets in cents; AP.11: overlapping % "
+          "times, the Into past the note's end; nothing held)") {
   Standalone s;
   setValue(s.ctx, s.pr.arp, "gate", 1.0);
   setValue(s.ctx, s.pr.arp, "glideCents", 1.0);
   setValue(s.ctx, s.pr.arp, "intoSource", 2.0);
   setValue(s.ctx, s.pr.arp, "intoOffset", -300.0);
-  setValue(s.ctx, s.pr.arp, "intoMs", 25.0);
+  setValue(s.ctx, s.pr.arp, "intoTime", 1.2);  // past the note's end: drawn faint there
   setValue(s.ctx, s.pr.arp, "intoShape", 1.0);  // Exponential
   setValue(s.ctx, s.pr.arp, "intoBend", 0.8);
   setValue(s.ctx, s.pr.arp, "outTarget", 2.0);
   setValue(s.ctx, s.pr.arp, "outOffset", 150.0);
-  setValue(s.ctx, s.pr.arp, "outSync", 1.0);
-  setValue(s.ctx, s.pr.arp, "outFrac", 0.5);
+  setValue(s.ctx, s.pr.arp, "outTime", 0.5);  // overlapping the Into: the curves add
   setValue(s.ctx, s.pr.arp, "outShape", 3.0);  // Overshoot
   setValue(s.ctx, s.pr.arp, "outBend", 0.6);
   s.build({"Glide"});
@@ -842,7 +841,7 @@ TEST_CASE("arp panel (AP.10): the bend view's handles drag Into time / offset an
   Ui u;
   setValue(u.ctx, u.pr.arp, "intoSource", 2.0);  // Offset
   setValue(u.ctx, u.pr.arp, "intoOffset", -2.0);
-  setValue(u.ctx, u.pr.arp, "intoMs", 20.0);
+  setValue(u.ctx, u.pr.arp, "intoTime", 0.2);
   setValue(u.ctx, u.pr.arp, "outTarget", 1.0);  // Next
   u.d.step();
   REQUIRE(u.foldOpen("Glide"));
@@ -854,13 +853,22 @@ TEST_CASE("arp panel (AP.10): the bend view's handles drag Into time / offset an
   const std::optional<Vec2> time = panel::test::bendHandle(el, u.face().target(), 0);
   REQUIRE(time.has_value());
   CHECK_FALSE(panel::test::bendHandle(el, u.face().target(), 3).has_value());  // Out → Next: no offset handle
-  // The Into time handle dragged 40 units right (through the window): a longer Into in ms, one undo step, a param
-  // write only.
+  // The Into time handle dragged 40 units right (through the window): a longer Into (AP.11: % of the note), one undo
+  // step, a param write only; the Time knob reads it in %.
   size_t h0 = u.history();
   u.d.drag(u.atLocal(bv, *time), u.atLocal(bv, {time->x + 40.0f, time->y}), 6);
   u.d.step();
-  const double ms = valueOf(u.ctx, u.pr.arp, "intoMs");
-  CHECK(ms > 30.0);
+  const double ms = valueOf(u.ctx, u.pr.arp, "intoTime");
+  CHECK(ms > 0.3);
+  CHECK(ms <= 2.0);
+  {
+    const panel::Element& kn = u.face().element(static_cast<size_t>(u.index("knob", "intoTime")));
+    REQUIRE(kn.binding() != nullptr);
+    const std::string txt = u.face().target().format(*kn.binding(), u.face().target().position(*kn.binding()));
+    CAPTURE(txt);
+    CHECK(txt.find('%') != std::string::npos);
+    CHECK(std::stod(txt) == doctest::Approx(ms * 100.0).epsilon(0.01));  // the knob's taper = the value's
+  }
   REQUIRE(u.history() == h0 + 1);
   CHECK_FALSE(u.ctx.store().history().entries()[h0].changes.structural());
   // The Into offset handle dragged up: a smaller downward offset (whole degrees).
@@ -881,7 +889,7 @@ TEST_CASE("arp panel (AP.10): the bend view's handles drag Into time / offset an
   u.d.drag(u.atLocal(bv, *t2), u.atLocal(bv, {t2->x, t2->y - 10.0f}), 4, ui::mod::kAlt);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") > bend0 + 0.1);
-  CHECK(valueOf(u.ctx, u.pr.arp, "intoMs") == doctest::Approx(ms));
+  CHECK(valueOf(u.ctx, u.pr.arp, "intoTime") == doctest::Approx(ms));
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.ctx.undo());
   CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") == doctest::Approx(bend0));

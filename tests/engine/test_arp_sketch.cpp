@@ -70,8 +70,8 @@ TEST_CASE("arp sketch (AP.10): Harmonic Walk over a JI chord — every walked ha
 
 TEST_CASE("arp sketch (AP.10): Into and Out glides as the note's curve; Pulse cycle; truncation; deterministic") {
   e::ArpParams p;
-  p.into = {e::ArpGlide::Step, 0.0f, true, 50.0f, 0.4f, e::RampShape::Exponential, 0.5f};
-  p.out = {e::ArpGlide::Offset, 2.0f, true, 50.0f, 0.2f, e::RampShape::SCurve, 0.0f};
+  p.into = {e::ArpGlide::Step, 0.0f, 0.4f, e::RampShape::Exponential, 0.5f};
+  p.out = {e::ArpGlide::Offset, 2.0f, 0.2f, e::RampShape::SCurve, 0.0f};
   const std::vector<e::ArpSketchHeld> held = {note(200.0f), note(300.0f)};
   const e::ArpSketch s = e::sketchArp(p, {}, {}, held);
   REQUIRE(s.notes.size() == 2);
@@ -87,6 +87,25 @@ TEST_CASE("arp sketch (AP.10): Into and Out glides as the note's curve; Pulse cy
   const double outMid = n.off - 0.05;  // half way through the Out glide (0.1 of a step) to +2 degrees
   CHECK(e::arpSketchHzAt(s, n, outMid) == doctest::Approx(300.0 * std::exp2(100.0 / 1200.0)).epsilon(1e-3));
   CHECK(e::arpSketchHzAt(s, n, n.off) == doctest::Approx(300.0 * std::exp2(200.0 / 1200.0)).epsilon(1e-3));
+
+  // AP.11: Out 150 % begins before the onset: the note starts partway (its own pitch still the step's, from the trace);
+  // Into 150 % has not arrived at the note's end.
+  e::ArpParams lo = p;
+  lo.glideCents = true;
+  lo.into = {e::ArpGlide::Off, 0.0f, 0.25f, e::RampShape::Linear, 0.0f};
+  lo.out = {e::ArpGlide::Offset, 300.0f, 1.5f, e::RampShape::Linear, 0.0f};
+  const e::ArpSketch so = e::sketchArp(lo, {}, {}, held);
+  REQUIRE(so.notes.size() == 2);
+  CHECK(so.notes[0].ownHz == 200.0f);
+  CHECK(e::arpSketchHzAt(so, so.notes[0], so.notes[0].on + 1e-4) ==
+        doctest::Approx(200.0 * std::exp2(100.0 / 1200.0)).epsilon(1e-3));  // a third of +300 ¢ at the onset
+  lo.out.mode = e::ArpGlide::Off;
+  lo.into = {e::ArpGlide::Offset, -300.0f, 1.5f, e::RampShape::Linear, 0.0f};
+  const e::ArpSketch si = e::sketchArp(lo, {}, {}, held);
+  REQUIRE(si.notes.size() == 2);
+  CHECK(si.notes[0].ownHz == 200.0f);
+  CHECK(e::arpSketchHzAt(si, si.notes[0], si.notes[0].off) ==
+        doctest::Approx(200.0 * std::exp2(-100.0 / 1200.0)).epsilon(1e-3));  // two thirds of the way at the end
 
   const e::ArpSketch again = e::sketchArp(p, {}, {}, held);
   REQUIRE(again.notes.size() == s.notes.size());
@@ -116,8 +135,8 @@ TEST_CASE("arp sketch (AP.10): cost of a 64-step cycle with glides (what a knob 
   p.style = e::ArpStyle::UpDown;
   p.steps = 8;
   p.distance = 3;
-  p.into = {e::ArpGlide::Step, 0.0f, false, 20.0f, 0.25f, e::RampShape::Exponential, 0.5f};
-  p.out = {e::ArpGlide::Step, 0.0f, true, 50.0f, 0.3f, e::RampShape::SCurve, 0.0f};
+  p.into = {e::ArpGlide::Step, 0.0f, 0.8f, e::RampShape::Exponential, 0.5f};  // (AP.11: overlapping, shaped: pieces)
+  p.out = {e::ArpGlide::Step, 0.0f, 0.6f, e::RampShape::SCurve, 0.0f};
   const std::vector<e::ArpSketchHeld> held = {note(200.0f), note(250.0f), note(300.0f), note(400.0f), note(500.0f)};
   const auto t0 = std::chrono::steady_clock::now();
   constexpr int kRuns = 20;

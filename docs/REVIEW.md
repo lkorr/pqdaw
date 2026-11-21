@@ -2268,6 +2268,7 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Known: not checked in the live app (tests and goldens only).
 - Goldens: new arp-panel-walk-chord, arp-panel-degrees-bends, arp-panel-bend-view; arp-panel-default / -ratio / -walk /
   -pulse / -lanes moved (the wider panel, the resolved pattern, the Glide section).
+
 ## 2026-11-21 · SM.10 · the Sampler's closed face (task/SM.10-closed-face) 👁
 - A Sampler in the circuit is now an oval (152 × 84): the sample's waveform (from Start to End) in a dark well, a thin
   region strip under it, and while notes play a glowing vertical playhead per voice where each one reads. Empty, it
@@ -2278,3 +2279,15 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - The knobs are the Classic set in every mode for now (Granular's Position / Size / Density come with SM.6); no Filter /
   LFO on switches yet (SM.11). Are the mini knobs readable without labels? Is the waveform contrast right?
 - Goldens: new sampler-face-empty / -sample / -voices at 1x and 2x. Not checked in the live app (tests and goldens only).
+
+## 2026-11-21 · AP.11 · Arpeggiator glide Time as a % of the note (task/AP.11-bend-time-pct) 👁
+- Into / Out each have ONE Time knob now: % of the note's sounding length, 0 – 200 %, default 25 %; it reads "25 %".
+  The knob is mildly tapered (100 % sits at about two thirds of its travel) so 0 – 100 % gets most of the throw. The
+  Time Sync buttons and the ms / fraction knobs are gone. Is the taper right, or should it be linear?
+- Into and Out now ADD (each a bend in cents on the note), so they may overlap: no more squeezing both into the note.
+  Into above 100 % is still gliding when the note ends; Out above 100 % starts before the note (it begins partway).
+- Bend view: Into's time is dimensioned above the plot ("In 25 %"), Out's below ("Out 50 %"); the time handles sit on
+  the curve; the view widens to show an Into past the note's end / an Out begun before its start, drawn faint.
+- Known: not checked in the live app (tests and goldens only).
+- Goldens moved: arp-panel-bend-view (now overlapping, Into 120 %), arp-panel-degrees-bends, arp-panel-walk (default
+  25 % times), project-patch-arp (the Time knobs).

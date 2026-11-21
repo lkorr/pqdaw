@@ -684,13 +684,13 @@ private:
 
 // AP.10: the BEND VIEW of a note device's glides — one step drawn large (doc::noteGlideView: the device's values): the
 // source (the previous step / an offset) → the Into curve → the hold → the Out curve → the target (the next step / an
-// offset), with the times and offsets dimensioned and the gate's end marked. Handles drag a side's time (sideways: ms,
-// or a note fraction with Time Sync), its offset (up / down, with source / target Offset: whole units, or cents) and,
+// offset), with the times and offsets dimensioned and the gate's end marked. Handles drag a side's time (sideways: AP.11
+// % of the note, 0 … 200 %; the curves add, so they may overlap and pass the note — drawn faint outside it), its offset (up / down, with source / target Offset: whole units, or cents) and,
 // with Alt, its bend (up / down) — one undo step per drag, param writes only. The curves are the voice's (doc::
 // noteRampShape). Slot 0 the device (Data), then the params in kBendSlots order.
-constexpr std::array<std::string_view, 17> kBendSlots = {
-    "device",   "into",     "into offset", "into sync", "into ms",  "into frac", "into shape", "into bend", "out",
-    "out offset", "out sync", "out ms",     "out frac",  "out shape", "out bend", "cents",      "gate"};
+constexpr std::array<std::string_view, 13> kBendSlots = {
+    "device", "into", "into offset", "into time", "into shape", "into bend", "out", "out offset", "out time",
+    "out shape", "out bend", "cents", "gate"};
 
 class BendView final : public Element {
 public:
@@ -699,8 +699,8 @@ public:
       {"colour", StyleSpec::Type::Token, 0, "value"},
   };
   enum Slot : size_t {
-    kDevice, kInto, kIntoOffset, kIntoSync, kIntoMs, kIntoFrac, kIntoShape, kIntoBend,
-    kOut, kOutOffset, kOutSync, kOutMs, kOutFrac, kOutShape, kOutBend, kCents, kGate
+    kDevice, kInto, kIntoOffset, kIntoTime, kIntoShape, kIntoBend, kOut, kOutOffset, kOutTime, kOutShape, kOutBend,
+    kCents, kGate
   };
   enum class Handle : int8_t { None = -1, IntoTime, IntoOffset, OutTime, OutOffset };
   uint32_t staticLayerCount() const noexcept override { return 1; }
@@ -730,24 +730,26 @@ public:
     const Vec2 gate[2] = {{X(g.v.gate), r.y0}, {X(g.v.gate), r.y1}};
     p.dashed(gate, 0.9f, 3.0f, 2.0f, ui::mulAlpha(accent, 0.55f));
     p.textAligned({X(g.v.gate) - 2.0f, r.y1 - 4.0f}, "gate end", 5.5f, ui::mulAlpha(ink, 0.9f), 1.0f);
-    // The curve: source → Into → hold → Out → target (each side as the voice ramps it).
+    // The curve over the note: the Into and Out offsets added (AP.11, each as the voice ramps it); faint outside the
+    // note, the parts that do not sound: an Into still travelling at the note's end, an Out begun before the onset.
     const double ti = g.v.into.steps, to = g.v.out.steps, len = g.v.gate;
     std::vector<Vec2> pts;
-    constexpr int kN = 32;
-    if (ti > 0.0)
-      for (int i = 0; i <= kN; ++i) {
-        const double u = static_cast<double>(i) / kN;
-        pts.push_back({X(u * ti), Y(g.src * (1.0 - doc::noteRampShape(g.v.into.shape, g.v.into.bend, u)))});
+    constexpr int kN = 96;
+    for (int i = 0; i <= kN; ++i) {
+      const double x = len * static_cast<double>(i) / kN;
+      pts.push_back({X(x), Y(curveAt(x))});
+    }
+    auto ghost = [&](double a, double b, auto&& f) {
+      std::vector<Vec2> q;
+      for (int i = 0; i <= 32; ++i) {
+        const double x = a + (b - a) * static_cast<double>(i) / 32;
+        q.push_back({X(x), Y(f(x))});
       }
-    else
-      pts.push_back({X(0.0), Y(0.0)});
-    if (to > 0.0)
-      for (int i = 0; i <= kN; ++i) {
-        const double u = static_cast<double>(i) / kN;
-        pts.push_back({X(len - to + u * to), Y(g.tgt * doc::noteRampShape(g.v.out.shape, g.v.out.bend, u))});
-      }
-    else
-      pts.push_back({X(len), Y(0.0)});
+      p.polyline(q, 1.2f, ui::mulAlpha(accent, 0.4f));
+    };
+    // (each continues the sounding curve: the other side held at its value at that end)
+    if (ti > len) ghost(len, ti, [&](double x) { return drawnAt(x); });
+    if (to > len) ghost(len - to, 0.0, [&](double x) { return drawnAt(x); });
     // Where the source / target come from: a lead-in at the source's pitch (the previous step / the offset's), a
     // lead-out to the target's.
     if (g.v.into.mode != 0) {
@@ -763,20 +765,19 @@ public:
                     g.v.out.mode == 1 ? std::string("next step") : g.v.out.text, 5.5f, ink, 1.0f);
     }
     p.polyline(pts, 2.2f, accent);
-    // The time spans dimensioned under the plot.
-    auto dim = [&](double a, double b, const char* name, const doc::NoteGlideSide& s) {
-      const float y = r.y1 + 5.0f, x0 = X(a), x1 = X(b);
+    // The time spans dimensioned: Into above the plot, Out below (they may overlap).
+    auto dim = [&](double a, double b, float y, float ty, const char* name, const doc::NoteGlideSide& s) {
+      const float x0 = X(a), x1 = X(b);
       p.line({x0, y - 2.5f}, {x0, y + 2.5f}, 0.8f, ink);
       p.line({x1, y - 2.5f}, {x1, y + 2.5f}, 0.8f, ink);
       p.line({x0, y}, {x1, y}, 0.8f, ink);
       char t[48];
-      if (s.synced) std::snprintf(t, sizeof t, "%s %.0f %% \xC2\xB7 %.0f ms", name, s.ms / std::max(g.v.gate * g.v.stepMs, 1e-9) * 100.0, s.ms);
-      else std::snprintf(t, sizeof t, "%s %.0f ms", name, s.ms);
-      p.text({(x0 + x1) * 0.5f, y + 6.0f}, t, 5.5f, ink);
+      std::snprintf(t, sizeof t, "%s %.0f %%", name, s.time * 100.0);
+      p.text({(x0 + x1) * 0.5f, ty}, t, 5.5f, ink);
     };
-    if (ti > 0.0) dim(0.0, ti, "Into", g.v.into);
-    else p.textAligned({X(0.0) + 2.0f, r.y1 + 9.0f}, g.v.into.mode == 0 ? "Into off" : "Into: none", 5.5f, ui::mulAlpha(ink, 0.7f), 0.0f);
-    if (to > 0.0) dim(len - to, len, "Out", g.v.out);
+    if (ti > 0.0) dim(0.0, ti, r.y0 - 4.0f, r.y0 - 10.0f, "In", g.v.into);
+    else p.textAligned({X(0.0) + 2.0f, r.y0 - 7.0f}, g.v.into.mode == 0 ? "Into off" : "Into: none", 5.5f, ui::mulAlpha(ink, 0.7f), 0.0f);
+    if (to > 0.0) dim(len - to, len, r.y1 + 5.0f, r.y1 + 11.0f, "Out", g.v.out);
     else p.textAligned({X(len) - 2.0f, r.y1 + 9.0f}, g.v.out.mode == 0 ? "Out off" : "Out: none", 5.5f, ui::mulAlpha(ink, 0.7f), 1.0f);
     // The handles.
     for (const Handle h : {Handle::IntoTime, Handle::IntoOffset, Handle::OutTime, Handle::OutOffset}) {
@@ -802,7 +803,7 @@ public:
       if (e.button != ui::PointerButton::Left || !geometry(t)) return false;
       const Handle h = nearest(e.local);
       if (h == Handle::None) return false;
-      const doc::Binding* b = binding(h == Handle::IntoTime || h == Handle::IntoOffset ? kIntoMs : kOutMs);
+      const doc::Binding* b = binding(h == Handle::IntoTime || h == Handle::IntoOffset ? kIntoTime : kOutTime);
       if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return true;
       drag_ = h;
       bendDrag_ = (e.mods & ui::mod::kAlt) != 0;
@@ -855,8 +856,10 @@ public:
     title = "Bend";
     body = "One step's pitch as the glides bend it: from the source (the previous step, or the Into offset) along the "
            "Into curve to the note, held, then along the Out curve over the end of the gate to the target (the next "
-           "step, or the Out offset). Drag a handle on the note sideways: that side's time; the end handles up / down: "
-           "its offset; Alt+drag up / down: its bend. One undo step per drag.";
+           "step, or the Out offset). The two curves add, so they may overlap; each Time is a % of the note (up to "
+           "200 %: an Into still gliding at the note's end, an Out begun before its start — drawn faint). Drag a handle "
+           "on the note sideways: that side's time; the end handles up / down: its offset; Alt+drag up / down: its "
+           "bend. One undo step per drag.";
   }
   // tests: a handle's position (element-local); nullopt: not shown.
   std::optional<Vec2> handlePos(int32_t h) {
@@ -870,13 +873,13 @@ private:
   struct G {
     doc::NoteGlideView v;
     double src = 0.0, tgt = 0.0;  // cents of the source / target from the note's own pitch
-    double span = 1.5;            // steps across the plot (from −0.15)
+    double lo = -0.15, span = 1.5;  // steps at the plot's left edge, across it (fitted; held while a handle drags)
     double cmax = 100.0;          // cents from the middle to the top
   };
-  Rect plot() const noexcept { return {6.0f, 8.0f, desc_.w - 6.0f, desc_.h - 18.0f}; }
+  Rect plot() const noexcept { return {6.0f, 17.0f, desc_.w - 6.0f, desc_.h - 18.0f}; }
   float X(double s) const noexcept {
     const Rect r = plot();
-    return r.x0 + static_cast<float>((s + 0.15) / g_.span) * (r.x1 - r.x0);
+    return r.x0 + static_cast<float>((s - g_.lo) / g_.span) * (r.x1 - r.x0);
   }
   float Y(double c) const noexcept {
     const Rect r = plot();
@@ -896,19 +899,46 @@ private:
     g_.tgt = std::isfinite(so) ? so : 0.0;
     double over = 1.0;  // room for an overshoot past the target / source
     if (g_.v.into.shape == 3 || g_.v.out.shape == 3) over = 1.35;
-    g_.cmax = std::max({std::fabs(g_.src), std::fabs(g_.tgt), 50.0}) * over * 1.12;
-    g_.span = std::max(g_.v.gate, 1.0) + 0.3;
+    double sum = 0.0;  // AP.11: the curves add (overlapping, same sign: past either offset)
+    for (int i = 0; i <= 64; ++i) sum = std::max(sum, std::fabs(curveAt(g_.v.gate * i / 64.0)));
+    g_.cmax = std::max({std::fabs(g_.src), std::fabs(g_.tgt), sum, 50.0}) * over * 1.12;
+    if (drag_ == Handle::None) {  // AP.11: fitted to the note, the next onset, an Into past the end, an Out before the start
+      const double x0 = std::min(0.0, g_.v.gate - g_.v.out.steps);
+      const double x1 = std::max({1.0, g_.v.gate, g_.v.into.steps});
+      const double pad = 0.12 * (x1 - x0);
+      g_.lo = x0 - pad;
+      g_.span = x1 - x0 + 2.0 * pad;
+    }
     return true;
   }
   bool into() const noexcept { return drag_ == Handle::IntoTime || drag_ == Handle::IntoOffset; }
+  // AP.11: each side's offset (cents from the note) at x steps from the onset, and the two added (the note's pitch).
+  double inAt(double x) const {
+    const double ti = g_.v.into.steps;
+    return ti > 0.0 && x < ti ? g_.src * (1.0 - doc::noteRampShape(g_.v.into.shape, g_.v.into.bend, x / ti)) : 0.0;
+  }
+  double outAt(double x) const {
+    const double to = g_.v.out.steps, len = g_.v.gate;
+    return to > 0.0 && x >= len - to ? g_.tgt * doc::noteRampShape(g_.v.out.shape, g_.v.out.bend, (x - (len - to)) / to) : 0.0;
+  }
+  double curveAt(double x) const { return inAt(x) + outAt(x); }
+  // The drawn curve: the note's, continued faint past its end (an Into: the Out held at its target) and before its
+  // onset (an Out: the Into at its source).
+  double drawnAt(double x) const {
+    if (x > g_.v.gate) return inAt(x) + (g_.v.out.steps > 0.0 ? g_.tgt : 0.0);
+    if (x < 0.0) return outAt(x) + (g_.v.into.steps > 0.0 ? g_.src : 0.0);
+    return curveAt(x);
+  }
   std::optional<Vec2> handleAt(Handle h) const {
     const doc::NoteGlideView& v = g_.v;
     if (!v.valid) return std::nullopt;
     switch (h) {
-      case Handle::IntoTime: return v.into.mode != 0 ? std::optional<Vec2>(Vec2{X(v.into.steps), Y(0.0)}) : std::nullopt;
+      case Handle::IntoTime:  // (on the curve: AP.11)
+        return v.into.mode != 0 ? std::optional<Vec2>(Vec2{X(v.into.steps), Y(drawnAt(v.into.steps))}) : std::nullopt;
       case Handle::IntoOffset: return v.into.mode == 2 ? std::optional<Vec2>(Vec2{X(0.0), Y(g_.src)}) : std::nullopt;
       case Handle::OutTime:
-        return v.out.mode != 0 ? std::optional<Vec2>(Vec2{X(v.gate - v.out.steps), Y(0.0)}) : std::nullopt;
+        return v.out.mode != 0 ? std::optional<Vec2>(Vec2{X(v.gate - v.out.steps), Y(drawnAt(v.gate - v.out.steps))})
+                               : std::nullopt;
       case Handle::OutOffset: return v.out.mode == 2 ? std::optional<Vec2>(Vec2{X(v.gate), Y(g_.tgt)}) : std::nullopt;
       default: return std::nullopt;
     }
@@ -941,9 +971,8 @@ private:
     if (drag_ == Handle::IntoTime || drag_ == Handle::OutTime) {
       const double pxPerStep = (r.x1 - r.x0) / g_.span;
       double steps = in ? (l.x - X(0.0)) / pxPerStep : (X(g_.v.gate) - l.x) / pxPerStep;
-      steps = std::clamp(steps, 0.0, g_.v.gate);
-      if (s.synced) set(t, in ? kIntoFrac : kOutFrac, g_.v.gate > 0.0 ? steps / g_.v.gate : 0.0);
-      else set(t, in ? kIntoMs : kOutMs, steps * g_.v.stepMs);
+      const double frac = g_.v.gate > 0.0 ? steps / g_.v.gate : 0.0;  // AP.11: % of the note
+      set(t, in ? kIntoTime : kOutTime, std::clamp(frac, 0.0, 2.0)  /* engine kArpMaxGlideTime */);
       return;
     }
     // The offset: the cents the pointer's height means (from the press, at the press's scale), in cents or the

@@ -4308,7 +4308,7 @@ bool LoweredNoteChain::sameStructure(const LoweredNoteChain& o) const noexcept {
     for (size_t k = 0; k < a.runtime.size(); ++k)
       if (a.runtime[k].param != b.runtime[k].param || a.runtime[k].key != b.runtime[k].key ||
           a.runtime[k].scale != b.runtime[k].scale || a.runtime[k].offset != b.runtime[k].offset ||
-          a.runtime[k].mods != b.runtime[k].mods)
+          a.runtime[k].taper != b.runtime[k].taper || a.runtime[k].mods != b.runtime[k].mods)
         return false;
     const NoteDeviceType* t = findNoteDeviceType(a.type);
     for (size_t k = 0; k < a.values.size(); ++k)  // the structural values (a runtime one plays its slot)
@@ -4387,6 +4387,7 @@ std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
         slot.key = "dev" + dev + ":" + sp.name + std::string(kPositionKeySuffix);
         slot.scale = sp.isBool ? 1.0f : static_cast<float>(sp.max - sp.min);
         slot.offset = sp.isBool ? 0.0f : static_cast<float>(sp.min);
+        slot.taper = sp.isBool ? 0.0f : static_cast<float>(sp.taper);
         if (!sp.isBool)  // AP.2b: the cables into it (each a bus value; one that did not lower adds nothing)
           for (const Wire* w : into)
             if (w->param == sp.name) slot.mods.push_back(w->id);

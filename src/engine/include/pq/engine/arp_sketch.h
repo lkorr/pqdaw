@@ -54,7 +54,7 @@ struct ArpSketchBend {
 struct ArpSketchNote {
   float on = 0.0f, off = 0.0f;  // steps from the cycle start (off: its end, or the sketch's end)
   float hz = 0.0f;              // at its note-on (an Into glide's start)
-  float ownHz = 0.0f;           // its own pitch (the step's; an Into glide's target): its first bend's, else hz
+  float ownHz = 0.0f;           // its own pitch (the step's; an Into glide's target): the core's trace (AP.11)
   float ratio = 1.0f, harmonic = 0.0f;  // the note-on's identity
   uint32_t source = 0;          // index into the held set
   ArpExact exact;               // what it plays relative to its source (Same: the source itself)

@@ -111,16 +111,12 @@ void setArpParam(ArpParams& p, ArpParamId id, float v) noexcept {  // RT-safe
     case ArpParamId::WalkOrder: p.walkOrder = static_cast<ArpWalkOrder>(clampi(v, 0, 3)); break;
     case ArpParamId::IntoSource: p.into.mode = static_cast<ArpGlide>(clampi(v, 0, 2)); break;
     case ArpParamId::IntoOffset: p.into.offset = v; break;
-    case ArpParamId::IntoSynced: p.into.synced = on; break;
-    case ArpParamId::IntoMs: p.into.ms = v; break;
-    case ArpParamId::IntoFraction: p.into.fraction = v; break;
+    case ArpParamId::IntoTime: p.into.time = v; break;
     case ArpParamId::IntoShape: p.into.shape = shapeOf(v); break;
     case ArpParamId::IntoBend: p.into.bend = v; break;
     case ArpParamId::OutTarget: p.out.mode = static_cast<ArpGlide>(clampi(v, 0, 2)); break;
     case ArpParamId::OutOffset: p.out.offset = v; break;
-    case ArpParamId::OutSynced: p.out.synced = on; break;
-    case ArpParamId::OutMs: p.out.ms = v; break;
-    case ArpParamId::OutFraction: p.out.fraction = v; break;
+    case ArpParamId::OutTime: p.out.time = v; break;
     case ArpParamId::OutShape: p.out.shape = shapeOf(v); break;
     case ArpParamId::OutBend: p.out.bend = v; break;
     case ArpParamId::GlideCents: p.glideCents = on; break;
@@ -264,8 +260,7 @@ ArpParams sanitized(const ArpParams& in) noexcept {  // RT-safe
   for (ArpGlideSide* g : {&p.into, &p.out}) {  // AP.10: each side its own
     if (static_cast<uint32_t>(g->mode) > 2) g->mode = ArpGlide::Off;
     g->offset = unit(g->offset, -4800.0f, 4800.0f, 0.0f);
-    g->ms = unit(g->ms, 0.0f, 10000.0f, 50.0f);
-    g->fraction = unit(g->fraction, 0.0f, 1.0f, 0.25f);
+    g->time = unit(g->time, 0.0f, kArpMaxGlideTime, 0.25f);  // AP.11
     if (static_cast<uint32_t>(g->shape) >= static_cast<uint32_t>(RampShape::Count)) g->shape = RampShape::Linear;
     g->bend = unit(g->bend, -1.0f, 1.0f, 0.5f);
   }
@@ -339,6 +334,14 @@ struct ArpCore::State {
     int64_t tieKey = 0;
     float glideAmt = 1.0f;
     int64_t stepC = 0;
+    // AP.11: its glide curves (arp.h "Glides"), additive offsets in cents from its own pitch: Into inC · (1 − s(u)) over
+    // [inT, inT + inLen) (inC 0: none; inLen may pass its end), Out outC · s(v) over [outT, off) (outT may precede its
+    // onset; outC is set when the Out starts: `outing`); segAt: the next linear piece of a curve no one ramp carries.
+    int64_t inT = 0, inLen = 0;
+    double inC = 0.0;
+    int64_t outT = 0, outLen = 1;
+    double outC = 0.0;
+    int64_t segAt = kNever;
   };
   // AP.5: one step's lane values (lanes switched off: their defaults) and how it relates to the next step.
   struct StepCtx {
@@ -845,7 +848,7 @@ struct ArpCore::State {
     minOff = minAct = kNever;
     for (uint32_t i = 0; i < numGens; ++i) {
       minOff = std::min(minOff, gens[i].off);
-      minAct = std::min({minAct, gens[i].intoEnd, gens[i].outAt});
+      minAct = std::min({minAct, gens[i].intoEnd, gens[i].outAt, gens[i].segAt});
     }
   }
   void endDue(int64_t t, uint32_t frame) noexcept {
@@ -935,11 +938,65 @@ struct ArpCore::State {
   static NoteEvent glide(const ArpGlideSide& g, uint32_t frame, uint32_t id, double hz, int64_t len) noexcept {
     return notePitch(frame, id, static_cast<float>(hz), static_cast<uint32_t>(len), g.shape, rampBendOf(g.bend));
   }
-  int64_t glideFrames(const ArpGlideSide& g, int64_t len) const noexcept {
-    const double f = g.synced ? static_cast<double>(g.fraction) * static_cast<double>(len)
-                              : static_cast<double>(g.ms) * 1e-3 * b->clock.sampleRate;
-    const int64_t n = std::llround(f);
-    return n <= 0 ? 0 : std::min(n, len);
+  // AP.11: Time · the note's length (0 … 2 of it; ≥ 1 frame when on).
+  static int64_t glideFrames(const ArpGlideSide& g, int64_t len) noexcept {
+    const int64_t n = std::llround(static_cast<double>(g.time) * static_cast<double>(len));
+    return n <= 0 || len <= 0 ? 0 : std::min(n, 2 * len);
+  }
+  static bool linearSide(const ArpGlideSide& g) noexcept {  // (the voice ramps Exponential with bend 0 linearly)
+    return g.shape == RampShape::Linear || (g.shape == RampShape::Exponential && rampBendOf(g.bend) == 0);
+  }
+  static double baseHz(const Gen& g) noexcept { return static_cast<double>(g.hz) * std::exp2(g.c / 1200.0); }
+  // AP.11: g's glide offset (cents from its own pitch) at engine time x: the Into and Out curves added.
+  double glideCents(const Gen& g, int64_t x) const noexcept {
+    double c = 0.0;
+    if (g.inC != 0.0 && x < g.inT + g.inLen) {
+      const double u = static_cast<double>(x - g.inT) / static_cast<double>(std::max<int64_t>(g.inLen, 1));
+      c += g.inC * (1.0 - rampShapeAt(p.into.shape, rampBendOf(p.into.bend), u));
+    }
+    if (g.outing) {
+      const double v = static_cast<double>(x - g.outT) / static_cast<double>(std::max<int64_t>(g.outLen, 1));
+      c += g.outC * rampShapeAt(p.out.shape, rampBendOf(p.out.bend), v);
+    }
+    return c;
+  }
+  // AP.11: from engine time T (frame `frame`) on, the pitch g's glides give. One side running from its start (or
+  // Linear): its one shaped ramp (Into: to the note's pitch, Out: to the target at the note's end); both Linear: a
+  // linear piece to the Into's end (exact); else a linear-in-cents piece to the curves' value ≥ 1 ms on (32 per the
+  // shorter curve), the next at g.segAt.
+  void aim(Gen& g, int64_t T, uint32_t frame) noexcept {
+    g.segAt = kNever;
+    if (g.off <= T) return;
+    const int64_t inEnd = g.inT + g.inLen;
+    const bool inOn = g.inC != 0.0 && T < inEnd;
+    const double base = baseHz(g);
+    if (!g.outing) {
+      if (inOn) out->push(glide(p.into, frame, g.id, base, inEnd - T));
+      return;
+    }
+    const bool outLin = linearSide(p.out);
+    if (!inOn && (outLin || T == g.outT)) {
+      out->push(glide(p.out, frame, g.id, base * std::exp2(g.outC / 1200.0), g.off - T));
+      return;
+    }
+    int64_t n = inOn ? std::min(inEnd, g.off) : g.off;
+    if (!(inOn && outLin && linearSide(p.into))) {
+      const int64_t minSeg = std::max<int64_t>(1, std::llround(1e-3 * b->clock.sampleRate));
+      const int64_t span = inOn ? std::min(g.inLen, g.outLen) : g.outLen;
+      const int64_t seg = std::max<int64_t>(minSeg, (span + 31) / 32);
+      if (n - T > seg + seg / 2) n = T + seg;  // (no sliver at the end)
+      if (n < g.off) g.segAt = n;
+      minAct = std::min(minAct, g.segAt);
+    }
+    out->push(notePitch(frame, g.id, static_cast<float>(base * std::exp2(glideCents(g, n) / 1200.0)),
+                        static_cast<uint32_t>(n - T)));
+  }
+  // AP.11: the Out's distance (cents) toward its target as known at `at` (the Glide lane applied); NaN: none.
+  double outCentsOf(const Gen& g, int64_t at) noexcept {
+    const double to = p.out.mode == ArpGlide::Step ? nextHz(g, at) : static_cast<double>(g.outHz) * std::exp2(g.c / 1200.0);
+    const double base = baseHz(g);
+    if (!(to > 0.0) || !std::isfinite(to) || !(base > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return 1200.0 * std::log2(to / base) * static_cast<double>(g.glideAmt);
   }
   // `hz` moved by an Into / Out offset: in cents, or (unit) the element's pitch `k` more steps up. 0: none.
   double offsetHz(const Held& h, const Elem& el, float hz, float offset) const noexcept {
@@ -985,14 +1042,17 @@ struct ArpCore::State {
     return hz * std::exp2(h.centsAt(at) / 1200.0);
   }
   // Generated notes' glide actions due at engine time `t` (frame `frame`): an Into glide's end (a source bend still
-  // running continues from there), an Out glide's start.
+  // running continues from there; an Out running: re-aimed), an Out glide's start (AP.11: begun before the onset, the
+  // note jumps to where the curves are at its onset), a linear piece's end (aim).
   void actDue(int64_t t, uint32_t frame) noexcept {
     for (uint32_t i = 0; i < numGens; ++i) {
       Gen& g = gens[i];
+      bool re = false;
       if (g.intoEnd <= t) {
         g.intoEnd = kNever;
-        const uint32_t s = find(g.src);
-        if (s != kNone) {
+        if (g.outing || g.outAt <= t) {
+          re = true;
+        } else if (const uint32_t s = find(g.src); s != kNone) {
           const Held& h = held[s];
           if (h.cLen != 0 && t < h.cT + h.cLen)
             out->push(notePitch(frame, g.id, static_cast<float>(g.hz * std::exp2(h.c1 / 1200.0)),
@@ -1001,18 +1061,21 @@ struct ArpCore::State {
       }
       if (g.outAt <= t) {
         g.outAt = kNever;
-        g.outing = true;
-        double to = p.out.mode == ArpGlide::Step ? nextHz(g, g.off)
-                                            : static_cast<double>(g.outHz) * std::exp2(g.c / 1200.0);
-        if (g.glideAmt != 1.0f && to > 0.0 && std::isfinite(to)) {  // AP.5: the Glide lane scales the distance
-          const double cur = static_cast<double>(g.hz) * std::exp2(g.c / 1200.0);
-          to = cur * std::pow(to / cur, static_cast<double>(g.glideAmt));
-        }
-        if (to > 0.0 && std::isfinite(to) && g.off > t) {
-          out->push(glide(p.out, frame, g.id, to, g.off - t));
+        const double oc = outCentsOf(g, g.off);
+        if (std::isfinite(oc) && g.off > t) {
+          g.outC = oc;
+          g.outing = true;
+          if (t > g.outT)
+            out->push(notePitch(frame, g.id, static_cast<float>(baseHz(g) * std::exp2(glideCents(g, t) / 1200.0)), 0));
+          re = true;
           ++stats.glides;
         }
       }
+      if (g.segAt <= t) {
+        g.segAt = kNever;
+        re = true;
+      }
+      if (re) aim(g, t, frame);
     }
     recomputeMinOff();
   }
@@ -1535,7 +1598,8 @@ struct ArpCore::State {
     g.stepC = sc.cyc;
     g.glideAmt = sc.glide;
     g.outing = false;
-    g.outAt = g.intoEnd = kNever;
+    g.outAt = g.intoEnd = g.segAt = kNever;
+    g.inC = 0.0;
     ++stats.ties;
     double own = g.hz * std::exp2(g.c / 1200.0);
     if (p.into.mode != ArpGlide::Off) {
@@ -1548,11 +1612,15 @@ struct ArpCore::State {
         g.el = el;
         g.hz = hz;
         g.c = bending ? h.c1 : c;
-        const int64_t ti = std::min<int64_t>(len, std::llround(static_cast<double>(glideFrames(p.into, len)) * sc.glide));
+        const int64_t ti = std::llround(static_cast<double>(glideFrames(p.into, len)) * sc.glide);
+        const double was = own;  // (the tie glides from where it is)
         own = static_cast<double>(hz) * std::exp2(c / 1200.0);
         if (ti > 0) {
           out->push(glide(p.into, frame, g.id, static_cast<double>(hz) * std::exp2(h.centsAt(t + ti) / 1200.0), ti));
           g.intoEnd = t + ti;
+          g.inT = t;
+          g.inLen = ti;
+          g.inC = was > 0.0 && std::isfinite(was) ? 1200.0 * std::log2(was / own) : 0.0;
           ++stats.glides;
         } else {
           out->push(notePitch(frame, g.id, static_cast<float>(own), 0));
@@ -1566,8 +1634,11 @@ struct ArpCore::State {
         g.outHz = s != kNone ? static_cast<float>(offsetHz(held[s], g.el, g.hz, p.out.offset)) : 0.0f;
         if (!(g.outHz > 0.0f) || !std::isfinite(g.outHz)) to = 0;
       }
-      if (g.intoEnd != kNever) to = std::min<int64_t>(to, len - (g.intoEnd - t));
-      if (to > 0) g.outAt = g.off - to;
+      if (to > 0) {  // AP.11: additive (no shrink); begun before the tie's onset: from there
+        g.outT = g.off - to;
+        g.outLen = to;
+        g.outAt = std::max(g.outT, t);
+      }
     }
     if (rank < kArpMaxHeld && el.layer == 0) {
       curHz[rank] = static_cast<float>(own);
@@ -1631,16 +1702,15 @@ struct ArpCore::State {
       g.outHz = static_cast<float>(offsetHz(h, el, hz, p.out.offset));
       if (!(g.outHz > 0.0f) || !std::isfinite(g.outHz)) to = 0;
     }
-    if (ti > 0 && to > 0 && ti + to > len) {  // both glides do not fit: shrunk in proportion (AP.10; equal: half each)
-      ti = std::max<int64_t>(1, ti * len / (ti + to));
-      to = len - ti;
-    }
     if (from > 0.0) on.hz = static_cast<float>(from);
     out->push(on);
-    if (trace != nullptr) trace->push_back({on.noteId, h.on.noteId, exactOf(h.on, el)});  // AP.7: offline only
+    if (trace != nullptr) trace->push_back({on.noteId, h.on.noteId, exactOf(h.on, el), own});  // AP.7: offline only
     if (from > 0.0) {
       out->push(glide(p.into, frame, on.noteId, static_cast<double>(hz) * std::exp2(h.centsAt(t + ti) / 1200.0), ti));
       g.intoEnd = t + ti;
+      g.inT = t;
+      g.inLen = ti;
+      g.inC = 1200.0 * std::log2(from / static_cast<double>(own));
       ++stats.glides;
     } else if (bending) {
       out->push(notePitch(frame, on.noteId, static_cast<float>(hz * std::exp2(h.c1 / 1200.0)),
@@ -1648,7 +1718,11 @@ struct ArpCore::State {
     }
     if (h.gLen != 0 && t < h.gT + h.gLen)
       out->push(noteGain(frame, on.noteId, h.g1 * level, static_cast<uint32_t>(h.gT + h.gLen - t)));
-    if (to > 0) g.outAt = off - to;
+    if (to > 0) {  // AP.11: additive with the Into (no shrink); Out > 100 %: begun before the onset (aimed at it)
+      g.outT = off - to;
+      g.outLen = to;
+      g.outAt = std::max(g.outT, t);
+    }
     if (rank < kArpMaxHeld && el.layer == 0) {
       curHz[rank] = own;
       curCount = std::max(curCount, rank + 1);
@@ -2012,8 +2086,12 @@ struct ArpCore::State {
     for (uint32_t i = 0; i < numGens; ++i) {
       Gen& g = gens[i];
       g.off = moved(g.off);
+      if (g.inC != 0.0 && g.inT + g.inLen > t) g.inLen = moved(g.inT + g.inLen) - g.inT;  // AP.11: the curves too
+      if (g.outT > t) g.outT = moved(g.outT);
+      g.outLen = std::max<int64_t>(1, g.off - g.outT);
       g.intoEnd = moved(g.intoEnd);
       g.outAt = moved(g.outAt);
+      g.segAt = moved(g.segAt);
     }
     recomputeMinOff();
     auto songMoved = [&](SampleTime x) { return seg.pos + static_cast<SampleTime>(std::llround(static_cast<double>(x - expectPos) * scale)); };
@@ -2082,7 +2160,11 @@ struct ArpCore::State {
     if (hz == g.hz && !bendReset) {
       if (outHz == g.outHz) return false;
       g.outHz = outHz;  // only the Out Offset target moved: re-aim a running Out glide
-      if (g.outing && g.off > t) out->push(glide(p.out, frame, g.id, static_cast<double>(outHz) * std::exp2(g.c / 1200.0), g.off - t));
+      if (g.outing && g.off > t)
+        if (const double oc = outCentsOf(g, g.off); std::isfinite(oc)) {
+          g.outC = oc;
+          aim(g, t, frame);
+        }
       return true;
     }
     const float old = g.hz;
@@ -2096,14 +2178,11 @@ struct ArpCore::State {
       r.rampBend = static_cast<uint8_t>(rampBendOf(p.into.bend));
     }
     out->push(r);
-    if (g.outing && g.off > t) {  // the Out glide re-aimed at its (retuned) target
-      double to = p.out.mode == ArpGlide::Step ? nextHz(g, g.off) : static_cast<double>(g.outHz) * bend;
-      if (g.glideAmt != 1.0f && to > 0.0 && std::isfinite(to)) {
-        const double cur = static_cast<double>(hz) * bend;
-        to = cur * std::pow(to / cur, static_cast<double>(g.glideAmt));
+    if (g.outing && g.off > t)  // the Out glide re-aimed at its (retuned) target (AP.11: with the Into's rest)
+      if (const double oc = outCentsOf(g, g.off); std::isfinite(oc)) {
+        g.outC = oc;
+        aim(g, t, frame);
       }
-      if (to > 0.0 && std::isfinite(to)) out->push(glide(p.out, frame, g.id, to, g.off - t));
-    }
     if (g.rank < kArpMaxHeld && g.el.layer == 0 && old > 0.0f) {  // Into → Step of the next step starts here
       const float f = static_cast<float>(static_cast<double>(hz) / static_cast<double>(old));
       if (g.stepK == prevStepK && g.rank < prevCount) prevHz[g.rank] *= f;
@@ -2384,7 +2463,7 @@ bool ArpStage::processStage(void* self, const NoteStageBlock& block, const Event
   for (size_t i = 0; i < n;) {
     const Mapping& m = st.map_[i++];
     const bool have = m.param < block.params.size();
-    float v = have ? m.offset + m.scale * block.params[m.param] : 0.0f;
+    float v = have ? m.offset + m.scale * arpTaper(m.taper, block.params[m.param]) : 0.0f;
     for (; i < n && st.map_[i].add; ++i)
       if (st.map_[i].param < block.mods.size()) v += block.mods[st.map_[i].param];
     if (have) setArpParam(p, m.id, v);

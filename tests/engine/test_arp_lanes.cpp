@@ -226,7 +226,7 @@ TEST_CASE("arp lanes (AP.5): Skip rests; Tie continues the previous note, glidin
       CHECK(f[i].t == static_cast<int64_t>(2 * i + 1) * k16 + 3000);  // the tie step's gate end
     }
     CHECK(st.core().stats().ties == 4);
-    if (into) {  // at each tie step's onset: a glide to that step's note (300), Glide ms 50 = 2400 frames
+    if (into) {  // at each tie step's onset: a glide to that step's note (300), Into Time 25 % (AP.11) of its 3000-frame note
       std::vector<Ev> atTies;
       for (const Ev& x : pitch)
         if (x.t % (2 * k16) == k16) atTies.push_back(x);
@@ -235,7 +235,7 @@ TEST_CASE("arp lanes (AP.5): Skip rests; Tie continues the previous note, glidin
         CHECK(atTies[i].t == static_cast<int64_t>(2 * i + 1) * k16);
         CHECK(atTies[i].ev.noteId == o[i].ev.noteId);
         CHECK(atTies[i].ev.hz == doctest::Approx(300.0f));
-        CHECK(atTies[i].ev.rampFrames == 2400);
+        CHECK(atTies[i].ev.rampFrames == 750);
       }
     } else {
       CHECK(pitch.empty());

@@ -58,7 +58,7 @@ Engine: per track slot the events are merged today (timeline + live input + keyb
 
 ### Pitch into / out of curves (glides)
 - **Into**: each step starts at a source pitch and glides to its own. Source = Previous step / Offset (in the Pitch
-  unit or cents) / Off. **Time** (ms or note fraction), **Shape**.
+  unit or cents) / Off. **Time** (AP.11: % of the note, 0 – 200 %), **Shape**.
 - **Out**: over the last **Time** of each step's gate it bends toward a target: Next step / Offset / Off. Same
   Time / Shape params.
 - **Shapes**: Linear (in cents), Exponential (bend amount), S-curve, Overshoot (one spring). The VoiceEngine's Pitch
@@ -165,3 +165,12 @@ notes dotted; the pitch bends drawn in it; separate Into and Out bend controls; 
    Out curve → target, the time spans and offsets dimensioned, the gate edge marked. Handles: drag a side's time
    horizontally, its offset vertically (one undo step per drag); Alt+drag the bend. Same formula as 2.
 8. Sound defaults unchanged (Into / Out Off: an added arp sounds like Live's) — reversible; only the fold's default opens.
+
+**AP.11 (user: the time knobs scaled far too high)**: each side's time is ONE param, `intoTime` / `outTime` = % of the
+note's sounding (gated) length, 0 – 200 %, default 25 % (knob taper exp0 k = 2: 100 % at 66 % of the travel); Sync / ms /
+fraction deleted (no compat). Into and Out are additive offset curves in cents, so they overlap freely (the proportional
+shrink of AP.10 item 1 is gone): Into > 100 % is still gliding when the note ends, Out > 100 % starts before the onset
+(the note begins partway). The engine sends one shaped ramp per side alone, linear pieces when both are Linear, else
+linear-in-cents pieces (≥ 1 ms, 32 per the shorter curve). The Glide lane still scales both distances (and a tie's Into
+time). The bend view's axis fits an Into past the end / an Out before the start (drawn faint), handles on the curve,
+labels "In 25 %" / "Out 50 %".

@@ -1091,7 +1091,7 @@ TEST_CASE("arp (AP.3): Into / Out glides — sources, targets, time, shape on th
   p.into.bend = p.out.bend = 0.5f;
   SUBCASE("Into Step: from the previous step's note; none before the first step") {
     p.into.mode = e::ArpGlide::Step;
-    p.into.ms = p.out.ms = 10.0f;  // 480 frames
+    p.into.time = p.out.time = 0.16f;  // 480 of the 3000-frame note
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 3, 64);
     const auto o = ons(all);
@@ -1113,8 +1113,7 @@ TEST_CASE("arp (AP.3): Into / Out glides — sources, targets, time, shape on th
     p.into.mode = e::ArpGlide::Offset;
     p.glideCents = true;
     p.into.offset = -100.0f;
-    p.into.synced = p.out.synced = true;
-    p.into.fraction = p.out.fraction = 0.5f;  // 1500 of the 3000-frame note
+    p.into.time = p.out.time = 0.5f;  // 1500 of the 3000-frame note
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64);
     const auto o = ons(all);
@@ -1133,7 +1132,7 @@ TEST_CASE("arp (AP.3): Into / Out glides — sources, targets, time, shape on th
   }
   SUBCASE("Out Step: over the last Time of the gate toward the next step; Offset in Harmonics") {
     p.out.mode = e::ArpGlide::Step;
-    p.into.ms = p.out.ms = 20.0f;  // 960 frames
+    p.into.time = p.out.time = 0.32f;  // 960 frames
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 2, 64);
     const auto o = ons(all);
@@ -1152,30 +1151,21 @@ TEST_CASE("arp (AP.3): Into / Out glides — sources, targets, time, shape on th
     REQUIRE(g2.size() == 1);
     CHECK(g2[0].ev.hz == 225.0f);
   }
-  SUBCASE("Out Step with a gate > 100 %: the next step already sounds; Into + Out longer than the note: halves") {
+  SUBCASE("Out Step with a gate > 100 %: the next step already sounds or is still ahead") {
     p.out.mode = e::ArpGlide::Step;
-    p.into.mode = e::ArpGlide::Step;
     p.gate = 1.5f;  // 9000 frames
-    p.into.ms = p.out.ms = 1000.0f;
+    p.into.time = p.out.time = 1.0f;  // the whole note
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 3, 64);
     const auto o = ons(all);
     REQUIRE(o.size() >= 2);
     const auto g0 = pitchesOf(all, o[0].ev.noteId);
-    REQUIRE(g0.size() == 1);  // the first step has no previous: Out only, the whole note
+    REQUIRE(g0.size() == 1);  // Out only, the whole note
     CHECK(g0[0].t == 0);
     CHECK(g0[0].ev.rampFrames == 9000);
     CHECK(g0[0].ev.hz == 300.0f);  // the step at 6000 (still ahead at frame 0)
-    const auto g1 = pitchesOf(all, o[1].ev.noteId);
-    REQUIRE(g1.size() == 2);  // Into 4500, Out 4500
-    CHECK(g1[0].t == 6000);
-    CHECK(g1[0].ev.rampFrames == 4500);
-    CHECK(g1[1].t == 6000 + 4500);
-    CHECK(g1[1].ev.rampFrames == 4500);
-    CHECK(g1[1].ev.hz == 200.0f);  // toward the step at 12000 (the pattern's next, still ahead at 10500)
     // A short Out (500) starts after the next step has begun (gate 150 %): it aims at that sounding step.
-    p.into.mode = e::ArpGlide::Off;
-    p.into.ms = p.out.ms = 500.0f / 48.0f;
+    p.out.time = 500.0f / 9000.0f;
     e::ArpCore arp2;
     const auto all2 = Harness{}.run(arp2, p, in, {}, kSixteenth * 3, 64);
     const auto o2 = ons(all2);
@@ -1189,7 +1179,7 @@ TEST_CASE("arp (AP.3): Into / Out glides — sources, targets, time, shape on th
     p.into.mode = e::ArpGlide::Offset;
     p.glideCents = true;
     p.into.offset = 100.0f;
-    p.into.ms = p.out.ms = 10.0f;  // 480
+    p.into.time = p.out.time = 0.16f;  // 480 of the 3000-frame note
     e::ArpCore arp;
     // the held note bends +1200 cents over 960 frames from frame 0
     const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}, {0, e::notePitch(0, 1, 400.0f, 960)}}, {}, 6000, 64);
@@ -1217,8 +1207,7 @@ TEST_CASE("arp (AP.3): glides and Harmonic Walk give the same events at block si
   p.out.mode = e::ArpGlide::Offset;
   p.glideCents = true;
   p.out.offset = -50.0f;
-  p.into.synced = p.out.synced = true;
-  p.into.fraction = p.out.fraction = 0.3f;
+  p.into.time = p.out.time = 0.3f;
   p.into.shape = p.out.shape = e::RampShape::Overshoot;
   p.gate = 0.9f;
   Transport tr;
@@ -1269,38 +1258,43 @@ TEST_CASE("arp (AP.3): the new params through setArpParam / sanitized") {
   e::setArpParam(p, e::ArpParamId::OutOffset, 7.0f);
   CHECK(p.into.offset == -3.0f);
   CHECK(p.out.offset == 7.0f);
-  // AP.10: each side its own time, shape and bend.
+  // AP.10: each side its own time, shape and bend; AP.11: the time one param, a fraction 0 … 2 of the note.
   e::setArpParam(p, e::ArpParamId::GlideCents, 1.0f);
-  e::setArpParam(p, e::ArpParamId::IntoSynced, 1.0f);
-  CHECK((p.glideCents && p.into.synced && !p.out.synced));
-  e::setArpParam(p, e::ArpParamId::IntoMs, 1e9f);
-  e::setArpParam(p, e::ArpParamId::OutMs, 123.0f);
-  e::setArpParam(p, e::ArpParamId::IntoFraction, -1.0f);
-  e::setArpParam(p, e::ArpParamId::OutFraction, 0.75f);
+  CHECK(p.glideCents);
+  e::setArpParam(p, e::ArpParamId::IntoTime, 9.0f);
+  e::setArpParam(p, e::ArpParamId::OutTime, 1.5f);
   e::setArpParam(p, e::ArpParamId::IntoShape, 3.0f);
   e::setArpParam(p, e::ArpParamId::OutShape, 2.0f);
   e::setArpParam(p, e::ArpParamId::IntoBend, 5.0f);
   e::setArpParam(p, e::ArpParamId::OutBend, -0.25f);
-  e::setArpParam(p, e::ArpParamId::OutSynced, 1.0f);
   CHECK(p.into.shape == e::RampShape::Overshoot);
   CHECK(p.out.shape == e::RampShape::SCurve);
   const e::ArpParams s = e::sanitized(p);
-  CHECK(s.into.ms == 10000.0f);
-  CHECK(s.out.ms == 123.0f);
-  CHECK(s.into.fraction == 0.0f);
-  CHECK(s.out.fraction == 0.75f);
+  CHECK(s.into.time == e::kArpMaxGlideTime);
+  CHECK(s.out.time == 1.5f);
+  CHECK(e::sanitized([] { e::ArpParams q; q.into.time = -1.0f; return q; }()).into.time == 0.0f);
   CHECK(s.into.bend == 1.0f);
   CHECK(s.out.bend == -0.25f);
-  CHECK(s.out.synced);
+  // The knob's taper (ArpParamInfo::taper, the ArpStage mapping): 100 % at log2(2.5) / 2 ≈ 66 % of the travel, the
+  // ends exact.
+  for (const e::ArpParamInfo& r : e::kArpParamInfo)
+    if (r.id == e::ArpParamId::IntoTime) {
+      CHECK(r.unit == "%");
+      CHECK(r.def == 0.25f);
+      CHECK(e::arpTaper(r.taper, 0.0f) == 0.0f);
+      CHECK(e::arpTaper(r.taper, 1.0f) == 1.0f);
+      CHECK(r.min + (r.max - r.min) * e::arpTaper(r.taper, static_cast<float>(std::log2(2.5) / 2.0)) == doctest::Approx(1.0).epsilon(1e-5));
+      CHECK(e::arpUntaper(r.taper, e::arpTaper(r.taper, 0.3f)) == doctest::Approx(0.3).epsilon(1e-6));
+    }
 }
 
 TEST_CASE("arp (AP.10): Into and Out each with their own time, shape and bend on the Pitch events") {
   const std::vector<Ev> in = {{0, on(1, 200.0f)}, {0, on(2, 300.0f)}};
   e::ArpParams p = freeParams(e::ArpStyle::Up);  // steps of 6000, gate 3000
   SUBCASE("Into only: its shape / bend / time; Out's own settings change nothing while Out is off") {
-    p.into = {e::ArpGlide::Step, 0.0f, false, 10.0f, 0.25f, e::RampShape::SCurve, 0.0f};  // 480 frames
+    p.into = {e::ArpGlide::Step, 0.0f, 0.16f, e::RampShape::SCurve, 0.0f};  // 480 frames
     p.out.shape = e::RampShape::Overshoot;
-    p.out.ms = 40.0f;
+    p.out.time = 0.5f;
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 2, 64);
     const auto o = ons(all);
@@ -1313,9 +1307,9 @@ TEST_CASE("arp (AP.10): Into and Out each with their own time, shape and bend on
     CHECK(g[0].ev.rampShape == static_cast<uint8_t>(e::RampShape::SCurve));
   }
   SUBCASE("Out only: its shape / bend / synced time; Into's own settings change nothing while Into is off") {
-    p.out = {e::ArpGlide::Step, 0.0f, true, 50.0f, 0.2f, e::RampShape::Overshoot, -0.6f};  // 600 of the 3000
+    p.out = {e::ArpGlide::Step, 0.0f, 0.2f, e::RampShape::Overshoot, -0.6f};  // 600 of the 3000
     p.into.shape = e::RampShape::Exponential;
-    p.into.ms = 1.0f;
+    p.into.time = 0.9f;
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 2, 64);
     const auto o = ons(all);
@@ -1329,9 +1323,9 @@ TEST_CASE("arp (AP.10): Into and Out each with their own time, shape and bend on
     CHECK(g[0].ev.rampShape == static_cast<uint8_t>(e::RampShape::Overshoot));
     CHECK(static_cast<int8_t>(g[0].ev.rampBend) == -76);
   }
-  SUBCASE("both on one step, asymmetric; longer than the note together: shrunk in proportion (2 : 1)") {
-    p.into = {e::ArpGlide::Step, 0.0f, false, 10.0f, 0.25f, e::RampShape::Exponential, 0.5f};          // 480
-    p.out = {e::ArpGlide::Offset, -100.0f, false, 5.0f, 0.25f, e::RampShape::Overshoot, 1.0f};        // 240
+  SUBCASE("both on one step, asymmetric, apart: one shaped ramp each") {
+    p.into = {e::ArpGlide::Step, 0.0f, 0.16f, e::RampShape::Exponential, 0.5f};    // 480
+    p.out = {e::ArpGlide::Offset, -100.0f, 0.08f, e::RampShape::Overshoot, 1.0f};  // 240
     p.glideCents = true;
     e::ArpCore arp;
     const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 2, 64);
@@ -1348,15 +1342,79 @@ TEST_CASE("arp (AP.10): Into and Out each with their own time, shape and bend on
     CHECK(g[1].ev.hz == static_cast<float>(300.0 * std::exp2(-100.0 / 1200.0)));
     CHECK(g[1].ev.rampShape == static_cast<uint8_t>(e::RampShape::Overshoot));
     CHECK(static_cast<int8_t>(g[1].ev.rampBend) == 127);
-    p.into.ms = 2000.0f / 48.0f;  // Into 2000 + Out 3000 frames > the 3000-frame note: 2 : 3 of it → 1200 / 1800
-    p.out.ms = 3000.0f / 48.0f;
+  }
+}
+
+// AP.11: the events of the additive curves (the sampled pitches: test_voices "AP.11").
+TEST_CASE("arp (AP.11): Into / Out Time a % of the note; overlapping sides add; > 100 % passes the note's ends") {
+  const std::vector<Ev> in = {{0, on(1, 200.0f)}, {0, on(2, 300.0f)}};
+  e::ArpParams p = freeParams(e::ArpStyle::Up);  // steps of 6000, gate 3000
+  p.glideCents = true;
+  auto cents = [](double hz, double ref) { return 1200.0 * std::log2(hz / ref); };
+  SUBCASE("both Linear, overlapping: linear pieces (exact), the sum of the two curves at each piece's end") {
+    p.into = {e::ArpGlide::Offset, -300.0f, 0.6f, e::RampShape::Linear, 0.0f};  // 1800: −300 ¢ → 0 over [0, 1800)
+    p.out = {e::ArpGlide::Offset, 200.0f, 0.6f, e::RampShape::Linear, 0.0f};    // 1800: 0 → +200 ¢ over [1200, 3000)
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() == 1);
+    CHECK(cents(o[0].ev.hz, 200.0) == doctest::Approx(-300.0).epsilon(1e-6));
+    const auto g = pitchesOf(all, o[0].ev.noteId);
+    REQUIRE(g.size() == 3);  // Into from the onset, the overlap to the Into's end, the Out's rest
+    CHECK(g[0].t == 0);
+    CHECK(g[0].ev.rampFrames == 1800);
+    CHECK(g[1].t == 1200);
+    CHECK(g[1].ev.rampFrames == 600);
+    CHECK(cents(g[1].ev.hz, 200.0) == doctest::Approx(200.0 * 600.0 / 1800.0).epsilon(1e-5));  // In 0 + Out 66.7
+    CHECK(g[2].t == 1800);
+    CHECK(g[2].ev.rampFrames == 1200);
+    CHECK(cents(g[2].ev.hz, 200.0) == doctest::Approx(200.0).epsilon(1e-5));
+    CHECK(arp.stats().glides == 2);
+  }
+  SUBCASE("shaped and overlapping: linear-in-cents pieces on the summed curve, 32 per the shorter one") {
+    p.into = {e::ArpGlide::Offset, -300.0f, 0.6f, e::RampShape::SCurve, 0.0f};
+    p.out = {e::ArpGlide::Offset, 200.0f, 0.6f, e::RampShape::Exponential, 0.5f};
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64);
+    const auto g = pitchesOf(all, ons(all).at(0).ev.noteId);
+    REQUIRE(g.size() > 10);
+    CHECK(g[0].ev.rampShape == static_cast<uint8_t>(e::RampShape::SCurve));  // the Into alone until 1200
+    CHECK(g[1].t == 1200);
+    const int8_t kb = e::rampBendOf(0.5f);
+    for (size_t i = 1; i < g.size(); ++i) {
+      CAPTURE(i);
+      const int64_t end = g[i].t + g[i].ev.rampFrames;
+      CHECK(g[i].ev.rampFrames >= 24);  // ≥ half a 1-ms piece (a last one is ≥ half a piece)
+      CHECK(end <= 3000);
+      const double u = std::min(1.0, static_cast<double>(end) / 1800.0), v = static_cast<double>(end - 1200) / 1800.0;
+      const double want = (end < 1800 ? -300.0 * (1.0 - e::rampShapeAt(e::RampShape::SCurve, 0, u)) : 0.0) +
+                          200.0 * e::rampShapeAt(e::RampShape::Exponential, kb, v);
+      if (g[i].ev.rampShape == 0) CHECK(cents(g[i].ev.hz, 200.0) == doctest::Approx(want).epsilon(1e-4));
+    }
+    CHECK(g.back().t + g.back().ev.rampFrames == 3000);  // the last: the Out alone to its target
+    CHECK(cents(g.back().ev.hz, 200.0) == doctest::Approx(200.0).epsilon(1e-5));
+  }
+  SUBCASE("Into 150 %: one ramp past the note's end (never arrives); Out 150 %: begun before the onset") {
+    p.into = {e::ArpGlide::Offset, -300.0f, 1.5f, e::RampShape::Linear, 0.0f};
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64);
+    const auto g = pitchesOf(all, ons(all).at(0).ev.noteId);
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].ev.rampFrames == 4500);
+    p.into.mode = e::ArpGlide::Off;
+    p.out = {e::ArpGlide::Step, 0.0f, 1.5f, e::RampShape::Linear, 0.0f};  // 4500 ending at 3000: from −1500
     e::ArpCore arp2;
-    const auto all2 = Harness{}.run(arp2, p, in, {}, kSixteenth * 2, 64);
-    const auto g2 = pitchesOf(all2, ons(all2)[1].ev.noteId);
-    REQUIRE(g2.size() == 2);
-    CHECK(g2[0].ev.rampFrames == 1200);
-    CHECK(g2[1].t == 6000 + 1200);
-    CHECK(g2[1].ev.rampFrames == 1800);
+    const auto all2 = Harness{}.run(arp2, p, in, {}, kSixteenth, 64);
+    const auto o2 = ons(all2);
+    REQUIRE(o2.size() == 1);
+    const auto g2 = pitchesOf(all2, o2[0].ev.noteId);
+    REQUIRE(g2.size() == 2);  // at the onset: a step to 1/3 of the way, then the rest to the next step
+    CHECK(g2[0].t == 0);
+    CHECK(g2[0].ev.rampFrames == 0);
+    CHECK(cents(g2[0].ev.hz, 200.0) == doctest::Approx(cents(300.0, 200.0) / 3.0).epsilon(1e-5));
+    CHECK(g2[1].t == 0);
+    CHECK(g2[1].ev.rampFrames == 3000);
+    CHECK(g2[1].ev.hz == 300.0f);
   }
 }
 
@@ -1642,7 +1700,7 @@ TEST_CASE("arp (AP.4): layers at (p/q)^L with exact ratio / harmonic and their o
   q.steps = 2;
   q.distance = 12;
   q.into.mode = e::ArpGlide::Step;
-  q.into.ms = q.out.ms = 10.0f;
+  q.into.time = q.out.time = 0.04f;  // 480 of the 12000-frame gate
   e::ArpCore arp2;
   const auto out2 = Harness{}.run(arp2, q, {{0, jiOn(1, 400.0f, 8.0f)}}, tr, 200000, 64);
   const auto o2 = ons(out2);
@@ -1796,7 +1854,7 @@ TEST_CASE("arp (AP.4): Out -> Step aims at the same clock's next pulse (its copy
   q.steps = 2;
   q.distance = 12;
   q.out.mode = e::ArpGlide::Step;
-  q.into.ms = q.out.ms = 10.0f;
+  q.into.time = q.out.time = 0.04f;  // 480 of the 12000-frame gate
   e::ArpCore arp;
   const auto out = Harness{}.run(arp, q, {{0, jiOn(1, 400.0f, 8.0f)}}, tr, 200000, 64);
   const auto o = ons(out);

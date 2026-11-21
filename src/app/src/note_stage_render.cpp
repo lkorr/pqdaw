@@ -40,7 +40,7 @@ std::unique_ptr<engine::ArpStage> makeArpStage(const doc::LoweredNoteStage& st, 
   for (const doc::LoweredNoteStage::Slot& r : st.runtime) {
     const uint32_t ps = slotOf ? slotOf(r.key) : kNoSlot;
     if (ps == kNoSlot || r.param >= static_cast<uint32_t>(engine::ArpParamId::Count)) continue;
-    map.push_back({static_cast<engine::ArpParamId>(r.param), ps, r.scale, r.offset});
+    map.push_back({static_cast<engine::ArpParamId>(r.param), ps, r.scale, r.offset, false, r.taper});
     if (busOf)
       for (const doc::WireId w : r.mods)  // AP.2b: each cable into it adds its bus value
         if (const uint32_t v = busOf(w); v != engine::kNoBusValue)
