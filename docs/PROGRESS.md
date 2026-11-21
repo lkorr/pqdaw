@@ -1346,3 +1346,10 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: after rebase pq_tests_views / meta / document default tiers, playback Sampler tests 6/6; 6 new goldens (sampler-face-empty / -sample / -voices, 1× + 2×), none moved; test_sampler expects 2 engine resources (Sample + VoiceTap).
 - Perf / CPU-efficiency check: waveform layer redrawn only on sample / Start / End / overview progress change. The perf test "64 tracks full-project paint < 2 ms" reads ~4 ms, but it fails on main 120d671e too (orchestrator checked): pre-existing.
 - Notes/blockers: Q?-SM.10-a; no Filter / LFO switches (SM.11); Device-view host never reports visibility, so its tap stays read; not checked in the live app.
+
+## 2026-11-21 · AP.11 · task/AP.11-bend-time-pct (merged 5a378a31)
+- Did: intoTime / outTime = % of the note's gated length, 0–200 %, default 25 %, mild taper (100 % at 66 % travel) shared by engine, document and knob; Sync / ms / fraction params deleted; Into / Out add as cents curves (shrink removed): Into > 100 % still gliding at the note's end, Out > 100 % starts before the onset. Bend view in %, faint past the note's ends.
+- Verified: worker: note-stage tests, engine 177/177 (Into 50 / 150 %, Out 150 %, overlap sampled), app render 21/21, views default tier. Orchestrator (worker's run memory-killed): -Affected -Slow 1 failure = the load-sensitive JI lowering bound (25.34 vs 25 ms; AP.11's lower.cpp change only touches note chains), shard re-run passes; ship link of pq_bench_dsp failed on a stale bench field (`ms`) — fixed (bench uses 25 %), links.
+- Perf / CPU-efficiency check: voice per-sample code untouched; one exp2 per tapered param per block; release arp bench glides row stays ≈ +12 ns over the plain 8-note row (as before; machine shared).
+- Notes/blockers: not checked in the live app; taper choice put to the user in REVIEW.md.
+
