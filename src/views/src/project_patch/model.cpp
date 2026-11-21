@@ -405,6 +405,28 @@ struct Builder {
     n.symbol = std::move(spec);
   }
 
+  // GU.3 / AP.9: block `c` drawn AS panel `pnl` of device `id` (a closed group's, a device type's): at the panel's shown
+  // size (SM.9: a fit panel's folded sections taken out, as the view state `opt.panelViews` has them; GU.5b: a round
+  // panel's circle), taller when its pin rows need it; its pins on the edges. `list`: the devices an embedded panel
+  // element looks its child up in (a group's track), null: none.
+  void panelBlock(Node& c, const doc::Panel& pnl, doc::DeviceId id, const std::vector<doc::DevicePtr>* list) {
+    c.groupPanel = true;
+    const doc::PanelWindowView* pv = nullptr;
+    if (opt.panelViews != nullptr)
+      if (const auto it = opt.panelViews->find(id.value); it != opt.panelViews->end()) pv = &it->second;
+    const doc::FoldLayout folds = panel::viewFoldLayout(pnl, pv);
+    if (const std::optional<FaceShape> ps = panel::panelShape(pnl, list, &folds); ps && ps->round) {
+      c.panelRound = true;
+      c.roundX = ps->centre.x;
+      c.roundY = ps->centre.y;
+      c.roundR = ps->radius;
+      c.roundRY = ps->ry;
+    }
+    const size_t rows = pinRows(c);
+    c.w = roundUp4(std::max(pnl.width, 24.0f));
+    c.h = roundUp4(std::max(folds.height, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
+  }
+
   Node deviceNode(uint32_t band, const doc::Device& d, const graph::Patch* tp) {
     Node n;
     n.kind = NodeKind::Device;
@@ -509,12 +531,13 @@ struct Builder {
         n.h = roundUp4(std::max(n.h, fs.y));
       }
     }
-    // TX.panel-faces: a closed stock device with a panel is drawn as it (the Device view's panel at the block's size).
-    graph::Point2 panelSize{0.0f, 0.0f};
-    if (!n.meta && !n.missing && !n.symbol && !n.valueKnob && opt.panelSize) panelSize = opt.panelSize(d);
+    // AP.9: a device whose type supplies its own panel (the Arpeggiator's) is drawn as it, as a closed group is.
+    doc::PanelPtr own;
+    if (!n.meta && !n.missing && !n.symbol && !n.valueKnob && !n.expanded && opt.typePanel) own = opt.typePanel(d);
+    if (own != nullptr && own->empty()) own = nullptr;
     // TX.mod-all: on a face or a panel a wired param whose control is visible takes no pin: its wires end on the control.
     // (Anchored ports are the last inputs, so the pins' rows stay where they were.)
-    if ((n.face != nullptr || (panelSize.x > 0.0f && panelSize.y > 0.0f)) && opt.controlAnchor) {
+    if ((n.face != nullptr || own != nullptr) && opt.controlAnchor) {
       for (Port& q : n.inputs)
         if (q.param)
           if (const std::optional<LayoutOptions::Anchor> a = opt.controlAnchor(d, q.name)) {
@@ -528,14 +551,9 @@ struct Builder {
         n.h = roundUp4(std::max(rowsHeight(n), fs.y));
       }
     }
-    {
-      const graph::Point2 ps = panelSize;
-      if (ps.x > 0.0f && ps.y > 0.0f) {
-        const size_t rows = pinRows(n);
-        n.panel = true;
-        n.w = roundUp4(ps.x);
-        n.h = roundUp4(std::max(ps.y, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
-      }
+    if (own != nullptr) {
+      n.typePanel = true;
+      panelBlock(n, *own, d.id, nullptr);
     }
     if (n.expanded)
       for (const ExpandedSize& e : opt.expanded)
@@ -952,24 +970,9 @@ struct Builder {
       sizeBlock(c, m::kClosedGroupW);
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
       if (g.hasPanel()) {  // GU.3: drawn as its panel (at the panel's size; its pins on the edges)
-        c.groupPanel = true;
-        // SM.9: at its shown size (a fit panel's folded sections taken out: the face's worldSize).
-        const doc::PanelWindowView* pv = nullptr;
-        if (opt.panelViews != nullptr)
-          if (const auto it = opt.panelViews->find(g.id.value); it != opt.panelViews->end()) pv = &it->second;
-        const doc::FoldLayout folds = panel::viewFoldLayout(*g.panel, pv);
-        if (const std::optional<FaceShape> ps = panel::panelShape(*g.panel, &t.devices, &folds); ps && ps->round) {  // GU.5b: a round panel
-          c.panelRound = true;
-          c.roundX = ps->centre.x;
-          c.roundY = ps->centre.y;
-          c.roundR = ps->radius;
-          c.roundRY = ps->ry;
-        }
         c.mini.clear();
         c.miniWires.clear();
-        const size_t rows = pinRows(c);
-        c.w = roundUp4(std::max(g.panel->width, 24.0f));
-        c.h = roundUp4(std::max(folds.height, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
+        panelBlock(c, *g.panel, g.id, &t.devices);
       }
       return addNode(scaled(std::move(c)));
     }
@@ -2084,7 +2087,7 @@ struct Builder {
       o.cx = n.x + n.roundX * k, o.cy = n.y + n.roundY * k, o.r = n.roundR * k, o.ry = n.roundRY * k;
       return o;
     }
-    if (n.panel || n.groupPanel) {  // GU.3: a group drawn as its panel too
+    if (n.groupPanel) {  // GU.3: a group drawn as its panel; AP.9: a device type's too
       o.x0 = n.x, o.y0 = n.y, o.x1 = n.x + n.w, o.y1 = n.y + n.h;
       o.corner = panel::GroupPanelFace::kCorner * k;
       return o;

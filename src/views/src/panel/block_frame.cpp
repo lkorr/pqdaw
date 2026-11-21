@@ -374,6 +374,8 @@ void BlockFrame::paintOver(ui::PaintContext& ctx) {
 
 // ---- the leaf's panel -------------------------------------------------------------------------------------------------
 
+doc::Panel typePanel(const doc::Device& d) { return doc::isNoteDevice(d) ? doc::noteDevicePanel(d) : doc::Panel{}; }
+
 doc::Panel leafPanel(const devices::DeviceSignature& sig, const doc::Device& d, bool* face) {
   if (face != nullptr) *face = false;
   // TMM.10 / GU.7: a native engine with a face: its module's panel (the face's sections and plain controls).
@@ -383,9 +385,8 @@ doc::Panel leafPanel(const devices::DeviceSignature& sig, const doc::Device& d, 
         if (face != nullptr) *face = true;
         return p;
       }
-  // AP.6: a note device whose type has its own panel (the Arpeggiator's); others get the generic one below.
-  if (doc::isNoteDevice(d))
-    if (doc::Panel p = doc::noteDevicePanel(d); !p.empty()) return p;
+  // AP.6: a device whose type has its own panel (the Arpeggiator's); others get the generic one below.
+  if (doc::Panel p = typePanel(d); !p.empty()) return p;
   doc::Panel p;
   // Columns 64 wide; a knob takes a 56-px slot, a toggle or a number box a 28-px one, 6 px between rows; two knob rows
   // per column for up to eight controls (wider, Live-like), else three.

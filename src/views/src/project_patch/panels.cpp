@@ -1,6 +1,7 @@
-// The faces the project patch view's canvas hosts for blocks drawn as panels (GU.3 / GU.5b / GU.11): a closed group as
-// its panel (GroupPanelFace bound to the document), a value block as its knob, a track's mixer as its face; and where a
-// wire into a control ends (controlAnchorOf). See pq/views/project_patch/project_patch_view.h.
+// The faces the project patch view's canvas hosts for blocks drawn as panels (GU.3 / GU.5b / GU.11 / AP.9): a closed
+// group as its panel (GroupPanelFace bound to the document), a device as the panel its type supplies (the same face over
+// that panel), a value block as its knob, a track's mixer as its face; and where a wire into a control ends
+// (controlAnchorOf). See pq/views/project_patch/project_patch_view.h.
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,7 @@
 #include "pq/views/browser/library.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/views/meta/face_targets.h"
+#include "pq/views/panel/block_frame.h"
 #include "pq/views/panel/group_panel_face.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
@@ -49,7 +51,26 @@ std::unique_ptr<Face> ProjectPatchView::makePanel(const circuit::SceneFace& f) {
     face->setOwner(g);  // GU.5: its elements answer for the controls inside the group ("<name>@<id>": wires end on them)
     return face;
   }
+  // AP.9: a device drawn as the panel its type supplies (the Arpeggiator's), bound to the device as the Device view's is.
+  if (std::string_view(f.path).starts_with(kTypePanelFacePrefix)) {
+    const doc::DeviceId id{f.owner};
+    const doc::Device* d = ctx_.doc() != nullptr ? doc::findDevice(*ctx_.doc(), id).device : nullptr;
+    doc::PanelPtr p = d != nullptr ? typePanelOf(*d) : nullptr;
+    if (p == nullptr) return nullptr;
+    auto face = std::make_unique<panel::GroupPanelFace>([p] { return p; },
+                                                        panel::makeDocPanelTarget(ctx_, id, [c = canvas_]() -> ui::Widget* { return c; }));
+    face->setOwner(id);  // its own params are the panel's bare port keys (wires end on their controls)
+    return face;
+  }
   return nullptr;  // GU.11: no other block is drawn as a panel (a native engine: its face; atoms: symbols)
+}
+doc::PanelPtr ProjectPatchView::typePanelOf(const doc::Device& d) {
+  auto [it, fresh] = typePanels_.try_emplace(d.id.value);
+  if (fresh || it->second.first != d.patch) {
+    doc::Panel p = panel::typePanel(d);
+    it->second = {d.patch, p.empty() ? nullptr : std::make_shared<const doc::Panel>(std::move(p))};
+  }
+  return it->second.second;
 }
 std::optional<LayoutOptions::Anchor> ProjectPatchView::controlAnchorOf(const doc::Device& d, std::string_view param) {
   // TMM.13-fix2 (H6): the wire runs down a gap beside the control (its labels' half width, or its rim, + 3 units).
@@ -72,6 +93,11 @@ std::optional<LayoutOptions::Anchor> ProjectPatchView::controlAnchorOf(const doc
   if (doc::isGroupDevice(d)) {
     if (!d.hasPanel()) return std::nullopt;
     const doc::PanelPtr p = d.panel;
+    panel::GroupPanelFace f([p] { return p; }, panel::makeDocPanelTarget(ctx_, d.id, {}));
+    f.setOwner(d.id);
+    return point(f.controlHome(param));
+  }
+  if (const doc::PanelPtr p = typePanelOf(d)) {  // AP.9: a type's panel — the element bound to the device's param
     panel::GroupPanelFace f([p] { return p; }, panel::makeDocPanelTarget(ctx_, d.id, {}));
     f.setOwner(d.id);
     return point(f.controlHome(param));

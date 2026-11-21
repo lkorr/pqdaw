@@ -2279,6 +2279,48 @@ Status setupProjectPatchTuningAt(Shell& shell, bool wheel, const char* scene) {
 }
 Status setupProjectPatchTuning(Shell& shell) { return setupProjectPatchTuningAt(shell, false, "project-patch-tuning"); }
 Status setupProjectPatchTuningWheel(Shell& shell) { return setupProjectPatchTuningAt(shell, true, "project-patch-tuning-wheel"); }
+// AP.9: a MIDI band's Arpeggiator drawn as its panel (the Device view's, project_patch.h Node::typePanel) between the
+// band's tuning block and its instrument — the sketch project's Keys with an arp added (style Up Down, its Glide section
+// open), the notes cable from the tuning block into it and on into the instrument.
+Status setupProjectPatchArp(Shell& shell) {
+  if (Status s = setupProjectPatch(shell, true); !s) return s;
+  ViewContext& ctx = shell.context();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  const doc::Track* keys = namedTrack(*ctx.doc(), "Keys");
+  if (keys == nullptr) return Error{ErrorCode::NotFound, "project-patch-arp: no Keys track", {}};
+  doc::DocumentStore& st = ctx.store();
+  auto a = doc::ops::addDevice(*st.current(), st.ids(), keys->id, doc::noteDevicePatch("arpeggiator"), doc::DeviceKind::AudioEffect);
+  if (!a.ok() || a->devices.empty() || !st.dispatch(a->command).ok())
+    return Error{ErrorCode::Unknown, "project-patch-arp: adding the arpeggiator failed", {}};
+  const doc::DeviceId arp = a->devices.front();
+  const doc::NoteDeviceType* t = doc::findNoteDeviceType("arpeggiator");
+  const doc::NoteParamSpec* style = t != nullptr ? t->param("style") : nullptr;
+  if (style == nullptr) return Error{ErrorCode::NotFound, "project-patch-arp: no style param", {}};
+  if (auto e = doc::ops::setDeviceParam(*st.current(), arp, "style", doc::noteParamPosition(*style, 2.0)); !e.ok() || !st.dispatch(e->command).ok())
+    return Error{ErrorCode::Unknown, "project-patch-arp: setting the style failed", {}};
+  {
+    const doc::Device* d = doc::findDevice(*st.current(), arp).device;
+    const doc::Panel p = d != nullptr ? doc::noteDevicePanel(*d) : doc::Panel{};
+    for (const doc::PanelElement& e : p.elements)
+      if (e.kind == doc::kFoldKind && e.text("title", "") == "Glide") st.view().panelWindows[arp.value].setFoldOpen(e.id, true);
+    ctx.panelFoldsChanged();  // (as the fold's click: the block takes the panel's new height)
+  }
+  shell.tree().layoutNow();
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t mn = pp.nodeOf(arp);
+  if (mn == project_patch::kNone || !pp.nodes[mn].typePanel) return Error{ErrorCode::NotFound, "project-patch-arp: the arp is not a panel", {}};
+  const project_patch::Node& n = pp.nodes[mn];
+  const ui::IRect r = v->canvas().rect();
+  const float us = shell.tree().scale();
+  circuit::CircuitCanvas::View view;
+  view.zoom = std::min({1.0, static_cast<double>(r.h) / (static_cast<double>(us) * (n.h + 120.0)),
+                        static_cast<double>(r.w) / (static_cast<double>(us) * (n.w + 420.0))});
+  view.x = n.x - 110.0;
+  view.y = n.y - 40.0;
+  v->canvas().setView(view);
+  shell.tree().layoutNow();
+  return Ok{};
+}
 // T5.x-circuit-chain: zooming into a band of the project patch view (a double-click on it): the sketch project's Keys
 // band opened — Operator → Saturator, each opened to its atoms in its labelled frame, wired through to the mixer.
 Status setupProjectPatchZoom(Shell& shell) {
@@ -4388,6 +4430,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-mixer", 1280, 800, setupProjectMixer},  // TX.mixer-look
     {"project-patch-tuning", 1280, 800, setupProjectPatchTuning},  // BR.tuning-block
     {"project-patch-tuning-wheel", 1280, 800, setupProjectPatchTuningWheel},  // BR.tuning-outside
+    {"project-patch-arp", 1280, 800, setupProjectPatchArp},  // AP.9
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
     {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio

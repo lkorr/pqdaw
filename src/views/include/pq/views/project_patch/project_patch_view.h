@@ -1175,6 +1175,9 @@ private:
   // (LayoutOptions::controlAnchor): the shown face's (its values, its panel's layout and selection now), else a
   // prototype's of the type / patch (the defaults' layout); nullopt: no visible control.
   std::optional<LayoutOptions::Anchor> controlAnchorOf(const doc::Device& d, std::string_view param);
+  // AP.9: the panel `d`'s type supplies (panel::typePanel; LayoutOptions::typePanel), null: none. Built once per device
+  // (it depends on the device's id and type only): the layout, the face and the anchors share it.
+  doc::PanelPtr typePanelOf(const doc::Device& d);
 
   ViewContext& ctx_;
   ViewContext::Subscription docSub_;
@@ -1253,6 +1256,8 @@ private:
   doc::DeviceId selectedGroup_;
   // TX.mod-all: prototype faces (by meta type) for controlAnchorOf before a block is shown.
   std::unordered_map<const meta::Type*, std::unique_ptr<MetaFace>> anchorFaces_;
+  // AP.9: typePanelOf's panels by device id (with the patch they were built for; null: the type has none).
+  std::unordered_map<uint32_t, std::pair<std::string, doc::PanelPtr>> typePanels_;
   // GU.5: the panel windows (children over the canvas, by group), the selected control, windows to remove (their group
   // went: removed at the next frame, never inside an event of theirs).
   std::vector<panel::PanelWindow*> windows_;

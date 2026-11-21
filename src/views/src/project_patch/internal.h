@@ -90,6 +90,8 @@ inline constexpr std::string_view kMixerFacePrefix = "\x01mixer:";
 inline constexpr std::string_view kGroupPanelFacePrefix = "\x01group-panel:";
 // GU.5b: the SceneFace path of a value block drawn as its knob ("<prefix><w>x<h>"): a one-knob panel bound to it.
 inline constexpr std::string_view kValueKnobFacePrefix = "\x01value-knob:";
+// AP.9: the SceneFace path of a device drawn as the panel its type supplies ("<prefix><w>x<h>").
+inline constexpr std::string_view kTypePanelFacePrefix = "\x01type-panel:";
 struct MixerSend {
   doc::TrackId target;  // the return
   std::string letter;   // its letter (the pin's label)
