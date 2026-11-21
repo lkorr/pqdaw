@@ -151,6 +151,7 @@ public:
         if (const Mapped* m = mapped(b)) return std::clamp(m->min + (m->max - m->min) * played(*ctx_.doc(), m->block, 0), 0.0, 1.0);
         return devices::storedPosition(r.param, d);
       case How::MetaParam: return doc::metaParamPosition(d, b.meta, *r.type, r.index);
+      case How::Active: return d.active ? 1.0 : 0.0;
       case How::GroupSetting:
       case How::Const:
       case How::MetaSetting: {
@@ -305,6 +306,11 @@ public:
       case How::GroupSetting:
       case How::Const: dispatch(doc::ops::setDeviceSetting(p, b.device, b.name, std::nullopt)); break;
       case How::MetaSetting: dispatch(doc::ops::setMetaSetting(p, b.device, b.meta, r.type->id, b.name, std::nullopt)); break;
+      case How::Active: {
+        const doc::DeviceId one[] = {b.device};
+        dispatch(doc::ops::setDevicesActive(p, one, true));
+        break;
+      }
       case How::None: break;
     }
   }
@@ -489,7 +495,7 @@ public:
   }
 
 private:
-  enum class How : uint8_t { None, Param, MetaParam, GroupSetting, Const, MetaSetting };
+  enum class How : uint8_t { None, Param, MetaParam, GroupSetting, Const, MetaSetting, Active };
   struct Resolved {
     doc::Binding b;
     uint64_t rev = 0;
@@ -643,7 +649,16 @@ private:
     }
     if (b.kind == doc::BindingKind::Setting) {
       i.setting = true;
-      if (doc::isGroupDevice(*d) && b.meta.empty()) {
+      if (b.name == doc::kActiveSetting) {  // SM.11: the block's activator (any block)
+        if (!b.meta.empty()) return;
+        r.how = How::Active;
+        r.def = 1.0;
+        i.label = d->name.empty() ? std::string("On") : d->name;
+        i.curve = linearOver(0.0, 1.0, 1.0);
+        i.choices = {"Off", "On"};
+        i.isSwitch = true;
+        i.steps = 2;
+      } else if (doc::isGroupDevice(*d) && b.meta.empty()) {
         const doc::SettingSpec* s = doc::groupSetting(b.name);
         if (s == nullptr) return;
         r.how = How::GroupSetting;
@@ -722,6 +737,10 @@ private:
   doc::ops::EditResult settingEdit(const doc::Binding& b, const Resolved& r, double position) const {
     const doc::Project& p = *ctx_.doc();
     const double v = settingValue(r.info.curve, position);
+    if (r.how == How::Active) {
+      const doc::DeviceId one[] = {b.device};
+      return doc::ops::setDevicesActive(p, one, v >= 0.5);
+    }
     if (r.how == How::MetaSetting) return doc::ops::setMetaSetting(p, b.device, b.meta, r.type->id, b.name, v);
     return doc::ops::setDeviceSetting(p, b.device, b.name, v);
   }

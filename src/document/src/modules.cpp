@@ -2439,13 +2439,16 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   wire(r.engine, "gateOut", r.envelope.engine, "gate");  // (a gate input reads its wires' sum > 0: the compare)
   wire(r.lfoOut, lfoPort, r.filterFrequency, kValueParam, WireLaw::Travel, 0.25);
   std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
-  // The panel (SM.10, docs/plans/SM.md "Face"): the CLOSED FACE — an oval plate (152 × 84) holding the sample's waveform
-  // and the voices' playheads (the engine face's `samplewave` section), three mini knobs on the lower arc (Transpose ·
-  // Filter · Volume) and the Expand chevron (a fold, folded by default: view state) — and, under the chevron's fold, the
-  // SM.3 settings (tabs Sample | Filter | Env | LFO; the filter / envelope / LFO panels embedded, GU.6), shown while it is
-  // open (Panel::fit: the closed face is the oval alone). SM.11 replaces that section with the expanded editor.
+  // The panel (SM.10 / SM.11, docs/plans/SM.md "Face"): the CLOSED FACE — an oval plate (152 × 84) holding the sample's
+  // waveform and the voices' playheads (the engine face's `samplewave` section), three mini knobs on the lower arc
+  // (Transpose · Filter · Volume) and the Expand chevron (a fold, folded by default: view state; a double-click on the
+  // waveform toggles it too: its "toggle") — and the EXPANDED PANEL under the chevron's fold (Panel::fit: the closed
+  // face is the oval alone, 152 wide; open, the panel is kSamplerPanelW wide): beside the oval the mode row and the root
+  // field (owned by the chevron: "section"), under it the waveform editor (`sampleedit`) and the fold sections Sample,
+  // Warp, Slices (Slice mode only), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on / off
+  // switches beside their headers: kActiveSetting), each a child of the chevron ("parent"); only Sample open.
   Panel panel;
-  panel.width = kSamplerFaceW;
+  panel.width = kSamplerPanelW;
   panel.fit = true;
   {
     PanelElement oval = element(1, "shape", 0, 0, kSamplerFaceW, kSamplerFaceH, {});
@@ -2456,6 +2459,7 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     panel.elements.push_back(std::move(oval));
   }
   uint32_t id = 2;
+  const uint32_t wave = id;
   panel.elements.push_back(element(id++, "samplewave", 24, 8, 104, 34, dataBinding(r.engine)));
   {
     struct K {
@@ -2481,48 +2485,141 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     chevron.setField(styleText("look", "chevron"));
     chevron.setField(styleNumber("open", 0.0));
     chevron.setField(styleText("title", "Settings"));
+    chevron.setField(styleNumber("toggle", static_cast<double>(wave)));
     panel.elements.push_back(std::move(chevron));
   }
-  // The settings, under the oval (y ≥ 84): their plate, the tabs, each tab's controls.
-  constexpr float kTop = kSamplerFaceH + 2.0f;
+  const auto owned = [&](PanelElement e) {  // beside the oval, shown with the expanded panel
+    e.setField(styleNumber(std::string(kFoldSectionField), static_cast<double>(r.expand)));
+    panel.elements.push_back(std::move(e));
+  };
+  constexpr float kRight = kSamplerFaceW + 8.0f, kRightW = kSamplerPanelW - kSamplerFaceW - 14.0f;
+  // The plate of the expanded panel (under the oval: what fit shrinks as sections fold).
   {
-    PanelElement back = element(id++, "shape", 0, kTop, kSamplerFaceW, 168, {});
+    PanelElement back = element(id++, "shape", 0, kSamplerFaceH + 2.0f, kSamplerPanelW, 1, {});  // (its height below)
     back.bindings.clear();
     back.setField(styleText("fill", "track"));
     back.setField(styleText("stroke", "none"));
-    back.setField(styleNumber("opacity", 0.35));
+    back.setField(styleNumber("opacity", 0.3));
     panel.elements.push_back(std::move(back));
   }
+  const size_t backAt = panel.elements.size() - 1;
+  // The mode row and the root, beside the oval.
   r.tabs = id++;
-  PanelElement tabs = element(r.tabs, "tabs", 6, kTop + 6, kSamplerFaceW - 12, 16, {});
-  tabs.bindings.clear();
-  tabs.setField(styleText("items", kSamplerTabs));
-  panel.elements.push_back(std::move(tabs));
-  auto onTab = [&](PanelElement e, double tab) {
-    e.when = Visibility{r.tabs, {tab}};
-    panel.elements.push_back(std::move(e));
-  };
   {
-    PanelElement mode = element(id++, "menu", 6, kTop + 28, 90, 16, settingBinding(r.engine, "mode"));
-    mode.setField(styleText("items", "Classic|One-Shot|Slice"));
-    mode.setField(styleText("label", "-"));
-    onTab(std::move(mode), 0.0);
-    struct K {
-      const char* param;
-      const char* label;
-      float x, y;
-    };
-    for (const K& k : {K{"start", "Start", 6, 50}, K{"end", "End", 53, 50}, K{"transpose", "Transpose", 100, 50},
-                       K{"gain", "Gain", 6, 108}, K{"root", "Root", 53, 108}, K{"detune", "Detune", 100, 108}}) {
-      PanelElement e = element(id++, "knob", k.x, kTop + k.y, 46, 56, controlBinding(r.engine, k.param));
-      e.setField(styleText("label", k.label));
-      onTab(std::move(e), 0.0);
-    }
+    PanelElement mode = element(r.tabs, "tabs", kRight, 10, kRightW, 16, settingBinding(r.engine, "mode"));
+    mode.setField(styleText("items", kSamplerModes));
+    owned(std::move(mode));
+    PanelElement label = element(id++, "label", kRight, 36, 30, 16, {});
+    label.bindings.clear();
+    label.setField(styleText("text", "Root"));
+    label.setField(styleText("align", "left"));
+    label.setField(styleNumber("size", 8.0));
+    owned(std::move(label));
+    owned(element(id++, "sampleroot", kRight + 30, 36, 120, 16, dataBinding(r.engine)));
+    PanelElement hint = element(id++, "label", kRight, 62, kRightW, 12, {});
+    hint.bindings.clear();
+    hint.setField(styleText("text", "Open the group to rewire it"));
+    hint.setField(styleText("align", "left"));
+    hint.setField(styleNumber("size", 6.5));
+    hint.setField(styleText("colour", "tick"));
+    owned(std::move(hint));
   }
-  onTab(element(id++, "panel", 6, kTop + 28, kSamplerFaceW - 12, 134, panelBinding(r.filter)), 1.0);
-  onTab(element(id++, "panel", 6, kTop + 28, kSamplerFaceW - 12, 134, panelBinding(r.envelope.group)), 2.0);
-  onTab(element(id++, "panel", 6, kTop + 28, kSamplerFaceW - 12, 134, panelBinding(r.lfo)), 3.0);
-  panel.height = kTop + 168.0f;
+  // The waveform editor.
+  constexpr float kEdTop = kSamplerFaceH + 6.0f;
+  panel.elements.push_back(element(id++, "sampleedit", 6, kEdTop, 328, 120, dataBinding(r.engine)));
+  // The sections, each under its header (14 high), children of the chevron.
+  float y = kEdTop + 124.0f;
+  const auto header = [&](const char* title, bool open) {
+    PanelElement f = element(id++, std::string(kFoldKind).c_str(), 6, y, kSamplerPanelW - 12, 14, {});
+    f.bindings.clear();
+    f.setField(styleText("title", title));
+    f.setField(styleNumber("open", open ? 1.0 : 0.0));
+    f.setField(styleNumber(std::string(kFoldParentField), static_cast<double>(r.expand)));
+    panel.elements.push_back(std::move(f));
+    y += 16.0f;
+  };
+  const auto when = [](PanelElement e, uint32_t source, std::vector<double> values) {
+    e.when = Visibility{source, std::move(values), {}, false};
+    return e;
+  };
+  const auto knob = [&](const char* param, const char* label, float x, float top) {
+    PanelElement e = element(id++, "knob", x, top, 46, 56, controlBinding(r.engine, param));
+    e.setField(styleText("label", label));
+    return e;
+  };
+  // Sample: gain, transpose, detune; Classic: the loop and its fade; One-Shot / Slice: the fades and the trigger.
+  header("Sample", true);
+  {
+    const float t = y;
+    panel.elements.push_back(knob("gain", "Gain", 6, t));
+    panel.elements.push_back(knob("transpose", "Transpose", 54, t));
+    panel.elements.push_back(knob("detune", "Detune", 102, t));
+    PanelElement loop = element(id++, "menu", 160, t + 12, 80, 26, settingBinding(r.engine, "loop"));
+    loop.setField(styleText("items", "Off|Forward|Ping-pong"));
+    loop.setField(styleText("label", "Loop"));
+    panel.elements.push_back(when(std::move(loop), r.tabs, {0.0}));
+    panel.elements.push_back(when(knob("loopFade", "Loop Fade", 250, t), r.tabs, {0.0}));
+    panel.elements.push_back(when(knob("fadeIn", "Fade In", 150, t), r.tabs, {1.0, 2.0}));
+    panel.elements.push_back(when(knob("fadeOut", "Fade Out", 198, t), r.tabs, {1.0, 2.0}));
+    PanelElement trig = element(id++, "menu", 252, t + 12, 80, 26, settingBinding(r.engine, "trigger"));
+    trig.setField(styleText("items", "Trigger|Gate"));
+    trig.setField(styleText("label", "Trigger"));
+    panel.elements.push_back(when(std::move(trig), r.tabs, {1.0, 2.0}));
+    y = t + 60.0f;
+  }
+  // Warp: the 7-way mode, the sample's tempo; Beats: its envelope and loop; Tones / Texture (Complex …): the grain;
+  // Texture: the flux.
+  header("Warp", false);
+  {
+    const float t = y;
+    const uint32_t warp = id++;
+    PanelElement w = element(warp, "menu", 6, t + 12, 100, 26, settingBinding(r.engine, "warp"));
+    w.setField(styleText("items", "Off|Re-Pitch|Beats|Tones|Texture|Complex|Complex Pro"));
+    w.setField(styleText("label", "Warp"));
+    panel.elements.push_back(std::move(w));
+    PanelElement bpm = element(id++, "number", 114, t + 12, 54, 26, controlBinding(r.engine, "sampleBpm"));
+    bpm.setField(styleText("label", "Sample BPM"));
+    bpm.setField(styleNumber("decimals", 2.0));
+    panel.elements.push_back(when(std::move(bpm), warp, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}));
+    panel.elements.push_back(when(knob("envelope", "Envelope", 178, t), warp, {2.0}));
+    PanelElement bl = element(id++, "menu", 230, t + 12, 100, 26, settingBinding(r.engine, "beatsLoop"));
+    bl.setField(styleText("items", "Off|Forward|Back-Forward"));
+    bl.setField(styleText("label", "Beats Loop"));
+    panel.elements.push_back(when(std::move(bl), warp, {2.0}));
+    panel.elements.push_back(when(knob("grain", "Grain", 178, t), warp, {3.0, 4.0, 5.0, 6.0}));
+    panel.elements.push_back(when(knob("flux", "Flux", 226, t), warp, {4.0}));
+    y = t + 60.0f;
+  }
+  // Slices (Slice mode only): how slices are played and made (SM.12 adds the slicing).
+  header("Slices", false);
+  panel.elements.back().when = Visibility{r.tabs, {2.0}, {}, false};
+  {
+    PanelElement hint = element(id++, "label", 6, y + 2, kSamplerPanelW - 12, 14, {});
+    hint.bindings.clear();
+    hint.setField(styleText("text", "Slice n plays on key 36 + n. Double-click the waveform to add a slice, a line to remove it."));
+    hint.setField(styleText("align", "left"));
+    hint.setField(styleNumber("size", 7.0));
+    panel.elements.push_back(std::move(hint));
+    y += 20.0f;
+  }
+  // The Envelope, the Filter and the LFO: their own panels; the Filter and LFO switches beside their headers.
+  const auto embedded = [&](const char* title, DeviceId group, DeviceId onOff) {
+    const float head = y;
+    header(title, false);
+    if (onOff.valid()) {
+      PanelElement on = element(id++, "toggle", kSamplerPanelW - 40, head + 1, 28, 12, activeBinding(onOff));
+      on.setField(styleText("look", "button"));
+      on.setField(styleText("text", "On"));
+      panel.elements.push_back(std::move(on));
+    }
+    panel.elements.push_back(element(id++, "panel", 6, y, kSamplerPanelW - 12, 140, panelBinding(group)));
+    y += 144.0f;
+  };
+  embedded("Envelope", r.envelope.group, DeviceId{});
+  embedded("Filter", r.filter, r.filter);
+  embedded("LFO", r.lfo, r.lfo);
+  panel.height = y;
+  panel.elements[backAt].h = y - panel.elements[backAt].y;
   {
     auto g = std::make_shared<Device>(*out.devices.front());
     g->panel = std::make_shared<const Panel>(std::move(panel));

@@ -192,6 +192,10 @@ private:
   ui::Vec2 cableTo_{0.0f, 0.0f};
   int32_t cableTargetAt(ui::Vec2 local) const;
   int32_t popupAt(ui::Vec2 local) const;  // the element whose open popup holds `local` (−1: none)
+  // SM.11: a fold's number field "toggle" (an element's id): a double-click on that element where it takes no press
+  // itself (the Sampler's closed waveform) folds / unfolds the fold. The fold whose trigger element holds `local`
+  // (and the element's index), or −1.
+  int32_t triggerFoldAt(ui::Vec2 local, int32_t* element = nullptr) const;
   bool round_ = false;                    // GU.5b: the bottom element's outline is the panel's
   int8_t shown_ = -1;                     // SM.10: what setShown said last (−1: nothing)
   float corner_ = kCorner;                // GU.7: the plate's corner (a bottom plate shape's radius)
@@ -226,7 +230,11 @@ private:
 std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list = nullptr,
                                     const doc::FoldLayout* folds = nullptr);
 // SM.9: the fold layout of a group's panel as its view state (ViewState::panelWindows' entry; null: none) has its folds.
-doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowView* view);
+// SM.11: a fold's visibility condition is read from `list` (the group's track's blocks; null: every fold shows) where its
+// source is bound to a SETTING (the setting's stored value or its default: a tabs / menu over a 0-based setting shows
+// that index, a toggle 0 / 1); a source bound otherwise (or unbound) counts as holding.
+doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowView* view,
+                               const std::vector<doc::DevicePtr>* list = nullptr);
 
 // GU.5b: the face of a VALUE BLOCK in a circuit (an opened group's): one knob filling w × h, bound to the block's
 // `value` (its name above, its value below).

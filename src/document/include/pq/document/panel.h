@@ -67,6 +67,10 @@ struct Binding {
   bool bound() const noexcept { return kind != BindingKind::None; }
   friend bool operator==(const Binding&, const Binding&) = default;
 };
+// SM.11 (Q?-SM.10-a): a Setting binding named kActiveSetting is the bound block's ACTIVATOR (Device::active, any block:
+// a toggle on it switches the block on / off, one undo step, a recompile) — the Sampler's Filter / LFO switches.
+inline constexpr std::string_view kActiveSetting = "@active";
+Binding activeBinding(DeviceId device);
 Binding controlBinding(DeviceId device, std::string param, std::string meta = {});
 Binding settingBinding(DeviceId device, std::string setting, std::string meta = {});
 Binding signalBinding(DeviceId device, std::string output);
@@ -154,18 +158,31 @@ using PanelPtr = std::shared_ptr<const Panel>;
 // Folded, its elements are hidden. Whether a fold is open is VIEW state (ViewState::panelWindows[group].folds: saved,
 // not undoable; every host of the panel shows the same), else its style "open" (default 1).
 // Panel::fit: the shown height is the sum of the open sections: each folded section's band is taken out, so what lies
-// below it moves up by the band's height and an element spanning it (a background shape) shrinks by it. Without fit the
-// panel keeps its size and a folded section's place stays empty.
+// below it moves up by the band's height and an element spanning it (a background shape) shrinks by it; SM.11: what
+// only hidden elements reach on the right is taken off the shown width (the panel's right margin kept). Without fit the
+// panel keeps its size and a
+// folded section's place stays empty.
+// SM.11: NESTED and CONDITIONAL folds, and sections owned by name —
+//   - a fold's number field "parent" (a fold's id): while that fold is folded or gone this one is GONE — its header and
+//     its section are hidden and (fit) taken out with the header; so is a fold whose visibility condition fails (the
+//     `shown` callback: the host evaluates `when`). Elements beside a header (in its row) show with the header.
+//   - an element's number field "section" (a fold's id) puts it in that fold's section wherever it lies (hidden while
+//     the fold is folded or gone): the Sampler's mode row beside its oval belongs to the Expand chevron.
 inline constexpr std::string_view kFoldKind = "fold";
+inline constexpr std::string_view kFoldParentField = "parent";
+inline constexpr std::string_view kFoldSectionField = "section";
 bool foldOpenByDefault(const PanelElement& e) noexcept;
 struct FoldLayout {
   bool folds = false;           // the panel has a fold element (else y / h / hidden are empty and height = p.height)
   float height = 0.0f;          // the shown height
+  float width = 0.0f;           // SM.11: the shown width (fit: the shown elements' right edge; else p.width)
   std::vector<float> y, h;      // per element (paint order): its shown top and height
   std::vector<uint8_t> hidden;  // per element: in a folded section
 };
 // `open(e)`: whether fold element e is open now (its view state, else foldOpenByDefault).
-FoldLayout foldLayout(const Panel& p, const std::function<bool(const PanelElement&)>& open);
+// `shown(e)` (optional): whether fold element e's visibility condition holds now (SM.11; none: every fold shows).
+FoldLayout foldLayout(const Panel& p, const std::function<bool(const PanelElement&)>& open,
+                      const std::function<bool(const PanelElement&)>& shown = {});
 
 // The panel's own rules: size in (0, kMaxPanelSize] when it has elements, at most kMaxPanelElements, ids ≥ 1 and unique,
 // a kind for each, finite rects with w, h > 0, style fields sorted / unique / named / finite, bindings well formed (a

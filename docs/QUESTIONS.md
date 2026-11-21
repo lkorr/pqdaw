@@ -2501,3 +2501,21 @@ Context: SM.4 (docs/plans/SM.md "Semantics", "SM.4"). Choices (most reversible):
    per instance and voice group, not per lane; review: audio threads include driver threads (ASIO) whose stack size
    we do not control, so it is not on the stack); ≈ 5 KiB of per-lane in / out buffers stay on the stack. Status: open.
 
+
+## Q?-SM.11-a · the expanded Sampler panel: readings taken
+Context: SM.11 (docs/plans/SM.md "Face (👁)" Expanded). Choices (most reversible):
+1. **No Granular section, no Gran cell** yet: SM.6's granular params / mode are not on main, and SM.13 owns the section.
+   Building against guessed names would leave dead controls; the mode row reads its items from the panel (`items`), so
+   SM.13 adds "|Gran" and the section in one place.
+2. **Nested folds via style fields**, not a new element kind: `parent` (a child fold is gone with its parent),
+   `section` (ownership by name, for the mode row beside the oval), a fold's `when` hides it entirely; fit also fits the
+   width. One general rule in `doc::foldLayout`; the patch reads a fold condition only when its source is bound to a
+   setting (other sources count as holding there).
+3. **Activator binding = a Setting binding named "@active"** (`doc::kActiveSetting`), not a new BindingKind: no file
+   format change, any block, one undo step + recompile through `ops::setDevicesActive`.
+4. **Warp shows in every mode** (Re-Pitch applies to Slice too; Beats … Complex Pro do not — the menu still offers them
+   there). Slices shows in Slice mode only; the slice lines also show with warp Beats (its transients).
+5. **Root identity** = the piano roll's row label + equave (`C3` for the 12-EDO reference, octave numbering as Live),
+   recomputed from the root Hz on display (the stored `rootText` only marks the identity display / keeps the name).
+6. **Warp marker drags move the frame, keep the beat** (Live's sample view); a new marker takes the beat the ruler reads
+   there, so adding one never changes the sound.

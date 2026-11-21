@@ -495,3 +495,58 @@ TEST_CASE("panel oval: the ellipse outline — the ray's point on it, the normal
   CHECK(circuit::outlineDistance(o, {o.cx, o.cy}) < 0.0f);
   CHECK(circuit::outlineDistance(o, {o.cx + 45.0f, o.cy}) == doctest::Approx(5.0f).epsilon(0.05));
 }
+
+TEST_CASE("panel folds (SM.11): nested folds (parent), sections owned by name, folds hidden by their condition, fit width") {
+  // A chevron (id 2) at the top; beside it a tabs (3) it owns by name; under it fold A (4, child of 2) with a knob (5),
+  // fold B (6, child of 2, shown only while tabs 3 is 1) with a knob (7) and a toggle in its header row (8).
+  doc::Panel p;
+  p.width = 300;
+  p.height = 200;
+  p.fit = true;
+  p.elements.push_back(el(1, "shape", 0, 0, 100, 40));
+  doc::PanelElement chev = el(2, "fold", 40, 30, 16, 10);
+  chev.setField(doc::styleNumber("open", 0.0));
+  p.elements.push_back(chev);
+  doc::PanelElement tabs = el(3, "tabs", 110, 4, 180, 16);
+  tabs.setField(doc::styleNumber(std::string(doc::kFoldSectionField), 2.0));
+  p.elements.push_back(tabs);
+  doc::PanelElement a = el(4, "fold", 0, 60, 300, 14);
+  a.setField(doc::styleNumber(std::string(doc::kFoldParentField), 2.0));
+  p.elements.push_back(a);
+  p.elements.push_back(el(5, "knob", 0, 80, 40, 40));
+  doc::PanelElement b = el(6, "fold", 0, 130, 300, 14);
+  b.setField(doc::styleNumber(std::string(doc::kFoldParentField), 2.0));
+  b.when = doc::Visibility{3, {1.0}, {}, false};
+  p.elements.push_back(b);
+  p.elements.push_back(el(7, "knob", 0, 150, 40, 40));
+  p.elements.push_back(el(8, "toggle", 260, 131, 30, 12));
+  auto idx = [&](uint32_t id) { return static_cast<size_t>(p.indexOf(id)); };
+  auto openIf = [](bool chevOpen) {
+    return [chevOpen](const doc::PanelElement& e) { return e.id == 2 ? chevOpen : doc::foldOpenByDefault(e); };
+  };
+  bool bShown = true;
+  const auto shown = [&](const doc::PanelElement& e) { return e.id != 6 || bShown; };
+  // The chevron folded: every child gone (headers too), the owned tabs hidden; the panel is the shape (100 × 40).
+  {
+    const doc::FoldLayout l = doc::foldLayout(p, openIf(false), shown);
+    for (const uint32_t id : {3u, 4u, 5u, 6u, 7u, 8u}) CHECK(l.hidden[idx(id)] == 1);
+    CHECK(l.hidden[idx(1)] == 0);
+    CHECK(l.height == doctest::Approx(40.0f));
+    CHECK(l.width == doctest::Approx(100.0f));
+  }
+  // Open: everything shows, the width is the widest element's right edge.
+  {
+    const doc::FoldLayout l = doc::foldLayout(p, openIf(true), shown);
+    for (size_t i = 0; i < p.elements.size(); ++i) CHECK(l.hidden[i] == 0);
+    CHECK(l.height == doctest::Approx(200.0f));
+    CHECK(l.width == doctest::Approx(300.0f));
+  }
+  // Fold B's condition fails: its header, its section and the toggle beside it are gone and taken out.
+  bShown = false;
+  {
+    const doc::FoldLayout l = doc::foldLayout(p, openIf(true), shown);
+    for (const uint32_t id : {6u, 7u, 8u}) CHECK(l.hidden[idx(id)] == 1);
+    CHECK(l.hidden[idx(5)] == 0);
+    CHECK(l.height == doctest::Approx(130.0f));
+  }
+}

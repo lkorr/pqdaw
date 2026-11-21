@@ -414,7 +414,7 @@ struct Builder {
     const doc::PanelWindowView* pv = nullptr;
     if (opt.panelViews != nullptr)
       if (const auto it = opt.panelViews->find(id.value); it != opt.panelViews->end()) pv = &it->second;
-    const doc::FoldLayout folds = panel::viewFoldLayout(pnl, pv);
+    const doc::FoldLayout folds = panel::viewFoldLayout(pnl, pv, list);
     if (const std::optional<FaceShape> ps = panel::panelShape(pnl, list, &folds); ps && ps->round) {
       c.panelRound = true;
       c.roundX = ps->centre.x;
@@ -423,7 +423,7 @@ struct Builder {
       c.roundRY = ps->ry;
     }
     const size_t rows = pinRows(c);
-    c.w = roundUp4(std::max(pnl.width, 24.0f));
+    c.w = roundUp4(std::max(folds.folds ? folds.width : pnl.width, 24.0f));  // SM.11: a fit panel's shown width
     c.h = roundUp4(std::max(folds.height, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
   }
 

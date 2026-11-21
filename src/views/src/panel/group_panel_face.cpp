@@ -15,6 +15,7 @@
 
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/meta/registry.h"
 #include "pq/ui/theme.h"
 #include "pq/views/panel/group_responses.h"
 #include "pq/views/view_context.h"
@@ -135,8 +136,19 @@ bool GroupPanelFace::syncFolds() {
   if (!panel_) return false;
   std::vector<uint8_t>& now = foldScratch_;
   now.clear();
-  for (const doc::PanelElement& e : panel_->elements)
-    if (e.kind == doc::kFoldKind) now.push_back(target_->foldOpen(e.id).value_or(doc::foldOpenByDefault(e)) ? 1 : 0);
+  // SM.11: a fold's visibility condition joins its state (a mode change re-lays the panel out); evaluated with no
+  // section folded (a source inside a folded section still selects).
+  std::vector<uint8_t> keepHidden;
+  keepHidden.swap(folds_.hidden);
+  std::vector<int8_t>& memo = freshMemo();
+  for (size_t i = 0; i < panel_->elements.size(); ++i) {
+    const doc::PanelElement& e = panel_->elements[i];
+    if (e.kind != doc::kFoldKind) continue;
+    const bool open = target_->foldOpen(e.id).value_or(doc::foldOpenByDefault(e));
+    const bool cond = !e.when || i >= elements_.size() || shownNow(i, memo);
+    now.push_back(static_cast<uint8_t>((open ? 1 : 0) | (cond ? 2 : 0)));
+  }
+  folds_.hidden.swap(keepHidden);
   if (foldsLaid_ && now == foldOpen_) return false;
   const bool first = !foldsLaid_;
   foldsLaid_ = true;
@@ -146,9 +158,16 @@ bool GroupPanelFace::syncFolds() {
     folds_.height = panel_->height;
     return false;
   }
-  folds_ = doc::foldLayout(*panel_, [&](const doc::PanelElement& e) {
-    return target_->foldOpen(e.id).value_or(doc::foldOpenByDefault(e));
-  });
+  folds_ = doc::foldLayout(
+      *panel_, [&](const doc::PanelElement& e) { return target_->foldOpen(e.id).value_or(doc::foldOpenByDefault(e)); },
+      [&](const doc::PanelElement& e) {  // (the condition as `now` read it: bit 2, folds in panel order)
+        for (size_t i = 0, k = 0; i < panel_->elements.size(); ++i)
+          if (panel_->elements[i].kind == doc::kFoldKind) {
+            if (panel_->elements[i].id == e.id) return (now[k] & 2) != 0;
+            ++k;
+          }
+        return true;
+      });
   for (size_t i = 0; i < elements_.size() && i < folds_.y.size(); ++i) elements_[i]->setPlacement(folds_.y[i], folds_.h[i]);
   updateShape();
   liveKeys_.clear();  // repaint the whole panel
@@ -229,11 +248,41 @@ FaceShape GroupPanelFace::shape() const noexcept {
   return {false, {0.0f, 0.0f}, corner_};
 }
 
-doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowView* v) {
-  return doc::foldLayout(panel, [&](const doc::PanelElement& e) {
+doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowView* v, const std::vector<doc::DevicePtr>* list) {
+  const auto open = [&](const doc::PanelElement& e) {
     const std::optional<bool> o = v != nullptr ? v->foldOpen(e.id) : std::nullopt;
     return o.value_or(doc::foldOpenByDefault(e));
-  });
+  };
+  // SM.11: a term's source bound to a setting reads it; anything else holds.
+  const auto settingOf = [&](uint32_t element) -> std::optional<double> {
+    const doc::PanelElement* src = panel.find(element);
+    const doc::Binding* b = src != nullptr ? src->binding() : nullptr;
+    if (b == nullptr || b->kind != doc::BindingKind::Setting || list == nullptr) return std::nullopt;
+    for (const doc::DevicePtr& d : *list) {
+      if (d->id != b->device) continue;
+      if (b->name == doc::kActiveSetting) return d->active ? 1.0 : 0.0;
+      if (const doc::DeviceValue* x = b->meta.empty() ? d->setting(b->name) : nullptr) return x->value;
+      if (const doc::MetaInstance* m = !b->meta.empty() ? d->metaAt(b->meta) : nullptr)
+        if (const doc::DeviceValue* x = m->setting(b->name)) return x->value;
+      if (const doc::SettingSpec* gs = doc::isGroupDevice(*d) && b->meta.empty() ? doc::groupSetting(b->name) : nullptr) return gs->def;
+      if (const meta::Type* t = meta::findType(b->meta.empty() ? doc::metaDeviceType(*d) : std::string_view{}))
+        if (const int32_t k = t->settingIndex(b->name); k >= 0) return t->settings[static_cast<size_t>(k)].def;
+      return std::nullopt;
+    }
+    return std::nullopt;
+  };
+  const auto shown = [&](const doc::PanelElement& e) {
+    if (!e.when) return true;
+    bool on = e.when->all;
+    for (size_t t = 0; t < e.when->terms(); ++t) {
+      const std::optional<double> x = settingOf(e.when->termElement(t));
+      bool term = !x.has_value();
+      for (const double want : e.when->termValues(t)) term = term || (x && std::fabs(*x - want) < 1e-6);
+      on = e.when->all ? on && term : on || term;
+    }
+    return on;
+  };
+  return doc::foldLayout(panel, open, shown);
 }
 
 std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list, const doc::FoldLayout* folds) {
@@ -391,7 +440,7 @@ bool GroupPanelFace::animating() const noexcept {
 
 Vec2 GroupPanelFace::worldSize() const noexcept {
   if (!panel_) return {120.0f, 60.0f};
-  return {std::max(1.0f, panel_->width), std::max(1.0f, folds_.folds ? folds_.height : panel_->height)};
+  return {std::max(1.0f, folds_.folds ? folds_.width : panel_->width), std::max(1.0f, folds_.folds ? folds_.height : panel_->height)};
 }
 
 int32_t GroupPanelFace::indexOf(uint32_t id) const noexcept {
@@ -435,6 +484,24 @@ std::vector<int8_t>& GroupPanelFace::freshMemo() const {
 bool GroupPanelFace::shown(size_t i) const {
   std::vector<int8_t>& memo = freshMemo();
   return i < elements_.size() && shownNow(i, memo);
+}
+
+int32_t GroupPanelFace::triggerFoldAt(Vec2 l, int32_t* element) const {
+  if (!panel_) return -1;
+  for (size_t k = 0; k < elements_.size(); ++k) {
+    const doc::PanelElement& f = elements_[k]->desc();
+    if (f.kind != doc::kFoldKind) continue;
+    const double id = f.number("toggle", 0.0);
+    if (!(id >= 1.0)) continue;
+    const int32_t i = indexOf(static_cast<uint32_t>(id));
+    if (i < 0 || !shown(static_cast<size_t>(i))) continue;
+    const Rect r = elements_[static_cast<size_t>(i)]->rect();
+    if (l.x >= r.x0 && l.x <= r.x1 && l.y >= r.y0 && l.y <= r.y1) {
+      if (element != nullptr) *element = i;
+      return static_cast<int32_t>(k);
+    }
+  }
+  return -1;
 }
 
 int32_t GroupPanelFace::elementAt(Vec2 l) const {
@@ -720,7 +787,8 @@ int32_t GroupPanelFace::hitTest(Vec2 l, float) const noexcept {
   const Vec2 ws = worldSize();
   if (l.x < 0.0f || l.y < 0.0f || l.x > ws.x || l.y > ws.y) return kNone;
   if (round_ && !roundShape_.contains(l, 0.75f)) return kNone;  // SM.9: outside a round / oval plate (its rim drawn in)
-  const int32_t i = elementAt(l);
+  int32_t i = elementAt(l);
+  if (i < 0) (void)triggerFoldAt(l, &i);  // SM.11: the press reaches the face (a double-click unfolds)
   return i >= 0 ? i : kFrame;
 }
 
@@ -760,9 +828,18 @@ bool GroupPanelFace::onPointer(const FacePointer& e) {
       endWheel();  // GU.13: a press ends a wheel run (its undo step) before anything else
       if (focus_ >= 0 && focus_ != i && static_cast<size_t>(focus_) < elements_.size()) elements_[static_cast<size_t>(focus_)]->focusLost(*target_);
       focus_ = i;
-      if (i < 0) return false;
+      int32_t trigger = -1;
+      const int32_t fold = triggerFoldAt(e.local, &trigger);
+      if (i < 0 && fold < 0) return false;
       // (an edit made by the element may rebuild the host's scene; this face and its elements stay)
-      const bool used = elements_[static_cast<size_t>(i)]->onPointer(local(i), *target_);
+      const bool used = i >= 0 && elements_[static_cast<size_t>(i)]->onPointer(local(i), *target_);
+      if (!used && fold >= 0 && (i < 0 || i == trigger)) {  // SM.11: a double-click on the fold's trigger toggles it
+        if (e.clicks < 2 || e.button != ui::PointerButton::Left) return false;
+        const doc::PanelElement& f = elements_[static_cast<size_t>(fold)]->desc();
+        target_->setFoldOpen(f.id, !target_->foldOpen(f.id).value_or(doc::foldOpenByDefault(f)));
+        return true;
+      }
+      if (i < 0) return false;
       if (used && static_cast<size_t>(i) < elements_.size() && elements_[static_cast<size_t>(i)]->dragging()) {
         capture_ = i;
         if (elements_[static_cast<size_t>(i)]->cableHandle()) {  // GU.5: a mod source's cable comes out

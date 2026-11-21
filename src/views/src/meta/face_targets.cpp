@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
@@ -13,6 +14,7 @@
 #include "pq/document/meta.h"
 #include "pq/dsp/curve.h"
 #include "pq/tuning/tuning.h"
+#include "pq/views/piano_roll/row_model.h"
 #include "pq/views/view_context.h"
 #include "pq/views/waveforms.h"
 
@@ -180,6 +182,45 @@ void DocTarget::pitchGuides(float loHz, float hiHz, std::vector<PitchGuide>& out
       out.push_back({static_cast<float>(*hz), d, eq});
     }
   std::sort(out.begin(), out.end(), [](const PitchGuide& a, const PitchGuide& b) { return a.hz < b.hz; });
+}
+
+// SM.11: a degree's name as the piano roll's keys print it (pq/views/piano_roll/row_model.h RowLabels::Auto): C-style
+// names on a 12-compatible octave EDO (the reference's octave is 3, as Live counts), else the row label and the equave
+// (octave EDOs counted as Live's octaves, other equaves from 0).
+std::string DocTarget::pitchName(const PitchGuide& g) const {
+  const doc::Project& p = *ctx_.doc();
+  const doc::DeviceLoc loc = doc::findDevice(p, device_);
+  if (loc.track == nullptr) return {};
+  const std::optional<doc::TrackPath> path = doc::findTrack(p, loc.track->id);
+  const doc::TuningDef* def = path ? doc::effectiveTuning(p, *path) : nullptr;
+  if (def == nullptr) return {};
+  auto t = doc::buildTuning(*def);
+  if (!t) return {};
+  const tuning::Tuning& tu = *t;
+  int32_t size = 0;
+  bool octave = false;
+  if (const tuning::Edo* e = tu.edo()) {
+    size = static_cast<int32_t>(e->n());
+    octave = std::fabs(e->equaveCents() - 1200.0) < 1e-6;
+  } else if (const tuning::Mos* m = tu.mos()) {
+    size = m->size();
+  } else if (const tuning::Scale* s = tu.scale()) {
+    size = s->size();
+  }
+  if (size <= 0) return {};
+  const roll::RowLabels mode = roll::resolveRowLabels(roll::RowLabels::Auto, tu);
+  const int64_t d = static_cast<int64_t>(g.equave) * size + g.degree;
+  const int64_t eq = octave ? g.equave + 3 : g.equave;
+  char buf[48];
+  if (mode == roll::RowLabels::Name && octave && size % 12 == 0 && g.degree % (size / 12) == 0) {
+    static constexpr const char* kNames[12] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    std::snprintf(buf, sizeof buf, "%s%lld", kNames[g.degree / (size / 12)], static_cast<long long>(eq));
+    return buf;
+  }
+  char lbuf[24];
+  const size_t n = roll::formatRowLabel(mode == roll::RowLabels::Name ? roll::RowLabels::Degree : mode, tu, d, lbuf);
+  std::snprintf(buf, sizeof buf, "%.*s %lld", static_cast<int>(n), lbuf, static_cast<long long>(eq));
+  return buf;
 }
 
 const dsp::Curve* DocTarget::curve(size_t param) const {  // GU.1

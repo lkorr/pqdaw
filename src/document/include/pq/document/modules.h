@@ -184,18 +184,22 @@ BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSyn
 // Its panel (SM.10): the closed face — an oval 152 × 84 (a `shape` ellipse: the block is that oval, its ports orbit it)
 // with the engine face's `samplewave` section (the waveform, the voices' playheads), mini knobs Transpose · Filter
 // (the Filter's Frequency) · Volume (the engine's Gain) on the lower arc and the Expand chevron (a `fold`, look chevron,
-// folded by default; Panel::fit) — and under the chevron's section the settings: tabs "Sample|Filter|Env|LFO" (the
-// engine's mode and knobs Start, End, Transpose, Gain, Root, Detune; the Filter's, Envelope's and LFO's panels
-// embedded, GU.6).
+// folded by default; Panel::fit; a double-click on the waveform toggles it) — and, open, the EXPANDED PANEL (SM.11,
+// kSamplerPanelW wide): the mode row (kSamplerModes, the engine's mode) and the root field beside the oval, the waveform
+// editor (`sampleedit`) under it, then the fold sections Sample (gain, transpose, detune; Classic: loop, loop fade;
+// One-Shot / Slice: fades, trigger), Warp (the 7-way mode, sample BPM, the Beats / Tones / Texture params), Slices
+// (Slice mode only), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on / off switches beside
+// their headers, bound to their activators: kActiveSetting). Only Sample is open by default.
 struct SamplerRoles {
   DeviceId group, engine, key, amp;  // the group, meta:sampler, the voice.key block, the amp (mul)
   DeviceId filter, filterFrequency;        // the EQ band group and its Frequency value block
   EngineRoles envelope;
   DeviceId lfo, lfoOut;                    // the LFO group, the block its jack is (the Travel wire leaves it)
-  uint32_t tabs = 0;                       // the tabs element's id
+  uint32_t tabs = 0;                       // the mode row's (a tabs element bound to the engine's mode) id
   uint32_t expand = 0;                     // SM.10: the Expand chevron's (a fold element) id
 };
 inline constexpr float kSamplerFaceW = 152.0f, kSamplerFaceH = 84.0f;  // SM.10: the closed face (the oval)
+inline constexpr float kSamplerPanelW = 340.0f;  // SM.11: the expanded panel's width
 struct SamplerOptions {
   DeviceId id;       // the group's (invalid: a fresh one)
   DeviceId inGroup;  // the group it sits in, or none
@@ -206,7 +210,7 @@ struct SamplerOptions {
   uint32_t mode = 0;                           // meta::SamplerMode
   bool active = true;
 };
-inline constexpr const char* kSamplerTabs = "Sample|Filter|Env|LFO";
+inline constexpr const char* kSamplerModes = "Classic|1-Shot|Slice";  // SM.11: the mode row (the engine's mode)
 BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o = {}, SamplerRoles* roles = nullptr);
 
 // ---- GU.10: the stock devices as group presets (docs/plans/GU.md "One hierarchy") ----

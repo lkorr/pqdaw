@@ -2291,3 +2291,22 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Known: not checked in the live app (tests and goldens only).
 - Goldens moved: arp-panel-bend-view (now overlapping, Into 120 %), arp-panel-degrees-bends, arp-panel-walk (default
   25 % times), project-patch-arp (the Time knobs).
+
+## 2026-11-21 · SM.11 · the Sampler's expanded panel + waveform editor (task/SM.11-expanded-panel) 👁
+- The chevron, or a double-click on the oval's waveform, now grows the Sampler in place into a 340-wide panel: the oval
+  stays top-left; beside it the mode row [Classic | 1-Shot | Slice] and the Root field; under it a large editor of the
+  whole sample; then fold sections Sample (open), Warp, Slices (only in Slice mode), Envelope, Filter, LFO.
+- Editor: Start / End are lines with flags under the waveform (drag either); outside them the waveform is greyed. In
+  Classic the loop is a bar along the top (drag its ends, or its body to move it), its crossfade shaded before both
+  ends. One-Shot / Slice fades are shaded ramps. Slice lines are numbered: double-click the waveform to add one, drag
+  one, double-click a line to remove it. The ruler reads seconds with warp Off, beats otherwise; in Beats … Complex Pro
+  the warp markers sit on it as pins (double-click the ruler to add one at the beat it reads, drag it along: that beat
+  falls there in the sample). Every drag / double-click is one undo step.
+- Root: "261.63 Hz", or with the ID cell the nearest pitch of the track's tuning and the cents left over ("A3", as the
+  piano roll names keys; "7\31 3 +4.0¢" in 31-EDO). Click it to type Hz or a name with cents ("C3 +50c").
+- The Filter and LFO headers have an on / off switch beside them (they start off, as before).
+- Not there yet: the Granular section and the mode row's Gran cell (SM.6 / SM.13: no granular params on main yet);
+  slicing by transient / beat / region and Slice to Notes (SM.12). Not checked in the live app (tests and goldens only).
+- Is the editor's density right at zoom 1 (labels at 5.5 px)? Should a single click on the waveform do anything (it
+  moves the block today)?
+- Goldens: new sampler-panel-classic / -oneshot / -slice at 1x and 2x; sampler-face-* unchanged.

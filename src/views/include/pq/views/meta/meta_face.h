@@ -93,6 +93,9 @@ public:
   // no track known, the default); guidesKey() changes whenever they may have (the face asks again).
   virtual void pitchGuides(float /*loHz*/, float /*hiHz*/, std::vector<PitchGuide>& out) const { out.clear(); }
   virtual uint64_t guidesKey() const { return 0; }
+  // SM.11: the name of a guide's degree in that tuning, as the piano roll's keys print it with its equave ("C4" on a
+  // 12-compatible octave EDO, "7 3", "4 1" on a MOS / scale); "" when no tuning is known (the default).
+  virtual std::string pitchName(const PitchGuide& /*g*/) const { return {}; }
   // VZ.3: where a display's tone preview plays (null: nowhere — the play surface does nothing; pq/views/tone_port.h).
   virtual TonePort* tonePort() const { return nullptr; }
   // SM.10: the overview of project sample `sample` (a SampleId value) a face draws (pq/views/waveforms.h; null: none,

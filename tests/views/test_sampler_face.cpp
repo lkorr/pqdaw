@@ -1,7 +1,7 @@
 // SM.10 (docs/plans/SM.md "Face (👁)" Closed): the Sampler group's CLOSED FACE — its panel's oval (152 × 84: the block
 // is that oval), the engine face's `samplewave` section (the sample's waveform from Start to End, a glowing playhead per
 // sounding voice), the mini knobs Transpose · Filter · Volume and the Expand chevron (a fold: view state, never an undo
-// step; open, the SM.3 settings show under the oval and the block is a rectangle again).
+// step; open, the SM.11 expanded panel shows beside and under the oval and the block is a rectangle again).
 //   goldens   sampler-face-empty / -sample / -voices (three voices sounding), 1x and 2x
 //   hidden    a face off the screen (the canvas scrolled away, the patch view hidden) leaves its tap without a reader
 //             (pq::VoiceTap::wanted false: the audio side's write is one relaxed load); on screen again it has one
@@ -21,8 +21,11 @@
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
+#include "pq/document/meta.h"
 #include "pq/document/modules.h"
 #include "pq/media/wav_file.h"
+#include "pq/meta/sampler.h"
+#include "pq/views/waveforms.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/fake_transport.h"
@@ -133,8 +136,9 @@ struct Standalone {
   SamplerProject ids;
   TestDriver d;
   panel::PanelHost* host = nullptr;
-  Standalone(float scale, bool withSample, std::vector<SyntheticVoices::Voice> sounding)
-      : d(static_cast<uint32_t>(doc::kSamplerFaceW * scale), static_cast<uint32_t>(doc::kSamplerFaceH * scale), scale) {
+  Standalone(float scale, bool withSample, std::vector<SyntheticVoices::Voice> sounding, float w = doc::kSamplerFaceW,
+             float h = doc::kSamplerFaceH)
+      : d(static_cast<uint32_t>(w * scale), static_cast<uint32_t>(h * scale), scale) {
     ctx.setDeviceLibrary(&devLib());
     ids = buildSamplerProject(ctx.store(), withSample);
     voices.setVoices(std::move(sounding));
@@ -320,4 +324,313 @@ TEST_CASE("sampler face (SM.10, real dispatch): the chevron opens the settings u
   CHECK(u.node().h == doctest::Approx(doc::kSamplerFaceH));
   CHECK(u.node().panelRound);
   CHECK(u.ctx.store().history().cursor() == h0);
+}
+
+// ---- SM.11: the expanded panel and the waveform editor ----------------------------------------------------------------
+// (docs/plans/SM.md "Face (👁)" Expanded): the chevron or a double-click on the closed waveform grows the Sampler in place
+// into the mode row, the root field, the waveform editor and the fold sections (only Sample open; Slices only in Slice
+// mode); every drag in the editor is one undo step; the root takes Hz or an identity of the track's tuning; the Filter's
+// and the LFO's switches toggle their blocks (one step each).
+//   goldens   sampler-panel-classic / -oneshot / -slice (expanded), 1x and 2x
+
+namespace {
+
+const doc::PanelElement* elementOf(const doc::Project& p, doc::DeviceId group, std::string_view kind, std::string_view title = {}) {
+  const doc::Device* g = doc::findDevice(p, group).device;
+  if (g == nullptr || !g->hasPanel()) return nullptr;
+  for (const doc::PanelElement& e : g->panel->elements)
+    if (e.kind == kind && (title.empty() || e.text("title", "") == title)) return &e;
+  return nullptr;
+}
+const doc::Device& engineOf(const doc::Project& p, doc::DeviceId engine) {
+  const doc::Device* d = doc::findDevice(p, engine).device;
+  REQUIRE(d != nullptr);
+  return *d;
+}
+double engineValue(const doc::Project& p, doc::DeviceId engine, meta::SamplerParam param) {
+  return doc::metaParamValue(engineOf(p, engine), "", meta::samplerType(), param);
+}
+meta::DataPtr engineData(const doc::Project& p, doc::DeviceId engine) {
+  const doc::MetaInstance* m = engineOf(p, engine).metaAt("");
+  return m != nullptr ? m->data : nullptr;
+}
+void setSetting(doc::DocumentStore& st, doc::DeviceId engine, const char* name, double v) {
+  auto e = doc::ops::setMetaSetting(*st.current(), engine, "", "sampler", name, v);
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+}
+void setValue(doc::DocumentStore& st, doc::DeviceId engine, const char* name, double v) {
+  auto e = doc::ops::setMetaParamValue(*st.current(), engine, "", "sampler", name, v);
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+}
+void setFloats(doc::DocumentStore& st, doc::DeviceId engine, const char* field, std::vector<float> v) {
+  const meta::DataPtr d = engineData(*st.current(), engine);
+  auto e = doc::ops::setMetaData(*st.current(), engine, "", "sampler",
+                                 meta::samplerWith(d.get(), field, meta::DataValue::floatArray(std::move(v))));
+  REQUIRE(e.ok());
+  REQUIRE(st.dispatch(e->command).ok());
+}
+
+// The editor's geometry (sampler_face.cpp kEditor …): element-local points of the `sampleedit` element (its face section
+// is 328 × 120 from face y 200: k = 1).
+constexpr float kEdX0 = 6.0f, kEdX1 = 322.0f;
+constexpr float kRulerY = 207.0f - 200.0f, kLoopBarY = 218.0f - 200.0f, kWaveMidY = 257.0f - 200.0f, kFlagY = 305.0f - 200.0f;
+float edLocalX(double u) { return kEdX0 + static_cast<float>(u) * (kEdX1 - kEdX0); }
+
+// The Ui with the expanded panel open (by the chevron, through the window).
+struct Expanded : Ui {
+  Expanded() {
+    d.click(at(expandId()));
+    d.step();
+    REQUIRE(foldState(expandId()) == std::optional<bool>(true));
+  }
+  uint32_t idOf(std::string_view kind, std::string_view title = {}) const {
+    const doc::PanelElement* e = elementOf(*ctx.doc(), ids.group, kind, title);
+    REQUIRE(e != nullptr);
+    return e->id;
+  }
+  // A device point of the editor at sample position u (0 … 1), element-local y.
+  Vec2 ed(double u, float ly) const {
+    panel::GroupPanelFace& f = face();
+    const int32_t i = f.indexOf(idOf("sampleedit"));
+    REQUIRE(i >= 0);
+    const Rect r = f.element(static_cast<size_t>(i)).rect();
+    const Node& n = node();
+    return view().canvas().toDevice({n.x + r.x0 + edLocalX(u), n.y + r.y0 + ly});
+  }
+  bool shownEl(uint32_t id) const { return face().shown(static_cast<size_t>(face().indexOf(id))); }
+  size_t cursor() const { return ctx.store().history().cursor(); }
+  double value(meta::SamplerParam p) const { return engineValue(*ctx.doc(), ids.engine, p); }
+  meta::DataPtr data() const { return engineData(*ctx.doc(), ids.engine); }
+};
+
+}  // namespace
+
+TEST_CASE("sampler panel (SM.11, real dispatch): a double-click on the closed waveform expands it in place; the mode row, "
+          "the root and the editor show; only Sample is open; Slices only in Slice mode") {
+  Ui u;
+  const Node n0 = u.node();
+  const size_t h0 = u.ctx.store().history().cursor();
+  // A single click on the waveform selects the block (no expand); the double-click expands.
+  u.d.doubleClick(u.at(2));
+  u.d.step();
+  CHECK(u.foldState(u.expandId()) == std::optional<bool>(true));
+  CHECK(u.ctx.store().history().cursor() == h0);
+  CHECK(u.node().x == doctest::Approx(n0.x));
+  CHECK(u.node().y == doctest::Approx(n0.y));
+  CHECK(u.node().w == doctest::Approx(doc::kSamplerPanelW));
+  CHECK(u.face().worldSize().x == doctest::Approx(doc::kSamplerPanelW));
+  const auto id = [&](std::string_view kind, std::string_view title = {}) {
+    const doc::PanelElement* e = elementOf(*u.ctx.doc(), u.ids.group, kind, title);
+    REQUIRE(e != nullptr);
+    return static_cast<size_t>(u.face().indexOf(e->id));
+  };
+  for (const size_t i : {id("tabs"), id("sampleroot"), id("sampleedit"), id("fold", "Sample"), id("fold", "Warp"),
+                         id("fold", "Envelope"), id("fold", "Filter"), id("fold", "LFO"), id("knob")})
+    CHECK(u.face().shown(i));
+  CHECK_FALSE(u.face().shown(id("fold", "Slices")));  // Classic: no Slices section
+  CHECK(u.foldState(elementOf(*u.ctx.doc(), u.ids.group, "fold", "Warp")->id) == std::nullopt);  // folded by default
+  const float hClassic = u.node().h;
+  // The mode row: Slice (one undo step) — the Slices section appears, the loop controls give way to the fades.
+  const panel::GroupPanelFace& f = u.face();
+  const Rect tabs = f.element(id("tabs")).rect();
+  const Node& n = u.node();
+  u.d.click(u.view().canvas().toDevice({n.x + tabs.x0 + tabs.width() * (2.5f / 3.0f), n.y + (tabs.y0 + tabs.y1) * 0.5f}));
+  u.d.step();
+  CHECK(u.ctx.store().history().cursor() == h0 + 1);
+  CHECK(std::lround(engineOf(*u.ctx.doc(), u.ids.engine).setting("mode")->value) == 2);
+  CHECK(u.face().shown(id("fold", "Slices")));
+  CHECK(u.node().h > hClassic);  // the block grew by the Slices header (its section folded)
+  // The chevron closes it all again: the oval.
+  u.d.click(u.at(u.expandId()));
+  u.d.step();
+  CHECK(u.node().h == doctest::Approx(doc::kSamplerFaceH));
+  CHECK(u.node().w == doctest::Approx(doc::kSamplerFaceW));
+  CHECK(u.node().panelRound);
+}
+
+TEST_CASE("sampler editor (SM.11, real dispatch): Start / End / loop drags, slice add / drag / remove, warp marker add / "
+          "drag — one undo step each") {
+  Expanded u;
+  REQUIRE(u.ctx.waveforms().overview(u.ids.sample) != nullptr);
+  // The loop's end (Classic loops Forward by default: its bar along the waveform's top) from 1 to 0.6.
+  size_t h = u.cursor();
+  u.d.drag(u.ed(1.0, kLoopBarY), u.ed(0.6, kLoopBarY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpLoopStart) + u.value(meta::kSmpLoopLength) == doctest::Approx(0.6).epsilon(0.01));
+  // Start 0 → 0.25, End 1 → 0.8 (at the waveform's middle).
+  h = u.cursor();
+  u.d.drag(u.ed(0.0, kWaveMidY), u.ed(0.25, kWaveMidY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpStart) == doctest::Approx(0.25).epsilon(0.01));
+  h = u.cursor();
+  u.d.drag(u.ed(1.0, kFlagY), u.ed(0.8, kFlagY), 6);  // (by its flag)
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpEnd) == doctest::Approx(0.8).epsilon(0.01));
+  // Undo: the End back.
+  REQUIRE(u.ctx.store().undo());
+  CHECK(u.value(meta::kSmpEnd) == doctest::Approx(1.0));
+  // Slice mode: a double-click on the waveform adds a slice (one step), a drag moves it (one step), a double-click on
+  // its line removes it (one step).
+  setSetting(u.ctx.store(), u.ids.engine, "mode", 2.0);
+  u.d.step();
+  const size_t before = meta::samplerSlices(u.data().get()).size();
+  h = u.cursor();
+  u.d.doubleClick(u.ed(0.5, kWaveMidY));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  std::vector<float> sl = meta::samplerSlices(u.data().get());
+  REQUIRE(sl.size() == before + 1);
+  const float frames = 28800.0f;
+  auto nearest = [&](float f) {
+    float best = -1e9f;
+    for (const float x : meta::samplerSlices(u.data().get()))
+      if (std::fabs(x - f) < std::fabs(best - f)) best = x;
+    return best;
+  };
+  CHECK(nearest(0.5f * frames) == doctest::Approx(0.5f * frames).epsilon(0.01));
+  h = u.cursor();
+  u.d.drag(u.ed(0.5, kWaveMidY), u.ed(0.62, kWaveMidY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(nearest(0.62f * frames) == doctest::Approx(0.62f * frames).epsilon(0.01));
+  CHECK(meta::samplerSlices(u.data().get()).size() == before + 1);
+  h = u.cursor();
+  u.d.doubleClick(u.ed(0.62, kWaveMidY));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(meta::samplerSlices(u.data().get()).size() == before);
+  // Classic + Beats: a double-click on the ruler adds a warp marker at the beat it reads there (one step); a drag along
+  // the ruler moves its frame, its beat stays (one step).
+  setSetting(u.ctx.store(), u.ids.engine, "mode", 0.0);
+  setSetting(u.ctx.store(), u.ids.engine, "warp", 2.0);
+  u.d.step();
+  h = u.cursor();
+  u.d.doubleClick(u.ed(0.5, kRulerY));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  std::vector<float> m = meta::samplerMarkers(u.data().get());
+  REQUIRE(m.size() == 2);
+  CHECK(m[0] == doctest::Approx(0.5 * frames).epsilon(0.01));
+  const double fpb = 60.0 * 48000.0 / 120.0;  // sampleBpm 120
+  CHECK(m[1] == doctest::Approx(m[0] / fpb).epsilon(1e-4));
+  const float beat = m[1];
+  h = u.cursor();
+  u.d.drag(u.ed(0.5, kRulerY), u.ed(0.4, kRulerY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  m = meta::samplerMarkers(u.data().get());
+  REQUIRE(m.size() == 2);
+  CHECK(m[0] == doctest::Approx(0.4 * frames).epsilon(0.01));
+  CHECK(m[1] == beat);
+}
+
+TEST_CASE("sampler root field (SM.11, real dispatch): typed as Hz and as an identity of the track's tuning; the Hz | ID "
+          "cells switch the display (one undo step each)") {
+  Expanded u;
+  const uint32_t root = u.idOf("sampleroot");
+  const auto cell = [&](float fx) { return u.at(root, fx, 0.5f); };  // (the text box: 0 … 0.68, Hz, ID)
+  // Hz.
+  size_t h = u.cursor();
+  u.d.click(cell(0.3f));
+  u.d.type("440");
+  (void)u.d.keyDown(ui::key::kReturn);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpRoot) == doctest::Approx(440.0));
+  CHECK(meta::samplerRootText(u.data().get()).empty());
+  // The ID cell: the identity shown, the root unchanged (one step).
+  h = u.cursor();
+  u.d.click(cell(0.93f));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  const std::string named = meta::samplerRootText(u.data().get());
+  MESSAGE("440 Hz names as '" << named << "'");
+  CHECK_FALSE(named.empty());
+  CHECK(u.value(meta::kSmpRoot) == doctest::Approx(440.0));
+  // An identity typed with cents: the root moves to it (one step) and the text is kept.
+  const std::string base = named.substr(0, named.find(" +") != std::string::npos ? named.find(" +") : named.find(" -"));
+  h = u.cursor();
+  u.d.click(cell(0.3f));
+  u.d.type(base + " +50c");
+  (void)u.d.keyDown(ui::key::kReturn);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpRoot) == doctest::Approx(440.0 * std::exp2(50.0 / 1200.0)).epsilon(1e-4));
+  CHECK(meta::samplerRootText(u.data().get()) == base + " +50.0\xC2\xA2");
+  // Not a pitch: nothing changes.
+  h = u.cursor();
+  u.d.click(cell(0.3f));
+  u.d.type("banana");
+  (void)u.d.keyDown(ui::key::kReturn);
+  u.d.step();
+  CHECK(u.cursor() == h);
+  // The Hz cell: back to Hz (one step).
+  u.d.click(cell(0.79f));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(meta::samplerRootText(u.data().get()).empty());
+}
+
+TEST_CASE("sampler panel (SM.11, real dispatch): the Filter's and the LFO's switches beside their headers turn the blocks "
+          "on and off (one undo step each; Q?-SM.10-a)") {
+  Expanded u;
+  // The switches, bound to the blocks' activators.
+  std::vector<std::pair<uint32_t, doc::DeviceId>> sw;
+  for (const doc::PanelElement& e : doc::findDevice(*u.ctx.doc(), u.ids.group).device->panel->elements)
+    if (e.kind == "toggle" && e.binding() != nullptr && e.binding()->name == doc::kActiveSetting) sw.emplace_back(e.id, e.binding()->device);
+  REQUIRE(sw.size() == 2);
+  for (const auto& [el, dev] : sw) {
+    CAPTURE(el);
+    CHECK(u.shownEl(el));  // (beside a folded header: shown with the header)
+    CHECK_FALSE(doc::findDevice(*u.ctx.doc(), dev).device->active);
+    const size_t h = u.cursor();
+    u.d.click(u.at(el));
+    u.d.step();
+    CHECK(u.cursor() == h + 1);
+    CHECK(doc::findDevice(*u.ctx.doc(), dev).device->active);
+    u.d.click(u.at(el));
+    u.d.step();
+    CHECK(u.cursor() == h + 2);
+    CHECK_FALSE(doc::findDevice(*u.ctx.doc(), dev).device->active);
+  }
+}
+
+TEST_CASE("render: sampler-panel-classic / -oneshot / -slice (SM.11: the expanded Sampler per mode, 1x and 2x)") {
+  for (const float scale : {1.0f, 2.0f}) {
+    CAPTURE(scale);
+    const std::string sfx = scale == 1.0f ? "" : "-2x";
+    for (const int mode : {0, 1, 2}) {
+      CAPTURE(mode);
+      Standalone s(scale, true, {{0, 0.0, 0.3}}, doc::kSamplerPanelW, 400.0f);
+      doc::DocumentStore& st = s.ctx.store();
+      const doc::PanelElement* chev = elementOf(*st.current(), s.ids.group, "fold", "Settings");
+      REQUIRE(chev != nullptr);
+      st.view().panelWindows[s.ids.group.value].setFoldOpen(chev->id, true);
+      if (mode == 0) {  // a forward loop with its fade, warp Beats with two markers (the ruler in beats)
+        setValue(st, s.ids.engine, "loopStart", 0.35);
+        setValue(st, s.ids.engine, "loopLength", 0.4);
+        setValue(st, s.ids.engine, "loopFade", 0.04);
+        setSetting(st, s.ids.engine, "warp", 2.0);
+        setFloats(st, s.ids.engine, "markers", {4800.0f, 0.4f, 21600.0f, 2.0f});
+      } else if (mode == 1) {  // One-Shot: Start / End in, the fades
+        setSetting(st, s.ids.engine, "mode", 1.0);
+        setValue(st, s.ids.engine, "start", 0.1);
+        setValue(st, s.ids.engine, "end", 0.85);
+        setValue(st, s.ids.engine, "fadeIn", 0.03);
+        setValue(st, s.ids.engine, "fadeOut", 0.1);
+      } else {  // Slice: six slices
+        setSetting(st, s.ids.engine, "mode", 2.0);
+        setFloats(st, s.ids.engine, "slices", {0.0f, 3000.0f, 7000.0f, 12000.0f, 17500.0f, 23000.0f});
+      }
+      (void)s.face().sync();
+      CHECK(s.face().worldSize().x == doctest::Approx(doc::kSamplerPanelW));
+      static constexpr const char* kNames[] = {"classic", "oneshot", "slice"};
+      checkImage(std::string("sampler-panel-") + kNames[mode] + sfx, s.render());
+    }
+  }
 }

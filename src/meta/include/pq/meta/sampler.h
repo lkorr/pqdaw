@@ -71,5 +71,10 @@ uint32_t samplerSample(const DataValue* data) noexcept;
 std::vector<float> samplerSlices(const DataValue* data);
 // A data value with `sample` and `slices` (the rest default).
 DataPtr samplerData(uint32_t sample, std::vector<float> slices = {});
+// SM.11: the data's warp markers ((frame, beat) pairs, both strictly ascending) and its root identity text ("": the
+// root shows as Hz), and a copy of `data` (null: the default) with field `name` set to `v` (the editors' writes).
+std::vector<float> samplerMarkers(const DataValue* data);
+std::string samplerRootText(const DataValue* data);
+DataPtr samplerWith(const DataValue* data, std::string_view name, DataValue v);
 
 }  // namespace pq::meta

@@ -1,6 +1,7 @@
 // The Sampler engine (SM.2): pq/meta/sampler.h.
 #include "pq/meta/sampler.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <string>
@@ -261,6 +262,28 @@ std::vector<float> samplerSlices(const DataValue* data) {
 DataPtr samplerData(uint32_t sample, std::vector<float> slices) {
   return std::make_shared<const DataValue>(DataValue::record({{"sample", DataValue::num(static_cast<double>(sample))},
                                                               {"slices", DataValue::floatArray(std::move(slices))}}));
+}
+
+std::vector<float> samplerMarkers(const DataValue* data) {
+  const DataValue* m = data != nullptr ? data->field("markers") : nullptr;
+  return m != nullptr && m->kind == DataValue::Kind::Floats ? m->floats : std::vector<float>{};
+}
+
+std::string samplerRootText(const DataValue* data) {
+  const DataValue* t = data != nullptr ? data->field("rootText") : nullptr;
+  return t != nullptr && t->kind == DataValue::Kind::String ? t->text : std::string();
+}
+
+DataPtr samplerWith(const DataValue* data, std::string_view name, DataValue v) {
+  DataValue out = data != nullptr && data->kind == DataValue::Kind::Record ? *data : *samplerData(0);
+  for (auto& [k, x] : out.fields)
+    if (k == name) {
+      x = std::move(v);
+      return std::make_shared<const DataValue>(std::move(out));
+    }
+  out.fields.emplace_back(std::string(name), std::move(v));
+  std::sort(out.fields.begin(), out.fields.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  return std::make_shared<const DataValue>(std::move(out));
 }
 
 }  // namespace pq::meta
