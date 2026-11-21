@@ -1261,3 +1261,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier before and after rebase; pq_tests_document; new test_panel_folds (5 real-dispatch cases); 6 new goldens (panel-folds-folded / -open, panel-oval, 1× + 2×), no existing golden moved.
 - Perf / CPU-efficiency check: UI thread only; re-places elements only when an open state changes; zero cost without folds.
 - Notes/blockers: no Fit toggle in the panel editor (code only); Device view frame not re-laid out on fold; embedded child panel fold state not saved.
+
+## 2026-11-21 · AP.5 + AP.2b · task/AP.5-step-lanes (merged 6052943b)
+- Did: AP.5 six step lanes (Velocity, Gate, Glide, Transpose, Chance, Skip/Tie), ≤ 32 steps, per-lane on / length structural, values runtime rows in kArpParamInfo; position = grid step mod length (Pulse: per note), velocity source Step Lane. AP.2b: cables into runtime note-device params play (exported bus, added at the next block start, one block late); tuning edits hand the stage the tuning node's static table lock-free (a generator drag posts nothing, sounding steps follow live); a structural republish of the same device at the same place carries clock / held / sounding / lane / RNG state; Pulse bars follow the time signature.
+- Verified: pq_tests_note_stage 43/43, pq_tests_playback note device 6/6 (generator drag over 12 writes: 0 republishes, 0 compiles, ≤ 0.2 % of the new pitch, pattern kept; MOS 7→5 compile: pattern continues), pq_tests_document 6/6; -Affected -Slow 89/90 (pq_tests_timeline load flake, passed on re-run); ship link ok.
+- Perf / CPU-efficiency check: ship ns/64-frame block: idle 8.5, 8 notes 1/32 45.8, all lanes on 52.1, pulse 48.4, 128 held 2.1 µs; a step's slot read only when it plays, only for lanes that are on.
+- Notes/blockers: Q?-AP.5-a; still flushes the arp: a note device inserted before it, the track changing slot, a new engine; generic panel lists 254 params until AP.6.
