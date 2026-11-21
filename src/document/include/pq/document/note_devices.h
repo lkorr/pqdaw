@@ -48,12 +48,18 @@ struct NoteParamSpec {
   bool runtime = true;   // a runtime param (else a structural setting)
 };
 
+enum class NoteStageKind : uint8_t;  // lower.h: the engine stage a type plays as
+
 struct NoteDeviceType {
   std::string id;         // "arpeggiator" (Device::patch "note:arpeggiator")
   std::string name;       // "Arpeggiator"
   std::string patchName;  // its fixed patch's name ("Arpeggiator": DeviceLibrary::patchOf)
   ChainSignal in = ChainSignal::Notes, out = ChainSignal::Notes;  // its declared main signals
   std::vector<NoteParamSpec> params;
+  // AP.8b (review L7): what the type IS, so nothing else keys on its id: the engine stage it plays as (the playback
+  // link and the offline render build that stage) and its device panel (noteDevicePanel; null: the generic one).
+  NoteStageKind stage{};
+  Panel (*panel)(DeviceId device) = nullptr;
   const NoteParamSpec* param(std::string_view name) const noexcept;
   int32_t paramIndex(std::string_view name) const noexcept;  // −1: none
 };

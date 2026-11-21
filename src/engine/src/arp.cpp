@@ -360,6 +360,10 @@ struct ArpCore::State {
   ArpLaneSteps laneFixed;
   std::array<std::array<uint32_t, kArpMaxLaneSteps>, kArpLaneCount> laneSlot{};
   std::array<float, kArpLaneCount> laneScale{1, 1, 1, 1, 1, 1}, laneOffset{};
+  // AP.8b (review M8): cables into a lane step: per step [begin, begin + count) of laneMods, the bus values added to
+  // the step's value (in the lane's units) when it plays — read only then, like the step's slot.
+  std::array<std::array<uint16_t, kArpMaxLaneSteps>, kArpLaneCount> laneModBegin{}, laneModCount{};
+  std::vector<uint32_t> laneMods;
   std::array<Held, kArpMaxHeld> held{};
   uint32_t numHeld = 0, keysDown = 0;
   uint64_t nextOrder = 0;
@@ -1405,7 +1409,9 @@ struct ArpCore::State {
     const int64_t len = p.laneLength[li];
     const auto i = static_cast<size_t>(lp - floorDiv(lp, len) * len);
     const uint32_t slot = laneSlot[li][i];
-    const float v = slot < b->params.size() ? laneOffset[li] + laneScale[li] * b->params[slot] : laneFixed.value[li][i];
+    float v = slot < b->params.size() ? laneOffset[li] + laneScale[li] * b->params[slot] : laneFixed.value[li][i];
+    for (uint32_t m = laneModBegin[li][i], e = m + laneModCount[li][i]; m < e; ++m)  // AP.8b (M8): cables into it
+      if (laneMods[m] < b->mods.size()) v += b->mods[laneMods[m]];
     const ArpLaneRange& r = kArpLaneRange[li];
     return std::isfinite(v) ? std::clamp(v, r.min, r.max) : r.def;
   }
@@ -2245,6 +2251,9 @@ void ArpCore::adopt(ArpCore& old) noexcept {  // RT-safe
   std::swap(a.laneSlot, b.laneSlot);
   std::swap(a.laneScale, b.laneScale);
   std::swap(a.laneOffset, b.laneOffset);
+  std::swap(a.laneModBegin, b.laneModBegin);  // AP.8b (M8)
+  std::swap(a.laneModCount, b.laneModCount);
+  std::swap(a.laneMods, b.laneMods);
   std::swap(a.status, b.status);  // AP.6
   a.patternNew = true;
   a.rawValid = false;  // the new stage's params: re-sanitized at the next block
@@ -2261,6 +2270,16 @@ void ArpCore::mapLaneStep(ArpLane lane, int32_t step, uint32_t param, float scal
   s_->laneSlot[l][static_cast<size_t>(step)] = param;
   s_->laneScale[l] = scale;
   s_->laneOffset[l] = offset;
+}
+
+void ArpCore::modLaneStep(ArpLane lane, int32_t step, std::span<const uint32_t> buses) {
+  const auto l = static_cast<size_t>(lane);
+  if (l >= kArpLaneCount || step < 0 || step >= kArpMaxLaneSteps || buses.empty()) return;
+  State& s = *s_;
+  const auto i = static_cast<size_t>(step);
+  s.laneModBegin[l][i] = static_cast<uint16_t>(s.laneMods.size());
+  s.laneModCount[l][i] = static_cast<uint16_t>(buses.size());
+  s.laneMods.insert(s.laneMods.end(), buses.begin(), buses.end());
 }
 
 void ArpCore::setTableMailbox(std::shared_ptr<ArpTableMailbox> box) noexcept { s_->box = std::move(box); }
@@ -2293,12 +2312,20 @@ ArpStage::ArpStage(const ArpParams& params, std::vector<Mapping> map, ArpTables 
   // AP.5: lane steps are read by the core when their step plays; the rest at every block start, each id's base
   // mapping followed by its add mappings (AP.2b: modulation, in the param's units).
   std::vector<Mapping> base, add;
-  for (const Mapping& m : map) {
+  std::vector<uint32_t> buses;
+  for (size_t k = 0; k < map.size(); ++k) {
+    const Mapping& m = map[k];
     if (isArpLaneStep(m.id)) {
-      if (m.add) continue;  // (no modulation of a single lane step)
       const uint32_t i = static_cast<uint32_t>(m.id) - static_cast<uint32_t>(ArpParamId::LaneStep0);
-      core_.mapLaneStep(static_cast<ArpLane>(i / kArpMaxLaneSteps), static_cast<int32_t>(i % kArpMaxLaneSteps), m.param,
-                        m.scale, m.offset);
+      const auto lane = static_cast<ArpLane>(i / kArpMaxLaneSteps);
+      const auto step = static_cast<int32_t>(i % kArpMaxLaneSteps);
+      if (m.add) continue;  // (taken with the step's base mapping below)
+      core_.mapLaneStep(lane, step, m.param, m.scale, m.offset);
+      // AP.8b (review M8): the cables into this step (its add mappings anywhere in the list).
+      buses.clear();
+      for (const Mapping& a : map)
+        if (a.add && a.id == m.id) buses.push_back(a.param);
+      core_.modLaneStep(lane, step, buses);
       continue;
     }
     (m.add ? add : base).push_back(m);

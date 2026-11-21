@@ -12,11 +12,15 @@
 // The generated note-ons become document notes: their start / end ticks (the sample's tick, on the grid where the
 // grid tick is that sample), their EXACT identity (the stage's ArpExact, composed through a chain, applied to the
 // source note's identity: note_flatten.h), their velocity, and their Pitch events (glides, carried bends) as a curve.
-// Not modelled (the preview / Flatten use the devices as set): automation of the devices' params and cables into them,
-// live input, an arrangement loop. A generated note belongs to the clip of the note that generated it, starting in
-// that clip's first pass (a clip loop's later passes are not listed) and cut at the clip's end.
+//   AP.8b        the devices' params follow their AUTOMATION as in playback (the lanes on their keys, written into the
+//                param block at every block start); a CABLE into one is named (TrackNoteRender::cable) and left out —
+//                its value comes from the audio graph while it plays (a free LFO's phase, an envelope, a signal), which
+//                no offline render reproduces, so Flatten refuses while one exists.
+// Not modelled: live input, an arrangement loop. A generated note belongs to the clip of the note that generated it,
+// starting in that clip's first pass (a clip loop's later passes are not listed) and cut at the clip's end.
 // Non-RT; any thread (the views' preview worker runs it on a document snapshot).
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -31,6 +35,7 @@
 #include "pq/document/note_flatten.h"
 #include "pq/engine/arp.h"
 #include "pq/engine/note_stage_offline.h"
+#include "pq/views/note_preview.h"
 
 namespace pq::app {
 
@@ -51,8 +56,17 @@ struct NoteStageRenderOptions {
   double sampleRate = 48000.0;
   uint64_t chanceSeed = 0;      // LinkConfig::chanceSeed
   uint32_t blockFrames = 512;
+  // AP.8b: the engine's block (LinkConfig::blockFrames): automation is read once per block, so a render that follows
+  // automation runs at the engine's block to give what it plays (without automation the block size changes nothing).
+  uint32_t engineBlockFrames = 64;
   Ticks until = doc::kMaxTicks;      // render the arrangement up to this tick (and at most to the end of the track's clips)
-  bool keepEvents = false;      // keep the engine events (TrackNoteRender::events: tests)
+  bool keepEvents = false;      // keep the engine events (TrackNoteRender::events: tests; the first pass's)
+  // AP.8b: which clips. Played (the preview): the played lane's clips as they play. All (Flatten, review M6): the main
+  // lane's clips as they play, then — in a second pass of their own — its deactivated clips as if they played (what a
+  // muted clip would sound like unmuted: Flatten writes that, the clip stays muted).
+  enum class Clips : uint8_t { Played, All };
+  Clips clips = Clips::Played;
+  const std::atomic<bool>* cancel = nullptr;  // AP.8b: set by another thread: the render stops (an error)
 };
 
 struct TrackNoteRender {
@@ -61,10 +75,17 @@ struct TrackNoteRender {
   std::vector<doc::DeviceId> devices;     // the chain's devices, in signal order
   engine::NoteStageRender events;         // keepEvents: the run's input / output events (song samples)
   uint64_t inexact = 0;                   // generated notes without an exact identity (Cents)
+  bool automated = false;                 // AP.8b: a device param is automated (the render follows it)
+  std::string cable;                      // AP.8b: "<device> <param>" of a cable into a device param (left out); "": none
 };
 
 // Errors: no such MIDI track; the sequence or tempo map did not build.
 Result<TrackNoteRender> renderTrackNoteStages(const doc::Project& p, doc::TrackId track,
                                               const NoteStageRenderOptions& options = {});
+
+// AP.8b: renderTrackNoteStages as the views' note-device source (NotePreviews::setSource, and the view scenes':
+// views::setSceneNotePreviewSource): a request's config (rate, chance seed), until, flatten (Clips::All) and cancel
+// become the options; the cable into a param is reported (NotePreview::cable).
+views::NotePreviewFn notePreviewSource();
 
 }  // namespace pq::app

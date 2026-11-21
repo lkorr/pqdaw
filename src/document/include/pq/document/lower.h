@@ -704,9 +704,12 @@ const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_
 // table alone goes to the running stages (engine::ArpTableMailbox: the pattern keeps its place), and a republished
 // chain's matching stages adopt the old ones' running state (NoteStageChain::takeOver). Library-free;
 // O(tracks + blocks).
+// AP.8b (review L7): the engine stage a note device type plays as (NoteDeviceType::stage).
+enum class NoteStageKind : uint8_t { Arpeggiator };
 struct LoweredNoteStage {
   DeviceId device;
   std::string type;            // the NoteDeviceType id ("arpeggiator")
+  NoteStageKind kind{};        // its type's stage
   std::vector<double> values;  // per param of the type (its spec order = the engine's param ids): its value now
   struct Slot {
     uint32_t param = 0;  // the param's index in the type

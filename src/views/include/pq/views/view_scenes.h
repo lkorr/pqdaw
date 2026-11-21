@@ -15,6 +15,7 @@
 #include "pq/ui/image.h"
 #include "pq/ui/ui_scale.h"
 #include "pq/ui/widget.h"
+#include "pq/views/note_preview.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
 
@@ -24,6 +25,11 @@ std::span<const std::string_view> viewSceneNames() noexcept;
 bool isViewScene(std::string_view scene) noexcept;
 // Logical size used when --size is not given (and by the goldens).
 void viewSceneDefaultSize(std::string_view scene, uint32_t& width, uint32_t& height) noexcept;
+
+// AP.8b (review L14): the note-device renderer the scenes that show note-device output use (the app's
+// app::notePreviewSource: the real offline render); such a scene fails without one. Process-wide; set before
+// building scenes (pqdaw --screenshot, the app's golden tests).
+void setSceneNotePreviewSource(NotePreviewFn fn);
 
 // T4.2: scenes over a patch file (`circuit`, `circuit-svf`, `circuit-svf-core`): the circuit viewer on that file.
 bool isPatchScene(std::string_view scene) noexcept;

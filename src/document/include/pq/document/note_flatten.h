@@ -17,9 +17,13 @@
 // Flatten (ops::flattenNoteStages, one undo step): in each listed clip the source notes are REMOVED — except those a
 // generated note is anchored to, which stay as DEACTIVATED notes (kept, drawn grey, not played: the anchors of the
 // exact ratios) —, the generated notes and their curves are added, and the track's active note devices are switched
-// off (deactivated, not deleted), so the clip plays what the devices played. Library-free; not RT code.
+// off (deactivated, not deleted), so the clip plays what the devices played. AP.8b: a source note is one that plays
+// (its start within the clip's window) or generated a listed note; notes outside the window stay (review M5). The app
+// lists every clip of the track's main lane, a deactivated one with what it would generate if active (review M6:
+// unmuting it later sounds as before). Library-free; not RT code.
 
 #include <span>
+#include <string>
 #include <vector>
 
 #include "pq/core/time.h"
@@ -47,10 +51,13 @@ struct ClipGenerated {
 
 namespace ops {
 
-// Flatten to clip (see above). Errors: the track is not a MIDI track, a clip is not one of its clips, a clip repeats
-// its loop (contentStart + length > loop end: its generated notes do not repeat with the loop). An empty list only switches the devices
-// off.
+// Flatten to clip (see above). Errors: flattenRefusal (below), a clip is not one of its main lane's clips, a clip
+// repeats its loop (contentStart + length > loop end: its generated notes do not repeat with the loop). An empty list
+// only switches the devices off.
 EditResult flattenNoteStages(const Project& p, IdSource& ids, TrackId track, std::span<const ClipGenerated> clips);
+// AP.8b: why the track cannot be flattened at all ("": it can) — not a MIDI track; a take lane holds notes (they would
+// lose the devices, and no note edit reaches a take lane); a main-lane clip repeats its loop. flattenNoteStages refuses the same; the views ask first.
+std::string flattenRefusal(const Project& p, TrackId track);
 
 }  // namespace ops
 

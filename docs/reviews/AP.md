@@ -41,7 +41,7 @@ Counts: **C 0 · H 4 · M 9 · L 14**.
 - **Fix:** the mailbox table carries absolute degree → Hz (reference Hz), and the arp re-resolves Degree-identity
   latched notes itself on `retable`.
 
-**H3 — Flatten writes notes playback would not play, then switches the arp off.**
+**H3 — Flatten writes notes playback would not play, then switches the arp off.** — **fixed in AP.8b** (the render follows the params' automation as playback; a cable is named and Flatten refuses while one exists: its value only exists while the graph plays)
 - **Where:** `src/app/src/note_stage_render.cpp` (knob positions only; `makeArpStage(..., {})`, no `mods`);
   `src/engine/src/note_stage_offline.cpp:68-82` (no `b.mods`, no automation); Q?-AP.7-a (3).
 - **Defect:** Q?-AP.7-a scopes this as a preview limitation, but Flatten (`src/views/src/note_preview.cpp:113`
@@ -81,18 +81,18 @@ O(512) earliest-off scan + `recomputeMinOff`, and Tie adds an O(512) `tieWaiting
 3 layers = 512 emits in one frame ≈ 0.5 M ops — an xrun risk at small blocks. Fix: cut the excess once per step
 (partial select / min-heap on `off`), index tie-waiting notes by (rank, layer).
 
-**M5 — Flatten deletes notes that never play.** `src/document/src/note_flatten.cpp:36-39` removes every enabled note,
+**M5 — Flatten deletes notes that never play.** — **fixed in AP.8b** (only notes starting in the clip window, or that generated something) `src/document/src/note_flatten.cpp:36-39` removes every enabled note,
 including notes outside `[contentStart, contentStart + length)`. Fix: remove only played-span notes / listed sources.
 
-**M6 — Flatten switches off devices for clips it does not write.** `note_flatten.cpp:70-75` vs `playedClips`
+**M6 — Flatten switches off devices for clips it does not write.** — **fixed in AP.8b** (muted main-lane clips flattened as if active, a second render pass; take lanes with notes refused: Q?-AP.8b-a) `note_flatten.cpp:70-75` vs `playedClips`
 (`note_stage_render.cpp:205`): unplaced / muted clips lose their arp without being flattened. Fix: flatten them too,
 or say so in the status.
 
-**M7 — Flatten renders from tick 0 to `kMaxTicks` on the UI thread.** `src/views/src/note_preview.cpp:113`
+**M7 — Flatten renders from tick 0 to `kMaxTicks` on the UI thread.** — **fixed in AP.8b** (NotePreviews worker; the edit dispatched on the UI thread, one undo step; re-rendered if the document changed) `src/views/src/note_preview.cpp:113`
 (`computeNow`). AP.md: compute "off the UI thread". A long song with a 1/128 arp stalls the UI. Fix: run it on the
 NotePreviews worker and post the edit back.
 
-**M8 — A cable into a lane step looks live but does nothing.** `lower.cpp:4366-4368` lists it in `slot.mods` and
+**M8 — A cable into a lane step looks live but does nothing.** — **fixed in AP.8b** (it plays: `ArpCore::modLaneStep`, read when the step plays) `lower.cpp:4366-4368` lists it in `slot.mods` and
 exports the bus; the ArpStage ctor skips `add` mappings for lane steps. Fix: keep lane-step wires out of
 `NoteDissolve::params` so they draw Inactive (or route them to `mapLaneStep`).
 
@@ -110,20 +110,20 @@ engine's stop/panic path.)
 - L5 (**fixed in AP.8a**) Idle arps still map ~60 params + `memcmp` every block before the idle early-out (`arp.cpp:2082-2095`); `memcmp` on
   a padded struct is unspecified. Check idle first; compare fields or a version.
 - L6 Handover coinciding with a panic: re-sent held note-ons at frame 0 land before the AllNotesOff (`engine.cpp:189-210`).
-- L7 Per-type keys on `"arpeggiator"`: `note_stage_render.cpp:24` (stage factory), `note_devices.cpp:352` (panel). Put
+- L7 (**fixed in AP.8b**: `NoteDeviceType::stage` / `panel`) Per-type keys on `"arpeggiator"`: `note_stage_render.cpp:24` (stage factory), `note_devices.cpp:352` (panel). Put
   `makeStage` / `panel` on `NoteDeviceType`.
 - L8 (**fixed in AP.8a**) `busValueOf_` never frees indices (`project_link.cpp:1069-1076`): after 1024 wire ids cables silently go dead.
 - L9 (**fixed in AP.8a**: timelineStageBlock) `note_stage_offline.cpp:68-82` copies `Engine::runStages`' block setup by hand: one shared helper.
-- L10 Preview cache key (`roll_state.cpp:1052`) misses a parent group's tuning and project-level wire edits; sample
+- L10 (**fixed in AP.8b**: key = track + ancestor groups + timeline + tunings + wires + render config; config read per request; latest_ pruned; renders cancelled on destruction) Preview cache key (`roll_state.cpp:1052`) misses a parent group's tuning and project-level wire edits; sample
   rate / seed captured once (`shell_app.cpp:290`). `latest_` never pruned; worker joined without a cancel flag.
-- L11 Panel, Pulse fold: Layer 3's knob shows with Layers = 2; the 8 Proportion boxes show with Length 4. I would
+- L11 (**fixed in AP.8b**: hidden, not dimmed — the panel hides what does not apply everywhere else) Panel, Pulse fold: Layer 3's knob shows with Layers = 2; the 8 Proportion boxes show with Length 4. I would
   overrule Q?-AP.6-a (2): dim values past Length and layers past the count.
-- L12 Panel, Arp block: two controls named "Retrigger" (pattern Off / Note / Beat, and velocity's lit button with a bloom
+- L12 (**partly fixed in AP.8b**: "Vel Retrig"; the Triplet chips, the bloom and the Glide Sync / Cents labels not touched) Panel, Arp block: two controls named "Retrigger" (pattern Off / Note / Beat, and velocity's lit button with a bloom
   that bleeds below it); Triplet chip and Tuplet n:m overlap (3:2 = Triplet). Name the second "Vel Retrig"; derive the
   chips from the tuplet. The Glide fold's Sync / Cents toggles float unlabelled between Out and Time.
 - L13 Panel, Pattern view: an empty "Hold notes" box takes a third of the 760 px width in 4 of 5 goldens; off step lanes
   (Gate / Glide / Chance) draw near-full-value bars almost as bright as on ones.
-- L14 `pianoroll-arp-preview.png` is drawn from a hand-made `sceneArp` source (`view_scenes.cpp` ~855-889), not the real
+- L14 (**fixed in AP.8b**: the scene takes `app::notePreviewSource`; golden in tests/app/test_note_stage_render.cpp; comment says over) `pianoroll-arp-preview.png` is drawn from a hand-made `sceneArp` source (`view_scenes.cpp` ~855-889), not the real
   renderer, so it shows no gate gaps and reads as one continuous zigzag; its comment says ghosts are drawn "under" the
   chord, Q?-AP.7-a (8) says over.
 

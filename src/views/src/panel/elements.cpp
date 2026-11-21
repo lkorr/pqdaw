@@ -760,6 +760,14 @@ public:
   };
   // bug-mod-ghost: a number's value is its text, and a ghost draws no text: no ghost (its box would only dim the text).
   void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
+  // AP.8b: a number is a visibility source by its value in its units (a count: the elements shown from n up list
+  // the values n … max).
+  std::optional<double> selection(const PanelTarget& t) const override {
+    if (binding() == nullptr) return std::nullopt;
+    const BoundInfo& i = bound(t);
+    if (!i.valid) return std::nullopt;
+    return dsp::evalCurveUnits(i.curve, std::clamp(pos(t), 0.0, 1.0));
+  }
   bool interactive() const noexcept override { return true; }
   uint32_t staticLayerCount() const noexcept override { return 2; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {

@@ -452,6 +452,38 @@ TEST_CASE("arp panel: the unit chips show Ratio p / q only in Ratio and Base onl
   CHECK(u.history() == h0 + 1);
 }
 
+TEST_CASE("arp panel (AP.8b, review L11): a layer's level shows only within Layers, a proportion entry only within Length") {
+  Ui u;
+  setValue(u.ctx, u.pr.arp, "pulse", 1.0);
+  setValue(u.ctx, u.pr.arp, "pulseSource", 1.0);  // Proportion
+  u.clickFold("Pulse");
+  REQUIRE(u.foldOpen("Pulse"));
+  auto shown = [&](const char* kind, const char* name) { return u.face().shown(static_cast<size_t>(u.index(kind, name))); };
+  CHECK_FALSE(shown("knob", "layerLevel1"));  // Layers 0: no levels
+  setValue(u.ctx, u.pr.arp, "layers", 2.0);
+  u.d.step();
+  CHECK(shown("knob", "layerLevel1"));
+  CHECK(shown("knob", "layerLevel2"));
+  CHECK_FALSE(shown("knob", "layerLevel3"));
+  setValue(u.ctx, u.pr.arp, "layers", 3.0);
+  u.d.step();
+  CHECK(shown("knob", "layerLevel3"));
+  setValue(u.ctx, u.pr.arp, "proportionLen", 4.0);
+  u.d.step();
+  CHECK(shown("number", "proportion4"));
+  CHECK_FALSE(shown("number", "proportion5"));
+  CHECK_FALSE(shown("number", "proportion8"));
+  setValue(u.ctx, u.pr.arp, "pulseSource", 0.0);  // Harmonic: the proportion row goes (its Length with it)
+  u.d.step();
+  CHECK_FALSE(shown("number", "proportion1"));
+  setValue(u.ctx, u.pr.arp, "pulse", 0.0);  // Pulse off: the layer levels go too (a hidden source hides what follows it)
+  u.d.step();
+  CHECK_FALSE(shown("knob", "layerLevel1"));
+  // L12: the two retriggers are told apart.
+  CHECK(findElement(u.face(), "tabs", "retrigger") >= 0);
+  CHECK(u.face().element(static_cast<size_t>(u.index("toggle", "velRetrig"))).desc().text("text", "") == "Vel Retrig");
+}
+
 TEST_CASE("arp panel: a fold opens and closes (view state, no undo step), the frame follows its height") {
   Ui u;
   const size_t h0 = u.history();

@@ -285,18 +285,10 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       app->ctx_->setSignalTapSource([lk](doc::DeviceId d, std::string_view path) { return lk->metaSignalTap(d, path, 0); });
       app->ctx_->setNoteStatusSource([lk](doc::DeviceId d) { return lk->noteStageStatus(d); });  // AP.6: the arp's panel
       // AP.7: the roll preview / Flatten: the track's note devices offline (renderTrackNoteStages, on the preview's
-      // worker or the UI thread for a Flatten), at the engine's rate and the link's chance seed.
-      app->ctx_->notePreviews().setSource(
-          [rate = lk->sampleRate(), seed = lk->chanceSeed()](const doc::Project& p, doc::TrackId t, Ticks until)
-              -> Result<views::NotePreview> {
-            app::NoteStageRenderOptions o;
-            o.sampleRate = rate;
-            o.chanceSeed = seed;
-            o.until = until;
-            Result<app::TrackNoteRender> r = app::renderTrackNoteStages(p, t, o);
-            if (!r) return std::move(r).error();
-            return views::NotePreview{r->any, std::move(r->clips)};
-          });
+      // worker: AP.8b, Flatten too), at the engine's rate and the link's chance seed.
+      app->ctx_->notePreviews().setSource(app::notePreviewSource(), [lk] {  // AP.8b: read with every request
+        return views::NoteRenderConfig{lk->sampleRate(), lk->chanceSeed(), lk->config().blockFrames};
+      });
     }
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());

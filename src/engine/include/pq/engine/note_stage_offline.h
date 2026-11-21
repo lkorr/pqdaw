@@ -7,11 +7,14 @@
 //                sequencer code), merged per block as Engine::onSlot merges them (no live input, no auditions)
 //   the clock    the block's song runs as ClockSegments (timelineSegments: the one function Engine::runStages uses
 //                too), the tempo / signature maps, the snapshot's bpm and bar
-//   the params   a param block the caller fills (the stages' mapped slots: their knob positions)
+//   the params   a param block the caller fills (the stages' mapped slots: their knob positions), with the
+//                automation image's lanes written into it at every block start (Timeline::writeAutomatedParams, as
+//                the engine's block hook does before the stages run: AP.8b, review H3)
 // So a deterministic stage (ArpCore: counter RNG, song-grid clock) produces here the events playback produces from the
 // same transport start, sample for sample, at any block size. Non-RT (allocates the timeline and its buffers); any
 // thread but the audio thread.
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -47,6 +50,8 @@ struct NoteStageRenderConfig {
   // The sequencer's limits (EngineConfig::timeline: events / sounding notes per track); its sample rate, block size,
   // track and clip-player sizes are set here (one track, no audio clips).
   TimelineConfig timeline;
+  // AP.8b: set (by another thread) to stop the render early: renderNoteStages returns ErrorCode::Cancelled.
+  const std::atomic<bool>* cancel = nullptr;
 };
 
 struct NoteStageRender {
@@ -56,9 +61,11 @@ struct NoteStageRender {
 };
 
 // Plays track 0 of `sequence` from song tick `from` for `frames` samples through `chain` (whose stages read `params`
-// at every block start), starting at engine time 0. Errors: the timeline refused an image.
+// at every block start), starting at engine time 0. `automation` (optional): lanes whose targets index `params`,
+// written into it at every block start. Errors: the timeline refused an image; cancelled.
 Result<NoteStageRender> renderNoteStages(std::unique_ptr<SequenceImage> sequence, std::unique_ptr<TempoImage> tempo,
-                                         NoteStageChain& chain, std::span<const float> params, Ticks from,
-                                         SampleTime frames, const NoteStageRenderConfig& config = {});
+                                         NoteStageChain& chain, std::span<float> params, Ticks from,
+                                         SampleTime frames, const NoteStageRenderConfig& config = {},
+                                         std::unique_ptr<AutomationImage> automation = {});
 
 }  // namespace pq::engine

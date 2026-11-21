@@ -824,47 +824,15 @@ Status setupPianoRollCurveNotes(Shell& shell) {
 // ---- AP.7: the Arpeggiator's roll preview (ghost notes with their glides) ---------------------------------------------
 
 namespace {
-// The scene's note device output (the views do not run the engine; the app's renderTrackNoteStages does): what an
-// Arpeggiator set to Up, 1/16, gate 75 %, Into from the previous step (a 1/64 glide) plays from the clip's chord over
-// its two bars — SCENE DATA in the shape the app's source gives (pq/views/note_preview.h).
-NotePreview sceneArp(const doc::Project& p, doc::TrackId t) {
-  NotePreview out;
-  const doc::Track* tr = doc::findTrackPtr(p, t);
-  if (tr == nullptr) return out;
-  for (const doc::DevicePtr& d : tr->devices) out.any = out.any || (d->active && doc::isNoteDevice(*d));
-  if (!out.any) return out;
-  for (const doc::ClipSlot& s : doc::playedClips(*tr)) {
-    if (!s.clip) continue;
-    std::vector<const doc::Note*> held;
-    for (const doc::Note& n : s.clip->notes)
-      if (n.enabled() && n.pitch.kind() == tuning::PitchKind::Degree) held.push_back(&n);
-    std::sort(held.begin(), held.end(), [](const doc::Note* a, const doc::Note* b) {
-      return a->pitch.equave() * 12 + a->pitch.degree() < b->pitch.equave() * 12 + b->pitch.degree();
-    });
-    doc::ClipGenerated cg{s.clip->id, {}};
-    const Ticks step = kPpq / 4;
-    int32_t prev = 0;
-    for (int32_t k = 0; !held.empty() && k * step < s.clip->length; ++k) {
-      const doc::Note& n = *held[static_cast<size_t>(k) % held.size()];
-      const int32_t deg = n.pitch.equave() * 12 + n.pitch.degree();
-      doc::GeneratedNote g;
-      g.start = k * step;
-      g.length = step * 3 / 4;
-      g.pitch = n.pitch;
-      g.source = n.id;
-      g.velocity = 100.0f;
-      if (k > 0) g.curve = {{0, 100.0f * static_cast<float>(prev - deg), 0.0f, {}}, {kPpq / 16, 0.0f, 0.0f, {}}};
-      prev = deg;
-      cg.notes.push_back(std::move(g));
-    }
-    out.clips.push_back(std::move(cg));
-  }
-  return out;
+NotePreviewFn& sceneNoteSource() {
+  static NotePreviewFn fn;
+  return fn;
 }
 }  // namespace
 
-// A chord (C E G, a whole bar, then E G B) on a track with an Arpeggiator: its generated notes drawn as ghosts under the
-// chord (light, thin, hollow heads, the Into glides as bends), the clip box's Arp row (Ghosts on, Flatten).
+// A chord (C E G, a whole bar, then E G B) on a track with an Arpeggiator (its defaults): its generated notes drawn as
+// ghosts over the chord (light, thin, hollow heads), the clip box's Arp row (Ghosts on, Flatten). AP.8b (review L14):
+// the ghosts are the app's real render (setSceneNotePreviewSource: app::notePreviewSource), so the scene needs it.
 Status setupPianoRollArpPreview(Shell& shell) {
   const std::optional<JiScene> sc = buildJiScene(shell, "Arp", 16, 5);
   if (!sc) return Error{ErrorCode::Unknown, "pianoroll-arp-preview: building the clip failed", {}};
@@ -880,7 +848,9 @@ Status setupPianoRollArpPreview(Shell& shell) {
   if (!runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), sc->clip.track, doc::noteDevicePatch("arpeggiator"),
                                           doc::DeviceKind::AudioEffect)))
     return Error{ErrorCode::Unknown, "pianoroll-arp-preview: addDevice", {}};
-  ctx.notePreviews().setSource([](const doc::Project& p, doc::TrackId t, Ticks) -> Result<NotePreview> { return sceneArp(p, t); });
+  if (!sceneNoteSource())
+    return Error{ErrorCode::Unsupported, "pianoroll-arp-preview: needs the app's note-device renderer (setSceneNotePreviewSource)", {}};
+  ctx.notePreviews().setSource(sceneNoteSource());
   sc->view->state().markAllDirty();
   shell.tree().layoutNow();
   sc->view->state().requestPreview(8 * q);
@@ -4645,5 +4615,8 @@ std::shared_ptr<const library::Index> browserDemoIndex(std::string_view samplesD
   ix->addEntry(r1, sample("Vocal Chop.wav", 1.6, 48000, 1, 120.0f));
   return ix;
 }
+
+// AP.8b (review L14): the scenes' note-device renderer (view_scenes.h).
+void setSceneNotePreviewSource(NotePreviewFn fn) { sceneNoteSource() = std::move(fn); }
 
 }  // namespace pq::views

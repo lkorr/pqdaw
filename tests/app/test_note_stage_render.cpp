@@ -21,6 +21,10 @@
 #include "pq/document/note_flatten.h"
 #include "pq/engine/arp.h"
 #include "pq/engine/note_stage.h"
+#include "pq/ui/gpu.h"
+#include "pq/ui/image.h"
+#include "pq/views/view_scenes.h"
+#include "../ui/golden_check.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -369,4 +373,133 @@ TEST_CASE("note stage render (AP.7): flattened identities — Degree shifts, rat
   }
   CHECK(ratio);
   CHECK(curve);
+}
+
+// ---- AP.8b: automation, cables, the played span, muted clips, the real-renderer golden ------------------------------
+
+namespace {
+
+// A lane on the arp's param `name` ({tick, value in the param's units}: positions written as the lane holds them).
+void automate(Rig& r, const char* name, std::vector<std::pair<Ticks, double>> points) {
+  auto l = std::make_shared<AutomationLane>();
+  l->id = r.store.ids().lane();
+  l->param = ParamRef::device(r.arp, name);
+  l->paramName = name;
+  for (const auto& [t, v] : points) {
+    Breakpoint b;
+    b.id = r.store.ids().breakpoint();
+    b.tick = t;
+    b.value = static_cast<float>(position(name, v));
+    l->points.push_back(b);
+  }
+  REQUIRE(r.store.dispatch(AddAutomationLane{r.track, l}).ok());
+}
+
+}  // namespace
+
+TEST_CASE("note stage render (AP.8b, review H3): automated Gate and Rate — the render and Flatten follow them") {
+  Rig r;
+  automate(r, "gate", {{0, 0.3}, {8 * kQ, 0.95}});  // a ramp (below 1: a tail past the clip end is cut, Q?-AP.7-a (3))
+  automate(r, "rateDen", {{0, 16.0}, {4 * kQ, 16.0}, {4 * kQ, 8.0}});  // sixteenths, then eighths (a jump at bar 2)
+  const app::TrackNoteRender off = offline(r);
+  CHECK(off.automated);
+  checkEqual(engineEvents(r, 4.5), off.events, barsSamples(2.0));
+  // The automation is what plays: an unautomated render differs (the jump halves the step count of bar 2).
+  size_t bar1 = 0, bar2 = 0;
+  for (const GeneratedNote& g : off.clips.at(0).notes) (g.start < 4 * kQ ? bar1 : bar2) += 1;
+  CHECK(bar1 == 16);
+  CHECK(bar2 == 8);
+  flattenRoundTrip(r, true);
+}
+
+TEST_CASE("note stage render (AP.8b, review H3): a cable into a param is named (the preview leaves it out)") {
+  Rig r;
+  const DeviceId v = r.edit(ops::addDevice(r.doc(), r.store.ids(), r.track, std::string(kValueDevice),
+                                           DeviceKind::AudioEffect, ops::kOffPath))
+                         .devices.at(0);
+  Wire w;
+  w.from = v;
+  w.port = std::string(kValueOutput);
+  w.to = r.arp;
+  w.param = "gate";
+  (void)r.edit(ops::connect(r.doc(), r.store.ids(), w));
+  const app::TrackNoteRender off = offline(r);
+  CHECK(off.cable == "Arpeggiator Gate");
+  // The views' source carries it to Flatten (which refuses: tests/views/test_note_preview.cpp, real dispatch).
+  views::NotePreviewRequest q;
+  q.until = kMaxTicks;
+  q.flatten = true;
+  q.config.sampleRate = kRate;
+  auto pv = app::notePreviewSource()(r.doc(), r.track, q);
+  REQUIRE(pv.ok());
+  CHECK(pv->cable == "Arpeggiator Gate");
+}
+
+TEST_CASE("note stage render (AP.8b, review M5 / M6): Flatten keeps unplayed notes; a muted clip is flattened as if it played") {
+  Rig r({7, 0, 4}, 4 * kQ);
+  IdSource& ids = r.store.ids();
+  // An unplayed note: past the clip's window (length 4 quarters).
+  const Note outside = playback_fixture::note(ids, 6 * kQ, kQ, 11, 0, 100.0f);
+  REQUIRE(r.store.dispatch(AddNotes{ClipRef{r.track, r.clip}, {outside}}).ok());
+  // A muted clip after it (bar 3), its own chord.
+  std::vector<Note> chord;
+  for (const int32_t d : {2, 5, 9}) chord.push_back(playback_fixture::note(ids, 0, 4 * kQ, d, 0, 100.0f));
+  ClipPtr c2 = playback_fixture::clip(ids, 8 * kQ, 4 * kQ, std::move(chord), "Muted");
+  const ClipId muted = c2->id;
+  REQUIRE(r.store.dispatch(AddClip{r.track, c2}).ok());
+  REQUIRE(r.store.dispatch(SetClipActive{ClipRef{r.track, muted}, false}).ok());
+  // What the muted clip plays with the arp when unmuted (the reference), then back.
+  REQUIRE(r.store.dispatch(SetClipActive{ClipRef{r.track, muted}, true}).ok());
+  const std::vector<NoteRec> want = notesOf(engineEvents(r, 6.5), true);
+  REQUIRE(r.store.undo());
+  // Flatten's render: every main-lane clip, the muted one as if active.
+  app::NoteStageRenderOptions o;
+  o.sampleRate = kRate;
+  o.clips = app::NoteStageRenderOptions::Clips::All;
+  auto all = app::renderTrackNoteStages(r.doc(), r.track, o);
+  REQUIRE(all.ok());
+  REQUIRE(all->clips.size() == 2);
+  CHECK(all->clips[1].clip == muted);
+  CHECK(!all->clips[1].notes.empty());
+  (void)r.edit(ops::flattenNoteStages(r.doc(), ids, r.track, all->clips));
+  const Track* t = findTrackPtr(r.doc(), r.track);
+  const NoteClip& c1 = *t->clips.at(0).clip;
+  CHECK(c1.notes.findById(outside.id) != nullptr);  // kept: it never played
+  CHECK_FALSE(t->clips.at(1).clip->active);          // still muted
+  // Unmuted, the flattened track plays what the arp played (the device off).
+  REQUIRE(r.store.dispatch(SetClipActive{ClipRef{r.track, muted}, true}).ok());
+  const std::vector<NoteRec> got = notesOf(engineEvents(r, 6.5), false);
+  REQUIRE(want.size() == got.size());
+  for (size_t i = 0; i < want.size(); ++i) {
+    CAPTURE(i);
+    CHECK(want[i].on == got[i].on);
+    CHECK(want[i].off == got[i].off);
+    CHECK(std::fabs(want[i].hz - got[i].hz) <= 2e-6f * want[i].hz);
+  }
+  // A take lane holding notes: refused (its notes would lose the devices; no note edit reaches a take lane).
+  REQUIRE(r.store.undo());  // the unmute
+  REQUIRE(r.store.undo());  // the flatten
+  const std::vector<ClipSlot> take = {findTrackPtr(r.doc(), r.track)->clips.at(0)};
+  (void)r.edit(ops::addTakeLane(r.doc(), ids, r.track, take, "Take 1"));
+  CHECK(ops::flattenRefusal(r.doc(), r.track).find("take lane \"Take 1\"") != std::string::npos);
+  CHECK_FALSE(ops::flattenNoteStages(r.doc(), ids, r.track, all->clips).ok());
+}
+
+TEST_CASE("note stage render (AP.8b, review L14): golden pianoroll-arp-preview — the ghosts from the real render") {
+  const char* scene = "pianoroll-arp-preview";
+  views::setSceneNotePreviewSource(app::notePreviewSource());
+  uint32_t w = 0, h = 0;
+  views::viewSceneDefaultSize(scene, w, h);
+  ui::GpuOptions o;
+  o.validation = true;
+  auto img = views::renderViewScene(scene, std::string(PQ_TEST_DATA_DIR) + "/views/fixtures/empty", w, h, {}, o);
+  views::setSceneNotePreviewSource({});
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + scene + ".png";
+  auto ref = ui::readPng(path);
+  if (!ref) (void)ui::writePng(std::string(scene) + ".actual.png", *img);
+  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
+  ui::ImageDiff diff;
+  CHECK(pq::ui::test::matchesGolden(scene, *img, *ref, true, &diff));
+  MESSAGE(std::string(scene) << ": " << pq::ui::test::describe(diff));
 }

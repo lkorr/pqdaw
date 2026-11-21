@@ -85,7 +85,8 @@ struct StyleField {
 StyleField styleNumber(std::string name, double v);
 StyleField styleText(std::string name, std::string v);
 
-// Shown only while element `element`'s value is one of `values` (a tabs / menu element: the index; a toggle: 0 / 1).
+// Shown only while element `element`'s value is one of `values` (a tabs / menu element: the index; a toggle: 0 / 1;
+// AP.8b: a number: its value in its units — "from n up" lists n … max).
 // A hidden source hides the elements that follow it, unless `values` holds kWhenHidden (EQ.3: shown while the source is
 // hidden — the EQ's chain-A columns while its chain tabs are, in Stereo mode).
 inline constexpr double kWhenHidden = -1.0;

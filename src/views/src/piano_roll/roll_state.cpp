@@ -1049,14 +1049,18 @@ bool RollState::previewShown() const noexcept { return ctx.notePreview() && hasN
 
 void RollState::requestPreview(Ticks visibleEndContent) {
   if (!previewShown() || !ctx.notePreviews().hasSource()) return;
-  const doc::Track* t = doc::findTrackPtr(*snap_, ref_.track);
   // How far: the visible end + one bar (4/4 at the clip's signature is close enough: the worker renders from 0).
   const Ticks until = clip_->start + std::max<Ticks>(0, visibleEndContent - clip_->contentStart) + kTicksPerWhole;
-  if (t == pvTrack_ && snap_->timeline.get() == pvTimeline_ && snap_->tunings.get() == pvTunings_ && until <= pvUntil_)
-    return;
-  pvTrack_ = t;
-  pvTimeline_ = snap_->timeline.get();
-  pvTunings_ = snap_->tunings.get();
+  std::vector<const void*> key = {snap_->timeline.get(), snap_->tunings.get(), snap_->wires.get()};
+  if (const std::optional<doc::TrackPath> path = doc::findTrack(*snap_, ref_.track))
+    for (doc::TrackPath at = *path;; at = at.parent()) {
+      key.push_back(&doc::trackAt(*snap_, at));
+      if (at.depth <= 1) break;
+    }
+  const NoteRenderConfig config = ctx.notePreviews().config();
+  if (key == pvKey_ && config == pvConfig_ && until <= pvUntil_) return;
+  pvKey_ = std::move(key);
+  pvConfig_ = config;
   pvUntil_ = std::max(until, clip_->start + clip_->length);  // (a clip's whole length at least: one compute per edit)
   ctx.notePreviews().request(snap_, ref_.track, pvUntil_);
 }
