@@ -1213,3 +1213,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views 965/980 before rebase (15 intended goldens re-recorded, 1 perf paint test that fails on main too); new real-dispatch tests (random add/cable sweep, S-drag each step + Esc, selection drop); orchestrator after rebase: -Affected 24/24.
 - Perf / CPU-efficiency check: UI thread only; one pass over blocks per build; 64-track S-drag step 8.05 ms vs 8.13 ms.
 - Notes/blockers: drag preview at full size, shrinks on drop; old in-group nudges ignored (no migration); not checked live.
+
+## 2026-11-20 · BR.I · task/BR.I-device-scale (merged a1f44e4a)
+- Did: Device view panels always 1:1 (face scaling + fit-to-height deleted); auto height follows the tallest panel/inspector (240 … half the panel area, + open free rack); splitter drag stores the user height in settings, double-click returns to auto; chain scrolls vertically (wheel, new scrollbar) and sideways (Shift+wheel); group mini circuits still fit the frame (zoom ≤ 1) and don't drive the height (orchestrator decision, Q?-BR.I-a).
+- Verified: worker pq_tests_views default tier (11 device goldens re-recorded, diffs checked), 2 real-dispatch tests (Wavetable 1:1 at default height; splitter drag / wheel / chain change / double-click); orchestrator -Affected 22/22.
+- Perf / CPU-efficiency check: UI thread only; one pass over top-level frames per layout; observers re-run once only when one changed the layout.
+- Notes/blockers: Q?-BR.I-b (free-rack cable end lags its port until next layout, pre-existing); not checked live.
