@@ -151,6 +151,11 @@ struct Node {
   bool active = true;          // Device: its activator
   bool missing = false;        // Device: its patch is not in the library
   bool instrument = false;     // Device: an instrument
+  // AP.2 (pq/document/note_devices.h): a NOTE DEVICE — never in the graph (the lowering dissolves it), so not `lowered`,
+  // yet it plays (not veiled while active); `notesOut`: the notes reach it (its chain stage gives Notes), so the cable
+  // out of its main output is a notes cable (EdgeKind::Notes, per voice).
+  bool noteStage = false;
+  bool notesOut = false;
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
   bool folded = false;         // TL.1: on a folded band (hidden: not drawn, not hit, its wires neither)
   // TX.all-free: off its track's main path (doc::mainPath): placed on the row under the path until a nudge moves it, and

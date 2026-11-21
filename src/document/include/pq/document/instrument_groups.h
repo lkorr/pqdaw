@@ -5,7 +5,9 @@
 // the schema 17 → 18 migration that wraps an existing track's instrument into one.
 //
 // THE RULE. A voice context is an INSTRUMENT GROUP: a group device (model.h "Groups") heading a MIDI track's main path,
-// or one a notes cable (a wire from a MIDI track's source, port "", into its main input "" / `x`) enters. Everything
+// or one a notes cable (a wire from a MIDI track's source, port "", into its main input "" / `x`) enters (AP.2: through
+// the note devices, note_devices.h — the head is the first block after the path's note run, and a cable out of a note
+// device continues the notes cable into it: dissolveNoteDevices). Everything
 // inside it (its members) runs per note of that source; its Out sums the voices. (GU.f7: only a group is one; the lone
 // stock instruments that were contexts of their own are gone with the stock devices.)
 // GU.2 (groups nest): only the OUTERMOST group fed notes is an instrument group; every device inside it at any depth

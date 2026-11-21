@@ -8,6 +8,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/meta.h"
+#include "pq/document/note_devices.h"
 #include "pq/document/racks.h"
 #include "pq/meta/registry.h"
 
@@ -508,9 +509,24 @@ Status checkList(ListKind k, const std::vector<DevicePtr>& list, std::vector<siz
         // GU.11 (model.h Device): a block is a group, an atom block, a value block or a native engine — nothing else.
         if (d->patch == kAudioEffectRack || d->patch == kInstrumentRack)
           return invalid("'" + d->patch + "' names a rack spawn, not a device patch (a rack is a group: ops::addRack)");
-        if (!isGroupDevice(*d) && !isValueDevice(*d) && !isMetaDevice(*d) &&
+        const NoteDeviceType* note = noteDeviceTypeOf(*d);
+        if (!isGroupDevice(*d) && !isValueDevice(*d) && !isMetaDevice(*d) && note == nullptr &&
             !(isAtomDevice(*d) && atomBlockPatch(atomDeviceName(*d)) != nullptr))
-          return invalid("'" + d->patch + "' is not a block (a group, an atom block, a value block or a native engine)");
+          return invalid("'" + d->patch + "' is not a block (a group, an atom block, a value block, a native engine or a "
+                         "note device)");
+        if (note != nullptr) {  // AP.2 (note_devices.h): a note stage on a MIDI track's notes link
+          if (k != ListKind::MidiTrack) return invalid("a note device goes on a MIDI track (no notes reach it elsewhere)");
+          if (d->kind != DeviceKind::AudioEffect) return invalid("a note device is an audio effect (its signals decide)");
+          if (d->group.valid()) return invalid("a note device sits on a track's notes link, not in a group");
+          if (d->meta) return invalid("a note device has no meta modules");
+          for (const DeviceValue& v : d->params)
+            if (const NoteParamSpec* sp = note->param(v.name); sp == nullptr || !sp->runtime)
+              return invalid("'" + v.name + "' is not a param of " + note->name);
+          for (const DeviceValue& v : d->settings)
+            if (const NoteParamSpec* sp = note->param(v.name); sp == nullptr || sp->runtime)
+              return invalid("'" + v.name + "' is not a setting of " + note->name);
+          if (!d->curves.empty()) return invalid("a note device's knobs keep their declared curves");
+        }
         for (size_t j = 0; j < i; ++j)
           if (list[j]->id == d->id) return invalid("device id twice in a chain");
         // The notes exist only on MIDI tracks (an instrument plays where they reach it: lower.h "The main path").

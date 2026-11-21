@@ -558,7 +558,8 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
       const Band& band = pp.bands[n.band];
       if (!shownNode(n)) {
         continue;  // TL.1: a lane (paintUnderlay), a folded band's block
-      } else if (n.kind == NodeKind::Device && (!n.lowered || !n.active || !band.active) && !(n.panel && band.active)) {
+      } else if (n.kind == NodeKind::Device && ((!n.lowered && !n.noteStage) || !n.active || !band.active) &&
+                 !(n.panel && band.active)) {
         // (TX.panel-faces: a panel shows its own switched-off look, as in the Device view.)
         // Bypassed (deactivated, missing, on a deactivated track): veiled; the chain wire passes under it.
         const Rect r = snapRect(nr);

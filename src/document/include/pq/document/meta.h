@@ -66,7 +66,9 @@ struct ChainStage {
 // out (meta::Form::ChainNotes), Voices → Voices (ChainVoice), Audio → Audio (ChainAudio), unplugged → Audio
 // (ChainAudio with nothing in: it runs once, freely). `voices` false (a rack chain, whose devices after its first the
 // lowering keeps global) delivers Audio where Voices would arrive. TX.groups-fix1: a group (model.h "Groups") passes on
-// what reaches it to its series (IG.1-2: an instrument group sums its voices at Out — Audio out). Any other device
+// what reaches it to its series (IG.1-2: an instrument group sums its voices at Out — Audio out). AP.2: a device with
+// DECLARED main signals (a note device, note_devices.h: Notes → Notes) gives its `out` where its `in` reaches it and
+// passes on anything else (so the notes reach the next stage: the instrument after an arpeggiator). Any other device
 // gives Audio. TX.all-free: with `path`, the devices of `list` not on it are listed (ChainStage::offPath) but take no
 // part in the flow (a track: pass flowOrder(t, path), the path first).
 std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool notes, bool voices = true,

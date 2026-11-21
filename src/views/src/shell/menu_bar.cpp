@@ -267,6 +267,7 @@ std::vector<MenuItem> MenuBar::items(int32_t i) const {
       // M4 review UI item 6: racks into the selected track's chain (the device menu and the browser add devices).
       v.push_back(act("Insert Instrument Rack", "device.addInstrumentRack"));
       v.push_back(act("Insert Audio Effect Rack", "device.addAudioEffectRack"));
+      v.push_back(act("Insert Arpeggiator", "device.addArpeggiator"));  // AP.2: onto the MIDI track's notes link
       v.push_back(MenuItem::sep());
       v.push_back(act("New Main Tuning", "tuning.newMain"));
       break;

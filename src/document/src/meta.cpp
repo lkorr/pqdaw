@@ -1,5 +1,6 @@
 // Meta modules in the document (TMM.3): pq/document/meta.h.
 #include "pq/document/meta.h"
+#include "pq/document/note_devices.h"
 
 #include <algorithm>
 
@@ -99,6 +100,12 @@ std::vector<ChainStage> chainStages(const std::vector<DevicePtr>& list, bool not
       st.in = st.input < 0 ? ChainSignal::None : s;
       st.out = st.in == ChainSignal::Notes || st.in == ChainSignal::Voices ? ChainSignal::Voices : ChainSignal::Audio;
       if (!voices && st.out == ChainSignal::Voices && st.in == ChainSignal::Voices) st.in = st.out = ChainSignal::Audio;
+    } else if (const NoteDeviceType* nt = noteDeviceTypeOf(d)) {
+      // AP.2 (note_devices.h): a device with DECLARED main signals gives `out` where its `in` reaches it (a note
+      // device: Notes → Notes, the notes pass on to the next stage); fed anything else it changes nothing (what
+      // reaches it passes on: the lowering dissolves it).
+      st.in = s;
+      st.out = s == nt->in ? nt->out : s;
     } else if (isGroupDevice(d)) {
       // TX.groups-fix1: a group passes on what reaches it — the notes or voices continue as voices through its terminals
       // (lower.h "Groups"); audio stays audio.

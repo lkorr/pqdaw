@@ -24,9 +24,12 @@
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/meta.h"
+#include "pq/document/lower.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/registry.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/engine/arp.h"
+#include "pq/engine/note_stage.h"
 #include "pq/engine/tuning_signal.h"
 #include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
@@ -527,6 +530,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   syncRecordInputs(*current_, true);
   publishAudio(*current_);
   publishAutomation(*current_);
+  publishNoteStages(*current_);  // AP.2
   if (cfg_.compileThread) worker_ = std::thread([this] { workerMain(); });
   return Ok{};
 }
@@ -670,6 +674,8 @@ Status ProjectLink::setSampleRate(double rate) {
   lastAudio_ = nullptr;
   publishAudio(*current_, true);  // T5.4: the new engine's timeline has no audio image yet
   publishAutomation(*current_);
+  noteChains_.clear();  // AP.2: the new engine has no note stages yet
+  publishNoteStages(*current_);
   if (loopSent_) postTransport({engine::TransportCommandKind::SetLoop, loop_.enabled, 0, loop_.start, loop_.end});
   postTransport({ph.playing ? engine::TransportCommandKind::Play : engine::TransportCommandKind::Locate, false, ph.tick, 0, 0});
   optimistic_ = {ph.playing, ph.tick, 0};
@@ -1101,6 +1107,50 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
   engine_->wake();
 }
 
+void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
+  if (!engine_) return;
+  std::vector<doc::LoweredNoteChain> chains = doc::lowerNoteChains(p);
+  std::vector<PublishedNotes> next;
+  next.reserve(chains.size());
+  auto find = [](std::vector<PublishedNotes>& v, doc::TrackId t) {
+    return std::find_if(v.begin(), v.end(), [&](const PublishedNotes& x) { return x.chain.track == t; });
+  };
+  for (PublishedNotes& old : noteChains_)  // gone: back to no stage (zero cost)
+    if (std::none_of(chains.begin(), chains.end(), [&](const doc::LoweredNoteChain& c) { return c.track == old.chain.track; })) {
+      (void)engine_->setNoteStages(old.slot, nullptr);
+      ++stats_.noteStagePublishes;
+    }
+  for (doc::LoweredNoteChain& c : chains) {
+    const uint32_t slot = slotForTrack(c.track);
+    if (slot == kNone) continue;
+    if (const auto it = find(noteChains_, c.track); it != noteChains_.end() && it->slot == slot && it->chain.sameStructure(c)) {
+      next.push_back({std::move(c), slot});
+      continue;
+    }
+    if (const auto it = find(noteChains_, c.track); it != noteChains_.end() && it->slot != slot)
+      (void)engine_->setNoteStages(it->slot, nullptr);  // (its slot changed: the old one plays nothing)
+    auto chain = std::make_unique<engine::NoteStageChain>();
+    for (const doc::LoweredNoteStage& st : c.stages) {
+      if (st.type != "arpeggiator") continue;  // (the one note device type: doc::noteDeviceTypes)
+      engine::ArpParams fixed;
+      for (size_t k = 0; k < st.values.size() && k < static_cast<size_t>(engine::ArpParamId::Count); ++k)
+        engine::setArpParam(fixed, static_cast<engine::ArpParamId>(k), static_cast<float>(st.values[k]));
+      std::vector<engine::ArpStage::Mapping> map;
+      for (const doc::LoweredNoteStage::Slot& r : st.runtime) {
+        const uint32_t ps = slotForParam(r.key);
+        if (ps == kNone || r.param >= static_cast<uint32_t>(engine::ArpParamId::Count)) continue;
+        map.push_back({static_cast<engine::ArpParamId>(r.param), ps, r.scale, r.offset});
+      }
+      (void)chain->add(std::make_unique<engine::ArpStage>(fixed, std::move(map), engine::ArpDegreeTable{c.degreeCents, c.equaveCents}));
+    }
+    (void)engine_->setNoteStages(slot, std::move(chain));
+    ++stats_.noteStagePublishes;
+    next.push_back({std::move(c), slot});
+  }
+  noteChains_ = std::move(next);
+  engine_->wake();
+}
+
 // The tuning node input an automation lane on `ref` drives per sample (T2.6-fix2): the live input of the current
 // table of its tuning, or null (not a tuning param, or the tuning has no table).
 const float** ProjectLink::liveTap(const doc::Project& p, const doc::ParamRef& ref, uint32_t* slotOut) {
@@ -1266,6 +1316,8 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   }
   const bool compile = structural || newTables || sendsChanged;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
+  // AP.2: the note chains after their params have slots and values; a tuning edit moves a chain's degree table.
+  if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty())) publishNoteStages(p);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
   if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only

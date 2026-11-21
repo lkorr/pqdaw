@@ -95,6 +95,9 @@ public:
   bool renameSelected();
   // M4 review UI item 6 (Create menu): an empty Instrument / Audio Effect Rack after the selected device, else at the end.
   bool addRack(bool instrument);
+  // AP.2 (Create > Insert Arpeggiator): a note device of `type` onto the shown MIDI track's notes link, after the note
+  // effects there and before the instrument (pq/document/note_devices.h). One undo step.
+  bool addNoteDevice(std::string_view type);
   // ---- T4.16c: keyboard (Live's Device view; docs/HOTKEYS.md) -------------------------------------------------------
   // Left / Right (device.selectPrev / Next): the neighbouring device in display order — a rack, then the devices of the
   // chain it shows, then what follows the rack — so the arrows walk into and out of rack chains; nothing selected: the

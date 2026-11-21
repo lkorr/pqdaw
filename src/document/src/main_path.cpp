@@ -1,5 +1,6 @@
 // TX.all-free: a track's main path (pq/document/main_path.h).
 #include "pq/document/main_path.h"
+#include "pq/document/note_devices.h"
 
 #include <algorithm>
 
@@ -41,6 +42,7 @@ MainPorts mainPortsOf(const graph::SubcircuitRef& sig, const graph::Patch* calle
 
 MainPorts mainPortsOf(const Device& d, const DeviceLibrary* lib) {
   if (isGroupDevice(d)) return {"x", "y"};
+  if (isNoteDevice(d)) return {"notes", "out"};  // AP.2: its fixed patch's (note_devices.h), library-free
   if (isMetaDevice(d)) {
     MainPorts m;
     if (const meta::Type* t = meta::findType(metaDeviceType(d))) {

@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "pq/document/lower.h"
+#include "pq/document/note_devices.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
 
@@ -415,7 +416,53 @@ const ValueBlock& valueBlock() {
   return v;
 }
 
+// AP.2: a note device type's fixed patch (note_devices.h noteDevicePatchText) and its description: one per type, parsed
+// once (thread-safe), for the process's life.
+struct NoteBlock {
+  graph::PatchFile file;
+  const graph::Patch* patch = nullptr;
+  DeviceInfo info;
+};
+const std::vector<NoteBlock>& noteBlocks() {
+  static const std::vector<NoteBlock> blocks = [] {
+    std::vector<NoteBlock> out;
+    out.reserve(noteDeviceTypes().size());  // (patch points into its file: no reallocation)
+    for (const NoteDeviceType& t : noteDeviceTypes()) {
+      NoteBlock& x = out.emplace_back();
+      Result<graph::PatchFile> f = graph::parse(noteDevicePatchText(t), t.id);
+      if (!f.ok()) continue;  // (tests/document test_note_devices: every type's text parses)
+      x.file = std::move(f.value());
+      x.patch = x.file.find(t.patchName);
+      if (x.patch == nullptr) continue;
+      x.info.patch = noteDevicePatch(t.id);
+      x.info.name = t.name;
+      x.info.kind = DeviceKind::AudioEffect;
+      for (graph::NodeIndex n = 0; n < x.patch->nodeCount(); ++n)
+        if (x.patch->node(n).kind == graph::NodeKind::Param) x.info.params.push_back(paramInfo(*x.patch, n));
+      for (const NoteParamSpec& s : t.params)
+        if (!s.runtime) x.info.settings.push_back(DeviceSettingInfo{s.name, s.def, true});
+    }
+    return out;
+  }();
+  return blocks;
+}
+const NoteBlock* noteBlock(std::string_view type) {
+  const std::span<const NoteDeviceType> types = noteDeviceTypes();
+  for (size_t i = 0; i < types.size(); ++i)
+    if (types[i].id == type) return noteBlocks()[i].patch != nullptr ? &noteBlocks()[i] : nullptr;
+  return nullptr;
+}
+
 }  // namespace
+
+const graph::Patch* noteDeviceBlockPatch(std::string_view type) {
+  const NoteBlock* b = noteBlock(type);
+  return b != nullptr ? b->patch : nullptr;
+}
+const DeviceInfo* noteDeviceInfo(std::string_view type) {
+  const NoteBlock* b = noteBlock(type);
+  return b != nullptr ? &b->info : nullptr;
+}
 
 const graph::Patch* atomBlockPatch(std::string_view atomName) {
   const AtomBlock* b = atomBlock(atomName);
@@ -442,6 +489,7 @@ const graph::Patch* builtinBlockPatch(const Device& d) {
   if (isGroupDevice(d)) return &groupPatch();
   if (isAtomDevice(d)) return atomBlockPatch(atomDeviceName(d));
   if (isValueDevice(d)) return &valuePatch();
+  if (const NoteDeviceType* t = noteDeviceTypeOf(d)) return noteDeviceBlockPatch(t->id);  // AP.2
   return nullptr;
 }
 
@@ -449,6 +497,7 @@ const graph::Patch* DeviceLibrary::patchOf(const Device& d) const {
   if (isGroupDevice(d)) return &groupPatch();  // TX.groups
   if (isAtomDevice(d)) return atomBlockPatch(atomDeviceName(d));  // GU.2
   if (isValueDevice(d)) return &valuePatch();                     // GU.2
+  if (const NoteDeviceType* t = noteDeviceTypeOf(d)) return noteDeviceBlockPatch(t->id);  // AP.2
   if (isMetaDevice(d)) {  // TMM.3
     const meta::Prelude::Entry* e = prelude_->find(metaDeviceType(d));
     if (e == nullptr) return nullptr;
@@ -463,6 +512,7 @@ const DeviceInfo* DeviceLibrary::infoOf(const Device& d) const {
   if (isGroupDevice(d)) return &groupDeviceInfo();  // TX.groups
   if (isAtomDevice(d)) return atomBlockInfo(atomDeviceName(d));  // GU.2
   if (isValueDevice(d)) return &valueDeviceInfo();               // GU.2
+  if (const NoteDeviceType* t = noteDeviceTypeOf(d)) return noteDeviceInfo(t->id);  // AP.2
   if (isMetaDevice(d)) {  // TMM.3
     for (size_t i = 0; i < prelude_->entries.size(); ++i)
       if (prelude_->entries[i].type->id == metaDeviceType(d)) {

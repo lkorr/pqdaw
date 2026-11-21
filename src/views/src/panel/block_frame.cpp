@@ -410,6 +410,7 @@ doc::Panel leafPanel(const devices::DeviceSignature& sig, const doc::Device& d, 
     // A label the patch gave (@label) is kept as written; a bare name in title case. (A toggle names itself.)
     const std::string label = prm.label == prm.name ? titleCase(prm.label) : prm.isBool ? prm.label : std::string();
     if (prm.isBool) place("toggle", kSmallH - 6.0f, doc::controlBinding(d.id, prm.name), label);
+    else if (!prm.choices.empty()) place("menu", kSmallH, doc::controlBinding(d.id, prm.name), label);  // AP.2: @choices
     else if (prm.steps > 1) place("number", kSmallH, doc::controlBinding(d.id, prm.name), label);
     else place("knob", kKnobH, doc::controlBinding(d.id, prm.name), label);
   }

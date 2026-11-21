@@ -38,6 +38,7 @@ struct ParamInfo {
   int32_t steps = 0;        // @steps(n): n integer positions (0 = continuous)
   bool isBool = false;
   bool hidden = false;      // @hidden
+  std::vector<std::string> choices;  // AP.2: @choices("a|b|…"): a stepped param's labels (index = value − min)
   // GU.1: the curve the knob plays (the instance's, doc::Device::curves, else `declared`) and the one its declaration
   // gives (graph::declaredCurve). toPosition / fromPosition follow `curve`.
   dsp::Curve curve, declared;

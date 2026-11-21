@@ -5,6 +5,7 @@
 
 #include "edit_common.h"
 #include "edit_paths.h"
+#include "pq/document/note_devices.h"
 #include "pq/document/racks.h"
 #include "pq/document/main_path.h"
 
@@ -57,6 +58,13 @@ Status splice(Steps& k, IdSource& ids, TrackId track, DeviceId device, uint32_t 
   if (t == nullptr) return notFound("track not found");
   const MainPath path = mainPath(k.doc(), *t);
   if (path.contains(device)) return ok();  // already on it
+  // AP.2 (note_devices.h): the notes reach the notes link's stages first — a note device goes no further than the end
+  // of the path's note run (after the stages there, before the first block that takes the notes), any other block
+  // no earlier than it.
+  if (const DeviceLoc dl = findDevice(k.doc(), device); dl.device != nullptr) {
+    const uint32_t run = noteRun(path);
+    slot = isNoteDevice(*dl.device) ? std::min(slot, run) : std::max(slot, run);
+  }
   const End self{device, {}};
   if (path.links.empty()) {  // no path at all: the source → it → the mixer
     PQ_DOC_TRY(k.add(AddWire{mainLink(ids, End{{}, track}, self)}));
@@ -202,6 +210,8 @@ EditResult moveOnPath(const Project& p, IdSource& ids, const DeviceLibrary* lib,
   if (dst == nullptr) return notFound("track not found");
   if (loc.device->kind == DeviceKind::Instrument && dst->kind != TrackKind::Midi)
     return invalid("instruments go on MIDI tracks (the notes are their main input)");
+  if (isNoteDevice(*loc.device) && dst->kind != TrackKind::Midi)  // AP.2
+    return invalid("a note device goes on a MIDI track (no notes reach it elsewhere)");
   Edit e = makeEdit("Move Device");
   e.devices.push_back(device);
   // Where it is now: on its path at `from` (an unchanged place is no edit).

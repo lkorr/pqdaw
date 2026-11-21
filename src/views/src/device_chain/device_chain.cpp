@@ -24,6 +24,7 @@
 #include "pq/views/meta/face_targets.h"
 #include "pq/views/shell/shell.h"
 #include "pq/document/meta.h"
+#include "pq/document/note_devices.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -152,6 +153,19 @@ std::vector<ui::MenuItem> DeviceChainView::Impl::deviceMenu(doc::TrackId trackId
       v->select(one);
     }
   };
+  // AP.2 (pq/document/note_devices.h): the note effects — on a MIDI track's notes link (ops::addDevice puts them after
+  // the note effects there, before the instrument), never in a rack chain.
+  {
+    ui::MenuItem head = ui::MenuItem::item("Note Effects");
+    head.enabled = false;
+    items.push_back(std::move(head));
+    for (const doc::NoteDeviceType& t : doc::noteDeviceTypes()) {
+      const std::string patch = doc::noteDevicePatch(t.id);
+      ui::MenuItem it = ui::MenuItem::item("   " + t.name, [add, patch] { add(patch, doc::DeviceKind::AudioEffect); });
+      it.enabled = instruments && !chain.valid();
+      items.push_back(std::move(it));
+    }
+  }
   for (const doc::DeviceKind kind : {doc::DeviceKind::Instrument, doc::DeviceKind::AudioEffect}) {
     ui::MenuItem head = ui::MenuItem::item(kind == doc::DeviceKind::Instrument ? "Instruments" : "Audio Effects");
     head.enabled = false;
@@ -1418,6 +1432,19 @@ bool DeviceChainView::addRack(bool instrument) {
                                         instrument ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect, index));
 }
 
+bool DeviceChainView::addNoteDevice(std::string_view type) {  // AP.2
+  const doc::Track* t = track_.valid() ? doc::findTrackPtr(*ctx_.doc(), track_) : nullptr;
+  if (t == nullptr) return false;
+  auto r = addCatalogDevice(ctx_, doc::noteDevicePatch(type), doc::DeviceKind::AudioEffect, DeviceSlot{track_, doc::kAppend, {}});
+  if (!r) {
+    ctx_.setStatus("Add Note Effect: " + r.error().message);
+    return false;
+  }
+  const doc::DeviceId one[1] = {*r};
+  select(one);
+  return true;
+}
+
 bool DeviceChainView::ungroupSelected() {
   if (selection_.size() != 1) {
     if (!selection_.empty()) ctx_.setStatus("Ungroup: select one rack");
@@ -1534,6 +1561,11 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   // M4 review UI item 6: Create > Instrument Rack / Audio Effect Rack (after the selected device, else at the end).
   ctx.setViewAction("device.addInstrumentRack", [p] { p->addRack(true); }, [p] { return p->track().valid(); });
   ctx.setViewAction("device.addAudioEffectRack", [p] { p->addRack(false); }, [p] { return p->track().valid(); });
+  // AP.2: Create > Insert Arpeggiator (onto the selected MIDI track's notes link).
+  ctx.setViewAction("device.addArpeggiator", [p] { p->addNoteDevice("arpeggiator"); }, [p, c = &ctx] {
+    const doc::Track* t = p->track().valid() && c->doc() ? doc::findTrackPtr(*c->doc(), p->track()) : nullptr;
+    return t != nullptr && t->kind == doc::TrackKind::Midi;
+  });
   // T4.16c: Live's arrow keys in the Device view.
   auto chain = [p] { return p->track().valid(); };
   ctx.setViewAction("device.selectPrev", [p] { p->selectNeighbour(-1, false); }, chain);

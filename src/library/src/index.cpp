@@ -101,6 +101,7 @@ std::string_view categoryName(Category c) noexcept {
     case Category::Patches: return "Patches/Subcircuits";
     case Category::Grooves: return "Grooves";
     case Category::MetaModules: return "Meta Modules";  // TMM.10
+    case Category::NoteEffects: return "Note Effects";  // AP.2
     case Category::Count: break;
   }
   return "?";
@@ -305,6 +306,7 @@ Category sniffDeviceCategory(std::string_view head) noexcept {
   if (valueAfterKey("\"patch\"", 0, &at)) {  // TMM.10: a chain meta device's preset
     while (at < head.size() && (head[at] == ' ' || head[at] == '\t' || head[at] == '\r' || head[at] == '\n')) ++at;
     if (head.substr(at).starts_with("\"meta:")) return Category::MetaModules;
+    if (head.substr(at).starts_with("\"note:")) return Category::NoteEffects;  // AP.2: a note device's preset
   }
   if (valueAfterKey("\"kind\"", 0, &at)) {
     while (at < head.size() && (head[at] == ' ' || head[at] == '\t' || head[at] == '\r' || head[at] == '\n')) ++at;
