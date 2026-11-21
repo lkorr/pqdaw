@@ -135,3 +135,33 @@ AP.2 / AP.5 document rows (-Affected); AP.6 / AP.7 views rows (pq_tests_views) p
 - **MIDI out / recording**: Capture MIDI and recording store the INPUT notes (as in Live), not the arp output; Flatten
   is the way to get the output.
 - **MPE / MTS-ESP out** to external synths: unaffected in v1 (no external-instrument path exists yet).
+
+## AP.10 · the resolved pattern and the bends (👁, engine + panel)
+User ask: the pattern view shows the WHOLE pattern Distance / Steps / Harmonics / walk / layers produce, generated
+notes dotted; the pitch bends drawn in it; separate Into and Out bend controls; a bend view showing exactly how they bend.
+1. **Separate Into / Out (engine, no compat)**: `ArpParams::into` / `out` are an `ArpGlideSide` {mode Off / Step / Offset,
+   offset, synced, ms, fraction, shape, bend} each; params `intoSource intoOffset intoSync intoMs intoFrac intoShape
+   intoBend` and `outTarget outOffset outSync outMs outFrac outShape outBend`; `glideCents` stays ONE switch (the unit of
+   both offsets: the Pitch unit or cents). The old shared glideSync / glideMs / glideFraction / glideShape / glideBend
+   are deleted. When Into + Out exceed the note they shrink proportionally (equal times: half each, as before).
+2. **One ramp formula**: `pq/engine/note_events.h rampShapeAt(shape, bend, u)` (closed form) is what the voice's shaped
+   loop, the roll preview's curves, the panel's drawings all evaluate (the voice keeps its per-sample recurrence for
+   Exponential; SCurve / Overshoot call the same inline kernels).
+3. **The resolved cycle (engine `pq/engine/arp_sketch.h`)**: `sketchArp` runs the REAL ArpCore offline (free clock at
+   4800 Hz, 32-frame blocks, the trace on) over a held set for one cycle (pattern length × Steps; Pulse: its Cycle; at
+   most 64 steps, else the first 64 and `truncated`): every note's on / off in steps, its pitch curve from its own
+   Pitch events, its source, its exact identity (ArpExact) and the status position / copy of its step.
+4. **The held set in the status**: NoteStageStatus also carries the held notes' identities (Hz, harmonic, degree /
+   equave / tuning, noteDegree; by Hz, ≤ kNotes), written with the pattern, so the panel sketches what is held.
+5. **Document**: `pq/document/note_pattern.h notePattern(project, device, held)` — the device's values, its track's
+   degree table → sketchArp → plain points (views never include engine). Nothing held: the last held set the view saw,
+   else a NOMINAL reference note (the track tuning's reference, harmonic Base) captioned "nominal note".
+6. **Pattern view**: x = time over the cycle, y = log Hz with faint lines on the unit's grid (Degrees: the table's
+   degrees / equaves; Harmonics / Ratio: equaves of the lowest source); source notes (exact Same, layer 0) solid, the
+   generated ones dotted outline + translucent with their identity label (+k, h11, 3/2); each note's segment is its
+   pitch curve (Into, hold, Out); the playing step (status position + copy) lit. Recomputed only when the params, the
+   held set or the tempo change (a hash: no ArpCore run per frame).
+7. **Bend view** (`arpbend` element, the Glide fold, open by default): one step large — source → Into curve → hold →
+   Out curve → target, the time spans and offsets dimensioned, the gate edge marked. Handles: drag a side's time
+   horizontally, its offset vertically (one undo step per drag); Alt+drag the bend. Same formula as 2.
+8. Sound defaults unchanged (Into / Out Off: an added arp sounds like Live's) — reversible; only the fold's default opens.
