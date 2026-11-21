@@ -927,7 +927,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **AP.4 Pulse mode (polyrhythm, phase lock, layers)** *(merged 057af42f; Q?-AP.4-a; open: Cycle bars assume 4/4 → follow the song's signature in AP.5)* (plan AP.4)
 - [x] **AP.2b Note-device follow-ups** *(merged 6052943b with AP.5; cables play one block late; tuning edits never reset the arp (user 2026-11-21); structural republish at the same place hands state over; bars per signature)*: (1) cables into a note-device param play (Q?-AP.2-a: today Inactive; general mechanism — the wire's value at param rate from the previous block, one block late, documented), (2) a tuning edit no longer republishes the chain (AP.3's live degree lookup; held pattern keeps its place), (3) Pulse Cycle "bars" follow the song's time signature (Q?-AP.4-a). With AP.5.
 - [x] **AP.5 Step lanes** (plan AP.5) *(merged 6052943b; Q?-AP.5-a; 192 step values as kArpParamInfo rows)*
-- [ ] **AP.6 Arpeggiator panel** 👁 (plan AP.6)
+- [x] **AP.6 Arpeggiator panel** 👁 (plan AP.6) *(merged a6ab0ecf; Q?-AP.6-a; general multi-source show-when conditions; 5 new goldens)*
 - [ ] **AP.7 Roll preview + Flatten to clip** 👁 (plan AP.7)
 
 ## SM: Sampler (Simpler modes + warp per voice + granulator; user 2026-11-20; plan: docs/plans/SM.md; design approved by the user 2026-11-20)
