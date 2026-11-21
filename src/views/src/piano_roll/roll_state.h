@@ -42,6 +42,7 @@
 #include "pq/ui/controls.h"
 #include "pq/ui/widget.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
+#include "pq/views/note_preview.h"
 #include "pq/views/piano_roll/row_model.h"
 #include "pq/views/view_context.h"
 
@@ -1126,10 +1127,10 @@ private:
   bool scale_ = false;
   bool harmonics_ = true;
   bool chance_ = false;
-  // AP.7: what the last preview request was made for.
-  const void* pvTrack_ = nullptr;
-  const void* pvTimeline_ = nullptr;
-  const void* pvTunings_ = nullptr;
+  // AP.7: what the last preview request was made for — AP.8b (review L10): the track and every group above it (an
+  // inherited tuning), the timeline, the tunings, the project's wires (cables into the devices), the render config.
+  std::vector<const void*> pvKey_;
+  NoteRenderConfig pvConfig_;
   Ticks pvUntil_ = 0;
   bool fitted_ = false;  // fitToClip ran for the current clip (needs a laid-out area)
 

@@ -53,14 +53,16 @@ struct Rig {
   doc::DeviceId arp;
   std::mutex m;
   std::vector<std::thread::id> threads;  // where the source ran
+  std::vector<std::thread::id> flattenThreads;  // AP.8b: where Flatten's renders ran
   std::atomic<int> calls{0};
 
   Rig() {
     REQUIRE(ctx.openProject(views::test::fixtureDir("empty")).ok());
-    ctx.notePreviews().setSource([this](const doc::Project& p, doc::TrackId t, Ticks) -> Result<NotePreview> {
+    ctx.notePreviews().setSource([this](const doc::Project& p, doc::TrackId t, const NotePreviewRequest& q) -> Result<NotePreview> {
       {
         std::lock_guard lock(m);
         threads.push_back(std::this_thread::get_id());
+        if (q.flatten) flattenThreads.push_back(std::this_thread::get_id());
       }
       ++calls;
       return arpeggiate(p, t);
@@ -113,6 +115,10 @@ struct Rig {
     for (const doc::DevicePtr& d : tr->devices) on = on || (d->active && doc::isNoteDevice(*d));
     if (!on) return out;
     out.any = true;
+    // As the app's source (tests/app/test_note_stage_render.cpp): a cable into a device param is named.
+    for (const doc::Wire& w : doc::wiresOf(p))
+      for (const doc::DevicePtr& d : tr->devices)
+        if (w.to == d->id && doc::isNoteDevice(*d) && w.param != doc::kMainPort) out.cable = "Arpeggiator " + w.param;
     for (const doc::ClipSlot& s : doc::playedClips(*tr)) {
       if (!s.clip) continue;
       doc::ClipGenerated cg{s.clip->id, {}};
@@ -213,8 +219,22 @@ TEST_CASE("roll preview (AP.7): Ctrl+Alt+F flattens into the clip (one undo step
   r.d.click({static_cast<float>(a.right()) - 6.0f, static_cast<float>(a.y) + 6.0f});  // the roll has the keys
   r.d.step();
   REQUIRE(r.notes() == 3);
+  const size_t undo0 = r.ctx.store().history().cursor();
   CHECK(r.d.press("Ctrl+Alt+F") == KeyResult::Action);
   r.d.step();
+  // AP.8b (review M7): the render runs on the preview worker; the key returns at once, nothing changed yet.
+  CHECK(r.notes() == 3);
+  CHECK(r.ctx.notePreviews().flattening());
+  r.settle();  // the worker done, its result taken on this (the UI) thread: the edit dispatched there
+  {
+    std::lock_guard lock(r.m);
+    REQUIRE(!r.flattenThreads.empty());
+    for (const std::thread::id id : r.flattenThreads) {
+      CHECK(id != std::this_thread::get_id());
+      CHECK(id == r.ctx.notePreviews().workerThread());
+    }
+  }
+  CHECK(r.ctx.store().history().cursor() == undo0 + 1);  // one undo step
   CHECK(r.notes() == 6);  // the generated notes, the sources gone (nothing anchors to them)
   CHECK_FALSE(r.arpDeviceActive());
   CHECK_FALSE(r.st().hasNoteDevices());
@@ -229,19 +249,44 @@ TEST_CASE("roll preview (AP.7): Ctrl+Alt+F flattens into the clip (one undo step
   CHECK(r.arpDeviceActive());
 }
 
-TEST_CASE("roll preview (AP.7): golden pianoroll-arp-preview") {
-  const char* scene = "pianoroll-arp-preview";
-  uint32_t w = 0, h = 0;
-  viewSceneDefaultSize(scene, w, h);
-  GpuOptions o;
-  o.validation = true;
-  auto img = renderViewScene(scene, views::test::fixtureDir("empty"), w, h, {}, o);
-  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
-  const std::string path = std::string(PQ_TEST_DATA_DIR) + "/views/golden/" + scene + ".png";
-  auto ref = readPng(path);
-  if (!ref) (void)writePng(std::string(scene) + ".actual.png", *img);
-  REQUIRE_MESSAGE(ref.ok(), (ref.ok() ? "" : ref.error().message));
-  ImageDiff diff;
-  CHECK(pq::ui::test::matchesGolden(scene, *img, *ref, true, &diff));
-  MESSAGE(std::string(scene) << ": " << pq::ui::test::describe(diff));
+TEST_CASE("roll preview (AP.8b): Flatten refuses while a cable modulates a device param; renders again after an edit") {
+  Rig r;
+  r.settle();
+  const IRect a = r.d.rect("main/body/bottom/detail/clip/clip-view/notes");
+  r.d.click({static_cast<float>(a.right()) - 6.0f, static_cast<float>(a.y) + 6.0f});
+  r.d.step();
+  SUBCASE("a cable: refused with the reason, nothing changed") {
+    auto v = doc::ops::addDevice(*r.ctx.doc(), r.ctx.store().ids(), r.ref.track, std::string(doc::kValueDevice),
+                                 doc::DeviceKind::AudioEffect, doc::ops::kOffPath);
+    REQUIRE(v.ok());
+    REQUIRE(r.ctx.store().dispatch(v->command).ok());
+    doc::Wire w;
+    w.from = v->devices.at(0);
+    w.port = std::string(doc::kValueOutput);
+    w.to = r.arp;
+    w.param = "gate";
+    auto c = doc::ops::connect(*r.ctx.doc(), r.ctx.store().ids(), w);
+    REQUIRE(c.ok());
+    REQUIRE(r.ctx.store().dispatch(c->command).ok());
+    CHECK(r.d.press("Ctrl+Alt+F") == KeyResult::Action);
+    r.settle();
+    CHECK(r.ctx.status().find("a cable modulates Arpeggiator gate") != std::string::npos);
+    CHECK(r.notes() == 3);
+    CHECK(r.arpDeviceActive());
+  }
+  SUBCASE("an edit while it renders: rendered again from the new document, then applied") {
+    CHECK(r.d.press("Ctrl+Alt+F") == KeyResult::Action);
+    // Before the worker's result is taken, the clip gets a note (the render was of the old document).
+    doc::Note n;
+    n.start = 2 * kQ;
+    n.length = kQ;
+    n.pitch = tuning::PitchId::fromDegree(2, 0);
+    auto ad = doc::ops::addNotes(*r.ctx.doc(), r.ctx.store().ids(), r.ref, std::vector<doc::Note>{n});
+    REQUIRE(ad.ok());
+    REQUIRE(r.ctx.store().dispatch(ad->command).ok());
+    r.settle();  // the stale result: posted again
+    r.settle();
+    CHECK(r.notes() == 8);  // 4 sources (the new one too), two each
+    CHECK_FALSE(r.arpDeviceActive());
+  }
 }

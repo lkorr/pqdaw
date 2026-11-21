@@ -7,6 +7,7 @@
 #include <functional>
 #include <optional>
 
+#include "pq/document/lower.h"
 #include "pq/engine/arp.h"
 
 namespace pq::doc {
@@ -25,6 +26,8 @@ std::vector<std::string> splitChoices(std::string_view s) {
   return out;
 }
 
+Panel arpeggiatorPanel(DeviceId dev);  // AP.6 (below)
+
 std::vector<NoteDeviceType> makeTypes() {
   std::vector<NoteDeviceType> out;
   NoteDeviceType arp;
@@ -32,6 +35,8 @@ std::vector<NoteDeviceType> makeTypes() {
   arp.name = "Arpeggiator";
   arp.patchName = "Arpeggiator";
   arp.in = arp.out = ChainSignal::Notes;
+  arp.stage = NoteStageKind::Arpeggiator;
+  arp.panel = &arpeggiatorPanel;
   for (const engine::ArpParamInfo& r : engine::kArpParamInfo) {
     NoteParamSpec s;
     s.name = std::string(r.name);
@@ -242,7 +247,7 @@ Panel arpeggiatorPanel(DeviceId dev) {
   at = k.p.elements.size();
   k.ctl("knob", 320, 96, 40, 56, A::FixedVelocity, "Fixed");
   k.when(at, vsrc, {1.0});
-  k.button(240, 156, 70, 16, A::VelocityRetrigger, "Retrigger");
+  k.button(240, 156, 70, 16, A::VelocityRetrigger, "Vel Retrig");  // (AP.8b, L12: not the pattern's Retrigger)
   // Pitch: Unit, Distance, Steps, Shift / Rotate; Ratio p / q (Ratio); Base (Harmonics); the walk (Harmonic Walk).
   const uint32_t unit = k.chips(376, 8, 190, A::Unit, "Pitch Unit", "Degrees|Ratio|Harmonics").id;
   k.ctl("number", 376, 42, 50, 28, A::Distance, "Distance");
@@ -303,15 +308,26 @@ Panel arpeggiatorPanel(DeviceId dev) {
   const size_t bars = k.p.elements.size();
   k.ctl("number", 382, y, 36, 28, A::PulseBars, "Bars");
   k.when(bars, cyc, {1.0});
-  k.ctl("number", 426, y, 44, 28, A::Layers, "Layers");
-  k.ctl("knob", 476, y - 2, 48, 58, A::LayerLevel1, "Layer 1");
-  k.ctl("knob", 526, y - 2, 48, 58, A::LayerLevel2, "Layer 2");
-  k.ctl("knob", 576, y - 2, 48, 58, A::LayerLevel3, "Layer 3");
+  // AP.8b (review L11, overrules Q?-AP.6-a (2)): a layer's level only while Layers reaches it, a proportion entry only
+  // within Length (a number is a visibility source by its value: the values from n up).
+  auto from = [](int n, int max) {
+    std::vector<double> v;
+    for (int i = n; i <= max; ++i) v.push_back(static_cast<double>(i));
+    return v;
+  };
+  const uint32_t layers = k.ctl("number", 426, y, 44, 28, A::Layers, "Layers").id;
+  for (int i = 0; i < engine::kArpMaxLayers; ++i) {
+    const std::string label = "Layer " + std::to_string(i + 1);
+    k.ctl("knob", 476.0f + 50.0f * static_cast<float>(i), y - 2, 48, 58, static_cast<A>(static_cast<int>(A::LayerLevel1) + i),
+          label.c_str())
+        .when = Visibility{layers, from(i + 1, engine::kArpMaxLayers)};
+  }
   const size_t prop = k.p.elements.size();
-  k.ctl("number", 56, y + 34, 40, 26, A::ProportionLen, "Length");
+  const uint32_t plen = k.ctl("number", 56, y + 34, 40, 26, A::ProportionLen, "Length").id;
   k.caption(102, y + 34, 120, "Proportion");
   for (int i = 0; i < engine::kArpMaxProportion; ++i)
-    k.bare(102.0f + 38.0f * static_cast<float>(i), y + 34, 34, 26, static_cast<A>(static_cast<int>(A::Proportion1) + i));
+    k.bare(102.0f + 38.0f * static_cast<float>(i), y + 34, 34, 26, static_cast<A>(static_cast<int>(A::Proportion1) + i))
+        .when = Visibility{plen, from(i + 1, engine::kArpMaxProportion)};
   k.when(prop, psrc, {1.0});
   k.when(at, pulse, {1.0});
   y += 66.0f;
@@ -349,8 +365,7 @@ Panel arpeggiatorPanel(DeviceId dev) {
 
 Panel noteDevicePanel(const Device& d) {
   const NoteDeviceType* t = noteDeviceTypeOf(d);
-  if (t == nullptr || t->id != "arpeggiator") return {};
-  return arpeggiatorPanel(d.id);
+  return t != nullptr && t->panel != nullptr ? t->panel(d.id) : Panel{};
 }
 
 uint32_t noteRun(const MainPath& path) noexcept {

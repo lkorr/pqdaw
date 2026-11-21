@@ -229,6 +229,35 @@ TEST_CASE("note device playback (AP.2b): a value block cabled into the arp's Rat
   CHECK(std::fabs(mean(out, 32000 + 400, 42667 - 200) - K * hz0) / (K * hz0) < 1e-3);
 }
 
+TEST_CASE("note device playback (AP.8b, review M8): a value block cabled into a lane step plays when the step does") {
+  Rig r;
+  const DeviceId v = r.edit(ops::addDevice(r.doc(), r.store.ids(), r.track, std::string(kValueDevice),
+                                           DeviceKind::AudioEffect, ops::kOffPath))
+                         .devices.at(0);
+  r.edit(ops::setDeviceParamValue(r.doc(), playback_fixture::unitsLibrary(), v, std::string(kValueParam), 1.0));
+  r.edit(ops::setDeviceSetting(r.doc(), r.arp, "transLane", 1.0));
+  r.edit(ops::setDeviceSetting(r.doc(), r.arp, "transLen", 2.0));
+  Wire w;
+  w.from = v;
+  w.port = std::string(kValueOutput);
+  w.to = r.arp;
+  w.param = "transStep2";
+  const WireId cable = r.edit(ops::connect(r.doc(), r.store.ids(), w)).wires.at(0);
+  auto link = makeLink(r.store.current());
+  const auto states = link->wireStates();
+  const auto st = std::find_if(states.begin(), states.end(), [&](const WireState& s) { return s.id == cable; });
+  REQUIRE(st != states.end());
+  CHECK(st->status == WireStatus::Lowered);  // live, and it does what it shows
+  // Transpose step 2 + 1 degree (the cable's value, the step's own 0): the second step a semitone above degree 4.
+  const std::vector<float> out = render(*link, 4.0 * kStep / kRate);
+  const double K = mean(out, 4000, kStep - 200) / tuning::kDefaultReferenceHz;
+  REQUIRE(K > 0.0);
+  const double want = K * tuning::kDefaultReferenceHz * std::exp2(5.0 / 12.0);  // degree 4 + 1
+  CHECK(std::fabs(mean(out, kStep + 4000, 2 * kStep - 200) - want) / want < 1e-3);
+  const double third = K * tuning::kDefaultReferenceHz * std::exp2(7.0 / 12.0);  // step 3: lane step 1 again (+0)
+  CHECK(std::fabs(mean(out, 2 * kStep + 4000, 3 * kStep - 200) - third) / third < 1e-3);
+}
+
 namespace {
 
 // AP.2b, as the user hears it: an arp of a held chord on a MOS main tuning, played by the engine block by block.

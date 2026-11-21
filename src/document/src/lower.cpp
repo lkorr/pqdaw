@@ -4356,6 +4356,7 @@ std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
       LoweredNoteStage s;
       s.device = st.device->id;
       s.type = type->id;
+      s.kind = type->stage;
       const std::string dev = std::to_string(st.device->id.value);
       std::vector<const Wire*> into;  // AP.2b: the wires into its params
       for (const Wire& w : wiresOf(p))

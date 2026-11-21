@@ -49,8 +49,9 @@ void append(std::vector<TimedNoteEvent>& to, const EventList& l, std::span<const
 }  // namespace
 
 Result<NoteStageRender> renderNoteStages(std::unique_ptr<SequenceImage> sequence, std::unique_ptr<TempoImage> tempo,
-                                         NoteStageChain& chain, std::span<const float> params, Ticks from,
-                                         SampleTime frames, const NoteStageRenderConfig& config) {
+                                         NoteStageChain& chain, std::span<float> params, Ticks from,
+                                         SampleTime frames, const NoteStageRenderConfig& config,
+                                         std::unique_ptr<AutomationImage> automation) {
   TimelineConfig tc = config.timeline;
   tc.sampleRate = config.sampleRate;
   tc.maxBlockFrames = std::max(config.blockFrames, 1u);
@@ -64,6 +65,8 @@ Result<NoteStageRender> renderNoteStages(std::unique_ptr<SequenceImage> sequence
   if (Status s = tl.publishSequence(std::move(sequence)); !s) return s.error();
   if (tempo)
     if (Status s = tl.publishTempo(std::move(tempo)); !s) return s.error();
+  if (automation)  // AP.8b (review H3): the device params' lanes, as playback publishes them
+    if (Status s = tl.publishAutomation(std::move(automation)); !s) return s.error();
   TransportCommand play;
   play.kind = TransportCommandKind::Play;
   play.tick = from;
@@ -74,10 +77,14 @@ Result<NoteStageRender> renderNoteStages(std::unique_ptr<SequenceImage> sequence
   ClockSegment segs[2 * Timeline::kMaxRuns + 1];
   int64_t time = 0;
   while (time < frames) {
+    if (config.cancel != nullptr && config.cancel->load(std::memory_order_relaxed))
+      return Error{ErrorCode::Unknown, "note stages: cancelled", {}};
     const auto n = static_cast<uint32_t>(std::min<SampleTime>(tc.maxBlockFrames, frames - time));
     // As Engine::onSlot: the chain's input is the slot's merged events (here the sequencer's alone).
     chain.input().clear();
     tl.process(time, n);
+    // As the engine's block hook (Timeline::onBlockHook) before the slots run: the automated params of this block.
+    tl.writeAutomatedParams(params);
     const EventList seq = tl.events(0);
     for (uint32_t i = 0; i < seq.count; ++i) chain.input().push(seq.events[i]);
     const std::span<const TransportRun> runs = tl.runs();

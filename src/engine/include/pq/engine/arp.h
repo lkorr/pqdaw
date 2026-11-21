@@ -178,6 +178,7 @@
 #include <cstdint>
 #include <iterator>
 #include <memory>
+#include <span>
 #include <string_view>
 #include <vector>
 
@@ -577,6 +578,9 @@ public:
   // runs: tests and offline runs set fixed values between blocks).
   void setLaneSteps(const ArpLaneSteps& steps) noexcept;
   void mapLaneStep(ArpLane lane, int32_t step, uint32_t param, float scale, float offset) noexcept;
+  // AP.8b (review M8): the cables into a lane step — bus values (NoteStageBlock::mods, in the lane's units) added to
+  // the step's value when it plays (read only then: no per-block cost). Once per step (allocates). Non-RT.
+  void modLaneStep(ArpLane lane, int32_t step, std::span<const uint32_t> buses);
   // AP.2b: where new degree tables come from while the core runs (non-RT, before the first block).
   void setTableMailbox(std::shared_ptr<ArpTableMailbox> box) noexcept;
   // AP.6: where the core shows its device panel what it plays (pq/core/note_stage_status.h): the lane positions and
@@ -615,7 +619,7 @@ public:
     bool add = false;  // AP.2b: adds NoteStageBlock::mods[param] (a bus value; scale / offset unused) to the id's value
   };
   // Mappings of lane step ids (isArpLaneStep) go to the core's lane table (read only when their step plays, not at
-  // every block start). AP.2b: Mapping::add entries add a bus value (in the param's units: a modulation wire's
+  // every block start; AP.8b: their add mappings too, ArpCore::modLaneStep). AP.2b: Mapping::add entries add a bus value (in the param's units: a modulation wire's
   // previous block, lower.h "Note devices") to the mapping of the same id before them; `steps` the fixed lane values;
   // `box` (optional) hands it later degree tables.
   // AP.6: `status` (optional) is what the device panel reads (ArpCore::setStatus).

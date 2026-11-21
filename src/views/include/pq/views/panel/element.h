@@ -286,7 +286,8 @@ public:
   virtual void focusLost(PanelTarget& /*t*/) {}
   virtual ui::Cursor cursor() const noexcept { return interactive() ? ui::Cursor::Pointer : ui::Cursor::Inherit; }
   virtual void describe(const PanelTarget& t, std::string& title, std::string& body) const;
-  // Its value as a visibility source (a tabs / menu element: the index; a toggle: 0 / 1); nullopt: it is none.
+  // Its value as a visibility source (a tabs / menu element: the index; a toggle: 0 / 1; AP.8b: a number: its value in
+  // its units); nullopt: it is none.
   virtual std::optional<double> selection(const PanelTarget& /*t*/) const { return std::nullopt; }
   // An unbound selection's own state (tabs: kept by the face across rebuilds of the panel).
   virtual void setLocalSelection(double /*v*/) {}

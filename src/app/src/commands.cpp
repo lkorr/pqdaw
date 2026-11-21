@@ -39,6 +39,7 @@
 #include "pq/views/view_scenes.h"
 #include "pq/app/bug_reporter.h"
 #include "pq/app/pipeline_cache.h"
+#include "pq/app/note_stage_render.h"
 #include "pq/app/project_link.h"
 #include "pq/document/devices.h"
 #include "pq/app/startup.h"
@@ -64,6 +65,7 @@ int runScreenshot(const CliOptions& o) {
     if (lib) devices = std::move(*lib);
     else std::fprintf(stderr, "pqdaw: device library: %s\n", lib.error().message.c_str());
   }
+  if (view) views::setSceneNotePreviewSource(notePreviewSource());  // AP.8b: the arp preview scene's real render
   auto img = view ? views::renderViewScene(o.scene, o.project, w, h, scale, {}, devices.get())
                   : renderSceneImage(o.scene, w, h, {}, scale);
   if (!img) {

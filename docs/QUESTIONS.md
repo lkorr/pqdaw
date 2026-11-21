@@ -2387,3 +2387,18 @@ freed by every post and by ProjectLink::collect); a producer's retune is absolut
 (4) The ratio of a generated note rides in its float Hz (E = hz / hz₀ in the node): exact to float32, the integers stay
 in ArpExact. (5) A tempo edit re-times the sounding notes' remaining gate by the ratio of the last and this block's
 snapshot bpm (exact for step tempos; a ramp is approximated over the remaining gate). Status: open.
+
+## Q?-AP.8b-a · 2026-11-21 · AP.8b · Flatten: what it covers, what it refuses, what the preview leaves out
+Context: review H3 / M5 / M6 / M7 asked Flatten to write exactly what plays. Chosen (reversible): (1) AUTOMATION of the
+devices' params is followed (the lanes on their slot keys, read once per block as playback does); a hand OVERRIDE of a
+lane ("Re-enable Automation" pending) is not known offline: the render follows the lane. (2) A CABLE into a device param
+(lane steps included) cannot be reproduced offline — its value comes from the audio graph (free LFO phase, envelopes,
+other tracks) — so Flatten REFUSES while one exists ("a cable modulates <device> <param> …") and the preview draws
+without it. (3) M6: a deactivated (muted) main-lane clip is flattened as it would play unmuted, in a second render
+pass of the muted clips alone (cross-clip arp state between a muted clip and its active neighbours is not modelled;
+clips do not overlap and a tail is cut at its clip's end anyway); it stays muted. Take lanes: Flatten REFUSES while one
+holds notes (no note edit reaches a take lane, and switching the devices off would change how they play) — comp or
+delete them first; while a take is auditioned the main lane is what is flattened (it is what the take does not hide).
+(4) M5: a source note is removed when it plays (start in [contentStart, contentStart + length)) or generated a listed
+note; others stay untouched. (5) M7: if the document changes while Flatten renders, it renders again from the new
+document, at most 3 times, then gives up with a status; one Flatten at a time. Status: open.
