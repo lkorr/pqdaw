@@ -116,6 +116,7 @@ enum class ResourceKind : uint8_t { FrameTable, VoiceTap, SignalTap, Sample };  
 struct SampleBinding {
   uint32_t sample = 0;
   std::vector<float> slices;
+  std::vector<float> markers;  // SM.4: warp markers, (frame, beat) pairs
   friend bool operator==(const SampleBinding&, const SampleBinding&) = default;
 };
 struct ResourceRequest {

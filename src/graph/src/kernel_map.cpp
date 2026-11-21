@@ -45,6 +45,9 @@ constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1}
                                   {U::Input, 8},    {U::Input, 9}, {U::Input, 10}};  // fadeIn, fadeOut, units
 constexpr ArgMap kSampleSlice[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1}};  // sample, key, units (SM.2)
 constexpr ArgMap kSamplePos[] = {{U::Resource, 0}, {U::Input, 0}};                      // sample, pos
+constexpr ArgMap kSamplerWarp[] = {{U::Resource, 0}, {U::Input, 0},  {U::Input, 1},  {U::Input, 2},  {U::Input, 3},
+                                   {U::Input, 4},    {U::Input, 5},  {U::Input, 6},  {U::Input, 7},  {U::Input, 8},
+                                   {U::Input, 9},    {U::Input, 10}, {U::Input, 11}, {U::Input, 12}, {U::Input, 13}};
 constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // degree, equave, hz,
                                 {U::Input, 4}, {U::Input, 5}, {U::Input, 6}, {U::Input, 7},  // cents, generator, period,
                                 {U::Resource, 0},                                            // stretch, reference, table,
@@ -88,6 +91,7 @@ constexpr Special kSpecial[] = {
     {"sample_pos_cubic", kSamplePos},
     {"sample_slice", kSampleSlice},
     {"sample_scrub", kSamplePos},  // sample, pos
+    {"sampler_warp", kSamplerWarp},  // SM.4
     {"tuning_hz", kTuningHz},
     {"gain", kGain},
     {"gain_add", kGainAdd},

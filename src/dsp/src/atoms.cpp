@@ -135,6 +135,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // SM.2 (kernels_sample.cpp): sample_slice (key, units) → (start, end); sample_scrub (pos) → (out, right).
     {"sample_slice", 2, 2, false, false, 0, 0, kB0 | kB1, 0, 0, Resource::Sample, false},  // (any mask: control regions)
     {"sample_scrub", 1, 2, false, false, 0, 0, kB0, 0, sizeof(SampleScrubState), Resource::Sample, false},
+    // SM.4 (kernels_sampler_warp.cpp): rate, reset, then 12 param-rate inputs → out, playing, right, pos.
+    {"sampler_warp", 14, 4, false, false, kB1, kB1, kB0 | kB1, 0x3FFCu, sizeof(SamplerWarpState), Resource::Sample,
+     false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -228,7 +231,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::Wavetable:
     case Atom::SampleReadLinear:
     case Atom::SampleReadCubic:
-    case Atom::SampleScrub: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
+    case Atom::SampleScrub:
+    case Atom::SamplerWarp: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};

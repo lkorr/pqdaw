@@ -65,6 +65,7 @@ struct SampleSource {
   SampleLevelView level[kSampleSlotLevels]{};
   double fileRate = 48000.0;  // the sample's frames per second
   std::vector<float> slices;  // slice start frames (sample_slice); sanitised by publish (sorted, in [0, length))
+  std::vector<float> markers;  // SM.4: warp markers, (frame, beat) pairs (sampler_warp); sanitised by publish
 };
 
 class SampleSlot {
@@ -77,12 +78,14 @@ public:
     double fileRate = 48000.0;       // the sample's frames per second (units 1: fades in seconds of the file)
     const float* slices = nullptr;   // sliceCount start frames, ascending, in [0, length)
     uint32_t sliceCount = 0;
+    const float* markers = nullptr;  // SM.4: markerCount (frame, beat) pairs, both strictly ascending
+    uint32_t markerCount = 0;
     uint64_t generation = 0;         // 1 for the initial entry, +1 per publish
     std::atomic<const Entry*> prev{nullptr};
     mutable std::atomic<uint32_t> touched{0};  // kernels: 1 when read in a call (non-newest entries only)
     // publish()/sweep() only (writeMutex_):
     std::shared_ptr<const void> owner;
-    std::vector<float> sliceStore;
+    std::vector<float> sliceStore, markerStore;
     std::chrono::steady_clock::time_point superseded{}, lastRead{};
   };
 
@@ -140,7 +143,7 @@ public:
                                                          uint32_t mipLevels = 0);
   // A source of this data at file rate `fileRate` (the owner is `self`).
   static SampleSource source(const std::shared_ptr<const SampleData>& self, double fileRate,
-                             std::vector<float> slices = {});
+                             std::vector<float> slices = {}, std::vector<float> markers = {});
   uint32_t channels() const noexcept { return channels_; }
   uint32_t levels() const noexcept { return levels_; }
   const SampleLevelView& level(uint32_t l) const noexcept { return level_[l]; }

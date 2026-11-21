@@ -162,6 +162,22 @@ constexpr PortSpec pSampleSliceOut[] = {{"start", kR}, {"end", kR}};
 constexpr PortSpec pSampleScrub[] = {{"sample", kRConst}, {"pos", kR}};
 constexpr PortSpec pSampleScrubOut[] = {{"out", kRAudio}, {"right", kRAudio}};
 constexpr PortSpec pSamplePos[] = {{"sample", kRConst}, {"pos", kR}};
+// SM.4: sampler_warp (pq/dsp/atoms.h): a Beats / Tones / Texture voice per lane; rate per sample, the rest per block.
+constexpr PortSpec pSamplerWarp[] = {{"sample", kRConst},  // (rate is read at its own sample: not delayed)
+                                     {"rate", kR},
+                                     {"reset", kB, true, 0.0f},
+                                     {"start", kRParamBound, true, 0.0f},
+                                     {"end", kRParamBound, true, 1.0f},
+                                     {"loopStart", kRParamBound, true, 0.0f},
+                                     {"loopEnd", kRParamBound, true, 0.0f},
+                                     {"bpm", kRParamBound, true, 120.0f},
+                                     {"sampleBpm", kRParamBound, true, 120.0f},
+                                     {"mode", kRConst, true, 1.0f},
+                                     {"grain", kRParamBound, true, 0.03f},
+                                     {"flux", kRParamBound, true, 0.0f},
+                                     {"sliceLoop", kRConst, true, 1.0f},
+                                     {"envelope", kRParamBound, true, 100.0f},
+                                     {"sr", kRParamBound, true, 48000.0f}};
 constexpr PortSpec pReduce[] = {{"x", kAny}};
 constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
 constexpr PortSpec pMulAdd[] = {{"a", kR}, {"b", kR}, {"c", kR}};
@@ -430,6 +446,8 @@ const AtomSignature kAtoms[] = {
      "the slice of key (slice n = key − 36) in the sample's slice table: its start and end frames (units 1: 0 … 1)"},
     {"sample_scrub", C::Sample, pSampleScrub, pSampleScrubOut, sizeof(dsp::SampleScrubState), kStateful, 0, {},
      "stereo read at position pos (0 … 1 of the sample), the mip level from its slope"},
+    {"sampler_warp", C::Sample, pSamplerWarp, pSampleReadOut, sizeof(dsp::SamplerWarpState), kStateful, 0, {},
+     "stereo Beats / Tones / Texture playback of the sample at its own pitch × rate, following bpm from the reset"},
     {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},

@@ -202,6 +202,22 @@
 //                                     frames): [slices[n], slices[n + 1] or the length); no table: slice 0 is the
 //                                     whole sample; out of range (or NaN): start = end = 0 (a read from it never
 //                                     plays). units as sample_read's.
+//   sampler_warp (rate, reset, start, end, loopStart, loopEnd, bpm, sampleBpm, mode, grain, flux, sliceLoop,
+//                 envelope, sr) → (out, playing, right, pos)
+//                                     SM.4: a dsp::WarpVoice per lane (pq/dsp/warp_voice.h): Beats (mode 0) / Tones (1)
+//                                     / Texture (2) over the slot's entry from the lane's last reset (a high reset
+//                                     restarts it at that sample on the newest entry, as sample_read). The content
+//                                     follows the tempo from the reset: content beats = bpm / 60 per second since then
+//                                     (re-anchored at tempo changes only) through the entry's markers (none: sampleBpm
+//                                     beats per minute of the file) to a source frame; the pitch is rate × the entry's
+//                                     rate scale, integrated per sample (glides move every grain / slice reader
+//                                     continuously). start, end, loopStart, loopEnd in [0, 1] of the sample (loopEnd >
+//                                     loopStart: the content loops there, the end ignored; else it stops at end with a
+//                                     2 ms fade, playing false after it). grain s (Tones / Texture, taken at the reset),
+//                                     flux % (Texture), sliceLoop 0 Off / 1 Forward / 2 Back-Forward and envelope %
+//                                     (Beats; the slices are the entry's slice table). Cubic reads, the mip level per
+//                                     grain / slice from its rate at its start. pos: where the content is, in [0, 1].
+//                                     Everything after reset must be Spl.
 //   sample_scrub (pos) → (out, right)  (cubic) a read of the newest entry at pos ∈ [0, 1] of its length (outside: 0),
 //                                     both channels, at the mip level of the block's fastest |Δpos| · length per sample.
 // Cubic = 4-point, 3rd-order Hermite (Catmull-Rom); linear = 2-point.
@@ -370,6 +386,8 @@ enum class Atom : uint16_t {
   Atan2,
   // SM.2: the sampler's slice lookup and scrub read (see "Tables" above; appended)
   SampleSlice, SampleScrub,
+  // SM.4: the Sampler's Beats / Tones / Texture voice (see "Tables" above; appended)
+  SamplerWarp,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

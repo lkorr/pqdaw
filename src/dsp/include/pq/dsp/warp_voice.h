@@ -130,13 +130,16 @@ struct WarpSliceParams {
 };
 
 // Per-call buffers: gain ≥ the run's frames; corrA ≥ kWarpMaxAlignLen + 64, corrB ≥ kWarpMaxAlignLen +
-// 2·kWarpMaxAlignLags + 64 (Tones' alignment).
+// 2·kWarpMaxAlignLags + 64 (Tones' alignment); gather (WarpVoice only): 2 × kWarpGatherFrames (alignment reads past
+// a resident sample's guards, zero-padded).
 inline constexpr uint32_t kWarpMaxAlignLen = 2048;  // Tones: source frames compared per grain at most
 inline constexpr uint32_t kWarpMaxAlignLags = 960;  // Tones: ± source frames searched at most
+inline constexpr uint32_t kWarpGatherFrames = 4096;
 struct WarpScratch {
   float* gain = nullptr;
   float* corrA = nullptr;
   float* corrB = nullptr;
+  float* gather = nullptr;
 };
 
 // Tones' alignment and Texture's jitter for a grain of hop H at rate r (audio_sequence.cpp's rule): Tones aligns when

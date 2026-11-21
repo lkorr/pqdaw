@@ -106,7 +106,8 @@ struct Render {
 // Renders `frames` frames in blocks of `block` with the slot as resource 1. `between`: called before each block (off
 // the audio side: publishes).
 Render render(const Rig& rig, compile::Backend backend, dsp::SampleSlot& slot, uint64_t frames, uint32_t block,
-              const Score& score, double bpm = 120.0, const std::function<void(uint64_t)>& between = {}) {
+              const Score& score, double bpm = 120.0, const std::function<void(uint64_t)>& between = {},
+              const std::function<double(uint64_t)>& bpmAt = {}) {
   const dsp::SampleSlot* views[2] = {nullptr, &slot};
   engine::Resources res;
   res.samples = views;
@@ -141,7 +142,7 @@ Render render(const Rig& rig, compile::Backend backend, dsp::SampleSlot& slot, u
     ctx.frames = n;
     ctx.sampleRate = kSr;
     ctx.sampleTime = static_cast<int64_t>(t0);
-    ctx.transport.bpm = bpm;
+    ctx.transport.bpm = bpmAt ? bpmAt(t0) : bpm;
     ctx.transport.playing = true;
     ctx.out = outs;
     ctx.numOut = 3;
@@ -300,30 +301,36 @@ TEST_CASE("sampler: registered; inputs, params, settings; every setting combinat
   REQUIRE_MESSAGE(parsed.ok(), (parsed.ok() ? std::string() : parsed.error().message));
   REQUIRE(parsed->patches.size() == 1);
   CHECK(parsed->patches[0] == a.patch);
-  auto readId = [](const Expansion& e) {
+  auto readId = [](const Expansion& e, std::string_view atom) {
     for (graph::NodeIndex n = 0; n < e.patch.nodeCount(); ++n)
-      if (e.patch.node(n).kind == graph::NodeKind::Atom &&
-          graph::atomSignature(e.patch.node(n).atom).name == "sample_read_cubic")
+      if (e.patch.node(n).kind == graph::NodeKind::Atom && graph::atomSignature(e.patch.node(n).atom).name == atom)
         return e.patch.node(n).id.value;
     return 0u;
   };
   std::vector<uint64_t> keys;
   for (double mode : {0.0, 1.0, 2.0})
-    for (double warp : {0.0, 1.0})
+    for (double warp : {0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0})
       for (double loop : {0.0, 1.0, 2.0})
         for (double trig : {0.0, 1.0})
           for (bool voice : {false, true}) {
-            const std::vector<double> s = {mode, warp, loop, trig};
+            // SM.4: the Beats loop setting only matters for Beats (one more combination there).
+            for (double beatsLoop : warp == 2.0 && mode != 2.0 ? std::vector<double>{1.0, 2.0} : std::vector<double>{1.0}) {
+            const std::vector<double> s = {mode, warp, loop, trig, beatsLoop};
             ExpandContext x;
             x.settings = s;
             x.voice = voice;
             const Expansion e = mustExpand(x);
-            CHECK(readId(e) == kBodyIdBase + 0);
-            keys.push_back(e.key);
+            // SM.4: Off / Re-Pitch (and Slice) read through sample_read (its id fixed), the stretch modes sampler_warp.
+            const bool stretch = mode != 2.0 && warp >= 2.0;
+            CHECK(readId(e, "sample_read_cubic") == (stretch ? 0u : kBodyIdBase + 0));
+            CHECK(readId(e, "sampler_warp") == (stretch ? kBodyIdBase + 5 : 0u));
+            // (Complex / Pro expand as Tones; Slice ignores 2 … 6: the same graphs, not new keys.)
+            if (warp < 5.0 && !(mode == 2.0 && warp >= 2.0)) keys.push_back(e.key);
             // The text form parses back to the same graph.
             auto p = graph::parse(graph::print(e.patch), "x.pqp");
             REQUIRE(p.ok());
             CHECK(p->patches[0] == e.patch);
+            }
           }
   std::sort(keys.begin(), keys.end());
   CHECK(std::adjacent_find(keys.begin(), keys.end()) == keys.end());
@@ -563,6 +570,96 @@ TEST_CASE("sampler: 10 000 blocks of note-ons, sample swaps and slice publishes 
           });
       CHECK(r.rtViolations == 0);
       CHECK(publishes >= 199);
+      bool sounded = false;
+      for (const float x : r.l) sounded = sounded || x != 0.0f;
+      CHECK(sounded);
+    }
+  }
+}
+
+// ---- SM.4: Beats / Tones / Texture (sampler_warp; the voice itself: tests/dsp/test_warp_voice.cpp) -------------------
+
+TEST_CASE("sampler warp: Beats / Tones / Texture render the same at blocks 32 / 64 / 512 / 37 and on both backends") {
+  Sample smp(48000, 44100.0, {0.0f, 5000.0f, 11000.0f, 17000.0f, 26000.0f, 33000.0f, 41000.0f});
+  // The note on from frame 0 to 18 944 (= 512 · 37: on every block grid), the tempo and pitch constant (per block they
+  // would land on different samples); the glides are per sample in the voice test.
+  const Score score = [](uint64_t t) {
+    Drive d;
+    d.gate = t < 18944;
+    d.hz = kRoot * 1.25f;
+    return d;
+  };
+  const uint64_t N = 30000;
+  for (const double warp : {2.0, 3.0, 4.0})
+    for (const double mode : {0.0, 1.0}) {
+      CAPTURE(warp);
+      CAPTURE(mode);
+      const Rig rig = compileRig({mode, warp, 1.0, 0.0, 2.0},
+                                 ", start: 0.05, end: 0.6, loopStart: 0.3, loopLength: 0.25, sampleBpm: 100, grain: 0.04, "
+                                 "flux: 35, envelope: 80");
+      const Render ref = render(rig, compile::Backend::Interpreter, smp.slot, N, 64, score, 133.0);
+      const Render jit = render(rig, compile::Backend::Jit, smp.slot, N, 64, score, 133.0);
+      CHECK(jit.l == ref.l);
+      CHECK(jit.r == ref.r);
+      CHECK(jit.g == ref.g);
+      for (const uint32_t block : {32u, 512u, 37u}) {
+        CAPTURE(block);
+        CHECK(render(rig, compile::Backend::Interpreter, smp.slot, N, block, score, 133.0).l == ref.l);
+        CHECK(render(rig, compile::Backend::Jit, smp.slot, N, block, score, 133.0).r == ref.r);
+      }
+      double peak = 0.0;
+      for (float x : ref.l) peak = std::max(peak, static_cast<double>(std::abs(x)));
+      CHECK(peak > 0.2);
+      // Classic loops (its gate out follows the note; the envelope after it releases the voice); One-Shot plays to its
+      // end (0.55 of the 1.09 s sample at 133 / 100 BPM ≈ 0.45 s: before N) and stops.
+      CHECK(ref.g[100] == 1.0f);
+      CHECK(ref.g[N - 1] == 0.0f);
+      if (mode == 0.0) CHECK(ref.l[N - 1] != 0.0f);
+      else CHECK(ref.l[N - 1] == 0.0f);
+    }
+}
+
+TEST_CASE("sampler warp: Complex / Complex Pro play as Tones until SM.5 (the same render)") {
+  Sample smp(30000, 48000.0);
+  const Score score = [](uint64_t t) {
+    Drive d;
+    d.gate = t < 12000;
+    return d;
+  };
+  const std::string call = ", grain: 0.05, sampleBpm: 90";
+  const Render tones = render(compileRig({0.0, 3.0, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, 20000, 64, score);
+  for (const double warp : {5.0, 6.0})
+    CHECK(render(compileRig({0.0, warp, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, 20000, 64, score).l == tones.l);
+  // Off and Re-Pitch keep sample_read (SM.2's path): different from the stretch.
+  CHECK(render(compileRig({0.0, 1.0, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, 20000, 64, score).l != tones.l);
+}
+
+TEST_CASE("sampler warp: 10 000 blocks of note-ons, tempo changes and sample swaps allocate nothing (RtScope)") {
+  REQUIRE(alloc_trap::installed());
+  Sample smp(24000, 44100.0, {0.0f, 3000.0f, 9000.0f, 15000.0f});
+  auto other = dsp::SampleData::build(tone(9000, 13.0, 0.4)).value();  // mono
+  for (const double warp : {2.0, 3.0, 4.0}) {
+    CAPTURE(warp);
+    const Rig rig = compileRig({0.0, warp, 1.0, 1.0, 1.0}, ", loopStart: 0.2, loopLength: 0.5, grain: 0.02, flux: 50");
+    for (const auto backend : {compile::Backend::Interpreter, compile::Backend::Jit}) {
+      const Render r = render(rig, backend, smp.slot, 10000ull * 37, 37,
+          [](uint64_t t) {
+            Drive d;
+            d.gate = (t / 37) % 9 < 6;  // a note-on every 9 blocks
+            d.hz = static_cast<float>(200.0 + (t / 37) % 250);
+            return d;
+          },
+          120.0,
+          [&](uint64_t t0) {
+            const uint64_t b = t0 / 37;
+            if (b % 400 == 123)
+              REQUIRE(smp.slot.publish(b % 800 == 123 ? dsp::SampleData::source(other, 22050.0, {0.0f, 4000.0f})
+                                                      : dsp::SampleData::source(smp.data, 44100.0, {0.0f, 6000.0f}),
+                                       kSr, smp.reclaimer).ok());
+            if (b % 400 == 300) smp.slot.sweep(smp.reclaimer);
+          },
+          [](uint64_t t0) { return 70.0 + static_cast<double>((t0 / 37 / 50) % 9) * 15.0; });  // a tempo change every 50 blocks
+      CHECK(r.rtViolations == 0);
       bool sounded = false;
       for (const float x : r.l) sounded = sounded || x != 0.0f;
       CHECK(sounded);

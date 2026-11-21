@@ -71,6 +71,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "truepeak",
       // SM.2: the Sampler's slice lookup and scrub read.
       "sample_slice", "sample_scrub",
+      // SM.4: the Sampler's Beats / Tones / Texture voice.
+      "sampler_warp",
   };
   for (const char* n : names) {
     CAPTURE(n);

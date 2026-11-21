@@ -2468,3 +2468,27 @@ Context: SM.10 (docs/plans/SM.md "Face (👁)" Closed). Choices (most reversible
    modulation ring (the Travel wire), even while the LFO is off.
 5. **Hidden = not on the canvas** (scrolled off, the view hidden, a retired face). The Device view's host says nothing,
    so a Sampler shown there keeps its tap read while the panel exists.
+
+## Q?-SM.4-a · Sampler warp (sampler_warp / dsp::WarpVoice): readings taken where the plan left room
+Context: SM.4 (docs/plans/SM.md "Semantics", "SM.4"). Choices (most reversible):
+1. **Complex / Complex Pro play as Tones** (the same render, tested) until SM.5. The panel has no warp control yet (SM.11),
+   so the fallback is stated in pq/meta/sampler.h and here only.
+2. **Slice mode ignores Beats … Complex Pro** (its slices play at their recorded pitch, unwarped); Re-Pitch keeps SM.2's
+   `(bpm / sampleBpm) · hz / root` sample_read path, so Off / Re-Pitch keep today's cost.
+3. **Loops in the stretch modes** fold the content in beats (Classic, loop on); Ping-pong loops forward; loop fade and
+   One-Shot fades in / out do not apply (Beats' crossfades and the 2 ms end fade do).
+4. **Reads are cubic** (sample_read's interpolator), not the clip's 64-tap sinc: the Sampler's quality everywhere else.
+   The mip level is per grain / slice from its rate at its start, so a fast upward glide inside one long slice aliases
+   until the next slice.
+5. **Beats in the clock form** (per sample, source frames since the entry) is a second implementation of the pass geometry:
+   the clip keeps its closed form (bit-identical renders). The next slice's entry is predicted from the current tempo
+   each run and fixed once reached.
+6. **Markers' law**: no markers = sampleBpm; one marker = sampleBpm through it; beyond the ends the end segments continue.
+7. **Tempo is per block** (transport.bpm): a tempo change lands on a block boundary, so renders match across block sizes
+   at a constant tempo (or a change on a shared boundary), as any param-rate input.
+8. Grain size is taken at the trigger (the grain grid is the voice's); a retrigger restarts hard (as sample_read); no
+   reverse.
+9. Cost (ship, bench/RESULTS.md SM.4): Tones ≈ the clip's Tones per voice; Beats / Texture ≈ 10 – 17 ns per voice-frame
+   (the clip's copy paths are ≈ 1.3 ns: the per-sample clock form and the kernel's per-lane gather / scatter). The
+   kernel's scratch (≈ 58 KiB, Tones' alignment) is on the audio thread's stack. Status: open.
+

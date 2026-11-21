@@ -69,6 +69,20 @@ Status SampleSlot::publish(SampleSource src, double engineRate, EpochReclaimer& 
     s.erase(std::unique(s.begin(), s.end()), s.end());
     e->slices = s.empty() ? nullptr : s.data();
     e->sliceCount = static_cast<uint32_t>(s.size());
+    // SM.4: warp markers (frame, beat) pairs: finite, sorted by frame, both strictly ascending (a pair that is not is
+    // dropped).
+    std::vector<std::pair<float, float>> pairs;
+    for (size_t i = 0; i + 1 < src.markers.size(); i += 2)
+      if (std::isfinite(src.markers[i]) && std::isfinite(src.markers[i + 1])) pairs.emplace_back(src.markers[i], src.markers[i + 1]);
+    std::sort(pairs.begin(), pairs.end());
+    std::vector<float>& m = e->markerStore;
+    for (const auto& [f, b] : pairs)
+      if (m.empty() || (f > m[m.size() - 2] && b > m.back())) {
+        m.push_back(f);
+        m.push_back(b);
+      }
+    e->markers = m.empty() ? nullptr : m.data();
+    e->markerCount = static_cast<uint32_t>(m.size() / 2);
     e->owner = std::move(src.owner);
   }
   std::lock_guard lock(writeMutex_);
@@ -164,7 +178,7 @@ Result<std::shared_ptr<const SampleData>> SampleData::build(std::span<const floa
 }
 
 SampleSource SampleData::source(const std::shared_ptr<const SampleData>& self, double fileRate,
-                                std::vector<float> slices) {
+                                std::vector<float> slices, std::vector<float> markers) {
   SampleSource s;
   s.owner = self;
   s.channels = self->channels_;
@@ -172,6 +186,7 @@ SampleSource SampleData::source(const std::shared_ptr<const SampleData>& self, d
   for (uint32_t l = 0; l <= self->levels_; ++l) s.level[l] = self->level_[l];
   s.fileRate = fileRate;
   s.slices = std::move(slices);
+  s.markers = std::move(markers);
   return s;
 }
 

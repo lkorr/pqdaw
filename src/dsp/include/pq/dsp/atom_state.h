@@ -231,6 +231,12 @@ struct alignas(32) SampleReadState {
 struct alignas(32) SampleScrubState {
   float prev[8];
 };
+// SM.4: sampler_warp: per lane a dsp::WarpVoice (pq/dsp/warp_voice.h) and the generation of the slot entry it plays,
+// stored as words interleaved by lane (w[word][lane]: LaneState::PerLane over the whole struct).
+inline constexpr uint32_t kSamplerWarpWords = 104;
+struct alignas(32) SamplerWarpState {
+  uint32_t w[kSamplerWarpWords][8];
+};
 
 // TMM.6: oversample_up / oversample_down (pq/dsp/oversample.h): per allpass of the half-band cascade its previous
 // output, per stage and path the path's previous input (18 allpasses over 4 stages; a lower factor uses the first
@@ -388,6 +394,7 @@ static_assert(sizeof(WavetableLiveState) == 672);
 static_assert(sizeof(WavetableShapeState) == 160);
 static_assert(sizeof(SampleReadState) == 160);
 static_assert(sizeof(SampleScrubState) == 32);
+static_assert(sizeof(SamplerWarpState) == kSamplerWarpWords * 32);
 static_assert(sizeof(ParamRampState) == 160);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 

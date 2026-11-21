@@ -23,7 +23,7 @@ using pq::dsp::Atom;
 TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   REQUIRE(pq::alloc_trap::installed());
   constexpr uint32_t kFrames = 67;  // not a multiple of 8: exercises the scalar tails too
-  constexpr uint32_t kMaxIn = 12, kMaxOut = 4;  // noise_step has 12 inputs (NZ.1)
+  constexpr uint32_t kMaxIn = 14, kMaxOut = 4;  // sampler_warp has 14 inputs (SM.4)
 
   // Resources and buffers are built outside the RtScope (that allocates by design).
   const auto cycle = pq::dsp::Wavetable::basicCycle(pq::dsp::BasicShape::Saw, 256);

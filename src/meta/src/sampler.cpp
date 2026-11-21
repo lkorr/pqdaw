@@ -28,18 +28,22 @@ constexpr std::array<ParamSpec, kSmpParams> kParams = {{
     {"sampleBpm", "Sample BPM", 120.0, 20.0, 999.0},
     {"fadeIn", "Fade in", 0.0, 0.0, 2.0, graph::Unit::s},
     {"fadeOut", "Fade out", 0.0, 0.0, 2.0, graph::Unit::s},
+    {"grain", "Grain size", 0.03, 0.001, 0.5, graph::Unit::s},
+    {"flux", "Flux", 0.0, 0.0, 100.0},
+    {"envelope", "Transient envelope", 100.0, 0.0, 100.0},
 }};
 constexpr std::array<SettingSpec, kSmpSettings> kSettings = {{
     {"mode", "Mode", 0.0, 0.0, 2.0, 3},        // Classic, One-Shot, Slice
-    {"warp", "Warp", 0.0, 0.0, 1.0, 2},        // Off, Re-Pitch
+    {"warp", "Warp", 0.0, 0.0, 6.0, 7},        // Off, Re-Pitch, Beats, Tones, Texture, Complex, Complex Pro
     {"loop", "Loop", 1.0, 0.0, 2.0, 3},        // Off, Forward, Ping-pong
     {"trigger", "Trigger", 0.0, 0.0, 1.0, 2},  // Trigger, Gate
+    {"beatsLoop", "Transient loop", 1.0, 0.0, 2.0, 3},  // SM.4 Beats: Off, Forward, Back-Forward
 }};
 constexpr std::array<OutputSpec, 2> kOutputs = {{{"out", graph::kWidthStereo}, {"gateOut", graph::kWidthMono}}};
 
 // Body node ids: the stateful nodes fixed (their state keys survive every re-expansion, a setting change included);
 // the rest in build order from kSeq.
-enum : uint32_t { kRead, kRise, kSlice, kScrub, kTap, kSeq = 16 };
+enum : uint32_t { kRead, kRise, kSlice, kScrub, kTap, kWarp, kSeq = 16 };
 
 class Body {
 public:
@@ -68,7 +72,11 @@ Status body(Builder& bld) {
   using P = Builder::PortRef;
   Body b(bld);
   const auto mode = static_cast<SamplerMode>(choice(bld.setting(kSmpMode), 3));
-  const bool repitch = choice(bld.setting(kSmpWarp), 2) == 1;
+  const auto warp = static_cast<SamplerWarp>(choice(bld.setting(kSmpWarp), 7));
+  const bool repitch = warp == SamplerWarp::RePitch;
+  // SM.4: Beats / Tones / Texture play through sampler_warp (Complex / Complex Pro: Tones until SM.5); Slice keeps its
+  // own path (its slices play at their recorded pitch, unwarped).
+  const bool stretch = mode != SamplerMode::Slice && warp >= SamplerWarp::Beats;
   const uint32_t loop = choice(bld.setting(kSmpLoop), 3);
   const bool gateMode = choice(bld.setting(kSmpTrigger), 2) == 1;
   const P slot = b.named(bld.slot(0), "sample");  // (read by several atoms: named, as the text form needs)
@@ -93,35 +101,55 @@ Status body(Builder& bld) {
                                    b.op("div", {hzIn, b.op("max", {noteHz, b.k(1e-6)})}), b.k(1.0)});
     rate = b.op("mul", {ratio, bend});
   }
-  if (repitch) rate = b.op("mul", {rate, b.op("div", {b.op("transport.bpm", {}), bld.param(kSmpSampleBpm)})});
+  if (repitch && !stretch) rate = b.op("mul", {rate, b.op("div", {b.op("transport.bpm", {}), bld.param(kSmpSampleBpm)})});
   const P trig = bld.atom("rise", {gate}, kRise);
   // The region: Classic start → end with its loop; One-Shot start → end; Slice the key's slice.
   P start = bld.param(kSmpStart), end = bld.param(kSmpEnd);
   P loopStart, loopEnd, fade, pingpong, fadeIn, fadeOut;
   const bool looping = mode == SamplerMode::Classic && loop != 0;
-  if (looping) {
-    loopStart = bld.param(kSmpLoopStart);
-    loopEnd = b.op("min", {b.op("add", {loopStart, bld.param(kSmpLoopLength)}), b.k(1.0)});
-    fade = bld.param(kSmpLoopFade);
-    pingpong = b.k(loop == 2 ? 1.0 : 0.0);
-  } else {
-    loopStart = b.k(0.0), loopEnd = b.k(0.0), fade = b.k(0.0), pingpong = b.k(0.0);
-  }
-  if (mode == SamplerMode::Classic) {
-    fadeIn = b.k(0.0), fadeOut = b.k(0.0);
-  } else {
-    fadeIn = bld.param(kSmpFadeIn);
-    fadeOut = bld.param(kSmpFadeOut);
-    if (mode == SamplerMode::Slice) {
-      const P s = b.named(bld.atom("sample_slice", {slot, bld.input(kSmpKey), b.k(1.0)}, kSlice), "slice");
-      start = s;
-      end = P{s.node, 1};
+  P rd;
+  if (stretch) {
+    // SM.4: the voice's content follows the song's tempo from its trigger; the pitch is the rate (hz / root ×
+    // transpose). Loop: Classic's (ping-pong loops forward: warp_voice.h loops the content's beats).
+    const double wm = warp == SamplerWarp::Beats ? 0.0 : warp == SamplerWarp::Texture ? 2.0 : 1.0;
+    if (looping) {
+      loopStart = bld.param(kSmpLoopStart);
+      loopEnd = b.op("min", {b.op("add", {loopStart, bld.param(kSmpLoopLength)}), b.k(1.0)});
+    } else {
+      loopStart = b.k(0.0), loopEnd = b.k(0.0);
     }
+    rd = b.named(bld.atom("sampler_warp",
+                          {slot, rate, trig, start, end, loopStart, loopEnd, b.op("transport.bpm", {}),
+                           bld.param(kSmpSampleBpm), b.k(wm), bld.param(kSmpGrain), bld.param(kSmpFlux),
+                           b.k(static_cast<double>(choice(bld.setting(kSmpBeatsLoop), 3))), bld.param(kSmpEnvelope),
+                           b.op("sr", {})},
+                          kWarp),
+                 "rd");
+  } else {
+    if (looping) {
+      loopStart = bld.param(kSmpLoopStart);
+      loopEnd = b.op("min", {b.op("add", {loopStart, bld.param(kSmpLoopLength)}), b.k(1.0)});
+      fade = bld.param(kSmpLoopFade);
+      pingpong = b.k(loop == 2 ? 1.0 : 0.0);
+    } else {
+      loopStart = b.k(0.0), loopEnd = b.k(0.0), fade = b.k(0.0), pingpong = b.k(0.0);
+    }
+    if (mode == SamplerMode::Classic) {
+      fadeIn = b.k(0.0), fadeOut = b.k(0.0);
+    } else {
+      fadeIn = bld.param(kSmpFadeIn);
+      fadeOut = bld.param(kSmpFadeOut);
+      if (mode == SamplerMode::Slice) {
+        const P s = b.named(bld.atom("sample_slice", {slot, bld.input(kSmpKey), b.k(1.0)}, kSlice), "slice");
+        start = s;
+        end = P{s.node, 1};
+      }
+    }
+    rd = b.named(bld.atom("sample_read_cubic",
+                          {slot, rate, trig, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, b.k(1.0)},
+                          kRead),
+                 "rd");
   }
-  const P rd = b.named(bld.atom("sample_read_cubic",
-                                {slot, rate, trig, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, b.k(1.0)},
-                                kRead),
-                       "rd");
   P l = rd, r = P{rd.node, 2};
   const P playing = P{rd.node, 1};
   // A wired position reads the sample there directly (an unwired one folds this away).
@@ -184,7 +212,10 @@ std::vector<uint32_t> sampleRefs(const DataValue& data) {
 
 SampleBinding sampleBinding(const DataValue* data, uint32_t index) {
   if (index != 0) return {};
-  return SampleBinding{samplerSample(data), samplerSlices(data)};
+  SampleBinding b{samplerSample(data), samplerSlices(data), {}};
+  if (data != nullptr)
+    if (const DataValue* m = data->field("markers"); m != nullptr && m->kind == DataValue::Kind::Floats) b.markers = m->floats;
+  return b;
 }
 
 Type makeType() {

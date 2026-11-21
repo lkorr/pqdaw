@@ -462,6 +462,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
   SOURCES
     dsp/test_atoms_math_logic.cpp
     dsp/test_warp_kernels.cpp  # T6.3: the warp kernels (Hann OLA, anchored ramps, best lag, jitter)
+    dsp/test_warp_voice.cpp  # SM.4: the Sampler's warp voice (markers law, tempo drift 0, Tones pitch, glides continuous, call-length identity)
     dsp/test_atoms_memory_gen.cpp
     dsp/test_sample_read.cpp  # SM.2: the sample atoms on live slots (references, generations, slices, scrub)
     dsp/test_delay_fade.cpp  # DT.2: delay_cubic from 1 sample; delay_fade glides within an octave, crossfades beyond
