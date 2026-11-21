@@ -939,7 +939,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SM.1 `voice.key` + `doc::midiKeyOf`** *(merged 22666f08; Q?-SM.1-a; note 72 → 80 bytes, event 56 → 60)* (plan SM.1)
 - [x] **SM.2 Sample slot, pinning, `sample_read` on slots, the `sampler` engine type** *(merged 29a8aad9; Q?-SM.2-a; `key` is an input until SM.1/SM.3 wire voice.key; stereo param-rate Re-Pitch 1.06–1.17 × two old mono reads at 8 voices vs ≤ 1.1 target: borderline, per-call setup)* (plan SM.2)
 - [x] **SM.3 Sampler group preset** *(merged 9026f0f7; Q?-SM.3-a; envelope multiplies after the filter (stereo); lowering accepts wires into bool gate inputs (sum > 0); interp == JIT bit-exact; project-node-menu golden moved)* (plan SM.3)
-- [ ] **SM.4 `dsp::WarpVoice` extraction + `sampler_warp`** (plan SM.4)
+- [x] **SM.4 `dsp::WarpVoice` extraction + `sampler_warp`** *(merged aea66e6c; Q?-SM.4-a; clip renders bit-identical (22 hashes); Complex / Pro play as Tones until SM.5; per-sample slice geometry is a second implementation beside the clip's closed form (Q item 5); Beats 10.5 / Texture 15.2 / Tones 30 ns per voice-frame, ship)* (plan SM.4)
 - [ ] **SM.5 Complex / Complex Pro per voice** (plan SM.5)
 - [ ] **SM.6 `granular` atom + GrainTap** (plan SM.6)
 - [x] **SM.7 Root pitch detection** *(merged b0de5e45; worst 1.57 ¢ on vibrato; 10 min file 8–14 ms)* (plan SM.7)

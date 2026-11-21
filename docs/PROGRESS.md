@@ -1353,3 +1353,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: voice per-sample code untouched; one exp2 per tapered param per block; release arp bench glides row stays ≈ +12 ns over the plain 8-note row (as before; machine shared).
 - Notes/blockers: not checked in the live app; taper choice put to the user in REVIEW.md.
 
+
+## 2026-11-21 · SM.4 · task/SM.4-warp-voice (merged aea66e6c)
+- Did: Beats / Tones / Texture renderers moved into `pq/dsp/warp_voice.h` (templates over a host; ClipPlayer::WarpHost is the first client, Complex stays in the engine). `dsp::WarpVoice`: note-on-anchored law (beats since trigger at transport.bpm → slot markers or sampleBpm → source frame), per-sample pitch rate integrated in 32.32, cubic AVX2 reads. `sampler_warp` atom (interp + JIT) selected by the sampler's 7-way warp setting (Off / Re-Pitch keep SM.2's path); Complex / Pro = Tones until SM.5. Scratch (≈ 57 KiB) in the atom state, not the audio stack.
+- Verified: -Affected -Slow 90/90 (worker, on e5cedb78's parent); clip warp renders bit-identical to 22 FNV hashes from 939bcf57; test_warp_voice (drift 0 over 64 bars at 120 → 97 BPM, glide worst step 1.00× slope, block-size invariance); meta sampler 11/11 (interp == JIT, RtScope 10k blocks). Merge with AP.11 overlaps in docs only; release pqdaw built.
+- Perf / CPU-efficiency check (ship, bench/RESULTS.md): Tones 30 ns / voice-frame (clip 25), +3 st 32.6, glide 34.5; Beats 10.5 (clip closed form 1.09), Texture 15.2 (clip 1.08); per-sample geometry is the cost of glides.
+- Notes/blockers: Q?-SM.4-a (Slice ignores stretch modes; ping-pong / loop fade / One-Shot fades not in stretch modes; cubic not sinc; tempo per block).
