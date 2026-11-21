@@ -1,4 +1,4 @@
-// T6.5: the stretch pool (pq/engine/stretch_pool.h; docs/plans/M6.md T6.5):
+// T6.5: the stretch pool (pq/dsp/stretch_pool.h; docs/plans/M6.md T6.5):
 //   - THE SPIKE: signalsmith-stretch's process() / seek() / reset never allocate on the audio thread: RtScope over 10k
 //     blocks of varying size, time ratio (0.1× .. 8×), transpose (−2 .. +2 octaves) and formant settings, with claims
 //     and releases between them
@@ -14,11 +14,11 @@
 #include <vector>
 
 #include "pq/core/alloc_trap.h"
-#include "pq/engine/stretch_pool.h"
+#include "pq/dsp/stretch_pool.h"
 
 namespace {
 
-namespace e = pq::engine;
+namespace dsp = pq::dsp;
 
 constexpr double kSr = 48000.0;
 
@@ -34,7 +34,7 @@ struct Noise {
 
 TEST_CASE("T6.5 spike: signalsmith-stretch never allocates on the audio thread (10k blocks, varying ratio / pitch)") {
   REQUIRE(pq::alloc_trap::installed());
-  e::StretchPool pool(2, kSr);
+  dsp::StretchPool pool(2, kSr);
   REQUIRE(pool.size() == 2);
   std::vector<float> inL(1 << 16), inR(1 << 16), outL(4096), outR(4096);
   Noise nz;
@@ -53,14 +53,14 @@ TEST_CASE("T6.5 spike: signalsmith-stretch never allocates on the audio thread (
     return (rnd >> 8) % m;
   };
   uint32_t idx = pool.claim(1);
-  REQUIRE(idx != e::StretchPool::kNone);
+  REQUIRE(idx != dsp::StretchPool::kNone);
   for (int block = 0; block < 10000; ++block) {
     const int outN = 16 + static_cast<int>(next(1009));                      // 16 .. 1024 output frames
     const double ratio = 0.1 * std::pow(80.0, next(1000) / 999.0);            // 0.1 .. 8 input frames per output frame
     const int inN = std::min(static_cast<int>(std::lround(outN * ratio)), 8192);
     const auto offset = static_cast<int>(next(static_cast<uint32_t>(inL.size()) - 8192));
     const float* src[2] = {in[0] + offset, in[1] + offset};
-    e::StretchParams p;
+    dsp::StretchParams p;
     p.transpose = std::pow(2.0, (static_cast<double>(next(4801)) - 2400.0) / 1200.0);
     const uint32_t mode = next(4);
     p.compensate = mode >= 2;
@@ -94,18 +94,18 @@ TEST_CASE("T6.5 spike: signalsmith-stretch never allocates on the audio thread (
 }
 
 TEST_CASE("T6.5: the pool claims until exhausted; reseeded claims render identically") {
-  e::StretchPool pool(2, kSr);
+  dsp::StretchPool pool(2, kSr);
   CHECK(pool.latency().input > 0);
   CHECK(pool.latency().output > 0);
   CHECK(pool.memoryBytes() > 0);
   for (const double sr : {44100.0, 48000.0, 96000.0}) {  // the formula the prefetch positions use == the stretcher's
-    const e::StretchPool p1(1, sr);
-    CHECK(p1.latency() == e::StretchPool::latencyFor(sr));
+    const dsp::StretchPool p1(1, sr);
+    CHECK(p1.latency() == dsp::StretchPool::latencyFor(sr));
   }
   const uint32_t a = pool.claim(5), b = pool.claim(5);
-  CHECK(a != e::StretchPool::kNone);
-  CHECK(b != e::StretchPool::kNone);
-  CHECK(pool.claim(5) == e::StretchPool::kNone);
+  CHECK(a != dsp::StretchPool::kNone);
+  CHECK(b != dsp::StretchPool::kNone);
+  CHECK(pool.claim(5) == dsp::StretchPool::kNone);
   CHECK(pool.available() == 0);
   // Both stretchers render a 3× stretch (phase randomisation on) of the same noise: identical.
   std::vector<float> in(48000);
@@ -137,7 +137,7 @@ TEST_CASE("T6.5: the pool claims until exhausted; reseeded claims render identic
 }
 
 TEST_CASE("T6.5: input / output latency: a primed stretcher's output lines up with its input") {
-  e::StretchPool pool(1, kSr);
+  dsp::StretchPool pool(1, kSr);
   const uint32_t i = pool.claim(0);
   const int inLat = pool.latency().input, outLat = pool.latency().output;
   // A click at input frame C. Output frame t should carry input frame origin + t − outLat (the analysis centre); the

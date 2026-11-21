@@ -47,7 +47,8 @@ constexpr ArgMap kSampleSlice[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1
 constexpr ArgMap kSamplePos[] = {{U::Resource, 0}, {U::Input, 0}};                      // sample, pos
 constexpr ArgMap kSamplerWarp[] = {{U::Resource, 0}, {U::Input, 0},  {U::Input, 1},  {U::Input, 2},  {U::Input, 3},
                                    {U::Input, 4},    {U::Input, 5},  {U::Input, 6},  {U::Input, 7},  {U::Input, 8},
-                                   {U::Input, 9},    {U::Input, 10}, {U::Input, 11}, {U::Input, 12}, {U::Input, 13}};
+                                   {U::Input, 9},    {U::Input, 10}, {U::Input, 11}, {U::Input, 12}, {U::Input, 13},
+                                   {U::Input, 14},   {U::Input, 15}};  // SM.5: formants, formantOrder
 constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // degree, equave, hz,
                                 {U::Input, 4}, {U::Input, 5}, {U::Input, 6}, {U::Input, 7},  // cents, generator, period,
                                 {U::Resource, 0},                                            // stretch, reference, table,

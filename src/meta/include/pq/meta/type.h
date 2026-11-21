@@ -122,6 +122,9 @@ struct SampleBinding {
 struct ResourceRequest {
   ResourceKind kind = ResourceKind::FrameTable;
   uint32_t index = 0;  // the type's own numbering (ExpandContext::slot(index))
+  // SM.5 (a Sample request): the expansion plays Complex / Complex Pro, so the slot needs a stretcher per voice lane
+  // (pq/dsp/sampler_stretch.h; the link builds them before the image and frees them when no request asks).
+  bool stretch = false;
   friend bool operator==(const ResourceRequest&, const ResourceRequest&) = default;
 };
 

@@ -44,7 +44,7 @@
 //            0.28 of its level; tests/engine/test_warp.cpp pins it). Chords and mixes: Complex. Texture jitters P_k by ±flux % · H · r (warpJitter, seeded per clip), unaligned.
 //     Every slice / grain position is anchored at a song sample that depends on the clip alone (its entry, its grain
 //     start), so renders are bit-identical whatever the engine block.
-//     Complex / Complex Pro (T6.5): a phase vocoder (signalsmith-stretch, pq/engine/stretch_pool.h) only stretches
+//     Complex / Complex Pro (T6.5): a phase vocoder (signalsmith-stretch, pq/dsp/stretch_pool.h) only stretches
 //            time: it reads the source continuously along the law, unfolded through loop wraps (φ(s) = f(s) + folds ·
 //            loop span in frames), and its output frame y is the analysis centred on φ(t(y)), t(y) = tA + y / r. The
 //            pitch is a resampling of that output at rate r (the windowed sinc; a copy at r = 1): song sample s reads
@@ -226,7 +226,7 @@ public:
     uint32_t sliceFirst = 0, sliceCount = 0;  // Beats: sliceContent() / sliceFrame()
     SliceLoop sliceLoop = SliceLoop::Off;
     float envelope = 100.0f;
-    // T6.5 Complex / Complex Pro (the stretcher's settings, pq/engine/stretch_pool.h StretchParams; the grain fields
+    // T6.5 Complex / Complex Pro (the stretcher's settings, pq/dsp/stretch_pool.h StretchParams; the grain fields
     // above are Tones', the fallback when no stretcher is free).
     double formantFactor = 1.0;    // the vocoder's formant shift: pitchRatio^(−formants) (the resampling adds pitchRatio)
     double formantBase = 0.0;      // cycles per sample (1 / formantEnvelope); 0 without formant processing

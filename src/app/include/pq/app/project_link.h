@@ -1042,6 +1042,7 @@ private:
     meta::SampleBinding binding;
     double sampleRate = 0;
     bool samplePublished = false;
+    uint32_t stretchLanes = 0;  // SM.5: the stretchers its lowering asks for (0: none)
   };
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
@@ -1056,6 +1057,12 @@ private:
   std::vector<uint32_t> metaFresh_;
   bool tapsFresh_ = false;  // TX.spectrum: the last syncMetaSlots made a new analysis tap (compile path)
   void syncMetaSlots(const std::vector<doc::LoweredProject::MetaResource>& resources);  // compile path, after lower
+  // SM.5 (compile path, after syncMetaSlots): the stretchers of the Samplers that play Complex / Complex Pro (their
+  // Sample request's `stretch`): a stretcher per voice lane of the instance's track (voiceGroupsFor(its polyphony) ·
+  // 8), built before any image of the lowering is built, freed when no request asks; ensureStretch (also after a
+  // sample publish: the channel count follows the sample) builds, keeps or frees one slot's.
+  void syncMetaStretchers(const doc::LoweredProject& lp);
+  void ensureStretch(dsp::SampleSlot& slot, uint32_t lanes);
   std::shared_ptr<const dsp::FrameTable> metaDefaultTable();                            // mutex_ held
   VoiceTapConfig metaTapConfig() const;
   // TMM.5: submits a build for every frame-table slot whose job key changed (metaDoc_; takes mutex_).

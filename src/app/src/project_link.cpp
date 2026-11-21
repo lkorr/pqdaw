@@ -26,6 +26,7 @@
 #include "pq/document/meta.h"
 #include "pq/document/lower.h"
 #include "pq/dsp/frame_table_build.h"
+#include "pq/dsp/sampler_stretch.h"
 #include "pq/meta/registry.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/app/note_stage_render.h"
@@ -1778,6 +1779,37 @@ void ProjectLink::resetMetaSlotsLocked() {
   metaGen_.fetch_add(1, std::memory_order_release);
 }
 
+void ProjectLink::syncMetaStretchers(const doc::LoweredProject& lp) {
+  std::vector<std::pair<std::shared_ptr<dsp::SampleSlot>, uint32_t>> want;
+  {
+    std::lock_guard lock(mutex_);
+    for (const doc::LoweredProject::MetaResource& r : lp.metaResources) {
+      if (r.slot == 0 || r.slot >= kMetaSlots || r.request.kind != meta::ResourceKind::Sample) continue;
+      MetaSlot& m = metaSlots_[r.slot];
+      if (!m.live || !m.sample) continue;
+      uint32_t voices = cfg_.maxVoices;
+      for (size_t i = 0; i < lp.trackIds.size() && i < lp.graph.tracks.size(); ++i)
+        if (lp.trackIds[i] == r.track && lp.graph.tracks[i].maxVoices > 0) voices = lp.graph.tracks[i].maxVoices;
+      m.stretchLanes = r.request.stretch ? engine::voiceGroupsFor(std::max(voices, 1u)) * 8u : 0u;
+      want.emplace_back(m.sample, m.stretchLanes);
+    }
+  }
+  for (const auto& [slot, lanes] : want) ensureStretch(*slot, lanes);  // (built outside the lock: ≈ 0.1 ms each)
+}
+
+void ProjectLink::ensureStretch(dsp::SampleSlot& slot, uint32_t lanes) {
+  const dsp::SamplerStretch* cur = slot.stretchView();
+  if (lanes == 0) {
+    if (cur != nullptr) slot.setStretch(nullptr, sampleReclaimer_);
+    return;
+  }
+  const dsp::SampleSlot::Entry* e = slot.acquire();
+  if (e->level[0].length <= 0) return;  // no sample yet: built when one is published (refreshMetaSamples)
+  const uint32_t ch = std::min<uint32_t>(std::max<uint32_t>(e->channels, 1), 2);
+  if (cur != nullptr && cur->lanes() == lanes && cur->channels() == ch && cur->sampleRate() == cfg_.sampleRate) return;
+  slot.setStretch(dsp::SamplerStretch::build(lanes, ch, cfg_.sampleRate), sampleReclaimer_);
+}
+
 uint32_t ProjectLink::metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index) {
   std::lock_guard lock(mutex_);
   MetaKey key{device.value, std::string(path), index};
@@ -2305,6 +2337,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   if (serial != 0) handLowering(s, serial, shared);
   metaFresh_.clear();
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
+  syncMetaStretchers(lp);            // SM.5: likewise, the Complex samplers' stretchers
   if (sampleRefreshDue_.load(std::memory_order_acquire)) scheduleSampleRefresh();  // SM.2: their samples
   syncCurveSlots(lp.curves);         // GU.1: likewise
   if (std::exchange(tapsFresh_, false) && onAnalysisTaps) {  // TX.spectrum: displays waiting for a tap look again

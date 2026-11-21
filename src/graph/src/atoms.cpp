@@ -177,7 +177,9 @@ constexpr PortSpec pSamplerWarp[] = {{"sample", kRConst},  // (rate is read at i
                                      {"flux", kRParamBound, true, 0.0f},
                                      {"sliceLoop", kRConst, true, 1.0f},
                                      {"envelope", kRParamBound, true, 100.0f},
-                                     {"sr", kRParamBound, true, 48000.0f}};
+                                     {"sr", kRParamBound, true, 48000.0f},
+                                     {"formants", kRParamBound, true, 100.0f},  // SM.5: Complex Pro
+                                     {"formantOrder", kRParamBound, true, 128.0f}};
 constexpr PortSpec pReduce[] = {{"x", kAny}};
 constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
 constexpr PortSpec pMulAdd[] = {{"a", kR}, {"b", kR}, {"c", kR}};
@@ -447,7 +449,8 @@ const AtomSignature kAtoms[] = {
     {"sample_scrub", C::Sample, pSampleScrub, pSampleScrubOut, sizeof(dsp::SampleScrubState), kStateful, 0, {},
      "stereo read at position pos (0 … 1 of the sample), the mip level from its slope"},
     {"sampler_warp", C::Sample, pSamplerWarp, pSampleReadOut, sizeof(dsp::SamplerWarpState), kStateful, 0, {},
-     "stereo Beats / Tones / Texture playback of the sample at its own pitch × rate, following bpm from the reset"},
+     "stereo Beats / Tones / Texture / Complex / Complex Pro playback of the sample at its own pitch × rate, following "
+     "bpm from the reset"},
     {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},

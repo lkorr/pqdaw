@@ -25,6 +25,7 @@
 #include "pq/core/denormal_guard.h"
 #include "pq/core/epoch_reclaimer.h"
 #include "pq/dsp/sample_slot.h"
+#include "pq/dsp/sampler_stretch.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
@@ -619,26 +620,65 @@ TEST_CASE("sampler warp: Beats / Tones / Texture render the same at blocks 32 / 
     }
 }
 
-TEST_CASE("sampler warp: Complex / Complex Pro play as Tones until SM.5 (the same render)") {
-  Sample smp(30000, 48000.0);
+TEST_CASE("sampler warp: Complex / Complex Pro — the stretch resource, Tones onset, the vocoder; blocks and backends") {
+  // SM.5: only Complex / Complex Pro outside Slice ask for the stretchers (a Classic project allocates none).
+  for (double mode = 0; mode < 3; ++mode)
+    for (double warp = 0; warp < 7; ++warp) {
+      const std::vector<double> st = {mode, warp, 1.0, 0.0, 1.0};
+      const auto rq = samplerType().resources(st);
+      REQUIRE(rq.size() == 2);
+      CHECK(rq[0].kind == ResourceKind::Sample);
+      CHECK(rq[0].stretch == (mode != 2.0 && warp >= 5.0));
+      CHECK(!rq[1].stretch);
+    }
+  Sample smp(48000, 44100.0);
   const Score score = [](uint64_t t) {
     Drive d;
-    d.gate = t < 12000;
+    d.gate = t < 18944;
+    d.hz = kRoot * 1.25f;
     return d;
   };
-  const std::string call = ", grain: 0.05, sampleBpm: 90";
-  const Render tones = render(compileRig({0.0, 3.0, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, 20000, 64, score);
+  const std::string call = ", grain: 0.05, sampleBpm: 90, formants: 60, formantOrder: 96";
+  const uint64_t N = 26000;
+  const Render tones = render(compileRig({0.0, 3.0, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, N, 64, score);
+  // Without stretchers (none published into the slot) Complex plays its Tones voice.
   for (const double warp : {5.0, 6.0})
-    CHECK(render(compileRig({0.0, warp, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, 20000, 64, score).l == tones.l);
-  // Off and Re-Pitch keep sample_read (SM.2's path): different from the stretch.
-  CHECK(render(compileRig({0.0, 1.0, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, 20000, 64, score).l != tones.l);
+    CHECK(render(compileRig({0.0, warp, 1.0, 0.0}, call), compile::Backend::Interpreter, smp.slot, N, 64, score).l == tones.l);
+  smp.slot.setStretch(dsp::SamplerStretch::build(1, 2, kSr), smp.reclaimer);
+  std::vector<float> complexL;
+  for (const double warp : {5.0, 6.0}) {
+    CAPTURE(warp);
+    const Rig rig = compileRig({0.0, warp, 1.0, 0.0}, call);
+    const Render ref = render(rig, compile::Backend::Interpreter, smp.slot, N, 64, score);
+    const Render jit = render(rig, compile::Backend::Jit, smp.slot, N, 64, score);
+    CHECK(jit.l == ref.l);
+    CHECK(jit.r == ref.r);
+    CHECK(jit.g == ref.g);
+    for (const uint32_t block : {32u, 512u, 37u}) {
+      CAPTURE(block);
+      CHECK(render(rig, compile::Backend::Interpreter, smp.slot, N, block, score).l == ref.l);
+      CHECK(render(rig, compile::Backend::Jit, smp.slot, N, block, score).r == ref.r);
+    }
+    // The onset is the Tones voice's (while the stretcher primes, ≈ 70 ms); then the vocoder.
+    size_t same = 0;
+    while (same < N && ref.l[same] == tones.l[same]) ++same;
+    CHECK(same >= 2400);
+    CHECK(same < 6000);
+    CHECK(ref.l[15000] != tones.l[15000]);
+    double peak = 0.0;
+    for (size_t t = 8000; t < 18000; ++t) peak = std::max(peak, static_cast<double>(std::abs(ref.l[t])));
+    CHECK(peak > 0.2);
+    if (warp == 5.0) complexL = ref.l;
+    else CHECK(ref.l != complexL);  // Pro moves the formants (rate 1.25 · 44.1 / 48)
+  }
 }
 
 TEST_CASE("sampler warp: 10 000 blocks of note-ons, tempo changes and sample swaps allocate nothing (RtScope)") {
   REQUIRE(alloc_trap::installed());
   Sample smp(24000, 44100.0, {0.0f, 3000.0f, 9000.0f, 15000.0f});
   auto other = dsp::SampleData::build(tone(9000, 13.0, 0.4)).value();  // mono
-  for (const double warp : {2.0, 3.0, 4.0}) {
+  smp.slot.setStretch(dsp::SamplerStretch::build(1, 2, kSr), smp.reclaimer);  // SM.5 (a mono sample swaps in: kept)
+  for (const double warp : {2.0, 3.0, 4.0, 5.0, 6.0}) {
     CAPTURE(warp);
     const Rig rig = compileRig({0.0, warp, 1.0, 1.0, 1.0}, ", loopStart: 0.2, loopLength: 0.5, grain: 0.02, flux: 50");
     for (const auto backend : {compile::Backend::Interpreter, compile::Backend::Jit}) {

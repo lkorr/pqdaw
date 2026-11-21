@@ -26,6 +26,12 @@
 // Level 0 is the sample; levels 1 … `levels` its 2^L× decimated copies (pq/dsp/resample.h decimate2, media's
 // SampleMips): a read faster than rate 2 reads one of them (sample_read: the level per call from |rate|).
 //
+// ---- Stretchers (SM.5) ----------------------------------------------------------------------------------------------
+// A Sampler whose warp setting is Complex / Pro also has its instance's stretchers here (pq/dsp/sampler_stretch.h:
+// one atom reads one resource, so the bank rides on the slot): one atomic pointer, set off the audio thread
+// (setStretch: the old bank is retired through the reclaimer), read by sampler_warp once per call (stretch()). Only
+// the audio thread uses a bank (its claims and vocoders); null for every other setting.
+//
 // ---- Threads ------------------------------------------------------------------------------------------------------
 // publish() / sweep(): any non-RT thread (serialised internally); the reclaimer must have every thread that runs
 // images reading this slot as a reader. acquire() / find(): RT-safe. The slot must outlive every image that reads it
@@ -44,6 +50,8 @@
 #include "pq/dsp/resample.h"
 
 namespace pq::dsp {
+
+class SamplerStretch;  // pq/dsp/sampler_stretch.h (SM.5)
 
 inline constexpr uint32_t kSampleSlotLevels = kMaxMipLevels + 1;  // level 0 + the mips
 inline constexpr int32_t kSampleSlotGuard = 4;                    // readable frames each side (at least)
@@ -105,6 +113,14 @@ public:
   uint64_t generation() const noexcept { return entry_.load(std::memory_order_acquire)->generation; }
   uint32_t entries() const;
 
+  // SM.5, non-RT: makes `bank` (may be null) the instance's stretchers; the one it replaces is retired through
+  // `reclaimer` (freed after the audio threads' next quiescent state). stretchView(): the current one (non-RT: what
+  // the link compares; do not use its audio-thread side).
+  void setStretch(std::unique_ptr<SamplerStretch> bank, EpochReclaimer& reclaimer);
+  const SamplerStretch* stretchView() const noexcept { return stretch_.load(std::memory_order_acquire); }
+  // RT-safe: the stretchers (null: none), valid until the caller's next quiescent state.
+  SamplerStretch* stretch() const noexcept { return stretch_.load(std::memory_order_acquire); }
+
   // RT-safe: the current entry (valid until the caller's next quiescent state).
   const Entry* acquire() const noexcept { return entry_.load(std::memory_order_acquire); }
   // RT-safe: the entry of `generation` (its low 32 bits) on the chain from `newest`, or null (gone).
@@ -127,6 +143,7 @@ private:
   static void deleteEntry(void* p) noexcept { delete static_cast<Entry*>(p); }
   void retireOld(std::chrono::steady_clock::time_point now, EpochReclaimer& reclaimer);  // writeMutex_ held
   std::atomic<const Entry*> entry_{nullptr};
+  std::atomic<SamplerStretch*> stretch_{nullptr};  // SM.5 (owned)
   mutable std::mutex writeMutex_;
   EntryDeleter deleter_ = &deleteEntry;
   double keepSeconds_ = kSampleKeepSeconds;

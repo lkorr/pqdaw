@@ -1,11 +1,13 @@
 // sampler_warp (SM.4; semantics in pq/dsp/atoms.h "Tables", the voice in pq/dsp/warp_voice.h): Beats / Tones /
-// Texture per lane over a live SampleSlot.
+// Texture per lane over a live SampleSlot; SM.5: Complex / Complex Pro (pq/dsp/sampler_stretch.h) with the slot's
+// stretchers.
 
 #include <cstring>
 
 #include "kernels_common.h"
 #include "pq/dsp/atom_state.h"
 #include "pq/dsp/sample_slot.h"
+#include "pq/dsp/sampler_stretch.h"
 #include "pq/dsp/warp_voice.h"
 
 namespace pq::dsp::detail {
@@ -13,21 +15,26 @@ namespace {
 
 using Entry = SampleSlot::Entry;
 
+// A lane's words: the WarpVoice, the entry's generation, the ComplexVoice (SM.5).
 constexpr uint32_t kVoiceWords = (static_cast<uint32_t>(sizeof(WarpVoice)) + 3u) / 4u;
-static_assert(kVoiceWords + 1 <= kSamplerWarpWords, "WarpVoice outgrew SamplerWarpState");
+constexpr uint32_t kComplexWords = (static_cast<uint32_t>(sizeof(ComplexVoice)) + 3u) / 4u;
+constexpr uint32_t kLaneWords = kVoiceWords + 1 + kComplexWords;
+static_assert(kLaneWords <= kSamplerWarpWords, "WarpVoice + ComplexVoice outgrew SamplerWarpState");
 
-void loadLane(const SamplerWarpState& st, uint32_t l, WarpVoice& v, uint32_t& gen) noexcept {  // RT-safe
-  uint32_t buf[kVoiceWords];
-  for (uint32_t w = 0; w < kVoiceWords; ++w) buf[w] = st.w[w][l];
+void loadLane(const SamplerWarpState& st, uint32_t l, WarpVoice& v, uint32_t& gen, ComplexVoice& cv) noexcept {  // RT-safe
+  uint32_t buf[kLaneWords];
+  for (uint32_t w = 0; w < kLaneWords; ++w) buf[w] = st.w[w][l];
   std::memcpy(&v, buf, sizeof(WarpVoice));
-  gen = st.w[kVoiceWords][l];
+  gen = buf[kVoiceWords];
+  std::memcpy(&cv, buf + kVoiceWords + 1, sizeof(ComplexVoice));
 }
 
-void storeLane(SamplerWarpState& st, uint32_t l, const WarpVoice& v, uint32_t gen) noexcept {  // RT-safe
-  uint32_t buf[kVoiceWords] = {};
+void storeLane(SamplerWarpState& st, uint32_t l, const WarpVoice& v, uint32_t gen, const ComplexVoice& cv) noexcept {  // RT-safe
+  uint32_t buf[kLaneWords] = {};
   std::memcpy(buf, &v, sizeof(WarpVoice));
-  for (uint32_t w = 0; w < kVoiceWords; ++w) st.w[w][l] = buf[w];
-  st.w[kVoiceWords][l] = gen;
+  buf[kVoiceWords] = gen;
+  std::memcpy(buf + kVoiceWords + 1, &cv, sizeof(ComplexVoice));
+  for (uint32_t w = 0; w < kLaneWords; ++w) st.w[w][l] = buf[w];
 }
 
 WarpSource sourceOf(const Entry& e) noexcept {  // RT-safe
@@ -60,6 +67,7 @@ struct SamplerWarpK {
     auto& st = *static_cast<SamplerWarpState*>(a.state);
     const auto& slot = *static_cast<const SampleSlot*>(a.resource);
     const Entry* newest = slot.acquire();
+    SamplerStretch* bank = slot.stretch();  // SM.5: the instance's stretchers (null: none; Complex plays Tones)
     WarpScratch ws;
     ws.gain = st.scratch;
     ws.corrA = ws.gain + kGainF;
@@ -76,7 +84,9 @@ struct SamplerWarpK {
     for (uint32_t lane = 0; lane < W; ++lane) {
       WarpVoice v;
       uint32_t gen = 0;
-      loadLane(st, lane, v, gen);
+      ComplexVoice cv;
+      loadLane(st, lane, v, gen, cv);
+      const uint32_t global = st.group * 8u + lane;
       const Entry* e = newest;
       if (v.active != 0 && gen != static_cast<uint32_t>(newest->generation)) {
         e = SampleSlot::find(newest, gen);
@@ -90,6 +100,8 @@ struct SamplerWarpK {
       WarpSource src = sourceOf(*e);
       // The param-rate inputs (positions in [0, 1] of the lane's sample).
       WarpVoiceRun run;
+      ComplexRun crun;
+      bool complex = false;
       auto frameOf = [&](uint32_t k) noexcept {
         const double x = a.in[k][lane];
         return std::isfinite(x) ? x * static_cast<double>(src.length()) : 0.0;
@@ -102,7 +114,15 @@ struct SamplerWarpK {
         run.bpm = std::isfinite(a.in[6][lane]) ? a.in[6][lane] : 120.0;
         run.sampleBpm = std::isfinite(a.in[7][lane]) ? a.in[7][lane] : 120.0;
         const float m = a.in[8][lane];
-        run.mode = m >= 1.5f ? WarpVoiceMode::Texture : m >= 0.5f ? WarpVoiceMode::Tones : WarpVoiceMode::Beats;
+        // SM.5: 3 Complex / 4 Complex Pro: a Tones voice (the onset, the fallback) under the vocoder.
+        complex = m >= 2.5f;
+        crun.pro = m >= 3.5f;
+        run.mode = complex ? WarpVoiceMode::Tones
+                   : m >= 1.5f ? WarpVoiceMode::Texture
+                   : m >= 0.5f ? WarpVoiceMode::Tones
+                               : WarpVoiceMode::Beats;
+        crun.formants = std::isfinite(a.in[14][lane]) ? a.in[14][lane] : 100.0;
+        crun.formantOrder = std::isfinite(a.in[15][lane]) ? a.in[15][lane] : 128.0;
         run.grainSeconds = std::isfinite(a.in[9][lane]) ? a.in[9][lane] : 0.03;
         run.flux = std::isfinite(a.in[10][lane]) ? a.in[10][lane] : 0.0;
         const float sl = a.in[11][lane];
@@ -122,6 +142,8 @@ struct SamplerWarpK {
           src = sourceOf(*e);
           setRun();
           v.trigger(src, run);
+          if (complex) cv.trigger(bank, global);
+          else cv.phase = ComplexVoice::kWait;
           f1 = f + 1;  // a held reset restarts every sample
         } else {
           if (v.active == 0) {  // idle: skip to the next reset
@@ -139,7 +161,8 @@ struct SamplerWarpK {
         }
         const uint32_t n = f1 - f;
         for (uint32_t i = 0; i < n; ++i) rate[i] = rateAt(f + i, lane);
-        v.render(src, run, rate, n, l, r, pos, play, ws);
+        if (complex) cv.render(bank, global, v, src, run, crun, rate, n, l, r, pos, play, ws);
+        else v.render(src, run, rate, n, l, r, pos, play, ws);
         for (uint32_t i = 0; i < n; ++i) {
           const uint32_t o = (f + i) * W + lane;
           a.out[0][o] = l[i];
@@ -149,7 +172,7 @@ struct SamplerWarpK {
         }
         f = f1;
       }
-      storeLane(st, lane, v, gen);
+      storeLane(st, lane, v, gen, cv);
     }
   }
 };

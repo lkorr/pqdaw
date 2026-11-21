@@ -1,6 +1,8 @@
 // Live sample slots (SM.2): pq/dsp/sample_slot.h.
 #include "pq/dsp/sample_slot.h"
 
+#include "pq/dsp/sampler_stretch.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -25,7 +27,13 @@ SampleSlot::SampleSlot() {
   entry_.store(e, std::memory_order_release);
 }
 
+void SampleSlot::setStretch(std::unique_ptr<SamplerStretch> bank, EpochReclaimer& reclaimer) {
+  std::lock_guard lock(writeMutex_);
+  if (SamplerStretch* old = stretch_.exchange(bank.release(), std::memory_order_acq_rel)) reclaimer.retire(old);
+}
+
 SampleSlot::~SampleSlot() {
+  delete stretch_.load(std::memory_order_acquire);  // SM.5
   // No image reads the slot any more (they hold it alive): every entry still on the chain is ours.
   const Entry* e = entry_.load(std::memory_order_acquire);
   while (e != nullptr) {

@@ -8,7 +8,7 @@
 //   - a gain-only edit while playing keeps the voice (seamless: after the 2 ms ramp, bit-identical to a render at the
 //     new gain); streamed (offline blocking fills) == resident bit for bit, every mode
 //   - RtScope over every mode (streamed and resident, swaps, slice claims)
-// T6.5, Complex / Complex Pro (the stretch pool, pq/engine/stretch_pool.h): every test above covers them too (they are
+// T6.5, Complex / Complex Pro (the stretch pool, pq/dsp/stretch_pool.h): every test above covers them too (they are
 // in everyMode()), and
 //   - a 220 Hz sine at 0.5× / 2× stays within ±1 ¢ over two consecutive 1.4 s windows; +3 steps of 31-EDO likewise
 //   - sample-aligned (no latency: at the source tempo the output lines up with the source to the frame; silent before
@@ -1038,7 +1038,7 @@ TEST_CASE("warp: an exhausted stretch pool plays Complex as Tones (counted, no c
   };
   CHECK(slow()[0] == slow()[0]);
   const auto t0 = std::chrono::steady_clock::now();
-  const e::StretchPool pool32(32, kSr);
+  const pq::dsp::StretchPool pool32(32, kSr);
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
   MESSAGE("stretch pool of 32 (the default) at 48 kHz: ", static_cast<double>(pool32.memoryBytes()) / 1048576.0,
           " MiB (estimated), made in ", ms, " ms");
@@ -1228,7 +1228,7 @@ TEST_CASE("T6.5b: a mono source runs a mono stretcher (half the work), the same 
   CHECK(stereo.stats().stretchMonoClaims == 0);
   CHECK(stereo.stats().stretchClaims == 2);
   CHECK(mono.stats().stretchCells == stereo.stats().stretchCells);
-  const e::StretchPool monoPool(0, kSr, 32);
+  const pq::dsp::StretchPool monoPool(0, kSr, 32);
   CHECK(monoPool.size() == 32);
   CHECK(monoPool.availableMono() == 32);
   MESSAGE("32 mono stretchers (the default): ", static_cast<double>(monoPool.memoryBytes()) / 1048576.0, " MiB (estimated)");
@@ -1309,7 +1309,7 @@ TEST_CASE("M6 H2 / L15: the stretch pool is sized from the project's Complex cli
     rig.audio({{1, {warped(e::ClipWarp::Tones, 1, 0, kPpq * 4, 120.0)}}}, {s});
     rig.play(0);
     (void)rig.render(4800);
-    const e::StretchPool* pool = rig.tl->clipPlayer().stretchPool();
+    const pq::dsp::StretchPool* pool = rig.tl->clipPlayer().stretchPool();
     REQUIRE(pool != nullptr);
     CHECK(pool->size() == 0);
     CHECK(pool->memoryBytes() == 0);

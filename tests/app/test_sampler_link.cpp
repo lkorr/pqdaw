@@ -12,6 +12,7 @@
 #include "pq/app/project_link.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/store.h"
+#include "pq/dsp/sampler_stretch.h"
 #include "pq/engine/wav_file.h"
 #include "pq/meta/sampler.h"
 
@@ -148,4 +149,54 @@ TEST_CASE("sampler link: a missing file plays silence (no load error loop)") {
   link->flush();
   REQUIRE(link->waitForSamples(30.0));
   CHECK(slot->generation() == 2);
+}
+
+// SM.5: the stretchers follow the warp setting (Complex / Complex Pro only: a Classic project allocates none), a
+// stretcher per voice lane of the track (engine::voiceGroupsFor(polyphony) · 8), of the published sample's channel count.
+TEST_CASE("sampler link: Complex builds a stretcher per voice lane before the image; other warp settings none") {
+  Song song("pq_sampler_link_stretch");
+  const SampleId a = song.sample("a.wav", 24000, 2, 48000.0);
+  const SampleId b = song.sample("b.wav", 9000, 1, 48000.0);
+  song.edit(nullptr, ops::setMetaData(*song.store.current(), song.sampler, "", "sampler", meta::samplerData(a.value)));
+  auto link = makeLink(song.store.current());
+  link->flush();
+  REQUIRE(link->waitForSamples(30.0));
+  const std::shared_ptr<dsp::SampleSlot> slot = link->metaSampleSlot(song.sampler, "", 0);
+  REQUIRE(slot != nullptr);
+  CHECK(slot->stretchView() == nullptr);  // warp Off (the default)
+  for (const double warp : {1.0, 2.0, 3.0, 4.0}) {  // Re-Pitch, Beats, Tones, Texture: none either
+    song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "warp", warp));
+    link->flush();
+    CHECK(slot->stretchView() == nullptr);
+  }
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "warp", 5.0));  // Complex
+  link->flush();
+  const dsp::SamplerStretch* bank = slot->stretchView();
+  REQUIRE(bank != nullptr);
+  // The track's polyphony (its voice context's: lower.cpp contextPolyphony) in voice groups, the headroom one included.
+  const uint32_t lanes = bank->lanes();
+  CHECK(lanes % 8 == 0);
+  CHECK(lanes >= 16);
+  CHECK(bank->channels() == 2);
+  CHECK(bank->memoryBytes() > size_t{lanes} * 512 * 1024);  // ≈ 0.75 MiB per stereo stretcher
+  // Complex Pro keeps it; a mono sample rebuilds it mono (half the work and memory).
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "warp", 6.0));
+  link->flush();
+  CHECK(slot->stretchView() == bank);
+  song.edit(link.get(), ops::setMetaData(*song.store.current(), song.sampler, "", "sampler", meta::samplerData(b.value)));
+  REQUIRE(link->waitForSamples(30.0));
+  link->flush();
+  REQUIRE(slot->stretchView() != nullptr);
+  CHECK(slot->stretchView()->channels() == 1);
+  CHECK(slot->stretchView()->lanes() == lanes);
+  // Slice mode plays unwarped: none; back to Classic + Tones: none.
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "mode", 2.0));
+  link->flush();
+  CHECK(slot->stretchView() == nullptr);
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "mode", 0.0));
+  link->flush();
+  CHECK(slot->stretchView() != nullptr);
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "warp", 3.0));
+  link->flush();
+  CHECK(slot->stretchView() == nullptr);
 }

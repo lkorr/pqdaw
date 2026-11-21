@@ -1,6 +1,6 @@
-// The stretch pool (T6.5): pq/engine/stretch_pool.h. The only TU that includes signalsmith-stretch (its warnings are
+// The stretch pool (T6.5): pq/dsp/stretch_pool.h. The only TU that includes signalsmith-stretch (its warnings are
 // off for this file, src/engine/CMakeLists.txt).
-#include "pq/engine/stretch_pool.h"
+#include "pq/dsp/stretch_pool.h"
 
 #include <algorithm>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include "pq/core/aligned_buffer.h"
 #include "signalsmith-stretch/signalsmith-stretch.h"
 
-namespace pq::engine {
+namespace pq::dsp {
 
 namespace {
 
@@ -200,4 +200,4 @@ void StretchPool::process(uint32_t i, const float* const* in, int inFrames, int 
 
 uint64_t StretchPool::generatorState(uint32_t i) const noexcept { return slots_[i]->rng; }
 
-}  // namespace pq::engine
+}  // namespace pq::dsp

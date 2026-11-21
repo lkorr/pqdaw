@@ -135,8 +135,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // SM.2 (kernels_sample.cpp): sample_slice (key, units) → (start, end); sample_scrub (pos) → (out, right).
     {"sample_slice", 2, 2, false, false, 0, 0, kB0 | kB1, 0, 0, Resource::Sample, false},  // (any mask: control regions)
     {"sample_scrub", 1, 2, false, false, 0, 0, kB0, 0, sizeof(SampleScrubState), Resource::Sample, false},
-    // SM.4 (kernels_sampler_warp.cpp): rate, reset, then 12 param-rate inputs → out, playing, right, pos.
-    {"sampler_warp", 14, 4, false, false, kB1, kB1, kB0 | kB1, 0x3FFCu, sizeof(SamplerWarpState), Resource::Sample,
+    // SM.4 (kernels_sampler_warp.cpp): rate, reset, then 14 param-rate inputs (SM.5: + formants, formantOrder) → out,
+    // playing, right, pos.
+    {"sampler_warp", 16, 4, false, false, kB1, kB1, kB0 | kB1, 0xFFFCu, sizeof(SamplerWarpState), Resource::Sample,
      false},
 };
 
@@ -233,7 +234,7 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::SampleReadCubic:
     case Atom::SampleScrub: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
     // SM.4: the voices' words per lane; the scratch after them is the call's (no state across calls).
-    case Atom::SamplerWarp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(SamplerWarpState, scratch))};
+    case Atom::SamplerWarp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(SamplerWarpState, group))};
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};
@@ -659,6 +660,7 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     }
     case Atom::WavetablePos: static_cast<WavetablePosState*>(state)->group = init.voiceGroup; break;
     case Atom::VoiceTap: static_cast<VoiceTapState*>(state)->group = init.voiceGroup; break;
+    case Atom::SamplerWarp: static_cast<SamplerWarpState*>(state)->group = init.voiceGroup; break;  // SM.5
     case Atom::WavetableLive: {
       auto& s = *static_cast<WavetableLiveState*>(state);
       s.group = init.voiceGroup;

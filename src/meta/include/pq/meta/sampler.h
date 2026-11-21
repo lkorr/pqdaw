@@ -1,8 +1,8 @@
 #pragma once
 
 // The Sampler engine, `sampler` (SM.2; docs/plans/SM.md "Where it sits", "Semantics"): one sample played per voice —
-// Classic, One-Shot and Slice, warp Off, Re-Pitch, and (SM.4) Beats / Tones / Texture (Complex / Complex Pro: Tones
-// until SM.5; the granulator is SM.6). A native engine (`meta:sampler`, a leaf): the Sampler group preset (SM.3) wraps
+// Classic, One-Shot and Slice, warp Off, Re-Pitch, and (SM.4) Beats / Tones / Texture, (SM.5) Complex / Complex Pro
+// (the granulator is SM.6). A native engine (`meta:sampler`, a leaf): the Sampler group preset (SM.3) wraps
 // it with an envelope, a filter and an LFO.
 //
 //   inputs   hz        (Hz; unwired: the root, so the sample plays at its recorded pitch; Reads::Frequency)
@@ -23,6 +23,8 @@
 //            grain                0.001 … 0.5 s (default 0.03): Tones / Texture grain size (taken at each trigger)
 //            flux                 0 … 100 %: Texture's grain position jitter (of the hop)
 //            envelope             0 … 100 % (default 100): Beats holds a slice for that % of its gap, then fades it
+//            formants             0 … 100 % (default 100): Complex Pro's formant preservation (SM.5)
+//            formantOrder         8 … 256 (default 128): Complex Pro's spectral envelope order (SM.5)
 //   settings mode     0 Classic (loop while held: the loop setting), 1 One-Shot (start → end, then done),
 //                     2 Slice (slice key − 36 of the data's slice table: [slices[n], slices[n + 1]))
 //            warp     0 Off: rate = hz / root · 2^(transpose + detune/100)/12 (Slice: the transpose only);
@@ -31,8 +33,10 @@
 //                     SM.4: 2 Beats, 3 Tones, 4 Texture (Classic / One-Shot): sampler_warp — the content follows
 //                     transport.bpm from the trigger through the data's markers (none: sampleBpm), the pitch is the
 //                     rate above per sample (glides continuous); Beats slices at the data's slice table (the
-//                     transients); 5 Complex, 6 Complex Pro: Tones until SM.5 (QUESTIONS Q?-SM.4-a). Slice mode
-//                     ignores 2 … 6 (its slices play unwarped).
+//                     transients); SM.5: 5 Complex, 6 Complex Pro: a phase vocoder per voice
+//                     (pq/dsp/sampler_stretch.h; Tones for its first ≈ 70 ms while it primes, then a 2 ms cross);
+//                     Pro moves the formants back by formants % (the resource request asks for the stretchers).
+//                     Slice mode ignores 2 … 6 (its slices play unwarped).
 //            loop     0 Off, 1 Forward, 2 Ping-pong (Classic; the stretch modes loop forward in content beats)
 //            trigger  0 Trigger (One-Shot / Slice: plays to the end whatever the gate), 1 Gate (the gate output, and
 //                     so the envelope after it, follows the note: the voice releases at note-off)
@@ -45,7 +49,7 @@
 //            Classic: not (gate and playing)); SM.8: outside a voice (no notes reach it) gateOut is also high
 //            while a wired position scrubs, so the envelope after it opens (an LFO on an audio track plays it)
 //   resource Sample request 0 (the link pins and publishes the data's sample, slices and markers into it; a data edit
-//            is no compile); SM.10: VoiceTap request 1 (voice_tap of where each voice reads, 0 … 1: the face's playheads)
+//            is no compile; SM.5: `stretch` in Complex / Pro, the slot then carries the stretchers); SM.10: VoiceTap request 1 (voice_tap of where each voice reads, 0 … 1: the face's playheads)
 // Settings choose the atoms (a mode change recompiles): Off / Re-Pitch is one sample_read_cubic (+ sample_slice in
 // Slice, + transport.bpm with Re-Pitch), so they keep SM.2's path and cost; Beats / Tones / Texture one sampler_warp;
 // an unwired position folds the scrub path away.
@@ -59,10 +63,10 @@ const Type& samplerType() noexcept;
 enum SamplerInput : uint32_t { kSmpHz, kSmpGate, kSmpKey, kSmpPosition, kSmpInputs };
 enum SamplerParam : uint32_t { kSmpStart, kSmpEnd, kSmpLoopStart, kSmpLoopLength, kSmpLoopFade, kSmpTranspose,
                                kSmpDetune, kSmpGain, kSmpRoot, kSmpSampleBpm, kSmpFadeIn, kSmpFadeOut, kSmpGrain,
-                               kSmpFlux, kSmpEnvelope, kSmpParams };
+                               kSmpFlux, kSmpEnvelope, kSmpFormants, kSmpFormantOrder, kSmpParams };
 enum SamplerSetting : uint32_t { kSmpMode, kSmpWarp, kSmpLoop, kSmpTrigger, kSmpBeatsLoop, kSmpSettings };
 enum class SamplerMode : uint8_t { Classic = 0, OneShot = 1, Slice = 2 };
-// SM.4: the warp setting (Complex / Complex Pro play as Tones until SM.5).
+// SM.4: the warp setting (SM.5: Complex / Complex Pro are the phase vocoder, pq/dsp/sampler_stretch.h).
 enum class SamplerWarp : uint8_t { Off = 0, RePitch = 1, Beats = 2, Tones = 3, Texture = 4, Complex = 5, ComplexPro = 6 };
 inline constexpr double kSamplerDefaultRoot = 261.63;  // unpitched → middle C (docs/plans/SM.md "Root pitch")
 

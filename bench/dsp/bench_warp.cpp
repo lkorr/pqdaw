@@ -23,6 +23,11 @@
 //   sampler_warp/tones glide L8       an audio-rate rate (1 → 1.5 ramps: per-sample positions)
 //   sampler_warp/texture L8           Texture, 30 ms, Flux 40
 //   L1: one voice (ns/frame), L8: an 8-voice group (ns per voice-frame = the group's ns/frame / 8).
+// SM.5 (pq/dsp/sampler_stretch.h; plan: ≈ 1.6 % of a core per voice, the T6.5 row):
+//   sampler_warp/complex 16v          Complex, 16 voices (two 8-lane groups, a stereo stretcher each), rate 1,
+//                                     measured after priming: ns/frame of all 16 (per voice: / 16)
+//   sampler_warp/complex +18/31 16v   the same at 2^(18/31) (the vocoder runs 1.5× the frames, the read resamples)
+//   sampler_warp/complexPro 16v       Complex Pro at 2^(18/31), Formants 100
 // % of a core = ns/frame × 48000 / 1e7.
 #include <cmath>
 #include <cstdint>
@@ -36,6 +41,7 @@
 #include "pq/dsp/atom_state.h"
 #include "pq/dsp/atoms.h"
 #include "pq/dsp/sample_slot.h"
+#include "pq/dsp/sampler_stretch.h"
 #include "pq/engine/audio_sequence.h"
 #include "pq/engine/clip_player.h"
 #include "pq_bench.h"
@@ -191,13 +197,13 @@ struct SamplerSource {
   }
 };
 
-void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide, uint32_t lanes) {
+void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide, uint32_t lanes, uint32_t groups = 1) {
   static SamplerSource src;
-  constexpr uint32_t kN = 64, kIn = 14;
+  constexpr uint32_t kN = 64, kIn = 16;
   std::vector<pq::AlignedBuffer<float>> in;
   for (uint32_t i = 0; i < kIn; ++i) in.emplace_back(static_cast<size_t>(kN) * 8);
   const float vals[kIn] = {rate, 0.0f, 0.05f, 1.0f, 0.1f, 0.9f, 97.0f, 120.0f, mode, 0.03f, mode == 2.0f ? 40.0f : 0.0f,
-                           1.0f, 100.0f, static_cast<float>(kSr)};
+                           1.0f, 100.0f, static_cast<float>(kSr), 100.0f, 128.0f};
   for (uint32_t i = 0; i < kIn; ++i)
     for (uint32_t k = 0; k < kN * 8; ++k) in[i][k] = vals[i];
   const uint32_t mask = (glide ? 0u : 1u) | 2u | pq::dsp::kernelInfo(pq::dsp::Atom::SamplerWarp).splRequired;
@@ -206,18 +212,32 @@ void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide,
   const float* ip[kIn];
   for (uint32_t i = 0; i < kIn; ++i) ip[i] = in[i].data();
   float* op[4] = {out[0].data(), out[1].data(), out[2].data(), out[3].data()};
-  pq::AlignedBuffer<float> state(sizeof(pq::dsp::SamplerWarpState) / sizeof(float));
-  pq::dsp::StateInit init;
-  init.lanes = lanes;
-  pq::dsp::initState(pq::dsp::Atom::SamplerWarp, state.data(), init);
+  const bool complex = mode >= 2.5f;
+  if (complex) src.slot.setStretch(pq::dsp::SamplerStretch::build(groups * 8, 2, kSr), src.reclaimer);
+  std::vector<pq::AlignedBuffer<float>> states;
   const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::SamplerWarp, lanes, mask);
-  pq::dsp::KernelArgs args{ip, op, state.data(), &src.slot, 1, kIn, 4, mask};
+  for (uint32_t g = 0; g < groups; ++g) {
+    states.emplace_back(sizeof(pq::dsp::SamplerWarpState) / sizeof(float));
+    pq::dsp::StateInit init;
+    init.lanes = lanes;
+    init.voiceGroup = g;
+    pq::dsp::initState(pq::dsp::Atom::SamplerWarp, states[g].data(), init);
+  }
+  pq::dsp::KernelArgs args{ip, op, states[0].data(), &src.slot, 1, kIn, 4, mask};
+  auto runGroups = [&] {
+    for (uint32_t g = 0; g < groups; ++g) {
+      args.state = states[g].data();
+      fn(args);
+    }
+  };
   // Trigger every lane (a one-frame call with reset high), then sustain.
   for (uint32_t k = 0; k < 8; ++k) in[1][k] = pq::dsp::boolMask(true);
-  fn(args);
+  runGroups();
   for (uint32_t k = 0; k < 8; ++k) in[1][k] = pq::dsp::boolMask(false);
   args.frames = kN;
   uint64_t calls = 0;
+  if (complex)
+    for (uint32_t b = 0; b < 48000 / kN; ++b) runGroups();  // 1 s: every voice primed and crossed to the vocoder
   c.measure(
       [&] {
         if (glide) {  // per-sample rates: a ramp 1 → 1.5 over 1 s, repeated
@@ -226,11 +246,12 @@ void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide,
             for (uint32_t l = 0; l < lanes; ++l) in[0][f * lanes + l] = x * (1.0f + 0.01f * static_cast<float>(l));
           }
         }
-        fn(args);
+        runGroups();
         ++calls;
         pq::bench::doNotOptimize(out[0][kN * lanes - 1]);
       },
-      kN, lanes == 1 ? "ns/frame" : "ns/frame(8 voices)", lanes == 1 ? "L1" : "L8");
+      kN, groups > 1 ? "ns/frame(16 voices)" : lanes == 1 ? "ns/frame" : "ns/frame(8 voices)", lanes == 1 ? "L1" : "L8");
+  if (complex) src.slot.setStretch(nullptr, src.reclaimer);
 }
 
 }  // namespace
@@ -245,6 +266,12 @@ void addWarpBenches(pq::bench::Runner& runner) {
              [](pq::bench::Context& c) { samplerWarpBench(c, 1.0f, static_cast<float>(std::exp2(3.0 / 12.0)), false, 8); });
   runner.add("sampler_warp/tones glide L8", [](pq::bench::Context& c) { samplerWarpBench(c, 1.0f, 1.0f, true, 8); });
   runner.add("sampler_warp/texture L8", [](pq::bench::Context& c) { samplerWarpBench(c, 2.0f, 1.0f, false, 8); });
+  const auto fifth31 = static_cast<float>(std::exp2(18.0 / 31.0));
+  runner.add("sampler_warp/complex 16v", [](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, 1.0f, false, 8, 2); });
+  runner.add("sampler_warp/complex +18/31 16v",
+             [fifth31](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, fifth31, false, 8, 2); });
+  runner.add("sampler_warp/complexPro 16v",
+             [fifth31](pq::bench::Context& c) { samplerWarpBench(c, 4.0f, fifth31, false, 8, 2); });
   runner.add("warp/beats", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Beats, 1.0, false); });
   runner.add("warp/beats +3 st", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Beats, std::exp2(3.0 / 12.0), false); });
   runner.add("warp/tones", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Tones, 1.0, false); });

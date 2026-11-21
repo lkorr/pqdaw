@@ -2533,3 +2533,27 @@ Context: SM.12 (docs/plans/SM.md "SM.12"). Choices (most reversible):
 4. **"Insert marker" = the start marker** (ViewContext::startMarker), the only insert position the views keep.
 5. **Transient slicing waits for the sample analysis** (SampleAnalysis): before it arrives the click says so and does
    nothing (the analysis is requested).
+
+## Q?-SM.5-a · Sampler Complex / Complex Pro: readings taken where the plan left room
+Context: SM.5 (docs/plans/SM.md "SM.5", "Semantics" Complex note-on, open risks 3–5, 9). Choices (most reversible):
+1. **The stretchers ride on the SampleSlot**, not a function-pointer resource or a second resource kind: `sampler_warp`
+   reads one resource (KernelArgs::resource) and the instance's SampleSlot is already per instance, so the bank is an
+   atomic pointer on it (`SampleSlot::setStretch` / `stretch()`), its state outside the JIT arena (risks 3 and 9 do not
+   arise). The Sample request carries `stretch` (meta::ResourceRequest) for Complex / Pro outside Slice; the link builds
+   the bank in `syncMetaStretchers` before any image of the lowering, rebuilds it when a published sample has another
+   channel count, frees it otherwise. StretchPool itself moved to pq_dsp (`pq/dsp/stretch_pool.h`).
+2. **A stretcher per voice lane of the track** (voiceGroupsFor(polyphony) · 8, the steal-headroom group included: a
+   voice can sit in any lane): 24 voices (the default) = 32 stretchers ≈ 24 MiB stereo. Not a free-list pool: lane
+   resets (note-on) would leak claims. Ownership {token, user lane, vHi} handles moves, Syncs and hot-swap transfers
+   (the first to run keeps it; the other plays Tones and re-primes on a free one, a hard Complex → Tones switch).
+3. **Content timing under glides**: the vocoder's content is placed ≈ 100 ms ahead of the read at the rate of the
+   moment (no future rate is known); measured ≈ 1 ms late held, ≈ 5 ms late in a 10 st/s descent, recovering once the
+   rate settles (tests/dsp/test_sampler_stretch.cpp). Pitch is exact (Φ): < 0.5 ¢ at 18\31, held after a glide.
+4. **Reads of the vocoder output are cubic** (the Sampler's quality, Q?-SM.4-a 4), not the clip's sinc: above rate 2 it
+   aliases (no mips of the vocoder output).
+5. **Device cost**: the vocoder runs inside the sampler's kernel, so device_cost.h's per-device ns/frame includes it with
+   no change; memory is not shown there (SamplerStretch::memoryBytes exists for a later readout).
+6. **Open (CPU)**: a voice whose lane the VoiceEngine has freed while its WarpVoice still plays (Classic looping after the
+   envelope's release) keeps running — Tones since SM.4, the vocoder now — until the lane is retriggered, whenever its
+   group runs for another voice. A per-lane "occupied" mask the kernel could read (as VoiceTap::setLaneMask) would stop
+   it; not done here (touches the VoiceEngine / image host). Status: open.

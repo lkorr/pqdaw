@@ -43,5 +43,11 @@ pq_add_module(pq_dsp
     src/fft_mixed.cpp
     src/warp.cpp
     src/warp_voice.cpp
+    src/stretch_pool.cpp  # T6.5 (SM.5: moved from pq_engine): the phase-vocoder stretchers (signalsmith-stretch)
+    src/sampler_stretch.cpp  # SM.5: the Sampler's Complex / Complex Pro voices (a stretcher per voice lane)
   DEPS pq_core
+  PRIVATE_DEPS pq_signalsmith
 )
+# T6.5: signalsmith-stretch is third-party code instantiated in this TU alone: its warnings off there (/bigobj: the
+# library's templates exceed MSVC's default section count).
+set_source_files_properties(src/stretch_pool.cpp PROPERTIES COMPILE_OPTIONS "/W0;/bigobj")

@@ -32,6 +32,8 @@ constexpr std::array<ParamSpec, kSmpParams> kParams = {{
     {"grain", "Grain size", 0.03, 0.001, 0.5, graph::Unit::s},
     {"flux", "Flux", 0.0, 0.0, 100.0},
     {"envelope", "Transient envelope", 100.0, 0.0, 100.0},
+    {"formants", "Formants", 100.0, 0.0, 100.0},                // SM.5: Complex Pro
+    {"formantOrder", "Envelope", 128.0, 8.0, 256.0},            // SM.5: Complex Pro (spectral envelope order)
 }};
 constexpr std::array<SettingSpec, kSmpSettings> kSettings = {{
     {"mode", "Mode", 0.0, 0.0, 2.0, 3},        // Classic, One-Shot, Slice
@@ -75,8 +77,8 @@ Status body(Builder& bld) {
   const auto mode = static_cast<SamplerMode>(choice(bld.setting(kSmpMode), 3));
   const auto warp = static_cast<SamplerWarp>(choice(bld.setting(kSmpWarp), 7));
   const bool repitch = warp == SamplerWarp::RePitch;
-  // SM.4: Beats / Tones / Texture play through sampler_warp (Complex / Complex Pro: Tones until SM.5); Slice keeps its
-  // own path (its slices play at their recorded pitch, unwarped).
+  // SM.4: Beats / Tones / Texture (SM.5: Complex / Complex Pro) play through sampler_warp; Slice keeps its own path (its
+  // slices play at their recorded pitch, unwarped).
   const bool stretch = mode != SamplerMode::Slice && warp >= SamplerWarp::Beats;
   const uint32_t loop = choice(bld.setting(kSmpLoop), 3);
   const bool gateMode = choice(bld.setting(kSmpTrigger), 2) == 1;
@@ -112,7 +114,7 @@ Status body(Builder& bld) {
   if (stretch) {
     // SM.4: the voice's content follows the song's tempo from its trigger; the pitch is the rate (hz / root ×
     // transpose). Loop: Classic's (ping-pong loops forward: warp_voice.h loops the content's beats).
-    const double wm = warp == SamplerWarp::Beats ? 0.0 : warp == SamplerWarp::Texture ? 2.0 : 1.0;
+    const double wm = static_cast<double>(static_cast<uint32_t>(warp) - static_cast<uint32_t>(SamplerWarp::Beats));
     if (looping) {
       loopStart = bld.param(kSmpLoopStart);
       loopEnd = b.op("min", {b.op("add", {loopStart, bld.param(kSmpLoopLength)}), b.k(1.0)});
@@ -123,7 +125,7 @@ Status body(Builder& bld) {
                           {slot, rate, trig, start, end, loopStart, loopEnd, b.op("transport.bpm", {}),
                            bld.param(kSmpSampleBpm), b.k(wm), bld.param(kSmpGrain), bld.param(kSmpFlux),
                            b.k(static_cast<double>(choice(bld.setting(kSmpBeatsLoop), 3))), bld.param(kSmpEnvelope),
-                           b.op("sr", {})},
+                           b.op("sr", {}), bld.param(kSmpFormants), bld.param(kSmpFormantOrder)},
                           kWarp),
                  "rd");
   } else {
@@ -183,8 +185,12 @@ Status body(Builder& bld) {
   return Ok{};
 }
 
-std::vector<ResourceRequest> resources(std::span<const double>) {
-  return {ResourceRequest{ResourceKind::Sample, 0}, ResourceRequest{ResourceKind::VoiceTap, 1}};
+std::vector<ResourceRequest> resources(std::span<const double> settings) {
+  // SM.5: Complex / Complex Pro (Classic / One-Shot: Slice plays unwarped) need the stretchers.
+  auto at = [&](uint32_t i) { return i < settings.size() ? settings[i] : kSettings[i].def; };
+  const auto warp = static_cast<SamplerWarp>(choice(at(kSmpWarp), 7));
+  const bool stretch = static_cast<SamplerMode>(choice(at(kSmpMode), 3)) != SamplerMode::Slice && warp >= SamplerWarp::Complex;
+  return {ResourceRequest{ResourceKind::Sample, 0, stretch}, ResourceRequest{ResourceKind::VoiceTap, 1}};
 }
 
 DataPtr defaultData() { return samplerData(0); }

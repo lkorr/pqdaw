@@ -449,14 +449,27 @@ struct WarpVoice {
   void stop() noexcept { active = 0; }  // RT-safe
   // Renders n frames (adds nothing when inactive): out L / R (written, not added), the read position in [0, 1] of the
   // sample (pos, may be null), playing (1 / 0 per frame, may be null). rate: per frame, file-natural (× rateScale).
+  // SM.5: outL null advances a Tones / Texture voice (its clock, Φ, the tempo anchor, the end) without rendering.
   void render(const WarpSource& src, const WarpVoiceRun& run, const float* rate, uint32_t n, float* outL, float* outR,
               float* pos, float* playing, const WarpScratch& sc) noexcept;  // RT-safe
+  // SM.5 (Complex): the law's source frame at output time t (fractional; before the trigger the law extrapolated),
+  // unfolded through the loop (every wrap adds the loop's span in whole frames: WarpUnfold). RT-safe.
+  double unfoldedAt(const WarpSource& src, const WarpVoiceRun& run, double t) const noexcept;
   // The end fade and Beats' slice crossfade: 2 ms.
   static int64_t fadeFrames(double sampleRate) noexcept {
     return std::max<int64_t>(1, std::lround(0.002 * sampleRate));
   }
 };
 static_assert(std::is_trivially_copyable_v<WarpVoice>);
+
+// SM.5 (Complex): the run's region and loop in whole frames: an unfolded frame x ≥ loopEnd plays the file at
+// loopStart + (x − loopEnd) mod (loopEnd − loopStart) while looping. RT-safe.
+struct WarpUnfold {
+  bool looping = false;
+  int64_t loopStart = 0, loopEnd = 0;
+  double startF = 0.0, endF = 0.0;
+};
+WarpUnfold warpUnfold(const WarpSource& src, const WarpVoiceRun& run) noexcept;
 
 // The source frame of content beat q / the beat of source frame f (WarpSource's markers; fpb = frames per beat at
 // sampleBpm). RT-safe.

@@ -69,7 +69,7 @@ bool sameClip(const doc::AudioClipDesc& a, const doc::AudioClipDesc& b) {
          a.markers == b.markers && a.pitchRatio == b.pitchRatio && a.warpParams == b.warpParams;
 }
 
-// The engine's warp mode (T6.5: Complex / Complex Pro are the engine's phase vocoder, pq/engine/stretch_pool.h).
+// The engine's warp mode (T6.5: Complex / Complex Pro are the engine's phase vocoder, pq/dsp/stretch_pool.h).
 engine::ClipWarp engineWarp(doc::AudioWarp w) {
   switch (w) {
     case doc::AudioWarp::Off: return engine::ClipWarp::Off;
@@ -457,13 +457,18 @@ void ProjectLink::refreshMetaSamples() {
     }
     if (Status st = w.slot->publish(std::move(src), cfg_.sampleRate, sampleReclaimer_); !st.ok())
       setError(st.error().message);
-    std::lock_guard lock(mutex_);
-    MetaSlot& m = metaSlots_[w.id];
-    if (m.sample != w.slot) continue;
-    m.samplePath = w.path;
-    m.binding = w.binding;
-    m.sampleRate = cfg_.sampleRate;
-    m.samplePublished = true;
+    uint32_t lanes = 0;
+    {
+      std::lock_guard lock(mutex_);
+      MetaSlot& m = metaSlots_[w.id];
+      if (m.sample != w.slot) continue;
+      m.samplePath = w.path;
+      m.binding = w.binding;
+      m.sampleRate = cfg_.sampleRate;
+      m.samplePublished = true;
+      lanes = m.stretchLanes;
+    }
+    ensureStretch(*w.slot, lanes);  // SM.5: the stretchers follow the published sample's channels
   }
   for (const Want& w : wants) w.slot->sweep(sampleReclaimer_);  // replaced samples no note plays any more
   sampleReclaimer_.collect();

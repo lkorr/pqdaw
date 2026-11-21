@@ -139,7 +139,7 @@ Timeline::~Timeline() {
   delete pubAuto_.exchange(nullptr);
   delete pubTempo_.exchange(nullptr);
   delete pubAudio_.exchange(nullptr);
-  StretchPool::destroy(pubStretch_.exchange(nullptr));
+  dsp::StretchPool::destroy(pubStretch_.exchange(nullptr));
   for (const auto& [p, deleter] : held_) deleter(p);
   held_.clear();
   reclaimer_.unregisterReader(reader_);
@@ -190,7 +190,7 @@ Status Timeline::publishAudio(std::unique_ptr<AudioSequenceImage> image) {  // T
   // T6.x-fix-warp (M6 review H2, L15): grow the clip player's stretch pool to what this image's Complex clips need,
   // here off the audio thread (≈ 0.5 ms and 0.9 MiB per stereo stretcher at 48 kHz); never past its capacity. Pushed
   // before the image, so the audio thread adopts them no later than the block it takes the image.
-  if (const StretchPool* pool = clips_->stretchPool()) {
+  if (const dsp::StretchPool* pool = clips_->stretchPool()) {
     const ClipPlayer::StretchDemand d = ClipPlayer::stretchDemand(*image);
     std::lock_guard<std::mutex> lock(stretchMutex_);
     uint32_t room = pool->capacity() > stretchPlanned_[0] + stretchPlanned_[1]
@@ -200,10 +200,10 @@ Status Timeline::publishAudio(std::unique_ptr<AudioSequenceImage> image) {  // T
     room -= addStereo;
     const uint32_t addMono = std::min(room, d.mono > stretchPlanned_[1] ? d.mono - stretchPlanned_[1] : 0u);
     if (addStereo + addMono > 0) {
-      StretchPool::Slot* list = StretchPool::build(addStereo, addMono, cfg_.sampleRate, ClipPlayer::kStretchFrames);
+      dsp::StretchPool::Slot* list = dsp::StretchPool::build(addStereo, addMono, cfg_.sampleRate, ClipPlayer::kStretchFrames);
       stretchPlanned_[0] += addStereo;
       stretchPlanned_[1] += addMono;
-      StretchPool::push(pubStretch_, list);
+      dsp::StretchPool::push(pubStretch_, list);
     }
   }
   if (AudioSequenceImage* old = pubAudio_.exchange(image.release(), std::memory_order_seq_cst))

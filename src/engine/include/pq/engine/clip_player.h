@@ -38,7 +38,7 @@
 // each grain once, in order (its lag from the grain before: Voice::grainIdx / grainPos), so renders are the same
 // whatever the block.
 //
-// T6.5, Complex / Complex Pro (audio_sequence.h "Complex"): a voice claims a stretcher of the player's StretchPool when
+// T6.5, Complex / Complex Pro (audio_sequence.h "Complex"): a voice claims a stretcher of the player's dsp::StretchPool when
 // it starts (a mono source claims a mono stretcher) and runs its vocoder in chunks of kStretchCell of its own frames
 // into the stretcher's buffer, which the run reads at the pitch rate (a copy, or the sinc resampler). A run keeps the
 // vocoder frames from its own first read on, and a voice re-primes only when its next read needs a frame below that
@@ -106,7 +106,7 @@
 #include "pq/dsp/warp_voice.h"
 #include "pq/engine/audio_sequence.h"
 #include "pq/engine/program_image.h"
-#include "pq/engine/stretch_pool.h"
+#include "pq/dsp/stretch_pool.h"
 #include "pq/media/stream.h"
 
 namespace pq::engine {
@@ -121,7 +121,7 @@ struct ClipPlayerConfig {
   media::StreamPool* streams = nullptr;  // null: frames past a streamed sample's head read as silence
   double lookaheadSeconds = 0.5;    // a clip's voice exists (and claims its stream) this long before it starts
   double declickSeconds = 0.002;    // stop / locate / wrap / swap fades
-  // T6.5: stereo / mono stretchers made with the player (pq/engine/stretch_pool.h); T6.x-fix-warp: 0 by default, the
+  // T6.5: stereo / mono stretchers made with the player (pq/dsp/stretch_pool.h); T6.x-fix-warp: 0 by default, the
   // timeline grows the pool to its images' stretchDemand(). stretchCapacity: the most it can grow to (0: no Complex at
   // all: no pool, those clips play as Tones).
   uint32_t stretchVoices = 0;
@@ -196,7 +196,7 @@ public:
   bool anyActive() const noexcept { return !touched_.empty(); }
   const ClipPlayerStats& stats() const noexcept { return stats_; }
   // T6.5: the Complex / Complex Pro stretchers (null with stretchCapacity 0): free count, latency, memory.
-  const StretchPool* stretchPool() const noexcept { return stretch_.get(); }
+  const dsp::StretchPool* stretchPool() const noexcept { return stretch_.get(); }
   // T6.x-fix-warp (M6 review H2): stretchFallbacks for other threads (the CPU meter's info text). RT-safe to read.
   uint64_t stretchFallbacksShared() const noexcept { return fallbacksShared_.load(std::memory_order_relaxed); }
   // The stretchers an image's Complex clips need at once (M6 review H2, L15), per kind: for each slot with Complex
@@ -206,9 +206,9 @@ public:
     uint32_t stereo = 0, mono = 0;
   };
   static StretchDemand stretchDemand(const AudioSequenceImage& img);
-  // Audio thread: takes over stretchers StretchPool::build() made off the thread (at this player's rate, with
+  // Audio thread: takes over stretchers dsp::StretchPool::build() made off the thread (at this player's rate, with
   // kStretchFrames output frames). Those beyond the capacity stay unused until the player is destroyed. RT-safe.
-  void adoptStretchers(StretchPool::Slot* list) noexcept;
+  void adoptStretchers(dsp::StretchPool::Slot* list) noexcept;
   // T6.5: Complex voices run their vocoder in chunks of this many of its output frames, on a grid fixed by the voice's
   // start (audio_sequence.h "Complex"), into a buffer of kStretchFrames per stretcher.
   static constexpr uint32_t kStretchCell = 128;
@@ -268,7 +268,7 @@ private:
     uint32_t relPos = 0, relLen = 0;   // releasing: fade out
     float gainFrom = 1.0f;             // a swap that changed the gain: ramp from gainFrom over rampLen
     uint32_t rampPos = 0, rampLen = 0;
-    // T6.5 Complex / Complex Pro: its stretcher (StretchPool::kNone: none, the voice plays as Tones); see below.
+    // T6.5 Complex / Complex Pro: its stretcher (dsp::StretchPool::kNone: none, the voice plays as Tones); see below.
     uint32_t stretch = 0xFFFFFFFFu;
     // T6.x-fix-warp (H2): a Complex voice playing as Tones that got a stretcher later: `takeover` is the voice index
     // that will replace it (it fades out where that one starts); the replacement's `replaces` points back. kNone: none.
@@ -372,8 +372,8 @@ private:
   AlignedBuffer<float> gain_;           // maxBlockFrames: a slice's / grain's gains (T6.3)
   AlignedBuffer<float> corrA_, corrB_;  // Tones' alignment: the previous grain's and the candidates' mono frames
   AlignedBuffer<float> zeros_;          // maxBlockFrames
-  std::unique_ptr<StretchPool> stretch_;  // T6.5 (null: stretchCapacity 0); each stretcher's recent output in it
-  StretchPool::Slot* stretchSpill_ = nullptr;  // adopted beyond the capacity: freed with the player
+  std::unique_ptr<dsp::StretchPool> stretch_;  // T6.5 (null: stretchCapacity 0); each stretcher's recent output in it
+  dsp::StretchPool::Slot* stretchSpill_ = nullptr;  // adopted beyond the capacity: freed with the player
   std::atomic<uint64_t> fallbacksShared_{0};
   AlignedBuffer<float> stretchIn_;      // 2 × stretchInCap_: a cell's (or a seek's) input, gathered
   uint32_t stretchInCap_ = 0;

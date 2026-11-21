@@ -172,7 +172,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     app/test_warp_link.cpp  # T6.3: warp modes through the link (Tones in 31-EDO steps, Complex as Tones, Beats transients analysed and cached)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
-    app/test_sampler_link.cpp  # SM.2: the Sampler's sample through the link (pin, publish, data edits, missing files)
+    app/test_sampler_link.cpp  # SM.2: the Sampler's sample through the link (pin, publish, data edits, missing files); SM.5 its stretchers
     app/test_sampler_group.cpp  # SM.3: the Sampler group through the Engine (= 0.5 x the bare engine, One-Shot, Slice by key, rewiring)
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
     app/test_scope_link.cpp  # TX.scope: the Oscilloscope through the link (its tap: beat, note, signal; pass-through)
@@ -410,7 +410,6 @@ pq_add_test(pq_tests_timeline
     engine/test_preview_player.cpp  # T5.10: the browser preview player (cue bus)
     engine/test_warp.cpp  # T6.3: warp markers, Beats, Tones, Texture (tempo / pitch accuracy, block / streaming identity, RtScope)
     engine/test_live_input.cpp  # T6.4: live note input (routing, stamps → frames, held notes, bend, 10k ev/s)
-    engine/test_stretch_pool.cpp  # T6.5: signalsmith-stretch allocation-free (the spike), claims, determinism, latency
     engine/test_metronome.cpp  # T6.6: metronome beats (ramps, signatures, PDC), count-in, the click pair, offline
     engine/test_recorder.cpp  # T6.7: the recorder (capture bit-exact with song time, punch + latency, overflow, monitor gates), crash-safe WAV
   DEPS pq_engine pq_doc)
@@ -462,6 +461,8 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
   SOURCES
     dsp/test_atoms_math_logic.cpp
     dsp/test_warp_kernels.cpp  # T6.3: the warp kernels (Hann OLA, anchored ramps, best lag, jitter)
+    dsp/test_stretch_pool.cpp  # T6.5: signalsmith-stretch allocation-free (the spike), claims, determinism, latency
+    dsp/test_sampler_stretch.cpp  # SM.5: the Sampler's Complex voice (Tones onset, pitch < 0.5 ¢, content timing, call-length identity, ownership, RtScope)
     dsp/test_warp_voice.cpp  # SM.4: the Sampler's warp voice (markers law, tempo drift 0, Tones pitch, glides continuous, call-length identity)
     dsp/test_atoms_memory_gen.cpp
     dsp/test_sample_read.cpp  # SM.2: the sample atoms on live slots (references, generations, slices, scrub)

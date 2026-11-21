@@ -409,10 +409,35 @@ void WarpVoice::trigger(const WarpSource& src, const WarpVoiceRun& run) noexcept
   if (run.mode == WarpVoiceMode::Beats) cur = makePass(law, 0, 0, law.startF, 0.0, false, 0);
 }
 
+WarpUnfold warpUnfold(const WarpSource& src, const WarpVoiceRun& run) noexcept {  // RT-safe
+  const Law law(src, run);
+  WarpUnfold u;
+  u.looping = law.looping;
+  u.loopStart = std::llround(law.lsF);
+  u.loopEnd = std::llround(law.leF);
+  if (u.loopEnd <= u.loopStart) u.looping = false;
+  u.startF = law.startF;
+  u.endF = law.endF;
+  return u;
+}
+
+double WarpVoice::unfoldedAt(const WarpSource& src, const WarpVoiceRun& run, double tt) const noexcept {  // RT-safe
+  const Law law(src, run);
+  const double q = beat0 + ba + (tt - static_cast<double>(ta)) * inc;
+  if (!law.looping || q < law.leB) return law.frameOf(q);
+  const double span = law.leB - law.lsB;
+  const double wraps = std::floor((q - law.lsB) / span);
+  return law.frameOf(q - wraps * span) +
+         wraps * static_cast<double>(std::llround(law.leF) - std::llround(law.lsF));
+}
+
 void WarpVoice::render(const WarpSource& src, const WarpVoiceRun& run, const float* rate, uint32_t n, float* outL,
                        float* outR, float* pos, float* playing, const WarpScratch& sc) noexcept {  // RT-safe
-  std::fill_n(outL, n, 0.0f);
-  std::fill_n(outR, n, 0.0f);
+  const bool audible = outL != nullptr;
+  if (audible) {
+    std::fill_n(outL, n, 0.0f);
+    std::fill_n(outR, n, 0.0f);
+  }
   const auto len = static_cast<double>(src.length());
   if (active == 0 || len <= 0.0) {
     active = 0;
@@ -464,8 +489,10 @@ void WarpVoice::render(const WarpSource& src, const WarpVoiceRun& run, const flo
     h.constStep = true;
     for (uint32_t i = 1; i < m; ++i) h.constStep = h.constStep && stp[i] == stp[0];
     h.sc = &sc;
-    float* o[2] = {outL + c0, outR + c0};
-    if (vm == WarpVoiceMode::Beats) {
+    float* o[2] = {audible ? outL + c0 : nullptr, audible ? outR + c0 : nullptr};
+    if (!audible) {
+      // (SM.5: the clock only)
+    } else if (vm == WarpVoiceMode::Beats) {
       if (cur.terminal) cur.next = INT64_MAX;
       else cur.next = std::max({cur.T + 1, t, timeOfBeats(*this, cur.exitU)});
       if (hasPrev != 0 && t < cur.T + X) renderPassClock(h, prev, run, X, o, sc);

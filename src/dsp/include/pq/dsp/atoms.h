@@ -203,7 +203,7 @@
 //                                     whole sample; out of range (or NaN): start = end = 0 (a read from it never
 //                                     plays). units as sample_read's.
 //   sampler_warp (rate, reset, start, end, loopStart, loopEnd, bpm, sampleBpm, mode, grain, flux, sliceLoop,
-//                 envelope, sr) → (out, playing, right, pos)
+//                 envelope, sr, formants, formantOrder) → (out, playing, right, pos)
 //                                     SM.4: a dsp::WarpVoice per lane (pq/dsp/warp_voice.h): Beats (mode 0) / Tones (1)
 //                                     / Texture (2) over the slot's entry from the lane's last reset (a high reset
 //                                     restarts it at that sample on the newest entry, as sample_read). The content
@@ -217,6 +217,10 @@
 //                                     flux % (Texture), sliceLoop 0 Off / 1 Forward / 2 Back-Forward and envelope %
 //                                     (Beats; the slices are the entry's slice table). Cubic reads, the mip level per
 //                                     grain / slice from its rate at its start. pos: where the content is, in [0, 1].
+//                                     SM.5: mode 3 Complex / 4 Complex Pro: a phase vocoder per lane from the slot's
+//                                     stretchers (SampleSlot::stretch, pq/dsp/sampler_stretch.h; none: Tones), read at
+//                                     the integrated rate (Tones while it primes, then a 2 ms cross); Pro moves the
+//                                     formants back by rate^(−formants %), envelope order formantOrder.
 //                                     Everything after reset must be Spl.
 //   sample_scrub (pos) → (out, right)  (cubic) a read of the newest entry at pos ∈ [0, 1] of its length (outside: 0),
 //                                     both channels, at the mip level of the block's fastest |Δpos| · length per sample.

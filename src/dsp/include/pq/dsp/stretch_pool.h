@@ -37,7 +37,7 @@
 #include <memory>
 #include <vector>
 
-namespace pq::engine {
+namespace pq::dsp {
 
 struct StretchParams {
   double transpose = 1.0;   // frequency factor (> 0): the clip's pitch ratio × file rate / engine rate
@@ -116,4 +116,4 @@ private:
   Latency latency_;
 };
 
-}  // namespace pq::engine
+}  // namespace pq::dsp
