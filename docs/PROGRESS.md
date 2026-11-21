@@ -1237,3 +1237,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_note_stage 21/21 (5053 assertions), engine voices / tuning voices 46/46 (shapes from real Hz buffers, Linear bit-identical, block sizes 32/64/512/37, modulated-tuning degree step); -Affected -Slow 57/57; ship link pq_bench_dsp ok; 2 AP.1 tests updated to the new first-step rule.
 - Perf / CPU-efficiency check: Linear glide 64 voices 7.6 µs/64-frame block before = after; shaped 22–30 µs while gliding (exact exp2 per sample; a fast exp2 gave nothing); arp 8 notes 1/32 90 → 55 ns/block (params re-sanitised only on change).
 - Notes/blockers: Q?-AP.3-a (5 readings); kArpParamInfo rows for the new ids → AP.2; not checked live.
+
+## 2026-11-20 · AP.4 · task/AP.4-pulse (merged 057af42f)
+- Did: Pulse mode: one clock per held note, period = Rate · h_ref / h (h from the JI harmonic, else a Proportion list by Hz rank, else order; h_ref fixed or lowest held); phase lock every Cycle (Base · h_ref or n bars); onsets as exact tick fractions through the tempo map (no drift); gate / velocity / Steps / glides (same note's prev / next pulse) / expression per pulse; Layers 0–3 at (p/q)^L, exact identities, own levels, both modes; 18 new ArpParamIds.
+- Verified: pq_tests_note_stage 33/33 (12 new: 8:9:10:12 exact over 4 bars and across 120→90 at block sizes 32/64/512/37, both locks, layers, 128 held, RtScope); -Affected -Slow 57/57; ship link ok.
+- Perf / CPU-efficiency check: ship ns/64-frame block: pulse 8:9:10:12 36, + 3 layers 48, 128 held 1.8 µs; clock state in the held entries.
+- Notes/blockers: Q?-AP.4-a (7 readings; Cycle "bars" = 4/4 whole notes → should follow the time signature); kArpParamInfo rows for AP.3 + AP.4 ids → AP.2.

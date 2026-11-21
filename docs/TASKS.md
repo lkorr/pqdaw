@@ -924,7 +924,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **AP.1 Engine: NoteStage chain + ArpCore (Ableton parity, Degrees / Ratio)** *(merged 7cca1b22; Q?-AP.1-a; first synced step at note-on when idle → AP.3)* (plan "Tasks" AP.1, "Semantics" Ableton parity, "Realtime and CPU")
 - [ ] **AP.2 Document + lowering: Notes → Notes devices, `note:arpeggiator`, insert on the Notes link** (plan AP.2)
 - [x] **AP.3 Pitch: Harmonics unit, Harmonic Walk, Into / Out glides with shapes** *(merged 0a6afa3e; Q?-AP.3-a; Q?-AP.1-a (3) decided: first step at the note-on when idle)* (plan AP.3)
-- [ ] **AP.4 Pulse mode (polyrhythm, phase lock, layers)** (plan AP.4)
+- [x] **AP.4 Pulse mode (polyrhythm, phase lock, layers)** *(merged 057af42f; Q?-AP.4-a; open: Cycle bars assume 4/4 → follow the song's signature in AP.5)* (plan AP.4)
 - [ ] **AP.5 Step lanes** (plan AP.5)
 - [ ] **AP.6 Arpeggiator panel** 👁 (plan AP.6)
 - [ ] **AP.7 Roll preview + Flatten to clip** 👁 (plan AP.7)
