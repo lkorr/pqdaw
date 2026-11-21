@@ -168,6 +168,10 @@ public:
   bool deleteSelected();  // wire.delete: one undo step
   // Recomputes the ends now and damages what moved (normally after each layout pass); true when something moved.
   bool refresh();
+  // BR.J (Q?-BR.I-b): the free rack's pins moved without a layout (DeviceChainView::onRackPinsMoved: its scene rebuilt
+  // after a new wire, a pan, an orbiting port's slide step): refresh() when a drawn cable ends in the open rack — none
+  // does: no work. Mid layout pass: nothing (onLayout follows).
+  void rackPinsMoved();
   // The wire under a badge at `pos` (invalid: none).
   doc::WireId badgeAt(ui::Vec2 pos) const noexcept;
 

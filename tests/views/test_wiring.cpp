@@ -200,7 +200,8 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   REQUIRE(c != nullptr);
   CHECK(c->aDocked);
   CHECK(c->bDocked);
-  CHECK(dist(c->a, from) < 4.0f);  // at the LFO's pin in the free rack
+  // At the LFO's pin in the free rack, where it is now (BR.J: the new wire turned the orbiting port toward its cable).
+  CHECK(dist(c->a, *u.view().freeRackView()->outputPoint(u.lfoB, "y")) < 0.5f);
   CHECK(dist(c->b, to) < 40.0f);  // the top part of the knob
   MESSAGE("LFO cable rate " << int(c->rate));
   CHECK(c->rate <= 1);            // an LFO module's output: audio or param rate (not per voice)
@@ -224,6 +225,40 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.ctx.undo());
   CHECK(newWires(u, before).empty());
+}
+
+TEST_CASE("wiring (BR.J): a free-rack cable's end is where its orbiting port is now, with no layout after the drop") {
+  // Q?-BR.I-b: the new wire turns the LFO's orbiting output toward its cable (the rack's scene is rebuilt, the port
+  // slides over frames); nothing lays out then — the rack's canvas tells the cable layer that its pins moved.
+  Ui u;
+  const doc::WireList before = all_free::drawnWires(*u.ctx.doc());
+  const Vec2 from = u.jack(u.lfoB), to = u.knob(u.util, "Width");
+  project_patch::ProjectPatchView* r = u.view().freeRackView();
+  REQUIRE(r != nullptr);
+  const Vec2 pin0 = *r->outputPoint(u.lfoB, "y");
+  u.d.drag(from, to, 10);
+  const doc::WireList wires = newWires(u, before);
+  REQUIRE(wires.size() == 1);
+  auto pinNow = [&] {  // where the rack draws the port now (no layoutNow: u.jack() would lay out)
+    const std::optional<Vec2> p = r->outputPoint(u.lfoB, "y");
+    REQUIRE(p.has_value());
+    return *p;
+  };
+  auto endNow = [&] {
+    const CableLayer::Cable* c = u.cable(wires[0].id);
+    REQUIRE(c != nullptr);
+    return c->a;
+  };
+  CHECK(dist(endNow(), pinNow()) < 0.5f);  // right after the drop
+  int frames = 0;
+  for (; frames < 240 && r->canvas().portsMoving(); ++frames) {  // the slide, frame by frame
+    u.d.advance(1.0 / 60.0);
+    CHECK(dist(endNow(), pinNow()) < 0.5f);
+  }
+  CHECK_FALSE(r->canvas().portsMoving());
+  MESSAGE("slide frames " << frames << ", the port moved " << dist(pinNow(), pin0) << " px");
+  CHECK(dist(pinNow(), pin0) > 2.0f);  // the port did turn toward its cable (the check above means something)
+  CHECK(dist(endNow(), pinNow()) < 0.5f);
 }
 
 TEST_CASE("wiring (WI.3): a cable whose declared type clashes is refused at the target: no-drop look, the status says why") {

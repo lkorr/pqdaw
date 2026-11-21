@@ -153,6 +153,9 @@ public:
   // ---- T4.7: cross-device wiring (pq/views/device_chain/wiring.h) --------------------------------------------------
   // A jack press (Down) and the pointer events of the drag that follows (Move, Up); installWiring sets it.
   std::function<void(doc::DeviceId device, std::string_view port, const ui::PointerEvent& e)> onJack;
+  // BR.J: the free rack's pins moved without a layout (its canvas's onPinsMoved: a rebuilt scene, a pan, an orbiting
+  // port's slide): the cable ends there (sourceEnd / targetEnd) moved with them. installWiring sets it.
+  std::function<void()> onRackPinsMoved;
   struct ParamControl {
     doc::DeviceId device;
     std::string param;
