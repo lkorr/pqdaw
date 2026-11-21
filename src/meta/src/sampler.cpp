@@ -142,6 +142,9 @@ Status body(Builder& bld) {
     gateOut = b.named(gateOut, "gate_out");
     done = b.op("not", {gateOut});
   }
+  // SM.8: outside a voice (a Sampler no notes reach, e.g. dropped on an audio track) a wired Position is the gate: the
+  // Envelope behind gateOut opens while something scrubs the sample. (Folded away when Position is unwired.)
+  if (!bld.context().voice) gateOut = b.op("or", {gateOut, scrubbing});
   bld.output(1, b.op("gate_to_real", {gateOut}));  // (a type's outputs are Real: 1 / 0)
   bld.done(done);
   return Ok{};

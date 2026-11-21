@@ -11,6 +11,7 @@
 
 #include "../common/paint.h"
 #include "internal.h"
+#include "pq/views/file_probes.h"
 #include <cstdio>
 #include <unordered_map>
 #include "pq/views/browser/library_load.h"
@@ -119,6 +120,7 @@ void ProjectPatchView::setRackTrack(doc::TrackId track) {
 
 ProjectPatchView::~ProjectPatchView() {
   laneAbort();  // TX.lane-edit: no drag of the arrangement's editor may outlive the windows' surface
+  if (pendingSampleDrop_) ctx_.fileProbes().setListener(nullptr);  // SM.8: its commit would call this view
   if (valueGesture_ && ctx_.store().inGesture()) (void)ctx_.store().cancelGesture();
   if (embedded()) return;  // TX.groups / TX.free-rack: an embedded view bound no actions of the main one
   ctx_.clearViewAction("view.togglePatch");

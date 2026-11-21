@@ -14,6 +14,9 @@
 
 #include "../arrangement/edit_surface.h"
 #include "pq/core/time.h"
+#include "pq/document/change_set.h"
+#include "pq/document/commands.h"
+#include "pq/document/edit_ops.h"
 #include "pq/ui/widget.h"
 #include "pq/views/project_patch/project_patch_view.h"
 
@@ -26,6 +29,40 @@ class MosCircle;
 }
 
 namespace pq::views::project_patch {
+
+// Builders applied in turn to a scratch snapshot (each reads what the previous made), kept as the steps of one Batch
+// (the node menu's placements, SM.8's sample drops).
+class Composer {
+public:
+  Composer(doc::Snapshot s, doc::IdSource& ids) : snap_(std::move(s)), ids_(ids) {}
+  const doc::Project& doc() const noexcept { return *snap_; }
+  doc::IdSource& ids() noexcept { return ids_; }
+  std::vector<doc::Command> steps;
+  std::string why;
+  bool add(const doc::ops::EditResult& e) {
+    if (!e) {
+      why = e.error().message;
+      return false;
+    }
+    if (e->empty()) return true;
+    return add(e->command);
+  }
+  bool add(const doc::Command& c) {
+    doc::ChangeSet cs;
+    auto next = doc::apply(snap_, c, cs);
+    if (!next) {
+      why = next.error().message;
+      return false;
+    }
+    snap_ = std::move(*next);
+    steps.push_back(c);
+    return true;
+  }
+
+private:
+  doc::Snapshot snap_;
+  doc::IdSource& ids_;
+};
 
 inline ui::Rect snapRect(ui::Rect r) noexcept { return {std::round(r.x0), std::round(r.y0), std::round(r.x1), std::round(r.y1)}; }
 

@@ -291,13 +291,20 @@ ui::DropFeedback ProjectCanvas::dragOver(const ui::DragPayload& p, Vec2 pos, ui:
     if (noteDropAt(view_, *this, p, pos)) return {ui::DropEffect::Copy, ui::Cursor::Arrow};
     return {};  // a note effect goes only onto a notes cable
   }
+  // On a band's lane the files are clips (the lane drop); SM.8: on its circuit audio files place Samplers.
   LaneEditSurface* s = view_.laneEditReady();
-  if (s == nullptr) return {};
-  return view_.laneArr_->fileDrop().over(*s, p, pos, mods);
+  ui::DropFeedback fb;
+  if (s != nullptr) fb = view_.laneArr_->fileDrop().over(*s, p, pos, mods);  // (off the lanes: none, and it leaves)
+  if (fb.effect != ui::DropEffect::None || (s != nullptr && s->dropSpotAt(pos))) {
+    view_.sampleDragLeave();
+    return fb;
+  }
+  return view_.sampleDragOver(p, pos);
 }
 
 void ProjectCanvas::dragLeave() {
   if (ArrangementView* arr = view_.laneArrangement()) arr->fileDrop().leave(*view_.laneEdit_);
+  view_.sampleDragLeave();
 }
 
 ui::DropEffect ProjectCanvas::drop(const ui::DragPayload& p, Vec2 pos, ui::Mods mods) {
@@ -313,6 +320,8 @@ ui::DropEffect ProjectCanvas::drop(const ui::DragPayload& p, Vec2 pos, ui::Mods 
     return ui::DropEffect::Copy;
   }
   LaneEditSurface* s = view_.laneEditReady();
+  if (s == nullptr || !s->dropSpotAt(pos))
+    if (const ui::DropEffect e = view_.sampleDropAt(p, pos); e != ui::DropEffect::None) return e;
   if (s == nullptr) return ui::DropEffect::None;
   return view_.laneArr_->fileDrop().drop(*s, p, pos, mods);
 }

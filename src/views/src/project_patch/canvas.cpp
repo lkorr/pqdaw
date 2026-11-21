@@ -767,6 +767,8 @@ void ProjectCanvas::paintOverlay(ui::PaintContext& ctx) {
 
   // TX.lane-drop: the ghost clips of files dragged over a lane.
   view_.paintLaneDrop(ctx);
+  // SM.8: where a dragged sample's sampler goes (or the Sampler whose sample it replaces).
+  view_.paintSampleDrop(ctx);
   // TL.3: the automation wire from the last pressed control to its sub-lane.
   view_.paintAutomationWire(ctx);
   // GU.5: the link lines from the panel windows' elements to their controls, and the selected control's ring.

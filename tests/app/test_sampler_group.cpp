@@ -253,3 +253,71 @@ TEST_CASE("SM.3 Sampler group: Slice picks the slice by voice.key (drawn notes a
   CHECK(hzBetween(o[0], 0.05, 0.45) == doctest::Approx(300.0).epsilon(1e-3));
   CHECK(hzBetween(o[0], 1.05, 1.45) == doctest::Approx(600.0).epsilon(1e-3));
 }
+
+// SM.8 (docs/plans/SM.md "Decisions", Drop): a Sampler dropped on an AUDIO track lands unwired (no notes reach it: a
+// plain group, not an instrument group). Wired into the track's path, an LFO into its engine's Position input scrubs the
+// sample and makes sound; with Position unwired it is silent (no gate).
+TEST_CASE("SM.8 Sampler on an audio track: an LFO into Position scrubs the sample (sound); unwired: silence") {
+  DocumentStore store;
+  const fs::path dir = fs::temp_directory_path() / "pq_sm8_audio";
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+  fs::create_directories(dir);
+  auto t = ops::createTrack(*store.current(), store.ids(), TrackKind::Audio);
+  run(store, t);
+  const TrackId track = t->tracks.at(0);
+  const fs::path p = dir / "s.wav";
+  const std::vector<std::vector<float>> ch = {sine(440.0, 0.5, at(1.0))};
+  REQUIRE(engine::writeWav(p, ch, static_cast<uint32_t>(kRate)).ok());
+  SampleRef s;
+  s.id = store.ids().sample();
+  s.path = utf8(p);
+  s.size = fs::file_size(p);
+  s.frames = static_cast<int64_t>(ch[0].size());
+  s.rate = kRate;
+  s.channels = 1;
+  s.displayName = "s.wav";
+  REQUIRE(store.dispatch(Command{AddSample{s}}).ok());
+  IdSource local;
+  SamplerOptions so;
+  so.sample = s.id.value;
+  const ops::EditResult e = ops::pasteBlocksAtNotes(*store.current(), store.ids(), track, samplerBlocks(local, so));
+  run(store, e);
+  const DeviceId group = e->devices.at(0);
+  CHECK(mainPath(*store.current(), *findTrackPtr(*store.current(), track)).blocks.empty());  // landed unwired
+  DeviceId engineId;
+  forEachDevice(*store.current(), [&](const Device& d, const Track&) {
+    if (d.patch == "meta:sampler" && d.group == group) engineId = d.id;
+  });
+  REQUIRE(engineId.valid());
+  // Its Out into the track's path (the user's wiring), then render: no gate, no Position → silence.
+  {
+    const MainPath path = mainPath(*store.current(), *findTrackPtr(*store.current(), track));
+    REQUIRE(!path.links.empty());
+    run(store, ops::spliceIntoWire(*store.current(), store.ids(), nullptr, group, path.links.front()));
+  }
+  auto render = [&](double seconds) {
+    app::LinkConfig c;
+    c.compileThread = false;
+    c.sleepAfterMs = 0.0f;
+    c.sampleRate = kRate;
+    auto l = app::ProjectLink::create(c, store.current());
+    REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
+    REQUIRE((*l)->waitForSamples(30.0));
+    (*l)->flush();
+    engine::BufferSink sink;
+    auto st = (*l)->renderOffline(0, static_cast<uint64_t>(std::llround(seconds * kRate)), sink);
+    REQUIRE_MESSAGE(st.ok(), (st.ok() ? std::string() : st.error().message));
+    CHECK((*l)->lastError().empty());
+    return sink.channels;
+  };
+  CHECK(rms(render(1.0)[0], 0.0, 1.0) < 1e-6);
+  // A stock LFO (free, its default rate) wired into the engine's Position: it scrubs the sample.
+  IdSource local2;
+  const ops::EditResult lfo = ops::pasteBlocks(*store.current(), store.ids(), track, lfoBlocks(local2));
+  run(store, lfo);
+  run(store, ops::connectWire(*store.current(), store.ids(), lfo->devices.at(0), std::string(kMainPort), engineId, "position"));
+  const auto o = render(2.0);
+  CHECK(rms(o[0], 0.0, 2.0) > 0.02);
+  fs::remove_all(dir, ec);
+}

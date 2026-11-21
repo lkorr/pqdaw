@@ -2438,3 +2438,16 @@ Context: AP.10 (docs/plans/AP.md "AP.10"). Choices (most reversible):
    Pattern view shows the real curves. Offsets (in the unit or cents) are drawn at their true size.
 4. **The pattern view shows one cycle of at most 64 steps** (longer: the first 64, captioned) and a nominal note of the
    track tuning's degree 0 when nothing has been held since the panel opened.
+## Q?-SM.8-a · the sample drop on the circuit: readings taken
+Context: SM.8 (docs/plans/SM.md "Decisions", Drop). Choices (most reversible):
+1. **An unvoiced Sampler plays from Position**: on an audio track no notes reach the group (a plain group, gate false),
+   so its Envelope stayed shut and an LFO into Position was silent. `meta:sampler` now raises gateOut while a wired
+   Position scrubs, only outside a voice (folded away unwired; voiced Samplers unchanged, SM.3's tests bit-identical).
+2. **Auto-wire = ops::pasteBlocksAtNotes's rule**: the path holds no block. A MIDI path with only a note effect (an
+   Arpeggiator) counts as not empty, so the Sampler lands unwired there. Alternative: splice after the note run.
+3. **Every band takes it**, the master and group bands too (not only MIDI / audio / return): what pasteBlocks accepts.
+   The group-panel (scoped) and embedded circuits take no drop yet.
+4. **Several files dropped on a Sampler**: the first replaces its sample, the rest become new Samplers under it.
+5. **A dropped Sampler is named after its file** ("Kick"), as a dropped track is; a replace keeps the name.
+6. **Placement** is the spawn rule: centred on the drop point but never above the band's title strip (a tall block
+   dropped near the top has its top there), an overlap goes to the nearest free spot.

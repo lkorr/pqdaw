@@ -181,6 +181,7 @@ namespace pq::views {
 
 class Shell;
 class MeterSource;
+struct ProbedFile;
 class ArrangementView;
 namespace panel {
 class PanelWindow;
@@ -933,6 +934,29 @@ public:
   // TX.node-menu-fix1: while a node menu is open, where its choice goes (world units; drawn as a marker), else nullopt.
   const std::optional<graph::Point2>& spawnMark() const noexcept { return spawnMark_; }
   circuit::NodeMenu* openInsertMenu(uint32_t edge, ui::Vec2 at);
+
+  // ---- SM.8: audio files dropped on the circuit (docs/plans/SM.md "Decisions", Drop) --------------------------------
+  // Audio files (Explorer or the browser) dragged over a band's circuit (any band: MIDI, audio, return, master; not its
+  // lane, where they are clips: the lane drop) place one Sampler group per file there, the first centred on the drop
+  // point, each further one under the previous. On a MIDI band whose main path holds no block the first goes onto the
+  // path (notes → sampler → mixer: ops::pasteBlocksAtNotes); everywhere else it lands unwired. Dropped on a Sampler the
+  // first file replaces its sample (ops::setSamplerSample). One undo step per drop. Each sampler's root and slices
+  // follow from the sample's analysis (SampleAnalysis::whenAnalysed: the detected pitch, unpitched 261.63 Hz; a slice
+  // at 0 and at every transient), dispatched into the drop's step while nothing else happened in between.
+  struct SampleDropHover {
+    bool on = false;
+    graph::Point2 at{0.0f, 0.0f};  // world: where the first sampler's centre goes
+    uint32_t band = kNone;
+    doc::DeviceId replace;         // a Sampler under the pointer (its sample is replaced)
+    uint32_t files = 0;            // the audio files dragged
+  };
+  const SampleDropHover& sampleDropHover() const noexcept { return sampleHover_; }
+  // The Sampler group `device` is, or whose engine it is (invalid: neither).
+  doc::DeviceId samplerOf(doc::DeviceId device) const;
+  // The drop itself (probed files, Ready): the samplers made or changed, in file order (empty: refused, the reason in
+  // the status line).
+  std::vector<doc::DeviceId> dropSamplers(std::span<const ProbedFile> files, graph::Point2 at, doc::TrackId track,
+                                          doc::DeviceId replace);
   // The main input / output of a device as it is now ("" = none), from its patch's signature (catalog facts).
   circuit::MainPorts mainPorts(doc::DeviceId device) const;
   // Push-apart — TX.block-drag: BLOCKS NEVER OVERLAP, one rule for every block. After every re-layout (a move, a drop, a
@@ -1048,6 +1072,7 @@ public:
   void paintPanelLinks(ui::PaintContext& ctx);  // (the canvas's overlay)
   void paintAutomationWire(ui::PaintContext& ctx);  // TL.3 (the canvas's overlay)
   void paintLaneDrop(ui::PaintContext& ctx);        // TX.lane-drop: a drop's ghost clips over the lanes (the overlay)
+  void paintSampleDrop(ui::PaintContext& ctx);      // SM.8: where a dragged sample's sampler goes (the overlay)
 
   // Menus: the band's (add device, focus, reset layout), a block's (delete, (de)activate, open, expand), a wire's.
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);
@@ -1217,6 +1242,20 @@ private:
   void endTapDrag(bool commit);
   friend class ProjectCanvas;
   void stampTap(doc::Wire& w);
+  // SM.8 (see "audio files dropped on the circuit"): the canvas's drag hooks off the lanes, and a drop waiting for its
+  // files' probes (committed when they arrive).
+  ui::DropFeedback sampleDragOver(const ui::DragPayload& p, ui::Vec2 pos);
+  void sampleDragLeave();
+  ui::DropEffect sampleDropAt(const ui::DragPayload& p, ui::Vec2 pos);
+  void commitSampleDrop();
+  SampleDropHover sampleHover_;
+  struct PendingSampleDrop {
+    std::vector<std::string> audio;
+    graph::Point2 at{0.0f, 0.0f};
+    doc::TrackId track;
+    doc::DeviceId replace;
+  };
+  std::optional<PendingSampleDrop> pendingSampleDrop_;
   uint32_t playheadTimer_ = 0;
   // TX.lane-edit: main view only, made and registered with the arrangement next to the view on first use; laneArr_ is
   // that arrangement while the surface is registered (its Surfaces unregister it when the arrangement goes first).

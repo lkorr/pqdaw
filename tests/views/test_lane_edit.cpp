@@ -1114,6 +1114,19 @@ DropEffect dropAt(Ui& u, std::vector<std::string> paths, Vec2 pos, Mods mods = 0
   return u.d.tree().dragDrop(pos, mods);
 }
 
+// A canvas point on no band (so neither a lane drop nor SM.8's circuit drop): between two bands or under the last.
+Vec2 offBands(Ui& u) {
+  ProjectCanvas& c = u.view().canvas();
+  const IRect cr = c.rect();
+  for (int32_t y = cr.y + 2; y < cr.bottom() - 2; y += 2)
+    for (int32_t x = cr.x + 2; x < cr.right() - 2; x += 8) {
+      const Vec2 p{static_cast<float>(x), static_cast<float>(y)};
+      if (c.bandAt(p) == kNone) return p;
+    }
+  FAIL("no point off the bands on the canvas");
+  return {};
+}
+
 // An audio track "Loop" after Mod (empty).
 doc::TrackId addLoopTrack(Ui& u) {
   doc::DocumentStore& st = u.ctx.store();
@@ -1249,10 +1262,9 @@ TEST_CASE("lane drop: the master band's lane refuses (NotAllowed); off the lanes
   CHECK(u.d.tree().dragDrop(p, 0) == DropEffect::None);
   CHECK(u.history() == h);
   CHECK(u.track("Master").clips.empty());
-  // On the canvas outside every lane (left of the lanes' column): not a drop target.
-  const IRect cr = u.view().canvas().rect();
-  const Vec2 off{static_cast<float>(cr.x) + 4.0f, static_cast<float>(cr.y) + 4.0f};
-  REQUIRE(u.body("Master").x0 > off.x);
+  // On the canvas outside every lane and every band (SM.8: a band's circuit takes audio files as Samplers): not a drop
+  // target.
+  const Vec2 off = offBands(u);
   CHECK(dropAt(u, {kick}, off) == DropEffect::None);
   CHECK(u.history() == h);
 }
@@ -1278,9 +1290,8 @@ TEST_CASE("lane drop: the ghost shows while hovering a lane (on the lane surface
   CHECK(arr.dropPlan().items[0].start == u.bar);
   CHECK(arr.dropPlan().newTracks == 0);
   u.d.step();  // painted (the canvas's overlay) without a fault
-  // Off the lanes: no target, the ghost goes.
-  const IRect cr = u.view().canvas().rect();
-  (void)u.d.tree().dragMove({static_cast<float>(cr.x) + 4.0f, static_cast<float>(cr.y) + 4.0f}, 0);
+  // Off the lanes (and off every band: SM.8's circuit drop): no target, the ghost goes.
+  (void)u.d.tree().dragMove(offBands(u), 0);
   CHECK(u.d.tree().dropTarget() == nullptr);
   CHECK_FALSE(arr.dropHovering());
   // Back on it, then the drag leaves the window: gone, nothing dropped.

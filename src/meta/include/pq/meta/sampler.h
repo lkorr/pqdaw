@@ -30,7 +30,8 @@
 //             markers: Floats (frame, beat pairs, SM.4), rootText: String (the root as an identity, SM.7 / SM.10)}
 //   outputs  out (stereo: a mono sample on both channels); gateOut (1 / 0, for the envelope after it: Classic the input
 //            gate; One-Shot / Slice: playing, in Gate mode also the input gate); done (Type::voiceEnd: not gateOut,
-//            Classic: not (gate and playing))
+//            Classic: not (gate and playing)); SM.8: outside a voice (no notes reach it) gateOut is also high
+//            while a wired position scrubs, so the envelope after it opens (an LFO on an audio track plays it)
 //   resource Sample request 0 (the link pins and publishes the data's sample into it; a data edit is no compile)
 // Settings choose the atoms (a mode change recompiles): every mode is one sample_read_cubic (+ sample_slice in Slice,
 // + transport.bpm with Re-Pitch); an unwired position folds the scrub path away.

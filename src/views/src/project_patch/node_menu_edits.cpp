@@ -24,39 +24,6 @@ using ui::Vec2;
 
 namespace {
 
-// Builders applied in turn to a scratch snapshot (each reads what the previous made), kept as the steps of one Batch.
-class Composer {
-public:
-  Composer(doc::Snapshot s, doc::IdSource& ids) : snap_(std::move(s)), ids_(ids) {}
-  const doc::Project& doc() const noexcept { return *snap_; }
-  doc::IdSource& ids() noexcept { return ids_; }
-  std::vector<doc::Command> steps;
-  std::string why;
-  bool add(const doc::ops::EditResult& e) {
-    if (!e) {
-      why = e.error().message;
-      return false;
-    }
-    if (e->empty()) return true;
-    return add(e->command);
-  }
-  bool add(const doc::Command& c) {
-    doc::ChangeSet cs;
-    auto next = doc::apply(snap_, c, cs);
-    if (!next) {
-      why = next.error().message;
-      return false;
-    }
-    snap_ = std::move(*next);
-    steps.push_back(c);
-    return true;
-  }
-
-private:
-  doc::Snapshot snap_;
-  doc::IdSource& ids_;
-};
-
 // The edit that adds `c`'s device to `track` at list position `index`. `plain`: no default preset. Its Edit::devices
 // holds the new device first (a module: its group).
 doc::ops::EditResult addChoice(ViewContext& ctx, const doc::Project& p, doc::IdSource& ids, const ProjectPatchView::NodeChoice& c,
