@@ -8,6 +8,7 @@
 #include "../common/paint.h"
 #include "pq/document/meta.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/theme.h"
@@ -382,6 +383,9 @@ doc::Panel leafPanel(const devices::DeviceSignature& sig, const doc::Device& d, 
         if (face != nullptr) *face = true;
         return p;
       }
+  // AP.6: a note device whose type has its own panel (the Arpeggiator's); others get the generic one below.
+  if (doc::isNoteDevice(d))
+    if (doc::Panel p = doc::noteDevicePanel(d); !p.empty()) return p;
   doc::Panel p;
   // Columns 64 wide; a knob takes a 56-px slot, a toggle or a number box a 28-px one, 6 px between rows; two knob rows
   // per column for up to eight controls (wider, Live-like), else three.

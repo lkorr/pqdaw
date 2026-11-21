@@ -31,6 +31,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/model.h"
+#include "pq/document/panel.h"
 
 namespace pq::doc {
 
@@ -69,6 +70,24 @@ const NoteDeviceType* noteDeviceTypeOf(const Device& d) noexcept;
 // The fixed patch text a type's devices play for the views and the edit builders (`in notes`, its params with their
 // ranges, defaults, @steps, @label, @choices, its settings as `real const` inputs, `out out = notes`). Never lowered.
 std::string noteDevicePatchText(const NoteDeviceType& t);
+
+// AP.6: the DEVICE PANEL of note device `d` — its type's own (the Arpeggiator: docs/plans/AP.md "AP.6"; the views'
+// leafPanel draws it 1:1 in the Device view), built from the group-panel elements (pq/document/panel.h) bound to the
+// device's own params (Control) and settings (Setting), so every control edits its param as any panel control does:
+// automation, cables, undo. Empty: the type has none (the generic panel: one control per param).
+// The Arpeggiator's (fit: the shown height is the open sections'):
+//   top        Arp (Style, Hold, Seed, Rate: Sync, num / den, tuplet n : m with Straight / Dotted / Triplet shortcuts —
+//              free: ms —, Gate, Groove, Offset, Repeats, Retrigger + its rate, Velocity: source, fixed, decay, target,
+//              retrigger), Pitch (Unit, Distance, Steps, Shift / Rotate; Ratio p / q only in Ratio, Base in
+//              Harmonics or Harmonic Walk (a condition of two sources), Range / Under / walk order only with style
+//              Harmonic Walk), the live pattern view.
+//   Glide      fold: Into and Out (source / target, offset, the drawn shape), Time (ms or a note fraction), Cents, Shape,
+//              Bend.
+//   Pulse      fold: on; with it on its source, ref, cycle (+ bars), Layers + levels, the proportion (with source
+//              Proportion).
+//   Step Lanes fold: per lane its switch and a step-lane editor (its 32 steps, its length).
+// Visibility conditions (Visibility) hide what does not apply; folds are view state (folded by default).
+Panel noteDevicePanel(const Device& d);
 
 // The NOTE RUN of a main path: how many of its first blocks are note devices (the notes link's stages, in order).
 uint32_t noteRun(const MainPath& path) noexcept;

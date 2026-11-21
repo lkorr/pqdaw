@@ -2209,3 +2209,20 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Not yet: no Fit toggle in the panel editor (set by code; SM.10/11 use it); the Device view doesn't re-lay out its frame
   on a fold (the panel just draws shorter); an embedded child panel's folds are not saved.
 - Goldens (new): panel-folds-folded(-2x), panel-folds-open(-2x), panel-oval(-2x).
+
+## 2026-11-21 · AP.6 · the Arpeggiator's panel (task/AP.6-panel) 👁
+- Insert an Arpeggiator on a MIDI track (Create > Insert Arpeggiator): the Device view shows its own panel at 1:1 instead
+  of the long list of 254 controls. Top: Arp (Style, Hold, Sync, Rate num / den, Tuplet n : m with Straight / Dotted /
+  Triplet, Gate, Groove, Retrigger, Seed, Offset, Repeats ∞, Velocity), Pitch (Unit, Distance, Steps, Shift / Rotate) and
+  a live Pattern view. Does it read like a Live device?
+- Controls appear only when they apply: switch Sync off (Rate ms), Retrigger Beat (its rate), Unit Ratio (p / q) or
+  Harmonics (Base), Style Harmonic Walk (Range / Under / Order), Velocity Fixed (the Fixed knob).
+- Three folds under it, folded by default: Glide (Into / Out with a small drawing of the shape, Time, Shape, Bend),
+  Pulse (its rows once On), Step Lanes. Opening one makes the Device view taller (unless you set its height by hand).
+- Step Lanes: switch a lane on, drag a bar up / down, drag sideways to paint several steps (one undo), Alt+drag or
+  double-click: default, drag the white grip after the last step to change the length. Skip / Tie: click a cell to cycle
+  Play → Skip → Tie. Hold a chord and play: each lane's current step lights (blue), and the Pattern view shows the held
+  notes in the order the pattern plays them with the playing one lit.
+- Base shows for Unit Harmonics or Style Harmonic Walk (any panel's show-when condition may now name several sources).
+- Known: Rate ms and Decay ms are linear knobs (Q?-AP.2-b). Not checked in the live app (tests and goldens only).
+- Goldens (new): arp-panel-default, arp-panel-ratio, arp-panel-walk, arp-panel-pulse, arp-panel-lanes.

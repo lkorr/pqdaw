@@ -33,6 +33,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 #include "pq/views/devices/device_model.h"
 #include "pq/views/live_modulation.h"
@@ -69,6 +70,13 @@ std::string formatUnits(const dsp::Curve& c, double v) {
   }
   if (c.step >= 1.0) return fmt("%.0f", v);
   return fmt(std::fabs(v) >= 10.0 ? "%.1f" : "%.2f", v);
+}
+
+// AP.6: a note device's structural setting `name` as its type declares it (range, step, a switch); null: not one.
+const doc::NoteParamSpec* noteSetting(const doc::Device& d, std::string_view name) {
+  const doc::NoteDeviceType* t = doc::noteDeviceTypeOf(d);
+  const doc::NoteParamSpec* s = t != nullptr ? t->param(name) : nullptr;
+  return s != nullptr && !s->runtime ? s : nullptr;
 }
 
 dsp::Curve linearOver(double min, double max, double step) {
@@ -117,6 +125,9 @@ public:
     const auto& all = ctx_.store().view().panelWindows;
     const auto it = all.find(group_.value);
     return it == all.end() ? std::nullopt : it->second.foldOpen(id);
+  }
+  std::shared_ptr<const NoteStageStatus> noteStatus(doc::DeviceId device) const override {  // AP.6
+    return ctx_.noteStageStatus(device);
   }
   void setFoldOpen(uint32_t id, bool open) override {
     doc::PanelWindowView& v = ctx_.store().view().panelWindows[group_.value];
@@ -653,6 +664,14 @@ private:
         const double step = ss.steps >= 2 ? (ss.max - ss.min) / static_cast<double>(ss.steps - 1) : 0.0;
         i.curve = linearOver(ss.min, ss.max, step);
         i.steps = ss.steps >= 2 ? static_cast<int32_t>(ss.steps) : 0;
+      } else if (const doc::NoteParamSpec* ns = noteSetting(*d, b.name)) {  // AP.6: a note device's declared setting
+        r.how = How::Const;
+        r.def = ns->def;
+        i.label = ns->label;
+        i.curve = linearOver(ns->min, ns->max, ns->isBool ? 1.0 : ns->step);
+        i.choices = ns->choices;
+        i.isSwitch = ns->isBool;
+        i.steps = ns->isBool ? 2 : ns->step > 0.0 ? static_cast<int32_t>(std::lround((ns->max - ns->min) / ns->step)) + 1 : 0;
       } else {
         const devices::DeviceSignature* sig = signature(*d);
         const devices::ConstInfo* ci = sig != nullptr ? sig->findConst(b.name) : nullptr;

@@ -702,7 +702,8 @@ private:
         for (size_t v = 0; v < values.size(); ++v) {
           names.push_back(sourceName(src) + " = " + values[v]);
           whenChoices_.push_back({src.id, static_cast<double>(v)});
-          if (e.when && e.when->element == src.id && e.when->values.size() == 1 && std::fabs(e.when->values.front() - static_cast<double>(v)) < 1e-6)
+          if (e.when && e.when->more.empty() && e.when->element == src.id && e.when->values.size() == 1 &&
+              std::fabs(e.when->values.front() - static_cast<double>(v)) < 1e-6)
             at = static_cast<int32_t>(names.size()) - 1;
         }
       }

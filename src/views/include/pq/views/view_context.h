@@ -49,6 +49,7 @@
 
 namespace pq {
 class TapRing;  // pq/core/tap_ring.h (TX.spectrum: the analysis taps)
+struct NoteStageStatus;  // pq/core/note_stage_status.h (AP.6)
 }
 
 namespace pq::views {
@@ -412,6 +413,13 @@ public:
   // none (tests, scenes without an engine).
   using FaceVoices = std::function<VoiceTapReader*(doc::DeviceId, std::string_view)>;
   void setFaceVoices(FaceVoices f) { faceVoices_ = std::move(f); }
+  // AP.6: what a note device's stage plays now (pq/core/note_stage_status.h: the lanes' current steps, the pattern), the
+  // app's source (the playback link's statuses); null: none (no source, the device plays in no published chain yet).
+  using NoteStatusSource = std::function<std::shared_ptr<const NoteStageStatus>(doc::DeviceId)>;
+  void setNoteStatusSource(NoteStatusSource f) { noteStatusOf_ = std::move(f); }
+  std::shared_ptr<const NoteStageStatus> noteStageStatus(doc::DeviceId device) const {
+    return noteStatusOf_ ? noteStatusOf_(device) : nullptr;
+  }
   VoiceTapReader* faceVoices(doc::DeviceId device, std::string_view path) const { return faceVoices_ ? faceVoices_(device, path) : nullptr; }
   // EQ.4: the sample rate the analysis source runs at (48 kHz until one is set): the response displays evaluate at it.
   double sampleRate() const noexcept { return sampleRate_; }
@@ -872,6 +880,7 @@ private:
   std::unique_ptr<LiveModulation> liveModulation_;     // bug-mod-ghost
   std::function<std::shared_ptr<TapRing>(doc::DeviceId, std::string_view)> signalTapOf_;  // GU.7
   FaceVoices faceVoices_;  // GU.7
+  NoteStatusSource noteStatusOf_;  // AP.6
   CircuitOpener circuitOpener_;
   ViewPrefs viewPrefs_;
   std::function<void(const ViewPrefs&)> viewPrefsListener_;

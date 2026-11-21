@@ -1178,8 +1178,11 @@ void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
             map.push_back({static_cast<engine::ArpParamId>(r.param), v, 1.0f, 0.0f, true});
       }
       auto box = std::make_shared<engine::ArpTableMailbox>();
+      std::shared_ptr<NoteStageStatus>& status = noteStatus_[st.device.value];  // AP.6: the panel's, kept per device
+      if (!status) status = std::make_shared<NoteStageStatus>();
       auto stage = std::make_unique<engine::ArpStage>(fixed, std::move(map),
-                                                      engine::ArpDegreeTable{c.degreeCents, c.equaveCents}, steps, box);
+                                                      engine::ArpDegreeTable{c.degreeCents, c.equaveCents}, steps, box,
+                                                      status);
       stage->key = st.device.value;  // AP.2b: the republished chain's stage adopts the running one's state
       if (chain->add(std::move(stage))) boxes.push_back(std::move(box));
     }
@@ -1188,7 +1191,19 @@ void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
     next.push_back({std::move(c), slot, std::move(boxes)});
   }
   noteChains_ = std::move(next);
+  for (auto it = noteStatus_.begin(); it != noteStatus_.end();) {  // AP.6: a device no chain plays any more
+    const bool used = std::any_of(noteChains_.begin(), noteChains_.end(), [&](const PublishedNotes& n) {
+      return std::any_of(n.chain.stages.begin(), n.chain.stages.end(),
+                         [&](const doc::LoweredNoteStage& st) { return st.device.value == it->first; });
+    });
+    it = used ? std::next(it) : noteStatus_.erase(it);
+  }
   engine_->wake();
+}
+
+std::shared_ptr<const NoteStageStatus> ProjectLink::noteStageStatus(doc::DeviceId device) const {  // AP.6
+  const auto it = noteStatus_.find(device.value);
+  return it == noteStatus_.end() ? nullptr : it->second;
 }
 
 // The tuning node input an automation lane on `ref` drives per sample (T2.6-fix2): the live input of the current

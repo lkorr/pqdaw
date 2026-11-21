@@ -45,6 +45,10 @@
 #include "pq/ui/theme.h"
 #include "pq/views/meta/meta_face.h"
 
+namespace pq {
+struct NoteStageStatus;  // pq/core/note_stage_status.h (AP.6)
+}
+
 namespace pq::views {
 class GroupResponses;  // pq/views/panel/group_responses.h (EQ.4)
 }
@@ -179,6 +183,10 @@ public:
   // panel shows the same); this default keeps it in the target (a fixed panel, an embedded child's, tests).
   virtual std::optional<bool> foldOpen(uint32_t id) const;
   virtual void setFoldOpen(uint32_t id, bool open);
+  // ---- AP.6: what a note device's stage plays now (the arpeggiator's step lanes and pattern view) ----
+  // The status the stage of note device `device` writes (pq/core/note_stage_status.h); null: none (no engine, the
+  // device in no published chain yet). The document's target asks the ViewContext's source.
+  virtual std::shared_ptr<const NoteStageStatus> noteStatus(doc::DeviceId /*device*/) const { return nullptr; }
 
 private:
   doc::DeviceId selected_;

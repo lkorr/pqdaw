@@ -905,6 +905,25 @@ private:
         w_.beginArray(false);
         for (const double v : e.when->values) w_.number(wat, v);
         w_.endArray();
+        if (!e.when->more.empty()) {  // AP.6: further sources
+          w_.key("more");
+          w_.beginArray(false);
+          for (const VisibilityTerm& t : e.when->more) {
+            w_.beginObject(false);
+            w_.key("element");
+            w_.integer(t.element);
+            w_.key("values");
+            w_.beginArray(false);
+            for (const double v : t.values) w_.number(wat, v);
+            w_.endArray();
+            w_.endObject();
+          }
+          w_.endArray();
+        }
+        if (e.when->all) {
+          w_.key("all");
+          w_.boolean(true);
+        }
         w_.endObject();
       }
       w_.endObject();
@@ -2647,16 +2666,37 @@ private:
           break;
         }
         case 5: {
-          static constexpr std::string_view W[] = {"element", "values"};
+          static constexpr std::string_view W[] = {"element", "values", "more", "all"};
+          static constexpr std::string_view T[] = {"element", "values"};
           Visibility v;
           Members wm(r_, f, W);
           for (int j; (j = wm.next()) >= 0;) {
             const PathSeg g(&f, W[static_cast<size_t>(j)]);
             if (j == 0) {
               v.element = u32(g);
-            } else {
+            } else if (j == 1) {
               r_.beginArray(g);
               for (size_t q = 0; r_.nextElement(g); ++q) v.values.push_back(r_.readDouble(PathSeg(&g, q)));
+            } else if (j == 2) {  // AP.6: further sources
+              r_.beginArray(g);
+              for (size_t q = 0; r_.nextElement(g); ++q) {
+                const PathSeg ts(&g, q);
+                VisibilityTerm t;
+                Members tm(r_, ts, T);
+                for (int tk; (tk = tm.next()) >= 0;) {
+                  const PathSeg h(&ts, T[static_cast<size_t>(tk)]);
+                  if (tk == 0) {
+                    t.element = u32(h);
+                  } else {
+                    r_.beginArray(h);
+                    for (size_t z = 0; r_.nextElement(h); ++z) t.values.push_back(r_.readDouble(PathSeg(&h, z)));
+                  }
+                }
+                tm.require({0, 1});
+                v.more.push_back(std::move(t));
+              }
+            } else {
+              v.all = r_.readBool(g);
             }
           }
           wm.require({0, 1});

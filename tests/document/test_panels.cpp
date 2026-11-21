@@ -408,3 +408,38 @@ TEST_CASE("panels (GU.5): a group's panel window is view state — saved as the 
     REQUIRE_FALSE(r.ok());
   }
 }
+
+// AP.6: a condition of several sources (Visibility::more, any-of / all-of): checked term by term, saved and read back,
+// and a removed source drops only its own term.
+TEST_CASE("panels: a visibility condition of several sources (any / all) is checked, saved and pruned per term") {
+  PanelDoc d;
+  PanelElement shown = *d.panel(d.g)->find(d.ids[5]);
+  REQUIRE(shown.when.has_value());
+  shown.when->more.push_back(VisibilityTerm{d.ids[2], {1.0}});
+  shown.when->all = true;
+  {
+    Panel q = *d.panel(d.g);
+    *const_cast<PanelElement*>(q.find(d.ids[5])) = shown;
+    CHECK(checkPanel(q).ok());
+    const_cast<PanelElement*>(q.find(d.ids[5]))->when->more.push_back(VisibilityTerm{99, {0.0}});
+    CHECK_FALSE(checkPanel(q).ok());  // a further term naming no element
+  }
+  d.edit(ops::setPanelElement(d.doc(), d.g, shown));
+  auto text = serializeProject(d.doc());
+  REQUIRE(text.ok());
+  CHECK(text->find("\"more\"") != std::string::npos);
+  auto back = parseProject(*text);
+  REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
+  const Device* g2 = findDevice(*back->project, d.g).device;
+  REQUIRE(g2 != nullptr);
+  CHECK(*g2->panel == *d.panel(d.g));
+  // The tabs (the first term's source) removed: the toggle's term is left, as the main one.
+  const uint32_t gone[] = {d.ids[4]};
+  d.edit(ops::removePanelElements(d.doc(), d.g, gone));
+  const PanelElement* after = d.panel(d.g)->find(d.ids[5]);
+  REQUIRE(after != nullptr);
+  REQUIRE(after->when.has_value());
+  CHECK(after->when->element == d.ids[2]);
+  CHECK(after->when->values == std::vector<double>{1.0});
+  CHECK(after->when->more.empty());
+}

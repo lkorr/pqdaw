@@ -903,6 +903,14 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
       for (panel::PanelHost* h : hs) h->notifyChanged();
     }
     if (bits & view_change::kLayout) requestFit(true);  // BR.I: the Device view may have been opened
+    if (bits & view_change::kPanelFolds) {  // AP.6: a panel's section folded: its frame takes the panel's new height
+      std::vector<panel::PanelHost*> hs;
+      for (const auto& [id, f] : impl_->all) f->hosts(hs);
+      for (panel::PanelHost* h : hs)
+        if (panel::GroupPanelFace* g = h->panelFace()) (void)g->sync();
+      impl_->content->invalidateLayout();
+      requestFit(false);  // the view follows the tallest panel (unless its height was set by hand)
+    }
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
     else if ((bits & view_change::kTransport) && (!impl_->autoShown.empty() || impl_->chainAuto)) applyAutomation();
     if (bits & view_change::kTransport) {  // DT.1: tempo sliders follow the playhead's tempo while it plays

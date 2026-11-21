@@ -87,7 +87,7 @@ EditResult removePanelElements(const Project& p, DeviceId group, std::span<const
   const std::unordered_set<uint32_t> gone(elements.begin(), elements.end());
   std::erase_if(panel.elements, [&](const PanelElement& e) { return gone.count(e.id) != 0; });
   for (PanelElement& e : panel.elements)
-    if (e.when && gone.count(e.when->element) != 0) e.when.reset();
+    if (e.when && !remapVisibility(*e.when, [&](uint32_t id) { return gone.count(id) != 0 ? 0u : id; })) e.when.reset();
   return panelEdit(p, group, std::move(panel));
 }
 
@@ -134,15 +134,17 @@ EditResult breakApartPanelElements(const Project& p, DeviceId group, std::span<c
     for (size_t i = first; i < out.elements.size(); ++i) {
       PanelElement& x = out.elements[i];
       if (!x.when) continue;
-      const auto it = std::find_if(ids.begin(), ids.end(), [&](const auto& m) { return m.first == x.when->element; });
-      if (it == ids.end()) x.when.reset();
-      else x.when->element = it->second;
+      if (!remapVisibility(*x.when, [&](uint32_t id) {
+            const auto it = std::find_if(ids.begin(), ids.end(), [&](const auto& m) { return m.first == id; });
+            return it == ids.end() ? 0u : it->second;
+          }))
+        x.when.reset();
     }
   }
   if (!any) return makeEdit("Edit Panel");
   // A condition naming a broken-apart embed is dropped (an embed has no selection: it never held).
   for (PanelElement& e : out.elements)
-    if (e.when && out.indexOf(e.when->element) < 0) e.when.reset();
+    if (e.when && !remapVisibility(*e.when, [&](uint32_t id) { return out.indexOf(id) < 0 ? 0u : id; })) e.when.reset();
   out.width = std::min(out.width, kMaxPanelSize);
   out.height = std::min(out.height, kMaxPanelSize);
   EditResult r = panelEdit(p, group, std::move(out));
