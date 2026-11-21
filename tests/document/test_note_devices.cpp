@@ -242,7 +242,9 @@ TEST_CASE("note devices: the lowering dissolves them (the same IR), params as po
     CHECK(s->status == WireStatus::Lowered);
   }
   CHECK(wireStates(c.doc(), library()) == std::vector<WireState>(with.wires.begin(), with.wires.end()));
-  // A cable into one of its params: not lowered (Inactive), and the IR stays.
+  // AP.2b: a cable into one of its runtime params is lowered (Lowered) as its source's export m<wire> (a bus the note
+  // stage reads one block late: LoweredProject::noteMods, graph.taps), listed on the chain's slot; one into a
+  // structural setting stays Inactive.
   Wire m;
   m.from = c.inst;
   m.to = a;
@@ -250,7 +252,28 @@ TEST_CASE("note devices: the lowering dissolves them (the same IR), params as po
   const WireId mw = c.edit(ops::connect(c.doc(), c.store.ids(), m)).wires.at(0);
   const LoweredProject wired = lowered(c.doc());
   REQUIRE(stateOf(wired, mw) != nullptr);
-  CHECK(stateOf(wired, mw)->status == WireStatus::Inactive);
+  CHECK(stateOf(wired, mw)->status == WireStatus::Lowered);
+  REQUIRE(wired.noteMods.size() == 1);
+  CHECK(wired.noteMods[0].wire == mw);
+  CHECK(wired.noteMods[0].port == "m" + std::to_string(mw.value));
+  CHECK(std::any_of(wired.graph.taps.begin(), wired.graph.taps.end(),
+                    [&](const auto& t) { return t.port == wired.noteMods[0].port; }));
+  {
+    const std::vector<LoweredNoteChain> chains = lowerNoteChains(c.doc());
+    REQUIRE(chains.size() == 1);
+    const auto& rt = chains[0].stages[0].runtime;
+    const auto gate = std::find_if(rt.begin(), rt.end(), [](const LoweredNoteStage::Slot& x) {
+      return x.param == static_cast<uint32_t>(pq::engine::ArpParamId::Gate);
+    });
+    REQUIRE(gate != rt.end());
+    CHECK(gate->mods == std::vector<WireId>{mw});
+  }
+  Wire ms = m;
+  ms.param = "seed";
+  const WireId sw = c.edit(ops::connect(c.doc(), c.store.ids(), ms)).wires.at(0);
+  const LoweredProject seeded = lowered(c.doc());
+  REQUIRE(stateOf(seeded, sw) != nullptr);
+  CHECK(stateOf(seeded, sw)->status == WireStatus::Inactive);
   // Save / load keeps it.
   Result<std::string> text = serializeProject(c.doc());
   REQUIRE(text.ok());

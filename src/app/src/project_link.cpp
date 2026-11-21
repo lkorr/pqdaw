@@ -1107,6 +1107,15 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
   engine_->wake();
 }
 
+uint32_t ProjectLink::busValueIndex(doc::WireId w) {  // AP.2b: stable per wire for the link's life
+  std::lock_guard lock(busValueMutex_);
+  if (const auto it = busValueOf_.find(w.value); it != busValueOf_.end()) return it->second;
+  if (busValueOf_.size() >= engine::kMaxBusValues) return engine::kNoBusValue;
+  const auto i = static_cast<uint32_t>(busValueOf_.size());
+  busValueOf_.emplace(w.value, i);
+  return i;
+}
+
 void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
   if (!engine_) return;
   std::vector<doc::LoweredNoteChain> chains = doc::lowerNoteChains(p);
@@ -1123,29 +1132,60 @@ void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
   for (doc::LoweredNoteChain& c : chains) {
     const uint32_t slot = slotForTrack(c.track);
     if (slot == kNone) continue;
+    // AP.2b: the degree table of the definition the track's tuning node plays STATICALLY (its table entry: a
+    // continuous drag moves the node's live inputs, the static pitches of the notes stay those of the entry), so a
+    // step's Hz = the source's static Hz times the static interval, and the node moves both alike.
+    if (const doc::TuningSlot* ts = c.tuning.valid() ? doc::findTuning(p, c.tuning) : nullptr) {
+      std::lock_guard lock(mutex_);
+      if (const EntryPtr* e = tuningEntry(ts->id, ts->def); e != nullptr) {
+        std::vector<double> cents;
+        double eq = 1200.0;
+        if (doc::noteDegreeTable((*e)->def, cents, eq)) {
+          c.degreeCents = std::move(cents);
+          c.equaveCents = eq;
+        }
+      }
+    }
     if (const auto it = find(noteChains_, c.track); it != noteChains_.end() && it->slot == slot && it->chain.sameStructure(c)) {
-      next.push_back({std::move(c), slot});
+      if (!it->chain.sameTable(c)) {  // AP.2b: a tuning edit: the running stages take the new table, nothing restarts
+        for (const auto& box : it->boxes)
+          if (box) box->post(engine::ArpDegreeTable{c.degreeCents, c.equaveCents});
+        ++stats_.noteTablePosts;
+      }
+      next.push_back({std::move(c), slot, std::move(it->boxes)});
       continue;
     }
     if (const auto it = find(noteChains_, c.track); it != noteChains_.end() && it->slot != slot)
       (void)engine_->setNoteStages(it->slot, nullptr);  // (its slot changed: the old one plays nothing)
     auto chain = std::make_unique<engine::NoteStageChain>();
+    std::vector<std::shared_ptr<engine::ArpTableMailbox>> boxes;
     for (const doc::LoweredNoteStage& st : c.stages) {
       if (st.type != "arpeggiator") continue;  // (the one note device type: doc::noteDeviceTypes)
       engine::ArpParams fixed;
-      for (size_t k = 0; k < st.values.size() && k < static_cast<size_t>(engine::ArpParamId::Count); ++k)
-        engine::setArpParam(fixed, static_cast<engine::ArpParamId>(k), static_cast<float>(st.values[k]));
+      engine::ArpLaneSteps steps;  // AP.5
+      for (size_t k = 0; k < st.values.size() && k < static_cast<size_t>(engine::ArpParamId::Count); ++k) {
+        const auto id = static_cast<engine::ArpParamId>(k);
+        if (!engine::setArpLaneStep(steps, id, static_cast<float>(st.values[k])))
+          engine::setArpParam(fixed, id, static_cast<float>(st.values[k]));
+      }
       std::vector<engine::ArpStage::Mapping> map;
       for (const doc::LoweredNoteStage::Slot& r : st.runtime) {
         const uint32_t ps = slotForParam(r.key);
         if (ps == kNone || r.param >= static_cast<uint32_t>(engine::ArpParamId::Count)) continue;
         map.push_back({static_cast<engine::ArpParamId>(r.param), ps, r.scale, r.offset});
+        for (const doc::WireId w : r.mods)  // AP.2b: each cable into it adds its bus value
+          if (const uint32_t v = busValueIndex(w); v != engine::kNoBusValue)
+            map.push_back({static_cast<engine::ArpParamId>(r.param), v, 1.0f, 0.0f, true});
       }
-      (void)chain->add(std::make_unique<engine::ArpStage>(fixed, std::move(map), engine::ArpDegreeTable{c.degreeCents, c.equaveCents}));
+      auto box = std::make_shared<engine::ArpTableMailbox>();
+      auto stage = std::make_unique<engine::ArpStage>(fixed, std::move(map),
+                                                      engine::ArpDegreeTable{c.degreeCents, c.equaveCents}, steps, box);
+      stage->key = st.device.value;  // AP.2b: the republished chain's stage adopts the running one's state
+      if (chain->add(std::move(stage))) boxes.push_back(std::move(box));
     }
     (void)engine_->setNoteStages(slot, std::move(chain));
     ++stats_.noteStagePublishes;
-    next.push_back({std::move(c), slot});
+    next.push_back({std::move(c), slot, std::move(boxes)});
   }
   noteChains_ = std::move(next);
   engine_->wake();
@@ -2306,10 +2346,20 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     }
     return m;
   };
-  auto metered = [](engine::ProjectLayout& layout) {
+  auto metered = [&](engine::ProjectLayout& layout) {
     layout.busMetered.assign(layout.busKey.size(), 0);
     for (size_t b = 0; b < layout.busKey.size(); ++b)
       layout.busMetered[b] = layout.busKey[b].ends_with(":out") || layout.busKey[b].find(":tap_d") != std::string::npos ? 1 : 0;
+    // AP.2b: the cables into note-device params: their buses' values, at the index the note chains map.
+    layout.busValue.clear();
+    for (const doc::LoweredNoteMod& m : lp.noteMods) {
+      const std::string key = std::to_string(lp.trackIds[m.track].value) + ":" + m.port;
+      for (size_t b = 0; b < layout.busKey.size(); ++b)
+        if (layout.busKey[b] == key) {
+          if (layout.busValue.empty()) layout.busValue.assign(layout.busKey.size(), engine::kNoBusValue);
+          layout.busValue[b] = busValueIndex(m.wire);
+        }
+    }
   };
   // Publishing: in order, after whatever earlier compiles left deferred (drainDeferred waits, bounded, for the
   // audio thread to take earlier images / topologies, because a refused publish would destroy the image; when the

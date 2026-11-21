@@ -1,5 +1,6 @@
 #include "pq/engine/note_stage.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace pq::engine {
@@ -37,6 +38,29 @@ void NoteStageChain::flush(uint32_t frame, EventBuffer& out, EventBuffer& held) 
     if (sink == &held && !mid_.empty()) sink = &mid_[0];  // later stages' held sets are dropped
   }
   if (!mid_.empty()) mid_[0].clear();
+}
+
+void NoteStageChain::takeOver(NoteStageChain& old, uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept {  // RT-safe
+  uint32_t n = 0;
+  const uint32_t m = std::min(size(), old.size());
+  while (n < m) {
+    NoteStage& a = *stages_[n];
+    NoteStage& b = *old.stages_[n];
+    if (a.adoptFn == nullptr || a.adoptFn != b.adoptFn || a.key == 0 || a.key != b.key) break;
+    a.adoptFn(&a, &b);  // b keeps a fresh state: nothing to flush
+    ++n;
+  }
+  if (n == 0) {
+    old.flush(frame, out, held);
+    return;
+  }
+  // Old stages after the adopted ones end their notes; their held sets (the adopted stage's notes) are dropped.
+  for (uint32_t i = n; i < old.size(); ++i) {
+    EventBuffer& sink = old.mid_[i - 1];
+    sink.clear();
+    old.stages_[i]->flushFn(old.stages_[i].get(), frame, out, sink);
+    sink.clear();
+  }
 }
 
 }  // namespace pq::engine

@@ -84,6 +84,9 @@ struct NoteDissolve {
   std::shared_ptr<const WireList> wires; // the wires as dissolved (null: none left); valid when `any`
   std::vector<std::pair<WireId, WireId>> aliases;  // (wire into a note device, the joined wire it plays as), by first
   std::vector<WireId> dropped;                     // sorted
+  // AP.2b: the wires into a note device's runtime (non-bool) param, kept in `wires` (their target is gone): the
+  // lowering exports each one's source as a bus the note stage reads one block late (lower.h "Note devices"). Sorted.
+  std::vector<WireId> params;
 };
 NoteDissolve dissolveNoteDevices(const Project& p);
 // `p` with its note devices removed from their tracks and its wires `how.wires` (shares every track without one);

@@ -136,6 +136,12 @@ NoteDissolve dissolveNoteDevices(const Project& p) {
   out.any = true;
   WireList w = wiresOf(p);
   std::vector<std::pair<WireId, WireId>> alias;
+  auto runtimeParam = [&](DeviceId n, const std::string& name) {
+    const Device* d = findDevice(p, n).device;
+    const NoteDeviceType* t = d != nullptr ? noteDeviceTypeOf(*d) : nullptr;
+    const NoteParamSpec* s = t != nullptr ? t->param(name) : nullptr;
+    return s != nullptr && s->runtime && !s->isBool;
+  };
   for (const DeviceId n : notes) {
     const Wire* in = nullptr;  // the oldest wire into its main input (the list is by id)
     for (const Wire& x : w)
@@ -165,6 +171,11 @@ NoteDissolve dissolveNoteDevices(const Project& p) {
         continue;
       }
       if (from && x.id == from->id) continue;  // (aliased below)
+      if (into && !outOf && x.param != kMainPort && runtimeParam(n, x.param)) {  // AP.2b: a cable into a param
+        out.params.push_back(x.id);
+        next.push_back(x);
+        continue;
+      }
       out.dropped.push_back(x.id);
     }
     if (from) {
@@ -189,6 +200,7 @@ NoteDissolve dissolveNoteDevices(const Project& p) {
   std::sort(out.dropped.begin(), out.dropped.end());
   out.dropped.erase(std::unique(out.dropped.begin(), out.dropped.end()), out.dropped.end());
   std::sort(out.aliases.begin(), out.aliases.end());
+  std::sort(out.params.begin(), out.params.end());
   if (!w.empty()) out.wires = std::make_shared<const WireList>(std::move(w));
   return out;
 }

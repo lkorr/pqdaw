@@ -214,6 +214,7 @@
 #include "pq/dsp/curve.h"
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/dsp/tuning_table.h"
+#include "pq/engine/arp.h"
 #include "pq/engine/background_compile.h"
 #include "pq/engine/engine.h"
 #include "pq/engine/project_compile.h"
@@ -311,6 +312,7 @@ struct LinkStats {
   uint64_t unitPublishes = 0;
   uint64_t sequencePublishes = 0, automationPublishes = 0, tempoPublishes = 0;
   uint64_t noteStagePublishes = 0;  // AP.2: note chains published (one per track whose chain changed; null included)
+  uint64_t noteTablePosts = 0;      // AP.2b: tuning edits handed to running note chains (no republish)
   uint64_t trackLowerings = 0;     // tracks whose note sequence was lowered again (the per-track cache missed)
   uint64_t clipLowerings = 0;      // T7.16b: clips of those tracks lowered again (the per-clip cache missed)
   double sequenceMs = 0.0;         // T7.16b: time in publishSequences (keys, lowering, the image build and publish)
@@ -735,6 +737,8 @@ private:
   // event slot (Engine::setNoteStages), only where its structure changed (a knob drag never republishes: its slot
   // plays it); a track whose chain went away publishes null. UI thread.
   void publishNoteStages(const doc::Project& p);
+  // AP.2b: the bus value index of a cable into a note-device param (engine::kNoBusValue past kMaxBusValues). Any thread.
+  uint32_t busValueIndex(doc::WireId w);
   doc::ParamRange laneRange(const doc::Project& p, const doc::AutomationLane& lane) const;  // T4.18
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
@@ -941,8 +945,11 @@ private:
   struct PublishedNotes {
     doc::LoweredNoteChain chain;
     uint32_t slot = 0;
+    std::vector<std::shared_ptr<engine::ArpTableMailbox>> boxes;  // AP.2b: per stage, a tuning edit's table
   };
   std::vector<PublishedNotes> noteChains_;
+  std::mutex busValueMutex_;
+  std::unordered_map<uint32_t, uint32_t> busValueOf_;  // AP.2b: wire id → bus value index
   std::unique_ptr<engine::ProjectCompiler> compiler_;
   std::shared_ptr<const doc::LoweredProject> lowered_;  // compile path (EQ.4b: shared with the response displays)
   doc::Snapshot current_;                        // UI thread: the snapshot the engine follows

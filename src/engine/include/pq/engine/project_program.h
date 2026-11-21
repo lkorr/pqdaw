@@ -114,6 +114,7 @@
 // A binding is one relaxed atomic word per unit (no compile: the channels are not part of the image). A unit with a
 // bound input that the device has is never idle (its input is live audio).
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -167,7 +168,14 @@ struct ProjectLayout {
   // Optional (empty, or one per bus): 1 = level-metered (peak and mean square of channels 0–1 per block; T3.17 track
   // meters). Metering costs one pass over the bus's first two channels per block.
   std::vector<uint8_t> busMetered;
+  // AP.2b (optional: empty, or one per bus): a BUS VALUE index (< kMaxBusValues) or kNoBusValue. After every block
+  // the bus's channel 0 last sample is stored at that index of the bus values (busValuesView), which the note stages
+  // read at their next block start (lower.h "Note devices": a cable into a note device's param, one block late).
+  // The index is the publisher's, stable across topologies.
+  std::vector<uint32_t> busValue;
 };
+inline constexpr uint32_t kMaxBusValues = 1024;
+inline constexpr uint32_t kNoBusValue = 0xFFFFFFFFu;
 
 // Levels of a metered bus since the previous readMeters() (linear; mean square over the frames).
 struct BusLevel {
@@ -344,6 +352,8 @@ public:
   }
   // AP.1: the same block, read-only (not counted as a change: the note stages read their runtime params from it).
   std::span<const float> projectParamsView() const noexcept { return {params_, numParams_}; }
+  // AP.2b: the bus values (ProjectLayout::busValue) as of the end of the previous block. RT-safe.
+  std::span<const float> busValuesView() const noexcept { return {busValues_.data(), busValues_.size()}; }
   // The unit's current image's param block (a write through it is seen at the next block: the call marks the block
   // as changed).
   std::span<float> params(uint32_t unit) noexcept;
@@ -428,6 +438,7 @@ private:
   };
   float* params_ = nullptr;
   uint32_t numParams_ = 0;
+  std::array<float, kMaxBusValues> busValues_{};  // AP.2b: audio thread writes (end of a block), stages read
   std::vector<std::unique_ptr<ParamBlock>> paramBlocks_;
   std::atomic<ParamBlock*> pendingParams_{nullptr};
   uint32_t reservedParams_ = 0;                     // mutex_

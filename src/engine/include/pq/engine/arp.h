@@ -88,9 +88,11 @@
 // the held notes; beyond its length the list repeats doubled: prop[r mod len] · 2^(r div len)), else Order = r + 1;
 // h is clamped to 1 … kArpMaxPulseH. h_ref = Pulse ref (fixed), or 0 = the lowest h held. Phase lock: all clocks
 // restart together every Cycle = Base · h_ref (Pulse cycle Base: a note's h pulses fill it exactly) or Pulse bars
-// whole notes (Bars: a clock's last pulse before the restart may be short of a period). Cycles sit on the song grid
-// from tick 0 (synced, playing) or start at the note-on that filled the held set (free clock), so pulse j of cycle
-// c starts at c · Cycle + j · Base · h_ref / h, computed from (c, j) as an exact rational of ticks (1/(D · h)) and
+// bars of the song's time signature (Bars, AP.2b: cycle c spans bars c · n … (c + 1) · n − 1 of the signature map, so
+// a 3/4 or 7/8 bar and a signature change are followed; the free clock uses the bar at the playhead
+// (StageClock::beatsPerBar); a clock's last pulse before the restart may be short of a period). Cycles sit on the
+// song grid from tick 0 (synced, playing) or start at the note-on that filled the held set (free clock), so pulse j
+// of cycle c starts at start(c) + j · Base · h_ref / h, computed from (c, j) as an exact rational of ticks (1/(D · h)) and
 // converted once through the tempo map: no accumulated drift, the same samples at any block size, across tempo
 // changes and loop wraps. A clock plays at most one pulse per sample (pulses closer than that merge).
 // A note-on starts its clock: its first pulse sounds AT the note-on when that is between its grid onsets (the AP.3
@@ -104,6 +106,30 @@
 // source's expression.
 // Layers (both modes): 0 … kArpMaxLayers extra copies of every generated note at (p/q)^L of it (the Ratio unit's
 // p/q: exact ratio / harmonic as the Ratio unit gives them), each at gain Layer level L times the note's gain.
+//
+// ---- Step lanes (AP.5, "Step lanes") ---------------------------------------------------------------------------------
+// Six lanes, each switched on / off with its own length 1 … kArpMaxLaneSteps (structural: a change republishes the
+// chain); their step values are runtime params (ArpLaneSteps, or a project param slot per step read only when that
+// step plays: a drag or automation never rebuilds anything). Lanes are polymetric: lane position = the grid step
+// index kk mod its length (pattern mode: the song grid while synced and playing, else the free clock's step count),
+// independent of the pattern's length, the pattern restarts and of the block size; Pulse mode: per note, its pulse
+// count c · J + j (cycle c of J pulses, pulse j) mod the length. A lane switched off reads its default.
+//   Velocity   × the step's velocity (0 … 1), or the velocity itself with Velocity source Step Lane (lane off: as
+//              played); Decay applies after it.
+//   Gate       × Gate (0 … 2; the step's gate clamped to 0.01 … 2 of a step / pulse period).
+//   Glide      × the Into / Out glides' pitch distance (0 … 1, in log Hz; 0: no glide); a tie: × its glide time
+//              (0: a legato jump).
+//   Transpose  + steps in the pitch unit (−48 … 48, rounded; Degrees: degrees, Ratio: powers of p/q, Harmonics:
+//              harmonics), part of what the step's notes play (a retune and Out → Step follow it).
+//   Chance     the probability the step plays (0 … 1): a counter-RNG draw keyed by (seed, kk) (pulse: (seed ^ h,
+//              the note's pulse count)), so playback, render and preview agree.
+//   Skip / Tie Play | Skip (a rest: the pattern still advances) | Tie: the step's notes continue the previous step's
+//              (same rank and layer; pulse: the same clock's) instead of new note-ons: the note's end moves to the tie
+//              step's gate end, and with Into on it glides (the glide time × the Glide lane) to the tie step's
+//              pitch (else keeps its own). A step followed by a tie holds its notes past the next onset (their Out
+//              glide waits for the tie); when the tie does not happen (its chance fails, nothing is held, Repeats
+//              ended) they end at that onset. A tie with nothing to continue plays as a normal step.
+// Per step the cost is one read per lane that is on (its step's slot) and one RNG draw with Chance on.
 //
 // ---- Velocity, expression -----------------------------------------------------------------------------------------
 // Velocity: as played (the source note's) or Fixed; Decay (ms, 0 = off) moves it linearly to Target from the pattern
@@ -119,6 +145,7 @@
 // held, nothing sounding and no event returns after one compare.
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <iterator>
 #include <memory>
@@ -142,6 +169,7 @@ inline constexpr int32_t kArpMaxProportion = 8;   // AP.4: Pulse proportion entr
 inline constexpr int32_t kArpMaxPulseH = 1024;    // AP.4: h and a fixed h_ref
 inline constexpr int32_t kArpMaxPulseBars = 16;   // AP.4: a Bars cycle
 inline constexpr int32_t kArpMaxLayers = 3;       // AP.4: extra copies per note
+inline constexpr int32_t kArpMaxLaneSteps = 32;   // AP.5: steps per lane
 
 enum class ArpStyle : uint8_t {
   Up, Down, UpDown, DownUp, UpAndDown, DownAndUp, Converge, Diverge, ConAndDiverge, PinkyUp, PinkyUpDown, ThumbUp,
@@ -153,9 +181,13 @@ enum class ArpUnit : uint8_t { Degrees, Ratio, Harmonics };
 enum class ArpWalkOrder : uint8_t { Up, Down, UpDown, Random };
 enum class ArpGlide : uint8_t { Off, Step, Offset };  // Into: Step = the previous step; Out: Step = the next step
 enum class ArpTranspose : uint8_t { Shift, Rotate };
-enum class ArpVelocitySource : uint8_t { AsPlayed, Fixed };
+enum class ArpVelocitySource : uint8_t { AsPlayed, Fixed, Lane };  // Lane (AP.5): the Velocity lane's step
 enum class ArpPulseSource : uint8_t { Harmonic, Proportion, Order };  // AP.4: where a pulse clock's h comes from
 enum class ArpPulseCycle : uint8_t { Base, Bars };                    // AP.4: the phase-lock cycle
+// AP.5: the step lanes (arp.h "Step lanes"), and what a Skip / Tie step does.
+enum class ArpLane : uint8_t { Velocity, Gate, Glide, Transpose, Chance, SkipTie, Count };
+inline constexpr uint32_t kArpLaneCount = static_cast<uint32_t>(ArpLane::Count);
+enum class ArpStepKind : uint8_t { Play, Skip, Tie };
 
 // A step length: Synced num/den of a whole note × m/n (n notes in the time of m), or Free `ms`.
 struct ArpRate {
@@ -213,11 +245,14 @@ struct ArpParams {
   std::array<int32_t, kArpMaxProportion> proportion{4, 5, 6, 7, 8, 9, 10, 11};  // 1 … kArpMaxPulseH each
   int32_t layers = 0;                 // 0 … kArpMaxLayers
   std::array<float, kArpMaxLayers> layerLevel{0.7f, 0.5f, 0.35f};  // 0 … 1
+  // AP.5: step lanes, the structural part (on / off, length 1 … kArpMaxLaneSteps); the step values are ArpLaneSteps.
+  std::array<bool, kArpLaneCount> laneOn{};
+  std::array<int32_t, kArpLaneCount> laneLength{16, 16, 16, 16, 16, 16};
 };
 
 // The runtime params a project param slot can drive (ArpStage::map). Values as floats: enums and ints rounded,
 // booleans > 0.5.
-enum class ArpParamId : uint8_t {
+enum class ArpParamId : uint16_t {
   Style, Synced, RateNum, RateDen, TupletN, TupletM, RateMs, Gate, Groove, Offset, Repeats, Retrigger, RetriggerNum,
   RetriggerDen, Hold, Unit, Transpose, Distance, Steps, RatioP, RatioQ, VelocitySource, FixedVelocity, VelocityDecayMs,
   VelocityTarget, VelocityRetrigger, Seed,
@@ -227,9 +262,44 @@ enum class ArpParamId : uint8_t {
   // AP.4
   Pulse, PulseSource, PulseRef, PulseCycle, PulseBars, ProportionLen, Proportion1, Proportion2, Proportion3,
   Proportion4, Proportion5, Proportion6, Proportion7, Proportion8, Layers, LayerLevel1, LayerLevel2, LayerLevel3,
+  // AP.5: per lane (ArpLane order) its switch, its length, then its kArpMaxLaneSteps step values (lane-major).
+  VelocityLane, GateLane, GlideLane, TransposeLane, ChanceLane, SkipTieLane,
+  VelocityLength, GateLength, GlideLength, TransposeLength, ChanceLength, SkipTieLength,
+  LaneStep0,
+  LaneStepEnd = LaneStep0 + kArpLaneCount * kArpMaxLaneSteps - 1,
   Count
 };
+// setArpParam ignores lane step ids (their values are ArpLaneSteps: setArpLaneStep).
 void setArpParam(ArpParams& p, ArpParamId id, float value) noexcept;  // RT-safe
+
+// AP.5: the lane step ids.
+constexpr bool isArpLaneStep(ArpParamId id) noexcept {
+  return static_cast<uint32_t>(id) >= static_cast<uint32_t>(ArpParamId::LaneStep0) &&
+         static_cast<uint32_t>(id) <= static_cast<uint32_t>(ArpParamId::LaneStepEnd);
+}
+constexpr ArpParamId arpLaneStepId(ArpLane lane, int32_t step) noexcept {
+  return static_cast<ArpParamId>(static_cast<uint32_t>(ArpParamId::LaneStep0) +
+                                 static_cast<uint32_t>(lane) * kArpMaxLaneSteps + static_cast<uint32_t>(step));
+}
+// The step values of every lane, in each lane's own units (arp.h "Step lanes"); unset: the lane's default.
+struct ArpLaneSteps {
+  std::array<std::array<float, kArpMaxLaneSteps>, kArpLaneCount> value;
+  ArpLaneSteps() noexcept;
+};
+// A lane's value range and default (the same as its kArpParamInfo rows).
+struct ArpLaneRange {
+  float min, max, def;
+};
+inline constexpr ArpLaneRange kArpLaneRange[kArpLaneCount] = {
+    {0.0f, 1.0f, 1.0f},     // Velocity: × the velocity (source Lane: the velocity)
+    {0.0f, 2.0f, 1.0f},     // Gate: × Gate (the step's gate, clamped 0.01 … 2)
+    {0.0f, 1.0f, 1.0f},     // Glide: × the Into / Out glide's pitch distance
+    {-48.0f, 48.0f, 0.0f},  // Transpose: + steps in the pitch unit (integers)
+    {0.0f, 1.0f, 1.0f},     // Chance: the probability the step plays
+    {0.0f, 2.0f, 0.0f},     // Skip / Tie: ArpStepKind
+};
+// Sets lane step `id` of `s` (false: not a lane step id). RT-safe.
+bool setArpLaneStep(ArpLaneSteps& s, ArpParamId id, float value) noexcept;
 
 // AP.2: the ONE declaration of the arpeggiator's params (docs/plans/AP.md "Tasks" AP.2), one row per ArpParamId in enum
 // order. The document reads it (pq/document/note_devices.h: the device's params, their ranges / defaults / labels, and
@@ -274,7 +344,7 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::Steps, "steps", "Steps", 1, kArpMaxSteps, 1, 1, false, "", true},
     {ArpParamId::RatioP, "ratioP", "Ratio P", 1, 64, 2, 1, false, "", true},
     {ArpParamId::RatioQ, "ratioQ", "Ratio Q", 1, 64, 1, 1, false, "", true},
-    {ArpParamId::VelocitySource, "velSource", "Velocity", 0, 1, 0, 1, false, "As Played|Fixed", true},
+    {ArpParamId::VelocitySource, "velSource", "Velocity", 0, 2, 0, 1, false, "As Played|Fixed|Step Lane", true},
     {ArpParamId::FixedVelocity, "velFixed", "Fixed Vel", 0, 1, 0.8f, 0, false, "", true},
     {ArpParamId::VelocityDecayMs, "velDecay", "Vel Decay ms", 0, 10000, 0, 0, false, "", true},
     {ArpParamId::VelocityTarget, "velTarget", "Vel Target", 0, 1, 0, 0, false, "", true},
@@ -313,6 +383,29 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::LayerLevel1, "layerLevel1", "Layer 1", 0, 1, 0.7f, 0, false, "", true},
     {ArpParamId::LayerLevel2, "layerLevel2", "Layer 2", 0, 1, 0.5f, 0, false, "", true},
     {ArpParamId::LayerLevel3, "layerLevel3", "Layer 3", 0, 1, 0.35f, 0, false, "", true},
+    // AP.5: lane switches and lengths are structural; the steps are runtime params.
+    {ArpParamId::VelocityLane, "velLane", "Vel Lane", 0, 1, 0, 1, true, "", false},
+    {ArpParamId::GateLane, "gateLane", "Gate Lane", 0, 1, 0, 1, true, "", false},
+    {ArpParamId::GlideLane, "glideLane", "Glide Lane", 0, 1, 0, 1, true, "", false},
+    {ArpParamId::TransposeLane, "transLane", "Trans Lane", 0, 1, 0, 1, true, "", false},
+    {ArpParamId::ChanceLane, "chanceLane", "Chance Lane", 0, 1, 0, 1, true, "", false},
+    {ArpParamId::SkipTieLane, "tieLane", "Skip/Tie Lane", 0, 1, 0, 1, true, "", false},
+    {ArpParamId::VelocityLength, "velLen", "Vel Len", 1, kArpMaxLaneSteps, 16, 1, false, "", false},
+    {ArpParamId::GateLength, "gateLen", "Gate Len", 1, kArpMaxLaneSteps, 16, 1, false, "", false},
+    {ArpParamId::GlideLength, "glideLen", "Glide Len", 1, kArpMaxLaneSteps, 16, 1, false, "", false},
+    {ArpParamId::TransposeLength, "transLen", "Trans Len", 1, kArpMaxLaneSteps, 16, 1, false, "", false},
+    {ArpParamId::ChanceLength, "chanceLen", "Chance Len", 1, kArpMaxLaneSteps, 16, 1, false, "", false},
+    {ArpParamId::SkipTieLength, "tieLen", "Skip/Tie Len", 1, kArpMaxLaneSteps, 16, 1, false, "", false},
+#define PQ_ARP_STEPS(M, ...)                                                                                          M(1, __VA_ARGS__) M(2, __VA_ARGS__) M(3, __VA_ARGS__) M(4, __VA_ARGS__) M(5, __VA_ARGS__) M(6, __VA_ARGS__)         M(7, __VA_ARGS__) M(8, __VA_ARGS__) M(9, __VA_ARGS__) M(10, __VA_ARGS__) M(11, __VA_ARGS__) M(12, __VA_ARGS__)      M(13, __VA_ARGS__) M(14, __VA_ARGS__) M(15, __VA_ARGS__) M(16, __VA_ARGS__) M(17, __VA_ARGS__) M(18, __VA_ARGS__)   M(19, __VA_ARGS__) M(20, __VA_ARGS__) M(21, __VA_ARGS__) M(22, __VA_ARGS__) M(23, __VA_ARGS__) M(24, __VA_ARGS__)   M(25, __VA_ARGS__) M(26, __VA_ARGS__) M(27, __VA_ARGS__) M(28, __VA_ARGS__) M(29, __VA_ARGS__) M(30, __VA_ARGS__)   M(31, __VA_ARGS__) M(32, __VA_ARGS__)
+#define PQ_ARP_STEP_ROW(n, lane, name, label, step, choices)                                                         {arpLaneStepId(ArpLane::lane, n - 1), name #n, label " " #n, kArpLaneRange[static_cast<size_t>(ArpLane::lane)].min,    kArpLaneRange[static_cast<size_t>(ArpLane::lane)].max, kArpLaneRange[static_cast<size_t>(ArpLane::lane)].def,       step, false, choices, true},
+    PQ_ARP_STEPS(PQ_ARP_STEP_ROW, Velocity, "velStep", "Vel", 0, "")
+    PQ_ARP_STEPS(PQ_ARP_STEP_ROW, Gate, "gateStep", "Gate", 0, "")
+    PQ_ARP_STEPS(PQ_ARP_STEP_ROW, Glide, "glideStep", "Glide", 0, "")
+    PQ_ARP_STEPS(PQ_ARP_STEP_ROW, Transpose, "transStep", "Trans", 1, "")
+    PQ_ARP_STEPS(PQ_ARP_STEP_ROW, Chance, "chanceStep", "Chance", 0, "")
+    PQ_ARP_STEPS(PQ_ARP_STEP_ROW, SkipTie, "tieStep", "Step", 1, "Play|Skip|Tie")
+#undef PQ_ARP_STEP_ROW
+#undef PQ_ARP_STEPS
 };
 static_assert(std::size(kArpParamInfo) == static_cast<size_t>(ArpParamId::Count),
               "kArpParamInfo: one row per ArpParamId");
@@ -351,6 +444,27 @@ struct ArpStats {
   uint64_t glides = 0;          // Into / Out glides sent (AP.3)
   uint64_t droppedWalk = 0;     // Harmonic Walk elements beyond kArpMaxWalk (per rebuild)
   uint64_t pulses = 0;          // AP.4: pulse-clock onsets played (a pulse with layers counts one)
+  uint64_t ties = 0;            // AP.5: notes a tie step continued
+  uint64_t laneRests = 0;       // AP.5: steps / pulses a Skip or a failed Chance silenced
+};
+
+// AP.2b: a new degree table for a running stage (a tuning edit: no republish, the pattern keeps its place). One
+// publisher (non-RT: post) and the stage's audio thread (take, at a block start). Lock-free: the audio thread takes
+// the pending table only when the retired one has been collected (post frees it), so nothing is freed on the audio
+// thread and a table is never freed while it reads it.
+class ArpTableMailbox {
+public:
+  ArpTableMailbox() = default;
+  ArpTableMailbox(const ArpTableMailbox&) = delete;
+  ArpTableMailbox& operator=(const ArpTableMailbox&) = delete;
+  ~ArpTableMailbox();
+  void post(ArpDegreeTable table);           // non-RT (allocates, frees the retired / an untaken table)
+  const ArpDegreeTable* take() noexcept;     // RT-safe: the new table (null: none); valid until the next take
+  bool pending() const noexcept { return pending_.load(std::memory_order_acquire) != nullptr; }
+
+private:
+  std::atomic<ArpDegreeTable*> pending_{nullptr}, retired_{nullptr};
+  ArpDegreeTable* current_ = nullptr;  // audio thread
 };
 
 class ArpCore {
@@ -366,6 +480,18 @@ public:
   bool process(const ArpParams& params, const NoteStageBlock& block, const EventList& in, EventBuffer& out) noexcept;
   // Handover (note_stage.h): offs for the sounding generated notes, the key-held source notes as note-ons. RT-safe.
   void flush(uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
+  // AP.2b: takes over `old`'s running state (held set, clock, pattern / lane positions, sounding notes, RNG
+  // counters), keeping its own structure (degree table, its mailbox, lane values / slots, id space); `old` is left
+  // idle. Its params apply from the next block. RT-safe (swaps, no allocation).
+  void adopt(ArpCore& old) noexcept;
+
+  // AP.5: the lane step values: fixed ones, and per step an optional project param slot read when the step plays
+  // (value = offset + scale · params[slot]; arp.h "Step lanes"). Non-RT (before the first block, or while no block
+  // runs: tests and offline runs set fixed values between blocks).
+  void setLaneSteps(const ArpLaneSteps& steps) noexcept;
+  void mapLaneStep(ArpLane lane, int32_t step, uint32_t param, float scale, float offset) noexcept;
+  // AP.2b: where a new degree table comes from while the core runs (non-RT, before the first block).
+  void setTableMailbox(std::shared_ptr<ArpTableMailbox> box) noexcept;
 
   uint32_t heldCount() const noexcept;      // RT-safe
   uint32_t soundingCount() const noexcept;  // RT-safe
@@ -388,8 +514,14 @@ public:
     // hold knob POSITIONS in [0, 1] (what automation writes): scale = max − min, offset = min of the param's linear
     // curve. Default: the slot holds the value itself.
     float scale = 1.0f, offset = 0.0f;
+    bool add = false;  // AP.2b: adds NoteStageBlock::mods[param] (a bus value; scale / offset unused) to the id's value
   };
-  explicit ArpStage(const ArpParams& params = {}, std::vector<Mapping> map = {}, ArpDegreeTable table = {});
+  // Mappings of lane step ids (isArpLaneStep) go to the core's lane table (read only when their step plays, not at
+  // every block start). AP.2b: Mapping::add entries add a bus value (in the param's units: a modulation wire's
+  // previous block, lower.h "Note devices") to the mapping of the same id before them; `steps` the fixed lane values;
+  // `box` (optional) hands it later degree tables.
+  explicit ArpStage(const ArpParams& params = {}, std::vector<Mapping> map = {}, ArpDegreeTable table = {},
+                    const ArpLaneSteps& steps = {}, std::shared_ptr<ArpTableMailbox> box = {});
   void setIndex(uint32_t index) override { core_.setStageIndex(index); }
   ArpCore& core() noexcept { return core_; }
   const ArpParams& params() const noexcept { return params_; }
@@ -397,6 +529,7 @@ public:
 private:
   static bool processStage(void* self, const NoteStageBlock& block, const EventList& in, EventBuffer& out) noexcept;
   static void flushStage(void* self, uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
+  static void adoptStage(void* self, void* old) noexcept;
   ArpParams params_;
   std::vector<Mapping> map_;
   ArpCore core_;
