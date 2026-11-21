@@ -311,6 +311,42 @@ TEST_CASE("render: arp-panel-lanes (AP.6: lanes on, the playing step lit)") {
   checkImage("arp-panel-lanes", img);
 }
 
+TEST_CASE("arp panel: a condition of several sources with all-of shows only while every term holds") {
+  Standalone s;
+  const doc::Device* dev = doc::findDevice(*s.ctx.doc(), s.pr.arp).device;
+  REQUIRE(dev != nullptr);
+  doc::Panel p = doc::noteDevicePanel(*dev);
+  doc::PanelElement* base = nullptr;
+  for (doc::PanelElement& e : p.elements)
+    if (const doc::Binding* b = e.binding(); b != nullptr && b->name == "harmonicBase") base = &e;
+  REQUIRE(base != nullptr);
+  REQUIRE(base->when.has_value());
+  REQUIRE(base->when->more.size() == 1);
+  base->when->all = true;
+  CHECK(doc::checkPanel(p).ok());
+  auto shared = std::make_shared<const doc::Panel>(p);
+  TestDriver d(800, 600);
+  panel::PanelHost* host = nullptr;
+  auto face = std::make_unique<panel::GroupPanelFace>([shared]() -> doc::PanelPtr { return shared; },
+                                                      panel::makeDocPanelTarget(s.ctx, s.pr.arp, [&host]() -> Widget* { return host; }));
+  host = &d.setRoot<panel::PanelHost>("panel", std::move(face));
+  auto& f = static_cast<panel::GroupPanelFace&>(host->face());
+  const int32_t i = findElement(f, "number", "harmonicBase");
+  REQUIRE(i >= 0);
+  auto shownNow = [&] {
+    (void)f.sync();
+    return f.shown(static_cast<size_t>(i));
+  };
+  CHECK_FALSE(shownNow());
+  setValue(s.ctx, s.pr.arp, "unit", 2.0);
+  CHECK_FALSE(shownNow());  // Harmonics alone
+  setValue(s.ctx, s.pr.arp, "style", 18.0);
+  CHECK(shownNow());  // and Harmonic Walk
+  setValue(s.ctx, s.pr.arp, "unit", 0.0);
+  CHECK_FALSE(shownNow());  // Harmonic Walk alone
+  d.tree().setRoot(std::make_unique<Widget>());
+}
+
 // ---- real dispatch in the Device view ----------------------------------------------------------------------------------
 
 TEST_CASE("arp panel: a lane bar dragged is one undo step and a param write (no structural change)") {
@@ -395,6 +431,17 @@ TEST_CASE("arp panel: the unit chips show Ratio p / q only in Ratio and Base onl
   CHECK(valueOf(u.ctx, u.pr.arp, "unit") == doctest::Approx(2.0));
   CHECK_FALSE(u.face().shown(static_cast<size_t>(p)));
   CHECK(u.face().shown(static_cast<size_t>(base)));
+  // Base also shows for the Harmonic Walk style in another unit (a condition of two sources: any of them).
+  u.d.click(u.at(unit, 0.15f, 0.5f));  // Degrees
+  u.d.step();
+  CHECK_FALSE(u.face().shown(static_cast<size_t>(base)));
+  setValue(u.ctx, u.pr.arp, "style", 18.0);  // Harmonic Walk
+  u.d.step();
+  CHECK(u.face().shown(static_cast<size_t>(base)));
+  CHECK_FALSE(u.face().shown(static_cast<size_t>(p)));
+  setValue(u.ctx, u.pr.arp, "style", 0.0);
+  u.d.step();
+  CHECK_FALSE(u.face().shown(static_cast<size_t>(base)));
   // The tuplet shortcuts set n and m together (one undo step): Triplet = 3 : 2.
   const int32_t pre = u.index("presets", "tupletN");
   const size_t h0 = u.history();

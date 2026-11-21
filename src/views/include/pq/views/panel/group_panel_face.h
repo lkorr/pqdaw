@@ -169,7 +169,8 @@ private:
   std::unique_ptr<PanelTarget> target_;
   doc::PanelPtr panel_;
   std::vector<std::unique_ptr<Element>> elements_;
-  std::vector<int32_t> whenSource_;  // per element: the index of its condition's source element (−1: always shown)
+  std::vector<int32_t> whenSource_;  // AP.6: the source element index of every condition term (−1: not on the panel)
+  std::vector<uint32_t> whenFirst_;  // per element (+ one past the last): its first term in whenSource_
   FaceHost* host_ = nullptr;
   int32_t capture_ = -1, focus_ = -1;
   mutable std::vector<int8_t> memo_;

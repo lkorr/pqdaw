@@ -196,14 +196,15 @@ Status checkPanel(const Panel& p) {
           break;
       }
     }
-    if (e.when) {
-      if (e.when->element == e.id) return bad(elementName(e) + ": its condition names itself");
-      if (ids.count(e.when->element) == 0)
-        return bad(elementName(e) + ": its condition names element " + std::to_string(e.when->element) + ", not on the panel");
-      if (e.when->values.empty()) return bad(elementName(e) + ": its condition has no values");
-      for (const double v : e.when->values)
-        if (!std::isfinite(v)) return bad(elementName(e) + ": its condition's values are finite");
-    }
+    if (e.when)
+      for (size_t t = 0; t < e.when->terms(); ++t) {  // AP.6: every term of a condition of several sources
+        const uint32_t src = e.when->termElement(t);
+        if (src == e.id) return bad(elementName(e) + ": its condition names itself");
+        if (ids.count(src) == 0) return bad(elementName(e) + ": its condition names element " + std::to_string(src) + ", not on the panel");
+        if (e.when->termValues(t).empty()) return bad(elementName(e) + ": its condition has no values");
+        for (const double v : e.when->termValues(t))
+          if (!std::isfinite(v)) return bad(elementName(e) + ": its condition's values are finite");
+      }
   }
   return Ok{};
 }
@@ -260,9 +261,20 @@ PanelPtr prunePanel(const PanelPtr& panel, const std::vector<DevicePtr>& list, D
       kept.insert(e.id);
     }
   for (PanelElement& e : out.elements)
-    if (e.when && kept.count(e.when->element) == 0) e.when.reset();
+    if (e.when && !remapVisibility(*e.when, [&](uint32_t id) { return kept.count(id) != 0 ? id : 0u; })) e.when.reset();
   if (out.elements.empty()) return nullptr;
   return std::make_shared<const Panel>(std::move(out));
+}
+
+bool remapVisibility(Visibility& v, const std::function<uint32_t(uint32_t)>& map) {
+  std::vector<VisibilityTerm> terms;
+  for (size_t t = 0; t < v.terms(); ++t)
+    if (const uint32_t id = map(v.termElement(t)); id != 0) terms.push_back({id, v.termValues(t)});
+  if (terms.empty()) return false;
+  v.element = terms.front().element;
+  v.values = std::move(terms.front().values);
+  v.more.assign(std::make_move_iterator(terms.begin() + 1), std::make_move_iterator(terms.end()));
+  return true;
 }
 
 Panel remapPanel(const Panel& p, std::span<const std::pair<DeviceId, DeviceId>> map) {

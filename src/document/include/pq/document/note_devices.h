@@ -78,8 +78,9 @@ std::string noteDevicePatchText(const NoteDeviceType& t);
 // The Arpeggiator's (fit: the shown height is the open sections'):
 //   top        Arp (Style, Hold, Seed, Rate: Sync, num / den, tuplet n : m with Straight / Dotted / Triplet shortcuts —
 //              free: ms —, Gate, Groove, Offset, Repeats, Retrigger + its rate, Velocity: source, fixed, decay, target,
-//              retrigger), Pitch (Unit, Distance, Steps, Shift / Rotate; Ratio p / q only in Ratio, Base only in
-//              Harmonics, Range / Under / walk order only with style Harmonic Walk), the live pattern view.
+//              retrigger), Pitch (Unit, Distance, Steps, Shift / Rotate; Ratio p / q only in Ratio, Base in
+//              Harmonics or Harmonic Walk (a condition of two sources), Range / Under / walk order only with style
+//              Harmonic Walk), the live pattern view.
 //   Glide      fold: Into and Out (source / target, offset, the drawn shape), Time (ms or a note fraction), Cents, Shape,
 //              Bend.
 //   Pulse      fold: on; with it on its source, ref, cycle (+ bars), Layers + levels, the proportion (with source

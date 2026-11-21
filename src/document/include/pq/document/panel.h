@@ -89,11 +89,29 @@ StyleField styleText(std::string name, std::string v);
 // A hidden source hides the elements that follow it, unless `values` holds kWhenHidden (EQ.3: shown while the source is
 // hidden — the EQ's chain-A columns while its chain tabs are, in Stereo mode).
 inline constexpr double kWhenHidden = -1.0;
+// AP.6: SEVERAL SOURCES. `more` lists further terms (another element and its values, each read as the main one); the
+// element is shown while ANY term holds (`all` false: the arpeggiator's Base for the Harmonics unit or the Harmonic Walk
+// style) or while EVERY term holds (`all` true). Saved as the condition's optional "more" / "all"; without `more`: one
+// source, as before.
+struct VisibilityTerm {
+  uint32_t element = 0;
+  std::vector<double> values;
+  friend bool operator==(const VisibilityTerm&, const VisibilityTerm&) = default;
+};
 struct Visibility {
   uint32_t element = 0;
   std::vector<double> values;
+  std::vector<VisibilityTerm> more;
+  bool all = false;
+  // Every term, the main one first.
+  size_t terms() const noexcept { return 1 + more.size(); }
+  uint32_t termElement(size_t i) const noexcept { return i == 0 ? element : more[i - 1].element; }
+  const std::vector<double>& termValues(size_t i) const noexcept { return i == 0 ? values : more[i - 1].values; }
   friend bool operator==(const Visibility&, const Visibility&) = default;
 };
+// A condition after elements went away or were renumbered: each term's element through `map` (0: gone, its term
+// dropped; the first term left becomes the main one). False (the caller drops the condition): no term is left.
+bool remapVisibility(Visibility& v, const std::function<uint32_t(uint32_t)>& map);
 
 struct PanelElement {
   uint32_t id = 0;  // ≥ 1, unique in its panel

@@ -185,6 +185,7 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
   panel_ = p;
   elements_.clear();
   whenSource_.clear();
+  whenFirst_.clear();
   target_->bindingsChanged();
   if (!p) return;
   elements_.reserve(p->elements.size());
@@ -194,7 +195,12 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
     for (const auto& [id, v] : keep)
       if (id == d.id) elements_.back()->setLocalSelection(v);
   }
-  for (const doc::PanelElement& d : p->elements) whenSource_.push_back(d.when ? indexOf(d.when->element) : -1);
+  for (const doc::PanelElement& d : p->elements) {  // AP.6: a condition's every term
+    whenFirst_.push_back(static_cast<uint32_t>(whenSource_.size()));
+    if (d.when)
+      for (size_t t = 0; t < d.when->terms(); ++t) whenSource_.push_back(indexOf(d.when->termElement(t)));
+  }
+  whenFirst_.push_back(static_cast<uint32_t>(whenSource_.size()));
   foldsLaid_ = false;
   foldOpen_.clear();
   updateShape();
@@ -388,17 +394,23 @@ int32_t GroupPanelFace::indexOf(uint32_t id) const noexcept {
 bool GroupPanelFace::shownNow(size_t i, std::vector<int8_t>& memo) const {
   if (memo[i] != 0) return memo[i] == 1;
   if (i < folds_.hidden.size() && folds_.hidden[i] != 0) return (memo[i] = 2) == 1;  // SM.9: in a folded section
-  const int32_t src = whenSource_[i];
-  if (src < 0) return (memo[i] = 1) == 1;
+  const std::optional<doc::Visibility>& when = elements_[i]->desc().when;
+  if (!when) return (memo[i] = 1) == 1;
   memo[i] = 2;  // (while it is evaluated: a cycle is hidden)
-  bool on = shownNow(static_cast<size_t>(src), memo);
-  if (!on) {  // EQ.3 (panel.h kWhenHidden): shown while its source is hidden
-    for (const double want : elements_[i]->desc().when->values) on = on || want == doc::kWhenHidden;
-  } else {
-    const std::optional<double> v = elements_[static_cast<size_t>(src)]->selection(*target_);
-    on = false;
-    if (v)
-      for (const double want : elements_[i]->desc().when->values) on = on || std::fabs(*v - want) < 1e-6;
+  // AP.6: each term (a source and its values); the condition holds when any (all: every) term holds.
+  bool on = when->all;
+  for (size_t t = 0; t < when->terms(); ++t) {
+    const int32_t src = whenSource_[whenFirst_[i] + t];
+    bool term = false;
+    if (src >= 0) {
+      const std::vector<double>& values = when->termValues(t);
+      if (!shownNow(static_cast<size_t>(src), memo)) {  // EQ.3 (panel.h kWhenHidden): shown while its source is hidden
+        for (const double want : values) term = term || want == doc::kWhenHidden;
+      } else if (const std::optional<double> v = elements_[static_cast<size_t>(src)]->selection(*target_)) {
+        for (const double want : values) term = term || std::fabs(*v - want) < 1e-6;
+      }
+    }
+    on = when->all ? on && term : on || term;
   }
   memo[i] = on ? 1 : 2;
   return on;

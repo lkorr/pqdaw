@@ -253,9 +253,11 @@ Panel arpeggiatorPanel(DeviceId dev) {
   k.caption(419, 92, 8, "/", 9.0);
   k.bare(426, 78, 40, 28, A::RatioQ);
   k.when(at, unit, {1.0});
-  at = k.p.elements.size();
-  k.ctl("number", 376, 78, 50, 28, A::HarmonicBase, "Base");
-  k.when(at, unit, {2.0});
+  {  // Base: the Harmonics unit OR the Harmonic Walk style (a walk of an ungrouped note starts at it)
+    PanelElement& base = k.ctl("number", 476, 78, 50, 28, A::HarmonicBase, "Base");
+    base.when = Visibility{unit, {2.0}};
+    base.when->more.push_back(VisibilityTerm{style, {static_cast<double>(engine::ArpStyle::HarmonicWalk)}});
+  }
   at = k.p.elements.size();
   k.caption(376, 116, 120, "Harmonic Walk");
   k.ctl("number", 376, 130, 44, 28, A::WalkRange, "Range");

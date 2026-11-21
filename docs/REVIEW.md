@@ -2223,6 +2223,6 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
   double-click: default, drag the white grip after the last step to change the length. Skip / Tie: click a cell to cycle
   Play → Skip → Tie. Hold a chord and play: each lane's current step lights (blue), and the Pattern view shows the held
   notes in the order the pattern plays them with the playing one lit.
-- Known: Rate ms and Decay ms are linear knobs (Q?-AP.2-b); Base hides with Harmonic Walk in Degrees / Ratio
-  (Q?-AP.6-a). Not checked in the live app (tests and goldens only).
+- Base shows for Unit Harmonics or Style Harmonic Walk (any panel's show-when condition may now name several sources).
+- Known: Rate ms and Decay ms are linear knobs (Q?-AP.2-b). Not checked in the live app (tests and goldens only).
 - Goldens (new): arp-panel-default, arp-panel-ratio, arp-panel-walk, arp-panel-pulse, arp-panel-lanes.

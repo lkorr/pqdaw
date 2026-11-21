@@ -2322,3 +2322,5 @@ unit to Harmonics first. Also chosen: (1) the pattern view shows the SOURCE note
 Steps copies, Transpose lane and Layers; Random styles: the elements by Hz, the drawn one lit; Pulse: the held notes by
 Hz, the pulsing one lit), ≤ 64 entries; (2) the proportion's 8 values all show with source Proportion (not only the
 first Length of them); (3) a lane's current step is lit only while the lane is on. Status: open.
+Decided (orchestrator, 2026-11-21): the Base gap blocks the walk's main use, so Visibility takes several sources
+(`more`, any-of; `all`: all-of) for every panel, and Base shows for Unit Harmonics OR style Harmonic Walk. (1)–(3) open.
