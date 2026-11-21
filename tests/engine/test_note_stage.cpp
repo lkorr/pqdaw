@@ -54,6 +54,7 @@ struct Harness {
   pq::TempoMap tempo;
   e::EventBuffer out{4096};
   std::vector<e::ClockSegment> segs;
+  uint64_t rtViolations = 0;  // inside ArpCore::process (AP.3)
 
   std::vector<Ev> run(e::ArpCore& arp, const e::ArpParams& p, std::vector<Ev> in, const Transport& tr, int64_t total,
                       uint32_t block) {
@@ -94,7 +95,7 @@ struct Harness {
       b.clock.segments = segs.data();
       b.clock.numSegments = static_cast<uint32_t>(segs.size());
       out.clear();
-      arp.process(p, b, inBuf.list(), out);
+      rtViolations += pq::alloc_trap::countRtViolations([&] { arp.process(p, b, inBuf.list(), out); });
       for (uint32_t i = 0; i < out.size(); ++i) res.push_back({T + out.list().events[i].frame, out.list().events[i]});
     }
     return res;
@@ -299,12 +300,45 @@ TEST_CASE("arp: synced steps sit on the song grid; n:m tuplets exact in samples;
   REQUIRE(out.size() > 24);
   for (size_t k = 0; k < out.size(); ++k)
     CHECK(out[k].t == h.tempo.ticksToSamples(static_cast<pq::Ticks>(k) * (pq::kPpq / 3), kSr));
-  // A note-on between steps waits for the next grid step.
+  // AP.3 (Q?-AP.1-a (3), decided): a note-on between steps into an idle arp sounds at once; the later steps stay on
+  // the grid; the first one's gate (50 % of 6000) ends before the next grid step.
   e::ArpCore late;
   p.rate = {true, 1, 16, 1, 1, 100.0f};
-  const auto o2 = ons(Harness{}.run(late, p, {{7000, on(1, 440.0f)}}, tr, 30000, 64));
-  REQUIRE(!o2.empty());
-  CHECK(o2[0].t == 12000);
+  Harness hl;
+  const auto all2 = hl.run(late, p, {{7000, on(1, 440.0f)}}, tr, 30000, 64);
+  const auto o2 = ons(all2);
+  REQUIRE(o2.size() >= 3);
+  CHECK(o2[0].t == 7000);
+  CHECK(o2[1].t == 12000);
+  CHECK(o2[2].t == 18000);
+  for (const Ev& x : all2)
+    if (x.ev.kind == e::NoteEventKind::NoteOff && x.ev.noteId == o2[0].ev.noteId) CHECK(x.t == 10000);
+  // Gate 150 %: the first note keeps its full gate length (9000) and overlaps the next grid step.
+  e::ArpCore late2;
+  p.gate = 1.5f;
+  const auto all3 = Harness{}.run(late2, p, {{7000, on(1, 440.0f)}}, tr, 30000, 64);
+  const auto o3 = ons(all3);
+  REQUIRE(o3.size() >= 2);
+  CHECK(o3[0].t == 7000);
+  CHECK(o3[1].t == 12000);
+  for (const Ev& x : all3)
+    if (x.ev.kind == e::NoteEventKind::NoteOff && x.ev.noteId == o3[0].ev.noteId) CHECK(x.t == 16000);
+  // Not idle (a generated note still sounding): a new note-on after a release waits for the grid.
+  e::ArpCore busy;
+  p.gate = 1.9f;
+  const auto o4 = ons(Harness{}.run(busy, p, {{0, on(1, 440.0f)}, {7000, off(1)}, {8000, on(2, 550.0f)}}, tr, 30000, 64));
+  REQUIRE(o4.size() >= 3);
+  CHECK(o4[0].t == 0);
+  CHECK(o4[1].t == 6000);
+  CHECK(o4[2].t == 12000);
+  CHECK(o4[2].ev.hz == 550.0f);
+  // A note-on exactly on a grid step is that step.
+  e::ArpCore onGrid;
+  p.gate = 0.5f;
+  const auto o5 = ons(Harness{}.run(onGrid, p, {{12000, on(1, 440.0f)}}, tr, 30000, 64));
+  REQUIRE(o5.size() >= 2);
+  CHECK(o5[0].t == 12000);
+  CHECK(o5[1].t == 18000);
 }
 
 TEST_CASE("arp: the same events at any block size (32 / 64 / 512 / 37 frames)") {
@@ -687,10 +721,10 @@ TEST_CASE("note stages: a chain of two arps (ids per stage), RtScope on the stag
   CHECK(violations == 0);
   // the voices see stage 1's notes only
   auto& s1 = static_cast<e::ArpStage*>(chain.stage(1))->core();
-  // stage 0: steps at 6000 … 42000 (the grid step after the note-ons at frame 3); stage 1 plays each 3000-sample note
-  // twice at 1/64
-  CHECK(static_cast<e::ArpStage*>(chain.stage(0))->core().stats().notes == 7);
-  CHECK(s1.stats().notes == 14);
+  // stage 0: a step at the note-ons (frame 3: idle, AP.3) ending at 3003, then 6000 … 42000 on the grid; stage 1
+  // plays the first note at 3, 1500, 3000 (idle again: at once) and each later 3000-sample note twice at 1/64
+  CHECK(static_cast<e::ArpStage*>(chain.stage(0))->core().stats().notes == 8);
+  CHECK(s1.stats().notes == 17);
   // flush: offs for the sounding notes, the key-held source note (id 2) as a note-on
   e::EventBuffer held(64);
   out.clear();
@@ -884,4 +918,365 @@ TEST_CASE("note stages: an arp installed on a slot plays through the Engine and 
   en.collect();
   CHECK(run(2000) == 0);
   CHECK(en.asleep());
+}
+
+// ---- AP.3: pitch (Harmonics unit, Harmonic Walk, Into / Out glides) --------------------------------------------------
+
+namespace {
+
+e::NoteEvent jiOn(uint32_t id, float hz, float harmonic, float ratio = 1.0f) {
+  e::NoteEvent n = on(id, hz);
+  n.harmonic = harmonic;
+  n.ratio = ratio;
+  return n;
+}
+
+std::vector<Ev> pitchesOf(const std::vector<Ev>& v, uint32_t id) {
+  std::vector<Ev> r;
+  for (const Ev& x : v)
+    if (x.ev.kind == e::NoteEventKind::Pitch && x.ev.noteId == id) r.push_back(x);
+  return r;
+}
+
+}  // namespace
+
+TEST_CASE("arp (AP.3): Harmonics unit — h + k over the anchor, exact ratio / harmonic; Base; Rotate doubles; rests") {
+  SUBCASE("a JI note (harmonic 8, ratio 2/1 of its anchor): 8, 9, 10 per copy") {
+    e::NoteEvent n = jiOn(1, 400.0f, 8.0f, 2.0f);
+    n.degree = 3.0f;
+    n.equave = 4.0f;
+    n.tuning = 1.0f;
+    n.noteDegree = 51.0f;
+    e::ArpParams p = freeParams(e::ArpStyle::Up);
+    p.unit = e::ArpUnit::Harmonics;
+    p.steps = 3;
+    e::ArpCore arp;
+    const auto o = ons(Harness{}.run(arp, p, {{0, n}}, {}, kSixteenth * 3, 64));
+    REQUIRE(o.size() == 3);
+    CHECK(o[0].ev.harmonic == 8.0f);  // copy 0: the source unchanged
+    CHECK(o[0].ev.degree == 3.0f);
+    for (int j = 1; j < 3; ++j) {
+      const e::NoteEvent& x = o[static_cast<size_t>(j)].ev;
+      CHECK(x.harmonic == 8.0f + static_cast<float>(j));
+      CHECK(x.hz == static_cast<float>(400.0 * (8 + j) / 8.0));
+      CHECK(x.ratio == static_cast<float>(2.0 * (8 + j) / 8.0));
+      CHECK(std::isnan(x.degree));
+      CHECK(std::isnan(x.equave));
+      CHECK(x.tuning == 0.0f);
+      CHECK(x.noteDegree == doctest::Approx(51.0 + 12.0 * std::log2((8.0 + j) / 8.0)).epsilon(1e-6));
+    }
+  }
+  SUBCASE("a note without a group counts as harmonic Base (5) of itself; distance -2") {
+    e::ArpParams p = freeParams(e::ArpStyle::Up);
+    p.unit = e::ArpUnit::Harmonics;
+    p.harmonicBase = 5;
+    p.steps = 3;
+    p.distance = -2;
+    e::ArpCore arp;
+    const auto o = ons(Harness{}.run(arp, p, {{0, on(1, 500.0f)}}, {}, kSixteenth * 3, 64));
+    REQUIRE(o.size() == 3);
+    CHECK(o[0].ev.harmonic == 0.0f);
+    CHECK(o[1].ev.hz == 300.0f);  // 500 · 3/5
+    CHECK(o[1].ev.harmonic == 3.0f);
+    CHECK(o[1].ev.ratio == 0.6f);
+    CHECK(o[2].ev.hz == 100.0f);  // 500 · 1/5
+    CHECK(o[2].ev.harmonic == 1.0f);
+  }
+  SUBCASE("below the first harmonic: a rest") {
+    e::ArpParams p = freeParams(e::ArpStyle::Up);
+    p.unit = e::ArpUnit::Harmonics;
+    p.harmonicBase = 2;
+    p.steps = 3;
+    p.distance = -1;
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}}, {}, kSixteenth * 3, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() == 2);  // 200 (h 2), 100 (h 1), then h 0: nothing
+    CHECK(o[1].ev.hz == 100.0f);
+    CHECK(arp.stats().steps == 3);
+  }
+  SUBCASE("Rotate: a wrap is the series' octave (h -> 2h)") {
+    e::ArpParams p = freeParams(e::ArpStyle::Up);
+    p.unit = e::ArpUnit::Harmonics;
+    p.transpose = e::ArpTranspose::Rotate;
+    p.steps = 2;
+    p.distance = 1;
+    e::ArpCore arp;
+    const auto o = ons(Harness{}.run(arp, p, {{0, jiOn(1, 200.0f, 4.0f)}, {0, jiOn(2, 250.0f, 5.0f)}}, {},
+                                     kSixteenth * 4, 64));
+    REQUIRE(o.size() == 4);
+    // copy 0: [h4 h5]; copy 1: elements 1, 2 -> h5, h4 one wrap up = h8
+    CHECK(o[2].ev.hz == 250.0f);
+    CHECK(o[3].ev.hz == 400.0f);
+    CHECK(o[3].ev.harmonic == 8.0f);
+    CHECK(o[3].ev.ratio == 2.0f);
+  }
+}
+
+TEST_CASE("arp (AP.3): Harmonic Walk — over / under, orders, two anchors merged by Hz (duplicates once)") {
+  auto walk = [](e::ArpParams p, std::vector<Ev> in, int count) {
+    e::ArpCore arp;
+    std::vector<e::NoteEvent> r;
+    for (const Ev& x : ons(Harness{}.run(arp, p, std::move(in), {}, kSixteenth * count, 64))) r.push_back(x.ev);
+    return r;
+  };
+  auto hzOf = [](const std::vector<e::NoteEvent>& v) {
+    std::vector<float> r;
+    for (const auto& x : v) r.push_back(x.hz);
+    return r;
+  };
+  e::ArpParams p = freeParams(e::ArpStyle::HarmonicWalk);
+  p.walkRange = 4;
+  SUBCASE("one anchor (h 4 of 50 Hz): an overtone run, Up / Down / UpDown") {
+    const std::vector<Ev> in = {{0, jiOn(1, 200.0f, 4.0f)}};
+    const auto up = walk(p, in, 6);
+    CHECK(hzOf(up) == std::vector<float>{200, 250, 300, 350, 400, 200});
+    for (size_t i = 0; i < 5; ++i) {
+      CHECK(up[i].harmonic == static_cast<float>(4 + i));
+      CHECK(up[i].ratio == static_cast<float>((4.0 + i) / 4.0));
+    }
+    p.walkOrder = e::ArpWalkOrder::Down;
+    CHECK(hzOf(walk(p, in, 5)) == std::vector<float>{400, 350, 300, 250, 200});
+    p.walkOrder = e::ArpWalkOrder::UpDown;
+    CHECK(hzOf(walk(p, in, 9)) == std::vector<float>{200, 250, 300, 350, 400, 350, 300, 250, 200});
+  }
+  SUBCASE("Under: the undertones 1/4 … 1/8 of the note, by Hz") {
+    p.walkUnder = true;
+    const auto o = walk(p, {{0, jiOn(1, 200.0f, 4.0f)}}, 5);
+    CHECK(hzOf(o) == std::vector<float>{100.0f, static_cast<float>(200.0 * 4 / 7), static_cast<float>(200.0 * 4 / 6),
+                                         160.0f, 200.0f});
+    CHECK(o[0].ratio == 0.5f);
+    CHECK(o[0].harmonic == 0.0f);
+    CHECK(o[4].harmonic == 4.0f);  // the note itself
+  }
+  SUBCASE("two anchors (h 4 and h 6 over 50 Hz, Range 3): one merged run, 300 / 350 once") {
+    p.walkRange = 3;
+    const auto o = walk(p, {{0, jiOn(1, 300.0f, 6.0f)}, {0, jiOn(2, 200.0f, 4.0f)}}, 7);
+    CHECK(hzOf(o) == std::vector<float>{200, 250, 300, 350, 400, 450, 200});
+    for (size_t i = 0; i < 6; ++i) CHECK(o[i].harmonic == static_cast<float>(4 + i));
+  }
+  SUBCASE("two unrelated notes: the union interleaves by Hz; Random draws from it deterministically") {
+    p.walkRange = 2;
+    const std::vector<Ev> in = {{0, jiOn(1, 200.0f, 2.0f)}, {0, on(2, 330.0f)}};  // note 2: Base 8
+    const float h9 = static_cast<float>(330.0 * 9 / 8), h10 = static_cast<float>(330.0 * 10 / 8);
+    CHECK(hzOf(walk(p, in, 6)) == std::vector<float>{200, 300, 330, h9, 400, h10});
+    p.walkOrder = e::ArpWalkOrder::Random;
+    p.seed = 3;
+    const auto a = hzOf(walk(p, in, 24)), b = hzOf(walk(p, in, 24));
+    CHECK(a == b);
+    const std::set<float> allowed{200.0f, 300.0f, 330.0f, h9, h10, 400.0f};
+    std::set<float> seen;
+    for (float x : a) {
+      CHECK(allowed.count(x) == 1);
+      seen.insert(x);
+    }
+    CHECK(seen.size() >= 4);
+  }
+  SUBCASE("Steps / Distance shift the walk in the unit (Harmonics: + 1 per copy)") {
+    p.walkRange = 1;
+    p.unit = e::ArpUnit::Harmonics;
+    p.steps = 2;
+    const auto o = walk(p, {{0, jiOn(1, 200.0f, 4.0f)}}, 4);
+    CHECK(hzOf(o) == std::vector<float>{200, 250, 250, 300});
+    CHECK(o[3].harmonic == 6.0f);
+  }
+}
+
+TEST_CASE("arp (AP.3): Into / Out glides — sources, targets, time, shape on the Pitch events") {
+  const std::vector<Ev> in = {{0, on(1, 200.0f)}, {0, on(2, 300.0f)}};
+  e::ArpParams p = freeParams(e::ArpStyle::Up);  // steps of 6000, gate 3000
+  p.glideShape = e::RampShape::Exponential;
+  p.glideBend = 0.5f;
+  SUBCASE("Into Step: from the previous step's note; none before the first step") {
+    p.into = e::ArpGlide::Step;
+    p.glideMs = 10.0f;  // 480 frames
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 3, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() == 3);
+    CHECK(o[0].ev.hz == 200.0f);
+    CHECK(pitchesOf(all, o[0].ev.noteId).empty());
+    CHECK(o[1].ev.hz == 200.0f);  // starts at the previous step's pitch
+    const auto g1 = pitchesOf(all, o[1].ev.noteId);
+    REQUIRE(g1.size() == 1);
+    CHECK(g1[0].t == o[1].t);
+    CHECK(g1[0].ev.hz == 300.0f);
+    CHECK(g1[0].ev.rampFrames == 480);
+    CHECK(g1[0].ev.rampShape == static_cast<uint8_t>(e::RampShape::Exponential));
+    CHECK(static_cast<int8_t>(g1[0].ev.rampBend) == 64);
+    CHECK(o[2].ev.hz == 300.0f);
+    CHECK(arp.stats().glides == 2);
+  }
+  SUBCASE("Into Offset in cents and in the unit (Degrees: -2 of 12-EDO); Time a fraction of the note") {
+    p.into = e::ArpGlide::Offset;
+    p.glideCents = true;
+    p.intoOffset = -100.0f;
+    p.glideSynced = true;
+    p.glideFraction = 0.5f;  // 1500 of the 3000-frame note
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() == 1);
+    CHECK(o[0].ev.hz == static_cast<float>(200.0 * std::exp2(-100.0 / 1200.0)));
+    const auto g = pitchesOf(all, o[0].ev.noteId);
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].ev.hz == 200.0f);
+    CHECK(g[0].ev.rampFrames == 1500);
+    p.glideCents = false;
+    p.intoOffset = -2.0f;
+    e::ArpCore arp2;
+    const auto o2 = ons(Harness{}.run(arp2, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64));
+    REQUIRE(o2.size() == 1);
+    CHECK(o2[0].ev.hz == static_cast<float>(200.0 * std::exp2(-200.0 / 1200.0)));
+  }
+  SUBCASE("Out Step: over the last Time of the gate toward the next step; Offset in Harmonics") {
+    p.out = e::ArpGlide::Step;
+    p.glideMs = 20.0f;  // 960 frames
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 2, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() == 2);
+    const auto g = pitchesOf(all, o[0].ev.noteId);
+    REQUIRE(g.size() == 1);
+    CHECK(g[0].t == 3000 - 960);
+    CHECK(g[0].ev.hz == 300.0f);
+    CHECK(g[0].ev.rampFrames == 960);
+    p.out = e::ArpGlide::Offset;
+    p.unit = e::ArpUnit::Harmonics;
+    p.outOffset = 1.0f;  // h 8 -> 9 (Base 8)
+    e::ArpCore arp2;
+    const auto all2 = Harness{}.run(arp2, p, {{0, on(1, 200.0f)}}, {}, kSixteenth, 64);
+    const auto g2 = pitchesOf(all2, ons(all2)[0].ev.noteId);
+    REQUIRE(g2.size() == 1);
+    CHECK(g2[0].ev.hz == 225.0f);
+  }
+  SUBCASE("Out Step with a gate > 100 %: the next step already sounds; Into + Out longer than the note: halves") {
+    p.out = e::ArpGlide::Step;
+    p.into = e::ArpGlide::Step;
+    p.gate = 1.5f;  // 9000 frames
+    p.glideMs = 1000.0f;
+    e::ArpCore arp;
+    const auto all = Harness{}.run(arp, p, in, {}, kSixteenth * 3, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() >= 2);
+    const auto g0 = pitchesOf(all, o[0].ev.noteId);
+    REQUIRE(g0.size() == 1);  // the first step has no previous: Out only, the whole note
+    CHECK(g0[0].t == 0);
+    CHECK(g0[0].ev.rampFrames == 9000);
+    CHECK(g0[0].ev.hz == 300.0f);  // the step at 6000 (still ahead at frame 0)
+    const auto g1 = pitchesOf(all, o[1].ev.noteId);
+    REQUIRE(g1.size() == 2);  // Into 4500, Out 4500
+    CHECK(g1[0].t == 6000);
+    CHECK(g1[0].ev.rampFrames == 4500);
+    CHECK(g1[1].t == 6000 + 4500);
+    CHECK(g1[1].ev.rampFrames == 4500);
+    CHECK(g1[1].ev.hz == 200.0f);  // toward the step at 12000 (the pattern's next, still ahead at 10500)
+    // A short Out (500) starts after the next step has begun (gate 150 %): it aims at that sounding step.
+    p.into = e::ArpGlide::Off;
+    p.glideMs = 500.0f / 48.0f;
+    e::ArpCore arp2;
+    const auto all2 = Harness{}.run(arp2, p, in, {}, kSixteenth * 3, 64);
+    const auto o2 = ons(all2);
+    REQUIRE(o2.size() >= 3);
+    const auto h1 = pitchesOf(all2, o2[1].ev.noteId);
+    REQUIRE(h1.size() == 1);
+    CHECK(h1[0].t == 6000 + 9000 - 500);
+    CHECK(h1[0].ev.hz == 200.0f);
+  }
+  SUBCASE("the source's bend carries over on top of the Into glide") {
+    p.into = e::ArpGlide::Offset;
+    p.glideCents = true;
+    p.intoOffset = 100.0f;
+    p.glideMs = 10.0f;  // 480
+    e::ArpCore arp;
+    // the held note bends +1200 cents over 960 frames from frame 0
+    const auto all = Harness{}.run(arp, p, {{0, on(1, 200.0f)}, {0, e::notePitch(0, 1, 400.0f, 960)}}, {}, 6000, 64);
+    const auto o = ons(all);
+    REQUIRE(o.size() == 1);
+    const auto g = pitchesOf(all, o[0].ev.noteId);
+    REQUIRE(g.size() == 2);
+    CHECK(g[0].t == 0);
+    CHECK(g[0].ev.rampFrames == 480);
+    CHECK(g[0].ev.hz == doctest::Approx(200.0 * std::exp2(0.5)).epsilon(1e-6));  // the bend at the glide's end
+    CHECK(g[1].t == 480);  // then the rest of the bend
+    CHECK(g[1].ev.rampFrames == 480);
+    CHECK(g[1].ev.hz == 400.0f);
+    CHECK(g[1].ev.rampShape == 0);
+  }
+}
+
+TEST_CASE("arp (AP.3): glides and Harmonic Walk give the same events at block sizes 32 / 64 / 512 / 37; RtScope") {
+  e::ArpParams p;
+  p.style = e::ArpStyle::HarmonicWalk;
+  p.rate = {true, 1, 16, 3, 2, 100.0f};
+  p.walkRange = 5;
+  p.walkOrder = e::ArpWalkOrder::UpDown;
+  p.into = e::ArpGlide::Step;
+  p.out = e::ArpGlide::Offset;
+  p.glideCents = true;
+  p.outOffset = -50.0f;
+  p.glideSynced = true;
+  p.glideFraction = 0.3f;
+  p.glideShape = e::RampShape::Overshoot;
+  p.gate = 0.9f;
+  Transport tr;
+  tr.playing = true;
+  const std::vector<Ev> in = {{1000, jiOn(1, 200.0f, 4.0f)}, {9000, jiOn(2, 300.0f, 6.0f)},
+                              {30000, e::notePitch(0, 1, 210.0f, 3000)}, {50000, off(1)}, {70000, off(2)}};
+  std::vector<std::vector<Ev>> runs;
+  for (uint32_t block : {32u, 64u, 512u, 37u}) {
+    e::ArpCore arp;
+    Harness h;
+    const std::vector<Ev> r = h.run(arp, p, in, tr, 80000, block);
+    CHECK(h.rtViolations == 0);
+    CHECK(arp.stats().glides > 10);
+    runs.push_back(r);
+  }
+  REQUIRE(runs[0].size() > 30);
+  for (size_t i = 1; i < runs.size(); ++i) {
+    REQUIRE(runs[i].size() == runs[0].size());
+    for (size_t j = 0; j < runs[0].size(); ++j) {
+      CHECK(runs[i][j].t == runs[0][j].t);
+      CHECK(runs[i][j].ev.kind == runs[0][j].ev.kind);
+      CHECK(runs[i][j].ev.noteId == runs[0][j].ev.noteId);
+      CHECK(runs[i][j].ev.hz == runs[0][j].ev.hz);
+      CHECK(runs[i][j].ev.rampFrames == runs[0][j].ev.rampFrames);
+    }
+  }
+}
+
+TEST_CASE("arp (AP.3): the new params through setArpParam / sanitized") {
+  e::ArpParams p;
+  e::setArpParam(p, e::ArpParamId::Unit, 2.0f);
+  CHECK(p.unit == e::ArpUnit::Harmonics);
+  e::setArpParam(p, e::ArpParamId::Style, 18.0f);
+  CHECK(p.style == e::ArpStyle::HarmonicWalk);
+  e::setArpParam(p, e::ArpParamId::HarmonicBase, 12.4f);
+  CHECK(p.harmonicBase == 12);
+  e::setArpParam(p, e::ArpParamId::WalkRange, 99.0f);
+  CHECK(p.walkRange == e::kArpMaxWalkRange);
+  e::setArpParam(p, e::ArpParamId::WalkUnder, 1.0f);
+  CHECK(p.walkUnder);
+  e::setArpParam(p, e::ArpParamId::WalkOrder, 3.0f);
+  CHECK(p.walkOrder == e::ArpWalkOrder::Random);
+  e::setArpParam(p, e::ArpParamId::IntoSource, 1.0f);
+  CHECK(p.into == e::ArpGlide::Step);
+  e::setArpParam(p, e::ArpParamId::OutTarget, 2.0f);
+  CHECK(p.out == e::ArpGlide::Offset);
+  e::setArpParam(p, e::ArpParamId::IntoOffset, -3.0f);
+  e::setArpParam(p, e::ArpParamId::OutOffset, 7.0f);
+  CHECK(p.intoOffset == -3.0f);
+  CHECK(p.outOffset == 7.0f);
+  e::setArpParam(p, e::ArpParamId::GlideCents, 1.0f);
+  e::setArpParam(p, e::ArpParamId::GlideSynced, 1.0f);
+  CHECK((p.glideCents && p.glideSynced));
+  e::setArpParam(p, e::ArpParamId::GlideMs, 1e9f);
+  e::setArpParam(p, e::ArpParamId::GlideFraction, -1.0f);
+  e::setArpParam(p, e::ArpParamId::GlideShape, 3.0f);
+  e::setArpParam(p, e::ArpParamId::GlideBend, 5.0f);
+  CHECK(p.glideShape == e::RampShape::Overshoot);
+  const e::ArpParams s = e::sanitized(p);
+  CHECK(s.glideMs == 10000.0f);
+  CHECK(s.glideFraction == 0.0f);
+  CHECK(s.glideBend == 1.0f);
 }

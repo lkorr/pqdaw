@@ -16,6 +16,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/core/time.h"
+#include "pq/engine/arp.h"
 #include "pq/engine/interpreter.h"
 #include "pq/engine/note_events.h"
 #include "pq/engine/sequence.h"
@@ -241,4 +242,75 @@ TEST_CASE("tuning voices: the timeline's PitchSource reaches the note-on as degr
   CHECK(ons[1].tuning == 0.0f);
   CHECK(std::isnan(ons[1].degree));
   CHECK(std::isnan(ons[1].equave));
+}
+
+// AP.3: an arpeggiator's Degrees steps under a modulated tuning. The arp shifts a Degree note by its stage's degree
+// table (the tuning at its definition); the generated events carry degree / equave, so the track's tuning node gives
+// every step the pitch buildMOSScale gives its degree at that sample while the generator sweeps.
+TEST_CASE("tuning voices (AP.3): arp Degrees steps follow a modulated tuning (degree + 2 per copy)") {
+  constexpr uint32_t kFrames = 18000;
+  TunedRig r(kFrames);
+  const pq::tuning::Mos mos = pq::tuning::Mos::make(sweepMos()).value();
+  eng::ArpDegreeTable table;
+  for (int32_t d = 0; d < 7; ++d) table.cents.push_back(mos.centsOf(d, 0) - mos.centsOf(0, 0));
+  table.equaveCents = mos.centsOf(0, 1) - mos.centsOf(0, 0);
+  eng::ArpCore arp(0, table);
+  eng::ArpParams p;
+  p.rate = {true, 1, 16, 1, 1, 125.0f};  // stopped transport: steps at 0, 6000, 12000
+  p.gate = 0.3f;
+  p.steps = 3;
+  p.distance = 2;
+  const auto staticHz = pq::tuning::resolveHzDouble(pq::tuning::PitchId::fromDegree(1, 0),
+                                                    pq::tuning::Tuning::make(mos, kRef).value(), {});
+  REQUIRE(staticHz);
+  eng::NoteEvent src = eng::noteOn(0, 1, static_cast<float>(*staticHz), 0.8f);
+  src.degree = 1.0f;
+  src.equave = 0.0f;
+  std::vector<float> f;
+  std::vector<eng::NoteEvent> ons;
+  eng::EventBuffer in(8);
+  uint64_t arpRt = 0;
+  pq::DenormalGuard dg;
+  for (uint32_t done = 0; done < kFrames; done += 128) {
+    const uint32_t n = std::min(128u, kFrames - done);
+    in.clear();
+    if (done == 0) in.push(src);
+    eng::NoteStageBlock b;
+    b.time = done;
+    b.frames = n;
+    b.clock.sampleRate = kSr;
+    r.buf.clear();
+    arpRt += pq::alloc_trap::countRtViolations([&] { arp.process(p, b, in.list(), r.buf); });
+    for (uint32_t i = 0; i < r.buf.size(); ++i)
+      if (r.buf.list().events[i].kind == eng::NoteEventKind::NoteOn) ons.push_back(r.buf.list().events[i]);
+    const float* ins[1] = {r.gen.data() + done};
+    eng::ProcessContext ctx;
+    ctx.frames = n;
+    ctx.sampleRate = kSr;
+    ctx.sampleTime = done;
+    ctx.in = ins;
+    ctx.numIn = 1;
+    ctx.events = &r.buf.list();
+    r.rtViolations += pq::alloc_trap::countRtViolations([&] { r.ve.process(ctx); });
+    f.insert(f.end(), r.ve.mix(r.f), r.ve.mix(r.f) + n);
+  }
+  CHECK(arpRt == 0);
+  CHECK(r.rtViolations == 0);
+  REQUIRE(ons.size() == 3);
+  uint64_t checked = 0, bad = 0;
+  for (uint32_t j = 0; j < 3; ++j) {
+    const int32_t deg = 1 + 2 * static_cast<int32_t>(j);
+    CHECK(ons[j].degree == static_cast<float>(deg));
+    CHECK(ons[j].equave == 0.0f);
+    for (uint32_t t = 6000 * j; t < 6000 * j + 1800; ++t) {  // while the step sounds alone
+      const auto ref = tuning_ref::mosAt(sweepMos(), r.gen[t]);
+      if (!ref) continue;
+      bad += !tuning_ref::withinTolerance(f[t], kRef * std::exp2(ref->centsOf(deg, 0) / 1200.0));
+      ++checked;
+    }
+  }
+  CHECK(checked > 5000);
+  CHECK(bad == 0);
+  // the generator moved: the last step is far from its static pitch
+  CHECK(std::fabs(1200.0 * std::log2(f[13000] / ons[2].hz)) > 10.0);
 }

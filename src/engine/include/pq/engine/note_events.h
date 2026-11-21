@@ -12,8 +12,18 @@
 //
 // Pitch: every note is float32 Hz, resolved upstream from its pitch identity and tuning (SPEC §3.1). The
 // identity-derived per-voice values (voice.ratio, voice.harmonic, unison count/index) travel with the note-on.
-// Expression: a Pitch event moves a sounding note to a new Hz, as a step or as a glide that is linear in cents
-// (exponential in Hz) over rampFrames samples (glides, pitch curves).
+// Expression: a Pitch event moves a sounding note to a new Hz, as a step or as a glide over rampFrames samples
+// (glides, pitch curves). AP.3: the glide's shape is `rampShape` (RampShape) with `rampBend` (a signed byte, read
+// as int8 −127 … 127): with c0 / c1 the cents at `frame` / the target and u = n / rampFrames (n samples into the
+// glide), cents(n) = c0 + (c1 − c0) · s(u), Hz = Hz0 · 2^((cents − c0) / 1200), and the target exactly from
+// frame + rampFrames on:
+//   Linear       s = u: linear in cents (exponential in Hz). rampBend unused. The default: every producer that does
+//                not set a shape gets the glide it always had (bit for bit).
+//   Exponential  s = (1 − e^(−k·u)) / (1 − e^(−k)), k = rampBend / 16 (|k| ≤ 7.9; k > 0 fast then settling, k < 0
+//                slow then fast; k = 0 is Linear). Monotonic.
+//   SCurve       s = u² · (3 − 2u) (smoothstep: zero slope at both ends). rampBend unused. Monotonic.
+//   Overshoot    s = 1 + (a + 1)(u − 1)³ + a (u − 1)², a = 4 · |rampBend| / 127 (one spring: past the target once,
+//                peak overshoot 4a³ / (27 (a + 1)²) of the interval — 10 % at a ≈ 1.70 — and back with zero slope).
 // Tuning as a signal (T2.6): a note-on may carry its Degree identity (`degree`, `equave`; NaN = none) as
 // voice.degree / voice.equave; a patch's tuning node (`tuning_hz` bound with `tune_voices`) then derives the
 // voice's Hz per sample from the modulated tuning, and `hz` is only the fallback for lanes without a degree.
@@ -57,6 +67,9 @@ enum class NoteEventKind : uint8_t {
   AllSoundOff,  // fast-fade every sounding voice (panic, project close); pending starts are dropped
 };
 
+// NoteEvent::rampShape (Pitch events, AP.3; see "Expression" above).
+enum class RampShape : uint8_t { Linear, Exponential, SCurve, Overshoot, Count };
+
 // NoteEvent::flags.
 inline constexpr uint8_t kNoteEventRetune = 1;  // Pitch: also replace the note's identity (ratio, harmonic, degree,
                                                 // equave, tuning): a held note re-resolved by an edit (T2.6-fix3)
@@ -74,7 +87,8 @@ struct NoteEvent {
   float ratio = 1.0f;             // NoteOn: voice.ratio (pitch as a ratio of its anchor; 1 if none)
   float harmonic = 0.0f;          // NoteOn: voice.harmonic (the note's number in its JI group; 0 if none)
   uint16_t unisonIndex = 0;       // NoteOn: voice.index (index within its unison group)
-  uint16_t pad2_ = 0;
+  uint8_t rampShape = 0;          // Pitch: the glide's RampShape (AP.3; 0 = Linear)
+  uint8_t rampBend = 0;           // Pitch: the shape's bend, an int8 stored as its byte (AP.3)
   union {
     uint32_t rampFrames = 0;      // Pitch, Gain: glide / ramp length in samples (0 = step)
     uint32_t sourceNoteId;        // Sync: the note to copy; Gain with kNoteEventIfSynced: the Syncs' source (T7.7)
@@ -115,6 +129,14 @@ inline NoteEvent notePitch(uint32_t frame, uint32_t noteId, float hz, uint32_t r
   e.noteId = noteId;
   e.hz = hz;
   e.rampFrames = rampFrames;
+  return e;
+}
+// AP.3: a glide of the given shape and bend (−127 … 127).
+inline NoteEvent notePitch(uint32_t frame, uint32_t noteId, float hz, uint32_t rampFrames, RampShape shape,
+                           int8_t bend = 0) noexcept {  // RT-safe
+  NoteEvent e = notePitch(frame, noteId, hz, rampFrames);
+  e.rampShape = static_cast<uint8_t>(shape);
+  e.rampBend = static_cast<uint8_t>(bend);
   return e;
 }
 

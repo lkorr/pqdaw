@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <numeric>
+#include <type_traits>
 #include <utility>
 
 namespace pq::engine {
+
+static_assert(std::is_trivially_copyable_v<ArpParams>);  // ArpCore::process compares / copies it bytewise
 
 namespace {
 
@@ -83,7 +87,7 @@ void setArpParam(ArpParams& p, ArpParamId id, float v) noexcept {  // RT-safe
     case ArpParamId::RetriggerNum: p.retriggerRate.num = clampi(v, 1, 16); break;
     case ArpParamId::RetriggerDen: p.retriggerRate.den = clampi(v, 1, kArpMaxRateDen); break;
     case ArpParamId::Hold: p.hold = on; break;
-    case ArpParamId::Unit: p.unit = static_cast<ArpUnit>(clampi(v, 0, 1)); break;
+    case ArpParamId::Unit: p.unit = static_cast<ArpUnit>(clampi(v, 0, 2)); break;
     case ArpParamId::Transpose: p.transpose = static_cast<ArpTranspose>(clampi(v, 0, 1)); break;
     case ArpParamId::Distance: p.distance = clampi(v, -64, 64); break;
     case ArpParamId::Steps: p.steps = clampi(v, 1, kArpMaxSteps); break;
@@ -95,6 +99,22 @@ void setArpParam(ArpParams& p, ArpParamId id, float v) noexcept {  // RT-safe
     case ArpParamId::VelocityTarget: p.velocityTarget = v; break;
     case ArpParamId::VelocityRetrigger: p.velocityRetrigger = on; break;
     case ArpParamId::Seed: p.seed = static_cast<uint32_t>(clampi(v, 0, 1 << 24)); break;
+    case ArpParamId::HarmonicBase: p.harmonicBase = clampi(v, 1, 64); break;
+    case ArpParamId::WalkRange: p.walkRange = clampi(v, 0, kArpMaxWalkRange); break;
+    case ArpParamId::WalkUnder: p.walkUnder = on; break;
+    case ArpParamId::WalkOrder: p.walkOrder = static_cast<ArpWalkOrder>(clampi(v, 0, 3)); break;
+    case ArpParamId::IntoSource: p.into = static_cast<ArpGlide>(clampi(v, 0, 2)); break;
+    case ArpParamId::OutTarget: p.out = static_cast<ArpGlide>(clampi(v, 0, 2)); break;
+    case ArpParamId::IntoOffset: p.intoOffset = v; break;
+    case ArpParamId::OutOffset: p.outOffset = v; break;
+    case ArpParamId::GlideCents: p.glideCents = on; break;
+    case ArpParamId::GlideSynced: p.glideSynced = on; break;
+    case ArpParamId::GlideMs: p.glideMs = v; break;
+    case ArpParamId::GlideFraction: p.glideFraction = v; break;
+    case ArpParamId::GlideShape:
+      p.glideShape = static_cast<RampShape>(clampi(v, 0, static_cast<int32_t>(RampShape::Count) - 1));
+      break;
+    case ArpParamId::GlideBend: p.glideBend = v; break;
     case ArpParamId::Count: break;
   }
 }
@@ -110,7 +130,7 @@ ArpParams sanitized(const ArpParams& in) noexcept {  // RT-safe
   p.groove = unit(p.groove, 0.0f, 1.0f, 0.0f);
   p.repeats = std::max(p.repeats, 0);
   if (static_cast<uint32_t>(p.retrigger) > 2) p.retrigger = ArpRetrigger::Off;
-  if (static_cast<uint32_t>(p.unit) > 1) p.unit = ArpUnit::Degrees;
+  if (static_cast<uint32_t>(p.unit) > 2) p.unit = ArpUnit::Degrees;
   if (static_cast<uint32_t>(p.transpose) > 1) p.transpose = ArpTranspose::Shift;
   if (static_cast<uint32_t>(p.velocitySource) > 1) p.velocitySource = ArpVelocitySource::AsPlayed;
   p.distance = std::clamp(p.distance, -64, 64);
@@ -120,6 +140,17 @@ ArpParams sanitized(const ArpParams& in) noexcept {  // RT-safe
   p.fixedVelocity = unit(p.fixedVelocity, 0.0f, 1.0f, 0.8f);
   p.velocityDecayMs = unit(p.velocityDecayMs, 0.0f, 60000.0f, 0.0f);
   p.velocityTarget = unit(p.velocityTarget, 0.0f, 1.0f, 0.0f);
+  p.harmonicBase = std::clamp(p.harmonicBase, 1, 64);
+  p.walkRange = std::clamp(p.walkRange, 0, kArpMaxWalkRange);
+  if (static_cast<uint32_t>(p.walkOrder) > 3) p.walkOrder = ArpWalkOrder::Up;
+  if (static_cast<uint32_t>(p.into) > 2) p.into = ArpGlide::Off;
+  if (static_cast<uint32_t>(p.out) > 2) p.out = ArpGlide::Off;
+  p.intoOffset = unit(p.intoOffset, -4800.0f, 4800.0f, 0.0f);
+  p.outOffset = unit(p.outOffset, -4800.0f, 4800.0f, 0.0f);
+  p.glideMs = unit(p.glideMs, 0.0f, 10000.0f, 50.0f);
+  p.glideFraction = unit(p.glideFraction, 0.0f, 1.0f, 0.25f);
+  if (static_cast<uint32_t>(p.glideShape) >= static_cast<uint32_t>(RampShape::Count)) p.glideShape = RampShape::Linear;
+  p.glideBend = unit(p.glideBend, -1.0f, 1.0f, 0.5f);
   return p;
 }
 
@@ -145,11 +176,31 @@ struct ArpCore::State {
       return g0 + (g1 - g0) * static_cast<float>(static_cast<double>(t - gT) / gLen);
     }
   };
+  // What a generated note plays: held note `slot` (walked m harmonics over / under it: Harmonic Walk), shifted by
+  // `shift` in the unit and `wraps` equaves (Rotate).
+  struct Elem {
+    uint32_t slot = 0;
+    int32_t shift = 0, wraps = 0;
+    uint16_t walk = 0;
+    bool under = false;
+  };
   struct Gen {
     uint32_t id, src;
-    int32_t shift;  // Degrees: degrees; Ratio: the exponent of p/q
-    float hz;       // its pitch without the source's bend
-    int64_t off;    // engine time of its note-off
+    Elem el;
+    float hz;        // its pitch without the source's bend
+    int64_t off;     // engine time of its note-off
+    double c;        // the source bend (cents) it was last aimed at
+    int64_t intoEnd;  // AP.3: the end of its Into glide (kNever: none)
+    int64_t outAt;    // AP.3: the start of its Out glide (kNever: none / started)
+    float outHz;      // AP.3: Out Offset: the target without the bend
+    bool outing;      // AP.3: inside its Out glide
+    uint16_t rank;    // its rank in its step (Chord Trigger)
+    int64_t stepK;    // its step's grid index
+  };
+  struct WalkEl {
+    double hz;
+    uint64_t order;
+    uint8_t slot, m;
   };
   enum class Clock : uint8_t { None, Song, Free };
 
@@ -176,8 +227,19 @@ struct ArpCore::State {
 
   std::array<Gen, kArpMaxSounding> gens{};
   uint32_t numGens = 0;
-  int64_t minOff = kNever;
+  int64_t minOff = kNever, minAct = kNever;
   uint32_t nextId = 0;
+  // Harmonic Walk (AP.3): the merged elements, by Hz.
+  std::array<WalkEl, kArpMaxWalk> walk{};
+  uint32_t numWalk = 0;
+  int32_t builtBase = 0, builtRange = -1;
+  bool builtUnder = false;
+  std::array<uint8_t, kArpMaxHeld> scratchPerm{};
+  // Glides (AP.3): the latest step's notes (Hz at their onset, bend included) by rank, and the one being played.
+  std::array<float, kArpMaxHeld> prevHz{}, curHz{};
+  uint32_t prevCount = 0, curCount = 0;
+  int64_t prevStepK = 0;
+  bool immediate = false;  // the next Song step sounds at the note-on (nextSong), off the grid (AP.3)
 
   // Clock.
   Clock clock = Clock::None;
@@ -199,6 +261,8 @@ struct ArpCore::State {
   bool hadHold = false;
 
   ArpParams p;
+  ArpParams raw;  // the unsanitized params p came from
+  bool rawValid = false;
   const NoteStageBlock* b = nullptr;
   EventBuffer* out = nullptr;
   ArpStats stats;
@@ -233,6 +297,42 @@ struct ArpCore::State {
     });
     std::sort(arrival.begin(), arrival.begin() + n, [&](uint8_t a, uint8_t b) { return held[a].order < held[b].order; });
     buildPattern(n);
+    builtBase = p.harmonicBase;
+    builtRange = p.walkRange;
+    builtUnder = p.walkUnder;
+    numWalk = 0;
+    if (p.style == ArpStyle::HarmonicWalk) buildWalk(n);
+  }
+  bool stale() const noexcept {
+    return dirty || builtStyle != p.style ||
+           (p.style == ArpStyle::HarmonicWalk &&
+            (builtBase != p.harmonicBase || builtRange != p.walkRange || builtUnder != p.walkUnder));
+  }
+
+  // Harmonic Walk: every held note's walk (h … h + Range over, or the undertones), merged by Hz, duplicates once.
+  void buildWalk(uint32_t n) noexcept {
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < n; ++i) {
+      const Held& h = held[sorted[i]];
+      const double hh = static_cast<double>(harmonicOf(h.on));
+      for (int32_t m = 0; m <= p.walkRange; ++m) {
+        if (w == kArpMaxWalk) {
+          ++stats.droppedWalk;
+          continue;
+        }
+        const double r = p.walkUnder ? hh / (hh + m) : (hh + m) / hh;
+        walk[w++] = WalkEl{static_cast<double>(h.on.hz) * r, h.order, sorted[i], static_cast<uint8_t>(m)};
+      }
+    }
+    std::sort(walk.begin(), walk.begin() + w, [](const WalkEl& a, const WalkEl& b) {
+      return a.hz < b.hz || (a.hz == b.hz && (a.order < b.order || (a.order == b.order && a.m < b.m)));
+    });
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < w; ++i) {  // within 0.01 ¢ of the last kept one: a duplicate
+      if (kept > 0 && walk[i].hz <= walk[kept - 1].hz * 1.000005776243187) continue;
+      walk[kept++] = walk[i];
+    }
+    numWalk = kept;
   }
 
   void buildPattern(uint32_t n) noexcept {
@@ -321,10 +421,13 @@ struct ArpCore::State {
     patternLen = std::max(L, 1u);
   }
 
-  void shuffle(int64_t step) noexcept {
+  void shuffleInto(uint8_t* dst, int64_t step) const noexcept {
     const uint32_t n = numHeld;
-    for (uint32_t i = 0; i < n; ++i) perm[i] = static_cast<uint8_t>(i);
-    for (uint32_t i = n; i-- > 1;) std::swap(perm[i], perm[draw(p.seed, step, i) % (i + 1)]);
+    for (uint32_t i = 0; i < n; ++i) dst[i] = static_cast<uint8_t>(i);
+    for (uint32_t i = n; i-- > 1;) std::swap(dst[i], dst[draw(p.seed, step, i) % (i + 1)]);
+  }
+  void shuffle(int64_t step) noexcept {
+    shuffleInto(perm.data(), step);
     permValid = true;
   }
 
@@ -335,8 +438,45 @@ struct ArpCore::State {
     const int64_t q = floorDiv(deg, N);
     return static_cast<double>(q) * table.equaveCents + table.cents[static_cast<size_t>(deg - q * N)];
   }
-  // The pitch of held note `h` shifted by `shift` (in the unit): fills e's hz and identity. Returns the Hz.
-  float pitch(const NoteEvent& src, int32_t shift, NoteEvent& e) const noexcept {
+  // Harmonics: the note's harmonic number (its JI group's, an integer ≥ 1), else Base.
+  int64_t harmonicOf(const NoteEvent& src) const noexcept {
+    const float h = src.harmonic;
+    if (h >= 1.0f && h < 1e6f && h == std::floor(h)) return static_cast<int64_t>(h);
+    return p.harmonicBase;
+  }
+  // `src` moved by the exact fraction num / den (Harmonics, Harmonic Walk): Hz, ratio, harmonic h · num / den when an
+  // integer (else 0), a static identity, noteDegree moved fractionally.
+  void scaled(const NoteEvent& src, int64_t num, int64_t den, int64_t h, NoteEvent& e) const noexcept {
+    const int64_t g = std::gcd(num, den);
+    num /= g;
+    den /= g;
+    const double r = static_cast<double>(num) / static_cast<double>(den);
+    e.hz = static_cast<float>(static_cast<double>(src.hz) * r);
+    e.ratio = static_cast<float>(static_cast<double>(src.ratio) * r);
+    e.harmonic = (h % den == 0 && h / den <= (int64_t{1} << 40) / num) ? static_cast<float>(h / den * num) : 0.0f;
+    e.degree = e.equave = kNaN;
+    e.tuning = 0.0f;
+    e.noteDegree = std::isfinite(src.noteDegree)
+                       ? src.noteDegree + static_cast<float>(1200.0 * std::log2(r) * tableSize() / table.equaveCents)
+                       : kNaN;
+  }
+  // Element `el` of held note `src` (its walk, then its shift / wraps in the unit): fills e's hz and identity.
+  // Returns the Hz (0: a rest).
+  float pitchOf(const NoteEvent& src, const Elem& el, int32_t extra, NoteEvent& e) const noexcept {
+    if (el.walk == 0) return pitch(src, el.shift + extra, el.wraps, e);
+    NoteEvent w = src;
+    const int64_t h = harmonicOf(src), m = el.walk;
+    if (el.under) {
+      scaled(src, h, h + m, h, w);
+      w.harmonic = 0.0f;  // an undertone is not a harmonic of the anchor
+    } else {
+      scaled(src, h + m, h, h, w);
+    }
+    return pitch(w, el.shift + extra, el.wraps, e);
+  }
+  // The pitch of `src` shifted by `shift` in the unit and `wraps` equaves (Rotate): fills e's hz and identity.
+  // Returns the Hz (0: a rest, Harmonics below the first).
+  float pitch(const NoteEvent& src, int32_t shift, int32_t wraps, NoteEvent& e) const noexcept {
     e.hz = src.hz;
     e.ratio = src.ratio;
     e.harmonic = src.harmonic;
@@ -346,9 +486,18 @@ struct ArpCore::State {
     e.noteDegree = src.noteDegree;
     e.unisonCount = src.unisonCount;
     e.unisonIndex = src.unisonIndex;
-    if (shift == 0) return e.hz;
+    if (shift == 0 && wraps == 0) return e.hz;
     const int64_t N = tableSize();
+    if (p.unit == ArpUnit::Harmonics) {
+      const int64_t h = harmonicOf(src), h1 = h + shift;
+      if (h1 < 1) return e.hz = 0.0f;
+      const int32_t w = std::clamp(wraps, -24, 24);
+      const int64_t num = w >= 0 ? h1 << w : h1, den = w >= 0 ? h : h << -w;
+      scaled(src, num, den, h, e);
+      return e.hz;
+    }
     if (p.unit == ArpUnit::Degrees) {
+      shift += static_cast<int32_t>(wraps * N);
       const bool deg = std::isfinite(src.degree) && std::isfinite(src.equave);
       const int64_t d0 = deg ? static_cast<int64_t>(std::llround(src.equave)) * N + std::llround(src.degree)
                              : (std::isfinite(src.noteDegree) ? std::llround(src.noteDegree) : 0);
@@ -369,6 +518,8 @@ struct ArpCore::State {
       return e.hz;
     }
     // Ratio: (p/q)^shift, exact while it fits.
+    shift += wraps;
+    if (shift == 0) return e.hz;
     const int64_t a = shift > 0 ? p.ratioP : p.ratioQ, c = shift > 0 ? p.ratioQ : p.ratioP;
     int64_t num = 1, den = 1;
     bool exact = true;
@@ -399,8 +550,11 @@ struct ArpCore::State {
 
   // ---- Generated notes ----
   void recomputeMinOff() noexcept {
-    minOff = kNever;
-    for (uint32_t i = 0; i < numGens; ++i) minOff = std::min(minOff, gens[i].off);
+    minOff = minAct = kNever;
+    for (uint32_t i = 0; i < numGens; ++i) {
+      minOff = std::min(minOff, gens[i].off);
+      minAct = std::min({minAct, gens[i].intoEnd, gens[i].outAt});
+    }
   }
   void endDue(int64_t t, uint32_t frame) noexcept {
     for (uint32_t i = 0; i < numGens;) {
@@ -416,7 +570,77 @@ struct ArpCore::State {
   void endAll(uint32_t frame) noexcept {
     for (uint32_t i = 0; i < numGens; ++i) out->push(noteOff(frame, gens[i].id));
     numGens = 0;
-    minOff = kNever;
+    minOff = minAct = kNever;
+    prevCount = curCount = 0;
+  }
+
+  // ---- Glides (AP.3) ----
+  int8_t bendByte() const noexcept { return static_cast<int8_t>(std::lround(p.glideBend * 127.0f)); }
+  NoteEvent glide(uint32_t frame, uint32_t id, double hz, int64_t len) const noexcept {
+    return notePitch(frame, id, static_cast<float>(hz), static_cast<uint32_t>(len), p.glideShape, bendByte());
+  }
+  // A glide's length for a note `len` frames long (0: none).
+  int64_t glideFrames(int64_t len) const noexcept {
+    const double f = p.glideSynced ? static_cast<double>(p.glideFraction) * static_cast<double>(len)
+                                   : static_cast<double>(p.glideMs) * 1e-3 * b->clock.sampleRate;
+    const int64_t n = std::llround(f);
+    return n <= 0 ? 0 : std::min(n, len);
+  }
+  // `hz` moved by an Into / Out offset: in cents, or (unit) the element's pitch `k` more steps up. 0: none.
+  double offsetHz(const Held& h, const Elem& el, float hz, float offset) const noexcept {
+    if (p.glideCents) return offset == 0.0f ? 0.0 : static_cast<double>(hz) * std::exp2(offset / 1200.0);
+    const auto steps = static_cast<int32_t>(std::lround(offset));
+    if (steps == 0) return 0.0;
+    NoteEvent tmp;
+    return pitchOf(h.on, el, steps, tmp);
+  }
+  // The pitch the pattern plays next for rank `rank` (Out -> Step), as known now: the bend-free Hz times the bend of
+  // its source at `at`. 0: nothing next.
+  double nextHz(const Gen& g, int64_t at) noexcept {
+    if (prevCount > 0 && prevStepK != g.stepK) return prevHz[std::min<uint32_t>(g.rank, prevCount - 1)];
+    if (numHeld == 0) return 0.0;
+    if (stale()) rebuild();
+    int64_t here = pos;
+    if (p.retrigger == ArpRetrigger::Beat && beatIndex(k) != lastBeat) here = 0;
+    const uint32_t n = elemCount();
+    if (n == 0) return 0.0;
+    const uint32_t rank = p.style == ArpStyle::ChordTrigger ? std::min<uint32_t>(g.rank, n - 1) : 0u;
+    uint32_t idx = 0;
+    int32_t j = 0;
+    if (!pick(here, k, rank, false, idx, j)) return 0.0;
+    const Elem el = element(idx, j);
+    const Held& h = held[el.slot];
+    NoteEvent tmp;
+    const double hz = pitchOf(h.on, el, 0, tmp);
+    return hz * std::exp2(h.centsAt(at) / 1200.0);
+  }
+  // Generated notes' glide actions due at engine time `t` (frame `frame`): an Into glide's end (a source bend still
+  // running continues from there), an Out glide's start.
+  void actDue(int64_t t, uint32_t frame) noexcept {
+    for (uint32_t i = 0; i < numGens; ++i) {
+      Gen& g = gens[i];
+      if (g.intoEnd <= t) {
+        g.intoEnd = kNever;
+        const uint32_t s = find(g.src);
+        if (s != kNone) {
+          const Held& h = held[s];
+          if (h.cLen != 0 && t < h.cT + h.cLen)
+            out->push(notePitch(frame, g.id, static_cast<float>(g.hz * std::exp2(h.c1 / 1200.0)),
+                                static_cast<uint32_t>(h.cT + h.cLen - t)));
+        }
+      }
+      if (g.outAt <= t) {
+        g.outAt = kNever;
+        g.outing = true;
+        const double to = p.out == ArpGlide::Step ? nextHz(g, g.off)
+                                                  : static_cast<double>(g.outHz) * std::exp2(g.c / 1200.0);
+        if (to > 0.0 && std::isfinite(to) && g.off > t) {
+          out->push(glide(frame, g.id, to, g.off - t));
+          ++stats.glides;
+        }
+      }
+    }
+    recomputeMinOff();
   }
 
   // ---- Clock ----
@@ -477,8 +701,9 @@ struct ArpCore::State {
   }
 
   // Starts the clock at block frame `frame` of segment `seg` (the next step: Song, the first grid step at or after
-  // it; Free, now).
-  void startClock(const ClockSegment& seg, uint32_t frame) noexcept {
+  // it — or, `atNote` (AP.3: a note-on into an idle arp), a step right there; Free, now).
+  void startClock(const ClockSegment& seg, uint32_t frame, bool atNote = false) noexcept {
+    immediate = false;
     if (p.rate.synced && seg.song && b->clock.tempo != nullptr) {
       clock = Clock::Song;
       const SampleTime at = seg.pos + (frame - seg.frame);
@@ -488,6 +713,11 @@ struct ArpCore::State {
       while (songOnset(step - 1) >= at) --step;
       k = step;
       nextSong = songOnset(k);
+      if (atNote && nextSong != at) {  // between grid steps: this step sounds now, as grid step k − 1
+        --k;
+        nextSong = at;
+        immediate = true;
+      }
     } else {
       clock = Clock::Free;
       period = freePeriod();
@@ -538,8 +768,9 @@ struct ArpCore::State {
         dirty = true;
         permValid = false;
         if (clock == Clock::None) {
-          startClock(seg, frame);
+          startClock(seg, frame, numGens == 0);
           resetPattern(t, true);
+          prevCount = 0;
         } else if (p.retrigger == ArpRetrigger::Note) {
           resetPattern(t, false);
         }
@@ -582,7 +813,7 @@ struct ArpCore::State {
             if (gens[g].src != e.noteId) continue;
             NoteEvent r = notePitch(frame, gens[g].id, 0.0f, e.rampFrames);
             r.flags = kNoteEventRetune;
-            gens[g].hz = pitch(h.on, gens[g].shift, r);
+            gens[g].hz = pitchOf(h.on, gens[g].el, 0, r);
             pushExpression(r);
           }
           return;
@@ -593,9 +824,15 @@ struct ArpCore::State {
         h.cT = t;
         h.cLen = e.rampFrames;
         const double r = std::exp2(h.c1 / 1200.0);
-        for (uint32_t g = 0; g < numGens; ++g)
-          if (gens[g].src == e.noteId)
-            pushExpression(notePitch(frame, gens[g].id, static_cast<float>(gens[g].hz * r), e.rampFrames));
+        for (uint32_t g = 0; g < numGens; ++g) {
+          Gen& gn = gens[g];
+          if (gn.src != e.noteId || gn.outing) continue;  // AP.3: an Out glide goes to its target
+          gn.c = h.c1;
+          if (gn.intoEnd != kNever && t < gn.intoEnd)  // AP.3: inside the Into glide: re-aimed, same end
+            pushExpression(glide(frame, gn.id, gn.hz * std::exp2(h.centsAt(gn.intoEnd) / 1200.0), gn.intoEnd - t));
+          else
+            pushExpression(notePitch(frame, gn.id, static_cast<float>(gn.hz * r), e.rampFrames));
+        }
         return;
       }
       case NoteEventKind::Gain: {
@@ -631,7 +868,8 @@ struct ArpCore::State {
         out->push(o);
         numHeld = keysDown = 0;
         numGens = 0;
-        minOff = kNever;
+        minOff = minAct = kNever;
+        prevCount = curCount = 0;
         clock = Clock::None;
         dirty = true;
         permValid = false;
@@ -641,8 +879,89 @@ struct ArpCore::State {
   }
 
   // ---- Steps ----
-  void emit(uint32_t slot, int32_t shift, float velocity, int64_t t, uint32_t frame, int64_t off) noexcept {
-    const Held& h = held[slot];
+  uint32_t elemCount() const noexcept { return p.style == ArpStyle::HarmonicWalk ? numWalk : numHeld; }
+  // Element `idx` of the ordered list (held notes by Hz / arrival, or the walk), copy j: what it plays.
+  Elem element(uint32_t idx, int32_t j) const noexcept {
+    const auto n = static_cast<int64_t>(elemCount());
+    int64_t i2 = idx, w = 0;
+    int32_t shift = j * p.distance;
+    if (p.transpose == ArpTranspose::Rotate) {
+      const int64_t r = static_cast<int64_t>(idx) + static_cast<int64_t>(j) * p.distance;
+      w = floorDiv(r, n);
+      i2 = r - w * n;
+      shift = 0;
+    }
+    Elem el;
+    el.shift = shift;
+    el.wraps = static_cast<int32_t>(w);
+    if (p.style == ArpStyle::HarmonicWalk) {
+      el.slot = walk[static_cast<size_t>(i2)].slot;
+      el.walk = walk[static_cast<size_t>(i2)].m;
+      el.under = p.walkUnder;
+    } else {
+      el.slot = (p.style == ArpStyle::PlayOrder ? arrival : sorted)[static_cast<size_t>(i2)];
+    }
+    return el;
+  }
+  // The cycle's period (elements per copy).
+  int64_t periodLen() const noexcept {
+    const auto n = static_cast<int64_t>(elemCount());
+    switch (p.style) {
+      case ArpStyle::ChordTrigger: return 1;
+      case ArpStyle::Random:
+      case ArpStyle::RandomOther:
+      case ArpStyle::RandomOnce: return n;
+      case ArpStyle::HarmonicWalk: return p.walkOrder == ArpWalkOrder::UpDown && n > 2 ? 2 * n - 2 : n;
+      default: return patternLen;
+    }
+  }
+  // Pattern step `here` (grid step kk), rank `rank` of a chord: the list index and copy. `commit`: a Random Other /
+  // Once shuffle it needs is kept (a step); else drawn into scratch (a look ahead). False: beyond Repeats / empty.
+  bool pick(int64_t here, int64_t kk, uint32_t rank, bool commit, uint32_t& idx, int32_t& j) noexcept {
+    const auto n = elemCount();
+    if (n == 0) return false;
+    const int64_t P = std::max<int64_t>(periodLen(), 1);
+    const int64_t cycle = P * p.steps;
+    if (p.repeats > 0 && here >= static_cast<int64_t>(p.repeats) * cycle) return false;
+    int64_t c = (here + p.offset) % cycle;
+    if (c < 0) c += cycle;
+    j = static_cast<int32_t>(c / P);
+    const auto e = static_cast<uint32_t>(c % P);
+    auto permuted = [&](bool reshuffle) {
+      if (!reshuffle) return static_cast<uint32_t>(perm[e]);
+      if (commit) {
+        shuffle(kk);
+        return static_cast<uint32_t>(perm[e]);
+      }
+      shuffleInto(scratchPerm.data(), kk);
+      return static_cast<uint32_t>(scratchPerm[e]);
+    };
+    switch (p.style) {
+      case ArpStyle::ChordTrigger: idx = rank; break;
+      case ArpStyle::Random: idx = static_cast<uint32_t>(draw(p.seed, kk, 0) % n); break;
+      case ArpStyle::RandomOther: idx = permuted(e == 0 || !permValid); break;
+      case ArpStyle::RandomOnce: idx = permuted(!permValid); break;
+      case ArpStyle::HarmonicWalk:
+        switch (p.walkOrder) {
+          case ArpWalkOrder::Up: idx = e; break;
+          case ArpWalkOrder::Down: idx = n - 1 - e; break;
+          case ArpWalkOrder::UpDown: idx = e < n ? e : 2 * n - 2 - e; break;
+          default: idx = static_cast<uint32_t>(draw(p.seed, kk, 0) % n); break;
+        }
+        break;
+      default: idx = pattern[e]; break;
+    }
+    return true;
+  }
+
+  void emit(const Elem& el, uint32_t rank, int64_t kk, float velocity, int64_t t, uint32_t frame, int64_t off) noexcept {
+    const Held& h = held[el.slot];
+    NoteEvent on;
+    on.frame = frame;
+    on.kind = NoteEventKind::NoteOn;
+    on.velocity = velocity;
+    const float hz = pitchOf(h.on, el, 0, on);
+    if (!(hz > 0.0f)) return;  // a rest (Harmonics below the first)
     if (numGens == kArpMaxSounding) {  // the earliest-ending one makes room
       uint32_t m = 0;
       for (uint32_t i = 1; i < numGens; ++i)
@@ -650,40 +969,58 @@ struct ArpCore::State {
       out->push(noteOff(frame, gens[m].id));
       gens[m] = gens[--numGens];
       ++stats.cutSounding;
+      recomputeMinOff();
     }
-    NoteEvent on;
-    on.frame = frame;
-    on.kind = NoteEventKind::NoteOn;
     on.noteId = stageNoteId(stageIndex, nextId++);
-    on.velocity = velocity;
-    const float hz = pitch(h.on, shift, on);
     const double c = h.centsAt(t);
     on.hz = c != 0.0 ? static_cast<float>(hz * std::exp2(c / 1200.0)) : hz;
+    const float own = on.hz;
     on.gain = h.gainAt(t);
+    const bool bending = h.cLen != 0 && t < h.cT + h.cLen;
+    Gen g{on.noteId, h.on.noteId, el, hz, off, bending ? h.c1 : c, kNever, kNever, 0.0f, false,
+          static_cast<uint16_t>(rank), kk};
+    // AP.3 glides: Into from the previous step / an offset, Out over the end of the gate.
+    const int64_t len = off - t;
+    int64_t ti = p.into != ArpGlide::Off ? glideFrames(len) : 0, to = p.out != ArpGlide::Off ? glideFrames(len) : 0;
+    double from = 0.0;
+    if (ti > 0) {
+      if (p.into == ArpGlide::Step) {
+        if (prevCount > 0) from = prevHz[std::min(rank, prevCount - 1)];
+      } else {
+        from = offsetHz(h, el, hz, p.intoOffset) * (c != 0.0 ? std::exp2(c / 1200.0) : 1.0);
+      }
+      if (!(from > 0.0) || !std::isfinite(from) || static_cast<float>(from) == own) from = 0.0;
+    }
+    if (from == 0.0) ti = 0;
+    if (to > 0 && p.out == ArpGlide::Offset) {
+      g.outHz = static_cast<float>(offsetHz(h, el, hz, p.outOffset));
+      if (!(g.outHz > 0.0f) || !std::isfinite(g.outHz)) to = 0;
+    }
+    if (ti > 0 && to > 0 && ti + to > len) {  // both glides do not fit: half the note each
+      ti = std::max<int64_t>(1, len / 2);
+      to = len - ti;
+    }
+    if (from > 0.0) on.hz = static_cast<float>(from);
     out->push(on);
-    if (h.cLen != 0 && t < h.cT + h.cLen)
+    if (from > 0.0) {
+      out->push(glide(frame, on.noteId, static_cast<double>(hz) * std::exp2(h.centsAt(t + ti) / 1200.0), ti));
+      g.intoEnd = t + ti;
+      ++stats.glides;
+    } else if (bending) {
       out->push(notePitch(frame, on.noteId, static_cast<float>(hz * std::exp2(h.c1 / 1200.0)),
                           static_cast<uint32_t>(h.cT + h.cLen - t)));
+    }
     if (h.gLen != 0 && t < h.gT + h.gLen)
       out->push(noteGain(frame, on.noteId, h.g1, static_cast<uint32_t>(h.gT + h.gLen - t)));
-    gens[numGens++] = Gen{on.noteId, h.on.noteId, shift, hz, off};
-    minOff = std::min(minOff, off);
-    ++stats.notes;
-  }
-
-  // Plays element (list index `idx`, copy `j`) of the cycle.
-  void playElement(uint32_t idx, int32_t j, float velocity, int64_t t, uint32_t frame, int64_t off) noexcept {
-    const uint8_t* list = p.style == ArpStyle::PlayOrder ? arrival.data() : sorted.data();
-    const auto n = static_cast<int64_t>(numHeld);
-    if (p.transpose == ArpTranspose::Shift) {
-      emit(list[idx], j * p.distance, velocity, t, frame, off);
-      return;
+    if (to > 0) g.outAt = off - to;
+    if (rank < kArpMaxHeld) {
+      curHz[rank] = own;
+      curCount = std::max(curCount, rank + 1);
     }
-    const int64_t r = static_cast<int64_t>(idx) + static_cast<int64_t>(j) * p.distance;
-    const int64_t w = floorDiv(r, n);
-    const auto i2 = static_cast<uint32_t>(r - w * n);
-    const auto shift = static_cast<int32_t>(p.unit == ArpUnit::Degrees ? w * tableSize() : w);
-    emit(list[i2], shift, velocity, t, frame, off);
+    gens[numGens++] = g;
+    minOff = std::min(minOff, off);
+    minAct = std::min({minAct, g.intoEnd, g.outAt});
+    ++stats.notes;
   }
 
   void step(const ClockSegment& seg, uint32_t frame) noexcept {
@@ -693,7 +1030,14 @@ struct ArpCore::State {
     if (clock == Clock::Song) {
       const SampleTime onS = nextSong;
       const SampleTime offS = roundSample(songAt(kk * Lsub, grooveSub(kk) + static_cast<double>(p.gate) * static_cast<double>(Lsub)));
-      off = t + std::max<int64_t>(1, offS - onS);
+      if (immediate) {  // AP.3: the first step at the note-on, off the grid: its grid step's gate length from here
+        immediate = false;
+        SampleTime len = std::max<SampleTime>(1, offS - songOnset(kk));
+        if (p.gate <= 1.0f) len = std::min<SampleTime>(len, songOnset(kk + 1) - onS);
+        off = t + std::max<int64_t>(1, len);
+      } else {
+        off = t + std::max<int64_t>(1, offS - onS);
+      }
       ++k;
       nextSong = songOnset(k);
     } else {
@@ -706,7 +1050,7 @@ struct ArpCore::State {
       clock = Clock::None;
       return;
     }
-    if (dirty || builtStyle != p.style) rebuild();
+    if (stale()) rebuild();
     if (p.retrigger == ArpRetrigger::Beat) {
       const int64_t beat = beatIndex(kk);
       if (beat != lastBeat) {
@@ -714,42 +1058,29 @@ struct ArpCore::State {
         resetPattern(t, false);
       }
     }
-    const uint32_t n = numHeld;
-    const bool chord = p.style == ArpStyle::ChordTrigger;
-    const int64_t P = chord ? 1 : (p.style >= ArpStyle::Random ? static_cast<int64_t>(n) : patternLen);
-    const int64_t cycle = P * p.steps;
     const int64_t here = pos++;
-    if (p.repeats > 0 && here >= static_cast<int64_t>(p.repeats) * cycle) return;
-    int64_t c = (here + p.offset) % cycle;
-    if (c < 0) c += cycle;
-    const auto j = static_cast<int32_t>(c / P);
-    const auto e = static_cast<uint32_t>(c % P);
-    float v = 0.0f;
+    uint32_t idx = 0;
+    int32_t j = 0;
+    if (!pick(here, kk, 0, true, idx, j)) return;
     ++stats.steps;
-    for (uint32_t m = 0; m < (chord ? n : 1u); ++m) {
-      uint32_t idx = m;
-      switch (p.style) {
-        case ArpStyle::ChordTrigger: break;
-        case ArpStyle::Random: idx = static_cast<uint32_t>(draw(p.seed, kk, 0) % n); break;
-        case ArpStyle::RandomOther:
-          if (e == 0 || !permValid) shuffle(kk);
-          idx = perm[e];
-          break;
-        case ArpStyle::RandomOnce:
-          if (!permValid) shuffle(kk);
-          idx = perm[e];
-          break;
-        default: idx = pattern[e]; break;
-      }
-      const uint8_t* list = p.style == ArpStyle::PlayOrder ? arrival.data() : sorted.data();
-      const Held& h = held[list[idx]];
-      v = p.velocitySource == ArpVelocitySource::Fixed ? p.fixedVelocity : h.on.velocity;
+    const uint32_t count = p.style == ArpStyle::ChordTrigger ? elemCount() : 1u;
+    curCount = 0;
+    for (uint32_t m = 0; m < count; ++m) {
+      if (m > 0) pick(here, kk, m, true, idx, j);
+      const Elem el = element(idx, j);
+      const Held& h = held[el.slot];
+      float v = p.velocitySource == ArpVelocitySource::Fixed ? p.fixedVelocity : h.on.velocity;
       if (p.velocityDecayMs > 0.0f) {
         const double len = static_cast<double>(p.velocityDecayMs) * 1e-3 * b->clock.sampleRate;
         const double f = std::min(1.0, static_cast<double>(t - decayStart) / len);
         v = static_cast<float>(v + (p.velocityTarget - v) * f);
       }
-      playElement(idx, j, v, t, frame, off);
+      emit(el, m, kk, v, t, frame, off);
+    }
+    if (curCount > 0) {  // this step's notes are the next one's "previous step"
+      std::copy(curHz.begin(), curHz.begin() + curCount, prevHz.begin());
+      prevCount = curCount;
+      prevStepK = kk;
     }
   }
 
@@ -802,16 +1133,21 @@ struct ArpCore::State {
         uint32_t fo = UINT32_MAX;
         if (minOff != kNever && minOff < blk.time + end)
           fo = static_cast<uint32_t>(std::max<int64_t>(minOff - blk.time, seg.frame));
+        uint32_t fa = UINT32_MAX;
+        if (minAct != kNever && minAct < blk.time + end)
+          fa = static_cast<uint32_t>(std::max<int64_t>(minAct - blk.time, seg.frame));
         uint32_t fs = UINT32_MAX;
         if (clock == Clock::Song) {
           if (nextSong < seg.pos + seg.len) fs = seg.frame + static_cast<uint32_t>(std::max<SampleTime>(nextSong - seg.pos, 0));
         } else if (clock == Clock::Free) {
           if (nextTime < blk.time + end) fs = static_cast<uint32_t>(std::max<int64_t>(nextTime - blk.time, seg.frame));
         }
-        const uint32_t m = std::min({fe, fo, fs});
+        const uint32_t m = std::min({fe, fo, fa, fs});
         if (m == UINT32_MAX || (m >= end && !(m == fe && lastSeg))) break;
         if (m == fo) {
           endDue(blk.time + m, m);
+        } else if (m == fa) {
+          actDue(blk.time + m, m);
         } else if (m == fe) {
           handle(in.events[ei++], seg, m);
         } else {
@@ -837,7 +1173,12 @@ bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, cons
     s.clock = State::Clock::None;
     return false;
   }
-  s.p = sanitized(params);
+  // AP.3: the params are sanitized only when they change (a byte compare; most blocks see the same ones).
+  if (!s.rawValid || std::memcmp(&params, &s.raw, sizeof(ArpParams)) != 0) {
+    std::memcpy(&s.raw, &params, sizeof(ArpParams));
+    s.rawValid = true;
+    s.p = sanitized(params);
+  }
   s.b = &block;
   s.out = &out;
   s.stageIndex = stageIndex_;

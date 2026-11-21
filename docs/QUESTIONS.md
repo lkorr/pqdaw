@@ -2245,4 +2245,17 @@ between grid steps. (4) Degrees needs a step table; a track patch may have sever
 arp.h): (1) Offset rotates the cycle by n steps (Live's); the grid stays at multiples of L from tick 0. (2) Steps =
 1 … 8 copies, copy j shifted j · Distance (Steps 1 = no transposition). (3) The first grid step at or after the note-on
 (stopped: the free clock starts at the note-on). (4) One `ArpDegreeTable` per stage, from the track's main tuning (AP.2
-builds it); a note without a Degree identity shifts from round(noteDegree) and plays static once shifted. Status: open.
+builds it); a note without a Degree identity shifts from round(noteDegree) and plays static once shifted. Status:
+(3) **decided** by the orchestrator (2026-11-20, done in AP.3): a note-on into an IDLE arp (nothing held, no generated
+note sounding) between grid steps sounds its first step AT the note-on (live feel), gate · L long and, with a gate
+≤ 100 %, ended at the next grid step at the latest; later steps stay on the song grid; a note-on exactly on a grid
+step is unchanged; a note-on while the arp is busy waits for the grid. (1), (2), (4) open.
+
+## Q?-AP.3-a · 2026-11-20 · AP.3 · Arp pitch: readings of the Harmonics wrap, undertones and glide overlaps
+Context: AP.md leaves details of the Harmonics unit and the glides open. Chosen (reversible, documented in arp.h):
+(1) Rotate in Harmonics wraps by the series' octave (h → 2h). (2) Harmonics below the first (h + k < 1) is a rest.
+(3) Harmonic Walk Under elements carry the exact ratio but harmonic 0 (an undertone is not a harmonic of the anchor).
+(4) One Time / Shape / Bend for Into and Out (as the plan says); a note fraction is of the generated note's length;
+Into + Out longer than the note get half each. (5) Out → Step aims at the step already sounding (gate > 100 %), else
+at what the pattern plays next as known at the Out start (a later retrigger / new note can differ). (6) During the
+Out glide the source's later bends do not move the note; during Into they re-aim the glide (same end). Status: open.
