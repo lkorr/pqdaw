@@ -10,7 +10,7 @@
 
 namespace pq::engine {
 
-static_assert(std::is_trivially_copyable_v<ArpParams>);  // ArpCore::process copies it per change (cheap)
+static_assert(std::is_trivially_copyable_v<ArpParams>);  // ArpCore::process compares / copies it bytewise first
 
 namespace {
 
@@ -1944,9 +1944,12 @@ struct ArpCore::State {
     const int64_t at = clock == Clock::Song ? seg.pos + (frame - seg.frame) : b->time + frame;
     if (stale()) rebuild();
     // AP.8a (M4): room for every due clock's notes in one pass; the waiting ties by (clock, layer).
-    uint32_t due = 0;
-    for (uint32_t i = 0; i < numHeld; ++i) due += held[i].pNext <= at ? 1u : 0u;
-    makeRoom(due * static_cast<uint32_t>(1 + p.layers), frame, laneOn(ArpLane::SkipTie));
+    const auto perClock = static_cast<uint32_t>(1 + p.layers);
+    if (numGens + numHeld * perClock > kArpMaxSounding) {  // (only near a full table is the count worth it)
+      uint32_t due = 0;
+      for (uint32_t i = 0; i < numHeld; ++i) due += held[i].pNext <= at ? 1u : 0u;
+      makeRoom(due * perClock, frame, laneOn(ArpLane::SkipTie));
+    }
     if (laneOn(ArpLane::SkipTie)) buildTies();
     for (uint32_t r = 0; r < numHeld; ++r)
       if (held[sorted[r]].pNext <= at) pulseFire(sorted[r], frame);
@@ -2193,9 +2196,10 @@ bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, cons
     s.clock = State::Clock::None;
     return false;
   }
-  // AP.3: the params are sanitized only when they change (AP.8a L5: memberwise; most blocks see the same ones).
-  if (!s.rawValid || !(params == s.raw)) {
-    s.raw = params;
+  // AP.3: the params are sanitized only when they change. Equal bytes are equal params (the fast path, most blocks);
+  // AP.8a (L5): differing bytes compare memberwise, so padding never forces a re-sanitize.
+  if (!s.rawValid || (std::memcmp(&params, &s.raw, sizeof(ArpParams)) != 0 && !(params == s.raw))) {
+    std::memcpy(&s.raw, &params, sizeof(ArpParams));
     s.rawValid = true;
     s.p = sanitized(params);
     s.pulseStale = true;  // AP.4: re-derive the pulse clocks at the next segment
