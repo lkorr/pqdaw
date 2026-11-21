@@ -823,6 +823,13 @@ EditResult setMetaParamValue(const Project& p, DeviceId device, std::string path
 EditResult setMetaSetting(const Project& p, DeviceId device, std::string path, std::string_view type, std::string setting,
                           std::optional<double> value);
 EditResult setMetaData(const Project& p, DeviceId device, std::string path, std::string_view type, meta::DataPtr data);
+// SM.3: a Sampler's sample (`sampler`: the Sampler group or its meta:sampler engine): the engine's data (the sample, the
+// slice table — start frames, sorted, duplicates dropped; the other fields reset: they belonged to the old sample) and
+// its root in ONE undo step. `rootHz`: the sample's detected root (views SampleAnalysisResult::pitch.hz once the
+// analysis has it; an unpitched sample's is 261.63 Hz); nullopt (not analysed yet): 261.63 Hz (meta::kSamplerDefaultRoot).
+// Errors: NotFound (no such device or sample), InvalidArgument (not a Sampler, a slice < 0 or not finite).
+EditResult setSamplerSample(const Project& p, DeviceId sampler, SampleId sample, std::optional<double> rootHz,
+                            std::vector<float> slices);
 // ---- User library (T5.11; pq/document/library_files.h) -----------------------------------------------------------
 // Hot-swap: `with` (a preset's device) replaces `device` in place: the same position and id (so wires, mappings and the
 // engine's state key follow it); everything inside `with` (a rack's chains, mappings, inner devices) gets fresh ids.

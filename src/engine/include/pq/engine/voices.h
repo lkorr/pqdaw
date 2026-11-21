@@ -24,7 +24,7 @@
 //                             (a glide's shape: NoteEvent::rampShape, note_events.h; AP.3)
 //   voice.gate                lane mask: true from the note-on frame, false from the note-off frame
 //   voice.trigger             lane mask: true at the note-on frame only (also on a same-note retrigger)
-//   voice.velocity, .release, .ratio, .harmonic, .unisonCount, .index, .noteHz (T4.17: the note-on's Hz), .noteDegree
+//   voice.velocity, .release, .ratio, .harmonic, .unisonCount, .index, .noteHz (T4.17: the note-on's Hz), .noteDegree, .key (SM.1)
 //                             param rate (8-float pattern, read at frame 0): the values of the lane's latest
 //                             note-on / note-off in this block hold for the whole block
 // A free lane reads hz = referenceHz (cents 0: finite, so `1 / voice.hz` stays finite in idle lanes), gate and
@@ -370,6 +370,7 @@ private:
   std::vector<float> velocity_, release_, ratio_, harmonic_, unison_, index_, degree_, equave_, tuning_;
   std::vector<float> onsetHz_;      // T4.17: voice.noteHz, the Hz of the lane's latest note-on
   std::vector<float> onsetDegree_;  // T4.17: voice.noteDegree, its absolute degree (NaN: unknown)
+  std::vector<float> onsetKey_;     // SM.1: voice.key, its MIDI key (−1: unknown)
 
   // Per block scratch.
   std::vector<LaneOp> ops_, sortedOps_;

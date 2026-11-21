@@ -2402,3 +2402,28 @@ delete them first; while a take is auditioned the main lane is what is flattened
 (4) M5: a source note is removed when it plays (start in [contentStart, contentStart + length)) or generated a listed
 note; others stay untouched. (5) M7: if the document changes while Flatten renders, it renders again from the new
 document, at most 3 times, then gives up with a status; one Flatten at a time. Status: open.
+## Q?-SM.1-a · voice.key: readings taken
+Context: SM.1 (docs/plans/SM.md). Choices (most reversible):
+1. **Keys outside 0 … 127 are −1** (unknown), as MIDI export skips them; voice.key is 0 … 127 or −1.
+2. **The computer keyboard** carries a drawn note's key (doc::midiKeyOf of what it plays: Keys 60 + degree / the .kbm key,
+   Hz mode the nearest 12-TET key); with a 12-TET key map the key it stands for (60 + d). MIDI keys: the raw key.
+3. **Arp steps**: a copy keeps its source's key; a step keeping a Degree identity moves the key by the degrees moved (from
+   the source's key, so a .kbm's keys stay its own when its mapping is consecutive; a non-consecutive .kbm would need
+   the stage's degree table to carry the key map: not done); any other step (Ratio, Harmonics, a static shift) the
+   nearest 12-TET key of its Hz.
+4. **Held from the note-on**: retunes and Pitch events never move voice.key (as voice.noteDegree).
+5. `SequenceImage::Note` grew 72 → 80 bytes and `NoteEvent` 56 → 60 (no free padding left for an int16).
+
+## Q?-SM.3-a · the Sampler group: readings taken
+Context: SM.3 (docs/plans/SM.md). Choices (most reversible):
+1. **The Envelope multiplies after the filter** (Amp = mul) instead of sitting in series: its `in` / `out` are mono and
+   the sample is stereo. The voice still ends by the Envelope (BR.C: an ender behind Out).
+2. **No explicit compare block**: the lowering now lets a wire target a Bool input (a gate) and reads sum > 0 there, so
+   gateOut is wired straight into the Envelope's gate (one `gt` per voice, the compare the plan asked for).
+3. **One-Shot's end**: the engine's `done` is not an ender of its own; the Envelope's gate is gateOut, so a One-Shot voice
+   ends at the sample's end + the Envelope's release (Trigger mode).
+4. **Filter and LFO switched off by default** (Filter Low Pass at 20 kHz; LFO → Filter Frequency a Travel wire of 0.25):
+   a default voice costs the engine + the envelope only. The panel has no on/off toggles for them yet (SM.10's face).
+5. **setSamplerSample takes the root as an argument** (document cannot see views' SampleAnalysis): the drop (SM.8) passes
+   SampleAnalysisResult::pitch.hz; nullopt (not analysed) → 261.63 Hz. A new sample resets the data's other fields
+   (markers, rootText, sliceBy).

@@ -8,6 +8,8 @@
 #include <type_traits>
 #include <utility>
 
+#include "pq/tuning/midi_key.h"
+
 namespace pq::engine {
 
 static_assert(std::is_trivially_copyable_v<ArpParams>);  // ArpCore::process compares / copies it bytewise first
@@ -653,6 +655,7 @@ struct ArpCore::State {
   // Returns the Hz (0: a rest).
   float pitchOf(const NoteEvent& src, const Elem& el, int32_t extra, NoteEvent& e) const noexcept {
     const float hz = unlayered(src, el, extra, e);
+    e.key = stepKey(src, el.walk == 0 && el.layer == 0 && el.shift + extra == 0 && el.wraps == 0, e);
     if (el.layer == 0 || !(hz > 0.0f)) return hz;
     // AP.4: layer L at (p/q)^L of the note, exact (scaled: ratio, harmonic h · P^L / Q^L when an integer).
     int64_t num = 1, den = 1;
@@ -664,7 +667,20 @@ struct ArpCore::State {
     const float h = base.harmonic;
     const int64_t hi = (h >= 1.0f && h < 1e6f && h == std::floor(h)) ? static_cast<int64_t>(h) : 0;
     scaled(base, num, den, hi, e);
+    e.key = stepKey(src, false, e);
     return e.hz;
+  }
+  // SM.1: a step's voice.key (doc::midiKeyOf's rule on the new pitch): a copy keeps the source's key; a Degree identity
+  // moves it by the degrees moved (from the source's key: a .kbm's keys stay its own; unknown: 60 + noteDegree);
+  // anything else (Ratio, Harmonics, a static shift) takes the nearest 12-TET key of the new Hz.
+  static int16_t stepKey(const NoteEvent& src, bool same, const NoteEvent& e) noexcept {  // RT-safe
+    if (same) return src.key;
+    if (std::isfinite(e.degree) && std::isfinite(e.noteDegree) && std::fabs(e.noteDegree) < 1e6f) {
+      if (src.key >= 0 && std::isfinite(src.noteDegree) && std::fabs(src.noteDegree) < 1e6f)
+        return tuning::midiKeyOrNone(src.key + std::llround(e.noteDegree) - std::llround(src.noteDegree));
+      return tuning::midiKeyOrNone(60 + std::llround(e.noteDegree));
+    }
+    return tuning::nearestMidiKeyOrNone(e.hz);
   }
   double layerRatio(uint8_t layer) const noexcept {
     int64_t num = 1, den = 1;

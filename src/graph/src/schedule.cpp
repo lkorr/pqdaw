@@ -2557,7 +2557,7 @@ private:
         if (e.poly == Poly::Global && e.rate != Rate::Audio) return true;
         if (e.source != External::Source::Engine) return false;
         const std::string_view n = atomSignature(e.atom).name;
-        return n == "voice.velocity" || n == "voice.noteHz" || n == "voice.noteDegree" || n == "voice.index" ||
+        return n == "voice.velocity" || n == "voice.noteHz" || n == "voice.noteDegree" || n == "voice.key" || n == "voice.index" ||
                n == "voice.unisonCount";
       }
       case Operand::Kind::Buffer: {

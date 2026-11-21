@@ -122,6 +122,7 @@ struct LivePitch {
   float equave = std::numeric_limits<float>::quiet_NaN();  // voice.equave
   float tuning = 0.0f;     // voice.tuning: the track patch's tuning node the note follows (0: static)
   float noteDegree = std::numeric_limits<float>::quiet_NaN();  // voice.noteDegree
+  int16_t key = -1;        // SM.1: voice.key (MIDI: the raw key; the computer keyboard: doc::midiKeyOf of its pitch)
   bool mapped() const noexcept { return hz > 0.0f; }
 };
 

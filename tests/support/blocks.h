@@ -85,14 +85,15 @@ inline pq::doc::DeviceId addDefaultInstrument(pq::doc::DocumentStore& s, pq::doc
 // GU.11: a PROBE instrument (what the tests' probe stdlib's BasicSynth was): an instrument group whose Out is the atom
 // block voice.hz, so a rendered track is the tuning node's pitch per sample (× the track's constant gains; the voices end
 // by the 5 ms release after note-off). Pasted at MIDI track `track`'s notes (its path must be empty: clear it first);
-// returns the group.
-inline pq::doc::DeviceId addProbeInstrument(pq::doc::DocumentStore& s, pq::doc::TrackId track) {
+// returns the group. SM.1: `atom` another voice atom as the Out (voice.key: the rendered track is K · Σ keys).
+inline pq::doc::DeviceId addProbeInstrument(pq::doc::DocumentStore& s, pq::doc::TrackId track,
+                                            std::string_view atom = "voice.hz") {
   using namespace pq::doc;
   BlockSet set;
   auto g = std::make_shared<Device>(*makeInstrumentGroup(DeviceId{1}));
   g->name = "Probe";
   set.devices.push_back(g);
-  auto hz = std::make_shared<Device>(*makeDevice(DeviceId{2}, std::string(kAtomDevicePrefix) + "voice.hz", DeviceKind::AudioEffect));
+  auto hz = std::make_shared<Device>(*makeDevice(DeviceId{2}, std::string(kAtomDevicePrefix) + std::string(atom), DeviceKind::AudioEffect));
   hz->group = DeviceId{1};
   set.devices.push_back(hz);
   Wire w;

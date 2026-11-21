@@ -173,6 +173,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_warp_link.cpp  # T6.3: warp modes through the link (Tones in 31-EDO steps, Complex as Tones, Beats transients analysed and cached)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
     app/test_sampler_link.cpp  # SM.2: the Sampler's sample through the link (pin, publish, data edits, missing files)
+    app/test_sampler_group.cpp  # SM.3: the Sampler group through the Engine (= 0.5 x the bare engine, One-Shot, Slice by key, rewiring)
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
     app/test_scope_link.cpp  # TX.scope: the Oscilloscope through the link (its tap: beat, note, signal; pass-through)
     app/test_spectrogram_link.cpp  # TX.spectrogram: the Spectrogram through the link (its tap, RtScope, a feed's columns, pass-through)
@@ -554,6 +555,8 @@ pq_add_test(pq_tests_document
     document/test_midi_file.cpp  # MF.1: SMF reader / writer (running status, sysex, RMID, errors, fuzz, 10 MB), notes (pairing, RPN / MPE bends, MTS, sustain)
     document/test_midi_import.cpp  # MF.2: MIDI import (Keys / Hz pitch, bends, MTS, tracks, tempo / signatures, ticks, one undo step)
     document/test_midi_export.cpp  # MF.3: MIDI export (12edo keys, MPE bends within 0.3 ¢, Degrees / .kbm, loop unrolled, tempo / signatures, > 15 voices)
+    document/test_midi_key.cpp  # SM.1: a note's MIDI key (Degree 60 + degree / lowest .kbm key, Cents / Ratio nearest 12-TET)
+    document/test_sampler_module.cpp  # SM.3: the Sampler group preset (blocks, wires, panel, module:sampler), setSamplerSample (one step, round trip)
     document/test_flatten.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio ops (one undo step, clip placement, SetTrackKind, round trip)
     document/test_note_devices.cpp  # AP.2: note devices (the arpeggiator): the engine's table, notes-link edits, chainStages, the dissolve, note chains
   DEPS pq_doc pq_engine)

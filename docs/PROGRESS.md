@@ -1297,3 +1297,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_playback note stage render / note device 35/35, pq_tests_views roll preview + arp panel 16/16, -Affected after rebase 37/37; 6 goldens re-recorded (label, hidden controls, real-render preview).
 - Perf / CPU-efficiency check: lane-step cables read only when their step plays; offline renders 512-frame blocks unless automation exists.
 - Notes/blockers: Q?-AP.8b-a; open lows L12 rest, L13; not checked live.
+
+## 2026-11-21 · SM.1 · task/SM.1-voice-key (merged 22666f08)
+- Did: `NoteEvent::key` / `voice.key` atom (param rate, held from note-on, −1 unknown) from one `doc::midiKeyOf` (Degree 60 + degree or lowest .kbm key; Cents / Ratio nearest 12-TET; live raw key; computer keyboard as drawn); midi_export uses it (tests unchanged); arp steps move the key by degrees moved, Ratio / Harmonics steps take the nearest 12-TET key. ARCHITECTURE + PATCH_LANGUAGE.
+- Verified: -Affected -Slow 90/90 before the AP.8a rebase; after it, see SM.3 (covers both). New test_midi_key + 2 playback tests.
+- Perf / CPU-efficiency check: one store per note-on, one param-rate slot; Note 72 → 80 B, NoteEvent 56 → 60 B (no padding left).
+- Notes/blockers: Q?-SM.1-a (.kbm non-consecutive arp keys).
+
+## 2026-11-21 · SM.3 · task/SM.3-sampler-group (merged 9026f0f7)
+- Did: Sampler instrument group (`ModuleKind::Sampler`, `module:sampler`, wherever the Wavetable Synth is): engine → Filter (EQ band) → Amp ← Envelope → Out, voice.key → key, gateOut → Envelope gate, LFO → Filter frequency, tabbed panel; `ops::setSamplerSample` (sample + slices + root, one undo step, 261.63 Hz default). Lowering accepts wires into bool gate inputs (sum > 0; general, documented).
+- Verified: -Affected -Slow after rebase onto 7723bd9d 88/90; the 2 failures pass alone (playback_s1 lowering wall-clock 116 ms vs 25 ms under load, 13.5 ms alone; library indexer idle wake count, 22/22 alone). Playback tests on interpreter and JIT bit-exact (163/163 assertions); project-node-menu golden moved (Sampler listed under "filter").
+- Perf / CPU-efficiency check: Filter + LFO off by default, cost nothing; default voice = engine + Envelope + one compare.
+- Notes/blockers: Q?-SM.3-a; no Filter / LFO on switches in the panel (SM.10); detected root passed by the caller (SM.8).

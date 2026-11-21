@@ -49,6 +49,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "voice.tuning",
       // T4.17: the pitch held from the note-on (an Instrument Rack's key zones).
       "voice.noteHz", "voice.noteDegree",
+      // SM.1: the note's MIDI key.
+      "voice.key",
       // T3.17-fix2 (the mixer): smoothed gains.
       "gain", "gain_add",
       // TMM.2 (meta modules): the live frame-table read and the voice-tap sink.

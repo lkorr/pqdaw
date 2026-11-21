@@ -1288,7 +1288,7 @@ constexpr int64_t kQ = 24000;  // samples per quarter note at the default 120 BP
 }  // namespace
 
 TEST_CASE("SequenceImage: note curves — storage, clean-up, curveValue, the hash, errors (T7.1)") {
-  CHECK(sizeof(e::SequenceImage::Note) == 72);  // curves cost a note without them nothing
+  CHECK(sizeof(e::SequenceImage::Note) == 80);  // curves cost a note without them nothing (SM.1: 72 → 80 for voice.key)
   e::NoteDesc a = curved(note(1, kPpq, 4 * kPpq),
                          {{3 * kPpq, 700.0f}, {kPpq, 0.0f}, {2 * kPpq, 100.0f}, {2 * kPpq, 200.0f}, {2 * kPpq, 300.0f}},  // unsorted, 3 at one tick
                          {{0, 0.5f}, {5 * kPpq, 1.0f}});

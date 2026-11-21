@@ -111,8 +111,9 @@ TEST_CASE("browser: categories, search (best first), collections, sorting") {
   // T5.11: Instruments lists the devices (GU.11: the instrument modules, then the rack); presets whose device is not one
   // of the rows (the demo's index has no files to read a patch from) follow them, loose.
   f.b->setSource({BrowserSource::Kind::Category, static_cast<uint32_t>(library::Category::Instruments)});
-  CHECK(f.names() == std::vector<std::string>{"Wavetable Synth", "Operator", "Instrument Rack", "Bright Pad.pqpreset",
-                                              "Glass Bell.pqpreset", "Sub Pluck.pqpreset", "Warm Keys.pqpreset"});
+  CHECK(f.names() == std::vector<std::string>{"Wavetable Synth", "Operator", "Sampler", "Instrument Rack",
+                                              "Bright Pad.pqpreset", "Glass Bell.pqpreset", "Sub Pluck.pqpreset",
+                                              "Warm Keys.pqpreset"});
   // A search text lists matching files flat, as before.
   f.b->setQuery("bright");
   CHECK(f.names() == std::vector<std::string>{"Bright Pad.pqpreset"});

@@ -20,6 +20,7 @@
 #include "pq/app/project_link.h"
 #include "pq/core/rt_scope.h"
 #include "pq/document/input_map.h"
+#include "pq/tuning/midi_key.h"
 #include "pq/tuning/scala.h"
 
 using namespace pq;
@@ -302,6 +303,45 @@ TEST_CASE("live input: an unmapped .kbm key plays nothing; the computer keyboard
     lk->liveKey(1, 4, 0.0f, false);
     (void)run(*lk, 2, [](uint32_t) {});
     CHECK(lk->engine().liveInput().heldNotes() == 0);
+  }
+}
+
+// SM.1: voice.key of a live note: a MIDI key is its raw key (a .kbm does not change it); a computer keyboard key is what
+// the same note drawn would carry (doc::midiKeyOf: Keys 60 + its degree, Hz the nearest 12-TET key).
+TEST_CASE("live input (SM.1): MIDI notes carry their raw key, the computer keyboard a drawn note's key") {
+  {
+    LiveFixture f(Case::ScalaKbm, NoteInputMode::Keys);
+    auto link = makeLink(f.store.current());
+    link->setLivePorts({"Port"}, {2.0f});
+    link->engine().liveInput().setRecording(true);
+    REQUIRE(link->livePorts()->push(0, midi(0, 0x90, 63, 100)));  // degree 3 of the .kbm
+    (void)run(*link, 2, [](uint32_t) {});
+    engine::LiveNoteRecord rec;
+    REQUIRE(link->engine().liveInput().popRecord(rec));
+    CHECK(rec.pitch.key == 63);
+    REQUIRE(link->livePorts()->push(0, midi(0, 0x80, 63, 0)));
+    (void)run(*link, 1, [](uint32_t) {});
+  }
+  for (const NoteInputMode mode : {NoteInputMode::Keys, NoteInputMode::Hz}) {
+    LiveFixture k(Case::Edo31, mode);
+    auto lk = makeLink(k.store.current());
+    lk->setLivePorts({"Port"}, {2.0f});
+    lk->engine().liveInput().setRecording(true);
+    lk->liveKey(1, 4, 90.0f, true);  // degree 31 + 4
+    REQUIRE(lk->livePorts()->push(0, midi(0, 0x90, 70, 100)));
+    (void)run(*lk, 2, [](uint32_t) {});
+    engine::LiveNoteRecord a, b;
+    REQUIRE(lk->engine().liveInput().popRecord(a));
+    REQUIRE(lk->engine().liveInput().popRecord(b));
+    const engine::LiveNoteRecord& kb = a.raw.port == engine::kLiveKeyboard ? a : b;
+    const engine::LiveNoteRecord& mi = a.raw.port == engine::kLiveKeyboard ? b : a;
+    CAPTURE(static_cast<int>(mode));
+    if (mode == NoteInputMode::Keys) CHECK(kb.pitch.key == 60 + 35);
+    else CHECK(kb.pitch.key == tuning::nearestMidiKey(kb.pitch.hz));
+    CHECK(mi.pitch.key == 70);
+    lk->liveKey(1, 4, 0.0f, false);
+    REQUIRE(lk->livePorts()->push(0, midi(0, 0x80, 70, 0)));
+    (void)run(*lk, 2, [](uint32_t) {});
   }
 }
 
