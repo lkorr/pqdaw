@@ -1225,3 +1225,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: new real-dispatch test (cable end at the port on every slide frame; failed 35–36 px without the fix); pq_tests_views after rebase 961/962 → device-path-broken re-recorded (ends now on the port dots), re-run passes.
 - Perf / CPU-efficiency check: event-driven, no per-frame poll; refreshes only while a cable ends in the open free rack.
 - Notes/blockers: none.
+
+## 2026-11-20 · AP.1 · task/AP.1-note-stage (merged 7cca1b22)
+- Did: `pq/engine/note_stage.h`: per-slot chain of note stages between the merged events and the VoiceEngine (one fn-pointer call per stage per block, preallocated, lock-free `Engine::setNoteStages`, handover ends the old chain's notes at frame 0; stage ids 0x80…0xDF, timeline ids now wrap below 0x80000000); `pq/engine/arp.h`: `ArpCore` / `ArpStage`, all Live styles but Harmonic Walk, synced n:m grid / free clock, gate, groove, offset, repeats, retrigger, hold, velocity, Degrees / Ratio Distance with Shift / Rotate, source expression carried onto steps.
+- Verified: worker pq_tests_note_stage 16/16 (3805 assertions: style table, block sizes 32/64/512/37, loop/locate/stop, n:m onsets, 128 held, exact identities, RtScope, real Engine path); orchestrator after rebase (worker's run was killed for low memory): -Affected -Slow 90/90; ship link of pq_bench_dsp ok.
+- Perf / CPU-efficiency check: ship bench arp/idle 7.7 ns/block, 8 notes 1/32 59 ns/block, chord 62 ns/block; no stage on a slot = one relaxed load.
+- Notes/blockers: Q?-AP.1-a (Offset, Steps, first step, one degree table); orchestrator: the first synced step should sound at the note-on when the arp is idle (live feel) → AP.3; unison voices held as separate notes.
