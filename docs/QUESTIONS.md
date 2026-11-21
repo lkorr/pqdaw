@@ -2480,9 +2480,16 @@ Context: SM.4 (docs/plans/SM.md "Semantics", "SM.4"). Choices (most reversible):
 4. **Reads are cubic** (sample_read's interpolator), not the clip's 64-tap sinc: the Sampler's quality everywhere else.
    The mip level is per grain / slice from its rate at its start, so a fast upward glide inside one long slice aliases
    until the next slice.
-5. **Beats in the clock form** (per sample, source frames since the entry) is a second implementation of the pass geometry:
-   the clip keeps its closed form (bit-identical renders). The next slice's entry is predicted from the current tempo
-   each run and fixed once reached.
+5. **Beats in the clock form** (per sample, source frames since the entry) is a second implementation of the pass geometry
+   (review: the plan wanted one). The clip player cannot take it without changing its renders: the clock form finds the
+   natural end and each loop iteration where the integrated 32.32 position crosses L (+ i·L/2), the closed form at
+   T + ceil(L / r + i·λ) in double, and its declicks are per-sample double ramps, the clip's float ramps anchored per
+   iteration — different samples / roundings, so the 22 baseline hashes would move. It also reads per-frame positions,
+   which the clip's streamed, chunked constant-step sinc reads (and reverse passes) do not take, and costs ≈ 10 ns /
+   frame where the closed form is ≈ 1.2. The other way round (the sampler on the closed form while its rate is
+   constant) would make a render depend on where glides start and stop relative to blocks. Shared: the pass struct, the
+   ramp shapes, Tones / Texture entirely. The next slice's entry is predicted from the current tempo each run and fixed
+   once reached.
 6. **Markers' law**: no markers = sampleBpm; one marker = sampleBpm through it; beyond the ends the end segments continue.
 7. **Tempo is per block** (transport.bpm): a tempo change lands on a block boundary, so renders match across block sizes
    at a constant tempo (or a change on a shared boundary), as any param-rate input.
@@ -2490,5 +2497,7 @@ Context: SM.4 (docs/plans/SM.md "Semantics", "SM.4"). Choices (most reversible):
    reverse.
 9. Cost (ship, bench/RESULTS.md SM.4): Tones ≈ the clip's Tones per voice; Beats / Texture ≈ 10 – 17 ns per voice-frame
    (the clip's copy paths are ≈ 1.3 ns: the per-sample clock form and the kernel's per-lane gather / scatter). The
-   kernel's scratch (≈ 58 KiB, Tones' alignment) is on the audio thread's stack. Status: open.
+   kernel's scratch (≈ 57 KiB: Tones' alignment buffers) is in the atom's state after the lanes' words (preallocated
+   per instance and voice group, not per lane; review: audio threads include driver threads (ASIO) whose stack size
+   we do not control, so it is not on the stack); ≈ 5 KiB of per-lane in / out buffers stay on the stack. Status: open.
 

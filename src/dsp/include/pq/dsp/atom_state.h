@@ -232,10 +232,14 @@ struct alignas(32) SampleScrubState {
   float prev[8];
 };
 // SM.4: sampler_warp: per lane a dsp::WarpVoice (pq/dsp/warp_voice.h) and the generation of the slot entry it plays,
-// stored as words interleaved by lane (w[word][lane]: LaneState::PerLane over the whole struct).
+// stored as words interleaved by lane (w[word][lane]: LaneState::PerLane over them); then the call's scratch, shared
+// by the lanes (Tones' alignment buffers, the gains; ≈ 57 KiB, preallocated with the state instead of on the audio
+// thread's stack: kernels_sampler_warp.cpp).
 inline constexpr uint32_t kSamplerWarpWords = 104;
+inline constexpr uint32_t kSamplerWarpScratchFloats = 144 + 2112 + 4032 + 8192;  // gain, corrA, corrB, gather
 struct alignas(32) SamplerWarpState {
   uint32_t w[kSamplerWarpWords][8];
+  float scratch[kSamplerWarpScratchFloats];
 };
 
 // TMM.6: oversample_up / oversample_down (pq/dsp/oversample.h): per allpass of the half-band cascade its previous
@@ -394,7 +398,7 @@ static_assert(sizeof(WavetableLiveState) == 672);
 static_assert(sizeof(WavetableShapeState) == 160);
 static_assert(sizeof(SampleReadState) == 160);
 static_assert(sizeof(SampleScrubState) == 32);
-static_assert(sizeof(SamplerWarpState) == kSamplerWarpWords * 32);
+static_assert(sizeof(SamplerWarpState) == kSamplerWarpWords * 32 + kSamplerWarpScratchFloats * 4);
 static_assert(sizeof(ParamRampState) == 160);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 

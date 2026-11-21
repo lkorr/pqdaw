@@ -231,8 +231,9 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::Wavetable:
     case Atom::SampleReadLinear:
     case Atom::SampleReadCubic:
-    case Atom::SampleScrub:
-    case Atom::SamplerWarp: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
+    case Atom::SampleScrub: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
+    // SM.4: the voices' words per lane; the scratch after them is the call's (no state across calls).
+    case Atom::SamplerWarp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(SamplerWarpState, scratch))};
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};

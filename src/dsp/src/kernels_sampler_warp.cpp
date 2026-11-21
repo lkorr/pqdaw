@@ -44,13 +44,11 @@ WarpSource sourceOf(const Entry& e) noexcept {  // RT-safe
   return s;
 }
 
-// The per-call scratch (on the audio thread's stack: ≈ 58 KiB; warp_voice.h WarpScratch).
-struct Scratch {
-  alignas(32) float gain[kWarpVoiceChunk + 16];
-  alignas(32) float corrA[kWarpMaxAlignLen + 64];
-  alignas(32) float corrB[kWarpMaxAlignLen + 2 * kWarpMaxAlignLags + 64];
-  alignas(32) float gather[2 * kWarpGatherFrames];
-};
+// The per-call scratch (warp_voice.h WarpScratch), in the state after the lanes' words (atom_state.h).
+constexpr uint32_t kGainF = kWarpVoiceChunk + 16, kCorrAF = kWarpMaxAlignLen + 64,
+                   kCorrBF = kWarpMaxAlignLen + 2 * kWarpMaxAlignLags + 64, kGatherF = 2 * kWarpGatherFrames;
+static_assert(kGainF + kCorrAF + kCorrBF + kGatherF == kSamplerWarpScratchFloats);
+static_assert(kGainF % 8 == 0 && kCorrAF % 8 == 0 && kCorrBF % 8 == 0);  // each buffer 32-byte aligned
 
 constexpr uint32_t kSeg = 256;  // frames per lane segment (the lane's contiguous in / out)
 
@@ -62,12 +60,11 @@ struct SamplerWarpK {
     auto& st = *static_cast<SamplerWarpState*>(a.state);
     const auto& slot = *static_cast<const SampleSlot*>(a.resource);
     const Entry* newest = slot.acquire();
-    Scratch sc;
     WarpScratch ws;
-    ws.gain = sc.gain;
-    ws.corrA = sc.corrA;
-    ws.corrB = sc.corrB;
-    ws.gather = sc.gather;
+    ws.gain = st.scratch;
+    ws.corrA = ws.gain + kGainF;
+    ws.corrB = ws.corrA + kCorrAF;
+    ws.gather = ws.corrB + kCorrBF;
     alignas(32) float rate[kSeg], l[kSeg], r[kSeg], pos[kSeg], play[kSeg];
     const uint32_t frames = a.frames;
     auto rateAt = [&](uint32_t i, uint32_t lane) noexcept {
