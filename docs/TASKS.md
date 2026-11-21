@@ -937,7 +937,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **SM.4 `dsp::WarpVoice` extraction + `sampler_warp`** (plan SM.4)
 - [ ] **SM.5 Complex / Complex Pro per voice** (plan SM.5)
 - [ ] **SM.6 `granular` atom + GrainTap** (plan SM.6)
-- [ ] **SM.7 Root pitch detection** (plan SM.7)
+- [x] **SM.7 Root pitch detection** *(merged b0de5e45; worst 1.57 ¢ on vibrato; 10 min file 8–14 ms)* (plan SM.7)
 - [ ] **SM.8 Grid drop on any band + auto-wire + replace** (plan SM.8)
 - [ ] **SM.9 Oval face shape + fold panel mechanism** 👁 (plan SM.9)
 - [ ] **SM.10 Closed face** 👁 (plan SM.10)

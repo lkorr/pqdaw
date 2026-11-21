@@ -1249,3 +1249,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_document note devices 6/6, pq_tests_playback note device 1/1 (chord renders Up then Down after a style drag, 0 compiles), pq_tests_views note device 1/1 (real dispatch browser → notes cable); -Affected before the AP.4 rebase 45/46 (4 intended goldens re-recorded) + NVIDIA flake re-run 4/4; after the AP.4 rebase the three note-device tests again.
 - Perf / CPU-efficiency check: no note device = nothing published; ~40 mapped slots per block; drags / automation are slot writes, no compile.
 - Notes/blockers: Q?-AP.2-a (cables into note-device params Inactive → AP.2b), Q?-AP.2-b (linear knobs only); a tuning drag republishes the chain → AP.2b; not checked live.
+
+## 2026-11-20 · SM.7 · task/SM.7-pitch (merged b0de5e45)
+- Did: `pq/media/pitch_detect.h` `detectPitch` (McLeod NSDF over the steadiest loud 0.5 s of the first 60 s; Hz + confidence, < 0.5 → unpitched, 261.63 Hz; root = midpoint of the 10th/90th percentile pitch, since a mean drifted 4.2 ¢ on vibrato); `loadOrDetectPitch` in the SampleAnalysis job → `SampleAnalysisResult::pitch`. ARCHITECTURE media row.
+- Verified: pq_tests_media default tier + 7 pitch tests (sines, saws, missing fundamental, Karplus-Strong, vibrato voice worst 1.57 ¢; noise / snare / hats / silence unpitched) + slow 10 min test; pq_tests_views default tier.
+- Perf / CPU-efficiency check: 10 min 48 kHz file 8 ms in memory, 14 ms through the decoder; bounded by the 60 s scan + ~20 FFT frames.
+- Notes/blockers: no disk cache; the job decodes the file a second time for this.
