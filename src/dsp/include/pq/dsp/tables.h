@@ -118,27 +118,7 @@ private:
   ShaperView view_{};
 };
 
-// ---- Sample data for sampleRead -----------------------------------------------------------------------------
-// One mono channel held in memory (disk streaming is a later task). `kSampleGuard` zero samples are stored
-// before and after the data so the 4-tap interpolator never reads out of bounds.
-inline constexpr int32_t kSampleGuard = 4;
-
-struct SampleView {
-  const float* data = nullptr;  // points at sample 0; data[-kSampleGuard .. length + kSampleGuard) is readable
-  int32_t length = 0;           // samples
-};
-
-class SampleData {
-public:
-  SampleData() = default;
-  // At most 2^31 − 2·kSampleGuard − 1 samples (int32 playhead; ~12 h at 48 kHz). Not RT-safe.
-  static Result<SampleData> build(std::span<const float> samples);
-  const SampleView& view() const noexcept { return view_; }  // RT-safe
-
-private:
-  AlignedBuffer<float> data_;
-  SampleView view_{};
-};
+// SM.2: sample data lives in live slots (pq/dsp/sample_slot.h: SampleSlot, SampleData).
 
 // ---- FFT (off-thread helper for table building) --------------------------------------------------------------
 // In-place iterative radix-2 complex FFT in double. n = re.size() = im.size() must be a power of two.

@@ -75,9 +75,11 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     {"wavetable", 1, 1, false, false, 0, 0, kB0, 0, sizeof(WavetableState), Resource::Wavetable, false},
     {"noise", 0, 1, false, false, 0, 0, 0, 0, sizeof(NoiseState), Resource::None, false},
     {"shaper", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Shaper, true},
-    {"sample_read_linear", 5, 2, false, false, kB1, kB1, kB0 | kB1, kB2 | kB3 | kB4, sizeof(SampleReadState),
+    // SM.2: rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units → out, playing, right,
+    // pos (kernels_sample.cpp); everything after reset is param rate.
+    {"sample_read_linear", 11, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FCu, sizeof(SampleReadState),
      Resource::Sample, false},
-    {"sample_read_cubic", 5, 2, false, false, kB1, kB1, kB0 | kB1, kB2 | kB3 | kB4, sizeof(SampleReadState),
+    {"sample_read_cubic", 11, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FCu, sizeof(SampleReadState),
      Resource::Sample, false},
     {"sample_pos_linear", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
     {"sample_pos_cubic", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
@@ -130,6 +132,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // block); it reads x behind its output, so no in-place output.
     {"truepeak", 1, 1, false, false, 0, 0, 0, 0, sizeof(TruePeakState), Resource::None, false},
     bin("atan2"),  // MX.2 (kernels_math.cpp)
+    // SM.2 (kernels_sample.cpp): sample_slice (key, units) → (start, end); sample_scrub (pos) → (out, right).
+    {"sample_slice", 2, 2, false, false, 0, 0, kB0 | kB1, 0, 0, Resource::Sample, false},  // (any mask: control regions)
+    {"sample_scrub", 1, 2, false, false, 0, 0, kB0, 0, sizeof(SampleScrubState), Resource::Sample, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -197,6 +202,7 @@ KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (KernelFn f = findSvfKernel(a, lanes, spec)) return f;
   if (KernelFn f = findNoiseStepKernel(a, lanes, spec)) return f;
   if (KernelFn f = findDynamicsKernel(a, lanes, spec)) return f;
+  if (KernelFn f = findSampleKernel(a, lanes, spec)) return f;
   return findTableKernel(a, lanes, spec);
 }
 
@@ -221,7 +227,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::Latch:
     case Atom::Wavetable:
     case Atom::SampleReadLinear:
-    case Atom::SampleReadCubic: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
+    case Atom::SampleReadCubic:
+    case Atom::SampleScrub: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};
@@ -641,8 +648,8 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     }
     case Atom::SampleReadLinear:
     case Atom::SampleReadCubic: {
-      auto& s = *static_cast<SampleReadState*>(state);
-      for (float& m : s.active) m = boolMask(true);
+      auto& s = *static_cast<SampleReadState*>(state);  // SM.2: stopped until its first reset
+      for (float& m : s.active) m = boolMask(false);
       break;
     }
     case Atom::WavetablePos: static_cast<WavetablePosState*>(state)->group = init.voiceGroup; break;

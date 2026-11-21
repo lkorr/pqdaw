@@ -578,15 +578,18 @@ Status ProjectLink::makeEngine() {
   resources_.voiceTaps = voiceTapViews_;
   resources_.signalTaps = signalTapViews_;  // TX.spectrum
   resources_.curves = curveViews_;          // GU.1: the control curves' slots
+  resources_.samples = sampleViews_;        // SM.2: the Samplers' sample slots
   co.resources = &resources_;
   // T2.6-fix4: every image holds the tuning tables it reads (the ones its compile named: compileHeld_). TMM.2: and the
   // meta-module slots it reads.
   co.keepAlive = [this](dsp::Resource kind, uint32_t index) -> std::shared_ptr<const void> {
-    if (kind == dsp::Resource::FrameTable || kind == dsp::Resource::VoiceTap || kind == dsp::Resource::SignalTap) {
+    if (kind == dsp::Resource::FrameTable || kind == dsp::Resource::VoiceTap || kind == dsp::Resource::SignalTap ||
+        kind == dsp::Resource::Sample) {
       std::lock_guard lock(mutex_);
       if (index >= kMetaSlots) return nullptr;
       const MetaSlot& m = metaSlots_[index];
       if (kind == dsp::Resource::FrameTable) return m.table;
+      if (kind == dsp::Resource::Sample) return m.sample;  // SM.2
       if (kind == dsp::Resource::SignalTap) return m.ring;
       return m.tap;
     }
@@ -711,6 +714,7 @@ ProjectLink::~ProjectLink() {
   loaded_.clear();
   frozenPub_.clear();  // FZ.2: their samples, before the pool
   retiring_.clear();
+  for (MetaSlot& m : metaSlots_) m.sample.reset();  // SM.2: their entries' pins, before the pool
   sampleReclaimer_.collect();
   pool_.reset();
 }
@@ -1262,6 +1266,9 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
         return d != nullptr && (doc::isMetaDevice(*d) || d->meta != nullptr);
       })))
     refreshMetaTables();
+  // SM.2: a Sampler's data edit (a new sample, its slices) or a relink publishes into its slot, no compile (a new
+  // instance's slot is made by its compile, which schedules the refresh itself).
+  if (!structural) refreshMetaSamples();
   if (structural) {  // free the slots of tracks that are gone (FIFO reuse: much later)
     std::vector<uint32_t> alive;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { alive.push_back(t.id.value); });
@@ -1825,6 +1832,8 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
         metaFresh_.push_back(r.slot);  // TMM.8-fix: its table is built before the image that reads it is published
         m.table = std::make_shared<dsp::FrameTableSlot>(metaDefaultTable(), metaTapConfig());
         m.tap = m.table->sharedTap();
+      } else if (m.kind == meta::ResourceKind::Sample) {  // SM.2: silent until refreshMetaSamples publishes
+        m.sample = std::make_shared<dsp::SampleSlot>();
       } else if (m.kind == meta::ResourceKind::SignalTap) {  // TX.spectrum: written per engine block
         m.ring = std::make_shared<TapRing>(dsp::kSignalTapChannels, kAnalysisTapFrames,
                                            std::clamp<uint32_t>(cfg_.blockFrames, 1u, kAnalysisTapFrames / 4));
@@ -1842,6 +1851,8 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
     frameTableViews_[r.slot] = m.table.get();
     voiceTapViews_[r.slot] = m.kind == meta::ResourceKind::VoiceTap ? m.tap.get() : nullptr;
     signalTapViews_[r.slot] = m.kind == meta::ResourceKind::SignalTap ? m.ring.get() : nullptr;
+    sampleViews_[r.slot] = m.kind == meta::ResourceKind::Sample ? m.sample.get() : nullptr;
+    if (m.kind == meta::ResourceKind::Sample) sampleRefreshDue_.store(true, std::memory_order_release);
   }
   // Ids this lowering did not name are free again. Their objects (and view entries) stay until the id is given out
   // again: an image built later from an older schedule (a background JIT compile) may still name the id, and it holds
@@ -2084,6 +2095,13 @@ meta::TableBuilder::Stats ProjectLink::metaTableStats() const {
   return tables_ != nullptr ? tables_->stats() : meta::TableBuilder::Stats{};
 }
 
+std::shared_ptr<dsp::SampleSlot> ProjectLink::metaSampleSlot(doc::DeviceId device, std::string_view path,
+                                                             uint32_t index) const {
+  std::lock_guard lock(mutex_);
+  const uint32_t id = metaIdLocked(device, path, index);
+  return id != 0 ? metaSlots_[id].sample : nullptr;
+}
+
 uint32_t ProjectLink::metaSlotsInUse() const {
   std::lock_guard lock(mutex_);
   return static_cast<uint32_t>(metaIds_.size());
@@ -2310,6 +2328,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   if (serial != 0) handLowering(s, serial, shared);
   metaFresh_.clear();
   syncMetaSlots(lp.metaResources);  // before any image is built: resourceFor reads the slots by id
+  if (sampleRefreshDue_.load(std::memory_order_acquire)) scheduleSampleRefresh();  // SM.2: their samples
   syncCurveSlots(lp.curves);         // GU.1: likewise
   if (std::exchange(tapsFresh_, false) && onAnalysisTaps) {  // TX.spectrum: displays waiting for a tap look again
     std::function<void(std::function<void()>)> post;

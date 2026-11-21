@@ -140,16 +140,27 @@ constexpr PortSpec pGlobalBP[] = {{"out", kGlobalBP}};
 constexpr PortSpec pGlobalRC[] = {{"out", kGlobalRC}};
 constexpr PortSpec pGlobalAudioN[] = {{"out", kGlobalAudioN}};
 
-// Sample playback (T1.6 kernels): `sample` names the buffer (a resource). Positions are in frames of the buffer.
-// sample_read_*: 32.32 fixed-point playhead that advances by `rate` frames per sample (so `rate` is a delayed
-// input); start/loopStart/loopEnd are read once per block (param-rate bound).
+// Sample playback (T1.6 kernels; SM.2: every one reads a live sample slot, pq/dsp/sample_slot.h): `sample` names the
+// slot (a resource). sample_read_*: 32.32 fixed-point playhead that advances by `rate` (× the file's rate / the
+// engine's: 1 plays at the file's speed) per sample (so `rate` is a delayed input); everything after `reset` is read
+// once per block (param-rate bound). units 0: positions in frames; 1: in [0, 1] of the sample, fades in seconds.
 constexpr PortSpec pSampleRead[] = {{"sample", kRConst},
                                     {"rate", kR, false, 0.0f, true},
                                     {"reset", kB, true, 0.0f},
                                     {"start", kRParamBound, true, 0.0f},
                                     {"loopStart", kRParamBound, true, 0.0f},
-                                    {"loopEnd", kRParamBound, true, 0.0f}};
-constexpr PortSpec pSampleReadOut[] = {{"out", kRAudio}, {"playing", kBAudio}};
+                                    {"loopEnd", kRParamBound, true, 0.0f},
+                                    {"fade", kRParamBound, true, 0.0f},
+                                    {"pingpong", kRParamBound, true, 0.0f},
+                                    {"end", kRParamBound, true, 1.0e30f},
+                                    {"fadeIn", kRParamBound, true, 0.0f},
+                                    {"fadeOut", kRParamBound, true, 0.0f},
+                                    {"units", kRConst, true, 0.0f}};
+constexpr PortSpec pSampleReadOut[] = {{"out", kRAudio}, {"playing", kBAudio}, {"right", kRAudio}, {"pos", kRAudio}};
+constexpr PortSpec pSampleSlice[] = {{"sample", kRConst}, {"key", kR}, {"units", kRConst, true, 0.0f}};
+constexpr PortSpec pSampleSliceOut[] = {{"start", kR}, {"end", kR}};
+constexpr PortSpec pSampleScrub[] = {{"sample", kRConst}, {"pos", kR}};
+constexpr PortSpec pSampleScrubOut[] = {{"out", kRAudio}, {"right", kRAudio}};
 constexpr PortSpec pSamplePos[] = {{"sample", kRConst}, {"pos", kR}};
 constexpr PortSpec pReduce[] = {{"x", kAny}};
 constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
@@ -405,13 +416,17 @@ const AtomSignature kAtoms[] = {
 
     // Samples and I/O.
     {"sample_read_linear", C::Sample, pSampleRead, pSampleReadOut, sizeof(dsp::SampleReadState), kStateful, 0, {},
-     "sample playback at rate (frames/sample), linear interpolation; loops when loopEnd > loopStart"},
+     "stereo sample playback at rate (1: the file's speed), linear interpolation; loops when loopEnd > loopStart"},
     {"sample_read_cubic", C::Sample, pSampleRead, pSampleReadOut, sizeof(dsp::SampleReadState), kStateful, 0, {},
-     "sample playback at rate (frames/sample), cubic interpolation; loops when loopEnd > loopStart"},
+     "stereo sample playback at rate (1: the file's speed), cubic interpolation; loops when loopEnd > loopStart"},
     {"sample_pos_linear", C::Sample, pSamplePos, pOutR, 0, kBroadcast, 0, {},
      "sample value at frame position pos (linear interpolation; 0 outside the buffer)"},
     {"sample_pos_cubic", C::Sample, pSamplePos, pOutR, 0, kBroadcast, 0, {},
      "sample value at frame position pos (cubic interpolation; 0 outside the buffer)"},
+    {"sample_slice", C::Sample, pSampleSlice, pSampleSliceOut, 0, 0, 0, {},
+     "the slice of key (slice n = key − 36) in the sample's slice table: its start and end frames (units 1: 0 … 1)"},
+    {"sample_scrub", C::Sample, pSampleScrub, pSampleScrubOut, sizeof(dsp::SampleScrubState), kStateful, 0, {},
+     "stereo read at position pos (0 … 1 of the sample), the mip level from its slope"},
     {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},

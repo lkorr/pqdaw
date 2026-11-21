@@ -13,6 +13,7 @@
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/dsp/frame_table_slot.h"
+#include "pq/dsp/sample_slot.h"
 #include "pq/dsp/tables.h"
 #include "pq/dsp/tuning_table.h"
 
@@ -31,9 +32,13 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
   std::vector<float> pts = {-1.0f, -0.5f, 0.0f, 0.5f, 1.0f};
   auto sh = pq::dsp::ShaperTable::build(pts, -1.0f, 1.0f);
   REQUIRE(sh.ok());
-  std::vector<float> smp(300, 0.25f);
-  auto sd = pq::dsp::SampleData::build(smp);
+  // SM.2: a stereo sample slot with two mip levels (the kernels' level and stereo paths).
+  std::vector<float> smp(300, 0.25f), smpR(300, -0.25f);
+  auto sd = pq::dsp::SampleData::build(smp, smpR, 2);
   REQUIRE(sd.ok());
+  pq::EpochReclaimer sampleReclaimer(1);
+  pq::dsp::SampleSlot sampleSlot;
+  REQUIRE(sampleSlot.publish(pq::dsp::SampleData::source(sd.value(), 44100.0, {10.0f, 100.0f}), 48000.0, sampleReclaimer).ok());
   // T2.6: a 2-note MOS table (one interval: degree 1 = g − ⌊g/P⌋·P), so tuning_hz takes its lookup paths.
   const double bounds[] = {0.0, 1.0}, windows[] = {1e-6, 1e-6};
   const int32_t tk[] = {0, 1}, tm[] = {0, 0}, tinv[] = {0, 1};
@@ -89,7 +94,7 @@ TEST_CASE("rt: every atom kernel and initState are allocation-free") {
     }
     const void* resource = info.resource == pq::dsp::Resource::Wavetable ? static_cast<const void*>(&wt->view())
                            : info.resource == pq::dsp::Resource::Shaper  ? static_cast<const void*>(&sh->view())
-                           : info.resource == pq::dsp::Resource::Sample  ? static_cast<const void*>(&sd->view())
+                           : info.resource == pq::dsp::Resource::Sample  ? static_cast<const void*>(&sampleSlot)
                            : info.resource == pq::dsp::Resource::Tuning  ? static_cast<const void*>(&tt->view())
                            : info.resource == pq::dsp::Resource::FrameTable ? static_cast<const void*>(&slot)
                            : info.resource == pq::dsp::Resource::VoiceTap   ? static_cast<const void*>(&tap)

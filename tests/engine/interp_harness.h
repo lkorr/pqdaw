@@ -21,6 +21,7 @@
 #include "../graph/text_util.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/dsp/sample_slot.h"
 #include "pq/dsp/tables.h"
 #include "pq/engine/interpreter.h"
 #include "pq/graph/optimise.h"
@@ -158,9 +159,9 @@ struct Tables {
   std::vector<pq::dsp::Wavetable> wavetables;
   std::vector<const pq::dsp::WavetableView*> wavetableViews;
   std::vector<pq::dsp::ShaperTable> shapers;
-  std::vector<pq::dsp::SampleData> samples;
+  std::vector<std::unique_ptr<pq::dsp::SampleSlot>> samples;  // SM.2: live slots (mono, at the file's speed)
   std::vector<const pq::dsp::ShaperView*> shaperViews;
-  std::vector<const pq::dsp::SampleView*> sampleViews;
+  std::vector<const pq::dsp::SampleSlot*> sampleViews;
   std::vector<refeval::ShaperSpec> shaperSpecs;
   std::vector<std::vector<float>> sampleData;
   eng::Resources resources;
@@ -180,9 +181,14 @@ struct Tables {
     for (int i = 0; i < 64; ++i) ramp.push_back(static_cast<float>(i) / 64.0f);
     for (int i = 0; i < 300; ++i) wave.push_back(static_cast<float>(0.8 * std::sin(2 * refeval::kPi * i / 37.0) + 0.1));
     sampleData = {ramp, wave};
-    for (const auto& d : sampleData) samples.push_back(std::move(pq::dsp::SampleData::build(d).value()));
+    pq::EpochReclaimer reclaimer(1);
+    for (const auto& d : sampleData) {
+      samples.push_back(std::make_unique<pq::dsp::SampleSlot>());
+      (void)samples.back()->publish(pq::dsp::SampleData::source(pq::dsp::SampleData::build(d).value(), 48000.0), 48000.0,
+                                    reclaimer);
+    }
     for (const auto& s : shapers) shaperViews.push_back(&s.view());
-    for (const auto& s : samples) sampleViews.push_back(&s.view());
+    for (const auto& s : samples) sampleViews.push_back(s.get());
     resources.wavetables = wavetableViews;
     resources.shapers = shaperViews;
     resources.samples = sampleViews;

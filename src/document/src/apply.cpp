@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "pq/document/samples.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
 #include "pq/document/lower.h"
@@ -1135,7 +1136,9 @@ bool sampleUsed(const Project& p, SampleId id) {
       if (sl.audio && sl.audio->sample == id) used = true;
     });
   });
-  return used;
+  std::vector<uint32_t> metas;  // SM.2: a Sampler's sample
+  forEachDevice(p, [&](const Device& d, const Track&) { metaSamplesOf(d, metas); });
+  return used || std::find(metas.begin(), metas.end(), id.value) != metas.end();
 }
 
 Res apply_(const Snapshot& s, const AddSample& c, ChangeSet& cs) {
@@ -1154,7 +1157,7 @@ Res apply_(const Snapshot& s, const AddSample& c, ChangeSet& cs) {
 
 Res apply_(const Snapshot& s, const RemoveSample& c, ChangeSet& cs) {
   if (!findSample(*s, c.sample)) return notFound("sample not found");
-  if (sampleUsed(*s, c.sample)) return invalid("the sample is still played by an audio clip");
+  if (sampleUsed(*s, c.sample)) return invalid("the sample is still played by an audio clip or a Sampler");
   auto np = copyOf(s);
   SampleList list = samplesOf(*s);
   std::erase_if(list, [&](const SampleRef& r) { return r.id == c.sample; });

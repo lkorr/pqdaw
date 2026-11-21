@@ -275,7 +275,6 @@ private:
           s.a = tp_.outputType(n, 0).kind == Kind::Bool ? (init != 0.0 ? 1.0 : 0.0) : static_cast<float>(init);
         }
         if (a == "clockdiv") s.i = -1;
-        if (a.starts_with("sample_read")) s.active = true;
       }
       if (a == "delay" || a == "delay_cubic" || a == "delay_allpass") {
         const double maxSec = constIn(n, 2);
@@ -726,13 +725,21 @@ private:
       St& s = stateOf(n, ch, v);
       const std::vector<float>& d = sampleData(static_cast<uint32_t>(constIn(n, 0)));
       const auto len = static_cast<int64_t>(d.size());
+      // SM.2: the extras (loop fade, ping-pong, fades, normalised units) are tested against their own reference
+      // (tests/meta/test_sampler.cpp); this one covers the frame-unit read with an end.
+      if (I(6) != 0 || I(7) > 0.5 || I(9) != 0 || I(10) != 0 || I(11) >= 0.5) {
+        ok_ = false;
+        why_ = "sample_read: fade / pingpong / fadeIn / fadeOut / units are not modelled here";
+        return;
+      }
+      const int64_t endEff = std::min<int64_t>(clampedFloor(I(8)), len);
       if (I(2) != 0) {  // reset (level)
         int64_t hi;
         uint32_t lo;
         toFixed(I(3), hi, lo);
         s.i = hi;
         s.frac = lo;
-        s.active = hi >= 0 && hi < len;
+        s.active = hi >= 0 && hi < endEff;
       }
       const int64_t i = std::clamp<int64_t>(s.i, 0, len - 1);
       const double fr = static_cast<double>(s.frac >> 8) * 0x1p-24;
@@ -750,6 +757,8 @@ private:
                                                  : tap(i) + fr * (tap(i + 1) - tap(i));
       set(n, 0, ch, v, s.active ? ys : 0.0);
       set(n, 1, ch, v, b01(s.active));
+      set(n, 2, ch, v, s.active ? ys : 0.0);  // right: a mono sample's left
+      set(n, 3, ch, v, static_cast<float>(static_cast<float>(s.i) + static_cast<float>(fr)));
       return;
     } else {
       ok_ = false;
@@ -879,7 +888,7 @@ private:
           const bool bwd = loopOn && s.i > ls - 1 && next < ls;
           if (fwd) next = ls + (next - le) % (le - ls);
           if (bwd) next = le - 1 - (ls - 1 - next) % (le - ls);
-          const bool inRange = next >= 0 && next < len;
+          const bool inRange = next >= 0 && next < std::min<int64_t>(clampedFloor(in(n, 8, ch, v)), len);
           if (s.active) {
             s.i = next;
             s.frac = newFrac;

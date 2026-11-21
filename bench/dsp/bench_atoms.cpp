@@ -17,6 +17,8 @@
 #include "pq/core/cpu.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/dsp/atoms.h"
+#include "pq/dsp/atom_state.h"
+#include "pq/dsp/sample_slot.h"
 #include "pq/dsp/tables.h"
 #include "pq_bench.h"
 
@@ -36,7 +38,7 @@ void printOversampleTable();
 namespace {
 
 constexpr uint32_t kFrames = 64;
-constexpr uint32_t kMaxIn = 5, kMaxOut = 4;
+constexpr uint32_t kMaxIn = 11, kMaxOut = 4;  // SM.2: sample_read has 11 inputs
 
 struct Fixture {
   // All block buffers are slices of one arena, like the interpreter's scratch memory. `pad` floats between
@@ -50,7 +52,9 @@ struct Fixture {
   float* outPtrs[kMaxOut]{};
   pq::dsp::Wavetable wt;
   pq::dsp::ShaperTable sh;
-  pq::dsp::SampleData sd;
+  // SM.2: a mono and a stereo slot of the same 1 s sample (the stereo rows: gSampleStereo).
+  pq::EpochReclaimer reclaimer{1};
+  pq::dsp::SampleSlot sampleMono, sampleStereo;
   explicit Fixture(uint32_t pad) : arena((kMaxIn + kMaxOut) * (kFrames * 8 + pad)) {
     const uint32_t stride = kFrames * 8 + pad;
     for (uint32_t i = 0; i < kMaxIn; ++i) in[i] = arena.data() + i * stride;
@@ -63,13 +67,19 @@ struct Fixture {
     sh = pq::dsp::ShaperTable::build(pts, -1.0f, 1.0f).value();
     std::vector<float> smp(48000);
     for (size_t i = 0; i < smp.size(); ++i) smp[i] = static_cast<float>(std::sin(0.01 * i));
-    sd = pq::dsp::SampleData::build(smp).value();
+    std::vector<float> smpR(smp.size());
+    for (size_t i = 0; i < smp.size(); ++i) smpR[i] = static_cast<float>(std::cos(0.013 * i));
+    (void)sampleMono.publish(pq::dsp::SampleData::source(pq::dsp::SampleData::build(smp).value(), 48000.0), 48000.0, reclaimer);
+    (void)sampleStereo.publish(pq::dsp::SampleData::source(pq::dsp::SampleData::build(smp, smpR).value(), 48000.0), 48000.0,
+                               reclaimer);
   }
 };
 
 // Wavetable phase increment per sample and its per-lane spread. Default: 0.013 cycles (624 Hz at 48 kHz, inside a
 // mip crossfade), lanes 10 % apart; the " (steady 1 kHz)" variant: one pitch where only the upper level is read.
 float gWavetableInc = 0.013f, gWavetableSpread = 0.1f;
+// SM.2: the sample atoms read the stereo slot (the " (stereo …)" rows).
+bool gSampleStereo = false;
 // DT.4: delay_fade's `crossfade` input: 1 Crossfade (DT.2's rows), 0 Repitch (the " (repitch)" rows).
 float gDelayFadeXfade = 1.0f;
 // DY.1: window's length (frames) and op for the " (L …)" rows.
@@ -98,8 +108,10 @@ float inputValue(Atom a, uint32_t i, uint32_t t, uint32_t l, bool isBool) {
       return 100.0f + 1000.0f * r;
     case Atom::Wavetable:
       return std::fmod(gWavetableInc * static_cast<float>(t) * (1.0f + gWavetableSpread * l), 1.0f);
+    // rate, reset, start, loopStart, loopEnd (a loop over most of the sample); SM.2: fade, pingpong 0, end (none),
+    // fadeIn / fadeOut 0, units 0 (frames).
     case Atom::SampleReadLinear: case Atom::SampleReadCubic:
-      return i == 0 ? 0.5f + r : i == 2 ? 0.0f : i == 3 ? 1000.0f : 40000.0f;
+      return i == 0 ? 0.5f + r : i == 2 ? 0.0f : i == 3 ? 1000.0f : i == 4 ? 40000.0f : i == 7 ? 1.0e30f : 0.0f;
     case Atom::SamplePosLinear: case Atom::SamplePosCubic:
       return 100.0f + 30000.0f * r;
     case Atom::Mux: case Atom::Demux:
@@ -131,7 +143,8 @@ TableRow benchAtom(pq::bench::Context& ctx, Fixture& fx, Atom a, uint32_t splMas
   const uint32_t nOut = info.variadicOut ? 4u : info.numOut;
   const void* resource = info.resource == pq::dsp::Resource::Wavetable ? static_cast<const void*>(&fx.wt.view())
                          : info.resource == pq::dsp::Resource::Shaper  ? static_cast<const void*>(&fx.sh.view())
-                         : info.resource == pq::dsp::Resource::Sample  ? static_cast<const void*>(&fx.sd.view())
+                         : info.resource == pq::dsp::Resource::Sample
+                             ? static_cast<const void*>(gSampleStereo ? &fx.sampleStereo : &fx.sampleMono)
                                                                        : nullptr;
   TableRow row;
   row.name = std::string(info.name) + suffix;
@@ -160,6 +173,15 @@ TableRow benchAtom(pq::bench::Context& ctx, Fixture& fx, Atom a, uint32_t splMas
       std::abort();
     }
     pq::dsp::initState(a, fx.state.data(), init);
+    if (a == Atom::SampleReadLinear || a == Atom::SampleReadCubic) {  // SM.2: playing (a read starts stopped)
+      auto& st = *reinterpret_cast<pq::dsp::SampleReadState*>(fx.state.data());
+      const auto* slot = static_cast<const pq::dsp::SampleSlot*>(resource);
+      for (uint32_t l = 0; l < 8; ++l) {
+        st.active[l] = pq::dsp::boolMask(true);
+        st.gen[l] = static_cast<uint32_t>(slot->generation());
+        st.index[l] = 1000 + 97 * static_cast<int32_t>(l);
+      }
+    }
     const pq::dsp::KernelFn fn = pq::dsp::findKernel(a, lanes, mask);
     pq::dsp::KernelArgs args{fx.inPtrs, fx.outPtrs, fx.state.data(), resource, kFrames,
                              static_cast<uint16_t>(nIn), static_cast<uint16_t>(nOut), mask};
@@ -254,6 +276,13 @@ int main(int argc, char** argv) {
       gDelayFadeXfade = 1.0f;
     });
   add(Atom::SampleReadCubic, 0b11, " (spl rate, spl reset)");
+  // SM.2: the Sampler's Re-Pitch read is stereo (docs/plans/SM.md SM.2: ≤ 1.1 × two mono reads).
+  for (const auto& [split, suffix] : {std::pair{0u, " (stereo)"}, std::pair{0b11u, " (stereo, spl rate, spl reset)"}})
+    runner.add(std::string("atom/sample_read_cubic") + suffix, [&fx, &rows, split, suffix](pq::bench::Context& c) {
+      gSampleStereo = true;
+      rows.push_back(benchAtom(c, fx, Atom::SampleReadCubic, split, suffix));
+      gSampleStereo = false;
+    });
   // DY.1: follow with param-rate times (the dynamics devices' case; the plain row has audio-rate times: an exp per
   // frame); window max / mean / min at 1, 10, 100 ms (48 kHz).
   add(Atom::Follow, 0b110, " (spl attack, spl release)");

@@ -172,6 +172,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
     app/test_warp_link.cpp  # T6.3: warp modes through the link (Tones in 31-EDO steps, Complex as Tones, Beats transients analysed and cached)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
+    app/test_sampler_link.cpp  # SM.2: the Sampler's sample through the link (pin, publish, data edits, missing files)
     app/test_meta_link.cpp  # TMM.3: meta modules through the link (a nested freq drag compiles nothing; chain instrument)
     app/test_scope_link.cpp  # TX.scope: the Oscilloscope through the link (its tap: beat, note, signal; pass-through)
     app/test_spectrogram_link.cpp  # TX.spectrogram: the Spectrogram through the link (its tap, RtScope, a feed's columns, pass-through)
@@ -454,6 +455,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_atoms_math_logic.cpp
     dsp/test_warp_kernels.cpp  # T6.3: the warp kernels (Hann OLA, anchored ramps, best lag, jitter)
     dsp/test_atoms_memory_gen.cpp
+    dsp/test_sample_read.cpp  # SM.2: the sample atoms on live slots (references, generations, slices, scrub)
     dsp/test_delay_fade.cpp  # DT.2: delay_cubic from 1 sample; delay_fade glides within an octave, crossfades beyond
     dsp/test_phasor_drift.cpp
     dsp/test_tables.cpp
@@ -499,6 +501,7 @@ pq_add_test(pq_tests_meta PERF  # TMM.13-fix1 M2: the preview rate of a drag (wa
     meta/test_oscilloscope.cpp  # TX.scope: the Oscilloscope module (expansion, the tap, data, pass-through bit for bit on both backends)
     meta/test_spectrogram_module.cpp  # TX.spectrogram: the Spectrogram module (expansion, the tap, data, pass-through bit for bit on both backends)
     meta/test_noise.cpp  # NZ.1: the Noise engine (expansion, settings, interpreter == JIT, clock, sync, voices, range)
+    meta/test_sampler.cpp  # SM.2: the Sampler engine (expansion, data, each mode vs a reference on both backends, swaps, rt)
   DEPS pq_meta pq_pqc)
 
 # document: note sequence, every command kind's ChangeSet, history/gestures, structural sharing.

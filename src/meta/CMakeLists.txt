@@ -8,6 +8,7 @@ pq_add_module(pq_meta
     src/expand.cpp
     src/noise.cpp
     src/registry.cpp
+    src/sampler.cpp         # SM.2: the Sampler engine
     src/table_builder.cpp
     src/spectrum.cpp
     src/oscilloscope.cpp

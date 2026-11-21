@@ -23,6 +23,13 @@
 // for level 1, +87.5 % for all three, counted in residentBytes; skipped when the budget has no room. A demotion
 // retires them with the residency. Streamed samples have none (Q151: the reasons are in the T5.x-perf-audio notes).
 //
+// Pins (SM.2, docs/plans/SM.md "Residency"): pin() makes a sample FULLY resident for as long as a SamplePin of it lives
+// (a sampler's sample: its voices read it from memory, never a stream) — a streamed one is decoded whole and its
+// residency replaced (the old one retired through the reclaimer), at most kPinMaxSeconds long (refused beyond) — and
+// builds its mips. A pinned sample is never demoted (so pinned samples can exceed the budget: they are counted, never
+// evicted). Pins are counted per sample; the last SamplePin's destruction unpins (the sample may then be demoted
+// again like any other).
+//
 // Disk thread (startDiskThread): THREAD_PRIORITY_ABOVE_NORMAL; 256 KiB overlapped reads (FILE_FLAG_SEQUENTIAL_SCAN)
 // into a staging buffer, converted into the rings (pq/media/pcm.h). It refills a ring as soon as one whole read fits
 // (256 KiB, or a quarter of a small ring), most-starved first, up to 32 reads in flight (QUESTIONS Q?-T5.2-a: the
@@ -119,9 +126,28 @@ private:
   mutable uint64_t lastUse_ = 0;              // pool tick of the last load()/touch()/markInUse()
   mutable uint64_t inUse_ = 0;                // == the pool's useEpoch_: the playing image reads it (never demoted)
   mutable uint64_t bytes_ = 0;                // what this entry counts toward the budget
+  mutable uint32_t pins_ = 0;                 // SM.2: live SamplePins (never demoted while > 0)
+  mutable uint32_t promotedSource_ = 0;       // SM.2: the stream source a pin replaced (kept until the entry goes)
 };
 
 using SampleRef = std::shared_ptr<const PooledSample>;
+
+// SM.2: a sample held fully resident (SamplePool::pin); unpins when destroyed. The pool must outlive it.
+class SamplePin {
+public:
+  ~SamplePin();
+  SamplePin(const SamplePin&) = delete;
+  SamplePin& operator=(const SamplePin&) = delete;
+  const SampleRef& sample() const noexcept { return sample_; }
+
+private:
+  friend class SamplePool;
+  SamplePin() = default;
+  SampleRef sample_;
+  SamplePool* pool_ = nullptr;
+};
+using PinRef = std::shared_ptr<const SamplePin>;
+inline constexpr double kPinMaxSeconds = 600.0;  // SM.2: the longest sample a sampler pins (10 min)
 
 class SamplePool {
 public:
@@ -146,6 +172,11 @@ public:
   // is streamed, the budget has no room, or more levels were asked of a sample that has some already and the pool has
   // no reclaimer to retire them (without one, a sample's mips are built once).
   bool buildMips(const PooledSample& s, uint32_t levels);
+  // SM.2: pins `s` fully resident (decoding a streamed one whole) and builds its mips 1 … mipLevels (skipped when the
+  // budget has no room: the pin holds anyway). Not RT-safe (may decode the whole file). Thread-safe. Errors: longer
+  // than kPinMaxSeconds ("… is longer than 10 minutes: a sampler plays at most 10 minutes"), a decode failure.
+  Result<PinRef> pin(const SampleRef& s, uint32_t mipLevels = dsp::kMaxMipLevels);
+  uint32_t pins(const PooledSample& s) const;  // tests
 
   StreamPool& streams() noexcept { return streams_; }
 
@@ -190,7 +221,9 @@ private:
   struct Source;
   struct DiskState;
 
+  friend class SamplePin;
   void removeEntry(PooledSample* s) noexcept;  // the last reference went
+  void unpin(const PooledSample& s) noexcept;
   Status makeStreamed(PooledSample& s, Decoder* d, const Residency* from);
   void enforceBudget(uint64_t incoming, const PooledSample* keep);
   void demote(PooledSample& s);

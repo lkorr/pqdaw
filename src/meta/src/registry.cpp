@@ -9,6 +9,7 @@
 #include "pq/meta/loudness.h"
 #include "pq/meta/noise.h"
 #include "pq/meta/oscilloscope.h"
+#include "pq/meta/sampler.h"
 #include "pq/meta/spectrogram.h"
 #include "pq/meta/spectrum.h"
 #include "pq/meta/stereo.h"
@@ -48,6 +49,7 @@ struct Registry {
     types.push_back(&waveformType());         // VZ.6
     types.push_back(&waterfallType());          // VZ.7
     types.push_back(&stereoSpectrogramType());  // VZ.7
+    types.push_back(&samplerType());            // SM.2
   }
 };
 

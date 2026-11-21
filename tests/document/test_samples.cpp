@@ -15,6 +15,8 @@
 #include "edit_helpers.h"
 #include "pq/document/samples.h"
 #include "pq/document/serialize.h"
+#include "pq/document/edit_ops.h"
+#include "pq/meta/sampler.h"
 
 using namespace pq;
 using namespace pq::doc;
@@ -293,4 +295,38 @@ TEST_CASE("samples: content hash = size + three 64 KiB windows") {
   CHECK(absoluteSamplePath("b/c.wav", "C:/a") == "C:/a/b/c.wav");
   CHECK(isAbsoluteSamplePath("//server/share/x.wav"));
   CHECK_FALSE(isAbsoluteSamplePath("samples/x.wav"));
+}
+
+// SM.2: a Sampler's sample (its data's SampleId, meta::Type::sampleRefs) counts as used: missing → relink, Collect All
+// and Save, and RemoveSample see it like a clip's.
+TEST_CASE("samples: a Sampler's sample counts as used (missing, collect, remove)") {
+  TempTree t;
+  const fs::path a = t.root / "library" / "pluck.wav";
+  writeWav(a, 2400, 1, 48000, 4);
+  DocumentStore store;
+  IdSource& ids = store.ids();
+  const Result<ops::Edit> made = ops::createTrack(*store.current(), ids, TrackKind::Midi);
+  edit_test::commit(store, made);
+  const TrackId track = made->tracks.at(0);
+  Result<SampleRef> r = makeSampleRef(ids, u8(a), u8(t.root / "Song"), probeWav);
+  REQUIRE(r.ok());
+  const SampleId id = r->id;
+  REQUIRE(store.dispatch(Command{AddSample{*r}}).ok());
+  const Result<ops::Edit> dev = ops::addMetaDevice(*store.current(), ids, track, "sampler");
+  edit_test::commit(store, dev);
+  const DeviceId d = dev->devices.at(0);
+  // Not played yet (the Sampler's data names no sample): never missing, never collected.
+  fs::rename(a, t.root / "library" / "moved.wav");
+  std::vector<SampleResolution> res = resolveSamples(*store.current(), SampleSearch{u8(t.root / "Song"), {}});
+  CHECK(missingSamples(*store.current(), res).empty());
+  edit_test::commit(store, ops::setMetaData(*store.current(), d, "", "sampler", meta::samplerData(id.value)));
+  res = resolveSamples(*store.current(), SampleSearch{u8(t.root / "Song"), {}});
+  CHECK(missingSamples(*store.current(), res) == std::vector<SampleId>{id});
+  CHECK_FALSE(store.dispatch(Command{RemoveSample{id}}).ok());  // still played
+  fs::rename(t.root / "library" / "moved.wav", a);
+  res = resolveSamples(*store.current(), SampleSearch{u8(t.root / "Song"), {}});
+  const Result<CollectPlan> plan = planCollect(*store.current(), u8(t.root / "Song"), res);
+  REQUIRE(plan.ok());
+  REQUIRE(plan->items.size() == 1);
+  CHECK(plan->items[0].id == id);
 }

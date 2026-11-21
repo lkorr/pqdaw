@@ -227,8 +227,32 @@ void ProjectLink::loaderMain() {
     uint32_t mipLevels = 0;
     {
       std::unique_lock lock(loadMutex_);
-      loadCv_.wait(lock, [&] { return loaderQuit_ || !loadQueue_.empty() || !mipQueue_.empty(); });
+      loadCv_.wait(lock, [&] { return loaderQuit_ || !loadQueue_.empty() || !mipQueue_.empty() || !pinQueue_.empty(); });
       if (loaderQuit_) return;
+      if (!pinQueue_.empty()) {  // SM.2: a Sampler's sample, fully resident with its mips
+        std::string pinPath = std::move(pinQueue_.front().first);
+        media::SampleRef pinSample = std::move(pinQueue_.front().second);
+        pinQueue_.pop_front();
+        lock.unlock();
+        auto r = pool_->pin(pinSample);  // may decode the whole file (a streamed one) and builds the mips
+        std::function<void(std::function<void()>)> post;
+        {
+          std::lock_guard l2(loadMutex_);
+          LoadedSample& e = loaded_[pinPath];
+          e.pinDone = true;
+          if (r.ok()) e.pin = std::move(r.value());
+          else e.pinError = r.error().message;
+          --loadsPending_;
+          post = post_;
+        }
+        pinSample.reset();
+        samplesArrived_.store(true, std::memory_order_release);
+        loadCv_.notify_all();
+        if (post) post([alive = std::weak_ptr<int>(alive_), this] {
+          if (alive.lock()) takeLoadedSamples();
+        });
+        continue;
+      }
       if (!loadQueue_.empty()) {
         path = std::move(loadQueue_.front());
         loadQueue_.pop_front();
@@ -296,6 +320,7 @@ void ProjectLink::loaderMain() {
 }
 
 void ProjectLink::takeLoadedSamples() {
+  if (sampleRefreshDue_.load(std::memory_order_acquire) && current_) refreshMetaSamples();  // SM.2 (a compile's)
   if (!samplesArrived_.exchange(false, std::memory_order_acq_rel) || !current_) return;
   {
     std::lock_guard lock(loadMutex_);
@@ -305,11 +330,149 @@ void ProjectLink::takeLoadedSamples() {
     }
   }
   publishAudio(*current_);
+  refreshMetaSamples();  // SM.2: the loads and pins a Sampler waited for
 }
+
+void ProjectLink::scheduleSampleRefresh() {
+  sampleRefreshDue_.store(true, std::memory_order_release);
+  if (!cfg_.compileThread) {  // the compiles run on the UI thread: now
+    if (current_) refreshMetaSamples();
+    return;
+  }
+  std::function<void(std::function<void()>)> post;
+  {
+    std::lock_guard lock(loadMutex_);
+    post = post_;
+  }
+  // (No poster: the next takeLoadedSamples / waitForSamples on the UI thread does it.)
+  if (post) post([alive = std::weak_ptr<int>(alive_), this] {
+    if (alive.lock()) takeLoadedSamples();
+  });
+}
+
+void ProjectLink::refreshMetaSamples() {
+  sampleRefreshDue_.store(false, std::memory_order_release);
+  if (!current_) return;
+  const doc::Project& p = *current_;
+  struct Want {
+    uint32_t id = 0;
+    std::shared_ptr<dsp::SampleSlot> slot;
+    meta::SampleBinding binding;
+    std::string path;
+  };
+  std::vector<Want> wants;
+  {
+    std::lock_guard lock(mutex_);
+    for (const auto& [key, id] : metaIds_) {
+      const MetaSlot& m = metaSlots_[id];
+      if (!m.live || m.kind != meta::ResourceKind::Sample || !m.sample || m.type == nullptr || m.type->sampleBinding == nullptr)
+        continue;
+      const doc::Device* d = doc::findDevice(p, m.device).device;
+      if (d == nullptr) continue;  // gone in the newest snapshot; the next compile frees the slot
+      const doc::MetaInstance* inst = d->metaAt(m.path);
+      meta::DataPtr data;
+      if (inst != nullptr && inst->type == m.type->id && inst->data != nullptr) data = inst->data;
+      else if (m.type->defaultData != nullptr) data = m.type->defaultData();
+      Want w;
+      w.id = id;
+      w.slot = m.sample;
+      w.binding = m.type->sampleBinding(data.get(), m.index);
+      wants.push_back(std::move(w));
+    }
+  }
+  for (Want& w : wants)
+    if (w.binding.sample != 0) w.path = samplePathOf(p, doc::SampleId{w.binding.sample});
+  // Pins nobody wants any more are dropped (published entries keep theirs until they are retired).
+  std::vector<media::PinRef> dropped;
+  {
+    std::lock_guard lock(loadMutex_);
+    for (auto& [path, e] : loaded_)
+      if (e.pinAsked && e.pinDone &&
+          std::none_of(wants.begin(), wants.end(), [&](const Want& w) { return w.path == path; })) {
+        dropped.push_back(std::move(e.pin));
+        e.pin.reset();
+        e.pinAsked = e.pinDone = false;
+        e.pinError.clear();
+      }
+  }
+  dropped.clear();  // (unpins outside loadMutex_: it takes the pool's lock)
+  for (const Want& w : wants) {
+    bool same = false;
+    {
+      std::lock_guard lock(mutex_);
+      const MetaSlot& m = metaSlots_[w.id];
+      same = m.sample == w.slot && m.samplePublished && m.samplePath == w.path && m.binding == w.binding &&
+             m.sampleRate == cfg_.sampleRate;
+    }
+    if (same) continue;
+    media::PinRef pin;
+    bool ready = w.path.empty();  // nothing (or a missing file): silence
+    if (!w.path.empty() && pool_ != nullptr) {
+      media::SampleRef ref;
+      bool known = false, askPin = false;
+      std::string err;
+      {
+        std::lock_guard lock(loadMutex_);
+        const auto l = loaded_.find(w.path);
+        known = l != loaded_.end();
+        if (known && l->second.done) {
+          if (!l->second.error.empty()) {
+            ready = true;  // could not load (the status line says so): silence
+          } else if (l->second.pinDone) {
+            pin = l->second.pin;
+            err = l->second.pinError;
+            ready = true;
+          } else if (!l->second.pinAsked) {
+            l->second.pinAsked = true;
+            ref = l->second.ref;
+            askPin = ref != nullptr;
+          }
+        }
+        if (askPin) {
+          pinQueue_.emplace_back(w.path, ref);
+          ++loadsPending_;
+        }
+      }
+      if (!known) requestLoad(w.path);
+      if (askPin) loadCv_.notify_all();
+      if (!err.empty()) setError(err);  // e.g. longer than 10 minutes: refused, silent
+    }
+    if (!ready) continue;  // published once its load / pin arrives (takeLoadedSamples)
+    dsp::SampleSource src;
+    if (pin != nullptr && !pin->sample()->view().streamed() && pin->sample()->view().frames > 0) {
+      const media::SampleView v = pin->sample()->view();
+      src.owner = pin;  // the entry keeps the sample pinned (and alive) until it is retired
+      src.channels = v.channels;
+      src.fileRate = v.sampleRate;
+      src.level[0] = {{v.data[0], v.channels > 1 ? v.data[1] : v.data[0]}, static_cast<int32_t>(v.frames)};
+      if (const media::SampleMips* mips = pin->sample()->mips(); mips != nullptr) {
+        src.levels = std::min(mips->levels, dsp::kMaxMipLevels);
+        for (uint32_t l = 1; l <= src.levels; ++l) {
+          const media::SampleView& mv = mips->level[l - 1];
+          src.level[l] = {{mv.data[0], mv.channels > 1 ? mv.data[1] : mv.data[0]}, static_cast<int32_t>(mv.frames)};
+        }
+      }
+      src.slices = w.binding.slices;
+    }
+    if (Status st = w.slot->publish(std::move(src), cfg_.sampleRate, sampleReclaimer_); !st.ok())
+      setError(st.error().message);
+    std::lock_guard lock(mutex_);
+    MetaSlot& m = metaSlots_[w.id];
+    if (m.sample != w.slot) continue;
+    m.samplePath = w.path;
+    m.binding = w.binding;
+    m.sampleRate = cfg_.sampleRate;
+    m.samplePublished = true;
+  }
+  for (const Want& w : wants) w.slot->sweep(sampleReclaimer_);  // replaced samples no note plays any more
+  sampleReclaimer_.collect();
+}
+
 
 bool ProjectLink::waitForSamples(double timeoutSeconds) {
   const auto until = std::chrono::steady_clock::now() + std::chrono::duration<double>(timeoutSeconds);
-  for (;;) {  // the publish after the loads may ask for mips: wait for those too
+  if (current_) refreshMetaSamples();  // SM.2: a Sampler's load / pin asked now, published below
+  for (;;) {  // the publish after the loads may ask for mips (and a Sampler's sample a pin): wait for those too
     bool ok = true;
     {
       std::unique_lock lock(loadMutex_);

@@ -2324,3 +2324,24 @@ Hz, the pulsing one lit), ≤ 64 entries; (2) the proportion's 8 values all show
 first Length of them); (3) a lane's current step is lit only while the lane is on. Status: open.
 Decided (orchestrator, 2026-11-21): the Base gap blocks the walk's main use, so Visibility takes several sources
 (`more`, any-of; `all`: all-of) for every panel, and Base shows for Unit Harmonics OR style Harmonic Walk. (1)–(3) open.
+
+## Q?-SM.2-a · Sampler engine: readings taken where the plan left room
+Context: SM.2 (docs/plans/SM.md) — the slot, `sample_read` on slots, the `sampler` type. Choices (most reversible):
+1. **Mip level**: one level per call and slot entry, from the SLOWEST playing lane's |rate| (a voice group of 8 shares
+   it): a lane far above the others aliases a little more, none is ever dulled. Per-lane levels need one buffer for all
+   levels (gathers from one base); not worth it until heard.
+2. **`sampleBpm` is a param**, not data: Re-Pitch needs it in the expansion, and data never reaches a body.
+3. **Slice Mono / Poly (choke)** is not in the engine: it is the group's polyphony (SM.3's preset); the engine is per voice.
+4. **Classic "gate holds the sustain loop"**: the loop keeps playing through the release (the envelope after the engine
+   releases it); no "loop off at note-off" (a per-sample gate into the param-rate loop points would make them audio rate).
+5. **`key` is an ordinary input** (default 0: no slice) until SM.3 wires `voice.key` (SM.1). Slice's rate follows a wired
+   hz / `voice.noteHz` per voice.
+6. **`gateOut` is 1 / 0 (Real)**: a meta type's outputs are Real; the Envelope's gate input needs a compare (SM.3 wires it).
+   Named `gateOut` (an output cannot share the input `gate`'s name).
+7. **Loop fade** crossfades with the frames BEFORE loopStart (as planned), so it is at most loopStart frames: a loop that
+   starts at the sample's first frame has no fade. Ping-pong loops have none (a turn is continuous).
+8. **Old entries live while read**: a held note keeps playing the sample it started on however long it holds (the entry
+   is retired 2 s after the last read); only more than 16 swaps during one note stop it (silent until its next trigger).
+9. Mip levels > 0 do not wrap the loop seam's taps (rates above 2 in a short loop: a seam tap from past the loop end).
+10. **Scrub** (`position` wired) reads the newest entry at once (no trigger to wait for).
+11. `sample_read` starts STOPPED (was: playing from 0), so an engine with nothing wired is silent (plan "Inputs").

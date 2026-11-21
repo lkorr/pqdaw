@@ -164,23 +164,46 @@
 //                                     gives the same bits.
 // Tables:
 //   shaper (x)                        transfer curve (tables.h)
-//   sample_read_linear/_cubic (rate, reset, start, loopStart, loopEnd) → (out, playing)
-//                                     32.32 fixed-point playhead, rate converted exactly (floor(rate·2^32);
-//                                     |rate| ≤ 2^20). The output at t is
-//                                     the interpolated sample at the playhead, then the playhead moves by rate.
-//                                     While reset is high the playhead is set to `start` and playing. Loop when
-//                                     loopEnd > loopStart (floored to samples): passing loopEnd forwards wraps
-//                                     to loopStart + (overshoot mod length); passing loopStart backwards wraps
-//                                     to loopEnd − 1 − (overshoot mod length), for any rate (also |rate| >
-//                                     the loop length).
-//                                     Without a loop, leaving [0, length) stops playback (out 0, playing false)
-//                                     until the next reset. While the playhead is inside the loop, the
-//                                     interpolation taps past the seam come from the other end of the loop
-//                                     (seamless loops; M1 review L3); taps outside the data read 0. No
-//                                     crossfade. start/loopStart/loopEnd must be Spl.
-//                                     Initially playing from 0.
-//   sample_pos_linear/_cubic (pos)    stateless read at a sample position (float, in samples); 0 outside
-//                                     [0, length). Float position: sub-sample accurate to ~2^24 samples.
+//   SM.2: every sample atom reads a live SampleSlot (pq/dsp/sample_slot.h: Resource::Sample), mono or stereo.
+//   sample_read_linear/_cubic (rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units)
+//                             → (out, playing, right, pos)
+//                                     32.32 fixed-point playhead in the sample's frames, advanced by rate × the entry's
+//                                     file rate / engine rate (rate 1: the file's own speed) converted exactly
+//                                     (floor(·2^32); |rate| ≤ 2^20). The output at t is the interpolated sample at the
+//                                     playhead (out: left, right: right — a mono sample's left, copied), then the
+//                                     playhead moves. While reset is high the playhead is set to `start`, forward, and
+//                                     plays if start lies in [0, end); the lane takes the slot's NEWEST entry there and
+//                                     plays that entry until its next reset (a sample swap never changes a sounding
+//                                     note; sample_slot.h "Publication"). Initially stopped (silent until a reset).
+//                                     Loop when loopEnd > loopStart (floored to frames): passing loopEnd forwards wraps
+//                                     to loopStart + (overshoot mod length); passing loopStart backwards wraps to
+//                                     loopEnd − 1 − (overshoot mod length), for any rate. pingpong > 0.5: the playhead
+//                                     reflects at loopEnd − 1 and at loopStart instead (x → 2b − x) and turns (clamped
+//                                     into the loop when |rate| exceeds its length). While the playhead is inside the
+//                                     loop, the interpolation taps past the seam come from the other end of the loop
+//                                     (ping-pong: are mirrored), so loops are seamless (M1 review L3). fade > 0 (forward
+//                                     loops): inside the last F = min(fade, loop length, loopStart) frames before
+//                                     loopEnd the output is the equal-power crossfade cos(u)·y(x) + sin(u)·y(x − len),
+//                                     u = π/2 · (x − (loopEnd − F)) / F, of the playhead and the frames before
+//                                     loopStart (continuous into the wrap); fade 0 is the plain read. Without a loop,
+//                                     leaving [0, end) (end floored, at most the length) stops playback (out 0, playing
+//                                     false) until the next reset. fadeIn / fadeOut > 0: the output × min(1, (x −
+//                                     start)/fadeIn, (end − x)/fadeOut) (the sample's own time). pos: the playhead x.
+//                                     Mip levels: a call reads each entry at the level mipLevelFor(the slowest |rate| of
+//                                     its playing lanes at the call's first frame) (resample.h: rates above 2 read a
+//                                     decimated copy at rate / 2^L; there, no loop seam handling). units (const) 0:
+//                                     positions and fades in frames; 1: positions (start, loop points, end, pos) in
+//                                     [0, 1] of the lane's sample, fades in seconds of the file. Taps outside the data
+//                                     read 0. Everything after reset must be Spl.
+//   sample_pos_linear/_cubic (pos)    stateless read of the newest entry's left channel at a position (float, in
+//                                     frames); 0 outside [0, length). Sub-sample accurate to ~2^24 frames.
+//   sample_slice (key, units) → (start, end)
+//                                     the slice n = round(key) − 36 of the newest entry's slice table (sorted start
+//                                     frames): [slices[n], slices[n + 1] or the length); no table: slice 0 is the
+//                                     whole sample; out of range (or NaN): start = end = 0 (a read from it never
+//                                     plays). units as sample_read's.
+//   sample_scrub (pos) → (out, right)  (cubic) a read of the newest entry at pos ∈ [0, 1] of its length (outside: 0),
+//                                     both channels, at the mip level of the block's fastest |Δpos| · length per sample.
 // Cubic = 4-point, 3rd-order Hermite (Catmull-Rom); linear = 2-point.
 // Tuning (T2.6, SPEC §3.3; pq/dsp/tuning_table.h):
 //   tuning_hz (degree, equave, hz, cents, generator, period, stretch, reference) → (hz, cents)
@@ -345,6 +368,8 @@ enum class Atom : uint16_t {
   TruePeak,
   // MX.2: math, binary (see "Math" above; appended, not with its siblings, so no table shifts)
   Atan2,
+  // SM.2: the sampler's slice lookup and scrub read (see "Tables" above; appended)
+  SampleSlice, SampleScrub,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

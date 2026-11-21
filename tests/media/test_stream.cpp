@@ -64,7 +64,7 @@ std::vector<float> flatten(const FrameSpan& s, uint32_t c) {
 int16_t pattern(int64_t f, uint32_t c, uint32_t seed) noexcept {
   return static_cast<int16_t>(static_cast<uint32_t>(f * 31 + c * 7919 + seed * 1009) & 0xFFFFu);
 }
-void writePatternWav(const fs::path& p, int64_t frames, uint32_t channels, uint32_t seed) {
+void writePatternWav(const fs::path& p, int64_t frames, uint32_t channels, uint32_t seed, uint32_t rate = 48000) {
   HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
   REQUIRE(h != INVALID_HANDLE_VALUE);
   const uint32_t data = static_cast<uint32_t>(frames * channels * 2);
@@ -77,8 +77,8 @@ void writePatternWav(const fs::path& p, int64_t frames, uint32_t channels, uint3
   put32(16, 16);
   put16(20, 1);
   put16(22, static_cast<uint16_t>(channels));
-  put32(24, 48000);
-  put32(28, 48000 * channels * 2);
+  put32(24, rate);
+  put32(28, rate * channels * 2);
   put16(32, static_cast<uint16_t>(channels * 2));
   put16(34, 16);
   std::memcpy(hdr + 36, "data", 4);
@@ -740,6 +740,92 @@ TEST_CASE("pool: a demotion retires a sample's mips; a streamed sample gets none
   CHECK((*sa)->mips() == nullptr);
   sa = Error{};
   sb = Error{};
+  reclaimer.unregisterReader(*reader);
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+// SM.2: a sampler's sample is pinned: fully resident (a streamed one decoded whole), with its mips, never demoted while
+// pinned, demotable again once the last pin goes; longer than 10 minutes is refused.
+TEST_CASE("pool: pin — a streamed sample becomes resident with mips, pinned samples are never demoted, 10 min cap") {
+  const fs::path dir = tempDir("pq_media_pin");
+  EpochReclaimer reclaimer(1);
+  auto reader = reclaimer.registerReader();
+  REQUIRE(reader);
+  PoolConfig cfg;
+  cfg.headFrames = 4096;
+  cfg.streamSlots = 8;
+  cfg.residentLimitBytes = 1u << 20;  // a 6 s stereo file (2.2 MB as float) streams
+  cfg.budgetBytes = 3u << 20;
+  cfg.reclaimer = &reclaimer;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);
+  const fs::path a = dir / "a.wav", b = dir / "b.wav", c = dir / "c.wav", longFile = dir / "long.wav";
+  writePatternWav(a, 48000 * 6, 2, 1);
+  writePatternWav(b, 48000 * 2, 2, 2);  // 0.73 MB: resident
+  writePatternWav(c, 48000 * 2, 2, 3);
+  auto sa = pool.load(a);
+  REQUIRE(sa.ok());
+  REQUIRE((*sa)->view().streamed());
+  {
+    auto pin = pool.pin(*sa);
+    REQUIRE(pin.ok());
+    CHECK(pool.pins(**sa) == 1);
+    const SampleView& v = (*sa)->view();
+    CHECK_FALSE(v.streamed());
+    CHECK(v.frames == 48000 * 6);
+    bool exact = true;
+    for (int64_t f = 0; f < v.frames && exact; f += 991)
+      exact = v.data[1][f] == pattern(f, 1, 1) / 32768.0f && v.data[0][f] == pattern(f, 0, 1) / 32768.0f;
+    CHECK(exact);
+    // Mips: over the budget here (2.2 MB + 87.5 % > 3 MB), so none; the pin holds anyway.
+    CHECK((*sa)->mips() == nullptr);
+    CHECK(pool.stats().streamedSamples == 0);
+    CHECK(reclaimer.pending() == 1);  // the streamed head, retired
+    // Loading more files over the budget demotes the unpinned ones, never the pinned one.
+    auto sb = pool.load(b);
+    REQUIRE(sb.ok());
+    auto sc = pool.load(c);
+    REQUIRE(sc.ok());
+    CHECK_FALSE((*sa)->view().streamed());
+    CHECK((*sb)->view().streamed());  // the least recently used unpinned one went
+    auto again = pool.pin(*sa);  // pins count
+    REQUIRE(again.ok());
+    CHECK(pool.pins(**sa) == 2);
+  }
+  CHECK(pool.pins(**sa) == 0);  // both pins gone: demotable again
+  {
+    const fs::path d = dir / "d.wav";
+    writePatternWav(d, 48000 * 2, 2, 4);
+    auto sd = pool.load(d);
+    REQUIRE(sd.ok());
+    CHECK((*sa)->view().streamed());  // a, the least recently used, is demoted now
+  }
+  // A resident sample gets its mips at pin time when the budget has room.
+  {
+    PoolConfig roomy = cfg;
+    roomy.budgetBytes = 64u << 20;
+    roomy.residentLimitBytes = 32u << 20;
+    SamplePool p2(roomy);
+    auto s = p2.load(b);
+    REQUIRE(s.ok());
+    auto pin = p2.pin(*s);
+    REQUIRE(pin.ok());
+    REQUIRE((*s)->mips() != nullptr);
+    CHECK((*s)->mips()->levels == dsp::kMaxMipLevels);
+  }
+  // Longer than 10 minutes: refused with a message, nothing pinned (100 Hz, 601 s).
+  writePatternWav(longFile, 100 * 601, 1, 5, 100);
+  auto sl = pool.load(longFile);
+  REQUIRE(sl.ok());
+  auto refused = pool.pin(*sl);
+  REQUIRE_FALSE(refused.ok());
+  CHECK(refused.error().message.find("longer than 10 minutes") != std::string::npos);
+  CHECK(pool.pins(**sl) == 0);
+  reclaimer.quiescent(*reader);
+  (void)reclaimer.collect();
+  sa = Error{};
+  sl = Error{};
   reclaimer.unregisterReader(*reader);
   std::error_code ec;
   fs::remove_all(dir, ec);

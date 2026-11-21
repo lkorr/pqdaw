@@ -218,11 +218,18 @@ struct alignas(32) DelayState {
   const float* ring() const noexcept { return reinterpret_cast<const float*>(this + 1); }
 };
 
-// sampleRead: 32.32 fixed-point playhead per lane (index + fraction), active mask.
+// sampleRead: 32.32 fixed-point playhead per lane (index + fraction), active mask; SM.2: the generation of the slot
+// entry the lane plays (low 32 bits, taken at its trigger) and its ping-pong direction (a mask: backwards).
 struct alignas(32) SampleReadState {
   int32_t index[8];
   uint32_t frac[8];
   float active[8];
+  uint32_t gen[8];
+  float back[8];
+};
+// SM.2: sample_scrub: the previous position per lane (its slope picks the mip level).
+struct alignas(32) SampleScrubState {
+  float prev[8];
 };
 
 // TMM.6: oversample_up / oversample_down (pq/dsp/oversample.h): per allpass of the half-band cascade its previous
@@ -379,7 +386,8 @@ static_assert(sizeof(WavetablePosState) == 192);
 static_assert(sizeof(VoiceTapState) == 64);
 static_assert(sizeof(WavetableLiveState) == 672);
 static_assert(sizeof(WavetableShapeState) == 160);
-static_assert(sizeof(SampleReadState) == 96);
+static_assert(sizeof(SampleReadState) == 160);
+static_assert(sizeof(SampleScrubState) == 32);
 static_assert(sizeof(ParamRampState) == 160);
 static_assert(std::is_trivially_copyable_v<DelayState> && std::is_trivially_copyable_v<PhasorState>);
 

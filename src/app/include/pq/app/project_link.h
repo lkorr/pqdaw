@@ -213,6 +213,7 @@
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/curve.h"
 #include "pq/dsp/frame_table_slot.h"
+#include "pq/dsp/sample_slot.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/arp.h"
 #include "pq/engine/background_compile.h"
@@ -490,7 +491,8 @@ public:
   // The link owns every slot a meta instance's expansion reads: LowerOptions::metaSlotOf gives each (device, name
   // path, request index) a stable id (from 1; 0 = none, the engine's built-in default) for as long as the lowering
   // lists it in LoweredProject::metaResources, and the link creates the object the request asks for: a
-  // dsp::FrameTableSlot (holding a one-frame sine at the link's rate until a table is published) or a VoiceTap. Both
+  // dsp::FrameTableSlot (holding a one-frame sine at the link's rate until a table is published), a VoiceTap, a TapRing
+  // or (SM.2) a dsp::SampleSlot (silent until refreshMetaSamples publishes the data's pinned sample into it). All
   // are Resources entries (frameTables / voiceTaps), kept alive by every image that reads them
   // (ProjectCompileOptions::keepAlive). Freed ids are reused in the order they were freed (FIFO), before fresh ones
   // (a freed slot's object keeps its table alive until its id is given out again). A Reset (New / Open) frees every
@@ -543,6 +545,8 @@ public:
   Status publishFrameTable(doc::DeviceId device, std::string_view path, uint32_t index,
                            std::shared_ptr<const dsp::FrameTable> table);
   uint32_t metaSlotsInUse() const;
+  // SM.2: the instance's sample slot (a Sampler's request `index`), or null.
+  std::shared_ptr<dsp::SampleSlot> metaSampleSlot(doc::DeviceId device, std::string_view path, uint32_t index) const;
   // TMM.5: the instances' own tables. For every frame-table slot whose type builds one (meta::Type::frameTable), the
   // link derives a TableJob from the instance's state in the newest snapshot (its data, its baked params' values, its
   // settings, the link's rate) and, when the job's key differs from the one last requested for the slot, hands it to
@@ -768,6 +772,14 @@ private:
   void requestMips(const media::SampleRef& s, uint32_t levels);
   void loaderMain();
   void takeLoadedSamples();       // UI thread: republish if loads finished
+  // SM.2 (see "Meta-module resources"): publishes into every Sample slot what its instance's data names — the sample
+  // resolved, loaded and pinned on the loader first (asked here, published on the next call: takeLoadedSamples), its
+  // slices; silence while there is none (or it is missing, or refused: longer than 10 minutes, a status message).
+  // Unchanged bindings publish nothing. UI thread (or the thread that runs the compiles when there is no compile
+  // thread); scheduleSampleRefresh() gets it there from a compile.
+  void refreshMetaSamples();
+  void scheduleSampleRefresh();
+  std::atomic<bool> sampleRefreshDue_{false};
   void prefetchAt(Ticks tick);    // UI thread: streams for the clips under `tick` (and the loop start)
   void engageDisk(bool on);
   void reportDisk();              // UI thread: a burst of underruns names itself in the status line
@@ -866,11 +878,17 @@ private:
     media::SampleRef ref;
     bool done = false;
     std::string error;
+    // SM.2: a Sampler plays it: pinned resident on the loader (refreshMetaSamples asks; dropped when no Sampler wants
+    // the path any more — the published slot entries hold their own references until they are retired).
+    bool pinAsked = false, pinDone = false;
+    media::PinRef pin;
+    std::string pinError;
   };
   mutable std::mutex loadMutex_;
   std::condition_variable loadCv_;
   std::deque<std::string> loadQueue_;
   std::deque<std::pair<media::SampleRef, uint32_t>> mipQueue_;  // (sample, levels) for the loader (loadMutex_)
+  std::deque<std::pair<std::string, media::SampleRef>> pinQueue_;  // SM.2: (path, sample) to pin (loadMutex_)
   std::unordered_map<std::string, LoadedSample> loaded_;  // by absolute path (loadMutex_)
   uint32_t loadsPending_ = 0;
   bool loaderQuit_ = false;
@@ -1010,6 +1028,12 @@ private:
     meta::DataPtr data;      // the data last hashed, and its hash (data values are immutable: hashed once each)
     uint64_t dataHash = 0;
     std::vector<uint8_t> modulated;  // TMM.8: the params its live path applies (not baked), from the last lowering
+    // SM.2: a Sample request's slot and what was last published into it (the resolved path, the binding, the rate).
+    std::shared_ptr<dsp::SampleSlot> sample;
+    std::string samplePath;
+    meta::SampleBinding binding;
+    double sampleRate = 0;
+    bool samplePublished = false;
   };
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)
@@ -1040,6 +1064,7 @@ private:
   std::array<const dsp::FrameTableSlot*, kMetaSlots> frameTableViews_{};
   std::array<VoiceTap*, kMetaSlots> voiceTapViews_{};
   std::array<TapRing*, kMetaSlots> signalTapViews_{};  // TX.spectrum
+  std::array<const dsp::SampleSlot*, kMetaSlots> sampleViews_{};  // SM.2
   // GU.1: the control curves' slots (mutex_; see "Control curves").
   struct CurveEntry {
     std::shared_ptr<dsp::CurveSlot> slot;

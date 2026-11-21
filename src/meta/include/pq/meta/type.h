@@ -107,7 +107,17 @@ struct OutputSpec {
 // An off-thread resource an expansion reads through a slot id (a frame table, a voice tap; TMM.2 builds them). The
 // document lowering allocates the slots (LowerOptions::metaSlotOf) and lists each instance's requests with its data
 // for the link (LoweredProject::metaResources).
-enum class ResourceKind : uint8_t { FrameTable, VoiceTap, SignalTap };  // SignalTap: TX.spectrum (a pq::TapRing)
+// SM.2: Sample = a dsp::SampleSlot (pq/dsp/sample_slot.h): the link resolves what Type::sampleBinding names (a
+// SampleId of the project's table), pins it resident (pq/media/sample_pool.h) and publishes it; a data edit
+// publishes again (voices take a new sample at their next trigger), never a compile.
+enum class ResourceKind : uint8_t { FrameTable, VoiceTap, SignalTap, Sample };  // SignalTap: TX.spectrum (a pq::TapRing)
+// SM.2: what a Sample request plays (Type::sampleBinding): a SampleId value of the project's sample table (0: none, the
+// slot stays silent) and its slice table (start frames, any order: the slot sorts them).
+struct SampleBinding {
+  uint32_t sample = 0;
+  std::vector<float> slices;
+  friend bool operator==(const SampleBinding&, const SampleBinding&) = default;
+};
 struct ResourceRequest {
   ResourceKind kind = ResourceKind::FrameTable;
   uint32_t index = 0;  // the type's own numbering (ExpandContext::slot(index))
@@ -196,6 +206,10 @@ struct Type {
   //   Nested           adds an output `done` (Bool) after the outputs (an instrument circuit wires it to its `done`)
   //   ChainAudio       ignores it
   bool voiceEnd = false;
+  // SM.2: the SampleId values an instance's data names (doc::usedSamples: missing samples, Collect, relink count them;
+  // null: none), and what its Sample request `index` plays (null data: the type's default; null hook: nothing).
+  std::vector<uint32_t> (*sampleRefs)(const DataValue& data) = nullptr;
+  SampleBinding (*sampleBinding)(const DataValue* data, uint32_t index) = nullptr;
 
   int32_t paramIndex(std::string_view n) const noexcept;    // −1: none
   int32_t settingIndex(std::string_view n) const noexcept;  // −1: none

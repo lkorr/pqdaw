@@ -30,6 +30,7 @@
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/curve.h"
 #include "pq/dsp/frame_table_slot.h"
+#include "pq/dsp/sample_slot.h"
 #include "pq/dsp/tables.h"
 #include "pq/dsp/tuning_table.h"
 #include "pq/engine/program_image.h"
@@ -47,7 +48,7 @@ namespace pq::engine {
 struct Resources {
   std::span<const dsp::WavetableView* const> wavetables;
   std::span<const dsp::ShaperView* const> shapers;
-  std::span<const dsp::SampleView* const> samples;
+  std::span<const dsp::SampleSlot* const> samples;  // SM.2: live sample slots (a missing one: a silent slot)
   std::span<const dsp::TuningTableView* const> tunings;  // T2.6
   std::span<const dsp::FrameTableSlot* const> frameTables;  // TMM.2
   std::span<VoiceTap* const> voiceTaps;                     // TMM.2

@@ -67,6 +67,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "follow", "window",
       // DY.5: the BS.1770 true-peak estimator.
       "truepeak",
+      // SM.2: the Sampler's slice lookup and scrub read.
+      "sample_slice", "sample_scrub",
   };
   for (const char* n : names) {
     CAPTURE(n);

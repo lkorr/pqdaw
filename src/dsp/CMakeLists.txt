@@ -27,6 +27,8 @@ pq_add_module(pq_dsp
     src/frame_table_read.cpp
     src/frame_table_build.cpp
     src/frame_table_slot.cpp
+    src/sample_slot.cpp  # SM.2: live sample slots (sample_read / sample_pos / sample_slice)
+    src/kernels_sample.cpp
     src/kernels_frame_table.cpp
     src/kernels_wave_live.cpp
     src/kernels_signal_tap.cpp

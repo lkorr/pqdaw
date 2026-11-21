@@ -39,8 +39,11 @@ constexpr ArgMap kWavetableLive[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}
                                                                                         // sync, table, mode, corr
 constexpr ArgMap kWavetableShape[] = {{U::Input, 0}, {U::Input, 1}, {U::Resource, 0}};  // x, position, table
 constexpr ArgMap kNoise[] = {{U::InitSeed, 0}};                                         // seed
-constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1},       // sample, rate, reset,
-                                  {U::Input, 2},    {U::Input, 3}, {U::Input, 4}};      // start, loopStart, loopEnd
+constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1},  // sample, rate, reset,
+                                  {U::Input, 2},    {U::Input, 3}, {U::Input, 4},  // start, loopStart, loopEnd,
+                                  {U::Input, 5},    {U::Input, 6}, {U::Input, 7},  // fade, pingpong, end (SM.2),
+                                  {U::Input, 8},    {U::Input, 9}, {U::Input, 10}};  // fadeIn, fadeOut, units
+constexpr ArgMap kSampleSlice[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1}};  // sample, key, units (SM.2)
 constexpr ArgMap kSamplePos[] = {{U::Resource, 0}, {U::Input, 0}};                      // sample, pos
 constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // degree, equave, hz,
                                 {U::Input, 4}, {U::Input, 5}, {U::Input, 6}, {U::Input, 7},  // cents, generator, period,
@@ -83,6 +86,8 @@ constexpr Special kSpecial[] = {
     {"sample_read_cubic", kSampleRead},
     {"sample_pos_linear", kSamplePos},
     {"sample_pos_cubic", kSamplePos},
+    {"sample_slice", kSampleSlice},
+    {"sample_scrub", kSamplePos},  // sample, pos
     {"tuning_hz", kTuningHz},
     {"gain", kGain},
     {"gain_add", kGainAdd},

@@ -102,13 +102,9 @@ const dsp::ShaperView& defaultShaper() {
   }();
   return table.view();
 }
-const dsp::SampleView& defaultSample() {
-  static const dsp::SampleData table = [] {
-    const float pts[1] = {0.0f};
-    auto t = dsp::SampleData::build(pts);
-    return t ? std::move(t.value()) : dsp::SampleData{};
-  }();
-  return table.view();
+const dsp::SampleSlot& defaultSample() {  // SM.2: a slot that stays silent (nothing ever publishes into it)
+  static const dsp::SampleSlot slot;
+  return slot;
 }
 
 // TMM.2: the frame-table slot a wavetable_pos without one reads: one frame of a sine, built once per sample rate (the

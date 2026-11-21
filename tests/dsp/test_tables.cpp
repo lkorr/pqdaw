@@ -10,6 +10,7 @@
 #include <random>
 #include <vector>
 
+#include "pq/dsp/sample_slot.h"
 #include "pq/dsp/tables.h"
 
 namespace {
@@ -79,13 +80,28 @@ TEST_CASE("wavetable mipmaps are band-limited per level (half an octave apart) a
   CHECK(pq::dsp::Wavetable::build(std::vector<float>(16)).ok());
 }
 
-TEST_CASE("sample data keeps zero guards around the samples") {
+TEST_CASE("sample data keeps zero guards around the samples; mono reads its left channel as its right (SM.2)") {
   const std::vector<float> s = {1, 2, 3};
   auto d = pq::dsp::SampleData::build(s);
   REQUIRE(d.ok());
-  const auto& v = d->view();
+  const pq::dsp::SampleLevelView& v = d.value()->level(0);
   CHECK(v.length == 3);
-  for (int32_t i = -pq::dsp::kSampleGuard; i < 0; ++i) CHECK(v.data[i] == 0.0f);
-  for (int32_t i = 0; i < 3; ++i) CHECK(v.data[i] == s[static_cast<size_t>(i)]);
-  for (int32_t i = 3; i < 3 + pq::dsp::kSampleGuard; ++i) CHECK(v.data[i] == 0.0f);
+  CHECK(v.ch[1] == v.ch[0]);
+  for (int32_t i = -pq::dsp::kSampleDataGuard; i < 0; ++i) CHECK(v.ch[0][i] == 0.0f);
+  for (int32_t i = 0; i < 3; ++i) CHECK(v.ch[0][i] == s[static_cast<size_t>(i)]);
+  for (int32_t i = 3; i < 3 + pq::dsp::kSampleDataGuard; ++i) CHECK(v.ch[0][i] == 0.0f);
+  CHECK(!pq::dsp::SampleData::build(std::vector<float>{}).ok());
+  CHECK(!pq::dsp::SampleData::build(s, std::vector<float>{1, 2}).ok());  // channels of different lengths
+  // Stereo with three mip levels: each level half the frames (rounded up), a DC sample stays DC (the decimator's DC
+  // gain is 1) away from the edges.
+  const std::vector<float> l(1000, 0.5f), r(1000, -0.25f);
+  auto m = pq::dsp::SampleData::build(l, r, 3);
+  REQUIRE(m.ok());
+  CHECK(m.value()->channels() == 2);
+  CHECK(m.value()->levels() == 3);
+  CHECK(m.value()->level(1).length == 500);
+  CHECK(m.value()->level(2).length == 250);
+  CHECK(m.value()->level(3).length == 125);
+  CHECK(m.value()->level(2).ch[0][125] == doctest::Approx(0.5f).epsilon(1e-5));
+  CHECK(m.value()->level(2).ch[1][125] == doctest::Approx(-0.25f).epsilon(1e-5));
 }

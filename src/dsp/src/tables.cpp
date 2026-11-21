@@ -206,15 +206,4 @@ Result<ShaperTable> ShaperTable::build(std::span<const float> points, float lo, 
 
 // ---- Sample data ------------------------------------------------------------------------------------------------
 
-Result<SampleData> SampleData::build(std::span<const float> samples) {
-  constexpr std::size_t kMax = 2147483647u - 2u * kSampleGuard - 1u;
-  if (samples.empty() || samples.size() > kMax)
-    return Error{ErrorCode::InvalidArgument, "sample length must be in [1, 2^31 - 9]", {}};
-  SampleData s;
-  s.data_ = AlignedBuffer<float>(samples.size() + 2 * kSampleGuard);  // zero-initialised guards
-  for (std::size_t i = 0; i < samples.size(); ++i) s.data_[kSampleGuard + i] = samples[i];
-  s.view_ = {s.data_.data() + kSampleGuard, static_cast<int32_t>(samples.size())};
-  return s;
-}
-
 }  // namespace pq::dsp

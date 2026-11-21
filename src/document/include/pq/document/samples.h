@@ -60,6 +60,9 @@ std::string absoluteSamplePath(std::string_view stored, std::string_view project
 Result<SampleRef> makeSampleRef(IdSource& ids, std::string_view absPath, std::string_view projectDir,
                                 const SampleProbeFn& probe);
 
+// SM.2: the SampleId values the device's meta modules play (a Sampler's data: meta::Type::sampleRefs), appended to `out`.
+void metaSamplesOf(const Device& d, std::vector<uint32_t>& out);
+
 // ---- Resolution and relink ---------------------------------------------------------------------------------------
 
 struct SampleSearch {
@@ -75,7 +78,8 @@ struct SampleResolution {
 // projectDir; an absolute one as written); otherwise the project folder and then `folders` are searched recursively
 // for a file of the same name and size (and content hash, when the entry has one).
 std::vector<SampleResolution> resolveSamples(const Project& p, const SampleSearch& search);
-// The ids of the missing entries that a clip plays (unused entries never count).
+// The ids of the missing entries that a clip or a meta module (a Sampler: meta::Type::sampleRefs) plays (unused entries
+// never count).
 std::vector<SampleId> missingSamples(const Project& p, std::span<const SampleResolution> resolved);
 // Relink: searches `folder` recursively for the given entries (by name; size and hash verified) and returns them with
 // their new stored paths, for those found. Every matching entry is relinked in one pass.
@@ -96,7 +100,7 @@ struct CollectPlan {
   std::vector<CollectItem> items;
   uint64_t bytes = 0;  // to copy
 };
-// Every sample a clip plays whose resolved file lies outside `projectDir` → samples/imported/<file name>. A name taken
+// Every sample a clip or a meta module plays whose resolved file lies outside `projectDir` → samples/imported/<file name>. A name taken
 // by a file with the same size and hash reuses that file; a different one gets " (2)", " (3)" … before the extension.
 // Missing samples are skipped. Errors: an untitled project (no directory).
 Result<CollectPlan> planCollect(const Project& p, std::string_view projectDir, std::span<const SampleResolution> resolved);

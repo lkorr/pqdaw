@@ -242,6 +242,10 @@ void SamplePool::removeEntry(PooledSample* s) noexcept {
     std::lock_guard lock(mutex_);
     auto it = entries_.find(s->key_);
     if (it != entries_.end() && it->second.expired()) entries_.erase(it);
+    if (s->promotedSource_ != 0) {  // SM.2: a pinned promotion's old source (readers of its streams are gone now)
+      std::lock_guard sl(sourcesMutex_);
+      sources_.erase(s->promotedSource_);
+    }
     if (s->streamSource_) {
       headBytes_ -= s->bytes_;
       --streamedSamples_;
@@ -395,6 +399,70 @@ bool SamplePool::buildMips(const PooledSample& s, uint32_t levels) {
   s.mipBytes_ = bytes;
   ++mipBuilds_;
   return true;
+}
+
+// ---- pins (SM.2) ----------------------------------------------------------------------------------------------------
+
+SamplePin::~SamplePin() {
+  if (pool_ != nullptr && sample_ != nullptr) pool_->unpin(*sample_);
+}
+
+void SamplePool::unpin(const PooledSample& s) noexcept {
+  std::lock_guard lock(mutex_);
+  if (s.pins_ > 0) --s.pins_;
+}
+
+uint32_t SamplePool::pins(const PooledSample& s) const {
+  std::lock_guard lock(mutex_);
+  return s.pins_;
+}
+
+Result<PinRef> SamplePool::pin(const SampleRef& ref, uint32_t mipLevels) {
+  if (ref == nullptr || ref->pool_ != this) return Error{ErrorCode::InvalidArgument, "pin: not a sample of this pool", {}};
+  PooledSample& s = const_cast<PooledSample&>(*ref);
+  const SampleInfo& info = s.info_;
+  if (static_cast<double>(info.frames) > kPinMaxSeconds * static_cast<double>(std::max<uint32_t>(info.sampleRate, 1)))
+    return Error{ErrorCode::Unsupported,
+                 detail::pathUtf8(s.path_) + " is longer than 10 minutes: a sampler plays at most 10 minutes", {}};
+  {
+    std::lock_guard budget(budgetMutex_);  // vs demotions (enforceBudget): pinned before any can pick it
+    {
+      std::lock_guard lock(mutex_);
+      ++s.pins_;
+    }
+    if (s.streamSource_ != 0) {  // promote: decode the whole file into a new residency
+      auto failed = [&](Error e) -> Result<PinRef> {
+        std::lock_guard lock(mutex_);
+        --s.pins_;
+        return e;
+      };
+      if (config_.reclaimer == nullptr)
+        return failed(Error{ErrorCode::Unsupported, "pin: a streamed sample needs the pool's reclaimer", {}});
+      auto decoder = Decoder::open(s.path_);
+      if (!decoder) return failed(std::move(decoder).error());
+      auto r = allocResidency(info, static_cast<int64_t>(info.frames));
+      auto got = decodeInto(**decoder, *r, 0, static_cast<int64_t>(info.frames));
+      if (!got) return failed(std::move(got).error());
+      r->view.frames = r->view.residentFrames = *got;
+      const uint64_t bytes = residencyBytes(*r);
+      std::unique_ptr<Residency> retired = std::move(s.owned_);
+      s.owned_ = std::move(r);
+      s.residency_.store(s.owned_.get(), std::memory_order_release);
+      config_.reclaimer->retire(retired.release());  // the audio thread may still read the old head this block
+      std::lock_guard lock(mutex_);
+      headBytes_ -= s.bytes_;
+      --streamedSamples_;
+      residentBytes_ += bytes;
+      s.bytes_ = bytes;
+      s.promotedSource_ = s.streamSource_;  // a clip may still stream from it: its source lives until the entry goes
+      s.streamSource_ = 0;
+    }
+  }
+  (void)buildMips(s, mipLevels);  // no room in the budget: the pin holds without mips (reads above rate 2 alias)
+  auto pin = std::shared_ptr<SamplePin>(new SamplePin);
+  pin->sample_ = ref;
+  pin->pool_ = this;
+  return PinRef(std::move(pin));
 }
 
 // Head + stream source for `s`. `d` decodes (at its start) when given; else `from` is the sample's current resident
@@ -558,7 +626,7 @@ void SamplePool::enforceBudget(uint64_t incoming, const PooledSample* keep) {
       for (auto& [k, w] : entries_) {
         SampleRef e = w.lock();
         if (!e) continue;
-        if (e.get() != keep && e->streamSource_ == 0 && e->inUse_ != useEpoch_ && e->lastUse_ < oldest) {
+        if (e.get() != keep && e->streamSource_ == 0 && e->inUse_ != useEpoch_ && e->pins_ == 0 && e->lastUse_ < oldest) {
           oldest = e->lastUse_;
           victim = e;
         }

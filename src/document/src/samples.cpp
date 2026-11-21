@@ -16,6 +16,7 @@
 #include <windows.h>
 
 #include "pq/document/serialize.h"
+#include "pq/meta/registry.h"
 
 namespace pq::doc {
 
@@ -121,6 +122,8 @@ std::vector<const SampleRef*> usedSamples(const Project& p) {
     for (const ClipSlot& s : t.clips)
       if (s.audio) used.push_back(s.audio->sample.value);
   });
+  // SM.2: the samples meta modules play (a Sampler's), by their type's sampleRefs.
+  forEachDevice(p, [&](const Device& d, const Track&) { metaSamplesOf(d, used); });
   std::sort(used.begin(), used.end());
   std::vector<const SampleRef*> out;
   for (const SampleRef& r : samplesOf(p))
@@ -129,6 +132,15 @@ std::vector<const SampleRef*> usedSamples(const Project& p) {
 }
 
 }  // namespace
+
+void metaSamplesOf(const Device& d, std::vector<uint32_t>& out) {
+  if (d.meta == nullptr) return;
+  for (const MetaEntry& m : *d.meta) {
+    const meta::Type* type = meta::findType(m.instance.type);
+    if (type == nullptr || type->sampleRefs == nullptr || m.instance.data == nullptr) continue;
+    for (const uint32_t id : type->sampleRefs(*m.instance.data)) out.push_back(id);
+  }
+}
 
 Result<FileIdentity> fileIdentity(std::string_view pathUtf8) {
   Handle f;

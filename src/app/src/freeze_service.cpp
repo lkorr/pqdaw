@@ -361,6 +361,9 @@ std::optional<doc::Project> freezeDocument(const doc::Project& p, doc::TrackId i
     };
     add(t.clips);
     for (const doc::TakeLanePtr& l : t.takes) add(l->clips);
+    std::vector<uint32_t> metas;  // SM.2: the samples its Samplers play
+    for (const doc::DevicePtr& d : t.devices) doc::metaSamplesOf(*d, metas);
+    used.insert(metas.begin(), metas.end());
   });
   if (!used.empty()) {
     auto s = std::make_shared<doc::SampleList>();
