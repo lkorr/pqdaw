@@ -7,6 +7,10 @@
 //   arp/8 notes 1/32 glides  AP.3: Up with Into (previous step) and Out (next step) glides, Exponential: per step a
 //                        note-on + an Into Pitch event, and an Out action (a look-ahead pick) at the gate's end
 //   arp/walk 4 notes 1/32    AP.3: Harmonic Walk over 4 JI notes (Range 7, merged by Hz), UpDown
+//   arp/pulse 8:9:10:12      AP.4: Pulse mode, 4 JI notes (harmonics 8, 9, 10, 12), Base 1/16, h_ref = 8: four
+//                        clocks (6000 · 8 / h samples), a note-off + note-on per onset
+//   arp/pulse 8:9:10:12 layers   the same with 3 layers (×3/2 each): four notes per onset
+//   arp/pulse 128 notes      AP.4: 128 JI notes (harmonics 8 … 135), Base 1/4, h_ref 8: ≈ 1144 onsets per beat
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -21,8 +25,8 @@ namespace e = pq::engine;
 constexpr uint32_t kFrames = 64;
 
 void benchArp(pq::bench::Runner& runner, const std::string& name, e::ArpStyle style, uint32_t notes,
-              bool glides = false) {
-  runner.add("arp/" + name, [style, notes, glides](pq::bench::Context& ctx) {
+              bool glides = false, int32_t pulseDen = 0, int32_t layers = 0, const int32_t* harmonics = nullptr) {
+  runner.add("arp/" + name, [style, notes, glides, pulseDen, layers, harmonics](pq::bench::Context& ctx) {
     e::ArpParams p;
     p.style = style;
     p.rate = {true, 1, 32, 1, 1, 100.0f};
@@ -34,12 +38,20 @@ void benchArp(pq::bench::Runner& runner, const std::string& name, e::ArpStyle st
       p.glideMs = 10.0f;
       p.glideShape = e::RampShape::Exponential;
     }
+    if (pulseDen > 0) {
+      p.pulse = true;
+      p.rate = {true, 1, pulseDen, 1, 1, 100.0f};
+      p.layers = layers;
+      p.ratioP = 3;
+      p.ratioQ = 2;
+    }
     auto stage = std::make_unique<e::ArpStage>(p);
     auto tempo = std::make_unique<pq::TempoMap>();
-    e::EventBuffer in(64), out(1024);
+    e::EventBuffer in(256), out(1024);
     for (uint32_t i = 0; i < notes; ++i) {
-      e::NoteEvent n = e::noteOn(0, i + 1, 200.0f + 25.0f * static_cast<float>(i), 0.8f);
-      n.harmonic = static_cast<float>(8 + i);  // a JI group over 25 Hz
+      const int32_t hh = harmonics != nullptr ? harmonics[i] : static_cast<int32_t>(8 + i);
+      e::NoteEvent n = e::noteOn(0, i + 1, 25.0f * static_cast<float>(hh), 0.8f);
+      n.harmonic = static_cast<float>(hh);  // a JI group over 25 Hz
       in.push(n);
     }
     e::ClockSegment seg{0, kFrames, true, 0};
@@ -73,4 +85,8 @@ void addArpBenches(pq::bench::Runner& runner) {
   benchArp(runner, "8 notes 1/32 chord", e::ArpStyle::ChordTrigger, 8);
   benchArp(runner, "8 notes 1/32 glides", e::ArpStyle::Up, 8, true);
   benchArp(runner, "walk 4 notes 1/32", e::ArpStyle::HarmonicWalk, 4);
+  static constexpr int32_t kPulse[4] = {8, 9, 10, 12};
+  benchArp(runner, "pulse 8:9:10:12", e::ArpStyle::Up, 4, false, 16, 0, kPulse);
+  benchArp(runner, "pulse 8:9:10:12 layers", e::ArpStyle::Up, 4, false, 16, 3, kPulse);
+  benchArp(runner, "pulse 128 notes", e::ArpStyle::Up, 128, false, 4);
 }

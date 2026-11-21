@@ -2259,3 +2259,17 @@ Context: AP.md leaves details of the Harmonics unit and the glides open. Chosen 
 Into + Out longer than the note get half each. (5) Out → Step aims at the step already sounding (gate > 100 %), else
 at what the pattern plays next as known at the Out start (a later retrigger / new note can differ). (6) During the
 Out glide the source's later bends do not move the note; during Into they re-aim the glide (same end). Status: open.
+
+## Q?-AP.4-a · 2026-11-20 · AP.4 · Arp pulse mode: readings of h, Steps, the idle rule and Layers
+Context: AP.md / the task leave details of Pulse mode open. Chosen (reversible, documented in arp.h "Pulse mode"):
+(1) Base is the arp's own Rate (synced or ms), not a second rate param. (2) "Its index in a chosen proportion": the
+note's rank by Hz among the held notes (not its scale degree), the list repeating doubled past its length
+(prop[r mod len] · 2^(r div len)); Proportion with an empty list falls back to Order (rank + 1); h clamped 1 … 1024.
+(3) Steps: pulse j of a cycle plays copy j mod Steps (shifted (j mod Steps) · Distance), restarting with the cycle;
+Rotate reads as Shift (no pattern to rotate). Style, Offset, Repeats, Groove and Retrigger Beat do not apply.
+(4) The idle-start rule per clock: every newly added note's first pulse sounds at its note-on when that is off its
+grid (also when other clocks are running), gate · its period long, ≤ 100 % ended at its next onset. (5) Cycle Bars:
+whole notes (4/4; no meter in the tempo map), a clock's last pulse before the restart may be short. (6) Into / Out
+→ Step = the same clock's previous / next pulse. (7) Layers apply in both modes (pattern and pulse), at (p/q)^L
+of the Ratio unit's p/q, gain = level × the note's gain. (8) A held-set change that moves h_ref (the lowest held)
+re-times every clock at that frame (each resumes at its first unplayed onset of the new grid). Status: open.
