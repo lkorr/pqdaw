@@ -1231,3 +1231,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker pq_tests_note_stage 16/16 (3805 assertions: style table, block sizes 32/64/512/37, loop/locate/stop, n:m onsets, 128 held, exact identities, RtScope, real Engine path); orchestrator after rebase (worker's run was killed for low memory): -Affected -Slow 90/90; ship link of pq_bench_dsp ok.
 - Perf / CPU-efficiency check: ship bench arp/idle 7.7 ns/block, 8 notes 1/32 59 ns/block, chord 62 ns/block; no stage on a slot = one relaxed load.
 - Notes/blockers: Q?-AP.1-a (Offset, Steps, first step, one degree table); orchestrator: the first synced step should sound at the note-on when the arp is idle (live feel) → AP.3; unison voices held as separate notes.
+
+## 2026-11-20 · AP.3 · task/AP.3-pitch (merged 0a6afa3e)
+- Did: Harmonics unit (h → h + k over the anchor, no group = harmonic Base 8; exact ratio / harmonic; Rotate wraps h → 2h); Harmonic Walk (+ Under, Range, order; walks merge by Hz); Into / Out glides (Previous / Offset / Off, Next / Offset / Off, ms or note fraction, unit or cents; Linear / Exp / S / Overshoot as a Pitch-ramp shape in NoteEvent, one VoiceEngine loop per shape); an idle arp's first step sounds at the note-on; 14 new ArpParamIds.
+- Verified: pq_tests_note_stage 21/21 (5053 assertions), engine voices / tuning voices 46/46 (shapes from real Hz buffers, Linear bit-identical, block sizes 32/64/512/37, modulated-tuning degree step); -Affected -Slow 57/57; ship link pq_bench_dsp ok; 2 AP.1 tests updated to the new first-step rule.
+- Perf / CPU-efficiency check: Linear glide 64 voices 7.6 µs/64-frame block before = after; shaped 22–30 µs while gliding (exact exp2 per sample; a fast exp2 gave nothing); arp 8 notes 1/32 90 → 55 ns/block (params re-sanitised only on change).
+- Notes/blockers: Q?-AP.3-a (5 readings); kArpParamInfo rows for the new ids → AP.2; not checked live.
