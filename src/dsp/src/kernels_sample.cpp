@@ -180,11 +180,17 @@ struct LaneConsts {
     const I fmax = S::mini(c.loopLen, S::maxi(c.loopStart, S::seti(0)));
     const I fe = S::andi(S::andi(c.loopOn, S::xori(c.pp, S::seti(-1))), S::mini(fade, fmax));
     c.fadeF = S::toFloat(fe);
-    c.fadeInv = S::select(S::gt(c.fadeF, S::zero()), S::div(S::set(kHalfPi), S::max(c.fadeF, S::set(1.0f))), S::zero());
+    // (The divisions only where a lane needs them: the per-call setup is a visible part of a param-rate read.)
+    c.fadeInv = S::zero();
+    if (S::any(S::gt(c.fadeF, S::zero())))
+      c.fadeInv = S::select(S::gt(c.fadeF, S::zero()), S::div(S::set(kHalfPi), S::max(c.fadeF, S::set(1.0f))), S::zero());
     // Fade in / out (from start, to the end): the inverse lengths (0 → none: gain 1).
     const F fi = S::mul(S::load(a.in[8]), timeScale), fo = S::mul(S::load(a.in[9]), timeScale);
-    c.fiInv = S::select(S::gt(fi, S::zero()), S::div(S::set(1.0f), S::max(fi, S::set(1e-30f))), S::zero());
-    c.foInv = S::select(S::gt(fo, S::zero()), S::div(S::set(1.0f), S::max(fo, S::set(1e-30f))), S::zero());
+    c.fiInv = c.foInv = S::zero();
+    if (S::any(S::bor(S::gt(fi, S::zero()), S::gt(fo, S::zero())))) {
+      c.fiInv = S::select(S::gt(fi, S::zero()), S::div(S::set(1.0f), S::max(fi, S::set(1e-30f))), S::zero());
+      c.foInv = S::select(S::gt(fo, S::zero()), S::div(S::set(1.0f), S::max(fo, S::set(1e-30f))), S::zero());
+    }
     c.startValid = S::band(S::asF(S::gti(c.startHi, S::seti(-1))), S::asF(S::gti(c.endEff, c.startHi)));
     c.scale = rateScale;
     c.posMul = units ? S::div(S::set(1.0f), S::max(lenF, S::set(1.0f))) : S::set(1.0f);
@@ -311,6 +317,103 @@ struct SampleReadK {
     }
   }
 
+  template <class S, uint32_t SM, int kTap, bool kStereo>
+  static void runSimple(const KernelArgs& a, SampleReadState& st, const float* dl, const float* dr,
+                        const LaneConsts<S>& cc, uint32_t newGen, bool resetActive) noexcept {  // RT-safe
+    using F = typename S::F;
+    using I = typename S::I;
+    constexpr uint32_t W = S::kW;
+    const In<S, splBit(SM, 0)> rate(a.in[0]);
+    const In<S, splBit(SM, 1)> reset(a.in[1]);
+    float* outL = a.out[0];
+    float* playing = a.out[1];
+    float* outR = a.out[2];
+    float* posOut = a.out[3];
+    const I startHi = cc.startHi, startLo = cc.startLo, loopStart = cc.loopStart, loopEnd = cc.loopEnd;
+    const I loopOn = cc.loopOn, loopLen = cc.loopLen, lastIn = cc.lastIn, endEff = cc.endEff, length = cc.length;
+    const I lastIndex = cc.lastIndex, pp = cc.pp;
+    const F startValid = cc.startValid, scale = cc.scale, posMul = cc.posMul;
+    const I zero = S::seti(0), one = S::seti(1), minusOne = S::seti(-1);
+    const I signBit = S::seti(static_cast<int32_t>(0x80000000u));
+    I index = S::loadi(st.index);
+    I frac = S::loadu32(st.frac);
+    F active = S::load(st.active);
+    F back = S::load(st.back);
+    I gen = S::loadu32(st.gen);
+    const I newGenV = S::seti(static_cast<int32_t>(newGen));
+    I incHi = zero, incLo = zero;
+    if constexpr (splBit(SM, 0)) toFixed<S>(S::mul(rate.at(0), scale), incHi, incLo);
+    for (uint32_t f = 0; f < a.frames; ++f) {
+      if (resetActive) {
+        const auto r = reset.at(f);
+        const I ri = S::asI(r);
+        gen = S::selecti(ri, newGenV, gen);
+        index = S::selecti(ri, startHi, index);
+        frac = S::selecti(ri, startLo, frac);
+        active = S::select(r, startValid, active);
+        if constexpr (kTap == Taps::PingPong) back = S::select(r, S::zero(), back);
+      }
+      const I i = S::mini(S::maxi(index, zero), lastIndex);
+      const F fr = S::mul(S::toFloat(S::template srli<8>(frac)), S::set(k2pm24));
+      F yl, yr;
+      if constexpr (kTap == Taps::None) {
+        yl = sampleInterp<S, kCubic>(dl, i, fr);
+        yr = kStereo ? sampleInterp<S, kCubic>(dr, i, fr) : yl;
+      } else {
+        const I inLoop = S::andi(loopOn, S::andi(S::gti(i, S::subi(loopStart, one)), S::gti(loopEnd, i)));
+        const LoopTaps<S> lt{inLoop, kTap == Taps::PingPong ? pp : zero, loopStart, lastIn, loopLen, length};
+        yl = sampleInterpLoop<S, kCubic, kTap>(dl, i, fr, lt);
+        yr = kStereo ? sampleInterpLoop<S, kCubic, kTap>(dr, i, fr, lt) : yl;
+      }
+      S::store(outL + f * W, S::band(active, yl));
+      S::store(outR + f * W, S::band(active, yr));
+      S::store(playing + f * W, active);
+      S::store(posOut + f * W, S::mul(S::add(S::toFloat(index), fr), posMul));
+      if constexpr (!splBit(SM, 0)) toFixed<S>(S::mul(rate.at(f), scale), incHi, incLo);
+      I dHi = incHi, dLo = incLo;
+      if constexpr (kTap == Taps::PingPong) {
+        const I bi = S::asI(back);
+        dHi = S::selecti(bi, S::addi(S::subi(zero, incHi), S::xori(S::eqi(incLo, zero), minusOne)), incHi);
+        dLo = S::selecti(bi, S::subi(zero, incLo), incLo);
+      }
+      const I newFrac = S::addi(frac, dLo);
+      const I carry = S::gti(S::xori(frac, signBit), S::xori(newFrac, signBit));
+      I next = S::subi(S::addi(index, dHi), carry);
+      I nextFrac = newFrac;
+      if constexpr (kTap != Taps::None) {
+        const I crossFwd = S::andi(S::andi(loopOn, S::gti(loopEnd, index)), S::gti(next, lastIn));
+        const I crossBwd = S::andi(S::andi(loopOn, S::gti(index, S::subi(loopStart, one))), S::gti(loopStart, next));
+        const I cross = S::xori(crossFwd, crossBwd);
+        if (S::any(S::asF(cross))) {
+          const I e = S::selecti(crossFwd, S::subi(next, loopEnd), S::subi(S::subi(loopStart, one), next));
+          const I m = smallMod<S>(e, loopLen);
+          I wrapped = S::selecti(crossFwd, S::addi(loopStart, m), S::subi(lastIn, m));
+          I wrappedFrac = nextFrac;
+          if constexpr (kTap == Taps::PingPong) {
+            const I b2 = S::selecti(crossFwd, S::addi(lastIn, lastIn), S::addi(loopStart, loopStart));
+            I refl = S::addi(S::subi(b2, next), S::xori(S::eqi(nextFrac, zero), minusOne));
+            refl = S::mini(S::maxi(refl, loopStart), lastIn);
+            wrapped = S::selecti(pp, refl, wrapped);
+            wrappedFrac = S::selecti(pp, S::subi(zero, nextFrac), nextFrac);
+            back = S::select(S::asF(S::andi(cross, pp)), S::bxor(back, S::asF(minusOne)), back);
+          }
+          next = S::selecti(cross, wrapped, next);
+          nextFrac = S::selecti(cross, wrappedFrac, nextFrac);
+        }
+      }
+      const auto inRange = S::asF(S::andi(S::gti(next, minusOne), S::gti(endEff, next)));
+      const I adv = S::asI(active);
+      index = S::selecti(adv, next, index);
+      frac = S::selecti(adv, nextFrac, frac);
+      active = S::band(active, inRange);
+    }
+    S::storei(st.index, index);
+    S::storeu32(st.frac, frac);
+    S::store(st.active, active);
+    S::store(st.back, back);
+    S::storeu32(st.gen, gen);
+  }
+
   template <class S, uint32_t SM, int kTap>
   static void runFrames(const KernelArgs& a) noexcept {  // RT-safe
     using F = typename S::F;
@@ -336,7 +439,10 @@ struct SampleReadK {
     alignas(32) float rateA[8], scaleA[8];
     alignas(32) float activeA[8];
     S::store(activeA, S::load(st.active));
-    for (uint32_t l = 0; l < W; ++l) {
+    // Every lane on the newest entry (the common case): one compare instead of the per-lane walk.
+    const bool allNewest = !S::any(S::bnot(S::asF(S::eqi(S::loadu32(st.gen), S::seti(static_cast<int32_t>(newGen))))));
+    if (allNewest) groups[0].lanes = (1u << W) - 1u;
+    for (uint32_t l = 0; l < W && !allNewest; ++l) {
       const Entry* e = newest;
       uint32_t g = 0;
       if (st.gen[l] != newGen) {
@@ -358,7 +464,10 @@ struct SampleReadK {
       scaleA[l] = e->rateScale;
     }
     auto active = S::load(activeA);
-    const LaneConsts<S> cur = LaneConsts<S>::make(a, S::loadi(lenA), S::load(rateA), S::load(scaleA), units);
+    const LaneConsts<S> cur =
+        allNewest ? LaneConsts<S>::make(a, S::seti(newest->level[0].length), S::set(static_cast<float>(newest->fileRate)),
+                                        S::set(newest->rateScale), units)
+                  : LaneConsts<S>::make(a, S::loadi(lenA), S::load(rateA), S::load(scaleA), units);
     const LaneConsts<S> fresh =
         nGroups == 1 ? cur
                      : LaneConsts<S>::make(a, S::seti(newest->level[0].length), S::set(static_cast<float>(newest->fileRate)),
@@ -370,6 +479,7 @@ struct SampleReadK {
       alignas(32) float r0[8];
       S::store(r0, S::abs(S::mul(rate.at(0), cur.scale)));
       for (uint32_t g = 0; g < nGroups; ++g) {
+        if (groups[g].e->levels == 0) continue;  // (level 0)
         float slowest = 1e30f;
         for (uint32_t l = 0; l < W; ++l)
           if (((groups[g].lanes >> l) & 1u) != 0 && maskIsTrue(activeA[l])) slowest = std::fmin(slowest, r0[l]);
@@ -385,6 +495,15 @@ struct SampleReadK {
     const bool resetActive = splBit(SM, 1) ? S::any(reset.at(0)) : blockAny(a.in[1], a.frames * W);
     bool stereo = false;
     for (uint32_t g = 0; g < nGroups; ++g) stereo = stereo || groups[g].e->channels > 1;
+    // The common case — every lane on one entry, read at the sample itself, no loop fade, no fades in / out — runs a
+    // loop with every constant in registers (the general loop below costs ≈ 2× it: QUESTIONS Q?-SM.2-a, bench).
+    if (nGroups == 1 && groups[0].level == 0 && !gainOn && !fadeOn) {
+      S::store(st.active, active);
+      const SampleLevelView& lv = newest->level[0];
+      if (stereo) runSimple<S, SM, kTap, true>(a, st, lv.ch[0], lv.ch[1], cur, newGen, resetActive);
+      else runSimple<S, SM, kTap, false>(a, st, lv.ch[0], lv.ch[0], cur, newGen, resetActive);
+      return;
+    }
 
     I index = S::loadi(st.index);
     I frac = S::loadu32(st.frac);

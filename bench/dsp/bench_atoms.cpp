@@ -52,7 +52,7 @@ struct Fixture {
   float* outPtrs[kMaxOut]{};
   pq::dsp::Wavetable wt;
   pq::dsp::ShaperTable sh;
-  // SM.2: a mono and a stereo slot of the same 1 s sample (the stereo rows: gSampleStereo).
+  // SM.2: a mono and a stereo slot of the same 1 s sample (the stereo rows: gSampleStereo; with mips, as a pinned one).
   pq::EpochReclaimer reclaimer{1};
   pq::dsp::SampleSlot sampleMono, sampleStereo;
   explicit Fixture(uint32_t pad) : arena((kMaxIn + kMaxOut) * (kFrames * 8 + pad)) {
@@ -70,7 +70,7 @@ struct Fixture {
     std::vector<float> smpR(smp.size());
     for (size_t i = 0; i < smp.size(); ++i) smpR[i] = static_cast<float>(std::cos(0.013 * i));
     (void)sampleMono.publish(pq::dsp::SampleData::source(pq::dsp::SampleData::build(smp).value(), 48000.0), 48000.0, reclaimer);
-    (void)sampleStereo.publish(pq::dsp::SampleData::source(pq::dsp::SampleData::build(smp, smpR).value(), 48000.0), 48000.0,
+    (void)sampleStereo.publish(pq::dsp::SampleData::source(pq::dsp::SampleData::build(smp, smpR, 3).value(), 48000.0), 48000.0,
                                reclaimer);
   }
 };
@@ -179,7 +179,7 @@ TableRow benchAtom(pq::bench::Context& ctx, Fixture& fx, Atom a, uint32_t splMas
       for (uint32_t l = 0; l < 8; ++l) {
         st.active[l] = pq::dsp::boolMask(true);
         st.gen[l] = static_cast<uint32_t>(slot->generation());
-        st.index[l] = 1000 + 97 * static_cast<int32_t>(l);
+        st.index[l] = 0;  // (as the pre-SM.2 read started: every lane at frame 0, playing)
       }
     }
     const pq::dsp::KernelFn fn = pq::dsp::findKernel(a, lanes, mask);

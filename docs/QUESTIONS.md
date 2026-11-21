@@ -2345,3 +2345,6 @@ Context: SM.2 (docs/plans/SM.md) — the slot, `sample_read` on slots, the `samp
 9. Mip levels > 0 do not wrap the loop seam's taps (rates above 2 in a short loop: a seam tap from past the loop end).
 10. **Scrub** (`position` wired) reads the newest entry at once (no trigger to wait for).
 11. `sample_read` starts STOPPED (was: playing from 0), so an engine with nothing wired is silent (plan "Inputs").
+12. **Cost** (bench/RESULTS.md SM.2, ship): stereo Re-Pitch with a param-rate rate is 1.06 – 1.17 × two pre-SM.2 mono
+    reads at 8 voices (audio-rate rate 0.96 ×, 1 voice 0.65 – 0.70 ×): at the ≤ 1.1 target, not clearly under it. The
+    remainder is per call (entry lookup, lane constants, mip choice: ≈ 3 ns/frame at 64 frames). Status: open.
