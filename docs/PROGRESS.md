@@ -1219,3 +1219,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker pq_tests_views default tier (11 device goldens re-recorded, diffs checked), 2 real-dispatch tests (Wavetable 1:1 at default height; splitter drag / wheel / chain change / double-click); orchestrator -Affected 22/22.
 - Perf / CPU-efficiency check: UI thread only; one pass over top-level frames per layout; observers re-run once only when one changed the layout.
 - Notes/blockers: Q?-BR.I-b (free-rack cable end lags its port until next layout, pre-existing); not checked live.
+
+## 2026-11-20 · BR.J · task/BR.J-cable-fit (merged bc09db15)
+- Did: free-rack cable ends follow orbiting-port slides, pans and zooms (CircuitCanvas::onPinsMoved → DeviceChainView::onRackPinsMoved → CableLayer::rackPinsMoved, skipped inside layout passes via UiTree::inLayout()); other views already followed. kFitMinScale 0.5 → 0.1 (user, Q?-BR.H-a).
+- Verified: new real-dispatch test (cable end at the port on every slide frame; failed 35–36 px without the fix); pq_tests_views after rebase 961/962 → device-path-broken re-recorded (ends now on the port dots), re-run passes.
+- Perf / CPU-efficiency check: event-driven, no per-frame poll; refreshes only while a cable ends in the open free rack.
+- Notes/blockers: none.
