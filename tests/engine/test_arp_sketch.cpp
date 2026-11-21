@@ -3,6 +3,7 @@
 // their pitch curves (the voice's ramp formula), Harmonic Walk and Distance / Steps transpositions, determinism.
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cmath>
 #include <vector>
 
@@ -108,4 +109,21 @@ TEST_CASE("arp sketch (AP.10): Into and Out glides as the note's curve; Pulse cy
   CHECK(ts.truncated);
   CHECK(ts.cycle == 64.0);
   CHECK(ts.notes.size() == 64);
+}
+
+TEST_CASE("arp sketch (AP.10): cost of a 64-step cycle with glides (what a knob drag re-runs per change)") {
+  e::ArpParams p;
+  p.style = e::ArpStyle::UpDown;
+  p.steps = 8;
+  p.distance = 3;
+  p.into = {e::ArpGlide::Step, 0.0f, false, 20.0f, 0.25f, e::RampShape::Exponential, 0.5f};
+  p.out = {e::ArpGlide::Step, 0.0f, true, 50.0f, 0.3f, e::RampShape::SCurve, 0.0f};
+  const std::vector<e::ArpSketchHeld> held = {note(200.0f), note(250.0f), note(300.0f), note(400.0f), note(500.0f)};
+  const auto t0 = std::chrono::steady_clock::now();
+  constexpr int kRuns = 20;
+  size_t n = 0;
+  for (int i = 0; i < kRuns; ++i) n += e::sketchArp(p, {}, {}, held).notes.size();
+  const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count() / kRuns;
+  CHECK(n == kRuns * 64u);
+  MESSAGE("sketchArp, 64 steps with glides: " << us << " us per run");
 }

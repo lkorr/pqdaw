@@ -86,13 +86,14 @@ std::string noteDevicePatchText(const NoteDeviceType& t);
 //              free: ms —, Gate, Groove, Offset, Repeats, Retrigger + its rate, Velocity: source, fixed, decay, target,
 //              retrigger), Pitch (Unit, Distance, Steps, Shift / Rotate; Ratio p / q only in Ratio, Base in
 //              Harmonics or Harmonic Walk (a condition of two sources), Range / Under / walk order only with style
-//              Harmonic Walk), the live pattern view.
-//   Glide      fold: Into and Out (source / target, offset, the drawn shape), Time (ms or a note fraction), Cents, Shape,
-//              Bend.
+//              Harmonic Walk), the pattern view (AP.10: the whole resolved cycle, pq/document/note_pattern.h).
+//   Glide      fold, OPEN by default (AP.10): Into and Out each with its source / target, Time Sync, Offset (with
+//              Offset), Time (ms or a note fraction), Bend, Shape; "Offsets in cents"; the bend view (one step large,
+//              its handles drag the times / offsets / bends).
 //   Pulse      fold: on; with it on its source, ref, cycle (+ bars), Layers + levels, the proportion (with source
 //              Proportion).
 //   Step Lanes fold: per lane its switch and a step-lane editor (its 32 steps, its length).
-// Visibility conditions (Visibility) hide what does not apply; folds are view state (folded by default).
+// Visibility conditions (Visibility) hide what does not apply; folds are view state (folded by default but Glide).
 Panel noteDevicePanel(const Device& d);
 
 // The NOTE RUN of a main path: how many of its first blocks are note devices (the notes link's stages, in order).

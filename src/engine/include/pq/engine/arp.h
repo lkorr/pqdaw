@@ -165,7 +165,8 @@
 // positions (Up, UpDown …: one per position of a period, Harmonic Walk: the walk's), the elements by Hz for Random /
 // Random Other / Random Once / Walk Random (the position: the element drawn), the held notes by Hz for Chord Trigger
 // (all lit) and Pulse (the position: the pulsing note's rank) — the source notes' Hz, before Distance / Transpose /
-// Layers. Nothing held: idle. Cost: a few relaxed stores per step, one O(entries) write per held-set change.
+// Layers; AP.10: with it the held notes' identities (by Hz, what the panel sketches the cycle over: arp_sketch.h).
+// Nothing held: idle. Cost: a few relaxed stores per step, one O(entries) write per held-set change.
 //
 // ---- Capacities -----------------------------------------------------------------------------------------------------
 // kArpMaxHeld source notes (a note-on beyond: dropped, counted); kArpMaxSounding generated notes (beyond: the

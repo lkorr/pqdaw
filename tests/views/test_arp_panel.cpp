@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -130,6 +131,27 @@ void setFolds(ViewContext& ctx, doc::DeviceId arp, const doc::Panel& p, const st
           e.id, std::find(open.begin(), open.end(), std::string(e.text("title", ""))) != open.end());
 }
 
+// AP.10: what the note stage writes while it holds `held` (their identities, by Hz) and has just played pattern
+// position `pos` of copy `cp`.
+std::shared_ptr<NoteStageStatus> holding(const std::vector<NoteStageStatus::HeldNote>& held, int32_t pos, int32_t cp) {
+  auto st = std::make_shared<NoteStageStatus>();
+  const auto n = static_cast<uint32_t>(held.size());
+  st->writePattern(n, n, false, [&](uint32_t i) { return held[i].hz; }, n, [&](uint32_t i) { return held[i]; });
+  const int32_t lanes[6] = {0, 0, 0, 0, 0, 0};
+  st->writeStep(lanes, 6, pos, cp);
+  return st;
+}
+NoteStageStatus::HeldNote jiNote(float hz, float harmonic) {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  return {hz, 0.8f, 1.0f, harmonic, nan, nan, 0.0f, nan};
+}
+NoteStageStatus::HeldNote degreeNote(float hz, float degree) { return {hz, 0.8f, 1.0f, 0.0f, degree, 0.0f, 0.0f, degree}; }
+const panel::Element* elementOf(const panel::GroupPanelFace& f, std::string_view kind) {
+  for (size_t i = 0; i < f.elementCount(); ++i)
+    if (f.element(i).desc().kind == kind) return &f.element(i);
+  return nullptr;
+}
+
 // The arpeggiator's panel standalone (a PanelHost over the document's target), the driver its shown size at 1x.
 struct Standalone {
   FakeTransport port;
@@ -222,6 +244,11 @@ struct Ui {
     REQUIRE_MESSAGE(inside, "element off the shown panel");
     return p;
   }
+  // AP.10: element-local point `l` of element `i`, device px.
+  Vec2 atLocal(int32_t i, Vec2 l) {
+    const Rect r = face().element(static_cast<size_t>(i)).rect();
+    return host().transform().map({r.x0 + l.x, r.y0 + l.y});
+  }
   bool foldOpen(const char* title) {
     const int32_t f = index("fold", title);
     return face().element(static_cast<size_t>(f)).selection(face().target()).value_or(0.0) >= 0.5;
@@ -266,8 +293,8 @@ TEST_CASE("render: arp-panel-walk (AP.6: Harmonic Walk in Harmonics, the Glide s
   setValue(s.ctx, s.pr.arp, "intoSource", 2.0);  // Offset
   setValue(s.ctx, s.pr.arp, "intoOffset", -2.0);
   setValue(s.ctx, s.pr.arp, "outTarget", 1.0);   // Next
-  setValue(s.ctx, s.pr.arp, "glideShape", 3.0);  // Overshoot
-  setValue(s.ctx, s.pr.arp, "glideBend", 0.6);
+  setValue(s.ctx, s.pr.arp, "intoShape", 3.0);  // Overshoot
+  setValue(s.ctx, s.pr.arp, "intoBend", 0.6);
   setValue(s.ctx, s.pr.arp, "velSource", 1.0);   // Fixed
   s.build({"Glide"});
   checkImage("arp-panel-walk", s.render());
@@ -302,7 +329,9 @@ TEST_CASE("render: arp-panel-lanes (AP.6: lanes on, the playing step lit)") {
   // (UpDown: 6 positions) at position 2.
   s.status = std::make_shared<NoteStageStatus>();
   const float hz[6] = {261.63f, 327.03f, 392.0f, 523.25f, 392.0f, 327.03f};
-  s.status->writePattern(6, 4, false, [&](uint32_t i) { return hz[i]; });
+  const NoteStageStatus::HeldNote held[4] = {degreeNote(261.63f, 0.0f), degreeNote(327.03f, 4.0f), degreeNote(392.0f, 7.0f),
+                                             degreeNote(523.25f, 12.0f)};
+  s.status->writePattern(6, 4, false, [&](uint32_t i) { return hz[i]; }, 4, [&](uint32_t i) { return held[i]; });
   const int32_t lanes[6] = {5, 5, 5, 5, 5, 5};
   s.status->writeStep(lanes, 6, 2, 0);
   s.build({"Step Lanes"});
@@ -316,6 +345,98 @@ TEST_CASE("render: arp-panel-lanes (AP.6: lanes on, the playing step lit)") {
       CHECK(panel::test::patternCount(s.face().element(i)) == 6);
     }
   checkImage("arp-panel-lanes", img);
+}
+
+// ---- AP.10: the resolved pattern, the bends, the bend view --------------------------------------------------------------
+
+TEST_CASE("render: arp-panel-walk-chord (AP.10: Harmonic Walk over a held JI chord, the generated harmonics dotted)") {
+  Standalone s;
+  setValue(s.ctx, s.pr.arp, "style", 18.0);  // Harmonic Walk
+  setValue(s.ctx, s.pr.arp, "unit", 2.0);    // Harmonics
+  setValue(s.ctx, s.pr.arp, "walkRange", 4.0);
+  setValue(s.ctx, s.pr.arp, "walkOrder", 2.0);  // UpDown
+  // h4 h5 h6 of 50 Hz held: the walks 4…8, 5…9, 6…10 merge to 4 … 10 (7 elements); UpDown: 12 steps.
+  s.status = holding({jiNote(200.0f, 4.0f), jiNote(250.0f, 5.0f), jiNote(300.0f, 6.0f)}, 3, 0);
+  s.build({});
+  const Image img = s.render();
+  const panel::Element* pv = elementOf(s.face(), "arppattern");
+  REQUIRE(pv != nullptr);
+  CHECK(panel::test::resolvedCount(*pv) == 12);
+  CHECK(panel::test::resolvedGenerated(*pv) == 12 - 5);  // the held h4 (once), h5 and h6 (up and down) are sources
+  CHECK(panel::test::resolvedLit(*pv) == 3);              // position 3 (h7) of copy 0
+  checkImage("arp-panel-walk-chord", img);
+}
+
+TEST_CASE("render: arp-panel-degrees-bends (AP.10: Distance / Steps in Degrees with Into + Out bends on)") {
+  Standalone s;
+  setValue(s.ctx, s.pr.arp, "distance", 7.0);
+  setValue(s.ctx, s.pr.arp, "steps", 3.0);
+  setValue(s.ctx, s.pr.arp, "gate", 0.85);
+  setValue(s.ctx, s.pr.arp, "intoSource", 2.0);  // Offset
+  setValue(s.ctx, s.pr.arp, "intoOffset", -2.0);
+  setValue(s.ctx, s.pr.arp, "intoMs", 30.0);
+  setValue(s.ctx, s.pr.arp, "intoShape", 1.0);  // Exponential
+  setValue(s.ctx, s.pr.arp, "intoBend", 0.7);
+  setValue(s.ctx, s.pr.arp, "outTarget", 1.0);  // Next
+  setValue(s.ctx, s.pr.arp, "outSync", 1.0);
+  setValue(s.ctx, s.pr.arp, "outFrac", 0.3);
+  setValue(s.ctx, s.pr.arp, "outShape", 2.0);  // S-curve
+  s.status = holding({degreeNote(261.63f, 0.0f), degreeNote(329.63f, 4.0f)}, 1, 1);
+  s.build({"Glide"});
+  const Image img = s.render();
+  const panel::Element* pv = elementOf(s.face(), "arppattern");
+  REQUIRE(pv != nullptr);
+  CHECK(panel::test::resolvedCount(*pv) == 6);      // 2 notes × Steps 3
+  CHECK(panel::test::resolvedGenerated(*pv) == 4);  // copies 1 and 2: +7, +14 degrees
+  CHECK(panel::test::resolvedLit(*pv) == 3);        // position 1 of copy 1
+  checkImage("arp-panel-degrees-bends", img);
+}
+
+TEST_CASE("render: arp-panel-bend-view (AP.10: asymmetric Into / Out — times, shapes, offsets in cents; nothing held)") {
+  Standalone s;
+  setValue(s.ctx, s.pr.arp, "gate", 1.0);
+  setValue(s.ctx, s.pr.arp, "glideCents", 1.0);
+  setValue(s.ctx, s.pr.arp, "intoSource", 2.0);
+  setValue(s.ctx, s.pr.arp, "intoOffset", -300.0);
+  setValue(s.ctx, s.pr.arp, "intoMs", 25.0);
+  setValue(s.ctx, s.pr.arp, "intoShape", 1.0);  // Exponential
+  setValue(s.ctx, s.pr.arp, "intoBend", 0.8);
+  setValue(s.ctx, s.pr.arp, "outTarget", 2.0);
+  setValue(s.ctx, s.pr.arp, "outOffset", 150.0);
+  setValue(s.ctx, s.pr.arp, "outSync", 1.0);
+  setValue(s.ctx, s.pr.arp, "outFrac", 0.5);
+  setValue(s.ctx, s.pr.arp, "outShape", 3.0);  // Overshoot
+  setValue(s.ctx, s.pr.arp, "outBend", 0.6);
+  s.build({"Glide"});
+  const Image img = s.render();
+  const panel::Element* pv = elementOf(s.face(), "arppattern");
+  REQUIRE(pv != nullptr);
+  CHECK(panel::test::resolvedCount(*pv) == 1);  // the nominal note
+  checkImage("arp-panel-bend-view", img);
+}
+
+TEST_CASE("arp panel (AP.10): the pattern recomputes only when its inputs change, not per frame") {
+  Standalone s;
+  s.status = holding({degreeNote(261.63f, 0.0f), degreeNote(329.63f, 4.0f)}, 0, 0);
+  s.build({});
+  (void)s.render();
+  const panel::Element* pv = elementOf(s.face(), "arppattern");
+  REQUIRE(pv != nullptr);
+  const uint64_t c0 = panel::test::resolvedComputes(*pv);
+  CHECK(c0 >= 1);
+  for (int i = 0; i < 5; ++i) {
+    s.host->wake();
+    s.d->advance(0.05);
+    (void)s.d->render();
+  }
+  CHECK(panel::test::resolvedComputes(*pv) == c0);
+  CHECK(panel::test::resolvedCount(*pv) == 2);
+  setValue(s.ctx, s.pr.arp, "steps", 2.0);
+  s.host->wake();
+  s.d->advance(0.05);
+  (void)s.d->render();
+  CHECK(panel::test::resolvedComputes(*pv) == c0 + 1);
+  CHECK(panel::test::resolvedCount(*pv) == 4);
 }
 
 TEST_CASE("arp panel: a condition of several sources with all-of shows only while every term holds") {
@@ -403,6 +524,7 @@ TEST_CASE("arp panel: a drag across steps paints them in one undo step; double-c
 
 TEST_CASE("arp panel: the length handle drags a lane's length (one undo step); Skip / Tie cells cycle") {
   Ui u;
+  u.clickFold("Glide");  // (AP.10: open by default; folded, the last lane is in the window)
   u.clickFold("Step Lanes");
   const int32_t lane = u.index("steplane", "4");  // Chance
   const float w = u.face().element(static_cast<size_t>(lane)).rect().width();
@@ -494,18 +616,20 @@ TEST_CASE("arp panel (AP.8b, review L11): a layer's level shows only within Laye
 TEST_CASE("arp panel: a fold opens and closes (view state, no undo step), the frame follows its height") {
   Ui u;
   const size_t h0 = u.history();
-  const float closed = u.host().face().worldSize().y;
-  u.clickFold("Glide");
-  CHECK(u.foldOpen("Glide"));
+  REQUIRE(u.foldOpen("Glide"));  // AP.10: the Glide section (and its bend view) is open by default
   const float open = u.host().face().worldSize().y;
-  CHECK(open > closed + 50.0f);
-  CHECK(u.view().panelOf(u.pr.arp)->logicalHeight() >= open);
-  const int32_t knob = u.index("knob", "glideBend");
+  const int32_t knob = u.index("knob", "intoBend");
   CHECK(u.face().shown(static_cast<size_t>(knob)));
   u.clickFold("Glide");
   CHECK_FALSE(u.foldOpen("Glide"));
-  CHECK(u.host().face().worldSize().y == doctest::Approx(closed));
+  const float closed = u.host().face().worldSize().y;
+  CHECK(open > closed + 50.0f);
   CHECK_FALSE(u.face().shown(static_cast<size_t>(knob)));
+  u.clickFold("Glide");
+  CHECK(u.foldOpen("Glide"));
+  CHECK(u.host().face().worldSize().y == doctest::Approx(open));
+  CHECK(u.view().panelOf(u.pr.arp)->logicalHeight() >= open);
+  CHECK(u.face().shown(static_cast<size_t>(knob)));
   CHECK(u.history() == h0);
 }
 
@@ -670,32 +794,34 @@ TEST_CASE("arp panel (AP.9, project patch, real dispatch): a unit chip click set
 
 TEST_CASE("arp panel (AP.9, project patch, real dispatch): a fold click grows the block in place (view state, no undo step)") {
   PatchUi u;
-  const project_patch::Node n0 = u.node();
+  const project_patch::Node n0 = u.node();  // (AP.10: Glide open by default)
   const size_t h0 = u.history();
   const int32_t fold = u.index("fold", "Glide");
   const uint32_t foldId = u.face().element(static_cast<size_t>(fold)).desc().id;
-  u.d.click(u.at(fold, 0.1f, 0.5f));
+  u.d.click(u.at(fold, 0.1f, 0.5f));  // closed
+  u.d.step();
+  u.d.tree().layoutNow();
+  CHECK(u.ctx.store().view().panelWindows[u.pr.arp.value].foldOpen(foldId) == std::optional<bool>(false));
+  const project_patch::Node n1 = u.node();
+  CHECK(n1.h < n0.h - 50.0f);
+  u.d.click(u.at(u.index("fold", "Glide"), 0.1f, 0.5f));  // open again: it grows in place
   u.d.step();
   u.d.tree().layoutNow();
   CHECK(u.ctx.store().view().panelWindows[u.pr.arp.value].foldOpen(foldId) == std::optional<bool>(true));
-  CHECK(u.node().h > n0.h + 50.0f);
-  CHECK(u.node().x == doctest::Approx(n0.x));
-  CHECK(u.node().y == doctest::Approx(n0.y));
-  CHECK(u.node().w == doctest::Approx(n0.w));
-  const int32_t bend = u.index("knob", "glideBend");
+  CHECK(u.node().h > n1.h + 50.0f);
+  CHECK(u.node().h == doctest::Approx(n0.h));
+  CHECK(u.node().x == doctest::Approx(n1.x));
+  CHECK(u.node().y == doctest::Approx(n1.y));
+  CHECK(u.node().w == doctest::Approx(n1.w));
+  const int32_t bend = u.index("knob", "intoBend");
   CHECK(u.face().shown(static_cast<size_t>(bend)));
   CHECK(u.history() == h0);
   // A control in the opened section takes a drag where it is shown (one step).
-  const double b0 = valueOf(u.ctx, u.pr.arp, "glideBend");
+  const double b0 = valueOf(u.ctx, u.pr.arp, "intoBend");
   u.d.drag(u.at(bend, 0.5f, 0.5f), u.at(bend, 0.5f, -1.0f), 6);
   u.d.step();
-  CHECK(valueOf(u.ctx, u.pr.arp, "glideBend") != doctest::Approx(b0));
+  CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") != doctest::Approx(b0));
   CHECK(u.history() == h0 + 1);
-  // Closed again: back to its size.
-  u.d.click(u.at(u.index("fold", "Glide"), 0.1f, 0.5f));
-  u.d.step();
-  u.d.tree().layoutNow();
-  CHECK(u.node().h == doctest::Approx(n0.h));
 }
 
 TEST_CASE("arp panel (AP.9, project patch): a cable into an arp param ends on its control (no pin)") {
@@ -710,4 +836,53 @@ TEST_CASE("arp panel (AP.9, project patch): a cable into an arp param ends on it
   CHECK(q.ax <= r.x1 * n.scale);
   CHECK(q.ay >= r.y0 * n.scale);
   CHECK(q.ay <= r.y1 * n.scale);
+}
+
+TEST_CASE("arp panel (AP.10): the bend view's handles drag Into time / offset and (Alt) bend, one undo step each") {
+  Ui u;
+  setValue(u.ctx, u.pr.arp, "intoSource", 2.0);  // Offset
+  setValue(u.ctx, u.pr.arp, "intoOffset", -2.0);
+  setValue(u.ctx, u.pr.arp, "intoMs", 20.0);
+  setValue(u.ctx, u.pr.arp, "outTarget", 1.0);  // Next
+  u.d.step();
+  REQUIRE(u.foldOpen("Glide"));
+  int32_t bv = -1;
+  for (size_t i = 0; i < u.face().elementCount(); ++i)
+    if (u.face().element(i).desc().kind == "arpbend") bv = static_cast<int32_t>(i);
+  REQUIRE(bv >= 0);
+  panel::Element& el = u.face().element(static_cast<size_t>(bv));
+  const std::optional<Vec2> time = panel::test::bendHandle(el, u.face().target(), 0);
+  REQUIRE(time.has_value());
+  CHECK_FALSE(panel::test::bendHandle(el, u.face().target(), 3).has_value());  // Out → Next: no offset handle
+  // The Into time handle dragged 40 units right (through the window): a longer Into in ms, one undo step, a param
+  // write only.
+  size_t h0 = u.history();
+  u.d.drag(u.atLocal(bv, *time), u.atLocal(bv, {time->x + 40.0f, time->y}), 6);
+  u.d.step();
+  const double ms = valueOf(u.ctx, u.pr.arp, "intoMs");
+  CHECK(ms > 30.0);
+  REQUIRE(u.history() == h0 + 1);
+  CHECK_FALSE(u.ctx.store().history().entries()[h0].changes.structural());
+  // The Into offset handle dragged up: a smaller downward offset (whole degrees).
+  const std::optional<Vec2> off = panel::test::bendHandle(el, u.face().target(), 1);
+  REQUIRE(off.has_value());
+  h0 = u.history();
+  u.d.drag(u.atLocal(bv, *off), u.atLocal(bv, {off->x, off->y - 14.0f}), 4);
+  u.d.step();
+  const double o = valueOf(u.ctx, u.pr.arp, "intoOffset");
+  CHECK(o > -2.0);
+  CHECK(o == std::round(o));
+  CHECK(u.history() == h0 + 1);
+  // Alt + drag up on the time handle: the Into bend, nothing else.
+  const std::optional<Vec2> t2 = panel::test::bendHandle(el, u.face().target(), 0);
+  REQUIRE(t2.has_value());
+  h0 = u.history();
+  const double bend0 = valueOf(u.ctx, u.pr.arp, "intoBend");
+  u.d.drag(u.atLocal(bv, *t2), u.atLocal(bv, {t2->x, t2->y - 10.0f}), 4, ui::mod::kAlt);
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") > bend0 + 0.1);
+  CHECK(valueOf(u.ctx, u.pr.arp, "intoMs") == doctest::Approx(ms));
+  CHECK(u.history() == h0 + 1);
+  REQUIRE(u.ctx.undo());
+  CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") == doctest::Approx(bend0));
 }

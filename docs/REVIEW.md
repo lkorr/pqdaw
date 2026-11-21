@@ -2250,3 +2250,21 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - General rule: any device whose type supplies its own panel is drawn this way (today only note devices with one).
 - Like a closed group's panel it has no title bar in the circuit; is the panel recognisable enough without one?
 - Golden: new project-patch-arp (Glide open). Not checked in the live app (tests and goldens only).
+
+## 2026-11-21 · AP.10 · the Arpeggiator's resolved pattern and bend view (task/AP.10-pattern-bends) 👁
+- The Arpeggiator panel is wider (960) and its Pattern view is twice as big: it now shows the WHOLE cycle the arp plays
+  from what you hold (or the last notes you held; nothing yet: one reference note, captioned). Held notes are solid;
+  what Distance / Steps, the Pitch unit, Harmonic Walk and Layers make of them is translucent with a dotted outline and a
+  small label (+7 degrees, h11, 3/2). Each note is drawn as it bends: its Into glide, the hold, its Out glide. The
+  playing note glows. Does it read at a glance, and are the labels legible at 1x?
+- Glide is open by default. Into and Out now each have their own Time (ms, or a note fraction with Time Sync), Shape and
+  Bend; "Offsets in cents" switches both offsets to cents. Sound defaults are unchanged (both Off).
+- The new Bend view (middle of the Glide section) draws one step large: where it comes from (previous step / offset),
+  the Into curve, the hold, the Out curve to the target, with the times written under it and the gate's end marked.
+  Drag the dot on the note sideways (that side's time), the end dots up / down (the offsets, whole units or cents),
+  Alt+drag up / down (the bend). One undo step per drag. Previous / next steps are drawn a nominal whole tone away
+  (their real pitches are in the Pattern view).
+- Off step lanes are dimmer (review L13); the Glide toggles are labelled (Time Sync, Offsets in cents; review L12).
+- Known: not checked in the live app (tests and goldens only).
+- Goldens: new arp-panel-walk-chord, arp-panel-degrees-bends, arp-panel-bend-view; arp-panel-default / -ratio / -walk /
+  -pulse / -lanes moved (the wider panel, the resolved pattern, the Glide section).

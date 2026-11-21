@@ -184,10 +184,10 @@ struct PanelKit {
     e.setField(styleNumber("opacity", 0.35));
     e.setField(styleNumber("radius", 5.0));
   }
-  PanelElement& fold(float y, const char* title) {
+  PanelElement& fold(float y, const char* title, bool open = false) {
     PanelElement& e = add(kFoldKind.data(), 6, y, p.width - 12, 16);
     e.setField(styleText("title", title));
-    e.setField(styleNumber("open", 0.0));
+    e.setField(styleNumber("open", open ? 1.0 : 0.0));
     return e;
   }
   // The elements added since `from` shown only while element `src` has one of `values` (unless they have a condition).
@@ -200,14 +200,14 @@ struct PanelKit {
 Panel arpeggiatorPanel(DeviceId dev) {
   PanelKit k;
   k.dev = dev;
-  k.p.width = 760.0f;
+  k.p.width = 960.0f;  // AP.10: the pattern view and the bend view take the room
   k.p.fit = true;
   using A = ArpParamId;
   // ---- the top band: Arp | Pitch | Pattern ----
   constexpr float kTop = 182.0f;
   k.backdrop(4, 4, 362, kTop - 8);
   k.backdrop(370, 4, 202, kTop - 8);
-  k.backdrop(576, 4, 180, kTop - 8);
+  k.backdrop(576, 4, 380, kTop - 8);
   // Arp: Style, Hold, Sync, the rate (synced: num / den, tuplet n : m and its shortcuts; free: ms), Seed.
   const uint32_t style = k.ctl("menu", 10, 8, 104, 28, A::Style, "Style").id;
   k.button(118, 20, 36, 16, A::Hold, "Hold");
@@ -269,34 +269,46 @@ Panel arpeggiatorPanel(DeviceId dev) {
   k.button(424, 142, 46, 16, A::WalkUnder, "Under");
   k.ctl("menu", 474, 130, 92, 28, A::WalkOrder, "Order");
   k.when(at, style, {static_cast<double>(engine::ArpStyle::HarmonicWalk)});
-  // The live pattern: the held notes in the order the pattern plays them, the current step lit.
+  // AP.10: the resolved pattern — the whole cycle over the held notes (generated ones dotted, their bends drawn), the
+  // playing step lit.
   k.caption(582, 8, 120, "Pattern");
-  k.add("arppattern", 582, 22, 168, 148, {dataBinding(dev)});
-  // ---- Glide (fold) ----
+  k.add("arppattern", 582, 22, 368, 148, {dataBinding(dev)});
+  // ---- Glide (fold; AP.10: open by default, Into and Out each with their own time / shape / bend, the bend view) ----
   float y = kTop;
-  k.fold(y, "Glide");
+  k.fold(y, "Glide", true);
   y += 20.0f;
-  auto side = [&](float x, A src, A off, const char* title, const char* items, const char* edge) {
-    const uint32_t s = k.chips(x, y, 132, src, title, items).id;
-    PanelElement& c = k.add("rampshape", x + 138, y, 56, 28, {k.bind(A::GlideShape), k.bind(A::GlideBend), k.bind(src)});
-    c.setField(styleText("side", edge));
-    const size_t from = k.p.elements.size();
-    k.ctl("knob", x, y + 32, 48, 58, off, "Offset");
+  // One side: its source / target chips, Time Sync, then Offset (with source Offset), Time (ms or a note fraction),
+  // Bend, Shape.
+  auto side = [&](float x, A mode, A off, A sync, A ms, A frac, A shape, A bend, const char* title, const char* items) {
+    const uint32_t s = k.chips(x, y, 170, mode, title, items).id;
+    const uint32_t sy = k.button(x + 178, y + 12, 62, 16, sync, "Time Sync").id;
+    size_t from = k.p.elements.size();
+    k.ctl("knob", x, y + 34, 48, 58, off, "Offset");
     k.when(from, s, {2.0});
+    from = k.p.elements.size();
+    k.ctl("knob", x + 52, y + 34, 48, 58, ms, "Time");
+    k.when(from, sy, {0.0});
+    from = k.p.elements.size();
+    k.ctl("knob", x + 52, y + 34, 48, 58, frac, "Time");
+    k.when(from, sy, {1.0});
+    k.ctl("knob", x + 104, y + 34, 48, 58, bend, "Bend");
+    k.ctl("menu", x + 156, y + 34, 96, 28, shape, "Shape");
   };
-  side(10, A::IntoSource, A::IntoOffset, "Into", "Off|Previous|Offset", "into");
-  side(214, A::OutTarget, A::OutOffset, "Out", "Off|Next|Offset", "out");
-  const uint32_t gsync = k.button(424, y + 12, 44, 16, A::GlideSynced, "Sync").id;
-  k.button(424, y + 34, 44, 16, A::GlideCents, "Cents");
-  at = k.p.elements.size();
-  k.ctl("knob", 472, y, 48, 58, A::GlideMs, "Time");
-  k.when(at, gsync, {0.0});
-  at = k.p.elements.size();
-  k.ctl("knob", 472, y, 48, 58, A::GlideFraction, "Time");
-  k.when(at, gsync, {1.0});
-  k.ctl("menu", 526, y, 100, 28, A::GlideShape, "Shape");
-  k.ctl("knob", 632, y, 48, 58, A::GlideBend, "Bend");
-  y += 96.0f;
+  side(10, A::IntoSource, A::IntoOffset, A::IntoSynced, A::IntoMs, A::IntoFraction, A::IntoShape, A::IntoBend, "Into",
+       "Off|Previous|Offset");
+  side(694, A::OutTarget, A::OutOffset, A::OutSynced, A::OutMs, A::OutFraction, A::OutShape, A::OutBend, "Out",
+       "Off|Next|Offset");
+  k.button(10, y + 100, 110, 16, A::GlideCents, "Offsets in cents");
+  {  // The bend view: one step large, its handles drag the times / offsets / bends above (one undo step per drag).
+    std::vector<Binding> b = {dataBinding(dev)};
+    for (const A id : {A::IntoSource, A::IntoOffset, A::IntoSynced, A::IntoMs, A::IntoFraction, A::IntoShape, A::IntoBend,
+                       A::OutTarget, A::OutOffset, A::OutSynced, A::OutMs, A::OutFraction, A::OutShape, A::OutBend,
+                       A::GlideCents, A::Gate})
+      b.push_back(k.bind(id));
+    k.caption(276, y, 120, "Bend");
+    k.add("arpbend", 276, y + 12, 408, 112, std::move(b));
+  }
+  y += 132.0f;
   // ---- Pulse (fold) ----
   k.fold(y, "Pulse");
   y += 20.0f;

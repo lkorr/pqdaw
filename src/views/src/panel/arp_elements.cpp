@@ -14,13 +14,17 @@
 //               the last step in play, drags the length (a setting: committed once at the end); steps past it dim.
 //               While its device's note stage plays (PanelTarget::noteStatus), the lane's current step is lit (`lane`:
 //               which of the status's lanes).
-//   arppattern  the LIVE PATTERN of a note device (slot 0: a Data binding naming it): its status's pattern list — the
-//               held notes in the order the pattern plays them, as bars at their pitch — with the current position lit
-//               (Chord Trigger: all), the number held; nothing held: a hint.
-//   rampshape   the drawn SHAPE of a glide (slot 0 the shape: Linear / Exponential / S-curve / Overshoot, slot 1 the
-//               bend −1 … 1, slot 2 the side's source: 0 = off, dimmed): `side` into (the shape, then the note) or out
-//               (the note, then the shape back). The formulas of pq/engine/note_events.h "rampShape" (bend → rampBend
-//               = round(127 · bend); Exponential k = rampBend / 16, Overshoot a = 4 · |rampBend| / 127).
+//   arppattern  the RESOLVED PATTERN of a note device (slot 0: a Data binding naming it; AP.10): the whole cycle its
+//               params make of the held notes (pq/document/note_pattern.h notePattern: the engine's own ArpCore run
+//               offline), time across, log pitch up over the unit's grid; the held notes solid, the generated ones
+//               (Distance / Steps copies, walk steps, ratio / harmonic steps, layers) translucent and dotted with their
+//               identity; each note drawn along its pitch curve (its Into / Out glides). The held set comes from the
+//               status (its held notes); nothing held: the last set it saw, else a nominal reference note. The note
+//               playing lights (the status's position / copy: the next such note of the cycle). Recomputed only when its
+//               input key (the device's values, the track, the held set, the tempo) moved.
+//   arpbend     the BEND VIEW of a note device's glides (AP.10; doc::noteGlideView): one step large, source → Into →
+//               hold → Out → target with the times / offsets dimensioned and the gate's end; handles drag the times,
+//               the offsets and (Alt) the bends — one undo step per drag. The curves: doc::noteRampShape (the voice's).
 //
 // Cost: the status is read only by an element that is painted (a fold that hides it reads nothing): per host frame tick
 // while the transport plays or the stage holds notes, a few relaxed loads; the pattern list is copied only when the
@@ -30,6 +34,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -37,6 +42,8 @@
 
 #include "elements_internal.h"
 #include "pq/core/note_stage_status.h"
+#include "pq/document/note_devices.h"
+#include "pq/document/note_pattern.h"
 #include "pq/views/panel/arp_elements.h"
 
 namespace pq::views::panel {
@@ -51,9 +58,7 @@ constexpr float kLabelPx = 7.5f;
 constexpr std::array<std::string_view, 1> kDataSlot = {"device"};
 constexpr std::array<std::string_view, 2> kPresetSlots = {"value 1", "value 2"};
 constexpr std::array<std::string_view, 3> kLaneSlots = {"length", "on", "steps"};
-constexpr std::array<std::string_view, 3> kShapeSlots = {"shape", "bend", "source"};
 constexpr std::array<std::string_view, 3> kLaneLooks = {"bars", "bipolar", "cells"};
-constexpr std::array<std::string_view, 2> kSides = {"into", "out"};
 
 uint64_t hmix(uint64_t h, uint64_t v) noexcept {
   h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
@@ -215,7 +220,7 @@ public:
       if (b == nullptr) continue;
       const double v = std::clamp(t.position(*b), 0.0, 1.0);
       float a = i < len ? 1.0f : 0.28f;  // past the length: dimmed
-      if (!on) a *= 0.45f;
+      if (!on) a *= 0.22f;  // (AP.10, review L13: an off lane reads as off)
       const Rgba fill = ui::mulAlpha(accent, a);
       if (look == "cells") {
         const int32_t k = kindAt(t, i);
@@ -424,6 +429,7 @@ private:
 
 // ---- arppattern -----------------------------------------------------------------------------------------------------
 
+// The device a Data binding names, its NotePattern recomputed only when what it is made of changed (AP.10).
 class PatternView final : public Element {
 public:
   using Element::Element;
@@ -437,47 +443,79 @@ public:
   }
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
-    if (env.target != nullptr)
-      if (const NoteStageStatus* st = status_.get(*env.target, binding())) (void)read(*st);
-    const uint32_t n = pattern_.count;
+    if (env.target != nullptr) {
+      if (const NoteStageStatus* st = status_.get(*env.target, binding())) (void)read(*st, *env.target);
+      ensure(*env.target);
+    }
     paintRollChip(p, env);  // AP.7
-    if (n == 0) {
-      p.text({desc_.w * 0.5f, desc_.h * 0.5f - 5.0f}, "Hold notes", 7.5f, th.device.displayText);
-      p.text({desc_.w * 0.5f, desc_.h * 0.5f + 6.0f}, "to see the pattern", 6.5f, th.device.displayText);
+    const Rgba accent = colour(th, "colour", "value", th.face.value);
+    const Rgba ink = th.device.displayText;
+    if (!pat_.valid || pat_.notes.empty()) {
+      p.text({desc_.w * 0.5f, desc_.h * 0.5f}, "No pattern", 7.5f, ink);
       return;
     }
-    // Pitch (log Hz) up, play order across; the range of the notes held, padded.
-    float lo = 1e30f, hi = -1e30f;
-    for (uint32_t i = 0; i < n; ++i)
-      if (pattern_.hz[i] > 0.0f) {
-        const float c = std::log2(pattern_.hz[i]);
-        lo = std::min(lo, c);
-        hi = std::max(hi, c);
+    const Rect r = plot();
+    // y: log Hz over the pattern's range (at least a third of an octave), padded; x: the cycle.
+    const float span = std::max(pat_.hi - pat_.lo, 0.34f) * 1.16f, mid = 0.5f * (pat_.lo + pat_.hi);
+    auto Y = [&](float l2) { return r.y1 - ((l2 - (mid - 0.5f * span)) / span) * (r.y1 - r.y0); };
+    const auto cyc = static_cast<float>(std::max(pat_.cycle, 1e-3));
+    auto X = [&](float s) { return r.x0 + s / cyc * (r.x1 - r.x0); };
+    // The unit's grid (equaves / octaves major) and the steps.
+    for (const auto& [l2, major] : pat_.grid) {
+      const float y = Y(l2);
+      if (y < r.y0 - 1.0f || y > r.y1 + 1.0f) continue;
+      p.line({r.x0, y}, {r.x1, y}, major ? 0.8f : 0.5f, major ? th.device.displayGridMajor : ui::mulAlpha(th.device.displayGrid, 0.7f));
+    }
+    if (pat_.cycle <= 64.0)
+      for (int k = 0; k <= static_cast<int>(std::ceil(pat_.cycle)); ++k) {
+        const float x = X(static_cast<float>(k));
+        if (x > r.x1 + 0.5f) break;
+        p.line({x, r.y0}, {x, r.y1}, 0.5f, ui::mulAlpha(th.device.displayGrid, k == 0 ? 0.9f : 0.45f));
       }
-    if (lo > hi) lo = hi = 0.0f;
-    const float span = std::max(hi - lo, 0.25f), mid = 0.5f * (lo + hi);
-    const Rect r{6.0f, 8.0f, desc_.w - 6.0f, desc_.h - 16.0f};
-    const float w = (r.x1 - r.x0) / static_cast<float>(n), bh = std::clamp((r.y1 - r.y0) / 12.0f, 2.0f, 6.0f);
-    const Rgba accent = colour(th, "colour", "value", th.face.value);
-    for (uint32_t i = 0; i < n; ++i) {
-      if (!(pattern_.hz[i] > 0.0f)) continue;
-      const float u = (std::log2(pattern_.hz[i]) - mid) / span + 0.5f;
-      const float y = r.y1 - bh * 0.5f - u * (r.y1 - r.y0 - bh);
-      const float x0 = r.x0 + static_cast<float>(i) * w;
-      const Rect bar{x0 + std::min(1.0f, w * 0.15f), y - bh * 0.5f, x0 + w - std::min(1.0f, w * 0.15f), y + bh * 0.5f};
-      const bool lit = position_ >= 0 && (pattern_.chord || static_cast<uint32_t>(position_) == i);
+    // The notes: each its pitch curve (glides included). Sources solid, generated ones translucent + dotted.
+    const bool live = held_ > 0;
+    std::vector<Vec2> pts;
+    struct Shown {
+      const std::string* label;
+      float x, y;
+    };
+    std::vector<Shown> shown;
+    for (size_t i = 0; i < pat_.notes.size(); ++i) {
+      const doc::NotePatternNote& n = pat_.notes[i];
+      pts.clear();
+      for (const auto& [t, l2] : n.curve) pts.push_back({std::min(X(t), r.x1), Y(l2)});
+      if (pts.size() == 1) pts.push_back({pts[0].x + 1.0f, pts[0].y});
+      const bool lit = live && lit_ >= 0 && n.on == pat_.notes[static_cast<size_t>(lit_)].on;
       if (lit) {
         p.beginGlow();
-        p.glow({(bar.x0 + bar.x1) * 0.5f, y}, std::max(6.0f, bh * 2.0f), ui::mulAlpha(accent, 0.35f));
+        p.glow({(pts.front().x + pts.back().x) * 0.5f, (pts.front().y + pts.back().y) * 0.5f}, 9.0f, ui::mulAlpha(accent, 0.4f));
         p.endGlow();
-        p.roundedRect(bar, 1.5f, accent);
+      }
+      if (n.source) {
+        p.polyline(pts, 3.0f, lit ? accent : ui::mulAlpha(accent, 0.8f));
       } else {
-        p.roundedRect(bar, 1.5f, ui::mulAlpha(th.device.curve, 0.55f));
+        p.polyline(pts, 3.0f, ui::mulAlpha(accent, lit ? 0.45f : 0.16f));
+        p.dashed(pts, 1.0f, 2.2f, 1.8f, ui::mulAlpha(accent, lit ? 1.0f : 0.75f));
+      }
+      // Its identity in the unit, where it fits (a label narrower than the note).
+      // (a repeat of the same label at the same height within ~24 px is left out: a pulse row reads once)
+      if (!n.label.empty() && pts.back().x - pts.front().x >= 4.0f * static_cast<float>(n.label.size()) - 2.0f) {
+        float top = pts.front().y;  // above the whole curve (a glide does not run through it)
+        for (const Vec2& q : pts) top = std::min(top, q.y);
+        bool repeat = false;
+        for (const Shown& sh : shown)
+          repeat = repeat || (*sh.label == n.label && std::fabs(sh.y - top) < 3.0f && pts.front().x - sh.x < 24.0f);
+        if (!repeat) {
+          p.textAligned({pts.front().x, top - 5.5f}, n.label, 5.5f, ui::mulAlpha(ink, n.source ? 1.0f : 0.8f), 0.0f);
+          shown.push_back({&n.label, pts.front().x, top});
+        }
       }
     }
-    char s[48];
-    std::snprintf(s, sizeof s, "%u held \xC2\xB7 %u step%s", pattern_.held, n, n == 1 ? "" : "s");
-    p.textAligned({4.0f, desc_.h - 6.0f}, s, 6.0f, th.device.displayText, 0.0f);
+    char s[96];
+    const char* what = live ? "" : (pat_.nominal ? " \xC2\xB7 nominal note (hold notes)" : " \xC2\xB7 last held");
+    std::snprintf(s, sizeof s, "%u held \xC2\xB7 %g step%s%s%s", live ? held_ : heldShown_, pat_.cycle,
+                  pat_.cycle == 1.0 ? "" : "s", pat_.truncated ? " (first)" : "", what);
+    p.textAligned({4.0f, desc_.h - 6.0f}, s, 6.0f, ink, 0.0f);
   }
   // AP.7: the ROLL chip (top right): the roll preview's switch (ViewContext::notePreview, the clip box's Ghosts).
   Rect rollChip() const noexcept { return {desc_.w - 34.0f, 3.0f, desc_.w - 4.0f, 13.0f}; }
@@ -494,18 +532,23 @@ public:
   }
   uint64_t liveKey(const PanelTarget& t) const override {
     const uint64_t roll = t.notePreview().value_or(false) ? 2u : 1u;  // AP.7: the ROLL chip
-    return hmix(hmix(hmix(0x5041544Eull, serial_), static_cast<uint64_t>(position_ + 1)), roll + (hoverChip_ ? 4u : 0u));
+    uint64_t h = hmix(hmix(hmix(0x5041544Eull, serial_), static_cast<uint64_t>(lit_ + 1)), roll + (hoverChip_ ? 4u : 0u));
+    h = hmix(h, inputKey(t));  // AP.10: the params / held set / tempo the pattern is made of
+    return h == kAnyChange ? h - 1 : h;
   }
   bool frameTick(PanelTarget& t) override {
     playing_ = t.transportPlaying();
     const NoteStageStatus* st = status_.get(t, binding());
-    return st != nullptr && read(*st);
+    return st != nullptr && read(*st, t);
   }
-  bool ticking() const noexcept override { return status_.s != nullptr && (playing_ || pattern_.held > 0); }
+  bool ticking() const noexcept override { return status_.s != nullptr && (playing_ || held_ > 0); }
   void describe(const PanelTarget&, std::string& title, std::string& body) const override {
     title = "Pattern";
-    body = "The held notes in the order the pattern plays them (pitch up, time across); the lit one is playing. "
-           "ROLL (top right) shows what the arpeggiator plays from the clip's notes as ghost notes in the piano roll.";
+    body = "The whole cycle the arpeggiator plays from the held notes (pitch up, time across): the held notes solid, what "
+           "Distance / Steps, the Pitch unit, Harmonic Walk and Layers make of them dotted with their identity (+k "
+           "degrees, h11, 3/2), each note drawn as it bends (Into / Out glides). The lit one is playing. Nothing held: "
+           "the last held notes, else a reference note. ROLL (top right) shows what the arpeggiator plays from the "
+           "clip's notes as ghost notes in the piano roll.";
   }
   // AP.7: only the ROLL chip takes presses (the rest is a display).
   bool hit(Vec2 l) const noexcept override {
@@ -529,102 +572,401 @@ public:
   // tests
   const NoteStageStatus::Pattern& pattern() const noexcept { return pattern_; }
   int32_t position() const noexcept { return position_; }
+  const doc::NotePattern& resolved() const noexcept { return pat_; }
+  int32_t litNote() const noexcept { return held_ > 0 ? lit_ : -1; }
+  uint64_t computes() const noexcept { return computes_; }
 
 private:
-  // A new status (its serial moved): the position, and the list when its seqlock read is consistent.
-  bool read(const NoteStageStatus& st) {
+  Rect plot() const noexcept { return {6.0f, 16.0f, desc_.w - 6.0f, desc_.h - 14.0f}; }
+  // What the pattern is drawn over: the held notes now, else the last ones seen (empty: the nominal note).
+  const std::vector<doc::NotePatternHeld>& heldSet() const noexcept { return lastHeld_; }
+  // A key of everything the pattern is computed from (cheap: one pass over the device's values).
+  uint64_t inputKey(const PanelTarget& t) const {
+    const doc::Binding* b = binding();
+    const doc::Project* pr = t.project();
+    if (b == nullptr || pr == nullptr) return 0;
+    const doc::DeviceLoc loc = doc::findDevice(*pr, b->device);
+    if (loc.device == nullptr) return 0;
+    uint64_t h = hmix(0xA9u, reinterpret_cast<uintptr_t>(loc.track));  // (a track edit: its tuning, its devices)
+    h = hmix(h, reinterpret_cast<uintptr_t>(loc.device));
+    if (const doc::NoteDeviceType* type = doc::noteDeviceTypeOf(*loc.device))
+      for (const doc::NoteParamSpec& s : type->params) {
+        const double v = doc::noteDeviceValue(*loc.device, s);
+        uint64_t bits = 0;
+        std::memcpy(&bits, &v, sizeof bits);
+        h = hmix(h, bits);
+      }
+    for (const doc::NotePatternHeld& n : heldSet()) {
+      uint32_t bits[3] = {};
+      std::memcpy(&bits[0], &n.hz, 4);
+      std::memcpy(&bits[1], &n.harmonic, 4);
+      std::memcpy(&bits[2], &n.noteDegree, 4);
+      h = hmix(hmix(hmix(h, bits[0]), bits[1]), bits[2]);
+    }
+    const double bpm = t.tempoBpm();
+    uint64_t bb = 0;
+    std::memcpy(&bb, &bpm, sizeof bb);
+    return hmix(h, bb);
+  }
+  // Recomputes the pattern when its key moved (the real ArpCore offline: doc::notePattern).
+  void ensure(const PanelTarget& t) {
+    const uint64_t k = inputKey(t);
+    if (k == key_ && computes_ > 0) return;
+    key_ = k;
+    ++computes_;
+    const doc::Binding* b = binding();
+    const doc::Project* pr = t.project();
+    if (b == nullptr || pr == nullptr) {
+      pat_ = {};
+      return;
+    }
+    pat_ = doc::notePattern(*pr, b->device, heldSet(), t.tempoBpm());
+    heldShown_ = static_cast<uint32_t>(heldSet().size());
+    lit_ = -1;
+  }
+  // A new status (its serial moved): the held set, the position (the lit note: the next one in the cycle at that
+  // position / copy), and the list when its seqlock read is consistent.
+  bool read(const NoteStageStatus& st, const PanelTarget& t) {
     const uint64_t s = st.serial.load(std::memory_order_acquire);
     if (s == serial_) return false;
     serial_ = s;
     const int32_t pos = st.position.load(std::memory_order_relaxed);
+    const int32_t cp = st.copy.load(std::memory_order_relaxed);
+    const uint64_t steps = st.steps.load(std::memory_order_relaxed);
     NoteStageStatus::Pattern p;
-    const bool got = st.readPattern(p);
-    if (got) pattern_ = p;
-    else serial_ = 0;  // (a write was in progress: read again next tick)
+    if (st.readPattern(p)) {
+      pattern_ = p;
+      held_ = p.held;
+      if (p.heldCount > 0) {
+        std::vector<doc::NotePatternHeld> h;
+        for (uint32_t i = 0; i < p.heldCount; ++i) {
+          const NoteStageStatus::HeldNote& n = p.heldNotes[i];
+          h.push_back({n.hz, n.velocity, n.ratio, n.harmonic, n.degree, n.equave, n.tuning, n.noteDegree});
+        }
+        lastHeld_ = std::move(h);
+      }
+    } else {
+      serial_ = 0;  // (a write was in progress: read again next tick)
+    }
     position_ = pattern_.count == 0 ? -1 : pos;
+    ensure(t);
+    if (held_ == 0 || position_ < 0) {
+      lit_ = -1;
+    } else if (steps != steps_) {  // a step played: the next note of the cycle at its position / copy
+      const auto n = static_cast<int32_t>(pat_.notes.size());
+      int32_t found = -1;
+      for (int32_t k = 1; k <= n && found < 0; ++k) {
+        const int32_t i = ((lit_ < 0 ? -1 : lit_) + k + n) % n;
+        const doc::NotePatternNote& nn = pat_.notes[static_cast<size_t>(i)];
+        if (nn.position == position_ && nn.copy == cp && (lit_ < 0 || nn.on != pat_.notes[static_cast<size_t>(lit_)].on))
+          found = i;
+      }
+      if (found >= 0) lit_ = found;
+    }
+    steps_ = steps;
     return true;
   }
   StatusRef status_;
   NoteStageStatus::Pattern pattern_;
-  uint64_t serial_ = 0;
+  uint64_t serial_ = 0, steps_ = 0;
   int32_t position_ = -1;
+  uint32_t held_ = 0, heldShown_ = 0;
   bool playing_ = false;
   bool hoverChip_ = false;  // AP.7
+  // AP.10: the resolved pattern and what it was computed from.
+  std::vector<doc::NotePatternHeld> lastHeld_;
+  doc::NotePattern pat_;
+  uint64_t key_ = 0, computes_ = 0;
+  int32_t lit_ = -1;  // the playing note (an index into pat_.notes; its chord / layers light with it)
 };
 
-// ---- rampshape ------------------------------------------------------------------------------------------------------
+// ---- arpbend --------------------------------------------------------------------------------------------------------
 
-class RampShapeView final : public Element {
+// AP.10: the BEND VIEW of a note device's glides — one step drawn large (doc::noteGlideView: the device's values): the
+// source (the previous step / an offset) → the Into curve → the hold → the Out curve → the target (the next step / an
+// offset), with the times and offsets dimensioned and the gate's end marked. Handles drag a side's time (sideways: ms,
+// or a note fraction with Time Sync), its offset (up / down, with source / target Offset: whole units, or cents) and,
+// with Alt, its bend (up / down) — one undo step per drag, param writes only. The curves are the voice's (doc::
+// noteRampShape). Slot 0 the device (Data), then the params in kBendSlots order.
+constexpr std::array<std::string_view, 17> kBendSlots = {
+    "device",   "into",     "into offset", "into sync", "into ms",  "into frac", "into shape", "into bend", "out",
+    "out offset", "out sync", "out ms",     "out frac",  "out shape", "out bend", "cents",      "gate"};
+
+class BendView final : public Element {
 public:
   using Element::Element;
   static constexpr StyleSpec kStyle[] = {
-      {"side", StyleSpec::Type::Choice, 0, "into", kSides},
       {"colour", StyleSpec::Type::Token, 0, "value"},
   };
+  enum Slot : size_t {
+    kDevice, kInto, kIntoOffset, kIntoSync, kIntoMs, kIntoFrac, kIntoShape, kIntoBend,
+    kOut, kOutOffset, kOutSync, kOutMs, kOutFrac, kOutShape, kOutBend, kCents, kGate
+  };
+  enum class Handle : int8_t { None = -1, IntoTime, IntoOffset, OutTime, OutOffset };
   uint32_t staticLayerCount() const noexcept override { return 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return th.device.display; }
   void paintStatic(ui::FacePainter& p, uint32_t) const override {
-    p.roundedRect({0.0f, 0.0f, desc_.w, desc_.h}, 3.0f, ui::rgba(255, 255, 255));
+    p.roundedRect({0.0f, 0.0f, desc_.w, desc_.h}, 4.0f, ui::rgba(255, 255, 255));
   }
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
-    const PanelTarget& t = *env.target;
-    const int32_t shape = slotUnits(t, 0, 0.0) < 0.5 ? 0 : static_cast<int32_t>(std::lround(slotUnits(t, 0, 0.0)));
-    const double bend = slotUnits(t, 1, 0.5);
-    const bool on = binding(2) == nullptr || slotUnits(t, 2, 1.0) >= 0.5;
-    const bool into = txt("side", "into") == "into";
-    // y: 0 at the source pitch, 1 at the target (an overshoot goes past it).
-    const float x0 = 4.0f, x1 = desc_.w - 4.0f, y0 = desc_.h - 5.0f, y1 = 6.0f;
-    auto at = [&](float u, double s) { return Vec2{x0 + u * (x1 - x0), y0 + static_cast<float>(s) * (y1 - y0)}; };
+    const Rgba accent = colour(th, "colour", "value", th.face.value), ink = th.device.displayText;
+    if (env.target == nullptr || !geometry(*env.target)) {
+      p.text({desc_.w * 0.5f, desc_.h * 0.5f}, "No glides", 7.5f, ink);
+      return;
+    }
+    const G& g = g_;
+    const Rect r = plot();
+    // The step boundaries, the note's own pitch, the gate's end.
+    p.line({X(0.0), r.y0}, {X(0.0), r.y1}, 0.6f, th.device.displayGridMajor);
+    if (X(1.0) < r.x1) {
+      const Vec2 nx[2] = {{X(1.0), r.y0}, {X(1.0), r.y1}};
+      p.dashed(nx, 0.6f, 2.0f, 2.0f, th.device.displayGridMajor);
+      if (std::fabs(X(1.0) - X(g_.v.gate)) > 44.0f)  // (a gate near 100 %: its label says it)
+        p.textAligned({X(1.0) + 2.0f, r.y1 - 4.0f}, "next onset", 5.5f, ui::mulAlpha(ink, 0.8f), 0.0f);
+    }
+    const Vec2 base[2] = {{r.x0, Y(0.0)}, {r.x1, Y(0.0)}};
+    p.dashed(base, 0.6f, 1.5f, 2.5f, ui::mulAlpha(th.device.displayGridMajor, 0.8f));
+    const Vec2 gate[2] = {{X(g.v.gate), r.y0}, {X(g.v.gate), r.y1}};
+    p.dashed(gate, 0.9f, 3.0f, 2.0f, ui::mulAlpha(accent, 0.55f));
+    p.textAligned({X(g.v.gate) - 2.0f, r.y1 - 4.0f}, "gate end", 5.5f, ui::mulAlpha(ink, 0.9f), 1.0f);
+    // The curve: source → Into → hold → Out → target (each side as the voice ramps it).
+    const double ti = g.v.into.steps, to = g.v.out.steps, len = g.v.gate;
+    std::vector<Vec2> pts;
     constexpr int kN = 32;
-    std::array<Vec2, kN + 2> pts;
-    // Into: the glide over the first 60 %, then the note; Out: the note, then the glide over the last 60 % (drawn
-    // falling back: the target below).
-    for (int i = 0; i <= kN; ++i) {
-      const float u = static_cast<float>(i) / kN;
-      const double s = rampShape(shape, bend, u);
-      pts[static_cast<size_t>(i)] = into ? at(u * 0.6f, s) : at(0.4f + u * 0.6f, 1.0 - s);
+    if (ti > 0.0)
+      for (int i = 0; i <= kN; ++i) {
+        const double u = static_cast<double>(i) / kN;
+        pts.push_back({X(u * ti), Y(g.src * (1.0 - doc::noteRampShape(g.v.into.shape, g.v.into.bend, u)))});
+      }
+    else
+      pts.push_back({X(0.0), Y(0.0)});
+    if (to > 0.0)
+      for (int i = 0; i <= kN; ++i) {
+        const double u = static_cast<double>(i) / kN;
+        pts.push_back({X(len - to + u * to), Y(g.tgt * doc::noteRampShape(g.v.out.shape, g.v.out.bend, u))});
+      }
+    else
+      pts.push_back({X(len), Y(0.0)});
+    // Where the source / target come from: a lead-in at the source's pitch (the previous step / the offset's), a
+    // lead-out to the target's.
+    if (g.v.into.mode != 0) {
+      const Vec2 lead[2] = {{r.x0, Y(g.src)}, {X(0.0), Y(g.src)}};
+      p.dashed(lead, 1.0f, 2.0f, 2.0f, ui::mulAlpha(accent, 0.6f));
+      p.textAligned({r.x0 + 1.0f, Y(g.src) + (g.src > 0 ? -5.0f : 5.0f)},
+                    g.v.into.mode == 1 ? std::string("previous step") : g.v.into.text, 5.5f, ink, 0.0f);
     }
-    pts[kN + 1] = into ? at(1.0f, 1.0) : at(0.0f, 1.0);
-    const Rgba c = on ? colour(th, "colour", "value", th.face.value) : ui::mulAlpha(th.device.displayText, 0.6f);
-    const Vec2 ends[2] = {at(0.0f, 1.0), at(1.0f, 1.0)};
-    p.dashed(ends, 0.6f, 2.0f, 2.0f, th.device.displayGridMajor);
-    if (into) {
-      p.polyline(std::span<const Vec2>(pts.data(), kN + 1), 1.4f, c);
-      p.line(pts[kN], pts[kN + 1], 1.4f, c);
-    } else {
-      p.line(pts[kN + 1], pts[0], 1.4f, c);
-      p.polyline(std::span<const Vec2>(pts.data(), kN + 1), 1.4f, c);
+    if (g.v.out.mode != 0) {
+      const Vec2 lead[2] = {{X(len), Y(g.tgt)}, {r.x1, Y(g.tgt)}};
+      p.dashed(lead, 1.0f, 2.0f, 2.0f, ui::mulAlpha(accent, 0.6f));
+      p.textAligned({r.x1 - 1.0f, Y(g.tgt) + (g.tgt > 0 ? -5.0f : 5.0f)},
+                    g.v.out.mode == 1 ? std::string("next step") : g.v.out.text, 5.5f, ink, 1.0f);
+    }
+    p.polyline(pts, 2.2f, accent);
+    // The time spans dimensioned under the plot.
+    auto dim = [&](double a, double b, const char* name, const doc::NoteGlideSide& s) {
+      const float y = r.y1 + 5.0f, x0 = X(a), x1 = X(b);
+      p.line({x0, y - 2.5f}, {x0, y + 2.5f}, 0.8f, ink);
+      p.line({x1, y - 2.5f}, {x1, y + 2.5f}, 0.8f, ink);
+      p.line({x0, y}, {x1, y}, 0.8f, ink);
+      char t[48];
+      if (s.synced) std::snprintf(t, sizeof t, "%s %.0f %% \xC2\xB7 %.0f ms", name, s.ms / std::max(g.v.gate * g.v.stepMs, 1e-9) * 100.0, s.ms);
+      else std::snprintf(t, sizeof t, "%s %.0f ms", name, s.ms);
+      p.text({(x0 + x1) * 0.5f, y + 6.0f}, t, 5.5f, ink);
+    };
+    if (ti > 0.0) dim(0.0, ti, "Into", g.v.into);
+    else p.textAligned({X(0.0) + 2.0f, r.y1 + 9.0f}, g.v.into.mode == 0 ? "Into off" : "Into: none", 5.5f, ui::mulAlpha(ink, 0.7f), 0.0f);
+    if (to > 0.0) dim(len - to, len, "Out", g.v.out);
+    else p.textAligned({X(len) - 2.0f, r.y1 + 9.0f}, g.v.out.mode == 0 ? "Out off" : "Out: none", 5.5f, ui::mulAlpha(ink, 0.7f), 1.0f);
+    // The handles.
+    for (const Handle h : {Handle::IntoTime, Handle::IntoOffset, Handle::OutTime, Handle::OutOffset}) {
+      const std::optional<Vec2> at = handleAt(h);
+      if (!at) continue;
+      const bool hot = h == drag_ || (drag_ == Handle::None && h == hover_);
+      p.disc(*at, hot ? 4.0f : 3.0f, hot ? th.face.signal : accent);
+      p.ring(*at, hot ? 4.0f : 3.0f, 1.0f, th.device.display);
     }
   }
-  bool hit(Vec2) const noexcept override { return false; }
+  bool hit(Vec2 l) const noexcept override { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
+  bool interactive() const noexcept override { return true; }
+  bool dragging() const noexcept override { return drag_ != Handle::None; }
+  bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    using K = FacePointer::Kind;
+    if (drag_ == Handle::None && (e.kind == K::Move || e.kind == K::Leave)) {
+      const Handle h = e.kind == K::Move && geometry(t) ? nearest(e.local) : Handle::None;
+      const bool changed = h != hover_;
+      hover_ = h;
+      return changed;
+    }
+    if (e.kind == K::Down) {
+      if (e.button != ui::PointerButton::Left || !geometry(t)) return false;
+      const Handle h = nearest(e.local);
+      if (h == Handle::None) return false;
+      const doc::Binding* b = binding(h == Handle::IntoTime || h == Handle::IntoOffset ? kIntoMs : kOutMs);
+      if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return true;
+      drag_ = h;
+      bendDrag_ = (e.mods & ui::mod::kAlt) != 0;
+      press_ = e.local;
+      startBend_ = into() ? g_.v.into.bend : g_.v.out.bend;
+      startCents_ = into() ? g_.src : g_.tgt;
+      perPx_ = g_.cmax / ((plot().y1 - plot().y0) * 0.5);
+      unitCents_.clear();  // the cents of each whole unit offset −48 … 48 (an offset drag snaps to the nearest)
+      if (const doc::Project* pr = t.project(); pr != nullptr && !g_.v.cents && (h == Handle::IntoOffset || h == Handle::OutOffset))
+        for (int k = -48; k <= 48; ++k) unitCents_.push_back(doc::noteGlideOffsetCents(*pr, binding(kDevice)->device, k));
+      t.begin(*b, bendDrag_ ? "Glide Bend" : "Glide Handle");
+      return true;
+    }
+    if (e.kind == K::Move && drag_ != Handle::None) {
+      apply(t, e.local);
+      return true;
+    }
+    if (e.kind == K::Up && drag_ != Handle::None) {
+      drag_ = Handle::None;
+      t.end();
+      return true;
+    }
+    return false;
+  }
+  void cancelDrag(PanelTarget& t) override {
+    if (drag_ == Handle::None) return;
+    drag_ = Handle::None;
+    t.cancel();
+  }
+  ui::Cursor cursor() const noexcept override {
+    const Handle h = drag_ != Handle::None ? drag_ : hover_;
+    if (h == Handle::IntoTime || h == Handle::OutTime) return ui::Cursor::ResizeEW;
+    if (h != Handle::None) return ui::Cursor::ResizeNS;
+    return ui::Cursor::Inherit;
+  }
+  uint64_t liveKey(const PanelTarget& t) const override {
+    uint64_t h = Element::liveKey(t);
+    if (h == kAnyChange) return h;
+    if (const doc::Project* pr = t.project(); pr != nullptr && binding(kDevice) != nullptr) {  // (the rate, the tuning)
+      const doc::DeviceLoc loc = doc::findDevice(*pr, binding(kDevice)->device);
+      h = hmix(hmix(h, reinterpret_cast<uintptr_t>(loc.track)), reinterpret_cast<uintptr_t>(loc.device));
+    }
+    const double bpm = t.tempoBpm();
+    uint64_t bb = 0;
+    std::memcpy(&bb, &bpm, sizeof bb);
+    h = hmix(hmix(h, bb), static_cast<uint64_t>(static_cast<int>(hover_) + 2) | (static_cast<uint64_t>(static_cast<int>(drag_) + 2) << 8));
+    return h == kAnyChange ? h - 1 : h;
+  }
   void describe(const PanelTarget&, std::string& title, std::string& body) const override {
-    title = txt("side", "into") == "into" ? "Into glide" : "Out glide";
-    body = "The glide's shape (Shape and Bend). Dimmed while this side is off.";
+    title = "Bend";
+    body = "One step's pitch as the glides bend it: from the source (the previous step, or the Into offset) along the "
+           "Into curve to the note, held, then along the Out curve over the end of the gate to the target (the next "
+           "step, or the Out offset). Drag a handle on the note sideways: that side's time; the end handles up / down: "
+           "its offset; Alt+drag up / down: its bend. One undo step per drag.";
   }
-  // pq/engine/note_events.h "rampShape": s(u) of shape `shape` with bend −1 … 1.
-  static double rampShape(int32_t shape, double bend, double u) noexcept {
-    const double rb = std::clamp(std::round(127.0 * std::clamp(bend, -1.0, 1.0)), -127.0, 127.0);
-    switch (shape) {
-      case 1: {  // Exponential
-        const double k = rb / 16.0;
-        if (std::fabs(k) < 1e-6) return u;
-        return (1.0 - std::exp(-k * u)) / (1.0 - std::exp(-k));
-      }
-      case 2: return u * u * (3.0 - 2.0 * u);  // S-curve
-      case 3: {                                 // Overshoot
-        const double a = 4.0 * std::fabs(rb) / 127.0, v = u - 1.0;
-        return 1.0 + (a + 1.0) * v * v * v + a * v * v;
-      }
-      default: return u;  // Linear (in cents)
-    }
+  // tests: a handle's position (element-local); nullopt: not shown.
+  std::optional<Vec2> handlePos(int32_t h) {
+    return static_cast<Handle>(h) >= Handle::IntoTime && static_cast<Handle>(h) <= Handle::OutOffset
+               ? handleAt(static_cast<Handle>(h))
+               : std::nullopt;
   }
+  bool prepare(const PanelTarget& t) { return geometry(t); }
 
 private:
-  double slotUnits(const PanelTarget& t, size_t slot, double def) const {
-    const doc::Binding* b = binding(slot);
-    return b != nullptr && t.info(*b).valid ? unitsOf(t, *b) : def;
+  struct G {
+    doc::NoteGlideView v;
+    double src = 0.0, tgt = 0.0;  // cents of the source / target from the note's own pitch
+    double span = 1.5;            // steps across the plot (from −0.15)
+    double cmax = 100.0;          // cents from the middle to the top
+  };
+  Rect plot() const noexcept { return {6.0f, 8.0f, desc_.w - 6.0f, desc_.h - 18.0f}; }
+  float X(double s) const noexcept {
+    const Rect r = plot();
+    return r.x0 + static_cast<float>((s + 0.15) / g_.span) * (r.x1 - r.x0);
   }
+  float Y(double c) const noexcept {
+    const Rect r = plot();
+    return (r.y0 + r.y1) * 0.5f - static_cast<float>(c / g_.cmax) * (r.y1 - r.y0) * 0.5f;
+  }
+  // The device's glides now (false: none to draw).
+  bool geometry(const PanelTarget& t) {
+    const doc::Binding* b = binding(kDevice);
+    const doc::Project* pr = t.project();
+    if (b == nullptr || pr == nullptr) return false;
+    g_.v = doc::noteGlideView(*pr, b->device, t.tempoBpm());
+    if (!g_.v.valid) return false;
+    constexpr double kStep = 200.0;  // the previous / next step drawn this far (cents) from the note: a placeholder
+    const double si = g_.v.into.mode == 2 ? g_.v.into.cents : (g_.v.into.mode == 1 ? -kStep : 0.0);
+    const double so = g_.v.out.mode == 2 ? g_.v.out.cents : (g_.v.out.mode == 1 ? kStep : 0.0);
+    g_.src = std::isfinite(si) ? si : 0.0;
+    g_.tgt = std::isfinite(so) ? so : 0.0;
+    double over = 1.0;  // room for an overshoot past the target / source
+    if (g_.v.into.shape == 3 || g_.v.out.shape == 3) over = 1.35;
+    g_.cmax = std::max({std::fabs(g_.src), std::fabs(g_.tgt), 50.0}) * over * 1.12;
+    g_.span = std::max(g_.v.gate, 1.0) + 0.3;
+    return true;
+  }
+  bool into() const noexcept { return drag_ == Handle::IntoTime || drag_ == Handle::IntoOffset; }
+  std::optional<Vec2> handleAt(Handle h) const {
+    const doc::NoteGlideView& v = g_.v;
+    if (!v.valid) return std::nullopt;
+    switch (h) {
+      case Handle::IntoTime: return v.into.mode != 0 ? std::optional<Vec2>(Vec2{X(v.into.steps), Y(0.0)}) : std::nullopt;
+      case Handle::IntoOffset: return v.into.mode == 2 ? std::optional<Vec2>(Vec2{X(0.0), Y(g_.src)}) : std::nullopt;
+      case Handle::OutTime:
+        return v.out.mode != 0 ? std::optional<Vec2>(Vec2{X(v.gate - v.out.steps), Y(0.0)}) : std::nullopt;
+      case Handle::OutOffset: return v.out.mode == 2 ? std::optional<Vec2>(Vec2{X(v.gate), Y(g_.tgt)}) : std::nullopt;
+      default: return std::nullopt;
+    }
+  }
+  Handle nearest(Vec2 l) const {
+    Handle best = Handle::None;
+    float bd = 7.0f * 7.0f;
+    for (const Handle h : {Handle::IntoOffset, Handle::OutOffset, Handle::IntoTime, Handle::OutTime})
+      if (const std::optional<Vec2> at = handleAt(h)) {
+        const float d = (at->x - l.x) * (at->x - l.x) + (at->y - l.y) * (at->y - l.y);
+        if (d < bd) {
+          bd = d;
+          best = h;
+        }
+      }
+    return best;
+  }
+  void set(PanelTarget& t, size_t slot, double v) {
+    if (const doc::Binding* b = binding(slot); b != nullptr && t.info(*b).valid) t.setPosition(*b, positionOf(t, *b, v));
+  }
+  // One drag move: the time (sideways), the offset (up / down), or with Alt the bend (up / down).
+  void apply(PanelTarget& t, Vec2 l) {
+    const bool in = into();
+    const doc::NoteGlideSide& s = in ? g_.v.into : g_.v.out;
+    if (bendDrag_) {
+      set(t, in ? kIntoBend : kOutBend, std::clamp(startBend_ + static_cast<double>(press_.y - l.y) / 40.0, -1.0, 1.0));
+      return;
+    }
+    const Rect r = plot();
+    if (drag_ == Handle::IntoTime || drag_ == Handle::OutTime) {
+      const double pxPerStep = (r.x1 - r.x0) / g_.span;
+      double steps = in ? (l.x - X(0.0)) / pxPerStep : (X(g_.v.gate) - l.x) / pxPerStep;
+      steps = std::clamp(steps, 0.0, g_.v.gate);
+      if (s.synced) set(t, in ? kIntoFrac : kOutFrac, g_.v.gate > 0.0 ? steps / g_.v.gate : 0.0);
+      else set(t, in ? kIntoMs : kOutMs, steps * g_.v.stepMs);
+      return;
+    }
+    // The offset: the cents the pointer's height means (from the press, at the press's scale), in cents or the
+    // nearest whole unit.
+    const double want = startCents_ + static_cast<double>(press_.y - l.y) * perPx_;
+    double v = want;
+    if (!g_.v.cents) {
+      double bd = 1e300;
+      v = s.offset;
+      for (size_t i = 0; i < unitCents_.size(); ++i)
+        if (std::isfinite(unitCents_[i]) && std::fabs(unitCents_[i] - want) < bd) {
+          bd = std::fabs(unitCents_[i] - want);
+          v = static_cast<double>(i) - 48.0;
+        }
+    }
+    set(t, in ? kIntoOffset : kOutOffset, v);
+  }
+  G g_;
+  Handle hover_ = Handle::None, drag_ = Handle::None;
+  bool bendDrag_ = false;
+  Vec2 press_{0.0f, 0.0f};
+  double startBend_ = 0.0, startCents_ = 0.0, perPx_ = 1.0;
+  std::vector<double> unitCents_;
 };
 
 template <class T>
@@ -639,7 +981,7 @@ void registerArpElements(void (*reg)(std::string_view, std::string_view, std::sp
   reg("presets", "Presets", Presets::kStyle, kPresetSlots, 120, 16, &make<Presets>);
   reg("steplane", "Step Lane", StepLane::kStyle, kLaneSlots, 300, 22, &make<StepLane>);
   reg("arppattern", "Pattern View", PatternView::kStyle, kDataSlot, 160, 120, &make<PatternView>);
-  reg("rampshape", "Glide Shape", RampShapeView::kStyle, kShapeSlots, 56, 28, &make<RampShapeView>);
+  reg("arpbend", "Bend View", BendView::kStyle, kBendSlots, 300, 110, &make<BendView>);
 }
 
 namespace test {
@@ -657,6 +999,35 @@ int32_t patternPosition(const Element& e) {
 uint32_t patternCount(const Element& e) {
   const auto* s = dynamic_cast<const PatternView*>(&e);
   return s != nullptr ? s->pattern().count : 0;
+}
+
+uint32_t resolvedCount(const Element& e) {
+  const auto* s = dynamic_cast<const PatternView*>(&e);
+  return s != nullptr ? static_cast<uint32_t>(s->resolved().notes.size()) : 0;
+}
+
+uint32_t resolvedGenerated(const Element& e) {
+  const auto* s = dynamic_cast<const PatternView*>(&e);
+  if (s == nullptr) return 0;
+  uint32_t n = 0;
+  for (const doc::NotePatternNote& x : s->resolved().notes) n += x.source ? 0u : 1u;
+  return n;
+}
+
+int32_t resolvedLit(const Element& e) {
+  const auto* s = dynamic_cast<const PatternView*>(&e);
+  return s != nullptr ? s->litNote() : -1;
+}
+
+uint64_t resolvedComputes(const Element& e) {
+  const auto* s = dynamic_cast<const PatternView*>(&e);
+  return s != nullptr ? s->computes() : 0;
+}
+
+std::optional<ui::Vec2> bendHandle(Element& e, const PanelTarget& t, int32_t h) {
+  auto* s = dynamic_cast<BendView*>(&e);
+  if (s == nullptr || !s->prepare(t)) return std::nullopt;
+  return s->handlePos(h);
 }
 
 }  // namespace test
