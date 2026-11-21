@@ -2427,3 +2427,14 @@ Context: SM.3 (docs/plans/SM.md). Choices (most reversible):
 5. **setSamplerSample takes the root as an argument** (document cannot see views' SampleAnalysis): the drop (SM.8) passes
    SampleAnalysisResult::pitch.hz; nullopt (not analysed) → 261.63 Hz. A new sample resets the data's other fields
    (markers, rootText, sliceBy).
+
+## Q?-AP.10-a · Arpeggiator Into / Out split: what stays shared, what the bend view shows
+Context: AP.10 (docs/plans/AP.md "AP.10"). Choices (most reversible):
+1. **One "Offsets in cents" switch** (`glideCents`) for both sides; time / sync / shape / bend are per side. A per-side
+   unit would be two more params and a second toggle for a rare need.
+2. **Into + Out longer than the note shrink in proportion** (equal times: half each, as before) — asymmetric times keep
+   their ratio instead of being forced to halves.
+3. **The bend view draws Previous / Next a nominal 200 ¢ away** (labelled): their real pitches depend on the step; the
+   Pattern view shows the real curves. Offsets (in the unit or cents) are drawn at their true size.
+4. **The pattern view shows one cycle of at most 64 steps** (longer: the first 64, captioned) and a nominal note of the
+   track tuning's degree 0 when nothing has been held since the panel opened.
