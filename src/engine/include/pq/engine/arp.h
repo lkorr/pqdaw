@@ -81,6 +81,30 @@
 // there); a source Pitch event during the Into glide re-aims it; during the Out glide the note goes to its target
 // (later source bends do not move it).
 //
+// ---- Pulse mode (AP.4, "Pulse mode (polyrhythm)") -----------------------------------------------------------------
+// Pulse on: no pattern order (Style, Offset, Repeats, Groove, Retrigger Beat do not apply). Every held note repeats
+// on its own clock with period Base · h_ref / h. Base = the Rate (synced or ms). h: Pulse source Harmonic = the
+// note's JI harmonic (an integer ≥ 1), else Proportion = entry r of the Proportion (r = the note's rank by Hz among
+// the held notes; beyond its length the list repeats doubled: prop[r mod len] · 2^(r div len)), else Order = r + 1;
+// h is clamped to 1 … kArpMaxPulseH. h_ref = Pulse ref (fixed), or 0 = the lowest h held. Phase lock: all clocks
+// restart together every Cycle = Base · h_ref (Pulse cycle Base: a note's h pulses fill it exactly) or Pulse bars
+// whole notes (Bars: a clock's last pulse before the restart may be short of a period). Cycles sit on the song grid
+// from tick 0 (synced, playing) or start at the note-on that filled the held set (free clock), so pulse j of cycle
+// c starts at c · Cycle + j · Base · h_ref / h, computed from (c, j) as an exact rational of ticks (1/(D · h)) and
+// converted once through the tempo map: no accumulated drift, the same samples at any block size, across tempo
+// changes and loop wraps. A clock plays at most one pulse per sample (pulses closer than that merge).
+// A note-on starts its clock: its first pulse sounds AT the note-on when that is between its grid onsets (the AP.3
+// idle rule, per clock: each new note's clock is idle), gate · its period long (gate ≤ 100 %: ended at its next
+// onset at the latest), the later pulses on its grid. Any held-set change (a note added, released, retuned) or
+// param change re-derives every h, h_ref and Cycle at that frame; each clock continues at its first onset at or
+// after that frame not yet played. Transport resets (wrap / locate / stop) re-seek every clock to the grid.
+// Per pulse: Gate (of its own period), velocity (source / Fixed, Decay from the clock start), Distance / Steps
+// (pulse j of a cycle plays copy j mod Steps, shifted (j mod Steps) · Distance in the unit; Rotate reads as Shift:
+// there is no pattern to rotate), the Into / Out glides (Step = the same clock's previous / next pulse) and the
+// source's expression.
+// Layers (both modes): 0 … kArpMaxLayers extra copies of every generated note at (p/q)^L of it (the Ratio unit's
+// p/q: exact ratio / harmonic as the Ratio unit gives them), each at gain Layer level L times the note's gain.
+//
 // ---- Velocity, expression -----------------------------------------------------------------------------------------
 // Velocity: as played (the source note's) or Fixed; Decay (ms, 0 = off) moves it linearly to Target from the pattern
 // start (and from every retrigger when Velocity Retrigger is on). Expression carry-over: a Pitch / Gain event of a
@@ -112,6 +136,10 @@ inline constexpr int32_t kArpMaxTuplet = 32;
 inline constexpr int32_t kArpMaxRateDen = 128;
 inline constexpr uint32_t kArpMaxWalk = 1024;  // Harmonic Walk elements (merged over the held notes)
 inline constexpr int32_t kArpMaxWalkRange = 32;
+inline constexpr int32_t kArpMaxProportion = 8;   // AP.4: Pulse proportion entries
+inline constexpr int32_t kArpMaxPulseH = 1024;    // AP.4: h and a fixed h_ref
+inline constexpr int32_t kArpMaxPulseBars = 16;   // AP.4: a Bars cycle
+inline constexpr int32_t kArpMaxLayers = 3;       // AP.4: extra copies per note
 
 enum class ArpStyle : uint8_t {
   Up, Down, UpDown, DownUp, UpAndDown, DownAndUp, Converge, Diverge, ConAndDiverge, PinkyUp, PinkyUpDown, ThumbUp,
@@ -124,6 +152,8 @@ enum class ArpWalkOrder : uint8_t { Up, Down, UpDown, Random };
 enum class ArpGlide : uint8_t { Off, Step, Offset };  // Into: Step = the previous step; Out: Step = the next step
 enum class ArpTranspose : uint8_t { Shift, Rotate };
 enum class ArpVelocitySource : uint8_t { AsPlayed, Fixed };
+enum class ArpPulseSource : uint8_t { Harmonic, Proportion, Order };  // AP.4: where a pulse clock's h comes from
+enum class ArpPulseCycle : uint8_t { Base, Bars };                    // AP.4: the phase-lock cycle
 
 // A step length: Synced num/den of a whole note × m/n (n notes in the time of m), or Free `ms`.
 struct ArpRate {
@@ -171,6 +201,16 @@ struct ArpParams {
   float glideFraction = 0.25f;        // 0 … 1
   RampShape glideShape = RampShape::Linear;
   float glideBend = 0.5f;             // −1 … 1 (Exponential: k = 8 · bend; Overshoot: spring 4 · |bend|)
+  // AP.4: pulse mode, layers.
+  bool pulse = false;
+  ArpPulseSource pulseSource = ArpPulseSource::Harmonic;
+  int32_t pulseRef = 0;               // h_ref: 0 = the lowest h held, else 1 … kArpMaxPulseH
+  ArpPulseCycle pulseCycle = ArpPulseCycle::Base;
+  int32_t pulseBars = 1;              // Bars: 1 … kArpMaxPulseBars whole notes
+  int32_t proportionLen = 0;          // 0 … kArpMaxProportion (0: Proportion falls back to Order)
+  std::array<int32_t, kArpMaxProportion> proportion{4, 5, 6, 7, 8, 9, 10, 11};  // 1 … kArpMaxPulseH each
+  int32_t layers = 0;                 // 0 … kArpMaxLayers
+  std::array<float, kArpMaxLayers> layerLevel{0.7f, 0.5f, 0.35f};  // 0 … 1
 };
 
 // The runtime params a project param slot can drive (ArpStage::map). Values as floats: enums and ints rounded,
@@ -182,6 +222,9 @@ enum class ArpParamId : uint8_t {
   // AP.3
   HarmonicBase, WalkRange, WalkUnder, WalkOrder, IntoSource, OutTarget, IntoOffset, OutOffset, GlideCents, GlideSynced,
   GlideMs, GlideFraction, GlideShape, GlideBend,
+  // AP.4
+  Pulse, PulseSource, PulseRef, PulseCycle, PulseBars, ProportionLen, Proportion1, Proportion2, Proportion3,
+  Proportion4, Proportion5, Proportion6, Proportion7, Proportion8, Layers, LayerLevel1, LayerLevel2, LayerLevel3,
   Count
 };
 void setArpParam(ArpParams& p, ArpParamId id, float value) noexcept;  // RT-safe
@@ -201,6 +244,7 @@ struct ArpStats {
   uint64_t transportJumps = 0;  // loop wraps / locates / stops seen while busy
   uint64_t glides = 0;          // Into / Out glides sent (AP.3)
   uint64_t droppedWalk = 0;     // Harmonic Walk elements beyond kArpMaxWalk (per rebuild)
+  uint64_t pulses = 0;          // AP.4: pulse-clock onsets played (a pulse with layers counts one)
 };
 
 class ArpCore {

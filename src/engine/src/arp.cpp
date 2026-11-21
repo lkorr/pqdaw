@@ -115,6 +115,29 @@ void setArpParam(ArpParams& p, ArpParamId id, float v) noexcept {  // RT-safe
       p.glideShape = static_cast<RampShape>(clampi(v, 0, static_cast<int32_t>(RampShape::Count) - 1));
       break;
     case ArpParamId::GlideBend: p.glideBend = v; break;
+    case ArpParamId::Pulse: p.pulse = on; break;
+    case ArpParamId::PulseSource: p.pulseSource = static_cast<ArpPulseSource>(clampi(v, 0, 2)); break;
+    case ArpParamId::PulseRef: p.pulseRef = clampi(v, 0, kArpMaxPulseH); break;
+    case ArpParamId::PulseCycle: p.pulseCycle = static_cast<ArpPulseCycle>(clampi(v, 0, 1)); break;
+    case ArpParamId::PulseBars: p.pulseBars = clampi(v, 1, kArpMaxPulseBars); break;
+    case ArpParamId::ProportionLen: p.proportionLen = clampi(v, 0, kArpMaxProportion); break;
+    case ArpParamId::Proportion1:
+    case ArpParamId::Proportion2:
+    case ArpParamId::Proportion3:
+    case ArpParamId::Proportion4:
+    case ArpParamId::Proportion5:
+    case ArpParamId::Proportion6:
+    case ArpParamId::Proportion7:
+    case ArpParamId::Proportion8:
+      p.proportion[static_cast<size_t>(static_cast<int>(id) - static_cast<int>(ArpParamId::Proportion1))] =
+          clampi(v, 1, kArpMaxPulseH);
+      break;
+    case ArpParamId::Layers: p.layers = clampi(v, 0, kArpMaxLayers); break;
+    case ArpParamId::LayerLevel1:
+    case ArpParamId::LayerLevel2:
+    case ArpParamId::LayerLevel3:
+      p.layerLevel[static_cast<size_t>(static_cast<int>(id) - static_cast<int>(ArpParamId::LayerLevel1))] = v;
+      break;
     case ArpParamId::Count: break;
   }
 }
@@ -151,6 +174,14 @@ ArpParams sanitized(const ArpParams& in) noexcept {  // RT-safe
   p.glideFraction = unit(p.glideFraction, 0.0f, 1.0f, 0.25f);
   if (static_cast<uint32_t>(p.glideShape) >= static_cast<uint32_t>(RampShape::Count)) p.glideShape = RampShape::Linear;
   p.glideBend = unit(p.glideBend, -1.0f, 1.0f, 0.5f);
+  if (static_cast<uint32_t>(p.pulseSource) > 2) p.pulseSource = ArpPulseSource::Harmonic;
+  p.pulseRef = std::clamp(p.pulseRef, 0, kArpMaxPulseH);
+  if (static_cast<uint32_t>(p.pulseCycle) > 1) p.pulseCycle = ArpPulseCycle::Base;
+  p.pulseBars = std::clamp(p.pulseBars, 1, kArpMaxPulseBars);
+  p.proportionLen = std::clamp(p.proportionLen, 0, kArpMaxProportion);
+  for (int32_t& x : p.proportion) x = std::clamp(x, 1, kArpMaxPulseH);
+  p.layers = std::clamp(p.layers, 0, kArpMaxLayers);
+  for (float& x : p.layerLevel) x = unit(x, 0.0f, 1.0f, 0.0f);
   return p;
 }
 
@@ -167,6 +198,14 @@ struct ArpCore::State {
     float g0 = 1.0f, g1 = 1.0f;  // gain: g0 → g1 over [gT, gT + gLen)
     int64_t gT = 0;
     uint32_t gLen = 0;
+    // AP.4: its pulse clock. The next pulse is (pc, pj): cycle, index in the cycle; pNext its onset (Song: song
+    // sample; Free: engine time), pLast the last onset played.
+    int64_t ph = 1;
+    int64_t pc = 0, pj = 0;
+    int64_t pNext = kNever, pLast = 0;
+    bool pHasLast = false, pImmediate = false;
+    bool pFresh = false;   // added at the pending refresh's frame (its first pulse may sound at the note-on)
+    float pPrevHz = 0.0f;  // its last pulse's own Hz (bend included; Into → Step)
     double centsAt(int64_t t) const noexcept {
       if (cLen == 0 || t >= cT + cLen) return c1;
       return c0 + (c1 - c0) * static_cast<double>(t - cT) / cLen;
@@ -183,6 +222,7 @@ struct ArpCore::State {
     int32_t shift = 0, wraps = 0;
     uint16_t walk = 0;
     bool under = false;
+    uint8_t layer = 0;  // AP.4: × (p/q)^layer
   };
   struct Gen {
     uint32_t id, src;
@@ -195,7 +235,8 @@ struct ArpCore::State {
     float outHz;      // AP.3: Out Offset: the target without the bend
     bool outing;      // AP.3: inside its Out glide
     uint16_t rank;    // its rank in its step (Chord Trigger)
-    int64_t stepK;    // its step's grid index
+    int64_t stepK;    // its step's grid index (Pulse: its pulse's index in the cycle)
+    float level;      // AP.4: its layer's level (1: layer 0)
   };
   struct WalkEl {
     double hz;
@@ -259,6 +300,15 @@ struct ArpCore::State {
   bool gridValid = false;
   int64_t D = 1, Lsub = 1, Rsub = 1;  // the step and retrigger lengths in 1/D ticks
   bool hadHold = false;
+  // Pulse mode (AP.4): the geometry every clock shares (rebuilt by pulseRefresh), the earliest pending onset.
+  bool wasPulse = false, pulseStale = true;
+  int64_t href = 1;
+  int64_t pUnit = 1, pCycSub = 1;  // Song: Base · h_ref and the Cycle in 1/D ticks
+  double pB = 0.0, pCyc = 0.0;     // Free: Base and the Cycle in samples
+  double pBpm = 0.0;
+  int64_t minPulse = kNever;
+  bool pulsePending = false;  // held-set changes at frame pulsePendingFrame: one refresh after that frame's events
+  uint32_t pulsePendingFrame = 0;
 
   ArpParams p;
   ArpParams raw;  // the unsanitized params p came from
@@ -279,6 +329,7 @@ struct ArpCore::State {
     held[i] = held[--numHeld];
     dirty = true;
     permValid = false;
+    pulseStale = true;
     if (numHeld == 0) clock = Clock::None;
   }
   void dropLatched() noexcept {
@@ -463,6 +514,29 @@ struct ArpCore::State {
   // Element `el` of held note `src` (its walk, then its shift / wraps in the unit): fills e's hz and identity.
   // Returns the Hz (0: a rest).
   float pitchOf(const NoteEvent& src, const Elem& el, int32_t extra, NoteEvent& e) const noexcept {
+    const float hz = unlayered(src, el, extra, e);
+    if (el.layer == 0 || !(hz > 0.0f)) return hz;
+    // AP.4: layer L at (p/q)^L of the note, exact (scaled: ratio, harmonic h · P^L / Q^L when an integer).
+    int64_t num = 1, den = 1;
+    for (uint8_t i = 0; i < el.layer; ++i) {
+      num *= p.ratioP;
+      den *= p.ratioQ;
+    }
+    const NoteEvent base = e;
+    const float h = base.harmonic;
+    const int64_t hi = (h >= 1.0f && h < 1e6f && h == std::floor(h)) ? static_cast<int64_t>(h) : 0;
+    scaled(base, num, den, hi, e);
+    return e.hz;
+  }
+  double layerRatio(uint8_t layer) const noexcept {
+    int64_t num = 1, den = 1;
+    for (uint8_t i = 0; i < layer; ++i) {
+      num *= p.ratioP;
+      den *= p.ratioQ;
+    }
+    return static_cast<double>(num) / static_cast<double>(den);
+  }
+  float unlayered(const NoteEvent& src, const Elem& el, int32_t extra, NoteEvent& e) const noexcept {
     if (el.walk == 0) return pitch(src, el.shift + extra, el.wraps, e);
     NoteEvent w = src;
     const int64_t h = harmonicOf(src), m = el.walk;
@@ -597,7 +671,17 @@ struct ArpCore::State {
   // The pitch the pattern plays next for rank `rank` (Out -> Step), as known now: the bend-free Hz times the bend of
   // its source at `at`. 0: nothing next.
   double nextHz(const Gen& g, int64_t at) noexcept {
-    if (prevCount > 0 && prevStepK != g.stepK) return prevHz[std::min<uint32_t>(g.rank, prevCount - 1)];
+    if (p.pulse) {  // AP.4: the same clock's next pulse (copy (j + 1) mod Steps, back to 0 at the cycle's end)
+      const uint32_t s = find(g.src);
+      if (s == kNone) return 0.0;
+      const Held& h = held[s];
+      const int64_t j = g.stepK + 1 < pulseCount(h.ph) ? g.stepK + 1 : 0;
+      NoteEvent tmp;
+      const double hz = pitchOf(h.on, pulseElem(s, j, g.el.layer), 0, tmp);
+      return hz * std::exp2(h.centsAt(at) / 1200.0);
+    }
+    if (prevCount > 0 && prevStepK != g.stepK)
+      return prevHz[std::min<uint32_t>(g.rank, prevCount - 1)] * layerRatio(g.el.layer);
     if (numHeld == 0) return 0.0;
     if (stale()) rebuild();
     int64_t here = pos;
@@ -608,7 +692,8 @@ struct ArpCore::State {
     uint32_t idx = 0;
     int32_t j = 0;
     if (!pick(here, k, rank, false, idx, j)) return 0.0;
-    const Elem el = element(idx, j);
+    Elem el = element(idx, j);
+    el.layer = g.el.layer;
     const Held& h = held[el.slot];
     NoteEvent tmp;
     const double hz = pitchOf(h.on, el, 0, tmp);
@@ -703,6 +788,10 @@ struct ArpCore::State {
   // Starts the clock at block frame `frame` of segment `seg` (the next step: Song, the first grid step at or after
   // it — or, `atNote` (AP.3: a note-on into an idle arp), a step right there; Free, now).
   void startClock(const ClockSegment& seg, uint32_t frame, bool atNote = false) noexcept {
+    if (p.pulse) {
+      startPulse(seg, frame);
+      return;
+    }
     immediate = false;
     if (p.rate.synced && seg.song && b->clock.tempo != nullptr) {
       clock = Clock::Song;
@@ -742,6 +831,7 @@ struct ArpCore::State {
     switch (e.kind) {
       case NoteEventKind::NoteOn: {
         uint32_t i = find(e.noteId);
+        const bool fresh = i == kNone;
         if (i == kNone) {
           if (p.hold && keysDown == 0) {
             while (numHeld > 0) remove(numHeld - 1);  // a new chord replaces the latched one
@@ -767,6 +857,17 @@ struct ArpCore::State {
         h.gLen = 0;
         dirty = true;
         permValid = false;
+        if (p.pulse) {  // AP.4: this note's clock starts (at once when off its grid), every other one re-derived
+          h.pFresh = fresh;
+          if (clock == Clock::None) {
+            startPulse(seg, frame);
+            resetPattern(t, true);
+          } else {
+            if (p.retrigger == ArpRetrigger::Note) resetPattern(t, false);
+            pulseLater(frame);
+          }
+          return;
+        }
         if (clock == Clock::None) {
           startClock(seg, frame, numGens == 0);
           resetPattern(t, true);
@@ -787,6 +888,7 @@ struct ArpCore::State {
           held[i].key = false;
         } else {
           remove(i);
+          if (p.pulse && clock != Clock::None) pulseLater(frame);  // AP.4
         }
         return;
       }
@@ -816,6 +918,7 @@ struct ArpCore::State {
             gens[g].hz = pitchOf(h.on, gens[g].el, 0, r);
             pushExpression(r);
           }
+          if (p.pulse && clock != Clock::None) pulseLater(frame);  // AP.4: its h may change
           return;
         }
         if (!(e.hz > 0.0f) || !(h.on.hz > 0.0f)) return;
@@ -851,7 +954,7 @@ struct ArpCore::State {
         h.gT = t;
         h.gLen = e.rampFrames;
         for (uint32_t g = 0; g < numGens; ++g)
-          if (gens[g].src == e.noteId) pushExpression(noteGain(frame, gens[g].id, h.g1, e.rampFrames));
+          if (gens[g].src == e.noteId) pushExpression(noteGain(frame, gens[g].id, h.g1 * gens[g].level, e.rampFrames));
         return;
       }
       case NoteEventKind::Sync: {
@@ -869,6 +972,7 @@ struct ArpCore::State {
         numHeld = keysDown = 0;
         numGens = 0;
         minOff = minAct = kNever;
+        minPulse = kNever;
         prevCount = curCount = 0;
         clock = Clock::None;
         dirty = true;
@@ -954,14 +1058,17 @@ struct ArpCore::State {
     return true;
   }
 
-  void emit(const Elem& el, uint32_t rank, int64_t kk, float velocity, int64_t t, uint32_t frame, int64_t off) noexcept {
+  // One generated note. `stepFrom`: the Into → Step source of layer 0 (< 0: the pattern's previous step by rank);
+  // `level`: its layer's gain. Returns its own Hz at the onset (bend included; 0: a rest).
+  float emit(const Elem& el, uint32_t rank, int64_t kk, float velocity, int64_t t, uint32_t frame, int64_t off,
+             double stepFrom = -1.0, float level = 1.0f) noexcept {
     const Held& h = held[el.slot];
     NoteEvent on;
     on.frame = frame;
     on.kind = NoteEventKind::NoteOn;
     on.velocity = velocity;
     const float hz = pitchOf(h.on, el, 0, on);
-    if (!(hz > 0.0f)) return;  // a rest (Harmonics below the first)
+    if (!(hz > 0.0f)) return 0.0f;  // a rest (Harmonics below the first)
     if (numGens == kArpMaxSounding) {  // the earliest-ending one makes room
       uint32_t m = 0;
       for (uint32_t i = 1; i < numGens; ++i)
@@ -975,17 +1082,19 @@ struct ArpCore::State {
     const double c = h.centsAt(t);
     on.hz = c != 0.0 ? static_cast<float>(hz * std::exp2(c / 1200.0)) : hz;
     const float own = on.hz;
-    on.gain = h.gainAt(t);
+    on.gain = h.gainAt(t) * level;
     const bool bending = h.cLen != 0 && t < h.cT + h.cLen;
-    Gen g{on.noteId, h.on.noteId, el, hz, off, bending ? h.c1 : c, kNever, kNever, 0.0f, false,
-          static_cast<uint16_t>(rank), kk};
+    Gen g{on.noteId, h.on.noteId, el,    hz, off, bending ? h.c1 : c, kNever, kNever, 0.0f, false,
+          static_cast<uint16_t>(std::min<uint32_t>(rank, 0xFFFFu)), kk, level};
     // AP.3 glides: Into from the previous step / an offset, Out over the end of the gate.
     const int64_t len = off - t;
     int64_t ti = p.into != ArpGlide::Off ? glideFrames(len) : 0, to = p.out != ArpGlide::Off ? glideFrames(len) : 0;
     double from = 0.0;
     if (ti > 0) {
       if (p.into == ArpGlide::Step) {
-        if (prevCount > 0) from = prevHz[std::min(rank, prevCount - 1)];
+        if (stepFrom >= 0.0) from = stepFrom;
+        else if (prevCount > 0) from = prevHz[std::min(rank, prevCount - 1)];
+        from *= layerRatio(el.layer);
       } else {
         from = offsetHz(h, el, hz, p.intoOffset) * (c != 0.0 ? std::exp2(c / 1200.0) : 1.0);
       }
@@ -1011,9 +1120,9 @@ struct ArpCore::State {
                           static_cast<uint32_t>(h.cT + h.cLen - t)));
     }
     if (h.gLen != 0 && t < h.gT + h.gLen)
-      out->push(noteGain(frame, on.noteId, h.g1, static_cast<uint32_t>(h.gT + h.gLen - t)));
+      out->push(noteGain(frame, on.noteId, h.g1 * level, static_cast<uint32_t>(h.gT + h.gLen - t)));
     if (to > 0) g.outAt = off - to;
-    if (rank < kArpMaxHeld) {
+    if (rank < kArpMaxHeld && el.layer == 0) {
       curHz[rank] = own;
       curCount = std::max(curCount, rank + 1);
     }
@@ -1021,6 +1130,17 @@ struct ArpCore::State {
     minOff = std::min(minOff, off);
     minAct = std::min({minAct, g.intoEnd, g.outAt});
     ++stats.notes;
+    return own;
+  }
+
+  float velocityOf(const Held& h, int64_t t) const noexcept {
+    float v = p.velocitySource == ArpVelocitySource::Fixed ? p.fixedVelocity : h.on.velocity;
+    if (p.velocityDecayMs > 0.0f) {
+      const double len = static_cast<double>(p.velocityDecayMs) * 1e-3 * b->clock.sampleRate;
+      const double f = std::min(1.0, static_cast<double>(t - decayStart) / len);
+      v = static_cast<float>(v + (p.velocityTarget - v) * f);
+    }
+    return v;
   }
 
   void step(const ClockSegment& seg, uint32_t frame) noexcept {
@@ -1068,20 +1188,220 @@ struct ArpCore::State {
     for (uint32_t m = 0; m < count; ++m) {
       if (m > 0) pick(here, kk, m, true, idx, j);
       const Elem el = element(idx, j);
-      const Held& h = held[el.slot];
-      float v = p.velocitySource == ArpVelocitySource::Fixed ? p.fixedVelocity : h.on.velocity;
-      if (p.velocityDecayMs > 0.0f) {
-        const double len = static_cast<double>(p.velocityDecayMs) * 1e-3 * b->clock.sampleRate;
-        const double f = std::min(1.0, static_cast<double>(t - decayStart) / len);
-        v = static_cast<float>(v + (p.velocityTarget - v) * f);
-      }
+      const float v = velocityOf(held[el.slot], t);
       emit(el, m, kk, v, t, frame, off);
+      for (int32_t L = 1; L <= p.layers; ++L) {  // AP.4
+        Elem le = el;
+        le.layer = static_cast<uint8_t>(L);
+        emit(le, m, kk, v, t, frame, off, -1.0, p.layerLevel[static_cast<size_t>(L - 1)]);
+      }
     }
     if (curCount > 0) {  // this step's notes are the next one's "previous step"
       std::copy(curHz.begin(), curHz.begin() + curCount, prevHz.begin());
       prevCount = curCount;
       prevStepK = kk;
     }
+  }
+
+  // ---- Pulse mode (AP.4) ----
+  // The h of held note `H` at rank `r` (by Hz): its harmonic, else the proportion's entry, else its order.
+  int64_t pulseHOf(const Held& H, uint32_t r) const noexcept {
+    int64_t v = 0;
+    if (p.pulseSource == ArpPulseSource::Harmonic) {
+      const float x = H.on.harmonic;
+      if (x >= 1.0f && x < 1e6f && x == std::floor(x)) v = static_cast<int64_t>(x);
+    }
+    if (v == 0 && p.pulseSource != ArpPulseSource::Order && p.proportionLen > 0) {
+      const auto len = static_cast<uint32_t>(p.proportionLen);
+      v = static_cast<int64_t>(p.proportion[r % len]) << std::min<uint32_t>(r / len, 16);
+    }
+    if (v == 0) v = static_cast<int64_t>(r) + 1;
+    return std::clamp<int64_t>(v, 1, kArpMaxPulseH);
+  }
+  // Pulses per cycle of a clock with `h` (Base: h exactly; Bars: the onsets before the restart).
+  int64_t pulseCount(int64_t h) const noexcept {
+    if (p.pulseCycle == ArpPulseCycle::Base) return h;
+    if (clock == Clock::Song) return std::max<int64_t>(1, (pCycSub * h + pUnit - 1) / pUnit);
+    const double x = pCyc * static_cast<double>(h) / (pB * static_cast<double>(href));
+    return std::max<int64_t>(1, static_cast<int64_t>(std::ceil(x - 1e-9)));
+  }
+  void pulseAdvance(int64_t h, int64_t& c, int64_t& j) const noexcept {
+    if (++j >= pulseCount(h)) {
+      j = 0;
+      ++c;
+    }
+  }
+  void pulseBack(int64_t h, int64_t& c, int64_t& j) const noexcept {
+    if (--j < 0) {
+      --c;
+      j = pulseCount(h) - 1;
+    }
+  }
+  // Song: pulse (c, j) of a clock with `h` at 1/D-tick position sub + frac: c · Cycle + j · pUnit / h, exact (pUnit
+  // = a · h + r, so j · pUnit / h = j · a + j · r / h with j · r small).
+  void pulseSub(int64_t h, int64_t c, int64_t j, int64_t& sub, double& frac) const noexcept {
+    const int64_t a = pUnit / h, r = pUnit - a * h, jr = j * r, q = floorDiv(jr, h);
+    sub = c * pCycSub + j * a + q;
+    frac = static_cast<double>(jr - q * h) / static_cast<double>(h);
+  }
+  double pulseFreeAt(int64_t h, int64_t c, int64_t j) const noexcept {
+    return t0 + static_cast<double>(c) * pCyc +
+           static_cast<double>(j) * (pB * static_cast<double>(href)) / static_cast<double>(h);
+  }
+  // The onset of pulse (c, j): Song: a song sample; Free: engine time.
+  int64_t pulseOnset(int64_t h, int64_t c, int64_t j) const noexcept {
+    if (clock == Clock::Song) {
+      int64_t sub;
+      double frac;
+      pulseSub(h, c, j, sub, frac);
+      return roundSample(songAt(sub, frac));
+    }
+    return static_cast<int64_t>(std::floor(pulseFreeAt(h, c, j) + 0.5));
+  }
+  // What pulse j (in its cycle) of held slot `s` plays: copy j mod Steps, layer `layer`.
+  Elem pulseElem(uint32_t s, int64_t j, uint8_t layer) const noexcept {
+    Elem el;
+    el.slot = s;
+    el.shift = p.steps > 1 ? static_cast<int32_t>(j % p.steps) * p.distance : 0;
+    el.layer = layer;
+    return el;
+  }
+  // Clock of held[slot] to its first onset at or after `at` that it has not played; `atNote`: a note-on at `at`
+  // (an onset there, else an immediate pulse there as the grid's previous pulse).
+  void pulseSeek(uint32_t slot, int64_t at, bool atNote) noexcept {
+    Held& H = held[slot];
+    atNote = atNote || (H.pImmediate && H.pNext == at);  // a pending immediate pulse stays one
+    const int64_t h = H.ph, J = pulseCount(h);
+    int64_t c, j;
+    if (clock == Clock::Song) {
+      const double sub = b->clock.tempo->samplesToTicks(at, b->clock.sampleRate) * static_cast<double>(D);
+      c = static_cast<int64_t>(std::floor(sub / static_cast<double>(pCycSub)));
+      const double rel = sub - static_cast<double>(c) * static_cast<double>(pCycSub);
+      j = static_cast<int64_t>(std::floor(rel * static_cast<double>(h) / static_cast<double>(pUnit)));
+    } else {
+      const double rel = static_cast<double>(at) - t0;
+      c = static_cast<int64_t>(std::floor(rel / pCyc));
+      j = static_cast<int64_t>(std::floor((rel - static_cast<double>(c) * pCyc) * static_cast<double>(h) /
+                                          (pB * static_cast<double>(href))));
+    }
+    j = std::clamp<int64_t>(j, 0, J - 1);
+    for (int i = 0; i < 64 && pulseOnset(h, c, j) < at; ++i) pulseAdvance(h, c, j);
+    for (int i = 0; i < 64; ++i) {
+      int64_t bc = c, bj = j;
+      pulseBack(h, bc, bj);
+      if (pulseOnset(h, bc, bj) < at) break;
+      c = bc;
+      j = bj;
+    }
+    if (H.pHasLast)
+      for (int i = 0; i < 64 && pulseOnset(h, c, j) <= H.pLast; ++i) pulseAdvance(h, c, j);
+    H.pc = c;
+    H.pj = j;
+    H.pNext = pulseOnset(h, c, j);
+    H.pImmediate = false;
+    if (atNote && H.pNext != at) {
+      pulseBack(h, H.pc, H.pj);
+      H.pNext = at;
+      H.pImmediate = true;
+    }
+  }
+  // Re-derives every h, h_ref and the Cycle at block frame `frame` of `seg`, and re-seeks every clock there (a
+  // note added there: pFresh). O(held) per call: held-set changes at one frame share one call (pulseLater).
+  void pulseRefresh(const ClockSegment& seg, uint32_t frame) noexcept {
+    pulseStale = false;
+    pulsePending = false;
+    minPulse = kNever;
+    if (numHeld == 0 || clock == Clock::None) return;
+    if (stale()) rebuild();
+    int64_t lo = kArpMaxPulseH;
+    for (uint32_t r = 0; r < numHeld; ++r) {
+      Held& H = held[sorted[r]];
+      H.ph = pulseHOf(H, r);
+      lo = std::min(lo, H.ph);
+    }
+    href = p.pulseRef > 0 ? p.pulseRef : lo;
+    int64_t at;
+    if (clock == Clock::Song) {
+      at = seg.pos + (frame - seg.frame);
+      pUnit = Lsub * href;
+      pCycSub = p.pulseCycle == ArpPulseCycle::Base ? pUnit : p.pulseBars * kTicksPerWhole * D;
+    } else {
+      at = b->time + frame;
+      pB = freePeriod();
+      pBpm = b->clock.bpm;
+      pCyc = p.pulseCycle == ArpPulseCycle::Base
+                 ? pB * static_cast<double>(href)
+                 : std::max(1.0, static_cast<double>(p.pulseBars * kTicksPerWhole) * samplesPerTick());
+    }
+    for (uint32_t i = 0; i < numHeld; ++i) {
+      pulseSeek(i, at, held[i].pFresh);
+      held[i].pFresh = false;
+      minPulse = std::min(minPulse, held[i].pNext);
+    }
+  }
+  void pulseLater(uint32_t frame) noexcept {
+    pulsePending = true;
+    pulsePendingFrame = frame;
+  }
+  void startPulse(const ClockSegment& seg, uint32_t frame) noexcept {
+    immediate = false;
+    clock = p.rate.synced && seg.song && b->clock.tempo != nullptr ? Clock::Song : Clock::Free;
+    t0 = static_cast<double>(b->time + frame);
+    for (uint32_t i = 0; i < numHeld; ++i) {
+      held[i].pHasLast = held[i].pImmediate = false;
+      held[i].pPrevHz = 0.0f;
+    }
+    (void)seg;
+    pulseLater(frame);
+  }
+  // Pulse (pc, pj) of held slot `s`, due at `frame`: its notes (layers included), then the clock moves on.
+  void pulseFire(uint32_t s, uint32_t frame) noexcept {
+    Held& H = held[s];
+    const int64_t h = H.ph, t = b->time + frame, c = H.pc, j = H.pj, onS = H.pNext;
+    int64_t nc = c, nj = j;
+    pulseAdvance(h, nc, nj);
+    const int64_t nextOn = pulseOnset(h, nc, nj);
+    int64_t len;
+    if (clock == Clock::Song) {
+      int64_t sub;
+      double frac;
+      pulseSub(h, c, j, sub, frac);
+      const double per = static_cast<double>(pUnit) / static_cast<double>(h);
+      const SampleTime offS = roundSample(songAt(sub, frac + static_cast<double>(p.gate) * per));
+      len = offS - (H.pImmediate ? roundSample(songAt(sub, frac)) : onS);
+    } else {
+      len = std::llround(static_cast<double>(p.gate) * pB * static_cast<double>(href) / static_cast<double>(h));
+    }
+    if (H.pImmediate && p.gate <= 1.0f) len = std::min<int64_t>(len, nextOn - onS);
+    const int64_t off = t + std::max<int64_t>(1, len);
+    H.pLast = onS;
+    H.pHasLast = true;
+    H.pImmediate = false;
+    H.pc = nc;
+    H.pj = nj;
+    H.pNext = nextOn;
+    for (int i = 0; i < 64 && H.pNext <= onS; ++i) {  // pulses closer than a sample merge
+      pulseAdvance(h, H.pc, H.pj);
+      H.pNext = pulseOnset(h, H.pc, H.pj);
+    }
+    if (H.pNext <= onS) pulseSeek(s, onS + 1, false);
+    ++stats.pulses;
+    ++stats.steps;
+    const float v = velocityOf(H, t);
+    const float own = emit(pulseElem(s, j, 0), 0xFFFFu, j, v, t, frame, off, H.pPrevHz, 1.0f);
+    for (int32_t L = 1; L <= p.layers; ++L)
+      emit(pulseElem(s, j, static_cast<uint8_t>(L)), 0xFFFFu, j, v, t, frame, off, H.pPrevHz,
+           p.layerLevel[static_cast<size_t>(L - 1)]);
+    if (own > 0.0f) H.pPrevHz = own;
+  }
+  // The clocks due at `frame` of `seg` (in Hz order), then the next pending onset.
+  void pulseDue(const ClockSegment& seg, uint32_t frame) noexcept {
+    const int64_t at = clock == Clock::Song ? seg.pos + (frame - seg.frame) : b->time + frame;
+    if (stale()) rebuild();
+    for (uint32_t r = 0; r < numHeld; ++r)
+      if (held[sorted[r]].pNext <= at) pulseFire(sorted[r], frame);
+    minPulse = kNever;
+    for (uint32_t i = 0; i < numHeld; ++i) minPulse = std::min(minPulse, held[i].pNext);
   }
 
   // A loop wrap, a locate (stop: also drops the latched notes no key holds) at `frame`.
@@ -1099,6 +1419,10 @@ struct ArpCore::State {
       if (!p.hold) dropLatched();
     }
     updateGrid();
+    if (p.pulse != wasPulse) {  // AP.4: a mode switch re-seeks the clock
+      wasPulse = p.pulse;
+      clock = Clock::None;
+    }
     ClockSegment whole{0, blk.frames, false, 0};
     const ClockSegment* segs = blk.clock.numSegments > 0 ? blk.clock.segments : &whole;
     const uint32_t numSegs = blk.clock.numSegments > 0 ? blk.clock.numSegments : 1u;
@@ -1113,7 +1437,8 @@ struct ArpCore::State {
       expectPos = seg.pos + seg.len;
       const bool wantSong = song && p.rate.synced;
       if (clock != Clock::None && (clock == Clock::Song) != wantSong) clock = Clock::None;
-      if (clock == Clock::Free) {  // the period follows the rate / tempo; the next step stays where it is
+      if (clock == Clock::Free && p.pulse && (freePeriod() != pB || blk.clock.bpm != pBpm)) pulseStale = true;
+      if (clock == Clock::Free && !p.pulse) {  // the period follows the rate / tempo; the next step stays where it is
         const double np = freePeriod();
         if (np != period) {
           t0 += static_cast<double>(k) * (period - np);
@@ -1122,6 +1447,7 @@ struct ArpCore::State {
         }
       }
       if (clock == Clock::None && numHeld > 0) startClock(seg, seg.frame);
+      else if (p.pulse && clock != Clock::None && pulseStale) pulseRefresh(seg, seg.frame);
       const uint32_t end = seg.frame + seg.len;
       const bool lastSeg = si + 1 == numSegs;
       for (;;) {
@@ -1130,6 +1456,10 @@ struct ArpCore::State {
           const uint32_t f = std::min(in.events[ei].frame, last);
           if (f < end || lastSeg) fe = std::max(f, seg.frame);
         }
+        if (pulsePending && fe != pulsePendingFrame) {  // AP.4: that frame's events are in: one refresh
+          if (p.pulse && clock != Clock::None) pulseRefresh(seg, pulsePendingFrame);
+          else pulsePending = false;
+        }
         uint32_t fo = UINT32_MAX;
         if (minOff != kNever && minOff < blk.time + end)
           fo = static_cast<uint32_t>(std::max<int64_t>(minOff - blk.time, seg.frame));
@@ -1137,7 +1467,12 @@ struct ArpCore::State {
         if (minAct != kNever && minAct < blk.time + end)
           fa = static_cast<uint32_t>(std::max<int64_t>(minAct - blk.time, seg.frame));
         uint32_t fs = UINT32_MAX;
-        if (clock == Clock::Song) {
+        if (p.pulse) {  // AP.4: the earliest clock
+          if (clock == Clock::Song && minPulse < seg.pos + seg.len)
+            fs = seg.frame + static_cast<uint32_t>(std::max<int64_t>(minPulse - seg.pos, 0));
+          else if (clock == Clock::Free && minPulse < blk.time + end)
+            fs = static_cast<uint32_t>(std::max<int64_t>(minPulse - blk.time, seg.frame));
+        } else if (clock == Clock::Song) {
           if (nextSong < seg.pos + seg.len) fs = seg.frame + static_cast<uint32_t>(std::max<SampleTime>(nextSong - seg.pos, 0));
         } else if (clock == Clock::Free) {
           if (nextTime < blk.time + end) fs = static_cast<uint32_t>(std::max<int64_t>(nextTime - blk.time, seg.frame));
@@ -1150,6 +1485,8 @@ struct ArpCore::State {
           actDue(blk.time + m, m);
         } else if (m == fe) {
           handle(in.events[ei++], seg, m);
+        } else if (p.pulse) {
+          pulseDue(seg, m);
         } else {
           step(seg, m);
         }
@@ -1178,6 +1515,7 @@ bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, cons
     std::memcpy(&s.raw, &params, sizeof(ArpParams));
     s.rawValid = true;
     s.p = sanitized(params);
+    s.pulseStale = true;  // AP.4: re-derive the pulse clocks at the next segment
   }
   s.b = &block;
   s.out = &out;
