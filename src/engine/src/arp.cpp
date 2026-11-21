@@ -396,6 +396,13 @@ struct ArpCore::State {
   bool pulsePending = false;  // held-set changes at frame pulsePendingFrame: one refresh after that frame's events
   uint32_t pulsePendingFrame = 0;
 
+  // AP.6: the panel status (null: none) and what its pattern list was last written from.
+  std::shared_ptr<NoteStageStatus> status;
+  bool patternNew = true, statusIdle = false;
+  ArpStyle statusStyle = ArpStyle::Count;
+  ArpWalkOrder statusOrder = ArpWalkOrder::Up;
+  bool statusPulse = false;
+
   ArpParams p;
   ArpParams raw;  // the unsanitized params p came from
   bool rawValid = false;
@@ -426,6 +433,7 @@ struct ArpCore::State {
 
   void rebuild() noexcept {
     dirty = false;
+    patternNew = true;
     const uint32_t n = numHeld;
     for (uint32_t i = 0; i < n; ++i) sorted[i] = arrival[i] = static_cast<uint8_t>(i);
     std::sort(sorted.begin(), sorted.begin() + n, [&](uint8_t a, uint8_t b) {
@@ -1157,6 +1165,80 @@ struct ArpCore::State {
     return true;
   }
 
+  // ---- AP.6: the panel status (arp.h "Panel status") ----
+  bool randomOrder() const noexcept {
+    switch (p.style) {
+      case ArpStyle::Random:
+      case ArpStyle::RandomOther:
+      case ArpStyle::RandomOnce: return true;
+      case ArpStyle::HarmonicWalk: return p.walkOrder == ArpWalkOrder::Random;
+      default: return false;
+    }
+  }
+  // The source Hz of element `idx` of the ordered list.
+  float listHz(uint32_t idx) const noexcept {
+    if (p.style == ArpStyle::HarmonicWalk) return idx < numWalk ? static_cast<float>(walk[idx].hz) : 0.0f;
+    if (idx >= numHeld) return 0.0f;
+    return held[(p.style == ArpStyle::PlayOrder ? arrival : sorted)[idx]].on.hz;
+  }
+  // The list element position e of a period plays (an order that is not random; pick's mapping).
+  uint32_t idxAt(uint32_t e) const noexcept {
+    if (p.style != ArpStyle::HarmonicWalk) return e < kArpMaxPattern ? pattern[e] : 0u;
+    const uint32_t n = numWalk;
+    switch (p.walkOrder) {
+      case ArpWalkOrder::Down: return n - 1 - e;
+      case ArpWalkOrder::UpDown: return e < n ? e : 2 * n - 2 - e;
+      default: return e;
+    }
+  }
+  // The pattern list, after a block in which it may have changed (one O(entries) write).
+  void statusBlock() noexcept {
+    const bool idle = numHeld == 0;
+    if (idle) {
+      if (!statusIdle) {
+        status->writeIdle();
+        statusIdle = true;
+      }
+      patternNew = false;
+      return;
+    }
+    if (stale()) rebuild();
+    if (!patternNew && !statusIdle && statusStyle == p.style && statusPulse == p.pulse && statusOrder == p.walkOrder)
+      return;
+    patternNew = statusIdle = false;
+    statusStyle = p.style;
+    statusPulse = p.pulse;
+    statusOrder = p.walkOrder;
+    const bool chord = !p.pulse && p.style == ArpStyle::ChordTrigger;
+    if (p.pulse || chord) {
+      status->writePattern(numHeld, numHeld, chord, [&](uint32_t i) { return held[sorted[i]].on.hz; });
+    } else if (randomOrder()) {
+      status->writePattern(elemCount(), numHeld, false, [&](uint32_t i) { return listHz(i); });
+    } else {
+      const auto len = static_cast<uint32_t>(std::max<int64_t>(periodLen(), 1));
+      status->writePattern(len, numHeld, false, [&](uint32_t i) { return listHz(idxAt(i)); });
+    }
+  }
+  // A step that is due: each lane's position (lane position `lp` mod its length), the pattern position (−1: a rest).
+  void statusStep(int64_t lp, int32_t position, int32_t copy) noexcept {
+    int32_t l[kArpLaneCount];
+    for (size_t i = 0; i < kArpLaneCount; ++i) {
+      const int64_t len = p.laneLength[i];
+      l[i] = static_cast<int32_t>(lp - floorDiv(lp, len) * len);
+    }
+    status->writeStep(l, kArpLaneCount, position, copy);
+  }
+  // The pattern position step `here` played element `idx` at (statusBlock's list).
+  int32_t statusPosition(int64_t here, uint32_t idx) const noexcept {
+    if (p.style == ArpStyle::ChordTrigger) return 0;
+    if (randomOrder()) return static_cast<int32_t>(idx);
+    const int64_t P = std::max<int64_t>(periodLen(), 1);
+    const int64_t cycle = P * p.steps;
+    int64_t c = (here + p.offset) % cycle;
+    if (c < 0) c += cycle;
+    return static_cast<int32_t>(c % P);
+  }
+
   // ---- Step lanes (AP.5) ----
   bool laneOn(ArpLane l) const noexcept { return p.laneOn[static_cast<size_t>(l)]; }
   // Lane `l` at lane position `lp` (mod its length): its step's slot (the block's value) or fixed value, clamped.
@@ -1418,7 +1500,10 @@ struct ArpCore::State {
     const int64_t here = pos++;
     uint32_t idx = 0;
     int32_t j = 0;
-    if (!pick(here, kk, 0, true, idx, j) || sc.kind == ArpStepKind::Skip || !chancePlays(kk, kk, 0x100u)) {
+    const bool picked = pick(here, kk, 0, true, idx, j);
+    const bool plays = picked && sc.kind != ArpStepKind::Skip && chancePlays(kk, kk, 0x100u);
+    if (status) statusStep(kk, plays ? statusPosition(here, idx) : -1, j);  // AP.6
+    if (!plays) {
       if (sc.kind == ArpStepKind::Skip || laneOn(ArpLane::Chance)) ++stats.laneRests;
       endUntied(t, kk, 0, false);
       return;
@@ -1649,7 +1734,14 @@ struct ArpCore::State {
     }
     if (H.pNext <= onS) pulseSeek(s, onS + 1, false);
     const uint32_t src = H.on.noteId;
-    if (sc.kind == ArpStepKind::Skip || !chancePlays(sc.key, sc.key, 0x10000u + static_cast<uint32_t>(h))) {
+    const bool plays = sc.kind != ArpStepKind::Skip && chancePlays(sc.key, sc.key, 0x10000u + static_cast<uint32_t>(h));
+    if (status) {  // AP.6: the pulsing note's rank by Hz (the pattern list of Pulse mode)
+      int32_t rank = -1;
+      for (uint32_t r = 0; plays && r < numHeld; ++r)
+        if (sorted[r] == s) rank = static_cast<int32_t>(r);
+      statusStep(sc.key, rank, static_cast<int32_t>(j % std::max(p.steps, 1)));
+    }
+    if (!plays) {
       ++stats.laneRests;
       endUntied(t, sc.key, src, true);
       return;
@@ -1826,7 +1918,9 @@ bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, cons
   s.b = &block;
   s.out = &out;
   s.stageIndex = stageIndex_;
-  return s.run(in);
+  const bool busy = s.run(in);
+  if (s.status) s.statusBlock();  // AP.6
+  return busy;
 }
 
 void ArpCore::flush(uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept {  // RT-safe
@@ -1842,6 +1936,7 @@ void ArpCore::flush(uint32_t frame, EventBuffer& out, EventBuffer& held) noexcep
   s.numHeld = s.keysDown = 0;
   s.clock = State::Clock::None;
   s.prevValid = false;
+  if (s.status) s.statusBlock();  // AP.6: idle
 }
 
 void ArpCore::adopt(ArpCore& old) noexcept {  // RT-safe
@@ -1858,6 +1953,8 @@ void ArpCore::adopt(ArpCore& old) noexcept {  // RT-safe
   std::swap(a.laneSlot, b.laneSlot);
   std::swap(a.laneScale, b.laneScale);
   std::swap(a.laneOffset, b.laneOffset);
+  std::swap(a.status, b.status);  // AP.6
+  a.patternNew = true;
   a.rawValid = false;  // the new stage's params: re-sanitized at the next block
   a.pulseStale = true;
   a.retable = true;    // its table may differ: the sounding notes re-derive their pitch
@@ -1876,6 +1973,12 @@ void ArpCore::mapLaneStep(ArpLane lane, int32_t step, uint32_t param, float scal
 
 void ArpCore::setTableMailbox(std::shared_ptr<ArpTableMailbox> box) noexcept { s_->box = std::move(box); }
 
+void ArpCore::setStatus(std::shared_ptr<NoteStageStatus> status) noexcept {
+  s_->status = std::move(status);
+  s_->patternNew = true;
+  s_->statusIdle = false;
+}
+
 uint32_t ArpCore::heldCount() const noexcept { return s_->numHeld; }
 uint32_t ArpCore::soundingCount() const noexcept { return s_->numGens; }
 const ArpStats& ArpCore::stats() const noexcept { return s_->stats; }
@@ -1883,8 +1986,9 @@ const ArpStats& ArpCore::stats() const noexcept { return s_->stats; }
 // ---- ArpStage -----------------------------------------------------------------------------------------------------
 
 ArpStage::ArpStage(const ArpParams& params, std::vector<Mapping> map, ArpDegreeTable table, const ArpLaneSteps& steps,
-                   std::shared_ptr<ArpTableMailbox> box)
+                   std::shared_ptr<ArpTableMailbox> box, std::shared_ptr<NoteStageStatus> status)
     : params_(params), core_(0, std::move(table)) {
+  core_.setStatus(std::move(status));
   processFn = &ArpStage::processStage;
   flushFn = &ArpStage::flushStage;
   adoptFn = &ArpStage::adoptStage;

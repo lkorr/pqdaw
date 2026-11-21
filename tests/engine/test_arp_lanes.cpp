@@ -442,3 +442,62 @@ TEST_CASE("arp (AP.2b): a republished chain's stage adopts the running state: no
   CHECK(handHeld.size() == 0);  // no key re-sent: the held set moved with the state
   CHECK(keyOf(got) == keyOf(want));
 }
+
+// AP.6: the panel status (arp.h "Panel status"): at every step the lane positions (grid step mod each lane's length)
+// and the pattern position; the pattern list in play order (UpDown over C E G: C E G E); idle once nothing is held.
+// Block-size invariant (one step per 6000-sample block, or 37-sample blocks); the writes allocate nothing.
+TEST_CASE("arp status: lane positions, pattern positions and the pattern list for the device panel") {
+  for (const uint32_t block : {6000u, 37u}) {
+    CAPTURE(block);
+    e::ArpParams p = base();
+    p.style = e::ArpStyle::UpDown;
+    p.laneLength[static_cast<size_t>(e::ArpLane::Velocity)] = 3;
+    p.laneLength[static_cast<size_t>(e::ArpLane::Gate)] = 5;
+    auto status = std::make_shared<pq::NoteStageStatus>();
+    e::ArpStage st(p, {}, {}, {}, {}, status);
+    Rig rig;
+    std::vector<int32_t> pos, vel, gate;
+    uint64_t seen = 0;
+    rig.before = [&](int64_t) {  // after each step (the status's step count moved), the first 8
+      const uint64_t n = status->steps.load();
+      if (n == seen || pos.size() == 8) return;
+      seen = n;
+      pos.push_back(status->position.load());
+      vel.push_back(status->lane[0].load());
+      gate.push_back(status->lane[1].load());
+    };
+    const auto out = rig.run(st,
+                             {{0, on(1, 261.63f)}, {0, on(2, 329.63f)}, {0, on(3, 392.0f)},
+                              {8 * k16 + 10, e::noteOff(0, 1)}, {8 * k16 + 10, e::noteOff(0, 2)}, {8 * k16 + 10, e::noteOff(0, 3)}},
+                             9 * k16, block);
+    CHECK(rig.rtViolations == 0);
+    // Steps 0 … 7 seen after each: UpDown positions 0 1 2 3 0 1 2 3; lanes at k mod 3 and k mod 5.
+    REQUIRE(pos.size() == 8);
+    CHECK(pos == std::vector<int32_t>{0, 1, 2, 3, 0, 1, 2, 3});
+    CHECK(vel == std::vector<int32_t>{0, 1, 2, 0, 1, 2, 0, 1});
+    CHECK(gate == std::vector<int32_t>{0, 1, 2, 3, 4, 0, 1, 2});
+    // Released: idle.
+    pq::NoteStageStatus::Pattern pat;
+    REQUIRE(status->readPattern(pat));
+    CHECK(pat.count == 0);
+    CHECK(pat.held == 0);
+    CHECK(status->position.load() == -1);
+    CHECK(status->lane[0].load() == -1);
+  }
+  // While held: the list in play order.
+  e::ArpParams p = base();
+  p.style = e::ArpStyle::UpDown;
+  auto status = std::make_shared<pq::NoteStageStatus>();
+  e::ArpStage st(p, {}, {}, {}, {}, status);
+  Rig rig;
+  (void)rig.run(st, {{0, on(1, 261.63f)}, {0, on(2, 329.63f)}, {0, on(3, 392.0f)}}, 2 * k16, 64);
+  pq::NoteStageStatus::Pattern pat;
+  REQUIRE(status->readPattern(pat));
+  CHECK(pat.held == 3);
+  CHECK_FALSE(pat.chord);
+  REQUIRE(pat.count == 4);
+  CHECK(pat.hz[0] == doctest::Approx(261.63f));
+  CHECK(pat.hz[1] == doctest::Approx(329.63f));
+  CHECK(pat.hz[2] == doctest::Approx(392.0f));
+  CHECK(pat.hz[3] == doctest::Approx(329.63f));
+}

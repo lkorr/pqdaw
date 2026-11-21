@@ -2312,3 +2312,13 @@ whose step does not play (chance, nothing held, Repeats) ends at that onset. (5)
 length (synced: the song grid; free: the free clock), not the pattern position: lanes do not restart on a retrigger.
 (6) Lane steps are 192 rows of kArpParamInfo (runtime) read only when their step plays (ArpStage routes them to the
 core); the generic device panel lists them until AP.6's step editor. Status: open.
+
+## Q?-AP.6-a · 2026-11-21 · AP.6 · Arp panel: what one visibility source cannot say, and what the pattern view shows
+Context: a panel element's Visibility names ONE source element (a chain is an AND), so "Base shown for the Harmonics unit
+OR Harmonic Walk" cannot be said. Options: an OR in Visibility (document + file format + panel editor), two Base
+controls, or one rule. Chosen (most reversible): Base shows with Unit Harmonics only; the walk row (Range / Under /
+Order) with style Harmonic Walk — a walk in Degrees / Ratio still uses Base for ungrouped notes, set it by switching the
+unit to Harmonics first. Also chosen: (1) the pattern view shows the SOURCE notes' Hz in play order (before Distance /
+Steps copies, Transpose lane and Layers; Random styles: the elements by Hz, the drawn one lit; Pulse: the held notes by
+Hz, the pulsing one lit), ≤ 64 entries; (2) the proportion's 8 values all show with source Proportion (not only the
+first Length of them); (3) a lane's current step is lit only while the lane is on. Status: open.

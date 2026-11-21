@@ -132,6 +132,9 @@ void registerTransferElement(void (*reg)(std::string_view kind, std::string_view
 // MX.3: the Math module's op circle (math_element.cpp, kind "mathop").
 void registerMathElement(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
                                      std::span<const std::string_view> slots, float w, float h, ElementFactory f));
+// AP.6: the arpeggiator panel's kinds (arp_elements.cpp: presets, steplane, arppattern, rampshape).
+void registerArpElements(void (*reg)(std::string_view kind, std::string_view label, std::span<const StyleSpec> style,
+                                     std::span<const std::string_view> slots, float w, float h, ElementFactory f));
 // MX.3: a "scope" bound to several signals (doc::elementTraces) is a trace scope (trace_element.cpp); its style fields.
 std::span<const StyleSpec> traceScopeStyle() noexcept;
 std::unique_ptr<Element> makeTraceScope(const doc::PanelElement& desc);

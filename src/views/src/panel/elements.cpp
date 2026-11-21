@@ -754,6 +754,9 @@ public:
       {"decimals", StyleSpec::Type::Number, -1.0, {}, {}, -1.0, 6.0},
       {"prefix", StyleSpec::Type::Text, 0, ""},
       {"suffix", StyleSpec::Type::Text, 0, ""},
+      // AP.6: the text shown for the value 0 ("" : the value): a count where 0 means "no limit" (∞), a reference where it
+      // means "the lowest".
+      {"zero", StyleSpec::Type::Text, 0, ""},
   };
   // bug-mod-ghost: a number's value is its text, and a ghost draws no text: no ghost (its box would only dim the text).
   void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
@@ -767,6 +770,9 @@ public:
     const double decimals = num("decimals", -1.0);
     const std::string_view prefix = txt("prefix", ""), suffix = txt("suffix", "");
     const BoundInfo& i = bound(t);
+    if (const std::string_view zero = txt("zero", ""); !zero.empty() && i.valid &&
+        std::fabs(dsp::evalCurveUnits(i.curve, std::clamp(position, 0.0, 1.0))) < 1e-9)
+      return std::string(zero);
     if (decimals < 0.0 || !i.valid) {
       if (prefix.empty() && suffix.empty()) return readoutText(t, position);
       return std::string(prefix) + readoutText(t, position) + std::string(suffix);
@@ -1512,6 +1518,7 @@ void registerGeneric() {
     registerCableSource(reg);  // DY.2
     registerTransferElement(reg);  // DY.3
     registerMathElement(reg);  // MX.3
+    registerArpElements(reg);  // AP.6
   });
 }
 

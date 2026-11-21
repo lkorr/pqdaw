@@ -281,6 +281,7 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       lk->onAnalysisTaps = [vc] { vc->analysisTapsChanged(); };
       // GU.7: a display placed on a panel reads the tap the lowering put on its signal
       app->ctx_->setSignalTapSource([lk](doc::DeviceId d, std::string_view path) { return lk->metaSignalTap(d, path, 0); });
+      app->ctx_->setNoteStatusSource([lk](doc::DeviceId d) { return lk->noteStageStatus(d); });  // AP.6: the arp's panel
     }
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());

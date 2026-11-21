@@ -139,6 +139,15 @@
 // current bend / gain (inside a ramp: its value at the step, then the rest of the ramp). A retune (kNoteEventRetune)
 // re-derives the held note and its sounding steps' identities. Sync / conditional gains of a held note are dropped.
 //
+// ---- Panel status (AP.6) ------------------------------------------------------------------------------------------
+// With a NoteStageStatus set (setStatus; the playback link gives each arpeggiator device one), every step / pulse that
+// is due writes each lane's position (lane position mod its length) and the pattern position, and the pattern list is
+// written after a block in which the held set or what orders it changed: the entries in play order — the pattern's
+// positions (Up, UpDown …: one per position of a period, Harmonic Walk: the walk's), the elements by Hz for Random /
+// Random Other / Random Once / Walk Random (the position: the element drawn), the held notes by Hz for Chord Trigger
+// (all lit) and Pulse (the position: the pulsing note's rank) — the source notes' Hz, before Distance / Transpose /
+// Layers. Nothing held: idle. Cost: a few relaxed stores per step, one O(entries) write per held-set change.
+//
 // ---- Capacities -----------------------------------------------------------------------------------------------------
 // kArpMaxHeld source notes (a note-on beyond: dropped, counted); kArpMaxSounding generated notes (beyond: the oldest
 // ends at the new step's frame, counted). Per block O(events + steps + gate ends in the block); a block with nothing
@@ -152,6 +161,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/core/note_stage_status.h"
 #include "pq/engine/note_events.h"
 #include "pq/engine/note_stage.h"
 
@@ -492,6 +502,10 @@ public:
   void mapLaneStep(ArpLane lane, int32_t step, uint32_t param, float scale, float offset) noexcept;
   // AP.2b: where a new degree table comes from while the core runs (non-RT, before the first block).
   void setTableMailbox(std::shared_ptr<ArpTableMailbox> box) noexcept;
+  // AP.6: where the core shows its device panel what it plays (pq/core/note_stage_status.h): the lane positions and
+  // pattern position at every step, the pattern list when the held set or its order changes, idle when nothing is held.
+  // Null (the default): nothing is written. Non-RT (before the first block); kept by adopt (each core keeps its own).
+  void setStatus(std::shared_ptr<NoteStageStatus> status) noexcept;
 
   uint32_t heldCount() const noexcept;      // RT-safe
   uint32_t soundingCount() const noexcept;  // RT-safe
@@ -520,8 +534,10 @@ public:
   // every block start). AP.2b: Mapping::add entries add a bus value (in the param's units: a modulation wire's
   // previous block, lower.h "Note devices") to the mapping of the same id before them; `steps` the fixed lane values;
   // `box` (optional) hands it later degree tables.
+  // AP.6: `status` (optional) is what the device panel reads (ArpCore::setStatus).
   explicit ArpStage(const ArpParams& params = {}, std::vector<Mapping> map = {}, ArpDegreeTable table = {},
-                    const ArpLaneSteps& steps = {}, std::shared_ptr<ArpTableMailbox> box = {});
+                    const ArpLaneSteps& steps = {}, std::shared_ptr<ArpTableMailbox> box = {},
+                    std::shared_ptr<NoteStageStatus> status = {});
   void setIndex(uint32_t index) override { core_.setStageIndex(index); }
   ArpCore& core() noexcept { return core_; }
   const ArpParams& params() const noexcept { return params_; }

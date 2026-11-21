@@ -526,6 +526,9 @@ public:
   std::shared_ptr<TapRing> metaSignalTap(doc::DeviceId device, std::string_view path, uint32_t index) const;
   // The device's analysis tap: a Spectrum native engine's (its face's).
   std::shared_ptr<TapRing> deviceAnalysisTap(doc::DeviceId device) const;
+  // AP.6: the status a note device's stage writes for its panel (pq/core/note_stage_status.h: the lanes' current steps,
+  // the pattern), one per note device of a published note chain, kept across republishes; null: none. UI thread.
+  std::shared_ptr<const NoteStageStatus> noteStageStatus(doc::DeviceId device) const;
   static constexpr uint32_t kAnalysisTapFrames = 16384;
   // Posted to the UI thread (setUiPoster) after a compile that made new analysis taps (the views look again). Set once,
   // before the first compile.
@@ -948,6 +951,7 @@ private:
     std::vector<std::shared_ptr<engine::ArpTableMailbox>> boxes;  // AP.2b: per stage, a tuning edit's table
   };
   std::vector<PublishedNotes> noteChains_;
+  std::unordered_map<uint32_t, std::shared_ptr<NoteStageStatus>> noteStatus_;  // AP.6: by device id. UI thread
   std::mutex busValueMutex_;
   std::unordered_map<uint32_t, uint32_t> busValueOf_;  // AP.2b: wire id → bus value index
   std::unique_ptr<engine::ProjectCompiler> compiler_;

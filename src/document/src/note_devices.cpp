@@ -120,6 +120,237 @@ std::string noteDevicePatchText(const NoteDeviceType& t) {
   return s;
 }
 
+// ---- AP.6: the Arpeggiator's panel ---------------------------------------------------------------------------------
+
+namespace {
+
+using engine::ArpParamId;
+
+// Builds a panel: element ids in order, each element's rect in panel units (logical px at 1:1).
+struct PanelKit {
+  Panel p;
+  DeviceId dev;
+  uint32_t next = 1;
+  static std::string name(ArpParamId id) { return std::string(engine::arpParamInfo(id).name); }
+  PanelElement& add(const char* kind, float x, float y, float w, float h, std::vector<Binding> b = {}) {
+    PanelElement e;
+    e.id = next++;
+    e.kind = kind;
+    e.x = x, e.y = y, e.w = w, e.h = h;
+    e.bindings = std::move(b);
+    p.elements.push_back(std::move(e));
+    return p.elements.back();
+  }
+  // A control on param `id` (a Control binding; a structural one: a Setting binding).
+  Binding bind(ArpParamId id) const {
+    return engine::arpParamInfo(id).runtime ? controlBinding(dev, name(id)) : settingBinding(dev, name(id));
+  }
+  PanelElement& ctl(const char* kind, float x, float y, float w, float h, ArpParamId id, const char* label = nullptr) {
+    PanelElement& e = add(kind, x, y, w, h, {bind(id)});
+    if (label != nullptr) e.setField(styleText("label", label));
+    return e;
+  }
+  // A number box without a label in a labelled row: its box where the labelled ones' boxes are.
+  PanelElement& bare(float x, float y, float w, float h, ArpParamId id) { return ctl("number", x, y + 10, w, h - 10, id, "-"); }
+  PanelElement& button(float x, float y, float w, float h, ArpParamId id, const char* text) {
+    PanelElement& e = ctl("toggle", x, y, w, h, id);
+    e.setField(styleText("look", "button"));
+    e.setField(styleText("text", text));
+    return e;
+  }
+  PanelElement& caption(float x, float y, float w, const char* text, double size = 7.5) {
+    PanelElement& e = add("label", x, y, w, 10);
+    e.setField(styleText("text", text));
+    e.setField(styleText("align", "left"));
+    e.setField(styleNumber("size", size));
+    return e;
+  }
+  // A caption over chips (tabs) on param `id`: the chips' element.
+  PanelElement& chips(float x, float y, float w, ArpParamId id, const char* label, const char* items) {
+    caption(x, y, w, label);
+    PanelElement& e = ctl("tabs", x, y + 12, w, 16, id);
+    e.setField(styleText("items", items));
+    return e;
+  }
+  void backdrop(float x, float y, float w, float h) {
+    PanelElement& e = add("shape", x, y, w, h);
+    e.setField(styleText("fill", "track"));
+    e.setField(styleText("stroke", "none"));
+    e.setField(styleNumber("opacity", 0.35));
+    e.setField(styleNumber("radius", 5.0));
+  }
+  PanelElement& fold(float y, const char* title) {
+    PanelElement& e = add(kFoldKind.data(), 6, y, p.width - 12, 16);
+    e.setField(styleText("title", title));
+    e.setField(styleNumber("open", 0.0));
+    return e;
+  }
+  // The elements added since `from` shown only while element `src` has one of `values` (unless they have a condition).
+  void when(size_t from, uint32_t src, const std::vector<double>& values) {
+    for (size_t i = from; i < p.elements.size(); ++i)
+      if (!p.elements[i].when) p.elements[i].when = Visibility{src, values};
+  }
+};
+
+Panel arpeggiatorPanel(DeviceId dev) {
+  PanelKit k;
+  k.dev = dev;
+  k.p.width = 760.0f;
+  k.p.fit = true;
+  using A = ArpParamId;
+  // ---- the top band: Arp | Pitch | Pattern ----
+  constexpr float kTop = 182.0f;
+  k.backdrop(4, 4, 362, kTop - 8);
+  k.backdrop(370, 4, 202, kTop - 8);
+  k.backdrop(576, 4, 180, kTop - 8);
+  // Arp: Style, Hold, Sync, the rate (synced: num / den, tuplet n : m and its shortcuts; free: ms), Seed.
+  const uint32_t style = k.ctl("menu", 10, 8, 104, 28, A::Style, "Style").id;
+  k.button(118, 20, 36, 16, A::Hold, "Hold");
+  const uint32_t sync = k.button(158, 20, 36, 16, A::Synced, "Sync").id;
+  size_t at = k.p.elements.size();
+  k.ctl("number", 198, 8, 28, 28, A::RateNum, "Rate");
+  k.caption(228, 22, 8, "/", 9.0);
+  k.bare(234, 8, 32, 28, A::RateDen);
+  k.ctl("number", 274, 8, 26, 28, A::TupletN, "Tuplet");
+  k.caption(302, 22, 6, ":", 9.0);
+  k.bare(308, 8, 26, 28, A::TupletM);
+  {
+    PanelElement& pr = k.add("presets", 198, 40, 136, 16, {k.bind(A::TupletN), k.bind(A::TupletM)});
+    pr.setField(styleText("items", "Straight|Dotted|Triplet"));
+    pr.setField(styleText("values", "1 1|2 3|3 2"));
+  }
+  k.when(at, sync, {1.0});
+  at = k.p.elements.size();
+  k.ctl("number", 198, 8, 72, 28, A::RateMs, "Rate ms");
+  k.when(at, sync, {0.0});
+  // Gate, Groove; Retrigger and its rate; Seed, Offset, Repeats.
+  k.ctl("knob", 10, 40, 48, 58, A::Gate);
+  k.ctl("knob", 60, 40, 48, 58, A::Groove);
+  const uint32_t retrig = k.chips(114, 42, 114, A::Retrigger, "Retrigger", "Off|Note|Beat").id;
+  at = k.p.elements.size();
+  k.bare(114, 64, 28, 28, A::RetriggerNum);
+  k.caption(144, 78, 8, "/", 9.0);
+  k.bare(150, 64, 32, 28, A::RetriggerDen);
+  k.when(at, retrig, {2.0});
+  k.ctl("number", 10, 106, 50, 26, A::Seed, "Seed");
+  k.ctl("number", 64, 106, 50, 26, A::Offset, "Offset");
+  k.ctl("number", 118, 106, 50, 26, A::Repeats, "Repeats").setField(styleText("zero", "∞"));
+  // Velocity: source, decay, target, fixed (with source Fixed), retrigger.
+  const uint32_t vsrc = k.chips(240, 62, 120, A::VelocitySource, "Velocity", "Played|Fixed|Lane").id;
+  k.ctl("knob", 240, 96, 40, 56, A::VelocityDecayMs, "Decay");
+  k.ctl("knob", 280, 96, 40, 56, A::VelocityTarget, "Target");
+  at = k.p.elements.size();
+  k.ctl("knob", 320, 96, 40, 56, A::FixedVelocity, "Fixed");
+  k.when(at, vsrc, {1.0});
+  k.button(240, 156, 70, 16, A::VelocityRetrigger, "Retrigger");
+  // Pitch: Unit, Distance, Steps, Shift / Rotate; Ratio p / q (Ratio); Base (Harmonics); the walk (Harmonic Walk).
+  const uint32_t unit = k.chips(376, 8, 190, A::Unit, "Pitch Unit", "Degrees|Ratio|Harmonics").id;
+  k.ctl("number", 376, 42, 50, 28, A::Distance, "Distance");
+  k.ctl("number", 430, 42, 40, 28, A::Steps, "Steps");
+  k.chips(476, 42, 90, A::Transpose, "Mode", "Shift|Rotate");
+  at = k.p.elements.size();
+  k.ctl("number", 376, 78, 40, 28, A::RatioP, "Ratio");
+  k.caption(419, 92, 8, "/", 9.0);
+  k.bare(426, 78, 40, 28, A::RatioQ);
+  k.when(at, unit, {1.0});
+  at = k.p.elements.size();
+  k.ctl("number", 376, 78, 50, 28, A::HarmonicBase, "Base");
+  k.when(at, unit, {2.0});
+  at = k.p.elements.size();
+  k.caption(376, 116, 120, "Harmonic Walk");
+  k.ctl("number", 376, 130, 44, 28, A::WalkRange, "Range");
+  k.button(424, 142, 46, 16, A::WalkUnder, "Under");
+  k.ctl("menu", 474, 130, 92, 28, A::WalkOrder, "Order");
+  k.when(at, style, {static_cast<double>(engine::ArpStyle::HarmonicWalk)});
+  // The live pattern: the held notes in the order the pattern plays them, the current step lit.
+  k.caption(582, 8, 120, "Pattern");
+  k.add("arppattern", 582, 22, 168, 148, {dataBinding(dev)});
+  // ---- Glide (fold) ----
+  float y = kTop;
+  k.fold(y, "Glide");
+  y += 20.0f;
+  auto side = [&](float x, A src, A off, const char* title, const char* items, const char* edge) {
+    const uint32_t s = k.chips(x, y, 132, src, title, items).id;
+    PanelElement& c = k.add("rampshape", x + 138, y, 56, 28, {k.bind(A::GlideShape), k.bind(A::GlideBend), k.bind(src)});
+    c.setField(styleText("side", edge));
+    const size_t from = k.p.elements.size();
+    k.ctl("knob", x, y + 32, 48, 58, off, "Offset");
+    k.when(from, s, {2.0});
+  };
+  side(10, A::IntoSource, A::IntoOffset, "Into", "Off|Previous|Offset", "into");
+  side(214, A::OutTarget, A::OutOffset, "Out", "Off|Next|Offset", "out");
+  const uint32_t gsync = k.button(424, y + 12, 44, 16, A::GlideSynced, "Sync").id;
+  k.button(424, y + 34, 44, 16, A::GlideCents, "Cents");
+  at = k.p.elements.size();
+  k.ctl("knob", 472, y, 48, 58, A::GlideMs, "Time");
+  k.when(at, gsync, {0.0});
+  at = k.p.elements.size();
+  k.ctl("knob", 472, y, 48, 58, A::GlideFraction, "Time");
+  k.when(at, gsync, {1.0});
+  k.ctl("menu", 526, y, 100, 28, A::GlideShape, "Shape");
+  k.ctl("knob", 632, y, 48, 58, A::GlideBend, "Bend");
+  y += 96.0f;
+  // ---- Pulse (fold) ----
+  k.fold(y, "Pulse");
+  y += 20.0f;
+  const uint32_t pulse = k.button(10, y + 12, 40, 16, A::Pulse, "On").id;
+  at = k.p.elements.size();
+  const uint32_t psrc = k.chips(56, y, 170, A::PulseSource, "Pulse h", "Harmonic|Proportion|Order").id;
+  k.ctl("number", 232, y, 50, 28, A::PulseRef, "Ref").setField(styleText("zero", "Lowest"));
+  const uint32_t cyc = k.chips(288, y, 90, A::PulseCycle, "Cycle", "Base|Bars").id;
+  const size_t bars = k.p.elements.size();
+  k.ctl("number", 382, y, 36, 28, A::PulseBars, "Bars");
+  k.when(bars, cyc, {1.0});
+  k.ctl("number", 426, y, 44, 28, A::Layers, "Layers");
+  k.ctl("knob", 476, y - 2, 48, 58, A::LayerLevel1, "Layer 1");
+  k.ctl("knob", 526, y - 2, 48, 58, A::LayerLevel2, "Layer 2");
+  k.ctl("knob", 576, y - 2, 48, 58, A::LayerLevel3, "Layer 3");
+  const size_t prop = k.p.elements.size();
+  k.ctl("number", 56, y + 34, 40, 26, A::ProportionLen, "Length");
+  k.caption(102, y + 34, 120, "Proportion");
+  for (int i = 0; i < engine::kArpMaxProportion; ++i)
+    k.bare(102.0f + 38.0f * static_cast<float>(i), y + 34, 34, 26, static_cast<A>(static_cast<int>(A::Proportion1) + i));
+  k.when(prop, psrc, {1.0});
+  k.when(at, pulse, {1.0});
+  y += 66.0f;
+  // ---- Step Lanes (fold) ----
+  k.fold(y, "Step Lanes");
+  y += 20.0f;
+  struct Lane {
+    engine::ArpLane lane;
+    A on, len;
+    const char* name;
+  };
+  constexpr Lane kLanes[] = {
+      {engine::ArpLane::Velocity, A::VelocityLane, A::VelocityLength, "Velocity"},
+      {engine::ArpLane::Gate, A::GateLane, A::GateLength, "Gate"},
+      {engine::ArpLane::Glide, A::GlideLane, A::GlideLength, "Glide"},
+      {engine::ArpLane::Transpose, A::TransposeLane, A::TransposeLength, "Transpose"},
+      {engine::ArpLane::Chance, A::ChanceLane, A::ChanceLength, "Chance"},
+      {engine::ArpLane::SkipTie, A::SkipTieLane, A::SkipTieLength, "Skip / Tie"},
+  };
+  for (const Lane& l : kLanes) {
+    k.ctl("toggle", 10, y + 4, 74, 14, l.on).setField(styleText("text", l.name));
+    std::vector<Binding> b = {k.bind(l.len), k.bind(l.on)};
+    for (int32_t i = 0; i < engine::kArpMaxLaneSteps; ++i) b.push_back(k.bind(engine::arpLaneStepId(l.lane, i)));
+    PanelElement& e = k.add("steplane", 88, y, 32 * 18.0f + 14.0f, 22, std::move(b));
+    e.setField(styleNumber("lane", static_cast<double>(l.lane)));
+    if (l.lane == engine::ArpLane::SkipTie) e.setField(styleText("look", "cells"));
+    if (l.lane == engine::ArpLane::Transpose) e.setField(styleText("look", "bipolar"));
+    y += 24.0f;
+  }
+  k.p.height = y + 4.0f;
+  return std::move(k.p);
+}
+
+}  // namespace
+
+Panel noteDevicePanel(const Device& d) {
+  const NoteDeviceType* t = noteDeviceTypeOf(d);
+  if (t == nullptr || t->id != "arpeggiator") return {};
+  return arpeggiatorPanel(d.id);
+}
+
 uint32_t noteRun(const MainPath& path) noexcept {
   uint32_t n = 0;
   while (n < path.blocks.size() && isNoteDevice(*path.blocks[n])) ++n;
