@@ -6,6 +6,7 @@
 //              engine alone ends at the note-off)
 //   one-shot   a short note plays the sample to its end, then the voice ends
 //   slice      drawn notes at keys 36 / 37 (12-EDO degrees −24 / −23: voice.key) play slices 0 / 1
+//   backends   every case renders bit for bit the same on the JIT as on the interpreter
 //   rewire     inside the group: the Filter switched on at 200 Hz takes the 880 Hz note down; the engine wired straight
 //              to Out plays the engine-alone output
 #include <doctest/doctest.h>
@@ -125,16 +126,17 @@ struct Song {
                                          static_cast<int32_t>(x[0]), 0, 100.0f));
     REQUIRE(store.dispatch(AddClip{track, playback_fixture::clip(ids, 0, 16 * kBeat, n, "Notes")}).ok());
   }
-  std::vector<std::vector<float>> render(double seconds) const {
+  std::vector<std::vector<float>> render(double seconds, bool jit = false) const {
     app::LinkConfig c;
     c.compileThread = false;
     c.sleepAfterMs = 0.0f;
-    c.jit = false;
+    c.jit = jit;
     c.sampleRate = kRate;
     auto l = app::ProjectLink::create(c, store.current());
     REQUIRE_MESSAGE(l.ok(), (l.ok() ? std::string() : l.error().message));
     app::ProjectLink& link = **l;
     REQUIRE(link.waitForSamples(30.0));
+    if (jit) REQUIRE(link.waitForJit(180.0));
     link.flush();
     engine::BufferSink sink;
     auto st = link.renderOffline(0, static_cast<uint64_t>(std::llround(seconds * kRate)), sink);
@@ -186,6 +188,10 @@ TEST_CASE("SM.3 Sampler group: drawn notes play the sample through the group = 0
   g.notes(ns);
   e.notes(ns);
   const auto go = g.render(2.5), eo = e.render(2.5);
+  {  // the JIT backend plays it bit for bit as the interpreter
+    const auto gj = g.render(2.5, true);
+    for (int c = 0; c < 2; ++c) CHECK(maxDiff(gj[c], go[c], 1.0, 0.0, 2.5) == 0.0);
+  }
   CHECK(rms(eo[0], 0.05, 0.45) > 0.1);
   for (int c = 0; c < 2; ++c) {
     CAPTURE(c);
@@ -222,6 +228,10 @@ TEST_CASE("SM.3 Sampler group: One-Shot plays a short note's sample to its end, 
   run(g.store, ops::setDeviceSetting(*g.store.current(), g.engine, "mode", static_cast<double>(meta::SamplerMode::OneShot)));
   g.notes({{9, 0, 0.2}});  // 0.1 s
   const auto o = g.render(2.0);
+  {
+    const auto oj = g.render(2.0, true);  // JIT == interpreter
+    CHECK(maxDiff(oj[0], o[0], 1.0, 0.0, 2.0) == 0.0);
+  }
   CHECK(rms(o[0], 0.5, 0.9) > 0.1);       // long after the note-off: still the sample
   CHECK(hzBetween(o[0], 0.5, 0.9) == doctest::Approx(440.0).epsilon(1e-3));
   CHECK(rms(o[0], 1.0, 1.1) < 0.05);      // the sample ended at 1 s: the release of nothing
@@ -236,6 +246,10 @@ TEST_CASE("SM.3 Sampler group: Slice picks the slice by voice.key (drawn notes a
   run(g.store, ops::setDeviceSetting(*g.store.current(), g.engine, "mode", static_cast<double>(meta::SamplerMode::Slice)));
   g.notes({{-24, 0, 1}, {-23, 2, 1}});  // 12-EDO from key 60: keys 36, 37
   const auto o = g.render(1.6);
+  {
+    const auto oj = g.render(1.6, true);  // JIT == interpreter
+    CHECK(maxDiff(oj[0], o[0], 1.0, 0.0, 1.6) == 0.0);
+  }
   CHECK(hzBetween(o[0], 0.05, 0.45) == doctest::Approx(300.0).epsilon(1e-3));
   CHECK(hzBetween(o[0], 1.05, 1.45) == doctest::Approx(600.0).epsilon(1e-3));
 }
