@@ -178,6 +178,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_spectrogram_link.cpp  # TX.spectrogram: the Spectrogram through the link (its tap, RtScope, a feed's columns, pass-through)
     app/test_au_fold.cpp  # AU.fold: the Wavetable fold in the default instrument (static, dragged, automated, cabled): no clicks, no aliasing
     app/test_meta_wavetable.cpp  # TMM.5: the Wavetable through the link (off-thread tables, click-free, alias suite, golden; taps → face dots)
+    app/test_note_stage_render.cpp  # AP.7: the offline note-stage render == the engine's events; Flatten round trip, undo
     app/test_note_device_playback.cpp  # AP.2: a chord through an Arpeggiator renders stepped notes; a knob drag republishes nothing
     golden/golden_audio.cpp
   DEPS pq_app)

@@ -20,6 +20,7 @@ pq_add_module(pq_engine
     src/newton.cpp
     src/note_list.cpp
     src/note_stage.cpp
+    src/note_stage_offline.cpp  # AP.7: note stages offline (the roll preview, Flatten)
     src/null_device.cpp
     src/offline_render.cpp
     src/preview_player.cpp

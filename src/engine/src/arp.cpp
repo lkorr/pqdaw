@@ -403,6 +403,8 @@ struct ArpCore::State {
   ArpWalkOrder statusOrder = ArpWalkOrder::Up;
   bool statusPulse = false;
 
+  std::vector<ArpTraceNote>* trace = nullptr;  // AP.7: offline only (setTrace)
+
   ArpParams p;
   ArpParams raw;  // the unsanitized params p came from
   bool rawValid = false;
@@ -714,6 +716,66 @@ struct ArpCore::State {
                        ? src.noteDegree + static_cast<float>(1200.0 * std::log2(r) * N / tab->equaveCents)
                        : kNaN;
     return e.hz;
+  }
+
+  // AP.7: what element `el` of held note `src` plays relative to it, exactly (ArpExact; the rules of pitchOf /
+  // unlayered / pitch above, as integers). Offline only (the trace).
+  ArpExact exactOf(const NoteEvent& src, const Elem& el) const noexcept {
+    ArpExact x;
+    int64_t num = 1, den = 1;
+    bool exact = true;
+    auto mul = [&](int64_t a, int64_t c) {  // × a / c, reduced; inexact when it no longer fits
+      if (!exact) return;
+      const int64_t g1 = std::gcd(a, den), g2 = std::gcd(c, num);
+      a /= g1;
+      const int64_t d1 = den / g1, c1 = c / g2, n1 = num / g2;
+      if (a > (int64_t{1} << 46) / std::max<int64_t>(1, n1) || c1 > (int64_t{1} << 46) / std::max<int64_t>(1, d1)) {
+        exact = false;
+        return;
+      }
+      num = n1 * a;
+      den = d1 * c1;
+    };
+    NoteEvent w = src;  // the walked note: its harmonic (what harmonicOf reads next)
+    bool walked = false;
+    if (el.walk != 0) {
+      const int64_t h = harmonicOf(src), m = el.walk;
+      if (el.under) {
+        mul(h, h + m);
+        w.harmonic = 0.0f;
+      } else {
+        mul(h + m, h);
+        w.harmonic = static_cast<float>(h + m);
+      }
+      walked = true;
+    }
+    int64_t degrees = 0;
+    if (el.shift != 0 || el.wraps != 0) {
+      if (p.unit == ArpUnit::Harmonics) {
+        const int64_t h = harmonicOf(w), h1 = h + el.shift;
+        const int32_t wr = std::clamp(el.wraps, -24, 24);
+        if (h1 >= 1) mul(wr >= 0 ? h1 << wr : h1, wr >= 0 ? h : h << -wr);
+      } else if (p.unit == ArpUnit::Degrees) {
+        degrees = el.shift + static_cast<int64_t>(el.wraps) * tableSize();
+        if (walked) exact = false;  // a walked note has no degree: shifted from round(noteDegree)
+      } else {
+        const int32_t sh = el.shift + el.wraps;
+        const int64_t a = sh > 0 ? p.ratioP : p.ratioQ, c = sh > 0 ? p.ratioQ : p.ratioP;
+        for (int32_t i = 0; i < std::abs(sh) && exact; ++i) mul(a, c);
+      }
+    }
+    for (uint8_t i = 0; i < el.layer && exact; ++i) mul(p.ratioP, p.ratioQ);
+    if (!exact || (degrees != 0 && (num != 1 || den != 1))) {
+      x.kind = ArpExact::Kind::Inexact;
+    } else if (degrees != 0) {
+      x.kind = ArpExact::Kind::Degrees;
+      x.degrees = degrees;
+    } else if (num != den) {
+      x.kind = ArpExact::Kind::Ratio;
+      x.num = num;
+      x.den = den;
+    }
+    return x;
   }
 
   // ---- Generated notes ----
@@ -1422,6 +1484,7 @@ struct ArpCore::State {
     }
     if (from > 0.0) on.hz = static_cast<float>(from);
     out->push(on);
+    if (trace != nullptr) trace->push_back({on.noteId, h.on.noteId, exactOf(h.on, el)});  // AP.7: offline only
     if (from > 0.0) {
       out->push(glide(frame, on.noteId, static_cast<double>(hz) * std::exp2(h.centsAt(t + ti) / 1200.0), ti));
       g.intoEnd = t + ti;
@@ -1978,6 +2041,8 @@ void ArpCore::setStatus(std::shared_ptr<NoteStageStatus> status) noexcept {
   s_->patternNew = true;
   s_->statusIdle = false;
 }
+
+void ArpCore::setTrace(std::vector<ArpTraceNote>* trace) noexcept { s_->trace = trace; }  // AP.7
 
 uint32_t ArpCore::heldCount() const noexcept { return s_->numHeld; }
 uint32_t ArpCore::soundingCount() const noexcept { return s_->numGens; }

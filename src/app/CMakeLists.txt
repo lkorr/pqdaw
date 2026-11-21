@@ -13,6 +13,7 @@ pq_add_module(pq_app
     src/project_link.cpp
     src/project_link_cost.cpp
     src/project_link_ji.cpp
+    src/note_stage_render.cpp  # AP.7: the note devices offline (the roll preview, Flatten to clip)
     src/project_link_latency.cpp
     src/project_link_audio.cpp
     src/project_link_input.cpp

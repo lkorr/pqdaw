@@ -6,6 +6,7 @@
 #include <span>
 
 #include "pq/core/automation_curve.h"
+#include "pq/document/lower.h"
 #include "pq/document/pitch_resolve.h"
 
 namespace pq::app {
@@ -158,6 +159,61 @@ void ClipCurveLowering::note(const doc::Note& n, engine::NoteDesc& nd) {
   flatten(*points, n.start, a_);
   thin(a_, ticksOf(kJiMinSpacingSeconds, n.start));
   emit(a_, nd.pitchCurve);
+}
+
+engine::ClipDesc lowerClipDesc(const doc::Project& p, const doc::NoteClip& c, const doc::ClipPitches& cp,
+                               std::span<const doc::TuningId> signals, bool tempoMoves) {
+  // How a note follows its tuning node (PitchSource), from what the document resolved.
+  auto setFollow = [&](engine::NoteDesc& nd, const doc::NotePitch& np) {
+    if (np.follow == doc::PitchFollow::Static) return;
+    const uint32_t node = doc::tuningNodeIndex(signals, np.signal);
+    if (node == 0) return;
+    nd.pitch.tuning = np.signal.value;
+    nd.pitch.node = static_cast<uint16_t>(node);
+    nd.pitch.kind = np.follow == doc::PitchFollow::Degree ? engine::PitchFollowKind::Degree
+                                                           : engine::PitchFollowKind::Reference;
+    if (np.follow == doc::PitchFollow::Degree) {
+      nd.pitch.degree = np.degree;
+      nd.pitch.equave = np.equave;
+    }
+  };
+  engine::ClipDesc cd;
+  cd.id = c.id.value;
+  cd.start = c.start;
+  cd.length = std::max<Ticks>(c.length, 1);
+  cd.contentStart = c.contentStart;
+  cd.loopEnabled = c.loop.enabled;
+  cd.loopStart = c.loop.start;
+  cd.loopEnd = c.loop.end;
+  cd.active = c.active;
+  // T7.13: the clip's note curves, bends, warps and harmonic numbers (above).
+  std::optional<ClipCurveLowering> curves;
+  if (ClipCurveLowering::needed(c)) curves.emplace(c, p.timeline->tempoMap, tempoMoves, cp);
+  cd.notes.reserve(c.notes.size());
+  size_t ni = 0;
+  for (const doc::Note& n : c.notes) {
+    const doc::NotePitch& np = cp.notes[ni++];
+    if (!np.hz) continue;
+    const double hz = *np.hz;
+    if (!(hz > 0.0) || !std::isfinite(static_cast<float>(hz))) continue;
+    engine::NoteDesc nd;
+    setFollow(nd, np);
+    nd.start = n.start;
+    nd.length = std::max<Ticks>(n.length, 1);
+    nd.id = n.id.value;
+    nd.hz = static_cast<float>(hz);
+    if (np.keyDegree) nd.keyDegree = static_cast<float>(*np.keyDegree);
+    nd.velocity = std::clamp(n.velocity, 1.0f, 127.0f);
+    nd.releaseVelocity = std::clamp(n.releaseVelocity, 0.0f, 127.0f);
+    nd.chance = std::clamp(n.chance, 0.0f, 1.0f);
+    nd.velocityRange = std::clamp(n.velocityRange, -127.0f, 127.0f);
+    if (n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.rawDen() != 0)
+      nd.ratio = static_cast<float>(static_cast<double>(n.pitch.rawNum()) / static_cast<double>(n.pitch.rawDen()));
+    nd.enabled = n.enabled();
+    if (curves) curves->note(n, nd);
+    cd.notes.push_back(std::move(nd));
+  }
+  return cd;
 }
 
 }  // namespace pq::app

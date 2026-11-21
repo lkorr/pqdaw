@@ -28,6 +28,7 @@
 #include "pq/dsp/frame_table_build.h"
 #include "pq/meta/registry.h"
 #include "pq/document/pitch_resolve.h"
+#include "pq/app/note_stage_render.h"
 #include "pq/engine/arp.h"
 #include "pq/engine/note_stage.h"
 #include "pq/engine/tuning_signal.h"
@@ -191,20 +192,6 @@ bool ProjectLink::lowerTrack(const doc::Project& p, const doc::TrackPath& path, 
   if (fresh == clips.size() && fresh != 0)
     if (auto r = doc::resolveTrackPitches(p, track.id, ro); r.ok()) all = std::move(r.value());
   bool changed = !hadOld || desc.clips.size() != clips.size();
-  // How a note follows its tuning node (PitchSource), from what the document resolved.
-  auto setFollow = [&](engine::NoteDesc& nd, const doc::NotePitch& np) {
-    if (np.follow == doc::PitchFollow::Static) return;
-    const uint32_t node = doc::tuningNodeIndex(signals, np.signal);
-    if (node == 0) return;
-    nd.pitch.tuning = np.signal.value;
-    nd.pitch.node = static_cast<uint16_t>(node);
-    nd.pitch.kind = np.follow == doc::PitchFollow::Degree ? engine::PitchFollowKind::Degree
-                                                           : engine::PitchFollowKind::Reference;
-    if (np.follow == doc::PitchFollow::Degree) {
-      nd.pitch.degree = np.degree;
-      nd.pitch.equave = np.equave;
-    }
-  };
   const bool tempoMoves = p.timeline->tempo.size() > 1;
   for (size_t ci = 0; ci < clips.size(); ++ci) {
     if (kept[ci] >= 0) {
@@ -222,45 +209,7 @@ bool ProjectLink::lowerTrack(const doc::Project& p, const doc::TrackPath& path, 
       one = doc::resolveClipPitches(p, path, c, ro);
       cpp = &*one;
     }
-    engine::ClipDesc cd;
-    cd.id = c.id.value;
-    cd.start = c.start;
-    cd.length = std::max<Ticks>(c.length, 1);
-    cd.contentStart = c.contentStart;
-    cd.loopEnabled = c.loop.enabled;
-    cd.loopStart = c.loop.start;
-    cd.loopEnd = c.loop.end;
-    cd.active = c.active;
-    {
-      const doc::ClipPitches& cp = *cpp;
-      // T7.13: the clip's note curves, bends, warps and harmonic numbers (project_link_ji.h).
-      std::optional<ClipCurveLowering> curves;
-      if (ClipCurveLowering::needed(c)) curves.emplace(c, p.timeline->tempoMap, tempoMoves, cp);
-      cd.notes.reserve(cd.notes.size() + c.notes.size());
-      size_t ni = 0;
-      for (const doc::Note& n : c.notes) {
-        const doc::NotePitch& np = cp.notes[ni++];
-        if (!np.hz) continue;
-        const double hz = *np.hz;
-        if (!(hz > 0.0) || !std::isfinite(static_cast<float>(hz))) continue;
-        engine::NoteDesc nd;
-        setFollow(nd, np);
-        nd.start = n.start;
-        nd.length = std::max<Ticks>(n.length, 1);
-        nd.id = n.id.value;
-        nd.hz = static_cast<float>(hz);
-        if (np.keyDegree) nd.keyDegree = static_cast<float>(*np.keyDegree);
-        nd.velocity = std::clamp(n.velocity, 1.0f, 127.0f);
-        nd.releaseVelocity = std::clamp(n.releaseVelocity, 0.0f, 127.0f);
-        nd.chance = std::clamp(n.chance, 0.0f, 1.0f);
-        nd.velocityRange = std::clamp(n.velocityRange, -127.0f, 127.0f);
-        if (n.pitch.kind() == tuning::PitchKind::Ratio && n.pitch.rawDen() != 0)
-          nd.ratio = static_cast<float>(static_cast<double>(n.pitch.rawNum()) / static_cast<double>(n.pitch.rawDen()));
-        nd.enabled = n.enabled();
-        if (curves) curves->note(n, nd);
-        cd.notes.push_back(std::move(nd));
-      }
-    }
+    engine::ClipDesc cd = lowerClipDesc(p, c, *cpp, signals, tempoMoves);  // AP.7: shared with the offline renders
     if (!changed) {  // the clip's previous description (same id; a kept one was moved out and has another id)
       const auto old = std::find_if(desc.clips.begin(), desc.clips.end(), [&](const engine::ClipDesc& o) { return o.id == cd.id; });
       changed = old == desc.clips.end() || !sameClipDesc(*old, cd);
@@ -824,6 +773,12 @@ uint32_t ProjectLink::slotForParam(const std::string& key) {
   return s;
 }
 
+std::optional<uint32_t> ProjectLink::eventSlotOf(doc::TrackId id) const {  // AP.7
+  std::lock_guard lock(mutex_);
+  if (auto it = trackSlots_.find(id.value); it != trackSlots_.end()) return it->second;
+  return std::nullopt;
+}
+
 uint32_t ProjectLink::slotForTrack(doc::TrackId id) {
   std::lock_guard lock(mutex_);
   if (auto it = trackSlots_.find(id.value); it != trackSlots_.end()) return it->second;
@@ -1164,31 +1119,18 @@ void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
     auto chain = std::make_unique<engine::NoteStageChain>();
     std::vector<std::shared_ptr<engine::ArpTableMailbox>> boxes;
     for (const doc::LoweredNoteStage& st : c.stages) {
-      if (st.type != "arpeggiator") continue;  // (the one note device type: doc::noteDeviceTypes)
-      engine::ArpParams fixed;
-      engine::ArpLaneSteps steps;  // AP.5
-      for (size_t k = 0; k < st.values.size() && k < static_cast<size_t>(engine::ArpParamId::Count); ++k) {
-        const auto id = static_cast<engine::ArpParamId>(k);
-        if (!engine::setArpLaneStep(steps, id, static_cast<float>(st.values[k])))
-          engine::setArpParam(fixed, id, static_cast<float>(st.values[k]));
-      }
-      std::vector<engine::ArpStage::Mapping> map;
-      for (const doc::LoweredNoteStage::Slot& r : st.runtime) {
-        const uint32_t ps = slotForParam(r.key);
-        if (ps == kNone || r.param >= static_cast<uint32_t>(engine::ArpParamId::Count)) continue;
-        map.push_back({static_cast<engine::ArpParamId>(r.param), ps, r.scale, r.offset});
-        for (const doc::WireId w : r.mods)  // AP.2b: each cable into it adds its bus value
-          if (const uint32_t v = busValueIndex(w); v != engine::kNoBusValue)
-            map.push_back({static_cast<engine::ArpParamId>(r.param), v, 1.0f, 0.0f, true});
-      }
       auto box = std::make_shared<engine::ArpTableMailbox>();
       std::shared_ptr<NoteStageStatus>& status = noteStatus_[st.device.value];  // AP.6: the panel's, kept per device
       if (!status) status = std::make_shared<NoteStageStatus>();
-      auto stage = std::make_unique<engine::ArpStage>(fixed, std::move(map),
-                                                      engine::ArpDegreeTable{c.degreeCents, c.equaveCents}, steps, box,
-                                                      status);
-      stage->key = st.device.value;  // AP.2b: the republished chain's stage adopts the running one's state
-      if (chain->add(std::move(stage))) boxes.push_back(std::move(box));
+      // AP.7: the one builder (the offline renders use it too).
+      std::unique_ptr<engine::ArpStage> stage = makeArpStage(
+          st, engine::ArpDegreeTable{c.degreeCents, c.equaveCents},
+          [this](const std::string& key) {
+            const uint32_t ps = slotForParam(key);
+            return ps == kNone ? kNoSlot : ps;
+          },
+          [this](doc::WireId w) { return busValueIndex(w); }, box, status);
+      if (stage && chain->add(std::move(stage))) boxes.push_back(std::move(box));
     }
     (void)engine_->setNoteStages(slot, std::move(chain));
     ++stats_.noteStagePublishes;
