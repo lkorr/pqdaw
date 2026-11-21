@@ -767,6 +767,7 @@ TEST_CASE("pool: pin — a streamed sample becomes resident with mips, pinned sa
   auto sa = pool.load(a);
   REQUIRE(sa.ok());
   REQUIRE((*sa)->view().streamed());
+  Result<SampleRef> sb = Error{}, sc = Error{};  // (alive to the end: a dropped sample frees its budget)
   {
     auto pin = pool.pin(*sa);
     REQUIRE(pin.ok());
@@ -783,9 +784,9 @@ TEST_CASE("pool: pin — a streamed sample becomes resident with mips, pinned sa
     CHECK(pool.stats().streamedSamples == 0);
     CHECK(reclaimer.pending() == 1);  // the streamed head, retired
     // Loading more files over the budget demotes the unpinned ones, never the pinned one.
-    auto sb = pool.load(b);
+    sb = pool.load(b);
     REQUIRE(sb.ok());
-    auto sc = pool.load(c);
+    sc = pool.load(c);
     REQUIRE(sc.ok());
     CHECK_FALSE((*sa)->view().streamed());
     CHECK((*sb)->view().streamed());  // the least recently used unpinned one went
@@ -825,6 +826,8 @@ TEST_CASE("pool: pin — a streamed sample becomes resident with mips, pinned sa
   reclaimer.quiescent(*reader);
   (void)reclaimer.collect();
   sa = Error{};
+  sb = Error{};
+  sc = Error{};
   sl = Error{};
   reclaimer.unregisterReader(*reader);
   std::error_code ec;

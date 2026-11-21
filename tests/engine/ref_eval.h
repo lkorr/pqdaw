@@ -275,6 +275,7 @@ private:
           s.a = tp_.outputType(n, 0).kind == Kind::Bool ? (init != 0.0 ? 1.0 : 0.0) : static_cast<float>(init);
         }
         if (a == "clockdiv") s.i = -1;
+        if (a.starts_with("sample_read")) s.active = false;  // SM.2: stopped until its first reset
       }
       if (a == "delay" || a == "delay_cubic" || a == "delay_allpass") {
         const double maxSec = constIn(n, 2);
