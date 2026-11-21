@@ -229,6 +229,7 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   // TX.free-rack: the Device view's free-device rack.
   if (const auto f = it->find("freeRackOpen"); f != it->end() && f->is_boolean()) prefs.freeRackOpen = f->get<bool>();
   if (const auto f = it->find("freeRackHeight"); f != it->end() && f->is_number()) prefs.freeRackHeight = f->get<float>();
+  if (const auto f = it->find("deviceViewHeight"); f != it->end() && f->is_number()) prefs.deviceViewHeight = f->get<float>();
   // T6.8: Preferences → Warp.
   if (const auto f = it->find("autoWarpLongSamples"); f != it->end() && f->is_boolean()) prefs.autoWarpLongSamples = f->get<bool>();
   if (const auto f = it->find("defaultWarpMode"); f != it->end() && f->is_string()) {
@@ -258,6 +259,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["dragOut24Bit"] = prefs.dragOut24Bit;
   v["freeRackOpen"] = prefs.freeRackOpen;  // TX.free-rack
   v["freeRackHeight"] = prefs.freeRackHeight;
+  v["deviceViewHeight"] = prefs.deviceViewHeight;
   v["autoWarpLongSamples"] = prefs.autoWarpLongSamples;  // T6.8
   v["defaultWarpMode"] = kWarpNames[static_cast<size_t>(prefs.defaultWarpMode)];
   v["recordOffsetMs"] = prefs.recordOffsetMs;  // T6.7b

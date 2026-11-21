@@ -8,9 +8,9 @@
 // double-click default, the wheel, type-in, Delete, the modulation ring, the curve glyph).
 //
 // BlockFrame is the Live-style frame around such a panel: the export jacks along the top edge, a title bar (activator,
-// fold triangle, title with in-place rename, the preset slot), the panel below it (scaled within minScale … maxScale to
-// the frame's height: an engine's face grows with the Device view, generated controls keep their size). A rack's macro
-// panel is one too (its own PanelTarget over the macros). UI thread only.
+// fold triangle, title with in-place rename, the preset slot), the panel below it at 1:1 (BR.I: never scaled to the
+// frame's height; a frame taller than its panel continues its background below, a Device view shorter than it scrolls).
+// A rack's macro panel is one too (its own PanelTarget over the macros). UI thread only.
 
 #include <functional>
 #include <memory>
@@ -33,8 +33,7 @@ public:
   struct Options {
     std::string title;
     std::vector<std::string> exports;  // the export jacks along the top edge (none: no strip)
-    float minScale = 1.0f, maxScale = 1.0f;  // the panel's scale range as the frame's height changes
-    float minWidth = 0.0f;                   // logical px (a face frame keeps room for a module's name)
+    float minWidth = 0.0f;  // logical px (a face frame keeps room for a module's name)
   };
   BlockFrame(std::string name, std::unique_ptr<GroupPanelFace> face, Options o);
   ~BlockFrame() override;
@@ -52,12 +51,9 @@ public:
   void setFoldable(bool f);
   bool foldable() const noexcept { return foldable_; }
   std::function<void()> onSizeChanged;  // folded / unfolded (the host re-lays out its chain)
-  // Logical size as laid out at scale 1 (folded: the title bar only), and the width when the frame is `frameHeight`
-  // logical px tall (the panel scaled to the room it has, within the options' range).
+  // Logical size with the panel at 1:1 (folded: the title bar only).
   float logicalWidth() const noexcept;
   float logicalHeight() const noexcept;
-  float logicalWidthFor(float frameHeight) const noexcept;
-  float panelScaleFor(float frameHeight) const noexcept;
   static constexpr float kJackStripH = 10.0f, kTitleH = 20.0f, kPad = 6.0f, kFoldedW = 132.0f;
   // T5.11: the preset slot ("Default" when empty); with onPresetClick set a click runs it.
   void setPresetName(std::string name);
@@ -99,7 +95,7 @@ private:
 // The synthetic panel of a LEAF block `d` with signature `sig` (its patch's): a native engine with a module panel
 // (doc::enginePanel: the Wavetable's, the Envelope's, the analysers') is that panel; any other block one control per
 // visible param — a knob, a toggle for a bool, a number box for a stepped one — and one number box per structural
-// setting, flowed into columns of 64 logical px. `face` (out): whether it is an engine's face (it scales with the frame).
+// setting, flowed into columns of 64 logical px. `face` (out): whether it is an engine's face.
 doc::Panel leafPanel(const devices::DeviceSignature& sig, const doc::Device& d, bool* face = nullptr);
 
 }  // namespace pq::views::panel

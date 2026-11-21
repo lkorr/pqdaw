@@ -452,6 +452,13 @@ public:
     if (panel_ != nullptr && panel_->folded()) return std::min(available, panel_->logicalHeight());
     return available;
   }
+  // BR.I: its macro panel and its chain's devices at 1:1 (below the title band).
+  float naturalHeight() const override {
+    if (panel_ != nullptr && panel_->folded()) return panel_->logicalHeight();
+    float h = panel_ != nullptr ? panel_->logicalHeight() : 0.0f;
+    for (const FrameBase* f : inner_) h = std::max(h, kTitleH + kPad + f->naturalHeight());
+    return h;
+  }
 
   // GU.9: what the frame shows is derived from the document (doc::RackInfo); the device given is its chain on the path.
   bool keeps(const doc::Device& d) const override {

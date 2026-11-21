@@ -357,6 +357,7 @@ TEST_CASE("settings: the view prefs section (T4.15) round-trips next to the audi
   v.circuitShowInactive = true;
   v.freeRackOpen = true;  // TX.free-rack: the Device view's free-device rack, expanded and its height
   v.freeRackHeight = 260.0f;
+  v.deviceViewHeight = 410.0f;  // BR.I: the detail height the user dragged
   v.recordOffsetMs = -3.25f;  // T6.7b: Preferences → Record
   v.midiExportMode = doc::MidiExportMode::Degrees;  // MF.3: the clip menu's last Export MIDI mode
   REQUIRE(saveViewPrefs(path, v).ok());

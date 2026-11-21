@@ -67,7 +67,7 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
   panels.setLayout(LayoutKind::Column);
   panels.setPadding({g, g, g, 0});
   panels.setHeight(Length::flex(1));
-  auto& body = panels.add<Splitter>("body", Splitter::Axis::Vertical, 240.0f, Splitter::Anchor::Second);
+  auto& body = panels.add<Splitter>("body", Splitter::Axis::Vertical, kDetailHeight, Splitter::Anchor::Second);
   body.setHeight(Length::flex(1));
   body.setLimits(80, kUnbounded, 80);
   body.setHandleThickness(g);

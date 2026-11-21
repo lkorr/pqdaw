@@ -61,6 +61,15 @@ namespace pq::views {
 
 namespace {
 
+// BR.I: a scene's detail height (the body splitter's lower pane), set as the user's (ViewPrefs::deviceViewHeight): the
+// Device view's auto height leaves it as the scene chose it.
+void setDetailHeight(Shell& shell, float logicalPx) {
+  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(logicalPx);
+  ViewPrefs prefs = shell.context().viewPrefs();
+  prefs.deviceViewHeight = logicalPx;
+  shell.context().setViewPrefs(prefs);
+}
+
 // GU.4: the scenes show each built-in module (a Phase Accumulator, a VCA: a group preset, open by default in the view)
 // closed — one block drawn as its panel, where the old meta faces were.
 void closeModules(project_patch::ProjectPatchView& v) {
@@ -246,7 +255,7 @@ Status openFirstClip(Shell& shell) {
     if (!ref.clip.valid() && t.kind == doc::TrackKind::Midi && !t.clips.empty()) ref = {t.id, t.clips.front().id};
   });
   if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "pianoroll scene: the project has no MIDI clip", {}};
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(520.0f);
+  setDetailHeight(shell, 520.0f);
   ctx.setDetailClip(ref);
   return Ok{};
 }
@@ -422,7 +431,7 @@ Status setupMosWheelPopover(Shell& shell) {
   const auto tb = run(doc::ops::addMainTuning(*store.current(), store.ids(), "Tuning B", doc::TuningDef{}, doc::Colour{0x8FC24A}));
   if (!tb || !store.dispatch(doc::SetClipTuning{c->clips[0], doc::TuningAssignment::mainTuning(tb->tunings[0])}).ok())
     return Error{ErrorCode::Unknown, "mos-wheel-popover: the clip's tuning failed", {}};
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(640.0f);
+  setDetailHeight(shell, 640.0f);
   ctx.setDetailClip(c->clips[0]);
   shell.tree().layoutNow();
   const ui::UiScale s(shell.tree().scale());
@@ -698,7 +707,7 @@ ClipView* buildRatioScene(Shell& shell) {
       scnNote(7 * q, q, PitchId::fromRatio(Rational(7, 4))),       scnNote(4 * q, 2 * q, PitchId::fromDegree(4, 0), 80.0f),
       scnNote(6 * q, 2 * q, PitchId::fromCents(-31.0), 70.0f)};
   if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), c->clips[0], notes))) return nullptr;
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(560.0f);
+  setDetailHeight(shell, 560.0f);
   ctx.setDetailClip(c->clips[0]);
   shell.tree().layoutNow();
   auto* view = dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
@@ -762,7 +771,7 @@ std::optional<JiScene> buildJiScene(Shell& shell, std::string_view name, int32_t
   if (!t) return std::nullopt;
   const auto c = runEdit(store, doc::ops::insertEmptyClip(*store.current(), store.ids(), t->tracks[0], 0, bars * kTicksPerWhole, std::string(name)));
   if (!c) return std::nullopt;
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(480.0f);  // the detail view at its tallest
+  setDetailHeight(shell, 480.0f);  // the detail view at its tallest
   ctx.setDetailClip(c->clips[0]);
   shell.tree().layoutNow();
   auto* view = dynamic_cast<ClipView*>(shell.tree().find("main/body/bottom/detail/clip/clip-view"));
@@ -1610,7 +1619,7 @@ Status setupClipViewAudio(Shell& shell) {
   ctx.setDetailClip(ref);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Clip);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(440.0f);
+  setDetailHeight(shell, 440.0f);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -1653,7 +1662,7 @@ Status setupAudioClipWarp(Shell& shell, bool markers, float panel = 440.0f) {
   ctx.setDetailClip(ref);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Clip);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(panel);
+  setDetailHeight(shell, panel);
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -1977,7 +1986,7 @@ Status setupDeviceChain(Shell& shell) {
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "device-chain: the Device view is not installed", {}};
   const doc::DeviceId one[1] = {satId};
@@ -2023,7 +2032,7 @@ Status setupDeviceWiring(Shell& shell) {
   ctx.setSelectedTrack(keysT);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "device-wiring: the Device view is not installed", {}};
   shell.tree().layoutNow();
@@ -2111,7 +2120,7 @@ Status setupDeviceFrozen(Shell& shell) {
   ctx.setSelectedTrack(keysT);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   if (findDeviceChain(shell) == nullptr) return Error{ErrorCode::NotFound, "device-frozen: the Device view is not installed", {}};
   shell.tree().layoutNow();
   return Ok{};
@@ -2268,7 +2277,7 @@ Status setupEqCircuitRoundTrip(Shell& shell) {
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   project_patch::ProjectPatchView* v = findProjectPatch(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "eq-circuit-roundtrip: the circuit view is not installed", {}};
@@ -2487,7 +2496,7 @@ Status setupAudioRack(Shell& shell) {
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "audio-rack: the Device view is not installed", {}};
   v->showChain(c1, c2);
@@ -2495,6 +2504,7 @@ Status setupAudioRack(Shell& shell) {
   const doc::DeviceId one[1] = {c1};
   v->select(one);
   shell.tree().layoutNow();
+  v->revealDevice(c1);  // BR.I: the Basic Synth's circuit at zoom 1 is wide: the rack scrolled into view
   return Ok{};
 }
 
@@ -2571,7 +2581,7 @@ Status setupDeviceAutomation(Shell& shell) {
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(330.0f);
+  setDetailHeight(shell, 330.0f);
   shell.tree().layoutNow();
   a->automation().showLanes(track, true);
   const float sc = shell.tree().scale();
@@ -2615,7 +2625,7 @@ Status setupDeviceKnobCurves(Shell& shell) {
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(330.0f);
+  setDetailHeight(shell, 330.0f);
   shell.tree().layoutNow();
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "device-knob-curves: the Device view is not installed", {}};
@@ -2670,7 +2680,7 @@ Status setupInstrumentRack(Shell& shell) {
   ctx.setSelectedTrack(track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   DeviceChainView* v = findDeviceChain(shell);
   if (v == nullptr) return Error{ErrorCode::NotFound, "instrument-rack: the Device view is not installed", {}};
   v->showChain(lo, lo);
@@ -2789,7 +2799,7 @@ Status setupDeviceMetaChain(Shell& shell) {
   ctx.setSelectedTrack(ids.lead);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   const doc::DeviceId one[1] = {wt};
@@ -3214,7 +3224,7 @@ Status setupDeviceGroupPanelElements(Shell& shell) {
   ctx.setSelectedTrack(ids.keys);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   shell.tree().layoutNow();
   return Ok{};
@@ -3230,7 +3240,7 @@ Status setupDeviceGroupPanel(Shell& shell) {
   ctx.setSelectedTrack(ids.keys);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   shell.tree().layoutNow();
   return Ok{};
@@ -3249,7 +3259,7 @@ Status setupDeviceFreeRack(Shell& shell, bool open) {
   ctx.setSelectedTrack(ids.lead);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   v->setFreeRackOpen(open);
   shell.tree().layoutNow();
   shell.tree().layoutNow();
@@ -3335,7 +3345,7 @@ Status setupDeviceMetaEnvelope(Shell& shell) {
   ctx.setSelectedTrack(ids.pluck);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   const doc::DeviceId one[1] = {env};
@@ -3395,7 +3405,7 @@ Status setupDeviceMetaVca(Shell& shell) {
   ctx.setSelectedTrack(ids.keys);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   const doc::DeviceId one[1] = {vca};
@@ -3450,7 +3460,7 @@ Status setupDeviceMetaSpectrum(Shell& shell) {
   ctx.setSelectedTrack(ids.keys);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();
@@ -3593,7 +3603,7 @@ Status setupDeviceMetaScope(Shell& shell) {
   ctx.setSelectedTrack(ids.track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();
@@ -3861,7 +3871,7 @@ Status setupDeviceMetaSpectrogram(Shell& shell) {
   ctx.setSelectedTrack(ids.track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();
@@ -3986,7 +3996,7 @@ Status setupDeviceMetaLoudness(Shell& shell) {
   ctx.setSelectedTrack(ids.track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();
@@ -4119,7 +4129,7 @@ Status setupDeviceMetaStereo(Shell& shell) {
   ctx.setSelectedTrack(ids.track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();
@@ -4207,7 +4217,7 @@ Status setupDeviceMetaBandWave(Shell& shell) {
   ctx.setSelectedTrack(ids.track);
   ctx.setDetailVisible(true);
   ctx.setDetailMode(DetailMode::Device);
-  if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) body->setPosition(300.0f);
+  setDetailHeight(shell, 300.0f);
   shell.tree().layoutNow();
   v->rebuild();
   shell.tree().layoutNow();

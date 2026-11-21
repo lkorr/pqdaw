@@ -5,6 +5,7 @@
 #include <cmath>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "../common/paint.h"
 #include "internal.h"
@@ -344,11 +345,7 @@ public:
       panel::BlockFrame::Options o;
       o.title = tpl->title;
       o.exports = tpl->sig.exports;
-      if (face) {  // TMM.10: a native engine's face scales with the Device view's height
-        o.minScale = 0.5f;
-        o.maxScale = 2.0f;
-        o.minWidth = 212.0f;  // the title bar keeps room for a module's name
-      }
+      if (face) o.minWidth = 212.0f;  // the title bar keeps room for a module's name (BR.I: the face at 1:1)
       panel_ = &add<panel::BlockFrame>("panel", std::move(gf), std::move(o));
       panel_->setActive(d.active);
       panel_->onActivate = [this](bool on) {
@@ -393,10 +390,7 @@ public:
     if (panel_) panel_->host().notifyChanged();
   }
   float logicalWidth() const override { return panel_ ? panel_->logicalWidth() : 160.0f; }
-  // TMM.10: a face panel scales with the Device view's height.
-  float logicalWidthFor(float available) const override {
-    return panel_ ? panel_->logicalWidthFor(logicalHeight(available)) : 160.0f;
-  }
+  float naturalHeight() const override { return panel_ ? panel_->logicalHeight() : 0.0f; }
   // M4 review UI item 3: an open panel fills the Device view's height (its background continues below its controls, as
   // Live's devices do); folded, the title bar only.
   float logicalHeight(float available) const override {
@@ -484,15 +478,17 @@ public:
   explicit ChainContent(DeviceChainView::Impl& impl) : Widget("chain"), impl_(impl) { setLayout(ui::LayoutKind::Custom); }
 
   // Device px the chain needs (frames, gaps, the add slot).
-  int32_t totalWidthPx(float scale, float hLogical) const {
+  int32_t totalWidthPx(float scale) const {
     float x = kChainPad;
-    for (const FrameBase* f : impl_.frames) x += f->logicalWidthFor(hLogical - 2.0f * kChainPad) + kFrameGap;
+    for (const FrameBase* f : impl_.frames) x += f->logicalWidth() + kFrameGap;
     x += kAddW + kChainPad;
     return static_cast<int32_t>(std::lround(x * scale));
   }
+  // BR.I: every panel at 1:1 — the chain is as tall as its tallest frame (whole device px rounded up), else the view.
   ui::ISize contentExtent(ui::ISize viewport) const override {
     const float s = tree() ? tree()->scale() : 1.0f;
-    return {std::max(viewport.w, totalWidthPx(s, static_cast<float>(viewport.h) / s)), viewport.h};
+    const auto h = static_cast<int32_t>(std::ceil((impl_.view.neededChainHeight()) * s - 1e-3f));
+    return {std::max(viewport.w, totalWidthPx(s)), std::max(viewport.h, h)};
   }
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
@@ -501,11 +497,14 @@ public:
     int32_t x = r.x + pad;
     const int32_t h = std::max(0, r.h - 2 * pad);
     for (FrameBase* f : impl_.frames) {
-      const int32_t w = pass.px(f->logicalWidthFor(hLogical - 2.0f * kChainPad));
+      const int32_t w = pass.px(f->logicalWidth());
       pass.place(*f, {x, r.y + pad, w, std::min(h, pass.px(f->logicalHeight(hLogical - 2.0f * kChainPad)))});
       x += w + gap;
     }
     if (impl_.view.addSlot()) pass.place(*impl_.view.addSlot(), {x, r.y + pad, pass.px(kAddW), h});
+    // BR.I: the height the chain needs changed (a device added, folded, another track): the auto height follows (right
+    // after this layout pass).
+    if (impl_.view.neededChainHeight() != impl_.fitNeed) impl_.fitPending = true;
     if (impl_.mapOverlay != nullptr) pass.place(*impl_.mapOverlay, r);  // T4.8: over everything while it is shown
     if (impl_.frozenVeil != nullptr) pass.place(*impl_.frozenVeil, r);  // FZ.3: over the map overlay too
   }
@@ -852,11 +851,17 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
   setFocusable(true);
   setKeyScope(ctx.scope("devices"));
   impl_->freeRack = &add<FreeRackPanel>(*impl_, ctx);  // TX.free-rack: over the chain
-  auto& scroll = add<ui::ScrollView>("scroll", true, false);
+  // BR.I: the chain scrolls both ways (panels at 1:1); its vertical bar at the right edge (unnamed row: not in paths).
+  auto& row = add<ui::Widget>();
+  row.setLayout(ui::LayoutKind::Row);
+  row.setGap(0);
+  auto& scroll = row.add<ui::ScrollView>("scroll", true, true);
   impl_->scroll = &scroll;
   auto& content = scroll.add<ChainContent>(*impl_);
   impl_->content = &content;
   addSlot_ = &content.add<AddSlot>(*this);
+  auto& vbar = row.add<ui::Scrollbar>("vscroll", scroll, ui::Scrollbar::Axis::Vertical);
+  vbar.setWidth(ui::Length::fixed(10.0f));
   auto& bar = add<ui::Scrollbar>("hscroll", scroll, ui::Scrollbar::Axis::Horizontal);
   bar.setHeight(ui::Length::fixed(10.0f));
   sub_ = ctx.subscribe([this](const doc::StoreEvent& e) { onStore(e); });
@@ -883,6 +888,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
       for (const auto& [id, f] : impl_->all) f->hosts(hs);
       for (panel::PanelHost* h : hs) h->notifyChanged();
     }
+    if (bits & view_change::kLayout) requestFit(true);  // BR.I: the Device view may have been opened
     if (bits & view_change::kAutomation) refreshAutomation();  // T4.18: overridden / re-enabled
     else if ((bits & view_change::kTransport) && (!impl_->autoShown.empty() || impl_->chainAuto)) applyAutomation();
     if (bits & view_change::kTransport) {  // DT.1: tempo sliders follow the playhead's tempo while it plays
@@ -895,6 +901,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
 }
 
 DeviceChainView::~DeviceChainView() {
+  if (impl_->fitTree != nullptr) impl_->fitTree->removeObserver(&impl_->fitObserver);
   impl_->retiredFrames.clear();  // before the rest of Impl (templates, maps) a frame may still reach
   for (std::string_view id : ViewContext::kDeviceChainActions) ctx_.clearViewAction(id);
 }
@@ -1541,9 +1548,36 @@ DeviceChainView& installDeviceChain(Shell& shell) {
   ctx.setViewAction("device.chainDown", [p] { p->showNeighbourChain(1); }, has);
   // TX.free-rack: the expanded rack grows the detail area (the body splitter's lower pane): the arrangement moves up,
   // the chain keeps its height.
+  // BR.I: the user's detail height (the splitter dragged) is kept in the view prefs; without one the Device view's height
+  // follows its tallest panel (onFitHeight), within kDetailHeight … half the body's height, both plus the open rack's.
   if (auto* body = dynamic_cast<ui::Splitter*>(shell.tree().find("main/body"))) {
-    p->onRackHeight = [body](float dy) { body->setPosition(body->position() + dy); };
-    if (p->freeRackOpen()) body->setPosition(body->position() + p->freeRackHeight() + DeviceChainView::kRackHandleH);
+    auto rackExtra = [p] { return p->freeRackOpen() ? p->freeRackHeight() + DeviceChainView::kRackHandleH : 0.0f; };
+    auto keepUser = [&ctx, body] {
+      ViewPrefs prefs = ctx.viewPrefs();
+      prefs.deviceViewHeight = body->position();
+      ctx.setViewPrefs(prefs);
+    };
+    p->onRackHeight = [&ctx, body, keepUser](float dy) {  // (TX.free-rack: the chain keeps its height)
+      body->setPosition(body->position() + dy);
+      if (ctx.viewPrefs().deviceViewHeight > 0.0f) keepUser();
+    };
+    p->onFitHeight = [body, rackExtra](float dy) {
+      const float lo = kDetailHeight + rackExtra();
+      const float s = body->tree() != nullptr ? body->tree()->scale() : 1.0f;
+      const float hi = std::max(lo, 0.5f * static_cast<float>(body->rect().h) / s + rackExtra());  // (the rack on top)
+      body->setPosition(std::clamp(body->position() + dy, lo, hi));
+    };
+    body->onUserMoved = keepUser;
+    body->onDoubleClick = [&ctx, body, p, rackExtra] {
+      ViewPrefs prefs = ctx.viewPrefs();
+      prefs.deviceViewHeight = 0.0f;
+      ctx.setViewPrefs(prefs);
+      body->setPosition(kDetailHeight + rackExtra());
+      p->requestFit(true);
+    };
+    if (const float user = ctx.viewPrefs().deviceViewHeight; user > 0.0f) body->setPosition(user);
+    else if (p->freeRackOpen()) body->setPosition(body->position() + rackExtra());
+    p->requestFit(true);
   }
   return v;
 }
@@ -1640,10 +1674,12 @@ bool DeviceChainView::isInput(doc::DeviceId device, std::string_view port) const
 
 namespace {
 // A socket on a frame's edge (left: inputs, right: outputs), `row` rows up from its bottom (never above its title bar).
-ui::Vec2 socketAt(const ui::IRect& r, bool right, size_t row, float us) {
+// BR.I: the signal row runs along the bottom of the frame's visible part (a chain taller than the view scrolls; its sockets
+// and links stay in view).
+ui::Vec2 socketAt(const ui::IRect& r, const ui::IRect& vp, bool right, size_t row, float us) {
   const float x = right ? static_cast<float>(r.right()) : static_cast<float>(r.x);
   const float y = std::max(static_cast<float>(r.y) + 10.0f * us,
-                           static_cast<float>(r.bottom()) - (kSocketRow + kSocketPitch * static_cast<float>(row)) * us);
+                           static_cast<float>(std::min(r.bottom(), vp.bottom())) - (kSocketRow + kSocketPitch * static_cast<float>(row)) * us);
   return {x, std::round(y)};
 }
 }  // namespace
@@ -1703,7 +1739,7 @@ std::optional<DeviceChainView::CableEnd> DeviceChainView::sourceEnd(doc::DeviceI
       for (size_t i = 0; i < ps->outputs.size(); ++i)
         if (ps->outputs[i] == port) row = i;
     bool inside = false;
-    const ui::Vec2 q = clampInto(socketAt(f->rect(), true, row, us), chainViewport(), inside);
+    const ui::Vec2 q = clampInto(socketAt(f->rect(), chainViewport(), true, row, us), chainViewport(), inside);
     return CableEnd{q, inside, EndDir::Right};
   }
   bool docked = false;
@@ -1729,7 +1765,7 @@ std::optional<DeviceChainView::CableEnd> DeviceChainView::targetEnd(doc::DeviceI
       for (size_t i = 0; i < ps->inputs.size(); ++i)
         if (ps->inputs[i] == port) row = i;
       bool inside = false;
-      const ui::Vec2 q = clampInto(socketAt(f->rect(), false, row, us), chainViewport(), inside);
+      const ui::Vec2 q = clampInto(socketAt(f->rect(), chainViewport(), false, row, us), chainViewport(), inside);
       return CableEnd{q, inside, EndDir::Left};
     }
   bool docked = false;
@@ -1784,7 +1820,7 @@ std::vector<DeviceChainView::ChainLink> DeviceChainView::chainLinks() const {
           if (ps->inputs[i] == k.input) row = i;
       bool inside = false;
       const float us = tree() ? tree()->scale() : 1.0f;
-      b = CableEnd{clampInto(socketAt(f->rect(), false, row, us), chainViewport(), inside), inside, EndDir::Left};
+      b = CableEnd{clampInto(socketAt(f->rect(), chainViewport(), false, row, us), chainViewport(), inside), inside, EndDir::Left};
       b->docked = inside;
     }
     prev = s.device;
@@ -1807,7 +1843,7 @@ std::vector<DeviceChainView::InputSocket> DeviceChainView::inputSockets() const 
     const Impl::Ports* ps = impl_->portsOf(doc::DeviceId{id});
     if (ps == nullptr) continue;
     for (size_t i = 0; i < ps->inputs.size(); ++i) {
-      const ui::Vec2 c = socketAt(f->rect(), false, i, us);
+      const ui::Vec2 c = socketAt(f->rect(), vp, false, i, us);
       const ui::IRect r{static_cast<int32_t>(std::lround(c.x)) - half, static_cast<int32_t>(std::lround(c.y)) - half, 2 * half, 2 * half};
       if (ui::intersect(r, vp).empty()) continue;
       out.push_back({doc::DeviceId{id}, ps->inputs[i], r});
@@ -1819,6 +1855,7 @@ std::vector<DeviceChainView::InputSocket> DeviceChainView::inputSockets() const 
 // ---- T4.7: wiring hooks and the modulation rings ---------------------------------------------------------------------
 
 ui::IRect DeviceChainView::chainViewport() const noexcept { return impl_->scroll->rect(); }
+ui::ScrollView& DeviceChainView::chainScroll() const noexcept { return *impl_->scroll; }
 
 void DeviceChainView::scrollChainBy(int32_t dx) {
   impl_->scroll->scrollTo(impl_->scroll->scrollX() + dx, impl_->scroll->scrollY());
@@ -2017,6 +2054,41 @@ void DeviceChainView::refreshRings() {
 }
 
 void DeviceChainView::onFrame(double) { impl_->retiredFrames.clear(); }  // no handler of a retired frame runs now
+
+// ---- BR.I: the Device view's height -----------------------------------------------------------------------------------
+
+float DeviceChainView::neededChainHeight() const {
+  float h = 0.0f;
+  for (const FrameBase* f : impl_->frames) h = std::max(h, f->naturalHeight());
+  return h > 0.0f ? h + 2.0f * kChainPad : 0.0f;
+}
+
+void DeviceChainView::requestFit(bool force) {
+  if (impl_->fitTree == nullptr && tree() != nullptr) {  // in a tree: fits after its layout passes
+    impl_->fitObserver.view = this;
+    impl_->fitTree = tree();
+    impl_->fitTree->addObserver(&impl_->fitObserver);
+  }
+  impl_->fitPending = true;
+  impl_->fitForced = impl_->fitForced || force;
+  invalidateLayout();  // the fit runs right after that layout (Impl::FitObserver)
+}
+
+// Called after a layout pass (the rects are current); a fit changes the splitter, which the tree places at once.
+void DeviceChainView::fitHeight() {
+  Impl& m = *impl_;
+  if (!m.fitPending || !onFitHeight || tree() == nullptr || !shownNow(*this)) return;  // hidden: when it is shown
+  m.fitPending = false;
+  const bool forced = std::exchange(m.fitForced, false);
+  const float need = neededChainHeight();
+  if (ctx_.viewPrefs().deviceViewHeight > 0.0f || (need == m.fitNeed && !forced)) {
+    m.fitNeed = need;
+    return;
+  }
+  m.fitNeed = need;
+  const float have = static_cast<float>(chainViewport().h) / tree()->scale();
+  if (std::abs(need - have) >= 0.5f) onFitHeight(need - have);
+}
 
 void DeviceChainView::onTimer(uint32_t id) {
   if (impl_->follow.fired(id)) {  // T4.18

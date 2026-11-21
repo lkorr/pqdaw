@@ -202,6 +202,9 @@ struct ViewPrefs {
   // is a resize handle).
   bool freeRackOpen = false;
   float freeRackHeight = 200.0f;
+  // BR.I: the detail area's height the user set by dragging the body splitter (logical px); 0: it follows the Device
+  // view's tallest panel (DeviceChainView::onFitHeight). A double-click on the splitter clears it.
+  float deviceViewHeight = 0.0f;
   // T6.8 (Preferences → Warp; Q?-M6-a item 10): a dropped sample longer than 8 s is warped when its tempo is known (a
   // tempo tag or name, else a detection of confidence >= 0.6); the mode used whenever a clip gets warped from Off by
   // auto-warp or a warp command (never Off or Re-Pitch-less: any warped mode).

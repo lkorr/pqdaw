@@ -2214,3 +2214,19 @@ or the other — part of the "30x" growth). Options: per-view places (more state
 block in the Device view would then not persist), or the group panel showing closed groups closed. Chosen: the last
 (one line in `Builder::closedGroup`; the scope group and those holding it stay opened) — the panel now matches the
 circuit (11 device goldens re-recorded). Status: open.
+
+## Q?-BR.I-a · 2026-11-20 · BR.I · Mini circuits count toward the Device view's height at zoom 1
+Context: panels now draw 1:1 and the Device view's auto height follows the tallest frame, group frames included. A group
+without a panel (Basic Synth's instrument group) shows its mini circuit; at zoom 1 it is ~990 × 330 units, so the default
+instrument alone takes the view to its cap (half the body) and is wide (the chain scrolls both ways). Options: count the
+circuit at zoom 1 (as the design says: "including group panels"); or keep a mini circuit fitted to the view (it zooms
+itself with Ctrl+wheel) and count only real panels. Chosen: the first (one function, `GroupFrame::naturalHeight` /
+`logicalWidth`, to change if the user prefers the second). Status: open.
+
+## Q?-BR.I-b · 2026-11-20 · BR.I · A free-rack cable's end lags its port's orbit
+Context: the cable layer computes ends on store events and after layout passes. When a new wire makes a free-rack block's
+orbiting port turn toward its cable, nothing lays out afterwards, so the cable starts at the port's old place until the
+next layout (seen in "wiring: a drag from a jack onto a knob" once BR.I's wider chain put the knob right under the LFO;
+the test now refreshes the layer before checking). Options: the free rack's canvas notifies the layer when its scene's
+ports move; or the layer refreshes once per frame after a store event. Chosen: none yet (pre-existing, out of BR.I's
+scope). Status: open.

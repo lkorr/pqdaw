@@ -2181,3 +2181,19 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - The Device view's group panel now shows the modules inside an instrument closed (as panels), as the circuit does,
   instead of their atoms (Q?-BR.H-b). Goldens: device-*, audio-rack, instrument-rack, project-cables*, project-orbit-ports,
   project-vca-panel.
+
+## 2026-11-20 · BR.I · Device view panels at 1:1 (task/BR.I-device-scale)
+- No panel in the Device view is shrunk any more: Wavetable, Noise, EQ Band, Spectrogram, Math, Waterfall, Compressor,
+  group panels and rack macros all draw 1:1 (engine faces no longer grow either). Open a Wavetable: is its text readable?
+- The Device view's height follows the tallest panel in the shown chain when it opens or the chain changes (never below
+  the old default 240, at most half the area under the control bar; the free rack's height on top of both).
+- Drag the splitter above the Info / Device area: that height is yours (remembered across sessions); chain changes no
+  longer move it. Double-click the splitter: back to following the panels.
+- Shorter than a panel: the chain scrolls — the wheel over the chain (not over a knob or a circuit canvas, which keep the
+  wheel), Shift+wheel sideways as before, and a scrollbar at the chain's right edge. Sockets and chain links stay on the
+  visible bottom edge.
+- Q?-BR.I-a: an instrument's mini circuit (Basic Synth) also counts at zoom 1 — it makes the default instrument tall and
+  wide. Say if it should go back to fitting the view instead.
+- Goldens: audio-rack, instrument-rack, device-automation, device-chain, device-free-rack(-collapsed), device-frozen,
+  device-group-panel(-elements), device-knob-curves, device-meta-{bandwave,chain,envelope,loudness,scope,spectrogram,
+  spectrum,stereo}, device-path-broken, device-wiring.

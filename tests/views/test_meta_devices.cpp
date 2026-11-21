@@ -1,5 +1,5 @@
-// TMM.10: meta modules as chain devices in the views — a chain meta device's Device-view panel IS its face (fitted to
-// the view's height, interactive: drags are one undo step each, double-click resets, the info view names the control),
+// TMM.10: meta modules as chain devices in the views — a chain meta device's Device-view panel IS its face (BR.I: at
+// 1:1, interactive: drags are one undo step each, double-click resets, the info view names the control),
 // automation LEDs on the face's controls, the device menu's Meta Modules (the kind follows the slot: a Wavetable after
 // a Phase accumulator continues its voices), presets load with the slot's kind, hot-swap keeps wires, the generic
 // knob's exp0 law (Q167 8), a panel description's "face" control. Goldens: device-meta-chain, project-meta-chain.
@@ -84,13 +84,14 @@ struct Ui {
   std::unique_ptr<Shell> shell;
   project_patch::MetaChainIds ids;
 
-  Ui() {
+  // defaultHeight (BR.I): the Shell's own Device view height (auto: it follows the tallest panel), else 320.
+  explicit Ui(bool defaultHeight = false) {
     ctx.setDeviceLibrary(&library());
     REQUIRE(project_patch::buildMetaChainProject(ctx.store(), &ids).ok());
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
-    dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(320.0f);
+    if (!defaultHeight) dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(320.0f);
     ctx.setSelectedTrack(ids.lead);
     ctx.setDetailVisible(true);
     ctx.setDetailMode(DetailMode::Device);
@@ -147,33 +148,107 @@ struct Ui {
 
 }  // namespace
 
-TEST_CASE("meta devices (views): a chain meta device's panel is its face, fitted to the Device view's height") {
+TEST_CASE("meta devices (views): a chain meta device's panel is its face at 1:1, whatever the Device view's height (BR.I)") {
   Ui u;
   panel::BlockFrame& wp = u.panel(u.ids.wt);
   CHECK(wp.face().elementCount() > 1);  // its module's panel: the face's sections and plain controls
   CHECK(wp.title() == "Wavetable");
   // (GU.4: the Phase Accumulator is its module — a group, free beside it — and the Wavetable heads the path.)
   CHECK(doc::isGroupDevice(u.dev(u.ids.acc)));
-  // The face fills the body: its control's height is the panel's minus the title bar and the body's padding, and the
-  // frame's width follows the face's aspect at that height.
-  const IRect fr = u.faceControl(u.ids.wt).rect();
-  const IRect pr = wp.rect();
+  // BR.I: the face at 1:1 (was fitted to the view's height, 0.5 … 2), the frame as wide as it (or its title's minimum).
   const float s = u.d.tree().scale();
-  CHECK(std::abs(static_cast<float>(fr.h) - (static_cast<float>(pr.h) - (20.0f + 12.0f) * s)) <= 2.0f);
-  const float faceScale = u.faceControl(u.ids.wt).transform().scale / s;
-  CHECK(std::abs(static_cast<float>(fr.h) / (248.0f * s) - faceScale) <= 0.02f);
-  CHECK(faceScale > 0.7f);
-  CHECK(faceScale <= 2.0f + 1e-3f);  // (the frame's maximum face scale)
-  CHECK(static_cast<float>(fr.w) >= 204.0f * faceScale * s - 3.0f);
+  const IRect fr = u.faceControl(u.ids.wt).rect();
+  CHECK(u.faceControl(u.ids.wt).transform().scale == doctest::Approx(s).epsilon(1e-3));
+  CHECK(static_cast<float>(fr.h) >= 248.0f * s);
+  CHECK(static_cast<float>(fr.w) >= 204.0f * s);
   // The block after it (GU.11: a module where Auto Filter was — a group, its frame its panel) has no leaf frame.
   CHECK(u.view().panelOf(doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), u.ids.lead)).blocks.at(1)->id) == nullptr);
-  // Another Device view height scales the face with it (the frame's width follows).
+  // A shorter Device view leaves the face's size alone (the chain scrolls instead).
   dynamic_cast<Splitter&>(*u.d.find("main/body")).setPosition(200.0f);
   u.d.tree().layoutNow();
   const IRect fr2 = u.faceControl(u.ids.wt).rect();
-  CHECK(fr2.h != fr.h);
-  // The face fits whole (width at least its aspect's; a narrow face keeps the panel's minimum width for its title).
-  CHECK(static_cast<float>(fr2.w) >= 204.0f * static_cast<float>(fr2.h) / 248.0f - 3.0f);
+  CHECK(fr2.h == fr.h);
+  CHECK(fr2.w == fr.w);
+  CHECK(u.faceControl(u.ids.wt).transform().scale == doctest::Approx(s).epsilon(1e-3));
+  CHECK(u.view().chainScroll().contentSize().h > u.view().chainViewport().h);
+}
+
+TEST_CASE("BR.I device view: at the default height a Wavetable shows 1:1 and whole; the height follows the chain (real dispatch)") {
+  Ui u(true);
+  Splitter& body = dynamic_cast<Splitter&>(*u.d.find("main/body"));
+  const float s = u.d.tree().scale();
+  panel::PanelHost& h = u.faceControl(u.ids.wt);
+  MESSAGE("Device view (auto): body " << body.position() << ", chain " << u.view().chainViewport().h << " of "
+          << u.view().chainScroll().contentSize().h << ", Wavetable panel scale " << h.transform().scale / s);
+  CHECK(u.ctx.viewPrefs().deviceViewHeight == 0.0f);
+  CHECK(h.transform().scale == doctest::Approx(s).epsilon(1e-3));
+  CHECK(body.position() > kDetailHeight);  // grown to the Wavetable (its panel is taller than the default's ~181 units)
+  // Whole: no vertical scroll needed, the panel inside the chain's viewport.
+  CHECK(u.view().chainScroll().contentSize().h <= u.view().chainViewport().h);
+  CHECK(ui::intersect(h.rect(), u.view().chainViewport()) == h.rect());
+  // A chain change: without the Wavetable the view shrinks back (not below the default); undo grows it again.
+  const float grown = body.position();
+  auto e = doc::ops::deleteDevices(*u.ctx.doc(), std::vector<doc::DeviceId>{u.ids.wt});
+  REQUIRE(e.ok());
+  REQUIRE(u.ctx.store().dispatch(e->command).ok());
+  u.d.step();
+  CHECK(body.position() < grown);
+  CHECK(body.position() >= kDetailHeight);
+  REQUIRE(u.ctx.undo());
+  u.d.step();
+  CHECK(body.position() == doctest::Approx(grown));
+}
+
+TEST_CASE("BR.I device view: a splitter drag sets the user's height (kept over chain changes); the chain scrolls to the panel's bottom; double-click: auto again") {
+  Ui u(true);
+  Splitter& body = dynamic_cast<Splitter&>(*u.d.find("main/body"));
+  const float s = u.d.tree().scale();
+  const float autoH = body.position();
+  // Drag the splitter's handle down 120 px: the Device view gets shorter than the Wavetable's panel.
+  const IRect hr = body.handleRect();
+  const Vec2 grab{static_cast<float>(hr.x) + 300.0f, static_cast<float>(hr.y) + static_cast<float>(hr.h) / 2.0f};
+  u.d.drag(grab, {grab.x, grab.y + 120.0f}, 6);
+  u.d.step();
+  CHECK(body.position() == doctest::Approx(autoH - 120.0f / s).epsilon(0.02));
+  CHECK(u.ctx.viewPrefs().deviceViewHeight == doctest::Approx(body.position()));
+  // Still 1:1; the chain is taller than its view now and scrolls.
+  panel::PanelHost& h = u.faceControl(u.ids.wt);
+  CHECK(h.transform().scale == doctest::Approx(s).epsilon(1e-3));
+  const IRect vp = u.view().chainViewport();
+  REQUIRE(u.view().chainScroll().contentSize().h > vp.h);
+  CHECK(h.rect().bottom() > vp.bottom());  // its bottom is below the view
+  auto* vbar = dynamic_cast<Scrollbar*>(u.view().find("vscroll"));
+  REQUIRE(vbar != nullptr);
+  CHECK_FALSE(vbar->thumbRect().empty());  // a visible thumb
+  // The wheel over the chain (the add slot: no control takes it) scrolls down until the panel's bottom shows.
+  u.d.tree().layoutNow();
+  const IRect add = u.view().addSlot()->rect();
+  const Vec2 over{static_cast<float>(add.x) + static_cast<float>(add.w) / 2.0f, static_cast<float>(vp.y) + 10.0f};
+  for (int i = 0; i < 20 && u.view().chainScroll().scrollY() < u.view().chainScroll().contentSize().h - vp.h; ++i) u.d.wheel(over, -1.0f);
+  u.d.tree().layoutNow();
+  CHECK(u.view().chainScroll().scrollY() > 0);
+  CHECK(u.faceControl(u.ids.wt).rect().bottom() <= u.view().chainViewport().bottom());
+  // Shift+wheel still scrolls sideways (where there is more chain to the right) and leaves the vertical position alone.
+  const int32_t y0 = u.view().chainScroll().scrollY();
+  (void)u.d.wheel(over, -1.0f, 0.0f, mod::kShift);
+  CHECK(u.view().chainScroll().scrollY() == y0);
+  // The user's height survives a chain change (the Wavetable deleted, then back).
+  const float userH = body.position();
+  auto e = doc::ops::deleteDevices(*u.ctx.doc(), std::vector<doc::DeviceId>{u.ids.wt});
+  REQUIRE(e.ok());
+  REQUIRE(u.ctx.store().dispatch(e->command).ok());
+  u.d.step();
+  CHECK(body.position() == doctest::Approx(userH));
+  REQUIRE(u.ctx.undo());
+  u.d.step();
+  CHECK(body.position() == doctest::Approx(userH));
+  // A double-click on the handle: back to auto (the prefs cleared, the height follows the Wavetable again).
+  const IRect hr2 = body.handleRect();
+  u.d.doubleClick({static_cast<float>(hr2.x) + 300.0f, static_cast<float>(hr2.y) + static_cast<float>(hr2.h) / 2.0f});
+  u.d.step();
+  CHECK(u.ctx.viewPrefs().deviceViewHeight == 0.0f);
+  CHECK(body.position() == doctest::Approx(autoH));
+  CHECK(u.view().chainScroll().contentSize().h <= u.view().chainViewport().h);
 }
 
 TEST_CASE("meta devices (views): the face's input socket shows where the chain is wired (TMM.10-fix1)") {

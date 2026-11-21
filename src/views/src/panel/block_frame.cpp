@@ -300,27 +300,13 @@ float BlockFrame::panelHeight() const noexcept {
   return host_->face().worldSize().y;
 }
 
-float BlockFrame::panelScaleFor(float frameHeight) const noexcept {
-  const float ph = panelHeight();
-  if (!(ph > 0.0f)) return 1.0f;
-  const float body = frameHeight - (jacks_.empty() ? 0.0f : kJackStripH) - kTitleH - 2.0f * kPad;
-  return std::clamp(body / ph, opt_.minScale, opt_.maxScale);
-}
-
 float BlockFrame::logicalWidth() const noexcept {
   if (folded_) return kFoldedW;
-  const float z = std::clamp(1.0f, opt_.minScale, opt_.maxScale);
-  return std::max(opt_.minWidth, std::ceil(host_->face().worldSize().x * z) + 2.0f * kPad);
+  return std::max(opt_.minWidth, std::ceil(host_->face().worldSize().x) + 2.0f * kPad);
 }
 
 float BlockFrame::logicalHeight() const noexcept {
-  const float z = std::clamp(1.0f, opt_.minScale, opt_.maxScale);
-  return (jacks_.empty() ? 0.0f : kJackStripH) + kTitleH + (folded_ ? 0.0f : panelHeight() * z + 2.0f * kPad);
-}
-
-float BlockFrame::logicalWidthFor(float frameHeight) const noexcept {
-  if (folded_) return kFoldedW;
-  return std::max(opt_.minWidth, std::ceil(host_->face().worldSize().x * panelScaleFor(frameHeight)) + 2.0f * kPad);
+  return (jacks_.empty() ? 0.0f : kJackStripH) + kTitleH + (folded_ ? 0.0f : panelHeight() + 2.0f * kPad);
 }
 
 void BlockFrame::setPresetName(std::string name) {
@@ -356,13 +342,14 @@ void BlockFrame::arrange(ui::LayoutPass& pass) {
   }
   pass.place(*title_, {r.x, y, r.w, pass.px(kTitleH)});
   y += pass.px(kTitleH);
-  // The panel at its scale for the frame's height, from the body's top-left padding (PanelHost centres it across).
-  const float z = panelScaleFor(static_cast<float>(r.h) / pass.scale());
+  // BR.I: the panel at 1:1 from the body's top-left padding (PanelHost centres it across): whole device px rounded up,
+  // so the host's fit never lands a hair under 1.
   const float ph = panelHeight();
   const int32_t pad = pass.px(kPad);
   const bool show = !folded_ && ph > 0.0f;
   host_->setVisible(show);
-  if (show) pass.place(*host_, {r.x + pad, y + pad, std::max(0, r.w - 2 * pad), std::max(0, std::min(pass.px(ph * z), r.bottom() - y - 2 * pad))});
+  const auto hpx = static_cast<int32_t>(std::ceil(ph * pass.scale() - 1e-3f));
+  if (show) pass.place(*host_, {r.x + pad, y + pad, std::max(0, r.w - 2 * pad), std::max(0, std::min(hpx, r.bottom() - y - pad))});
 }
 
 void BlockFrame::paint(ui::PaintContext& ctx) {

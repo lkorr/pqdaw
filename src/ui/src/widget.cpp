@@ -315,7 +315,13 @@ bool Splitter::onPointer(const PointerEvent& e) {
   switch (e.type) {
     case PointerType::Down:
       if (e.button != PointerButton::Left || !handle_.contains(e.pos)) return false;
+      if (e.clickCount == 2 && onDoubleClick) {
+        dragging_ = false;
+        onDoubleClick();
+        return true;
+      }
       dragging_ = true;
+      dragMoved_ = false;
       dragStart_ = coord;
       dragStartPx_ = anchoredPx_;
       markDirty();
@@ -325,13 +331,16 @@ bool Splitter::onPointer(const PointerEvent& e) {
       const int32_t d = static_cast<int32_t>(std::lround(coord - dragStart_));
       const int32_t px = anchor_ == Anchor::First ? dragStartPx_ + d : dragStartPx_ - d;
       const float s = tree() ? tree()->scale() : 1.0f;
+      const float before = position_;
       setPosition(static_cast<float>(px) / s);
+      dragMoved_ = dragMoved_ || position_ != before;
       return true;
     }
     case PointerType::Up:
       if (!dragging_ || e.button != PointerButton::Left) return false;
       dragging_ = false;
       markDirty();
+      if (dragMoved_ && onUserMoved) onUserMoved();
       return true;
     default: return false;
   }

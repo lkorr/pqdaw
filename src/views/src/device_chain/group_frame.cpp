@@ -4,7 +4,7 @@
 // panels in place, S-resize blocks, Ctrl+G / Delete inside, exactly as in the circuit. The frame's title bar moves
 // and selects the group as any device's; its right edge drags the panel wider or narrower (view state of the session).
 // GU.3 (docs/plans/GU.md "Decided"): a group whose PANEL has elements shows its panel instead (pq/views/panel/
-// group_panel_face.h: the same face the circuit draws for the closed group, fitted to the frame's height, edited in
+// group_panel_face.h: the same face the circuit draws for the closed group, at 1:1 (BR.I), edited in
 // place); an empty panel keeps the mini circuit. The INSPECTOR on the left: an instrument group's polyphony (voices,
 // mono, legato, glide, steal) and (TX.group-oversample) the group's Oversample menu as panel elements bound to the
 // group's settings (an edit: one undo step, one recompile) — what IG.4's group panel was to be. BR.A: only an
@@ -14,6 +14,7 @@
 // or value blocks: a module's internals are not devices) and shows no count for a module.
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <string>
 
 #include "../common/paint.h"
@@ -67,30 +68,26 @@ public:
       });
   }
 
-  // TMM.13-fix2 (MM review "UI and aesthetic" 9): by default the panel is as wide as its contents at the zoom that fills its
-  // height (at most 1: a face at its own size), so the mini circuit opens legible instead of letterboxed at ~0.35. A width
-  // dragged this session wins.
-  float logicalWidth() const override { return logicalWidthFor(0.0f); }
-  float logicalWidthFor(float available) const override {
+  // TMM.13-fix2 (MM review "UI and aesthetic" 9) / BR.I: by default the panel is as wide as its contents at 1:1 (a
+  // face at its own size, the mini circuit at zoom 1; the chain is as tall as they need and scrolls). A width dragged
+  // this session wins.
+  float logicalWidth() const override {
     const auto it = impl_.groupWidths.find(id_.value);
     if (it != impl_.groupWidths.end()) return it->second;
     const float side = inspector_ != nullptr ? inspectorW() : 0.0f;
-    if (panel_ != nullptr) {  // GU.3: the panel at the scale that fills the height (at most 1), the inspector beside it
-      const ui::Vec2 ws = panel_->face().worldSize();
-      const float h = available > 0.0f ? available - kTitleH - 1.0f : ws.y;
-      const float z = std::min(1.0f, h / std::max(1.0f, ws.y));
-      return std::clamp(std::ceil(ws.x * z) + side + 2.0f, kMinW, kMaxW);
-    }
+    if (panel_ != nullptr)  // GU.3: the panel, the inspector beside it
+      return std::clamp(std::ceil(panel_->face().worldSize().x) + side + 2.0f, kMinW, kMaxW);
     if (view_ == nullptr) return side + kMinW;
-    const project_patch::ProjectPatch& pp = view_->patch();
-    if (pp.nodes.empty() || !(available > 0.0f)) return kDefaultW + side;
-    float x0 = pp.nodes[0].x, y0 = pp.nodes[0].y, x1 = x0 + pp.nodes[0].w, y1 = y0 + pp.nodes[0].h;
-    for (const project_patch::Node& n : pp.nodes)
-      x0 = std::min(x0, n.x), y0 = std::min(y0, n.y - 12.0f), x1 = std::max(x1, n.x + n.w), y1 = std::max(y1, n.y + n.h);
-    constexpr float kMargin = 24.0f;  // CircuitCanvas's fit margin (world units)
-    const float h = available - kTitleH - 1.0f;
-    const float z = std::min(1.0f, h / std::max(1.0f, (y1 - y0) + 2.0f * kMargin));
-    return std::clamp(std::ceil(((x1 - x0) + 2.0f * kMargin) * z) + 2.0f + side, kMinW, kMaxW);
+    const std::optional<ui::Rect> b = circuitBounds();
+    if (!b) return kDefaultW + side;
+    return std::clamp(std::ceil(b->x1 - b->x0) + 2.0f + side, kMinW, kMaxW);
+  }
+  float naturalHeight() const override {
+    float h = 0.0f;
+    if (panel_ != nullptr) h = panel_->face().worldSize().y;
+    else if (const std::optional<ui::Rect> b = circuitBounds()) h = b->y1 - b->y0;
+    if (inspector_ != nullptr) h = std::max(h, inspector_->face().worldSize().y);
+    return h > 0.0f ? kTitleH + 1.0f + std::ceil(h) : 0.0f;
   }
   float logicalHeight(float available) const override { return available; }
   void update(const doc::Device& d) override {
@@ -222,6 +219,17 @@ private:
   panel::PanelHost* panel_ = nullptr;      // GU.3: the group's panel (when it has elements)
   panel::PanelHost* inspector_ = nullptr;  // GU.3: the group's inspector (its polyphony when an instrument group, its oversampling)
   float inspectorW() const noexcept { return instrument_ ? kInspectorW : kPlainInspectorW; }
+  // The mini circuit's contents at zoom 1 with CircuitCanvas's fit margin (world units); nullopt: empty.
+  std::optional<ui::Rect> circuitBounds() const {
+    if (view_ == nullptr) return std::nullopt;
+    const project_patch::ProjectPatch& pp = view_->patch();
+    if (pp.nodes.empty()) return std::nullopt;
+    float x0 = pp.nodes[0].x, y0 = pp.nodes[0].y, x1 = x0 + pp.nodes[0].w, y1 = y0 + pp.nodes[0].h;
+    for (const project_patch::Node& n : pp.nodes)
+      x0 = std::min(x0, n.x), y0 = std::min(y0, n.y - 12.0f), x1 = std::max(x1, n.x + n.w), y1 = std::max(y1, n.y + n.h);
+    constexpr float kMargin = 24.0f;  // CircuitCanvas's fit margin (world units)
+    return ui::Rect{x0 - kMargin, y0 - kMargin, x1 + kMargin, y1 + kMargin};
+  }
   bool hasPanel_ = false, instrument_ = false;
   ViewContext::Subscription sub_;
   std::string name_;

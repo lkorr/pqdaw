@@ -74,6 +74,15 @@ struct DeviceChainView::Impl {
   DeviceChainView& view;
   ui::ScrollView* scroll = nullptr;
   ui::Widget* content = nullptr;
+  // BR.I: the Device view's auto height — a fit is due on the next frame (forced: even when the need is unchanged), and
+  // the chain height the last fit (or layout) saw.
+  bool fitPending = false, fitForced = false;
+  float fitNeed = -1.0f;
+  struct FitObserver final : ui::TreeObserver {  // fits right after the layout that showed the change
+    DeviceChainView* view = nullptr;
+    void onLayout() override { view->fitHeight(); }
+  } fitObserver;
+  ui::UiTree* fitTree = nullptr;  // where fitObserver is registered (installDeviceChain)
   std::vector<device_chain::FrameBase*> frames;       // the track's chain (top level)
   // TMM.13-fix2 (MM review H1): frames a sync replaced, kept alive until the next frame. A sync runs from a store
   // listener, i.e. inside whatever dispatched the edit, and that can be a key handler of the frame's own embedded
@@ -184,8 +193,9 @@ public:
   doc::DeviceId id() const noexcept { return id_; }
   virtual float logicalWidth() const = 0;
   virtual float logicalHeight(float available) const = 0;
-  // TMM.10: the width in a chain `available` logical px tall (a face panel scales with the height).
-  virtual float logicalWidthFor(float /*available*/) const { return logicalWidth(); }
+  // BR.I: the logical height its panels need at 1:1 (the chain is at least this tall; it scrolls when the view is
+  // shorter, and the Device view's auto height follows the tallest).
+  virtual float naturalHeight() const = 0;
   // The device (or something inside it) changed in the document: show it (values, settings, activation, structure).
   virtual void update(const doc::Device& d) = 0;
   // Whether update(d) can show `d` (else the frame is rebuilt).

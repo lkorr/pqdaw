@@ -28,6 +28,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -414,6 +415,8 @@ public:
   void setPosition(float logicalPx);
   IRect handleRect() const noexcept { return handle_; }
   bool dragging() const noexcept { return dragging_; }
+  // BR.I: the user moved the handle (called once when a drag that moved it ends) / double-clicked it.
+  std::function<void()> onUserMoved, onDoubleClick;
 
   void arrange(LayoutPass& pass) override;
   bool onPointer(const PointerEvent& e) override;
@@ -429,7 +432,7 @@ private:
   int32_t thickness_ = 4;
   Rgba handleColor_ = 0;
   IRect handle_{};
-  bool dragging_ = false;
+  bool dragging_ = false, dragMoved_ = false;
   float dragStart_ = 0;      // pointer main coordinate at Down
   int32_t dragStartPx_ = 0;  // anchored pane size at Down
   int32_t anchoredPx_ = 0;   // from the last layout

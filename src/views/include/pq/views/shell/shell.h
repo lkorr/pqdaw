@@ -44,6 +44,9 @@
 
 namespace pq::views {
 
+// The default height of the area under the arrangement (info + detail view; the body splitter's lower pane), logical px.
+inline constexpr float kDetailHeight = 240.0f;
+
 enum class ShellSlot : uint8_t { TrackArea, Mixer, ClipDetail, DeviceDetail, Browser, Tunings, Cables, Patch };
 
 struct ShellOptions {
