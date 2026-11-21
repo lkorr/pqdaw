@@ -23,6 +23,7 @@ pq_add_module(pq_media
     src/waveform.cpp
     src/transients.cpp
     src/tempo_detect.cpp
+    src/pitch_detect.cpp  # SM.7: root pitch (McLeod NSDF over the steadiest loud 0.5 s)
   DEPS pq_core pq_dsp
   PRIVATE_DEPS pq_media_codecs pq_flac
 )

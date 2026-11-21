@@ -15,7 +15,7 @@ namespace fs = std::filesystem;
 namespace {
 fs::path utf8Path(std::string_view s) { return fs::path(std::u8string(reinterpret_cast<const char8_t*>(s.data()), s.size())); }
 
-// The job: tempo (and on the way the transients) of one file, through the media caches.
+// The job: tempo (and on the way the transients) and the root pitch of one file, through the media caches.
 bool analyse(const media::TransientRequest& r, const std::atomic<bool>* stop, SampleAnalysisResult& out) {
   Result<media::TempoPtr> t = media::loadOrDetectTempo(r, stop);
   if (!t) return false;
@@ -26,6 +26,9 @@ bool analyse(const media::TransientRequest& r, const std::atomic<bool>* stop, Sa
     if (!tr) return false;
     out.transients = std::move(*tr);
   }
+  Result<media::PitchPtr> p = media::loadOrDetectPitch(r, stop);
+  if (!p) return false;
+  out.pitch = (*p)->estimate;
   return true;
 }
 }  // namespace

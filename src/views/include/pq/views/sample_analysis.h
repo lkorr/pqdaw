@@ -1,8 +1,10 @@
 #pragma once
 
 // The views' sample analysis (T6.8): per project sample its transients (media/transients.h: the faint markers on the
-// audio clip view's waveform) and its tempo (media/tempo_detect.h: auto-warp, "Warp as N-Bar Loop", the ×2 / ÷2
-// suggestions), from one off-thread job per file (media::loadOrDetectTempo: one pass that finds both). Owned by the
+// audio clip view's waveform), its tempo (media/tempo_detect.h: auto-warp, "Warp as N-Bar Loop", the ×2 / ÷2
+// suggestions) and its root pitch (SM.7, media/pitch_detect.h: the sampler's root on drop), from one off-thread job
+// per file (media::loadOrDetectTempo: one pass that finds the first two; media::loadOrDetectPitch: a bounded second
+// read of the file's first minute and one 0.5 s window). Owned by the
 // ViewContext (ViewContext::sampleAnalysis()), shaped like Waveforms (pq/views/waveforms.h).
 //
 //   get(id)                 the analysis of a project sample, or null while it is missing / running. The first call
@@ -28,6 +30,7 @@
 #include <vector>
 
 #include "pq/document/ids.h"
+#include "pq/media/pitch_detect.h"
 #include "pq/media/tempo_detect.h"
 #include "pq/media/transients.h"
 
@@ -42,6 +45,7 @@ class ViewContext;
 struct SampleAnalysisResult {
   media::TransientsPtr transients;  // onsets in source frames
   media::TempoPtr tempo;            // estimate.bpm 0: none
+  media::PitchEstimate pitch;       // the root: hz (kUnpitchedHz when !pitched), confidence, pitched
 };
 
 class SampleAnalysis {
