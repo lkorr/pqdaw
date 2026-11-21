@@ -922,9 +922,10 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## AP: Arpeggiator, the first note stage (user 2026-11-20; plan: docs/plans/AP.md; SPEC §15 "the arpeggiator"; design approved by the user 2026-11-20)
 - [x] **AP.1 Engine: NoteStage chain + ArpCore (Ableton parity, Degrees / Ratio)** *(merged 7cca1b22; Q?-AP.1-a; first synced step at note-on when idle → AP.3)* (plan "Tasks" AP.1, "Semantics" Ableton parity, "Realtime and CPU")
-- [ ] **AP.2 Document + lowering: Notes → Notes devices, `note:arpeggiator`, insert on the Notes link** (plan AP.2)
+- [x] **AP.2 Document + lowering: Notes → Notes devices, `note:arpeggiator`, insert on the Notes link** *(merged df334e3f; Q?-AP.2-a → AP.2b, Q?-AP.2-b; 4 browser / menu goldens re-recorded)* (plan AP.2)
 - [x] **AP.3 Pitch: Harmonics unit, Harmonic Walk, Into / Out glides with shapes** *(merged 0a6afa3e; Q?-AP.3-a; Q?-AP.1-a (3) decided: first step at the note-on when idle)* (plan AP.3)
 - [x] **AP.4 Pulse mode (polyrhythm, phase lock, layers)** *(merged 057af42f; Q?-AP.4-a; open: Cycle bars assume 4/4 → follow the song's signature in AP.5)* (plan AP.4)
+- [ ] **AP.2b Note-device follow-ups**: (1) cables into a note-device param play (Q?-AP.2-a: today Inactive; general mechanism — the wire's value at param rate from the previous block, one block late, documented), (2) a tuning edit no longer republishes the chain (AP.3's live degree lookup; held pattern keeps its place), (3) Pulse Cycle "bars" follow the song's time signature (Q?-AP.4-a). With AP.5.
 - [ ] **AP.5 Step lanes** (plan AP.5)
 - [ ] **AP.6 Arpeggiator panel** 👁 (plan AP.6)
 - [ ] **AP.7 Roll preview + Flatten to clip** 👁 (plan AP.7)
