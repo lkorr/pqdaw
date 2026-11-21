@@ -73,7 +73,7 @@ struct Rig {
   DocumentStore store{playback_fixture::unwiredDefaultProject()};
   TrackId track;
   DeviceId probe, arp;
-  Rig() {
+  explicit Rig(std::string_view probeAtom = "voice.hz") {
     IdSource& ids = store.ids();
     track = ids.track();
     Batch b{"arp fixture", {}};
@@ -84,7 +84,7 @@ struct Rig {
     b.commands.push_back(AddClip{track, playback_fixture::clip(ids, 0, 8 * kQ, std::move(chord), "Chord")});
     REQUIRE(store.dispatch(b).ok());
     playback_fixture::wireSeries(store);
-    probe = test_blocks::addProbeInstrument(store, track);
+    probe = test_blocks::addProbeInstrument(store, track, probeAtom);
     arp = edit(ops::addDevice(doc(), ids, track, noteDevicePatch("arpeggiator"), DeviceKind::AudioEffect)).devices.at(0);
     // Up, an eighth (1/8 synced), gate 100 % (each step sounds its whole length).
     edit(ops::setDeviceParam(doc(), arp, "rateDen", position("rateDen", 8.0)));
@@ -159,6 +159,41 @@ TEST_CASE("note device playback: a chord through an Arpeggiator renders stepped 
     const double want = K * (hz[0] + hz[1] + hz[2]);
     CHECK(std::fabs(mean(chord, 2 * kStep + 4000, 3 * kStep) - want) / want < 1e-3);
   }
+}
+
+// SM.1: voice.key through the real path (the lowering's doc::midiKeyOf → the timeline → the arp → the voices): the
+// probe's Out is voice.key, so each step's level is K · its key.
+TEST_CASE("note device playback (SM.1): voice.key: drawn Degree notes are 60 + degree; arp copies keep it, Degree steps "
+          "move it, Ratio steps take the nearest 12-TET key") {
+  Rig r("voice.key");
+  auto link = makeLink(r.store.current());
+  [[maybe_unused]] const ListenerId sub = r.store.subscribe([&](const StoreEvent& e) { link->onDocumentChange(e); });
+  auto check = [&](const std::vector<float>& out, const std::vector<double>& keys) {
+    const double K = mean(out, 4000, kStep - 200) / keys[0];
+    REQUIRE(K > 0.0);
+    for (size_t k = 0; k < keys.size(); ++k) {
+      CAPTURE(k);
+      const double got = mean(out, k * kStep + 4000, (k + 1) * kStep - 200);
+      CHECK(got / K == doctest::Approx(keys[k]).epsilon(1e-4));
+    }
+    return K;
+  };
+  // Up, Steps 2 / Distance 1 degree: degrees 0 4 7, then 1 5 8.
+  r.edit(ops::setDeviceParam(r.doc(), r.arp, "steps", position("steps", 2.0)));
+  link->flush();
+  const double K = check(render(*link, 6.0 * kStep / kRate), {60, 64, 67, 61, 65, 68});
+  // Ratio unit, 3/2: the copies at 392.4, 494.4, 588.0 Hz: static pitches, keys 67, 71, 74.
+  r.edit(ops::setDeviceParam(r.doc(), r.arp, "unit", position("unit", 1.0)));
+  r.edit(ops::setDeviceParam(r.doc(), r.arp, "ratioP", position("ratioP", 3.0)));
+  r.edit(ops::setDeviceParam(r.doc(), r.arp, "ratioQ", position("ratioQ", 2.0)));
+  link->flush();
+  (void)check(render(*link, 6.0 * kStep / kRate), {60, 64, 67, 67, 71, 74});
+  // Switched off: the chord as drawn, all three keys at once.
+  const DeviceId one[] = {r.arp};
+  r.edit(ops::setDevicesActive(r.doc(), one, false));
+  link->flush();
+  const std::vector<float> chord = render(*link, 2.0 * kStep / kRate);
+  CHECK(mean(chord, kStep, 2 * kStep - 200) / K == doctest::Approx(60.0 + 64.0 + 67.0).epsilon(1e-4));
 }
 
 // ---- AP.5 / AP.2b ------------------------------------------------------------------------------------------------

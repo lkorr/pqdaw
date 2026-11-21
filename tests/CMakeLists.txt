@@ -554,6 +554,7 @@ pq_add_test(pq_tests_document
     document/test_midi_file.cpp  # MF.1: SMF reader / writer (running status, sysex, RMID, errors, fuzz, 10 MB), notes (pairing, RPN / MPE bends, MTS, sustain)
     document/test_midi_import.cpp  # MF.2: MIDI import (Keys / Hz pitch, bends, MTS, tracks, tempo / signatures, ticks, one undo step)
     document/test_midi_export.cpp  # MF.3: MIDI export (12edo keys, MPE bends within 0.3 ¢, Degrees / .kbm, loop unrolled, tempo / signatures, > 15 voices)
+    document/test_midi_key.cpp  # SM.1: a note's MIDI key (Degree 60 + degree / lowest .kbm key, Cents / Ratio nearest 12-TET)
     document/test_flatten.cpp  # FZ.4: Flatten / Bounce to New Track / Consolidate audio ops (one undo step, clip placement, SetTrackKind, round trip)
     document/test_note_devices.cpp  # AP.2: note devices (the arpeggiator): the engine's table, notes-link edits, chainStages, the dissolve, note chains
   DEPS pq_doc pq_engine)

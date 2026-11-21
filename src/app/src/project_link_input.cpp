@@ -4,6 +4,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -13,6 +14,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/input_map.h"
 #include "pq/document/lower.h"
+#include "pq/document/midi_key.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/views/computer_keyboard.h"
 
@@ -27,7 +29,8 @@ namespace {
 
 // A key's pitch as the engine plays it: the NoteDesc fields lowerTrack gives the same drawn note (project_link.cpp),
 // which Timeline::setIdentity turns into the note-on's identity fields.
-engine::LivePitch livePitch(const doc::InputPitch& ip, const std::vector<doc::TuningId>& signals) {
+// SM.1: `key` is voice.key (the raw MIDI key, or the computer keyboard's doc::midiKeyOf).
+engine::LivePitch livePitch(const doc::InputPitch& ip, const std::vector<doc::TuningId>& signals, int16_t key) {
   engine::LivePitch lp;
   if (!ip.mapped || !(ip.hz > 0.0) || !std::isfinite(static_cast<float>(ip.hz))) return lp;
   lp.id = ip.id;
@@ -43,6 +46,7 @@ engine::LivePitch livePitch(const doc::InputPitch& ip, const std::vector<doc::Tu
     }
   }
   lp.noteDegree = ip.noteDegree;
+  lp.key = key;
   return lp;
 }
 
@@ -142,16 +146,23 @@ void ProjectLink::publishLiveRoutes(const doc::Project& p, bool force) {  // UI 
       entry.held = table;
       entry.keys.reserve(doc::InputPitchMap::kKeys);
       for (uint32_t k = 0; k < doc::InputPitchMap::kKeys; ++k)
-        entry.keys.push_back(livePitch(im.at(static_cast<uint8_t>(k)), signals));
+        entry.keys.push_back(livePitch(im.at(static_cast<uint8_t>(k)), signals, static_cast<int16_t>(k)));
       // The computer keyboard: degrees 0 … 35 above each equave offset (KB.1) (a 12-TET key map counts semitones from key 60).
       const bool twelve = t.noteInput.keyMap == doc::InputKeyMap::TwelveTetNearest ||
                           t.noteInput.keyMap == doc::InputKeyMap::TwelveTetHz;
       const int64_t size = twelve ? 12 : std::max<int64_t>(im.degreesPerEquave(), 1);
       entry.keyboard.reserve(engine::kKeyboardKeys);
+      // SM.1: a keyboard key's voice.key is a drawn note's (doc::midiKeyOf of what it plays); with a 12-TET key map
+      // the key it stands for (60 + d).
+      const doc::DegreeKeyMap degreeKeys(eff.def);
       for (uint32_t i = 0; i < engine::kKeyboardKeys; ++i) {
         const auto k = static_cast<uint8_t>(i);
         const int64_t d = int64_t{engine::keyboardEquave(k)} * size + engine::keyboardStep(k);
-        entry.keyboard.push_back(livePitch(im.pitchForDegree(d), signals));
+        const doc::InputPitch ip = im.pitchForDegree(d);
+        const std::optional<double> kd =
+            std::isnan(ip.noteDegree) ? std::nullopt : std::optional<double>(static_cast<double>(ip.noteDegree));
+        const int16_t mk = twelve ? tuning::midiKeyOrNone(60 + d) : doc::midiKeyOf(ip.id, kd, ip.hz, degreeKeys);
+        entry.keyboard.push_back(livePitch(ip, signals, mk));
       }
     }
     entry.sources = sources;  // TU.2b: drainMidiNotes routes as this image does

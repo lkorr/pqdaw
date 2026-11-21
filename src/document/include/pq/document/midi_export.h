@@ -21,7 +21,7 @@
 //           Degrees    key = 60 + the note's absolute degree in its clip's tuning (equave · size + degree), or the
 //                      lowest key the tuning's .kbm maps to that degree when it carries one; channel 1. A note between
 //                      degrees takes the nearest one (counted: `snapped`). Round-trips with a Keys import (MF.2) into a
-//                      track of the same tuning (key map Tuning / Consecutive).
+//                      track of the same tuning (key map Tuning / Consecutive). Keys: pq/document/midi_key.h (SM.1).
 //   A note whose key falls outside 0 … 127 (or a degree no .kbm key plays) is skipped (`outOfRange`); an unresolvable
 //   pitch (pitch_resolve.h: a missing anchor, a cycle of anchors) is skipped (`unresolved`). A note whose pitch moves
 //   (vibrato, a drawn curve, bends, a JI warp's glide) is written at its start pitch and counted (`curvesDropped`; the

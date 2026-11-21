@@ -1000,6 +1000,7 @@ void Timeline::setIdentity(NoteEvent& e, const SequenceImage::Note& n) noexcept 
   e.ratio = n.ratio;
   e.harmonic = n.harmonic;
   e.noteDegree = n.keyDegree;
+  e.key = n.key;
   e.unisonCount = n.unisonCount;  // T7.3
   e.unisonIndex = n.unisonIndex;
   if (n.pitch.tuning != 0) {  // T2.6: a note following a tuning signal (T2.6-fix3: which node, and how)

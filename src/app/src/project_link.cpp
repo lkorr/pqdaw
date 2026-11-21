@@ -68,6 +68,7 @@ bool sameNote(const engine::NoteDesc& a, const engine::NoteDesc& b) {
          a.releaseVelocity == b.releaseVelocity && a.chance == b.chance && a.velocityRange == b.velocityRange &&
          a.ratio == b.ratio && a.harmonic == b.harmonic && a.pitch == b.pitch && a.enabled == b.enabled &&
          std::bit_cast<uint32_t>(a.keyDegree) == std::bit_cast<uint32_t>(b.keyDegree) &&  // NaN: unknown
+         a.key == b.key &&  // SM.1
          a.unisonCount == b.unisonCount && a.unisonIndex == b.unisonIndex && a.pitchCurve == b.pitchCurve &&
          a.gainCurve == b.gainCurve;  // T7.3
 }

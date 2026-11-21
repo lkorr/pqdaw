@@ -47,9 +47,11 @@ namespace pq::engine {
 // move it): what an Instrument Rack's key zones read, so a zone is decided at note-on and a zone edit fades over the
 // rack's smoothing instead of stepping a sounding voice. NoteDegree (T4.17, M4 review M7): the note's absolute degree
 // in its own tuning (NoteEvent::noteDegree; NaN: unknown), param rate, what an Instrument Rack's Degree zones read.
+// Key (SM.1): the note's MIDI key (NoteEvent::key; −1: unknown), param rate, held from the note-on: what a Sampler's
+// Slice mode picks its slice by.
 enum class VoiceSignal : uint8_t {
   Hz, Cents, Gate, Trigger, Velocity, Release, Ratio, Harmonic, UnisonCount, Index, Degree, Equave, Tuning, NoteHz,
-  NoteDegree, Count_
+  NoteDegree, Key, Count_
 };
 inline constexpr uint32_t kVoiceSignalCount = static_cast<uint32_t>(VoiceSignal::Count_);
 

@@ -395,6 +395,9 @@ const AtomSignature kAtoms[] = {
      "the note's Hz at its note-on (param rate: glides, pitch events and retunes do not move it)"},
     {"voice.noteDegree", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
      "the note's absolute degree in its own tuning at its note-on (fractional between degrees; NaN if unknown)"},
+    // SM.1: a Sampler's Slice mode picks its slice by it (slice n = key 36 + n).
+    {"voice.key", C::Voice, kNoPorts, pVoiceRP, 0, kNeedsVoice, 0, {},
+     "the note's MIDI key at its note-on (drawn notes: 60 + degree, the .kbm key or the nearest 12-TET key; -1 if none)"},
     // Tuning as a signal (T2.6). infer() consumes tune_voices: within every subcircuit the calling patch
     // instantiates, voice.hz reads `hz` and (when connected) voice.cents reads `cents`.
     {"tuning_hz", C::Math, pTuningHz, pTuningHzOut, 0, 0, 0, {},

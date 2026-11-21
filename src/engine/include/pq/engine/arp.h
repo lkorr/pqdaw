@@ -76,6 +76,8 @@
 // source's degree / equave / tuning, noteDegree moved fractionally. h + k < 1 is a rest (no note). Rotate's wrap is
 // an octave of the series (h → 2h).
 // A copy with no shift carries the source's identity unchanged.
+// voice.key (SM.1): a copy keeps the source's key; a step that keeps a Degree identity moves the key by the degrees moved
+// (from the source's key; unknown: 60 + noteDegree); any other step takes the nearest 12-TET key of its Hz.
 // Tuning edits (AP.2b, AP.8a H2): a new table set (ArpTableMailbox: a definition change, a clip / track tuning
 // switch; never a continuous drag, which only moves the node's live inputs) re-resolves every held note — latched
 // ones too, whose producer no longer sends retunes — from the old table of its tuning to the new one: a Degree note

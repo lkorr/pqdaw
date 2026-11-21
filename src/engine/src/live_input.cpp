@@ -265,6 +265,7 @@ void LiveInput::onNoteOn(const RawMidi& m, int64_t time, const LiveRouteImage& i
     e.equave = p->equave;
     e.tuning = p->tuning;
     e.noteDegree = p->noteDegree;
+    e.key = p->key;
     (void)queue(time, t.slot, e, false);
     // T6.9: Capture MIDI: always, into the track's ring.
     const uint64_t seq = t.capture != nullptr ? t.capture->begin(time, b.playing ? b.songSample + (time - b.start) : -1,

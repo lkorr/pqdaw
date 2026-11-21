@@ -212,6 +212,7 @@ Result<std::unique_ptr<SequenceImage>> SequenceImage::build(std::span<const Trac
         n.harmonic = nd.harmonic;
         n.pitch = nd.pitch;
         n.keyDegree = nd.keyDegree;
+        n.key = nd.key;
         n.unisonCount = nd.unisonCount;
         n.unisonIndex = nd.unisonIndex;
         if (!nd.pitchCurve.empty() || !nd.gainCurve.empty()) {  // T7.1: header (hash), pitch points, gain points

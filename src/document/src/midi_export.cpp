@@ -6,13 +6,13 @@
 #include <cmath>
 #include <limits>
 #include <optional>
-#include <unordered_map>
 #include <utility>
 
 #include "edit_common.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/input_map.h"
 #include "pq/document/midi_file.h"
+#include "pq/document/midi_key.h"
 #include "pq/document/note_bend.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/tuning/scala.h"
@@ -41,29 +41,6 @@ struct TickMap {
     const int64_t q = d / kPpq, r = d % kPpq;
     return q * division + (2 * r * division + kPpq) / (2 * kPpq);
   }
-};
-
-int64_t nearestKey(double hz) noexcept { return std::llround(69.0 + 12.0 * std::log2(hz / 440.0)); }
-
-// Degrees mode: absolute degree → MIDI key (the lowest key the .kbm maps to it; without a .kbm, 60 + degree).
-class DegreeKeys {
-public:
-  explicit DegreeKeys(const TuningDef* def) {
-    const ScaleDef* s = def ? def->scale() : nullptr;
-    if (!s || !s->mapping) return;
-    kbm_ = true;
-    for (int32_t k = 127; k >= 0; --k)
-      if (const std::optional<int64_t> d = tuning::mapKeyToDegree(*s->mapping, k)) keyOf_[*d] = k;
-  }
-  int64_t key(int64_t degree) const {
-    if (!kbm_) return 60 + degree;
-    const auto it = keyOf_.find(degree);
-    return it == keyOf_.end() ? kNoKey : it->second;
-  }
-
-private:
-  bool kbm_ = false;
-  std::unordered_map<int64_t, int64_t> keyOf_;
 };
 
 uint8_t clamp7(float v, int lo) noexcept {
@@ -147,7 +124,7 @@ Result<std::vector<uint8_t>> exportMidi(const Project& p, std::span<const ClipRe
   for (uint32_t ci = 0; ci < found.size(); ++ci) {
     const NoteClip& c = *found[ci].f.clip;
     const ClipPitches& cp = found[ci].pitches;
-    const DegreeKeys degreeKeys(opt.mode == MidiExportMode::Degrees ? cp.tuning.def : nullptr);
+    const DegreeKeyMap degreeKeys(opt.mode == MidiExportMode::Degrees ? cp.tuning.def : nullptr);
     // T7.16b (review M21): which notes move while they sound (only notes with a curve record or a warp are looked at).
     std::optional<NotePitchIndex> index;
     auto moves = [&](const Note& n) {
@@ -178,10 +155,10 @@ Result<std::vector<uint8_t>> exportMidi(const Project& p, std::span<const ClipRe
         int64_t key = kNoKey;
         switch (opt.mode) {
           case MidiExportMode::TwelveEdo:
-            key = nearestKey(*np.hz);
+            key = tuning::nearestMidiKey(*np.hz);
             break;
           case MidiExportMode::Mpe: {
-            key = nearestKey(*np.hz);
+            key = tuning::nearestMidiKey(*np.hz);
             const double semis = 12.0 * std::log2(*np.hz / twelveTetHz(static_cast<double>(key)));
             const long v = std::lround(8192.0 + semis * 8192.0 / kMpeBendSemitones);
             o.bend = static_cast<uint16_t>(std::clamp<long>(v, 0, 16383));

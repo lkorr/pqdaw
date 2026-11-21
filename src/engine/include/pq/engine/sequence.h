@@ -109,6 +109,7 @@ struct NoteDesc {
   float harmonic = 0.0f;          // voice.harmonic
   PitchSource pitch;
   float keyDegree = std::numeric_limits<float>::quiet_NaN();  // voice.noteDegree (T4.17; NaN: unknown)
+  int16_t key = -1;               // SM.1: voice.key (doc::midiKeyOf; −1: unknown)
   // T7.3: voice.unisonCount / voice.index (NoteEvent): a JI object's voices that share one pitch at the note's start.
   uint16_t unisonCount = 1;
   uint16_t unisonIndex = 0;
@@ -148,7 +149,7 @@ NoteRandom noteRandom(uint64_t seed, uint32_t noteId, int64_t pass) noexcept;
 
 class SequenceImage {
 public:
-  // A note as stored: 72 bytes. Its curves (T7.1) are not in it: see curvesOf().
+  // A note as stored: 80 bytes. Its curves (T7.1) are not in it: see curvesOf().
   struct Note {
     Ticks start;            // content ticks
     Ticks length;
@@ -160,8 +161,9 @@ public:
     float keyDegree;        // T4.17: voice.noteDegree (NaN: unknown)
     uint16_t unisonCount;   // T7.3: voice.unisonCount / voice.index (in what was padding)
     uint16_t unisonIndex;
+    int16_t key;            // SM.1: voice.key (−1: unknown)
   };
-  static_assert(sizeof(Note) == 72);
+  static_assert(sizeof(Note) == 80);
 
   // T7.1: where a note's curves are in curves(): one header entry at `begin` (its `tick` holds the curve hash), then
   // pitchCount pitch points, then gainCount gain points. Both counts 0: no curves (`begin` is meaningless).

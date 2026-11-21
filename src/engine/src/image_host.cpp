@@ -693,7 +693,7 @@ bool ImageHost::externals(const g::Schedule& s) {
       static constexpr std::string_view kVoice[kVoiceSignalCount] = {
           "voice.hz", "voice.cents", "voice.gate", "voice.trigger", "voice.velocity", "voice.release",
           "voice.ratio", "voice.harmonic", "voice.unisonCount", "voice.index", "voice.degree", "voice.equave",
-          "voice.tuning", "voice.noteHz", "voice.noteDegree"};
+          "voice.tuning", "voice.noteHz", "voice.noteDegree", "voice.key"};
       bool found = false;
       for (uint32_t k = 0; k < kVoiceSignalCount; ++k)
         if (name == kVoice[k]) {

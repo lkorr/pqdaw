@@ -7,6 +7,7 @@
 
 #include "pq/core/automation_curve.h"
 #include "pq/document/lower.h"
+#include "pq/document/midi_key.h"
 #include "pq/document/pitch_resolve.h"
 
 namespace pq::app {
@@ -190,6 +191,7 @@ engine::ClipDesc lowerClipDesc(const doc::Project& p, const doc::NoteClip& c, co
   std::optional<ClipCurveLowering> curves;
   if (ClipCurveLowering::needed(c)) curves.emplace(c, p.timeline->tempoMap, tempoMoves, cp);
   cd.notes.reserve(c.notes.size());
+  const doc::DegreeKeyMap degreeKeys(cp.tuning.def);  // SM.1: voice.key
   size_t ni = 0;
   for (const doc::Note& n : c.notes) {
     const doc::NotePitch& np = cp.notes[ni++];
@@ -203,6 +205,7 @@ engine::ClipDesc lowerClipDesc(const doc::Project& p, const doc::NoteClip& c, co
     nd.id = n.id.value;
     nd.hz = static_cast<float>(hz);
     if (np.keyDegree) nd.keyDegree = static_cast<float>(*np.keyDegree);
+    nd.key = doc::midiKeyOf(n.pitch, np.keyDegree, hz, degreeKeys);
     nd.velocity = std::clamp(n.velocity, 1.0f, 127.0f);
     nd.releaseVelocity = std::clamp(n.releaseVelocity, 0.0f, 127.0f);
     nd.chance = std::clamp(n.chance, 0.0f, 1.0f);

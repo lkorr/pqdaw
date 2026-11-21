@@ -113,8 +113,11 @@ struct NoteEvent {
   float noteDegree = std::numeric_limits<float>::quiet_NaN();
   // T7.1: NoteOn: the note's initial gain; Gain: the target gain. Linear, ≥ 0 (negative / NaN read as 0).
   float gain = 1.0f;
+  // SM.1: NoteOn: voice.key, the note's MIDI key (doc::midiKeyOf for drawn notes, the raw key for live MIDI; 0 … 127,
+  // −1 = unknown). Held from the note-on (a Pitch event, a retune, never moves it).
+  int16_t key = -1;
 };
-static_assert(sizeof(NoteEvent) == 56);
+static_assert(sizeof(NoteEvent) == 60);
 
 inline NoteEvent noteOn(uint32_t frame, uint32_t noteId, float hz, float velocity) noexcept {  // RT-safe
   NoteEvent e;
