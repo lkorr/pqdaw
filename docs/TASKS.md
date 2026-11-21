@@ -933,9 +933,9 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **AP.8b Review fixes: Flatten + panel** *(merged 9218a571; Q?-AP.8b-a; open lows: L12 rest (Triplet chip overlap, button bloom, unlabelled Glide Sync / Cents), L13 (empty Hold box, off lanes too bright))* (docs/reviews/AP.md H3, M5–M8 + UI lows): Flatten follows automation / cables or refuses, keeps unplayed notes, covers muted / unplaced clips, runs off the UI thread; lane-step cables Inactive; panel nits.
 
 ## SM: Sampler (Simpler modes + warp per voice + granulator; user 2026-11-20; plan: docs/plans/SM.md; design approved by the user 2026-11-20)
-- [ ] **SM.1 `voice.key` + `doc::midiKeyOf`** (plan SM.1; after AP.5 merges: touches NoteEvent / arp)
+- [x] **SM.1 `voice.key` + `doc::midiKeyOf`** *(merged 22666f08; Q?-SM.1-a; note 72 → 80 bytes, event 56 → 60)* (plan SM.1)
 - [x] **SM.2 Sample slot, pinning, `sample_read` on slots, the `sampler` engine type** *(merged 29a8aad9; Q?-SM.2-a; `key` is an input until SM.1/SM.3 wire voice.key; stereo param-rate Re-Pitch 1.06–1.17 × two old mono reads at 8 voices vs ≤ 1.1 target: borderline, per-call setup)* (plan SM.2)
-- [ ] **SM.3 Sampler group preset** (plan SM.3)
+- [x] **SM.3 Sampler group preset** *(merged 9026f0f7; Q?-SM.3-a; envelope multiplies after the filter (stereo); lowering accepts wires into bool gate inputs (sum > 0); interp == JIT bit-exact; project-node-menu golden moved)* (plan SM.3)
 - [ ] **SM.4 `dsp::WarpVoice` extraction + `sampler_warp`** (plan SM.4)
 - [ ] **SM.5 Complex / Complex Pro per voice** (plan SM.5)
 - [ ] **SM.6 `granular` atom + GrainTap** (plan SM.6)
