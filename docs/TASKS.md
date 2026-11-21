@@ -932,7 +932,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## SM: Sampler (Simpler modes + warp per voice + granulator; user 2026-11-20; plan: docs/plans/SM.md; design approved by the user 2026-11-20)
 - [ ] **SM.1 `voice.key` + `doc::midiKeyOf`** (plan SM.1; after AP.5 merges: touches NoteEvent / arp)
-- [ ] **SM.2 Sample slot, pinning, `sample_read` on slots, the `sampler` engine type** (plan SM.2)
+- [x] **SM.2 Sample slot, pinning, `sample_read` on slots, the `sampler` engine type** *(merged 29a8aad9; Q?-SM.2-a; `key` is an input until SM.1/SM.3 wire voice.key; stereo param-rate Re-Pitch 1.06–1.17 × two old mono reads at 8 voices vs ≤ 1.1 target: borderline, per-call setup)* (plan SM.2)
 - [ ] **SM.3 Sampler group preset** (plan SM.3)
 - [ ] **SM.4 `dsp::WarpVoice` extraction + `sampler_warp`** (plan SM.4)
 - [ ] **SM.5 Complex / Complex Pro per voice** (plan SM.5)
