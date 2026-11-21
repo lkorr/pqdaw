@@ -1066,17 +1066,45 @@ void ProjectLink::publishAutomation(const doc::Project& p) {
   engine_->wake();
 }
 
-uint32_t ProjectLink::busValueIndex(doc::WireId w) {  // AP.2b: stable per wire for the link's life
+uint32_t ProjectLink::busValueIndex(doc::WireId w) {  // AP.2b: stable per wire while the wire exists
   std::lock_guard lock(busValueMutex_);
   if (const auto it = busValueOf_.find(w.value); it != busValueOf_.end()) return it->second;
-  if (busValueOf_.size() >= engine::kMaxBusValues) return engine::kNoBusValue;
-  const auto i = static_cast<uint32_t>(busValueOf_.size());
+  uint32_t i;
+  if (!busValueFree_.empty()) {  // AP.8a (review L8): an index a deleted wire left
+    i = busValueFree_.back();
+    busValueFree_.pop_back();
+  } else {
+    if (busValueNext_ >= engine::kMaxBusValues) return engine::kNoBusValue;
+    i = busValueNext_++;
+  }
   busValueOf_.emplace(w.value, i);
   return i;
 }
 
-void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
+void ProjectLink::pruneBusValues(const doc::Project& p, bool reset) {  // AP.8a (review L8)
+  std::lock_guard lock(busValueMutex_);
+  if (reset) {  // (wire ids restart per project)
+    busValueOf_.clear();
+    busValueFree_.clear();
+    busValueNext_ = 0;
+    return;
+  }
+  for (auto it = busValueOf_.begin(); it != busValueOf_.end();)
+    if (doc::findWire(p, doc::WireId{it->first}) == nullptr) {
+      busValueFree_.push_back(it->second);
+      it = busValueOf_.erase(it);
+    } else {
+      ++it;
+    }
+}
+
+void ProjectLink::publishNoteStages(const doc::Project& p, bool reset) {  // AP.2
   if (!engine_) return;
+  if (reset) {  // AP.8a (review M9): another project: nothing of the last one's arps carries over
+    noteChains_.clear();
+    ++noteEpoch_;  // the new stages' keys never match the running ones (no adoption)
+  }
+  pruneBusValues(p, reset);
   std::vector<doc::LoweredNoteChain> chains = doc::lowerNoteChains(p);
   std::vector<PublishedNotes> next;
   next.reserve(chains.size());
@@ -1091,24 +1119,26 @@ void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
   for (doc::LoweredNoteChain& c : chains) {
     const uint32_t slot = slotForTrack(c.track);
     if (slot == kNone) continue;
-    // AP.2b: the degree table of the definition the track's tuning node plays STATICALLY (its table entry: a
-    // continuous drag moves the node's live inputs, the static pitches of the notes stay those of the entry), so a
-    // step's Hz = the source's static Hz times the static interval, and the node moves both alike.
-    if (const doc::TuningSlot* ts = c.tuning.valid() ? doc::findTuning(p, c.tuning) : nullptr) {
-      std::lock_guard lock(mutex_);
-      if (const EntryPtr* e = tuningEntry(ts->id, ts->def); e != nullptr) {
-        std::vector<double> cents;
-        double eq = 1200.0;
-        if (doc::noteDegreeTable((*e)->def, cents, eq)) {
-          c.degreeCents = std::move(cents);
-          c.equaveCents = eq;
+    // AP.2b: the degree tables of the definitions the track's tuning nodes play STATICALLY (their table entries: a
+    // continuous drag moves the nodes' live inputs, the static pitches of the notes stay those of the entries), so a
+    // step's Hz = the source's static Hz times the static interval, and the node moves both alike. AP.8a (H4): one per
+    // node, so a clip's own tuning steps in its own degrees.
+    auto entryTable = [&](doc::TuningId id, doc::NoteDegreeTable& t) {
+      if (const doc::TuningSlot* ts = id.valid() ? doc::findTuning(p, id) : nullptr) {
+        std::lock_guard lock(mutex_);
+        if (const EntryPtr* e = tuningEntry(ts->id, ts->def); e != nullptr) {
+          doc::NoteDegreeTable r;
+          if (doc::noteDegreeTable((*e)->def, r)) t = std::move(r);
         }
       }
-    }
+    };
+    entryTable(c.tuning, c.trackTable);
+    for (size_t i = 0; i < c.signals.size() && i < c.nodes.size(); ++i) entryTable(c.signals[i], c.nodes[i]);
     if (const auto it = find(noteChains_, c.track); it != noteChains_.end() && it->slot == slot && it->chain.sameStructure(c)) {
-      if (!it->chain.sameTable(c)) {  // AP.2b: a tuning edit: the running stages take the new table, nothing restarts
+      if (!it->chain.sameTable(c)) {  // AP.2b: a tuning edit: the running stages take the new tables, nothing restarts
+        const engine::ArpTables tables = arpTablesOf(c);
         for (const auto& box : it->boxes)
-          if (box) box->post(engine::ArpDegreeTable{c.degreeCents, c.equaveCents});
+          if (box) box->post(tables);
         ++stats_.noteTablePosts;
       }
       next.push_back({std::move(c), slot, std::move(it->boxes)});
@@ -1124,12 +1154,13 @@ void ProjectLink::publishNoteStages(const doc::Project& p) {  // AP.2
       if (!status) status = std::make_shared<NoteStageStatus>();
       // AP.7: the one builder (the offline renders use it too).
       std::unique_ptr<engine::ArpStage> stage = makeArpStage(
-          st, engine::ArpDegreeTable{c.degreeCents, c.equaveCents},
+          st, arpTablesOf(c),
           [this](const std::string& key) {
             const uint32_t ps = slotForParam(key);
             return ps == kNone ? kNoSlot : ps;
           },
           [this](doc::WireId w) { return busValueIndex(w); }, box, status);
+      if (stage) stage->key |= static_cast<uint64_t>(noteEpoch_) << 32;  // AP.8a (M9): this project's stages only
       if (stage && chain->add(std::move(stage))) boxes.push_back(std::move(box));
     }
     (void)engine_->setNoteStages(slot, std::move(chain));
@@ -1321,7 +1352,7 @@ void ProjectLink::onDocumentChange(const doc::StoreEvent& e) {
   const bool compile = structural || newTables || sendsChanged;
   if (reset || structural || c.has(doc::kChangeParam)) applyParams(p, reset);
   // AP.2: the note chains after their params have slots and values; a tuning edit moves a chain's degree table.
-  if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty())) publishNoteStages(p);
+  if (reset || structural || (c.has(doc::kChangeParam) && !c.tunings.empty())) publishNoteStages(p, reset);
   if (reset || c.has(doc::kChangeTimeline)) publishTempo(p);
   if (reset || compile || c.has(doc::kChangeSequence)) publishSequences(p);
   else if (c.has(doc::kChangeParam) && !c.tunings.empty()) publishSequences(p, true);  // static pitches only
@@ -1581,6 +1612,9 @@ std::string ProjectLink::lastError() const {
 void ProjectLink::collect() {
   engine_->collect();
   sampleReclaimer_.collect();  // T5.4: residencies a demotion replaced
+  for (const PublishedNotes& n : noteChains_)  // AP.8a (review M1): the degree tables the stages retired
+    for (const auto& box : n.boxes)
+      if (box) box->collect();
 }
 
 void ProjectLink::collectIdle() {

@@ -10,7 +10,8 @@
 // releases (Hold off) or only lifts the key (Hold on: latched). Hold: a note-on while no key is down replaces the
 // latched set; one while a key is down joins it; Hold switched off drops the latched notes no key holds. Events of
 // an id the stage does not hold (notes that started before the stage was installed, a 129th note's off) pass through
-// unchanged; AllNotesOff / AllSoundOff pass through and clear the held set, the generated notes and the clock.
+// unchanged; AllNotesOff / AllSoundOff pass through and clear the held set, the generated notes and the clock. A
+// NoteOff flagged kNoteEventGone (a handover: its producer stage was removed) drops the note even with Hold on.
 // "Up" orders the held notes by Hz (ties: arrival), so it works in any tuning; Play Order by arrival.
 //
 // ---- Clock (at sample k of a block: frame order; at one frame: gate ends, then input events, then the step) -----------
@@ -27,7 +28,10 @@
 // of that block (param rate).
 // Transport: a loop wrap / locate (a Song segment that does not continue the last one) or a stop (Song → Free) ends
 // every generated note at that frame and re-seeks the clock; Hold keeps the latched set across a wrap / locate, a
-// stop drops the latched notes no key holds.
+// stop drops the latched notes no key holds. AP.8a (review M3): a tempo edit is not a locate — a block whose clock says
+// `remapped` (the timeline swapped the tempo map at frame 0, keeping the tick) ends nothing: the next step re-seeks on
+// the same grid index under the new map, each pulse clock resumes at its first unplayed onset, and the sounding
+// notes' remaining gate / glide times scale by the tempo ratio (the last block's bpm over this one's).
 //
 // ---- Pattern --------------------------------------------------------------------------------------------------------
 // The cycle is the style's base pattern over the n held notes, played Steps times (copy j = 0 … Steps − 1 shifted by
@@ -51,22 +55,34 @@
 // work over the W elements as over held notes.
 //
 // ---- Pitch units (exact identities) ------------------------------------------------------------------------------
-// Degrees: degree D + k of the note's tuning (D = equave · N + degree; the new degree / equave normalized, `tuning`
-// kept, so a patch's tuning node still drives the voice: T2.6). The Hz moves by cents(D + k) − cents(D) of the
-// stage's ArpDegreeTable (the track tuning's step table, set off-thread with the stage; default 12-EDO). A note
-// without a Degree identity is shifted by the table's interval from degree round(noteDegree) (0 when unknown) and
-// plays static (tuning 0) when shifted. Under a modulated tuning (a track patch's tuning_hz node, T2.6) the voice
-// derives its Hz from the event's degree / equave per sample, and the Hz the table gives is that degree's static
-// pitch (the node's E = hz / hz₀ = 1), so the step follows the modulation and an arp glide composes on top.
+// Every generated note is a PITCH IDENTITY = the source's degree identity (degree / equave / tuning, or none) × an
+// exact ratio (note_events.h "Pitch identity"): it keeps the source's `tuning` and Degree identity (Degrees: the
+// shifted degree) and its Hz is that identity's static Hz times the ratio, so a patch's tuning node (tuning_hz,
+// T2.6: E = hz / hz₀) moves EVERY step — copies, Ratio / Harmonics steps, Harmonic Walk elements, Layers, latched
+// notes — with a live tuning modulation per sample, at its exact ratio over the moved degree (AP.8a, review H1).
+// Degrees: degree D + k of the note's tuning (D = equave · N + degree; the new degree / equave normalized). The Hz
+// moves by cents(D + k) − cents(D) of the note's table (ArpTables::of(its tuning): its clip's tuning, AP.8a H4; set
+// off-thread with the stage; default 12-EDO). A note without a Degree identity is shifted by the table's interval
+// from degree round(noteDegree) (0 when unknown); it keeps its `tuning` (a reference-relative note follows the
+// reference). Under a modulated tuning the Hz the table gives is that degree's static pitch (the node's E = 1), so
+// the step follows the modulation and an arp glide composes on top.
 // Ratio: × (p/q)^e (e = j · Distance, or the Rotate wraps), an exact integer fraction (Hz = hz · num / den in double,
-// float32 at the end): ratio = source ratio · num/den, harmonic = h · num/den when that is an integer (else 0),
-// degree / equave NaN, tuning 0 (a static pitch), noteDegree moved by the table's steps (fractional).
+// float32 at the end): ratio = source ratio · num/den, harmonic = h · num/den when that is an integer ≤ 2^24 (else
+// 0), the source's degree / equave / tuning (the node: E = the source's E · num/den), noteDegree moved by the table's
+// steps (fractional).
 // Harmonics (AP.3): a note with voice.harmonic h > 0 (an integer: its number in its JI group, anchor = Hz · h_a / h)
 // steps to h + k over the same anchor; a note without one counts as harmonic Base of itself. Hz = hz · (h + k) / h
-// (double, float32 at the end), ratio = source ratio · (h + k) / h, harmonic = h + k exactly; degree / equave NaN,
-// tuning 0 (static), noteDegree moved fractionally. h + k < 1 is a rest (no note). Rotate's wrap is an octave of
-// the series (h → 2h).
+// (double, float32 at the end), ratio = source ratio · (h + k) / h, harmonic = h + k exactly (≤ 2^24, else 0); the
+// source's degree / equave / tuning, noteDegree moved fractionally. h + k < 1 is a rest (no note). Rotate's wrap is
+// an octave of the series (h → 2h).
 // A copy with no shift carries the source's identity unchanged.
+// Tuning edits (AP.2b, AP.8a H2): a new table set (ArpTableMailbox: a definition change, a clip / track tuning
+// switch; never a continuous drag, which only moves the node's live inputs) re-resolves every held note — latched
+// ones too, whose producer no longer sends retunes — from the old table of its tuning to the new one: a Degree note
+// keeps its degree and its ratio to it (Hz × new Hz(D) / old Hz(D)), a reference-relative one moves with the
+// reference, a static one stays; then every sounding step re-derives its pitch at frame 0 with a 5 ms retune (the
+// running Into / Out glides re-aimed, their glide state moved: review L1). The link posts a table before it publishes
+// the retuned sequences / live routes, so a producer's retune (absolute) arrives with or after it.
 //
 // ---- Glides (AP.3, "Pitch into / out of curves") -------------------------------------------------------------------
 // Into: a step's note starts at a source pitch and glides to its own over Time: Step = the previous step's note
@@ -149,9 +165,13 @@
 // Layers. Nothing held: idle. Cost: a few relaxed stores per step, one O(entries) write per held-set change.
 //
 // ---- Capacities -----------------------------------------------------------------------------------------------------
-// kArpMaxHeld source notes (a note-on beyond: dropped, counted); kArpMaxSounding generated notes (beyond: the oldest
-// ends at the new step's frame, counted). Per block O(events + steps + gate ends in the block); a block with nothing
-// held, nothing sounding and no event returns after one compare.
+// kArpMaxHeld source notes (a note-on beyond: dropped, counted); kArpMaxSounding generated notes (beyond: the
+// earliest-ending ones end at the new step's frame, counted). Per block O(events + steps + gate ends in the block);
+// AP.8a (review M4): a step (or a frame of pulses) that starts many notes into a full table makes its room in ONE
+// partial selection (O(sounding)), and a tie step finds its waiting notes through a (rank | clock, layer) table, so a
+// 128-note Chord Trigger with 3 layers and ties costs O(sounding) per step, not O(sounding²). A block with nothing
+// held, nothing sounding and no event returns after one compare (ArpStage maps no param for it: review L5).
+// Generated ids skip counters still sounding after a 2^24 wrap (review L4).
 
 #include <array>
 #include <atomic>
@@ -205,6 +225,7 @@ struct ArpRate {
   int32_t num = 1, den = 16;          // 1 … 16 / 1 … kArpMaxRateDen
   int32_t tupletN = 1, tupletM = 1;   // 1 … kArpMaxTuplet: straight 1:1, triplet 3:2, dotted 2:3, quintuplet 5:4
   float ms = 125.0f;                  // Free: 1 … 10000 ms
+  friend bool operator==(const ArpRate&, const ArpRate&) = default;
 };
 
 struct ArpParams {
@@ -248,7 +269,9 @@ struct ArpParams {
   // AP.4: pulse mode, layers.
   bool pulse = false;
   ArpPulseSource pulseSource = ArpPulseSource::Harmonic;
-  int32_t pulseRef = 0;               // h_ref: 0 = the lowest h held, else 1 … kArpMaxPulseH
+  // h_ref: 0 = the lowest h held, else 1 … kArpMaxPulseH. AP.8a (Q?-AP.4-a (8) decided): fixed 8 by default (the
+  // Harmonics Base), so releasing the lowest note never re-times every clock; 0 is the opt-in "lowest held".
+  int32_t pulseRef = 8;
   ArpPulseCycle pulseCycle = ArpPulseCycle::Base;
   int32_t pulseBars = 1;              // Bars: 1 … kArpMaxPulseBars whole notes
   int32_t proportionLen = 0;          // 0 … kArpMaxProportion (0: Proportion falls back to Order)
@@ -258,6 +281,9 @@ struct ArpParams {
   // AP.5: step lanes, the structural part (on / off, length 1 … kArpMaxLaneSteps); the step values are ArpLaneSteps.
   std::array<bool, kArpLaneCount> laneOn{};
   std::array<int32_t, kArpLaneCount> laneLength{16, 16, 16, 16, 16, 16};
+  // AP.8a (review L5): memberwise (ArpCore::process re-sanitizes only when the params change; no byte compare of a
+  // padded struct).
+  friend bool operator==(const ArpParams&, const ArpParams&) = default;
 };
 
 // The runtime params a project param slot can drive (ArpStage::map). Values as floats: enums and ints rounded,
@@ -377,7 +403,7 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::GlideBend, "glideBend", "Bend", -1, 1, 0.5f, 0, false, "", true},
     {ArpParamId::Pulse, "pulse", "Pulse", 0, 1, 0, 1, true, "", true},
     {ArpParamId::PulseSource, "pulseSource", "Pulse h", 0, 2, 0, 1, false, "Harmonic|Proportion|Order", true},
-    {ArpParamId::PulseRef, "pulseRef", "Pulse Ref", 0, kArpMaxPulseH, 0, 1, false, "", true},
+    {ArpParamId::PulseRef, "pulseRef", "Pulse Ref", 0, kArpMaxPulseH, 8, 1, false, "", true},
     {ArpParamId::PulseCycle, "pulseCycle", "Cycle", 0, 1, 0, 1, false, "Base|Bars", true},
     {ArpParamId::PulseBars, "pulseBars", "Bars", 1, kArpMaxPulseBars, 1, 1, false, "", true},
     {ArpParamId::ProportionLen, "proportionLen", "Prop Len", 0, kArpMaxProportion, 0, 1, false, "", true},
@@ -439,10 +465,31 @@ static_assert(arpChoicesMatchRanges(), "kArpParamInfo: an enum's choices are one
 inline const ArpParamInfo& arpParamInfo(ArpParamId id) noexcept { return kArpParamInfo[static_cast<size_t>(id)]; }
 ArpParams sanitized(const ArpParams& p) noexcept;                       // clamps every field to its range. RT-safe
 
-// Degrees: the tuning's degrees in cents within one equave (cents[0] = 0, size N ≥ 1) and the equave in cents.
+// Degrees: the tuning's degrees in cents within one equave and the equave in cents. AP.8a: cents are measured from
+// the reference (cents[0] = degree 0's, 0 when the reference sits on degree 0), and `referenceHz` makes the table an
+// absolute degree → Hz map: degree D sounds referenceHz · 2^(cents(D) / 1200) (D = equave · N + degree, cents(D) =
+// q · equave + cents[D − q · N]) — what a tuning edit re-resolves a held note with (ArpTables). referenceHz 0: unknown
+// (the table's intervals still shift degrees; a tuning edit then leaves the held notes' Hz).
 struct ArpDegreeTable {
   std::vector<double> cents;  // empty: 12-EDO
   double equaveCents = 1200.0;
+  double referenceHz = 0.0;
+  friend bool operator==(const ArpDegreeTable&, const ArpDegreeTable&) = default;
+};
+
+// AP.8a (review H4): the degree tables of a stage, one per tuning its notes follow. A note event's `tuning` (voice.tuning:
+// the track patch's tuning node it follows, 1-based; note_events.h) picks nodes[tuning − 1]; a note without one (0: a
+// static pitch — private, Scala, MODMOS tunings, or a track without a tuning node) plays the track's table. So a
+// clip with its own tuning steps in ITS degrees, and a tuning edit re-resolves each note in its own tuning.
+struct ArpTables {
+  ArpDegreeTable track;
+  std::vector<ArpDegreeTable> nodes;
+  ArpTables() = default;
+  ArpTables(ArpDegreeTable t) : track(std::move(t)) {}  // NOLINT: one table for every note
+  const ArpDegreeTable& of(float tuning) const noexcept {  // RT-safe
+    return tuning >= 1.0f && tuning <= static_cast<float>(nodes.size()) ? nodes[static_cast<size_t>(tuning) - 1] : track;
+  }
+  friend bool operator==(const ArpTables&, const ArpTables&) = default;
 };
 
 struct ArpStats {
@@ -456,25 +503,35 @@ struct ArpStats {
   uint64_t pulses = 0;          // AP.4: pulse-clock onsets played (a pulse with layers counts one)
   uint64_t ties = 0;            // AP.5: notes a tie step continued
   uint64_t laneRests = 0;       // AP.5: steps / pulses a Skip or a failed Chance silenced
+  uint64_t tempoRemaps = 0;     // AP.8a: tempo swaps under a running song clock (StageClock::remapped: not a locate)
 };
 
-// AP.2b: a new degree table for a running stage (a tuning edit: no republish, the pattern keeps its place). One
-// publisher (non-RT: post) and the stage's audio thread (take, at a block start). Lock-free: the audio thread takes
-// the pending table only when the retired one has been collected (post frees it), so nothing is freed on the audio
-// thread and a table is never freed while it reads it.
+// AP.2b: new degree tables for a running stage (a tuning edit: no republish, the pattern keeps its place). One
+// publisher (non-RT: post, collect) and the stage's audio thread (take, at a block start). Lock-free: the audio thread
+// keeps the table it played last block valid through the block it takes a new one (the arp re-resolves its held notes
+// from the old to the new one) and retires it at its next take into a free retired slot; post and collect free the
+// retired ones (nothing is freed on the audio thread, a table is never freed while it reads it). AP.8a (review M1): the
+// retired tables are kRetiredSlots slots, so a post racing a take can never leave a newer table untaken until a later
+// edit; ProjectLink::collect also frees them, so the slots never fill while edits stop.
 class ArpTableMailbox {
 public:
+  static constexpr uint32_t kRetiredSlots = 4;
   ArpTableMailbox() = default;
   ArpTableMailbox(const ArpTableMailbox&) = delete;
   ArpTableMailbox& operator=(const ArpTableMailbox&) = delete;
   ~ArpTableMailbox();
-  void post(ArpDegreeTable table);           // non-RT (allocates, frees the retired / an untaken table)
-  const ArpDegreeTable* take() noexcept;     // RT-safe: the new table (null: none); valid until the next take
+  void post(ArpTables tables);           // non-RT (allocates, frees the retired / an untaken table set)
+  void collect();                        // non-RT: frees the retired table sets
+  // RT-safe: the newest posted table set (null: none, or no free retired slot: next block). The one it replaces stays
+  // valid until the next take.
+  const ArpTables* take() noexcept;
   bool pending() const noexcept { return pending_.load(std::memory_order_acquire) != nullptr; }
 
 private:
-  std::atomic<ArpDegreeTable*> pending_{nullptr}, retired_{nullptr};
-  ArpDegreeTable* current_ = nullptr;  // audio thread
+  std::atomic<ArpTables*> pending_{nullptr};
+  std::array<std::atomic<ArpTables*>, kRetiredSlots> retired_{};
+  ArpTables* current_ = nullptr;  // audio thread: the one played
+  ArpTables* prev_ = nullptr;     // audio thread: the one it replaced (read in the block of the take)
 };
 
 // AP.7 (docs/plans/AP.md "Roll preview + Flatten"): what a generated note plays relative to its source note, EXACTLY
@@ -500,7 +557,7 @@ struct ArpTraceNote {
 class ArpCore {
 public:
   // Non-RT (allocates every table). `stageIndex`: the id space (note_stage.h stageNoteId).
-  explicit ArpCore(uint32_t stageIndex = 0, ArpDegreeTable table = {});
+  explicit ArpCore(uint32_t stageIndex = 0, ArpTables tables = {});
   ArpCore(const ArpCore&) = delete;
   ArpCore& operator=(const ArpCore&) = delete;
   ~ArpCore();
@@ -520,7 +577,7 @@ public:
   // runs: tests and offline runs set fixed values between blocks).
   void setLaneSteps(const ArpLaneSteps& steps) noexcept;
   void mapLaneStep(ArpLane lane, int32_t step, uint32_t param, float scale, float offset) noexcept;
-  // AP.2b: where a new degree table comes from while the core runs (non-RT, before the first block).
+  // AP.2b: where new degree tables come from while the core runs (non-RT, before the first block).
   void setTableMailbox(std::shared_ptr<ArpTableMailbox> box) noexcept;
   // AP.6: where the core shows its device panel what it plays (pq/core/note_stage_status.h): the lane positions and
   // pattern position at every step, the pattern list when the held set or its order changes, idle when nothing is held.
@@ -530,7 +587,11 @@ public:
   // its ArpTraceNote to `trace` (allocates). Null (the default): nothing is recorded (one branch per note-on).
   void setTrace(std::vector<ArpTraceNote>* trace) noexcept;
 
+  // AP.8a (review L4): starts the generated-id counter at `n` (tests: the 2^24 wrap). Non-RT.
+  void setNoteCounter(uint32_t n) noexcept;
+
   uint32_t heldCount() const noexcept;      // RT-safe
+  bool idle() const noexcept;               // RT-safe: nothing held, nothing sounding
   uint32_t soundingCount() const noexcept;  // RT-safe
   const ArpStats& stats() const noexcept;
 
@@ -558,7 +619,7 @@ public:
   // previous block, lower.h "Note devices") to the mapping of the same id before them; `steps` the fixed lane values;
   // `box` (optional) hands it later degree tables.
   // AP.6: `status` (optional) is what the device panel reads (ArpCore::setStatus).
-  explicit ArpStage(const ArpParams& params = {}, std::vector<Mapping> map = {}, ArpDegreeTable table = {},
+  explicit ArpStage(const ArpParams& params = {}, std::vector<Mapping> map = {}, ArpTables tables = {},
                     const ArpLaneSteps& steps = {}, std::shared_ptr<ArpTableMailbox> box = {},
                     std::shared_ptr<NoteStageStatus> status = {});
   void setIndex(uint32_t index) override { core_.setStageIndex(index); }

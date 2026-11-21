@@ -4302,8 +4302,8 @@ bool LoweredNoteChain::sameStructure(const LoweredNoteChain& o) const noexcept {
 
 namespace {
 
-// The cents of each degree of `def` within one equave and the equave (false: it does not build).
-bool degreeTable(const TuningDef& def, std::vector<double>& cents, double& equave) {
+// The degree table of `def` (lower.h NoteDegreeTable; false: it does not build).
+bool degreeTable(const TuningDef& def, NoteDegreeTable& out) {
   Result<tuning::Tuning> t = buildTuning(def);
   if (!t.ok()) return false;
   int32_t n = 0;
@@ -4312,28 +4312,30 @@ bool degreeTable(const TuningDef& def, std::vector<double>& cents, double& equav
   else if (const tuning::Scale* sc = t->scale()) n = sc->size();
   if (n <= 0 || n > 4096) return false;
   const double ref = t->referenceHz();
+  if (!(ref > 0.0) || !std::isfinite(ref)) return false;
   auto centsOf = [&](int32_t degree, int32_t eq) -> std::optional<double> {
     const std::optional<double> hz = tuning::resolveHzDouble(tuning::PitchId::fromDegree(degree, eq), *t, {});
     if (!hz || !(*hz > 0.0)) return std::nullopt;
     return 1200.0 * std::log2(*hz / ref);
   };
-  cents.assign(static_cast<size_t>(n), 0.0);
-  for (int32_t k = 1; k < n; ++k) {
+  NoteDegreeTable r;
+  r.cents.assign(static_cast<size_t>(n), 0.0);
+  for (int32_t k = 0; k < n; ++k) {  // AP.8a: degree 0 too (the reference need not sit on it)
     const std::optional<double> c = centsOf(k, 0);
     if (!c) return false;
-    cents[static_cast<size_t>(k)] = *c;
+    r.cents[static_cast<size_t>(k)] = *c;
   }
   const std::optional<double> e = centsOf(0, 1);
-  if (!e || !(*e > 0.0)) return false;
-  equave = *e;
+  if (!e || !(*e - r.cents[0] > 0.0)) return false;
+  r.equaveCents = *e - r.cents[0];
+  r.referenceHz = ref;
+  out = std::move(r);
   return true;
 }
 
 }  // namespace
 
-bool noteDegreeTable(const TuningDef& def, std::vector<double>& cents, double& equaveCents) {
-  return degreeTable(def, cents, equaveCents);
-}
+bool noteDegreeTable(const TuningDef& def, NoteDegreeTable& out) { return degreeTable(def, out); }
 
 std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
   std::vector<LoweredNoteChain> out;
@@ -4378,10 +4380,11 @@ std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
     if (const std::optional<TrackPath> at = findTrack(p, t.id)) {
       const EffectiveTuning et = effectiveTuningRef(p, *at);
       c.tuning = et.main;
-      if (et.def != nullptr && !degreeTable(*et.def, c.degreeCents, c.equaveCents)) {
-        c.degreeCents.clear();
-        c.equaveCents = 1200.0;
-      }
+      if (et.def != nullptr) (void)degreeTable(*et.def, c.trackTable);  // (one that does not build: none, 12-EDO)
+      c.signals = trackTuningSignals(p, *at);  // AP.8a (H4): a table per tuning node, in node order
+      c.nodes.resize(c.signals.size());
+      for (size_t i = 0; i < c.signals.size(); ++i)
+        if (const TuningSlot* ts = findTuning(p, c.signals[i])) (void)degreeTable(ts->def, c.nodes[i]);
     }
     out.push_back(std::move(c));
   };

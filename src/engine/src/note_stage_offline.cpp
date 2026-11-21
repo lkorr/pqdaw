@@ -17,6 +17,22 @@ uint32_t timelineSegments(std::span<const TransportRun> runs, uint32_t frames, C
   return n;
 }
 
+NoteStageBlock timelineStageBlock(const Timeline& tl, int64_t time, uint32_t frames, double sampleRate,
+                                  ClockSegment* segs) noexcept {  // RT-safe
+  NoteStageBlock b;
+  b.time = time;
+  b.frames = frames;
+  b.clock.tempo = &tl.tempoImage().tempo();
+  b.clock.sampleRate = sampleRate;
+  b.clock.bpm = tl.snapshot().bpm;
+  b.clock.signatures = &tl.tempoImage().signatures();  // AP.2b: Pulse Cycle bars
+  b.clock.beatsPerBar = tl.snapshot().beatsPerBar;
+  b.clock.segments = segs;
+  b.clock.numSegments = timelineSegments(tl.runs(), frames, segs);
+  b.clock.remapped = tl.tempoRemapped();  // AP.8a (M3)
+  return b;
+}
+
 namespace {
 
 // The song sample of block frame `f` (−1: in no song run).
@@ -66,17 +82,8 @@ Result<NoteStageRender> renderNoteStages(std::unique_ptr<SequenceImage> sequence
     for (uint32_t i = 0; i < seq.count; ++i) chain.input().push(seq.events[i]);
     const std::span<const TransportRun> runs = tl.runs();
     append(r.input, chain.input().list(), runs);
-    // As Engine::runStages.
-    NoteStageBlock b;
-    b.time = time;
-    b.frames = n;
-    b.clock.tempo = &tl.tempoImage().tempo();
-    b.clock.sampleRate = config.sampleRate;
-    b.clock.bpm = tl.snapshot().bpm;
-    b.clock.signatures = &tl.tempoImage().signatures();
-    b.clock.beatsPerBar = tl.snapshot().beatsPerBar;
-    b.clock.segments = segs;
-    b.clock.numSegments = timelineSegments(runs, n, segs);
+    // As Engine::runStages (the same setup).
+    NoteStageBlock b = timelineStageBlock(tl, time, n, config.sampleRate, segs);
     b.params = params;
     out.clear();
     (void)chain.run(b, out);

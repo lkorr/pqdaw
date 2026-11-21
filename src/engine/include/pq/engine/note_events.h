@@ -30,6 +30,14 @@
 // T2.6-fix3: `tuning` (voice.tuning) names which of the track patch's tuning nodes the note follows (a reference-
 // relative note has a tuning but no degree), and a Pitch event with kNoteEventRetune moves a held note to a new
 // static Hz AND identity (a re-resolved note: the timeline's sequence swap retunes instead of cutting it).
+// Pitch identity = degree identity × exact ratio (AP.8a; docs/reviews/AP.md H1): a producer that plays a note at a
+// ratio r of another note's pitch (an arpeggiator's Ratio / Harmonics step, a walk element, a layer; a JI note
+// anchored to a Degree note, T2.6-fix3) sends the OTHER note's degree / equave / tuning with hz = its static Hz · r.
+// The tuning node derives the voice's Hz as ref · 2^(tc / 1200) · E with E = hz / hz₀ (hz₀ = that degree's static
+// pitch): E = r, so the note sounds at exactly r over the degree's live pitch and follows every tuning modulation
+// per sample. No extra field: the identity is (degree, equave, tuning) and the ratio rides in hz (float32 within an
+// ulp; the exact integers stay with the producer, e.g. ArpExact). A note without a degree but with a tuning is
+// reference-relative (it moves with the reference only); with neither it is a static pitch.
 // Note gain (T7.1): a note-on carries a linear gain (`gain`, default 1) and a Gain event moves a sounding note's
 // gain to a new value, as a step or as a linear ramp over rampFrames samples (per-note gain curves; a voice parked
 // at gain 0 is invisible to the mix and the patch's reducers). The voice's lane gain is its steal fade × this gain
@@ -75,6 +83,9 @@ inline constexpr uint8_t kNoteEventRetune = 1;  // Pitch: also replace the note'
                                                 // equave, tuning): a held note re-resolved by an edit (T2.6-fix3)
 inline constexpr uint8_t kNoteEventIfSynced = 2;  // Gain (a step): only if the block's Syncs from sourceNoteId
                                                   // succeeded; at frame 0 of the next block (T7.7, see above)
+inline constexpr uint8_t kNoteEventGone = 4;  // NoteOff (AP.8a): the note is gone (its producer left: a note stage
+                                              // removed at a handover), not a key release — a stage holding it as a
+                                              // source drops it even with Hold on (pq/engine/arp.h)
 
 struct NoteEvent {
   uint32_t frame = 0;             // sample offset in the block

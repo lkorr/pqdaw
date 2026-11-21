@@ -397,6 +397,9 @@ public:
   // polls the playhead or the meters (at most every 200 ms), and the compile worker collects the program's retired
   // images after a compile (T3.17-fix1, M3 review L13), so nothing waits for the next publish to be freed.
   void collect();
+  // AP.2b: the bus value index of a cable into a note-device param (engine::kNoBusValue when all kMaxBusValues are
+  // taken; AP.8a L8: a deleted wire's index is freed at the next structural edit and reused). Any thread.
+  uint32_t busValueIndex(doc::WireId w);
   const LinkConfig& config() const noexcept { return cfg_; }
   // T4.1: the device library the link lowers with (the window gives its catalog to the views: one load per process).
   const doc::DeviceLibrary& devices() const noexcept { return *devices_; }
@@ -746,9 +749,8 @@ private:
   // AP.2 (lower.h "Note devices"): each MIDI track's note chain (doc::lowerNoteChains) → an engine::NoteStageChain on its
   // event slot (Engine::setNoteStages), only where its structure changed (a knob drag never republishes: its slot
   // plays it); a track whose chain went away publishes null. UI thread.
-  void publishNoteStages(const doc::Project& p);
-  // AP.2b: the bus value index of a cable into a note-device param (engine::kNoBusValue past kMaxBusValues). Any thread.
-  uint32_t busValueIndex(doc::WireId w);
+  void publishNoteStages(const doc::Project& p, bool reset = false);  // AP.8a: reset (New / Open) adopts nothing
+  void pruneBusValues(const doc::Project& p, bool reset);             // AP.8a (L8): deleted wires free their index
   doc::ParamRange laneRange(const doc::Project& p, const doc::AutomationLane& lane) const;  // T4.18
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
@@ -973,8 +975,11 @@ private:
   };
   std::vector<PublishedNotes> noteChains_;
   std::unordered_map<uint32_t, std::shared_ptr<NoteStageStatus>> noteStatus_;  // AP.6: by device id. UI thread
+  uint32_t noteEpoch_ = 0;  // AP.8a (M9): bumped per project reset; in the high half of every published stage's key
   std::mutex busValueMutex_;
   std::unordered_map<uint32_t, uint32_t> busValueOf_;  // AP.2b: wire id → bus value index
+  std::vector<uint32_t> busValueFree_;                 // AP.8a (L8): indices of deleted wires, reused first
+  uint32_t busValueNext_ = 0;
   std::unique_ptr<engine::ProjectCompiler> compiler_;
   std::shared_ptr<const doc::LoweredProject> lowered_;  // compile path (EQ.4b: shared with the response displays)
   doc::Snapshot current_;                        // UI thread: the snapshot the engine follows

@@ -309,9 +309,10 @@ TEST_CASE("note devices: the note chain (mapping, degree table, null without, a 
     }
   }
   // The default tuning: 12-EDO.
-  REQUIRE(ch[0].degreeCents.size() == 12);
-  for (size_t k = 0; k < 12; ++k) CHECK(ch[0].degreeCents[k] == doctest::Approx(100.0 * static_cast<double>(k)).epsilon(1e-9));
-  CHECK(ch[0].equaveCents == doctest::Approx(1200.0));
+  REQUIRE(ch[0].trackTable.cents.size() == 12);
+  for (size_t k = 0; k < 12; ++k) CHECK(ch[0].trackTable.cents[k] == doctest::Approx(100.0 * static_cast<double>(k)).epsilon(1e-9));
+  CHECK(ch[0].trackTable.equaveCents == doctest::Approx(1200.0));
+  CHECK(ch[0].trackTable.referenceHz > 0.0);  // AP.8a: an absolute degree -> Hz map (re-resolving latched notes)
   // A 19-EDO main tuning on the track: its table.
   auto edo = pq::tuning::Edo::make(19);
   REQUIRE(edo.ok());
@@ -321,8 +322,13 @@ TEST_CASE("note devices: the note chain (mapping, degree table, null without, a 
   REQUIRE(c.store.dispatch(SetTrackTuning{c.keys, TuningAssignment::mainTuning(t19)}).ok());
   ch = lowerNoteChains(c.doc());
   REQUIRE(ch.size() == 1);
-  REQUIRE(ch[0].degreeCents.size() == 19);
-  CHECK(ch[0].degreeCents[1] == doctest::Approx(1200.0 / 19.0));
+  REQUIRE(ch[0].trackTable.cents.size() == 19);
+  CHECK(ch[0].trackTable.cents[1] == doctest::Approx(1200.0 / 19.0));
+  // AP.8a (H4): one table per tuning node, in node order (the track-level signal first)
+  REQUIRE(ch[0].signals.size() == ch[0].nodes.size());
+  REQUIRE(ch[0].signals.size() == 1);
+  CHECK(ch[0].signals[0] == t19);
+  CHECK(ch[0].nodes[0] == ch[0].trackTable);
   // A knob drag: a param change (no compile), the same structure; a setting: a new structure.
   {
     ChangeSet cs;

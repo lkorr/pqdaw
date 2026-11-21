@@ -370,6 +370,10 @@ public:
   std::span<const TransportRun> runs() const noexcept { return {runs_, numRuns_}; }
   // T6.7: recording state (see "Recording").
   bool recording() const noexcept { return recording_; }
+  // AP.8a (review M3): this block's first song run continues the last block's playhead under a NEW tempo map (a tempo
+  // edit while playing: swapTempo keeps the tick, its song sample moved), not a locate. Note stages read it as
+  // StageClock::remapped. RT-safe (valid after process()).
+  bool tempoRemapped() const noexcept { return tempoRemapped_; }
   uint32_t recordSession() const noexcept { return recordSession_; }
   RecordWindow recordWindow() const noexcept { return punch_; }
   static constexpr uint32_t kMaxRuns = 16;
@@ -574,6 +578,7 @@ private:
   bool playing_ = false;
   bool releasePending_ = false;  // release every sounding note at the next block's frame 0 (stop, locate, wrap)
   bool seekPending_ = false;     // re-seek the cursors at nextTick_ before the next block plays
+  bool tempoRemapped_ = false;   // AP.8a: this block's tempo swap moved a playing song position (tempoRemapped)
   bool snapshotDirty_ = true;
   bool reportPending_ = true;
   bool holdValid_ = false;       // stopped: the automation buffers hold the values at the playhead

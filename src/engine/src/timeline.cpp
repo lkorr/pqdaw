@@ -429,6 +429,7 @@ void Timeline::swapTempo(const TempoImage* next) noexcept {  // RT-safe
   barStartTick_ = barEndTick_ = 0;  // the bar and tempo caches (computeSnapshot) are stale
   bpmFrom_ = bpmTo_ = 0;
   ++stats_.tempoSwaps;
+  tempoRemapped_ = playing_;  // AP.8a (M3)
   if (playing_) resyncCurvesToTempo();  // T7.1: the running curve ramps get their new lengths
 }
 
@@ -1312,6 +1313,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
   }
   clips_->beginBlock(frames);
   numRuns_ = 0;
+  tempoRemapped_ = false;
   drainCommands();
   pickUpImages();
   if (releasePending_) {
@@ -1319,6 +1321,7 @@ void Timeline::process(int64_t sampleTime, uint32_t frames) noexcept {  // RT-sa
     releasePending_ = false;
   }
   if (seekPending_) {
+    tempoRemapped_ = false;  // a locate as well: the stages re-seek
     seekAll(resolveTick());
     if (playing_) chaseAll(resolveTick(), 0);  // T7.3: the notes under the new position
     clips_->seek(pos_);

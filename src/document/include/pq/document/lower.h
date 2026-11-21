@@ -694,9 +694,10 @@ const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_
 //   lowerNoteChains   per active MIDI track whose main path's notes reach active note devices (chainStages: in Notes,
 //                     in signal order), those devices — each its type, its params' current values (the structural ones
 //                     are fixed in the stage) and its runtime params' keys with the line from position to value
-//                     (value = offset + scale · position: the declared linear curve) — and the track's DEGREE TABLE
-//                     (its tuning, effectiveTuning, as cents of each degree within one equave and the equave; a tuning
-//                     that does not build: none, the stage's 12-EDO). A track without one is not listed.
+//                     (value = offset + scale · position: the declared linear curve) — and its DEGREE TABLES (the
+//                     track tuning's, effectiveTuning, and AP.8a one per tuning node its clips follow; each as cents of
+//                     each degree within one equave, the equave and the reference Hz; a tuning that does not build:
+//                     none, the stage's 12-EDO). A track without one is not listed.
 // The playback link builds an engine::NoteStageChain from each (pq/engine/arp.h ArpStage: fixed params + mapping) and
 // publishes it to the track's event slot (Engine::setNoteStages) when its structure changed (sameStructure: everything
 // but the runtime params' current values and the degree table), null for a track whose chain went away; a new degree
@@ -715,23 +716,35 @@ struct LoweredNoteStage {
   };
   std::vector<Slot> runtime;
 };
+// A degree table (engine::ArpDegreeTable): cents of each degree within equave 0 above the reference (cents[0]: degree
+// 0's), the equave in cents, the reference Hz — degree D sounds referenceHz · 2^((q · equave + cents[D − q · N]) /
+// 1200). Empty cents: none (the stage's 12-EDO).
+struct NoteDegreeTable {
+  std::vector<double> cents;
+  double equaveCents = 1200.0;
+  double referenceHz = 0.0;
+  friend bool operator==(const NoteDegreeTable&, const NoteDegreeTable&) = default;
+};
 struct LoweredNoteChain {
   TrackId track;
   std::vector<LoweredNoteStage> stages;  // in signal order (never empty)
-  std::vector<double> degreeCents;       // the track tuning's degrees in one equave (degreeCents[0] = 0); empty: none
-  double equaveCents = 1200.0;
-  TuningId tuning;  // AP.2b: the main tuning it was made from (the playback link takes the table of the definition
-                    // its tuning node plays statically: a live drag moves the node, not the static pitches)
-  // Everything but the runtime params' current values and the degree table (AP.2b: a tuning edit hands the running
-  // stages the new table, ArpTableMailbox; it never republishes the chain).
+  // AP.8a (review H4): the degree tables its notes step in — `trackTable`: the track tuning's (notes that follow no tuning
+  // node: static pitches); nodes[i]: the table of signals[i], the (i + 1)th tuning node of the track patch
+  // (trackTuningSignals: the track-level one, then the clips' own tunings), which a note following it names as its
+  // voice.tuning. So a clip with its own tuning steps in its degrees.
+  NoteDegreeTable trackTable;
+  std::vector<NoteDegreeTable> nodes;
+  TuningId tuning;                // AP.2b: the track's main tuning (`trackTable`'s)
+  std::vector<TuningId> signals;  // AP.8a: `nodes`' tunings. The playback link takes each table from the definition
+                                  // its tuning node plays statically (a live drag moves the node, not static pitches)
+  // Everything but the runtime params' current values and the degree tables (AP.2b: a tuning edit hands the running
+  // stages the new tables, ArpTableMailbox; it never republishes the chain).
   bool sameStructure(const LoweredNoteChain& o) const noexcept;
-  bool sameTable(const LoweredNoteChain& o) const noexcept {
-    return degreeCents == o.degreeCents && equaveCents == o.equaveCents;
-  }
+  bool sameTable(const LoweredNoteChain& o) const noexcept { return trackTable == o.trackTable && nodes == o.nodes; }
 };
 std::vector<LoweredNoteChain> lowerNoteChains(const Project& project);
-// AP.2b: the degree table of `def` (cents of each degree within one equave, the equave); false: it does not build.
-bool noteDegreeTable(const TuningDef& def, std::vector<double>& cents, double& equaveCents);
+// AP.2b: the degree table of `def`; false: it does not build.
+bool noteDegreeTable(const TuningDef& def, NoteDegreeTable& out);
 
 // ---- Frozen tracks (FZ.1; docs/plans/RB.md D2; model.h "Frozen tracks") --------------------------------------------
 // A frozen MIDI or audio track whose render is ready (LowerOptions::frozenSlotOf gives a slot; it is active, and not a
