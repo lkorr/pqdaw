@@ -1255,3 +1255,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_media default tier + 7 pitch tests (sines, saws, missing fundamental, Karplus-Strong, vibrato voice worst 1.57 ¢; noise / snare / hats / silence unpitched) + slow 10 min test; pq_tests_views default tier.
 - Perf / CPU-efficiency check: 10 min 48 kHz file 8 ms in memory, 14 ms through the decoder; bounded by the 60 s scan + ~20 FFT frames.
 - Notes/blockers: no disk cache; the job decodes the file a second time for this.
+
+## 2026-11-21 · SM.9 · task/SM.9-fold-panels (merged e114c5e0)
+- Did: ellipse case in `FaceShape` / `circuit::Outline` (exact ellipse distance): `shape` "ellipse" oval plate + rim, presses outside miss (now also round-face corners: one rule), main ports orbit the ellipse. `fold` element (chevron + title owns elements to the next fold), `Panel::fit` shrinks to open sections; one `doc::foldLayout` for face + project patch; folds are view state (`ViewState::panelWindows[group].folds`, saved, never undo); a fold re-lays out the patch (top-left kept, band neighbours unmoved, lower bands shift as for any growth). ARCHITECTURE + REVIEW.
+- Verified: pq_tests_views default tier before and after rebase; pq_tests_document; new test_panel_folds (5 real-dispatch cases); 6 new goldens (panel-folds-folded / -open, panel-oval, 1× + 2×), no existing golden moved.
+- Perf / CPU-efficiency check: UI thread only; re-places elements only when an open state changes; zero cost without folds.
+- Notes/blockers: no Fit toggle in the panel editor (code only); Device view frame not re-laid out on fold; embedded child panel fold state not saved.

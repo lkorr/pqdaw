@@ -939,7 +939,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **SM.6 `granular` atom + GrainTap** (plan SM.6)
 - [x] **SM.7 Root pitch detection** *(merged b0de5e45; worst 1.57 ¢ on vibrato; 10 min file 8–14 ms)* (plan SM.7)
 - [ ] **SM.8 Grid drop on any band + auto-wire + replace** (plan SM.8)
-- [ ] **SM.9 Oval face shape + fold panel mechanism** 👁 (plan SM.9)
+- [x] **SM.9 Oval face shape + fold panel mechanism** 👁 *(merged e114c5e0; 6 new goldens; REVIEW; open: no Fit toggle in the panel editor, Device view frame not re-laid out on fold, embedded child panel folds not saved)* (plan SM.9)
 - [ ] **SM.10 Closed face** 👁 (plan SM.10)
 - [ ] **SM.11 Expanded panel + waveform editor** 👁 (plan SM.11)
 - [ ] **SM.12 Slicing + Slice to Notes** (plan SM.12)
