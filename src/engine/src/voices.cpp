@@ -292,6 +292,7 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   hzTarget_.assign(lanes_, 0.0f);
   centsTarget_.assign(lanes_, 0.0);
   rampLeft_.assign(lanes_, 0);
+  shaped_.assign(lanes_, ShapedRamp{});
   gateMask_.assign(lanes_, 0.0f);
   laneGain_.assign(lanes_, 0.0f);
   fadeLeft_.assign(lanes_, 0);
@@ -772,6 +773,12 @@ void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const
       for (uint32_t f = from; f < to; ++f) hz[f * 8 + l] = h;
     if (!same(c, 1))
       for (uint32_t f = from; f < to; ++f) cents[f * 8 + l] = c;
+  } else if (const RampShape shape = shaped_[lane].shape; shape != RampShape::Linear) {  // AP.3: one loop per shape
+    switch (shape) {
+      case RampShape::Exponential: renderShaped<RampShape::Exponential>(lane, from, to, hz + l, cents + l); break;
+      case RampShape::SCurve: renderShaped<RampShape::SCurve>(lane, from, to, hz + l, cents + l); break;
+      default: renderShaped<RampShape::Overshoot>(lane, from, to, hz + l, cents + l); break;
+    }
   } else {
     double h = hz_[lane], c = cents_[lane];
     uint32_t left = rampLeft_[lane];
@@ -838,6 +845,58 @@ void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const
   }
 }
 
+// AP.3: a shaped glide (not Linear) over frames [from, to) of lane `lane` (hz / cents point at its lane column).
+// The value written at a frame is the one before advancing, as in the linear walk: frame `frame` of the Pitch event
+// reads c0, frame + len the target exactly.
+template <RampShape S>
+void VoiceEngine::renderShaped(uint32_t lane, uint32_t from, uint32_t to, float* hz, float* cents) noexcept {  // RT-safe
+  ShapedRamp& r = shaped_[lane];
+  // Locals: MSVC assumes the float stores may alias every member, so nothing it reads per sample lives in memory.
+  const double c0 = r.c0, dc = r.dc, hz0 = r.hz0, a = r.a, em = r.em, k1200 = r.dc / 1200.0;
+  const double invLen = 1.0 / static_cast<double>(r.len);
+  const uint32_t len = r.len;
+  double h = hz_[lane], c = cents_[lane], ex = r.e;
+  uint32_t left = rampLeft_[lane];
+  uint32_t f = from;
+  for (; f < to && left > 1; ++f) {  // inside the glide
+    hz[f * 8] = static_cast<float>(h);
+    cents[f * 8] = static_cast<float>(c);
+    --left;
+    double s;
+    if constexpr (S == RampShape::Exponential) {
+      ex *= em;
+      s = (1.0 - ex) * a;
+    } else {
+      const double u = static_cast<double>(len - left) * invLen;
+      if constexpr (S == RampShape::SCurve) {
+        s = u * u * (3.0 - 2.0 * u);
+      } else {
+        const double x = u - 1.0;
+        s = 1.0 + (a + 1.0) * x * x * x + a * x * x;
+      }
+    }
+    c = c0 + dc * s;
+    h = hz0 * std::exp2(k1200 * s);
+  }
+  if (f < to && left == 1) {  // the last glide frame; the target exactly from the next one on
+    hz[f * 8] = static_cast<float>(h);
+    cents[f * 8] = static_cast<float>(c);
+    ++f;
+    left = 0;
+    h = hzTarget_[lane];
+    c = centsTarget_[lane];
+  }
+  const float hf = static_cast<float>(h), cf = static_cast<float>(c);
+  for (; f < to; ++f) {
+    hz[f * 8] = hf;
+    cents[f * 8] = cf;
+  }
+  r.e = ex;
+  hz_[lane] = h;
+  cents_[lane] = c;
+  rampLeft_[lane] = left;
+}
+
 void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT-safe
   const uint32_t lane = op.lane;
   const NoteEvent& e = op.ev;
@@ -882,8 +941,28 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
         rampLeft_[lane] = 0;
       } else {
         const double r = static_cast<double>(e.rampFrames);
-        hzMul_[lane] = std::pow(target / hz_[lane], 1.0 / r);
-        centsStep_[lane] = (tc - cents_[lane]) / r;
+        ShapedRamp& sr = shaped_[lane];
+        sr.shape = e.rampShape < static_cast<uint8_t>(RampShape::Count) ? static_cast<RampShape>(e.rampShape)
+                                                                          : RampShape::Linear;
+        const double bend = static_cast<double>(static_cast<int8_t>(e.rampBend));
+        if (sr.shape == RampShape::Exponential && bend == 0.0) sr.shape = RampShape::Linear;  // k = 0
+        if (sr.shape == RampShape::Linear) {
+          hzMul_[lane] = std::pow(target / hz_[lane], 1.0 / r);
+          centsStep_[lane] = (tc - cents_[lane]) / r;
+        } else {
+          sr.c0 = cents_[lane];
+          sr.dc = tc - sr.c0;
+          sr.hz0 = hz_[lane];
+          sr.len = e.rampFrames;
+          if (sr.shape == RampShape::Exponential) {
+            const double k = bend / 16.0;
+            sr.a = 1.0 / (1.0 - std::exp(-k));
+            sr.em = std::exp(-k / r);
+            sr.e = 1.0;
+          } else {
+            sr.a = 4.0 * std::fabs(bend) / 127.0;
+          }
+        }
         hzTarget_[lane] = e.hz;
         centsTarget_[lane] = tc;
         rampLeft_[lane] = e.rampFrames;
@@ -1034,6 +1113,7 @@ void VoiceEngine::moveLane(uint32_t a, uint32_t b) noexcept {  // RT-safe
   hzTarget_[b] = hzTarget_[a];
   centsTarget_[b] = centsTarget_[a];
   rampLeft_[b] = rampLeft_[a];
+  shaped_[b] = shaped_[a];
   gateMask_[b] = gateMask_[a];
   laneGain_[b] = laneGain_[a];
   fadeLeft_[b] = fadeLeft_[a];
@@ -1137,6 +1217,7 @@ void VoiceEngine::resolveSyncs() noexcept {  // RT-safe
     hzTarget_[lane] = hzTarget_[src];
     centsTarget_[lane] = centsTarget_[src];
     rampLeft_[lane] = rampLeft_[src];
+    shaped_[lane] = shaped_[src];
     velocity_[lane] = velocity_[src];
     ratio_[lane] = ratio_[src];
     harmonic_[lane] = harmonic_[src];

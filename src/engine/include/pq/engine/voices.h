@@ -21,6 +21,7 @@
 // ---- Sample accuracy (an event at frame k takes effect at sample k) -----------------------------------------
 // No sub-block splitting: the block runs once and the voice.* signals carry the timing.
 //   voice.hz, voice.cents     audio rate, per lane and sample: the note's Hz from k; Pitch events step or glide
+//                             (a glide's shape: NoteEvent::rampShape, note_events.h; AP.3)
 //   voice.gate                lane mask: true from the note-on frame, false from the note-off frame
 //   voice.trigger             lane mask: true at the note-on frame only (also on a same-note retrigger)
 //   voice.velocity, .release, .ratio, .harmonic, .unisonCount, .index, .noteHz (T4.17: the note-on's Hz), .noteDegree
@@ -292,6 +293,8 @@ private:
   // Rendering (per lane, signal buffers).
   void renderGroup(uint32_t g, uint32_t frames) noexcept;
   void renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept;
+  template <RampShape S>
+  void renderShaped(uint32_t lane, uint32_t from, uint32_t to, float* hz, float* cents) noexcept;
   void applyOp(const LaneOp& op, bool writeTrigger = true) noexcept;
   void freeLane(uint32_t lane) noexcept;
   void moveLane(uint32_t from, uint32_t to) noexcept;
@@ -347,6 +350,16 @@ private:
   std::vector<float> hzTarget_;
   std::vector<double> centsTarget_;
   std::vector<uint32_t> rampLeft_;
+  // AP.3: a running glide's shape (Linear: the hzMul_ / centsStep_ walk above, unchanged). Others evaluate
+  // cents = c0 + dc · s(n / len), Hz = hz0 · 2^(dc · s / 1200) per sample, one loop per shape (no per-sample switch).
+  struct ShapedRamp {
+    double c0 = 0.0, dc = 0.0, hz0 = 0.0;
+    double a = 0.0;            // Exponential: 1 / (1 − e^(−k)); Overshoot: the spring constant
+    double e = 1.0, em = 1.0;  // Exponential: e^(−k·u) now, and its factor per sample
+    uint32_t len = 0;
+    RampShape shape = RampShape::Linear;
+  };
+  std::vector<ShapedRamp> shaped_;
   std::vector<float> gateMask_;       // 0 or all-ones mask
   std::vector<float> laneGain_;       // steal fade × note gain
   std::vector<uint32_t> fadeLeft_;    // > 0 while fading: frames to go

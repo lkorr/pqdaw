@@ -1,5 +1,5 @@
 // T1.8: voices — the event list, allocation and stealing, sample-accurate voice.* signals, lane state reset,
-// voice end, the steal fade, 64 voices under heavy note traffic without allocation.
+// voice end, the steal fade, 64 voices under heavy note traffic without allocation; AP.3 glide shapes (also an arp's).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -14,6 +14,7 @@
 #include "interp_harness.h"
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
+#include "pq/engine/arp.h"
 #include "pq/engine/interpreter.h"
 #include "pq/engine/note_events.h"
 #include "pq/engine/voices.h"
@@ -1707,4 +1708,150 @@ TEST_CASE("voices: a conditional step waits for the next block with the lane's l
   CHECK(b.push(eng::noteOff(1, 2)));            // … and the newest one makes room for a note-off
   CHECK(b.list().events[0].kind == eng::NoteEventKind::Sync);
   CHECK(b.list().events[1].kind == eng::NoteEventKind::NoteOff);
+}
+
+// ---- AP.3: glide shapes (NoteEvent::rampShape / rampBend) -----------------------------------------------------------
+
+namespace {
+
+double shapeOf(eng::RampShape s, int8_t bend, double u) {
+  switch (s) {
+    case eng::RampShape::Exponential: {
+      const double k = bend / 16.0;
+      return (1.0 - std::exp(-k * u)) / (1.0 - std::exp(-k));
+    }
+    case eng::RampShape::SCurve: return u * u * (3.0 - 2.0 * u);
+    case eng::RampShape::Overshoot: {
+      const double a = 4.0 * std::fabs(static_cast<double>(bend)) / 127.0, x = u - 1.0;
+      return 1.0 + (a + 1.0) * x * x * x + a * x * x;
+    }
+    default: return u;
+  }
+}
+
+Ev shaped(int64_t t, uint32_t id, float hz, uint32_t ramp, eng::RampShape s, int8_t bend) {
+  return {t, eng::notePitch(0, id, hz, ramp, s, bend)};
+}
+
+}  // namespace
+
+TEST_CASE("voices (AP.3): glide shapes — Exponential / S-curve / Overshoot follow their curve in cents; exact ends") {
+  const eng::RampShape shapes[] = {eng::RampShape::Exponential, eng::RampShape::SCurve, eng::RampShape::Overshoot};
+  for (const int8_t bend : {int8_t{64}, int8_t{-100}, int8_t{127}}) {
+    for (const eng::RampShape s : shapes) {
+      CAPTURE(static_cast<int>(s));
+      CAPTURE(static_cast<int>(bend));
+      VoiceConfig cfg;
+      Rig r(kProbe, cfg, 1);
+      const auto out = r.run(400, 64, {on(10, 1, 200.0f), shaped(50, 1, 400.0f, 100, s, bend), pitch(300, 1, 300.0f)});
+      CHECK(r.rtViolations == 0);
+      const auto& f = out[r.mixIndex("f")];
+      const auto& c = out[r.mixIndex("c")];
+      const double c0 = 1200.0 * std::log2(200.0 / cfg.referenceHz);
+      CHECK(f[50] == 200.0f);   // starts at the current pitch
+      CHECK(f[150] == 400.0f);  // reaches the target exactly
+      CHECK(f[299] == 400.0f);
+      CHECK(f[300] == 300.0f);
+      for (uint32_t n = 0; n < 100; ++n) {
+        const double sv = shapeOf(s, bend, n / 100.0);
+        CHECK(c[50 + n] == doctest::Approx(c0 + 1200.0 * sv).epsilon(1e-6));
+        CHECK(f[50 + n] == doctest::Approx(200.0 * std::exp2(sv)).epsilon(2e-7));
+      }
+      if (s == eng::RampShape::Overshoot) {
+        const double a = 4.0 * std::fabs(static_cast<double>(bend)) / 127.0;
+        const double peak = 4.0 * a * a * a / (27.0 * (a + 1.0) * (a + 1.0));  // of the 1200-cent interval
+        double top = 0.0;
+        for (uint32_t t = 50; t <= 150; ++t) top = std::max(top, static_cast<double>(c[t]) - c0);
+        CHECK(top - 1200.0 == doctest::Approx(1200.0 * peak).epsilon(5e-3));
+        CHECK(top > 1200.0);
+      } else if (s == eng::RampShape::Exponential && bend < 0) {
+        for (uint32_t t = 51; t <= 150; ++t) CHECK(f[t] > f[t - 1]);  // slow then fast, still monotonic
+        CHECK(c[100] - c0 < 600.0);
+      } else {
+        for (uint32_t t = 51; t <= 150; ++t) CHECK(f[t] > f[t - 1]);
+        if (s == eng::RampShape::Exponential) CHECK(c[100] - c0 > 600.0);  // fast then settling
+      }
+    }
+  }
+}
+
+TEST_CASE("voices (AP.3): a Linear glide is bit-identical with or without a shape byte; shapes at block sizes 32 / 64 / 512 / 37") {
+  {
+    VoiceConfig cfg;
+    Rig a(kProbe, cfg, 1), b(kProbe, cfg, 1);
+    const auto x = a.run(400, 64, {on(10, 1, 200.0f), pitch(50, 1, 433.0f, 177), pitch(120, 1, 150.0f, 90)});
+    const auto y = b.run(400, 64, {on(10, 1, 200.0f), shaped(50, 1, 433.0f, 177, eng::RampShape::Linear, 77),
+                                   shaped(120, 1, 150.0f, 90, eng::RampShape::Exponential, 0)});  // k = 0: Linear
+    CHECK(x[a.mixIndex("f")] == y[b.mixIndex("f")]);
+    CHECK(x[a.mixIndex("c")] == y[b.mixIndex("c")]);
+  }
+  for (const eng::RampShape s : {eng::RampShape::Linear, eng::RampShape::Exponential, eng::RampShape::SCurve,
+                                 eng::RampShape::Overshoot}) {
+    CAPTURE(static_cast<int>(s));
+    // A glide across many block boundaries, replaced mid-way by another one (it starts from the current value).
+    const std::vector<Ev> evs = {on(5, 1, 220.0f), shaped(40, 1, 500.0f, 1000, s, 90), shaped(700, 1, 180.0f, 333, s, -40)};
+    std::vector<float> ref;
+    for (const uint32_t block : {32u, 64u, 512u, 37u}) {
+      CAPTURE(block);
+      VoiceConfig cfg;
+      Rig r(kProbe, cfg, 1, 512);
+      const auto out = r.run(1200, block, evs);
+      CHECK(r.rtViolations == 0);
+      const auto& f = out[r.mixIndex("f")];
+      CHECK(f[1033] == 180.0f);
+      if (ref.empty()) ref = f;
+      else CHECK(f == ref);
+    }
+  }
+}
+
+TEST_CASE("voices (AP.3): an arp's Into glide sampled from the VoiceEngine's Hz buffer, at block sizes 32 / 64 / 512 / 37") {
+  eng::ArpParams p;
+  p.rate = {true, 1, 16, 1, 1, 125.0f};  // stopped transport: steps of 6000 from the first note-on
+  p.into = eng::ArpGlide::Step;
+  p.glideMs = 20.0f;  // 960 frames
+  p.glideShape = eng::RampShape::Exponential;
+  p.glideBend = 0.5f;
+  std::vector<float> ref;
+  for (const uint32_t block : {32u, 64u, 512u, 37u}) {
+    CAPTURE(block);
+    // The arp's events at this block size (a Free clock: no segments), then the voices at the same block size.
+    eng::ArpCore arp;
+    eng::EventBuffer in(64), outBuf(256);
+    std::vector<Ev> evs;
+    uint64_t arpRt = 0;
+    for (int64_t T = 0; T < 14000; T += block) {
+      in.clear();
+      if (T == 0) {
+        in.push(eng::noteOn(0, 1, 200.0f, 0.8f));
+        in.push(eng::noteOn(0, 2, 300.0f, 0.8f));
+      }
+      eng::NoteStageBlock b;
+      b.time = T;
+      b.frames = static_cast<uint32_t>(std::min<int64_t>(block, 14000 - T));
+      b.clock.sampleRate = kSr;
+      outBuf.clear();
+      arpRt += pq::alloc_trap::countRtViolations([&] { arp.process(p, b, in.list(), outBuf); });
+      for (uint32_t i = 0; i < outBuf.size(); ++i) evs.push_back({T + outBuf.list().events[i].frame, outBuf.list().events[i]});
+    }
+    CHECK(arpRt == 0);
+    VoiceConfig cfg;
+    Rig r(kProbe, cfg, 1, 512);
+    const auto out = r.run(14000, block, evs);
+    CHECK(r.rtViolations == 0);
+    const auto& f = out[r.mixIndex("f")];
+    CHECK(f[0] == 200.0f);
+    CHECK(f[6000] == 200.0f);  // step 2 starts at step 1's pitch …
+    CHECK(f[6000 + 960] == 300.0f);  // … and reaches its own exactly
+    for (uint32_t t = 6001; t <= 6960; ++t) CHECK(f[t] > f[t - 1]);
+    CHECK(f[6480] == doctest::Approx(200.0 * std::exp2(std::log2(1.5) * shapeOf(eng::RampShape::Exponential, 64, 0.5))).epsilon(1e-6));
+    CHECK(f[12000] == 300.0f);  // step 3 (200 Hz) glides down from 300
+    CHECK(f[12960] == 200.0f);
+    // The glides sample for sample at every block size (outside them a released voice ends on block-peak silence,
+    // which is block-granular by design).
+    std::vector<float> glides(f.begin() + 6000, f.begin() + 7000);
+    glides.insert(glides.end(), f.begin() + 12000, f.begin() + 13000);
+    if (ref.empty()) ref = glides;
+    else CHECK(glides == ref);
+  }
 }
