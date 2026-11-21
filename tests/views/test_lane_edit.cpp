@@ -384,7 +384,7 @@ TEST_CASE("lane edit: one selection with the arrangement; the canvas's own keys 
   const uint32_t n = v.patch().nodeOf(sat);
   REQUIRE(n != kNone);
   const Node& nd = v.patch().nodes[n];
-  u.d.click(v.canvas().toDevice({nd.x + nd.w * 0.5f, nd.y + (nd.panel ? 10.0f : nd.h * 0.5f)}));
+  u.d.click(v.canvas().toDevice({nd.x + nd.w * 0.5f, nd.y + nd.h * 0.5f}));
   CHECK_FALSE(v.canvas().laneFocused());
   const size_t clips = u.track("Pad").clips.size(), blocks = doc::mainPath(*u.ctx.doc(), u.track("Keys")).blocks.size();
   (void)u.d.press("Delete");

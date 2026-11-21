@@ -101,7 +101,7 @@ ProjectCanvas::ProjectCanvas(ProjectPatchView& view) : CircuitCanvas("patch-canv
     if (f.path.empty()) b.analysis = [ctx = &view_.context(), id = f.owner] { return ctx->analysisFeed(doc::DeviceId{id}); };
     return b;
   };
-  // TX.panel-faces: a closed stock device's block is its Device-view panel (bound to the document by the view).
+  // The blocks drawn as panels (closed groups, AP.9 type panels, value knobs, mixers, tuning blocks): the view's.
   panelMaker = [this](const circuit::SceneFace& f) { return view_.makePanel(f); };
   onHoverChanged = [this](const circuit::CanvasHit& hit) {
     uint32_t edge = kNone;
@@ -561,9 +561,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
       const Band& band = pp.bands[n.band];
       if (!shownNode(n)) {
         continue;  // TL.1: a lane (paintUnderlay), a folded band's block
-      } else if (n.kind == NodeKind::Device && ((!n.lowered && !n.noteStage) || !n.active || !band.active) &&
-                 !(n.panel && band.active)) {
-        // (TX.panel-faces: a panel shows its own switched-off look, as in the Device view.)
+      } else if (n.kind == NodeKind::Device && ((!n.lowered && !n.noteStage) || !n.active || !band.active)) {
         // Bypassed (deactivated, missing, on a deactivated track): veiled; the chain wire passes under it.
         const Rect r = snapRect(nr);
         dl.addRectFilled(r, ui::mulAlpha(th.circuit.background, 0.55f));
@@ -614,7 +612,7 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         if (!mine(n) || !shownNode(n)) continue;
         if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input) continue;  // the symbol says it
         // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
-        if (n.face != nullptr || n.panel || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
+        if (n.face != nullptr || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
         if (n.symbol) continue;  // GU.5b: an atom block's symbol says what it is
         const Rect nr = deviceRect(n.x, n.y, n.w, n.h);
         if (nr.x1 - nr.x0 < 24.0f * us || !overlaps(nr, clip)) continue;
@@ -1750,15 +1748,14 @@ void ProjectCanvas::finishWire(Vec2 pos) {
       }
     }
     // TX.patching: a face's control (the Phase accumulator's frequency or phase, a VCA's knob …): that param;
-    // TX.panel-faces: a panel's control (a knob, a box, a toggle, a display's handle): its param.
     if (const FaceParamHit fh = faceParamAt(pos); !fh.param.empty() && fh.node < v.scene().modelNode.size()) {
       const uint32_t mn = v.scene().modelNode[fh.node];
-      if (mn < pp.nodes.size() && pp.nodes[mn].kind == NodeKind::Device && (pp.nodes[mn].face != nullptr || pp.nodes[mn].panel) &&
+      if (mn < pp.nodes.size() && pp.nodes[mn].kind == NodeKind::Device && pp.nodes[mn].face != nullptr &&
           v.scene().sceneNode[mn] == fh.node) {
         wire(pp.nodes[mn].device, fh.param);
         return;
       }
-      // GU.5: a closed group's panel element: the control inside the group it shows.
+      // GU.5: a closed group's panel element: the control inside the group it shows (AP.9: a type panel's: its own).
       if (mn < pp.nodes.size() && pp.nodes[mn].groupPanel && v.scene().sceneNode[mn] == fh.node) {
         const doc::Binding b = panel::GroupPanelFace::controlOfKey(pp.nodes[mn].device, fh.param);
         if (b.bound()) {

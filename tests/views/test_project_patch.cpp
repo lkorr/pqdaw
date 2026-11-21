@@ -180,7 +180,7 @@ struct Ui {
   // other block's centre.
   Vec2 grip(uint32_t node) const {
     const Node& n = pp().nodes[node];
-    return n.panel || n.groupPanel ? dev(n.x + n.w * 0.5f, n.y + 10.0f) : centre(node);  // (GU.11: a module's panel too)
+    return n.groupPanel ? dev(n.x + n.w * 0.5f, n.y + 10.0f) : centre(node);  // (GU.11: a module's panel too)
   }
   Vec2 outPin(uint32_t node, std::string_view name) const {
     const Node& n = pp().nodes[node];

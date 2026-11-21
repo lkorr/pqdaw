@@ -597,6 +597,9 @@ void ProjectPatchView::rebuild() {
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
   opt.panelViews = &ctx_.store().view().panelWindows;  // SM.9
+  // AP.9: a device whose type supplies its panel is drawn as it (as a closed group is: typePanelOf).
+  if (!sameDoc) std::erase_if(typePanels_, [&](const auto& e) { return doc::findDevice(*snap, doc::DeviceId{e.first}).device == nullptr; });
+  opt.typePanel = [this](const doc::Device& d) { return typePanelOf(d); };
   if (!sameDoc) std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   // GU.5b: groups seen for the first time start closed when they have a panel (seenGroups_).
   if (!sameDoc) doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {

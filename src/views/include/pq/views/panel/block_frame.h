@@ -97,5 +97,8 @@ private:
 // visible param — a knob, a toggle for a bool, a number box for a stepped one — and one number box per structural
 // setting, flowed into columns of 64 logical px. `face` (out): whether it is an engine's face.
 doc::Panel leafPanel(const devices::DeviceSignature& sig, const doc::Device& d, bool* face = nullptr);
+// AP.9: the panel `d`'s TYPE supplies (today a note device's own: doc::noteDevicePanel, the Arpeggiator's), empty: none.
+// The Device view draws it as the leaf's panel (leafPanel) and the project patch view draws the block as it.
+doc::Panel typePanel(const doc::Device& d);
 
 }  // namespace pq::views::panel

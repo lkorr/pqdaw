@@ -2240,3 +2240,13 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Known: param automation / cables into the arp are not part of the preview or Flatten; a clip that repeats its loop is
   refused by Flatten (Q?-AP.7-a). Not checked in the live app (tests and goldens only).
 - Goldens: new pianoroll-arp-preview; arp-panel-default / -ratio / -walk / -pulse / -lanes moved (the ROLL chip).
+
+## 2026-11-21 · AP.9 · the Arpeggiator in the project patch (circuit) view (task/AP.9-patch-panel) 👁
+- The Arpeggiator is no longer a gray box in the circuit: it is drawn as the same panel the Device view shows (every
+  chip, menu, knob, fold, step lane and the live pattern), between the MIDI band's tuning block and the instrument. The
+  notes cable runs from the tuning block into its left edge and out of its right edge into the instrument.
+- Opening a fold (Glide, Pulse, Step Lanes) grows the block downwards in place; the fold state is shared with the
+  Device view. Edits are one undo step each, as in the Device view. A cable into an arp param ends on its control.
+- General rule: any device whose type supplies its own panel is drawn this way (today only note devices with one).
+- Like a closed group's panel it has no title bar in the circuit; is the panel recognisable enough without one?
+- Golden: new project-patch-arp (Glide open). Not checked in the live app (tests and goldens only).

@@ -6,6 +6,9 @@
 // Device view (window → chain → panel host → face → element): a lane bar dragged (one undo step, a param write only:
 // not structural), a paint across steps, the length handle, the unit chips switching which controls show, a fold
 // opened and closed (view state: no undo step, the frame follows the panel's height).
+// AP.9: the same panel in the project patch view (the circuit): the block drawn as it (Node::typePanel), golden
+// project-patch-arp; through the window: a control click (one undo step), a fold opening (the block grows in place), a
+// cable into a param ending on its control, the notes pins on the band's spine.
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -15,12 +18,14 @@
 #include <string>
 #include <vector>
 
+#include "../support/blocks.h"
 #include "../ui/golden_check.h"
 #include "pq/core/note_stage_status.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
 #include "pq/document/note_devices.h"
+#include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/test_driver.h"
@@ -30,8 +35,10 @@
 #include "pq/views/panel/block_frame.h"
 #include "pq/views/panel/element.h"
 #include "pq/views/panel/group_panel_face.h"
+#include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
+#include "pq/views/view_scenes.h"
 
 using namespace pq;
 using namespace pq::ui;
@@ -523,4 +530,184 @@ TEST_CASE("arp panel (AP.7): the pattern view's ROLL chip flips the roll preview
   u.d.click(u.at(pv, 0.3f, 0.6f));
   u.d.step();
   CHECK(u.ctx.notePreview());
+}
+
+// ---- AP.9: the panel in the project patch view ---------------------------------------------------------------------
+
+namespace {
+
+// The shell's project patch view over the project, zoom 1 on the arpeggiator's block (drawn as its panel).
+struct PatchUi {
+  FakeTransport port;
+  ViewContext ctx{port};
+  TestDriver d{1600, 1000};
+  std::unique_ptr<Shell> shell;
+  Project pr;
+  explicit PatchUi(bool lfo = false) {
+    pr = makeProject(ctx);
+    if (lfo) {  // an LFO off the path, cabled into the arp's Gate
+      const doc::DeviceId l = test_blocks::addModule(ctx.store(), pr.keys, "lfo", doc::ops::kOffPath);
+      run(ctx.store(), doc::ops::connectWire(*ctx.doc(), ctx.store().ids(), l, "y", pr.arp, "gate"));
+    }
+    auto s = Shell::create(d.tree(), ctx);
+    REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
+    shell = std::move(*s);
+    d.tree().layoutNow();
+    view().setPushAnimated(false);
+    view().setShown(true, false);
+    d.tree().layoutNow();
+    const project_patch::Node& n = node();
+    circuit::CircuitCanvas::View v;
+    v.zoom = 1.0;
+    v.x = n.x - 60.0;
+    v.y = n.y - 60.0;
+    view().canvas().setView(v);
+    d.tree().layoutNow();
+    d.step();
+    d.tree().setFocus(&view().canvas());
+  }
+  ~PatchUi() { d.tree().setRoot(std::make_unique<Widget>()); }
+  project_patch::ProjectPatchView& view() const {
+    project_patch::ProjectPatchView* v = findProjectPatch(*shell);
+    REQUIRE(v != nullptr);
+    return *v;
+  }
+  const project_patch::Node& node() const {
+    const uint32_t n = view().patch().nodeOf(pr.arp);
+    REQUIRE(n != project_patch::kNone);
+    return view().patch().nodes[n];
+  }
+  panel::GroupPanelFace& face() const {
+    const uint32_t mn = view().patch().nodeOf(pr.arp);
+    REQUIRE(mn != project_patch::kNone);
+    Face* f = view().canvas().panelOn(view().scene().sceneNode[mn]);
+    REQUIRE(f != nullptr);
+    auto* g = dynamic_cast<panel::GroupPanelFace*>(f);
+    REQUIRE(g != nullptr);
+    (void)g->sync();
+    return *g;
+  }
+  int32_t index(std::string_view kind, std::string_view what) const {
+    const int32_t i = findElement(face(), kind, what);
+    REQUIRE_MESSAGE(i >= 0, "no " << kind << " " << what);
+    return i;
+  }
+  // A point of element `i` as the block shows it (fractions of its rect), device px.
+  Vec2 at(int32_t i, float fx, float fy) const {
+    const Rect r = face().element(static_cast<size_t>(i)).rect();
+    const project_patch::Node& n = node();
+    const float k = n.scale;
+    return view().canvas().toDevice({n.x + (r.x0 + (r.x1 - r.x0) * fx) * k, n.y + (r.y0 + (r.y1 - r.y0) * fy) * k});
+  }
+  size_t history() const { return ctx.store().history().cursor(); }
+};
+
+}  // namespace
+
+TEST_CASE("render: project-patch-arp (AP.9: the arp drawn as its panel between the tuning block and the instrument)") {
+  uint32_t w = 0, h = 0;
+  viewSceneDefaultSize("project-patch-arp", w, h);
+  GpuOptions o;
+  o.validation = true;
+  auto img = renderViewScene("project-patch-arp", {}, w, h, {}, o, &devLib());
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  checkImage("project-patch-arp", *img);
+}
+
+TEST_CASE("arp panel (AP.9, project patch): the block is the type's panel; the band's notes cables run into and out of it") {
+  PatchUi u;
+  const project_patch::Node& n = u.node();
+  CHECK(n.typePanel);
+  CHECK(n.groupPanel);
+  CHECK(u.face().owner() == u.pr.arp);
+  // The Device view's panel (the same elements), at its shown size (every fold closed: the panel's fit height).
+  const doc::Panel p = doc::noteDevicePanel(*doc::findDevice(*u.ctx.doc(), u.pr.arp).device);
+  CHECK(u.face().elementCount() == p.elements.size());
+  CHECK(n.w == doctest::Approx(std::ceil(p.width / 4.0f) * 4.0f));
+  CHECK(n.h == doctest::Approx(std::ceil(u.face().worldSize().y / 4.0f) * 4.0f));
+  // The band's notes cable: from the tuning block into its main input, and from its output on to the instrument. Its main
+  // ports orbit its outline toward those cables (TX.orbit-ports, as any closed block's): the input on its left edge, the
+  // output on its right edge.
+  const project_patch::ProjectPatch& pp = u.view().patch();
+  const uint32_t b = pp.bandOf(u.pr.keys), me = pp.nodeOf(u.pr.arp);
+  REQUIRE(b != project_patch::kNone);
+  REQUIRE(pp.bands[b].tuning != project_patch::kNone);
+  REQUIRE(n.mainIn >= 0);
+  bool in = false, out = false;
+  for (const project_patch::Edge& e : pp.edges) {
+    if (e.kind != project_patch::EdgeKind::Notes) continue;
+    in = in || (e.to == me && e.toPort == static_cast<uint32_t>(n.mainIn) && e.from == pp.bands[b].tuning);
+    out = out || (e.from == me && e.fromPort == 0 && e.to != project_patch::kNone && pp.nodes[e.to].instrument);
+  }
+  CHECK(in);
+  CHECK(out);
+  CHECK(n.orbitIn.on);
+  CHECK(n.orbitOut.on);
+  const graph::Point2 pi = project_patch::inPortPoint(n, static_cast<size_t>(n.mainIn)), po = project_patch::outPortPoint(n, 0);
+  CHECK(std::abs(pi.x - n.x) <= 8.0f);  // (just outside the plate's edge)
+  CHECK(std::abs(po.x - (n.x + n.w)) <= 8.0f);
+  CHECK(pi.y >= n.y);
+  CHECK(pi.y <= n.y + n.h);
+  CHECK(po.y >= n.y);
+  CHECK(po.y <= n.y + n.h);
+}
+
+TEST_CASE("arp panel (AP.9, project patch, real dispatch): a unit chip click sets the param in one undo step") {
+  PatchUi u;
+  const int32_t unit = u.index("tabs", "unit"), ratioP = u.index("number", "ratioP");
+  CHECK_FALSE(u.face().shown(static_cast<size_t>(ratioP)));
+  const size_t h0 = u.history();
+  u.d.click(u.at(unit, 0.5f, 0.5f));  // Ratio (the middle chip)
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "unit") == doctest::Approx(1.0));
+  CHECK(u.history() == h0 + 1);
+  CHECK(u.face().shown(static_cast<size_t>(ratioP)));  // the panel's conditions follow, as in the Device view
+  REQUIRE(u.ctx.undo());
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "unit") == doctest::Approx(0.0));
+  CHECK_FALSE(u.face().shown(static_cast<size_t>(ratioP)));
+}
+
+TEST_CASE("arp panel (AP.9, project patch, real dispatch): a fold click grows the block in place (view state, no undo step)") {
+  PatchUi u;
+  const project_patch::Node n0 = u.node();
+  const size_t h0 = u.history();
+  const int32_t fold = u.index("fold", "Glide");
+  const uint32_t foldId = u.face().element(static_cast<size_t>(fold)).desc().id;
+  u.d.click(u.at(fold, 0.1f, 0.5f));
+  u.d.step();
+  u.d.tree().layoutNow();
+  CHECK(u.ctx.store().view().panelWindows[u.pr.arp.value].foldOpen(foldId) == std::optional<bool>(true));
+  CHECK(u.node().h > n0.h + 50.0f);
+  CHECK(u.node().x == doctest::Approx(n0.x));
+  CHECK(u.node().y == doctest::Approx(n0.y));
+  CHECK(u.node().w == doctest::Approx(n0.w));
+  const int32_t bend = u.index("knob", "glideBend");
+  CHECK(u.face().shown(static_cast<size_t>(bend)));
+  CHECK(u.history() == h0);
+  // A control in the opened section takes a drag where it is shown (one step).
+  const double b0 = valueOf(u.ctx, u.pr.arp, "glideBend");
+  u.d.drag(u.at(bend, 0.5f, 0.5f), u.at(bend, 0.5f, -1.0f), 6);
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "glideBend") != doctest::Approx(b0));
+  CHECK(u.history() == h0 + 1);
+  // Closed again: back to its size.
+  u.d.click(u.at(u.index("fold", "Glide"), 0.1f, 0.5f));
+  u.d.step();
+  u.d.tree().layoutNow();
+  CHECK(u.node().h == doctest::Approx(n0.h));
+}
+
+TEST_CASE("arp panel (AP.9, project patch): a cable into an arp param ends on its control (no pin)") {
+  PatchUi u(true);
+  const project_patch::Node& n = u.node();
+  const int32_t k = n.input("gate");
+  REQUIRE(k >= 0);
+  const project_patch::Port& q = n.inputs[static_cast<size_t>(k)];
+  CHECK(q.anchored);
+  const Rect r = u.face().element(static_cast<size_t>(u.index("knob", "gate"))).rect();
+  CHECK(q.ax >= r.x0 * n.scale);
+  CHECK(q.ax <= r.x1 * n.scale);
+  CHECK(q.ay >= r.y0 * n.scale);
+  CHECK(q.ay <= r.y1 * n.scale);
 }

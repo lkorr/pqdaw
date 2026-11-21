@@ -169,9 +169,11 @@ struct Node {
   // opened to its atoms; `meta` is set for every chain meta device (its atoms are generated: opened, read-only).
   const meta::Type* face = nullptr;
   bool meta = false;
-  // TX.panel-faces: a closed stock device with a panel (LayoutOptions::panelSize) is drawn as its Device-view panel: the
-  // block is the panel's size (taller when its pins need it), its pins on the edges.
-  bool panel = false;
+  // AP.9: a device whose TYPE supplies its own panel (LayoutOptions::typePanel: a note device's, the Arpeggiator's) is
+  // drawn AS that panel, as a closed group is (`groupPanel` set too: a GroupPanelFace bound to the device, its own params
+  // the panel's bare port keys): the block is the panel's shown size (its folds as the view state has them; taller when
+  // its pins need it), its pins on the edges, a wire into a control it shows ending on the control.
+  bool typePanel = false;
   // A closed group's members (any depth): a wire to / from one of them ends on the group's block at a port named
   // "<port>@<device id>" (labelled with the port's name).
   std::vector<doc::DeviceId> inner;
@@ -458,9 +460,9 @@ struct LayoutOptions {
   const std::unordered_map<uint32_t, doc::PatchNudge>* nudges = nullptr;  // ViewState::patchNudges
   // SM.9: the groups' panel view state (ViewState::panelWindows): a closed group's panel is laid out with its folds.
   const std::unordered_map<uint32_t, doc::PanelWindowView>* panelViews = nullptr;
-  // TX.panel-faces: the world size of a device's panel (a stock device that is not edited, not a rack, not a chain meta
-  // device: those keep their block / face), {0, 0} for none. Unset: every device is a plain block.
-  std::function<graph::Point2(const doc::Device&)> panelSize;
+  // AP.9: the panel a device's type supplies (pq/views/panel/block_frame.h typePanel; the view keeps one per device),
+  // null for none. Unset: no device is drawn as its type's panel.
+  std::function<doc::PanelPtr(const doc::Device&)> typePanel;
   // TX.mod-all: the centre (node-local world units) of the control that shows `param` on a device's face or panel, or
   // nullopt when none shows it (the param keeps a pin). Asked only for face and panel blocks' wired params. Unset: every
   // wired param has a pin.
