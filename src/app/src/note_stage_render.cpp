@@ -16,7 +16,14 @@
 
 namespace pq::app {
 
-std::unique_ptr<engine::ArpStage> makeArpStage(const doc::LoweredNoteStage& st, const engine::ArpDegreeTable& table,
+engine::ArpTables arpTablesOf(const doc::LoweredNoteChain& c) {
+  auto one = [](const doc::NoteDegreeTable& t) { return engine::ArpDegreeTable{t.cents, t.equaveCents, t.referenceHz}; };
+  engine::ArpTables r(one(c.trackTable));
+  for (const doc::NoteDegreeTable& n : c.nodes) r.nodes.push_back(one(n));
+  return r;
+}
+
+std::unique_ptr<engine::ArpStage> makeArpStage(const doc::LoweredNoteStage& st, const engine::ArpTables& table,
                                                const std::function<uint32_t(const std::string& key)>& slotOf,
                                                const std::function<uint32_t(doc::WireId)>& busOf,
                                                std::shared_ptr<engine::ArpTableMailbox> box,
@@ -159,6 +166,7 @@ struct SourceNote {
   const doc::Note* note = nullptr;
   double hz = 0.0;  // its lowered (static) Hz
   float keyDegree = std::numeric_limits<float>::quiet_NaN();
+  uint16_t node = 0;  // AP.8a: the tuning node it follows (its degree table; 0: the track's)
 };
 
 }  // namespace
@@ -187,7 +195,7 @@ Result<TrackNoteRender> renderTrackNoteStages(const doc::Project& p, doc::TrackI
       params.push_back(static_cast<float>(v != nullptr ? v->value : doc::noteParamPosition(s, s.def)));
     }
   }
-  const engine::ArpDegreeTable table{ch->degreeCents, ch->equaveCents};
+  const engine::ArpTables table = arpTablesOf(*ch);
   engine::NoteStageChain chain;
   std::vector<std::vector<engine::ArpTraceNote>> traces(ch->stages.size());
   for (size_t i = 0; i < ch->stages.size(); ++i) {
@@ -220,7 +228,7 @@ Result<TrackNoteRender> renderTrackNoteStages(const doc::Project& p, doc::TrackI
     for (const engine::NoteDesc& nd : cd.notes) byId.emplace(nd.id, &nd);
     for (const doc::Note& n : c.notes)
       if (const auto it = byId.find(n.id.value); it != byId.end())
-        sources[n.id.value] = {out.clips.size(), &n, it->second->hz, it->second->keyDegree};
+        sources[n.id.value] = {out.clips.size(), &n, it->second->hz, it->second->keyDegree, it->second->pitch.node};
     end = std::max(end, c.start + std::max<Ticks>(c.length, 1));
     out.clips.push_back({c.id, {}});
     noteClips.push_back(ci);
@@ -267,12 +275,16 @@ Result<TrackNoteRender> renderTrackNoteStages(const doc::Project& p, doc::TrackI
     }
     return false;
   };
-  const int64_t N = ch->degreeCents.empty() ? 12 : static_cast<int64_t>(ch->degreeCents.size());
-  auto centsOf = [&](int64_t deg) {
+  // AP.8a (H4): the degree table of a source's tuning node (the stage's ArpTables::of).
+  auto tableOf = [&](uint16_t node) -> const doc::NoteDegreeTable& {
+    return node >= 1 && node <= ch->nodes.size() ? ch->nodes[node - 1u] : ch->trackTable;
+  };
+  auto sizeOf = [](const doc::NoteDegreeTable& t) -> int64_t { return t.cents.empty() ? 12 : static_cast<int64_t>(t.cents.size()); };
+  auto centsOf = [&](const doc::NoteDegreeTable& t, int64_t deg) {
+    const int64_t N = sizeOf(t);
     const int64_t q = deg >= 0 ? deg / N : -((-deg + N - 1) / N);
-    const double step = ch->degreeCents.empty() ? 100.0 * static_cast<double>(deg - q * N)
-                                                : ch->degreeCents[static_cast<size_t>(deg - q * N)];
-    return static_cast<double>(q) * ch->equaveCents + step;
+    const double step = t.cents.empty() ? 100.0 * static_cast<double>(deg - q * N) : t.cents[static_cast<size_t>(deg - q * N)];
+    return static_cast<double>(q) * (t.cents.empty() ? 1200.0 : t.equaveCents) + step;
   };
   std::unordered_map<uint32_t, Collected> live;
   struct Done {
@@ -357,19 +369,22 @@ Result<TrackNoteRender> renderTrackNoteStages(const doc::Project& p, doc::TrackI
         gn.pitch = sp;
         hz = src.hz;
         break;
-      case K::Degrees:
+      case K::Degrees: {
+        const doc::NoteDegreeTable& tab = tableOf(src.node);
+        const int64_t N = sizeOf(tab);
         if (sp.kind() == tuning::PitchKind::Degree) {
           const int64_t D = static_cast<int64_t>(sp.equave()) * N + sp.degree();
           const int64_t D1 = D + d.x.degrees;
           const int64_t q = D1 >= 0 ? D1 / N : -((-D1 + N - 1) / N);
           gn.pitch = tuning::PitchId::fromDegree(static_cast<int32_t>(D1 - q * N), static_cast<int32_t>(q));
-          hz = src.hz * std::exp2((centsOf(D1) - centsOf(D)) / 1200.0);
+          hz = src.hz * std::exp2((centsOf(tab, D1) - centsOf(tab, D)) / 1200.0);
         } else {  // the arp shifted from round(noteDegree): its Hz, as Cents
           const int64_t d0 = std::isfinite(src.keyDegree) ? std::llround(src.keyDegree) : 0;
-          hz = src.hz * std::exp2((centsOf(d0 + d.x.degrees) - centsOf(d0)) / 1200.0);
+          hz = src.hz * std::exp2((centsOf(tab, d0 + d.x.degrees) - centsOf(tab, d0)) / 1200.0);
           exact = false;
         }
         break;
+      }
       case K::Ratio: {
         const tuning::Rational r(d.x.num, d.x.den);
         std::optional<tuning::PitchId> pid;

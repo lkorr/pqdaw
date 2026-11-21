@@ -10,7 +10,7 @@
 
 namespace pq::engine {
 
-static_assert(std::is_trivially_copyable_v<ArpParams>);  // ArpCore::process compares / copies it bytewise
+static_assert(std::is_trivially_copyable_v<ArpParams>);  // ArpCore::process copies it per change (cheap)
 
 namespace {
 
@@ -171,7 +171,7 @@ bool setArpLaneStep(ArpLaneSteps& s, ArpParamId id, float v) noexcept {  // RT-s
 }
 
 namespace {
-// The table as the core plays it: empty → 12-EDO, a bad equave → 1200 ¢.
+// The table as the core plays it: empty → 12-EDO, a bad equave → 1200 ¢, a bad reference → unknown (0).
 ArpDegreeTable normalizedTable(ArpDegreeTable table) {
   if (table.cents.empty()) {
     table.cents.resize(12);
@@ -179,30 +179,51 @@ ArpDegreeTable normalizedTable(ArpDegreeTable table) {
     table.equaveCents = 1200.0;
   }
   if (!(table.equaveCents > 0.0) || !std::isfinite(table.equaveCents)) table.equaveCents = 1200.0;
+  for (double& c : table.cents)
+    if (!std::isfinite(c)) c = 0.0;
+  if (!(table.referenceHz > 0.0) || !std::isfinite(table.referenceHz)) table.referenceHz = 0.0;
   return table;
+}
+ArpTables normalizedTables(ArpTables t) {
+  t.track = normalizedTable(std::move(t.track));
+  for (ArpDegreeTable& n : t.nodes) n = normalizedTable(std::move(n));
+  return t;
 }
 }  // namespace
 
-// ---- ArpTableMailbox (AP.2b) ----------------------------------------------------------------------------------------
+// ---- ArpTableMailbox (AP.2b, AP.8a) ---------------------------------------------------------------------------------
 
 ArpTableMailbox::~ArpTableMailbox() {
   delete pending_.load();
-  delete retired_.load();
+  for (auto& r : retired_) delete r.load();
+  delete prev_;
   delete current_;
 }
 
-void ArpTableMailbox::post(ArpDegreeTable table) {  // non-RT
-  auto* t = new ArpDegreeTable(normalizedTable(std::move(table)));
-  delete retired_.exchange(nullptr, std::memory_order_acq_rel);  // the audio thread no longer reads it
-  delete pending_.exchange(t, std::memory_order_acq_rel);         // never taken: nobody read it
+void ArpTableMailbox::collect() {  // non-RT: the audio thread no longer reads a retired one
+  for (auto& r : retired_) delete r.exchange(nullptr, std::memory_order_acq_rel);
 }
 
-const ArpDegreeTable* ArpTableMailbox::take() noexcept {  // RT-safe
-  if (pending_.load(std::memory_order_acquire) == nullptr || retired_.load(std::memory_order_acquire) != nullptr)
-    return nullptr;  // nothing new, or the last retired table not collected yet: next block
-  ArpDegreeTable* t = pending_.exchange(nullptr, std::memory_order_acq_rel);
+void ArpTableMailbox::post(ArpTables tables) {  // non-RT
+  auto* t = new ArpTables(normalizedTables(std::move(tables)));
+  collect();
+  delete pending_.exchange(t, std::memory_order_acq_rel);  // never taken: nobody read it
+}
+
+const ArpTables* ArpTableMailbox::take() noexcept {  // RT-safe
+  if (pending_.load(std::memory_order_acquire) == nullptr) return nullptr;
+  if (prev_ != nullptr) {  // the one replaced at the last take: not read since that block; into a free slot
+    for (auto& r : retired_)
+      if (r.load(std::memory_order_acquire) == nullptr) {
+        r.store(prev_, std::memory_order_release);
+        prev_ = nullptr;
+        break;
+      }
+    if (prev_ != nullptr) return nullptr;  // every slot waits for collect(): next block
+  }
+  ArpTables* t = pending_.exchange(nullptr, std::memory_order_acq_rel);
   if (t == nullptr) return nullptr;
-  retired_.store(current_, std::memory_order_release);
+  prev_ = current_;  // still read in this block (the re-resolution)
   current_ = t;
   return t;
 }
@@ -327,12 +348,12 @@ struct ArpCore::State {
   };
   enum class Clock : uint8_t { None, Song, Free };
 
-  explicit State(ArpDegreeTable t) : table(normalizedTable(std::move(t))) {
+  explicit State(ArpTables t) : tables(normalizedTables(std::move(t))) {
     for (auto& l : laneSlot) l.fill(kNone);
   }
 
-  ArpDegreeTable table;
-  const ArpDegreeTable* tab = &table;  // AP.2b: the table played (own, or the mailbox's latest)
+  ArpTables tables;
+  const ArpTables* tabs = &tables;  // AP.2b: the tables played (own, or the mailbox's latest)
   std::shared_ptr<ArpTableMailbox> box;
   bool retable = false;  // AP.2b: a new table: the sounding notes re-derive their pitch at the next block's frame 0
   // AP.5: step lanes: fixed values, per step a param slot (kNone: the fixed value), per lane the slot's line.
@@ -354,6 +375,13 @@ struct ArpCore::State {
   uint32_t numGens = 0;
   int64_t minOff = kNever, minAct = kNever;
   uint32_t nextId = 0;
+  // AP.8a (review L4): at a 2^24 wrap of nextId, the live ids' counters (sorted) the next pass skips.
+  std::array<uint32_t, kArpMaxSounding> skipIds{};
+  uint32_t numSkip = 0, skipAt = 0;
+  // AP.8a (review M4): scratch of the one-pass room making; a tie step's lookup (rank · 4 + layer → gen index + 1).
+  std::array<uint16_t, kArpMaxSounding> roomIdx{};
+  std::array<uint16_t, kArpMaxHeld * (kArpMaxLayers + 1)> tieIdx{};
+  bool tieIdxValid = false;
   // Harmonic Walk (AP.3): the merged elements, by Hz.
   std::array<WalkEl, kArpMaxWalk> walk{};
   uint32_t numWalk = 0;
@@ -379,6 +407,7 @@ struct ArpCore::State {
   // Transport tracking.
   bool prevValid = false, prevSong = false;
   SampleTime expectPos = 0;
+  double lastBpm = 0.0;  // AP.8a (M3): the last block's tempo (a remap's ratio)
   // Grid cache.
   ArpRate gridRate{}, gridRetrig{};
   bool gridValid = false;
@@ -579,11 +608,17 @@ struct ArpCore::State {
   }
 
   // ---- Pitch units ----
-  int32_t tableSize() const noexcept { return static_cast<int32_t>(tab->cents.size()); }
-  double centsOf(int64_t deg) const noexcept {
-    const int64_t N = tableSize();
+  // AP.8a (H4): the table of a note's tuning (its clip's).
+  const ArpDegreeTable& tabOf(const NoteEvent& n) const noexcept { return tabs->of(n.tuning); }
+  static int32_t sizeOf(const ArpDegreeTable& t) noexcept { return static_cast<int32_t>(t.cents.size()); }
+  static double centsOf(const ArpDegreeTable& t, int64_t deg) noexcept {
+    const int64_t N = sizeOf(t);
     const int64_t q = floorDiv(deg, N);
-    return static_cast<double>(q) * tab->equaveCents + tab->cents[static_cast<size_t>(deg - q * N)];
+    return static_cast<double>(q) * t.equaveCents + t.cents[static_cast<size_t>(deg - q * N)];
+  }
+  // A float harmonic number only while it is an exact integer (review L3: at most 2^24), else 0 (none).
+  static float harmonicNumber(int64_t h) noexcept {
+    return h >= 1 && h <= (int64_t{1} << 24) ? static_cast<float>(h) : 0.0f;
   }
   // Harmonics: the note's harmonic number (its JI group's, an integer ≥ 1), else Base.
   int64_t harmonicOf(const NoteEvent& src) const noexcept {
@@ -591,8 +626,9 @@ struct ArpCore::State {
     if (h >= 1.0f && h < 1e6f && h == std::floor(h)) return static_cast<int64_t>(h);
     return p.harmonicBase;
   }
-  // `src` moved by the exact fraction num / den (Harmonics, Harmonic Walk): Hz, ratio, harmonic h · num / den when an
-  // integer (else 0), a static identity, noteDegree moved fractionally.
+  // `src` moved by the exact fraction num / den (Harmonics, Harmonic Walk, Layers): Hz, ratio, harmonic h · num / den
+  // when an integer (else 0), the source's degree identity and tuning kept (AP.8a H1: the tuning node moves it with
+  // the source's degree, at the ratio), noteDegree moved fractionally.
   void scaled(const NoteEvent& src, int64_t num, int64_t den, int64_t h, NoteEvent& e) const noexcept {
     const int64_t g = std::gcd(num, den);
     num /= g;
@@ -600,11 +636,13 @@ struct ArpCore::State {
     const double r = static_cast<double>(num) / static_cast<double>(den);
     e.hz = static_cast<float>(static_cast<double>(src.hz) * r);
     e.ratio = static_cast<float>(static_cast<double>(src.ratio) * r);
-    e.harmonic = (h % den == 0 && h / den <= (int64_t{1} << 40) / num) ? static_cast<float>(h / den * num) : 0.0f;
-    e.degree = e.equave = kNaN;
-    e.tuning = 0.0f;
+    e.harmonic = (h % den == 0 && h / den <= (int64_t{1} << 24) / num) ? harmonicNumber(h / den * num) : 0.0f;
+    e.degree = src.degree;
+    e.equave = src.equave;
+    e.tuning = src.tuning;
+    const ArpDegreeTable& t = tabOf(src);
     e.noteDegree = std::isfinite(src.noteDegree)
-                       ? src.noteDegree + static_cast<float>(1200.0 * std::log2(r) * tableSize() / tab->equaveCents)
+                       ? src.noteDegree + static_cast<float>(1200.0 * std::log2(r) * sizeOf(t) / t.equaveCents)
                        : kNaN;
   }
   // Element `el` of held note `src` (its walk, then its shift / wraps in the unit): fills e's hz and identity.
@@ -657,7 +695,8 @@ struct ArpCore::State {
     e.unisonCount = src.unisonCount;
     e.unisonIndex = src.unisonIndex;
     if (shift == 0 && wraps == 0) return e.hz;
-    const int64_t N = tableSize();
+    const ArpDegreeTable& tab = tabOf(src);
+    const int64_t N = sizeOf(tab);
     if (p.unit == ArpUnit::Harmonics) {
       const int64_t h = harmonicOf(src), h1 = h + shift;
       if (h1 < 1) return e.hz = 0.0f;
@@ -672,7 +711,7 @@ struct ArpCore::State {
       const int64_t d0 = deg ? static_cast<int64_t>(std::llround(src.equave)) * N + std::llround(src.degree)
                              : (std::isfinite(src.noteDegree) ? std::llround(src.noteDegree) : 0);
       const int64_t d1 = d0 + shift;
-      const double r = std::exp2((centsOf(d1) - centsOf(d0)) / 1200.0);
+      const double r = std::exp2((centsOf(tab, d1) - centsOf(tab, d0)) / 1200.0);
       e.hz = static_cast<float>(static_cast<double>(src.hz) * r);
       e.ratio = static_cast<float>(static_cast<double>(src.ratio) * r);
       e.harmonic = 0.0f;
@@ -680,10 +719,7 @@ struct ArpCore::State {
         const int64_t q = floorDiv(d1, N);
         e.equave = static_cast<float>(q);
         e.degree = static_cast<float>(d1 - q * N);
-      } else {
-        e.degree = e.equave = kNaN;
-        e.tuning = 0.0f;
-      }
+      }  // else: no degree; its tuning kept (a reference-relative note still follows the reference)
       if (std::isfinite(src.noteDegree)) e.noteDegree = src.noteDegree + static_cast<float>(shift);
       return e.hz;
     }
@@ -708,12 +744,11 @@ struct ArpCore::State {
     e.harmonic = 0.0f;
     if (exact && src.harmonic > 0.0f && src.harmonic == std::floor(src.harmonic) && src.harmonic < 1e6f) {
       const auto h = static_cast<int64_t>(src.harmonic);
-      if (h <= (int64_t{1} << 46) / num && (h * num) % den == 0) e.harmonic = static_cast<float>(h * num / den);
+      if (h <= (int64_t{1} << 46) / num && (h * num) % den == 0) e.harmonic = harmonicNumber(h * num / den);
     }
-    e.degree = e.equave = kNaN;
-    e.tuning = 0.0f;
+    // AP.8a (H1): the source's degree / equave / tuning stay (copied above): the node moves it at its ratio.
     e.noteDegree = std::isfinite(src.noteDegree)
-                       ? src.noteDegree + static_cast<float>(1200.0 * std::log2(r) * N / tab->equaveCents)
+                       ? src.noteDegree + static_cast<float>(1200.0 * std::log2(r) * N / tab.equaveCents)
                        : kNaN;
     return e.hz;
   }
@@ -756,7 +791,7 @@ struct ArpCore::State {
         const int32_t wr = std::clamp(el.wraps, -24, 24);
         if (h1 >= 1) mul(wr >= 0 ? h1 << wr : h1, wr >= 0 ? h : h << -wr);
       } else if (p.unit == ArpUnit::Degrees) {
-        degrees = el.shift + static_cast<int64_t>(el.wraps) * tableSize();
+        degrees = el.shift + static_cast<int64_t>(el.wraps) * sizeOf(tabOf(src));
         if (walked) exact = false;  // a walked note has no degree: shifted from round(noteDegree)
       } else {
         const int32_t sh = el.shift + el.wraps;
@@ -797,11 +832,75 @@ struct ArpCore::State {
     }
     recomputeMinOff();
   }
-  void endAll(uint32_t frame) noexcept {
-    for (uint32_t i = 0; i < numGens; ++i) out->push(noteOff(frame, gens[i].id));
+  void endAll(uint32_t frame, uint8_t flags = 0) noexcept {
+    for (uint32_t i = 0; i < numGens; ++i) {
+      NoteEvent o = noteOff(frame, gens[i].id);
+      o.flags = flags;
+      out->push(o);
+    }
     numGens = 0;
     minOff = minAct = kNever;
     prevCount = curCount = 0;
+  }
+
+  // AP.8a (review M4): room for `need` new notes when the sounding table is full: the earliest-ending ones (waiting
+  // ties kept when `keepTies`: the step continues them) end at `frame`, chosen in ONE partial selection — a step or a
+  // frame of pulses costs O(sounding) however many notes it starts, never O(sounding) per note.
+  void makeRoom(uint32_t need, uint32_t frame, bool keepTies) noexcept {
+    if (numGens + need <= kArpMaxSounding) return;
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < numGens; ++i)
+      if (!(keepTies && gens[i].tieWait)) roomIdx[n++] = static_cast<uint16_t>(i);
+    const uint32_t cut = std::min(numGens + need - kArpMaxSounding, n);
+    if (cut == 0) return;
+    if (cut < n)
+      std::nth_element(roomIdx.begin(), roomIdx.begin() + cut, roomIdx.begin() + n,
+                       [&](uint16_t a, uint16_t c) { return gens[a].off < gens[c].off; });
+    for (uint32_t i = 0; i < cut; ++i) {
+      Gen& g = gens[roomIdx[i]];
+      out->push(noteOff(frame, g.id));
+      g.id = kNone;  // (removed below)
+    }
+    uint32_t w = 0;
+    for (uint32_t i = 0; i < numGens; ++i)
+      if (gens[i].id != kNone) gens[w++] = gens[i];
+    numGens = w;
+    stats.cutSounding += cut;
+    tieIdxValid = false;
+    recomputeMinOff();
+  }
+  // AP.8a (review L4): a generated id (stageNoteId) no sounding note has: the 24-bit counter skips, after each wrap,
+  // the counters still live then (a long Tie chain can outlive 2^24 notes). O(1) per note; a wrap sorts ≤ 512 ids.
+  uint32_t newId() noexcept {
+    for (;;) {
+      const uint32_t n = nextId++ & 0x00FFFFFFu;
+      if (n == 0) {
+        numSkip = 0;
+        for (uint32_t i = 0; i < numGens; ++i) skipIds[numSkip++] = gens[i].id & 0x00FFFFFFu;
+        std::sort(skipIds.begin(), skipIds.begin() + numSkip);
+        skipAt = 0;
+      }
+      while (skipAt < numSkip && skipIds[skipAt] < n) ++skipAt;
+      if (skipAt < numSkip && skipIds[skipAt] == n) continue;
+      return stageNoteId(stageIndex, n);
+    }
+  }
+  // AP.8a (review M4): the waiting notes (tieWait) by (key, layer) — pattern: key = rank; pulse: the held slot of its
+  // source — in one pass, so a tie step's notes find theirs in O(1). Valid until gens move (makeRoom) or the step /
+  // frame ends.
+  void buildTies() noexcept {
+    std::fill(tieIdx.begin(), tieIdx.end(), uint16_t{0});
+    for (uint32_t i = 0; i < numGens; ++i) {
+      const Gen& g = gens[i];
+      if (!g.tieWait || g.el.layer > kArpMaxLayers) continue;
+      uint32_t key = kNone;
+      if (p.pulse) key = g.el.slot < numHeld && held[g.el.slot].on.noteId == g.src ? g.el.slot : find(g.src);
+      else if (g.rank < kArpMaxHeld) key = g.rank;
+      if (key == kNone) continue;
+      uint16_t& e = tieIdx[key * (kArpMaxLayers + 1) + g.el.layer];
+      if (e == 0) e = static_cast<uint16_t>(i + 1);
+    }
+    tieIdxValid = true;
   }
 
   // ---- Glides (AP.3) ----
@@ -1052,7 +1151,7 @@ struct ArpCore::State {
           NoteEvent o = e;
           o.frame = frame;
           out->push(o);
-        } else if (p.hold) {
+        } else if (p.hold && (e.flags & kNoteEventGone) == 0) {  // AP.8a: a gone note (handover) is not a key release
           if (held[i].key) --keysDown;
           held[i].key = false;
         } else {
@@ -1071,22 +1170,19 @@ struct ArpCore::State {
         }
         Held& h = held[i];
         if ((e.flags & kNoteEventRetune) != 0) {
+          if (h.on.hz > 0.0f && e.hz > 0.0f) h.pPrevHz *= e.hz / h.on.hz;  // AP.8a (L1): its pulse's Into source
           h.on.hz = e.hz;
           h.on.ratio = e.ratio;
           h.on.harmonic = e.harmonic;
           h.on.degree = e.degree;
           h.on.equave = e.equave;
           h.on.tuning = e.tuning;
+          if (std::isfinite(e.noteDegree)) h.on.noteDegree = e.noteDegree;  // AP.8a (L1)
           h.c0 = h.c1 = 0.0;
           h.cLen = 0;
           dirty = true;
-          for (uint32_t g = 0; g < numGens; ++g) {
-            if (gens[g].src != e.noteId) continue;
-            NoteEvent r = notePitch(frame, gens[g].id, 0.0f, e.rampFrames);
-            r.flags = kNoteEventRetune;
-            gens[g].hz = pitchOf(h.on, gens[g].el, 0, r);
-            pushExpression(r);
-          }
+          for (uint32_t g = 0; g < numGens; ++g)
+            if (gens[g].src == e.noteId) rederive(gens[g], h, t, frame, e.rampFrames, true);
           if (p.pulse && clock != Clock::None) pulseLater(frame);  // AP.4: its h may change
           return;
         }
@@ -1342,8 +1438,21 @@ struct ArpCore::State {
     return u < static_cast<double>(c);
   }
   // The waiting notes (tieWait) not continued by the step with key `key` (pulse: of source `src` only) end at `t`.
-  void endUntied(int64_t t, int64_t key, uint32_t src, bool pulseOnly) noexcept {
+  void endUntied(int64_t t, int64_t key, uint32_t src, bool pulseOnly, uint32_t slot = kNone) noexcept {
     bool any = false;
+    if (pulseOnly && tieIdxValid && slot < kArpMaxHeld) {  // AP.8a (M4): this clock's waiting notes, by layer
+      for (uint32_t L = 0; L <= static_cast<uint32_t>(kArpMaxLayers); ++L) {
+        const uint16_t e = tieIdx[slot * (kArpMaxLayers + 1) + L];
+        if (e == 0) continue;
+        Gen& g = gens[e - 1u];
+        if (!g.tieWait || g.tieKey == key || g.src != src) continue;
+        g.tieWait = false;
+        g.off = std::min(g.off, t);
+        any = true;
+      }
+      if (any) minOff = std::min(minOff, t);  // (earlier ends only: a bound)
+      return;
+    }
     for (uint32_t i = 0; i < numGens; ++i) {
       Gen& g = gens[i];
       if (!g.tieWait || g.tieKey == key || (pulseOnly && g.src != src)) continue;
@@ -1351,11 +1460,18 @@ struct ArpCore::State {
       g.off = std::min(g.off, t);
       any = true;
     }
-    if (any) recomputeMinOff();
+    if (any) minOff = std::min(minOff, t);  // (earlier ends only: a bound)
   }
   // A waiting note a tie step continues: the same rank and layer (pulse: the same clock and layer).
   Gen* tieWaiting(const Held& h, const Elem& el, uint32_t rank) noexcept {
     const auto r = static_cast<uint16_t>(std::min<uint32_t>(rank, 0xFFFFu));
+    const auto key = p.pulse ? static_cast<uint32_t>(&h - held.data()) : rank;
+    if (tieIdxValid && key < kArpMaxHeld && el.layer <= kArpMaxLayers) {  // AP.8a (M4): the step's table
+      const uint16_t e = tieIdx[key * (kArpMaxLayers + 1) + el.layer];
+      if (e == 0) return nullptr;
+      Gen& g = gens[e - 1u];
+      if (g.tieWait && g.el.layer == el.layer && (p.pulse ? g.src == h.on.noteId : g.rank == r)) return &g;
+    }
     for (uint32_t i = 0; i < numGens; ++i) {
       Gen& g = gens[i];
       if (!g.tieWait || g.el.layer != el.layer) continue;
@@ -1414,7 +1530,9 @@ struct ArpCore::State {
       curHz[rank] = static_cast<float>(own);
       curCount = std::max(curCount, rank + 1);
     }
-    recomputeMinOff();
+    // AP.8a (M4): a bound, not a rescan per tie (a later end only makes minOff early: one extra endDue pass)
+    minOff = std::min(minOff, g.off);
+    minAct = std::min({minAct, g.intoEnd, g.outAt});
     return static_cast<float>(own);
   }
 
@@ -1432,16 +1550,8 @@ struct ArpCore::State {
     on.velocity = velocity;
     const float hz = pitchOf(h.on, el, 0, on);
     if (!(hz > 0.0f)) return 0.0f;  // a rest (Harmonics below the first)
-    if (numGens == kArpMaxSounding) {  // the earliest-ending one makes room
-      uint32_t m = 0;
-      for (uint32_t i = 1; i < numGens; ++i)
-        if (gens[i].off < gens[m].off) m = i;
-      out->push(noteOff(frame, gens[m].id));
-      gens[m] = gens[--numGens];
-      ++stats.cutSounding;
-      recomputeMinOff();
-    }
-    on.noteId = stageNoteId(stageIndex, nextId++);
+    if (numGens == kArpMaxSounding) makeRoom(1, frame, false);  // (the step made room for its notes: a rare tie)
+    on.noteId = newId();
     const double c = h.centsAt(t);
     on.hz = c != 0.0 ? static_cast<float>(hz * std::exp2(c / 1200.0)) : hz;
     const float own = on.hz;
@@ -1574,6 +1684,9 @@ struct ArpCore::State {
     sc.holdNext = kindAt(kk + 1) == ArpStepKind::Tie;
     ++stats.steps;
     const uint32_t count = p.style == ArpStyle::ChordTrigger ? elemCount() : 1u;
+    // AP.8a (M4): room for the step's notes in one pass; a tie step's waiting notes by (rank, layer).
+    makeRoom(count * static_cast<uint32_t>(1 + p.layers), frame, sc.kind == ArpStepKind::Tie);
+    if (sc.kind == ArpStepKind::Tie) buildTies();
     curCount = 0;
     for (uint32_t m = 0; m < count; ++m) {
       if (m > 0) pick(here, kk, m, true, idx, j);
@@ -1587,6 +1700,7 @@ struct ArpCore::State {
         emit(le, m, kk, v, t, frame, off, -1.0, p.layerLevel[static_cast<size_t>(L - 1)], sc);
       }
     }
+    tieIdxValid = false;
     endUntied(t, kk, 0, false);
     if (curCount > 0) {  // this step's notes are the next one's "previous step"
       std::copy(curHz.begin(), curHz.begin() + curCount, prevHz.begin());
@@ -1806,7 +1920,7 @@ struct ArpCore::State {
     }
     if (!plays) {
       ++stats.laneRests;
-      endUntied(t, sc.key, src, true);
+      endUntied(t, sc.key, src, true, s);
       return;
     }
     sc.holdNext = kindAt(pulseLanePos(h, H.pc, H.pj)) == ArpStepKind::Tie;
@@ -1822,17 +1936,52 @@ struct ArpCore::State {
       le.layer = static_cast<uint8_t>(L);
       emit(le, 0xFFFFu, j, v, t, frame, off, H.pPrevHz, p.layerLevel[static_cast<size_t>(L - 1)], sc);
     }
-    endUntied(t, sc.key, src, true);
+    endUntied(t, sc.key, src, true, s);
     if (own > 0.0f) H.pPrevHz = own;
   }
   // The clocks due at `frame` of `seg` (in Hz order), then the next pending onset.
   void pulseDue(const ClockSegment& seg, uint32_t frame) noexcept {
     const int64_t at = clock == Clock::Song ? seg.pos + (frame - seg.frame) : b->time + frame;
     if (stale()) rebuild();
+    // AP.8a (M4): room for every due clock's notes in one pass; the waiting ties by (clock, layer).
+    uint32_t due = 0;
+    for (uint32_t i = 0; i < numHeld; ++i) due += held[i].pNext <= at ? 1u : 0u;
+    makeRoom(due * static_cast<uint32_t>(1 + p.layers), frame, laneOn(ArpLane::SkipTie));
+    if (laneOn(ArpLane::SkipTie)) buildTies();
     for (uint32_t r = 0; r < numHeld; ++r)
       if (held[sorted[r]].pNext <= at) pulseFire(sorted[r], frame);
+    tieIdxValid = false;
     minPulse = kNever;
     for (uint32_t i = 0; i < numHeld; ++i) minPulse = std::min(minPulse, held[i].pNext);
+  }
+
+  // AP.8a (review M3): a new tempo map moved the song position under the playhead (Timeline::swapTempo keeps the
+  // tick; StageClock::remapped): not a locate. Nothing ends: the clock keeps its grid index (pattern: the next step
+  // re-seeks on the new map; pulse: every clock resumes at its first unplayed onset), and what the sounding notes have
+  // left (gate, glide starts / ends) scales by the tempo ratio, so a gate still ends where the new tempo puts it.
+  void remap(const ClockSegment& seg) noexcept {
+    const int64_t t = b->time + seg.frame;
+    const double scale = lastBpm > 0.0 && b->clock.bpm > 0.0 && std::isfinite(b->clock.bpm) ? lastBpm / b->clock.bpm : 1.0;
+    auto moved = [&](int64_t x) { return x == kNever || x <= t ? x : t + std::max<int64_t>(1, std::llround(static_cast<double>(x - t) * scale)); };
+    for (uint32_t i = 0; i < numGens; ++i) {
+      Gen& g = gens[i];
+      g.off = moved(g.off);
+      g.intoEnd = moved(g.intoEnd);
+      g.outAt = moved(g.outAt);
+    }
+    recomputeMinOff();
+    auto songMoved = [&](SampleTime x) { return seg.pos + static_cast<SampleTime>(std::llround(static_cast<double>(x - expectPos) * scale)); };
+    if (clock == Clock::Song && !p.pulse) {
+      nextSong = immediate ? std::max(seg.pos, songMoved(nextSong)) : songOnset(k);
+    } else if (clock == Clock::Song) {
+      for (uint32_t i = 0; i < numHeld; ++i) {
+        Held& H = held[i];
+        if (H.pHasLast) H.pLast = std::min(seg.pos - 1, songMoved(H.pLast));
+        if (H.pImmediate) H.pNext = std::max(seg.pos, songMoved(H.pNext));
+      }
+      pulseStale = true;
+    }
+    ++stats.tempoRemaps;
   }
 
   // A loop wrap, a locate (stop: also drops the latched notes no key holds) at `frame`.
@@ -1843,22 +1992,90 @@ struct ArpCore::State {
     clock = Clock::None;
   }
 
-  // AP.2b: a new degree table: every sounding note whose held source is known re-derives its pitch (identity
-  // included) at frame 0, gliding 5 ms like a timeline retune, so a tuning drag moves the steps at once.
+  // AP.8a (H2): the held notes re-resolved from tables `from` to `to` (arp.h "Tuning edits"): a Degree note keeps its
+  // degree and its ratio to it, a reference-relative note moves with the reference, a static note stays. RT-safe.
+  void reresolve(const ArpTables& from, const ArpTables& to) noexcept {
+    bool any = false;
+    for (uint32_t i = 0; i < numHeld; ++i) {
+      NoteEvent& on = held[i].on;
+      if (!(on.tuning >= 1.0f) && !std::isfinite(on.degree)) continue;  // static (no tuning node): its Hz stays
+      const ArpDegreeTable& ta = from.of(on.tuning);
+      const ArpDegreeTable& tb = to.of(on.tuning);
+      if (!(ta.referenceHz > 0.0) || !(tb.referenceHz > 0.0) || ta == tb) continue;
+      double cents = 1200.0 * std::log2(tb.referenceHz / ta.referenceHz);
+      if (std::isfinite(on.degree) && std::isfinite(on.equave)) {
+        const int64_t q = std::llround(on.equave), d = std::llround(on.degree);
+        cents += centsOf(tb, q * sizeOf(tb) + d) - centsOf(ta, q * sizeOf(ta) + d);
+      }
+      if (cents == 0.0) continue;
+      const double hz = static_cast<double>(on.hz) * std::exp2(cents / 1200.0);
+      if (!(hz > 0.0) || !std::isfinite(static_cast<float>(hz))) continue;
+      held[i].pPrevHz = static_cast<float>(static_cast<double>(held[i].pPrevHz) * hz / static_cast<double>(on.hz));
+      on.hz = static_cast<float>(hz);
+      any = true;
+    }
+    if (any) {
+      dirty = true;  // the order by Hz, a walk's elements
+      pulseStale = true;
+    }
+  }
+
+  // AP.8a (L1): generated note `g` (of held `h`) re-derives its pitch from h at `t` (frame `frame`): a retune Pitch
+  // event (identity included) over `ramp` frames — inside its Into glide over the rest of it, with the glide's shape —
+  // then a running Out glide re-aimed at its target over the rest of the note; the glide state (bend aimed at, the
+  // Out Offset target, the previous / current step's Hz by rank) moves with it. `bendReset`: the source's bend was
+  // reset (a producer's retune). False when nothing moved.
+  bool rederive(Gen& g, const Held& h, int64_t t, uint32_t frame, uint32_t ramp, bool bendReset) noexcept {
+    NoteEvent r = notePitch(frame, g.id, 0.0f, ramp);
+    r.flags = kNoteEventRetune;
+    const float hz = pitchOf(h.on, g.el, 0, r);
+    if (!(hz > 0.0f)) return false;
+    if (bendReset) g.c = 0.0;
+    float outHz = g.outHz;
+    if (outHz > 0.0f) outHz = static_cast<float>(offsetHz(h, g.el, hz, p.outOffset));  // (the table moves it too)
+    if (hz == g.hz && !bendReset) {
+      if (outHz == g.outHz) return false;
+      g.outHz = outHz;  // only the Out Offset target moved: re-aim a running Out glide
+      if (g.outing && g.off > t) out->push(glide(frame, g.id, static_cast<double>(outHz) * std::exp2(g.c / 1200.0), g.off - t));
+      return true;
+    }
+    const float old = g.hz;
+    g.hz = hz;
+    g.outHz = outHz;
+    const double bend = std::exp2(g.c / 1200.0);
+    r.hz = static_cast<float>(static_cast<double>(hz) * bend);
+    if (g.intoEnd != kNever && t < g.intoEnd) {  // the Into glide goes on to the new pitch, same end
+      r.rampFrames = static_cast<uint32_t>(g.intoEnd - t);
+      r.rampShape = static_cast<uint8_t>(p.glideShape);
+      r.rampBend = static_cast<uint8_t>(bendByte());
+    }
+    out->push(r);
+    if (g.outing && g.off > t) {  // the Out glide re-aimed at its (retuned) target
+      double to = p.out == ArpGlide::Step ? nextHz(g, g.off) : static_cast<double>(g.outHz) * bend;
+      if (g.glideAmt != 1.0f && to > 0.0 && std::isfinite(to)) {
+        const double cur = static_cast<double>(hz) * bend;
+        to = cur * std::pow(to / cur, static_cast<double>(g.glideAmt));
+      }
+      if (to > 0.0 && std::isfinite(to)) out->push(glide(frame, g.id, to, g.off - t));
+    }
+    if (g.rank < kArpMaxHeld && g.el.layer == 0 && old > 0.0f) {  // Into → Step of the next step starts here
+      const float f = static_cast<float>(static_cast<double>(hz) / static_cast<double>(old));
+      if (g.stepK == prevStepK && g.rank < prevCount) prevHz[g.rank] *= f;
+      if (g.rank < curCount) curHz[g.rank] *= f;
+    }
+    return true;
+  }
+
+  // AP.2b: new degree tables: every sounding note whose held source is known re-derives its pitch (identity
+  // included) at frame 0, gliding 5 ms like a timeline retune, so a tuning edit moves the steps at once.
   void retableNow() noexcept {
     retable = false;
     const auto g5 = static_cast<uint32_t>(std::max(1.0, 0.005 * b->clock.sampleRate));
+    const uint32_t ramp = std::min<uint32_t>(g5, std::max<uint32_t>(b->frames, 1));
     for (uint32_t i = 0; i < numGens; ++i) {
       Gen& g = gens[i];
       const uint32_t s = find(g.src);
-      if (s == kNone) continue;
-      NoteEvent r = notePitch(0, g.id, 0.0f, std::min<uint32_t>(g5, std::max<uint32_t>(b->frames, 1)));
-      r.flags = kNoteEventRetune;
-      const float hz = pitchOf(held[s].on, g.el, 0, r);
-      if (!(hz > 0.0f) || hz == g.hz) continue;
-      g.hz = hz;
-      r.hz = static_cast<float>(static_cast<double>(hz) * std::exp2(g.c / 1200.0));
-      out->push(r);
+      if (s != kNone) rederive(g, held[s], b->time, 0, ramp, false);
     }
   }
 
@@ -1886,7 +2103,10 @@ struct ArpCore::State {
     for (uint32_t si = 0; si < numSegs; ++si) {
       const ClockSegment& seg = segs[si];
       const bool song = seg.song && blk.clock.tempo != nullptr;
-      if (prevValid && (song != prevSong || (song && seg.pos != expectPos))) transport(seg.frame, prevSong && !song);
+      if (prevValid && (song != prevSong || (song && seg.pos != expectPos))) {
+        if (song && prevSong && si == 0 && seg.frame == 0 && blk.clock.remapped) remap(seg);  // AP.8a (M3)
+        else transport(seg.frame, prevSong && !song);
+      }
       prevValid = true;
       prevSong = song;
       expectPos = seg.pos + seg.len;
@@ -1948,22 +2168,24 @@ struct ArpCore::State {
         }
       }
     }
+    lastBpm = blk.clock.bpm;
     return numHeld > 0 || numGens > 0;
   }
 };
 
 // ---- ArpCore ------------------------------------------------------------------------------------------------------
 
-ArpCore::ArpCore(uint32_t stageIndex, ArpDegreeTable table)
-    : s_(std::make_unique<State>(std::move(table))), stageIndex_(stageIndex) {}
+ArpCore::ArpCore(uint32_t stageIndex, ArpTables tables)
+    : s_(std::make_unique<State>(std::move(tables))), stageIndex_(stageIndex) {}
 ArpCore::~ArpCore() = default;
 
 bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, const EventList& in,
                       EventBuffer& out) noexcept {  // RT-safe
   State& s = *s_;
-  if (s.box != nullptr && s.box->pending())  // AP.2b: a tuning edit's degree table, taken at a block start
-    if (const ArpDegreeTable* t = s.box->take()) {
-      s.tab = t;
+  if (s.box != nullptr && s.box->pending())  // AP.2b: a tuning edit's degree tables, taken at a block start
+    if (const ArpTables* t = s.box->take()) {
+      s.reresolve(*s.tabs, *t);  // AP.8a (H2): the old tables stay valid through this block (ArpTableMailbox)
+      s.tabs = t;
       s.retable = true;
     }
   if (in.count == 0 && s.numHeld == 0 && s.numGens == 0) {  // idle: nothing held, nothing sounding
@@ -1971,9 +2193,9 @@ bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, cons
     s.clock = State::Clock::None;
     return false;
   }
-  // AP.3: the params are sanitized only when they change (a byte compare; most blocks see the same ones).
-  if (!s.rawValid || std::memcmp(&params, &s.raw, sizeof(ArpParams)) != 0) {
-    std::memcpy(&s.raw, &params, sizeof(ArpParams));
+  // AP.3: the params are sanitized only when they change (AP.8a L5: memberwise; most blocks see the same ones).
+  if (!s.rawValid || !(params == s.raw)) {
+    s.raw = params;
     s.rawValid = true;
     s.p = sanitized(params);
     s.pulseStale = true;  // AP.4: re-derive the pulse clocks at the next segment
@@ -1988,14 +2210,16 @@ bool ArpCore::process(const ArpParams& params, const NoteStageBlock& block, cons
 
 void ArpCore::flush(uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept {  // RT-safe
   State& s = *s_;
-  s.out = &out;
-  s.endAll(frame);
+  // AP.8a (M2): the key-held notes first, then the offs (kNoteEventGone): a stage that adopts the notes this one fed
+  // gets the new ones before it loses the old ones (its held set never runs empty: its pattern does not restart).
   for (uint32_t i = 0; i < s.numHeld; ++i) {
     if (!s.held[i].key) continue;
     NoteEvent on = s.held[i].on;
     on.frame = frame;
     held.push(on);
   }
+  s.out = &out;
+  s.endAll(frame, kNoteEventGone);
   s.numHeld = s.keysDown = 0;
   s.clock = State::Clock::None;
   s.prevValid = false;
@@ -2006,12 +2230,13 @@ void ArpCore::adopt(ArpCore& old) noexcept {  // RT-safe
   std::swap(s_, old.s_);  // this core now runs old's state; then each takes its own structure back
   State& a = *s_;
   State& b = *old.s_;
-  const ArpDegreeTable* ta = a.tab == &a.table ? nullptr : a.tab;
-  const ArpDegreeTable* tb = b.tab == &b.table ? nullptr : b.tab;
-  std::swap(a.table, b.table);
+  const ArpTables* ta = a.tabs == &a.tables ? nullptr : a.tabs;
+  const ArpTables* tb = b.tabs == &b.tables ? nullptr : b.tabs;
+  std::swap(a.tables, b.tables);
   std::swap(a.box, b.box);
-  a.tab = tb != nullptr ? tb : &a.table;
-  b.tab = ta != nullptr ? ta : &b.table;
+  a.tabs = tb != nullptr ? tb : &a.tables;
+  b.tabs = ta != nullptr ? ta : &b.tables;
+  a.reresolve(*b.tabs, *a.tabs);  // AP.8a (H2): the running notes into the new stage's tuning (the old one is alive)
   std::swap(a.laneFixed, b.laneFixed);
   std::swap(a.laneSlot, b.laneSlot);
   std::swap(a.laneScale, b.laneScale);
@@ -2045,14 +2270,16 @@ void ArpCore::setStatus(std::shared_ptr<NoteStageStatus> status) noexcept {
 void ArpCore::setTrace(std::vector<ArpTraceNote>* trace) noexcept { s_->trace = trace; }  // AP.7
 
 uint32_t ArpCore::heldCount() const noexcept { return s_->numHeld; }
+bool ArpCore::idle() const noexcept { return s_->numHeld == 0 && s_->numGens == 0; }
+void ArpCore::setNoteCounter(uint32_t n) noexcept { s_->nextId = n; }  // AP.8a: tests (the 2^24 wrap)
 uint32_t ArpCore::soundingCount() const noexcept { return s_->numGens; }
 const ArpStats& ArpCore::stats() const noexcept { return s_->stats; }
 
 // ---- ArpStage -----------------------------------------------------------------------------------------------------
 
-ArpStage::ArpStage(const ArpParams& params, std::vector<Mapping> map, ArpDegreeTable table, const ArpLaneSteps& steps,
+ArpStage::ArpStage(const ArpParams& params, std::vector<Mapping> map, ArpTables tables, const ArpLaneSteps& steps,
                    std::shared_ptr<ArpTableMailbox> box, std::shared_ptr<NoteStageStatus> status)
-    : params_(params), core_(0, std::move(table)) {
+    : params_(params), core_(0, std::move(tables)) {
   core_.setStatus(std::move(status));
   processFn = &ArpStage::processStage;
   flushFn = &ArpStage::flushStage;
@@ -2081,7 +2308,8 @@ ArpStage::ArpStage(const ArpParams& params, std::vector<Mapping> map, ArpDegreeT
 
 bool ArpStage::processStage(void* self, const NoteStageBlock& block, const EventList& in, EventBuffer& out) noexcept {  // RT-safe
   auto& st = *static_cast<ArpStage*>(self);
-  if (st.map_.empty()) return st.core_.process(st.params_, block, in, out);
+  // AP.8a (L5): an idle arp (no event, nothing held or sounding) maps nothing: the core returns after its table check.
+  if (st.map_.empty() || (in.count == 0 && st.core_.idle())) return st.core_.process(st.params_, block, in, out);
   ArpParams p = st.params_;
   const size_t n = st.map_.size();
   for (size_t i = 0; i < n;) {

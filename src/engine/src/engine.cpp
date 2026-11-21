@@ -258,17 +258,7 @@ void Engine::setEventProbe(uint32_t slot, EventProbe* probe) {  // AP.7: non-RT
 void Engine::runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
   // AP.1: the block's clock as segments: the timeline's song runs, Free between them (stopped, counting in).
   ClockSegment segs[2 * Timeline::kMaxRuns + 1];
-  const uint32_t n = timelineSegments(timeline_->runs(), frames, segs);  // AP.7: the offline renders' too
-  NoteStageBlock b;
-  b.time = sampleTime;
-  b.frames = frames;
-  b.clock.tempo = &timeline_->tempoImage().tempo();
-  b.clock.sampleRate = cfg_.sampleRate;
-  b.clock.bpm = timeline_->snapshot().bpm;
-  b.clock.signatures = &timeline_->tempoImage().signatures();  // AP.2b: Pulse Cycle bars
-  b.clock.beatsPerBar = timeline_->snapshot().beatsPerBar;
-  b.clock.segments = segs;
-  b.clock.numSegments = n;
+  NoteStageBlock b = timelineStageBlock(*timeline_, sampleTime, frames, cfg_.sampleRate, segs);  // AP.8a L9: shared
   if (program_ != nullptr) {
     b.params = program_->projectParamsView();
     b.mods = program_->busValuesView();  // AP.2b: cables into note-device params, one block late

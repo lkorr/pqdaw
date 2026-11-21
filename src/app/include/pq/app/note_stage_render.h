@@ -39,11 +39,13 @@ namespace pq::app {
 // into it to the bus value `busOf` gives — engine::kNoBusValue: none). What ProjectLink::publishNoteStages publishes.
 // Null: not a type the engine plays.
 inline constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
-std::unique_ptr<engine::ArpStage> makeArpStage(const doc::LoweredNoteStage& st, const engine::ArpDegreeTable& table,
+std::unique_ptr<engine::ArpStage> makeArpStage(const doc::LoweredNoteStage& st, const engine::ArpTables& tables,
                                                const std::function<uint32_t(const std::string& key)>& slotOf,
                                                const std::function<uint32_t(doc::WireId)>& busOf,
                                                std::shared_ptr<engine::ArpTableMailbox> box = {},
                                                std::shared_ptr<NoteStageStatus> status = {});
+// AP.8a (review H4): the engine's degree tables of a lowered chain (its track table, one per tuning node).
+engine::ArpTables arpTablesOf(const doc::LoweredNoteChain& c);
 
 struct NoteStageRenderOptions {
   double sampleRate = 48000.0;

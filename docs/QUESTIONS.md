@@ -2249,7 +2249,10 @@ builds it); a note without a Degree identity shifts from round(noteDegree) and p
 (3) **decided** by the orchestrator (2026-11-20, done in AP.3): a note-on into an IDLE arp (nothing held, no generated
 note sounding) between grid steps sounds its first step AT the note-on (live feel), gate · L long and, with a gate
 ≤ 100 %, ended at the next grid step at the latest; later steps stay on the song grid; a note-on exactly on a grid
-step is unchanged; a note-on while the arp is busy waits for the grid. (1), (2), (4) open.
+step is unchanged; a note-on while the arp is busy waits for the grid. (1), (2) open. (4) **decided (overruled)** in
+AP.8a (review H4, task): one table per tuning NODE (engine::ArpTables: the event's voice.tuning picks it, the track's
+table for notes without a node), so a clip with its own tuning steps in its degrees; a note without a Degree identity
+keeps its `tuning` when shifted (a reference-relative note follows the reference) instead of playing static.
 
 ## Q?-AP.3-a · 2026-11-20 · AP.3 · Arp pitch: readings of the Harmonics wrap, undertones and glide overlaps
 Context: AP.md leaves details of the Harmonics unit and the glides open. Chosen (reversible, documented in arp.h):
@@ -2275,6 +2278,8 @@ of the Ratio unit's p/q, gain = level × the note's gain. (8) A held-set change 
 re-times every clock at that frame (each resumes at its first unplayed onset of the new grid). Status: open.
 Decided (AP.2b, 2026-11-20): (5) Cycle Bars follow the song's time signature (StageClock::signatures; a signature
 change: cycle c = bars c · n … (c + 1) · n − 1; free clock: the bar at the playhead). The rest stays as chosen.
+Decided (AP.8a, review / task, 2026-11-21): (8) Pulse Ref defaults to a FIXED 8 (the Harmonics Base: an 8:9:10:12 chord
+plays as before), so releasing the lowest note never re-times every clock; 0 ("the lowest held") stays available.
 builds it); a note without a Degree identity shifts from round(noteDegree) and plays static once shifted. Status: open.
 
 ## Q?-AP.2-a · 2026-11-20 · AP.2 · Cables into a note device's params; a tuning drag republishes the chain
@@ -2367,3 +2372,18 @@ shifted Degree note has voice.ratio 1 (the arp sends the interval), an ungrouped
 arp sends Base + k). (7) A layer's level is folded into velocity (a document note has no gain); shaped glides become
 16 linear curve segments (Linear ones are exact). (8) Ghosts are drawn OVER the clip's notes (an arpeggio plays on the
 chord's own pitches). Status: open.
+
+## Q?-AP.8a-a · 2026-11-21 · AP.8a · Arp retune: what the per-node tables and the re-resolution do not cover
+Context: AP.8a keys the arp's degree tables by the note event's tuning node and re-resolves held notes itself when a
+table set changes. Chosen (reversible, arp.h "Tuning edits", note_events.h "Pitch identity"): (1) A note that follows
+no tuning node (event tuning 0: a clip in a private / Scala / MODMOS tuning) steps in the TRACK's table: a static-tuning
+clip on a track of another tuning steps in the track's degrees (the event has no room to name a static tuning; a field
+or a static node index would be needed). (2) Tables follow node NUMBERS: when the track's signal list changes (a clip
+switching tuning renumbers the nodes), a latched note keeps its node number and is re-resolved in whatever tuning now
+has it (the track's own tuning keeps node 1, so a track tuning switch moves a latched set to the new tuning — tested).
+(3) The re-resolution assumes a table set reaches the stage no later than its producers' retunes (the link posts tables
+before it publishes sequences / live routes, and a take never waits behind an uncollected slot in practice: 4 slots,
+freed by every post and by ProjectLink::collect); a producer's retune is absolute, so table-then-retune is exact.
+(4) The ratio of a generated note rides in its float Hz (E = hz / hz₀ in the node): exact to float32, the integers stay
+in ArpExact. (5) A tempo edit re-times the sounding notes' remaining gate by the ratio of the last and this block's
+snapshot bpm (exact for step tempos; a ramp is approximated over the remaining gate). Status: open.

@@ -23,7 +23,7 @@ Counts: **C 0 · H 4 · M 9 · L 14**.
 
 ## High
 
-**H1 — Ratio / Harmonics / Walk / Layer steps do not follow a live tuning modulation.**
+**H1 — Ratio / Harmonics / Walk / Layer steps do not follow a live tuning modulation.** — **fixed in AP.8a** (every step keeps its source's degree identity; Hz = static × exact ratio: the node's E carries the ratio, note_events.h "Pitch identity")
 - **Where:** `src/engine/src/arp.cpp:603-608, 660-700` (`scaled()` / `pitch()` set `degree = equave = NaN`,
   `tuning = 0`); documented as intended in `src/engine/include/pq/engine/arp.h:58-68`.
 - **Defect:** only copy 0 and Degrees-unit steps keep a degree identity, so only they follow a `tuning_hz` node drag or
@@ -33,7 +33,7 @@ Counts: **C 0 · H 4 · M 9 · L 14**.
 - **Fix:** keep the source's degree / equave / tuning on the event and add an exact ratio multiplier (num/den) the
   voice applies on top of its degree-derived Hz.
 
-**H2 — Hold-latched notes never retune.**
+**H2 — Hold-latched notes never retune.** — **fixed in AP.8a** (tables carry referenceHz; a new table set re-resolves every held note, latched too)
 - **Where:** retunes reach the arp only as `kNoteEventRetune` Pitch events (`arp.cpp:1073-1092`), sent by the timeline
   and `live_input.cpp:280` `retuneHeld` only for notes whose key is still down; `retableNow` (`arp.cpp:1844`) then
   multiplies the latched source's OLD Hz by the NEW table's interval.
@@ -50,7 +50,7 @@ Counts: **C 0 · H 4 · M 9 · L 14**.
 - **Fix:** feed the automation image into `renderNoteStages`, or refuse Flatten (status message) while any device
   param has automation or a cable. I would overrule Q?-AP.7-a (3) for Flatten.
 
-**H4 — The Degrees unit uses the TRACK tuning's table for clips with their own tuning.**
+**H4 — The Degrees unit uses the TRACK tuning's table for clips with their own tuning.** — **fixed in AP.8a** (ArpTables per tuning node, playback and offline render; static-tuning clips: Q?-AP.8a-a (1))
 - **Where:** `src/document/src/lower.cpp:4379` (`effectiveTuningRef(p, *at)` without the clip, unlike `:3902`);
   `NoteClip::tuning` (`model.h:376`); the same table in `note_stage_render.cpp`'s Degree identity / `centsOf`.
 - **Scenario:** a 31-EDO clip on a 12-EDO track, Distance 1: each step moves by a 12-EDO semitone and wraps the equave
@@ -61,22 +61,22 @@ Counts: **C 0 · H 4 · M 9 · L 14**.
 
 ## Medium
 
-**M1 — `ArpTableMailbox` race can leave the last tuning edit unapplied.** `src/engine/src/arp.cpp:197-214`. Audio does
+**M1 — `ArpTableMailbox` race can leave the last tuning edit unapplied.** — **fixed in AP.8a** (4 retired slots, `collect()` from ProjectLink::collect; confirmed by reading: the interleaving is real) `src/engine/src/arp.cpp:197-214`. Audio does
 `pending.exchange` (takes t1); `post` does `retired.exchange(null)` (sees null) then `pending = t2`; audio then
 `retired.store(cur)`. Now `take()` returns null until another edit is posted — the final value of a drag can stick.
 Fix: free `retired_` from the link's `collect()` (a `box->collect()`), not only from `post`.
 
-**M2 — A structural edit ahead of a running arp restarts it.** `src/engine/src/note_stage.cpp:43-56`: `takeOver` adopts
+**M2 — A structural edit ahead of a running arp restarts it.** — **fixed in AP.8a** (adoption by key anywhere, order kept; kNoteEventGone offs) `src/engine/src/note_stage.cpp:43-56`: `takeOver` adopts
 only a matching positional PREFIX; inserting / removing / switching off a note device before it, or reordering two,
 gives `n == 0` → `old.flush`. Known in PROGRESS (AP.5), but not filed as a Q. Fix: match old stages by `key` anywhere
 in the old chain.
 
-**M3 — A tempo edit during playback acts as a locate for the arp.** `Timeline::swapTempo` (`timeline.cpp:417-425`)
+**M3 — A tempo edit during playback acts as a locate for the arp.** — **fixed in AP.8a** (StageClock::remapped) `Timeline::swapTempo` (`timeline.cpp:417-425`)
 moves `pos_`; the arp sees `seg.pos != expectPos` (`arp.cpp` ~1873) and runs `transport()` → `endAll` + clock reset.
 (Clip notes are also released there, T5.4, so the source chord re-triggers — but Hold-latched sets and sounding steps
 are cut too.) Fix: a "tempo swap" flag on the clock; re-seek `nextSong` from the tick without `endAll`.
 
-**M4 — O(512²) per frame when the sounding table is full.** `arp.cpp:1386, 1430-1438`: each `emit` at capacity does an
+**M4 — O(512²) per frame when the sounding table is full.** — **fixed in AP.8a** (one partial selection per step / pulse frame, a tie table; the per-tie minOff rescan was the larger cost) `arp.cpp:1386, 1430-1438`: each `emit` at capacity does an
 O(512) earliest-off scan + `recomputeMinOff`, and Tie adds an O(512) `tieWaiting` scan. Chord Trigger, 128 held,
 3 layers = 512 emits in one frame ≈ 0.5 M ops — an xrun risk at small blocks. Fix: cut the excess once per step
 (partial select / min-heap on `off`), index tie-waiting notes by (rank, layer).
@@ -96,24 +96,24 @@ NotePreviews worker and post the edit back.
 exports the bus; the ArpStage ctor skips `add` mappings for lane steps. Fix: keep lane-step wires out of
 `NoteDissolve::params` so they draw Inactive (or route them to `mapLaneStep`).
 
-**M9 — Opening a project keeps the previous project's running arp state.** `src/app/src/project_link.cpp:1324`: Reset
+**M9 — Opening a project keeps the previous project's running arp state.** — **fixed in AP.8a** (traced: the link handles the Reset before ViewContext::afterLoad stops the transport, and a stopped free-clock latched set survives a stop anyway; chains cleared + a per-reset key epoch) `src/app/src/project_link.cpp:1324`: Reset
 publishes without clearing `noteChains_` (unlike `makeEngine` at `:629`); a same-slot, same-id, same-structure chain
 adopts the old held set / Hold latch. Fix: `if (reset) noteChains_.clear()` first. (Plausible, not traced to the
 engine's stop/panic path.)
 
 ## Low (14)
-- L1 Retune leaves glide state stale (`gens[].c`, `outHz`, `prevHz` / `curHz`, `h.on.noteDegree`): `arp.cpp:1073-1092`.
-- L2 Tuning edit: table taken at block start, source retunes may arrive a block later → a brief old-source × new-interval
+- L1 (**fixed in AP.8a**) Retune leaves glide state stale (`gens[].c`, `outHz`, `prevHz` / `curHz`, `h.on.noteDegree`): `arp.cpp:1073-1092`.
+- L2 (**fixed in AP.8a**: the table now re-resolves key-held notes too; the later retune is absolute) Tuning edit: table taken at block start, source retunes may arrive a block later → a brief old-source × new-interval
   glide (`retableNow`), then a re-glide. Not verified.
-- L3 `e.harmonic` is float; `scaled()` allows up to 2^40 / 2^46 (`arp.cpp:603, 697`): clamp to 2^24 or 0.
-- L4 Stage note ids wrap at 2^24 (`note_stage.h:52`); a long Tie chain can collide after 16 M notes: skip live ids.
-- L5 Idle arps still map ~60 params + `memcmp` every block before the idle early-out (`arp.cpp:2082-2095`); `memcmp` on
+- L3 (**fixed in AP.8a**) `e.harmonic` is float; `scaled()` allows up to 2^40 / 2^46 (`arp.cpp:603, 697`): clamp to 2^24 or 0.
+- L4 (**fixed in AP.8a**) Stage note ids wrap at 2^24 (`note_stage.h:52`); a long Tie chain can collide after 16 M notes: skip live ids.
+- L5 (**fixed in AP.8a**) Idle arps still map ~60 params + `memcmp` every block before the idle early-out (`arp.cpp:2082-2095`); `memcmp` on
   a padded struct is unspecified. Check idle first; compare fields or a version.
 - L6 Handover coinciding with a panic: re-sent held note-ons at frame 0 land before the AllNotesOff (`engine.cpp:189-210`).
 - L7 Per-type keys on `"arpeggiator"`: `note_stage_render.cpp:24` (stage factory), `note_devices.cpp:352` (panel). Put
   `makeStage` / `panel` on `NoteDeviceType`.
-- L8 `busValueOf_` never frees indices (`project_link.cpp:1069-1076`): after 1024 wire ids cables silently go dead.
-- L9 `note_stage_offline.cpp:68-82` copies `Engine::runStages`' block setup by hand: one shared helper.
+- L8 (**fixed in AP.8a**) `busValueOf_` never frees indices (`project_link.cpp:1069-1076`): after 1024 wire ids cables silently go dead.
+- L9 (**fixed in AP.8a**: timelineStageBlock) `note_stage_offline.cpp:68-82` copies `Engine::runStages`' block setup by hand: one shared helper.
 - L10 Preview cache key (`roll_state.cpp:1052`) misses a parent group's tuning and project-level wire edits; sample
   rate / seed captured once (`shell_app.cpp:290`). `latest_` never pruned; worker joined without a cancel flag.
 - L11 Panel, Pulse fold: Layer 3's knob shows with Layers = 2; the 8 Proportion boxes show with Length 4. I would
@@ -132,7 +132,7 @@ engine's stop/panic path.)
   chain, runtime vs structural split, adopt-on-republish, all four v1 extras.
 - Differs with a Q: preview renders from tick 0 instead of "visible range + one bar" (Q?-AP.7-a (2), reasonable).
 - Overrule: Q?-AP.1-a (4) (H4), Q?-AP.7-a (3) for Flatten (H3), Q?-AP.6-a (2) (L11).
-- Question: Q?-AP.4-a (8) — releasing the lowest held note re-times every clock (h_ref = lowest). Musically a released
+- Question (**decided in AP.8a**: Pulse Ref defaults to a fixed 8): Q?-AP.4-a (8) — releasing the lowest held note re-times every clock (h_ref = lowest). Musically a released
   bass note shifts every rhythm; consider making Ref "Fixed" the default or keeping h_ref until the set empties.
 
 ## CPU

@@ -265,6 +265,7 @@ TEST_CASE("arp lanes (AP.5): Chance is deterministic, block-size invariant and s
 TEST_CASE("arp lanes (AP.5): Pulse mode reads the lanes per note (its own pulse count)") {
   e::ArpParams p = base(4);
   p.pulse = true;
+  p.pulseRef = 0;  // h_ref = the lowest held (AP.8a: no longer the default)
   lane(p, e::ArpLane::Velocity, 2);
   e::ArpStage st(p, {}, {}, values(e::ArpLane::Velocity, {1.0f, 0.5f}));
   Rig r;

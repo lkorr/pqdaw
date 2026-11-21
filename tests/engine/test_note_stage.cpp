@@ -577,8 +577,10 @@ TEST_CASE("arp: Distance / Steps in Degrees and Ratio carry exact identities; Ro
     CHECK(o[2].ev.hz == static_cast<float>(440.0 * 9.0 / 4.0));
     CHECK(o[3].ev.hz == static_cast<float>(440.0 * 27.0 / 8.0));
     CHECK(o[2].ev.ratio == static_cast<float>(1.25 * 9.0 / 4.0));
-    CHECK(std::isnan(o[1].ev.degree));
-    CHECK(o[1].ev.tuning == 0.0f);
+    // AP.8a (review H1): a ratio step keeps the source's degree identity (the tuning node moves it at its ratio)
+    CHECK(o[1].ev.degree == 2.0f);
+    CHECK(o[1].ev.equave == n.equave);
+    CHECK(o[1].ev.tuning == n.tuning);
   }
   SUBCASE("Rotate: copy j starts j notes up the held set, up an equave per wrap") {
     std::vector<Ev> in = {{0, on(1, 200.0f)}, {0, on(2, 250.0f)}, {0, on(3, 300.0f)}};
@@ -960,9 +962,9 @@ TEST_CASE("arp (AP.3): Harmonics unit — h + k over the anchor, exact ratio / h
       CHECK(x.harmonic == 8.0f + static_cast<float>(j));
       CHECK(x.hz == static_cast<float>(400.0 * (8 + j) / 8.0));
       CHECK(x.ratio == static_cast<float>(2.0 * (8 + j) / 8.0));
-      CHECK(std::isnan(x.degree));
-      CHECK(std::isnan(x.equave));
-      CHECK(x.tuning == 0.0f);
+      CHECK(x.degree == 3.0f);  // AP.8a (review H1): the source's degree identity, moved by the node at the ratio
+      CHECK(x.equave == n.equave);
+      CHECK(x.tuning == n.tuning);
       CHECK(x.noteDegree == doctest::Approx(51.0 + 12.0 * std::log2((8.0 + j) / 8.0)).epsilon(1e-6));
     }
   }
@@ -1288,6 +1290,7 @@ namespace {
 e::ArpParams pulseParams(int32_t den = 4) {
   e::ArpParams p;
   p.pulse = true;
+  p.pulseRef = 0;  // the lowest held (these tests were written for it; AP.8a made a fixed 8 the default)
   p.rate = {true, 1, den, 1, 1, 100.0f};
   p.gate = 0.5f;
   return p;

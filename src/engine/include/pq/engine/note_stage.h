@@ -20,7 +20,7 @@
 // NoteStageBlock::clock describes the block as segments of block frames: a Song segment plays song samples
 // [pos, pos + len) at frames [frame, frame + len) (the timeline's TransportRuns); a Free segment is transport
 // stopped or counting in. A loop wrap or a locate shows as a Song segment whose pos does not continue the previous
-// one; a stop as Song → Free. Stages see positions only through this struct (and the tempo map it names), so the
+// one (unless StageClock::remapped: a tempo edit, AP.8a); a stop as Song → Free. Stages see positions only through this struct (and the tempo map it names), so the
 // same stage runs offline over a clip's notes with segments the caller makes up (AP.7: preview == playback).
 //
 // ---- Handover (Engine::setNoteStages) ------------------------------------------------------------------------------
@@ -31,8 +31,9 @@
 // is empty — so held keys keep sounding through a structural edit. AP.2b: when the new chain starts with the old
 // one's stages (same device keys, same kinds) those stages ADOPT the old ones' running state instead
 // (NoteStageChain::takeOver): an arp keeps its clock, step and lane positions, held set and sounding notes through a
-// structural edit of itself (a lane switched on, a length, the seed) or of its chain's tail. The old chain is freed
-// by Engine::collect().
+// structural edit of itself (a lane switched on, a length, the seed) or of its chain (AP.8a: a note device inserted,
+// removed or switched off anywhere before or after it). The old chain is freed by Engine::collect(). A key carries
+// the project's epoch (ProjectLink): a project reset never adopts the previous project's stages.
 // Params are not part of the handover: a stage reads its runtime params from NoteStageBlock::params (the project
 // param block) at every block start (arp.h ArpStage::map), so a knob or automation never rebuilds a chain.
 
@@ -67,6 +68,9 @@ struct StageClock {
   double beatsPerBar = 4.0;                // AP.2b: the free clock's bar, in quarter notes (the bar at the playhead)
   const ClockSegment* segments = nullptr;  // in frame order, covering [0, frames); none: one Free segment
   uint32_t numSegments = 0;
+  // AP.8a (review M3): the first segment (a Song one at frame 0) continues the last block's playhead under a new tempo
+  // map (Timeline::tempoRemapped): its pos differs from where the last block ended, but it is not a locate.
+  bool remapped = false;
 };
 
 struct NoteStageBlock {
@@ -119,10 +123,13 @@ public:
   // The handover: every stage ends its generated notes at `frame` into `out`; stage 0's key-held source notes go to
   // `held` as note-ons at `frame`. RT-safe.
   void flush(uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
-  // AP.2b, the handover with state: this chain replaces `old`. Its leading stages that match old's (same place, key
-  // and adoptFn) take over their running state (clock, held set, sounding notes: nothing ends, nothing restarts);
-  // old's stages after them are flushed (their notes end at `frame`); with no match the whole of `old` is flushed as
-  // in flush (its key-held notes into `held`). RT-safe.
+  // AP.2b, the handover with state: this chain replaces `old`. Each of its stages that matches one of old's (same key
+  // and adoptFn; AP.8a: anywhere in old after the last match, so the matched stages keep their order) takes over its
+  // running state (clock, held set, sounding notes: nothing ends, nothing restarts); old's unmatched stages are
+  // flushed: their notes end at `frame` — into `held` (this chain's input) when the stage they fed was adopted, so it
+  // drops them (kNoteEventGone), to `out` from old's last stage — and old stage 0's key-held notes go into `held` as
+  // note-ons (before those offs: the adopting stage's held set never runs empty); with no match the whole of `old` is
+  // flushed as in flush. RT-safe.
   void takeOver(NoteStageChain& old, uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept;
 
 private:

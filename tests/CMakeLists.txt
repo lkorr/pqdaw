@@ -180,6 +180,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_meta_wavetable.cpp  # TMM.5: the Wavetable through the link (off-thread tables, click-free, alias suite, golden; taps → face dots)
     app/test_note_stage_render.cpp  # AP.7: the offline note-stage render == the engine's events; Flatten round trip, undo
     app/test_note_device_playback.cpp  # AP.2: a chord through an Arpeggiator renders stepped notes; a knob drag republishes nothing
+    app/test_arp_retune.cpp  # AP.8a: the arp plays on through every tuning change (drag, definition, clip / track switch), structural edits, tempo, reset
     golden/golden_audio.cpp
   DEPS pq_app)
 
@@ -386,6 +387,7 @@ pq_add_test(pq_tests_note_stage
   SOURCES
     engine/test_note_stage.cpp
     engine/test_arp_lanes.cpp  # AP.5 step lanes, AP.2b (bars follow the signature, live degree table, adoption)
+    engine/test_arp_retune_core.cpp  # AP.8a: tables per tuning node, re-resolution, mailbox race, adoption by key, tempo remap, full table, ids
   DEPS pq_engine)
 
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).

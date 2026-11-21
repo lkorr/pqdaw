@@ -41,26 +41,43 @@ void NoteStageChain::flush(uint32_t frame, EventBuffer& out, EventBuffer& held) 
 }
 
 void NoteStageChain::takeOver(NoteStageChain& old, uint32_t frame, EventBuffer& out, EventBuffer& held) noexcept {  // RT-safe
-  uint32_t n = 0;
-  const uint32_t m = std::min(size(), old.size());
-  while (n < m) {
-    NoteStage& a = *stages_[n];
-    NoteStage& b = *old.stages_[n];
-    if (a.adoptFn == nullptr || a.adoptFn != b.adoptFn || a.key == 0 || a.key != b.key) break;
-    a.adoptFn(&a, &b);  // b keeps a fresh state: nothing to flush
-    ++n;
+  // AP.8a (review M2): each stage adopts the old stage with its key and kind ANYWHERE after the last one adopted (an
+  // order-keeping match: a device inserted, removed or switched off before a running arp, or the tail edited, never
+  // restarts it; of two swapped stages one adopts, the other starts fresh).
+  const uint32_t n = size(), m = old.size();
+  bool adopted[kMaxNoteStages] = {};
+  uint32_t from = 0, count = 0;
+  for (uint32_t i = 0; i < n && from < m; ++i) {
+    NoteStage& a = *stages_[i];
+    if (a.adoptFn == nullptr || a.key == 0) continue;
+    for (uint32_t j = from; j < m; ++j) {
+      NoteStage& b = *old.stages_[j];
+      if (b.adoptFn != a.adoptFn || b.key != a.key) continue;
+      a.adoptFn(&a, &b);  // b keeps a fresh state: nothing to flush
+      adopted[j] = true;
+      from = j + 1;
+      ++count;
+      break;
+    }
   }
-  if (n == 0) {
+  if (count == 0) {
     old.flush(frame, out, held);
     return;
   }
-  // Old stages after the adopted ones end their notes; their held sets (the adopted stage's notes) are dropped.
-  for (uint32_t i = n; i < old.size(); ++i) {
-    EventBuffer& sink = old.mid_[i - 1];
-    sink.clear();
-    old.stages_[i]->flushFn(old.stages_[i].get(), frame, out, sink);
-    sink.clear();
+  // The old stages that were not adopted end their notes. Their generated notes went into old stage j + 1: when that
+  // one was adopted, the offs (kNoteEventGone) go into this chain's input (`held`) to reach it (the stages before it
+  // pass ids they do not hold); the last stage's go to the voices; otherwise they are dropped with their receiver.
+  // Old stage 0's key-held source notes go into this chain's input as note-ons (as in flush), before those offs.
+  if (count == m) return;
+  EventBuffer& scratch = old.mid_[0];  // (m ≥ 2 here: an adopted stage and a flushed one; old runs no more blocks)
+  for (uint32_t j = 0; j < m; ++j) {
+    if (adopted[j]) continue;
+    EventBuffer& offs = j + 1 == m ? out : (adopted[j + 1] ? held : scratch);
+    EventBuffer& ons = j == 0 ? held : scratch;
+    scratch.clear();
+    old.stages_[j]->flushFn(old.stages_[j].get(), frame, offs, ons);
   }
+  scratch.clear();
 }
 
 }  // namespace pq::engine

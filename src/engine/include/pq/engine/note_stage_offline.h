@@ -29,6 +29,11 @@ namespace pq::engine {
 // The block's clock segments from the timeline's transport runs (Song runs as Song segments, Free between them):
 // what Engine::runStages hands its stages. `segs` holds at least 2 · Timeline::kMaxRuns + 1. Returns the count. RT-safe.
 uint32_t timelineSegments(std::span<const TransportRun> runs, uint32_t frames, ClockSegment* segs) noexcept;
+// AP.8a (review L9): the block a note-stage chain sees from timeline `tl` after its process() — engine time, frames,
+// the clock (tempo map, signatures, snapshot bpm and bar, the song runs as segments written into `segs`, a tempo
+// remap) — the ONE setup Engine::runStages and renderNoteStages share; params / mods are the caller's. RT-safe.
+NoteStageBlock timelineStageBlock(const Timeline& tl, int64_t time, uint32_t frames, double sampleRate,
+                                  ClockSegment* segs) noexcept;
 
 // One event of a render, at song sample `song` (−1: the transport was stopped there).
 struct TimedNoteEvent {
