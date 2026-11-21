@@ -388,6 +388,7 @@ pq_add_test(pq_tests_note_stage
   SOURCES
     engine/test_note_stage.cpp
     engine/test_arp_lanes.cpp  # AP.5 step lanes, AP.2b (bars follow the signature, live degree table, adoption)
+    engine/test_arp_sketch.cpp  # AP.10: the resolved cycle (ArpCore offline over a held set: steps, identities, curves)
     engine/test_arp_retune_core.cpp  # AP.8a: tables per tuning node, re-resolution, mailbox race, adoption by key, tempo remap, full table, ids
   DEPS pq_engine)
 

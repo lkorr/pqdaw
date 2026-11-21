@@ -79,22 +79,8 @@ ArpExact compose(const ArpExact& a, const ArpExact& b) noexcept {
   return x;
 }
 
-double rampShape(engine::RampShape shape, int8_t bend, double u) noexcept {  // note_events.h "Expression"
-  u = std::clamp(u, 0.0, 1.0);
-  switch (shape) {
-    case engine::RampShape::Exponential: {
-      const double k = bend / 16.0;
-      if (std::fabs(k) < 1e-9) return u;
-      return (1.0 - std::exp(-k * u)) / (1.0 - std::exp(-k));
-    }
-    case engine::RampShape::SCurve: return u * u * (3.0 - 2.0 * u);
-    case engine::RampShape::Overshoot: {
-      const double a = 4.0 * std::abs(static_cast<int>(bend)) / 127.0, v = u - 1.0;
-      return 1.0 + (a + 1.0) * v * v * v + a * v * v;
-    }
-    default: return u;
-  }
-}
+// The voice's ramp (note_events.h rampShapeAt, AP.10: the one formula).
+double rampShape(engine::RampShape shape, int8_t bend, double u) noexcept { return engine::rampShapeAt(shape, bend, u); }
 
 // A generated note's events as the run gave them.
 struct RawPitch {

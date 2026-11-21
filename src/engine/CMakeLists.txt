@@ -1,6 +1,7 @@
 pq_add_module(pq_engine
   SOURCES
     src/arp.cpp
+    src/arp_sketch.cpp  # AP.10: the resolved cycle (the panel's pattern / bend views)
     src/asio_convert.cpp
     src/audio_sequence.cpp
     src/clip_player.cpp

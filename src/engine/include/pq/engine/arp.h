@@ -92,9 +92,10 @@
 // run), Offset = its own pitch moved by Into offset (in the pitch unit, rounded, or in cents with Glide cents).
 // Out: over the last Time of the step's gate the note glides to a target: Step = the next step's note (already
 // sounding with a gate > 100 %, else the step the pattern plays next, as known at that frame), Offset = its own
-// pitch moved by Out offset. Time = Glide ms, or (Glide synced) Glide fraction of the note's length; ≥ 1 frame, and
-// when Into + Out exceed the note each gets half. Shape = Glide shape (RampShape) with Glide bend (−1 … 1 → the
-// byte −127 … 127): the NoteEvent ramp shape (note_events.h), evaluated by the VoiceEngine. The source note's own
+// pitch moved by Out offset. AP.10: each side has its own Time (ms, or synced: a fraction of the note's length; ≥ 1
+// frame), Shape (RampShape) and Bend (−1 … 1 → the byte −127 … 127, rampBendOf): the NoteEvent ramp shape
+// (note_events.h rampShapeAt), evaluated by the VoiceEngine. When Into + Out exceed the note both shrink in
+// proportion (equal times: half each). Glide cents: both offsets in cents. The source note's own
 // bend carries over on top: the Into glide aims at the source's bend at its end (a running bend continues from
 // there); a source Pitch event during the Into glide re-aims it; during the Out glide the note goes to its target
 // (later source bends do not move it).
@@ -222,6 +223,18 @@ enum class ArpLane : uint8_t { Velocity, Gate, Glide, Transpose, Chance, SkipTie
 inline constexpr uint32_t kArpLaneCount = static_cast<uint32_t>(ArpLane::Count);
 enum class ArpStepKind : uint8_t { Play, Skip, Tie };
 
+// AP.10: one side of the glides (arp.h "Glides"): Into (mode: its source) or Out (mode: its target).
+struct ArpGlideSide {
+  ArpGlide mode = ArpGlide::Off;
+  float offset = 0.0f;                // −4800 … 4800: in the pitch unit (rounded) or cents (ArpParams::glideCents)
+  bool synced = false;                // Time = fraction of the note (else ms)
+  float ms = 50.0f;                   // 0 … 10000
+  float fraction = 0.25f;             // 0 … 1
+  RampShape shape = RampShape::Linear;
+  float bend = 0.5f;                  // −1 … 1 (rampBendOf: Exponential k = 8 · bend; Overshoot spring 4 · |bend|)
+  friend bool operator==(const ArpGlideSide&, const ArpGlideSide&) = default;
+};
+
 // A step length: Synced num/den of a whole note × m/n (n notes in the time of m), or Free `ms`.
 struct ArpRate {
   bool synced = true;
@@ -258,17 +271,9 @@ struct ArpParams {
   int32_t walkRange = 7;              // Harmonic Walk: h … h + Range, 0 … kArpMaxWalkRange
   bool walkUnder = false;             // Harmonic Walk: undertones
   ArpWalkOrder walkOrder = ArpWalkOrder::Up;
-  // AP.3: glides.
-  ArpGlide into = ArpGlide::Off;
-  ArpGlide out = ArpGlide::Off;
-  float intoOffset = 0.0f;            // −4800 … 4800: in the pitch unit (rounded) or cents (glideCents)
-  float outOffset = 0.0f;
-  bool glideCents = false;
-  bool glideSynced = false;           // Time = glideFraction of the note (else glideMs)
-  float glideMs = 50.0f;              // 0 … 10000
-  float glideFraction = 0.25f;        // 0 … 1
-  RampShape glideShape = RampShape::Linear;
-  float glideBend = 0.5f;             // −1 … 1 (Exponential: k = 8 · bend; Overshoot: spring 4 · |bend|)
+  // AP.3 glides; AP.10: Into and Out each with their own time, shape and bend.
+  ArpGlideSide into, out;
+  bool glideCents = false;            // both offsets in cents (else in the pitch unit)
   // AP.4: pulse mode, layers.
   bool pulse = false;
   ArpPulseSource pulseSource = ArpPulseSource::Harmonic;
@@ -296,8 +301,10 @@ enum class ArpParamId : uint16_t {
   RetriggerDen, Hold, Unit, Transpose, Distance, Steps, RatioP, RatioQ, VelocitySource, FixedVelocity, VelocityDecayMs,
   VelocityTarget, VelocityRetrigger, Seed,
   // AP.3
-  HarmonicBase, WalkRange, WalkUnder, WalkOrder, IntoSource, OutTarget, IntoOffset, OutOffset, GlideCents, GlideSynced,
-  GlideMs, GlideFraction, GlideShape, GlideBend,
+  HarmonicBase, WalkRange, WalkUnder, WalkOrder,
+  // AP.10: the two glide sides (each its own time, shape, bend), the offsets' unit
+  IntoSource, IntoOffset, IntoSynced, IntoMs, IntoFraction, IntoShape, IntoBend,
+  OutTarget, OutOffset, OutSynced, OutMs, OutFraction, OutShape, OutBend, GlideCents,
   // AP.4
   Pulse, PulseSource, PulseRef, PulseCycle, PulseBars, ProportionLen, Proportion1, Proportion2, Proportion3,
   Proportion4, Proportion5, Proportion6, Proportion7, Proportion8, Layers, LayerLevel1, LayerLevel2, LayerLevel3,
@@ -394,16 +401,22 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::WalkUnder, "walkUnder", "Under", 0, 1, 0, 1, true, "", true},
     {ArpParamId::WalkOrder, "walkOrder", "Walk Order", 0, 3, 0, 1, false, "Up|Down|UpDown|Random", true},
     {ArpParamId::IntoSource, "intoSource", "Into", 0, 2, 0, 1, false, "Off|Step|Offset", true},
-    {ArpParamId::OutTarget, "outTarget", "Out", 0, 2, 0, 1, false, "Off|Step|Offset", true},
     {ArpParamId::IntoOffset, "intoOffset", "Into Offset", -4800, 4800, 0, 0, false, "", true},
-    {ArpParamId::OutOffset, "outOffset", "Out Offset", -4800, 4800, 0, 0, false, "", true},
-    {ArpParamId::GlideCents, "glideCents", "Cents", 0, 1, 0, 1, true, "", true},
-    {ArpParamId::GlideSynced, "glideSync", "Glide Sync", 0, 1, 0, 1, true, "", true},
-    {ArpParamId::GlideMs, "glideMs", "Glide ms", 0, 10000, 50, 0, false, "", true},
-    {ArpParamId::GlideFraction, "glideFraction", "Glide Frac", 0, 1, 0.25f, 0, false, "", true},
-    {ArpParamId::GlideShape, "glideShape", "Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
+    {ArpParamId::IntoSynced, "intoSync", "Into Sync", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::IntoMs, "intoMs", "Into ms", 0, 10000, 50, 0, false, "", true},
+    {ArpParamId::IntoFraction, "intoFrac", "Into Frac", 0, 1, 0.25f, 0, false, "", true},
+    {ArpParamId::IntoShape, "intoShape", "Into Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
      "Linear|Exponential|S-Curve|Overshoot", true},
-    {ArpParamId::GlideBend, "glideBend", "Bend", -1, 1, 0.5f, 0, false, "", true},
+    {ArpParamId::IntoBend, "intoBend", "Into Bend", -1, 1, 0.5f, 0, false, "", true},
+    {ArpParamId::OutTarget, "outTarget", "Out", 0, 2, 0, 1, false, "Off|Step|Offset", true},
+    {ArpParamId::OutOffset, "outOffset", "Out Offset", -4800, 4800, 0, 0, false, "", true},
+    {ArpParamId::OutSynced, "outSync", "Out Sync", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::OutMs, "outMs", "Out ms", 0, 10000, 50, 0, false, "", true},
+    {ArpParamId::OutFraction, "outFrac", "Out Frac", 0, 1, 0.25f, 0, false, "", true},
+    {ArpParamId::OutShape, "outShape", "Out Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
+     "Linear|Exponential|S-Curve|Overshoot", true},
+    {ArpParamId::OutBend, "outBend", "Out Bend", -1, 1, 0.5f, 0, false, "", true},
+    {ArpParamId::GlideCents, "glideCents", "Cents", 0, 1, 0, 1, true, "", true},
     {ArpParamId::Pulse, "pulse", "Pulse", 0, 1, 0, 1, true, "", true},
     {ArpParamId::PulseSource, "pulseSource", "Pulse h", 0, 2, 0, 1, false, "Harmonic|Proportion|Order", true},
     {ArpParamId::PulseRef, "pulseRef", "Pulse Ref", 0, kArpMaxPulseH, 8, 1, false, "", true},
@@ -597,6 +610,9 @@ public:
   void setNoteCounter(uint32_t n) noexcept;
 
   uint32_t heldCount() const noexcept;      // RT-safe
+  // AP.10: the pattern's cycle in steps (Rate periods) after the last block: the period × Steps (Chord Trigger: Steps);
+  // Pulse: the Cycle over the Base period. 0: nothing held. RT-safe.
+  double cycleSteps() const noexcept;
   bool idle() const noexcept;               // RT-safe: nothing held, nothing sounding
   uint32_t soundingCount() const noexcept;  // RT-safe
   const ArpStats& stats() const noexcept;

@@ -537,9 +537,9 @@ TEST_CASE("arp core (AP.8a L1): a retune moves the glide state — an Out Offset
   e::ArpTables t12;
   t12.nodes = {edo(12, 200.0)};
   e::ArpParams p = upEighths();
-  p.out = e::ArpGlide::Offset;
-  p.outOffset = 2.0f;
-  p.glideMs = 50.0f;
+  p.out.mode = e::ArpGlide::Offset;
+  p.out.offset = 2.0f;
+  p.into.ms = p.out.ms = 50.0f;
   auto chain = chainOf(std::make_unique<e::ArpStage>(p, std::vector<e::ArpStage::Mapping>{}, t12, e::ArpLaneSteps{}, box), 1);
   Rig r;
   r.before = [&](int64_t T) {

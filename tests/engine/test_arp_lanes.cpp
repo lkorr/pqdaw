@@ -213,7 +213,7 @@ TEST_CASE("arp lanes (AP.5): Skip rests; Tie continues the previous note, glidin
     CAPTURE(into);
     e::ArpParams p = base();
     lane(p, e::ArpLane::SkipTie, 2);
-    if (into) p.into = e::ArpGlide::Step;
+    if (into) p.into.mode = e::ArpGlide::Step;
     e::ArpStage st(p, {}, {}, values(e::ArpLane::SkipTie, {float(K::Play), float(K::Tie)}));
     Rig r;
     const auto v = r.run(st, two, 8 * k16, 64);

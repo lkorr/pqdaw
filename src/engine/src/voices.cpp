@@ -870,12 +870,8 @@ void VoiceEngine::renderShaped(uint32_t lane, uint32_t from, uint32_t to, float*
       s = (1.0 - ex) * a;
     } else {
       const double u = static_cast<double>(len - left) * invLen;
-      if constexpr (S == RampShape::SCurve) {
-        s = u * u * (3.0 - 2.0 * u);
-      } else {
-        const double x = u - 1.0;
-        s = 1.0 + (a + 1.0) * x * x * x + a * x * x;
-      }
+      if constexpr (S == RampShape::SCurve) s = rampSCurve(u);  // AP.10: the shared kernels (note_events.h)
+      else s = rampOvershoot(u, a);
     }
     c = c0 + dc * s;
     h = hz0 * std::exp2(k1200 * s);
@@ -963,7 +959,7 @@ void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT
             sr.em = std::exp(-k / r);
             sr.e = 1.0;
           } else {
-            sr.a = 4.0 * std::fabs(bend) / 127.0;
+            sr.a = rampOvershootA(static_cast<int8_t>(e.rampBend));
           }
         }
         hzTarget_[lane] = e.hz;

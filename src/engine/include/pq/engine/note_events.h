@@ -58,6 +58,7 @@
 // keeper: either all of them move at one frame, on identical lanes, or none does (the merging voice stays parked, the
 // others keep their level: no jump either way).
 
+#include <cmath>
 #include <cstdint>
 #include <limits>
 
@@ -77,6 +78,34 @@ enum class NoteEventKind : uint8_t {
 
 // NoteEvent::rampShape (Pitch events, AP.3; see "Expression" above).
 enum class RampShape : uint8_t { Linear, Exponential, SCurve, Overshoot, Count };
+// AP.10: THE ramp formula (s(u) above), shared by every reader: the VoiceEngine's shaped loop (SCurve / Overshoot call
+// these kernels per sample; Exponential walks e^(-k·u) by its per-sample factor, the same curve), the roll preview's
+// curves (pq/app/note_stage_render.h), the arpeggiator's sketch and the panel's drawings (pq/engine/arp_sketch.h).
+inline double rampSCurve(double u) noexcept { return u * u * (3.0 - 2.0 * u); }  // RT-safe
+inline double rampOvershoot(double u, double a) noexcept {                         // RT-safe
+  const double x = u - 1.0;
+  return 1.0 + (a + 1.0) * x * x * x + a * x * x;
+}
+inline double rampOvershootA(int8_t bend) noexcept { return 4.0 * std::fabs(static_cast<double>(bend)) / 127.0; }
+// s(u) of `shape` with rampBend `bend` (−127 … 127) at u (clamped to 0 … 1). RT-safe.
+inline double rampShapeAt(RampShape shape, int8_t bend, double u) noexcept {
+  u = u < 0.0 ? 0.0 : (u > 1.0 ? 1.0 : u);
+  switch (shape) {
+    case RampShape::Exponential: {
+      const double k = static_cast<double>(bend) / 16.0;
+      if (bend == 0) return u;
+      return (1.0 - std::exp(-k * u)) / (1.0 - std::exp(-k));
+    }
+    case RampShape::SCurve: return rampSCurve(u);
+    case RampShape::Overshoot: return rampOvershoot(u, rampOvershootA(bend));
+    default: return u;
+  }
+}
+// The rampBend byte of a bend −1 … 1 (the arpeggiator's Bend params).
+inline int8_t rampBendOf(float bend) noexcept {
+  const float b = bend < -1.0f ? -1.0f : (bend > 1.0f ? 1.0f : bend);
+  return static_cast<int8_t>(std::lround(b * 127.0f));
+}
 
 // NoteEvent::flags.
 inline constexpr uint8_t kNoteEventRetune = 1;  // Pitch: also replace the note's identity (ratio, harmonic, degree,

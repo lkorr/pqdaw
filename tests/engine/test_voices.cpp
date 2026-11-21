@@ -1808,10 +1808,10 @@ TEST_CASE("voices (AP.3): a Linear glide is bit-identical with or without a shap
 TEST_CASE("voices (AP.3): an arp's Into glide sampled from the VoiceEngine's Hz buffer, at block sizes 32 / 64 / 512 / 37") {
   eng::ArpParams p;
   p.rate = {true, 1, 16, 1, 1, 125.0f};  // stopped transport: steps of 6000 from the first note-on
-  p.into = eng::ArpGlide::Step;
-  p.glideMs = 20.0f;  // 960 frames
-  p.glideShape = eng::RampShape::Exponential;
-  p.glideBend = 0.5f;
+  p.into.mode = eng::ArpGlide::Step;
+  p.into.ms = 20.0f;  // 960 frames
+  p.into.shape = eng::RampShape::Exponential;
+  p.into.bend = 0.5f;
   std::vector<float> ref;
   for (const uint32_t block : {32u, 64u, 512u, 37u}) {
     CAPTURE(block);
@@ -1853,5 +1853,79 @@ TEST_CASE("voices (AP.3): an arp's Into glide sampled from the VoiceEngine's Hz 
     glides.insert(glides.end(), f.begin() + 12000, f.begin() + 13000);
     if (ref.empty()) ref = glides;
     else CHECK(glides == ref);
+  }
+}
+
+// AP.10: the arp's events over a free clock at block size `block` (two held notes 200 / 300 Hz at frame 0), then the
+// voices' Hz probe at the same block size.
+std::vector<float> arpVoiceHz(const eng::ArpParams& p, uint32_t block, int64_t frames) {
+  eng::ArpCore arp;
+  eng::EventBuffer in(64), outBuf(256);
+  std::vector<Ev> evs;
+  for (int64_t T = 0; T < frames; T += block) {
+    in.clear();
+    if (T == 0) {
+      in.push(eng::noteOn(0, 1, 200.0f, 0.8f));
+      in.push(eng::noteOn(0, 2, 300.0f, 0.8f));
+    }
+    eng::NoteStageBlock b;
+    b.time = T;
+    b.frames = static_cast<uint32_t>(std::min<int64_t>(block, frames - T));
+    b.clock.sampleRate = kSr;
+    outBuf.clear();
+    CHECK(pq::alloc_trap::countRtViolations([&] { arp.process(p, b, in.list(), outBuf); }) == 0);
+    for (uint32_t i = 0; i < outBuf.size(); ++i) evs.push_back({T + outBuf.list().events[i].frame, outBuf.list().events[i]});
+  }
+  VoiceConfig cfg;
+  Rig r(kProbe, cfg, 1, 512);
+  const auto out = r.run(static_cast<uint32_t>(frames), block, evs);
+  return out[r.mixIndex("f")];
+}
+
+TEST_CASE("voices (AP.10): an arp's Into and Out glides each with their own time / shape / bend, sampled") {
+  // The shared formula (note_events.h rampShapeAt) is the one written out in shapeOf.
+  for (const eng::RampShape s : {eng::RampShape::Linear, eng::RampShape::Exponential, eng::RampShape::SCurve,
+                                 eng::RampShape::Overshoot})
+    for (const int8_t bend : {int8_t{-90}, int8_t{40}, int8_t{127}})
+      for (const double u : {0.0, 0.25, 0.5, 0.9, 1.0})
+        CHECK(eng::rampShapeAt(s, bend, u) == doctest::Approx(s == eng::RampShape::Linear ? u : shapeOf(s, bend, u)).epsilon(1e-12));
+  eng::ArpParams base;
+  base.rate = {true, 1, 16, 1, 1, 125.0f};  // stopped transport: steps of 6000 from the first note-on, gate 3000
+  const double up = std::log2(1.5);
+  SUBCASE("Into only: Step, Exponential, 960 frames; no Out") {
+    eng::ArpParams p = base;
+    p.into = {eng::ArpGlide::Step, 0.0f, false, 20.0f, 0.25f, eng::RampShape::Exponential, 0.5f};
+    p.out.shape = eng::RampShape::Overshoot;  // (Out is off: its shape changes nothing)
+    for (const uint32_t block : {64u, 37u}) {
+      const auto f = arpVoiceHz(p, block, 9000);
+      CHECK(f[6000] == 200.0f);
+      CHECK(f[6480] == doctest::Approx(200.0 * std::exp2(up * shapeOf(eng::RampShape::Exponential, 64, 0.5))).epsilon(1e-6));
+      CHECK(f[6960] == 300.0f);
+      CHECK(f[8990] == 300.0f);  // held to the gate's end
+    }
+  }
+  SUBCASE("Out only: Step, Overshoot (bend 0.6), 480 frames over the gate's end; no Into") {
+    eng::ArpParams p = base;
+    p.out = {eng::ArpGlide::Step, 0.0f, false, 10.0f, 0.25f, eng::RampShape::Overshoot, 0.6f};
+    p.into.shape = eng::RampShape::SCurve;  // (Into is off)
+    for (const uint32_t block : {64u, 37u}) {
+      const auto f = arpVoiceHz(p, block, 3200);
+      CHECK(f[0] == 200.0f);
+      CHECK(f[2520] == 200.0f);  // the Out glide starts 480 before the gate's end (3000)
+      CHECK(f[2760] == doctest::Approx(200.0 * std::exp2(up * shapeOf(eng::RampShape::Overshoot, 76, 0.5))).epsilon(1e-6));
+      CHECK(f[2999] == doctest::Approx(200.0 * std::exp2(up * shapeOf(eng::RampShape::Overshoot, 76, 479.0 / 480.0))).epsilon(1e-6));
+    }
+  }
+  SUBCASE("both: Into Exponential 960, Out Offset −200 cents S-curve 480 (in cents) on the same step") {
+    eng::ArpParams p = base;
+    p.glideCents = true;
+    p.into = {eng::ArpGlide::Step, 0.0f, false, 20.0f, 0.25f, eng::RampShape::Exponential, 0.5f};
+    p.out = {eng::ArpGlide::Offset, -200.0f, false, 10.0f, 0.25f, eng::RampShape::SCurve, -1.0f};
+    for (const uint32_t block : {64u, 37u}) {
+      const auto f = arpVoiceHz(p, block, 9000);
+      CHECK(f[6480] == doctest::Approx(200.0 * std::exp2(up * shapeOf(eng::RampShape::Exponential, 64, 0.5))).epsilon(1e-6));
+      CHECK(f[8520] == 300.0f);  // the hold, then Out over the last 480 frames of the gate (9000)
+      CHECK(f[8760] == doctest::Approx(300.0 * std::exp2(-200.0 / 1200.0 * 0.5)).epsilon(1e-6));
+    }
   }
 }

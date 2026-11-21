@@ -37,10 +37,10 @@ void benchArp(pq::bench::Runner& runner, const std::string& name, e::ArpStyle st
     p.walkRange = 7;
     p.walkOrder = e::ArpWalkOrder::UpDown;
     if (glides) {
-      p.into = e::ArpGlide::Step;
-      p.out = e::ArpGlide::Step;
-      p.glideMs = 10.0f;
-      p.glideShape = e::RampShape::Exponential;
+      p.into.mode = e::ArpGlide::Step;
+      p.out.mode = e::ArpGlide::Step;
+      p.into.ms = p.out.ms = 10.0f;
+      p.into.shape = p.out.shape = e::RampShape::Exponential;
     }
     if (pulseDen > 0) {
       p.pulse = true;
