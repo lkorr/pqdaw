@@ -39,7 +39,7 @@ void benchArp(pq::bench::Runner& runner, const std::string& name, e::ArpStyle st
     if (glides) {
       p.into.mode = e::ArpGlide::Step;
       p.out.mode = e::ArpGlide::Step;
-      p.into.ms = p.out.ms = 10.0f;
+      p.into.time = p.out.time = 0.25f;  // AP.11: a quarter of each note
       p.into.shape = p.out.shape = e::RampShape::Exponential;
     }
     if (pulseDen > 0) {
