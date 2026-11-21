@@ -42,6 +42,7 @@ pq_add_module(pq_doc
     src/devices.cpp
     src/meta.cpp
     src/main_path.cpp
+    src/note_flatten.cpp  # AP.7: Flatten to clip (the generated notes of a track's note devices)
     src/note_devices.cpp  # AP.2: note devices (the arpeggiator): its params from pq/engine/arp.h's table
     src/wire_types.cpp  # WI.3: declared-type clashes a wiring gesture refuses
     src/instrument_groups.cpp

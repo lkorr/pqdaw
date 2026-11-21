@@ -2348,3 +2348,22 @@ Context: SM.2 (docs/plans/SM.md) — the slot, `sample_read` on slots, the `samp
 12. **Cost** (bench/RESULTS.md SM.2, ship): stereo Re-Pitch with a param-rate rate is 1.06 – 1.17 × two pre-SM.2 mono
     reads at 8 voices (audio-rate rate 0.96 ×, 1 voice 0.65 – 0.70 ×): at the ≤ 1.1 target, not clearly under it. The
     remainder is per call (entry lookup, lane constants, mip choice: ≈ 3 ns/frame at 64 frames). Status: open.
+
+## Q?-AP.7-a · 2026-11-21 · AP.7 · Roll preview + Flatten: what the offline path covers, what Flatten writes
+Context: AP.md "Roll preview + Flatten" leaves the extent, the switch's default and Flatten's document form open.
+Chosen (reversible): (1) The switch is ONE view setting (ViewContext::notePreview), on by default: a roll shows ghosts
+whenever its clip's track has an active note device; not saved. (2) The preview renders the track's played clips from
+song tick 0 (as an offline render from the start: the arp's state at the visible start depends on what came before;
+cost ≈ the timeline + ~50 ns/block of arp), up to the visible end + one bar and at least the clip's end, recomputed
+when the track, the tempo map or the tunings change (debounced 40 ms, on a worker). (3) Not modelled: automation of
+the device's params, cables into them (AP.2b mods), live input, an arrangement loop; a Hold-latched tail past a clip's
+end is cut there; a clip's later loop passes are not drawn, and Flatten refuses a clip that repeats its loop. (4)
+Flatten writes every played clip of the track and switches off every active note device on it (switching one device
+off changes every clip). (5) Source notes are removed, except those a generated ratio is anchored to: they stay as
+deactivated notes. Identity: a Degree shift of a Degree note → that Degree; a ratio (Harmonics / Ratio / Walk /
+Layers) of a Ratio note → the product to the same anchor, of any other note → the ratio anchored to the source note;
+otherwise Cents of its Hz (counted: TrackNoteRender::inexact). (6) Consequences tested as such: Hz is exact; a flattened
+shifted Degree note has voice.ratio 1 (the arp sends the interval), an ungrouped Harmonics note voice.harmonic 0 (the
+arp sends Base + k). (7) A layer's level is folded into velocity (a document note has no gain); shaped glides become
+16 linear curve segments (Linear ones are exact). (8) Ghosts are drawn OVER the clip's notes (an arpeggio plays on the
+chord's own pitches). Status: open.

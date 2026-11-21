@@ -187,6 +187,10 @@ public:
   // The status the stage of note device `device` writes (pq/core/note_stage_status.h); null: none (no engine, the
   // device in no published chain yet). The document's target asks the ViewContext's source.
   virtual std::shared_ptr<const NoteStageStatus> noteStatus(doc::DeviceId /*device*/) const { return nullptr; }
+  // ---- AP.7: the roll preview switch (ViewContext::notePreview: ONE view setting, also on the roll's clip box) ----
+  // nullopt: none here (no context: a fixed panel, tests without one).
+  virtual std::optional<bool> notePreview() const { return std::nullopt; }
+  virtual void setNotePreview(bool /*on*/) {}
 
 private:
   doc::DeviceId selected_;

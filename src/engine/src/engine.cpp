@@ -1,5 +1,6 @@
 // The engine (T3.17): pq/engine/engine.h describes it.
 #include "pq/engine/engine.h"
+#include "pq/engine/note_stage_offline.h"
 
 #include <algorithm>
 #include <bit>
@@ -39,6 +40,7 @@ Engine::Engine(const EngineConfig& config)
     : cfg_(config),
       auditionIn_(std::bit_ceil(std::max(config.auditionRing, 2u))),
       stages_(std::make_unique<SlotStages[]>(std::max(config.maxSlots, 1u))),
+      probes_(std::make_unique<std::atomic<EventProbe*>[]>(std::max(config.maxSlots, 1u))),
       retiredStages_(std::bit_ceil(std::max(2 * config.maxSlots, 16u))) {
   TimelineConfig tc = cfg_.timeline;
   tc.sampleRate = cfg_.sampleRate;
@@ -232,19 +234,31 @@ void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer
   }
   e.live_->emit(s.slot, sampleTime, frames, merge);  // T6.4: live notes routed to this slot
   if (cur != nullptr) e.runStages(*cur, sampleTime, frames, out);
+  if (EventProbe* pr = e.probes_[s.slot].load(std::memory_order_relaxed)) e.probe(*pr, out.list(), sampleTime);  // AP.7
+}
+
+void Engine::probe(EventProbe& p, const EventList& l, int64_t sampleTime) noexcept {  // RT-safe (preallocated)
+  for (uint32_t i = 0; i < l.count; ++i) {
+    if (p.entries.size() >= p.entries.capacity()) {
+      ++p.dropped;
+      continue;
+    }
+    const NoteEvent& ev = l.events[i];
+    SampleTime song = -1;
+    for (const TransportRun& r : timeline_->runs())
+      if (r.kind == TransportRun::Song && ev.frame >= r.frame && ev.frame < r.frame + r.len) song = r.pos + (ev.frame - r.frame);
+    p.entries.push_back({sampleTime + ev.frame, song, ev});
+  }
+}
+
+void Engine::setEventProbe(uint32_t slot, EventProbe* probe) {  // AP.7: non-RT
+  if (slot < cfg_.maxSlots) probes_[slot].store(probe, std::memory_order_relaxed);
 }
 
 void Engine::runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
   // AP.1: the block's clock as segments: the timeline's song runs, Free between them (stopped, counting in).
   ClockSegment segs[2 * Timeline::kMaxRuns + 1];
-  uint32_t n = 0, at = 0;
-  for (const TransportRun& r : timeline_->runs()) {
-    if (r.kind != TransportRun::Song || r.len == 0 || r.frame < at || r.frame + r.len > frames) continue;
-    if (r.frame > at) segs[n++] = {at, r.frame - at, false, 0};
-    segs[n++] = {r.frame, r.len, true, r.pos};
-    at = r.frame + r.len;
-  }
-  if (at < frames) segs[n++] = {at, frames - at, false, 0};
+  const uint32_t n = timelineSegments(timeline_->runs(), frames, segs);  // AP.7: the offline renders' too
   NoteStageBlock b;
   b.time = sampleTime;
   b.frames = frames;

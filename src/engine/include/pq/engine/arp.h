@@ -477,6 +477,26 @@ private:
   ArpDegreeTable* current_ = nullptr;  // audio thread
 };
 
+// AP.7 (docs/plans/AP.md "Roll preview + Flatten"): what a generated note plays relative to its source note, EXACTLY
+// — the same rules as its Hz (Pitch units, Harmonic Walk, Layers), kept as integers: the roll preview and Flatten give
+// it the document identity the source's identity times this (pq/app/note_stage_render.h).
+//   Same      the source's identity unchanged
+//   Degrees   + `degrees` degrees of the stage's table (Degrees unit, no walk / layer): exact for a source with a
+//             Degree identity (the arp shifts from its degree, or from round(noteDegree) when the event has none)
+//   Ratio     × num / den (reduced, both > 0): Harmonics / Ratio units, Harmonic Walk, Layers
+//   Inexact   neither (a degree shift on a walked or layered note, a ratio too large to keep exact): only its Hz
+struct ArpExact {
+  enum class Kind : uint8_t { Same, Degrees, Ratio, Inexact };
+  Kind kind = Kind::Same;
+  int64_t degrees = 0;
+  int64_t num = 1, den = 1;
+};
+// One generated note-on (its id in the stage's id space) and the held source note it plays (the source's event id).
+struct ArpTraceNote {
+  uint32_t id = 0, source = 0;
+  ArpExact exact;
+};
+
 class ArpCore {
 public:
   // Non-RT (allocates every table). `stageIndex`: the id space (note_stage.h stageNoteId).
@@ -506,6 +526,9 @@ public:
   // pattern position at every step, the pattern list when the held set or its order changes, idle when nothing is held.
   // Null (the default): nothing is written. Non-RT (before the first block); kept by adopt (each core keeps its own).
   void setStatus(std::shared_ptr<NoteStageStatus> status) noexcept;
+  // AP.7: OFFLINE ONLY (the roll preview, Flatten; the audio thread never sets one): every generated note-on appends
+  // its ArpTraceNote to `trace` (allocates). Null (the default): nothing is recorded (one branch per note-on).
+  void setTrace(std::vector<ArpTraceNote>* trace) noexcept;
 
   uint32_t heldCount() const noexcept;      // RT-safe
   uint32_t soundingCount() const noexcept;  // RT-safe

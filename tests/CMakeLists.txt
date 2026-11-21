@@ -178,6 +178,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_spectrogram_link.cpp  # TX.spectrogram: the Spectrogram through the link (its tap, RtScope, a feed's columns, pass-through)
     app/test_au_fold.cpp  # AU.fold: the Wavetable fold in the default instrument (static, dragged, automated, cabled): no clicks, no aliasing
     app/test_meta_wavetable.cpp  # TMM.5: the Wavetable through the link (off-thread tables, click-free, alias suite, golden; taps → face dots)
+    app/test_note_stage_render.cpp  # AP.7: the offline note-stage render == the engine's events; Flatten round trip, undo
     app/test_note_device_playback.cpp  # AP.2: a chord through an Arpeggiator renders stepped notes; a knob drag republishes nothing
     golden/golden_audio.cpp
   DEPS pq_app)
@@ -194,6 +195,7 @@ pq_add_test(pq_tests_audio PERF  # T5.10: the cold preview start (perf)
 pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock checks (64 tracks: paint, morph)
   SOURCES
     views/test_view_context.cpp
+    views/test_note_preview.cpp  # AP.7: the roll preview (ghosts off the UI thread, debounced, Ghosts switch), Flatten (Ctrl+Alt+F), golden
     views/test_note_device_drop.cpp  # AP.2: the Arpeggiator dragged from the browser onto a notes cable (real dispatch)
     views/test_spectrum_display.cpp  # TX.spectrum: the analysis feed, the spectrum plot, the Spectrum face, scenes, 8-display frame
     views/test_scope_display.cpp  # TX.scope: the feed's scope history, the Oscilloscope face, scenes, 4-scope frame

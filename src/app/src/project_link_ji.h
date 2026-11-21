@@ -23,6 +23,7 @@
 // engine level; nothing here emits them — deferred, docs/TASKS.md).
 
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -81,5 +82,12 @@ private:
   std::vector<std::pair<doc::NoteId, int64_t>> harmonics_;  // (note, its number in its group; > 0), sorted by note
   std::vector<Point> a_;                                     // scratch
 };
+
+// AP.7: one note clip's engine description — its notes' resolved Hz, identity signals (PitchSource from `signals`, the
+// track's tuning signals: doc::trackTuningSignals), velocities, chance, curves (ClipCurveLowering) — from its resolved
+// pitches. The ONE lowering of a clip: ProjectLink::lowerTrack (playback) and the offline note-stage renders
+// (note_stage_render.h: the roll preview, Flatten) both call it.
+engine::ClipDesc lowerClipDesc(const doc::Project& p, const doc::NoteClip& c, const doc::ClipPitches& cp,
+                               std::span<const doc::TuningId> signals, bool tempoMoves);
 
 }  // namespace pq::app

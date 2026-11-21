@@ -2226,3 +2226,17 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Base shows for Unit Harmonics or Style Harmonic Walk (any panel's show-when condition may now name several sources).
 - Known: Rate ms and Decay ms are linear knobs (Q?-AP.2-b). Not checked in the live app (tests and goldens only).
 - Goldens (new): arp-panel-default, arp-panel-ratio, arp-panel-walk, arp-panel-pulse, arp-panel-lanes.
+
+## 2026-11-21 · AP.7 · Arpeggiator roll preview + Flatten to Clip (task/AP.7-preview-flatten) 👁
+- Put an Arpeggiator on a MIDI track and open one of its clips: what the arp plays from the clip's notes shows in the
+  roll as light, thin ghost notes over the chord, with a hollow ring at each start and the glides (Into / Out, ties,
+  carried bends) drawn as bends. They update shortly (~40 ms) after a note, knob or tuning edit, computed in the
+  background (the roll never waits). Is the look distinct enough from real notes and readable on busy clips?
+- The clip box has an "Arp" row (only on a track with an active note device): Ghosts (on / off) and Flatten. The
+  Arpeggiator's Pattern view has a ROLL chip (top right): the same switch.
+- Flatten to Clip (Arp row, Ctrl+Alt+F in the roll, or the device's right-click menu): the arp's notes are written into
+  the track's clips (exact pitches: degrees, or ratios anchored to the original note, which then stays as a greyed
+  note; glides as note curves) and the Arpeggiator is switched off, so playback sounds the same. One undo step.
+- Known: param automation / cables into the arp are not part of the preview or Flatten; a clip that repeats its loop is
+  refused by Flatten (Q?-AP.7-a). Not checked in the live app (tests and goldens only).
+- Goldens: new pianoroll-arp-preview; arp-panel-default / -ratio / -walk / -pulse / -lanes moved (the ROLL chip).

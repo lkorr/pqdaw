@@ -61,6 +61,7 @@ struct RenderEditJob;
 class Waveforms;       // pq/views/waveforms.h (T5.5)
 class SampleAnalysis;  // pq/views/sample_analysis.h (T6.8)
 class FileProbes;      // pq/views/file_probes.h (T5.7)
+class NotePreviews;    // pq/views/note_preview.h (AP.7)
 class Library;         // pq/views/browser/library.h (T5.10)
 class ModulationSource;  // pq/views/device_chain/wiring.h (T4.7)
 class VoiceTapReader;    // pq/views/meta/meta_face.h
@@ -114,6 +115,7 @@ inline constexpr uint32_t kWireErrors = 1u << 23;     // WI.2: the wires the pla
 inline constexpr uint32_t kFreeze = 1u << 24;         // FZ.3: a frozen track's render status (or its slot) changed
 inline constexpr uint32_t kMacro = 1u << 25;          // T8.1: macro mode (on / off, layer, cursor, anchor, composition)
 inline constexpr uint32_t kPanelFolds = 1u << 26;     // SM.9: a group panel's fold section opened or folded (view state)
+inline constexpr uint32_t kNotePreview = 1u << 27;    // AP.7: a roll preview arrived, or the preview switch flipped
 }  // namespace view_change
 
 // FZ.3 (docs/plans/RB.md FZ.3): what the views show of a frozen track's render (the playback link's FreezeStatus,
@@ -420,6 +422,18 @@ public:
   std::shared_ptr<const NoteStageStatus> noteStageStatus(doc::DeviceId device) const {
     return noteStatusOf_ ? noteStatusOf_(device) : nullptr;
   }
+  // AP.7 (pq/views/note_preview.h): the roll preview of note devices — the worker that computes it (the app installs
+  // its source: NotePreviews::setSource) and the ONE switch the roll's toolbar and the arpeggiator's panel show (on by
+  // default: a roll shows the preview whenever its clip's track has an active note device). View state: not saved,
+  // not undoable.
+  NotePreviews& notePreviews() noexcept { return *notePreviews_; }
+  bool notePreview() const noexcept { return notePreviewOn_; }
+  void setNotePreview(bool on) {
+    if (on == notePreviewOn_) return;
+    notePreviewOn_ = on;
+    notify(view_change::kNotePreview);
+  }
+  void notePreviewsChanged() { notify(view_change::kNotePreview); }
   VoiceTapReader* faceVoices(doc::DeviceId device, std::string_view path) const { return faceVoices_ ? faceVoices_(device, path) : nullptr; }
   // EQ.4: the sample rate the analysis source runs at (48 kHz until one is set): the response displays evaluate at it.
   double sampleRate() const noexcept { return sampleRate_; }
@@ -779,7 +793,9 @@ public:
       // T7.6
       "pianoroll.glide",
       // T7.14: Tune to JI / back (Ctrl+Shift+J), walk the active JI group (Alt+Up / Alt+Down), the proportion tool (J)
-      "pianoroll.tuneToJi", "pianoroll.walkUp", "pianoroll.walkDown", "pianoroll.proportionTool"};
+      "pianoroll.tuneToJi", "pianoroll.walkUp", "pianoroll.walkDown", "pianoroll.proportionTool",
+      // AP.7: Flatten to Clip (Ctrl+Alt+F)
+      "pianoroll.flattenArp"};
   // View actions of the MOS wheel (T3.14): installMosWheel sets the handler (Ctrl+Shift+W, Q15).
   static constexpr std::string_view kMosWheelActions[] = {"tuning.openMosWheel"};
   // T3.10: the mixer view's toggle (Ctrl+Alt+M), forwarded the same way (installMixer sets the handler).
@@ -928,6 +944,8 @@ private:
   std::unique_ptr<Waveforms> waveforms_;  // T5.5
   std::unique_ptr<SampleAnalysis> sampleAnalysis_;  // T6.8
   std::unique_ptr<FileProbes> probes_;    // T5.7
+  std::unique_ptr<NotePreviews> notePreviews_;  // AP.7
+  bool notePreviewOn_ = true;                   // AP.7
   std::unique_ptr<Library> library_;      // T5.10
   SamplePreloader preload_;
   TonePort* tone_ = nullptr;

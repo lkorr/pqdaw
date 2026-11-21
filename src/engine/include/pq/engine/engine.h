@@ -187,6 +187,20 @@ public:
   // voices), and the old chain waits for collect(). Build the chain with the unit's event capacity
   // (ProjectConfig::eventCapacity). False for a slot ≥ maxSlots.
   bool setNoteStages(uint32_t slot, std::unique_ptr<NoteStageChain> chain);
+  // AP.7 (tests, diagnostics): every event slot `slot` hands its VoiceEngine (after its note stages) is appended to
+  // `probe` — engine time, song sample (−1: stopped), the event — up to the capacity reserved in probe->entries (beyond:
+  // counted in `dropped`, never allocated). Null removes it. Non-RT: set while the audio thread does not run (offline
+  // renders); the probe outlives its use.
+  struct EventProbe {
+    struct Entry {
+      int64_t time = 0;
+      SampleTime song = -1;
+      NoteEvent e;
+    };
+    std::vector<Entry> entries;  // reserve() the capacity
+    uint64_t dropped = 0;
+  };
+  void setEventProbe(uint32_t slot, EventProbe* probe);
 
   // ---- Audio thread ----
   void process(const AudioBlock& block) noexcept;  // RT-safe
@@ -248,6 +262,7 @@ private:
   struct CaptureRun;  // EX.1: renderOffline's bus capture
   static void onCaptureBlock(void* self, const AudioBlock& b) noexcept;  // RT-safe
   static void onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;
+  void probe(EventProbe& p, const EventList& l, int64_t sampleTime) noexcept;  // AP.7
   void runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;  // AP.1
   static void onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
                      std::span<float> params) noexcept;  // T6.6: the timeline's hook, then the metronome
@@ -279,6 +294,7 @@ private:
   SpscRing<AuditionRequest> auditionIn_;
   std::vector<SlotSource> slots_;
   std::unique_ptr<SlotStages[]> stages_;              // AP.1: per slot
+  std::unique_ptr<std::atomic<EventProbe*>[]> probes_;  // AP.7: per slot (tests)
   SpscRing<NoteStageChain*> retiredStages_;           // AP.1: audio thread → collect()
   bool stagesBusy_ = false;                           // AP.1: audio thread: a chain held / sounded notes this block
   std::atomic<uint32_t> wake_{0};

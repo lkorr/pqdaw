@@ -21,6 +21,7 @@
 #include "pq/tuning/ji.h"
 #include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
+#include "pq/views/note_preview.h"
 #include "roll_playhead.h"
 #include "roll_widgets.h"
 
@@ -86,6 +87,53 @@ std::pair<Ticks, Ticks> tickSpan(const RollState& s, int32_t x0, int32_t x1) {
   // (bug-roll-playhead: a playhead column's partial repaint dropped the grid line at its edge).
   const double a = s.tickAtX(static_cast<float>(x0 - 1)), b = s.tickAtX(static_cast<float>(x1 + 1));
   return {static_cast<Ticks>(std::floor(a)) - 1, static_cast<Ticks>(std::ceil(b)) + 1};
+}
+
+// AP.7: the roll preview — the notes the track's note devices generate from the clip's (pq/views/note_preview.h), as
+// GHOSTS over the clip's own notes (an arpeggio plays on the chord's own pitches): thin light lines (the primary text colour, translucent: never a clip's colour or a
+// note's velocity shade, never grey like a deactivated note) with a hollow ring at their start, along their glides and carried bends (their curve:
+// cents over the identity's pitch, note ticks), not editable (no hit test reads them).
+void paintNotePreview(DrawList& dl, RollState& s, const Theme& th, const LineStyle& base, Ticks from, Ticks to, float vx0,
+                      float vx1, float vy0, float vy1, float scale) {
+  s.requestPreview(to);  // (only asks when the range grew or the track changed: debounced, off the UI thread)
+  const doc::ClipGenerated* pv = s.preview();
+  if (pv == nullptr) return;
+  LineStyle st = base;
+  st.thick = std::max(1.0f, std::round(0.5f * base.thick));
+  st.bandAlpha = static_cast<uint8_t>(std::min<int>(base.bandAlpha, 40));
+  const Rgba fill = withAlpha(th.text.primary, 200);
+  const float lane = static_cast<float>(std::max(1, s.rows().laneHeight()));
+  std::vector<Vec2> path;
+  for (const doc::GeneratedNote& g : pv->notes) {
+    if (g.start >= to || g.start + g.length <= from) continue;
+    const std::optional<double> c = s.centsOf(g.pitch);
+    if (!c) continue;
+    const float x0 = std::round(s.xOfTick(static_cast<double>(g.start)));
+    const float x1 = std::max(x0 + 3.0f, std::round(s.xOfTick(static_cast<double>(g.start + g.length))));
+    if (x1 <= vx0 || x0 >= vx1) continue;
+    const float yc = s.yOfCents(*c);
+    NoteLine d{x0, x1, yc - 0.5f * lane, yc + 0.5f * lane, yc, fill, 0};
+    path.clear();
+    if (!g.curve.empty()) {
+      path.push_back({x0, s.yOfCents(*c + g.curve.front().value)});
+      for (const doc::Breakpoint& b : g.curve)
+        path.push_back({std::round(s.xOfTick(static_cast<double>(g.start + b.tick))), s.yOfCents(*c + b.value)});
+      path.push_back({x1, s.yOfCents(*c + g.curve.back().value)});
+      float lo = path.front().y, hi = lo;
+      for (const Vec2& v : path) lo = std::min(lo, v.y), hi = std::max(hi, v.y);
+      if (hi + lane < vy0 || lo - lane > vy1) continue;
+      d.y0 = lo - 0.5f * lane;
+      d.y1 = hi + 0.5f * lane;
+    } else if (d.y1 <= vy0 || d.y0 >= vy1) {
+      continue;
+    }
+    drawNoteLine(dl, st, d, path);
+    // The hollow head: where the generated note starts (a ring, not the clip's own notes' solid start).
+    const float r = std::max(1.5f, 1.5f * scale);
+    const Vec2 head = path.empty() ? Vec2{x0, yc} : path.front();
+    dl.addCircleFilled(head, r + std::max(1.0f, 0.5f * scale), fill);
+    dl.addCircleFilled(head, r, th.surface.background);
+  }
 }
 
 }  // namespace
@@ -487,6 +535,8 @@ void NoteAreaWidget::paint(PaintContext& ctx) {
       }
 
   if (!curved.empty()) paintCurveNotes(ctx, s_, vis);  // the same lines, along their paths
+  paintNotePreview(dl, s_, *th, lineStyle(*th, s_, ctx.scale.factor), from, to, static_cast<float>(vis.x) - 4.0f,
+                   static_cast<float>(vis.right()) + 4.0f, vy0, vy1, ctx.scale.factor);  // AP.7: the ghosts
   if (!labels.empty()) paintNoteLabels(ctx);
 
   paintGroupOverlays(ctx, s_, vis);  // T7.14: warp markers, grips, labels; the proportion tool's box

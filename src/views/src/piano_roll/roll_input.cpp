@@ -1273,6 +1273,29 @@ ClipBoxPanel::ClipBoxPanel(RollState& s) : Widget("clip-box"), s_(s) {
     s_.setShowHarmonics(on);
     s_.focusNotes();
   };
+  // AP.7: the Arpeggiator's (any note device's) ghosts in the roll, and Flatten to Clip.
+  arpRow_ = &row("arp-row", "Arp");
+  arpPreview_ = &arpRow_->add<Toggle>("arp-preview", "Ghosts", ToggleStyle::Accent);
+  arpPreview_->setWidth(Length::fixed(44));
+  arpPreview_->setFocusable(false);
+  arpPreview_->setInfo("Arp Preview", "Shows what the track's note devices (the Arpeggiator) play from this clip's notes "
+                                      "as light ghost notes, their glides drawn as bends. Computed in the background "
+                                      "whenever the notes, the device or the tuning change. The same switch is on the "
+                                      "Arpeggiator's panel.");
+  arpPreview_->onToggle = [this](bool on) {
+    s_.ctx.setNotePreview(on);
+    s_.focusNotes();
+  };
+  arpFlatten_ = &arpRow_->add<Button>("arp-flatten", "Flatten");
+  arpFlatten_->setWidth(Length::fixed(46));
+  arpFlatten_->setFocusable(false);
+  arpFlatten_->setInfo("Flatten to Clip", "Writes what the track's note devices play into its clips as notes (exact "
+                                          "pitches, velocities, glides as bends) and switches the devices off, so "
+                                          "it sounds the same. One undo step. Ctrl+Alt+F.");
+  arpFlatten_->onClick = [this] {
+    (void)s_.flattenNoteDevices();
+    s_.focusNotes();
+  };
   auto& spacer = add<Widget>();
   spacer.setHeight(Length::flex(1));
   loop_ = &add<Toggle>("loop", "Loop", ToggleStyle::Accent);
@@ -1306,6 +1329,9 @@ void ClipBoxPanel::refresh() {
   const bool ji = s_.hasClip() && (s_.clip()->groups != nullptr || s_.referenceHarmonics().has_value());
   if (jiRow_->visible() != ji) jiRow_->setVisible(ji);
   ji_->setOn(s_.showHarmonics());
+  const bool arp = s_.hasNoteDevices();  // AP.7
+  if (arpRow_->visible() != arp) arpRow_->setVisible(arp);
+  arpPreview_->setOn(s_.ctx.notePreview());
   if (mos && !gen_->inGesture()) {
     const tuning::MosParams& p = mos->params();
     // The default (Delete, double-click reset) is the clip's committed generator, not a fixed 700 ¢: in a period-600

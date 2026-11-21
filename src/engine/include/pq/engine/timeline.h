@@ -143,6 +143,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "pq/core/aligned_buffer.h"
@@ -382,9 +383,13 @@ public:
   ClipPlayer& clipPlayer() noexcept { return *clips_; }
   const ClipPlayer& clipPlayer() const noexcept { return *clips_; }
   const TempoImage& tempoImage() const noexcept { return *tempo_; }
+  // AP.7: OFFLINE ONLY (pq/engine/note_stage_offline.h; never on the audio thread: it allocates): every note-on appends
+  // (its event note id, the document note id it plays) to `log`. Null (the default): nothing (one branch per note-on).
+  void setNoteLog(std::vector<std::pair<uint32_t, uint32_t>>* log) noexcept { noteLog_ = log; }
 
 private:
   static constexpr Ticks kNever = INT64_MAX;
+  std::vector<std::pair<uint32_t, uint32_t>>* noteLog_ = nullptr;  // AP.7
 
   struct Sounding {
     Ticks off;
