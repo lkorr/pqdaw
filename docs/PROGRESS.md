@@ -1328,3 +1328,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: panel built once per device (cached by id + patch), face rebuilt only on a size change; non-panel devices one map lookup per layout.
 - Notes/blockers: user report "arp is just a gray box" (circuit view). Main ports orbit the plate as for closed blocks. Not checked in the live app.
 
+## 2026-11-21 · AP.10 · task/AP.10-pattern-bends (merged 006e5f90)
+- Did: Into / Out each own time (ms | synced fraction), shape, bend (ArpGlideSide; old shared glide params deleted); one ramp formula rampShapeAt (voice, roll preview, panel); status carries held notes (≤ 16); engine::sketchArp runs the real ArpCore for the whole cycle (doc::notePattern / noteGlideView wrap it); pattern view: held solid, generated dotted + labelled, along their bends, playing note lit, cached on inputs; arpbend view (drag time / offset / Alt bend, one undo step); panel 960 wide, Glide open by default; L12 / L13 lows.
+- Verified: worker: pq_tests_note_stage 58/58, pq_tests_engine 169/169, arp view tests 43/43, goldens re-recorded + 3 new (looked at). Orchestrator (worker's run killed for low memory): -Affected -Slow (everything) 90/90; ship link pq_bench_dsp OK.
+- Perf / CPU-efficiency check: no new per-sample / per-block work; release arp bench within shared-machine noise (8 notes 49.0→40.4 ns/block, chord 62.9→81.6 with idle also swinging); sketch ≈ 0.25 ms per 64-step cycle, only on param / held / tempo change.
+- Notes/blockers: Q?-AP.10-a (shared cents switch, proportional shrink when In + Out exceed the note, bend view's nominal ±200 ¢ neighbours, 64-step sketch cap). Not checked in the live app.
+
