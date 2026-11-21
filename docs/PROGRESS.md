@@ -1291,3 +1291,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected -Slow 88/90 (arp-panel-pulse golden intended, re-recorded; ji-lowering CPU timing under load, passed on re-run); then pq_tests_note_stage 53/53, playback arp / note device / render pass; fixes' tests shown failing before (M1 two-thread stress, M4 partial).
 - Perf / CPU-efficiency check: ship arp/ min ns/block before → after within 1 ns (idle 7.8, 8 notes 29.8, pulse 35.5, 128 notes 1787); 128-note Chord Trigger × 4 layers table full ~20 µs/step block (was 2–15 ms).
 - Notes/blockers: Q?-AP.8a-a (5 readings; static clip tuning on another track's tuning steps in the track's degrees); the user's restart-on-retune could not be reproduced before the fix for a tuning switch with keys held (steps simply did not follow); not checked live.
+
+## 2026-11-21 · AP.8b · task/AP.8b-flatten (merged 9218a571)
+- Did: review H3 (offline render / Flatten follow arp param automation at the engine's 64-frame block; a cable is named and Flatten refuses: its value comes from the live graph), M5 (only played / source notes removed), M6 (muted main-lane clips flattened in a second pass; take lanes with notes refused), M7 (Flatten renders on the NotePreviews worker, one undo step, re-renders ≤ 3× if the document changed), M8 (cables into lane steps play), L7, L10 (full preview cache key), L11 (Layer n / Proportion n hidden; numbers as visibility sources), L12 part ("Vel Retrig"), L14 (preview golden from the real renderer).
+- Verified: pq_tests_playback note stage render / note device 35/35, pq_tests_views roll preview + arp panel 16/16, -Affected after rebase 37/37; 6 goldens re-recorded (label, hidden controls, real-render preview).
+- Perf / CPU-efficiency check: lane-step cables read only when their step plays; offline renders 512-frame blocks unless automation exists.
+- Notes/blockers: Q?-AP.8b-a; open lows L12 rest, L13; not checked live.
