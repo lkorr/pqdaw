@@ -16,7 +16,9 @@
 #include "../arrangement/internal.h"
 #include "../arrangement/lane_paint.h"
 #include "internal.h"
+#include "pq/document/note_devices.h"
 #include "pq/document/racks.h"
+#include "pq/views/browser/library_load.h"
 #include "pq/ui/lines.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/circuit/cables.h"
@@ -256,7 +258,39 @@ arrangement::EditSurface::DropInsert LaneEditSurface::dropInsert(const DropSpot&
   return {static_cast<int32_t>(std::lround(bottom)), std::max(1, static_cast<int32_t>(std::lround(body.y1 - body.y0)))};
 }
 
+// AP.2 (pq/document/note_devices.h): a note device from the browser dropped onto a NOTES cable goes onto that link of
+// its track's main path (ops::addDevice at the link's slot: after the tuning block, before the block the notes went
+// to), one undo step. Its patch and the slot (nullopt: not such a drop here).
+struct NoteDrop {
+  std::string patch;
+  doc::TrackId track;
+  uint32_t slot = 0;
+};
+static std::optional<NoteDrop> noteDropAt(const ProjectPatchView& view, const ProjectCanvas& canvas, const ui::DragPayload& p,
+                                          Vec2 pos) {
+  if (p.kind != ui::DragKind::BrowserItems || p.paths.size() != 1) return std::nullopt;
+  const std::string_view patch = catalogPatchOf(p.paths.front());
+  if (!doc::isNoteDevicePatch(patch)) return std::nullopt;
+  const uint32_t edge = canvas.edgeAt(pos);
+  const ProjectPatch& pp = view.patch();
+  if (edge == kNone || edge >= pp.edges.size()) return std::nullopt;
+  const Edge& e = pp.edges[edge];
+  if (e.kind != EdgeKind::Notes || !e.wire.valid() || e.from >= pp.nodes.size()) return std::nullopt;
+  const Band& band = pp.bands[pp.nodes[e.from].band];
+  const doc::Project& doc = *view.context().doc();
+  const doc::Track* t = doc::findTrackPtr(doc, band.track);
+  if (t == nullptr || t->kind != doc::TrackKind::Midi) return std::nullopt;
+  const doc::MainPath path = doc::mainPath(doc, *t);
+  for (uint32_t i = 0; i < path.links.size(); ++i)
+    if (path.links[i] == e.wire) return NoteDrop{std::string(patch), t->id, i};
+  return std::nullopt;  // (a notes cable off the path: not the notes link)
+}
+
 ui::DropFeedback ProjectCanvas::dragOver(const ui::DragPayload& p, Vec2 pos, ui::Mods mods) {
+  if (p.kind == ui::DragKind::BrowserItems && p.paths.size() == 1 && doc::isNoteDevicePatch(catalogPatchOf(p.paths.front()))) {
+    if (noteDropAt(view_, *this, p, pos)) return {ui::DropEffect::Copy, ui::Cursor::Arrow};
+    return {};  // a note effect goes only onto a notes cable
+  }
   LaneEditSurface* s = view_.laneEditReady();
   if (s == nullptr) return {};
   return view_.laneArr_->fileDrop().over(*s, p, pos, mods);
@@ -267,6 +301,17 @@ void ProjectCanvas::dragLeave() {
 }
 
 ui::DropEffect ProjectCanvas::drop(const ui::DragPayload& p, Vec2 pos, ui::Mods mods) {
+  if (p.kind == ui::DragKind::BrowserItems && p.paths.size() == 1 && doc::isNoteDevicePatch(catalogPatchOf(p.paths.front()))) {
+    const std::optional<NoteDrop> d = noteDropAt(view_, *this, p, pos);
+    if (!d) return ui::DropEffect::None;
+    ViewContext& ctx = view_.context();
+    auto r = addCatalogDevice(ctx, d->patch, doc::DeviceKind::AudioEffect, DeviceSlot{d->track, d->slot, {}});
+    if (!r) {
+      ctx.setStatus("Add Note Effect: " + r.error().message);
+      return ui::DropEffect::None;
+    }
+    return ui::DropEffect::Copy;
+  }
   LaneEditSurface* s = view_.laneEditReady();
   if (s == nullptr) return ui::DropEffect::None;
   return view_.laneArr_->fileDrop().drop(*s, p, pos, mods);

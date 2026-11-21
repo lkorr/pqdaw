@@ -2273,3 +2273,21 @@ whole notes (4/4; no meter in the tempo map), a clock's last pulse before the re
 → Step = the same clock's previous / next pulse. (7) Layers apply in both modes (pattern and pulse), at (p/q)^L
 of the Ratio unit's p/q, gain = level × the note's gain. (8) A held-set change that moves h_ref (the lowest held)
 re-times every clock at that frame (each resumes at its first unplayed onset of the new grid). Status: open.
+builds it); a note without a Degree identity shifts from round(noteDegree) and plays static once shifted. Status: open.
+
+## Q?-AP.2-a · 2026-11-20 · AP.2 · Cables into a note device's params; a tuning drag republishes the chain
+Context: a note device is not in the graph (the lowering dissolves it; its params are project param slots read at the
+stage's block start). (1) A cable (an LFO, a macro's value block) into one of its params would need the graph's
+modulated value carried to the stage (a bus the engine hands NoteStageBlock, one block late). (2) The degree table is
+built from the track's tuning when the chain is published; a MOS generator drag changes it every step. Options: (1) a
+per-param bus read by the stage, or leave cables out; (2) republish per tuning change, or look degrees up live (AP.3
+"tuning-table lookup under a modulated tuning"). Chosen (reversible): (1) such a cable is Inactive (drawn dim; automation,
+knob drags and type-in work); (2) the link republishes the chain on a tuning param change (the handover keeps held keys
+sounding, the pattern restarts) until AP.3's live lookup replaces it. Status: open.
+
+## Q?-AP.2-b · 2026-11-20 · AP.2 · Note-device knobs are linear over the declared range
+Context: the stage reads a slot's knob POSITION and maps it with one line (value = min + position · (max − min)); a
+custom knob curve would need the curve in the stage. Rate ms (1 … 10000) and Velocity Decay ms (0 … 10000) are coarse on
+a linear knob. Options: curves in the stage; per-param exp mapping in the table; linear for now. Chosen: linear, own knob
+curves refused on a note device (checks.cpp); AP.6's panel can show ms on an exp scale by adding a curve kind to the
+table's mapping. Status: open.

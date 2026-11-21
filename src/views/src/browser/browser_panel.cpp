@@ -16,6 +16,7 @@
 #include "pq/ui/theme.h"
 #include "pq/document/devices.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
@@ -280,6 +281,7 @@ bool BrowserPanel::deviceTreeMode() const noexcept {
   if (source_.kind != BrowserSource::Kind::Category || !query_.empty() || collections_ != 0 || filters_.any()) return false;
   return source_.index == static_cast<uint32_t>(library::Category::Instruments) ||
          source_.index == static_cast<uint32_t>(library::Category::AudioEffects) ||
+         source_.index == static_cast<uint32_t>(library::Category::NoteEffects) ||  // AP.2
          source_.index == static_cast<uint32_t>(library::Category::MetaModules);  // TMM.10
 }
 
@@ -511,13 +513,17 @@ void BrowserPanel::buildDeviceTree() {
   const bool instruments = source_.index == static_cast<uint32_t>(library::Category::Instruments);
   const doc::DeviceKind kind = instruments ? doc::DeviceKind::Instrument : doc::DeviceKind::AudioEffect;
   const bool metaModules = source_.index == static_cast<uint32_t>(library::Category::MetaModules);
+  const bool noteEffects = source_.index == static_cast<uint32_t>(library::Category::NoteEffects);  // AP.2
   // GU.11: every item is a built-in module (a group preset) or a native engine. Instruments: the instrument modules;
   // Audio Effects: the effect modules that were stock devices (Utility, Saturator, LFO); Meta Modules: the native
   // engines and the other modules (the Phase Accumulator, the VCA, the engines' groups, the analysers).
   auto stockEffect = [](const doc::ModuleInfo& m) {
     return m.kind == doc::ModuleKind::Utility || m.kind == doc::ModuleKind::Saturator || m.kind == doc::ModuleKind::Lfo;
   };
-  if (metaModules) {  // TMM.10: the meta modules (a chain meta device: the kind follows where it lands)
+  if (noteEffects) {  // AP.2: the note devices (note_devices.h: onto a MIDI track's notes link)
+    for (const doc::NoteDeviceType& t : doc::noteDeviceTypes())
+      deviceRows_.push_back({t.name, doc::noteDevicePatch(t.id), doc::DeviceKind::AudioEffect});
+  } else if (metaModules) {  // TMM.10: the meta modules (a chain meta device: the kind follows where it lands)
     for (const meta::Type* t : metaModuleTypes(true))
       deviceRows_.push_back({std::string(t->name), std::string(doc::kMetaDevicePrefix) + std::string(t->id),
                              doc::DeviceKind::Instrument});
@@ -529,7 +535,7 @@ void BrowserPanel::buildDeviceTree() {
       if (instruments ? m.instrument : (!m.instrument && stockEffect(m)))
         deviceRows_.push_back({std::string(m.name), std::string(doc::kModuleItemPrefix) + std::string(m.key), kind});
   }
-  if (!metaModules)
+  if (!metaModules && !noteEffects)
     deviceRows_.push_back({instruments ? "Instrument Rack" : "Audio Effect Rack",
                            std::string(instruments ? doc::kInstrumentRack : doc::kAudioEffectRack), kind});
   // Presets by the patch they are for; presets of unknown devices after the devices.

@@ -665,6 +665,46 @@ const graph::ParamDecl* findParamDecl(const graph::Patch& patch, std::string_vie
 // The declaration of any param `param` of `patch` (bools too; null: none).
 const graph::ParamDecl* findAnyParamDecl(const graph::Patch& patch, std::string_view param) noexcept;
 
+// ---- Note devices (AP.2; docs/plans/AP.md "Where it sits"; pq/document/note_devices.h) -------------------------------
+// A note device (the arpeggiator) is not in the graph. Every lowering (lower, lowerParams, wireStates) first DISSOLVES
+// the project's note devices (note_devices.h dissolveNoteDevices: the wire out of a note device's main output starts
+// where the wire into its main input started), so the instrument after an arpeggiator reads the note source exactly as
+// without it, and a track with note devices compiles to the same IR as without them (a note device added, removed,
+// moved or switched off never recompiles its unit's graph). Wire states: the wire into a note device plays as the
+// wire it was joined into; a note device's other wires (into its params, a second input) are Inactive (no audio-rate
+// modulation of a note device's params in v1: QUESTIONS Q?-AP.2-a).
+// Its runtime params are project params all the same: LoweredProject::params / lowerParams list each as its knob
+// POSITION ("dev<id>:<name>@pos", position true; `track` graph::kNone: no track patch links it), so automation, a knob
+// drag and a type-in write their slot without a compile. What plays them is the track's NOTE CHAIN:
+//   lowerNoteChains   per active MIDI track whose main path's notes reach active note devices (chainStages: in Notes,
+//                     in signal order), those devices — each its type, its params' current values (the structural ones
+//                     are fixed in the stage) and its runtime params' keys with the line from position to value
+//                     (value = offset + scale · position: the declared linear curve) — and the track's DEGREE TABLE
+//                     (its tuning, effectiveTuning, as cents of each degree within one equave and the equave; a tuning
+//                     that does not build: none, the stage's 12-EDO). A track without one is not listed.
+// The playback link builds an engine::NoteStageChain from each (pq/engine/arp.h ArpStage: fixed params + mapping) and
+// publishes it to the track's event slot (Engine::setNoteStages) when its structure changed (sameStructure: everything
+// but the runtime params' current values), null for a track whose chain went away. Library-free; O(tracks + blocks).
+struct LoweredNoteStage {
+  DeviceId device;
+  std::string type;            // the NoteDeviceType id ("arpeggiator")
+  std::vector<double> values;  // per param of the type (its spec order = the engine's param ids): its value now
+  struct Slot {
+    uint32_t param = 0;  // the param's index in the type
+    std::string key;     // its project param ("dev<id>:<name>@pos": a knob position)
+    float scale = 1.0f, offset = 0.0f;  // value = offset + scale · position
+  };
+  std::vector<Slot> runtime;
+};
+struct LoweredNoteChain {
+  TrackId track;
+  std::vector<LoweredNoteStage> stages;  // in signal order (never empty)
+  std::vector<double> degreeCents;       // the track tuning's degrees in one equave (degreeCents[0] = 0); empty: none
+  double equaveCents = 1200.0;
+  bool sameStructure(const LoweredNoteChain& o) const noexcept;
+};
+std::vector<LoweredNoteChain> lowerNoteChains(const Project& project);
+
 // ---- Frozen tracks (FZ.1; docs/plans/RB.md D2; model.h "Frozen tracks") --------------------------------------------
 // A frozen MIDI or audio track whose render is ready (LowerOptions::frozenSlotOf gives a slot; it is active, and not a
 // captureOwn track) is lowered from the project with its circuit replaced by the render:

@@ -22,9 +22,11 @@
 #include "pq/document/devices.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
+#include "pq/document/note_devices.h"
 #include "pq/document/panel.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/graph/atoms.h"
+#include "pq/tuning/tuning.h"
 #include "pq/graph/kernel_map.h"
 #include "pq/graph/patch_file.h"
 #include "pq/document/meta.h"
@@ -102,6 +104,10 @@ struct Flow {
   std::vector<DevicePtr> list;  // flowOrder: the path, then the blocks off it
 };
 struct Cables {
+  // AP.2 (lower.h "Note devices"): the note devices dissolved (note_devices.h) — `base` is the project without them (the
+  // original itself when it has none), what everything below is made from.
+  NoteDissolve notes;
+  Project base;
   Project q;  // the project as lowered: its non-link wires, main ports named (shares every subtree with the original)
   std::unordered_map<uint32_t, Flow> flows;  // by track id
   std::unordered_set<uint32_t> offPath;      // top-level blocks off their track's main path (device ids)
@@ -177,8 +183,11 @@ Project withGroupsOff(const Project& p) {
 
 std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
   auto c = std::make_shared<Cables>();
-  c->q = withGroupsOff(p);
-  const MainLinks mainLinks(p);  // one pass over the wires for every track's path
+  c->notes = dissolveNoteDevices(p);
+  if (c->notes.any) c->base = withoutNoteDevices(p, c->notes);
+  const Project& b = c->notes.any ? c->base : p;  // AP.2: the project as its note devices leave it
+  c->q = withGroupsOff(b);
+  const MainLinks mainLinks(b);  // one pass over the wires for every track's path
   forEachTrack(c->q, [&](const Track& t, const Track*) {  // (q's tracks: GU.11 a switched-off group's blocks are off)
     Flow f;
     f.path = mainPath(t, mainLinks);
@@ -189,13 +198,13 @@ std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibra
     c->flows.emplace(t.id.value, std::move(f));
   });
   std::sort(c->links.begin(), c->links.end());
-  const WireList& wires = wiresOf(p);
+  const WireList& wires = wiresOf(b);
   if (wires.empty()) return c;
   WireList rest;
   rest.reserve(wires.size());
   // PF.6: every device by id once (findDevice per device walks the whole project).
   std::unordered_map<uint32_t, const Device*> byId;
-  forEachTrack(p, [&](const Track& t, const Track*) {
+  forEachTrack(b, [&](const Track& t, const Track*) {
     for (const DevicePtr& d : t.devices) byId.emplace(d->id.value, d.get());
   });
   std::unordered_map<uint32_t, MainPorts> ports;
@@ -217,8 +226,24 @@ std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibra
     rest.push_back(std::move(x));
   }
   c->q.wires = rest.empty() ? nullptr : std::make_shared<const WireList>(std::move(rest));
-  c->contexts = voiceContexts(p);  // (the original project: its main paths; contexts hold its devices, shared by q)
+  c->contexts = voiceContexts(b);  // (the original project: its main paths; contexts hold its devices, shared by q)
   return c;
+}
+
+// AP.2 (lower.h "Note devices"): every note device's runtime params as knob positions (no track patch links them).
+void noteDeviceParams(const Project& p, std::vector<LoweredParam>& out) {
+  forEachDevice(p, [&](const Device& d, const Track&) {
+    const NoteDeviceType* t = noteDeviceTypeOf(d);
+    if (t == nullptr) return;
+    const std::string dev = std::to_string(d.id.value);
+    for (const NoteParamSpec& s : t->params) {
+      if (!s.runtime) continue;
+      const DeviceValue* v = d.param(s.name);
+      const double pos = v != nullptr ? v->value : noteParamPosition(s, s.def);
+      out.push_back(LoweredParam{"dev" + dev + ":" + s.name + std::string(kPositionKeySuffix), graph::kNone, s.name,
+                                 static_cast<float>(pos), ParamRef::device(d.id, s.name), true});
+    }
+  });
 }
 
 struct Callees {
@@ -3972,10 +3997,24 @@ std::optional<Project> frozenProject(const Project& p, const LowerOptions& o, Fr
 // TX.all-free: every wire's state, in id order: the planned ones and the main paths' links (Lowered: realised as the
 // path's own connections; Inactive on a track that is not lowered).
 std::vector<WireState> withLinks(std::vector<WireState> states, const Cables& c, const Plan& pl) {
-  if (c.links.empty()) return states;
-  for (const auto& [w, t] : c.links)
-    states.push_back(WireState{w, pl.indexOf.count(t.value) != 0 ? WireStatus::Lowered : WireStatus::Inactive});
-  std::sort(states.begin(), states.end(), [](const WireState& a, const WireState& b) { return a.id < b.id; });
+  auto byId = [](const WireState& a, const WireState& b) { return a.id < b.id; };
+  if (!c.links.empty()) {
+    for (const auto& [w, t] : c.links)
+      states.push_back(WireState{w, pl.indexOf.count(t.value) != 0 ? WireStatus::Lowered : WireStatus::Inactive});
+    std::sort(states.begin(), states.end(), byId);
+  }
+  // AP.2 (lower.h "Note devices"): a wire into a note device plays as the wire it was joined into; its other wires
+  // are not lowered.
+  if (!c.notes.any) return states;
+  const size_t n = states.size();
+  for (const auto& [a, joined] : c.notes.aliases) {
+    const auto it = std::lower_bound(states.begin(), states.begin() + static_cast<std::ptrdiff_t>(n), WireState{joined}, byId);
+    WireState st = it != states.begin() + static_cast<std::ptrdiff_t>(n) && it->id == joined ? *it : WireState{joined, WireStatus::Inactive};
+    st.id = a;
+    states.push_back(st);
+  }
+  for (const WireId w : c.notes.dropped) states.push_back(WireState{w, WireStatus::Inactive});
+  std::sort(states.begin(), states.end(), byId);
   return states;
 }
 }  // namespace
@@ -4080,6 +4119,7 @@ out.wires = withLinks(wp.states, *cables, pl);
     if (mix.captureOwn) ownTaps.push_back(i);
     addParams(pl, i, aud, out.params, lib, wp, devs[i]);
   }
+  noteDeviceParams(p, out.params);  // AP.2
   out.master = pl.master;
   // Wires: outputs, then sends (wire order = summing order).
   using W = graph::WireKind;
@@ -4157,15 +4197,128 @@ std::vector<WireState> wireStatesWith(const Cables& c, const Callees& lib) {
 
 std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const graph::PatchLibrary* library) {
   std::shared_ptr<const Cables> c = cablesOf(p, library, nullptr);
-  if (library == nullptr) return paramsWith(c->q, tuningNodes, nullptr);
-  const UserCallees uc = makeCallees(c->q, c, library, !wiresOf(c->q).empty());
-  return paramsWith(c->q, tuningNodes, &uc.callees);
+  std::vector<LoweredParam> out;
+  if (library == nullptr) {
+    out = paramsWith(c->q, tuningNodes, nullptr);
+  } else {
+    const UserCallees uc = makeCallees(c->q, c, library, !wiresOf(c->q).empty());
+    out = paramsWith(c->q, tuningNodes, &uc.callees);
+  }
+  if (c->notes.any) noteDeviceParams(p, out);  // AP.2
+  return out;
 }
 
 std::vector<LoweredParam> lowerParams(const Project& p, bool tuningNodes, const DeviceLibrary& devices) {
   std::shared_ptr<const Cables> c = cablesOf(p, &devices.library(), &devices);
   const UserCallees uc = makeCallees(c->q, c, &devices.library(), !wiresOf(c->q).empty());
-  return paramsWith(c->q, tuningNodes, &uc.callees);
+  std::vector<LoweredParam> out = paramsWith(c->q, tuningNodes, &uc.callees);
+  if (c->notes.any) noteDeviceParams(p, out);  // AP.2
+  return out;
+}
+
+// ---- AP.2: note chains (lower.h "Note devices") ---------------------------------------------------------------------
+
+bool LoweredNoteChain::sameStructure(const LoweredNoteChain& o) const noexcept {
+  if (track != o.track || stages.size() != o.stages.size() || degreeCents != o.degreeCents || equaveCents != o.equaveCents)
+    return false;
+  for (size_t i = 0; i < stages.size(); ++i) {
+    const LoweredNoteStage& a = stages[i];
+    const LoweredNoteStage& b = o.stages[i];
+    if (a.device != b.device || a.type != b.type || a.values.size() != b.values.size() || a.runtime.size() != b.runtime.size())
+      return false;
+    for (size_t k = 0; k < a.runtime.size(); ++k)
+      if (a.runtime[k].param != b.runtime[k].param || a.runtime[k].key != b.runtime[k].key ||
+          a.runtime[k].scale != b.runtime[k].scale || a.runtime[k].offset != b.runtime[k].offset)
+        return false;
+    const NoteDeviceType* t = findNoteDeviceType(a.type);
+    for (size_t k = 0; k < a.values.size(); ++k)  // the structural values (a runtime one plays its slot)
+      if ((t == nullptr || k >= t->params.size() || !t->params[k].runtime) && a.values[k] != b.values[k]) return false;
+  }
+  return true;
+}
+
+namespace {
+
+// The cents of each degree of `def` within one equave and the equave (false: it does not build).
+bool degreeTable(const TuningDef& def, std::vector<double>& cents, double& equave) {
+  Result<tuning::Tuning> t = buildTuning(def);
+  if (!t.ok()) return false;
+  int32_t n = 0;
+  if (const tuning::Edo* e = t->edo()) n = static_cast<int32_t>(e->n());
+  else if (const tuning::Mos* m = t->mos()) n = m->size();
+  else if (const tuning::Scale* sc = t->scale()) n = sc->size();
+  if (n <= 0 || n > 4096) return false;
+  const double ref = t->referenceHz();
+  auto centsOf = [&](int32_t degree, int32_t eq) -> std::optional<double> {
+    const std::optional<double> hz = tuning::resolveHzDouble(tuning::PitchId::fromDegree(degree, eq), *t, {});
+    if (!hz || !(*hz > 0.0)) return std::nullopt;
+    return 1200.0 * std::log2(*hz / ref);
+  };
+  cents.assign(static_cast<size_t>(n), 0.0);
+  for (int32_t k = 1; k < n; ++k) {
+    const std::optional<double> c = centsOf(k, 0);
+    if (!c) return false;
+    cents[static_cast<size_t>(k)] = *c;
+  }
+  const std::optional<double> e = centsOf(0, 1);
+  if (!e || !(*e > 0.0)) return false;
+  equave = *e;
+  return true;
+}
+
+}  // namespace
+
+std::vector<LoweredNoteChain> lowerNoteChains(const Project& p) {
+  std::vector<LoweredNoteChain> out;
+  bool any = false;
+  forEachDevice(p, [&](const Device& d, const Track&) { any = any || isNoteDevice(d); });
+  if (!any) return out;
+  const MainLinks links(p);
+  auto chainOf = [&](const Track& t) {
+    bool has = false;
+    for (const DevicePtr& d : t.devices) has = has || (d->active && isNoteDevice(*d));
+    if (!has) return;
+    const MainPath path = mainPath(t, links);
+    LoweredNoteChain c;
+    c.track = t.id;
+    for (const ChainStage& st : chainStages(flowOrder(t, path), true, true, &path)) {
+      const NoteDeviceType* type = noteDeviceTypeOf(*st.device);
+      if (type == nullptr || st.offPath || st.in != type->in) continue;
+      LoweredNoteStage s;
+      s.device = st.device->id;
+      s.type = type->id;
+      const std::string dev = std::to_string(st.device->id.value);
+      for (size_t k = 0; k < type->params.size(); ++k) {
+        const NoteParamSpec& sp = type->params[k];
+        s.values.push_back(noteDeviceValue(*st.device, sp));
+        if (!sp.runtime) continue;
+        LoweredNoteStage::Slot slot;
+        slot.param = static_cast<uint32_t>(k);
+        slot.key = "dev" + dev + ":" + sp.name + std::string(kPositionKeySuffix);
+        slot.scale = sp.isBool ? 1.0f : static_cast<float>(sp.max - sp.min);
+        slot.offset = sp.isBool ? 0.0f : static_cast<float>(sp.min);
+        s.runtime.push_back(std::move(slot));
+      }
+      c.stages.push_back(std::move(s));
+    }
+    if (c.stages.empty()) return;
+    if (const std::optional<TrackPath> at = findTrack(p, t.id))
+      if (const TuningDef* def = effectiveTuning(p, *at); def != nullptr && !degreeTable(*def, c.degreeCents, c.equaveCents)) {
+        c.degreeCents.clear();
+        c.equaveCents = 1200.0;
+      }
+    out.push_back(std::move(c));
+  };
+  // The lowered MIDI tracks: active, not inside a switched-off group (lower.h: left out with their members).
+  std::function<void(const std::vector<TrackPtr>&)> walk = [&](const std::vector<TrackPtr>& list) {
+    for (const TrackPtr& t : list) {
+      if (!t->active) continue;
+      if (t->kind == TrackKind::Midi) chainOf(*t);
+      walk(t->children);
+    }
+  };
+  walk(p.tracks);
+  return out;
 }
 
 std::vector<WireState> wireStates(const Project& p, const graph::PatchLibrary& library) {

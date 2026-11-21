@@ -116,7 +116,12 @@ const graph::Patch* voicelessAtomPatch(std::string_view atomName);  // its descr
 // The patch every value block plays (model.h valuePatchText, parsed once) and its description (one param `value`).
 const graph::Patch& valuePatch();
 const DeviceInfo& valueDeviceInfo();
-// The fixed patch a built-in block plays (a group: groupPatch(); an atom block; a value block), or null for any other
+// AP.2 (pq/document/note_devices.h): a note device type's fixed patch (`in notes`, its runtime params, its settings as
+// `real const` inputs, `out out = notes`: for the views, the panels and the edit builders; never lowered) and its
+// description (an audio effect named after the type). Null: no such type.
+const graph::Patch* noteDeviceBlockPatch(std::string_view type);
+const DeviceInfo* noteDeviceInfo(std::string_view type);
+// The fixed patch a built-in block plays (a group: groupPatch(); an atom block; a value block; AP.2 a note device), or null for any other
 // device. The views and the edit builders see these; the lowering picks a group's variant itself (lower.h "Groups").
 const graph::Patch* builtinBlockPatch(const Device& d);
 

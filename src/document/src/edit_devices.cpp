@@ -12,6 +12,7 @@
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc::ops {
@@ -44,10 +45,14 @@ Status placeOnPath(Steps& k, IdSource& ids, TrackId track, DeviceId dev, bool me
   const Track* t = findTrackPtr(k.doc(), track);
   if (t == nullptr) return notFound("track not found");
   const MainPath path = mainPath(k.doc(), *t);
-  const Device* head = path.blocks.empty() ? nullptr : path.blocks.front();
+  // AP.2: the instrument is the first block after the notes link's note devices (note_devices.h noteRun); a slot
+  // inside that run is its end (splice's rule).
+  const uint32_t run = noteRun(path);
+  if (slot != kAppend && slot < run) slot = run;
+  const Device* head = path.blocks.size() > run ? path.blocks[run] : nullptr;
   if (head == nullptr || !isGroupDevice(*head) || t->kind != TrackKind::Midi) return splice(k, ids, track, dev, slot);
-  const bool intoGroup = meta && (slot == 0 || (slot >= path.blocks.size() && path.blocks.size() == 1));
-  if (!intoGroup) return splice(k, ids, track, dev, slot == 0 ? 1 : slot);
+  const bool intoGroup = meta && (slot == run || (slot >= path.blocks.size() && path.blocks.size() == run + 1));
+  if (!intoGroup) return splice(k, ids, track, dev, slot == run ? run + 1 : slot);
   const DeviceId g = head->id;
   PQ_DOC_TRY(k.add(SetDeviceGroup{dev, g}));
   // (its ports by name, as Ctrl+G's series names them: ungroup reads the series back)
@@ -112,9 +117,11 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
     if (m->instrument) {
       // An instrument takes the notes: it replaces the instrument group heading the path (Live: a new instrument
       // replaces the old one; its blocks go with it).
+      // AP.2: the instrument group heading the path after its note devices (they stay: they feed the new one).
       const MainPath path = mainPath(k.doc(), *findTrackPtr(k.doc(), track));
-      if (!path.blocks.empty() && isGroupDevice(*path.blocks.front()) && path.blocks.front()->id != g) {
-        const DeviceId gone = path.blocks.front()->id;
+      const uint32_t run = noteRun(path);
+      if (path.blocks.size() > run && isGroupDevice(*path.blocks[run]) && path.blocks[run]->id != g) {
+        const DeviceId gone = path.blocks[run]->id;
         PQ_DOC_TRY(detach(k, ids, nullptr, gone));
         PQ_DOC_TRY(k.add(RemoveDevice{gone}));
       }
@@ -130,7 +137,12 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
   Result<ListView> l = listOf(p, track);
   if (!l) return std::move(l).error();
   if (patch.empty()) return invalid("no device patch");
-  Edit e = makeEdit("Add Device");
+  // AP.2 (note_devices.h): a note device goes on the notes link — after the stages already there (kAppend), or at a
+  // slot inside that run (splice clamps it there) — on a MIDI track only.
+  const bool note = isNoteDevicePatch(patch);
+  if (note && !l->instrumentAllowed) return invalid("a note device goes on a MIDI track (no notes reach it elsewhere)");
+  if (note) kind = DeviceKind::AudioEffect;
+  Edit e = makeEdit(note ? "Add Note Effect" : "Add Device");
   // TX.all-free: a track's block, spliced into its main path at slot `index` (kOffPath: unwired).
   if (kind == DeviceKind::Instrument && !l->instrumentAllowed) return invalid("instruments go on MIDI tracks");
   DevicePtr d = makeDevice(ids.device(), std::move(patch), kind);
@@ -139,7 +151,10 @@ EditResult addDevice(const Project& p, IdSource& ids, TrackId track, std::string
   e.tracks.push_back(l->track);
   Steps k(p);
   PQ_DOC_TRY(k.add(AddDevice{l->track, std::move(d), kAppend}));
-  if (index != kOffPath) PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, false, index));
+  if (index != kOffPath) {
+    if (note) PQ_DOC_TRY(splice(k, ids, l->track, id, index));
+    else PQ_DOC_TRY(placeOnPath(k, ids, l->track, id, false, index));
+  }
   batchOf(e).commands = std::move(k.commands);
   return e;
 }
@@ -417,6 +432,8 @@ EditResult setParamCurve(const Project& p, const DeviceLibrary& lib, DeviceId de
   if (!l.track) return notFound("device not found");
   if (isGroupDevice(*l.device)) return invalid("a group has no knobs");
   if (param.empty()) return invalid("no param");
+  // AP.2 (QUESTIONS Q?-AP.2-b): a note device's stage reads its knobs on their declared line.
+  if (isNoteDevice(*l.device) && curve) return invalid("a note device's knobs keep their declared curves");
   const graph::ParamDecl* decl = declOf(lib, *l.device, param);
   if (decl == nullptr) return notFound("the device has no param '" + param + "'");
   if (curve && !dsp::validCurve(*curve)) return invalid("not a valid curve");

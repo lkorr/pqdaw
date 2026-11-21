@@ -42,6 +42,7 @@ pq_add_module(pq_doc
     src/devices.cpp
     src/meta.cpp
     src/main_path.cpp
+    src/note_devices.cpp  # AP.2: note devices (the arpeggiator): its params from pq/engine/arp.h's table
     src/wire_types.cpp  # WI.3: declared-type clashes a wiring gesture refuses
     src/instrument_groups.cpp
     src/audibility.cpp
@@ -58,5 +59,7 @@ pq_add_module(pq_doc
   # nlohmann::json in MigrationFn.
   # pq_graph: project → graph lowering (lower.h, T3.17).
   # pq_meta (TMM.3): meta-module state in the model, their expansions in the lowering.
+  # pq_engine (AP.2, private): the note devices' param table (pq/engine/arp.h kArpParamInfo, header data only).
   DEPS pq_tuning pq_core pq_graph pq_meta nlohmann_json::nlohmann_json
+  PRIVATE_DEPS pq_engine
 )

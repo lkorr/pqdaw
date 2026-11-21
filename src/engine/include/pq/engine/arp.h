@@ -120,7 +120,9 @@
 
 #include <array>
 #include <cstdint>
+#include <iterator>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "pq/engine/note_events.h"
@@ -228,6 +230,110 @@ enum class ArpParamId : uint8_t {
   Count
 };
 void setArpParam(ArpParams& p, ArpParamId id, float value) noexcept;  // RT-safe
+
+// AP.2: the ONE declaration of the arpeggiator's params (docs/plans/AP.md "Tasks" AP.2), one row per ArpParamId in enum
+// order. The document reads it (pq/document/note_devices.h: the device's params, their ranges / defaults / labels, and
+// the settings), so a new ArpParamId needs a row here and nothing in the document. Values are what setArpParam takes:
+//   min … max, default   in the param's own units (ms, a fraction of a step, a count; an enum's index; a bool 0 / 1)
+//   step                 0: continuous; 1: integers (enums, counts)
+//   choices              an enum's labels, '|'-separated, index = value ("" : none)
+//   runtime              true: a runtime param (a project param slot, read at every block start: automation and knob
+//                        drags never rebuild the chain); false: a structural setting (a change republishes the chain)
+struct ArpParamInfo {
+  ArpParamId id;
+  std::string_view name;   // the document's param / setting name (an identifier)
+  std::string_view label;  // shown
+  float min, max, def;
+  float step;
+  bool isBool;
+  std::string_view choices;
+  bool runtime;
+};
+inline constexpr ArpParamInfo kArpParamInfo[] = {
+    {ArpParamId::Style, "style", "Style", 0, static_cast<float>(ArpStyle::Count) - 1, 0, 1, false,
+     "Up|Down|UpDown|DownUp|Up & Down|Down & Up|Converge|Diverge|Con & Diverge|Pinky Up|Pinky UpDown|Thumb Up|"
+     "Thumb UpDown|Play Order|Chord Trigger|Random|Random Other|Random Once|Harmonic Walk",
+     true},
+    {ArpParamId::Synced, "sync", "Sync", 0, 1, 1, 1, true, "", true},
+    {ArpParamId::RateNum, "rateNum", "Rate Num", 1, 16, 1, 1, false, "", true},
+    {ArpParamId::RateDen, "rateDen", "Rate Den", 1, kArpMaxRateDen, 16, 1, false, "", true},
+    {ArpParamId::TupletN, "tupletN", "Tuplet N", 1, kArpMaxTuplet, 1, 1, false, "", true},
+    {ArpParamId::TupletM, "tupletM", "Tuplet M", 1, kArpMaxTuplet, 1, 1, false, "", true},
+    {ArpParamId::RateMs, "rateMs", "Rate ms", 1, 10000, 125, 0, false, "", true},
+    {ArpParamId::Gate, "gate", "Gate", 0.01f, 2, 0.5f, 0, false, "", true},
+    {ArpParamId::Groove, "groove", "Groove", 0, 1, 0, 0, false, "", true},
+    {ArpParamId::Offset, "offset", "Offset", -32, 32, 0, 1, false, "", true},
+    {ArpParamId::Repeats, "repeats", "Repeats", 0, 64, 0, 1, false, "", true},
+    {ArpParamId::Retrigger, "retrigger", "Retrigger", 0, 2, 0, 1, false, "Off|Note|Beat", true},
+    {ArpParamId::RetriggerNum, "retrigNum", "Retrig Num", 1, 16, 1, 1, false, "", true},
+    {ArpParamId::RetriggerDen, "retrigDen", "Retrig Den", 1, kArpMaxRateDen, 1, 1, false, "", true},
+    {ArpParamId::Hold, "hold", "Hold", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::Unit, "unit", "Unit", 0, 2, 0, 1, false, "Degrees|Ratio|Harmonics", true},
+    {ArpParamId::Transpose, "transpose", "Transpose", 0, 1, 0, 1, false, "Shift|Rotate", true},
+    {ArpParamId::Distance, "distance", "Distance", -64, 64, 1, 1, false, "", true},
+    {ArpParamId::Steps, "steps", "Steps", 1, kArpMaxSteps, 1, 1, false, "", true},
+    {ArpParamId::RatioP, "ratioP", "Ratio P", 1, 64, 2, 1, false, "", true},
+    {ArpParamId::RatioQ, "ratioQ", "Ratio Q", 1, 64, 1, 1, false, "", true},
+    {ArpParamId::VelocitySource, "velSource", "Velocity", 0, 1, 0, 1, false, "As Played|Fixed", true},
+    {ArpParamId::FixedVelocity, "velFixed", "Fixed Vel", 0, 1, 0.8f, 0, false, "", true},
+    {ArpParamId::VelocityDecayMs, "velDecay", "Vel Decay ms", 0, 10000, 0, 0, false, "", true},
+    {ArpParamId::VelocityTarget, "velTarget", "Vel Target", 0, 1, 0, 0, false, "", true},
+    {ArpParamId::VelocityRetrigger, "velRetrig", "Vel Retrig", 0, 1, 1, 1, true, "", true},
+    {ArpParamId::Seed, "seed", "Seed", 0, 1 << 24, 0, 1, false, "", false},
+    {ArpParamId::HarmonicBase, "harmonicBase", "Harm Base", 1, 64, 8, 1, false, "", true},
+    {ArpParamId::WalkRange, "walkRange", "Walk Range", 0, kArpMaxWalkRange, 7, 1, false, "", true},
+    {ArpParamId::WalkUnder, "walkUnder", "Under", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::WalkOrder, "walkOrder", "Walk Order", 0, 3, 0, 1, false, "Up|Down|UpDown|Random", true},
+    {ArpParamId::IntoSource, "intoSource", "Into", 0, 2, 0, 1, false, "Off|Step|Offset", true},
+    {ArpParamId::OutTarget, "outTarget", "Out", 0, 2, 0, 1, false, "Off|Step|Offset", true},
+    {ArpParamId::IntoOffset, "intoOffset", "Into Offset", -4800, 4800, 0, 0, false, "", true},
+    {ArpParamId::OutOffset, "outOffset", "Out Offset", -4800, 4800, 0, 0, false, "", true},
+    {ArpParamId::GlideCents, "glideCents", "Cents", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::GlideSynced, "glideSync", "Glide Sync", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::GlideMs, "glideMs", "Glide ms", 0, 10000, 50, 0, false, "", true},
+    {ArpParamId::GlideFraction, "glideFraction", "Glide Frac", 0, 1, 0.25f, 0, false, "", true},
+    {ArpParamId::GlideShape, "glideShape", "Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
+     "Linear|Exponential|S-Curve|Overshoot", true},
+    {ArpParamId::GlideBend, "glideBend", "Bend", -1, 1, 0.5f, 0, false, "", true},
+    {ArpParamId::Pulse, "pulse", "Pulse", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::PulseSource, "pulseSource", "Pulse h", 0, 2, 0, 1, false, "Harmonic|Proportion|Order", true},
+    {ArpParamId::PulseRef, "pulseRef", "Pulse Ref", 0, kArpMaxPulseH, 0, 1, false, "", true},
+    {ArpParamId::PulseCycle, "pulseCycle", "Cycle", 0, 1, 0, 1, false, "Base|Bars", true},
+    {ArpParamId::PulseBars, "pulseBars", "Bars", 1, kArpMaxPulseBars, 1, 1, false, "", true},
+    {ArpParamId::ProportionLen, "proportionLen", "Prop Len", 0, kArpMaxProportion, 0, 1, false, "", true},
+    {ArpParamId::Proportion1, "proportion1", "Prop 1", 1, kArpMaxPulseH, 4, 1, false, "", true},
+    {ArpParamId::Proportion2, "proportion2", "Prop 2", 1, kArpMaxPulseH, 5, 1, false, "", true},
+    {ArpParamId::Proportion3, "proportion3", "Prop 3", 1, kArpMaxPulseH, 6, 1, false, "", true},
+    {ArpParamId::Proportion4, "proportion4", "Prop 4", 1, kArpMaxPulseH, 7, 1, false, "", true},
+    {ArpParamId::Proportion5, "proportion5", "Prop 5", 1, kArpMaxPulseH, 8, 1, false, "", true},
+    {ArpParamId::Proportion6, "proportion6", "Prop 6", 1, kArpMaxPulseH, 9, 1, false, "", true},
+    {ArpParamId::Proportion7, "proportion7", "Prop 7", 1, kArpMaxPulseH, 10, 1, false, "", true},
+    {ArpParamId::Proportion8, "proportion8", "Prop 8", 1, kArpMaxPulseH, 11, 1, false, "", true},
+    {ArpParamId::Layers, "layers", "Layers", 0, kArpMaxLayers, 0, 1, false, "", true},
+    {ArpParamId::LayerLevel1, "layerLevel1", "Layer 1", 0, 1, 0.7f, 0, false, "", true},
+    {ArpParamId::LayerLevel2, "layerLevel2", "Layer 2", 0, 1, 0.5f, 0, false, "", true},
+    {ArpParamId::LayerLevel3, "layerLevel3", "Layer 3", 0, 1, 0.35f, 0, false, "", true},
+};
+static_assert(std::size(kArpParamInfo) == static_cast<size_t>(ArpParamId::Count),
+              "kArpParamInfo: one row per ArpParamId");
+consteval bool arpParamInfoInOrder() {
+  for (size_t i = 0; i < std::size(kArpParamInfo); ++i)
+    if (static_cast<size_t>(kArpParamInfo[i].id) != i) return false;
+  return true;
+}
+static_assert(arpParamInfoInOrder(), "kArpParamInfo: rows in ArpParamId order");
+// An enum's labels: one per value of its range.
+consteval bool arpChoicesMatchRanges() {
+  for (const ArpParamInfo& r : kArpParamInfo) {
+    if (r.choices.empty()) continue;
+    size_t n = 1;
+    for (const char c : r.choices) n += c == '|' ? 1 : 0;
+    if (static_cast<float>(n) != r.max - r.min + 1) return false;
+  }
+  return true;
+}
+static_assert(arpChoicesMatchRanges(), "kArpParamInfo: an enum's choices are one per value of its range");
+inline const ArpParamInfo& arpParamInfo(ArpParamId id) noexcept { return kArpParamInfo[static_cast<size_t>(id)]; }
 ArpParams sanitized(const ArpParams& p) noexcept;                       // clamps every field to its range. RT-safe
 
 // Degrees: the tuning's degrees in cents within one equave (cents[0] = 0, size N ≥ 1) and the equave in cents.
@@ -278,6 +384,10 @@ public:
   struct Mapping {
     ArpParamId id;
     uint32_t param;  // index into NoteStageBlock::params (out of range: ignored)
+    // AP.2: the slot's value v gives the field offset + scale · v (setArpParam rounds / clamps). The document's slots
+    // hold knob POSITIONS in [0, 1] (what automation writes): scale = max − min, offset = min of the param's linear
+    // curve. Default: the slot holds the value itself.
+    float scale = 1.0f, offset = 0.0f;
   };
   explicit ArpStage(const ArpParams& params = {}, std::vector<Mapping> map = {}, ArpDegreeTable table = {});
   void setIndex(uint32_t index) override { core_.setStageIndex(index); }

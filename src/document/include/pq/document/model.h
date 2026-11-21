@@ -768,12 +768,13 @@ struct MetaEntry {
 using MetaMap = std::vector<MetaEntry>;  // sorted by path, unique
 using MetaMapPtr = std::shared_ptr<const MetaMap>;
 
-// One BLOCK of a track's circuit (GU.11, docs/plans/GU.md "One hierarchy"): `patch` says which of exactly four it is —
+// One BLOCK of a track's circuit (GU.11, docs/plans/GU.md "One hierarchy"): `patch` says which of exactly five it is —
 //   a GROUP          kGroupDevice: the one container (its members name it in Device::group; "Groups" below)
 //   an ATOM BLOCK    "atom:<name>": one atom of the graph's registry ("Atom blocks and value blocks" below)
 //   a VALUE BLOCK    kValueDevice: one control
 //   a NATIVE ENGINE  "meta:<type>": a meta type whose expansion is real DSP (the wavetable oscillator, the envelope, the
 //                    analysers' taps): a leaf with a face and no inside ("Meta modules" above)
+//   AP.2: a NOTE DEVICE    "note:<type>": a note stage on a MIDI track's notes link (the arpeggiator; note_devices.h)
 // Nothing else is a block (checks.cpp refuses any other patch: no stock patch, no patch text of the instance's own).
 // Ports are the block's fixed patch's signature and are not stored; params / settings not listed play the defaults.
 struct Device {

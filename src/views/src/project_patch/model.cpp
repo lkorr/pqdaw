@@ -13,6 +13,7 @@
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/document/note_devices.h"
 #include "pq/document/racks.h"
 #include "pq/graph/layout.h"
 #include "pq/graph/patch_file.h"
@@ -416,6 +417,11 @@ struct Builder {
     if (doc::isMetaDevice(d))
       for (const doc::ChainStage& s : *bandStages)
         if (s.device == &d) n.instrument = s.in == doc::ChainSignal::Notes;
+    if (doc::isNoteDevice(d)) {  // AP.2: a note stage (its signals: chainStages)
+      n.noteStage = true;
+      for (const doc::ChainStage& s : *bandStages)
+        if (s.device == &d) n.notesOut = !s.offPath && s.out == doc::ChainSignal::Notes;
+    }
     // The block's description (its name) from the library; its callee from what the graph calls, else the library.
     const doc::DeviceInfo* info = devices != nullptr ? devices->infoOf(d) : nullptr;
     // TX.node-menu: the device's own name when it has one (Ctrl+R; a node-menu atom block is named after its atom).
@@ -1178,8 +1184,10 @@ struct Builder {
       td.made = true;
       if (!derived->mainLinks) derived->mainLinks.emplace(p);
       td.path = doc::mainPath(t, *derived->mainLinks);
-      // (Only a meta block or a group reads its stage: a track without one skips the walk.)
-      if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) { return doc::isMetaDevice(*d) || doc::isGroupDevice(*d); }))
+      // (Only a meta block, a group or (AP.2) a note device reads its stage: a track without one skips the walk.)
+      if (std::any_of(t.devices.begin(), t.devices.end(), [](const doc::DevicePtr& d) {
+            return doc::isMetaDevice(*d) || doc::isGroupDevice(*d) || doc::isNoteDevice(*d);
+          }))
         td.stages = doc::trackStages(p, t, td.path);
       td.racks = doc::findRacks(p, t);
     }
@@ -1364,7 +1372,7 @@ struct Builder {
         e.tapX = *w.tap;
       }
       e.delayed = st == doc::WireStatus::Delayed;
-      e.voice = (w.fromNoteSource() && fromMidi) || out.nodes[a].instrument;
+      e.voice = (w.fromNoteSource() && fromMidi) || out.nodes[a].instrument || out.nodes[a].notesOut;
       if (const auto it = modGraphWire.find(w.id.value); it != modGraphWire.end()) e.graphWire = it->second;
       e.input = toPort >= 0 && (out.nodes[b].kind != NodeKind::Device || !out.nodes[b].inputs[static_cast<size_t>(toPort)].param);
       // Its kind (how it is drawn): notes into a main input, an audio path inside the band, or modulation.
@@ -1385,6 +1393,7 @@ struct Builder {
       const bool mainTo = w.param.empty() || series;
       EdgeKind k = EdgeKind::Modulation;
       if (w.fromNoteSource() && fromMidi && mainFrom && mainTo) k = EdgeKind::Notes;
+      else if (out.nodes[a].notesOut && mainFrom && mainTo) k = EdgeKind::Notes;  // AP.2: on from a note device
       else if (series && out.nodes[a].kind == NodeKind::Terminal) k = EdgeKind::Notes;
       else if (sameBand && e.graphWire == kNone && ((mainFrom && mainTo) || w.toMixer() || (w.fromNoteSource() && mainFrom))) k = EdgeKind::Chain;
       crossingEdges(k, a, fromPort, b, toPort, w, std::move(e));

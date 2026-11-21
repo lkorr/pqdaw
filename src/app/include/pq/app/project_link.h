@@ -310,6 +310,7 @@ struct LinkStats {
   uint64_t topologyChanges = 0;    // jobs that changed the partition / buses
   uint64_t unitPublishes = 0;
   uint64_t sequencePublishes = 0, automationPublishes = 0, tempoPublishes = 0;
+  uint64_t noteStagePublishes = 0;  // AP.2: note chains published (one per track whose chain changed; null included)
   uint64_t trackLowerings = 0;     // tracks whose note sequence was lowered again (the per-track cache missed)
   uint64_t clipLowerings = 0;      // T7.16b: clips of those tracks lowered again (the per-clip cache missed)
   double sequenceMs = 0.0;         // T7.16b: time in publishSequences (keys, lowering, the image build and publish)
@@ -730,6 +731,10 @@ private:
   // UI thread (T2.6-fix2). *slot: the table slot whose live inputs it drives (L18).
   const float** liveTap(const doc::Project& p, const doc::ParamRef& ref, uint32_t* slot = nullptr);
   void publishAutomation(const doc::Project& p);
+  // AP.2 (lower.h "Note devices"): each MIDI track's note chain (doc::lowerNoteChains) → an engine::NoteStageChain on its
+  // event slot (Engine::setNoteStages), only where its structure changed (a knob drag never republishes: its slot
+  // plays it); a track whose chain went away publishes null. UI thread.
+  void publishNoteStages(const doc::Project& p);
   doc::ParamRange laneRange(const doc::Project& p, const doc::AutomationLane& lane) const;  // T4.18
   void reportDelayedSends(const doc::Project& p);
   void reportMissingDevices(const doc::Project& p);  // UI thread (T4.1): the status line names a bypassed device  // UI thread: the status line names a newly delayed send
@@ -932,6 +937,12 @@ private:
   void followLiveClips();             // re-publishes when the clip view's clip or the position left the span
   uint64_t livePublishes_ = 0;
   std::unique_ptr<engine::Engine> engine_;
+  // AP.2: the note chains the engine plays (publishNoteStages) and the event slot each went to. UI thread.
+  struct PublishedNotes {
+    doc::LoweredNoteChain chain;
+    uint32_t slot = 0;
+  };
+  std::vector<PublishedNotes> noteChains_;
   std::unique_ptr<engine::ProjectCompiler> compiler_;
   std::shared_ptr<const doc::LoweredProject> lowered_;  // compile path (EQ.4b: shared with the response displays)
   doc::Snapshot current_;                        // UI thread: the snapshot the engine follows

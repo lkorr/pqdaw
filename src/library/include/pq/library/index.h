@@ -63,13 +63,15 @@ enum class Category : uint8_t {
   Patches,  // "Patches/Subcircuits"
   Grooves,
   MetaModules,  // TMM.10: chain meta devices (their presets); listed after Audio Effects (categoryOrder)
+  NoteEffects,  // AP.2: note devices (the Arpeggiator; their presets): listed after Audio Effects
   Count
 };
 // TMM.10: the categories in the order the browser lists them (Meta Modules after Audio Effects; the enum keeps its
 // values for the index file).
-inline constexpr Category kCategoryOrder[] = {Category::Instruments, Category::AudioEffects, Category::MetaModules,
-                                              Category::Racks,       Category::Samples,      Category::Clips,
-                                              Category::Tunings,     Category::Patches,      Category::Grooves};
+inline constexpr Category kCategoryOrder[] = {Category::Instruments, Category::AudioEffects, Category::NoteEffects,
+                                              Category::MetaModules, Category::Racks,        Category::Samples,
+                                              Category::Clips,       Category::Tunings,      Category::Patches,
+                                              Category::Grooves};
 std::string_view categoryName(Category c) noexcept;
 
 // Entry flags.

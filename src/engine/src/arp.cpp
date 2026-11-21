@@ -1555,7 +1555,7 @@ bool ArpStage::processStage(void* self, const NoteStageBlock& block, const Event
   if (st.map_.empty()) return st.core_.process(st.params_, block, in, out);
   ArpParams p = st.params_;
   for (const Mapping& m : st.map_)
-    if (m.param < block.params.size()) setArpParam(p, m.id, block.params[m.param]);
+    if (m.param < block.params.size()) setArpParam(p, m.id, m.offset + m.scale * block.params[m.param]);
   return st.core_.process(p, block, in, out);
 }
 

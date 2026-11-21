@@ -99,6 +99,16 @@ DeviceSignature signatureOf(const graph::Patch& patch) {
         if (const graph::Attr* a = findAttr(d, "steps"); a && !a->args.empty())
           p.steps = static_cast<int32_t>(std::lround(a->args[0].value.number.value()));
         p.hidden = findAttr(d, "hidden") != nullptr;
+        // AP.2: @choices("a|b|c"): a stepped param's labels (index = value − min), shown as a menu.
+        if (const graph::Attr* a = findAttr(d, "choices"); a && !a->args.empty() && !a->args[0].value.text.empty()) {
+          const std::string& t = a->args[0].value.text;
+          size_t start = 0;
+          for (size_t i = 0; i <= t.size(); ++i)
+            if (i == t.size() || t[i] == '|') {
+              p.choices.push_back(t.substr(start, i - start));
+              start = i + 1;
+            }
+        }
         if (p.exp && (p.min <= 0.0 || p.max <= 0.0)) p.exp = false;  // a log scale needs positive ends
         p.declared = graph::declaredCurve(d);  // GU.1
         p.curve = p.declared;

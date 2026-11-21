@@ -8,6 +8,7 @@
 #include "pq/document/commands.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc {
@@ -49,7 +50,11 @@ VoiceContexts voiceContexts(const Project& p) {
   });
   if (!any) return out;
   std::unordered_map<uint32_t, std::vector<const Wire*>> feeds;  // block id → notes cables into it (id order)
-  for (const Wire& w : wiresOf(p))
+  // AP.2 (note_devices.h): through the note devices — the cable out of an arpeggiator is the notes cable it continues.
+  const NoteDissolve notes = dissolveNoteDevices(p);
+  static const WireList kNone;
+  const WireList& cables = !notes.any ? wiresOf(p) : notes.wires != nullptr ? *notes.wires : kNone;
+  for (const Wire& w : cables)
     if (w.fromNoteSource() && w.port.empty() && !w.toMixer() && w.to.valid()) feeds[w.to.value].push_back(&w);
   const MainLinks links(p);
   // The context of block `d` on track `t` whose main path head is `head`, or false.
@@ -89,7 +94,7 @@ VoiceContexts voiceContexts(const Project& p) {
     const Device* head = nullptr;
     if (t.kind == TrackKind::Midi)
       for (const Device* b : path.blocks)
-        if (b->active) {
+        if (b->active && !isNoteDevice(*b)) {  // AP.2: the notes link's stages pass the notes on
           head = b;
           break;
         }

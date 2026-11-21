@@ -599,6 +599,7 @@ private:
         i.curveSwitched = !doc::isValueDevice(*d) && !(i.curve == pi->declared);
         i.isSwitch = pi->isBool;
         i.steps = pi->isBool ? 2 : pi->steps;
+        i.choices = pi->choices;  // AP.2: @choices (a menu's items)
         i.editable = true;
       } else {
         const meta::Type* t = metaTypeAt(ctx_, b.device, b.meta);

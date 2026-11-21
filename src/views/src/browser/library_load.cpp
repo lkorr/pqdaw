@@ -10,6 +10,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/meta.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 #include "pq/library/index.h"
 #include "pq/tuning/scala.h"
@@ -104,6 +105,8 @@ std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch) {
   if (patch.starts_with(doc::kMetaDevicePrefix))  // TMM.10: a chain meta device: its type's name
     if (const meta::Type* t = meta::findType(patch.substr(doc::kMetaDevicePrefix.size()))) return std::string(t->name);
   if (patch == doc::kInstrumentRack) return "Instrument Rack";
+  if (patch.starts_with(doc::kNoteDevicePrefix))  // AP.2: a note device: its type's name
+    if (const doc::NoteDeviceType* t = doc::findNoteDeviceType(patch.substr(doc::kNoteDevicePrefix.size()))) return t->name;
   (void)ctx;
   return std::string(patch);
 }
