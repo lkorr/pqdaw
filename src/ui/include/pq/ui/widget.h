@@ -553,6 +553,9 @@ public:
   // Forces a full relayout at the next update() (benchmarks, theme changes).
   void invalidateAll() noexcept;
   void layoutNow();  // runs pending layout immediately (update() does this too)
+  // BR.J: a layout pass runs now (widgets placed, then the observers' onLayout): what an observer would redo after a
+  // change it hears of mid-pass (a canvas rebuilt in its arrange) it can leave to its onLayout.
+  bool inLayout() const noexcept { return inLayout_; }
 
   // --- input ---
   bool dispatch(const InputEvent& e);
@@ -680,6 +683,7 @@ private:
   uint32_t width_ = 0, height_ = 0;
   UiScale scale_{};
   bool layoutPending_ = true;
+  bool inLayout_ = false;  // BR.J: layoutNow runs
   uint64_t paintSerial_ = 0;  // PaintContext::frame
   int16_t maxOverflow_ = 0;  // largest visual overflow (logical px) any widget of the tree has declared
   IRect clip_{};  // during layout: the visible area through the clipping ancestors of the widget being placed

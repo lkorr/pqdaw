@@ -134,6 +134,11 @@ public:
   std::function<void()> onSelectionChanged;
   std::function<void(const CanvasHit&)> onHoverChanged;
   std::function<void(uint32_t node)> onOpen;  // double-click on a subcircuit or filter
+  // BR.J (Q?-BR.I-b): where the scene's pins are drawn in device px (pinPoint, toDevice) changed outside a layout of
+  // the canvas: a new scene, the view panned / zoomed / fitted, an orbiting port's slide step, hold or snap. A host
+  // that draws over the canvas at its pins (the cable layer over the free rack) follows here; nothing runs while
+  // nothing moves (no per-frame poll). May be called during a layout pass (a host's arrange rebuilds the scene).
+  std::function<void()> onPinsMoved;
   // T4.5 (bool wires lit when high): drawn in circuit.wireBoolLit. Repaints only when the flag changes.
   void setWireLit(uint32_t wire, bool lit);
   // T5.x-circuit-chain (M4 review L13): pin stubs drawn only from the Near level (the overviews built on the canvas: the

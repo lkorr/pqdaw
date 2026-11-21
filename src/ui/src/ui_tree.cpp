@@ -119,6 +119,11 @@ void UiTree::layoutNow() {
   if (!root_ || !layoutPending_) return;
   layoutPending_ = false;
   ++stats_.layoutPasses;
+  inLayout_ = true;
+  struct Done {
+    bool& f;
+    ~Done() { f = false; }
+  } done{inLayout_};
   const IRect view{0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)};
   clip_ = view;
   place(*root_, view);

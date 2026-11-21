@@ -977,7 +977,8 @@ public:
   // below kFitMinScale (the group grows to hold them then) nor above their own size. Their cables to blocks outside
   // become crossings of its frame, as any cable into a group. False + the reason in the status line when refused.
   bool moveIntoGroup(std::span<const doc::DeviceId> devices, doc::DeviceId group, float dx, float dy);
-  static constexpr float kFitMinScale = 0.5f;  // BR.H: of a dropped block's size before (Q?-BR.H-a)
+  // BR.H / BR.J: of a dropped block's size before — the user's "the smallest shrink should be 0.1x" (Q?-BR.H-a).
+  static constexpr float kFitMinScale = 0.1f;
   // ---- GU.2: copy / paste of blocks (doc::ops::copyBlocks / pasteBlocks; ViewContext::blockClipboard) and group
   // presets. Ctrl+C copies the selected blocks (a group with everything inside it) and the wires among them; Ctrl+V
   // pastes a fresh copy at the pointer — into the innermost opened capsule under it (or the group panel's group), else

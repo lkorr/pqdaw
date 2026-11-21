@@ -34,6 +34,9 @@ FreeRackPanel::FreeRackPanel(DeviceChainView::Impl& impl, ViewContext& ctx)
   // A block dragged out of the rack onto the chain goes into it; a wire dragged out of it lands on the chain's knobs
   // and inputs (the cable layer takes the drag over, as from a jack).
   DeviceChainView::Impl* im = &impl_;
+  view_->canvas().onPinsMoved = [im] {  // BR.J: the cables ending here follow (no layout needed)
+    if (im->view.onRackPinsMoved) im->view.onRackPinsMoved();
+  };
   view_->onBlockOutside = [im](doc::DeviceId device, ui::Vec2 pos, bool drop) {
     DeviceChainView& v = im->view;
     const std::optional<uint32_t> slot = device.valid() ? v.chainSlotAt(pos) : std::nullopt;

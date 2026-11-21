@@ -2204,7 +2204,9 @@ task said the group grows only below "a readable minimum scale". There was no su
 threshold at the current zoom (kNearZoom / zoom: 0.75 at zoom 1, little shrinking), a fixed fraction, or none. Chosen:
 `ProjectPatchView::kFitMinScale` = 0.5 of the blocks' size before (~5.5 px text at zoom 1); below that the group grows
 round them. Also: the task asked for an S-resize to be "one undo step"; TX.group-resize (and Q240 (3) for blocks)
-decided a scale is saved view state with no undo step — kept as decided. Status: open.
+decided a scale is saved view state with no undo step — kept as decided.
+Decided (user 2026-11-20: "the smallest shrink should be 0.1x"): `kFitMinScale` = 0.1 (BR.J). The S-resize without an
+undo step and Q?-BR.H-b stay as chosen (the user did not object). Status: decided.
 
 ## Q?-BR.H-b · 2026-11-20 · BR.H · The Device view's group panel shows the groups inside as the circuit does
 Context: block places in a group are now stored once per block (view state) and every view honours them. The Device
@@ -2229,5 +2231,9 @@ Context: the cable layer computes ends on store events and after layout passes. 
 orbiting port turn toward its cable, nothing lays out afterwards, so the cable starts at the port's old place until the
 next layout (seen in "wiring: a drag from a jack onto a knob" while the mini circuit drew at zoom 1 and put the knob right under the
 LFO; with Q?-BR.I-a's decision the test's geometry is back and it passes unchanged). Options: the free rack's canvas notifies the layer when its scene's
-ports move; or the layer refreshes once per frame after a store event. Chosen: none yet (pre-existing, out of BR.I's
-scope). Status: open.
+ports move; or the layer refreshes once per frame after a store event. Chosen (BR.J): the event — `CircuitCanvas::
+onPinsMoved` fires when its pins move outside a layout (a new scene, a pan / zoom / fit, a port's slide step, hold or
+snap); the free rack forwards it (`DeviceChainView::onRackPinsMoved`) and the cable layer refreshes, only while a drawn
+cable ends in the open rack and not mid layout pass (`UiTree::inLayout`: onLayout follows). No per-frame cost at rest.
+The project patch view and opened groups draw their own cables inside the canvas (they already follow the slide); the
+Device view's group frames and panels end cables on widget rects, which move only by layout. Status: done.

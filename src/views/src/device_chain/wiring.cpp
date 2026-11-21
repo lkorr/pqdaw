@@ -432,6 +432,7 @@ struct CableLayer::Impl {
   uint64_t statesFreeze = 0;                 // FZ.3: the ViewContext::freezeSerial they were made at
   doc::Snapshot statesFrom;
   const doc::DeviceLibrary* statesLib = nullptr;  // the library they were planned with
+  bool rackEnds = false;                     // BR.J: a drawn cable ends in the open free rack (rackPinsMoved follows it)
   ui::IRect dragBounds{};                    // what the dragged cable and the target outlines painted
   uint32_t lastHoverRow = 0xFFFFFFFFu;
   // The tree and the slots the layer reads, not the Shell: a screenshot or a test may destroy the Shell object before
@@ -535,8 +536,14 @@ void CableLayer::onLayout() {
   refresh();
 }
 
+void CableLayer::rackPinsMoved() {
+  if (!impl_->rackEnds || !visible() || tree() == nullptr || tree()->inLayout()) return;
+  refresh();
+}
+
 bool CableLayer::refresh() {
   if (!tree()) return false;
+  impl_->rackEnds = false;
   if (!visible()) {
     if (cables_.empty()) return false;
     cables_.clear();
@@ -666,6 +673,8 @@ bool CableLayer::refresh() {
       c.input = chain->isInput(w.to, param);
     }
     if (!ea && !eb) continue;  // neither end in the shown chain: not drawn (the project patch view shows every wire, T4.13)
+    // BR.J: an end on a pin of the open free rack (it moves with the rack's canvas: rackPinsMoved).
+    if (chain->freeRackOpen() && ((from.device != nullptr && chain->inFreeRack(w.from)) || chain->inFreeRack(w.to))) impl_->rackEnds = true;
     std::optional<ui::Vec2> a = ea ? std::optional<ui::Vec2>(ea->at) : trackAnchor(w.fromNoteSource() ? w.noteSource : from.track->id);
     std::optional<ui::Vec2> b = eb ? std::optional<ui::Vec2>(eb->at) : trackAnchor(to.track->id);
     if (!a || !b) continue;
@@ -1037,6 +1046,7 @@ CableLayer& installWiring(Shell& shell) {
   ctx.setViewAction("wire.delete", [l] { l->deleteSelected(); }, [l] { return l->selected().valid(); });
   if (DeviceChainView* chain = findDeviceChain(shell)) {
     ui::UiTree* tree = &shell.tree();
+    chain->onRackPinsMoved = [l] { l->rackPinsMoved(); };  // BR.J: no layout follows a rebuild or slide of the rack
     chain->onJack = [l, tree](doc::DeviceId device, std::string_view port, const ui::PointerEvent& e) {
       if (e.type == ui::PointerType::Down) {
         l->beginDrag(device, std::string(port), e.pos);

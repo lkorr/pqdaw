@@ -974,6 +974,10 @@ struct CircuitCanvas::Impl final : FaceHost {
   std::shared_ptr<const CircuitScene> scene0;  // the scene the orbits were built for (their keys across a new one)
 
   int32_t orbitAt(uint32_t pin) const noexcept { return pin < orbitOf.size() ? orbitOf[pin] : -1; }
+  // BR.J: the pins moved in device px (CircuitCanvas::onPinsMoved).
+  void pinsMoved() const {
+    if (self.onPinsMoved) self.onPinsMoved();
+  }
   // Where orbit o is drawn now (shifted: by its block's lift offset).
   Point2 orbitPos(const OrbitRef& o, bool shifted) const noexcept {
     const SceneNode& n = scene->nodes[o.node];
@@ -1154,6 +1158,7 @@ struct CircuitCanvas::Impl final : FaceHost {
         o.cur = o.target;
         damagePort(o);
       }
+    pinsMoved();
   }
   // Damages a port's drawn rect (with its glow) where it is now.
   void damagePort(const OrbitRef& o) {
@@ -1184,6 +1189,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       damagePort(o);
     }
     refreshOrbitCables();
+    pinsMoved();
     if (orbitsMoving()) self.requestFrame();
     else orbitLast = -1.0;
   }
@@ -1635,6 +1641,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     fitReadable = false;
     view.zoom = z;
     self.markDirty();
+    pinsMoved();
   }
 
   void zoomed() {
@@ -1785,6 +1792,7 @@ void CircuitCanvas::setScene(std::shared_ptr<const CircuitScene> scene, bool fit
     impl_->fit();
   }
   markDirty();
+  impl_->pinsMoved();
 }
 
 const std::shared_ptr<const CircuitScene>& CircuitCanvas::scene() const noexcept { return impl_->scene; }
@@ -1800,6 +1808,7 @@ void CircuitCanvas::setView(const View& v) {
   impl_->fitPending = false;
   if (zoomChanged) impl_->zoomed();
   else markDirty();
+  impl_->pinsMoved();
 }
 
 void CircuitCanvas::fitToRead() {
@@ -3457,6 +3466,7 @@ void CircuitCanvas::setCablesAnimated(bool on) {
     for (Impl::OrbitRef& o : m.orbits) o.cur = o.target;
     m.refreshOrbitCables();
     markDirty();
+    m.pinsMoved();
   }
   if (wasAwake) markDirty();
 }
@@ -3493,6 +3503,7 @@ void CircuitCanvas::setPortAngle(uint32_t pin, float angle) {
   m.damagePort(o);
   m.refreshOrbitCables();
   markDirty();
+  m.pinsMoved();
 }
 
 void CircuitCanvas::releasePort(uint32_t pin) {
