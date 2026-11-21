@@ -19,6 +19,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -1431,4 +1432,112 @@ TEST_CASE("M6 M12: Tones is exact for one pitched voice only; on a chord its par
       }
     }
   }
+}
+
+// SM.4: the Beats / Tones / Texture renderer moved into dsp::WarpVoice (pq/dsp/warp_voice.h); the clip player is its
+// first client. These hashes were recorded from the clip player BEFORE the extraction (main 939bcf57): every render
+// below must stay bit-identical (FNV-1a over both channels' float bits).
+namespace {
+
+uint64_t fnv(const std::vector<float>& v) {
+  uint64_t h = 1469598103934665603ull;
+  for (float f : v) {
+    const auto b = std::bit_cast<uint32_t>(f);
+    for (int k = 0; k < 4; ++k) {
+      h ^= (b >> (8 * k)) & 0xFFu;
+      h *= 1099511628211ull;
+    }
+  }
+  return h;
+}
+
+std::vector<e::AudioClipDesc> sm4Cases() {
+  std::vector<e::AudioClipDesc> v = everyMode();
+  // More of the Beats / Tones / Texture paths: Off loops, an envelope, transient slices, forward Texture, a loud
+  // transpose (mips), a slow Tones (alignment over long lags).
+  e::AudioClipDesc b = warped(e::ClipWarp::Beats, 11, 0, kPpq * 3, 120.0);
+  b.stretch.sliceLoop = e::SliceLoop::Off;
+  b.stretch.envelope = 35.0f;
+  b.stretch.pitchRatio = 0.8;
+  v.push_back(b);
+  e::AudioClipDesc bt = warped(e::ClipWarp::Beats, 12, 0, kPpq * 3, 120.0);
+  bt.stretch.granulation = 0;
+  bt.stretch.sliceLoop = e::SliceLoop::Forward;
+  static const std::vector<double> onsets = [] {
+    std::vector<double> o;
+    for (int h = 0; h < kHits; ++h) o.push_back(static_cast<double>(h * kHitFrames) + 3.0);
+    return o;
+  }();
+  bt.transients = onsets;
+  v.push_back(bt);
+  e::AudioClipDesc x = warped(e::ClipWarp::Texture, 13, 0, kPpq * 3, 90.0);
+  x.stretch.flux = 100.0f;
+  x.stretch.pitchRatio = 1.3;
+  v.push_back(x);
+  e::AudioClipDesc t = warped(e::ClipWarp::Tones, 14, 0, kPpq * 3, 140.0);
+  t.stretch.pitchRatio = 2.9;  // above rate 2
+  t.stretch.grainSeconds = 0.08;
+  v.push_back(t);
+  e::AudioClipDesc t2 = warped(e::ClipWarp::Tones, 15, 0, kPpq * 3, 70.0);
+  t2.stretch.pitchRatio = 0.6;
+  t2.reverse = true;
+  v.push_back(t2);
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("SM.4: clip-player Beats / Tones / Texture renders are bit-identical to before the WarpVoice extraction") {
+  const e::ClipSample s = makeSample(400000, 2, busy);
+  const std::vector<e::AudioClipDesc> all = sm4Cases();
+  std::vector<uint64_t> got;
+  for (size_t only = 0; only < all.size(); ++only)
+    for (const bool ramp : {false, true}) {
+      if (e::clipComplex(all[only].warp) || all[only].warp == e::ClipWarp::RePitch) continue;
+      CAPTURE(only);
+      CAPTURE(ramp);
+      std::vector<uint64_t> h;
+      for (uint32_t block : {64u, 37u}) {
+        Rig rig(block);
+        if (ramp) rig.tempo({{0, 100.0, pq::TempoCurve::Linear}, {kEveryModeEnd, 150.0, pq::TempoCurve::Step}});
+        else rig.tempo({{0, 128.0, pq::TempoCurve::Step}});
+        e::AudioClipDesc c = all[only];
+        c.crossfadeIn = 0;
+        const Ticks end = c.start + c.length;
+        rig.audio({{1, {c}}}, {s});
+        rig.play(c.start > kPpq ? c.start - kPpq : 0);
+        std::vector<float> r;
+        std::vector<float> l = rig.render(static_cast<uint64_t>(rig.map.ticksToSamples(end - (c.start > kPpq ? c.start - kPpq : 0), kSr)), 0, 0, &r);
+        l.insert(l.end(), r.begin(), r.end());
+        float peak = 0.0f;
+        for (float y : l) peak = std::max(peak, std::abs(y));
+        CHECK(peak > 0.05f);
+        h.push_back(fnv(l));
+      }
+      CHECK(h[0] == h[1]);
+      got.push_back(h[0]);
+    }
+  // Every everyMode() clip at once (crossfades, Complex and Re-Pitch around the stretch modes).
+  for (const bool ramp : {false, true}) {
+    Rig rig(64);
+    if (ramp) rig.tempo({{0, 100.0, pq::TempoCurve::Linear}, {kEveryModeEnd, 150.0, pq::TempoCurve::Step}});
+    else rig.tempo({{0, 128.0, pq::TempoCurve::Step}});
+    rig.audio({{1, everyMode()}}, {s});
+    rig.play(0);
+    std::vector<float> r;
+    std::vector<float> l = rig.render(static_cast<uint64_t>(rig.map.ticksToSamples(kEveryModeEnd, kSr)), 0, 0, &r);
+    l.insert(l.end(), r.begin(), r.end());
+    got.push_back(fnv(l));
+  }
+  std::string list;
+  for (uint64_t x : got) list += std::to_string(x) + "ull, ";
+  MESSAGE("hashes: ", list);
+  const std::vector<uint64_t> want = {
+      13178002982794756628ull, 11501452169219816393ull, 5465651248702430293ull,  9260306898543244997ull,
+      12865482765260031741ull, 9882299265028725284ull,  9689780281645209777ull,  4246441625156050472ull,
+      5709435580480571101ull,  17078761170441031203ull, 14956903473804657082ull, 14745678876713372941ull,
+      42480860076646277ull,    15013354399145482131ull, 17681837085499952033ull, 12696680910353746901ull,
+      5798068288485186556ull,  10969512245636323802ull, 1974019200371578659ull,  7892739669148853691ull,
+      1089499390348791985ull,  3584902972447577824ull};
+  CHECK(got == want);
 }
