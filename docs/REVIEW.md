@@ -2192,8 +2192,8 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Shorter than a panel: the chain scrolls — the wheel over the chain (not over a knob or a circuit canvas, which keep the
   wheel), Shift+wheel sideways as before, and a scrollbar at the chain's right edge. Sockets and chain links stay on the
   visible bottom edge.
-- Q?-BR.I-a: an instrument's mini circuit (Basic Synth) also counts at zoom 1 — it makes the default instrument tall and
-  wide. Say if it should go back to fitting the view instead.
+- An instrument's mini circuit (Basic Synth) still fits the view (zoom ≤ 1; Ctrl+wheel zooms it) and does not make the
+  view taller (Q?-BR.I-a).
 - Goldens: audio-rack, instrument-rack, device-automation, device-chain, device-free-rack(-collapsed), device-frozen,
   device-group-panel(-elements), device-knob-curves, device-meta-{bandwave,chain,envelope,loudness,scope,spectrogram,
   spectrum,stereo}, device-path-broken, device-wiring.

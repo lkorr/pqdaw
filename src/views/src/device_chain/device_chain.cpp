@@ -478,17 +478,17 @@ public:
   explicit ChainContent(DeviceChainView::Impl& impl) : Widget("chain"), impl_(impl) { setLayout(ui::LayoutKind::Custom); }
 
   // Device px the chain needs (frames, gaps, the add slot).
-  int32_t totalWidthPx(float scale) const {
+  int32_t totalWidthPx(float scale, float hLogical) const {
     float x = kChainPad;
-    for (const FrameBase* f : impl_.frames) x += f->logicalWidth() + kFrameGap;
+    for (const FrameBase* f : impl_.frames) x += f->logicalWidthFor(hLogical - 2.0f * kChainPad) + kFrameGap;
     x += kAddW + kChainPad;
     return static_cast<int32_t>(std::lround(x * scale));
   }
   // BR.I: every panel at 1:1 — the chain is as tall as its tallest frame (whole device px rounded up), else the view.
   ui::ISize contentExtent(ui::ISize viewport) const override {
     const float s = tree() ? tree()->scale() : 1.0f;
-    const auto h = static_cast<int32_t>(std::ceil((impl_.view.neededChainHeight()) * s - 1e-3f));
-    return {std::max(viewport.w, totalWidthPx(s)), std::max(viewport.h, h)};
+    const int32_t h = std::max(viewport.h, static_cast<int32_t>(std::ceil(impl_.view.neededChainHeight() * s - 1e-3f)));
+    return {std::max(viewport.w, totalWidthPx(s, static_cast<float>(h) / s)), h};
   }
   void arrange(ui::LayoutPass& pass) override {
     const ui::IRect r = rect();
@@ -497,7 +497,7 @@ public:
     int32_t x = r.x + pad;
     const int32_t h = std::max(0, r.h - 2 * pad);
     for (FrameBase* f : impl_.frames) {
-      const int32_t w = pass.px(f->logicalWidth());
+      const int32_t w = pass.px(f->logicalWidthFor(hLogical - 2.0f * kChainPad));
       pass.place(*f, {x, r.y + pad, w, std::min(h, pass.px(f->logicalHeight(hLogical - 2.0f * kChainPad)))});
       x += w + gap;
     }

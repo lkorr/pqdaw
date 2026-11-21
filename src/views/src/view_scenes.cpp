@@ -2504,7 +2504,6 @@ Status setupAudioRack(Shell& shell) {
   const doc::DeviceId one[1] = {c1};
   v->select(one);
   shell.tree().layoutNow();
-  v->revealDevice(c1);  // BR.I: the Basic Synth's circuit at zoom 1 is wide: the rack scrolled into view
   return Ok{};
 }
 

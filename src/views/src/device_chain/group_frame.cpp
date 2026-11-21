@@ -68,10 +68,11 @@ public:
       });
   }
 
-  // TMM.13-fix2 (MM review "UI and aesthetic" 9) / BR.I: by default the panel is as wide as its contents at 1:1 (a
-  // face at its own size, the mini circuit at zoom 1; the chain is as tall as they need and scrolls). A width dragged
-  // this session wins.
-  float logicalWidth() const override {
+  // TMM.13-fix2 (MM review "UI and aesthetic" 9) / BR.I: a panel is as wide as it is at 1:1 (the chain is as tall as it
+  // needs and scrolls); the mini circuit — a zoomable canvas, not a panel (Q?-BR.I-a) — as wide as its contents at the
+  // zoom that fills the frame's height (at most 1). A width dragged this session wins.
+  float logicalWidth() const override { return logicalWidthFor(0.0f); }
+  float logicalWidthFor(float available) const override {
     const auto it = impl_.groupWidths.find(id_.value);
     if (it != impl_.groupWidths.end()) return it->second;
     const float side = inspector_ != nullptr ? inspectorW() : 0.0f;
@@ -79,13 +80,13 @@ public:
       return std::clamp(std::ceil(panel_->face().worldSize().x) + side + 2.0f, kMinW, kMaxW);
     if (view_ == nullptr) return side + kMinW;
     const std::optional<ui::Rect> b = circuitBounds();
-    if (!b) return kDefaultW + side;
-    return std::clamp(std::ceil(b->x1 - b->x0) + 2.0f + side, kMinW, kMaxW);
+    if (!b || !(available > 0.0f)) return kDefaultW + side;
+    const float z = std::min(1.0f, (available - kTitleH - 1.0f) / std::max(1.0f, b->y1 - b->y0));
+    return std::clamp(std::ceil((b->x1 - b->x0) * z) + 2.0f + side, kMinW, kMaxW);
   }
+  // BR.I: what its panels need at 1:1 (its panel, its inspector); a mini circuit needs nothing (it fits).
   float naturalHeight() const override {
-    float h = 0.0f;
-    if (panel_ != nullptr) h = panel_->face().worldSize().y;
-    else if (const std::optional<ui::Rect> b = circuitBounds()) h = b->y1 - b->y0;
+    float h = panel_ != nullptr ? panel_->face().worldSize().y : 0.0f;
     if (inspector_ != nullptr) h = std::max(h, inspector_->face().worldSize().y);
     return h > 0.0f ? kTitleH + 1.0f + std::ceil(h) : 0.0f;
   }

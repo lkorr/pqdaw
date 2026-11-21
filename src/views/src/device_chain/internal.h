@@ -196,6 +196,8 @@ public:
   // BR.I: the logical height its panels need at 1:1 (the chain is at least this tall; it scrolls when the view is
   // shorter, and the Device view's auto height follows the tallest).
   virtual float naturalHeight() const = 0;
+  // The width in a chain `available` logical px tall (a group's mini circuit fits that height: Q?-BR.I-a).
+  virtual float logicalWidthFor(float /*available*/) const { return logicalWidth(); }
   // The device (or something inside it) changed in the document: show it (values, settings, activation, structure).
   virtual void update(const doc::Device& d) = 0;
   // Whether update(d) can show `d` (else the frame is rebuilt).

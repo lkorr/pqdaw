@@ -2220,13 +2220,14 @@ Context: panels now draw 1:1 and the Device view's auto height follows the talle
 without a panel (Basic Synth's instrument group) shows its mini circuit; at zoom 1 it is ~990 × 330 units, so the default
 instrument alone takes the view to its cap (half the body) and is wide (the chain scrolls both ways). Options: count the
 circuit at zoom 1 (as the design says: "including group panels"); or keep a mini circuit fitted to the view (it zooms
-itself with Ctrl+wheel) and count only real panels. Chosen: the first (one function, `GroupFrame::naturalHeight` /
-`logicalWidth`, to change if the user prefers the second). Status: open.
+itself with Ctrl+wheel) and count only real panels. Chosen (orchestrator, 2026-11-20): the second — a mini circuit fits
+the frame's height (zoom ≤ 1) and does not count toward the auto height; only real panels (and the inspector) draw 1:1
+and count. Status: decided.
 
 ## Q?-BR.I-b · 2026-11-20 · BR.I · A free-rack cable's end lags its port's orbit
 Context: the cable layer computes ends on store events and after layout passes. When a new wire makes a free-rack block's
 orbiting port turn toward its cable, nothing lays out afterwards, so the cable starts at the port's old place until the
-next layout (seen in "wiring: a drag from a jack onto a knob" once BR.I's wider chain put the knob right under the LFO;
-the test now refreshes the layer before checking). Options: the free rack's canvas notifies the layer when its scene's
+next layout (seen in "wiring: a drag from a jack onto a knob" while the mini circuit drew at zoom 1 and put the knob right under the
+LFO; with Q?-BR.I-a's decision the test's geometry is back and it passes unchanged). Options: the free rack's canvas notifies the layer when its scene's
 ports move; or the layer refreshes once per frame after a store event. Chosen: none yet (pre-existing, out of BR.I's
 scope). Status: open.

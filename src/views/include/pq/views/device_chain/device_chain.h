@@ -245,11 +245,11 @@ public:
 
   // ---- BR.I: panels at 1:1; the Device view's height -----------------------------------------------------------------
   // Every panel draws at 1:1 (none is fitted to the view's height). The chain is as tall as its tallest frame (a leaf's
-  // panel, a group's panel or mini circuit at zoom 1, a rack's macros and chain) and scrolls vertically when the view is
-  // shorter: the wheel over the chain (where no control or canvas takes it; Shift+wheel: sideways, as before) and the
+  // panel, a group's panel, a rack's macros and chain; a group's mini circuit fits the height it gets: Q?-BR.I-a) and
+  // scrolls vertically when the view is shorter: the wheel over the chain (where no control or canvas takes it; Shift+wheel: sideways, as before) and the
   // scrollbar at its right edge. The signal row (sockets, chain links) runs along the bottom of the visible part.
-  // Auto height (ViewPrefs::deviceViewHeight 0): when the Device view is shown or the height the chain needs changes, a
-  // frame later onFitHeight is asked to grow (+) or shrink (−) the detail area by this many logical px so the chain is
+  // Auto height (ViewPrefs::deviceViewHeight 0): when the Device view is shown or the height the chain needs changes, right
+  // after that layout pass onFitHeight is asked to grow (+) or shrink (−) the detail area by this many logical px so the chain is
   // as tall as it needs (installDeviceChain: the shell's body splitter, within kDetailHeight … half the body's height).
   // Dragging the body splitter sets the user's height (kept in the view prefs; no auto height after); a double-click
   // on it goes back to auto.

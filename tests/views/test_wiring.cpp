@@ -87,14 +87,10 @@ struct Ui {
     lfoB = test_blocks::addModule(st, keys, "lfo", doc::ops::kOffPath);
     util = test_blocks::addModule(st, keys, "utility");
     inst = doc::mainPath(*st.current(), *doc::findTrackPtr(*st.current(), keys)).blocks.at(0)->id;
-    // BR.I: a Device view height of the user's (300 + the free rack), else it follows the tallest panel (here the
-    // instrument's circuit at zoom 1: the arrangement's lanes would be too short to hover a row in an 800-px window).
-    ViewPrefs prefs = ctx.viewPrefs();
-    prefs.deviceViewHeight = 300.0f;
-    ctx.setViewPrefs(prefs);
     auto s = Shell::create(d.tree(), ctx);
     REQUIRE_MESSAGE(s.ok(), (s.ok() ? "" : s.error().message));
     shell = std::move(*s);
+    dynamic_cast<Splitter&>(*d.find("main/body")).setPosition(300.0f);
     ctx.setSelectedTrack(keys);
     ctx.setDetailVisible(true);
     ctx.setDetailMode(DetailMode::Device);
@@ -200,15 +196,11 @@ TEST_CASE("wiring: a drag from a jack onto a knob is one undo step and draws a c
   CHECK(wires[0].amount == 1.0);
   CHECK_FALSE(u.layer().dragging());
   u.d.step();
-  // (Q?-BR.I-b: the layer computed the ends when the wire was made, before the free rack re-orbited the LFO's port toward
-  // the knob, which no layout follows; BR.I's wider chain puts the knob right under the LFO, where that shows.)
-  u.layer().refresh();
   const CableLayer::Cable* c = u.cable(wires[0].id);
   REQUIRE(c != nullptr);
   CHECK(c->aDocked);
   CHECK(c->bDocked);
-  // At the LFO's pin in the free rack (TX.orbit-ports: the pin faces its cable now — asked again).
-  CHECK(dist(c->a, u.jack(u.lfoB)) < 4.0f);
+  CHECK(dist(c->a, from) < 4.0f);  // at the LFO's pin in the free rack
   CHECK(dist(c->b, to) < 40.0f);  // the top part of the knob
   MESSAGE("LFO cable rate " << int(c->rate));
   CHECK(c->rate <= 1);            // an LFO module's output: audio or param rate (not per voice)
@@ -247,7 +239,6 @@ TEST_CASE("wiring (WI.3): a cable whose declared type clashes is refused at the 
   u.d.tree().layoutNow();
   u.d.step();
   auto socket = [&](const char* input) {
-    u.view().revealDevice(logic);  // (BR.I: the instrument group's circuit at 1:1 is wide: the block may be scrolled away)
     u.d.tree().layoutNow();
     for (const DeviceChainView::InputSocket& is : u.view().inputSockets())
       if (is.device == logic && is.input == input) return mid(is.rect);
