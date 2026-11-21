@@ -44,7 +44,7 @@
 // (equal frames: offs before ons). A note-off at min(on + length, end of its clip pass). At a loop wrap, a locate or
 // a stop, every sounding note gets a note-off at that frame (so locate releases all sounding voices; voices from other
 // sources, e.g. live MIDI on the same instrument, are left alone). Note ids in events are per-track instance numbers
-// (unique among sounding notes), not document ids.
+// (unique among sounding notes, below 0x80000000: AP.1's note stages own the ids above), not document ids.
 // Chance and velocity range: SequenceImage's deterministic per-note-and-pass RNG (sequence.h).
 // Image swap (sequence): sounding notes follow their track id. A sounding note that is still in the new image (same
 // id, same start; findOccurrence) keeps sounding, with its note-off recomputed from the new length; if its pitch
@@ -609,7 +609,7 @@ private:
   uint64_t commandsPosted_ = 0;  // commands drained from the post() ring
   // Sequencer.
   uint32_t numTracks_ = 0;
-  uint32_t nextInstance_ = 1;    // event note ids: unique across tracks (wrap below 0xE0000000, skipping 0: T6.4)
+  uint32_t nextInstance_ = 1;    // event note ids: unique across tracks (wrap below 0x80000000, skipping 0: T6.4, AP.1)
   std::vector<TrackState> tracks_;
   std::vector<Ticks> next_;      // per track: min(next note-on, next note-off) — the per-track fast path
   SampleTime minNextSample_ = INT64_MAX;  // ticksToSamples(min over tracks of next_) — the per-block fast path

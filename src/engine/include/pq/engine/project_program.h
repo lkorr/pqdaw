@@ -342,6 +342,8 @@ public:
     ++paramGen_;
     return {params_, numParams_};
   }
+  // AP.1: the same block, read-only (not counted as a change: the note stages read their runtime params from it).
+  std::span<const float> projectParamsView() const noexcept { return {params_, numParams_}; }
   // The unit's current image's param block (a write through it is seen at the next block: the call marks the block
   // as changed).
   std::span<float> params(uint32_t unit) noexcept;

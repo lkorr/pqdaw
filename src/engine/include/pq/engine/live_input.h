@@ -33,8 +33,9 @@
 // stopped) play their note-offs and drop their note-ons. The EventBuffer itself never loses a note-off (note_events.h).
 //
 // ---- Note ids -------------------------------------------------------------------------------------------------------
-// Live notes use 0xE0000000 | n (n < 2^28); the timeline's instances stay below 0xE0000000 and auditions use
-// 0xF0000000 | n, so the three spaces are disjoint in a slot.
+// Live notes use 0xE0000000 | n (n < 2^28); the timeline's instances stay below 0x80000000, note stages' generated
+// notes use 0x80000000 … 0xDFFFFFFF (AP.1, note_stage.h) and auditions 0xF0000000 | n, so the spaces are disjoint in a
+// slot.
 //
 // ---- Threads --------------------------------------------------------------------------------------------------------
 //   LivePorts::push(port)          that port's producer thread (one per port); wait-free

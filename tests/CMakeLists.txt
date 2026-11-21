@@ -373,6 +373,12 @@ pq_add_test(pq_tests_engine PERF
     engine/test_linear_response.cpp  # EQ.2: analytic responses vs interpreted impulse responses
   DEPS pq_engine nlohmann_json::nlohmann_json)
 
+# AP.1: note stages (the per-slot chain between the merged events and the VoiceEngine) and the arpeggiator core.
+pq_add_test(pq_tests_note_stage
+  SOURCES
+    engine/test_note_stage.cpp
+  DEPS pq_engine)
+
 # T1.x-arch1: per-track compile units (partition, composition, the project runner, per-unit hot swap).
 pq_add_test(pq_tests_project
   SOURCES

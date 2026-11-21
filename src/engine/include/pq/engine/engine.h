@@ -16,6 +16,8 @@
 //   recorder (T6.7)         device inputs → capture rings with song time, and the tracks' monitor gates
 //                           (pq/engine/recorder.h); run from the block hook
 //   idle gate               see below
+//   note stages (AP.1)      per slot an optional NoteStageChain (pq/engine/note_stage.h: an arpeggiator, …) between
+//                           the slot's merged events and its VoiceEngine; setNoteStages hands one over lock-free
 //
 // ---- Threads ---------------------------------------------------------------------------------------------------
 //   setProgram                       non-RT, before the audio thread runs (or while it is offline)
@@ -40,7 +42,9 @@
 // 3. ProjectProgram::process: per image block the hook (Timeline::process: transport, automation → project params,
 //    note events), then every unit; an instrument unit's events come from slotSource(k) = the timeline's track k
 //    plus the audition notes of slot k plus the live notes routed to slot k (T6.4). The gate also waits while live
-//    notes are held or queued.
+//    notes are held or queued. AP.1: a slot with a note stage chain merges those into the chain's input instead and
+//    the chain writes the unit's events (the clock: the timeline's runs of the block as ClockSegments, its tempo
+//    map, the snapshot's bpm; the project param block); the gate also waits while any chain holds or sounds notes.
 // 4. T6.6: the metronome. The engine's block hook runs the timeline's, then (metronome on, or a count-in running, and
 //    not rendering offline) queues the clicks of that image block's runs at beat + ProjectProgram::outputLatency().
 //    After the program, queued clicks are added into the main pair (outputs 0 / 1), or — when the owner set
@@ -68,6 +72,7 @@
 #include "pq/engine/audio_block.h"
 #include "pq/engine/live_input.h"
 #include "pq/engine/metronome.h"
+#include "pq/engine/note_stage.h"
 #include "pq/engine/offline_render.h"
 #include "pq/engine/project_compile.h"
 #include "pq/engine/project_program.h"
@@ -172,8 +177,16 @@ public:
   }
   bool asleep() const noexcept { return asleep_.load(std::memory_order_relaxed); }
   uint64_t droppedParams() const noexcept { return droppedParams_.load(std::memory_order_relaxed); }  // ring full
-  // Non-RT: frees retired timeline images and program packets.
+  // Non-RT: frees retired timeline images and program packets (AP.1: and replaced note stage chains).
   void collect();
+
+  // AP.1 (note_stage.h "Handover"), one non-RT publisher thread (the UI / compile thread): slot `slot`'s note stage
+  // chain from its next block on; null or an empty chain removes it. A chain published before the audio thread took
+  // the previous one replaces it (that one is freed here). The audio thread takes it at the slot's next block start:
+  // the old chain's generated notes end at frame 0, its key-held source notes go on into the new chain (or to the
+  // voices), and the old chain waits for collect(). Build the chain with the unit's event capacity
+  // (ProjectConfig::eventCapacity). False for a slot ≥ maxSlots.
+  bool setNoteStages(uint32_t slot, std::unique_ptr<NoteStageChain> chain);
 
   // ---- Audio thread ----
   void process(const AudioBlock& block) noexcept;  // RT-safe
@@ -225,11 +238,17 @@ private:
     Engine* engine;
     uint32_t slot;
   };
+  // AP.1: a slot's note stages. `next`: published, not taken yet (UI ↔ audio, exchange); `cur`: the audio thread's.
+  struct SlotStages {
+    std::atomic<NoteStageChain*> next{nullptr};
+    NoteStageChain* cur = nullptr;
+  };
   explicit Engine(const EngineConfig& config);
   static void onBlock(void* self, const AudioBlock& b) noexcept { static_cast<Engine*>(self)->process(b); }
   struct CaptureRun;  // EX.1: renderOffline's bus capture
   static void onCaptureBlock(void* self, const AudioBlock& b) noexcept;  // RT-safe
   static void onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;
+  void runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;  // AP.1
   static void onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
                      std::span<float> params) noexcept;  // T6.6: the timeline's hook, then the metronome
   void mixClicks(const AudioBlock& block) noexcept;     // T6.6
@@ -259,6 +278,9 @@ private:
   std::atomic<ParamRing*> paramConsumed_{nullptr};      // the ring the audio thread reads (for collect)
   SpscRing<AuditionRequest> auditionIn_;
   std::vector<SlotSource> slots_;
+  std::unique_ptr<SlotStages[]> stages_;              // AP.1: per slot
+  SpscRing<NoteStageChain*> retiredStages_;           // AP.1: audio thread → collect()
+  bool stagesBusy_ = false;                           // AP.1: audio thread: a chain held / sounded notes this block
   std::atomic<uint32_t> wake_{0};
   std::atomic<void (*)(void*)> wakeHook_{nullptr};
   std::atomic<void*> wakeUser_{nullptr};

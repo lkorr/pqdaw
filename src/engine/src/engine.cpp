@@ -37,7 +37,9 @@ Result<std::unique_ptr<Engine>> Engine::create(const EngineConfig& config) {
 
 Engine::Engine(const EngineConfig& config)
     : cfg_(config),
-      auditionIn_(std::bit_ceil(std::max(config.auditionRing, 2u))) {
+      auditionIn_(std::bit_ceil(std::max(config.auditionRing, 2u))),
+      stages_(std::make_unique<SlotStages[]>(std::max(config.maxSlots, 1u))),
+      retiredStages_(std::bit_ceil(std::max(2 * config.maxSlots, 16u))) {
   TimelineConfig tc = cfg_.timeline;
   tc.sampleRate = cfg_.sampleRate;
   tc.maxBlockFrames = cfg_.blockFrames;
@@ -63,6 +65,21 @@ Engine::Engine(const EngineConfig& config)
 Engine::~Engine() {
   program_.reset();
   timeline_.reset();
+  for (uint32_t k = 0; k < cfg_.maxSlots; ++k) {  // AP.1
+    delete stages_[k].next.exchange(nullptr);
+    delete stages_[k].cur;
+  }
+  NoteStageChain* c = nullptr;
+  while (retiredStages_.tryPop(c)) delete c;
+}
+
+bool Engine::setNoteStages(uint32_t slot, std::unique_ptr<NoteStageChain> chain) {  // the publisher thread
+  if (slot >= cfg_.maxSlots) return false;
+  if (chain == nullptr) chain = std::make_unique<NoteStageChain>(1);  // an empty chain: "none" from the next block
+  // The audio thread takes `next` with an exchange: a non-null previous value was never seen by it.
+  delete stages_[slot].next.exchange(chain.release(), std::memory_order_acq_rel);
+  wake();
+  return true;
 }
 
 ProjectConfig Engine::projectConfig() noexcept {
@@ -135,6 +152,8 @@ void Engine::collect() {
   live_->collect(audioStopped());
   recorder_->collect(audioStopped());
   if (program_) program_->collect();
+  NoteStageChain* c = nullptr;  // AP.1: chains the audio thread replaced
+  while (retiredStages_.tryPop(c)) delete c;
 }
 
 void Engine::audioOffline() noexcept {  // RT-safe
@@ -164,13 +183,30 @@ void Engine::audioOnline() noexcept {  // RT-safe
 void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
   const SlotSource& s = *static_cast<const SlotSource*>(slot);
   Engine& e = *s.engine;
+  // AP.1: the slot's note stages. A new chain is taken at the block start (when the retire ring has room); the old
+  // one ends its notes at frame 0 and hands its key-held source notes on (note_stage.h "Handover").
+  SlotStages& st = e.stages_[s.slot];
+  if (st.next.load(std::memory_order_relaxed) != nullptr &&
+      e.retiredStages_.sizeApprox() + 2 <= e.retiredStages_.capacity()) {
+    NoteStageChain* next = st.next.exchange(nullptr, std::memory_order_acq_rel);
+    NoteStageChain* old = st.cur;
+    st.cur = next->size() > 0 ? next : nullptr;
+    if (st.cur != nullptr) st.cur->input().clear();
+    if (old != nullptr) old->flush(0, out, st.cur != nullptr ? st.cur->input() : out);
+    if (old != nullptr) e.retiredStages_.tryPush(old);
+    if (st.cur == nullptr) e.retiredStages_.tryPush(next);
+  } else if (st.cur != nullptr) {
+    st.cur->input().clear();
+  }
+  NoteStageChain* const cur = st.cur;
+  EventBuffer& merge = cur != nullptr ? cur->input() : out;
   if (e.panicNow_) {  // L16: first, so the block's own note-ons still start
     NoteEvent all;
     all.kind = NoteEventKind::AllNotesOff;
-    out.push(all);
+    merge.push(all);
   }
   const EventSource tl = e.timeline_->eventSource(s.slot);
-  tl.fn(tl.user, sampleTime, frames, out);
+  tl.fn(tl.user, sampleTime, frames, merge);
   // Auditions of this slot: the note-on at the first block after the request, the note-off at its time.
   const int64_t end = sampleTime + frames;
   for (uint32_t i = 0; i < e.numAuditions_;) {
@@ -180,18 +216,42 @@ void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer
       continue;
     }
     if (!a.started) {
-      out.push(noteOn(0, a.id, a.hz, a.velocity * (1.0f / 127.0f)));
+      merge.push(noteOn(0, a.id, a.hz, a.velocity * (1.0f / 127.0f)));
       a.started = true;
     }
     if (a.offTime < end) {
-      out.push(noteOff(static_cast<uint32_t>(std::max<int64_t>(0, a.offTime - sampleTime)), a.id));
+      merge.push(noteOff(static_cast<uint32_t>(std::max<int64_t>(0, a.offTime - sampleTime)), a.id));
       a = e.auditions_[--e.numAuditions_];  // unordered removal
       ++e.stats_.auditionOffs;
       continue;
     }
     ++i;
   }
-  e.live_->emit(s.slot, sampleTime, frames, out);  // T6.4: live notes routed to this slot
+  e.live_->emit(s.slot, sampleTime, frames, merge);  // T6.4: live notes routed to this slot
+  if (cur != nullptr) e.runStages(*cur, sampleTime, frames, out);
+}
+
+void Engine::runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
+  // AP.1: the block's clock as segments: the timeline's song runs, Free between them (stopped, counting in).
+  ClockSegment segs[2 * Timeline::kMaxRuns + 1];
+  uint32_t n = 0, at = 0;
+  for (const TransportRun& r : timeline_->runs()) {
+    if (r.kind != TransportRun::Song || r.len == 0 || r.frame < at || r.frame + r.len > frames) continue;
+    if (r.frame > at) segs[n++] = {at, r.frame - at, false, 0};
+    segs[n++] = {r.frame, r.len, true, r.pos};
+    at = r.frame + r.len;
+  }
+  if (at < frames) segs[n++] = {at, frames - at, false, 0};
+  NoteStageBlock b;
+  b.time = sampleTime;
+  b.frames = frames;
+  b.clock.tempo = &timeline_->tempoImage().tempo();
+  b.clock.sampleRate = cfg_.sampleRate;
+  b.clock.bpm = timeline_->snapshot().bpm;
+  b.clock.segments = segs;
+  b.clock.numSegments = n;
+  if (program_ != nullptr) b.params = program_->projectParamsView();
+  if (chain.run(b, out)) stagesBusy_ = true;
 }
 
 void Engine::onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
@@ -313,11 +373,12 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
   {
     AudioBlock main = block;  // the program plays the main channels; the click pair (if any) is the engine's
     main.numOut = std::min(block.numOut, cfg_.numOut);
+    stagesBusy_ = false;  // AP.1: set by the slots' chains during the program
     program_->process(main);
   }
   if (clickPair_ || metronome_->pending()) mixClicks(block);  // T6.6
   if (sleepFrames_ == 0) return;
-  bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !timeline_->playing() && !timeline_->countingIn() &&
+  bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !stagesBusy_ && !timeline_->playing() && !timeline_->countingIn() &&
                !metronome_->pending() && !recorder_->monitoring() && program_->quiet();  // T6.7: a monitored input
   if (quiet)
     for (uint32_t c = 0; c < block.numOut && quiet; ++c)

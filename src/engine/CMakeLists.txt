@@ -1,5 +1,6 @@
 pq_add_module(pq_engine
   SOURCES
+    src/arp.cpp
     src/asio_convert.cpp
     src/audio_sequence.cpp
     src/clip_player.cpp
@@ -18,6 +19,7 @@ pq_add_module(pq_engine
     src/interpreter.cpp
     src/newton.cpp
     src/note_list.cpp
+    src/note_stage.cpp
     src/null_device.cpp
     src/offline_render.cpp
     src/preview_player.cpp

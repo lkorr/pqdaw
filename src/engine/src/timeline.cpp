@@ -694,7 +694,7 @@ __declspec(noinline) void Timeline::chase(uint32_t track, Ticks t, uint32_t fram
     }
     ++stats_.noteOns;
     ++stats_.chasedNotes;
-    if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;
+    if (++nextInstance_ >= 0x80000000u) nextInstance_ = 1;  // AP.1: note-stage ids above
   }
   // T7.7: a chased voice that landed in a synced unison becomes a clone of its keeper (both started at this frame
   // from reset state, at the unison's gains: the copy removes what their pitch paths' rounding left).
@@ -1112,7 +1112,7 @@ void Timeline::playTrackImpl(uint32_t track, uint32_t frame, SampleTime s0, uint
                               n.id, n.hz, std::clamp(n.releaseVelocity, 0.0f, 127.0f) * (1.0f / 127.0f), 0, 0, 0, 0, 0});
       }
       ++stats_.noteOns;
-      if (++nextInstance_ >= 0xE0000000u) nextInstance_ = 1;  // T6.4: live notes (0xE…) and auditions (0xF…) above
+      if (++nextInstance_ >= 0x80000000u) nextInstance_ = 1;  // T6.4 + AP.1: stage notes (0x80…0xDF), live (0xE…), auditions (0xF…) above
     }
     ++c.note;
     computeNextOn(c);
