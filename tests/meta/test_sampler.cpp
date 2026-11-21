@@ -290,8 +290,10 @@ TEST_CASE("sampler: registered; inputs, params, settings; every setting combinat
   ExpandContext c;
   const Expansion a = mustExpand(c), b = mustExpand(c);
   CHECK(a.patch == b.patch);
-  REQUIRE(a.resources.size() == 1);
+  REQUIRE(a.resources.size() == 2);  // SM.10: the Sample, then the face's VoiceTap (the playheads)
   CHECK(a.resources[0].kind == ResourceKind::Sample);
+  CHECK(a.resources[1].kind == ResourceKind::VoiceTap);
+  CHECK(a.resources[1].index == 1);
   const std::string text = graph::print(a.patch);
   CAPTURE(text);
   auto parsed = graph::parse(text, "expansion.pqp");

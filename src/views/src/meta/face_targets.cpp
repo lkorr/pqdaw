@@ -14,6 +14,7 @@
 #include "pq/dsp/curve.h"
 #include "pq/tuning/tuning.h"
 #include "pq/views/view_context.h"
+#include "pq/views/waveforms.h"
 
 namespace pq::views {
 
@@ -188,6 +189,11 @@ const dsp::Curve* DocTarget::curve(size_t param) const {  // GU.1
 }
 
 TonePort* DocTarget::tonePort() const { return ctx_.tonePort(); }
+
+const media::WaveformOverview* DocTarget::sampleOverview(uint32_t sample) const {
+  return sample != 0 ? ctx_.waveforms().overview(doc::SampleId{sample}) : nullptr;
+}
+uint64_t DocTarget::overviewRevision() const { return ctx_.waveforms().revision(); }
 
 uint64_t DocTarget::guidesKey() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx_.doc().get())); }
 

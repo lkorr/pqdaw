@@ -358,6 +358,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     bool panel = false;  // TX.panel-faces: a device's panel (panelMaker), else a meta face
     float scale = 1.0f;  // TX.resize: its node's SceneNode::scale (face-local units = world units / scale)
     uint64_t tileSalt = 0;  // TX.resize: a scaled face's tiles are its own (0: shared by its type at scale 1)
+    int8_t shown = -1;      // SM.10: what Face::setShown last said (−1: nothing yet)
     MetaFace* meta() const noexcept { return panel ? nullptr : static_cast<MetaFace*>(face.get()); }
   };
   std::vector<Hosted> faces;
@@ -494,7 +495,10 @@ struct CircuitCanvas::Impl final : FaceHost {
     for (Hosted& o : old)
       if (o.face) retired.push_back(std::move(o.face));
     // TX.panel-faces: a retired face is kept alive (a handler of its may be running) but leaves the host.
-    for (const std::unique_ptr<Face>& f : retired) f->attach(nullptr);
+    for (const std::unique_ptr<Face>& f : retired) {
+      f->setShown(false);  // SM.10: off the screen (its reader may stop)
+      f->attach(nullptr);
+    }
     faceCapture = indexOf(capture);
     faceWheel = indexOf(wheelFace);
     if (wheelFace != nullptr && faceWheel < 0) wheelFace->endWheel();  // (retired: its run ends now)
@@ -570,6 +574,17 @@ struct CircuitCanvas::Impl final : FaceHost {
            devY(n.y + n.h) >= static_cast<float>(r.y) && devY(n.y) <= static_cast<float>(r.bottom());
   }
 
+  // SM.10: tells a face whether it is on screen when that changes (Face::setShown).
+  static void showFace(Hosted& h, bool on) {
+    const int8_t v = on ? 1 : 0;
+    if (h.shown == v || !h.face) return;
+    h.shown = v;
+    h.face->setShown(on);
+  }
+  void hideFaces() {
+    for (Hosted& h : faces) showFace(h, false);
+  }
+
   // At most 60 Hz while a visible face's reader is live: new voice records damage that face's live rects only.
   void pollFaces() {
     if (!facesShown || !scene) return;
@@ -580,7 +595,9 @@ struct CircuitCanvas::Impl final : FaceHost {
     for (size_t i = 0; i < faces.size() && built == facesBuilt; ++i) {
       Hosted& h = faces[i];
       VoiceTapReader* rd = h.face->voices();
-      if (!faceVisible(h)) continue;
+      const bool vis = faceVisible(h);
+      showFace(h, vis);  // SM.10
+      if (!vis) continue;
       const bool ticked = h.face->frameTick() | h.face->pollGhosts();  // DT.1, bug-mod-ghost: a compare each
       if (built != facesBuilt) break;  // BR.B: rebuilt by a face's call
       live = live || h.face->ticking() || h.face->ghostsLive();
@@ -615,6 +632,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     for (size_t i = 0; i < faces.size(); ++i) {
       Hosted& h = faces[i];
       const SceneNode& n = scene->nodes[h.node];
+      showFace(h, faceVisible(h));  // SM.10 (a compare when unchanged; every pass: the same answer)
       if (n.hidden || !showNode(h.node)) continue;  // TX.block-drag: a lifted face in the lifted pass
       const float sc = s() * h.scale;  // TX.resize: a scaled node's face at its own px per unit
       const float x0 = devX(n.x), y0 = devY(n.y), x1 = devX(n.x + n.w), y1 = devY(n.y + n.h);
@@ -3460,6 +3478,7 @@ void CircuitCanvas::setFacesShown(bool on) {
   markDirty();
 }
 bool CircuitCanvas::facesShown() const noexcept { return impl_->facesShown; }
+void CircuitCanvas::hideFaces() { impl_->hideFaces(); }
 bool CircuitCanvas::faceDragging() const noexcept { return impl_->faceCapture >= 0; }
 
 // ---- TX.cables -------------------------------------------------------------------------------------------------------

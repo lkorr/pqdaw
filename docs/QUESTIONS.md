@@ -2451,3 +2451,19 @@ Context: SM.8 (docs/plans/SM.md "Decisions", Drop). Choices (most reversible):
 5. **A dropped Sampler is named after its file** ("Kick"), as a dropped track is; a replace keeps the name.
 6. **Placement** is the spawn rule: centred on the drop point but never above the band's title strip (a tall block
    dropped near the top has its top there), an overlap goes to the nearest free spot.
+
+## Q?-SM.10-a · the closed Sampler face: readings taken
+Context: SM.10 (docs/plans/SM.md "Face (👁)" Closed). Choices (most reversible):
+1. **The face is the group's panel** (an oval `shape`, an engine section `samplewave` of a new `sampler` MetaFace, generic
+   mini knobs, a `fold` chevron), not a view-side special face: the Device view and the panel window show the same, and
+   the bare `meta:sampler` block (inside the opened group) is drawn as the oval face too.
+2. **Expand = a fold** (look "chevron", folded by default, Panel::fit): open, the SM.3 tabbed settings show under the
+   oval at its width (the embedded Filter / Env / LFO panels scaled to ~0.6). While open the block is a rectangle (a
+   round plate shapes a panel with folds only when no open section shows below it). SM.11 replaces the section.
+3. **Classic knobs in every mode** (Transpose · Filter · Volume): the Gran set (Position · Size · Density) needs SM.6's
+   params. Label-free (the meta faces' style; names on hover).
+4. **No Filter / LFO on switches on the face**: a panel has no binding for a block's activator (on / off); adding one
+   (a BindingKind or an "active" setting) is left to SM.11 with the expanded panel. The Filter's knob shows the LFO's
+   modulation ring (the Travel wire), even while the LFO is off.
+5. **Hidden = not on the canvas** (scrolled off, the view hidden, a retired face). The Device view's host says nothing,
+   so a Sampler shown there keeps its tap read while the panel exists.

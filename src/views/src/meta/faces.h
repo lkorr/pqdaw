@@ -28,6 +28,9 @@ std::unique_ptr<MetaFace> makeBandLevelsFace(const meta::Type& t);       // VZ.6
 std::unique_ptr<MetaFace> makeWaveformFace(const meta::Type& t);         // VZ.6
 std::unique_ptr<MetaFace> makeWaterfallFace(const meta::Type& t);          // VZ.7
 std::unique_ptr<MetaFace> makeStereoSpectrogramFace(const meta::Type& t);  // VZ.7
+std::unique_ptr<MetaFace> makeSamplerFace(const meta::Type& t);            // SM.10
+// SM.10 (tests): the playheads a Sampler face shows now (0: none, or not a Sampler face).
+size_t samplerFacePlayheads(const MetaFace& f);
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 

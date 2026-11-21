@@ -315,6 +315,8 @@ public:
   virtual bool frameTick(PanelTarget& /*t*/) { return false; }
   virtual bool ticking() const noexcept { return false; }
   virtual VoiceTapReader* voiceReader(PanelTarget& /*t*/) const { return nullptr; }
+  // SM.10: the panel is on screen or not (Face::setShown, passed on): an element showing an engine face passes it on.
+  virtual void setShown(bool /*shown*/) {}
   // GU.5b: the face-local rects (element-local) its live layer changes while voices sound (default: its rect).
   virtual void liveRects(std::vector<ui::Rect>& out) const { out.push_back({0.0f, 0.0f, desc_.w, desc_.h}); }
   // GU.6: elements that hold a panel of their own (an embedded child panel, kind doc::kEmbedKind):

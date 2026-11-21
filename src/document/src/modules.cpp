@@ -2439,13 +2439,62 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   wire(r.engine, "gateOut", r.envelope.engine, "gate");  // (a gate input reads its wires' sum > 0: the compare)
   wire(r.lfoOut, lfoPort, r.filterFrequency, kValueParam, WireLaw::Travel, 0.25);
   std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
-  // The panel: tabs, the sample's knobs, the filter / envelope / LFO panels embedded (GU.6). SM.10 draws the face.
+  // The panel (SM.10, docs/plans/SM.md "Face"): the CLOSED FACE — an oval plate (152 × 84) holding the sample's waveform
+  // and the voices' playheads (the engine face's `samplewave` section), three mini knobs on the lower arc (Transpose ·
+  // Filter · Volume) and the Expand chevron (a fold, folded by default: view state) — and, under the chevron's fold, the
+  // SM.3 settings (tabs Sample | Filter | Env | LFO; the filter / envelope / LFO panels embedded, GU.6), shown while it is
+  // open (Panel::fit: the closed face is the oval alone). SM.11 replaces that section with the expanded editor.
   Panel panel;
-  panel.width = 256.0f;
-  panel.height = 268.0f;
-  panel.elements.push_back(plate(panel.width, panel.height, 12.0));
-  r.tabs = 2;
-  PanelElement tabs = element(r.tabs, "tabs", 8, 8, 240, 18, {});
+  panel.width = kSamplerFaceW;
+  panel.fit = true;
+  {
+    PanelElement oval = element(1, "shape", 0, 0, kSamplerFaceW, kSamplerFaceH, {});
+    oval.bindings.clear();
+    oval.setField(styleText("shape", "ellipse"));
+    oval.setField(styleText("fill", "body"));
+    oval.setField(styleNumber("thickness", 1.2));
+    panel.elements.push_back(std::move(oval));
+  }
+  uint32_t id = 2;
+  panel.elements.push_back(element(id++, "samplewave", 24, 8, 104, 34, dataBinding(r.engine)));
+  {
+    struct K {
+      Binding b;
+      float x, y;
+    };
+    // Transpose, Filter (the Filter's Frequency), Volume (the engine's Gain): label-free, as the meta faces are (their
+    // names in the info view on hover).
+    for (const K& k : {K{controlBinding(r.engine, "transpose"), 34, 44},
+                       K{controlBinding(r.filterFrequency, std::string(kValueParam)), 63, 47},
+                       K{controlBinding(r.engine, "gain"), 92, 44}}) {
+      PanelElement e = element(id++, "knob", k.x, k.y, 26, 26, k.b);
+      e.setField(styleText("label", "-"));
+      e.setField(styleText("readout", "none"));
+      e.setField(styleNumber("track", 2.0));
+      panel.elements.push_back(std::move(e));
+    }
+  }
+  r.expand = id++;
+  {
+    PanelElement chevron = element(r.expand, std::string(kFoldKind).c_str(), 68, kSamplerFaceH - 11.0f, 16, 11, {});
+    chevron.bindings.clear();
+    chevron.setField(styleText("look", "chevron"));
+    chevron.setField(styleNumber("open", 0.0));
+    chevron.setField(styleText("title", "Settings"));
+    panel.elements.push_back(std::move(chevron));
+  }
+  // The settings, under the oval (y ≥ 84): their plate, the tabs, each tab's controls.
+  constexpr float kTop = kSamplerFaceH + 2.0f;
+  {
+    PanelElement back = element(id++, "shape", 0, kTop, kSamplerFaceW, 168, {});
+    back.bindings.clear();
+    back.setField(styleText("fill", "track"));
+    back.setField(styleText("stroke", "none"));
+    back.setField(styleNumber("opacity", 0.35));
+    panel.elements.push_back(std::move(back));
+  }
+  r.tabs = id++;
+  PanelElement tabs = element(r.tabs, "tabs", 6, kTop + 6, kSamplerFaceW - 12, 16, {});
   tabs.bindings.clear();
   tabs.setField(styleText("items", kSamplerTabs));
   panel.elements.push_back(std::move(tabs));
@@ -2453,9 +2502,8 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     e.when = Visibility{r.tabs, {tab}};
     panel.elements.push_back(std::move(e));
   };
-  uint32_t id = 3;
   {
-    PanelElement mode = element(id++, "menu", 8, 34, 96, 18, settingBinding(r.engine, "mode"));
+    PanelElement mode = element(id++, "menu", 6, kTop + 28, 90, 16, settingBinding(r.engine, "mode"));
     mode.setField(styleText("items", "Classic|One-Shot|Slice"));
     mode.setField(styleText("label", "-"));
     onTab(std::move(mode), 0.0);
@@ -2464,16 +2512,17 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
       const char* label;
       float x, y;
     };
-    for (const K& k : {K{"start", "Start", 8, 60}, K{"end", "End", 68, 60}, K{"transpose", "Transpose", 128, 60},
-                       K{"gain", "Gain", 188, 60}, K{"root", "Root", 8, 140}, K{"detune", "Detune", 68, 140}}) {
-      PanelElement e = element(id++, "knob", k.x, k.y, 56, 72, controlBinding(r.engine, k.param));
+    for (const K& k : {K{"start", "Start", 6, 50}, K{"end", "End", 53, 50}, K{"transpose", "Transpose", 100, 50},
+                       K{"gain", "Gain", 6, 108}, K{"root", "Root", 53, 108}, K{"detune", "Detune", 100, 108}}) {
+      PanelElement e = element(id++, "knob", k.x, kTop + k.y, 46, 56, controlBinding(r.engine, k.param));
       e.setField(styleText("label", k.label));
       onTab(std::move(e), 0.0);
     }
   }
-  onTab(element(id++, "panel", 8, 32, 240, 228, panelBinding(r.filter)), 1.0);
-  onTab(element(id++, "panel", 8, 32, 208, 128, panelBinding(r.envelope.group)), 2.0);
-  onTab(element(id++, "panel", 8, 32, 236, 140, panelBinding(r.lfo)), 3.0);
+  onTab(element(id++, "panel", 6, kTop + 28, kSamplerFaceW - 12, 134, panelBinding(r.filter)), 1.0);
+  onTab(element(id++, "panel", 6, kTop + 28, kSamplerFaceW - 12, 134, panelBinding(r.envelope.group)), 2.0);
+  onTab(element(id++, "panel", 6, kTop + 28, kSamplerFaceW - 12, 134, panelBinding(r.lfo)), 3.0);
+  panel.height = kTop + 168.0f;
   {
     auto g = std::make_shared<Device>(*out.devices.front());
     g->panel = std::make_shared<const Panel>(std::move(panel));

@@ -39,7 +39,7 @@ constexpr std::array<OutputSpec, 2> kOutputs = {{{"out", graph::kWidthStereo}, {
 
 // Body node ids: the stateful nodes fixed (their state keys survive every re-expansion, a setting change included);
 // the rest in build order from kSeq.
-enum : uint32_t { kRead, kRise, kSlice, kScrub, kSeq = 16 };
+enum : uint32_t { kRead, kRise, kSlice, kScrub, kTap, kSeq = 16 };
 
 class Body {
 public:
@@ -146,11 +146,17 @@ Status body(Builder& bld) {
   // Envelope behind gateOut opens while something scrubs the sample. (Folded away when Position is unwired.)
   if (!bld.context().voice) gateOut = b.op("or", {gateOut, scrubbing});
   bld.output(1, b.op("gate_to_real", {gateOut}));  // (a type's outputs are Real: 1 / 0)
+  // SM.10: the face's playheads — per voice where it reads now (0 … 1 of the sample: the playhead, or a wired Position),
+  // into the instance's voice tap (request 1; one relaxed load per block while no face reads it).
+  const P head = b.op("select", {scrubbing, posIn, P{rd.node, 3}});
+  b.named(bld.atom("voice_tap", {head, bld.slot(1)}, kTap), "tap");
   bld.done(done);
   return Ok{};
 }
 
-std::vector<ResourceRequest> resources(std::span<const double>) { return {ResourceRequest{ResourceKind::Sample, 0}}; }
+std::vector<ResourceRequest> resources(std::span<const double>) {
+  return {ResourceRequest{ResourceKind::Sample, 0}, ResourceRequest{ResourceKind::VoiceTap, 1}};
+}
 
 DataPtr defaultData() { return samplerData(0); }
 

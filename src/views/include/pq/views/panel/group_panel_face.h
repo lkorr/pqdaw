@@ -77,6 +77,7 @@ public:
   void paintPopup(ui::FacePainter& p, const FaceEnv& env) override;
   void setPopupOverFace(bool on) override;
   VoiceTapReader* voices() const noexcept override;
+  void setShown(bool shown) override;  // SM.10: passed on to the elements (and remembered for rebuilt ones)
   bool pollVoices() override;
   bool animating() const noexcept override;
   bool frameTick() override;  // DT.1: the elements' frameTick
@@ -192,6 +193,7 @@ private:
   int32_t cableTargetAt(ui::Vec2 local) const;
   int32_t popupAt(ui::Vec2 local) const;  // the element whose open popup holds `local` (−1: none)
   bool round_ = false;                    // GU.5b: the bottom element's outline is the panel's
+  int8_t shown_ = -1;                     // SM.10: what setShown said last (−1: nothing)
   float corner_ = kCorner;                // GU.7: the plate's corner (a bottom plate shape's radius)
   struct AnyReader final : VoiceTapReader {  // GU.7: live while any element's reader is
     const GroupPanelFace* face = nullptr;

@@ -195,6 +195,7 @@ void ProjectPatchView::setShown(bool on, bool animate) {
       return;  // hidden when the morph ends
     }
     slot->setVisible(false);
+    canvas_->hideFaces();  // SM.10: off the screen (a face's voice reader may stop sampling)
     if (costSource_ != nullptr && showCosts_) costSource_->setCostMetering(false);
     refreshTransport();  // hidden: the playhead timer stops
     if (arr) {
@@ -234,6 +235,7 @@ void ProjectPatchView::finishMorph() {
     morph_.t = 0.0f;
     canvas_->setVisible(true);
     if (Widget* slot = parent()) slot->setVisible(false);
+    canvas_->hideFaces();  // SM.10
     if (costSource_ != nullptr && showCosts_) costSource_->setCostMetering(false);
     refreshTransport();
     if (ArrangementView* arr = arrangementNear(*this)) {

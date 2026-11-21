@@ -14,6 +14,7 @@
 //   meter        a level meter (new): the signal's peak and RMS per channel, from its analysis tap; DY.3: or a gain-
 //                reduction meter (mode reduction: the signal as dB of reduction, drawn down from the top)
 //   noise        NZ.1: the Noise engine's display (the output's trace, the voices' dots, the colour's slope line)
+//   samplewave   SM.10: the Sampler's waveform well (the played region, each sounding voice's playhead)
 //
 // The face's plain controls are generic elements (the Wavetable's phase slider and fold / warp / sync knobs, the
 // Envelope's amount slider: pq/document/modules.h enginePanel).
@@ -128,6 +129,7 @@ constexpr Section kSections[] = {
     {"spectrum", "Spectrum", "spectrum", {0.0f, 0.0f, 240.0f, 150.0f}, true},
     {"spectrogram", "Spectrogram", "spectrogram", {0.0f, 0.0f, 300.0f, 170.0f}, true},
     {"noise", "Noise Display", "noise", {0.0f, 0.0f, 220.0f, 44.0f}},  // NZ.1: the trace, the voices, the slope
+    {"samplewave", "Sample Waveform", "sampler", {24.0f, 8.0f, 128.0f, 42.0f}},  // SM.10: the waveform, the playheads
     {"levelmeter", "Level Meter", "level_meter", {0.0f, 0.0f, 100.0f, 160.0f}, true},            // VZ.4
     {"lufsmeter", "LUFS Meter", "lufs_meter", {0.0f, 0.0f, 200.0f, 160.0f}, true},               // VZ.4
     {"loudnesshistory", "Loudness History", "loudness_history", {0.0f, 0.0f, 300.0f, 160.0f}, true},  // VZ.4
@@ -157,6 +159,12 @@ public:
     face_.reset();
     if (const doc::Binding* b = binding()) face_ = t.engineFace(*b, sec_.type, host);
     if (face_) face_->attach(host);
+    if (face_ && shown_ >= 0) face_->setShown(shown_ == 1);
+  }
+  // SM.10: the panel on screen or not: the shared face hears it (its voice reader may stop sampling while hidden).
+  void setShown(bool shown) override {
+    shown_ = shown ? 1 : 0;
+    if (face_) face_->setShown(shown);
   }
 
   // ---- painting ----
@@ -330,6 +338,7 @@ private:
   FaceHost* host_ = nullptr;
   bool pressed_ = false;
   int32_t hover_ = Face::kNone;
+  int8_t shown_ = -1;
   mutable doc::Binding scratch_;
 };
 
@@ -475,11 +484,12 @@ bool showMeter(Element& e, float a, float b) {
 
 void registerEngineElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                         float, float, ElementFactory)) {
-  static_assert(std::size(kSections) == 19);
+  static_assert(std::size(kSections) == 20);
   constexpr ElementFactory kMake[] = {&makeSection<0>, &makeSection<1>, &makeSection<2>, &makeSection<3>, &makeSection<4>,
                                       &makeSection<5>, &makeSection<6>, &makeSection<7>, &makeSection<8>, &makeSection<9>,
                                       &makeSection<10>, &makeSection<11>, &makeSection<12>, &makeSection<13>,
-                                      &makeSection<14>, &makeSection<15>, &makeSection<16>, &makeSection<17>, &makeSection<18>};
+                                      &makeSection<14>, &makeSection<15>, &makeSection<16>, &makeSection<17>, &makeSection<18>,
+                                      &makeSection<19>};
   for (size_t i = 0; i < std::size(kSections); ++i) {
     const Section& s = kSections[i];
     const bool scope = s.kind == "scope";  // MX.3: its trace slots and style (a trace scope's)

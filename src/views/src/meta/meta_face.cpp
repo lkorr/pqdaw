@@ -38,7 +38,8 @@ struct Registry {
                                                                      {"band_levels", &makeBandLevelsFace},  // VZ.6
                                                                      {"waveform", &makeWaveformFace},      // VZ.6
                                                                      {"waterfall", &makeWaterfallFace},  // VZ.7
-                                                                     {"stereo_spectrogram", &makeStereoSpectrogramFace}};  // VZ.7
+                                                                     {"stereo_spectrogram", &makeStereoSpectrogramFace},  // VZ.7
+                                                                     {"sampler", &makeSamplerFace}};  // SM.10
   // worldSize per type id, filled on first ask (a face's size never changes).
   std::vector<std::pair<std::string, ui::Vec2>> sizes;
   std::vector<std::pair<std::string, ui::Vec2>> captions;  // TMM.13-fix2: captionAt per type id

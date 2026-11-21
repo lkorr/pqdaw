@@ -39,7 +39,28 @@ void TapVoices::park() noexcept {
   resolved_ = false;
 }
 
+void TapVoices::shown(const void* face, bool on) {
+  auto it = std::find_if(shownBy_.begin(), shownBy_.end(), [face](const auto& e) { return e.first == face; });
+  if (it == shownBy_.end()) shownBy_.emplace_back(face, on);
+  else it->second = on;
+  updateHidden();
+}
+
+void TapVoices::forget(const void* face) {
+  std::erase_if(shownBy_, [face](const auto& e) { return e.first == face; });
+  updateHidden();
+}
+
+void TapVoices::updateHidden() {
+  const bool h = !shownBy_.empty() && std::none_of(shownBy_.begin(), shownBy_.end(), [](const auto& e) { return e.second; });
+  if (h == hidden_) return;
+  hidden_ = h;
+  if (h) park();  // the tap's reader goes: nothing is sampled for this object
+  else resolved_ = false;  // the next read resolves the tap again
+}
+
 void TapVoices::follow() const noexcept {
+  if (hidden_) return;  // SM.10: every face showing it is hidden
   if (genResolve_) {  // TMM.13-fix1 M12: nothing the lookups return has changed
     const uint64_t g = genResolve_();
     if (resolved_ && g == gen_) return;

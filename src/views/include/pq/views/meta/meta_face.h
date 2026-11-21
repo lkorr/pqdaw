@@ -48,6 +48,10 @@ namespace pq::dsp {
 class FrameTable;
 }
 
+namespace pq::media {
+class WaveformOverview;  // pq/media/waveform.h (SM.10)
+}
+
 namespace pq::views {
 
 // TX.spectrogram: one pitch of the tuning the instance's track plays in (a scale degree), what an analysis face draws as
@@ -91,6 +95,10 @@ public:
   virtual uint64_t guidesKey() const { return 0; }
   // VZ.3: where a display's tone preview plays (null: nowhere — the play surface does nothing; pq/views/tone_port.h).
   virtual TonePort* tonePort() const { return nullptr; }
+  // SM.10: the overview of project sample `sample` (a SampleId value) a face draws (pq/views/waveforms.h; null: none,
+  // or not built yet: the first ask requests it), and a counter that moves whenever an overview arrived or grew.
+  virtual const media::WaveformOverview* sampleOverview(uint32_t /*sample*/) const { return nullptr; }
+  virtual uint64_t overviewRevision() const { return 0; }
   // GU.1: param i's own curve (doc::Device::curves of a chain meta device; null: the declared one, meta::paramCurve).
   // The face's controls travel along it (faceTravelToValue / faceValueToTravel).
   virtual const dsp::Curve* curve(size_t /*param*/) const { return nullptr; }
@@ -167,6 +175,12 @@ public:
   virtual uint64_t serial() const noexcept = 0;
   // Whether records may still arrive (a voice sounds, the transport plays): the host keeps polling while true.
   virtual bool live() const noexcept = 0;
+  // SM.10 (docs/plans/SM.md "Face", CPU): a face showing this reader says whether it is on screen now (`face`: its
+  // identity; a face that never says is not counted). While at least one face said so and every such face is hidden, the
+  // reader lets go of its tap (no reader registered there: the audio side costs one relaxed load per block) and reads
+  // nothing; shown again, it resolves the tap anew. forget: that face is gone. Default: always reads.
+  virtual void shown(const void* /*face*/, bool /*on*/) {}
+  virtual void forget(const void* /*face*/) {}
 };
 
 // A pin of the host on the face's edge (face-local world units).
@@ -326,6 +340,9 @@ public:
   virtual bool animating() const noexcept { return false; }
   // The voice reader the face shows (null: none) and its poll (true: what the face shows changed).
   virtual VoiceTapReader* voices() const noexcept { return nullptr; }
+  // SM.10: the host says whether the face is on screen (its canvas shown, the face inside its viewport) whenever that
+  // changes: a face whose reader may stop for it while hidden passes it on (VoiceTapReader::shown). Default: nothing.
+  virtual void setShown(bool /*shown*/) {}
   virtual bool pollVoices() { return false; }
   // DT.1: FRAME TICKS for what follows the transport without a voice reader (a tempo slider's markings follow the tempo
   // at the playhead). The host calls frameTick() on each visible face when it wakes (kTransport, kSignal) and at its

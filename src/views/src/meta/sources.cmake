@@ -9,6 +9,7 @@ set(PQ_VIEWS_META_SOURCES
   src/meta/scope_face.cpp       # TX.scope: the Oscilloscope face (pq/dsp/scope.h; PQ Meter's oscilloscope)
   src/meta/spectrogram_face.cpp # TX.spectrogram: the Spectrogram face (pq/dsp/spectrogram.h; PQ Meter's spectrogram)
   src/meta/noise_face.cpp       # NZ.1: the Noise face (its display: the trace, the voices, the colour's slope)
+  src/meta/sampler_face.cpp     # SM.10: the Sampler face (the oval, the waveform, the voices' playheads)
   src/meta/loudness_faces.cpp   # VZ.4: the Level Meter, LUFS Meter and Loudness History faces (PQ Meter's)
   src/meta/stereo_faces.cpp     # VZ.5: the Stereo Field, Stereo Image and Phase Scope faces (PQ Meter's)
   src/meta/band_wave_faces.cpp  # VZ.6: the Band Levels and Waveform faces (PQ Meter's multiband RMS and waveform)

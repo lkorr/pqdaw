@@ -192,6 +192,7 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
   for (const doc::PanelElement& d : p->elements) {
     elements_.push_back(makeElement(d));
     elements_.back()->bind(*target_, host_);  // GU.6: an embedded panel reads its child through the target
+    if (shown_ >= 0) elements_.back()->setShown(shown_ == 1);  // SM.10
     for (const auto& [id, v] : keep)
       if (id == d.id) elements_.back()->setLocalSelection(v);
   }
@@ -213,9 +214,12 @@ void GroupPanelFace::updateShape() {
     if (const std::optional<FaceShape> o = elements_.front()->outline(); o && !o->round) {
       corner_ = o->radius;  // GU.7: a plate shape: the panel keeps its rectangle with that corner
     } else if (o) {
+      const Rect r = elements_.front()->rect();
+      // SM.10: a round plate shapes a panel with folds only while no open section shows below it (the Sampler's
+      // settings under its oval: the panel is its rectangle again, so the section's controls take presses).
+      if (folds_.folds && worldSize().y > r.y1 + 0.5f) return;
       round_ = true;
       roundShape_ = *o;
-      const Rect r = elements_.front()->rect();
       roundShape_.centre = {roundShape_.centre.x + r.x0, roundShape_.centre.y + r.y0};
     }
 }
@@ -257,6 +261,8 @@ std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<d
   }
   const std::unique_ptr<Element> e = makeElement(bottom);
   std::optional<FaceShape> o = e->outline();
+  // SM.10: a round plate with an open fold section shown below it does not shape the panel.
+  if (o && o->round && folds != nullptr && folds->folds && folds->height > bottom.y + bottom.h + 0.5f) return std::nullopt;
   if (o) o->centre = {o->centre.x + e->desc().x, o->centre.y + e->desc().y};
   return o;
 }
@@ -309,6 +315,11 @@ bool GroupPanelFace::AnyReader::live() const noexcept {
   for (const std::unique_ptr<Element>& e : face->elements_)
     if (VoiceTapReader* r = e->voiceReader(*face->target_); r != nullptr && r->live()) return true;
   return false;
+}
+
+void GroupPanelFace::setShown(bool shown) {
+  shown_ = shown ? 1 : 0;
+  for (const std::unique_ptr<Element>& e : elements_) e->setShown(shown);
 }
 
 VoiceTapReader* GroupPanelFace::voices() const noexcept {

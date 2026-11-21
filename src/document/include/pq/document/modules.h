@@ -181,15 +181,21 @@ BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSyn
 // The voices end when the enders behind Out are done (lower.h "end", BR.C): the Envelope, whose gate is the engine's
 // gateOut, so a One-Shot voice lasts to the sample's end plus the release. Everything is rewirable once the group is
 // opened.
-// Its panel: tabs "Sample|Filter|Env|LFO": the engine's mode and knobs (Start, End, Transpose, Gain, Root, Detune), the
-// Filter's, Envelope's and LFO's panels embedded (GU.6). The face is SM.10's.
+// Its panel (SM.10): the closed face — an oval 152 × 84 (a `shape` ellipse: the block is that oval, its ports orbit it)
+// with the engine face's `samplewave` section (the waveform, the voices' playheads), mini knobs Transpose · Filter
+// (the Filter's Frequency) · Volume (the engine's Gain) on the lower arc and the Expand chevron (a `fold`, look chevron,
+// folded by default; Panel::fit) — and under the chevron's section the settings: tabs "Sample|Filter|Env|LFO" (the
+// engine's mode and knobs Start, End, Transpose, Gain, Root, Detune; the Filter's, Envelope's and LFO's panels
+// embedded, GU.6).
 struct SamplerRoles {
   DeviceId group, engine, key, amp;  // the group, meta:sampler, the voice.key block, the amp (mul)
   DeviceId filter, filterFrequency;        // the EQ band group and its Frequency value block
   EngineRoles envelope;
   DeviceId lfo, lfoOut;                    // the LFO group, the block its jack is (the Travel wire leaves it)
   uint32_t tabs = 0;                       // the tabs element's id
+  uint32_t expand = 0;                     // SM.10: the Expand chevron's (a fold element) id
 };
+inline constexpr float kSamplerFaceW = 152.0f, kSamplerFaceH = 84.0f;  // SM.10: the closed face (the oval)
 struct SamplerOptions {
   DeviceId id;       // the group's (invalid: a fresh one)
   DeviceId inGroup;  // the group it sits in, or none

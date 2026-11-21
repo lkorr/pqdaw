@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <span>
+#include <utility>
 #include <vector>
 
 #include "pq/core/voice_tap.h"
@@ -56,6 +57,17 @@ public:
   bool live() const noexcept override;
   bool fresh() const noexcept;
   HeardTable heardTable() const override;
+  // SM.10: faces that say whether they are shown; while every one is hidden the tap has no reader of this object.
+  void shown(const void* face, bool on) override;
+  void forget(const void* face) override;
+  bool hidden() const noexcept { return hidden_; }
+  // (tests) the faces that said, and how many of them are shown
+  size_t faces() const noexcept { return shownBy_.size(); }
+  size_t facesShown() const noexcept {
+    size_t n = 0;
+    for (const auto& e : shownBy_) n += e.second ? 1u : 0u;
+    return n;
+  }
 
   // The tap read now (tests).
   const pq::VoiceTap* tap() const noexcept { return tap_.get(); }
@@ -90,6 +102,9 @@ private:
   double lastRecord_ = -1e300;         // when records last arrived (seen by a read)
   mutable std::vector<uint64_t> seen_; // per voice slot: the record serial of its last read
   std::vector<float> hist_;
+  std::vector<std::pair<const void*, bool>> shownBy_;  // SM.10: the faces that said, and whether each is shown
+  bool hidden_ = false;
+  void updateHidden();
 };
 
 }  // namespace pq::views

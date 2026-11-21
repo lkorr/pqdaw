@@ -2268,3 +2268,13 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Known: not checked in the live app (tests and goldens only).
 - Goldens: new arp-panel-walk-chord, arp-panel-degrees-bends, arp-panel-bend-view; arp-panel-default / -ratio / -walk /
   -pulse / -lanes moved (the wider panel, the resolved pattern, the Glide section).
+## 2026-11-21 · SM.10 · the Sampler's closed face (task/SM.10-closed-face) 👁
+- A Sampler in the circuit is now an oval (152 × 84): the sample's waveform (from Start to End) in a dark well, a thin
+  region strip under it, and while notes play a glowing vertical playhead per voice where each one reads. Empty, it
+  says "drop a sample". Below the waveform three label-free mini knobs: Transpose, Filter (frequency), Volume.
+- The small chevron at the bottom of the oval expands the Sampler: the settings from SM.3 (Sample | Filter | Env | LFO
+  tabs) appear under the oval and the block grows downwards in place (a rectangle while open); click it again to close.
+  It is view state (no undo step), shared with the Device view.
+- The knobs are the Classic set in every mode for now (Granular's Position / Size / Density come with SM.6); no Filter /
+  LFO on switches yet (SM.11). Are the mini knobs readable without labels? Is the waveform contrast right?
+- Goldens: new sampler-face-empty / -sample / -voices at 1x and 2x. Not checked in the live app (tests and goldens only).

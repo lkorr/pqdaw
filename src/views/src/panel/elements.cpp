@@ -1243,10 +1243,14 @@ public:
 // A chevron (down: open, right: folded) and the section's title, a hairline under the row. A click folds / unfolds its
 // section (pq/document/panel.h foldLayout): view state through the target (PanelTarget::setFoldOpen), never an edit.
 // Its selection is 1 open / 0 folded, so a visibility condition can follow it too.
+// SM.10: look "chevron" — an EXPAND chevron alone, centred (down: folded, "more below"; up: open), no title or line: the
+// Sampler's closed face grows its settings out of it.
+constexpr std::array<std::string_view, 2> kFoldLooks = {"header", "chevron"};
 class Fold final : public Element {
 public:
   using Element::Element;
   static constexpr StyleSpec kStyle[] = {
+      {"look", StyleSpec::Type::Choice, 0, "header", kFoldLooks},
       {"title", StyleSpec::Type::Text, 0, "Section"},
       {"open", StyleSpec::Type::Number, 1.0, {}, {}, 0.0, 1.0},  // the default (until the user folds it)
       {"size", StyleSpec::Type::Number, 8.0, {}, {}, 3.0, 64.0},
@@ -1254,7 +1258,8 @@ public:
   };
   bool open(const PanelTarget& t) const { return t.foldOpen(desc_.id).value_or(doc::foldOpenByDefault(desc_)); }
   bool interactive() const noexcept override { return true; }
-  uint32_t staticLayerCount() const noexcept override { return 1; }
+  bool chevron() const { return txt("look", "header") == "chevron"; }
+  uint32_t staticLayerCount() const noexcept override { return chevron() ? 0 : 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return ui::mulAlpha(th.face.frame, 0.8f); }
   void paintStatic(ui::FacePainter& p, uint32_t) const override {
     p.line({1.0f, desc_.h - 0.5f}, {desc_.w - 1.0f, desc_.h - 0.5f}, 1.0f, ui::rgba(255, 255, 255));
@@ -1262,6 +1267,15 @@ public:
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     const bool o = open(*env.target);
+    if (chevron()) {  // SM.10: a chevron stroke, pointing down while folded (there is more), up while open
+      const float cx = desc_.w * 0.5f, cy = desc_.h * 0.5f;
+      const float s = std::min(desc_.w * 0.32f, desc_.h * 0.36f), dy = (o ? -1.0f : 1.0f) * s * 0.5f;
+      const Rgba ink = colour(th, "colour", "ink", th.face.ink);
+      if (env.hovered) p.roundedRect({0.5f, 0.5f, desc_.w - 0.5f, desc_.h - 0.5f}, 3.0f, ui::mulAlpha(th.face.hover, 0.45f));
+      const Vec2 pts[3] = {{cx - s, cy - dy}, {cx, cy + dy}, {cx + s, cy - dy}};
+      p.polyline(pts, 1.3f, ui::mulAlpha(ink, env.hovered ? 1.0f : 0.8f));
+      return;
+    }
     const float px = static_cast<float>(std::clamp(num("size", 8.0), 3.0, 64.0));
     const float cy = (desc_.h - 1.0f) * 0.5f, s = std::min(px * 0.42f, cy), cx = 2.0f + s;
     if (env.hovered) p.roundedRect({0.5f, 0.5f, desc_.w - 0.5f, desc_.h - 1.5f}, 3.0f, ui::mulAlpha(th.face.hover, 0.35f));
@@ -1278,6 +1292,11 @@ public:
   }
   std::optional<double> selection(const PanelTarget& t) const override { return open(t) ? 1.0 : 0.0; }
   void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
+    if (chevron()) {
+      title = open(t) ? "Collapse" : "Expand";
+      body = open(t) ? "Click to fold the settings away." : "Click to show the settings.";
+      return;
+    }
     title = std::string(txt("title", "Section"));
     body = open(t) ? "Click to fold the section." : "Click to unfold the section.";
   }

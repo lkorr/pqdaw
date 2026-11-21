@@ -5,6 +5,10 @@
 
 namespace pq::app {
 
+namespace {
+constexpr uint32_t kTapRequests = 4;  // the requests a type's voice tap may be among (a map find each, on a slot change)
+}  // namespace
+
 views::VoiceTapReader* FaceVoiceHub::voices(doc::DeviceId device, std::string_view path) {
   auto key = std::make_pair(device.value, std::string(path));
   auto it = readers_.find(key);
@@ -12,7 +16,12 @@ views::VoiceTapReader* FaceVoiceHub::voices(doc::DeviceId device, std::string_vi
     ProjectLink* link = &link_;
     const std::string p(path);
     // TMM.16: and the table its slot plays (the Wavetable face draws what is heard), with its live params.
-    auto r = std::make_unique<views::TapVoices>([link, device, p] { return link->metaVoiceTap(device, p, 0); },
+    auto r = std::make_unique<views::TapVoices>(
+        [link, device, p] {  // its VoiceTap request (SM.10: the Sampler's is request 1, after its Sample)
+          for (uint32_t i = 0; i < kTapRequests; ++i)
+            if (std::shared_ptr<VoiceTap> t = link->metaVoiceTap(device, p, i)) return t;
+          return std::shared_ptr<VoiceTap>{};
+        },
                                                 [link, device, p] {
                                                   views::TapVoices::TableSlotRef t;
                                                   t.slot = link->metaFrameTable(device, p, 0, t.modulated);

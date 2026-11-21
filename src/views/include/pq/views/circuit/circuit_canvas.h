@@ -195,6 +195,9 @@ public:
   // Benchmarks (A/B): off draws face nodes as plain blocks and routes nothing to them.
   void setFacesShown(bool on);
   bool facesShown() const noexcept;
+  // SM.10: the canvas is going off the screen (its view hidden): every face hears setShown(false). (A face on screen
+  // again hears setShown(true) at the next paint or poll.)
+  void hideFaces();
   static constexpr double kFaceFrameSeconds = 1.0 / 60.0;
   // TX.block-drag: a face on a node scaled below this (SceneNode::scale: a block shrunk to a miniature) is drawn but has
   // no controls — presses, hover and wire drops there are the block's (select, move, open), so a tiny block can be
