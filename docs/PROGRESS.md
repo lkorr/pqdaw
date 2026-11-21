@@ -1321,3 +1321,10 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow on 7723bd9d 88/90 (2 load flakes pass alone). The merge onto 3a8d1eda (AP.8b; QUESTIONS conflict only) re-run on main: -Affected -Slow 89/90, the 1 failure a stale CRLF working copy of audio-track-input.pqp in the main checkout (index LF; restored → pq_tests_document 324/324). Playback tests interp == JIT bit-exact.
 - Perf / CPU-efficiency check: Filter + LFO off by default, cost nothing; default voice = engine + Envelope + one compare.
 - Notes/blockers: Q?-SM.3-a; no Filter / LFO switches in the panel (SM.10); detected root passed by the caller (SM.8).
+
+## 2026-11-21 · AP.9 · task/AP.9-patch-panel (merged 0881fef4)
+- Did: a device whose type supplies its own panel (panel::typePanel; today the Arpeggiator's) is drawn in the project patch as that panel via the closed-group path (Node::typePanel, kTypePanelFacePrefix → GroupPanelFace over the device); folds shared with the Device view resize the block; wires into its params end on their controls. Deleted the dead TX.panel-faces path (opt.panelSize, Node::panel).
+- Verified: pq_tests_views default tier 1/1 (whole exe); AP.9 cases 5/5 (golden project-patch-arp new; chip click 1 undo step; fold opens through the window, block grows; LFO cable anchored on `gate`).
+- Perf / CPU-efficiency check: panel built once per device (cached by id + patch), face rebuilt only on a size change; non-panel devices one map lookup per layout.
+- Notes/blockers: user report "arp is just a gray box" (circuit view). Main ports orbit the plate as for closed blocks. Not checked in the live app.
+
