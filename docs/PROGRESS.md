@@ -1334,3 +1334,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Perf / CPU-efficiency check: no new per-sample / per-block work; release arp bench within shared-machine noise (8 notes 49.0→40.4 ns/block, chord 62.9→81.6 with idle also swinging); sketch ≈ 0.25 ms per 64-step cycle, only on param / held / tempo change.
 - Notes/blockers: Q?-AP.10-a (shared cents switch, proportional shrink when In + Out exceed the note, bend view's nominal ±200 ¢ neighbours, 64-step sketch cap). Not checked in the live app.
 
+
+## 2026-11-21 · SM.8 · task/SM.8-grid-drop (merged 2195d554)
+- Did: audio files (Explorer / browser) dropped on any band's circuit place one Sampler per file at the drop point (offset down), one undo step; auto-wired notes → sampler → mixer only on a MIDI band with an empty path, else unwired; a drop on a Sampler replaces its sample; root + slices (0 + transients) from the analysis join the undo step; ghost while dragging, Esc cancels. Engine: with no notes, a Sampler opens its gate while Position is driven (LFO plays it on an audio track).
+- Verified: pq_tests_views default tier (test_delay_tap_face crashed once, passed on re-run); 6 real-dispatch drop tests; playback LFO → Position test + SM.3 tests on interp + JIT; meta, document. Two lane-drop tests moved their point off every band (a band's circuit is now a drop target).
+- Perf / CPU-efficiency check: one band scan + hit test per drag move; the gate `or` folds away when Position is unwired.
+- Notes/blockers: Q?-SM.8-a.
+
+## 2026-11-21 · SM.10 · task/SM.10-closed-face (merged 04d3cd86)
+- Did: the Sampler panel is an oval (152 × 84): waveform Start → End (cached static layer), region / fade strip, a glowing playhead per sounding voice (new engine VoiceTap), three mini knobs (Transpose · Filter · Volume), Expand chevron = a fold showing the SM.3 tabbed settings under the oval (no undo step); off-screen faces leave the tap unread (Face::setShown); the engine block inside an opened group draws the oval too.
+- Verified: after rebase pq_tests_views / meta / document default tiers, playback Sampler tests 6/6; 6 new goldens (sampler-face-empty / -sample / -voices, 1× + 2×), none moved; test_sampler expects 2 engine resources (Sample + VoiceTap).
+- Perf / CPU-efficiency check: waveform layer redrawn only on sample / Start / End / overview progress change. The perf test "64 tracks full-project paint < 2 ms" reads ~4 ms, but it fails on main 120d671e too (orchestrator checked): pre-existing.
+- Notes/blockers: Q?-SM.10-a; no Filter / LFO switches (SM.11); Device-view host never reports visibility, so its tap stays read; not checked in the live app.
