@@ -33,6 +33,7 @@ set(PQ_VIEWS_SOURCES
   src/waveforms.cpp
   src/sample_analysis.cpp
   src/file_probes.cpp
+  src/note_preview.cpp  # AP.7: the roll preview's worker
   src/sample_drop.cpp
   src/midi_import.cpp  # MF.2: MIDI files into the project (drops, the browser)
   src/midi_export.cpp  # MF.3: note clips → .mid files (the clip menu's Export MIDI, the app's drag-out)

@@ -34,6 +34,7 @@
 #include "pq/core/grid.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/document/note_flatten.h"
 #include "pq/document/pitch_resolve.h"
 #include "pq/tuning/mos_regions.h"
 #include "pq/tuning/tuning.h"
@@ -410,6 +411,18 @@ public:
   void setShowHarmonics(bool on);
   bool showChance() const noexcept { return chance_; }
   void setShowChance(bool on);
+  // AP.7 (pq/views/note_preview.h): the ROLL PREVIEW — what the clip's track's note devices (the Arpeggiator)
+  // generate from its notes, drawn as ghost notes. hasNoteDevices: the track has an active one (the clip box's Arp row
+  // shows); previewShown: that and the context's switch is on. requestPreview asks the worker (off the UI thread,
+  // debounced) when the track, the tempo map or the tunings changed since the last request, or the visible content
+  // end + one bar lies beyond what was asked; preview() is the latest result for this clip (null: none yet).
+  bool hasNoteDevices() const noexcept;
+  bool previewShown() const noexcept;
+  void requestPreview(Ticks visibleEndContent);
+  void requestPreviewVisible();  // requestPreview for the note area's visible end (a document edit, a new clip)
+  const doc::ClipGenerated* preview() const;
+  // Flatten to Clip (the roll's command and Arp row): the track's note devices written into its clips (one undo step).
+  bool flattenNoteDevices();
   const std::vector<uint8_t>& highlightScale() const noexcept { return scaleMask_; }
 
   // --- notes ---
@@ -1113,6 +1126,11 @@ private:
   bool scale_ = false;
   bool harmonics_ = true;
   bool chance_ = false;
+  // AP.7: what the last preview request was made for.
+  const void* pvTrack_ = nullptr;
+  const void* pvTimeline_ = nullptr;
+  const void* pvTunings_ = nullptr;
+  Ticks pvUntil_ = 0;
   bool fitted_ = false;  // fitToClip ran for the current clip (needs a laid-out area)
 
   std::vector<uint32_t> sel_;

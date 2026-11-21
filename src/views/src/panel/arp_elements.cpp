@@ -440,6 +440,7 @@ public:
     if (env.target != nullptr)
       if (const NoteStageStatus* st = status_.get(*env.target, binding())) (void)read(*st);
     const uint32_t n = pattern_.count;
+    paintRollChip(p, env);  // AP.7
     if (n == 0) {
       p.text({desc_.w * 0.5f, desc_.h * 0.5f - 5.0f}, "Hold notes", 7.5f, th.device.displayText);
       p.text({desc_.w * 0.5f, desc_.h * 0.5f + 6.0f}, "to see the pattern", 6.5f, th.device.displayText);
@@ -478,7 +479,23 @@ public:
     std::snprintf(s, sizeof s, "%u held \xC2\xB7 %u step%s", pattern_.held, n, n == 1 ? "" : "s");
     p.textAligned({4.0f, desc_.h - 6.0f}, s, 6.0f, th.device.displayText, 0.0f);
   }
-  uint64_t liveKey(const PanelTarget&) const override { return hmix(hmix(0x5041544Eull, serial_), static_cast<uint64_t>(position_ + 1)); }
+  // AP.7: the ROLL chip (top right): the roll preview's switch (ViewContext::notePreview, the clip box's Ghosts).
+  Rect rollChip() const noexcept { return {desc_.w - 34.0f, 3.0f, desc_.w - 4.0f, 13.0f}; }
+  void paintRollChip(ui::FacePainter& p, const ElementEnv& env) const {
+    if (env.target == nullptr) return;
+    const std::optional<bool> on = env.target->notePreview();
+    if (!on) return;
+    const ui::Theme& th = *env.theme;
+    const Rect c = rollChip();
+    const Rgba accent = colour(th, "colour", "value", th.face.value);
+    if (*on) p.roundedRect(c, 2.5f, accent);
+    else outlineRect(p, c, 2.5f, 1.0f, hoverChip_ ? th.face.hover : th.device.displayText);
+    p.text({(c.x0 + c.x1) * 0.5f, (c.y0 + c.y1) * 0.5f}, "ROLL", 6.0f, *on ? th.face.body : th.device.displayText);
+  }
+  uint64_t liveKey(const PanelTarget& t) const override {
+    const uint64_t roll = t.notePreview().value_or(false) ? 2u : 1u;  // AP.7: the ROLL chip
+    return hmix(hmix(hmix(0x5041544Eull, serial_), static_cast<uint64_t>(position_ + 1)), roll + (hoverChip_ ? 4u : 0u));
+  }
   bool frameTick(PanelTarget& t) override {
     playing_ = t.transportPlaying();
     const NoteStageStatus* st = status_.get(t, binding());
@@ -487,9 +504,28 @@ public:
   bool ticking() const noexcept override { return status_.s != nullptr && (playing_ || pattern_.held > 0); }
   void describe(const PanelTarget&, std::string& title, std::string& body) const override {
     title = "Pattern";
-    body = "The held notes in the order the pattern plays them (pitch up, time across); the lit one is playing.";
+    body = "The held notes in the order the pattern plays them (pitch up, time across); the lit one is playing. "
+           "ROLL (top right) shows what the arpeggiator plays from the clip's notes as ghost notes in the piano roll.";
   }
-  bool hit(Vec2) const noexcept override { return false; }
+  // AP.7: only the ROLL chip takes presses (the rest is a display).
+  bool hit(Vec2 l) const noexcept override {
+    const Rect c = rollChip();
+    return l.x >= c.x0 && l.x <= c.x1 && l.y >= c.y0 && l.y <= c.y1;
+  }
+  bool interactive() const noexcept override { return true; }
+  bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    const Rect c = rollChip();
+    const bool in = e.local.x >= c.x0 && e.local.x <= c.x1 && e.local.y >= c.y0 && e.local.y <= c.y1;
+    if (e.kind == FacePointer::Kind::Move || e.kind == FacePointer::Kind::Leave) {
+      const bool h = in && e.kind == FacePointer::Kind::Move;
+      const bool changed = h != hoverChip_;
+      hoverChip_ = h;
+      return changed;
+    }
+    if (e.kind != FacePointer::Kind::Down || e.button != ui::PointerButton::Left || !in) return false;
+    if (const std::optional<bool> on = t.notePreview()) t.setNotePreview(!*on);
+    return true;
+  }
   // tests
   const NoteStageStatus::Pattern& pattern() const noexcept { return pattern_; }
   int32_t position() const noexcept { return position_; }
@@ -513,6 +549,7 @@ private:
   uint64_t serial_ = 0;
   int32_t position_ = -1;
   bool playing_ = false;
+  bool hoverChip_ = false;  // AP.7
 };
 
 // ---- rampshape ------------------------------------------------------------------------------------------------------

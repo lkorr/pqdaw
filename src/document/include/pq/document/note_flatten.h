@@ -47,8 +47,8 @@ struct ClipGenerated {
 
 namespace ops {
 
-// Flatten to clip (see above). Errors: the track is not a MIDI track, a clip is not one of its clips, a clip loops
-// (its generated notes do not repeat with the loop: switch the loop off first). An empty list only switches the devices
+// Flatten to clip (see above). Errors: the track is not a MIDI track, a clip is not one of its clips, a clip repeats
+// its loop (contentStart + length > loop end: its generated notes do not repeat with the loop). An empty list only switches the devices
 // off.
 EditResult flattenNoteStages(const Project& p, IdSource& ids, TrackId track, std::span<const ClipGenerated> clips);
 

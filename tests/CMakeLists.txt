@@ -195,6 +195,7 @@ pq_add_test(pq_tests_audio PERF  # T5.10: the cold preview start (perf)
 pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock checks (64 tracks: paint, morph)
   SOURCES
     views/test_view_context.cpp
+    views/test_note_preview.cpp  # AP.7: the roll preview (ghosts off the UI thread, debounced, Ghosts switch), Flatten (Ctrl+Alt+F), golden
     views/test_note_device_drop.cpp  # AP.2: the Arpeggiator dragged from the browser onto a notes cable (real dispatch)
     views/test_spectrum_display.cpp  # TX.spectrum: the analysis feed, the spectrum plot, the Spectrum face, scenes, 8-display frame
     views/test_scope_display.cpp  # TX.scope: the feed's scope history, the Oscilloscope face, scenes, 4-scope frame

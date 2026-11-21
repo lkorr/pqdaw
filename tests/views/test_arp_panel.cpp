@@ -469,3 +469,26 @@ TEST_CASE("arp panel: a fold opens and closes (view state, no undo step), the fr
   CHECK_FALSE(u.face().shown(static_cast<size_t>(knob)));
   CHECK(u.history() == h0);
 }
+
+TEST_CASE("arp panel (AP.7): the pattern view's ROLL chip flips the roll preview (one view setting, no undo step)") {
+  Ui u;
+  int32_t pv = -1;
+  for (size_t i = 0; i < u.face().elementCount(); ++i)
+    if (u.face().element(i).desc().kind == "arppattern") pv = static_cast<int32_t>(i);
+  REQUIRE(pv >= 0);
+  const Rect r = u.face().element(static_cast<size_t>(pv)).rect();
+  const float fx = 1.0f - 19.0f / (r.x1 - r.x0), fy = 8.0f / (r.y1 - r.y0);  // the chip's centre (arp_elements.cpp)
+  const size_t h0 = u.history();
+  REQUIRE(u.ctx.notePreview());
+  u.d.click(u.at(pv, fx, fy));
+  u.d.step();
+  CHECK_FALSE(u.ctx.notePreview());
+  u.d.click(u.at(pv, fx, fy));
+  u.d.step();
+  CHECK(u.ctx.notePreview());
+  CHECK(u.history() == h0);
+  // A press on the rest of the display is not the chip's.
+  u.d.click(u.at(pv, 0.3f, 0.6f));
+  u.d.step();
+  CHECK(u.ctx.notePreview());
+}

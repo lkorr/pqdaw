@@ -444,6 +444,7 @@ public:
                      engine::AudioSink& sink, const std::atomic<bool>* cancel = nullptr,
                      std::atomic<float>* progress = nullptr);
   double sampleRate() const noexcept { return cfg_.sampleRate; }
+  uint64_t chanceSeed() const noexcept { return cfg_.chanceSeed; }  // AP.7: the offline note-stage renders' seed
 
   // ---- T5.4: audio clips (see the file comment) ----
   media::SamplePool& samplePool() noexcept { return *pool_; }

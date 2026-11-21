@@ -58,6 +58,10 @@ private:
   // T3.x-fix-look: the virtual fundamental's guide on / off (shown when the clip has reference-anchored ratios).
   ui::Widget* jiRow_ = nullptr;
   ui::Toggle* ji_ = nullptr;
+  // AP.7: the roll preview of the track's note devices and Flatten to Clip (shown while the track has an active one).
+  ui::Widget* arpRow_ = nullptr;
+  ui::Toggle* arpPreview_ = nullptr;
+  ui::Button* arpFlatten_ = nullptr;
 };
 
 class CornerPanel : public ui::Widget {

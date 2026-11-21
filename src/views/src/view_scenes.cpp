@@ -40,7 +40,9 @@
 #include "meta/faces.h"  // TX.spectrogram: the face's analysis request (gramRequest)
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
-#include "piano_roll/roll_state.h"  // the roll scenes make their bends and declarations as the roll does
+#include "piano_roll/roll_state.h"
+#include "pq/document/note_devices.h"
+#include "pq/views/note_preview.h"  // the roll scenes make their bends and declarations as the roll does
 #include "piano_roll/roll_help.h"   // KB.help: the help panel scenes
 #include "pq/views/mos_wheel/mos_chart.h"
 #include "pq/views/mos_wheel/mos_circle.h"
@@ -815,6 +817,76 @@ Status setupPianoRollCurveNotes(Shell& shell) {
     return Error{ErrorCode::Unknown, "pianoroll-curve-notes: setNoteCurve", {}};
   const doc::NoteId sel = vib->id;
   sc->view->select(std::span<const doc::NoteId>(&sel, 1));
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// ---- AP.7: the Arpeggiator's roll preview (ghost notes with their glides) ---------------------------------------------
+
+namespace {
+// The scene's note device output (the views do not run the engine; the app's renderTrackNoteStages does): what an
+// Arpeggiator set to Up, 1/16, gate 75 %, Into from the previous step (a 1/64 glide) plays from the clip's chord over
+// its two bars — SCENE DATA in the shape the app's source gives (pq/views/note_preview.h).
+NotePreview sceneArp(const doc::Project& p, doc::TrackId t) {
+  NotePreview out;
+  const doc::Track* tr = doc::findTrackPtr(p, t);
+  if (tr == nullptr) return out;
+  for (const doc::DevicePtr& d : tr->devices) out.any = out.any || (d->active && doc::isNoteDevice(*d));
+  if (!out.any) return out;
+  for (const doc::ClipSlot& s : doc::playedClips(*tr)) {
+    if (!s.clip) continue;
+    std::vector<const doc::Note*> held;
+    for (const doc::Note& n : s.clip->notes)
+      if (n.enabled() && n.pitch.kind() == tuning::PitchKind::Degree) held.push_back(&n);
+    std::sort(held.begin(), held.end(), [](const doc::Note* a, const doc::Note* b) {
+      return a->pitch.equave() * 12 + a->pitch.degree() < b->pitch.equave() * 12 + b->pitch.degree();
+    });
+    doc::ClipGenerated cg{s.clip->id, {}};
+    const Ticks step = kPpq / 4;
+    int32_t prev = 0;
+    for (int32_t k = 0; !held.empty() && k * step < s.clip->length; ++k) {
+      const doc::Note& n = *held[static_cast<size_t>(k) % held.size()];
+      const int32_t deg = n.pitch.equave() * 12 + n.pitch.degree();
+      doc::GeneratedNote g;
+      g.start = k * step;
+      g.length = step * 3 / 4;
+      g.pitch = n.pitch;
+      g.source = n.id;
+      g.velocity = 100.0f;
+      if (k > 0) g.curve = {{0, 100.0f * static_cast<float>(prev - deg), 0.0f, {}}, {kPpq / 16, 0.0f, 0.0f, {}}};
+      prev = deg;
+      cg.notes.push_back(std::move(g));
+    }
+    out.clips.push_back(std::move(cg));
+  }
+  return out;
+}
+}  // namespace
+
+// A chord (C E G, a whole bar, then E G B) on a track with an Arpeggiator: its generated notes drawn as ghosts under the
+// chord (light, thin, hollow heads, the Into glides as bends), the clip box's Arp row (Ghosts on, Flatten).
+Status setupPianoRollArpPreview(Shell& shell) {
+  const std::optional<JiScene> sc = buildJiScene(shell, "Arp", 16, 5);
+  if (!sc) return Error{ErrorCode::Unknown, "pianoroll-arp-preview: building the clip failed", {}};
+  ViewContext& ctx = shell.context();
+  doc::DocumentStore& store = ctx.store();
+  using tuning::PitchId;
+  const Ticks q = kPpq;
+  const std::vector<doc::Note> notes = {scnNote(0, 4 * q, PitchId::fromDegree(0, 0), 90.0f), scnNote(0, 4 * q, PitchId::fromDegree(4, 0), 90.0f),
+                                        scnNote(0, 4 * q, PitchId::fromDegree(7, 0), 90.0f), scnNote(4 * q, 4 * q, PitchId::fromDegree(4, 0), 90.0f),
+                                        scnNote(4 * q, 4 * q, PitchId::fromDegree(7, 0), 90.0f), scnNote(4 * q, 4 * q, PitchId::fromDegree(11, 0), 90.0f)};
+  if (!runEdit(store, doc::ops::addNotes(*store.current(), store.ids(), sc->clip, notes)))
+    return Error{ErrorCode::Unknown, "pianoroll-arp-preview: addNotes", {}};
+  if (!runEdit(store, doc::ops::addDevice(*store.current(), store.ids(), sc->clip.track, doc::noteDevicePatch("arpeggiator"),
+                                          doc::DeviceKind::AudioEffect)))
+    return Error{ErrorCode::Unknown, "pianoroll-arp-preview: addDevice", {}};
+  ctx.notePreviews().setSource([](const doc::Project& p, doc::TrackId t, Ticks) -> Result<NotePreview> { return sceneArp(p, t); });
+  sc->view->state().markAllDirty();
+  shell.tree().layoutNow();
+  sc->view->state().requestPreview(8 * q);
+  if (!ctx.notePreviews().waitIdle()) return Error{ErrorCode::Unknown, "pianoroll-arp-preview: the preview worker", {}};
+  (void)ctx.notePreviews().pump();
+  if (sc->view->state().preview() == nullptr) return Error{ErrorCode::NotFound, "pianoroll-arp-preview: no ghosts", {}};
   shell.tree().layoutNow();
   return Ok{};
 }
@@ -4305,6 +4377,7 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-ratios", 1280, 800, setupPianoRollRatios},
     {"pianoroll-note-menu", 1280, 800, setupPianoRollNoteMenu},
     {"pianoroll-curve-notes", 1280, 800, setupPianoRollCurveNotes},
+    {"pianoroll-arp-preview", 1280, 800, setupPianoRollArpPreview},  // AP.7
     {"pianoroll-fundamental-lock", 1280, 800, setupPianoRollFundamentalLock},
     {"pianoroll-bends", 1280, 800, setupPianoRollBends},
     {"pianoroll-note-lines", 1280, 800, setupPianoRollNoteLines},  // T7.12

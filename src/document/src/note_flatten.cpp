@@ -22,8 +22,10 @@ EditResult flattenNoteStages(const Project& p, IdSource& ids, TrackId track, std
     Result<ClipFound> f = findClip(p, ref);
     if (!f) return std::move(f).error();
     const NoteClip& c = *f->clip;
-    if (c.loop.enabled && c.loop.end > c.loop.start)
-      return invalid("Flatten: clip \"" + c.name + "\" loops (switch its loop off first)");
+    // A clip that plays its loop more than once: the generated notes do not repeat with it (a loop that only spans the
+    // clip, the default, plays once: fine).
+    if (c.loop.enabled && c.loop.end > c.loop.start && c.contentStart + c.length > c.loop.end)
+      return invalid("Flatten: clip \"" + c.name + "\" repeats its loop (shorten the clip or switch the loop off first)");
     // The anchors the exact ratios need stay, deactivated; every other playing source note goes.
     std::unordered_set<uint32_t> anchors;
     for (const GeneratedNote& g : cg.notes)

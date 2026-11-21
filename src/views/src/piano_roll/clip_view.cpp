@@ -102,6 +102,9 @@ ClipView::ClipView(ViewContext& ctx) : Widget("clip-view"), ctx_(ctx), state_(st
                      [this] { return hasClip() && state_->activeJiGroup() != nullptr; });
   ctx_.setViewAction("pianoroll.walkDown", [this] { (void)state_->walkActiveGroup(-1); },
                      [this] { return hasClip() && state_->activeJiGroup() != nullptr; });
+  // AP.7: Flatten to Clip (the track's note devices written into its clips, the devices off; one undo step).
+  ctx_.setViewAction("pianoroll.flattenArp", [this] { (void)state_->flattenNoteDevices(); },
+                     [this] { return hasClip() && state_->hasNoteDevices(); });
   ctx_.setViewAction("pianoroll.proportionTool", [this] { state_->armProportionTool(!state_->proportionArmed()); },
                      [this] { return hasClip(); });
 
@@ -137,6 +140,7 @@ void ClipView::onDocument() {
     s.refreshHoverPart();  // the notes moved under a still pointer (an arrow key, undo)
     if (playheadTimer_ || s.playhead) refreshPlayhead();  // bug-roll-playhead: the clip moved, its loop changed
   }
+  s.requestPreviewVisible();   // AP.7: the note devices' ghosts (asks only when the track changed; off the UI thread)
   ctx_.macro().rollChanged();  // T8.1: the anchor note may be gone, the tuning another
 }
 
@@ -171,6 +175,11 @@ void ClipView::onView(uint32_t bits) {
   if (bits & (view_change::kDetailClip | view_change::kGrid | view_change::kLayout)) ctx_.macro().rollChanged();
   if (bits & view_change::kInfo) (void)ctx_.macro().sync();
   if (bits & view_change::kMacro) refreshMacro();
+  if (bits & (view_change::kNotePreview | view_change::kDetailClip)) s.requestPreviewVisible();  // AP.7
+  if (bits & view_change::kNotePreview) {  // AP.7: a preview arrived, or the switch flipped
+    if (s.noteArea) s.noteArea->markDirty();
+    if (s.boxPanel) s.boxPanel->refresh();
+  }
   // bug-roll-playhead: play / stop / a jump, another clip, the detail view shown or hidden.
   if (bits & (view_change::kTransport | view_change::kDetailClip | view_change::kLayout)) refreshPlayhead();
 }

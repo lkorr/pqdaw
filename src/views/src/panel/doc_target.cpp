@@ -129,6 +129,8 @@ public:
   std::shared_ptr<const NoteStageStatus> noteStatus(doc::DeviceId device) const override {  // AP.6
     return ctx_.noteStageStatus(device);
   }
+  std::optional<bool> notePreview() const override { return ctx_.notePreview(); }  // AP.7
+  void setNotePreview(bool on) override { ctx_.setNotePreview(on); }
   void setFoldOpen(uint32_t id, bool open) override {
     doc::PanelWindowView& v = ctx_.store().view().panelWindows[group_.value];
     if (v.foldOpen(id) == open) return;

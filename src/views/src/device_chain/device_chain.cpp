@@ -1,5 +1,6 @@
 // The Device view (T4.1; racks T4.8): pq/views/device_chain/device_chain.h.
 #include "pq/views/device_chain/device_chain.h"
+#include "pq/views/note_preview.h"
 
 #include <algorithm>
 #include <cmath>
@@ -762,6 +763,12 @@ bool FrameBase::onPointer(const ui::PointerEvent& e) {
       }
       items.push_back(ui::MenuItem::item("Hot-Swap Presets\xE2\x80\xA6", [v, id] { v->hotSwap(id); }));
       items.push_back(ui::MenuItem::sep());
+      // AP.7: a note device (the Arpeggiator): its notes into the track's clips, the device off (one undo step).
+      if (loc.device != nullptr && loc.track != nullptr && doc::isNoteDevice(*loc.device) && loc.device->active) {
+        ViewContext* c = &ctx_;
+        const doc::TrackId t = loc.track->id;
+        items.push_back(ui::MenuItem::item("Flatten to Clip", [c, t] { (void)flattenTrackNoteDevices(*c, t); }));
+      }
       items.push_back(ui::MenuItem::item(on ? "Deactivate" : "Activate", [v] { v->toggleSelectedActive(); }, "0"));
       items.push_back(ui::MenuItem::sep());
       items.push_back(ui::MenuItem::item("Cut", [v] { v->cutSelected(); }, "Ctrl+X"));

@@ -95,6 +95,7 @@
     {"scope": "pianoroll", "keys": "0", "action": "pianoroll.toggleActive", "status": "implemented", "task": "T3.11"},
     {"scope": "pianoroll", "keys": "Ctrl+G", "action": "pianoroll.glide", "status": "implemented", "task": "T7.6"},
     {"scope": "pianoroll", "keys": "Ctrl+Shift+J", "action": "pianoroll.tuneToJi", "status": "implemented", "task": "T7.14"},
+    {"scope": "pianoroll", "keys": "Ctrl+Alt+F", "action": "pianoroll.flattenArp", "status": "implemented", "task": "AP.7"},
     {"scope": "pianoroll", "keys": "Alt+Up", "action": "pianoroll.walkUp", "status": "implemented", "task": "T7.14"},
     {"scope": "pianoroll", "keys": "Alt+Down", "action": "pianoroll.walkDown", "status": "implemented", "task": "T7.14"},
     {"scope": "pianoroll", "keys": "J", "action": "pianoroll.proportionTool", "status": "implemented", "task": "T7.14"},

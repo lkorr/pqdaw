@@ -2,6 +2,9 @@
 
 #include "roll_state.h"
 
+#include "pq/document/note_devices.h"
+#include "pq/views/note_preview.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -1029,6 +1032,53 @@ void RollState::setShowChance(bool on) {
   chance_ = on;
   if (laneView) laneView->markDirty();
   if (laneHeaderView) laneHeaderView->refresh();
+}
+
+// --- AP.7: the roll preview ------------------------------------------------------------------------------
+
+bool RollState::hasNoteDevices() const noexcept {
+  if (!clip_ || !snap_) return false;
+  const doc::Track* t = doc::findTrackPtr(*snap_, ref_.track);
+  if (t == nullptr || t->kind != doc::TrackKind::Midi) return false;
+  for (const doc::DevicePtr& d : t->devices)
+    if (d->active && doc::isNoteDevice(*d)) return true;
+  return false;
+}
+
+bool RollState::previewShown() const noexcept { return ctx.notePreview() && hasNoteDevices(); }
+
+void RollState::requestPreview(Ticks visibleEndContent) {
+  if (!previewShown() || !ctx.notePreviews().hasSource()) return;
+  const doc::Track* t = doc::findTrackPtr(*snap_, ref_.track);
+  // How far: the visible end + one bar (4/4 at the clip's signature is close enough: the worker renders from 0).
+  const Ticks until = clip_->start + std::max<Ticks>(0, visibleEndContent - clip_->contentStart) + kTicksPerWhole;
+  if (t == pvTrack_ && snap_->timeline.get() == pvTimeline_ && snap_->tunings.get() == pvTunings_ && until <= pvUntil_)
+    return;
+  pvTrack_ = t;
+  pvTimeline_ = snap_->timeline.get();
+  pvTunings_ = snap_->tunings.get();
+  pvUntil_ = std::max(until, clip_->start + clip_->length);  // (a clip's whole length at least: one compute per edit)
+  ctx.notePreviews().request(snap_, ref_.track, pvUntil_);
+}
+
+void RollState::requestPreviewVisible() {
+  if (!clip_) return;
+  const double end = tickAtX(static_cast<float>(area().right()));
+  requestPreview(static_cast<Ticks>(std::ceil(std::max(end, 0.0))));
+}
+
+const doc::ClipGenerated* RollState::preview() const {
+  if (!clip_ || !previewShown()) return nullptr;
+  const std::shared_ptr<const NotePreview> p = ctx.notePreviews().latest(ref_.track);
+  if (!p || !p->any) return nullptr;
+  for (const doc::ClipGenerated& c : p->clips)
+    if (c.clip == ref_.clip) return &c;
+  return nullptr;
+}
+
+bool RollState::flattenNoteDevices() {
+  if (!clip_) return false;
+  return flattenTrackNoteDevices(ctx, ref_.track);
 }
 
 // --- notes ----------------------------------------------------------------------------------------------

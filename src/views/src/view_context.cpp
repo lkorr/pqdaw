@@ -1,4 +1,5 @@
 #include "pq/views/view_context.h"
+#include "pq/views/note_preview.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -79,6 +80,7 @@ ViewContext::ViewContext(TransportPort& transport) : transport_(transport) {
   waveforms_ = std::make_unique<Waveforms>(*this);
   sampleAnalysis_ = std::make_unique<SampleAnalysis>(*this);  // T6.8
   probes_ = std::make_unique<FileProbes>(*this);
+  notePreviews_ = std::make_unique<NotePreviews>(*this);  // AP.7
   saved_ = store_.current();
   storeListener_ = store_.subscribe([this](const doc::StoreEvent& e) { onStoreEvent(e); });
   // Scopes of the default keymap, interned now so views can set them before the keymap file is applied.
@@ -119,6 +121,7 @@ ViewContext::~ViewContext() {
   waveforms_.reset();      // joins its workers
   sampleAnalysis_.reset();  // T6.8: joins its worker
   probes_.reset();         // T5.7: joins the probe workers
+  notePreviews_.reset();   // AP.7: joins the preview worker
   store_.unsubscribe(storeListener_);
 }
 
