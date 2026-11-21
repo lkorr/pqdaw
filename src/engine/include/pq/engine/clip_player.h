@@ -103,6 +103,7 @@
 
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/time.h"
+#include "pq/dsp/warp_voice.h"
 #include "pq/engine/audio_sequence.h"
 #include "pq/engine/program_image.h"
 #include "pq/engine/stretch_pool.h"
@@ -274,8 +275,7 @@ private:
     uint32_t takeover = 0xFFFFFFFFu, replaces = 0xFFFFFFFFu;
     Reader reader;
     Reader reader2;                    // T6.3 Beats: the other slice's stream
-    int64_t grainIdx = INT64_MIN;      // T6.3 Tones / Texture: the last grain positioned
-    double grainPos[2] = {0.0, 0.0};   // ... its centre's source frame and the one before (by parity)
+    dsp::WarpGrains grains;            // T6.3 Tones / Texture: the last grains positioned (SM.4: pq/dsp/warp_voice.h)
     // T6.5 Complex / Complex Pro: the stream its stretcher is fed: input frame k is the unfolded source frame
     // phi0 + dir·k; frames [0, head) are in, those below zeroBelow (before the clip plays) read as zeros. Its output
     // (the vocoder clock y; song sample t reads y = (t − tA) · pitch rate) is held in its stretchOut_ buffer: frames
@@ -289,16 +289,11 @@ private:
     int64_t vLo = 0, vHi = INT64_MIN;
     int64_t phi0 = 0, head = 0, zeroBelow = 0;
   };
-  // T6.3 Beats: one pass of one slice (audio_sequence.h "Beats").
-  struct SlicePass {
-    SampleTime T = 0;          // entry
-    SampleTime next = 0;       // the next pass's entry (INT64_MAX: none before the clip ends)
-    double F = 0.0;            // source frame at T
-    double L = 0.0;            // natural length in source frames (+inf: to the clip's end)
-    double entryU = 0.0, exitU = 0.0;  // the forward-time unfolded content bounds of the slice in this pass
-    int dir = 1;
-    bool fadeIn = true;        // false: the clip's own first slice (no pass before it)
-  };
+  // T6.3 Beats: one pass of one slice (audio_sequence.h "Beats"); entryU / exitU: the forward-time unfolded content
+  // bounds of the slice in this pass; next INT64_MAX: none before the clip ends; L +inf: to the clip's end.
+  using SlicePass = dsp::WarpSlicePass;
+  // SM.4: the renderers are dsp::warpRenderGrains / warpRenderSlices (pq/dsp/warp_voice.h) over this host.
+  struct WarpHost;
   // One contiguous piece of source positions for a run of output frames.
   // Trivial (no member initialisers): a run's Piece array lives on the audio thread's stack and must not be zeroed
   // per call (kMaxPieces of them; pieces() writes every field it hands out).
@@ -328,12 +323,6 @@ private:
   // T6.3, the time-stretch modes.
   const float* stretchEnvelope(Voice& v, SampleTime s, uint32_t n) noexcept;  // null: flat (the clip gain)
   void renderStretch(Voice& v, uint32_t frame, SampleTime s, uint32_t n) noexcept;
-  void renderGrains(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out, const float* env) noexcept;
-  double grainCentre(Voice& v, const media::SampleView& view, int64_t k) noexcept;
-  double alignGrain(Voice& v, const media::SampleView& view, double prev, int64_t p) noexcept;
-  void renderSlices(Voice& v, const media::SampleView& view, SampleTime s, uint32_t n, float* const* out, const float* env) noexcept;
-  void renderPass(Voice& v, const media::SampleView& view, const SlicePass& p, SampleTime s, uint32_t n, float* const* out,
-                  const float* env) noexcept;
   Reader& passReader(Voice& v, const SlicePass& p, SampleTime s) noexcept;
   void claimSlice(Voice& v, const media::SampleView& view, const SlicePass& current, SampleTime runEnd) noexcept;
   static SlicePass passFromU(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, double u) noexcept;
