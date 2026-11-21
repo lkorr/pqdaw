@@ -983,7 +983,8 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 // TX.patching (SPEC §15 2026-11-01 "a wire adds its value in the target param's own units", "free patching in the
 // circuit"; QUESTIONS Q?-TX.patching-a): a wire's source is ANY output of its device (an `out` as well as an export: a
 // meta module's output, an effect's audio), and its target any real param or any non-const INPUT of its device
-// (`param` names either: a device's audio in, a meta module's frequency or phase-modulation input). The wire's LAW:
+// (`param` names either: a device's audio in, a meta module's frequency or phase-modulation input; SM.3: a Bool input,
+// a gate — the Envelope's, the Sampler's —, which reads true where the sum of its wires is > 0). The wire's LAW:
 //   Add      every new wire. GU.1 (docs/plans/GU.md "Curves"): it ADDS IN POSITION — to the target's knob position,
 //            before its curve (Device::curves / the declared curve; +1 = the whole range, through the curve: even
 //            octave sweeps on an octave knob), wrapped by a wrap curve, mirrored by a signed one — unless the curve is

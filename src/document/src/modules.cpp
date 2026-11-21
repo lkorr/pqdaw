@@ -23,7 +23,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 29> kModules = {{
+constexpr std::array<ModuleInfo, 30> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -117,6 +117,11 @@ constexpr std::array<ModuleInfo, 29> kModules = {{
      "Two inputs, A and B, each plus a typed value, combined by one op you pick: compare (< > ≤ ≥ == ≠, giving a 0 / 1 "
      "gate), logic (and, or, xor, nand, nor, xnor, not), arithmetic (+ − × ÷ mod pow average |A − B|), range (min, "
      "max, clip, wrap, fold) or geometry (atan2, hypot). Scopes show A, B and the output on one time base."},
+    // SM.3 (docs/plans/SM.md).
+    {ModuleKind::Sampler, "sampler", "Sampler",
+     "Plays one sample per note: Classic (looped while held), One-Shot or Slice (a slice per key from C1), at the note's "
+     "pitch over the sample's root. A filter, an envelope and an LFO after it; open it to see and rewire the circuit.",
+     true},
 }};
 
 struct Builder {
@@ -372,7 +377,8 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::DelayTap:
     case ModuleKind::Compressor:
     case ModuleKind::Limiter:
-    case ModuleKind::Math: break;
+    case ModuleKind::Math:
+    case ModuleKind::Sampler: break;
   }
   return {};
 }
@@ -549,7 +555,8 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::DelayTap:
     case ModuleKind::Compressor:
     case ModuleKind::Limiter:
-    case ModuleKind::Math: break;
+    case ModuleKind::Math:
+    case ModuleKind::Sampler: break;
   }
   return p;
 }
@@ -719,6 +726,7 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::Compressor) return compressorBlocks(ids);
   if (k == ModuleKind::Limiter) return limiterBlocks(ids);
   if (k == ModuleKind::Math) return mathBlocks(ids);
+  if (k == ModuleKind::Sampler) return samplerBlocks(ids);
   return engineModuleBlocks(ids, k);
 }
 
@@ -2331,6 +2339,148 @@ std::optional<MathInfo> mathInfo(const Project& p, DeviceId group) {
   const DeviceValue* code = loc.device->setting(kMathOpSetting);
   info.op = code != nullptr ? mathOpOfCode(code->value) : nullptr;
   return info;
+}
+
+// ---- SM.3: the Sampler ----------------------------------------------------------------------------------------------
+
+BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* roles) {
+  SamplerRoles r;
+  r.group = o.id.valid() ? o.id : ids.device();
+  BlockSet out;
+  {
+    auto g = std::make_shared<Device>(*makeInstrumentGroup(r.group));
+    g->name = o.name.empty() ? std::string("Sampler") : o.name;
+    g->group = o.inGroup;
+    g->active = o.active;
+    out.devices.push_back(std::move(g));
+  }
+  Builder b{ids, {}, r.group};
+  // The engine: the sample, its root, its mode.
+  r.engine = b.add(std::string(kMetaDevicePrefix) + "sampler", "Sampler");
+  {
+    auto e = std::make_shared<Device>(*b.set.devices.back());
+    e->params = {DeviceValue{"root", enginePosition("sampler", "root", o.rootHz)}};
+    if (o.mode != 0) e->settings = {DeviceValue{"mode", static_cast<double>(o.mode)}};
+    if (o.sample != 0 || !o.slices.empty())
+      if (const meta::Type* t = meta::findType("sampler")) {
+        MetaInstance in = defaultMetaInstance(*t);
+        in.data = meta::samplerData(o.sample, o.slices);
+        e->meta = std::make_shared<const MetaMap>(MetaMap{MetaEntry{"", std::move(in)}});
+      }
+    b.set.devices.back() = std::move(e);
+  }
+  r.key = b.atom("voice.key", "Key");
+  r.amp = b.atom("mul", "Amp");
+  for (DevicePtr& d : b.set.devices) out.devices.push_back(std::move(d));
+  for (Wire& w : b.set.wires) out.wires.push_back(std::move(w));
+  auto take = [&](BlockSet set) {
+    for (DevicePtr& d : set.devices) out.devices.push_back(std::move(d));
+    for (Wire& w : set.wires) out.wires.push_back(std::move(w));
+  };
+  auto wire = [&](DeviceId from, std::string_view port, DeviceId to, std::string_view param, WireLaw law = WireLaw::Add,
+                  double amount = 1.0) {
+    Wire w;
+    w.id = ids.wire();
+    w.from = from;
+    w.port = std::string(port);
+    w.to = to;
+    w.param = std::string(param);
+    w.law = law;
+    w.amount = amount;
+    out.wires.push_back(std::move(w));
+  };
+  // The filter: an EQ band, Low Pass at 20 kHz, switched off (passes the sample by, costs nothing) until wanted.
+  {
+    EqBandOptions f;
+    f.inGroup = r.group;
+    f.name = "Filter";
+    f.type = 0;
+    f.freqHz = kBandMaxHz;
+    f.active = false;
+    BlockSet set = eqBandBlocks(ids, f);
+    r.filter = set.devices.front()->id;
+    for (const DevicePtr& d : set.devices)
+      if (bandRole(*d) == BandRole::Frequency) r.filterFrequency = d->id;
+    take(std::move(set));
+  }
+  // The envelope (its In unplugged: the envelope itself, amount 0.5), multiplied into the signal after the filter.
+  {
+    BlockSet env = engineModuleBlocks(ids, ModuleKind::Envelope, {DeviceId{}, r.group, {}, true}, &r.envelope);
+    for (DevicePtr& d : env.devices)
+      if (d->id == r.envelope.engine) {
+        auto e = std::make_shared<Device>(*d);
+        e->params = {DeviceValue{"amount", enginePosition("envelope", "amount", 0.5)}};
+        d = std::move(e);
+      }
+    std::erase_if(env.wires, [&](const Wire& w) { return w.to == r.envelope.engine && w.from == r.envelope.group; });
+    take(std::move(env));
+  }
+  // The LFO on the filter's Frequency (a Travel wire, a quarter of the knob's travel), switched off until wanted.
+  std::string lfoPort;
+  {
+    StockModuleOptions l;
+    l.inGroup = r.group;
+    l.active = false;
+    BlockSet set = lfoBlocks(ids, l);
+    r.lfo = set.devices.front()->id;
+    for (const Wire& w : set.wires)  // its jack's signal (what feeds its Out): a Travel wire leaves from there
+      if (w.to == r.lfo && w.param == kGroupOutPort) {
+        r.lfoOut = w.from;
+        lfoPort = w.port;
+      }
+    take(std::move(set));
+  }
+  wire(r.group, kGroupInPort, r.engine, "hz");
+  wire(r.key, "out", r.engine, "key");
+  wire(r.engine, "out", r.filter, kMainPort);
+  wire(r.filter, kMainPort, r.amp, "a");
+  wire(r.envelope.group, kMainPort, r.amp, "b");
+  wire(r.amp, "out", r.group, kGroupOutPort);
+  wire(r.engine, "gateOut", r.envelope.engine, "gate");  // (a gate input reads its wires' sum > 0: the compare)
+  wire(r.lfoOut, lfoPort, r.filterFrequency, kValueParam, WireLaw::Travel, 0.25);
+  std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
+  // The panel: tabs, the sample's knobs, the filter / envelope / LFO panels embedded (GU.6). SM.10 draws the face.
+  Panel panel;
+  panel.width = 256.0f;
+  panel.height = 268.0f;
+  panel.elements.push_back(plate(panel.width, panel.height, 12.0));
+  r.tabs = 2;
+  PanelElement tabs = element(r.tabs, "tabs", 8, 8, 240, 18, {});
+  tabs.bindings.clear();
+  tabs.setField(styleText("items", kSamplerTabs));
+  panel.elements.push_back(std::move(tabs));
+  auto onTab = [&](PanelElement e, double tab) {
+    e.when = Visibility{r.tabs, {tab}};
+    panel.elements.push_back(std::move(e));
+  };
+  uint32_t id = 3;
+  {
+    PanelElement mode = element(id++, "menu", 8, 34, 96, 18, settingBinding(r.engine, "mode"));
+    mode.setField(styleText("items", "Classic|One-Shot|Slice"));
+    mode.setField(styleText("label", "-"));
+    onTab(std::move(mode), 0.0);
+    struct K {
+      const char* param;
+      const char* label;
+      float x, y;
+    };
+    for (const K& k : {K{"start", "Start", 8, 60}, K{"end", "End", 68, 60}, K{"transpose", "Transpose", 128, 60},
+                       K{"gain", "Gain", 188, 60}, K{"root", "Root", 8, 140}, K{"detune", "Detune", 68, 140}}) {
+      PanelElement e = element(id++, "knob", k.x, k.y, 56, 72, controlBinding(r.engine, k.param));
+      e.setField(styleText("label", k.label));
+      onTab(std::move(e), 0.0);
+    }
+  }
+  onTab(element(id++, "panel", 8, 32, 240, 228, panelBinding(r.filter)), 1.0);
+  onTab(element(id++, "panel", 8, 32, 208, 128, panelBinding(r.envelope.group)), 2.0);
+  onTab(element(id++, "panel", 8, 32, 236, 140, panelBinding(r.lfo)), 3.0);
+  {
+    auto g = std::make_shared<Device>(*out.devices.front());
+    g->panel = std::make_shared<const Panel>(std::move(panel));
+    out.devices.front() = std::move(g);
+  }
+  if (roles != nullptr) *roles = r;
+  return out;
 }
 
 }  // namespace pq::doc

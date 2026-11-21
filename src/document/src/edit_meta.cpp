@@ -2,6 +2,10 @@
 #include "edit_common.h"
 #include "pq/document/meta.h"
 #include "pq/meta/registry.h"
+#include "pq/meta/sampler.h"
+
+#include <algorithm>
+#include <cmath>
 
 namespace pq::doc::ops {
 
@@ -67,6 +71,39 @@ EditResult setMetaData(const Project& p, DeviceId device, std::string path, std:
     batchOf(e).commands.push_back(AddMetaInstance{device, "", defaultMetaInstance(*t)});
   }
   batchOf(e).commands.push_back(SetMetaData{device, std::move(path), std::move(data)});
+  return e;
+}
+
+// SM.3: a Sampler's sample (pq/document/edit_ops.h).
+EditResult setSamplerSample(const Project& p, DeviceId sampler, SampleId sample, std::optional<double> rootHz,
+                            std::vector<float> slices) {
+  const DeviceLoc l = findDevice(p, sampler);
+  if (!l.track) return notFound("device not found");
+  auto isEngine = [](const Device& d) { return isMetaDevice(d) && metaDeviceType(d) == "sampler"; };
+  DeviceId engine;
+  if (isEngine(*l.device)) {
+    engine = sampler;
+  } else if (isGroupDevice(*l.device)) {
+    forEachDeviceIn(l.track->devices, [&](const Device& d) {
+      if (!engine.valid() && d.group == sampler && isEngine(d)) engine = d.id;
+    });
+  }
+  if (!engine.valid()) return invalid("not a Sampler");
+  if (sample.valid() && findSample(p, sample) == nullptr) return notFound("sample not found");
+  for (const float f : slices)
+    if (!(f >= 0.0f) || !std::isfinite(f)) return invalid("a slice must be a frame ≥ 0");
+  std::sort(slices.begin(), slices.end());
+  slices.erase(std::unique(slices.begin(), slices.end()), slices.end());
+  const double hz = rootHz && *rootHz > 0.0 && std::isfinite(*rootHz) ? *rootHz : meta::kSamplerDefaultRoot;
+  Result<Edit> data = setMetaData(p, engine, "", "sampler", meta::samplerData(sample.valid() ? sample.value : 0, std::move(slices)));
+  if (!data) return std::move(data).error();
+  Result<Edit> root = setMetaParamValue(p, engine, "", "sampler", "root", hz);
+  if (!root) return std::move(root).error();
+  Edit e = makeEdit("Set Sampler Sample");
+  e.devices.push_back(sampler);
+  e.tracks.push_back(l.track->id);
+  for (Edit* x : {&*data, &*root})
+    for (Command& c : batchOf(*x).commands) batchOf(e).commands.push_back(std::move(c));
   return e;
 }
 

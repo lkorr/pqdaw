@@ -1147,11 +1147,20 @@ uint32_t signalInput(const graph::Patch& callee, std::string_view name) noexcept
     if (callee.node(v).kind != graph::NodeKind::Input) continue;
     if (callee.nodeName(v) == name) {
       const graph::PortType& t = callee.outputType(v, 0);
-      return t.rate == graph::Rate::Const || t.kind == graph::Kind::Bool ? graph::kNone : ordinal;
+      return t.rate == graph::Rate::Const ? graph::kNone : ordinal;
     }
     ++ordinal;
   }
   return graph::kNone;
+}
+// SM.3: whether the callee's `in` number `ordinal` is a Bool (a gate: the Envelope's, the Sampler's). Its wires arrive
+// as reals (TX.bool-real) and are summed as into any input; the gate reads sum > 0 (lowerSites).
+bool boolInput(const graph::Patch& callee, uint32_t ordinal) noexcept {
+  uint32_t o = 0;
+  for (NodeIndex v = 0; v < callee.nodeCount(); ++v)
+    if (callee.node(v).kind == graph::NodeKind::Input && o++ == ordinal)
+      return callee.outputType(v, 0).kind == graph::Kind::Bool;
+  return false;
 }
 
 // A lowered device (in a track's flat list).
@@ -2667,6 +2676,9 @@ enum WireK : uint32_t {
   kWOwn14,  // TX.knob-curves: an Add wire's own free slots (kWAmount, kWTerm, this) hold its site's @signed / dB nodes
   kWNotePhase,  // TX.all-free-fix1: a notes cable into a phase input: phasor of the note's Hz
   kWTarget = 16,
+  // SM.3: a gate input's conversion (keyed by its first wire: a wire into an input has no param site, so these slots are
+  // free): what it read before as a real, and the sum > 0.
+  kWGateIn = kWTarget, kWGate = kWTarget + 1,
 };
 // A driven param's nodes (keyed by its first wire: kWTarget + k; GU.1: a site no wire reaches by its lowest automation
 // lane (an entity id like a wire's: NodeRole::Wire, kWTarget + k)): the knob, the sum, the curve atom and the stages
@@ -2869,6 +2881,10 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
             std::replace(m->second.begin(), m->second.end(), last, x);
         if (!(from == b.freeZero)) sum = from;
       }
+      // SM.3: into a Bool input (a gate) the terms are reals: what it read before as its 0 / 1, the wires added, then
+      // true where the sum is > 0.
+      const bool gate = f.signalIn && td[f.toDev].callee != nullptr && boolInput(*td[f.toDev].callee, f.toPin);
+      if (gate && sum.node != graph::kNone) sum = ir.atom("gate_to_real", {sum}, wid(f, kWGateIn));
       // TX.groups-fix1: chain links first (Wire::chain: a grouped series' link is what the chain gave the input), then
       // the other wires in id order.
       bool first = true;
@@ -2880,6 +2896,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
           sum = sum.node == graph::kNone ? src : ir.atom("add", {sum, src}, wid(w, first ? kWTerm : kWSum));
           first = false;
         }
+      if (gate) sum = ir.atom("gt", {sum, b.c0()}, wid(f, kWGate));
       if (pin.node != graph::kNone) {
         p.connect(sum, pin);
         for (const uint32_t j : *group) b.wireEnd(wp.wires[into[j]].wire->id, sum, pin.node, wp.wires[into[j]].wire->id.value);  // WI.2

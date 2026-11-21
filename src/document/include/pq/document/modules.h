@@ -35,6 +35,7 @@
 #include "pq/document/model.h"
 #include "pq/document/panel.h"
 #include "pq/dsp/curve.h"
+#include "pq/meta/sampler.h"
 
 namespace pq::doc {
 
@@ -50,7 +51,8 @@ enum class ModuleKind : uint8_t {
   StereoField, StereoImage, PhaseScope,     // VZ.5: the stereo analysers
   BandLevels, Waveform,                    // VZ.6
   Waterfall, StereoSpectrogram,             // VZ.7: the 3D analysers
-  Math                                      // MX.2
+  Math,                                     // MX.2
+  Sampler                                   // SM.3
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -164,6 +166,42 @@ struct WavetableSynthRoles {
 };
 inline constexpr const char* kSynthTabs = "Osc|Env|LFO 1|LFO 2";
 BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSynthRoles* roles = nullptr);
+
+// ---- SM.3: the Sampler (docs/plans/SM.md "Decisions", "Where it sits") ---------------------------------------------
+// An instrument group (makeInstrumentGroup: 16 voices) around the native engine `meta:sampler` (pq/meta/sampler.h):
+//   In (the note's Hz) → Sampler engine `hz`;  voice.key (an atom block) → its `key` (Slice: slice key − 36)
+//   engine out (stereo) → Filter (an EQ band: Low Pass 20 kHz, SWITCHED OFF: it passes the sample by and costs
+//                         nothing until switched on) → Amp (mul) → Out
+//   Envelope (its In unplugged: the envelope itself, amount 0.5) → Amp's other input (a mono envelope × the stereo
+//                         sample: the Envelope's own `in` is mono)
+//   engine gateOut (1 / 0) → the Envelope's gate (a Bool input: it reads the wire > 0, lower.h's compare): Classic
+//                         follows the note; One-Shot / Slice (Trigger) stay high until the sample ends, so the
+//                         envelope releases there
+//   LFO (the stock LFO, SWITCHED OFF): from its jack a Travel wire (a quarter of the travel) into the Filter's Frequency
+// The voices end when the enders behind Out are done (lower.h "end", BR.C): the Envelope, whose gate is the engine's
+// gateOut, so a One-Shot voice lasts to the sample's end plus the release. Everything is rewirable once the group is
+// opened.
+// Its panel: tabs "Sample|Filter|Env|LFO": the engine's mode and knobs (Start, End, Transpose, Gain, Root, Detune), the
+// Filter's, Envelope's and LFO's panels embedded (GU.6). The face is SM.10's.
+struct SamplerRoles {
+  DeviceId group, engine, key, amp;  // the group, meta:sampler, the voice.key block, the amp (mul)
+  DeviceId filter, filterFrequency;        // the EQ band group and its Frequency value block
+  EngineRoles envelope;
+  DeviceId lfo, lfoOut;                    // the LFO group, the block its jack is (the Travel wire leaves it)
+  uint32_t tabs = 0;                       // the tabs element's id
+};
+struct SamplerOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the group it sits in, or none
+  std::string name;  // "" = "Sampler"
+  uint32_t sample = 0;                         // a SampleId value (0: none)
+  std::vector<float> slices;                   // slice start frames
+  double rootHz = meta::kSamplerDefaultRoot;   // the engine's root
+  uint32_t mode = 0;                           // meta::SamplerMode
+  bool active = true;
+};
+inline constexpr const char* kSamplerTabs = "Sample|Filter|Env|LFO";
+BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o = {}, SamplerRoles* roles = nullptr);
 
 // ---- GU.10: the stock devices as group presets (docs/plans/GU.md "One hierarchy") ----
 // Utility, Saturator, the LFO and Operator are groups of atom blocks, value blocks and modules, each with a panel laid
