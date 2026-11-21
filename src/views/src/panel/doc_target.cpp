@@ -112,6 +112,19 @@ public:
 
   const BoundInfo& info(const doc::Binding& b) const override { return resolved(b).info; }
 
+  // SM.9: the group's fold sections, in the store's view state (saved, not undoable).
+  std::optional<bool> foldOpen(uint32_t id) const override {
+    const auto& all = ctx_.store().view().panelWindows;
+    const auto it = all.find(group_.value);
+    return it == all.end() ? std::nullopt : it->second.foldOpen(id);
+  }
+  void setFoldOpen(uint32_t id, bool open) override {
+    doc::PanelWindowView& v = ctx_.store().view().panelWindows[group_.value];
+    if (v.foldOpen(id) == open) return;
+    v.setFoldOpen(id, open);
+    ctx_.panelFoldsChanged();
+  }
+
   double position(const doc::Binding& b) const override {
     for (const Pending& p : pending_)
       if (p.b == b) return p.position;

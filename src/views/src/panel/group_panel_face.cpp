@@ -91,6 +91,8 @@ public:
   std::optional<double> ghostPosition(const doc::Binding& b) const override { return in_.ghostPosition(b); }
   bool modulationLive() const override { return in_.modulationLive(); }
   bool ghostPass() const noexcept override { return true; }
+  std::optional<bool> foldOpen(uint32_t id) const override { return in_.foldOpen(id); }  // SM.9
+  void setFoldOpen(uint32_t, bool) override {}
   double tempoBpm() const override { return in_.tempoBpm(); }
   bool transportPlaying() const override { return in_.transportPlaying(); }
   double sampleRate() const override { return in_.sampleRate(); }
@@ -121,9 +123,36 @@ GroupPanelFace::~GroupPanelFace() = default;
 
 bool GroupPanelFace::sync() {
   doc::PanelPtr p = source_ ? source_() : nullptr;
-  if (p == panel_) return false;
-  rebuild(p);
-  return true;
+  bool rebuilt = false;
+  if (p != panel_) {
+    rebuild(p);
+    rebuilt = true;
+  }
+  return syncFolds() || rebuilt;
+}
+
+bool GroupPanelFace::syncFolds() {
+  if (!panel_) return false;
+  std::vector<uint8_t>& now = foldScratch_;
+  now.clear();
+  for (const doc::PanelElement& e : panel_->elements)
+    if (e.kind == doc::kFoldKind) now.push_back(target_->foldOpen(e.id).value_or(doc::foldOpenByDefault(e)) ? 1 : 0);
+  if (foldsLaid_ && now == foldOpen_) return false;
+  const bool first = !foldsLaid_;
+  foldsLaid_ = true;
+  foldOpen_ = now;
+  if (now.empty()) {  // no folds: as the document has it
+    folds_ = {};
+    folds_.height = panel_->height;
+    return false;
+  }
+  folds_ = doc::foldLayout(*panel_, [&](const doc::PanelElement& e) {
+    return target_->foldOpen(e.id).value_or(doc::foldOpenByDefault(e));
+  });
+  for (size_t i = 0; i < elements_.size() && i < folds_.y.size(); ++i) elements_[i]->setPlacement(folds_.y[i], folds_.h[i]);
+  updateShape();
+  liveKeys_.clear();  // repaint the whole panel
+  return !first;
 }
 
 bool GroupPanelFace::changedRects(std::vector<Rect>& out) {
@@ -166,6 +195,12 @@ void GroupPanelFace::rebuild(const doc::PanelPtr& p) {
       if (id == d.id) elements_.back()->setLocalSelection(v);
   }
   for (const doc::PanelElement& d : p->elements) whenSource_.push_back(d.when ? indexOf(d.when->element) : -1);
+  foldsLaid_ = false;
+  foldOpen_.clear();
+  updateShape();
+}
+
+void GroupPanelFace::updateShape() {
   round_ = false;
   corner_ = kCorner;
   if (!elements_.empty())
@@ -184,9 +219,22 @@ FaceShape GroupPanelFace::shape() const noexcept {
   return {false, {0.0f, 0.0f}, corner_};
 }
 
-std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list) {
+doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowView* v) {
+  return doc::foldLayout(panel, [&](const doc::PanelElement& e) {
+    const std::optional<bool> o = v != nullptr ? v->foldOpen(e.id) : std::nullopt;
+    return o.value_or(doc::foldOpenByDefault(e));
+  });
+}
+
+std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list, const doc::FoldLayout* folds) {
   if (panel.elements.empty()) return std::nullopt;
-  const doc::PanelElement& bottom = panel.elements.front();
+  doc::PanelElement placed;
+  if (folds != nullptr && folds->folds && !folds->y.empty()) {
+    placed = panel.elements.front();  // SM.9: as the fold layout places it
+    placed.y = folds->y[0];
+    placed.h = folds->h[0];
+  }
+  const doc::PanelElement& bottom = placed.kind.empty() ? panel.elements.front() : placed;
   if (const doc::DeviceId child = doc::embeddedGroup(bottom); child.valid()) {  // GU.6: the embedded child's outline
     if (list == nullptr) return std::nullopt;
     for (const doc::DevicePtr& d : *list)
@@ -196,11 +244,12 @@ std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<d
         const doc::EmbedFit f = doc::embedFit(bottom.w, bottom.h, std::max(1.0f, d->panel->width), std::max(1.0f, d->panel->height));
         o->centre = {bottom.x + f.x + o->centre.x * f.k, bottom.y + f.y + o->centre.y * f.k};
         o->radius *= f.k;
+        o->ry *= f.k;
         return o;
       }
     return std::nullopt;
   }
-  const std::unique_ptr<Element> e = makeElement(panel.elements.front());
+  const std::unique_ptr<Element> e = makeElement(bottom);
   std::optional<FaceShape> o = e->outline();
   if (o) o->centre = {o->centre.x + e->desc().x, o->centre.y + e->desc().y};
   return o;
@@ -325,7 +374,7 @@ bool GroupPanelFace::animating() const noexcept {
 
 Vec2 GroupPanelFace::worldSize() const noexcept {
   if (!panel_) return {120.0f, 60.0f};
-  return {std::max(1.0f, panel_->width), std::max(1.0f, panel_->height)};
+  return {std::max(1.0f, panel_->width), std::max(1.0f, folds_.folds ? folds_.height : panel_->height)};
 }
 
 int32_t GroupPanelFace::indexOf(uint32_t id) const noexcept {
@@ -338,6 +387,7 @@ int32_t GroupPanelFace::indexOf(uint32_t id) const noexcept {
 // follow their sources; a cycle reads as hidden).
 bool GroupPanelFace::shownNow(size_t i, std::vector<int8_t>& memo) const {
   if (memo[i] != 0) return memo[i] == 1;
+  if (i < folds_.hidden.size() && folds_.hidden[i] != 0) return (memo[i] = 2) == 1;  // SM.9: in a folded section
   const int32_t src = whenSource_[i];
   if (src < 0) return (memo[i] = 1) == 1;
   memo[i] = 2;  // (while it is evaluated: a cycle is hidden)
@@ -525,7 +575,9 @@ void GroupPanelFace::paintLive(ui::FacePainter& p, const FaceEnv& env) {
   }
   // The block's selection / hover rim.
   const Rgba rim = env.selected ? th.circuit.selected : (env.hovered && hovered_ == kFrame ? th.circuit.hover : 0u);
-  if (round_) p.ring(roundShape_.centre, roundShape_.radius - 0.75f, env.selected ? 1.75f : 1.25f, rim);
+  if (round_ && roundShape_.ry > 0.0f)  // SM.9: an oval
+    ellipseRing(p, roundShape_.centre, roundShape_.radius - 0.75f, roundShape_.radiusY() - 0.75f, env.selected ? 1.75f : 1.25f, rim);
+  else if (round_) p.ring(roundShape_.centre, roundShape_.radius - 0.75f, env.selected ? 1.75f : 1.25f, rim);
   else outlineRect(p, {0.6f, 0.6f, ws.x - 0.6f, ws.y - 0.6f}, kCorner - 0.6f, env.selected ? 1.75f : 1.25f, rim);
 }
 
@@ -644,6 +696,7 @@ int32_t GroupPanelFace::hitTest(Vec2 l, float) const noexcept {
   if (const int32_t pop = popupAt(l); pop >= 0) return pop;  // GU.5b: outside the panel too
   const Vec2 ws = worldSize();
   if (l.x < 0.0f || l.y < 0.0f || l.x > ws.x || l.y > ws.y) return kNone;
+  if (round_ && !roundShape_.contains(l, 0.75f)) return kNone;  // SM.9: outside a round / oval plate (its rim drawn in)
   const int32_t i = elementAt(l);
   return i >= 0 ? i : kFrame;
 }

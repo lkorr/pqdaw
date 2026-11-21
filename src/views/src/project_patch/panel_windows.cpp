@@ -57,6 +57,7 @@ panel::PanelWindow& ProjectPatchView::makeWindow(doc::DeviceId group) {
 void ProjectPatchView::windowChanged(panel::PanelWindow& w) {
   auto& all = ctx_.store().view().panelWindows;
   doc::PanelWindowView s = w.state();
+  if (const auto it = all.find(w.group().value); it != all.end()) s.folds = it->second.folds;  // SM.9: the panel's, not the window's
   if (s.empty()) all.erase(w.group().value);
   else all[w.group().value] = s;
   ctx_.viewStateChanged();

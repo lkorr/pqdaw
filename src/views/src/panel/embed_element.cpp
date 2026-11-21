@@ -185,6 +185,7 @@ public:
     const doc::EmbedFit f = fit();
     s.centre = {f.x + s.centre.x * f.k, f.y + s.centre.y * f.k};
     s.radius *= f.k;
+    s.ry *= f.k;
     return s;
   }
   std::optional<Rect> popupRect() const noexcept override {

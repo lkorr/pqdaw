@@ -102,6 +102,53 @@ uint32_t Panel::nextId() const noexcept {
   return m + 1;
 }
 
+bool foldOpenByDefault(const PanelElement& e) noexcept { return e.number("open", 1.0) >= 0.5; }
+
+FoldLayout foldLayout(const Panel& p, const std::function<bool(const PanelElement&)>& open) {
+  FoldLayout out;
+  out.height = p.height;
+  std::vector<size_t> folds;
+  for (size_t i = 0; i < p.elements.size(); ++i)
+    if (p.elements[i].kind == kFoldKind) folds.push_back(i);
+  if (folds.empty()) return out;
+  out.folds = true;
+  std::stable_sort(folds.begin(), folds.end(), [&](size_t a, size_t b) { return p.elements[a].y < p.elements[b].y; });
+  struct Band {
+    float top, end;  // the section: [the header's bottom, the next fold's top)
+    bool closed;
+  };
+  std::vector<Band> bands;
+  for (size_t k = 0; k < folds.size(); ++k) {
+    const PanelElement& f = p.elements[folds[k]];
+    const float end = k + 1 < folds.size() ? p.elements[folds[k + 1]].y : std::max(p.height, f.y + f.h);
+    bands.push_back({f.y + f.h, std::max(f.y + f.h, end), !open(f)});
+  }
+  constexpr float kEdge = 0.5f;  // an element starting half a unit above a header's bottom is in its section
+  // What the folded bands take out above v (fit only).
+  const auto taken = [&](float v) {
+    float d = 0.0f;
+    if (p.fit)
+      for (const Band& b : bands)
+        if (b.closed) d += std::clamp(v - b.top, 0.0f, b.end - b.top);
+    return d;
+  };
+  const size_t n = p.elements.size();
+  out.y.resize(n);
+  out.h.resize(n);
+  out.hidden.assign(n, 0);
+  for (size_t i = 0; i < n; ++i) {
+    const PanelElement& e = p.elements[i];
+    if (e.kind != kFoldKind)
+      for (const Band& b : bands)
+        if (e.y >= b.top - kEdge && e.y < b.end) out.hidden[i] = b.closed ? 1 : 0;
+    const float y0 = e.y - taken(e.y), y1 = e.y + e.h - taken(e.y + e.h);
+    out.y[i] = y0;
+    out.h[i] = out.hidden[i] ? e.h : std::max(1.0f, y1 - y0);
+  }
+  out.height = std::max(1.0f, p.height - taken(p.height));
+  return out;
+}
+
 Status checkPanel(const Panel& p) {
   if (!finite(p.width) || !finite(p.height) || p.width < 0.0f || p.height < 0.0f || p.width > kMaxPanelSize ||
       p.height > kMaxPanelSize)
@@ -205,6 +252,7 @@ PanelPtr prunePanel(const PanelPtr& panel, const std::vector<DevicePtr>& list, D
   Panel out;
   out.width = panel->width;
   out.height = panel->height;
+  out.fit = panel->fit;
   std::unordered_set<uint32_t> kept;
   for (const PanelElement& e : panel->elements)
     if (keep(e)) {

@@ -82,6 +82,10 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
         if (w->visible()) w->wakePanel();
       if (costSource_ != nullptr && showCosts_ && shown() && !costTimer_) pollCosts();
     }
+    if (bits & view_change::kPanelFolds) {  // SM.9: a panel's section folded: its block's size (the others stay)
+      relayout();
+      for (panel::PanelWindow* w : windows_) w->markDirty();
+    }
     if (bits & view_change::kWireErrors) {  // WI.2: the link cut (or restored) a wire: its look
       stale_ = true;
       if (shown()) sync();
@@ -592,6 +596,7 @@ void ProjectPatchView::rebuild() {
   opt.expanded = sizes;
   opt.expandedMixers = expandedMixers_;
   opt.nudges = &ctx_.store().view().patchNudges;
+  opt.panelViews = &ctx_.store().view().panelWindows;  // SM.9
   if (!sameDoc) std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   // GU.5b: groups seen for the first time start closed when they have a panel (seenGroups_).
   if (!sameDoc) doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {

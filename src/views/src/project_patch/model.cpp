@@ -953,17 +953,23 @@ struct Builder {
       c.h = roundUp4(std::max(c.h, m::kClosedGroupH));
       if (g.hasPanel()) {  // GU.3: drawn as its panel (at the panel's size; its pins on the edges)
         c.groupPanel = true;
-        if (const std::optional<FaceShape> ps = panel::panelShape(*g.panel, &t.devices); ps && ps->round) {  // GU.5b: a round panel
+        // SM.9: at its shown size (a fit panel's folded sections taken out: the face's worldSize).
+        const doc::PanelWindowView* pv = nullptr;
+        if (opt.panelViews != nullptr)
+          if (const auto it = opt.panelViews->find(g.id.value); it != opt.panelViews->end()) pv = &it->second;
+        const doc::FoldLayout folds = panel::viewFoldLayout(*g.panel, pv);
+        if (const std::optional<FaceShape> ps = panel::panelShape(*g.panel, &t.devices, &folds); ps && ps->round) {  // GU.5b: a round panel
           c.panelRound = true;
           c.roundX = ps->centre.x;
           c.roundY = ps->centre.y;
           c.roundR = ps->radius;
+          c.roundRY = ps->ry;
         }
         c.mini.clear();
         c.miniWires.clear();
         const size_t rows = pinRows(c);
         c.w = roundUp4(std::max(g.panel->width, 24.0f));
-        c.h = roundUp4(std::max(g.panel->height, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
+        c.h = roundUp4(std::max(folds.height, m::kPinTop + m::kPinPitch * static_cast<float>(rows - 1) + 16.0f));
       }
       return addNode(scaled(std::move(c)));
     }
@@ -2066,7 +2072,7 @@ struct Builder {
       if (!known) shapes.emplace_back(n.face, fs = faceShape(*n.face));
       if (fs.round) {
         o.round = true;
-        o.cx = n.x + fs.centre.x * k, o.cy = n.y + fs.centre.y * k, o.r = fs.radius * k;
+        o.cx = n.x + fs.centre.x * k, o.cy = n.y + fs.centre.y * k, o.r = fs.radius * k, o.ry = fs.ry * k;
         return o;
       }
       const ui::Vec2 sz = faceSize(*n.face);
@@ -2075,7 +2081,7 @@ struct Builder {
     }
     if (n.groupPanel && n.panelRound) {  // GU.5b: a round panel (the VCA's dial, the Phase Accumulator's body)
       o.round = true;
-      o.cx = n.x + n.roundX * k, o.cy = n.y + n.roundY * k, o.r = n.roundR * k;
+      o.cx = n.x + n.roundX * k, o.cy = n.y + n.roundY * k, o.r = n.roundR * k, o.ry = n.roundRY * k;
       return o;
     }
     if (n.panel || n.groupPanel) {  // GU.3: a group drawn as its panel too

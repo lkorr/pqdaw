@@ -211,7 +211,10 @@ uint32_t ProjectCanvas::nodeAt(Vec2 d) const {
       if (n.w < minW) x0 = n.x + (n.w - minW) * 0.5f, x1 = x0 + minW;
       if (n.h < minW) y0 = n.y + (n.h - minW) * 0.5f, y1 = y0 + minW;
     }
-    if (w.x >= x0 && w.x <= x1 && w.y >= y0 && w.y <= y1) return i;
+    if (!(w.x >= x0 && w.x <= x1 && w.y >= y0 && w.y <= y1)) continue;
+    // SM.9: a round (circle or oval) block is its outline: its rect's corners are not the block (a unit of slack).
+    if (n.kind == NodeKind::Device && n.outline.round && n.outline.valid() && circuit::outlineDistance(n.outline, w) > 1.0f) continue;
+    return i;
   }
   return kNone;
 }

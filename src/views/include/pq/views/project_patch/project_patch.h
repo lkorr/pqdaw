@@ -207,6 +207,7 @@ struct Node {
   // body): its centre and radius in the panel's own units (× scale on the block); its ports orbit the circle.
   bool panelRound = false;
   float roundX = 0.0f, roundY = 0.0f, roundR = 0.0f;
+  float roundRY = 0.0f;  // SM.9: an elliptical panel's vertical radius (0: a circle)
   // GU.5b (docs/plans/GU.md 5a, "an opened group is a circuit"): an ATOM BLOCK is drawn as its circuit symbol (the
   // circuit editor's symbol set: ×, +, a phasor, a box with its name …; `symbol` its spec at the block's size, pins at
   // its pin offsets, no title pill), a VALUE BLOCK as a small knob (`valueKnob`; with `groupPanel` set its face is a
@@ -455,6 +456,8 @@ struct LayoutOptions {
   std::span<const ExpandedSize> expanded;
   std::span<const doc::TrackId> expandedMixers;  // mixer strips shown expanded (one row per send)
   const std::unordered_map<uint32_t, doc::PatchNudge>* nudges = nullptr;  // ViewState::patchNudges
+  // SM.9: the groups' panel view state (ViewState::panelWindows): a closed group's panel is laid out with its folds.
+  const std::unordered_map<uint32_t, doc::PanelWindowView>* panelViews = nullptr;
   // TX.panel-faces: the world size of a device's panel (a stock device that is not edited, not a rack, not a chain meta
   // device: those keep their block / face), {0, 0} for none. Unset: every device is a plain block.
   std::function<graph::Point2(const doc::Device&)> panelSize;

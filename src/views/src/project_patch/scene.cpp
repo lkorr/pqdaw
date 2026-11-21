@@ -261,7 +261,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
       }
     }
     sn.pinCount = static_cast<uint32_t>(sc.pins.size()) - sn.firstPin;
-    if (n.orbitIn.on || n.orbitOut.on) sn.outline = n.outline;  // TX.orbit-ports
+    if (n.orbitIn.on || n.orbitOut.on || (n.outline.round && n.outline.valid())) sn.outline = n.outline;  // TX.orbit-ports; SM.9: a round body's hit
     sc.nodes.push_back(sn);
     if (hidden) continue;  // TL.1: no face, no labels
     if (n.face != nullptr) sc.faces.push_back({v, n.face, std::string(), n.device.value});  // TMM.4: the device itself

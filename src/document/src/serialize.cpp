@@ -841,6 +841,10 @@ private:
     w_.number(at, p.width);
     w_.number(at, p.height);
     w_.endArray();
+    if (p.fit) {  // SM.9
+      w_.key("fit");
+      w_.boolean(true);
+    }
     const PathSeg eat(&at, "elements");
     w_.key("elements");
     w_.beginArray(true);
@@ -1554,6 +1558,17 @@ private:
         w_.number(at, win.w);
         w_.key("h");
         w_.number(at, win.h);
+        if (!win.folds.empty()) {  // SM.9
+          w_.key("folds");
+          w_.beginArray(false);
+          for (const auto& [fid, o] : win.folds) {
+            w_.beginArray(false);
+            w_.integer(fid);
+            w_.integer(o ? 1 : 0);
+            w_.endArray();
+          }
+          w_.endArray();
+        }
         w_.endObject();
       }
       w_.endArray();
@@ -2556,11 +2571,15 @@ private:
   // GU.3: the encoder's panelObject. The panel's own rules are checkList's (checkPanel); its bindings are checked
   // against the group's track once the track is read.
   PanelPtr panelObject(const PathSeg& at) {
-    static constexpr std::string_view K[] = {"size", "elements"};
+    static constexpr std::string_view K[] = {"size", "elements", "fit"};
     Panel p;
     Members m(r_, at, K);
     for (int k; (k = m.next()) >= 0;) {
       const PathSeg f(&at, K[static_cast<size_t>(k)]);
+      if (k == 2) {  // SM.9 (optional)
+        p.fit = r_.readBool(f);
+        continue;
+      }
       if (k == 0) {
         float v[2] = {};
         size_t n = 0;
@@ -3730,11 +3749,29 @@ private:
         r_.beginArray(list);
         for (size_t i = 0; r_.nextElement(list); ++i) {
           const PathSeg el(&list, i);
-          static constexpr std::string_view N[] = {"id", "open", "minimised", "edit", "x", "y", "w", "h"};
+          static constexpr std::string_view N[] = {"id", "open", "minimised", "edit", "x", "y", "w", "h", "folds"};
           RawWindow e{0, {}, r_.pos()};
           Members em(r_, el, N);
           for (int q; (q = em.next()) >= 0;) {
             const PathSeg f(&el, N[static_cast<size_t>(q)]);
+            if (q == 8) {  // SM.9 (optional): [[fold element id, 0 | 1], …]
+              r_.beginArray(f);
+              for (size_t j = 0; r_.nextElement(f); ++j) {
+                const PathSeg ef(&f, j);
+                int64_t pair[2] = {0, 0};
+                size_t count = 0;
+                r_.beginArray(ef);
+                for (size_t c = 0; r_.nextElement(ef); ++c) {
+                  const int64_t x = r_.readInt(PathSeg(&ef, c));
+                  if (count < 2) pair[count] = x;
+                  ++count;
+                }
+                if (count != 2 || pair[0] < 1 || pair[0] > 0xFFFFFFFFll || (pair[1] != 0 && pair[1] != 1) || e.win.foldOpen(static_cast<uint32_t>(pair[0])))
+                  r_.failValue(ef, "a fold is [element id ≥ 1, 0 | 1], one per element");
+                e.win.setFoldOpen(static_cast<uint32_t>(pair[0]), pair[1] == 1);
+              }
+              continue;
+            }
             if (q == 0) e.id = ref(f);
             if (q == 1) e.win.open = r_.readBool(f);
             if (q == 2) e.win.minimised = r_.readBool(f);

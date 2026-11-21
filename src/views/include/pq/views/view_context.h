@@ -112,6 +112,7 @@ inline constexpr uint32_t kLiveNotes = 1u << 22;      // TU.2: a note the UI pla
 inline constexpr uint32_t kWireErrors = 1u << 23;     // WI.2: the wires the playback link cut from its compile changed
 inline constexpr uint32_t kFreeze = 1u << 24;         // FZ.3: a frozen track's render status (or its slot) changed
 inline constexpr uint32_t kMacro = 1u << 25;          // T8.1: macro mode (on / off, layer, cursor, anchor, composition)
+inline constexpr uint32_t kPanelFolds = 1u << 26;     // SM.9: a group panel's fold section opened or folded (view state)
 }  // namespace view_change
 
 // FZ.3 (docs/plans/RB.md FZ.3): what the views show of a frozen track's render (the playback link's FreezeStatus,
@@ -709,6 +710,12 @@ public:
   // --- sample analysis (T6.8; pq/views/sample_analysis.h): transients and tempo per project sample ---
   SampleAnalysis& sampleAnalysis() noexcept { return *sampleAnalysis_; }
   void sampleAnalysisChanged() { notify(view_change::kSampleAnalysis); }
+  // SM.9: a group panel's fold section was opened or folded (ViewState::panelWindows' folds): saved view state, and the
+  // hosts lay the panel out again (its shown size may change).
+  void panelFoldsChanged() {
+    viewStateChanged();
+    notify(view_change::kPanelFolds);
+  }
 
   // --- drops (T5.7; pq/views/file_probes.h, pq/views/sample_drop.h) ---
   // What dragged files are, probed off the UI thread while they hover.

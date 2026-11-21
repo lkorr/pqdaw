@@ -29,10 +29,12 @@
 
 namespace pq::views::circuit {
 
-// A block's outline (world units): a circle (round: centre, radius) or a rect with rounded corners.
+// A block's outline (world units): a circle (round: centre, radius), SM.9 an ellipse (round with ry > 0: radii r × ry)
+// or a rect with rounded corners.
 struct Outline {
   bool round = false;
   float cx = 0.0f, cy = 0.0f, r = 0.0f;              // round
+  float ry = 0.0f;                                   // round: the vertical radius (0: r, a circle)
   float x0 = 0.0f, y0 = 0.0f, x1 = 0.0f, y1 = 0.0f;  // rect
   float corner = 0.0f;                               // rect: the corner radius
   bool valid() const noexcept { return round ? r > 0.0f : x1 > x0 && y1 > y0; }

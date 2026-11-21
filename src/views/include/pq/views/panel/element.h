@@ -173,10 +173,17 @@ public:
   void selectGroup(doc::DeviceId g) noexcept { selected_ = g; }
   double viewValue(uint32_t element, std::string_view key, double def) const;
   void setViewValue(uint32_t element, std::string_view key, double v);
+  // ---- SM.9: fold sections (pq/document/panel.h foldLayout) ----
+  // Whether fold element `id` is open as the user left it (nullopt: never toggled: its default), and the toggle. VIEW
+  // state: the document's target keeps it in the store's ViewState (saved, not undoable; every host of the group's
+  // panel shows the same); this default keeps it in the target (a fixed panel, an embedded child's, tests).
+  virtual std::optional<bool> foldOpen(uint32_t id) const;
+  virtual void setFoldOpen(uint32_t id, bool open);
 
 private:
   doc::DeviceId selected_;
   std::vector<std::pair<std::string, double>> view_;
+  std::vector<std::pair<uint32_t, bool>> folds_;  // SM.9: the default's
 };
 
 // What an element paints with.
@@ -222,6 +229,8 @@ public:
   const doc::PanelElement& desc() const noexcept { return desc_; }
   uint32_t id() const noexcept { return desc_.id; }
   ui::Rect rect() const noexcept { return {desc_.x, desc_.y, desc_.x + desc_.w, desc_.y + desc_.h}; }
+  // SM.9: where the panel's fold layout shows it (its top and height; the document's element keeps its own).
+  void setPlacement(float y, float h) noexcept;
   ui::Vec2 size() const noexcept { return {desc_.w, desc_.h}; }
   const doc::Binding* binding(size_t slot = 0) const noexcept { return desc_.binding(slot); }
 
@@ -329,6 +338,7 @@ protected:
   doc::PanelElement desc_;
 
 private:
+  void rekey() noexcept;
   uint64_t staticKey_ = 0;
   mutable std::string label_, readout_;
   mutable uint64_t labelGen_ = ~0ull, readoutGen_ = ~0ull;
@@ -348,5 +358,10 @@ std::vector<std::string_view> elementKinds();  // registered kinds, registration
 // ---- a small library of drawing helpers shared by elements (element-local units) ----
 // A rounded rect's outline (the painter fills rounded rects only).
 void outlineRect(ui::FacePainter& p, const ui::Rect& r, float radius, float thickness, ui::Rgba col);
+// SM.9: an ellipse of radii rx × ry about c, filled / its outline (kEllipseSegments sides: smooth at any zoom a panel
+// is drawn at; the painter has circles only).
+inline constexpr uint32_t kEllipseSegments = 96;
+void ellipseDisc(ui::FacePainter& p, ui::Vec2 c, float rx, float ry, ui::Rgba col);
+void ellipseRing(ui::FacePainter& p, ui::Vec2 c, float rx, float ry, float thickness, ui::Rgba col);
 
 }  // namespace pq::views::panel

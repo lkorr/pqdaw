@@ -37,6 +37,7 @@
 // Element ids are the panel's own (1 … , unique in the panel; ops allocate them), so a pasted panel keeps them.
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -118,6 +119,7 @@ inline constexpr float kMaxPanelSize = 8192.0f;
 struct Panel {
   float width = 0.0f, height = 0.0f;
   std::vector<PanelElement> elements;  // paint order
+  bool fit = false;  // SM.9: the shown height is the open sections' (foldLayout below); saved as the optional "fit"
   bool empty() const noexcept { return elements.empty(); }
   const PanelElement* find(uint32_t id) const noexcept;
   int32_t indexOf(uint32_t id) const noexcept;  // −1: none
@@ -125,6 +127,26 @@ struct Panel {
   friend bool operator==(const Panel&, const Panel&) = default;
 };
 using PanelPtr = std::shared_ptr<const Panel>;
+
+// ---- SM.9: fold sections ------------------------------------------------------------------------------------------
+// A `fold` element (kFoldKind: a chevron and a title) is a SECTION HEADER. Folds are ordered by their top; a fold's
+// section is the band from its bottom edge to the next fold's top (the last: to the panel's bottom), and it owns the
+// elements whose top lies in that band (elements above the first fold, or beside a header in its row, belong to none).
+// Folded, its elements are hidden. Whether a fold is open is VIEW state (ViewState::panelWindows[group].folds: saved,
+// not undoable; every host of the panel shows the same), else its style "open" (default 1).
+// Panel::fit: the shown height is the sum of the open sections: each folded section's band is taken out, so what lies
+// below it moves up by the band's height and an element spanning it (a background shape) shrinks by it. Without fit the
+// panel keeps its size and a folded section's place stays empty.
+inline constexpr std::string_view kFoldKind = "fold";
+bool foldOpenByDefault(const PanelElement& e) noexcept;
+struct FoldLayout {
+  bool folds = false;           // the panel has a fold element (else y / h / hidden are empty and height = p.height)
+  float height = 0.0f;          // the shown height
+  std::vector<float> y, h;      // per element (paint order): its shown top and height
+  std::vector<uint8_t> hidden;  // per element: in a folded section
+};
+// `open(e)`: whether fold element e is open now (its view state, else foldOpenByDefault).
+FoldLayout foldLayout(const Panel& p, const std::function<bool(const PanelElement&)>& open);
 
 // The panel's own rules: size in (0, kMaxPanelSize] when it has elements, at most kMaxPanelElements, ids ≥ 1 and unique,
 // a kind for each, finite rects with w, h > 0, style fields sorted / unique / named / finite, bindings well formed (a

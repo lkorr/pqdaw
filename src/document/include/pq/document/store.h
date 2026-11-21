@@ -11,6 +11,7 @@
 // Not thread-safe: UI thread only. The engine sees the document only through the plain-data images T3.16/T3.17
 // build from snapshots.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -19,6 +20,7 @@
 #include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "pq/core/result.h"
@@ -112,10 +114,31 @@ inline float patchPinQuantise(float radians) noexcept { return patchPinRadians(p
 // minimised (its title bar only), in edit or play mode, and where it floats over the canvas: its top-left from the
 // canvas's top-left and its size, logical px (w, h 0: not placed yet, the view's default). View state like a nudge
 // (saved with the project as the view's optional "panels", not undoable). Key: the group's device id.
+// SM.9: the entry also keeps the panel's FOLD sections the user opened or folded (pq/document/panel.h foldLayout), in
+// every host of the panel (its block, its window, the Device view): `folds` (fold element id, open), sorted by id. Saved
+// as the entry's optional "folds": [[id, 0 | 1], …].
 struct PanelWindowView {
   bool open = false, minimised = false, edit = false;
   float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
-  bool empty() const noexcept { return !open && !minimised && !edit && w == 0.0f && h == 0.0f && x == 0.0f && y == 0.0f; }
+  std::vector<std::pair<uint32_t, bool>> folds;  // SM.9
+  // SM.9: whether fold element `id` is open as the user left it (nullopt: never toggled: its default).
+  std::optional<bool> foldOpen(uint32_t id) const noexcept {
+    for (const auto& [f, o] : folds)
+      if (f == id) return o;
+    return std::nullopt;
+  }
+  void setFoldOpen(uint32_t id, bool o) {
+    for (auto& [f, v] : folds)
+      if (f == id) {
+        v = o;
+        return;
+      }
+    folds.emplace_back(id, o);
+    std::sort(folds.begin(), folds.end());
+  }
+  bool empty() const noexcept {
+    return !open && !minimised && !edit && w == 0.0f && h == 0.0f && x == 0.0f && y == 0.0f && folds.empty();
+  }
   friend bool operator==(const PanelWindowView&, const PanelWindowView&) noexcept = default;
 };
 inline constexpr float kMaxPanelWindowCoord = 1.0e5f;  // |x|, |y|, w, h (logical px) the reader accepts

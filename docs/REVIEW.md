@@ -2197,3 +2197,15 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Goldens: audio-rack, instrument-rack, device-automation, device-chain, device-free-rack(-collapsed), device-frozen,
   device-group-panel(-elements), device-knob-curves, device-meta-{bandwave,chain,envelope,loudness,scope,spectrogram,
   spectrum,stereo}, device-path-broken, device-wiring.
+
+## 2026-11-21 · SM.9 · oval panels and fold sections (task/SM.9-fold-panels) 👁
+- An oval panel: a `shape` element set to "ellipse" at the bottom of a group's panel makes the block an oval (plate and
+  rim drawn as an ellipse). A press in the rect's corners outside the oval no longer selects or drags the block; circle
+  panels (VCA dial, Phase Accumulator) now behave the same. The main ports orbit just outside the ellipse.
+- Fold sections: a new panel element "Fold" (chevron + title) heads a section: the elements below it, down to the next
+  fold. Click it to fold / unfold. With the panel's Fit on, the panel shrinks to its open sections (what is below moves up)
+  and the block in the circuit view shrinks or grows from its top-left. Blocks in its band stay; bands below follow its
+  band's height. Fold state is saved with the project and is never an undo step.
+- Not yet: no Fit toggle in the panel editor (set by code; SM.10/11 use it); the Device view doesn't re-lay out its frame
+  on a fold (the panel just draws shorter); an embedded child panel's folds are not saved.
+- Goldens (new): panel-folds-folded(-2x), panel-folds-open(-2x), panel-oval(-2x).

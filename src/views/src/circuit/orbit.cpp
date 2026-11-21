@@ -31,6 +31,16 @@ float angleDelta(float a, float b) noexcept {
 
 Point2 outlinePoint(const Outline& o, float angle, Point2* normal) noexcept {
   const float dx = std::cos(angle), dy = std::sin(angle);
+  if (o.round && o.ry > 0.0f && o.ry != o.r) {  // SM.9: an ellipse — the ray's exit, the normal ∝ (x / a², y / b²)
+    const float a = o.r, b = o.ry;
+    const float u = dx / a, v = dy / b, t = 1.0f / std::sqrt(u * u + v * v);
+    const float px = t * dx, py = t * dy;
+    if (normal != nullptr) {
+      const float nx = px / (a * a), ny = py / (b * b), l = std::sqrt(nx * nx + ny * ny);
+      *normal = l > 1e-9f ? Point2{nx / l, ny / l} : Point2{dx, dy};
+    }
+    return {o.cx + px, o.cy + py};
+  }
   if (o.round) {
     if (normal != nullptr) *normal = {dx, dy};
     return {o.cx + o.r * dx, o.cy + o.r * dy};
@@ -62,6 +72,28 @@ Point2 outlinePoint(const Outline& o, float angle, Point2* normal) noexcept {
 }
 
 float outlineDistance(const Outline& o, Point2 p) noexcept {
+  if (o.round && o.ry > 0.0f && o.ry != o.r) {
+    // SM.9: an ellipse — the distance to its nearest point, found by three steps of the evolute iteration (each moves
+    // the guess to where the ray from the local centre of curvature meets the ellipse: within 1e-3 of a unit at the
+    // block sizes here), negative inside.
+    const float a = o.r, b = o.ry;
+    const float px = std::fabs(p.x - o.cx), py = std::fabs(p.y - o.cy);
+    float tx = 0.70710678f, ty = 0.70710678f;
+    for (int i = 0; i < 3; ++i) {
+      const float x = a * tx, y = b * ty;
+      const float ex = (a * a - b * b) * tx * tx * tx / a, ey = (b * b - a * a) * ty * ty * ty / b;
+      const float rx = x - ex, ry = y - ey, qx = px - ex, qy = py - ey;
+      const float r = std::hypot(rx, ry), q = std::hypot(qx, qy);
+      if (!(q > 1e-9f)) break;
+      tx = std::clamp((qx * r / q + ex) / a, 0.0f, 1.0f);
+      ty = std::clamp((qy * r / q + ey) / b, 0.0f, 1.0f);
+      const float t = std::hypot(tx, ty);
+      tx /= t, ty /= t;
+    }
+    const float d = std::hypot(px - a * tx, py - b * ty);
+    const float u = px / a, v = py / b;
+    return u * u + v * v < 1.0f ? -d : d;
+  }
   if (o.round) return std::hypot(p.x - o.cx, p.y - o.cy) - o.r;
   const float hw = 0.5f * (o.x1 - o.x0), hh = 0.5f * (o.y1 - o.y0);
   const float cr = std::clamp(o.corner, 0.0f, std::min(hw, hh));

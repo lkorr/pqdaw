@@ -251,6 +251,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_engine_elements.cpp  # GU.7: the engines' faces as rich elements, the modules' panels, harmonic / envelope drags
     views/test_panel_window.cpp  # GU.5: the panel window (open / move / resize / minimise), send to panel (button, P, drag), the editor and inspector, mod-source cables, link lines, goldens
     views/test_panel_embed.cpp  # GU.6: a child group embedded on its parent's panel (send, play, rename, move out), break apart, any depth, golden
+    views/test_panel_folds.cpp  # SM.9: the oval face shape (plate, hit, orbiting ports) and fold sections (fit, view state, re-layout), goldens 1x / 2x
     views/test_wavetable_synth_panel.cpp  # GU.8: the Wavetable Synth panel on each tab (goldens), a tab click in the patch view
     views/test_groups_view.cpp  # TX.groups: Ctrl+G / Ctrl+Shift+G in the circuit, capsules, the Device view group panel, goldens
     views/test_node_menu.cpp  # TX.node-menu: catalog, search, the menu, spawn / insert / Z / splice / dissolve / Ctrl-release / push-apart, golden, perf

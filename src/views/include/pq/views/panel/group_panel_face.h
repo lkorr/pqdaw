@@ -20,6 +20,12 @@
 //              typed into). A press on no element is the block's (kFrame: select / move).
 //   target     a PanelTarget (element.h): makeDocPanelTarget binds the document (gestures through the store: one undo
 //              step per drag; a setting committed once).
+//   folds      SM.9: `fold` elements are section headers (pq/document/panel.h foldLayout): a folded section's elements
+//              are hidden, and with the panel's `fit` the elements below move up and the face's size shrinks to the open
+//              sections (the hosts lay the block out again: view_change::kPanelFolds). The open state is the target's
+//              (view state). Each sync re-reads it; the elements are placed again only when it changed.
+//   shape      GU.5b / SM.9: a panel whose bottom element is a circle or an ellipse is that shape; a press outside it
+//              is not the panel's (kNone).
 //
 // UI thread only.
 
@@ -30,6 +36,7 @@
 #include <vector>
 
 #include "pq/document/panel.h"
+#include "pq/document/store.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/widget.h"
 #include "pq/views/meta/meta_face.h"
@@ -48,7 +55,7 @@ public:
   ~GroupPanelFace() override;
 
   // ---- geometry ----
-  ui::Vec2 worldSize() const noexcept override;  // the panel's size (as of the last sync)
+  ui::Vec2 worldSize() const noexcept override;  // the panel's shown size (as of the last sync; SM.9: fit folds it)
   // GU.5b: a panel whose bottom element has an outline (Element::outline: a circle shape, the dial) is that shape (no
   // rectangular plate); any other a rounded rect.
   FaceShape shape() const noexcept override;
@@ -138,6 +145,8 @@ public:
   size_t elementCount() const noexcept { return elements_.size(); }
   Element& element(size_t i) const noexcept { return *elements_[i]; }
   int32_t indexOf(uint32_t id) const noexcept;  // −1: none
+  // SM.9: the fold layout of the last sync (folds false: the panel has none).
+  const doc::FoldLayout& folds() const noexcept { return folds_; }
   bool shown(size_t i) const;                   // its visibility condition holds now
   // The element under `local` that takes presses (topmost, shown), −1: none.
   int32_t elementAt(ui::Vec2 local) const;
@@ -150,6 +159,8 @@ public:
 
 private:
   void rebuild(const doc::PanelPtr& p);
+  bool syncFolds();      // SM.9: the elements placed by the fold layout when the open states changed (true)
+  void updateShape();    // the outline from the bottom element (as placed)
   bool shownNow(size_t i, std::vector<int8_t>& memo) const;
   std::vector<int8_t>& freshMemo() const;  // memo_ cleared for this many elements (no allocation once grown)
   ui::TileAtlas* atlas() const noexcept;
@@ -189,6 +200,10 @@ private:
   };
   mutable AnyReader any_;
   FaceShape roundShape_;
+  doc::FoldLayout folds_;            // SM.9
+  std::vector<uint8_t> foldOpen_;    // the fold elements' open states folds_ was made for (paint order)
+  std::vector<uint8_t> foldScratch_;
+  bool foldsLaid_ = false;
   // PF.2: the stand-in's swatches (one per element, by index) and the draw list their live layers are averaged from.
   struct Swatch {
     const Element* of = nullptr;
@@ -204,7 +219,11 @@ private:
 // GU.5b: the outline a panel takes from its bottom element (Element::outline, in panel units), nullopt: a rounded rect.
 // GU.6: a bottom element embedding a child panel takes the child's outline (looked up in `list`, the group's track's
 // blocks; null: an embed is never round).
-std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list = nullptr);
+// SM.9: `folds` (a foldLayout of `panel`): the bottom element as placed (a fit panel's plate shrinks with it).
+std::optional<FaceShape> panelShape(const doc::Panel& panel, const std::vector<doc::DevicePtr>* list = nullptr,
+                                    const doc::FoldLayout* folds = nullptr);
+// SM.9: the fold layout of a group's panel as its view state (ViewState::panelWindows' entry; null: none) has its folds.
+doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowView* view);
 
 // GU.5b: the face of a VALUE BLOCK in a circuit (an opened group's): one knob filling w × h, bound to the block's
 // `value` (its name above, its value below).

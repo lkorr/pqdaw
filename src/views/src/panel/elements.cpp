@@ -43,7 +43,17 @@ uint64_t hashText(uint64_t h, std::string_view s) noexcept {
 
 }  // namespace
 
-Element::Element(doc::PanelElement desc) : desc_(std::move(desc)) {
+Element::Element(doc::PanelElement desc) : desc_(std::move(desc)) { rekey(); }
+
+void Element::setPlacement(float y, float h) noexcept {
+  if (desc_.y == y && desc_.h == h) return;
+  const bool sized = desc_.h != h;
+  desc_.y = y;
+  desc_.h = h;
+  if (sized) rekey();
+}
+
+void Element::rekey() noexcept {
   uint64_t h = hashText(0x50414E454Cull, desc_.kind);
   for (const doc::StyleField& f : desc_.style) {
     h = hashText(h, f.name);
@@ -75,6 +85,21 @@ void PanelTarget::setViewValue(uint32_t element, std::string_view key, double v)
       return;
     }
   view_.emplace_back(std::move(k), v);
+}
+
+std::optional<bool> PanelTarget::foldOpen(uint32_t id) const {
+  for (const auto& [f, o] : folds_)
+    if (f == id) return o;
+  return std::nullopt;
+}
+
+void PanelTarget::setFoldOpen(uint32_t id, bool open) {
+  for (auto& [f, o] : folds_)
+    if (f == id) {
+      o = open;
+      return;
+    }
+  folds_.emplace_back(id, open);
 }
 
 uint64_t Element::liveKey(const PanelTarget& t) const {
@@ -190,6 +215,29 @@ void outlineRect(ui::FacePainter& p, const Rect& r, float rad, float t, Rgba col
   p.arc({r.x1 - rad, r.y0 + rad}, rad, -0.5f * kPi, 0.0f, t, col);
   p.arc({r.x1 - rad, r.y1 - rad}, rad, 0.0f, 0.5f * kPi, t, col);
   p.arc({r.x0 + rad, r.y1 - rad}, rad, 0.5f * kPi, kPi, t, col);
+}
+
+namespace {
+void ellipsePoints(Vec2 c, float rx, float ry, std::array<Vec2, kEllipseSegments + 1>& pts) {
+  for (uint32_t k = 0; k <= kEllipseSegments; ++k) {
+    const float a = 2.0f * std::numbers::pi_v<float> * static_cast<float>(k % kEllipseSegments) / static_cast<float>(kEllipseSegments);
+    pts[k] = {c.x + rx * std::cos(a), c.y + ry * std::sin(a)};
+  }
+}
+}  // namespace
+
+void ellipseDisc(ui::FacePainter& p, Vec2 c, float rx, float ry, Rgba col) {
+  if (ui::alphaOf(col) == 0) return;
+  std::array<Vec2, kEllipseSegments + 1> pts;
+  ellipsePoints(c, rx, ry, pts);
+  p.convex(std::span<const Vec2>(pts.data(), kEllipseSegments), col);
+}
+
+void ellipseRing(ui::FacePainter& p, Vec2 c, float rx, float ry, float t, Rgba col) {
+  if (ui::alphaOf(col) == 0 || !(t > 0.0f)) return;
+  std::array<Vec2, kEllipseSegments + 1> pts;  // closed: the first point again
+  ellipsePoints(c, rx, ry, pts);
+  p.polyline(pts, t, col);
 }
 
 // ---- shared behaviour ---------------------------------------------------------------------------------------------
@@ -349,7 +397,7 @@ constexpr std::array<std::string_view, 4> kReadouts = {"below", "above", "inside
 constexpr std::array<std::string_view, 3> kOrient = {"auto", "horizontal", "vertical"};
 constexpr std::array<std::string_view, 2> kHandles = {"bar", "dot"};
 constexpr std::array<std::string_view, 2> kToggleLooks = {"switch", "button"};
-constexpr std::array<std::string_view, 4> kShapes = {"rect", "round", "circle", "line"};
+constexpr std::array<std::string_view, 5> kShapes = {"rect", "round", "circle", "line", "ellipse"};  // SM.9: ellipse
 constexpr std::array<std::string_view, 3> kAligns = {"centre", "left", "right"};
 constexpr std::array<std::string_view, 1> kValueSlot = {"value"};
 constexpr std::array<std::string_view, 2> kXySlots = {"x", "y"};
@@ -1141,6 +1189,13 @@ public:
       else if (t > 0.0f) p.ring(c, rr, t, w);
       return;
     }
+    if (s == "ellipse") {  // SM.9: filling the rect (an oval plate)
+      const Vec2 c{desc_.w * 0.5f, desc_.h * 0.5f};
+      const float rx = std::max(0.5f, desc_.w * 0.5f - t * 0.5f), ry = std::max(0.5f, desc_.h * 0.5f - t * 0.5f);
+      if (layer == 0) ellipseDisc(p, c, rx, ry, w);
+      else if (t > 0.0f) ellipseRing(p, c, rx, ry, t, w);
+      return;
+    }
     if (layer == 0) p.roundedRect(r, rad, w);
     else if (t > 0.0f) outlineRect(p, r, rad, t, w);
   }
@@ -1161,9 +1216,56 @@ public:
   std::optional<FaceShape> outline() const noexcept override {
     if (num("plate", 0.0) >= 0.5 && txt("shape", "round") == "round")  // GU.7: the plate's corner (a rounded rect)
       return FaceShape{false, {desc_.w * 0.5f, desc_.h * 0.5f}, static_cast<float>(std::clamp(num("radius", 6.0), 0.0, 256.0))};
-    if (txt("shape", "round") != "circle") return std::nullopt;
+    const std::string_view s = txt("shape", "round");
+    if (s != "circle" && s != "ellipse") return std::nullopt;
     const float t = static_cast<float>(std::clamp(num("thickness", 1.0), 0.0, 32.0));
+    if (s == "ellipse")  // SM.9: an oval panel
+      return FaceShape{true, {desc_.w * 0.5f, desc_.h * 0.5f}, std::max(0.5f, desc_.w * 0.5f - t * 0.5f), std::max(0.5f, desc_.h * 0.5f - t * 0.5f)};
     return FaceShape{true, {desc_.w * 0.5f, desc_.h * 0.5f}, std::min(desc_.w, desc_.h) * 0.5f - t * 0.5f};
+  }
+};
+
+// ---- SM.9: fold (a section header) ----------------------------------------------------------------------------------
+// A chevron (down: open, right: folded) and the section's title, a hairline under the row. A click folds / unfolds its
+// section (pq/document/panel.h foldLayout): view state through the target (PanelTarget::setFoldOpen), never an edit.
+// Its selection is 1 open / 0 folded, so a visibility condition can follow it too.
+class Fold final : public Element {
+public:
+  using Element::Element;
+  static constexpr StyleSpec kStyle[] = {
+      {"title", StyleSpec::Type::Text, 0, "Section"},
+      {"open", StyleSpec::Type::Number, 1.0, {}, {}, 0.0, 1.0},  // the default (until the user folds it)
+      {"size", StyleSpec::Type::Number, 8.0, {}, {}, 3.0, 64.0},
+      {"colour", StyleSpec::Type::Token, 0, "ink"},
+  };
+  bool open(const PanelTarget& t) const { return t.foldOpen(desc_.id).value_or(doc::foldOpenByDefault(desc_)); }
+  bool interactive() const noexcept override { return true; }
+  uint32_t staticLayerCount() const noexcept override { return 1; }
+  Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return ui::mulAlpha(th.face.frame, 0.8f); }
+  void paintStatic(ui::FacePainter& p, uint32_t) const override {
+    p.line({1.0f, desc_.h - 0.5f}, {desc_.w - 1.0f, desc_.h - 0.5f}, 1.0f, ui::rgba(255, 255, 255));
+  }
+  void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
+    const ui::Theme& th = *env.theme;
+    const bool o = open(*env.target);
+    const float px = static_cast<float>(std::clamp(num("size", 8.0), 3.0, 64.0));
+    const float cy = (desc_.h - 1.0f) * 0.5f, s = std::min(px * 0.42f, cy), cx = 2.0f + s;
+    if (env.hovered) p.roundedRect({0.5f, 0.5f, desc_.w - 0.5f, desc_.h - 1.5f}, 3.0f, ui::mulAlpha(th.face.hover, 0.35f));
+    const Rgba ink = colour(th, "colour", "ink", th.face.ink);
+    if (o) p.triangle({cx - s, cy - s * 0.55f}, {cx + s, cy - s * 0.55f}, {cx, cy + s * 0.65f}, ink);
+    else p.triangle({cx - s * 0.55f, cy - s}, {cx + s * 0.65f, cy}, {cx - s * 0.55f, cy + s}, ink);
+    p.textAligned({cx + s + 4.0f, cy}, txt("title", "Section"), px, ink, 0.0f);
+  }
+  uint64_t liveKey(const PanelTarget& t) const override { return mix(0x464F4C44ull, open(t) ? 1u : 2u); }
+  bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    if (e.kind != FacePointer::Kind::Down || e.button != ui::PointerButton::Left) return false;
+    t.setFoldOpen(desc_.id, !open(t));
+    return true;
+  }
+  std::optional<double> selection(const PanelTarget& t) const override { return open(t) ? 1.0 : 0.0; }
+  void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
+    title = std::string(txt("title", "Section"));
+    body = open(t) ? "Click to fold the section." : "Click to unfold the section.";
   }
 };
 
@@ -1398,6 +1500,7 @@ void registerGeneric() {
     reg("label", "Label", Label::kStyle, kValueSlot, 80, 14, &make<Label>);
     reg("shape", "Shape", Shape::kStyle, {}, 80, 40, &make<Shape>);
     reg("tabs", "Tabs", Tabs::kStyle, kValueSlot, 120, 16, &make<Tabs>);
+    reg(doc::kFoldKind, "Fold", Fold::kStyle, {}, 160, 16, &make<Fold>);  // SM.9
     reg("curve", "Curve Editor", curveElementStyle(), kValueSlot, 160, 96, &makeCurveElement);
     reg("modsource", "Mod Source", ModSource::kStyle, kSignalSlot, 24, 32, &make<ModSource>);
     reg("jack", "Jack", {}, kPortSlot, 10, 10, &make<Jack>);  // MX.4

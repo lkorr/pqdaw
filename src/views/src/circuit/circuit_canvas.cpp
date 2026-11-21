@@ -1907,6 +1907,14 @@ void CircuitCanvas::setWireLit(uint32_t wire, bool lit) {
   markDirty();
 }
 
+namespace {
+// SM.9: a round (circle or oval) block is its outline, not its rect: a press in the rect's corners misses it (a unit of
+// slack for the rim).
+bool inRoundBody(const SceneNode& n, Point2 w) noexcept {
+  return !n.outline.round || !n.outline.valid() || outlineDistance(n.outline, w) <= 1.0f;
+}
+}  // namespace
+
 CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
   const Impl& m = *impl_;
   if (!m.scene || !rect().contains(d)) return {};
@@ -1976,7 +1984,7 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
     for (size_t i = set.size(); i-- > 0;) {
       const SceneNode& n = sc.nodes[set[i]];
       const float lx = w.x - m.shiftOf(set[i]).x, ly = w.y - m.shiftOf(set[i]).y;
-      if (!n.hidden && lx >= n.x && lx <= n.x + n.w && ly >= n.y && ly <= n.y + n.h) return {CanvasHit::Kind::Node, set[i]};
+      if (!n.hidden && lx >= n.x && lx <= n.x + n.w && ly >= n.y && ly <= n.y + n.h && inRoundBody(n, {lx, ly})) return {CanvasHit::Kind::Node, set[i]};
     }
   sc.grid.cellRange(w.x, w.y, w.x, w.y, c0, r0, c1, r1);
   const uint32_t cell = r0 * sc.grid.cols + c0;
@@ -1984,7 +1992,7 @@ CanvasHit CircuitCanvas::hitTest(Vec2 d) const noexcept {
     const uint32_t i = sc.grid.nodeItems[k];
     if (m.lifted(i)) continue;
     const SceneNode& n = sc.nodes[i];
-    if (!n.hidden && w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h) return {CanvasHit::Kind::Node, i};
+    if (!n.hidden && w.x >= n.x && w.x <= n.x + n.w && w.y >= n.y && w.y <= n.y + n.h && inRoundBody(n, w)) return {CanvasHit::Kind::Node, i};
   }
   sc.grid.cellRange(w.x - wireR, w.y - wireR, w.x + wireR, w.y + wireR, c0, r0, c1, r1);
   float bestWire = wireR;

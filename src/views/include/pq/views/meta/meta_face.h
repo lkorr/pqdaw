@@ -233,11 +233,21 @@ struct ControlAnchor {
 class Face;
 
 // TX.orbit-ports (pq/views/circuit/orbit.h): a face's outline as it draws it, face-local units — a circle (`round`:
-// centre, radius) or its whole rect with corners of `radius`. The host's orbiting main ports sit just outside it.
+// centre, radius), SM.9 an ellipse (`round` with ry > 0: radii radius × ry), or its whole rect with corners of
+// `radius`. The host's orbiting main ports sit just outside it; a round face is pressed only inside it.
 struct FaceShape {
   bool round = false;
   ui::Vec2 centre{0.0f, 0.0f};
   float radius = 10.0f;
+  float ry = 0.0f;  // SM.9: round: the vertical radius (0: `radius`, a circle)
+  float radiusY() const noexcept { return ry > 0.0f ? ry : radius; }
+  // A round shape: whether `p` lies inside it, grown by `margin` (face-local units).
+  bool contains(ui::Vec2 p, float margin = 0.0f) const noexcept {
+    const float a = radius + margin, b = radiusY() + margin;
+    if (!(a > 0.0f) || !(b > 0.0f)) return false;
+    const float u = (p.x - centre.x) / a, v = (p.y - centre.y) / b;
+    return u * u + v * v <= 1.0f;
+  }
 };
 
 // TX.panel-faces: what a face with its own clock or popups needs from its host (the canvas).
