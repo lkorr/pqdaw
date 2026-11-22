@@ -197,9 +197,11 @@ EditResult sliceSampler(const Project& p, DeviceId sampler, const SliceSpec& spe
   const uint32_t sid = meta::samplerSample(data.get());
   const SampleRef* ref = sid != 0 ? findSample(p, SampleId{sid}) : nullptr;
   meta::DataPtr d = meta::samplerWith(data.get(), "sliceBy", meta::DataValue::num(static_cast<double>(spec.by)));
-  d = meta::samplerWith(d.get(), "sensitivity", meta::DataValue::num(std::clamp(spec.sensitivity, 0.0, 1.0)));
-  d = meta::samplerWith(d.get(), "sliceBeats", meta::DataValue::num(spec.beats));
-  d = meta::samplerWith(d.get(), "sliceCount", meta::DataValue::num(static_cast<double>(spec.count)));
+  // (only the way's own amount is stored: the others keep what they were)
+  if (spec.by == SliceBy::Transient)
+    d = meta::samplerWith(d.get(), "sensitivity", meta::DataValue::num(std::clamp(spec.sensitivity, 0.0, 1.0)));
+  if (spec.by == SliceBy::Beat) d = meta::samplerWith(d.get(), "sliceBeats", meta::DataValue::num(spec.beats));
+  if (spec.by == SliceBy::Region) d = meta::samplerWith(d.get(), "sliceCount", meta::DataValue::num(static_cast<double>(spec.count)));
   if (spec.by != SliceBy::Manual) {
     if (ref == nullptr) return invalid("the Sampler has no sample to slice");
     const meta::Type& t = meta::samplerType();

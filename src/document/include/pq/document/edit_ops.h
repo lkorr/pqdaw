@@ -853,7 +853,8 @@ double sliceThreshold(double sensitivity) noexcept;
 // The slice starts (frames, ascending) of a sample of `frames` at `rate` (Manual: empty). Pure.
 std::vector<float> sliceStarts(const SliceSpec& spec, int64_t frames, double rate, std::span<const double> onsets,
                                std::span<const float> strengths, std::span<const float> markers, double sampleBpm);
-// The Sampler's (`sampler`: the group or its engine) slices made by `spec` and the way stored, ONE undo step.
+// The Sampler's (`sampler`: the group or its engine) slices made by `spec` and the way stored (with that way's amount
+// only), ONE undo step.
 // `onsets` / `strengths`: the sample's transients (Transient only). Errors: not a Sampler, no sample (except Manual).
 EditResult sliceSampler(const Project& p, DeviceId sampler, const SliceSpec& spec, std::span<const double> onsets = {},
                         std::span<const float> strengths = {});

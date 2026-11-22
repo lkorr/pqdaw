@@ -261,7 +261,7 @@ TEST_CASE("SM.12 sliceToNotes: a clip at the marker, a note per slice on keys 36
   CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), g, 0).ok());  // no sample
   const SampleId s = d.addSample();  // 48000 frames at 48 kHz: 1 s
   d.edit(ops::setSamplerSample(d.doc(), g, s, std::nullopt, {6000.0f, 18000.0f, 42000.0f}));
-  const Ticks at = 4 * pq::kPpq;
+  const pq::Ticks at = 4 * pq::kPpq;
   const size_t cursor = d.store.history().cursor();
   const ops::Edit e = d.edit(ops::sliceToNotes(d.doc(), d.store.ids(), g, at));
   CHECK(d.store.history().cursor() == cursor + 1);
@@ -297,9 +297,8 @@ TEST_CASE("SM.12 sliceToNotes: a clip at the marker, a note per slice on keys 36
   REQUIRE(n2.size() == 3);
   CHECK(static_cast<double>(n2[1].start) == doctest::Approx(0.25 * beat).epsilon(1e-9));  // 12000 frames later
   CHECK(static_cast<double>(n2[2].start) == doctest::Approx(0.75 * beat).epsilon(1e-9));
-  // Refused on an audio track.
-  const TrackId audio = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Audio, {}, "A")).tracks.at(0);
-  const DeviceId ga = test_blocks::addModule(d.store, audio, "sampler", 0);
-  d.edit(ops::setSamplerSample(d.doc(), ga, s, std::nullopt, {0.0f}));
-  CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), ga, 0).ok());
+  // Refused without slices, and for a block that is no Sampler.
+  d.edit(ops::setSamplerSample(d.doc(), g, s, std::nullopt, {}));
+  CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), g, 0).ok());
+  CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), d.dev(engine).group == g ? DeviceId{999999} : g, 0).ok());
 }
