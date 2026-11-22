@@ -309,24 +309,32 @@ TEST_CASE("sampler: registered; inputs, params, settings; every setting combinat
     return 0u;
   };
   std::vector<uint64_t> keys;
-  for (double mode : {0.0, 1.0, 2.0})
+  for (double mode : {0.0, 1.0, 2.0, 3.0})
     for (double warp : {0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0})
       for (double loop : {0.0, 1.0, 2.0})
         for (double trig : {0.0, 1.0})
           for (bool voice : {false, true}) {
-            // SM.4: the Beats loop setting only matters for Beats (one more combination there).
-            for (double beatsLoop : warp == 2.0 && mode != 2.0 ? std::vector<double>{1.0, 2.0} : std::vector<double>{1.0}) {
-            const std::vector<double> s = {mode, warp, loop, trig, beatsLoop};
+            // SM.4: the Beats loop setting only matters for Beats (one more combination there); SM.6: the grain mode and
+            // harmonic grains only for Granular.
+            const bool gran = mode == 3.0;
+            for (double beatsLoop : warp == 2.0 && mode < 2.0 ? std::vector<double>{1.0, 2.0} : std::vector<double>{1.0})
+            for (double granMode : gran ? std::vector<double>{0.0, 1.0, 2.0} : std::vector<double>{1.0})
+            for (double harmonic : gran ? std::vector<double>{0.0, 1.0} : std::vector<double>{0.0}) {
+            const std::vector<double> s = {mode, warp, loop, trig, beatsLoop, granMode, 16.0, harmonic, gran ? granMode : 0.0};
             ExpandContext x;
             x.settings = s;
             x.voice = voice;
             const Expansion e = mustExpand(x);
-            // SM.4: Off / Re-Pitch (and Slice) read through sample_read (its id fixed), the stretch modes sampler_warp.
-            const bool stretch = mode != 2.0 && warp >= 2.0;
-            CHECK(readId(e, "sample_read_cubic") == (stretch ? 0u : kBodyIdBase + 0));
+            // SM.4: Off / Re-Pitch (and Slice) read through sample_read (its id fixed), the stretch modes sampler_warp;
+            // SM.6: Granular the granular atom (warp, loop and trigger do not apply).
+            const bool stretch = mode < 2.0 && warp >= 2.0;
+            CHECK(readId(e, "sample_read_cubic") == (stretch || gran ? 0u : kBodyIdBase + 0));
             CHECK(readId(e, "sampler_warp") == (stretch ? kBodyIdBase + 5 : 0u));
-            // (Complex / Pro expand as Tones; Slice ignores 2 … 6: the same graphs, not new keys.)
-            if (warp < 5.0 && !(mode == 2.0 && warp >= 2.0)) keys.push_back(e.key);
+            CHECK(readId(e, "granular") == (gran ? kBodyIdBase + 6 : 0u));
+            CHECK(e.resources.size() == (gran ? 3u : 2u));
+            // (Slice ignores 2 … 6 and Granular warp / loop / trigger: the same graphs, not new keys. SM.5: Complex /
+            // Pro are their own graphs.)
+            if (gran ? warp == 0.0 && loop == 0.0 && trig == 0.0 : !(mode == 2.0 && warp >= 2.0)) keys.push_back(e.key);
             // The text form parses back to the same graph.
             auto p = graph::parse(graph::print(e.patch), "x.pqp");
             REQUIRE(p.ok());
@@ -704,5 +712,44 @@ TEST_CASE("sampler warp: 10 000 blocks of note-ons, tempo changes and sample swa
       for (const float x : r.l) sounded = sounded || x != 0.0f;
       CHECK(sounded);
     }
+  }
+}
+
+TEST_CASE("sampler: Granular — the granular atom on both backends, at blocks 32 / 64 / 512 / 37; the grain tap resource") {
+  // SM.6: only Granular asks for a GrainTap (request 2), and never for stretchers.
+  for (double mode = 0; mode < 4; ++mode) {
+    const auto rq = samplerType().resources(std::vector<double>{mode, 5.0, 1.0, 0.0, 1.0, 1.0, 16.0, 0.0, 0.0});
+    CHECK(rq.size() == (mode == 3.0 ? 3u : 2u));
+    CHECK(rq[0].stretch == (mode < 2.0));
+    if (mode == 3.0) CHECK(rq[2].kind == ResourceKind::GrainTap);
+  }
+  Sample smp(48000, 44100.0);
+  const Score score = [](uint64_t t) {
+    Drive d;
+    d.gate = t < 18944;
+    d.hz = kRoot * 1.5f;
+    return d;
+  };
+  const uint64_t N = 24000;
+  for (const double gm : {0.0, 1.0, 2.0}) {
+    CAPTURE(gm);
+    const Rig rig = compileRig({3.0, 0.0, 1.0, 0.0, 1.0, gm, 12.0, gm == 1.0 ? 1.0 : 0.0, gm},
+                               ", start: 0.1, end: 0.8, grainPosition: 0.3, scan: 0.5, grainSize: 0.04, density: 70, "
+                               "sprayTime: 0.01, sprayPitch: 2, sprayPan: 0.5");
+    const Render ref = render(rig, compile::Backend::Interpreter, smp.slot, N, 64, score);
+    const Render jit = render(rig, compile::Backend::Jit, smp.slot, N, 64, score);
+    CHECK(jit.l == ref.l);
+    CHECK(jit.r == ref.r);
+    CHECK(jit.g == ref.g);
+    for (const uint32_t block : {32u, 512u, 37u}) {
+      CAPTURE(block);
+      CHECK(render(rig, compile::Backend::Interpreter, smp.slot, N, block, score).l == ref.l);
+      CHECK(render(rig, compile::Backend::Jit, smp.slot, N, block, score).r == ref.r);
+    }
+    double peak = 0.0;
+    for (size_t t = 2000; t < 18000; ++t) peak = std::max(peak, static_cast<double>(std::abs(ref.l[t])));
+    CHECK(peak > 0.1);
+    CHECK(ref.g[1000] == 1.0f);
+    CHECK(ref.g[N - 1] == 0.0f);  // the gate fell: Classic's voice end
   }
 }

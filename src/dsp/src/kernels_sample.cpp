@@ -742,6 +742,7 @@ KernelFn findSampleKernel(Atom a, uint32_t lanes, uint32_t m) noexcept {
     case Atom::SampleSlice: return pick<SampleSliceK>(lanes, m);
     case Atom::SampleScrub: return pick<SampleScrubK<true>>(lanes, m);
     case Atom::SamplerWarp: return findSamplerWarpKernel(lanes, m);
+    case Atom::Granular: return findGranularKernel(lanes, m);
     default: return nullptr;
   }
 }

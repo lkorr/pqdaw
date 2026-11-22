@@ -210,6 +210,7 @@
 #include "pq/document/samples.h"
 #include "pq/document/store.h"
 #include "pq/core/tap_ring.h"
+#include "pq/core/grain_tap.h"
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/curve.h"
 #include "pq/dsp/frame_table_slot.h"
@@ -553,6 +554,8 @@ public:
   uint32_t metaSlotsInUse() const;
   // SM.2: the instance's sample slot (a Sampler's request `index`), or null.
   std::shared_ptr<dsp::SampleSlot> metaSampleSlot(doc::DeviceId device, std::string_view path, uint32_t index) const;
+  // SM.6: the instance's grain tap (a Granular Sampler's request `index`, 2), or null: the face's GrainTapReader.
+  std::shared_ptr<GrainTap> metaGrainTap(doc::DeviceId device, std::string_view path, uint32_t index = 2) const;
   // TMM.5: the instances' own tables. For every frame-table slot whose type builds one (meta::Type::frameTable), the
   // link derives a TableJob from the instance's state in the newest snapshot (its data, its baked params' values, its
   // settings, the link's rate) and, when the job's key differs from the one last requested for the slot, hands it to
@@ -1043,6 +1046,7 @@ private:
     double sampleRate = 0;
     bool samplePublished = false;
     uint32_t stretchLanes = 0;  // SM.5: the stretchers its lowering asks for (0: none)
+    std::shared_ptr<GrainTap> grainTap;  // SM.6: a GrainTap request's tap (hung on its instance's sample slot)
   };
   using MetaKey = std::tuple<uint32_t, std::string, uint32_t>;  // device, path, request index
   uint32_t metaSlotFor(doc::DeviceId device, std::string_view path, uint32_t index);  // compile path (allocates)

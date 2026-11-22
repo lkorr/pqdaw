@@ -25,8 +25,17 @@
 //            envelope             0 … 100 % (default 100): Beats holds a slice for that % of its gap, then fades it
 //            formants             0 … 100 % (default 100): Complex Pro's formant preservation (SM.5)
 //            formantOrder         8 … 256 (default 128): Complex Pro's spectral envelope order (SM.5)
+//            SM.6, Granular: grainPosition 0 … 1 (where in [start, end) the voice starts), scan −4 … 4 (× the file's
+//                                 speed; default 1), grainSize 0.005 … 1 s (default 0.08), density 1 … 400 Hz
+//                                 (default 30; Loop / Cloud), sprayTime 0 … 0.5 s, sprayPitch 0 … 24 st, sprayPan 0 … 1,
+//                                 freeze 0 / 1 (the position holds, grains keep spawning)
 //   settings mode     0 Classic (loop while held: the loop setting), 1 One-Shot (start → end, then done),
-//                     2 Slice (slice key − 36 of the data's slice table: [slices[n], slices[n + 1]))
+//                     2 Slice (slice key − 36 of the data's slice table: [slices[n], slices[n + 1])),
+//                     3 Granular (SM.6: the granular atom, pq/dsp/granular.h; warp and loop do not apply; the voice
+//                     ends as Classic's: when the gate falls)
+//            granMode 0 Classic (pitch-synchronous), 1 Loop (default), 2 Cloud; grains 1 … 32 per voice (default
+//                     16); harmonic 0 / 1 (each grain takes the next ratio of the data's `harmonics`); shape 0 Hann,
+//                     1 Tukey, 2 Gauss, 3 Triangle, 4 Exp
 //            warp     0 Off: rate = hz / root · 2^(transpose + detune/100)/12 (Slice: the transpose only);
 //                     (Slice per voice: × a wired hz / voice.noteHz, so glides and bends move it);
 //                     1 Re-Pitch: the same × transport.bpm / sampleBpm (the sample follows the song's tempo by speed);
@@ -43,13 +52,14 @@
 //            beatsLoop 0 Off, 1 Forward (default), 2 Back-Forward: what a Beats slice does past its natural end
 //   data     {sample: a SampleId value (0: none), slices: Floats (start frames), sliceBy, sensitivity: Numbers,
 //             markers: Floats (frame, beat pairs: the stretch modes' law), rootText: String (the root as an identity,
-//             SM.7 / SM.10)}
+//             SM.7 / SM.10), SM.6 harmonics: Floats ((n, d) pairs of whole numbers; none: 1, 2, 3/2, 3, 4, 5)}
 //   outputs  out (stereo: a mono sample on both channels); gateOut (1 / 0, for the envelope after it: Classic the input
 //            gate; One-Shot / Slice: playing, in Gate mode also the input gate); done (Type::voiceEnd: not gateOut,
 //            Classic: not (gate and playing)); SM.8: outside a voice (no notes reach it) gateOut is also high
 //            while a wired position scrubs, so the envelope after it opens (an LFO on an audio track plays it)
 //   resource Sample request 0 (the link pins and publishes the data's sample, slices and markers into it; a data edit
-//            is no compile; SM.5: `stretch` in Complex / Pro, the slot then carries the stretchers); SM.10: VoiceTap request 1 (voice_tap of where each voice reads, 0 … 1: the face's playheads)
+//            is no compile; SM.5: `stretch` in Complex / Pro, the slot then carries the stretchers; SM.6: GrainTap
+//            request 2 in Granular, the link hangs it on the slot: the face's grain dots); SM.10: VoiceTap request 1 (voice_tap of where each voice reads, 0 … 1: the face's playheads)
 // Settings choose the atoms (a mode change recompiles): Off / Re-Pitch is one sample_read_cubic (+ sample_slice in
 // Slice, + transport.bpm with Re-Pitch), so they keep SM.2's path and cost; Beats / Tones / Texture one sampler_warp;
 // an unwired position folds the scrub path away.
@@ -63,9 +73,12 @@ const Type& samplerType() noexcept;
 enum SamplerInput : uint32_t { kSmpHz, kSmpGate, kSmpKey, kSmpPosition, kSmpInputs };
 enum SamplerParam : uint32_t { kSmpStart, kSmpEnd, kSmpLoopStart, kSmpLoopLength, kSmpLoopFade, kSmpTranspose,
                                kSmpDetune, kSmpGain, kSmpRoot, kSmpSampleBpm, kSmpFadeIn, kSmpFadeOut, kSmpGrain,
-                               kSmpFlux, kSmpEnvelope, kSmpFormants, kSmpFormantOrder, kSmpParams };
-enum SamplerSetting : uint32_t { kSmpMode, kSmpWarp, kSmpLoop, kSmpTrigger, kSmpBeatsLoop, kSmpSettings };
-enum class SamplerMode : uint8_t { Classic = 0, OneShot = 1, Slice = 2 };
+                               kSmpFlux, kSmpEnvelope, kSmpFormants, kSmpFormantOrder, kSmpGrainPosition, kSmpScan,
+                               kSmpGrainSize, kSmpDensity, kSmpSprayTime, kSmpSprayPitch, kSmpSprayPan, kSmpFreeze,
+                               kSmpParams };
+enum SamplerSetting : uint32_t { kSmpMode, kSmpWarp, kSmpLoop, kSmpTrigger, kSmpBeatsLoop, kSmpGranMode, kSmpGrains,
+                                 kSmpHarmonic, kSmpShape, kSmpSettings };
+enum class SamplerMode : uint8_t { Classic = 0, OneShot = 1, Slice = 2, Granular = 3 };
 // SM.4: the warp setting (SM.5: Complex / Complex Pro are the phase vocoder, pq/dsp/sampler_stretch.h).
 enum class SamplerWarp : uint8_t { Off = 0, RePitch = 1, Beats = 2, Tones = 3, Texture = 4, Complex = 5, ComplexPro = 6 };
 inline constexpr double kSamplerDefaultRoot = 261.63;  // unpitched → middle C (docs/plans/SM.md "Root pitch")

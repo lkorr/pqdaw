@@ -1781,12 +1781,19 @@ void ProjectLink::resetMetaSlotsLocked() {
 
 void ProjectLink::syncMetaStretchers(const doc::LoweredProject& lp) {
   std::vector<std::pair<std::shared_ptr<dsp::SampleSlot>, uint32_t>> want;
+  std::vector<std::pair<std::shared_ptr<dsp::SampleSlot>, std::shared_ptr<GrainTap>>> taps;  // SM.6
   {
     std::lock_guard lock(mutex_);
     for (const doc::LoweredProject::MetaResource& r : lp.metaResources) {
       if (r.slot == 0 || r.slot >= kMetaSlots || r.request.kind != meta::ResourceKind::Sample) continue;
       MetaSlot& m = metaSlots_[r.slot];
       if (!m.live || !m.sample) continue;
+      std::shared_ptr<GrainTap> tap;  // SM.6: the instance's GrainTap request (Granular), if any
+      for (const doc::LoweredProject::MetaResource& g : lp.metaResources)
+        if (g.request.kind == meta::ResourceKind::GrainTap && g.device == r.device && g.path == r.path && g.slot != 0 &&
+            g.slot < kMetaSlots && metaSlots_[g.slot].live)
+          tap = metaSlots_[g.slot].grainTap;
+      if (m.sample->grainTap() != tap.get()) taps.emplace_back(m.sample, std::move(tap));
       uint32_t voices = cfg_.maxVoices;
       for (size_t i = 0; i < lp.trackIds.size() && i < lp.graph.tracks.size(); ++i)
         if (lp.trackIds[i] == r.track && lp.graph.tracks[i].maxVoices > 0) voices = lp.graph.tracks[i].maxVoices;
@@ -1795,6 +1802,7 @@ void ProjectLink::syncMetaStretchers(const doc::LoweredProject& lp) {
     }
   }
   for (const auto& [slot, lanes] : want) ensureStretch(*slot, lanes);  // (built outside the lock: ≈ 0.1 ms each)
+  for (auto& [slot, tap] : taps) slot->setGrainTap(std::move(tap), sampleReclaimer_);  // SM.6
 }
 
 void ProjectLink::ensureStretch(dsp::SampleSlot& slot, uint32_t lanes) {
@@ -1843,6 +1851,8 @@ void ProjectLink::syncMetaSlots(const std::vector<doc::LoweredProject::MetaResou
         m.tap = m.table->sharedTap();
       } else if (m.kind == meta::ResourceKind::Sample) {  // SM.2: silent until refreshMetaSamples publishes
         m.sample = std::make_shared<dsp::SampleSlot>();
+      } else if (m.kind == meta::ResourceKind::GrainTap) {  // SM.6: hung on the instance's sample slot (syncMetaStretchers)
+        m.grainTap = std::make_shared<GrainTap>(GrainTapConfig{engine::voiceGroupsFor(std::max(cfg_.maxVoices, 1u)), 8});
       } else if (m.kind == meta::ResourceKind::SignalTap) {  // TX.spectrum: written per engine block
         m.ring = std::make_shared<TapRing>(dsp::kSignalTapChannels, kAnalysisTapFrames,
                                            std::clamp<uint32_t>(cfg_.blockFrames, 1u, kAnalysisTapFrames / 4));
@@ -2109,6 +2119,12 @@ std::shared_ptr<dsp::SampleSlot> ProjectLink::metaSampleSlot(doc::DeviceId devic
   std::lock_guard lock(mutex_);
   const uint32_t id = metaIdLocked(device, path, index);
   return id != 0 ? metaSlots_[id].sample : nullptr;
+}
+
+std::shared_ptr<GrainTap> ProjectLink::metaGrainTap(doc::DeviceId device, std::string_view path, uint32_t index) const {
+  std::lock_guard lock(mutex_);
+  const uint32_t id = metaIdLocked(device, path, index);
+  return id != 0 ? metaSlots_[id].grainTap : nullptr;
 }
 
 uint32_t ProjectLink::metaSlotsInUse() const {

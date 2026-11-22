@@ -110,13 +110,14 @@ struct OutputSpec {
 // SM.2: Sample = a dsp::SampleSlot (pq/dsp/sample_slot.h): the link resolves what Type::sampleBinding names (a
 // SampleId of the project's table), pins it resident (pq/media/sample_pool.h) and publishes it; a data edit
 // publishes again (voices take a new sample at their next trigger), never a compile.
-enum class ResourceKind : uint8_t { FrameTable, VoiceTap, SignalTap, Sample };  // SignalTap: TX.spectrum (a pq::TapRing)
+enum class ResourceKind : uint8_t { FrameTable, VoiceTap, SignalTap, Sample, GrainTap };  // SM.6: GrainTap (pq/core/grain_tap.h)  // SignalTap: TX.spectrum (a pq::TapRing)
 // SM.2: what a Sample request plays (Type::sampleBinding): a SampleId value of the project's sample table (0: none, the
 // slot stays silent) and its slice table (start frames, any order: the slot sorts them).
 struct SampleBinding {
   uint32_t sample = 0;
   std::vector<float> slices;
   std::vector<float> markers;  // SM.4: warp markers, (frame, beat) pairs
+  std::vector<float> harmonics;  // SM.6: harmonic grains' (n, d) pairs
   friend bool operator==(const SampleBinding&, const SampleBinding&) = default;
 };
 struct ResourceRequest {

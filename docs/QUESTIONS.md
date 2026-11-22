@@ -2557,3 +2557,23 @@ Context: SM.5 (docs/plans/SM.md "SM.5", "Semantics" Complex note-on, open risks 
    envelope's release) keeps running — Tones since SM.4, the vocoder now — until the lane is retriggered, whenever its
    group runs for another voice. A per-lane "occupied" mask the kernel could read (as VoiceTap::setLaneMask) would stop
    it; not done here (touches the VoiceEngine / image host). Status: open.
+
+## Q?-SM.6-a · Sampler granulator (granular atom, GrainTap): readings taken where the plan left room
+Context: SM.6 (docs/plans/SM.md "Semantics" Granular, "SM.6"). Choices (most reversible):
+1. **Granular is a fourth Sampler mode** (`mode` 3), with settings granMode (Classic / Loop / Cloud, default Loop),
+   grains (1 … 32, default 16), harmonic, shape, and params grainPosition, scan (−4 … 4 × the file's speed, default
+   1), grainSize (5 ms … 1 s, default 80 ms), density (1 … 400 Hz), sprayTime (≤ 0.5 s), sprayPitch (≤ 24 st),
+   sprayPan, freeze. Warp, loop and trigger do not apply; the voice ends as Classic's (the gate falls).
+2. **The GrainTap rides on the SampleSlot** (one resource per atom, as SM.5's stretchers): the sampler requests
+   `ResourceKind::GrainTap` (index 2) in Granular; the link makes the tap and hangs it on the instance's slot.
+3. **A grain's rate and mip level are fixed at its spawn** (a glide moves later grains); Classic reads at the transpose
+   ratio × the file's speed, Loop / Cloud at hz / root × ratio. Spray time is ± seconds of source around the voice's
+   position; pan is equal power with centre gain 1 (overlapping grains are not normalised: density × size sets the
+   level, capped by the grain count).
+4. **Slot reuse on a 64-sample grid** of the voice's clock (a spawn takes a slot whose grain ended at or before its grid
+   cell's start; none free: skipped). Needed so which grain plays where, and so the render, never depends on the block.
+5. **The seed** is StateInit::seed (0 from the sampler body today, so two samplers on the same note draw alike; voices
+   differ by their voice slot). A per-node seed input is a one-line follow-up if wanted.
+6. **A retrigger keeps the voice's live grains** unless the sample changed (then they stop at once: a click on a swap +
+   retrigger). Harmonic ratios come from the data's `harmonics` ((n, d) pairs; default 1, 2, 3/2, 3, 4, 5).
+7. Q?-SM.5-a 6 applies here too: a freed lane whose voice never ends keeps spawning grains while its group runs.

@@ -34,19 +34,31 @@ constexpr std::array<ParamSpec, kSmpParams> kParams = {{
     {"envelope", "Transient envelope", 100.0, 0.0, 100.0},
     {"formants", "Formants", 100.0, 0.0, 100.0},                // SM.5: Complex Pro
     {"formantOrder", "Envelope", 128.0, 8.0, 256.0},            // SM.5: Complex Pro (spectral envelope order)
+    {"grainPosition", "Position", 0.0, 0.0, 1.0},               // SM.6: Granular
+    {"scan", "Scan", 1.0, -4.0, 4.0},
+    {"grainSize", "Grain size", 0.08, 0.005, 1.0, graph::Unit::s},
+    {"density", "Density", 30.0, 1.0, 400.0, graph::Unit::Hz, dsp::CurvePreset::Octave},
+    {"sprayTime", "Spray", 0.0, 0.0, 0.5, graph::Unit::s},
+    {"sprayPitch", "Pitch spray", 0.0, 0.0, 24.0},
+    {"sprayPan", "Pan spray", 0.0, 0.0, 1.0},
+    {"freeze", "Freeze", 0.0, 0.0, 1.0},
 }};
 constexpr std::array<SettingSpec, kSmpSettings> kSettings = {{
-    {"mode", "Mode", 0.0, 0.0, 2.0, 3},        // Classic, One-Shot, Slice
+    {"mode", "Mode", 0.0, 0.0, 3.0, 4},        // Classic, One-Shot, Slice, Granular (SM.6)
     {"warp", "Warp", 0.0, 0.0, 6.0, 7},        // Off, Re-Pitch, Beats, Tones, Texture, Complex, Complex Pro
     {"loop", "Loop", 1.0, 0.0, 2.0, 3},        // Off, Forward, Ping-pong
     {"trigger", "Trigger", 0.0, 0.0, 1.0, 2},  // Trigger, Gate
     {"beatsLoop", "Transient loop", 1.0, 0.0, 2.0, 3},  // SM.4 Beats: Off, Forward, Back-Forward
+    {"granMode", "Grain mode", 1.0, 0.0, 2.0, 3},       // SM.6: Classic, Loop, Cloud
+    {"grains", "Grains", 16.0, 1.0, 32.0, 32},          // SM.6: per voice
+    {"harmonic", "Harmonic grains", 0.0, 0.0, 1.0, 2},  // SM.6
+    {"shape", "Grain shape", 0.0, 0.0, 4.0, 5},         // SM.6: Hann, Tukey, Gauss, Triangle, Exp
 }};
 constexpr std::array<OutputSpec, 2> kOutputs = {{{"out", graph::kWidthStereo}, {"gateOut", graph::kWidthMono}}};
 
 // Body node ids: the stateful nodes fixed (their state keys survive every re-expansion, a setting change included);
 // the rest in build order from kSeq.
-enum : uint32_t { kRead, kRise, kSlice, kScrub, kTap, kWarp, kSeq = 16 };
+enum : uint32_t { kRead, kRise, kSlice, kScrub, kTap, kWarp, kGran, kSeq = 16 };
 
 class Body {
 public:
@@ -74,12 +86,13 @@ uint32_t choice(double v, uint32_t n) noexcept {
 Status body(Builder& bld) {
   using P = Builder::PortRef;
   Body b(bld);
-  const auto mode = static_cast<SamplerMode>(choice(bld.setting(kSmpMode), 3));
+  const auto mode = static_cast<SamplerMode>(choice(bld.setting(kSmpMode), 4));
+  const bool granular = mode == SamplerMode::Granular;
   const auto warp = static_cast<SamplerWarp>(choice(bld.setting(kSmpWarp), 7));
   const bool repitch = warp == SamplerWarp::RePitch;
   // SM.4: Beats / Tones / Texture (SM.5: Complex / Complex Pro) play through sampler_warp; Slice keeps its own path (its
   // slices play at their recorded pitch, unwarped).
-  const bool stretch = mode != SamplerMode::Slice && warp >= SamplerWarp::Beats;
+  const bool stretch = mode != SamplerMode::Slice && !granular && warp >= SamplerWarp::Beats;
   const uint32_t loop = choice(bld.setting(kSmpLoop), 3);
   const bool gateMode = choice(bld.setting(kSmpTrigger), 2) == 1;
   const P slot = b.named(bld.slot(0), "sample");  // (read by several atoms: named, as the text form needs)
@@ -94,8 +107,11 @@ Status body(Builder& bld) {
   P rate = ratio;
   const P hzIn = bld.input(kSmpHz);
   // (Every node is made only where it is read: an anonymous dead node does not survive the text form.)
-  if (mode != SamplerMode::Slice) {
-    const P hz = b.op("select", {b.op("gt", {hzIn, unwired}), hzIn, root});
+  P hz;
+  if (granular) {
+    hz = b.op("select", {b.op("gt", {hzIn, unwired}), hzIn, root});
+  } else if (mode != SamplerMode::Slice) {
+    hz = b.op("select", {b.op("gt", {hzIn, unwired}), hzIn, root});
     rate = b.op("mul", {b.op("div", {hz, root}), ratio});
   } else if (bld.context().voice) {
     // Slice: a wired frequency's motion away from the note's pitch (a glide, a bend) moves the rate.
@@ -104,14 +120,25 @@ Status body(Builder& bld) {
                                    b.op("div", {hzIn, b.op("max", {noteHz, b.k(1e-6)})}), b.k(1.0)});
     rate = b.op("mul", {ratio, bend});
   }
-  if (repitch && !stretch) rate = b.op("mul", {rate, b.op("div", {b.op("transport.bpm", {}), bld.param(kSmpSampleBpm)})});
+  if (repitch && !stretch && !granular) rate = b.op("mul", {rate, b.op("div", {b.op("transport.bpm", {}), bld.param(kSmpSampleBpm)})});
   const P trig = bld.atom("rise", {gate}, kRise);
   // The region: Classic start → end with its loop; One-Shot start → end; Slice the key's slice.
   P start = bld.param(kSmpStart), end = bld.param(kSmpEnd);
   P loopStart, loopEnd, fade, pingpong, fadeIn, fadeOut;
   const bool looping = mode == SamplerMode::Classic && loop != 0;
   P rd;
-  if (stretch) {
+  if (granular) {
+    // SM.6: the granulator (pq/dsp/granular.h); its outputs are sample_read's (out, playing, right, pos).
+    auto kset = [&](uint32_t s, uint32_t n) { return b.k(static_cast<double>(choice(bld.setting(s), n))); };
+    rd = b.named(bld.atom("granular",
+                          {slot, hz, trig, root, ratio, start, end, bld.param(kSmpGrainPosition), bld.param(kSmpScan),
+                           bld.param(kSmpGrainSize), bld.param(kSmpDensity), bld.param(kSmpSprayTime),
+                           bld.param(kSmpSprayPitch), bld.param(kSmpSprayPan), bld.param(kSmpFreeze), kset(kSmpShape, 5),
+                           kset(kSmpGranMode, 3), b.k(static_cast<double>(1 + choice(bld.setting(kSmpGrains) - 1.0, 32))),
+                           kset(kSmpHarmonic, 2), b.op("sr", {})},
+                          kGran),
+                 "rd");
+  } else if (stretch) {
     // SM.4: the voice's content follows the song's tempo from its trigger; the pitch is the rate (hz / root ×
     // transpose). Loop: Classic's (ping-pong loops forward: warp_voice.h loops the content's beats).
     const double wm = static_cast<double>(static_cast<uint32_t>(warp) - static_cast<uint32_t>(SamplerWarp::Beats));
@@ -166,7 +193,7 @@ Status body(Builder& bld) {
   // Gate out (the envelope after it) and the voice's end.
   P gateOut = gate;
   P done;
-  if (mode == SamplerMode::Classic) {
+  if (mode == SamplerMode::Classic || granular) {
     done = b.op("not", {b.op("and", {gate, playing})});
   } else {
     gateOut = gateMode ? b.op("and", {gate, playing}) : playing;
@@ -189,8 +216,12 @@ std::vector<ResourceRequest> resources(std::span<const double> settings) {
   // SM.5: Complex / Complex Pro (Classic / One-Shot: Slice plays unwarped) need the stretchers.
   auto at = [&](uint32_t i) { return i < settings.size() ? settings[i] : kSettings[i].def; };
   const auto warp = static_cast<SamplerWarp>(choice(at(kSmpWarp), 7));
-  const bool stretch = static_cast<SamplerMode>(choice(at(kSmpMode), 3)) != SamplerMode::Slice && warp >= SamplerWarp::Complex;
-  return {ResourceRequest{ResourceKind::Sample, 0, stretch}, ResourceRequest{ResourceKind::VoiceTap, 1}};
+  const auto mode = static_cast<SamplerMode>(choice(at(kSmpMode), 4));
+  const bool stretch = mode != SamplerMode::Slice && mode != SamplerMode::Granular && warp >= SamplerWarp::Complex;
+  std::vector<ResourceRequest> r = {ResourceRequest{ResourceKind::Sample, 0, stretch},
+                                    ResourceRequest{ResourceKind::VoiceTap, 1}};
+  if (mode == SamplerMode::Granular) r.push_back(ResourceRequest{ResourceKind::GrainTap, 2});  // SM.6: the grain dots
+  return r;
 }
 
 DataPtr defaultData() { return samplerData(0); }
@@ -201,7 +232,7 @@ std::string dataProblem(const DataValue& v) {
   if (s == nullptr || s->kind != DataValue::Kind::Number || !(s->number >= 0.0) || s->number > 4294967295.0 ||
       s->number != std::floor(s->number))
     return "sampler data: `sample` must be a sample id (a whole number ≥ 0)";
-  for (const char* f : {"slices", "markers"})
+  for (const char* f : {"slices", "markers", "harmonics"})
     if (const DataValue* x = v.field(f); x != nullptr && x->kind != DataValue::Kind::Floats)
       return std::string("sampler data: `") + f + "` must be floats";
   for (const char* f : {"sliceBy", "sensitivity"})
@@ -219,9 +250,12 @@ std::vector<uint32_t> sampleRefs(const DataValue& data) {
 
 SampleBinding sampleBinding(const DataValue* data, uint32_t index) {
   if (index != 0) return {};
-  SampleBinding b{samplerSample(data), samplerSlices(data), {}};
-  if (data != nullptr)
+  SampleBinding b{samplerSample(data), samplerSlices(data), {}, {}};
+  if (data != nullptr) {
     if (const DataValue* m = data->field("markers"); m != nullptr && m->kind == DataValue::Kind::Floats) b.markers = m->floats;
+    if (const DataValue* h = data->field("harmonics"); h != nullptr && h->kind == DataValue::Kind::Floats)
+      b.harmonics = h->floats;
+  }
   return b;
 }
 

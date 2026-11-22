@@ -222,6 +222,20 @@
 //                                     the integrated rate (Tones while it primes, then a 2 ms cross); Pro moves the
 //                                     formants back by rate^(−formants %), envelope order formantOrder.
 //                                     Everything after reset must be Spl.
+//   granular (hz, reset, root, ratio, start, end, position, scan, size, density, sprayTime, sprayPitch, sprayPan,
+//             freeze, shape, mode, grains, harmonic, sr) → (out, playing, right, pos)
+//                                     SM.6 (pq/dsp/granular.h): ≤ `grains` (1 … 32) grains per lane over the slot's
+//                                     entry from the lane's last reset: mode 0 Classic (onsets every sr / hz, read at
+//                                     ratio × the file's speed), 1 Loop (every sr / density, read at hz / root ×
+//                                     ratio), 2 Cloud (Poisson at density); the voice's position moves from start +
+//                                     position · (end − start) by scan × the file's speed through [start, end) (start,
+//                                     end, position in [0, 1]; freeze ≥ 0.5 holds it); grains of size s with the shape's
+//                                     window (0 Hann, 1 Tukey, 2 Gauss, 3 Triangle, 4 Exp), sprays ± sprayTime s of
+//                                     source, ± sprayPitch st, ± sprayPan; harmonic ≥ 0.5: each grain × the next n / d of
+//                                     the entry's harmonic list. Randomness a counter hash (StateInit::seed, the voice
+//                                     slot, the grain number): repeatable. hz per sample (read at each onset), reset
+//                                     per sample, the rest Spl. pos: the voice's position in [0, 1]; playing: 1 from the
+//                                     first reset. The slot's GrainTap (SampleSlot::grainTap) gets the live grains.
 //   sample_scrub (pos) → (out, right)  (cubic) a read of the newest entry at pos ∈ [0, 1] of its length (outside: 0),
 //                                     both channels, at the mip level of the block's fastest |Δpos| · length per sample.
 // Cubic = 4-point, 3rd-order Hermite (Catmull-Rom); linear = 2-point.
@@ -392,6 +406,8 @@ enum class Atom : uint16_t {
   SampleSlice, SampleScrub,
   // SM.4: the Sampler's Beats / Tones / Texture voice (see "Tables" above; appended)
   SamplerWarp,
+  // SM.6: the Sampler's granulator (see "Tables" above; appended)
+  Granular,
   Count_
 };
 inline constexpr uint32_t kAtomCount = static_cast<uint32_t>(Atom::Count_);

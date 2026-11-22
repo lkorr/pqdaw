@@ -129,6 +129,7 @@ KernelFn findRampKernel(Atom a, uint32_t lanes) noexcept;  // TX.smooth: param_r
 KernelFn findSignalTapKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // TX.spectrum (kernels_signal_tap.cpp)
 KernelFn findCurveKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // GU.1 (kernels_curve.cpp)
 KernelFn findSamplerWarpKernel(uint32_t lanes, uint32_t specMask) noexcept;  // SM.4 (kernels_sampler_warp.cpp)
+KernelFn findGranularKernel(uint32_t lanes, uint32_t specMask) noexcept;     // SM.6 (kernels_granular.cpp)
 KernelFn findSvfKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;    // EQ.1 (kernels_svf.cpp)
 KernelFn findNoiseStepKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // NZ.1 (kernels_noise_step.cpp)
 KernelFn findSampleKernel(Atom a, uint32_t lanes, uint32_t specMask) noexcept;  // SM.2 (kernels_sample.cpp)

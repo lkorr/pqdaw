@@ -30,7 +30,8 @@
 // A Sampler whose warp setting is Complex / Pro also has its instance's stretchers here (pq/dsp/sampler_stretch.h:
 // one atom reads one resource, so the bank rides on the slot): one atomic pointer, set off the audio thread
 // (setStretch: the old bank is retired through the reclaimer), read by sampler_warp once per call (stretch()). Only
-// the audio thread uses a bank (its claims and vocoders); null for every other setting.
+// the audio thread uses a bank (its claims and vocoders); null for every other setting. SM.6: likewise the instance's
+// GrainTap (setGrainTap / grainTap(): the granular atom's live grains for the face), only in Granular mode.
 //
 // ---- Threads ------------------------------------------------------------------------------------------------------
 // publish() / sweep(): any non-RT thread (serialised internally); the reclaimer must have every thread that runs
@@ -52,6 +53,11 @@
 namespace pq::dsp {
 
 class SamplerStretch;  // pq/dsp/sampler_stretch.h (SM.5)
+}  // namespace pq::dsp
+namespace pq {
+class GrainTap;  // pq/core/grain_tap.h (SM.6)
+}  // namespace pq
+namespace pq::dsp {
 
 inline constexpr uint32_t kSampleSlotLevels = kMaxMipLevels + 1;  // level 0 + the mips
 inline constexpr int32_t kSampleSlotGuard = 4;                    // readable frames each side (at least)
@@ -74,6 +80,7 @@ struct SampleSource {
   double fileRate = 48000.0;  // the sample's frames per second
   std::vector<float> slices;  // slice start frames (sample_slice); sanitised by publish (sorted, in [0, length))
   std::vector<float> markers;  // SM.4: warp markers, (frame, beat) pairs (sampler_warp); sanitised by publish
+  std::vector<float> harmonics;  // SM.6: harmonic grains' ratios, (n, d) pairs of positive integers; sanitised by publish
 };
 
 class SampleSlot {
@@ -88,12 +95,14 @@ public:
     uint32_t sliceCount = 0;
     const float* markers = nullptr;  // SM.4: markerCount (frame, beat) pairs, both strictly ascending
     uint32_t markerCount = 0;
+    const float* harmonics = nullptr;  // SM.6: harmonicCount (n, d) pairs, whole numbers ≥ 1 (granular)
+    uint32_t harmonicCount = 0;
     uint64_t generation = 0;         // 1 for the initial entry, +1 per publish
     std::atomic<const Entry*> prev{nullptr};
     mutable std::atomic<uint32_t> touched{0};  // kernels: 1 when read in a call (non-newest entries only)
     // publish()/sweep() only (writeMutex_):
     std::shared_ptr<const void> owner;
-    std::vector<float> sliceStore, markerStore;
+    std::vector<float> sliceStore, markerStore, harmonicStore;
     std::chrono::steady_clock::time_point superseded{}, lastRead{};
   };
 
@@ -120,6 +129,10 @@ public:
   const SamplerStretch* stretchView() const noexcept { return stretch_.load(std::memory_order_acquire); }
   // RT-safe: the stretchers (null: none), valid until the caller's next quiescent state.
   SamplerStretch* stretch() const noexcept { return stretch_.load(std::memory_order_acquire); }
+  // SM.6, non-RT: the instance's grain tap (may be null; the granular atom writes its live grains there); the one it
+  // replaces is released through `reclaimer`. RT-safe: grainTap(), valid until the caller's next quiescent state.
+  void setGrainTap(std::shared_ptr<GrainTap> tap, EpochReclaimer& reclaimer);
+  GrainTap* grainTap() const noexcept { return grainTap_.load(std::memory_order_acquire); }
 
   // RT-safe: the current entry (valid until the caller's next quiescent state).
   const Entry* acquire() const noexcept { return entry_.load(std::memory_order_acquire); }
@@ -144,6 +157,8 @@ private:
   void retireOld(std::chrono::steady_clock::time_point now, EpochReclaimer& reclaimer);  // writeMutex_ held
   std::atomic<const Entry*> entry_{nullptr};
   std::atomic<SamplerStretch*> stretch_{nullptr};  // SM.5 (owned)
+  std::atomic<GrainTap*> grainTap_{nullptr};       // SM.6 (grainOwner_ holds it)
+  std::shared_ptr<GrainTap> grainOwner_;
   mutable std::mutex writeMutex_;
   EntryDeleter deleter_ = &deleteEntry;
   double keepSeconds_ = kSampleKeepSeconds;

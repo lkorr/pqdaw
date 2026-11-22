@@ -245,6 +245,28 @@ struct alignas(32) SamplerWarpState {
   float scratch[kSamplerWarpScratchFloats];
 };
 
+// SM.6: granular (pq/dsp/granular.h): per lane a dsp::GranVoice (words interleaved by lane) and kGrainsMax grain slots
+// (SoA, [slot][lane]: the 32.32 read position as integer + fraction words, the step likewise, age (frames since its
+// start; < 0: starts later), length, window increment, pan gains, mip level); LaneState::PerLane over all of them. Then
+// the voice group (its voice slots, the grain tap's record) and the node's seed.
+inline constexpr uint32_t kGranVoiceWords = 12;
+struct alignas(32) GranularState {
+  uint32_t v[kGranVoiceWords][8];
+  int32_t gi[32][8];
+  uint32_t gf[32][8];
+  int32_t si[32][8];
+  uint32_t sf[32][8];
+  int32_t age[32][8];
+  int32_t len[32][8];
+  float winc[32][8];
+  float gl[32][8];
+  float gr[32][8];
+  uint32_t level[32][8];
+  uint32_t group;
+  uint32_t seed;
+  uint32_t pad[6];
+};
+
 // TMM.6: oversample_up / oversample_down (pq/dsp/oversample.h): per allpass of the half-band cascade its previous
 // output, per stage and path the path's previous input (18 allpasses over 4 stages; a lower factor uses the first
 // stages). Every field is per lane.

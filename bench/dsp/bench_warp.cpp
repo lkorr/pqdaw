@@ -28,6 +28,11 @@
 //                                     measured after priming: ns/frame of all 16 (per voice: / 16)
 //   sampler_warp/complex +18/31 16v   the same at 2^(18/31) (the vocoder runs 1.5× the frames, the read resamples)
 //   sampler_warp/complexPro 16v       Complex Pro at 2^(18/31), Formants 100
+// SM.6 (the granular atom, pq/dsp/granular.h), the same slot, 64-frame blocks, two 8-lane groups (16 voices):
+//   granular/loop 16v×16g     Loop, 16 grains per voice live (density 200 Hz × 80 ms), rate 1.5: ns/frame of all 16
+//   granular/cloud 16v×16g    Cloud with sprays (time, pitch ± 3 st, pan)
+//   granular/loop 16v×4g      Loop, 4 grains per voice live (cost ∝ live grains)
+//   granular/silence 16v      no voice triggered (the silent path)
 // % of a core = ns/frame × 48000 / 1e7.
 #include <cmath>
 #include <cstdint>
@@ -40,6 +45,7 @@
 #include "pq/core/epoch_reclaimer.h"
 #include "pq/dsp/atom_state.h"
 #include "pq/dsp/atoms.h"
+#include "pq/dsp/granular.h"
 #include "pq/dsp/sample_slot.h"
 #include "pq/dsp/sampler_stretch.h"
 #include "pq/engine/audio_sequence.h"
@@ -254,9 +260,61 @@ void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide,
   if (complex) src.slot.setStretch(nullptr, src.reclaimer);
 }
 
+// SM.6: granular, `groups` 8-lane groups, every lane triggered (unless silent), `live` grains per voice.
+void granularBench(pq::bench::Context& c, float mode, uint32_t live, bool spray, bool silent) {
+  static SamplerSource src;
+  constexpr uint32_t kN = 64, kIn = 19, kGroups = 2;
+  std::vector<pq::AlignedBuffer<float>> in;
+  for (uint32_t i = 0; i < kIn; ++i) in.emplace_back(static_cast<size_t>(kN) * 8);
+  const float density = 200.0f, size = static_cast<float>(live) / density;
+  const float vals[kIn] = {392.4f, 0.0f, 261.63f, 1.0f, 0.05f, 0.95f, 0.2f, 1.0f, size, density, spray ? 0.02f : 0.0f,
+                           spray ? 3.0f : 0.0f, spray ? 1.0f : 0.0f, 0.0f, 0.0f, mode, 32.0f, 0.0f, static_cast<float>(kSr)};
+  for (uint32_t i = 0; i < kIn; ++i)
+    for (uint32_t k = 0; k < kN * 8; ++k) in[i][k] = vals[i];
+  const uint32_t mask = pq::dsp::kernelInfo(pq::dsp::Atom::Granular).splRequired;  // hz, reset per sample
+  std::vector<pq::AlignedBuffer<float>> out;
+  for (uint32_t o = 0; o < 4; ++o) out.emplace_back(static_cast<size_t>(kN) * 8);
+  const float* ip[kIn];
+  for (uint32_t i = 0; i < kIn; ++i) ip[i] = in[i].data();
+  float* op[4] = {out[0].data(), out[1].data(), out[2].data(), out[3].data()};
+  std::vector<pq::AlignedBuffer<float>> states;
+  for (uint32_t g = 0; g < kGroups; ++g) {
+    states.emplace_back(sizeof(pq::dsp::GranularState) / sizeof(float));
+    pq::dsp::StateInit init;
+    init.lanes = 8;
+    init.voiceGroup = g;
+    init.seed = 7;
+    pq::dsp::initState(pq::dsp::Atom::Granular, states[g].data(), init);
+  }
+  const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::Granular, 8, mask);
+  pq::dsp::KernelArgs args{ip, op, states[0].data(), &src.slot, kN, kIn, 4, mask};
+  auto runGroups = [&] {
+    for (uint32_t g = 0; g < kGroups; ++g) {
+      args.state = states[g].data();
+      fn(args);
+    }
+  };
+  if (!silent) {
+    for (uint32_t k = 0; k < 8; ++k) in[1][k] = pq::dsp::boolMask(true);  // a trigger at frame 0 of every lane
+    runGroups();
+    for (uint32_t k = 0; k < 8; ++k) in[1][k] = pq::dsp::boolMask(false);
+    for (uint32_t b = 0; b < 48000 / kN / 4; ++b) runGroups();  // 250 ms: the grain population settled
+  }
+  c.measure(
+      [&] {
+        runGroups();
+        pq::bench::doNotOptimize(out[0][kN * 8 - 1]);
+      },
+      kN, "ns/frame(16 voices)", "L8");
+}
+
 }  // namespace
 
 void addWarpBenches(pq::bench::Runner& runner) {
+  runner.add("granular/loop 16v×16g", [](pq::bench::Context& c) { granularBench(c, 1.0f, 16, false, false); });
+  runner.add("granular/cloud 16v×16g", [](pq::bench::Context& c) { granularBench(c, 2.0f, 16, true, false); });
+  runner.add("granular/loop 16v×4g", [](pq::bench::Context& c) { granularBench(c, 1.0f, 4, false, false); });
+  runner.add("granular/silence 16v", [](pq::bench::Context& c) { granularBench(c, 1.0f, 16, false, true); });
   for (const uint32_t lanes : {1u, 8u}) {
     const std::string l = lanes == 1 ? " L1" : " L8";
     runner.add("sampler_warp/beats" + l, [lanes](pq::bench::Context& c) { samplerWarpBench(c, 0.0f, 1.0f, false, lanes); });

@@ -49,6 +49,10 @@ constexpr ArgMap kSamplerWarp[] = {{U::Resource, 0}, {U::Input, 0},  {U::Input, 
                                    {U::Input, 4},    {U::Input, 5},  {U::Input, 6},  {U::Input, 7},  {U::Input, 8},
                                    {U::Input, 9},    {U::Input, 10}, {U::Input, 11}, {U::Input, 12}, {U::Input, 13},
                                    {U::Input, 14},   {U::Input, 15}};  // SM.5: formants, formantOrder
+constexpr ArgMap kGranular[] = {{U::Resource, 0}, {U::Input, 0},  {U::Input, 1},  {U::Input, 2},  {U::Input, 3},
+                                {U::Input, 4},    {U::Input, 5},  {U::Input, 6},  {U::Input, 7},  {U::Input, 8},
+                                {U::Input, 9},    {U::Input, 10}, {U::Input, 11}, {U::Input, 12}, {U::Input, 13},
+                                {U::Input, 14},   {U::Input, 15}, {U::Input, 16}, {U::Input, 17}, {U::Input, 18}};  // SM.6
 constexpr ArgMap kTuningHz[] = {{U::Input, 0}, {U::Input, 1}, {U::Input, 2}, {U::Input, 3},  // degree, equave, hz,
                                 {U::Input, 4}, {U::Input, 5}, {U::Input, 6}, {U::Input, 7},  // cents, generator, period,
                                 {U::Resource, 0},                                            // stretch, reference, table,
@@ -93,6 +97,7 @@ constexpr Special kSpecial[] = {
     {"sample_slice", kSampleSlice},
     {"sample_scrub", kSamplePos},  // sample, pos
     {"sampler_warp", kSamplerWarp},  // SM.4
+    {"granular", kGranular},         // SM.6
     {"tuning_hz", kTuningHz},
     {"gain", kGain},
     {"gain_add", kGainAdd},

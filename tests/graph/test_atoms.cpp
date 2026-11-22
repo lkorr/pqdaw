@@ -73,6 +73,8 @@ TEST_CASE("atoms: every SPEC §7.2 leaf atom and every language operator is regi
       "sample_slice", "sample_scrub",
       // SM.4: the Sampler's Beats / Tones / Texture voice.
       "sampler_warp",
+      // SM.6: the Sampler's granulator.
+      "granular",
   };
   for (const char* n : names) {
     CAPTURE(n);

@@ -257,8 +257,10 @@ int main(int argc, char** argv) {
     // EQ.1: svf needs its consts as patterns and per-mode / stage rows (bench_svf.cpp).
     // NZ.1: noise_step needs its consts and a configuration per row (bench_noise.cpp).
     // DY.1: window needs its length / op (the " (L …)" rows below).
-    // SM.4: sampler_warp needs a triggered voice and its 14 inputs (bench_warp.cpp: sampler_warp/*).
-    if (!noFixture && !converter && a != Atom::Svf && a != Atom::NoiseStep && a != Atom::Window && a != Atom::SamplerWarp)
+    // SM.4: sampler_warp needs a triggered voice and its 16 inputs (bench_warp.cpp: sampler_warp/*); SM.6 granular
+    // likewise (bench_warp.cpp: granular/*).
+    if (!noFixture && !converter && a != Atom::Svf && a != Atom::NoiseStep && a != Atom::Window && a != Atom::SamplerWarp &&
+        a != Atom::Granular)
       add(a, 0, "");
   }
   // Buffer ⊗ param: the second input is a Spl pattern (one vector load per block).

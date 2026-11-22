@@ -7,6 +7,7 @@ pq_add_module(pq_core
     src/grid.cpp
     src/rt_log.cpp
     src/voice_tap.cpp
+    src/grain_tap.cpp  # SM.6: the granulator's grain dots (lossy seqlock records per voice group)
     src/rt_heap.cpp
 )
 # DbgHelp: symbolised stack traces when the allocation trap aborts (system library).

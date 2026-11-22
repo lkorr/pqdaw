@@ -1,6 +1,7 @@
 // Live sample slots (SM.2): pq/dsp/sample_slot.h.
 #include "pq/dsp/sample_slot.h"
 
+#include "pq/core/grain_tap.h"
 #include "pq/dsp/sampler_stretch.h"
 
 #include <algorithm>
@@ -30,6 +31,14 @@ SampleSlot::SampleSlot() {
 void SampleSlot::setStretch(std::unique_ptr<SamplerStretch> bank, EpochReclaimer& reclaimer) {
   std::lock_guard lock(writeMutex_);
   if (SamplerStretch* old = stretch_.exchange(bank.release(), std::memory_order_acq_rel)) reclaimer.retire(old);
+}
+
+void SampleSlot::setGrainTap(std::shared_ptr<GrainTap> tap, EpochReclaimer& reclaimer) {
+  std::lock_guard lock(writeMutex_);
+  grainTap_.store(tap.get(), std::memory_order_release);
+  // The old owner is released once the audio threads have passed a quiescent state (a kernel may hold the pointer).
+  if (grainOwner_ != nullptr) reclaimer.retire(new std::shared_ptr<GrainTap>(std::move(grainOwner_)));
+  grainOwner_ = std::move(tap);
 }
 
 SampleSlot::~SampleSlot() {
@@ -91,6 +100,17 @@ Status SampleSlot::publish(SampleSource src, double engineRate, EpochReclaimer& 
       }
     e->markers = m.empty() ? nullptr : m.data();
     e->markerCount = static_cast<uint32_t>(m.size() / 2);
+    // SM.6: harmonic ratios, (n, d) pairs of whole numbers in [1, 2^16] (others dropped).
+    std::vector<float>& h = e->harmonicStore;
+    for (size_t i = 0; i + 1 < src.harmonics.size(); i += 2) {
+      const float n = src.harmonics[i], d = src.harmonics[i + 1];
+      if (n >= 1.0f && d >= 1.0f && n <= 65536.0f && d <= 65536.0f && n == std::floor(n) && d == std::floor(d)) {
+        h.push_back(n);
+        h.push_back(d);
+      }
+    }
+    e->harmonics = h.empty() ? nullptr : h.data();
+    e->harmonicCount = static_cast<uint32_t>(h.size() / 2);
     e->owner = std::move(src.owner);
   }
   std::lock_guard lock(writeMutex_);

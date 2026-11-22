@@ -139,6 +139,8 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // playing, right, pos.
     {"sampler_warp", 16, 4, false, false, kB1, kB1, kB0 | kB1, 0xFFFCu, sizeof(SamplerWarpState), Resource::Sample,
      false},
+    // SM.6 (kernels_granular.cpp): hz, reset, then 17 param-rate inputs → out, playing, right, pos.
+    {"granular", 19, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FFFCu, sizeof(GranularState), Resource::Sample, false},
 };
 
 bool isDelay(Atom a) noexcept {
@@ -235,6 +237,8 @@ LaneStateInfo laneStateInfo(Atom a) noexcept {  // RT-safe
     case Atom::SampleScrub: return {LaneState::PerLane, kernelInfo(a).stateSize};  // only [8] arrays
     // SM.4: the voices' words per lane; the scratch after them is the call's (no state across calls).
     case Atom::SamplerWarp: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(SamplerWarpState, group))};
+    // SM.6: the voice and its grain slots per lane; the group and seed are the group's.
+    case Atom::Granular: return {LaneState::PerLane, static_cast<uint32_t>(offsetof(GranularState, group))};
     case Atom::Phasor:
     case Atom::SineHz: return {LaneState::PerLane, static_cast<uint32_t>(sizeof(PhasorState::phase))};
     case Atom::Noise: return {LaneState::PerLane, 0};
@@ -661,6 +665,12 @@ void initState(Atom a, void* state, const StateInit& init) noexcept {  // RT-saf
     case Atom::WavetablePos: static_cast<WavetablePosState*>(state)->group = init.voiceGroup; break;
     case Atom::VoiceTap: static_cast<VoiceTapState*>(state)->group = init.voiceGroup; break;
     case Atom::SamplerWarp: static_cast<SamplerWarpState*>(state)->group = init.voiceGroup; break;  // SM.5
+    case Atom::Granular: {  // SM.6
+      auto& s = *static_cast<GranularState*>(state);
+      s.group = init.voiceGroup;
+      s.seed = init.seed;
+      break;
+    }
     case Atom::WavetableLive: {
       auto& s = *static_cast<WavetableLiveState*>(state);
       s.group = init.voiceGroup;

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "pq/app/project_link.h"
+#include "pq/core/grain_tap.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/store.h"
 #include "pq/dsp/sampler_stretch.h"
@@ -199,4 +200,28 @@ TEST_CASE("sampler link: Complex builds a stretcher per voice lane before the im
   song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "warp", 3.0));
   link->flush();
   CHECK(slot->stretchView() == nullptr);
+}
+
+// SM.6: Granular asks for a GrainTap (request 2), which the link hangs on the instance's sample slot; other modes none.
+TEST_CASE("sampler link: Granular gets a grain tap on its sample slot; other modes none") {
+  Song song("pq_sampler_link_grains");
+  const SampleId a = song.sample("a.wav", 24000, 2, 48000.0);
+  song.edit(nullptr, ops::setMetaData(*song.store.current(), song.sampler, "", "sampler", meta::samplerData(a.value)));
+  auto link = makeLink(song.store.current());
+  link->flush();
+  REQUIRE(link->waitForSamples(30.0));
+  const std::shared_ptr<dsp::SampleSlot> slot = link->metaSampleSlot(song.sampler, "", 0);
+  REQUIRE(slot != nullptr);
+  CHECK(slot->grainTap() == nullptr);
+  CHECK(link->metaGrainTap(song.sampler, "") == nullptr);
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "mode", 3.0));
+  link->flush();
+  const std::shared_ptr<GrainTap> tap = link->metaGrainTap(song.sampler, "");
+  REQUIRE(tap != nullptr);
+  CHECK(link->metaSampleSlot(song.sampler, "", 0) == slot);  // the same sample slot (no reload)
+  CHECK(slot->grainTap() == tap.get());
+  CHECK(slot->stretchView() == nullptr);
+  song.edit(link.get(), ops::setMetaSetting(*song.store.current(), song.sampler, "", "sampler", "mode", 0.0));
+  link->flush();
+  CHECK(slot->grainTap() == nullptr);
 }

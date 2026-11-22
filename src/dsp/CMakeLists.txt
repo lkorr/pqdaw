@@ -30,6 +30,7 @@ pq_add_module(pq_dsp
     src/sample_slot.cpp  # SM.2: live sample slots (sample_read / sample_pos / sample_slice)
     src/kernels_sample.cpp
     src/kernels_sampler_warp.cpp
+    src/kernels_granular.cpp  # SM.6: the granular atom (8 grains per AVX2 op)
     src/kernels_frame_table.cpp
     src/kernels_wave_live.cpp
     src/kernels_signal_tap.cpp

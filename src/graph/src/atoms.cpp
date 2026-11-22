@@ -180,6 +180,27 @@ constexpr PortSpec pSamplerWarp[] = {{"sample", kRConst},  // (rate is read at i
                                      {"sr", kRParamBound, true, 48000.0f},
                                      {"formants", kRParamBound, true, 100.0f},  // SM.5: Complex Pro
                                      {"formantOrder", kRParamBound, true, 128.0f}};
+// SM.6: granular (pq/dsp/atoms.h): grains per lane; hz and reset per sample, the rest per block.
+constexpr PortSpec pGranular[] = {{"sample", kRConst},
+                                  {"hz", kR},
+                                  {"reset", kB, true, 0.0f},
+                                  {"root", kRParamBound, true, 261.63f},
+                                  {"ratio", kRParamBound, true, 1.0f},
+                                  {"start", kRParamBound, true, 0.0f},
+                                  {"end", kRParamBound, true, 1.0f},
+                                  {"position", kRParamBound, true, 0.0f},
+                                  {"scan", kRParamBound, true, 1.0f},
+                                  {"size", kRParamBound, true, 0.08f},
+                                  {"density", kRParamBound, true, 30.0f},
+                                  {"sprayTime", kRParamBound, true, 0.0f},
+                                  {"sprayPitch", kRParamBound, true, 0.0f},
+                                  {"sprayPan", kRParamBound, true, 0.0f},
+                                  {"freeze", kRParamBound, true, 0.0f},
+                                  {"shape", kRConst, true, 0.0f},
+                                  {"mode", kRConst, true, 1.0f},
+                                  {"grains", kRConst, true, 16.0f},
+                                  {"harmonic", kRConst, true, 0.0f},
+                                  {"sr", kRParamBound, true, 48000.0f}};
 constexpr PortSpec pReduce[] = {{"x", kAny}};
 constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
 constexpr PortSpec pMulAdd[] = {{"a", kR}, {"b", kR}, {"c", kR}};
@@ -451,6 +472,8 @@ const AtomSignature kAtoms[] = {
     {"sampler_warp", C::Sample, pSamplerWarp, pSampleReadOut, sizeof(dsp::SamplerWarpState), kStateful, 0, {},
      "stereo Beats / Tones / Texture / Complex / Complex Pro playback of the sample at its own pitch × rate, following "
      "bpm from the reset"},
+    {"granular", C::Sample, pGranular, pSampleReadOut, sizeof(dsp::GranularState), kStateful, 0, {},
+     "stereo granulator over the sample: Classic / Loop / Cloud grains with sprays, shapes, freeze and harmonic ratios"},
     {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},

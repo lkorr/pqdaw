@@ -454,6 +454,7 @@ void ProjectLink::refreshMetaSamples() {
       }
       src.slices = w.binding.slices;
       src.markers = w.binding.markers;
+      src.harmonics = w.binding.harmonics;
     }
     if (Status st = w.slot->publish(std::move(src), cfg_.sampleRate, sampleReclaimer_); !st.ok())
       setError(st.error().message);
