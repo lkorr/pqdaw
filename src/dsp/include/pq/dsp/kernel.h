@@ -38,6 +38,14 @@
 //
 // Every kernel is RT-safe: noexcept, no allocation, no locks, no syscalls, bounded loops (frames × outputs).
 // Kernels assume FTZ/DAZ is set on the calling thread (pq::DenormalGuard) but are correct without it.
+//
+// ---- Occupied lanes (SM.14) ---------------------------------------------------------------------------------
+// KernelArgs::laneMask: bit v = lane v of the voice group being run holds a voice (VoiceGroupIO::laneMask, the
+// engine's lane status), delivered only to kernels whose KernelInfo::readsLanes is set (the interpreter rewrites the
+// word per group, the JIT loads it from the image host's run record at the call); 0xFF everywhere else (1-lane calls,
+// global stages, tests and benches that call a kernel directly). A stateful per-lane kernel stops a lane whose bit is
+// clear (its voice is over: the lane is free until a note-on, which sets the bit in the block of its reset), so a
+// free lane costs the mask test, not the voice's own render (a looping sampler, a vocoder, live grains).
 
 #include <bit>
 #include <cstdint>
@@ -57,6 +65,7 @@ struct KernelArgs {
   uint16_t numOut = 0;               // number of outputs (only read by variadic atoms: demux)
   uint32_t splMask = 0;              // Spl bits of all inputs (only read by variadic atoms: mux); fixed-arity
                                      // kernels are template-specialised for their mask instead
+  uint32_t laneMask = 0xFFu;         // SM.14: occupied lanes of the group (only read by KernelInfo::readsLanes atoms)
 };
 
 using KernelFn = void (*)(const KernelArgs&) noexcept;

@@ -103,6 +103,9 @@ struct RegionRun {
   bool anyChecked = false;
   mutable bool rampDirty = false;
   uint32_t firstChecked = 0, numChecked = 0;
+  // SM.14: its records of kernels that read the group's occupied lanes (KernelInfo::readsLanes; into laneRecs_):
+  // their KernelArgs::laneMask is rewritten before the region runs for a group (voice stages only).
+  uint32_t firstLaneRec = 0, numLaneRec = 0;
 };
 
 struct OperandRef {  // element (frame t, lane l) = base[t·stride + l]; stride 0 = a pattern
@@ -175,6 +178,7 @@ public:
   std::vector<Swap> swaps_;          // TX.smooth
   std::vector<uint32_t> rampRecs_;   // TX.smooth: record indices, per region
   std::vector<uint32_t> rampChecked_;  // TX.smooth-fix1: the param_ramp records of non-static ramps, per region
+  std::vector<uint32_t> laneRecs_;   // SM.14: per voice region, its records that read the occupied lanes
   std::vector<BranchRun> branches_;  // TX.uniform-branch
   std::vector<uint8_t> guardOn_;     // TX.uniform-branch: per guard (2 per branch), whether it runs this block
   bool rampMode_ = false;          // TX.smooth-fix1: the stage being run is in its ramp mode (ImageHost::run)
@@ -196,6 +200,9 @@ public:
 
 private:
   void runRegion(const RegionRun& r, uint32_t frames) noexcept;
+  void setLanes(const RegionRun& r, uint32_t mask) noexcept {  // RT-safe: SM.14
+    for (uint32_t q = r.firstLaneRec; q < r.firstLaneRec + r.numLaneRec; ++q) recs_[laneRecs_[q]].args.laneMask = mask;
+  }
   void prepareRamps(const RegionRun& r, uint32_t frames) noexcept;
   // In a Loop region, a record in ramp mode reads its ramps from frame t (after relocate()).
   void relocateRamps(const Rec& rec, uint32_t t) noexcept {  // RT-safe
@@ -558,7 +565,11 @@ void InterpretedImage::process(ProcessContext& ctx) noexcept {  // RT-safe
         rampMode_ = ramp;
         const StageRegions& st = stages_[k];
         const uint32_t base = st.firstRegion + gi * st.numRegions;
-        for (uint32_t r = base; r < base + st.numRegions; ++r) runRegion(regions_[r], frames);
+        const uint32_t lanes = host_.runCtx().laneMask;
+        for (uint32_t r = base; r < base + st.numRegions; ++r) {
+          setLanes(regions_[r], lanes);
+          runRegion(regions_[r], frames);
+        }
       });
 }
 
@@ -588,8 +599,10 @@ void InterpretedImage::runMetered(ProcessContext& ctx) noexcept {  // RT-safe
         rampMode_ = ramp;
         const StageRegions& st = stages_[k];
         const uint32_t base = st.firstRegion + gi * st.numRegions;
+        const uint32_t lanes = host_.runCtx().laneMask;
         for (uint32_t r = base; r < base + st.numRegions; ++r) {
           const uint64_t t0 = __rdtsc();
+          setLanes(regions_[r], lanes);
           runRegion(regions_[r], frames);
           host_.addRegionCycles(regions_[r].schedRegion, __rdtsc() - t0);
         }
@@ -716,6 +729,8 @@ private:
         rec.args.state = const_cast<host::SendInfo*>(host().sendInfo(i));
         break;
     }
+    if (voiceStage_ && op.kind == g::OpKind::Kernel && op.lanes == 8 && dsp::kernelInfo(op.kernel).readsLanes)
+      im.laneRecs_.push_back(static_cast<uint32_t>(im.recs_.size()));  // SM.14 (a solve body's records too)
     im.recs_.push_back(rec);
     return true;
   }
@@ -831,6 +846,8 @@ private:
           rr.subBlock = reg.subBlock;
           rr.factor = reg.factor;
           rr.firstRec = static_cast<uint32_t>(im.recs_.size());
+          voiceStage_ = voice;
+          rr.firstLaneRec = static_cast<uint32_t>(im.laneRecs_.size());
           for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
             if (!makeRec(i, gi, loop, control)) return false;
           rr.numRec = static_cast<uint32_t>(im.recs_.size()) - rr.firstRec;
@@ -875,6 +892,7 @@ private:
             }
             rr.numItems = static_cast<uint32_t>(im.items_.size()) - rr.firstItem;
           }
+          rr.numLaneRec = static_cast<uint32_t>(im.laneRecs_.size()) - rr.firstLaneRec;
           im.regions_.push_back(rr);
         }
       }
@@ -1005,6 +1023,7 @@ private:
   std::unique_ptr<InterpretedImage> img_;
   Error err_;
   uint32_t G_ = 1;
+  bool voiceStage_ = false;  // SM.14: the stage whose records are being made is a voice stage
   std::vector<PendingSite> pending_;
   uint32_t maxN_ = 0;
   uint32_t maxAdIn_ = 0, maxAdOut_ = 0;

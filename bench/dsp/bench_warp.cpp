@@ -28,6 +28,10 @@
 //                                     measured after priming: ns/frame of all 16 (per voice: / 16)
 //   sampler_warp/complex +18/31 16v   the same at 2^(18/31) (the vocoder runs 1.5× the frames, the read resamples)
 //   sampler_warp/complexPro 16v       Complex Pro at 2^(18/31), Formants 100
+// SM.14 (KernelArgs::laneMask: freed lanes stop):
+//   sampler_warp/complex 16v released 14   the 16 primed voices, then 14 of them freed (one held per group, the groups
+//                                          still run): ns/frame of the two calls. Before SM.14 a freed lane kept its
+//                                          vocoder running, i.e. this cost the "complex 16v" row.
 // SM.6 (the granular atom, pq/dsp/granular.h), the same slot, 64-frame blocks, two 8-lane groups (16 voices):
 //   granular/loop 16v×16g     Loop, 16 grains per voice live (density 200 Hz × 80 ms), rate 1.5: ns/frame of all 16
 //   granular/cloud 16v×16g    Cloud with sprays (time, pitch ± 3 st, pan)
@@ -203,7 +207,8 @@ struct SamplerSource {
   }
 };
 
-void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide, uint32_t lanes, uint32_t groups = 1) {
+void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide, uint32_t lanes, uint32_t groups = 1,
+                      uint32_t measuredMask = 0xFFu) {
   static SamplerSource src;
   constexpr uint32_t kN = 64, kIn = 16;
   std::vector<pq::AlignedBuffer<float>> in;
@@ -244,6 +249,7 @@ void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide,
   uint64_t calls = 0;
   if (complex)
     for (uint32_t b = 0; b < 48000 / kN; ++b) runGroups();  // 1 s: every voice primed and crossed to the vocoder
+  args.laneMask = measuredMask;  // SM.14: the occupied lanes while measured (all: the default)
   c.measure(
       [&] {
         if (glide) {  // per-sample rates: a ramp 1 → 1.5 over 1 s, repeated
@@ -330,6 +336,8 @@ void addWarpBenches(pq::bench::Runner& runner) {
              [fifth31](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, fifth31, false, 8, 2); });
   runner.add("sampler_warp/complexPro 16v",
              [fifth31](pq::bench::Context& c) { samplerWarpBench(c, 4.0f, fifth31, false, 8, 2); });
+  runner.add("sampler_warp/complex 16v released 14",
+             [](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, 1.0f, false, 8, 2, 0x01u); });
   runner.add("warp/beats", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Beats, 1.0, false); });
   runner.add("warp/beats +3 st", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Beats, std::exp2(3.0 / 12.0), false); });
   runner.add("warp/tones", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Tones, 1.0, false); });

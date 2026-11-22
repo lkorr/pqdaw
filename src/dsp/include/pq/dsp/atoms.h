@@ -432,6 +432,7 @@ struct KernelInfo {
   uint32_t stateSize;     // sizeof the state struct (0: stateless; DelayState: header only, see stateBytes)
   Resource resource;
   bool inPlaceOk;         // output 0 may alias an input (element-wise stateless atoms)
+  bool readsLanes = false;  // SM.14: reads KernelArgs::laneMask (stateful per-lane kernels that stop a freed lane)
 };
 
 const KernelInfo& kernelInfo(Atom a) noexcept;  // RT-safe

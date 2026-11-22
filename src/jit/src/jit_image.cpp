@@ -209,6 +209,10 @@ Result<std::unique_ptr<JitImage>> buildHost(const g::Schedule& s, uint32_t maxBl
       case g::OpKind::Kernel: {
         const dsp::Resource r = dsp::kernelInfo(op.kernel).resource;
         if (r != dsp::Resource::None) L.opInfo[i] = tab.slot(host.resource(r, op.resource));
+        if (op.lanes == 8 && dsp::kernelInfo(op.kernel).readsLanes && L.runSlot == g::kNone) {  // SM.14
+          L.runSlot = tab.slot(&host.runCtx());
+          L.runSlotB = tab.slot(&host.runCtxB());
+        }
         break;
       }
       case g::OpKind::Reduce:

@@ -78,8 +78,9 @@ static_assert(offsetof(dsp::KernelArgs, in) == 0 && offsetof(dsp::KernelArgs, ou
               offsetof(dsp::KernelArgs, state) == 16 && offsetof(dsp::KernelArgs, resource) == 24 &&
               offsetof(dsp::KernelArgs, frames) == 32 && offsetof(dsp::KernelArgs, numIn) == 36 &&
               offsetof(dsp::KernelArgs, numOut) == 38 && offsetof(dsp::KernelArgs, splMask) == 40 &&
-              sizeof(dsp::KernelArgs) == 48,
+              offsetof(dsp::KernelArgs, laneMask) == 44 && sizeof(dsp::KernelArgs) == 48,
               "the IR's KernelArgs struct type mirrors this layout");
+static_assert(offsetof(engine::host::RunCtx, laneMask) == 0, "SM.14: the generated code loads the run record's first word");
 static_assert(offsetof(dsp::PhasorState, incScale) == 32 && offsetof(dsp::PhasorState, halfSr) == 40);
 static_assert(offsetof(dsp::FlipFlopState, prevClk) == 32 && offsetof(dsp::SampleHoldState, prevTrig) == 32);
 static_assert(offsetof(dsp::CounterState, prevUp) == 32 && offsetof(dsp::CounterState, prevDown) == 64);
@@ -143,7 +144,7 @@ public:
     i64_ = llvm::Type::getInt64Ty(C_);
     ptr_ = llvm::PointerType::getUnqual(C_);
     void_ = llvm::Type::getVoidTy(C_);
-    kargsTy_ = llvm::StructType::get(C_, {ptr_, ptr_, ptr_, ptr_, i32_, i16_, i16_, i32_});
+    kargsTy_ = llvm::StructType::get(C_, {ptr_, ptr_, ptr_, ptr_, i32_, i16_, i16_, i32_, i32_});
     if (o.contract) {
       fmf_.setAllowContract(true);
       fmf_.setApproxFunc(true);
@@ -1421,6 +1422,13 @@ private:
       fnV = B_.CreateSelect(opActive, tabLoad(fnRamp), fnV);
     }
     B_.CreateStore(splV, B_.CreateStructGEP(kargsTy_, kargs_, 7));
+    if (op.kind == g::OpKind::Kernel && dsp::kernelInfo(op.kernel).readsLanes) {
+      // SM.14: the group's occupied lanes, from the host's run record (ImageHost::runCtx; 0xFF outside a voice).
+      Value* lanes = c32(0xFFu);
+      if (voice_ && op.lanes == 8)
+        lanes = B_.CreateAlignedLoad(i32_, tabSlot(h ? L_.runSlotB : L_.runSlot), llvm::Align(4));
+      B_.CreateStore(lanes, B_.CreateStructGEP(kargsTy_, kargs_, 8));
+    }
     llvm::FunctionType* ty = llvm::FunctionType::get(void_, {ptr_}, false);
     callPtr(ty, fnV, {kargs_});
   }

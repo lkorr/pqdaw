@@ -463,6 +463,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_warp_kernels.cpp  # T6.3: the warp kernels (Hann OLA, anchored ramps, best lag, jitter)
     dsp/test_stretch_pool.cpp  # T6.5: signalsmith-stretch allocation-free (the spike), claims, determinism, latency
     dsp/test_granular.cpp  # SM.6: the granular atom (reference, call-length identity, silence, the grain tap, RtScope)
+    dsp/test_lane_mask.cpp  # SM.14: freed lanes stop in sampler_warp / Complex / granular / sample_read (work counters, fresh retrigger, RtScope)
     dsp/test_sampler_stretch.cpp  # SM.5: the Sampler's Complex voice (Tones onset, pitch < 0.5 ¢, content timing, call-length identity, ownership, RtScope)
     dsp/test_warp_voice.cpp  # SM.4: the Sampler's warp voice (markers law, tempo drift 0, Tones pitch, glides continuous, call-length identity)
     dsp/test_atoms_memory_gen.cpp

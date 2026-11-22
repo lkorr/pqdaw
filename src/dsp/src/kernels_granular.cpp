@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <numbers>
 
@@ -60,6 +61,7 @@ using Entry = SampleSlot::Entry;
 
 constexpr uint32_t kVoiceWords = (static_cast<uint32_t>(sizeof(GranVoice)) + 3u) / 4u;
 static_assert(kVoiceWords <= kGranVoiceWords, "GranVoice outgrew GranularState");
+constexpr uint32_t kActiveWord = static_cast<uint32_t>(offsetof(GranVoice, active)) / 4u;  // SM.14: the lane's stop
 constexpr uint32_t kDefaultHarmonics[] = {1, 1, 2, 1, 3, 2, 3, 1, 4, 1, 5, 1};  // (n, d) pairs
 
 void loadVoice(const GranularState& st, uint32_t l, GranVoice& v) noexcept {  // RT-safe
@@ -211,7 +213,15 @@ struct GranularK {
     GrainTapRecord* rec = tap != nullptr ? tap->begin(st.group) : nullptr;
     uint32_t recCount = 0;
     alignas(32) float l[kGrainGrid], r[kGrainGrid];
+    const uint32_t freeLanes = W == 8 ? ~a.laneMask & 0xFFu : 0u;  // SM.14 (kernel.h "Occupied lanes")
     for (uint32_t lane = 0; lane < W; ++lane) {
+      if (((freeLanes >> lane) & 1u) != 0) {  // SM.14: a free lane: the voice and its grains stop
+        st.v[kActiveWord][lane] = 0;
+        for (uint32_t q = 0; q < kGrainsMax; ++q) st.len[q][lane] = 0;
+        for (uint32_t i = 0; i < frames; ++i)
+          a.out[0][i * W + lane] = a.out[1][i * W + lane] = a.out[2][i * W + lane] = a.out[3][i * W + lane] = 0.0f;
+        continue;
+      }
       GranVoice v;
       loadVoice(st, lane, v);
       const Entry* e = newest;
