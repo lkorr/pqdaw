@@ -946,6 +946,6 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SM.8 Grid drop on any band + auto-wire + replace** *(merged 2195d554; Q?-SM.8-a; an unvoiced Sampler opens its gate while Position is driven)* (plan SM.8)
 - [x] **SM.9 Oval face shape + fold panel mechanism** 👁 *(merged e114c5e0; 6 new goldens; REVIEW; open: no Fit toggle in the panel editor, Device view frame not re-laid out on fold, embedded child panel folds not saved)* (plan SM.9)
 - [x] **SM.10 Closed face** 👁 *(merged 04d3cd86; Q?-SM.10-a; REVIEW; 6 new goldens; chevron opens the SM.3 tabbed panel until SM.11; no Filter / LFO switches (no panel binding for block on/off) → SM.11; knobs are the Classic set in every mode until SM.6)* (plan SM.10)
-- [ ] **SM.11 Expanded panel + waveform editor** 👁 (plan SM.11)
-- [ ] **SM.12 Slicing + Slice to Notes** (plan SM.12)
+- [x] **SM.11 Expanded panel + waveform editor** 👁 *(merged 9eb94271; Q?-SM.11-a; REVIEW; 6 new goldens; general fold additions (parent / section / when / toggle), `@active` block on/off binding; no Granular section / Gran cell yet → SM.13)* (plan SM.11)
+- [x] **SM.12 Slicing + Slice to Notes** *(merged 0b2fa202; Q?-SM.12-a; transient cache format v2 (onset strengths); Slice to Notes onsets within 1 sample at 97 BPM)* (plan SM.12)
 - [ ] **SM.13 Granular section + grain dots** 👁 (plan SM.13)

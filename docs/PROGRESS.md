@@ -1359,3 +1359,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected -Slow 90/90 (worker, on e5cedb78's parent); clip warp renders bit-identical to 22 FNV hashes from 939bcf57; test_warp_voice (drift 0 over 64 bars at 120 → 97 BPM, glide worst step 1.00× slope, block-size invariance); meta sampler 11/11 (interp == JIT, RtScope 10k blocks). Merge with AP.11 overlaps in docs only; release pqdaw built.
 - Perf / CPU-efficiency check (ship, bench/RESULTS.md): Tones 30 ns / voice-frame (clip 25), +3 st 32.6, glide 34.5; Beats 10.5 (clip closed form 1.09), Texture 15.2 (clip 1.08); per-sample geometry is the cost of glides.
 - Notes/blockers: Q?-SM.4-a (Slice ignores stretch modes; ping-pong / loop fade / One-Shot fades not in stretch modes; cubic not sinc; tempo per block).
+
+## 2026-11-21 · SM.11 · task/SM.11-expanded-panel (merged 9eb94271)
+- Did: chevron / double-click grows the Sampler to 340 wide: mode row [Classic | 1-Shot | Slice], Root field (Hz or nearest tuning note + cents, both typeable), `sampleedit` waveform editor (Start / End, loop + fade shade, fade ramps, slice lines, seconds / beats ruler, warp markers in stretch modes, voice playheads), folds Sample / Warp / Slices / Envelope / Filter / LFO with On switches. General: `doc::foldLayout` parent / section / `when` / toggle, fit width; `@active` Setting binding = on / off for any block.
+- Verified: pq_tests_views default tier before + after rebase; real-dispatch tests (expand, mode, each drag one undo step, root Hz / identity, switches) + foldLayout units; 6 new goldens (sampler-panel-classic / -oneshot / -slice, 1× + 2×), none moved.
+- Perf / CPU-efficiency check: UI only; editor columns cached by sample + overview; sections outside the clip skipped.
+- Notes/blockers: Q?-SM.11-a; no Granular section / Gran cell / grain region (SM.6 params not on main; SM.13); not checked live.
+
+## 2026-11-21 · SM.12 · task/SM.12-slicing (merged 0b2fa202)
+- Did: `ops::sliceSampler` (Transient with sensitivity over stored onset strengths, Beat 1/16 … 4 bars, Region n, Manual; data writes, no recompile); `media::Transients` keeps strengths (cache format v2); `ops::sliceToNotes` (clip at the start marker, beats with warp on else seconds via the tempo map, keys 36 + n via new `DegreeKeyMap::degreeOf`); Slices-section row + block context menu item.
+- Verified: -Affected after rebase 34/37 → document + views bugs fixed (document 327/327, views default tier), playback_s0 JI lowering bound flake passes on re-run; Slice to Notes playback test (97 BPM, onsets within 1 sample); real-dispatch slicing test.
+- Perf / CPU-efficiency check: sensitivity filters cached onsets, never re-detects; no audio-thread change.
+- Notes/blockers: Q?-SM.12-a; transient slicing waits for the analysis; context-menu item untested.
