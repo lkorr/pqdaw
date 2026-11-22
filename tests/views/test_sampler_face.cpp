@@ -432,11 +432,11 @@ TEST_CASE("sampler panel (SM.11, real dispatch): a double-click on the closed wa
   CHECK_FALSE(u.face().shown(id("fold", "Slices")));  // Classic: no Slices section
   CHECK(u.foldState(elementOf(*u.ctx.doc(), u.ids.group, "fold", "Warp")->id) == std::nullopt);  // folded by default
   const float hClassic = u.node().h;
-  // The mode row: Slice (one undo step) — the Slices section appears, the loop controls give way to the fades.
+  // The mode row (Classic | 1-Shot | Slice | Gran, SM.6): Slice (one undo step) — the Slices section appears, the loop controls give way to the fades.
   const panel::GroupPanelFace& f = u.face();
   const Rect tabs = f.element(id("tabs")).rect();
   const Node& n = u.node();
-  u.d.click(u.view().canvas().toDevice({n.x + tabs.x0 + tabs.width() * (2.5f / 3.0f), n.y + (tabs.y0 + tabs.y1) * 0.5f}));
+  u.d.click(u.view().canvas().toDevice({n.x + tabs.x0 + tabs.width() * (2.5f / 4.0f), n.y + (tabs.y0 + tabs.y1) * 0.5f}));
   u.d.step();
   CHECK(u.ctx.store().history().cursor() == h0 + 1);
   CHECK(std::lround(engineOf(*u.ctx.doc(), u.ids.engine).setting("mode")->value) == 2);

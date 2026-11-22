@@ -210,7 +210,7 @@ struct SamplerOptions {
   uint32_t mode = 0;                           // meta::SamplerMode
   bool active = true;
 };
-inline constexpr const char* kSamplerModes = "Classic|1-Shot|Slice";  // SM.11: the mode row (the engine's mode)
+inline constexpr const char* kSamplerModes = "Classic|1-Shot|Slice|Gran";  // SM.11: the mode row (the engine's mode; SM.6: + Granular)
 BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o = {}, SamplerRoles* roles = nullptr);
 
 // ---- GU.10: the stock devices as group presets (docs/plans/GU.md "One hierarchy") ----

@@ -2563,7 +2563,9 @@ Context: SM.6 (docs/plans/SM.md "Semantics" Granular, "SM.6"). Choices (most rev
 1. **Granular is a fourth Sampler mode** (`mode` 3), with settings granMode (Classic / Loop / Cloud, default Loop),
    grains (1 … 32, default 16), harmonic, shape, and params grainPosition, scan (−4 … 4 × the file's speed, default
    1), grainSize (5 ms … 1 s, default 80 ms), density (1 … 400 Hz), sprayTime (≤ 0.5 s), sprayPitch (≤ 24 st),
-   sprayPan, freeze. Warp, loop and trigger do not apply; the voice ends as Classic's (the gate falls).
+   sprayPan, freeze. Warp, loop and trigger do not apply; the voice ends as Classic's (the gate falls). The panel's mode
+   row gained "Gran" (kSamplerModes: the tabs map items onto the setting's range, so the row must list all four; the
+   six sampler-panel goldens moved in that row only); its Granular section is SM.13's.
 2. **The GrainTap rides on the SampleSlot** (one resource per atom, as SM.5's stretchers): the sampler requests
    `ResourceKind::GrainTap` (index 2) in Granular; the link makes the tap and hangs it on the instance's slot.
 3. **A grain's rate and mip level are fixed at its spawn** (a glide moves later grains); Classic reads at the transpose
