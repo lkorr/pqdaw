@@ -322,6 +322,12 @@ void SyntheticVoices::freeze() {
   ++serial_;
 }
 
+uint32_t SyntheticVoices::grains(std::span<FaceGrain> out) const {
+  const size_t n = std::min(out.size(), grains_.size());
+  std::copy_n(grains_.begin(), n, out.begin());
+  return static_cast<uint32_t>(n);
+}
+
 bool SyntheticVoices::live() const noexcept {
   return std::any_of(voices_.begin(), voices_.end(), [](const Voice& v) { return v.hz != 0.0; });
 }

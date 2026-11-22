@@ -30,6 +30,17 @@
 //           the track's tuning and the cents left over ("C3 +2.0¢", MetaTarget::pitchName); click it to type Hz
 //           ("440", "440 Hz") or an identity ("A3", "7\31 3 -5¢"), Return commits (one step: root and rootText
 //           together); the Hz | ID cells switch the display (an identity keeps the root exactly where it is).
+//
+// SM.13 (docs/plans/SM.md "Granular", "Face"): in Gran mode (mode 3) —
+//   region  the GRAIN REGION on the closed well and on the editor's waveform: from Position (0 … 1 of Start … End) one
+//           grain size wide, the spray time shaded either side; drag its body to move Position, its right edge to set
+//           the grain size (one undo step per drag)
+//   grains  a glowing dot per live grain (the engine's grain tap, request 2, through the voice reader: grains()) where it
+//           reads, its size and glow by its window's amplitude, its height by its pan, in place of the playheads; the
+//           reader holds the tap only while the face is shown (hidden: no reader there, the kernel's write is one load)
+//   ratios  `sampleharm` (kHarm, 328 × 24): the harmonic grains' ratio list (the data's `harmonics`, (n, d) pairs; none:
+//           1, 2, 3/2, 3, 4, 5) as chips: click one to type n or n/d (whole numbers 1 … 65536; Return commits, one undo
+//           step), its × removes it, + adds the next whole number; data writes, never a recompile
 
 #include <algorithm>
 #include <array>
@@ -62,6 +73,7 @@ constexpr Rect kWell{24.0f, 8.0f, 128.0f, 42.0f};  // the waveform's well (the p
 constexpr float kInset = 3.0f;                     // the waveform inside the well
 constexpr float kFade = 0.08f;
 constexpr int kEllipseSteps = 64;
+constexpr size_t kMaxGrainDots = 512;  // SM.13: the grains read per poll (TapVoices::kMaxGrains)
 
 // SM.11: the expanded editor's and the root field's sections (face units; the panel's `sampleedit` / `sampleroot`).
 constexpr Rect kEditor{0.0f, 200.0f, 328.0f, 320.0f};
@@ -75,6 +87,15 @@ constexpr Rect kRoot{0.0f, 330.0f, 120.0f, 346.0f};
 constexpr Rect kSlicing{0.0f, 360.0f, 328.0f, 390.0f};
 constexpr float kSliceRowY0 = 361.0f, kSliceRowY1 = 375.0f;
 constexpr Rect kSliceAmount{208.0f, 361.0f, 262.0f, 375.0f}, kSliceNotes{266.0f, 361.0f, 327.5f, 375.0f};
+// SM.13: the harmonic ratio chips (`sampleharm`, 328 × 24): two rows of kHarmPerRow chips beside the label.
+constexpr Rect kHarm{0.0f, 400.0f, 328.0f, 424.0f};
+constexpr float kHarmX0 = 40.0f, kHarmChipW = 28.0f, kHarmGap = 2.0f, kHarmX = 8.0f;  // kHarmX: the × at a chip's right
+constexpr size_t kHarmPerRow = 9, kHarmMax = 2 * kHarmPerRow - 1;                       // (+ takes the last cell)
+Rect harmCell(size_t i) noexcept {
+  const float x0 = kHarmX0 + static_cast<float>(i % kHarmPerRow) * (kHarmChipW + kHarmGap);
+  const float y0 = kHarm.y0 + 0.5f + (i >= kHarmPerRow ? 12.0f : 0.0f);
+  return {x0, y0, x0 + kHarmChipW, y0 + 11.0f};
+}
 constexpr const char* kSliceByNames[4] = {"Manual", "Transient", "Beat", "Region"};  // (doc::ops::SliceBy order)
 constexpr int kSliceCellOrder[4] = {1, 2, 3, 0};  // drawn Transient | Beat | Region | Manual
 constexpr double kSliceBeats[7] = {0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0};
@@ -87,6 +108,8 @@ constexpr Rect kRootText{0.5f, 330.5f, 82.0f, 345.5f}, kRootHz{84.0f, 330.5f, 10
 enum EditPart : int32_t {
   kPStart = 0, kPEnd, kPLoopStart, kPLoopEnd, kPLoop, kPWave, kPRuler, kPRootText, kPRootHz, kPRootId,
   kPSliceBy0 = 20, kPSliceAmount = 24, kPSliceNotes = 25,  // SM.12 (kPSliceBy0 + the drawn cell)
+  kPGrain = 30, kPGrainSize = 31, kPHarmAdd = 32,          // SM.13: the grain region (body, right edge), + a ratio
+  kPHarm0 = 40, kPHarmX0 = 70,                              // SM.13: ratio chip i (its text, its ×)
   kPSlice0 = 1000, kPMarker0 = 100000,
 };
 bool within(const Rect& r, Vec2 l) noexcept { return l.x >= r.x0 && l.x <= r.x1 && l.y >= r.y0 && l.y <= r.y1; }
@@ -194,7 +217,13 @@ public:
     if (cols_.sample == 0)
       p.text({(kWell.x0 + kWell.x1) * 0.5f, (kWell.y0 + kWell.y1) * 0.5f - 6.0f}, "drop a sample", 6.0f, ui::mulAlpha(th.face.ink, 0.55f));
     paintRegion(p, th);
-    if (!env.ghost && !shown_v_.empty()) {
+    const bool gran = granular();
+    if (gran) {  // SM.13: the grain region over the well, the grains in it
+      const Lane well = wellLane();
+      paintGrainRegion(p, th, well, kWell.y0 + 1.5f, kWell.y1 - 1.5f);
+      if (!env.ghost) paintGrains(p, th, well, kWell.y0 + 1.5f, kWell.y1 - 1.5f, 1.0f);
+    }
+    if (!env.ghost && !gran && !shown_v_.empty()) {
       const float y0 = kWell.y0 + 1.5f, y1 = kWell.y1 - 1.5f;
       p.beginGlow();
       for (const Shown& s : shown_v_) {
@@ -216,14 +245,20 @@ public:
     if (!env.ghost && meetsClip(p, kEditor)) paintEditor(p, th, now);  // SM.11
     if (!env.ghost && meetsClip(p, kRoot)) paintRoot(p, th);
     if (!env.ghost && meetsClip(p, kSlicing)) paintSlicing(p, th);
+    if (!env.ghost && meetsClip(p, kHarm)) paintHarm(p, th);  // SM.13
   }
 
   void liveRects(std::vector<Rect>& out) const override { out.push_back({kWell.x0 - 6.0f, kWell.y0 - 4.0f, kWell.x1 + 6.0f, kWell.y1 + 4.0f}); }
-  bool animating() const noexcept override { return !shown_v_.empty(); }
+  bool animating() const noexcept override { return !shown_v_.empty() || grainCount_ != 0; }
 
   // ---- interaction: the closed face is the frame only (the panel has its controls); SM.11: the editor and the root ----
   int32_t hitTest(Vec2 l, float ppu) const noexcept override {
+    if (within(kWell, l) && granular()) {  // SM.13: the grain region on the closed well
+      const int32_t g = grainPart(wellLane(), l.x, ppu);
+      if (g != kNone) return g;
+    }
     if (within(kEditor, l)) return editorPart(l, ppu);
+    if (within(kHarm, l)) return harmPart(l);  // SM.13
     if (within(kRoot, l)) return within(kRootHz, l) ? kPRootHz : within(kRootId, l) ? kPRootId : kPRootText;
     if (within(kSlicing, l)) {  // SM.12
       for (int k = 0; k < 4; ++k)
@@ -243,17 +278,26 @@ public:
   }
   bool onKey(const ui::KeyEvent& e) override;
   bool onText(const ui::TextEvent& e) override {
+    if (harmEdit_ >= 0) {  // SM.13: a ratio takes digits and one '/'
+      for (const char c : e.text())
+        if ((c >= '0' && c <= '9') || (c == '/' && harmTyped_.find('/') == std::string::npos)) harmTyped_.push_back(c);
+      return true;
+    }
     if (!typing_) return false;
     typed_ += e.text();
     return true;
   }
-  bool wantsText() const noexcept override { return typing_; }
+  bool wantsText() const noexcept override { return typing_ || harmEdit_ >= 0; }
   void focusLost() override {
     if (typing_) commitRoot();
+    if (harmEdit_ >= 0) commitHarm();
   }
   ui::Cursor cursor(int32_t part) const noexcept override {
     if (part == kPStart || part == kPEnd || part == kPLoopStart || part == kPLoopEnd || part >= kPSlice0) return ui::Cursor::ResizeEW;
-    if (part == kPLoop) return ui::Cursor::Move;
+    if (part == kPLoop || part == kPGrain) return ui::Cursor::Move;
+    if (part == kPGrainSize) return ui::Cursor::ResizeEW;
+    if (part >= kPHarm0 && part < kPHarm0 + static_cast<int32_t>(kHarmMax)) return ui::Cursor::Text;
+    if (part == kPHarmAdd || (part >= kPHarmX0 && part < kPHarmX0 + static_cast<int32_t>(kHarmMax))) return ui::Cursor::Pointer;
     if (part == kPSliceAmount) return ui::Cursor::ResizeNS;
     if (part >= kPSliceBy0 && part <= kPSliceNotes) return ui::Cursor::Pointer;
     if (part == kPRootText) return ui::Cursor::Text;
@@ -264,7 +308,18 @@ public:
     if (part == kFrame || part == kNone) {
       title = "Sampler";
       body = cols_.sample == 0 ? "Drop an audio file on it to load a sample."
+             : granular()      ? "The sample from Start to End; each live grain glows where it reads, sized by its level."
                                : "The sample from Start to End; each sounding voice's playhead glows where it reads.";
+      return;
+    }
+    if (part >= kPHarm0 && part < kPHarm0 + static_cast<int32_t>(kHarmMax)) {
+      title = "Harmonic Ratio";
+      body = "Each new grain takes the next ratio of the played pitch. Click to type n or n/d (whole numbers).";
+      return;
+    }
+    if (part >= kPHarmX0 && part < kPHarmX0 + static_cast<int32_t>(kHarmMax)) {
+      title = "Remove Ratio";
+      body = "Click: take this ratio out of the list.";
       return;
     }
     switch (part) {
@@ -292,6 +347,9 @@ public:
         body = "A note clip at the start marker: one note per slice, in order and timing, on its slice key.";
         return;
       case kPRootId: title = "Root as Identity"; body = "Show the root as the nearest pitch of the track's tuning and its cents."; return;
+      case kPGrain: title = "Grain Position"; body = "Drag: where in Start \xE2\x80\xA6 End the grains read (Position)."; return;
+      case kPGrainSize: title = "Grain Size"; body = "Drag: how long each grain is."; return;
+      case kPHarmAdd: title = "Add Ratio"; body = "Click: add the next whole-number ratio to the list."; return;
       default: break;
     }
     if (part >= kPSliceBy0 && part < kPSliceBy0 + 4) {
@@ -312,8 +370,9 @@ public:
     MetaFace::describe(part, title, body);
   }
 
-  // (tests) the playheads shown and the waveform's columns
+  // (tests) the playheads shown and the waveform's columns; SM.13: the grains shown
   size_t playheads() const noexcept { return shown_v_.size(); }
+  size_t grainDots() const noexcept { return grainCount_; }
 
 protected:
   bool voicesPolled(bool changed) override {
@@ -348,7 +407,7 @@ protected:
     bool fading = shown_v_.size() != before;
     for (const Shown& s : shown_v_) fading = fading || s.dying || now - s.born < kFade;
     if (shown_v_.size() > 2 * kMaxVoices) shown_v_.erase(shown_v_.begin(), shown_v_.end() - 2 * kMaxVoices);
-    return changed || fading;
+    return pollGrains() || changed || fading;
   }
 
 private:
@@ -496,12 +555,54 @@ private:
   Slicing slicing() const;
   std::string amountText(const Slicing& sl) const;
   void refreshWhole() const;
+  // ---- SM.13: Granular ----
+  // A horizontal map of sample fractions u0 … u1 onto face x0 … x1 (the closed well: Start … End; the editor: 0 … 1).
+  struct Lane {
+    float x0, x1;
+    double u0, u1;
+    float x(double u) const noexcept {
+      const double t = u1 > u0 ? (u - u0) / (u1 - u0) : 0.0;
+      return x0 + static_cast<float>(std::clamp(t, 0.0, 1.0)) * (x1 - x0);
+    }
+    double u(float xx) const noexcept {
+      return u0 + static_cast<double>(std::clamp((xx - x0) / std::max(x1 - x0, 1e-3f), 0.0f, 1.0f)) * (u1 - u0);
+    }
+  };
+  Lane wellLane() const {
+    refresh();
+    const double s = std::min(cols_.start, cols_.end), e = std::max(cols_.start, cols_.end);
+    return {kWell.x0 + kInset, kWell.x1 - kInset, s, e > s ? e : s + 1e-6};
+  }
+  static Lane editorLane() noexcept { return {kEdX0, kEdX1, 0.0, 1.0}; }
+  // Where the grains read: [a, b) of the sample (Position in Start … End, one grain size wide) and the spray time either
+  // side (fractions of the sample; the sizes need its length: unknown, the region is a hairline).
+  struct GrainSpan {
+    double a = 0.0, b = 0.0, spray = 0.0, seconds = 0.0;
+  };
+  bool granular() const { return std::lround(target().setting(meta::kSmpMode)) == static_cast<long>(SamplerMode::Granular); }
+  GrainSpan grainSpan() const;
+  int32_t grainPart(const Lane& lane, float x, float ppu) const noexcept;
+  void paintGrainRegion(ui::FacePainter& p, const ui::Theme& th, const Lane& lane, float y0, float y1) const;
+  void paintGrains(ui::FacePainter& p, const ui::Theme& th, const Lane& lane, float y0, float y1, float k) const;
+  bool pollGrains();
+  // The ratio list ((n, d) pairs: the data's, else the default), the chips' part at l, their paint, a typed ratio.
+  std::vector<std::pair<uint32_t, uint32_t>> harmonics() const;
+  void writeHarmonics(const std::vector<std::pair<uint32_t, uint32_t>>& h);
+  int32_t harmPart(Vec2 l) const;
+  void paintHarm(ui::FacePainter& p, const ui::Theme& th);
+  void commitHarm();
   std::string rootLabel() const;
   void commitRoot();
   void editFloats(const char* field, std::vector<float> v);
   void dragTo(float x);
 
   std::vector<Shown> shown_v_;
+  std::vector<FaceGrain> grainBuf_;  // SM.13: the live grains of the last poll (grainCount_ of them)
+  uint32_t grainCount_ = 0;
+  bool dragWell_ = false;            // SM.13: the grain drag began on the closed well (its lane), else on the editor
+  double grainGrab_ = 0.0;           // SM.13: the pointer's offset from the region's start (a body drag)
+  int32_t harmEdit_ = -1;            // SM.13: the ratio being typed (its index)
+  std::string harmTyped_;
   mutable Whole whole_;
   int32_t drag_ = kNone;   // the part being dragged
   double grab_ = 0.0;      // kPLoop: the pointer's offset from the loop's start (0 … 1)
@@ -536,7 +637,7 @@ SamplerFace::Geometry SamplerFace::geometry() const {
   g.fadeIn = t.value(meta::kSmpFadeIn);
   g.fadeOut = t.value(meta::kSmpFadeOut);
   g.sampleBpm = std::max(1.0, t.value(meta::kSmpSampleBpm));
-  g.mode = static_cast<SamplerMode>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpMode))), 0, 2));
+  g.mode = static_cast<SamplerMode>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpMode))), 0, 3));
   g.warp = static_cast<SamplerWarp>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpWarp))), 0, 6));
   g.loop = g.mode == SamplerMode::Classic && std::lround(t.setting(meta::kSmpLoop)) != 0;
   const meta::DataPtr d = t.data();
@@ -545,14 +646,16 @@ SamplerFace::Geometry SamplerFace::geometry() const {
   return g;
 }
 
-bool SamplerFace::slicesShown() const {
+bool SamplerFace::slicesShown() const {  // (Granular warps nothing: SM.13)
   const MetaTarget& t = target();
-  return std::lround(t.setting(meta::kSmpMode)) == static_cast<long>(SamplerMode::Slice) ||
-         std::lround(t.setting(meta::kSmpWarp)) == static_cast<long>(SamplerWarp::Beats);
+  const long mode = std::lround(t.setting(meta::kSmpMode));
+  return mode == static_cast<long>(SamplerMode::Slice) ||
+         (mode != static_cast<long>(SamplerMode::Granular) && std::lround(t.setting(meta::kSmpWarp)) == static_cast<long>(SamplerWarp::Beats));
 }
 bool SamplerFace::markersShown() const {
   const MetaTarget& t = target();
-  return std::lround(t.setting(meta::kSmpMode)) != static_cast<long>(SamplerMode::Slice) &&
+  const long mode = std::lround(t.setting(meta::kSmpMode));
+  return mode != static_cast<long>(SamplerMode::Slice) && mode != static_cast<long>(SamplerMode::Granular) &&
          std::lround(t.setting(meta::kSmpWarp)) >= static_cast<long>(SamplerWarp::Beats);
 }
 
@@ -572,6 +675,8 @@ int32_t SamplerFace::editorPart(Vec2 l, float ppu) const noexcept {
     return kPRuler;
   }
   if (l.y >= kWaveY0 && l.y <= kWaveY1) {
+    if (g.mode == SamplerMode::Granular)  // SM.13: the grain region first (it lies inside Start … End)
+      if (const int32_t gp = grainPart(editorLane(), l.x, ppu); gp != kNone) return gp;
     if (g.loop && l.y <= kLoopY1 + 1.0f) {
       if (near(g.loopEnd)) return kPLoopEnd;
       if (near(g.loopStart)) return kPLoopStart;
@@ -623,6 +728,19 @@ bool SamplerFace::onPointer(const FacePointer& e) {
     }
     return true;
   }
+  if (e.kind == K::Move && (drag_ == kPGrain || drag_ == kPGrainSize)) {  // SM.13
+    const Lane lane = dragWell_ ? wellLane() : editorLane();
+    const GrainSpan sp = grainSpan();
+    const double u = lane.u(e.local.x);
+    const Geometry g = geometry();
+    const double s = std::min(g.start, g.end), w = std::max(g.start, g.end) - s;
+    if (drag_ == kPGrain) {
+      if (w > 0.0) t.set(meta::kSmpGrainPosition, std::clamp((u - grainGrab_ - s) / w, 0.0, 1.0));
+    } else if (sp.seconds > 0.0) {
+      t.set(meta::kSmpGrainSize, std::clamp((u - sp.a) * sp.seconds, 0.005, 1.0));
+    }
+    return true;
+  }
   if (e.kind == K::Move && drag_ != kNone) {
     dragTo(e.local.x);
     return true;
@@ -636,8 +754,42 @@ bool SamplerFace::onPointer(const FacePointer& e) {
   if (e.kind != K::Down || e.button != ui::PointerButton::Left) return false;
   const int32_t part = hitTest(e.local, e.pxPerUnit);
   if (part != kPRootText && typing_) commitRoot();
+  if (harmEdit_ >= 0 && part != kPHarm0 + harmEdit_) commitHarm();
   if (part == kFrame || part == kNone) return false;
   if (!t.editable()) return false;
+  if (part == kPGrain || part == kPGrainSize) {  // SM.13: the grain region (one undo step per drag)
+    dragWell_ = within(kWell, e.local);
+    const Lane lane = dragWell_ ? wellLane() : editorLane();
+    grainGrab_ = lane.u(e.local.x) - grainSpan().a;
+    drag_ = part;
+    t.begin(part == kPGrain ? "Grain Position" : "Grain Size");
+    return true;
+  }
+  if (part >= kPHarm0 && part < kPHarm0 + static_cast<int32_t>(kHarmMax)) {  // type a ratio in its place
+    harmEdit_ = part - kPHarm0;
+    harmTyped_.clear();
+    return true;
+  }
+  if (part >= kPHarmX0 && part < kPHarmX0 + static_cast<int32_t>(kHarmMax)) {  // remove it (one step; one stays)
+    auto h = harmonics();
+    const auto i = static_cast<size_t>(part - kPHarmX0);
+    if (h.size() <= 1) {
+      t.notice("The list keeps one ratio at least");
+      return true;
+    }
+    if (i < h.size()) h.erase(h.begin() + static_cast<std::ptrdiff_t>(i));
+    writeHarmonics(h);
+    return true;
+  }
+  if (part == kPHarmAdd) {  // the next whole number above the list's largest ratio (one step)
+    auto h = harmonics();
+    if (h.size() >= kHarmMax) return true;
+    uint32_t next = 1;
+    for (const auto& [n, d] : h) next = std::max(next, n / d + 1);
+    h.emplace_back(std::min<uint32_t>(next, 65536u), 1u);
+    writeHarmonics(h);
+    return true;
+  }
   const Geometry g = geometry();
   const double u = edU(e.local.x);
   if (part >= kPSliceBy0 && part < kPSliceBy0 + 4) {  // SM.12: slice by this way now (one step)
@@ -858,6 +1010,17 @@ void SamplerFace::commitRoot() {
 }
 
 bool SamplerFace::onKey(const ui::KeyEvent& e) {
+  if (harmEdit_ >= 0 && e.down) {  // SM.13: a ratio being typed
+    if (e.key == ui::key::kEscape) {
+      harmEdit_ = -1;
+      harmTyped_.clear();
+    } else if (e.key == ui::key::kBackspace) {
+      if (!harmTyped_.empty()) harmTyped_.pop_back();
+    } else if (e.key == ui::key::kReturn) {
+      commitHarm();
+    }
+    return true;
+  }
   if (!typing_ || !e.down) return false;
   if (e.key == ui::key::kEscape) {
     typing_ = false;
@@ -999,7 +1162,7 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
     }
   }
   // One-Shot / Slice fades (warp Off / Re-Pitch): shaded ramps after Start and before End (the sample's seconds).
-  if (g.mode != SamplerMode::Classic && g.frames > 0.0 && g.warp <= SamplerWarp::RePitch) {
+  if ((g.mode == SamplerMode::OneShot || g.mode == SamplerMode::Slice) && g.frames > 0.0 && g.warp <= SamplerWarp::RePitch) {
     const double len = g.frames / g.rate;
     const float sx = edX(g.start), ex = edX(g.end);
     if (g.fadeIn > 0.0) {
@@ -1034,8 +1197,14 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
     const float d = part == kPStart ? 6.0f : -6.0f;
     p.triangle({x, kFlagY0}, {x + d, kFlagY0 + 4.5f}, {x, kFlagY1}, col);
   }
+  // SM.13, Granular: the grain region and the live grains in place of the playheads.
+  if (g.mode == SamplerMode::Granular) {
+    paintGrainRegion(p, th, editorLane(), kWaveY0 + 0.5f, kWaveY1 - 0.5f);
+    paintGrains(p, th, editorLane(), kWaveY0 + 2.0f, kWaveY1 - 2.0f, 1.4f);
+  }
   // The voices' playheads (0 … 1 of the sample).
   for (const Shown& sv : shown_v_) {
+    if (g.mode == SamplerMode::Granular) break;
     const float a = alphaOf(sv, now);
     const float x = edX(std::isfinite(sv.v.phase) ? static_cast<double>(sv.v.phase) : 0.0);
     p.line({x, kWaveY0 + 1.0f}, {x, kWaveY1 - 1.0f}, 1.2f, ui::mulAlpha(th.face.signal, a));
@@ -1047,10 +1216,193 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
     char b[96];
     if (g.mode == SamplerMode::Slice)
       std::snprintf(b, sizeof b, "%zu slices  \xC2\xB7  keys 36 \xE2\x80\xA6 %zu", g.slices.size(), 35 + std::max<size_t>(g.slices.size(), 1));
-    else
+    else if (g.mode == SamplerMode::Granular) {
+      const GrainSpan sp = grainSpan();
+      std::snprintf(b, sizeof b, "grains from %.3f s  \xC2\xB7  %.0f ms each  \xC2\xB7  %u live", sp.a * len,
+                    target().value(meta::kSmpGrainSize) * 1000.0, grainCount_);
+    } else
       std::snprintf(b, sizeof b, "%.3f s \xE2\x80\x93 %.3f s  of %.3f s", g.start * len, g.end * len, len);
     p.textAligned({kEdX0, kFlagY1 + 5.0f}, b, 6.0f, ui::mulAlpha(th.face.ink, 0.75f), 0.0f);
   }
+}
+
+// ---- SM.13: Granular ---------------------------------------------------------------------------------------------------
+
+SamplerFace::GrainSpan SamplerFace::grainSpan() const {
+  const MetaTarget& t = target();
+  refresh();
+  GrainSpan sp;
+  const double s = std::clamp(std::min(t.value(meta::kSmpStart), t.value(meta::kSmpEnd)), 0.0, 1.0);
+  const double e = std::clamp(std::max(t.value(meta::kSmpStart), t.value(meta::kSmpEnd)), 0.0, 1.0);
+  sp.a = s + std::clamp(t.value(meta::kSmpGrainPosition), 0.0, 1.0) * (e - s);
+  const media::WaveformOverview* o = cols_.overview;
+  sp.seconds = o != nullptr && o->sampleRate() > 0 && o->frames() > 0 ? static_cast<double>(o->frames()) / o->sampleRate() : 0.0;
+  if (sp.seconds > 0.0) {
+    sp.b = std::min(1.0, sp.a + t.value(meta::kSmpGrainSize) / sp.seconds);
+    sp.spray = t.value(meta::kSmpSprayTime) / sp.seconds;
+  } else {
+    sp.b = sp.a;
+  }
+  return sp;
+}
+
+// The region's right edge (the grain size), else its body (Position; at least ≈ 8 device px wide to grab), else none.
+int32_t SamplerFace::grainPart(const Lane& lane, float x, float ppu) const noexcept {
+  const float tol = std::max(1.0f, 4.0f / std::max(ppu, 0.1f));
+  const GrainSpan sp = grainSpan();
+  const float a = lane.x(sp.a), b = lane.x(sp.b);
+  if (sp.seconds > 0.0 && std::fabs(x - b) <= tol && b - a >= tol) return kPGrainSize;
+  if (x >= a - tol && x <= std::max(b, a + tol)) return kPGrain;
+  return kNone;
+}
+
+void SamplerFace::paintGrainRegion(ui::FacePainter& p, const ui::Theme& th, const Lane& lane, float y0, float y1) const {
+  const GrainSpan sp = grainSpan();
+  const float a = lane.x(sp.a), b = std::max(lane.x(sp.b), a + 0.6f);
+  const bool hotBody = hovered_ == kPGrain || drag_ == kPGrain, hotSize = hovered_ == kPGrainSize || drag_ == kPGrainSize;
+  if (sp.spray > 0.0)  // where spray may move a grain
+    p.roundedRect({lane.x(sp.a - sp.spray), y0, lane.x(sp.b + sp.spray), y1}, 0.0f, ui::mulAlpha(th.face.value, 0.08f));
+  p.roundedRect({a, y0, b, y1}, 1.5f, ui::mulAlpha(th.face.value, hotBody ? 0.3f : 0.2f));
+  p.line({a, y0}, {a, y1}, hotBody ? 1.3f : 1.0f, ui::mulAlpha(th.face.value, 0.95f));
+  p.line({b, y0}, {b, y1}, hotSize ? 1.3f : 0.8f, hotSize ? th.face.hover : ui::mulAlpha(th.face.value, 0.7f));
+  const float m = (y0 + y1) * 0.5f;  // the size grip
+  p.roundedRect({b - 1.2f, m - 3.0f, b + 1.2f, m + 3.0f}, 1.0f, hotSize ? th.face.hover : th.face.value);
+}
+
+// A dot per live grain where it reads (its height by its pan, left above), its size and glow by its window's amplitude:
+// the wavetable's voice dots (a glow sprite, a disc in the signal colour, a white core). k: the editor's larger scale.
+void SamplerFace::paintGrains(ui::FacePainter& p, const ui::Theme& th, const Lane& lane, float y0, float y1, float k) const {
+  if (grainCount_ == 0) return;
+  const float mid = (y0 + y1) * 0.5f, half = (y1 - y0) * 0.5f - 2.5f * k;
+  const auto at = [&](const FaceGrain& g) {
+    return Vec2{lane.x(std::isfinite(g.position) ? g.position : 0.0), mid - std::clamp(g.pan, -1.0f, 1.0f) * half};
+  };
+  p.beginGlow();
+  for (uint32_t i = 0; i < grainCount_; ++i) {
+    const float amp = std::clamp(grainBuf_[i].amplitude, 0.0f, 1.0f);
+    p.glow(at(grainBuf_[i]), (3.0f + 6.0f * amp) * k, ui::withAlpha(th.face.glow, static_cast<uint32_t>(30.0f + 120.0f * amp)));
+  }
+  p.endGlow();
+  for (uint32_t i = 0; i < grainCount_; ++i) {
+    const float amp = std::clamp(grainBuf_[i].amplitude, 0.0f, 1.0f);
+    const Vec2 d = at(grainBuf_[i]);
+    p.disc(d, (0.7f + 1.7f * amp) * k, ui::mulAlpha(th.face.signal, 0.5f + 0.5f * amp));
+    p.disc(d, (0.3f + 0.8f * amp) * k, ui::mulAlpha(ui::rgba(255, 255, 255), 0.4f + 0.6f * amp));
+  }
+}
+
+// Reads the voice reader's grains (none in other modes: the instance has no grain tap); true when they changed.
+bool SamplerFace::pollGrains() {
+  VoiceTapReader* r = voices();
+  if (grainBuf_.size() < kMaxGrainDots) grainBuf_.resize(kMaxGrainDots);
+  const uint32_t before = grainCount_;
+  std::array<FaceGrain, 4> head{};  // (a cheap change check: the count and the first few grains)
+  std::copy_n(grainBuf_.begin(), std::min<size_t>(before, head.size()), head.begin());
+  grainCount_ = r != nullptr ? r->grains(grainBuf_) : 0;
+  if (grainCount_ != before) return true;
+  for (size_t i = 0; i < std::min<size_t>(grainCount_, head.size()); ++i)
+    if (grainBuf_[i].position != head[i].position || grainBuf_[i].amplitude != head[i].amplitude) return true;
+  return false;
+}
+
+std::vector<std::pair<uint32_t, uint32_t>> SamplerFace::harmonics() const {
+  std::vector<std::pair<uint32_t, uint32_t>> h;
+  const meta::DataPtr d = target().data();
+  if (const meta::DataValue* x = d != nullptr ? d->field("harmonics") : nullptr; x != nullptr && x->kind == meta::DataValue::Kind::Floats)
+    for (size_t i = 0; i + 1 < x->floats.size(); i += 2) {
+      const float n = x->floats[i], dd = x->floats[i + 1];
+      if (n >= 1.0f && dd >= 1.0f && n <= 65536.0f && dd <= 65536.0f && n == std::floor(n) && dd == std::floor(dd))
+        h.emplace_back(static_cast<uint32_t>(n), static_cast<uint32_t>(dd));
+    }
+  if (h.empty()) h = {{1, 1}, {2, 1}, {3, 2}, {3, 1}, {4, 1}, {5, 1}};  // (the atom's default: pq/meta/sampler.h)
+  if (h.size() > kHarmMax) h.resize(kHarmMax);
+  return h;
+}
+
+void SamplerFace::writeHarmonics(const std::vector<std::pair<uint32_t, uint32_t>>& h) {
+  std::vector<float> v;
+  v.reserve(2 * h.size());
+  for (const auto& [n, d] : h) {
+    v.push_back(static_cast<float>(n));
+    v.push_back(static_cast<float>(d));
+  }
+  editFloats("harmonics", std::move(v));
+}
+
+int32_t SamplerFace::harmPart(Vec2 l) const {
+  const size_t n = harmonics().size();
+  for (size_t i = 0; i < n; ++i) {
+    const Rect r = harmCell(i);
+    if (!within(r, l)) continue;
+    return l.x >= r.x1 - kHarmX ? kPHarmX0 + static_cast<int32_t>(i) : kPHarm0 + static_cast<int32_t>(i);
+  }
+  if (n < kHarmMax && within(harmCell(n), l)) return kPHarmAdd;
+  return kFrame;
+}
+
+void SamplerFace::paintHarm(ui::FacePainter& p, const ui::Theme& th) {
+  const bool on = std::lround(target().setting(meta::kSmpHarmonic)) != 0;
+  const float dim = on ? 1.0f : 0.55f;  // (Harmonic grains off: the list waits, dimmed)
+  p.textAligned({1.0f, kHarm.y0 + 6.0f}, "Ratios", 6.5f, ui::mulAlpha(th.face.ink, 0.85f * dim), 0.0f);
+  p.textAligned({1.0f, kHarm.y0 + 17.5f}, on ? "n / d" : "off", 5.5f, ui::mulAlpha(th.face.ink, 0.55f), 0.0f);
+  const auto h = harmonics();
+  const Rgba cell = ui::lerp(th.face.body, th.face.track, 0.6f);
+  for (size_t i = 0; i < h.size(); ++i) {
+    const Rect r = harmCell(i);
+    const bool editing = harmEdit_ == static_cast<int32_t>(i);
+    const bool hot = hovered_ == kPHarm0 + static_cast<int32_t>(i), hotX = hovered_ == kPHarmX0 + static_cast<int32_t>(i);
+    p.roundedRect(r, 3.0f, editing ? ui::lerp(th.face.body, th.face.track, 0.4f) : hot ? ui::lerp(cell, th.face.hover, 0.35f) : cell);
+    if (editing) {
+      const Vec2 ring[5] = {{r.x0, r.y0}, {r.x1, r.y0}, {r.x1, r.y1}, {r.x0, r.y1}, {r.x0, r.y0}};
+      p.polyline(ring, 0.8f, th.circuit.selected);
+    }
+    std::string text = editing ? harmTyped_ + "|"
+                               : std::to_string(h[i].first) + (h[i].second != 1 ? "/" + std::to_string(h[i].second) : std::string());
+    p.text({(r.x0 + r.x1 - kHarmX) * 0.5f + 1.0f, (r.y0 + r.y1) * 0.5f}, text, 6.0f,
+           editing ? th.face.ink : ui::mulAlpha(th.face.value, dim));
+    const float cx = r.x1 - kHarmX * 0.5f, cy = (r.y0 + r.y1) * 0.5f;  // the ×
+    const Rgba xc = hotX ? th.face.hover : ui::mulAlpha(th.face.ink, 0.5f * dim);
+    p.line({cx - 1.6f, cy - 1.6f}, {cx + 1.6f, cy + 1.6f}, 0.7f, xc);
+    p.line({cx - 1.6f, cy + 1.6f}, {cx + 1.6f, cy - 1.6f}, 0.7f, xc);
+  }
+  if (h.size() < kHarmMax) {
+    const Rect r = harmCell(h.size());
+    const bool hot = hovered_ == kPHarmAdd;
+    p.roundedRect(r, 3.0f, hot ? ui::lerp(cell, th.face.hover, 0.35f) : ui::lerp(th.face.body, th.face.track, 0.35f));
+    p.text({(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f}, "+", 7.5f, ui::mulAlpha(th.face.ink, dim));
+  }
+}
+
+// The typed ratio: "n" or "n/d", whole numbers 1 … 65536 (one undo step); empty: unchanged; anything else: a notice.
+void SamplerFace::commitHarm() {
+  const int32_t i = harmEdit_;
+  harmEdit_ = -1;
+  const std::string in = std::move(harmTyped_);
+  harmTyped_.clear();
+  if (in.empty() || i < 0) return;
+  const size_t slash = in.find('/');
+  const auto whole = [](std::string_view v, uint32_t& out) {
+    if (v.empty() || v.size() > 6) return false;
+    uint64_t x = 0;
+    for (const char c : v) {
+      if (c < '0' || c > '9') return false;
+      x = x * 10 + static_cast<uint64_t>(c - '0');
+    }
+    if (x < 1 || x > 65536) return false;
+    out = static_cast<uint32_t>(x);
+    return true;
+  };
+  uint32_t n = 0, d = 1;
+  const std::string_view v(in);
+  if (!whole(v.substr(0, slash), n) || (slash != std::string::npos && !whole(v.substr(slash + 1), d))) {
+    target().notice("A ratio is n or n/d, whole numbers 1 \xE2\x80\xA6 65536");
+    return;
+  }
+  auto h = harmonics();
+  if (static_cast<size_t>(i) >= h.size()) return;
+  if (h[static_cast<size_t>(i)] == std::pair{n, d}) return;
+  h[static_cast<size_t>(i)] = {n, d};
+  writeHarmonics(h);
 }
 
 // ---- SM.12: the slicing row --------------------------------------------------------------------------------------------
@@ -1135,6 +1487,11 @@ std::unique_ptr<MetaFace> makeSamplerFace(const meta::Type& t) { return std::mak
 size_t samplerFacePlayheads(const MetaFace& f) {
   const auto* s = dynamic_cast<const SamplerFace*>(&f);
   return s != nullptr ? s->playheads() : 0;
+}
+
+size_t samplerFaceGrainDots(const MetaFace& f) {
+  const auto* s = dynamic_cast<const SamplerFace*>(&f);
+  return s != nullptr ? s->grainDots() : 0;
 }
 
 }  // namespace pq::views

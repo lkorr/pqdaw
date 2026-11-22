@@ -104,6 +104,12 @@ public:
   // goldens).
   void freeze();
   uint32_t read(std::span<FaceVoice> out) override;
+  // SM.13: fixed grains reported as live (a still frame of a granulator: goldens, tests).
+  void setGrains(std::vector<FaceGrain> g) {
+    grains_ = std::move(g);
+    ++serial_;
+  }
+  uint32_t grains(std::span<FaceGrain> out) const override;
   uint64_t serial() const noexcept override { return serial_; }
   // Live (the host keeps polling) while a voice moves (hz != 0): fixed voices are read once and stay shown.
   bool live() const noexcept override;
@@ -111,6 +117,7 @@ public:
 private:
   std::vector<Voice> voices_;
   std::vector<std::vector<float>> pending_;  // per voice: the phases sampled since the last read
+  std::vector<FaceGrain> grains_;
   uint64_t serial_ = 1;
   double rate_ = 0.0;
 };

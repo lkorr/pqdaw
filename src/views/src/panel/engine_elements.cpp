@@ -19,6 +19,7 @@
 //                ruler's warp markers, the playheads; every drag one undo step)
 //   sampleroot   SM.11: the Sampler's root field (Hz, or the nearest identity of the track's tuning + cents; typed)
 //   sampleslice  SM.12: the Sampler's slicing row (Transient | Beat | Region | Manual, the amount, Slice to Notes)
+//   sampleharm   SM.13: the Sampler's harmonic grain ratios (n/d chips: type, remove, add; the data's `harmonics`)
 //
 // The face's plain controls are generic elements (the Wavetable's phase slider and fold / warp / sync knobs, the
 // Envelope's amount slider: pq/document/modules.h enginePanel).
@@ -137,6 +138,7 @@ constexpr Section kSections[] = {
     {"sampleedit", "Sample Editor", "sampler", {0.0f, 200.0f, 328.0f, 320.0f}},   // SM.11: the expanded waveform editor
     {"sampleroot", "Sample Root", "sampler", {0.0f, 330.0f, 120.0f, 346.0f}},     // SM.11: the root (Hz / identity)
     {"sampleslice", "Sample Slicing", "sampler", {0.0f, 360.0f, 328.0f, 390.0f}},  // SM.12: slice by, amount, to notes
+    {"sampleharm", "Grain Ratios", "sampler", {0.0f, 400.0f, 328.0f, 424.0f}},     // SM.13: harmonic grains' n/d chips
     {"levelmeter", "Level Meter", "level_meter", {0.0f, 0.0f, 100.0f, 160.0f}, true},            // VZ.4
     {"lufsmeter", "LUFS Meter", "lufs_meter", {0.0f, 0.0f, 200.0f, 160.0f}, true},               // VZ.4
     {"loudnesshistory", "Loudness History", "loudness_history", {0.0f, 0.0f, 300.0f, 160.0f}, true},  // VZ.4
@@ -491,13 +493,13 @@ bool showMeter(Element& e, float a, float b) {
 
 void registerEngineElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                         float, float, ElementFactory)) {
-  static_assert(std::size(kSections) == 23);
+  static_assert(std::size(kSections) == 24);
   constexpr ElementFactory kMake[] = {&makeSection<0>, &makeSection<1>, &makeSection<2>, &makeSection<3>, &makeSection<4>,
                                       &makeSection<5>, &makeSection<6>, &makeSection<7>, &makeSection<8>, &makeSection<9>,
                                       &makeSection<10>, &makeSection<11>, &makeSection<12>, &makeSection<13>,
                                       &makeSection<14>, &makeSection<15>, &makeSection<16>, &makeSection<17>, &makeSection<18>,
                                       &makeSection<19>, &makeSection<20>, &makeSection<21>,
-                                      &makeSection<22>};
+                                      &makeSection<22>, &makeSection<23>};
   for (size_t i = 0; i < std::size(kSections); ++i) {
     const Section& s = kSections[i];
     const bool scope = s.kind == "scope";  // MX.3: its trace slots and style (a trace scope's)

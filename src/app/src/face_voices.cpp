@@ -30,7 +30,9 @@ views::VoiceTapReader* FaceVoiceHub::voices(doc::DeviceId device, std::string_vi
                                                 // TMM.17: increments per sample at the engine's rate (voice colours)
                                                 [link] { return link->config().sampleRate; },
                                                 // TMM.13-fix1 M12: look up again only when the slots changed
-                                                [link] { return link->metaGeneration(); });
+                                                [link] { return link->metaGeneration(); },
+                                                // SM.13: a Granular Sampler's grain tap (request 2): its grain dots
+                                                [link, device, p] { return link->metaGrainTap(device, p, 2); });
     it = readers_.emplace(std::move(key), Entry{std::move(r), false}).first;
   }
   it->second.parked = false;  // asked for: polled again (until the next prune finds no slot)

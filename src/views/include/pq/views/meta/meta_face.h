@@ -172,9 +172,21 @@ struct HeardTable {
   std::vector<uint8_t> modulated;
 };
 
+// SM.13: one live grain of a granulator (pq/core/grain_tap.h GrainTapGrain): where it reads (0 … 1 of the sample), its
+// window's amplitude now (0 … 1), its pan (−1 … 1) and its voice group / lane (stable while it sounds).
+struct FaceGrain {
+  float position = 0.0f;
+  float amplitude = 0.0f;
+  float pan = 0.0f;
+  uint32_t voice = 0;
+};
+
 class VoiceTapReader {
 public:
   virtual ~VoiceTapReader() = default;
+  // SM.13: the instance's live grains as of the last read() (at most out.size()); returns the count. Records of the
+  // grain tap count as news like voice records (serial(), live()). None by default.
+  virtual uint32_t grains(std::span<FaceGrain> /*out*/) const { return 0; }
   // TMM.16: the instance's published table (see HeardTable); none by default.
   virtual HeardTable heardTable() const { return {}; }
   // The voices sounding now (at most out.size()), newest record per voice slot; returns the count.

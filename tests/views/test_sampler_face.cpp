@@ -9,6 +9,7 @@
 //             (the block grows in place, the tabs show), a second one closes them; no undo step either way
 #include <doctest/doctest.h>
 
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -17,6 +18,7 @@
 #include <vector>
 
 #include "../ui/golden_check.h"
+#include "pq/core/grain_tap.h"
 #include "pq/core/voice_tap.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
@@ -165,6 +167,8 @@ struct Ui {
   FakeTransport port;
   ViewContext ctx{port};
   std::shared_ptr<pq::VoiceTap> tap = std::make_shared<pq::VoiceTap>(pq::VoiceTapConfig{});
+  std::shared_ptr<pq::GrainTap> grainTap = std::make_shared<pq::GrainTap>(pq::GrainTapConfig{1, 8});  // SM.13
+  bool granular = false;  // SM.13: the grain tap is the instance's (a Granular Sampler has one)
   std::unique_ptr<TapVoices> reader;
   TestDriver d{1600, 900};
   std::unique_ptr<Shell> shell;
@@ -172,7 +176,9 @@ struct Ui {
   Ui() {
     ctx.setDeviceLibrary(&devLib());
     ids = buildSamplerProject(ctx.store(), true);
-    reader = std::make_unique<TapVoices>([t = tap] { return t; });
+    reader = std::make_unique<TapVoices>([t = tap] { return t; }, TapVoices::TableResolve{}, TapVoices::RateResolve{},
+                                         TapVoices::GenerationResolve{},
+                                         [this] { return granular ? grainTap : std::shared_ptr<pq::GrainTap>{}; });
     ctx.setFaceVoices([this](doc::DeviceId dev, std::string_view) -> views::VoiceTapReader* { return dev == ids.engine ? reader.get() : nullptr; });
     ctx.setDetailVisible(false);  // only the canvas's face (the Device view's panel says nothing: shown while it exists)
     REQUIRE(d.enableGpu().ok());  // (frames are painted: the canvas tells its faces whether they are on screen)
@@ -694,4 +700,259 @@ TEST_CASE("sampler slicing (SM.12, real dispatch): Region / Beat / Manual cells 
   REQUIRE(t.clips.front().clip != nullptr);
   CHECK(t.clips.front().clip->start == 2 * kPpq);
   CHECK(t.clips.front().clip->notes.size() == 2);
+}
+
+// ---- SM.13: Granular — the section, the grain region, the grain dots, the ratio chips, the closed face's knobs ----------
+// (docs/plans/SM.md "Granular", "Face"): in Gran mode the expanded panel shows a Granular section (and no Warp); the grain
+// region on the closed well and on the editor drags Position (its body) and the grain size (its right edge), one undo
+// step per drag; the ratio chips add / remove / take a typed n/d (one step each, data only); the closed face's mini knobs
+// are Position · Size · Density; the grain tap has no reader while the face is hidden.
+//   goldens   sampler-face-grains (the closed face, grain dots), sampler-panel-gran (expanded), 1x and 2x
+
+namespace {
+
+// A still frame of a granulator: 14 grains around Position, levels and pans spread (fed through the synthetic reader).
+std::vector<FaceGrain> stillGrains(double from) {
+  std::vector<FaceGrain> g;
+  for (uint32_t i = 0; i < 14; ++i) {
+    const double t = static_cast<double>(i) / 13.0;
+    g.push_back({static_cast<float>(from + 0.16 * t + 0.01 * std::sin(7.0 * t)),
+                 static_cast<float>(0.15 + 0.85 * std::sin(std::numbers::pi * t)), static_cast<float>(std::sin(5.3 * t + 0.4)),
+                 i % 3});
+  }
+  return g;
+}
+
+void granularState(doc::DocumentStore& st, doc::DeviceId engine) {
+  setSetting(st, engine, "mode", 3.0);
+  setValue(st, engine, "grainPosition", 0.35);
+  setValue(st, engine, "grainSize", 0.1);
+  setValue(st, engine, "sprayTime", 0.03);
+}
+
+// The closed face's mini knob bound to engine param `param` (readout none: not the Sample section's).
+uint32_t miniKnob(const doc::Project& p, doc::DeviceId group, std::string_view param) {
+  const doc::Device* g = doc::findDevice(p, group).device;
+  REQUIRE(g != nullptr);
+  for (const doc::PanelElement& e : g->panel->elements)
+    if (e.kind == "knob" && e.text("readout", "") == "none" && !e.bindings.empty() && e.bindings.front().name == param) return e.id;
+  FAIL("no mini knob " << param);
+  return 0;
+}
+
+}  // namespace
+
+TEST_CASE("render: sampler-face-grains / sampler-panel-gran (SM.13: Gran mode, the grain region and dots, 1x and 2x)") {
+  for (const float scale : {1.0f, 2.0f}) {
+    CAPTURE(scale);
+    const std::string sfx = scale == 1.0f ? "" : "-2x";
+    {
+      Standalone s(scale, true, {{0, 0.0, 0.4}});
+      granularState(s.ctx.store(), s.ids.engine);
+      s.voices.setGrains(stillGrains(0.33));
+      (void)s.face().sync();
+      checkImage("sampler-face-grains" + sfx, s.render());
+    }
+    {
+      Standalone s(scale, true, {{0, 0.0, 0.4}}, doc::kSamplerPanelW, 520.0f);
+      doc::DocumentStore& st = s.ctx.store();
+      granularState(st, s.ids.engine);
+      setSetting(st, s.ids.engine, "harmonic", 1.0);
+      setFloats(st, s.ids.engine, "harmonics", {1, 1, 3, 2, 5, 4, 2, 1, 7, 4, 3, 1});
+      for (const char* title : {"Settings", "Granular"})
+        st.view().panelWindows[s.ids.group.value].setFoldOpen(elementOf(*st.current(), s.ids.group, "fold", title)->id, true);
+      s.voices.setGrains(stillGrains(0.33));
+      (void)s.face().sync();
+      checkImage("sampler-panel-gran" + sfx, s.render());
+    }
+  }
+}
+
+namespace {
+// A click on mode-row cell k (Classic | 1-Shot | Slice | Gran) through the window.
+void clickMode(Expanded& u, int k) {
+  panel::GroupPanelFace& f = u.face();
+  const Rect tabs = f.element(static_cast<size_t>(f.indexOf(u.tabsId()))).rect();
+  const Node& n = u.node();
+  u.d.click(u.view().canvas().toDevice(
+      {n.x + tabs.x0 + tabs.width() * ((static_cast<float>(k) + 0.5f) / 4.0f), n.y + (tabs.y0 + tabs.y1) * 0.5f}));
+  u.d.step();
+  REQUIRE(std::lround(engineOf(*u.ctx.doc(), u.ids.engine).setting("mode")->value) == k);
+}
+}  // namespace
+
+TEST_CASE("sampler granular (SM.13, real dispatch): the mode row shows Granular in Gran mode only (Warp everywhere else)") {
+  Expanded u;
+  const uint32_t gran = u.idOf("fold", "Granular"), warp = u.idOf("fold", "Warp"), slices = u.idOf("fold", "Slices");
+  const uint32_t harm = u.idOf("sampleharm");
+  for (const int k : {3, 0, 1, 2, 3}) {
+    CAPTURE(k);
+    clickMode(u, k);
+    CHECK(u.shownEl(gran) == (k == 3));
+    CHECK(u.shownEl(warp) == (k != 3));
+    CHECK(u.shownEl(slices) == (k == 2));
+  }
+  // Folded by default; opened (view state, no undo step) its controls and the ratio chips show.
+  CHECK_FALSE(u.shownEl(harm));
+  const size_t h = u.cursor();
+  u.d.click(u.at(gran, 0.1f, 0.5f));
+  u.d.step();
+  CHECK(u.shownEl(harm));
+  const doc::PanelElement* gm = nullptr;
+  for (const doc::PanelElement& e : doc::findDevice(*u.ctx.doc(), u.ids.group).device->panel->elements)
+    if (e.kind == "menu" && !e.bindings.empty() && e.bindings.front().name == "granMode") gm = &e;
+  REQUIRE(gm != nullptr);
+  CHECK(u.shownEl(gm->id));
+  CHECK(u.cursor() == h);
+}
+
+TEST_CASE("sampler granular (SM.13, real dispatch): the closed face's knobs are Transpose · Filter · Volume, in Gran mode "
+          "Position · Size · Density (the Position knob drags Position)") {
+  Expanded u;
+  const auto shownKnob = [&](std::string_view param) { return u.shownEl(miniKnob(*u.ctx.doc(), u.ids.group, param)); };
+  const auto closedKnobs = [&](bool gran) {
+    u.d.click(u.at(u.expandId()));  // closed: the oval
+    u.d.step();
+    REQUIRE(u.node().panelRound);
+    for (const char* p : {"transpose", "gain"}) CHECK(shownKnob(p) == !gran);
+    for (const char* p : {"grainPosition", "grainSize", "density"}) CHECK(shownKnob(p) == gran);
+  };
+  closedKnobs(false);
+  u.d.click(u.at(u.expandId()));  // open again, Gran through the mode row
+  u.d.step();
+  clickMode(u, 3);
+  closedKnobs(true);
+  // Closed, the Position knob dragged up: Position rises (one undo step).
+  const uint32_t pos = miniKnob(*u.ctx.doc(), u.ids.group, "grainPosition");
+  const size_t h = u.cursor();
+  const Vec2 c = u.at(pos);
+  u.d.drag(c, {c.x, c.y - 60.0f}, 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpGrainPosition) > 0.1);
+}
+
+TEST_CASE("sampler granular (SM.13, real dispatch): the grain region drags Position (its body) and the grain size (its "
+          "right edge) on the editor and on the closed well, one undo step per drag") {
+  Expanded u;
+  setSetting(u.ctx.store(), u.ids.engine, "mode", 3.0);
+  u.d.step();
+  REQUIRE(u.ctx.waveforms().overview(u.ids.sample) != nullptr);
+  const double sizeU = 0.08 / 0.6;  // the default grain size over the sample's 0.6 s
+  // The editor: the body by half the sample (Start … End is the whole: Position 0.5).
+  size_t h = u.cursor();
+  u.d.drag(u.ed(sizeU * 0.5, kWaveMidY), u.ed(sizeU * 0.5 + 0.5, kWaveMidY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpGrainPosition) == doctest::Approx(0.5).epsilon(0.02));
+  // Its right edge from 0.5 + sizeU to 0.8: the grain size 0.3 × 0.6 s.
+  h = u.cursor();
+  u.d.drag(u.ed(0.5 + sizeU, kWaveMidY), u.ed(0.8, kWaveMidY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpGrainSize) == doctest::Approx(0.18).epsilon(0.03));
+  // Undo takes the size drag back whole.
+  REQUIRE(u.ctx.store().undo());
+  CHECK(u.value(meta::kSmpGrainSize) == doctest::Approx(0.08));
+  // The closed well (its lane: Start … End over face x 27 … 125): the body from Position 0.5 back to ≈ 0.25.
+  u.d.click(u.at(u.expandId()));
+  u.d.step();
+  REQUIRE(u.node().panelRound);
+  const auto well = [&](double v) {  // the well element (face x 24 … 128) at sample fraction v
+    return u.at(2, (27.0f + static_cast<float>(v) * 98.0f - 24.0f) / 104.0f, 0.5f);
+  };
+  h = u.cursor();
+  u.d.drag(well(0.5 + sizeU * 0.5), well(0.25 + sizeU * 0.5), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpGrainPosition) == doctest::Approx(0.25).epsilon(0.04));
+  CHECK(u.node().panelRound);  // (a drag never toggles the settings)
+}
+
+TEST_CASE("sampler granular (SM.13, real dispatch): ratio chips — + adds the next whole number, × removes, a click types "
+          "n/d (one undo step each, the data's harmonics; integers only)") {
+  Expanded u;
+  setSetting(u.ctx.store(), u.ids.engine, "mode", 3.0);
+  u.d.step();
+  const uint32_t fold = u.idOf("fold", "Granular");
+  u.d.click(u.at(fold, 0.1f, 0.5f));
+  u.d.step();
+  const uint32_t harm = u.idOf("sampleharm");
+  REQUIRE(u.shownEl(harm));
+  const auto local = [&](float lx, float ly) {
+    panel::GroupPanelFace& f = u.face();
+    const Rect r = f.element(static_cast<size_t>(f.indexOf(harm))).rect();
+    const Node& n = u.node();
+    return u.view().canvas().toDevice({n.x + r.x0 + lx, n.y + r.y0 + ly});
+  };
+  const auto chipX = [](size_t i) { return 40.0f + static_cast<float>(i % 9) * 30.0f; };
+  const auto chipY = [](size_t i) { return 6.0f + (i >= 9 ? 12.0f : 0.0f); };
+  const auto ratios = [&] {
+    const meta::DataPtr d = u.data();
+    const meta::DataValue* x = d != nullptr ? d->field("harmonics") : nullptr;
+    return x != nullptr ? x->floats : std::vector<float>{};
+  };
+  CHECK(ratios().empty());  // the default list (1, 2, 3/2, 3, 4, 5) until edited
+  // +: after the default six, 6.
+  size_t h = u.cursor();
+  u.d.click(local(chipX(6) + 14.0f, chipY(6)));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(ratios() == std::vector<float>{1, 1, 2, 1, 3, 2, 3, 1, 4, 1, 5, 1, 6, 1});
+  // × of the second chip (2).
+  h = u.cursor();
+  u.d.click(local(chipX(1) + 24.0f, chipY(1)));
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(ratios() == std::vector<float>{1, 1, 3, 2, 3, 1, 4, 1, 5, 1, 6, 1});
+  // The first chip typed 7/4.
+  h = u.cursor();
+  u.d.click(local(chipX(0) + 8.0f, chipY(0)));
+  u.d.type("7/4");
+  (void)u.d.keyDown(ui::key::kReturn);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(ratios() == std::vector<float>{7, 4, 3, 2, 3, 1, 4, 1, 5, 1, 6, 1});
+  // Not whole numbers in range: nothing changes, no undo step.
+  h = u.cursor();
+  for (const char* bad : {"0", "3/", "70000"}) {
+    u.d.click(local(chipX(2) + 8.0f, chipY(2)));
+    u.d.type(bad);
+    (void)u.d.keyDown(ui::key::kReturn);
+    u.d.step();
+  }
+  CHECK(ratios() == std::vector<float>{7, 4, 3, 2, 3, 1, 4, 1, 5, 1, 6, 1});
+  CHECK(u.cursor() == h);
+}
+
+TEST_CASE("sampler granular (SM.13): the grain tap is read while the face shows, and has no reader while it is hidden") {
+  Ui u;
+  setSetting(u.ctx.store(), u.ids.engine, "mode", 3.0);
+  u.granular = true;  // (the link would give the Granular instance its tap now)
+  u.frame();
+  (void)u.reader->serial();
+  REQUIRE(u.reader->grainTap() == u.grainTap.get());
+  CHECK(u.grainTap->wanted());
+  // A record of three grains: the reader takes them at its next read (the face's poll; the app wakes it through
+  // FaceVoiceHub::anyFresh, which this test has not: it reads as the face would).
+  pq::GrainTapRecord* r = u.grainTap->begin(0);
+  REQUIRE(r != nullptr);
+  for (uint32_t i = 0; i < 3; ++i) r->grain[i] = {0.2f + 0.1f * static_cast<float>(i), 0.8f, 0.0f, i};
+  u.grainTap->commit(0, 3);
+  CHECK(u.reader->fresh());
+  std::array<FaceVoice, 4> voices{};
+  (void)u.reader->read(voices);
+  std::array<FaceGrain, 8> got{};
+  CHECK(u.reader->grains(got) == 3);
+  CHECK(got[1].position == doctest::Approx(0.3f));
+  // Scrolled away: no reader of the grain tap (the kernel's write is one relaxed load), the grains gone.
+  u.frame(6000.0f);
+  CHECK(u.reader->hidden());
+  CHECK_FALSE(u.grainTap->wanted());
+  CHECK(u.reader->grains(got) == 0);
+  CHECK(u.reader->grainTap() == nullptr);
+  // Back on screen: read again.
+  u.frame();
+  (void)u.reader->serial();
+  CHECK(u.grainTap->wanted());
 }

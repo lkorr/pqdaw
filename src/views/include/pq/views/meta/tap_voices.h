@@ -17,6 +17,9 @@
 // slot plays now, and a newly published table counts as news like a record: serial() changes, fresh() is true until
 // the next read, and live() stays true for kTableLinger seconds after the last table (a preview's full table follows
 // a pause in a drag by ≈ 0.1 s + its build: the host keeps polling until it has been drawn).
+// SM.13: with a grain resolver (a Granular Sampler: its GrainTap), grains() is the live grains as of the last read; the
+// grain tap's records count as news like the voice tap's, and it has a reader of this object only while the voice tap
+// has one (a hidden face, park: none — the granulator's write is one relaxed load).
 // UI thread only.
 
 #include <cstdint>
@@ -26,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "pq/core/grain_tap.h"
 #include "pq/core/voice_tap.h"
 #include "pq/dsp/frame_table_slot.h"
 #include "pq/views/meta/meta_face.h"
@@ -48,8 +52,12 @@ public:
   // meta-slot generation). With one, a read re-resolves only when it moved (the lookups take the host's lock and
   // copy the modulated flags); without one, every read re-resolves.
   using GenerationResolve = std::function<uint64_t()>;
+  // SM.13: the instance's grain tap now (null: none).
+  using GrainResolve = std::function<std::shared_ptr<pq::GrainTap>()>;
   static constexpr double kTableLinger = 2.0;
-  explicit TapVoices(Resolve resolve, TableResolve table = {}, RateResolve rate = {}, GenerationResolve generation = {});
+  static constexpr uint32_t kMaxGrains = 512;  // grains kept per read (the face draws at most this many dots)
+  explicit TapVoices(Resolve resolve, TableResolve table = {}, RateResolve rate = {}, GenerationResolve generation = {},
+                     GrainResolve grains = {});
   ~TapVoices() override;
 
   uint32_t read(std::span<FaceVoice> out) override;
@@ -57,6 +65,7 @@ public:
   bool live() const noexcept override;
   bool fresh() const noexcept;
   HeardTable heardTable() const override;
+  uint32_t grains(std::span<FaceGrain> out) const override;
   // SM.10: faces that say whether they are shown; while every one is hidden the tap has no reader of this object.
   void shown(const void* face, bool on) override;
   void forget(const void* face) override;
@@ -71,6 +80,7 @@ public:
 
   // The tap read now (tests).
   const pq::VoiceTap* tap() const noexcept { return tap_.get(); }
+  const pq::GrainTap* grainTap() const noexcept { return grainTap_.get(); }  // SM.13 (tests)
   // TMM.13-fix1 M12: lets go of the tap and the table slot (the instance is gone: nothing of it stays alive here); the
   // next read resolves again (an undo brings it back).
   void park() noexcept;
@@ -87,6 +97,10 @@ private:
   TableResolve tableResolve_;
   RateResolve rateResolve_;
   GenerationResolve genResolve_;
+  GrainResolve grainResolve_;
+  mutable std::shared_ptr<pq::GrainTap> grainTap_;           // SM.13
+  mutable std::unique_ptr<pq::GrainTapReader> grainReader_;
+  std::vector<FaceGrain> grains_;                            // the live grains of the last read
   mutable uint64_t gen_ = 0;          // genResolve_() at the last lookup
   mutable bool resolved_ = false;     // a lookup was made since construction / park()
   mutable uint64_t resolves_ = 0;

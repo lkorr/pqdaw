@@ -2579,3 +2579,21 @@ Context: SM.6 (docs/plans/SM.md "Semantics" Granular, "SM.6"). Choices (most rev
 6. **A retrigger keeps the voice's live grains** unless the sample changed (then they stop at once: a click on a swap +
    retrigger). Harmonic ratios come from the data's `harmonics` ((n, d) pairs; default 1, 2, 3/2, 3, 4, 5).
 7. Q?-SM.5-a 6 applies here too: a freed lane whose voice never ends keeps spawning grains while its group runs.
+
+## Q?-SM.13-a · the Granular section and grain dots: readings taken
+Context: SM.13 (docs/plans/SM.md "Face (👁)", "SM.13"). Choices (most reversible):
+1. **Grains reach the face through the voice reader** (`views::VoiceTapReader::grains`, TapVoices with a GrainTap
+   resolver; FaceVoiceHub asks the link for request 2), not a second reader per face: one shown / hidden path, so a
+   hidden face's TapVoices parks both taps (no reader on either).
+2. **A `when` condition reads a source inside a FOLDED section** (GroupPanelFace::conditionHolds; a source hidden by
+   its own condition is still "hidden", EQ.3): folding is view state and must not change which controls apply. The
+   closed face's two knob sets (Transpose · Filter · Volume / Position · Size · Density) are conditions on the mode row,
+   which only the expanded panel shows. Affects only panels with folds (the Sampler's).
+3. **Warp is hidden in Gran mode** (Granular warps nothing, Q?-SM.6-a 1) — revises Q?-SM.11-a 4 for that mode only.
+4. **Grain region** = [Position in Start … End, + grain size), the spray time shaded either side; a dot's height is its
+   pan (left above), its size / glow its window's amplitude. The closed well's region is draggable too (its body and
+   right edge take presses there; the rest of the well stays the block's: select / double-click to expand).
+5. **Ratio chips**: ≤ 17 ratios in the editor (two rows); the last one cannot be removed (an empty list would silently
+   fall back to the default six); + adds the next whole number above the largest ratio; typed n/d is kept as typed
+   (4/2 is not reduced). Shown dimmed, still editable, while Harmonic grains is off.
+6. **Density** shows only for Loop / Cloud (Classic spawns one grain per period).

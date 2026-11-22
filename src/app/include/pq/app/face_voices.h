@@ -3,7 +3,8 @@
 // The faces' voice dots in the running app (TMM.5, the TMM.2 / TMM.4 join): one views::TapVoices per meta instance
 // (device, name path), reading the tap the playback link owns for it — request 0's (a VoiceTap: the Phase
 // accumulator's `voice_tap` of its phase; a FrameTable slot's: what the Wavetable's `wavetable_pos` read; SM.10: the
-// first VoiceTap among requests 0 … 3, the Sampler's request 1). The project
+// first VoiceTap among requests 0 … 3, the Sampler's request 1; SM.13: and a Granular Sampler's GrainTap, request 2,
+// for its grain dots). The project
 // patch view binds them (ProjectPatchView::faceVoices); the shell wakes its faces when any of them received records
 // (wakeIfFresh), so a note played while nothing animates starts the dots.
 // UI thread only. Readers live as long as the hub (their pointers are bound into faces).

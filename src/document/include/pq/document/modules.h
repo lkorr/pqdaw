@@ -188,8 +188,10 @@ BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSyn
 // kSamplerPanelW wide): the mode row (kSamplerModes, the engine's mode) and the root field beside the oval, the waveform
 // editor (`sampleedit`) under it, then the fold sections Sample (gain, transpose, detune; Classic: loop, loop fade;
 // One-Shot / Slice: fades, trigger), Warp (the 7-way mode, sample BPM, the Beats / Tones / Texture params), Slices
-// (Slice mode only), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on / off switches beside
-// their headers, bound to their activators: kActiveSetting). Only Sample is open by default.
+// (Slice mode only), SM.13 Granular (Gran mode only: grain mode, shape, grains, Freeze, Harmonic, the Position … Density
+// knobs, the harmonic n/d chips `sampleharm`), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on
+// / off switches beside their headers, bound to their activators: kActiveSetting). Only Sample is open by default; Warp
+// hides in Gran mode. SM.13: in Gran mode the closed face's mini knobs are Position · Size · Density.
 struct SamplerRoles {
   DeviceId group, engine, key, amp;  // the group, meta:sampler, the voice.key block, the amp (mul)
   DeviceId filter, filterFrequency;        // the EQ band group and its Frequency value block

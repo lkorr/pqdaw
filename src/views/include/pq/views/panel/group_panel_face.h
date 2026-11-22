@@ -163,6 +163,7 @@ private:
   bool syncFolds();      // SM.9: the elements placed by the fold layout when the open states changed (true)
   void updateShape();    // the outline from the bottom element (as placed)
   bool shownNow(size_t i, std::vector<int8_t>& memo) const;
+  bool conditionHolds(size_t i, std::vector<int8_t>& memo) const;  // SM.13: its `when` alone (folds aside)
   std::vector<int8_t>& freshMemo() const;  // memo_ cleared for this many elements (no allocation once grown)
   ui::TileAtlas* atlas() const noexcept;
 

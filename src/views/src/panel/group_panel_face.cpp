@@ -449,11 +449,18 @@ int32_t GroupPanelFace::indexOf(uint32_t id) const noexcept {
   return -1;
 }
 
-// memo: per element 0 unknown, 1 shown, 2 hidden (a condition's source is evaluated once per pass; chains of conditions
-// follow their sources; a cycle reads as hidden).
+// memo: per element 0 unknown, 1 its condition holds, 2 it does not (a condition's source is evaluated once per pass;
+// chains of conditions follow their sources; a cycle reads as hidden). SM.13: a condition reads its source's value
+// even while the source sits in a FOLDED section (folding is view state: it never changes which controls apply — the
+// Sampler's closed face picks its mini knobs by the mode row, which only the expanded panel shows); a source hidden by
+// its own condition is hidden to it (EQ.3, kWhenHidden).
 bool GroupPanelFace::shownNow(size_t i, std::vector<int8_t>& memo) const {
+  if (i < folds_.hidden.size() && folds_.hidden[i] != 0) return false;  // SM.9: in a folded section
+  return conditionHolds(i, memo);
+}
+
+bool GroupPanelFace::conditionHolds(size_t i, std::vector<int8_t>& memo) const {
   if (memo[i] != 0) return memo[i] == 1;
-  if (i < folds_.hidden.size() && folds_.hidden[i] != 0) return (memo[i] = 2) == 1;  // SM.9: in a folded section
   const std::optional<doc::Visibility>& when = elements_[i]->desc().when;
   if (!when) return (memo[i] = 1) == 1;
   memo[i] = 2;  // (while it is evaluated: a cycle is hidden)
@@ -464,7 +471,7 @@ bool GroupPanelFace::shownNow(size_t i, std::vector<int8_t>& memo) const {
     bool term = false;
     if (src >= 0) {
       const std::vector<double>& values = when->termValues(t);
-      if (!shownNow(static_cast<size_t>(src), memo)) {  // EQ.3 (panel.h kWhenHidden): shown while its source is hidden
+      if (!conditionHolds(static_cast<size_t>(src), memo)) {  // EQ.3 (panel.h kWhenHidden): shown while its source is hidden
         for (const double want : values) term = term || want == doc::kWhenHidden;
       } else if (const std::optional<double> v = elements_[static_cast<size_t>(src)]->selection(*target_)) {
         for (const double want : values) term = term || std::fabs(*v - want) < 1e-6;

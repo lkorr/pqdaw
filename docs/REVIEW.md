@@ -2310,3 +2310,16 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Is the editor's density right at zoom 1 (labels at 5.5 px)? Should a single click on the waveform do anything (it
   moves the block today)?
 - Goldens: new sampler-panel-classic / -oneshot / -slice at 1x and 2x; sampler-face-* unchanged.
+
+## 2026-11-21 · SM.13 · the Sampler's Granular section + grain dots (task/SM.13-granular-face) 👁
+- Gran mode (the mode row's 4th cell): the expanded panel shows a Granular section (Warp hides): Grain Mode
+  (Classic / Loop / Cloud), Shape, Grains, Freeze, Harmonic, then Position, Scan, Size, Spray, Pitch, Pan, Density (Loop /
+  Cloud only), and a row of ratio chips (n/d): click one to type "3/2" + Return, its × removes it, + adds the next
+  whole number. All one undo step each; the ratios dim while Harmonic is off.
+- The grain region is drawn on the editor's waveform and on the closed oval: a lit band from Position, one grain wide,
+  the spray shaded around it. Drag its body (Position) or its right edge (grain size).
+- Live grains show as glowing dots (size and glow by level, height by pan) in place of the playheads.
+- Closed, the three mini knobs become Position · Size · Density in Gran mode.
+- Not checked in the live app (tests and goldens only). Are the dots readable at zoom 1 with 16 voices × 16 grains?
+  Should pan map to height, or should all dots sit on the centre line?
+- Goldens: new sampler-face-grains / sampler-panel-gran at 1x and 2x; no existing golden moved.

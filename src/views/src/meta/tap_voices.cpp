@@ -14,13 +14,16 @@ double nowSeconds() {
   return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
+constexpr double kGrainStaleSeconds = 0.12;  // SM.13: a voice group's grains count as gone this long after its last record
+
 }  // namespace
 
-TapVoices::TapVoices(Resolve resolve, TableResolve table, RateResolve rate, GenerationResolve generation)
+TapVoices::TapVoices(Resolve resolve, TableResolve table, RateResolve rate, GenerationResolve generation, GrainResolve grains)
     : resolve_(std::move(resolve)),
       tableResolve_(std::move(table)),
       rateResolve_(std::move(rate)),
-      genResolve_(std::move(generation)) {
+      genResolve_(std::move(generation)),
+      grainResolve_(std::move(grains)) {
   follow();
   readGen_ = seenGen_ = table_.slot ? tableGeneration() : 0;  // the table there now is not news (a face reads it)
   lastTableChange_ = -1e300;
@@ -31,6 +34,9 @@ TapVoices::~TapVoices() = default;
 void TapVoices::park() noexcept {
   reader_.reset();
   tap_.reset();
+  grainReader_.reset();
+  grainTap_.reset();
+  grains_.clear();
   table_ = TableSlotRef{};
   seen_.clear();
   ++tapSerial_;
@@ -80,6 +86,19 @@ void TapVoices::follow() const noexcept {
     } catch (...) {  // keep the slot we have
     }
   }
+  if (grainResolve_) {  // SM.13: the grain tap (a mode change gives the instance one, or takes it)
+    try {
+      std::shared_ptr<pq::GrainTap> g = grainResolve_();
+      if (g != grainTap_) {
+        grainReader_.reset();
+        grainTap_ = std::move(g);
+        if (grainTap_) grainReader_ = std::make_unique<pq::GrainTapReader>(grainTap_, kGrainStaleSeconds);
+        ++tapSerial_;
+        readWritten_ = 0;
+      }
+    } catch (...) {  // keep the grain tap we have
+    }
+  }
   if (t == tap_) return;
   reader_.reset();
   tap_ = std::move(t);
@@ -95,9 +114,11 @@ void TapVoices::follow() const noexcept {
 }
 
 uint64_t TapVoices::written() const noexcept {
-  if (!tap_) return 0;
   uint64_t n = 0;
-  for (uint32_t g = 0; g < tap_->groups(); ++g) n += tap_->written(g);
+  if (tap_)
+    for (uint32_t g = 0; g < tap_->groups(); ++g) n += tap_->written(g);
+  if (grainTap_)  // SM.13
+    for (uint32_t g = 0; g < grainTap_->groups(); ++g) n += grainTap_->written(g);
   return n;
 }
 
@@ -142,11 +163,34 @@ HeardTable TapVoices::heardTable() const {
   return h;
 }
 
+uint32_t TapVoices::grains(std::span<FaceGrain> out) const {
+  const size_t n = std::min(out.size(), grains_.size());
+  std::copy_n(grains_.begin(), n, out.begin());
+  return static_cast<uint32_t>(n);
+}
+
 uint32_t TapVoices::read(std::span<FaceVoice> out) {
   follow();
   readGen_ = tableGeneration();
-  if (!reader_) return 0;
   const double now = nowSeconds();
+  grains_.clear();
+  if (grainReader_) {  // SM.13: the newest record of each voice group
+    (void)grainReader_->poll(now);
+    for (uint32_t g = 0; g < grainTap_->groups(); ++g) {
+      const pq::GrainTapRecord* r = grainReader_->group(g);
+      for (uint32_t i = 0; r != nullptr && i < r->count && grains_.size() < kMaxGrains; ++i) {
+        const pq::GrainTapGrain& x = r->grain[i];
+        grains_.push_back({x.position, x.amplitude, x.pan, g * 8u + x.lane});
+      }
+    }
+  }
+  if (!reader_) {
+    const uint64_t w = written();
+    if (w != readWritten_) lastRecord_ = now;
+    readWritten_ = w;
+    active_ = !grains_.empty();
+    return 0;
+  }
   const uint64_t w = written();
   if (w != readWritten_) lastRecord_ = now;
   readWritten_ = w;
@@ -177,7 +221,7 @@ uint32_t TapVoices::read(std::span<FaceVoice> out) {
     f.sampleCount = got;
     std::copy_n(hist_.begin(), got, f.samples.begin());
   }
-  active_ = n != 0;
+  active_ = n != 0 || !grains_.empty();
   return n;
 }
 

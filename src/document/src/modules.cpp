@@ -8,6 +8,7 @@
 #include <memory>
 #include <numbers>
 #include <string>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -2461,24 +2462,35 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   uint32_t id = 2;
   const uint32_t wave = id;
   panel.elements.push_back(element(id++, "samplewave", 24, 8, 104, 34, dataBinding(r.engine)));
+  // The mode row's id, taken now: the mini knobs' conditions name it (it is placed beside the oval below).
+  const uint32_t kKnobsAt = id;
+  id += 6;
+  r.expand = id++;
+  r.tabs = id++;
   {
     struct K {
       Binding b;
       float x, y;
+      bool gran;
     };
-    // Transpose, Filter (the Filter's Frequency), Volume (the engine's Gain): label-free, as the meta faces are (their
-    // names in the info view on hover).
-    for (const K& k : {K{controlBinding(r.engine, "transpose"), 34, 44},
-                       K{controlBinding(r.filterFrequency, std::string(kValueParam)), 63, 47},
-                       K{controlBinding(r.engine, "gain"), 92, 44}}) {
-      PanelElement e = element(id++, "knob", k.x, k.y, 26, 26, k.b);
+    // Transpose, Filter (the Filter's Frequency), Volume (the engine's Gain); SM.13: in Gran mode Position · Size ·
+    // Density in their places. Label-free, as the meta faces are (their names in the info view on hover). Each set is
+    // shown by the mode row (a condition reads it while the settings are folded away: folding is view state).
+    uint32_t kid = kKnobsAt;
+    for (const K& k : {K{controlBinding(r.engine, "transpose"), 34, 44, false},
+                       K{controlBinding(r.filterFrequency, std::string(kValueParam)), 63, 47, false},
+                       K{controlBinding(r.engine, "gain"), 92, 44, false},
+                       K{controlBinding(r.engine, "grainPosition"), 34, 44, true},
+                       K{controlBinding(r.engine, "grainSize"), 63, 47, true},
+                       K{controlBinding(r.engine, "density"), 92, 44, true}}) {
+      PanelElement e = element(kid++, "knob", k.x, k.y, 26, 26, k.b);
       e.setField(styleText("label", "-"));
       e.setField(styleText("readout", "none"));
       e.setField(styleNumber("track", 2.0));
+      e.when = k.gran ? Visibility{r.tabs, {3.0}, {}, false} : Visibility{r.tabs, {0.0, 1.0, 2.0}, {}, false};
       panel.elements.push_back(std::move(e));
     }
   }
-  r.expand = id++;
   {
     PanelElement chevron = element(r.expand, std::string(kFoldKind).c_str(), 68, kSamplerFaceH - 11.0f, 16, 11, {});
     chevron.bindings.clear();
@@ -2504,7 +2516,6 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   }
   const size_t backAt = panel.elements.size() - 1;
   // The mode row and the root, beside the oval.
-  r.tabs = id++;
   {
     PanelElement mode = element(r.tabs, "tabs", kRight, 10, kRightW, 16, settingBinding(r.engine, "mode"));
     mode.setField(styleText("items", kSamplerModes));
@@ -2570,6 +2581,7 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   // Warp: the 7-way mode, the sample's tempo; Beats: its envelope and loop; Tones / Texture (Complex …): the grain;
   // Texture: the flux.
   header("Warp", false);
+  panel.elements.back().when = Visibility{r.tabs, {0.0, 1.0, 2.0}, {}, false};  // SM.13: Granular does not warp
   {
     const float t = y;
     const uint32_t warp = id++;
@@ -2595,6 +2607,43 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   panel.elements.back().when = Visibility{r.tabs, {2.0}, {}, false};
   panel.elements.push_back(element(id++, "sampleslice", 6, y + 2, 328, 30, dataBinding(r.engine)));
   y += 36.0f;
+  // SM.13, Granular (Gran mode only): the grain mode, the window shape, the grains per voice, Freeze, Harmonic grains;
+  // the knobs Position, Scan, Size, Spray (time), Pitch and Pan spray, Density (Loop / Cloud: Classic spawns one grain
+  // per period); the harmonic list (`sampleharm`: n/d chips, the data's `harmonics`).
+  header("Granular", false);
+  panel.elements.back().when = Visibility{r.tabs, {3.0}, {}, false};
+  {
+    const float t = y;
+    const uint32_t gm = id++;
+    PanelElement m = element(gm, "menu", 6, t + 4, 80, 26, settingBinding(r.engine, "granMode"));
+    m.setField(styleText("items", "Classic|Loop|Cloud"));
+    m.setField(styleText("label", "Grain Mode"));
+    panel.elements.push_back(std::move(m));
+    PanelElement sh = element(id++, "menu", 92, t + 4, 80, 26, settingBinding(r.engine, "shape"));
+    sh.setField(styleText("items", "Hann|Tukey|Gauss|Triangle|Exp"));
+    sh.setField(styleText("label", "Shape"));
+    panel.elements.push_back(std::move(sh));
+    PanelElement gr = element(id++, "number", 178, t + 4, 54, 26, settingBinding(r.engine, "grains"));
+    gr.setField(styleText("label", "Grains"));
+    panel.elements.push_back(std::move(gr));
+    for (const auto& [x, w, bind, text] : {std::tuple{240.0f, 40.0f, controlBinding(r.engine, "freeze"), "Freeze"},
+                                        std::tuple{284.0f, 44.0f, settingBinding(r.engine, "harmonic"), "Harmonic"}}) {
+      PanelElement on = element(id++, "toggle", x, t + 13, w, 14, bind);
+      on.setField(styleText("look", "button"));
+      on.setField(styleText("text", text));
+      panel.elements.push_back(std::move(on));
+    }
+    const float k = t + 34;
+    panel.elements.push_back(knob("grainPosition", "Position", 6, k));
+    panel.elements.push_back(knob("scan", "Scan", 52, k));
+    panel.elements.push_back(knob("grainSize", "Size", 98, k));
+    panel.elements.push_back(knob("sprayTime", "Spray", 144, k));
+    panel.elements.push_back(knob("sprayPitch", "Pitch", 190, k));
+    panel.elements.push_back(knob("sprayPan", "Pan", 236, k));
+    panel.elements.push_back(when(knob("density", "Density", 282, k), gm, {1.0, 2.0}));
+    panel.elements.push_back(element(id++, "sampleharm", 6, k + 60, 328, 24, dataBinding(r.engine)));
+    y = k + 88.0f;
+  }
   // The Envelope, the Filter and the LFO: their own panels; the Filter and LFO switches beside their headers.
   const auto embedded = [&](const char* title, DeviceId group, DeviceId onOff) {
     const float head = y;
