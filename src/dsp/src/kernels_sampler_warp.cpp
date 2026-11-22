@@ -2,6 +2,7 @@
 // Texture per lane over a live SampleSlot; SM.5: Complex / Complex Pro (pq/dsp/sampler_stretch.h) with the slot's
 // stretchers.
 
+#include <cstddef>
 #include <cstring>
 
 #include "kernels_common.h"
@@ -20,6 +21,10 @@ constexpr uint32_t kVoiceWords = (static_cast<uint32_t>(sizeof(WarpVoice)) + 3u)
 constexpr uint32_t kComplexWords = (static_cast<uint32_t>(sizeof(ComplexVoice)) + 3u) / 4u;
 constexpr uint32_t kLaneWords = kVoiceWords + 1 + kComplexWords;
 static_assert(kLaneWords <= kSamplerWarpWords, "WarpVoice + ComplexVoice outgrew SamplerWarpState");
+// SM.14: the words a free lane's stop writes (WarpVoice::stop, ComplexVoice idle: the next trigger primes afresh).
+constexpr uint32_t kActiveWord = static_cast<uint32_t>(offsetof(WarpVoice, active)) / 4u;
+constexpr uint32_t kPhaseWord = kVoiceWords + 1 + static_cast<uint32_t>(offsetof(ComplexVoice, phase)) / 4u;
+static_assert(offsetof(WarpVoice, active) % 4 == 0 && offsetof(ComplexVoice, phase) % 4 == 0);
 
 void loadLane(const SamplerWarpState& st, uint32_t l, WarpVoice& v, uint32_t& gen, ComplexVoice& cv) noexcept {  // RT-safe
   uint32_t buf[kLaneWords];
@@ -81,7 +86,18 @@ struct SamplerWarpK {
     auto resetAt = [&](uint32_t i, uint32_t lane) noexcept {
       return maskIsTrue(splBit(SM, 1) ? a.in[1][lane] : a.in[1][i * W + lane]);
     };
+    const uint32_t freeLanes = W == 8 ? ~a.laneMask & 0xFFu : 0u;  // SM.14 (kernel.h "Occupied lanes")
     for (uint32_t lane = 0; lane < W; ++lane) {
+      // SM.14: a free lane (its voice is over) stops: no render, no vocoder, until the note-on that occupies it.
+      // Its stretcher claim stays (a moved copy of the voice may be the one that holds it; the lane's next trigger
+      // frees what it held).
+      if (((freeLanes >> lane) & 1u) != 0) {
+        st.w[kActiveWord][lane] = 0;
+        st.w[kPhaseWord][lane] = ComplexVoice::kWait;
+        for (uint32_t i = 0; i < frames; ++i)
+          a.out[0][i * W + lane] = a.out[1][i * W + lane] = a.out[2][i * W + lane] = a.out[3][i * W + lane] = 0.0f;
+        continue;
+      }
       WarpVoice v;
       uint32_t gen = 0;
       ComplexVoice cv;

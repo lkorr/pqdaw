@@ -439,6 +439,11 @@ struct SampleReadK {
     alignas(32) float rateA[8], scaleA[8];
     alignas(32) float activeA[8];
     S::store(activeA, S::load(st.active));
+    if constexpr (W == 8) {  // SM.14: a free lane's playhead stops (kernel.h "Occupied lanes")
+      if (const uint32_t freeLanes = ~a.laneMask & 0xFFu; freeLanes != 0)
+        for (uint32_t l = 0; l < W; ++l)
+          if (((freeLanes >> l) & 1u) != 0) activeA[l] = 0.0f;
+    }
     // Every lane on the newest entry (the common case): one compare instead of the per-lane walk.
     const bool allNewest = !S::any(S::bnot(S::asF(S::eqi(S::loadu32(st.gen), S::seti(static_cast<int32_t>(newGen))))));
     if (allNewest) groups[0].lanes = (1u << W) - 1u;

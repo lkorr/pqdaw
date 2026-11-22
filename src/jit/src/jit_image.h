@@ -70,6 +70,9 @@ struct HostLayout {
   std::vector<uint8_t> pairable;
   std::vector<uint32_t> altOff;
   std::vector<uint32_t> opInfoB;
+  // SM.14: pointer-table slots of the host's run records (ImageHost::runCtx / runCtxB: the group's occupied lanes,
+  // KernelArgs::laneMask of the readsLanes kernels); kNone when no voice op reads them.
+  uint32_t runSlot = 0xFFFFFFFFu, runSlotB = 0xFFFFFFFFu;
 };
 
 // Atoms whose voice ops codegen generates inline wherever they are (the "simple stateful" atoms, codegen.h).

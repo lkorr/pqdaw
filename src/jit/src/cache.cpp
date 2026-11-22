@@ -52,7 +52,8 @@ namespace g = pq::graph;
 
 // Entry format: bump kFormat whenever the payload layout or the meaning of a key field changes.
 constexpr char kMagic[8] = {'P', 'Q', 'J', 'I', 'T', 'C', 'C', 'H'};
-constexpr uint32_t kFormat = 4;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3); 4: objects (PF.4)
+constexpr uint32_t kFormat = 5;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3); 4: objects (PF.4);
+                                 // 5: KernelArgs::laneMask (SM.14)
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint64_t kMaxPayload = uint64_t{256} << 20;
 constexpr const wchar_t* kExt = L".pqjit";
@@ -146,7 +147,7 @@ static_assert(sizeof(g::Ramp) == 24, "graph::Ramp changed: update codegenDigest"
 static_assert(sizeof(g::ProbeRef) == 28, "graph::ProbeRef changed: update codegenDigest");
 static_assert(sizeof(g::SleepPlan) == 152, "graph::SleepPlan changed: update codegenDigest");
 static_assert(sizeof(g::RegionSleep) == 12, "graph::RegionSleep changed: update codegenDigest");
-static_assert(sizeof(HostLayout) == 208, "HostLayout changed: update codegenDigest");  // (memoOff fills padding)
+static_assert(sizeof(HostLayout) == 216, "HostLayout changed: update codegenDigest");  // (memoOff fills padding; SM.14 runSlot)
 static_assert(sizeof(g::RampStage) == 24, "graph::RampStage changed: update codegenDigest");
 
 Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots) {
@@ -279,6 +280,7 @@ Key codegenDigest(const g::Schedule& s, const HostLayout& L, uint32_t hostSlots)
   h.putU32s(L.pairable);
   h.putU32s(L.altOff);
   h.putU32s(L.opInfoB);
+  h.put(L.runSlot), h.put(L.runSlotB);  // SM.14
   h.put(hostSlots);
   return hashBytes(h.bytes().data(), h.bytes().size());
 }

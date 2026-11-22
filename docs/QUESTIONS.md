@@ -2556,7 +2556,9 @@ Context: SM.5 (docs/plans/SM.md "SM.5", "Semantics" Complex note-on, open risks 
 6. **Open (CPU)**: a voice whose lane the VoiceEngine has freed while its WarpVoice still plays (Classic looping after the
    envelope's release) keeps running — Tones since SM.4, the vocoder now — until the lane is retriggered, whenever its
    group runs for another voice. A per-lane "occupied" mask the kernel could read (as VoiceTap::setLaneMask) would stop
-   it; not done here (touches the VoiceEngine / image host). Status: open.
+   it; not done here (touches the VoiceEngine / image host). Status: decided (SM.14): a general `KernelArgs::laneMask`
+   word (the group's occupied lanes) delivered to `KernelInfo::readsLanes` kernels on both backends; sampler_warp,
+   granular and sample_read stop a freed lane (docs/ARCHITECTURE.md leaf-atom kernel ABI "Occupied lanes").
 
 ## Q?-SM.6-a · Sampler granulator (granular atom, GrainTap): readings taken where the plan left room
 Context: SM.6 (docs/plans/SM.md "Semantics" Granular, "SM.6"). Choices (most reversible):
@@ -2578,4 +2580,4 @@ Context: SM.6 (docs/plans/SM.md "Semantics" Granular, "SM.6"). Choices (most rev
    differ by their voice slot). A per-node seed input is a one-line follow-up if wanted.
 6. **A retrigger keeps the voice's live grains** unless the sample changed (then they stop at once: a click on a swap +
    retrigger). Harmonic ratios come from the data's `harmonics` ((n, d) pairs; default 1, 2, 3/2, 3, 4, 5).
-7. Q?-SM.5-a 6 applies here too: a freed lane whose voice never ends keeps spawning grains while its group runs.
+7. Q?-SM.5-a 6 applies here too: a freed lane whose voice never ends keeps spawning grains while its group runs. (Fixed by SM.14.)

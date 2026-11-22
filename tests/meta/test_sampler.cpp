@@ -11,6 +11,7 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,8 @@
 #include "pq/core/epoch_reclaimer.h"
 #include "pq/dsp/sample_slot.h"
 #include "pq/dsp/sampler_stretch.h"
+#include "pq/engine/note_events.h"
+#include "pq/engine/voices.h"
 #include "pq/graph/parse.h"
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
@@ -752,4 +755,205 @@ TEST_CASE("sampler: Granular — the granular atom on both backends, at blocks 3
     CHECK(ref.g[1000] == 1.0f);
     CHECK(ref.g[N - 1] == 0.0f);  // the gate fell: Classic's voice end
   }
+}
+
+// ---- SM.14: freed lanes stop (KernelArgs::laneMask) -------------------------------------------------------------------
+// The Sampler per voice under a VoiceEngine (16 voices, 3 groups): the engine frees a lane when its voice ends (Classic,
+// Granular: the gate fell), and its group keeps running for the voices still held. The stateful kernels stop a freed
+// lane (sampler_warp: its WarpVoice / ComplexVoice; granular: its grains; sample_read: its playhead).
+
+namespace {
+
+Rig compileVoiceRig(const std::vector<double>& settings, const std::string& call) {
+  ExpandContext x;
+  x.voice = true;
+  x.settings = settings;
+  const uint32_t slots[] = {1};
+  x.slots = slots;
+  std::string text = graph::print(mustExpand(x).patch);
+  text += "\npatch V {\n  out l : audio voice\n  out r : audio voice\n  out done : bool voice\n";
+  text += "  s = smp(hz: voice.hz, gate: voice.gate" + call + ")\n  l = s.out[0]\n  r = s.out[1]\n  done = s.done\n}\n";
+  const fs::path f = fs::temp_directory_path() / "pq_test_sampler_voices.pqp";
+  std::ofstream(f, std::ios::binary) << text;
+  auto src = compile::SourceFile::load(f);
+  REQUIRE_MESSAGE(src.ok(), (src.ok() ? std::string() : src.error().message));
+  auto idx = (*src)->findPatch("V");
+  REQUIRE(idx.ok());
+  compile::CompileOptions co;
+  co.sampleRate = kSr;
+  auto c = compile::compilePatch(**src, *idx, co);
+  REQUIRE_MESSAGE(c.ok(), (c.ok() ? std::string() : c.error().message) << "\n" << text);
+  Rig r;
+  r.src = std::move(src.value());
+  r.c = std::move(c.value());
+  fs::remove(f);
+  return r;
+}
+
+struct NoteAt {
+  uint64_t t;
+  bool on;
+  uint32_t id;
+  float hz;
+};
+
+struct VoiceRender {
+  std::vector<float> l, r;
+  std::vector<uint64_t> chunks;  // per block: the stretcher bank's chunks computed so far (0 without a bank)
+  uint64_t rtViolations = 0;
+};
+
+VoiceRender renderVoices(const Rig& rig, compile::Backend backend, dsp::SampleSlot& slot, uint64_t frames,
+                         uint32_t block, const std::vector<NoteAt>& notes) {
+  const dsp::SampleSlot* views[2] = {nullptr, &slot};
+  engine::Resources res;
+  res.samples = views;
+  compile::ImageOptions io;
+  io.maxBlockFrames = 1024;
+  io.maxVoiceGroups = 3;
+  io.resources = &res;
+  auto img = compile::buildImage(rig.c.schedule, backend, io);
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? std::string() : img.error().message));
+  engine::VoiceEngine ve;
+  engine::VoiceConfig cfg;
+  cfg.maxVoices = 16;
+  cfg.doneSlot = engine::findVoiceSlot((*img)->io(), rig.c.scheduled().patch, "done");
+  REQUIRE(cfg.doneSlot != engine::kNoSlot);
+  REQUIRE(ve.prepare(img->get(), cfg).ok());
+  uint32_t ml = 0, mr = 0;
+  for (uint32_t i = 0; i < ve.numMixes(); ++i) {
+    const std::string n = rig.c.scheduled().patch.nodeName((*img)->io().voiceOut[ve.mixSlot(i)].node);
+    if (n == "l") ml = i;
+    if (n == "r") mr = i;
+  }
+  engine::EventBuffer buf(256);
+  VoiceRender out;
+  DenormalGuard dg;
+  size_t next = 0;
+  for (uint64_t t0 = 0; t0 < frames; t0 += block) {
+    const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(block, frames - t0));
+    buf.clear();
+    for (; next < notes.size() && notes[next].t < t0 + n; ++next) {
+      const NoteAt& e = notes[next];
+      const auto f = static_cast<uint32_t>(e.t - t0);
+      buf.push(e.on ? engine::noteOn(f, e.id, e.hz, 0.8f) : engine::noteOff(f, e.id));
+    }
+    engine::ProcessContext ctx;
+    ctx.frames = n;
+    ctx.sampleRate = kSr;
+    ctx.sampleTime = static_cast<int64_t>(t0);
+    ctx.transport.bpm = 120.0;
+    ctx.transport.playing = true;
+    ctx.events = &buf.list();
+    out.rtViolations += alloc_trap::countRtViolations([&] { ve.process(ctx); });
+    out.l.insert(out.l.end(), ve.mix(ml), ve.mix(ml) + n);
+    out.r.insert(out.r.end(), ve.mix(mr), ve.mix(mr) + n);
+    const dsp::SamplerStretch* bank = slot.stretchView();
+    out.chunks.push_back(bank != nullptr ? bank->chunks : 0);
+  }
+  return out;
+}
+
+uint64_t fnv(const std::vector<float>& a, const std::vector<float>& b) {
+  uint64_t h = 1469598103934665603ull;
+  for (const auto* v : {&a, &b})
+    for (const float x : *v) {
+      const uint32_t u = std::bit_cast<uint32_t>(x);
+      for (int k = 0; k < 4; ++k) h = (h ^ ((u >> (8 * k)) & 0xFFu)) * 1099511628211ull;
+    }
+  return h;
+}
+
+// 16 notes at frame 0 (ids 1 … 16, within a fifth: one mip level), all but note 1 released at `release`; later notes
+// `extra`.
+std::vector<NoteAt> sixteen(uint64_t release, bool all = true, const std::vector<NoteAt>& extra = {}) {
+  std::vector<NoteAt> v;
+  for (uint32_t k = 0; k < (all ? 16u : 1u); ++k)
+    v.push_back({0, true, k + 1, static_cast<float>(kRoot * std::exp2(static_cast<double>(k) * 7.0 / 31.0 / 16.0 * 3.0))});
+  if (all)
+    for (uint32_t k = 1; k < 16; ++k) v.push_back({release, false, k + 1, 0.0f});
+  for (const NoteAt& e : extra) v.push_back(e);
+  std::stable_sort(v.begin(), v.end(), [](const NoteAt& a, const NoteAt& b) { return a.t < b.t; });
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("SM.14 sampler: renders with freed lanes in a running group — Classic, Tones loop, Complex, Granular") {
+  // The voices' mixes (16 notes, 15 released at 0.25 s, a 17th at 0.5 s into a freed lane, interpreter == JIT): the
+  // mix only holds occupied lanes, so these are the FNV hashes of origin/main 76402a45 (before freed lanes stopped).
+  Sample smp(48000, 44100.0);
+  smp.slot.setStretch(dsp::SamplerStretch::build(24, 2, kSr), smp.reclaimer);
+  const auto notes = sixteen(12000, true, {{24000, true, 17, kRoot * 1.1f}, {33000, false, 17, 0.0f}});
+  struct Case {
+    const char* name;
+    std::vector<double> settings;
+    const char* call;
+    uint64_t hash;
+  };
+  const Case cases[] = {
+      {"classic loop", {0.0, 0.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2, loopFade: 0.01",
+       10306494242544494933ull},
+      {"tones loop", {0.0, 3.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2, grain: 0.04",
+       16467499559850472747ull},
+      {"complex loop", {0.0, 5.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2", 14897091141915727426ull},
+      {"granular", {3.0, 0.0, 1.0, 0.0, 1.0, 1.0, 12.0, 0.0, 0.0}, ", grainSize: 0.04, density: 70, sprayTime: 0.01",
+       17647464308222159515ull},
+  };
+  for (const Case& c : cases) {
+    CAPTURE(c.name);
+    const Rig rig = compileVoiceRig(c.settings, c.call);
+    const VoiceRender a = renderVoices(rig, compile::Backend::Interpreter, smp.slot, 40000, 64, notes);
+    const VoiceRender b = renderVoices(rig, compile::Backend::Jit, smp.slot, 40000, 64, notes);
+    CHECK(a.l == b.l);
+    CHECK(a.r == b.r);
+    CHECK(a.rtViolations == 0);
+    // Sounding: all 16, then note 1 alone, then with note 17.
+    auto peak = [&](size_t t0, size_t t1) {
+      double p = 0.0;
+      for (size_t t = t0; t < t1; ++t) p = std::max(p, static_cast<double>(std::abs(a.l[t])));
+      return p;
+    };
+    MESSAGE(std::string(c.name) << " hash " << fnv(a.l, a.r) << " peaks " << peak(2000, 12000) << " " << peak(14000, 24000)
+                                << " " << peak(26000, 33000));
+    CHECK(peak(14000, 24000) > 0.05);
+    CHECK(peak(26000, 33000) > peak(14000, 24000) * 1.05);
+    CHECK(fnv(a.l, a.r) == c.hash);
+  }
+}
+
+TEST_CASE("SM.14 sampler: 16 Complex voices, 15 released — the freed lanes' vocoders stop; a freed lane primes afresh") {
+  // Work done = the stretcher bank's vocoder chunks. After the 15 voices end (the block after their note-off), the
+  // group of the held note keeps running: its 7 freed lanes must cost nothing, so the chunks per block are those of a
+  // render with note 1 alone. Note 17 then takes freed lane 1 (its old voice's stretcher): from there on the mix is
+  // bit for bit the one where lane 1 was never used (a clean priming), on both backends.
+  REQUIRE(alloc_trap::installed());
+  Sample smp(48000, 44100.0);
+  const Rig rig = compileVoiceRig({0.0, 5.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2");
+  const std::vector<NoteAt> extra = {{24000, true, 17, kRoot * 1.1f}, {40000, false, 17, 0.0f}};
+  constexpr uint64_t kN = 48000;
+  constexpr size_t kFrom = 13056;  // a block boundary after the voices' end
+  for (const auto backend : {compile::Backend::Interpreter, compile::Backend::Jit}) {
+    CAPTURE(static_cast<int>(backend));
+    smp.slot.setStretch(dsp::SamplerStretch::build(24, 2, kSr), smp.reclaimer);
+    const VoiceRender all = renderVoices(rig, backend, smp.slot, kN, 64, sixteen(12000, true, extra));
+    smp.slot.setStretch(dsp::SamplerStretch::build(24, 2, kSr), smp.reclaimer);
+    const VoiceRender one = renderVoices(rig, backend, smp.slot, kN, 64, sixteen(12000, false, extra));
+    CHECK(all.rtViolations == 0);
+    const size_t b0 = kFrom / 64;
+    REQUIRE(all.chunks.size() == one.chunks.size());
+    CHECK(all.chunks[b0] > 16 * one.chunks[b0] / 2);  // all 16 ran their vocoders before the release
+    uint64_t worst = 0;
+    for (size_t b = b0; b < all.chunks.size(); ++b) {
+      const uint64_t da = all.chunks[b] - all.chunks[b0], d1 = one.chunks[b] - one.chunks[b0];
+      worst = std::max(worst, da > d1 ? da - d1 : d1 - da);
+    }
+    MESSAGE("chunks after the release: 16 voices " << all.chunks.back() - all.chunks[b0] << ", note 1 alone "
+                                                  << one.chunks.back() - one.chunks[b0]);
+    CHECK(worst == 0);
+    CHECK(one.chunks.back() - one.chunks[b0] > 100);  // the held note (and note 17) still run theirs
+    CHECK(std::equal(all.l.begin() + kFrom, all.l.end(), one.l.begin() + kFrom));
+    CHECK(std::equal(all.r.begin() + kFrom, all.r.end(), one.r.begin() + kFrom));
+  }
+  smp.slot.setStretch(nullptr, smp.reclaimer);
 }

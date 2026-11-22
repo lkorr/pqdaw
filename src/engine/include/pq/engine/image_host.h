@@ -200,6 +200,11 @@ public:
   // voice value of stage k (null: in the buffer itself, i.e. per-group or not written in the stage).
   void enablePairs(const std::vector<uint8_t>& pairableStages, const std::function<float*(uint32_t, uint32_t)>& alt);
   const ReduceInfo* reduceInfoB(uint32_t op) const noexcept;  // a reducer's record for a pair's second group
+  // SM.14: the run records of the group being run (and of a pair's second group): their laneMask is the group's
+  // occupied lanes while its voice stage runs (KernelArgs::laneMask of the KernelInfo::readsLanes kernels: the
+  // interpreter copies it into their records, the JIT loads it through its pointer table). Fixed addresses.
+  const RunCtx& runCtx() const noexcept { return run_; }
+  const RunCtx& runCtxB() const noexcept { return runB_; }
   bool pairable(uint32_t stage) const noexcept { return stage < pairable_.size() && pairable_[stage] != 0; }
 
   // ---- the ProgramImage accessors ----

@@ -78,9 +78,9 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // SM.2: rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units → out, playing, right,
     // pos (kernels_sample.cpp); everything after reset is param rate.
     {"sample_read_linear", 11, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FCu, sizeof(SampleReadState),
-     Resource::Sample, false},
+     Resource::Sample, false, true},
     {"sample_read_cubic", 11, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FCu, sizeof(SampleReadState),
-     Resource::Sample, false},
+     Resource::Sample, false, true},
     {"sample_pos_linear", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
     {"sample_pos_cubic", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
     // Every input may be Spl or Blk; the kernel reads KernelArgs::splMask (kernels_tuning.cpp).
@@ -138,9 +138,10 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     // SM.4 (kernels_sampler_warp.cpp): rate, reset, then 14 param-rate inputs (SM.5: + formants, formantOrder) → out,
     // playing, right, pos.
     {"sampler_warp", 16, 4, false, false, kB1, kB1, kB0 | kB1, 0xFFFCu, sizeof(SamplerWarpState), Resource::Sample,
-     false},
+     false, true},
     // SM.6 (kernels_granular.cpp): hz, reset, then 17 param-rate inputs → out, playing, right, pos.
-    {"granular", 19, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FFFCu, sizeof(GranularState), Resource::Sample, false},
+    {"granular", 19, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FFFCu, sizeof(GranularState), Resource::Sample, false,
+     true},
 };
 
 bool isDelay(Atom a) noexcept {
