@@ -1371,3 +1371,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected after rebase 34/37 → document + views bugs fixed (document 327/327, views default tier), playback_s0 JI lowering bound flake passes on re-run; Slice to Notes playback test (97 BPM, onsets within 1 sample); real-dispatch slicing test.
 - Perf / CPU-efficiency check: sensitivity filters cached onsets, never re-detects; no audio-thread change.
 - Notes/blockers: Q?-SM.12-a; transient slicing waits for the analysis; context-menu item untested.
+
+## 2026-11-21 · SM.5 · task/SM.5-complex-voice (merged d9ca85aa)
+- Did: StretchPool → pq_dsp; `dsp::SamplerStretch` (one stretcher per voice lane, the sample's channels) hangs on the Sampler's SampleSlot (outside the JIT arena), built by the link only for Complex / Pro, freed otherwise. ComplexVoice: Tones while priming (≤ 4·max(1,r) frames per sample, golden-ratio stagger), 2 ms crossfade, vocoder read at Φ + per-sample resample; Pro formants r^(−formants%). Complex = Tones fallback removed.
+- Verified: -Affected -Slow after rebase onto 7075e94a (with SM.6) 88/90 + 2 known flakes pass alone; < 0.5 ¢ at 18\31 and after a glide; 22 clip hashes bit-identical; RtScope; call-length + backend invariance; Classic allocates no stretcher.
+- Perf / CPU-efficiency check (ship, loaded): 16 voices 684 ns / voice-frame (≈ 3.3 % of a core each; clip 513), +18\31 934, Pro 1014; mono samples get mono stretchers.
+- Notes/blockers: Q?-SM.5-a; content lags ≈ 5 ms in fast glides; freed lanes keep running (→ SM.14).
+
+## 2026-11-21 · SM.6 · task/SM.6-granular (merged 176fb1d7)
+- Did: `granular` atom (Classic / Loop / Cloud, time / pitch / pan spray, 5 windows, Freeze, harmonic n/d grains from data, counter-hash RNG; 8 grains per AVX2 op, scalar spawning); `pq::GrainTap` + ResourceKind::GrainTap on the slot; sampler mode Granular; mode row gained "Gran".
+- Verified: same -Affected -Slow run; reference model within 2e-5 (5 cases), bit-identical across call lengths and backends, tap test, RtScope; views re-run after the mode-row change; 6 sampler-panel goldens re-recorded (mode row only).
+- Perf / CPU-efficiency check (ship): 16 v × 16 g 911 ns/frame (3.6 ns per grain-frame), 16 v × 4 g 341, silence 48 ns for 16 lanes.
+- Notes/blockers: Q?-SM.6-a; Granular panel section is SM.13.
