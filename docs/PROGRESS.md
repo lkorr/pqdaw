@@ -1389,3 +1389,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier; pq_tests_document sampler / panel 13/13; pqdaw compiles; real-dispatch tests (visibility per mode, knob set + drag, region drags + undo, chips); hidden face holds no grain reader; 4 new goldens (sampler-face-grains, sampler-panel-gran, 1× + 2×), none moved.
 - Perf / CPU-efficiency check: UI only; tap read only while shown; ≤ 512 grains copied per poll, no allocation after the first.
 - Notes/blockers: Q?-SM.13-a; hidden-face test reads the reader directly (no hub poll); not checked live.
+
+## 2026-11-21 · SM.14 · task/SM.14-lane-mask (merged 1623a3a0)
+- Did: `KernelArgs::laneMask` (former padding; 48 B kept) = the running group's occupied lanes (`VoiceGroupIO::laneMask`), given only to kernels with `KernelInfo::readsLanes` (sampler_warp, granular, sample_read_*), others see 0xFF; interpreter patches those records per group, JIT loads from the host run record (`HostLayout::runSlot/runSlotB`, cache format 5). A freed lane: WarpVoice / ComplexVoice idle (re-prime on next trigger), grains cleared, sample_read stopped, outputs 0. Q?-SM.5-a 6 decided.
+- Verified: -Affected -Slow 90/90; ship bench linked; meta 16 Complex / 15 released: vocoder chunks 462 = held-only 462 (main: 2100 vs 519), retrigger bit-identical to a fresh lane, both backends; dsp test_lane_mask (240 assertions fail with the mask forced off); occupied-lane voice hashes unchanged from 76402a45; clip hashes pass.
+- Perf / CPU-efficiency check (ship): 16 Complex primed, 14 freed: 657.9 ns/frame vs 5348.6 for 16 held (freed lanes ≈ 0); other kernels untouched.
+- Notes/blockers: sample_read is lane-SIMD, so freeing saves state, not CPU; a dead looping lane no longer lowers sample_read's mip choice. QUESTIONS conflict with SM.13 resolved (both kept).
