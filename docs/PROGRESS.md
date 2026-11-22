@@ -1383,3 +1383,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: same -Affected -Slow run; reference model within 2e-5 (5 cases), bit-identical across call lengths and backends, tap test, RtScope; views re-run after the mode-row change; 6 sampler-panel goldens re-recorded (mode row only).
 - Perf / CPU-efficiency check (ship): 16 v × 16 g 911 ns/frame (3.6 ns per grain-frame), 16 v × 4 g 341, silence 48 ns for 16 lanes.
 - Notes/blockers: Q?-SM.6-a; Granular panel section is SM.13.
+
+## 2026-11-21 · SM.13 · task/SM.13-granular-face (merged acf8c800)
+- Did: Granular fold in the expanded panel (Gran only): grain mode, shape, grains, Freeze, Harmonic, Position … Density (Density in Loop / Cloud), `sampleharm` n/d chips (data, no recompile); Warp hidden in Gran; grain region drawn + draggable on editor and oval (body = Position, edge = Size, one undo step); live grain dots by amplitude replace playheads; closed-face knobs Position · Size · Density in Gran. Grains via `VoiceTapReader::grains` (TapVoices grain lookup, FaceVoiceHub request 2). General: `when` reads sources inside folded sections.
+- Verified: pq_tests_views default tier; pq_tests_document sampler / panel 13/13; pqdaw compiles; real-dispatch tests (visibility per mode, knob set + drag, region drags + undo, chips); hidden face holds no grain reader; 4 new goldens (sampler-face-grains, sampler-panel-gran, 1× + 2×), none moved.
+- Perf / CPU-efficiency check: UI only; tap read only while shown; ≤ 512 grains copied per poll, no allocation after the first.
+- Notes/blockers: Q?-SM.13-a; hidden-face test reads the reader directly (no hub poll); not checked live.

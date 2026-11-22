@@ -948,5 +948,5 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SM.10 Closed face** 👁 *(merged 04d3cd86; Q?-SM.10-a; REVIEW; 6 new goldens; chevron opens the SM.3 tabbed panel until SM.11; no Filter / LFO switches (no panel binding for block on/off) → SM.11; knobs are the Classic set in every mode until SM.6)* (plan SM.10)
 - [x] **SM.11 Expanded panel + waveform editor** 👁 *(merged 9eb94271; Q?-SM.11-a; REVIEW; 6 new goldens; general fold additions (parent / section / when / toggle), `@active` block on/off binding; no Granular section / Gran cell yet → SM.13)* (plan SM.11)
 - [x] **SM.12 Slicing + Slice to Notes** *(merged 0b2fa202; Q?-SM.12-a; transient cache format v2 (onset strengths); Slice to Notes onsets within 1 sample at 97 BPM)* (plan SM.12)
-- [ ] **SM.13 Granular section + grain dots** 👁 (plan SM.13)
+- [x] **SM.13 Granular section + grain dots** 👁 *(merged acf8c800; Q?-SM.13-a; REVIEW; 4 new goldens; `when` reads sources in folded sections; Warp hidden in Gran)* (plan SM.13)
 - [ ] **SM.14 Lane-occupied mask for stateful voice kernels** (Q?-SM.5-a item 6: a lane the VoiceEngine freed keeps running its WarpVoice / vocoder / grains until retriggered; general mechanism, any per-voice kernel)
