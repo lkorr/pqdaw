@@ -1401,3 +1401,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected -Slow 66/66 after rebase; ship pq_bench_dsp links; new full-path tests (clip and live keys → ArpStage → VoiceEngine `voice.hz` bends with Into Prev); real-dispatch bend-view + pattern-view drags; 5 goldens re-recorded (arp-panel-walk / -lanes / -degrees-bends / -bend-view, project-patch-arp).
 - Perf / CPU-efficiency check: nothing per sample or block added; an offset glide is one exp2 (no pitchOf).
 - Notes/blockers: "glide does nothing" was the Glide lane (scaled Into / Out that are off by default); glide itself was not broken. Q?-AR.2-a. Open: no curve / knee drag in the pattern view; tie under lane-only slide untested; not checked live.
+
+## 2026-11-23 · AR.1 · task/AR.1-arp-placement (merged 58730c09)
+- Did: note devices in the node menu's MIDI effects tab (by declared in / out); Tab on a MIDI band places one free, on an audio band / in a group refused with the reason; Tab over a Notes cable inserts onto it; `doc::notesWireClash` (in `declaredWireClash`): a Notes main input takes only note cables, a Notes output goes only into what takes notes — refused while dragging and by the cable edits; wiring both ends removes the direct notes → instrument cable in the same undo step.
+- Verified: worker -Affected 46/46; after the merge with AR.2 pq_tests_views default tier 1022/1023 → `project-node-menu-midi` re-recorded (it shows the arp's param list, which AR.2 changed) → node-menu / arp cases pass; pq_tests_document passes.
+- Perf / CPU-efficiency check: UI / document only; the rule returns early unless an end declares Notes.
+- Notes/blockers: Q?-AR.1-a. Open: a notes cable dropped on empty canvas is not filtered to note devices (instruments must stay connectable); the tuning block's pin cannot start a cable; a loaded rule-breaking wire is inert, not rejected; not checked live.

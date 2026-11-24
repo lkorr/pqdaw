@@ -952,7 +952,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SM.14 Lane-occupied mask for stateful voice kernels** *(merged 1623a3a0; `KernelArgs::laneMask` for kernels with `readsLanes`; JIT cache format 5; 16 Complex, 14 freed: 5349 → 658 ns/frame)* (Q?-SM.5-a item 6: a lane the VoiceEngine freed keeps running its WarpVoice / vocoder / grains until retriggered; general mechanism, any per-voice kernel)
 
 ### AR: arpeggiator rework (docs/plans/AR.md; user 2026-11-23)
-- [ ] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1)
+- [x] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1) *(merged 58730c09; Q?-AR.1-a; new golden project-node-menu-midi)*
 - [x] **AR.2 Glide: drag the note (bend view editor, fewer params), Glide lane = slide per step** 👁 (plan AR.2) *(merged 2906ad09; Q?-AR.2-a; 5 goldens re-recorded)*
 - [ ] **AR.3 Pulse: cycle / division rows, masks + shift, clickable pulse view** 👁 (plan AR.3; after AR.2)
 - [ ] **AR.4 Step lanes get room (Transpose grid, lane menu) + panel pass** 👁 (plan AR.4; after AR.1)
