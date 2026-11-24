@@ -215,6 +215,95 @@ TEST_CASE("project silence: dormant units are skipped bit-exactly; silent buses 
   CHECK(skip.rtViolations == 0);
 }
 
+// OP.4: a silent bus is neither scanned nor, once zeros are published for a window that held nothing else, published
+// again. What readMeters() returns must be what scanning every block gives: per window (the blocks since the previous
+// read) the peak, the mean square over ALL its frames (silent blocks included) and the last sample; windows read at
+// several cadences, across sound -> tail -> silence -> sound again (a second note wakes the idle units).
+TEST_CASE("project meters: a bus read through its silence equals scanning every block (OP.4)") {
+  for (const uint32_t every : {1u, 16u, 37u, 400u}) {
+    CAPTURE(every);
+    auto proj = makeProject(2);
+    eng::ProjectCompiler compiler(compileOptions(true));
+    auto b = compiler.build(proj->graph);
+    REQUIRE_MESSAGE(b.ok(), (b.ok() ? "" : b.error().message));
+    eng::ProjectLayout layout = b.value().layout;
+    layout.busMetered.assign(layout.busWidth.size(), 1);
+    REQUIRE(layout.outputBus < layout.busWidth.size());
+    constexpr uint64_t kFrames = 48000 * 14;
+    constexpr int64_t kSecond = 48000 * 9;  // after every tail has died away: the units are idle, the buses silent
+    std::vector<std::unique_ptr<eng::NoteListSource>> notes;
+    eng::ProjectConfig pc;
+    pc.sampleRate = kSr;
+    pc.maxBlockFrames = kBlock;
+    pc.numOut = 1;
+    pc.idleUnits = true;
+    for (uint32_t k = 0; k < 2; ++k) {
+      std::vector<eng::TimedNote> list{{static_cast<int64_t>(2000 * k), 960, 220.0f * (1.0f + 0.25f * static_cast<float>(k)), 0.8f, 0.5f}};
+      if (k == 0) list.push_back({kSecond, 960, 330.0f, 0.8f, 0.5f});
+      notes.push_back(std::make_unique<eng::NoteListSource>(std::move(list)));
+      pc.eventSources.push_back(notes.back()->source());
+    }
+    auto prog = eng::ProjectProgram::create(pc, layout);
+    REQUIRE(prog.ok());
+    eng::ProjectProgram& program = *prog.value();
+    for (uint32_t u = 0; u < b.value().images.size(); ++u) REQUIRE(program.publish(u, std::move(b.value().images[u])).ok());
+    std::vector<uint32_t> buses(layout.busWidth.size());
+    for (uint32_t i = 0; i < buses.size(); ++i) buses[i] = i;
+    std::vector<eng::BusLevel> levels(buses.size());
+    std::vector<float> l(kBlock);
+    float* outs[1] = {l.data()};
+    uint64_t rtViolations = 0, windows = 0, silentWindows = 0, loudAfterSilence = 0, wrong = 0;
+    float peak = 0.0f, last = 0.0f;
+    double sumSq = 0.0;
+    uint64_t n = 0, block = 0;
+    for (uint64_t t = 0; t < kFrames; t += kBlock, ++block) {
+      eng::AudioBlock ab;
+      ab.out = outs;
+      ab.numOut = 1;
+      ab.frames = kBlock;
+      ab.frameTime = static_cast<int64_t>(t);
+      rtViolations += pq::alloc_trap::countRtViolations([&] {
+        pq::DenormalGuard dg;
+        program.process(ab);
+      });
+      for (const float x : l) {
+        peak = std::max(peak, std::fabs(x));
+        sumSq += static_cast<double>(x) * x;
+      }
+      last = l[kBlock - 1];
+      n += kBlock;
+      if ((block + 1) % every != 0) continue;
+      program.readMeters(buses, levels);
+      const eng::BusLevel& out = levels[layout.outputBus];  // the device's output is this bus
+      const double ms = sumSq / static_cast<double>(n);
+      const bool ok = out.channels == 1 && out.peak[0] == peak && out.last[0] == last &&
+                      std::fabs(static_cast<double>(out.meanSquare[0]) - ms) <= 1e-5 * ms + 1e-30 &&
+                      (peak != 0.0f || out.meanSquare[0] == 0.0f);
+      if (!ok) {
+        ++wrong;
+        if (wrong <= 3) MESSAGE("window ending at block " << block << ": peak " << out.peak[0] << " want " << peak << ", ms "
+                                << out.meanSquare[0] << " want " << ms << ", last " << out.last[0] << " want " << last);
+      }
+      // Every other metered bus: zero levels exactly when its window was silent is checked through the output bus's
+      // producers too (a track bus that reads 0 while the output is loud would be a stale fast path).
+      ++windows;
+      if (peak == 0.0f) ++silentWindows;
+      else if (silentWindows > 0 && t >= static_cast<uint64_t>(kSecond)) ++loudAfterSilence;
+      peak = 0.0f;
+      sumSq = 0.0;
+      n = 0;
+    }
+    CHECK(wrong == 0);
+    CHECK(rtViolations == 0);
+    CHECK(windows > 10);
+    CHECK(silentWindows > 0);      // the fast path's windows
+    CHECK(loudAfterSilence > 0);   // and the meter came back with the second note
+    bool idled = false;
+    for (uint32_t u = 0; u < program.numUnits(); ++u) idled = idled || program.unitStats(u).idleBlocks > 0;
+    CHECK(idled);
+  }
+}
+
 TEST_CASE("project silence: the stdlib reverb/delay fixture falls fully asleep after its tails (T1.x-silence)") {
   // The acceptance fixture (idle_project_fixture.h; 30 tracks in bench/engine/bench_silence.cpp), 6 tracks here.
   constexpr uint32_t kFixtureTracks = 6;

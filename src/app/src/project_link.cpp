@@ -2836,6 +2836,7 @@ void ProjectLink::continuePlayback() {
 void ProjectLink::locate(Ticks tick) {
   const views::PlayheadSnapshot now = playhead();
   if (!now.playing) prefetchAt(tick);  // T5.4: Play then starts with the streams filled
+  else if (pool_ != nullptr) pool_->wake();  // OP.4: the claims at the new position read at once (2 ms polling)
   postTransport({engine::TransportCommandKind::Locate, false, tick, 0, 0});
   optimistic_ = {now.playing, tick, 0};
 }

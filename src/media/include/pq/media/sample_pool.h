@@ -34,7 +34,10 @@
 // into a staging buffer, converted into the rings (pq/media/pcm.h). It refills a ring as soon as one whole read fits
 // (256 KiB, or a quarter of a small ring), most-starved first, up to 32 reads in flight (QUESTIONS Q?-T5.2-a: the
 // plan's "below half full" stalls a reader whose block exceeds the gap; rings stay nearly full instead). It waits on an event that only non-RT code sets (engage(), wake(), prefetch(), waitFilled()):
-// while engaged or while any stream is claimed it polls every 2 ms (a high-resolution waitable timer); otherwise it
+// while a pass had reads to issue, a render waits (waitFilled) or, engaged, for 250 ms after such a call, it polls
+// every 2 ms (a high-resolution waitable timer); engaged otherwise, every 50 ms or sooner (OP.4: a quarter of the time
+// the emptiest ring lasts at a rate no reader reaches), which serves the claims the audio thread makes ahead of need
+// (a clip's voice 0.5 s before it starts; a stream from the file's start has the resident head first); otherwise it
 // blocks without a timeout (0 wakeups when idle).
 // Recording writes on its own thread (pq/app/recording.h), never on this one (M6 review M9).
 
@@ -184,10 +187,12 @@ public:
   void startDiskThread();
   void stopDiskThread();
   // While engaged (refcounted; the playback link brackets Play … Stop with engage/disengage) the disk thread polls the
-  // stream slots every 2 ms, so RT claims are served. Non-RT.
+  // stream slots, so RT claims are served: every 2 ms for 250 ms after engage() or wake() (claims that read at
+  // once: Play, a locate while playing), then every 50 ms or sooner (claims made ahead of need). Non-RT.
   void engage();
   void disengage();
-  // One pass soon (after a claim made outside engagement, or a new prefetch). Non-RT.
+  // One pass now (after a claim made outside engagement, or a new prefetch), and 2 ms polling for the next 250 ms
+  // while engaged: call it with any command after which the audio thread claims a stream it reads at once. Non-RT.
   void wake();
   // Prefetch for a locate while stopped: a stream for `sample` read from `frame` in `dir` (the part outside the
   // resident head), filled now and adopted by the RT claim that SampleCursor::start makes at the same position.

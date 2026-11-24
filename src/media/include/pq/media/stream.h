@@ -9,8 +9,10 @@
 //                                                      wrap); frames the disk thread has not delivered yet read as
 //                                                      silence and count one underrun
 //   release(id)                                        returns the slot
-// The consumer never signals a kernel object (a syscall): the disk thread polls the slots every 2 ms while it is
-// engaged (playback, prefetch, renders) and blocks otherwise (SamplePool::engage / wake).
+// The consumer never signals a kernel object (a syscall): the disk thread polls the slots while it is engaged
+// (playback, prefetch, renders; every 2 ms after a wake, every 50 ms or sooner otherwise: sample_pool.h) and blocks
+// otherwise (SamplePool::engage / wake). A claim that reads the ring at once therefore follows a wake() (or was
+// prefetched); every other claim is made ahead of its first read.
 //
 // Ordering: per span one acquire load of the slot's fill word and one release store of the read position; no
 // per-sample atomics, no copies (the caller reads the ring in place). Each slot word carries the claim's generation,

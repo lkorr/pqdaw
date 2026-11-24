@@ -294,6 +294,7 @@ public:
   void emit(uint32_t slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;
   // Nothing held, nothing queued (the engine may sleep). RT-safe.
   bool idle() const noexcept { return numHeld_ == 0 && numPending_ == 0; }
+  bool anyPending() const noexcept { return numPending_ != 0; }  // OP.4: emit() would look at something. RT-safe.
   uint32_t heldNotes() const noexcept { return numHeld_; }
   const LiveInputStats& stats() const noexcept { return stats_; }  // audio thread (or after it)
   // Engine time of host time `stamp` (the filter's current map; before any host time: blockStart). Audio thread.

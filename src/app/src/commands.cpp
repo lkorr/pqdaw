@@ -112,6 +112,12 @@ struct WindowApp {
   bool quit = false;
   uint32_t framesPresented = 0;
   uint32_t framesSkipped = 0;
+  // OP.1 (pq/ui/frame_pacer.h, frameWait): the interactive loop's last frame time and when the pacer last returned
+  // from a compositor pass, on now()'s clock (negative = not yet); the refresh period of the window's display (0:
+  // unknown).
+  double lastFrame = -1.0;
+  double lastPass = -1.0;
+  double displayPeriod = 0.0;
   std::string error;
   // T0.7-fix6: the Vulkan pipeline cache file and what it held at startup (saved after the first frame if the
   // driver's cache differs).
@@ -241,6 +247,26 @@ struct WindowApp {
   }
 
   double now() const { return std::chrono::duration<double>(Clock::now() - start).count(); }
+
+  // The window's display's refresh period: read at startup and when the window changes display or the display its
+  // mode. PQ_REFRESH_HZ overrides it (measuring the pacing of a display this machine does not have).
+  void refreshDisplayPeriod() {
+    displayPeriod = 0.0;
+    double hz = 0.0;
+    if (const char* e = std::getenv("PQ_REFRESH_HZ"); e != nullptr && *e != '\0') {
+      hz = std::atof(e);
+    } else if (const SDL_DisplayMode* m = SDL_GetCurrentDisplayMode(SDL_GetDisplayForWindow(window->sdl()))) {
+      hz = m->refresh_rate_denominator > 0
+               ? static_cast<double>(m->refresh_rate_numerator) / static_cast<double>(m->refresh_rate_denominator)
+               : static_cast<double>(m->refresh_rate);
+    }
+    if (hz > 20.0 && hz < 1000.0) displayPeriod = 1.0 / hz;
+  }
+
+  // Waits for the next compositor pass (bounded: FramePacer::wait) and notes when it came.
+  void waitForPass() {
+    if (pacer.wait()) lastPass = now();
+  }
 
   // Runs the tree's timers/frame requests/layout and turns its damage into a frame request.
   void updateUi() {
@@ -447,7 +473,10 @@ struct WindowApp {
       case SDL_EVENT_WINDOW_RESTORED:
       case SDL_EVENT_WINDOW_MAXIMIZED:
       case SDL_EVENT_WINDOW_SHOWN: damage.addAll(); break;
+      case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED: refreshDisplayPeriod(); break;  // OP.1: a new refresh rate
       case SDL_EVENT_WINDOW_DISPLAY_CHANGED:  // moved to another monitor
+        refreshDisplayPeriod();
+        [[fallthrough]];
       case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
         if (!refreshScale()) std::fprintf(stderr, "pqdaw: UI scale change failed: %s\n", error.c_str());
         damage.addAll();
@@ -559,6 +588,7 @@ Result<std::unique_ptr<WindowApp>> openWindowApp(const CliOptions& o, bool hidde
                   ct.instance, ct.choose, ct.device, ct.rest);
     addStartupNote(note);
   }
+  app->refreshDisplayPeriod();
   auto sc = Swapchain::create(*app->gpu, *app->window, 2);
   if (!sc) return std::move(sc).error();
   app->swapchain = std::move(*sc);
@@ -630,7 +660,24 @@ bool paceIfAnotherFrameDue(WindowApp& app) {
   pump(app);
   app.updateUi();
   if (app.quit || (!app.frameDue() && !(app.ui && app.ui->needsFrame()))) return false;
-  app.pacer.wait();  // one frame per compositor pass, without a driver vsync spin
+  app.waitForPass();  // one frame per compositor pass, without a driver vsync spin
+  return true;
+}
+
+// OP.1 (pq/ui/frame_pacer.h, frameWait): before a frame that became due within the refresh the previous one was
+// drawn in (a widget timer a few ms after the last frame; input while something animates): waits for the next one
+// and takes what arrived meanwhile, so every timer firing in that time is drawn in this one frame. A frame due a
+// refresh period or more after the previous one (the first after an idle wait) is not held back. Returns whether it
+// waited.
+bool paceBeforeFrame(WindowApp& app) {
+  const FrameWait w = frameWait(app.now(), app.lastFrame, app.lastPass, app.pacer.available() ? app.pacer.period() : 0.0,
+                                app.displayPeriod);
+  if (w.kind == FrameWait::Kind::Pass) app.waitForPass();
+  else if (w.kind == FrameWait::Kind::Sleep) app.pacer.sleep(w.seconds);
+  app.lastFrame = frameTime(w, app.lastFrame, app.now(), app.displayPeriod);
+  if (w.kind == FrameWait::Kind::None) return false;
+  pump(app);
+  app.updateUi();
   return true;
 }
 
@@ -654,6 +701,7 @@ int interactive(WindowApp& app) {
     app.pollTheme();
     app.updateUi();
     if (app.frameDue() && !app.window->minimized()) {
+      if (paceBeforeFrame(app) && app.quit) break;
       if (!app.drawFrame()) {
         std::fprintf(stderr, "pqdaw: frame failed: %s\n", app.error.c_str());
         SDL_RemoveEventWatch(&WindowApp::liveResizeWatch, &app);

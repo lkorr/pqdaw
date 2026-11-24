@@ -2836,3 +2836,31 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   kernel's first touch, not only the tap's.
 - Choice (provisional): A; C looks the more valuable follow-up (OP.4 touches the same per-block overhead).
 - Status: open
+
+## Q?-OP.1-a · 2026-11-24 · OP.1 · The audit's "60 Hz display" is a 100 Hz one
+- Context: OP.md F1 expected 85 → 60 and 109 → 60 frames per second. This machine's primary display (and so DwmFlush
+  and the app window) runs at 100 Hz; the second one at 60 Hz. One present per refresh therefore gives 85 → 84 and
+  110 → 100 here: almost nothing with the arrangement. On a display slower than the pacer (the window dragged to the
+  60 Hz monitor) the loop now paces by time: 59 – 60 frames per second, UI thread −30 % with the arrangement.
+- Consequence for Q?-OP.0-a: at 100 Hz the UI's playback cost is what F2 / the animation-rate answer decide, not F1.
+- Status: note (nothing to decide)
+
+## Q?-OP.4-a · 2026-11-24 · OP.4 · The master's sum over silent inputs is not done
+- Context: F8's third item. The sum is `add` nodes in the Master unit's compiled patch, so skipping the inputs
+  `inSilent` marks means a silence-aware sum in the schedule and both backends (`schedule.cpp`, `codegen.cpp`,
+  `interpreter.cpp`: OP.5's files), and it has to keep the sum's order (x + 0 is exact, a −0 is not kept). Nothing in
+  `project_program.cpp` can do it. Worth ≈ 24 ns per frame at 64 tracks with 4 sounding (0.1 % of a core).
+- Options: A. leave it. B. a task after OP.5 / OP.7 (same files): an n-ary sum op whose silent operands the sleep plan
+  lets the host mask per block.
+- Choice (provisional): A.
+- Status: open
+
+## Q?-OP.4-b · 2026-11-24 · OP.4 · The disk thread still polls while the transport runs (every 50 ms, not never)
+- Context: F7 proposed no timeout when no stream is active, "with the existing wake event for new claims". There is
+  no such event for a claim: the audio thread claims lock-free and never signals (stream.h). With no timeout a clip
+  that starts while playing would never be read. So: 2 ms for 250 ms after a wake (engage, prefetch, wake; `locate`
+  while playing now calls `wake`), 2 ms while reads are issued, otherwise 50 ms or a quarter of the time the emptiest
+  ring lasts at 768 k frames / s. A clip's voice claims its stream 0.5 s before it starts, so 50 ms is early enough.
+- Left: a claim that reads at once without a wake before it waits up to 50 ms instead of 2 (none known: Play, locate
+  and previews wake; samplers pin their samples resident).
+- Status: note
