@@ -6,6 +6,9 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/main_path.h"
+#include "pq/document/meta.h"
+#include "pq/document/note_devices.h"
+#include "pq/meta/registry.h"
 
 namespace pq::doc {
 
@@ -64,7 +67,36 @@ std::optional<PortType> targetType(const Project& p, const Wire& w, const Device
 
 }  // namespace
 
+WireClash notesWireClash(const Project& p, const Wire& w) {
+  const Device* from = w.fromNoteSource() ? nullptr : findDevice(p, w.from).device;
+  const Device* to = w.toMixer() ? nullptr : findDevice(p, w.to).device;
+  const MainSignals fs = from != nullptr ? declaredMainSignals(*from) : MainSignals{};
+  const MainSignals ts = to != nullptr ? declaredMainSignals(*to) : MainSignals{};
+  if (fs.out != ChainSignal::Notes && ts.in != ChainSignal::Notes) return WireClash::None;  // (nearly every wire)
+  // An end by its main port: kMainPort, or the port's own name (a wire not yet canonical).
+  const bool mainOut = from != nullptr && (w.port.empty() || w.port == mainPortsOf(*from, nullptr).out);
+  const bool mainIn = to != nullptr && (w.param.empty() || w.param == mainPortsOf(*to, nullptr).in);
+  const bool notesOut = mainOut && fs.out == ChainSignal::Notes;
+  const bool notesIn = mainIn && ts.in == ChainSignal::Notes;
+  if (notesIn) {
+    bool carries = notesOut;
+    if (w.fromNoteSource() && w.port.empty())
+      if (const Track* t = findTrackPtr(p, w.noteSource)) carries = t->kind == TrackKind::Midi;
+    if (!carries) return WireClash::NotesInput;
+  }
+  if (notesOut && !notesIn) {
+    bool takes = false;
+    if (mainIn) {
+      const meta::Type* mt = isMetaDevice(*to) ? meta::findType(metaDeviceType(*to)) : nullptr;
+      takes = isGroupDevice(*to) || to->kind == DeviceKind::Instrument || (mt != nullptr && metaChainInput(*to, *mt) >= 0);
+    }
+    if (!takes) return WireClash::NotesOutput;
+  }
+  return WireClash::None;
+}
+
 WireClash declaredWireClash(const Project& p, const Wire& w, const DeviceLibrary* lib) {
+  if (const WireClash c = notesWireClash(p, w); c != WireClash::None) return c;
   if (lib == nullptr) return WireClash::None;
   const std::optional<PortType> src = sourceType(p, w, *lib);
   if (!src) return WireClash::None;
@@ -83,6 +115,10 @@ std::string_view wireClashText(WireClash c) noexcept {
     case WireClash::RealIntoBool:
       return "Wire: a real signal cannot drive a bool input (on / off): compare it first (a comparison block's output is a bool)";
     case WireClash::EventMismatch: return "Wire: an event output only drives an event input, and an event input takes only events";
+    case WireClash::NotesInput:
+      return "Wire: a notes input takes only a notes cable (a MIDI track's notes, or a note effect's output)";
+    case WireClash::NotesOutput:
+      return "Wire: a notes output goes only into a main input that takes notes (an instrument, a rack, a module, a note effect)";
   }
   return "";
 }

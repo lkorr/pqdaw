@@ -34,6 +34,8 @@ std::vector<NoteDeviceType> makeTypes() {
   arp.id = "arpeggiator";
   arp.name = "Arpeggiator";
   arp.patchName = "Arpeggiator";
+  arp.description = "Plays the held notes one after another: styles, steps, octaves, glides and pulses. A note effect: "
+                    "it goes on a MIDI track's notes cable, before the instrument.";
   arp.in = arp.out = ChainSignal::Notes;
   arp.stage = NoteStageKind::Arpeggiator;
   arp.panel = &arpeggiatorPanel;
@@ -100,6 +102,11 @@ bool isNoteDevice(const Device& d) noexcept { return isNoteDevicePatch(d.patch);
 const NoteDeviceType* noteDeviceTypeOf(const Device& d) noexcept {
   if (!d.patch.starts_with(kNoteDevicePrefix)) return nullptr;
   return findNoteDeviceType(std::string_view(d.patch).substr(kNoteDevicePrefix.size()));
+}
+
+MainSignals declaredMainSignals(const Device& d) noexcept {
+  const NoteDeviceType* t = noteDeviceTypeOf(d);
+  return t != nullptr ? MainSignals{t->in, t->out} : MainSignals{};
 }
 
 std::string noteDevicePatchText(const NoteDeviceType& t) {

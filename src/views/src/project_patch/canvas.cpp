@@ -1474,8 +1474,10 @@ const char* ProjectCanvas::dropRefusal(const PinHit& from, uint32_t to, bool onP
   if (notes && from.port == 0 && t.kind != NodeKind::Mixer && (onPin ? t.inputs[port].param : !onPin))
     return "Wire: the notes go into a main input (an instrument's notes, a meta module's input); a parameter takes a note output (Hz, gate, velocity)";
   // An instrument's notes input takes notes: a MIDI track's source (output 0) — TX.cross-track (SPEC §15 2026-11-03
-  // "tracks are not walls"): any track's, which then plays it with its voices — no audio, no other output.
-  if (onPin && t.inputs[port].name == "notes" && !(notes && from.port == 0))
+  // "tracks are not walls"): any track's, which then plays it with its voices — no audio, no other output. AR.1: or the
+  // main output of a block declared Notes out; an input DECLARED Notes has the declared rule (typeClashAt).
+  const bool notesFrom = a.kind == NodeKind::Device && a.declNotesOut && from.port == 0;
+  if (onPin && t.inputs[port].name == "notes" && !t.declNotesIn && !(notes && from.port == 0) && !notesFrom)
     return "Wire: an instrument's notes input takes a MIDI track's notes (from a track's source)";
   return nullptr;
 }
@@ -1500,8 +1502,13 @@ doc::WireClash ProjectCanvas::typeClashAt(Vec2 pos) const {
   } else {
     return doc::WireClash::None;
   }
+  const PinHit pin = pinAt(pos);
   if (const uint32_t to = nodeAt(pos); to != kNone && pp.nodes[to].kind == NodeKind::Mixer) {  // (finishWire's order)
     w.mixer = pp.bands[pp.nodes[to].band].track;
+  } else if (pin.valid() && pin.input && pin.node < pp.nodes.size() && pp.nodes[pin.node].kind == NodeKind::Device &&
+             pp.nodes[pin.node].mainIn >= 0 && pin.port == static_cast<uint32_t>(pp.nodes[pin.node].mainIn) &&
+             pp.nodes[pin.node].inputs[pin.port].name.find('@') == std::string::npos) {
+    w.to = pp.nodes[pin.node].device;  // AR.1: a block's main input pin (a `notes` pin too): kMainPort
   } else {
     const ProjectPatchView::WireTarget t = view_.wireTargetAt(pos);  // the pin or control a release connects
     if (!t.device.valid()) return doc::WireClash::None;
@@ -1733,10 +1740,11 @@ void ProjectCanvas::finishWire(Vec2 pos) {
         // TX.all-free: an instrument's `notes` takes a track's source (the notes: TX.cross-track — any MIDI track's, which
         // then plays it with its voices; its own track's is a main link, the head of the path); a rack's input only a
         // main output (a main link). Any other output there is refused, as before.
-        const bool notesIn = param == "notes";
+        // AR.1: an input DECLARED Notes (a note device's) is wired by the declared rule (connectEnds refuses the rest).
+        const bool notesIn = param == "notes" && !t.declNotesIn;
         const bool mainOnly = notesIn;
         const bool fromSource = isTrackSource(a) && from_.port == 0 && (a.band == t.band || (notesIn && isNoteSource(pp, a)));
-        const bool fromMain = fromSource || (!notesIn && a.kind == NodeKind::Device &&
+        const bool fromMain = fromSource || ((!notesIn || a.declNotesOut) && a.kind == NodeKind::Device &&
                                              a.outputs[from_.port].name == v.mainPorts(a.device).out);
         if (mainOnly && !fromMain) return;
         if (mainOnly) param.clear();
@@ -2039,9 +2047,12 @@ bool ProjectCanvas::onKey(const ui::KeyEvent& e) {
     Vec2 at = pointer_;
     if (!rect().contains(at)) at = {static_cast<float>(rect().x + rect().w / 2), static_cast<float>(rect().y + rect().h / 2)};
     uint32_t edge = edgeAt(at);
-    // TX.node-menu-fix1: over a cable nothing can be inserted into (notes, routes, sends), Tab adds a node as on empty
-    // canvas (it did nothing but a status line).
-    if (e.key == ui::key::kTab && edge != kNone && !cuttableEdge(edge)) edge = kNone;
+    // TX.node-menu-fix1: over a cable nothing can be inserted into (routes, sends), Tab adds a node as on empty canvas
+    // (it did nothing but a status line). AR.1: a NOTES cable takes a note effect (the insert menu offers the entries
+    // whose main input and output are Notes).
+    if (e.key == ui::key::kTab && edge != kNone && !cuttableEdge(edge) &&
+        !(view_.patch().edges[edge].kind == EdgeKind::Notes && view_.patch().edges[edge].wire.valid()))
+      edge = kNone;
     if (e.key == 'z') {
       // bug-wire-cut: over an input port (a pin, a control, a mixer's input) with cables into it, one VCA takes them all
       // (the port before a cable that passes over it); over a port without cables, nothing.

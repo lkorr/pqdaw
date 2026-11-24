@@ -154,8 +154,12 @@ struct Node {
   // AP.2 (pq/document/note_devices.h): a NOTE DEVICE — never in the graph (the lowering dissolves it), so not `lowered`,
   // yet it plays (not veiled while active); `notesOut`: the notes reach it (its chain stage gives Notes), so the cable
   // out of its main output is a notes cable (EdgeKind::Notes, per voice).
+  // AR.1: `declNotesIn` / `declNotesOut`: its main input / output is DECLARED Notes (doc::declaredMainSignals) — what a
+  // cable may join there (doc::notesWireClash), and a cable out of such an output into a main input is drawn as a
+  // notes cable whether or not the notes reach the block yet (a half-wired note device: amber on its wired side).
   bool noteStage = false;
   bool notesOut = false;
+  bool declNotesIn = false, declNotesOut = false;
   bool expanded = false;       // Device: drawn opened to its atoms (LayoutOptions::expanded)
   bool folded = false;         // TL.1: on a folded band (hidden: not drawn, not hit, its wires neither)
   // TX.all-free: off its track's main path (doc::mainPath): placed on the row under the path until a nudge moves it, and
