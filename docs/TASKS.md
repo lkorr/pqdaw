@@ -960,10 +960,10 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ### OP: CPU optimisation pass (docs/plans/OP.md; user 2026-11-23)
 - [x] **OP.0 Measured audit** *(merged 573267fb; Q?-OP.0-a, -b; pq_bench_scenarios)*
-- [ ] **OP.1 One present per compositor pass** (plan F1; lane 2)
+- [x] **OP.1 One present per compositor pass** (plan F1) *(merged dac5be82; Q?-OP.1-a; the display is 100 Hz, not 60: frames 850 → 840 / 1100 → 1000 per 10 s, little gain)*
 - [ ] **OP.2 Analyser / face frame cost; animation rate** (plan F2; after OP.1 and the answer to Q?-OP.0-a)
 - [x] **OP.3 SVF key cache, tap flag on a hot line** (plan F3) *(merged ec45a30c; Q?-OP.3-a; EQ ×8 −13.6 %; fixed an 8-lane key-switch bug; tap stall not removed)*
-- [ ] **OP.4 Engine housekeeping: voice-unit param pass, silent meters, idle note sources, master sum, disk poll** (plan F4, F7, F8; lane 2)
+- [x] **OP.4 Engine housekeeping: voice-unit param pass, silent meters, idle note sources, master sum, disk poll** (plan F4, F7, F8) *(merged dac5be82; Q?-OP.4-a, -b; synth tracks −4 … −9 %, 64 silent tracks −49 %, disk thread 0.37 → 0.03 %; master-sum part not done)*
 - [ ] **OP.5 Voice stages: independent recursions in one loop** (plan F5; lane 1, after OP.3)
 - [ ] **OP.6 Constant-input fast paths, vector glide shapes** (plan F6, F9; lane 2)
 - [ ] **OP.7 SVF sections interleaved** (plan F3; lane 1, after OP.5)

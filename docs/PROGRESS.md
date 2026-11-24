@@ -1467,3 +1467,15 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected -Slow 99/101: `meta-wavetable-voices` (pq_tests_playback_s3) fails on main since WF.2 (line joins; lives in playback, not run by the UI task) → re-recorded by the orchestrator after comparing (glyphs / trace only, dots unmoved); pq_tests_meta TableBuilder waitIdle timeout under load passes alone. 3 new svf cases (11983 assertions). Ship benches link.
 - Perf / CPU-efficiency check (ship, interleaved ×5 medians): fx/eq ×8 in series 22716 → 19618 ns/block (−13.6 %); svf lowpass L8 6.96 → 4.80 ns/frame, lowshelf L8 9.69 → 4.83; session within noise.
 - Notes/blockers: Q?-OP.3-a: the tap-flag move did NOT remove the stall (`signalTap1` still 2.3 – 2.5 % of fx/eq ×8; cause not established).
+
+## 2026-11-24 · OP.1 · task/OP.1-4-pacing-housekeeping (merged dac5be82)
+- Did: a frame due in the refresh the previous one was drawn in waits for the next compositor pass (timers fold into one frame); first frame after idle immediate; pure `frameWait / frameTime` (pq/ui/frame_pacer.h) + loop-model test. A window on a display slower than the pacer is paced by time; `PQ_REFRESH_HZ` overrides.
+- Verified: -Affected -Slow 90/90 after the rebase; no golden moved; idle 0 frames.
+- Perf / CPU-efficiency check: the audit's premise was wrong: the primary display runs at 100 Hz (not 60), so 85 – 109 fps was about the refresh rate. Frames per 10 s playing, old → new at 100 Hz: arrangement 850 → 840, faces 1100 → 1000; with PQ_REFRESH_HZ=60: 592 / 599. UI-thread ms unreliable (machine loaded).
+- Notes/blockers: Q?-OP.1-a. The playing UI's cost scales with the refresh rate: the animation-rate cap (Q?-OP.0-a) is what would cut it.
+
+## 2026-11-24 · OP.4 · task/OP.1-4-pacing-housekeeping (merged dac5be82)
+- Did: `paramsUnchanged` for voice units too; a silent bus is not scanned for meters; `Engine::onSlot` returns early for a slot with nothing to do; disk thread: 2 ms polls only for 250 ms after a wake or while reads are issued, else ≤ 50 ms from the emptiest ring's fill, `locate` while playing wakes it (the audit's "wake event for a claim" does not exist: claims are lock-free).
+- Verified: same run 90/90; audio hashes and goldens unchanged; RtScope pass; new tests: meters vs a full scan at 4 read cadences, quiet-poll rate, wake-on-engage, 4× reader with 0 underruns.
+- Perf / CPU-efficiency check (ship pq_bench_scenarios, interleaved ×8 medians, ns/block): default 1 voice 2135 → 2035, 8 tracks 15327 → 14209, 16 tracks 33584 → 30466, Operator 8 v 6650 → 6400, 64 silent tracks 3056 → 1548, 4 of 64 sounding 11144 → 9732; disk thread playing without clips 0.37 % → 0.03 % of a core.
+- Notes/blockers: Q?-OP.4-a: the master sum skipping silent inputs NOT done (the sum is `add` nodes in the Master's compiled patch: schedule / codegen work, OP.5's files). Q?-OP.4-b: a claim with no wake before it is found within ≤ 50 ms instead of 2.
