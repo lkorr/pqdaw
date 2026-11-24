@@ -951,7 +951,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SM.13 Granular section + grain dots** 👁 *(merged acf8c800; Q?-SM.13-a; REVIEW; 4 new goldens; `when` reads sources in folded sections; Warp hidden in Gran)* (plan SM.13)
 - [x] **SM.14 Lane-occupied mask for stateful voice kernels** *(merged 1623a3a0; `KernelArgs::laneMask` for kernels with `readsLanes`; JIT cache format 5; 16 Complex, 14 freed: 5349 → 658 ns/frame)* (Q?-SM.5-a item 6: a lane the VoiceEngine freed keeps running its WarpVoice / vocoder / grains until retriggered; general mechanism, any per-voice kernel)
 - [x] **SM.15 One warp law, one Beats renderer, shared warp rules / enums (clip + sampler)** (plan "Rework 2026-11-23" SM.15) *(merged a794c609; Q?-SM.15-a; 22 clip + 3 sampler hashes re-recorded; sampler Beats 10.9 → 7.5, Texture 16.2 → 9.5 ns per voice-frame)*
-- [ ] **SM.16 One Complex stream + sampler warp CPU** (plan SM.16; w1, after SM.15)
+- [x] **SM.16 One Complex stream + sampler warp CPU** (plan SM.16) *(merged c23cb719; Q?-SM.16-a; no hash moved; sampler Beats −18 %, Tones −19 %, Texture −40 %; Complex unchanged (vocoder-bound))*
 - [x] **SM.17 Sampler panel pass: radial choices, warp in the header, labels, live check** 👁 (plan SM.17) *(merged 8011e46f; Q?-SM.17-a; REVIEW; 16 sampler goldens re-recorded, 3 new)*
 
 ### WF: clean waveforms, zoom to samples (docs/plans/WF.md; user 2026-11-23)
