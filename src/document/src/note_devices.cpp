@@ -230,7 +230,7 @@ Panel arpeggiatorPanel(DeviceId dev) {
   // Arp, left column: Style; Gate, Groove; Seed, Offset; Repeats, Hold.
   const uint32_t style = k.ctl("menu", 10, 8, 104, 28, A::Style, "Style").id;
   k.ctl("knob", 10, 44, 48, 58, A::Gate);
-  k.ctl("knob", 62, 44, 48, 58, A::Groove);
+  k.ctl("knob", 62, 44, 48, 58, A::Groove).setField(styleNumber("origin", 0.5));  // bipolar: 0 in the middle
   k.ctl("number", 10, 112, 48, 26, A::Seed, "Seed");
   k.ctl("number", 62, 112, 48, 26, A::Offset, "Offset");
   k.ctl("number", 10, 146, 48, 26, A::Repeats, "Repeats").setField(styleText("zero", "\xE2\x88\x9E"));

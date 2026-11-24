@@ -242,7 +242,7 @@ ArpParams sanitized(const ArpParams& in) noexcept {  // RT-safe
   p.retriggerRate.synced = true;
   auto unit = [](float v, float lo, float hi, float def) { return std::isfinite(v) ? std::clamp(v, lo, hi) : def; };
   p.gate = unit(p.gate, 0.01f, 2.0f, 0.5f);
-  p.groove = unit(p.groove, 0.0f, 1.0f, 0.0f);
+  p.groove = unit(p.groove, -1.0f, 1.0f, 0.0f);
   p.repeats = std::max(p.repeats, 0);
   if (static_cast<uint32_t>(p.retrigger) > 2) p.retrigger = ArpRetrigger::Off;
   if (static_cast<uint32_t>(p.unit) > 2) p.unit = ArpUnit::Degrees;

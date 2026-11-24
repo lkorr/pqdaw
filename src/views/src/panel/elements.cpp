@@ -411,6 +411,7 @@ public:
       {"pointer", StyleSpec::Type::Choice, 0, "arc", kPointers},
       {"track", StyleSpec::Type::Number, 3.0, {}, {}, 0.5, 12.0},
       {"sweep", StyleSpec::Type::Number, 270.0, {}, {}, 30.0, 360.0},
+      {"origin", StyleSpec::Type::Number, 0.0, {}, {}, 0.0, 1.0},  // where the value fill starts (0.5: a bipolar knob)
       {"colour", StyleSpec::Type::Token, 0, "value"},
       {"readout", StyleSpec::Type::Choice, 0, "below", kReadouts},
       {"label", StyleSpec::Type::Text, 0, ""},
@@ -441,6 +442,8 @@ public:
     const bool ok = editable(t);
     const Rgba accent = ok ? colour(th, "colour", "value", th.face.value) : ui::lerp(th.face.track, th.face.value, 0.35f);
     const float a = g.a0 + g.sweep * static_cast<float>(v);
+    const float ao = g.a0 + g.sweep * static_cast<float>(std::clamp(num("origin", 0.0), 0.0, 1.0));  // the fill's start
+    const float f0 = std::min(a, ao), f1 = std::max(a, ao);
     const bool hot = env.hovered || drag_;
     const std::string_view ptr = pointer();
     if (hot) p.ring(g.c, g.r, track() + 2.0f, th.face.hover);
@@ -454,10 +457,10 @@ public:
     }
     if (ptr == "pie") {
       // A filled wedge from the start to the value: an arc as thick as the radius (one primitive, no seams).
-      if (a > g.a0 + 1e-4f) p.arc(g.c, g.r * 0.5f, g.a0, a, g.r, ui::mulAlpha(accent, 0.9f));
+      if (f1 > f0 + 1e-4f) p.arc(g.c, g.r * 0.5f, f0, f1, g.r, ui::mulAlpha(accent, 0.9f));
       p.line(g.c, polar(g.c, g.r, a), 1.5f, th.face.handle);
     } else if (ptr == "arc") {
-      if (a > g.a0 + 1e-4f) p.arc(g.c, g.r, g.a0, a, track(), accent, ui::LineCap::Round);
+      if (f1 > f0 + 1e-4f) p.arc(g.c, g.r, f0, f1, track(), accent, ui::LineCap::Round);
       // (bug-mod-ghost: a ghost is its arc and needle; its body would dim the solid needle under it)
       if (!env.ghost) p.disc(g.c, std::max(1.0f, g.r - track() - 1.5f), ui::lerp(th.face.body, th.face.track, 0.5f));
       p.line(polar(g.c, std::max(0.0f, g.r * 0.25f), a), polar(g.c, g.r - track() * 0.5f - 1.0f, a), hot ? 2.0f : 1.6f, th.face.handle);

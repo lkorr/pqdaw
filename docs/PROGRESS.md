@@ -1419,3 +1419,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected -Slow 87/90 before AR.4 (golden project-node-menu-midi re-recorded; ji-playback CPU check and library watcher timing pass alone); after the rebase onto AR.4: pq_tests_views default tier, pq_tests_document, pq_tests_engine, pq_tests_note_stage pass; ship bench links; 11 arp goldens re-recorded (2 pulse, 9 Layers box), new arp-panel-pulse-chord.
 - Perf / CPU-efficiency check (ship, vs main): pulse 8:9:10:12 39.8 vs 39.3 ns/block, layers 59.0 vs 58.7, 128 notes 2272 vs 2318; mask = shift + AND per pulse.
 - Notes/blockers: Q?-AR.3-a. Open: the view's beat lines assume 4 beats / bar; a note-on between onsets is silent when the pulse before it is muted; not checked live.
+
+## 2026-11-23 · AR.5 · task/AR.5-groove-bipolar
+- Did: arp Groove is −1 … 1, default 0 in the middle of the knob (right: odd steps late, left: early); knob style `origin` (0 … 1, where the value arc starts; the Groove knob 0.5) — general, in the panel inspector.
+- Verified: pq_tests_note_stage (new negative-groove case at 3 block sizes), pq_tests_views default tier, pq_tests_document, pq_tests_app pass; 13 goldens re-recorded (11 arp: the Groove knob only; panel-window-inspector / -edit: the new style row).
+- Perf / CPU-efficiency check: no new work (a clamp bound; two float compares per knob paint).
+- Notes/blockers: no -Affected -Slow run (the engine diff is one clamp bound; the onset seek is monotone for negative groove).

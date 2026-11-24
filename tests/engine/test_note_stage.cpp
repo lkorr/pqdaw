@@ -235,6 +235,18 @@ TEST_CASE("arp: free clock (stopped): steps from the first note-on, gate, groove
     REQUIRE(offT.size() >= 5);
     CHECK(offT[0] == 1000 + kSixteenth / 2);
   }
+  {  // AR.5: a negative groove swings the other way (odd steps early), on the free clock and block-size invariant
+    for (const uint32_t block : {64u, 1u, 509u}) {
+      e::ArpCore arp;
+      e::ArpParams p = freeParams(e::ArpStyle::Up);
+      p.gate = 0.5f;
+      p.groove = -0.5f;
+      const auto out = ons(h.run(arp, p, in, {}, 1000 + kSixteenth * 6, block));
+      REQUIRE(out.size() == 6);
+      for (int k = 0; k < 6; ++k)
+        CHECK(out[static_cast<size_t>(k)].t == 1000 + k * kSixteenth - (k % 2 == 1 ? kSixteenth / 4 : 0));
+    }
+  }
   {
     e::ArpCore arp;
     e::ArpParams p = freeParams(e::ArpStyle::Up);

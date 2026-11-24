@@ -23,8 +23,8 @@
 // the note-on (live feel; AP.3, Q?-AP.1-a (3)) with grid index k − 1 of the next grid step k, its gate · L long (a
 // gate ≤ 100 % ends it at the next grid step at the latest), and the later steps stay on the grid. A note-on exactly
 // on a grid step is that step. Free rate (ms), or a stopped transport: a free clock (Synced: L at the song tempo) whose step 0 is the
-// note-on that filled the held set (or the frame the transport stopped at, keys held). Groove g: odd steps start
-// g · L / 2 late. Gate 1 … 200 % of L (> 100 %: overlapping notes). Steps that start inside a block use the params
+// note-on that filled the held set (or the frame the transport stopped at, keys held). Groove g (−1 … 1): odd steps start
+// g · L / 2 late (g < 0: early). Gate 1 … 200 % of L (> 100 %: overlapping notes). Steps that start inside a block use the params
 // of that block (param rate).
 // Transport: a loop wrap / locate (a Song segment that does not continue the last one) or a stop (Song → Free) ends
 // every generated note at that frame and re-seeks the clock; Hold keeps the latched set across a wrap / locate, a
@@ -282,7 +282,7 @@ struct ArpParams {
   ArpStyle style = ArpStyle::Up;
   ArpRate rate;
   float gate = 0.5f;                  // 0.01 … 2 of a step
-  float groove = 0.0f;                // 0 … 1: odd steps groove · L / 2 late
+  float groove = 0.0f;                // −1 … 1: odd steps groove · L / 2 late (< 0: early)
   int32_t offset = 0;                 // cycle rotation (steps)
   int32_t repeats = 0;                // cycles, 0 = ∞
   ArpRetrigger retrigger = ArpRetrigger::Off;
@@ -453,7 +453,7 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::TupletM, "tupletM", "Tuplet M", 1, kArpMaxTuplet, 1, 1, false, "", true},
     {ArpParamId::RateMs, "rateMs", "Rate ms", 1, 10000, 125, 0, false, "", true},
     {ArpParamId::Gate, "gate", "Gate", 0.01f, 2, 0.5f, 0, false, "", true},
-    {ArpParamId::Groove, "groove", "Groove", 0, 1, 0, 0, false, "", true},
+    {ArpParamId::Groove, "groove", "Groove", -1, 1, 0, 0, false, "", true},
     {ArpParamId::Offset, "offset", "Offset", -32, 32, 0, 1, false, "", true},
     {ArpParamId::Repeats, "repeats", "Repeats", 0, 64, 0, 1, false, "", true},
     {ArpParamId::Retrigger, "retrigger", "Retrigger", 0, 2, 0, 1, false, "Off|Note|Beat", true},
