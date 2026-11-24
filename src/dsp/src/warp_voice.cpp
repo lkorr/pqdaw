@@ -43,22 +43,25 @@ namespace {
 struct VoiceHost {
   static constexpr bool kClock = true;
   static constexpr uint32_t kMaxRun = kWarpVoiceChunk;
+  static constexpr int64_t kCatchUp = 1;  // (warpGrainCentre: never more than a call's own grains)
   WarpVoice& v;
   const WarpSource& src;
   const WarpVoiceRun& run;
   const WarpRunLaw& law;
   int64_t s = 0;              // the chunk's first sample (since the trigger)
   uint32_t n = 0;
-  const int64_t* ph = nullptr;  // Φ(s + i), i ≤ n
-  const double* rt = nullptr;   // the rate at s + i, i < n
-  const int64_t* st = nullptr;  // the 32.32 step at s + i
+  const WarpClock* ck = nullptr;  // the run's clock: Φ(s + i), i ≤ n; the rate and 32.32 step at s + i, i < n
+  const int64_t* ph = nullptr;    // ck->ph
   const WarpScratch* sc = nullptr;
-  bool constant = false;        // every step of the chunk is the same
   static constexpr int64_t kGather = kWarpGatherFrames;
 
   int64_t keep() const noexcept { return 0; }
-  double rateAt(int64_t t) const noexcept { return rt[std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)]; }
-  int64_t stepAt(int64_t t) const noexcept { return st[std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)]; }
+  double rateAt(int64_t t) const noexcept {
+    return ck->rate(static_cast<uint32_t>(std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)));
+  }
+  int64_t stepAt(int64_t t) const noexcept {
+    return ck->step(static_cast<uint32_t>(std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)));
+  }
   double lawFrame(int64_t t) const noexcept {
     return law.law.frameAt(law.law.fold(v.beat0 + v.ba + static_cast<double>(t - v.ta) * v.inc));
   }
@@ -73,16 +76,18 @@ struct VoiceHost {
   }
   int64_t phiAt(int64_t t) const noexcept {
     if (t >= s) return ph[std::min<int64_t>(t - s, n)];
-    return ph[0] - (s - t) * st[0];  // a grain that started before the trigger: extrapolated at the first rate
+    return ph[0] - (s - t) * ck->st[0];  // a grain that started before the trigger: extrapolated at the first rate
   }
   uint32_t levelFor(double rate) const noexcept { return mipLevelFor(rate, src.levels); }
-  void countGrain() noexcept {}
+  void countGrain() noexcept {
+    if (sc->grains != nullptr) ++*sc->grains;
+  }
   void countPass() noexcept {}
   // Beats (warp_voice.h): the pass's clock at t in [s, s + n], the chunk's step when it is constant.
   int64_t clock(const WarpSlicePass& p, int64_t t) const noexcept { return ph[t - s] - p.phiT; }
   bool constStep(int64_t* step) const noexcept {
-    *step = st[0];
-    return constant;
+    *step = ck->st[0];
+    return ck->constant;
   }
   uint32_t passReader(const WarpSlicePass& p) const noexcept { return p.level; }
   // Level-0 frames [first, last): in place inside the guards, else gathered with zeros (alignment reads only).
@@ -122,14 +127,16 @@ struct VoiceHost {
            i0 + frames <= static_cast<int64_t>(src.level[0].length) + kSampleSlotGuard;
   }
   // out[c][i] += cubic(source at pos[i] on `level`) · g[i] (pos: level-0 32.32; one rounding per add, as fmadd), 8
-  // frames at a time (AVX2 gathers; a short tail runs the same vector code on a padded copy, so a frame's value does
-  // not depend on where a call splits). Positions whose taps all lie in the zeros beyond the data add nothing. A run
-  // of consecutive whole frames on level 0 (rate 1) is a straight copy: the cubic there is exactly the frame anyway.
+  // frames at a time. SM.16: each frame's four taps are one unaligned load (simd.h taps8: no gathers, whatever the
+  // step; the same values, so bit-identical to the gathered read), and a mono sample is read once for both outputs.
+  // A short tail runs the same vector code on a padded copy, so a frame's value does not depend on where a call
+  // splits. Positions whose taps all lie in the zeros beyond the data add nothing. A run of consecutive whole frames
+  // on level 0 (rate 1) is a straight copy: the cubic there is exactly the frame anyway.
   void readAt(const int64_t* pos, uint32_t level, const float* g, uint32_t frames, float* const* out) const noexcept {
     if (frames == 0) return;
     const SampleLevelView& lv = src.level[level];
     const int64_t len = lv.length;
-    const float* ch[2] = {lv.ch[0], src.channels > 1 ? lv.ch[1] : lv.ch[0]};
+    const uint32_t nch = src.channels > 1 ? 2u : 1u;
     if (level == 0 && copyable(pos[0], frames)) {
       bool lin = true;
       for (uint32_t i = 1; i < frames && lin; ++i) lin = pos[i] == pos[0] + static_cast<int64_t>(i) * kFixedOne;
@@ -153,19 +160,22 @@ struct VoiceHost {
         any = true;
       }
       if (!any) continue;
-      const __m256i vi = _mm256_load_si256(reinterpret_cast<const __m256i*>(ix));
       const __m256 t = _mm256_load_ps(fr), gv = _mm256_load_ps(gm);
+      __m256 y[2];
+      for (uint32_t c = 0; c < nch; ++c) {
+        __m256 xm1, x0, x1, x2;
+        simd::taps8(lv.ch[c], ix, xm1, x0, x1, x2);
+        y[c] = simd::cubic4<simd::S8>(xm1, x0, x1, x2, t);
+      }
+      if (nch == 1) y[1] = y[0];
       for (uint32_t c = 0; c < 2; ++c) {
-        const float* d = ch[c];
-        const __m256 y = simd::cubic4<simd::S8>(_mm256_i32gather_ps(d - 1, vi, 4), _mm256_i32gather_ps(d, vi, 4),
-                                                _mm256_i32gather_ps(d + 1, vi, 4), _mm256_i32gather_ps(d + 2, vi, 4), t);
         float* o = out[c] + i;
         if (m == 8) {
-          _mm256_storeu_ps(o, _mm256_fmadd_ps(y, gv, _mm256_loadu_ps(o)));
+          _mm256_storeu_ps(o, _mm256_fmadd_ps(y[c], gv, _mm256_loadu_ps(o)));
         } else {
           alignas(32) float buf[8] = {};
           for (uint32_t k = 0; k < m; ++k) buf[k] = o[k];
-          _mm256_store_ps(buf, _mm256_fmadd_ps(y, gv, _mm256_load_ps(buf)));
+          _mm256_store_ps(buf, _mm256_fmadd_ps(y[c], gv, _mm256_load_ps(buf)));
           for (uint32_t k = 0; k < m; ++k) o[k] = buf[k];
         }
       }
@@ -279,18 +289,52 @@ void WarpVoice::trigger(const WarpSource& src, const WarpVoiceRun& run, const Wa
   if (run.mode == AudioWarp::Beats) cur = makePass(src, law, 0, 0, law.startF, 0.0, false, 0, 0);
 }
 
+void WarpClock::integrate(int64_t phi, const float* rate, uint32_t m, double scale) noexcept {  // RT-safe
+  flat = constant = allEqual(rate, m);
+  ph[0] = phi;
+  if (flat) {
+    const double r = clampReadRate(static_cast<double>(rate[0]) * scale);
+    const int64_t step = rateStep(r);
+    rt[0] = r;
+    st[0] = step;
+    for (uint32_t i = 0; i < m; ++i) ph[i + 1] = ph[i] + step;
+  } else {
+    for (uint32_t i = 0; i < m; ++i) {
+      const double r = clampReadRate(static_cast<double>(rate[i]) * scale);
+      rt[i] = r;
+      st[i] = rateStep(r);
+      ph[i + 1] = ph[i] + st[i];
+    }
+    constant = true;  // (different rates can still round to one step)
+    for (uint32_t i = 1; i < m; ++i) constant = constant && st[i] == st[0];
+  }
+}
+
 void WarpVoice::render(const WarpSource& src, const WarpVoiceRun& run, const WarpRunLaw& law, const float* rate, uint32_t n,
                        float* outL, float* outR, float* pos, float* playing, const WarpScratch& sc) noexcept {  // RT-safe
+  WarpClock ck;
+  const bool audible = outL != nullptr;
+  for (uint32_t c0 = 0; c0 < n;) {
+    const uint32_t m = std::min<uint32_t>(kWarpVoiceChunk, n - c0);
+    if (active != 0) ck.integrate(phi, rate + c0, m, src.rateScale);
+    renderClock(src, run, law, ck, m, audible ? outL + c0 : nullptr, audible ? outR + c0 : nullptr,
+                pos != nullptr ? pos + c0 : nullptr, playing != nullptr ? playing + c0 : nullptr, sc);
+    c0 += m;
+  }
+}
+
+void WarpVoice::renderClock(const WarpSource& src, const WarpVoiceRun& run, const WarpRunLaw& law, const WarpClock& ck,
+                            uint32_t m, float* outL, float* outR, float* pos, float* playing, const WarpScratch& sc) noexcept {  // RT-safe
   const bool audible = outL != nullptr;
   if (audible) {
-    std::fill_n(outL, n, 0.0f);
-    std::fill_n(outR, n, 0.0f);
+    std::fill_n(outL, m, 0.0f);
+    std::fill_n(outR, m, 0.0f);
   }
   const auto len = static_cast<double>(src.length());
   if (active == 0 || len <= 0.0) {
     active = 0;
-    if (pos != nullptr) std::fill_n(pos, n, 0.0f);
-    if (playing != nullptr) std::fill_n(playing, n, 0.0f);
+    if (pos != nullptr) std::fill_n(pos, m, 0.0f);
+    if (playing != nullptr) std::fill_n(playing, m, 0.0f);
     return;
   }
   const int64_t X = warpFadeFrames(run.sampleRate);
@@ -304,112 +348,77 @@ void WarpVoice::render(const WarpSource& src, const WarpVoiceRun& run, const War
   if (law.law.looping) endT = INT64_MAX;
   else if (endT >= t) endT = std::max(t, timeOfBeats(*this, law.law.contentAt(law.endF) - beat0));  // not reached: predicted
   const bool beats = static_cast<AudioWarp>(mode) == AudioWarp::Beats;
-  alignas(32) int64_t ph[kWarpVoiceChunk + 1];
-  alignas(32) int64_t stp[kWarpVoiceChunk];
-  alignas(32) double rt[kWarpVoiceChunk];
-  WarpGrainParams P;
-  P.origin = -static_cast<int64_t>(hop);  // grain 0 is centred on the trigger
-  P.hop = hop;
-  P.grain = 2 * hop;
-  P.dir = 1;
-  P.gain = 1.0f;
-  P.seed = 0x5A3D17u;
-  P.sourceRate = static_cast<uint32_t>(std::lround(src.fileRate));
-  P.channels = src.channels;
-  WarpSliceParams S;
-  S.fade = X;
-  S.loop = run.set.sliceLoop;
-  S.envelope = run.set.envelope;
-  S.gain = 1.0f;
-  S.perSample = run.perSample;
-  const double scale = src.rateScale;
-  for (uint32_t c0 = 0; c0 < n;) {
-    const uint32_t m = std::min<uint32_t>(kWarpVoiceChunk, n - c0);
-    // Φ over the chunk. A constant rate (no glide: the common case) converts once; Φ is the same sums either way.
-    bool constant = allEqual(rate + c0, m);
-    ph[0] = phi;
-    if (constant) {
-      const double r = clampReadRate(static_cast<double>(rate[c0]) * scale);
-      const int64_t step = rateStep(r);
-      std::fill_n(rt, m, r);
-      std::fill_n(stp, m, step);
-      for (uint32_t i = 0; i < m; ++i) ph[i + 1] = ph[i] + step;
-    } else {
+  const int64_t* ph = ck.ph;
+  VoiceHost h{*this, src, run, law};
+  h.s = t;
+  h.n = m;
+  h.ck = &ck;
+  h.ph = ph;
+  h.sc = &sc;
+  float* o[2] = {outL, outR};
+  if (!audible) {
+    // (SM.5: the clock only)
+  } else if (beats) {
+    WarpSliceParams S;
+    S.fade = X;
+    S.loop = run.set.sliceLoop;
+    S.envelope = run.set.envelope;
+    S.gain = 1.0f;
+    S.perSample = run.perSample;
+    if (cur.step0 == 0 && !cur.terminal) {  // the first pass: its entry is this chunk's first sample
+      cur.step0 = std::max<int64_t>(ck.st[0], kMinEntryStep);
+      cur.level = mipLevelFor(ck.rt[0], src.levels);
+    }
+    if (cur.terminal) cur.next = INT64_MAX;
+    else cur.next = std::max({cur.T + 1, t, timeOfBeats(*this, cur.exitU)});
+    if (hasPrev != 0 && t < cur.T + X) warpRenderPass(h, S, prev, t, m, o, nullptr, sc);
+    for (uint32_t guard = 0; guard < 64; ++guard) {
+      warpRenderPass(h, S, cur, t, m, o, nullptr, sc);
+      if (cur.terminal || cur.next >= t + m) break;
+      const auto k = static_cast<uint32_t>(cur.next - t);
+      const WarpSlicePass np =
+          passAfter(src, law, cur, ph[k], mipLevelFor(ck.rate(k), src.levels), std::max<int64_t>(ck.step(k), kMinEntryStep));
+      prev = cur;
+      hasPrev = 1;
+      cur = np;
+      cur.next = cur.terminal ? INT64_MAX : std::max(cur.T + 1, timeOfBeats(*this, cur.exitU));
+    }
+  } else {
+    WarpGrainParams P;
+    P.origin = -static_cast<int64_t>(hop);  // grain 0 is centred on the trigger
+    P.hop = hop;
+    P.grain = 2 * hop;
+    P.dir = 1;
+    P.gain = 1.0f;
+    P.seed = 0x5A3D17u;
+    P.sourceRate = static_cast<uint32_t>(std::lround(src.fileRate));
+    P.channels = src.channels;
+    warpRenderGrains(h, grains, P, t, m, o, nullptr, sc);
+    // The end (no loop): a 2 ms fade from the sample the content reaches it.
+    if (endT != INT64_MAX && t + m > endT) {
+      const auto Xf = static_cast<float>(X);
       for (uint32_t i = 0; i < m; ++i) {
-        const double r = clampReadRate(static_cast<double>(rate[c0 + i]) * scale);
-        rt[i] = r;
-        stp[i] = rateStep(r);
-        ph[i + 1] = ph[i] + stp[i];
+        const float gi = rampValue((Xf - 0.5f) / Xf, -1.0f / Xf, warpRampIndex(t + static_cast<int64_t>(i), endT));
+        o[0][i] *= gi;
+        o[1][i] *= gi;
       }
-      constant = true;  // (different rates can still round to one step)
-      for (uint32_t i = 1; i < m; ++i) constant = constant && stp[i] == stp[0];
-    }
-    VoiceHost h{*this, src, run, law};
-    h.s = t;
-    h.n = m;
-    h.ph = ph;
-    h.rt = rt;
-    h.st = stp;
-    h.constant = constant;
-    h.sc = &sc;
-    float* o[2] = {audible ? outL + c0 : nullptr, audible ? outR + c0 : nullptr};
-    if (!audible) {
-      // (SM.5: the clock only)
-    } else if (beats) {
-      if (cur.step0 == 0 && !cur.terminal) {  // the first pass: its entry is this chunk's first sample
-        cur.step0 = std::max<int64_t>(stp[0], kMinEntryStep);
-        cur.level = mipLevelFor(rt[0], src.levels);
-      }
-      if (cur.terminal) cur.next = INT64_MAX;
-      else cur.next = std::max({cur.T + 1, t, timeOfBeats(*this, cur.exitU)});
-      if (hasPrev != 0 && t < cur.T + X) warpRenderPass(h, S, prev, t, m, o, nullptr, sc);
-      for (uint32_t guard = 0; guard < 64; ++guard) {
-        warpRenderPass(h, S, cur, t, m, o, nullptr, sc);
-        if (cur.terminal || cur.next >= t + m) break;
-        const auto k = static_cast<uint32_t>(cur.next - t);
-        const WarpSlicePass np =
-            passAfter(src, law, cur, ph[k], mipLevelFor(rt[k], src.levels), std::max<int64_t>(stp[k], kMinEntryStep));
-        prev = cur;
-        hasPrev = 1;
-        cur = np;
-        cur.next = cur.terminal ? INT64_MAX : std::max(cur.T + 1, timeOfBeats(*this, cur.exitU));
-      }
-    } else {
-      warpRenderGrains(h, grains, P, t, m, o, nullptr, sc);
-      // The end (no loop): a 2 ms fade from the sample the content reaches it.
-      if (endT != INT64_MAX && t + m > endT) {
-        const auto Xf = static_cast<float>(X);
-        for (uint32_t i = 0; i < m; ++i) {
-          const float gi = rampValue((Xf - 0.5f) / Xf, -1.0f / Xf, warpRampIndex(t + static_cast<int64_t>(i), endT));
-          o[0][i] *= gi;
-          o[1][i] *= gi;
-        }
-      }
-    }
-    // The read position (where the law is), and whether the voice still sounds.
-    const float at = pos != nullptr ? static_cast<float>(std::clamp(h.lawFrame(t) / len, 0.0, 1.0)) : 0.0f;
-    if (endT == INT64_MAX || t + m <= endT + X) {  // sounding throughout (all but a voice's last chunk)
-      if (pos != nullptr) std::fill_n(pos + c0, m, at);
-      if (playing != nullptr) std::fill_n(playing + c0, m, 1.0f);
-    } else {
-      for (uint32_t i = 0; i < m; ++i) {
-        const bool on = t + i < endT + X;
-        if (pos != nullptr) pos[c0 + i] = on ? at : 0.0f;
-        if (playing != nullptr) playing[c0 + i] = on ? 1.0f : 0.0f;
-      }
-    }
-    phi = ph[m];
-    t += m;
-    c0 += m;
-    if (endT != INT64_MAX && t >= endT + X) {
-      active = 0;
-      for (uint32_t i = c0; i < n; ++i) {
-        if (pos != nullptr) pos[i] = 0.0f;
-        if (playing != nullptr) playing[i] = 0.0f;
-      }
-      return;
     }
   }
+  // The read position (where the law is), and whether the voice still sounds.
+  const float at = pos != nullptr ? static_cast<float>(std::clamp(h.lawFrame(t) / len, 0.0, 1.0)) : 0.0f;
+  if (endT == INT64_MAX || t + m <= endT + X) {  // sounding throughout (all but a voice's last chunk)
+    if (pos != nullptr) std::fill_n(pos, m, at);
+    if (playing != nullptr) std::fill_n(playing, m, 1.0f);
+  } else {
+    for (uint32_t i = 0; i < m; ++i) {
+      const bool on = t + i < endT + X;
+      if (pos != nullptr) pos[i] = on ? at : 0.0f;
+      if (playing != nullptr) playing[i] = on ? 1.0f : 0.0f;
+    }
+  }
+  phi = ph[m];
+  t += m;
+  if (endT != INT64_MAX && t >= endT + X) active = 0;
 }
 
 }  // namespace pq::dsp

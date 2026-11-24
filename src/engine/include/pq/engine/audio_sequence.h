@@ -50,7 +50,7 @@
 //            pitch is a resampling of that output at rate r (the windowed sinc; a copy at r = 1): song sample s reads
 //            vocoder frame (s − tA) · r, so the pitch is exact (the library's own transpose estimates each peak's
 //            frequency and was 2 ¢ off at +3 steps of 31-EDO, 8 ¢ at +7 st). The vocoder runs in chunks of
-//            kStretchCell of its frames on a grid fixed by the voice's start (each chunk's input up to
+//            dsp::kComplexChunk of its frames on a grid fixed by the voice's start (each chunk's input up to
 //            φ(t(chunk end + outputLatency)) + inputLatency), so the rate follows the warp segments and the tempo per
 //            chunk and a render is the same whatever the block. Complex Pro adds formant preservation: the vocoder
 //            shifts the formants by pitchRatio^(−formants %), which the resampling brings back, over a spectral

@@ -6,6 +6,7 @@
 #include <set>
 #include <string>
 
+#include "pq/dsp/complex_stream.h"
 #include "pq/dsp/resample.h"
 #include "pq/dsp/warp.h"
 
@@ -33,13 +34,10 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
   for (uint32_t L = 1; L <= dsp::mipLevelFor(r, dsp::kMaxMipLevels); ++L) qs.insert(dsp::sincStretchQ(std::ldexp(r, -static_cast<int>(L))));
   if (dsp::warpComplex(d.warp)) {  // T6.5: the stretcher's settings (audio_sequence.h "Complex")
     c.seed = d.stretch.seed;
-    if (d.warp == dsp::AudioWarp::ComplexPro) {
-      const double keep = std::clamp(static_cast<double>(d.stretch.formants), 0.0, 100.0) / 100.0;
-      if (keep > 0.0) {
-        c.formantFactor = std::pow(d.stretch.pitchRatio, -keep);
-        c.formantBase = 1.0 / std::clamp(static_cast<double>(d.stretch.formantEnvelope), 8.0, 256.0);
-      }
-    }
+    const dsp::StretchParams fp =  // the formant rule (pq/dsp/complex_stream.h)
+        dsp::complexFormants(d.warp, d.stretch.pitchRatio, d.stretch.formants, d.stretch.formantEnvelope);
+    c.formantFactor = fp.formant;
+    c.formantBase = fp.formantBase;
   }
   if (d.warp == dsp::AudioWarp::Tones || d.warp == dsp::AudioWarp::Texture || dsp::warpComplex(d.warp)) {
     const uint32_t n = dsp::warpGrainFrames(d.stretch.grainSeconds, sr);

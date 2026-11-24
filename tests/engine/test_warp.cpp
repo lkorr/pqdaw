@@ -31,7 +31,11 @@
 
 #include "pq/core/aligned_buffer.h"
 #include "pq/core/alloc_trap.h"
+#include "pq/core/denormal_guard.h"
+#include "pq/core/epoch_reclaimer.h"
 #include "pq/dsp/fft.h"
+#include "pq/dsp/sample_slot.h"
+#include "pq/dsp/sampler_stretch.h"
 #include "pq/engine/audio_sequence.h"
 #include "pq/engine/clip_player.h"
 #include "pq/engine/timeline.h"
@@ -1072,7 +1076,7 @@ double rmsOf(const std::vector<float>& x, size_t from, size_t to) {
   return std::sqrt(e / static_cast<double>(to - from));
 }
 
-// The most vocoder chunks one 256-frame block may run per voice: priming at kStretchPrimeRate × the playing rate (pitch
+// The most vocoder chunks one 256-frame block may run per voice: priming at kComplexPrimeRate × the playing rate (pitch
 // rate ≤ 1.09: ≤ 9 chunks) or the block a voice starts in (a playing block, the priming schedule's step and the
 // resampler's reach: ≤ 13), rounded up.
 constexpr uint64_t kCellsPerVoiceBlock = 16;
@@ -1291,7 +1295,7 @@ TEST_CASE("M6 C2: a Complex voice read slower than its resampler's reach per blo
     CHECK(diff == 0);
     CHECK(s64.stretchCells == s1024.stretchCells);
     // Playing: pitch rate x 64 frames < one chunk per block; priming (pending, from the look-ahead): at most
-    // kStretchPrimeRate x that, rounded up, plus the chunk a block boundary splits.
+    // kComplexPrimeRate x that, rounded up, plus the chunk a block boundary splits.
     CHECK(s64.stretchCellsBlockMax <= 3);
     double peak = 0.0;
     for (size_t i = static_cast<size_t>(k.engineRate * 0.6); i < a.size(); ++i) peak = std::max(peak, static_cast<double>(std::abs(a[i])));
@@ -1545,4 +1549,122 @@ TEST_CASE("SM.15: clip-player Beats / Tones / Texture renders are pinned (the un
       12619082166495659721ull, 11952104424440661977ull, 3069216394029115078ull, 8453846467329063909ull,
       11037291907190714745ull, 13577540894113758852ull};
   CHECK(got == want);
+}
+
+// ---- SM.16: one Complex stream ------------------------------------------------------------------------------------------
+namespace {
+
+// What dsp::ComplexStream did in one chunk (the test probe, complex_stream.h): the vocoder frame it starts at, the
+// unfolded source frames it consumed and a hash of the input it gathered.
+struct StreamChunk {
+  int64_t vHi = 0, from = 0, to = 0, lead = 0;
+  uint64_t hash = 0;
+  friend bool operator==(const StreamChunk&, const StreamChunk&) = default;
+};
+struct StreamTrace {
+  std::vector<StreamChunk> chunks;
+  pq::dsp::ComplexProbe probe{&StreamTrace::on, this};
+  static void on(void* user, const pq::dsp::ComplexStream& st, int64_t k0, int64_t k1, int64_t lead, const pq::dsp::ComplexIn& in,
+                 uint32_t channels) {
+    uint64_t h = 1469598103934665603ull;
+    for (uint32_t c = 0; c < channels; ++c)
+      for (int64_t i = 0; i < k1 - k0 - lead; ++i) h = (h ^ std::bit_cast<uint32_t>(in.ch[c][i])) * 1099511628211ull;
+    static_cast<StreamTrace*>(user)->chunks.push_back({st.vHi, st.u0 + k0, st.u0 + k1, lead, h});
+  }
+};
+
+}  // namespace
+
+TEST_CASE("SM.16: the clip player and the Sampler's Complex voice drive the same stream (same chunks, same input, same audio)") {
+  // One stereo source (noise + a tone), played at 90 BPM against its own 120 (the vocoder stretches by 4 / 3), pitch
+  // rate 1, by a Complex clip and by a Sampler Complex voice. Both hosts are dsp::ComplexStream's: the stream primes
+  // on the same grid, consumes the same source frames chunk by chunk, feeds the vocoder the same input, and — the
+  // clip copying the vocoder's output, the voice's cubic reading it on whole frames — the two play the same samples.
+  constexpr int64_t kLen = 48000 * 3;
+  constexpr uint32_t kSeedOfVoices = 0x5A3D17u;  // (the Sampler's stretcher seed: the clip's is its `seed`)
+  std::vector<float> l(static_cast<size_t>(kLen)), r(l.size());
+  uint32_t x = 12345;
+  for (size_t i = 0; i < l.size(); ++i) {
+    x = x * 1664525u + 1013904223u;
+    const float nz = static_cast<float>(static_cast<int32_t>(x >> 8) & 0xFFFF) / 65536.0f - 0.5f;
+    l[i] = 0.3f * nz + 0.3f * static_cast<float>(std::sin(2.0 * std::numbers::pi * 220.0 * static_cast<double>(i) / kSr));
+    r[i] = 0.3f * static_cast<float>(std::sin(2.0 * std::numbers::pi * 331.0 * static_cast<double>(i) / kSr)) - 0.2f * nz;
+  }
+  constexpr size_t kFrames = 40000;  // of the voice / of the clip from its start
+
+  // The clip: from beat 1 (primed in its look-ahead: no late start), played from 0.
+  StreamTrace clipTrace;
+  std::vector<float> clipL, clipR;
+  SampleTime clipStart = 0;
+  {
+    const e::ClipSample s = makeSample(kLen, 2, [&](uint32_t c, int64_t i) { return (c == 0 ? l : r)[static_cast<size_t>(i)]; });
+    Rig rig(64);
+    rig.tempo({{0, 90.0, pq::TempoCurve::Step}});
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Complex, 1, kPpq, kPpq * 8, 120.0);
+    c.stretch.seed = kSeedOfVoices;
+    rig.audio({{1, {c}}}, {s});
+    rig.play(0);
+    clipStart = rig.map.ticksToSamples(kPpq, kSr);
+    pq::dsp::tComplexProbe = &clipTrace.probe;
+    clipL = rig.render(static_cast<uint64_t>(clipStart) + kFrames, 0, 0, &clipR);
+    pq::dsp::tComplexProbe = nullptr;
+    CHECK(rig.tl->clipPlayer().stats().stretchLateStarts == 0);
+  }
+
+  // The voice: triggered at frame 0 on stretcher 0 (lead 0), rate 1, the same tempi.
+  StreamTrace voiceTrace;
+  std::vector<float> voiceL(kFrames), voiceR(kFrames);
+  {
+    pq::EpochReclaimer reclaimer{1};
+    pq::dsp::SampleSlot slot;
+    auto data = pq::dsp::SampleData::build(l, r).value();
+    REQUIRE(slot.publish(pq::dsp::SampleData::source(data, kSr), kSr, reclaimer).ok());
+    const pq::dsp::WarpSource src = pq::dsp::warpSourceOf(*slot.acquire());
+    auto bank = pq::dsp::SamplerStretch::build(1, 2, kSr);
+    pq::dsp::WarpVoiceRun run;
+    run.mode = pq::dsp::AudioWarp::Complex;
+    run.start = 0.0;
+    run.end = static_cast<double>(kLen);
+    run.bpm = 90.0;
+    run.sampleBpm = 120.0;
+    run.sampleRate = kSr;
+    const pq::dsp::WarpRunLaw law = pq::dsp::warpRunLaw(src, run);
+    std::vector<float> gain(pq::dsp::kWarpVoiceChunk + 16), ca(pq::dsp::kWarpMaxAlignLen + 64),
+        cb(pq::dsp::kWarpMaxAlignLen + 2 * pq::dsp::kWarpMaxAlignLags + 64), gather(2 * pq::dsp::kWarpGatherFrames);
+    const pq::dsp::WarpScratch ws{gain.data(), ca.data(), cb.data(), gather.data()};
+    pq::dsp::WarpVoice v;
+    pq::dsp::ComplexVoice cv;
+    v.trigger(src, run, law);
+    cv.trigger(bank.get(), 0);
+    std::vector<float> rate(64, 1.0f), pos(64), playing(64);
+    pq::DenormalGuard dg;
+    pq::dsp::tComplexProbe = &voiceTrace.probe;
+    for (size_t t = 0; t < kFrames; t += 64)
+      cv.render(bank.get(), 0, v, src, run, law, rate.data(), 64, voiceL.data() + t, voiceR.data() + t, pos.data(), playing.data(), ws);
+    pq::dsp::tComplexProbe = nullptr;
+    CHECK(cv.phase == pq::dsp::ComplexVoice::kOn);
+  }
+
+  // The same chunk schedule and vocoder input (the clip also computes its lead ahead, and its pre-roll: compare the
+  // chunks both made).
+  const size_t common = std::min(clipTrace.chunks.size(), voiceTrace.chunks.size());
+  MESSAGE("chunks: clip ", clipTrace.chunks.size(), ", voice ", voiceTrace.chunks.size());
+  REQUIRE(common > 300);
+  size_t differ = 0;
+  for (size_t i = 0; i < common; ++i) differ += clipTrace.chunks[i] == voiceTrace.chunks[i] ? 0u : 1u;
+  CHECK(differ == 0);
+  CHECK(clipTrace.chunks[0].vHi == voiceTrace.chunks[0].vHi);
+  CHECK(clipTrace.chunks[common - 1].to == voiceTrace.chunks[common - 1].to);
+  // 4 / 3 stretch: a chunk of 128 vocoder frames consumes 96 source frames.
+  CHECK(voiceTrace.chunks[200].to - voiceTrace.chunks[200].from == 96);
+  // The same audio once the voice plays its vocoder (its Tones onset and 2 ms cross are over well before 8000).
+  size_t audio = 0;
+  float peak = 0.0f;
+  for (size_t y = 8000; y < kFrames; ++y) {
+    audio += clipL[static_cast<size_t>(clipStart) + y] != voiceL[y] ? 1u : 0u;
+    audio += clipR[static_cast<size_t>(clipStart) + y] != voiceR[y] ? 1u : 0u;
+    peak = std::max(peak, std::abs(voiceL[y]));
+  }
+  CHECK(audio == 0);
+  CHECK(peak > 0.1f);
 }

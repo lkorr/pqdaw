@@ -149,6 +149,7 @@ struct WarpScratch {
   float* corrA = nullptr;
   float* corrB = nullptr;
   float* gather = nullptr;
+  uint32_t* grains = nullptr;  // tests (WarpVoice): counts the grains positioned
 };
 
 // ---- Tones / Texture --------------------------------------------------------------------------------------------------
@@ -205,10 +206,13 @@ double warpAlignGrain(H& h, const WarpGrainParams& P, const WarpGrainRate& gr, d
 // The source frame grain k is centred on: the law at its centre (Texture: jittered), Tones: moved by the lag that
 // continues grain k − 1. Grains are positioned once, in order (the state keeps the last two). A clock host also gets
 // each grain's 32.32 anchor (at its first sample), Φ there and its mip level (h.grainAnchor).
+// A host that skipped grains (H::kCatchUp: the clip 64; the Sampler's voice 1 — it stops positioning grains while
+// its vocoder sounds, and a voice that lost its stretcher must not align every grain it skipped in one call, SM.16)
+// catches up through at most that many, aligning each; further behind, grain k starts afresh at the law's position.
 template <class H>
 double warpGrainCentre(H& h, WarpGrains& g, const WarpGrainParams& P, int64_t k, const WarpScratch& sc) noexcept {  // RT-safe
   if (g.idx != INT64_MIN && k <= g.idx && k >= g.idx - 1) return g.pos[k & 1];
-  const int64_t from = g.idx != INT64_MIN && k > g.idx && k - g.idx <= 64 ? g.idx + 1 : k;
+  const int64_t from = g.idx != INT64_MIN && k > g.idx && k - g.idx <= H::kCatchUp ? g.idx + 1 : k;
   const auto Hh = static_cast<int64_t>(P.hop);
   for (int64_t j = from; j <= k; ++j) {
     const int64_t gj = P.origin + j * Hh;
@@ -577,6 +581,22 @@ WarpRunLaw warpRunLaw(const WarpSource& src, const WarpVoiceRun& run) noexcept; 
 
 inline constexpr uint32_t kWarpVoiceChunk = 128;  // frames per inner run (the Φ prefix, positions and gains)
 
+// The read clock over one inner run of m ≤ kWarpVoiceChunk frames: Φ at each frame (ph[i], i ≤ m), each frame's rate
+// (file frames per output frame) and 32.32 step. Integrated ONCE per run and shared by everything that reads on it
+// (the voice's grains / slices, the Complex voice's vocoder read: SM.16).
+struct WarpClock {
+  alignas(32) int64_t ph[kWarpVoiceChunk + 1];
+  alignas(32) int64_t st[kWarpVoiceChunk];  // (flat: only [0] is written; read through step() / rate())
+  alignas(32) double rt[kWarpVoiceChunk];
+  bool constant;  // every step of the run is the same
+  bool flat;      // every rate of the run is the same value (no glide: the common case)
+  // rate: per frame, file-natural (× scale = file frames per output frame); phi: Φ at the first frame. A flat run
+  // converts its rate once; Φ is the same sums either way. RT-safe.
+  void integrate(int64_t phi, const float* rate, uint32_t m, double scale) noexcept;
+  int64_t step(uint32_t i) const noexcept { return st[flat ? 0u : i]; }  // RT-safe
+  double rate(uint32_t i) const noexcept { return rt[flat ? 0u : i]; }   // RT-safe
+};
+
 // The Sampler's per-voice warp renderer (see the top of the file). Trivially copyable: it is a lane's state.
 struct WarpVoice {
   int64_t t = 0;        // output samples since the trigger (of the next frame)
@@ -597,9 +617,12 @@ struct WarpVoice {
   void stop() noexcept { active = 0; }  // RT-safe
   // Renders n frames (adds nothing when inactive): out L / R (written, not added), the read position in [0, 1] of the
   // sample (pos, may be null), playing (1 / 0 per frame, may be null). rate: per frame, file-natural (× rateScale).
-  // SM.5: outL null advances a Tones / Texture voice (its clock, Φ, the tempo anchor, the end) without rendering.
   void render(const WarpSource& src, const WarpVoiceRun& run, const WarpRunLaw& law, const float* rate, uint32_t n,
               float* outL, float* outR, float* pos, float* playing, const WarpScratch& sc) noexcept;  // RT-safe
+  // One inner run of m ≤ kWarpVoiceChunk frames on a clock the caller integrated from this voice's phi (render() is a
+  // loop over these). SM.5: outL null advances a voice (its clock, Φ, the tempo anchor, the end) without rendering.
+  void renderClock(const WarpSource& src, const WarpVoiceRun& run, const WarpRunLaw& law, const WarpClock& ck, uint32_t m,
+                   float* outL, float* outR, float* pos, float* playing, const WarpScratch& sc) noexcept;  // RT-safe
   // SM.5 (Complex): the law's source frame at output time t (fractional; before the trigger the law extrapolated),
   // unfolded through the loop (every wrap adds the loop's span in whole frames: WarpLaw::unfoldedFrameAt). RT-safe.
   double unfoldedAt(const WarpRunLaw& law, double tt) const noexcept {

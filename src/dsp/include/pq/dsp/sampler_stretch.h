@@ -18,23 +18,25 @@
 // are being reset), then takes stretcher L if it is free, else any free one; none free: Tones, retried every call.
 //
 // ---- One voice (ComplexVoice, beside the lane's WarpVoice) --------------------------------------------------------
-// Vocoder frames y are file frames on the voice's read clock: the output at sample t reads the vocoder output at
-// Y(t) = Φ(t) (WarpVoice::phi, the integrated per-sample pitch rate), cubic, so the pitch is the rate exactly (the
-// stretcher runs at transpose 1). The content the vocoder holds at frame y is the voice's time law (WarpVoice: content
-// beats since the trigger → markers → source frame, unfolded through the loop) at the output time the read reaches y,
-// estimated where the chunk is computed: t_y = t + (y − Y(t)) / r(t) (a glide moves the estimate; the input head is
-// recomputed from the law every chunk, so the content never drifts). The stretcher is fed one continuous stream (the
-// unfolded source frames, zeros before the trigger's start and, without a loop, after the end) in chunks of
-// kComplexChunk output frames, each computed at the first sample whose read needs it (Y + 3 + the voice's lead), so a
-// render does not depend on the block size.
-//   Note-on: the voice plays Tones (WarpVoice) while its stretcher primes (reset, seek with the history before its
-// first frame, then the vocoder from an output latency + a block before the read, at most kComplexPrimeRate ×
-// max(1, r) vocoder frames per output sample: never a burst; ≈ 70 ms at r = 1), and crosses to Complex over 2 ms
-// (warp.h warpFadeFrames) at the first sample the vocoder has what the read needs. Phase offsets: each stretcher's
-// lead (a golden-ratio fraction of the analysis interval by its index) keeps its vocoder that far ahead of the read
-// and delays its priming by lead / k samples, so voices started together do their spectral work in different blocks.
-// Complex Pro: the formants are moved back by r^(−formants %) (the clip's rule, audio_sequence.cpp), base 1 / order.
-// Lost stretcher (another voice took it): back to Tones at once (a hard switch), re-primed on a free one.
+// SM.16: the stream — what the stretcher is fed, the priming, the chunks, the lead, the formant rule, the constants —
+// is dsp::ComplexStream (pq/dsp/complex_stream.h), the one the clip player drives too. The voice is its host and keeps
+// what is the Sampler's: the lane's ownership of a stretcher, the Tones cover, the 2 ms cross, the cubic read.
+//   Vocoder frames y are file frames on the voice's read clock: the output at sample t reads the vocoder output at
+// Y(t) = Φ(t) (WarpVoice::phi, the integrated per-sample pitch rate), cubic, so the pitch is the rate exactly. The
+// content the vocoder holds at frame y is the voice's time law (WarpVoice: content beats since the trigger → markers
+// → source frame, unfolded through the loop) at the output time the read reaches y, estimated where the chunk is
+// computed: t_y = t + (y − Y(t)) / r(t) (a glide moves the estimate; the stream recomputes its input head from the law
+// every chunk, so the content never drifts). Each chunk is computed at the first sample whose read needs it (Y + 3 +
+// the voice's lead), so a render does not depend on the block size. Φ is integrated once per inner run (WarpClock,
+// shared with the Tones voice under it), the sample a chunk is due at is found once per chunk (Φ is monotonic), and
+// the frames between two chunks are read 8 at a time (simd.h taps8 + the one cubic).
+//   Note-on: the voice plays Tones (WarpVoice) while its stretcher primes (at most complexPrimeRate(r) vocoder frames
+// per output sample: never a burst; ≈ 70 ms at r = 1; its priming delayed by lead / kComplexPrimeRate samples, so
+// voices started together do their spectral work in different blocks), and crosses to Complex over 2 ms (warp.h
+// warpFadeFrames) at the first sample the vocoder has what the read needs.
+// Complex Pro: complexFormants at the pitch ratio of the moment, set again only when the ratio or the settings moved.
+// Lost stretcher (another voice took it): back to Tones at once (a hard switch; the Tones voice positions its grains
+// afresh: it never catches up on the ones it skipped, warpGrainCentre), re-primed on a free one.
 // RT-safe: everything noexcept, no allocation; ComplexVoice is POD (lane words).
 
 #include <cstddef>
@@ -43,15 +45,11 @@
 #include <type_traits>
 
 #include "pq/core/aligned_buffer.h"
+#include "pq/dsp/complex_stream.h"
 #include "pq/dsp/stretch_pool.h"
 #include "pq/dsp/warp_voice.h"
 
 namespace pq::dsp {
-
-inline constexpr uint32_t kComplexChunk = 128;        // vocoder frames per process() call
-inline constexpr uint32_t kComplexFrames = 8192;      // vocoder output kept per stretcher and channel
-inline constexpr uint32_t kComplexInFrames = 16384;   // the input gather per channel at least (also ≥ the seek)
-inline constexpr uint32_t kComplexPrimeRate = 4;      // vocoder frames per output sample while priming, × max(1, r)
 
 class SamplerStretch {
 public:
@@ -77,7 +75,7 @@ public:
   // ---- audio thread (RT-safe) ----
   StretchPool& pool() noexcept { return pool_; }
   Owner& owner(uint32_t s) noexcept { return owners_[s]; }
-  float* in(uint32_t c) noexcept { return in_.data() + static_cast<size_t>(c) * inCap_; }
+  ComplexIn in() noexcept { return {{in_.data(), in_.data() + (channels_ > 1 ? inCap_ : 0u)}, inCap_}; }
   uint32_t newToken() noexcept {
     if (++nextToken_ == 0) nextToken_ = 1;
     return nextToken_;
@@ -97,14 +95,12 @@ private:
 
 struct ComplexVoice {
   enum Phase : uint32_t { kWait = 0, kPending, kPriming, kFading, kOn };
-  int64_t vLo = 0, vHi = 0;       // vocoder frames held in the stretcher's output buffer: [vLo, vHi)
-  int64_t ys = 0;                 // the first vocoder frame (the priming schedule's base)
-  int64_t head = 0;               // stream frames fed
-  int64_t u0 = 0;                 // unfolded source frame of stream frame 0
-  int64_t zeroBelow = 0;          // stream frames below: zeros (before the start)
-  int64_t zeroAbove = INT64_MAX;  // stream frames from here on: zeros (after the end, no loop)
+  ComplexStream cx;               // the stream (cx.vHi also names the voice's place in its stretcher: Owner::vHi)
   int64_t primeT = 0;             // Pending: the sample the priming starts; Priming: the one it started
   double primeK = 0.0;            // vocoder frames per output sample while priming
+  double fRatio = 0.0;            // the formant params last set: the pitch ratio, Formants, the order, the mode
+  float fFormants = 0.0f, fOrder = 0.0f;
+  uint32_t fMode = 0;
   uint32_t stretcher = SamplerStretch::kNone, token = 0, bank = 0;
   uint32_t phase = kWait;
   uint32_t fade = 0;              // Fading: samples done
@@ -112,7 +108,7 @@ struct ComplexVoice {
 
   // At the lane's trigger (after WarpVoice::trigger): frees the stretchers lane `lane` ran, claims one. RT-safe.
   void trigger(SamplerStretch* bank, uint32_t lane) noexcept;
-  // Renders n (≤ 256) frames of voice v (which it advances), as WarpVoice::render: Tones while the stretcher primes,
+  // Renders n frames of voice v (which it advances), as WarpVoice::render: Tones while the stretcher primes,
   // the 2 ms cross, then the vocoder read at Φ. bank null (or of fewer channels than the sample): Tones. run.mode
   // ComplexPro: formant preservation (run.set.formants %, envelope order run.set.formantEnvelope). RT-safe.
   void render(SamplerStretch* bank, uint32_t lane, WarpVoice& v, const WarpSource& src, const WarpVoiceRun& run,

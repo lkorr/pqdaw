@@ -300,6 +300,23 @@ inline typename S::F cubic4(typename S::F xm1, typename S::F x0, typename S::F x
   return S::fma(S::fma(S::fma(c3, fr, c2), fr, c1), fr, x0);
 }
 
+// The cubic's taps x[i − 1 … i + 2] of eight positions (SM.16). A position's four taps are neighbours in memory, so
+// each is ONE unaligned load and the eight are transposed into the four tap vectors: 8 loads instead of 4 gathers of
+// 8 (32 loads), and the same values, so a read is bit-identical to the gathered form. d[ix[k] − 1 …
+// ix[k] + 2] must be readable for every k. RT-safe.
+inline void taps8(const float* d, const int32_t* ix, __m256& xm1, __m256& x0, __m256& x1, __m256& x2) noexcept {
+  const __m256 r0 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(d + ix[0] - 1)), _mm_loadu_ps(d + ix[4] - 1), 1);
+  const __m256 r1 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(d + ix[1] - 1)), _mm_loadu_ps(d + ix[5] - 1), 1);
+  const __m256 r2 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(d + ix[2] - 1)), _mm_loadu_ps(d + ix[6] - 1), 1);
+  const __m256 r3 = _mm256_insertf128_ps(_mm256_castps128_ps256(_mm_loadu_ps(d + ix[3] - 1)), _mm_loadu_ps(d + ix[7] - 1), 1);
+  const __m256 t0 = _mm256_unpacklo_ps(r0, r1), t1 = _mm256_unpackhi_ps(r0, r1);
+  const __m256 t2 = _mm256_unpacklo_ps(r2, r3), t3 = _mm256_unpackhi_ps(r2, r3);
+  xm1 = _mm256_shuffle_ps(t0, t2, 0x44);
+  x0 = _mm256_shuffle_ps(t0, t2, 0xEE);
+  x1 = _mm256_shuffle_ps(t1, t3, 0x44);
+  x2 = _mm256_shuffle_ps(t1, t3, 0xEE);
+}
+
 // Input accessor for template-specialised rates. Spl: the pattern is loaded once (lane 0 for S1, 8 lanes for
 // S8). Blk: one load per frame at f * kW.
 template <class S, bool kSpl>
