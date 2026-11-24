@@ -956,7 +956,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ### WF: clean waveforms, zoom to samples (docs/plans/WF.md; user 2026-11-23)
 - [x] **WF.1 One waveform renderer, sample-exact at every zoom; Sampler editor zoom** 👁 (plan WF.1) *(merged b739c5ec; Q?-WF.1-a; REVIEW; 28 views goldens re-recorded)*
-- [ ] **WF.2 The other waveform-like displays (wavetable, scope, LFO / envelope shapes) + WF.1 leftovers** 👁 (plan WF.2; w2)
+- [x] **WF.2 The other waveform-like displays (wavetable, scope, LFO / envelope shapes) + WF.1 leftovers** 👁 (plan WF.2) *(merged 3a158919; Q?-WF.2-a; REVIEW; 138 views goldens re-recorded; direct drawWaveform 2.0× its pre-WF.1 cost → OP pass)*
 
 ### AR: arpeggiator rework (docs/plans/AR.md; user 2026-11-23)
 - [x] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1) *(merged 58730c09; Q?-AR.1-a; new golden project-node-menu-midi)*
