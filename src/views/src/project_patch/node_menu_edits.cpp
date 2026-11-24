@@ -292,9 +292,6 @@ void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::stri
     float top = patch_.bands[nd.band].y + metrics::kTitle;
     for (uint32_t c = nd.capsule; c < patch_.nodes.size(); c = patch_.nodes[c].capsule) top += patch_.nodes[c].fitT;
     if (nd.y + dy < top) dy = top - nd.y;
-    // AR.1: nor left of its band's first column (a wide block placed on the short notes cable at the band's left end
-    // hung out over the tuning block): the free-spot search below then clears what it lands on.
-    if (nd.capsule == kNone && !patch_.scoped && nd.x + dx < patch_.bands[nd.band].x0 + 8.0f) dx = patch_.bands[nd.band].x0 + 8.0f - nd.x;
   }
   const bool orbiting = nd.orbitIn.on || nd.orbitOut.on;
   nudge(device.value, dx, dy);
@@ -744,6 +741,13 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca, 
     return false;
   }
   if (!hasIn || !hasOut) ctx_.setStatus(name + (!hasIn ? " has no input: only its output is wired" : " has no output: only its input is wired"));
+  if (onPath) {
+    // AR.1: a note device on the notes link — the cable out of the tuning block is short and at the band's left end, and
+    // the block is wide: inside its band's left edge (it hung out over the tuning block), then the free spot as ever.
+    sync();
+    if (const uint32_t n = patch_.nodeOf(id); n != kNone && patch_.nodes[n].band < patch_.bands.size() && !patch_.scoped)
+      mid.x = std::max(mid.x, patch_.bands[patch_.nodes[n].band].x0 + 8.0f + patch_.nodes[n].w * 0.5f);
+  }
   finishSpawn(before, id, mid, {}, {});
   return true;
 }

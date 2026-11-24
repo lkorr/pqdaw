@@ -2599,3 +2599,23 @@ Context: SM.13 (docs/plans/SM.md "Face (👁)", "SM.13"). Choices (most reversib
    fall back to the default six); + adds the next whole number above the largest ratio; typed n/d is kept as typed
    (4/2 is not reduced). Shown dimmed, still editable, while Harmonic grains is off.
 6. **Density** shows only for Loop / Cloud (Classic spawns one grain per period).
+
+## Q?-AR.1-a · arpeggiator placement and the notes cable rule: readings taken
+Context: AR.1 (docs/plans/AR.md "AR.1"). Choices (most reversible):
+1. **Wiring both ends replaces the direct notes cable.** A track has one note stream, and the main path takes the
+   OLDEST cable out of the notes that reaches the mixer: with the direct notes → instrument cable left in, a free
+   arpeggiator wired notes → arp → instrument would be off the path and do nothing. So the cable edit that completes the
+   way through note devices removes the parallel cable in the same undo step. Other option: keep both and make the
+   main path prefer the way through note devices (then the direct cable would be drawn but carry nothing).
+2. **The rule is on the cable edits, not on the `AddWire` command.** The main-path builders still make source → arp →
+   mixer on a track without an instrument, and removing the instrument after an arp joins arp → the next block; both
+   play through nothing, as before. Refusing those in `apply` would make those device edits fail.
+3. **"Takes notes"** (where a Notes output may go): the MAIN input of a note device, a group, a meta module with a
+   chain input, an instrument. Not an atom or value block, a param, a second input, a mixer.
+4. **A cable out of the lane's notes dropped on empty canvas** still offers every node with a main input (instruments
+   and modules, as before), the Arpeggiator among them — not only Notes-in-and-out entries as the plan's wording
+   suggests; only Tab over a notes cable narrows to those. Out of the Arpeggiator's output: what takes notes (3).
+5. **Inserted on the notes cable**, the block is kept inside its band's left edge (that cable is short, at the band's
+   left end, and the panel is ≈ 960 wide: centred on the pointer it hung out over the tuning block).
+6. Not changed: the browser drop still goes only onto a notes cable (dropped on empty canvas it is refused), while
+   Tab places it free. A loaded project with a wire that breaks the rule loads (the wire is inert).
