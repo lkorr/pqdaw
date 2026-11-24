@@ -214,7 +214,36 @@ struct SamplePool::DiskState {
   std::vector<AlignedBuffer<uint8_t>> staging;
   HANDLE events[kMaxInflight] = {};
   HANDLE timer = nullptr;
+  // OP.4: what the last pass found, for the wait after it. Frames buffered ahead of the reader in the emptiest ring
+  // of a stream that still has file left to read (INT64_MAX: no such stream).
+  int64_t minAhead = INT64_MAX;
 };
+
+namespace {
+
+// OP.4: the disk thread's poll periods (ms). The audio thread never signals it (a claim is lock-free: stream.h), so
+// while engaged it has to look at the slots by itself; how often depends on what a late look can cost.
+//   kFastPollMs    after a wake (engage, wake, prefetch, a render's waitFilled), for kFastWindowMs: the claims that
+//                  need their data at once follow such a call (Play, a locate while playing, a preview), within the
+//                  audio device's next buffer. Also while a pass had reads to issue or a render waits.
+//   kQuietPollMs   otherwise, at most. Every other claim is made ahead of its first read: a clip's voice claims its
+//                  stream ClipPlayerConfig::lookaheadSeconds (0.5 s) before the clip, a loop wrap or a slice starts,
+//                  and a stream begun at the file's start has the resident head (2.7 s) before it reads the ring.
+// A ring left without a read holds at least 3/4 of its capacity (diskPass refills as soon as a read fits); the quiet
+// period is also bounded by a quarter of the time the emptiest one lasts at kDrainFramesPerSecond, a rate no reader
+// reaches (a 192 kHz file at 4x speed), so a ring cannot run dry between two looks.
+constexpr DWORD kFastPollMs = 2;
+constexpr DWORD kQuietPollMs = 50;
+constexpr ULONGLONG kFastWindowMs = 250;
+constexpr int64_t kDrainFramesPerSecond = 768000;
+
+DWORD quietPollMs(int64_t minAhead) noexcept {
+  if (minAhead == INT64_MAX) return kQuietPollMs;
+  const int64_t ms = minAhead * 1000 / (4 * kDrainFramesPerSecond);
+  return static_cast<DWORD>(std::clamp<int64_t>(ms, kFastPollMs, kQuietPollMs));
+}
+
+}  // namespace
 
 // ---- PooledSample -----------------------------------------------------------------------------------------------------
 
@@ -753,16 +782,22 @@ void SamplePool::diskMain() {
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
   SetThreadDescription(GetCurrentThread(), L"pqdaw disk");
   bool busy = false;
+  ULONGLONG fastUntil = 0;  // OP.4: GetTickCount64 until which an engaged thread polls at kFastPollMs (after a wake)
   while (!stop_.load()) {
+    bool woken = true;
     if (busy || engaged_.load() > 0 || waiters_.load() > 0) {
+      // OP.4: 2 ms only while that buys something (see kFastPollMs); else the quiet period. It was 2 ms whenever
+      // the transport ran: 500 wakeups a second, 0.6 - 1.6 % of a core, also in a project without an audio clip.
+      const DWORD ms = busy || waiters_.load() > 0 || GetTickCount64() < fastUntil ? kFastPollMs : quietPollMs(disk_->minAhead);
       LARGE_INTEGER due;
-      due.QuadPart = -20000;  // 2 ms, relative, in 100 ns units
+      due.QuadPart = -10000 * static_cast<LONGLONG>(ms);  // relative, in 100 ns units
       SetWaitableTimer(disk_->timer, &due, 0, nullptr, nullptr, FALSE);
       HANDLE both[2] = {wakeEvent_, disk_->timer};
-      WaitForMultipleObjects(2, both, FALSE, INFINITE);
+      woken = WaitForMultipleObjects(2, both, FALSE, INFINITE) == WAIT_OBJECT_0;
     } else {
       WaitForSingleObject(wakeEvent_, INFINITE);  // idle: no timeout, no wakeups
     }
+    if (woken) fastUntil = GetTickCount64() + kFastWindowMs;
     wakeups_.fetch_add(1, std::memory_order_relaxed);
     if (stop_.load()) break;
     // M5 review M1: poll again only while some stream still had room for a read. A claimed but unengaged stream (a
@@ -783,6 +818,7 @@ bool SamplePool::diskPass() {
   };
   std::vector<Job> jobs;  // the disk thread is not realtime: a small vector per pass is fine
   const uint32_t ringBytes = streams_.ringFloats() * sizeof(float);
+  disk_->minAhead = INT64_MAX;
   for (uint32_t i = 0; i < streams_.slotCount(); ++i) {
     const StreamPool::Request r = streams_.request(i);
     DiskState::Local& l = disk_->local[i];
@@ -820,6 +856,7 @@ bool SamplePool::diskPass() {
       }
       const int64_t end = std::min(r.frames, l.src->frames);
       const int64_t have = l.frontier - consumed;
+      if (l.frontier < end) disk_->minAhead = std::min(disk_->minAhead, have);
       if (l.frontier >= end || cap - have < minRead) continue;
       const int64_t n = std::min({chunk, cap - have, end - l.frontier});
       jobs.push_back({i, r.gen, l.frontier, n, have, {}});
@@ -829,6 +866,7 @@ bool SamplePool::diskPass() {
         streams_.publishFill(i, r.gen, l.frontier);
       }
       const int64_t have = consumed - l.frontier;
+      if (l.frontier > 0) disk_->minAhead = std::min(disk_->minAhead, have);
       if (l.frontier <= 0 || cap - have < minRead) continue;
       const int64_t n = std::min({chunk, cap - have, l.frontier});
       jobs.push_back({i, r.gen, l.frontier - n, n, have, {}});

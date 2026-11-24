@@ -890,6 +890,156 @@ TEST_CASE("pool: a prefetch held while stopped fills its ring, then the disk thr
   fs::remove_all(dir, ec);
 }
 
+// OP.4: the disk thread polled every 2 ms whenever the transport ran (500 wakeups a second, also with no stream at
+// all). It now does so only for 250 ms after a wake (engage, wake, prefetch, waitFilled) or while it has reads to
+// issue; otherwise every 50 ms or sooner. The audio thread cannot wake it (a claim is lock-free), so a claim made
+// while it is quiet is still found by that poll.
+TEST_CASE("pool: engaged without a stream the disk thread polls every 50 ms; a wake polls every 2 ms again") {
+  SamplePool pool;
+  pool.startDiskThread();
+  pool.engage();
+  std::this_thread::sleep_for(std::chrono::milliseconds(450));  // past the fast window after engage()
+  const uint64_t w0 = pool.stats().diskWakeups;
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  const uint64_t quiet = pool.stats().diskWakeups - w0;
+  CHECK(quiet >= 8);   // 20 expected; a loaded machine may be late
+  CHECK(quiet <= 40);  // was ~500
+  pool.wake();
+  const uint64_t w1 = pool.stats().diskWakeups;
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  CHECK(pool.stats().diskWakeups - w1 >= 25);  // 75 expected
+  pool.disengage();
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const uint64_t settled = pool.stats().diskWakeups;
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  CHECK(pool.stats().diskWakeups == settled);  // disengaged: blocked again
+  pool.stopDiskThread();
+}
+
+TEST_CASE("pool: engage() serves a claim made while disengaged; a claim made while engaged and quiet is found by the poll") {
+  const fs::path dir = tempDir("pq_media_wake_engage");
+  PoolConfig cfg;
+  cfg.residentLimitBytes = 0;  // streams
+  cfg.headFrames = 1024;
+  cfg.streamSlots = 4;
+  cfg.ringFloats = 2 * 65536;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);
+  writePatternWav(dir / "long.wav", 48000 * 20, 2, 5);
+  auto s = pool.load(dir / "long.wav");
+  REQUIRE(s.ok());
+  const SampleView v = (*s)->view();
+  REQUIRE(v.streamed());
+  pool.startDiskThread();
+  StreamPool& sp = pool.streams();
+  auto ready = [&](StreamId id, int64_t frames, int ms) {
+    const auto t0 = Clock::now();
+    while (sp.buffered(id) < frames && Clock::now() - t0 < std::chrono::milliseconds(ms))
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+  };
+  auto check = [&](StreamId id, int64_t at) {
+    const FrameSpan span = sp.span(id, 4096);
+    CHECK(span.missing == 0);
+    const std::vector<float> l = flatten(span, 0);
+    bool ok = l.size() == 4096;
+    for (int f = 0; ok && f < 4096; ++f) ok = l[static_cast<std::size_t>(f)] == pattern(at + f, 0, 5) / 32768.0f;
+    CHECK(ok);
+  };
+  // Disengaged: the thread is blocked, an audio-thread claim (no wake) is not seen ...
+  const int64_t at1 = 48000 * 5;
+  const StreamId a = sp.claim(v.streamSource, at1, Direction::Forward, v.channels, v.frames);
+  REQUIRE(a.valid());
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  CHECK(pool.stats().diskWakeups == 0);
+  CHECK(sp.buffered(a) == 0);
+  // ... until engage(), which wakes it: the data is there at once.
+  pool.engage();
+  const double engageMs = ready(a, 4096, 2000);
+  CHECK(sp.buffered(a) >= 4096);
+  check(a, at1);
+  // Engaged and quiet (the ring is full, the fast window over): a second claim, again without a wake, is found by
+  // the quiet poll (here a quarter of the time the full ring lasts at the drain bound: 16 ms).
+  uint64_t reads = 0;
+  for (const auto t0 = Clock::now();;) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const uint64_t r = pool.stats().diskReads;
+    if (r == reads) break;
+    reads = r;
+    REQUIRE(Clock::now() - t0 < std::chrono::seconds(10));
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  const int64_t at2 = 48000 * 12;
+  const StreamId b = sp.claim(v.streamSource, at2, Direction::Forward, v.channels, v.frames);
+  REQUIRE(b.valid());
+  const double quietMs = ready(b, 4096, 2000);
+  CHECK(sp.buffered(b) >= 4096);
+  check(b, at2);
+  MESSAGE("claim → 4096 frames ready: " << engageMs << " ms after engage(), " << quietMs << " ms through the quiet poll");
+  CHECK(quietMs <= 500.0);  // 16 ms + one read expected; loose for a loaded machine
+  CHECK(pool.stats().underruns == 0);
+  sp.release(a);
+  sp.release(b);
+  pool.disengage();
+  pool.stopDiskThread();
+  s = Error{};
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
+TEST_CASE("pool: a reader at 4x speed through the quiet poll never runs dry (0 underruns)") {
+  const fs::path dir = tempDir("pq_media_quiet_reader");
+  PoolConfig cfg;
+  cfg.residentLimitBytes = 0;
+  cfg.headFrames = 1024;
+  cfg.streamSlots = 4;
+  cfg.decodedCacheDir = dir / "cache";
+  SamplePool pool(cfg);  // the default ring: 196608 stereo frames
+  writePatternWav(dir / "long.wav", 48000 * 30, 2, 9);
+  auto s = pool.load(dir / "long.wav");
+  REQUIRE(s.ok());
+  const SampleView v = (*s)->view();
+  REQUIRE(v.streamed());
+  pool.startDiskThread();
+  pool.engage();
+  StreamPool& sp = pool.streams();
+  const int64_t start = 48000;
+  const StreamId id = sp.claim(v.streamSource, start, Direction::Forward, v.channels, v.frames);
+  REQUIRE(id.valid());
+  REQUIRE(pool.waitFilled(id, 65536));
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));  // the ring fills, the fast window ends
+  const uint64_t w0 = pool.stats().diskWakeups;
+  // 2 s of wall time at 4 x 48 kHz, in 256-frame spans as an audio thread would take them.
+  const auto t0 = Clock::now();
+  int64_t read = 0, missing = 0;
+  bool ok = true;
+  while (Clock::now() - t0 < std::chrono::seconds(2)) {
+    const auto due = static_cast<int64_t>(std::chrono::duration<double>(Clock::now() - t0).count() * 4.0 * 48000.0);
+    while (read + 256 <= due) {
+      const FrameSpan span = sp.span(id, 256);
+      missing += span.missing;
+      const std::vector<float> l = flatten(span, 0);
+      ok = ok && l.size() == 256 && l[0] == pattern(start + read, 0, 9) / 32768.0f &&
+           l[255] == pattern(start + read + 255, 0, 9) / 32768.0f;
+      read += 256;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const uint64_t wakeups = pool.stats().diskWakeups - w0;
+  MESSAGE(read << " frames read in 2 s, " << wakeups << " disk wakeups");
+  CHECK(read > 300000);
+  CHECK(missing == 0);
+  CHECK(ok);
+  CHECK(pool.stats().underruns == 0);
+  CHECK(wakeups <= 400);  // was ~1000 in 2 s
+  sp.release(id);
+  pool.disengage();
+  pool.stopDiskThread();
+  s = Error{};
+  std::error_code ec;
+  fs::remove_all(dir, ec);
+}
+
 namespace {
 
 // Two threads: this one claims, reads and releases streams at random (positions, directions, lengths), the disk
