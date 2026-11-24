@@ -2735,3 +2735,26 @@ Context: SM.15 (docs/plans/SM.md "Rework 2026-11-23"). Choices (most reversible)
    compares per frame. Lanes read the law of the entry they play.
 6. **The first Beats slice's mip level** now comes from the rate at the trigger's first sample (was level 0).
 Status: open.
+
+## Q?-SM.16-a · one Complex stream + sampler warp CPU: readings taken
+Context: SM.16 (docs/plans/SM.md "Rework 2026-11-23"). Choices (most reversible):
+1. **The stream is a template over its host** (`dsp::ComplexStream`, pq/dsp/complex_stream.h), not a virtual
+   interface: the host supplies U(y) (its law at vocoder frame y), the loop, the direction, start / end and `read`.
+   The priming SCHEDULE stays per host (the plan says so: the clip's pre-roll / cue in song time, the voice's
+   per-sample budget); `complexPrimeRate` (the rate both schedules use) is shared.
+2. **One input-gather size**: 32768 frames per channel (the clip's; the Sampler's bank had 16384). Only a chunk that
+   consumes more than that (a read rate above ≈ 128×) differs; + 128 KiB per stereo bank.
+3. **The seek's rate** is |U(y0 + chunk) − U(y0)| / chunk for both (the clip evaluated the second point as
+   t(y0) + chunk / r: one rounding apart, and the library keeps it as a float). No clip or sampler hash moved.
+4. **The lane state stays interleaved** (`w[word][lane]`, LaneState::PerLane: the VoiceEngine moves and resets lanes
+   by that layout, and so does the hot-swap transfer). So an 8-lane group still copies a lane's words in and out and
+   scatters its four outputs; what changed is how much (only the mode's words: 35 Tones, 63 Beats, 65 Complex of 109;
+   nothing for an idle lane) and the 1-lane kernel, whose buffers are contiguous, reads and writes in place. A
+   lane-major state layout (a new LaneState kind) would remove the rest: VoiceEngine + state transfer + JIT state
+   access; not done here. Alternative for the output scatter: render all lanes of a window into lane-major scratch
+   and transpose once (8-wide stores); est. ≤ 1 ns / voice-frame.
+5. **Tones after a lost stretcher** starts its grains afresh (`VoiceHost::kCatchUp` 1): the first grain is at the
+   law's position, unaligned, like a note-on's. The clip keeps 64 (its runs position grains in order; unchanged).
+6. **A test probe** (`dsp::tComplexProbe`, a thread-local pointer read once per chunk) lets a test see every chunk of
+   both hosts; null outside tests.
+Status: open.

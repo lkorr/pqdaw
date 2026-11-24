@@ -1076,7 +1076,7 @@ double rmsOf(const std::vector<float>& x, size_t from, size_t to) {
   return std::sqrt(e / static_cast<double>(to - from));
 }
 
-// The most vocoder chunks one 256-frame block may run per voice: priming at kStretchPrimeRate × the playing rate (pitch
+// The most vocoder chunks one 256-frame block may run per voice: priming at kComplexPrimeRate × the playing rate (pitch
 // rate ≤ 1.09: ≤ 9 chunks) or the block a voice starts in (a playing block, the priming schedule's step and the
 // resampler's reach: ≤ 13), rounded up.
 constexpr uint64_t kCellsPerVoiceBlock = 16;
@@ -1295,7 +1295,7 @@ TEST_CASE("M6 C2: a Complex voice read slower than its resampler's reach per blo
     CHECK(diff == 0);
     CHECK(s64.stretchCells == s1024.stretchCells);
     // Playing: pitch rate x 64 frames < one chunk per block; priming (pending, from the look-ahead): at most
-    // kStretchPrimeRate x that, rounded up, plus the chunk a block boundary splits.
+    // kComplexPrimeRate x that, rounded up, plus the chunk a block boundary splits.
     CHECK(s64.stretchCellsBlockMax <= 3);
     double peak = 0.0;
     for (size_t i = static_cast<size_t>(k.engineRate * 0.6); i < a.size(); ++i) peak = std::max(peak, static_cast<double>(std::abs(a[i])));

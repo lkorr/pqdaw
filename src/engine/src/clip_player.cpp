@@ -1651,7 +1651,7 @@ void ClipPlayer::renderComplex(Voice& v, const media::SampleView& view, SampleTi
 // Where a stretch voice's stream starts at s: a little before the first frame its slice / grains read there.
 int64_t ClipPlayer::stretchStreamFrame(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s,
                                        bool* forward, bool complex) noexcept {  // RT-safe
-  if (complex) {  // T6.5: the first frame the stretcher's priming reads (complexInput)
+  if (complex) {  // T6.5: the first frame the stretcher's priming reads (ComplexStream::gather)
     // (as primeComplex places the voice's stream: tA = s)
     const dsp::StretchPool::Latency lat = dsp::StretchPool::latencyFor(img.sampleRate());
     const media::SampleView view = img.sample(c.sample).view();
