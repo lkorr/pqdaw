@@ -158,3 +158,14 @@ proto-Operator, SPSC, atoms) in one go; run it on an idle machine from a clean c
 `pq::bench::measure` and reports by hand needs no other change; switching to `ctx.measure(f, ops, unit, suffix)`
 additionally makes `--repeats/--warmup/--min-time` apply. Keep any extra flags of the bench by filtering them out of
 `argv` before `runner.main` (as `pq_bench_dsp --pad` does).
+
+### Profiling without an external profiler (OP.0, docs/plans/OP.md §1)
+
+- `pq_bench_scenarios` (bench/app/bench_scenarios.cpp): whole-engine scenarios; `PQ_BENCH_SAMPLE=<file>` adds a sampling
+  profile of the audio thread per scenario, `PQ_BENCH_CADENCE=1` the cost at a device's cadence, `PQ_BENCH_SAVE=<dir>`
+  saves each scenario's project.
+- `pq_sample_process <pid> <seconds> <file>`: the same kind of profile of a running pqdaw (only one you started).
+- `tools/bench/symbolize_samples.py <samples> <linker map>`: samples → functions (the bench target writes its map; link
+  pqdaw with `/MAP` for its own). `tools/bench/annotate_jit.py`: samples inside one JIT stage function, per loop.
+- `bench/support/op_profile.patch`: the audit's instrumentation (stage / unit rdtsc scopes, a JIT symbol map, `/MAP`
+  for pqdaw). Apply for a measurement, never commit it applied.
