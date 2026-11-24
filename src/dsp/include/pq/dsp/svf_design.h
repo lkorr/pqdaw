@@ -88,8 +88,34 @@ struct SvfKernelCoefs {
 SvfParams svfParamsFromInputs(float cutoff, float q, float gain, float mode, float stages, float prewarp,
                               double sampleRate) noexcept;
 
+// OP.3: the settings part of that conversion alone, which the kernel needs on every call (its key): inline, scalar
+// results (in a register: an aggregate return was built on the stack and read back across its stores) and no CRT call
+// (std::lround and the gain's log10 were 12 % of an EQ). svfParamsFromInputs uses them: one rule.
+namespace detail {
+// v rounded half away from zero and clamped to [lo, hi] (NaN: lo). Equal to std::lround on lo ≤ v < hi (0 ≤ lo,
+// hi ≤ 2^23): the truncation and the fraction are exact there.
+constexpr uint32_t svfRoundClamp(float v, uint32_t lo, uint32_t hi) noexcept {
+  if (!(v >= static_cast<float>(lo))) return lo;
+  if (v >= static_cast<float>(hi)) return hi;
+  const int32_t t = static_cast<int32_t>(v);
+  return static_cast<uint32_t>(t) + (v - static_cast<float>(t) >= 0.5f ? 1u : 0u);
+}
+}  // namespace detail
+constexpr SvfMode svfModeFromInput(float mode) noexcept {  // RT-safe
+  return static_cast<SvfMode>(detail::svfRoundClamp(mode, 0, kSvfModeCount - 1));
+}
+constexpr uint32_t svfStagesFromInput(float stages) noexcept {  // RT-safe
+  return detail::svfRoundClamp(stages, 1, kSvfMaxStages);
+}
+constexpr SvfPrewarp svfPrewarpFromInput(float prewarp) noexcept {  // RT-safe
+  return prewarp >= 0.5f ? SvfPrewarp::Bilinear : SvfPrewarp::Matched;
+}
+
 // Sections of a mode at `stages` (1 … 64; Bell, Notch: 1). RT-safe.
-uint32_t svfSectionCount(SvfMode mode, uint32_t stages) noexcept;
+constexpr uint32_t svfSectionCount(SvfMode mode, uint32_t stages) noexcept {
+  if (mode == SvfMode::Bell || mode == SvfMode::Notch) return 1;
+  return stages < 1 ? 1u : stages > kSvfMaxStages ? kSvfMaxStages : stages;
+}
 
 // The target analog sections (after sanitising `p`), as the matched design builds them (a cut bell / shelf: its boost,
 // invert set). Writes svfSectionCount() entries to `out` (room for kSvfMaxStages) and returns the count. RT-safe.

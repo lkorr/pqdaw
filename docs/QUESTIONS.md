@@ -2822,3 +2822,17 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - Options: A. keep 64. B. the engine block follows the device buffer up to 256.
 - Choice (provisional): A; OP.4 removes the cheap part of the per-block overhead instead.
 - Status: open
+
+## Q?-OP.3-a · 2026-11-24 · OP.3 · The unwatched tap's stall is not the field's place in the ring
+- Context: OP.md F3 asked to put `TapRing::readers_` on a line `signal_tap` already touches. Unwatched, the kernel
+  reads exactly one line of the ring whichever it is; with the count on the ring's first line (done: the ring is 256 B
+  instead of 384, a watched write reads one line less) the profile is unchanged: 193 of 360 samples still sit after
+  the load of the count, ≈ 20 ns per tap per block (an L3-latency load), and 92 more on the kernel's first
+  instruction (the indirect call). A line read once per block does not stay in L1 / L2 in `fx/eq x8` (cause not
+  established; the same shows on other once-per-block loads). The −2 % of an EQ is therefore not delivered.
+- Options: A. leave it (≈ 40 ns per analysed device per block). B. the host skips the call: a "no tap of this image is
+  wanted" word in the run record the generated code already loads (as SM.14's lane mask), set in `begin()` from
+  `segTaps_`. C. find what evicts once-per-block lines (per-block footprint of the engine) first: it would pay for every
+  kernel's first touch, not only the tap's.
+- Choice (provisional): A; C looks the more valuable follow-up (OP.4 touches the same per-block overhead).
+- Status: open

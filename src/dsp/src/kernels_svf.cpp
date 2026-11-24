@@ -78,18 +78,24 @@ struct Layout {
 };
 
 struct LaneKey {
-  SvfParams p;     // mode, prewarp, stages (the rest is filled per design)
+  SvfMode mode;
+  SvfPrewarp prewarp;
+  uint32_t stages;
   uint32_t key;
   uint32_t count;  // ≤ the state's sections
   bool gainMode;   // bell / shelves (the others ignore the gain input: held at 1)
 };
-LaneKey laneKey(float mode, float stages, float prewarp, double sr, uint32_t cap) noexcept {
-  LaneKey k{};
-  k.p = svfParamsFromInputs(1000.0f, 1.0f, 1.0f, mode, stages, prewarp, sr);
-  const uint32_t c = svfSectionCount(k.p.mode, k.p.stages);
+// Per call and lane (OP.3: a few compares and a truncation; not the design conversion, which costs a log10 and two
+// lround).
+inline LaneKey laneKey(float mode, float stages, float prewarp, uint32_t cap) noexcept {
+  LaneKey k;
+  k.mode = svfModeFromInput(mode);
+  k.prewarp = svfPrewarpFromInput(prewarp);
+  k.stages = svfStagesFromInput(stages);
+  const uint32_t c = svfSectionCount(k.mode, k.stages);
   k.count = c < cap ? c : cap;
-  k.key = 1u | static_cast<uint32_t>(k.p.mode) << 1 | static_cast<uint32_t>(k.p.prewarp) << 4 | k.p.stages << 8;
-  k.gainMode = k.p.mode == SvfMode::Bell || k.p.mode == SvfMode::LowShelf || k.p.mode == SvfMode::HighShelf;
+  k.key = 1u | static_cast<uint32_t>(k.mode) << 1 | static_cast<uint32_t>(k.prewarp) << 4 | k.stages << 8;
+  k.gainMode = k.mode == SvfMode::Bell || k.mode == SvfMode::LowShelf || k.mode == SvfMode::HighShelf;
   return k;
 }
 
@@ -115,9 +121,9 @@ void writeCoefs(SvfState& st, uint32_t s, uint32_t lane, const SvfKernelCoefs& c
 }
 
 uint32_t designSections(const SvfState& st, const LaneKey& k, const Inputs& v, SvfSection* out) noexcept {
-  const SvfParams p = svfParamsFromInputs(v.v[0], v.v[1], v.v[2], static_cast<float>(k.p.mode),
-                                          static_cast<float>(k.p.stages),
-                                          k.p.prewarp == SvfPrewarp::Bilinear ? 1.0f : 0.0f, st.sampleRate[0]);
+  const SvfParams p = svfParamsFromInputs(v.v[0], v.v[1], v.v[2], static_cast<float>(k.mode),
+                                          static_cast<float>(k.stages),
+                                          k.prewarp == SvfPrewarp::Bilinear ? 1.0f : 0.0f, st.sampleRate[0]);
   const uint32_t n = svfDesign(p, out);
   return n < k.count ? n : k.count;
 }
@@ -599,9 +605,13 @@ struct Svf {
     auto inputs = [&](uint32_t l) { return Inputs{{vv[0][l], vv[1][l], vv[2][l]}}; };
     uint32_t follow = 0;
     if constexpr (L > 1) {  // a lane in lane l − 1's state with its inputs follows it (one design for a voice group)
+      // OP.3: only while its key stands and is lane l − 1's this call. A lane whose key changed designs (designExact:
+      // the identity and zeroed states past its count, which a follow, copying the sections the group runs, leaves
+      // stale: a later call that ran more sections read them, NaN after a double cascade), and two lanes that were alike
+      // but get different keys now do not copy each other.
       for (uint32_t m = (evt | done) & ~1u; m != 0; m &= m - 1) {
         const uint32_t l = static_cast<uint32_t>(std::countr_zero(m));
-        if (sameLogic(st, l, inputs(l), inputs(l - 1))) follow |= 1u << l;
+        if (st.key[l] == ck.key[l] && ck.key[l - 1] == ck.key[l] && sameLogic(st, l, inputs(l), inputs(l - 1))) follow |= 1u << l;
       }
     }
     if (adv != 0) {
@@ -653,7 +663,7 @@ struct Svf {
     LaneKey keys[L];
     uint32_t n = 1, precision = 0;
     for (uint32_t l = 0; l < L; ++l) {
-      keys[l] = laneKey(a.in[4][l], a.in[5][l], a.in[6][l], st.sampleRate[0], cap);
+      keys[l] = laneKey(a.in[4][l], a.in[5][l], a.in[6][l], cap);
       n = keys[l].count > n ? keys[l].count : n;
       precision |= st.precision[l];  // a lane reset to the initial state holds zeros: valid in either precision
     }

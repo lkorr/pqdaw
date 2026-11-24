@@ -127,12 +127,19 @@ public:
   }
 
 private:
+  // Layout (OP.3). The first line: what every call of the writer reads, none of it written while the tap runs: the
+  // constants, the buffer and the interest count (written only when a reader comes or goes), so that line stays shared
+  // in both threads' caches and a watched write reads its constants from the line wanted() just loaded. The count used
+  // to have a line pair of its own behind the writer's. The writer's count (stored per chunk, read by the analysis
+  // thread) keeps its own pair, kHotLineSeparation from the first line.
   const uint32_t channels_, capacity_, mask_, maxWrite_;
+  std::atomic<int32_t> readers_{0};
   AlignedBuffer<float> buf_;
   struct alignas(kHotLineSeparation) Writer {
     std::atomic<uint64_t> written{0};
   } w_;
-  alignas(kHotLineSeparation) std::atomic<int32_t> readers_{0};
 };
+static_assert(alignof(TapRing) == kHotLineSeparation && sizeof(TapRing) == 2 * kHotLineSeparation,
+              "TapRing: one read-mostly line pair, one for the writer's count");
 
 }  // namespace pq
