@@ -9,6 +9,7 @@
 //             (the block grows in place, the tabs show), a second one closes them; no undo step either way
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -29,6 +30,8 @@
 #include "pq/meta/sampler.h"
 #include "pq/views/waveforms.h"
 #include "pq/ui/image.h"
+#include "pq/ui/overlay.h"
+#include "pq/ui/radial_menu.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
@@ -348,6 +351,15 @@ const doc::PanelElement* elementOf(const doc::Project& p, doc::DeviceId group, s
     if (e.kind == kind && (title.empty() || e.text("title", "") == title)) return &e;
   return nullptr;
 }
+// The id of the nth element of `kind` whose first binding is `name`.
+uint32_t boundElement(const doc::Project& p, doc::DeviceId group, std::string_view kind, std::string_view name, int nth = 0) {
+  const doc::Device* g = doc::findDevice(p, group).device;
+  REQUIRE(g != nullptr);
+  for (const doc::PanelElement& e : g->panel->elements)
+    if (e.kind == kind && !e.bindings.empty() && e.bindings.front().name == name && nth-- == 0) return e.id;
+  FAIL("no " << kind << " bound to " << name);
+  return 0;
+}
 const doc::Device& engineOf(const doc::Project& p, doc::DeviceId engine) {
   const doc::Device* d = doc::findDevice(p, engine).device;
   REQUIRE(d != nullptr);
@@ -432,11 +444,12 @@ TEST_CASE("sampler panel (SM.11, real dispatch): a double-click on the closed wa
     REQUIRE(e != nullptr);
     return static_cast<size_t>(u.face().indexOf(e->id));
   };
-  for (const size_t i : {id("tabs"), id("sampleroot"), id("sampleedit"), id("fold", "Sample"), id("fold", "Warp"),
-                         id("fold", "Envelope"), id("fold", "Filter"), id("fold", "LFO"), id("knob")})
+  for (const size_t i : {id("tabs"), id("sampleroot"), id("sampleedit"), id("fold", "Sample"), id("fold", "Envelope"),
+                         id("fold", "Filter"), id("fold", "LFO"), id("knob"), id("menu")})  // ("menu": the Warp pill)
     CHECK(u.face().shown(i));
   CHECK_FALSE(u.face().shown(id("fold", "Slices")));  // Classic: no Slices section
-  CHECK(u.foldState(elementOf(*u.ctx.doc(), u.ids.group, "fold", "Warp")->id) == std::nullopt);  // folded by default
+  // SM.17: the warp mode sits beside the oval; the Warp SECTION exists only for a stretch mode (warp is Off: none).
+  CHECK_FALSE(u.face().shown(id("fold", "Warp")));
   const float hClassic = u.node().h;
   // The mode row (Classic | 1-Shot | Slice | Gran, SM.6): Slice (one undo step) — the Slices section appears, the loop controls give way to the fades.
   const panel::GroupPanelFace& f = u.face();
@@ -447,7 +460,7 @@ TEST_CASE("sampler panel (SM.11, real dispatch): a double-click on the closed wa
   CHECK(u.ctx.store().history().cursor() == h0 + 1);
   CHECK(std::lround(engineOf(*u.ctx.doc(), u.ids.engine).setting("mode")->value) == 2);
   CHECK(u.face().shown(id("fold", "Slices")));
-  CHECK(u.node().h > hClassic);  // the block grew by the Slices header (its section folded)
+  CHECK(u.node().h > hClassic);  // the block grew by the Slices section (SM.17: open by default)
   // The chevron closes it all again: the oval.
   u.d.click(u.at(u.expandId()));
   u.d.step();
@@ -612,7 +625,7 @@ TEST_CASE("render: sampler-panel-classic / -oneshot / -slice (SM.11: the expande
     const std::string sfx = scale == 1.0f ? "" : "-2x";
     for (const int mode : {0, 1, 2}) {
       CAPTURE(mode);
-      Standalone s(scale, true, {{0, 0.0, 0.3}}, doc::kSamplerPanelW, 400.0f);
+      Standalone s(scale, true, {{0, 0.0, 0.3}}, doc::kSamplerPanelW, 420.0f);  // (SM.17: Classic + Beats is 414 high)
       doc::DocumentStore& st = s.ctx.store();
       const doc::PanelElement* chev = elementOf(*st.current(), s.ids.group, "fold", "Settings");
       REQUIRE(chev != nullptr);
@@ -648,10 +661,7 @@ TEST_CASE("sampler slicing (SM.12, real dispatch): Region / Beat / Manual cells 
   Expanded u;
   setSetting(u.ctx.store(), u.ids.engine, "mode", 2.0);
   u.d.step();
-  const uint32_t fold = u.idOf("fold", "Slices");
-  REQUIRE(u.shownEl(fold));
-  u.d.click(u.at(fold, 0.1f, 0.5f));  // open the Slices section (view state)
-  u.d.step();
+  REQUIRE(u.shownEl(u.idOf("fold", "Slices")));  // (SM.17: its section is open by default in Slice mode)
   const uint32_t row = u.idOf("sampleslice");
   REQUIRE(u.shownEl(row));
   // Element-local points of the row (its section 328 × 30 from face y 360: k = 1).
@@ -769,7 +779,7 @@ TEST_CASE("render: sampler-face-grains / sampler-panel-gran (SM.13: Gran mode, t
 }
 
 namespace {
-// A click on mode-row cell k (Classic | 1-Shot | Slice | Gran) through the window.
+// A click on mode-row cell k (Classic | One-Shot | Slice | Granular) through the window.
 void clickMode(Expanded& u, int k) {
   panel::GroupPanelFace& f = u.face();
   const Rect tabs = f.element(static_cast<size_t>(f.indexOf(u.tabsId()))).rect();
@@ -783,26 +793,33 @@ void clickMode(Expanded& u, int k) {
 
 TEST_CASE("sampler granular (SM.13, real dispatch): the mode row shows Granular in Gran mode only (Warp everywhere else)") {
   Expanded u;
-  const uint32_t gran = u.idOf("fold", "Granular"), warp = u.idOf("fold", "Warp"), slices = u.idOf("fold", "Slices");
+  const uint32_t gran = u.idOf("fold", "Granular"), slices = u.idOf("fold", "Slices");
+  // SM.17: "Warp" is the row beside the oval (the pill; in Slice mode the cells Off | Re-Pitch), no longer a section
+  // that shows in every mode but Gran.
+  const uint32_t warpPill = boundElement(*u.ctx.doc(), u.ids.group, "menu", "warp");
+  const uint32_t warpCells = boundElement(*u.ctx.doc(), u.ids.group, "tabs", "warp");
   const uint32_t harm = u.idOf("sampleharm");
   for (const int k : {3, 0, 1, 2, 3}) {
     CAPTURE(k);
     clickMode(u, k);
     CHECK(u.shownEl(gran) == (k == 3));
-    CHECK(u.shownEl(warp) == (k != 3));
+    CHECK(u.shownEl(warpPill) == (k == 0 || k == 1));
+    CHECK(u.shownEl(warpCells) == (k == 2));
     CHECK(u.shownEl(slices) == (k == 2));
   }
-  // Folded by default; opened (view state, no undo step) its controls and the ratio chips show.
-  CHECK_FALSE(u.shownEl(harm));
+  // SM.17: open by default (the mode's own section): its controls and the ratio chips show; its header folds it (view
+  // state, no undo step) and opens it again.
+  const uint32_t gm = boundElement(*u.ctx.doc(), u.ids.group, "tabs", "granMode");  // (SM.17: cells, was a menu)
+  CHECK(u.shownEl(harm));
+  CHECK(u.shownEl(gm));
   const size_t h = u.cursor();
   u.d.click(u.at(gran, 0.1f, 0.5f));
   u.d.step();
+  CHECK_FALSE(u.shownEl(harm));
+  CHECK_FALSE(u.shownEl(gm));
+  u.d.click(u.at(gran, 0.1f, 0.5f));
+  u.d.step();
   CHECK(u.shownEl(harm));
-  const doc::PanelElement* gm = nullptr;
-  for (const doc::PanelElement& e : doc::findDevice(*u.ctx.doc(), u.ids.group).device->panel->elements)
-    if (e.kind == "menu" && !e.bindings.empty() && e.bindings.front().name == "granMode") gm = &e;
-  REQUIRE(gm != nullptr);
-  CHECK(u.shownEl(gm->id));
   CHECK(u.cursor() == h);
 }
 
@@ -874,11 +891,8 @@ TEST_CASE("sampler granular (SM.13, real dispatch): ratio chips — + adds the n
   Expanded u;
   setSetting(u.ctx.store(), u.ids.engine, "mode", 3.0);
   u.d.step();
-  const uint32_t fold = u.idOf("fold", "Granular");
-  u.d.click(u.at(fold, 0.1f, 0.5f));
-  u.d.step();
   const uint32_t harm = u.idOf("sampleharm");
-  REQUIRE(u.shownEl(harm));
+  REQUIRE(u.shownEl(harm));  // (SM.17: the Granular section is open by default)
   const auto local = [&](float lx, float ly) {
     panel::GroupPanelFace& f = u.face();
     const Rect r = f.element(static_cast<size_t>(f.indexOf(harm))).rect();
@@ -955,4 +969,334 @@ TEST_CASE("sampler granular (SM.13): the grain tap is read while the face shows,
   u.frame();
   (void)u.reader->serial();
   CHECK(u.grainTap->wanted());
+}
+
+// ---- SM.17: the panel pass — radial choices, the Warp row beside the oval, the conditional Warp section, the editor ----
+// (docs/plans/SM.md "SM.17"): the warp mode is a radial menu on a pill beside the oval (the generic `menu` element, look
+// "radial"): a click opens it centred on the pill, the current mode marked; a pick by pointer, by keys or by a typed
+// filter is one undo step; the wheel over the pill steps it (a run of notches one step). In Slice mode the row is the
+// cells Off | Re-Pitch (a stored stretch mode shows as Off and is kept until a cell is clicked). The Warp section exists
+// only while Beats / Tones / Texture / Complex Pro is chosen, with that mode's controls. A press anywhere on the
+// waveform editor is the editor's: the block never moves.
+//   goldens   sampler-panel-warp (Texture: the Warp section open), sampler-panel-radial (the menu open on the pill)
+
+namespace {
+
+// The expanded Sampler in the patch view, with the radial menu's helpers (the overlay the canvas opens it in).
+struct WarpUi : Expanded {
+  uint32_t pill() const { return boundElement(*ctx.doc(), ids.group, "menu", "warp"); }
+  long warp() const {
+    const doc::DeviceValue* v = engineOf(*ctx.doc(), ids.engine).setting("warp");
+    return v != nullptr ? std::lround(v->value) : 0;
+  }
+  RadialMenu* menu() const {
+    OverlayLayer* o = OverlayLayer::of(view().canvas());
+    return o != nullptr ? dynamic_cast<RadialMenu*>(o->top()) : nullptr;
+  }
+  RadialMenu& open() {
+    d.click(at(pill()));
+    RadialMenu* m = menu();
+    REQUIRE(m != nullptr);
+    d.advance(0.2);  // (past the open animation)
+    return *m;
+  }
+  Vec2 bubble(std::string_view label) {
+    RadialMenu* m = menu();
+    REQUIRE(m != nullptr);
+    const int32_t i = m->find(label);
+    REQUIRE_MESSAGE(i >= 0, label);
+    REQUIRE_MESSAGE(m->shown(i), label);
+    return m->centreOf(i);
+  }
+};
+
+}  // namespace
+
+TEST_CASE("sampler warp (SM.17, real dispatch): a click on the Warp pill opens the radial menu centred on it, the current "
+          "mode marked; a click on a mode picks it — one undo step, undo restores") {
+  WarpUi u;
+  REQUIRE(u.shownEl(u.pill()));
+  REQUIRE(u.warp() == 0);
+  const size_t h0 = u.cursor();
+  RadialMenu& m = u.open();
+  CHECK(u.cursor() == h0);  // opening is no edit
+  CHECK(m.itemCount() == 7);  // the seven modes, one ring
+  for (const char* mode : {"Off", "Re-Pitch", "Beats", "Tones", "Texture", "Complex", "Complex Pro"}) {
+    CAPTURE(mode);
+    const int32_t i = m.find(mode);
+    REQUIRE(i >= 0);
+    CHECK(m.shown(i));
+  }
+  CHECK(m.highlighted() == m.find("Off"));  // the current mode
+  const Vec2 pill = u.at(u.pill());
+  CHECK(std::fabs(m.centre().x - pill.x) < 2.0f);  // centred on the pill
+  CHECK(std::fabs(m.centre().y - pill.y) < 2.0f);
+  const Vec2 beats = u.bubble("Beats");
+  u.d.move(beats);
+  u.d.click(beats);
+  u.d.step();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.warp() == 2);
+  CHECK(u.cursor() == h0 + 1);
+  REQUIRE(u.ctx.store().undo());
+  u.d.step();
+  CHECK(u.warp() == 0);
+  CHECK(u.cursor() == h0);
+  // A press outside every bubble closes it without an edit.
+  (void)u.open();
+  u.d.click({5.0f, 5.0f});
+  u.d.step();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.cursor() == h0);
+}
+
+TEST_CASE("sampler warp (SM.17, real dispatch): the radial menu by keys (Down round the ring, Enter picks) and by a typed "
+          "filter — one undo step each; Esc closes without an edit") {
+  WarpUi u;
+  const size_t h0 = u.cursor();
+  // Keys: from Off three steps clockwise is Tones.
+  (void)u.open();
+  u.d.press("Down");
+  u.d.press("Down");
+  u.d.press("Down");
+  u.d.press("Enter");
+  u.d.step();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.warp() == 3);
+  CHECK(u.cursor() == h0 + 1);
+  // Typed: "tex" leaves Texture alone; Enter picks it. (The panel was rebuilt by the pick: the pill answers again.)
+  RadialMenu& m = u.open();
+  CHECK(m.highlighted() == m.find("Tones"));
+  u.d.type("tex");
+  REQUIRE(m.resultCount() == 1);
+  CHECK(m.labelOf(m.result(0)) == "Texture");
+  u.d.press("Enter");
+  u.d.step();
+  CHECK(u.warp() == 4);
+  CHECK(u.cursor() == h0 + 2);
+  // "complex" matches two: the exact one first.
+  RadialMenu& m2 = u.open();
+  u.d.type("complex");
+  REQUIRE(m2.resultCount() == 2);
+  CHECK(m2.labelOf(m2.result(0)) == "Complex");
+  u.d.press("Down");
+  u.d.press("Enter");
+  u.d.step();
+  CHECK(u.warp() == 6);
+  CHECK(u.cursor() == h0 + 3);
+  // Esc: closed, nothing changed.
+  (void)u.open();
+  u.d.press("Escape");
+  u.d.step();
+  CHECK(u.menu() == nullptr);
+  CHECK(u.warp() == 6);
+  CHECK(u.cursor() == h0 + 3);
+}
+
+TEST_CASE("sampler warp (SM.17, real dispatch): the wheel over the Warp pill steps the mode; a run of notches is one undo "
+          "step") {
+  Standalone s(1.0f, true, {}, doc::kSamplerPanelW, 400.0f);
+  doc::DocumentStore& st = s.ctx.store();
+  st.view().panelWindows[s.ids.group.value].setFoldOpen(elementOf(*st.current(), s.ids.group, "fold", "Settings")->id, true);
+  (void)s.face().sync();
+  s.d.tree().layoutNow();
+  const uint32_t pill = boundElement(*st.current(), s.ids.group, "menu", "warp");
+  const int32_t i = s.face().indexOf(pill);
+  REQUIRE(i >= 0);
+  REQUIRE(s.face().shown(static_cast<size_t>(i)));
+  const Rect r = s.face().element(static_cast<size_t>(i)).rect();
+  const Vec2 c = s.host->transform().map({(r.x0 + r.x1) * 0.5f, (r.y0 + r.y1) * 0.5f});
+  const auto warp = [&] {
+    const doc::DeviceValue* v = engineOf(*st.current(), s.ids.engine).setting("warp");
+    return v != nullptr ? std::lround(v->value) : 0l;
+  };
+  const size_t h0 = st.history().cursor();
+  s.d.move(c);
+  s.d.wheel(c, 1.0f);
+  s.d.wheel(c, 1.0f);
+  s.d.advance(panel::PanelHost::kWheelRunSeconds + 0.1);
+  CHECK(warp() == 2);  // Off → Re-Pitch → Beats
+  CHECK(st.history().cursor() == h0 + 1);
+  s.d.wheel(c, -1.0f);
+  s.d.advance(panel::PanelHost::kWheelRunSeconds + 0.1);
+  CHECK(warp() == 1);
+  CHECK(st.history().cursor() == h0 + 2);
+  REQUIRE(st.undo());
+  CHECK(warp() == 2);
+}
+
+TEST_CASE("sampler warp (SM.17, real dispatch): the Warp section exists only for a stretch mode that has controls, open, "
+          "with that mode's controls; Sample BPM shows while the sample warps") {
+  WarpUi u;
+  const uint32_t fold = u.idOf("fold", "Warp");
+  const doc::Project& p0 = *u.ctx.doc();
+  const uint32_t bpm = boundElement(p0, u.ids.group, "number", "sampleBpm");
+  const uint32_t envelope = boundElement(p0, u.ids.group, "knob", "envelope"), beatsLoop = boundElement(p0, u.ids.group, "tabs", "beatsLoop");
+  const uint32_t grain = boundElement(p0, u.ids.group, "knob", "grain"), flux = boundElement(p0, u.ids.group, "knob", "flux");
+  const uint32_t formants = boundElement(p0, u.ids.group, "knob", "formants"), order = boundElement(p0, u.ids.group, "knob", "formantOrder");
+  const uint32_t loopFade = boundElement(p0, u.ids.group, "knob", "loopFade");
+  struct Want {
+    const char* mode;
+    bool section, bpm, envelope, grain, flux, formants;
+  };
+  float hOff = 0.0f;
+  for (const Want& w : {Want{"Off", false, false, false, false, false, false}, Want{"Re-Pitch", false, true, false, false, false, false},
+                        Want{"Beats", true, true, true, false, false, false}, Want{"Tones", true, true, false, true, false, false},
+                        Want{"Texture", true, true, false, true, true, false}, Want{"Complex", false, true, false, false, false, false},
+                        Want{"Complex Pro", true, true, false, false, false, true}, Want{"Off", false, false, false, false, false, false}}) {
+    CAPTURE(w.mode);
+    if (std::string_view(w.mode) != "Off" || u.warp() != 0) {  // picked through the menu
+      (void)u.open();
+      const Vec2 b = u.bubble(w.mode);
+      u.d.move(b);
+      u.d.click(b);
+      u.d.step();
+    }
+    CHECK(u.shownEl(fold) == w.section);
+    CHECK(u.shownEl(bpm) == w.bpm);
+    CHECK(u.shownEl(envelope) == w.envelope);  // (shown: the section is open by default)
+    CHECK(u.shownEl(beatsLoop) == w.envelope);
+    CHECK(u.shownEl(grain) == w.grain);
+    CHECK(u.shownEl(flux) == w.flux);
+    CHECK(u.shownEl(formants) == w.formants);
+    CHECK(u.shownEl(order) == w.formants);
+    CHECK(u.shownEl(loopFade) == (u.warp() <= 1));  // (Classic loops Forward by default; a stretch mode has no loop crossfade)
+    if (hOff == 0.0f) hOff = u.node().h;
+    CHECK((u.node().h > hOff + 40.0f) == w.section);  // the block grows by the section, and gives it back
+  }
+}
+
+TEST_CASE("sampler warp (SM.17, real dispatch): Slice mode offers only Off | Re-Pitch (cells); a stored stretch mode shows "
+          "as Off there and is kept until a cell is clicked; Granular has no Warp row") {
+  WarpUi u;
+  setSetting(u.ctx.store(), u.ids.engine, "warp", 4.0);  // Texture, in Classic
+  u.d.step();
+  const uint32_t pill = u.pill(), cells = boundElement(*u.ctx.doc(), u.ids.group, "tabs", "warp");
+  const uint32_t fold = u.idOf("fold", "Warp");
+  const uint32_t sliceBpm = boundElement(*u.ctx.doc(), u.ids.group, "number", "sampleBpm", 1);  // (Slice's BPM box)
+  CHECK(u.shownEl(pill));
+  CHECK_FALSE(u.shownEl(cells));
+  CHECK(u.shownEl(fold));
+  clickMode(u, 2);  // Slice
+  CHECK_FALSE(u.shownEl(pill));
+  CHECK(u.shownEl(cells));
+  CHECK_FALSE(u.shownEl(fold));  // no stretch controls in Slice
+  CHECK_FALSE(u.shownEl(sliceBpm));
+  {
+    panel::GroupPanelFace& f = u.face();
+    const panel::Element& e = f.element(static_cast<size_t>(f.indexOf(cells)));
+    CHECK(e.desc().text("items", "") == "Off|Re-Pitch");
+    CHECK(e.selection(f.target()) == std::optional<double>(0.0));  // Texture plays unwarped in Slice: shown as Off
+  }
+  CHECK(u.warp() == 4);  // kept
+  clickMode(u, 0);
+  CHECK(u.shownEl(fold));  // Classic again: Texture is back
+  clickMode(u, 2);
+  // The Re-Pitch cell (one undo step), then Off.
+  const size_t h = u.cursor();
+  u.d.click(u.at(cells, 0.75f, 0.5f));
+  u.d.step();
+  CHECK(u.warp() == 1);
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.shownEl(sliceBpm));
+  u.d.click(u.at(cells, 0.25f, 0.5f));
+  u.d.step();
+  CHECK(u.warp() == 0);
+  CHECK(u.cursor() == h + 2);
+  CHECK_FALSE(u.shownEl(sliceBpm));
+  clickMode(u, 3);  // Granular: no Warp row at all
+  CHECK_FALSE(u.shownEl(pill));
+  CHECK_FALSE(u.shownEl(cells));
+  CHECK_FALSE(u.shownEl(fold));
+}
+
+TEST_CASE("sampler editor (SM.17, real dispatch): a press or drag on the waveform editor never moves the block (empty "
+          "waveform, ruler, flag strip), and a hovered handle says what it is") {
+  Expanded u;
+  const Node n0 = u.node();
+  const size_t h0 = u.cursor();
+  for (const float y : {kWaveMidY, kRulerY, kFlagY, 116.0f}) {  // the waveform, the ruler (warp Off), the flag strip, the info line
+    CAPTURE(y);
+    const Vec2 to = u.ed(0.7, y);
+    u.d.drag(u.ed(0.5, y), {to.x, to.y + 30.0f}, 6);
+    u.d.step();
+    CHECK(u.node().x == doctest::Approx(n0.x));
+    CHECK(u.node().y == doctest::Approx(n0.y));
+  }
+  CHECK(u.cursor() == h0);  // and nothing was edited
+  // Hover: the handles name themselves (the info view's text), with a resize cursor; the empty waveform an arrow.
+  const size_t ed = static_cast<size_t>(u.face().indexOf(u.idOf("sampleedit")));
+  const auto hover = [&](Vec2 at) {
+    u.d.move(at);
+    u.d.step();
+    std::string title, body;
+    panel::GroupPanelFace& f = u.face();
+    f.element(ed).describe(f.target(), title, body);
+    return title;
+  };
+  const auto cursor = [&] { return u.face().element(ed).cursor(); };
+  CHECK(hover(u.ed(0.0, kWaveMidY)) == "Sample Start");
+  CHECK(cursor() == Cursor::ResizeEW);
+  CHECK(hover(u.ed(1.0, kFlagY)) == "Sample End");
+  CHECK(hover(u.ed(1.0, kLoopBarY)) == "Loop End");
+  CHECK(hover(u.ed(0.5, kLoopBarY)) == "Loop");
+  CHECK(cursor() == Cursor::Move);
+  CHECK(hover(u.ed(0.5, kWaveMidY)) == "Sample Editor");
+  CHECK(cursor() == Cursor::Arrow);
+}
+
+TEST_CASE("sampler panel (SM.17): no drop-down list is left — every choice is cells (2 – 3 values) or a radial menu; the "
+          "closed face names its knobs") {
+  Ui u;
+  const doc::Device* g = doc::findDevice(*u.ctx.doc(), u.ids.group).device;
+  REQUIRE(g != nullptr);
+  size_t radial = 0, names = 0;
+  for (const doc::PanelElement& e : g->panel->elements) {
+    if (e.kind == "menu") {
+      CHECK(e.text("look", "list") == "radial");
+      ++radial;
+    }
+    if (e.kind == "label")
+      for (const char* n : {"Transpose", "Filter", "Volume", "Position", "Size", "Density"})
+        if (e.text("text", "") == n && e.y < doc::kSamplerFaceH) ++names;
+  }
+  CHECK(radial == 2);  // Warp, grain Shape
+  CHECK(names == 6);
+  for (const char* setting : {"loop", "trigger", "beatsLoop", "granMode"}) CHECK(boundElement(*u.ctx.doc(), u.ids.group, "tabs", setting) != 0);
+}
+
+TEST_CASE("render: sampler-panel-warp / sampler-panel-radial (SM.17: a stretch mode's Warp section; the radial menu open "
+          "on the Warp pill, 1x and 2x)") {
+  for (const float scale : {1.0f, 2.0f}) {
+    CAPTURE(scale);
+    const std::string sfx = scale == 1.0f ? "" : "-2x";
+    {
+      Standalone s(scale, true, {{0, 0.0, 0.3}}, doc::kSamplerPanelW, 420.0f);
+      doc::DocumentStore& st = s.ctx.store();
+      st.view().panelWindows[s.ids.group.value].setFoldOpen(elementOf(*st.current(), s.ids.group, "fold", "Settings")->id, true);
+      setSetting(st, s.ids.engine, "mode", 1.0);
+      setSetting(st, s.ids.engine, "warp", 4.0);  // Texture: Grain Size and Flux
+      (void)s.face().sync();
+      checkImage("sampler-panel-warp" + sfx, s.render());
+    }
+  }
+  // The menu, opened by a click on the pill in the patch view (the canvas's overlay); the image cropped to the menu.
+  WarpUi u;
+  setSetting(u.ctx.store(), u.ids.engine, "warp", 2.0);  // Beats: opened to and marked
+  u.d.step();
+  RadialMenu& m = u.open();
+  u.d.move(u.bubble("Texture"));  // (hovered: its name tag shows)
+  u.d.advance(0.3);
+  auto img = u.d.render();
+  REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
+  const IRect b = m.bounds();
+  const int32_t x0 = std::max(0, b.x - 60), y0 = std::max(0, b.y - 12);
+  const int32_t x1 = std::min<int32_t>(static_cast<int32_t>(img->width), b.x + b.w + 60), y1 = std::min<int32_t>(static_cast<int32_t>(img->height), b.y + b.h + 12);
+  Image cut;
+  cut.width = static_cast<uint32_t>(x1 - x0);
+  cut.height = static_cast<uint32_t>(y1 - y0);
+  cut.rgba.resize(static_cast<size_t>(cut.width) * cut.height * 4);
+  for (uint32_t y = 0; y < cut.height; ++y)
+    std::copy_n(img->pixel(static_cast<uint32_t>(x0), static_cast<uint32_t>(y0) + y), static_cast<size_t>(cut.width) * 4, cut.pixel(0, y));
+  checkImage("sampler-panel-radial", cut);
 }

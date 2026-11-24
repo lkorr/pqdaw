@@ -183,15 +183,19 @@ BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSyn
 // opened.
 // Its panel (SM.10): the closed face — an oval 152 × 84 (a `shape` ellipse: the block is that oval, its ports orbit it)
 // with the engine face's `samplewave` section (the waveform, the voices' playheads), mini knobs Transpose · Filter
-// (the Filter's Frequency) · Volume (the engine's Gain) on the lower arc and the Expand chevron (a `fold`, look chevron,
-// folded by default; Panel::fit; a double-click on the waveform toggles it) — and, open, the EXPANDED PANEL (SM.11,
-// kSamplerPanelW wide): the mode row (kSamplerModes, the engine's mode) and the root field beside the oval, the waveform
-// editor (`sampleedit`) under it, then the fold sections Sample (gain, transpose, detune; Classic: loop, loop fade;
-// One-Shot / Slice: fades, trigger), Warp (the 7-way mode, sample BPM, the Beats / Tones / Texture params), Slices
-// (Slice mode only), SM.13 Granular (Gran mode only: grain mode, shape, grains, Freeze, Harmonic, the Position … Density
-// knobs, the harmonic n/d chips `sampleharm`), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on
-// / off switches beside their headers, bound to their activators: kActiveSetting). Only Sample is open by default; Warp
-// hides in Gran mode. SM.13: in Gran mode the closed face's mini knobs are Position · Size · Density.
+// (the Filter's Frequency) · Volume (the engine's Gain) with their names under them and the Expand chevron (a `fold`,
+// look chevron, folded by default; Panel::fit; a double-click on the waveform toggles it) — and, open, the EXPANDED
+// PANEL (SM.11 / SM.17, kSamplerPanelW wide). Beside the oval: the mode row (kSamplerModes, the engine's mode), the root
+// field and the Warp row (the warp mode as a radial menu — in Slice mode the cells Off | Re-Pitch, a stored stretch
+// mode showing as Off — and the sample's BPM while it warps; none in Gran mode). Under it the waveform editor
+// (`sampleedit`), then the fold sections Sample (gain, transpose, detune; Classic: loop cells, loop fade; One-Shot /
+// Slice: fades, Trigger | Gate), Warp (only while Beats / Tones / Texture / Complex Pro is chosen outside Slice and
+// Gran: that mode's controls), Slices (Slice mode only), SM.13 Granular (Gran mode only: grain mode cells, shape,
+// grains, Freeze, Harmonic, the Position … Density knobs, the harmonic n/d chips `sampleharm`), Envelope, Filter, LFO
+// (their panels embedded, GU.6; the Filter and LFO on / off switches beside their headers, bound to their activators:
+// kActiveSetting). Sample and the mode's own section are open by default, the embedded three folded. SM.13: in Gran
+// mode the closed face's mini knobs are Position · Size · Density. SM.17: a choice of 2 – 3 values is cells (`tabs`),
+// of 5 or more a radial menu (`menu`, look "radial").
 struct SamplerRoles {
   DeviceId group, engine, key, amp;  // the group, meta:sampler, the voice.key block, the amp (mul)
   DeviceId filter, filterFrequency;        // the EQ band group and its Frequency value block
@@ -212,7 +216,7 @@ struct SamplerOptions {
   uint32_t mode = 0;                           // meta::SamplerMode
   bool active = true;
 };
-inline constexpr const char* kSamplerModes = "Classic|1-Shot|Slice|Gran";  // SM.11: the mode row (the engine's mode; SM.6: + Granular)
+inline constexpr const char* kSamplerModes = "Classic|One-Shot|Slice|Granular";  // SM.11: the mode row (the engine's mode; SM.6: + Granular)
 BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o = {}, SamplerRoles* roles = nullptr);
 
 // ---- GU.10: the stock devices as group presets (docs/plans/GU.md "One hierarchy") ----

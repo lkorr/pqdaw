@@ -815,7 +815,7 @@ void ShellApp::runBugScriptStep() {
       SDL_PushEvent(&ev);
     }
   };
-  auto pushMouse = [&](Uint32 type, float x, float y) {
+  auto pushMouse = [&](Uint32 type, float x, float y, Uint8 clicks = 1) {
     SDL_Event ev{};
     ev.type = type;
     if (type == SDL_EVENT_MOUSE_MOTION) {
@@ -827,7 +827,7 @@ void ShellApp::runBugScriptStep() {
       ev.button.windowID = SDL_GetWindowID(window_);
       ev.button.button = SDL_BUTTON_LEFT;
       ev.button.down = type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-      ev.button.clicks = 1;
+      ev.button.clicks = clicks;
       ev.button.x = x / density;
       ev.button.y = y / density;
       ev.button.timestamp = SDL_GetTicksNS();
@@ -856,6 +856,43 @@ void ShellApp::runBugScriptStep() {
     pushMouse(SDL_EVENT_MOUSE_MOTION, x, y);
     pushMouse(SDL_EVENT_MOUSE_BUTTON_DOWN, x, y);
     pushMouse(SDL_EVENT_MOUSE_BUTTON_UP, x, y);
+  } else if (step.rfind("dclick:", 0) == 0) {  // SM.17: a double-click
+    float x = 0, y = 0;
+    xy(value("dclick:"), x, y);
+    pushMouse(SDL_EVENT_MOUSE_MOTION, x, y);
+    for (const Uint8 n : {Uint8{1}, Uint8{2}}) {
+      pushMouse(SDL_EVENT_MOUSE_BUTTON_DOWN, x, y, n);
+      pushMouse(SDL_EVENT_MOUSE_BUTTON_UP, x, y, n);
+    }
+  } else if (step.rfind("down:", 0) == 0 || step.rfind("up:", 0) == 0) {  // SM.17: a drag is down, move …, up
+    const bool down = step[0] == 'd';
+    float x = 0, y = 0;
+    xy(value(down ? "down:" : "up:"), x, y);
+    pushMouse(SDL_EVENT_MOUSE_MOTION, x, y);
+    pushMouse(down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP, x, y);
+  } else if (step.rfind("wheel:", 0) == 0) {  // SM.17: "wheel:x,y,notches" (up positive) at a point
+    const std::string v = value("wheel:");
+    float x = 0, y = 0;
+    xy(v, x, y);
+    const size_t c = v.rfind(',');
+    pushMouse(SDL_EVENT_MOUSE_MOTION, x, y);
+    SDL_Event ev{};
+    ev.type = SDL_EVENT_MOUSE_WHEEL;
+    ev.wheel.windowID = SDL_GetWindowID(window_);
+    ev.wheel.y = c != std::string::npos && c != v.find(',') ? std::strtof(v.c_str() + c + 1, nullptr) : 1.0f;
+    ev.wheel.mouse_x = x / density;
+    ev.wheel.mouse_y = y / density;
+    ev.wheel.timestamp = SDL_GetTicksNS();
+    SDL_PushEvent(&ev);
+  } else if (step.rfind("type:", 0) == 0) {  // SM.17: typed text into whatever has the focus
+    static std::string typed;  // (the event points at it until it is handled)
+    typed = value("type:");
+    SDL_Event ev{};
+    ev.type = SDL_EVENT_TEXT_INPUT;
+    ev.text.windowID = SDL_GetWindowID(window_);
+    ev.text.text = typed.c_str();
+    ev.text.timestamp = SDL_GetTicksNS();
+    SDL_PushEvent(&ev);
   } else if (step.rfind("key:", 0) == 0) {  // one plain key by name ("key:space")
     pushKey(SDL_GetKeyFromName(value("key:").c_str()), SDL_KMOD_NONE);
   } else if (step.rfind("text:", 0) == 0 && panel) {

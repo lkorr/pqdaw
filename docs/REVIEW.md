@@ -2371,3 +2371,26 @@ Arpeggiator → open the **Pulse** fold → **On**. Try:
 - Cycle 3 / 4, 1 / 2, 2 / 1 … changes how long the whole figure is; it follows the time signature.
 - Layers moved to the bottom of the Pitch block (they work in both modes).
 Is the row order (lowest note at the bottom) and "rows without a note dimmed" the right read? Open choices: Q?-AR.3-a.
+
+## SM.17 · Sampler panel pass: radial choices, Warp beside the oval (👁)
+Drop a sample on a MIDI track, open the Sampler (chevron under the oval, or double-click its waveform).
+- **Closed face**: the three knobs are named (Transpose · Filter · Volume; Granular: Position · Size · Density); with no
+  sample it says "Drop a sample here".
+- **Beside the oval**: mode cells (Classic | One-Shot | Slice | Granular), Root, then **Warp**: a pill; click it and the
+  seven modes open in a ring around it (the Math module's menu). Click one, or Up / Down + Enter, or just type ("tex",
+  Enter). Sample BPM shows beside it once warp is on. In Slice the row is two cells, Off | Re-Pitch; Granular has none.
+- **Warp section**: only there for Beats / Tones / Texture / Complex Pro, open, with only that mode's knobs.
+- **Cells instead of drop-downs**: Loop (Off | Forward | Ping-Pong), Plays (Trigger | Gate), Transient Loop, Grain Mode.
+  Grain Shape is a small radial pill. Slices and Granular are open when you enter their mode.
+- **Editor**: pressing or dragging anywhere on the waveform editor no longer moves the block; hover a line / flag / the
+  loop bar / a slice / a marker / the grain region and the info view names it, with a resize or move cursor.
+- Live check done in the running app (worktree build, scripted input): every mode, every warp choice by pointer / keys /
+  typed filter, fold / unfold, drags of Start flag, End, loop end, a slice line, a warp marker, the grain region.
+  Not driven live: loop start / loop body, the grain's size edge, the wheel on the pill (covered by a test).
+- To judge: the ring covers the mode row and Root while it is open (it is centred on the pill, as asked) - fine, or
+  should it open beside the panel? Is "Plays: Trigger | Gate" the right wording? Mini-knob names are 6 pt: readable at
+  zoom 1.5 in the project patch, small in the Device view when the expanded panel is scaled to fit. Wheel on the pill
+  works in the Device view / panel window only (on the canvas the wheel scrolls the canvas, as for every knob).
+- Known, not changed here: a Sampler saved before this keeps its old panel (no migration); loop bar can reach past End;
+  the Device view scales the tall expanded panel down instead of scrolling.
+- Goldens: sampler-face-* and sampler-panel-* (all 16 re-recorded), new sampler-panel-warp(-2x), sampler-panel-radial.
