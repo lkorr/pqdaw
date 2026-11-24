@@ -32,6 +32,17 @@ constexpr float kBelowOne = 0.99999994f;  // nextafter(1, 0)
     }                                                                                            \
   };
 
+// OP.6: an Op tagged PQ_MEMO runs kernels_common.h's repeated-input driver (elementwiseMemo). Tagged: the four unit
+// conversions computed in double (cents ↔ Hz, dB ↔ gain: 10 – 16 ns per 8 values), whose input usually holds still
+// for the block (a held voice's cents, a level), so a vector whose bits repeat the previous one reuses its result;
+// a moving input pays ≈ 0 – 5 % for the compare. Not tagged, measured: exp / log / pow / tan (single-precision SVML,
+// 2 – 7 ns per 8 values: a moving input paid 6 – 25 % and no profile shows them), sin / tanh (their inputs are
+// signals) and every fast variant (inline polynomials).
+#define PQ_MEMO(Name, Base)             \
+  struct Name : Base {                  \
+    static constexpr bool kMemo = true; \
+  };
+
 PQ_BINARY(AddOp, S::add(a, b))
 PQ_BINARY(SubOp, S::sub(a, b))
 PQ_BINARY(MulOp, S::mul(a, b))
@@ -49,9 +60,11 @@ inline typename S::F modFloored(typename S::F a, typename S::F b) noexcept {  //
 PQ_BINARY(ModOp, modFloored<S>(a, b))
 PQ_BINARY(PowOp, S::exactPow(a, b))
 PQ_BINARY(PowFastOp, S::fastExp2(S::mul(b, S::fastLog2(a))))
-PQ_BINARY(CentsToHzOp, S::exactCentsToHz(a, b))
+PQ_BINARY(CentsToHzOpPlain, S::exactCentsToHz(a, b))
+PQ_MEMO(CentsToHzOp, CentsToHzOpPlain)
 PQ_BINARY(CentsToHzFastOp, S::mul(b, S::fastExp2(S::mul(a, S::set(1.0f / 1200.0f)))))
-PQ_BINARY(HzToCentsOp, S::exactHzToCents(a, b))
+PQ_BINARY(HzToCentsOpPlain, S::exactHzToCents(a, b))
+PQ_MEMO(HzToCentsOp, HzToCentsOpPlain)
 PQ_BINARY(Atan2Op, S::fastAtan2(a, b))  // MX.2: atan2(y = a, x = b)
 PQ_BINARY(HzToCentsFastOp, S::mul(S::set(1200.0f), S::fastLog2(S::div(a, b))))
 
@@ -75,9 +88,11 @@ PQ_UNARY(TanOp, S::exactTan(x))
 PQ_UNARY(TanFastOp, S::fastTan(x))
 PQ_UNARY(TanhOp, S::exactTanh(x))
 PQ_UNARY(TanhFastOp, S::fastTanh(x))
-PQ_UNARY(DbToGainOp, S::exactDbToGain(x))
+PQ_UNARY(DbToGainOpPlain, S::exactDbToGain(x))
+PQ_MEMO(DbToGainOp, DbToGainOpPlain)
 PQ_UNARY(DbToGainFastOp, S::fastExp2(S::mul(x, S::set(0.166096404744368118f))))  // log2(10)/20
-PQ_UNARY(GainToDbOp, S::exactGainToDb(x))
+PQ_UNARY(GainToDbOpPlain, S::exactGainToDb(x))
+PQ_MEMO(GainToDbOp, GainToDbOpPlain)
 PQ_UNARY(GainToDbFastOp, S::mul(S::fastLog2(x), S::set(6.02059991327962390f)))  // 20·log10(2)
 PQ_UNARY(ConstOp, x)
 // sine(phase): reduce to r in [−0.5, 0.5] cycles first, so the radian argument stays in [−π, π] where
@@ -92,6 +107,7 @@ PQ_TERNARY(MulAddOp, S::fma(a, b, c))
 #undef PQ_UNARY
 #undef PQ_BINARY
 #undef PQ_TERNARY
+#undef PQ_MEMO
 
 }  // namespace
 

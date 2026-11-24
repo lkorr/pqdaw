@@ -79,13 +79,91 @@ inline void elementwise(const KernelArgs& a, uint32_t count) noexcept {  // RT-s
   }
 }
 
-// Adapts an element-wise Op to the Impl interface used by the tables below.
+// OP.6: the same driver for an Op whose f is an expensive pure function (the unit conversions through double: cents ↔
+// Hz, dB ↔ gain) of inputs that mostly hold still (a held voice's cents, a level param). A vector of 8 inputs whose
+// bits equal the previous vector's reuses the previous result: the same function of the same values, so the output
+// is bit for bit what `elementwise` writes (compared as integers: NaN payloads and ±0 count as different). For L = 8
+// that is "no lane moved since the last frame", for L = 1 "these 8 frames repeat the last 8". The previous inputs
+// and result live in registers, not in the buffers: the JIT runs these kernels in place (output over the input).
+// Unary and binary Ops.
+template <class Op, uint32_t SM>
+inline void elementwiseMemo(const KernelArgs& a, uint32_t count) noexcept {  // RT-safe
+  static_assert(Op::kArity == 1 || Op::kArity == 2);
+  float* out = a.out[0];
+  const uint32_t vecEnd = count & ~7u;
+  constexpr bool xSpl = splBit(SM, 0);
+  constexpr bool ySpl = Op::kArity == 1 || splBit(SM, 1);
+  const In<S8, xSpl> x(a.in[0]);
+  const In<S8, ySpl> y(a.in[Op::kArity - 1]);  // (unary: the same input again, never compared)
+  auto f = [](__m256 vx, __m256 vy) noexcept {
+    if constexpr (Op::kArity == 1) {
+      (void)vy;
+      return Op::template f<S8>(vx);
+    } else {
+      return Op::template f<S8>(vx, vy);
+    }
+  };
+  if (vecEnd != 0) {
+    __m256 px = x.at(0), py = y.at(0);
+    __m256 r = f(px, py);
+    S8::store(out, r);
+    uint32_t i = 8;
+    // Two vectors per step (as `elementwise` runs a binary Op): both repeat the last one, or both are computed. A
+    // moving input then pays the compare and the spills around the calls once per 16 values.
+    for (; i + 16 <= vecEnd; i += 16) {
+      const __m256 ax = x.at(i >> 3), ay = y.at(i >> 3), bx = x.at((i >> 3) + 1), by = y.at((i >> 3) + 1);
+      __m256i moved = _mm256_setzero_si256();
+      if constexpr (!xSpl) moved = _mm256_castps_si256(_mm256_or_ps(_mm256_xor_ps(ax, px), _mm256_xor_ps(bx, px)));
+      if constexpr (!ySpl)
+        moved = _mm256_or_si256(moved, _mm256_castps_si256(_mm256_or_ps(_mm256_xor_ps(ay, py), _mm256_xor_ps(by, py))));
+      if (!_mm256_testz_si256(moved, moved)) {
+        const __m256 ra = f(ax, ay);
+        r = f(bx, by);
+        S8::store(out + i, ra);
+        S8::store(out + i + 8, r);
+        px = bx;
+        py = by;
+      } else {
+        S8::store(out + i, r);
+        S8::store(out + i + 8, r);
+      }
+    }
+    for (; i < vecEnd; i += 8) {
+      const __m256 cx = x.at(i >> 3), cy = y.at(i >> 3);
+      __m256i moved = _mm256_setzero_si256();
+      if constexpr (!xSpl) moved = _mm256_castps_si256(_mm256_xor_ps(cx, px));
+      if constexpr (!ySpl) moved = _mm256_or_si256(moved, _mm256_castps_si256(_mm256_xor_ps(cy, py)));
+      if (!_mm256_testz_si256(moved, moved)) {
+        r = f(cx, cy);
+        px = cx;
+        py = cy;
+      }
+      S8::store(out + i, r);
+    }
+  }
+  for (uint32_t i = vecEnd; i < count; ++i) {  // (L = 1 only)
+    const float* px = xSpl ? a.in[0] : a.in[0] + i;
+    if constexpr (Op::kArity == 1) {
+      S1::store(out + i, Op::template f<S1>(S1::load(px)));
+    } else {
+      const float* py = ySpl ? a.in[1] : a.in[1] + i;
+      S1::store(out + i, Op::template f<S1>(S1::load(px), S1::load(py)));
+    }
+  }
+}
+
+// Adapts an element-wise Op to the Impl interface used by the tables below. An Op that declares `kMemo` runs the
+// repeated-input driver.
 template <class Op>
 struct Ew {
   static constexpr uint32_t kSpec = Op::kArity;
   template <class S, uint32_t SM>
   static void run(const KernelArgs& a) noexcept {  // RT-safe
-    elementwise<Op, SM>(a, a.frames * S::kW);
+    if constexpr (requires { Op::kMemo; }) {
+      elementwiseMemo<Op, SM>(a, a.frames * S::kW);
+    } else {
+      elementwise<Op, SM>(a, a.frames * S::kW);
+    }
   }
 };
 

@@ -36,6 +36,7 @@
 // Not for the audio thread: the UI thread (a scope face) runs it once per displayed frame. Allocates while it grows to
 // the largest window; nothing after that.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -126,7 +127,7 @@ private:
   bool shapeValid_ = false;
   size_t lastStart_ = 0, lastSpan_ = 0;  // frozen frames repeat these
   // The detector's scratch.
-  std::unique_ptr<RealFft> fft_;
+  std::array<std::unique_ptr<RealFft>, 17> fft_;  // by log2 of the size (8 … 65536): made when first used, kept
   std::vector<float> pad_, re_, im_, nsdf_;
   std::vector<double> cum_;
 };

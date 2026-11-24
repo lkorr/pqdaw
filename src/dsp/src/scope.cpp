@@ -78,9 +78,14 @@ size_t ScopeTracker::need(double sr) const noexcept {
   return a + std::max(search, span) + span;
 }
 
+// OP.6 (OP.2 a): one transform per size used, kept. The padded length follows the detection window (6 periods of the
+// smoothed period, and a third of it for the retry of a frame without a pitch), so it moves between powers of two
+// while a note plays; a single cached transform was rebuilt (its sin / cos tables) at each of those flips, up to twice
+// per frame.
 RealFft& ScopeTracker::fftOf(uint32_t n) {
-  if (!fft_ || fft_->size() != n) fft_ = std::make_unique<RealFft>(n);
-  return *fft_;
+  std::unique_ptr<RealFft>& f = fft_[static_cast<size_t>(std::countr_zero(n))];
+  if (!f) f = std::make_unique<RealFft>(n);
+  return *f;
 }
 
 // McLeod's normalised square difference: autocorrelation normalised by the energy of the two overlapping parts, so
