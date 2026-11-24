@@ -202,6 +202,73 @@ Granular controls, harmonic list editor (n/d chips), live grain dots from the Gr
 the wavetable dots). REVIEW entry.
 - Verify: `pq_tests_views`.
 
+## Rework 2026-11-23 (user: one warp implementation for clip and sampler; a more intuitive panel)
+Audit (2026-11-23): Tones / Texture share a core; Beats geometry, the whole Complex drive and the marker law exist
+twice or three times; Sampler Re-Pitch ignores warp markers. The 22 bit-identical clip hashes
+(`tests/engine/test_warp.cpp` "SM.4: clip-player … bit-identical") were what forced the second forms: they are
+re-recorded ONCE per task below, after the existing quality checks (same file: Beats ± 1 ms, Tones ± 0.5 ¢, Texture
+level, Complex cases, block-size and streamed = resident invariance) pass unchanged. Those checks are not weakened.
+
+### SM.15 One warp law, one Beats, shared rules (dsp + engine + document + meta) · w1
+- **`dsp::WarpLaw`** (double segments; frame ↔ content beat, fold / unfold of a loop): the only marker law. Replaces
+  `AudioSequenceImage::frameAtContent / contentAtFrame`, `clip_player.cpp segIndex`, `warp_voice.cpp warpFrameOfBeat /
+  warpBeatOfFrame / segmentOf / Law`; `doc::warpFrameAt / warpContentAt` call it (ticks converted at the edge). Built
+  once per image / per run record, never per render call.
+- **One Beats renderer**: positions and gains are pure functions of the integer clock d = Φ(t) − Φ(T) (32.32); events
+  at the first sample with d ≥ L·2³² (+ i·L/2); fades in source frames scaled by the rate at pass entry. A
+  constant-step fast path solves the event sample by integer division and emits pieces + ramps, bit-equal to the
+  per-sample evaluation (test: fast path == per-sample path, and a render does not depend on block size or on where a
+  glide starts). `warpRenderPass / warpRenderSlices` (closed form) and `renderPassClock` collapse into it; the host
+  supplies the reader (clip: sinc pieces, reverse, streamed; sampler: cubic) and the pass enumeration. Envelope < 100
+  must not leave the fast path.
+- **One of each rule / constant / enum**: grain size, align length / lags, jitter, 2 ms fade, max align
+  (`audio_sequence.cpp:54-78,137` vs `warp_voice.*`); one warp-mode enum and one slice-loop enum in `pq/dsp/warp.h`
+  used by document, engine, meta and dsp (delete `engine::ClipWarp`, `meta::SamplerWarp`, `dsp::WarpVoiceMode`,
+  `engine::SliceLoop`, `dsp::WarpSliceLoop`, the float-threshold dispatch in `kernels_sampler_warp.cpp:132-139`); one
+  warp parameter struct below the document's; `toFixed` / `floorDiv` / `k2m32` / cubic `interp4` once in a dsp header
+  (granular and sample_read use them too). One window: the precomputed Hann + AVX2 gain for both hosts.
+- **Sampler Re-Pitch follows the markers**: the `sample_read` rate takes the law's local slope (constant per marker
+  segment), not only bpm / sampleBpm.
+- Verify: `-Affected -Slow`; ship `pq_bench_dsp` link; bench clip Beats / Tones / Texture and sampler Beats / Texture
+  / Tones before and after (clip Beats must stay ≈ 1.2 ns/frame; sampler Beats / Texture at a constant rate should
+  drop well below today's 10 – 15) → bench/RESULTS.md. Report lines deleted.
+
+### SM.16 One Complex stream + sampler warp CPU (dsp + engine) · w1, after SM.15
+- **`dsp::ComplexStream`**: state (vLo / vHi / ys / head / u0 / zeroBelow / zeroAbove), lead (golden ratio), prime,
+  ensure / chunk with the make-room move, gather through the host's source, the formant rule, one set of constants.
+  `ClipPlayer` (keeps its pre-roll schedule, reverse, streamed sources; Y = (t − tA)·r) and `ComplexVoice` (keeps lane
+  ownership, Tones cover, 2 ms cross) both drive it; their own copies are deleted.
+- Sampler path, from the audit: contiguous (non-gather) reads whenever the step is constant, not only at rate 1; a
+  mono sample is read once; Complex integrates Φ once, computes chunk demand once per block and reads with the vector
+  cubic; formant params set only when the rate changed; lane state not copied in / out for idle lanes, and a voice
+  carries only its mode's state if that is cheap to do; bound the Tones catch-up after a lost stretcher
+  (`warpGrainCentre` can align 64 grains in one chunk).
+- Verify: as SM.15; bench 16 Complex voices (684 ns / voice-frame today), +18\31, Pro.
+
+### SM.17 Panel pass: radial choices, warp in the header, labels, live check 👁 (views + document + ui) · w2
+- **General**: the panel `menu` element gets style `look` = `list` (today) | `radial`: a pill showing the current item;
+  a click opens `ui::RadialMenu` centred on it (items from `items`; `Category/Item` makes a category ring; current
+  opened to; type to filter); a pick is the same one-undo-step write the list makes. Wheel over the pill steps the value.
+- **Rule**: 2 – 3 choices = cells (all visible, one click: the `tabs` element); 5 or more = radial; no drop-down list
+  left in the Sampler.
+- **Header** (right of the oval): mode row; Root; then **Warp** (radial: Off · Re-Pitch · Beats · Tones · Texture ·
+  Complex · Complex Pro) with Sample BPM beside it while warp is on — in place of the "Open the group to rewire it"
+  hint. Hidden in Gran. In Slice only Off / Re-Pitch are offered (the others do nothing there).
+- **Warp section**: exists only while a stretch mode is chosen (Beats … Pro), open, holding only that mode's controls
+  (Beats: Envelope, loop cells; Tones: Grain; Texture: Grain, Flux; Complex Pro: Formants / Envelope if the engine
+  has them). No folded, empty Warp header otherwise.
+- Loop (Off | Forward | Ping-pong), Trigger | Gate, Beats loop, Grain mode (Classic | Loop | Cloud) = cells; grain
+  Shape = radial (draw the window's curve as the glyph if the menu takes one cheaply, else its name).
+- **Closed face**: names under the three mini knobs (they change with the mode, so they need them); the empty face
+  says what to do (drop a sample here).
+- **Editor**: a press on the waveform never moves the block; hover on a handle shows what it is (info view + cursor).
+- **Live check** (none of SM.10 – SM.13 was looked at in the running app): build `pqdaw` in the worktree, launch that
+  instance only, drop a sample, go through every mode and warp choice, expand / fold, drag each handle; fix what is
+  wrong or awkward, list what is left. Real-dispatch tests for the radial pick (pointer, keys, filter) through the
+  overlay.
+- Verify: `pq_tests_views` default tier (+ `pq_tests_document` for the preset); goldens: the sampler-panel-* and
+  sampler-face-* move by design; anything else moving is a bug. REVIEW entry.
+
 ## Lanes
 - **w1**: SM.1 → SM.2 → SM.4 → SM.5, then SM.6.
 - **w2**: SM.7, SM.9 first (independent), then SM.3 (after SM.2) → SM.8 → SM.10 → SM.11 → SM.12 → SM.13 (also needs
