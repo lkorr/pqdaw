@@ -1425,3 +1425,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_note_stage (new negative-groove case at 3 block sizes), pq_tests_views default tier, pq_tests_document, pq_tests_app pass; 13 goldens re-recorded (11 arp: the Groove knob only; panel-window-inspector / -edit: the new style row).
 - Perf / CPU-efficiency check: no new work (a clamp bound; two float compares per knob paint).
 - Notes/blockers: no -Affected -Slow run (the engine diff is one clamp bound; the onset seek is monotone for negative groove).
+
+## 2026-11-23 · SM.17 · task/SM.17-panel-pass (merged 8011e46f)
+- Did: panel `menu` style `look` = list | radial (pill → `ui::RadialMenu`, `Category/Item` rings, type-to-filter, one undo step); `menu` / `tabs` with fewer items than steps name the first steps. Sampler: Warp radial + Sample BPM beside the oval (Slice: cells Off | Re-Pitch; none in Granular), the Warp fold only for a stretch mode with that mode's controls, Loop / Plays / Transient Loop / Grain Mode as cells, Shape radial, named mini knobs, "Drop a sample here", editor presses never move the block, handles named on hover. `PQ_BUGREPORT_SCRIPT` gained dclick / down / up / wheel / type steps.
+- Verified: pq_tests_views 1040/1040, pq_tests_document 326/326, pqdaw links; 9 new real-dispatch cases; 16 sampler goldens re-recorded, 3 new (sampler-panel-warp 1× / 2×, -radial). First live check of the sampler UI (the worker's own instance, scripted, pre-built project).
+- Perf / CPU-efficiency check: UI only; menu items built on click.
+- Notes/blockers: Q?-SM.17-a. Open: not driven live: loop start / body, grain size edge, wheel on the pill, the OS drop; fades have no editor handles; Shape shows names, not curves; the Device view scales the tall panel instead of scrolling it.
