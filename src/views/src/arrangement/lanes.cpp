@@ -1059,6 +1059,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
     m.beginPaint(previewBudget_);
     m.stats.wavesDirect = 0;
     m.stats.waveColumns = 0;
+    m.stats.waveSampleDraws = m.stats.waveCurveDraws = m.stats.waveApprox = m.stats.waveDots = 0;
   }
   paintFrame_ = ctx.frame;
   const double k = view_.devicePxPerTick();

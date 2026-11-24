@@ -50,6 +50,7 @@ class FrameTable;
 
 namespace pq::media {
 class WaveformOverview;  // pq/media/waveform.h (SM.10)
+struct SampleWindow;     // (WF.1)
 }
 
 namespace pq::views {
@@ -107,6 +108,10 @@ public:
   // or not built yet: the first ask requests it), and a counter that moves whenever an overview arrived or grew.
   virtual const media::WaveformOverview* sampleOverview(uint32_t /*sample*/) const { return nullptr; }
   virtual uint64_t overviewRevision() const { return 0; }
+  // WF.1: frames [frame0, frame1) of that sample (clamped to the file) for a waveform drawn below the overview's
+  // resolution (ui::waveformLevelFor < 0). Null: none, or not read yet — the ask requests the read and
+  // overviewRevision moves when it arrives (the face draws the overview stretched meanwhile).
+  virtual const media::SampleWindow* sampleWindow(uint32_t /*sample*/, int64_t /*frame0*/, int64_t /*frame1*/) const { return nullptr; }
   // GU.1: param i's own curve (doc::Device::curves of a chain meta device; null: the declared one, meta::paramCurve).
   // The face's controls travel along it (faceTravelToValue / faceValueToTravel).
   virtual const dsp::Curve* curve(size_t /*param*/) const { return nullptr; }

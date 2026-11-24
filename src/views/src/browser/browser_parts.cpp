@@ -682,8 +682,9 @@ void Waveform::paint(PaintContext& ctx) {
   const media::WaveformOverview* ov = panel_.previewOverview();
   if (ov && ov->frames() > 0) {
     WaveformLevel lv[kMaxOverviewLevels];
-    const WaveformData data = waveformData(*ov, nullptr, lv);
+    const WaveformData data = waveformData(*ov, panel_.previewSamples(), lv);  // WF.1: a short sample from its samples
     WaveformDraw d;
+    d.lineWidth = std::max(1.0f, ctx.scale.factor);
     d.frame0 = 0.0;
     d.frame1 = static_cast<double>(ov->frames());
     const float in = 2.0f * ctx.scale.factor;

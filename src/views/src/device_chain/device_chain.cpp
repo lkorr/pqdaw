@@ -898,6 +898,7 @@ DeviceChainView::DeviceChainView(ViewContext& ctx) : Widget("chain-view"), ctx_(
         if (panel::BlockFrame* panel = f->panel(); panel != nullptr && !f->isRack())
           panel->setPresetName(ctx_.library().presetName(doc::DeviceId{id}));
     if (bits & view_change::kModulation) refreshRings();
+    if (bits & view_change::kWaveforms) markDirty();  // WF.1: a panel that draws a sample (a Sampler): its waveform arrived
     if (bits & view_change::kAnalysis)  // TX.spectrum: a device's analysis tap appeared: its displays and face look again
       wakeFaces();
     if (bits & view_change::kSignal) {  // KB.3: the engine is active again: the panels and the modulation rings poll

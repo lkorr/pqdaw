@@ -6,8 +6,12 @@
 //
 //   overview(id)       the overview of a project sample (possibly still building: builtFrames < frames), or null
 //                      while it is missing / not loaded yet. The first call requests it.
-//   window(id, a, b)   the sample frames for deep zoom (< 256 frames per px) covering [a, b), or null (a read is
-//                      requested; the finest level is drawn stretched meanwhile).
+//   window(id, a, b)   the sample frames for deep zoom (below the overview's resolution: ui::waveformLevelFor < 0)
+//                      covering [a, b), or null (a read is requested; the finest level is drawn stretched meanwhile).
+//                      WF.1: a sample keeps up to kWindowsPerSample windows (the arrangement's clip, the clip view and a
+//                      Sampler's well and editor each look at their own part of one file: one window per sample made
+//                      them read in turn, for ever). A caller that draws the band-limited curve asks for
+//                      ui::kWaveformSampleMargin frames either side of what it shows.
 //
 // Where they are cached: the project's `cache/waveforms/` when the project has a directory and the project cache is on
 // (SPEC §12; the app turns it on), else the shared directory the app sets (`%LOCALAPPDATA%\pqdaw\waveforms`, LRU
@@ -70,6 +74,7 @@ public:
   // Bytes held by sample windows; the least recently used windows are dropped past kWindowCacheBytes (M5 review M9).
   uint64_t windowBytes() const noexcept { return windowBytes_; }
   inline static constexpr uint64_t kWindowCacheBytes = uint64_t{128} << 20;
+  inline static constexpr size_t kWindowsPerSample = 4;
 
 private:
   struct Entry {
@@ -78,12 +83,15 @@ private:
     bool requested = false;
     bool failed = false;
     bool injected = false;
-    media::SampleWindowPtr window;
-    int64_t pendingFrom = 0, pendingTo = 0;  // a window read in flight
+    struct Win {
+      media::SampleWindowPtr w;
+      uint64_t use = 0;       // windowClock_ at the last use (LRU of the window cache)
+      bool injected = false;  // putWindow: not counted, never evicted
+    };
+    std::vector<Win> windows;                // WF.1: the windows held (≤ kWindowsPerSample read ones)
+    std::vector<std::pair<int64_t, int64_t>> pending;  // window reads in flight
     int64_t fileFrames = -1;                 // the file's length once known (window requests are clamped to it)
     bool windowFailed = false;               // a read failed: not retried on every paint (M5 review H3)
-    uint64_t windowUse = 0;                  // windowClock_ at the last use (LRU of the window cache)
-    bool windowInjected = false;             // putWindow: not counted, never evicted
   };
   struct Arrival;
   struct Inbox;
@@ -91,7 +99,8 @@ private:
   Entry& entry(doc::SampleId id);
   void request(doc::SampleId id, Entry& e);
   void drain();
-  void storeWindow(Entry& e, media::SampleWindowPtr w);  // keeps the windows within kWindowCacheBytes
+  const media::SampleWindow* storeWindow(Entry& e, media::SampleWindowPtr w);  // keeps the windows within the caps
+  void dropWindows(Entry& e);
 
   ViewContext& ctx_;
   std::filesystem::path sharedDir_;

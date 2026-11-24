@@ -182,12 +182,21 @@ namespace audio_clip {
 namespace {
 constexpr float kWarpStripH = 16.0f;     // logical px: the warp markers' strip (warped clips)
 constexpr double kEnvelopeSeconds = 0.025;  // AC.look: the waveform body's window (a solid body, not a trace)
+// WF.1: zoomed in, the body (an envelope: peak and RMS over that window) gives way to the signal itself (ui::drawWaveform:
+// sample columns, the curve, a dot per sample) — the body alone from kBodyFramesPerPx frames per px up, the signal alone
+// from kSignalFramesPerPx down, cross-faded between (nothing pops). The deepest zoom: kMaxPxPerSample px per sample.
+constexpr double kBodyFramesPerPx = 16.0, kSignalFramesPerPx = 8.0;
+constexpr double kMaxPxPerSample = 64.0;
 constexpr double kConfident = 0.6;       // a detected tempo the warp commands trust (plan: auto-warp threshold)
 }  // namespace
 
 // An Off clip shows its whole file on a frame axis; a warped one its content on a content-tick axis
 // [axis0_, axis1_] (the file's ends through the warp law, widened to the clip's region and loop), frozen during a warp
 // marker drag so the view does not rescale under the pointer.
+// WF.1: the VIEW is the fractions z0_ … z1_ of that whole axis (0 … 1 until zoomed): the wheel zooms about the pointer
+// (to kMaxPxPerSample), Shift + wheel (or a sideways wheel) scrolls, a drag on the time ruler scrolls sideways and
+// zooms up / down, a double-click on it shows everything again. View state: no undo step, not saved; another clip
+// starts whole.
 class SampleDisplay : public Control {
 public:
   explicit SampleDisplay(AudioClipView& v) : Control("sample"), v_(v) {
@@ -196,7 +205,8 @@ public:
                       "where the clip starts; drag the loop brace or its ends (1/16 notes; Shift: free). Warped clips: "
                       "double-click to add a warp marker, drag one to stretch the audio around it, Ctrl-drag to slide "
                       "the audio under it, double-click or Delete removes it; right-click for Warp From Here and Warp "
-                      "as Loop. Each edit is one undo step.");
+                      "as Loop. Each edit is one undo step. The wheel zooms about the pointer, down to single samples "
+                      "(Shift: scroll); drag the time ruler to scroll and zoom, double-click it for the whole sample.");
   }
   void paint(PaintContext& ctx) override;
   bool onPointer(const PointerEvent& e) override;
@@ -204,9 +214,11 @@ public:
   void onCaptureLost() override { cancel(); }
   Cursor cursorAt(Vec2 p) const override {
     Drag d = drag_;
+    if (d == Drag::None && inTimeline(p)) d = Drag::View;
     if (d == Drag::None) d = hit(p).drag;
     switch (d) {
       case Drag::None: return Cursor::Arrow;
+      case Drag::View: return Cursor::ResizeNS;
       case Drag::Brace: return Cursor::Move;
       default: return Cursor::ResizeEW;
     }
@@ -214,6 +226,10 @@ public:
   bool dragging() const noexcept { return drag_ != Drag::None; }
   bool cancel() {
     if (drag_ == Drag::None) return false;
+    if (drag_ == Drag::View) {  // WF.1: the view as it was
+      z0_ = pressZ0_;
+      z1_ = pressZ1_;
+    }
     drag_ = Drag::None;
     frozen_ = false;
     if (gestureOpen_ && v_.ctx_.store().inGesture()) (void)v_.ctx_.store().cancelGesture();
@@ -259,12 +275,8 @@ public:
   // Content (warped) of a source frame and back, through the clip's law.
   double contentOf(double frame) const noexcept { return v_.clip_ ? doc::warpContentAt(*v_.clip_, rate(), frame) : 0.0; }
   double frameOf(double content) const noexcept { return v_.clip_ ? doc::warpFrameAt(*v_.clip_, rate(), content) : 0.0; }
-  void axis(double& a0, double& a1) const noexcept {
-    if (frozen_) {
-      a0 = axis0_;
-      a1 = axis1_;
-      return;
-    }
+  // The whole axis (warped: content ticks), and the part of it in view.
+  void fullAxis(double& a0, double& a1) const noexcept {
     a0 = 0.0;
     a1 = 1.0;
     if (!v_.clip_ || !sample()) return;
@@ -276,6 +288,43 @@ public:
     a1 = std::max(contentOf(frames()), end);
     if (!(a1 > a0)) a1 = a0 + 1.0;
   }
+  void axis(double& a0, double& a1) const noexcept {
+    if (frozen_) {
+      a0 = axis0_;
+      a1 = axis1_;
+      return;
+    }
+    double f0 = 0, f1 = 1;
+    fullAxis(f0, f1);
+    a0 = f0 + z0_ * (f1 - f0);
+    a1 = f0 + z1_ * (f1 - f0);
+  }
+  // WF.1: the view.
+  void viewRange(double& z0, double& z1) const noexcept {
+    z0 = z0_;
+    z1 = z1_;
+  }
+  void resetView() noexcept {
+    z0_ = 0.0;
+    z1_ = 1.0;
+  }
+  void setZoom(double z0, double span) {
+    const IRect w = wave();
+    const double least = std::min(1.0, static_cast<double>(std::max(1, w.w)) / (kMaxPxPerSample * frames()));
+    span = std::clamp(span, least, 1.0);
+    z0_ = std::clamp(z0, 0.0, 1.0 - span);
+    z1_ = z0_ + span;
+    markDirty();
+  }
+  bool inTimeline(Vec2 p) const noexcept {
+    const IRect t = timeline();
+    return t.h > 0 && p.y >= static_cast<float>(t.y) && p.y < static_cast<float>(t.bottom()) && p.x >= static_cast<float>(t.x) &&
+           p.x < static_cast<float>(t.right());
+  }
+  // What the last paint drew of the waveform (tests): how much of it is the signal (0: the body alone, 1: the signal
+  // alone) and the signal's draw.
+  float signalMix() const noexcept { return signalMix_; }
+  const WaveformStats& signalStats() const noexcept { return signalStats_; }
   float xOfContent(double t) const noexcept {
     const IRect w = wave();
     double a0 = 0, a1 = 1;
@@ -291,12 +340,14 @@ public:
   float xOf(double frame) const noexcept {
     if (warped()) return xOfContent(contentOf(frame));
     const IRect w = wave();
-    return static_cast<float>(w.x) + static_cast<float>(frame / frames() * static_cast<double>(w.w));
+    const double f0 = z0_ * frames(), f1 = z1_ * frames();
+    return static_cast<float>(w.x) + static_cast<float>((frame - f0) / (f1 - f0) * static_cast<double>(w.w));
   }
   double frameAt(float x) const noexcept {
     if (warped()) return frameOf(contentAtX(x));
     const IRect w = wave();
-    return w.w > 0 ? (static_cast<double>(x) - w.x) / static_cast<double>(w.w) * frames() : 0.0;
+    const double f0 = z0_ * frames(), f1 = z1_ * frames();
+    return w.w > 0 ? f0 + (static_cast<double>(x) - w.x) / static_cast<double>(w.w) * (f1 - f0) : f0;
   }
   const doc::SampleRef* sample() const noexcept {
     return v_.clip_ && v_.snap_ ? doc::findSample(*v_.snap_, v_.clip_->sample) : nullptr;
@@ -322,7 +373,7 @@ public:
   Menu* openMenu(Vec2 at);
 
 private:
-  enum class Drag : uint8_t { None, Marker, LoopStart, LoopEnd, Brace, WarpMove, WarpSlide };
+  enum class Drag : uint8_t { None, Marker, LoopStart, LoopEnd, Brace, WarpMove, WarpSlide, View };
   struct Hit {
     Drag drag = Drag::None;
     int32_t marker = -1;
@@ -374,7 +425,9 @@ private:
     double a0 = 0.0, a1 = 0.0;
     bool samples = false;
     uint32_t channels = 0;
+    double z0 = 0.0, z1 = 1.0;       // WF.1: the view
     std::vector<float> lo, hi, rms;  // channel c's column i at [c · w + i]; lo > hi: no audio there
+    std::vector<float> rlo, rhi;     // WF.1: the RMS core as columns (inside lo … hi; rlo > rhi: none)
     std::vector<float> sq, sq2;      // scratch: each column's mean square before the window; copies
     std::vector<float> lo0, hi0;     // scratch: the columns' own extremes
     std::vector<uint8_t> half;       // each column's window: ± this many columns (its own frames per column)
@@ -385,8 +438,16 @@ private:
   void paintStretch(PaintContext& ctx);
   void paintFades(PaintContext& ctx, float xa, float xb);
 
+  bool wheel(const PointerEvent& e);
   AudioClipView& v_;
   Columns cols_;
+  // WF.1: the view (fractions of the whole axis), a view drag's press, the last paint's waveform.
+  double z0_ = 0.0, z1_ = 1.0;
+  Vec2 pressPos_{0.0f, 0.0f};
+  double pressZ0_ = 0.0, pressZ1_ = 1.0;
+  float signalMix_ = 0.0f;
+  WaveformStats signalStats_;
+  std::vector<double> cuts_;  // (scratch: a warped view's linear pieces)
   Drag drag_ = Drag::None;
   float pressX_ = 0.0f;
   doc::AudioClipPtr pressClip_;
@@ -404,8 +465,10 @@ const SampleDisplay::Columns* SampleDisplay::columns(const WaveformData& data, b
   Columns& k = cols_;
   const uint64_t rev = v_.ctx_.waveforms().revision();
   if (k.clip == v_.clip_ && k.revision == rev && k.x == w.x && k.w == w.w && k.a0 == a0 && k.a1 == a1 && k.samples == samples &&
-      k.channels == data.channels)
+      k.channels == data.channels && k.z0 == z0_ && k.z1 == z1_)
     return &k;
+  k.z0 = z0_;
+  k.z1 = z1_;
   k.clip = v_.clip_;
   k.revision = rev;
   k.x = w.x;
@@ -419,6 +482,8 @@ const SampleDisplay::Columns* SampleDisplay::columns(const WaveformData& data, b
   k.lo.assign(n, 1.0f);  // assign keeps the capacity: no allocation once grown
   k.hi.assign(n, -1.0f);
   k.rms.assign(n, 0.0f);
+  k.rlo.assign(n, 1.0f);
+  k.rhi.assign(n, -1.0f);
   k.sq.assign(n, 0.0f);
   k.sq2.assign(n, 0.0f);
   k.lo0.assign(n, 1.0f);
@@ -563,6 +628,17 @@ const SampleDisplay::Columns* SampleDisplay::columns(const WaveformData& data, b
       lo[i] = std::min(lo0[i], std::max(pastLo, static_cast<float>(sl / static_cast<double>(m))));
       hi[i] = std::max(hi0[i], std::min(pastHi, static_cast<float>(sh / static_cast<double>(m))));
     }
+    // WF.1: full scale at most, and the RMS core as columns of its own (inside the peak body).
+    float* rl = k.rlo.data() + c * cw;
+    float* rh = k.rhi.data() + c * cw;
+    for (size_t i = 0; i < cw; ++i) {
+      if (lo[i] > hi[i]) continue;
+      lo[i] = std::clamp(lo[i], -1.0f, 1.0f);
+      hi[i] = std::clamp(hi[i], -1.0f, 1.0f);
+      const float r = std::min(rm[i], std::max(std::abs(lo[i]), std::abs(hi[i])));
+      rl[i] = std::max(lo[i], -r);
+      rh[i] = std::min(hi[i], r);
+    }
   }
   return &k;
 }
@@ -579,39 +655,125 @@ void SampleDisplay::paintWaveform(PaintContext& ctx, float xa, float xb, Rgba co
   }
   WaveformLevel lv[kMaxOverviewLevels];
   WaveformData data = waveformData(*ov, nullptr, lv);
+  // WF.1: the frames in view, and below the overview's resolution their samples (read in the background; the overview
+  // meanwhile).
+  double vf0 = frameAt(static_cast<float>(w.x)), vf1 = frameAt(static_cast<float>(w.right()));
+  if (vf1 < vf0) std::swap(vf0, vf1);
+  vf0 = std::clamp(vf0, 0.0, frames());
+  vf1 = std::clamp(vf1, 0.0, frames());
+  const double fpp = (vf1 - vf0) / std::max(1, w.w);
   bool samples = false;
-  if (waveformLevelFor(data, frames() / std::max(1, w.w)) < 0)  // deep zoom (a short file): the samples themselves
-    if (const media::SampleWindow* sw = v_.ctx_.waveforms().window(v_.clip_->sample, 0, static_cast<int64_t>(frames()))) {
+  if (vf1 > vf0 && waveformLevelFor(data, fpp) < 0)
+    if (const media::SampleWindow* sw = v_.ctx_.waveforms().window(v_.clip_->sample, static_cast<int64_t>(std::floor(vf0)) - kWaveformSampleMargin,
+                                                                   static_cast<int64_t>(std::ceil(vf1)) + kWaveformSampleMargin)) {
       data = waveformData(*ov, sw, lv);
       samples = true;
     }
-  const Columns* k = columns(data, samples);
-  if (!k || k->channels == 0 || k->w <= 0) return;
-  const auto cw = static_cast<size_t>(k->w);
+  // The body (the peak / RMS envelope) down to kBodyFramesPerPx, the signal itself from kSignalFramesPerPx, both
+  // cross-faded between.
+  const float mix = vf1 > vf0 ? static_cast<float>(std::clamp((kBodyFramesPerPx - fpp) / (kBodyFramesPerPx - kSignalFramesPerPx), 0.0, 1.0)) : 0.0f;
+  signalMix_ = mix;
+  signalStats_ = {};
+  const uint32_t channels = std::max<uint32_t>(1, data.channels);
   const float wy0 = static_cast<float>(w.y), wy1 = static_cast<float>(w.bottom());
-  const float laneH = (wy1 - wy0) / static_cast<float>(k->channels);
+  const float wx0 = static_cast<float>(w.x), wx1 = static_cast<float>(w.right());
+  const float laneH = (wy1 - wy0) / static_cast<float>(channels);
+  const float amp = 0.5f * laneH - static_cast<float>(ctx.scale.px(3.0f));
   const Rgba bg = th.face.body;
   const Rgba peakIn = lerp(bg, colour, 0.5f), rmsIn = lerp(colour, rgba(255, 255, 255), 0.16f);
   const Rgba peakOut = lerp(bg, colour, 0.17f), rmsOut = lerp(bg, colour, 0.3f);
-  for (uint32_t c = 0; c < k->channels; ++c) {
+  const float lw = std::max(1.0f, ctx.scale.factor);
+  // The lanes' separators and zero lines (the zero line is the row ui::drawWaveform centres a lane on).
+  for (uint32_t c = 0; c < channels; ++c) {
     const float top = wy0 + laneH * static_cast<float>(c);
-    const float mid = std::round(top + 0.5f * laneH);
-    const float amp = 0.5f * laneH - static_cast<float>(ctx.scale.px(3.0f));
-    if (c > 0) dl.addRectFilled({static_cast<float>(w.x), std::round(top), static_cast<float>(w.right()), std::round(top) + 1.0f}, th.face.track);
-    dl.addRectFilled({static_cast<float>(w.x), mid, static_cast<float>(w.right()), mid + 1.0f}, withAlpha(th.face.tick, 90));
-    const float* lo = k->lo.data() + c * cw;
-    const float* hi = k->hi.data() + c * cw;
-    const float* rm = k->rms.data() + c * cw;
-    for (size_t i = 0; i < cw; ++i) {
-      if (lo[i] > hi[i]) continue;
-      const float x = static_cast<float>(w.x) + static_cast<float>(i);
-      const bool in = x >= xa && x < xb;
-      float y0 = std::round(mid - std::clamp(hi[i], -1.0f, 1.0f) * amp), y1 = std::round(mid - std::clamp(lo[i], -1.0f, 1.0f) * amp) + 1.0f;
-      dl.addRectFilled({x, y0, x + 1.0f, y1}, in ? peakIn : peakOut);
-      const float r = std::min(rm[i], std::max(std::abs(lo[i]), std::abs(hi[i])));
-      y0 = std::max(y0, std::round(mid - r * amp));
-      y1 = std::min(y1, std::round(mid + r * amp) + 1.0f);
-      if (y1 > y0) dl.addRectFilled({x, y0, x + 1.0f, y1}, in ? rmsIn : rmsOut);
+    const float mid = std::floor(top + 0.5f * laneH);
+    if (c > 0) dl.addRectFilled({wx0, std::round(top), wx1, std::round(top) + 1.0f}, th.face.track);
+    dl.addRectFilled({wx0, mid, wx1, mid + 1.0f}, withAlpha(th.face.tick, 90));
+  }
+  if (mix < 1.0f) {
+    const Columns* k = columns(data, samples);
+    if (k && k->channels != 0 && k->w > 0) {
+      const auto cw = static_cast<size_t>(k->w);
+      const float a = 1.0f - mix;
+      for (uint32_t c = 0; c < k->channels; ++c) {
+        const float top = wy0 + laneH * static_cast<float>(c);
+        WaveformColumns wc;
+        wc.count = static_cast<uint32_t>(cw);
+        wc.x0 = wx0;
+        wc.y0 = top;
+        wc.y1 = top + laneH;
+        wc.centre = std::floor(top + 0.5f * laneH) + 0.5f;
+        wc.half = amp;
+        // WF.1: the shared renderer's columns (antialiased top and bottom edges; these were whole-pixel rects): the
+        // peak body, then the RMS core over it, each dim outside the played region [xa, xb).
+        const auto pass = [&](const float* lo, const float* hi, Rgba in, Rgba out) {
+          wc.lo = lo + c * cw;
+          wc.hi = hi + c * cw;
+          wc.colour = mulAlpha(out, a);
+          wc.clipX0 = -3.0e38f;
+          wc.clipX1 = xa;
+          if (xa > wx0) (void)drawWaveformColumns(dl, wc);
+          wc.clipX0 = xb;
+          wc.clipX1 = 3.0e38f;
+          if (xb < wx1) (void)drawWaveformColumns(dl, wc);
+          wc.colour = mulAlpha(in, a);
+          wc.clipX0 = xa;
+          wc.clipX1 = xb;
+          if (xb > xa) (void)drawWaveformColumns(dl, wc);
+        };
+        pass(k->lo.data(), k->hi.data(), peakIn, peakOut);
+        pass(k->rlo.data(), k->rhi.data(), rmsIn, rmsOut);
+      }
+    }
+  }
+  if (mix > 0.0f) {
+    // The signal: one linear piece (px [pa, pb) showing frames [fa, fb)) per stretch of the view between warp markers
+    // (an Off clip: the view), each through ui::drawWaveform over its whole columns.
+    const auto piece = [&](double fa, double fb, double pa, double pb) {
+      const double ia = std::ceil(pa - 0.5), ib = std::ceil(pb - 0.5);
+      if (ib <= ia || !(fb > fa)) return;
+      const double s = (fb - fa) / (pb - pa);
+      WaveformDraw d;
+      d.frame0 = fa + (ia - pa) * s;
+      d.frame1 = fa + (ib - pa) * s;
+      d.rect = {static_cast<float>(ia), wy0, static_cast<float>(ib), wy1};
+      d.gain = amp / (0.5f * laneH);
+      d.lineWidth = lw;
+      const auto part = [&](float c0, float c1, Rgba col) {
+        if (!(c1 > c0)) return;
+        d.clipX0 = c0;
+        d.clipX1 = c1;
+        d.colour = mulAlpha(col, mix);
+        const WaveformStats st = drawWaveform(dl, data, d);
+        if (st.columns > signalStats_.columns || signalStats_.level == -2) {
+          const uint32_t dots = signalStats_.dots;
+          signalStats_ = st;
+          signalStats_.dots += dots;
+        } else {
+          signalStats_.dots += st.dots;
+        }
+      };
+      part(wx0, xa, rmsOut);
+      part(xb, wx1, rmsOut);
+      part(xa, xb, rmsIn);
+    };
+    if (!warped()) {
+      const double f0 = z0_ * frames(), f1 = z1_ * frames();
+      piece(f0, f1, static_cast<double>(w.x), static_cast<double>(w.right()));
+    } else {
+      double a0 = 0, a1 = 1;
+      axis(a0, a1);
+      cuts_.clear();
+      cuts_.push_back(a0);
+      for (const doc::WarpMarker& m : v_.clip_->markers) {
+        const auto t = static_cast<double>(m.content);
+        if (t > cuts_.back() && t < a1) cuts_.push_back(t);
+      }
+      cuts_.push_back(a1);
+      const double pxPerTick = static_cast<double>(w.w) / (a1 - a0);
+      for (size_t i = 0; i + 1 < cuts_.size(); ++i)
+        piece(frameOf(cuts_[i]), frameOf(cuts_[i + 1]), static_cast<double>(w.x) + (cuts_[i] - a0) * pxPerTick,
+              static_cast<double>(w.x) + (cuts_[i + 1] - a0) * pxPerTick);
     }
   }
 }
@@ -671,9 +833,12 @@ void SampleDisplay::paintTimeline(PaintContext& ctx) {
       }
     }
   } else {
-    const double secs = frames() / std::max(1.0, rate());
-    const double pxPerSec = static_cast<double>(w.w) / std::max(1e-9, secs);
-    static constexpr double kSteps[] = {0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600};
+    // WF.1: seconds over the view (zoomed in: down to 10 µs steps; only the view's ticks are walked).
+    const double r = std::max(1.0, rate());
+    const double s0 = frameAt(static_cast<float>(w.x)) / r, s1 = frameAt(static_cast<float>(w.right())) / r;
+    const double pxPerSec = static_cast<double>(w.w) / std::max(1e-12, s1 - s0);
+    static constexpr double kSteps[] = {1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5,
+                                        1,    2,    5,    10,   15,   30,   60,    120,   300,   600,  1800, 3600};
     double every = kSteps[std::size(kSteps) - 1];
     for (const double s : kSteps)
       if (pxPerSec * s >= static_cast<double>(minGap)) {
@@ -682,14 +847,20 @@ void SampleDisplay::paintTimeline(PaintContext& ctx) {
       }
     const double mant = every / std::pow(10.0, std::floor(std::log10(every)));
     const double minorEvery = every / (std::abs(mant - 2.0) < 1e-9 ? 4.0 : 5.0);
-    if (pxPerSec * minorEvery >= 5.0)
-      for (int64_t i = 0; static_cast<double>(i) * minorEvery <= secs; ++i)
-        tick(std::round(xOf(static_cast<double>(i) * minorEvery * rate())), minor, withAlpha(th.face.tick, 130));
-    for (int64_t i = 0; static_cast<double>(i) * every <= secs + 1e-9; ++i) {
+    if (pxPerSec * minorEvery >= 5.0) {
+      auto i = static_cast<int64_t>(std::ceil(s0 / minorEvery - 1e-9));
+      for (int n = 0; static_cast<double>(i) * minorEvery <= s1 && n < 4000; ++i, ++n)
+        tick(std::round(xOf(static_cast<double>(i) * minorEvery * r)), minor, withAlpha(th.face.tick, 130));
+    }
+    const int decimals = every >= 1.0 ? 0 : std::clamp(static_cast<int>(std::ceil(-std::log10(every) - 1e-9)), 1, 6);
+    auto i = static_cast<int64_t>(std::ceil(s0 / every - 1e-9));
+    for (int n = 0; static_cast<double>(i) * every <= s1 + 1e-9 && n < 1000; ++i, ++n) {
       const double s = static_cast<double>(i) * every;
-      const float x = std::round(xOf(s * rate()));
+      const float x = std::round(xOf(s * r));
       tick(x, major, th.face.tick);
-      if (s >= 60.0) std::snprintf(num, sizeof num, "%d:%02d", static_cast<int>(s) / 60, static_cast<int>(s) % 60);
+      if (s >= 60.0 && every >= 1.0) std::snprintf(num, sizeof num, "%d:%02d", static_cast<int>(s) / 60, static_cast<int>(s) % 60);
+      else if (s >= 60.0)
+        std::snprintf(num, sizeof num, "%d:%0*.*f", static_cast<int>(s) / 60, decimals + 3, decimals, s - 60.0 * std::floor(s / 60.0));
       else std::snprintf(num, sizeof num, "%gs", s);
       label(x, num, th.text.secondary);
     }
@@ -797,6 +968,12 @@ void SampleDisplay::paint(PaintContext& ctx) {
   DrawList& dl = ctx.dl;
   const IRect r = rect();
   const Rgba bg = th->face.body;
+  // WF.1: zoomed in, markers and braces lie outside the display: nothing of them is drawn past it.
+  struct Clip {
+    DrawList& dl;
+    explicit Clip(DrawList& d, const Rect& rc) : dl(d) { dl.pushClip(rc); }
+    ~Clip() { dl.popClip(); }
+  } clipGuard(dl, r.toRect());
   dl.addRectFilled(r.toRect(), bg);
   const IRect u = ruler(), tl = timeline(), st = strip(), w = wave();
   dl.addRectFilled(u.toRect(), lerp(bg, th->face.track, 0.75f));
@@ -871,7 +1048,8 @@ void SampleDisplay::paint(PaintContext& ctx) {
   }
   // Warped: the loop brace in the loop strip (lit when on), its ends as grips.
   if (isWarped) {
-    const float la = std::round(xOfContent(static_cast<double>(c.loop.start))), lb = std::round(xOfContent(static_cast<double>(c.loop.end)));
+    const float la = std::clamp(std::round(xOfContent(static_cast<double>(c.loop.start))), wx0 - 64.0f, wx1 + 64.0f);
+    const float lb = std::clamp(std::round(xOfContent(static_cast<double>(c.loop.end))), wx0 - 64.0f, wx1 + 64.0f);
     const Rgba braceCol = c.loop.enabled ? th->face.value : th->face.tick;
     const float by0 = static_cast<float>(u.y) + static_cast<float>(ctx.scale.px(4.0f)), by1 = static_cast<float>(u.bottom()) - static_cast<float>(ctx.scale.px(4.0f));
     if (lb > la) {
@@ -907,7 +1085,7 @@ void SampleDisplay::paint(PaintContext& ctx) {
     }
   }
   // The start marker (M5 review UI 2): a flag in the accent colour filling the loop strip, and a 2-px line down.
-  const float mx = std::round(startX());
+  const float mx = std::clamp(std::round(startX()), wx0 - 4096.0f, wx1 + 4096.0f);
   const float fh = static_cast<float>(u.h);
   const float sz = std::max(static_cast<float>(ctx.scale.px(9.0f)), fh * 0.75f);
   const float lw = static_cast<float>(std::max(2, ctx.scale.px(2.0f)));
@@ -962,6 +1140,18 @@ bool SampleDisplay::onPointer(const PointerEvent& e) {
         return true;
       }
       if (e.button != PointerButton::Left) return false;
+      if (inTimeline(e.pos) && v_.clip_ && sample()) {  // WF.1: the time ruler is the view's (scroll, zoom, fit)
+        if (e.clickCount >= 2) {
+          resetView();
+          markDirty();
+          return true;
+        }
+        drag_ = Drag::View;
+        pressPos_ = e.pos;
+        pressZ0_ = z0_;
+        pressZ1_ = z1_;
+        return true;
+      }
       if (e.clickCount >= 2) {
         doubleClick(e.pos);
         return true;
@@ -989,7 +1179,20 @@ bool SampleDisplay::onPointer(const PointerEvent& e) {
       markDirty();
       return true;
     }
+    case PointerType::Wheel: return wheel(e);
     case PointerType::Move:
+      if (drag_ == Drag::View) {  // sideways scrolls, up / down zooms about the press (down: in)
+        const IRect w = wave();
+        const double span0 = pressZ1_ - pressZ0_;
+        const double us = tree() ? static_cast<double>(tree()->uiScale().factor) : 1.0;
+        const double span = span0 * std::exp(-static_cast<double>(e.pos.y - pressPos_.y) / (90.0 * std::max(0.1, us)));
+        const double frac = (static_cast<double>(pressPos_.x) - w.x) / std::max(1, w.w);
+        const double anchor = pressZ0_ + frac * span0;
+        setZoom(0.0, span);  // (clamps the span)
+        const double got = z1_ - z0_;
+        setZoom(anchor - (frac + static_cast<double>(e.pos.x - pressPos_.x) / std::max(1, w.w)) * got, got);
+        return true;
+      }
       if (drag_ != Drag::None) dragTo(e);
       return drag_ != Drag::None;
     case PointerType::Up:
@@ -1002,6 +1205,26 @@ bool SampleDisplay::onPointer(const PointerEvent& e) {
       return true;
     default: return false;
   }
+}
+
+// WF.1: the wheel — zoom about the pointer (Ctrl too); Shift or a sideways wheel scrolls; Alt passes it on.
+bool SampleDisplay::wheel(const PointerEvent& e) {
+  if (!v_.clip_ || !sample() || (e.mods & mod::kAlt) != 0 || drag_ != Drag::None) return false;
+  const IRect w = wave();
+  if (w.w <= 0) return false;
+  const double span = z1_ - z0_;
+  if ((e.mods & mod::kShift) != 0 || e.wheel.x != 0.0f) {
+    const double notches = e.wheel.x != 0.0f ? e.wheel.x : -e.wheel.y;  // Shift + wheel up = left (ScrollView's rule)
+    setZoom(z0_ + notches * span * 0.125, span);
+    return true;
+  }
+  if (e.wheel.y == 0.0f) return false;
+  const double frac = std::clamp((static_cast<double>(e.pos.x) - w.x) / w.w, 0.0, 1.0);
+  const double anchor = z0_ + frac * span;
+  setZoom(0.0, span * std::pow(0.8, static_cast<double>(e.wheel.y)));  // (clamps the span)
+  const double got = z1_ - z0_;
+  setZoom(anchor - frac * got, got);
+  return true;
 }
 
 void SampleDisplay::dragTo(const PointerEvent& e) {
@@ -1568,6 +1791,7 @@ void AudioClipView::refresh() {
       if (i >= 0) c = t->clips[static_cast<size_t>(i)].audio;
     }
   const bool changed = c != clip_ || cur != snap_ || !(want.clip == ref_.clip && want.track == ref_.track);
+  if (!(want.clip == ref_.clip && want.track == ref_.track) && display_ != nullptr) display_->resetView();  // WF.1: another clip: whole
   ref_ = want;
   clip_ = c;
   snap_ = cur;
@@ -1906,6 +2130,14 @@ IRect AudioClipView::sampleRect() const noexcept { return display_->wave(); }
 IRect AudioClipView::rulerRect() const noexcept { return display_->ruler(); }
 IRect AudioClipView::warpStripRect() const noexcept { return display_->strip(); }
 float AudioClipView::xOfFrame(double frame) const noexcept { return display_->xOf(frame); }
+ui::IRect AudioClipView::timeRulerRect() const noexcept { return display_->timeline(); }
+AudioClipView::SampleView AudioClipView::sampleView() const noexcept {
+  SampleView v;
+  display_->viewRange(v.z0, v.z1);
+  v.signalMix = display_->signalMix();
+  v.signal = display_->signalStats();
+  return v;
+}
 float AudioClipView::xOfContent(double content) const noexcept { return display_->xOfContent(content); }
 float AudioClipView::warpMarkerX(size_t i) const noexcept { return display_->warpMarkerX(i); }
 int32_t AudioClipView::selectedWarpMarker() const noexcept { return display_->selected(); }

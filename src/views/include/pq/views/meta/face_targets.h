@@ -53,6 +53,7 @@ public:
   TonePort* tonePort() const override;  // VZ.3: the context's (ViewContext::tonePort)
   const media::WaveformOverview* sampleOverview(uint32_t sample) const override;  // SM.10: ViewContext::waveforms
   uint64_t overviewRevision() const override;
+  const media::SampleWindow* sampleWindow(uint32_t sample, int64_t frame0, int64_t frame1) const override;  // WF.1
   const dsp::Curve* curve(size_t param) const override;  // GU.1: a chain meta device's own (path ""); nested: null
   bool showPosition(size_t param, std::optional<double> position) override;  // TL.6
   // bug-mod-ghost: the instance's params as live modulation has them (ViewContext::liveModulation; a chain meta device

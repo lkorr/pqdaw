@@ -285,6 +285,9 @@ const media::WaveformOverview* DocTarget::sampleOverview(uint32_t sample) const 
   return sample != 0 ? ctx_.waveforms().overview(doc::SampleId{sample}) : nullptr;
 }
 uint64_t DocTarget::overviewRevision() const { return ctx_.waveforms().revision(); }
+const media::SampleWindow* DocTarget::sampleWindow(uint32_t sample, int64_t frame0, int64_t frame1) const {
+  return sample != 0 ? ctx_.waveforms().window(doc::SampleId{sample}, frame0, frame1) : nullptr;
+}
 
 uint64_t DocTarget::guidesKey() const { return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(ctx_.doc().get())); }
 

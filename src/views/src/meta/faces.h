@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 
+#include "pq/ui/waveform.h"
 #include "pq/views/devices/analysis.h"
 #include "pq/views/devices/spectrum_plot.h"
 #include "pq/views/meta/meta_face.h"
@@ -33,6 +34,13 @@ std::unique_ptr<MetaFace> makeSamplerFace(const meta::Type& t);            // SM
 size_t samplerFacePlayheads(const MetaFace& f);
 // SM.13 (tests): the grain dots it shows now (0: none, or not a Sampler face).
 size_t samplerFaceGrainDots(const MetaFace& f);
+// WF.1 (tests): a Sampler face's editor view (fractions of the sample) and what its closed well's and its editor's last
+// paints drew (ui::WaveformStats: the level, approx while the samples load, the curve). False: not a Sampler face.
+struct SamplerFaceWave {
+  double viewA = 0.0, viewB = 1.0;
+  ui::WaveformStats well, editor;
+};
+bool samplerFaceWave(const MetaFace& f, SamplerFaceWave& out);
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 

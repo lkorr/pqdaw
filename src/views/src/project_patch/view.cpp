@@ -75,7 +75,12 @@ ProjectPatchView::ProjectPatchView(ViewContext& ctx) : Widget("project-patch"), 
     if (bits & view_change::kAutomation) refreshAutomation();  // TL.6: overridden / re-enabled
     else if ((bits & view_change::kTransport) && !autoControls_.empty()) applyAutomation();  // TL.6: played, located
     if (bits & view_change::kTimeWindow) timeWindowChanged();  // TL.1: zoomed / scrolled here or in the arrangement
-    if ((bits & view_change::kWaveforms) && shown()) damageLanes();  // an overview arrived or grew: the lanes only
+    if ((bits & view_change::kWaveforms) && shown()) {  // an overview or a sample window arrived or grew
+      damageLanes();
+      canvas_->markDirty();  // WF.1: and the faces that draw a sample (a Sampler's well and editor)
+      for (panel::PanelWindow* w : windows_)
+        if (w->visible()) w->markDirty();
+    }
     if (bits & view_change::kAnalysis) wakeFaces();  // TX.spectrum: a Spectrum face's tap appeared
     if (bits & view_change::kSignal) {  // KB.3: the engine is active again (a key, MIDI in): the glow, faces, costs poll
       wakeFaces();

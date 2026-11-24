@@ -23,6 +23,8 @@
 #include "pq/ui/draw_list.h"
 #include "pq/ui/tile_atlas.h"
 #include "pq/ui/widget.h"
+#include "pq/media/waveform.h"
+#include "pq/views/waveforms.h"
 #include "pq/views/arrangement/arrangement.h"
 #include "pq/views/sample_drop.h"
 #include "edit_surface.h"
@@ -207,6 +209,19 @@ void forEachAudioPiece(const doc::AudioClip& c, const AudioLayout& L, const Temp
     else f(AudioPiece{W - xb, W - xa, fa, fb, true});
   });
 }
+
+// WF.1: the waveform of clip `c` (layout L, device px per tick k) drawn directly over the device columns [vx0, vx1),
+// its left edge at device x `cx0` (a double: at deep zoom it is far outside the view): its linear pieces through
+// ui::drawWaveform, scaled by the clip gain; below the overview's resolution the samples under the columns (a window
+// asked of `waveforms`: read in the background, the overview drawn stretched meanwhile — `approx`). The arrangement's
+// lanes and the project patch view's lane windows both draw with it (audio_paint.cpp).
+struct ClipWaveStats {
+  uint32_t columns = 0, dots = 0;
+  bool approx = false, samples = false, curve = false;
+};
+ClipWaveStats paintClipWaveform(ui::DrawList& dl, Waveforms& waveforms, const media::WaveformOverview& ov, const doc::AudioClip& c,
+                                const AudioLayout& L, const TempoMap& tm, double k, double cx0, float vx0, float vx1, float by0,
+                                float by1, ui::Rgba col, float lineWidth);
 
 // Fade lengths in device px as the clip player plays them (clamped: the fade-in first, then the fade-out).
 struct AudioFadesPx {
