@@ -185,9 +185,16 @@ void Engine::audioOnline() noexcept {  // RT-safe
 void Engine::onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept {  // RT-safe
   const SlotSource& s = *static_cast<const SlotSource*>(slot);
   Engine& e = *s.engine;
+  SlotStages& st = e.stages_[s.slot];
+  // OP.4: nothing can give this slot an event in this block: no note-stage chain (running or waiting to be taken),
+  // no panic, no audition and no pending live note anywhere, and the timeline (run for this block already by the
+  // block hook) has no event on its track. A track without a note edge under the playhead, i.e. nearly every track
+  // in nearly every block, costs these loads instead of the merge below.
+  if (st.cur == nullptr && st.next.load(std::memory_order_relaxed) == nullptr && !e.panicNow_ && e.numAuditions_ == 0 &&
+      !e.live_->anyPending() && e.timeline_->noEventsAt(s.slot, sampleTime))
+    return;
   // AP.1: the slot's note stages. A new chain is taken at the block start (when the retire ring has room); the old
   // one ends its notes at frame 0 and hands its key-held source notes on (note_stage.h "Handover").
-  SlotStages& st = e.stages_[s.slot];
   if (st.next.load(std::memory_order_relaxed) != nullptr &&
       e.retiredStages_.sizeApprox() + 2 <= e.retiredStages_.capacity()) {
     NoteStageChain* next = st.next.exchange(nullptr, std::memory_order_acq_rel);

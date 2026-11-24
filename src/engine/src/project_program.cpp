@@ -239,6 +239,9 @@ struct ProjectProgram::BusStore {
   std::atomic<float> pubLast[2] = {0.0f, 0.0f};  // bug-mod-ghost: the latest block's last sample (one store per block)
   float* channel(uint16_t c) noexcept { return data.data() + static_cast<size_t>(c) * stride; }
   bool silent = false;  // audio thread: its producer is idle and zeroed it (idle units)
+  // OP.4, audio thread: the bus was silent in every block of the current meter window so far and zeros are what the
+  // meter publishes (peak, mean square, last): a silent block has nothing to add or publish.
+  bool zeroPublished = false;
 };
 
 ProjectProgram::DelayLine::DelayLine(std::shared_ptr<BusStore> b, uint32_t clipSlot, uint16_t w, uint32_t frames,
@@ -1659,7 +1662,9 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   ctx.numOut = static_cast<uint32_t>(p->outPtrs.size());
   ctx.params = p->params.data();
   ctx.numParams = static_cast<uint32_t>(p->params.size());
-  ctx.paramsUnchanged = paramsSame && !U.voices;  // a voice engine's images get their own contexts
+  // OP.4: voice units too. The VoiceEngine hands this context to its image as it is (PF.4b; it sets only `voices`)
+  // in every block it is given, so the image's previous block is this packet's previous run, as for any other unit.
+  ctx.paramsUnchanged = paramsSame;
   ctx.clipIn = clipLines ? ce->clipIn.data() : cfg_.clipIn;  // T5.4 (T6.2b: delayed)
   ctx.trackIn = trackIn;  // T6.7
   ctx.events = nullptr;
@@ -1772,14 +1777,26 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
         b.accN = 0;
       }
       const uint16_t ch = std::min<uint16_t>(b.width, 2);
-      for (uint16_t c = 0; c < ch; ++c) levelOf(b.channel(c), n, b.accPeak[c], b.accSq[c]);
       b.accN += n;
+      // OP.4: a silent bus (exactly ±0: an idle unit zeroed it, or its image reported it) adds nothing to the peak
+      // or the sum of squares, so it is not scanned; and once zeros are published for a window that held nothing
+      // else, it is not published again either (64 silent tracks: a fifth to a third of the engine's block). What a
+      // reader sees is unchanged: the window's levels with the silent blocks counted in accN, the decay of a window
+      // that still holds signal, zeros after it.
+      if (b.silent) {
+        if (b.zeroPublished) continue;
+      } else {
+        for (uint16_t c = 0; c < ch; ++c) levelOf(b.channel(c), n, b.accPeak[c], b.accSq[c]);
+        b.zeroPublished = false;
+      }
       const double inv = 1.0 / static_cast<double>(b.accN);
       for (uint16_t c = 0; c < ch; ++c) {
         b.pubPeak[c].store(b.accPeak[c], std::memory_order_relaxed);
         b.pubMs[c].store(static_cast<float>(b.accSq[c] * inv), std::memory_order_relaxed);
         if (n > 0) b.pubLast[c].store(b.channel(c)[n - 1], std::memory_order_relaxed);  // bug-mod-ghost
       }
+      if (b.silent && n > 0)
+        b.zeroPublished = b.accPeak[0] == 0.0f && b.accPeak[1] == 0.0f && b.accSq[0] == 0.0 && b.accSq[1] == 0.0;
     }
     if (n > 0)  // AP.2b: the bus values the note stages read at the next block
       for (const auto& [bp, i] : t.values) busValues_[i] = bp->channel(0)[n - 1];

@@ -355,6 +355,10 @@ public:
   EventList events(uint32_t track) const noexcept {
     return {events_.data() + static_cast<size_t>(track) * cfg_.maxEventsPerTrack, eventCount_[track]};
   }
+  // OP.4: process() ran for the block at `sampleTime` and left track `track` without a note event. RT-safe.
+  bool noEventsAt(uint32_t track, int64_t sampleTime) const noexcept {
+    return sampleTime == lastSampleTime_ && eventCount_[track] == 0;
+  }
   uint32_t numTracks() const noexcept { return numTracks_; }
   const TransportSnapshot& snapshot() const noexcept { return snapshot_; }
   const AutomationRenderer& automation() const noexcept { return automation_; }
