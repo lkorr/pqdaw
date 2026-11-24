@@ -162,12 +162,12 @@ const media::SampleWindow* Waveforms::window(doc::SampleId id, int64_t frame0, i
     frame1 = std::min(frame1, e.fileFrames);
     frame0 = std::min(frame0, frame1);
   }
+  if (frame1 <= frame0) return nullptr;  // nothing of the file is wanted
   for (Entry::Win& w : e.windows)
     if (w.w->frame0 <= frame0 && w.w->frame0 + w.w->frames >= frame1) {
       w.use = ++windowClock_;
       return w.w.get();
     }
-  if (frame1 <= frame0) return nullptr;  // nothing of the file is wanted
   if (e.injected || e.path.empty() || e.windowFailed) return nullptr;
   if (frame1 - frame0 > kMaxWindowFrames) return nullptr;  // more than one read holds (the overview draws it)
   for (const auto& [pa, pb] : e.pending)

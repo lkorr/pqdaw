@@ -421,7 +421,9 @@ TEST_CASE("render: audio clips — partial repaints equal a full repaint; tiles 
   Rig rig(1280, 800, 1.0f, "audio");
   rig.install();
   ArrangementView& arr = *rig.arr;
-  arr.setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), 300.0 / static_cast<double>(kTicksPerWhole));
+  // WF.1: 120 px per whole note (was 300: 320 frames per px, which now draws from the samples — below twice the
+  // overview's bucket — and so without tiles; this case is about the tiles).
+  arr.setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), 120.0 / static_cast<double>(kTicksPerWhole));
   const auto& st = arr.stats();
   rig.settle();
   (void)rig.drawFull(*rig.partial, rig.res);
@@ -461,7 +463,7 @@ TEST_CASE("render: audio clips — partial repaints equal a full repaint; tiles 
   rig.frame();
   rig.comparePartial("audio-hover-title");
   for (int i = 0; i < 12; ++i) {
-    arr.scrollByPx(23.0);
+    arr.scrollByPx(6.0);  // (WF.1: was 23 px a step at 300 px per bar: the same share of the view)
     rig.frame();
   }
   rig.settle();

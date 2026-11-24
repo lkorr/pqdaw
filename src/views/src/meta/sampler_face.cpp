@@ -202,6 +202,7 @@ public:
       p.roundedRect(kWell, 5.0f, ui::mulAlpha(w, 0.32f));
       return;
     }
+    if (!meetsClip(p, kWell)) return;  // (another section's paint: the editor, the root field)
     refresh();
     const float mid = (kWell.y0 + kWell.y1) * 0.5f;
     const media::WaveformOverview* o = smp_.overview;

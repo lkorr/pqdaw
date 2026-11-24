@@ -13,7 +13,9 @@
 #include <array>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <string>
 #include <vector>
@@ -40,6 +42,7 @@
 #include "pq/views/project_patch/project_patch_view.h"
 #include "pq/views/shell/shell.h"
 #include "views_test_util.h"
+#include "../../src/views/src/meta/faces.h"  // WF.1: the Sampler face as it last painted (tests)
 
 using namespace pq;
 using namespace pq::ui;
@@ -1224,6 +1227,11 @@ TEST_CASE("sampler editor (SM.17, real dispatch): a press or drag on the wavefor
     CHECK(u.node().y == doctest::Approx(n0.y));
   }
   CHECK(u.cursor() == h0);  // and nothing was edited
+  // WF.1: the drag on the ruler scrolled and zoomed the editor's view (view state); a double-click on the strip under
+  // the waveform shows the whole sample again (the hovers below are placed on the whole sample).
+  u.d.doubleClick(u.ed(0.5, kFlagY));
+  u.d.step();
+  CHECK(u.cursor() == h0);
   // Hover: the handles name themselves (the info view's text), with a resize cursor; the empty waveform an arrow.
   const size_t ed = static_cast<size_t>(u.face().indexOf(u.idOf("sampleedit")));
   const auto hover = [&](Vec2 at) {
@@ -1299,4 +1307,198 @@ TEST_CASE("render: sampler-panel-warp / sampler-panel-radial (SM.17: a stretch m
   for (uint32_t y = 0; y < cut.height; ++y)
     std::copy_n(img->pixel(static_cast<uint32_t>(x0), static_cast<uint32_t>(y0) + y), static_cast<size_t>(cut.width) * 4, cut.pixel(0, y));
   checkImage("sampler-panel-radial", cut);
+}
+
+// ---- WF.1: the Sampler's waveform through the shared renderer; the editor's view ---------------------------------------
+
+namespace {
+
+// The engine's face behind the panel's `sampleedit` element (the one the well shares), as it last painted.
+SamplerFaceWave waveOf(const Expanded& u, std::string_view kind = "sampleedit") {
+  panel::GroupPanelFace& f = u.face();
+  const int32_t i = f.indexOf(u.idOf(kind));
+  REQUIRE(i >= 0);
+  const doc::Binding* b = f.element(static_cast<size_t>(i)).desc().binding(0);
+  REQUIRE(b != nullptr);
+  const std::shared_ptr<MetaFace> face = f.target().engineFace(*b, "", nullptr);
+  REQUIRE(face != nullptr);
+  SamplerFaceWave w;
+  REQUIRE(samplerFaceWave(*face, w));
+  return w;
+}
+
+struct QueuePoster {
+  std::mutex m;
+  std::vector<std::function<void()>> q;
+  ViewContext::UiPoster poster() {
+    return [this](std::function<void()> f) {
+      std::lock_guard<std::mutex> l(m);
+      q.push_back(std::move(f));
+    };
+  }
+  void pump() {
+    std::vector<std::function<void()>> run;
+    {
+      std::lock_guard<std::mutex> l(m);
+      run.swap(q);
+    }
+    for (auto& f : run) f();
+  }
+};
+
+constexpr double kPluckFrames = 28800.0;
+// Device px per sample of the editor's view (316 face units wide at zoom 1, scale 1).
+double pxPerSample(const SamplerFaceWave& w) { return 316.0 / ((w.viewB - w.viewA) * kPluckFrames); }
+
+}  // namespace
+
+TEST_CASE("sampler waveform (WF.1): a short sample at fit zoom is drawn from its samples, never the overview stretched — "
+          "stretched only until the samples arrive, then repainted") {
+  Expanded u;
+  // 0.6 s (28,800 frames) across the well (98 px in the panel) and the editor (316 px): 294 and 91 frames per px, both below the
+  // overview's resolution (512 frames per px: two 256-frame buckets).
+  SamplerFaceWave w = waveOf(u);
+  const SamplerFaceWave well = waveOf(u, "samplewave");
+  CHECK(well.well.columns > 80);
+  CHECK(well.well.level == -1);
+  CHECK_FALSE(well.well.approx);
+  CHECK(w.editor.columns > 300);
+  CHECK(w.editor.level == -1);
+  CHECK_FALSE(w.editor.approx);
+  CHECK(w.viewA == 0.0);
+  CHECK(w.viewB == 1.0);
+  // As the app reads them (a poster: overviews and sample windows come from the background workers): the first paint
+  // after the overview has no samples yet (the overview, stretched: approx), the arrival repaints the faces, and the
+  // settled picture is the samples. A settled view reads nothing more.
+  QueuePoster qp;
+  u.ctx.setUiPoster(qp.poster());
+  u.ctx.waveforms().clear();
+  u.d.tree().invalidateAll();
+  u.d.step();  // (asks for the overview)
+  bool sawApprox = false;
+  for (int i = 0; i < 8; ++i) {
+    u.ctx.waveforms().waitIdle();
+    qp.pump();
+    u.d.step();
+    w = waveOf(u);
+    sawApprox = sawApprox || (w.editor.columns > 0 && w.editor.approx);
+  }
+  CHECK(sawApprox);
+  CHECK(w.editor.level == -1);
+  CHECK_FALSE(w.editor.approx);
+  CHECK(waveOf(u, "samplewave").well.level == -1);
+  CHECK_FALSE(waveOf(u, "samplewave").well.approx);
+  const uint64_t reads = u.ctx.waveforms().windowReads();
+  u.d.tree().invalidateAll();
+  u.d.step();
+  u.ctx.waveforms().waitIdle();
+  qp.pump();
+  CHECK(u.ctx.waveforms().windowReads() == reads);
+  u.ctx.setUiPoster({});
+}
+
+TEST_CASE("sampler editor (WF.1, real dispatch): the wheel zooms about the pointer down to single samples (the curve, a "
+          "dot per sample); Shift + wheel and a ruler drag scroll; a double-click on the ruler shows the whole sample; "
+          "nothing is an undo step") {
+  Expanded u;
+  const size_t h0 = u.cursor();
+  const Node n0 = u.node();
+  // The wheel over the waveform at a quarter of the editor: zooms in about that point, down to its limit.
+  for (int i = 0; i < 6; ++i) CHECK(u.d.wheel(u.ed(0.25, kWaveMidY), 1.0f));
+  u.d.step();
+  SamplerFaceWave w = waveOf(u);
+  CHECK(w.viewB - w.viewA == doctest::Approx(std::pow(0.8, 6.0)).epsilon(1e-6));
+  CHECK(w.viewA + 0.25 * (w.viewB - w.viewA) == doctest::Approx(0.25).epsilon(1e-6));  // the frame under the pointer stays
+  for (int i = 0; i < 60; ++i) (void)u.d.wheel(u.ed(0.25, kWaveMidY), 1.0f);
+  u.d.step();
+  w = waveOf(u);
+  CHECK(pxPerSample(w) >= 32.0);   // to the samples
+  CHECK(pxPerSample(w) <= 64.01);  // (the limit: 64 device px per sample)
+  CHECK(w.viewA + 0.25 * (w.viewB - w.viewA) == doctest::Approx(0.25).epsilon(1e-4));
+  CHECK(w.editor.level == -1);
+  CHECK(w.editor.curve);
+  CHECK_FALSE(w.editor.approx);
+  CHECK(w.editor.dots >= 4);
+  CHECK(waveOf(u, "samplewave").well.columns > 80);  // the closed well stays the fit view
+  // Wheel down zooms out again about the pointer; Shift + wheel scrolls (up: left), the span kept.
+  for (int i = 0; i < 20; ++i) (void)u.d.wheel(u.ed(0.25, kWaveMidY), -1.0f);
+  u.d.step();
+  w = waveOf(u);
+  const double span = w.viewB - w.viewA;
+  CHECK(span > 0.01);
+  CHECK(span < 0.2);
+  CHECK(u.d.wheel(u.ed(0.5, kWaveMidY), -1.0f, 0.0f, mod::kShift));
+  u.d.step();
+  SamplerFaceWave s = waveOf(u);
+  CHECK(s.viewA == doctest::Approx(w.viewA + span * 0.125).epsilon(1e-6));
+  CHECK(s.viewB - s.viewA == doctest::Approx(span).epsilon(1e-9));
+  // A drag along the ruler (warp Off: no markers) scrolls: the sample follows the pointer.
+  u.d.drag(u.ed(0.6, kRulerY), u.ed(0.4, kRulerY), 5);
+  u.d.step();
+  w = waveOf(u);
+  CHECK(w.viewA == doctest::Approx(s.viewA + 0.2 * span).epsilon(1e-3));
+  CHECK(w.viewB - w.viewA == doctest::Approx(span).epsilon(1e-6));
+  // Up / down on the ruler zooms (down: in).
+  const Vec2 from = u.ed(0.5, kRulerY);
+  u.d.drag(from, {from.x, from.y + 60.0f}, 5);
+  u.d.step();
+  CHECK(waveOf(u).viewB - waveOf(u).viewA < span * 0.7);
+  // A double-click on the ruler: the whole sample.
+  u.d.doubleClick(u.ed(0.5, kRulerY));
+  u.d.step();
+  w = waveOf(u);
+  CHECK(w.viewA == 0.0);
+  CHECK(w.viewB == 1.0);
+  // View state only: no undo step, the block where it was.
+  CHECK(u.cursor() == h0);
+  CHECK(u.node().x == doctest::Approx(n0.x));
+  CHECK(u.node().y == doctest::Approx(n0.y));
+}
+
+TEST_CASE("sampler editor (WF.1, real dispatch): handles drag while zoomed — a flag out of view waits at the edge, a drag "
+          "lands where the view shows it, and one held past the edge scrolls the view (one undo step each)") {
+  Expanded u;
+  for (int i = 0; i < 10; ++i) (void)u.d.wheel(u.ed(0.5, kWaveMidY), 1.0f);
+  u.d.step();
+  SamplerFaceWave w = waveOf(u);
+  const double span = w.viewB - w.viewA;
+  REQUIRE(span < 0.12);
+  REQUIRE(w.viewA > 0.4);  // Start (0) and End (1) are out of view
+  // The Start flag waits at the left edge: dragged to the editor's middle, Start is the sample position shown there.
+  size_t h = u.cursor();
+  u.d.drag(u.ed(0.0, kFlagY), u.ed(0.5, kFlagY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpStart) == doctest::Approx(w.viewA + 0.5 * span).epsilon(2e-3));
+  // The End flag from the right edge to three quarters.
+  h = u.cursor();
+  u.d.drag(u.ed(1.0, kFlagY), u.ed(0.75, kFlagY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpEnd) == doctest::Approx(w.viewA + 0.75 * span).epsilon(2e-3));
+  // Start's line (now in view, at the middle) dragged within the view: sample-fine (a pixel is span / 316 of the sample).
+  h = u.cursor();
+  u.d.drag(u.ed(0.5, kWaveMidY), u.ed(0.3, kWaveMidY), 6);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpStart) == doctest::Approx(w.viewA + 0.3 * span).epsilon(2e-3));
+  CHECK(waveOf(u).viewA == doctest::Approx(w.viewA));  // (inside the view nothing scrolls)
+  // Held past the left edge, the view scrolls with every move and Start follows the edge.
+  h = u.cursor();
+  const Vec2 a = u.ed(0.3, kWaveMidY), out = u.ed(-0.08, kWaveMidY);
+  u.d.move(a);
+  u.d.down(a);
+  for (int i = 1; i <= 12; ++i) u.d.move({out.x - static_cast<float>(i % 2), out.y});
+  u.d.up(out);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  const SamplerFaceWave s = waveOf(u);
+  CHECK(s.viewA < w.viewA - 0.5 * span);  // scrolled left by more than half a view
+  CHECK(s.viewB - s.viewA == doctest::Approx(span).epsilon(1e-9));
+  CHECK(u.value(meta::kSmpStart) == doctest::Approx(s.viewA).epsilon(1e-6));
+  // Undo: Start back at 0.3 of the old view; the view (view state) stays.
+  REQUIRE(u.ctx.store().undo());
+  CHECK(u.value(meta::kSmpStart) == doctest::Approx(w.viewA + 0.3 * span).epsilon(2e-3));
+  u.d.step();
+  CHECK(waveOf(u).viewA == doctest::Approx(s.viewA));
 }
