@@ -100,9 +100,11 @@ std::string noteDevicePatchText(const NoteDeviceType& t);
 // device's own params (Control) and settings (Setting), so every control edits its param as any panel control does:
 // automation, cables, undo. Empty: the type has none (the generic panel: one control per param).
 // The Arpeggiator's (fit: the shown height is the open sections'):
-//   top        Arp (Style, Hold, Seed, Rate: Sync, num / den, tuplet n : m with Straight / Dotted / Triplet shortcuts —
-//              free: ms —, Gate, Groove, Offset, Repeats, Retrigger + its rate, Velocity: source, fixed, decay, target,
-//              retrigger), Pitch (Unit, Distance, Steps, Shift / Rotate; Ratio p / q only in Ratio, Base in
+//   top        Arp (Style, Hold, Seed, Gate, Groove, Offset, Repeats; the rate — AR.4: Sync and ONE `rate` control: the
+//              note value's menu 1/1 … 1/128 with the Feel chips Straight / Dotted / Triplet, its "n:m" chip showing
+//              the numbers themselves instead (num / den, tuplet n : m); free: ms —; Retrigger + (Beat) its rate;
+//              Velocity: source, decay, target, fixed (source Fixed), "Decay restarts on retrigger"), Pitch (Unit,
+//              Distance, Steps, Shift / Rotate; Ratio p / q only in Ratio, Base in
 //              Harmonics or Harmonic Walk (a condition of two sources), Range / Under / walk order only with style
 //              Harmonic Walk), the pattern view (AP.10: the whole resolved cycle, pq/document/note_pattern.h).
 //   Glide      fold, OPEN by default (AP.10): Into and Out each with its source / target, Time Sync, Offset (with
@@ -110,7 +112,10 @@ std::string noteDevicePatchText(const NoteDeviceType& t);
 //              its handles drag the times / offsets / bends).
 //   Pulse      fold: on; with it on its source, ref, cycle (+ bars), Layers + levels, the proportion (with source
 //              Proportion).
-//   Step Lanes fold: per lane its switch and a step-lane editor (its 32 steps, its length).
+//   Step Lanes fold (AR.4): one `steplane` per lane, the panel's width — its name column (switch, menu, readout) and its
+//              32 steps. A lane that is on is tall (Velocity / Gate / Glide / Chance 44, Transpose — a grid of the
+//              unit's steps — 96, Skip / Tie 26); one that is off is its 14 px name strip: the element spans a `fold`
+//              of look "band" whose condition is the lane's switch, so the fit height follows.
 // Visibility conditions (Visibility) hide what does not apply; folds are view state (folded by default but Glide).
 Panel noteDevicePanel(const Device& d);
 

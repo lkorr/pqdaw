@@ -76,23 +76,37 @@ pulses only, and the model is opaque.
 Tests: 8:9:10:12 onsets exact over 4 bars (kept), a masked + shifted row, block-size invariance, RtScope.
 Row: engine / RT.
 
-## AR.4 · step lanes + the panel (👁, views + document), after AR.1
-1. **Lanes get room**: a lane that is ON is a tall row (Velocity / Gate / Chance / Glide ≈ 44 px, Transpose ≈ 96 px,
-   Skip / Tie 22 px); a lane that is OFF is a 14 px strip with only its name switch. The panel's fit height follows.
-2. **Transpose**: a grid, not bars — one row per unit step, the zero line marked, equave lines stronger (Degrees: the
-   track table's equave; Harmonics / Ratio: every step labelled), the visible range auto-fits the values in use
-   (minimum ± 7, grows in whole equaves up to ± 48) with the value written in the step. Wheel = ± 1, Shift+wheel
-   = ± an equave, typed value on double-click, Alt+click = 0.
-3. All lanes: hover readout (step, value in its unit), wheel fine-adjust, lane menu (right-click the lane name):
-   Reset, Randomize (seeded by the device seed, one undo step), Shift ← / →, Reverse, Copy to lane…; the length
-   handle shows its number while dragged.
-4. **Panel pass** (own judgement, keep every capability reachable): one Rate control (a stepped rate menu 1/1 …
-   1/128 with · / T, the n:m tuplet boxes behind a small "n:m" toggle), fewer bare number boxes, consistent knob
-   sizes, sections titled, no control without a label, nothing overlapping at 1× and 2× (open AP lows L12 / L13 in
-   docs/reviews/AP.md). Do not touch the Glide and Pulse sections' contents (AR.2 / AR.3 own them); leave their y
-   bands as functions so the merges stay mechanical.
-Row: views → `pq_tests_views` default tier (+ `pq_tests_document` panel tests); goldens re-recorded only for the arp
-panel. REVIEW.md entry.
+## AR.4 · step lanes + the panel (👁, views + document), after AR.1 — DONE (as built; deviations: Q?-AR.4-a)
+1. **Lanes get room**: one `steplane` element per lane, the panel's width (940): a NAME COLUMN (84 px: the switch
+   with the lane's name, the menu's dots, a readout) and 32 steps of ≈ 26 px. On: Velocity / Gate / Glide / Chance
+   44 px, Transpose 96 px, Skip / Tie 26 px. Off: only the 14 px name strip — the element spans a `fold` of the new
+   look "band" (no header, no press) whose condition is the lane's own switch, so the fit height follows (Device view
+   and patch block). A tick between every four steps; Gate has a line at × 1.
+2. **Transpose** is look `grid`: a row per step of the unit, the 0 row marked, in Degrees the track table's equaves
+   ruled and labelled (`doc::noteDeviceTuning` / `tuningEquaveDegrees`), in Ratio / Harmonics a label every few rows.
+   The rows shown fit the values: ± 7, else the whole equaves that hold every value (no equave: sevens), at most ± 48.
+   Each step is a block on its row with a stem from 0 and its value written beside it. A press sets the row under
+   the pointer; the rows are held while a drag runs and go on past the edge (so a drag reaches beyond ± 7). Wheel =
+   ± 1, Shift+wheel = ± an equave, double-click = type the value, Alt+click = 0.
+3. **All lanes**: the readout under the name (the step under the pointer / being dragged and its value in its unit:
+   "75 %", "+7 deg", "Tie"; else "16 steps"), the hovered step outlined; wheel = 1 % (Shift 10 %; cells: the next
+   state), a run of notches one undo step; double-click = type (bars: percent); Alt+click / drag = the default; the
+   length handle shows its number while hot. The MENU (the dots, or a right-click on the name column; a right-click on
+   a step stays the host's automation menu): Reset, Randomize (the steps in play; seed + lane + a view count, so
+   asking again gives another one), Shift Left / Right and Reverse (within the length), Copy to (Velocity / Gate /
+   Glide / Chance among themselves: values and length). Each one undo step, param writes (Copy also the length).
+4. **Panel pass** (top band 200 px high, was 182):
+   - ONE Rate control (`rate` element): a box "1/16", "1/8 T", "1/8 D", "3/16 5:4" — click: 1/1 … 1/128, wheel: the
+     next / previous — with the Feel chips Straight / Dotted / Triplet beside it; its "n:m" chip shows the four number
+     boxes (Note num / den, Tuplet n : m) in place of the chips (view state; shown anyway while the rate is none of the
+     menu's). Free: Rate ms.
+   - Arp block in columns: Style, Gate / Groove, Seed / Offset, Repeats / Hold | Sync + Rate, Retrigger (+ "Every"
+     n / d on Beat), Velocity (source chips, "Decay restarts — On retrigger" as a switch: no second "Retrigger", no
+     button glow; Decay / Target / Fixed knobs).
+   - Every knob 48 × 58; no box without a label ("Every", "Note", "Tuplet", "Walk Range", "Walk Order"); the Harmonic
+     Walk row lost its caption. Pitch block: the row y 136 … 194 is free for AR.3's Layers.
+   - Glide and Pulse sections untouched (their y bands still run from the fold above).
+Row: views → `pq_tests_views` default tier + `pq_tests_document`; goldens: the arp panel's + arp-panel-lanes-2x (new).
 
 ## Order
 w1: AR.1 → AR.4. w2: AR.2 → AR.3. Shared files: `note_devices.cpp arpeggiatorPanel` and `arp_elements.cpp` — each

@@ -82,4 +82,10 @@ double noteGlideSnap(const NoteGlideView& v, double cents) noexcept;
 // 2 S-curve, 3 Overshoot) with an arpeggiator Bend −1 … 1: what the panel's drawings evaluate.
 double noteRampShape(int32_t shape, double bend, double u) noexcept;
 
+// AR.4: what a transpose lane rules its Degrees grid by — the tuning note device `device`'s track steps in (null: none;
+// pointer walking only: cheap enough per paint) and the degrees in one equave of a tuning's degree table (12: none /
+// no table; builds the table: cache it by the tuning).
+const TuningDef* noteDeviceTuning(const Project& p, DeviceId device) noexcept;
+int32_t tuningEquaveDegrees(const TuningDef* def);
+
 }  // namespace pq::doc

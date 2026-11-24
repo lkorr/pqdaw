@@ -28,6 +28,7 @@
 #include "pq/document/note_devices.h"
 #include "pq/ui/gpu.h"
 #include "pq/ui/image.h"
+#include "pq/ui/overlay.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/test_driver.h"
 #include "pq/views/device_chain/device_chain.h"
@@ -126,7 +127,7 @@ int32_t findElement(const panel::GroupPanelFace& f, std::string_view kind, std::
 // The open state of the panel's folds (by title) set as view state before the panel is built.
 void setFolds(ViewContext& ctx, doc::DeviceId arp, const doc::Panel& p, const std::vector<std::string>& open) {
   for (const doc::PanelElement& e : p.elements)
-    if (e.kind == doc::kFoldKind)
+    if (e.kind == doc::kFoldKind && e.text("look", "") != "band")  // (AR.4: a band is no section header)
       ctx.store().view().panelWindows[arp.value].setFoldOpen(
           e.id, std::find(open.begin(), open.end(), std::string(e.text("title", ""))) != open.end());
 }
@@ -164,7 +165,7 @@ struct Standalone {
   ~Standalone() {
     if (d) d->tree().setRoot(std::make_unique<Widget>());
   }
-  void build(const std::vector<std::string>& open) {
+  void build(const std::vector<std::string>& open, float scale = 1.0f) {
     const doc::Device* dev = doc::findDevice(*ctx.doc(), pr.arp).device;
     REQUIRE(dev != nullptr);
     auto p = std::make_shared<const doc::Panel>(doc::noteDevicePanel(*dev));
@@ -172,10 +173,20 @@ struct Standalone {
     CHECK(doc::checkPanel(*p).ok());
     setFolds(ctx, pr.arp, *p, open);
     if (status) ctx.setNoteStatusSource([s = status](doc::DeviceId) { return std::shared_ptr<const NoteStageStatus>(s); });
-    const doc::FoldLayout fl = doc::foldLayout(*p, [&](const doc::PanelElement& e) {
-      return ctx.store().view().panelWindows[pr.arp.value].foldOpen(e.id).value_or(doc::foldOpenByDefault(e));
-    });
-    d = std::make_unique<TestDriver>(static_cast<uint32_t>(p->width), static_cast<uint32_t>(std::ceil(fl.height)), 1.0f);
+    // (AR.4: a fold with a condition — a step lane's band — shows while its source's setting has the value)
+    const doc::FoldLayout fl = doc::foldLayout(
+        *p,
+        [&](const doc::PanelElement& e) {
+          return ctx.store().view().panelWindows[pr.arp.value].foldOpen(e.id).value_or(doc::foldOpenByDefault(e));
+        },
+        [&](const doc::PanelElement& e) {
+          if (!e.when) return true;
+          const doc::PanelElement* src = p->find(e.when->element);
+          REQUIRE(src != nullptr);
+          REQUIRE(src->binding() != nullptr);
+          return valueOf(ctx, pr.arp, src->binding()->name) == e.when->values.at(0);
+        });
+    d = std::make_unique<TestDriver>(static_cast<uint32_t>(p->width * scale), static_cast<uint32_t>(std::ceil(fl.height * scale)), scale);
     auto face = std::make_unique<panel::GroupPanelFace>([p]() -> doc::PanelPtr { return p; },
                                                         panel::makeDocPanelTarget(ctx, pr.arp, [this]() -> Widget* { return host; }));
     host = &d->setRoot<panel::PanelHost>("panel", std::move(face));
@@ -249,6 +260,23 @@ struct Ui {
     const Rect r = face().element(static_cast<size_t>(i)).rect();
     return host().transform().map({r.x0 + l.x, r.y0 + l.y});
   }
+  // AR.4: step lane `l` (the status's lane index); its switch clicked; the middle of its step's cell at `fy` of its
+  // height, device px.
+  int32_t lane(int l) { return index("steplane", std::to_string(l)); }
+  void laneOn(int32_t i) {
+    d.click(atLocal(i, {10.0f, 7.0f}));
+    d.step();
+  }
+  Vec2 cell(int32_t i, int step, float fy) {
+    const std::optional<Rect> c = panel::test::stepLaneCell(face().element(static_cast<size_t>(i)), step);
+    REQUIRE(c.has_value());
+    return atLocal(i, {(c->x0 + c->x1) * 0.5f, c->y0 + (c->y1 - c->y0) * fy});
+  }
+  Menu* lastMenu() {
+    for (size_t i = shell->overlay().childCount(); i-- > 0;)
+      if (auto* m = dynamic_cast<Menu*>(&shell->overlay().child(i))) return m;
+    return nullptr;
+  }
   bool foldOpen(const char* title) {
     const int32_t f = index("fold", title);
     return face().element(static_cast<size_t>(f)).selection(face().target()).value_or(0.0) >= 0.5;
@@ -311,17 +339,21 @@ TEST_CASE("render: arp-panel-pulse (AP.6: Pulse on, Proportion, a Bars cycle)") 
   checkImage("arp-panel-pulse", s.render());
 }
 
-TEST_CASE("render: arp-panel-lanes (AP.6: lanes on, the playing step lit)") {
-  Standalone s;
+namespace {
+// AR.4: Velocity, Gate, Transpose and Skip / Tie on with values (Glide and Chance off: their strips), the stage playing
+// grid step 5.
+void lanesScene(Standalone& s) {
   setValue(s.ctx, s.pr.arp, "velLane", 1.0);
+  setValue(s.ctx, s.pr.arp, "gateLane", 1.0);
   setValue(s.ctx, s.pr.arp, "transLane", 1.0);
   setValue(s.ctx, s.pr.arp, "tieLane", 1.0);
   setValue(s.ctx, s.pr.arp, "velLen", 8.0);
   setValue(s.ctx, s.pr.arp, "transLen", 12.0);
   setValue(s.ctx, s.pr.arp, "tieLen", 6.0);
   for (int i = 0; i < 8; ++i) setValue(s.ctx, s.pr.arp, "velStep" + std::to_string(i + 1), 0.25 + 0.1 * i);
-  setValue(s.ctx, s.pr.arp, "transStep2", 7.0);
-  setValue(s.ctx, s.pr.arp, "transStep5", -5.0);
+  for (int i = 0; i < 16; ++i) setValue(s.ctx, s.pr.arp, "gateStep" + std::to_string(i + 1), i % 4 == 0 ? 1.6 : (i % 2 == 0 ? 1.0 : 0.5));
+  const int trans[12] = {0, 7, 3, 0, -5, 12, 2, 0, -12, -2, 5, 0};
+  for (int i = 0; i < 12; ++i) setValue(s.ctx, s.pr.arp, "transStep" + std::to_string(i + 1), trans[i]);
   setValue(s.ctx, s.pr.arp, "tieStep3", 1.0);  // Skip
   setValue(s.ctx, s.pr.arp, "tieStep4", 2.0);  // Tie
   // What the stage writes while it plays: grid step 5 (each lane at 5 mod its length), four notes held, the pattern
@@ -333,17 +365,49 @@ TEST_CASE("render: arp-panel-lanes (AP.6: lanes on, the playing step lit)") {
   s.status->writePattern(6, 4, false, [&](uint32_t i) { return hz[i]; }, 4, [&](uint32_t i) { return held[i]; });
   const int32_t lanes[6] = {5, 5, 5, 5, 5, 5};
   s.status->writeStep(lanes, 6, 2, 0);
+}
+}  // namespace
+
+TEST_CASE("render: arp-panel-lanes (AP.6 / AR.4: lanes on — bars, the Transpose grid, cells —, two off, the playing step lit)") {
+  Standalone s;
+  lanesScene(s);
   s.build({"Step Lanes"});
+  {  // the pointer over Transpose step 2: its cell outlined, the readout under the lane's name
+    const int32_t trans = findElement(s.face(), "steplane", "3");
+    REQUIRE(trans >= 0);
+    const panel::Element& e = s.face().element(static_cast<size_t>(trans));
+    const Rect c = *panel::test::stepLaneCell(e, 1);
+    (void)s.d->move({e.rect().x0 + (c.x0 + c.x1) * 0.5f, e.rect().y0 + 70.0f});
+  }
   const Image img = s.render();
   const int32_t vel = findElement(s.face(), "steplane", "0");
   REQUIRE(vel >= 0);
   CHECK(panel::test::stepLaneLit(s.face().element(static_cast<size_t>(vel))) == 5);
+  const int32_t glide = findElement(s.face(), "steplane", "2");
+  REQUIRE(glide >= 0);
+  CHECK(panel::test::stepLaneLit(s.face().element(static_cast<size_t>(glide))) == -1);  // off: it reads no status
+  CHECK(s.face().element(static_cast<size_t>(glide)).rect().height() == doctest::Approx(14.0f));
   for (size_t i = 0; i < s.face().elementCount(); ++i)
     if (s.face().element(i).desc().kind == "arppattern") {
       CHECK(panel::test::patternPosition(s.face().element(i)) == 2);
       CHECK(panel::test::patternCount(s.face().element(i)) == 6);
     }
   checkImage("arp-panel-lanes", img);
+}
+
+TEST_CASE("render: arp-panel-lanes-2x (AR.4: the same at 2x, the rate's n:m numbers shown, Harmonic Walk's row)") {
+  Standalone s;
+  lanesScene(s);
+  setValue(s.ctx, s.pr.arp, "rateNum", 3.0);
+  setValue(s.ctx, s.pr.arp, "tupletN", 5.0);
+  setValue(s.ctx, s.pr.arp, "tupletM", 4.0);
+  setValue(s.ctx, s.pr.arp, "retrigger", 2.0);
+  setValue(s.ctx, s.pr.arp, "velSource", 1.0);
+  setValue(s.ctx, s.pr.arp, "style", 18.0);
+  setValue(s.ctx, s.pr.arp, "unit", 2.0);
+  for (int i = 0; i < 12; ++i) setValue(s.ctx, s.pr.arp, "transStep" + std::to_string(i + 1), (i * 5) % 9 - 4);
+  s.build({"Step Lanes"}, 2.0f);
+  checkImage("arp-panel-lanes-2x", s.render());
 }
 
 // ---- AP.10: the resolved pattern, the bends, the bend view --------------------------------------------------------------
@@ -469,20 +533,52 @@ TEST_CASE("arp panel: a condition of several sources with all-of shows only whil
 
 // ---- real dispatch in the Device view ----------------------------------------------------------------------------------
 
+TEST_CASE("arp panel (AR.4): a lane switched off is its name strip; its switch grows it (one undo step) and the panel follows") {
+  Ui u;
+  u.clickFold("Glide");  // (folded: every lane is in the window)
+  u.clickFold("Step Lanes");
+  const int32_t vel = u.lane(0), trans = u.lane(3);
+  CHECK(u.face().element(static_cast<size_t>(vel)).rect().height() == doctest::Approx(14.0f));
+  CHECK(u.face().element(static_cast<size_t>(trans)).rect().height() == doctest::Approx(14.0f));
+  const float h0 = u.host().face().worldSize().y;
+  const float transY = u.face().element(static_cast<size_t>(trans)).rect().y0;
+  const size_t hist = u.history();
+  u.laneOn(vel);
+  CHECK(valueOf(u.ctx, u.pr.arp, "velLane") == doctest::Approx(1.0));
+  CHECK(u.history() == hist + 1);
+  CHECK(u.face().element(static_cast<size_t>(vel)).rect().height() == doctest::Approx(44.0f));
+  CHECK(u.host().face().worldSize().y == doctest::Approx(h0 + 30.0f));
+  CHECK(u.face().element(static_cast<size_t>(trans)).rect().y0 == doctest::Approx(transY + 30.0f));  // the lanes below move
+  CHECK(u.view().panelOf(u.pr.arp)->logicalHeight() >= h0 + 30.0f);
+  u.laneOn(trans);
+  CHECK(u.face().element(static_cast<size_t>(trans)).rect().height() == doctest::Approx(96.0f));
+  // A press on a lane that is off, right of its name column, is not the lane's (nothing there).
+  const int32_t gate = u.lane(1);
+  const size_t h1 = u.history();
+  u.d.click(u.atLocal(gate, {300.0f, 7.0f}));
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep9") == doctest::Approx(1.0));
+  CHECK(u.history() == h1);
+  u.laneOn(vel);  // off again
+  CHECK(valueOf(u.ctx, u.pr.arp, "velLane") == doctest::Approx(0.0));
+  CHECK(u.face().element(static_cast<size_t>(vel)).rect().height() == doctest::Approx(14.0f));
+}
+
 TEST_CASE("arp panel: a lane bar dragged is one undo step and a param write (no structural change)") {
   Ui u;
   REQUIRE_FALSE(u.foldOpen("Step Lanes"));
+  u.clickFold("Glide");
   u.clickFold("Step Lanes");
   REQUIRE(u.foldOpen("Step Lanes"));
-  const int32_t lane = u.index("steplane", "0");  // Velocity
+  const int32_t lane = u.lane(0);  // Velocity
+  u.laneOn(lane);
   const size_t h0 = u.history();
   // Step 4 (index 3): press at its bottom, drag to its top.
-  const float fx = (3.5f * 18.0f) / u.face().element(static_cast<size_t>(lane)).rect().width();
-  u.d.drag(u.at(lane, fx, 0.95f), u.at(lane, fx, 0.0f), 6);
+  u.d.drag(u.cell(lane, 3, 0.95f), u.cell(lane, 3, 0.0f), 6);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "velStep4") == doctest::Approx(1.0));
   // Then to the bottom: 0.
-  u.d.drag(u.at(lane, fx, 0.2f), u.at(lane, fx, 1.0f), 6);
+  u.d.drag(u.cell(lane, 3, 0.2f), u.cell(lane, 3, 1.0f), 6);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "velStep4") == doctest::Approx(0.0));
   REQUIRE(u.history() == h0 + 2);
@@ -494,47 +590,303 @@ TEST_CASE("arp panel: a lane bar dragged is one undo step and a param write (no 
   CHECK(valueOf(u.ctx, u.pr.arp, "velStep4") == doctest::Approx(1.0));
 }
 
-TEST_CASE("arp panel: a drag across steps paints them in one undo step; double-click resets one") {
+TEST_CASE("arp panel (AR.4): a drag across steps paints them in one undo step; double-click types a value; Alt+click resets; "
+          "the wheel fine-adjusts (a run: one undo step)") {
   Ui u;
+  u.clickFold("Glide");
   u.clickFold("Step Lanes");
-  const int32_t lane = u.index("steplane", "1");  // Gate (0 … 2, default 1)
-  const float w = u.face().element(static_cast<size_t>(lane)).rect().width();
+  const int32_t lane = u.lane(1);  // Gate (0 … 2, default 1)
+  u.laneOn(lane);
   const size_t h0 = u.history();
   // Press on step 1 at three quarters down its height (a quarter of the range), sweep to step 8 at the same height
   // (a fast drag: 2 moves, the steps between painted too).
-  u.d.drag(u.at(lane, 0.5f * 18.0f / w, 0.75f), u.at(lane, 7.5f * 18.0f / w, 0.75f), 2);
+  u.d.drag(u.cell(lane, 0, 0.75f), u.cell(lane, 7, 0.75f), 2);
   u.d.step();
   CHECK(u.history() == h0 + 1);
   for (int i = 1; i <= 8; ++i) CHECK(valueOf(u.ctx, u.pr.arp, "gateStep" + std::to_string(i)) == doctest::Approx(0.5).epsilon(0.1));
   CHECK(valueOf(u.ctx, u.pr.arp, "gateStep9") == doctest::Approx(1.0));
-  // A double-click on step 2: back to its default (one step).
-  u.d.doubleClick(u.at(lane, 1.5f * 18.0f / w, 0.5f));
+  // A double-click on step 2 types its value in percent; Enter sets it.
+  u.d.doubleClick(u.cell(lane, 1, 0.75f));
+  u.d.step();
+  REQUIRE(panel::test::stepLaneTyping(u.face().element(static_cast<size_t>(lane))));
+  CHECK(u.d.type("150"));
+  (void)u.d.press("Enter");
+  u.d.step();
+  CHECK_FALSE(panel::test::stepLaneTyping(u.face().element(static_cast<size_t>(lane))));
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep2") == doctest::Approx(1.5));
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep3") == doctest::Approx(0.5).epsilon(0.1));
+  // Escape leaves the value.
+  u.d.doubleClick(u.cell(lane, 1, 0.25f));
+  u.d.step();
+  CHECK(u.d.type("20"));
+  (void)u.d.press("Escape");
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep2") == doctest::Approx(1.5));
+  // Alt+click: the default.
+  u.d.click(u.cell(lane, 1, 0.9f), mod::kAlt);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "gateStep2") == doctest::Approx(1.0));
-  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep3") == doctest::Approx(0.5).epsilon(0.1));
+  // The wheel over step 2: 1 % a notch, Shift: 10 %; the run is one undo step.
+  const size_t h1 = u.history();
+  CHECK(u.d.wheel(u.cell(lane, 1, 0.5f), 1.0f));
+  CHECK(u.d.wheel(u.cell(lane, 1, 0.5f), 1.0f));
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep2") == doctest::Approx(1.02));
+  CHECK(u.d.wheel(u.cell(lane, 1, 0.5f), -1.0f, 0.0f, mod::kShift));
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep2") == doctest::Approx(0.92));
+  u.d.click(u.atLocal(lane, {40.0f, 30.0f}));  // (a press ends the run; the name column below the strip takes nothing)
+  u.d.step();
+  CHECK(u.history() == h1 + 1);
+  REQUIRE(u.ctx.undo());
+  CHECK(valueOf(u.ctx, u.pr.arp, "gateStep2") == doctest::Approx(1.0));
 }
 
 TEST_CASE("arp panel: the length handle drags a lane's length (one undo step); Skip / Tie cells cycle") {
   Ui u;
   u.clickFold("Glide");  // (AP.10: open by default; folded, the last lane is in the window)
   u.clickFold("Step Lanes");
-  const int32_t lane = u.index("steplane", "4");  // Chance
-  const float w = u.face().element(static_cast<size_t>(lane)).rect().width();
+  const int32_t lane = u.lane(4);  // Chance
+  u.laneOn(lane);
   REQUIRE(valueOf(u.ctx, u.pr.arp, "chanceLen") == doctest::Approx(16.0));
   const size_t h0 = u.history();
-  u.d.drag(u.at(lane, 16.0f * 18.0f / w, 0.5f), u.at(lane, 7.0f * 18.0f / w, 0.5f), 5);
+  // From the grip after step 16 to the boundary after step 7.
+  const Rect c16 = *panel::test::stepLaneCell(u.face().element(static_cast<size_t>(lane)), 15);
+  const Rect c7 = *panel::test::stepLaneCell(u.face().element(static_cast<size_t>(lane)), 6);
+  u.d.drag(u.atLocal(lane, {c16.x1 + 1.0f, 20.0f}), u.atLocal(lane, {c7.x1 + 1.0f, 20.0f}), 5);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "chanceLen") == doctest::Approx(7.0));
   CHECK(u.history() == h0 + 1);
-  // Skip / Tie: a click on a cell cycles Play → Skip → Tie.
-  const int32_t tie = u.index("steplane", "5");
-  const Vec2 c = u.at(tie, 2.5f * 18.0f / w, 0.5f);
+  // Skip / Tie: a click on a cell cycles Play → Skip → Tie; the wheel steps back.
+  const int32_t tie = u.lane(5);
+  u.laneOn(tie);
+  const Vec2 c = u.cell(tie, 2, 0.5f);
   u.d.click(c);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "tieStep3") == doctest::Approx(1.0));
   u.d.click(c);
   u.d.step();
   CHECK(valueOf(u.ctx, u.pr.arp, "tieStep3") == doctest::Approx(2.0));
+  CHECK(u.d.wheel(c, -1.0f));
+  CHECK(valueOf(u.ctx, u.pr.arp, "tieStep3") == doctest::Approx(1.0));
+}
+
+TEST_CASE("arp panel (AR.4): the Transpose lane is a grid — a row per step of the unit, the rows fit the values in whole "
+          "equaves; wheel one step, Shift+wheel an equave; a typed value") {
+  Ui u;
+  u.clickFold("Glide");
+  u.clickFold("Step Lanes");
+  const int32_t lane = u.lane(3);
+  u.laneOn(lane);
+  auto el = [&]() -> panel::Element& { return u.face().element(static_cast<size_t>(lane)); };
+  auto row = [&](int step, int value) {
+    const Rect c = *panel::test::stepLaneCell(el(), step);
+    return u.atLocal(lane, {(c.x0 + c.x1) * 0.5f, panel::test::stepLaneRowY(el(), u.face().target(), value)});
+  };
+  CHECK(panel::test::stepLaneRange(el(), u.face().target()) == 7);  // nothing set: ± 7
+  const size_t h0 = u.history();
+  // A click on a row sets the step to it; a drag paints the row across steps.
+  u.d.click(row(1, 5));
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep2") == doctest::Approx(5.0));
+  u.d.drag(row(3, -3), row(6, -3), 3);
+  u.d.step();
+  for (int i = 4; i <= 7; ++i) CHECK(valueOf(u.ctx, u.pr.arp, "transStep" + std::to_string(i)) == doctest::Approx(-3.0));
+  CHECK(u.history() == h0 + 2);
+  CHECK_FALSE(u.ctx.store().history().entries()[h0].changes.structural());
+  // Dragged past the top edge the rows go on (one row per row height): beyond ± 7, and the grid then shows a whole
+  // equave (the default tuning: 12 degrees).
+  const Vec2 from = row(0, 6);
+  const float rowPx = row(0, 5).y - row(0, 6).y;
+  u.d.drag(from, {from.x, from.y - 4.0f * rowPx}, 4);
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep1") == doctest::Approx(10.0));
+  CHECK(panel::test::stepLaneRange(el(), u.face().target()) == 12);
+  // The wheel: one step; Shift: an equave. One undo step for the run.
+  const size_t h1 = u.history();
+  CHECK(u.d.wheel(row(1, 5), 1.0f));
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep2") == doctest::Approx(6.0));
+  CHECK(u.d.wheel(row(1, 6), 1.0f, 0.0f, mod::kShift));
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep2") == doctest::Approx(18.0));
+  CHECK(u.d.wheel(row(1, 6), -1.0f, 0.0f, mod::kShift));
+  CHECK(u.d.wheel(row(1, 6), -1.0f, 0.0f, mod::kShift));
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep2") == doctest::Approx(-6.0));
+  u.d.click(u.atLocal(lane, {40.0f, 60.0f}));
+  u.d.step();
+  CHECK(u.history() == h1 + 1);
+  CHECK(panel::test::stepLaneRange(el(), u.face().target()) == 12);
+  // A typed value (beyond the rows shown): the grid grows to hold it.
+  u.d.doubleClick(row(9, 0));
+  u.d.step();
+  REQUIRE(panel::test::stepLaneTyping(el()));
+  CHECK(u.d.type("-19"));
+  (void)u.d.press("Enter");
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep10") == doctest::Approx(-19.0));
+  CHECK(panel::test::stepLaneRange(el(), u.face().target()) == 24);
+  // Alt+click: 0.
+  u.d.click(row(9, -19), mod::kAlt);
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "transStep10") == doctest::Approx(0.0));
+  // Ratio has no equave: the rows grow in sevens.
+  setValue(u.ctx, u.pr.arp, "unit", 1.0);
+  u.d.step();
+  CHECK(panel::test::stepLaneRange(el(), u.face().target()) == 14);
+}
+
+TEST_CASE("arp panel (AR.4): the lane menu — Reset, Randomize (from the seed), Shift, Reverse, Copy to: each one undo step") {
+  Ui u;
+  u.clickFold("Glide");
+  u.clickFold("Step Lanes");
+  const int32_t lane = u.lane(0);  // Velocity
+  u.laneOn(lane);
+  setValue(u.ctx, u.pr.arp, "velLen", 4.0);
+  for (int i = 0; i < 4; ++i) setValue(u.ctx, u.pr.arp, "velStep" + std::to_string(i + 1), 0.2 * (i + 1));
+  u.d.step();
+  auto vel = [&](int i) { return valueOf(u.ctx, u.pr.arp, "velStep" + std::to_string(i)); };
+  auto pick = [&](std::string_view label, bool dots = false) {
+    // (the dots at the end of the name strip, or a right-click anywhere on the name column)
+    if (dots) u.d.click(u.atLocal(lane, {74.0f, 7.0f}));
+    else u.d.click(u.atLocal(lane, {30.0f, 30.0f}), mod::kNone, PointerButton::Right);
+    Menu* m = u.lastMenu();
+    REQUIRE(m != nullptr);
+    for (size_t i = 0; i < m->items().size(); ++i)
+      if (m->items()[i].label == label) {
+        m->choose(static_cast<int32_t>(i));
+        u.d.step();
+        return;
+      }
+    FAIL("no menu item " << label);
+  };
+  size_t h = u.history();
+  pick("Shift Right", true);
+  CHECK(vel(1) == doctest::Approx(0.8));
+  CHECK(vel(2) == doctest::Approx(0.2));
+  CHECK(vel(4) == doctest::Approx(0.6));
+  CHECK(vel(5) == doctest::Approx(1.0));  // past the length: untouched
+  CHECK(u.history() == ++h);
+  pick("Shift Left");
+  CHECK(vel(1) == doctest::Approx(0.2));
+  CHECK(vel(4) == doctest::Approx(0.8));
+  CHECK(u.history() == ++h);
+  pick("Reverse");
+  CHECK(vel(1) == doctest::Approx(0.8));
+  CHECK(vel(4) == doctest::Approx(0.2));
+  CHECK(u.history() == ++h);
+  CHECK_FALSE(u.ctx.store().history().entries()[h - 1].changes.structural());
+  // Copy to Gate: the values and the length.
+  {
+    u.d.click(u.atLocal(lane, {30.0f, 30.0f}), mod::kNone, PointerButton::Right);
+    Menu* m = u.lastMenu();
+    REQUIRE(m != nullptr);
+    int32_t copy = -1;
+    for (size_t i = 0; i < m->items().size(); ++i)
+      if (m->items()[i].label == "Copy to") copy = static_cast<int32_t>(i);
+    REQUIRE(copy >= 0);
+    m->setHighlighted(copy);
+    Menu* sub = m->openSubmenu();
+    REQUIRE(sub != nullptr);
+    REQUIRE(sub->items().size() == 3);
+    CHECK(sub->items()[0].label == "Gate");
+    sub->choose(0);
+    u.d.step();
+    CHECK(valueOf(u.ctx, u.pr.arp, "gateStep1") == doctest::Approx(0.8));
+    CHECK(valueOf(u.ctx, u.pr.arp, "gateStep4") == doctest::Approx(0.2));
+    CHECK(valueOf(u.ctx, u.pr.arp, "gateLen") == doctest::Approx(4.0));
+    CHECK(u.history() == ++h);
+    REQUIRE(u.ctx.undo());
+    CHECK(valueOf(u.ctx, u.pr.arp, "gateStep1") == doctest::Approx(1.0));
+    CHECK(valueOf(u.ctx, u.pr.arp, "gateLen") == doctest::Approx(16.0));
+    REQUIRE(u.ctx.redo());
+  }
+  // Randomize: the steps in play, one undo step; again: other values.
+  pick("Randomize");
+  CHECK(u.history() == ++h);
+  const double r1[4] = {vel(1), vel(2), vel(3), vel(4)};
+  CHECK((r1[0] != doctest::Approx(0.8) || r1[3] != doctest::Approx(0.2)));
+  CHECK(vel(5) == doctest::Approx(1.0));
+  pick("Randomize");
+  CHECK(u.history() == ++h);
+  CHECK((vel(1) != doctest::Approx(r1[0]) || vel(2) != doctest::Approx(r1[1])));
+  // Reset: every step its default.
+  pick("Reset");
+  CHECK(u.history() == ++h);
+  for (int i = 1; i <= 4; ++i) CHECK(vel(i) == doctest::Approx(1.0));
+  REQUIRE(u.ctx.undo());
+  CHECK(vel(1) != doctest::Approx(1.0));
+  // A right-click on a step is not the lane's menu (the host's: the step's automation).
+  const size_t menus = [&] {
+    size_t n = 0;
+    for (size_t i = 0; i < u.shell->overlay().childCount(); ++i) n += dynamic_cast<Menu*>(&u.shell->overlay().child(i)) != nullptr;
+    return n;
+  }();
+  CHECK(menus == 0);
+  u.d.click(u.cell(lane, 2, 0.5f), mod::kNone, PointerButton::Right);
+  Menu* host = u.lastMenu();
+  REQUIRE(host != nullptr);
+  bool reset = false;
+  for (const MenuItem& it : host->items()) reset = reset || it.label == "Randomize";
+  CHECK_FALSE(reset);
+}
+
+TEST_CASE("arp panel (AR.4): one Rate control — the note value's menu and wheel (one undo step), the feel chips, n:m for "
+          "the numbers themselves") {
+  Ui u;
+  const int32_t rate = u.index("rate", "rateNum");
+  const int32_t feel = u.index("presets", "tupletN");
+  const int32_t num = u.index("number", "rateNum"), tupN = u.index("number", "tupletN");
+  auto shown = [&](int32_t i) { return u.face().shown(static_cast<size_t>(i)); };
+  CHECK(shown(rate));
+  CHECK(shown(feel));
+  CHECK_FALSE(shown(num));
+  CHECK_FALSE(shown(tupN));
+  // The menu: 1/8 (the numerator back to 1, the tuplet kept).
+  setValue(u.ctx, u.pr.arp, "tupletN", 3.0);
+  setValue(u.ctx, u.pr.arp, "tupletM", 2.0);
+  u.d.step();
+  size_t h = u.history();
+  u.d.click(u.atLocal(rate, {20.0f, 19.0f}));
+  Menu* m = u.lastMenu();
+  REQUIRE(m != nullptr);
+  REQUIRE(m->items().size() == 8);
+  CHECK(m->items()[4].label == "1/16");
+  CHECK(m->items()[4].checked);
+  m->choose(3);
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "rateDen") == doctest::Approx(8.0));
+  CHECK(valueOf(u.ctx, u.pr.arp, "rateNum") == doctest::Approx(1.0));
+  CHECK(valueOf(u.ctx, u.pr.arp, "tupletN") == doctest::Approx(3.0));
+  CHECK(u.history() == ++h);
+  // The wheel: the next note value (up: shorter); a run is one undo step.
+  CHECK(u.d.wheel(u.atLocal(rate, {20.0f, 19.0f}), 1.0f));
+  CHECK(u.d.wheel(u.atLocal(rate, {20.0f, 19.0f}), 1.0f));
+  CHECK(valueOf(u.ctx, u.pr.arp, "rateDen") == doctest::Approx(32.0));
+  u.d.click(u.at(feel, 0.15f, 0.5f));  // Straight (the press ends the wheel run first)
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "tupletN") == doctest::Approx(1.0));
+  CHECK(valueOf(u.ctx, u.pr.arp, "tupletM") == doctest::Approx(1.0));
+  CHECK(u.history() == h + 2);
+  h += 2;
+  // n:m: the four numbers show in place of the feel chips (view state: no undo step).
+  u.d.click(u.atLocal(rate, {70.0f, 19.0f}));
+  u.d.step();
+  CHECK(u.history() == h);
+  CHECK(shown(num));
+  CHECK(shown(tupN));
+  CHECK_FALSE(shown(feel));
+  u.d.click(u.atLocal(rate, {70.0f, 19.0f}));
+  u.d.step();
+  CHECK_FALSE(shown(num));
+  CHECK(shown(feel));
+  // A rate that is none of the menu's shows its numbers anyway.
+  setValue(u.ctx, u.pr.arp, "rateNum", 3.0);
+  u.d.step();
+  CHECK(shown(num));
+  CHECK_FALSE(shown(feel));
+  // Free: the ms box alone.
+  setValue(u.ctx, u.pr.arp, "sync", 0.0);
+  u.d.step();
+  CHECK_FALSE(shown(rate));
+  CHECK_FALSE(shown(num));
+  CHECK(shown(u.index("number", "rateMs")));
 }
 
 TEST_CASE("arp panel: the unit chips show Ratio p / q only in Ratio and Base only in Harmonics") {
@@ -602,7 +954,7 @@ TEST_CASE("arp panel (AP.8b, review L11): a layer's level shows only within Laye
   CHECK_FALSE(shown("knob", "layerLevel1"));
   // L12: the two retriggers are told apart.
   CHECK(findElement(u.face(), "tabs", "retrigger") >= 0);
-  CHECK(u.face().element(static_cast<size_t>(u.index("toggle", "velRetrig"))).desc().text("text", "") == "Vel Retrig");
+  CHECK(u.face().element(static_cast<size_t>(u.index("toggle", "velRetrig"))).desc().text("text", "") == "On retrigger");
 }
 
 TEST_CASE("arp panel: a fold opens and closes (view state, no undo step), the frame follows its height") {

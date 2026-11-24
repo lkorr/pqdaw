@@ -307,4 +307,17 @@ NotePattern notePattern(const Project& p, DeviceId device, std::span<const NoteP
   return out;
 }
 
+const TuningDef* noteDeviceTuning(const Project& p, DeviceId device) noexcept {
+  const DeviceLoc loc = findDevice(p, device);
+  if (loc.track == nullptr) return nullptr;
+  const std::optional<TrackPath> at = findTrack(p, loc.track->id);
+  return at ? effectiveTuningRef(p, *at).def : nullptr;
+}
+
+int32_t tuningEquaveDegrees(const TuningDef* def) {
+  NoteDegreeTable t;
+  if (def == nullptr || !noteDegreeTable(*def, t) || t.cents.empty()) return 12;
+  return static_cast<int32_t>(t.cents.size());
+}
+
 }  // namespace pq::doc

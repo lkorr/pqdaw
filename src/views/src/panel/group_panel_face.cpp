@@ -15,6 +15,7 @@
 
 #include "pq/document/edit_ops.h"
 #include "pq/document/model.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 #include "pq/ui/theme.h"
 #include "pq/views/panel/group_responses.h"
@@ -261,6 +262,10 @@ doc::FoldLayout viewFoldLayout(const doc::Panel& panel, const doc::PanelWindowVi
     for (const doc::DevicePtr& d : *list) {
       if (d->id != b->device) continue;
       if (b->name == doc::kActiveSetting) return d->active ? 1.0 : 0.0;
+      // AR.4: a note device's setting (the arpeggiator's lane switches: a lane that is off is taken out), its default
+      // where it was never set.
+      if (const doc::NoteDeviceType* nt = b->meta.empty() ? doc::noteDeviceTypeOf(*d) : nullptr)
+        if (const doc::NoteParamSpec* ns = nt->param(b->name); ns != nullptr && !ns->runtime) return doc::noteDeviceValue(*d, *ns);
       if (const doc::DeviceValue* x = b->meta.empty() ? d->setting(b->name) : nullptr) return x->value;
       if (const doc::MetaInstance* m = !b->meta.empty() ? d->metaAt(b->meta) : nullptr)
         if (const doc::DeviceValue* x = m->setting(b->name)) return x->value;

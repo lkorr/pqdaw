@@ -168,6 +168,9 @@ using PanelPtr = std::shared_ptr<const Panel>;
 //     `shown` callback: the host evaluates `when`). Elements beside a header (in its row) show with the header.
 //   - an element's number field "section" (a fold's id) puts it in that fold's section wherever it lies (hidden while
 //     the fold is folded or gone): the Sampler's mode row beside its oval belongs to the Expand chevron.
+//   - AR.4: a fold of look "band" draws nothing and takes no press: a layout band alone. With a condition, an element
+//     that SPANS its section shrinks by it while the condition fails (the arpeggiator's step lanes: a lane switched
+//     off is its name strip; the condition's source is the lane's own element, its selection the switch).
 inline constexpr std::string_view kFoldKind = "fold";
 inline constexpr std::string_view kFoldParentField = "parent";
 inline constexpr std::string_view kFoldSectionField = "section";

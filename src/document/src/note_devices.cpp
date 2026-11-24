@@ -222,71 +222,96 @@ Panel arpeggiatorPanel(DeviceId dev) {
   k.p.width = 960.0f;  // AP.10: the pattern view and the bend view take the room
   k.p.fit = true;
   using A = ArpParamId;
-  // ---- the top band: Arp | Pitch | Pattern ----
-  constexpr float kTop = 182.0f;
+  // ---- the top band: Arp | Pitch | Pattern (AR.4) ----
+  constexpr float kTop = 200.0f;
   k.backdrop(4, 4, 362, kTop - 8);
   k.backdrop(370, 4, 202, kTop - 8);
   k.backdrop(576, 4, 380, kTop - 8);
-  // Arp: Style, Hold, Sync, the rate (synced: num / den, tuplet n : m and its shortcuts; free: ms), Seed.
+  // Arp, left column: Style; Gate, Groove; Seed, Offset; Repeats, Hold.
   const uint32_t style = k.ctl("menu", 10, 8, 104, 28, A::Style, "Style").id;
-  k.button(118, 20, 36, 16, A::Hold, "Hold");
-  const uint32_t sync = k.button(158, 20, 36, 16, A::Synced, "Sync").id;
-  size_t at = k.p.elements.size();
-  k.ctl("number", 198, 8, 28, 28, A::RateNum, "Rate");
-  k.caption(228, 22, 8, "/", 9.0);
-  k.bare(234, 8, 32, 28, A::RateDen);
-  k.ctl("number", 274, 8, 26, 28, A::TupletN, "Tuplet");
-  k.caption(302, 22, 6, ":", 9.0);
-  k.bare(308, 8, 26, 28, A::TupletM);
+  k.ctl("knob", 10, 44, 48, 58, A::Gate);
+  k.ctl("knob", 62, 44, 48, 58, A::Groove);
+  k.ctl("number", 10, 112, 48, 26, A::Seed, "Seed");
+  k.ctl("number", 62, 112, 48, 26, A::Offset, "Offset");
+  k.ctl("number", 10, 146, 48, 26, A::Repeats, "Repeats").setField(styleText("zero", "\xE2\x88\x9E"));
+  k.button(62, 156, 48, 16, A::Hold, "Hold");
+  // The rate: Sync, then ONE control — synced: the note value's menu (1/1 … 1/128) and the feel chips (Straight /
+  // Dotted / Triplet: the tuplet); its "n:m" chip shows the four numbers themselves instead (any num / den, any
+  // tuplet; shown anyway while the rate is none of the menu's). Free: ms.
+  const uint32_t sync = k.button(120, 20, 34, 16, A::Synced, "Sync").id;
+  uint32_t rate = 0;
   {
-    PanelElement& pr = k.add("presets", 198, 40, 136, 16, {k.bind(A::TupletN), k.bind(A::TupletM)});
+    PanelElement& r = k.add("rate", 158, 8, 80, 28, {k.bind(A::RateNum), k.bind(A::RateDen), k.bind(A::TupletN), k.bind(A::TupletM)});
+    r.setField(styleText("label", "Rate"));
+    r.when = Visibility{sync, {1.0}};
+    rate = r.id;
+  }
+  // (shown while synced AND the rate control's selection is `custom`)
+  auto rateWhen = [&](size_t from, double custom) {
+    for (size_t i = from; i < k.p.elements.size(); ++i) {
+      Visibility v{sync, {1.0}};
+      v.more.push_back(VisibilityTerm{rate, {custom}});
+      v.all = true;
+      k.p.elements[i].when = std::move(v);
+    }
+  };
+  size_t at = k.p.elements.size();
+  k.caption(244, 8, 60, "Feel");
+  {
+    PanelElement& pr = k.add("presets", 244, 20, 116, 16, {k.bind(A::TupletN), k.bind(A::TupletM)});
     pr.setField(styleText("items", "Straight|Dotted|Triplet"));
     pr.setField(styleText("values", "1 1|2 3|3 2"));
   }
-  k.when(at, sync, {1.0});
+  rateWhen(at, 0.0);
   at = k.p.elements.size();
-  k.ctl("number", 198, 8, 72, 28, A::RateMs, "Rate ms");
+  k.ctl("number", 244, 8, 24, 28, A::RateNum, "Note");
+  k.caption(270, 22, 6, "/", 9.0);
+  k.bare(276, 8, 30, 28, A::RateDen);
+  k.ctl("number", 312, 8, 21, 28, A::TupletN, "Tuplet");
+  k.caption(334.5f, 22, 5, ":", 9.0);
+  k.bare(339, 8, 21, 28, A::TupletM);
+  rateWhen(at, 1.0);
+  at = k.p.elements.size();
+  k.ctl("number", 158, 8, 72, 28, A::RateMs, "Rate ms");
   k.when(at, sync, {0.0});
-  // Gate, Groove; Retrigger and its rate; Seed, Offset, Repeats.
-  k.ctl("knob", 10, 40, 48, 58, A::Gate);
-  k.ctl("knob", 60, 40, 48, 58, A::Groove);
-  const uint32_t retrig = k.chips(114, 42, 114, A::Retrigger, "Retrigger", "Off|Note|Beat").id;
+  // Retrigger and (Beat) its rate.
+  const uint32_t retrig = k.chips(120, 46, 114, A::Retrigger, "Retrigger", "Off|Note|Beat").id;
   at = k.p.elements.size();
-  k.bare(114, 64, 28, 28, A::RetriggerNum);
-  k.caption(144, 78, 8, "/", 9.0);
-  k.bare(150, 64, 32, 28, A::RetriggerDen);
+  k.caption(244, 46, 60, "Every");
+  k.bare(244, 46, 26, 28, A::RetriggerNum);
+  k.caption(272, 60, 6, "/", 9.0);
+  k.bare(278, 46, 30, 28, A::RetriggerDen);
   k.when(at, retrig, {2.0});
-  k.ctl("number", 10, 106, 50, 26, A::Seed, "Seed");
-  k.ctl("number", 64, 106, 50, 26, A::Offset, "Offset");
-  k.ctl("number", 118, 106, 50, 26, A::Repeats, "Repeats").setField(styleText("zero", "∞"));
-  // Velocity: source, decay, target, fixed (with source Fixed), retrigger.
-  const uint32_t vsrc = k.chips(240, 62, 120, A::VelocitySource, "Velocity", "Played|Fixed|Lane").id;
-  k.ctl("knob", 240, 96, 40, 56, A::VelocityDecayMs, "Decay");
-  k.ctl("knob", 280, 96, 40, 56, A::VelocityTarget, "Target");
+  // Velocity: its source; the decay (to Target over Decay, restarting with the pattern's retrigger or not); Fixed.
+  const uint32_t vsrc = k.chips(120, 84, 114, A::VelocitySource, "Velocity", "Played|Fixed|Lane").id;
+  k.ctl("knob", 120, 118, 48, 58, A::VelocityDecayMs, "Decay");
+  k.ctl("knob", 172, 118, 48, 58, A::VelocityTarget, "Target");
   at = k.p.elements.size();
-  k.ctl("knob", 320, 96, 40, 56, A::FixedVelocity, "Fixed");
+  k.ctl("knob", 224, 118, 48, 58, A::FixedVelocity, "Fixed");
   k.when(at, vsrc, {1.0});
-  k.button(240, 156, 70, 16, A::VelocityRetrigger, "Vel Retrig");  // (AP.8b, L12: not the pattern's Retrigger)
-  // Pitch: Unit, Distance, Steps, Shift / Rotate; Ratio p / q (Ratio); Base (Harmonics); the walk (Harmonic Walk).
+  // (AP.8b / AR.4, review L12: not the pattern's Retrigger — a switch, no button glow)
+  k.caption(244, 84, 80, "Decay restarts");
+  k.ctl("toggle", 244, 97, 100, 14, A::VelocityRetrigger).setField(styleText("text", "On retrigger"));
+  // Pitch: Unit; Distance, Steps, Shift / Rotate; Ratio p / q (Ratio) and Base (Harmonics); the walk (Harmonic Walk).
+  // The row at y 136 … 194 is the Layers' (AR.3: a count and up to three level knobs).
   const uint32_t unit = k.chips(376, 8, 190, A::Unit, "Pitch Unit", "Degrees|Ratio|Harmonics").id;
-  k.ctl("number", 376, 42, 50, 28, A::Distance, "Distance");
-  k.ctl("number", 430, 42, 40, 28, A::Steps, "Steps");
-  k.chips(476, 42, 90, A::Transpose, "Mode", "Shift|Rotate");
+  k.ctl("number", 376, 40, 50, 28, A::Distance, "Distance");
+  k.ctl("number", 430, 40, 40, 28, A::Steps, "Steps");
+  k.chips(476, 40, 90, A::Transpose, "Mode", "Shift|Rotate");
   at = k.p.elements.size();
-  k.ctl("number", 376, 78, 40, 28, A::RatioP, "Ratio");
-  k.caption(419, 92, 8, "/", 9.0);
-  k.bare(426, 78, 40, 28, A::RatioQ);
+  k.ctl("number", 376, 72, 40, 28, A::RatioP, "Ratio");
+  k.caption(419, 86, 8, "/", 9.0);
+  k.bare(426, 72, 40, 28, A::RatioQ);
   k.when(at, unit, {1.0});
   {  // Base: the Harmonics unit OR the Harmonic Walk style (a walk of an ungrouped note starts at it)
-    PanelElement& base = k.ctl("number", 476, 78, 50, 28, A::HarmonicBase, "Base");
+    PanelElement& base = k.ctl("number", 476, 72, 50, 28, A::HarmonicBase, "Base");
     base.when = Visibility{unit, {2.0}};
     base.when->more.push_back(VisibilityTerm{style, {static_cast<double>(engine::ArpStyle::HarmonicWalk)}});
   }
   at = k.p.elements.size();
-  k.caption(376, 116, 120, "Harmonic Walk");
-  k.ctl("number", 376, 130, 44, 28, A::WalkRange, "Range");
-  k.button(424, 142, 46, 16, A::WalkUnder, "Under");
-  k.ctl("menu", 474, 130, 92, 28, A::WalkOrder, "Order");
+  k.ctl("number", 376, 104, 44, 28, A::WalkRange);
+  k.button(424, 116, 46, 16, A::WalkUnder, "Under");
+  k.ctl("menu", 474, 104, 92, 28, A::WalkOrder);
   k.when(at, style, {static_cast<double>(engine::ArpStyle::HarmonicWalk)});
   // AP.10: the resolved pattern — the whole cycle over the held notes (generated ones dotted, their bends drawn), the
   // playing step lit.
@@ -294,7 +319,7 @@ Panel arpeggiatorPanel(DeviceId dev) {
   {  // (AR.2: with the glide params — a drag on a note's head / tail edits them, as in the bend view)
     std::vector<Binding> b = {dataBinding(dev)};
     for (const A id : kGlideParams) b.push_back(k.bind(id));
-    k.add("arppattern", 582, 22, 368, 148, std::move(b));
+    k.add("arppattern", 582, 22, 368, kTop - 34, std::move(b));
   }
   // ---- Glide (fold, open; AR.2: the bend view IS the editor — drag the note's head / tail / curves; per side two
   // knobs that follow the drags and its shape chips) ----
@@ -350,32 +375,61 @@ Panel arpeggiatorPanel(DeviceId dev) {
   k.when(prop, psrc, {1.0});
   k.when(at, pulse, {1.0});
   y += 66.0f;
-  // ---- Step Lanes (fold) ----
-  k.fold(y, "Step Lanes");
+  // ---- Step Lanes (fold; AR.4) ----
+  // One `steplane` per lane, the panel's width: its name column (the switch, the menu, the readout) and 32 steps. A
+  // lane that is ON is tall (Transpose: a grid, a row per step of the unit); one that is OFF is its 14 px name strip —
+  // the element spans a conditional `band` fold (shown while the lane's switch is on) that the fit takes out, and a
+  // plain band between two lanes keeps the next lane's strip out of that section.
+  const uint32_t lanesFold = k.fold(y, "Step Lanes").id;
   y += 20.0f;
   struct Lane {
     engine::ArpLane lane;
     A on, len;
     const char* name;
+    float height;
+    const char* look;
+    const char* copy;  // the lanes its values make sense in (the same 0 … 1 kind)
   };
+  constexpr float kLaneStrip = 14.0f;  // (the views' StepLane::kStrip)
   constexpr Lane kLanes[] = {
-      {engine::ArpLane::Velocity, A::VelocityLane, A::VelocityLength, "Velocity"},
-      {engine::ArpLane::Gate, A::GateLane, A::GateLength, "Gate"},
-      {engine::ArpLane::Glide, A::GlideLane, A::GlideLength, "Glide"},
-      {engine::ArpLane::Transpose, A::TransposeLane, A::TransposeLength, "Transpose"},
-      {engine::ArpLane::Chance, A::ChanceLane, A::ChanceLength, "Chance"},
-      {engine::ArpLane::SkipTie, A::SkipTieLane, A::SkipTieLength, "Skip / Tie"},
+      {engine::ArpLane::Velocity, A::VelocityLane, A::VelocityLength, "Velocity", 44, "bars",
+       "Gate=gateStep,gateLen|Glide=glideStep,glideLen|Chance=chanceStep,chanceLen"},
+      {engine::ArpLane::Gate, A::GateLane, A::GateLength, "Gate", 44, "bars",
+       "Velocity=velStep,velLen|Glide=glideStep,glideLen|Chance=chanceStep,chanceLen"},
+      {engine::ArpLane::Glide, A::GlideLane, A::GlideLength, "Glide", 44, "bars",
+       "Velocity=velStep,velLen|Gate=gateStep,gateLen|Chance=chanceStep,chanceLen"},
+      {engine::ArpLane::Transpose, A::TransposeLane, A::TransposeLength, "Transpose", 96, "grid", ""},
+      {engine::ArpLane::Chance, A::ChanceLane, A::ChanceLength, "Chance", 44, "bars",
+       "Velocity=velStep,velLen|Gate=gateStep,gateLen|Glide=glideStep,glideLen"},
+      {engine::ArpLane::SkipTie, A::SkipTieLane, A::SkipTieLength, "Skip / Tie", 26, "cells", ""},
   };
+  auto band = [&](float top, std::optional<Visibility> when) {
+    PanelElement& f = k.add(kFoldKind.data(), 10, top, k.p.width - 20, 1);
+    f.setField(styleText("look", "band"));
+    f.setField(styleNumber(std::string(kFoldParentField), static_cast<double>(lanesFold)));
+    f.when = std::move(when);
+  };
+  bool first = true;
   for (const Lane& l : kLanes) {
-    k.ctl("toggle", 10, y + 4, 74, 14, l.on).setField(styleText("text", l.name));
-    std::vector<Binding> b = {k.bind(l.len), k.bind(l.on)};
+    if (!first) {
+      band(y, std::nullopt);
+      y += 3.0f;
+    }
+    first = false;
+    std::vector<Binding> b = {k.bind(l.on), k.bind(l.len), k.bind(A::Seed), k.bind(A::Unit)};
     for (int32_t i = 0; i < engine::kArpMaxLaneSteps; ++i) b.push_back(k.bind(engine::arpLaneStepId(l.lane, i)));
-    PanelElement& e = k.add("steplane", 88, y, 32 * 18.0f + 14.0f, 22, std::move(b));
+    PanelElement& e = k.add("steplane", 10, y, k.p.width - 20, l.height, std::move(b));
     e.setField(styleNumber("lane", static_cast<double>(l.lane)));
-    if (l.lane == engine::ArpLane::SkipTie) e.setField(styleText("look", "cells"));
-    if (l.lane == engine::ArpLane::Transpose) e.setField(styleText("look", "bipolar"));
-    y += 24.0f;
+    e.setField(styleText("look", l.look));
+    e.setField(styleText("name", l.name));
+    if (l.copy[0] != 0) e.setField(styleText("copy", l.copy));
+    if (l.lane == engine::ArpLane::Gate) e.setField(styleNumber("mark", 0.5));  // × 1
+    const uint32_t id = e.id;
+    band(y + kLaneStrip, Visibility{id, {1.0}});
+    y += l.height;
   }
+  band(y, std::nullopt);
+  y += 1.0f;
   k.p.height = y + 4.0f;
   return std::move(k.p);
 }
