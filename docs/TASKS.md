@@ -958,6 +958,17 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **WF.1 One waveform renderer, sample-exact at every zoom; Sampler editor zoom** 👁 (plan WF.1) *(merged b739c5ec; Q?-WF.1-a; REVIEW; 28 views goldens re-recorded)*
 - [x] **WF.2 The other waveform-like displays (wavetable, scope, LFO / envelope shapes) + WF.1 leftovers** 👁 (plan WF.2) *(merged 3a158919; Q?-WF.2-a; REVIEW; 138 views goldens re-recorded; direct drawWaveform 2.0× its pre-WF.1 cost → OP pass)*
 
+### OP: CPU optimisation pass (docs/plans/OP.md; user 2026-11-23)
+- [x] **OP.0 Measured audit** *(merged 573267fb; Q?-OP.0-a, -b; pq_bench_scenarios)*
+- [ ] **OP.1 One present per compositor pass** (plan F1; lane 2)
+- [ ] **OP.2 Analyser / face frame cost; animation rate** (plan F2; after OP.1 and the answer to Q?-OP.0-a)
+- [ ] **OP.3 SVF key cache, tap flag on a hot line** (plan F3; lane 1)
+- [ ] **OP.4 Engine housekeeping: voice-unit param pass, silent meters, idle note sources, master sum, disk poll** (plan F4, F7, F8; lane 2)
+- [ ] **OP.5 Voice stages: independent recursions in one loop** (plan F5; lane 1, after OP.3)
+- [ ] **OP.6 Constant-input fast paths, vector glide shapes** (plan F6, F9; lane 2)
+- [ ] **OP.7 SVF sections interleaved** (plan F3; lane 1, after OP.5)
+- [ ] **OP.8 Re-run the audit tables; decide F10** (after all)
+
 ### AR: arpeggiator rework (docs/plans/AR.md; user 2026-11-23)
 - [x] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1) *(merged 58730c09; Q?-AR.1-a; new golden project-node-menu-midi)*
 - [x] **AR.2 Glide: drag the note (bend view editor, fewer params), Glide lane = slide per step** 👁 (plan AR.2) *(merged 2906ad09; Q?-AR.2-a; 5 goldens re-recorded)*
