@@ -955,7 +955,8 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SM.17 Sampler panel pass: radial choices, warp in the header, labels, live check** 👁 (plan SM.17) *(merged 8011e46f; Q?-SM.17-a; REVIEW; 16 sampler goldens re-recorded, 3 new)*
 
 ### WF: clean waveforms, zoom to samples (docs/plans/WF.md; user 2026-11-23)
-- [ ] **WF.1 One waveform renderer, sample-exact at every zoom; Sampler editor zoom** 👁 (plan WF.1; w2)
+- [x] **WF.1 One waveform renderer, sample-exact at every zoom; Sampler editor zoom** 👁 (plan WF.1) *(merged b739c5ec; Q?-WF.1-a; REVIEW; 28 views goldens re-recorded)*
+- [ ] **WF.2 The other waveform-like displays (wavetable, scope, LFO / envelope shapes) + WF.1 leftovers** 👁 (plan WF.2; w2)
 
 ### AR: arpeggiator rework (docs/plans/AR.md; user 2026-11-23)
 - [x] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1) *(merged 58730c09; Q?-AR.1-a; new golden project-node-menu-midi)*

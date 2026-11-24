@@ -36,3 +36,21 @@ browser/browser_parts.cpp, meta/face_targets.cpp, common/waveform_data.h.
   for handle drags while zoomed; goldens: waveform goldens move by design (look at each); live check in the worker's
   own instance (script harness from SM.17: `PQ_BUGREPORT_SCRIPT`), zooming from the whole file to single samples in
   the Sampler editor, the audio clip view and the arrangement. REVIEW entry.
+
+### WF.2 The other waveform-like displays + WF.1 leftovers 👁 (ui + views) · w2
+WF.1 did the sample waveforms and did not audit the rest. Here:
+- **Audit every other place a signal is drawn as a curve**: wavetable frames (2D and 3D faces), scope, band / loudness
+  visualisers' traces, LFO and envelope shapes, the Math / module output scopes, automation-free previews in the
+  browser, filter / EQ response curves. For each: how it is drawn, whether it shows steps, aliased edges, too few
+  points for its width, or a line that breaks at high slope. Fix them through one shared antialiased-line path
+  (the face painter's / `pq/ui/lines.h`; no new per-site line code); a curve gets at least one point per device px
+  of its width (computed only when its input changes).
+- **WF.1 leftovers**: the moiré in the Sampler's closed well for tones near 2 px per cycle; the 1 px line "roping"
+  at shallow slopes (check the line's weight / coverage); the arrangement ruler repeating labels zoomed past 1/64;
+  edge scroll while dragging a handle in the audio clip view; the Sampler's "Ping-Pong" cell text overflowing its
+  cell (sampler-panel-classic golden).
+- **Numbers**: release-preset A/B of `drawWaveform` / `rasterWaveform` (before WF.1 = 47 µs for 2560 px stereo from
+  the overview) → bench/RESULTS.md; if the antialiased columns cost more than ≈ 1.5× get it back (fewer vertices per
+  column, instancing, or raster tiles) without losing the look.
+- Verify: `pq_tests_ui` + `pq_tests_views` default tier; goldens of the displays touched move by design (look at
+  each); live check in the worker's own instance. REVIEW entry with the per-display audit.
