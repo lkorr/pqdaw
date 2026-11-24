@@ -954,6 +954,9 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [ ] **SM.16 One Complex stream + sampler warp CPU** (plan SM.16; w1, after SM.15)
 - [x] **SM.17 Sampler panel pass: radial choices, warp in the header, labels, live check** 👁 (plan SM.17) *(merged 8011e46f; Q?-SM.17-a; REVIEW; 16 sampler goldens re-recorded, 3 new)*
 
+### WF: clean waveforms, zoom to samples (docs/plans/WF.md; user 2026-11-23)
+- [ ] **WF.1 One waveform renderer, sample-exact at every zoom; Sampler editor zoom** 👁 (plan WF.1; w2)
+
 ### AR: arpeggiator rework (docs/plans/AR.md; user 2026-11-23)
 - [x] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1) *(merged 58730c09; Q?-AR.1-a; new golden project-node-menu-midi)*
 - [x] **AR.2 Glide: drag the note (bend view editor, fewer params), Glide lane = slide per step** 👁 (plan AR.2) *(merged 2906ad09; Q?-AR.2-a; 5 goldens re-recorded)*
