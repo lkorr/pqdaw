@@ -30,7 +30,7 @@
 //   Note-on: the voice plays Tones (WarpVoice) while its stretcher primes (reset, seek with the history before its
 // first frame, then the vocoder from an output latency + a block before the read, at most kComplexPrimeRate ×
 // max(1, r) vocoder frames per output sample: never a burst; ≈ 70 ms at r = 1), and crosses to Complex over 2 ms
-// (WarpVoice::fadeFrames) at the first sample the vocoder has what the read needs. Phase offsets: each stretcher's
+// (warp.h warpFadeFrames) at the first sample the vocoder has what the read needs. Phase offsets: each stretcher's
 // lead (a golden-ratio fraction of the analysis interval by its index) keeps its vocoder that far ahead of the read
 // and delays its priming by lead / k samples, so voices started together do their spectral work in different blocks.
 // Complex Pro: the formants are moved back by r^(−formants %) (the clip's rule, audio_sequence.cpp), base 1 / order.
@@ -95,13 +95,6 @@ private:
   uint32_t nextToken_ = 0;
 };
 
-// What a Complex run adds to WarpVoiceRun (the atom's inputs).
-struct ComplexRun {
-  bool pro = false;
-  double formants = 100.0;    // Pro: formant preservation, % (0: they move with the pitch)
-  double formantOrder = 128;  // Pro: the spectral envelope's order (8 … 256)
-};
-
 struct ComplexVoice {
   enum Phase : uint32_t { kWait = 0, kPending, kPriming, kFading, kOn };
   int64_t vLo = 0, vHi = 0;       // vocoder frames held in the stretcher's output buffer: [vLo, vHi)
@@ -120,9 +113,10 @@ struct ComplexVoice {
   // At the lane's trigger (after WarpVoice::trigger): frees the stretchers lane `lane` ran, claims one. RT-safe.
   void trigger(SamplerStretch* bank, uint32_t lane) noexcept;
   // Renders n (≤ 256) frames of voice v (which it advances), as WarpVoice::render: Tones while the stretcher primes,
-  // the 2 ms cross, then the vocoder read at Φ. bank null (or of fewer channels than the sample): Tones. RT-safe.
+  // the 2 ms cross, then the vocoder read at Φ. bank null (or of fewer channels than the sample): Tones. run.mode
+  // ComplexPro: formant preservation (run.set.formants %, envelope order run.set.formantEnvelope). RT-safe.
   void render(SamplerStretch* bank, uint32_t lane, WarpVoice& v, const WarpSource& src, const WarpVoiceRun& run,
-              const ComplexRun& cr, const float* rate, uint32_t n, float* outL, float* outR, float* pos,
+              const WarpRunLaw& law, const float* rate, uint32_t n, float* outL, float* outR, float* pos,
               float* playing, const WarpScratch& sc) noexcept;
 };
 static_assert(std::is_trivially_copyable_v<ComplexVoice>);

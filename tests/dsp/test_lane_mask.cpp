@@ -76,7 +76,7 @@ struct Group {
     for (uint32_t o = 0; o < 4; ++o) out.emplace_back(static_cast<size_t>(kBlock) * 8);
     std::vector<float> v(nIn, 0.0f);
     if (atom == Atom::SamplerWarp) {
-      const float mode = k == K::Complex ? 3.0f : 1.0f;  // Complex / Tones
+      const auto mode = static_cast<float>(k == K::Complex ? AudioWarp::Complex : AudioWarp::Tones);  // (warp.h)
       const float vals[] = {1.0f, 0.0f, 0.05f, 1.0f, 0.3f, 0.5f, 120.0f, 120.0f, mode, 0.04f, 0.0f, 1.0f, 100.0f,
                             static_cast<float>(kSr), 100.0f, 128.0f};
       v.assign(vals, vals + 16);
@@ -84,9 +84,10 @@ struct Group {
       const float vals[] = {392.0f, 0.0f, 261.63f, 1.0f, 0.05f, 0.95f, 0.2f, 1.0f, 0.04f, 120.0f, 0.01f, 1.0f, 0.5f,
                             0.0f, 0.0f, 1.0f, 16.0f, 0.0f, static_cast<float>(kSr)};
       v.assign(vals, vals + 19);
-    } else {  // sample_read: rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units
-      const float vals[] = {1.0f, 0.0f, 0.05f, 0.3f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
-      v.assign(vals, vals + 11);
+    } else {  // sample_read: rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units,
+              // tempo (0: no Re-Pitch), sampleBpm
+      const float vals[] = {1.0f, 0.0f, 0.05f, 0.3f, 0.5f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 120.0f};
+      v.assign(vals, vals + 13);
     }
     for (uint32_t i = 0; i < nIn; ++i)
       for (uint32_t f = 0; f < kBlock * 8; ++f) in[i][f] = i == 1 ? 0.0f : v[i];

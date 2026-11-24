@@ -83,32 +83,25 @@ double framesPerContentTick(double rate, double sourceBpm) noexcept {
 }
 
 namespace {
-// The segment of a marker list (size ≥ 2) a coordinate falls in: the index i of its left marker, i + 1 < size; before
-// the first marker the first segment, after the last the last one. `key` reads a marker's coordinate.
-template <class Key>
-size_t warpSegment(std::span<const WarpMarker> m, double x, Key key) noexcept {
-  const auto it = std::upper_bound(m.begin(), m.end(), x, [&](double v, const WarpMarker& w) { return v < key(w); });
-  const auto i = static_cast<size_t>(it - m.begin());
-  return std::clamp<size_t>(i == 0 ? 0 : i - 1, 0, m.size() - 2);
+// SM.15: the clip's markers through the one warp law (pq/dsp/warp.h): segment k of them, evaluated in place (ticks
+// become doubles at this edge; nothing is allocated).
+dsp::WarpSeg markerSeg(std::span<const WarpMarker> m, double fpt, uint32_t k) noexcept {
+  return dsp::warpMarkerSeg(static_cast<uint32_t>(m.size()), k, fpt, [&](uint32_t i) {
+    return std::pair<double, double>(static_cast<double>(m[i].content), m[i].sourceFrame);
+  });
 }
-double contentOf(const WarpMarker& w) noexcept { return static_cast<double>(w.content); }
-double frameOf(const WarpMarker& w) noexcept { return w.sourceFrame; }
 }  // namespace
 
 double warpFrameAt(std::span<const WarpMarker> m, double fpt, double content) noexcept {  // RT-safe
-  if (m.empty()) return content * fpt;
-  if (m.size() == 1) return m[0].sourceFrame + (content - contentOf(m[0])) * fpt;
-  const size_t i = warpSegment(m, content, contentOf);
-  const double slope = (m[i + 1].sourceFrame - m[i].sourceFrame) / (contentOf(m[i + 1]) - contentOf(m[i]));
-  return m[i].sourceFrame + (content - contentOf(m[i])) * slope;
+  const uint32_t k = dsp::warpPieceOf(dsp::warpMarkerSegs(static_cast<uint32_t>(m.size())), content,
+                                      [&](uint32_t i) { return static_cast<double>(m[i].content); });
+  return markerSeg(m, fpt, k).frame(content);
 }
 
 double warpContentAt(std::span<const WarpMarker> m, double fpt, double frame) noexcept {  // RT-safe
-  if (m.empty()) return frame / fpt;
-  if (m.size() == 1) return contentOf(m[0]) + (frame - m[0].sourceFrame) / fpt;
-  const size_t i = warpSegment(m, frame, frameOf);
-  const double slope = (contentOf(m[i + 1]) - contentOf(m[i])) / (m[i + 1].sourceFrame - m[i].sourceFrame);
-  return contentOf(m[i]) + (frame - m[i].sourceFrame) * slope;
+  const uint32_t k = dsp::warpPieceOf(dsp::warpMarkerSegs(static_cast<uint32_t>(m.size())), frame,
+                                      [&](uint32_t i) { return m[i].sourceFrame; });
+  return markerSeg(m, fpt, k).content(frame);
 }
 
 double warpFrameAt(const AudioClip& c, double rate, double content) noexcept {

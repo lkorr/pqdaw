@@ -165,15 +165,11 @@ std::vector<float> sliceStarts(const SliceSpec& spec, int64_t frames, double rat
       break;
     }
     case SliceBy::Beat: {  // every `beats` content beats, through the markers (none: sampleBpm)
-      dsp::WarpSource src;
-      src.fileRate = rate;
-      src.markers = markers.size() >= 2 ? markers.data() : nullptr;
-      src.markerCount = static_cast<uint32_t>(markers.size() / 2);
-      const double fpb = 60.0 * rate / std::max(1.0, sampleBpm);
+      const dsp::WarpBeatLaw law(markers, 60.0 * rate / std::max(1.0, sampleBpm));
       const double step = std::max(spec.beats, 1.0 / 64.0);
-      const double b0 = dsp::warpBeatOfFrame(src, 0.0, fpb), b1 = dsp::warpBeatOfFrame(src, static_cast<double>(frames), fpb);
+      const double b0 = law.law.contentAt(0.0), b1 = law.law.contentAt(static_cast<double>(frames));
       for (double q = std::floor(b0 / step + 1.0) * step; q < b1 && out.size() < kMaxSlices; q += step)
-        add(dsp::warpFrameOfBeat(src, q, fpb));
+        add(law.law.frameAt(q));
       break;
     }
     case SliceBy::Region: {
@@ -234,21 +230,17 @@ EditResult sliceToNotes(const Project& p, IdSource& ids, DeviceId sampler, Ticks
   if (slices.empty()) return invalid("the Sampler has no slices");
   const meta::Type& t = meta::samplerType();
   const DeviceValue* warpSetting = s.device->setting("warp");
-  const auto warp = static_cast<meta::SamplerWarp>(
+  const auto warp = static_cast<pq::dsp::AudioWarp>(
       std::lround(warpSetting != nullptr ? warpSetting->value : t.settings[meta::kSmpWarp].def));
   // Where slice frame f starts, in ticks after `at`: content beats (warp on: through the markers / sampleBpm), else the
   // seconds since the first slice through the tempo map from `at`.
-  dsp::WarpSource src;
   const std::vector<float> markers = meta::samplerMarkers(data.get());
-  src.fileRate = ref->rate;
-  src.markers = markers.size() >= 2 ? markers.data() : nullptr;
-  src.markerCount = static_cast<uint32_t>(markers.size() / 2);
-  const double fpb = 60.0 * ref->rate / std::max(1.0, metaParamValue(*s.device, "", t, meta::kSmpSampleBpm));
+  const dsp::WarpBeatLaw law(markers, 60.0 * ref->rate / std::max(1.0, metaParamValue(*s.device, "", t, meta::kSmpSampleBpm)));
   const TempoMap& tm = p.timeline->tempoMap;
   const double atSec = tm.ticksToSeconds(at);
-  const double f0 = slices.front(), q0 = dsp::warpBeatOfFrame(src, f0, fpb);
+  const double f0 = slices.front(), q0 = law.law.contentAt(f0);
   const auto tickOf = [&](double f) -> Ticks {
-    if (warp != meta::SamplerWarp::Off) return static_cast<Ticks>(std::llround((dsp::warpBeatOfFrame(src, f, fpb) - q0) * kPpq));
+    if (warp != pq::dsp::AudioWarp::Off) return static_cast<Ticks>(std::llround((law.law.contentAt(f) - q0) * kPpq));
     return static_cast<Ticks>(std::llround(tm.secondsToTicks(atSec + (f - f0) / ref->rate))) - at;
   };
   const std::optional<TrackPath> path = findTrack(p, s.track->id);

@@ -47,9 +47,9 @@ struct Slot {
   SampleSlot slot;
   std::shared_ptr<const SampleData> data;
   explicit Slot(const std::vector<float>& l, const std::vector<float>& r = {}, uint32_t levels = 0,
-                double fileRate = 48000.0, std::vector<float> slices = {}) {
+                double fileRate = 48000.0, std::vector<float> slices = {}, std::vector<float> markers = {}) {
     data = SampleData::build(l, r, levels).value();
-    REQUIRE(slot.publish(SampleData::source(data, fileRate, std::move(slices)), 48000.0, reclaimer).ok());
+    REQUIRE(slot.publish(SampleData::source(data, fileRate, std::move(slices), std::move(markers)), 48000.0, reclaimer).ok());
   }
 };
 
@@ -148,7 +148,8 @@ struct ReadRef {
 std::vector<Gen> readGens() {
   return {pickFrom({1.0f, 0.5f, -0.75f, 1.25f, 2.0f, 0.3125f, -1.5f}), boolRuns(0.02), uniform(0, 150),
           pickFrom({20.0f, 50.5f}), pickFrom({0.0f, 80.0f, 120.7f}), pickFrom({0.0f}), pickFrom({0.0f}),
-          pickFrom({1.0e30f}), pickFrom({0.0f}), pickFrom({0.0f}), pickFrom({0.0f})};
+          pickFrom({1.0e30f}), pickFrom({0.0f}), pickFrom({0.0f}), pickFrom({0.0f}),
+          pickFrom({0.0f}), pickFrom({120.0f})};  // SM.15: tempo 0 (no Re-Pitch), sampleBpm
 }
 
 }  // namespace
@@ -250,10 +251,10 @@ TEST_CASE("sample atoms: sample_read interpolates across the loop seam from the 
       init.lanes = lanes;
       pq::dsp::initState(atom, &st, init);
       const float* ins[] = {rate.data(), reset.data(), start.data(), ls.data(), le.data(), zero.data(),
-                            zero.data(), end.data(), zero.data(), zero.data(), zero.data()};
+                            zero.data(), end.data(), zero.data(), zero.data(), zero.data(), zero.data(), zero.data()};
       float* outs[] = {out.data(), playing.data(), right.data(), pos.data()};
-      const uint32_t spl = 0x7FDu;  // everything at param rate but reset (per sample)
-      pq::dsp::KernelArgs args{ins, outs, &st, &s.slot, T, 11, 4, spl};
+      const uint32_t spl = 0x1FFDu;  // everything at param rate but reset (per sample)
+      pq::dsp::KernelArgs args{ins, outs, &st, &s.slot, T, 13, 4, spl};
       pq::dsp::findKernel(atom, lanes, spl)(args);
       const auto w = [](int j) { return static_cast<double>(10 + ((j - 10) % 4 + 4) % 4); };
       for (uint32_t t = 0; t < T; ++t) {
@@ -282,7 +283,8 @@ struct Reader {
   std::vector<float> rate = std::vector<float>(8, 1.0f), start = std::vector<float>(8, 0.0f),
                      ls = std::vector<float>(8, 0.0f), le = std::vector<float>(8, 0.0f), fade = std::vector<float>(8, 0.0f),
                      pp = std::vector<float>(8, 0.0f), end = std::vector<float>(8, 1e30f), fi = std::vector<float>(8, 0.0f),
-                     fo = std::vector<float>(8, 0.0f), units = std::vector<float>(8, 0.0f);
+                     fo = std::vector<float>(8, 0.0f), units = std::vector<float>(8, 0.0f),
+                     tempo = std::vector<float>(8, 0.0f), sbpm = std::vector<float>(8, 120.0f);
   std::vector<float> reset, out, playing, right, pos;
   explicit Reader(uint32_t l = 8, Atom a = Atom::SampleReadCubic) : atom(a), lanes(l) {
     pq::dsp::StateInit init;
@@ -297,10 +299,10 @@ struct Reader {
     out.assign(reset.size(), 0.0f);
     playing = right = pos = out;
     const float* ins[] = {rate.data(), reset.data(), start.data(), ls.data(), le.data(), fade.data(),
-                          pp.data(), end.data(), fi.data(), fo.data(), units.data()};
+                          pp.data(), end.data(), fi.data(), fo.data(), units.data(), tempo.data(), sbpm.data()};
     float* outs[] = {out.data(), playing.data(), right.data(), pos.data()};
-    const uint32_t spl = 0x7FDu;
-    pq::dsp::KernelArgs args{ins, outs, &st, &slot, frames, 11, 4, spl};
+    const uint32_t spl = 0x1FFDu;
+    pq::dsp::KernelArgs args{ins, outs, &st, &slot, frames, 13, 4, spl};
     pq::dsp::findKernel(atom, lanes, spl)(args);
   }
   float at(uint32_t t, uint32_t l) const { return out[static_cast<size_t>(t) * lanes + l]; }
@@ -332,6 +334,70 @@ TEST_CASE("sample atoms: units 1 — positions in [0, 1] of the lane's sample, f
   CHECK(f.at(0, 0) == 0.0f);
   CHECK(f.at(5, 0) == doctest::Approx(255.0f * 0.5f));
   CHECK(f.at(12, 0) == 262.0f);
+}
+
+// SM.15: Re-Pitch through the markers. tempo > 0 multiplies the rate by the warp law's local speed at the playhead:
+// constant per marker segment, changing on the sample the playhead enters the next one; no markers: tempo / sampleBpm.
+TEST_CASE("SM.15 sample_read: tempo follows the warp markers (the law's local slope), sampleBpm without them") {
+  std::vector<float> ramp(20000);
+  for (size_t k = 0; k < ramp.size(); ++k) ramp[k] = static_cast<float>(k);
+  // 2880 BPM at 48 kHz is 0.001 beats per sample: a segment of F frames per beat reads F / 1000 frames per sample.
+  {
+    Slot none(ramp);
+    for (const uint32_t lanes : {1u, 8u}) {
+      Reader r(lanes, Atom::SampleReadLinear);
+      r.tempo.assign(8, 240.0f);
+      r.sbpm.assign(8, 120.0f);  // twice the sample's tempo: two frames per sample
+      r.run(none.slot, 100, 0xFF);
+      for (uint32_t t = 0; t < 100; ++t) REQUIRE(r.at(t, lanes - 1) == static_cast<float>(2 * t));
+    }
+  }
+  // Markers: beat 0 at frame 0, beat 1 at 1000 (1000 frames per beat), beat 2 at 4000 (3000), beat 3 at 4500 (500).
+  Slot m(ramp, {}, 0, 48000.0, {}, {0.0f, 0.0f, 1000.0f, 1.0f, 4000.0f, 2.0f, 4500.0f, 3.0f});
+  auto expected = [](uint32_t t) -> double {  // the playhead after t samples from frame 0
+    double x = 0.0;
+    for (uint32_t i = 0; i < t; ++i) x += x < 1000.0 ? 1.0 : x < 4000.0 ? 3.0 : 0.5;
+    return x;
+  };
+  for (const uint32_t lanes : {1u, 8u})
+    for (const uint32_t block : {4000u, 64u, 1u, 333u}) {  // the crossings fall inside calls and on their edges
+      CAPTURE(lanes);
+      CAPTURE(block);
+      Reader r(lanes, Atom::SampleReadLinear);
+      r.tempo.assign(8, 2880.0f);
+      r.sbpm.assign(8, 77.0f);  // (unused with markers)
+      r.tempo[3] = 0.0f;        // lane 3: no Re-Pitch (its rate alone)
+      r.rate[3] = 0.25f;
+      uint32_t t = 0;
+      bool ok = true;
+      while (t < 4000) {
+        const uint32_t n = std::min(block, 4000 - t);
+        r.run(m.slot, n, t == 0 ? 0xFFu : 0u);
+        for (uint32_t i = 0; i < n && ok; ++i) {
+          ok = r.at(i, 0) == static_cast<float>(expected(t + i));
+          if (lanes == 8) ok = ok && r.at(i, 7) == static_cast<float>(expected(t + i)) && r.at(i, 3) == 0.25f * static_cast<float>(t + i);
+          if (!ok) MESSAGE("first mismatch at sample ", t + i, ": ", r.at(i, 0), " vs ", expected(t + i));
+        }
+        t += n;
+      }
+      CHECK(ok);
+    }
+  // A loop back over a marker (the speed follows the playhead back), and a retrigger into the first segment.
+  Reader r(1, Atom::SampleReadLinear);
+  r.tempo.assign(8, 2880.0f);
+  r.start.assign(8, 990.0f);
+  r.ls.assign(8, 990.0f);
+  r.le.assign(8, 1030.0f);
+  r.run(m.slot, 60, 1);
+  // 990 … 999 at 1 frame per sample, 1000, 1003 … 1027 at 3, the wrap (1030 → 990), then 1 again.
+  CHECK(r.at(9, 0) == 999.0f);
+  CHECK(r.at(10, 0) == 1000.0f);
+  CHECK(r.at(11, 0) == 1003.0f);
+  CHECK(r.at(19, 0) == 1027.0f);
+  CHECK(r.at(20, 0) == 990.0f);
+  CHECK(r.at(21, 0) == 991.0f);
+  r.run(m.slot, 5, 1);
+  CHECK(r.at(1, 0) == 991.0f);
 }
 
 TEST_CASE("sample atoms: a read faster than rate 2 reads a decimated copy (the level per call from |rate|)") {
@@ -385,10 +451,10 @@ TEST_CASE("sample atoms: a swap never changes a sounding note; a reset takes the
     r.out.assign(64 * 8, 0.0f);
     r.playing = r.right = r.pos = r.out;
     const float* ins[] = {r.rate.data(), r.reset.data(), r.start.data(), r.ls.data(), r.le.data(), r.fade.data(),
-                          r.pp.data(), r.end.data(), r.fi.data(), r.fo.data(), r.units.data()};
+                          r.pp.data(), r.end.data(), r.fi.data(), r.fo.data(), r.units.data(), r.tempo.data(), r.sbpm.data()};
     float* outs[] = {r.out.data(), r.playing.data(), r.right.data(), r.pos.data()};
-    pq::dsp::KernelArgs args{ins, outs, &r.st, &slot, 64, 11, 4, 0x7FDu};
-    pq::dsp::findKernel(r.atom, 8, 0x7FDu)(args);
+    pq::dsp::KernelArgs args{ins, outs, &r.st, &slot, 64, 13, 4, 0x1FFDu};
+    pq::dsp::findKernel(r.atom, 8, 0x1FFDu)(args);
     CHECK(r.at(9, 1) == 0.5f);
     CHECK(r.at(10, 1) == -0.25f);
     CHECK(r.at(10, 2) == 0.5f);

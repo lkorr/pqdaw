@@ -75,11 +75,11 @@ constexpr KernelInfo kInfo[kAtomCount] = {
     {"wavetable", 1, 1, false, false, 0, 0, kB0, 0, sizeof(WavetableState), Resource::Wavetable, false},
     {"noise", 0, 1, false, false, 0, 0, 0, 0, sizeof(NoiseState), Resource::None, false},
     {"shaper", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Shaper, true},
-    // SM.2: rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units → out, playing, right,
-    // pos (kernels_sample.cpp); everything after reset is param rate.
-    {"sample_read_linear", 11, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FCu, sizeof(SampleReadState),
+    // SM.2: rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units (SM.15: tempo,
+    // sampleBpm) → out, playing, right, pos (kernels_sample.cpp); everything after reset is param rate.
+    {"sample_read_linear", 13, 4, false, false, kB1, kB1, kB0 | kB1, 0x1FFCu, sizeof(SampleReadState),
      Resource::Sample, false, true},
-    {"sample_read_cubic", 11, 4, false, false, kB1, kB1, kB0 | kB1, 0x7FCu, sizeof(SampleReadState),
+    {"sample_read_cubic", 13, 4, false, false, kB1, kB1, kB0 | kB1, 0x1FFCu, sizeof(SampleReadState),
      Resource::Sample, false, true},
     {"sample_pos_linear", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},
     {"sample_pos_cubic", 1, 1, false, false, 0, 0, kB0, 0, 0, Resource::Sample, true},

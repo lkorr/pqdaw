@@ -31,7 +31,7 @@
 //            over 2 ms (equal gain: the next slice fades in from its entry while the previous one plays on and fades
 //            out); a slice the next one cuts before (or within the crossfade of) its natural end (W(B_{j+1}) − W(B_j)
 //            frames) reads on naturally through its fade-out (seamless at the source's tempo); one that reaches it
-//            first stops with a fade (SliceLoop Off), loops its second half forward (declicked) or back and forth;
+//            first stops with a fade (dsp::WarpSliceLoop Off), loops its second half forward (declicked) or back and forth;
 //            `envelope` < 100 holds a slice for that % of its gap and fades it to 0 at the next slice. Reverse plays
 //            each slice backwards from its end.
 //     Tones / Texture  granular overlap-add: grains of N = grainSeconds · sr output frames (even), one every H = N / 2
@@ -91,6 +91,7 @@
 #include "pq/core/clip_time.h"
 #include "pq/core/result.h"
 #include "pq/core/time.h"
+#include "pq/dsp/warp.h"
 #include "pq/media/sample_pool.h"
 #include "pq/media/stream.h"
 
@@ -108,36 +109,17 @@ struct ClipSample {
   }
 };
 
-// T6.3: Beats / Tones / Texture are the time-stretch modes; T6.5 adds Complex / Complex Pro (the phase vocoder).
-enum class ClipWarp : uint8_t { Off, RePitch, Beats, Tones, Texture, Complex, ComplexPro };
-inline constexpr bool clipComplex(ClipWarp w) noexcept { return w == ClipWarp::Complex || w == ClipWarp::ComplexPro; }
-inline constexpr bool clipStretches(ClipWarp w) noexcept {
-  return w == ClipWarp::Beats || w == ClipWarp::Tones || w == ClipWarp::Texture || clipComplex(w);
-}
+// The warp modes, the slice loop and the stretch settings are dsp::AudioWarp / WarpSliceLoop / WarpSettings
+// (pq/dsp/warp.h: one of each for the document, this image and the Sampler).
 
-// T6.3: one piece of a warped clip's law content tick → source frame: from content tick `content0` on (the first
-// segment also before it), frame = frame0 + (content − content0) · framesPerTick (> 0).
+// T6.3: one piece of a warped clip's law content tick → source frame as the caller describes it: from content tick
+// `content0` on (the first segment also before it), frame = frame0 + (content − content0) · framesPerTick (> 0).
+// The image keeps them as the law's segments (dsp::WarpSeg, Clip::law).
 struct WarpSegment {
   Ticks content0 = 0;
   double frame0 = 0.0;
   double framesPerTick = 0.0;
   friend constexpr bool operator==(const WarpSegment&, const WarpSegment&) noexcept = default;
-};
-
-// T6.3: what a Beats slice does past its natural end (doc::BeatsLoop).
-enum class SliceLoop : uint8_t { Off, Forward, BackForward };
-
-// T6.3: the time-stretch modes' settings (doc::WarpParams resolved).
-struct WarpSettings {
-  double pitchRatio = 1.0;       // the transpose × detune (a pitch shift; the duration follows the tempo)
-  Ticks granulation = kPpq / 4;  // Beats: the slice grid in content ticks (0: the transients)
-  SliceLoop sliceLoop = SliceLoop::Forward;
-  float envelope = 100.0f;       // Beats: % of each slice's gap at full gain before it fades to the next slice
-  double grainSeconds = 0.03;    // Tones / Texture
-  float flux = 0.0f;             // Texture: grain position jitter, % of the hop
-  uint32_t seed = 0;             // Texture: the jitter's seed; Complex: the stretcher's (the app uses the clip id)
-  float formants = 100.0f;       // T6.5 Complex Pro: formant preservation, % [0, 100]
-  float formantEnvelope = 128.0f;  // T6.5 Complex Pro: the spectral envelope's order [8, 256] (formant base sr / order)
 };
 
 // One clip as the document lowered it (doc::AudioClipDesc, plain data).
@@ -146,7 +128,7 @@ struct AudioClipDesc {
   uint32_t sample = 0;          // index into the build's samples (out of range: silent)
   Ticks start = 0;
   Ticks length = 1;
-  ClipWarp warp = ClipWarp::Off;
+  dsp::AudioWarp warp = dsp::AudioWarp::Off;
   bool reverse = false;
   bool playable = true;         // false: silent (inactive clip, missing sample)
   // Off.
@@ -157,7 +139,7 @@ struct AudioClipDesc {
   ContentLoop loop;
   double framesPerTick = 0.0;      // source frames per content tick (the implied segment when `segments` is empty)
   std::vector<WarpSegment> segments;  // T6.3: the warp markers' law (by content0; empty: one implied segment)
-  WarpSettings stretch;            // T6.3: Beats / Tones / Texture
+  dsp::WarpSettings stretch;       // T6.3: Beats / Tones / Texture (pq/dsp/warp.h)
   std::span<const double> transients;  // T6.3: Beats with granulation 0: the sample's onsets (source frames, ascending;
                                        // the caller keeps them alive until build returns; empty: the 1/16 grid)
   // Envelope (ticks; doc::lowerAudioTrack has clamped them).
@@ -190,7 +172,7 @@ public:
   struct Clip {
     uint32_t id = 0;
     uint32_t sample = kNoSample;     // index into samples(); kNoSample: silent (never started)
-    ClipWarp warp = ClipWarp::Off;
+    dsp::AudioWarp warp = dsp::AudioWarp::Off;
     bool reverse = false;
     bool looped = false;             // RePitch with an active loop
     SampleTime bodyStart = 0, bodyEnd = 0;
@@ -212,6 +194,9 @@ public:
     ContentLoop loop;
     double framesPerTick = 0.0;      // the first segment's (informational)
     uint32_t segFirst = 0, segCount = 0;  // segments() (≥ 1 for a warped clip)
+    // SM.15: the warp law W of a warped clip (pq/dsp/warp.h WarpLaw over segments(), with the content loop): content
+    // tick → source frame (frameAt), its inverse (contentAt), fold / folds / unfoldedFrameAt. Built with the image.
+    dsp::WarpLaw law;
     double maxRate = 1.0;            // the largest |rate| the clip can read at (its stretch tables are prepared)
     double peakRate = 1.0;           // the same without the tables' margin (T5.x-perf-audio: which mips it needs)
     // T6.3, the time-stretch modes.
@@ -224,7 +209,7 @@ public:
     double jitter = 0.0;             // Texture: grain position jitter in source frames at most (flux % · H · r)
     uint32_t seed = 0;
     uint32_t sliceFirst = 0, sliceCount = 0;  // Beats: sliceContent() / sliceFrame()
-    SliceLoop sliceLoop = SliceLoop::Off;
+    dsp::WarpSliceLoop sliceLoop = dsp::WarpSliceLoop::Off;
     float envelope = 100.0f;
     // T6.5 Complex / Complex Pro (the stretcher's settings, pq/dsp/stretch_pool.h StretchParams; the grain fields
     // above are Tones', the fallback when no stretcher is free).
@@ -252,17 +237,13 @@ public:
   uint32_t declickFrames() const noexcept { return declick_; }
   size_t totalClips() const noexcept { return clips_.size(); }
   // T6.3 (RT-safe).
-  std::span<const WarpSegment> segments(const Clip& c) const noexcept { return {segments_.data() + c.segFirst, c.segCount}; }
+  std::span<const dsp::WarpSeg> segments(const Clip& c) const noexcept { return {segments_.data() + c.segFirst, c.segCount}; }
   const float* window(const Clip& c) const noexcept { return windows_.data() + c.winFirst; }
   std::span<const double> sliceContent(const Clip& c) const noexcept {
     return {sliceContent_.data() + c.sliceFirst, c.sliceCount};
   }
   std::span<const double> sliceFrame(const Clip& c) const noexcept { return {sliceFrame_.data() + c.sliceFirst, c.sliceCount}; }
   uint32_t sliceFadeFrames() const noexcept { return sliceFade_; }  // Beats' slice crossfade (2 ms)
-  // The warp law W of a warped clip: the source frame of (folded) content tick q. RT-safe.
-  double frameAtContent(const Clip& c, double q) const noexcept;
-  // Its inverse: the content tick of source frame f. RT-safe.
-  double contentAtFrame(const Clip& c, double f) const noexcept;
   // A warped clip's forward-time content position at song sample s, unfolded: contentStart + o (reverse:
   // contentStart + length − o), o = samplesToTicks(s) − start. RT-safe.
   double contentAt(const Clip& c, SampleTime s) const noexcept;
@@ -278,8 +259,6 @@ public:
   // Warped: the clip offset o (fractional ticks from its start) at song sample s, on this image's tempo map. RT-safe.
   double repitchOffset(const Clip& c, SampleTime s) const noexcept;
 
-  static constexpr uint32_t kMaxAlignLen = 2048;  // Tones: source frames compared per grain at most
-  static constexpr uint32_t kMaxAlignLags = 960;  // Tones: ± source frames searched at most
   static constexpr size_t kMaxSlices = size_t{1} << 20;  // Beats: slice boundaries per clip at most
 
 private:
@@ -288,7 +267,7 @@ private:
   std::vector<Clip> clips_;
   std::vector<uint32_t> slotFirst_;   // numSlots + 1
   std::vector<ClipSample> samples_;
-  std::vector<WarpSegment> segments_;
+  std::vector<dsp::WarpSeg> segments_;
   std::vector<float> windows_;
   std::vector<double> sliceContent_, sliceFrame_;
   std::vector<std::pair<uint32_t, uint32_t>> windowAt_;  // grain size → windows_ offset (build only)

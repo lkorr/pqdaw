@@ -49,6 +49,7 @@
 #include "pq/core/epoch_reclaimer.h"
 #include "pq/core/result.h"
 #include "pq/dsp/resample.h"
+#include "pq/dsp/warp.h"
 
 namespace pq::dsp {
 
@@ -95,6 +96,8 @@ public:
     uint32_t sliceCount = 0;
     const float* markers = nullptr;  // SM.4: markerCount (frame, beat) pairs, both strictly ascending
     uint32_t markerCount = 0;
+    const WarpSeg* law = nullptr;    // SM.15: the markers as the warp law's segments over beats (pq/dsp/warp.h
+    uint32_t lawCount = 0;           // warpBeatSegments; none with fewer than two markers)
     const float* harmonics = nullptr;  // SM.6: harmonicCount (n, d) pairs, whole numbers ≥ 1 (granular)
     uint32_t harmonicCount = 0;
     uint64_t generation = 0;         // 1 for the initial entry, +1 per publish
@@ -103,6 +106,7 @@ public:
     // publish()/sweep() only (writeMutex_):
     std::shared_ptr<const void> owner;
     std::vector<float> sliceStore, markerStore, harmonicStore;
+    std::vector<WarpSeg> lawStore;
     std::chrono::steady_clock::time_point superseded{}, lastRead{};
   };
 

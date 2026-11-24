@@ -85,7 +85,7 @@ struct Source {
   }
 };
 
-std::unique_ptr<e::AudioSequenceImage> image(e::ClipWarp warp, double ratio, bool markers, const Source& src,
+std::unique_ptr<e::AudioSequenceImage> image(pq::dsp::AudioWarp warp, double ratio, bool markers, const Source& src,
                                             uint32_t clips) {
   auto tempo = pq::TempoMap::create(std::vector<pq::TempoPoint>{{0, 97.0, pq::TempoCurve::Step}});
   std::vector<e::AudioTrackDesc> tracks(clips);
@@ -97,7 +97,7 @@ std::unique_ptr<e::AudioSequenceImage> image(e::ClipWarp warp, double ratio, boo
     d.length = pq::kPpq * 90;  // ≈ 56 s at 97 BPM
     d.framesPerTick = kSr * 60.0 / (120.0 * static_cast<double>(pq::kPpq));
     d.stretch.pitchRatio = ratio;
-    d.stretch.flux = warp == e::ClipWarp::Texture ? 40.0f : 0.0f;
+    d.stretch.flux = warp == pq::dsp::AudioWarp::Texture ? 40.0f : 0.0f;
     d.stretch.seed = 1 + k;
     if (markers)
       for (int q = 0; q < 16; ++q)
@@ -113,7 +113,7 @@ std::unique_ptr<e::AudioSequenceImage> image(e::ClipWarp warp, double ratio, boo
 // The worst block after each locate into the middle of `clips` Complex clips (64 blocks: the start and what follows).
 void startBench(pq::bench::Context& c, uint32_t clips) {
   static Source src;
-  const auto img = image(e::ClipWarp::Complex, 1.0, false, src, clips);
+  const auto img = image(pq::dsp::AudioWarp::Complex, 1.0, false, src, clips);
   e::ClipPlayerConfig pc;
   pc.slots = clips;
   pc.maxBlockFrames = kBlock;
@@ -152,7 +152,7 @@ void startBench(pq::bench::Context& c, uint32_t clips) {
   c.record(pq::bench::summarize(std::move(worst)), "us/block", clips == 1 ? "1 voice" : "4 voices");
 }
 
-void voiceBench(pq::bench::Context& c, e::ClipWarp warp, double ratio, bool markers, uint32_t channels = 2) {
+void voiceBench(pq::bench::Context& c, pq::dsp::AudioWarp warp, double ratio, bool markers, uint32_t channels = 2) {
   static Source stereo(2), mono(1);
   const Source& src = channels == 1 ? mono : stereo;
   const auto img = image(warp, ratio, markers, src, 1);
@@ -207,13 +207,15 @@ struct SamplerSource {
   }
 };
 
-void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide, uint32_t lanes, uint32_t groups = 1,
+void samplerWarpBench(pq::bench::Context& c, pq::dsp::AudioWarp warp, float rate, bool glide, uint32_t lanes, uint32_t groups = 1,
                       uint32_t measuredMask = 0xFFu) {
   static SamplerSource src;
   constexpr uint32_t kN = 64, kIn = 16;
   std::vector<pq::AlignedBuffer<float>> in;
   for (uint32_t i = 0; i < kIn; ++i) in.emplace_back(static_cast<size_t>(kN) * 8);
-  const float vals[kIn] = {rate, 0.0f, 0.05f, 1.0f, 0.1f, 0.9f, 97.0f, 120.0f, mode, 0.03f, mode == 2.0f ? 40.0f : 0.0f,
+  const auto mode = static_cast<float>(warp);  // the atom's mode input is the enum's value (pq/dsp/warp.h)
+  const float vals[kIn] = {rate, 0.0f, 0.05f, 1.0f, 0.1f, 0.9f, 97.0f, 120.0f, mode, 0.03f,
+                           warp == pq::dsp::AudioWarp::Texture ? 40.0f : 0.0f,
                            1.0f, 100.0f, static_cast<float>(kSr), 100.0f, 128.0f};
   for (uint32_t i = 0; i < kIn; ++i)
     for (uint32_t k = 0; k < kN * 8; ++k) in[i][k] = vals[i];
@@ -223,7 +225,7 @@ void samplerWarpBench(pq::bench::Context& c, float mode, float rate, bool glide,
   const float* ip[kIn];
   for (uint32_t i = 0; i < kIn; ++i) ip[i] = in[i].data();
   float* op[4] = {out[0].data(), out[1].data(), out[2].data(), out[3].data()};
-  const bool complex = mode >= 2.5f;
+  const bool complex = pq::dsp::warpComplex(warp);
   if (complex) src.slot.setStretch(pq::dsp::SamplerStretch::build(groups * 8, 2, kSr), src.reclaimer);
   std::vector<pq::AlignedBuffer<float>> states;
   const pq::dsp::KernelFn fn = pq::dsp::findKernel(pq::dsp::Atom::SamplerWarp, lanes, mask);
@@ -323,30 +325,30 @@ void addWarpBenches(pq::bench::Runner& runner) {
   runner.add("granular/silence 16v", [](pq::bench::Context& c) { granularBench(c, 1.0f, 16, false, true); });
   for (const uint32_t lanes : {1u, 8u}) {
     const std::string l = lanes == 1 ? " L1" : " L8";
-    runner.add("sampler_warp/beats" + l, [lanes](pq::bench::Context& c) { samplerWarpBench(c, 0.0f, 1.0f, false, lanes); });
-    runner.add("sampler_warp/tones" + l, [lanes](pq::bench::Context& c) { samplerWarpBench(c, 1.0f, 1.0f, false, lanes); });
+    runner.add("sampler_warp/beats" + l, [lanes](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Beats, 1.0f, false, lanes); });
+    runner.add("sampler_warp/tones" + l, [lanes](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Tones, 1.0f, false, lanes); });
   }
   runner.add("sampler_warp/tones +3 st L8",
-             [](pq::bench::Context& c) { samplerWarpBench(c, 1.0f, static_cast<float>(std::exp2(3.0 / 12.0)), false, 8); });
-  runner.add("sampler_warp/tones glide L8", [](pq::bench::Context& c) { samplerWarpBench(c, 1.0f, 1.0f, true, 8); });
-  runner.add("sampler_warp/texture L8", [](pq::bench::Context& c) { samplerWarpBench(c, 2.0f, 1.0f, false, 8); });
+             [](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Tones, static_cast<float>(std::exp2(3.0 / 12.0)), false, 8); });
+  runner.add("sampler_warp/tones glide L8", [](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Tones, 1.0f, true, 8); });
+  runner.add("sampler_warp/texture L8", [](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Texture, 1.0f, false, 8); });
   const auto fifth31 = static_cast<float>(std::exp2(18.0 / 31.0));
-  runner.add("sampler_warp/complex 16v", [](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, 1.0f, false, 8, 2); });
+  runner.add("sampler_warp/complex 16v", [](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Complex, 1.0f, false, 8, 2); });
   runner.add("sampler_warp/complex +18/31 16v",
-             [fifth31](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, fifth31, false, 8, 2); });
+             [fifth31](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Complex, fifth31, false, 8, 2); });
   runner.add("sampler_warp/complexPro 16v",
-             [fifth31](pq::bench::Context& c) { samplerWarpBench(c, 4.0f, fifth31, false, 8, 2); });
+             [fifth31](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::ComplexPro, fifth31, false, 8, 2); });
   runner.add("sampler_warp/complex 16v released 14",
-             [](pq::bench::Context& c) { samplerWarpBench(c, 3.0f, 1.0f, false, 8, 2, 0x01u); });
-  runner.add("warp/beats", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Beats, 1.0, false); });
-  runner.add("warp/beats +3 st", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Beats, std::exp2(3.0 / 12.0), false); });
-  runner.add("warp/tones", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Tones, 1.0, false); });
-  runner.add("warp/texture", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Texture, 1.0, false); });
-  runner.add("warp/repitch markers", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::RePitch, 1.0, true); });
-  runner.add("warp/complex", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Complex, 1.0, false); });
-  runner.add("warp/complex +3 st", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Complex, std::exp2(3.0 / 12.0), false); });
-  runner.add("warp/complexPro", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::ComplexPro, std::exp2(3.0 / 12.0), false); });
-  runner.add("warp/complex mono", [](pq::bench::Context& c) { voiceBench(c, e::ClipWarp::Complex, 1.0, false, 1); });
+             [](pq::bench::Context& c) { samplerWarpBench(c, pq::dsp::AudioWarp::Complex, 1.0f, false, 8, 2, 0x01u); });
+  runner.add("warp/beats", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Beats, 1.0, false); });
+  runner.add("warp/beats +3 st", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Beats, std::exp2(3.0 / 12.0), false); });
+  runner.add("warp/tones", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Tones, 1.0, false); });
+  runner.add("warp/texture", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Texture, 1.0, false); });
+  runner.add("warp/repitch markers", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::RePitch, 1.0, true); });
+  runner.add("warp/complex", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Complex, 1.0, false); });
+  runner.add("warp/complex +3 st", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Complex, std::exp2(3.0 / 12.0), false); });
+  runner.add("warp/complexPro", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::ComplexPro, std::exp2(3.0 / 12.0), false); });
+  runner.add("warp/complex mono", [](pq::bench::Context& c) { voiceBench(c, pq::dsp::AudioWarp::Complex, 1.0, false, 1); });
   runner.add("warp/complex start", [](pq::bench::Context& c) {
     startBench(c, 1);
     startBench(c, 4);

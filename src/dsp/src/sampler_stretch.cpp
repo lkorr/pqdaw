@@ -6,7 +6,9 @@
 #include <cmath>
 #include <cstring>
 
+#include "pq/dsp/fixed.h"
 #include "pq/dsp/warp.h"
+#include "simd.h"
 
 namespace pq::dsp {
 
@@ -15,12 +17,8 @@ namespace {
 std::atomic<uint32_t> gBankTag{0};
 constexpr auto kC = static_cast<int64_t>(kComplexChunk);
 constexpr auto kVoc = static_cast<int64_t>(kComplexFrames);
-constexpr double k2m32 = 1.0 / 4294967296.0;
-constexpr double kMaxRate = 64.0;   // as WarpVoice (warp_voice.cpp)
 constexpr double kMinRate = 1e-3;   // the law's time estimate divides by the rate
 constexpr uint32_t kSeed = 0x5A3D17u;  // every claim reseeds the library's generator alike: renders repeat
-
-int64_t floorDiv(int64_t a, int64_t b) noexcept { return a >= 0 ? a / b : -((-a + b - 1) / b); }  // RT-safe
 
 // The stretcher's lead: a golden-ratio fraction of the analysis interval by its index. RT-safe.
 uint32_t leadOf(uint32_t s, const StretchPool::Latency& lat) noexcept {
@@ -62,13 +60,10 @@ void release(SamplerStretch* bank, ComplexVoice& cv) noexcept {  // RT-safe
   cv.phase = ComplexVoice::kWait;
 }
 
-// One Catmull-Rom (sample_read's cubic) read of x[i − 1 … i + 2] at fraction f. RT-safe.
+// One read of x[i − 1 … i + 2] at fraction f through sample_read's cubic (simd.h cubic4). RT-safe.
 float cubicAt(const float* x, float f) noexcept {
-  const float xm1 = x[-1], x0 = x[0], x1 = x[1], x2 = x[2];
-  const float c1 = 0.5f * (x1 - xm1);
-  const float c2 = xm1 - 2.5f * x0 + 2.0f * x1 - 0.5f * x2;
-  const float c3 = 0.5f * (x2 - xm1) + 1.5f * (x0 - x1);
-  return ((c3 * f + c2) * f + c1) * f + x0;
+  using simd::S1;
+  return _mm_cvtss_f32(simd::cubic4<S1>(_mm_set_ss(x[-1]), _mm_set_ss(x[0]), _mm_set_ss(x[1]), _mm_set_ss(x[2]), _mm_set_ss(f)));
 }
 
 // The voice's chunk work inside one render call.
@@ -78,19 +73,20 @@ struct Run {
   WarpVoice& v;
   const WarpSource& src;
   const WarpVoiceRun& run;
-  const ComplexRun& cr;
+  const WarpRunLaw& L;
   const StretchPool::Latency& lat;
-  WarpUnfold U;
   uint32_t ch = 1;  // the bank's channels
 
-  double unfolded(double t) const noexcept { return v.unfoldedAt(src, run, t); }
+  double unfolded(double t) const noexcept { return v.unfoldedAt(L, t); }
+  // The loop in whole frames (an unfolded frame x ≥ loopEnd plays loopStart + (x − loopEnd) mod span).
+  bool looping() const noexcept { return L.law.looping && L.law.loopEndF > L.law.loopStartF; }
 
   // The stream frames [k0, k1) into the bank's input (frame k0 at index 0): unfolded frame u0 + k folded into the file
   // through the loop; zeros before the start, after the end (no loop) and outside the file.
   void gather(int64_t k0, int64_t k1) noexcept {
     const SampleLevelView& lv = src.level[0];
     const int64_t len = lv.length;
-    const int64_t span = U.loopEnd - U.loopStart;
+    const int64_t span = L.law.loopEndF - L.law.loopStartF;
     for (int64_t k = k0; k < k1;) {
       const auto at = static_cast<size_t>(k - k0);
       int64_t r = k1 - k;
@@ -103,11 +99,11 @@ struct Run {
       r = std::min(r, cv.zeroAbove - k);
       const int64_t x = cv.u0 + k;
       int64_t f = x;
-      if (U.looping && x >= U.loopEnd) {
-        f = U.loopStart + (x - U.loopEnd) % span;
-        r = std::min(r, span - (f - U.loopStart));
-      } else if (U.looping) {
-        r = std::min(r, U.loopEnd - x);
+      if (looping() && x >= L.law.loopEndF) {
+        f = L.law.loopStartF + (x - L.law.loopEndF) % span;
+        r = std::min(r, span - (f - L.law.loopStartF));
+      } else if (looping()) {
+        r = std::min(r, L.law.loopEndF - x);
       }
       const int64_t a = std::clamp<int64_t>(f, 0, len), b = std::clamp<int64_t>(f + r, 0, len);
       for (uint32_t c = 0; c < ch; ++c) {
@@ -125,12 +121,12 @@ struct Run {
   }
 
   void formants(double r) noexcept {
-    if (!cr.pro) return;
-    const double keep = std::clamp(cr.formants, 0.0, 100.0) / 100.0;
+    if (run.mode != AudioWarp::ComplexPro) return;
+    const double keep = std::clamp(static_cast<double>(run.set.formants), 0.0, 100.0) / 100.0;
     if (keep <= 0.0) return;  // (as claimed: no formant processing)
     const double ratio = std::max(r / std::max(src.rateScale, 1e-9), kMinRate);  // the pitch ratio (file-natural)
     bank.pool().setParams(cv.stretcher,
-                          StretchParams{1.0, std::pow(ratio, -keep), false, 1.0 / std::clamp(cr.formantOrder, 8.0, 256.0)});
+                          StretchParams{1.0, std::pow(ratio, -keep), false, 1.0 / std::clamp(static_cast<double>(run.set.formantEnvelope), 8.0, 256.0)});
   }
 
   // Primes the stretcher for a read at sample t (read position Y, rate r).
@@ -142,8 +138,8 @@ struct Run {
     cv.ys = floorDiv((phi >> 32) - lat.output - lat.block - 4, kC) * kC;
     const auto y0 = static_cast<double>(cv.ys + lat.output);
     cv.u0 = std::llround(unfolded(tOf(y0)));
-    cv.zeroBelow = std::llround(U.startF) - cv.u0;
-    cv.zeroAbove = U.looping ? INT64_MAX : std::llround(U.endF) - cv.u0;
+    cv.zeroBelow = std::llround(L.startF) - cv.u0;
+    cv.zeroAbove = looping() ? INT64_MAX : std::llround(L.endF) - cv.u0;
     P.reset(cv.stretcher, kSeed);
     formants(r);
     gather(lat.input - lat.seek, lat.input);
@@ -215,7 +211,7 @@ void ComplexVoice::trigger(SamplerStretch* b, uint32_t lane) noexcept {  // RT-s
 }
 
 void ComplexVoice::render(SamplerStretch* b, uint32_t lane, WarpVoice& v, const WarpSource& src, const WarpVoiceRun& run,
-                          const ComplexRun& cr, const float* rate, uint32_t n, float* outL, float* outR, float* pos,
+                          const WarpRunLaw& law, const float* rate, uint32_t n, float* outL, float* outR, float* pos,
                           float* playing, const WarpScratch& sc) noexcept {  // RT-safe
   const uint32_t srcCh = std::min<uint32_t>(src.channels, 2);
   const bool usable = b != nullptr && b->channels() >= srcCh && src.length() > 0;
@@ -237,27 +233,26 @@ void ComplexVoice::render(SamplerStretch* b, uint32_t lane, WarpVoice& v, const 
   n = std::min<uint32_t>(n, 256);
   ph[0] = v.phi;
   for (uint32_t i = 0; i < n; ++i) {
-    double r = static_cast<double>(rate[i]) * src.rateScale;
-    r = r > 0.0 ? std::min(r, kMaxRate) : 0.0;
+    const double r = clampReadRate(static_cast<double>(rate[i]) * src.rateScale);
     rt[i] = r;
-    ph[i + 1] = ph[i] + static_cast<int64_t>(r * 4294967296.0 + 0.5);
+    ph[i + 1] = ph[i] + rateStep(r);
   }
   const int64_t t0 = v.t;
   const bool wasActive = v.active != 0;
   if (phase != kOn) {
-    v.render(src, run, rate, n, outL, outR, pos, playing, sc);  // Tones (priming, the cross, no stretcher)
+    v.render(src, run, law, rate, n, outL, outR, pos, playing, sc);  // Tones (priming, the cross, no stretcher)
   } else {
     std::fill_n(outL, n, 0.0f);
     std::fill_n(outR, n, 0.0f);
-    v.render(src, run, rate, n, nullptr, nullptr, pos, playing, sc);  // the clock only
+    v.render(src, run, law, rate, n, nullptr, nullptr, pos, playing, sc);  // the clock only
   }
   if (phase == kWait || !usable || !wasActive) {
     if (v.active == 0) release(b, *this);
     return;
   }
-  Run R{*b, *this, v, src, run, cr, b->pool().latency(), warpUnfold(src, run)};
+  Run R{*b, *this, v, src, run, law, b->pool().latency()};
   R.ch = b->channels();
-  const int64_t X = WarpVoice::fadeFrames(run.sampleRate);
+  const int64_t X = warpFadeFrames(run.sampleRate);
   const auto Xf = static_cast<float>(X);
   const int64_t endT = v.endT;
   const float* b0 = b->pool().output(stretcher);

@@ -88,11 +88,11 @@ Status body(Builder& bld) {
   Body b(bld);
   const auto mode = static_cast<SamplerMode>(choice(bld.setting(kSmpMode), 4));
   const bool granular = mode == SamplerMode::Granular;
-  const auto warp = static_cast<SamplerWarp>(choice(bld.setting(kSmpWarp), 7));
-  const bool repitch = warp == SamplerWarp::RePitch;
+  const auto warp = static_cast<dsp::AudioWarp>(choice(bld.setting(kSmpWarp), 7));
+  const bool repitch = warp == dsp::AudioWarp::RePitch;
   // SM.4: Beats / Tones / Texture (SM.5: Complex / Complex Pro) play through sampler_warp; Slice keeps its own path (its
   // slices play at their recorded pitch, unwarped).
-  const bool stretch = mode != SamplerMode::Slice && !granular && warp >= SamplerWarp::Beats;
+  const bool stretch = mode != SamplerMode::Slice && !granular && warp >= dsp::AudioWarp::Beats;
   const uint32_t loop = choice(bld.setting(kSmpLoop), 3);
   const bool gateMode = choice(bld.setting(kSmpTrigger), 2) == 1;
   const P slot = b.named(bld.slot(0), "sample");  // (read by several atoms: named, as the text form needs)
@@ -120,7 +120,9 @@ Status body(Builder& bld) {
                                    b.op("div", {hzIn, b.op("max", {noteHz, b.k(1e-6)})}), b.k(1.0)});
     rate = b.op("mul", {ratio, bend});
   }
-  if (repitch && !stretch && !granular) rate = b.op("mul", {rate, b.op("div", {b.op("transport.bpm", {}), bld.param(kSmpSampleBpm)})});
+  // Re-Pitch: sample_read multiplies the rate by the song's tempo over the sample's — through the data's warp markers
+  // (the law's local slope at the playhead, constant per marker segment), sampleBpm without them (SM.15).
+  const bool tempoRead = repitch && !stretch && !granular;
   const P trig = bld.atom("rise", {gate}, kRise);
   // The region: Classic start → end with its loop; One-Shot start → end; Slice the key's slice.
   P start = bld.param(kSmpStart), end = bld.param(kSmpEnd);
@@ -141,7 +143,7 @@ Status body(Builder& bld) {
   } else if (stretch) {
     // SM.4: the voice's content follows the song's tempo from its trigger; the pitch is the rate (hz / root ×
     // transpose). Loop: Classic's (ping-pong loops forward: warp_voice.h loops the content's beats).
-    const double wm = static_cast<double>(static_cast<uint32_t>(warp) - static_cast<uint32_t>(SamplerWarp::Beats));
+    const double wm = static_cast<double>(static_cast<uint32_t>(warp));  // the atom's mode is the enum's value
     if (looping) {
       loopStart = bld.param(kSmpLoopStart);
       loopEnd = b.op("min", {b.op("add", {loopStart, bld.param(kSmpLoopLength)}), b.k(1.0)});
@@ -175,10 +177,17 @@ Status body(Builder& bld) {
         end = P{s.node, 1};
       }
     }
-    rd = b.named(bld.atom("sample_read_cubic",
-                          {slot, rate, trig, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, b.k(1.0)},
-                          kRead),
-                 "rd");
+    if (tempoRead) {
+      const P units = b.k(1.0), tempo = b.op("transport.bpm", {});
+      rd = bld.atom("sample_read_cubic",
+                    {slot, rate, trig, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units, tempo,
+                     bld.param(kSmpSampleBpm)},
+                    kRead);
+    } else {
+      rd = bld.atom("sample_read_cubic",
+                    {slot, rate, trig, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, b.k(1.0)}, kRead);
+    }
+    rd = b.named(rd, "rd");
   }
   P l = rd, r = P{rd.node, 2};
   const P playing = P{rd.node, 1};
@@ -215,9 +224,9 @@ Status body(Builder& bld) {
 std::vector<ResourceRequest> resources(std::span<const double> settings) {
   // SM.5: Complex / Complex Pro (Classic / One-Shot: Slice plays unwarped) need the stretchers.
   auto at = [&](uint32_t i) { return i < settings.size() ? settings[i] : kSettings[i].def; };
-  const auto warp = static_cast<SamplerWarp>(choice(at(kSmpWarp), 7));
+  const auto warp = static_cast<dsp::AudioWarp>(choice(at(kSmpWarp), 7));
   const auto mode = static_cast<SamplerMode>(choice(at(kSmpMode), 4));
-  const bool stretch = mode != SamplerMode::Slice && mode != SamplerMode::Granular && warp >= SamplerWarp::Complex;
+  const bool stretch = mode != SamplerMode::Slice && mode != SamplerMode::Granular && warp >= dsp::AudioWarp::Complex;
   std::vector<ResourceRequest> r = {ResourceRequest{ResourceKind::Sample, 0, stretch},
                                     ResourceRequest{ResourceKind::VoiceTap, 1}};
   if (mode == SamplerMode::Granular) r.push_back(ResourceRequest{ResourceKind::GrainTap, 2});  // SM.6: the grain dots

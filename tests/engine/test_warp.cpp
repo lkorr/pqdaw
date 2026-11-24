@@ -132,7 +132,7 @@ struct Rig {
 
 double fptAt(double bpm) { return kSr * 60.0 / (bpm * static_cast<double>(kPpq)); }
 
-e::AudioClipDesc warped(e::ClipWarp w, uint32_t id, Ticks start, Ticks length, double sourceBpm) {
+e::AudioClipDesc warped(pq::dsp::AudioWarp w, uint32_t id, Ticks start, Ticks length, double sourceBpm) {
   e::AudioClipDesc c;
   c.id = id;
   c.warp = w;
@@ -298,39 +298,39 @@ void fillWait(void* user, pq::media::StreamId id, int64_t frames) {
 // One clip of every mode (loops, reverse, markers) over one sample: what the identity tests render.
 std::vector<e::AudioClipDesc> everyMode() {
   std::vector<e::AudioClipDesc> v;
-  e::AudioClipDesc rp = warped(e::ClipWarp::RePitch, 1, 0, kPpq * 3, 100.0);
+  e::AudioClipDesc rp = warped(pq::dsp::AudioWarp::RePitch, 1, 0, kPpq * 3, 100.0);
   rp.segments = {{0, 0.0, fptAt(100.0)}, {kPpq, fptAt(100.0) * kPpq, fptAt(140.0)}, {kPpq * 2, fptAt(100.0) * kPpq + fptAt(140.0) * kPpq, fptAt(80.0)}};
   v.push_back(rp);
-  e::AudioClipDesc b = warped(e::ClipWarp::Beats, 2, kPpq * 3, kPpq * 4, 120.0);
+  e::AudioClipDesc b = warped(pq::dsp::AudioWarp::Beats, 2, kPpq * 3, kPpq * 4, 120.0);
   b.contentStart = kPpq / 8;
   b.loop = {true, kPpq / 2, kPpq * 5 / 2};
-  b.stretch.sliceLoop = e::SliceLoop::Forward;
+  b.stretch.sliceLoop = pq::dsp::WarpSliceLoop::Forward;
   b.stretch.pitchRatio = 1.12;
   b.crossfadeIn = kPpq / 8;
   v.push_back(b);
-  e::AudioClipDesc b2 = warped(e::ClipWarp::Beats, 3, kPpq * 7, kPpq * 3, 120.0);
-  b2.stretch.sliceLoop = e::SliceLoop::BackForward;
+  e::AudioClipDesc b2 = warped(pq::dsp::AudioWarp::Beats, 3, kPpq * 7, kPpq * 3, 120.0);
+  b2.stretch.sliceLoop = pq::dsp::WarpSliceLoop::BackForward;
   b2.stretch.envelope = 60.0f;
   b2.reverse = true;
   v.push_back(b2);
-  e::AudioClipDesc t = warped(e::ClipWarp::Tones, 4, kPpq * 10, kPpq * 3, 110.0);
+  e::AudioClipDesc t = warped(pq::dsp::AudioWarp::Tones, 4, kPpq * 10, kPpq * 3, 110.0);
   t.loop = {true, kPpq / 4, kPpq * 2};
   t.stretch.pitchRatio = 0.94;
   v.push_back(t);
-  e::AudioClipDesc x = warped(e::ClipWarp::Texture, 5, kPpq * 13, kPpq * 3, 130.0);
+  e::AudioClipDesc x = warped(pq::dsp::AudioWarp::Texture, 5, kPpq * 13, kPpq * 3, 130.0);
   x.stretch.flux = 40.0f;
   x.reverse = true;
   x.stretch.grainSeconds = 0.05;
   v.push_back(x);
-  e::AudioClipDesc t2 = warped(e::ClipWarp::Tones, 6, kPpq * 16, kPpq * 2, 120.0);  // pitch rate 1: straight copies
+  e::AudioClipDesc t2 = warped(pq::dsp::AudioWarp::Tones, 6, kPpq * 16, kPpq * 2, 120.0);  // pitch rate 1: straight copies
   v.push_back(t2);
   // T6.5: Complex looped and transposed (the stream unfolds through the wraps), Complex Pro reversed with formants.
-  e::AudioClipDesc cx = warped(e::ClipWarp::Complex, 7, kPpq * 18, kPpq * 3, 105.0);
+  e::AudioClipDesc cx = warped(pq::dsp::AudioWarp::Complex, 7, kPpq * 18, kPpq * 3, 105.0);
   cx.contentStart = kPpq / 3;
   cx.loop = {true, kPpq / 2, kPpq * 3 / 2};
   cx.stretch.pitchRatio = 1.09;
   v.push_back(cx);
-  e::AudioClipDesc cp = warped(e::ClipWarp::ComplexPro, 8, kPpq * 21, kPpq * 2, 135.0);
+  e::AudioClipDesc cp = warped(pq::dsp::AudioWarp::ComplexPro, 8, kPpq * 21, kPpq * 2, 135.0);
   cp.reverse = true;
   cp.stretch.pitchRatio = 0.85;
   cp.stretch.formants = 80.0f;
@@ -353,7 +353,7 @@ TEST_CASE("warp: Re-Pitch with markers reads every segment at its own speed, sam
   const double P = 64.0;
   Rig rig(64);
   rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
-  e::AudioClipDesc c = warped(e::ClipWarp::RePitch, 1, kPpq / 2, kPpq * 8, 120.0);
+  e::AudioClipDesc c = warped(pq::dsp::AudioWarp::RePitch, 1, kPpq / 2, kPpq * 8, 120.0);
   // Markers at beats 0, 2, 3, 5 of content with source frames 0, 40000, 52000, 100000: segments of rate 0.833, 0.5, 1,
   // and beyond the last at 1.
   const double f1 = 40000.0, f2 = 52000.0, f3 = 100000.0;
@@ -412,17 +412,17 @@ TEST_CASE("warp: Beats keeps a 120 BPM drum loop's hits within ±1 ms of the war
   struct Case {
     double bpm;
     Ticks granulation;
-    e::SliceLoop loopMode;
+    pq::dsp::WarpSliceLoop loopMode;
   };
-  for (const Case k : {Case{90.0, kPpq / 4, e::SliceLoop::Forward}, Case{150.0, kPpq / 4, e::SliceLoop::Forward},
-                       Case{90.0, 0, e::SliceLoop::BackForward}, Case{150.0, 0, e::SliceLoop::Off},
-                       Case{90.0, kPpq / 2, e::SliceLoop::Off}}) {
+  for (const Case k : {Case{90.0, kPpq / 4, pq::dsp::WarpSliceLoop::Forward}, Case{150.0, kPpq / 4, pq::dsp::WarpSliceLoop::Forward},
+                       Case{90.0, 0, pq::dsp::WarpSliceLoop::BackForward}, Case{150.0, 0, pq::dsp::WarpSliceLoop::Off},
+                       Case{90.0, kPpq / 2, pq::dsp::WarpSliceLoop::Off}}) {
     CAPTURE(k.bpm);
     CAPTURE(k.granulation);
     CAPTURE(static_cast<int>(k.loopMode));
     Rig rig(256);
     rig.tempo({{0, k.bpm, pq::TempoCurve::Step}});
-    e::AudioClipDesc c = warped(e::ClipWarp::Beats, 1, 0, kPpq * 8, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Beats, 1, 0, kPpq * 8, 120.0);
     c.stretch.granulation = k.granulation;
     c.stretch.sliceLoop = k.loopMode;
     c.transients = onsets;
@@ -462,7 +462,7 @@ TEST_CASE("warp: Tones keeps a 220 Hz sine at 220 Hz ±0.5 ¢ at 0.5× / 2× tem
     CAPTURE(k.ratio);
     Rig rig(128);
     rig.tempo({{0, k.bpm, pq::TempoCurve::Step}});
-    e::AudioClipDesc c = warped(e::ClipWarp::Tones, 1, 0, kPpq * 16, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Tones, 1, 0, kPpq * 16, 120.0);
     c.stretch.pitchRatio = k.ratio;
     rig.audio({{1, {c}}}, {sine});
     rig.play(0);
@@ -487,7 +487,7 @@ TEST_CASE("warp: Texture keeps a stationary source's level; Flux is deterministi
   for (int run = 0; run < 2; ++run) {
     Rig rig(run == 0 ? 64 : 1000);
     rig.tempo({{0, 70.0, pq::TempoCurve::Step}});
-    e::AudioClipDesc c = warped(e::ClipWarp::Texture, 9, 0, kPpq * 8, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Texture, 9, 0, kPpq * 8, 120.0);
     c.stretch.flux = 60.0f;
     rig.audio({{1, {c}}}, {sine});
     rig.play(0);
@@ -537,8 +537,8 @@ TEST_CASE("warp: every mode renders bit-identically across engine blocks 64 / 10
 
 TEST_CASE("warp: a gain-only edit while playing keeps every stretch voice (seamless)") {
   const e::ClipSample s = makeSample(400000, 2, busy);
-  for (const e::ClipWarp w : {e::ClipWarp::Beats, e::ClipWarp::Tones, e::ClipWarp::Texture, e::ClipWarp::Complex,
-                             e::ClipWarp::ComplexPro}) {
+  for (const pq::dsp::AudioWarp w : {pq::dsp::AudioWarp::Beats, pq::dsp::AudioWarp::Tones, pq::dsp::AudioWarp::Texture, pq::dsp::AudioWarp::Complex,
+                             pq::dsp::AudioWarp::ComplexPro}) {
     CAPTURE(static_cast<int>(w));
     auto clipWith = [&](float gain) {
       e::AudioClipDesc c = warped(w, 1, 0, kPpq * 8, 120.0);
@@ -574,7 +574,7 @@ TEST_CASE("warp: a gain-only edit while playing keeps every stretch voice (seaml
 TEST_CASE("AC.fix: a formant edit while playing keeps the Complex Pro voice (no gap) and takes effect at once") {
   const e::ClipSample s = makeSample(400000, 2, busy);
   auto clipWith = [&](float formants, float envelope) {
-    e::AudioClipDesc c = warped(e::ClipWarp::ComplexPro, 1, 0, kPpq * 8, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::ComplexPro, 1, 0, kPpq * 8, 120.0);
     c.stretch.pitchRatio = 1.26;
     c.stretch.formants = formants;
     c.stretch.formantEnvelope = envelope;
@@ -617,7 +617,7 @@ TEST_CASE("AC.fix: a formant edit while playing keeps the Complex Pro voice (no 
 
 TEST_CASE("AC.fix: a transpose while playing hands a Complex voice over (it plays on until the new one sounds, no gap)") {
   const e::ClipSample s = makeSample(400000, 2, busy);
-  for (const e::ClipWarp w : {e::ClipWarp::Complex, e::ClipWarp::ComplexPro}) {
+  for (const pq::dsp::AudioWarp w : {pq::dsp::AudioWarp::Complex, pq::dsp::AudioWarp::ComplexPro}) {
     for (const bool drag : {false, true}) {
       CAPTURE(static_cast<int>(w));
       CAPTURE(drag);
@@ -841,7 +841,7 @@ TEST_CASE("warp: Complex / Complex Pro keep a 220 Hz sine within ±1 ¢ at 0.5×
     double expectCents;
   };
   const double steps = 3.0 * 1200.0 / 31.0;
-  for (const e::ClipWarp w : {e::ClipWarp::Complex, e::ClipWarp::ComplexPro})
+  for (const pq::dsp::AudioWarp w : {pq::dsp::AudioWarp::Complex, pq::dsp::AudioWarp::ComplexPro})
   for (const Case k : {Case{60.0, 1.0, 0.0}, Case{240.0, 1.0, 0.0}, Case{60.0, std::exp2(3.0 / 31.0), steps},
                        Case{240.0, std::exp2(3.0 / 31.0), steps}, Case{120.0, std::exp2(3.0 / 31.0), steps}}) {
     CAPTURE(static_cast<int>(w));
@@ -859,7 +859,7 @@ TEST_CASE("warp: Complex / Complex Pro keep a 220 Hz sine within ±1 ¢ at 0.5×
     for (const size_t from : {size_t{4800}, size_t{4800 + 65536}}) {
       const double f = peakHz(out, from, 65536, 220.0 * k.ratio);
       const double err = cents(f, 220.0) - k.expectCents;
-      const std::string name = w == e::ClipWarp::Complex ? "Complex" : "Complex Pro";
+      const std::string name = w == pq::dsp::AudioWarp::Complex ? "Complex" : "Complex Pro";
       MESSAGE(name, " at ", k.bpm, " BPM, ratio ", k.ratio, ": ", f, " Hz, error ", err, " cents");
       worst = std::max(worst, std::abs(err));
     }
@@ -891,7 +891,7 @@ TEST_CASE("warp: Complex is sample-aligned (no latency) and keeps a drum loop's 
     Rig rig(256);
     rig.tempo({{0, bpm, pq::TempoCurve::Step}});
     // The clip starts at beat 1 (its voice primes before it starts, in step with the song).
-    e::AudioClipDesc c = warped(e::ClipWarp::Complex, 1, kPpq, kPpq * 8, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Complex, 1, kPpq, kPpq * 8, 120.0);
     rig.audio({{1, {c}}}, {loop});
     rig.play(0);
     const SampleTime end = rig.map.ticksToSamples(kPpq * 9, kSr);
@@ -955,7 +955,7 @@ TEST_CASE("warp: Complex Pro holds a vowel's formants at +7 st (shift < 5 %); Co
   const e::ClipSample v = makeSample(static_cast<int64_t>(kSr * 6.0), 1, [](uint32_t, int64_t i) { return vowel(i); });
   const double ratio = std::exp2(7.0 / 12.0);
   double shift[2] = {0.0, 0.0};
-  for (const e::ClipWarp w : {e::ClipWarp::Complex, e::ClipWarp::ComplexPro}) {
+  for (const pq::dsp::AudioWarp w : {pq::dsp::AudioWarp::Complex, pq::dsp::AudioWarp::ComplexPro}) {
     Rig rig(256);
     rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
     e::AudioClipDesc c = warped(w, 1, 0, kPpq * 8, 120.0);
@@ -966,8 +966,8 @@ TEST_CASE("warp: Complex Pro holds a vowel's formants at +7 st (shift < 5 %); Co
     const double f0 = peakHz(out, 24000, 65536, kVowelF0 * ratio);
     CHECK(std::abs(cents(f0, kVowelF0 * ratio)) <= 1.0);
     const double a = formantShift(out, 24000, 65536, f0);
-    shift[w == e::ClipWarp::ComplexPro ? 1 : 0] = a;
-    const std::string name = w == e::ClipWarp::ComplexPro ? "Complex Pro" : "Complex";
+    shift[w == pq::dsp::AudioWarp::ComplexPro ? 1 : 0] = a;
+    const std::string name = w == pq::dsp::AudioWarp::ComplexPro ? "Complex Pro" : "Complex";
     MESSAGE(name, ": formant shift ", (a - 1.0) * 100.0, " %");
   }
   // The estimator on the source itself.
@@ -980,8 +980,8 @@ TEST_CASE("warp: Complex Pro holds a vowel's formants at +7 st (shift < 5 %); Co
 
 TEST_CASE("warp: an exhausted stretch pool plays Complex as Tones (counted, no click); renders are deterministic") {
   const e::ClipSample s = makeSample(400000, 2, busy);
-  auto image = [&](e::ClipWarp second) {
-    e::AudioClipDesc a = warped(e::ClipWarp::Complex, 1, 0, kPpq * 6, 120.0);
+  auto image = [&](pq::dsp::AudioWarp second) {
+    e::AudioClipDesc a = warped(pq::dsp::AudioWarp::Complex, 1, 0, kPpq * 6, 120.0);
     a.stretch.pitchRatio = 1.05;
     e::AudioClipDesc b = warped(second, 2, kPpq, kPpq * 4, 97.0);  // starts while the first holds the only stretcher
     b.stretch.pitchRatio = 0.9;
@@ -998,14 +998,14 @@ TEST_CASE("warp: an exhausted stretch pool plays Complex as Tones (counted, no c
   pc.sampleRate = kSr;
   pc.stretchVoices = 1;
   const SampleTime frames = static_cast<SampleTime>(kSr * 4.0);
-  const auto img = image(e::ClipWarp::Complex);
+  const auto img = image(pq::dsp::AudioWarp::Complex);
   e::ClipPlayer p1(pc);
   REQUIRE(p1.stretchPool() != nullptr);
   const auto got = playDirect(p1, *img, 2, frames, 256);
   CHECK(p1.stats().stretchClaims == 1);
   CHECK(p1.stats().stretchFallbacks == 1);
   // The fallback voice is exactly a Tones clip.
-  const auto tonesImg = image(e::ClipWarp::Tones);
+  const auto tonesImg = image(pq::dsp::AudioWarp::Tones);
   e::ClipPlayer p2(pc);
   const auto tones = playDirect(p2, *tonesImg, 2, frames, 256);
   CHECK(got[2] == tones[2]);
@@ -1028,7 +1028,7 @@ TEST_CASE("warp: an exhausted stretch pool plays Complex as Tones (counted, no c
   e::ClipPlayerConfig pc2 = pc;
   pc2.stretchVoices = 2;
   auto slow = [&] {
-    e::AudioClipDesc a = warped(e::ClipWarp::Complex, 5, 0, kPpq * 4, 120.0);
+    e::AudioClipDesc a = warped(pq::dsp::AudioWarp::Complex, 5, 0, kPpq * 4, 120.0);
     e::AudioBuildOptions o;
     o.sampleRate = kSr;
     auto r = e::AudioSequenceImage::build(std::vector<e::AudioTrackDesc>{{1, {a}}}, {s}, tempoMap({{0, 40.0, pq::TempoCurve::Step}}), o);
@@ -1052,7 +1052,7 @@ namespace {
 std::vector<e::AudioTrackDesc> complexTracks(uint32_t n) {
   std::vector<e::AudioTrackDesc> t;
   for (uint32_t k = 0; k < n; ++k) {
-    e::AudioClipDesc c = warped(e::ClipWarp::Complex, 1 + k, 0, kPpq * 16, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Complex, 1 + k, 0, kPpq * 16, 120.0);
     c.stretch.pitchRatio = k % 2 == 0 ? 1.0 : 1.09;  // copies and sinc reads
     t.push_back({1 + k, {c}});
   }
@@ -1203,9 +1203,9 @@ TEST_CASE("T6.5b: a loop wrap into Complex clips starts primed (cued before the 
 TEST_CASE("T6.5b: a mono source runs a mono stretcher (half the work), the same audio as through a stereo one") {
   const e::ClipSample v = makeSample(static_cast<int64_t>(kSr * 6.0), 1, [](uint32_t, int64_t i) { return vowel(i); });
   auto img = [&] {
-    e::AudioClipDesc c = warped(e::ClipWarp::ComplexPro, 1, kPpq, kPpq * 6, 120.0);
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::ComplexPro, 1, kPpq, kPpq * 6, 120.0);
     c.stretch.pitchRatio = std::exp2(5.0 / 12.0);
-    e::AudioClipDesc d = warped(e::ClipWarp::Complex, 2, kPpq, kPpq * 6, 97.0);
+    e::AudioClipDesc d = warped(pq::dsp::AudioWarp::Complex, 2, kPpq, kPpq * 6, 97.0);
     e::AudioBuildOptions o;
     o.sampleRate = kSr;
     auto r = e::AudioSequenceImage::build(std::vector<e::AudioTrackDesc>{{1, {c}}, {2, {d}}}, {v},
@@ -1257,7 +1257,7 @@ std::vector<float> complexSine(double engineRate, uint32_t block, double ratio, 
   });
   Rig rig(block, nullptr, engineRate);
   rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
-  e::AudioClipDesc c = warped(e::ClipWarp::Complex, 1, kPpq, kPpq * 12, 120.0);  // framesPerTick of a 48 kHz file
+  e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Complex, 1, kPpq, kPpq * 12, 120.0);  // framesPerTick of a 48 kHz file
   c.stretch.pitchRatio = ratio;
   rig.audio({{1, {c}}}, {s});
   rig.play(0);
@@ -1306,7 +1306,7 @@ TEST_CASE("M6 H2 / L15: the stretch pool is sized from the project's Complex cli
   {
     Rig rig(64);
     rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
-    rig.audio({{1, {warped(e::ClipWarp::Tones, 1, 0, kPpq * 4, 120.0)}}}, {s});
+    rig.audio({{1, {warped(pq::dsp::AudioWarp::Tones, 1, 0, kPpq * 4, 120.0)}}}, {s});
     rig.play(0);
     (void)rig.render(4800);
     const pq::dsp::StretchPool* pool = rig.tl->clipPlayer().stretchPool();
@@ -1322,8 +1322,8 @@ TEST_CASE("M6 H2 / L15: the stretch pool is sized from the project's Complex cli
   rig.tempo({{0, 120.0, pq::TempoCurve::Step}});
   std::vector<e::AudioTrackDesc> t;
   for (uint32_t k = 0; k < kTracks; ++k) {
-    e::AudioClipDesc a = warped(e::ClipWarp::Complex, 1 + 2 * k, 0, kPpq * 4, 120.0);
-    e::AudioClipDesc b = warped(e::ClipWarp::ComplexPro, 2 + 2 * k, kPpq * 4, kPpq * 4, 120.0);
+    e::AudioClipDesc a = warped(pq::dsp::AudioWarp::Complex, 1 + 2 * k, 0, kPpq * 4, 120.0);
+    e::AudioClipDesc b = warped(pq::dsp::AudioWarp::ComplexPro, 2 + 2 * k, kPpq * 4, kPpq * 4, 120.0);
     a.sample = b.sample = k % 4 == 3 ? 1u : 0u;  // every fourth track mono
     a.crossfadeIn = b.crossfadeIn = 0;
     t.push_back({1 + k, {a, b}});
@@ -1351,7 +1351,7 @@ TEST_CASE("M6 H2 / L15: the stretch pool is sized from the project's Complex cli
   CHECK(d.mono == 6 * 3);
   CHECK(cp.stretchPool()->size() == d.stereo + d.mono);
   // A smaller project later: the pool keeps what it has (it grows only).
-  rig.audio({{1, {warped(e::ClipWarp::Complex, 900, 0, kPpq * 4, 120.0)}}}, {s});
+  rig.audio({{1, {warped(pq::dsp::AudioWarp::Complex, 900, 0, kPpq * 4, 120.0)}}}, {s});
   (void)rig.render(640);
   CHECK(cp.stretchPool()->size() == d.stereo + d.mono);
 }
@@ -1362,8 +1362,8 @@ TEST_CASE("M6 H2: a Complex voice that fell back to Tones takes a stretcher when
   });
   // One stretcher: clip a holds it for 2 beats; clip b (another slot) starts at beat 1 as Tones, and takes the
   // stretcher once a has ended (beat 2 = 1 s at 120 BPM), primed like a locate's start (late, faded in).
-  e::AudioClipDesc a = warped(e::ClipWarp::Complex, 1, 0, kPpq * 2, 120.0);
-  e::AudioClipDesc b = warped(e::ClipWarp::Complex, 2, kPpq, kPpq * 8, 120.0);
+  e::AudioClipDesc a = warped(pq::dsp::AudioWarp::Complex, 1, 0, kPpq * 2, 120.0);
+  e::AudioClipDesc b = warped(pq::dsp::AudioWarp::Complex, 2, kPpq, kPpq * 8, 120.0);
   b.stretch.pitchRatio = 1.25;
   e::AudioBuildOptions o;
   o.sampleRate = kSr;
@@ -1406,7 +1406,7 @@ TEST_CASE("M6 M12: Tones is exact for one pitched voice only; on a chord its par
     for (const double f : fs) v += 0.25 * std::sin(2.0 * std::numbers::pi * f * static_cast<double>(i) / kSr);
     return static_cast<float>(v);
   });
-  for (const e::ClipWarp w : {e::ClipWarp::Tones, e::ClipWarp::Complex}) {
+  for (const pq::dsp::AudioWarp w : {pq::dsp::AudioWarp::Tones, pq::dsp::AudioWarp::Complex}) {
     CAPTURE(static_cast<int>(w));
     Rig rig(128);
     rig.tempo({{0, 97.0, pq::TempoCurve::Step}});
@@ -1418,9 +1418,9 @@ TEST_CASE("M6 M12: Tones is exact for one pitched voice only; on a chord its par
       err[k] = cents(peakHz(o, 4800, 131072, fs[k]), fs[k]);
       level[k] = dtftMag(o, 4800, 131072, fs[k]) / (0.25 * 131072 / 4);
     }
-    MESSAGE(std::string(w == e::ClipWarp::Tones ? "Tones" : "Complex"), " on a 220 / 277 / 330 Hz triad at 97 BPM: errors ", err[0], " / ",
+    MESSAGE(std::string(w == pq::dsp::AudioWarp::Tones ? "Tones" : "Complex"), " on a 220 / 277 / 330 Hz triad at 97 BPM: errors ", err[0], " / ",
             err[1], " / ", err[2], " cents; levels ", level[0], " / ", level[1], " / ", level[2]);
-    if (w == e::ClipWarp::Tones) {  // measured +20.1 / −0.6 / −5.6 ¢, levels 0.28 / 0.88 / 0.43
+    if (w == pq::dsp::AudioWarp::Tones) {  // measured +20.1 / −0.6 / −5.6 ¢, levels 0.28 / 0.88 / 0.43
       CHECK(err[0] == doctest::Approx(20.1).epsilon(0.1));
       CHECK(std::abs(err[1]) < 2.0);
       CHECK(err[2] == doctest::Approx(-5.6).epsilon(0.2));
@@ -1455,14 +1455,14 @@ std::vector<e::AudioClipDesc> sm4Cases() {
   std::vector<e::AudioClipDesc> v = everyMode();
   // More of the Beats / Tones / Texture paths: Off loops, an envelope, transient slices, forward Texture, a loud
   // transpose (mips), a slow Tones (alignment over long lags).
-  e::AudioClipDesc b = warped(e::ClipWarp::Beats, 11, 0, kPpq * 3, 120.0);
-  b.stretch.sliceLoop = e::SliceLoop::Off;
+  e::AudioClipDesc b = warped(pq::dsp::AudioWarp::Beats, 11, 0, kPpq * 3, 120.0);
+  b.stretch.sliceLoop = pq::dsp::WarpSliceLoop::Off;
   b.stretch.envelope = 35.0f;
   b.stretch.pitchRatio = 0.8;
   v.push_back(b);
-  e::AudioClipDesc bt = warped(e::ClipWarp::Beats, 12, 0, kPpq * 3, 120.0);
+  e::AudioClipDesc bt = warped(pq::dsp::AudioWarp::Beats, 12, 0, kPpq * 3, 120.0);
   bt.stretch.granulation = 0;
-  bt.stretch.sliceLoop = e::SliceLoop::Forward;
+  bt.stretch.sliceLoop = pq::dsp::WarpSliceLoop::Forward;
   static const std::vector<double> onsets = [] {
     std::vector<double> o;
     for (int h = 0; h < kHits; ++h) o.push_back(static_cast<double>(h * kHitFrames) + 3.0);
@@ -1470,15 +1470,15 @@ std::vector<e::AudioClipDesc> sm4Cases() {
   }();
   bt.transients = onsets;
   v.push_back(bt);
-  e::AudioClipDesc x = warped(e::ClipWarp::Texture, 13, 0, kPpq * 3, 90.0);
+  e::AudioClipDesc x = warped(pq::dsp::AudioWarp::Texture, 13, 0, kPpq * 3, 90.0);
   x.stretch.flux = 100.0f;
   x.stretch.pitchRatio = 1.3;
   v.push_back(x);
-  e::AudioClipDesc t = warped(e::ClipWarp::Tones, 14, 0, kPpq * 3, 140.0);
+  e::AudioClipDesc t = warped(pq::dsp::AudioWarp::Tones, 14, 0, kPpq * 3, 140.0);
   t.stretch.pitchRatio = 2.9;  // above rate 2
   t.stretch.grainSeconds = 0.08;
   v.push_back(t);
-  e::AudioClipDesc t2 = warped(e::ClipWarp::Tones, 15, 0, kPpq * 3, 70.0);
+  e::AudioClipDesc t2 = warped(pq::dsp::AudioWarp::Tones, 15, 0, kPpq * 3, 70.0);
   t2.stretch.pitchRatio = 0.6;
   t2.reverse = true;
   v.push_back(t2);
@@ -1487,13 +1487,18 @@ std::vector<e::AudioClipDesc> sm4Cases() {
 
 }  // namespace
 
-TEST_CASE("SM.4: clip-player Beats / Tones / Texture renders are bit-identical to before the WarpVoice extraction") {
+// SM.15: these hashes pin the UNIFIED renderer (pq/dsp/warp_voice.h: one Beats — integer-clock events, clock fades —
+// and one Hann window for the clip player and the Sampler). They were re-recorded once, with SM.15, after every
+// quality check in this file (Beats ± 1 ms, Tones ± 0.5 ¢, Texture's level, the Complex cases, block-size and
+// streamed = resident identity) passed unchanged; before SM.15 they pinned T6.3's closed-form Beats. A change that
+// moves them changes what clips sound like: look at why before recording again.
+TEST_CASE("SM.15: clip-player Beats / Tones / Texture renders are pinned (the unified warp renderer)") {
   const e::ClipSample s = makeSample(400000, 2, busy);
   const std::vector<e::AudioClipDesc> all = sm4Cases();
   std::vector<uint64_t> got;
   for (size_t only = 0; only < all.size(); ++only)
     for (const bool ramp : {false, true}) {
-      if (e::clipComplex(all[only].warp) || all[only].warp == e::ClipWarp::RePitch) continue;
+      if (pq::dsp::warpComplex(all[only].warp) || all[only].warp == pq::dsp::AudioWarp::RePitch) continue;
       CAPTURE(only);
       CAPTURE(ramp);
       std::vector<uint64_t> h;
@@ -1533,11 +1538,11 @@ TEST_CASE("SM.4: clip-player Beats / Tones / Texture renders are bit-identical t
   for (uint64_t x : got) list += std::to_string(x) + "ull, ";
   MESSAGE("hashes: ", list);
   const std::vector<uint64_t> want = {
-      13178002982794756628ull, 11501452169219816393ull, 5465651248702430293ull,  9260306898543244997ull,
-      12865482765260031741ull, 9882299265028725284ull,  9689780281645209777ull,  4246441625156050472ull,
-      5709435580480571101ull,  17078761170441031203ull, 14956903473804657082ull, 14745678876713372941ull,
-      42480860076646277ull,    15013354399145482131ull, 17681837085499952033ull, 12696680910353746901ull,
-      5798068288485186556ull,  10969512245636323802ull, 1974019200371578659ull,  7892739669148853691ull,
-      1089499390348791985ull,  3584902972447577824ull};
+      6206821551932379371ull, 9561215612330997534ull, 5465651248702430293ull, 9260306898543244997ull,
+      7361752640460143538ull, 2303909819983500404ull, 8525543786382301828ull, 2557884976587432538ull,
+      13237843331323705060ull, 4804409974389055079ull, 14956903473804657082ull, 14745678876713372941ull,
+      42480860076646277ull, 17916843422693529066ull, 12744396353475487886ull, 3797839237123770861ull,
+      12619082166495659721ull, 11952104424440661977ull, 3069216394029115078ull, 8453846467329063909ull,
+      11037291907190714745ull, 13577540894113758852ull};
   CHECK(got == want);
 }

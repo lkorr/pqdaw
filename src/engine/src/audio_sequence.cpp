@@ -13,18 +13,9 @@ namespace pq::engine {
 
 namespace {
 
-constexpr double kFixedOneD = 4294967296.0;
-
-int64_t toFixed(double v) { return static_cast<int64_t>(std::llround(v * kFixedOneD)); }
+using dsp::toFixed;
 
 Error audioError(std::string m) { return Error{ErrorCode::InvalidArgument, "audio sequence: " + std::move(m), {}}; }
-
-// Folds a RePitch content position into the loop (clipContentAt with fractional ticks).
-double foldContent(double p, const ContentLoop& l) {
-  if (!contentLooped(l) || p < static_cast<double>(l.end)) return p;
-  const auto span = static_cast<double>(l.end - l.start);
-  return static_cast<double>(l.start) + std::fmod(p - static_cast<double>(l.end), span);
-}
 
 }  // namespace
 
@@ -40,9 +31,9 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
   c.maxRate = c.peakRate = r;
   qs.insert(dsp::sincStretchQ(r));
   for (uint32_t L = 1; L <= dsp::mipLevelFor(r, dsp::kMaxMipLevels); ++L) qs.insert(dsp::sincStretchQ(std::ldexp(r, -static_cast<int>(L))));
-  if (clipComplex(d.warp)) {  // T6.5: the stretcher's settings (audio_sequence.h "Complex")
+  if (dsp::warpComplex(d.warp)) {  // T6.5: the stretcher's settings (audio_sequence.h "Complex")
     c.seed = d.stretch.seed;
-    if (d.warp == ClipWarp::ComplexPro) {
+    if (d.warp == dsp::AudioWarp::ComplexPro) {
       const double keep = std::clamp(static_cast<double>(d.stretch.formants), 0.0, 100.0) / 100.0;
       if (keep > 0.0) {
         c.formantFactor = std::pow(d.stretch.pitchRatio, -keep);
@@ -50,9 +41,8 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
       }
     }
   }
-  if (d.warp == ClipWarp::Tones || d.warp == ClipWarp::Texture || clipComplex(d.warp)) {
-    const double secs = std::clamp(d.stretch.grainSeconds, 0.001, 0.5);
-    const auto n = static_cast<uint32_t>(std::max<int64_t>(2, 2 * std::llround(secs * sr / 2.0)));
+  if (d.warp == dsp::AudioWarp::Tones || d.warp == dsp::AudioWarp::Texture || dsp::warpComplex(d.warp)) {
+    const uint32_t n = dsp::warpGrainFrames(d.stretch.grainSeconds, sr);
     c.grain = n;
     c.hop = n / 2;
     // One window per grain size, shared.
@@ -69,13 +59,10 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
       img.windowAt_.emplace_back(n, c.winFirst);
     }
     const double hr = static_cast<double>(c.hop) * r;
-    if ((d.warp == ClipWarp::Tones || clipComplex(d.warp)) && hr >= 16.0) {
-      c.alignLen = static_cast<uint32_t>(std::min<double>(std::round(hr), kMaxAlignLen));
-      c.alignLags = static_cast<uint32_t>(std::min<double>(
-          {std::floor(hr / 2.0), std::floor(0.012 * static_cast<double>(fileRate)), static_cast<double>(kMaxAlignLags)}));
-    }
-    if (d.warp == ClipWarp::Texture) {
-      c.jitter = std::clamp(static_cast<double>(d.stretch.flux), 0.0, 100.0) / 100.0 * hr;
+    if (d.warp == dsp::AudioWarp::Tones || dsp::warpComplex(d.warp))
+      dsp::warpAlignFor(hr, static_cast<double>(fileRate), &c.alignLen, &c.alignLags);
+    if (d.warp == dsp::AudioWarp::Texture) {
+      c.jitter = dsp::warpJitterFrames(d.stretch.flux, hr);
       c.seed = d.stretch.seed;
     }
     return;
@@ -99,7 +86,7 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
     grid(d.stretch.granulation);
   } else if (!d.transients.empty()) {
     for (const double f : d.transients) {
-      const double q = img.contentAtFrame(c, f);
+      const double q = c.law.contentAt(f);
       if (q >= cLo && q < cHi && b.size() < kMaxSlices) b.push_back(q);
     }
   } else {
@@ -121,7 +108,7 @@ void AudioSequenceImage::stretchClip(AudioSequenceImage& img, Clip& c, const Aud
   c.sliceCount = static_cast<uint32_t>(u.size());
   for (const double x : u) {
     img.sliceContent_.push_back(x);
-    img.sliceFrame_.push_back(img.frameAtContent(c, x));
+    img.sliceFrame_.push_back(c.law.frameAt(x));
   }
 }
 
@@ -134,7 +121,7 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
   img->tempo_ = tempo;
   img->sr_ = options.sampleRate;
   const double sr = options.sampleRate;
-  img->sliceFade_ = static_cast<uint32_t>(std::max<long>(1, std::lround(0.002 * sr)));
+  img->sliceFade_ = static_cast<uint32_t>(dsp::warpFadeFrames(sr));
   img->declick_ = options.edgeDeclick ? static_cast<uint32_t>(std::lround(std::max(options.declickSeconds, 0.0) * sr)) : 0u;
   const SampleTime declick = img->declick_;
   img->samples_ = std::move(samples);
@@ -147,15 +134,15 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
       const AudioClipDesc& d = tr.clips[i];
       const SampleTime D = d.declick ? declick : 0;  // FZ.2: a clip without edge declicks
       if (d.length <= 0) return audioError("clip " + std::to_string(d.id) + ": length must be positive");
-      if (d.warp == ClipWarp::Off && !(d.speed > 0.0)) return audioError("clip " + std::to_string(d.id) + ": speed must be positive");
-      if (d.warp != ClipWarp::Off) {
+      if (d.warp == dsp::AudioWarp::Off && !(d.speed > 0.0)) return audioError("clip " + std::to_string(d.id) + ": speed must be positive");
+      if (d.warp != dsp::AudioWarp::Off) {
         if (d.segments.empty() && !(d.framesPerTick > 0.0))
           return audioError("clip " + std::to_string(d.id) + ": framesPerTick must be positive");
         for (size_t k = 0; k < d.segments.size(); ++k)
           if (!(d.segments[k].framesPerTick > 0.0) || !std::isfinite(d.segments[k].frame0) ||
               (k > 0 && d.segments[k].content0 <= d.segments[k - 1].content0))
             return audioError("clip " + std::to_string(d.id) + ": warp segments must increase with positive slopes");
-        if (clipStretches(d.warp) && !(d.stretch.pitchRatio > 0.0 && std::isfinite(d.stretch.pitchRatio)))
+        if (dsp::warpStretches(d.warp) && !(d.stretch.pitchRatio > 0.0 && std::isfinite(d.stretch.pitchRatio)))
           return audioError("clip " + std::to_string(d.id) + ": pitchRatio must be positive");
       }
       Clip c;
@@ -211,7 +198,7 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
         }
         c.outStart = c.bodyEnd - std::clamp<SampleTime>(f, 0, body);  // a later crossfade out resets it
       }
-      if (d.warp == ClipWarp::Off) {
+      if (d.warp == dsp::AudioWarp::Off) {
         const double k = d.speed / sr;
         c.step = toFixed(k);
         const int64_t a = toFixed(d.contentStartFrame);
@@ -231,16 +218,21 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
         c.loop = d.loop;
         c.looped = contentLooped(d.loop);
         c.segFirst = static_cast<uint32_t>(img->segments_.size());
-        if (d.segments.empty()) img->segments_.push_back(WarpSegment{0, 0.0, d.framesPerTick});
-        else img->segments_.insert(img->segments_.end(), d.segments.begin(), d.segments.end());
+        if (d.segments.empty()) img->segments_.push_back(dsp::WarpSeg{0.0, 0.0, d.framesPerTick});
+        for (const WarpSegment& g : d.segments)
+          img->segments_.push_back(dsp::WarpSeg{static_cast<double>(g.content0), g.frame0, g.framesPerTick});
         c.segCount = static_cast<uint32_t>(img->segments_.size()) - c.segFirst;
-        c.framesPerTick = img->segments_[c.segFirst].framesPerTick;
+        c.framesPerTick = img->segments_[c.segFirst].slope;
+        // The law (its segments' address is set again once every clip is in: the vector may still grow).
+        c.law.seg = img->segments_.data() + c.segFirst;
+        c.law.count = c.segCount;
+        if (c.looped) c.law.setLoop(static_cast<double>(d.loop.start), static_cast<double>(d.loop.end));
         double fptLo = 1e300, fptHi = 0.0;
         for (uint32_t k = c.segFirst; k < c.segFirst + c.segCount; ++k) {
-          fptLo = std::min(fptLo, img->segments_[k].framesPerTick);
-          fptHi = std::max(fptHi, img->segments_[k].framesPerTick);
+          fptLo = std::min(fptLo, img->segments_[k].slope);
+          fptHi = std::max(fptHi, img->segments_[k].slope);
         }
-        if (d.warp == ClipWarp::RePitch) {
+        if (d.warp == dsp::AudioWarp::RePitch) {
           // The rate range over the clip (tempo ramps, the segments' slopes): sampled, plus the ends, with a margin.
           double lo = 1e300, hi = 0.0;
           for (int k = 0; k <= 64; ++k) {
@@ -288,6 +280,8 @@ Result<std::unique_ptr<AudioSequenceImage>> AudioSequenceImage::build(std::span<
     }
   }
   img->slotFirst_.push_back(static_cast<uint32_t>(img->clips_.size()));
+  for (Clip& c : img->clips_)
+    if (c.segCount != 0) c.law.seg = img->segments_.data() + c.segFirst;
   (void)dsp::prepareSincTable(dsp::ResampleQuality::High, 256);
   for (uint32_t q : qs) (void)dsp::prepareSincTable(dsp::ResampleQuality::High, q);
   return img;
@@ -297,37 +291,13 @@ double AudioSequenceImage::repitchOffset(const Clip& c, SampleTime s) const noex
   return tempo_.samplesToTicks(s, sr_) - static_cast<double>(c.start);
 }
 
-double AudioSequenceImage::frameAtContent(const Clip& c, double q) const noexcept {  // RT-safe
-  const WarpSegment* g = segments_.data() + c.segFirst;
-  uint32_t lo = 1, hi = c.segCount;  // the last segment k ≥ 1 with content0 ≤ q, else 0
-  while (lo < hi) {
-    const uint32_t mid = (lo + hi) / 2;
-    if (static_cast<double>(g[mid].content0) <= q) lo = mid + 1;
-    else hi = mid;
-  }
-  const WarpSegment& w = g[lo - 1];
-  return w.frame0 + (q - static_cast<double>(w.content0)) * w.framesPerTick;
-}
-
-double AudioSequenceImage::contentAtFrame(const Clip& c, double f) const noexcept {  // RT-safe
-  const WarpSegment* g = segments_.data() + c.segFirst;
-  uint32_t lo = 1, hi = c.segCount;
-  while (lo < hi) {
-    const uint32_t mid = (lo + hi) / 2;
-    if (g[mid].frame0 <= f) lo = mid + 1;
-    else hi = mid;
-  }
-  const WarpSegment& w = g[lo - 1];
-  return static_cast<double>(w.content0) + (f - w.frame0) / w.framesPerTick;
-}
-
 double AudioSequenceImage::contentAt(const Clip& c, SampleTime s) const noexcept {  // RT-safe
   const double o = repitchOffset(c, s);
   return static_cast<double>(c.contentStart) + (c.reverse ? static_cast<double>(c.length) - o : o);
 }
 
 double AudioSequenceImage::warpFrame(const Clip& c, SampleTime s) const noexcept {  // RT-safe
-  return frameAtContent(c, foldContent(contentAt(c, s), c.loop));
+  return c.law.frameAt(c.law.fold(contentAt(c, s)));
 }
 
 SampleTime AudioSequenceImage::sampleAtOffset(const Clip& c, double o) const noexcept {  // RT-safe
@@ -340,10 +310,10 @@ SampleTime AudioSequenceImage::sampleAtOffset(const Clip& c, double o) const noe
 
 std::optional<double> AudioSequenceImage::sourceFrame(const Clip& c, SampleTime s) const {
   if (s < c.playStart || s >= c.playEnd) return std::nullopt;
-  if (c.warp == ClipWarp::Off) {
+  if (c.warp == dsp::AudioWarp::Off) {
     const auto p = static_cast<int64_t>(static_cast<uint64_t>(c.anchor) +
                                         static_cast<uint64_t>(s - c.bodyStart) * static_cast<uint64_t>(c.step));
-    return static_cast<double>(p) / kFixedOneD;
+    return static_cast<double>(p) * dsp::k2m32;
   }
   return warpFrame(c, s);
 }

@@ -5,7 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <numbers>
+#include <utility>
 
 namespace pq::dsp {
 
@@ -58,11 +58,67 @@ void warpRampMul(float base, float dg, int32_t k, float* out, uint32_t n) noexce
   for (; i < n; ++i) out[i] *= rampValue(base, dg, k + static_cast<int32_t>(i));
 }
 
+namespace {
+
+// sin²(π j / N) for 8 frames j in [0, N), reduced as integers (exact) to the first eighth of the circle: a = the
+// distance of j to the nearer of 0 and N (the square drops the sign); past a quarter (2a > N / 2) the value is
+// 1 − sin²(π (N / 2 − a) / N). So frames j and j + N / 2 — two overlapping grains' — evaluate one polynomial at one
+// argument, s and 1 − s: they sum to 1 within one rounding. y = a / N by a division (correctly rounded); sin(π y),
+// |π y| ≤ π / 4, an odd polynomial of degree 9 (error < 2e-9). Every operation per lane: nothing between frames.
+inline __m256 hann8(__m256i j, __m256i n, __m256i halfN, __m256 nf) noexcept {  // RT-safe
+  const __m256i fromN = _mm256_sub_epi32(n, j);
+  __m256i a = _mm256_min_epi32(j, fromN);                                        // [0, N / 2]
+  const __m256i past = _mm256_cmpgt_epi32(_mm256_slli_epi32(a, 1), halfN);       // beyond a quarter
+  a = _mm256_blendv_epi8(a, _mm256_sub_epi32(halfN, a), past);
+  const __m256 z = _mm256_mul_ps(_mm256_div_ps(_mm256_cvtepi32_ps(a), nf), _mm256_set1_ps(3.14159265358979323846f));
+  const __m256 z2 = _mm256_mul_ps(z, z);
+  __m256 p = _mm256_set1_ps(2.7557319223985890653e-6f);  // 1 / 9!
+  p = _mm256_fmadd_ps(p, z2, _mm256_set1_ps(-1.9841269841269841270e-4f));
+  p = _mm256_fmadd_ps(p, z2, _mm256_set1_ps(8.3333333333333333333e-3f));
+  p = _mm256_fmadd_ps(p, z2, _mm256_set1_ps(-1.6666666666666666667e-1f));
+  const __m256 sn = _mm256_fmadd_ps(_mm256_mul_ps(p, z2), z, z);
+  const __m256 s2 = _mm256_mul_ps(sn, sn);
+  return _mm256_blendv_ps(s2, _mm256_sub_ps(_mm256_set1_ps(1.0f), s2), _mm256_castsi256_ps(past));
+}
+
+}  // namespace
+
+void warpHannGain(uint32_t N, int64_t j0, const float* env, float gain, float* out, uint32_t n) noexcept {  // RT-safe
+  const __m256i nv = _mm256_set1_epi32(static_cast<int32_t>(N));
+  const __m256i halfN = _mm256_set1_epi32(static_cast<int32_t>(N / 2));
+  const __m256 nf = _mm256_set1_ps(static_cast<float>(N));
+  const __m256 g8 = _mm256_set1_ps(gain);
+  const __m256i idx = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
+  const auto k = static_cast<int32_t>(j0);
+  uint32_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    const __m256i j = _mm256_add_epi32(idx, _mm256_set1_epi32(k + static_cast<int32_t>(i)));
+    _mm256_storeu_ps(out + i, _mm256_mul_ps(hann8(j, nv, halfN, nf), env != nullptr ? _mm256_loadu_ps(env + i) : g8));
+  }
+  if (i < n) {  // the tail through the same vector code (a frame's value never depends on where a call splits)
+    alignas(32) float w[8];
+    const __m256i j = _mm256_add_epi32(idx, _mm256_set1_epi32(k + static_cast<int32_t>(i)));
+    _mm256_store_ps(w, hann8(j, nv, halfN, nf));
+    for (uint32_t q = 0; i < n; ++i, ++q) out[i] = w[q] * (env != nullptr ? env[i] : gain);
+  }
+}
+
 std::vector<float> hannWindow(uint32_t n) {
   std::vector<float> w(n);
-  for (uint32_t j = 0; j < n; ++j)
-    w[j] = static_cast<float>(0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * static_cast<double>(j) / static_cast<double>(n)));
+  warpHannGain(n, 0, nullptr, 1.0f, w.data(), n);
   return w;
+}
+
+std::vector<WarpSeg> warpBeatSegments(std::span<const float> pairs) {
+  std::vector<WarpSeg> out;
+  const auto m = static_cast<uint32_t>(pairs.size() / 2);
+  if (m < 2) return out;
+  out.reserve(m - 1);
+  for (uint32_t k = 0; k + 1 < m; ++k)
+    out.push_back(warpMarkerSeg(m, k, 1.0, [&](uint32_t i) {
+      return std::pair<double, double>(pairs[2 * i + 1], pairs[2 * i]);
+    }));
+  return out;
 }
 
 double warpJitter(uint32_t seed, int64_t k) noexcept {  // RT-safe

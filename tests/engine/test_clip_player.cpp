@@ -79,7 +79,7 @@ e::AudioClipDesc offClip(uint32_t id, Ticks start, Ticks length, double speed = 
   c.sample = sample;
   c.start = start;
   c.length = length;
-  c.warp = e::ClipWarp::Off;
+  c.warp = pq::dsp::AudioWarp::Off;
   c.speed = speed;
   c.contentStartFrame = contentStartFrame;
   return c;
@@ -245,7 +245,7 @@ TEST_CASE("clip player: Re-Pitch renders are bit-identical across engine blocks 
       const double fpt = kSr * 60.0 / (100.0 * static_cast<double>(kPpq));  // a 100 BPM source
       e::AudioClipDesc a;
       a.id = 1;
-      a.warp = e::ClipWarp::RePitch;
+      a.warp = pq::dsp::AudioWarp::RePitch;
       a.start = kPpq / 3;
       a.length = kPpq * 6;
       a.contentStart = kPpq / 7;
@@ -426,7 +426,7 @@ TEST_CASE("clip player: RePitch follows the analytic tempo integral within a sam
   rig.tempo({{0, 100.0, pq::TempoCurve::Linear}, {kPpq * 2400, 140.0, pq::TempoCurve::Step}});
   e::AudioClipDesc c;
   c.id = 1;
-  c.warp = e::ClipWarp::RePitch;
+  c.warp = pq::dsp::AudioWarp::RePitch;
   c.start = kPpq;
   c.length = kPpq * 4000;
   c.contentStart = 0;
@@ -482,7 +482,7 @@ TEST_CASE("clip player: a RePitch loop wraps where the content passes the loop e
   const double fpt = kSr * 60.0 / (120.0 * static_cast<double>(kPpq));  // rate 1 at 120 BPM
   e::AudioClipDesc c;
   c.id = 1;
-  c.warp = e::ClipWarp::RePitch;
+  c.warp = pq::dsp::AudioWarp::RePitch;
   c.start = 0;
   c.length = kPpq * 4;
   c.contentStart = kPpq / 4;
@@ -833,7 +833,7 @@ TEST_CASE("clip player: a looped RePitch clip on a streamed sample wraps without
       const double fpt = 1.07 * kSr * 60.0 / (120.0 * static_cast<double>(kPpq));  // +1.2 st: the sinc path
       e::AudioClipDesc c;
       c.id = 1;
-      c.warp = e::ClipWarp::RePitch;
+      c.warp = pq::dsp::AudioWarp::RePitch;
       c.reverse = reverse;
       c.start = 0;
       // 4.1 s; not a whole number of loop passes, so a reverse clip (which starts at the content's end, folded into the
@@ -906,7 +906,7 @@ TEST_CASE("rt: the clip player across boundaries, crossfades, loop wraps, swaps 
     e::AudioClipDesc rp;
     rp.id = 3;
     rp.sample = 1;
-    rp.warp = e::ClipWarp::RePitch;
+    rp.warp = pq::dsp::AudioWarp::RePitch;
     rp.start = kPpq * 4;
     rp.length = kPpq * 4;
     rp.loop = {true, 0, kPpq / 8};

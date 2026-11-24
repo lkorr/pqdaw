@@ -22,6 +22,7 @@
 #include <variant>
 #include <vector>
 
+#include "pq/dsp/warp.h"
 #include "pq/core/result.h"
 #include "pq/core/time.h"
 #include "pq/document/ids.h"
@@ -485,8 +486,9 @@ using SampleList = std::vector<SampleRef>;  // sorted by id
 //            warpFrameAt: the markers, else one segment at sourceBpm) — but the source is TIME-STRETCHED: its pitch does
 //            not follow the tempo, and the transpose and detune apply (as in Live). WarpParams tune them.
 // Every warped mode may carry warp markers (AudioClip::markers).
-enum class AudioWarp : uint8_t { Off, RePitch, Beats, Tones, Texture, Complex, ComplexPro };
-inline constexpr AudioWarp kLastAudioWarp = AudioWarp::ComplexPro;
+// SM.15: the enum is dsp::AudioWarp (pq/dsp/warp.h: the one the engine's clips and the Sampler use too).
+using AudioWarp = dsp::AudioWarp;  // Off, RePitch, Beats, Tones, Texture, Complex, ComplexPro
+inline constexpr AudioWarp kLastAudioWarp = dsp::kLastAudioWarp;
 // Every mode but Off: the clip's time is content ticks (it follows the tempo).
 inline constexpr bool isWarped(AudioWarp w) noexcept { return w != AudioWarp::Off; }
 // Whether the transpose and detune play in this mode (Off and the time-stretch modes; never RePitch).
@@ -501,8 +503,8 @@ struct WarpMarker {
   friend constexpr bool operator==(const WarpMarker&, const WarpMarker&) noexcept = default;
 };
 inline constexpr size_t kMaxWarpMarkers = 4096;
-// T6.1: Beats' loop of a slice shorter than its gap (Live's "Transient Loop Mode").
-enum class BeatsLoop : uint8_t { Off, Forward, BackForward };
+// T6.1: Beats' loop of a slice shorter than its gap (Live's "Transient Loop Mode"). SM.15: dsp::WarpSliceLoop.
+using BeatsLoop = dsp::WarpSliceLoop;  // Off, Forward, BackForward
 // T6.1: the settings of the time-stretch modes (each reads only its own; all are kept, so a mode switch loses none).
 struct WarpParams {
   Ticks beatsGranulation = kPpq / 4;  // Beats' "Preserve": slices on this grid (0: at transients); [0, kTicksPerWhole]
