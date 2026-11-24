@@ -1013,15 +1013,15 @@ TEST_CASE("arp panel (AP.8b, review L11; AR.3): a layer's level shows only withi
   Ui u;
   auto shown = [&](const char* kind, const char* name) { return u.face().shown(static_cast<size_t>(u.index(kind, name))); };
   CHECK(shown("number", "layers"));  // Pulse off, its fold closed: Layers are in the Pitch block
-  CHECK_FALSE(shown("number", "layerLevel1"));  // Layers 0: no levels
+  CHECK_FALSE(shown("knob", "layerLevel1"));  // Layers 0: no levels
   setValue(u.ctx, u.pr.arp, "layers", 2.0);
   u.d.step();
-  CHECK(shown("number", "layerLevel1"));
-  CHECK(shown("number", "layerLevel2"));
-  CHECK_FALSE(shown("number", "layerLevel3"));
+  CHECK(shown("knob", "layerLevel1"));
+  CHECK(shown("knob", "layerLevel2"));
+  CHECK_FALSE(shown("knob", "layerLevel3"));
   setValue(u.ctx, u.pr.arp, "layers", 3.0);
   u.d.step();
-  CHECK(shown("number", "layerLevel3"));
+  CHECK(shown("knob", "layerLevel3"));
   u.clickFold("Pulse");
   REQUIRE(u.foldOpen("Pulse"));
   auto pulseView = [&] {
@@ -1037,7 +1037,7 @@ TEST_CASE("arp panel (AP.8b, review L11; AR.3): a layer's level shows only withi
   CHECK(pulseView());
   CHECK(shown("toggle", "pulseAuto"));
   CHECK(shown("number", "pulseCycleNum"));
-  CHECK(shown("number", "layerLevel1"));
+  CHECK(shown("knob", "layerLevel1"));
   // L12: the two retriggers are told apart.
   CHECK(findElement(u.face(), "tabs", "retrigger") >= 0);
   CHECK(u.face().element(static_cast<size_t>(u.index("toggle", "velRetrig"))).desc().text("text", "") == "On retrigger");
