@@ -19,6 +19,7 @@
 #include "elements_internal.h"
 #include "pq/views/panel/response_display.h"
 #include "pq/ui/overlay.h"
+#include "pq/ui/radial_menu.h"
 #include "pq/views/devices/device_model.h"
 
 namespace pq::views::panel {
@@ -397,6 +398,7 @@ constexpr std::array<std::string_view, 4> kReadouts = {"below", "above", "inside
 constexpr std::array<std::string_view, 3> kOrient = {"auto", "horizontal", "vertical"};
 constexpr std::array<std::string_view, 2> kHandles = {"bar", "dot"};
 constexpr std::array<std::string_view, 2> kToggleLooks = {"switch", "button"};
+constexpr std::array<std::string_view, 2> kBeyond = {"last", "first"};  // SM.17 (tabs)
 constexpr std::array<std::string_view, 5> kShapes = {"rect", "round", "circle", "line", "ellipse"};  // SM.9: ellipse
 constexpr std::array<std::string_view, 3> kAligns = {"centre", "left", "right"};
 constexpr std::array<std::string_view, 1> kValueSlot = {"value"};
@@ -983,6 +985,14 @@ private:
 };
 
 // ---- menu ---------------------------------------------------------------------------------------------------------
+// SM.17: look "radial" — a PILL showing the current item; a click opens the radial menu (pq/ui/radial_menu.h) centred on
+// it with the element's items: "Category/Item" puts Item on the ring of Category (the pill shows "Item"), plain items sit
+// on the first ring; the current item is opened to and marked; typing filters. A pick is the write the list makes
+// (setOnce: one undo step). The wheel over the pill steps the value where the host allows value gestures (a run of
+// notches is one step). Look "list" (the default) is the drop-down.
+// SM.17: ITEMS FEWER THAN THE BINDING'S STEPS name its first steps (item k = step k), for menus and tabs alike: a
+// control may offer only some of a setting's values (the Sampler's Warp in Slice mode: Off | Re-Pitch of seven). A
+// stored value past the items shows as the last item — or, tabs style "beyond" = "first", as the first.
 
 std::vector<std::string> choicesOf(const Element& e, const BoundInfo& i) {
   std::vector<std::string> items = splitItems(e.desc().text("items", ""));
@@ -997,6 +1007,24 @@ size_t positionIndex(double p, size_t count) noexcept {
   if (count <= 1) return 0;
   return static_cast<size_t>(std::clamp(std::lround(p * static_cast<double>(count - 1)), 0l, static_cast<long>(count - 1)));
 }
+// The positions the items are spread over: the binding's steps when it has more of them than there are items.
+size_t itemSpan(const BoundInfo& i, size_t items) noexcept {
+  return i.valid && i.steps >= 2 && static_cast<size_t>(i.steps) > items ? static_cast<size_t>(i.steps) : items;
+}
+// The item shown at position `p` (`beyondFirst`: a value past the items is the first item, else the last).
+size_t itemAt(const BoundInfo& i, double p, size_t items, bool beyondFirst = false) noexcept {
+  if (items == 0) return 0;
+  const size_t k = positionIndex(p, itemSpan(i, items));
+  return k < items ? k : beyondFirst ? 0 : items - 1;
+}
+double itemPosition(const BoundInfo& i, size_t index, size_t items) noexcept { return indexPosition(index, itemSpan(i, items)); }
+// "Category/Item" → "Item" (the radial look's item name).
+std::string_view itemName(std::string_view item) noexcept {
+  const size_t s = item.find('/');
+  return s == std::string_view::npos ? item : item.substr(s + 1);
+}
+
+constexpr std::array<std::string_view, 2> kMenuLooks = {"list", "radial"};
 
 class MenuElement final : public ValueElement {
 public:
@@ -1005,6 +1033,7 @@ public:
       {"colour", StyleSpec::Type::Token, 0, "value"},
       {"items", StyleSpec::Type::Text, 0, ""},
       {"label", StyleSpec::Type::Text, 0, ""},
+      {"look", StyleSpec::Type::Choice, 0, "list", kMenuLooks},  // SM.17
   };
   // bug-mod-ghost: a menu's value is its text: no ghost (as a number box).
   void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
@@ -1015,12 +1044,18 @@ public:
   }
   void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
     const Rect r = box();
+    const float rad = corner(r);
     if (layer == 0) {
-      p.roundedRect(r, 3.0f, ui::rgba(255, 255, 255));
+      p.roundedRect(r, rad, ui::rgba(255, 255, 255));
       return;
     }
-    outlineRect(p, r, 3.0f, 1.0f, ui::rgba(255, 255, 255));
-    const float cx = r.x1 - 6.0f, cy = (r.y0 + r.y1) * 0.5f;  // the chevron
+    outlineRect(p, r, rad, 1.0f, ui::rgba(255, 255, 255));
+    const float cy = (r.y0 + r.y1) * 0.5f;
+    if (radial()) {  // a small ring: the choices open around the pill
+      p.ring({r.x1 - rad - 0.5f, cy}, 2.2f, 1.0f, ui::rgba(255, 255, 255));
+      return;
+    }
+    const float cx = r.x1 - 6.0f;  // the chevron
     p.line({cx - 2.5f, cy - 1.2f}, {cx, cy + 1.3f}, 1.1f, ui::rgba(255, 255, 255));
     p.line({cx, cy + 1.3f}, {cx + 2.5f, cy - 1.2f}, 1.1f, ui::rgba(255, 255, 255));
   }
@@ -1028,45 +1063,103 @@ public:
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
     const Rect r = box();
-    if (env.hovered) outlineRect(p, r, 3.0f, 1.25f, th.face.hover);
+    const bool rad = radial();
+    if (rad && *open_) outlineRect(p, r, corner(r), 1.5f, th.circuit.selected);
+    else if (env.hovered) outlineRect(p, r, corner(r), 1.25f, th.face.hover);
     const BoundInfo& i = bound(t);
     const std::vector<std::string> items = choicesOf(*this, i);
     std::string shown;
-    if (binding() != nullptr) shown = items.empty() ? readoutText(t, pos(t)) : items[positionIndex(pos(t), items.size())];
-    p.textAligned({r.x0 + 5.0f, (r.y0 + r.y1) * 0.5f}, shown, kLabelPx, editable(t) ? colour(th, "colour", "value", th.face.value) : th.face.ink, 0.0f);
+    if (binding() != nullptr) shown = items.empty() ? readoutText(t, pos(t)) : items[itemAt(i, pos(t), items.size())];
+    const Rgba ink = editable(t) ? colour(th, "colour", "value", th.face.value) : th.face.ink;
+    if (rad) p.text({(r.x0 + r.x1) * 0.5f - 2.5f, (r.y0 + r.y1) * 0.5f}, itemName(shown), kLabelPx, ink);
+    else p.textAligned({r.x0 + 5.0f, (r.y0 + r.y1) * 0.5f}, shown, kLabelPx, ink, 0.0f);
     const std::string& label = labelText(t);
     if (!label.empty() && r.y0 > 6.0f) p.textAligned({r.x0, 4.5f}, label, kLabelPx, th.face.ink, 0.0f);
   }
+  uint64_t liveKey(const PanelTarget& t) const override {
+    const uint64_t k = Element::liveKey(t);
+    return k == kAnyChange ? k : mix(k, *open_ ? 2u : 1u);
+  }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    if (radial()) {
+      noteGestures(e, t);
+      if (e.kind == FacePointer::Kind::Wheel) return wheelStep(e, t);
+    }
     if (e.kind != FacePointer::Kind::Down || e.button != ui::PointerButton::Left || !editable(t)) return false;
     ui::Widget* host = t.menuHost();
     const doc::Binding* b = binding();
-    const std::vector<std::string> items = choicesOf(*this, bound(t));
+    const BoundInfo& info = bound(t);
+    const std::vector<std::string> items = choicesOf(*this, info);
     if (host == nullptr || b == nullptr || items.empty()) return true;
-    const size_t now = positionIndex(pos(t), items.size());
-    std::vector<ui::MenuItem> menu;
+    const size_t now = itemAt(info, pos(t), items.size());
     PanelTarget* target = &t;
     const doc::Binding bound = *b;
+    if (radial()) {
+      // Each item a leaf keyed by its whole text; its position worked out now (the pick handler touches only the target:
+      // a pick may rebuild the panel, and this element with it).
+      std::vector<ui::RadialItem> ring;
+      std::vector<std::pair<std::string, double>> at;
+      for (size_t k = 0; k < items.size(); ++k) {
+        const std::string_view name = itemName(items[k]);
+        ui::RadialItem leaf = ui::RadialItem::leaf(items[k], std::string(name));
+        at.emplace_back(items[k], itemPosition(info, k, items.size()));
+        if (name.size() == items[k].size()) {
+          ring.push_back(std::move(leaf));
+          continue;
+        }
+        const std::string_view cat = std::string_view(items[k]).substr(0, items[k].size() - name.size() - 1);
+        auto c = std::find_if(ring.begin(), ring.end(), [&](const ui::RadialItem& x) { return !x.children.empty() && x.label == cat; });
+        if (c == ring.end()) {
+          ring.push_back(ui::RadialItem::category(std::string(cat), {}));
+          c = ring.end() - 1;
+        }
+        c->children.push_back(std::move(leaf));
+      }
+      const Rect r = box();
+      const auto dev = [&](float x, float y) {
+        return Vec2{e.device.x + (x - e.local.x) * e.pxPerUnit, e.device.y + (y - e.local.y) * e.pxPerUnit};
+      };
+      const Vec2 a = dev(r.x0, r.y0), z = dev(r.x1, r.y1);
+      const ui::IRect anchor{static_cast<int32_t>(std::lround(a.x)), static_cast<int32_t>(std::lround(a.y)),
+                             static_cast<int32_t>(std::lround(z.x - a.x)), static_cast<int32_t>(std::lround(z.y - a.y))};
+      ui::RadialMenuOptions o;
+      o.current = items[now];
+      o.onPick = [target, bound, at = std::move(at)](std::string_view key) {
+        for (const auto& [item, position] : at)
+          if (item == key) {
+            target->setOnce(bound, position, "Panel Menu");
+            return;
+          }
+      };
+      o.onClosed = [open = open_] { *open = false; };  // (the menu can outlive the element: the flag is shared)
+      *open_ = ui::openRadialMenu(*host, anchor, std::move(ring), std::move(o)) != nullptr;
+      return true;
+    }
+    std::vector<ui::MenuItem> menu;
     for (size_t k = 0; k < items.size(); ++k) {
-      ui::MenuItem m = ui::MenuItem::item(items[k], [target, bound, k, n = items.size()] { target->setOnce(bound, indexPosition(k, n), "Panel Menu"); });
+      ui::MenuItem m = ui::MenuItem::item(items[k], [target, bound, p = itemPosition(info, k, items.size())] { target->setOnce(bound, p, "Panel Menu"); });
       m.checked = k == now;
       menu.push_back(std::move(m));
     }
     (void)ui::openContextMenu(*host, e.device, std::move(menu));
     return true;
   }
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override { return radial() && valueKey(e, t); }
   std::optional<double> selection(const PanelTarget& t) const override {
     if (binding() == nullptr) return std::nullopt;
     const std::vector<std::string> items = choicesOf(*this, bound(t));
-    return static_cast<double>(positionIndex(pos(t), std::max<size_t>(items.size(), 2)));
+    return static_cast<double>(itemAt(bound(t), pos(t), std::max<size_t>(items.size(), 2)));
   }
 
 private:
+  bool radial() const noexcept { return txt("look", "list") == "radial"; }
+  float corner(const Rect& r) const noexcept { return radial() ? (r.y1 - r.y0) * 0.5f : 3.0f; }
   Rect box() const noexcept {
     const float top = txt("label", "") != "-" && desc_.h >= 26.0f ? std::min(10.0f, desc_.h * 0.4f) : 0.0f;
     return {0.5f, top + 0.5f, desc_.w - 0.5f, desc_.h - 0.5f};
   }
-  std::string hint() const override { return " Click to choose."; }
+  std::string hint() const override { return radial() ? " Click to choose (type to search)." : " Click to choose."; }
+  std::shared_ptr<bool> open_ = std::make_shared<bool>(false);
 };
 
 // ---- XY pad -------------------------------------------------------------------------------------------------------
@@ -1320,6 +1413,8 @@ public:
       {"items", StyleSpec::Type::Text, 0, "A|B"},
       {"colour", StyleSpec::Type::Token, 0, "value"},
       {"default", StyleSpec::Type::Number, 0.0, {}, {}, 0.0, 64.0},
+      // SM.17: what a stored value past the items shows as (items fewer than the binding's steps: see the menu).
+      {"beyond", StyleSpec::Type::Choice, 0, "last", kBeyond},
   };
   explicit Tabs(doc::PanelElement d) : ValueElement(std::move(d)) { local_ = std::max(0.0, std::round(num("default", 0.0))); }
   // bug-mod-ghost: a ghost only while the modulation selects another tab.
@@ -1358,7 +1453,7 @@ public:
     const int32_t k = cellAt(e.local, it.size());
     if (k < 0) return false;
     if (const doc::Binding* b = binding()) {
-      if (editable(t)) t.setOnce(*b, indexPosition(static_cast<size_t>(k), it.size()), "Panel Tab");
+      if (editable(t)) t.setOnce(*b, itemPosition(bound(t), static_cast<size_t>(k), it.size()), "Panel Tab");
     } else {
       local_ = static_cast<double>(k);
     }
@@ -1366,7 +1461,7 @@ public:
   }
   std::optional<double> selection(const PanelTarget& t) const override {
     const size_t n = std::max<size_t>(items().size(), 1);
-    if (binding() != nullptr) return static_cast<double>(positionIndex(pos(t), n));
+    if (binding() != nullptr) return static_cast<double>(itemAt(bound(t), pos(t), n, txt("beyond", "last") == "first"));
     return std::min(local_, static_cast<double>(n - 1));
   }
   void setLocalSelection(double v) override { local_ = v; }

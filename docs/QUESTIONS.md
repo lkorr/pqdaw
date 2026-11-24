@@ -2687,3 +2687,27 @@ Context: AR.3 (docs/plans/AR.md, now updated to what was built). Choices made wi
    follows the real signature.
 8. **Layers** in the Pitch block: a count and up to three level knobs in the row AR.4 left for them (first built as
    number boxes: the block had no room before AR.4).
+
+## Q?-SM.17-a · Sampler panel pass: readings taken
+Context: SM.17 (docs/plans/SM.md "SM.17"). Choices (most reversible):
+1. **A stored stretch mode in Slice shows as Off** and is kept (Slice plays it unwarped: pq/meta/sampler.cpp); a click on
+   Off / Re-Pitch there overwrites it. Back in Classic the stretch mode is still chosen. Other option: write Off when
+   entering Slice (loses the choice).
+2. **Fewer items than steps = the first steps** (menu and tabs), with tabs style `beyond` (last | first) for a value past
+   them. General rule instead of a Sampler-only "Slice warp" element. Before, such items were spread over the range.
+3. **Complex has no Warp section** (the plan lists no control for it; whether `grain` reaches the Complex stream was
+   not checked here: SM.16 reworks it); Complex Pro shows Formants and Envelope (`formants`, `formantOrder`).
+4. **Loop Fade shows only while looping with warp Off / Re-Pitch** (a stretch mode has no loop crossfade, Q?-SM.4-a 3);
+   the editor's fade shading follows the same rule.
+5. **Slices and Granular are open by default** (they only exist in their mode); Envelope / Filter / LFO stay folded.
+6. **Wheel on the pill follows the hosts' value-gesture rule** (Device view and panel windows; on the canvas the wheel
+   scrolls the view, as for knobs) rather than taking the wheel everywhere.
+7. **Grain Shape shows names**, not drawn window curves: RadialItem takes a text glyph only; a drawn glyph needs a
+   painter callback on the menu (not cheap, left out).
+8. **Fades have no handles in the editor** (they are knobs; the ramps are drawn only), so there is nothing to hover.
+9. **The radial item text `A/B` means category A** in the radial look only: a list of note values ("1/4") must stay a
+   list or be given categories.
+10. **Live check harness**: `PQ_BUGREPORT_SCRIPT` got drag / wheel / type / double-click / key steps (src/app) so a
+    worker can drive its own instance and read F12 shots; an unsaved-changes prompt at quit is a native box the script
+    cannot answer (the runner ends its own process and removes the autosave folder that leaves in pqdaw/Unsaved).
+Status: open.

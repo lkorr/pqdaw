@@ -2440,14 +2440,20 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   wire(r.engine, "gateOut", r.envelope.engine, "gate");  // (a gate input reads its wires' sum > 0: the compare)
   wire(r.lfoOut, lfoPort, r.filterFrequency, kValueParam, WireLaw::Travel, 0.25);
   std::sort(out.wires.begin(), out.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
-  // The panel (SM.10 / SM.11, docs/plans/SM.md "Face"): the CLOSED FACE — an oval plate (152 × 84) holding the sample's
-  // waveform and the voices' playheads (the engine face's `samplewave` section), three mini knobs on the lower arc
-  // (Transpose · Filter · Volume) and the Expand chevron (a fold, folded by default: view state; a double-click on the
-  // waveform toggles it too: its "toggle") — and the EXPANDED PANEL under the chevron's fold (Panel::fit: the closed
-  // face is the oval alone, 152 wide; open, the panel is kSamplerPanelW wide): beside the oval the mode row and the root
-  // field (owned by the chevron: "section"), under it the waveform editor (`sampleedit`) and the fold sections Sample,
-  // Warp, Slices (Slice mode only), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on / off
-  // switches beside their headers: kActiveSetting), each a child of the chevron ("parent"); only Sample open.
+  // The panel (SM.10 / SM.11 / SM.17, docs/plans/SM.md "Face"): the CLOSED FACE — an oval plate (152 × 84) holding the
+  // sample's waveform and the voices' playheads (the engine face's `samplewave` section), three mini knobs with their
+  // names under them (Transpose · Filter · Volume; Gran: Position · Size · Density) and the Expand chevron (a fold,
+  // folded by default: view state; a double-click on the waveform toggles it too: its "toggle") — and the EXPANDED PANEL
+  // under the chevron's fold (Panel::fit: the closed face is the oval alone, 152 wide; open, the panel is kSamplerPanelW
+  // wide). Beside the oval (owned by the chevron: "section"): the mode row, the root field and the Warp row — the warp
+  // mode (a radial menu; in Slice mode the cells Off | Re-Pitch: the stretch modes do nothing there) and the sample's
+  // tempo while it warps; no Warp row in Gran mode. Under it the waveform editor (`sampleedit`) and the fold sections
+  // Sample, Warp (only while a stretch mode with controls is chosen: that mode's controls), Slices (Slice mode only),
+  // Granular (Gran mode only), Envelope, Filter, LFO (their panels embedded, GU.6; the Filter and LFO on / off switches
+  // beside their headers: kActiveSetting), each a child of the chevron ("parent"); the mode's own sections open, the
+  // embedded three folded.
+  // SM.17's rule for a choice: 2 – 3 values are cells (a `tabs` element: all visible, one click), 5 or more a radial menu
+  // (a `menu` of look "radial"); no drop-down list.
   Panel panel;
   panel.width = kSamplerPanelW;
   panel.fit = true;
@@ -2467,28 +2473,42 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   id += 6;
   r.expand = id++;
   r.tabs = id++;
+  const auto text = [&](const char* what, float x, float y, float w, float h, double size = 7.5, const char* align = "left") {
+    PanelElement label = element(id++, "label", x, y, w, h, {});
+    label.bindings.clear();
+    label.setField(styleText("text", what));
+    label.setField(styleText("align", align));
+    label.setField(styleNumber("size", size));
+    return label;
+  };
   {
     struct K {
       Binding b;
-      float x, y;
+      const char* name;
+      float x;
       bool gran;
     };
     // Transpose, Filter (the Filter's Frequency), Volume (the engine's Gain); SM.13: in Gran mode Position · Size ·
-    // Density in their places. Label-free, as the meta faces are (their names in the info view on hover). Each set is
-    // shown by the mode row (a condition reads it while the settings are folded away: folding is view state).
+    // Density in their places. SM.17: each with its name under it (the set changes with the mode, so they are named).
+    // Each set is shown by the mode row (a condition reads it while the settings are folded away: folding is view
+    // state).
     uint32_t kid = kKnobsAt;
-    for (const K& k : {K{controlBinding(r.engine, "transpose"), 34, 44, false},
-                       K{controlBinding(r.filterFrequency, std::string(kValueParam)), 63, 47, false},
-                       K{controlBinding(r.engine, "gain"), 92, 44, false},
-                       K{controlBinding(r.engine, "grainPosition"), 34, 44, true},
-                       K{controlBinding(r.engine, "grainSize"), 63, 47, true},
-                       K{controlBinding(r.engine, "density"), 92, 44, true}}) {
-      PanelElement e = element(kid++, "knob", k.x, k.y, 26, 26, k.b);
+    for (const K& k : {K{controlBinding(r.engine, "transpose"), "Transpose", 34, false},
+                       K{controlBinding(r.filterFrequency, std::string(kValueParam)), "Filter", 65, false},
+                       K{controlBinding(r.engine, "gain"), "Volume", 96, false},
+                       K{controlBinding(r.engine, "grainPosition"), "Position", 34, true},
+                       K{controlBinding(r.engine, "grainSize"), "Size", 65, true},
+                       K{controlBinding(r.engine, "density"), "Density", 96, true}}) {
+      const Visibility shown = k.gran ? Visibility{r.tabs, {3.0}, {}, false} : Visibility{r.tabs, {0.0, 1.0, 2.0}, {}, false};
+      PanelElement e = element(kid++, "knob", k.x, 43, 22, 22, k.b);
       e.setField(styleText("label", "-"));
       e.setField(styleText("readout", "none"));
       e.setField(styleNumber("track", 2.0));
-      e.when = k.gran ? Visibility{r.tabs, {3.0}, {}, false} : Visibility{r.tabs, {0.0, 1.0, 2.0}, {}, false};
+      e.when = shown;
       panel.elements.push_back(std::move(e));
+      PanelElement name = text(k.name, k.x - 8.0f, 65, 38, 7, 6.0, "centre");
+      name.when = shown;
+      panel.elements.push_back(std::move(name));
     }
   }
   {
@@ -2515,25 +2535,49 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     panel.elements.push_back(std::move(back));
   }
   const size_t backAt = panel.elements.size() - 1;
-  // The mode row and the root, beside the oval.
+  const auto when = [](PanelElement e, uint32_t source, std::vector<double> values) {
+    e.when = Visibility{source, std::move(values), {}, false};
+    return e;
+  };
+  // Shown while BOTH hold (a source hidden by its own condition fails its term).
+  const auto whenBoth = [](PanelElement e, uint32_t a, std::vector<double> av, uint32_t b, std::vector<double> bv) {
+    e.when = Visibility{a, std::move(av), {VisibilityTerm{b, std::move(bv)}}, true};
+    return e;
+  };
+  const auto cells = [&](uint32_t eid, const char* setting, const char* items, float x, float top, float w) {
+    PanelElement e = element(eid, "tabs", x, top, w, 16, settingBinding(r.engine, setting));
+    e.setField(styleText("items", items));
+    return e;
+  };
+  // The mode row, the root and the warp row, beside the oval.
+  const uint32_t warp = id++, sliceWarp = id++;
   {
-    PanelElement mode = element(r.tabs, "tabs", kRight, 10, kRightW, 16, settingBinding(r.engine, "mode"));
-    mode.setField(styleText("items", kSamplerModes));
-    owned(std::move(mode));
-    PanelElement label = element(id++, "label", kRight, 36, 30, 16, {});
-    label.bindings.clear();
-    label.setField(styleText("text", "Root"));
-    label.setField(styleText("align", "left"));
-    label.setField(styleNumber("size", 8.0));
-    owned(std::move(label));
-    owned(element(id++, "sampleroot", kRight + 30, 36, 120, 16, dataBinding(r.engine)));
-    PanelElement hint = element(id++, "label", kRight, 62, kRightW, 12, {});
-    hint.bindings.clear();
-    hint.setField(styleText("text", "Open the group to rewire it"));
-    hint.setField(styleText("align", "left"));
-    hint.setField(styleNumber("size", 6.5));
-    hint.setField(styleText("colour", "tick"));
-    owned(std::move(hint));
+    owned(cells(r.tabs, "mode", kSamplerModes, kRight, 8, kRightW));
+    owned(text("Root", kRight, 31, 30, 16));
+    owned(element(id++, "sampleroot", kRight + 30, 31, 120, 16, dataBinding(r.engine)));
+    // Warp: Classic / One-Shot the seven modes; Slice only Off | Re-Pitch (its slices play unwarped in the stretch
+    // modes: a stored stretch mode shows as Off there, which is what plays, and is kept until a cell is clicked);
+    // Granular warps nothing: no row.
+    owned(when(text("Warp", kRight, 54, 30, 16), r.tabs, {0.0, 1.0, 2.0}));
+    PanelElement w = element(warp, "menu", kRight + 30, 54, 80, 16, settingBinding(r.engine, "warp"));
+    w.setField(styleText("items", "Off|Re-Pitch|Beats|Tones|Texture|Complex|Complex Pro"));
+    w.setField(styleText("label", "-"));
+    w.setField(styleText("look", "radial"));
+    owned(when(std::move(w), r.tabs, {0.0, 1.0}));
+    PanelElement sw = cells(sliceWarp, "warp", "Off|Re-Pitch", kRight + 30, 54, 80);
+    sw.setField(styleText("beyond", "first"));
+    owned(when(std::move(sw), r.tabs, {2.0}));
+    // The sample's tempo, while it warps.
+    const auto bpm = [&] {
+      PanelElement e = element(id++, "number", kRight + 114, 54, 60, 16, controlBinding(r.engine, "sampleBpm"));
+      e.setField(styleText("label", "-"));
+      e.setField(styleNumber("decimals", 2.0));
+      e.setField(styleText("suffix", " BPM"));
+      e.setField(styleNumber("size", 7.5));
+      return e;
+    };
+    owned(whenBoth(bpm(), r.tabs, {0.0, 1.0}, warp, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}));
+    owned(whenBoth(bpm(), r.tabs, {2.0}, sliceWarp, {1.0}));
   }
   // The waveform editor.
   constexpr float kEdTop = kSamplerFaceH + 6.0f;
@@ -2549,88 +2593,74 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     panel.elements.push_back(std::move(f));
     y += 16.0f;
   };
-  const auto when = [](PanelElement e, uint32_t source, std::vector<double> values) {
-    e.when = Visibility{source, std::move(values), {}, false};
-    return e;
-  };
   const auto knob = [&](const char* param, const char* label, float x, float top) {
     PanelElement e = element(id++, "knob", x, top, 46, 56, controlBinding(r.engine, param));
     e.setField(styleText("label", label));
     return e;
   };
-  // Sample: gain, transpose, detune; Classic: the loop and its fade; One-Shot / Slice: the fades and the trigger.
+  // Sample: gain, transpose, detune; Classic: the loop cells and (looping, not stretching) its fade; One-Shot / Slice: the fades and
+  // how a note plays it (Trigger: to the end; Gate: while held).
   header("Sample", true);
   {
     const float t = y;
     panel.elements.push_back(knob("gain", "Gain", 6, t));
     panel.elements.push_back(knob("transpose", "Transpose", 54, t));
     panel.elements.push_back(knob("detune", "Detune", 102, t));
-    PanelElement loop = element(id++, "menu", 160, t + 12, 80, 26, settingBinding(r.engine, "loop"));
-    loop.setField(styleText("items", "Off|Forward|Ping-pong"));
-    loop.setField(styleText("label", "Loop"));
-    panel.elements.push_back(when(std::move(loop), r.tabs, {0.0}));
-    panel.elements.push_back(when(knob("loopFade", "Loop Fade", 250, t), r.tabs, {0.0}));
-    panel.elements.push_back(when(knob("fadeIn", "Fade In", 150, t), r.tabs, {1.0, 2.0}));
-    panel.elements.push_back(when(knob("fadeOut", "Fade Out", 198, t), r.tabs, {1.0, 2.0}));
-    PanelElement trig = element(id++, "menu", 252, t + 12, 80, 26, settingBinding(r.engine, "trigger"));
-    trig.setField(styleText("items", "Trigger|Gate"));
-    trig.setField(styleText("label", "Trigger"));
-    panel.elements.push_back(when(std::move(trig), r.tabs, {1.0, 2.0}));
+    const uint32_t loop = id++;
+    panel.elements.push_back(when(text("Loop", 160, t + 8, 60, 10), r.tabs, {0.0}));
+    panel.elements.push_back(when(cells(loop, "loop", "Off|Forward|Ping-Pong", 160, t + 20, 122), r.tabs, {0.0}));
+    // (The loop's crossfade is Off / Re-Pitch's: a stretch mode loops the content in beats, Q?-SM.4-a 3.)
+    panel.elements.push_back(whenBoth(knob("loopFade", "Loop Fade", 288, t), loop, {1.0, 2.0}, warp, {0.0, 1.0}));
+    panel.elements.push_back(when(knob("fadeIn", "Fade In", 156, t), r.tabs, {1.0, 2.0}));
+    panel.elements.push_back(when(knob("fadeOut", "Fade Out", 204, t), r.tabs, {1.0, 2.0}));
+    panel.elements.push_back(when(text("Plays", 258, t + 8, 60, 10), r.tabs, {1.0, 2.0}));
+    panel.elements.push_back(when(cells(id++, "trigger", "Trigger|Gate", 258, t + 20, 76), r.tabs, {1.0, 2.0}));
     y = t + 60.0f;
   }
-  // Warp: the 7-way mode, the sample's tempo; Beats: its envelope and loop; Tones / Texture (Complex …): the grain;
-  // Texture: the flux.
-  header("Warp", false);
-  panel.elements.back().when = Visibility{r.tabs, {0.0, 1.0, 2.0}, {}, false};  // SM.13: Granular does not warp
+  // Warp: only while a stretch mode that has controls is chosen (Classic / One-Shot), open, with that mode's controls —
+  // Beats: the transient envelope and what a held transient does; Tones: the grain size; Texture: grain size and flux;
+  // Complex Pro: formants and the spectral envelope's order. (Off, Re-Pitch and Complex have none: no section.)
+  header("Warp", true);
+  panel.elements.back().when = Visibility{r.tabs, {0.0, 1.0}, {VisibilityTerm{warp, {2.0, 3.0, 4.0, 6.0}}}, true};
   {
     const float t = y;
-    const uint32_t warp = id++;
-    PanelElement w = element(warp, "menu", 6, t + 12, 100, 26, settingBinding(r.engine, "warp"));
-    w.setField(styleText("items", "Off|Re-Pitch|Beats|Tones|Texture|Complex|Complex Pro"));
-    w.setField(styleText("label", "Warp"));
-    panel.elements.push_back(std::move(w));
-    PanelElement bpm = element(id++, "number", 114, t + 12, 54, 26, controlBinding(r.engine, "sampleBpm"));
-    bpm.setField(styleText("label", "Sample BPM"));
-    bpm.setField(styleNumber("decimals", 2.0));
-    panel.elements.push_back(when(std::move(bpm), warp, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}));
-    panel.elements.push_back(when(knob("envelope", "Envelope", 178, t), warp, {2.0}));
-    PanelElement bl = element(id++, "menu", 230, t + 12, 100, 26, settingBinding(r.engine, "beatsLoop"));
-    bl.setField(styleText("items", "Off|Forward|Back-Forward"));
-    bl.setField(styleText("label", "Beats Loop"));
-    panel.elements.push_back(when(std::move(bl), warp, {2.0}));
-    panel.elements.push_back(when(knob("grain", "Grain", 178, t), warp, {3.0, 4.0, 5.0, 6.0}));
-    panel.elements.push_back(when(knob("flux", "Flux", 226, t), warp, {4.0}));
+    panel.elements.push_back(when(knob("envelope", "Envelope", 6, t), warp, {2.0}));
+    panel.elements.push_back(when(text("Transient Loop", 64, t + 8, 90, 10), warp, {2.0}));
+    panel.elements.push_back(when(cells(id++, "beatsLoop", "Off|Forward|Back-Forth", 64, t + 20, 150), warp, {2.0}));
+    panel.elements.push_back(when(knob("grain", "Grain Size", 6, t), warp, {3.0, 4.0}));
+    panel.elements.push_back(when(knob("flux", "Flux", 54, t), warp, {4.0}));
+    panel.elements.push_back(when(knob("formants", "Formants", 6, t), warp, {6.0}));
+    panel.elements.push_back(when(knob("formantOrder", "Envelope", 54, t), warp, {6.0}));
     y = t + 60.0f;
   }
   // Slices (Slice mode only): the slicing row (SM.12: Transient | Beat | Region | Manual, the amount, Slice to Notes).
-  header("Slices", false);
+  header("Slices", true);
   panel.elements.back().when = Visibility{r.tabs, {2.0}, {}, false};
   panel.elements.push_back(element(id++, "sampleslice", 6, y + 2, 328, 30, dataBinding(r.engine)));
   y += 36.0f;
-  // SM.13, Granular (Gran mode only): the grain mode, the window shape, the grains per voice, Freeze, Harmonic grains;
-  // the knobs Position, Scan, Size, Spray (time), Pitch and Pan spray, Density (Loop / Cloud: Classic spawns one grain
-  // per period); the harmonic list (`sampleharm`: n/d chips, the data's `harmonics`).
-  header("Granular", false);
+  // SM.13, Granular (Gran mode only): the grain mode cells, the window shape (a radial menu), the grains per voice,
+  // Freeze, Harmonic grains; the knobs Position, Scan, Size, Spray (time), Pitch and Pan spray, Density (Loop / Cloud:
+  // Classic spawns one grain per period); the harmonic list (`sampleharm`: n/d chips, the data's `harmonics`).
+  header("Granular", true);
   panel.elements.back().when = Visibility{r.tabs, {3.0}, {}, false};
   {
     const float t = y;
     const uint32_t gm = id++;
-    PanelElement m = element(gm, "menu", 6, t + 4, 80, 26, settingBinding(r.engine, "granMode"));
-    m.setField(styleText("items", "Classic|Loop|Cloud"));
-    m.setField(styleText("label", "Grain Mode"));
-    panel.elements.push_back(std::move(m));
-    PanelElement sh = element(id++, "menu", 92, t + 4, 80, 26, settingBinding(r.engine, "shape"));
+    panel.elements.push_back(text("Grain Mode", 6, t + 4, 80, 10));
+    panel.elements.push_back(cells(gm, "granMode", "Classic|Loop|Cloud", 6, t + 14, 120));
+    PanelElement sh = element(id++, "menu", 132, t + 4, 62, 26, settingBinding(r.engine, "shape"));
     sh.setField(styleText("items", "Hann|Tukey|Gauss|Triangle|Exp"));
     sh.setField(styleText("label", "Shape"));
+    sh.setField(styleText("look", "radial"));
     panel.elements.push_back(std::move(sh));
-    PanelElement gr = element(id++, "number", 178, t + 4, 54, 26, settingBinding(r.engine, "grains"));
+    PanelElement gr = element(id++, "number", 200, t + 4, 38, 26, settingBinding(r.engine, "grains"));
     gr.setField(styleText("label", "Grains"));
     panel.elements.push_back(std::move(gr));
-    for (const auto& [x, w, bind, text] : {std::tuple{240.0f, 40.0f, controlBinding(r.engine, "freeze"), "Freeze"},
-                                        std::tuple{284.0f, 44.0f, settingBinding(r.engine, "harmonic"), "Harmonic"}}) {
-      PanelElement on = element(id++, "toggle", x, t + 13, w, 14, bind);
+    for (const auto& [x, w, bind, what] : {std::tuple{244.0f, 40.0f, controlBinding(r.engine, "freeze"), "Freeze"},
+                                           std::tuple{288.0f, 46.0f, settingBinding(r.engine, "harmonic"), "Harmonic"}}) {
+      PanelElement on = element(id++, "toggle", x, t + 14, w, 16, bind);
       on.setField(styleText("look", "button"));
-      on.setField(styleText("text", text));
+      on.setField(styleText("text", what));
       panel.elements.push_back(std::move(on));
     }
     const float k = t + 34;

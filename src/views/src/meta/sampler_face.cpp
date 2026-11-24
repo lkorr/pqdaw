@@ -107,6 +107,7 @@ Rect sliceCell(int k) noexcept {
 constexpr Rect kRootText{0.5f, 330.5f, 82.0f, 345.5f}, kRootHz{84.0f, 330.5f, 101.0f, 345.5f}, kRootId{103.0f, 330.5f, 119.5f, 345.5f};
 enum EditPart : int32_t {
   kPStart = 0, kPEnd, kPLoopStart, kPLoopEnd, kPLoop, kPWave, kPRuler, kPRootText, kPRootHz, kPRootId,
+  kPEditor = 10,  // SM.17: the editor where nothing is (its presses are the editor's: they never move the block)
   kPSliceBy0 = 20, kPSliceAmount = 24, kPSliceNotes = 25,  // SM.12 (kPSliceBy0 + the drawn cell)
   kPGrain = 30, kPGrainSize = 31, kPHarmAdd = 32,          // SM.13: the grain region (body, right edge), + a ratio
   kPHarm0 = 40, kPHarmX0 = 70,                              // SM.13: ratio chip i (its text, its ×)
@@ -215,7 +216,7 @@ public:
     const double now = clockNow();
     refresh();
     if (cols_.sample == 0)
-      p.text({(kWell.x0 + kWell.x1) * 0.5f, (kWell.y0 + kWell.y1) * 0.5f - 6.0f}, "drop a sample", 6.0f, ui::mulAlpha(th.face.ink, 0.55f));
+      p.text({(kWell.x0 + kWell.x1) * 0.5f, (kWell.y0 + kWell.y1) * 0.5f - 6.0f}, "Drop a sample here", 6.5f, ui::mulAlpha(th.face.ink, 0.8f));
     paintRegion(p, th);
     const bool gran = granular();
     if (gran) {  // SM.13: the grain region over the well, the grains in it
@@ -302,6 +303,7 @@ public:
     if (part >= kPSliceBy0 && part <= kPSliceNotes) return ui::Cursor::Pointer;
     if (part == kPRootText) return ui::Cursor::Text;
     if (part == kPRootHz || part == kPRootId) return ui::Cursor::Pointer;
+    if (part == kPEditor || part == kPWave || part == kPRuler) return ui::Cursor::Arrow;  // SM.17: not the block's grab
     return MetaFace::cursor(part);
   }
   void describe(int32_t part, std::string& title, std::string& body) const override {
@@ -323,14 +325,18 @@ public:
       return;
     }
     switch (part) {
-      case kPStart: title = "Start"; body = "Drag: where a note starts reading the sample."; return;
-      case kPEnd: title = "End"; body = "Drag: where the sample ends."; return;
+      case kPStart: title = "Sample Start"; body = "Drag: where a note starts reading the sample."; return;
+      case kPEnd: title = "Sample End"; body = "Drag: where the sample ends."; return;
       case kPLoopStart: title = "Loop Start"; body = "Drag: where the loop starts (its end stays)."; return;
       case kPLoopEnd: title = "Loop End"; body = "Drag: where the loop ends."; return;
       case kPLoop: title = "Loop"; body = "Drag: move the loop (its length stays)."; return;
       case kPWave:
-        title = "Waveform";
-        body = slicesShown() ? "Double-click: add a slice here." : "The whole sample; Start, End and the loop drag here.";
+      case kPEditor:
+        title = "Sample Editor";
+        body = cols_.sample == 0 ? "Drop an audio file on the Sampler to load a sample."
+               : granular()      ? "The whole sample. Drag the Start and End lines; drag the grain region to move Position, its right edge to set the grain size."
+               : slicesShown()   ? "The whole sample. Drag the Start and End lines and the slice lines; double-click the waveform to add a slice."
+                                 : "The whole sample. Drag the Start and End lines (or their flags below); the loop bar along the top moves and resizes the loop.";
         return;
       case kPRuler:
         title = "Beat Ruler";
@@ -639,6 +645,9 @@ SamplerFace::Geometry SamplerFace::geometry() const {
   g.sampleBpm = std::max(1.0, t.value(meta::kSmpSampleBpm));
   g.mode = static_cast<SamplerMode>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpMode))), 0, 3));
   g.warp = static_cast<SamplerWarp>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpWarp))), 0, 6));
+  // SM.17: the warp that PLAYS (pq/meta/sampler.h): Granular warps nothing, Slice plays a stored stretch mode unwarped —
+  // the ruler then reads seconds and the fades show, as the panel's Warp row says Off.
+  if (g.mode == SamplerMode::Granular || (g.mode == SamplerMode::Slice && g.warp >= SamplerWarp::Beats)) g.warp = SamplerWarp::Off;
   g.loop = g.mode == SamplerMode::Classic && std::lround(t.setting(meta::kSmpLoop)) != 0;
   const meta::DataPtr d = t.data();
   g.slices = meta::samplerSlices(d.get());
@@ -666,10 +675,10 @@ int32_t SamplerFace::editorPart(Vec2 l, float ppu) const noexcept {
   if (l.y >= kFlagY0 - 1.0f && l.y <= kFlagY1 + 1.0f) {  // the flags (End wins where they meet: it is drawn on top)
     if (near(g.end)) return kPEnd;
     if (near(g.start)) return kPStart;
-    return kFrame;
+    return kPEditor;
   }
   if (l.y >= kRulerY0 && l.y < kWaveY0 - 0.5f) {
-    if (!markersShown() || g.frames <= 0.0) return kFrame;
+    if (!markersShown() || g.frames <= 0.0) return kPEditor;
     for (size_t i = 0; i + 1 < g.markers.size(); i += 2)
       if (near(static_cast<double>(g.markers[i]) / g.frames)) return kPMarker0 + static_cast<int32_t>(i / 2);
     return kPRuler;
@@ -689,7 +698,7 @@ int32_t SamplerFace::editorPart(Vec2 l, float ppu) const noexcept {
         if (near(static_cast<double>(g.slices[i]) / g.frames)) return kPSlice0 + static_cast<int32_t>(i);
     return kPWave;
   }
-  return kFrame;
+  return kPEditor;
 }
 
 void SamplerFace::editFloats(const char* field, std::vector<float> v) {
@@ -756,7 +765,8 @@ bool SamplerFace::onPointer(const FacePointer& e) {
   if (part != kPRootText && typing_) commitRoot();
   if (harmEdit_ >= 0 && part != kPHarm0 + harmEdit_) commitHarm();
   if (part == kFrame || part == kNone) return false;
-  if (!t.editable()) return false;
+  if (part == kPEditor) return true;  // SM.17: a press in the editor is never the block's
+  if (!t.editable()) return within(kEditor, e.local);
   if (part == kPGrain || part == kPGrainSize) {  // SM.13: the grain region (one undo step per drag)
     dragWell_ = within(kWell, e.local);
     const Lane lane = dragWell_ ? wellLane() : editorLane();
@@ -841,7 +851,7 @@ bool SamplerFace::onPointer(const FacePointer& e) {
       return true;
     }
     case kPWave:
-      if (e.clicks < 2 || !slicesShown() || g.frames <= 0.0) return false;
+      if (e.clicks < 2 || !slicesShown() || g.frames <= 0.0) return true;  // (the editor's press: nothing to do)
       {  // a slice here (one step)
         std::vector<float> v = g.slices;
         const float f = static_cast<float>(std::round(u * g.frames));
@@ -851,7 +861,7 @@ bool SamplerFace::onPointer(const FacePointer& e) {
       }
       return true;
     case kPRuler:
-      if (e.clicks < 2 || g.frames <= 0.0) return false;
+      if (e.clicks < 2 || g.frames <= 0.0) return true;
       {  // a warp marker at the beat the ruler reads here (one step; nothing moves)
         std::vector<float> m = g.markers;
         dsp::WarpSource src;
@@ -1084,7 +1094,7 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
   const float mid = (kWaveY0 + kWaveY1) * 0.5f, half = (kWaveY1 - kWaveY0) * 0.5f - 4.0f;
   if (whole_.lo.empty()) {
     p.line({kEdX0, mid}, {kEdX1, mid}, 0.8f, ui::mulAlpha(th.face.ink, 0.4f));
-    p.text({(kEdX0 + kEdX1) * 0.5f, mid - 10.0f}, cols_.sample == 0 ? "drop a sample" : "reading the sample", 7.0f,
+    p.text({(kEdX0 + kEdX1) * 0.5f, mid - 10.0f}, cols_.sample == 0 ? "Drop an audio file on the Sampler to load a sample" : "Reading the sample \xE2\x80\xA6", 7.0f,
            ui::mulAlpha(th.face.ink, 0.55f));
   } else {
     const float step = (kEdX1 - kEdX0) / static_cast<float>(whole_.lo.size());
@@ -1149,7 +1159,7 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
   // The loop (Classic with a loop): its bar along the waveform's top, its fade shaded before both ends.
   if (g.loop) {
     const float a = edX(g.loopStart), b = edX(g.loopEnd);
-    if (g.loopFade > 0.0 && g.frames > 0.0) {
+    if (g.loopFade > 0.0 && g.frames > 0.0 && g.warp <= SamplerWarp::RePitch) {  // (a stretch mode has no loop crossfade)
       const float w = static_cast<float>(g.loopFade / (g.frames / g.rate)) * (kEdX1 - kEdX0);
       for (const float e : {a, b})
         p.roundedRect({std::max(kEdX0, e - w), kLoopY1, std::max(kEdX0 + 0.5f, e), kWaveY1 - 1.0f}, 0.0f, ui::mulAlpha(th.face.value, 0.12f));
@@ -1214,7 +1224,11 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
   if (g.frames > 0.0) {
     const double len = g.frames / g.rate;
     char b[96];
-    if (g.mode == SamplerMode::Slice)
+    if (g.mode == SamplerMode::Slice && g.slices.empty())  // SM.17: say what to do
+      std::snprintf(b, sizeof b, "no slices yet: choose a way below, or double-click the waveform");
+    else if (g.mode == SamplerMode::Slice && g.slices.size() == 1)
+      std::snprintf(b, sizeof b, "1 slice  \xC2\xB7  key 36");
+    else if (g.mode == SamplerMode::Slice)
       std::snprintf(b, sizeof b, "%zu slices  \xC2\xB7  keys 36 \xE2\x80\xA6 %zu", g.slices.size(), 35 + std::max<size_t>(g.slices.size(), 1));
     else if (g.mode == SamplerMode::Granular) {
       const GrainSpan sp = grainSpan();
