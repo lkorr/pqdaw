@@ -12,6 +12,12 @@ namespace pq::views::panel::test {
 
 // A steplane's lit step (its lane's current step read from the note stage's status; −1: none, −2: not a steplane).
 int32_t stepLaneLit(const Element& e);
+// AR.4: a steplane's cell of `step` (element-local; nullopt: not a steplane), the rows a grid lane shows now (± this
+// many steps of its unit), the middle of its row of `value` (element-local y) and whether a value is being typed.
+std::optional<ui::Rect> stepLaneCell(const Element& e, int32_t step);
+int32_t stepLaneRange(const Element& e, const PanelTarget& t);
+float stepLaneRowY(const Element& e, const PanelTarget& t, int32_t value);
+bool stepLaneTyping(const Element& e);
 // An arppattern's lit position (−1: none, −2: not one) and its pattern's entries.
 int32_t patternPosition(const Element& e);
 uint32_t patternCount(const Element& e);

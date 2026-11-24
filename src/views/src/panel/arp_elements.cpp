@@ -5,15 +5,34 @@
 //   presets     chips that set SEVERAL bindings at once: item k sets slot s to the k-th group of `values` (in the
 //               bindings' units, "1 1|2 3|3 2": a tuplet's n and m — Straight, Dotted, Triplet); one undo step. The
 //               item whose values all bindings have now is lit (none: a tuplet typed in by hand).
-//   steplane    a STEP-SEQUENCER ROW: slot 0 its length (1 … the steps bound), slot 1 its on / off switch (off: dimmed),
-//               slots 2 … its steps (controls). Look `bars` (the default: a bar per step, its height the value), `bipolar`
-//               (bars from the middle: a transpose lane, the value written in the cell) or `cells` (a 3-state cell per
-//               step: Play / Skip / Tie). A press on a step sets it from the pointer's height and a drag PAINTS across
-//               steps (cells: the state the first press gave) — one store gesture, one undo step, param writes only
-//               (runtime params: no compile); double-click or Alt+press: the default. The LENGTH HANDLE, a grip after
-//               the last step in play, drags the length (a setting: committed once at the end); steps past it dim.
+//   rate        AR.4: ONE RATE CONTROL over a synced rate's four numbers (slots: numerator, denominator, tuplet n, m):
+//               a box reading "1/16", "1/8 T", "1/8 D", "3/16 5:4" — a click opens the note values 1/1 … 1/128 (sets
+//               1 / den in one undo step, the tuplet stays), the wheel steps through them — and an "n:m" chip (view
+//               state). Its selection is 1 while the chip is on or the rate is none of the menu's: the panel shows
+//               the four number boxes on it, the feel chips (a `presets`) on 0.
+//   steplane    a STEP-SEQUENCER LANE (AR.4): slot 0 its on / off switch, slot 1 its length (1 … the steps bound), slot
+//               2 a seed (Randomize), slot 3 the pitch unit (a grid's rows; may be unbound), slots 4 … its steps
+//               (controls). On the left the NAME COLUMN: the switch with the lane's name, the menu's dots, a readout
+//               (the step under the pointer and its value in its unit, else the length). Its selection is the switch:
+//               the panel puts a conditional `fold` band (look "band") over the element's part below the name strip,
+//               so a lane switched OFF is only that strip and the panel's fit height follows.
+//               Looks: `bars` (a bar per step, its height the value; `mark`: a line at the neutral position), `grid`
+//               (a TRANSPOSE lane: a row per step of the unit, 0 marked, the track table's equaves ruled in Degrees;
+//               the rows shown fit the values — ± 7, else the whole equaves that hold them, at most ± 48; each step a
+//               block on its row with a stem from 0 and its value written) or `cells` (Play / Skip / Tie).
+//               A press on a step sets it from the pointer's height (a grid: the row under it; the rows are held
+//               while the drag runs and go on past the edge) and a drag PAINTS across steps (cells: the state the
+//               first press gave) — one store gesture, one undo step, param writes only (runtime params: no
+//               compile). Alt+press / drag: the default. Double-click: TYPE the value (bars: percent; a grid:
+//               steps). Wheel over a step: 1 % (Shift: 10 %), a grid 1 step (Shift: an equave), cells the next state;
+//               a run of notches is one undo step. The LENGTH HANDLE, a grip after the last step in play, drags the
+//               length (a setting: committed once at the end) and shows its number; steps past it dim. The MENU (the
+//               dots, or a right-click on the name column; a right-click on a step stays the host's): Reset,
+//               Randomize (the steps in play, from the seed + the lane + a view count), Shift Left / Right and
+//               Reverse (within the length), Copy to (`copy`: "Gate=gateStep,gateLen|…" — the values and the length
+//               into another lane of the same note device) — each one undo step.
 //               While its device's note stage plays (PanelTarget::noteStatus), the lane's current step is lit (`lane`:
-//               which of the status's lanes).
+//               which of the status's lanes); a lane that is off reads no status.
 //   arppattern  the RESOLVED PATTERN of a note device (slot 0: a Data binding naming it; AP.10): the whole cycle its
 //               params make of the held notes (pq/document/note_pattern.h notePattern: the engine's own ArpCore run
 //               offline), time across, log pitch up over the unit's grid; the held notes solid, the generated ones
@@ -37,7 +56,10 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,6 +69,7 @@
 #include "pq/core/note_stage_status.h"
 #include "pq/document/note_devices.h"
 #include "pq/document/note_pattern.h"
+#include "pq/ui/overlay.h"
 #include "pq/views/panel/arp_elements.h"
 
 namespace pq::views::panel {
@@ -59,8 +82,9 @@ namespace {
 
 constexpr float kLabelPx = 7.5f;
 constexpr std::array<std::string_view, 2> kPresetSlots = {"value 1", "value 2"};
-constexpr std::array<std::string_view, 3> kLaneSlots = {"length", "on", "steps"};
-constexpr std::array<std::string_view, 3> kLaneLooks = {"bars", "bipolar", "cells"};
+constexpr std::array<std::string_view, 4> kRateSlots = {"num", "den", "tuplet n", "tuplet m"};
+constexpr std::array<std::string_view, 5> kLaneSlots = {"on", "length", "seed", "unit", "steps"};
+constexpr std::array<std::string_view, 3> kLaneLooks = {"bars", "grid", "cells"};
 
 uint64_t hmix(uint64_t h, uint64_t v) noexcept {
   h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
@@ -188,6 +212,154 @@ private:
   int32_t hover_ = -1;
 };
 
+// ---- rate (AR.4) ----------------------------------------------------------------------------------------------------
+
+constexpr int32_t kRateDens[] = {1, 2, 4, 8, 16, 32, 64, 128};
+
+class RateMenu final : public ValueElement {
+public:
+  using ValueElement::ValueElement;
+  static constexpr StyleSpec kStyle[] = {
+      {"colour", StyleSpec::Type::Token, 0, "value"},
+      {"label", StyleSpec::Type::Text, 0, ""},
+  };
+  static constexpr float kChipW = 24.0f;
+  enum Slot : size_t { kNum, kDen, kTupN, kTupM };
+  struct Rate {
+    int32_t num = 1, den = 16, n = 1, m = 1;
+  };
+
+  void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
+  bool interactive() const noexcept override { return true; }
+  uint32_t staticLayerCount() const noexcept override { return 2; }
+  Rgba staticLayerColour(const ui::Theme& th, uint32_t layer) const noexcept override {
+    return layer == 0 ? ui::lerp(th.face.body, th.face.track, 0.5f) : th.face.frame;
+  }
+  void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
+    const Rect r = box(), c = chip();
+    if (layer == 0) {
+      p.roundedRect(r, 3.0f, ui::rgba(255, 255, 255));
+      p.roundedRect(c, 3.0f, ui::rgba(255, 255, 255));
+      return;
+    }
+    outlineRect(p, r, 3.0f, 1.0f, ui::rgba(255, 255, 255));
+    outlineRect(p, c, 3.0f, 1.0f, ui::rgba(255, 255, 255));
+    const float cx = r.x1 - 6.0f, cy = (r.y0 + r.y1) * 0.5f;  // the chevron
+    p.line({cx - 2.5f, cy - 1.2f}, {cx, cy + 1.3f}, 1.1f, ui::rgba(255, 255, 255));
+    p.line({cx, cy + 1.3f}, {cx + 2.5f, cy - 1.2f}, 1.1f, ui::rgba(255, 255, 255));
+  }
+  void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
+    const ui::Theme& th = *env.theme;
+    PanelTarget& t = *env.target;
+    const Rect r = box(), c = chip();
+    const Rgba accent = editable(t) ? colour(th, "colour", "value", th.face.value) : th.face.ink;
+    if (env.hovered && !hoverChip_) outlineRect(p, r, 3.0f, 1.25f, th.face.hover);
+    p.textAligned({r.x0 + 5.0f, (r.y0 + r.y1) * 0.5f}, text(rate(t)), 8.5f, accent, 0.0f);
+    const bool on = custom(t);
+    if (on) p.roundedRect(c, 3.0f, accent);
+    else if (env.hovered && hoverChip_) outlineRect(p, c, 3.0f, 1.0f, th.face.hover);
+    p.text({(c.x0 + c.x1) * 0.5f, (c.y0 + c.y1) * 0.5f}, "n:m", kLabelPx, on ? th.face.body : th.face.ink);
+    const std::string& label = labelText(t);
+    if (!label.empty() && r.y0 > 6.0f) p.textAligned({r.x0, 4.5f}, label, kLabelPx, th.face.ink, 0.0f);
+  }
+  bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    using K = FacePointer::Kind;
+    if (e.kind == K::Down) endWheel(t);
+    const Rect c = chip();
+    const bool inChip = e.local.x >= c.x0;
+    if (e.kind == K::Move) {
+      const bool changed = inChip != hoverChip_;
+      hoverChip_ = inChip;
+      return changed;
+    }
+    const doc::Binding* nb = binding(kNum);
+    const doc::Binding* db = binding(kDen);
+    if (nb == nullptr || db == nullptr || !editable(t)) return false;
+    if (e.kind == K::Wheel) {  // the next / previous note value (a run of notches: one undo step)
+      if (!e.valueGestures || inChip || e.wheel.y == 0.0f || (e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper)) != 0)
+        return false;
+      const Rate now = rate(t);
+      int32_t k = 0;  // the list entry nearest the rate now
+      for (int32_t i = 0; i < static_cast<int32_t>(std::size(kRateDens)); ++i)
+        if (std::abs(kRateDens[i] * now.num - now.den) < std::abs(kRateDens[k] * now.num - now.den)) k = i;
+      k = std::clamp(k + (e.wheel.y > 0.0f ? 1 : -1), 0, static_cast<int32_t>(std::size(kRateDens)) - 1);
+      if (!wheel_) {
+        wheel_ = true;
+        t.begin(*db, "Rate");
+      }
+      t.setPosition(*nb, positionOf(t, *nb, 1.0));
+      t.setPosition(*db, positionOf(t, *db, kRateDens[k]));
+      return true;
+    }
+    if (e.kind != K::Down || e.button != ui::PointerButton::Left) return false;
+    if (inChip) {  // the n : m boxes (view state; shown anyway while the rate is not a plain note value)
+      const bool on = t.viewValue(desc_.id, "custom", 0.0) >= 0.5;
+      t.setViewValue(desc_.id, "custom", on ? 0.0 : 1.0);
+      if (on && !simple(rate(t))) t.notice("The rate is not a plain note value: its numbers stay shown");
+      return true;
+    }
+    ui::Widget* host = t.menuHost();
+    if (host == nullptr) return true;
+    const Rate now = rate(t);
+    std::vector<ui::MenuItem> menu;
+    PanelTarget* target = &t;
+    for (const int32_t den : kRateDens) {
+      ui::MenuItem m = ui::MenuItem::item("1/" + std::to_string(den), [target, n = *nb, d = *db, den] {
+        target->begin(d, "Rate");  // both in one gesture: one undo step (the tuplet stays)
+        target->setPosition(n, positionOf(*target, n, 1.0));
+        target->setPosition(d, positionOf(*target, d, den));
+        target->end();
+      });
+      m.checked = now.num == 1 && now.den == den;
+      menu.push_back(std::move(m));
+    }
+    (void)ui::openContextMenu(*host, e.device, std::move(menu));
+    return true;
+  }
+  // 1: the n : m boxes show (asked for, or the rate is none of the menu's), 0: the menu and the feel chips say it all.
+  std::optional<double> selection(const PanelTarget& t) const override { return custom(t) ? 1.0 : 0.0; }
+  uint64_t liveKey(const PanelTarget& t) const override {
+    uint64_t h = Element::liveKey(t);
+    if (h == kAnyChange) return h;
+    h = hmix(h, (custom(t) ? 1u : 0u) | (hoverChip_ ? 2u : 0u));
+    return h == kAnyChange ? h - 1 : h;
+  }
+  void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
+    title = labelText(t).empty() ? std::string("Rate") : labelText(t);
+    body = "The step length as a note value. Click: choose 1/1 \xE2\x80\xA6 1/128; wheel: the next / previous one. Dotted and "
+           "Triplet are the Feel chips beside it. n:m shows the numbers themselves: any numerator / denominator and any "
+           "tuplet n : m (n steps in the time of m).";
+  }
+
+private:
+  Rate rate(const PanelTarget& t) const {
+    auto v = [&](size_t s, int32_t def) {
+      const doc::Binding* b = binding(s);
+      return b != nullptr && t.info(*b).valid ? static_cast<int32_t>(std::lround(unitsOf(t, *b))) : def;
+    };
+    return {v(kNum, 1), v(kDen, 16), v(kTupN, 1), v(kTupM, 1)};
+  }
+  static bool simple(const Rate& r) noexcept {
+    const bool den = std::find(std::begin(kRateDens), std::end(kRateDens), r.den) != std::end(kRateDens);
+    const bool feel = (r.n == 1 && r.m == 1) || (r.n == 2 && r.m == 3) || (r.n == 3 && r.m == 2);
+    return r.num == 1 && den && feel;
+  }
+  bool custom(const PanelTarget& t) const { return t.viewValue(desc_.id, "custom", 0.0) >= 0.5 || !simple(rate(t)); }
+  // "1/16", "1/8 T" (triplet), "1/8 D" (dotted), "3/16 5:4".
+  static std::string text(const Rate& r) {
+    char s[40];
+    if (r.n == r.m) std::snprintf(s, sizeof s, "%d/%d", r.num, r.den);
+    else if (r.n == 3 && r.m == 2) std::snprintf(s, sizeof s, "%d/%d T", r.num, r.den);
+    else if (r.n == 2 && r.m == 3) std::snprintf(s, sizeof s, "%d/%d D", r.num, r.den);
+    else std::snprintf(s, sizeof s, "%d/%d %d:%d", r.num, r.den, r.n, r.m);
+    return s;
+  }
+  float top() const noexcept { return txt("label", "") != "-" && desc_.h >= 26.0f ? std::min(10.0f, desc_.h * 0.4f) : 0.0f; }
+  Rect box() const noexcept { return {0.5f, top() + 0.5f, desc_.w - kChipW - 2.5f, desc_.h - 0.5f}; }
+  Rect chip() const noexcept { return {desc_.w - kChipW, top() + 0.5f, desc_.w - 0.5f, desc_.h - 0.5f}; }
+  bool hoverChip_ = false;
+};
+
 // ---- steplane -------------------------------------------------------------------------------------------------------
 
 class StepLane final : public ValueElement {
@@ -197,90 +369,171 @@ public:
       {"look", StyleSpec::Type::Choice, 0, "bars", kLaneLooks},
       {"lane", StyleSpec::Type::Number, -1.0, {}, {}, -1.0, 7.0},
       {"colour", StyleSpec::Type::Token, 0, "value"},
+      {"name", StyleSpec::Type::Text, 0, ""},
+      {"mark", StyleSpec::Type::Number, -1.0, {}, {}, -1.0, 1.0},
+      {"copy", StyleSpec::Type::Text, 0, ""},
   };
-  static constexpr size_t kFirstStep = 2;
-  static constexpr float kHandleW = 10.0f;
+  enum Slot : size_t { kOn, kLength, kSeed, kUnit, kFirstStep };
+  static constexpr float kGutter = 84.0f;   // the name column
+  static constexpr float kHandleW = 12.0f;  // room after the last step (the length handle at 32, its number)
+  static constexpr float kStrip = 14.0f;    // the name switch's row: all there is of a lane switched off
+  static constexpr int32_t kMinRange = 7, kMaxRange = 48;
+  enum class Part : int8_t { None, Switch, Menu, Handle, Step };
 
   void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
   bool interactive() const noexcept override { return true; }
+  bool hit(Vec2 l) const noexcept override {
+    return l.x >= 0.0f && l.y >= 0.0f && l.y <= desc_.h && (open() ? l.x <= desc_.w : l.x <= kGutter);
+  }
   uint32_t staticLayerCount() const noexcept override { return 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return ui::lerp(th.face.body, th.face.track, 0.75f); }
   void paintStatic(ui::FacePainter& p, uint32_t) const override {
+    if (!open()) return;
     for (int32_t i = 0; i < steps(); ++i) p.roundedRect(cellRect(i), 2.0f, ui::rgba(255, 255, 255));
   }
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
-    const int32_t n = steps(), len = length(t);
     const bool on = laneOn(t);
     const Rgba accent = colour(th, "colour", "value", th.face.value);
+    const Part hover = env.hovered ? hover_ : Part::None;
+    {  // the name switch and the menu's dots
+      const Rect s = pill();
+      const float rr = (s.y1 - s.y0) * 0.5f;
+      p.roundedRect(s, rr, on ? accent : th.face.track);
+      if (hover == Part::Switch) outlineRect(p, s, rr, 1.0f, th.face.hover);
+      p.disc({on ? s.x1 - rr : s.x0 + rr, (s.y0 + s.y1) * 0.5f}, rr - 1.5f, th.face.handle);
+      p.textAligned({s.x1 + 4.0f, kStrip * 0.5f}, name(t), kLabelPx, ui::mulAlpha(th.face.ink, on ? 1.0f : 0.6f), 0.0f);
+      const Rgba dots = ui::mulAlpha(th.face.ink, hover == Part::Menu ? 1.0f : 0.45f);
+      for (int k = 0; k < 3; ++k) p.disc({kGutter - 13.0f + 3.5f * static_cast<float>(k), kStrip * 0.5f}, 1.0f, dots);
+    }
+    if (!open()) return;
+    const int32_t n = steps(), len = length(t);
     const std::string_view look = txt("look", "bars");
-    if (const NoteStageStatus* st = status_.get(t, binding(0))) readStatus(*st);
-    for (int32_t i = 0; i < n; ++i) {
-      const Rect c = cellRect(i);
-      const doc::Binding* b = binding(kFirstStep + static_cast<size_t>(i));
-      if (b == nullptr) continue;
-      const double v = std::clamp(t.position(*b), 0.0, 1.0);
-      float a = i < len ? 1.0f : 0.28f;  // past the length: dimmed
-      if (!on) a *= 0.22f;  // (AP.10, review L13: an off lane reads as off)
-      const Rgba fill = ui::mulAlpha(accent, a);
-      if (look == "cells") {
-        const int32_t k = kindAt(t, i);
-        if (k == 1) {  // Skip: a rest
-          p.line({c.x0 + 4.0f, (c.y0 + c.y1) * 0.5f}, {c.x1 - 4.0f, (c.y0 + c.y1) * 0.5f}, 1.4f, ui::mulAlpha(th.face.ink, a));
-        } else if (k == 2) {  // Tie: joined to the step before
-          p.roundedRect({c.x0 - 2.5f, c.y0 + 6.0f, c.x1, c.y1 - 6.0f}, 2.0f, fill);
-        } else {  // Play
-          p.disc({(c.x0 + c.x1) * 0.5f, (c.y0 + c.y1) * 0.5f}, 2.6f, fill);
-        }
-      } else if (look == "bipolar") {
-        const float mid = (c.y0 + c.y1) * 0.5f, y = c.y1 - static_cast<float>(v) * (c.y1 - c.y0);
-        if (std::fabs(y - mid) > 0.3f) p.roundedRect({c.x0 + 1.0f, std::min(y, mid), c.x1 - 1.0f, std::max(y, mid)}, 1.0f, fill);
-        p.line({c.x0 + 1.0f, mid}, {c.x1 - 1.0f, mid}, 0.8f, ui::mulAlpha(th.face.ink, 0.5f * a));
-        const double u = unitsOf(t, *b);
-        if (std::fabs(u) > 0.5) {
-          char s[8];
-          std::snprintf(s, sizeof s, "%+d", static_cast<int>(std::lround(u)));
-          p.text({(c.x0 + c.x1) * 0.5f, u > 0 ? c.y1 - 4.5f : c.y0 + 4.5f}, s, 5.5f, ui::mulAlpha(th.face.ink, a));
-        }
+    if (const NoteStageStatus* st = status_.get(t, binding(kOn))) readStatus(*st);
+    // The readout under the name: the step under the pointer (or being dragged / typed) and its value, else the length.
+    {
+      const int32_t s = typing_ ? typeStep_ : (drag_ && !lengthDrag_ ? last_ : (hover == Part::Step ? hoverStep_ : -1));
+      const Rgba dim = ui::mulAlpha(th.face.ink, 0.6f);
+      char b[48];
+      if (desc_.h < 40.0f) {  // one line
+        if (s >= 0 && s < n) std::snprintf(b, sizeof b, "%d: %s", s + 1, valueText(t, s).c_str());
+        else std::snprintf(b, sizeof b, "%d step%s", len, len == 1 ? "" : "s");
+        p.textAligned({1.0f, desc_.h - 5.0f}, b, 6.5f, s >= 0 ? accent : dim, 0.0f);
+      } else if (s >= 0 && s < n) {
+        p.textAligned({1.0f, kStrip + 8.0f}, valueText(t, s), 8.0f, accent, 0.0f);
+        std::snprintf(b, sizeof b, "step %d of %d", s + 1, len);
+        p.textAligned({1.0f, kStrip + 20.0f}, b, 6.5f, dim, 0.0f);
       } else {
-        const float y = c.y1 - static_cast<float>(v) * (c.y1 - c.y0);
-        if (c.y1 - y > 0.3f) p.roundedRect({c.x0 + 1.0f, y, c.x1 - 1.0f, c.y1}, 1.0f, fill);
-      }
-      if (i == lit_ && on) {  // the step playing now
-        outlineRect(p, {c.x0 - 0.5f, c.y0 - 0.5f, c.x1 + 0.5f, c.y1 + 0.5f}, 2.5f, 1.3f, th.face.signal);
-        p.beginGlow();
-        p.glow({(c.x0 + c.x1) * 0.5f, (c.y0 + c.y1) * 0.5f}, 9.0f, ui::mulAlpha(th.face.signal, 0.25f));
-        p.endGlow();
+        std::snprintf(b, sizeof b, "%d step%s", len, len == 1 ? "" : "s");
+        p.textAligned({1.0f, kStrip + 8.0f}, b, 6.5f, dim, 0.0f);
       }
     }
-    // The length handle: a grip after the last step in play.
+    // Beats: a tick between every four steps.
+    for (int32_t i = 4; i < n; i += 4) {
+      const float x = cellsX0() + static_cast<float>(i) * cellW();
+      p.line({x, 1.0f}, {x, desc_.h - 1.0f}, 1.0f, ui::mulAlpha(th.face.ink, 0.5f));
+    }
+    if (look == "grid") {
+      paintGrid(p, th, t, accent, n, len);
+    } else {
+      const float mark = static_cast<float>(num("mark", -1.0));
+      for (int32_t i = 0; i < n; ++i) {
+        const Rect c = cellRect(i);
+        const doc::Binding* b = step(i);
+        if (b == nullptr) continue;
+        const float a = i < len ? 1.0f : 0.28f;  // past the length: dimmed
+        const Rgba fill = ui::mulAlpha(accent, a);
+        if (look == "cells") {
+          const int32_t k = kindAt(t, i);
+          const float cy = (c.y0 + c.y1) * 0.5f;
+          if (k == 1) {  // Skip: a rest
+            p.line({c.x0 + 6.0f, cy}, {c.x1 - 6.0f, cy}, 1.4f, ui::mulAlpha(th.face.ink, 0.8f * a));
+          } else if (k == 2) {  // Tie: joined to the step before
+            p.roundedRect({c.x0 - 3.0f, cy - 3.0f, c.x1 - 3.0f, cy + 3.0f}, 2.0f, fill);
+          } else {  // Play
+            p.disc({(c.x0 + c.x1) * 0.5f, cy}, 3.2f, fill);
+          }
+        } else {
+          const float v = static_cast<float>(std::clamp(t.position(*b), 0.0, 1.0));
+          const float y = c.y1 - v * (c.y1 - c.y0);
+          if (c.y1 - y > 0.3f) p.roundedRect({c.x0 + 1.0f, y, c.x1 - 1.0f, c.y1}, 1.5f, fill);
+          if (mark > 0.0f && mark < 1.0f) {  // the neutral value (a Gate of × 1)
+            const float my = c.y1 - mark * (c.y1 - c.y0);
+            p.line({c.x0 + 1.0f, my}, {c.x1 - 1.0f, my}, 0.8f, ui::mulAlpha(th.face.ink, 0.45f * a));
+          }
+        }
+      }
+    }
+    if (lit_ >= 0 && lit_ < n && on) {  // the step playing now
+      const Rect c = cellRect(lit_);
+      outlineRect(p, {c.x0 - 0.5f, c.y0 - 0.5f, c.x1 + 0.5f, c.y1 + 0.5f}, 2.5f, 1.3f, th.face.signal);
+      p.beginGlow();
+      p.glow({(c.x0 + c.x1) * 0.5f, (c.y0 + c.y1) * 0.5f}, 11.0f, ui::mulAlpha(th.face.signal, 0.25f));
+      p.endGlow();
+    }
+    if (hover == Part::Step && hoverStep_ >= 0 && hoverStep_ < n && !drag_ && !typing_) {
+      const Rect c = cellRect(hoverStep_);
+      outlineRect(p, c, 2.0f, 1.0f, ui::mulAlpha(th.face.hover, 0.9f));
+    }
+    // The length handle: a grip after the last step in play; its number while it is hot.
     const float hx = handleX(len);
-    const bool hot = lengthDrag_ || hoverHandle_;
+    const bool hot = lengthDrag_ || hover == Part::Handle;
     p.roundedRect({hx - 2.0f, 1.0f, hx + 2.0f, desc_.h - 1.0f}, 1.5f, hot ? th.face.value : th.face.handle);
-    if (hot || lengthDrag_) {
+    if (hot) {
       char s[8];
       std::snprintf(s, sizeof s, "%d", len);
-      p.textAligned({hx + 4.0f, desc_.h * 0.5f}, s, 6.5f, th.face.ink, 0.0f);
+      const float tx = hx + 5.0f, ty = std::min(desc_.h * 0.5f, 12.0f);
+      p.roundedRect({tx - 1.5f, ty - 5.5f, tx + (len >= 10 ? 10.5f : 6.5f), ty + 5.5f}, 2.0f, th.face.body);
+      p.textAligned({tx, ty}, s, 8.0f, th.face.value, 0.0f);
+    }
+    if (typing_ && typeStep_ >= 0 && typeStep_ < n) {  // a value being typed into a step
+      const Rect c = cellRect(typeStep_);
+      const float cy = std::min((c.y0 + c.y1) * 0.5f, c.y0 + 11.0f);
+      const Rect box{c.x0 - 3.0f, cy - 7.0f, c.x1 + 3.0f, cy + 7.0f};
+      p.roundedRect(box, 2.5f, th.face.body);
+      outlineRect(p, box, 2.5f, 1.25f, th.circuit.selected);
+      p.text({(box.x0 + box.x1) * 0.5f, cy}, text_ + "|", 8.0f, th.face.ink);
     }
   }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
+    if (e.kind == K::Wheel) return onWheel(e, t);
     if (e.kind == K::Move && !drag_) {
-      const bool h = nearHandle(t, e.local.x);
-      const bool changed = h != hoverHandle_;
-      hoverHandle_ = h;
+      const Part h = partAt(t, e.local);
+      const int32_t s = h == Part::Step ? stepAt(e.local.x) : -1;
+      const bool changed = h != hover_ || s != hoverStep_;
+      hover_ = h;
+      hoverStep_ = s;
       return changed;
     }
     if (e.kind == K::Leave) {
-      const bool changed = hoverHandle_;
-      hoverHandle_ = false;
+      const bool changed = hover_ != Part::None;
+      hover_ = Part::None;
+      hoverStep_ = -1;
       return changed;
     }
     if (e.kind == K::Down) {
+      endWheel(t);
+      if (typing_) commit(t);
+      const Part part = partAt(t, e.local);
+      if (e.button == ui::PointerButton::Right) {  // the lane's menu on its name column; a step: the host's (automation)
+        if (e.local.x >= kGutter) return false;
+        openMenu(t, e);
+        return true;
+      }
       if (e.button != ui::PointerButton::Left) return false;
-      if (nearHandle(t, e.local.x)) {  // the length
-        const doc::Binding* lb = binding(0);
+      if (part == Part::Menu) {
+        openMenu(t, e);
+        return true;
+      }
+      if (part == Part::Switch) {
+        if (const doc::Binding* ob = binding(kOn); ob != nullptr && t.info(*ob).valid && t.info(*ob).editable)
+          t.setOnce(*ob, laneOn(t) ? 0.0 : 1.0, "Step Lane");
+        return true;
+      }
+      if (part == Part::Handle) {  // the length
+        const doc::Binding* lb = binding(kLength);
         if (lb == nullptr || !t.info(*lb).valid) return true;
         if (e.clicks >= 2) {
           t.reset(*lb);
@@ -290,30 +543,35 @@ public:
         t.begin(*lb, "Step Lane Length");
         return true;
       }
+      if (part != Part::Step) return false;
       const int32_t i = stepAt(e.local.x);
-      const doc::Binding* b = i >= 0 ? binding(kFirstStep + static_cast<size_t>(i)) : nullptr;
-      if (b == nullptr || !t.info(*b).valid) return false;
-      if (e.clicks >= 2) {  // the default (one step)
-        t.reset(*b);
+      const doc::Binding* b = step(i);
+      if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return false;
+      const bool cells = txt("look", "bars") == "cells";
+      if (e.clicks >= 2 && !cells && (e.mods & ui::mod::kAlt) == 0) {  // type its value
+        typing_ = true;
+        typeStep_ = i;
+        text_.clear();
         return true;
       }
       drag_ = true;
       last_ = i;
       reset_ = (e.mods & ui::mod::kAlt) != 0;
       cellValue_ = -1;
-      if (txt("look", "bars") == "cells" && !reset_) cellValue_ = (kindAt(t, i) + 1) % 3;
+      range_ = fitRange(t);  // held while the drag runs: the row under the pointer stays that row
+      if (cells && !reset_) cellValue_ = (kindAt(t, i) + 1) % 3;
       t.begin(*b, "Step Lane");
       paintStep(t, i, e.local.y);
       return true;
     }
     if (e.kind == K::Move && drag_) {
       if (lengthDrag_) {
-        const doc::Binding* lb = binding(0);
-        const int32_t len = std::clamp(static_cast<int32_t>(std::lround(e.local.x / cellW())), 1, steps());
+        const doc::Binding* lb = binding(kLength);
+        const int32_t len = std::clamp(static_cast<int32_t>(std::lround((e.local.x - cellsX0()) / cellW())), 1, steps());
         t.setPosition(*lb, positionOf(t, *lb, len));
         return true;
       }
-      const int32_t i = std::clamp(static_cast<int32_t>(std::floor(e.local.x / cellW())), 0, steps() - 1);
+      const int32_t i = std::clamp(static_cast<int32_t>(std::floor((e.local.x - cellsX0()) / cellW())), 0, steps() - 1);
       // Paint every step the pointer crossed since the last move (a fast drag skips none).
       const int32_t from = std::min(last_, i), to = std::max(last_, i);
       for (int32_t k = from; k <= to; ++k) paintStep(t, k, e.local.y);
@@ -322,6 +580,7 @@ public:
     }
     if (e.kind == K::Up && drag_) {
       drag_ = lengthDrag_ = false;
+      hoverStep_ = last_;
       t.end();
       return true;
     }
@@ -332,73 +591,232 @@ public:
     drag_ = lengthDrag_ = false;
     t.cancel();
   }
-  ui::Cursor cursor() const noexcept override { return hoverHandle_ || lengthDrag_ ? ui::Cursor::ResizeEW : ui::Cursor::Pointer; }
+  bool wantsText() const noexcept override { return typing_; }
+  bool onText(const ui::TextEvent& e, PanelTarget&) override {
+    if (!typing_) return false;
+    text_ += e.text();
+    return true;
+  }
+  bool onKey(const ui::KeyEvent& e, PanelTarget& t) override {
+    if (!typing_ || !e.down) return false;
+    if (e.key == ui::key::kEscape) typing_ = false;
+    else if (e.key == ui::key::kBackspace && !text_.empty()) text_.pop_back();
+    else if (e.key == ui::key::kReturn) commit(t);
+    return true;  // the step holds the keys while typing
+  }
+  void focusLost(PanelTarget& t) override {
+    if (typing_) commit(t);
+  }
+  ui::Cursor cursor() const noexcept override {
+    if (typing_) return ui::Cursor::Text;
+    if (hover_ == Part::Handle || lengthDrag_) return ui::Cursor::ResizeEW;
+    return hover_ == Part::None && !drag_ ? ui::Cursor::Inherit : ui::Cursor::Pointer;
+  }
   void describe(const PanelTarget& t, std::string& title, std::string& body) const override {
-    const doc::Binding* on = binding(1);
-    title = on != nullptr ? t.info(*on).label : std::string("Step lane");
-    body = txt("look", "bars") == "cells"
-               ? "Click a step: Play, Skip (a rest), Tie (continues the step before); drag to paint that state across steps."
-               : "Drag a step up / down to set it; drag sideways to paint across steps.";
-    body += " Double-click or Alt+click: the default. Drag the grip after the last step: the lane's length (steps past it "
-            "do not play). The lit step is the one playing.";
+    title = name(t);
+    const std::string_view look = txt("look", "bars");
+    body = "The switch turns the lane on (off: it takes no room). ";
+    if (look == "cells")
+      body += "Click a step: Play, Skip (a rest), Tie (continues the step before); drag to paint that state across steps; "
+              "wheel: the next state.";
+    else if (look == "grid")
+      body += "A row per step of the pitch unit, 0 in the middle (Degrees: the equaves ruled); the rows fit the values in "
+              "use. Click or drag a step to the row it plays, sideways to paint; wheel: one step, Shift+wheel: an equave; "
+              "double-click: type it.";
+    else
+      body += "Drag a step up / down to set it, sideways to paint across steps; wheel: 1 %, Shift+wheel: 10 %; "
+              "double-click: type it (percent).";
+    body += " Alt+click or Alt+drag: the default. The grip after the last step is the lane's length (steps past it do not "
+            "play). The dots or a right-click on the name: Reset, Randomize, Shift, Reverse, Copy. The lit step is playing.";
   }
   void visitControls(const ControlVisitor& fn) const override {
+    if (!open()) return;
     for (int32_t i = 0; i < steps(); ++i)
-      if (const doc::Binding* b = binding(kFirstStep + static_cast<size_t>(i)); b != nullptr && b->kind == doc::BindingKind::Control)
-        fn(*b, cellRect(i));
+      if (const doc::Binding* b = step(i); b != nullptr && b->kind == doc::BindingKind::Control) fn(*b, cellRect(i));
   }
+  const doc::Binding* controlAt(Vec2 l) const override { return open() && partOf(l) == Part::Step ? step(stepAt(l.x)) : nullptr; }
+  std::optional<double> selection(const PanelTarget& t) const override { return laneOn(t) ? 1.0 : 0.0; }
   uint64_t liveKey(const PanelTarget& t) const override {
     uint64_t h = Element::liveKey(t);
     if (h == kAnyChange) return h;
-    h = hmix(h, static_cast<uint64_t>(lit_ + 1));
-    h = hmix(h, (hoverHandle_ ? 1u : 0u) | (lengthDrag_ ? 2u : 0u));
+    h = hmix(h, static_cast<uint64_t>(lit_ + 1) | (static_cast<uint64_t>(hoverStep_ + 1) << 16) |
+                    (static_cast<uint64_t>(hover_) << 32) | (lengthDrag_ ? 1ull << 40 : 0u) | (typing_ ? 1ull << 41 : 0u) |
+                    (static_cast<uint64_t>(typeStep_ + 1) << 48));
+    h = hmix(h, std::hash<std::string>{}(text_));
+    h = hmix(h, std::bit_cast<uint32_t>(desc_.h));
+    if (open() && txt("look", "bars") == "grid") h = hmix(h, static_cast<uint64_t>(equave(t)));
     return h == kAnyChange ? h - 1 : h;
   }
-  // The status: the lane's current step (a change repaints), ticking while the transport plays or notes are held.
+  // The status: the lane's current step (a change repaints), ticking while the transport plays or notes are held. A
+  // lane that is off reads nothing.
   bool frameTick(PanelTarget& t) override {
+    if (!open()) return false;
     playing_ = t.transportPlaying();
-    const NoteStageStatus* st = status_.get(t, binding(0));
+    const NoteStageStatus* st = status_.get(t, binding(kOn));
     if (st == nullptr) return false;
     const int32_t was = lit_;
     readStatus(*st);
     return lit_ != was;
   }
-  bool ticking() const noexcept override { return status_.s != nullptr && (playing_ || lit_ >= 0); }
+  bool ticking() const noexcept override { return open() && status_.s != nullptr && (playing_ || lit_ >= 0); }
+  // tests
   int32_t litStep() const noexcept { return lit_; }
+  Rect cell(int32_t i) const noexcept { return cellRect(i); }
+  int32_t shownRange(const PanelTarget& t) const { return drag_ ? range_ : fitRange(t); }
+  float rowY(const PanelTarget& t, int32_t v) const {  // the middle of the grid row of value v
+    const int32_t r = shownRange(t);
+    const float rowH = (desc_.h - 2.0f) / static_cast<float>(2 * r + 1);
+    return 1.0f + (static_cast<float>(r - v) + 0.5f) * rowH;
+  }
+  bool typing() const noexcept { return typing_; }
 
 private:
+  bool open() const noexcept { return desc_.h >= kStrip + 6.0f; }
   int32_t steps() const noexcept {
     return static_cast<int32_t>(desc_.bindings.size() > kFirstStep ? desc_.bindings.size() - kFirstStep : 0);
   }
-  float cellW() const noexcept { return (desc_.w - kHandleW) / static_cast<float>(std::max(steps(), 1)); }
+  const doc::Binding* step(int32_t i) const noexcept {
+    return i >= 0 && i < steps() ? binding(kFirstStep + static_cast<size_t>(i)) : nullptr;
+  }
+  float cellsX0() const noexcept { return kGutter; }
+  float cellW() const noexcept { return (desc_.w - kGutter - kHandleW) / static_cast<float>(std::max(steps(), 1)); }
   Rect cellRect(int32_t i) const noexcept {
-    const float w = cellW(), x0 = static_cast<float>(i) * w;
+    const float w = cellW(), x0 = cellsX0() + static_cast<float>(i) * w;
     return {x0 + 1.0f, 1.0f, x0 + w - 1.0f, desc_.h - 1.0f};
   }
-  float handleX(int32_t len) const noexcept { return static_cast<float>(len) * cellW(); }
+  Rect pill() const noexcept { return {0.5f, 2.0f, 20.5f, 12.0f}; }
+  float handleX(int32_t len) const noexcept { return cellsX0() + static_cast<float>(len) * cellW(); }
   int32_t stepAt(float x) const noexcept {
-    if (x < 0.0f) return -1;
-    const auto i = static_cast<int32_t>(std::floor(x / cellW()));
+    if (x < cellsX0()) return -1;
+    const auto i = static_cast<int32_t>(std::floor((x - cellsX0()) / cellW()));
     return i < steps() ? i : -1;
   }
-  bool nearHandle(const PanelTarget& t, float x) const { return std::fabs(x - handleX(length(t))) <= 4.0f; }
+  // What is under `l`, the handle apart (it needs the length).
+  Part partOf(Vec2 l) const noexcept {
+    if (l.x < kGutter) {
+      if (l.y > kStrip) return Part::None;
+      return l.x >= kGutter - 18.0f ? Part::Menu : Part::Switch;
+    }
+    return open() && stepAt(l.x) >= 0 ? Part::Step : Part::None;
+  }
+  Part partAt(const PanelTarget& t, Vec2 l) const {
+    if (open() && l.x >= kGutter - 4.0f && std::fabs(l.x - handleX(length(t))) <= 4.0f) return Part::Handle;
+    return partOf(l);
+  }
+  std::string name(const PanelTarget& t) const {
+    if (const std::string_view n = txt("name", ""); !n.empty()) return std::string(n);
+    const doc::Binding* on = binding(kOn);
+    return on != nullptr ? t.info(*on).label : std::string("Step lane");
+  }
   int32_t length(const PanelTarget& t) const {
-    const doc::Binding* b = binding(0);
+    const doc::Binding* b = binding(kLength);
     const int32_t n = steps();
     if (b == nullptr || !t.info(*b).valid) return n;
     return std::clamp(static_cast<int32_t>(std::lround(unitsOf(t, *b))), 1, std::max(n, 1));
   }
   bool laneOn(const PanelTarget& t) const {
-    const doc::Binding* b = binding(1);
+    const doc::Binding* b = binding(kOn);
     return b == nullptr || !t.info(*b).valid || t.position(*b) >= 0.5;
   }
   int32_t kindAt(const PanelTarget& t, int32_t i) const {
-    const doc::Binding* b = binding(kFirstStep + static_cast<size_t>(i));
+    const doc::Binding* b = step(i);
     return b != nullptr ? std::clamp(static_cast<int32_t>(std::lround(unitsOf(t, *b))), 0, 2) : 0;
+  }
+  int32_t valueAt(const PanelTarget& t, int32_t i) const {  // a grid step's value
+    const doc::Binding* b = step(i);
+    return b != nullptr ? static_cast<int32_t>(std::lround(unitsOf(t, *b))) : 0;
+  }
+  // ---- the grid look (a transpose lane) ----
+  // The pitch unit (slot kUnit: 0 Degrees, 1 Ratio, 2 Harmonics; unbound: plain steps, −1).
+  int32_t unit(const PanelTarget& t) const {
+    const doc::Binding* b = binding(kUnit);
+    return b != nullptr && t.info(*b).valid ? static_cast<int32_t>(std::lround(unitsOf(t, *b))) : -1;
+  }
+  // The unit's steps in an equave (Degrees: the track table's; 0: none). The table is built only when the track's
+  // tuning changed.
+  int32_t equave(const PanelTarget& t) const {
+    if (unit(t) != 0) return 0;
+    const doc::Project* pr = t.project();
+    const doc::Binding* b = binding(kOn);
+    if (pr == nullptr || b == nullptr) return 12;
+    const doc::TuningDef* def = doc::noteDeviceTuning(*pr, b->device);
+    if (def != tuning_ || equave_ <= 0) {
+      tuning_ = def;
+      equave_ = doc::tuningEquaveDegrees(def);
+    }
+    return equave_;
+  }
+  // The rows shown: ± kMinRange, or — a value beyond it — the whole equaves that hold every value (no equave: sevens),
+  // at most ± kMaxRange.
+  int32_t fitRange(const PanelTarget& t) const {
+    int32_t m = 0;
+    for (int32_t i = 0; i < steps(); ++i) m = std::max(m, std::abs(valueAt(t, i)));
+    if (m <= kMinRange) return kMinRange;
+    const int32_t e = equave(t), chunk = e > 0 ? e : kMinRange;
+    return std::min(kMaxRange, ((m + chunk - 1) / chunk) * chunk);
+  }
+  void paintGrid(ui::FacePainter& p, const ui::Theme& th, PanelTarget& t, Rgba accent, int32_t n, int32_t len) {
+    const int32_t r = drag_ && !lengthDrag_ ? range_ : fitRange(t), e = equave(t);
+    const float y0 = 1.0f, rowH = (desc_.h - 2.0f) / static_cast<float>(2 * r + 1);
+    const float x0 = cellsX0(), x1 = x0 + static_cast<float>(n) * cellW();
+    auto top = [&](int32_t v) { return y0 + static_cast<float>(r - v) * rowH; };
+    // The rows: 0 marked, the equaves ruled (no equave: a label every few rows), hairlines while rows are tall enough.
+    if (rowH >= 4.0f)
+      for (int32_t v = -r; v < r; ++v) p.line({x0, top(v) + rowH}, {x1, top(v) + rowH}, 0.5f, ui::mulAlpha(th.face.ink, 0.08f));
+    p.roundedRect({x0, top(0), x1, top(0) + rowH}, 0.0f, ui::mulAlpha(th.face.ink, 0.2f));
+    const int32_t every = e > 0 ? e : std::max(1, static_cast<int32_t>(std::ceil(9.0f / rowH)));
+    for (int32_t v = -r; v <= r; ++v) {
+      if (v % every != 0) continue;
+      const float cy = top(v) + rowH * 0.5f;
+      if (v != 0 && e > 0) p.roundedRect({x0, top(v), x1, top(v) + rowH}, 0.0f, ui::mulAlpha(th.face.ink, 0.11f));
+      if (cy < kStrip + 3.0f) continue;  // (the name strip's: the menu's dots are there)
+      char s[8];
+      std::snprintf(s, sizeof s, v == 0 ? "%d" : "%+d", v);
+      p.textAligned({kGutter - 3.0f, std::min(cy, desc_.h - 4.0f)}, s, 5.5f, ui::mulAlpha(th.face.ink, v == 0 ? 0.9f : 0.6f), 1.0f);
+    }
+    const float zc = top(0) + rowH * 0.5f;
+    for (int32_t i = 0; i < n; ++i) {
+      const Rect c = cellRect(i);
+      if (step(i) == nullptr) continue;
+      const float a = i < len ? 1.0f : 0.28f;
+      const int32_t v = valueAt(t, i), vc = std::clamp(v, -r, r);
+      const float bh = std::max(rowH, 3.0f), by = top(vc) + (rowH - bh) * 0.5f;
+      if (v != 0)  // a stem from 0: up and down read at a glance
+        p.roundedRect({c.x0 + 1.0f, std::min(by + bh * 0.5f, zc), c.x1 - 1.0f, std::max(by + bh * 0.5f, zc)}, 1.0f,
+                      ui::mulAlpha(accent, 0.22f * a));
+      p.roundedRect({c.x0 + 1.0f, by, c.x1 - 1.0f, by + bh}, 1.5f, ui::mulAlpha(accent, (v == 0 ? 0.45f : 1.0f) * a));
+      if (v != 0) {  // its value, beside the block (outside the stem where there is room)
+        char s[8];
+        std::snprintf(s, sizeof s, "%+d", v);
+        float ty = v > 0 ? by - 4.5f : by + bh + 4.5f;
+        if (ty < c.y0 + 4.0f) ty = by + bh + 4.5f;
+        if (ty > c.y1 - 4.0f) ty = by - 4.5f;
+        p.text({(c.x0 + c.x1) * 0.5f, ty}, s, 6.5f, ui::mulAlpha(th.face.ink, a));
+      }
+    }
+  }
+  // Step i's value as text in the lane's unit.
+  std::string valueText(const PanelTarget& t, int32_t i) const {
+    const doc::Binding* b = step(i);
+    if (b == nullptr) return {};
+    const std::string_view look = txt("look", "bars");
+    char s[40];
+    if (look == "cells") {
+      static constexpr const char* kKinds[] = {"Play", "Skip", "Tie"};
+      return kKinds[kindAt(t, i)];
+    }
+    if (look == "grid") {
+      const int32_t v = valueAt(t, i), u = unit(t);
+      const char* what = u == 0 ? " deg" : (u == 1 ? " ratio steps" : (u == 2 ? " harmonics" : ""));
+      std::snprintf(s, sizeof s, v == 0 ? "%d%s" : "%+d%s", v, what);
+      return s;
+    }
+    std::snprintf(s, sizeof s, "%.0f %%", unitsOf(t, *b) * 100.0);
+    return s;
   }
   // Step i from the pointer's height `y` (cells: the state of the press; Alt: the default).
   void paintStep(PanelTarget& t, int32_t i, float y) {
-    const doc::Binding* b = binding(kFirstStep + static_cast<size_t>(i));
+    const doc::Binding* b = step(i);
     if (b == nullptr || !t.info(*b).valid) return;
     if (reset_) {  // the declared default (inside the gesture: the same undo step)
       t.reset(*b);
@@ -407,6 +825,10 @@ private:
     double pos;
     if (cellValue_ >= 0) {
       pos = positionOf(t, *b, cellValue_);
+    } else if (txt("look", "bars") == "grid") {  // the row under the pointer (past the edge: the rows go on)
+      const float rowH = (desc_.h - 2.0f) / static_cast<float>(2 * range_ + 1);
+      const int32_t v = range_ - static_cast<int32_t>(std::floor((y - 1.0f) / rowH));
+      pos = positionOf(t, *b, std::clamp(v, -kMaxRange, kMaxRange));
     } else {
       const Rect c = cellRect(i);
       pos = std::clamp(static_cast<double>((c.y1 - y) / (c.y1 - c.y0)), 0.0, 1.0);
@@ -414,6 +836,161 @@ private:
       if (info.steps >= 2) pos = std::round(pos * (info.steps - 1)) / (info.steps - 1);
     }
     t.setPosition(*b, pos);
+  }
+  // The wheel over a step: bars 1 % (Shift: 10 %), a grid one step (Shift: an equave), cells the next state. A run of
+  // notches is one undo step (the host ends it: endWheel).
+  bool onWheel(const FacePointer& e, PanelTarget& t) {
+    if (!e.valueGestures || drag_ || typing_ || !open() || e.wheel.y == 0.0f) return false;
+    if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper)) != 0 || partOf(e.local) != Part::Step) return false;
+    const int32_t i = stepAt(e.local.x);
+    const doc::Binding* b = step(i);
+    if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return false;
+    if (!wheel_) {
+      wheel_ = true;
+      t.begin(*b, "Step Lane Wheel");
+    }
+    const int32_t dir = e.wheel.y > 0.0f ? 1 : -1;
+    const bool coarse = (e.mods & ui::mod::kShift) != 0;
+    const std::string_view look = txt("look", "bars");
+    double to;
+    if (look == "cells") to = std::clamp(kindAt(t, i) + dir, 0, 2);
+    else if (look == "grid") to = std::clamp(valueAt(t, i) + dir * (coarse ? std::max(equave(t), 1) : 1), -kMaxRange, kMaxRange);
+    else to = std::round((unitsOf(t, *b) + dir * (coarse ? 0.1 : 0.01)) * 100.0) / 100.0;
+    t.setPosition(*b, positionOf(t, *b, to));
+    hover_ = Part::Step;
+    hoverStep_ = i;
+    return true;
+  }
+  // The typed value into its step (bars: percent; a grid: steps): one undo step.
+  void commit(PanelTarget& t) {
+    typing_ = false;
+    const doc::Binding* b = step(typeStep_);
+    if (b == nullptr || text_.empty() || !t.info(*b).valid) return;
+    char* end = nullptr;
+    const double v = std::strtod(text_.c_str(), &end);
+    if (end == text_.c_str() || !std::isfinite(v)) {
+      t.notice("'" + text_ + "' is not a value");
+      return;
+    }
+    const double units = txt("look", "bars") == "grid" ? std::round(v) : v / 100.0;
+    t.setOnce(*b, positionOf(t, *b, units), "Step Lane Value");
+  }
+  // ---- the lane's menu ----
+  // "Gate=gateStep,gateLen|…": the lanes Copy offers (their name, their step params' prefix, their length setting).
+  struct Sibling {
+    std::string label, steps, length;
+  };
+  std::vector<Sibling> siblings() const {
+    std::vector<Sibling> out;
+    for (const std::string& item : splitItems(txt("copy", ""))) {
+      const size_t eq = item.find('='), comma = item.find(',');
+      if (eq == std::string::npos || comma == std::string::npos || comma < eq) continue;
+      out.push_back({item.substr(0, eq), item.substr(eq + 1, comma - eq - 1), item.substr(comma + 1)});
+    }
+    return out;
+  }
+  void openMenu(PanelTarget& t, const FacePointer& e) {
+    ui::Widget* host = t.menuHost();
+    const doc::Binding* first = step(0);
+    if (host == nullptr || first == nullptr || !t.info(*first).valid || !t.info(*first).editable) return;
+    // (the actions run after this call, perhaps after a rebuild of the panel: they hold copies, never the element)
+    auto all = std::make_shared<std::vector<doc::Binding>>();
+    for (int32_t i = 0; i < steps(); ++i)
+      if (const doc::Binding* b = step(i)) all->push_back(*b);
+    PanelTarget* target = &t;
+    const auto len = static_cast<size_t>(std::min<int32_t>(length(t), static_cast<int32_t>(all->size())));
+    // The steps in play set to `f(their positions now)`: one undo step.
+    auto remap = [target, all, len](const char* label, const std::function<void(std::vector<double>&)>& f) {
+      std::vector<double> pos(len);
+      for (size_t i = 0; i < len; ++i) pos[i] = target->position((*all)[i]);
+      f(pos);
+      target->begin((*all)[0], label);
+      for (size_t i = 0; i < len; ++i) target->setPosition((*all)[i], pos[i]);
+      target->end();
+    };
+    std::vector<ui::MenuItem> menu;
+    menu.push_back(ui::MenuItem::item("Reset", [target, all] {
+      target->begin((*all)[0], "Reset Step Lane");
+      for (const doc::Binding& b : *all) target->reset(b);
+      target->end();
+    }));
+    {  // Randomize: the steps in play, from the device's seed, the lane and how often it was asked (a view count).
+      const std::string_view look = txt("look", "bars");
+      const int32_t kind = look == "cells" ? 2 : (look == "grid" ? 1 : 0), range = kind == 1 ? fitRange(t) : 0;
+      const doc::Binding* sb = binding(kSeed);
+      const auto seed = static_cast<uint64_t>(sb != nullptr && t.info(*sb).valid ? std::llround(unitsOf(t, *sb)) : 0);
+      const auto lane = static_cast<uint64_t>(std::llround(num("lane", 0.0)) + 1);
+      const uint32_t id = desc_.id;
+      menu.push_back(ui::MenuItem::item("Randomize", [target, all, remap, seed, lane, id, kind, range] {
+        const double count = target->viewValue(id, "random", 0.0);
+        target->setViewValue(id, "random", count + 1.0);
+        uint64_t s = hmix(hmix(seed, lane), static_cast<uint64_t>(count));
+        auto next = [&s] {  // splitmix64 → [0, 1)
+          uint64_t z = (s += 0x9E3779B97F4A7C15ull);
+          z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+          z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+          return static_cast<double>((z ^ (z >> 31)) >> 11) / 9007199254740992.0;
+        };
+        remap("Randomize Step Lane", [&](std::vector<double>& pos) {
+          for (size_t i = 0; i < pos.size(); ++i) {
+            const double u = next();
+            if (kind == 0) pos[i] = u;
+            else if (kind == 1) pos[i] = positionOf(*target, (*all)[i], std::floor(u * (2 * range + 1)) - range);
+            else pos[i] = positionOf(*target, (*all)[i], u < 0.6 ? 0.0 : (u < 0.85 ? 1.0 : 2.0));  // mostly Play
+          }
+        });
+      }));
+    }
+    menu.push_back(ui::MenuItem::sep());
+    menu.push_back(ui::MenuItem::item("Shift Left", [remap] {
+      remap("Shift Step Lane", [](std::vector<double>& p) {
+        if (p.size() > 1) std::rotate(p.begin(), p.begin() + 1, p.end());
+      });
+    }));
+    menu.push_back(ui::MenuItem::item("Shift Right", [remap] {
+      remap("Shift Step Lane", [](std::vector<double>& p) {
+        if (p.size() > 1) std::rotate(p.begin(), p.end() - 1, p.end());
+      });
+    }));
+    menu.push_back(ui::MenuItem::item("Reverse", [remap] {
+      remap("Reverse Step Lane", [](std::vector<double>& p) { std::reverse(p.begin(), p.end()); });
+    }));
+    if (const std::vector<Sibling> sib = siblings(); !sib.empty() && binding(kLength) != nullptr) {
+      std::vector<ui::MenuItem> to;
+      const std::string lengthName = binding(kLength)->name;
+      for (const Sibling& s : sib)
+        to.push_back(ui::MenuItem::item(s.label, [target, all, s, lengthName] { copyTo(*target, *all, lengthName, s); }));
+      menu.push_back(ui::MenuItem::sep());
+      menu.push_back(ui::MenuItem::sub("Copy to", std::move(to)));
+    }
+    (void)ui::openContextMenu(*host, e.device, std::move(menu));
+  }
+  // Every step's VALUE and the length into lane `to` of the same note device (clamped to its range): one undo step.
+  static void copyTo(PanelTarget& t, const std::vector<doc::Binding>& from, const std::string& lengthName, const Sibling& to) {
+    (void)t.run([&](const doc::Project& p, doc::IdSource&) -> doc::ops::EditResult {
+      doc::Batch batch{"Copy Step Lane", {}};
+      auto done = [&] {
+        doc::ops::Edit e;
+        e.command = doc::Command(std::move(batch));
+        return e;
+      };
+      if (from.empty()) return done();
+      const doc::DeviceId dev = from[0].device;
+      const doc::Device* d = doc::findDevice(p, dev).device;
+      const doc::NoteDeviceType* type = d != nullptr ? doc::noteDeviceTypeOf(*d) : nullptr;
+      if (type == nullptr) return done();
+      for (size_t i = 0; i < from.size(); ++i) {
+        const doc::NoteParamSpec* src = type->param(from[i].name);
+        const doc::NoteParamSpec* dst = type->param(to.steps + std::to_string(i + 1));
+        if (src == nullptr || dst == nullptr) continue;
+        const double v = std::clamp(doc::noteDeviceValue(*d, *src), std::min(dst->min, dst->max), std::max(dst->min, dst->max));
+        batch.commands.push_back(doc::SetDeviceParam{dev, dst->name, doc::noteParamPosition(*dst, v)});
+      }
+      const doc::NoteParamSpec* sl = type->param(lengthName);
+      const doc::NoteParamSpec* dl = type->param(to.length);
+      if (sl != nullptr && dl != nullptr) batch.commands.push_back(doc::SetDeviceSetting{dev, dl->name, doc::noteDeviceValue(*d, *sl)});
+      return done();
+    });
   }
   void readStatus(const NoteStageStatus& st) {
     const auto l = static_cast<int32_t>(std::lround(num("lane", -1.0)));
@@ -425,8 +1002,12 @@ private:
   }
 
   StatusRef status_;
-  int32_t lit_ = -1, last_ = -1, cellValue_ = -1;
-  bool lengthDrag_ = false, hoverHandle_ = false, reset_ = false, playing_ = false;
+  int32_t lit_ = -1, last_ = -1, cellValue_ = -1, hoverStep_ = -1, typeStep_ = -1, range_ = kMinRange;
+  Part hover_ = Part::None;
+  bool lengthDrag_ = false, reset_ = false, playing_ = false, typing_ = false;
+  std::string text_;
+  mutable const doc::TuningDef* tuning_ = nullptr;
+  mutable int32_t equave_ = 0;
 };
 
 // ---- AR.2: the glide drag (arpbend and arppattern) ------------------------------------------------------------------
@@ -1323,7 +1904,8 @@ std::unique_ptr<Element> make(const doc::PanelElement& d) {
 void registerArpElements(void (*reg)(std::string_view, std::string_view, std::span<const StyleSpec>, std::span<const std::string_view>,
                                      float, float, ElementFactory)) {
   reg("presets", "Presets", Presets::kStyle, kPresetSlots, 120, 16, &make<Presets>);
-  reg("steplane", "Step Lane", StepLane::kStyle, kLaneSlots, 300, 22, &make<StepLane>);
+  reg("rate", "Rate Menu", RateMenu::kStyle, kRateSlots, 80, 28, &make<RateMenu>);
+  reg("steplane", "Step Lane", StepLane::kStyle, kLaneSlots, 600, 44, &make<StepLane>);
   reg("arppattern", "Pattern View", PatternView::kStyle, kPatternSlots, 160, 120, &make<PatternView>);
   reg("arpbend", "Bend View", BendView::kStyle, kBendSlots, 300, 110, &make<BendView>);
 }
@@ -1333,6 +1915,26 @@ namespace test {
 int32_t stepLaneLit(const Element& e) {
   const auto* s = dynamic_cast<const StepLane*>(&e);
   return s != nullptr ? s->litStep() : -2;
+}
+
+std::optional<ui::Rect> stepLaneCell(const Element& e, int32_t step) {
+  const auto* s = dynamic_cast<const StepLane*>(&e);
+  return s != nullptr ? std::optional<ui::Rect>(s->cell(step)) : std::nullopt;
+}
+
+int32_t stepLaneRange(const Element& e, const PanelTarget& t) {
+  const auto* s = dynamic_cast<const StepLane*>(&e);
+  return s != nullptr ? s->shownRange(t) : 0;
+}
+
+float stepLaneRowY(const Element& e, const PanelTarget& t, int32_t value) {
+  const auto* s = dynamic_cast<const StepLane*>(&e);
+  return s != nullptr ? s->rowY(t, value) : 0.0f;
+}
+
+bool stepLaneTyping(const Element& e) {
+  const auto* s = dynamic_cast<const StepLane*>(&e);
+  return s != nullptr && s->typing();
 }
 
 int32_t patternPosition(const Element& e) {

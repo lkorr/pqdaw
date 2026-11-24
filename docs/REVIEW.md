@@ -2341,3 +2341,22 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Old projects: arp glide settings are not converted (no compatibility).
 - Goldens re-recorded: arp-panel-walk, arp-panel-lanes, arp-panel-degrees-bends, arp-panel-bend-view,
   project-patch-arp.
+
+## AR.4 · arpeggiator: step lanes and panel pass (👁)
+Open an Arpeggiator's panel (Device view, or its block in the project patch).
+- Step Lanes: every lane is a row across the whole panel. Off = just its name with a switch; switch it on and it
+  opens (Velocity / Gate / Glide / Chance 44 px, Transpose 96 px). Steps are ≈ 26 px wide, a tick every four.
+- Transpose is a grid: one row per degree, 0 in the middle, octave (equave) rows ruled. Click a row; drag past the
+  top / bottom to go beyond ± 7 (the grid then shows whole equaves). Each step shows its number.
+- On any step: wheel = fine (1 % / 1 step), Shift+wheel = 10 % / an equave, double-click = type a value,
+  Alt+click = default. Hovering shows "step 5 of 16" and the value under the lane's name.
+- The three dots after a lane's name (or right-click the name): Reset, Randomize, Shift Left / Right, Reverse,
+  Copy to another lane. Right-click on a step is still the automation menu.
+- Rate is one box: click for 1/1 … 1/128 (or wheel), Straight / Dotted / Triplet chips next to it. The small "n:m"
+  chip shows the raw numbers (3/16, 5:4 tuplets) instead.
+- "Vel Retrig" is now a switch "Decay restarts — On retrigger"; Retrigger's Beat rate is labelled "Every".
+- Not checked in the live app (tests and goldens at 1x and 2x only). To judge: is 44 px enough for Velocity / Gate?
+  Is double-click = type right (it was reset)? With everything on and Glide open the panel is ≈ 760 px tall and the
+  Device view does not scroll it: fold Glide, or should the Device view scroll tall panels? The Pitch block has an
+  empty row at the bottom until AR.3 puts Layers there.
+- Goldens: arp-panel-* (all), arp-panel-lanes-2x (new), project-patch-arp, project-node-menu-midi.

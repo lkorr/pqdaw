@@ -1245,7 +1245,10 @@ public:
 // Its selection is 1 open / 0 folded, so a visibility condition can follow it too.
 // SM.10: look "chevron" — an EXPAND chevron alone, centred (down: folded, "more below"; up: open), no title or line: the
 // Sampler's closed face grows its settings out of it.
-constexpr std::array<std::string_view, 2> kFoldLooks = {"header", "chevron"};
+// AR.4: look "band" — NO header at all (nothing drawn, no press): a layout band alone. With a visibility condition its
+// section is taken out of a fit panel while the condition fails (the arpeggiator's step lanes: a lane switched off
+// is only its name strip; the lane's element spans the band and shrinks by it).
+constexpr std::array<std::string_view, 3> kFoldLooks = {"header", "chevron", "band"};
 class Fold final : public Element {
 public:
   using Element::Element;
@@ -1257,15 +1260,18 @@ public:
       {"colour", StyleSpec::Type::Token, 0, "ink"},
   };
   bool open(const PanelTarget& t) const { return t.foldOpen(desc_.id).value_or(doc::foldOpenByDefault(desc_)); }
-  bool interactive() const noexcept override { return true; }
+  bool band() const noexcept { return txt("look", "header") == "band"; }
+  bool interactive() const noexcept override { return !band(); }
+  bool hit(Vec2 l) const noexcept override { return !band() && Element::hit(l); }
   bool chevron() const { return txt("look", "header") == "chevron"; }
-  uint32_t staticLayerCount() const noexcept override { return chevron() ? 0 : 1; }
+  uint32_t staticLayerCount() const noexcept override { return chevron() || band() ? 0 : 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return ui::mulAlpha(th.face.frame, 0.8f); }
   void paintStatic(ui::FacePainter& p, uint32_t) const override {
     p.line({1.0f, desc_.h - 0.5f}, {desc_.w - 1.0f, desc_.h - 0.5f}, 1.0f, ui::rgba(255, 255, 255));
   }
   void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
     const ui::Theme& th = *env.theme;
+    if (band()) return;
     const bool o = open(*env.target);
     if (chevron()) {  // SM.10: a chevron stroke, pointing down while folded (there is more), up while open
       const float cx = desc_.w * 0.5f, cy = desc_.h * 0.5f;

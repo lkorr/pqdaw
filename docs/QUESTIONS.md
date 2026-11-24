@@ -2639,3 +2639,27 @@ Context: AR.1 (docs/plans/AR.md "AR.1"). Choices (most reversible):
    left end, and the panel is ≈ 960 wide: centred on the pointer it hung out over the tuning block).
 6. Not changed: the browser drop still goes only onto a notes cable (dropped on empty canvas it is refused), while
    Tab places it free. A loaded project with a wire that breaks the rule loads (the wire is inert).
+
+## Q?-AR.4-a · arpeggiator step lanes and panel pass: readings taken
+Context: AR.4 (docs/plans/AR.md "AR.4"). Choices (most reversible):
+1. **A lane's switch, name, menu and readout are part of the `steplane` element** (a name column), not a separate
+   toggle: the element shrinks to its name strip when off. The collapse uses the existing fold layout — a `fold` of
+   look "band" (nothing drawn) with the lane's switch as its condition — instead of a new layout rule.
+2. **Double-click types a value** (was: reset); the default is Alt+click / Alt+drag on every lane. The first click of
+   the double-click still sets the step from the pointer (its own undo step), as any click does.
+3. **Wheel: plain = fine (1 % / 1 step), Shift = coarse (10 % / an equave)** on every lane — the plan's Transpose rule
+   made the lanes' rule; the knobs' wheel has Shift = finer.
+4. **Transpose rows**: ± 7, then whole equaves that hold every value (12-EDO: ± 12, ± 24 …), not "7 + equaves"; so an
+   equave line is always at the edge. Ratio / Harmonics have no equave: sevens, a label every few rows (not every row:
+   6 px rows cannot all carry a number; each step's own value is written on it).
+5. **Randomize** is seeded by the device seed, the lane and a count kept as view state: the same project gives the same
+   sequence of results, and asking again gives a new one. Transpose randomizes within the rows shown; Skip / Tie
+   60 / 25 / 15 % Play / Skip / Tie.
+6. **Copy to** only between Velocity / Gate / Glide / Chance (by value, clamped, with the length). Transpose and
+   Skip / Tie have other units; not offered.
+7. **Rate**: "n:m" is a chip on the rate control (view state, not saved); a rate the menu cannot say (3/16, 5:4) shows
+   the number boxes whatever the chip says. Dotted reads "D", Triplet "T" in the box.
+8. **Top band 200 px** (was 182) to leave AR.3 a 58 px Layers row in the Pitch block; all lanes on, Glide open the
+   panel is ≈ 760 px high — taller than a small Device view (the view does not scroll a panel vertically).
+9. `viewFoldLayout` (the patch block's size) now reads a note device's settings with their defaults, so a lane that
+   was never switched on counts as off there too.
