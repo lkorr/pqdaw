@@ -21,9 +21,9 @@
 
 namespace pq::views {
 
-// How far (vertically, device px) a simplified path may stray from the points it was given. Under a quarter pixel:
-// invisible next to the stroke's 0.75 px feather.
-inline constexpr float kPathPxTolerance = 0.2f;
+// The simplification's tolerance and the streaming simplifier: pq/ui/lines.h (WF.2: shared with every curve display).
+using ui::kPathPxTolerance;
+using ui::PxPolyline;
 
 // A vibrato drawn as its band when one cycle is shorter than this many logical px (or than two strokes and their
 // gaps): below it the up and down strokes of the wave run into each other.
@@ -32,98 +32,10 @@ inline constexpr float kVibratoBandPx = 8.0f;
 // note's weight does not jump where the wave turns into the band.
 inline constexpr float kVibratoBandAlpha = 0.45f;
 
-// Streaming polyline simplification in device px ("swinging door"): points arrive left to right (x never decreasing)
-// and only those the line from the last kept point cannot skip are kept — every skipped point lies within `tol` px
-// (vertically) of the output, so flat runs and straight stretches collapse to their ends and sub-pixel detail to its
-// silhouette. A jump (two points on one x) stays a vertical step. Output overwrites `out` (capacity reused).
-class PxPolyline {
-public:
-  explicit PxPolyline(std::vector<ui::Vec2>& out, float tol = kPathPxTolerance) noexcept : out_(out), tol_(tol) { out_.clear(); }
-  void add(ui::Vec2 p) {
-    if (out_.empty()) {
-      keep(p);
-      return;
-    }
-    if (!pending_) {
-      start(p);
-      return;
-    }
-    const float dx = p.x - a_.x;
-    if (dx > kSameX) {
-      const float s = (p.y - a_.y) / dx;
-      if (s >= lo_ && s <= hi_) {  // the line from the anchor to p passes every skipped point: p may be skipped later
-        lo_ = std::max(lo_, (p.y - tol_ - a_.y) / dx);
-        hi_ = std::min(hi_, (p.y + tol_ - a_.y) / dx);
-        last_ = p;
-        return;
-      }
-    }
-    keep(last_);  // p cannot be reached past the last point: that one is kept and becomes the anchor
-    start(p);
-  }
-  // Keeps the last point (the path's end).
-  void finish() {
-    if (pending_) keep(last_);
-  }
-  // Adds p and keeps it as a vertex: the walk restarts there, so what follows does not depend on what came before (a
-  // paint that starts its walk at p draws the same vertices after it as one that passed through it). (p dropped as a
-  // repeat on the anchor's x: the anchor moves onto p.)
-  void restart(ui::Vec2 p) {
-    add(p);
-    if (pending_) {
-      keep(last_);  // (= p)
-    } else if (out_.back().x != p.x || out_.back().y != p.y) {
-      out_.back() = p;
-      a_ = p;
-    }
-  }
-
-private:
-  static constexpr float kSameX = 1e-3f;
-  void keep(ui::Vec2 p) {
-    out_.push_back(p);
-    a_ = p;
-    pending_ = false;
-  }
-  // The first point after the anchor: the slopes from the anchor that pass within tol of it.
-  void start(ui::Vec2 p) {
-    const float dx = p.x - a_.x;
-    if (dx <= kSameX) {  // on the anchor's x: a jump is kept as a vertical step, a repeat is dropped
-      if (std::fabs(p.y - a_.y) > tol_) keep(p);
-      return;
-    }
-    lo_ = (p.y - tol_ - a_.y) / dx;
-    hi_ = (p.y + tol_ - a_.y) / dx;
-    last_ = p;
-    pending_ = true;
-  }
-  std::vector<ui::Vec2>& out_;
-  float tol_;
-  ui::Vec2 a_{}, last_{};
-  float lo_ = 0.0f, hi_ = 0.0f;
-  bool pending_ = false;
-};
-
-// A pitch path's stroke. Where it turns by more than 60° somewhere (a zoomed-out wave's tips, a glide's corners),
-// ui::smoothPolylineCols in one colour: its joins are mitred on the two segments' own normals (≤ 2×) and bevel past
-// 120°, where smoothPolyline's joins (normals from the neighbours' chord, miters up to 2.5×) stick out as spikes at
-// such corners; else the cheaper smoothPolyline.
+// A pitch path's stroke: ui::strokePolyline (smoothPolylineCols where the path turns by more than 60° somewhere, a
+// zoomed-out wave's tips or a glide's corners; else the cheaper smoothPolyline).
 inline void strokePath(ui::DrawList& dl, std::span<const ui::Vec2> pts, ui::Rgba col, float thickness) {
-  const size_t n = pts.size();
-  if (n < 2) return;
-  bool sharp = false;
-  for (size_t i = 1; i + 1 < n && !sharp; ++i) {
-    const float ax = pts[i].x - pts[i - 1].x, ay = pts[i].y - pts[i - 1].y, bx = pts[i + 1].x - pts[i].x, by = pts[i + 1].y - pts[i].y;
-    const float dot = ax * bx + ay * by;
-    sharp = dot <= 0.0f || dot * dot < 0.25f * (ax * ax + ay * ay) * (bx * bx + by * by);  // cos(turn) < ½
-  }
-  if (!sharp) {
-    ui::smoothPolyline(dl, pts, col, thickness);
-    return;
-  }
-  static thread_local std::vector<ui::Rgba> cols;
-  cols.assign(n, col);
-  ui::smoothPolylineCols(dl, pts.data(), cols.data(), static_cast<uint32_t>(n), thickness);
+  ui::strokePolyline(dl, pts, col, thickness);
 }
 
 // strokePath always with joins on the segments' own normals (ui::smoothPolylineCols): for a walk that may cover only

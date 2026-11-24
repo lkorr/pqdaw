@@ -32,6 +32,7 @@
 #include "pq/dsp/waterfall.h"
 #include "pq/meta/registry.h"
 #include "pq/ui/colormap.h"
+#include "pq/ui/lines.h"
 #include "pq/ui/theme.h"
 
 namespace pq::views {
@@ -505,7 +506,10 @@ void WaterfallFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th*/, bool
   const int nDrawn = static_cast<int>(drawIdx_.size());
   const bool oldestFirst = R[8] >= 0.0f;
   const float edgeOn = std::clamp(std::fabs(R[8]) / 0.2f, 0.0f, 1.0f), ridgeFade = edgeOn * edgeOn * (3.0f - 2.0f * edgeOn);
-  const int drawPts = std::min<int>(kP, std::max(64, static_cast<int>((plot.x1 - plot.x0) * 0.5f)));
+  // A point per 2 device px of the plot (the terrain is 140 strips of them) — per 2 px as drawn: zoomed in (to 4×) the
+  // count follows (WF.2: it did not, and the chords grew to 8 px), up to the slices' own kP columns.
+  const float camZoom = std::clamp(static_cast<float>(opts_[wZoom]), 1.0f, 4.0f);
+  const int drawPts = std::min<int>(kP, std::max(64, static_cast<int>((plot.x1 - plot.x0) * 0.5f * camZoom)));
   const float Hs = static_cast<float>(opts_[wHeight]), shading = static_cast<float>(opts_[wShade]);
   const bool glow = opts_.on(wGlow);
   const float glowAmt = static_cast<float>(opts_[wGlowAmt]), lineW = static_cast<float>(opts_[wLine]) * tf.scale * 0.5f;
@@ -547,24 +551,14 @@ void WaterfallFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th*/, bool
     p.meshDevice(mv_, mc_, mi_);
     verts_ += static_cast<uint32_t>(mv_.size());
   };
+  // WF.2: the lines (the wireframe's slices, the newest curve's ridge and their glow) through the shared antialiased
+  // stroke, as the Spectrum draws its curve (ui::gradientPolyline via the painter). It was a quad per segment written
+  // here: no fringe (stair-steps on every slope), no joins (gaps and overlaps at every bend). 4 vertices a point, as
+  // before.
   auto polyline = [&](const Vec2* pts, const Rgba* cs, int n, float thick) {
     if (n < 2 || thick <= 0.0f) return;
-    mv_.clear(), mc_.clear(), mi_.clear();
-    const float hw = 0.5f * thick;
-    for (int i = 0; i + 1 < n; ++i) {
-      float dx = pts[i + 1].x - pts[i].x, dy = pts[i + 1].y - pts[i].y;
-      const float len = std::sqrt(dx * dx + dy * dy);
-      if (len > 1e-6f) dx /= len, dy /= len;
-      else dx = 1.0f, dy = 0.0f;
-      const float nx = -dy * hw, ny = dx * hw;
-      const auto base = static_cast<uint32_t>(mv_.size());
-      mv_.insert(mv_.end(), {{pts[i].x + nx, pts[i].y + ny}, {pts[i + 1].x + nx, pts[i + 1].y + ny}, {pts[i + 1].x - nx, pts[i + 1].y - ny},
-                             {pts[i].x - nx, pts[i].y - ny}});
-      mc_.insert(mc_.end(), {cs[i], cs[i + 1], cs[i + 1], cs[i]});
-      mi_.insert(mi_.end(), {base, base + 1, base + 2, base, base + 2, base + 3});
-    }
-    p.meshDevice(mv_, mc_, mi_);
-    verts_ += static_cast<uint32_t>(mv_.size());
+    p.gradientLineDevice({pts, static_cast<size_t>(n)}, {cs, static_cast<size_t>(n)}, thick);
+    verts_ += static_cast<uint32_t>(n) * 4u;
   };
   // ---- closing faces ----
   const bool floorFirst = R[7] >= 0.0f;
@@ -594,8 +588,27 @@ void WaterfallFace::paintScene(ui::FacePainter& p, const ui::Theme& /*th*/, bool
     strip(pts_.data(), topC.data(), botPts_.data(), botC.data(), drawPts);
   };
   auto drawRidge = [&] {
+    if (ridge_.size() < 2 || ridgeFade <= 0.004f) return;
+    // WF.2: the newest curve at a point per device px — the slice's points are 2 px apart, so one more between each
+    // pair, on the Catmull-Rom curve through them (ui::catmullRom), its level between its neighbours'.
+    {
+      static thread_local std::vector<Vec2> fine;
+      static thread_local std::vector<float> fineLt;
+      const size_t m = ridge_.size();
+      fine.clear();
+      fineLt.clear();
+      for (size_t i = 0; i + 1 < m; ++i) {
+        fine.push_back(ridge_[i]);
+        fineLt.push_back(ridgeLt_[i]);
+        fine.push_back(ui::catmullRom(ridge_[i > 0 ? i - 1 : 0], ridge_[i], ridge_[i + 1], ridge_[i + 2 < m ? i + 2 : m - 1], 0.5f));
+        fineLt.push_back(0.5f * (ridgeLt_[i] + ridgeLt_[i + 1]));
+      }
+      fine.push_back(ridge_.back());
+      fineLt.push_back(ridgeLt_.back());
+      ridge_.swap(fine);
+      ridgeLt_.swap(fineLt);
+    }
     const int n = static_cast<int>(ridge_.size());
-    if (n < 2 || ridgeFade <= 0.004f) return;
     static thread_local std::vector<Rgba> rc;
     rc.resize(static_cast<size_t>(n));
     if (glow && glowAmt > 0.01f) {

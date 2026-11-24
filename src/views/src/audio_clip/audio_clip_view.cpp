@@ -212,6 +212,19 @@ public:
   bool onPointer(const PointerEvent& e) override;
   bool onKey(const KeyEvent& e) override;
   void onCaptureLost() override { cancel(); }
+  // WF.2: a marker or brace held past the display's side keeps the view scrolling under it (zoomed in, the place it is
+  // going to is outside the view), a frame at a time while the pointer rests there.
+  void onFrame(double now) override {
+    if (!edgeScrolling()) return;
+    edgeStep(now);
+    dragTo(lastDrag_);
+    requestFrame();
+  }
+  bool edgeScrolling() const noexcept {
+    if (drag_ == Drag::None || drag_ == Drag::View || z1_ - z0_ >= 1.0) return false;
+    const IRect w = wave();
+    return lastDrag_.pos.x < static_cast<float>(w.x) || lastDrag_.pos.x > static_cast<float>(w.right());
+  }
   Cursor cursorAt(Vec2 p) const override {
     Drag d = drag_;
     if (d == Drag::None && inTimeline(p)) d = Drag::View;
@@ -450,6 +463,12 @@ private:
   std::vector<double> cuts_;  // (scratch: a warped view's linear pieces)
   Drag drag_ = Drag::None;
   float pressX_ = 0.0f;
+  // WF.2: what was under the pointer at the press (content ticks / source frame): the drag is measured from there, so
+  // it still is when the view has scrolled under the pointer; the last drag event and when the view last stepped.
+  double pressContent_ = 0.0, pressFrame_ = 0.0;
+  PointerEvent lastDrag_{};
+  double edgeAt_ = -1.0;
+  void edgeStep(double now);
   doc::AudioClipPtr pressClip_;
   int32_t marker_ = -1;    // the warp marker being dragged
   int32_t selected_ = -1;  // the selected warp marker (Delete)
@@ -1181,6 +1200,10 @@ bool SampleDisplay::onPointer(const PointerEvent& e) {
       frozen_ = false;
       axis(axis0_, axis1_);
       frozen_ = true;  // the axis stays as pressed until the drag ends
+      pressContent_ = contentAtX(pressX_);
+      pressFrame_ = frameAt(pressX_);
+      lastDrag_ = e;
+      edgeAt_ = -1.0;
       gestureOpen_ = false;
       markDirty();
       return true;
@@ -1199,7 +1222,11 @@ bool SampleDisplay::onPointer(const PointerEvent& e) {
         setZoom(anchor - (frac + static_cast<double>(e.pos.x - pressPos_.x) / std::max(1, w.w)) * got, got);
         return true;
       }
-      if (drag_ != Drag::None) dragTo(e);
+      if (drag_ != Drag::None) {
+        lastDrag_ = e;
+        dragTo(e);
+        if (edgeScrolling()) requestFrame();  // (the view follows from the next frame on: onFrame)
+      }
       return drag_ != Drag::None;
     case PointerType::Up:
       if (drag_ == Drag::None) return e.button == PointerButton::Right;
@@ -1233,6 +1260,18 @@ bool SampleDisplay::wheel(const PointerEvent& e) {
   return true;
 }
 
+// The view moves toward the side the pointer is past: by how far past, at most a tenth of the view per 1 / 60 s.
+void SampleDisplay::edgeStep(double now) {
+  const IRect w = wave();
+  if (w.w <= 0) return;
+  const double dt = edgeAt_ < 0.0 ? 1.0 / 60.0 : std::clamp(now - edgeAt_, 0.0, 0.05);
+  edgeAt_ = now;
+  const float x = lastDrag_.pos.x;
+  const double over = x < static_cast<float>(w.x) ? static_cast<double>(x) - w.x : static_cast<double>(x) - w.right();
+  const double span = z1_ - z0_;
+  setZoom(z0_ + std::clamp(over / w.w, -0.1, 0.1) * span * dt * 60.0, span);
+}
+
 void SampleDisplay::dragTo(const PointerEvent& e) {
   if (!pressClip_ || !v_.snap_) return;
   const doc::AudioClip& c0 = *pressClip_;
@@ -1254,7 +1293,7 @@ void SampleDisplay::dragTo(const PointerEvent& e) {
   };
   const doc::Snapshot snap = v_.ctx_.doc();
   const double r = rate();
-  const double dContent = contentAtX(e.pos.x) - contentAtX(pressX_);  // warped: ticks the pointer moved
+  const double dContent = contentAtX(e.pos.x) - pressContent_;  // warped: ticks the pointer moved (WF.2: from the press's content)
   if (drag_ == Drag::WarpMove || drag_ == Drag::WarpSlide) {
     if (marker_ < 0 || static_cast<size_t>(marker_) >= c0.markers.size()) return;
     const doc::WarpMarker m0 = c0.markers[static_cast<size_t>(marker_)];
@@ -1264,7 +1303,7 @@ void SampleDisplay::dragTo(const PointerEvent& e) {
       (void)v_.dispatch(doc::ops::moveWarpMarker(*snap, v_.ref_, static_cast<size_t>(marker_), t), "Move Warp Marker");
     } else {
       // The source frame under the pointer follows it: the marker reads earlier source as the pointer moves right.
-      const double df = doc::warpFrameAt(c0, r, contentAtX(e.pos.x)) - doc::warpFrameAt(c0, r, contentAtX(pressX_));
+      const double df = doc::warpFrameAt(c0, r, contentAtX(e.pos.x)) - doc::warpFrameAt(c0, r, pressContent_);
       (void)v_.dispatch(doc::ops::slideWarpMarker(*snap, v_.ref_, static_cast<size_t>(marker_), m0.sourceFrame - df),
                         "Slide Warp Marker");
     }
@@ -1273,7 +1312,7 @@ void SampleDisplay::dragTo(const PointerEvent& e) {
   if (drag_ == Drag::Marker) {
     doc::AudioClip n = *v_.clip_;
     if (c0.warp == doc::AudioWarp::Off) {
-      const double df = frameAt(e.pos.x) - frameAt(pressX_);
+      const double df = frameAt(e.pos.x) - pressFrame_;
       const double span = c0.seconds * s->rate * speedRatio();
       n.contentStartFrame = std::clamp(c0.contentStartFrame + df, 0.0, std::max(0.0, static_cast<double>(s->frames) - span));
       if (n.contentStartFrame == v_.clip_->contentStartFrame) return;

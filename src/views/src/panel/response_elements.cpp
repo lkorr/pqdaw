@@ -862,8 +862,12 @@ private:
     if (b.hasGain()) return {x, yOf(b.db)};
     if (chain == ~0u || chain == shown_.active)
       if (b.index < band_.size() && band_[b.index].valid()) {
+        // WF.2: between the two points either side (it took the nearest: the node stepped along a steep flank).
         const float k = std::clamp(x / desc_.w, 0.0f, 1.0f) * (kPoints - 1);
-        return {x, std::clamp(yOf(band_[b.index].v[static_cast<size_t>(std::lround(k))]), area_[kMag].y0 + 4.0f, area_[kMag].y1 - 4.0f)};
+        const auto k0 = std::min(static_cast<size_t>(k), static_cast<size_t>(kPoints - 2));
+        const auto& v = band_[b.index].v;
+        const float db = v[k0] + (v[k0 + 1] - v[k0]) * (k - static_cast<float>(k0));
+        return {x, std::clamp(yOf(db), area_[kMag].y0 + 4.0f, area_[kMag].y1 - 4.0f)};
       }
     return {x, yOf(0.0)};
   }
@@ -973,7 +977,7 @@ private:
       const Derived& o = total_[1 - shown_.active];
       if (o.valid()) {
         curvePoints(o.v, 0, kPoints, pts_);
-        p.polyline(pts_, 1.2f, ui::mulAlpha(th.device.response, 0.35f));
+        p.series(pts_, 1.2f, ui::mulAlpha(th.device.response, 0.35f));
       }
     }
     // Each band's own curve, faint, filled toward 0 dB.
@@ -1001,7 +1005,7 @@ private:
           dev_[k] = ft.map(pts_[k]);
           cols_[k] = ui::mulAlpha(c, (sel ? 0.85f : 0.5f) * std::clamp(std::fabs(d.v[a + k]) / 1.5f, 0.0f, 1.0f));
         }
-        ui::gradientPolyline(dl, dev_.data(), cols_.data(), static_cast<uint32_t>(dev_.size()), std::max(0.75f, 0.9f * ft.scale));
+        p.gradientLineDevice(dev_, cols_, std::max(0.75f, 0.9f * ft.scale));  // (through the painter: its ghost / tint)
       }
     // The total.
     const Derived& tot = total_[shown_.active];
@@ -1012,9 +1016,11 @@ private:
       if (tot.kind == graph::ResponseKind::Approximate) {
         p.dashed(pts_, 1.5f, 4.0f, 3.0f, m);
       } else {
-        p.polyline(pts_, 6.0f, ui::mulAlpha(m, 0.06f));
-        p.polyline(pts_, 3.2f, ui::mulAlpha(m, 0.14f));
-        p.polyline(pts_, 1.5f, m);
+        // WF.2: series — the 768 points are two per device px at 1×: a column per px instead (a third of the vertices
+        // of the three ribbons, re-made on every analyser frame), a spline where a wide element spreads them out.
+        p.series(pts_, 6.0f, ui::mulAlpha(m, 0.06f));
+        p.series(pts_, 3.2f, ui::mulAlpha(m, 0.14f));
+        p.series(pts_, 1.5f, m);
       }
     } else {
       p.text({w * 0.5f, A.y0 + 12.0f}, "no curve", 6.5f, th.device.displayText);
@@ -1068,15 +1074,15 @@ private:
     if (sel.valid())
       runs(sel.v, [&](uint32_t a, uint32_t b) {
         stripPoints(sel.v, a, b, s, delay, pts_);
-        p.polyline(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
+        p.series(pts_, 0.9f, ui::mulAlpha(selColour_, 0.55f));
       }, ui::mulAlpha(selColour_, 0.3f), false);
     if (tot.valid()) {
       const Rgba m = th.device.response;
       runs(tot.v, [&](uint32_t a, uint32_t b) {
         stripPoints(tot.v, a, b, s, delay, pts_);
-        p.polyline(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
+        p.series(pts_, 3.0f, ui::mulAlpha(m, 0.12f));
         if (tot.kind == graph::ResponseKind::Approximate) p.dashed(pts_, 1.2f, 4.0f, 3.0f, ui::mulAlpha(m, 0.9f));
-        else p.polyline(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
+        else p.series(pts_, 1.2f, ui::mulAlpha(m, 0.9f));
       }, ui::mulAlpha(m, 0.4f), true);
     } else {
       p.text({desc_.w * 0.5f, (s.y0 + s.y1) * 0.5f}, "no curve", 6.0f, th.device.displayText);

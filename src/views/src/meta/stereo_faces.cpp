@@ -756,16 +756,31 @@ protected:
       }
       if (opts_.on(iPosLine)) {
         const float lw = static_cast<float>(opts_[iLine]) * 0.6f;
-        const Col lc = colOpt(opts_, iColLine, lineTint(fillAt(0.5f)));  // (its own: every segment; else the ramp's tint)
+        const Col lc = colOpt(opts_, iColLine, lineTint(fillAt(0.5f)));  // (its own: every point; else the ramp's tint)
         const bool ownLine = opts_[iColLine] >= 0.0;
-        for (size_t i = 0; i + 1 < n; ++i) {
+        // WF.2: one joined stroke per run of audible rows, a colour per point (it was a ribbon per segment: 255
+        // unjoined butt-ended pieces, whose overlaps beaded along a translucent line and gaped at bends).
+        linePts_.clear();
+        lineCols_.clear();
+        auto flushLine = [&] {
+          if (linePts_.size() >= 2) p.polylineCols(linePts_, lineCols_, lw);
+          linePts_.clear();
+          lineCols_.clear();
+        };
+        for (size_t i = 0; i < n; ++i) {
           const auto& a = shown_[i];
-          const auto& b = shown_[i + 1];
-          const float aA = levelA(a.db), bA = levelA(b.db);
-          if (aA < 0.004f && bA < 0.004f) continue;
-          const Col c = ownLine ? lc : lineTint(colMode == 2 ? byLevel(0.5f * (a.db + b.db)) : fillAt((static_cast<float>(i) + 0.5f) / static_cast<float>(n - 1)));
-          p.line({xOf(a.pos), yOfT(tOf(i))}, {xOf(b.pos), yOfT(tOf(i + 1))}, lw, rgbF(c.r, c.g, c.b, 0.5f * (aA + bA)));
+          const float aA = levelA(a.db);
+          // (a silent row between audible ones still ends a segment at alpha 0, as the per-segment mean did)
+          const bool near = aA >= 0.004f || (i > 0 && levelA(shown_[i - 1].db) >= 0.004f) || (i + 1 < n && levelA(shown_[i + 1].db) >= 0.004f);
+          if (!near) {
+            flushLine();
+            continue;
+          }
+          const Col c = ownLine ? lc : lineTint(colMode == 2 ? byLevel(a.db) : fillAt(static_cast<float>(i) / static_cast<float>(n - 1)));
+          linePts_.push_back({xOf(a.pos), yOfT(tOf(i))});
+          lineCols_.push_back(rgbF(c.r, c.g, c.b, aA));
         }
+        flushLine();
       }
     }
     p.drawList().popClip();
@@ -795,6 +810,8 @@ private:
   size_t texRows_ = 0;
   std::vector<uint32_t> texels_;
   std::vector<dsp::StereoPoint> shown_;
+  std::vector<Vec2> linePts_;   // WF.2: the position line's current run and its colours
+  std::vector<Rgba> lineCols_;
 };
 
 // ---- the Phase Scope (PQ phase_scope) --------------------------------------------------------------------------------
@@ -931,10 +948,19 @@ protected:
     p.drawList().pushClip(deviceRect(p, {plotL, lt, plotR, lb}));
     // The area to the 0 dB line, one strip per run of visible points of one state (normal / past the warn level: red),
     // then the curve segment by segment at its level's opacity.
-    bool have = false, runWarn = false;
-    Vec2 prev{};
-    float prevA = 0.0f, prevV = 0.0f, runA = 0.0f;
+    // WF.2: the curve is one joined stroke per run with a colour per point (ui::smoothPolylineCols through the
+    // painter); it was a two-point ribbon per segment — unjoined, the butt ends overlapping in a translucent colour and
+    // leaving wedges on the steep sides of a notch.
+    bool runWarn = false;
+    float runA = 0.0f;
     pts_.clear();
+    linePts_.clear();
+    lineCols_.clear();
+    auto flushLine = [&] {
+      if (linePts_.size() >= 2) p.polylineCols(linePts_, lineCols_, lw);
+      linePts_.clear();
+      lineCols_.clear();
+    };
     auto flush = [&] {
       if (pts_.size() >= 2) {
         const Rgba c = ui::mulAlpha(runWarn ? warnCol : monoCol, 0.18f * runA / static_cast<float>(pts_.size()));
@@ -948,7 +974,7 @@ protected:
       const float a = std::clamp((pt.db - floorDb) / 24.0f, 0.0f, 1.0f);
       if (pt.db < floorDb || a <= 0.01f) {
         flush();
-        have = false;
+        flushLine();
         continue;
       }
       const float v = std::clamp(i < mono_.size() ? mono_[i] : pt.monoDb, -120.0f, mHi);
@@ -962,11 +988,11 @@ protected:
       runWarn = warnHere;
       pts_.push_back(cur);
       runA += a;
-      if (have && std::min(prevA, a) > 0.01f)
-        p.line(prev, cur, lw, ui::mulAlpha(v < warn && prevV < warn ? warnCol : monoCol, std::min(prevA, a)));
-      prev = cur, prevA = a, prevV = v, have = true;
+      linePts_.push_back(cur);
+      lineCols_.push_back(ui::mulAlpha(warnHere ? warnCol : monoCol, a));
     }
     flush();
+    flushLine();
     p.drawList().popClip();
     if (opts_.on(qCoh)) {  // how much of the picture to believe
       const float rb = bot - 1.0f, ribH = std::min(14.0f, (bot - top) * 0.12f);
@@ -1015,6 +1041,8 @@ protected:
 private:
   std::vector<float> mono_;
   std::vector<Vec2> pts_;
+  std::vector<Vec2> linePts_;   // WF.2: the curve's current run and its colours
+  std::vector<Rgba> lineCols_;
 };
 
 }  // namespace

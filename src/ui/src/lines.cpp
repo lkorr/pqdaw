@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "pq/ui/waveform.h"
+
 // Port notes (vs PQ Meter's smooth_line.h / spectrum.cpp):
 //   - Vertices and indices are written through DrawList::primReserveSpan's raw pointers instead of
 //     PrimWriteVtx/PrimWriteIdx (MSVC reloads member write pointers after every store; ~3× slower).
@@ -391,6 +393,120 @@ void splineSmooth(const float* src, float* dst, uint32_t n, int knotStep) {
     dst[s] = 0.5f * ((2.0f * c1) + (-c0 + c2) * u + (2.0f * c0 - 5.0f * c1 + 4.0f * c2 - c3) * u * u +
                      (-c0 + 3.0f * c1 - 3.0f * c2 + c3) * u * u * u);
   }
+}
+
+// --- WF.2: the curve displays' entry points ------------------------------------------------------------------------
+
+void strokePolyline(DrawList& dl, std::span<const Vec2> pts, Rgba col, float thickness) {
+  const size_t n = pts.size();
+  if (n < 2) return;
+  bool sharp = false;
+  for (size_t i = 1; i + 1 < n && !sharp; ++i) {
+    const float ax = pts[i].x - pts[i - 1].x, ay = pts[i].y - pts[i - 1].y, bx = pts[i + 1].x - pts[i].x, by = pts[i + 1].y - pts[i].y;
+    const float dot = ax * bx + ay * by;
+    sharp = dot <= 0.0f || dot * dot < 0.25f * (ax * ax + ay * ay) * (bx * bx + by * by);  // cos(turn) < ½
+  }
+  if (!sharp) {
+    smoothPolyline(dl, pts.data(), static_cast<uint32_t>(n), col, thickness);
+    return;
+  }
+  static thread_local std::vector<Rgba> cols;
+  cols.assign(n, col);
+  smoothPolylineCols(dl, pts.data(), cols.data(), static_cast<uint32_t>(n), thickness);
+}
+
+void curveParams(std::vector<double>& out, uint32_t n, std::span<const double> knots) {
+  out.clear();
+  n = std::max<uint32_t>(n, 1);
+  out.reserve(n + 1 + knots.size());
+  for (uint32_t i = 0; i <= n; ++i) out.push_back(static_cast<double>(i) / n);
+  const size_t grid = out.size();
+  for (const double k : knots)
+    if (k > 0.0 && k < 1.0) out.push_back(k);
+  if (out.size() == grid) return;
+  std::sort(out.begin() + static_cast<std::ptrdiff_t>(grid), out.end());
+  std::inplace_merge(out.begin(), out.begin() + static_cast<std::ptrdiff_t>(grid), out.end());
+  // A knot within a hundredth of a step of a sample: once (no zero-length chord).
+  const double eps = 0.01 / n;
+  size_t w = 1;
+  for (size_t i = 1; i < out.size(); ++i)
+    if (out[i] - out[w - 1] > eps) out[w++] = out[i];
+  out.resize(w);
+  out.back() = 1.0;
+}
+
+void strokeSeries(DrawList& dl, std::span<const Vec2> pts, Rgba col, float thickness) {
+  const size_t n = pts.size();
+  if (n < 2) return;
+  const float xa = pts.front().x, xb = pts.back().x;
+  const float width = xb - xa;
+  if (!(width > 0.0f) || !(width < 1.0e6f)) return;
+  if (static_cast<float>(n - 1) * 1.5f <= width) {  // sparse: the spline through the points
+    static thread_local std::vector<Vec2> sp;
+    splinePath(pts, sp, 1.0f);  // (a point per device px)
+    strokePolyline(dl, sp, col, thickness);
+    return;
+  }
+  // Dense. A smooth curve first loses the points it does not need (PxPolyline, 0.2 px): what is left of a response
+  // curve or a slow trace is well under a vertex per px, and a ribbon through those is the cleanest picture of it.
+  {
+    static thread_local std::vector<Vec2> simple;
+    PxPolyline line(simple);
+    for (const Vec2& q : pts) line.add(q);
+    line.finish();
+    if (static_cast<float>(simple.size()) <= 0.75f * width) {
+      strokePolyline(dl, simple, col, thickness);
+      return;
+    }
+  }
+  // Still denser than the pixels (noise, a fast wave): one column per device px from the first point's — the range of
+  // the series (straight between its points) inside each. A column's range includes the series' value at both its
+  // edges, so neighbours touch (one unbroken stroke).
+  const float x0 = std::floor(xa);
+  const auto ncol = static_cast<size_t>(std::ceil(xb) - x0);
+  if (ncol == 0) return;
+  static thread_local std::vector<float> lo, hi;
+  lo.assign(ncol, 2.0e30f);   // (lo > hi: no column)
+  hi.assign(ncol, -2.0e30f);
+  // lo / hi are in drawWaveformColumns' units about centre 0 with half = 1: value = −y.
+  auto put = [&](size_t c, float y) {
+    const float v = -y;
+    lo[c] = std::min(lo[c], v);
+    hi[c] = std::max(hi[c], v);
+  };
+  auto colOf = [&](float x) { return std::min(ncol - 1, static_cast<size_t>(std::max(0.0f, x - x0))); };
+  float y0 = pts[0].y, y1 = pts[0].y;
+  size_t c = colOf(pts[0].x);
+  put(c, pts[0].y);
+  for (size_t i = 1; i < n; ++i) {
+    const Vec2 a = pts[i - 1], b = pts[i];
+    const size_t cb = colOf(b.x);
+    if (cb > c) {  // the segment leaves column c: its value at every column edge it crosses goes to both sides
+      const float inv = 1.0f / (b.x - a.x);
+      for (size_t k = c + 1; k <= cb; ++k) {
+        const float y = a.y + (b.y - a.y) * std::clamp((x0 + static_cast<float>(k) - a.x) * inv, 0.0f, 1.0f);
+        put(k - 1, y);
+        put(k, y);
+      }
+      c = cb;
+    }
+    put(c, b.y);
+    y0 = std::min(y0, b.y);
+    y1 = std::max(y1, b.y);
+  }
+  const float lw = std::max(thickness, 0.05f);
+  WaveformColumns wc;
+  wc.lo = lo.data();
+  wc.hi = hi.data();
+  wc.count = static_cast<uint32_t>(ncol);
+  wc.x0 = x0;
+  wc.y0 = std::floor(y0 - lw - 1.0f);  // (the lane: the series' own extent and a stroke's weight)
+  wc.y1 = std::ceil(y1 + lw + 1.0f);
+  wc.centre = 0.0f;
+  wc.half = 1.0f;
+  wc.lineWidth = lw;
+  wc.colour = col;
+  (void)drawWaveformColumns(dl, wc);
 }
 
 // --- layered looks -----------------------------------------------------------------------------------------

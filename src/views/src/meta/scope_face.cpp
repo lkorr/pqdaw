@@ -840,7 +840,8 @@ private:
       default: return dsp::ScopeBeat::kM;
     }
   }
-  // A trail: this frame's trace, kTrailPoints points of (x 0 … 1, the scaled value), oldest first.
+  // A trail: this frame's trace, kTrailPoints points (or as many min / max pairs) of (x 0 … 1, the scaled value),
+  // oldest first.
   void pushTrails() {
     const uint32_t keep = keepTrails();
     if (keep == 0) {
@@ -858,10 +859,33 @@ private:
         t = std::move(trails.front());
         trails.erase(trails.begin());
       }
-      t.resize(kTrailPoints);
-      for (uint32_t k = 0; k < kTrailPoints; ++k) {
-        const double u = static_cast<double>(k) / (kTrailPoints - 1);
-        t[k] = {static_cast<float>(u), shape(cubic(src, static_cast<double>(vs) + u * static_cast<double>(vn - 1)))};
+      if (vn > 2 * static_cast<size_t>(kTrailPoints)) {
+        // WF.2: more samples in view than twice the points: each of kTrailPoints slices gives its minimum and maximum
+        // in the order they occur (the trace's own extent; it was one point sample per slice: a trail of an aliased
+        // zig-zag that did not match the trace it trailed).
+        t.clear();
+        const size_t end = std::min(vs + vn, src.size());
+        for (uint32_t k = 0; k < kTrailPoints; ++k) {
+          const size_t a = vs + static_cast<size_t>(uint64_t{k} * vn / kTrailPoints);
+          const size_t b = std::min(end, vs + static_cast<size_t>(uint64_t{k + 1} * vn / kTrailPoints));
+          if (a >= b) continue;
+          size_t lo = a, hi = a;
+          for (size_t i = a + 1; i < b; ++i) {
+            if (src[i] < src[lo]) lo = i;
+            if (src[i] > src[hi]) hi = i;
+          }
+          const size_t first = std::min(lo, hi), second = std::max(lo, hi);
+          const double inv = 1.0 / static_cast<double>(vn - 1);
+          t.push_back({static_cast<float>(static_cast<double>(first - vs) * inv), shape(src[first])});
+          if (second != first) t.push_back({static_cast<float>(static_cast<double>(second - vs) * inv), shape(src[second])});
+        }
+        if (t.size() < 2) return;
+      } else {
+        t.resize(kTrailPoints);
+        for (uint32_t k = 0; k < kTrailPoints; ++k) {
+          const double u = static_cast<double>(k) / (kTrailPoints - 1);
+          t[k] = {static_cast<float>(u), shape(cubic(src, static_cast<double>(vs) + u * static_cast<double>(vn - 1)))};
+        }
       }
       trails.push_back(std::move(t));
       while (trails.size() > keep) trails.erase(trails.begin());
@@ -948,7 +972,9 @@ private:
         if (alpha <= 2.0f) continue;
         pts_.resize(tr[t].size());
         for (size_t k = 0; k < tr[t].size(); ++k) pts_[k] = {r.x0 + tr[t][k].x * (r.x1 - r.x0), yOf(tr[t][k].y, lane)};
-        ui::smoothPolyline(dl, pts_, ui::withAlpha(col, static_cast<uint32_t>(alpha)), std::max(0.75f * scale, lw * 0.85f));
+        // WF.2: ui::strokeSeries — a column per device px where the trail is denser than the pixels, a spline where it
+        // is sparser (256 straight chords over a plot 490+ px wide showed facets under the trace's two points per px).
+        ui::strokeSeries(dl, pts_, ui::withAlpha(col, static_cast<uint32_t>(alpha)), std::max(1.0f, std::max(0.75f * scale, lw * 0.85f)));
       }
     };
     if (keep > 0) {

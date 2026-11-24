@@ -810,31 +810,14 @@ private:
     const float s = std::clamp(u, 0.0f, 1.0f);
     return {kDisp.x0 + 2.0f + ox * s, kDisp.x1 - kDisp.x0 - ox - 4.0f, kDisp.y1 - 3.0f - a - oy * s, a};
   }
-  // Fills curve_ with frame values (kPoints + 1, every `step`-th) placed at depth u.
-  // The point step for a frame drawn at `pxPerUnit` (`minStep` at full size): about one point per 1.5 device px, so a
-  // far-zoomed face draws its curves with a few points (the same primitives, far fewer vertices).
-  static uint32_t stepFor(float pxPerUnit, uint32_t minStep) noexcept {
-    uint32_t step = minStep;
-    const float width = (kDisp.x1 - kDisp.x0) * pxPerUnit;
-    while (step < 64 && width * static_cast<float>(step) < 1.5f * wt::kPoints) step *= 2;
-    return step;
-  }
-  // v: a closed thumbnail frame (kPoints + 1 values, σ-smoothed). Every `step`-th value.
-  void place(std::span<const float> v, float u, uint32_t step) const {
-    curve_.clear();
-    const FrameGeom g = geom(u);
-    const float k = g.a * dispGain();
-    const auto n = static_cast<uint32_t>(v.size() - 1);
-    for (uint32_t i = 0; i <= n; i += step)
-      curve_.push_back({g.x0 + g.w * static_cast<float>(i) / static_cast<float>(n), g.cy - k * v[i]});
-  }
   // bug-wavetable-look: a periodic cycle of n samples (val(i), i in [0, n)) traced into out for a curve `widthPx`
   // device px wide, through at(x in 0 … 1, value): resampled for the scale it is drawn at from the full-resolution
   // cycle (never a decimated one), so a dense wave keeps its shape at any zoom:
   //   over 2 samples per px  each px column's minimum and maximum in the order they occur (the extent the full
   //                          polyline rasterises to, at two points per px: no averaging, no aliasing);
-  //   up to 1.5 px apart     every sample;
-  //   sparser (zoomed in)    a periodic Catmull-Rom spline through the samples, a point per ~1.5 px, so the curve
+  //   up to 1 px apart       every sample;
+  //   sparser (zoomed in)    a periodic Catmull-Rom spline through the samples, a point per device px (WF.2: it was
+  //                          one per 1.5 px), so the curve
   //                          stays smooth instead of turning into straight segments.
   template <class Val, class At>
   static void trace(std::vector<Vec2>& out, uint32_t n, float widthPx, Val val, At at) {
@@ -858,12 +841,12 @@ private:
       out.push_back(at(1.0f, val(0)));
       return;
     }
-    if (1.5f * static_cast<float>(n) >= widthPx) {
+    if (static_cast<float>(n) >= widthPx) {
       for (uint32_t i = 0; i < n; ++i) out.push_back(at(static_cast<float>(i) * inv, val(i)));
       out.push_back(at(1.0f, val(0)));
       return;
     }
-    const auto m = static_cast<uint32_t>(std::min(std::ceil(widthPx / 1.5f), 16384.0f));
+    const auto m = static_cast<uint32_t>(std::min(std::ceil(widthPx), 16384.0f));
     const float step = static_cast<float>(n) / static_cast<float>(m);
     for (uint32_t j = 0; j <= m; ++j) {
       const float t = static_cast<float>(j) * step;
@@ -873,6 +856,16 @@ private:
       const float v = p1 + 0.5f * f * (p2 - p0 + f * (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3 + f * (3.0f * (p1 - p2) + p3 - p0)));
       out.push_back(at(static_cast<float>(j) / static_cast<float>(m), v));
     }
+  }
+  // Fills curve_ with a closed thumbnail frame v (kPoints + 1 values, σ-smoothed) placed at depth u, for a face drawn
+  // at `scale` device px per unit. WF.2: through trace(), as the sounding frame is — every sample, the px columns'
+  // extremes when zoomed out, a spline when zoomed in. (It took every 2nd … 64th value: at most 129 points however
+  // wide the frame was drawn, straight facets from 2× up, and a plain decimation zoomed out, which aliased.)
+  void place(std::span<const float> v, float u, float scale) const {
+    const FrameGeom g = geom(u);
+    const float k = g.a * dispGain();
+    const auto n = static_cast<uint32_t>(v.size() - 1);
+    trace(curve_, n, g.w * scale, [&](uint32_t i) { return v[i]; }, [&](float x, float val) { return Vec2{g.x0 + g.w * x, g.cy - k * val}; });
   }
   // The main curves' stroke: 1.5 world units, never wider than 2.25 device px (zoomed in, the world-scaled stroke
   // swelled to 4+ px and a dense wave's cycles ran together).
@@ -995,7 +988,7 @@ private:
     for (uint32_t i = n; i-- > 0;) {
       const uint32_t d = idx[i];
       const float u = f > 1 ? static_cast<float>(d) / static_cast<float>(f - 1) : 0.0f;
-      place(dispFrame(d), u, stepFor(p.transform().scale, f > 1 ? 2u : 1u));
+      place(dispFrame(d), u, p.transform().scale);
       const float alpha = f > 1 ? 0.95f - 0.6f * u : 0.55f;
       p.polyline(curve_, f > 1 ? 0.75f : 1.0f, ui::mulAlpha(ui::rgba(255, 255, 255), alpha));
     }
@@ -1360,10 +1353,19 @@ private:
     recordShown(u, false);
     const FrameGeom g = geom(u);
     const float scale = p.transform().scale, gk = g.a * dispGain();
-    trace(curve_, wt::kSoundPoints, g.w * scale, [&](uint32_t i) { return sound_[i]; },
-          [&](float x, float v) { return Vec2{g.x0 + g.w * x, g.cy - gk * v}; });
-    p.fillUnder(curve_, g.cy, ui::mulAlpha(th.face.value, 0.22f), ui::mulAlpha(th.face.value, 0.02f));
-    p.polyline(curve_, waveWidth(scale), th.face.value);
+    // WF.2: the curve's points are kept until what they are made of changes (the frame shown, the position, the gain,
+    // the width in device px): a repaint for the voices' glow (60 a second while notes sound) re-traced 1024 samples.
+    if (const float widthPx = g.w * scale; !(soundCurveKey_ == soundKey_ && soundCurveU_ == u && soundCurveW_ == widthPx &&
+                                              soundCurveGain_ == gk && !soundCurve_.empty())) {
+      trace(soundCurve_, wt::kSoundPoints, widthPx, [&](uint32_t i) { return sound_[i]; },
+            [&](float x, float v) { return Vec2{g.x0 + g.w * x, g.cy - gk * v}; });
+      soundCurveKey_ = soundKey_;
+      soundCurveU_ = u;
+      soundCurveW_ = widthPx;
+      soundCurveGain_ = gk;
+    }
+    p.fillUnder(soundCurve_, g.cy, ui::mulAlpha(th.face.value, 0.22f), ui::mulAlpha(th.face.value, 0.02f));
+    p.polyline(soundCurve_, waveWidth(scale), th.face.value);
     // No voice: a dashed line and a dot where the DSP reads with x unwired (the sketch): Phase mode's read phase
     // frac(phase); Shape mode's table position u = clamp((phase + 1)/2) — the slider is a bias on x, which spans the
     // display as −1 … 1 (BR.wt: the dot sat at u = phase, half the slider's travel off the true read).
@@ -1390,7 +1392,7 @@ private:
       const float vu = std::clamp(s.v.position, 0.0f, 1.0f);
       if (std::fabs(vu - hiU) <= frameStep) continue;
       dispBlended(vu, blend_);
-      place(blend_, vu, stepFor(p.transform().scale, 2));
+      place(blend_, vu, p.transform().scale);
       p.polyline(curve_, 1.0f, ui::mulAlpha(th.face.signal, 0.28f * a));
     }
     p.beginGlow();
@@ -1524,6 +1526,9 @@ private:
   mutable std::vector<float> targetCycle_;
   mutable wt::Spectrum1 targetSpec_;
   mutable std::vector<Vec2> curve_;
+  std::vector<Vec2> soundCurve_;  // WF.2: the sounding frame's drawn points and what they were traced from
+  uint64_t soundCurveKey_ = 0;
+  float soundCurveU_ = -1.0f, soundCurveW_ = 0.0f, soundCurveGain_ = 0.0f;
   mutable Glyphs glyphs_;
   std::vector<float> blend_;
   std::vector<float> sound_ = std::vector<float>(wt::kSoundPoints + 1, 0.0f);  // TMM.16: the sounding frame drawn

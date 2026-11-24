@@ -2777,3 +2777,30 @@ Context: SM.16 (docs/plans/SM.md "Rework 2026-11-23"). Choices (most reversible)
 6. **A test probe** (`dsp::tComplexProbe`, a thread-local pointer read once per chunk) lets a test see every chunk of
    both hosts; null outside tests.
 Status: open.
+
+## Q?-WF.2-a · curve displays: readings taken
+Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all reversible):
+- **A waveform's stroke weighs what every other line does** (a 1 px core + the 0.75 px feather: about 1.75 px of ink)
+  instead of the 1 px box line. That is what removes the roping; the option not taken was a 1.25 … 1.5 px box line.
+  Bodies keep exact (box) edges; the feather is 0.75 px down the column whatever the slope.
+- **Moiré**: a column whose neighbours' midpoints alternate three times running takes the union of its neighbours'
+  ranges, in proportion (full from an alternation of 35 % of the union, none under 10 %, so a dense body's jitter is
+  left alone). A tone near 2 px per cycle becomes its envelope with up to ≈ 20 % of the beat left; 3 px per cycle and
+  slower are untouched (they show as a wave). Option: an exact detector from the samples' turning points (more reads).
+- **drawWaveform is 2.0× the pre-WF.1 cost for the overview, not ≈ 1.5×** (bench/RESULTS.md: 27.5 → 59.5 → 55.8 µs;
+  1.7× / 1.6× in the sample regimes). The antialiased strip is 152 B a column against 64 B and the draw list has no
+  instancing; reading the columns and the strips alone are 43 µs. The cached path (rasterWaveform: the arrangement's
+  tiles) is 0.64× for overview tiles. Option if the direct sites matter (Sampler, clip view, browser, drag previews):
+  draw them from coverage tiles too — a task of its own.
+- **strokeSeries picks the picture by the data**: sparse → spline; dense and smooth → the simplified ribbon; dense and
+  not → columns. The thresholds (1.5 px a point; 3 vertices per 4 px after simplifying) are judgement.
+- **Ruler**: labels stop at the sixteenths and the view's own sixteenth is named when no line is in view; the time
+  ruler carries the fine positions (to 10 µs). Option not taken: a fourth field (ticks) on the beat ruler.
+- **Left, with reasons**: the automation line stays `smoothPolyline` (bevelled joins overlap, and an envelope is also
+  drawn from coverage tiles: a partial repaint no longer equalled a full one — its sharp reversals can still spike);
+  Stereo Image's ribbon (a quad per row); the Waterfall's terrain silhouette; the response grid ignoring band centres;
+  the arp sketch's 16 points per glide.
+- **Hard-cornered glyphs are even-width now** (the wavetable's double saw reads heavier). Option: thinner glyph strokes.
+- No bench or paint timer exists for the live faces, so their per-frame cost was not measured; by construction a
+  trace's vertices now follow its width (4 per px) or drop (Math scopes: 3 ribbons of 7), except the Waterfall's ridge
+  (twice its points) and its lines when zoomed in (points × zoom, as the look needs).

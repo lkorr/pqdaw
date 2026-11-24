@@ -143,8 +143,10 @@ void paintProbeReadout(ui::PaintContext& ctx, const ProbeOverlay& o, ui::Vec2 an
       bool high = false;
       for (size_t k = a; k < b && k < n; ++k) high = high || std::signbit(o.samples[k]);
       const float yy = high ? yHi : yLo;
-      if (prevY >= 0.0f && prevY != yy) ctx.dl.addVLine(sc.x0 + static_cast<float>(c), std::min(prevY, yy), std::max(prevY, yy) + 1.0f, th->circuit.wireBoolLit);
-      ctx.dl.addHLine(sc.x0 + static_cast<float>(c), sc.x0 + static_cast<float>(c) + 1.0f, yy, high ? th->circuit.wireBoolLit : th->circuit.wireBool);
+      // (pixel-aligned rules: no antialiasing to do; WF.2: as thick as the UI scale, they were 1 px at 2×)
+      const float lw = std::max(1.0f, std::round(ctx.scale.exact(1.0f)));
+      if (prevY >= 0.0f && prevY != yy) ctx.dl.addVLine(sc.x0 + static_cast<float>(c), std::min(prevY, yy), std::max(prevY, yy) + lw, th->circuit.wireBoolLit, lw);
+      ctx.dl.addHLine(sc.x0 + static_cast<float>(c), sc.x0 + static_cast<float>(c) + 1.0f, yy, high ? th->circuit.wireBoolLit : th->circuit.wireBool, lw);
       prevY = yy;
     }
     return;
@@ -168,35 +170,15 @@ void paintProbeReadout(ui::PaintContext& ctx, const ProbeOverlay& o, ui::Vec2 an
   }
   auto yOf = [&](float v) { return sc.y1 - (v - lo) / (hi - lo) * sh; };
   if (lo < 0.0f && hi > 0.0f) ctx.dl.addHLine(sc.x0, sc.x1, std::round(yOf(0.0f)), th->circuit.probeGrid);
-  if (n <= cols) {  // sparse: a polyline through the samples
-    std::vector<ui::Vec2> pts;
-    pts.reserve(n);
-    for (size_t k = 0; k < n; ++k)
-      pts.push_back({sc.x0 + sw * static_cast<float>(k) / static_cast<float>(std::max<size_t>(n - 1, 1)),
-                     yOf(std::isfinite(o.samples[k]) ? o.samples[k] : 0.0f)});
-    ui::smoothPolyline(ctx.dl, pts.data(), static_cast<uint32_t>(pts.size()), th->circuit.probeTrace, ctx.scale.exact(1.25f));
-    return;
-  }
-  // Dense: a min / max band per column, the band's centre as the line.
-  std::vector<ui::Vec2> mid;
-  mid.reserve(cols);
-  for (uint32_t c = 0; c < cols; ++c) {
-    const size_t a = n * c / cols, b = std::max(a + 1, n * (c + 1) / cols);
-    float mn = 0.0f, mx = 0.0f;
-    bool any = false;
-    for (size_t k = a; k < b && k < n; ++k)
-      if (std::isfinite(o.samples[k])) {
-        mn = any ? std::min(mn, o.samples[k]) : o.samples[k];
-        mx = any ? std::max(mx, o.samples[k]) : o.samples[k];
-        any = true;
-      }
-    if (!any) continue;
-    const float x0 = sc.x0 + static_cast<float>(c);
-    ctx.dl.addVLine(x0 + 0.5f, yOf(mx), yOf(mn) + 1.0f, ui::mulAlpha(th->circuit.probeTrace, 0.45f));
-    mid.push_back({x0 + 0.5f, yOf(0.5f * (mn + mx))});
-  }
-  if (mid.size() >= 2)
-    ui::smoothPolyline(ctx.dl, mid.data(), static_cast<uint32_t>(mid.size()), th->circuit.probeTrace, ctx.scale.exact(1.0f));
+  // WF.2: the trace through ui::strokeSeries, whatever its density (it was, when dense, a 1 px unfeathered rule per
+  // column — 1 px at any UI scale — under a line through each column's (min + max) / 2, which for audio is not the
+  // signal): an antialiased column per px covering the samples in it, a spline where they are sparse.
+  static thread_local std::vector<ui::Vec2> pts;
+  pts.clear();
+  for (size_t k = 0; k < n; ++k)
+    pts.push_back({sc.x0 + sw * static_cast<float>(k) / static_cast<float>(std::max<size_t>(n - 1, 1)),
+                   yOf(std::isfinite(o.samples[k]) ? o.samples[k] : 0.0f)});
+  ui::strokeSeries(ctx.dl, pts, th->circuit.probeTrace, std::max(1.0f, ctx.scale.exact(1.25f)));
 }
 
 void paintCostLabels(ui::PaintContext& ctx, std::span<const CostLabelAt> labels) {

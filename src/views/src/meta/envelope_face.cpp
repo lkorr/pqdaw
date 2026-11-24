@@ -28,6 +28,7 @@
 
 #include "faces.h"
 #include "pq/meta/envelope.h"
+#include "pq/ui/lines.h"
 
 namespace pq::views {
 
@@ -53,7 +54,8 @@ constexpr float kHold = 16.0f;                        // the sustain plateau's w
 constexpr float kAmtX = 192.0f, kAmtHalfW = 2.0f, kAmtY0 = 18.0f, kAmtY1 = 110.0f;  // the amount slider
 constexpr float kOutY = 64.0f;                        // the output jack (and the `in` jack: the signal passes through)
 constexpr float kHandleR = 3.4f, kBendR = 2.3f;
-constexpr int kSteps = 40;                            // points per drawn segment (the same at every zoom)
+constexpr int kSteps = 40;                            // least chords per drawn segment (WF.2: one per device px of it above that)
+constexpr int kMaxSteps = 1024;
 constexpr float kFade = 0.08f;                        // voices fade in / out (seconds)
 
 // ---- parts ----
@@ -116,6 +118,7 @@ public:
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
     const ui::Theme& th = *env.theme;
     const double now = clockNow();
+    scale_ = p.transform().scale;  // (the segments' point counts follow the device px they cover)
     layout();
     // Leads: `in` into the well and the output from past the amount slider (in the signal colour when wired).
     for (const FaceJack& j : env.jacks) {
@@ -135,13 +138,16 @@ public:
       // Above its socket, right-aligned at the edge: clear of the amount slider to its left and of the socket's ring.
       p.textAligned({kW - 0.5f, done != nullptr ? done->at.y - 7.5f : 0.0f}, "done", 6.0f, done != nullptr ? th.face.ink : 0, 1.0f);
     }
-    // The shape: fill, then the line (each segment its own polyline so a hovered or dragged one can light).
+    // The shape: fill, then the line. WF.2: ONE polyline through the four segments (it was one per segment: butt ends
+    // met at the peak and at the sustain's corners, notched on the outside); a hovered or dragged segment is drawn
+    // again over it, heavier.
     p.fillUnder(shape_, kY0, ui::mulAlpha(th.face.value, 0.24f), ui::mulAlpha(th.face.value, 0.03f));
     const Rgba line = drivenAny(env) ? th.face.valueDriven : th.face.value;
+    p.polyline(shape_, 1.5f, line);
     for (int s = 0; s < 4; ++s) {
       const int32_t bend = s == 0 ? kBendA : s == 1 ? kBendD : s == 3 ? kBendR_ : kPlateau;
       const bool hot = hovered_ == bend || drag_ == bend || (s == 2 && (hovered_ == kPlateau || drag_ == kPlateau));
-      p.polyline(segment(s), hot ? 2.1f : 1.5f, line);
+      p.polyline(segment(s), 2.1f, hot ? line : 0);
     }
     // Where the sustain is held: a faint drop from the plateau to the baseline at both ends.
     const Vec2 d0[2] = {{pt_[2].x, pt_[2].y + 3.0f}, {pt_[2].x, kY0}}, d1[2] = {{pt_[3].x, pt_[3].y + 3.0f}, {pt_[3].x, kY0}};
@@ -339,7 +345,8 @@ private:
     return static_cast<float>(faceValueToTravel(target(), type(), p, v[p]));
   }
 
-  // Recomputes the breakpoints and the drawn segments when a value changed (cheap: 4 · kSteps points).
+  // Recomputes the breakpoints and the drawn segments when a value changed, or the zoom (WF.2: a segment has a point
+  // per device px of its width, kSteps chords at least: 40 chords over a segment 270 px wide at 2× showed facets).
   void layout() const {
     std::array<double, meta::kEnvParams> v{};
     for (size_t i = 0; i < v.size(); ++i) v[i] = value(i);
@@ -349,9 +356,10 @@ private:
                               travelOfValue(meta::kEnvRelease, v));
     const float target = std::clamp(kAvail / std::max(raw, 1e-3f), 1.0f, kMaxFit);
     const float fit = drag_ >= 0 && fit_ > 0.0f ? std::min(fit_, target) : target;
-    if (v == laidOut_ && fit == fit_ && !segPts_[0].empty()) return;
+    if (v == laidOut_ && fit == fit_ && scale_ == laidScale_ && !segPts_[0].empty()) return;
     laidOut_ = v;
     fit_ = fit;
+    laidScale_ = scale_;
     attack_ = meta::envAttackLaw(v[meta::kEnvACurve]);
     decay_ = meta::envFallLaw(v[meta::kEnvDCurve]);
     release_ = meta::envFallLaw(v[meta::kEnvRCurve]);
@@ -366,22 +374,34 @@ private:
     pt_[3] = {pt_[2].x + kHold, levelY(sus_)};
     pt_[4] = {pt_[3].x + wr, kY0};
     for (auto& s : segPts_) s.clear();
-    for (int i = 0; i <= kSteps; ++i) {
-      const double u = static_cast<double>(i) / kSteps;
+    // An even count, so a segment's middle (its bend ring) is one of its points.
+    auto steps = [&](float w) {
+      return static_cast<int>(ui::curveSamples(w * scale_, kSteps, kMaxSteps) + 1u) / 2 * 2;
+    };
+    const int na = steps(wa), nd = steps(wd), nr = steps(wr);
+    for (int i = 0; i <= na; ++i) {
+      const double u = static_cast<double>(i) / na;
       segPts_[0].push_back({kX0 + wa * static_cast<float>(u), levelY(meta::envAttackLevel(attack_, u))});
+    }
+    for (int i = 0; i <= nd; ++i) {
+      const double u = static_cast<double>(i) / nd;
       segPts_[1].push_back({pt_[1].x + wd * static_cast<float>(u), levelY(meta::envFallLevel(decay_, 1.0, sus_, 1.0 - sus_, u))});
+    }
+    for (int i = 0; i <= nr; ++i) {
+      const double u = static_cast<double>(i) / nr;
       segPts_[3].push_back({pt_[3].x + wr * static_cast<float>(u), levelY(meta::envFallLevel(release_, sus_, 0.0, 1.0, u))});
     }
     segPts_[2] = {pt_[2], pt_[3]};
     shape_.clear();
     for (int s = 0; s < 4; ++s)
-      for (const Vec2& q : segPts_[static_cast<size_t>(s)]) shape_.push_back(q);
+      for (const Vec2& q : segPts_[static_cast<size_t>(s)])
+        if (shape_.empty() || shape_.back().x != q.x || shape_.back().y != q.y) shape_.push_back(q);  // (a join: once)
   }
   std::span<const Vec2> segment(int s) const { return segPts_[static_cast<size_t>(s)]; }
   // A segment's bend ring: on the drawn curve at half its time.
   Vec2 bendAt(int s) const {
     const auto& seg = segPts_[s == 0 ? 0 : s == 1 ? 1 : 3];
-    return seg[kSteps / 2];
+    return seg[seg.size() / 2];
   }
 
   // Where a level sits on the shape (the voices): attack (rising), decay (held) or release.
@@ -562,6 +582,7 @@ private:
   mutable std::array<Vec2, 5> pt_{};
   mutable std::array<std::vector<Vec2>, 4> segPts_;
   mutable std::vector<Vec2> shape_;
+  mutable float scale_ = 1.0f, laidScale_ = 0.0f;  // device px per world unit at the last paint / of the points
 };
 
 bool EnvelopeFace::voicesPolled(bool changed) {

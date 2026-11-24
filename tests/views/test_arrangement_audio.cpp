@@ -742,6 +742,95 @@ TEST_CASE("audio clip view (WF.1, real dispatch): the wheel zooms about the poin
   }
 }
 
+// WF.2 (WF.1's leftover): no edge scroll while dragging in the clip view.
+TEST_CASE("audio clip view (WF.2, real dispatch): the start marker held past the display's side scrolls the zoomed view, "
+          "frame by frame, and stays under the pointer (one undo step); at fit nothing scrolls") {
+  Fixture f(1280, 900);
+  if (auto* body = dynamic_cast<Splitter*>(f.d.find("main/body"))) body->setPosition(420.0f);
+  const doc::ClipRef rev = f.clip("Drums", 2);  // warp Off: the file's frames on the axis; 1.5 s of a 2 s file
+  f.ctx.setDetailVisible(true);
+  f.ctx.setDetailClip(rev);
+  f.d.tree().layoutNow();
+  REQUIRE(f.d.enableGpu().ok());
+  f.d.tree().invalidateAll();
+  f.d.step();
+  AudioClipView& v = f.view();
+  REQUIRE(v.hasClip());
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), v.clip()->sample);
+  REQUIRE(s != nullptr);
+  const IRect w = v.sampleRect(), ru = v.rulerRect();
+  REQUIRE(w.w > 200);
+  REQUIRE(ru.h > 0);
+  const float my = static_cast<float>(ru.y + ru.h / 2);
+  auto frameAtX = [&](float x) {
+    const double x0 = v.xOfFrame(0.0), x1 = v.xOfFrame(1000.0);
+    return (static_cast<double>(x) - x0) / (x1 - x0) * 1000.0;
+  };
+  const double start0 = v.startMarkerFrame();
+  // At fit: the marker dragged past the right side and held — the view stays the whole sample.
+  {
+    const Vec2 a{v.xOfFrame(start0), my}, out{static_cast<float>(w.right()) + 30.0f, my};
+    f.d.move(a);
+    f.d.down(a);
+    f.d.move({out.x - 1.0f, out.y});
+    f.d.move(out);
+    f.d.advance(0.2);
+    CHECK(v.sampleView().z0 == 0.0);
+    CHECK(v.sampleView().z1 == 1.0);
+    f.d.up(out);
+    f.d.step();
+    REQUIRE(f.ctx.undo());
+    f.d.step();
+    CHECK(v.startMarkerFrame() == doctest::Approx(start0));
+  }
+  // Zoomed in ten notches about the marker: it sits in view, a tenth of the sample shown.
+  const Vec2 at{std::clamp(v.xOfFrame(start0), static_cast<float>(w.x), static_cast<float>(w.right()) - 1.0f), static_cast<float>(w.y + w.h / 2)};
+  for (int i = 0; i < 10; ++i) (void)f.d.wheel(at, 1.0f);
+  f.d.step();
+  const AudioClipView::SampleView z = v.sampleView();
+  const double span = z.z1 - z.z0;
+  REQUIRE(span < 0.12);
+  const float mx = v.xOfFrame(start0);
+  REQUIRE(mx >= static_cast<float>(w.x) - 1.0f);
+  REQUIRE(mx < static_cast<float>(w.right()));
+  const size_t h = f.history();
+  // Inside the display nothing scrolls: the marker moves with the pointer.
+  const Vec2 a{mx, my}, in{mx + 40.0f, my};
+  f.d.move(a);
+  f.d.down(a);
+  f.d.move({in.x - 1.0f, in.y});
+  f.d.move(in);
+  f.d.advance(0.1);
+  CHECK(v.sampleView().z0 == z.z0);
+  const double limit = static_cast<double>(s->frames) - v.clip()->seconds * s->rate * std::exp2(700.0 / 1200.0);  // (+7 st)
+  CHECK(v.startMarkerFrame() == doctest::Approx(std::min(limit, start0 + frameAtX(in.x) - frameAtX(a.x))).epsilon(1e-3));
+  // Past the right side, 8 % of the display out, and held there: the view scrolls right 8 % of itself per 1 / 60 s.
+  const Vec2 out{static_cast<float>(w.right()) + 0.08f * static_cast<float>(w.w), my};
+  f.d.move(out);
+  CHECK(v.sampleView().z0 == z.z0);  // (a move alone scrolls nothing: the frames do)
+  f.d.advance(6.0 / 60.0);
+  const AudioClipView::SampleView z2 = v.sampleView();
+  CHECK(z2.z0 > z.z0 + 0.3 * span);
+  CHECK(z2.z0 < z.z0 + 0.7 * span);
+  CHECK(z2.z1 - z2.z0 == doctest::Approx(span).epsilon(1e-9));
+  // The marker is where the pointer is on the scrolled view (or at the end of what the file allows).
+  const double want = std::min(limit, start0 + frameAtX(out.x) - (start0));
+  CHECK(v.startMarkerFrame() == doctest::Approx(std::min(limit, frameAtX(out.x))).epsilon(2e-3));
+  (void)want;
+  // Back inside: the scrolling stops.
+  f.d.move({static_cast<float>(w.x) + 0.5f * static_cast<float>(w.w), my});
+  const double held = v.sampleView().z0;
+  f.d.advance(0.1);
+  CHECK(v.sampleView().z0 == held);
+  f.d.up({static_cast<float>(w.x) + 0.5f * static_cast<float>(w.w), my});
+  f.d.step();
+  CHECK(f.history() == h + 1);  // the whole drag: one step
+  REQUIRE(f.ctx.undo());
+  f.d.step();
+  CHECK(v.startMarkerFrame() == doctest::Approx(start0));
+  CHECK(v.sampleView().z0 == held);  // (the view is view state)
+}
+
 TEST_CASE("arrangement audio (WF.1): the arrangement zooms in to the samples (>= 32 px per sample) — the curve with a dot "
           "per sample, from the samples, a second into the clip") {
   Fixture f;

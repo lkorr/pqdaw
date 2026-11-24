@@ -119,6 +119,19 @@ TEST_CASE("waveform: a dense column covers its min / max with fractional coverag
     double top = centre - v * half, bottom = centre + v * half;
     if (bottom - top < 1.0) top = centre - 0.5, bottom = centre + 0.5;  // at least lineWidth tall
     CAPTURE(x);
+    // WF.2: a column no taller than a line (here x = 0, 1 % of full scale: 1 px) is drawn as the shared line is
+    // (pq/ui/lines.h: the core, and kSmoothFeather = 0.75 px fading out either side) instead of a 1 px box, so thin
+    // strokes do not rope; it was checked as exact coverage like the bodies. From 3 px of body the edge is the box.
+    if (bottom - top < 1.5) {  // 1.008 px about the centre of row 50
+      CHECK(img[50 * W + x] == 255);
+      const double side = 1.0 - (0.5 - 0.5 * (bottom - top - 1.0)) / 0.75;  // half a px less the core's edge into the feather
+      CHECK(std::abs(img[49 * W + x] / 255.0 - side) <= 0.02);
+      CHECK(std::abs(img[51 * W + x] / 255.0 - side) <= 0.02);
+      CHECK(img[48 * W + x] == 0);
+      CHECK(img[52 * W + x] == 0);
+      continue;
+    }
+    REQUIRE(bottom - top >= 3.0);
     for (uint32_t y = 0; y < H; ++y) {
       // The part of row [y, y + 1) inside [top, bottom].
       const double cover = std::clamp(std::min<double>(y + 1, bottom) - std::max<double>(y, top), 0.0, 1.0);
@@ -304,11 +317,78 @@ TEST_CASE("waveform: sample columns (2 to 512 frames per px) are one unbroken an
       CHECK(n.top <= k.bottom);
     }
   }
-  // An even weight: every column carries about a line's worth of ink (1 px flat, x sqrt(1 + slope^2) on a slope).
+  // An even weight: every column carries a line's worth of ink — the core, x sqrt(1 + slope^2) on a slope, and (WF.2)
+  // the shared line's 0.75 px feather (pq/ui/lines.h): 1.75 px where it is flat, 1.8 + 0.75 at this wave's steepest.
+  // The bounds were 0.9 to 2.1 for the 1 px box line, which "roped".
   MESSAGE("ink per column: " << minInk << " to " << maxInk);
-  CHECK(minInk >= 0.9);
-  CHECK(maxInk <= 2.1);
+  CHECK(minInk >= 1.6);
+  CHECK(maxInk <= 2.7);
   CHECK(partial >= static_cast<int>(W));  // antialiased: fractional coverage in every column, not whole rows
+}
+
+// WF.2 (WF.1's leftovers): the moiré of a tone near two columns per cycle, and the 1 px line's roping.
+TEST_CASE("waveform (WF.2): a tone near 2 px per cycle is drawn as its envelope (no moiré); an impulse and a slow wave are "
+          "left alone; a shallow stroke keeps a full-strength row in every column (no roping)") {
+  constexpr uint32_t W = 300, H = 80;
+  Synth s(1 << 16);
+  auto inkRange = [&](const std::vector<float>& x, double fpp, double& lo, double& hi) {
+    const WaveformData wd = withSamples(s, x);
+    WaveformDraw d;
+    d.frame0 = 1000.0;
+    d.frame1 = 1000.0 + fpp * W;
+    d.rect = {0, 0, static_cast<float>(W), static_cast<float>(H)};
+    DrawList dl;
+    dl.reset(W, H);
+    const WaveformStats st = drawWaveform(dl, wd, d);
+    CHECK(st.level == -1);
+    const auto img = raster(dl, W, H);
+    lo = 1e9, hi = 0.0;
+    for (uint32_t c = 8; c < W - 8; ++c) {
+      const Ink k = inkOf(img, W, H, c);
+      lo = std::min(lo, k.sum);
+      hi = std::max(hi, k.sum);
+    }
+    return img;
+  };
+  // A sine of 2.07 columns per cycle at 16 frames per px (33.12 frames per cycle): every column holds about half a
+  // cycle, a different half each time. Full scale 0.8: the envelope is 64 px tall.
+  std::vector<float> tone(1 << 16);
+  for (size_t i = 0; i < tone.size(); ++i) tone[i] = 0.8f * std::sin(static_cast<float>(i) * (6.2831853f / 33.12f));
+  double lo = 0, hi = 0;
+  (void)inkRange(tone, 16.0, lo, hi);
+  MESSAGE("2.07 px per cycle: ink per column " << lo << " to " << hi);
+  CHECK(hi <= 66.0);
+  CHECK(lo >= 0.8 * hi);  // (it was about half: the columns alternated between a half and the whole of the envelope)
+  // An impulse in silence: its column alone is tall, the neighbours stay the silent line.
+  std::vector<float> imp(1 << 16, 0.0f);
+  imp[1000 + 16 * 150 + 5] = 0.8f;
+  {
+    const auto img = inkRange(imp, 16.0, lo, hi);
+    CHECK(inkOf(img, W, H, 150).sum > 25.0);
+    for (const uint32_t c : {147u, 148u, 149u, 151u, 152u, 153u}) CHECK(inkOf(img, W, H, c).sum < 2.0);
+  }
+  // A slow wave (150 px per cycle): a stroke, nowhere a body.
+  std::vector<float> slow(1 << 16);
+  for (size_t i = 0; i < slow.size(); ++i) slow[i] = 0.8f * std::sin(static_cast<float>(i) * (6.2831853f / 2400.0f));
+  (void)inkRange(slow, 16.0, lo, hi);
+  CHECK(hi <= 2.7);  // (slopes to 1.3 rows per column: the core's 1.7 px there and the feather; a body would be far more)
+  // Roping: a ramp of 0.07 rows per column crosses a row every 14 columns. Wherever it lies, the column's strongest
+  // pixel is at full strength and its ink is the line's (the 1 px box line went 255 … 128 … 255 along it).
+  std::vector<float> ramp(1 << 16);
+  for (size_t i = 0; i < ramp.size(); ++i) ramp[i] = -0.3f + static_cast<float>(i) * (0.07f / 16.0f / 40.0f);
+  {
+    const auto img = inkRange(ramp, 16.0, lo, hi);
+    int weakest = 255;
+    for (uint32_t c = 8; c < W - 8; ++c) {
+      int peak = 0;
+      for (uint32_t y = 0; y < H; ++y) peak = std::max<int>(peak, img[y * W + c]);
+      weakest = std::min(weakest, peak);
+    }
+    CHECK(weakest >= 240);
+    // (1.75 px of ink on average; point-sampled at the row centres it is 1.70 … 1.92 with the 0.75 px feather)
+    CHECK(lo >= 1.65);
+    CHECK(hi <= 1.95);
+  }
 }
 
 TEST_CASE("waveform: the curve passes through the sample values and follows a band-limited signal between them") {
@@ -532,6 +612,9 @@ TEST_CASE("render: waveform-lod matches the golden image") {
 
 // WF.1: the bounds were 50 / 100 us with two vertices and 6 indices per column (no antialiasing); a column is now four
 // vertices and 18 indices (the coverage profile) and reads up to 9 buckets, so the bounds are 90 / 160 us.
+// WF.2: release, the three builds interleaved (bench/RESULTS.md): 27.5 / 48 (0.5 frames per px) / 71 (40) us before
+// WF.1, 59.5 / 81 / 112 at WF.1, 56 / 81.5 / 111.5 now (and 97 at 0.05). The bounds stay (they leave room for a machine
+// that is building something else, where every figure is about 1.5 times these).
 TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample level <= 160 us)" * doctest::test_suite("perf")) {
   Synth s(10ull * 60 * 48000, 2);
   DrawList dl;
@@ -575,5 +658,39 @@ TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample
     std::sort(t.begin(), t.end());
     MESSAGE("2560-px stereo waveform at " << fpp << " frames/px (samples): median " << t[100] << " us");
     CHECK(t[100] <= 160.0);
+  }
+}
+
+// WF.2: the tile path's cost in the same three regimes (2560 x 80 px, stereo), for bench/RESULTS.md. Release: 110 / 73
+// / 90 us before WF.1 (whole rows of 255), 301 / 102 / 197 at WF.1 (a float per pixel down each column), 71 / 98 / 128
+// now (row by row, eight columns a step).
+TEST_CASE("waveform (perf): rasterWaveform of a 2560-px stereo clip" * doctest::test_suite("perf")) {
+  Synth s(10ull * 60 * 48000, 2);
+  std::vector<float> x[2];
+  for (uint32_t c = 0; c < 2; ++c) {
+    x[c].resize(1u << 18);
+    for (size_t i = 0; i < x[c].size(); ++i) x[c][i] = std::sin(static_cast<float>(i) * 0.01f + static_cast<float>(c)) * 0.7f;
+  }
+  WaveformData wd = s.wd;
+  wd.samples.frame0 = 0;
+  wd.samples.frames = static_cast<int64_t>(x[0].size());
+  wd.samples.channel[0] = x[0].data();
+  wd.samples.channel[1] = x[1].data();
+  std::vector<uint8_t> img(2560u * 80u);
+  for (const double fpp : {0.0, 0.5, 40.0}) {  // 0: the whole file from the overview
+    WaveformDraw d;
+    d.rect = {0, 0, 2560, 80};
+    d.frame0 = fpp > 0.0 ? 1000.0 : 0.0;
+    d.frame1 = fpp > 0.0 ? 1000.0 + 2560.0 * fpp : static_cast<double>(s.frames);
+    std::vector<double> t;
+    for (int i = 0; i < 200; ++i) {
+      std::fill(img.begin(), img.end(), uint8_t{0});
+      const double t0 = pq::test::threadCpuUs();
+      (void)rasterWaveform(wd, d, img.data(), 2560, 80, 2560);
+      t.push_back(pq::test::threadCpuUs() - t0);
+    }
+    std::sort(t.begin(), t.end());
+    MESSAGE("2560-px stereo rasterWaveform at " << fpp << " frames/px (0 = overview): median " << t[100] << " us, p99 " << t[198] << " us");
+    CHECK(t[100] <= (fpp == 0.0 ? 150.0 : 260.0));
   }
 }

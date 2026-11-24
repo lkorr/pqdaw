@@ -2607,8 +2607,9 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
     panel.elements.push_back(knob("transpose", "Transpose", 54, t));
     panel.elements.push_back(knob("detune", "Detune", 102, t));
     const uint32_t loop = id++;
-    panel.elements.push_back(when(text("Loop", 160, t + 8, 60, 10), r.tabs, {0.0}));
-    panel.elements.push_back(when(cells(loop, "loop", "Off|Forward|Ping-Pong", 160, t + 20, 122), r.tabs, {0.0}));
+    // (WF.2: 46 units a cell — at 122 across the three "Ping-Pong" filled its cell edge to edge.)
+    panel.elements.push_back(when(text("Loop", 150, t + 8, 60, 10), r.tabs, {0.0}));
+    panel.elements.push_back(when(cells(loop, "loop", "Off|Forward|Ping-Pong", 150, t + 20, 138), r.tabs, {0.0}));
     // (The loop's crossfade is Off / Re-Pitch's: a stretch mode loops the content in beats, Q?-SM.4-a 3.)
     panel.elements.push_back(whenBoth(knob("loopFade", "Loop Fade", 288, t), loop, {1.0, 2.0}, warp, {0.0, 1.0}));
     panel.elements.push_back(when(knob("fadeIn", "Fade In", 156, t), r.tabs, {1.0, 2.0}));

@@ -326,7 +326,9 @@ private:
     const float w = d.x1 - d.x0;
     const Rect r = plot();
     auto y = [&](float v) { return d.y0 + (yOf(v) - r.y0) * scale; };
-    const float lw = 1.1f * scale, glow = 0.35f;
+    // WF.2: no glow passes (glow was 0.35: the two passes came out at alpha 4 / 255 and 1 / 255 — four of an envelope's
+    // seven ribbons, drawn every frame for nothing visible).
+    const float lw = 1.1f * scale, glow = 0.0f;
     const double spp = static_cast<double>(x.size()) / std::max(1.0f, w);
     if (spp > kEnvelopeSpp) {
       const int cols = std::max(2, static_cast<int>(w));

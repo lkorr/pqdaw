@@ -117,9 +117,11 @@ public:
                  ft.origin.y + r.y1 * ft.scale});
     if (curveValid_) {
       const Rgba c = th.device.curve;
-      p.polyline(pts_, 5.0f, ui::mulAlpha(c, 0.07f));
-      p.polyline(pts_, 2.8f, ui::mulAlpha(c, 0.16f));
-      p.polyline(pts_, 1.4f, c);
+      // WF.2: series — the 128 evaluated points are under a device px apart at 1× and further at 2× or on a larger
+      // element: a column per px when dense, a spline through them when sparse (no facets; nothing re-evaluated).
+      p.series(pts_, 5.0f, ui::mulAlpha(c, 0.07f));
+      p.series(pts_, 2.8f, ui::mulAlpha(c, 0.16f));
+      p.series(pts_, 1.4f, c);
       if (const std::optional<double> lv = liveLevel(); lv && *lv > lo && dotOn()) {
         const double out = outAt(*lv);
         if (std::isfinite(out)) {

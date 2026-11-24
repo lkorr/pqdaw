@@ -2,10 +2,13 @@
 
 #include "pq/ui/waveform.h"
 
+#include "pq/ui/lines.h"
+
 #include <immintrin.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <numbers>
 #include <vector>
@@ -25,6 +28,8 @@ struct Scratch {
   std::vector<int32_t> k0, nb;     // [col]: the level path's first bucket and bucket count
   std::vector<float> edge;         // [channel * (columns + 1) + edge]: the sample path's values at the column edges
   std::vector<float> yA, yB, yC, yD, al;  // [col]: a lane's profiles
+  std::vector<float> up, dn;       // [col]: rasterWaveform's ramp slopes
+  std::vector<float> mid, dm;      // [col + 8]: fillAliased's midpoints and their steps
 };
 Scratch& scratch() {
   static thread_local Scratch s;
@@ -117,6 +122,74 @@ int32_t waveformLevelFor(const WaveformData& data, double framesPerPx) noexcept 
 
 namespace {
 
+// WF.2: a tone near two columns per cycle. Each column then holds half a cycle, so the ranges alternate (up half, down
+// half) and beat against the pixel grid: a moiré where the picture should be the tone's envelope. A column in the
+// middle of three strict alternations of its neighbours' midpoints (i − 2 … i + 2 go up, down, up, down or the
+// reverse: only a cycle of about two columns does that; one peak, an impulse and a four-column wave do not) takes the
+// union of the ranges of i − 1 … i + 1 (one and a half cycles: the envelope), by how large the alternation is against
+// that union (a dense body's jitter, under a tenth of its height, changes nothing). lo / hi: one channel's row with
+// its empty column either side.
+void fillAliased(float* lo, float* hi, size_t n, Scratch& s) {
+  if (n < 5) return;
+  if (s.mid.size() < n + 8) {
+    s.mid.resize(n + 8);
+    s.dm.resize(n + 8);
+  }
+  float* const m = s.mid.data();
+  float* const d = s.dm.data();  // d[k] = the step of the midpoint from column k to k + 1 (0 across an empty column)
+  constexpr float kBig = 3.0e30f;
+  {
+    size_t k = 0;
+    const __m256 hf = _mm256_set1_ps(0.5f), big = _mm256_set1_ps(kBig);
+    for (; k + 8 <= n; k += 8) {
+      const __m256 l = _mm256_loadu_ps(lo + k), h = _mm256_loadu_ps(hi + k);
+      _mm256_storeu_ps(m + k, _mm256_blendv_ps(big, _mm256_mul_ps(_mm256_add_ps(l, h), hf), _mm256_cmp_ps(h, l, _CMP_GE_OQ)));
+    }
+    for (; k < n; ++k) m[k] = hi[k] >= lo[k] ? 0.5f * (lo[k] + hi[k]) : kBig;
+    const __m256 lim = _mm256_set1_ps(1.0e30f);
+    for (k = 0; k + 9 <= n; k += 8) {
+      const __m256 a = _mm256_loadu_ps(m + k), b = _mm256_loadu_ps(m + k + 1);
+      const __m256 ok = _mm256_and_ps(_mm256_cmp_ps(a, lim, _CMP_LT_OQ), _mm256_cmp_ps(b, lim, _CMP_LT_OQ));
+      _mm256_storeu_ps(d + k, _mm256_and_ps(_mm256_sub_ps(b, a), ok));
+    }
+    for (; k + 1 < n; ++k) d[k] = m[k] < 1.0e30f && m[k + 1] < 1.0e30f ? m[k + 1] - m[k] : 0.0f;
+  }
+  // Column i is a candidate when d[i − 2], d[i − 1], d[i], d[i + 1] alternate in sign: rare, so the eight-wide test
+  // finds them and the few hits are worked out one by one, from the unchanged ranges (applied after the scan).
+  struct Hit {
+    size_t i;
+    float lo, hi;
+  };
+  static thread_local std::vector<Hit> hits;
+  hits.clear();
+  auto visit = [&](size_t i) {
+    const float d0 = d[i - 2], d1 = d[i - 1], d2 = d[i], d3 = d[i + 1];
+    if (!(d0 * d1 < 0.0f && d1 * d2 < 0.0f && d2 * d3 < 0.0f)) return;
+    const float r = std::min(std::min(std::fabs(d0), std::fabs(d1)), std::min(std::fabs(d2), std::fabs(d3)));
+    const float ul = std::min(lo[i - 1], std::min(lo[i], lo[i + 1])), uh = std::max(hi[i - 1], std::max(hi[i], hi[i + 1]));
+    const float t = std::clamp((r / std::max(uh - ul, 1e-7f) - 0.1f) * 4.0f, 0.0f, 1.0f);
+    if (t > 0.0f) hits.push_back({i, lo[i] + (ul - lo[i]) * t, hi[i] + (uh - hi[i]) * t});
+  };
+  size_t i = 2;
+  const __m256 zero = _mm256_setzero_ps();
+  for (; i + 8 + 2 <= n; i += 8) {
+    const __m256 a = _mm256_loadu_ps(d + i - 2), b = _mm256_loadu_ps(d + i - 1), c = _mm256_loadu_ps(d + i), e = _mm256_loadu_ps(d + i + 1);
+    const __m256 alt = _mm256_and_ps(_mm256_and_ps(_mm256_cmp_ps(_mm256_mul_ps(a, b), zero, _CMP_LT_OQ), _mm256_cmp_ps(_mm256_mul_ps(b, c), zero, _CMP_LT_OQ)),
+                                     _mm256_cmp_ps(_mm256_mul_ps(c, e), zero, _CMP_LT_OQ));
+    unsigned mask = static_cast<unsigned>(_mm256_movemask_ps(alt));
+    while (mask != 0) {
+      const unsigned bit = static_cast<unsigned>(_tzcnt_u32(mask));
+      mask &= mask - 1;
+      visit(i + bit);
+    }
+  }
+  for (; i + 2 < n; ++i) visit(i);
+  for (const Hit& h : hits) {
+    lo[h.i] = h.lo;
+    hi[h.i] = h.hi;
+  }
+}
+
 // The columns of a draw: [c0, c0 + ncol) from rect.x0 are emitted; the scratch holds [e0, e0 + ncolE) (one more
 // either side where the rect has one: a column's profile reads its neighbours, so a tile's edge column equals the
 // direct draw's). ok = something to draw.
@@ -207,6 +280,7 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
     // top level can span more (a whole file in a few px): those take the loop.
     constexpr int32_t kFixed = 9;
     bool wide = false;
+    int32_t most = 1;  // WF.2: the most buckets any column spans: the gathers stop there (usually 3 … 5 of the 9)
     for (int32_t c = e0; c < e1; ++c) {
       const size_t i = static_cast<size_t>(c - e0);
       double fa = 0, fb = 0;
@@ -224,7 +298,9 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
       k0s[i] = any ? static_cast<int32_t>(k0) : 0;  // word 0 exists whenever a column has data (valid > 0)
       nbs[i] = any ? static_cast<int32_t>(k1 - k0) : 1;
       wide = wide || (any && k1 - k0 > kFixed);
+      most = nbs[i] > most ? nbs[i] : most;
     }
+    most = most < kFixed ? most : kFixed;
     if (valid <= 0 || valid > (int64_t{1} << 30)) wide = true;  // gathers index with int32
     // Eight columns at a time: a column's (min, max) pairs are 32-bit words, gathered kFixed per column (lanes past
     // its buckets re-read its first word); 16-bit min / max on the words keeps min in the low and max in the high
@@ -241,7 +317,7 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
         const __m256i nb = _mm256_loadu_si256(reinterpret_cast<const __m256i*>(nbs + i));
         const __m256i w = _mm256_i32gather_epi32(words, k0, 4);
         __m256i mn = w, mx = w;
-        for (int32_t k = 1; k < kFixed; ++k) {
+        for (int32_t k = 1; k < most; ++k) {
           const __m256i kk = _mm256_set1_epi32(k);
           const __m256i at = _mm256_add_epi32(k0, _mm256_and_si256(_mm256_cmpgt_epi32(nb, kk), kk));
           const __m256i g = _mm256_i32gather_epi32(words, at, 4);
@@ -370,6 +446,9 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
       }
     }
   }
+  // (every regime, so nothing pops at 2 frames per px; from 0.5 frames per px down no cycle is that short)
+  if (fpp > 0.5)
+    for (uint32_t ch = 0; ch < channels; ++ch) fillAliased(s.lo.data() + ch * stride + 1, s.hi.data() + ch * stride + 1, ncolE, s);
   pr.channels = channels;
   pr.c0 = c0;
   pr.e0 = e0;
@@ -403,7 +482,12 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
   {  // eight columns per pass: the arithmetic of the scalar loop below, branch-free
     const __m256 vc = _mm256_set1_ps(L.centre), vh = _mm256_set1_ps(L.half), vy0 = _mm256_set1_ps(L.y0), vy1 = _mm256_set1_ps(L.y1);
     const __m256 vlw = _mm256_set1_ps(L.lw), vlane = _mm256_set1_ps(laneH), one = _mm256_set1_ps(1.0f), hf = _mm256_set1_ps(0.5f);
+    const __m256 vfe = _mm256_set1_ps(kSmoothFeather);
     const __m256 zero = _mm256_setzero_ps(), e7 = _mm256_set1_ps(1e-7f), e6 = _mm256_set1_ps(1e-6f), neg = _mm256_set1_ps(-1.0f);
+    // WF.2: with a line at least a pixel wide in a lane at least a pixel tall, a stroke's thickness down the column is
+    // never under its rise (P = lw · sqrt(1 + rho²) ≥ rho) and the support never under a pixel (S ≥ P ≥ 1): the two
+    // quotients of `a` are exactly 1 and are not computed (two of the four divisions a step cost).
+    const bool unit = L.lw >= 1.0f && laneH >= 1.0f;
     for (; i + 8 <= n; i += 8) {
       const __m256 l = _mm256_loadu_ps(lo + i), h = _mm256_loadu_ps(hi + i);
       const __m256 pl = _mm256_loadu_ps(lo + i - 1), ph = _mm256_loadu_ps(hi + i - 1);
@@ -414,28 +498,41 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
                                         _mm256_blendv_ps(_mm256_max_ps(zero, _mm256_sub_ps(h, nl)), r, ne));
       const __m256 fall = _mm256_add_ps(_mm256_blendv_ps(_mm256_max_ps(zero, _mm256_sub_ps(h, pl)), r, pe),
                                         _mm256_blendv_ps(_mm256_max_ps(zero, _mm256_sub_ps(nh, l)), r, ne));
-      const __m256 w = _mm256_min_ps(_mm256_max_ps(_mm256_sub_ps(one, _mm256_div_ps(_mm256_min_ps(rise, fall), r)), zero), one);
+      const __m256 invR = _mm256_div_ps(one, r);
+      const __m256 w = _mm256_min_ps(_mm256_max_ps(_mm256_sub_ps(one, _mm256_mul_ps(_mm256_min_ps(rise, fall), invR)), zero), one);
       const __m256 ya = _mm256_min_ps(_mm256_max_ps(_mm256_sub_ps(vc, _mm256_mul_ps(h, vh)), vy0), vy1);
       const __m256 yb = _mm256_min_ps(_mm256_max_ps(_mm256_sub_ps(vc, _mm256_mul_ps(l, vh)), vy0), vy1);
       const __m256 t0 = _mm256_min_ps(ya, yb), b0 = _mm256_max_ps(ya, yb);
       const __m256 R = _mm256_sub_ps(b0, t0);
       const __m256 rho = _mm256_mul_ps(R, w);
-      const __m256 P = _mm256_mul_ps(vlw, _mm256_sqrt_ps(_mm256_add_ps(one, _mm256_mul_ps(rho, rho))));
+      const __m256 sec = _mm256_sqrt_ps(_mm256_add_ps(one, _mm256_mul_ps(rho, rho)));
+      const __m256 P = _mm256_mul_ps(vlw, sec);
       const __m256 ext = _mm256_max_ps(zero, _mm256_mul_ps(_mm256_sub_ps(P, _mm256_mul_ps(R, _mm256_sub_ps(one, w))), hf));
       const __m256 S = _mm256_min_ps(_mm256_add_ps(R, _mm256_add_ps(ext, ext)), vlane);
       const __m256 hS = _mm256_mul_ps(S, hf);
       const __m256 m = _mm256_min_ps(_mm256_max_ps(_mm256_mul_ps(_mm256_add_ps(t0, b0), hf), _mm256_add_ps(vy0, hS)), _mm256_sub_ps(vy1, hS));
       const __m256 Sx = _mm256_max_ps(S, one);
-      __m256 a = _mm256_mul_ps(_mm256_min_ps(one, _mm256_div_ps(P, _mm256_max_ps(rho, e6))), _mm256_div_ps(S, Sx));
+      __m256 a = one;
+      if (!unit) a = _mm256_mul_ps(_mm256_min_ps(one, _mm256_div_ps(P, _mm256_max_ps(rho, e6))), _mm256_div_ps(S, Sx));
       const __m256 hSx = _mm256_mul_ps(Sx, hf);
       const __m256 sT = _mm256_sub_ps(m, hSx), sB = _mm256_add_ps(m, hSx);
       const __m256 g = _mm256_min_ps(rho, hSx);
-      const __m256 A = _mm256_sub_ps(sT, hf), D = _mm256_add_ps(sB, hf);
-      __m256 B = _mm256_add_ps(_mm256_add_ps(sT, g), hf), C = _mm256_sub_ps(_mm256_sub_ps(sB, g), hf);
+      const __m256 qThin = _mm256_sub_ps(one, _mm256_mul_ps(_mm256_sub_ps(_mm256_sub_ps(R, rho), vlw), hf));
+      const __m256 op = _mm256_sub_ps(_mm256_min_ps(h, ph), _mm256_max_ps(l, pl)), on = _mm256_sub_ps(_mm256_min_ps(h, nh), _mm256_max_ps(l, nl));
+      const __m256 cover = _mm256_mul_ps(_mm256_max_ps(_mm256_max_ps(op, on), zero), invR);
+      const __m256 qTurn = _mm256_sub_ps(_mm256_set1_ps(1.5f), _mm256_add_ps(cover, cover));
+      const __m256 q = _mm256_min_ps(one, _mm256_max_ps(zero, _mm256_max_ps(qThin, qTurn)));
+      const __m256 hB = _mm256_sub_ps(hf, _mm256_mul_ps(hf, q));
+      const __m256 hA = _mm256_add_ps(hB, _mm256_mul_ps(vfe, q));
+      const __m256 A = _mm256_sub_ps(sT, _mm256_min_ps(hA, _mm256_max_ps(hf, _mm256_sub_ps(sT, vy0))));
+      const __m256 D = _mm256_add_ps(sB, _mm256_min_ps(hA, _mm256_max_ps(hf, _mm256_sub_ps(vy1, sB))));
+      __m256 B = _mm256_add_ps(_mm256_add_ps(sT, g), hB), C = _mm256_sub_ps(_mm256_sub_ps(sB, g), hB);
       const __m256 cross = _mm256_cmp_ps(B, C, _CMP_GT_OQ);
-      a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_div_ps(_mm256_sub_ps(m, A), _mm256_sub_ps(B, A))), cross);
-      B = _mm256_blendv_ps(B, m, cross);
-      C = _mm256_blendv_ps(C, m, cross);
+      if (_mm256_movemask_ps(cross) != 0) {  // (rare: a column thinner than its ramps)
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_div_ps(_mm256_sub_ps(m, A), _mm256_sub_ps(B, A))), cross);
+        B = _mm256_blendv_ps(B, m, cross);
+        C = _mm256_blendv_ps(C, m, cross);
+      }
       _mm256_storeu_ps(yA + i, A);
       _mm256_storeu_ps(yB + i, B);
       _mm256_storeu_ps(yC + i, C);
@@ -454,12 +551,14 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
     const bool pe = ph < pl, ne = nh < nl;
     const float rise = (pe ? r : std::max(0.0f, ph - l)) + (ne ? r : std::max(0.0f, h - nl));
     const float fall = (pe ? r : std::max(0.0f, h - pl)) + (ne ? r : std::max(0.0f, nh - l));
-    const float w = std::clamp(1.0f - std::min(rise, fall) / r, 0.0f, 1.0f);
+    const float invR = 1.0f / r;  // (as the eight-wide pass: one division, two products)
+    const float w = std::clamp(1.0f - std::min(rise, fall) * invR, 0.0f, 1.0f);
     const float ya = std::min(std::max(L.centre - h * L.half, L.y0), L.y1), yb = std::min(std::max(L.centre - l * L.half, L.y0), L.y1);
     const float t0 = std::min(ya, yb), b0 = std::max(ya, yb);
     const float R = b0 - t0;
     const float rho = R * w;                              // the stroke's rise across the column, px
-    const float P = L.lw * std::sqrt(1.0f + rho * rho);   // its thickness measured down the column
+    const float sec = std::sqrt(1.0f + rho * rho);
+    const float P = L.lw * sec;                           // its thickness measured down the column
     const float ext = std::max(0.0f, (P - R * (1.0f - w)) * 0.5f);
     const float S = std::min(R + 2.0f * ext, laneH);      // the support, kept inside the lane
     const float m = std::min(std::max(0.5f * (t0 + b0), L.y0 + 0.5f * S), L.y1 - 0.5f * S);
@@ -467,8 +566,23 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
     float a = std::min(1.0f, P / std::max(rho, 1e-6f)) * (S / Sx);
     const float sT = m - 0.5f * Sx, sB = m + 0.5f * Sx;
     const float g = std::min(rho, 0.5f * Sx);
-    const float A = sT - 0.5f, D = sB + 0.5f;
-    float B = sT + g + 0.5f, C = sB - g - 0.5f;
+    // The edge (WF.2). A dense body's is the pixel's box: half a px either side of the fractional row, exact coverage.
+    // A thin column's is the shared line's (pq/ui/lines.h): opaque to the core's edge, kSmoothFeather fading out
+    // beyond it. The 1 px box line "roped" — it thinned and swelled along a shallow slope as it crossed the rows;
+    // with the feather it keeps a full-strength row wherever it lies. q is how thin: 1 where the column holds no more
+    // than a line's weight besides the stroke passing through (a stroke, silence), 0 from 2 px more; and 1 where its
+    // neighbours' ranges overlap little of its own (a turn — the stroke goes up and comes back inside the column — or
+    // a lone spike): `cover` is the larger share of its range one neighbour also holds, near 1 in a body.
+    // The feather is kSmoothFeather px down the column whatever the slope (a steep stroke's sides are soft through its
+    // ramps; scaled by the slope it reached past the column's own range — a halo above a peak, which its steep
+    // neighbours stop under), and stops half a px past the lane's edge, as the box does (lanes do not blend).
+    const float cover = std::max(std::max(std::min(h, ph) - std::max(l, pl), std::min(h, nh) - std::max(l, nl)), 0.0f) * invR;
+    const float q = std::clamp(std::max(1.0f - 0.5f * (R - rho - L.lw), 1.5f - 2.0f * cover), 0.0f, 1.0f);
+    const float hB = 0.5f * (1.0f - q);
+    const float hA = hB + kSmoothFeather * q;
+    const float A = sT - std::min(hA, std::max(0.5f, sT - L.y0));
+    const float D = sB + std::min(hA, std::max(0.5f, L.y1 - sB));
+    float B = sT + g + hB, C = sB - g - hB;
     if (B > C) {  // the ramps meet before the plateau: a triangle
       a *= (m - A) / (B - A);
       B = C = m;
@@ -488,6 +602,8 @@ void growProfiles(Scratch& s, size_t n) {
   s.yC.resize(n);
   s.yD.resize(n);
   s.al.resize(n);
+  s.up.resize(n);
+  s.dn.resize(n);
 }
 
 // The index pattern of four column steps (three quads each: ramp, body, ramp), relative to the first vertex.
@@ -511,9 +627,15 @@ struct Pattern {
 // The strips of n columns from device x `x0` (their profiles in the scratch): one per run of columns with data.
 // Returns the columns drawn; adds the vertices to `vertices`.
 uint32_t emitStrips(DrawList& dl, const Scratch& s, size_t n, float x0, Rgba colour, uint32_t& vertices) {
+  static_assert(sizeof(Vertex) == 20 && offsetof(Vertex, pos) == 0 && offsetof(Vertex, uv) == 8 && offsetof(Vertex, col) == 16);
   const Vec2 uv = dl.whiteUv();
   const Rgba clear = withAlpha(colour, 0);
   const auto baseA = static_cast<float>(alphaOf(colour));
+  // (x, y, u, v, colour) × 4 = dwords 0 … 19 from S: see put().
+  const __m256i idx0 = _mm256_setr_epi32(4, 0, 6, 7, 0, 4, 1, 6), idx1 = _mm256_setr_epi32(7, 5, 4, 2, 6, 7, 5, 4),
+                idx2 = _mm256_setr_epi32(3, 6, 7, 0, 0, 0, 0, 0);
+  const __m256 vclear = _mm256_castsi256_ps(_mm256_set1_epi32(static_cast<int>(clear)));
+  const __m128 uvHi = _mm_setr_ps(0.0f, 0.0f, uv.x, uv.y);  // (x, colour, u, v) before x and the colour go in
   const float *yA = s.yA.data(), *yB = s.yB.data(), *yC = s.yC.data(), *yD = s.yD.data(), *al = s.al.data();
   uint32_t columns = 0;
   size_t i = 0;
@@ -527,14 +649,18 @@ uint32_t emitStrips(DrawList& dl, const Scratch& s, size_t n, float x0, Rgba col
     const auto m = static_cast<uint32_t>(e - i);
     const uint32_t sets = m + 2;
     const DrawList::PrimSpan sp = dl.primReserveSpan(18 * (sets - 1), 4 * sets);
-    Vertex* v = sp.v;
+    // WF.2: a column's four vertices (80 bytes) as three stores. S = (yA, yB, yC, yD, x, colour, u, v); the two
+    // transparent colours are blended in. (Twenty scalar stores through a lambda's captured pointer cost twice this.)
+    float* out = reinterpret_cast<float*>(sp.v);
     auto put = [&](float x, size_t k) {
-      const Rgba c = withAlpha(colour, static_cast<uint32_t>(baseA * al[k] + 0.5f));
-      v[0] = {{x, yA[k]}, uv, clear};
-      v[1] = {{x, yB[k]}, uv, c};
-      v[2] = {{x, yC[k]}, uv, c};
-      v[3] = {{x, yD[k]}, uv, clear};
-      v += 4;
+      const auto c = static_cast<int>(withAlpha(colour, static_cast<uint32_t>(baseA * al[k] + 0.5f)));
+      const __m128 ys = _mm_setr_ps(yA[k], yB[k], yC[k], yD[k]);
+      const __m128 xc = _mm_castsi128_ps(_mm_insert_epi32(_mm_castps_si128(_mm_move_ss(uvHi, _mm_set_ss(x))), c, 1));
+      const __m256 S = _mm256_insertf128_ps(_mm256_castps128_ps256(ys), xc, 1);
+      _mm256_storeu_ps(out, _mm256_blend_ps(_mm256_permutevar8x32_ps(S, idx0), vclear, 0x10));
+      _mm256_storeu_ps(out + 8, _mm256_permutevar8x32_ps(S, idx1));
+      _mm_storeu_ps(out + 16, _mm_blend_ps(_mm256_castps256_ps128(_mm256_permutevar8x32_ps(S, idx2)), _mm256_castps256_ps128(vclear), 0x8));
+      out += 20;
     };
     put(x0 + static_cast<float>(i), i);
     for (size_t k = i; k < e; ++k) put(x0 + static_cast<float>(k) + 0.5f, k);
@@ -680,23 +806,52 @@ WaveformStats rasterWaveform(const WaveformData& data, const WaveformDraw& d, ui
     const Lane L = laneOf(d.rect, d.merge ? 0 : ch, lanes, d.gain, d.lineWidth);
     profiles(s.lo.data() + ch * pr.stride + off, s.hi.data() + ch * pr.stride + off, pr.ncol, L, s.yA.data(), s.yB.data(), s.yC.data(),
              s.yD.data(), s.al.data());
-    for (size_t i = 0; i < pr.ncol; ++i) {
-      const float a = s.al[i];
-      if (a < 0.0f) continue;
-      const int32_t x = static_cast<int32_t>(d.rect.x0) + pr.c0 + static_cast<int32_t>(i);
-      if (x < 0 || x >= W) continue;
+    // WF.2: row by row, eight columns at a time (it was a float per pixel down each column: 3.6× the cost of the
+    // strips it replaced). A pixel's value is its column's trapezoid at the row's centre: min(up ramp, plateau, down
+    // ramp), as the GPU interpolates the strip.
+    const int32_t xBase = static_cast<int32_t>(d.rect.x0) + pr.c0;
+    const auto i0 = static_cast<size_t>(std::clamp<int64_t>(-static_cast<int64_t>(xBase), 0, static_cast<int64_t>(pr.ncol)));
+    const auto i1 = static_cast<size_t>(std::clamp<int64_t>(static_cast<int64_t>(W) - xBase, static_cast<int64_t>(i0), static_cast<int64_t>(pr.ncol)));
+    float* const al = s.al.data();
+    float* const up = s.up.data();
+    float* const dn = s.dn.data();
+    const float *yA = s.yA.data(), *yB = s.yB.data(), *yC = s.yC.data(), *yD = s.yD.data();
+    float top = 3.0e38f, bot = -3.0e38f;
+    for (size_t i = i0; i < i1; ++i) {
+      const float a = al[i];
+      if (a < 0.0f) {  // an empty column: nothing in any row
+        al[i] = up[i] = dn[i] = 0.0f;
+        continue;
+      }
       if (ch == 0) ++st.columns;
-      const float A = s.yA[i], B = s.yB[i], C = s.yC[i], D = s.yD[i];
-      // Rows whose centre lies in (A, D): the profile at the centre, as the GPU interpolates the strip.
-      const int32_t r0 = std::max(0, static_cast<int32_t>(std::floor(A + 0.5f)));
-      const int32_t r1 = std::min(H, static_cast<int32_t>(std::ceil(D - 0.5f)));
-      const float up = B > A ? a / (B - A) : 0.0f, down = D > C ? a / (D - C) : 0.0f;
-      uint8_t* p = dst + static_cast<size_t>(r0) * rowPitch + static_cast<size_t>(x);
-      for (int32_t y = r0; y < r1; ++y, p += rowPitch) {
-        const float yc = static_cast<float>(y) + 0.5f;
-        const float v = yc < B ? (yc - A) * up : yc <= C ? a : (D - yc) * down;
-        const auto q = static_cast<uint8_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
-        if (q > *p) *p = q;
+      up[i] = a / (yB[i] - yA[i]);  // (B − A and D − C are at least half a px: see profiles)
+      dn[i] = a / (yD[i] - yC[i]);
+      top = std::min(top, yA[i]);
+      bot = std::max(bot, yD[i]);
+    }
+    // Rows whose centre lies in (top, bot).
+    const int32_t r0 = std::max(0, static_cast<int32_t>(std::floor(std::max(top, -1.0e9f) + 0.5f)));
+    const int32_t r1 = std::min(H, static_cast<int32_t>(std::ceil(std::min(bot, 1.0e9f) - 0.5f)));
+    const __m256 v255 = _mm256_set1_ps(255.0f), zero = _mm256_setzero_ps();
+    for (int32_t y = r0; y < r1; ++y) {
+      const float yc = static_cast<float>(y) + 0.5f;
+      const __m256 vy = _mm256_set1_ps(yc);
+      uint8_t* const row = dst + static_cast<size_t>(y) * rowPitch + static_cast<size_t>(static_cast<int64_t>(xBase) + static_cast<int64_t>(i0)) - i0;
+      size_t i = i0;
+      for (; i + 8 <= i1; i += 8) {
+        const __m256 ru = _mm256_mul_ps(_mm256_sub_ps(vy, _mm256_loadu_ps(yA + i)), _mm256_loadu_ps(up + i));
+        const __m256 rd = _mm256_mul_ps(_mm256_sub_ps(_mm256_loadu_ps(yD + i), vy), _mm256_loadu_ps(dn + i));
+        const __m256 v = _mm256_max_ps(_mm256_min_ps(_mm256_min_ps(ru, rd), _mm256_loadu_ps(al + i)), zero);
+        const __m256i q = _mm256_cvtps_epi32(_mm256_mul_ps(v, v255));  // (round to nearest; v ≤ 1)
+        const __m128i q16 = _mm_packus_epi32(_mm256_castsi256_si128(q), _mm256_extracti128_si256(q, 1));
+        const __m128i q8 = _mm_packus_epi16(q16, q16);
+        const __m128i old = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(row + i));
+        _mm_storel_epi64(reinterpret_cast<__m128i*>(row + i), _mm_max_epu8(old, q8));
+      }
+      for (; i < i1; ++i) {
+        const float v = std::max(std::min(std::min((yc - yA[i]) * up[i], (yD[i] - yc) * dn[i]), al[i]), 0.0f);
+        const auto q = static_cast<uint8_t>(v * 255.0f + 0.5f);
+        if (q > row[i]) row[i] = q;
       }
     }
     if (dots.alpha > 0.0f) {

@@ -8,6 +8,7 @@
 #include "../common/paint.h"
 #include "internal.h"
 #include "pq/ui/lines.h"
+#include "pq/ui/waveform.h"
 #include "pq/views/arrangement/automation.h"
 
 namespace pq::views {
@@ -232,18 +233,24 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
   };
   if (dense) {
     // Dense (under 2 px per breakpoint): one span per pixel column from the lowest to the highest value the
-    // envelope takes there, as a rect. The ribbon would be a zigzag of sub-pixel segments costing 8 vertices each;
-    // the spans look the same and cost 4 per column.
+    // envelope takes there. The ribbon would be a zigzag of sub-pixel segments costing 8 vertices each; the spans cost
+    // 4 per column. WF.2: drawn by the sample waveforms' renderer (ui::drawWaveformColumns: antialiased, a stroke
+    // where the envelope passes through a column, a body where it is denser) — they were plain rects, stepped on every
+    // slope.
     // Per column: the envelope at its right edge (a cursor: amortised O(1); the left edge is the previous column's)
     // and every breakpoint inside (value compares only; the display mapping runs at most twice per column). Each column
-    // depends only on its own ticks, so partial and full repaints agree exactly.
+    // depends only on its own ticks and its two neighbours' (one more column is computed either side of the painted
+    // part), so partial and full repaints agree.
     EnvelopeCursor cur(pts, fallback);
-    auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(pax.tick(static_cast<float>(vis.x)))),
+    const int32_t c0 = vis.x - 1, c1 = vis.right() + 1;
+    auto it = std::lower_bound(pts.begin(), pts.end(), static_cast<Ticks>(std::floor(pax.tick(static_cast<float>(c0)))),
                                [](const doc::Breakpoint& bp, Ticks t) { return bp.tick < t; });
-    uint32_t spans = 0;
-    double tl = pax.tick(static_cast<float>(vis.x));
+    static thread_local std::vector<float> lo, hi;
+    lo.resize(static_cast<size_t>(c1 - c0));
+    hi.resize(static_cast<size_t>(c1 - c0));
+    double tl = pax.tick(static_cast<float>(c0));
     double vl = cur.at(tl);  // the envelope at the column's left edge (the previous column's right edge)
-    for (int32_t col = vis.x; col < vis.right(); ++col) {
+    for (int32_t col = c0; col < c1; ++col) {
       const double tr = pax.tick(static_cast<float>(col + 1));
       double vmin = vl, vmax = vl;
       for (; it != pts.end() && static_cast<double>(it->tick) < tr; ++it) {
@@ -256,12 +263,25 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
       vmax = std::max(vmax, vr);
       vl = vr;
       const float ya = yOf(vmin), yb = vmax == vmin ? ya : yOf(vmax);
-      const auto x = static_cast<float>(col);
-      dl.addRectFilled({x, std::min(ya, yb) - lineW * 0.5f, x + 1.0f, std::max(ya, yb) + lineW * 0.5f}, lineCol);
-      ++spans;
+      // (the renderer's units about centre 0, half 1: a value is −y)
+      lo[static_cast<size_t>(col - c0)] = -std::max(ya, yb);
+      hi[static_cast<size_t>(col - c0)] = -std::min(ya, yb);
       tl = tr;
     }
-    stats_.vertices += spans;
+    ui::WaveformColumns wc;
+    wc.lo = lo.data();
+    wc.hi = hi.data();
+    wc.count = static_cast<uint32_t>(c1 - c0);
+    wc.x0 = static_cast<float>(c0);
+    wc.y0 = static_cast<float>(b.top) - lineW;
+    wc.y1 = static_cast<float>(b.bottom) + lineW;
+    wc.centre = 0.0f;
+    wc.half = 1.0f;
+    wc.lineWidth = lineW;
+    wc.colour = lineCol;
+    wc.clipX0 = static_cast<float>(vis.x);
+    wc.clipX1 = static_cast<float>(vis.right());
+    stats_.vertices += ui::drawWaveformColumns(dl, wc);
     return;
   }
   // The polyline over the visible columns. A partial repaint must draw exactly the pixels a full one draws, and
@@ -347,6 +367,9 @@ void ArrangementAutomation::paintEnvelopeDirect(PaintContext& ctx, const Automat
   }
   flush();
   stats_.vertices += static_cast<uint32_t>(poly_.size());
+  // (WF.2: this stays smoothPolyline. ui::smoothPolylineCols would give sharp reversals a bevel instead of a clamped
+  // miter, but its bevels overlap the segments' ends, and an envelope is also drawn from coverage tiles: overlapping
+  // feathers blend differently in a tile than drawn directly, so a partial repaint no longer equalled a full one.)
   smoothPolyline(dl, poly_.data(), static_cast<uint32_t>(poly_.size()), lineCol, lineW);
 }
 

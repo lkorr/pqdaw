@@ -236,13 +236,40 @@ void Ruler::paint(PaintContext& ctx) {
   TextSystem* ts = ctx.res.text;
   const FontId font = ctx.res.uiFonts ? ctx.res.uiFonts->small : kNoFont;
   const int32_t cap = ts && font != kNoFont ? static_cast<int32_t>(std::lround(0.727 * ts->metrics(font).pixelSize)) : 0;
-  const Grid labels = Grid::adaptive(am::kRulerLabelMinPx, sigs, ax_->pxPerTick());
+  Grid labels = Grid::adaptive(am::kRulerLabelMinPx, sigs, ax_->pxPerTick());
+  // WF.2: a label reads bar.beat.sixteenth, so a labelled line finer than a sixteenth repeated its sixteenth's label
+  // ("1.1.1" on each of the four 1/64 lines, once the zoom to the samples spread them out). The labelled lines stop at
+  // the sixteenths; the finer lines keep their ticks above.
+  if (labels.divisionAt(from).denominator > 16) {
+    GridSpec sixteenths;
+    sixteenths.mode = GridMode::Fixed;
+    sixteenths.fixedExp = 4;
+    labels = Grid(sixteenths, sigs, ax_->pxPerTick());
+  }
   char buf[kRulerLabelMaxChars];
   // BR.ui: a label left of the painted columns may reach into them (its text runs right of its tick): a partial repaint
   // (the lanes' playhead columns) draws it again, or the column erases a slice of it (user bug 2026-11-13_17-17-10).
   const double textReach = static_cast<double>(s.px(3.0f)) +
                            (ts && font != kNoFont ? 0.7 * static_cast<double>(ts->metrics(font).pixelSize) * kRulerLabelMaxChars : 0.0);
   const Ticks labelFrom = std::max<Ticks>(0, from - static_cast<Ticks>(std::ceil(textReach / k)));
+  // WF.2: zoomed in until a sixteenth is wider than the ruler, no labelled line may be in view at all: the sixteenth the
+  // view's left edge lies in is then named there, dimmed (it is where the view is, not a line).
+  if (const IRect cols = columns(r); ts && font != kNoFont && (!compact_ || numH >= cap) && cols.w > 0) {
+    const Ticks sixteenth = kTicksPerWhole / 16;
+    const double leftTick = origin + (static_cast<double>(cols.x) - ox) / k;
+    if (leftTick >= 0.0 && static_cast<double>(sixteenth) * k > static_cast<double>(cols.w)) {
+      const auto lt = static_cast<Ticks>(std::floor(leftTick));
+      const RulerPosition rp = rulerPosition(sigs, lt);
+      const float lineX = X(static_cast<double>(lt - rp.remainder));  // the sixteenth's own line (its label, if in view)
+      const float nextX = X(static_cast<double>(lt - rp.remainder + sixteenth));
+      const size_t n = formatRulerPosition(rp, buf);
+      const float pad = static_cast<float>(s.px(3.0f));
+      const float left = static_cast<float>(cols.x);
+      const float wText = static_cast<float>(ts->measure(font, {buf, n}));
+      if (lineX < left - 1.0f && nextX > left + 2.0f * pad + wText)
+        ts->draw(dl, font, {left + pad, numY + static_cast<float>((numH + cap) / 2)}, {buf, n}, withAlpha(at.rulerText, 120));
+    }
+  }
   for (const GridLine& g : labels.lines(labelFrom, to)) {
     const float x = std::floor(X(static_cast<double>(g.tick)));
     if (x >= rx1) break;
@@ -503,30 +530,42 @@ void TimeRuler::paint(PaintContext& ctx) {
   const double s0 = tm.ticksToSeconds(std::max<Ticks>(0, vis.start));
   const double s1 = tm.ticksToSeconds(std::max<Ticks>(1, vis.end));
   if (!(s1 > s0) || r.w <= 0) return;
-  // Label step: the smallest "nice" number of seconds whose labels are ≥ 50 logical px apart.
+  // Label step: the smallest "nice" number of seconds whose labels are ≥ 50 logical px apart (64 with decimals).
+  // WF.2: down to 10 µs (the steps stopped at 1 s: zoomed in to the samples the ruler was empty, or one label).
   const double pxPerSecond = static_cast<double>(r.w) / ctx.scale.factor / (s1 - s0);
-  constexpr double kSteps[] = {1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600};
+  constexpr double kSteps[] = {1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 1e-3, 2e-3, 5e-3, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5,
+                               1,    2,    5,    10,   15,   30,   60,   120,  300,  600,  1200, 1800, 3600};
   double step = kSteps[std::size(kSteps) - 1];
   for (double st : kSteps)
-    if (st * pxPerSecond >= 50.0) {
+    if (st * pxPerSecond >= (st < 1.0 ? 64.0 : 50.0)) {
       step = st;
       break;
     }
+  const int decimals = step >= 1.0 ? 0 : static_cast<int>(std::ceil(-std::log10(step) - 1e-9));
   TextSystem* ts = ctx.res.text;
   const FontId font = ctx.res.uiFonts ? ctx.res.uiFonts->small : kNoFont;
   const int32_t cap = ts && font != kNoFont ? static_cast<int32_t>(std::lround(0.727 * ts->metrics(font).pixelSize)) : 0;
   const float base = static_cast<float>(r.y) + std::round((static_cast<float>(r.h) + static_cast<float>(cap)) * 0.5f);
   const double k = view_.devicePxPerTick();
   dl.pushClip(r.toRect());
-  for (double sec = std::ceil(s0 / step) * step; sec <= s1 + 1e-9; sec += step) {
+  for (double i = std::ceil(s0 / step); i * step <= s1 + step * 1e-6; i += 1.0) {
+    const double sec = i * step;  // (a multiple of the step: nothing accumulates)
     const double tick = tm.secondsToTicks(sec);
     const float x = std::floor(static_cast<float>(static_cast<double>(r.x) + (tick - view_.originTick()) * k));
     if (x >= rx1) break;
     dl.addRectFilled({x, static_cast<float>(r.y + 1), x + 1.0f, static_cast<float>(r.y + r.h / 2)}, withAlpha(at.rulerText, 130));
     if (ts && font != kNoFont) {
-      char buf[24];
-      const auto total = static_cast<long long>(std::llround(sec));
-      const int n = std::snprintf(buf, sizeof buf, "%lld:%02lld", total / 60, total % 60);
+      char buf[40];
+      int n = 0;
+      if (decimals == 0) {
+        const auto total = static_cast<long long>(std::llround(sec));
+        n = std::snprintf(buf, sizeof buf, "%lld:%02lld", total / 60, total % 60);
+      } else {  // m:ss.d…: the whole steps counted, so 0:01.250 is never 0:01.2499
+        const double scale = std::pow(10.0, decimals);
+        const auto units = static_cast<long long>(std::llround(sec * scale)), per = static_cast<long long>(std::llround(scale));
+        const long long whole = units / per;
+        n = std::snprintf(buf, sizeof buf, "%lld:%02lld.%0*lld", whole / 60, whole % 60, decimals, units % per);
+      }
       ts->draw(dl, font, {x + static_cast<float>(ctx.scale.px(3.0f)), base}, {buf, static_cast<size_t>(std::max(0, n))},
                withAlpha(at.rulerText, 200));
     }
