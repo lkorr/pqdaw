@@ -1,9 +1,10 @@
-// OP.6: the exact transcendental atoms (cents → Hz, Hz → cents, pow, exp, log, tan, the dB conversions) reuse the
-// previous vector's result when a vector of 8 inputs repeats the previous one bit for bit (kernels_common.h
-// elementwiseMemo). The output must be the bits of the same function on the same values, whatever the input does:
-// here every block is compared with the kernel called one vector at a time (a call's first vector is always
-// computed), over inputs that hold, start moving, move in one lane only, stop, and change only in a NaN payload or
-// the sign of a zero. Both lane counts, every Blk / Spl mask, block lengths with a 1-lane remainder.
+// OP.6: the unit conversions computed in double (cents ↔ Hz, dB ↔ gain) reuse the previous vector's result when a
+// vector of 8 inputs repeats the previous one bit for bit (kernels_common.h elementwiseMemo). The output must be the
+// bits of the same function on the same values, whatever the input does: here every block is compared with the
+// kernel called one vector at a time (a call's first vector is always computed) and with the same block computed in
+// place (as the JIT runs it), over inputs that hold, start moving, move in one lane only, stop, and change only in a
+// NaN payload or the sign of a zero. Both lane counts, every Blk / Spl mask, block lengths with a 1-lane remainder.
+// The other exact transcendentals (pow, exp, log, tan: the plain driver) run through the same comparison.
 
 #include <doctest/doctest.h>
 
@@ -109,6 +110,18 @@ void compare(Atom a, uint32_t lanes, uint32_t mask, uint32_t frames, uint32_t se
   {
     const pq::RtScope rt;  // the kernel is RT code: no allocation in the memo path either
     fn(pq::dsp::KernelArgs{inp, outp, nullptr, nullptr, frames, static_cast<uint16_t>(nIn), 1, mask});
+  }
+  // In place (the output over a block input: the previous input vector is gone when the next one is compared).
+  for (uint32_t i = 0; i < nIn; ++i) {
+    if (((mask >> i) & 1u) != 0 || count == 0) continue;
+    std::vector<float> io = in[i];
+    const float* ip[2] = {inp[0], inp[1]};
+    ip[i] = io.data();
+    float* op[1] = {io.data()};
+    fn(pq::dsp::KernelArgs{ip, op, nullptr, nullptr, frames, static_cast<uint16_t>(nIn), 1, mask});
+    if (std::memcmp(io.data(), out.data(), count * sizeof(float)) != 0 && r.differ++ == 0)
+      r.first = std::string(pq::dsp::kernelInfo(a).name) + " in place over input " + std::to_string(i) + ", lanes " +
+                std::to_string(lanes) + " mask " + std::to_string(mask) + " frames " + std::to_string(frames);
   }
   // The reference: 8 floats per call (1 frame of 8 lanes, 8 frames of 1 lane), then the 1-lane remainder.
   const uint32_t step = 8 / lanes;

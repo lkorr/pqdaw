@@ -79,12 +79,13 @@ inline void elementwise(const KernelArgs& a, uint32_t count) noexcept {  // RT-s
   }
 }
 
-// OP.6: the same driver for an Op whose f is an expensive pure function (the SVML transcendentals: cents → Hz, exp,
-// pow, log, tan, the dB conversions) of inputs that mostly hold still (a held voice's cents, a param). A vector of 8
-// inputs whose bits equal the previous vector's reuses the previous result: the same function of the same values, so
-// the output is bit for bit what `elementwise` writes (compared as integers: NaN payloads and ±0 count as different).
-// For L = 8 that is "no lane moved since the last frame", for L = 1 "these 8 frames repeat the last 8". A moving
-// input pays one xor / or / ptest and a predicted branch per vector on top of the call. Unary and binary Ops.
+// OP.6: the same driver for an Op whose f is an expensive pure function (the unit conversions through double: cents ↔
+// Hz, dB ↔ gain) of inputs that mostly hold still (a held voice's cents, a level param). A vector of 8 inputs whose
+// bits equal the previous vector's reuses the previous result: the same function of the same values, so the output
+// is bit for bit what `elementwise` writes (compared as integers: NaN payloads and ±0 count as different). For L = 8
+// that is "no lane moved since the last frame", for L = 1 "these 8 frames repeat the last 8". The previous inputs
+// and result live in registers, not in the buffers: the JIT runs these kernels in place (output over the input).
+// Unary and binary Ops.
 template <class Op, uint32_t SM>
 inline void elementwiseMemo(const KernelArgs& a, uint32_t count) noexcept {  // RT-safe
   static_assert(Op::kArity == 1 || Op::kArity == 2);

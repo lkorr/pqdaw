@@ -32,10 +32,12 @@ constexpr float kBelowOne = 0.99999994f;  // nextafter(1, 0)
     }                                                                                            \
   };
 
-// OP.6: an Op tagged PQ_MEMO runs kernels_common.h's repeated-input driver (elementwiseMemo): its f is an SVML call
-// (tens of cycles per vector, in double for the unit conversions) and its input usually holds still for the block
-// (a held voice's cents, a level or a time param), so a vector whose bits repeat the previous one reuses its result.
-// Not tagged: sin / tanh (their inputs are signals) and every fast variant (inline polynomials, cheaper than a miss).
+// OP.6: an Op tagged PQ_MEMO runs kernels_common.h's repeated-input driver (elementwiseMemo). Tagged: the four unit
+// conversions computed in double (cents ↔ Hz, dB ↔ gain: 10 – 16 ns per 8 values), whose input usually holds still
+// for the block (a held voice's cents, a level), so a vector whose bits repeat the previous one reuses its result;
+// a moving input pays ≈ 0 – 5 % for the compare. Not tagged, measured: exp / log / pow / tan (single-precision SVML,
+// 2 – 7 ns per 8 values: a moving input paid 6 – 25 % and no profile shows them), sin / tanh (their inputs are
+// signals) and every fast variant (inline polynomials).
 #define PQ_MEMO(Name, Base)             \
   struct Name : Base {                  \
     static constexpr bool kMemo = true; \
@@ -56,8 +58,7 @@ inline typename S::F modFloored(typename S::F a, typename S::F b) noexcept {  //
   return S::andnot(S::eq(r, b), r);
 }
 PQ_BINARY(ModOp, modFloored<S>(a, b))
-PQ_BINARY(PowOpPlain, S::exactPow(a, b))
-PQ_MEMO(PowOp, PowOpPlain)
+PQ_BINARY(PowOp, S::exactPow(a, b))
 PQ_BINARY(PowFastOp, S::fastExp2(S::mul(b, S::fastLog2(a))))
 PQ_BINARY(CentsToHzOpPlain, S::exactCentsToHz(a, b))
 PQ_MEMO(CentsToHzOp, CentsToHzOpPlain)
@@ -73,11 +74,9 @@ PQ_UNARY(SignOp, S::sub(S::band(S::gt(x, S::zero()), S::set(1.0f)), S::band(S::l
 PQ_UNARY(FloorOp, S::floor(x))
 PQ_UNARY(FracOp, S::min(S::sub(x, S::floor(x)), S::set(kBelowOne)))
 PQ_UNARY(SqrtOp, S::sqrt(x))
-PQ_UNARY(ExpOpPlain, S::exactExp(x))
-PQ_MEMO(ExpOp, ExpOpPlain)
+PQ_UNARY(ExpOp, S::exactExp(x))
 PQ_UNARY(ExpFastOp, S::fastExp2(S::mul(x, S::set(kLog2e))))
-PQ_UNARY(LogOpPlain, S::exactLog(x))
-PQ_MEMO(LogOp, LogOpPlain)
+PQ_UNARY(LogOp, S::exactLog(x))
 PQ_UNARY(LogFastOp, S::mul(S::fastLog2(x), S::set(kLn2)))
 PQ_UNARY(SinOp, S::exactSin(x))
 // fast_sin has no range reduction beyond |x| ≤ kFastSinMaxArg (65536 rad); further out its polynomial grows
@@ -85,8 +84,7 @@ PQ_UNARY(SinOp, S::exactSin(x))
 // [−1, 1]: two ops, bit-identical inside the domain except where the polynomial overshot 1 by an ulp, and NaN/±inf
 // in still give NaN (the constant is the first operand, so NaN propagates).
 PQ_UNARY(SinFastOp, S::max(S::set(-1.0f), S::min(S::set(1.0f), S::fastSin(x))))
-PQ_UNARY(TanOpPlain, S::exactTan(x))
-PQ_MEMO(TanOp, TanOpPlain)
+PQ_UNARY(TanOp, S::exactTan(x))
 PQ_UNARY(TanFastOp, S::fastTan(x))
 PQ_UNARY(TanhOp, S::exactTanh(x))
 PQ_UNARY(TanhFastOp, S::fastTanh(x))
