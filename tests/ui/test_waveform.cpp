@@ -317,12 +317,12 @@ TEST_CASE("waveform: sample columns (2 to 512 frames per px) are one unbroken an
       CHECK(n.top <= k.bottom);
     }
   }
-  // An even weight: every column carries a line's worth of ink, x sqrt(1 + slope^2) on a slope. WF.2: a stroke has
-  // the shared line's cross-section (pq/ui/lines.h: a core of lineWidth and kSmoothFeather fading out either side),
-  // which is 1.75 px of ink where it is flat; the bounds were 0.9 to 2.1 for the 1 px box line, which "roped".
+  // An even weight: every column carries a line's worth of ink — the core, x sqrt(1 + slope^2) on a slope, and (WF.2)
+  // the shared line's 0.75 px feather (pq/ui/lines.h): 1.75 px where it is flat, 1.8 + 0.75 at this wave's steepest.
+  // The bounds were 0.9 to 2.1 for the 1 px box line, which "roped".
   MESSAGE("ink per column: " << minInk << " to " << maxInk);
   CHECK(minInk >= 1.6);
-  CHECK(maxInk <= 1.75 * 1.9);
+  CHECK(maxInk <= 2.7);
   CHECK(partial >= static_cast<int>(W));  // antialiased: fractional coverage in every column, not whole rows
 }
 
@@ -371,7 +371,7 @@ TEST_CASE("waveform (WF.2): a tone near 2 px per cycle is drawn as its envelope 
   std::vector<float> slow(1 << 16);
   for (size_t i = 0; i < slow.size(); ++i) slow[i] = 0.8f * std::sin(static_cast<float>(i) * (6.2831853f / 2400.0f));
   (void)inkRange(slow, 16.0, lo, hi);
-  CHECK(hi <= 1.75 * 1.9);
+  CHECK(hi <= 2.7);  // (slopes to 1.3 rows per column: the core's 1.7 px there and the feather; a body would be far more)
   // Roping: a ramp of 0.07 rows per column crosses a row every 14 columns. Wherever it lies, the column's strongest
   // pixel is at full strength and its ink is the line's (the 1 px box line went 255 … 128 … 255 along it).
   std::vector<float> ramp(1 << 16);

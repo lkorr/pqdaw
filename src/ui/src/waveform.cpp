@@ -559,15 +559,16 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
     float a = std::min(1.0f, P / std::max(rho, 1e-6f)) * (S / Sx);
     const float sT = m - 0.5f * Sx, sB = m + 0.5f * Sx;
     const float g = std::min(rho, 0.5f * Sx);
-    // The edge. A dense body's is the pixel's box (half a px either side of the fractional row: exact coverage). A
-    // thin column's — a stroke, a turn, silence: q = 1 where the column holds no more than a line's weight besides the stroke, 0 from
-    // 2 px more — is the shared line's (WF.2; pq/ui/lines.h: an opaque core of lineWidth, kSmoothFeather fading out beyond
-    // it; kSmoothFeather px down the column whatever the slope — scaled by the slope it reached past the column's own
-    // range, above a peak its steep neighbours stop under: a halo. A steep stroke's sides are soft through its ramps). The 1 px box line "roped": it thinned and swelled along a shallow slope as it
-    // crossed the rows; with the feather it keeps a full-strength row wherever it lies. The feather stops half a px
-    // past the lane's edge, as the box does (lanes do not blend into each other).
-    // Or where its neighbours' ranges overlap little of its own (a turn: the stroke goes up and comes back inside the
-    // column; a lone spike): `cover`, the larger share of its range one neighbour also holds — a body's is near 1.
+    // The edge (WF.2). A dense body's is the pixel's box: half a px either side of the fractional row, exact coverage.
+    // A thin column's is the shared line's (pq/ui/lines.h): opaque to the core's edge, kSmoothFeather fading out
+    // beyond it. The 1 px box line "roped" — it thinned and swelled along a shallow slope as it crossed the rows;
+    // with the feather it keeps a full-strength row wherever it lies. q is how thin: 1 where the column holds no more
+    // than a line's weight besides the stroke passing through (a stroke, silence), 0 from 2 px more; and 1 where its
+    // neighbours' ranges overlap little of its own (a turn — the stroke goes up and comes back inside the column — or
+    // a lone spike): `cover` is the larger share of its range one neighbour also holds, near 1 in a body.
+    // The feather is kSmoothFeather px down the column whatever the slope (a steep stroke's sides are soft through its
+    // ramps; scaled by the slope it reached past the column's own range — a halo above a peak, which its steep
+    // neighbours stop under), and stops half a px past the lane's edge, as the box does (lanes do not blend).
     const float cover = std::max(std::max(std::min(h, ph) - std::max(l, pl), std::min(h, nh) - std::max(l, nl)), 0.0f) * invR;
     const float q = std::clamp(std::max(1.0f - 0.5f * (R - rho - L.lw), 1.5f - 2.0f * cover), 0.0f, 1.0f);
     const float hB = 0.5f * (1.0f - q);
