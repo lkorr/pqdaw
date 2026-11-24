@@ -14,12 +14,16 @@
 //   EQ.1b      20 ms param ramps (interpolated coefficients) within −90 dB of a design per frame, no clicks, 8 lanes = 1
 //              lane bit for bit (a group on one ramp designs once); after a ramp the exact design runs (bit-identical
 //              to a filter set there from the start); the state is sized by its sections; RtScope on the new paths
+//   OP.3       the per-call key: the inputs round as std::lround did; a changed mode / stages / prewarp switches the
+//              lane on the call it changes (one lane of a group alone too); a reset state or lane designs again
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstring>
+#include <limits>
 #include <numbers>
 #include <random>
 #include <string>
@@ -710,4 +714,197 @@ TEST_CASE("svf (EQ.1b): no allocation on the ramp, lane-follow and held-block pa
       });
     }
   CHECK(violations == 0);
+}
+
+// ---- OP.3: the per-call key (mode / stages / prewarp → enums; no CRT call per block) ---------------------------------
+namespace {
+
+// atom_state.h SvfState: a lane's key word for a filter's settings.
+uint32_t keyWord(const Filt& f) {
+  const SvfParams p = f.params();
+  return 1u | static_cast<uint32_t>(p.mode) << 1 | static_cast<uint32_t>(p.prewarp) << 4 | p.stages << 8;
+}
+
+SvfState& stateOf(Rig& r) { return *reinterpret_cast<SvfState*>(r.state.data()); }
+
+// Section s, field f (4 … 9: d1 b1 b2 m0 h1 h2), lane l of the rig's state.
+float secField(Rig& r, uint32_t s, uint32_t f, uint32_t l) {
+  const uint32_t w = r.lanes == 8 ? 8u : 1u;
+  return stateOf(r).sec[(static_cast<size_t>(s) * kSvfFields + f) * w + l];
+}
+
+// Lane l holds f's key and count, and the identity in its sections from the count on; `exact` (param rate): the
+// sections below it are f's design.
+void checkLane(Rig& r, uint32_t l, const Filt& f, bool exact) {
+  const SvfState& st = stateOf(r);
+  const SvfParams p = f.params();
+  CHECK(st.key[l] == keyWord(f));
+  SvfSection secs[kSvfMaxStages];
+  const uint32_t n = svfDesign(p, secs);
+  CHECK(n == svfSectionCount(p.mode, p.stages));
+  CHECK(st.count[l] == n);
+  bool ok = true;
+  for (uint32_t s = 0; s < kSvfMaxStages; ++s) {
+    if (s < n && !exact) continue;
+    const SvfKernelCoefs c = s < n ? svfKernelCoefs(secs[s]) : SvfKernelCoefs{};
+    const float want[6] = {c.d1, c.b1, c.b2, c.m0, c.h1, c.h2};
+    for (uint32_t k = 0; k < 6; ++k) ok = ok && secField(r, s, 4 + k, l) == want[k];
+  }
+  CHECK(ok);
+  if (exact) CHECK(st.exact[l] == 1);
+}
+
+// Settings that differ from their neighbours in one of mode / stages / prewarp (cutoff, q and gain the same throughout;
+// one step to 17 sections, the double cascade, and back).
+std::vector<Filt> keySequence() {
+  std::vector<Filt> seq;
+  auto add = [&](uint32_t mode, uint32_t stages, uint32_t prewarp) {
+    Filt f;
+    f.mode = mode;
+    f.stages = stages;
+    f.prewarp = prewarp;
+    f.cutoff = 700.0f;
+    f.q = 0.9f;
+    f.gain = 2.0f;
+    seq.push_back(f);
+  };
+  add(0, 4, 0);
+  add(1, 4, 0);   // mode
+  add(1, 8, 0);   // stages
+  add(1, 8, 1);   // prewarp
+  add(0, 8, 1);   // mode
+  add(0, 2, 1);   // stages
+  add(0, 2, 0);   // prewarp
+  add(4, 2, 0);   // a bell: one section, a gain mode
+  add(5, 2, 0);   // shelves
+  add(5, 2, 1);
+  add(6, 3, 1);
+  add(7, 3, 1);
+  add(7, 17, 1);  // 17 sections: double
+  add(2, 17, 1);
+  add(2, 1, 1);   // float again
+  add(3, 1, 1);
+  add(3, 1, 0);
+  return seq;
+}
+
+// x: noise; audio: the cutoff a curve (no two frames on a line: a design per frame), the same in every lane.
+void fillBlock(Rig& r, std::mt19937& rng, bool audio, uint32_t t0) {
+  std::uniform_real_distribution<float> u(-1.0f, 1.0f);
+  for (uint32_t t = 0; t < 64; ++t)
+    for (uint32_t l = 0; l < r.lanes; ++l) {
+      r.in[0][t * r.lanes + l] = u(rng);
+      if (audio) r.in[1][t * r.lanes + l] = 700.0f * std::exp(0.004f * static_cast<float>((t0 + t) % 300));
+    }
+}
+
+}  // namespace
+
+TEST_CASE("svf (OP.3): mode / stages / prewarp inputs round half away from zero and clamp, as std::lround did (every "
+          "float around every tie and integer, a fine sweep, NaN, infinities)") {
+  auto want = [](float v, uint32_t lo, uint32_t hi) -> uint32_t {  // the conversion before OP.3
+    if (!(v >= static_cast<float>(lo))) return lo;
+    if (v >= static_cast<float>(hi)) return hi;
+    return static_cast<uint32_t>(std::lround(v));
+  };
+  const float inf = std::numeric_limits<float>::infinity();
+  std::vector<float> vals = {std::nanf(""), -inf, inf, -1.0f, -0.0f, 0.0f, 1e-30f, 1e30f, -1e30f};
+  for (int k = 0; k <= 66; ++k)
+    for (float base : {static_cast<float>(k), static_cast<float>(k) + 0.5f}) {
+      float lo = base, hi = base;
+      vals.push_back(base);
+      for (int i = 0; i < 4; ++i) {
+        lo = std::nextafter(lo, -1e9f);
+        hi = std::nextafter(hi, 1e9f);
+        vals.push_back(lo);
+        vals.push_back(hi);
+      }
+    }
+  for (uint32_t i = 0; i < 70 * 4096; ++i) vals.push_back(static_cast<float>(i) / 4096.0f * 1.0009765625f - 1.0f);
+  uint32_t bad = 0;
+  for (float v : vals) {
+    const SvfParams p = svfParamsFromInputs(1000.0f, 1.0f, 1.0f, v, v, v, kSr);
+    const bool ok = static_cast<uint32_t>(p.mode) == want(v, 0, kSvfModeCount - 1) && p.stages == want(v, 1, kSvfMaxStages) &&
+                    (p.prewarp == SvfPrewarp::Bilinear) == (v >= 0.5f);
+    bad += ok ? 0u : 1u;
+  }
+  CHECK(bad == 0);
+}
+
+TEST_CASE("svf (OP.3): a changed mode / stages / prewarp input switches the lane's key on the call it changes (param and "
+          "audio rate, 1 and 8 lanes, one lane of a group alone too)") {
+  pq::DenormalGuard dg;
+  const std::vector<Filt> seq = keySequence();
+  for (uint32_t lanes : {1u, 8u})
+    for (bool audio : {false, true})
+      for (bool oneLane : {false, true}) {  // 8 lanes: lane 3 changes a call before the others
+        if (oneLane && lanes == 1) continue;
+        Rig r(lanes, 64);
+        std::mt19937 rng(21);
+        // Every setting for two calls (the second: nothing changed), the sequence twice (a key held before comes back).
+        uint32_t t0 = 0;
+        for (uint32_t step = 0; step < 4 * seq.size(); ++step) {
+          std::vector<Filt> f(8, seq[(step / 2) % seq.size()]);
+          if (oneLane) f[3] = seq[((step + 1) / 2) % seq.size()];
+          INFO("lanes " << lanes << std::string(audio ? " audio" : " param") << std::string(oneLane ? " lane 3 ahead" : "")
+                        << " step " << step << " " << f[0].name());
+          r.setPatterns(f);
+          fillBlock(r, rng, audio, t0);
+          r.call(64, audio ? 0x7Cu : kAllSpl);
+          t0 += 64;
+          for (uint32_t l = 0; l < lanes; ++l) checkLane(r, l, f[l], !audio);
+          bool finite = true;
+          for (uint32_t i = 0; i < 64 * lanes; ++i) finite = finite && std::isfinite(r.out[i]);
+          CHECK(finite);
+        }
+      }
+}
+
+TEST_CASE("svf (OP.3): after a state reset (the whole state, or one lane of a group) the same inputs design again: the "
+          "reset filter is a fresh one, bit for bit") {
+  pq::DenormalGuard dg;
+  const Filt f = keySequence()[2];  // an 8-stage highpass
+  for (uint32_t lanes : {1u, 8u})
+    for (bool audio : {false, true})
+      for (bool whole : {true, false}) {
+        if (!whole && lanes == 1) continue;
+        INFO("lanes " << lanes << std::string(audio ? " audio" : " param") << std::string(whole ? " whole state" : " lane 3"));
+        Rig a(lanes, 64), keep(lanes, 64), fresh(lanes, 64);
+        const std::vector<float> blank(fresh.state.data(), fresh.state.data() + fresh.state.size());  // the initial state
+        a.setPatterns({f});
+        keep.setPatterns({f});
+        fresh.setPatterns({f});
+        std::mt19937 rng(22);
+        uint32_t t0 = 0;
+        auto block = [&](bool withFresh) {
+          fillBlock(a, rng, audio, t0);
+          for (uint32_t k = 0; k < 2; ++k) {
+            std::copy_n(a.in[k].data(), 64 * 8, keep.in[k].data());
+            std::copy_n(a.in[k].data(), 64 * 8, fresh.in[k].data());
+          }
+          a.call(64, audio ? 0x7Cu : kAllSpl);
+          keep.call(64, audio ? 0x7Cu : kAllSpl);
+          if (withFresh) fresh.call(64, audio ? 0x7Cu : kAllSpl);
+          t0 += 64;
+        };
+        for (int k = 0; k < 5; ++k) block(false);
+        // The reset: every word of the state (whole), or lane 3's word of every [8] array, back to its initial value.
+        for (size_t w = 0; w < blank.size(); ++w)
+          if (whole || w % 8 == 3) a.state[w] = blank[w];
+        CHECK(stateOf(a).key[whole ? 0 : 3] == 0);
+        bool same = true, others = true;
+        for (int k = 0; k < 4; ++k) {
+          block(true);  // `fresh` starts here: the same frames as `a` from the reset on
+          for (uint32_t l = 0; l < lanes; ++l) {
+            checkLane(a, l, f, !audio);
+            for (uint32_t t = 0; t < 64; ++t) {
+              const uint32_t got = std::bit_cast<uint32_t>(a.out[t * lanes + l]);
+              if (whole || l == 3) same = same && got == std::bit_cast<uint32_t>(fresh.out[t * lanes + l]);
+              else others = others && got == std::bit_cast<uint32_t>(keep.out[t * lanes + l]);
+            }
+          }
+        }
+        CHECK(same);    // the reset lanes: a fresh filter
+        CHECK(others);  // the other lanes of the group: as if nothing happened
+      }
 }

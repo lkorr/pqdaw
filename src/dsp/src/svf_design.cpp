@@ -222,26 +222,16 @@ SvfSection matched(SvfMode mode, const SvfProto& p) noexcept {
 
 SvfParams svfParamsFromInputs(float cutoff, float q, float gain, float mode, float stages, float prewarp,
                               double sampleRate) noexcept {
-  auto roundClamp = [](float v, uint32_t lo, uint32_t hi) -> uint32_t {
-    if (!(v >= static_cast<float>(lo))) return lo;  // NaN too
-    if (v >= static_cast<float>(hi)) return hi;
-    return static_cast<uint32_t>(std::lround(v));
-  };
   SvfParams p;
-  p.mode = static_cast<SvfMode>(roundClamp(mode, 0, kSvfModeCount - 1));
-  p.prewarp = prewarp >= 0.5f ? SvfPrewarp::Bilinear : SvfPrewarp::Matched;
-  p.stages = roundClamp(stages, 1, kSvfMaxStages);
+  p.mode = svfModeFromInput(mode);
+  p.prewarp = svfPrewarpFromInput(prewarp);
+  p.stages = svfStagesFromInput(stages);
   p.cutoffHz = cutoff;
   p.q = q;
   const bool gainMode = p.mode == SvfMode::Bell || p.mode == SvfMode::LowShelf || p.mode == SvfMode::HighShelf;
   p.gainDb = !gainMode || std::isnan(gain) ? 0.0 : !(gain > 0.0f) ? -120.0 : 20.0 * std::log10(static_cast<double>(gain));
   p.sampleRate = sampleRate;
   return p;
-}
-
-uint32_t svfSectionCount(SvfMode mode, uint32_t stages) noexcept {
-  if (mode == SvfMode::Bell || mode == SvfMode::Notch) return 1;
-  return std::clamp<uint32_t>(stages, 1u, kSvfMaxStages);
 }
 
 namespace {
