@@ -9,7 +9,9 @@
 
 #include "pq/core/alloc_trap.h"
 #include "pq/ui/draw_list.h"
+#include "pq/ui/face_painter.h"
 #include "pq/ui/lines.h"
+#include "pq/ui/raster.h"
 
 using namespace pq::ui;
 
@@ -236,6 +238,176 @@ TEST_CASE("lines: warm ribbon generation does not allocate") {
   };
   frame();
   CHECK(pq::alloc_trap::countRtViolations(frame) == 0);
+}
+
+// ---- WF.2: the curve displays' entry points --------------------------------------------------------------------------
+
+TEST_CASE("lines (WF.2): strokePolyline is smoothPolyline on a gentle path and bevels / mitres on the segments' own normals "
+          "where it turns hard") {
+  DrawList dl;
+  dl.reset(200, 100);
+  std::vector<Vec2> gentle;
+  for (int i = 0; i < 40; ++i) gentle.push_back({static_cast<float>(i) * 4.0f, 50.0f + 20.0f * std::sin(static_cast<float>(i) * 0.2f)});
+  strokePolyline(dl, gentle, rgba(255, 255, 255), 1.5f);
+  DrawList ref;
+  ref.reset(200, 100);
+  smoothPolyline(ref, gentle, rgba(255, 255, 255), 1.5f);
+  REQUIRE(dl.vertices().size() == ref.vertices().size());
+  for (size_t k = 0; k < ref.vertices().size(); ++k) {
+    CHECK(dl.vertices()[k].pos.x == ref.vertices()[k].pos.x);
+    CHECK(dl.vertices()[k].pos.y == ref.vertices()[k].pos.y);
+  }
+  // A square wave's edge: a long run, a short vertical step, a long run. smoothPolyline takes each vertex's normal
+  // from its neighbours' chord, so the corner's outer vertex sits off the true mitre; strokePolyline's sits on it.
+  const Vec2 sq[4] = {{10, 80}, {100, 80}, {100, 20}, {190, 20}};
+  dl.reset(200, 100);
+  strokePolyline(dl, sq, rgba(255, 255, 255), 4.0f);
+  // Two 90 degree turns: mitred (under 120 degrees: no bevel), 3 segments of 8 vertices.
+  REQUIRE(dl.vertices().size() == 3 * 8);
+  // Segment 0's end and segment 1's start share one offset: the true mitre (2, -2) · (half width 2) from the corner.
+  const auto v = dl.vertices();
+  CHECK(dist(v[1].pos, v[8].pos) < 1e-4f);
+  CHECK(dist(v[2].pos, v[8 + 3].pos) < 1e-4f);
+  const float d1 = dist(v[1].pos, {100, 80}), d2 = dist(v[2].pos, {100, 80});
+  CHECK(d1 == doctest::Approx(2.0f * std::sqrt(2.0f)).epsilon(1e-4));
+  CHECK(d2 == doctest::Approx(2.0f * std::sqrt(2.0f)).epsilon(1e-4));
+  // A hairpin (a reversal): bevelled, one bevel of 5 vertices.
+  const Vec2 pin[3] = {{10, 50}, {100, 52}, {10, 54}};
+  dl.reset(200, 100);
+  strokePolyline(dl, pin, rgba(255, 255, 255), 2.0f);
+  CHECK(dl.vertices().size() == 2 * 8 + 5);
+}
+
+TEST_CASE("lines (WF.2): strokeSeries — denser than the pixels, one antialiased column per device px (the cost follows the "
+          "width, nothing overlaps itself); sparser, a spline with a point per px") {
+  constexpr uint32_t W = 240, H = 80;
+  auto rasterOf = [&](const DrawList& dl) {
+    std::vector<uint8_t> img(static_cast<size_t>(W) * H, 0);
+    rasterizeCoverage(dl, img.data(), W, H, W, {0.0f, 0.0f});
+    return img;
+  };
+  // 6000 points of a noisy slow wave over 200 px (30 per px).
+  std::vector<Vec2> dense;
+  uint32_t rng = 7u;
+  for (int i = 0; i < 6000; ++i) {
+    rng = rng * 1664525u + 1013904223u;
+    const float x = 20.0f + 200.0f * static_cast<float>(i) / 5999.0f;
+    dense.push_back({x, 40.0f + 20.0f * std::sin(x * 0.05f) + 4.0f * (static_cast<float>(rng >> 8) / 8388608.0f - 1.0f)});
+  }
+  DrawList dl;
+  dl.reset(W, H);
+  strokeSeries(dl, dense, rgba(255, 255, 255, 128), 1.0f);
+  CHECK(dl.vertices().size() == 4 * (200 + 2));  // four vertices a column and the run's two ends: not 8 per point
+  for (const Vertex& v : dl.vertices()) CHECK(alphaOf(v.col) <= 128);
+  auto img = rasterOf(dl);
+  for (uint32_t x = 21; x < 219; ++x) {
+    // The column covers the series' range inside it (about 8 px of noise).
+    float lo = 1e9f, hi = -1e9f;
+    for (const Vec2& q : dense)
+      if (q.x >= static_cast<float>(x) && q.x < static_cast<float>(x + 1)) lo = std::min(lo, q.y), hi = std::max(hi, q.y);
+    REQUIRE(hi > lo);
+    const auto mid = static_cast<uint32_t>(0.5f * (lo + hi));
+    CAPTURE(x);
+    CHECK(std::abs(static_cast<int>(img[mid * W + x]) - 128) <= 1);  // the colour's alpha, once: nothing overlaps
+    CHECK(img[static_cast<uint32_t>(lo - 3.0f) * W + x] == 0);
+    CHECK(img[static_cast<uint32_t>(hi + 4.0f) * W + x] == 0);
+  }
+  // A dense but smooth series (a shallow ramp, 10 points per px): the two points a line through it needs, one ribbon —
+  // at full strength in every column, the weight of the shared line, wherever it lies between two rows.
+  std::vector<Vec2> ramp;
+  for (int i = 0; i <= 2000; ++i) ramp.push_back({20.0f + static_cast<float>(i) * 0.1f, 30.3f + static_cast<float>(i) * 0.01f});
+  dl.reset(W, H);
+  strokeSeries(dl, ramp, rgba(255, 255, 255), 1.0f);
+  CHECK(dl.vertices().size() == 8);  // one segment
+  img = rasterOf(dl);
+  for (uint32_t x = 22; x < 218; ++x) {
+    int peak = 0;
+    double ink = 0.0;
+    for (uint32_t y = 0; y < H; ++y) peak = std::max<int>(peak, img[y * W + x]), ink += img[y * W + x] / 255.0;
+    CAPTURE(x);
+    CHECK(peak >= 250);
+    CHECK(ink >= 1.6);  // (the ribbon's 1 + 0.75 px, point-sampled at the row centres: 1.67 on a row, 2.0 between two)
+    CHECK(ink <= 2.05);
+  }
+  // 12 points over 220 px (20 px apart): a spline through them, a point per px at least, passing through every point.
+  std::vector<Vec2> sparse;
+  for (int i = 0; i < 12; ++i) sparse.push_back({10.0f + 20.0f * static_cast<float>(i), 40.0f + (i % 2 ? 15.0f : -15.0f)});
+  dl.reset(W, H);
+  strokeSeries(dl, sparse, rgba(255, 255, 255), 1.5f);
+  CHECK(dl.vertices().size() >= 8 * 220);
+  img = rasterOf(dl);
+  for (size_t i = 0; i + 1 < sparse.size(); ++i)  // (the last point is the stroke's butt end: its pixel's centre lies past it)
+    CHECK(img[static_cast<uint32_t>(sparse[i].y) * W + static_cast<uint32_t>(sparse[i].x)] >= 200);
+  // Nothing to draw: nothing drawn.
+  dl.reset(W, H);
+  strokeSeries(dl, std::span<const Vec2>(sparse.data(), 1), rgba(255, 255, 255), 1.0f);
+  const Vec2 same[2] = {{5, 5}, {5, 9}};
+  strokeSeries(dl, same, rgba(255, 255, 255), 1.0f);
+  CHECK(dl.vertices().empty());
+}
+
+TEST_CASE("lines (WF.2): curveSamples is a sample per device px within its bounds; curveParams adds the knots") {
+  CHECK(curveSamples(0.0f) == 16);
+  CHECK(curveSamples(100.0f) == 100);
+  CHECK(curveSamples(100.2f) == 101);
+  CHECK(curveSamples(1.0e9f) == 4096);
+  CHECK(curveSamples(300.0f, 64, 256) == 256);
+  std::vector<double> t;
+  const double knots[] = {0.5, 0.3, 0.0, 1.0, 0.2500001};
+  curveParams(t, 4, knots);
+  REQUIRE(t.size() == 6);
+  CHECK(t[0] == 0.0);
+  CHECK(t[1] == doctest::Approx(0.25));
+  CHECK(t[2] == 0.3);
+  CHECK(t[3] == 0.5);
+  CHECK(t[4] == 0.75);
+  CHECK(t[5] == 1.0);
+  curveParams(t, 3, {});
+  CHECK(t.size() == 4);
+}
+
+TEST_CASE("face painter (WF.2): a dash is one ribbon through the polyline's vertices inside it; series and polylineCols map "
+          "world units") {
+  DrawList dl;
+  dl.reset(400, 400);
+  FacePainter p(dl, FaceTransform{{10.0f, 20.0f}, 2.0f});
+  // A right angle 6 units into a 20 unit dash: both pieces of the dash share the corner's vertices (they were two
+  // butt-ended ribbons that overlapped inside the corner and left a notch outside it).
+  const Vec2 corner[3] = {{0, 0}, {6, 0}, {6, 10}};
+  p.dashed(corner, 2.0f, 20.0f, 5.0f, rgba(255, 255, 255));
+  REQUIRE(dl.vertices().size() == 2 * 8);
+  const auto v = dl.vertices();
+  CHECK(dist(v[1].pos, v[8].pos) < 1e-4f);
+  CHECK(dist(v[2].pos, v[8 + 3].pos) < 1e-4f);
+  // Dashes of 4 on, 4 off along 40 straight units cut into 40 segments: 5 ribbons of 4 segments.
+  std::vector<Vec2> line;
+  for (int i = 0; i <= 40; ++i) line.push_back({static_cast<float>(i), 50.0f});
+  dl.reset(400, 400);
+  p.dashed(line, 1.0f, 4.0f, 4.0f, rgba(255, 255, 255));
+  CHECK(dl.vertices().size() == 5 * 4 * 8);
+  // Consecutive segments of one dash share their joint.
+  CHECK(dist(dl.vertices()[1].pos, dl.vertices()[8].pos) < 1e-4f);
+  // series: world -> device (origin + world · scale); a column per device px when dense.
+  std::vector<Vec2> s;
+  for (int i = 0; i <= 1000; ++i) s.push_back({static_cast<float>(i) * 0.05f, 30.0f + std::sin(static_cast<float>(i) * 0.7f)});
+  dl.reset(400, 400);
+  p.series(s, 1.0f, rgba(255, 255, 255));
+  CHECK(dl.vertices().size() == 4 * (100 + 2));  // 50 units = 100 device px from x = 10 (a wave of 0.9 px per cycle)
+  float x0 = 1e9f, x1 = -1e9f;
+  for (const Vertex& q : dl.vertices()) x0 = std::min(x0, q.pos.x), x1 = std::max(x1, q.pos.x);
+  CHECK(x0 == 10.0f);
+  CHECK(x1 == 110.0f);
+  // polylineCols: one joined stroke, a colour per point.
+  const Vec2 pc[3] = {{0, 0}, {10, 0}, {20, 0}};
+  const Rgba cc[3] = {rgba(255, 0, 0), rgba(0, 255, 0), rgba(0, 0, 255, 100)};
+  dl.reset(400, 400);
+  p.polylineCols(pc, cc, 2.0f);
+  REQUIRE(dl.vertices().size() == 2 * 8);
+  CHECK(dl.vertices()[0].col == rgba(255, 0, 0));
+  CHECK(dl.vertices()[1].col == rgba(0, 255, 0));
+  CHECK(dl.vertices()[8 + 1].col == rgba(0, 0, 255, 100));
+  CHECK(dl.vertices()[0].pos.x == 10.0f);
+  CHECK(dl.vertices()[1].pos.x == 30.0f);
 }
 
 TEST_CASE("color: PQ Meter helpers round as the originals do") {

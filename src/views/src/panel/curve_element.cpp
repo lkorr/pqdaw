@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "pq/ui/lines.h"
 #include "elements_internal.h"
 #include "pq/ui/overlay.h"
 
@@ -78,11 +79,16 @@ public:
     const dsp::Curve& c = info.curve;
     const Rect r = plot();
     const Rgba accent = colour(th, "colour", "value", th.face.value);
-    std::array<Vec2, kSamples + 1> pts;
-    for (size_t i = 0; i <= kSamples; ++i) {
-      const double x = static_cast<double>(i) / kSamples;
-      pts[i] = toLocal(x, shareAt(c, x));
-    }
+    // WF.2: a sample per device px of the plot (kSamples at least) and one at each of the curve's own points (it was
+    // 64 equal steps: a strongly bent segment showed as a straight ramp, and a corner between two samples was cut off
+    // while its handle sat at the exact point, off the line).
+    static thread_local std::vector<double> ts, knots;
+    static thread_local std::vector<Vec2> pts;
+    knots.clear();
+    for (uint32_t i = 1; i < c.segments; ++i) knots.push_back(c.points[i].t);
+    ui::curveParams(ts, ui::curveSamples((r.x1 - r.x0) * p.transform().scale, kSamples, 2048), knots);
+    pts.clear();
+    for (const double x : ts) pts.push_back(toLocal(x, shareAt(c, x)));
     if (!env.ghost) {  // (bug-mod-ghost: a ghost is the knob's position on the curve, the curve stays one)
       p.fillUnder(pts, r.y1, ui::mulAlpha(accent, 0.28f), ui::mulAlpha(accent, 0.02f));
       p.polyline(pts, 1.6f, accent);

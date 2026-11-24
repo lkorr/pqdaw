@@ -10,7 +10,7 @@
 // device px from rect.x0 (an integer, as clip edges are); only the columns inside the draw list's current clip rect (and
 // [clipX0, clipX1)) are generated, so the cost is proportional to the visible pixels, never to the file length.
 // Channels are stacked lanes (channel 0 on top; `merge`: all in one lane, one over the other), each centred on its zero
-// line, which sits on a pixel centre (silence is one crisp row at lineWidth 1); `gain` scales the amplitude, clamped to
+// line, which sits on a pixel centre (silence is one full row and its feather at lineWidth 1); `gain` scales the amplitude, clamped to
 // the lane.
 //
 // What a column shows, with f frames per device px:
@@ -33,11 +33,20 @@
 // touches its neighbours' (one stroke passing through: a slow wave, the curve) is the exact coverage of a line of
 // weight lineWidth crossing the column: ramps as long as the stroke's rise, so a steep stroke is antialiased sideways
 // too. In between, by how much the ranges overlap.
+// WF.2: the edge of a THIN column (a stroke, a turn, silence: no more than a line's weight in it besides the stroke) is
+// the shared line's (pq/ui/lines.h): opaque to the core's edge, kSmoothFeather (0.75 px down the column) fading
+// out beyond it — so a waveform's stroke weighs what every other curve does and does not "rope" along a shallow slope
+// (a 1 px box-filtered line is one full row where it lies on a row and two half rows where it lies between two). A body
+// keeps the pixel box: exact coverage in its edge rows. Between the two over 2 px of body.
+// WF.2: a tone of about two columns per cycle puts half a cycle in each column: the ranges alternate and beat against
+// the pixel grid (a moiré). A column in the middle of three strict alternations of its neighbours' midpoints takes
+// the union of its neighbours' ranges (the tone's envelope), by how large the alternation is against that union.
 //
 // Geometry: per lane and run of columns with data, one strip with four vertices at each column centre (alpha 0, a, a,
 // 0 down the profile) plus four at each end of the run: the GPU samples each pixel at its centre, so a pixel gets its
 // column's profile there. rasterWaveform writes the same profile into a coverage image (within 2 / 255 of
-// rasterizeCoverage of the geometry: the tests bound it). UI thread; allocation-free once its scratch has grown.
+// rasterizeCoverage of the geometry: the tests bound it), row by row (AVX2: eight columns a step). UI thread;
+// allocation-free once its scratch has grown.
 
 #include <cstdint>
 #include <span>

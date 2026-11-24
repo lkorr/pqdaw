@@ -71,8 +71,49 @@ void FacePainter::polyline(std::span<const Vec2> pts, float thickness, Rgba col0
   d.resize(pts.size());
   for (size_t i = 0; i < pts.size(); ++i) d[i] = t_.map(pts[i]);
   const float w = t_.len(thickness);
-  if (w < 1.0f) smoothPolyline(dl_, d.data(), static_cast<uint32_t>(d.size()), mulAlpha(col, std::max(w, 0.0f)), 1.0f);
-  else smoothPolyline(dl_, d.data(), static_cast<uint32_t>(d.size()), col, w);
+  // WF.2: strokePolyline — the same ribbon, with joins that hold at hard corners (a square's edges, an envelope's peak).
+  if (w < 1.0f) strokePolyline(dl_, d, mulAlpha(col, std::max(w, 0.0f)), 1.0f);
+  else strokePolyline(dl_, d, col, w);
+}
+
+void FacePainter::series(std::span<const Vec2> pts, float thickness, Rgba col0) {
+  ++count_;
+  if (invisible(col0)) return;
+  const Rgba col = c(col0);
+  if (pts.size() < 2) return;
+  std::vector<Vec2>& d = scratchPoints();
+  d.resize(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i) d[i] = t_.map(pts[i]);
+  const float w = t_.len(thickness);
+  if (w < 1.0f) strokeSeries(dl_, d, mulAlpha(col, std::max(w, 0.0f)), 1.0f);
+  else strokeSeries(dl_, d, col, w);
+}
+
+void FacePainter::polylineCols(std::span<const Vec2> pts, std::span<const Rgba> cols, float thickness) {
+  ++count_;
+  if (pts.size() < 2 || cols.size() < pts.size()) return;
+  std::vector<Vec2>& d = scratchPoints();
+  d.resize(pts.size());
+  for (size_t i = 0; i < pts.size(); ++i) d[i] = t_.map(pts[i]);
+  thread_local std::vector<Rgba> dc;
+  dc.resize(pts.size());
+  const float w = t_.len(thickness);
+  const float k = w < 1.0f ? std::max(w, 0.0f) : 1.0f;  // below a pixel: coverage through alpha
+  for (size_t i = 0; i < pts.size(); ++i) dc[i] = k < 1.0f ? mulAlpha(c(cols[i]), k) : c(cols[i]);
+  smoothPolylineCols(dl_, d.data(), dc.data(), static_cast<uint32_t>(d.size()), std::max(w, 1.0f));
+}
+
+void FacePainter::gradientLineDevice(std::span<const Vec2> pts, std::span<const Rgba> cols, float thicknessPx) {
+  ++count_;
+  if (pts.size() < 2 || cols.size() < pts.size() || thicknessPx <= 0.0f) return;
+  const Rgba* cs = cols.data();
+  if (tinted_ || ghosted_) {
+    thread_local std::vector<Rgba> dc;
+    dc.resize(pts.size());
+    for (size_t i = 0; i < pts.size(); ++i) dc[i] = c(cols[i]);
+    cs = dc.data();
+  }
+  gradientPolyline(dl_, pts.data(), cs, static_cast<uint32_t>(pts.size()), thicknessPx);
 }
 
 void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, float off, Rgba col) {
@@ -92,6 +133,15 @@ void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, f
     smoothPolyline(dl_, d.data(), static_cast<uint32_t>(d.size()), mulAlpha(dc, on / period), tw);
     return;
   }
+  // WF.2: one ribbon per DASH, through the polyline's vertices inside it (it was one two-point ribbon per piece of a
+  // dash per segment: on a curve of many short segments a dash was a row of unjoined butt-ended pieces, which bead in
+  // a translucent colour and cost a ribbon per source point).
+  std::vector<Vec2>& d = scratchPoints();
+  d.clear();
+  auto flush = [&] {
+    if (d.size() >= 2) strokePolyline(dl_, d, dc, tw);
+    d.clear();
+  };
   float phase = 0.0f;  // world units into the pattern
   for (size_t i = 0; i + 1 < pts.size(); ++i) {
     const Vec2 a = pts[i], b = pts[i + 1];
@@ -107,13 +157,15 @@ void FacePainter::dashed(std::span<const Vec2> pts, float thickness, float on, f
       if (pos + run <= pos) break;  // below float resolution: the rest is shorter than a rounding step
       if (drawing && run > 0.0f) {
         const float u0 = pos / len, u1 = (pos + run) / len;
-        const Vec2 seg[2] = {t_.map({a.x + dx * u0, a.y + dy * u0}), t_.map({a.x + dx * u1, a.y + dy * u1})};
-        smoothPolyline(dl_, seg, 2, dc, tw);
+        if (d.empty()) d.push_back(t_.map({a.x + dx * u0, a.y + dy * u0}));
+        d.push_back(t_.map({a.x + dx * u1, a.y + dy * u1}));
+        if (on - in <= len - pos) flush();  // the dash ends in this segment (else it goes on past the vertex)
       }
       pos += run;
       phase += run;
     }
   }
+  flush();
 }
 
 void FacePainter::fillUnder(std::span<const Vec2> curve, float baseY, Rgba top, Rgba bottom) {

@@ -342,33 +342,42 @@ protected:
       const uint64_t first = read_ - static_cast<uint64_t>(nCols);
       auto xAt = [&](int i) { return r.x0 + static_cast<float>(i) / static_cast<float>(nCols - 1) * w; };
       const float fillA = static_cast<float>(opts_[bFill]);
-      // Fills first (per-column quads: no triangulation to fail on a comb of notches), back to front.
+      // WF.2: each band's points once (they were mapped three times a paint), drawn through the shared paths — the fill
+      // is ui::gradientBand (it was the same quads written here), the line ui::strokeSeries: a long span holds up to 14
+      // columns per device px (4096 over ~290 px), which drew 33k vertices of mitred zig-zag per band; now one
+      // antialiased column per px, and a spline where the columns are further apart than 1.5 px.
+      for (int b = 0; b < nBands; ++b) {
+        if (!show[b]) continue;
+        std::vector<Vec2>& bp = bandPts_[static_cast<size_t>(b)];
+        bp.resize(static_cast<size_t>(nCols));
+        for (int i = 0; i < nCols; ++i) bp[static_cast<size_t>(i)] = {xAt(i), dbToY(col(first + static_cast<uint64_t>(i))[b])};
+      }
+      // Fills first, back to front: per device px column the band's highest level in it (the line covers the rest).
       if (fillA > 0.001f) {
         for (int b = 0; b < nBands; ++b) {
           if (!show[b]) continue;
-          const Rgba c = ui::setAlpha(bandCol(nBands, b), fillA);
-          const uint32_t segs = static_cast<uint32_t>(nCols - 1);
-          const ui::DrawList::PrimSpan sp = dl.primReserveSpan(segs * 6, segs * 4);
-          const Vec2 uv = dl.whiteUv();
-          ui::Vertex* v = sp.v;
-          uint32_t* ix = sp.i;
-          for (int i = 0; i + 1 < nCols; ++i) {
-            const float y0 = dbToY(col(first + static_cast<uint64_t>(i))[b]), y1 = dbToY(col(first + static_cast<uint64_t>(i) + 1)[b]);
-            const float x0 = xAt(i), x1 = xAt(i + 1);
-            const uint32_t base = sp.base + static_cast<uint32_t>(i) * 4;
-            v[0] = {{x0, y0}, uv, c};
-            v[1] = {{x1, y1}, uv, c};
-            v[2] = {{x1, r.y1}, uv, c};
-            v[3] = {{x0, r.y1}, uv, c};
-            ix[0] = base;
-            ix[1] = base + 1;
-            ix[2] = base + 2;
-            ix[3] = base;
-            ix[4] = base + 2;
-            ix[5] = base + 3;
-            v += 4;
-            ix += 6;
+          const std::vector<Vec2>& bp = bandPts_[static_cast<size_t>(b)];
+          pts_.clear();
+          if (static_cast<float>(nCols) > 2.0f * w) {
+            float px = std::floor(bp[0].x), top = bp[0].y;
+            for (const Vec2& q : bp) {
+              const float c = std::floor(q.x);
+              if (c != px) {
+                pts_.push_back({px + 0.5f, top});
+                px = c;
+                top = q.y;
+              } else {
+                top = std::min(top, q.y);
+              }
+            }
+            pts_.push_back({px + 0.5f, top});
+            pts_.front().x = bp.front().x;  // (the fill reaches both ends of the plot)
+            pts_.back().x = bp.back().x;
+          } else {
+            pts_.assign(bp.begin(), bp.end());
           }
+          fillCols_.assign(pts_.size(), ui::setAlpha(bandCol(nBands, b), fillA));
+          ui::gradientBand(dl, pts_.data(), fillCols_.data(), r.y1, 1.0f, static_cast<uint32_t>(pts_.size()));
         }
       }
       // Then every line on top, broken where a band is silent (no trace along the floor).
@@ -378,14 +387,13 @@ protected:
         const Rgba c = bandCol(nBands, b);
         pts_.clear();
         auto flush = [&] {
-          if (pts_.size() == 1) dl.addRectFilled({pts_[0].x - lw * 0.5f, pts_[0].y - lw * 0.5f, pts_[0].x + lw * 0.5f, pts_[0].y + lw * 0.5f}, c);
-          else if (pts_.size() >= 2) ui::smoothPolyline(dl, pts_.data(), static_cast<uint32_t>(pts_.size()), c, lw);
+          if (pts_.size() == 1) dl.addCircleFilled(pts_[0], std::max(0.5f, lw * 0.5f), c);
+          else if (pts_.size() >= 2) ui::strokeSeries(dl, pts_, c, lw);
           pts_.clear();
         };
-        for (int i = 0; i < nCols; ++i) {
-          const float y = dbToY(col(first + static_cast<uint64_t>(i))[b]);
-          if (y >= r.y1 - 0.5f) flush();
-          else pts_.push_back({xAt(i), y});
+        for (const Vec2& q : bandPts_[static_cast<size_t>(b)]) {
+          if (q.y >= r.y1 - 0.5f) flush();
+          else pts_.push_back(q);
         }
         flush();
       }
@@ -451,6 +459,8 @@ private:
   std::vector<AxisLabel> axisLabels_;  // the scale's labels, drawn after the traces
   uint64_t read_ = 0;        // columns copied so far
   std::vector<Vec2> pts_;
+  std::array<std::vector<Vec2>, kBands> bandPts_;  // WF.2: each band's points of this paint (device px)
+  std::vector<Rgba> fillCols_;
 };
 
 // ---- the Waveform (PQ waveform) -------------------------------------------------------------------------------------

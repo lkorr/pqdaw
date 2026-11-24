@@ -408,7 +408,9 @@ protected:
         const float v = hist_[i].shortTerm;
         pts_.push_back({t.x1 - static_cast<float>(hist_.size() - 1 - i) / maxN * (t.x1 - t.x0), yOf(valid(v) ? v : lo_)});
       }
-      p.polyline(pts_, 0.8f, opts_.colour(uColTrace, ui::rgba(255, 255, 255, 105)));
+      // WF.2: a series (600+ points across a tank ~50 units wide: the translucent ribbon overlapped itself a dozen
+      // times per px, so its alpha followed the density) — one antialiased column per device px.
+      p.series(pts_, 0.8f, opts_.colour(uColTrace, ui::rgba(255, 255, 255, 105)));
     }
     const Rgba fill = pal_.state(anim_.momentary - target);
     if (valid(anim_.momentary) && anim_.momentary > lo_) {
@@ -761,7 +763,9 @@ protected:
       auto flush = [&] {
         if (pts_.size() >= 2) {
           if (fill) p.fillUnder(pts_, plotB, ui::mulAlpha(col, 0.14f), ui::mulAlpha(col, 0.02f));
-          p.polyline(pts_, thick, col);
+          // WF.2: a series — 10 points a second are 2.7 px apart at 1× over a 10 s window (a spline through them) and
+          // 7 per px over 180 s (a column per px: the translucent momentary trace no longer overdraws itself).
+          p.series(pts_, thick, col);
         }
         pts_.clear();
       };

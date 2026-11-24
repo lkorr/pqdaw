@@ -69,6 +69,7 @@
 #include <vector>
 
 #include "elements_internal.h"
+#include "pq/ui/lines.h"
 #include "pq/core/note_stage_status.h"
 #include "pq/document/note_devices.h"
 #include "pq/document/note_pattern.h"
@@ -1626,11 +1627,15 @@ public:
     // The curve over the note: the Into and Out offsets added (AP.11, each as the voice ramps it); faint outside the
     // note, the parts that do not sound: an Into still travelling at the note's end, an Out begun before the onset.
     const double ti = g.v.into.steps, to = g.v.out.steps, len = g.v.gate;
-    std::vector<Vec2> pts;
-    constexpr int kN = 96;
-    for (int i = 0; i <= kN; ++i) {
-      const double x = len * static_cast<double>(i) / kN;
-      pts.push_back({X(x), Yc(curveAt(x))});
+    // WF.2: a sample per device px of the note (96 at least) and one at each knee (it was 96 equal steps: the knees,
+    // between two samples, were cut off while their handles sat at the exact positions).
+    static thread_local std::vector<Vec2> pts;
+    static thread_local std::vector<double> ts;
+    {
+      const double knees[2] = {len > 0.0 ? ti / len : 0.0, len > 0.0 ? (len - to) / len : 0.0};
+      ui::curveParams(ts, ui::curveSamples((X(len) - X(0.0)) * p.transform().scale, 96, 2048), knees);
+      pts.clear();
+      for (const double u : ts) pts.push_back({X(len * u), Yc(curveAt(len * u))});
     }
     auto faint = [&](double a, double b) {
       std::vector<Vec2> q;

@@ -40,6 +40,7 @@
 
 #include "../common/voice_colour.h"
 #include "elements_internal.h"
+#include "pq/ui/lines.h"
 
 namespace pq::views::panel {
 
@@ -293,6 +294,7 @@ public:
     if (!open_) return;
     const ui::Theme& th = *env.theme;
     PanelTarget& t = *env.target;
+    popupScale_ = p.transform().scale;  // (the curve's samples follow the device px its box covers)
     refresh(t);
     const float s = k(), top = popTop();
     const Rect body = rectAt({0.5f, top + 0.5f, kD - 0.5f, top + kPopH - 0.5f});
@@ -534,7 +536,12 @@ private:
     if (b == nullptr) return;
     const BoundInfo& info = t.info(*b);
     const double pos = std::clamp(t.position(*b), 0.0, 1.0);
-    const uint64_t key = dsp::curveHash(info.curve) ^ (over_ ? 0x9E37ull : 0ull);
+    // WF.2: the drawn curve has a sample per device px of its box (kCurveN at least) and one at each of the curve's own
+    // points; the count and the element's size are part of the key (the points are in the element's units).
+    const float boxPx = (box().x1 - box().x0) * popupScale_;
+    const uint32_t samples = ui::curveSamples(boxPx, kCurveN, 1024);
+    const uint64_t key = dsp::curveHash(info.curve) ^ (over_ ? 0x9E37ull : 0ull) ^ (uint64_t{samples} << 40) ^
+                         (static_cast<uint64_t>(std::lround(k() * 4096.0f)) << 20);
     pos_ = pos;
     if (key == curveKey_ && !drawn_.empty()) return;
     curveKey_ = key;
@@ -557,7 +564,13 @@ private:
     yLo_ = shown(curve_.min);
     yHi_ = shown(curve_.max);
     drawn_.clear();
-    for (int i = 0; i <= kCurveN; ++i) drawn_.push_back(boxPoint(static_cast<double>(i) / kCurveN));
+    {
+      static thread_local std::vector<double> ts, knots;
+      knots.clear();
+      for (const Mark& mk : marks_) knots.push_back(mk.t);
+      ui::curveParams(ts, samples, knots);
+      for (const double u : ts) drawn_.push_back(boxPoint(u));
+    }
     for (int i = 0; i < kPresets; ++i) {
       const auto q = static_cast<size_t>(i);
       presets_[q] = presetCurve(i);
@@ -904,6 +917,7 @@ private:
   std::vector<Mark> startMarks_;
   // Derived from the bound curve (refresh).
   mutable uint64_t curveKey_ = 0;
+  float popupScale_ = 1.0f;  // device px per unit at the popup's last paint
   mutable dsp::Curve curve_;
   mutable double pos_ = 0.0, logScale_ = 1.0, yLo_ = 0.0, yHi_ = 1.0;
   mutable bool symlog_ = false;

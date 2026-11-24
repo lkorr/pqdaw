@@ -99,6 +99,16 @@ public:
   void arc(Vec2 c, float r, float a0, float a1, float thickness, Rgba col, LineCap cap = LineCap::Butt);
   void line(Vec2 a, Vec2 b, float thickness, Rgba col);
   void polyline(std::span<const Vec2> pts, float thickness, Rgba col);
+  // WF.2: a sampled series left to right (x never decreasing: a history, a response, a trace), clean at any density:
+  // ui::strokeSeries — denser than the device px, one antialiased column per px (nothing overlaps itself, the cost
+  // follows the width); sparser than 1.5 px a point, a spline through the points.
+  void series(std::span<const Vec2> pts, float thickness, Rgba col);
+  // WF.2: one stroke with a colour per point (a curve whose opacity or hue follows its level): ui::smoothPolylineCols,
+  // joined at every point (not a ribbon per segment, whose butt ends overlap and bead in a translucent colour).
+  void polylineCols(std::span<const Vec2> pts, std::span<const Rgba> cols, float thickness);
+  // The same for a face that projects its own points: positions and thickness in DEVICE px, drawn as the Spectrum's
+  // curve is (ui::gradientPolyline: shared mitred vertices, a 1 px fringe either side; 4 vertices a point).
+  void gradientLineDevice(std::span<const Vec2> pts, std::span<const Rgba> cols, float thicknessPx);
   // Dashes of `on` world units every on + off along the polyline (the pattern continues across corners).
   void dashed(std::span<const Vec2> pts, float thickness, float on, float off, Rgba col);
   // The area between a curve (left to right) and the horizontal line y = baseY, colour `top` at the curve fading to
