@@ -81,8 +81,15 @@ struct StreamHost {
 // l[i] (and r[i]) = the cubic of the vocoder's output at Φ_i = ph[i] (32.32 vocoder frames; the buffer's frame 0 is
 // vLo), i < n ≤ kWarpVoiceChunk; frames whose taps start below vLo: 0. The taps up to (Φ_i >> 32) + 2 are held (the
 // voice's chunk demand). b1 null: one channel, written to both. 8 frames at a time; a tail runs the same vector code
-// on padding. RT-safe.
-void readVocoder(const float* b0, const float* b1, int64_t vLo, const int64_t* ph, uint32_t n, float* l, float* r) noexcept {
+// on padding. unit: the positions step by exactly one frame — on whole frames (a note at the file's own pitch) the
+// cubic is exactly the frame, so the run is a straight copy (the same bits). RT-safe.
+void readVocoder(const float* b0, const float* b1, int64_t vLo, const int64_t* ph, uint32_t n, bool unit, float* l, float* r) noexcept {
+  if (unit && static_cast<uint32_t>(ph[0]) == 0 && (ph[0] >> 32) - vLo >= 1) {
+    const int64_t at = (ph[0] >> 32) - vLo;
+    std::memcpy(l, b0 + at, sizeof(float) * n);
+    std::memcpy(r, (b1 != nullptr ? b1 : b0) + at, sizeof(float) * n);
+    return;
+  }
   for (uint32_t i = 0; i < n; i += 8) {
     const uint32_t m = std::min<uint32_t>(8, n - i);
     alignas(32) int32_t ix[8];
@@ -208,7 +215,7 @@ void ComplexVoice::render(SamplerStretch* b, uint32_t lane, WarpVoice& v, const 
     const auto ld = static_cast<int64_t>(lead);
     // The chunks sample i's read needs, computed there (the law's estimate at that sample).
     auto host = [&](uint32_t i) noexcept {
-      return StreamHost{v, src, law, static_cast<double>(t0 + i), static_cast<double>(ph[i]) * k2m32, std::max(ck.rt[i], kMinRate)};
+      return StreamHost{v, src, law, static_cast<double>(t0 + i), static_cast<double>(ph[i]) * k2m32, std::max(ck.rate(i), kMinRate)};
     };
     auto feed = [&](uint32_t i, int64_t last, uint32_t maxChunks) noexcept {
       StreamHost h = host(i);
@@ -253,10 +260,11 @@ void ComplexVoice::render(SamplerStretch* b, uint32_t lane, WarpVoice& v, const 
       const float* b0 = P.output(stretcher);
       const float* b1 = b->channels() >= 2 ? b0 + kVoc : nullptr;
       const bool ending = endT != INT64_MAX && t + len > endT;
+      const bool unit = ck.constant && ck.st[0] == kFixedOne;
       if (phase == kOn && !ending) {
-        readVocoder(b0, b1, cx.vLo, ph + i, len, oL + i, oR + i);
+        readVocoder(b0, b1, cx.vLo, ph + i, len, unit, oL + i, oR + i);
       } else {
-        readVocoder(b0, b1, cx.vLo, ph + i, len, cl, cr);
+        readVocoder(b0, b1, cx.vLo, ph + i, len, unit, cl, cr);
         for (uint32_t k = 0; k < len; ++k) {
           const int64_t tk = t + k;
           if (endT != INT64_MAX && tk >= endT + X) {  // over (the WarpVoice zeroed the outputs)

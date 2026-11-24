@@ -293,6 +293,47 @@ TEST_CASE("SM.5 complex voice: ownership — a copy loses to the first that runs
   CHECK(c.cv.phase == ComplexVoice::kPending);
 }
 
+TEST_CASE("SM.16 complex voice: a voice that loses its stretcher resumes Tones without catching up on skipped grains") {
+  // While the vocoder sounds the Tones voice under it only advances its clock: its grains are not positioned. When
+  // the stretcher is lost, the first Tones call must position only the grains under that call (before SM.16 it
+  // aligned every grain skipped, up to 64 WSOLA searches in one callback).
+  const std::vector<float> s = sine(48000, 250.0);
+  Src src(s);
+  const WarpSource ws = src.source();
+  auto bank = SamplerStretch::build(1, 1, kSr);
+  const WarpVoiceRun run = withComplex(loopRun(s.size(), 120.0, 120.0), {});  // 40 ms grains: a hop of 960 frames
+  const WarpRunLaw law = warpRunLaw(ws, run);
+  Scratch sc;
+  uint32_t grains = 0;
+  WarpScratch scr = sc.ws();
+  scr.grains = &grains;
+  std::vector<float> rate(128, 1.0f), l(128), r(128), pos(128), pl(128);
+  auto step = [&](Voice& x) {
+    x.cv.render(bank.get(), 0, x.v, ws, run, law, rate.data(), 128, l.data(), r.data(), pos.data(), pl.data(), scr);
+  };
+  Voice a;
+  a.v.trigger(ws, run, law);
+  a.cv.trigger(bank.get(), 0);
+  for (int i = 0; i < 60; ++i) step(a);
+  REQUIRE(a.cv.phase == ComplexVoice::kOn);
+  grains = 0;
+  for (int i = 0; i < 300; ++i) step(a);  // 0.8 s on the vocoder: 40 grains not positioned
+  CHECK(grains == 0);
+  Voice d;  // a trigger in the lane takes the stretcher
+  d.v.trigger(ws, run, law);
+  d.cv.trigger(bank.get(), 0);
+  step(a);
+  CHECK(a.cv.phase == ComplexVoice::kWait);
+  CHECK(grains >= 2);
+  CHECK(grains <= 3);  // the grains under 128 frames (two overlap; a third when the call crosses a hop)
+  float peak = 0.0f;
+  for (float x : l) peak = std::max(peak, std::abs(x));
+  CHECK(peak > 0.2f);  // Tones sounds at once
+  grains = 0;
+  for (int i = 0; i < 15; ++i) step(a);  // 1920 frames: two more hops
+  CHECK(grains == 2);
+}
+
 TEST_CASE("SM.5 complex voice: voices triggered together compute their chunks on different samples (phase offsets)") {
   const std::vector<float> s = sine(48000, 250.0);
   Src src(s);

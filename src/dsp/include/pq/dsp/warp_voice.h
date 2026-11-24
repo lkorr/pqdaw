@@ -149,6 +149,7 @@ struct WarpScratch {
   float* corrA = nullptr;
   float* corrB = nullptr;
   float* gather = nullptr;
+  uint32_t* grains = nullptr;  // tests (WarpVoice): counts the grains positioned
 };
 
 // ---- Tones / Texture --------------------------------------------------------------------------------------------------
@@ -585,12 +586,15 @@ inline constexpr uint32_t kWarpVoiceChunk = 128;  // frames per inner run (the �
 // (the voice's grains / slices, the Complex voice's vocoder read: SM.16).
 struct WarpClock {
   alignas(32) int64_t ph[kWarpVoiceChunk + 1];
-  alignas(32) int64_t st[kWarpVoiceChunk];
+  alignas(32) int64_t st[kWarpVoiceChunk];  // (flat: only [0] is written; read through step() / rate())
   alignas(32) double rt[kWarpVoiceChunk];
   bool constant;  // every step of the run is the same
-  // rate: per frame, file-natural (× scale = file frames per output frame); phi: Φ at the first frame. A constant
-  // rate (no glide: the common case) converts once; Φ is the same sums either way. RT-safe.
+  bool flat;      // every rate of the run is the same value (no glide: the common case)
+  // rate: per frame, file-natural (× scale = file frames per output frame); phi: Φ at the first frame. A flat run
+  // converts its rate once; Φ is the same sums either way. RT-safe.
   void integrate(int64_t phi, const float* rate, uint32_t m, double scale) noexcept;
+  int64_t step(uint32_t i) const noexcept { return st[flat ? 0u : i]; }  // RT-safe
+  double rate(uint32_t i) const noexcept { return rt[flat ? 0u : i]; }   // RT-safe
 };
 
 // The Sampler's per-voice warp renderer (see the top of the file). Trivially copyable: it is a lane's state.

@@ -50,16 +50,18 @@ struct VoiceHost {
   const WarpRunLaw& law;
   int64_t s = 0;              // the chunk's first sample (since the trigger)
   uint32_t n = 0;
-  const int64_t* ph = nullptr;  // Φ(s + i), i ≤ n
-  const double* rt = nullptr;   // the rate at s + i, i < n
-  const int64_t* st = nullptr;  // the 32.32 step at s + i
+  const WarpClock* ck = nullptr;  // the run's clock: Φ(s + i), i ≤ n; the rate and 32.32 step at s + i, i < n
+  const int64_t* ph = nullptr;    // ck->ph
   const WarpScratch* sc = nullptr;
-  bool constant = false;        // every step of the chunk is the same
   static constexpr int64_t kGather = kWarpGatherFrames;
 
   int64_t keep() const noexcept { return 0; }
-  double rateAt(int64_t t) const noexcept { return rt[std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)]; }
-  int64_t stepAt(int64_t t) const noexcept { return st[std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)]; }
+  double rateAt(int64_t t) const noexcept {
+    return ck->rate(static_cast<uint32_t>(std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)));
+  }
+  int64_t stepAt(int64_t t) const noexcept {
+    return ck->step(static_cast<uint32_t>(std::clamp<int64_t>(t - s, 0, static_cast<int64_t>(n) - 1)));
+  }
   double lawFrame(int64_t t) const noexcept {
     return law.law.frameAt(law.law.fold(v.beat0 + v.ba + static_cast<double>(t - v.ta) * v.inc));
   }
@@ -74,16 +76,18 @@ struct VoiceHost {
   }
   int64_t phiAt(int64_t t) const noexcept {
     if (t >= s) return ph[std::min<int64_t>(t - s, n)];
-    return ph[0] - (s - t) * st[0];  // a grain that started before the trigger: extrapolated at the first rate
+    return ph[0] - (s - t) * ck->st[0];  // a grain that started before the trigger: extrapolated at the first rate
   }
   uint32_t levelFor(double rate) const noexcept { return mipLevelFor(rate, src.levels); }
-  void countGrain() noexcept {}
+  void countGrain() noexcept {
+    if (sc->grains != nullptr) ++*sc->grains;
+  }
   void countPass() noexcept {}
   // Beats (warp_voice.h): the pass's clock at t in [s, s + n], the chunk's step when it is constant.
   int64_t clock(const WarpSlicePass& p, int64_t t) const noexcept { return ph[t - s] - p.phiT; }
   bool constStep(int64_t* step) const noexcept {
-    *step = st[0];
-    return constant;
+    *step = ck->st[0];
+    return ck->constant;
   }
   uint32_t passReader(const WarpSlicePass& p) const noexcept { return p.level; }
   // Level-0 frames [first, last): in place inside the guards, else gathered with zeros (alignment reads only).
@@ -286,13 +290,13 @@ void WarpVoice::trigger(const WarpSource& src, const WarpVoiceRun& run, const Wa
 }
 
 void WarpClock::integrate(int64_t phi, const float* rate, uint32_t m, double scale) noexcept {  // RT-safe
-  constant = allEqual(rate, m);
+  flat = constant = allEqual(rate, m);
   ph[0] = phi;
-  if (constant) {
+  if (flat) {
     const double r = clampReadRate(static_cast<double>(rate[0]) * scale);
     const int64_t step = rateStep(r);
-    std::fill_n(rt, m, r);
-    std::fill_n(st, m, step);
+    rt[0] = r;
+    st[0] = step;
     for (uint32_t i = 0; i < m; ++i) ph[i + 1] = ph[i] + step;
   } else {
     for (uint32_t i = 0; i < m; ++i) {
@@ -345,15 +349,11 @@ void WarpVoice::renderClock(const WarpSource& src, const WarpVoiceRun& run, cons
   else if (endT >= t) endT = std::max(t, timeOfBeats(*this, law.law.contentAt(law.endF) - beat0));  // not reached: predicted
   const bool beats = static_cast<AudioWarp>(mode) == AudioWarp::Beats;
   const int64_t* ph = ck.ph;
-  const int64_t* stp = ck.st;
-  const double* rt = ck.rt;
   VoiceHost h{*this, src, run, law};
   h.s = t;
   h.n = m;
+  h.ck = &ck;
   h.ph = ph;
-  h.rt = rt;
-  h.st = stp;
-  h.constant = ck.constant;
   h.sc = &sc;
   float* o[2] = {outL, outR};
   if (!audible) {
@@ -366,8 +366,8 @@ void WarpVoice::renderClock(const WarpSource& src, const WarpVoiceRun& run, cons
     S.gain = 1.0f;
     S.perSample = run.perSample;
     if (cur.step0 == 0 && !cur.terminal) {  // the first pass: its entry is this chunk's first sample
-      cur.step0 = std::max<int64_t>(stp[0], kMinEntryStep);
-      cur.level = mipLevelFor(rt[0], src.levels);
+      cur.step0 = std::max<int64_t>(ck.st[0], kMinEntryStep);
+      cur.level = mipLevelFor(ck.rt[0], src.levels);
     }
     if (cur.terminal) cur.next = INT64_MAX;
     else cur.next = std::max({cur.T + 1, t, timeOfBeats(*this, cur.exitU)});
@@ -377,7 +377,7 @@ void WarpVoice::renderClock(const WarpSource& src, const WarpVoiceRun& run, cons
       if (cur.terminal || cur.next >= t + m) break;
       const auto k = static_cast<uint32_t>(cur.next - t);
       const WarpSlicePass np =
-          passAfter(src, law, cur, ph[k], mipLevelFor(rt[k], src.levels), std::max<int64_t>(stp[k], kMinEntryStep));
+          passAfter(src, law, cur, ph[k], mipLevelFor(ck.rate(k), src.levels), std::max<int64_t>(ck.step(k), kMinEntryStep));
       prev = cur;
       hasPrev = 1;
       cur = np;
