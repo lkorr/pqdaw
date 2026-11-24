@@ -2735,3 +2735,23 @@ Context: SM.15 (docs/plans/SM.md "Rework 2026-11-23"). Choices (most reversible)
    compares per frame. Lanes read the law of the entry they play.
 6. **The first Beats slice's mip level** now comes from the rate at the trigger's first sample (was level 0).
 Status: open.
+
+## Q?-WF.1-a · one waveform renderer: readings taken
+Context: docs/plans/WF.md. Choices made where the plan left room or the code said otherwise (all reversible):
+- **Samples from 512 frames per px, not 256.** A column the size of one overview bucket straddles two, so it drew up
+  to twice its frames (a slow wave as a thick stepped band). Levels are now chosen so a column reads ≥ 2 buckets, and
+  the samples take over below 2 × 256. Cost: sample reads at 256 … 512 frames per px (≤ 1.3 M frames for 2560 px).
+- **Audio clip view keeps its peak / RMS body** (AC.look, an envelope: not the signal's min / max) down to 16 frames per
+  px, drawn with the shared column geometry (antialiased); the signal itself (shared renderer) from 8, cross-faded
+  between. Option not taken: replace the body with the plain waveform at every zoom.
+- **The audio clip view had no zoom at all** (the plan says "follow its gestures"): both editors got wheel = zoom,
+  Shift+wheel = scroll, ruler drag = scroll / zoom, ruler double-click = fit.
+- **Sampler ruler double-click** adds a warp marker when markers are shown (SM.11, kept); it fits only without markers.
+  Fit in every mode: double-click the strip under the waveform.
+- **Sampler editor shows stereo as two lanes** (the closed well merges them into one lane, as before).
+- **Arrangement limit 64 px per tick** (fixed): ≥ 32 px per sample from 7 bpm at 48 kHz, which is 640 px per sample at
+  120 bpm. Option: a limit that follows the tempo and the clips' rates.
+- **No stems** under the sample dots (decided by look: the curve already passes through them).
+- Sample windows: up to 4 per sample (each view reads its own part; one window made two views read in turn for ever).
+- Seen, not changed: a scripted instance under PQ_SETTINGS_DIR still offers the user's `%LOCALAPPDATA%\pqdaw\Unsaved`
+  recovery (I chose Later; nothing was touched). Worth isolating for test runs.

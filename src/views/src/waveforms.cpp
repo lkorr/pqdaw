@@ -29,6 +29,7 @@ struct Waveforms::Arrival {
   media::SampleWindowPtr window;  // a read finished
   bool failed = false;
   bool isWindow = false;
+  int64_t from = 0, to = 0;  // a window read: the range asked for (its pending entry)
 };
 
 struct Waveforms::Inbox {
@@ -161,13 +162,16 @@ const media::SampleWindow* Waveforms::window(doc::SampleId id, int64_t frame0, i
     frame1 = std::min(frame1, e.fileFrames);
     frame0 = std::min(frame0, frame1);
   }
-  if (e.window && e.window->frame0 <= frame0 && e.window->frame0 + e.window->frames >= frame1) {
-    e.windowUse = ++windowClock_;
-    return e.window.get();
-  }
   if (frame1 <= frame0) return nullptr;  // nothing of the file is wanted
+  for (Entry::Win& w : e.windows)
+    if (w.w->frame0 <= frame0 && w.w->frame0 + w.w->frames >= frame1) {
+      w.use = ++windowClock_;
+      return w.w.get();
+    }
   if (e.injected || e.path.empty() || e.windowFailed) return nullptr;
-  if (e.pendingTo > e.pendingFrom && e.pendingFrom <= frame0 && e.pendingTo >= frame1) return nullptr;  // in flight
+  if (frame1 - frame0 > kMaxWindowFrames) return nullptr;  // more than one read holds (the overview draws it)
+  for (const auto& [pa, pb] : e.pending)
+    if (pa <= frame0 && pb >= frame1) return nullptr;  // in flight
   const int64_t len = std::max<int64_t>(1, frame1 - frame0);
   int64_t a = frame0 - len * kWindowMarginFactor, b = frame1 + len * kWindowMarginFactor;
   if (b - a > kMaxWindowFrames) {
@@ -185,18 +189,17 @@ const media::SampleWindow* Waveforms::window(doc::SampleId id, int64_t frame0, i
       return nullptr;
     }
     e.fileFrames = (*w)->fileFrames;
-    storeWindow(e, std::move(*w));
+    const media::SampleWindow* got = storeWindow(e, std::move(*w));
     ++revision_;
     frame1 = std::min(frame1, e.fileFrames);
-    return (e.window->frame0 <= frame0 && e.window->frame0 + e.window->frames >= frame1) ? e.window.get() : nullptr;
+    return (got->frame0 <= frame0 && got->frame0 + got->frames >= frame1) ? got : nullptr;
   }
   if (!reads_) reads_ = std::make_unique<media::AnalysisWorker>(true);
   {
     std::lock_guard<std::mutex> l(inbox_->m);
     inbox_->post = post;
   }
-  e.pendingFrom = a;
-  e.pendingTo = b;
+  e.pending.emplace_back(a, b);
   std::weak_ptr<Inbox> weak = inbox_;
   reads_->post([weak, path = e.path, id = id.value, gen = generation_, a, b] {
     Result<media::SampleWindowPtr> w = media::readSampleWindow(utf8Path(path), a, b - a);
@@ -205,6 +208,8 @@ const media::SampleWindow* Waveforms::window(doc::SampleId id, int64_t frame0, i
     arr.generation = gen;
     arr.path = path;
     arr.isWindow = true;
+    arr.from = a;
+    arr.to = b;
     if (w) arr.window = std::move(*w);
     else arr.failed = true;
     deliver(weak, std::move(arr));
@@ -212,22 +217,53 @@ const media::SampleWindow* Waveforms::window(doc::SampleId id, int64_t frame0, i
   return nullptr;
 }
 
-void Waveforms::storeWindow(Entry& e, media::SampleWindowPtr w) {
-  if (e.window && !e.windowInjected) windowBytes_ -= e.window->data.size() * sizeof(float);
+const media::SampleWindow* Waveforms::storeWindow(Entry& e, media::SampleWindowPtr w) {
+  // A read window the new one covers is of no more use.
+  std::erase_if(e.windows, [&](const Entry::Win& x) {
+    const bool inside = !x.injected && x.w->frame0 >= w->frame0 && x.w->frame0 + x.w->frames <= w->frame0 + w->frames;
+    if (inside) windowBytes_ -= x.w->data.size() * sizeof(float);
+    return inside;
+  });
   windowBytes_ += w->data.size() * sizeof(float);
-  e.window = std::move(w);
-  e.windowInjected = false;
-  e.windowUse = ++windowClock_;
+  const media::SampleWindow* got = w.get();
+  e.windows.push_back({std::move(w), ++windowClock_, false});
+  // This sample's least recently used read windows past kWindowsPerSample (never the new one).
+  for (;;) {
+    size_t read = 0, oldest = SIZE_MAX;
+    for (size_t i = 0; i < e.windows.size(); ++i) {
+      if (e.windows[i].injected) continue;
+      ++read;
+      if (e.windows[i].w.get() != got && (oldest == SIZE_MAX || e.windows[i].use < e.windows[oldest].use)) oldest = i;
+    }
+    if (read <= kWindowsPerSample || oldest == SIZE_MAX) break;
+    windowBytes_ -= e.windows[oldest].w->data.size() * sizeof(float);
+    e.windows.erase(e.windows.begin() + static_cast<std::ptrdiff_t>(oldest));
+  }
   // M5 review M9: windows used to stay until the project closed (deep-zoom scrolling over many samples kept ~1 GB).
   // The least recently used ones (never this one) go until the windows fit.
   while (windowBytes_ > kWindowCacheBytes) {
-    Entry* oldest = nullptr;
+    Entry* in = nullptr;
+    size_t at = 0;
     for (auto& [k, o] : entries_)
-      if (o.window && !o.windowInjected && &o != &e && (!oldest || o.windowUse < oldest->windowUse)) oldest = &o;
-    if (!oldest) break;
-    windowBytes_ -= oldest->window->data.size() * sizeof(float);
-    oldest->window.reset();
+      for (size_t i = 0; i < o.windows.size(); ++i) {
+        const Entry::Win& x = o.windows[i];
+        if (x.injected || x.w.get() == got) continue;
+        if (in == nullptr || x.use < in->windows[at].use) {
+          in = &o;
+          at = i;
+        }
+      }
+    if (in == nullptr) break;
+    windowBytes_ -= in->windows[at].w->data.size() * sizeof(float);
+    in->windows.erase(in->windows.begin() + static_cast<std::ptrdiff_t>(at));
   }
+  return got;
+}
+
+void Waveforms::dropWindows(Entry& e) {
+  for (const Entry::Win& x : e.windows)
+    if (!x.injected) windowBytes_ -= x.w->data.size() * sizeof(float);
+  e.windows.clear();
 }
 
 void Waveforms::drain() {
@@ -245,10 +281,10 @@ void Waveforms::drain() {
     if (it == entries_.end() || it->second.path != a.path) continue;
     Entry& e = it->second;
     if (a.isWindow) {
-      e.pendingFrom = e.pendingTo = 0;
+      std::erase_if(e.pending, [&](const std::pair<int64_t, int64_t>& p) { return p.first == a.from && p.second == a.to; });
       if (a.window) {
         e.fileFrames = a.window->fileFrames;
-        storeWindow(e, std::move(a.window));
+        (void)storeWindow(e, std::move(a.window));
       } else {
         e.windowFailed = true;  // not retried on every paint; a re-resolution or a new project starts over
       }
@@ -274,9 +310,9 @@ void Waveforms::put(doc::SampleId id, media::OverviewPtr o) {
 
 void Waveforms::putWindow(doc::SampleId id, media::SampleWindowPtr w) {
   Entry& e = entries_[id.value];
-  if (e.window && !e.windowInjected) windowBytes_ -= e.window->data.size() * sizeof(float);
-  e.window = std::move(w);  // supplied: neither counted nor evicted
-  e.windowInjected = true;
+  dropWindows(e);
+  e.windows.clear();
+  e.windows.push_back({std::move(w), ++windowClock_, true});  // supplied: neither counted nor evicted
   ++revision_;
 }
 
@@ -284,7 +320,7 @@ void Waveforms::samplesResolved() {
   bool changed = false;
   for (auto it = entries_.begin(); it != entries_.end();) {
     if (!it->second.injected && ctx_.samplePath(doc::SampleId{it->first}) != it->second.path) {
-      if (it->second.window && !it->second.windowInjected) windowBytes_ -= it->second.window->data.size() * sizeof(float);
+      dropWindows(it->second);
       it = entries_.erase(it);
       changed = true;
     } else {

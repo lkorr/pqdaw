@@ -672,3 +672,110 @@ TEST_CASE("render: arrangement-audio (waveforms, fades, crossfade, gain, reverse
 }
 
 TEST_CASE("render: clip-view-audio (the audio clip view on a Re-Pitch clip) matches the golden") { checkGolden("clip-view-audio"); }
+
+// ---- WF.1: zoom to the samples ---------------------------------------------------------------------------------------
+
+TEST_CASE("audio clip view (WF.1, real dispatch): the wheel zooms about the pointer down to single samples (the body gives "
+          "way to the signal: the curve, a dot per sample), Shift + wheel scrolls, the time ruler drags the view and a "
+          "double-click on it shows the whole sample; nothing is an undo step") {
+  Fixture f(1280, 900);
+  if (auto* body = dynamic_cast<Splitter*>(f.d.find("main/body"))) body->setPosition(420.0f);
+  const doc::ClipRef rev = f.clip("Drums", 2);  // warp Off: the file's frames on the axis
+  f.ctx.setDetailVisible(true);
+  f.ctx.setDetailClip(rev);
+  f.d.tree().layoutNow();
+  REQUIRE(f.d.enableGpu().ok());
+  f.d.tree().invalidateAll();
+  f.d.step();
+  AudioClipView& v = f.view();
+  REQUIRE(v.hasClip());
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), v.clip()->sample);
+  REQUIRE(s != nullptr);
+  const auto frames = static_cast<double>(s->frames);
+  const IRect w = v.sampleRect();
+  REQUIRE(w.w > 200);
+  AudioClipView::SampleView sv = v.sampleView();
+  CHECK(sv.z0 == 0.0);
+  CHECK(sv.z1 == 1.0);
+  CHECK(sv.signalMix == 0.0f);  // the whole file: the peak / RMS body
+  const size_t h = f.history();
+  const Vec2 p{static_cast<float>(w.x) + 0.3f * static_cast<float>(w.w), static_cast<float>(w.y + w.h / 2)};
+  for (int i = 0; i < 70; ++i) (void)f.d.wheel(p, 1.0f);
+  f.d.step();
+  sv = v.sampleView();
+  const double pxPerSample = static_cast<double>(w.w) / ((sv.z1 - sv.z0) * frames);
+  CHECK(pxPerSample >= 32.0);
+  CHECK(pxPerSample <= 64.01);
+  CHECK(sv.z0 + 0.3 * (sv.z1 - sv.z0) == doctest::Approx(0.3).epsilon(1e-4));  // the frame under the pointer stays
+  CHECK(sv.signalMix == 1.0f);
+  CHECK(sv.signal.level == -1);
+  CHECK(sv.signal.curve);
+  CHECK_FALSE(sv.signal.approx);
+  CHECK(sv.signal.dots >= 4);
+  // Two neighbouring samples are that many px apart on the axis the markers use too.
+  const double f0 = std::floor((sv.z0 + 0.5 * (sv.z1 - sv.z0)) * frames);
+  CHECK(static_cast<double>(v.xOfFrame(f0 + 1.0) - v.xOfFrame(f0)) == doctest::Approx(pxPerSample).epsilon(0.01));
+  // Shift + wheel down: right by an eighth of the view.
+  const double span = sv.z1 - sv.z0;
+  CHECK(f.d.wheel(p, -1.0f, 0.0f, mod::kShift));
+  CHECK(v.sampleView().z0 == doctest::Approx(sv.z0 + span * 0.125).epsilon(1e-9));
+  // The time ruler: a drag to the left scrolls right by as much; a double-click shows the whole sample.
+  sv = v.sampleView();
+  const IRect tr = v.timeRulerRect();
+  REQUIRE(tr.h > 0);
+  const float ty = static_cast<float>(tr.y + tr.h / 2);
+  f.d.drag({static_cast<float>(tr.x + 300), ty}, {static_cast<float>(tr.x + 200), ty}, 5);
+  CHECK(v.sampleView().z0 == doctest::Approx(sv.z0 + span * 100.0 / w.w).epsilon(1e-6));
+  CHECK(v.sampleView().z1 - v.sampleView().z0 == doctest::Approx(span).epsilon(1e-9));
+  f.d.doubleClick({static_cast<float>(tr.x + 300), ty});
+  CHECK(v.sampleView().z0 == 0.0);
+  CHECK(v.sampleView().z1 == 1.0);
+  CHECK(f.history() == h);
+  // Half way in (12 frames per px: between the body at 16 and the signal at 8) both are drawn, cross-faded.
+  for (int i = 0; i < 40 && static_cast<double>(w.w) / ((v.sampleView().z1 - v.sampleView().z0) * frames) < 1.0 / 12.5; ++i) (void)f.d.wheel(p, 1.0f);
+  f.d.step();
+  sv = v.sampleView();
+  const double fpp = (sv.z1 - sv.z0) * frames / w.w;
+  if (fpp > 8.0 && fpp < 16.0) {
+    CHECK(sv.signalMix > 0.0f);
+    CHECK(sv.signalMix < 1.0f);
+  }
+}
+
+TEST_CASE("arrangement audio (WF.1): the arrangement zooms in to the samples (>= 32 px per sample) — the curve with a dot "
+          "per sample, from the samples, a second into the clip") {
+  Fixture f;
+  REQUIRE(f.d.enableGpu().ok());
+  const doc::ClipRef beat = f.clip("Drums", 0);
+  const doc::AudioClip c = f.get(beat);
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), c.sample);
+  REQUIRE(s != nullptr);
+  namespace am = pq::views::arrangement_metrics;
+  // The deepest zoom, the view starting a quarter note into the clip (its left edge is then 14 million px to the left:
+  // far past the whole pixels a float holds).
+  f.arr->setTimeView(static_cast<double>(c.start + kPpq), am::kMaxPxPerTick);
+  f.d.tree().invalidateAll();
+  f.d.step();
+  CHECK(f.arr->pxPerTick() == doctest::Approx(am::kMaxPxPerTick));
+  const TempoMap& tm = f.ctx.doc()->timeline->tempoMap;
+  const double secondsPerTick = (tm.ticksToSeconds(c.start + 2 * kPpq) - tm.ticksToSeconds(c.start + kPpq)) / static_cast<double>(kPpq);
+  const double pxPerSample = f.arr->devicePxPerTick() / (secondsPerTick * s->rate);
+  MESSAGE("deepest zoom: " << pxPerSample << " px per sample");
+  CHECK(pxPerSample >= 32.0);
+  const ArrangementView::Stats& st = f.arr->stats();
+  CHECK(st.wavesDirect >= 1);
+  CHECK(st.waveSampleDraws >= 1);
+  CHECK(st.waveCurveDraws >= 1);
+  CHECK(st.waveApprox == 0);
+  // A dot per sample in view (the lanes' width over the px per sample, give or take the ends).
+  const double expect = static_cast<double>(f.arr->lanesViewport().w) / pxPerSample;
+  CHECK(static_cast<double>(st.waveDots) >= expect - 1.0);
+  CHECK(static_cast<double>(st.waveDots) <= expect + 4.0);
+  // 16 px per sample, further along: still the curve and the dots, nothing stretched.
+  f.arr->setTimeView(static_cast<double>(c.start + kPpq + kPpq / 3), am::kMaxPxPerTick * 16.0 / pxPerSample);
+  f.d.tree().invalidateAll();
+  f.d.step();
+  CHECK(st.waveCurveDraws >= 1);
+  CHECK(st.waveApprox == 0);
+  CHECK(st.waveDots > 0);
+}

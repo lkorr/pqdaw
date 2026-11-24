@@ -1,5 +1,6 @@
-// The `waveform-lod` scene (T5.5): one stereo signal drawn by ui::drawWaveform at six zooms, from the coarse mip
-// levels down to single samples (5000, 1500, 400, 60, 4 and 0.3 frames per device px). The overview levels are
+// The `waveform-lod` scene (T5.5): one stereo signal drawn by ui::drawWaveform in every regime, from the coarse mip
+// levels down to single samples with their dots (WF.1: 5000, 2200, 60, 4, 0.3 and 1/24 frames per device px, and a split
+// row across each boundary: 516 | 508, 2.04 | 1.96, 1/5 | 1/7). The overview levels are
 // built here the way pq/media/waveform.h builds them (floor / ceil of min / max × 32767 per 256-frame bucket, ×4 mips)
 // — ui does not depend on media; the media tests check that builder against brute force.
 
@@ -110,26 +111,46 @@ void waveformScene(DrawList& dl, const SceneTextures& tex, double /*time*/) {
   const float s = tex.scale.factor;
   const float W = static_cast<float>(dl.targetWidth()), H = static_cast<float>(dl.targetHeight());
   dl.addRectFilled({0, 0, W, H}, rgba(30, 30, 30));
-  constexpr double kFpp[6] = {5000.0, 1500.0, 400.0, 60.0, 4.0, 0.3};
-  const Rgba body[6] = {rgba(180, 160, 110), rgba(120, 170, 200), rgba(160, 190, 120), rgba(200, 140, 150), rgba(150, 140, 200),
-                        rgba(200, 180, 120)};
-  const float pad = std::round(8.0f * s);
-  const float rowH = std::floor((H - pad) / 6.0f);
-  for (int r = 0; r < 6; ++r) {
+  // WF.1: a row per regime and a split row at each boundary — its left half just above the boundary, its right half
+  // just below, the frames running on across the middle (a pop would show as a seam there).
+  struct Row {
+    double fpp, fppRight;  // fppRight 0: one zoom across the row
+  };
+  constexpr int kRows = 9;
+  constexpr Row kRow[kRows] = {{5000.0, 0.0}, {2200.0, 0.0}, {516.0, 508.0}, {60.0, 0.0},      {4.0, 0.0},
+                               {2.04, 1.96},  {0.3, 0.0},    {1.0 / 5.0, 1.0 / 7.0}, {1.0 / 24.0, 0.0}};
+  const Rgba body[kRows] = {rgba(180, 160, 110), rgba(120, 170, 200), rgba(150, 180, 170), rgba(160, 190, 120), rgba(200, 140, 150),
+                            rgba(170, 150, 190), rgba(150, 140, 200), rgba(190, 170, 140), rgba(200, 180, 120)};
+  const float pad = std::round(6.0f * s);
+  const float rowH = std::floor((H - pad) / static_cast<float>(kRows));
+  for (int r = 0; r < kRows; ++r) {
     const float y0 = std::round(pad + rowH * static_cast<float>(r));
     const float y1 = y0 + rowH - pad;
     const Rect rect{pad, y0, std::round(W - pad), y1};
     dl.addRectFilled(rect, body[r]);
     const double width = static_cast<double>(rect.x1 - rect.x0);
-    // Centre each zoom on the same moment (a hit at 3 · 24000 + 400 frames, near the start), except the widest.
-    const double centre = r == 0 ? width * kFpp[0] * 0.5 : 12.0 * 24000.0 + 400.0;
+    // Centre each zoom on the same moment (a hit at 12 · 24000 + 400 frames), except the widest.
+    const double centre = r == 0 ? width * kRow[0].fpp * 0.5 : 12.0 * 24000.0 + 400.0;
     WaveformDraw d;
-    d.frame0 = centre - width * kFpp[r] * 0.5;
-    d.frame1 = centre + width * kFpp[r] * 0.5;
-    d.rect = rect;
     d.colour = rgba(28, 28, 28);
+    d.lineWidth = std::max(1.0f, s);
     d.gain = r == 3 ? 1.6f : 1.0f;  // one row with clip gain
     d.reverse = r == 4;             // and one reversed
+    if (kRow[r].fppRight == 0.0) {
+      d.frame0 = centre - width * kRow[r].fpp * 0.5;
+      d.frame1 = centre + width * kRow[r].fpp * 0.5;
+      d.rect = rect;
+      (void)drawWaveform(dl, data, d);
+      continue;
+    }
+    const float mid = std::round(0.5f * (rect.x0 + rect.x1));
+    d.rect = {rect.x0, rect.y0, mid, rect.y1};
+    d.frame1 = centre;
+    d.frame0 = centre - static_cast<double>(mid - rect.x0) * kRow[r].fpp;
+    (void)drawWaveform(dl, data, d);
+    d.rect = {mid, rect.y0, rect.x1, rect.y1};
+    d.frame0 = centre;
+    d.frame1 = centre + static_cast<double>(rect.x1 - mid) * kRow[r].fppRight;
     (void)drawWaveform(dl, data, d);
   }
 }

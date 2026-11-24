@@ -64,6 +64,7 @@
 #include "pq/tuning/tuning.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
+#include "pq/ui/waveform.h"
 #include "pq/ui/widget.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
@@ -137,6 +138,17 @@ public:
   ui::IRect sampleRect() const noexcept;    // the waveform
   ui::IRect rulerRect() const noexcept;     // the strip above it (marker, brace)
   float xOfFrame(double frame) const noexcept;
+  // WF.1: the time ruler under the strip (a drag on it scrolls and zooms the view, a double-click shows everything), and
+  // the view: the fractions z0 … z1 of the whole sample (a warped clip: of its content axis) the display shows, how much
+  // of the last paint's waveform is the signal itself (0: the peak / RMS body alone … 1: the signal alone: ≤ 8 frames
+  // per px) and that draw's stats (the samples, the curve, the dots).
+  ui::IRect timeRulerRect() const noexcept;
+  struct SampleView {
+    double z0 = 0.0, z1 = 1.0;
+    float signalMix = 0.0f;
+    ui::WaveformStats signal;
+  };
+  SampleView sampleView() const noexcept;
   double startMarkerFrame() const noexcept;  // where the start marker is drawn
   // T6.8: the warp strip (warped clips; empty otherwise), x of a content tick (warped) and of warp marker i.
   ui::IRect warpStripRect() const noexcept;

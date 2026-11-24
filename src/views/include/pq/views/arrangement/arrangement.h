@@ -181,7 +181,11 @@ inline constexpr float kTakeLaneHeight = 34.0f;   // T6.10: a take lane (title s
 inline constexpr float kRulerLabelMinPx = 44.0f;  // minimum spacing of ruler labels
 // Zoom limits (logical px per tick): 1 px per 16 bars of 4/4 … 2000 px per sixteenth.
 inline constexpr double kMinPxPerTick = 1.0 / (16.0 * static_cast<double>(kTicksPerWhole));
-inline constexpr double kMaxPxPerTick = 2000.0 / (static_cast<double>(kTicksPerWhole) / 16.0);
+// WF.1: zoom in to the samples — 64 logical px per tick is ≥ 32 px per sample wherever a sample is ≥ half a tick
+// (kPpq · bpm / (60 · rate) ≥ 0.5: 48 kHz from 7 bpm, 192 kHz from 26 bpm; at 120 bpm / 48 kHz it is 590 px per
+// sample). It was 2000 px per 1/16 note (a third of a pixel per sample at 120 bpm). Positions on screen are doubles
+// (tick − origin) · k: a tick is 64 px apart at most, so they hold.
+inline constexpr double kMaxPxPerTick = 64.0;
 inline constexpr double kDefaultPxPerTick = 96.0 / static_cast<double>(kTicksPerWhole);  // a 4/4 bar = 96 px (1/4 grid)
 // Progressive note previews (frame-time bounds, see LaneCanvas::paint):
 // - at most this many preview notes are built per lanes paint (at least one clip); the rest of the clips draw their
@@ -546,6 +550,13 @@ public:
     // T5.6, last lanes paint: audio clips whose waveform was drawn directly (no tile) and the columns they drew.
     uint32_t wavesDirect = 0;
     uint32_t waveColumns = 0;
+    // WF.1, last lanes paint: of those, the ones drawn from the samples (below the overview's resolution), the ones
+    // drawn as the band-limited curve, the ones still drawn from the stretched overview (their samples loading), and
+    // the sample dots drawn.
+    uint32_t waveSampleDraws = 0;
+    uint32_t waveCurveDraws = 0;
+    uint32_t waveApprox = 0;
+    uint32_t waveDots = 0;
     // T6.10, last lanes paint: take lanes and take clips drawn, and the wall time of the last LaneCanvas::paint (ms).
     uint32_t takeRowsPainted = 0;
     uint32_t takeClipsPainted = 0;

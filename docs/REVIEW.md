@@ -2394,3 +2394,29 @@ Drop a sample on a MIDI track, open the Sampler (chevron under the oval, or doub
 - Known, not changed here: a Sampler saved before this keeps its old panel (no migration); loop bar can reach past End;
   the Device view scales the tall expanded panel down instead of scrolling.
 - Goldens: sampler-face-* and sampler-panel-* (all 16 re-recorded), new sampler-panel-warp(-2x), sampler-panel-radial.
+
+## WF.1 · Clean waveforms everywhere, zoom to the samples (👁)
+One renderer now draws every sample waveform (arrangement clips and their tiles, project patch lanes, audio clip view,
+Sampler well and editor, browser preview).
+- **Sampler**: the stepped blob is gone. A short sample is drawn from its samples at every size (the 0.6 s test sample
+  shows its cycles). In the editor: **wheel = zoom about the pointer** down to single samples (the curve through the
+  samples, a dot on each from about 8 px per sample), **Shift+wheel = scroll**, **drag the ruler** sideways to scroll and
+  up / down to zoom, **double-click the ruler** (or the strip under the waveform) for the whole sample. Handles, slices,
+  markers, loop, grain region and playheads follow the view; a Start / End flag out of view waits at the edge; a handle
+  dragged past the edge scrolls the view. Stereo samples show two lanes in the editor (one merged lane in the oval).
+- **Audio clip view**: same wheel / Shift+wheel; the **time ruler** drags the view and double-click fits. Zoomed in, the
+  peak / RMS body cross-fades into the signal itself (16 → 8 frames per px), then the curve and dots.
+- **Arrangement**: zooms in until samples are dots (the limit was a third of a pixel per sample).
+- Edges are antialiased everywhere (no 1-px stairs); a slow wave is one unbroken stroke instead of dashes.
+- Live check done in my own instance (scripted input, screenshots at each zoom): Sampler editor, audio clip view and
+  arrangement, whole file → single samples, on a 2 s drum loop and a 0.6 s one-shot. Found and fixed there: the clip
+  view's fades were drawn at the display's edge when zoomed.
+- To judge: (1) the closed Sampler well shows a faint moiré on a tone whose cycle is about 2 px wide (it is the true
+  min / max per pixel; the old picture was a solid, stepped body) — keep, or draw the well as a body? (2) a 1-px line
+  at a shallow slope "ropes" between two pixel rows — thicker line (1.25–1.5 px)? (3) the arrangement's ruler repeats
+  the same label when zoomed past 1/64 notes; (4) the arrangement's deepest zoom is 640 px per sample at 120 bpm (it has
+  to reach 32 px per sample at slow tempos): cap by the tempo instead?
+- Not done: edge-scroll while dragging in the audio clip view; pinch / keyboard zoom in the two editors.
+- Goldens: all 28 with a waveform re-recorded (arrangement-audio / -takes / -comp, clip-view-audio, audio-clip-warp-*,
+  browser-*, project-patch-lanes, sampler-face-*, sampler-panel-*), waveform-lod redrawn (a row per regime, a split row
+  across each boundary).

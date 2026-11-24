@@ -197,6 +197,10 @@ public:
   std::string cellText(const BrowserRow& r, BrowserColumn c) const;
   void openContextMenu(int32_t row, ui::Vec2 at);
   const media::WaveformOverview* previewOverview() const noexcept { return overview_.get(); }
+  // WF.1: the selected sample's frames when it is short (≤ kPreviewSampleFrames: its strip is below the overview's
+  // resolution, so the waveform is drawn from the samples, never the overview stretched); null: long, or not read yet.
+  const media::SampleWindow* previewSamples() const noexcept { return samples_.get(); }
+  inline static constexpr uint64_t kPreviewSampleFrames = uint64_t{1} << 19;
   double previewLength() const noexcept;      // seconds of the selected sample (0: none)
   double previewPosition();                  // seconds (< 0: not playing)
   void scrubTo(double seconds);              // click in the preview waveform
@@ -263,6 +267,7 @@ private:
   bool sync_ = false;
   float volumeDb_ = -6.0f;
   media::OverviewPtr overview_;
+  media::SampleWindowPtr samples_;  // WF.1 (previewSamples)
   std::string overviewFor_;
   uint64_t overviewGen_ = 0;
   // M5 review H6: one background-priority worker builds the preview overviews; a newer selection cancels the running

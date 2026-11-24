@@ -666,6 +666,7 @@ void BrowserPanel::loadInPlace() {
 void BrowserPanel::selectionChanged(bool preview) {
   PreviewPort* port = lib_.preview();
   overview_.reset();
+  samples_.reset();
   overviewFor_.clear();
   if (selected_ < 0 || !index_) {
     strip_->markDirty();
@@ -694,7 +695,11 @@ void BrowserPanel::requestOverview() {
   req.cacheDir = ctx_.waveforms().sharedCacheDir();  // the app's shared cache (none in tests and scenes)
   req.cacheLimitBytes = req.cacheDir.empty() ? 0 : (1ull << 30);
   if (!ctx_.uiPoster()) {  // tests, scenes: here
-    if (auto o = media::loadOrBuildOverview(req)) overview_ = *o;
+    if (auto o = media::loadOrBuildOverview(req)) {
+      overview_ = *o;
+      if (overview_->frames() <= kPreviewSampleFrames)  // WF.1
+        if (auto w = media::readSampleWindow(req.path, 0, static_cast<int64_t>(overview_->frames()))) samples_ = *w;
+    }
     return;
   }
   // One background-priority worker (M5 review H6: it was a detached normal-priority thread per selection, so holding
@@ -706,9 +711,13 @@ void BrowserPanel::requestOverview() {
     if (cancel->load(std::memory_order_relaxed)) return;  // a newer selection came first
     auto o = media::loadOrBuildOverview(req, {}, cancel.get());
     if (!o || cancel->load(std::memory_order_relaxed)) return;
-    post([o = *o, gen, alive, this] {
+    media::SampleWindowPtr samples;  // WF.1: a short sample's frames (the strip draws them)
+    if ((*o)->frames() <= kPreviewSampleFrames)
+      if (auto w = media::readSampleWindow(req.path, 0, static_cast<int64_t>((*o)->frames()))) samples = *w;
+    post([o = *o, samples, gen, alive, this] {
       if (!alive.lock() || gen != overviewGen_) return;
       overview_ = o;
+      samples_ = samples;
       strip_->markDirty();
     });
   });

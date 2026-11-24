@@ -2,10 +2,11 @@
 // a glowing playhead per sounding voice. The visual family of the Envelope's and the Noise's faces (a dark body, a quiet
 // well, the signal in the accent, voices as glowing neon marks). Label-free:
 //
-//   waveform  the played region (Start … End) of the sample's overview (pq/views/waveforms.h through the target), one
-//             min / max bar per world unit of the well, drawn as a STATIC LAYER keyed on the sample, Start, End and the
-//             overview's progress (the host's tile: re-rasterised only when one of them changes); no sample: a flat line
-//             and "drop a sample"
+//   waveform  the played region (Start … End) of the sample through the shared renderer (WF.1: ui::drawWaveform — the
+//             overview, or below its resolution the samples themselves, asked of the target and drawn when they arrive:
+//             a short sample is its samples, never the overview stretched), all channels in the one lane, drawn as a
+//             STATIC LAYER keyed on the sample, Start, End, the overview's progress and the waveforms' revision (the
+//             host's tile: re-rasterised only when one of them changes); no sample: a flat line and "drop a sample"
 //   region    along the well's foot, the whole sample as a hairline with the played region (Start … End) lit and the
 //             One-Shot / Slice fades as short ramps at its ends (a modulated Start / End / fade shows its ghost here)
 //   voices    each sounding voice a vertical playhead with a glow at where it reads (the engine's voice tap, request 1:
@@ -17,8 +18,12 @@
 //
 // SM.11 (docs/plans/SM.md "Face (👁)" Expanded): two more sections, outside the closed face's world (drawn only through
 // the Sampler group's panel, each clipped to its section; a paint whose clip misses one skips it):
-//   editor  `sampleedit` (kEditor, 328 × 120): the WHOLE sample's waveform (columns cached by sample and overview), the
-//           played region lit (Start / End drawn as handles on the flag strip under the waveform), the loop bar
+//   editor  `sampleedit` (kEditor, 328 × 120): the sample's waveform (WF.1: ui::drawWaveform over the VIEW, the whole
+//           sample until zoomed — the wheel zooms about the pointer down to 64 device px per sample, Shift + wheel
+//           scrolls, a drag on the ruler scrolls sideways and zooms up / down, a double-click on the ruler (no warp
+//           markers shown) or on the strip under the waveform shows the whole sample again; view state: no undo step,
+//           not saved; a handle dragged past an edge scrolls the view, Start / End flags out of view wait at the edge),
+//           the played region lit (Start / End drawn as handles on the flag strip under the waveform), the loop bar
 //           (Classic with a loop: its ends and its body drag) with the loop fade shaded before both ends, the One-Shot /
 //           Slice fades as shaded ramps, the slice lines (Slice mode, or Beats: drag one; double-click the waveform to
 //           add one, a line to remove it), a ruler above (seconds with warp Off; else beats through the warp markers —
@@ -53,10 +58,12 @@
 #include <string>
 #include <vector>
 
+#include "../common/waveform_data.h"
 #include "faces.h"
 #include "pq/dsp/warp_voice.h"
 #include "pq/media/waveform.h"
 #include "pq/meta/sampler.h"
+#include "pq/ui/waveform.h"
 
 namespace pq::views {
 
@@ -114,8 +121,7 @@ enum EditPart : int32_t {
   kPSlice0 = 1000, kPMarker0 = 100000,
 };
 bool within(const Rect& r, Vec2 l) noexcept { return l.x >= r.x0 && l.x <= r.x1 && l.y >= r.y0 && l.y <= r.y1; }
-float edX(double u) noexcept { return kEdX0 + static_cast<float>(std::clamp(u, 0.0, 1.0)) * (kEdX1 - kEdX0); }
-double edU(float x) noexcept { return std::clamp(static_cast<double>((x - kEdX0) / (kEdX1 - kEdX0)), 0.0, 1.0); }
+constexpr double kMaxPxPerSample = 64.0;  // WF.1: the editor's deepest zoom (device px per sample)
 // Whether face rect `r` meets the painter's clip (a section's paint clips the face to it: the others are skipped).
 bool meetsClip(ui::FacePainter& p, const Rect& r) noexcept {
   const ui::FaceTransform& t = p.transform();
@@ -183,7 +189,7 @@ public:
   uint64_t staticKey(uint32_t layer) const override {
     if (layer != 2) return 0;
     refresh();
-    return cols_.key;
+    return smp_.key;
   }
   void paintStatic(ui::FacePainter& p, uint32_t layer) const override {
     const Rgba w = ui::rgba(255, 255, 255);
@@ -196,18 +202,17 @@ public:
       p.roundedRect(kWell, 5.0f, ui::mulAlpha(w, 0.32f));
       return;
     }
+    if (!meetsClip(p, kWell)) return;  // (another section's paint: the editor, the root field)
     refresh();
-    const float mid = (kWell.y0 + kWell.y1) * 0.5f, half = (kWell.y1 - kWell.y0) * 0.5f - kInset;
-    if (cols_.lo.empty()) {  // no sample (or its overview not there yet): the zero line
+    const float mid = (kWell.y0 + kWell.y1) * 0.5f;
+    const media::WaveformOverview* o = smp_.overview;
+    if (o == nullptr || smp_.built == 0 || !(smp_.f1 > smp_.f0)) {  // no sample (or its overview not there yet): the zero line
       p.line({kWell.x0 + kInset, mid}, {kWell.x1 - kInset, mid}, 0.8f, ui::mulAlpha(w, 0.5f));
       return;
     }
-    const float x0 = kWell.x0 + kInset, step = (kWell.x1 - kWell.x0 - 2.0f * kInset) / static_cast<float>(cols_.lo.size());
-    for (size_t i = 0; i < cols_.lo.size(); ++i) {
-      const float x = x0 + step * (static_cast<float>(i) + 0.5f);
-      const float a = mid - cols_.hi[i] * half, b = mid - cols_.lo[i] * half;
-      p.line({x, std::min(a, b - 0.6f)}, {x, std::max(b, a + 0.6f)}, step * 0.9f, w);
-    }
+    // WF.1: the shared renderer (the samples themselves below the overview's resolution).
+    wellStats_ = drawSample(p, *o, smp_.f0, smp_.f1, {kWell.x0 + kInset, kWell.y0 + kInset, kWell.x1 - kInset, kWell.y1 - kInset}, w, true,
+                            -3.0e38f, 3.0e38f);
   }
 
   void paintLive(ui::FacePainter& p, const FaceEnv& env) override {
@@ -215,7 +220,7 @@ public:
     const ui::Theme& th = *env.theme;
     const double now = clockNow();
     refresh();
-    if (cols_.sample == 0)
+    if (smp_.sample == 0)
       p.text({(kWell.x0 + kWell.x1) * 0.5f, (kWell.y0 + kWell.y1) * 0.5f - 6.0f}, "Drop a sample here", 6.5f, ui::mulAlpha(th.face.ink, 0.8f));
     paintRegion(p, th);
     const bool gran = granular();
@@ -250,7 +255,7 @@ public:
   }
 
   void liveRects(std::vector<Rect>& out) const override { out.push_back({kWell.x0 - 6.0f, kWell.y0 - 4.0f, kWell.x1 + 6.0f, kWell.y1 + 4.0f}); }
-  bool animating() const noexcept override { return !shown_v_.empty() || grainCount_ != 0; }
+  bool animating() const noexcept override { return !shown_v_.empty() || grainCount_ != 0 || edgeScrolling(); }
 
   // ---- interaction: the closed face is the frame only (the panel has its controls); SM.11: the editor and the root ----
   int32_t hitTest(Vec2 l, float ppu) const noexcept override {
@@ -274,6 +279,12 @@ public:
   bool dragging() const noexcept override { return drag_ != kNone; }
   void cancelDrag() override {
     if (drag_ == kNone) return;
+    if (drag_ == kPRuler) {  // WF.1: a view drag: the view as it was (nothing to undo)
+      viewA_ = rulerA_;
+      viewB_ = rulerB_;
+      drag_ = kNone;
+      return;
+    }
     drag_ = kNone;
     target().cancel();
   }
@@ -303,13 +314,14 @@ public:
     if (part >= kPSliceBy0 && part <= kPSliceNotes) return ui::Cursor::Pointer;
     if (part == kPRootText) return ui::Cursor::Text;
     if (part == kPRootHz || part == kPRootId) return ui::Cursor::Pointer;
-    if (part == kPEditor || part == kPWave || part == kPRuler) return ui::Cursor::Arrow;  // SM.17: not the block's grab
+    if (part == kPRuler) return ui::Cursor::ResizeNS;  // WF.1: a drag scrolls and zooms the view
+    if (part == kPEditor || part == kPWave) return ui::Cursor::Arrow;  // SM.17: not the block's grab
     return MetaFace::cursor(part);
   }
   void describe(int32_t part, std::string& title, std::string& body) const override {
     if (part == kFrame || part == kNone) {
       title = "Sampler";
-      body = cols_.sample == 0 ? "Drop an audio file on it to load a sample."
+      body = smp_.sample == 0 ? "Drop an audio file on it to load a sample."
              : granular()      ? "The sample from Start to End; each live grain glows where it reads, sized by its level."
                                : "The sample from Start to End; each sounding voice's playhead glows where it reads.";
       return;
@@ -333,14 +345,20 @@ public:
       case kPWave:
       case kPEditor:
         title = "Sample Editor";
-        body = cols_.sample == 0 ? "Drop an audio file on the Sampler to load a sample."
+        body = smp_.sample == 0 ? "Drop an audio file on the Sampler to load a sample."
                : granular()      ? "The whole sample. Drag the Start and End lines; drag the grain region to move Position, its right edge to set the grain size."
                : slicesShown()   ? "The whole sample. Drag the Start and End lines and the slice lines; double-click the waveform to add a slice."
                                  : "The whole sample. Drag the Start and End lines (or their flags below); the loop bar along the top moves and resizes the loop.";
+        body += " Wheel: zoom about the pointer (to single samples); Shift + wheel: scroll; double-click under the waveform: the whole sample.";
         return;
       case kPRuler:
-        title = "Beat Ruler";
-        body = "The sample's beats through its warp markers. Double-click: add a warp marker here.";
+        if (markersShown()) {
+          title = "Beat Ruler";
+          body = "The sample's beats through its warp markers. Double-click: add a warp marker here. Drag: scroll (sideways) and zoom (up / down).";
+        } else {
+          title = "Ruler";
+          body = "Drag: scroll (sideways) and zoom (up / down). Double-click: the whole sample. The wheel zooms about the pointer, Shift + wheel scrolls.";
+        }
         return;
       case kPRootText: title = "Root"; body = "The pitch the sample plays at rate 1. Click to type Hz or an identity (A3, 7\\31 3, +cents)."; return;
       case kPRootHz: title = "Root in Hz"; body = "Show the root as Hz."; return;
@@ -379,6 +397,13 @@ public:
   // (tests) the playheads shown and the waveform's columns; SM.13: the grains shown
   size_t playheads() const noexcept { return shown_v_.size(); }
   size_t grainDots() const noexcept { return grainCount_; }
+  // WF.1 (tests): the editor's view and what the last paints drew.
+  void wave(SamplerFaceWave& out) const noexcept {
+    out.viewA = viewA_;
+    out.viewB = viewB_;
+    out.well = wellStats_;
+    out.editor = editStats_;
+  }
 
 protected:
   bool voicesPolled(bool changed) override {
@@ -413,7 +438,12 @@ protected:
     bool fading = shown_v_.size() != before;
     for (const Shown& s : shown_v_) fading = fading || s.dying || now - s.born < kFade;
     if (shown_v_.size() > 2 * kMaxVoices) shown_v_.erase(shown_v_.begin(), shown_v_.end() - 2 * kMaxVoices);
-    return pollGrains() || changed || fading;
+    bool scrolled = false;
+    if (edgeScrolling() && now - edgeAt_ >= 1.0 / 60.0) {  // WF.1: a handle held past the editor's edge keeps scrolling
+      dragTo(dragX_);
+      scrolled = true;
+    }
+    return pollGrains() || changed || fading || scrolled;
   }
 
 private:
@@ -422,14 +452,15 @@ private:
     double born = 0.0, died = 0.0;
     bool dying = false, seen = false;
   };
-  // The waveform's columns (min / max in −1 … 1), remade when the sample, Start, End or the overview's progress change.
-  struct Columns {
+  // What the waveform is drawn from, read again when the sample, Start, End, the overview's progress or the waveforms'
+  // revision change (WF.1: no columns of its own; pq/ui/waveform.h draws it).
+  struct Source {
     uint32_t sample = 0;
     double start = -1.0, end = -1.0;
     const media::WaveformOverview* overview = nullptr;
     uint64_t built = 0, revision = ~uint64_t{0};
     uint64_t key = 0;
-    std::vector<float> lo, hi;
+    double f0 = 0.0, f1 = 0.0;  // the played region in frames (f1 > f0: something to draw)
   };
   static float alphaOf(const Shown& s, double now) noexcept {
     const float in = std::clamp(static_cast<float>((now - s.born) / kFade), 0.0f, 1.0f);
@@ -446,8 +477,8 @@ private:
     p.line({x0, y}, {x1, y}, 0.5f, ui::mulAlpha(th.face.frame, 0.8f));
     const float a = at(std::min(s, e)), b = at(std::max(s, e));
     p.line({a, y}, {std::max(b, a + 0.5f), y}, 0.9f, ui::mulAlpha(th.face.value, 0.6f));
-    const double len = cols_.overview != nullptr && cols_.overview->sampleRate() > 0
-                           ? static_cast<double>(cols_.overview->frames()) / cols_.overview->sampleRate()
+    const double len = smp_.overview != nullptr && smp_.overview->sampleRate() > 0
+                           ? static_cast<double>(smp_.overview->frames()) / smp_.overview->sampleRate()
                            : 2.0;
     const double fi = t.value(meta::kSmpFadeIn) / std::max(len, 1e-3), fo = t.value(meta::kSmpFadeOut) / std::max(len, 1e-3);
     if (fi > 0.0) p.line({a, y + 1.2f}, {at(std::min(s, e) + fi), y - 1.2f}, 0.8f, ui::mulAlpha(th.face.value, 0.8f));
@@ -455,7 +486,7 @@ private:
   }
   // Where a voice reading at `pos` (0 … 1 of the sample) is drawn: its place in the Start … End window of the well.
   float headX(float pos) const noexcept {
-    const double s = cols_.start, e = cols_.end > cols_.start ? cols_.end : cols_.start + 1e-6;
+    const double s = smp_.start, e = smp_.end > smp_.start ? smp_.end : smp_.start + 1e-6;
     const double u = std::isfinite(pos) ? std::clamp((static_cast<double>(pos) - s) / (e - s), 0.0, 1.0) : 0.0;
     return kWell.x0 + kInset + static_cast<float>(u) * (kWell.x1 - kWell.x0 - 2.0f * kInset);
   }
@@ -477,65 +508,63 @@ private:
     const uint32_t sample = meta::samplerSample(t.data().get());
     const double start = t.value(meta::kSmpStart), end = t.value(meta::kSmpEnd);
     const uint64_t rev = t.overviewRevision();
-    if (sample == cols_.sample && start == cols_.start && end == cols_.end && rev == cols_.revision &&
-        (cols_.overview == nullptr || cols_.overview->builtFrames() == cols_.built))
+    if (sample == smp_.sample && start == smp_.start && end == smp_.end && rev == smp_.revision &&
+        (smp_.overview == nullptr || smp_.overview->builtFrames() == smp_.built))
       return;
-    cols_.sample = sample;
-    cols_.start = start;
-    cols_.end = end;
-    cols_.revision = rev;
-    cols_.overview = sample != 0 ? t.sampleOverview(sample) : nullptr;
-    cols_.built = cols_.overview != nullptr ? cols_.overview->builtFrames() : 0;
-    cols_.lo.clear();
-    cols_.hi.clear();
+    smp_.sample = sample;
+    smp_.start = start;
+    smp_.end = end;
+    smp_.revision = rev;
+    smp_.overview = sample != 0 ? t.sampleOverview(sample) : nullptr;
+    smp_.built = smp_.overview != nullptr ? smp_.overview->builtFrames() : 0;
     uint64_t key = 0x53414D50ull;  // "SAMP"
     auto mixIn = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ull; };
     mixIn(sample);
     mixIn(std::bit_cast<uint64_t>(start));
     mixIn(std::bit_cast<uint64_t>(end));
-    mixIn(cols_.built);
-    mixIn(reinterpret_cast<uintptr_t>(cols_.overview));
-    cols_.key = key | 1u;
-    const media::WaveformOverview* o = cols_.overview;
-    if (o == nullptr || o->frames() == 0 || o->levelCount() == 0 || cols_.built == 0) return;
-    const auto n = static_cast<size_t>(kWell.x1 - kWell.x0 - 2.0f * kInset);  // a bar per world unit
-    const double f0 = std::clamp(std::min(start, end), 0.0, 1.0) * static_cast<double>(o->frames());
-    const double f1 = std::clamp(std::max(start, end), 0.0, 1.0) * static_cast<double>(o->frames());
-    if (!(f1 > f0)) return;
-    const double perCol = (f1 - f0) / static_cast<double>(n);
-    size_t lv = 0;  // the coarsest level whose buckets are no wider than a column
-    for (size_t i = 0; i < o->levelCount(); ++i)
-      if (static_cast<double>(o->level(i).framesPerBucket) <= std::max(1.0, perCol)) lv = i;
-    const media::WaveformOverview::Level& L = o->level(lv);
-    const uint64_t valid = o->validBuckets(lv);
-    if (L.framesPerBucket == 0 || valid == 0) return;
-    cols_.lo.assign(n, 0.0f);
-    cols_.hi.assign(n, 0.0f);
-    for (size_t i = 0; i < n; ++i) {
-      const auto b0 = static_cast<uint64_t>((f0 + perCol * static_cast<double>(i)) / static_cast<double>(L.framesPerBucket));
-      auto b1 = static_cast<uint64_t>(std::ceil((f0 + perCol * static_cast<double>(i + 1)) / static_cast<double>(L.framesPerBucket)));
-      b1 = std::min(std::max(b1, b0 + 1), valid);
-      int32_t lo = 32767, hi = -32768;
-      for (uint32_t c = 0; c < o->channels(); ++c) {
-        const int16_t* mm = o->minMax(lv, c);
-        for (uint64_t b = b0; b < b1; ++b) {
-          lo = std::min<int32_t>(lo, mm[2 * b]);
-          hi = std::max<int32_t>(hi, mm[2 * b + 1]);
-        }
-      }
-      if (lo > hi) lo = hi = 0;
-      cols_.lo[i] = static_cast<float>(lo) / 32767.0f;
-      cols_.hi[i] = static_cast<float>(hi) / 32767.0f;
+    mixIn(smp_.built);
+    mixIn(reinterpret_cast<uintptr_t>(smp_.overview));
+    mixIn(rev);  // WF.1: a sample window arrived (the well draws the samples then)
+    smp_.key = key | 1u;
+    smp_.f0 = smp_.f1 = 0.0;
+    if (sample != viewSample_) {  // another sample: its whole length
+      viewSample_ = sample;
+      viewA_ = 0.0;
+      viewB_ = 1.0;
     }
+    const media::WaveformOverview* o = smp_.overview;
+    if (o == nullptr || o->frames() == 0 || o->levelCount() == 0 || smp_.built == 0) return;
+    smp_.f0 = std::clamp(std::min(start, end), 0.0, 1.0) * static_cast<double>(o->frames());
+    smp_.f1 = std::clamp(std::max(start, end), 0.0, 1.0) * static_cast<double>(o->frames());
+  }
+  // WF.1: frames [f0, f1) of the sample across face rect `r` through the shared renderer (pq/ui/waveform.h): the
+  // overview, or below its resolution the samples (asked of the target: read in the background, the overview drawn
+  // stretched until they arrive, when the waveforms' revision moves and the host repaints). Whole device columns from
+  // the rect's rounded left edge; [clipX0, clipX1) in device px.
+  ui::WaveformStats drawSample(ui::FacePainter& p, const media::WaveformOverview& o, double f0, double f1, const Rect& r, Rgba colour,
+                               bool merge, float clipX0, float clipX1) const {
+    const ui::FaceTransform& t = p.transform();
+    ui::WaveformDraw d;
+    d.rect = {std::round(t.origin.x + r.x0 * t.scale), t.origin.y + r.y0 * t.scale, std::round(t.origin.x + r.x1 * t.scale),
+              t.origin.y + r.y1 * t.scale};
+    if (!(d.rect.x1 > d.rect.x0) || !(f1 > f0)) return {};
+    d.frame0 = f0;
+    d.frame1 = f1;
+    d.colour = p.colour(colour);
+    d.merge = merge;
+    d.lineWidth = std::max(1.0f, 0.6f * t.scale);
+    d.clipX0 = clipX0;
+    d.clipX1 = clipX1;
+    ui::WaveformLevel lv[kMaxOverviewLevels];
+    ui::WaveformData data = waveformData(o, nullptr, lv);
+    if (ui::waveformLevelFor(data, (f1 - f0) / static_cast<double>(d.rect.x1 - d.rect.x0)) < 0)
+      if (const media::SampleWindow* w = target().sampleWindow(smp_.sample, static_cast<int64_t>(std::floor(f0)) - ui::kWaveformSampleMargin,
+                                                               static_cast<int64_t>(std::ceil(f1)) + ui::kWaveformSampleMargin))
+        data = waveformData(o, w, lv);
+    return ui::drawWaveform(p.drawList(), data, d);
   }
 
   // ---- SM.11: the editor ----
-  struct Whole {  // the whole sample's columns (the editor's waveform)
-    uint32_t sample = 0;
-    const media::WaveformOverview* overview = nullptr;
-    uint64_t built = ~uint64_t{0}, revision = ~uint64_t{0};
-    std::vector<float> lo, hi;
-  };
   struct Geometry {  // what the editor reads of the target now
     double frames = 0.0, rate = 48000.0;  // the sample's (0: unknown, no overview yet)
     double start = 0.0, end = 1.0, loopStart = 0.0, loopEnd = 1.0, loopFade = 0.0, fadeIn = 0.0, fadeOut = 0.0;
@@ -560,7 +589,6 @@ private:
   };
   Slicing slicing() const;
   std::string amountText(const Slicing& sl) const;
-  void refreshWhole() const;
   // ---- SM.13: Granular ----
   // A horizontal map of sample fractions u0 … u1 onto face x0 … x1 (the closed well: Start … End; the editor: 0 … 1).
   struct Lane {
@@ -576,10 +604,44 @@ private:
   };
   Lane wellLane() const {
     refresh();
-    const double s = std::min(cols_.start, cols_.end), e = std::max(cols_.start, cols_.end);
+    const double s = std::min(smp_.start, smp_.end), e = std::max(smp_.start, smp_.end);
     return {kWell.x0 + kInset, kWell.x1 - kInset, s, e > s ? e : s + 1e-6};
   }
-  static Lane editorLane() noexcept { return {kEdX0, kEdX1, 0.0, 1.0}; }
+  Lane editorLane() const noexcept { return {kEdX0, kEdX1, viewA_, viewB_}; }
+  // ---- WF.1: the editor's view (fractions viewA_ … viewB_ of the sample across kEdX0 … kEdX1) ----
+  // Where sample fraction u is drawn (not clamped: outside the view it lies outside the editor), the same clamped to
+  // the editor, whether it is in view, and the fraction at face x (clamped to the view and the sample).
+  float edX(double u) const noexcept {
+    return kEdX0 + static_cast<float>(std::clamp((u - viewA_) / (viewB_ - viewA_), -1.0e4, 1.0e4)) * (kEdX1 - kEdX0);
+  }
+  float edXc(double u) const noexcept { return std::clamp(edX(u), kEdX0, kEdX1); }
+  bool edIn(double u) const noexcept { return u >= viewA_ - 1e-12 && u <= viewB_ + 1e-12; }
+  double edU(float x) const noexcept {
+    return std::clamp(viewA_ + std::clamp(static_cast<double>((x - kEdX0) / (kEdX1 - kEdX0)), 0.0, 1.0) * (viewB_ - viewA_), 0.0, 1.0);
+  }
+  double sampleFrames() const {
+    refresh();
+    return smp_.overview != nullptr ? static_cast<double>(smp_.overview->frames()) : 0.0;
+  }
+  // The view from `a`, `span` wide: no narrower than kMaxPxPerSample allows (edPpu_: device px per unit as last
+  // painted or pressed), inside the sample.
+  double clampSpan(double span) const {
+    const double frames = std::max(1.0, sampleFrames());
+    const double least = std::min(1.0, static_cast<double>((kEdX1 - kEdX0) * edPpu_) / (kMaxPxPerSample * frames));
+    return std::clamp(span, least, 1.0);
+  }
+  void setView(double a, double span) {
+    span = clampSpan(span);
+    viewA_ = std::clamp(a, 0.0, 1.0 - span);
+    viewB_ = viewA_ + span;
+  }
+  bool inView(Vec2 l) const noexcept { return l.x >= kEditor.x0 && l.x <= kEditor.x1 && l.y >= kRulerY0 && l.y <= kFlagY1 + 1.0f; }
+  bool wheelView(const FacePointer& e);
+  // A handle of the editor is dragged with the pointer past the editor's side: the view scrolls under it.
+  bool edgeScrolling() const noexcept {
+    return drag_ != kNone && drag_ != kPRuler && drag_ != kPSliceAmount && drag_ != kPGrain && drag_ != kPGrainSize &&
+           (dragX_ < kEdX0 || dragX_ > kEdX1) && viewB_ - viewA_ < 1.0;
+  }
   // Where the grains read: [a, b) of the sample (Position in Start … End, one grain size wide) and the spray time either
   // side (fractions of the sample; the sizes need its length: unknown, the region is a hairline).
   struct GrainSpan {
@@ -609,7 +671,15 @@ private:
   double grainGrab_ = 0.0;           // SM.13: the pointer's offset from the region's start (a body drag)
   int32_t harmEdit_ = -1;            // SM.13: the ratio being typed (its index)
   std::string harmTyped_;
-  mutable Whole whole_;
+  // WF.1: the editor's view (view state: not undoable, not saved; another sample fits again).
+  mutable double viewA_ = 0.0, viewB_ = 1.0;
+  mutable uint32_t viewSample_ = 0;
+  float edPpu_ = 1.0f;                 // device px per face unit (the deepest zoom is in device px per sample)
+  Vec2 rulerPress_{0.0f, 0.0f};        // a ruler drag: where it began (device px), the fraction under it, the view then
+  double rulerU_ = 0.0, rulerA_ = 0.0, rulerB_ = 1.0;
+  float dragX_ = 0.0f;                 // a handle drag: the pointer's face x (the edge scroll)
+  double edgeAt_ = 0.0;                // the clock of the last edge-scroll step
+  mutable ui::WaveformStats wellStats_, editStats_;
   int32_t drag_ = kNone;   // the part being dragged
   double grab_ = 0.0;      // kPLoop: the pointer's offset from the loop's start (0 … 1)
   float dragY_ = 0.0f;     // SM.12: the amount drag's start (device px) and amount
@@ -619,7 +689,7 @@ private:
   std::string typed_;
   mutable std::string rootCache_;
   mutable uint64_t rootKey_ = 0;
-  mutable Columns cols_;
+  mutable Source smp_;
   mutable std::vector<Vec2> pts_;
   VoiceTapReader* said_ = nullptr;  // the reader told whether this face is shown
   bool shown_ = true;
@@ -631,7 +701,7 @@ SamplerFace::Geometry SamplerFace::geometry() const {
   const MetaTarget& t = target();
   Geometry g;
   refresh();
-  if (const media::WaveformOverview* o = cols_.overview; o != nullptr && o->frames() > 0) {
+  if (const media::WaveformOverview* o = smp_.overview; o != nullptr && o->frames() > 0) {
     g.frames = static_cast<double>(o->frames());
     g.rate = o->sampleRate() > 0 ? static_cast<double>(o->sampleRate()) : 48000.0;
   }
@@ -673,15 +743,17 @@ int32_t SamplerFace::editorPart(Vec2 l, float ppu) const noexcept {
   const Geometry g = geometry();
   const auto near = [&](double u) { return std::fabs(l.x - edX(u)) <= tol; };
   if (l.y >= kFlagY0 - 1.0f && l.y <= kFlagY1 + 1.0f) {  // the flags (End wins where they meet: it is drawn on top)
-    if (near(g.end)) return kPEnd;
-    if (near(g.start)) return kPStart;
+    // WF.1: a flag out of view waits at the editor's edge.
+    if (std::fabs(l.x - edXc(g.end)) <= tol) return kPEnd;
+    if (std::fabs(l.x - edXc(g.start)) <= tol) return kPStart;
     return kPEditor;
   }
   if (l.y >= kRulerY0 && l.y < kWaveY0 - 0.5f) {
-    if (!markersShown() || g.frames <= 0.0) return kPEditor;
-    for (size_t i = 0; i + 1 < g.markers.size(); i += 2)
-      if (near(static_cast<double>(g.markers[i]) / g.frames)) return kPMarker0 + static_cast<int32_t>(i / 2);
-    return kPRuler;
+    if (g.frames <= 0.0) return kPEditor;
+    if (markersShown())
+      for (size_t i = 0; i + 1 < g.markers.size(); i += 2)
+        if (near(static_cast<double>(g.markers[i]) / g.frames)) return kPMarker0 + static_cast<int32_t>(i / 2);
+    return kPRuler;  // (WF.1: with or without markers: a drag on it scrolls and zooms)
   }
   if (l.y >= kWaveY0 && l.y <= kWaveY1) {
     if (g.mode == SamplerMode::Granular)  // SM.13: the grain region first (it lies inside Start … End)
@@ -718,6 +790,16 @@ static const PitchGuide* nearestGuide(const MetaTarget& t, double hz, std::vecto
 bool SamplerFace::onPointer(const FacePointer& e) {
   using K = FacePointer::Kind;
   MetaTarget& t = target();
+  if (e.kind == K::Wheel) return wheelView(e);  // WF.1
+  if (e.kind == K::Move && drag_ == kPRuler) {  // WF.1: sideways scrolls, up / down zooms about the press (down: in)
+    edPpu_ = e.pxPerUnit;
+    const double w = static_cast<double>((kEdX1 - kEdX0) * e.pxPerUnit);
+    const double span0 = rulerB_ - rulerA_;
+    const double span = clampSpan(span0 * std::exp(-static_cast<double>(e.device.y - rulerPress_.y) / (90.0 * std::max(0.1, static_cast<double>(e.uiScale)))));
+    const double frac = (rulerU_ - rulerA_) / span0 + static_cast<double>(e.device.x - rulerPress_.x) / std::max(1.0, w);
+    setView(rulerU_ - frac * span, span);
+    return true;
+  }
   if (e.kind == K::Move && drag_ == kPSliceAmount) {
     const double dy = static_cast<double>(dragY_ - e.device.y) / std::max(0.1, static_cast<double>(e.uiScale));
     double a = dragAmount_;
@@ -756,8 +838,9 @@ bool SamplerFace::onPointer(const FacePointer& e) {
   }
   if (e.kind == K::Up) {
     if (drag_ == kNone) return false;
+    const bool view = drag_ == kPRuler;
     drag_ = kNone;
-    t.end();
+    if (!view) t.end();
     return true;
   }
   if (e.kind != K::Down || e.button != ui::PointerButton::Left) return false;
@@ -765,7 +848,23 @@ bool SamplerFace::onPointer(const FacePointer& e) {
   if (part != kPRootText && typing_) commitRoot();
   if (harmEdit_ >= 0 && part != kPHarm0 + harmEdit_) commitHarm();
   if (part == kFrame || part == kNone) return false;
-  if (part == kPEditor) return true;  // SM.17: a press in the editor is never the block's
+  if (part == kPEditor) {  // SM.17: a press in the editor is never the block's
+    if (e.clicks >= 2 && inView(e.local)) setView(0.0, 1.0);  // WF.1: the whole sample again
+    return true;
+  }
+  if (part == kPRuler && (e.clicks < 2 || !markersShown())) {  // WF.1: the view (no undo step, read-only targets too)
+    edPpu_ = e.pxPerUnit;
+    if (e.clicks >= 2) {
+      setView(0.0, 1.0);
+      return true;
+    }
+    drag_ = kPRuler;
+    rulerPress_ = e.device;
+    rulerA_ = viewA_;
+    rulerB_ = viewB_;
+    rulerU_ = viewA_ + static_cast<double>((e.local.x - kEdX0) / (kEdX1 - kEdX0)) * (viewB_ - viewA_);
+    return true;
+  }
   if (!t.editable()) return within(kEditor, e.local);
   if (part == kPGrain || part == kPGrainSize) {  // SM.13: the grain region (one undo step per drag)
     dragWell_ = within(kWell, e.local);
@@ -861,8 +960,8 @@ bool SamplerFace::onPointer(const FacePointer& e) {
       }
       return true;
     case kPRuler:
-      if (e.clicks < 2 || g.frames <= 0.0) return true;
-      {  // a warp marker at the beat the ruler reads here (one step; nothing moves)
+      if (g.frames <= 0.0) return true;
+      {  // (a double-click with the markers shown) a warp marker at the beat the ruler reads here (one step; nothing moves)
         std::vector<float> m = g.markers;
         const dsp::WarpBeatLaw law(m, 60.0 * g.rate / g.sampleBpm);
         const auto f = static_cast<float>(std::round(u * g.frames));
@@ -890,12 +989,40 @@ bool SamplerFace::onPointer(const FacePointer& e) {
   const char* label = part >= kPMarker0 ? "Move Warp Marker" : part >= kPSlice0 ? "Move Slice" : kLabels[part];
   grab_ = part == kPLoop ? u - g.loopStart : 0.0;
   drag_ = part;
+  dragX_ = e.local.x;
+  edPpu_ = e.pxPerUnit;
   t.begin(label);
+  return true;
+}
+
+// WF.1: the wheel over the editor — zoom about the pointer (Ctrl too), Shift (or a sideways wheel) scrolls; Alt passes
+// it on to the host. View state: nothing is edited.
+bool SamplerFace::wheelView(const FacePointer& e) {
+  if (!inView(e.local) || (e.mods & ui::mod::kAlt) != 0 || sampleFrames() <= 0.0) return false;
+  edPpu_ = e.pxPerUnit;
+  const double span = viewB_ - viewA_;
+  if ((e.mods & ui::mod::kShift) != 0 || e.wheel.x != 0.0f) {
+    const double notches = e.wheel.x != 0.0f ? e.wheel.x : -e.wheel.y;  // Shift + wheel up = left (ScrollView's rule)
+    setView(viewA_ + notches * span * 0.125, span);
+    return true;
+  }
+  if (e.wheel.y == 0.0f) return false;
+  const double frac = std::clamp(static_cast<double>((e.local.x - kEdX0) / (kEdX1 - kEdX0)), 0.0, 1.0);
+  const double anchor = viewA_ + frac * span;
+  const double next = clampSpan(span * std::pow(0.8, static_cast<double>(e.wheel.y)));
+  setView(anchor - frac * next, next);
   return true;
 }
 
 void SamplerFace::dragTo(float x) {
   MetaTarget& t = target();
+  dragX_ = x;
+  if (edgeScrolling()) {  // WF.1: past the editor's side the view follows (by how far past, at most a tenth per step)
+    const float over = x < kEdX0 ? x - kEdX0 : x - kEdX1;
+    const double span = viewB_ - viewA_;
+    setView(viewA_ + std::clamp(static_cast<double>(over / (kEdX1 - kEdX0)), -0.1, 0.1) * span, span);
+    edgeAt_ = clockNow();
+  }
   const Geometry g = geometry();
   const double u = edU(x);
   constexpr double kGap = 1e-4;  // Start stays before End, a loop keeps a length
@@ -1039,109 +1166,98 @@ bool SamplerFace::onKey(const ui::KeyEvent& e) {
   return true;  // the field holds the keys while typing
 }
 
-void SamplerFace::refreshWhole() const {
-  const MetaTarget& t = target();
-  const uint32_t sample = meta::samplerSample(t.data().get());
-  const media::WaveformOverview* o = sample != 0 ? t.sampleOverview(sample) : nullptr;
-  const uint64_t built = o != nullptr ? o->builtFrames() : 0, rev = t.overviewRevision();
-  if (sample == whole_.sample && o == whole_.overview && built == whole_.built && rev == whole_.revision) return;
-  whole_.sample = sample;
-  whole_.overview = o;
-  whole_.built = built;
-  whole_.revision = rev;
-  whole_.lo.clear();
-  whole_.hi.clear();
-  if (o == nullptr || o->frames() == 0 || o->levelCount() == 0 || built == 0) return;
-  const auto n = static_cast<size_t>(kEdX1 - kEdX0);  // a bar per world unit
-  const double perCol = static_cast<double>(o->frames()) / static_cast<double>(n);
-  size_t lv = 0;  // the coarsest level whose buckets are no wider than a column
-  for (size_t i = 0; i < o->levelCount(); ++i)
-    if (static_cast<double>(o->level(i).framesPerBucket) <= std::max(1.0, perCol)) lv = i;
-  const media::WaveformOverview::Level& L = o->level(lv);
-  const uint64_t valid = o->validBuckets(lv);
-  if (L.framesPerBucket == 0 || valid == 0) return;
-  whole_.lo.assign(n, 0.0f);
-  whole_.hi.assign(n, 0.0f);
-  for (size_t i = 0; i < n; ++i) {
-    const auto b0 = static_cast<uint64_t>(perCol * static_cast<double>(i) / static_cast<double>(L.framesPerBucket));
-    auto b1 = static_cast<uint64_t>(std::ceil(perCol * static_cast<double>(i + 1) / static_cast<double>(L.framesPerBucket)));
-    b1 = std::min(std::max(b1, b0 + 1), valid);
-    int32_t lo = 32767, hi = -32768;
-    for (uint32_t c = 0; c < o->channels(); ++c) {
-      const int16_t* mm = o->minMax(lv, c);
-      for (uint64_t b = b0; b < b1; ++b) {
-        lo = std::min<int32_t>(lo, mm[2 * b]);
-        hi = std::max<int32_t>(hi, mm[2 * b + 1]);
-      }
-    }
-    if (lo > hi) lo = hi = 0;
-    whole_.lo[i] = static_cast<float>(lo) / 32767.0f;
-    whole_.hi[i] = static_cast<float>(hi) / 32767.0f;
-  }
-}
-
 void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double now) {
-  refreshWhole();
   const Geometry g = geometry();
+  const ui::FaceTransform& tf = p.transform();
+  edPpu_ = tf.scale;
+  if (viewB_ - viewA_ < 1.0) setView(viewA_, viewB_ - viewA_);  // (the scale changed: the deepest zoom with it)
   const Rgba white = ui::rgba(255, 255, 255);
   // The wells: the ruler's and the waveform's.
   p.roundedRect({kEdX0 - 4.0f, kRulerY0, kEdX1 + 4.0f, kRulerY1}, 3.0f, ui::mulAlpha(th.face.track, 0.55f));
   p.roundedRect({kEdX0 - 4.0f, kWaveY0, kEdX1 + 4.0f, kWaveY1}, 5.0f, ui::mulAlpha(th.face.track, 0.85f));
-  const float mid = (kWaveY0 + kWaveY1) * 0.5f, half = (kWaveY1 - kWaveY0) * 0.5f - 4.0f;
-  if (whole_.lo.empty()) {
+  const float mid = (kWaveY0 + kWaveY1) * 0.5f;
+  // WF.1: what follows the view is clipped to the wells (a line just out of view stops at their side).
+  ui::DrawList& dl = p.drawList();
+  dl.pushClip({tf.origin.x + (kEdX0 - 4.0f) * tf.scale, tf.origin.y + kRulerY0 * tf.scale, tf.origin.x + (kEdX1 + 4.0f) * tf.scale,
+               tf.origin.y + (kFlagY1 + 0.5f) * tf.scale});
+  const media::WaveformOverview* o = smp_.overview;
+  editStats_ = {};
+  if (o == nullptr || g.frames <= 0.0 || smp_.built == 0) {
     p.line({kEdX0, mid}, {kEdX1, mid}, 0.8f, ui::mulAlpha(th.face.ink, 0.4f));
-    p.text({(kEdX0 + kEdX1) * 0.5f, mid - 10.0f}, cols_.sample == 0 ? "Drop an audio file on the Sampler to load a sample" : "Reading the sample \xE2\x80\xA6", 7.0f,
+    p.text({(kEdX0 + kEdX1) * 0.5f, mid - 10.0f}, smp_.sample == 0 ? "Drop an audio file on the Sampler to load a sample" : "Reading the sample \xE2\x80\xA6", 7.0f,
            ui::mulAlpha(th.face.ink, 0.55f));
   } else {
-    const float step = (kEdX1 - kEdX0) / static_cast<float>(whole_.lo.size());
-    const double a = std::min(g.start, g.end), b = std::max(g.start, g.end);
-    for (size_t i = 0; i < whole_.lo.size(); ++i) {
-      const float x = kEdX0 + step * (static_cast<float>(i) + 0.5f);
-      const double u = (static_cast<double>(i) + 0.5) / static_cast<double>(whole_.lo.size());
-      const float y0 = mid - whole_.hi[i] * half, y1 = mid - whole_.lo[i] * half;
-      const Rgba col = u >= a && u <= b ? ui::mulAlpha(th.face.signal, 0.9f) : ui::mulAlpha(th.face.ink, 0.28f);
-      p.line({x, std::min(y0, y1 - 0.6f)}, {x, std::max(y1, y0 + 0.6f)}, step * 0.9f, col);
+    // WF.1: the view's frames through the shared renderer (the samples themselves below the overview's resolution,
+    // down to the curve and a dot per sample), the played region lit, the rest dim.
+    const Rect wr{kEdX0, kWaveY0 + 4.0f, kEdX1, kWaveY1 - 4.0f};
+    const double fa = viewA_ * g.frames, fb = viewB_ * g.frames;
+    const float x0 = std::round(tf.origin.x + kEdX0 * tf.scale), x1 = std::round(tf.origin.x + kEdX1 * tf.scale);
+    const float xa = std::clamp(std::round(tf.origin.x + edXc(std::min(g.start, g.end)) * tf.scale), x0, x1);
+    const float xb = std::clamp(std::round(tf.origin.x + edXc(std::max(g.start, g.end)) * tf.scale), xa, x1);
+    const Rgba lit = ui::mulAlpha(th.face.signal, 0.9f), dim = ui::mulAlpha(th.face.ink, 0.28f);
+    if (xa > x0) editStats_ = drawSample(p, *o, fa, fb, wr, dim, false, -3.0e38f, xa);
+    if (xb < x1) {
+      const ui::WaveformStats st = drawSample(p, *o, fa, fb, wr, dim, false, xb, 3.0e38f);
+      if (editStats_.columns == 0) editStats_ = st;
     }
+    if (xb > xa) editStats_ = drawSample(p, *o, fa, fb, wr, lit, false, xa, xb);
   }
-  // The ruler: seconds (warp Off) or the sample's beats through its markers (bars every 4 beats, numbered).
+  // The ruler: seconds (warp Off) or the sample's beats through its markers (bars numbered), over the view.
   if (g.frames > 0.0) {
     const double len = g.frames / g.rate;
-    const Rgba tick = ui::mulAlpha(th.face.ink, 0.45f), strong = ui::mulAlpha(th.face.ink, 0.8f);
+    const Rgba tick = ui::mulAlpha(th.face.ink, 0.45f), strong = ui::mulAlpha(th.face.ink, 0.8f), faint = ui::mulAlpha(th.face.ink, 0.28f);
     const float labelY = (kRulerY0 + kRulerY1) * 0.5f;
+    const double span = viewB_ - viewA_;
     if (g.warp == dsp::AudioWarp::Off) {
+      const double t0 = viewA_ * len, t1 = viewB_ * len;
+      const double perSecond = static_cast<double>(kEdX1 - kEdX0) / std::max(1e-12, t1 - t0);
       double stepS = 60.0;  // the finest step leaving ≥ 28 units between ticks
-      for (const double c : {0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0})
-        if (static_cast<double>(kEdX1 - kEdX0) * c / len >= 28.0) {
+      for (const double c : {1e-6, 2e-6, 5e-6, 1e-5, 2e-5, 5e-5, 1e-4, 2e-4, 5e-4, 0.001, 0.002, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0,
+                             5.0, 10.0, 30.0, 60.0})
+        if (perSecond * c >= 28.0) {
           stepS = c;
           break;
         }
-      for (int k = 0; k * stepS <= len + 1e-9 && k < 4000; ++k) {
-        const float x = edX(k * stepS / len);
+      const int decimals = stepS >= 1.0 ? 0 : std::clamp(static_cast<int>(std::ceil(-std::log10(stepS) - 1e-9)), 2, 6);
+      auto k = static_cast<int64_t>(std::ceil(t0 / stepS - 1e-9));
+      for (int n = 0; static_cast<double>(k) * stepS <= t1 + 1e-12 && n < 400; ++k, ++n) {
+        const float x = edX(static_cast<double>(k) * stepS / len);
         p.line({x, kRulerY1 - 4.0f}, {x, kRulerY1 - 0.5f}, 0.6f, tick);
-        char lb[16];
-        std::snprintf(lb, sizeof lb, stepS < 1.0 ? "%.2f" : "%.0f", k * stepS);
+        char lb[24];
+        std::snprintf(lb, sizeof lb, "%.*f", decimals, static_cast<double>(k) * stepS);
         if (x + 14.0f < kEdX1) p.textAligned({x + 1.5f, labelY}, lb, 5.5f, tick, 0.0f);
       }
     } else {
       const bool useMarkers = markersShown();
       const dsp::WarpBeatLaw law(useMarkers ? std::span<const float>(g.markers) : std::span<const float>(),
                                  60.0 * g.rate / g.sampleBpm);
-      const double b0 = law.law.contentAt(0.0), b1 = law.law.contentAt(g.frames);
-      const double perBeat = static_cast<double>(kEdX1 - kEdX0) / std::max(1e-6, b1 - b0);
-      const double every = perBeat >= 6.0 ? 1.0 : perBeat >= 1.5 ? 4.0 : 16.0;
-      for (double q = std::ceil(b0 / every) * every; q <= b1 + 1e-9 && q - b0 < 4096.0; q += every) {
+      const double b0 = law.law.contentAt(viewA_ * g.frames), b1 = law.law.contentAt(viewB_ * g.frames);
+      const double perBeat = static_cast<double>(kEdX1 - kEdX0) / std::max(1e-9, b1 - b0);
+      double every = perBeat >= 6.0 ? 1.0 : perBeat >= 1.5 ? 4.0 : 16.0;
+      while (every > 1.0 / 64.0 && perBeat * every >= 48.0) every *= 0.5;  // WF.1: zoomed in, the beat's divisions
+      const bool beatLabels = perBeat >= 40.0;
+      int n = 0;
+      for (double q = std::ceil(b0 / every - 1e-9) * every; q <= b1 + 1e-9 && n < 600; q += every, ++n) {
         const float x = edX(law.law.frameAt(q) / g.frames);
-        const bool bar = std::fabs(std::fmod(q, 4.0)) < 1e-9;
-        p.line({x, bar ? kRulerY0 + 2.0f : kRulerY1 - 4.0f}, {x, kRulerY1 - 0.5f}, bar ? 0.8f : 0.6f, bar ? strong : tick);
-        if (bar && perBeat * 4.0 >= 14.0 && x + 10.0f < kEdX1) {
-          char lb[16];
-          std::snprintf(lb, sizeof lb, "%d", static_cast<int>(std::floor(q / 4.0)) + 1);
+        const bool bar = std::fabs(std::remainder(q, 4.0)) < 1e-9, beat = std::fabs(std::remainder(q, 1.0)) < 1e-9;
+        p.line({x, bar ? kRulerY0 + 2.0f : beat ? kRulerY1 - 4.0f : kRulerY1 - 2.5f}, {x, kRulerY1 - 0.5f}, bar ? 0.8f : 0.6f,
+               bar ? strong : beat ? tick : faint);
+        if (x + 10.0f >= kEdX1) continue;
+        char lb[24];
+        const int barNo = static_cast<int>(std::floor(q / 4.0 + 1e-9)) + 1;
+        if (bar && perBeat * 4.0 >= 14.0) {
+          std::snprintf(lb, sizeof lb, "%d", barNo);
           p.textAligned({x + 1.5f, labelY}, lb, 5.5f, strong, 0.0f);
+        } else if (beat && beatLabels) {
+          std::snprintf(lb, sizeof lb, "%d.%d", barNo, static_cast<int>(std::lround(q - 4.0 * std::floor(q / 4.0 + 1e-9))) + 1);
+          p.textAligned({x + 1.5f, labelY}, lb, 5.5f, tick, 0.0f);
         }
       }
       if (useMarkers)  // the warp markers: a pin on the ruler, a faint line through the waveform
         for (size_t i = 0; i + 1 < g.markers.size(); i += 2) {
-          const float x = edX(static_cast<double>(g.markers[i]) / g.frames);
+          const double u = static_cast<double>(g.markers[i]) / g.frames;
+          if (u < viewA_ - span * 0.05 || u > viewB_ + span * 0.05) continue;
+          const float x = edX(u);
           const int32_t part = kPMarker0 + static_cast<int32_t>(i / 2);
           const bool hot = hovered_ == part || drag_ == part;
           p.line({x, kWaveY0}, {x, kWaveY1}, 0.6f, ui::mulAlpha(th.face.value, 0.35f));
@@ -1150,69 +1266,80 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
     }
   }
   // The loop (Classic with a loop): its bar along the waveform's top, its fade shaded before both ends.
-  if (g.loop) {
-    const float a = edX(g.loopStart), b = edX(g.loopEnd);
+  if (g.loop && g.loopEnd >= viewA_ && g.loopStart <= viewB_) {
+    const float a = edXc(g.loopStart), b = edXc(g.loopEnd);
     if (g.loopFade > 0.0 && g.frames > 0.0 && g.warp <= dsp::AudioWarp::RePitch) {  // (a stretch mode has no loop crossfade)
-      const float w = static_cast<float>(g.loopFade / (g.frames / g.rate)) * (kEdX1 - kEdX0);
-      for (const float e : {a, b})
-        p.roundedRect({std::max(kEdX0, e - w), kLoopY1, std::max(kEdX0 + 0.5f, e), kWaveY1 - 1.0f}, 0.0f, ui::mulAlpha(th.face.value, 0.12f));
+      const double w = g.loopFade / (g.frames / g.rate);
+      for (const double e : {g.loopStart, g.loopEnd})
+        if (e >= viewA_ && e - w <= viewB_)
+          p.roundedRect({edXc(e - w), kLoopY1, std::max(kEdX0 + 0.5f, edXc(e)), kWaveY1 - 1.0f}, 0.0f, ui::mulAlpha(th.face.value, 0.12f));
     }
     const bool hotBar = hovered_ == kPLoop || drag_ == kPLoop;
     p.roundedRect({a, kWaveY0 + 0.5f, std::max(b, a + 1.0f), kLoopY1}, 2.0f, ui::mulAlpha(th.face.value, hotBar ? 0.75f : 0.5f));
-    for (const auto& [x, part] : {std::pair{a, kPLoopStart}, std::pair{b, kPLoopEnd}}) {
+    for (const auto& [u, part] : {std::pair{g.loopStart, kPLoopStart}, std::pair{g.loopEnd, kPLoopEnd}}) {
+      if (!edIn(u)) continue;
+      const float x = edX(u);
       const bool hot = hovered_ == part || drag_ == part;
       p.line({x, kWaveY0 + 0.5f}, {x, kWaveY1 - 0.5f}, hot ? 1.2f : 0.8f, ui::mulAlpha(th.face.value, hot ? 1.0f : 0.7f));
     }
   }
-  // One-Shot / Slice fades (warp Off / Re-Pitch): shaded ramps after Start and before End (the sample's seconds).
+  // One-Shot / Slice fades (warp Off / Re-Pitch): shaded ramps after Start and before End (the sample's seconds). Each
+  // is drawn over the part of it in view (the ramp's height there).
   if ((g.mode == SamplerMode::OneShot || g.mode == SamplerMode::Slice) && g.frames > 0.0 && g.warp <= dsp::AudioWarp::RePitch) {
     const double len = g.frames / g.rate;
-    const float sx = edX(g.start), ex = edX(g.end);
-    if (g.fadeIn > 0.0) {
-      const float fx = edX(g.start + g.fadeIn / len);
-      const Vec2 tri[3] = {{sx, kWaveY0 + 1.0f}, {fx, kWaveY0 + 1.0f}, {sx, kWaveY1 - 1.0f}};
-      p.convex(tri, ui::mulAlpha(th.face.body, 0.55f));
-      p.line({sx, kWaveY1 - 1.0f}, {fx, kWaveY0 + 1.0f}, 0.8f, ui::mulAlpha(th.face.value, 0.8f));
-    }
-    if (g.fadeOut > 0.0) {
-      const float fx = edX(g.end - g.fadeOut / len);
-      const Vec2 tri[3] = {{fx, kWaveY0 + 1.0f}, {ex, kWaveY0 + 1.0f}, {ex, kWaveY1 - 1.0f}};
-      p.convex(tri, ui::mulAlpha(th.face.body, 0.55f));
-      p.line({fx, kWaveY0 + 1.0f}, {ex, kWaveY1 - 1.0f}, 0.8f, ui::mulAlpha(th.face.value, 0.8f));
-    }
+    const float top = kWaveY0 + 1.0f, bottom = kWaveY1 - 1.0f;
+    // A ramp from `from` (the line at the bottom) to `to` (at the top), shaded above the line.
+    const auto ramp = [&](double from, double to) {
+      const double lo = std::max(std::min(from, to), viewA_), hi = std::min(std::max(from, to), viewB_);
+      if (!(hi > lo) || from == to) return;
+      const auto yAt = [&](double u) { return bottom + (top - bottom) * static_cast<float>((u - from) / (to - from)); };
+      const float xl = edX(lo), xh = edX(hi), yl = yAt(lo), yh = yAt(hi);
+      const Vec2 quad[4] = {{xl, top}, {xh, top}, {xh, yh}, {xl, yl}};
+      p.convex(quad, ui::mulAlpha(th.face.body, 0.55f));
+      p.line({xl, yl}, {xh, yh}, 0.8f, ui::mulAlpha(th.face.value, 0.8f));
+    };
+    if (g.fadeIn > 0.0) ramp(g.start, g.start + g.fadeIn / len);
+    if (g.fadeOut > 0.0) ramp(g.end, g.end - g.fadeOut / len);
   }
   // Slice lines, numbered (slice n plays on key 36 + n − 1).
   if (slicesShown() && g.frames > 0.0)
     for (size_t i = 0; i < g.slices.size(); ++i) {
-      const float x = edX(static_cast<double>(g.slices[i]) / g.frames);
+      const double u = static_cast<double>(g.slices[i]) / g.frames;
+      if (!edIn(u)) continue;
+      const float x = edX(u);
       const int32_t part = kPSlice0 + static_cast<int32_t>(i);
       const bool hot = hovered_ == part || drag_ == part;
       p.line({x, kWaveY0 + 1.0f}, {x, kWaveY1 - 1.0f}, hot ? 1.3f : 0.9f, hot ? th.face.hover : ui::mulAlpha(white, 0.75f));
-      const float nx = i + 1 < g.slices.size() ? edX(static_cast<double>(g.slices[i + 1]) / g.frames) : kEdX1;
+      const float nx = i + 1 < g.slices.size() ? std::min(kEdX1, edX(static_cast<double>(g.slices[i + 1]) / g.frames)) : kEdX1;
       if (nx - x >= 9.0f) p.textAligned({x + 1.5f, kWaveY1 - 5.0f}, std::to_string(i + 1), 5.5f, ui::mulAlpha(th.face.ink, 0.8f), 0.0f);
     }
-  // Start / End: a line through the waveform and a flag below it.
+  // Start / End: a line through the waveform and a flag below it (WF.1: out of view the flag waits at the edge, dim).
   for (const auto& [u, part] : {std::pair{g.start, kPStart}, std::pair{g.end, kPEnd}}) {
-    const float x = edX(u);
+    const bool in = edIn(u);
+    const float x = edXc(u);
     const bool hot = hovered_ == part || drag_ == part;
     const Rgba col = hot ? th.face.hover : th.face.handle;
-    p.line({x, kWaveY0 + 0.5f}, {x, kWaveY1 - 0.5f}, hot ? 1.4f : 1.0f, col);
+    if (in) p.line({x, kWaveY0 + 0.5f}, {x, kWaveY1 - 0.5f}, hot ? 1.4f : 1.0f, col);
     const float d = part == kPStart ? 6.0f : -6.0f;
-    p.triangle({x, kFlagY0}, {x + d, kFlagY0 + 4.5f}, {x, kFlagY1}, col);
+    p.triangle({x, kFlagY0}, {x + d, kFlagY0 + 4.5f}, {x, kFlagY1}, in ? col : ui::mulAlpha(col, 0.5f));
   }
   // SM.13, Granular: the grain region and the live grains in place of the playheads.
   if (g.mode == SamplerMode::Granular) {
-    paintGrainRegion(p, th, editorLane(), kWaveY0 + 0.5f, kWaveY1 - 0.5f);
+    const GrainSpan sp = grainSpan();
+    if (sp.b + sp.spray >= viewA_ && sp.a - sp.spray <= viewB_) paintGrainRegion(p, th, editorLane(), kWaveY0 + 0.5f, kWaveY1 - 0.5f);
     paintGrains(p, th, editorLane(), kWaveY0 + 2.0f, kWaveY1 - 2.0f, 1.4f);
   }
   // The voices' playheads (0 … 1 of the sample).
   for (const Shown& sv : shown_v_) {
     if (g.mode == SamplerMode::Granular) break;
+    const double u = std::isfinite(sv.v.phase) ? static_cast<double>(sv.v.phase) : 0.0;
+    if (!edIn(u)) continue;
     const float a = alphaOf(sv, now);
-    const float x = edX(std::isfinite(sv.v.phase) ? static_cast<double>(sv.v.phase) : 0.0);
+    const float x = edX(u);
     p.line({x, kWaveY0 + 1.0f}, {x, kWaveY1 - 1.0f}, 1.2f, ui::mulAlpha(th.face.signal, a));
     p.disc({x, kWaveY0 + 1.5f}, 1.4f, ui::mulAlpha(white, a));
   }
+  dl.popClip();
   // The info line: the region's times, or the slices and their keys.
   if (g.frames > 0.0) {
     const double len = g.frames / g.rate;
@@ -1242,7 +1369,7 @@ SamplerFace::GrainSpan SamplerFace::grainSpan() const {
   const double s = std::clamp(std::min(t.value(meta::kSmpStart), t.value(meta::kSmpEnd)), 0.0, 1.0);
   const double e = std::clamp(std::max(t.value(meta::kSmpStart), t.value(meta::kSmpEnd)), 0.0, 1.0);
   sp.a = s + std::clamp(t.value(meta::kSmpGrainPosition), 0.0, 1.0) * (e - s);
-  const media::WaveformOverview* o = cols_.overview;
+  const media::WaveformOverview* o = smp_.overview;
   sp.seconds = o != nullptr && o->sampleRate() > 0 && o->frames() > 0 ? static_cast<double>(o->frames()) / o->sampleRate() : 0.0;
   if (sp.seconds > 0.0) {
     sp.b = std::min(1.0, sp.a + t.value(meta::kSmpGrainSize) / sp.seconds);
@@ -1284,13 +1411,18 @@ void SamplerFace::paintGrains(ui::FacePainter& p, const ui::Theme& th, const Lan
   const auto at = [&](const FaceGrain& g) {
     return Vec2{lane.x(std::isfinite(g.position) ? g.position : 0.0), mid - std::clamp(g.pan, -1.0f, 1.0f) * half};
   };
+  const auto out = [&](const FaceGrain& g) {  // WF.1: outside the lane's view (the zoomed editor)
+    return std::isfinite(g.position) && (g.position < lane.u0 - 1e-9 || g.position > lane.u1 + 1e-9);
+  };
   p.beginGlow();
   for (uint32_t i = 0; i < grainCount_; ++i) {
+    if (out(grainBuf_[i])) continue;
     const float amp = std::clamp(grainBuf_[i].amplitude, 0.0f, 1.0f);
     p.glow(at(grainBuf_[i]), (3.0f + 6.0f * amp) * k, ui::withAlpha(th.face.glow, static_cast<uint32_t>(30.0f + 120.0f * amp)));
   }
   p.endGlow();
   for (uint32_t i = 0; i < grainCount_; ++i) {
+    if (out(grainBuf_[i])) continue;
     const float amp = std::clamp(grainBuf_[i].amplitude, 0.0f, 1.0f);
     const Vec2 d = at(grainBuf_[i]);
     p.disc(d, (0.7f + 1.7f * amp) * k, ui::mulAlpha(th.face.signal, 0.5f + 0.5f * amp));
@@ -1494,6 +1626,13 @@ std::unique_ptr<MetaFace> makeSamplerFace(const meta::Type& t) { return std::mak
 size_t samplerFacePlayheads(const MetaFace& f) {
   const auto* s = dynamic_cast<const SamplerFace*>(&f);
   return s != nullptr ? s->playheads() : 0;
+}
+
+bool samplerFaceWave(const MetaFace& f, SamplerFaceWave& out) {
+  const auto* s = dynamic_cast<const SamplerFace*>(&f);
+  if (s == nullptr) return false;
+  s->wave(out);
+  return true;
 }
 
 size_t samplerFaceGrainDots(const MetaFace& f) {

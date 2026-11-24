@@ -119,33 +119,6 @@ uint32_t paintNotes(ui::DrawList& dl, const arrangement::Preview& pv, const doc:
   return emitted;
 }
 
-// An audio clip's waveform over [vx0, vx1) of its columns (as the arrangement draws it directly: pieces of the clip's
-// time → source frame mapping, each drawn by ui::drawWaveform over its whole columns).
-void paintWave(ui::DrawList& dl, const ui::WaveformData& data, const doc::AudioClip& c, const arrangement::AudioLayout& L, const TempoMap& tm,
-               double k, float cx0, float vx0, float vx1, float by0, float by1, Rgba col) {
-  const float gain = arrangement::clipGainLinear(c.gainDb);
-  arrangement::forEachAudioPiece(c, L, tm, k, static_cast<double>(vx0 - cx0), static_cast<double>(vx1 - cx0), [&](const arrangement::AudioPiece& p) {
-    const double ia = std::ceil(p.xa - 0.5), ib = std::ceil(p.xb - 0.5);
-    if (ib <= ia || !(p.fb > p.fa)) return;
-    const double s = (p.fb - p.fa) / (p.xb - p.xa);
-    ui::WaveformDraw d;
-    if (!p.reverse) {
-      d.frame0 = p.fa + (ia - p.xa) * s;
-      d.frame1 = p.fa + (ib - p.xa) * s;
-    } else {
-      d.frame1 = p.fb - (ia - p.xa) * s;
-      d.frame0 = p.fb - (ib - p.xa) * s;
-    }
-    d.rect = {cx0 + static_cast<float>(ia), by0, cx0 + static_cast<float>(ib), by1};
-    d.gain = gain;
-    d.reverse = p.reverse;
-    d.colour = col;
-    d.clipX0 = vx0;
-    d.clipX1 = vx1;
-    (void)ui::drawWaveform(dl, data, d);
-  });
-}
-
 }  // namespace
 
 void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatchView& view) {
@@ -354,9 +327,11 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
         arow.id = t->id;
         arow.track = t;
         const arrangement::AudioLayout& L = model->audioLayout(arow, c.audio);
-        ui::WaveformLevel lv[kMaxOverviewLevels];
-        const ui::WaveformData data = waveformData(*ov, nullptr, lv);
-        paintWave(dl, data, ac, L, p.timeline->tempoMap, k, cx0, vx0, vx1, by0, by1, noteCol);
+        // WF.1: the arrangement's own direct draw (the samples below the overview's resolution; was a copy of it that
+        // only ever drew the overview).
+        const double cx0d = std::round(static_cast<double>(body.x0) + (static_cast<double>(c.start()) - origin) * k);
+        (void)arrangement::paintClipWaveform(dl, view.context().waveforms(), *ov, ac, L, p.timeline->tempoMap, k, cx0d, vx0, vx1, by0, by1,
+                                             noteCol, std::max(1.0f, us));
       }
     }
   }
