@@ -2710,4 +2710,28 @@ Context: SM.17 (docs/plans/SM.md "SM.17"). Choices (most reversible):
 10. **Live check harness**: `PQ_BUGREPORT_SCRIPT` got drag / wheel / type / double-click / key steps (src/app) so a
     worker can drive its own instance and read F12 shots; an unsaved-changes prompt at quit is a native box the script
     cannot answer (the runner ends its own process and removes the autosave folder that leaves in pqdaw/Unsaved).
+
+## Q?-SM.15-a · one warp core: readings taken (supersedes Q?-SM.4-a item 5)
+Context: SM.15 (docs/plans/SM.md "Rework 2026-11-23"). Choices (most reversible):
+1. **The enum is `dsp::AudioWarp`**, not `WarpMode` (`dsp::WarpMode` is the Wavetable's Bend / Mirror / Pulse width,
+   pq/dsp/wave_warp.h). `doc::AudioWarp` / `doc::BeatsLoop` stay as aliases of the dsp enums (35 files name them);
+   `engine::ClipWarp` / `SliceLoop` / `WarpSettings`, `meta::SamplerWarp`, `dsp::WarpVoiceMode`, `ComplexRun` are gone.
+   `sampler_warp`'s `mode` input is now the enum's value (2 Beats … 6 Complex Pro; was 0 … 4).
+2. **Beats, the one law** (pq/dsp/warp_voice.h top). Where the two old forms differed: fades and the loop rule scale by
+   the step at the pass's ENTRY (the clock form used the current rate); before its natural end a slice is "cut" when
+   t + ⌈clock left / entry step⌉ ≥ next − X; at pitch rate 1 the natural length and the looped half are whole frames
+   (loops stay straight copies); the clip's events sit on the integer clock instead of ceil(T + L / r + i·λ) in double
+   (≤ 1 sample apart). A voice whose rate moved inside a slice evaluates that slice per sample until the next one.
+3. **Pass enumeration stays per host** (the plan says so): the clip's slices are in song time on its image, the voice's
+   follow the live tempo. The renderer, pass struct and gains are shared.
+4. **Window**: `warpHannGain` computes sin²(πj / N) per frame (integer reduction to an eighth, one polynomial; grains
+   sum to 1 within one rounding; ≤ 2e-7 from the cos form). The clip's image still caches it per grain size (built
+   by that function) because that is cheaper per frame; the Sampler's grain size is a param taken at the trigger on the
+   audio thread, so no table can be built ahead: it calls the function per grain piece. Alternative: both call it
+   per piece (clip Tones / Texture ≈ +0.3 ns per frame and grain).
+5. **Sampler Re-Pitch through the markers is inside `sample_read`** (inputs `tempo`, `sampleBpm`): the local slope
+   depends on the playhead, and a graph atom reading `pos` back into `rate` is a cycle the scheduler only takes with a
+   z1 (per-sample scheduling of the loop). Cost with no markers: none per frame (a per-lane constant); with markers two
+   compares per frame. Lanes read the law of the entry they play.
+6. **The first Beats slice's mip level** now comes from the rate at the trigger's first sample (was level 0).
 Status: open.

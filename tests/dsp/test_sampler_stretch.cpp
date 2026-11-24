@@ -36,16 +36,7 @@ struct Src {
     data = SampleData::build(l).value();
     REQUIRE(slot.publish(SampleData::source(data, fileRate), kSr, reclaimer).ok());
   }
-  WarpSource source() const {
-    const SampleSlot::Entry& e = *slot.acquire();
-    WarpSource s;
-    s.level = e.level;
-    s.levels = e.levels;
-    s.channels = e.channels;
-    s.fileRate = e.fileRate;
-    s.rateScale = e.rateScale;
-    return s;
-  }
+  WarpSource source() const { return warpSourceOf(*slot.acquire()); }
 };
 
 struct Scratch {
@@ -61,6 +52,18 @@ struct Voice {
   ComplexVoice cv;
 };
 
+// A run's Complex settings (WarpVoiceRun::mode / set).
+struct ComplexRun {
+  bool pro = false;
+  float formants = 100.0f, formantOrder = 128.0f;
+};
+WarpVoiceRun withComplex(WarpVoiceRun run, const ComplexRun& cr) {
+  run.mode = cr.pro ? AudioWarp::ComplexPro : AudioWarp::Complex;
+  run.set.formants = cr.formants;
+  run.set.formantEnvelope = cr.formantOrder;
+  return run;
+}
+
 struct Out {
   std::vector<float> l, r;
   uint64_t maxChunks = 0;  // the most chunks one call computed
@@ -72,7 +75,9 @@ Out play(const WarpSource& src, WarpVoiceRun run, SamplerStretch* bank, size_t f
          const ComplexRun& cr = {}) {
   Scratch sc;
   Voice x;
-  x.v.trigger(src, run);
+  if (bank != nullptr) run = withComplex(run, cr);
+  const WarpRunLaw law = warpRunLaw(src, run);
+  x.v.trigger(src, run, law);
   if (bank != nullptr) x.cv.trigger(bank, 0);
   Out o;
   o.l.resize(frames), o.r.resize(frames);
@@ -83,9 +88,9 @@ Out play(const WarpSource& src, WarpVoiceRun run, SamplerStretch* bank, size_t f
     for (uint32_t i = 0; i < n; ++i) rate[i] = rateAt(t + i);
     const uint64_t c0 = bank != nullptr ? bank->chunks : 0;
     if (bank != nullptr)
-      x.cv.render(bank, 0, x.v, src, run, cr, rate.data(), n, o.l.data() + t, o.r.data() + t, pos.data(), playing.data(), sc.ws());
+      x.cv.render(bank, 0, x.v, src, run, law, rate.data(), n, o.l.data() + t, o.r.data() + t, pos.data(), playing.data(), sc.ws());
     else
-      x.v.render(src, run, rate.data(), n, o.l.data() + t, o.r.data() + t, pos.data(), playing.data(), sc.ws());
+      x.v.render(src, run, law, rate.data(), n, o.l.data() + t, o.r.data() + t, pos.data(), playing.data(), sc.ws());
     if (bank != nullptr) o.maxChunks = std::max(o.maxChunks, bank->chunks - c0);
   }
   return o;
@@ -115,7 +120,7 @@ double cents(double a, double b) { return 1200.0 * std::log2(a / b); }
 
 WarpVoiceRun loopRun(size_t len, double bpm, double sampleBpm) {
   WarpVoiceRun run;
-  run.mode = WarpVoiceMode::Tones;
+  run.mode = AudioWarp::Tones;
   run.start = 0.0;
   run.end = static_cast<double>(len);
   run.loopStart = 0.0;
@@ -123,7 +128,7 @@ WarpVoiceRun loopRun(size_t len, double bpm, double sampleBpm) {
   run.bpm = bpm;
   run.sampleBpm = sampleBpm;
   run.sampleRate = kSr;
-  run.grainSeconds = 0.04;
+  run.set.grainSeconds = 0.04;
   return run;
 }
 
@@ -222,7 +227,7 @@ TEST_CASE("SM.5 complex voice: renders do not depend on the call length") {
   run.loopStart = 9000.0;  // a loop inside the sample (the stream unfolds through it)
   run.loopEnd = 41000.0;
   auto rateAt = [](size_t t) { return static_cast<float>(1.2 + 0.3 * std::sin(static_cast<double>(t) * 2e-4)); };
-  const ComplexRun pro{true, 70.0, 64.0};
+  const ComplexRun pro{true, 70.0f, 64.0f};
   for (const ComplexRun& cr : {ComplexRun{}, pro}) {
     const Out ref = play(ws, run, bank.get(), 40000, 64, rateAt, cr);
     for (const uint32_t block : {1u, 37u, 128u, 256u}) {
@@ -240,14 +245,15 @@ TEST_CASE("SM.5 complex voice: ownership — a copy loses to the first that runs
   Src src(s);
   const WarpSource ws = src.source();
   auto bank = SamplerStretch::build(2, 1, kSr);
-  const WarpVoiceRun run = loopRun(s.size(), 120.0, 120.0);
+  const WarpVoiceRun run = withComplex(loopRun(s.size(), 120.0, 120.0), {});
+  const WarpRunLaw law = warpRunLaw(ws, run);
   Scratch sc;
   std::vector<float> rate(128, 1.0f), l(128), r(128), pos(128), pl(128);
   auto step = [&](Voice& x, uint32_t lane) {
-    x.cv.render(bank.get(), lane, x.v, ws, run, {}, rate.data(), 128, l.data(), r.data(), pos.data(), pl.data(), sc.ws());
+    x.cv.render(bank.get(), lane, x.v, ws, run, law, rate.data(), 128, l.data(), r.data(), pos.data(), pl.data(), sc.ws());
   };
   Voice a;
-  a.v.trigger(ws, run);
+  a.v.trigger(ws, run, law);
   a.cv.trigger(bank.get(), 0);
   CHECK(a.cv.stretcher == 0);
   for (int i = 0; i < 60; ++i) step(a, 0);  // primed and crossed over
@@ -264,7 +270,7 @@ TEST_CASE("SM.5 complex voice: ownership — a copy loses to the first that runs
   CHECK(a.cv.phase == ComplexVoice::kOn);
   // Exhausted: a third voice gets none (Tones, counted) until one is free.
   Voice c;
-  c.v.trigger(ws, run);
+  c.v.trigger(ws, run, law);
   const uint64_t misses = bank->misses;
   c.cv.trigger(bank.get(), 3);
   CHECK(c.cv.phase == ComplexVoice::kWait);
@@ -273,7 +279,7 @@ TEST_CASE("SM.5 complex voice: ownership — a copy loses to the first that runs
   CHECK(c.cv.phase == ComplexVoice::kWait);
   // A trigger in lane 0 frees what lane 0 held (its previous voice is over) and takes it again.
   Voice d;
-  d.v.trigger(ws, run);
+  d.v.trigger(ws, run, law);
   d.cv.trigger(bank.get(), 0);
   CHECK(d.cv.stretcher == 0);
   step(a, 0);  // the old words: lost
@@ -292,11 +298,12 @@ TEST_CASE("SM.5 complex voice: voices triggered together compute their chunks on
   Src src(s);
   const WarpSource ws = src.source();
   auto bank = SamplerStretch::build(8, 1, kSr);
-  const WarpVoiceRun run = loopRun(s.size(), 120.0, 120.0);
+  const WarpVoiceRun run = withComplex(loopRun(s.size(), 120.0, 120.0), {});
+  const WarpRunLaw law = warpRunLaw(ws, run);
   Scratch sc;
   std::vector<Voice> v(8);
   for (uint32_t k = 0; k < 8; ++k) {
-    v[k].v.trigger(ws, run);
+    v[k].v.trigger(ws, run, law);
     v[k].cv.trigger(bank.get(), k);
   }
   std::vector<float> rate(1, 1.0f), l(1), r(1), pos(1), pl(1);
@@ -305,7 +312,7 @@ TEST_CASE("SM.5 complex voice: voices triggered together compute their chunks on
   for (int t = 0; t < 30000; ++t) {
     const uint64_t c0 = bank->chunks;
     for (uint32_t k = 0; k < 8; ++k)
-      v[k].cv.render(bank.get(), k, v[k].v, ws, run, {}, rate.data(), 1, l.data(), r.data(), pos.data(), pl.data(), sc.ws());
+      v[k].cv.render(bank.get(), k, v[k].v, ws, run, law, rate.data(), 1, l.data(), r.data(), pos.data(), pl.data(), sc.ws());
     if (t > 12000) worst = std::max(worst, bank->chunks - c0);
   }
   for (uint32_t k = 0; k < 8; ++k) CHECK(v[k].cv.phase == ComplexVoice::kOn);
@@ -319,21 +326,22 @@ TEST_CASE("SM.5 complex voice: 10 000 calls of note-ons and glides allocate noth
   const WarpSource ws = src.source();
   auto bank = SamplerStretch::build(4, 1, kSr);
   WarpVoiceRun run = loopRun(s.size(), 120.0, 110.0);
+  const WarpRunLaw law = warpRunLaw(ws, run);  // (it does not depend on the tempo or the mode)
   Scratch sc;
   std::vector<Voice> v(4);
   std::vector<float> rate(64), l(64), r(64), pos(64), pl(64);
   uint64_t violations = 0;
   for (uint32_t b = 0; b < 10000; ++b) {
     run.bpm = 80.0 + (b / 50) % 7 * 20.0;
-    const ComplexRun cr{(b / 300) % 2 == 1, 80.0, 128.0};
+    run = withComplex(run, ComplexRun{(b / 300) % 2 == 1, 80.0f, 128.0f});
     violations += alloc_trap::countRtViolations([&] {
       for (uint32_t k = 0; k < 4; ++k) {
         if ((b + k * 13) % 97 == 0) {
-          v[k].v.trigger(ws, run);
+          v[k].v.trigger(ws, run, law);
           v[k].cv.trigger(bank.get(), k);
         }
         for (uint32_t i = 0; i < 64; ++i) rate[i] = static_cast<float>(0.7 + 0.6 * ((b * 64 + i + k * 1000) % 9000) / 9000.0);
-        v[k].cv.render(bank.get(), k, v[k].v, ws, run, cr, rate.data(), 64, l.data(), r.data(), pos.data(), pl.data(), sc.ws());
+        v[k].cv.render(bank.get(), k, v[k].v, ws, run, law, rate.data(), 64, l.data(), r.data(), pos.data(), pl.data(), sc.ws());
       }
     });
   }

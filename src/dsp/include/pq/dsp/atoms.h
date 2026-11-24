@@ -165,8 +165,8 @@
 // Tables:
 //   shaper (x)                        transfer curve (tables.h)
 //   SM.2: every sample atom reads a live SampleSlot (pq/dsp/sample_slot.h: Resource::Sample), mono or stereo.
-//   sample_read_linear/_cubic (rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units)
-//                             → (out, playing, right, pos)
+//   sample_read_linear/_cubic (rate, reset, start, loopStart, loopEnd, fade, pingpong, end, fadeIn, fadeOut, units,
+//                              tempo, sampleBpm) → (out, playing, right, pos)
 //                                     32.32 fixed-point playhead in the sample's frames, advanced by rate × the entry's
 //                                     file rate / engine rate (rate 1: the file's own speed) converted exactly
 //                                     (floor(·2^32); |rate| ≤ 2^20). The output at t is the interpolated sample at the
@@ -194,7 +194,12 @@
 //                                     decimated copy at rate / 2^L; there, no loop seam handling). units (const) 0:
 //                                     positions and fades in frames; 1: positions (start, loop points, end, pos) in
 //                                     [0, 1] of the lane's sample, fades in seconds of the file. Taps outside the data
-//                                     read 0. Everything after reset must be Spl.
+//                                     read 0. SM.15, Re-Pitch: tempo > 0 (BPM) multiplies the lane's rate by the
+//                                     local speed of the entry's warp law at the playhead: tempo / 60 × the frames
+//                                     per beat of the law's segment there (pq/dsp/warp.h WarpLaw over the entry's
+//                                     markers) / the file rate — constant per marker segment, changing on the sample
+//                                     the playhead enters the next; fewer than two markers: tempo / sampleBpm.
+//                                     Everything after reset must be Spl.
 //   sample_pos_linear/_cubic (pos)    stateless read of the newest entry's left channel at a position (float, in
 //                                     frames); 0 outside [0, length). Sub-sample accurate to ~2^24 frames.
 //   sample_slice (key, units) → (start, end)
@@ -204,8 +209,9 @@
 //                                     plays). units as sample_read's.
 //   sampler_warp (rate, reset, start, end, loopStart, loopEnd, bpm, sampleBpm, mode, grain, flux, sliceLoop,
 //                 envelope, sr, formants, formantOrder) → (out, playing, right, pos)
-//                                     SM.4: a dsp::WarpVoice per lane (pq/dsp/warp_voice.h): Beats (mode 0) / Tones (1)
-//                                     / Texture (2) over the slot's entry from the lane's last reset (a high reset
+//                                     SM.4: a dsp::WarpVoice per lane (pq/dsp/warp_voice.h): mode is a
+//                                     dsp::AudioWarp value (pq/dsp/warp.h): 2 Beats / 3 Tones / 4 Texture (anything
+//                                     else: Tones) over the slot's entry from the lane's last reset (a high reset
 //                                     restarts it at that sample on the newest entry, as sample_read). The content
 //                                     follows the tempo from the reset: content beats = bpm / 60 per second since then
 //                                     (re-anchored at tempo changes only) through the entry's markers (none: sampleBpm
@@ -217,7 +223,7 @@
 //                                     flux % (Texture), sliceLoop 0 Off / 1 Forward / 2 Back-Forward and envelope %
 //                                     (Beats; the slices are the entry's slice table). Cubic reads, the mip level per
 //                                     grain / slice from its rate at its start. pos: where the content is, in [0, 1].
-//                                     SM.5: mode 3 Complex / 4 Complex Pro: a phase vocoder per lane from the slot's
+//                                     SM.5: mode 5 Complex / 6 Complex Pro: a phase vocoder per lane from the slot's
 //                                     stretchers (SampleSlot::stretch, pq/dsp/sampler_stretch.h; none: Tones), read at
 //                                     the integrated rate (Tones while it primes, then a 2 ms cross); Pro moves the
 //                                     formants back by rate^(−formants %), envelope order formantOrder.

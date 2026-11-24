@@ -7,6 +7,7 @@
 #include "kernels_common.h"
 #include "pq/dsp/atom_state.h"
 #include "pq/dsp/sample_slot.h"
+#include "pq/dsp/warp.h"
 
 namespace pq::dsp::detail {
 namespace {
@@ -22,11 +23,7 @@ template <class S, bool kCubic>
 inline typename S::F interp4(typename S::F xm1, typename S::F x0, typename S::F x1, typename S::F x2,
                              typename S::F fr) noexcept {  // RT-safe
   if constexpr (kCubic) {
-    const auto half = S::set(0.5f);
-    const auto c1 = S::mul(half, S::sub(x1, xm1));
-    const auto c2 = S::add(S::fnma(S::set(2.5f), x0, xm1), S::fnma(half, x2, S::add(x1, x1)));
-    const auto c3 = S::fma(half, S::sub(x2, xm1), S::mul(S::set(1.5f), S::sub(x0, x1)));
-    return S::fma(S::fma(S::fma(c3, fr, c2), fr, c1), fr, x0);
+    return simd::cubic4<S>(xm1, x0, x1, x2, fr);  // simd.h
   } else {
     (void)xm1;
     (void)x2;
@@ -234,6 +231,66 @@ inline typename S::I laneBitsToMask(uint32_t bits) noexcept {  // RT-safe: bit l
   return S::loadi(m);
 }
 
+// SM.15, Re-Pitch through the markers (tempo > 0 on a lane; atoms.h "sample_read"): the lane's rate × the warp law's
+// local speed at its playhead — tempo / 60 beats per second × the frames per beat of the law's segment there / the
+// file rate. Fewer than two markers: one segment at sampleBpm, i.e. tempo / sampleBpm, a constant folded into the
+// lane's scale (this struct stays off). With markers each lane keeps its segment's frame range [lo, hi) and scale;
+// the frame loops test the playhead against it (two compares) and re-seat the lanes that left (rare: once per marker
+// crossed), so the speed is constant per marker segment and changes on the sample the playhead enters the next.
+template <class S>
+struct TempoLaw {
+  using I = typename S::I;
+  bool on = false;
+  alignas(32) int32_t lo[8] = {}, hi[8] = {};
+  alignas(32) float scale[8] = {};
+  const Entry* entry[8] = {};
+  const float* tempo = nullptr;  // per lane (param rate)
+  const float* sbpm = nullptr;
+  I loV, hiV;
+
+  void seat(uint32_t l, int32_t x) noexcept {  // RT-safe: lane l's playhead is at frame x
+    const Entry& e = *entry[l];
+    lo[l] = INT32_MIN;
+    hi[l] = INT32_MAX;
+    scale[l] = e.rateScale;
+    const float t = tempo[l];
+    if (!(t > 0.0f)) return;
+    const double fpb = 60.0 * e.fileRate / std::max(static_cast<double>(sbpm[l]), 1.0);
+    const WarpLaw law = warpBeatLaw(e.law, e.lawCount, e.markers, e.markerCount, fpb);
+    const uint32_t k = law.pieceAtFrame(static_cast<double>(x));
+    const WarpSeg* g = law.segs();
+    if (k > 0) lo[l] = static_cast<int32_t>(std::ceil(g[k].f0));
+    if (k + 1 < law.count) hi[l] = static_cast<int32_t>(std::ceil(g[k + 1].f0));
+    scale[l] = static_cast<float>(static_cast<double>(e.rateScale) * (static_cast<double>(t) / 60.0) * g[k].slope / e.fileRate);
+  }
+  void load() noexcept {
+    loV = S::loadi(lo);
+    hiV = S::loadi(hi);
+  }
+  // Does a lane's playhead lie outside its segment?
+  bool left(I index) const noexcept {
+    return S::any(S::bor(S::asF(S::gti(loV, index)), S::asF(S::gti(index, S::subi(hiV, S::seti(1))))));
+  }
+  void update(I index) noexcept {  // RT-safe
+    alignas(32) int32_t x[8] = {};
+    S::storei(x, index);
+    for (uint32_t l = 0; l < S::kW; ++l)
+      if (x[l] < lo[l] || x[l] >= hi[l]) seat(l, x[l]);
+    load();
+  }
+  // The lanes of mask `m` move to `newest` (a reset): re-seated at the next test.
+  void moved(I m, const Entry* newest) noexcept {
+    alignas(32) int32_t b[8] = {};
+    S::storei(b, m);
+    for (uint32_t l = 0; l < S::kW; ++l)
+      if (b[l] != 0) {
+        entry[l] = newest;
+        lo[l] = hi[l] = 0;  // (empty: every frame is outside)
+      }
+    load();
+  }
+};
+
 template <bool kCubic>
 struct SampleReadK {
   static constexpr uint32_t kSpec = 2;  // rate, reset (the rest: Spl only)
@@ -319,7 +376,7 @@ struct SampleReadK {
 
   template <class S, uint32_t SM, int kTap, bool kStereo>
   static void runSimple(const KernelArgs& a, SampleReadState& st, const float* dl, const float* dr,
-                        const LaneConsts<S>& cc, uint32_t newGen, bool resetActive) noexcept {  // RT-safe
+                        const LaneConsts<S>& cc, uint32_t newGen, bool resetActive, TempoLaw<S>& tl) noexcept {  // RT-safe
     using F = typename S::F;
     using I = typename S::I;
     constexpr uint32_t W = S::kW;
@@ -332,7 +389,8 @@ struct SampleReadK {
     const I startHi = cc.startHi, startLo = cc.startLo, loopStart = cc.loopStart, loopEnd = cc.loopEnd;
     const I loopOn = cc.loopOn, loopLen = cc.loopLen, lastIn = cc.lastIn, endEff = cc.endEff, length = cc.length;
     const I lastIndex = cc.lastIndex, pp = cc.pp;
-    const F startValid = cc.startValid, scale = cc.scale, posMul = cc.posMul;
+    const F startValid = cc.startValid, posMul = cc.posMul;
+    F scale = cc.scale;  // (SM.15: a lane's changes where its playhead crosses a marker, tl)
     const I zero = S::seti(0), one = S::seti(1), minusOne = S::seti(-1);
     const I signBit = S::seti(static_cast<int32_t>(0x80000000u));
     I index = S::loadi(st.index);
@@ -369,6 +427,11 @@ struct SampleReadK {
       S::store(outR + f * W, S::band(active, yr));
       S::store(playing + f * W, active);
       S::store(posOut + f * W, S::mul(S::add(S::toFloat(index), fr), posMul));
+      if (tl.on && tl.left(index)) {
+        tl.update(index);
+        scale = S::load(tl.scale);
+        if constexpr (splBit(SM, 0)) toFixed<S>(S::mul(rate.at(0), scale), incHi, incLo);
+      }
       if constexpr (!splBit(SM, 0)) toFixed<S>(S::mul(rate.at(f), scale), incHi, incLo);
       I dHi = incHi, dLo = incLo;
       if constexpr (kTap == Taps::PingPong) {
@@ -469,14 +532,34 @@ struct SampleReadK {
       scaleA[l] = e->rateScale;
     }
     auto active = S::load(activeA);
+    // SM.15 Re-Pitch (tempo > 0): the rate × tempo / sampleBpm; with markers × the law's local speed instead (TempoLaw).
+    F tempoRatio = S::set(1.0f);
+    TempoLaw<S> tl;
+    if (const F tempoOn = S::gt(S::load(a.in[11]), S::zero()); S::any(tempoOn)) {
+      tempoRatio = S::select(tempoOn, S::div(S::load(a.in[11]), S::max(S::load(a.in[12]), S::set(1.0f))), S::set(1.0f));
+      for (uint32_t g = 0; g < nGroups; ++g) tl.on = tl.on || groups[g].e->lawCount != 0;
+      if (tl.on) {
+        tl.tempo = a.in[11];
+        tl.sbpm = a.in[12];
+        for (uint32_t l = 0; l < W; ++l) {
+          tl.entry[l] = newest;
+          for (uint32_t g = 1; g < nGroups; ++g)
+            if (((groups[g].lanes >> l) & 1u) != 0) tl.entry[l] = groups[g].e;
+          tl.seat(l, st.index[l]);
+        }
+        tl.load();
+      }
+    }
+    const F newestScale = S::mul(S::set(newest->rateScale), tempoRatio);
+    const F curScale = tl.on ? S::load(tl.scale) : allNewest ? newestScale : S::mul(S::load(scaleA), tempoRatio);
     const LaneConsts<S> cur =
         allNewest ? LaneConsts<S>::make(a, S::seti(newest->level[0].length), S::set(static_cast<float>(newest->fileRate)),
-                                        S::set(newest->rateScale), units)
-                  : LaneConsts<S>::make(a, S::loadi(lenA), S::load(rateA), S::load(scaleA), units);
+                                        curScale, units)
+                  : LaneConsts<S>::make(a, S::loadi(lenA), S::load(rateA), curScale, units);
     const LaneConsts<S> fresh =
         nGroups == 1 ? cur
                      : LaneConsts<S>::make(a, S::seti(newest->level[0].length), S::set(static_cast<float>(newest->fileRate)),
-                                           S::set(newest->rateScale), units);
+                                           newestScale, units);
     LaneConsts<S> c = cur;
     // Mip levels: per group, from the slowest |rate| of its playing lanes at the call's first frame (a faster lane
     // than that aliases a little more; a slower one is never dulled).
@@ -505,8 +588,8 @@ struct SampleReadK {
     if (nGroups == 1 && groups[0].level == 0 && !gainOn && !fadeOn) {
       S::store(st.active, active);
       const SampleLevelView& lv = newest->level[0];
-      if (stereo) runSimple<S, SM, kTap, true>(a, st, lv.ch[0], lv.ch[1], cur, newGen, resetActive);
-      else runSimple<S, SM, kTap, false>(a, st, lv.ch[0], lv.ch[0], cur, newGen, resetActive);
+      if (stereo) runSimple<S, SM, kTap, true>(a, st, lv.ch[0], lv.ch[1], cur, newGen, resetActive, tl);
+      else runSimple<S, SM, kTap, false>(a, st, lv.ch[0], lv.ch[0], cur, newGen, resetActive, tl);
       return;
     }
 
@@ -530,6 +613,7 @@ struct SampleReadK {
             c = LaneConsts<S>::pick(r, fresh, c);
             gmask[0] = S::selecti(ri, S::seti(-1), gmask[0]);
             for (uint32_t g = 1; g < nGroups; ++g) gmask[g] = S::selecti(ri, zero, gmask[g]);
+            if (tl.on) tl.moved(ri, newest);
             if constexpr (splBit(SM, 0)) toFixed<S>(S::mul(rate.at(0), c.scale), incHi, incLo);
           }
           gen = S::selecti(ri, newGenV, gen);
@@ -562,6 +646,11 @@ struct SampleReadK {
       S::store(outR + f * W, S::band(active, yr));  // mono: the left read, copied
       S::store(playing + f * W, active);
       S::store(posOut + f * W, S::mul(x, c.posMul));
+      if (tl.on && tl.left(index)) {  // SM.15: a playhead entered another marker segment
+        tl.update(index);
+        c.scale = S::load(tl.scale);
+        if constexpr (splBit(SM, 0)) toFixed<S>(S::mul(rate.at(0), c.scale), incHi, incLo);
+      }
       // Advance the 32.32 playhead: unsigned carry out of the fraction via a sign-flipped signed compare.
       if constexpr (!splBit(SM, 0)) toFixed<S>(S::mul(rate.at(f), c.scale), incHi, incLo);
       I dHi = incHi, dLo = incLo;

@@ -90,8 +90,6 @@ struct GranParams {
 
 double finiteOr(float x, double d) noexcept { return std::isfinite(x) ? static_cast<double>(x) : d; }
 
-int64_t toFixed(double x) noexcept { return static_cast<int64_t>(std::llround(x * 4294967296.0)); }
-
 // P wrapped into [start, end) (32.32); an empty region holds start.
 int64_t wrapPos(int64_t x, int64_t s, int64_t e) noexcept {
   const int64_t L = e - s;
@@ -139,8 +137,7 @@ void renderBatch(GranularState& st, uint32_t lane, uint32_t q0, uint32_t include
   const __m256i one = _mm256_set1_epi32(1), sign = _mm256_set1_epi32(static_cast<int>(0x80000000u));
   const __m256i lo = _mm256_set1_epi32(-kSampleSlotGuard + 1), hi = _mm256_set1_epi32(lv.length + kSampleSlotGuard - 3);
   const __m256i tabMax = _mm256_set1_epi32(static_cast<int>(kGrainShapePoints) - 1);
-  const __m256 k24 = _mm256_set1_ps(0x1p-24f), half = _mm256_set1_ps(0.5f), c15 = _mm256_set1_ps(1.5f),
-               c25 = _mm256_set1_ps(2.5f), two = _mm256_set1_ps(2.0f);
+  const __m256 k24 = _mm256_set1_ps(0x1p-24f);
   const float* L = lv.ch[0];
   const float* R = lv.ch[1];
   const __m256 zero = _mm256_setzero_ps();
@@ -149,11 +146,7 @@ void renderBatch(GranularState& st, uint32_t lane, uint32_t q0, uint32_t include
     const __m256 x0 = _mm256_mask_i32gather_ps(zero, base, idx, act, 4);
     const __m256 x1 = _mm256_mask_i32gather_ps(zero, base + 1, idx, act, 4);
     const __m256 x2 = _mm256_mask_i32gather_ps(zero, base + 2, idx, act, 4);
-    // Catmull-Rom, as sample_read's cubic: ((c3·f + c2)·f + c1)·f + x0
-    const __m256 c1 = _mm256_mul_ps(half, _mm256_sub_ps(x1, xm1));
-    const __m256 c2 = _mm256_sub_ps(_mm256_fmadd_ps(two, x1, _mm256_fnmadd_ps(c25, x0, xm1)), _mm256_mul_ps(half, x2));
-    const __m256 c3 = _mm256_fmadd_ps(half, _mm256_sub_ps(x2, xm1), _mm256_mul_ps(c15, _mm256_sub_ps(x0, x1)));
-    return _mm256_fmadd_ps(_mm256_fmadd_ps(_mm256_fmadd_ps(c3, fr, c2), fr, c1), fr, x0);
+    return simd::cubic4<simd::S8>(xm1, x0, x1, x2, fr);  // simd.h: sample_read's cubic
   };
   for (uint32_t f = 0; f < m; ++f) {
     const __m256i actI = _mm256_andnot_si256(_mm256_cmpgt_epi32(_mm256_setzero_si256(), vage),

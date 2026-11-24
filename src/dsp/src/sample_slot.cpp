@@ -100,6 +100,9 @@ Status SampleSlot::publish(SampleSource src, double engineRate, EpochReclaimer& 
       }
     e->markers = m.empty() ? nullptr : m.data();
     e->markerCount = static_cast<uint32_t>(m.size() / 2);
+    e->lawStore = warpBeatSegments(m);
+    e->law = e->lawStore.empty() ? nullptr : e->lawStore.data();
+    e->lawCount = static_cast<uint32_t>(e->lawStore.size());
     // SM.6: harmonic ratios, (n, d) pairs of whole numbers in [1, 2^16] (others dropped).
     std::vector<float>& h = e->harmonicStore;
     for (size_t i = 0; i + 1 < src.harmonics.size(); i += 2) {

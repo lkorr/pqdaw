@@ -288,6 +288,18 @@ struct S1 {
   }
 };
 
+// The cubic every sample read uses (SM.15: one copy — sample_read, the warp voice's grains and slices, the Complex
+// voice's read of its vocoder, the granulator): Catmull-Rom through x0 … x1 at fraction fr, taps xm1 … x2. RT-safe.
+template <class S>
+inline typename S::F cubic4(typename S::F xm1, typename S::F x0, typename S::F x1, typename S::F x2,
+                            typename S::F fr) noexcept {
+  const auto half = S::set(0.5f);
+  const auto c1 = S::mul(half, S::sub(x1, xm1));
+  const auto c2 = S::add(S::fnma(S::set(2.5f), x0, xm1), S::fnma(half, x2, S::add(x1, x1)));
+  const auto c3 = S::fma(half, S::sub(x2, xm1), S::mul(S::set(1.5f), S::sub(x0, x1)));
+  return S::fma(S::fma(S::fma(c3, fr, c2), fr, c1), fr, x0);
+}
+
 // Input accessor for template-specialised rates. Spl: the pattern is loaded once (lane 0 for S1, 8 lanes for
 // S8). Blk: one load per frame at f * kW.
 template <class S, bool kSpl>

@@ -22,7 +22,7 @@
 //           (Classic with a loop: its ends and its body drag) with the loop fade shaded before both ends, the One-Shot /
 //           Slice fades as shaded ramps, the slice lines (Slice mode, or Beats: drag one; double-click the waveform to
 //           add one, a line to remove it), a ruler above (seconds with warp Off; else beats through the warp markers —
-//           pq/dsp/warp_voice.h warpBeatOfFrame — or sampleBpm), the markers on it in the stretch modes (drag one along
+//           pq/dsp/warp.h WarpBeatLaw — or sampleBpm), the markers on it in the stretch modes (drag one along
 //           the ruler: its frame moves, its beat stays; double-click the ruler to add one at the beat it reads there,
 //           one to remove it), each sounding voice's playhead. Every drag is one undo step (MetaTarget begin … end: the
 //           params and the data in one gesture), every double-click one step; the data never recompiles.
@@ -154,7 +154,7 @@ void ellipsePoints(std::vector<Vec2>& out, Vec2 c, float rx, float ry, bool clos
 }
 
 using meta::SamplerMode;
-using meta::SamplerWarp;
+using pq::dsp::AudioWarp;
 
 class SamplerFace final : public MetaFace {
 public:
@@ -541,7 +541,7 @@ private:
     double start = 0.0, end = 1.0, loopStart = 0.0, loopEnd = 1.0, loopFade = 0.0, fadeIn = 0.0, fadeOut = 0.0;
     double sampleBpm = 120.0;
     SamplerMode mode = SamplerMode::Classic;
-    SamplerWarp warp = SamplerWarp::Off;
+    dsp::AudioWarp warp = dsp::AudioWarp::Off;
     bool loop = false;
     std::vector<float> slices, markers;
   };
@@ -644,10 +644,10 @@ SamplerFace::Geometry SamplerFace::geometry() const {
   g.fadeOut = t.value(meta::kSmpFadeOut);
   g.sampleBpm = std::max(1.0, t.value(meta::kSmpSampleBpm));
   g.mode = static_cast<SamplerMode>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpMode))), 0, 3));
-  g.warp = static_cast<SamplerWarp>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpWarp))), 0, 6));
+  g.warp = static_cast<dsp::AudioWarp>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpWarp))), 0, 6));
   // SM.17: the warp that PLAYS (pq/meta/sampler.h): Granular warps nothing, Slice plays a stored stretch mode unwarped —
   // the ruler then reads seconds and the fades show, as the panel's Warp row says Off.
-  if (g.mode == SamplerMode::Granular || (g.mode == SamplerMode::Slice && g.warp >= SamplerWarp::Beats)) g.warp = SamplerWarp::Off;
+  if (g.mode == SamplerMode::Granular || (g.mode == SamplerMode::Slice && g.warp >= dsp::AudioWarp::Beats)) g.warp = dsp::AudioWarp::Off;
   g.loop = g.mode == SamplerMode::Classic && std::lround(t.setting(meta::kSmpLoop)) != 0;
   const meta::DataPtr d = t.data();
   g.slices = meta::samplerSlices(d.get());
@@ -659,13 +659,13 @@ bool SamplerFace::slicesShown() const {  // (Granular warps nothing: SM.13)
   const MetaTarget& t = target();
   const long mode = std::lround(t.setting(meta::kSmpMode));
   return mode == static_cast<long>(SamplerMode::Slice) ||
-         (mode != static_cast<long>(SamplerMode::Granular) && std::lround(t.setting(meta::kSmpWarp)) == static_cast<long>(SamplerWarp::Beats));
+         (mode != static_cast<long>(SamplerMode::Granular) && std::lround(t.setting(meta::kSmpWarp)) == static_cast<long>(dsp::AudioWarp::Beats));
 }
 bool SamplerFace::markersShown() const {
   const MetaTarget& t = target();
   const long mode = std::lround(t.setting(meta::kSmpMode));
   return mode != static_cast<long>(SamplerMode::Slice) && mode != static_cast<long>(SamplerMode::Granular) &&
-         std::lround(t.setting(meta::kSmpWarp)) >= static_cast<long>(SamplerWarp::Beats);
+         std::lround(t.setting(meta::kSmpWarp)) >= static_cast<long>(dsp::AudioWarp::Beats);
 }
 
 int32_t SamplerFace::editorPart(Vec2 l, float ppu) const noexcept {
@@ -864,13 +864,9 @@ bool SamplerFace::onPointer(const FacePointer& e) {
       if (e.clicks < 2 || g.frames <= 0.0) return true;
       {  // a warp marker at the beat the ruler reads here (one step; nothing moves)
         std::vector<float> m = g.markers;
-        dsp::WarpSource src;
-        src.fileRate = g.rate;
-        src.markers = m.data();
-        src.markerCount = static_cast<uint32_t>(m.size() / 2);
-        const double fpb = 60.0 * g.rate / g.sampleBpm;
+        const dsp::WarpBeatLaw law(m, 60.0 * g.rate / g.sampleBpm);
         const auto f = static_cast<float>(std::round(u * g.frames));
-        const auto beat = static_cast<float>(dsp::warpBeatOfFrame(src, f, fpb));
+        const auto beat = static_cast<float>(law.law.contentAt(f));
         size_t at = 0;
         while (at + 1 < m.size() && m[at] < f) at += 2;
         if (at + 1 < m.size() && m[at] == f) return true;
@@ -1112,7 +1108,7 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
     const double len = g.frames / g.rate;
     const Rgba tick = ui::mulAlpha(th.face.ink, 0.45f), strong = ui::mulAlpha(th.face.ink, 0.8f);
     const float labelY = (kRulerY0 + kRulerY1) * 0.5f;
-    if (g.warp == SamplerWarp::Off) {
+    if (g.warp == dsp::AudioWarp::Off) {
       double stepS = 60.0;  // the finest step leaving ≥ 28 units between ticks
       for (const double c : {0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0})
         if (static_cast<double>(kEdX1 - kEdX0) * c / len >= 28.0) {
@@ -1127,17 +1123,14 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
         if (x + 14.0f < kEdX1) p.textAligned({x + 1.5f, labelY}, lb, 5.5f, tick, 0.0f);
       }
     } else {
-      dsp::WarpSource src;
-      src.fileRate = g.rate;
       const bool useMarkers = markersShown();
-      src.markers = useMarkers ? g.markers.data() : nullptr;
-      src.markerCount = useMarkers ? static_cast<uint32_t>(g.markers.size() / 2) : 0;
-      const double fpb = 60.0 * g.rate / g.sampleBpm;
-      const double b0 = dsp::warpBeatOfFrame(src, 0.0, fpb), b1 = dsp::warpBeatOfFrame(src, g.frames, fpb);
+      const dsp::WarpBeatLaw law(useMarkers ? std::span<const float>(g.markers) : std::span<const float>(),
+                                 60.0 * g.rate / g.sampleBpm);
+      const double b0 = law.law.contentAt(0.0), b1 = law.law.contentAt(g.frames);
       const double perBeat = static_cast<double>(kEdX1 - kEdX0) / std::max(1e-6, b1 - b0);
       const double every = perBeat >= 6.0 ? 1.0 : perBeat >= 1.5 ? 4.0 : 16.0;
       for (double q = std::ceil(b0 / every) * every; q <= b1 + 1e-9 && q - b0 < 4096.0; q += every) {
-        const float x = edX(dsp::warpFrameOfBeat(src, q, fpb) / g.frames);
+        const float x = edX(law.law.frameAt(q) / g.frames);
         const bool bar = std::fabs(std::fmod(q, 4.0)) < 1e-9;
         p.line({x, bar ? kRulerY0 + 2.0f : kRulerY1 - 4.0f}, {x, kRulerY1 - 0.5f}, bar ? 0.8f : 0.6f, bar ? strong : tick);
         if (bar && perBeat * 4.0 >= 14.0 && x + 10.0f < kEdX1) {
@@ -1159,7 +1152,7 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
   // The loop (Classic with a loop): its bar along the waveform's top, its fade shaded before both ends.
   if (g.loop) {
     const float a = edX(g.loopStart), b = edX(g.loopEnd);
-    if (g.loopFade > 0.0 && g.frames > 0.0 && g.warp <= SamplerWarp::RePitch) {  // (a stretch mode has no loop crossfade)
+    if (g.loopFade > 0.0 && g.frames > 0.0 && g.warp <= dsp::AudioWarp::RePitch) {  // (a stretch mode has no loop crossfade)
       const float w = static_cast<float>(g.loopFade / (g.frames / g.rate)) * (kEdX1 - kEdX0);
       for (const float e : {a, b})
         p.roundedRect({std::max(kEdX0, e - w), kLoopY1, std::max(kEdX0 + 0.5f, e), kWaveY1 - 1.0f}, 0.0f, ui::mulAlpha(th.face.value, 0.12f));
@@ -1172,7 +1165,7 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
     }
   }
   // One-Shot / Slice fades (warp Off / Re-Pitch): shaded ramps after Start and before End (the sample's seconds).
-  if ((g.mode == SamplerMode::OneShot || g.mode == SamplerMode::Slice) && g.frames > 0.0 && g.warp <= SamplerWarp::RePitch) {
+  if ((g.mode == SamplerMode::OneShot || g.mode == SamplerMode::Slice) && g.frames > 0.0 && g.warp <= dsp::AudioWarp::RePitch) {
     const double len = g.frames / g.rate;
     const float sx = edX(g.start), ex = edX(g.end);
     if (g.fadeIn > 0.0) {

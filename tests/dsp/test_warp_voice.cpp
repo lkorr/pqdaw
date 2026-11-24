@@ -33,20 +33,7 @@ struct Src {
     data = SampleData::build(l).value();
     REQUIRE(slot.publish(SampleData::source(data, fileRate, std::move(slices), std::move(markers)), kSr, reclaimer).ok());
   }
-  WarpSource source() const {
-    const SampleSlot::Entry& e = *slot.acquire();
-    WarpSource s;
-    s.level = e.level;
-    s.levels = e.levels;
-    s.channels = e.channels;
-    s.fileRate = e.fileRate;
-    s.rateScale = e.rateScale;
-    s.slices = e.slices;
-    s.sliceCount = e.sliceCount;
-    s.markers = e.markers;
-    s.markerCount = e.markerCount;
-    return s;
-  }
+  WarpSource source() const { return warpSourceOf(*slot.acquire()); }
 };
 
 struct Scratch {
@@ -66,7 +53,8 @@ Out play(const WarpSource& src, WarpVoiceRun run, size_t frames, uint32_t block,
   Scratch sc;
   WarpVoice v;
   run.bpm = bpmAt(0);
-  v.trigger(src, run);
+  const WarpRunLaw law = warpRunLaw(src, run);  // (once per run record: it does not depend on the tempo)
+  v.trigger(src, run, law);
   Out o;
   o.l.resize(frames), o.r.resize(frames), o.playing.resize(frames);
   std::vector<float> rate(block), pos(block);
@@ -74,7 +62,7 @@ Out play(const WarpSource& src, WarpVoiceRun run, size_t frames, uint32_t block,
     const auto n = static_cast<uint32_t>(std::min<size_t>(block, frames - t));
     run.bpm = bpmAt(t);
     for (uint32_t i = 0; i < n; ++i) rate[i] = rateAt(t + i);
-    v.render(src, run, rate.data(), n, o.l.data() + t, o.r.data() + t, pos.data(), o.playing.data() + t, sc.ws());
+    v.render(src, run, law, rate.data(), n, o.l.data() + t, o.r.data() + t, pos.data(), o.playing.data() + t, sc.ws());
   }
   return o;
 }
@@ -105,6 +93,10 @@ TEST_CASE("SM.4 warp voice: the markers' law round-trips; without markers it is 
   const std::vector<float> l(48000 * 4, 0.0f);
   Src none(l);
   const double fpb = 60.0 * kSr / 120.0;
+  // (The voice's law: warp.h WarpLaw over the entry's segments, fpb frames per beat without markers.)
+  const auto lawOf = [&](const WarpSource& w) { return warpBeatLaw(w.law, w.lawCount, w.markers, w.markerCount, fpb); };
+  const auto warpFrameOfBeat = [&](const WarpSource& w, double q, double) { return lawOf(w).frameAt(q); };
+  const auto warpBeatOfFrame = [&](const WarpSource& w, double f, double) { return lawOf(w).contentAt(f); };
   CHECK(warpFrameOfBeat(none.source(), 3.0, fpb) == doctest::Approx(72000.0));
   CHECK(warpBeatOfFrame(none.source(), 36000.0, fpb) == doctest::Approx(1.5));
   // Rubato: 0 → 0, 30000 → 1, 54000 → 2, 96000 → 3 (one unsorted, one non-monotone pair dropped by publish).
@@ -128,12 +120,12 @@ TEST_CASE("SM.4 warp voice: Beats stays on the tempo for 64 bars at 97 BPM and a
   }
   Src src(clicks, slices);
   WarpVoiceRun run;
-  run.mode = WarpVoiceMode::Beats;
+  run.mode = AudioWarp::Beats;
   run.start = 0.0;
   run.end = static_cast<double>(clicks.size());
   run.sampleBpm = 120.0;
   run.sampleRate = kSr;
-  run.sliceLoop = WarpSliceLoop::Off;
+  run.set.sliceLoop = WarpSliceLoop::Off;
   for (const bool change : {false, true}) {
     CAPTURE(change);
     // 64 bars of 4 beats; the change after 32 bars (3 072 000 samples at 120 BPM: a block boundary).
@@ -166,7 +158,7 @@ TEST_CASE("SM.4 warp voice: Tones keeps a sine's pitch at another tempo; the rat
   const std::vector<float> s = sine(48000 * 8, 220.0);
   Src src(s);
   WarpVoiceRun run;
-  run.mode = WarpVoiceMode::Tones;
+  run.mode = AudioWarp::Tones;
   run.end = static_cast<double>(s.size());
   run.sampleRate = kSr;
   for (const double bpm : {60.0, 240.0})
@@ -188,7 +180,7 @@ TEST_CASE("SM.4 warp voice: a glide and a vibrato are continuous in every mode (
   for (int k = 0; k < 12; ++k) slices.push_back(static_cast<float>(k * 24000));
   Src src(s, slices);
   const double threshold = 1.1 * 2.0 * std::numbers::pi * 880.0 / kSr * 0.5;
-  for (const WarpVoiceMode mode : {WarpVoiceMode::Beats, WarpVoiceMode::Tones, WarpVoiceMode::Texture})
+  for (const AudioWarp mode : {AudioWarp::Beats, AudioWarp::Tones, AudioWarp::Texture})
     for (const bool vibrato : {false, true}) {
       CAPTURE(static_cast<int>(mode));
       CAPTURE(vibrato);
@@ -196,7 +188,7 @@ TEST_CASE("SM.4 warp voice: a glide and a vibrato are continuous in every mode (
       run.mode = mode;
       run.end = static_cast<double>(s.size());
       run.sampleRate = kSr;
-      run.sliceLoop = WarpSliceLoop::Forward;
+      run.set.sliceLoop = WarpSliceLoop::Forward;
       auto rateAt = [&](size_t t) {
         const double x = static_cast<double>(t) / kSr;
         if (vibrato) return static_cast<float>(1.5 * std::exp2(0.5 / 12.0 * std::sin(2.0 * std::numbers::pi * 6.0 * x)));
@@ -223,10 +215,10 @@ TEST_CASE("SM.4 warp voice: renders do not depend on the call length; the end fa
     s[i] = static_cast<float>(0.4 * std::sin(0.031 * i) + 0.3 * std::sin(0.0071 * i * (1.0 + i / 96000.0)));
   std::vector<float> slices = {0.0f, 7000.0f, 19000.0f, 30000.0f, 52000.0f, 70000.0f};
   Src src(s, slices, {0.0f, 0.0f, 30000.0f, 1.0f, 96000.0f, 3.5f});
-  for (const WarpVoiceMode mode : {WarpVoiceMode::Beats, WarpVoiceMode::Tones, WarpVoiceMode::Texture})
+  for (const AudioWarp mode : {AudioWarp::Beats, AudioWarp::Tones, AudioWarp::Texture})
     for (const WarpSliceLoop sl : {WarpSliceLoop::Off, WarpSliceLoop::Forward, WarpSliceLoop::BackForward})
       for (const bool loop : {false, true}) {
-        if (mode != WarpVoiceMode::Beats && sl != WarpSliceLoop::Forward) continue;
+        if (mode != AudioWarp::Beats && sl != WarpSliceLoop::Forward) continue;
         CAPTURE(static_cast<int>(mode));
         CAPTURE(static_cast<int>(sl));
         CAPTURE(loop);
@@ -238,9 +230,9 @@ TEST_CASE("SM.4 warp voice: renders do not depend on the call length; the end fa
         run.loopEnd = loop ? 50000.0 : 0.0;
         run.sampleBpm = 100.0;
         run.sampleRate = kSr;
-        run.flux = 60.0;
-        run.envelope = 70.0f;
-        run.sliceLoop = sl;
+        run.set.flux = 60.0;
+        run.set.envelope = 70.0f;
+        run.set.sliceLoop = sl;
         auto rateAt = [](size_t t) { return static_cast<float>(0.8 + 0.5 * std::sin(static_cast<double>(t) * 1e-4)); };
         // Constant tempo: identical for every call length.
         std::vector<Out> flat;
@@ -271,4 +263,96 @@ TEST_CASE("SM.4 warp voice: renders do not depend on the call length; the end fa
           for (size_t t = at; t < o.l.size(); ++t) REQUIRE(o.l[t] == 0.0f);
         }
       }
+}
+
+// SM.15: one Beats renderer. Its constant-step pieces (events by integer division, vector ramps) must give what the
+// per-sample evaluation gives (WarpVoiceRun::perSample forces it), and a render must not depend on the call length or
+// on where a glide starts and stops — a chunk with a constant step takes the pieces, one with a moving step the
+// per-sample form, and the chunks fall differently for every call length.
+TEST_CASE("SM.15: the Beats constant-step pieces equal the per-sample evaluation; block size and glides do not matter") {
+  std::vector<float> s(48000 * 2);
+  for (size_t i = 0; i < s.size(); ++i)
+    s[i] = static_cast<float>(0.4 * std::sin(0.031 * i) + 0.3 * std::sin(0.0071 * i * (1.0 + i / 96000.0)));
+  const std::vector<float> slices = {0.0f, 7000.0f, 19000.0f, 30000.0f, 52000.0f, 70000.0f};
+  Src src(s, slices, {0.0f, 0.0f, 30000.0f, 1.0f, 96000.0f, 3.5f});
+  struct Shape {
+    const char* name;
+    float (*rate)(size_t);
+  };
+  const Shape shapes[] = {
+      {"rate 1", [](size_t) { return 1.0f; }},
+      {"rate 0.83", [](size_t) { return 0.83f; }},
+      {"rate 2.3 (a mip level)", [](size_t) { return 2.3f; }},
+      // Constant, a glide up over 0.2 s, constant again, a step down, a short vibrato, constant.
+      {"glides", [](size_t t) {
+         if (t < 20011) return 1.0f;
+         if (t < 29600) return 1.0f + 0.5f * static_cast<float>(t - 20011) / 9589.0f;
+         if (t < 61000) return 1.5f;
+         if (t < 90000) return 0.75f;
+         if (t < 97000) return 0.75f + 0.05f * std::sin(static_cast<float>(t - 90000) * 0.01f);
+         return 0.75f;
+       }},
+  };
+  for (const Shape& shape : shapes)
+    for (const WarpSliceLoop sl : {WarpSliceLoop::Off, WarpSliceLoop::Forward, WarpSliceLoop::BackForward})
+      for (const bool loop : {false, true})
+        for (const float envelope : {100.0f, 60.0f})
+          for (const double bpm : {70.0, 97.0, 150.0}) {  // slower than the sample (slices loop) … faster (cut)
+            CAPTURE(shape.name);
+            CAPTURE(static_cast<int>(sl));
+            CAPTURE(loop);
+            CAPTURE(envelope);
+            CAPTURE(bpm);
+            WarpVoiceRun run;
+            run.mode = AudioWarp::Beats;
+            run.start = 3000.0;
+            run.end = 60000.0;
+            run.loopStart = loop ? 20000.0 : 0.0;
+            run.loopEnd = loop ? 50000.0 : 0.0;
+            run.sampleBpm = 100.0;
+            run.sampleRate = kSr;
+            run.set.envelope = envelope;
+            run.set.sliceLoop = sl;
+            const size_t frames = 48000 * 5 / 2;
+            auto bpmAt = [&](size_t) { return bpm; };
+            const Out ref = play(src.source(), run, frames, 64, bpmAt, shape.rate);
+            double peak = 0.0;
+            for (float y : ref.l) peak = std::max(peak, static_cast<double>(std::abs(y)));
+            CHECK(peak > 0.1);
+            WarpVoiceRun per = run;
+            per.perSample = true;
+            const Out ps = play(src.source(), per, frames, 64, bpmAt, shape.rate);
+            CHECK(ps.l == ref.l);
+            CHECK(ps.r == ref.r);
+            for (const uint32_t block : {1u, 37u, 128u, 500u}) {
+              CAPTURE(block);
+              const Out o = play(src.source(), run, frames, block, bpmAt, shape.rate);
+              CHECK(o.l == ref.l);
+              CHECK(o.r == ref.r);
+              CHECK(o.playing == ref.playing);
+            }
+          }
+}
+
+// SM.15: one window (warp.h warpHannGain): a pure function of the frame, whatever the call's split; grains sum to 1.
+TEST_CASE("SM.15: the Hann gain is the same for every split of a grain, and overlapping grains sum to 1") {
+  for (const uint32_t N : {2u, 96u, 2880u, 48000u}) {
+    CAPTURE(N);
+    std::vector<float> whole(N), parts(N);
+    warpHannGain(N, 0, nullptr, 1.0f, whole.data(), N);
+    for (uint32_t at = 0, k = 0; at < N; ++k) {
+      const uint32_t n = std::min<uint32_t>(N - at, 1 + (k * 7) % 23);
+      warpHannGain(N, at, nullptr, 1.0f, parts.data() + at, n);
+      at += n;
+    }
+    CHECK(parts == whole);
+    CHECK(hannWindow(N) == whole);
+    double worst = 0.0, off = 0.0;
+    for (uint32_t j = 0; j < N / 2; ++j) {
+      worst = std::max(worst, std::abs(static_cast<double>(whole[j]) + static_cast<double>(whole[j + N / 2]) - 1.0));
+      off = std::max(off, std::abs(whole[j] - (0.5 - 0.5 * std::cos(2.0 * std::numbers::pi * j / N))));
+    }
+    CHECK(worst < 6e-8);  // (one rounding of 1 − s)
+    CHECK(off < 2e-7);  // (float: the phase and the polynomial each round)
+  }
 }

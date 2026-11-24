@@ -38,7 +38,9 @@
 //                     1 Tukey, 2 Gauss, 3 Triangle, 4 Exp
 //            warp     0 Off: rate = hz / root · 2^(transpose + detune/100)/12 (Slice: the transpose only);
 //                     (Slice per voice: × a wired hz / voice.noteHz, so glides and bends move it);
-//                     1 Re-Pitch: the same × transport.bpm / sampleBpm (the sample follows the song's tempo by speed);
+//                     1 Re-Pitch: the same × the song's tempo over the sample's (it follows the tempo by speed):
+//                     through the data's markers (sample_read's tempo input: the law's local speed at the playhead,
+//                     SM.15), transport.bpm / sampleBpm without them;
 //                     SM.4: 2 Beats, 3 Tones, 4 Texture (Classic / One-Shot): sampler_warp — the content follows
 //                     transport.bpm from the trigger through the data's markers (none: sampleBpm), the pitch is the
 //                     rate above per sample (glides continuous); Beats slices at the data's slice table (the
@@ -64,6 +66,7 @@
 // Slice, + transport.bpm with Re-Pitch), so they keep SM.2's path and cost; Beats / Tones / Texture one sampler_warp;
 // an unwired position folds the scrub path away.
 
+#include "pq/dsp/warp.h"
 #include "pq/meta/type.h"
 
 namespace pq::meta {
@@ -79,8 +82,8 @@ enum SamplerParam : uint32_t { kSmpStart, kSmpEnd, kSmpLoopStart, kSmpLoopLength
 enum SamplerSetting : uint32_t { kSmpMode, kSmpWarp, kSmpLoop, kSmpTrigger, kSmpBeatsLoop, kSmpGranMode, kSmpGrains,
                                  kSmpHarmonic, kSmpShape, kSmpSettings };
 enum class SamplerMode : uint8_t { Classic = 0, OneShot = 1, Slice = 2, Granular = 3 };
-// SM.4: the warp setting (SM.5: Complex / Complex Pro are the phase vocoder, pq/dsp/sampler_stretch.h).
-enum class SamplerWarp : uint8_t { Off = 0, RePitch = 1, Beats = 2, Tones = 3, Texture = 4, Complex = 5, ComplexPro = 6 };
+// SM.4: the warp setting's values are dsp::AudioWarp (pq/dsp/warp.h; SM.15: the one enum), the beatsLoop setting's
+// dsp::WarpSliceLoop.
 inline constexpr double kSamplerDefaultRoot = 261.63;  // unpitched → middle C (docs/plans/SM.md "Root pitch")
 
 // The data's sample (SampleId value; 0: none) and slice table.

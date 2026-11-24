@@ -69,20 +69,6 @@ bool sameClip(const doc::AudioClipDesc& a, const doc::AudioClipDesc& b) {
          a.markers == b.markers && a.pitchRatio == b.pitchRatio && a.warpParams == b.warpParams;
 }
 
-// The engine's warp mode (T6.5: Complex / Complex Pro are the engine's phase vocoder, pq/dsp/stretch_pool.h).
-engine::ClipWarp engineWarp(doc::AudioWarp w) {
-  switch (w) {
-    case doc::AudioWarp::Off: return engine::ClipWarp::Off;
-    case doc::AudioWarp::RePitch: return engine::ClipWarp::RePitch;
-    case doc::AudioWarp::Beats: return engine::ClipWarp::Beats;
-    case doc::AudioWarp::Tones: return engine::ClipWarp::Tones;
-    case doc::AudioWarp::Texture: return engine::ClipWarp::Texture;
-    case doc::AudioWarp::Complex: return engine::ClipWarp::Complex;
-    case doc::AudioWarp::ComplexPro: return engine::ClipWarp::ComplexPro;
-  }
-  return engine::ClipWarp::Off;
-}
-
 // The analysis cache directory of each queued transient job (by content hash): set on the UI thread when the job is
 // queued, taken by the loader.
 std::mutex gAnalysisDirsMutex;
@@ -127,7 +113,7 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
   c.sample = sample;
   c.start = d.start;
   c.length = d.length;
-  c.warp = engineWarp(d.warp);
+  c.warp = d.warp;  // (dsp::AudioWarp: one enum)
   c.reverse = d.reverse;
   c.playable = playable;
   c.declick = d.declick;  // FZ.x-fix: a render clip (AudioClip::noEdgeFade)
@@ -139,18 +125,17 @@ engine::AudioClipDesc toEngine(const doc::AudioClipDesc& d, uint32_t sample, boo
   // T6.3: the warp markers as the law's segments (doc::warpFrameAt: a lone marker at framesPerTick through it; else
   // between neighbours, the first and last segments extended).
   const std::vector<doc::WarpMarker>& m = d.markers;
-  if (m.size() == 1) {
-    c.segments.push_back({m[0].content, m[0].sourceFrame, d.framesPerTick});
-  } else {
-    for (size_t i = 0; i + 1 < m.size(); ++i)
-      c.segments.push_back({m[i].content, m[i].sourceFrame,
-                            (m[i + 1].sourceFrame - m[i].sourceFrame) / static_cast<double>(m[i + 1].content - m[i].content)});
-  }
+  const auto markers = static_cast<uint32_t>(m.size());
+  if (markers != 0)
+    for (uint32_t k = 0; k < dsp::warpMarkerSegs(markers); ++k) {
+      const dsp::WarpSeg g = dsp::warpMarkerSeg(markers, k, d.framesPerTick, [&](uint32_t i) {
+        return std::pair<double, double>(static_cast<double>(m[i].content), m[i].sourceFrame);
+      });
+      c.segments.push_back({m[k].content, g.f0, g.slope});
+    }
   c.stretch.pitchRatio = d.pitchRatio;
   c.stretch.granulation = d.warpParams.beatsGranulation;
-  c.stretch.sliceLoop = d.warpParams.beatsLoop == doc::BeatsLoop::Off       ? engine::SliceLoop::Off
-                        : d.warpParams.beatsLoop == doc::BeatsLoop::Forward ? engine::SliceLoop::Forward
-                                                                            : engine::SliceLoop::BackForward;
+  c.stretch.sliceLoop = d.warpParams.beatsLoop;
   c.stretch.envelope = d.warpParams.beatsEnvelope;
   c.stretch.grainSeconds = static_cast<double>(d.warpParams.grainSizeMs) / 1000.0;
   c.stretch.flux = d.warp == doc::AudioWarp::Texture ? d.warpParams.flux : 0.0f;
@@ -645,7 +630,7 @@ void ProjectLink::publishAudio(const doc::Project& p, bool force) {
       c.sample = static_cast<uint32_t>(samples.size());
       c.start = 0;
       c.length = std::max<Ticks>(1, tempo.firstTickAtOrAfterSample(static_cast<SampleTime>(f.render.frames), cfg_.sampleRate));
-      c.warp = engine::ClipWarp::Off;
+      c.warp = pq::dsp::AudioWarp::Off;
       c.speed = static_cast<double>(f.render.rate);
       c.declick = false;  // song sample k is file frame k
       fkey.insert(fkey.end(), {f.slot, f.render.clipId, static_cast<uint64_t>(c.length)});
@@ -890,7 +875,7 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   pc.streams = &pool_->streams();
   pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
   // T6.5: one clip (a Complex one and its fade-out after a swap at most); none for the other modes (L15).
-  const bool complex = engine::clipComplex(c.warp);
+  const bool complex = pq::dsp::warpComplex(c.warp);
   pc.stretchVoices = complex && channels == 2 ? 2u : 0u;
   pc.stretchMonoVoices = complex && channels == 1 ? 2u : 0u;
   pc.stretchCapacity = 0;
@@ -998,7 +983,7 @@ Status ProjectLink::renderClips(const doc::Project& p, doc::TrackId track, Ticks
   for (const engine::AudioSequenceImage::Clip& c : image.clips(0))
     if (c.sample != engine::AudioSequenceImage::kNoSample && c.playEnd > s0 && c.playStart < s1) {
       s = std::min(s, c.playStart);
-      if (engine::clipComplex(c.warp)) {
+      if (pq::dsp::warpComplex(c.warp)) {
         complex = true;
         stereoComplex = stereoComplex || image.sample(c.sample).view().channels > 1;
       }

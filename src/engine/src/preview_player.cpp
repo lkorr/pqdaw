@@ -57,14 +57,14 @@ Status PreviewPlayer::play(media::SampleRef sample, double startSeconds, const P
     auto t = TempoMap::create(std::span<const TempoPoint>(&pt, 1));
     if (!t) return std::move(t).error();
     tempo = std::move(*t);
-    c.warp = ClipWarp::RePitch;
+    c.warp = dsp::AudioWarp::RePitch;
     framesPerTick = rate * 60.0 / (o.fileBpm * static_cast<double>(kPpq));
     c.framesPerTick = framesPerTick;
     c.contentStart = 0;
     c.length = std::max<Ticks>(1, static_cast<Ticks>(std::ceil(static_cast<double>(v.frames) / framesPerTick)));
     speed_ = o.projectBpm / o.fileBpm;
   } else {
-    c.warp = ClipWarp::Off;
+    c.warp = dsp::AudioWarp::Off;
     c.speed = rate;
     c.contentStartFrame = 0.0;
     c.length = std::max<Ticks>(1, static_cast<Ticks>(std::ceil(tempo.secondsToTicks(seconds))));
@@ -104,7 +104,7 @@ SampleTime PreviewPlayer::songAt(double fileSeconds) const noexcept {
   const AudioSequenceImage& img = *current_;
   if (img.clips(0).empty()) return 0;
   const AudioSequenceImage::Clip& c = img.clips(0)[0];
-  if (c.warp == ClipWarp::RePitch) {
+  if (c.warp == dsp::AudioWarp::RePitch) {
     const double rate = static_cast<double>(img.sample(0).view().sampleRate);
     const double contentTicks = fileSeconds * rate / c.framesPerTick;
     return img.tempo().ticksToSamples(static_cast<Ticks>(std::llround(contentTicks)), img.sampleRate());

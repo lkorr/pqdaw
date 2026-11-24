@@ -42,7 +42,8 @@ constexpr ArgMap kNoise[] = {{U::InitSeed, 0}};                                 
 constexpr ArgMap kSampleRead[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1},  // sample, rate, reset,
                                   {U::Input, 2},    {U::Input, 3}, {U::Input, 4},  // start, loopStart, loopEnd,
                                   {U::Input, 5},    {U::Input, 6}, {U::Input, 7},  // fade, pingpong, end (SM.2),
-                                  {U::Input, 8},    {U::Input, 9}, {U::Input, 10}};  // fadeIn, fadeOut, units
+                                  {U::Input, 8},    {U::Input, 9}, {U::Input, 10},  // fadeIn, fadeOut, units,
+                                  {U::Input, 11},   {U::Input, 12}};                // tempo, sampleBpm (SM.15)
 constexpr ArgMap kSampleSlice[] = {{U::Resource, 0}, {U::Input, 0}, {U::Input, 1}};  // sample, key, units (SM.2)
 constexpr ArgMap kSamplePos[] = {{U::Resource, 0}, {U::Input, 0}};                      // sample, pos
 constexpr ArgMap kSamplerWarp[] = {{U::Resource, 0}, {U::Input, 0},  {U::Input, 1},  {U::Input, 2},  {U::Input, 3},

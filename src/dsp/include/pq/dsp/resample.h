@@ -46,13 +46,15 @@
 
 #include <cstdint>
 
+#include "pq/dsp/fixed.h"
+
 namespace pq::dsp {
 
 enum class ResampleQuality : uint8_t { High, Draft };
 
 inline constexpr uint32_t kSincPhases = 256;    // table rows per input frame of the unstretched prototype
 inline constexpr uint32_t kMinStretchQ = 16;    // the largest stretch is 256 / 16 = 16× (+48 semitones)
-inline constexpr int64_t kFixedOne = int64_t{1} << 32;  // one frame in 32.32
+// (kFixedOne: pq/dsp/fixed.h)
 
 struct SincPrototype {
   uint32_t halfWidth = 32;  // W: taps = 2·W

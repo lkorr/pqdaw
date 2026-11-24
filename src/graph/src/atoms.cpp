@@ -155,7 +155,11 @@ constexpr PortSpec pSampleRead[] = {{"sample", kRConst},
                                     {"end", kRParamBound, true, 1.0e30f},
                                     {"fadeIn", kRParamBound, true, 0.0f},
                                     {"fadeOut", kRParamBound, true, 0.0f},
-                                    {"units", kRConst, true, 0.0f}};
+                                    {"units", kRConst, true, 0.0f},
+                                    // SM.15 (Re-Pitch): tempo > 0 (BPM): the rate × the local speed of the sample's
+                                    // warp law at the playhead (no markers: tempo / sampleBpm).
+                                    {"tempo", kRParamBound, true, 0.0f},
+                                    {"sampleBpm", kRParamBound, true, 120.0f}};
 constexpr PortSpec pSampleReadOut[] = {{"out", kRAudio}, {"playing", kBAudio}, {"right", kRAudio}, {"pos", kRAudio}};
 constexpr PortSpec pSampleSlice[] = {{"sample", kRConst}, {"key", kR}, {"units", kRConst, true, 0.0f}};
 constexpr PortSpec pSampleSliceOut[] = {{"start", kR}, {"end", kR}};
@@ -172,7 +176,7 @@ constexpr PortSpec pSamplerWarp[] = {{"sample", kRConst},  // (rate is read at i
                                      {"loopEnd", kRParamBound, true, 0.0f},
                                      {"bpm", kRParamBound, true, 120.0f},
                                      {"sampleBpm", kRParamBound, true, 120.0f},
-                                     {"mode", kRConst, true, 1.0f},
+                                     {"mode", kRConst, true, 3.0f},  // dsp::AudioWarp (3: Tones)
                                      {"grain", kRParamBound, true, 0.03f},
                                      {"flux", kRParamBound, true, 0.0f},
                                      {"sliceLoop", kRConst, true, 1.0f},

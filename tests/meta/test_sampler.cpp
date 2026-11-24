@@ -882,6 +882,9 @@ std::vector<NoteAt> sixteen(uint64_t release, bool all = true, const std::vector
 TEST_CASE("SM.14 sampler: renders with freed lanes in a running group — Classic, Tones loop, Complex, Granular") {
   // The voices' mixes (16 notes, 15 released at 0.25 s, a 17th at 0.5 s into a freed lane, interpreter == JIT): the
   // mix only holds occupied lanes, so these are the FNV hashes of origin/main 76402a45 (before freed lanes stopped).
+  // SM.15 re-recorded three of them once, with the unified warp core: "tones loop" (the one Hann window, warpHannGain,
+  // ≤ 2e-7 from the table it replaced), "complex loop" (its Tones cover, and the vocoder read through the one cubic,
+  // fused) and "granular" (the one cubic: the same polynomial, its c2 term summed in sample_read's order).
   Sample smp(48000, 44100.0);
   smp.slot.setStretch(dsp::SamplerStretch::build(24, 2, kSr), smp.reclaimer);
   const auto notes = sixteen(12000, true, {{24000, true, 17, kRoot * 1.1f}, {33000, false, 17, 0.0f}});
@@ -895,10 +898,10 @@ TEST_CASE("SM.14 sampler: renders with freed lanes in a running group — Classi
       {"classic loop", {0.0, 0.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2, loopFade: 0.01",
        10306494242544494933ull},
       {"tones loop", {0.0, 3.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2, grain: 0.04",
-       16467499559850472747ull},
-      {"complex loop", {0.0, 5.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2", 14897091141915727426ull},
+       6344938697517164065ull},
+      {"complex loop", {0.0, 5.0, 1.0, 0.0}, ", start: 0.05, loopStart: 0.3, loopLength: 0.2", 16493227967992128308ull},
       {"granular", {3.0, 0.0, 1.0, 0.0, 1.0, 1.0, 12.0, 0.0, 0.0}, ", grainSize: 0.04, density: 70, sprayTime: 0.01",
-       17647464308222159515ull},
+       15022816456587296612ull},
   };
   for (const Case& c : cases) {
     CAPTURE(c.name);
