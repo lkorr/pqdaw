@@ -2420,3 +2420,60 @@ Sampler well and editor, browser preview).
 - Goldens: all 28 with a waveform re-recorded (arrangement-audio / -takes / -comp, clip-view-audio, audio-clip-warp-*,
   browser-*, project-patch-lanes, sampler-face-*, sampler-panel-*), waveform-lod redrawn (a row per regime, a split row
   across each boundary).
+
+## WF.2 · Every other curve display, and WF.1's leftovers (👁)
+Every curve now goes through one antialiased path (`pq/ui/lines.h`: `strokePolyline`, `strokeSeries`, the coloured
+strokes; a face calls them through the painter). What to look at, at 100 % and 200 %:
+- **Sample waveforms** (arrangement, clip view, Sampler, browser): a thin stroke is the same line as everywhere else — a
+  1 px core and a soft 0.75 px edge — so it no longer thins and swells along a shallow slope; dense bodies keep their
+  exact edges. A tone of about 2 px per cycle is drawn as its envelope instead of a moiré (a little of the beat can
+  remain: up to about a fifth of the height). The lines are heavier than WF.1's: judge the weight.
+- **Glyphs and corners**: every face polyline with a hard corner (the wavetable's saw / square / pulse cells, envelope
+  peaks, band-type icons) has even-width mitred or bevelled joins; they were pinched. The double-saw glyph reads heavier
+  (closer to an "M"): say if the old lighter look was wanted.
+- **Envelope**: one line through the four segments (the peak is a point, no notch), a point per px at any zoom.
+- **Wavetable**: the frame stack and the voices' frames are traced like the sounding frame (no facets at 200 %, no
+  aliasing zoomed out); dashed curves (draw mode, fitted nodes) are real dashes, not beads.
+- **EQ / filter response, transfer curves, curve editor, dial popup, arp bend**: smooth at any size; corners land on
+  their handles; an EQ node on a steep flank slides instead of stepping.
+- **Analysers**: Band Levels, the loudness traces, scope trails and circuit probes draw one column per px when denser
+  than the pixels (no more self-overlapping translucent lines) and a spline when sparser. The Waterfall's ridge and
+  wireframe are antialiased; Stereo Image's position line and the Phase Scope's curve are joined strokes.
+- **Arrangement rulers** zoomed in: bar.beat.sixteenth labels stop at the sixteenths (1/32 and 1/64 lines keep their
+  ticks); when no labelled line is in view the sixteenth the view is in is named, dimmed, at the left. The time ruler
+  goes on below a second (0:10.05 … 0:10.07292).
+- **Audio clip view**: zoomed in, a marker or brace held past the display's side scrolls the view under it.
+- **Sampler**: the Loop cells are wider ("Ping-Pong" has room).
+
+Per display (how it was drawn → what was wrong → what changed):
+| Display | File | Was | Now |
+|---|---|---|---|
+| Sample waveforms (draw + tiles) | ui/waveform.cpp | column profiles, 1 px box strokes: roping; moiré near 2 px per cycle; tile raster 3.6× slower than before WF.1 | thin columns get the line's feather; alternating half-cycle columns filled to the envelope; raster row by row |
+| Wavetable sounding frame | meta/wavetable_face.cpp | clean; re-traced on every paint | points kept until the frame / width changes; a point per px |
+| Wavetable frame stack, voice frames | same | every 2nd … 64th value: ≤ 129 points (facets from 200 %), plain decimation zoomed out | traced like the sounding frame |
+| Wavetable draw mode / nodes (dashed) | ui/face_painter.cpp | a two-point ribbon per piece of a dash per segment | one ribbon per dash |
+| Face glyphs, any polyline with a hard corner | ui/face_painter.cpp | chord normals: pinched, notched corners | strokePolyline (mitre / bevel) |
+| Envelope | meta/envelope_face.cpp | 40 chords a segment at every zoom, four separate ribbons | a point per px, one polyline, hot segment over it |
+| Oscilloscope trace, beat mode | meta/scope_face.cpp | spline at 2 points per px / envelope columns | clean, unchanged |
+| Oscilloscope trails | same | 256 point samples, straight chords | min / max pairs, strokeSeries |
+| Band Levels | meta/band_wave_faces.cpp | fill quads written in place; up to 14 columns per px as a ribbon | gradientBand; strokeSeries |
+| Waveform (meta) | same | own feathered strip with a colour per vertex | clean, left |
+| LUFS tank trace, Loudness History | meta/loudness_faces.cpp | 600 … 1800 points over 50 … 270 px, translucent | painter series |
+| Stereo Field | meta/stereo_faces.cpp | joined runs | clean |
+| Stereo Image | same | position line: a ribbon per segment; ribbon: a quad per row | line joined (a colour per point); the ribbon is left (a band plot: its rows are the data) |
+| Phase Scope curve | same | a ribbon per segment | joined, a colour per point |
+| Waterfall ridge, wireframe | meta/waterfall_face.cpp | a bare quad per segment: no fringe, no joins; points ignored the zoom | gradient stroke through the painter; points follow the zoom, the ridge one per px. The terrain's silhouette is left (a filled mesh) |
+| Spectrum, analyser overlay, noise trace | devices/spectrum_plot.cpp, meta/noise_face.cpp | one point per px | clean |
+| Curve editor, dial popup, arp bend | panel/curve_element.cpp, rich_elements.cpp, arp_elements.cpp | 64 / 64 / 96 equal steps, corners between samples | a sample per px and one at every corner |
+| Transfer (compressor, saturator) | panel/transfer_element.cpp | 128 points, straight chords | series (spline when sparse) |
+| Response: magnitude, phase, delay | panel/response_elements.cpp | 768 points × 3 ribbons on every analyser frame; node from the nearest point | series (a simplified ribbon); node interpolated. Left: the frequency grid ignores band centres (a Q above ≈ 50 is quantised) |
+| Math scopes | panel/trace_element.cpp | two glow passes at alpha ≤ 4 / 255 | no glow passes |
+| Circuit probe | circuit/probes.cpp | dense: a 1 px rule per column and a midline | strokeSeries; the bool trace as thick as the UI scale |
+| Automation envelope | arrangement/automation_paint.cpp | dense: a plain rect per column | antialiased columns. The line itself is left (see the question) |
+| Arp pattern glides | document/note_pattern.cpp | 16 points per shaped glide | left (≤ 5 px chords at 200 % under a 6 px stroke) |
+- Live check (my own instance, scripted, isolated settings and autosave folder, no audio device): the device view's
+  faces at 100 % and 200 %, the arrangement and time rulers from bars to 10 µs. Not seen live: moving traces (no audio)
+  and sample waveforms (no way to load a file by script); those are judged from the goldens (138 views goldens and
+  waveform-lod re-recorded, each compared with the old one).
+- Seen there, not mine: a scripted `quit` with unsaved edits waits for ever in the native Save dialog; one run ended
+  with an access violation after `discard` + `quit` (not reproduced in three more runs).
