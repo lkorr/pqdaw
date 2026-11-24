@@ -2804,3 +2804,21 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - No bench or paint timer exists for the live faces, so their per-frame cost was not measured; by construction a
   trace's vertices now follow its width (4 per px) or drop (Math scopes: 3 ribbons of 7), except the Waterfall's ridge
   (twice its points) and its lines when zoomed in (points × zoom, as the look needs).
+
+## Q?-OP.0-a · 2026-11-24 · OP.0 · Animation rate of meters, faces and analysers
+- Context: while playing, the UI thread costs 7 – 15 % of a core (docs/plans/OP.md §2.4, F1, F2), as much as or more
+  than the audio engine. OP.1 bounds it at one present per display refresh without any visible change. What remains
+  scales with the frame rate (and with the display's refresh rate on 120 / 144 Hz screens).
+- Options: A. everything at the display's rate (after OP.1). B. meters, panel faces and analysers at 30 Hz, playhead
+  and gestures at the display's rate. C. a preference (30 / 60 / display), default B.
+- Choice (provisional): A until answered (OP.1 only); OP.2's rate cap waits for the answer.
+- Status: open
+
+## Q?-OP.0-b · 2026-11-24 · OP.0 · Engine block larger than 64 frames
+- Context: back to back, a session costs 7.4 % of a core at 64 frames, 6.6 % at 128, 5.7 % at 256 (per-block overhead
+  ≈ 1 µs per sounding unit); at a device's cadence the difference is inside the noise (OP.md §2.3, F11). A larger
+  block changes param-rate stepping (live would no longer equal a 64-frame offline render bit for bit) and adds
+  adapter latency on device buffers smaller than the block.
+- Options: A. keep 64. B. the engine block follows the device buffer up to 256.
+- Choice (provisional): A; OP.4 removes the cheap part of the per-block overhead instead.
+- Status: open

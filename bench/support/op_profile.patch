@@ -1,0 +1,303 @@
+diff --git a/src/app/CMakeLists.txt b/src/app/CMakeLists.txt
+index 23dbca71..28b14bf2 100644
+--- a/src/app/CMakeLists.txt
++++ b/src/app/CMakeLists.txt
+@@ -76,6 +76,7 @@ pq_add_executable(pqdaw
+ # the stock units (a new project, default-instrument tracks; 44.1/48/88.2/96 kHz) for the baseline CPU into
+ # <exe dir>/jit-aot, which it reads at run time: its entries are keyed by this very binary, so they are rebuilt with
+ # it (well under a second in release). Ship the directory next to pqdaw.exe.
++target_link_options(pqdaw PRIVATE /MAP)  # OP.0 THROWAWAY
+ option(PQ_JIT_AOT_SEED "Compile the JIT AOT seed (stock units) next to pqdaw.exe after each link" ON)
+ if(PQ_JIT_AOT_SEED)
+   add_custom_command(TARGET pqdaw POST_BUILD
+diff --git a/src/engine/include/pq/engine/op_profile.h b/src/engine/include/pq/engine/op_profile.h
+new file mode 100644
+index 00000000..c376d2d4
+--- /dev/null
++++ b/src/engine/include/pq/engine/op_profile.h
+@@ -0,0 +1,49 @@
++#pragma once
++// OP.0 THROWAWAY instrumentation (not committed): rdtsc scopes per engine stage and per unit.
++#include <cstdint>
++#include <cstring>
++#include <intrin.h>
++namespace pq::engine::opprof {
++enum : uint32_t { kEngine, kEnginePre, kProgram, kHook, kTimelineNotes, kClips, kAutomation, kUnits, kEvents, kMeters, kOutput, kEnginePost, kCount };
++inline const char* const kStageNames[kCount] = {"engine total", "engine pre (params, live input)", "program total", "hook (timeline + recorder + metronome)",
++                                                "  timeline notes", "  clip players", "  automation", "units (sum)", "  of which event sources / note stages",
++                                                "meters", "output copy", "engine post (clicks, quiet scan)"};
++struct UnitRow {
++  char name[96];
++  uint64_t cycles, runs, idle;
++  bool voices;
++};
++struct Table {
++  uint64_t stage[kCount];
++  uint64_t blocks;
++  UnitRow units[2048];
++  uint32_t numUnits;
++};
++inline Table& table() noexcept {
++  static Table t{};
++  return t;
++}
++inline uint32_t unitRow(const char* name, bool voices) noexcept {
++  Table& t = table();
++  for (uint32_t i = 0; i < t.numUnits; ++i)
++    if (std::strncmp(t.units[i].name, name, sizeof t.units[i].name - 1) == 0) return i;
++  if (t.numUnits == 2048) return 2047;
++  UnitRow& r = t.units[t.numUnits];
++  std::strncpy(r.name, name, sizeof r.name - 1);
++  r.voices = voices;
++  return t.numUnits++;
++}
++inline void reset() noexcept {
++  Table& t = table();
++  std::memset(t.stage, 0, sizeof t.stage);
++  t.blocks = 0;
++  for (uint32_t i = 0; i < t.numUnits; ++i) t.units[i].cycles = t.units[i].runs = t.units[i].idle = 0;
++}
++struct Scope {
++  uint64_t& acc;
++  uint64_t t0;
++  explicit Scope(uint64_t& a) noexcept : acc(a), t0(__rdtsc()) {}
++  explicit Scope(uint32_t stage) noexcept : acc(table().stage[stage]), t0(__rdtsc()) {}
++  ~Scope() { acc += __rdtsc() - t0; }
++};
++}  // namespace pq::engine::opprof
+diff --git a/src/engine/src/engine.cpp b/src/engine/src/engine.cpp
+index 4600b4e8..b7eef79a 100644
+--- a/src/engine/src/engine.cpp
++++ b/src/engine/src/engine.cpp
+@@ -1,5 +1,6 @@
+ // The engine (T3.17): pq/engine/engine.h describes it.
+ #include "pq/engine/engine.h"
++#include "pq/engine/op_profile.h"
+ #include "pq/engine/note_stage_offline.h"
+ 
+ #include <algorithm>
+@@ -294,6 +295,8 @@ void Engine::mixClicks(const AudioBlock& block) noexcept {  // RT-safe
+ }
+ 
+ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
++  opprof::Scope profEngine(opprof::kEngine);
++  const uint64_t profPre0 = __rdtsc();
+   ++stats_.blocks;
+   // The engine's own time base (T3.17-fix1, M3 review M15b): monotonic whatever the device does (a reopened device
+   // starts its frame count at 0 again), so audition note-offs and the units' sample time never go back.
+@@ -386,8 +389,10 @@ void Engine::process(const AudioBlock& device) noexcept {  // RT-safe
+     AudioBlock main = block;  // the program plays the main channels; the click pair (if any) is the engine's
+     main.numOut = std::min(block.numOut, cfg_.numOut);
+     stagesBusy_ = false;  // AP.1: set by the slots' chains during the program
++    opprof::table().stage[opprof::kEnginePre] += __rdtsc() - profPre0;
+     program_->process(main);
+   }
++  opprof::Scope profPost(opprof::kEnginePost);
+   if (clickPair_ || metronome_->pending()) mixClicks(block);  // T6.6
+   if (sleepFrames_ == 0) return;
+   bool quiet = !activity && numAuditions_ == 0 && live_->idle() && !stagesBusy_ && !timeline_->playing() && !timeline_->countingIn() &&
+diff --git a/src/engine/src/project_program.cpp b/src/engine/src/project_program.cpp
+index e3a91941..25072699 100644
+--- a/src/engine/src/project_program.cpp
++++ b/src/engine/src/project_program.cpp
+@@ -1,5 +1,6 @@
+ // Per-track project runner (T1.x-arch1; topology changes T3.17): pq/engine/project_program.h describes the protocol.
+ #include "pq/engine/project_program.h"
++#include "pq/engine/op_profile.h"
+ 
+ #include <algorithm>
+ #include <bit>
+@@ -202,6 +203,7 @@ struct ProjectProgram::Unit {  // (128-aligned: its ring)
+   // T6.7: its track input (setUnitInputs): first | channels << 16 (0: none).
+   std::atomic<uint32_t> input{0};
+   bool idle = false;         // skipped last block (its bus channels are zero)
++  uint32_t profRow = 0;      // OP.0 throwaway
+   // T1.x-silence: what its image reported after the last block it ran (ProcessContext::dormant / tailsDone).
+   bool dormant = false;
+   bool tailsDone = true;
+@@ -342,6 +344,7 @@ Result<std::unique_ptr<ProjectProgram>> ProjectProgram::create(const ProjectConf
+ std::unique_ptr<ProjectProgram::Unit> ProjectProgram::makeUnit(const UnitLayout& cfg) {
+   auto u = std::make_unique<Unit>(std::bit_ceil(std::max(2u, cfg_.maxPendingPerUnit)));
+   u->cfg = cfg;
++  u->profRow = opprof::unitRow(cfg.name.c_str(), cfg.voices);
+   if (u->cfg.voices) {
+     u->voices = std::make_unique<VoiceEngine>();
+     u->eventBuf = EventBuffer(std::max(cfg_.eventCapacity, 1u));
+@@ -1503,6 +1506,9 @@ void ProjectProgram::delayEvents(Unit& U, EventDelay& d, uint32_t delay, uint32_
+ }
+ 
+ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t time) noexcept {  // RT-safe
++  opprof::UnitRow& profRow = opprof::table().units[U.profRow];
++  opprof::Scope profScope(profRow.cycles);
++  ++profRow.runs;
+   if (U.fadeFrom == nullptr) trySwap(U, s);
+   Packet* p = U.cur;
+   if (p == nullptr) return false;  // no image yet: its buses keep reading zeros
+@@ -1513,7 +1519,10 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
+     for (const Compensation::Line& l : ce->lines) runLine(*l.line, l.delay, frames);
+   if (U.voices) {
+     U.eventBuf.clear();
+-    if (s.events.fn != nullptr) s.events.fn(s.events.user, time, frames, U.eventBuf);
++    if (s.events.fn != nullptr) {
++      opprof::Scope ev(opprof::kEvents);
++      s.events.fn(s.events.user, time, frames, U.eventBuf);
++    }
+     if (ce != nullptr && ce->events != nullptr) delayEvents(U, *ce->events, ce->eventDelay, frames, time);
+   }
+   // T6.2: the packets' slot → delay line maps, rebuilt when the plan changed (O(slots · lines), once per plan): every
+@@ -1598,6 +1607,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
+       const float* zero = zeros_.data();
+       for (TapRing* t : p->signalTaps) t->write(&zero, 1, frames, 1u);  // BR.C: its silence (nothing when unwatched)
+       ++U.stats.idleBlocks;
++      ++profRow.idle;
+       return false;
+     }
+   }
+@@ -1715,6 +1725,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
+ }
+ 
+ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
++  opprof::Scope profProgram(opprof::kProgram);
+   if (pendingParams_.load(std::memory_order_relaxed) != nullptr) adoptProjectParams();  // M4: a grown param block
+   const uint32_t maxBlock = cfg_.maxBlockFrames;
+   const uint32_t numOut = std::min(cfg_.numOut, block.numOut);
+@@ -1724,7 +1735,11 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+     const uint32_t n = std::min(maxBlock, block.frames - off);
+     const int64_t time = block.frameTime + off;
+     blockInOff_ = off;
+-    if (cfg_.hook.fn != nullptr) cfg_.hook.fn(cfg_.hook.user, time, n, transport_, std::span<float>(params_, numParams_));
++    if (cfg_.hook.fn != nullptr) {
++      opprof::Scope hk(opprof::kHook);
++      cfg_.hook.fn(cfg_.hook.user, time, n, transport_, std::span<float>(params_, numParams_));
++    }
++    ++opprof::table().blocks;
+     // L1: this block's param generation (a hook without a counter may have written anything: a new generation).
+     const uint64_t hookWrites =
+         cfg_.hook.fn == nullptr ? 0 : cfg_.hook.paramWrites != nullptr ? *cfg_.hook.paramWrites : ++hookGen_;
+@@ -1739,6 +1754,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+     unitCtx_.numTrackIn = 2;
+     Topology& t = *topo_;
+     uint32_t fading = 0;
++    const uint64_t profUnits0 = __rdtsc();
+     for (size_t i = 0; i < t.order.size(); ++i) {
+       if (t.alive[i].load(std::memory_order_relaxed) == 0) continue;
+       const Slot& s = t.order[i];
+@@ -1754,6 +1770,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+       }
+       fading += runUnit(*s.unit, s, n, time) ? 1u : 0u;
+     }
++    opprof::table().stage[opprof::kUnits] += __rdtsc() - profUnits0;
+     for (const CaptureTap& tap : capture_) {  // EX.1: offline bus capture
+       BusStore* b = tap.bus < t.stores.size() ? t.stores[tap.bus].get() : nullptr;
+       for (uint16_t c = 0; c < tap.width; ++c) {
+@@ -1763,6 +1780,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+       }
+     }
+     const uint32_t gen = meterGen_.load(std::memory_order_acquire);
++    const uint64_t profMeters0 = __rdtsc();
+     for (BusStore* bp : t.metered) {
+       BusStore& b = *bp;
+       if (b.seenGen != gen) {
+@@ -1781,6 +1799,8 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+         if (n > 0) b.pubLast[c].store(b.channel(c)[n - 1], std::memory_order_relaxed);  // bug-mod-ghost
+       }
+     }
++    const uint64_t profOut0 = __rdtsc();
++    opprof::table().stage[opprof::kMeters] += profOut0 - profMeters0;
+     if (n > 0)  // AP.2b: the bus values the note stages read at the next block
+       for (const auto& [bp, i] : t.values) busValues_[i] = bp->channel(0)[n - 1];
+     for (uint32_t c = 0; c < numOut; ++c) {
+@@ -1792,6 +1812,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
+       }
+       std::memcpy(dst, ob->channel(ob->width == 1 ? uint16_t{0} : static_cast<uint16_t>(c)), sizeof(float) * n);
+     }
++    opprof::table().stage[opprof::kOutput] += __rdtsc() - profOut0;
+     ++stats_.blocks;
+     if (fading > 0) ++stats_.fadeBlocks;
+     stats_.maxFadingUnits = std::max(stats_.maxFadingUnits, fading);
+diff --git a/src/engine/src/timeline.cpp b/src/engine/src/timeline.cpp
+index 135b1f4d..0e6b4ecf 100644
+--- a/src/engine/src/timeline.cpp
++++ b/src/engine/src/timeline.cpp
+@@ -1,4 +1,5 @@
+ #include "pq/engine/timeline.h"
++#include "pq/engine/op_profile.h"
+ 
+ #include <algorithm>
+ #include <bit>
+@@ -1161,6 +1162,7 @@ void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
+     const SampleTime s1 = pos_ + len;
+     bool ticked = false;
+     Ticks t1 = 0;
++    const uint64_t profN0 = __rdtsc();
+     if (notes) {
+       // The earliest pending event of any track, as a sample: t < firstTickAtOrAfterSample(s1) ⟺ ticksToSamples(t)
+       // < s1, so a run without events costs one compare, whatever the number of tracks (and no tick conversion).
+@@ -1181,10 +1183,15 @@ void Timeline::playBlock(uint32_t from, uint32_t frames) noexcept {  // RT-safe
+         }
+       }
+     }
++    const uint64_t profC0 = __rdtsc();
++    opprof::table().stage[opprof::kTimelineNotes] += profC0 - profN0;
+     clips_->play(f, pos_, len);  // T5.4
+     // T6.5b: the last look-ahead before a loop wrap primes the Complex voices the loop start needs (ClipPlayer::cue).
+     if (loopOn_ && pos_ < loopEndSample_ && loopEndSample_ - s1 <= clips_->cueLead()) clips_->cue(loopStartSample_, len);
++    const uint64_t profA0 = __rdtsc();
++    opprof::table().stage[opprof::kClips] += profA0 - profC0;
+     renderAutomation(f, pos_, len, f == 0 && len == frames);
++    opprof::table().stage[opprof::kAutomation] += __rdtsc() - profA0;
+     pushRun(f, len, pos_, TransportRun::Song);  // T6.6: the metronome's beats
+     f += len;
+     if (wrap) {
+diff --git a/src/jit/src/compiler.cpp b/src/jit/src/compiler.cpp
+index 5942276b..cadeafae 100644
+--- a/src/jit/src/compiler.cpp
++++ b/src/jit/src/compiler.cpp
+@@ -37,6 +37,7 @@
+ #include <cassert>
+ #include <chrono>
+ #include <condition_variable>
++#include <cstdio>
+ #include <cstdlib>
+ #include <mutex>
+ #include <new>
+@@ -112,6 +113,18 @@ struct SmallFunctionLsr : llvm::PassInfoMixin<SmallFunctionLsr> {
+   }
+ };
+ 
++
++// OP.0 THROWAWAY (not committed): PQ_JIT_MAP=<file> gets "<address> <name>" per stage function.
++static void opMapSym(const std::string& name, const void* p) {
++  const char* path = std::getenv("PQ_JIT_MAP");
++  if (path == nullptr || *path == 0) return;
++  static std::mutex m;
++  std::lock_guard lock(m);
++  if (FILE* f = std::fopen(path, "a")) {
++    std::fprintf(f, "%llx %s\n", static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(p)), name.c_str());
++    std::fclose(f);
++  }
++}
+ llvm::ModulePassManager lightPipeline() {
+   llvm::FunctionPassManager fpm;
+   fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+@@ -686,6 +699,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
+           return false;
+         }
+         fn = sym->toPtr<detail::StageFn>();
++        opMapSym(name, reinterpret_cast<const void*>(fn));
+         return true;
+       };
+       code->fns.assign(e.stageFunctions.size(), nullptr);
+@@ -970,10 +984,12 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
+     auto sym = s.jit->lookup(*code->jd, gen->stageFunctions[k]);  // links the object now, not on the audio thread
+     if (!sym) return llvmError("looking up a stage function", sym.takeError());
+     code->fns[k] = sym->toPtr<detail::StageFn>();
++    opMapSym(gen->stageFunctions[k], reinterpret_cast<const void*>(code->fns[k]));
+     if (gen->pairFunctions[k].empty()) continue;
+     auto pair = s.jit->lookup(*code->jd, gen->pairFunctions[k]);
+     if (!pair) return llvmError("looking up a pair function", pair.takeError());
+     code->pairFns[k] = pair->toPtr<detail::StageFn>();
++    opMapSym(gen->pairFunctions[k], reinterpret_cast<const void*>(code->pairFns[k]));
+     ++code->pairedStages;
+   }
+   st.machineCodeMs += msSince(t1);

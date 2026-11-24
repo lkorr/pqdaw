@@ -110,6 +110,14 @@ target_compile_definitions(pq_bench_silence PRIVATE PQ_TEST_DATA_DIR=pq_build_te
 pq_add_bench(pq_bench_playback SOURCES app/bench_playback.cpp DEPS pq_app)
 pq_use_build_paths(pq_bench_playback)  # GU.4: the gu4_modules fixture projects
 target_compile_definitions(pq_bench_playback PRIVATE PQ_TEST_DATA_DIR=pq_build_test_data_dir)
+# OP.0 (docs/plans/OP.md): whole-engine scenarios (idle, silent tracks, the stock synths, effects, analysers, warp
+# modes, a mixed session) through the playback path, and a sampling profile of each (PQ_BENCH_SAMPLE; the linker map
+# resolves its addresses: tools/bench/symbolize_samples.py).
+pq_add_bench(pq_bench_scenarios SOURCES app/bench_scenarios.cpp DEPS pq_app)
+target_link_options(pq_bench_scenarios PRIVATE /MAP)
+# OP.0: the same kind of profile of a RUNNING pqdaw (its UI thread, the device's audio thread): pq_sample_process <pid>
+# <seconds> <out file>; resolve with pqdaw's linker map (link pqdaw with /MAP for that run).
+pq_add_bench(pq_sample_process SOURCES support/sample_process.cpp)
 pq_add_bench(pq_bench_arrangement SOURCES views/bench_arrangement.cpp DEPS pq_views)
 # T5.6: the arrangement over 64 audio tracks × 200 clips (waveform tiles; scroll / zoom / playhead frames, memory, idle).
 pq_add_bench(pq_bench_arrangement_audio SOURCES views/bench_arrangement_audio.cpp DEPS pq_views)
