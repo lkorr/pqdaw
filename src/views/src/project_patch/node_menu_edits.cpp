@@ -292,6 +292,9 @@ void ProjectPatchView::placeAt(doc::DeviceId device, graph::Point2 at, std::stri
     float top = patch_.bands[nd.band].y + metrics::kTitle;
     for (uint32_t c = nd.capsule; c < patch_.nodes.size(); c = patch_.nodes[c].capsule) top += patch_.nodes[c].fitT;
     if (nd.y + dy < top) dy = top - nd.y;
+    // AR.1: nor left of its band's first column (a wide block placed on the short notes cable at the band's left end
+    // hung out over the tuning block): the free-spot search below then clears what it lands on.
+    if (nd.capsule == kNone && !patch_.scoped && nd.x + dx < patch_.bands[nd.band].x0 + 8.0f) dx = patch_.bands[nd.band].x0 + 8.0f - nd.x;
   }
   const bool orbiting = nd.orbitIn.on || nd.orbitOut.on;
   nudge(device.value, dx, dy);

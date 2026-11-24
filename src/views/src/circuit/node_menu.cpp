@@ -668,15 +668,16 @@ void NodeMenu::paintPreview(ui::PaintContext& ctx, const IRect& pv) {
       ctx.dl.addRoundedRectFilled(blk.toRect(), ctx.scale.exact(6.0f), F.hub);
       ctx.dl.addRoundedRectStroke(blk.toRect(), ctx.scale.exact(6.0f), ui::mulAlpha(F.frame, 0.8f), std::max(1.0f, std::round(ctx.scale.factor)));
       const float jr = ctx.scale.exact(4.0f), stub = ctx.scale.exact(22.0f), cwid = ctx.scale.exact(3.0f);
-      auto colourOf = [&](const std::string& name, bool main) {
+      auto colourOf = [&](const std::string& name, bool main, bool input) {
         if (name == "notes") return th.circuit.wireNotes;
+        if (main && (input ? e->notesIn : e->notesOut)) return th.circuit.wireNotes;  // AR.1: a main port declared Notes
         return main ? th.circuit.wireAudio : th.circuit.wireMod;
       };
       auto side = [&](const std::vector<std::string>& ports, bool left) {
         for (size_t k = 0; k < ports.size(); ++k) {
           const float py = static_cast<float>(blk.y + ctx.scale.px(6) + static_cast<int32_t>(k) * pitch + pitch / 2);
           const float px = left ? static_cast<float>(blk.x) : static_cast<float>(blk.right());
-          const Rgba col = colourOf(ports[k], k == 0);
+          const Rgba col = colourOf(ports[k], k == 0, left);
           const float sx = left ? px - stub : px + stub;
           // The cable: a short tube (a darker rim, the colour, a highlight) fading out away from the jack.
           ctx.dl.addRectFilledMultiColor({std::min(px, sx), py - cwid * 0.5f, std::max(px, sx), py + cwid * 0.5f},

@@ -199,6 +199,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_view_context.cpp
     views/test_note_preview.cpp  # AP.7: the roll preview (ghosts off the UI thread, debounced, Ghosts switch), Flatten (Ctrl+Alt+F), golden
     views/test_note_device_drop.cpp  # AP.2: the Arpeggiator dragged from the browser onto a notes cable (real dispatch)
+    views/test_arp_placement.cpp  # AR.1: the Arpeggiator from the Tab node menu, notes cables only (real dispatch), golden
     views/test_sample_place.cpp  # SM.8: audio files dropped on the circuit place / replace Samplers (real dispatch)
     views/test_sampler_face.cpp  # SM.10: the closed Sampler face (goldens, a hidden face's tap unread, the chevron)
     views/test_spectrum_display.cpp  # TX.spectrum: the analysis feed, the spectrum plot, the Spectrum face, scenes, 8-display frame

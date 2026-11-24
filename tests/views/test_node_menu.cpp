@@ -368,7 +368,7 @@ TEST_CASE("node search: fuzzy over names, aliases and descriptions; categories; 
   CHECK(first("one-sample delay", NodeTab::Atoms) == "z1");  // descriptions (substrings)
   CHECK(first("spectrum", NodeTab::Visualisers) == "Spectrum");
   CHECK(first("utility", NodeTab::Atoms).empty());  // the tab filters
-  CHECK(first("", NodeTab::MidiEffects).empty());   // none yet
+  CHECK(first("", NodeTab::MidiEffects) == "Arpeggiator");  // AR.1: the note device types (test_arp_placement.cpp)
   // Compatible first: from an output, nodes with an input before the rest (an instrument has none).
   {
     const auto hits = searchNodes(*c, "", NodeTab::All, NodeFilter::WithInput);
@@ -376,7 +376,7 @@ TEST_CASE("node search: fuzzy over names, aliases and descriptions; categories; 
     for (const NodeHit& h : hits) {
       if (!h.compatible) seenIncompatible = true;
       else CHECK_FALSE(seenIncompatible);
-      CHECK(h.compatible == c->entries[h.entry].hasIn);
+      CHECK(h.compatible == (c->entries[h.entry].hasIn && !c->entries[h.entry].notesIn));  // AR.1: never a Notes input
     }
     CHECK(seenIncompatible);
   }
@@ -2094,8 +2094,9 @@ TEST_CASE("node menu (TX.ports-always): every catalog entry placed unwired — t
       const graph::Point2 at = inside ? insideCapsule(u) : u.emptyWorld();
       const doc::Snapshot before = u.ctx.doc();
       const doc::DeviceId d = u.view().spawnNode(ProjectPatchView::choiceOf(e), at);
-      if (!d.valid()) {  // only an instrument may be refused (inside the instrument group)
-        CHECK_MESSAGE(e.instrument, e.key << " refused: " << u.ctx.status());
+      if (!d.valid()) {  // only an instrument may be refused (inside the instrument group), AR.1: or a note device
+        // (it sits on a track's notes link, never in a group: checks.cpp)
+        CHECK_MESSAGE((e.instrument || (inside && e.notesIn)), e.key << " refused: " << u.ctx.status());
         MESSAGE(e.key << std::string(inside ? " refused in the group: " : " refused: ") << u.ctx.status());
         ++refused;
         continue;
