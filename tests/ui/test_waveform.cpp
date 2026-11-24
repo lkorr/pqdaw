@@ -612,10 +612,10 @@ TEST_CASE("render: waveform-lod matches the golden image") {
 
 // WF.1: the bounds were 50 / 100 us with two vertices and 6 indices per column (no antialiasing); a column is now four
 // vertices and 18 indices (the coverage profile) and reads up to 9 buckets, so the bounds are 90 / 160 us.
-// WF.2: measured in release on the bench machine (bench/RESULTS.md): 42 / 72 (0.5) / 101 (40) us before WF.1, 86 / 135 /
-// 177 at WF.1, 76 / 125 / 167 now (and 155 at 0.05). The sample bound of 160 did not hold in release at WF.1 (it was
-// set from a check-preset run): it is 190 here, the overview bound stays 90.
-TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample level <= 190 us)" * doctest::test_suite("perf")) {
+// WF.2: release, the three builds interleaved (bench/RESULTS.md): 27.5 / 48 (0.5 frames per px) / 71 (40) us before
+// WF.1, 59.5 / 81 / 112 at WF.1, 56 / 81.5 / 111.5 now (and 97 at 0.05). The bounds stay (they leave room for a machine
+// that is building something else, where every figure is about 1.5 times these).
+TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample level <= 160 us)" * doctest::test_suite("perf")) {
   Synth s(10ull * 60 * 48000, 2);
   DrawList dl;
   WaveformDraw d;
@@ -657,13 +657,13 @@ TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample
     }
     std::sort(t.begin(), t.end());
     MESSAGE("2560-px stereo waveform at " << fpp << " frames/px (samples): median " << t[100] << " us");
-    CHECK(t[100] <= 190.0);
+    CHECK(t[100] <= 160.0);
   }
 }
 
-// WF.2: the tile path's cost in the same three regimes (2560 x 80 px, stereo), for bench/RESULTS.md. Release: 134 / 103
-// / 126 us before WF.1 (whole rows of 255), 478 / 163 / 338 at WF.1 (a float per pixel down each column), 111 / 159 /
-// 210 now (row by row, eight columns a step).
+// WF.2: the tile path's cost in the same three regimes (2560 x 80 px, stereo), for bench/RESULTS.md. Release: 110 / 73
+// / 90 us before WF.1 (whole rows of 255), 301 / 102 / 197 at WF.1 (a float per pixel down each column), 71 / 98 / 128
+// now (row by row, eight columns a step).
 TEST_CASE("waveform (perf): rasterWaveform of a 2560-px stereo clip" * doctest::test_suite("perf")) {
   Synth s(10ull * 60 * 48000, 2);
   std::vector<float> x[2];

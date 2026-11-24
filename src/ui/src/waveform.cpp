@@ -484,6 +484,10 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
     const __m256 vlw = _mm256_set1_ps(L.lw), vlane = _mm256_set1_ps(laneH), one = _mm256_set1_ps(1.0f), hf = _mm256_set1_ps(0.5f);
     const __m256 vfe = _mm256_set1_ps(kSmoothFeather);
     const __m256 zero = _mm256_setzero_ps(), e7 = _mm256_set1_ps(1e-7f), e6 = _mm256_set1_ps(1e-6f), neg = _mm256_set1_ps(-1.0f);
+    // WF.2: with a line at least a pixel wide in a lane at least a pixel tall, a stroke's thickness down the column is
+    // never under its rise (P = lw · sqrt(1 + rho²) ≥ rho) and the support never under a pixel (S ≥ P ≥ 1): the two
+    // quotients of `a` are exactly 1 and are not computed (two of the four divisions a step cost).
+    const bool unit = L.lw >= 1.0f && laneH >= 1.0f;
     for (; i + 8 <= n; i += 8) {
       const __m256 l = _mm256_loadu_ps(lo + i), h = _mm256_loadu_ps(hi + i);
       const __m256 pl = _mm256_loadu_ps(lo + i - 1), ph = _mm256_loadu_ps(hi + i - 1);
@@ -508,7 +512,8 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
       const __m256 hS = _mm256_mul_ps(S, hf);
       const __m256 m = _mm256_min_ps(_mm256_max_ps(_mm256_mul_ps(_mm256_add_ps(t0, b0), hf), _mm256_add_ps(vy0, hS)), _mm256_sub_ps(vy1, hS));
       const __m256 Sx = _mm256_max_ps(S, one);
-      __m256 a = _mm256_mul_ps(_mm256_min_ps(one, _mm256_div_ps(P, _mm256_max_ps(rho, e6))), _mm256_div_ps(S, Sx));
+      __m256 a = one;
+      if (!unit) a = _mm256_mul_ps(_mm256_min_ps(one, _mm256_div_ps(P, _mm256_max_ps(rho, e6))), _mm256_div_ps(S, Sx));
       const __m256 hSx = _mm256_mul_ps(Sx, hf);
       const __m256 sT = _mm256_sub_ps(m, hSx), sB = _mm256_add_ps(m, hSx);
       const __m256 g = _mm256_min_ps(rho, hSx);
@@ -523,9 +528,11 @@ void profiles(const float* lo, const float* hi, size_t n, const Lane& L, float* 
       const __m256 D = _mm256_add_ps(sB, _mm256_min_ps(hA, _mm256_max_ps(hf, _mm256_sub_ps(vy1, sB))));
       __m256 B = _mm256_add_ps(_mm256_add_ps(sT, g), hB), C = _mm256_sub_ps(_mm256_sub_ps(sB, g), hB);
       const __m256 cross = _mm256_cmp_ps(B, C, _CMP_GT_OQ);
-      a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_div_ps(_mm256_sub_ps(m, A), _mm256_sub_ps(B, A))), cross);
-      B = _mm256_blendv_ps(B, m, cross);
-      C = _mm256_blendv_ps(C, m, cross);
+      if (_mm256_movemask_ps(cross) != 0) {  // (rare: a column thinner than its ramps)
+        a = _mm256_blendv_ps(a, _mm256_mul_ps(a, _mm256_div_ps(_mm256_sub_ps(m, A), _mm256_sub_ps(B, A))), cross);
+        B = _mm256_blendv_ps(B, m, cross);
+        C = _mm256_blendv_ps(C, m, cross);
+      }
       _mm256_storeu_ps(yA + i, A);
       _mm256_storeu_ps(yB + i, B);
       _mm256_storeu_ps(yC + i, C);

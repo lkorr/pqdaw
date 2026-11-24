@@ -2787,10 +2787,11 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   ranges, in proportion (full from an alternation of 35 % of the union, none under 10 %, so a dense body's jitter is
   left alone). A tone near 2 px per cycle becomes its envelope with up to ≈ 20 % of the beat left; 3 px per cycle and
   slower are untouched (they show as a wave). Option: an exact detector from the samples' turning points (more reads).
-- **drawWaveform is 1.8× the pre-WF.1 cost, not ≈ 1.5×** (bench/RESULTS.md). The antialiased strip is 152 B a column
-  against 64 B; the draw list has no instancing. The cached path (rasterWaveform: the arrangement) is 0.83× for
-  overview tiles. Option if the direct sites matter (Sampler, clip view, browser): draw them from coverage tiles too.
-  The perf case's sample bound went 160 → 190 µs: it did not hold in release at WF.1 either (177).
+- **drawWaveform is 2.0× the pre-WF.1 cost for the overview, not ≈ 1.5×** (bench/RESULTS.md: 27.5 → 59.5 → 55.8 µs;
+  1.7× / 1.6× in the sample regimes). The antialiased strip is 152 B a column against 64 B and the draw list has no
+  instancing; reading the columns and the strips alone are 43 µs. The cached path (rasterWaveform: the arrangement's
+  tiles) is 0.64× for overview tiles. Option if the direct sites matter (Sampler, clip view, browser, drag previews):
+  draw them from coverage tiles too — a task of its own.
 - **strokeSeries picks the picture by the data**: sparse → spline; dense and smooth → the simplified ribbon; dense and
   not → columns. The thresholds (1.5 px a point; 3 vertices per 4 px after simplifying) are judgement.
 - **Ruler**: labels stop at the sixteenths and the view's own sixteenth is named when no line is in view; the time
