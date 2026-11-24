@@ -1395,3 +1395,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected -Slow 90/90; ship bench linked; meta 16 Complex / 15 released: vocoder chunks 462 = held-only 462 (main: 2100 vs 519), retrigger bit-identical to a fresh lane, both backends; dsp test_lane_mask (240 assertions fail with the mask forced off); occupied-lane voice hashes unchanged from 76402a45; clip hashes pass.
 - Perf / CPU-efficiency check (ship): 16 Complex primed, 14 freed: 657.9 ns/frame vs 5348.6 for 16 held (freed lanes ≈ 0); other kernels untouched.
 - Notes/blockers: sample_read is lane-SIMD, so freeing saves state, not CPU; a dead looping lane no longer lowers sample_read's mip choice. QUESTIONS conflict with SM.13 resolved (both kept).
+
+## 2026-11-23 · AR.2 · task/AR.2-arp-glide (merged 2906ad09)
+- Did: glide per side = `intoOffset`/`outOffset` (cents, 0 = off), `intoPrev`/`outNext`, Time, Curve, Shape (Curve | S | Spring); mode enum, Bend knobs, `glideCents`, unit-offset path deleted. Glide lane = slide per step (default 0; no side on: glides in from the previous step). `arpbend` is the editor (drag head / tail / knee / curve, drop on a ghost = prev / next, double-click = off); the same head / tail drag on pattern-view notes; panel: Amount / Time knobs + shape chips.
+- Verified: -Affected -Slow 66/66 after rebase; ship pq_bench_dsp links; new full-path tests (clip and live keys → ArpStage → VoiceEngine `voice.hz` bends with Into Prev); real-dispatch bend-view + pattern-view drags; 5 goldens re-recorded (arp-panel-walk / -lanes / -degrees-bends / -bend-view, project-patch-arp).
+- Perf / CPU-efficiency check: nothing per sample or block added; an offset glide is one exp2 (no pitchOf).
+- Notes/blockers: "glide does nothing" was the Glide lane (scaled Into / Out that are off by default); glide itself was not broken. Q?-AR.2-a. Open: no curve / knee drag in the pattern view; tie under lane-only slide untested; not checked live.

@@ -953,6 +953,6 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ### AR: arpeggiator rework (docs/plans/AR.md; user 2026-11-23)
 - [ ] **AR.1 Placement: Tab picker (MIDI effects) + note cables only** (plan AR.1)
-- [ ] **AR.2 Glide: drag the note (bend view editor, fewer params), Glide lane = slide per step** 👁 (plan AR.2)
+- [x] **AR.2 Glide: drag the note (bend view editor, fewer params), Glide lane = slide per step** 👁 (plan AR.2) *(merged 2906ad09; Q?-AR.2-a; 5 goldens re-recorded)*
 - [ ] **AR.3 Pulse: cycle / division rows, masks + shift, clickable pulse view** 👁 (plan AR.3; after AR.2)
 - [ ] **AR.4 Step lanes get room (Transpose grid, lane menu) + panel pass** 👁 (plan AR.4; after AR.1)
