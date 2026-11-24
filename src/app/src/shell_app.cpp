@@ -884,6 +884,11 @@ void ShellApp::runBugScriptStep() {
     ev.wheel.mouse_y = y / density;
     ev.wheel.timestamp = SDL_GetTicksNS();
     SDL_PushEvent(&ev);
+  } else if (step.rfind("mods:", 0) == 0) {  // WF.1: the modifiers held from here on ("mods:ctrl", "mods:shift", "mods:none")
+    const std::string v = value("mods:");
+    SDL_SetModState(static_cast<SDL_Keymod>((v.find("ctrl") != std::string::npos ? SDL_KMOD_LCTRL : SDL_KMOD_NONE) |
+                                            (v.find("shift") != std::string::npos ? SDL_KMOD_LSHIFT : SDL_KMOD_NONE) |
+                                            (v.find("alt") != std::string::npos ? SDL_KMOD_LALT : SDL_KMOD_NONE)));
   } else if (step.rfind("type:", 0) == 0) {  // SM.17: typed text into whatever has the focus
     static std::string typed;  // (the event points at it until it is handled)
     typed = value("type:");

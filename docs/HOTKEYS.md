@@ -198,6 +198,9 @@ Every part shows the cursor of what a press there does (the same hit test the pr
 | Audio clip: fade-in / fade-out handle (top of the body, at the fade's end; T5.6) | ↔ (Alt: ↕) | handle lit | drag = fade length; Alt-drag = its curve; past the clip's edge onto an adjacent audio clip = that boundary's crossfade (centred, length 2 × the distance); one undo step; Esc cancels |
 | Audio clip: gain handle (top centre of the body; T5.6) | ↕ | handle lit | drag = clip gain (0.2 dB per px, Shift 0.02); double-click = 0 dB; one undo step |
 | Audio clip edges (T5.6) | ↔ | the edge marked | drag trims; stops at the file's ends (warp Off; Re-Pitch without a loop), a looped Re-Pitch clip extends through its loop |
+| Audio clip view: the waveform (WF.1) | Arrow | — | wheel zooms about the pointer, down to single samples (64 px per sample: the curve and a dot per sample); `Shift`+wheel (or a sideways wheel) scrolls; `Alt`+wheel is passed on. View state: no undo step, another clip starts whole |
+| Audio clip view: the time ruler (WF.1) | ↕ | — | drag sideways scrolls, up / down zooms about the press (down: in); double-click shows the whole sample |
+| Sampler editor: the waveform and ruler (WF.1) | Arrow / ↕ on the ruler | — | wheel zooms about the pointer (to 64 px per sample), `Shift`+wheel scrolls; a drag on the ruler scrolls sideways and zooms up / down; double-click the ruler (no warp markers shown) or the strip under the waveform: the whole sample. A Start / End flag out of view waits at the editor's edge; a handle dragged past the edge scrolls the view. View state: no undo step, not saved |
 | Audio Clip View: start marker (ruler strip, T5.6) | ↔ | — | drag = where the clip starts in the file (warp Off: frames; Re-Pitch: 1/16 notes, Shift free); one undo step |
 | Audio Clip View: Re-Pitch loop brace / its ends (T5.6) | Move / ↔ | — | drag the loop (1/16 notes, Shift free); one undo step |
 

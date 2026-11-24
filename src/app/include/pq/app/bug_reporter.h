@@ -17,7 +17,8 @@
 // PQ_BUGREPORT_SCRIPT (a scripted run; see runScript): steps separated by ';', one every 0.6 s after the first frame:
 // `f12`, `shift+f12`, `move:x,y` / `click:x,y` (device px: synthetic SDL events), `text:...`, `tag:t`, `ticket:i`,
 // (SM.17, for live checks of any view:) `dclick:x,y`, `down:x,y` / `up:x,y` (a drag: down, moves, up), `wheel:x,y,n`,
-// `type:text` (text input to the focus), `key:name`,
+// `type:text` (text input to the focus), `key:name`, (WF.1:) `mods:ctrl` / `mods:shift` / `mods:none` (the modifiers held
+// for the pointer and wheel steps that follow),
 // `suggestions`, `bugs`, `add`, `close`, `submit`, `discard`, `quit`.
 
 #include <chrono>

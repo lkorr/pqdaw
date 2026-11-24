@@ -940,9 +940,13 @@ void SampleDisplay::paintFades(PaintContext& ctx, float xa, float xb) {
   Vec2 pts[65];
   auto fade = [&](float x0, float fw, float curve, bool rising) {
     if (fw < 1.0f) return;
-    const int n = std::clamp(static_cast<int>(fw / 3.0f), 2, 64);
+    // WF.1: the part of the fade in view (zoomed in, a fade is many displays wide).
+    const double ta = std::clamp(static_cast<double>(static_cast<float>(w.x) - 8.0f - x0) / fw, 0.0, 1.0);
+    const double tb = std::clamp(static_cast<double>(static_cast<float>(w.right()) + 8.0f - x0) / fw, 0.0, 1.0);
+    if (!(tb > ta)) return;
+    const int n = std::clamp(static_cast<int>((tb - ta) * fw / 3.0), 2, 64);
     for (int i = 0; i <= n; ++i) {
-      const double t = static_cast<double>(i) / n;
+      const double t = ta + (tb - ta) * static_cast<double>(i) / n;
       const double g = rising ? automationShape(t, curve) : 1.0 - automationShape(t, curve);
       pts[i] = {x0 + fw * static_cast<float>(t), wy1 - static_cast<float>(g) * (wy1 - wy0)};
     }
@@ -1004,6 +1008,8 @@ void SampleDisplay::paint(PaintContext& ctx) {
     xa = xOf(c.contentStartFrame);
     xb = xOf(c.contentStartFrame + c.seconds * s->rate * speedRatio());
   }
+  // WF.1: zoomed in, the region's ends may lie far outside the display: the fades hang on the ends themselves.
+  const float fxa = std::clamp(std::round(xa), wx0 - 1.0e6f, wx1 + 1.0e6f), fxb = std::clamp(std::round(xb), wx0 - 1.0e6f, wx1 + 1.0e6f);
   xa = std::clamp(std::round(xa), wx0, wx1);
   xb = std::clamp(std::round(xb), wx0, wx1);
   if (xb > xa) {
@@ -1038,7 +1044,7 @@ void SampleDisplay::paint(PaintContext& ctx) {
     }
   }
   paintWaveform(ctx, xa, xb, colour);
-  paintFades(ctx, xa, xb);
+  paintFades(ctx, fxa, fxb);
   paintTimeline(ctx);
   // Region edges.
   if (xb > xa) {
