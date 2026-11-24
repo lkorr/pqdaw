@@ -2360,3 +2360,14 @@ Open an Arpeggiator's panel (Device view, or its block in the project patch).
   Device view does not scroll it: fold Glide, or should the Device view scroll tall panels? The Pitch block has an
   empty row at the bottom until AR.3 puts Layers there.
 - Goldens: arp-panel-* (all), arp-panel-lanes-2x (new), project-patch-arp, project-node-menu-midi.
+
+## AR.3 · pulse: a polyrhythm you can see and click
+Arpeggiator → open the **Pulse** fold → **On**. Try:
+- Hold a JI chord (8:9:10:12) with **Auto** on, Cycle 1 / 1: each note pulses at its harmonic per bar (rows read h8, h9 …);
+  the lines join the pulses that land together, the lit dots and the playhead follow playback.
+- Hold plain notes (or switch Auto off): every note uses its row's division. **Drag a row sideways** (or wheel) to change
+  it (÷1 … ÷64); **click a dot** to mute that pulse; **Shift+drag** a row to shift it against the others (offbeats,
+  flams); **right-click a row** (or the dots at its right end) for Euclid k of n, Rotate, Invert, All On, Reset.
+- Cycle 3 / 4, 1 / 2, 2 / 1 … changes how long the whole figure is; it follows the time signature.
+- Layers moved to the bottom of the Pitch block (they work in both modes).
+Is the row order (lowest note at the bottom) and "rows without a note dimmed" the right read? Open choices: Q?-AR.3-a.

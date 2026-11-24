@@ -313,6 +313,18 @@ Panel arpeggiatorPanel(DeviceId dev) {
   k.button(424, 116, 46, 16, A::WalkUnder, "Under");
   k.ctl("menu", 474, 104, 92, 28, A::WalkOrder);
   k.when(at, style, {static_cast<double>(engine::ArpStyle::HarmonicWalk)});
+  {  // AR.3: Layers (both modes): extra copies at (p/q)^L of every note; a level knob only while Layers reaches it
+     // (AP.8b L11: a number is a visibility source by its value: the values from n up).
+    const uint32_t layers = k.ctl("number", 376, 152, 40, 28, A::Layers, "Layers").id;
+    for (int i = 0; i < engine::kArpMaxLayers; ++i) {
+      std::vector<double> from;
+      for (int n = i + 1; n <= engine::kArpMaxLayers; ++n) from.push_back(static_cast<double>(n));
+      const std::string label = "Level " + std::to_string(i + 1);
+      k.ctl("knob", 422.0f + 48.0f * static_cast<float>(i), 136, 48, 58, static_cast<A>(static_cast<int>(A::LayerLevel1) + i),
+            label.c_str())
+          .when = Visibility{layers, std::move(from)};
+    }
+  }
   // AP.10: the resolved pattern — the whole cycle over the held notes (generated ones dotted, their bends drawn), the
   // playing step lit.
   k.caption(582, 8, 120, "Pattern");
@@ -341,40 +353,26 @@ Panel arpeggiatorPanel(DeviceId dev) {
     k.add("arpbend", 124, y, 712, 150, std::move(b));
   }
   y += 158.0f;
-  // ---- Pulse (fold) ----
+  // ---- Pulse (fold; AR.3: the pulse view IS the editor — a row per held note, a dot per pulse of the Cycle; click
+  // a dot to mute it, drag a row for its division, Shift+drag for its shift, its menu for Euclid / Rotate / Invert) ----
   k.fold(y, "Pulse");
   y += 20.0f;
   const uint32_t pulse = k.button(10, y + 12, 40, 16, A::Pulse, "On").id;
   at = k.p.elements.size();
-  const uint32_t psrc = k.chips(56, y, 170, A::PulseSource, "Pulse h", "Harmonic|Proportion|Order").id;
-  k.ctl("number", 232, y, 50, 28, A::PulseRef, "Ref").setField(styleText("zero", "Lowest"));
-  const uint32_t cyc = k.chips(288, y, 90, A::PulseCycle, "Cycle", "Base|Bars").id;
-  const size_t bars = k.p.elements.size();
-  k.ctl("number", 382, y, 36, 28, A::PulseBars, "Bars");
-  k.when(bars, cyc, {1.0});
-  // AP.8b (review L11, overrules Q?-AP.6-a (2)): a layer's level only while Layers reaches it, a proportion entry only
-  // within Length (a number is a visibility source by its value: the values from n up).
-  auto from = [](int n, int max) {
-    std::vector<double> v;
-    for (int i = n; i <= max; ++i) v.push_back(static_cast<double>(i));
-    return v;
-  };
-  const uint32_t layers = k.ctl("number", 426, y, 44, 28, A::Layers, "Layers").id;
-  for (int i = 0; i < engine::kArpMaxLayers; ++i) {
-    const std::string label = "Layer " + std::to_string(i + 1);
-    k.ctl("knob", 476.0f + 50.0f * static_cast<float>(i), y - 2, 48, 58, static_cast<A>(static_cast<int>(A::LayerLevel1) + i),
-          label.c_str())
-        .when = Visibility{layers, from(i + 1, engine::kArpMaxLayers)};
+  k.button(56, y + 12, 40, 16, A::PulseAuto, "Auto");
+  k.ctl("number", 10, y + 36, 28, 28, A::PulseCycleNum, "Cycle");
+  k.caption(40, y + 50, 8, "/", 9.0);
+  k.bare(46, y + 36, 28, 28, A::PulseCycleDen);
+  k.caption(78, y + 50, 24, "bars");
+  {
+    std::vector<Binding> b = {dataBinding(dev), k.bind(A::PulseAuto), k.bind(A::PulseCycleNum), k.bind(A::PulseCycleDen)};
+    for (int32_t r = 0; r < engine::kArpPulseRows; ++r)
+      for (const A first : {A::PulseDiv1, A::PulseShift1, A::PulseMaskLo1, A::PulseMaskHi1})
+        b.push_back(k.bind(engine::arpPulseRowId(first, r)));
+    k.add("arppulse", 110, y, 840, 148, std::move(b));
   }
-  const size_t prop = k.p.elements.size();
-  const uint32_t plen = k.ctl("number", 56, y + 34, 40, 26, A::ProportionLen, "Length").id;
-  k.caption(102, y + 34, 120, "Proportion");
-  for (int i = 0; i < engine::kArpMaxProportion; ++i)
-    k.bare(102.0f + 38.0f * static_cast<float>(i), y + 34, 34, 26, static_cast<A>(static_cast<int>(A::Proportion1) + i))
-        .when = Visibility{plen, from(i + 1, engine::kArpMaxProportion)};
-  k.when(prop, psrc, {1.0});
   k.when(at, pulse, {1.0});
-  y += 66.0f;
+  y += 156.0f;
   // ---- Step Lanes (fold; AR.4) ----
   // One `steplane` per lane, the panel's width: its name column (the switch, the menu, the readout) and 32 steps. A
   // lane that is ON is tall (Transpose: a grid, a row per step of the unit); one that is OFF is its 14 px name strip —

@@ -43,7 +43,8 @@ void benchArp(pq::bench::Runner& runner, const std::string& name, e::ArpStyle st
     }
     if (pulseDen > 0) {
       p.pulse = true;
-      p.rate = {true, 1, pulseDen, 1, 1, 100.0f};
+      p.pulseCycleNum = 8;  // AR.3: the cycle the AP.4 numbers had (Base 1 / pulseDen × h_ref 8): the same pulse load
+      p.pulseCycleDen = pulseDen;
       p.layers = layers;
       p.ratioP = 3;
       p.ratioQ = 2;

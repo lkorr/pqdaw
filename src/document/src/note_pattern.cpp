@@ -179,6 +179,44 @@ double noteGlideSnap(const NoteGlideView& v, double cents) noexcept {
   return best;
 }
 
+NotePulseView notePulseView(const Project& p, DeviceId device, std::span<const NotePatternHeld> held) {
+  NotePulseView v;
+  engine::ArpParams params;
+  DeviceLoc loc;
+  if (paramsOf(p, device, params, nullptr, loc) == nullptr) return v;
+  v.valid = true;
+  v.on = params.pulse;
+  v.cycleNum = params.pulseCycleNum;
+  v.cycleDen = params.pulseCycleDen;
+  v.maxDivision = engine::kArpMaxPulseDiv;
+  v.maxShift = engine::kArpMaxPulseShift;
+  const auto n = static_cast<uint32_t>(std::min<size_t>(held.size(), kNotePulseRows));
+  const uint32_t rows = std::max(n, kNotePulseMinRows);
+  for (uint32_t r = 0; r < rows; ++r) {
+    NotePulseRow row;
+    row.held = r < n;
+    const float harmonic = row.held ? held[r].harmonic : 0.0f;
+    row.division = engine::arpPulseDiv(params, harmonic, r);
+    row.locked = engine::arpPulseAuto(params, harmonic);
+    row.mask = params.pulseMask[r % engine::kArpPulseRows];
+    row.shift = params.pulseShift[r % engine::kArpPulseRows];
+    v.rows.push_back(row);
+  }
+  return v;
+}
+
+uint32_t notePulseEuclid(int32_t k, int32_t n) noexcept { return engine::arpEuclidMask(k, n); }
+
+uint32_t notePulseRotate(uint32_t mask, int32_t n, int32_t by) noexcept {
+  n = std::clamp(n, 1, 32);
+  uint32_t m = 0;
+  for (int32_t j = 0; j < 32; ++j) {
+    const int32_t from = (((j % n) - by) % n + n) % n;
+    if (((mask >> from) & 1u) != 0) m |= 1u << j;
+  }
+  return m;
+}
+
 double noteRampShape(int32_t shape, double bend, double u) noexcept {
   const int32_t sh = std::clamp(shape, 0, static_cast<int32_t>(engine::RampShape::Count) - 1);
   return engine::rampShapeAt(static_cast<engine::RampShape>(sh), engine::rampBendOf(static_cast<float>(bend)), u);

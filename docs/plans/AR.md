@@ -55,25 +55,31 @@ kept as tests (tests/app/test_note_device_playback.cpp "AR.2").
 4. Panel Glide section: the bend view; per side Amount + Time knobs that follow the drags and the shape chips.
 Row: engine / RT → `-Affected -Slow` + ship link of pq_bench_dsp; arp panel goldens re-recorded.
 
-## AR.3 · pulse: a polyrhythm you can see and click (engine + panel), after AR.2
-Today: period = Base · h_ref / h, h from Harmonic / Proportion / Order, Cycle Base | Bars, Ref — evenly spaced
-pulses only, and the model is opaque.
-1. **Model**: a **Cycle** length (synced rate num/den of a whole note, default 1/1, up to 16 bars; follows the
-   signature map as Bars did) and per held note a **division n**: the cycle is cut into n equal pulses (period =
-   Cycle / n, exact rational ticks as today). n comes from **Auto** (the note's JI harmonic; a note without one uses
-   its row) or **Rows** (row r = the note's rank by Hz, 8 rows, n 1 … 64, beyond 8 the rows repeat). Rate / Ref /
-   Cycle mode / Proportion length / Order are deleted in pulse mode (Rate stays the pattern-mode rate).
-2. **Per-row rhythm**: a 32-bit **mask** per row (a structural setting; pulse j plays when bit j mod 32 is set;
-   default all on) and a **shift** per row (−0.5 … 0.5 of the row's period: offbeats, flams, swing against the
-   others). Mask test is one AND per pulse; no table.
-3. **Pulse view** (`arppulse` element, shown when Pulse is on, replaces the number boxes): one row per held note
-   (nothing held: the first 4 rows, nominal), a dot per pulse across the cycle, the cycle's beats as faint lines,
-   coinciding onsets linked, a playhead and lit dots from the status. Click a dot: mute / unmute (mask). Drag a row
-   horizontally (or wheel): its division. Shift+drag: its shift. Row menu: Euclid k of n (writes the mask), Invert,
-   Reset. Auto rows show their harmonic and are division-locked (mask / shift still editable).
-4. Layers leave the Pulse fold (they apply in both modes): into the Pitch block.
-5. `sketchArp` / pattern view / roll preview / Flatten follow the same engine code (no second implementation).
-Tests: 8:9:10:12 onsets exact over 4 bars (kept), a masked + shifted row, block-size invariance, RtScope.
+## AR.3 · pulse: a polyrhythm you can see and click (engine + panel), after AR.2 — DONE (as built; deviations: Q?-AR.3-a)
+Was: period = Base · h_ref / h, h from Harmonic / Proportion / Order, Cycle Base | Bars, Ref — evenly spaced pulses
+only, and the model was opaque.
+1. **Model**: a **Cycle** (num / den BARS of the song's signature, default 1 / 1, num ≤ 16, den ≤ 32: in 4/4 that is
+   num / den of a whole note; it follows the signature map as Bars did, a fractional cycle being that fraction of its
+   bar) and per held note a **division n**: the cycle is cut into n equal pulses (period = Cycle / n, exact rational
+   ticks as before). n comes from **Auto** (on by default: the note's JI harmonic, ≤ 1024; a note without one uses its
+   row) or its **row** (row r = the note's rank by Hz mod 8, n 1 … 64, defaults 3 … 10). Rate / Ref / Cycle mode /
+   Proportion / Order are deleted (Rate stays the pattern-mode rate; Sync off / a stopped transport: the free clock
+   from the note-on, the cycle at the song tempo). The old 8:9:10:12 result = Auto with a 1-bar cycle.
+2. **Per-row rhythm**: a 32-bit **mask** per row (structural, stored as two 16-bit settings `pulseMaskLo/Hi n`; pulse j
+   plays when bit j mod 32 is set; default all on; one AND per pulse, no table) and a **shift** per row (−0.5 … 0.5 of
+   the row's period, a runtime param).
+3. **Pulse view** (`arppulse`, shown when Pulse is on, replaces the number boxes): one row per held note, lowest at
+   the bottom (at least 4, at most 8 rows; nothing held: the last held set, else nominal rows; rows without a note
+   dimmed), a dot per pulse across the cycle, the cycle's beats as faint lines, coinciding onsets joined, a playhead and
+   lit dots from the status. Click a dot: mute / unmute. Drag a row sideways (or wheel): its division. Shift+drag: its
+   shift (snapped to 1/24 of the period; Alt: free). Right-click a row / its chip: Euclid k of n, Rotate Later / Earlier,
+   Invert, All On, Reset Row. Auto rows show their harmonic ("h9") and are division-locked (mask / shift still edit).
+4. Layers left the Pulse fold (they apply in both modes): a count and up to three level knobs in the Pitch block's last row.
+5. `sketchArp` / pattern view / roll preview / Flatten run the same engine code (no second implementation); the view's
+   rows come from `doc::notePulseView` (the engine's `arpPulseDiv`).
+Tests: 8:9:10:12 onsets exact over 4 bars (1- and 2-bar cycles), a masked + shifted row, signature changes with
+fractional cycles, block-size invariance, RtScope; the view through real dispatch (click, drag, Shift+drag, wheel,
+menu, the Auto lock); goldens arp-panel-pulse, arp-panel-pulse-chord.
 Row: engine / RT.
 
 ## AR.4 · step lanes + the panel (👁, views + document), after AR.1 — DONE (as built; deviations: Q?-AR.4-a)

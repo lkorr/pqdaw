@@ -113,8 +113,9 @@ TEST_CASE("arp sketch (AP.10): Into and Out glides as the note's curve; Pulse cy
     CHECK(again.notes[i].hz == s.notes[i].hz);
   }
 
-  e::ArpParams pu;  // Pulse 8 : 12 with h_ref 8: the cycle is 8 Base periods, 8 + 12 pulses
+  e::ArpParams pu;  // Pulse 8 : 12 over a half-bar Cycle (AR.3): 8 Rate periods (1/16), 8 + 12 pulses
   pu.pulse = true;
+  pu.pulseCycleDen = 2;
   const e::ArpSketch ps = e::sketchArp(pu, {}, {}, std::vector<e::ArpSketchHeld>{note(200.0f, 8.0f), note(300.0f, 12.0f)});
   CHECK(ps.cycle == doctest::Approx(8.0));
   CHECK(ps.notes.size() == 20);

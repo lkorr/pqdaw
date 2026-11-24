@@ -110,25 +110,33 @@
 // continues from there); a source Pitch event during the Into glide re-aims it; during the Out glide the note goes to
 // its target (later source bends do not move it).
 //
-// ---- Pulse mode (AP.4, "Pulse mode (polyrhythm)") -----------------------------------------------------------------
-// Pulse on: no pattern order (Style, Offset, Repeats, Groove, Retrigger Beat do not apply). Every held note repeats
-// on its own clock with period Base · h_ref / h. Base = the Rate (synced or ms). h: Pulse source Harmonic = the
-// note's JI harmonic (an integer ≥ 1), else Proportion = entry r of the Proportion (r = the note's rank by Hz among
-// the held notes; beyond its length the list repeats doubled: prop[r mod len] · 2^(r div len)), else Order = r + 1;
-// h is clamped to 1 … kArpMaxPulseH. h_ref = Pulse ref (fixed), or 0 = the lowest h held. Phase lock: all clocks
-// restart together every Cycle = Base · h_ref (Pulse cycle Base: a note's h pulses fill it exactly) or Pulse bars
-// bars of the song's time signature (Bars, AP.2b: cycle c spans bars c · n … (c + 1) · n − 1 of the signature map, so
-// a 3/4 or 7/8 bar and a signature change are followed; the free clock uses the bar at the playhead
-// (StageClock::beatsPerBar); a clock's last pulse before the restart may be short of a period). Cycles sit on the
-// song grid from tick 0 (synced, playing) or start at the note-on that filled the held set (free clock), so pulse j
-// of cycle c starts at start(c) + j · Base · h_ref / h, computed from (c, j) as an exact rational of ticks (1/(D · h)) and
-// converted once through the tempo map: no accumulated drift, the same samples at any block size, across tempo
-// changes and loop wraps. A clock plays at most one pulse per sample (pulses closer than that merge).
+// ---- Pulse mode (AP.4; AR.3: "a polyrhythm you can see and click") ---------------------------------------------------
+// Pulse on: no pattern order (Style, Offset, Repeats, Groove, Retrigger Beat and the Rate do not apply). There is one
+// CYCLE — Cycle num / den bars of the song's time signature (1 / 1 by default; 4/4: num / den of a whole note; a
+// fractional cycle inside a bar is that fraction of the bar: cycle c starts at bar position c · num / den of the
+// signature map, so a 3/4 or 7/8 bar and a signature change are followed; the free clock uses the bar at the playhead,
+// StageClock::beatsPerBar) — and every held note cuts it into n equal pulses on its own clock: period = Cycle / n.
+// n is the note's DIVISION (arpPulseDiv): with Auto its JI harmonic (an integer 1 … kArpMaxPulseHarmonic: held
+// 8:9:10:12 pulses 8, 9, 10 and 12 times per cycle), else — Auto off, or a note without a harmonic — the Division of its
+// ROW, 1 … kArpMaxPulseDiv. Row r = the note's rank by Hz among the held notes, mod kArpPulseRows (beyond 8 notes the
+// rows repeat). Each row also has
+//   mask    32 bits (structural: two 16-bit settings; all on by default): pulse j of the cycle plays when bit j mod 32
+//           is set — one AND per pulse, no table. A muted pulse is a rest (the lanes still advance; a note waiting for
+//           a tie ends there). arpEuclidMask(k, n): k onsets spread evenly over n pulses.
+//   shift   −0.5 … 0.5 of the row's own period: every pulse of the row that much late / early against the others
+//           (offbeats, flams, swing between rows).
+// Phase lock: all clocks restart together at every cycle start (before the shift), so the polyrhythm never drifts
+// off the grid. Cycles sit on the song grid from tick 0 (synced, playing) or start at the note-on that filled the held
+// set (free clock: Sync off or a stopped transport; the cycle at the song tempo), so pulse j of cycle c starts at
+// start(c) + (j + shift) · Cycle(c) / n, computed from (c, j) as an exact rational of ticks (1/(den · n)) and converted
+// once through the tempo map: no accumulated drift, the same samples at any block size, across tempo changes and loop
+// wraps. A clock plays at most one pulse per sample (pulses closer than that merge).
 // A note-on starts its clock: its first pulse sounds AT the note-on when that is between its grid onsets (the AP.3
-// idle rule, per clock: each new note's clock is idle), gate · its period long (gate ≤ 100 %: ended at its next
-// onset at the latest), the later pulses on its grid. Any held-set change (a note added, released, retuned) or
-// param change re-derives every h, h_ref and Cycle at that frame; each clock continues at its first onset at or
-// after that frame not yet played. Transport resets (wrap / locate / stop) re-seek every clock to the grid.
+// idle rule, per clock: each new note's clock is idle; it plays as the grid pulse before it, so that pulse's mask bit
+// decides whether it sounds), gate · its period long (gate ≤ 100 %: ended at its next onset at the latest), the later
+// pulses on its grid. Any held-set change (a note added, released, retuned) or param change re-derives every row,
+// division and the Cycle at that frame; each clock continues at its first onset at or after that frame not yet
+// played. Transport resets (wrap / locate / stop) re-seek every clock to the grid.
 // Per pulse: Gate (of its own period), velocity (source / Fixed, Decay from the clock start), Distance / Steps
 // (pulse j of a cycle plays copy j mod Steps, shifted (j mod Steps) · Distance in the unit; Rotate reads as Shift:
 // there is no pattern to rotate), the Into / Out glides (Step = the same clock's previous / next pulse) and the
@@ -142,7 +150,7 @@
 // step plays: a drag or automation never rebuilds anything). Lanes are polymetric: lane position = the grid step
 // index kk mod its length (pattern mode: the song grid while synced and playing, else the free clock's step count),
 // independent of the pattern's length, the pattern restarts and of the block size; Pulse mode: per note, its pulse
-// count c · J + j (cycle c of J pulses, pulse j) mod the length. A lane switched off reads its default (Glide: × 1).
+// count c · n + j (cycle c, pulse j of its n) mod the length. A lane switched off reads its default (Glide: × 1).
 //   Velocity   × the step's velocity (0 … 1), or the velocity itself with Velocity source Step Lane (lane off: as
 //              played); Decay applies after it.
 //   Gate       × Gate (0 … 2; the step's gate clamped to 0.01 … 2 of a step / pulse period).
@@ -152,7 +160,7 @@
 //              × its glide time (0: a legato jump). The lane switched off: every step's glides in full (× 1).
 //   Transpose  + steps in the pitch unit (−48 … 48, rounded; Degrees: degrees, Ratio: powers of p/q, Harmonics:
 //              harmonics), part of what the step's notes play (a retune and Out → Step follow it).
-//   Chance     the probability the step plays (0 … 1): a counter-RNG draw keyed by (seed, kk) (pulse: (seed ^ h,
+//   Chance     the probability the step plays (0 … 1): a counter-RNG draw keyed by (seed, kk) (pulse: (seed ^ n,
 //              the note's pulse count)), so playback, render and preview agree.
 //   Skip / Tie Play | Skip (a rest: the pattern still advances) | Tie: the step's notes continue the previous step's
 //              (same rank and layer; pulse: the same clock's) instead of new note-ons: the note's end moves to the tie
@@ -178,7 +186,8 @@
 // Random Other / Random Once / Walk Random (the position: the element drawn), the held notes by Hz for Chord Trigger
 // (all lit) and Pulse (the position: the pulsing note's rank) — the source notes' Hz, before Distance / Transpose /
 // Layers; AP.10: with it the held notes' identities (by Hz, what the panel sketches the cycle over: arp_sketch.h).
-// Nothing held: idle. Cost: a few relaxed stores per step, one O(entries) write per held-set change.
+// AR.3: every pulse that is due also writes its row's pulse index j and its place in the cycle ((j + shift) / n: the
+// pulse view's lit dots and playhead; NoteStageStatus::writePulse). Nothing held: idle. Cost: a few relaxed stores per step, one O(entries) write per held-set change.
 //
 // ---- Capacities -----------------------------------------------------------------------------------------------------
 // kArpMaxHeld source notes (a note-on beyond: dropped, counted); kArpMaxSounding generated notes (beyond: the
@@ -189,6 +198,7 @@
 // held, nothing sounding and no event returns after one compare (ArpStage maps no param for it: review L5).
 // Generated ids skip counters still sounding after a 2^24 wrap (review L4).
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -213,9 +223,12 @@ inline constexpr int32_t kArpMaxTuplet = 32;
 inline constexpr int32_t kArpMaxRateDen = 128;
 inline constexpr uint32_t kArpMaxWalk = 1024;  // Harmonic Walk elements (merged over the held notes)
 inline constexpr int32_t kArpMaxWalkRange = 32;
-inline constexpr int32_t kArpMaxProportion = 8;   // AP.4: Pulse proportion entries
-inline constexpr int32_t kArpMaxPulseH = 1024;    // AP.4: h and a fixed h_ref
-inline constexpr int32_t kArpMaxPulseBars = 16;   // AP.4: a Bars cycle
+inline constexpr int32_t kArpPulseRows = 8;             // AR.3: pulse rows (division, mask, shift), by Hz rank mod 8
+inline constexpr int32_t kArpMaxPulseDiv = 64;          // AR.3: a row's division
+inline constexpr int32_t kArpMaxPulseHarmonic = 1024;   // AR.3: Auto: a harmonic taken as a division
+inline constexpr int32_t kArpMaxPulseBars = 16;         // AR.3: the Cycle's num (bars)
+inline constexpr int32_t kArpMaxPulseCycleDen = 32;     // AR.3: the Cycle's den
+inline constexpr float kArpMaxPulseShift = 0.5f;        // AR.3: a row's shift, of its period
 inline constexpr int32_t kArpMaxLayers = 3;       // AP.4: extra copies per note
 inline constexpr int32_t kArpMaxLaneSteps = 32;   // AP.5: steps per lane
 inline constexpr float kArpMaxGlideTime = 2.0f;    // AP.11: a glide side's time, of the note's length (200 %)
@@ -232,8 +245,6 @@ enum class ArpWalkOrder : uint8_t { Up, Down, UpDown, Random };
 enum class ArpGlideShape : uint8_t { Curve, S, Spring, Count };  // AR.2: a glide side's shape (arp.h "Glides")
 enum class ArpTranspose : uint8_t { Shift, Rotate };
 enum class ArpVelocitySource : uint8_t { AsPlayed, Fixed, Lane };  // Lane (AP.5): the Velocity lane's step
-enum class ArpPulseSource : uint8_t { Harmonic, Proportion, Order };  // AP.4: where a pulse clock's h comes from
-enum class ArpPulseCycle : uint8_t { Base, Bars };                    // AP.4: the phase-lock cycle
 // AP.5: the step lanes (arp.h "Step lanes"), and what a Skip / Tie step does.
 enum class ArpLane : uint8_t { Velocity, Gate, Glide, Transpose, Chance, SkipTie, Count };
 inline constexpr uint32_t kArpLaneCount = static_cast<uint32_t>(ArpLane::Count);
@@ -296,16 +307,16 @@ struct ArpParams {
   ArpWalkOrder walkOrder = ArpWalkOrder::Up;
   // AP.3 glides; AR.2: Into and Out each an offset | the neighbouring step, a time, a curve and a shape.
   ArpGlideSide into, out;
-  // AP.4: pulse mode, layers.
+  // AP.4 / AR.3: pulse mode (arp.h "Pulse mode"): the Cycle (num / den bars), Auto (a note's JI harmonic is its
+  // division), and per row its division, shift (of its period) and 32-bit mask (pulse j plays when bit j mod 32 is set).
   bool pulse = false;
-  ArpPulseSource pulseSource = ArpPulseSource::Harmonic;
-  // h_ref: 0 = the lowest h held, else 1 … kArpMaxPulseH. AP.8a (Q?-AP.4-a (8) decided): fixed 8 by default (the
-  // Harmonics Base), so releasing the lowest note never re-times every clock; 0 is the opt-in "lowest held".
-  int32_t pulseRef = 8;
-  ArpPulseCycle pulseCycle = ArpPulseCycle::Base;
-  int32_t pulseBars = 1;              // Bars: 1 … kArpMaxPulseBars whole notes
-  int32_t proportionLen = 0;          // 0 … kArpMaxProportion (0: Proportion falls back to Order)
-  std::array<int32_t, kArpMaxProportion> proportion{4, 5, 6, 7, 8, 9, 10, 11};  // 1 … kArpMaxPulseH each
+  bool pulseAuto = true;
+  int32_t pulseCycleNum = 1, pulseCycleDen = 1;  // 1 … kArpMaxPulseBars / 1 … kArpMaxPulseCycleDen
+  std::array<int32_t, kArpPulseRows> pulseDiv{3, 4, 5, 6, 7, 8, 9, 10};  // 1 … kArpMaxPulseDiv each
+  std::array<float, kArpPulseRows> pulseShift{};                         // −kArpMaxPulseShift … kArpMaxPulseShift
+  std::array<uint32_t, kArpPulseRows> pulseMask{0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
+                                                0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+  // Layers (both modes).
   int32_t layers = 0;                 // 0 … kArpMaxLayers
   std::array<float, kArpMaxLayers> layerLevel{0.7f, 0.5f, 0.35f};  // 0 … 1
   // AP.5: step lanes, the structural part (on / off, length 1 … kArpMaxLaneSteps); the step values are ArpLaneSteps.
@@ -327,9 +338,14 @@ enum class ArpParamId : uint16_t {
   // AR.2: the two glide sides (arp.h "Glides": what a drag on the note sets; AP.11: a time is a fraction of the note)
   IntoOffset, IntoPrev, IntoTime, IntoCurve, IntoShape,
   OutOffset, OutNext, OutTime, OutCurve, OutShape,
-  // AP.4
-  Pulse, PulseSource, PulseRef, PulseCycle, PulseBars, ProportionLen, Proportion1, Proportion2, Proportion3,
-  Proportion4, Proportion5, Proportion6, Proportion7, Proportion8, Layers, LayerLevel1, LayerLevel2, LayerLevel3,
+  // AP.4 / AR.3: pulse mode; per row (kArpPulseRows of each) its division, shift and the two 16-bit halves of its
+  // mask (structural settings: a float / a stepped setting carries 16 bits exactly, not 32).
+  Pulse, PulseAuto, PulseCycleNum, PulseCycleDen,
+  PulseDiv1, PulseDivEnd = PulseDiv1 + kArpPulseRows - 1,
+  PulseShift1, PulseShiftEnd = PulseShift1 + kArpPulseRows - 1,
+  PulseMaskLo1, PulseMaskLoEnd = PulseMaskLo1 + kArpPulseRows - 1,
+  PulseMaskHi1, PulseMaskHiEnd = PulseMaskHi1 + kArpPulseRows - 1,
+  Layers, LayerLevel1, LayerLevel2, LayerLevel3,
   // AP.5: per lane (ArpLane order) its switch, its length, then its kArpMaxLaneSteps step values (lane-major).
   VelocityLane, GateLane, GlideLane, TransposeLane, ChanceLane, SkipTieLane,
   VelocityLength, GateLength, GlideLength, TransposeLength, ChanceLength, SkipTieLength,
@@ -339,6 +355,31 @@ enum class ArpParamId : uint16_t {
 };
 // setArpParam ignores lane step ids (their values are ArpLaneSteps: setArpLaneStep).
 void setArpParam(ArpParams& p, ArpParamId id, float value) noexcept;  // RT-safe
+
+// AR.3: row `row`'s id of a per-row pulse param (`first`: PulseDiv1, PulseShift1, PulseMaskLo1, PulseMaskHi1).
+constexpr ArpParamId arpPulseRowId(ArpParamId first, int32_t row) noexcept {
+  return static_cast<ArpParamId>(static_cast<uint32_t>(first) + static_cast<uint32_t>(row));
+}
+// AR.3 (arp.h "Pulse mode"): whether Auto takes a held note's JI harmonic `harmonic` (0: none) as its division (then
+// its row's Division does not apply: the pulse view locks it), and the division of a note at rank `rank` by Hz: that
+// harmonic (≤ kArpMaxPulseHarmonic), else its row's Division. What the engine clocks and the panel draws. RT-safe.
+inline bool arpPulseAuto(const ArpParams& p, float harmonic) noexcept {
+  return p.pulseAuto && harmonic >= 1.0f && harmonic < 1e6f && harmonic == std::floor(harmonic);
+}
+inline int32_t arpPulseDiv(const ArpParams& p, float harmonic, uint32_t rank) noexcept {
+  if (arpPulseAuto(p, harmonic)) return std::min(static_cast<int32_t>(harmonic), kArpMaxPulseHarmonic);
+  return p.pulseDiv[rank % static_cast<uint32_t>(kArpPulseRows)];
+}
+// AR.3: Euclid k of n as a row mask: k onsets spread as evenly as n pulses allow (n 1 … 32, k 0 … n; pulse 0 plays
+// when k ≥ 1), repeated over the 32 bits (bit j = pulse j mod n). RT-safe.
+constexpr uint32_t arpEuclidMask(int32_t k, int32_t n) noexcept {
+  n = n < 1 ? 1 : (n > 32 ? 32 : n);
+  k = k < 0 ? 0 : (k > n ? n : k);
+  uint32_t m = 0;
+  for (int32_t j = 0; j < 32; ++j)
+    if (((j % n) * k) % n < k) m |= 1u << j;
+  return m;
+}
 
 // AP.5: the lane step ids.
 constexpr bool isArpLaneStep(ArpParamId id) noexcept {
@@ -448,19 +489,20 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::OutShape, "outShape", "Out Shape", 0, static_cast<float>(ArpGlideShape::Count) - 1, 0, 1, false,
      "Curve|S|Spring", true},
     {ArpParamId::Pulse, "pulse", "Pulse", 0, 1, 0, 1, true, "", true},
-    {ArpParamId::PulseSource, "pulseSource", "Pulse h", 0, 2, 0, 1, false, "Harmonic|Proportion|Order", true},
-    {ArpParamId::PulseRef, "pulseRef", "Pulse Ref", 0, kArpMaxPulseH, 8, 1, false, "", true},
-    {ArpParamId::PulseCycle, "pulseCycle", "Cycle", 0, 1, 0, 1, false, "Base|Bars", true},
-    {ArpParamId::PulseBars, "pulseBars", "Bars", 1, kArpMaxPulseBars, 1, 1, false, "", true},
-    {ArpParamId::ProportionLen, "proportionLen", "Prop Len", 0, kArpMaxProportion, 0, 1, false, "", true},
-    {ArpParamId::Proportion1, "proportion1", "Prop 1", 1, kArpMaxPulseH, 4, 1, false, "", true},
-    {ArpParamId::Proportion2, "proportion2", "Prop 2", 1, kArpMaxPulseH, 5, 1, false, "", true},
-    {ArpParamId::Proportion3, "proportion3", "Prop 3", 1, kArpMaxPulseH, 6, 1, false, "", true},
-    {ArpParamId::Proportion4, "proportion4", "Prop 4", 1, kArpMaxPulseH, 7, 1, false, "", true},
-    {ArpParamId::Proportion5, "proportion5", "Prop 5", 1, kArpMaxPulseH, 8, 1, false, "", true},
-    {ArpParamId::Proportion6, "proportion6", "Prop 6", 1, kArpMaxPulseH, 9, 1, false, "", true},
-    {ArpParamId::Proportion7, "proportion7", "Prop 7", 1, kArpMaxPulseH, 10, 1, false, "", true},
-    {ArpParamId::Proportion8, "proportion8", "Prop 8", 1, kArpMaxPulseH, 11, 1, false, "", true},
+    {ArpParamId::PulseAuto, "pulseAuto", "Auto", 0, 1, 1, 1, true, "", true},
+    {ArpParamId::PulseCycleNum, "pulseCycleNum", "Cycle", 1, kArpMaxPulseBars, 1, 1, false, "", true},
+    {ArpParamId::PulseCycleDen, "pulseCycleDen", "Cycle Den", 1, kArpMaxPulseCycleDen, 1, 1, false, "", true},
+#define PQ_ARP_ROWS(M, ...)                                                                                           \
+  M(1, __VA_ARGS__) M(2, __VA_ARGS__) M(3, __VA_ARGS__) M(4, __VA_ARGS__) M(5, __VA_ARGS__) M(6, __VA_ARGS__)         \
+  M(7, __VA_ARGS__) M(8, __VA_ARGS__)
+#define PQ_ARP_ROW(n, first, name, label, min, max, def0, defN, step, runtime)                                               \
+  {arpPulseRowId(ArpParamId::first, n - 1), name #n, label " " #n, min, max, def0 + defN * n, step, false, "", runtime},
+    PQ_ARP_ROWS(PQ_ARP_ROW, PulseDiv1, "pulseDiv", "Division", 1, kArpMaxPulseDiv, 2, 1, 1, true)
+    PQ_ARP_ROWS(PQ_ARP_ROW, PulseShift1, "pulseShift", "Shift", -kArpMaxPulseShift, kArpMaxPulseShift, 0, 0, 0, true)
+    PQ_ARP_ROWS(PQ_ARP_ROW, PulseMaskLo1, "pulseMaskLo", "Mask Lo", 0, 65535, 65535, 0, 1, false)
+    PQ_ARP_ROWS(PQ_ARP_ROW, PulseMaskHi1, "pulseMaskHi", "Mask Hi", 0, 65535, 65535, 0, 1, false)
+#undef PQ_ARP_ROW
+#undef PQ_ARP_ROWS
     {ArpParamId::Layers, "layers", "Layers", 0, kArpMaxLayers, 0, 1, false, "", true},
     {ArpParamId::LayerLevel1, "layerLevel1", "Layer 1", 0, 1, 0.7f, 0, false, "", true},
     {ArpParamId::LayerLevel2, "layerLevel2", "Layer 2", 0, 1, 0.5f, 0, false, "", true},
@@ -547,6 +589,7 @@ struct ArpStats {
   uint64_t glides = 0;          // Into / Out glides sent (AP.3)
   uint64_t droppedWalk = 0;     // Harmonic Walk elements beyond kArpMaxWalk (per rebuild)
   uint64_t pulses = 0;          // AP.4: pulse-clock onsets played (a pulse with layers counts one)
+  uint64_t pulseMutes = 0;      // AR.3: pulses a row's mask silenced
   uint64_t ties = 0;            // AP.5: notes a tie step continued
   uint64_t laneRests = 0;       // AP.5: steps / pulses a Skip or a failed Chance silenced
   uint64_t tempoRemaps = 0;     // AP.8a: tempo swaps under a running song clock (StageClock::remapped: not a locate)
@@ -642,7 +685,7 @@ public:
 
   uint32_t heldCount() const noexcept;      // RT-safe
   // AP.10: the pattern's cycle in steps (Rate periods) after the last block: the period × Steps (Chord Trigger: Steps);
-  // Pulse: the Cycle over the Base period. 0: nothing held. RT-safe.
+  // Pulse: the Cycle over the Rate period (the sketch's time unit). 0: nothing held. RT-safe.
   double cycleSteps() const noexcept;
   bool idle() const noexcept;               // RT-safe: nothing held, nothing sounding
   uint32_t soundingCount() const noexcept;  // RT-safe

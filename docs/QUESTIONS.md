@@ -2663,3 +2663,27 @@ Context: AR.4 (docs/plans/AR.md "AR.4"). Choices (most reversible):
    panel is ≈ 760 px high — taller than a small Device view (the view does not scroll a panel vertically).
 9. `viewFoldLayout` (the patch block's size) now reads a note device's settings with their defaults, so a lane that
    was never switched on counts as off there too.
+
+## Q?-AR.3-a · pulse rework: where the build differs from plan AR.3
+Context: AR.3 (docs/plans/AR.md, now updated to what was built). Choices made without asking (all reversible):
+1. **Cycle unit.** Plan: "num/den of a whole note … follows the signature map as Bars did" (two readings). Options: whole
+   notes (ignores the signature) | bars. Choice: **num / den bars** — identical to whole notes in 4/4, and a 3/4 or 7/8 bar
+   or a signature change is followed (a fractional cycle = that fraction of its bar). den ≤ 32.
+2. **The mask's storage.** A 32-bit value is not exact in a float param, and a stepped setting counts its steps in an
+   int32 (2^32 overflows). Choice: **two 16-bit settings per row** (`pulseMaskLo/Hi n`); a click writes one of them, a menu
+   action both in one undo step.
+3. **Rows shown.** Plan: "nothing held: the first 4 rows, nominal". Built: at least 4 and at most 8 rows always — the held
+   notes (or the last held set) from the bottom, the rest dimmed "what a note added here would play" — so rows 5 … 8 are
+   reached by holding more notes (as their notes would be). Beyond 8 held notes the rows repeat (the view shows 8).
+4. **Shift snap + more menu items.** Shift+drag snaps to 1/24 of the row's period (halves, thirds, quarters, eighths;
+   Alt: free); the row menu also has Rotate Later / Earlier and All On (more rhythms from one Euclid pattern).
+5. **A masked first pulse.** A note-on between grid onsets sounds at once as the grid pulse before it (the AP.3 idle
+   rule): if that pulse is muted in the row's mask it does not sound. Alternative: always sound the note-on. Kept the
+   rule (the mask is the rhythm), cheap to flip.
+6. **Releasing a note no longer re-times the others** (there is no h_ref): each clock depends only on the Cycle and its
+   own division. A note's ROW still follows its rank by Hz, so adding a lower note moves the notes above it up a row
+   (in Auto with JI notes nothing moves: the harmonic is the division).
+7. **Beat lines** in the view assume 4 beats per bar (the panel target has no signature at the playhead); the engine
+   follows the real signature.
+8. **Layers** in the Pitch block: a count and up to three level knobs in the row AR.4 left for them (first built as
+   number boxes: the block had no room before AR.4).
