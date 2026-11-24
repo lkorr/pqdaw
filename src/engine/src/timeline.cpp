@@ -200,7 +200,7 @@ Status Timeline::publishAudio(std::unique_ptr<AudioSequenceImage> image) {  // T
     room -= addStereo;
     const uint32_t addMono = std::min(room, d.mono > stretchPlanned_[1] ? d.mono - stretchPlanned_[1] : 0u);
     if (addStereo + addMono > 0) {
-      dsp::StretchPool::Slot* list = dsp::StretchPool::build(addStereo, addMono, cfg_.sampleRate, ClipPlayer::kStretchFrames);
+      dsp::StretchPool::Slot* list = dsp::StretchPool::build(addStereo, addMono, cfg_.sampleRate, dsp::kComplexFrames);
       stretchPlanned_[0] += addStereo;
       stretchPlanned_[1] += addMono;
       dsp::StretchPool::push(pubStretch_, list);

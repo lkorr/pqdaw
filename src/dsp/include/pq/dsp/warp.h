@@ -163,6 +163,13 @@ struct WarpLaw {
     const double f = frameAt(fold(x));
     return loopEndF > loopStartF ? f + static_cast<double>(folds(x) * (loopEndF - loopStartF)) : f;
   }
+  // ... and back (SM.16, the Complex stream): the file frame of the whole unfolded frame u (a loop of at least one
+  // frame: loopsFrames()).
+  bool loopsFrames() const noexcept { return looping && loopEndF > loopStartF; }
+  int64_t foldFrame(int64_t u) const noexcept {
+    if (!loopsFrames() || u < loopEndF) return u;
+    return loopStartF + (u - loopEndF) % (loopEndF - loopStartF);
+  }
 };
 
 // The Sampler's markers — (frame, beat) float pairs, both strictly ascending (SampleSlot sanitises them) — as the

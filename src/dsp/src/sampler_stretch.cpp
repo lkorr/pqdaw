@@ -6,6 +6,8 @@
 #include <cmath>
 #include <cstring>
 
+#include <immintrin.h>
+
 #include "pq/dsp/fixed.h"
 #include "pq/dsp/warp.h"
 #include "simd.h"
@@ -19,13 +21,7 @@ constexpr auto kC = static_cast<int64_t>(kComplexChunk);
 constexpr auto kVoc = static_cast<int64_t>(kComplexFrames);
 constexpr double kMinRate = 1e-3;   // the law's time estimate divides by the rate
 constexpr uint32_t kSeed = 0x5A3D17u;  // every claim reseeds the library's generator alike: renders repeat
-
-// The stretcher's lead: a golden-ratio fraction of the analysis interval by its index. RT-safe.
-uint32_t leadOf(uint32_t s, const StretchPool::Latency& lat) noexcept {
-  const double g = static_cast<double>(s) * 0.6180339887498949;
-  const auto lead = static_cast<int64_t>((g - std::floor(g)) * static_cast<double>(lat.interval));
-  return static_cast<uint32_t>(std::clamp<int64_t>(lead, 0, std::max(lat.interval - 1, 0)));
-}
+constexpr int64_t kReach = 4;       // vocoder frames the cubic read reaches before its first (priming)
 
 bool claim(SamplerStretch& bank, ComplexVoice& cv, uint32_t lane, int64_t t) noexcept {  // RT-safe
   const uint32_t n = bank.lanes();
@@ -44,11 +40,11 @@ bool claim(SamplerStretch& bank, ComplexVoice& cv, uint32_t lane, int64_t t) noe
   cv.stretcher = s;
   cv.token = bank.newToken();
   cv.bank = bank.tag();
-  cv.lead = leadOf(s, bank.pool().latency());
+  cv.lead = static_cast<uint32_t>(complexLead(s, bank.pool().latency()));
   cv.phase = ComplexVoice::kPending;
   cv.primeT = t + static_cast<int64_t>(cv.lead / kComplexPrimeRate);  // (staggered as the lead: M10)
   cv.fade = 0;
-  bank.owner(s) = {cv.token, lane, cv.vHi};
+  bank.owner(s) = {cv.token, lane, cv.cx.vHi};
   return true;
 }
 
@@ -60,127 +56,85 @@ void release(SamplerStretch* bank, ComplexVoice& cv) noexcept {  // RT-safe
   cv.phase = ComplexVoice::kWait;
 }
 
-// One read of x[i − 1 … i + 2] at fraction f through sample_read's cubic (simd.h cubic4). RT-safe.
-float cubicAt(const float* x, float f) noexcept {
-  using simd::S1;
-  return _mm_cvtss_f32(simd::cubic4<S1>(_mm_set_ss(x[-1]), _mm_set_ss(x[0]), _mm_set_ss(x[1]), _mm_set_ss(x[2]), _mm_set_ss(f)));
-}
-
-// The voice's chunk work inside one render call.
-struct Run {
-  SamplerStretch& bank;
-  ComplexVoice& cv;
-  WarpVoice& v;
+// The voice as the stream's host at one sample (complex_stream.h "The host"): the read is at vocoder frame Y there,
+// moving at r, so the read reaches vocoder frame y at output time t + (y − Y) / r, where the voice's law gives the
+// content. The source: the resident sample, level 0.
+struct StreamHost {
+  const WarpVoice& v;
   const WarpSource& src;
-  const WarpVoiceRun& run;
   const WarpRunLaw& L;
-  const StretchPool::Latency& lat;
-  uint32_t ch = 1;  // the bank's channels
+  double t, Y, r;
 
-  double unfolded(double t) const noexcept { return v.unfoldedAt(L, t); }
-  // The loop in whole frames (an unfolded frame x ≥ loopEnd plays loopStart + (x − loopEnd) mod span).
-  bool looping() const noexcept { return L.law.looping && L.law.loopEndF > L.law.loopStartF; }
-
-  // The stream frames [k0, k1) into the bank's input (frame k0 at index 0): unfolded frame u0 + k folded into the file
-  // through the loop; zeros before the start, after the end (no loop) and outside the file.
-  void gather(int64_t k0, int64_t k1) noexcept {
+  double unfolded(double y) const noexcept { return v.unfoldedAt(L, t + (y - Y) / r); }  // RT-safe (all)
+  const WarpLaw& law() const noexcept { return L.law; }
+  int64_t dir() const noexcept { return 1; }
+  int64_t startU() const noexcept { return std::llround(L.startF); }
+  int64_t endU() const noexcept { return L.law.loopsFrames() ? INT64_MAX : std::llround(L.endF); }
+  int64_t frames() const noexcept { return src.level[0].length; }
+  uint32_t channels() const noexcept { return src.channels > 1 ? 2u : 1u; }
+  void read(int64_t a, int64_t b, bool /*forward*/, float* const* dst) const noexcept {
     const SampleLevelView& lv = src.level[0];
-    const int64_t len = lv.length;
-    const int64_t span = L.law.loopEndF - L.law.loopStartF;
-    for (int64_t k = k0; k < k1;) {
-      const auto at = static_cast<size_t>(k - k0);
-      int64_t r = k1 - k;
-      if (k < cv.zeroBelow || k >= cv.zeroAbove) {
-        if (k < cv.zeroBelow) r = std::min(r, cv.zeroBelow - k);
-        for (uint32_t c = 0; c < ch; ++c) std::memset(bank.in(c) + at, 0, sizeof(float) * static_cast<size_t>(r));
-        k += r;
-        continue;
-      }
-      r = std::min(r, cv.zeroAbove - k);
-      const int64_t x = cv.u0 + k;
-      int64_t f = x;
-      if (looping() && x >= L.law.loopEndF) {
-        f = L.law.loopStartF + (x - L.law.loopEndF) % span;
-        r = std::min(r, span - (f - L.law.loopStartF));
-      } else if (looping()) {
-        r = std::min(r, L.law.loopEndF - x);
-      }
-      const int64_t a = std::clamp<int64_t>(f, 0, len), b = std::clamp<int64_t>(f + r, 0, len);
-      for (uint32_t c = 0; c < ch; ++c) {
-        float* d = bank.in(c) + at;
-        if (b <= a) {
-          std::memset(d, 0, sizeof(float) * static_cast<size_t>(r));
-          continue;
-        }
-        if (a > f) std::memset(d, 0, sizeof(float) * static_cast<size_t>(a - f));
-        std::memcpy(d + (a - f), lv.ch[c] + a, sizeof(float) * static_cast<size_t>(b - a));
-        if (f + r > b) std::memset(d + (b - f), 0, sizeof(float) * static_cast<size_t>(f + r - b));
-      }
-      k += r;
-    }
-  }
-
-  void formants(double r) noexcept {
-    if (run.mode != AudioWarp::ComplexPro) return;
-    const double keep = std::clamp(static_cast<double>(run.set.formants), 0.0, 100.0) / 100.0;
-    if (keep <= 0.0) return;  // (as claimed: no formant processing)
-    const double ratio = std::max(r / std::max(src.rateScale, 1e-9), kMinRate);  // the pitch ratio (file-natural)
-    bank.pool().setParams(cv.stretcher,
-                          StretchParams{1.0, std::pow(ratio, -keep), false, 1.0 / std::clamp(static_cast<double>(run.set.formantEnvelope), 8.0, 256.0)});
-  }
-
-  // Primes the stretcher for a read at sample t (read position Y, rate r).
-  void prime(int64_t t, int64_t phi, double r) noexcept {
-    StretchPool& P = bank.pool();
-    const double Y = static_cast<double>(phi) * k2m32;
-    r = std::max(r, kMinRate);
-    auto tOf = [&](double y) noexcept { return static_cast<double>(t) + (y - Y) / r; };
-    cv.ys = floorDiv((phi >> 32) - lat.output - lat.block - 4, kC) * kC;
-    const auto y0 = static_cast<double>(cv.ys + lat.output);
-    cv.u0 = std::llround(unfolded(tOf(y0)));
-    cv.zeroBelow = std::llround(L.startF) - cv.u0;
-    cv.zeroAbove = looping() ? INT64_MAX : std::llround(L.endF) - cv.u0;
-    P.reset(cv.stretcher, kSeed);
-    formants(r);
-    gather(lat.input - lat.seek, lat.input);
-    const double rate = std::abs(unfolded(tOf(y0 + static_cast<double>(kC))) - unfolded(tOf(y0))) / static_cast<double>(kC);
-    const float* in[2] = {bank.in(0), bank.in(ch - 1)};
-    P.seek(cv.stretcher, in, lat.seek, rate);
-    cv.head = lat.input;
-    cv.vLo = cv.vHi = cv.ys;
-    cv.primeT = t;
-    cv.primeK = static_cast<double>(kComplexPrimeRate) * std::max(1.0, r);
-    cv.phase = ComplexVoice::kPriming;
-  }
-
-  // The vocoder frames [vHi, vHi + kComplexChunk), at sample t (read position Y, rate r): the input up to the law's
-  // frame where the read will reach vHi + kComplexChunk + the output latency, + the input latency.
-  void chunk(int64_t t, int64_t phi, double r) noexcept {
-    StretchPool& P = bank.pool();
-    float* b0 = P.output(cv.stretcher);
-    if (cv.vHi + kC - cv.vLo > kVoc) {  // make room: drop what the read no longer reaches
-      const int64_t from = std::clamp<int64_t>((phi >> 32) - 2, cv.vLo, cv.vHi);
-      const auto keep = static_cast<size_t>(cv.vHi - from);
-      for (uint32_t c = 0; c < ch; ++c) std::memmove(b0 + c * kVoc, b0 + c * kVoc + (from - cv.vLo), sizeof(float) * keep);
-      cv.vLo = from;
-      if (cv.vHi + kC - cv.vLo > kVoc) cv.vLo = cv.vHi;
-    }
-    r = std::max(r, kMinRate);
-    const double Y = static_cast<double>(phi) * k2m32;
-    const double tEnd = static_cast<double>(t) + (static_cast<double>(cv.vHi + kC + lat.output) - Y) / r;
-    const int64_t target = std::llround(unfolded(tEnd)) - cv.u0 + lat.input;
-    const int64_t inN = std::clamp<int64_t>(target - cv.head, 0, int64_t{1} << 24);
-    const int64_t lead = std::max<int64_t>(0, inN - static_cast<int64_t>(bank.inFrames()));
-    gather(cv.head + lead, cv.head + inN);
-    formants(r);
-    const float* in[2] = {bank.in(0), bank.in(ch - 1)};
-    float* out[2] = {b0 + (cv.vHi - cv.vLo), b0 + kVoc + (cv.vHi - cv.vLo)};
-    P.process(cv.stretcher, in, static_cast<int>(inN), static_cast<int>(lead), out, static_cast<int>(kC));
-    cv.head += inN;
-    cv.vHi += kC;
-    ++bank.chunks;
+    for (uint32_t c = 0; c < channels(); ++c) std::memcpy(dst[c], lv.ch[c] + a, sizeof(float) * static_cast<size_t>(b - a));
   }
 };
+
+// l[i] (and r[i]) = the cubic of the vocoder's output at Φ_i = ph[i] (32.32 vocoder frames; the buffer's frame 0 is
+// vLo), i < n ≤ kWarpVoiceChunk; frames whose taps start below vLo: 0. The taps up to (Φ_i >> 32) + 2 are held (the
+// voice's chunk demand). b1 null: one channel, written to both. 8 frames at a time; a tail runs the same vector code
+// on padding. RT-safe.
+void readVocoder(const float* b0, const float* b1, int64_t vLo, const int64_t* ph, uint32_t n, float* l, float* r) noexcept {
+  for (uint32_t i = 0; i < n; i += 8) {
+    const uint32_t m = std::min<uint32_t>(8, n - i);
+    alignas(32) int32_t ix[8];
+    alignas(32) float fr[8], on[8];
+    for (uint32_t k = 0; k < 8; ++k) {
+      ix[k] = 1;
+      fr[k] = on[k] = 0.0f;
+    }
+    for (uint32_t k = 0; k < m; ++k) {
+      const int64_t at = (ph[i + k] >> 32) - vLo;
+      if (at < 1) continue;
+      ix[k] = static_cast<int32_t>(at);
+      fr[k] = static_cast<float>(static_cast<uint32_t>(ph[i + k])) * 2.3283064365386963e-10f;  // 2^-32
+      on[k] = 1.0f;
+    }
+    const __m256 t = _mm256_load_ps(fr), keep = _mm256_cmp_ps(_mm256_load_ps(on), _mm256_setzero_ps(), _CMP_NEQ_OQ);
+    __m256 xm1, x0, x1, x2;
+    simd::taps8(b0, ix, xm1, x0, x1, x2);
+    const __m256 yl = _mm256_and_ps(simd::cubic4<simd::S8>(xm1, x0, x1, x2, t), keep);
+    __m256 yr = yl;
+    if (b1 != nullptr) {
+      simd::taps8(b1, ix, xm1, x0, x1, x2);
+      yr = _mm256_and_ps(simd::cubic4<simd::S8>(xm1, x0, x1, x2, t), keep);
+    }
+    if (m == 8) {
+      _mm256_storeu_ps(l + i, yl);
+      _mm256_storeu_ps(r + i, yr);
+    } else {
+      alignas(32) float bl[8], br[8];
+      _mm256_store_ps(bl, yl);
+      _mm256_store_ps(br, yr);
+      for (uint32_t k = 0; k < m; ++k) {
+        l[i + k] = bl[k];
+        r[i + k] = br[k];
+      }
+    }
+  }
+}
+
+// The stretcher's formant params for the read rate r (file frames per output frame): the rule at the pitch ratio
+// (file-natural). Set only when the ratio, the settings or the mode moved since the last set (std::pow). RT-safe.
+StretchParams formantsFor(ComplexVoice& cv, const WarpSource& src, const WarpVoiceRun& run, double r, bool* changed) noexcept {
+  const double ratio = std::max(r / std::max(src.rateScale, 1e-9), kMinRate);
+  const auto mode = static_cast<uint32_t>(run.mode);
+  *changed = ratio != cv.fRatio || run.set.formants != cv.fFormants || run.set.formantEnvelope != cv.fOrder || mode != cv.fMode;
+  if (!*changed) return {};
+  cv.fRatio = ratio;
+  cv.fFormants = run.set.formants;
+  cv.fOrder = run.set.formantEnvelope;
+  cv.fMode = mode;
+  return complexFormants(run.mode, ratio, run.set.formants, run.set.formantEnvelope);
+}
 
 }  // namespace
 
@@ -195,7 +149,7 @@ SamplerStretch::SamplerStretch(uint32_t lanes, uint32_t channels, double sampleR
       channels_(channels >= 2 ? 2u : 1u),
       tag_(gBankTag.fetch_add(1, std::memory_order_relaxed) + 1),
       sampleRate_(sampleRate) {
-  inCap_ = std::max<uint32_t>(kComplexInFrames, static_cast<uint32_t>(pool_.latency().seek) + kComplexChunk);
+  inCap_ = complexInFrames(pool_.latency());
   in_ = AlignedBuffer<float>(static_cast<size_t>(channels_) * inCap_);
 }
 
@@ -203,7 +157,7 @@ void ComplexVoice::trigger(SamplerStretch* b, uint32_t lane) noexcept {  // RT-s
   stretcher = SamplerStretch::kNone;
   phase = kWait;
   fade = 0;
-  vLo = vHi = 0;
+  cx.vLo = cx.vHi = 0;
   if (b == nullptr) return;
   for (uint32_t s = 0; s < b->lanes(); ++s)  // the lane's previous voice is over (its words are being reset)
     if (b->owner(s).user == lane) b->owner(s) = {};
@@ -219,7 +173,7 @@ void ComplexVoice::render(SamplerStretch* b, uint32_t lane, WarpVoice& v, const 
     bool ok = usable && b->tag() == bank && stretcher < b->lanes();
     if (ok) {
       const SamplerStretch::Owner& o = b->owner(stretcher);
-      ok = o.token == token && o.vHi == vHi;
+      ok = o.token == token && o.vHi == cx.vHi;
     }
     if (!ok) {
       stretcher = SamplerStretch::kNone;
@@ -227,83 +181,113 @@ void ComplexVoice::render(SamplerStretch* b, uint32_t lane, WarpVoice& v, const 
     }
   }
   if (phase == kWait && usable && v.active != 0) claim(*b, *this, lane, v.t);
-  // Φ per frame, as WarpVoice::render integrates it.
-  alignas(32) int64_t ph[257];
-  alignas(32) double rt[256];
-  n = std::min<uint32_t>(n, 256);
-  ph[0] = v.phi;
-  for (uint32_t i = 0; i < n; ++i) {
-    const double r = clampReadRate(static_cast<double>(rate[i]) * src.rateScale);
-    rt[i] = r;
-    ph[i + 1] = ph[i] + rateStep(r);
-  }
-  const int64_t t0 = v.t;
-  const bool wasActive = v.active != 0;
-  if (phase != kOn) {
-    v.render(src, run, law, rate, n, outL, outR, pos, playing, sc);  // Tones (priming, the cross, no stretcher)
-  } else {
-    std::fill_n(outL, n, 0.0f);
-    std::fill_n(outR, n, 0.0f);
-    v.render(src, run, law, rate, n, nullptr, nullptr, pos, playing, sc);  // the clock only
-  }
-  if (phase == kWait || !usable || !wasActive) {
-    if (v.active == 0) release(b, *this);
-    return;
-  }
-  Run R{*b, *this, v, src, run, law, b->pool().latency()};
-  R.ch = b->channels();
   const int64_t X = warpFadeFrames(run.sampleRate);
   const auto Xf = static_cast<float>(X);
-  const int64_t endT = v.endT;
-  const float* b0 = b->pool().output(stretcher);
-  const float* b1 = R.ch >= 2 ? b0 + kVoc : b0;
-  for (uint32_t i = 0; i < n; ++i) {
-    const int64_t t = t0 + static_cast<int64_t>(i);
-    const int64_t y = ph[i] >> 32;
-    const int64_t need = y + 3 + static_cast<int64_t>(lead);
-    if (phase == kPending) {
-      if (t < primeT) continue;
-      R.prime(t, ph[i], rt[i]);
-    }
-    if (phase == kPriming) {  // at most primeK vocoder frames per sample since the priming started
-      const auto allowed = ys + static_cast<int64_t>(std::floor(static_cast<double>(t - primeT + 1) * primeK));
-      while (vHi < need && vHi + kC <= allowed) R.chunk(t, ph[i], rt[i]);
-      if (vHi < need) continue;
-      phase = kFading;
-      fade = 0;
-    }
-    while (vHi < need) R.chunk(t, ph[i], rt[i]);
-    if (endT != INT64_MAX && t >= endT + X) {  // over (the WarpVoice zeroed the outputs)
-      outL[i] = outR[i] = 0.0f;
+  WarpClock ck;
+  alignas(32) float cl[kWarpVoiceChunk], cr[kWarpVoiceChunk];
+  for (uint32_t c0 = 0; c0 < n;) {
+    const uint32_t m = std::min<uint32_t>(kWarpVoiceChunk, n - c0);
+    float* oL = outL + c0;
+    float* oR = outR + c0;
+    float* ps = pos != nullptr ? pos + c0 : nullptr;
+    float* pl = playing != nullptr ? playing + c0 : nullptr;
+    c0 += m;
+    const int64_t t0 = v.t;
+    const bool wasActive = v.active != 0;
+    const bool tones = phase != kOn || !wasActive;  // Tones sounds (priming, the cross, no stretcher); else the clock only
+    if (wasActive) ck.integrate(v.phi, rate + (c0 - m), m, src.rateScale);  // Φ once, for the Tones voice and the read
+    v.renderClock(src, run, law, ck, m, tones ? oL : nullptr, tones ? oR : nullptr, ps, pl, sc);
+    if (phase == kWait || !usable || !wasActive) {
+      if (v.active == 0) release(b, *this);
       continue;
     }
-    const auto at = static_cast<size_t>(y - vLo);
-    const float f = static_cast<float>(static_cast<double>(ph[i] & 0xFFFFFFFF) * k2m32);
-    float cl = 0.0f, cr2 = 0.0f;
-    if (y - 1 >= vLo) {
-      cl = cubicAt(b0 + at, f);
-      cr2 = cubicAt(b1 + at, f);
+    StretchPool& P = b->pool();
+    const ComplexIn in = b->in();
+    const int64_t endT = v.endT;
+    const int64_t* ph = ck.ph;
+    const auto ld = static_cast<int64_t>(lead);
+    // The chunks sample i's read needs, computed there (the law's estimate at that sample).
+    auto host = [&](uint32_t i) noexcept {
+      return StreamHost{v, src, law, static_cast<double>(t0 + i), static_cast<double>(ph[i]) * k2m32, std::max(ck.rt[i], kMinRate)};
+    };
+    auto feed = [&](uint32_t i, int64_t last, uint32_t maxChunks) noexcept {
+      StreamHost h = host(i);
+      bool changed = false;
+      const StretchParams fp = formantsFor(*this, src, run, h.r, &changed);
+      if (changed) P.setParams(stretcher, fp);
+      b->chunks += cx.ensure(h, P, stretcher, in, (ph[i] >> 32) - 2, last, maxChunks);
+    };
+    for (uint32_t i = 0; i < m;) {
+      const int64_t t = t0 + static_cast<int64_t>(i);
+      const int64_t need = (ph[i] >> 32) + 3 + ld;
+      if (phase == kPending) {
+        if (t < primeT) {
+          i = static_cast<uint32_t>(std::min<int64_t>(m, i + (primeT - t)));
+          continue;
+        }
+        StreamHost h = host(i);
+        bool changed = false;
+        fRatio = -1.0;  // (the reset drops the stretcher's params: set them whatever was set before)
+        const StretchParams fp = formantsFor(*this, src, run, h.r, &changed);
+        cx.prime(h, P, stretcher, in, complexPrimeStart(ph[i] >> 32, kReach, P.latency()), kSeed, fp);
+        primeT = t;
+        primeK = complexPrimeRate(h.r);
+        phase = kPriming;
+      }
+      if (phase == kPriming) {  // at most primeK vocoder frames per sample since the priming started
+        const auto allowed = cx.ys + static_cast<int64_t>(std::floor(static_cast<double>(t - primeT + 1) * primeK));
+        if (cx.vHi < need && cx.vHi + kC <= allowed)
+          feed(i, need, static_cast<uint32_t>((allowed - cx.vHi) / kC));
+        if (cx.vHi < need) {
+          ++i;
+          continue;
+        }
+        phase = kFading;
+        fade = 0;
+      }
+      if (cx.vHi < need) feed(i, need, 0xFFFFFFFFu);
+      // The frames from i that need nothing more: up to the first whose read does (Φ is monotonic: one search).
+      const int64_t thr = (cx.vHi - 2 - ld) * kFixedOne;  // need(j) > vHi  ⇔  ph[j] ≥ thr
+      const auto j = static_cast<uint32_t>(std::lower_bound(ph + i + 1, ph + m, thr) - ph);
+      const uint32_t len = j - i;
+      const float* b0 = P.output(stretcher);
+      const float* b1 = b->channels() >= 2 ? b0 + kVoc : nullptr;
+      const bool ending = endT != INT64_MAX && t + len > endT;
+      if (phase == kOn && !ending) {
+        readVocoder(b0, b1, cx.vLo, ph + i, len, oL + i, oR + i);
+      } else {
+        readVocoder(b0, b1, cx.vLo, ph + i, len, cl, cr);
+        for (uint32_t k = 0; k < len; ++k) {
+          const int64_t tk = t + k;
+          if (endT != INT64_MAX && tk >= endT + X) {  // over (the WarpVoice zeroed the outputs)
+            oL[i + k] = oR[i + k] = 0.0f;
+            continue;
+          }
+          float a = cl[k], c = cr[k];
+          if (endT != INT64_MAX && tk >= endT) {  // the end's 2 ms fade (as Tones')
+            const float g = rampValue((Xf - 0.5f) / Xf, -1.0f / Xf, warpRampIndex(tk, endT));
+            a *= g;
+            c *= g;
+          }
+          if (phase == kFading) {
+            const float g = (static_cast<float>(fade) + 0.5f) / Xf;
+            oL[i + k] = oL[i + k] + g * (a - oL[i + k]);
+            oR[i + k] = oR[i + k] + g * (c - oR[i + k]);
+            if (++fade >= static_cast<uint32_t>(X)) phase = kOn;
+          } else {
+            oL[i + k] = a;
+            oR[i + k] = c;
+          }
+        }
+      }
+      i = j;
     }
-    if (endT != INT64_MAX && t >= endT) {  // the end's 2 ms fade (as Tones')
-      const float g = rampValue((Xf - 0.5f) / Xf, -1.0f / Xf, warpRampIndex(t, endT));
-      cl *= g;
-      cr2 *= g;
+    if (v.active == 0) {
+      release(b, *this);
+      continue;
     }
-    if (phase == kFading) {
-      const float g = (static_cast<float>(fade) + 0.5f) / Xf;
-      outL[i] = outL[i] + g * (cl - outL[i]);
-      outR[i] = outR[i] + g * (cr2 - outR[i]);
-      if (++fade >= static_cast<uint32_t>(X)) phase = kOn;
-    } else {
-      outL[i] = cl;
-      outR[i] = cr2;
-    }
+    if (phase != kWait) b->owner(stretcher) = {token, lane, cx.vHi};
   }
-  if (v.active == 0) {
-    release(b, *this);
-    return;
-  }
-  if (phase != kWait) b->owner(stretcher) = {token, lane, vHi};
 }
 
 }  // namespace pq::dsp
