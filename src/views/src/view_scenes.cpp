@@ -2979,6 +2979,22 @@ Status setupProjectNodeMenu(Shell& shell) {
   return Ok{};
 }
 
+// AR.1: the node menu's MIDI effects tab over the same scene: the note device types (the Arpeggiator: its preview with
+// its `notes` input, `out` output and params).
+Status setupProjectNodeMenuMidi(Shell& shell) {
+  if (Status s = setupProjectPatchFree(shell); !s) return s;
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-node-menu-midi: the view is not installed", {}};
+  circuit::clearRecentNodes();
+  const ui::IRect r = v->canvas().rect();
+  circuit::NodeMenu* m = v->openSpawnMenu({static_cast<float>(r.x) + static_cast<float>(r.w) * 0.22f, static_cast<float>(r.y) + static_cast<float>(r.h) * 0.18f});
+  if (m == nullptr) return Error{ErrorCode::NotFound, "project-node-menu-midi: no overlay layer", {}};
+  m->setTab(circuit::NodeTab::MidiEffects);
+  m->finishOpening();
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.node-menu-fix1: a new connection being drawn out in the project patch view (the TX.patching scene): a press on the
 // free Utility's output and a drag onto an input pin of another block — the real cable (tube, plugs, the source's
 // colour) from the port to the pin it snapped to, highlighted (its halo, a ring on the pin). Cables at rest (no motion:
@@ -4443,6 +4459,7 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-notes", 1280, 800, setupProjectPatchNotes},        // TMM.10-fix2
     {"project-patch-free", 1280, 800, setupProjectPatchFree},          // TX.patching
     {"project-node-menu", 1280, 800, setupProjectNodeMenu},          // TX.node-menu
+    {"project-node-menu-midi", 1280, 800, setupProjectNodeMenuMidi}, // AR.1
     {"project-cable-drag", 1280, 800, setupProjectCableDrag},        // TX.node-menu-fix1
     {"project-patch-panels", 1600, 900, setupProjectPatchPanels},      // TX.panel-faces
     {"project-patch-resize", 1600, 900, setupProjectPatchResize},      // TX.resize

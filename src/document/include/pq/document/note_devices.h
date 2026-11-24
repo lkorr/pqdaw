@@ -8,6 +8,13 @@
 //                track the kind of a block means nothing: its signals decide). Its params are the type's runtime params
 //                (knob POSITIONS, GU.1: automation and drags write them) and its settings the type's structural ones.
 //                Only on a MIDI track (checks.cpp: no notes reach any other), never in a group.
+//   the cables   AR.1 (wire_types.h notesWireClash): its main input takes only a cable that carries notes (a MIDI
+//                track's notes, a Notes-out device's main output) and its main output goes only into a main input
+//                that takes notes; the cable edits refuse anything else. A cable that completes a way from the notes
+//                through note devices into an input REPLACES the direct cable between those two ends (ops::connect:
+//                a track has one note stream — it runs through the stages or around them, not both). Half-wired (or
+//                beside a direct cable that is still there) it is off the main path: no stage, and nothing plays
+//                through it.
 //   the signals  declared by its type (NoteDeviceType::in / out: Notes → Notes), never by its patch name:
 //                doc::chainStages gives a device with declared signals `in` → `out` when `in` reaches it, else passes
 //                on what reaches it (it changes nothing it does not take). So the instrument after an arpeggiator still
@@ -56,6 +63,7 @@ struct NoteDeviceType {
   std::string id;         // "arpeggiator" (Device::patch "note:arpeggiator")
   std::string name;       // "Arpeggiator"
   std::string patchName;  // its fixed patch's name ("Arpeggiator": DeviceLibrary::patchOf)
+  std::string description;  // one sentence (the node menu's preview)
   ChainSignal in = ChainSignal::Notes, out = ChainSignal::Notes;  // its declared main signals
   std::vector<NoteParamSpec> params;
   // AP.8b (review L7): what the type IS, so nothing else keys on its id: the engine stage it plays as (the playback
@@ -75,6 +83,14 @@ std::string noteDevicePatch(std::string_view type);  // "note:<type>"
 // Whether `d` is a note device (its patch names a registered type), and its type (null: not one).
 bool isNoteDevice(const Device& d) noexcept;
 const NoteDeviceType* noteDeviceTypeOf(const Device& d) noexcept;
+// AR.1: the main signals `d` DECLARES (its type's NoteDeviceType::in / out; None: it declares none — a group, an atom
+// block, a meta module: what reaches it decides, chainStages). What a cable may join follows these (wire_types.h
+// notesWireClash), never a patch name.
+struct MainSignals {
+  ChainSignal in = ChainSignal::None, out = ChainSignal::None;
+};
+MainSignals declaredMainSignals(const Device& d) noexcept;
+
 // The fixed patch text a type's devices play for the views and the edit builders (`in notes`, its params with their
 // ranges, defaults, @steps, @label, @choices, its settings as `real const` inputs, `out out = notes`). Never lowered.
 std::string noteDevicePatchText(const NoteDeviceType& t);

@@ -13,6 +13,7 @@
 #include "pq/document/edit_ops.h"
 #include "pq/document/library_files.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/meta/registry.h"
 #include "pq/views/browser/library.h"
 #include "pq/views/browser/library_load.h"
@@ -671,7 +672,18 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca, 
   const doc::TrackId track = place.track;
   const doc::DeviceId group = place.group;
   Composer k(start, ctx_.store().ids());
-  doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, doc::ops::kOffPath, vca);
+  // AR.1: a note device into a notes cable that is a link of its track's main path: the edit the browser drop makes
+  // (ops::addDevice at the link's slot — a rack's feed stays one feed); any other cable: spliced into it below (the
+  // document's notes rule refuses a cable that is not a notes cable).
+  uint32_t slot = doc::ops::kOffPath;
+  if (e.kind == EdgeKind::Notes && c.item == circuit::NodeItem::Device && doc::isNoteDevicePatch(c.id) && !group.valid())
+    if (const doc::Track* t = doc::findTrackPtr(p, track)) {
+      const doc::MainPath path = doc::mainPath(p, *t);
+      for (uint32_t i = 0; i < path.links.size(); ++i)
+        if (path.links[i] == old.id) slot = i;
+    }
+  const bool onPath = slot != doc::ops::kOffPath;
+  doc::ops::EditResult add = addChoice(ctx_, p, k.ids(), c, track, slot, vca);
   if (!add || add->devices.empty()) {
     ctx_.setStatus(label + ": " + (add ? std::string("nothing was added") : add.error().message));
     return false;
@@ -691,7 +703,9 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca, 
   const circuit::MainPorts mp = doc::mainPortsOf(*made, ctx_.deviceLibrary());
   const bool hasIn = !mp.in.empty() || made->kind == doc::DeviceKind::Instrument;
   const bool hasOut = !mp.out.empty();
-  if (hasIn && hasOut) {
+  if (onPath) {
+    // (wired by the add)
+  } else if (hasIn && hasOut) {
     if (!k.add(doc::ops::spliceIntoWire(k.doc(), k.ids(), ctx_.deviceLibrary(), id, old.id))) {
       ctx_.setStatus(label + ": " + k.why);
       return false;
@@ -727,6 +741,13 @@ bool ProjectPatchView::insertImpl(uint32_t edge, const NodeChoice& c, bool vca, 
     return false;
   }
   if (!hasIn || !hasOut) ctx_.setStatus(name + (!hasIn ? " has no input: only its output is wired" : " has no output: only its input is wired"));
+  if (onPath) {
+    // AR.1: a note device on the notes link — the cable out of the tuning block is short and at the band's left end, and
+    // the block is wide: inside its band's left edge (it hung out over the tuning block), then the free spot as ever.
+    sync();
+    if (const uint32_t n = patch_.nodeOf(id); n != kNone && patch_.nodes[n].band < patch_.bands.size() && !patch_.scoped)
+      mid.x = std::max(mid.x, patch_.bands[patch_.nodes[n].band].x0 + 8.0f + patch_.nodes[n].w * 0.5f);
+  }
   finishSpawn(before, id, mid, {}, {});
   return true;
 }
@@ -908,7 +929,21 @@ bool ProjectPatchView::dissolve(doc::DeviceId device) {
 circuit::NodeMenu* ProjectPatchView::openSpawnMenu(Vec2 at, const SpawnLink& link) {
   circuit::NodeMenuOptions o;
   o.catalog = circuit::nodeCatalog(circuit::NodeCatalog::Scope::Project, ctx_);
-  o.filter = link.kind == SpawnLink::Kind::FromOutput ? circuit::NodeFilter::WithInput
+  // AR.1: a cable out of a notes output offers what takes notes (a MIDI track's notes: any main input; an output
+  // declared Notes: the document's notes rule), any other output never a Notes input.
+  auto fromOutput = [&] {
+    const doc::Project& p = *ctx_.doc();
+    if (link.notes.valid()) {
+      const doc::Track* t = doc::findTrackPtr(p, link.notes);
+      return link.port.empty() && t != nullptr && t->kind == doc::TrackKind::Midi ? circuit::NodeFilter::FromNotes
+                                                                                  : circuit::NodeFilter::WithInput;
+    }
+    const doc::Device* d = doc::findDevice(p, link.device).device;
+    const bool notes = d != nullptr && doc::declaredMainSignals(*d).out == doc::ChainSignal::Notes &&
+                       (link.port.empty() || link.port == doc::mainPortsOf(*d, ctx_.deviceLibrary()).out);
+    return notes ? circuit::NodeFilter::TakesNotes : circuit::NodeFilter::WithInput;
+  };
+  o.filter = link.kind == SpawnLink::Kind::FromOutput ? fromOutput()
              : link.kind == SpawnLink::Kind::IntoParam ? circuit::NodeFilter::WithOutput
                                                        : circuit::NodeFilter::None;
   o.title = link.kind == SpawnLink::Kind::FromOutput ? "Connect from" : link.kind == SpawnLink::Kind::IntoParam ? "Drive " + link.port : "Add";
@@ -957,7 +992,7 @@ circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
     for (uint32_t i = 0; i < patch_.edges.size(); ++i) {
       const Edge& x = patch_.edges[i];
       if (x.kind != kind) continue;
-      if (kind == EdgeKind::Modulation) {
+      if (kind == EdgeKind::Modulation || kind == EdgeKind::Notes) {  // (AR.1: a notes cable by its wire)
         if (x.wire == wireId) return i;
         continue;
       }
@@ -971,7 +1006,8 @@ circuit::NodeMenu* ProjectPatchView::openInsertMenu(uint32_t edge, Vec2 at) {
   };
   circuit::NodeMenuOptions o;
   o.catalog = circuit::nodeCatalog(circuit::NodeCatalog::Scope::Project, ctx_);
-  o.filter = circuit::NodeFilter::WithBoth;
+  // AR.1: into a notes cable goes a node whose main input and output are Notes (a note effect).
+  o.filter = kind == EdgeKind::Notes ? circuit::NodeFilter::NotesThrough : circuit::NodeFilter::WithBoth;
   o.title = "Insert";
   // TX.node-menu-fix1: the cable it goes into is shown selected while the menu is open (the selection comes back when
   // it closes, before a choice rebuilds the scene); the point on it marked.

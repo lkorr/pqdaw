@@ -5,6 +5,7 @@
 
 #include "edit_common.h"
 #include "pq/document/main_path.h"
+#include "pq/document/wire_types.h"
 
 namespace pq::doc::ops {
 
@@ -93,6 +94,7 @@ EditResult setCableSource(const Project& p, IdSource& ids, const DeviceLibrary* 
     const Track* from = sourceTrackOf(p, ends);
     if (from == nullptr) return notFound("the cable source was not found");
     if (from == target.track) return invalid("a cable source is another track");
+    if (const WireClash c = notesWireClash(p, ends); c != WireClash::None) return invalid(std::string(wireClashText(c)));  // AR.1
     // Already the one source: nothing changes.
     if (old.size() == 1)
       if (const Wire* w = findWire(p, old.front()); w != nullptr && w->sameEnds(ends)) return makeEdit("Cable Source");

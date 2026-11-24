@@ -11,6 +11,7 @@
 //                 Stereo Image, Phase Scope; VZ.6 Band Levels, Waveform; VZ.7 Waterfall, Stereo Spectrogram) under
 //                 Visualisers
 //   modules       the built-in modules (doc::moduleInfos: group presets), the two racks
+//   MIDI effects  AR.1: every registered note device type (doc::noteDeviceTypes: the Arpeggiator), the project only
 //   user library  the User Library's saved presets and racks (the browser's index: Library::index())
 //
 // Each entry carries the facts the menu needs and nothing it does not: its signal ports (inputs apart from params,
@@ -18,6 +19,9 @@
 // cable into it feeds) and a main output (its first output). Those two facts decide what is "compatible": a cable
 // dragged out of an output offers nodes with an input first, a backwards cable out of a param nodes with an output.
 // No per-type rule: the facts come from the signatures (atoms, meta types, device patches).
+// AR.1: an entry whose type DECLARES its main signals (doc::NoteDeviceType::in / out) carries them (notesIn, notesOut),
+// and every entry whether its main input takes notes (takesNotes: the document's notes rule, doc::notesWireClash) — a
+// notes port joins only a notes port, so the cable menus offer what the cable can connect: NodeFilter below.
 //
 // Search: fuzzy over names and aliases (library::fuzzyScore, the browser's: a term must be a subsequence; word starts
 // and runs score), and descriptions by substring (a subsequence would match almost any sentence); every term of the
@@ -58,7 +62,7 @@ inline NodeTab tabOf(NodeCategory c) noexcept { return static_cast<NodeTab>(stat
 enum class NodeItem : uint8_t {
   Atom,        // id: the atom's name ("tanh"); the circuit editor's spec, a one-atom free device in the project
   Meta,        // id: the type ("vca"): a chain meta device "meta:<id>" / a `meta_<id>` call
-  Device,      // id: doc::kValueDevice (the value block)
+  Device,      // id: a device patch — doc::kValueDevice (the value block), AR.1 "note:<type>" (a note device)
   Rack,        // id: doc::kAudioEffectRack / doc::kInstrumentRack
   LibraryFile, // id: a .pqpreset path of the User Library
   Module,      // GU.4, id: a built-in module's key ("vca", doc::moduleInfos): its group preset, pasted (project only)
@@ -82,6 +86,10 @@ struct NodeEntry {
   bool hasIn = false;   // a main input (what a cable into it, or a chain, feeds)
   bool hasOut = false;  // a main output
   bool instrument = false;  // goes first in a chain (takes the notes), never free
+  // AR.1: its main input / output is DECLARED Notes (a note device type's signals); takesNotes: a notes output's cable
+  // may enter its main input (a Notes input, an instrument, a group or a meta module with a chain input).
+  bool notesIn = false, notesOut = false;
+  bool takesNotes = false;
   // Search (folded once).
   std::string foldedName, foldedAliases, foldedDesc;
   uint64_t mask = 0;  // character set of name + aliases + description (a term outside it cannot match)
@@ -102,7 +110,10 @@ std::shared_ptr<const NodeCatalog> nodeCatalog(NodeCatalog::Scope scope, ViewCon
 
 // What a menu opened from a cable offers first: nothing in particular, nodes with a main input (a cable out of an
 // output), nodes with a main output (a backwards cable out of a param), nodes with both (a node inserted into a cable).
-enum class NodeFilter : uint8_t { None, WithInput, WithOutput, WithBoth };
+// AR.1, by the declared signals: those three never offer a Notes port (an audio or modulation cable cannot enter or
+// leave one); FromNotes: a cable out of a MIDI track's notes (any main input, a Notes one too); TakesNotes: a cable
+// out of an output declared Notes (takesNotes); NotesThrough: a node inserted into a notes cable (Notes in and out).
+enum class NodeFilter : uint8_t { None, WithInput, WithOutput, WithBoth, FromNotes, TakesNotes, NotesThrough };
 bool compatible(const NodeEntry& e, NodeFilter f) noexcept;
 
 struct NodeHit {

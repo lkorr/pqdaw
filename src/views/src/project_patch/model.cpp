@@ -439,6 +439,11 @@ struct Builder {
     if (doc::isMetaDevice(d))
       for (const doc::ChainStage& s : *bandStages)
         if (s.device == &d) n.instrument = s.in == doc::ChainSignal::Notes;
+    {  // AR.1: the main signals it declares
+      const doc::MainSignals ms = doc::declaredMainSignals(d);
+      n.declNotesIn = ms.in == doc::ChainSignal::Notes;
+      n.declNotesOut = ms.out == doc::ChainSignal::Notes;
+    }
     if (doc::isNoteDevice(d)) {  // AP.2: a note stage (its signals: chainStages)
       n.noteStage = true;
       for (const doc::ChainStage& s : *bandStages)
@@ -1402,7 +1407,10 @@ struct Builder {
       const bool mainTo = w.param.empty() || series;
       EdgeKind k = EdgeKind::Modulation;
       if (w.fromNoteSource() && fromMidi && mainFrom && mainTo) k = EdgeKind::Notes;
-      else if (out.nodes[a].notesOut && mainFrom && mainTo) k = EdgeKind::Notes;  // AP.2: on from a note device
+      // AP.2: on from a note device; AR.1: by its DECLARED output, so also while no notes reach it (half-wired)
+      else if ((out.nodes[a].notesOut || (out.nodes[a].declNotesOut && out.nodes[a].device == w.from && !w.toMixer())) &&
+               mainFrom && mainTo)
+        k = EdgeKind::Notes;
       else if (series && out.nodes[a].kind == NodeKind::Terminal) k = EdgeKind::Notes;
       else if (sameBand && e.graphWire == kNone && ((mainFrom && mainTo) || w.toMixer() || (w.fromNoteSource() && mainFrom))) k = EdgeKind::Chain;
       crossingEdges(k, a, fromPort, b, toPort, w, std::move(e));

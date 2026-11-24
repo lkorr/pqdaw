@@ -21,6 +21,7 @@
 #include "pq/document/note_devices.h"
 #include "pq/document/serialize.h"
 #include "pq/document/store.h"
+#include "pq/document/wire_types.h"
 #include "pq/engine/arp.h"
 
 using namespace pq::doc;
@@ -365,4 +366,100 @@ TEST_CASE("note devices: the note chain (mapping, degree table, null without, a 
   c.edit(ops::setDevicesActive(c.doc(), both, true));
   c.edit(ops::takeOffPath(c.doc(), c.store.ids(), &library(), both));
   CHECK(lowerNoteChains(c.doc()).empty());
+}
+
+// AR.1 (docs/plans/AR.md "AR.1"; wire_types.h notesWireClash): the notes rule by declared signals, on the cable edits.
+TEST_CASE("note devices: a notes port joins only a notes port (the cable edits refuse the rest)") {
+  Doc d;
+  const DeviceId arp = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, kArp, DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
+  CHECK(mainPath(d.doc(), d.track(d.keys)).indexOf(arp) < 0);  // free, unwired
+  CHECK(lowerNoteChains(d.doc()).empty());
+  const DeviceId gain = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, "atom:gain", DeviceKind::AudioEffect)).devices.at(0);
+  const DeviceId tone = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.audio, "atom:tanh", DeviceKind::AudioEffect)).devices.at(0);
+  auto refused = [&](const Result<ops::Edit>& e, WireClash c) {
+    REQUIRE_FALSE(e.ok());
+    CHECK(e.error().message == std::string(wireClashText(c)));
+  };
+  // Its input: no audio (a block's output, an audio track's own signal), no note output (Hz, gate).
+  refused(ops::connectWire(d.doc(), d.store.ids(), gain, "", arp, ""), WireClash::NotesInput);
+  refused(ops::connectWire(d.doc(), d.store.ids(), d.inst, "", arp, "notes"), WireClash::NotesInput);
+  refused(ops::connectWire(d.doc(), d.store.ids(), tone, "", arp, ""), WireClash::NotesInput);
+  refused(ops::connectNoteWire(d.doc(), d.store.ids(), d.audio, "", arp, ""), WireClash::NotesInput);
+  refused(ops::connectNoteWire(d.doc(), d.store.ids(), d.keys, "hz", arp, ""), WireClash::NotesInput);
+  // Its output: not into an atom block, a param, a mixer.
+  refused(ops::connectWire(d.doc(), d.store.ids(), arp, "", gain, ""), WireClash::NotesOutput);
+  refused(ops::connectWire(d.doc(), d.store.ids(), arp, "out", gain, "g"), WireClash::NotesOutput);
+  {
+    Wire w;
+    w.from = arp;
+    w.mixer = d.keys;
+    refused(ops::connect(d.doc(), d.store.ids(), w), WireClash::NotesOutput);
+    CHECK(declaredWireClash(d.doc(), w, nullptr) == WireClash::NotesOutput);  // (library-free)
+  }
+  // A cable into one of its PARAMS is modulation (AP.2b): as before.
+  const NoteDeviceType* type = findNoteDeviceType("arpeggiator");
+  REQUIRE(type != nullptr);
+  std::string runtime;
+  for (const NoteParamSpec& s : type->params)
+    if (runtime.empty() && s.runtime && !s.isBool) runtime = s.name;
+  REQUIRE_FALSE(runtime.empty());
+  (void)d.edit(ops::connectWire(d.doc(), d.store.ids(), gain, "", arp, runtime));
+  // Spliced into an audio cable: refused; an atom into a cable between two notes ports too.
+  const MainPath path = mainPath(d.doc(), d.track(d.keys));
+  REQUIRE(path.blocks.size() == 2);  // inst, gain
+  refused(ops::spliceIntoWire(d.doc(), d.store.ids(), nullptr, arp, path.links.at(1)), WireClash::NotesInput);
+}
+
+TEST_CASE("note devices: a free one wired at both ends is a stage; half-wired it plays through nothing") {
+  Doc d;
+  const DeviceId arp = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, kArp, DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
+  const WireId direct = mainPath(d.doc(), d.track(d.keys)).links.at(0);
+  // The notes into it: the instrument keeps its direct cable (and its notes), the arpeggiator is no stage.
+  const WireId in = d.edit(ops::connectNoteWire(d.doc(), d.store.ids(), d.keys, "", arp, "")).wires.at(0);
+  CHECK(findWire(d.doc(), direct) != nullptr);
+  CHECK(d.path(d.keys) == std::vector<DeviceId>{d.inst});
+  CHECK(lowerNoteChains(d.doc()).empty());
+  {
+    const LoweredProject l = lowered(d.doc());
+    const WireState* s = stateOf(l, in);
+    REQUIRE(s != nullptr);
+    CHECK(s->status == WireStatus::Inactive);  // nothing goes on from it
+    const WireState* ds = stateOf(l, direct);
+    REQUIRE(ds != nullptr);
+    CHECK(ds->status != WireStatus::Inactive);
+  }
+  // Its output into the instrument: the way through it is complete, so the direct cable goes in the same undo step.
+  const Snapshot before = d.store.current();
+  const WireId out = d.edit(ops::connectWire(d.doc(), d.store.ids(), arp, "", d.inst, "")).wires.at(0);
+  CHECK(findWire(d.doc(), direct) == nullptr);
+  CHECK(findWire(d.doc(), out) != nullptr);
+  CHECK(d.path(d.keys) == std::vector<DeviceId>{arp, d.inst});
+  {
+    const std::vector<LoweredNoteChain> chains = lowerNoteChains(d.doc());
+    REQUIRE(chains.size() == 1);
+    CHECK(chains[0].track == d.keys);
+    REQUIRE(chains[0].stages.size() == 1);
+    CHECK(chains[0].stages[0].device == arp);
+  }
+  REQUIRE(d.store.undo());
+  CHECK(d.store.current() == before);
+  // The other order (its output first): the same.
+  REQUIRE(d.store.undo());  // the notes cable into it
+  CHECK(findWire(d.doc(), in) == nullptr);
+  (void)d.edit(ops::connectWire(d.doc(), d.store.ids(), arp, "", d.inst, ""));
+  CHECK(findWire(d.doc(), direct) != nullptr);
+  CHECK(lowerNoteChains(d.doc()).empty());  // only its output wired: no notes reach it
+  (void)d.edit(ops::connectNoteWire(d.doc(), d.store.ids(), d.keys, "", arp, ""));
+  CHECK(findWire(d.doc(), direct) == nullptr);
+  CHECK(d.path(d.keys) == std::vector<DeviceId>{arp, d.inst});
+  CHECK(lowerNoteChains(d.doc()).size() == 1);
+  // A second one after it (a chain of two): the cable between them replaces nothing but a parallel.
+  const DeviceId arp2 = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, kArp, DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
+  (void)d.edit(ops::connectWire(d.doc(), d.store.ids(), arp, "", arp2, ""));
+  CHECK(d.path(d.keys) == std::vector<DeviceId>{arp, d.inst});
+  (void)d.edit(ops::connectWire(d.doc(), d.store.ids(), arp2, "", d.inst, ""));
+  CHECK(d.path(d.keys) == std::vector<DeviceId>{arp, arp2, d.inst});
+  const std::vector<LoweredNoteChain> chains = lowerNoteChains(d.doc());
+  REQUIRE(chains.size() == 1);
+  CHECK(chains[0].stages.size() == 2);
 }

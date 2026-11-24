@@ -13,6 +13,7 @@
 #include "pq/document/meta.h"
 #include "pq/document/modules.h"
 #include "pq/document/note_devices.h"
+#include "pq/document/wire_types.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc::ops {
@@ -474,21 +475,72 @@ EditResult setDeviceParamValue(const Project& p, const DeviceLibrary& lib, Devic
 
 namespace {
 // The "Add Wire" edit of `w` (its ends and law set; the source checked by the caller): a fresh id; a Travel wire's
-// amount clamped.
+// amount clamped. AR.1: refused by the notes rule (wire_types.h notesWireClash); a cable that completes a way through
+// note devices takes the parallel cable out in the same batch (below).
 EditResult addWire(const Project& p, IdSource& ids, Wire w, double amount) {
   if (w.toMixer()) {  // TX.all-free: a track's mixer input
     if (findTrackPtr(p, w.mixer) == nullptr) return notFound("wire target track not found");
   } else if (!findDevice(p, w.to).track) {
     return notFound("wire target device not found");
   }
+  // AR.1: a cable on a port DECLARED Notes — its main ends as kMainPort (what the dissolve and the main path read).
+  const Device* from = w.fromNoteSource() ? nullptr : findDevice(p, w.from).device;
+  const Device* to = w.toMixer() ? nullptr : findDevice(p, w.to).device;
+  const bool notesPort = (from != nullptr && declaredMainSignals(*from).out == ChainSignal::Notes) ||
+                         (to != nullptr && declaredMainSignals(*to).in == ChainSignal::Notes);
+  if (notesPort) w = canonicalWire(p, std::move(w), nullptr);
   for (const Wire& x : wiresOf(p))
     if (x.sameEnds(w)) return invalid("these two ports are already wired");
+  // AR.1 (wire_types.h): the notes rule — a cable edit never joins a notes port to anything else.
+  if (const WireClash c = notesWireClash(p, w); c != WireClash::None) return invalid(std::string(wireClashText(c)));
   w.id = ids.wire();
   w.amount = !w.travels() ? 1.0 : std::isfinite(amount) ? std::clamp(amount, -1.0, 1.0) : kDefaultWireAmount;
   PQ_DOC_TRY(checkWire(w));
+  // AR.1 (note_devices.h "the cables"): a cable on a notes port may complete a way from the notes through note devices
+  // into an input: the direct cable between those two ends goes in the same edit (the track's one note stream runs
+  // through the stages; left in, the older direct cable would be the main path and the stages would play nothing).
+  const WireId added = w.id;
   Edit e = makeEdit("Add Wire");
-  e.wires.push_back(w.id);
+  e.wires.push_back(added);
   batchOf(e).commands.push_back(AddWire{std::move(w)});
+  if (!notesPort) return e;
+  Steps k(p);
+  PQ_DOC_TRY(k.add(batchOf(e).commands.front()));
+  const NoteDissolve d = dissolveNoteDevices(k.doc());
+  if (!d.any || !d.wires) return e;
+  const WireList& now = wiresOf(k.doc());
+  // Whether the new cable is a stretch of the joined wire `was` became: back from it through the note devices, each
+  // by the oldest wire into its main input (the dissolve's choice).
+  auto through = [&](const Wire& was) {
+    const Wire* at = &was;
+    for (size_t guard = 0; guard <= now.size(); ++guard) {
+      if (at->id == added) return true;
+      const Device* dv = at->fromNoteSource() ? nullptr : findDevice(k.doc(), at->from).device;
+      if (dv == nullptr || !isNoteDevice(*dv)) return false;
+      const Wire* in = nullptr;
+      for (const Wire& x : now)
+        if (!x.toMixer() && x.to == dv->id && x.param == kMainPort) {
+          in = &x;
+          break;
+        }
+      if (in == nullptr) return false;
+      at = in;
+    }
+    return false;
+  };
+  for (const Wire& j : *d.wires) {
+    const Wire* was = findWire(k.doc(), j.id);
+    if (was == nullptr || was->sameEnds(j) || !through(*was)) continue;  // (not joined, or not through the new cable)
+    // The other cables that end the same way from the same notes (the direct cable, or the last cable of a way through
+    // other note devices): the new way replaces them.
+    for (const Wire& x : *d.wires) {
+      if (x.id == j.id || !x.sameEnds(j)) continue;
+      const Wire* other = findWire(k.doc(), x.id);
+      if (other == nullptr || through(*other)) continue;
+      const Command gone = RemoveWire{x.id};
+      if (k.add(gone).ok()) batchOf(e).commands.push_back(gone);  // (once: a second removal fails on the scratch)
+    }
+  }
   return e;
 }
 

@@ -12,6 +12,7 @@
 #include "pq/document/devices.h"
 #include "pq/document/model.h"
 #include "pq/document/modules.h"
+#include "pq/document/note_devices.h"
 #include "pq/graph/atoms.h"
 #include "pq/graph/edit.h"
 #include "pq/graph/parse.h"
@@ -209,6 +210,7 @@ void addMetas(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
       e.params.push_back({std::string(p.label.empty() ? p.name : p.label), valueText(p.def, p.unit)});
     e.hasIn = t->chainInput >= 0;
     e.hasOut = !t->outputs.empty();
+    e.takesNotes = e.hasIn;  // AR.1: a meta module with a chain input reads the notes there
     if (e.description.empty())
       e.description = "A meta module with " + std::to_string(t->inputs.size()) + " inputs and " + std::to_string(t->params.size()) + " params.";
     finish(e);
@@ -234,6 +236,7 @@ void addModules(NodeCatalog& c, std::vector<NodeEntry>& visualisers) {
     e.inputs = {"in"};
     e.outputs = {"out"};
     e.hasIn = e.hasOut = true;
+    e.takesNotes = true;  // AR.1: a group (it reads the notes through its terminals)
     const doc::BlockSet set = doc::moduleBlocks(m.kind);
     for (const doc::DevicePtr& d : set.devices)
       if (doc::isValueDevice(*d) && d->group == set.devices.front()->id && d->curve(doc::kValueParam) != nullptr &&
@@ -263,9 +266,43 @@ void addRacks(std::vector<NodeEntry>& instruments, std::vector<NodeEntry>& effec
     e.outputs = {"out"};
     e.hasIn = !inst;
     e.hasOut = true;
+    e.takesNotes = true;  // AR.1: a group
     for (uint32_t m = 1; m <= 8; ++m) e.params.push_back({"Macro " + std::to_string(m), "0"});
     finish(e);
     (inst ? instruments : effects).push_back(std::move(e));
+  }
+}
+
+// AR.1: the note device types (doc::noteDeviceTypes: registration order), each a device "note:<type>" with the main
+// signals its type declares. The project only (a note device sits on a MIDI track's notes).
+void addNoteDevices(NodeCatalog& c) {
+  for (const doc::NoteDeviceType& t : doc::noteDeviceTypes()) {
+    NodeEntry e;
+    e.item = NodeItem::Device;
+    e.id = doc::noteDevicePatch(t.id);
+    e.key = "device:" + e.id;
+    e.name = t.name;
+    e.category = NodeCategory::MidiEffects;
+    e.chip = "MIDI EFFECT";
+    e.aliases = t.id + " midi note effect";
+    e.description = t.description;
+    e.notesIn = t.in == doc::ChainSignal::Notes;
+    e.notesOut = t.out == doc::ChainSignal::Notes;
+    e.takesNotes = e.notesIn;
+    e.hasIn = t.in != doc::ChainSignal::None;
+    e.hasOut = t.out != doc::ChainSignal::None;
+    if (e.hasIn) e.inputs = {"notes"};  // its fixed patch's ports (doc::mainPortsOf)
+    if (e.hasOut) e.outputs = {"out"};
+    for (const doc::NoteParamSpec& s : t.params) {
+      if (!s.runtime) continue;
+      const size_t choice = static_cast<size_t>(std::max(0.0, s.def - s.min));
+      e.params.push_back({s.label.empty() ? s.name : s.label,
+                          s.isBool ? std::string(s.def >= 0.5 ? "on" : "off")
+                          : choice < s.choices.size() ? s.choices[choice]
+                          : s.unit == "%" ? number(s.def * 100.0) + " %" : number(s.def)});
+    }
+    finish(e);
+    c.entries.push_back(std::move(e));
   }
 }
 
@@ -291,6 +328,7 @@ void addLibrary(NodeCatalog& c, const library::Index& index) {
                     (e.instrument ? " (an instrument)." : cat == library::Category::MetaModules ? " (a meta module)." : ".");
     e.hasIn = !e.instrument;
     e.hasOut = true;
+    e.takesNotes = true;  // AR.1: a preset is a group or an engine (one that is not is refused when wired)
     if (!e.instrument) e.inputs = {"in"};
     e.outputs = {"out"};
     finish(e);
@@ -315,6 +353,7 @@ std::shared_ptr<const NodeCatalog> build(NodeCatalog::Scope scope, const doc::De
     std::stable_sort(effects.begin(), effects.end(), byName);
     for (NodeEntry& e : instruments) c->entries.push_back(std::move(e));
     for (NodeEntry& e : effects) c->entries.push_back(std::move(e));
+    addNoteDevices(*c);  // AR.1: the MIDI effects
   }
   for (NodeEntry& e : visualisers) c->entries.push_back(std::move(e));
   if (scope == NodeCatalog::Scope::Project && index != nullptr) addLibrary(*c, *index);
@@ -386,9 +425,12 @@ std::shared_ptr<const NodeCatalog> nodeCatalog(NodeCatalog::Scope scope, ViewCon
 bool compatible(const NodeEntry& e, NodeFilter f) noexcept {
   switch (f) {
     case NodeFilter::None: return true;
-    case NodeFilter::WithInput: return e.hasIn;
-    case NodeFilter::WithOutput: return e.hasOut;
-    case NodeFilter::WithBoth: return e.hasIn && e.hasOut;
+    case NodeFilter::WithInput: return e.hasIn && !e.notesIn;
+    case NodeFilter::WithOutput: return e.hasOut && !e.notesOut;
+    case NodeFilter::WithBoth: return e.hasIn && e.hasOut && !e.notesIn && !e.notesOut;
+    case NodeFilter::FromNotes: return e.hasIn;
+    case NodeFilter::TakesNotes: return e.takesNotes;
+    case NodeFilter::NotesThrough: return e.notesIn && e.notesOut;
   }
   return true;
 }

@@ -8,6 +8,7 @@
 #include "pq/document/note_devices.h"
 #include "pq/document/racks.h"
 #include "pq/document/main_path.h"
+#include "pq/document/wire_types.h"
 
 namespace pq::doc::ops {
 
@@ -303,10 +304,14 @@ EditResult spliceIntoWire(const Project& p, IdSource& ids, const DeviceLibrary* 
   Wire a = mainLink(ids, endFrom(old), End{device, {}});
   a.port = old.port;
   a.tap = old.tap;  // TL.1: a lane's cable keeps where it leaves the lane
-  PQ_DOC_TRY(k.add(AddWire{a}));
   Wire b = mainLink(ids, End{device, {}}, endTo(old));
   b.param = old.param;
   b.reducer = old.reducer;
+  // AR.1 (wire_types.h): the notes rule on the two cables it makes (a note device goes only into a notes cable, and
+  // nothing but one into a cable between two notes ports).
+  for (const Wire* w : {&a, &b})
+    if (const WireClash c = notesWireClash(k.doc(), *w); c != WireClash::None) return invalid(std::string(wireClashText(c)));
+  PQ_DOC_TRY(k.add(AddWire{a}));
   PQ_DOC_TRY(k.add(AddWire{b}));
   batchOf(e).commands = std::move(k.commands);
   return e;
