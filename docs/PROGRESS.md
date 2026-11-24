@@ -1407,3 +1407,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected 46/46; after the merge with AR.2 pq_tests_views default tier 1022/1023 → `project-node-menu-midi` re-recorded (it shows the arp's param list, which AR.2 changed) → node-menu / arp cases pass; pq_tests_document passes.
 - Perf / CPU-efficiency check: UI / document only; the rule returns early unless an end declares Notes.
 - Notes/blockers: Q?-AR.1-a. Open: a notes cable dropped on empty canvas is not filtered to note devices (instruments must stay connectable); the tuning block's pin cannot start a cable; a loaded rule-breaking wire is inert, not rejected; not checked live.
+
+## 2026-11-23 · AR.4 · task/AR.4-arp-lanes (merged 59e5a418)
+- Did: step lanes full width with a name column (switch, menu, hover readout): on = Velocity / Gate / Glide / Chance 44 px, Transpose 96 px (a grid: a row per unit step, zero + equaves ruled, range auto-fits ±7 … ±48), Skip / Tie 26 px; off = 14 px strip (fit height follows). Wheel / Shift+wheel, double-click type-in, Alt+click default, lane menu (Reset, Randomize, Shift ← / →, Reverse, Copy to). One Rate control (1/1 … 1/128 menu + wheel, Straight / Dotted / Triplet chips, n:m chip shows the raw boxes); Arp block regrouped, every box labelled.
+- Verified: pq_tests_views default tier pass, pq_tests_document pass, pqdaw compiles; real-dispatch tests for every lane gesture, the lane menu and the rate control; 9 arp goldens re-recorded, new arp-panel-lanes-2x.
+- Perf / CPU-efficiency check: UI only; a lane repaints on its live key, an off lane reads no status; step edits are param writes.
+- Notes/blockers: Q?-AR.4-a. Open: all lanes on + Glide open ≈ 760 px and the Device view does not scroll a tall panel; Shift+wheel is coarse on lanes (fine on knobs); Copy only among the four 0 … 1 lanes; Ratio 2/1 with ±12 transposes washes out the pattern view's grid; not checked live.
