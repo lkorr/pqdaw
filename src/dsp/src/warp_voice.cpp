@@ -200,6 +200,16 @@ struct VoiceHost {
   }
 };
 
+// Is x[0 … n) one value? (NaN: no.) RT-safe.
+bool allEqual(const float* x, uint32_t n) noexcept {
+  const __m256 v0 = _mm256_set1_ps(x[0]);
+  int ne = 0;
+  uint32_t i = 0;
+  for (; i + 8 <= n; i += 8) ne |= _mm256_movemask_ps(_mm256_cmp_ps(_mm256_loadu_ps(x + i), v0, _CMP_NEQ_UQ));
+  for (; i < n; ++i) ne |= x[i] != x[0] ? 1 : 0;
+  return ne == 0;
+}
+
 // A Beats pass's entry step at least (rate 1/64): a slice entered while the rate is (near) 0 still gets fades and a
 // loop rule of a sensible length once the rate rises.
 constexpr int64_t kMinEntryStep = kFixedOne / 64;
@@ -316,17 +326,14 @@ void WarpVoice::render(const WarpSource& src, const WarpVoiceRun& run, const War
   for (uint32_t c0 = 0; c0 < n;) {
     const uint32_t m = std::min<uint32_t>(kWarpVoiceChunk, n - c0);
     // Φ over the chunk. A constant rate (no glide: the common case) converts once; Φ is the same sums either way.
-    bool constant = true;
-    for (uint32_t i = 1; i < m; ++i) constant = constant && rate[c0 + i] == rate[c0];
+    bool constant = allEqual(rate + c0, m);
     ph[0] = phi;
     if (constant) {
       const double r = clampReadRate(static_cast<double>(rate[c0]) * scale);
       const int64_t step = rateStep(r);
-      for (uint32_t i = 0; i < m; ++i) {
-        rt[i] = r;
-        stp[i] = step;
-        ph[i + 1] = ph[i] + step;
-      }
+      std::fill_n(rt, m, r);
+      std::fill_n(stp, m, step);
+      for (uint32_t i = 0; i < m; ++i) ph[i + 1] = ph[i] + step;
     } else {
       for (uint32_t i = 0; i < m; ++i) {
         const double r = clampReadRate(static_cast<double>(rate[c0 + i]) * scale);
@@ -380,11 +387,16 @@ void WarpVoice::render(const WarpSource& src, const WarpVoiceRun& run, const War
       }
     }
     // The read position (where the law is), and whether the voice still sounds.
-    const float at = static_cast<float>(std::clamp(h.lawFrame(t) / len, 0.0, 1.0));
-    for (uint32_t i = 0; i < m; ++i) {
-      const bool on = endT == INT64_MAX || t + i < endT + X;
-      if (pos != nullptr) pos[c0 + i] = on ? at : 0.0f;
-      if (playing != nullptr) playing[c0 + i] = on ? 1.0f : 0.0f;
+    const float at = pos != nullptr ? static_cast<float>(std::clamp(h.lawFrame(t) / len, 0.0, 1.0)) : 0.0f;
+    if (endT == INT64_MAX || t + m <= endT + X) {  // sounding throughout (all but a voice's last chunk)
+      if (pos != nullptr) std::fill_n(pos + c0, m, at);
+      if (playing != nullptr) std::fill_n(playing + c0, m, 1.0f);
+    } else {
+      for (uint32_t i = 0; i < m; ++i) {
+        const bool on = t + i < endT + X;
+        if (pos != nullptr) pos[c0 + i] = on ? at : 0.0f;
+        if (playing != nullptr) playing[c0 + i] = on ? 1.0f : 0.0f;
+      }
     }
     phi = ph[m];
     t += m;

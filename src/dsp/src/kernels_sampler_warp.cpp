@@ -66,11 +66,17 @@ struct SamplerWarpK {
     ws.gather = ws.corrB + kCorrBF;
     alignas(32) float rate[kSeg], l[kSeg], r[kSeg], pos[kSeg], play[kSeg];
     const uint32_t frames = a.frames;
-    auto rateAt = [&](uint32_t i, uint32_t lane) noexcept {
-      return splBit(SM, 0) ? a.in[0][lane] : a.in[0][i * W + lane];
-    };
     auto resetAt = [&](uint32_t i, uint32_t lane) noexcept {
       return maskIsTrue(splBit(SM, 1) ? a.in[1][lane] : a.in[1][i * W + lane]);
+    };
+    // The first frame in [from, limit) with a high reset (limit: none). A param-rate reset is one value: no scan.
+    auto nextReset = [&](uint32_t from, uint32_t limit, uint32_t lane) noexcept {
+      if constexpr (splBit(SM, 1)) {
+        return resetAt(0, lane) ? from : limit;
+      } else {
+        while (from < limit && !resetAt(from, lane)) ++from;
+        return from;
+      }
     };
     const uint32_t freeLanes = W == 8 ? ~a.laneMask & 0xFFu : 0u;  // SM.14 (kernel.h "Occupied lanes")
     for (uint32_t lane = 0; lane < W; ++lane) {
@@ -146,7 +152,7 @@ struct SamplerWarpK {
           f1 = f + 1;  // a held reset restarts every sample
         } else {
           if (v.active == 0) {  // idle: skip to the next reset
-            while (f1 < frames && !resetAt(f1, lane)) ++f1;
+            f1 = nextReset(f, frames, lane);
             for (uint32_t i = f; i < f1; ++i) {
               a.out[0][i * W + lane] = 0.0f;
               a.out[1][i * W + lane] = 0.0f;
@@ -156,10 +162,12 @@ struct SamplerWarpK {
             f = f1;
             continue;
           }
-          while (f1 < frames && f1 - f < kSeg && !resetAt(f1, lane)) ++f1;
+          f1 = nextReset(f, std::min(frames, f + kSeg), lane);
         }
         const uint32_t n = f1 - f;
-        for (uint32_t i = 0; i < n; ++i) rate[i] = rateAt(f + i, lane);
+        if constexpr (splBit(SM, 0)) std::fill_n(rate, n, a.in[0][lane]);  // (param rate: one value)
+        else
+          for (uint32_t i = 0; i < n; ++i) rate[i] = a.in[0][(f + i) * W + lane];
         if (complex) cv.render(bank, global, v, src, run, law, rate, n, l, r, pos, play, ws);
         else v.render(src, run, law, rate, n, l, r, pos, play, ws);
         for (uint32_t i = 0; i < n; ++i) {
