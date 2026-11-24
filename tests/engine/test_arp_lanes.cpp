@@ -213,7 +213,7 @@ TEST_CASE("arp lanes (AP.5): Skip rests; Tie continues the previous note, glidin
     CAPTURE(into);
     e::ArpParams p = base();
     lane(p, e::ArpLane::SkipTie, 2);
-    if (into) p.into.mode = e::ArpGlide::Step;
+    if (into) p.into.step = true;
     e::ArpStage st(p, {}, {}, values(e::ArpLane::SkipTie, {float(K::Play), float(K::Tie)}));
     Rig r;
     const auto v = r.run(st, two, 8 * k16, 64);
@@ -239,6 +239,73 @@ TEST_CASE("arp lanes (AP.5): Skip rests; Tie continues the previous note, glidin
       }
     } else {
       CHECK(pitch.empty());
+    }
+  }
+}
+
+// AR.2: the Glide lane is the step's SLIDE (arp.h "Step lanes"): 0 where nothing is painted; with no side on a painted
+// step glides in from the previous step's note; with a side on it scales that side; switched off: glides in full.
+TEST_CASE("arp lanes (AR.2): the Glide lane slides a painted step in from the previous step; it scales the sides on") {
+  auto pitchOf = [](const std::vector<Ev>& v, uint32_t id) {
+    std::vector<Ev> r;
+    for (const Ev& x : v)
+      if (x.ev.kind == e::NoteEventKind::Pitch && x.ev.noteId == id) r.push_back(x);
+    return r;
+  };
+  CHECK(e::ArpLaneSteps{}.value[static_cast<size_t>(e::ArpLane::Glide)][0] == 0.0f);  // nothing painted: no slide
+  SUBCASE("no side on: steps 0 | 1 | 0.5 — a jump, a full slide from the previous step, half the distance") {
+    e::ArpParams p = base();  // Up over 200 / 300 / 400, steps of 6000, gate 3000; Into time 25 % = 750
+    lane(p, e::ArpLane::Glide, 3);
+    e::ArpStage st(p, {}, {}, values(e::ArpLane::Glide, {0.0f, 1.0f, 0.5f}));
+    Rig r;
+    const auto v = r.run(st, chord3(), 6 * k16, 64);
+    CHECK(r.rtViolations == 0);
+    const auto o = ons(v);
+    REQUIRE(o.size() == 6);
+    CHECK(o[0].ev.hz == 200.0f);
+    CHECK(pitchOf(v, o[0].ev.noteId).empty());
+    CHECK(o[1].ev.hz == 200.0f);  // from the previous step's note ...
+    const auto g1 = pitchOf(v, o[1].ev.noteId);
+    REQUIRE(g1.size() == 1);
+    CHECK(g1[0].t == k16);
+    CHECK(g1[0].ev.hz == 300.0f);  // ... onto its own over Into time
+    CHECK(g1[0].ev.rampFrames == 750);
+    CHECK(g1[0].ev.rampShape == static_cast<uint8_t>(e::RampShape::Linear));
+    CHECK(o[2].ev.hz == doctest::Approx(std::sqrt(300.0 * 400.0)).epsilon(1e-6));  // half the way (in log Hz)
+    REQUIRE(pitchOf(v, o[2].ev.noteId).size() == 1);
+    CHECK(pitchOf(v, o[2].ev.noteId)[0].ev.hz == 400.0f);
+    CHECK(o[3].ev.hz == 200.0f);  // lane step 0 again: the pattern's wrap jumps
+    CHECK(pitchOf(v, o[3].ev.noteId).empty());
+    CHECK(st.core().stats().glides == 4);  // steps 1, 2, 4 and 5
+  }
+  SUBCASE("the lane on and nothing painted: no glide — also with Into on (every step × 0)") {
+    for (const bool into : {false, true}) {
+      e::ArpParams p = base();
+      p.into.step = into;
+      lane(p, e::ArpLane::Glide, 4);
+      e::ArpStage st(p, {}, {}, {});
+      Rig r;
+      const auto v = r.run(st, chord3(), 6 * k16, 64);
+      CHECK(kind(v, e::NoteEventKind::Pitch).empty());
+      CHECK(st.core().stats().glides == 0);
+    }
+  }
+  SUBCASE("a side on: the lane scales it (Out +200 ¢ × 0.5), and no slide is added; the lane off: in full") {
+    for (const bool laneOn : {true, false}) {
+      CAPTURE(laneOn);
+      e::ArpParams p = base();
+      p.out.offset = 200.0f;
+      if (laneOn) lane(p, e::ArpLane::Glide, 1);
+      e::ArpStage st(p, {}, {}, values(e::ArpLane::Glide, {0.5f}));
+      Rig r;
+      const auto v = r.run(st, chord3(), 2 * k16, 64);
+      const auto o = ons(v);
+      REQUIRE(o.size() == 2);
+      CHECK(o[1].ev.hz == 300.0f);  // no Into: it starts on its own pitch
+      const auto g = pitchOf(v, o[0].ev.noteId);
+      REQUIRE(g.size() == 1);
+      CHECK(g[0].t == 3000 - 750);
+      CHECK(g[0].ev.hz == doctest::Approx(200.0 * std::exp2((laneOn ? 100.0 : 200.0) / 1200.0)).epsilon(1e-6));
     }
   }
 }

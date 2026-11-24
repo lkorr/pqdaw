@@ -531,14 +531,14 @@ TEST_CASE("arp core (AP.8a L3 / L4): a harmonic beyond 2^24 is none; ids skip li
 }
 
 TEST_CASE("arp core (AP.8a L1): a retune moves the glide state — an Out Offset glide aims at the retuned pitch") {
-  // Degrees, Out = Offset +2 degrees over the last 50 ms of a 100 % gate. A note of 12-EDO degree 0 (node 1); at 3000
-  // samples the node's table becomes 19-EDO: the Out glide (at 12000 − 2400) goes to degree 2 of 19-EDO.
+  // AR.2 (rewritten: an offset is cents from the note's own pitch, no longer steps of the table). Out = +200 ¢ over the
+  // last 50 ms of a 100 % gate. A note of 12-EDO degree 1 (node 1); at 3000 samples the node's table becomes 19-EDO:
+  // the Out glide (at 12000 − 2400) goes 200 ¢ above degree 1 of 19-EDO, not of 12-EDO.
   auto box = std::make_shared<e::ArpTableMailbox>();
   e::ArpTables t12;
   t12.nodes = {edo(12, 200.0)};
   e::ArpParams p = upEighths();
-  p.out.mode = e::ArpGlide::Offset;
-  p.out.offset = 2.0f;
+  p.out.offset = 200.0f;
   p.into.time = p.out.time = 0.2f;  // 2400 of the 12000-frame note
   auto chain = chainOf(std::make_unique<e::ArpStage>(p, std::vector<e::ArpStage::Mapping>{}, t12, e::ArpLaneSteps{}, box), 1);
   Rig r;
@@ -548,12 +548,12 @@ TEST_CASE("arp core (AP.8a L1): a retune moves the glide state — an Out Offset
     t19.nodes = {edo(19, 200.0)};
     box->post(t19);
   };
-  const auto out = r.run(*chain, {{0, degreeOn(1, 200.0f, 0, 0, 1.0f)}}, 12000, 64);
+  const auto out = r.run(*chain, {{0, degreeOn(1, static_cast<float>(edoHz(12, 200.0, 1)), 1, 0, 1.0f)}}, 12000, 64);
   CHECK(r.rtViolations == 0);
   bool aimed = false;
   for (const Ev& x : ofKind(out, e::NoteEventKind::Pitch))
     if (x.t == 12000 - 2400 && (x.ev.flags & e::kNoteEventRetune) == 0) {
-      CHECK(x.ev.hz == doctest::Approx(edoHz(19, 200.0, 2)).epsilon(1e-6));  // not 12-EDO's degree 2
+      CHECK(x.ev.hz == doctest::Approx(edoHz(19, 200.0, 1) * std::exp2(200.0 / 1200.0)).epsilon(1e-6));  // not 12-EDO's
       aimed = true;
     }
   CHECK(aimed);

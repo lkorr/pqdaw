@@ -202,6 +202,13 @@ struct PanelKit {
   }
 };
 
+// AR.2: the glide params a drag on a note sets, in the slot order of the arpbend / arppattern elements (after slot 0,
+// the device).
+constexpr ArpParamId kGlideParams[] = {ArpParamId::IntoOffset, ArpParamId::IntoPrev, ArpParamId::IntoTime,
+                                       ArpParamId::IntoCurve,  ArpParamId::IntoShape, ArpParamId::OutOffset,
+                                       ArpParamId::OutNext,    ArpParamId::OutTime,   ArpParamId::OutCurve,
+                                       ArpParamId::OutShape};
+
 Panel arpeggiatorPanel(DeviceId dev) {
   PanelKit k;
   k.dev = dev;
@@ -277,33 +284,31 @@ Panel arpeggiatorPanel(DeviceId dev) {
   // AP.10: the resolved pattern — the whole cycle over the held notes (generated ones dotted, their bends drawn), the
   // playing step lit.
   k.caption(582, 8, 120, "Pattern");
-  k.add("arppattern", 582, 22, 368, 148, {dataBinding(dev)});
-  // ---- Glide (fold; AP.10: open by default, Into and Out each with their own time / shape / bend, the bend view) ----
+  {  // (AR.2: with the glide params — a drag on a note's head / tail edits them, as in the bend view)
+    std::vector<Binding> b = {dataBinding(dev)};
+    for (const A id : kGlideParams) b.push_back(k.bind(id));
+    k.add("arppattern", 582, 22, 368, 148, std::move(b));
+  }
+  // ---- Glide (fold, open; AR.2: the bend view IS the editor — drag the note's head / tail / curves; per side two
+  // knobs that follow the drags and its shape chips) ----
   float y = kTop;
   k.fold(y, "Glide", true);
   y += 20.0f;
-  // One side: its source / target chips, then Offset (with source Offset), Time (AP.11: % of the note), Bend, Shape.
-  auto side = [&](float x, A mode, A off, A time, A shape, A bend, const char* title, const char* items) {
-    const uint32_t s = k.chips(x, y, 170, mode, title, items).id;
-    const size_t from = k.p.elements.size();
-    k.ctl("knob", x, y + 34, 48, 58, off, "Offset");
-    k.when(from, s, {2.0});
-    k.ctl("knob", x + 52, y + 34, 48, 58, time, "Time");
-    k.ctl("knob", x + 104, y + 34, 48, 58, bend, "Bend");
-    k.ctl("menu", x + 156, y + 34, 96, 28, shape, "Shape");
+  auto side = [&](float x, A off, A time, A shape, const char* title) {
+    k.caption(x, y, 104, title);
+    k.ctl("knob", x, y + 12, 48, 58, off, "Amount");
+    k.ctl("knob", x + 54, y + 12, 48, 58, time, "Time");
+    k.chips(x, y + 76, 104, shape, "Shape", "Curve|S|Spring");
   };
-  side(10, A::IntoSource, A::IntoOffset, A::IntoTime, A::IntoShape, A::IntoBend, "Into", "Off|Previous|Offset");
-  side(694, A::OutTarget, A::OutOffset, A::OutTime, A::OutShape, A::OutBend, "Out", "Off|Next|Offset");
-  k.button(10, y + 100, 110, 16, A::GlideCents, "Offsets in cents");
-  {  // The bend view: one step large, its handles drag the times / offsets / bends above (one undo step per drag).
+  side(10, A::IntoOffset, A::IntoTime, A::IntoShape, "Into (head)");
+  side(846, A::OutOffset, A::OutTime, A::OutShape, "Out (tail)");
+  {  // The bend view: one note large between its neighbours; its drags write the params above (one undo step each).
     std::vector<Binding> b = {dataBinding(dev)};
-    for (const A id : {A::IntoSource, A::IntoOffset, A::IntoTime, A::IntoShape, A::IntoBend, A::OutTarget, A::OutOffset,
-                       A::OutTime, A::OutShape, A::OutBend, A::GlideCents, A::Gate})
-      b.push_back(k.bind(id));
-    k.caption(276, y, 120, "Bend");
-    k.add("arpbend", 276, y + 12, 408, 112, std::move(b));
+    for (const A id : kGlideParams) b.push_back(k.bind(id));
+    b.push_back(k.bind(A::Gate));
+    k.add("arpbend", 124, y, 712, 150, std::move(b));
   }
-  y += 132.0f;
+  y += 158.0f;
   // ---- Pulse (fold) ----
   k.fold(y, "Pulse");
   y += 20.0f;

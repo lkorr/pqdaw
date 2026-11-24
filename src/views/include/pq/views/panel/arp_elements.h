@@ -21,8 +21,12 @@ uint32_t resolvedCount(const Element& e);
 uint32_t resolvedGenerated(const Element& e);
 int32_t resolvedLit(const Element& e);
 uint64_t resolvedComputes(const Element& e);
-// AP.10: an arpbend's handle `h` (0 Into time, 1 Into offset, 2 Out time, 3 Out offset), element-local, read from
-// target `t` now; nullopt: not shown (or not an arpbend).
+// AR.2: an arpbend's part `h` — 0 the Into knee (its time), 1 the note's head (Into), 2 the Out knee, 3 its tail (Out),
+// 4 / 5 the middle of the Into / Out curve, 6 / 7 the previous / next step's ghost — element-local, read from target `t`
+// now; nullopt: not shown (or not an arpbend).
 std::optional<ui::Vec2> bendHandle(Element& e, const PanelTarget& t, int32_t h);
+// AR.2: resolved note `note` of an arppattern (resolved from target `t` now): its head (or tail) as drawn,
+// element-local; nullopt: none.
+std::optional<ui::Vec2> patternNoteEnd(Element& e, const PanelTarget& t, uint32_t note, bool tail);
 
 }  // namespace pq::views::panel::test

@@ -290,11 +290,10 @@ TEST_CASE("render: arp-panel-walk (AP.6: Harmonic Walk in Harmonics, the Glide s
   setValue(s.ctx, s.pr.arp, "style", 18.0);  // Harmonic Walk
   setValue(s.ctx, s.pr.arp, "unit", 2.0);
   setValue(s.ctx, s.pr.arp, "walkUnder", 1.0);
-  setValue(s.ctx, s.pr.arp, "intoSource", 2.0);  // Offset
-  setValue(s.ctx, s.pr.arp, "intoOffset", -2.0);
-  setValue(s.ctx, s.pr.arp, "outTarget", 1.0);   // Next
-  setValue(s.ctx, s.pr.arp, "intoShape", 3.0);  // Overshoot
-  setValue(s.ctx, s.pr.arp, "intoBend", 0.6);
+  setValue(s.ctx, s.pr.arp, "intoOffset", 1200.0 * std::log2(6.0 / 8.0));  // AR.2: cents; h8 → h6 (what a drag snaps to)
+  setValue(s.ctx, s.pr.arp, "outNext", 1.0);
+  setValue(s.ctx, s.pr.arp, "intoShape", 2.0);  // Spring
+  setValue(s.ctx, s.pr.arp, "intoCurve", 0.6);
   setValue(s.ctx, s.pr.arp, "velSource", 1.0);   // Fixed
   s.build({"Glide"});
   checkImage("arp-panel-walk", s.render());
@@ -372,14 +371,12 @@ TEST_CASE("render: arp-panel-degrees-bends (AP.10: Distance / Steps in Degrees w
   setValue(s.ctx, s.pr.arp, "distance", 7.0);
   setValue(s.ctx, s.pr.arp, "steps", 3.0);
   setValue(s.ctx, s.pr.arp, "gate", 0.85);
-  setValue(s.ctx, s.pr.arp, "intoSource", 2.0);  // Offset
-  setValue(s.ctx, s.pr.arp, "intoOffset", -2.0);
+  setValue(s.ctx, s.pr.arp, "intoOffset", -200.0);  // AR.2: cents (−2 degrees of 12-EDO)
   setValue(s.ctx, s.pr.arp, "intoTime", 0.3);
-  setValue(s.ctx, s.pr.arp, "intoShape", 1.0);  // Exponential
-  setValue(s.ctx, s.pr.arp, "intoBend", 0.7);
-  setValue(s.ctx, s.pr.arp, "outTarget", 1.0);  // Next
+  setValue(s.ctx, s.pr.arp, "intoCurve", 0.7);  // exponential
+  setValue(s.ctx, s.pr.arp, "outNext", 1.0);
   setValue(s.ctx, s.pr.arp, "outTime", 0.3);
-  setValue(s.ctx, s.pr.arp, "outShape", 2.0);  // S-curve
+  setValue(s.ctx, s.pr.arp, "outShape", 1.0);  // S
   s.status = holding({degreeNote(261.63f, 0.0f), degreeNote(329.63f, 4.0f)}, 1, 1);
   s.build({"Glide"});
   const Image img = s.render();
@@ -391,21 +388,17 @@ TEST_CASE("render: arp-panel-degrees-bends (AP.10: Distance / Steps in Degrees w
   checkImage("arp-panel-degrees-bends", img);
 }
 
-TEST_CASE("render: arp-panel-bend-view (AP.10: asymmetric Into / Out — shapes, offsets in cents; AP.11: overlapping % "
+TEST_CASE("render: arp-panel-bend-view (AP.10: asymmetric Into / Out — shapes, free offsets; AP.11: overlapping % "
           "times, the Into past the note's end; nothing held)") {
   Standalone s;
   setValue(s.ctx, s.pr.arp, "gate", 1.0);
-  setValue(s.ctx, s.pr.arp, "glideCents", 1.0);
-  setValue(s.ctx, s.pr.arp, "intoSource", 2.0);
   setValue(s.ctx, s.pr.arp, "intoOffset", -300.0);
   setValue(s.ctx, s.pr.arp, "intoTime", 1.2);  // past the note's end: drawn faint there
-  setValue(s.ctx, s.pr.arp, "intoShape", 1.0);  // Exponential
-  setValue(s.ctx, s.pr.arp, "intoBend", 0.8);
-  setValue(s.ctx, s.pr.arp, "outTarget", 2.0);
-  setValue(s.ctx, s.pr.arp, "outOffset", 150.0);
+  setValue(s.ctx, s.pr.arp, "intoCurve", 0.8);  // exponential
+  setValue(s.ctx, s.pr.arp, "outOffset", 150.0);  // (off the 12-EDO grid: read in cents)
   setValue(s.ctx, s.pr.arp, "outTime", 0.5);  // overlapping the Into: the curves add
-  setValue(s.ctx, s.pr.arp, "outShape", 3.0);  // Overshoot
-  setValue(s.ctx, s.pr.arp, "outBend", 0.6);
+  setValue(s.ctx, s.pr.arp, "outShape", 2.0);  // Spring
+  setValue(s.ctx, s.pr.arp, "outCurve", 0.6);
   s.build({"Glide"});
   const Image img = s.render();
   const panel::Element* pv = elementOf(s.face(), "arppattern");
@@ -617,7 +610,7 @@ TEST_CASE("arp panel: a fold opens and closes (view state, no undo step), the fr
   const size_t h0 = u.history();
   REQUIRE(u.foldOpen("Glide"));  // AP.10: the Glide section (and its bend view) is open by default
   const float open = u.host().face().worldSize().y;
-  const int32_t knob = u.index("knob", "intoBend");
+  const int32_t knob = u.index("knob", "intoTime");
   CHECK(u.face().shown(static_cast<size_t>(knob)));
   u.clickFold("Glide");
   CHECK_FALSE(u.foldOpen("Glide"));
@@ -812,14 +805,14 @@ TEST_CASE("arp panel (AP.9, project patch, real dispatch): a fold click grows th
   CHECK(u.node().x == doctest::Approx(n1.x));
   CHECK(u.node().y == doctest::Approx(n1.y));
   CHECK(u.node().w == doctest::Approx(n1.w));
-  const int32_t bend = u.index("knob", "intoBend");
+  const int32_t bend = u.index("knob", "intoTime");
   CHECK(u.face().shown(static_cast<size_t>(bend)));
   CHECK(u.history() == h0);
   // A control in the opened section takes a drag where it is shown (one step).
-  const double b0 = valueOf(u.ctx, u.pr.arp, "intoBend");
+  const double b0 = valueOf(u.ctx, u.pr.arp, "intoTime");
   u.d.drag(u.at(bend, 0.5f, 0.5f), u.at(bend, 0.5f, -1.0f), 6);
   u.d.step();
-  CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") != doctest::Approx(b0));
+  CHECK(valueOf(u.ctx, u.pr.arp, "intoTime") != doctest::Approx(b0));
   CHECK(u.history() == h0 + 1);
 }
 
@@ -837,60 +830,179 @@ TEST_CASE("arp panel (AP.9, project patch): a cable into an arp param ends on it
   CHECK(q.ay <= r.y1 * n.scale);
 }
 
-TEST_CASE("arp panel (AP.10): the bend view's handles drag Into time / offset and (Alt) bend, one undo step each") {
+// AR.2 (replaces the AP.10 handle test: the modes, the unit / cents switch and the Alt bend drag are gone — the note is
+// what is dragged). Everything through the window (real dispatch).
+TEST_CASE("arp panel (AR.2): the bend view is the editor — the note's head / tail, a knee, a curve, the ghosts; the "
+          "knobs follow; one undo step each") {
   Ui u;
-  setValue(u.ctx, u.pr.arp, "intoSource", 2.0);  // Offset
-  setValue(u.ctx, u.pr.arp, "intoOffset", -2.0);
-  setValue(u.ctx, u.pr.arp, "intoTime", 0.2);
-  setValue(u.ctx, u.pr.arp, "outTarget", 1.0);  // Next
-  u.d.step();
   REQUIRE(u.foldOpen("Glide"));
   int32_t bv = -1;
   for (size_t i = 0; i < u.face().elementCount(); ++i)
     if (u.face().element(i).desc().kind == "arpbend") bv = static_cast<int32_t>(i);
   REQUIRE(bv >= 0);
-  panel::Element& el = u.face().element(static_cast<size_t>(bv));
-  const std::optional<Vec2> time = panel::test::bendHandle(el, u.face().target(), 0);
-  REQUIRE(time.has_value());
-  CHECK_FALSE(panel::test::bendHandle(el, u.face().target(), 3).has_value());  // Out → Next: no offset handle
-  // The Into time handle dragged 40 units right (through the window): a longer Into (AP.11: % of the note), one undo
-  // step, a param write only; the Time knob reads it in %.
+  auto el = [&]() -> panel::Element& { return u.face().element(static_cast<size_t>(bv)); };
+  auto part = [&](int32_t h) { return panel::test::bendHandle(el(), u.face().target(), h); };
+  enum : int32_t { kIntoKnee, kHead, kOutKnee, kTail, kIntoCurve, kOutCurve, kPrev, kNext };
+  auto val = [&](const char* name) { return valueOf(u.ctx, u.pr.arp, name); };
+  // Both sides off (the default): the head and the tail are there to grab, no knee, no curve handle.
+  CHECK(val("intoOffset") == 0.0);
+  REQUIRE(part(kHead).has_value());
+  REQUIRE(part(kTail).has_value());
+  CHECK_FALSE(part(kIntoKnee).has_value());
+  CHECK_FALSE(part(kIntoCurve).has_value());
+  // The head dragged straight down: an Into from below, snapped to whole 12-EDO degrees (the Degrees unit), the time
+  // untouched (a straight pull) — one undo step, param writes only.
   size_t h0 = u.history();
-  u.d.drag(u.atLocal(bv, *time), u.atLocal(bv, {time->x + 40.0f, time->y}), 6);
+  const double t0 = val("intoTime");
+  Vec2 head = *part(kHead);
+  u.d.drag(u.atLocal(bv, head), u.atLocal(bv, {head.x + 2.0f, head.y + 30.0f}), 6);
   u.d.step();
-  const double ms = valueOf(u.ctx, u.pr.arp, "intoTime");
-  CHECK(ms > 0.3);
-  CHECK(ms <= 2.0);
+  const double o1 = val("intoOffset");
+  CHECK(o1 <= -100.0);
+  CHECK(std::fabs(o1 / 100.0 - std::round(o1 / 100.0)) < 1e-6);
+  CHECK(val("intoPrev") == 0.0);
+  CHECK(val("intoTime") == doctest::Approx(t0));
+  CHECK(val("outOffset") == 0.0);
+  REQUIRE(u.history() == h0 + 1);
+  CHECK_FALSE(u.ctx.store().history().entries()[h0].changes.structural());
+  {  // the Amount knob beside the view follows
+    const panel::Element& kn = u.face().element(static_cast<size_t>(u.index("knob", "intoOffset")));
+    REQUIRE(kn.binding() != nullptr);
+    const std::string txt = u.face().target().format(*kn.binding(), u.face().target().position(*kn.binding()));
+    CAPTURE(txt);
+    CHECK(std::stod(txt) == doctest::Approx(o1).epsilon(0.01));
+  }
+  // The knee (where the Into arrives) dragged right: a longer Into, nothing else; the Time knob reads it in %.
+  REQUIRE(part(kIntoKnee).has_value());
+  const Vec2 knee = *part(kIntoKnee);
+  h0 = u.history();
+  u.d.drag(u.atLocal(bv, knee), u.atLocal(bv, {knee.x + 40.0f, knee.y}), 6);
+  u.d.step();
+  const double t1 = val("intoTime");
+  CHECK(t1 > t0 + 0.05);
+  CHECK(t1 <= 2.0);
+  CHECK(val("intoOffset") == doctest::Approx(o1));
   {
     const panel::Element& kn = u.face().element(static_cast<size_t>(u.index("knob", "intoTime")));
     REQUIRE(kn.binding() != nullptr);
     const std::string txt = u.face().target().format(*kn.binding(), u.face().target().position(*kn.binding()));
     CAPTURE(txt);
     CHECK(txt.find('%') != std::string::npos);
-    CHECK(std::stod(txt) == doctest::Approx(ms * 100.0).epsilon(0.01));  // the knob's taper = the value's
+    CHECK(std::stod(txt) == doctest::Approx(t1 * 100.0).epsilon(0.01));  // the knob's taper = the value's
   }
-  REQUIRE(u.history() == h0 + 1);
-  CHECK_FALSE(u.ctx.store().history().entries()[h0].changes.structural());
-  // The Into offset handle dragged up: a smaller downward offset (whole degrees).
-  const std::optional<Vec2> off = panel::test::bendHandle(el, u.face().target(), 1);
-  REQUIRE(off.has_value());
-  h0 = u.history();
-  u.d.drag(u.atLocal(bv, *off), u.atLocal(bv, {off->x, off->y - 14.0f}), 4);
-  u.d.step();
-  const double o = valueOf(u.ctx, u.pr.arp, "intoOffset");
-  CHECK(o > -2.0);
-  CHECK(o == std::round(o));
   CHECK(u.history() == h0 + 1);
-  // Alt + drag up on the time handle: the Into bend, nothing else.
-  const std::optional<Vec2> t2 = panel::test::bendHandle(el, u.face().target(), 0);
-  REQUIRE(t2.has_value());
+  // The head dragged around (down and right): amount AND time in one drag, one undo step.
+  head = *part(kHead);
   h0 = u.history();
-  const double bend0 = valueOf(u.ctx, u.pr.arp, "intoBend");
-  u.d.drag(u.atLocal(bv, *t2), u.atLocal(bv, {t2->x, t2->y - 10.0f}), 4, ui::mod::kAlt);
+  u.d.drag(u.atLocal(bv, head), u.atLocal(bv, {head.x + 30.0f, head.y + 16.0f}), 6);
   u.d.step();
-  CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") > bend0 + 0.1);
-  CHECK(valueOf(u.ctx, u.pr.arp, "intoTime") == doctest::Approx(ms));
+  const double o2 = val("intoOffset"), t2 = val("intoTime");
+  CHECK(o2 < o1);
+  CHECK(t2 > t1 + 0.02);
   CHECK(u.history() == h0 + 1);
   REQUIRE(u.ctx.undo());
-  CHECK(valueOf(u.ctx, u.pr.arp, "intoBend") == doctest::Approx(bend0));
+  CHECK(val("intoOffset") == doctest::Approx(o1));
+  CHECK(val("intoTime") == doctest::Approx(t1));
+  // Shift: free cents (off the unit's grid).
+  head = *part(kHead);
+  u.d.drag(u.atLocal(bv, head), u.atLocal(bv, {head.x, head.y + 11.0f}), 6, ui::mod::kShift);
+  u.d.step();
+  const double o3 = val("intoOffset");
+  CHECK(o3 < o1);
+  CHECK(std::fabs(o3 / 100.0 - std::round(o3 / 100.0)) > 1e-3);
+  // The middle of the Into curve dragged up: its Curve (from below: more bend), the time and amount untouched.
+  REQUIRE(part(kIntoCurve).has_value());
+  const Vec2 mid = *part(kIntoCurve);
+  h0 = u.history();
+  u.d.drag(u.atLocal(bv, mid), u.atLocal(bv, {mid.x, mid.y - 14.0f}), 4);
+  u.d.step();
+  CHECK(val("intoCurve") > 0.2);
+  CHECK(val("intoTime") == doctest::Approx(t1));
+  CHECK(val("intoOffset") == doctest::Approx(o3));
+  CHECK(u.history() == h0 + 1);
+  // The head dragged onto the previous step's ghost: Into from that step (its time stays).
+  head = *part(kHead);
+  const Vec2 prev = *part(kPrev);
+  h0 = u.history();
+  u.d.drag(u.atLocal(bv, head), u.atLocal(bv, prev), 8);
+  u.d.step();
+  CHECK(val("intoPrev") == 1.0);
+  CHECK(val("intoTime") == doctest::Approx(t1));
+  CHECK(u.history() == h0 + 1);
+  // A double-click on the head: that side off.
+  h0 = u.history();
+  u.d.doubleClick(u.atLocal(bv, *part(kHead)));
+  u.d.step();
+  CHECK(val("intoPrev") == 0.0);
+  CHECK(val("intoOffset") == 0.0);
+  CHECK_FALSE(part(kIntoKnee).has_value());
+  CHECK(u.history() == h0 + 1);
+  // The tail dragged up: an Out to above; then a click on the next step's ghost: Out to that step, and again: off.
+  Vec2 tail = *part(kTail);
+  h0 = u.history();
+  u.d.drag(u.atLocal(bv, tail), u.atLocal(bv, {tail.x, tail.y - 24.0f}), 6);
+  u.d.step();
+  CHECK(val("outOffset") >= 100.0);
+  CHECK(val("intoOffset") == 0.0);
+  CHECK(u.history() == h0 + 1);
+  h0 = u.history();
+  u.d.click(u.atLocal(bv, *part(kNext)));
+  u.d.step();
+  CHECK(val("outNext") == 1.0);
+  CHECK(u.history() == h0 + 1);
+  u.d.click(u.atLocal(bv, *part(kNext)));
+  u.d.step();
+  CHECK(val("outNext") == 0.0);
+  // A press on the note's body (its left half, off any handle) takes the head.
+  head = *part(kHead);
+  tail = *part(kTail);
+  const Vec2 body{head.x + (tail.x - head.x) * 0.3f, head.y};
+  u.d.drag(u.atLocal(bv, body), u.atLocal(bv, {body.x, body.y - 24.0f}), 6);
+  u.d.step();
+  CHECK(val("intoOffset") >= 100.0);
+}
+
+TEST_CASE("arp panel (AR.2): a note of the pattern view takes the same drags (head: Into, tail: Out; every note conforms)") {
+  Ui u;
+  setValue(u.ctx, u.pr.arp, "rateDen", 4.0);  // (one long nominal note: room to grab it)
+  u.d.step();
+  int32_t pv = -1;
+  for (size_t i = 0; i < u.face().elementCount(); ++i)
+    if (u.face().element(i).desc().kind == "arppattern") pv = static_cast<int32_t>(i);
+  REQUIRE(pv >= 0);
+  auto end = [&](bool tail) {
+    return panel::test::patternNoteEnd(u.face().element(static_cast<size_t>(pv)), u.face().target(), 0, tail);
+  };
+  auto val = [&](const char* name) { return valueOf(u.ctx, u.pr.arp, name); };
+  REQUIRE(end(false).has_value());
+  REQUIRE(end(true).has_value());
+  // The head (just inside the note) dragged down: the Into amount, snapped; one undo step.
+  size_t h0 = u.history();
+  Vec2 a = *end(false);
+  a.x += 2.0f;
+  u.d.drag(u.atLocal(pv, a), u.atLocal(pv, {a.x, a.y + 20.0f}), 6);
+  u.d.step();
+  const double o = val("intoOffset");
+  CHECK(o <= -100.0);
+  CHECK(std::fabs(o / 100.0 - std::round(o / 100.0)) < 1e-6);
+  CHECK(val("outOffset") == 0.0);
+  CHECK(u.history() == h0 + 1);
+  // The tail dragged up and left: the Out amount and a longer Out.
+  const double t0 = val("outTime");
+  Vec2 b = *end(true);
+  b.x -= 2.0f;
+  h0 = u.history();
+  u.d.drag(u.atLocal(pv, b), u.atLocal(pv, {b.x - 30.0f, b.y - 20.0f}), 6);
+  u.d.step();
+  CHECK(val("outOffset") >= 100.0);
+  CHECK(val("outTime") > t0 + 0.02);
+  CHECK(val("intoOffset") == doctest::Approx(o));
+  CHECK(u.history() == h0 + 1);
+  // A double-click on the head: Into off.
+  a = *end(false);
+  a.x += 2.0f;
+  u.d.doubleClick(u.atLocal(pv, a));
+  u.d.step();
+  CHECK(val("intoOffset") == 0.0);
+  CHECK(val("outOffset") >= 100.0);
 }

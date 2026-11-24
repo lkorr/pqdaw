@@ -32,29 +32,28 @@ Tests: real-dispatch Tab-place free + wire both ends → `lowerNoteChains` has t
 an audio cable onto the arp input is refused (view + document). Goldens: the node menu's MIDI effects tab.
 Row: document / shared → `-Affected`.
 
-## AR.2 · glide: draw it on the note (engine + panel)
-Find first why "glide doesn't seem to do anything": (a) the Glide LANE only scales Into / Out, which are Off by
-default, so switching the lane on does nothing — fixed by 3 below; (b) check through a full engine render (ClipPlayer
-→ ArpStage → VoiceEngine, not ArpCore alone) and the live keyboard path that Into = Previous actually bends the
-voice's Hz; fix what is broken and keep that test.
-1. **Params per side shrink to what a drag sets**: `intoOffset` / `outOffset` (0 = that side off), `intoTime` /
-   `outTime`, `intoCurve` / `outCurve` (one −1 … 1 value: 0 linear, ± exponential bend; the drag of the curve's
-   middle), plus `intoPrev` / `outNext` (bool: the side aims at the neighbouring step instead of a fixed offset).
-   The mode enum, the Shape menu and the separate Bend knob go; S-curve and Overshoot stay reachable as two small
-   shape chips per side (Curve | S | Spring) only if they survive as distinct sounds — else delete them. `glideCents`
-   goes: an offset is stored in cents, and a drag SNAPS to the pitch unit's steps of the nominal note (Shift: free).
-   (In Degrees under an unequal tuning a snapped offset is the nominal note's interval; say so in arp.h.)
-2. **The bend view is the editor** (arpbend, larger, no Alt): the previous and next step drawn as ghosts; grab the
-   note's HEAD: vertical = Into offset (snaps to the unit grid, to 0 = off, and onto the previous-step ghost =
-   `intoPrev`), horizontal = Into time; the TAIL the same for Out / next; grab the curve between = its Curve.
-   Double-click a handle: that side off. One undo step per drag; cursor + a readout ("In −2 deg · 30 %").
-   The same head / tail drag works on any note of the **pattern view** (it edits the same params; all notes conform).
-3. **Glide lane = slide per step** (303-style): value 0 … 1, default 0 when the lane is first switched on with both
-   sides off; a step's value scales the sides that are on, and with NO side on it glides that step in from the
-   previous step's pitch (time = Into time). So painting the lane always does something.
-4. Panel Glide section: the bend view + per side two knobs (Amount, Time) that follow the drags, and the shape chips.
-   No "Offsets in cents", no source chips.
-Row: engine / RT → `-Affected -Slow` + ship link of pq_bench_dsp; views goldens of the arp panel re-recorded.
+## AR.2 · glide: draw it on the note (engine + panel) — DONE (as built; deviations: Q?-AR.2-a)
+Found: "glide doesn't do anything" was (a) — the Glide LANE only scaled Into / Out, both Off by default (and its
+steps defaulted to 1 = no change even with a side on). (b) was not broken: a full render (clip → timeline → ArpStage
+→ VoiceEngine → the instrument's voice.hz) and the live keyboard path bend the voice's Hz with Into Prev; both are
+kept as tests (tests/app/test_note_device_playback.cpp "AR.2").
+1. **Params per side = what a drag sets**: `intoOffset` / `outOffset` (cents, ± 2400; 0 = that side off), `intoTime`
+   / `outTime` (% of the note, as AP.11), `intoCurve` / `outCurve` (−1 … 1: 0 a line, ± an exponential bend; Spring:
+   the overshoot), `intoPrev` / `outNext` (the side aims at the neighbouring step instead of its offset) and
+   `intoShape` / `outShape` (Curve | S | Spring: S-curve and Overshoot kept, they are distinct sounds). Gone: the mode
+   enum (`intoSource` / `outTarget`), the 4-entry Shape menu's Linear / Exponential split, the Bend knobs,
+   `glideCents`. An offset is ALWAYS cents; a drag snaps to the pitch unit's steps of the nominal note (Shift: free).
+2. **The bend view is the editor** (`arpbend`, 712 × 150, no Alt): the previous / next step as ghosts (schematic: a
+   step below / above); the note's HEAD: up / down = Into offset (snapped; 0 = off), sideways = Into time, dropped on
+   the previous step's ghost = `intoPrev`; the TAIL the same for Out / next; a knee dot = that time alone; the middle
+   of a curve = its Curve. A press anywhere on the note takes its nearer end. Double-click an end: that side off;
+   click a ghost: from / to that step on / off. One undo step per drag; readouts "In −2 deg · 30 %".
+   The same head / tail drag works on any note of the **pattern view** (the real neighbours are its ghosts).
+3. **Glide lane = slide per step** (303-style): 0 … 1, default 0; a step's value scales the pitch distance of the
+   sides that are on, and with NO side on a step > 0 glides in from the previous step (over Into time). The lane
+   switched off: glides in full.
+4. Panel Glide section: the bend view; per side Amount + Time knobs that follow the drags and the shape chips.
+Row: engine / RT → `-Affected -Slow` + ship link of pq_bench_dsp; arp panel goldens re-recorded.
 
 ## AR.3 · pulse: a polyrhythm you can see and click (engine + panel), after AR.2
 Today: period = Base · h_ref / h, h from Harmonic / Proportion / Order, Cycle Base | Bars, Ref — evenly spaced
