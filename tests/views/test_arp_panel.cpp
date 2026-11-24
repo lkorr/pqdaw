@@ -147,6 +147,13 @@ NoteStageStatus::HeldNote jiNote(float hz, float harmonic) {
   return {hz, 0.8f, 1.0f, harmonic, nan, nan, 0.0f, nan};
 }
 NoteStageStatus::HeldNote degreeNote(float hz, float degree) { return {hz, 0.8f, 1.0f, 0.0f, degree, 0.0f, 0.0f, degree}; }
+// AR.3: the face's first element of `kind` (to edit / ask through panel::test).
+panel::Element& elementIn(panel::GroupPanelFace& f, std::string_view kind) {
+  for (size_t i = 0; i < f.elementCount(); ++i)
+    if (f.element(i).desc().kind == kind) return f.element(i);
+  FAIL("no element of kind " << kind);
+  return f.element(0);
+}
 const panel::Element* elementOf(const panel::GroupPanelFace& f, std::string_view kind) {
   for (size_t i = 0; i < f.elementCount(); ++i)
     if (f.element(i).desc().kind == kind) return &f.element(i);
@@ -327,16 +334,90 @@ TEST_CASE("render: arp-panel-walk (AP.6: Harmonic Walk in Harmonics, the Glide s
   checkImage("arp-panel-walk", s.render());
 }
 
-TEST_CASE("render: arp-panel-pulse (AP.6: Pulse on, Proportion, a Bars cycle)") {
+TEST_CASE("render: arp-panel-pulse (AR.3: Pulse on, nothing held — four nominal rows, a Euclid row, a shifted row)") {
   Standalone s;
   setValue(s.ctx, s.pr.arp, "pulse", 1.0);
-  setValue(s.ctx, s.pr.arp, "pulseSource", 1.0);
-  setValue(s.ctx, s.pr.arp, "pulseCycle", 1.0);
-  setValue(s.ctx, s.pr.arp, "pulseBars", 2.0);
-  setValue(s.ctx, s.pr.arp, "proportionLen", 4.0);
+  setValue(s.ctx, s.pr.arp, "pulseDiv2", 8.0);
+  setValue(s.ctx, s.pr.arp, "pulseMaskLo2", static_cast<double>(0x4949));  // Euclid 3 of 8
+  setValue(s.ctx, s.pr.arp, "pulseMaskHi2", static_cast<double>(0x4949));
+  setValue(s.ctx, s.pr.arp, "pulseShift3", 0.25);
   setValue(s.ctx, s.pr.arp, "layers", 2.0);
   s.build({"Pulse"});
-  checkImage("arp-panel-pulse", s.render());
+  const Image img = s.render();
+  panel::Element& pv = elementIn(s.face(), "arppulse");
+  const panel::PanelTarget& t = s.face().target();
+  REQUIRE(panel::test::pulseRows(pv, t) == 4);
+  CHECK(panel::test::pulseRow(pv, t, 0).division == 3);
+  CHECK_FALSE(panel::test::pulseRow(pv, t, 0).held);
+  CHECK(panel::test::pulseRow(pv, t, 1).division == 8);
+  CHECK(panel::test::pulseRow(pv, t, 1).mask == 0x49494949u);
+  CHECK(panel::test::pulseRow(pv, t, 2).shift == doctest::Approx(0.25));
+  CHECK(panel::test::pulseLit(pv, 0) == -1);  // nothing plays
+  CHECK(panel::test::pulsePlayhead(pv) == -1.0f);
+  checkImage("arp-panel-pulse", img);
+}
+
+TEST_CASE("render: arp-panel-pulse-chord (AR.3: a held 8:9:10:12 chord with Auto — rows locked to the harmonics, "
+          "coinciding onsets joined, each row's last pulse lit, the playhead)") {
+  Standalone s;
+  setValue(s.ctx, s.pr.arp, "pulse", 1.0);
+  const std::vector<NoteStageStatus::HeldNote> held = {jiNote(200.0f, 8.0f), jiNote(225.0f, 9.0f), jiNote(250.0f, 10.0f),
+                                                       jiNote(300.0f, 12.0f)};
+  s.status = std::make_shared<NoteStageStatus>();
+  s.status->writePattern(4, 4, false, [&](uint32_t i) { return held[i].hz; }, 4, [&](uint32_t i) { return held[i]; });
+  // What the stage writes as it plays: each row's last pulse, the newest (row 3's pulse 5 of 12) the playhead.
+  s.status->writePulse(0, 3, 3.0f / 8.0f);
+  s.status->writePulse(1, 3, 3.0f / 9.0f);
+  s.status->writePulse(2, 4, 4.0f / 10.0f);
+  s.status->writePulse(3, 5, 5.0f / 12.0f);
+  const int32_t lanes[6] = {0, 0, 0, 0, 0, 0};
+  s.status->writeStep(lanes, 6, 3, 0);
+  s.build({"Pulse"});
+  const Image img = s.render();
+  panel::Element& pv = elementIn(s.face(), "arppulse");
+  const panel::PanelTarget& t = s.face().target();
+  REQUIRE(panel::test::pulseRows(pv, t) == 4);
+  const int32_t want[4] = {8, 9, 10, 12};
+  for (uint32_t r = 0; r < 4; ++r) {
+    const panel::test::PulseRow row = panel::test::pulseRow(pv, t, r);
+    CHECK(row.division == want[r]);
+    CHECK(row.locked);  // Auto: its harmonic
+    CHECK(row.held);
+  }
+  CHECK(panel::test::pulseLit(pv, 0) == 3);
+  CHECK(panel::test::pulseLit(pv, 3) == 5);
+  CHECK(panel::test::pulsePlayhead(pv) == doctest::Approx(5.0f / 12.0f));
+  // Joined onsets: the cycle start (all four), 1/4, 1/2, 3/4 (8 with 12), 1/2 also 10; 1/3, 2/3 (9 with 12): 6 places.
+  CHECK(panel::test::pulseLinks(pv) == 6);
+  checkImage("arp-panel-pulse-chord", img);
+  // Auto off: the same notes pulse at their rows' divisions (3, 4, 5, 6), unlocked.
+  setValue(s.ctx, s.pr.arp, "pulseAuto", 0.0);
+  CHECK(panel::test::pulseRow(pv, t, 0).division == 3);
+  CHECK_FALSE(panel::test::pulseRow(pv, t, 0).locked);
+  CHECK(panel::test::pulseRow(pv, t, 3).division == 6);
+}
+
+TEST_CASE("arp panel (AR.3): the pulse rows recompute only when their inputs change, not per frame") {
+  Standalone s;
+  setValue(s.ctx, s.pr.arp, "pulse", 1.0);
+  s.status = holding({jiNote(200.0f, 4.0f), jiNote(250.0f, 5.0f)}, 0, 0);
+  s.build({"Pulse"});
+  (void)s.render();
+  panel::Element& pv = elementIn(s.face(), "arppulse");
+  const uint64_t c0 = panel::test::pulseComputes(pv);
+  CHECK(c0 >= 1);
+  for (int i = 0; i < 5; ++i) {
+    s.host->wake();
+    s.d->advance(0.05);
+    (void)s.d->render();
+  }
+  CHECK(panel::test::pulseComputes(pv) == c0);
+  setValue(s.ctx, s.pr.arp, "pulseDiv3", 7.0);
+  s.host->wake();
+  s.d->advance(0.05);
+  (void)s.d->render();
+  CHECK(panel::test::pulseComputes(pv) == c0 + 1);
+  CHECK(panel::test::pulseRow(pv, s.face().target(), 2).division == 7);
 }
 
 namespace {
@@ -925,33 +1006,38 @@ TEST_CASE("arp panel: the unit chips show Ratio p / q only in Ratio and Base onl
   CHECK(u.history() == h0 + 1);
 }
 
-TEST_CASE("arp panel (AP.8b, review L11): a layer's level shows only within Layers, a proportion entry only within Length") {
+TEST_CASE("arp panel (AP.8b, review L11; AR.3): a layer's level shows only within Layers — in both modes; the pulse "
+          "view only while Pulse is on") {
+  // AR.3 (rewritten: Layers moved from the Pulse fold into the Pitch block — they apply in both modes — and the
+  // Proportion row is gone with the old pulse model).
   Ui u;
-  setValue(u.ctx, u.pr.arp, "pulse", 1.0);
-  setValue(u.ctx, u.pr.arp, "pulseSource", 1.0);  // Proportion
-  u.clickFold("Pulse");
-  REQUIRE(u.foldOpen("Pulse"));
   auto shown = [&](const char* kind, const char* name) { return u.face().shown(static_cast<size_t>(u.index(kind, name))); };
-  CHECK_FALSE(shown("knob", "layerLevel1"));  // Layers 0: no levels
+  CHECK(shown("number", "layers"));  // Pulse off, its fold closed: Layers are in the Pitch block
+  CHECK_FALSE(shown("number", "layerLevel1"));  // Layers 0: no levels
   setValue(u.ctx, u.pr.arp, "layers", 2.0);
   u.d.step();
-  CHECK(shown("knob", "layerLevel1"));
-  CHECK(shown("knob", "layerLevel2"));
-  CHECK_FALSE(shown("knob", "layerLevel3"));
+  CHECK(shown("number", "layerLevel1"));
+  CHECK(shown("number", "layerLevel2"));
+  CHECK_FALSE(shown("number", "layerLevel3"));
   setValue(u.ctx, u.pr.arp, "layers", 3.0);
   u.d.step();
-  CHECK(shown("knob", "layerLevel3"));
-  setValue(u.ctx, u.pr.arp, "proportionLen", 4.0);
+  CHECK(shown("number", "layerLevel3"));
+  u.clickFold("Pulse");
+  REQUIRE(u.foldOpen("Pulse"));
+  auto pulseView = [&] {
+    for (size_t i = 0; i < u.face().elementCount(); ++i)
+      if (u.face().element(i).desc().kind == "arppulse") return u.face().shown(i);
+    FAIL("no arppulse");
+    return false;
+  };
+  CHECK_FALSE(pulseView());  // Pulse off: only its switch
+  CHECK_FALSE(shown("toggle", "pulseAuto"));
+  setValue(u.ctx, u.pr.arp, "pulse", 1.0);
   u.d.step();
-  CHECK(shown("number", "proportion4"));
-  CHECK_FALSE(shown("number", "proportion5"));
-  CHECK_FALSE(shown("number", "proportion8"));
-  setValue(u.ctx, u.pr.arp, "pulseSource", 0.0);  // Harmonic: the proportion row goes (its Length with it)
-  u.d.step();
-  CHECK_FALSE(shown("number", "proportion1"));
-  setValue(u.ctx, u.pr.arp, "pulse", 0.0);  // Pulse off: the layer levels go too (a hidden source hides what follows it)
-  u.d.step();
-  CHECK_FALSE(shown("knob", "layerLevel1"));
+  CHECK(pulseView());
+  CHECK(shown("toggle", "pulseAuto"));
+  CHECK(shown("number", "pulseCycleNum"));
+  CHECK(shown("number", "layerLevel1"));
   // L12: the two retriggers are told apart.
   CHECK(findElement(u.face(), "tabs", "retrigger") >= 0);
   CHECK(u.face().element(static_cast<size_t>(u.index("toggle", "velRetrig"))).desc().text("text", "") == "On retrigger");
@@ -1357,4 +1443,218 @@ TEST_CASE("arp panel (AR.2): a note of the pattern view takes the same drags (he
   u.d.step();
   CHECK(val("intoOffset") == 0.0);
   CHECK(val("outOffset") >= 100.0);
+}
+
+// ---- AR.3: the pulse view ------------------------------------------------------------------------------------------
+
+TEST_CASE("arp panel (AR.3, real dispatch): the pulse view is the editor — a dot click mutes, a row drag sets its "
+          "division, Shift+drag its shift, the wheel, the row menu; one undo step each") {
+  Ui u;
+  setValue(u.ctx, u.pr.arp, "pulse", 1.0);
+  u.clickFold("Glide");  // (closed: the whole Pulse section is inside the shown part of the Device view)
+  u.clickFold("Pulse");
+  REQUIRE(u.foldOpen("Pulse"));
+  int32_t pv = -1;
+  for (size_t i = 0; i < u.face().elementCount(); ++i)
+    if (u.face().element(i).desc().kind == "arppulse") pv = static_cast<int32_t>(i);
+  REQUIRE(pv >= 0);
+  REQUIRE(u.face().shown(static_cast<size_t>(pv)));
+  (void)u.at(pv, 0.5f, 0.98f);  // (its bottom row is on the shown panel)
+  auto el = [&]() -> panel::Element& { return u.face().element(static_cast<size_t>(pv)); };
+  auto row = [&](uint32_t r) { return panel::test::pulseRow(el(), u.face().target(), r); };
+  auto dot = [&](uint32_t r, int32_t j) {
+    const std::optional<Vec2> p = panel::test::pulseDot(el(), u.face().target(), r, j);
+    REQUIRE(p.has_value());
+    return *p;
+  };
+  auto val = [&](const char* name) { return valueOf(u.ctx, u.pr.arp, name); };
+  auto structural = [&](size_t h) { return u.ctx.store().history().entries()[h].changes.structural(); };
+  // Nothing held: four nominal rows at the rows' divisions 3, 4, 5, 6, every pulse on.
+  REQUIRE(panel::test::pulseRows(el(), u.face().target()) == 4);
+  for (uint32_t r = 0; r < 4; ++r) {
+    CHECK(row(r).division == static_cast<int32_t>(r) + 3);
+    CHECK(row(r).mask == 0xFFFFFFFFu);
+    CHECK_FALSE(row(r).locked);
+  }
+  // A click on pulse 1 of row 1 (÷4) mutes it: the mask's bit 1 — a setting (structural), one undo step.
+  size_t h0 = u.history();
+  u.d.click(u.atLocal(pv, dot(1, 1)));
+  u.d.step();
+  CHECK(val("pulseMaskLo2") == static_cast<double>(0xFFFD));
+  CHECK(val("pulseMaskHi2") == static_cast<double>(0xFFFF));
+  CHECK(row(1).mask == 0xFFFFFFFDu);
+  CHECK(row(0).mask == 0xFFFFFFFFu);
+  REQUIRE(u.history() == h0 + 1);
+  CHECK(structural(h0));
+  u.d.click(u.atLocal(pv, dot(1, 1)));  // again: it plays
+  u.d.step();
+  CHECK(row(1).mask == 0xFFFFFFFFu);
+  CHECK(u.history() == h0 + 2);
+  // Row 0 dragged right by three division steps (12 px each) from between its dots: ÷3 → ÷6; a param write only.
+  h0 = u.history();
+  const Vec2 a0 = dot(0, 0), a1 = dot(0, 1);
+  const Vec2 from{a0.x + (a1.x - a0.x) * 0.4f, a0.y};
+  u.d.drag(u.atLocal(pv, from), u.atLocal(pv, {from.x + 38.0f, from.y + 1.0f}), 6);
+  u.d.step();
+  CHECK(val("pulseDiv1") == 6.0);
+  CHECK(row(0).division == 6);
+  CHECK(row(0).mask == 0xFFFFFFFFu);  // (no dot was toggled by the drag)
+  REQUIRE(u.history() == h0 + 1);
+  CHECK_FALSE(structural(h0));
+  u.d.drag(u.atLocal(pv, from), u.atLocal(pv, {from.x - 500.0f, from.y}), 6);  // far left: clamped at ÷1
+  u.d.step();
+  CHECK(val("pulseDiv1") == 1.0);
+  CHECK(u.history() == h0 + 2);
+  // Shift+drag row 1 by a quarter of its period: its dots follow the pointer, shift +25 % (snapped to 1/24).
+  h0 = u.history();
+  const Vec2 b0 = dot(1, 0), b1 = dot(1, 1);
+  const float period = b1.x - b0.x;
+  const Vec2 sf{b0.x + period * 0.5f, b0.y};
+  u.d.drag(u.atLocal(pv, sf), u.atLocal(pv, {sf.x + period * 0.25f, sf.y}), 6, mod::kShift);
+  u.d.step();
+  CHECK(val("pulseShift2") == doctest::Approx(0.25).epsilon(1e-4));
+  CHECK(val("pulseDiv2") == 4.0);
+  CHECK(dot(1, 0).x == doctest::Approx(b0.x + period * 0.25f).epsilon(0.01));
+  REQUIRE(u.history() == h0 + 1);
+  CHECK_FALSE(structural(h0));
+  u.d.drag(u.atLocal(pv, sf), u.atLocal(pv, {sf.x - period * 2.0f, sf.y}), 6, mod::kShift);  // clamped at −50 %
+  u.d.step();
+  CHECK(val("pulseShift2") == doctest::Approx(-0.5));
+  // The wheel over row 2 (÷5): a notch up is ÷6, two down ÷4; a run of notches is one undo step.
+  h0 = u.history();
+  const Vec2 w = u.atLocal(pv, {dot(2, 1).x + 10.0f, dot(2, 1).y});
+  CHECK(u.d.wheel(w, 1.0f));
+  CHECK(val("pulseDiv3") == 6.0);
+  CHECK(u.d.wheel(w, -1.0f));
+  CHECK(u.d.wheel(w, -1.0f));
+  u.d.advance(1.0);  // the run ends
+  CHECK(val("pulseDiv3") == 4.0);
+  CHECK(u.history() == h0 + 1);
+  // The row menu (right-click a row, or its ⋯ chip): Euclid 3 of 4 on row 3 (÷6 → set ÷4 first), Invert, Reset.
+  setValue(u.ctx, u.pr.arp, "pulseDiv4", 4.0);
+  setValue(u.ctx, u.pr.arp, "pulseShift4", 0.125);
+  u.d.step();
+  auto menu = [&]() -> Menu* {
+    OverlayLayer* layer = OverlayLayer::of(u.host());
+    REQUIRE(layer != nullptr);
+    auto* m = dynamic_cast<Menu*>(layer->top());
+    REQUIRE(m != nullptr);
+    return m;
+  };
+  auto item = [](const Menu& m, std::string_view label) {
+    for (size_t i = 0; i < m.items().size(); ++i)
+      if (m.items()[i].label == label) return static_cast<int32_t>(i);
+    FAIL("no menu item " << label);
+    return -1;
+  };
+  h0 = u.history();
+  const Vec2 d3 = dot(3, 2);
+  u.d.click(u.atLocal(pv, {d3.x + 12.0f, d3.y}), mod::kNone, PointerButton::Right);
+  u.d.step();
+  {
+    Menu* m = menu();
+    m->setHighlighted(item(*m, "Euclid"));
+    Menu* s = m->openSubmenu();
+    REQUIRE(s != nullptr);
+    CHECK(s->items().size() == 4);  // 1 … 4 of 4
+    CHECK(s->items()[3].checked);   // all on now: 4 of 4
+    s->choose(item(*s, "3 of 4"));
+    u.d.step();
+  }
+  CHECK(row(3).mask == 0xDDDDDDDDu);  // pulses 0, 2, 3 of every 4
+  CHECK(val("pulseMaskLo4") == static_cast<double>(0xDDDD));
+  CHECK(val("pulseMaskHi4") == static_cast<double>(0xDDDD));
+  REQUIRE(u.history() == h0 + 1);  // both halves: one step
+  CHECK(structural(h0));
+  const std::optional<Vec2> chip = panel::test::pulseMenu(el(), u.face().target(), 3);
+  REQUIRE(chip.has_value());
+  u.d.click(u.atLocal(pv, *chip));  // the chip: a left click opens it
+  u.d.step();
+  {
+    Menu* m = menu();
+    m->choose(item(*m, "Invert"));
+    u.d.step();
+  }
+  CHECK(row(3).mask == 0x22222222u);
+  CHECK(u.history() == h0 + 2);
+  u.d.click(u.atLocal(pv, *chip));
+  u.d.step();
+  {
+    Menu* m = menu();
+    m->choose(item(*m, "Rotate Later"));
+    u.d.step();
+  }
+  CHECK(row(3).mask == 0x44444444u);  // pulse 1 → pulse 2
+  u.d.click(u.atLocal(pv, *chip));
+  u.d.step();
+  {
+    Menu* m = menu();
+    m->choose(item(*m, "Reset Row (all on, no shift)"));
+    u.d.step();
+  }
+  CHECK(row(3).mask == 0xFFFFFFFFu);
+  CHECK(val("pulseShift4") == doctest::Approx(0.0));
+  CHECK(u.history() == h0 + 4);  // the reset — mask and shift — is one step
+}
+
+TEST_CASE("arp panel (AR.3, real dispatch): a row Auto clocks by its note's harmonic is division-locked; its dots and "
+          "its shift still edit") {
+  Ui u;
+  auto st = std::make_shared<NoteStageStatus>();
+  const std::vector<NoteStageStatus::HeldNote> held = {jiNote(200.0f, 4.0f), jiNote(250.0f, 5.0f), degreeNote(300.0f, 7.0f)};
+  st->writePattern(3, 3, false, [&](uint32_t i) { return held[i].hz; }, 3, [&](uint32_t i) { return held[i]; });
+  u.ctx.setNoteStatusSource([st](doc::DeviceId) { return std::shared_ptr<const NoteStageStatus>(st); });
+  setValue(u.ctx, u.pr.arp, "pulse", 1.0);
+  u.clickFold("Glide");  // (closed: the whole Pulse section is inside the shown part of the Device view)
+  u.clickFold("Pulse");
+  REQUIRE(u.foldOpen("Pulse"));
+  int32_t pv = -1;
+  for (size_t i = 0; i < u.face().elementCount(); ++i)
+    if (u.face().element(i).desc().kind == "arppulse") pv = static_cast<int32_t>(i);
+  REQUIRE(pv >= 0);
+  u.host().wake();  // (the status: what a host frame tick reads)
+  u.d.advance(0.1);
+  (void)u.at(pv, 0.5f, 0.98f);  // (its bottom row is on the shown panel)
+  auto el = [&]() -> panel::Element& { return u.face().element(static_cast<size_t>(pv)); };
+  auto row = [&](uint32_t r) { return panel::test::pulseRow(el(), u.face().target(), r); };
+  auto dot = [&](uint32_t r, int32_t j) {
+    const std::optional<Vec2> p = panel::test::pulseDot(el(), u.face().target(), r, j);
+    REQUIRE(p.has_value());
+    return *p;
+  };
+  REQUIRE(panel::test::pulseRows(el(), u.face().target()) == 4);  // three held + one more (at least four rows)
+  CHECK(row(0).division == 4);  // h4
+  CHECK(row(0).locked);
+  CHECK(row(1).division == 5);  // h5
+  CHECK(row(2).division == 5);  // no harmonic: its row's division (row 3: 5)
+  CHECK_FALSE(row(2).locked);
+  CHECK(row(2).held);
+  CHECK_FALSE(row(3).held);
+  // A plain drag on the locked row changes nothing (no undo step); the same drag on the unlocked row does.
+  size_t h0 = u.history();
+  Vec2 p0 = dot(0, 1);
+  u.d.drag(u.atLocal(pv, {p0.x + 20.0f, p0.y}), u.atLocal(pv, {p0.x + 60.0f, p0.y}), 6);
+  u.d.step();
+  CHECK(row(0).division == 4);
+  CHECK(valueOf(u.ctx, u.pr.arp, "pulseDiv1") == 3.0);
+  CHECK(u.history() == h0);
+  CHECK(u.d.wheel(u.atLocal(pv, {p0.x + 20.0f, p0.y}), 1.0f));  // (consumed; nothing changes)
+  u.d.advance(1.0);
+  CHECK(u.history() == h0);
+  p0 = dot(2, 1);
+  u.d.drag(u.atLocal(pv, {p0.x + 20.0f, p0.y}), u.atLocal(pv, {p0.x + 45.0f, p0.y}), 6);
+  u.d.step();
+  CHECK(row(2).division == 7);
+  CHECK(u.history() == h0 + 1);
+  // The locked row's dots and shift are its own.
+  h0 = u.history();
+  u.d.click(u.atLocal(pv, dot(0, 2)));
+  u.d.step();
+  CHECK(row(0).mask == 0xFFFFFFFBu);
+  p0 = dot(0, 1);
+  const float period = dot(0, 1).x - dot(0, 0).x;
+  u.d.drag(u.atLocal(pv, {p0.x + 20.0f, p0.y}), u.atLocal(pv, {p0.x + 20.0f + period / 3.0f, p0.y}), 6, mod::kShift);
+  u.d.step();
+  CHECK(valueOf(u.ctx, u.pr.arp, "pulseShift1") == doctest::Approx(1.0 / 3.0).epsilon(1e-4));
+  CHECK(u.history() == h0 + 2);
 }

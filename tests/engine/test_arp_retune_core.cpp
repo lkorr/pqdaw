@@ -495,16 +495,13 @@ TEST_CASE("arp core (AP.8a L3 / L4): a harmonic beyond 2^24 is none; ids skip li
     CHECK(ons[7].ev.harmonic == 0.0f);
   }
   SUBCASE("L4") {
-    // Pulse, Proportion {1, 64}, h_ref 64: clock A (h 1) one pulse per 64 of clock B; gate 100 % — A's first note
-    // (id counter 0) sounds while B's notes run the counter through 2^24.
+    // Pulse, rows ÷1 and ÷64 of a 1-bar cycle (AR.3; was Proportion {1, 64} with h_ref 64: the same clocks): clock A
+    // one pulse per 64 of clock B; gate 100 % — A's first note (id counter 0) sounds while B's notes run the counter
+    // through 2^24.
     e::ArpParams p;
     p.pulse = true;
-    p.pulseSource = e::ArpPulseSource::Proportion;
-    p.proportionLen = 2;
-    p.proportion[0] = 1;
-    p.proportion[1] = 64;
-    p.pulseRef = 64;
-    p.rate = {true, 1, 64, 1, 1, 125.0f};
+    p.pulseDiv[0] = 1;
+    p.pulseDiv[1] = 64;
     p.gate = 1.0f;
     auto st = std::make_unique<e::ArpStage>(p);
     e::ArpStage* stage = st.get();

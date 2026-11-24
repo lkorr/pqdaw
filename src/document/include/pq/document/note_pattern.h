@@ -88,4 +88,32 @@ double noteRampShape(int32_t shape, double bend, double u) noexcept;
 const TuningDef* noteDeviceTuning(const Project& p, DeviceId device) noexcept;
 int32_t tuningEquaveDegrees(const TuningDef* def);
 
+// AR.3 (pq/engine/arp.h "Pulse mode"): the PULSE ROWS of note device `device` as its pulse view draws and edits them:
+// the Cycle (num / den bars) and, per row from the lowest held note up, the division the engine clocks it at (Auto: the
+// note's JI harmonic — `locked`: the row's Division param does not apply —, else the row's Division), its 32-bit mask
+// (pulse j plays when bit j mod 32 is set) and its shift (of its period). Rows = the held notes by Hz (the first
+// kNotePulseRows; more held: they share the rows again from the first), at least kNotePulseMinRows — a row without a
+// held note (`held` false) shows what the next note added would play.
+inline constexpr uint32_t kNotePulseRows = 8, kNotePulseMinRows = 4;
+struct NotePulseRow {
+  int32_t division = 1;
+  bool locked = false;
+  bool held = false;
+  uint32_t mask = 0xFFFFFFFFu;
+  double shift = 0.0;
+};
+struct NotePulseView {
+  bool valid = false;       // the device is a note device with pulse rows
+  bool on = false;          // Pulse is on
+  int32_t cycleNum = 1, cycleDen = 1;
+  int32_t maxDivision = 64;
+  double maxShift = 0.5;
+  std::vector<NotePulseRow> rows;
+};
+NotePulseView notePulseView(const Project& p, DeviceId device, std::span<const NotePatternHeld> held);
+// Euclid k of n as a row mask (the engine's arpEuclidMask: k onsets spread evenly over n pulses, n ≤ 32, repeated over
+// the 32 bits), and a mask rotated by `by` pulses within its first n (later / earlier; repeated likewise).
+uint32_t notePulseEuclid(int32_t k, int32_t n) noexcept;
+uint32_t notePulseRotate(uint32_t mask, int32_t n, int32_t by) noexcept;
+
 }  // namespace pq::doc

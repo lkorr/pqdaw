@@ -9,6 +9,8 @@
 //   - RtScope on the stage entry point and through the real Engine + VoiceEngine (install, play, handover).
 #include <doctest/doctest.h>
 
+#include <bit>
+
 #include <algorithm>
 #include <cmath>
 #include <map>
@@ -1428,11 +1430,12 @@ TEST_CASE("arp (AP.11): Into / Out Time a % of the note; overlapping sides add; 
 
 namespace {
 
-e::ArpParams pulseParams(int32_t den = 4) {
+// AR.3 (rewritten: the model is a Cycle cut into n pulses per note; there is no Base / h_ref): Auto, a Cycle of `bars`
+// bars. The AP.4 tests were written for Base 1/4 with h_ref 8 = a cycle of 8 quarters: 2 bars, the default here.
+e::ArpParams pulseParams(int32_t bars = 2) {
   e::ArpParams p;
   p.pulse = true;
-  p.pulseRef = 0;  // the lowest held (these tests were written for it; AP.8a made a fixed 8 the default)
-  p.rate = {true, 1, den, 1, 1, 100.0f};
+  p.pulseCycleNum = bars;
   p.gate = 0.5f;
   return p;
 }
@@ -1478,47 +1481,116 @@ std::vector<Ev> chord8_9_10_12(int64_t t = 0) {
 
 }  // namespace
 
-TEST_CASE("arp (AP.4): pulse 8:9:10:12 onsets exact in samples over 4 bars, at block sizes 32 / 64 / 512 / 37") {
-  // Base 1/4 (24000 samples at 120 BPM), h_ref = 8 (the lowest): note h pulses every 24000 * 8 / h; the cycle is
-  // 8 quarters (192000) where every clock restarts.
-  const e::ArpParams p = pulseParams(4);
+TEST_CASE("arp (AP.4, AR.3): pulse 8:9:10:12 onsets exact in samples over 4 bars, at block sizes 32 / 64 / 512 / 37") {
+  // Auto: note h pulses h times per Cycle (1 bar = 96000 samples at 120 BPM, or 2 bars: the AP.4 result of Base 1/4
+  // with h_ref 8), every clock restarting at each cycle start.
   Transport tr;
   tr.playing = true;
   const int64_t total = 4 * 96000;
+  for (int32_t bars : {1, 2}) {
+    CAPTURE(bars);
+    const e::ArpParams p = pulseParams(bars);
+    const int64_t C = 96000 * bars;
+    std::vector<std::string> ref;
+    for (uint32_t block : {64u, 32u, 512u, 37u}) {
+      CAPTURE(block);
+      e::ArpCore arp;
+      Harness h;
+      const auto out = h.run(arp, p, chord8_9_10_12(), tr, total, block);
+      CHECK(h.rtViolations == 0);
+      const auto by = onsetsByHz(out);
+      const auto offs = offsById(out);
+      for (int64_t hh : kHs) {
+        CAPTURE(hh);
+        std::vector<int64_t> want, wantOff;
+        for (int64_t c = 0; c < 4 / bars; ++c)
+          for (int64_t j = 0; j < hh; ++j) {
+            want.push_back(roundDiv(c * C * hh + j * C, hh));
+            wantOff.push_back(roundDiv(c * C * hh + j * C + C / 2, hh));  // gate 50 % of C / h
+          }
+        const auto it = by.find(100.0f * static_cast<float>(hh));
+        REQUIRE(it != by.end());
+        CHECK(it->second == want);
+        std::vector<int64_t> gotOff;
+        for (const Ev& x : out)
+          if (x.ev.kind == e::NoteEventKind::NoteOn && x.ev.hz == 100.0f * static_cast<float>(hh)) {
+            const auto o = offs.find(x.ev.noteId);
+            gotOff.push_back(o == offs.end() ? -1 : o->second);
+          }
+        gotOff.pop_back();  // the last one may end after the run
+        wantOff.pop_back();
+        CHECK(gotOff == wantOff);
+      }
+      CHECK(arp.stats().pulses == static_cast<uint64_t>(4 / bars) * (8 + 9 + 10 + 12));
+      const auto k = keyOf(out);
+      if (ref.empty()) ref = k;
+      else CHECK(k == ref);
+    }
+  }
+}
+
+TEST_CASE("arp (AR.3): a masked + shifted row — exact onsets, the same at any block size, no allocation") {
+  // Three plain notes, rows by Hz: 200 Hz ÷4 (all on), 300 Hz ÷8 with Euclid 3 of 8 (pulses 0, 3, 6), 400 Hz ÷3 shifted
+  // +0.25 of its period (32000 → 8000 late) with its pulse 1 muted. Cycle 1 bar (96000), 3 bars played.
+  CHECK(e::arpEuclidMask(3, 8) == 0x49494949u);
+  CHECK(e::arpEuclidMask(5, 8) == 0xB5B5B5B5u);  // x.x.xx.x: pulses 0, 2, 4, 5, 7
+  CHECK(e::arpEuclidMask(4, 4) == 0xFFFFFFFFu);
+  CHECK(e::arpEuclidMask(0, 7) == 0u);
+  CHECK(std::popcount(e::arpEuclidMask(7, 32)) == 7);
+  e::ArpParams p = pulseParams(1);
+  p.pulseAuto = false;
+  p.pulseDiv = {4, 8, 3, 6, 7, 8, 9, 10};
+  p.pulseMask[1] = e::arpEuclidMask(3, 8);
+  p.pulseMask[2] = ~2u;
+  p.pulseShift[2] = 0.25f;
+  Transport tr;
+  tr.playing = true;
+  const std::vector<Ev> in = {{0, on(1, 200.0f)}, {0, on(2, 300.0f)}, {0, on(3, 400.0f)}};
   std::vector<std::string> ref;
   for (uint32_t block : {64u, 32u, 512u, 37u}) {
     CAPTURE(block);
     e::ArpCore arp;
     Harness h;
-    const auto out = h.run(arp, p, chord8_9_10_12(), tr, total, block);
+    const auto out = h.run(arp, p, in, tr, 3 * 96000, block);
     CHECK(h.rtViolations == 0);
     const auto by = onsetsByHz(out);
-    const auto offs = offsById(out);
-    for (int64_t hh : kHs) {
-      CAPTURE(hh);
-      std::vector<int64_t> want, wantOff;
-      for (int64_t c = 0; c < 2; ++c)
-        for (int64_t j = 0; j < hh; ++j) {
-          want.push_back(roundDiv(c * 192000 * hh + j * 192000, hh));
-          wantOff.push_back(roundDiv(c * 192000 * hh + j * 192000 + 96000, hh));  // gate 50 % of 192000 / h
-        }
-      const auto it = by.find(100.0f * static_cast<float>(hh));
-      REQUIRE(it != by.end());
-      CHECK(it->second == want);
-      std::vector<int64_t> gotOff;
-      for (const Ev& x : out)
-        if (x.ev.kind == e::NoteEventKind::NoteOn && x.ev.hz == 100.0f * static_cast<float>(hh)) {
-          const auto o = offs.find(x.ev.noteId);
-          gotOff.push_back(o == offs.end() ? -1 : o->second);
-        }
-      gotOff.pop_back();  // the last one may end after the run
-      wantOff.pop_back();
-      CHECK(gotOff == wantOff);
+    std::vector<int64_t> a, b, c;
+    for (int64_t cy = 0; cy < 3; ++cy) {
+      for (int64_t j = 0; j < 4; ++j) a.push_back(cy * 96000 + j * 24000);
+      for (int64_t j : {0, 3, 6}) b.push_back(cy * 96000 + j * 12000);
+      for (int64_t j : {0, 2}) c.push_back(cy * 96000 + j * 32000 + 8000);
     }
-    CHECK(arp.stats().pulses == 2 * (8 + 9 + 10 + 12));
+    CHECK(by.at(200.0f) == a);
+    CHECK(by.at(300.0f) == b);
+    // (the 400 Hz note-on at 0 is between its shifted grid onsets — the cycle before's pulse 2 at −24000 and pulse 0
+    // at 8000 —, so it sounds at once as that pulse 2 (the AP.3 idle rule), then on its grid)
+    std::vector<int64_t> cc = c;
+    cc.insert(cc.begin(), 0);
+    CHECK(by.at(400.0f) == cc);
+    CHECK(arp.stats().pulseMutes == 3 * 5 + 3);  // 5 of row 1's 8 and 1 of row 2's 3 per cycle (the last cycle's
+                                                 // shifted pulse 2 … all inside the 3 bars)
     const auto k = keyOf(out);
     if (ref.empty()) ref = k;
     else CHECK(k == ref);
+  }
+  SUBCASE("a negative shift: the row plays early (a flam before the others), the first cycle's pulse 0 at the note-on") {
+    e::ArpParams q = pulseParams(1);
+    q.pulseAuto = false;
+    q.pulseDiv = {4, 4, 3, 6, 7, 8, 9, 10};
+    q.pulseShift[1] = -0.125f;  // 3000 early
+    e::ArpCore arp;
+    const auto by = onsetsByHz(Harness{}.run(arp, q, {{0, on(1, 200.0f)}, {0, on(2, 300.0f)}}, tr, 100000, 64));
+    CHECK(by.at(200.0f) == std::vector<int64_t>{0, 24000, 48000, 72000, 96000});
+    CHECK(by.at(300.0f) == std::vector<int64_t>{0, 21000, 45000, 69000, 93000});
+  }
+  SUBCASE("the free clock (stopped): the same rhythm from the note-on") {
+    e::ArpCore arp;
+    std::vector<Ev> late = in;
+    for (Ev& x : late) x.t = 500;
+    const auto by = onsetsByHz(Harness{}.run(arp, p, late, {}, 96500, 64));
+    CHECK(by.at(200.0f) == std::vector<int64_t>{500, 24500, 48500, 72500});
+    CHECK(by.at(300.0f) == std::vector<int64_t>{500, 36500, 72500});
+    CHECK(by.at(400.0f) == std::vector<int64_t>{500, 8500, 72500});
   }
 }
 
@@ -1526,7 +1598,7 @@ TEST_CASE("arp (AP.4): pulse 8:9:10:12 exact across a tempo change (120 -> 90 at
   pq::TempoPoint pts[2] = {{0, 120.0}, {4 * pq::kPpq, 90.0}};
   auto tm = pq::TempoMap::create(pts);
   REQUIRE(tm.ok());
-  const e::ArpParams p = pulseParams(4);
+  const e::ArpParams p = pulseParams();
   Transport tr;
   tr.playing = true;
   const int64_t total = 96000 + 3 * 128000;  // 4 bars: 1 at 120, 3 at 90
@@ -1563,7 +1635,7 @@ TEST_CASE("arp (AP.4): pulse 8:9:10:12 exact across a tempo change (120 -> 90 at
 TEST_CASE("arp (AP.4): pulse with a stopped transport: the free clock from the note-on, the same ratios") {
   e::ArpCore arp;
   Harness h;
-  const auto by = onsetsByHz(h.run(arp, pulseParams(4), chord8_9_10_12(1000), {}, 200000, 64));
+  const auto by = onsetsByHz(h.run(arp, pulseParams(), chord8_9_10_12(1000), {}, 200000, 64));
   for (int64_t hh : kHs) {
     CAPTURE(hh);
     std::vector<int64_t> want;
@@ -1573,42 +1645,44 @@ TEST_CASE("arp (AP.4): pulse with a stopped transport: the free clock from the n
   }
 }
 
-TEST_CASE("arp (AP.4): phase lock every Base * h_ref or every n bars") {
-  // Order: three plain notes are h = 1, 2, 3 (by Hz); h_ref fixed 3: periods 72000, 36000, 24000 (Base 1/4).
-  e::ArpParams p = pulseParams(4);
-  p.pulseSource = e::ArpPulseSource::Order;
-  p.pulseRef = 3;
+TEST_CASE("arp (AR.3): phase lock at every Cycle (num / den bars); each row cuts it into its division") {
+  // AR.3 (rewritten: was "every Base * h_ref or every n bars"; a cycle is always cut exactly, there is no short last
+  // pulse). Three plain notes are rows 0, 1, 2 by Hz with divisions 1, 2, 3.
+  e::ArpParams p = pulseParams(1);
+  p.pulseDiv = {1, 2, 3, 6, 7, 8, 9, 10};
   Transport tr;
   tr.playing = true;
   std::vector<Ev> in = {{0, on(1, 200.0f)}, {0, on(2, 300.0f)}, {0, on(3, 400.0f)}};
-  SUBCASE("Cycle Base: 3 quarters, every clock fills it exactly") {
+  SUBCASE("Cycle 3/4 of a bar: 3 quarters (72000)") {
+    p.pulseCycleNum = 3;
+    p.pulseCycleDen = 4;
     e::ArpCore arp;
     const auto by = onsetsByHz(Harness{}.run(arp, p, in, tr, 200000, 64));
     CHECK(by.at(200.0f) == std::vector<int64_t>{0, 72000, 144000});
     CHECK(by.at(300.0f) == std::vector<int64_t>{0, 36000, 72000, 108000, 144000, 180000});
     CHECK(by.at(400.0f).size() == 9);  // every 24000
   }
-  SUBCASE("Cycle Bars 1: all restart at every bar (96000); the last pulse before it is short") {
-    p.pulseCycle = e::ArpPulseCycle::Bars;
-    p.pulseBars = 1;
+  SUBCASE("Cycle 1 bar: all restart at every bar (96000)") {
     e::ArpCore arp;
     const auto by = onsetsByHz(Harness{}.run(arp, p, in, tr, 200000, 64));
-    CHECK(by.at(200.0f) == std::vector<int64_t>{0, 72000, 96000, 168000, 192000});
-    CHECK(by.at(300.0f) == std::vector<int64_t>{0, 36000, 72000, 96000, 132000, 168000, 192000});
-    CHECK(by.at(400.0f) == std::vector<int64_t>{0, 24000, 48000, 72000, 96000, 120000, 144000, 168000, 192000});
+    CHECK(by.at(200.0f) == std::vector<int64_t>{0, 96000, 192000});
+    CHECK(by.at(300.0f) == std::vector<int64_t>{0, 48000, 96000, 144000, 192000});
+    CHECK(by.at(400.0f) == std::vector<int64_t>{0, 32000, 64000, 96000, 128000, 160000, 192000});
   }
-  SUBCASE("Cycle Bars 2, stopped (the free clock from the note-on at 500)") {
-    p.pulseCycle = e::ArpPulseCycle::Bars;
-    p.pulseBars = 2;
+  SUBCASE("Cycle 2 bars, stopped (the free clock from the note-on at 500)") {
+    p.pulseCycleNum = 2;
     e::ArpCore arp;
     std::vector<Ev> late = in;
     for (Ev& x : late) x.t = 500;
     const auto by = onsetsByHz(Harness{}.run(arp, p, late, {}, 200500, 64));
-    CHECK(by.at(200.0f) == std::vector<int64_t>{500, 72500, 144500, 192500});
+    CHECK(by.at(200.0f) == std::vector<int64_t>{500, 192500});
+    CHECK(by.at(300.0f) == std::vector<int64_t>{500, 96500, 192500});
+    CHECK(by.at(400.0f) == std::vector<int64_t>{500, 64500, 128500, 192500});
   }
 }
 
-TEST_CASE("arp (AP.4): h from the harmonic, the proportion or the order") {
+TEST_CASE("arp (AR.3): the division from the harmonic (Auto) or the note's row") {
+  // AR.3 (rewritten: was "h from the harmonic, the proportion or the order" — Proportion / Order / Ref are gone).
   Transport tr;
   tr.playing = true;
   auto periods = [&](const e::ArpParams& p, const std::vector<Ev>& in) {
@@ -1620,50 +1694,46 @@ TEST_CASE("arp (AP.4): h from the harmonic, the proportion or the order") {
     }
     return r;
   };
-  e::ArpParams p = pulseParams(4);
-  SUBCASE("harmonic 4:5:6 (JI notes): Base * 4 / h") {
-    const auto r = periods(p, {{0, jiOn(1, 400.0f, 4.0f)}, {0, jiOn(2, 500.0f, 5.0f)}, {0, jiOn(3, 600.0f, 6.0f)}});
+  e::ArpParams p = pulseParams(1);
+  p.pulseDiv = {4, 5, 6, 2, 7, 8, 9, 3};
+  const std::vector<Ev> ji = {{0, jiOn(1, 400.0f, 8.0f)}, {0, jiOn(2, 500.0f, 10.0f)}, {0, jiOn(3, 600.0f, 12.0f)}};
+  SUBCASE("Auto: harmonics 8:10:12 are the divisions (96000 / h)") {
+    const auto r = periods(p, ji);
+    CHECK(r.at(400.0f) == 12000);
+    CHECK(r.at(500.0f) == 9600);
+    CHECK(r.at(600.0f) == 8000);
+    CHECK(e::arpPulseDiv(p, 8.0f, 0) == 8);
+    CHECK(e::arpPulseAuto(p, 8.0f));
+    CHECK_FALSE(e::arpPulseAuto(p, 0.0f));
+    CHECK(e::arpPulseDiv(p, 5000.0f, 0) == e::kArpMaxPulseHarmonic);
+  }
+  SUBCASE("Auto off: the same notes use their rows (4, 5, 6 by Hz rank)") {
+    p.pulseAuto = false;
+    const auto r = periods(p, ji);
     CHECK(r.at(400.0f) == 24000);
     CHECK(r.at(500.0f) == 19200);
     CHECK(r.at(600.0f) == 16000);
   }
-  const std::vector<Ev> plain = {{0, on(1, 300.0f)}, {0, on(2, 200.0f)}, {0, on(3, 250.0f)}};
-  SUBCASE("proportion 4:5:6 by Hz rank (also the Harmonic source's fallback for notes without a group)") {
-    p.proportionLen = 3;
-    p.proportion[0] = 4;
-    p.proportion[1] = 5;
-    p.proportion[2] = 6;
-    for (auto src : {e::ArpPulseSource::Proportion, e::ArpPulseSource::Harmonic}) {
-      p.pulseSource = src;
-      const auto r = periods(p, plain);
-      CHECK(r.at(200.0f) == 24000);
-      CHECK(r.at(250.0f) == 19200);
-      CHECK(r.at(300.0f) == 16000);
-    }
-    // beyond its length the proportion repeats doubled: 2:3, then 4
-    p.proportionLen = 2;
-    p.proportion[0] = 2;
-    p.proportion[1] = 3;
-    const auto r = periods(p, plain);
-    CHECK(r.at(200.0f) == 24000);
-    CHECK(r.at(250.0f) == 16000);
-    CHECK(r.at(300.0f) == 12000);
+  SUBCASE("Auto: a note without a harmonic uses its row; rows are by Hz, not arrival") {
+    const auto r = periods(p, {{0, on(1, 300.0f)}, {0, on(2, 200.0f)}, {0, jiOn(3, 250.0f, 12.0f)}});
+    CHECK(r.at(200.0f) == 24000);  // row 0: 4
+    CHECK(r.at(250.0f) == 8000);   // its harmonic 12 (row 1's 5 does not apply)
+    CHECK(r.at(300.0f) == 16000);  // row 2: 6
   }
-  SUBCASE("order: 1, 2, 3 (also Proportion with no proportion)") {
-    for (auto src : {e::ArpPulseSource::Order, e::ArpPulseSource::Proportion}) {
-      p.pulseSource = src;
-      const auto r = periods(p, plain);
-      CHECK(r.at(200.0f) == 24000);
-      CHECK(r.at(250.0f) == 12000);
-      CHECK(r.at(300.0f) == 8000);
-    }
+  SUBCASE("beyond 8 notes the rows repeat") {
+    std::vector<Ev> nine;
+    for (uint32_t i = 0; i < 9; ++i) nine.push_back({0, on(i + 1, 100.0f + 10.0f * static_cast<float>(i))});
+    const auto r = periods(p, nine);
+    CHECK(r.at(100.0f) == 24000);
+    CHECK(r.at(170.0f) == 32000);  // row 7: 3
+    CHECK(r.at(180.0f) == 24000);  // the 9th note: row 0 again
   }
 }
 
 TEST_CASE("arp (AP.4): layers at (p/q)^L with exact ratio / harmonic and their own levels; Steps; Into per clock") {
   Transport tr;
   tr.playing = true;
-  e::ArpParams p = pulseParams(4);
+  e::ArpParams p = pulseParams();
   p.layers = 2;
   p.ratioP = 3;
   p.ratioQ = 2;
@@ -1702,7 +1772,7 @@ TEST_CASE("arp (AP.4): layers at (p/q)^L with exact ratio / harmonic and their o
 
   // Steps 2, Distance 12 (Degrees, 12-EDO): pulse j of the cycle plays copy j mod 2; Into Step glides from the same
   // clock's previous pulse.
-  e::ArpParams q = pulseParams(4);
+  e::ArpParams q = pulseParams();
   q.steps = 2;
   q.distance = 12;
   q.into.step = true;
@@ -1726,7 +1796,7 @@ TEST_CASE("arp (AP.4): layers at (p/q)^L with exact ratio / harmonic and their o
 }
 
 TEST_CASE("arp (AP.4): notes added / released mid-cycle; the first pulse of a new clock sounds at its note-on") {
-  e::ArpParams p = pulseParams(4);
+  e::ArpParams p = pulseParams();
   Transport tr;
   tr.playing = true;
   std::vector<Ev> in = {{0, jiOn(8, 800.0f, 8.0f)},
@@ -1745,15 +1815,12 @@ TEST_CASE("arp (AP.4): notes added / released mid-cycle; the first pulse of a ne
     CHECK(by.at(800.0f) == std::vector<int64_t>{0, 24000, 48000, 72000, 96000, 120000, 144000});
     // 12: every 16000 until 100000
     CHECK(by.at(1200.0f) == std::vector<int64_t>{0, 16000, 32000, 48000, 64000, 80000, 96000});
-    // 10: at its note-on (50000, between its grid onsets 38400 / 57600), ended at 57600; then every 19200; once 8
-    // is released h_ref = 10: every 24000 on the new cycle (240000) grid
+    // 10: at its note-on (50000, between its grid onsets 38400 / 57600), ended at 57600; then every 19200. AR.3
+    // (rewritten: there is no h_ref, so releasing 8 no longer re-times it): it stays on that grid to the end.
     const auto& ten = by.at(1000.0f);
-    REQUIRE(ten.size() >= 9);
+    REQUIRE(ten.size() == 10);
     CHECK(ten[0] == 50000);
-    for (size_t i = 1; i <= 5; ++i) CHECK(ten[i] == 57600 + 19200 * static_cast<int64_t>(i - 1));
-    CHECK(ten[6] == 168000);
-    CHECK(ten[7] == 192000);
-    CHECK(ten[8] == 216000);
+    for (size_t i = 1; i <= 9; ++i) CHECK(ten[i] == 57600 + 19200 * static_cast<int64_t>(i - 1));
     const auto offs = offsById(out);
     for (const Ev& x : out)
       if (x.ev.kind == e::NoteEventKind::NoteOn && x.t == 50000) CHECK(offs.at(x.ev.noteId) == 57600);
@@ -1774,7 +1841,7 @@ TEST_CASE("arp (AP.4): pulse with hold; loop wrap and locate re-seek every clock
   Transport tr;
   tr.playing = true;
   SUBCASE("hold: released keys keep pulsing; a new chord replaces them") {
-    e::ArpParams p = pulseParams(4);
+    e::ArpParams p = pulseParams();
     p.hold = true;
     e::ArpCore arp;
     std::vector<Ev> in = {{0, jiOn(8, 800.0f, 8.0f)}, {0, jiOn(12, 1200.0f, 12.0f)}, {1000, off(8)},
@@ -1782,15 +1849,16 @@ TEST_CASE("arp (AP.4): pulse with hold; loop wrap and locate re-seek every clock
     const auto by = onsetsByHz(Harness{}.run(arp, p, in, tr, 260000, 64));
     CHECK(by.at(800.0f).back() == 192000);
     CHECK(by.at(1200.0f).back() == 192000);
-    // 10 alone: h_ref 10, every 24000; its note-on (200000) is off that grid: at once, then 216000
-    CHECK(by.at(1000.0f) == std::vector<int64_t>{200000, 216000, 240000});
+    // 10 alone (AR.3, rewritten: its grid is the cycle's, 192000 + 19200 k, whatever else is held): its note-on
+    // (200000) is off that grid: at once, then 211200 …
+    CHECK(by.at(1000.0f) == std::vector<int64_t>{200000, 211200, 230400, 249600});
   }
   SUBCASE("loop [0, 120000): every clock restarts at the wrap; a locate seeks the first onsets after it") {
     tr.loopA = 0;
     tr.loopB = 120000;
     tr.locates = {{200000, 7777}};
     e::ArpCore arp;
-    const auto out = Harness{}.run(arp, pulseParams(4), chord8_9_10_12(), tr, 240000, 64);
+    const auto out = Harness{}.run(arp, pulseParams(), chord8_9_10_12(), tr, 240000, 64);
     const auto by = onsetsByHz(out);
     for (int64_t hh : kHs) {
       CAPTURE(hh);
@@ -1807,7 +1875,7 @@ TEST_CASE("arp (AP.4): pulse with hold; loop wrap and locate re-seek every clock
 }
 
 TEST_CASE("arp (AP.4): a 128-note held set pulses with bounded work; RtScope") {
-  e::ArpParams p = pulseParams(4);
+  e::ArpParams p = pulseParams();
   Transport tr;
   tr.playing = true;
   std::vector<Ev> in;
@@ -1818,7 +1886,7 @@ TEST_CASE("arp (AP.4): a 128-note held set pulses with bounded work; RtScope") {
   const auto out = h.run(arp, p, in, tr, 96000, 64);
   CHECK(h.rtViolations == 0);
   CHECK(arp.heldCount() == 128);
-  // h = 8 ... 135, h_ref 8: one bar is half the cycle: ceil(h / 2) pulses each
+  // h = 8 ... 135, a 2-bar cycle: one bar is half the cycle: ceil(h / 2) pulses each
   uint64_t want = 0;
   for (int64_t hh = 8; hh < 136; ++hh) want += static_cast<uint64_t>((hh + 1) / 2);
   CHECK(arp.stats().pulses == want);
@@ -1833,20 +1901,27 @@ TEST_CASE("arp (AP.4): pulse / layer params through setArpParam / sanitized; pul
   CHECK(p.layers == 0);
   e::setArpParam(p, e::ArpParamId::Pulse, 1.0f);
   CHECK(p.pulse);
-  e::setArpParam(p, e::ArpParamId::PulseSource, 2.0f);
-  CHECK(p.pulseSource == e::ArpPulseSource::Order);
-  e::setArpParam(p, e::ArpParamId::PulseRef, 5000.0f);
-  CHECK(p.pulseRef == e::kArpMaxPulseH);
-  e::setArpParam(p, e::ArpParamId::PulseCycle, 1.0f);
-  CHECK(p.pulseCycle == e::ArpPulseCycle::Bars);
-  e::setArpParam(p, e::ArpParamId::PulseBars, 99.0f);
-  CHECK(p.pulseBars == e::kArpMaxPulseBars);
-  e::setArpParam(p, e::ArpParamId::ProportionLen, 3.0f);
-  e::setArpParam(p, e::ArpParamId::Proportion1, 7.0f);
-  e::setArpParam(p, e::ArpParamId::Proportion8, 0.0f);
-  CHECK(p.proportionLen == 3);
-  CHECK(p.proportion[0] == 7);
-  CHECK(p.proportion[7] == 1);
+  CHECK(p.pulseAuto);
+  e::setArpParam(p, e::ArpParamId::PulseAuto, 0.0f);
+  CHECK_FALSE(p.pulseAuto);
+  e::setArpParam(p, e::ArpParamId::PulseCycleNum, 99.0f);
+  CHECK(p.pulseCycleNum == e::kArpMaxPulseBars);
+  e::setArpParam(p, e::ArpParamId::PulseCycleDen, 0.0f);
+  CHECK(p.pulseCycleDen == 1);
+  // AR.3: the rows — a division, a shift, and the mask's two 16-bit halves (exact through a float).
+  e::setArpParam(p, e::arpPulseRowId(e::ArpParamId::PulseDiv1, 7), 500.0f);
+  CHECK(p.pulseDiv[7] == e::kArpMaxPulseDiv);
+  e::setArpParam(p, e::arpPulseRowId(e::ArpParamId::PulseShift1, 2), 3.0f);
+  CHECK(e::sanitized(p).pulseShift[2] == e::kArpMaxPulseShift);
+  CHECK(p.pulseMask[3] == 0xFFFFFFFFu);
+  e::setArpParam(p, e::arpPulseRowId(e::ArpParamId::PulseMaskLo1, 3), static_cast<float>(0xA5C3));
+  e::setArpParam(p, e::arpPulseRowId(e::ArpParamId::PulseMaskHi1, 3), static_cast<float>(0x8001));
+  CHECK(p.pulseMask[3] == 0x8001A5C3u);
+  CHECK(p.pulseMask[2] == 0xFFFFFFFFu);
+  CHECK(std::string(e::arpParamInfo(e::arpPulseRowId(e::ArpParamId::PulseMaskHi1, 7)).name) == "pulseMaskHi8");
+  CHECK_FALSE(e::arpParamInfo(e::ArpParamId::PulseMaskLo1).runtime);  // structural: a change republishes the chain
+  CHECK(e::arpParamInfo(e::ArpParamId::PulseDiv1).runtime);
+  CHECK(e::arpParamInfo(e::arpPulseRowId(e::ArpParamId::PulseDiv1, 1)).def == 4.0f);
   e::setArpParam(p, e::ArpParamId::Layers, 9.0f);
   CHECK(p.layers == e::kArpMaxLayers);
   e::setArpParam(p, e::ArpParamId::LayerLevel3, 2.0f);
@@ -1856,7 +1931,7 @@ TEST_CASE("arp (AP.4): pulse / layer params through setArpParam / sanitized; pul
 TEST_CASE("arp (AP.4): Out -> Step aims at the same clock's next pulse (its copy; copy 0 after the cycle's end)") {
   Transport tr;
   tr.playing = true;
-  e::ArpParams q = pulseParams(4);
+  e::ArpParams q = pulseParams();
   q.steps = 2;
   q.distance = 12;
   q.out.step = true;
@@ -1874,11 +1949,13 @@ TEST_CASE("arp (AP.4): Out -> Step aims at the same clock's next pulse (its copy
   }
 }
 
-TEST_CASE("arp (AP.4): Pulse and h_ref as runtime params (ArpStage::map) switch at a block start") {
-  e::ArpParams base = pulseParams(4);
+TEST_CASE("arp (AP.4, AR.3): Pulse and the Cycle as runtime params (ArpStage::map) switch at a block start") {
+  // AR.3 (rewritten: h_ref is gone; the Cycle's num is the runtime param that re-times the clocks).
+  e::ArpParams base = pulseParams(2);
   base.pulse = false;
-  e::ArpStage st(base, {{e::ArpParamId::Pulse, 0}, {e::ArpParamId::PulseRef, 1}});
-  float params[2] = {0.0f, 0.0f};
+  base.rate = {true, 1, 4, 1, 1, 100.0f};
+  e::ArpStage st(base, {{e::ArpParamId::Pulse, 0}, {e::ArpParamId::PulseCycleNum, 1}});
+  float params[2] = {0.0f, 2.0f};
   pq::TempoMap tempo;
   e::EventBuffer in(64), out(256);
   in.push(jiOn(1, 800.0f, 8.0f));
@@ -1886,7 +1963,7 @@ TEST_CASE("arp (AP.4): Pulse and h_ref as runtime params (ArpStage::map) switch 
   std::map<float, std::vector<int64_t>> by;
   for (int64_t T = 0; T < 192000; T += 64) {
     if (T == 48000) params[0] = 1.0f;   // pulse on
-    if (T == 96000) params[1] = 12.0f;  // h_ref 12: the 12 clock pulses every 24000, the 8 one every 36000
+    if (T == 96000) params[1] = 1.0f;   // a 1-bar cycle: the 8 clock every 12000, the 12 one every 8000
     e::ClockSegment seg{0, 64, true, T};
     e::NoteStageBlock b;
     b.time = T;
@@ -1901,7 +1978,11 @@ TEST_CASE("arp (AP.4): Pulse and h_ref as runtime params (ArpStage::map) switch 
     for (uint32_t i = 0; i < out.size(); ++i)
       if (out.list().events[i].kind == e::NoteEventKind::NoteOn) by[out.list().events[i].hz].push_back(T + out.list().events[i].frame);
   }
-  // pattern mode first (Up at 1/4: 800, 1200 alternating), then pulse from 48000 on the cycle grid
-  CHECK(by.at(800.0f) == std::vector<int64_t>{0, 48000, 72000, 108000, 144000, 180000});
-  CHECK(by.at(1200.0f) == std::vector<int64_t>{24000, 48000, 64000, 80000, 96000, 120000, 144000, 168000});
+  // pattern mode first (Up at 1/4: 800, 1200 alternating), then pulse from 48000 on the 2-bar cycle's grid (every
+  // 24000 / 16000), from 96000 on the 1-bar cycle's
+  std::vector<int64_t> a = {0, 48000, 72000}, b12 = {24000, 48000, 64000, 80000};
+  for (int64_t k = 0; k < 8; ++k) a.push_back(96000 + 12000 * k);
+  for (int64_t k = 0; k < 12; ++k) b12.push_back(96000 + 8000 * k);
+  CHECK(by.at(800.0f) == a);
+  CHECK(by.at(1200.0f) == b12);
 }

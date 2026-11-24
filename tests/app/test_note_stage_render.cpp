@@ -197,16 +197,16 @@ TEST_CASE("note stage render (AP.7): the offline render equals the engine's even
     r.param("ratioQ", 2.0);
     checkConfig(r);
   }
-  SUBCASE("Pulse 8:9:10:12 (Proportion), Steps 2 by a Ratio") {
+  SUBCASE("Pulse 8:9:10:12 (rows; AR.3: one masked, one shifted), Steps 2 by a Ratio") {
     Rig r({0, 4, 7, 10});
     r.param("pulse", 1.0);
-    r.param("pulseSource", static_cast<double>(engine::ArpPulseSource::Proportion));
-    r.param("proportionLen", 4.0);
-    r.param("proportion1", 8.0);
-    r.param("proportion2", 9.0);
-    r.param("proportion3", 10.0);
-    r.param("proportion4", 12.0);
-    r.param("rateDen", 4.0);
+    r.param("pulseDiv1", 8.0);
+    r.param("pulseDiv2", 9.0);
+    r.param("pulseDiv3", 10.0);
+    r.param("pulseDiv4", 12.0);
+    r.setting("pulseMaskLo2", static_cast<double>(0x5A5A));
+    r.setting("pulseMaskHi2", static_cast<double>(0x00FF));
+    r.param("pulseShift3", 0.25);
     r.param("unit", static_cast<double>(engine::ArpUnit::Ratio));
     r.param("steps", 2.0);
     checkConfig(r);

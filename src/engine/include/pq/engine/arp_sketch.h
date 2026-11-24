@@ -9,7 +9,7 @@
 // (what the live status lights). Not RT code (allocates); deterministic: the same inputs give the same sketch.
 //
 //   cycle       pattern mode: the period × Steps (Chord Trigger: Steps; Random: the n elements × Steps); Pulse: the
-//               Cycle in Base periods (ArpCore::cycleSteps); at most maxSteps (longer: the first maxSteps, truncated).
+//               Cycle in Rate periods (ArpCore::cycleSteps); at most maxSteps (longer: the first maxSteps, truncated).
 //   Repeats     a finite Repeats that ends inside the cycle ends the sketch there (nothing more plays).
 //   Chance      drawn as playback draws it (seed, grid step index of the free clock).
 // Cost: O(steps × notes) events; a typical 16-step cycle is ~600 blocks of a few compares each (well under a ms).
@@ -38,7 +38,7 @@ struct ArpSketchHeld {
 struct ArpSketchConfig {
   double sampleRate = 4800.0;  // the sketch's resolution (0.2 ms)
   double bpm = 120.0;          // the free clock's tempo (synced rates)
-  double beatsPerBar = 4.0;    // the bar a Bars pulse cycle counts
+  double beatsPerBar = 4.0;    // the bar a pulse Cycle counts (quarter notes)
   uint32_t maxSteps = 64;
   uint32_t blockFrames = 32;
 };

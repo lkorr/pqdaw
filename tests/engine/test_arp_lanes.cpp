@@ -332,11 +332,12 @@ TEST_CASE("arp lanes (AP.5): Chance is deterministic, block-size invariant and s
 TEST_CASE("arp lanes (AP.5): Pulse mode reads the lanes per note (its own pulse count)") {
   e::ArpParams p = base(4);
   p.pulse = true;
-  p.pulseRef = 0;  // h_ref = the lowest held (AP.8a: no longer the default)
+  p.pulseCycleNum = 1;  // AR.3: a half-bar cycle (48000), harmonics 2 and 3 its divisions
+  p.pulseCycleDen = 2;
   lane(p, e::ArpLane::Velocity, 2);
   e::ArpStage st(p, {}, {}, values(e::ArpLane::Velocity, {1.0f, 0.5f}));
   Rig r;
-  // h 2 and 3, h_ref = 2: periods 24000 and 16000, cycle 48000.
+  // h 2 and 3: periods 24000 and 16000, cycle 48000.
   const auto o = ons(r.run(st, {{0, jiOn(1, 200.0f, 2.0f)}, {0, jiOn(2, 300.0f, 3.0f)}}, 4 * kQ, 64));
   std::map<float, std::vector<std::pair<int64_t, float>>> by;
   for (const Ev& x : o) by[x.ev.hz].push_back({x.t, x.ev.velocity});
@@ -396,29 +397,40 @@ TEST_CASE("arp lanes (AP.5): param table rows, setArpParam / setArpLaneStep / sa
   CHECK(e::sanitized(p).laneLength[0] == 1);
 }
 
-TEST_CASE("arp (AP.2b): Pulse Cycle bars follow the time signature (3/4, 7/8, a change 4/4 -> 3/4)") {
-  // One clock (Order: h = 1, h_ref 1) at a half note (48000): restarts at every bar line.
-  auto onsets = [](std::vector<pq::TimeSigChange> changes, int64_t total) {
+TEST_CASE("arp (AP.2b, AR.3): the pulse Cycle follows the time signature (3/4, 7/8, a change 4/4 -> 3/4)") {
+  // AR.3 (rewritten: a cycle is num / den bars cut into the row's division — no fixed period restarting at the bar).
+  // One clock (a plain note: row 0, division `div`), Cycle num / den bars.
+  auto onsets = [](std::vector<pq::TimeSigChange> changes, int64_t total, int32_t div = 2, int32_t num = 1, int32_t den = 1) {
     auto sm = pq::TimeSigMap::create(changes);
     REQUIRE(sm.ok());
     e::ArpParams p = base(2);
     p.pulse = true;
-    p.pulseSource = e::ArpPulseSource::Order;
-    p.pulseRef = 1;
-    p.pulseCycle = e::ArpPulseCycle::Bars;
-    p.pulseBars = 1;
-    e::ArpStage st(p);
-    Rig r;
-    r.sig = &sm.value();
-    std::vector<int64_t> t;
-    for (const Ev& x : ons(r.run(st, {{0, on(1, 440.0f)}}, total, 64))) t.push_back(x.t);
-    CHECK(r.rtViolations == 0);
-    return t;
+    p.pulseDiv[0] = div;
+    p.pulseCycleNum = num;
+    p.pulseCycleDen = den;
+    std::vector<int64_t> ref;
+    for (uint32_t block : {64u, 37u}) {
+      e::ArpStage st(p);
+      Rig r;
+      r.sig = &sm.value();
+      std::vector<int64_t> t;
+      for (const Ev& x : ons(r.run(st, {{0, on(1, 440.0f)}}, total, block))) t.push_back(x.t);
+      CHECK(r.rtViolations == 0);
+      if (block == 64u) ref = t;
+      else CHECK(t == ref);
+    }
+    return ref;
   };
-  CHECK(onsets({{0, {3, 4}}}, 150000) == std::vector<int64_t>{0, 48000, 72000, 120000, 144000});
-  CHECK(onsets({{0, {7, 8}}}, 170000) == std::vector<int64_t>{0, 48000, 84000, 132000, 168000});
-  CHECK(onsets({{0, {4, 4}}, {1, {3, 4}}}, 170000) == std::vector<int64_t>{0, 48000, 96000, 144000, 168000});
+  CHECK(onsets({{0, {3, 4}}}, 150000) == std::vector<int64_t>{0, 36000, 72000, 108000, 144000});
+  CHECK(onsets({{0, {7, 8}}}, 170000) == std::vector<int64_t>{0, 42000, 84000, 126000, 168000});
+  CHECK(onsets({{0, {4, 4}}, {1, {3, 4}}}, 170000) == std::vector<int64_t>{0, 48000, 96000, 132000, 168000});
   CHECK(onsets({{0, {4, 4}}}, 150000) == std::vector<int64_t>{0, 48000, 96000, 144000});
+  // A fractional cycle is that fraction of ITS bar: half bars of 4/4 then 3/4; 3/2 bars across the change (bar
+  // positions 0, 1.5, 3: 0, 96000 + 36000, 96000 + 2 * 72000).
+  CHECK(onsets({{0, {4, 4}}, {1, {3, 4}}}, 170000, 1, 1, 2) == std::vector<int64_t>{0, 48000, 96000, 132000, 168000});
+  CHECK(onsets({{0, {4, 4}}, {1, {3, 4}}}, 250000, 1, 3, 2) == std::vector<int64_t>{0, 132000, 240000});
+  CHECK(onsets({{0, {4, 4}}, {1, {3, 4}}}, 250000, 3, 3, 2) ==
+        std::vector<int64_t>{0, 44000, 88000, 132000, 168000, 204000, 240000});
 }
 
 TEST_CASE("arp (AP.2b): a new degree table reaches a running core: same grid, sounding steps retune at once") {

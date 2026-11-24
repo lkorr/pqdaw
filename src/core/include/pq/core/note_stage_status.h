@@ -14,6 +14,9 @@
 //                 step: Chord Trigger).
 //                 AP.10: with it the HELD NOTES themselves (by Hz, the first kHeld): each note-on's identity, so the
 //                 panel can sketch the whole resolved cycle over what is held (pq/engine/arp_sketch.h).
+//   pulse fields  AR.3 (the arpeggiator's Pulse mode): written at every pulse a held note's clock plays or rests — the
+//                 pulse index in its cycle per ROW (the note's rank by Hz; −1: none yet) and the
+//                 pulse's place in the cycle (0 … 1: the pulse view's playhead). Relaxed stores, three per pulse.
 //   idle          held 0, the list empty, every position −1.
 //
 // RT-safe writer (noexcept, no allocation, no waiting); a reader never blocks the writer. Fixed size (≈ 1 KB).
@@ -41,6 +44,10 @@ struct alignas(kHotLineSeparation) NoteStageStatus {
   std::atomic<int32_t> position{-1};
   std::atomic<int32_t> copy{0};
   std::atomic<uint64_t> steps{0};
+  // ---- pulse fields (AR.3) ----
+  static constexpr uint32_t kPulseRows = 16;  // rows carried (the held notes by Hz: kHeld)
+  std::atomic<int32_t> pulse[kPulseRows] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
+  std::atomic<float> pulsePhase{-1.0f};  // the last pulse's place in the cycle (−1: none)
   // ---- the pattern (seqlock) ----
   std::atomic<uint32_t> seq{0};
   std::atomic<uint32_t> count{0};
@@ -60,6 +67,12 @@ struct alignas(kHotLineSeparation) NoteStageStatus {
     copy.store(cp, std::memory_order_relaxed);
     steps.store(steps.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
     bump();
+  }
+  // AR.3: one pulse of row `row` (rows ≥ kPulseRows: only the phase): its index in the cycle and its place in it.
+  // Call before the pulse's writeStep (which moves the serial).
+  void writePulse(uint32_t row, int32_t index, float phase) noexcept {
+    if (row < kPulseRows) pulse[row].store(index, std::memory_order_relaxed);
+    pulsePhase.store(phase, std::memory_order_relaxed);
   }
   // The pattern: `num` entries (clamped to kNotes) from `at(i)` → Hz; AP.10: `nh` held notes (clamped to kHeld) from
   // `heldAt(i)` → HeldNote.
@@ -90,6 +103,8 @@ struct alignas(kHotLineSeparation) NoteStageStatus {
   // Idle: nothing held, nothing playing.
   void writeIdle() noexcept {
     for (std::atomic<int32_t>& l : lane) l.store(-1, std::memory_order_relaxed);
+    for (std::atomic<int32_t>& x : pulse) x.store(-1, std::memory_order_relaxed);
+    pulsePhase.store(-1.0f, std::memory_order_relaxed);
     position.store(-1, std::memory_order_relaxed);
     writePattern(0, 0, false, [](uint32_t) { return 0.0f; });
   }

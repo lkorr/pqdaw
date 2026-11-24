@@ -47,6 +47,9 @@
 //   arpbend     the BEND VIEW, the editor of a note device's glides (AR.2; doc::noteGlideView): one step's note large
 //               between ghosts of its neighbours; drag its head / tail (offset, time, onto a ghost), a knee (time), a
 //               curve's middle (curve) — one undo step per drag. The curves: doc::noteRampShape (the voice's).
+//   arppulse    the PULSE VIEW, the editor of a note device's polyrhythm (AR.3; doc::notePulseView): a row per held
+//               note, a dot per pulse of the Cycle — click a dot (mute), drag a row (its division), Shift+drag (its
+//               shift), its menu (Euclid, Rotate, Invert); the status lights each row's last pulse and a playhead.
 //
 // Cost: the status is read only by an element that is painted (a fold that hides it reads nothing): per host frame tick
 // while the transport plays or the stage holds notes, a few relaxed loads; the pattern list is copied only when the
@@ -1894,6 +1897,513 @@ private:
   glide::Drag drag_;
 };
 
+// ---- arppulse -------------------------------------------------------------------------------------------------------
+
+// AR.3: the PULSE VIEW, the editor of a note device's Pulse mode (pq/engine/arp.h "Pulse mode"; doc::notePulseView): the
+// polyrhythm drawn — one ROW per held note (the lowest at the bottom; the held set from the status as the pattern view
+// reads it, nothing held: the last set seen; at least 4 rows, the ones without a note dimmed: what a note added there
+// would play), the Cycle across, a DOT per pulse (filled: it plays, a ring: muted), the cycle's beats as faint lines,
+// onsets that coincide across rows joined, and while the stage plays each row's last pulse lit and a playhead at its
+// place in the cycle (NoteStageStatus pulse fields). The rows are what you edit:
+//   click a dot          mutes / unmutes that pulse (the row's mask: a setting, one undo step)
+//   drag a row sideways  its division (÷1 … ÷64; the wheel: a step) — a row whose note Auto clocks by its JI harmonic
+//                        ("h9") is locked
+//   Shift+drag           its shift, of its own period (snapped to 1/24; Alt: free)
+//   ⋯ / right-click      Euclid k of n, Rotate, Invert, All on, Reset
+// One undo step per gesture. Slot 0 the device (Data), then Auto, the Cycle's num / den, and per row its division,
+// shift, mask lo, mask hi (kPulseSlots). Recomputed only when its inputs moved (the device, its bound values, the
+// held set); the status is read only while it is painted or ticking.
+constexpr std::array<std::string_view, 5> kPulseSlots = {"device", "auto", "cycle num", "cycle den", "rows"};
+
+class PulseView final : public Element {
+public:
+  using Element::Element;
+  enum Slot : size_t { kDevice, kAuto, kCycleNum, kCycleDen, kFirstRow };
+  enum RowSlot : size_t { kDiv, kShift, kMaskLo, kMaskHi, kPerRow };
+  static constexpr StyleSpec kStyle[] = {
+      {"colour", StyleSpec::Type::Token, 0, "value"},
+  };
+  uint32_t staticLayerCount() const noexcept override { return 1; }
+  Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return th.device.display; }
+  void paintStatic(ui::FacePainter& p, uint32_t) const override {
+    p.roundedRect({0.0f, 0.0f, desc_.w, desc_.h}, 4.0f, ui::rgba(255, 255, 255));
+  }
+  void paintGhost(ui::FacePainter&, const ElementEnv&) override {}
+  void paintLive(ui::FacePainter& p, const ElementEnv& env) override {
+    const ui::Theme& th = *env.theme;
+    const Rgba accent = colour(th, "colour", "value", th.face.value), ink = th.device.displayText;
+    if (env.target != nullptr) {
+      if (const NoteStageStatus* st = status_.get(*env.target, binding(kDevice))) (void)read(*st);
+      ensure(*env.target);
+    }
+    if (!view_.valid || view_.rows.empty()) {
+      p.text({desc_.w * 0.5f, desc_.h * 0.5f}, "No pulse rows", 7.5f, ink);
+      return;
+    }
+    const Rect r = plot();
+    const auto rows = static_cast<int32_t>(view_.rows.size());
+    const float W = r.x1 - r.x0;
+    // The cycle's beats (quarter notes of a 4/4 bar; bars stronger), its start and end.
+    const double beats = 4.0 * view_.cycleNum / view_.cycleDen;
+    if (beats <= 64.0)
+      for (int k = 1; static_cast<double>(k) < beats - 1e-9; ++k) {
+        const float x = r.x0 + static_cast<float>(k / beats) * W;
+        p.line({x, r.y0}, {x, r.y1}, 0.5f, k % 4 == 0 ? th.device.displayGridMajor : ui::mulAlpha(th.device.displayGrid, 0.7f));
+      }
+    p.line({r.x0, r.y0}, {r.x0, r.y1}, 0.8f, th.device.displayGridMajor);
+    p.line({r.x1, r.y0}, {r.x1, r.y1}, 0.8f, th.device.displayGridMajor);
+    const bool live = held_ > 0;
+    const int32_t hotRow = mode_ != Mode::None ? pressRow_ : (wheel_ ? wheelRow_ : hoverRow_);
+    // Coinciding onsets: a line through the rows that play together there.
+    for (const Link& l : links_) {
+      const float x = r.x0 + l.x * W;
+      p.line({x, rowY(l.lo)}, {x, rowY(l.hi)}, 1.0f, ui::mulAlpha(accent, 0.3f));
+    }
+    for (int32_t i = 0; i < rows; ++i) {
+      const doc::NotePulseRow& row = view_.rows[static_cast<size_t>(i)];
+      const float y = rowY(i);
+      const bool hot = i == hotRow;
+      const float a = row.held || !live ? (row.held ? 1.0f : 0.6f) : 0.4f;  // (a row without a note: dimmed)
+      p.line({r.x0, y}, {r.x1, y}, 0.5f, ui::mulAlpha(th.device.displayGrid, hot ? 1.0f : 0.6f));
+      char s[24];
+      if (row.locked) std::snprintf(s, sizeof s, "h%d", row.division);
+      else std::snprintf(s, sizeof s, "\xC3\xB7%d", row.division);  // ÷
+      p.textAligned({r.x0 - 6.0f, y}, s, 7.5f, hot ? th.face.signal : ui::mulAlpha(ink, std::max(a, 0.75f)), 1.0f);
+      const int32_t n = row.division;
+      const float rad = dotRadius(i);
+      if (W / static_cast<float>(n) < 2.5f) {  // too dense to tell apart (a high harmonic): a band
+        p.roundedRect({r.x0, y - 2.0f, r.x1, y + 2.0f}, 1.0f, ui::mulAlpha(accent, 0.5f * a));
+      } else {
+        const int32_t lit = live && static_cast<uint32_t>(i) < NoteStageStatus::kPulseRows ? lit_[static_cast<size_t>(i)] : -1;
+        for (int32_t j = 0; j < n; ++j) {
+          const Vec2 c{dotX(i, j), y};
+          const bool on = ((row.mask >> (static_cast<uint32_t>(j) & 31u)) & 1u) != 0;
+          if (j == lit) {
+            p.beginGlow();
+            p.glow(c, rad + 6.0f, ui::mulAlpha(th.face.signal, on ? 0.45f : 0.2f));
+            p.endGlow();
+          }
+          if (on) p.disc(c, rad, j == lit ? th.face.signal : ui::mulAlpha(accent, a));
+          else p.ring(c, rad, 1.0f, ui::mulAlpha(j == lit ? th.face.signal : ink, 0.55f * a));
+          if (hot && j == hoverDot_ && mode_ == Mode::None) p.ring(c, rad + 2.0f, 1.0f, th.face.signal);
+        }
+      }
+      // The row's menu chip.
+      const Rect m = menuChip(i);
+      const bool mh = hoverMenu_ == i;
+      for (int k = -1; k <= 1; ++k)
+        p.disc({(m.x0 + m.x1) * 0.5f + 3.5f * static_cast<float>(k), y}, 1.0f, mh ? th.face.signal : ui::mulAlpha(ink, 0.7f));
+    }
+    if (live && phase_ >= 0.0f) {  // the playhead: the last pulse's place in the cycle
+      const float x = r.x0 + std::clamp(phase_, 0.0f, 1.0f) * W;
+      p.line({x, r.y0 - 2.0f}, {x, r.y1 + 2.0f}, 1.0f, ui::mulAlpha(th.face.signal, 0.8f));
+    }
+    // The readouts: the hot row, else what the view is.
+    std::string left;
+    if (hotRow >= 0 && hotRow < rows) left = rowText(hotRow);
+    else left = "Click a dot: mute \xC2\xB7 drag a row: its division \xC2\xB7 Shift+drag: its shift \xC2\xB7 right-click: Euclid, Rotate, Invert";
+    p.textAligned({r.x0, 8.0f}, left, 6.5f, hotRow >= 0 ? th.face.signal : ink, 0.0f);
+    char s[96];
+    if (live) std::snprintf(s, sizeof s, "%u held \xC2\xB7 cycle %d/%d bar", held_, view_.cycleNum, view_.cycleDen);
+    else
+      std::snprintf(s, sizeof s, "%s \xC2\xB7 cycle %d/%d bar", lastHeld_.empty() ? "hold notes: a row each, lowest at the bottom" : "last held",
+                    view_.cycleNum, view_.cycleDen);
+    p.textAligned({r.x1, 8.0f}, s, 6.5f, ink, 1.0f);
+  }
+  bool hit(Vec2 l) const noexcept override { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
+  bool interactive() const noexcept override { return true; }
+  bool dragging() const noexcept override { return mode_ != Mode::None; }
+  void cancelDrag(PanelTarget& t) override {
+    if (mode_ == Mode::Division || mode_ == Mode::Shift) t.cancel();
+    mode_ = Mode::None;
+  }
+  void endWheel(PanelTarget& t) override {
+    if (!wheel_) return;
+    wheel_ = false;
+    t.end();
+  }
+  ui::Cursor cursor() const noexcept override {
+    if (mode_ == Mode::Division || mode_ == Mode::Shift) return ui::Cursor::ResizeEW;
+    return hoverRow_ >= 0 || hoverMenu_ >= 0 ? ui::Cursor::Pointer : ui::Cursor::Inherit;
+  }
+  bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    using K = FacePointer::Kind;
+    if (e.kind == K::Leave) {
+      const bool changed = hoverRow_ >= 0 || hoverMenu_ >= 0;
+      hoverRow_ = hoverDot_ = hoverMenu_ = -1;
+      return changed;
+    }
+    if (mode_ == Mode::None) ensure(t);  // (a press finds the rows of the values now, painted or not)
+    if (e.kind == K::Wheel) return wheel(e, t);
+    if (e.kind == K::Move && mode_ == Mode::None) {
+      const int32_t m = menuAt(e.local), row = m >= 0 ? -1 : rowAt(e.local), dot = row >= 0 ? dotAt(row, e.local.x) : -1;
+      const bool changed = m != hoverMenu_ || row != hoverRow_ || dot != hoverDot_;
+      hoverMenu_ = m;
+      hoverRow_ = row;
+      hoverDot_ = dot;
+      return changed;
+    }
+    if (e.kind == K::Down) {
+      endWheel(t);
+      const int32_t m = menuAt(e.local), row = m >= 0 ? m : rowAt(e.local);
+      if (row < 0) return false;
+      if (e.button == ui::PointerButton::Right || (m >= 0 && e.button == ui::PointerButton::Left)) {
+        openMenu(t, row, e);
+        return true;
+      }
+      if (e.button != ui::PointerButton::Left) return false;
+      mode_ = Mode::Pending;
+      pressRow_ = row;
+      pressDot_ = dotAt(row, e.local.x);
+      press_ = e.local;
+      pressDev_ = e.device;
+      return true;
+    }
+    if (e.kind == K::Move) {
+      if (pressRow_ < 0 || static_cast<size_t>(pressRow_) >= view_.rows.size()) return false;
+      const doc::NotePulseRow& row = view_.rows[static_cast<size_t>(pressRow_)];
+      if (mode_ == Mode::Pending) {
+        if (std::fabs(e.device.x - pressDev_.x) <= 3.0f * std::max(e.uiScale, 1.0f)) return false;
+        const bool shift = (e.mods & ui::mod::kShift) != 0;
+        const doc::Binding* b = rowBinding(pressRow_, shift ? kShift : kDiv);
+        if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) {
+          mode_ = Mode::Locked;
+          return true;
+        }
+        if (!shift && row.locked) {  // Auto: the note's harmonic is its division
+          mode_ = Mode::Locked;
+          t.notice("Auto: this row pulses at its note's harmonic (switch Auto off to set its division)");
+          return true;
+        }
+        mode_ = shift ? Mode::Shift : Mode::Division;
+        startDiv_ = row.division;
+        startShift_ = row.shift;
+        t.begin(*b, shift ? "Pulse Shift" : "Pulse Division");
+      }
+      const float dx = e.local.x - press_.x;
+      if (mode_ == Mode::Division) {
+        const int32_t n = std::clamp(startDiv_ + static_cast<int32_t>(std::lround(dx / kDivPx)), 1, view_.maxDivision);
+        setUnits(t, rowBinding(pressRow_, kDiv), n);
+        return true;
+      }
+      if (mode_ == Mode::Shift) {  // the dots follow the pointer: a period is W / n wide
+        const Rect r = plot();
+        double s = startShift_ + static_cast<double>(dx) / ((r.x1 - r.x0) / static_cast<float>(std::max(startDiv_, 1)));
+        if ((e.mods & ui::mod::kAlt) == 0) s = std::round(s * 24.0) / 24.0;
+        setUnits(t, rowBinding(pressRow_, kShift), std::clamp(s, -view_.maxShift, view_.maxShift));
+        return true;
+      }
+      return mode_ == Mode::Locked;
+    }
+    if (e.kind == K::Up && mode_ != Mode::None) {
+      const Mode was = mode_;
+      mode_ = Mode::None;
+      if (was == Mode::Division || was == Mode::Shift) t.end();
+      else if (was == Mode::Pending && pressDot_ >= 0) toggle(t, pressRow_, pressDot_);
+      return true;
+    }
+    return false;
+  }
+  uint64_t liveKey(const PanelTarget& t) const override {
+    uint64_t h = hmix(hmix(0x50554C53ull, serial_), inputKey(t));
+    h = hmix(h, static_cast<uint64_t>(hoverRow_ + 1) | (static_cast<uint64_t>(hoverDot_ + 1) << 8) |
+                    (static_cast<uint64_t>(hoverMenu_ + 1) << 24) | (static_cast<uint64_t>(mode_) << 32) |
+                    (static_cast<uint64_t>(pressRow_ + 1) << 36) | (wheel_ ? 1ull << 44 : 0u));
+    return h == kAnyChange ? h - 1 : h;
+  }
+  bool frameTick(PanelTarget& t) override {
+    playing_ = t.transportPlaying();
+    const NoteStageStatus* st = status_.get(t, binding(kDevice));
+    return st != nullptr && read(*st);
+  }
+  bool ticking() const noexcept override { return status_.s != nullptr && (playing_ || held_ > 0); }
+  void describe(const PanelTarget&, std::string& title, std::string& body) const override {
+    title = "Pulse";
+    body = "The polyrhythm: a row per held note (lowest at the bottom), the Cycle across, a dot per pulse. Every row "
+           "cuts the Cycle into its division; with Auto a note of a JI chord pulses at its harmonic (h8, h9 \xE2\x80\xA6: "
+           "8 : 9 : 10 : 12 held is that polyrhythm), other notes at their row's division. Click a dot: mute / unmute "
+           "that pulse. Drag a row sideways (or the wheel): its division. Shift+drag: shift the whole row against the "
+           "others (offbeats, flams; Alt: free). Right-click a row (or the dots at its right end): Euclid k of n, Rotate, Invert, All on, "
+           "Reset. Lines join the pulses that land together; the lit dots and the playhead follow playback.";
+  }
+  // tests
+  const doc::NotePulseView& rows(const PanelTarget& t) {
+    ensure(t);
+    return view_;
+  }
+  std::optional<Vec2> dotPos(const PanelTarget& t, int32_t row, int32_t j) {
+    ensure(t);
+    if (row < 0 || static_cast<size_t>(row) >= view_.rows.size() || j < 0 || j >= view_.rows[static_cast<size_t>(row)].division)
+      return std::nullopt;
+    return Vec2{dotX(row, j), rowY(row)};
+  }
+  std::optional<Vec2> menuPos(const PanelTarget& t, int32_t row) {
+    ensure(t);
+    if (row < 0 || static_cast<size_t>(row) >= view_.rows.size()) return std::nullopt;
+    const Rect m = menuChip(row);
+    return Vec2{(m.x0 + m.x1) * 0.5f, (m.y0 + m.y1) * 0.5f};
+  }
+  int32_t litDot(int32_t row) const noexcept {
+    return held_ > 0 && row >= 0 && static_cast<uint32_t>(row) < NoteStageStatus::kPulseRows ? lit_[static_cast<size_t>(row)] : -1;
+  }
+  float playhead() const noexcept { return held_ > 0 ? phase_ : -1.0f; }
+  uint32_t linkCount() const noexcept { return static_cast<uint32_t>(links_.size()); }
+  uint64_t computes() const noexcept { return computes_; }
+
+private:
+  enum class Mode : uint8_t { None, Pending, Division, Shift, Locked };
+  struct Link {
+    float x;
+    int32_t lo, hi;
+  };
+  static constexpr float kDivPx = 12.0f;  // a division step of a row drag
+
+  Rect plot() const noexcept { return {40.0f, 18.0f, desc_.w - 22.0f, desc_.h - 4.0f}; }
+  float rowH() const noexcept {
+    const Rect r = plot();
+    return (r.y1 - r.y0) / static_cast<float>(std::max<size_t>(view_.rows.size(), 1));
+  }
+  float rowY(int32_t i) const noexcept { return plot().y1 - (static_cast<float>(i) + 0.5f) * rowH(); }
+  // Pulse j of row i in the cycle, 0 … 1 (its shift wraps round the cycle), and where it is drawn.
+  double dotPhase(int32_t i, int32_t j) const noexcept {
+    const doc::NotePulseRow& row = view_.rows[static_cast<size_t>(i)];
+    const double u = (static_cast<double>(j) + row.shift) / static_cast<double>(std::max(row.division, 1));
+    return u - std::floor(u);
+  }
+  float dotX(int32_t i, int32_t j) const noexcept {
+    const Rect r = plot();
+    return r.x0 + static_cast<float>(dotPhase(i, j)) * (r.x1 - r.x0);
+  }
+  float dotRadius(int32_t i) const noexcept {
+    const Rect r = plot();
+    const float gap = (r.x1 - r.x0) / static_cast<float>(std::max(view_.rows[static_cast<size_t>(i)].division, 1));
+    return std::clamp(std::min(gap * 0.36f, rowH() * 0.3f), 1.0f, 4.5f);
+  }
+  Rect menuChip(int32_t i) const noexcept {
+    const float y = rowY(i), h = std::min(rowH() * 0.5f, 7.0f);
+    return {desc_.w - 20.0f, y - h, desc_.w - 2.0f, y + h};
+  }
+  int32_t rowAt(Vec2 l) const noexcept {
+    const Rect r = plot();
+    if (view_.rows.empty() || l.y < r.y0 || l.y >= r.y1 || l.x < 0.0f || l.x > r.x1 + 2.0f) return -1;
+    const auto i = static_cast<int32_t>(std::floor((r.y1 - l.y) / rowH()));
+    return i >= 0 && static_cast<size_t>(i) < view_.rows.size() ? i : -1;
+  }
+  int32_t menuAt(Vec2 l) const noexcept {
+    for (size_t i = 0; i < view_.rows.size(); ++i) {
+      const Rect m = menuChip(static_cast<int32_t>(i));
+      if (l.x >= m.x0 && l.x <= m.x1 && l.y >= m.y0 - 1.0f && l.y <= m.y1 + 1.0f) return static_cast<int32_t>(i);
+    }
+    return -1;
+  }
+  // The dot of row i under x (−1: none): the nearest pulse, within reach.
+  int32_t dotAt(int32_t i, float x) const noexcept {
+    const Rect r = plot();
+    const doc::NotePulseRow& row = view_.rows[static_cast<size_t>(i)];
+    const int32_t n = std::max(row.division, 1);
+    const float W = r.x1 - r.x0;
+    if (W / static_cast<float>(n) < 2.5f || x < r.x0 - 6.0f || x > r.x1 + 6.0f) return -1;
+    const double u = static_cast<double>(x - r.x0) / W;
+    auto j = static_cast<int32_t>(std::lround(u * n - row.shift));
+    j = ((j % n) + n) % n;
+    float d = std::fabs(dotX(i, j) - x);
+    d = std::min(d, W - d);  // (across the cycle's edge)
+    return d <= std::max(dotRadius(i) + 2.0f, std::min(5.0f, W / static_cast<float>(n) * 0.5f)) ? j : -1;
+  }
+  const doc::Binding* rowBinding(int32_t row, RowSlot s) const noexcept {
+    return binding(kFirstRow + static_cast<size_t>(row % static_cast<int32_t>(doc::kNotePulseRows)) * kPerRow + s);
+  }
+  static void setUnits(PanelTarget& t, const doc::Binding* b, double v) {
+    if (b != nullptr && t.info(*b).valid) t.setPosition(*b, positionOf(t, *b, v));
+  }
+  std::string rowText(int32_t i) const {
+    const doc::NotePulseRow& row = view_.rows[static_cast<size_t>(i)];
+    int32_t on = 0;
+    for (int32_t j = 0; j < row.division; ++j) on += static_cast<int32_t>((row.mask >> (static_cast<uint32_t>(j) & 31u)) & 1u);
+    char s[128];
+    int k = row.locked ? std::snprintf(s, sizeof s, "Row %d \xC2\xB7 h%d (Auto)", i + 1, row.division)
+                       : std::snprintf(s, sizeof s, "Row %d \xC2\xB7 \xC3\xB7%d", i + 1, row.division);
+    if (on != row.division) k += std::snprintf(s + k, sizeof s - static_cast<size_t>(k), " \xC2\xB7 %d of %d play", on, row.division);
+    if (std::fabs(row.shift) > 1e-6)
+      k += std::snprintf(s + k, sizeof s - static_cast<size_t>(k), " \xC2\xB7 shift %+.0f %%", row.shift * 100.0);
+    if (!row.held && held_ > 0) std::snprintf(s + k, sizeof s - static_cast<size_t>(k), " \xC2\xB7 no note");
+    return s;
+  }
+  // The row's mask written (both halves: one undo step inside the caller's gesture, or one of its own).
+  static void writeMask(PanelTarget& t, const doc::Binding* lo, const doc::Binding* hi, uint32_t mask) {
+    setUnits(t, lo, static_cast<double>(mask & 0xFFFFu));
+    setUnits(t, hi, static_cast<double>(mask >> 16));
+  }
+  void toggle(PanelTarget& t, int32_t row, int32_t j) {
+    if (row < 0 || static_cast<size_t>(row) >= view_.rows.size()) return;
+    const uint32_t bit = static_cast<uint32_t>(j) & 31u;
+    const doc::Binding* b = rowBinding(row, bit < 16 ? kMaskLo : kMaskHi);
+    if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return;
+    const uint32_t mask = view_.rows[static_cast<size_t>(row)].mask ^ (1u << bit);
+    t.setOnce(*b, positionOf(t, *b, static_cast<double>(bit < 16 ? mask & 0xFFFFu : mask >> 16)), "Pulse Mute");
+  }
+  bool wheel(const FacePointer& e, PanelTarget& t) {
+    if (!e.valueGestures || mode_ != Mode::None || e.wheel.y == 0.0f) return false;
+    if ((e.mods & (ui::mod::kCtrl | ui::mod::kAlt | ui::mod::kSuper)) != 0) return false;
+    const int32_t row = rowAt(e.local);
+    if (row < 0) return false;
+    const doc::Binding* b = rowBinding(row, kDiv);
+    if (view_.rows[static_cast<size_t>(row)].locked || b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return true;
+    if (!wheel_ || wheelRow_ != row) {  // a new run: one gesture until the host ends it (endWheel)
+      endWheel(t);
+      wheel_ = true;
+      wheelRow_ = row;
+      wheelDiv_ = view_.rows[static_cast<size_t>(row)].division;
+      t.begin(*b, "Pulse Division");
+    }
+    wheelDiv_ = std::clamp(wheelDiv_ + (e.wheel.y > 0.0f ? 1 : -1), 1, view_.maxDivision);
+    setUnits(t, b, wheelDiv_);
+    return true;
+  }
+  void openMenu(PanelTarget& t, int32_t row, const FacePointer& e) {
+    ui::Widget* host = t.menuHost();
+    const doc::Binding *lo = rowBinding(row, kMaskLo), *hi = rowBinding(row, kMaskHi), *sh = rowBinding(row, kShift);
+    if (host == nullptr || lo == nullptr || hi == nullptr || sh == nullptr || !t.info(*lo).valid || !t.info(*lo).editable) return;
+    const doc::NotePulseRow r = view_.rows[static_cast<size_t>(row)];
+    const int32_t n = std::min(r.division, 32);
+    PanelTarget* target = &t;
+    const doc::Binding bl = *lo, bh = *hi, bs = *sh;
+    auto mask = [target, bl, bh](uint32_t m, const char* label) {
+      return [target, bl, bh, m, label] {
+        target->begin(bl, label);
+        writeMask(*target, &bl, &bh, m);
+        target->end();
+      };
+    };
+    // What plays of the first n pulses (the pattern a mask repeats).
+    auto same = [n](uint32_t a, uint32_t b) {
+      const uint32_t keep = n >= 32 ? 0xFFFFFFFFu : (1u << n) - 1u;
+      return (a & keep) == (b & keep);
+    };
+    std::vector<ui::MenuItem> euclid;
+    for (int32_t k = 1; k <= n; ++k) {
+      const uint32_t m = doc::notePulseEuclid(k, n);
+      ui::MenuItem it = ui::MenuItem::item(std::to_string(k) + " of " + std::to_string(n), mask(m, "Pulse Euclid"));
+      it.checked = same(m, r.mask);
+      euclid.push_back(std::move(it));
+    }
+    std::vector<ui::MenuItem> items;
+    items.push_back(ui::MenuItem::sub("Euclid", std::move(euclid)));
+    items.push_back(ui::MenuItem::item("Rotate Later", mask(doc::notePulseRotate(r.mask, n, 1), "Pulse Rotate")));
+    items.push_back(ui::MenuItem::item("Rotate Earlier", mask(doc::notePulseRotate(r.mask, n, -1), "Pulse Rotate")));
+    items.push_back(ui::MenuItem::item("Invert", mask(~r.mask, "Pulse Invert")));
+    items.push_back(ui::MenuItem::item("All On", mask(0xFFFFFFFFu, "Pulse All On")));
+    items.push_back(ui::MenuItem::sep());
+    items.push_back(ui::MenuItem::item("Reset Row (all on, no shift)", [target, bl, bh, bs] {
+      target->begin(bs, "Pulse Reset");
+      writeMask(*target, &bl, &bh, 0xFFFFFFFFu);
+      setUnits(*target, &bs, 0.0);
+      target->end();
+    }));
+    (void)ui::openContextMenu(*host, e.device, std::move(items));
+  }
+  // A key of everything the rows are made of: the device (any of its values), the bound values as the target shows
+  // them, the held set.
+  uint64_t inputKey(const PanelTarget& t) const {
+    const doc::Binding* b = binding(kDevice);
+    const doc::Project* pr = t.project();
+    if (b == nullptr || pr == nullptr) return 0;
+    uint64_t h = hmix(0xB7u, reinterpret_cast<uintptr_t>(doc::findDevice(*pr, b->device).device));
+    for (size_t s = kAuto; s < desc_.bindings.size(); ++s)
+      if (const doc::Binding* x = binding(s)) {
+        const double v = t.position(*x);
+        uint64_t bits = 0;
+        std::memcpy(&bits, &v, sizeof bits);
+        h = hmix(h, bits);
+      }
+    for (const doc::NotePatternHeld& n : lastHeld_) {
+      uint32_t bits[2] = {};
+      std::memcpy(&bits[0], &n.hz, 4);
+      std::memcpy(&bits[1], &n.harmonic, 4);
+      h = hmix(hmix(h, bits[0]), bits[1]);
+    }
+    return h;
+  }
+  void ensure(const PanelTarget& t) {
+    const uint64_t k = inputKey(t);
+    if (k == key_ && computes_ > 0) return;
+    key_ = k;
+    ++computes_;
+    const doc::Binding* b = binding(kDevice);
+    const doc::Project* pr = t.project();
+    view_ = b != nullptr && pr != nullptr ? doc::notePulseView(*pr, b->device, lastHeld_) : doc::NotePulseView{};
+    // The onsets that coincide across rows (rows too dense to draw: left out).
+    links_.clear();
+    struct On {
+      double x;
+      int32_t row;
+    };
+    std::vector<On> ons;
+    for (size_t i = 0; i < view_.rows.size(); ++i) {
+      const doc::NotePulseRow& row = view_.rows[i];
+      if (row.division > 128) continue;
+      for (int32_t j = 0; j < row.division; ++j)
+        if (((row.mask >> (static_cast<uint32_t>(j) & 31u)) & 1u) != 0) ons.push_back({dotPhase(static_cast<int32_t>(i), j), static_cast<int32_t>(i)});
+    }
+    std::sort(ons.begin(), ons.end(), [](const On& a, const On& c) { return a.x < c.x; });
+    for (size_t a = 0; a < ons.size();) {
+      size_t e = a + 1;
+      int32_t lo = ons[a].row, hi = ons[a].row;
+      while (e < ons.size() && ons[e].x - ons[a].x < 1e-6) {
+        lo = std::min(lo, ons[e].row);
+        hi = std::max(hi, ons[e].row);
+        ++e;
+      }
+      if (hi > lo) links_.push_back({static_cast<float>(ons[a].x), lo, hi});
+      a = e;
+    }
+  }
+  // A new status (its serial moved): the held set (the rows), each row's last pulse, the playhead.
+  bool read(const NoteStageStatus& st) {
+    const uint64_t s = st.serial.load(std::memory_order_acquire);
+    if (s == serial_) return false;
+    serial_ = s;
+    NoteStageStatus::Pattern p;
+    if (st.readPattern(p)) {
+      held_ = p.held;
+      if (p.heldCount > 0) {
+        lastHeld_.clear();
+        for (uint32_t i = 0; i < p.heldCount; ++i) {
+          const NoteStageStatus::HeldNote& n = p.heldNotes[i];
+          lastHeld_.push_back({n.hz, n.velocity, n.ratio, n.harmonic, n.degree, n.equave, n.tuning, n.noteDegree});
+        }
+      }
+    } else {
+      serial_ = 0;  // (a write was in progress: read again next tick)
+    }
+    for (uint32_t i = 0; i < NoteStageStatus::kPulseRows; ++i) lit_[i] = st.pulse[i].load(std::memory_order_relaxed);
+    phase_ = st.pulsePhase.load(std::memory_order_relaxed);
+    return true;
+  }
+
+  StatusRef status_;
+  uint64_t serial_ = 0;
+  uint32_t held_ = 0;
+  bool playing_ = false;
+  std::array<int32_t, NoteStageStatus::kPulseRows> lit_ = [] {
+    std::array<int32_t, NoteStageStatus::kPulseRows> a;
+    a.fill(-1);
+    return a;
+  }();
+  float phase_ = -1.0f;
+  std::vector<doc::NotePatternHeld> lastHeld_;
+  doc::NotePulseView view_;
+  std::vector<Link> links_;
+  uint64_t key_ = 0, computes_ = 0;
+  int32_t hoverRow_ = -1, hoverDot_ = -1, hoverMenu_ = -1;
+  Mode mode_ = Mode::None;
+  int32_t pressRow_ = -1, pressDot_ = -1, startDiv_ = 1;
+  double startShift_ = 0.0;
+  Vec2 press_{0.0f, 0.0f}, pressDev_{0.0f, 0.0f};
+  bool wheel_ = false;
+  int32_t wheelRow_ = -1, wheelDiv_ = 1;
+};
+
 template <class T>
 std::unique_ptr<Element> make(const doc::PanelElement& d) {
   return std::make_unique<T>(d);
@@ -1908,6 +2418,7 @@ void registerArpElements(void (*reg)(std::string_view, std::string_view, std::sp
   reg("steplane", "Step Lane", StepLane::kStyle, kLaneSlots, 600, 44, &make<StepLane>);
   reg("arppattern", "Pattern View", PatternView::kStyle, kPatternSlots, 160, 120, &make<PatternView>);
   reg("arpbend", "Bend View", BendView::kStyle, kBendSlots, 300, 110, &make<BendView>);
+  reg("arppulse", "Pulse View", PulseView::kStyle, kPulseSlots, 400, 120, &make<PulseView>);
 }
 
 namespace test {
@@ -1979,6 +2490,48 @@ std::optional<ui::Vec2> bendHandle(Element& e, const PanelTarget& t, int32_t h) 
 std::optional<ui::Vec2> patternNoteEnd(Element& e, const PanelTarget& t, uint32_t note, bool tail) {
   auto* s = dynamic_cast<PatternView*>(&e);
   return s != nullptr ? s->noteEnd(t, note, tail) : std::nullopt;
+}
+
+uint32_t pulseRows(Element& e, const PanelTarget& t) {
+  auto* s = dynamic_cast<PulseView*>(&e);
+  return s != nullptr ? static_cast<uint32_t>(s->rows(t).rows.size()) : 0;
+}
+
+PulseRow pulseRow(Element& e, const PanelTarget& t, uint32_t row) {
+  auto* s = dynamic_cast<PulseView*>(&e);
+  if (s == nullptr || row >= s->rows(t).rows.size()) return {};
+  const doc::NotePulseRow& r = s->rows(t).rows[row];
+  return {r.division, r.locked, r.held, r.mask, r.shift};
+}
+
+std::optional<ui::Vec2> pulseDot(Element& e, const PanelTarget& t, uint32_t row, int32_t j) {
+  auto* s = dynamic_cast<PulseView*>(&e);
+  return s != nullptr ? s->dotPos(t, static_cast<int32_t>(row), j) : std::nullopt;
+}
+
+std::optional<ui::Vec2> pulseMenu(Element& e, const PanelTarget& t, uint32_t row) {
+  auto* s = dynamic_cast<PulseView*>(&e);
+  return s != nullptr ? s->menuPos(t, static_cast<int32_t>(row)) : std::nullopt;
+}
+
+int32_t pulseLit(const Element& e, uint32_t row) {
+  const auto* s = dynamic_cast<const PulseView*>(&e);
+  return s != nullptr ? s->litDot(static_cast<int32_t>(row)) : -2;
+}
+
+float pulsePlayhead(const Element& e) {
+  const auto* s = dynamic_cast<const PulseView*>(&e);
+  return s != nullptr ? s->playhead() : -2.0f;
+}
+
+uint32_t pulseLinks(const Element& e) {
+  const auto* s = dynamic_cast<const PulseView*>(&e);
+  return s != nullptr ? s->linkCount() : 0;
+}
+
+uint64_t pulseComputes(const Element& e) {
+  const auto* s = dynamic_cast<const PulseView*>(&e);
+  return s != nullptr ? s->computes() : 0;
 }
 
 }  // namespace test

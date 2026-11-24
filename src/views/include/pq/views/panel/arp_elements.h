@@ -1,6 +1,6 @@
 #pragma once
 
-// AP.6: the arpeggiator panel's element kinds (arp_elements.cpp: presets, steplane, arppattern, arpbend; the kinds
+// AP.6: the arpeggiator panel's element kinds (arp_elements.cpp: presets, steplane, arppattern, arpbend, arppulse; the kinds
 // register with the generic ones, pq/views/panel/element.h). What tests read of them. UI thread only.
 
 #include <cstdint>
@@ -34,5 +34,25 @@ std::optional<ui::Vec2> bendHandle(Element& e, const PanelTarget& t, int32_t h);
 // AR.2: resolved note `note` of an arppattern (resolved from target `t` now): its head (or tail) as drawn,
 // element-local; nullopt: none.
 std::optional<ui::Vec2> patternNoteEnd(Element& e, const PanelTarget& t, uint32_t note, bool tail);
+
+// AR.3: an arppulse's rows as it draws them from target `t` now (0: not one) — row `row`'s division, whether Auto
+// locks it to its note's harmonic, whether a note is held on it, its mask and shift —, pulse `j`'s dot and the row's
+// menu chip (element-local; nullopt: none), the row's lit pulse (−1: none, −2: not an arppulse), the playhead (the
+// last pulse's place in the cycle, 0 … 1; −1: none), the count of coinciding-onset links drawn and how often it
+// computed its rows.
+struct PulseRow {
+  int32_t division = 0;
+  bool locked = false, held = false;
+  uint32_t mask = 0;
+  double shift = 0.0;
+};
+uint32_t pulseRows(Element& e, const PanelTarget& t);
+PulseRow pulseRow(Element& e, const PanelTarget& t, uint32_t row);
+std::optional<ui::Vec2> pulseDot(Element& e, const PanelTarget& t, uint32_t row, int32_t j);
+std::optional<ui::Vec2> pulseMenu(Element& e, const PanelTarget& t, uint32_t row);
+int32_t pulseLit(const Element& e, uint32_t row);
+float pulsePlayhead(const Element& e);
+uint32_t pulseLinks(const Element& e);
+uint64_t pulseComputes(const Element& e);
 
 }  // namespace pq::views::panel::test
