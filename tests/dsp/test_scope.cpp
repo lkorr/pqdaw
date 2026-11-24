@@ -122,6 +122,25 @@ TEST_CASE("scope: the detector reads sines and bright waves within 0.2 %, nothin
   CHECK(t.detectPitch(x, x.size(), kSr).period == 0.0);
 }
 
+// OP.6: the detector keeps one transform per padded length. A tracker whose window moves between lengths (the frame's
+// retry at a third of the window; a period that drifts across a power of two) must read what a fresh tracker reads.
+TEST_CASE("scope (OP.6): the detector's result does not depend on the window lengths it used before") {
+  std::vector<float> x(24000);
+  for (size_t i = 0; i < x.size(); ++i) x[i] = static_cast<float>(bright(196.0 * static_cast<double>(i) / kSr));
+  ScopeTracker t;
+  t.setSettings(pitchSettings());
+  const size_t lens[] = {12000, 4000, 2048, 12000, 20000, 2048, 6000, 4000, 20000};  // padded: 16384, 8192, 4096, 32768
+  for (const size_t n : lens) {
+    CAPTURE(n);
+    ScopeTracker fresh;
+    fresh.setSettings(pitchSettings());
+    const auto a = t.detectPitch(x, n, kSr), b = fresh.detectPitch(x, n, kSr);
+    CHECK(a.period > 0.0);
+    CHECK(a.period == b.period);
+    CHECK(a.clarity == b.clarity);
+  }
+}
+
 TEST_CASE("scope: no pitch in a slow wave or a slowly moving level; a tone on an offset keeps its pitch (bug-small-fixes)") {
   // Before: the NSDF's lag-0 lobe spans every lag of a slow signal and its float ripple read as a 6 - 8 kHz pitch.
   ScopeTracker t;

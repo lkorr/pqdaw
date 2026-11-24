@@ -106,7 +106,28 @@ inline void elementwiseMemo(const KernelArgs& a, uint32_t count) noexcept {  // 
     __m256 px = x.at(0), py = y.at(0);
     __m256 r = f(px, py);
     S8::store(out, r);
-    for (uint32_t i = 8; i < vecEnd; i += 8) {
+    uint32_t i = 8;
+    // Two vectors per step (as `elementwise` runs a binary Op): both repeat the last one, or both are computed. A
+    // moving input then pays the compare and the spills around the calls once per 16 values.
+    for (; i + 16 <= vecEnd; i += 16) {
+      const __m256 ax = x.at(i >> 3), ay = y.at(i >> 3), bx = x.at((i >> 3) + 1), by = y.at((i >> 3) + 1);
+      __m256i moved = _mm256_setzero_si256();
+      if constexpr (!xSpl) moved = _mm256_castps_si256(_mm256_or_ps(_mm256_xor_ps(ax, px), _mm256_xor_ps(bx, px)));
+      if constexpr (!ySpl)
+        moved = _mm256_or_si256(moved, _mm256_castps_si256(_mm256_or_ps(_mm256_xor_ps(ay, py), _mm256_xor_ps(by, py))));
+      if (!_mm256_testz_si256(moved, moved)) {
+        const __m256 ra = f(ax, ay);
+        r = f(bx, by);
+        S8::store(out + i, ra);
+        S8::store(out + i + 8, r);
+        px = bx;
+        py = by;
+      } else {
+        S8::store(out + i, r);
+        S8::store(out + i + 8, r);
+      }
+    }
+    for (; i < vecEnd; i += 8) {
       const __m256 cx = x.at(i >> 3), cy = y.at(i >> 3);
       __m256i moved = _mm256_setzero_si256();
       if constexpr (!xSpl) moved = _mm256_castps_si256(_mm256_xor_ps(cx, px));

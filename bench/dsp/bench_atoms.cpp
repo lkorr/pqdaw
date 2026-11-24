@@ -33,6 +33,7 @@ void addCurveBenches(pq::bench::Runner& runner);       // bench_curve.cpp (GU.1)
 void addSvfBenches(pq::bench::Runner& runner);         // bench_svf.cpp (EQ.1)
 void addNoiseBenches(pq::bench::Runner& runner);       // bench_noise.cpp (NZ.1)
 void addArpBenches(pq::bench::Runner& runner);         // bench_arp.cpp (AP.1)
+void addScopeBenches(pq::bench::Runner& runner);       // bench_scope.cpp (OP.6)
 void printOversampleTable();
 
 namespace {
@@ -322,6 +323,7 @@ int main(int argc, char** argv) {
   addSvfBenches(runner);
   addNoiseBenches(runner);
   addArpBenches(runner);
+  addScopeBenches(runner);
   const int code = runner.main(static_cast<int>(args.size()), args.data());
   printOversampleTable();
   if (code != 0 || rows.empty()) return code;
