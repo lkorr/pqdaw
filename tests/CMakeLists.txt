@@ -475,6 +475,7 @@ pq_add_test(pq_tests_dsp SLOW_SHARDS 10  # TMM.8: the live path's slow alias pro
     dsp/test_tables.cpp
     dsp/test_dsp_rt.cpp
     dsp/test_exact_lanes.cpp
+    dsp/test_repeat_inputs.cpp  # OP.6: the exact atoms' repeated-input reuse equals one vector per call, bit for bit
     dsp/test_lane_state.cpp
     dsp/test_gain.cpp
     dsp/test_param_ramp.cpp  # TX.smooth: the param_ramp kernel
