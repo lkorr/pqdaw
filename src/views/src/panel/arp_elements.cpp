@@ -22,9 +22,12 @@
 //               status (its held notes); nothing held: the last set it saw, else a nominal reference note. The note
 //               playing lights (the status's position / copy: the next such note of the cycle). Recomputed only when its
 //               input key (the device's values, the track, the held set, the tempo) moved.
-//   arpbend     the BEND VIEW of a note device's glides (AP.10; doc::noteGlideView): one step large, source → Into →
-//               hold → Out → target with the times / offsets dimensioned and the gate's end; handles drag the times,
-//               the offsets and (Alt) the bends — one undo step per drag. The curves: doc::noteRampShape (the voice's).
+//               AR.2: slots 1 … 10 the glide params — a drag on a note's head / tail edits them as the bend view does
+//               (up / down the offset, sideways the time, onto the note before / after: from / to that step; a
+//               double-click: that side off); every note conforms.
+//   arpbend     the BEND VIEW, the editor of a note device's glides (AR.2; doc::noteGlideView): one step's note large
+//               between ghosts of its neighbours; drag its head / tail (offset, time, onto a ghost), a knee (time), a
+//               curve's middle (curve) — one undo step per drag. The curves: doc::noteRampShape (the voice's).
 //
 // Cost: the status is read only by an element that is painted (a fold that hides it reads nothing): per host frame tick
 // while the transport plays or the stage holds notes, a few relaxed loads; the pattern list is copied only when the
@@ -55,7 +58,6 @@ using ui::Vec2;
 namespace {
 
 constexpr float kLabelPx = 7.5f;
-constexpr std::array<std::string_view, 1> kDataSlot = {"device"};
 constexpr std::array<std::string_view, 2> kPresetSlots = {"value 1", "value 2"};
 constexpr std::array<std::string_view, 3> kLaneSlots = {"length", "on", "steps"};
 constexpr std::array<std::string_view, 3> kLaneLooks = {"bars", "bipolar", "cells"};
@@ -427,6 +429,150 @@ private:
   bool lengthDrag_ = false, hoverHandle_ = false, reset_ = false, playing_ = false;
 };
 
+// ---- AR.2: the glide drag (arpbend and arppattern) ------------------------------------------------------------------
+
+// The glide params a drag on a note sets (pq/engine/arp.h "Glides"), slots 1 … 10 of both elements after the device
+// (the document's kGlideParams order).
+constexpr std::array<std::string_view, 11> kPatternSlots = {
+    "device",     "into offset", "into prev", "into time", "into curve", "into shape",
+    "out offset", "out next",    "out time",  "out curve", "out shape"};
+
+namespace glide {
+
+enum Slot : size_t {
+  kDevice, kIntoOffset, kIntoPrev, kIntoTime, kIntoCurve, kIntoShape, kOutOffset, kOutNext, kOutTime, kOutCurve, kOutShape,
+  kCount
+};
+// What a press takes: the note's head / tail (its Into / Out: up / down the offset, sideways the time, onto the
+// neighbouring step's note: from / to that step), a side's knee (where its glide ends / starts: the time alone), the
+// middle of a side's curve (its Curve), a neighbour's ghost (a click: from / to that step, on / off).
+enum class Part : int8_t { None = -1, IntoKnee, Head, OutKnee, Tail, IntoCurve, OutCurve, PrevGhost, NextGhost };
+
+constexpr bool isInto(Part p) noexcept {
+  return p == Part::Head || p == Part::IntoKnee || p == Part::IntoCurve || p == Part::PrevGhost;
+}
+constexpr float kDead = 4.0f;  // px a head / tail drag moves before the other axis follows (a straight pull stays straight)
+inline float pastDead(float v) noexcept { return std::fabs(v) <= kDead ? 0.0f : (v > 0.0f ? v - kDead : v + kDead); }
+
+struct Drag {
+  Part part = Part::None;
+  Vec2 press{0.0f, 0.0f};
+  doc::NoteGlideView v;      // at the press (the snaps, the side's start values)
+  double startCents = 0.0;   // where the head / tail was drawn (cents from the note's own pitch)
+  double centsPerPx = 1.0;   // up
+  double notePx = 1.0;       // the note's sounding length (a Time of 100 %)
+  bool neighbour = false;    // the pointer is on the neighbouring step's note
+
+  bool active() const noexcept { return part != Part::None; }
+  static void set(const doc::PanelElement& d, PanelTarget& t, size_t slot, double value) {
+    if (const doc::Binding* b = d.binding(slot); b != nullptr && t.info(*b).valid) t.setPosition(*b, positionOf(t, *b, value));
+  }
+  static void flag(const doc::PanelElement& d, PanelTarget& t, size_t slot, bool on) {  // a switch: its position
+    if (const doc::Binding* b = d.binding(slot); b != nullptr && t.info(*b).valid) t.setPosition(*b, on ? 1.0 : 0.0);
+  }
+  static bool editable(const doc::PanelElement& d, const PanelTarget& t, Part p) {
+    const doc::Binding* b = d.binding(isInto(p) ? kIntoOffset : kOutOffset);
+    return b != nullptr && t.info(*b).valid && t.info(*b).editable;
+  }
+  // Starts the gesture (one undo step until end()). False: the params cannot be edited.
+  bool begin(const doc::PanelElement& d, PanelTarget& t, Part p, Vec2 at, const doc::NoteGlideView& view, double cents,
+             double perPx, double px) {
+    if (!editable(d, t, p)) return false;
+    part = p;
+    press = at;
+    v = view;
+    startCents = cents;
+    centsPerPx = perPx;
+    notePx = std::max(px, 1.0);
+    neighbour = false;
+    const char* label = p == Part::IntoCurve || p == Part::OutCurve ? "Glide Curve"
+                        : (p == Part::IntoKnee || p == Part::OutKnee ? "Glide Time" : "Glide");
+    t.begin(*d.binding(isInto(p) ? kIntoOffset : kOutOffset), label);
+    return true;
+  }
+  // One move to `l`. `free`: no snap (Shift); `onNeighbour`: the pointer is on the previous (head) / next (tail)
+  // step's note.
+  void move(const doc::PanelElement& d, PanelTarget& t, Vec2 l, bool free, bool onNeighbour) {
+    const bool in = isInto(part);
+    const doc::NoteGlideSide& s = in ? v.into : v.out;
+    const double time0 = s.timeParam > 0.0 ? s.timeParam : 0.25;
+    const double sgn = in ? 1.0 : -1.0;
+    const float dx = l.x - press.x, dy = press.y - l.y;
+    switch (part) {
+      case Part::Head:
+      case Part::Tail: {
+        neighbour = onNeighbour;
+        if (onNeighbour) {  // from / to the neighbouring step: its offset and time stay
+          flag(d, t, in ? kIntoPrev : kOutNext, true);
+          set(d, t, in ? kIntoOffset : kOutOffset, s.offset);
+          set(d, t, in ? kIntoTime : kOutTime, time0);
+          return;
+        }
+        const float up = pastDead(dy);
+        if (up != 0.0f) {  // (pulled off a neighbouring step: from where its head / tail was drawn)
+          double want = std::clamp(startCents + static_cast<double>(up) * centsPerPx, -v.maxOffset, v.maxOffset);
+          if (!free) want = doc::noteGlideSnap(v, want);
+          flag(d, t, in ? kIntoPrev : kOutNext, false);
+          set(d, t, in ? kIntoOffset : kOutOffset, want);
+        } else {
+          flag(d, t, in ? kIntoPrev : kOutNext, s.step);
+          set(d, t, in ? kIntoOffset : kOutOffset, s.offset);
+        }
+        set(d, t, in ? kIntoTime : kOutTime, std::clamp(time0 + sgn * static_cast<double>(pastDead(dx)) / notePx, 0.0, 2.0));
+        return;
+      }
+      case Part::IntoKnee:
+      case Part::OutKnee:
+        set(d, t, in ? kIntoTime : kOutTime, std::clamp(s.timeParam + sgn * static_cast<double>(dx) / notePx, 0.0, 2.0));
+        return;
+      case Part::IntoCurve:
+      case Part::OutCurve: {
+        // Up raises the middle of the drawn curve: an Into from below (an Out to above) bends more, one from above less.
+        const double dir = in ? (startCents < 0.0 ? 1.0 : -1.0) : (startCents > 0.0 ? 1.0 : -1.0);
+        set(d, t, in ? kIntoCurve : kOutCurve, std::clamp(s.curve + dir * static_cast<double>(dy) / 48.0, -1.0, 1.0));
+        return;
+      }
+      default: return;
+    }
+  }
+  void end(PanelTarget& t) {
+    if (part == Part::None) return;
+    part = Part::None;
+    t.end();
+  }
+  void cancel(PanelTarget& t) {
+    if (part == Part::None) return;
+    part = Part::None;
+    t.cancel();
+  }
+  // One step: a side off (a double-click on the head / tail), or its "neighbouring step" switched (a ghost's click).
+  static bool off(const doc::PanelElement& d, PanelTarget& t, bool into) {
+    if (!editable(d, t, into ? Part::Head : Part::Tail)) return false;
+    t.begin(*d.binding(into ? kIntoOffset : kOutOffset), "Glide Off");
+    flag(d, t, into ? kIntoPrev : kOutNext, false);
+    set(d, t, into ? kIntoOffset : kOutOffset, 0.0);
+    t.end();
+    return true;
+  }
+  static bool toggleStep(const doc::PanelElement& d, PanelTarget& t, bool into, bool on) {
+    if (!editable(d, t, into ? Part::Head : Part::Tail)) return false;
+    t.begin(*d.binding(into ? kIntoOffset : kOutOffset), on ? "Glide From Step" : "Glide Off");
+    flag(d, t, into ? kIntoPrev : kOutNext, on);
+    t.end();
+    return true;
+  }
+};
+
+// What a side reads: "In −2 deg · 30 %", "Out off".
+inline std::string readout(const char* name, const doc::NoteGlideSide& s) {
+  char b[96];
+  if (s.on) std::snprintf(b, sizeof b, "%s %s \xC2\xB7 %.0f %%", name, s.text.c_str(), s.timeParam * 100.0);
+  else std::snprintf(b, sizeof b, "%s off", name);
+  return b;
+}
+
+}  // namespace glide
+
 // ---- arppattern -----------------------------------------------------------------------------------------------------
 
 // The device a Data binding names, its NotePattern recomputed only when what it is made of changed (AP.10).
@@ -456,10 +602,10 @@ public:
     }
     const Rect r = plot();
     // y: log Hz over the pattern's range (at least a third of an octave), padded; x: the cycle.
-    const float span = std::max(pat_.hi - pat_.lo, 0.34f) * 1.16f, mid = 0.5f * (pat_.lo + pat_.hi);
-    auto Y = [&](float l2) { return r.y1 - ((l2 - (mid - 0.5f * span)) / span) * (r.y1 - r.y0); };
-    const auto cyc = static_cast<float>(std::max(pat_.cycle, 1e-3));
-    auto X = [&](float s) { return r.x0 + s / cyc * (r.x1 - r.x0); };
+    if (!drag_.active()) map_ = mapNow();  // (held while a glide drag runs: the pointer keeps its note)
+    const Map& m = map_;
+    auto Y = [&](float l2) { return m.Y(l2); };
+    auto X = [&](float s) { return m.X(s); };
     // The unit's grid (equaves / octaves major) and the steps.
     for (const auto& [l2, major] : pat_.grid) {
       const float y = Y(l2);
@@ -497,6 +643,12 @@ public:
         p.polyline(pts, 3.0f, ui::mulAlpha(accent, lit ? 0.45f : 0.16f));
         p.dashed(pts, 1.0f, 2.2f, 1.8f, ui::mulAlpha(accent, lit ? 1.0f : 0.75f));
       }
+      // AR.2: the end a press would take (hover) / is dragging.
+      if (static_cast<int32_t>(i) == grab_ && grabPart_ != glide::Part::None && !pts.empty()) {
+        const Vec2 at = grabPart_ == glide::Part::Head ? pts.front() : pts.back();
+        p.disc(at, 3.5f, th.face.signal);
+        p.ring(at, 3.5f, 1.0f, th.device.display);
+      }
       // Its identity in the unit, where it fits (a label narrower than the note).
       // (a repeat of the same label at the same height within ~24 px is left out: a pulse row reads once)
       if (!n.label.empty() && pts.back().x - pts.front().x >= 4.0f * static_cast<float>(n.label.size()) - 2.0f) {
@@ -516,6 +668,11 @@ public:
     std::snprintf(s, sizeof s, "%u held \xC2\xB7 %g step%s%s%s", live ? held_ : heldShown_, pat_.cycle,
                   pat_.cycle == 1.0 ? "" : "s", pat_.truncated ? " (first)" : "", what);
     p.textAligned({4.0f, desc_.h - 6.0f}, s, 6.0f, ink, 0.0f);
+    if (grabPart_ != glide::Part::None && env.target != nullptr && env.target->project() != nullptr && binding() != nullptr) {
+      const doc::NoteGlideView v = doc::noteGlideView(*env.target->project(), binding()->device, env.target->tempoBpm());
+      const bool in = grabPart_ == glide::Part::Head;
+      p.textAligned({desc_.w - 4.0f, desc_.h - 6.0f}, glide::readout(in ? "In" : "Out", in ? v.into : v.out), 6.0f, th.face.signal, 1.0f);
+    }
   }
   // AP.7: the ROLL chip (top right): the roll preview's switch (ViewContext::notePreview, the clip box's Ghosts).
   Rect rollChip() const noexcept { return {desc_.w - 34.0f, 3.0f, desc_.w - 4.0f, 13.0f}; }
@@ -533,6 +690,8 @@ public:
   uint64_t liveKey(const PanelTarget& t) const override {
     const uint64_t roll = t.notePreview().value_or(false) ? 2u : 1u;  // AP.7: the ROLL chip
     uint64_t h = hmix(hmix(hmix(0x5041544Eull, serial_), static_cast<uint64_t>(lit_ + 1)), roll + (hoverChip_ ? 4u : 0u));
+    h = hmix(h, static_cast<uint64_t>(grab_ + 1) | (static_cast<uint64_t>(static_cast<int>(grabPart_) + 2) << 32) |
+                    (drag_.active() ? 1ull << 40 : 0u));
     h = hmix(h, inputKey(t));  // AP.10: the params / held set / tempo the pattern is made of
     return h == kAnyChange ? h - 1 : h;
   }
@@ -547,26 +706,83 @@ public:
     body = "The whole cycle the arpeggiator plays from the held notes (pitch up, time across): the held notes solid, what "
            "Distance / Steps, the Pitch unit, Harmonic Walk and Layers make of them dotted with their identity (+k "
            "degrees, h11, 3/2), each note drawn as it bends (Into / Out glides). The lit one is playing. Nothing held: "
-           "the last held notes, else a reference note. ROLL (top right) shows what the arpeggiator plays from the "
-           "clip's notes as ghost notes in the piano roll.";
+           "the last held notes, else a reference note. Drag a note's head (its left half) up / down and sideways: the "
+           "Into glide's amount and time, onto the note before it: from that step; its tail: the Out glide; "
+           "double-click: that side off (every note conforms: the Glide section's params). ROLL (top right) shows what "
+           "the arpeggiator plays from the clip's notes as ghost notes in the piano roll.";
   }
-  // AP.7: only the ROLL chip takes presses (the rest is a display).
-  bool hit(Vec2 l) const noexcept override {
-    const Rect c = rollChip();
-    return l.x >= c.x0 && l.x <= c.x1 && l.y >= c.y0 && l.y <= c.y1;
-  }
+  // AP.7: the ROLL chip takes presses; AR.2: so do the notes (a glide drag on a head / tail).
+  bool hit(Vec2 l) const noexcept override { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
   bool interactive() const noexcept override { return true; }
+  bool dragging() const noexcept override { return drag_.active(); }
+  void cancelDrag(PanelTarget& t) override {
+    drag_.cancel(t);
+    grabPart_ = glide::Part::None;
+  }
+  ui::Cursor cursor() const noexcept override {
+    return grabPart_ != glide::Part::None ? ui::Cursor::Move : (hoverChip_ ? ui::Cursor::Pointer : ui::Cursor::Inherit);
+  }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
+    using K = FacePointer::Kind;
+    if (!drag_.active() && e.kind != K::Leave) ensure(t);  // (a press finds the notes of the values now, painted or not)
     const Rect c = rollChip();
     const bool in = e.local.x >= c.x0 && e.local.x <= c.x1 && e.local.y >= c.y0 && e.local.y <= c.y1;
-    if (e.kind == FacePointer::Kind::Move || e.kind == FacePointer::Kind::Leave) {
-      const bool h = in && e.kind == FacePointer::Kind::Move;
-      const bool changed = h != hoverChip_;
+    if (drag_.active()) {
+      if (e.kind == K::Move) {
+        drag_.move(desc_, t, e.local, (e.mods & ui::mod::kShift) != 0, onNeighbour(e.local));
+        return true;
+      }
+      if (e.kind == K::Up) {
+        drag_.end(t);
+        grabPart_ = glide::Part::None;
+        return true;
+      }
+      return false;
+    }
+    if (e.kind == K::Move || e.kind == K::Leave) {
+      const bool h = in && e.kind == K::Move;
+      glide::Part part = glide::Part::None;
+      const int32_t n = e.kind == K::Move && !h ? noteAt(e.local, part) : -1;
+      const bool changed = h != hoverChip_ || n != grab_ || part != grabPart_;
       hoverChip_ = h;
+      grab_ = n;
+      grabPart_ = part;
       return changed;
     }
-    if (e.kind != FacePointer::Kind::Down || e.button != ui::PointerButton::Left || !in) return false;
-    if (const std::optional<bool> on = t.notePreview()) t.setNotePreview(!*on);
+    if (e.kind != K::Down || e.button != ui::PointerButton::Left) return false;
+    if (in) {
+      if (const std::optional<bool> on = t.notePreview()) t.setNotePreview(!*on);
+      return true;
+    }
+    // AR.2: a note's head / tail.
+    glide::Part part = glide::Part::None;
+    const int32_t n = noteAt(e.local, part);
+    const doc::Project* pr = t.project();
+    if (n < 0 || pr == nullptr || binding() == nullptr) return false;
+    const bool into = part == glide::Part::Head;
+    map_ = mapNow();
+    if (e.clicks >= 2) {
+      (void)glide::Drag::off(desc_, t, into);
+      return true;
+    }
+    const doc::NotePatternNote& note = pat_.notes[static_cast<size_t>(n)];
+    const doc::NoteGlideView v = doc::noteGlideView(*pr, binding()->device, t.tempoBpm());
+    // Where its head / tail is drawn, in cents from its own pitch; the notes before / after it (what a drag onto
+    // them means: from / to that step).
+    const float own = std::log2(note.hz);
+    const double cents = 1200.0 * static_cast<double>((into ? note.curve.front().second : note.curve.back().second) - own);
+    neighbourY_.clear();
+    float edge = into ? -1e30f : 1e30f;
+    for (const doc::NotePatternNote& o : pat_.notes)
+      if (into ? (o.on < note.on && o.on > edge) : (o.on > note.on && o.on < edge)) edge = o.on;
+    for (const doc::NotePatternNote& o : pat_.notes)
+      if (o.on == edge) neighbourY_.push_back(map_.Y(std::log2(o.hz)));
+    edgeX_ = into ? map_.X(note.on) : map_.X(note.off);
+    const double perPx = static_cast<double>(map_.span) * 1200.0 / static_cast<double>(map_.r.y1 - map_.r.y0);
+    grab_ = n;
+    grabPart_ = part;
+    if (!drag_.begin(desc_, t, part, e.local, v, cents, perPx, static_cast<double>(map_.X(note.off) - map_.X(note.on))))
+      grabPart_ = glide::Part::None;
     return true;
   }
   // tests
@@ -575,9 +791,68 @@ public:
   const doc::NotePattern& resolved() const noexcept { return pat_; }
   int32_t litNote() const noexcept { return held_ > 0 ? lit_ : -1; }
   uint64_t computes() const noexcept { return computes_; }
+  // Note `i`'s head / tail as drawn (element-local); nullopt: none.
+  std::optional<Vec2> noteEnd(const PanelTarget& t, uint32_t i, bool tail) {
+    ensure(t);
+    if (i >= pat_.notes.size() || pat_.notes[i].curve.empty()) return std::nullopt;
+    map_ = mapNow();
+    const auto& c = pat_.notes[i].curve;
+    return tail ? Vec2{std::min(map_.X(c.back().first), map_.r.x1), map_.Y(c.back().second)}
+                : Vec2{map_.X(c.front().first), map_.Y(c.front().second)};
+  }
 
 private:
   Rect plot() const noexcept { return {6.0f, 16.0f, desc_.w - 6.0f, desc_.h - 14.0f}; }
+  // The plot's scales: x the cycle (steps), y log2 Hz over the pattern's range (at least a third of an octave), padded.
+  struct Map {
+    Rect r{0.0f, 0.0f, 1.0f, 1.0f};
+    float span = 1.0f, mid = 0.0f, cyc = 1.0f;
+    float X(float s) const noexcept { return r.x0 + s / cyc * (r.x1 - r.x0); }
+    float Y(float l2) const noexcept { return r.y1 - ((l2 - (mid - 0.5f * span)) / span) * (r.y1 - r.y0); }
+  };
+  Map mapNow() const noexcept {
+    return {plot(), std::max(pat_.hi - pat_.lo, 0.34f) * 1.16f, 0.5f * (pat_.lo + pat_.hi),
+            static_cast<float>(std::max(pat_.cycle, 1e-3))};
+  }
+  // AR.2: the note whose curve is under `l` (−1: none; the nearest in pitch) and the end a press takes: its left half
+  // the head (Into), its right half the tail (Out).
+  int32_t noteAt(Vec2 l, glide::Part& part) const {
+    part = glide::Part::None;
+    if (!pat_.valid) return -1;
+    const Map m = mapNow();
+    int32_t best = -1;
+    float bd = 6.0f;
+    for (size_t i = 0; i < pat_.notes.size(); ++i) {
+      const doc::NotePatternNote& n = pat_.notes[i];
+      if (n.curve.empty()) continue;
+      const float x0 = m.X(n.on), x1 = std::min(m.X(n.off), m.r.x1);
+      if (l.x < x0 - 2.0f || l.x > x1 + 2.0f) continue;
+      // Its pitch at the pointer's time (the curve's points are in time order).
+      const float ts = std::clamp((l.x - m.r.x0) / (m.r.x1 - m.r.x0) * m.cyc, n.curve.front().first, n.curve.back().first);
+      float y = n.curve.back().second;
+      for (size_t k = 1; k < n.curve.size(); ++k)
+        if (ts <= n.curve[k].first) {
+          const auto& [ta, ya] = n.curve[k - 1];
+          const auto& [tb, yb] = n.curve[k];
+          y = tb > ta ? ya + (yb - ya) * (ts - ta) / (tb - ta) : yb;
+          break;
+        }
+      const float d = std::fabs(m.Y(y) - l.y);
+      if (d < bd) {
+        bd = d;
+        best = static_cast<int32_t>(i);
+        part = l.x < 0.5f * (x0 + x1) ? glide::Part::Head : glide::Part::Tail;
+      }
+    }
+    return best;
+  }
+  // A head drag's pointer is on the note before (left of the head, at that note's pitch); a tail's on the note after.
+  bool onNeighbour(Vec2 l) const noexcept {
+    if (drag_.part == glide::Part::Head ? l.x >= edgeX_ - 2.0f : l.x <= edgeX_ + 2.0f) return false;
+    for (const float y : neighbourY_)
+      if (std::fabs(l.y - y) <= 6.0f) return true;
+    return false;
+  }
   // What the pattern is drawn over: the held notes now, else the last ones seen (empty: the nominal note).
   const std::vector<doc::NotePatternHeld>& heldSet() const noexcept { return lastHeld_; }
   // A key of everything the pattern is computed from (cheap: one pass over the device's values).
@@ -673,6 +948,14 @@ private:
   uint32_t held_ = 0, heldShown_ = 0;
   bool playing_ = false;
   bool hoverChip_ = false;  // AP.7
+  // AR.2: the glide drag on a note's head / tail: the note and end under the pointer (hover / drag), the scales and
+  // the neighbour (its pitch's y, the head's / tail's x) held while it runs.
+  Map map_;
+  glide::Drag drag_;
+  int32_t grab_ = -1;
+  glide::Part grabPart_ = glide::Part::None;
+  std::vector<float> neighbourY_;
+  float edgeX_ = 0.0f;
   // AP.10: the resolved pattern and what it was computed from.
   std::vector<doc::NotePatternHeld> lastHeld_;
   doc::NotePattern pat_;
@@ -682,27 +965,29 @@ private:
 
 // ---- arpbend --------------------------------------------------------------------------------------------------------
 
-// AP.10: the BEND VIEW of a note device's glides — one step drawn large (doc::noteGlideView: the device's values): the
-// source (the previous step / an offset) → the Into curve → the hold → the Out curve → the target (the next step / an
-// offset), with the times and offsets dimensioned and the gate's end marked. Handles drag a side's time (sideways: AP.11
-// % of the note, 0 … 200 %; the curves add, so they may overlap and pass the note — drawn faint outside it), its offset (up / down, with source / target Offset: whole units, or cents) and,
-// with Alt, its bend (up / down) — one undo step per drag, param writes only. The curves are the voice's (doc::
-// noteRampShape). Slot 0 the device (Data), then the params in kBendSlots order.
-constexpr std::array<std::string_view, 13> kBendSlots = {
-    "device", "into", "into offset", "into time", "into shape", "into bend", "out", "out offset", "out time",
-    "out shape", "out bend", "cents", "gate"};
+// AR.2 (was AP.10): the BEND VIEW, the editor of a note device's glides — one step's note drawn large between GHOSTS of
+// the previous and the next step (schematic: a step below, a step above), along the curve the voice plays (doc::
+// noteGlideView, doc::noteRampShape: the Into and Out offset curves added, AP.11; faint where a curve passes the note).
+// The note is what you drag (glide::Drag; one undo step per drag, param writes only):
+//   its HEAD   up / down: the Into offset — snapped to the pitch unit's steps of the nominal note (faint lines), 0 =
+//              off, Shift: free cents; sideways: the Into time; onto the previous step's ghost: Into from that step.
+//   its TAIL   the same for Out and the next step.
+//   a knee     (where a glide ends / starts) sideways: that time alone.
+//   a curve    its middle up / down: that side's Curve.
+// A press anywhere else on the note takes its nearer end. Double-click the head / tail: that side off. Click a ghost:
+// from / to that step, on / off. The readouts ("In −2 deg · 30 %") follow. Slot 0 the device (Data), then the params
+// in kBendSlots order.
+constexpr std::array<std::string_view, 12> kBendSlots = {
+    "device",     "into offset", "into prev", "into time", "into curve", "into shape",
+    "out offset", "out next",    "out time",  "out curve", "out shape",  "gate"};
 
 class BendView final : public Element {
 public:
   using Element::Element;
+  using Part = glide::Part;
   static constexpr StyleSpec kStyle[] = {
       {"colour", StyleSpec::Type::Token, 0, "value"},
   };
-  enum Slot : size_t {
-    kDevice, kInto, kIntoOffset, kIntoTime, kIntoShape, kIntoBend, kOut, kOutOffset, kOutTime, kOutShape, kOutBend,
-    kCents, kGate
-  };
-  enum class Handle : int8_t { None = -1, IntoTime, IntoOffset, OutTime, OutOffset };
   uint32_t staticLayerCount() const noexcept override { return 1; }
   Rgba staticLayerColour(const ui::Theme& th, uint32_t) const noexcept override { return th.device.display; }
   void paintStatic(ui::FacePainter& p, uint32_t) const override {
@@ -717,19 +1002,43 @@ public:
     }
     const G& g = g_;
     const Rect r = plot();
+    const Part hot = drag_.active() ? drag_.part : hover_;
+    // The unit's grid (what an offset snaps to), where its lines are not too dense.
+    {
+      double gap = 1e300;
+      for (size_t i = 1; i < g.v.snaps.size(); ++i) gap = std::min(gap, g.v.snaps[i] - g.v.snaps[i - 1]);
+      if (gap < 1e300 && static_cast<float>(gap / g.cmax) * (r.y1 - r.y0) * 0.5f >= 5.0f)
+        for (const double c : g.v.snaps) {
+          if (c == 0.0 || std::fabs(c) > g.cmax) continue;
+          p.line({r.x0, Y(c)}, {r.x1, Y(c)}, 0.5f, ui::mulAlpha(th.device.displayGrid, 0.6f));
+        }
+    }
     // The step boundaries, the note's own pitch, the gate's end.
     p.line({X(0.0), r.y0}, {X(0.0), r.y1}, 0.6f, th.device.displayGridMajor);
-    if (X(1.0) < r.x1) {
+    {
       const Vec2 nx[2] = {{X(1.0), r.y0}, {X(1.0), r.y1}};
       p.dashed(nx, 0.6f, 2.0f, 2.0f, th.device.displayGridMajor);
-      if (std::fabs(X(1.0) - X(g_.v.gate)) > 44.0f)  // (a gate near 100 %: its label says it)
-        p.textAligned({X(1.0) + 2.0f, r.y1 - 4.0f}, "next onset", 5.5f, ui::mulAlpha(ink, 0.8f), 0.0f);
     }
     const Vec2 base[2] = {{r.x0, Y(0.0)}, {r.x1, Y(0.0)}};
     p.dashed(base, 0.6f, 1.5f, 2.5f, ui::mulAlpha(th.device.displayGridMajor, 0.8f));
-    const Vec2 gate[2] = {{X(g.v.gate), r.y0}, {X(g.v.gate), r.y1}};
-    p.dashed(gate, 0.9f, 3.0f, 2.0f, ui::mulAlpha(accent, 0.55f));
-    p.textAligned({X(g.v.gate) - 2.0f, r.y1 - 4.0f}, "gate end", 5.5f, ui::mulAlpha(ink, 0.9f), 1.0f);
+    if (std::fabs(g.v.gate - 1.0) > 1e-6) {
+      const Vec2 gate[2] = {{X(g.v.gate), r.y0}, {X(g.v.gate), r.y1}};
+      p.dashed(gate, 0.9f, 3.0f, 2.0f, ui::mulAlpha(accent, 0.55f));
+      p.textAligned({X(g.v.gate) + (g.v.gate < 1.0 ? 2.0f : -2.0f), r.y1 - 4.0f}, "gate end", 5.5f, ui::mulAlpha(ink, 0.8f),
+                    g.v.gate < 1.0 ? 0.0f : 1.0f);
+    }
+    // The neighbours' ghosts: the previous step (the Into's source when it comes from the step), the next one.
+    auto ghost = [&](const Rect& gr, bool on, bool hov, const char* label, float align) {
+      p.roundedRect(gr, 2.0f, ui::mulAlpha(accent, on ? 0.6f : (hov ? 0.35f : 0.12f)));
+      const Vec2 edge[2] = {{gr.x0, (gr.y0 + gr.y1) * 0.5f}, {gr.x1, (gr.y0 + gr.y1) * 0.5f}};
+      p.dashed(edge, 1.0f, 2.2f, 1.8f, ui::mulAlpha(accent, on || hov ? 1.0f : 0.4f));
+      p.textAligned({align == 0.0f ? gr.x0 + 1.0f : gr.x1 - 1.0f, gr.y0 - 4.5f}, label, 5.5f, ui::mulAlpha(ink, on || hov ? 1.0f : 0.75f),
+                    align);
+    };
+    const bool laneIn = g.v.laneSlide;
+    ghost(prevRect(), g.v.into.step || laneIn, hot == Part::PrevGhost || (drag_.part == Part::Head && drag_.neighbour),
+          "prev step", 0.0f);
+    ghost(nextRect(), g.v.out.step, hot == Part::NextGhost || (drag_.part == Part::Tail && drag_.neighbour), "next step", 1.0f);
     // The curve over the note: the Into and Out offsets added (AP.11, each as the voice ramps it); faint outside the
     // note, the parts that do not sound: an Into still travelling at the note's end, an Out begun before the onset.
     const double ti = g.v.into.steps, to = g.v.out.steps, len = g.v.gate;
@@ -737,146 +1046,143 @@ public:
     constexpr int kN = 96;
     for (int i = 0; i <= kN; ++i) {
       const double x = len * static_cast<double>(i) / kN;
-      pts.push_back({X(x), Y(curveAt(x))});
+      pts.push_back({X(x), Yc(curveAt(x))});
     }
-    auto ghost = [&](double a, double b, auto&& f) {
+    auto faint = [&](double a, double b) {
       std::vector<Vec2> q;
       for (int i = 0; i <= 32; ++i) {
         const double x = a + (b - a) * static_cast<double>(i) / 32;
-        q.push_back({X(x), Y(f(x))});
+        q.push_back({X(x), Yc(drawnAt(x))});
       }
       p.polyline(q, 1.2f, ui::mulAlpha(accent, 0.4f));
     };
     // (each continues the sounding curve: the other side held at its value at that end)
-    if (ti > len) ghost(len, ti, [&](double x) { return drawnAt(x); });
-    if (to > len) ghost(len - to, 0.0, [&](double x) { return drawnAt(x); });
-    // Where the source / target come from: a lead-in at the source's pitch (the previous step / the offset's), a
-    // lead-out to the target's.
-    if (g.v.into.mode != 0) {
-      const Vec2 lead[2] = {{r.x0, Y(g.src)}, {X(0.0), Y(g.src)}};
+    if (ti > len) faint(len, ti);
+    if (to > len) faint(len - to, 0.0);
+    // An offset's lead: where the head starts / the tail ends, off the note's own pitch.
+    if (g.v.into.on && !g.v.into.step) {
+      const Vec2 lead[2] = {{X(0.0) - 12.0f, Yc(g.src)}, {X(0.0), Yc(g.src)}};
       p.dashed(lead, 1.0f, 2.0f, 2.0f, ui::mulAlpha(accent, 0.6f));
-      p.textAligned({r.x0 + 1.0f, Y(g.src) + (g.src > 0 ? -5.0f : 5.0f)},
-                    g.v.into.mode == 1 ? std::string("previous step") : g.v.into.text, 5.5f, ink, 0.0f);
     }
-    if (g.v.out.mode != 0) {
-      const Vec2 lead[2] = {{X(len), Y(g.tgt)}, {r.x1, Y(g.tgt)}};
+    if (g.v.out.on && !g.v.out.step) {
+      const Vec2 lead[2] = {{X(len), Yc(g.tgt)}, {X(len) + 12.0f, Yc(g.tgt)}};
       p.dashed(lead, 1.0f, 2.0f, 2.0f, ui::mulAlpha(accent, 0.6f));
-      p.textAligned({r.x1 - 1.0f, Y(g.tgt) + (g.tgt > 0 ? -5.0f : 5.0f)},
-                    g.v.out.mode == 1 ? std::string("next step") : g.v.out.text, 5.5f, ink, 1.0f);
     }
-    p.polyline(pts, 2.2f, accent);
-    // The time spans dimensioned: Into above the plot, Out below (they may overlap).
-    auto dim = [&](double a, double b, float y, float ty, const char* name, const doc::NoteGlideSide& s) {
-      const float x0 = X(a), x1 = X(b);
-      p.line({x0, y - 2.5f}, {x0, y + 2.5f}, 0.8f, ink);
-      p.line({x1, y - 2.5f}, {x1, y + 2.5f}, 0.8f, ink);
-      p.line({x0, y}, {x1, y}, 0.8f, ink);
-      char t[48];
-      std::snprintf(t, sizeof t, "%s %.0f %%", name, s.time * 100.0);
-      p.text({(x0 + x1) * 0.5f, ty}, t, 5.5f, ink);
-    };
-    if (ti > 0.0) dim(0.0, ti, r.y0 - 4.0f, r.y0 - 10.0f, "In", g.v.into);
-    else p.textAligned({X(0.0) + 2.0f, r.y0 - 7.0f}, g.v.into.mode == 0 ? "Into off" : "Into: none", 5.5f, ui::mulAlpha(ink, 0.7f), 0.0f);
-    if (to > 0.0) dim(len - to, len, r.y1 + 5.0f, r.y1 + 11.0f, "Out", g.v.out);
-    else p.textAligned({X(len) - 2.0f, r.y1 + 9.0f}, g.v.out.mode == 0 ? "Out off" : "Out: none", 5.5f, ui::mulAlpha(ink, 0.7f), 1.0f);
-    // The handles.
-    for (const Handle h : {Handle::IntoTime, Handle::IntoOffset, Handle::OutTime, Handle::OutOffset}) {
+    p.polyline(pts, 3.0f, accent);
+    // The handles: head and tail (always), the knees and the curves' middles of the sides that glide.
+    for (const Part h : {Part::IntoCurve, Part::OutCurve, Part::IntoKnee, Part::OutKnee, Part::Head, Part::Tail}) {
       const std::optional<Vec2> at = handleAt(h);
       if (!at) continue;
-      const bool hot = h == drag_ || (drag_ == Handle::None && h == hover_);
-      p.disc(*at, hot ? 4.0f : 3.0f, hot ? th.face.signal : accent);
-      p.ring(*at, hot ? 4.0f : 3.0f, 1.0f, th.device.display);
+      const bool lit = h == hot;
+      const bool end = h == Part::Head || h == Part::Tail;
+      const float rad = end ? (lit ? 5.0f : 4.0f) : (lit ? 3.5f : 2.5f);
+      if (h == Part::IntoCurve || h == Part::OutCurve) {
+        p.disc(*at, rad, th.device.display);
+        p.ring(*at, rad, 1.0f, lit ? th.face.signal : accent);
+      } else {
+        p.disc(*at, rad, lit ? th.face.signal : accent);
+        p.ring(*at, rad, 1.0f, th.device.display);
+      }
     }
+    // The readouts.
+    std::string in = glide::readout("In", g.v.into), out = glide::readout("Out", g.v.out);
+    if (laneIn) in = "In: the Glide lane's steps slide from the previous step";
+    else if (!g.v.into.on) in += " \xC2\xB7 drag the note's head";
+    if (!g.v.out.on) out += " \xC2\xB7 drag its tail";
+    p.textAligned({r.x0, 8.0f}, in, 6.5f, isInto(hot) && hot != Part::None ? th.face.signal : ink, 0.0f);
+    p.textAligned({r.x1, 8.0f}, out, 6.5f, !isInto(hot) && hot != Part::None ? th.face.signal : ink, 1.0f);
   }
   bool hit(Vec2 l) const noexcept override { return l.x >= 0.0f && l.y >= 0.0f && l.x <= desc_.w && l.y <= desc_.h; }
   bool interactive() const noexcept override { return true; }
-  bool dragging() const noexcept override { return drag_ != Handle::None; }
+  bool dragging() const noexcept override { return drag_.active(); }
   bool onPointer(const FacePointer& e, PanelTarget& t) override {
     using K = FacePointer::Kind;
-    if (drag_ == Handle::None && (e.kind == K::Move || e.kind == K::Leave)) {
-      const Handle h = e.kind == K::Move && geometry(t) ? nearest(e.local) : Handle::None;
+    if (!drag_.active() && (e.kind == K::Move || e.kind == K::Leave)) {
+      const Part h = e.kind == K::Move && geometry(t) ? partAt(e.local) : Part::None;
       const bool changed = h != hover_;
       hover_ = h;
       return changed;
     }
     if (e.kind == K::Down) {
       if (e.button != ui::PointerButton::Left || !geometry(t)) return false;
-      const Handle h = nearest(e.local);
-      if (h == Handle::None) return false;
-      const doc::Binding* b = binding(h == Handle::IntoTime || h == Handle::IntoOffset ? kIntoTime : kOutTime);
-      if (b == nullptr || !t.info(*b).valid || !t.info(*b).editable) return true;
-      drag_ = h;
-      bendDrag_ = (e.mods & ui::mod::kAlt) != 0;
-      press_ = e.local;
-      startBend_ = into() ? g_.v.into.bend : g_.v.out.bend;
-      startCents_ = into() ? g_.src : g_.tgt;
-      perPx_ = g_.cmax / ((plot().y1 - plot().y0) * 0.5);
-      unitCents_.clear();  // the cents of each whole unit offset −48 … 48 (an offset drag snaps to the nearest)
-      if (const doc::Project* pr = t.project(); pr != nullptr && !g_.v.cents && (h == Handle::IntoOffset || h == Handle::OutOffset))
-        for (int k = -48; k <= 48; ++k) unitCents_.push_back(doc::noteGlideOffsetCents(*pr, binding(kDevice)->device, k));
-      t.begin(*b, bendDrag_ ? "Glide Bend" : "Glide Handle");
+      const Part h = partAt(e.local);
+      if (h == Part::None) return false;
+      if (h == Part::PrevGhost) return glide::Drag::toggleStep(desc_, t, true, !g_.v.into.step) || true;
+      if (h == Part::NextGhost) return glide::Drag::toggleStep(desc_, t, false, !g_.v.out.step) || true;
+      const bool in = glide::isInto(h);
+      if (e.clicks >= 2 && (h == Part::Head || h == Part::Tail)) return glide::Drag::off(desc_, t, in) || true;
+      const Rect r = plot();
+      (void)drag_.begin(desc_, t, h, e.local, g_.v, in ? g_.src : g_.tgt, g_.cmax / ((r.y1 - r.y0) * 0.5),
+                        (r.x1 - r.x0) / g_.span * g_.v.gate);
       return true;
     }
-    if (e.kind == K::Move && drag_ != Handle::None) {
-      apply(t, e.local);
+    if (e.kind == K::Move && drag_.active()) {
+      drag_.move(desc_, t, e.local, (e.mods & ui::mod::kShift) != 0, onGhost(drag_.part, e.local));
       return true;
     }
-    if (e.kind == K::Up && drag_ != Handle::None) {
-      drag_ = Handle::None;
-      t.end();
+    if (e.kind == K::Up && drag_.active()) {
+      drag_.end(t);
       return true;
     }
     return false;
   }
-  void cancelDrag(PanelTarget& t) override {
-    if (drag_ == Handle::None) return;
-    drag_ = Handle::None;
-    t.cancel();
-  }
+  void cancelDrag(PanelTarget& t) override { drag_.cancel(t); }
   ui::Cursor cursor() const noexcept override {
-    const Handle h = drag_ != Handle::None ? drag_ : hover_;
-    if (h == Handle::IntoTime || h == Handle::OutTime) return ui::Cursor::ResizeEW;
-    if (h != Handle::None) return ui::Cursor::ResizeNS;
-    return ui::Cursor::Inherit;
+    const Part h = drag_.active() ? drag_.part : hover_;
+    switch (h) {
+      case Part::Head:
+      case Part::Tail: return ui::Cursor::Move;
+      case Part::IntoKnee:
+      case Part::OutKnee: return ui::Cursor::ResizeEW;
+      case Part::IntoCurve:
+      case Part::OutCurve: return ui::Cursor::ResizeNS;
+      case Part::PrevGhost:
+      case Part::NextGhost: return ui::Cursor::Pointer;
+      default: return ui::Cursor::Inherit;
+    }
   }
   uint64_t liveKey(const PanelTarget& t) const override {
     uint64_t h = Element::liveKey(t);
     if (h == kAnyChange) return h;
-    if (const doc::Project* pr = t.project(); pr != nullptr && binding(kDevice) != nullptr) {  // (the rate, the tuning)
-      const doc::DeviceLoc loc = doc::findDevice(*pr, binding(kDevice)->device);
+    if (const doc::Project* pr = t.project(); pr != nullptr && binding(glide::kDevice) != nullptr) {  // (the rate, the tuning, the unit)
+      const doc::DeviceLoc loc = doc::findDevice(*pr, binding(glide::kDevice)->device);
       h = hmix(hmix(h, reinterpret_cast<uintptr_t>(loc.track)), reinterpret_cast<uintptr_t>(loc.device));
     }
     const double bpm = t.tempoBpm();
     uint64_t bb = 0;
     std::memcpy(&bb, &bpm, sizeof bb);
-    h = hmix(hmix(h, bb), static_cast<uint64_t>(static_cast<int>(hover_) + 2) | (static_cast<uint64_t>(static_cast<int>(drag_) + 2) << 8));
+    h = hmix(hmix(h, bb), static_cast<uint64_t>(static_cast<int>(hover_) + 2) | (static_cast<uint64_t>(static_cast<int>(drag_.part) + 2) << 8) |
+                              (drag_.neighbour ? 1u << 16 : 0u));
     return h == kAnyChange ? h - 1 : h;
   }
   void describe(const PanelTarget&, std::string& title, std::string& body) const override {
-    title = "Bend";
-    body = "One step's pitch as the glides bend it: from the source (the previous step, or the Into offset) along the "
-           "Into curve to the note, held, then along the Out curve over the end of the gate to the target (the next "
-           "step, or the Out offset). The two curves add, so they may overlap; each Time is a % of the note (up to "
-           "200 %: an Into still gliding at the note's end, an Out begun before its start — drawn faint). Drag a handle "
-           "on the note sideways: that side's time; the end handles up / down: its offset; Alt+drag up / down: its "
-           "bend. One undo step per drag.";
+    title = "Glide";
+    body = "One step's note between the previous and the next step, as its glides bend it. Drag the note's head up / "
+           "down: where it starts (the Into amount, snapped to the Pitch unit's steps; Shift: free) and sideways: how "
+           "long it takes to arrive; drag the head onto the previous step: it glides from that step. The tail does the "
+           "same for the Out glide and the next step. Drag the middle of a curve: its bend. The small dots move a time "
+           "alone. Double-click the head / tail: that side off. The knobs beside follow; one undo step per drag.";
   }
-  // tests: a handle's position (element-local); nullopt: not shown.
+  // tests: part `h`'s point (element-local; a glide::Part); nullopt: not shown.
   std::optional<Vec2> handlePos(int32_t h) {
-    return static_cast<Handle>(h) >= Handle::IntoTime && static_cast<Handle>(h) <= Handle::OutOffset
-               ? handleAt(static_cast<Handle>(h))
-               : std::nullopt;
+    const auto part = static_cast<Part>(h);
+    if (part == Part::PrevGhost || part == Part::NextGhost) {
+      const Rect g = part == Part::PrevGhost ? prevRect() : nextRect();
+      return Vec2{(g.x0 + g.x1) * 0.5f, (g.y0 + g.y1) * 0.5f};
+    }
+    return part >= Part::IntoKnee && part <= Part::OutCurve ? handleAt(part) : std::nullopt;
   }
   bool prepare(const PanelTarget& t) { return geometry(t); }
 
 private:
   struct G {
     doc::NoteGlideView v;
-    double src = 0.0, tgt = 0.0;  // cents of the source / target from the note's own pitch
-    double lo = -0.15, span = 1.5;  // steps at the plot's left edge, across it (fitted; held while a handle drags)
-    double cmax = 100.0;          // cents from the middle to the top
+    double src = 0.0, tgt = 0.0;  // cents of the head / the tail from the note's own pitch
+    double prev = -200.0, next = 200.0;  // the ghosts' (schematic)
+    double lo = -0.15, span = 1.5;  // steps at the plot's left edge, across it (fitted; held while a drag runs)
+    double cmax = 100.0;          // cents from the middle to the top (held while a drag runs)
   };
-  Rect plot() const noexcept { return {6.0f, 17.0f, desc_.w - 6.0f, desc_.h - 18.0f}; }
+  Rect plot() const noexcept { return {8.0f, 18.0f, desc_.w - 8.0f, desc_.h - 8.0f}; }
   float X(double s) const noexcept {
     const Rect r = plot();
     return r.x0 + static_cast<float>((s - g_.lo) / g_.span) * (r.x1 - r.x0);
@@ -885,41 +1191,63 @@ private:
     const Rect r = plot();
     return (r.y0 + r.y1) * 0.5f - static_cast<float>(c / g_.cmax) * (r.y1 - r.y0) * 0.5f;
   }
+  float Yc(double c) const noexcept {  // (a drag past the plot's scale: drawn at its edge)
+    const Rect r = plot();
+    return std::clamp(Y(c), r.y0 - 3.0f, r.y1 + 3.0f);
+  }
+  Rect prevRect() const noexcept {
+    const Rect r = plot();
+    const float y = Y(g_.prev);
+    return {r.x0, y - 3.0f, X(0.0) - 3.0f, y + 3.0f};
+  }
+  Rect nextRect() const noexcept {
+    const Rect r = plot();
+    const float y = Y(g_.next);
+    return {std::min(X(std::max(1.0, g_.v.gate)) + 3.0f, r.x1 - 16.0f), y - 3.0f, r.x1, y + 3.0f};
+  }
   // The device's glides now (false: none to draw).
   bool geometry(const PanelTarget& t) {
-    const doc::Binding* b = binding(kDevice);
+    const doc::Binding* b = binding(glide::kDevice);
     const doc::Project* pr = t.project();
     if (b == nullptr || pr == nullptr) return false;
     g_.v = doc::noteGlideView(*pr, b->device, t.tempoBpm());
     if (!g_.v.valid) return false;
-    constexpr double kStep = 200.0;  // the previous / next step drawn this far (cents) from the note: a placeholder
-    const double si = g_.v.into.mode == 2 ? g_.v.into.cents : (g_.v.into.mode == 1 ? -kStep : 0.0);
-    const double so = g_.v.out.mode == 2 ? g_.v.out.cents : (g_.v.out.mode == 1 ? kStep : 0.0);
-    g_.src = std::isfinite(si) ? si : 0.0;
-    g_.tgt = std::isfinite(so) ? so : 0.0;
-    double over = 1.0;  // room for an overshoot past the target / source
-    if (g_.v.into.shape == 3 || g_.v.out.shape == 3) over = 1.35;
-    double sum = 0.0;  // AP.11: the curves add (overlapping, same sign: past either offset)
-    for (int i = 0; i <= 64; ++i) sum = std::max(sum, std::fabs(curveAt(g_.v.gate * i / 64.0)));
-    g_.cmax = std::max({std::fabs(g_.src), std::fabs(g_.tgt), sum, 50.0}) * over * 1.12;
-    if (drag_ == Handle::None) {  // AP.11: fitted to the note, the next onset, an Into past the end, an Out before the start
-      const double x0 = std::min(0.0, g_.v.gate - g_.v.out.steps);
-      const double x1 = std::max({1.0, g_.v.gate, g_.v.into.steps});
-      const double pad = 0.12 * (x1 - x0);
+    const doc::NoteGlideView& v = g_.v;
+    if (!drag_.active()) {
+      // The pitch scale: the offsets (at least ± 3 semitones of room to drag into), the ghosts a step inside it.
+      const double room = std::max({v.into.step ? 0.0 : std::fabs(v.into.offset), v.out.step ? 0.0 : std::fabs(v.out.offset), 300.0});
+      g_.prev = -0.62 * room;
+      g_.next = 0.62 * room;
+    }
+    g_.src = v.into.step || v.laneSlide ? g_.prev : (v.into.on ? v.into.offset : 0.0);
+    g_.tgt = v.out.step ? g_.next : (v.out.on ? v.out.offset : 0.0);
+    if (v.laneSlide) {  // (drawn as the lane's slide would be: from the previous step over Into time)
+      g_.v.into.time = v.into.timeParam;
+      g_.v.into.steps = v.into.timeParam * v.gate;
+    }
+    if (!drag_.active()) {
+      double over = 1.0;  // room for an overshoot past the target / source
+      if (v.into.shape == 3 || v.out.shape == 3) over = 1.3;
+      double sum = 0.0;  // AP.11: the curves add (overlapping, same sign: past either offset)
+      for (int i = 0; i <= 64; ++i) sum = std::max(sum, std::fabs(curveAt(v.gate * i / 64.0)));
+      g_.cmax = std::max({std::fabs(g_.src), std::fabs(g_.tgt), std::fabs(g_.prev) / 0.62, sum * over}) * 1.15;
+      // The time scale: the note, the next onset, an Into past the end, an Out before the start; margins for the ghosts.
+      const double x0 = std::min(0.0, v.gate - g_.v.out.steps);
+      const double x1 = std::max({1.0, v.gate, g_.v.into.steps});
+      const double pad = 0.16 * (x1 - x0);
       g_.lo = x0 - pad;
       g_.span = x1 - x0 + 2.0 * pad;
     }
     return true;
   }
-  bool into() const noexcept { return drag_ == Handle::IntoTime || drag_ == Handle::IntoOffset; }
   // AP.11: each side's offset (cents from the note) at x steps from the onset, and the two added (the note's pitch).
   double inAt(double x) const {
     const double ti = g_.v.into.steps;
-    return ti > 0.0 && x < ti ? g_.src * (1.0 - doc::noteRampShape(g_.v.into.shape, g_.v.into.bend, x / ti)) : 0.0;
+    return ti > 0.0 && x < ti ? g_.src * (1.0 - doc::noteRampShape(g_.v.into.shape, g_.v.into.curve, x / ti)) : 0.0;
   }
   double outAt(double x) const {
     const double to = g_.v.out.steps, len = g_.v.gate;
-    return to > 0.0 && x >= len - to ? g_.tgt * doc::noteRampShape(g_.v.out.shape, g_.v.out.bend, (x - (len - to)) / to) : 0.0;
+    return to > 0.0 && x >= len - to ? g_.tgt * doc::noteRampShape(g_.v.out.shape, g_.v.out.curve, (x - (len - to)) / to) : 0.0;
   }
   double curveAt(double x) const { return inAt(x) + outAt(x); }
   // The drawn curve: the note's, continued faint past its end (an Into: the Out held at its target) and before its
@@ -929,24 +1257,33 @@ private:
     if (x < 0.0) return outAt(x) + (g_.v.into.steps > 0.0 ? g_.src : 0.0);
     return curveAt(x);
   }
-  std::optional<Vec2> handleAt(Handle h) const {
+  std::optional<Vec2> handleAt(Part h) const {
     const doc::NoteGlideView& v = g_.v;
     if (!v.valid) return std::nullopt;
+    const bool in = v.into.on && v.into.steps > 0.0, out = v.out.on && v.out.steps > 0.0;
     switch (h) {
-      case Handle::IntoTime:  // (on the curve: AP.11)
-        return v.into.mode != 0 ? std::optional<Vec2>(Vec2{X(v.into.steps), Y(drawnAt(v.into.steps))}) : std::nullopt;
-      case Handle::IntoOffset: return v.into.mode == 2 ? std::optional<Vec2>(Vec2{X(0.0), Y(g_.src)}) : std::nullopt;
-      case Handle::OutTime:
-        return v.out.mode != 0 ? std::optional<Vec2>(Vec2{X(v.gate - v.out.steps), Y(drawnAt(v.gate - v.out.steps))})
-                               : std::nullopt;
-      case Handle::OutOffset: return v.out.mode == 2 ? std::optional<Vec2>(Vec2{X(v.gate), Y(g_.tgt)}) : std::nullopt;
+      case Part::Head: return Vec2{X(0.0), Yc(drawnAt(0.0))};
+      case Part::Tail: return Vec2{X(v.gate), Yc(drawnAt(v.gate))};
+      case Part::IntoKnee: return in ? std::optional<Vec2>(Vec2{X(v.into.steps), Yc(drawnAt(v.into.steps))}) : std::nullopt;
+      case Part::OutKnee:
+        return out ? std::optional<Vec2>(Vec2{X(v.gate - v.out.steps), Yc(drawnAt(v.gate - v.out.steps))}) : std::nullopt;
+      case Part::IntoCurve:
+        return in ? std::optional<Vec2>(Vec2{X(v.into.steps * 0.5), Yc(drawnAt(v.into.steps * 0.5))}) : std::nullopt;
+      case Part::OutCurve:
+        return out ? std::optional<Vec2>(Vec2{X(v.gate - v.out.steps * 0.5), Yc(drawnAt(v.gate - v.out.steps * 0.5))})
+                   : std::nullopt;
       default: return std::nullopt;
     }
   }
-  Handle nearest(Vec2 l) const {
-    Handle best = Handle::None;
-    float bd = 7.0f * 7.0f;
-    for (const Handle h : {Handle::IntoOffset, Handle::OutOffset, Handle::IntoTime, Handle::OutTime})
+  static bool inside(const Rect& r, Vec2 l, float pad) noexcept {
+    return l.x >= r.x0 - pad && l.x <= r.x1 + pad && l.y >= r.y0 - pad && l.y <= r.y1 + pad;
+  }
+  // The part a press at `l` takes: the nearest handle within reach (the head / tail win a tie), a ghost, else the
+  // note's body (its nearer end).
+  Part partAt(Vec2 l) const {
+    Part best = Part::None;
+    float bd = 8.0f * 8.0f;
+    for (const Part h : {Part::Head, Part::Tail, Part::IntoKnee, Part::OutKnee, Part::IntoCurve, Part::OutCurve})
       if (const std::optional<Vec2> at = handleAt(h)) {
         const float d = (at->x - l.x) * (at->x - l.x) + (at->y - l.y) * (at->y - l.y);
         if (d < bd) {
@@ -954,48 +1291,26 @@ private:
           best = h;
         }
       }
-    return best;
-  }
-  void set(PanelTarget& t, size_t slot, double v) {
-    if (const doc::Binding* b = binding(slot); b != nullptr && t.info(*b).valid) t.setPosition(*b, positionOf(t, *b, v));
-  }
-  // One drag move: the time (sideways), the offset (up / down), or with Alt the bend (up / down).
-  void apply(PanelTarget& t, Vec2 l) {
-    const bool in = into();
-    const doc::NoteGlideSide& s = in ? g_.v.into : g_.v.out;
-    if (bendDrag_) {
-      set(t, in ? kIntoBend : kOutBend, std::clamp(startBend_ + static_cast<double>(press_.y - l.y) / 40.0, -1.0, 1.0));
-      return;
+    if (best != Part::None) return best;
+    if (inside(prevRect(), l, 4.0f)) return Part::PrevGhost;
+    if (inside(nextRect(), l, 4.0f)) return Part::NextGhost;
+    const double len = g_.v.gate;
+    if (l.x >= X(0.0) && l.x <= X(len)) {
+      const double x = g_.lo + static_cast<double>(l.x - plot().x0) / (plot().x1 - plot().x0) * g_.span;
+      if (std::fabs(Yc(curveAt(x)) - l.y) <= 7.0f) return x < len * 0.5 ? Part::Head : Part::Tail;
     }
-    const Rect r = plot();
-    if (drag_ == Handle::IntoTime || drag_ == Handle::OutTime) {
-      const double pxPerStep = (r.x1 - r.x0) / g_.span;
-      double steps = in ? (l.x - X(0.0)) / pxPerStep : (X(g_.v.gate) - l.x) / pxPerStep;
-      const double frac = g_.v.gate > 0.0 ? steps / g_.v.gate : 0.0;  // AP.11: % of the note
-      set(t, in ? kIntoTime : kOutTime, std::clamp(frac, 0.0, 2.0)  /* engine kArpMaxGlideTime */);
-      return;
-    }
-    // The offset: the cents the pointer's height means (from the press, at the press's scale), in cents or the
-    // nearest whole unit.
-    const double want = startCents_ + static_cast<double>(press_.y - l.y) * perPx_;
-    double v = want;
-    if (!g_.v.cents) {
-      double bd = 1e300;
-      v = s.offset;
-      for (size_t i = 0; i < unitCents_.size(); ++i)
-        if (std::isfinite(unitCents_[i]) && std::fabs(unitCents_[i] - want) < bd) {
-          bd = std::fabs(unitCents_[i] - want);
-          v = static_cast<double>(i) - 48.0;
-        }
-    }
-    set(t, in ? kIntoOffset : kOutOffset, v);
+    return Part::None;
   }
+  // A head / tail drag's pointer is on the neighbouring step's ghost.
+  bool onGhost(Part drag, Vec2 l) const noexcept {
+    if (drag == Part::Head) return l.x < X(0.0) - 3.0f && std::fabs(l.y - Y(g_.prev)) <= 9.0f;
+    if (drag == Part::Tail) return l.x > nextRect().x0 && std::fabs(l.y - Y(g_.next)) <= 9.0f;
+    return false;
+  }
+  static bool isInto(Part p) noexcept { return glide::isInto(p); }
   G g_;
-  Handle hover_ = Handle::None, drag_ = Handle::None;
-  bool bendDrag_ = false;
-  Vec2 press_{0.0f, 0.0f};
-  double startBend_ = 0.0, startCents_ = 0.0, perPx_ = 1.0;
-  std::vector<double> unitCents_;
+  Part hover_ = Part::None;
+  glide::Drag drag_;
 };
 
 template <class T>
@@ -1009,7 +1324,7 @@ void registerArpElements(void (*reg)(std::string_view, std::string_view, std::sp
                                      float, float, ElementFactory)) {
   reg("presets", "Presets", Presets::kStyle, kPresetSlots, 120, 16, &make<Presets>);
   reg("steplane", "Step Lane", StepLane::kStyle, kLaneSlots, 300, 22, &make<StepLane>);
-  reg("arppattern", "Pattern View", PatternView::kStyle, kDataSlot, 160, 120, &make<PatternView>);
+  reg("arppattern", "Pattern View", PatternView::kStyle, kPatternSlots, 160, 120, &make<PatternView>);
   reg("arpbend", "Bend View", BendView::kStyle, kBendSlots, 300, 110, &make<BendView>);
 }
 
@@ -1057,6 +1372,11 @@ std::optional<ui::Vec2> bendHandle(Element& e, const PanelTarget& t, int32_t h) 
   auto* s = dynamic_cast<BendView*>(&e);
   if (s == nullptr || !s->prepare(t)) return std::nullopt;
   return s->handlePos(h);
+}
+
+std::optional<ui::Vec2> patternNoteEnd(Element& e, const PanelTarget& t, uint32_t note, bool tail) {
+  auto* s = dynamic_cast<PatternView*>(&e);
+  return s != nullptr ? s->noteEnd(t, note, tail) : std::nullopt;
 }
 
 }  // namespace test

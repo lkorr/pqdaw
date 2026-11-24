@@ -2323,3 +2323,21 @@ Judge: spawn Math, plug an LFO into In B on the closed face; switch the op to cl
 - Not checked in the live app (tests and goldens only). Are the dots readable at zoom 1 with 16 voices × 16 grains?
   Should pan map to height, or should all dots sit on the centre line?
 - Goldens: new sampler-face-grains / sampler-panel-gran at 1x and 2x; no existing golden moved.
+
+## AR.2 · arpeggiator glide: draw it on the note (2026-11-23)
+- "Glide doesn't do anything" was the step lanes' Glide lane: it only scaled Into / Out, which are off by default.
+  Now it is a slide per step: switch the Glide lane on, paint a step, and that step glides in from the previous one
+  (Into Time sets how long). Glide through a clip and from the keyboard was working and is now tested end to end.
+- Glide section: one big view of a note between its neighbours. Drag the note's left end (head) down / up: it starts
+  that far off and glides in (snaps to the Pitch unit's steps; Shift = free). Drag it sideways too: how long. Drop
+  the head on the "prev step" ghost: it glides from the previous step. The right end (tail) does the same for the
+  glide out / "next step". Drag the middle of a curve: its bend. Double-click an end: off. Click a ghost: on / off.
+- The same drags work on any note in the Pattern view (top right).
+- Left of / right of the view: Amount and Time knobs per side that follow the drags, and Curve | S | Spring chips.
+  Gone: the Off / Previous / Offset chips, the Shape menu, the Bend knobs, "Offsets in cents".
+- Not checked in the live app (tests and goldens only). To judge: is "drop the head on the ghost" findable, or do
+  you want a small Prev / Next switch as well? Is S worth keeping next to Curve and Spring? With the Glide lane on,
+  Into / Out glide only on painted steps: right, or should unpainted steps keep the full glide?
+- Old projects: arp glide settings are not converted (no compatibility).
+- Goldens re-recorded: arp-panel-walk, arp-panel-lanes, arp-panel-degrees-bends, arp-panel-bend-view,
+  project-patch-arp.

@@ -2599,3 +2599,23 @@ Context: SM.13 (docs/plans/SM.md "Face (👁)", "SM.13"). Choices (most reversib
    fall back to the default six); + adds the next whole number above the largest ratio; typed n/d is kept as typed
    (4/2 is not reduced). Shown dimmed, still editable, while Harmonic grains is off.
 6. **Density** shows only for Loop / Cloud (Classic spawns one grain per period).
+
+## Q?-AR.2-a · arp glide rework: where the build left the plan
+Context: AR.2 (docs/plans/AR.md "AR.2"; pq/engine/arp.h "Glides", "Step lanes"). Choices (most reversible):
+1. **Onto a ghost, not a vertical snap**: the plan snaps a head drag "onto the previous-step ghost" by height. A
+   ghost's height can equal a unit step's (−2 deg), which would make that step unreachable, so `intoPrev` / `outNext`
+   are set by dragging the head / tail ONTO the neighbour (left of the onset / right of the note's end, at its
+   height) or by clicking the ghost. Pulling the head up / down off the ghost returns to an offset.
+2. **Sideways = time, relatively, with a 4 px dead zone** on each axis (a straight pull changes one value); the knee
+   dots are kept as a time-only handle. No source chips and no Prev / Next toggle beside the knobs (the ghosts are it).
+3. **Shape chips kept** (Curve | S | Spring per side): S-curve and the overshoot are distinct sounds. Curve's value 0
+   is the old Linear, ± the old Exponential bend; Spring with curve 0 is a cubic ease-out (the old default Bend 0.5
+   overshoot is one drag of the curve's middle away). Option: drop S (subtle on short glides).
+4. **The Glide lane's default is 0 always** (not only "when first switched on with both sides off"): one rule — a
+   lane that is ON slides only the painted steps; OFF is × 1. So switching the lane on with Into / Out on silences
+   their glides until steps are painted (303 behaviour). Its value scales DISTANCE (0.5 = from half way), not time.
+5. **Offsets are cents, ± 2400** (two octaves; was ± 4800 unit steps): the engine no longer steps a glide offset
+   through the note's own table, so under an unequal tuning a snapped "−2 deg" is the nominal note's interval for
+   every note (the plan's rule). Lost on purpose: per-note unit offsets (Harmonics: h → h + k of each note's own h).
+6. **Bend view ghosts are schematic** (± 62 % of the view's pitch range, the previous step below, the next above); the
+   pattern view shows and uses the real neighbours.

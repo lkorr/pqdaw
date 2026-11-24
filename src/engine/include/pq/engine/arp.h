@@ -86,24 +86,29 @@
 // running Into / Out glides re-aimed, their glide state moved: review L1). The link posts a table before it publishes
 // the retuned sequences / live routes, so a producer's retune (absolute) arrives with or after it.
 //
-// ---- Glides (AP.3, "Pitch into / out of curves") -------------------------------------------------------------------
-// Into: a step's note starts at a source pitch and glides to its own over Time: Step = the previous step's note
-// (Chord Trigger: the previous chord's note of the same rank, else its top note; none before the first step of a
-// run), Offset = its own pitch moved by Into offset (in the pitch unit, rounded, or in cents with Glide cents).
-// Out: over the last Time of the step's gate the note glides to a target: Step = the next step's note (already
-// sounding with a gate > 100 %, else the step the pattern plays next, as known at that frame), Offset = its own
-// pitch moved by Out offset. AP.10 / AP.11: each side has its own Time (a fraction 0 … 2 of the note's sounding
-// length, the gated note: 25 % default; ≥ 1 frame), Shape (RampShape) and Bend (−1 … 1 → the byte −127 … 127,
-// rampBendOf): the NoteEvent ramp shape (note_events.h rampShapeAt), evaluated by the VoiceEngine. The two sides are
-// ADDITIVE offset curves in cents on the note's own pitch — Into: offset_in · (1 − s_in(u)) from the onset over its
-// Time, Out: offset_out · s_out(v) over the last Out Time ending at the note's end — so they overlap freely: Into
-// > 100 % is still travelling when the note ends; Out > 100 % starts before the onset (the note begins partway along
-// it). One side alone is one shaped ramp; both Linear overlapping are linear pieces (exact); otherwise the overlap (and
-// an Out begun before the onset) is sent as linear-in-cents pieces of ≥ 1 ms, 32 per the shorter curve. The Glide lane
-// scales both distances (and, on a tie, the Into time). Glide cents: both offsets in cents. The source note's own
-// bend carries over on top: the Into glide aims at the source's bend at its end (a running bend continues from
-// there); a source Pitch event during the Into glide re-aims it; during the Out glide the note goes to its target
-// (later source bends do not move it).
+// ---- Glides (AP.3 "Pitch into / out of curves"; AR.2: what a drag on the note sets) ------------------------------
+// Each side — Into (the note's head) and Out (its tail) — is the few values a drag in the panel's bend view sets:
+//   offset  cents (−2400 … 2400; 0: none). Into: the note starts this far from its own pitch and glides onto it; Out:
+//           it ends this far from it. ALWAYS cents: the panel snaps a drag to the pitch unit's steps of the NOMINAL
+//           note (Degrees: the track table's intervals from degree 0, so under an unequal tuning a snapped offset is
+//           the nominal note's interval, not each note's own; Harmonics: Base → Base + k; Ratio: (p/q)^k), Shift: free.
+//   step    the side aims at the NEIGHBOURING STEP instead of its offset (Into Prev: from the previous step's note —
+//           Chord Trigger: the previous chord's note of the same rank, else its top note; none before the first step
+//           of a run. Out Next: to the next step's note — already sounding with a gate > 100 %, else the step the
+//           pattern plays next, as known at that frame).
+//   time    a fraction 0 … 2 of the note's sounding length (the gated note; 25 % default; ≥ 1 frame).
+//   curve   −1 … 1, with shape Curve | S | Spring. Curve: 0 a line in cents, ± an exponential bend (fast first / fast
+//           last: RampShape::Exponential, k = 8 · curve); S: the smoothstep; Spring: an overshoot of 4 · |curve| (0: a
+//           cubic ease-out). The NoteEvent ramp shape (note_events.h rampShapeAt), evaluated by the VoiceEngine.
+// A side is ON when step is set or its offset is not 0 (there is no mode). The two sides are ADDITIVE offset curves in
+// cents on the note's own pitch — Into: offset_in · (1 − s_in(u)) from the onset over its Time, Out: offset_out ·
+// s_out(v) over the last Out Time ending at the note's end — so they overlap freely: Into > 100 % is still travelling
+// when the note ends; Out > 100 % starts before the onset (the note begins partway along it). One side alone is one
+// shaped ramp; both linear overlapping are linear pieces (exact); otherwise the overlap (and an Out begun before the
+// onset) is sent as linear-in-cents pieces of ≥ 1 ms, 32 per the shorter curve. The Glide lane: "Step lanes". The
+// source note's own bend carries over on top: the Into glide aims at the source's bend at its end (a running bend
+// continues from there); a source Pitch event during the Into glide re-aims it; during the Out glide the note goes to
+// its target (later source bends do not move it).
 //
 // ---- Pulse mode (AP.4, "Pulse mode (polyrhythm)") -----------------------------------------------------------------
 // Pulse on: no pattern order (Style, Offset, Repeats, Groove, Retrigger Beat do not apply). Every held note repeats
@@ -137,12 +142,14 @@
 // step plays: a drag or automation never rebuilds anything). Lanes are polymetric: lane position = the grid step
 // index kk mod its length (pattern mode: the song grid while synced and playing, else the free clock's step count),
 // independent of the pattern's length, the pattern restarts and of the block size; Pulse mode: per note, its pulse
-// count c · J + j (cycle c of J pulses, pulse j) mod the length. A lane switched off reads its default.
+// count c · J + j (cycle c of J pulses, pulse j) mod the length. A lane switched off reads its default (Glide: × 1).
 //   Velocity   × the step's velocity (0 … 1), or the velocity itself with Velocity source Step Lane (lane off: as
 //              played); Decay applies after it.
 //   Gate       × Gate (0 … 2; the step's gate clamped to 0.01 … 2 of a step / pulse period).
-//   Glide      × the Into / Out glides' pitch distance (0 … 1, in log Hz; 0: no glide); a tie: × its glide time
-//              (0: a legato jump).
+//   Glide      the SLIDE of the step (0 … 1; 0 where nothing is painted; AR.2, 303-style): × the pitch distance (in
+//              log Hz) of the sides that are on; with NO side on, a step > 0 glides in from the previous step's note
+//              (as Into Prev, over Into time) × its value — so a painted step always slides. 0: no glide; a tie:
+//              × its glide time (0: a legato jump). The lane switched off: every step's glides in full (× 1).
 //   Transpose  + steps in the pitch unit (−48 … 48, rounded; Degrees: degrees, Ratio: powers of p/q, Harmonics:
 //              harmonics), part of what the step's notes play (a retune and Out → Step follow it).
 //   Chance     the probability the step plays (0 … 1): a counter-RNG draw keyed by (seed, kk) (pulse: (seed ^ h,
@@ -222,7 +229,7 @@ enum class ArpStyle : uint8_t {
 enum class ArpRetrigger : uint8_t { Off, Note, Beat };
 enum class ArpUnit : uint8_t { Degrees, Ratio, Harmonics };
 enum class ArpWalkOrder : uint8_t { Up, Down, UpDown, Random };
-enum class ArpGlide : uint8_t { Off, Step, Offset };  // Into: Step = the previous step; Out: Step = the next step
+enum class ArpGlideShape : uint8_t { Curve, S, Spring, Count };  // AR.2: a glide side's shape (arp.h "Glides")
 enum class ArpTranspose : uint8_t { Shift, Rotate };
 enum class ArpVelocitySource : uint8_t { AsPlayed, Fixed, Lane };  // Lane (AP.5): the Velocity lane's step
 enum class ArpPulseSource : uint8_t { Harmonic, Proportion, Order };  // AP.4: where a pulse clock's h comes from
@@ -232,13 +239,22 @@ enum class ArpLane : uint8_t { Velocity, Gate, Glide, Transpose, Chance, SkipTie
 inline constexpr uint32_t kArpLaneCount = static_cast<uint32_t>(ArpLane::Count);
 enum class ArpStepKind : uint8_t { Play, Skip, Tie };
 
-// AP.10: one side of the glides (arp.h "Glides"): Into (mode: its source) or Out (mode: its target).
+// AR.2: one side of the glides (arp.h "Glides"): Into (the note's head) or Out (its tail).
+inline constexpr float kArpMaxGlideOffset = 2400.0f;  // cents
 struct ArpGlideSide {
-  ArpGlide mode = ArpGlide::Off;
-  float offset = 0.0f;                // −4800 … 4800: in the pitch unit (rounded) or cents (ArpParams::glideCents)
+  float offset = 0.0f;                // cents, −kArpMaxGlideOffset … kArpMaxGlideOffset (0: none)
+  bool step = false;                  // aims at the neighbouring step (Into: the previous, Out: the next), not the offset
   float time = 0.25f;                 // AP.11: 0 … kArpMaxGlideTime of the note's sounding (gated) length
-  RampShape shape = RampShape::Linear;
-  float bend = 0.5f;                  // −1 … 1 (rampBendOf: Exponential k = 8 · bend; Overshoot spring 4 · |bend|)
+  float curve = 0.0f;                 // −1 … 1 (Curve: 0 linear, ± exponential k = 8 · curve; Spring: overshoot 4 · |curve|)
+  ArpGlideShape shape = ArpGlideShape::Curve;
+  constexpr bool on() const noexcept { return step || offset != 0.0f; }  // RT-safe
+  // The voice's ramp (note_events.h RampShape) of this side. RT-safe.
+  constexpr RampShape ramp() const noexcept {
+    if (shape == ArpGlideShape::S) return RampShape::SCurve;
+    if (shape == ArpGlideShape::Spring) return RampShape::Overshoot;
+    const float b = curve * 127.0f;  // (its rampBend byte 0: a line)
+    return b > -0.5f && b < 0.5f ? RampShape::Linear : RampShape::Exponential;
+  }
   friend bool operator==(const ArpGlideSide&, const ArpGlideSide&) = default;
 };
 
@@ -278,9 +294,8 @@ struct ArpParams {
   int32_t walkRange = 7;              // Harmonic Walk: h … h + Range, 0 … kArpMaxWalkRange
   bool walkUnder = false;             // Harmonic Walk: undertones
   ArpWalkOrder walkOrder = ArpWalkOrder::Up;
-  // AP.3 glides; AP.10: Into and Out each with their own time, shape and bend.
+  // AP.3 glides; AR.2: Into and Out each an offset | the neighbouring step, a time, a curve and a shape.
   ArpGlideSide into, out;
-  bool glideCents = false;            // both offsets in cents (else in the pitch unit)
   // AP.4: pulse mode, layers.
   bool pulse = false;
   ArpPulseSource pulseSource = ArpPulseSource::Harmonic;
@@ -309,10 +324,9 @@ enum class ArpParamId : uint16_t {
   VelocityTarget, VelocityRetrigger, Seed,
   // AP.3
   HarmonicBase, WalkRange, WalkUnder, WalkOrder,
-  // AP.10: the two glide sides (each its own time, shape, bend), the offsets' unit
-  // (AP.11: each side's time one param, a fraction of the note)
-  IntoSource, IntoOffset, IntoTime, IntoShape, IntoBend,
-  OutTarget, OutOffset, OutTime, OutShape, OutBend, GlideCents,
+  // AR.2: the two glide sides (arp.h "Glides": what a drag on the note sets; AP.11: a time is a fraction of the note)
+  IntoOffset, IntoPrev, IntoTime, IntoCurve, IntoShape,
+  OutOffset, OutNext, OutTime, OutCurve, OutShape,
   // AP.4
   Pulse, PulseSource, PulseRef, PulseCycle, PulseBars, ProportionLen, Proportion1, Proportion2, Proportion3,
   Proportion4, Proportion5, Proportion6, Proportion7, Proportion8, Layers, LayerLevel1, LayerLevel2, LayerLevel3,
@@ -347,7 +361,7 @@ struct ArpLaneRange {
 inline constexpr ArpLaneRange kArpLaneRange[kArpLaneCount] = {
     {0.0f, 1.0f, 1.0f},     // Velocity: × the velocity (source Lane: the velocity)
     {0.0f, 2.0f, 1.0f},     // Gate: × Gate (the step's gate, clamped 0.01 … 2)
-    {0.0f, 1.0f, 1.0f},     // Glide: × the Into / Out glide's pitch distance
+    {0.0f, 1.0f, 0.0f},     // Glide: the step's slide (AR.2: 0 where nothing is painted; the lane off: × 1)
     {-48.0f, 48.0f, 0.0f},  // Transpose: + steps in the pitch unit (integers)
     {0.0f, 1.0f, 1.0f},     // Chance: the probability the step plays
     {0.0f, 2.0f, 0.0f},     // Skip / Tie: ArpStepKind
@@ -421,19 +435,18 @@ inline constexpr ArpParamInfo kArpParamInfo[] = {
     {ArpParamId::WalkRange, "walkRange", "Walk Range", 0, kArpMaxWalkRange, 7, 1, false, "", true},
     {ArpParamId::WalkUnder, "walkUnder", "Under", 0, 1, 0, 1, true, "", true},
     {ArpParamId::WalkOrder, "walkOrder", "Walk Order", 0, 3, 0, 1, false, "Up|Down|UpDown|Random", true},
-    {ArpParamId::IntoSource, "intoSource", "Into", 0, 2, 0, 1, false, "Off|Step|Offset", true},
-    {ArpParamId::IntoOffset, "intoOffset", "Into Offset", -4800, 4800, 0, 0, false, "", true},
+    {ArpParamId::IntoOffset, "intoOffset", "Into", -kArpMaxGlideOffset, kArpMaxGlideOffset, 0, 0, false, "", true},
+    {ArpParamId::IntoPrev, "intoPrev", "Into Prev", 0, 1, 0, 1, true, "", true},
     {ArpParamId::IntoTime, "intoTime", "Into Time", 0, kArpMaxGlideTime, 0.25f, 0, false, "", true, "%", kArpGlideTimeTaper},
-    {ArpParamId::IntoShape, "intoShape", "Into Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
-     "Linear|Exponential|S-Curve|Overshoot", true},
-    {ArpParamId::IntoBend, "intoBend", "Into Bend", -1, 1, 0.5f, 0, false, "", true},
-    {ArpParamId::OutTarget, "outTarget", "Out", 0, 2, 0, 1, false, "Off|Step|Offset", true},
-    {ArpParamId::OutOffset, "outOffset", "Out Offset", -4800, 4800, 0, 0, false, "", true},
+    {ArpParamId::IntoCurve, "intoCurve", "Into Curve", -1, 1, 0, 0, false, "", true},
+    {ArpParamId::IntoShape, "intoShape", "Into Shape", 0, static_cast<float>(ArpGlideShape::Count) - 1, 0, 1, false,
+     "Curve|S|Spring", true},
+    {ArpParamId::OutOffset, "outOffset", "Out", -kArpMaxGlideOffset, kArpMaxGlideOffset, 0, 0, false, "", true},
+    {ArpParamId::OutNext, "outNext", "Out Next", 0, 1, 0, 1, true, "", true},
     {ArpParamId::OutTime, "outTime", "Out Time", 0, kArpMaxGlideTime, 0.25f, 0, false, "", true, "%", kArpGlideTimeTaper},
-    {ArpParamId::OutShape, "outShape", "Out Shape", 0, static_cast<float>(RampShape::Count) - 1, 0, 1, false,
-     "Linear|Exponential|S-Curve|Overshoot", true},
-    {ArpParamId::OutBend, "outBend", "Out Bend", -1, 1, 0.5f, 0, false, "", true},
-    {ArpParamId::GlideCents, "glideCents", "Cents", 0, 1, 0, 1, true, "", true},
+    {ArpParamId::OutCurve, "outCurve", "Out Curve", -1, 1, 0, 0, false, "", true},
+    {ArpParamId::OutShape, "outShape", "Out Shape", 0, static_cast<float>(ArpGlideShape::Count) - 1, 0, 1, false,
+     "Curve|S|Spring", true},
     {ArpParamId::Pulse, "pulse", "Pulse", 0, 1, 0, 1, true, "", true},
     {ArpParamId::PulseSource, "pulseSource", "Pulse h", 0, 2, 0, 1, false, "Harmonic|Proportion|Order", true},
     {ArpParamId::PulseRef, "pulseRef", "Pulse Ref", 0, kArpMaxPulseH, 8, 1, false, "", true},

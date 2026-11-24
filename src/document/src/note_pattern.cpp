@@ -82,9 +82,10 @@ double degreeCents(const engine::ArpDegreeTable& t, int64_t d) {
   return static_cast<double>(q) * (t.cents.empty() ? 1200.0 : t.equaveCents) + c;
 }
 
-double offsetCents(const engine::ArpParams& params, const engine::ArpTables& tables, double offset) {
-  if (params.glideCents) return offset;
-  const auto k = static_cast<int64_t>(std::llround(offset));
+// AR.2: the cents `k` steps of the device's pitch unit move the NOMINAL note (Degrees: the track table's interval from
+// degree 0; Harmonics: Base → Base + k; Ratio: (p/q)^k). NaN: none (Harmonics below the first).
+constexpr int64_t kSnapSteps = 96;
+double unitCents(const engine::ArpParams& params, const engine::ArpTables& tables, int64_t k) {
   switch (params.unit) {
     case engine::ArpUnit::Harmonics: {
       const double h = params.harmonicBase;
@@ -97,19 +98,15 @@ double offsetCents(const engine::ArpParams& params, const engine::ArpTables& tab
   }
 }
 
-std::string offsetText(const engine::ArpParams& params, double offset) {
+std::string unitText(const engine::ArpParams& params, int64_t k) {
   char s[48];
-  if (params.glideCents) {
-    std::snprintf(s, sizeof s, "%+.0f \xC2\xA2", offset);  // ¢
-    return s;
-  }
-  const auto k = static_cast<long long>(std::llround(offset));
+  const auto kk = static_cast<long long>(k);
   switch (params.unit) {
     case engine::ArpUnit::Harmonics:
-      std::snprintf(s, sizeof s, "h%d → h%lld", params.harmonicBase, params.harmonicBase + k);  // ->
+      std::snprintf(s, sizeof s, "h%d → h%lld", params.harmonicBase, params.harmonicBase + kk);  // →
       break;
-    case engine::ArpUnit::Ratio: std::snprintf(s, sizeof s, "× (%d/%d)^%lld", params.ratioP, params.ratioQ, k); break;
-    default: std::snprintf(s, sizeof s, "%+lld deg", k); break;
+    case engine::ArpUnit::Ratio: std::snprintf(s, sizeof s, "× (%d/%d)^%lld", params.ratioP, params.ratioQ, kk); break;
+    default: std::snprintf(s, sizeof s, "%+lld deg", kk); break;
   }
   return s;
 }
@@ -126,30 +123,60 @@ NoteGlideView noteGlideView(const Project& p, DeviceId device, double bpm) {
   const engine::ArpRate& r = params.rate;
   v.stepMs = r.synced ? 4.0 * 60000.0 / bpm * r.num * r.tupletM / (static_cast<double>(r.den) * r.tupletN) : r.ms;
   v.gate = params.gate;
-  v.cents = params.glideCents;
+  v.maxOffset = engine::kArpMaxGlideOffset;
   const engine::ArpTables tables = tablesOf(p, loc.track->id);
   const double noteMs = v.gate * v.stepMs;
-  auto side = [&](const engine::ArpGlideSide& g, NoteGlideSide& o) {
-    o.mode = static_cast<int32_t>(g.mode);
+  // The unit's steps of the nominal note within the offset's range (k = 0: 0 ¢), ascending.
+  std::vector<std::pair<double, int64_t>> units;
+  for (int64_t k = -kSnapSteps; k <= kSnapSteps; ++k) {
+    const double c = k == 0 ? 0.0 : unitCents(params, tables, k);
+    if (!std::isfinite(c) || std::fabs(c) > engine::kArpMaxGlideOffset || (k != 0 && std::fabs(c) < 0.5)) continue;
+    units.emplace_back(c, k);
+  }
+  std::sort(units.begin(), units.end());
+  for (const auto& [c, k] : units)
+    if (v.snaps.empty() || c - v.snaps.back() >= 0.5) v.snaps.push_back(c);
+  auto side = [&](const engine::ArpGlideSide& g, NoteGlideSide& o, const char* neighbour) {
+    o.on = g.on();
+    o.step = g.step;
     o.offset = g.offset;
-    o.cents = offsetCents(params, tables, g.offset);
-    o.text = offsetText(params, g.offset);
-    o.shape = static_cast<int32_t>(g.shape);
-    o.bend = g.bend;
-    o.time = g.mode == engine::ArpGlide::Off ? 0.0 : static_cast<double>(g.time);  // AP.11: of the note; additive
+    o.shape = static_cast<int32_t>(g.ramp());
+    o.curve = g.curve;
+    o.timeParam = g.time;
+    o.time = o.on ? static_cast<double>(g.time) : 0.0;  // AP.11: of the note; additive
     o.steps = o.time * v.gate;
     o.ms = o.time * noteMs;
+    if (g.step) {
+      o.text = neighbour;
+    } else if (!o.on) {
+      o.text = "off";
+    } else {
+      const std::pair<double, int64_t>* hit = nullptr;
+      for (const auto& u : units)
+        if (std::fabs(u.first - o.offset) < 0.5) hit = &u;
+      if (hit != nullptr) {
+        o.text = unitText(params, hit->second);
+      } else {
+        char s[32];
+        std::snprintf(s, sizeof s, "%+.0f ¢", o.offset);  // ¢
+        o.text = s;
+      }
+    }
   };
-  side(params.into, v.into);
-  side(params.out, v.out);
+  side(params.into, v.into, "prev step");
+  side(params.out, v.out, "next step");
+  v.laneSlide = params.laneOn[static_cast<size_t>(engine::ArpLane::Glide)] && !v.into.on && !v.out.on;
   return v;
 }
 
-double noteGlideOffsetCents(const Project& p, DeviceId device, double offset) {
-  engine::ArpParams params;
-  DeviceLoc loc;
-  if (paramsOf(p, device, params, nullptr, loc) == nullptr) return 0.0;
-  return offsetCents(params, tablesOf(p, loc.track->id), offset);
+double noteGlideSnap(const NoteGlideView& v, double cents) noexcept {
+  double best = cents, bd = 1e300;
+  for (const double s : v.snaps)
+    if (std::fabs(s - cents) < bd) {
+      bd = std::fabs(s - cents);
+      best = s;
+    }
+  return best;
 }
 
 double noteRampShape(int32_t shape, double bend, double u) noexcept {

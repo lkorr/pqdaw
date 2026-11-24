@@ -47,31 +47,36 @@ struct NotePattern {
 // The pattern of note device `device` over `held` (empty: the nominal note) at `bpm`. Library-free.
 NotePattern notePattern(const Project& p, DeviceId device, std::span<const NotePatternHeld> held, double bpm = 120.0);
 
-// AP.10: the GLIDES of one step of note device `device` as its bend view draws them (its values now, at `bpm`): the
-// step's length, the note's (Gate), and each side's mode, offset (its param value, in cents, as text in the unit), time
-// (AP.11: a fraction 0 … 2 of the note → steps / ms; the sides are additive and may overlap or pass the note: the
-// engine's rule, arp.h "Glides"), shape and bend.
+// AR.2 (was AP.10): the GLIDES of one step of note device `device` as its bend view draws and edits them (its values
+// now, at `bpm`): the step's length, the note's (Gate), and each side as the engine reads it (pq/engine/arp.h "Glides":
+// an offset in cents | the neighbouring step, a time — a fraction 0 … 2 of the note; the sides are additive and may
+// overlap or pass the note —, a curve and a shape), plus the offsets a drag snaps to.
 struct NoteGlideSide {
-  int32_t mode = 0;            // 0 Off, 1 Step (Into: the previous step, Out: the next one), 2 Offset
-  double offset = 0.0;         // the Offset param's value (in the unit, or cents)
-  double cents = 0.0;          // the offset in cents (NaN: a rest — Harmonics below the first)
-  std::string text;            // the offset as the unit reads it: "−2 deg", "+100 ¢", "h8 → h9", "× (3/2)^1"
-  double time = 0.0;           // its Time, a fraction of the note (0: Off)
-  double steps = 0.0, ms = 0.0;  // the same in steps / ms
-  int32_t shape = 0;           // RampShape
-  double bend = 0.0;           // −1 … 1
+  bool on = false;             // it glides (step, or an offset that is not 0)
+  bool step = false;           // from the previous step (Into) / to the next step (Out) instead of the offset
+  double offset = 0.0;         // cents (the param)
+  std::string text;            // what it reads: "−2 deg", "h8 → h9", "× (3/2)^1", "+35 ¢", "prev step", "off"
+  double timeParam = 0.0;      // its Time param, a fraction of the note
+  double time = 0.0;           // the same while it is on, else 0
+  double steps = 0.0, ms = 0.0;  // `time` in steps / ms
+  int32_t shape = 0;           // the voice's RampShape (noteRampShape)
+  double curve = 0.0;          // −1 … 1
 };
 struct NoteGlideView {
   bool valid = false;
   double stepMs = 0.0;         // one step (a Rate period)
   double gate = 0.5;           // the note's length in steps
-  bool cents = false;          // Offsets in cents
+  double maxOffset = 2400.0;   // an offset's range, cents either way (the engine's kArpMaxGlideOffset)
+  bool laneSlide = false;      // the Glide lane is on with no side on: its painted steps slide in from the previous step
   NoteGlideSide into, out;
+  // The offsets (cents, ascending, 0 among them, within the offset's range) a drag snaps to: the device's pitch unit's
+  // steps of the NOMINAL note (Degrees: the track table's intervals from degree 0; Harmonics: Base → Base + k; Ratio:
+  // (p/q)^k).
+  std::vector<double> snaps;
 };
 NoteGlideView noteGlideView(const Project& p, DeviceId device, double bpm = 120.0);
-// The cents an Into / Out offset of `offset` moves the note in the device's unit now (Glide cents: itself; Degrees: the
-// track table's interval from degree 0; Harmonics: Base → Base + k; Ratio: (p/q)^k). NaN: a rest.
-double noteGlideOffsetCents(const Project& p, DeviceId device, double offset);
+// The snap of `v` nearest `cents` (itself when there is none).
+double noteGlideSnap(const NoteGlideView& v, double cents) noexcept;
 
 // The voice's glide ramp s(u) (pq/engine/note_events.h rampShapeAt) of RampShape `shape` (0 Linear, 1 Exponential,
 // 2 S-curve, 3 Overshoot) with an arpeggiator Bend −1 … 1: what the panel's drawings evaluate.

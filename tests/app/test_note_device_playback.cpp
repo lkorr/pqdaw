@@ -485,3 +485,107 @@ TEST_CASE("note device playback (AP.2b): a new tuning table (MOS 7 -> 5, a compi
     CHECK(std::fabs(mean(out, k * kStep + 2000, (k + 1) * kStep - 200) - want) / want < 1e-3);  // its pattern place
   }
 }
+
+// AR.2 (the user: "glide doesn't seem to do anything"): the glides through the WHOLE path, not ArpCore alone — the
+// drawn chord → the timeline → the arp stage → the VoiceEngine → the instrument's voice.hz, and the same from the live
+// keyboard. The probe's level is K · the voice's Hz per sample, so a glide is read off the render.
+TEST_CASE("note device playback (AR.2): Into from the previous step bends the voice's Hz in a full render; the Glide "
+          "lane alone slides a painted step; both off: steps jump") {
+  auto glideAt = [](const std::vector<float>& out, double K, size_t at) { return mean(out, at - 24, at + 24) / K; };
+  const double hz[3] = {tuning::kDefaultReferenceHz, tuning::kDefaultReferenceHz * std::exp2(4.0 / 12.0),
+                        tuning::kDefaultReferenceHz * std::exp2(7.0 / 12.0)};
+  const double half = std::sqrt(hz[0] * hz[1]);  // half way from step 0's note to step 1's, in cents
+  SUBCASE("no glide: step 1 sits on its own pitch from its onset") {
+    Rig r;
+    auto link = makeLink(r.store.current());
+    const std::vector<float> out = render(*link, 3.0 * kStep / kRate);
+    const double K = mean(out, 4000, kStep - 200) / hz[0];
+    CHECK(glideAt(out, K, kStep + 4800) == doctest::Approx(hz[1]).epsilon(1e-3));
+  }
+  SUBCASE("Into Prev, 80 % of the note, a line in cents") {
+    Rig r;
+    r.edit(ops::setDeviceParam(r.doc(), r.arp, "intoPrev", position("intoPrev", 1.0)));
+    r.edit(ops::setDeviceParam(r.doc(), r.arp, "intoTime", position("intoTime", 0.8)));  // 9600 frames
+    auto link = makeLink(r.store.current());
+    const std::vector<float> out = render(*link, 3.0 * kStep / kRate);
+    const double K = mean(out, 4000, kStep - 200) / hz[0];
+    CHECK(glideAt(out, K, kStep + 4800) == doctest::Approx(half).epsilon(2e-3));     // half way through the glide
+    CHECK(glideAt(out, K, kStep + 2400) == doctest::Approx(hz[0] * std::pow(hz[1] / hz[0], 0.25)).epsilon(2e-3));
+    CHECK(glideAt(out, K, kStep + 11000) == doctest::Approx(hz[1]).epsilon(1e-3));   // arrived
+    CHECK(glideAt(out, K, 2 * kStep + 4800) == doctest::Approx(std::sqrt(hz[1] * hz[2])).epsilon(2e-3));
+  }
+  SUBCASE("an Into offset of −300 ¢ (what a drag of the head sets)") {
+    Rig r;
+    r.edit(ops::setDeviceParam(r.doc(), r.arp, "intoOffset", position("intoOffset", -300.0)));
+    r.edit(ops::setDeviceParam(r.doc(), r.arp, "intoTime", position("intoTime", 0.8)));
+    auto link = makeLink(r.store.current());
+    const std::vector<float> out = render(*link, 3.0 * kStep / kRate);
+    const double K = mean(out, 11000, kStep - 200) / hz[0];
+    CHECK(glideAt(out, K, kStep + 4800) == doctest::Approx(hz[1] * std::exp2(-150.0 / 1200.0)).epsilon(2e-3));
+  }
+  SUBCASE("the Glide lane alone (no side on): a painted step slides in from the previous step, the others jump") {
+    Rig r;
+    r.edit(ops::setDeviceSetting(r.doc(), r.arp, "glideLane", 1.0));
+    r.edit(ops::setDeviceSetting(r.doc(), r.arp, "glideLen", 2.0));
+    r.edit(ops::setDeviceParam(r.doc(), r.arp, "glideStep2", position("glideStep2", 1.0)));
+    r.edit(ops::setDeviceParam(r.doc(), r.arp, "intoTime", position("intoTime", 0.8)));
+    auto link = makeLink(r.store.current());
+    const std::vector<float> out = render(*link, 3.0 * kStep / kRate);
+    const double K = mean(out, 4000, kStep - 200) / hz[0];
+    CHECK(glideAt(out, K, kStep + 4800) == doctest::Approx(half).epsilon(2e-3));          // step 1: lane step 2 = 1
+    CHECK(glideAt(out, K, 2 * kStep + 4800) == doctest::Approx(hz[2]).epsilon(1e-3));     // step 2: lane step 1 = 0
+  }
+}
+
+TEST_CASE("note device playback (AR.2): the live keyboard path — held keys through the arp glide in the voice's Hz") {
+  DocumentStore store{playback_fixture::unwiredDefaultProject()};
+  IdSource& ids = store.ids();
+  const TrackId track = ids.track();
+  Batch b{"arp live keys", {}};
+  b.commands.push_back(AddTrack{playback_fixture::track(track, TrackKind::Midi, "Live"), {}, kAppend});
+  REQUIRE(store.dispatch(b).ok());
+  playback_fixture::wireSeries(store);
+  (void)test_blocks::addProbeInstrument(store, track);
+  auto edit = [&](const ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(store.dispatch(e->command).ok());
+    return *e;
+  };
+  const DeviceId arp =
+      edit(ops::addDevice(*store.current(), ids, track, noteDevicePatch("arpeggiator"), DeviceKind::AudioEffect)).devices.at(0);
+  edit(ops::setDeviceParam(*store.current(), arp, "rateDen", position("rateDen", 8.0)));
+  edit(ops::setDeviceParam(*store.current(), arp, "gate", position("gate", 1.0)));
+  edit(ops::setDeviceParam(*store.current(), arp, "intoPrev", position("intoPrev", 1.0)));
+  edit(ops::setDeviceParam(*store.current(), arp, "intoTime", position("intoTime", 0.8)));
+  edit(ops::armTrack(*store.current(), track, false));
+  auto link = makeLink(store.current());
+  link->setLivePorts({"Test Port"}, {2.0f});
+  REQUIRE(link->liveRouteTracks() == 1);
+  auto& ports = *link->livePorts();
+  link->flush();
+  engine::Engine& e = link->engine();
+  REQUIRE(e.post(engine::TransportCommand{engine::TransportCommandKind::Play, false, 0, 0, 0}));
+  std::vector<float> out;
+  float l[64], rr[64];
+  float* outs[2] = {l, rr};
+  for (size_t s = 0; s < 3 * kStep; s += 64) {
+    if (s == 0)
+      for (const uint8_t key : {uint8_t{60}, uint8_t{64}}) {
+        engine::RawMidi m;
+        m.port = 0;
+        m.status = 0x90;
+        m.d1 = key;
+        m.d2 = 100;
+        REQUIRE(ports.push(0, m));
+      }
+    e.process(engine::AudioBlock{nullptr, 0, outs, 2, 64, 0, 0, 0});
+    out.insert(out.end(), l, l + 64);
+  }
+  // Steps of 12000: key 60, key 64 (gliding from 60's pitch over 9600), key 60 (gliding from 64's).
+  const double lo = mean(out, 6000, kStep - 200);
+  const double hi = mean(out, kStep + 11000, 2 * kStep - 200);
+  REQUIRE(lo > 0.0);
+  CHECK(hi / lo == doctest::Approx(std::exp2(4.0 / 12.0)).epsilon(1e-3));  // a major third up: the two keys
+  const double mid = mean(out, kStep + 4800 - 24, kStep + 4800 + 24);
+  CHECK(mid / lo == doctest::Approx(std::exp2(2.0 / 12.0)).epsilon(2e-3));  // half way there: the voice glides
+}
