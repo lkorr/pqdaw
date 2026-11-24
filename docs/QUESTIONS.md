@@ -2864,3 +2864,44 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - Left: a claim that reads at once without a wake before it waits up to 50 ms instead of 2 (none known: Play, locate
   and previews wake; samplers pin their samples resident).
 - Status: note
+
+## Q?-OP.6-a · 2026-11-24 · OP.6 · Shaped glides cannot be vectorised with the same bits (F9 not done)
+- Context: `VoiceEngine::renderShaped` (Exponential / S-curve / Overshoot) writes `hz0 · std::exp2(k · s)` per frame.
+  The curve `s` and the cents are closed forms that vectorise exactly; the cost is the scalar UCRT `exp2` (≈ 5 of the
+  6 – 7 ns per voice-frame: 25 – 30 µs per block for 64 gliding voices, 8.7 µs linear). No vector exp2 gives the UCRT's
+  bits: SVML's `_mm256_exp2_pd` differed from `std::exp2` in 37 % of 20 M random arguments (by ≤ 2 ulp of the
+  double). After the float32 rounding of the Hz value none of the 20 M differed (expected rate ≈ 1 in 10^8 … 10^9
+  samples), but that is a rate, not a proof, and the double state a re-targeted glide starts from differs too.
+- Options: A. leave the scalar loop (today). B. 4 frames per `_mm256_exp2_pd` call, the remainder through the same
+  function on a broadcast (the S1 = S8 rule of the exact atoms): ≈ 3× on gliding blocks; a glide's Hz may move by one
+  float ulp about once per 10^8 gliding voice-samples, so a hash / golden over a long glide can move once and is then
+  re-recorded knowingly. C. the tuning kernel's own `exp2Scalar` / `exp2Vec` pair (same arithmetic per lane by
+  construction, no SVML): the same speed class, every glide's double changes in the last ulps once.
+- Choice (provisional): A until the user picks; B is the cheap one (the atoms already rely on SVML being the same
+  function at 1 and 8 lanes).
+- Status: open
+
+## Q?-OP.6-b · 2026-11-24 · OP.6 · What of OP.md F2 / F6 / F12 held, and what is left in OP.5's files
+- F6 held for cents → Hz only (Wavetable Synth −14 … −16 %, session −3.6 %). Not there: the default instrument has no
+  cents → Hz kernel in its profile (expected −3 %: 0); `tuningHz8` in the scenarios is on its unmodulated COPY path
+  (every sample of it falls in the check and the two copy loops; `tuningCoefficients` / `exp2Scalar` do not appear),
+  so "its constant path does eight exp2 and log2 per group per block" is not what costs 3 – 8 %. Removing that copy
+  means the schedule aliasing the node's outputs to its inputs while the tuning is unmodulated (`schedule.cpp` /
+  `codegen.cpp`, a run-time condition: not a kernel change).
+- Not tagged for the reuse, measured: exp / log / pow / tan (2 – 7 ns per 8 values; a moving input paid +6 … +25 %).
+- The JIT's own helpers (`rt::centsToHzV`, `dbToGainV`, … in `runtime.cpp`: 1 – 2 % of the session and the Wavetable
+  Synth) are stateless `void(float* io)` calls inside generated loops: reusing a repeated vector needs a per-call-site
+  slot (or hoisting the call out of the loop for a block-constant operand) in `codegen.cpp`. Left for OP.5 / OP.7.
+- F12 phasor (Hz → increment through double per sample): emitted inline by `codegen.cpp` (Atom::Phasor); nothing in
+  the kernels or the runtime is involved. Left.
+- F12 `reduceKernel` (image_host.cpp, OP.5's file; 2 – 6 % of every synth profile): left. A transposed 8-frame sum
+  CAN keep the bits, but not in `mixOutputs`' hadd order: `horizontalSum` adds ((v0+v4)+(v2+v6)) + ((v1+v5)+(v3+v7)),
+  so the 8-frame form must add each frame's low and high halves first (two frames per ymm through permute2f128),
+  then the movehl and movehdup steps as in-lane shuffles, then gather the 8 sums and add them to `out` in one vector.
+- F2 (b) "the spectrum's FFT runs per painted frame" does not hold: `SpectrumFeed::work` runs on the feed's own
+  thread, reads only frames the tap has written since its last pass (`pos_ ≥ written` → nothing), transforms once per
+  hop, and the faces copy a snapshot only when its sequence moved (`snapshot(seq, …)`, `scopeEnd`, `stereoRead`, …).
+  Its thread was 0.0 % of the samples with a scope playing. Nothing changed.
+- F2 (a) held: the site is `ScopeTracker::fftOf`, through the frame's retry on a third of the window when nothing is
+  pitched (two padded lengths per frame); bench/RESULTS.md.
+- Status: note
