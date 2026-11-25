@@ -46,8 +46,17 @@
 //                 `sr`, products/sums of non-negative bounds, max, x − literal (T1b.3) and, with
 //                 ScheduleOptions::trustParamRanges, the
 //                 declared range minimum of a param (the engine must clamp params to their ranges).
-//    Within a stage and class, ready SCCs are taken depth-first (most recently readied first), so a value is read
-//    soon after it is written and few buffers are live; consecutive loops with the same subBlock share one region.
+//    Order. Within a stage and class, ready SCCs are taken depth-first (most recently readied first), so a value is
+//    read soon after it is written and few buffers are live; consecutive loops with the same subBlock share one
+//    region. OP.5: between a ready item that generated code runs inline, frame by frame (dsp::inlineForm: a
+//    per-sample loop, an element-wise atom, a simple stateful atom of a voice stage, a global gain with pattern
+//    target and time) and a ready kernel call, the order stays with the form of the item taken last, and a stage
+//    starts with its ready calls. A stage's inline items then come in as few groups as its dependencies allow:
+//    independent per-sample recursions (a voice's envelopes) next to each other with what leads into them and what
+//    reads them, the calls that only read them (a tap, a table read) behind. Generated code runs such a group as
+//    one loop over frames, where the recursions overlap in the out-of-order window instead of each loop waiting on
+//    its own recurrence (pq/jit/codegen.h, chains). Only the order of independent items changes: every op computes
+//    what it computed, on both backends. The rule is a property of the graph and of the atoms, not of a device.
 //    Solve blocks of param/const rate are solved once per block inside the Control region.
 // 5. Buffers. Every op output is a virtual value; values get physical buffers by interval reuse (linear scan in op
 //    order, LIFO free lists per class: 8-float pattern, block × 1 lane, block × 8 lanes). Element-wise ops
