@@ -86,26 +86,13 @@ static_assert(offsetof(dsp::FlipFlopState, prevClk) == 32 && offsetof(dsp::Sampl
 static_assert(offsetof(dsp::CounterState, prevUp) == 32 && offsetof(dsp::CounterState, prevDown) == 64);
 static_assert(offsetof(dsp::ClockDivState, prevClk) == 32 && offsetof(dsp::TimerState, prevTrig) == 32);
 
+// dsp::inlineForm (pq/dsp/atoms.h) says which atoms are generated inline; the scheduler orders by the same list.
 bool isElementwise(Atom a) noexcept {
-  switch (a) {
-    case Atom::Add: case Atom::Sub: case Atom::Mul: case Atom::Div: case Atom::Min: case Atom::Max: case Atom::Mod:
-    case Atom::Pow: case Atom::PowFast: case Atom::CentsToHz: case Atom::CentsToHzFast: case Atom::HzToCents:
-    case Atom::HzToCentsFast: case Atom::Neg: case Atom::Abs: case Atom::Sign: case Atom::Floor: case Atom::Frac:
-    case Atom::Sqrt: case Atom::SqrtFast: case Atom::Exp: case Atom::ExpFast: case Atom::Log: case Atom::LogFast:
-    case Atom::Sin: case Atom::SinFast: case Atom::Tan: case Atom::TanFast: case Atom::Tanh: case Atom::TanhFast:
-    case Atom::DbToGain: case Atom::DbToGainFast: case Atom::GainToDb: case Atom::GainToDbFast: case Atom::Const:
-    case Atom::Clip: case Atom::Lerp: case Atom::Select: case Atom::MulAdd: case Atom::And: case Atom::Or:
-    case Atom::Xor: case Atom::Nand: case Atom::Nor: case Atom::Not: case Atom::Gt: case Atom::Lt: case Atom::Ge:
-    case Atom::Le: case Atom::Eq: case Atom::Ne: case Atom::GateToReal: case Atom::Mux: case Atom::Demux:
-    case Atom::SinePhase: case Atom::Atan2:
-      return true;
-    default:
-      return false;
-  }
+  return dsp::inlineForm(a) == dsp::InlineForm::Elementwise || dsp::inlineForm(a) == dsp::InlineForm::Exact;
 }
 
 // Stateful atoms generated inline in per-frame contexts (one frame per evaluation; state in registers).
-bool isSimpleStateful(Atom a) noexcept { return inlineStateful(a); }  // jit_image.cpp
+bool isSimpleStateful(Atom a) noexcept { return dsp::inlineForm(a) == dsp::InlineForm::Stateful; }
 
 int exactOf(Atom a) noexcept {
   switch (a) {
@@ -124,6 +111,7 @@ int exactOf(Atom a) noexcept {
 }
 
 using Map = std::unordered_map<uint32_t, Value*>;  // buffer index → its value at the current frame (this width)
+constexpr uint32_t kExternalKey = 0x80000000u;      // | external index: an engine block's loaded frame (read())
 
 struct Frame {
   Value* t = nullptr;   // i64 frame index of the first frame this evaluation covers
@@ -163,6 +151,13 @@ public:
   }
 
   Result<GenResult> run() {
+    // The scheduler orders by dsp::inlineForm; its exact transcendentals must be the ones generated through rt::Exact.
+    static const bool formsAgree = [] {
+      for (uint32_t a = 0; a < dsp::kAtomCount; ++a)
+        if ((exactOf(static_cast<Atom>(a)) >= 0) != (dsp::inlineForm(static_cast<Atom>(a)) == dsp::InlineForm::Exact)) return false;
+      return true;
+    }();
+    if (!formsAgree) return Error{ErrorCode::Unknown, "jit: dsp::inlineForm and the exact transcendentals disagree", {}};
     analyse();
     if (o_.scalarLanes)
       for (const g::Stage& st : s_.stages) {
@@ -189,6 +184,8 @@ public:
       }
     }
     for (uint32_t i = 0; i < s_.ops.size(); ++i) (inline_[i] ? res_.inlinedOps : res_.calledOps) += 1;
+    for (uint32_t r = 0; r < s_.regions.size(); ++r)
+      if (chainEnd_[r] >= 0) forChainOps(r, static_cast<uint32_t>(chainEnd_[r]), [&](uint32_t) { ++res_.chainedOps; });
     std::string err;
     llvm::raw_string_ostream os(err);
     if (llvm::verifyModule(M_, &os)) return Error{ErrorCode::Unknown, "jit: generated IR does not verify: " + err, {}};
@@ -206,11 +203,15 @@ public:
 private:
   // A voice stage the host lets pair, without per-frame calls and without a chain too big for a pair's frame (after
   // analyse()).
-  bool wantsPair(uint32_t k) const {
+  bool wantsPair(uint32_t k) const { return pairsBut(k) && chainCost_[k] <= pairChainCap(s_.stages[k]); }
+  // ... but for its chains' cost (after inline_ is known: analyse() cuts such a stage's chains at pairChainCap).
+  bool pairsBut(uint32_t k) const {
     const g::Stage& st = s_.stages[k];
     return st.poly == g::Poly::Voice && !o_.scalarLanes && o_.pairs && k < L_.pairable.size() && L_.pairable[k] &&
-           !frameCalls(st) &&
-           chainCost_[k] <= (stageChecksRamps(st) && !pairCanBail(st) ? kMaxPairChainCostWithRamps : kMaxPairChainCost);
+           !frameCalls(st);
+  }
+  uint32_t pairChainCap(const g::Stage& st) const noexcept {
+    return stageChecksRamps(st) && !pairCanBail(st) ? kMaxPairChainCostWithRamps : kMaxPairChainCost;
   }
   // TX.smooth: a pair function of a stage with checked ramps (TX.smooth-fix1: non-static sources) hands a block in
   // which one moves back to the host (which then runs the two groups one by one) when everything before its ramp check
@@ -418,6 +419,10 @@ private:
       }
     }
     chainEnd_.assign(s_.regions.size(), -1);
+    chainHead_.assign(s_.regions.size(), 0);
+    chainTail_.assign(s_.regions.size(), 0);
+    skipHead_.assign(s_.regions.size(), 0);
+    skipTail_.assign(s_.regions.size(), 0);
     chainCost_.assign(s_.stages.size(), 0);
     for (uint32_t sk = 0; sk < s_.stages.size(); ++sk) {
       const g::Stage& st = s_.stages[sk];
@@ -435,60 +440,97 @@ private:
         return voice || runCost(reg.firstOp, reg.firstOp + reg.numOps) <= kMaxGlobalChainBlockCost;
       };
       auto isLoop = [&](uint32_t q) { return s_.regions[q].kind == g::RegionKind::Loop; };
-      uint32_t r = st.firstRegion;
       const uint32_t end = st.firstRegion + st.numRegions;
-      while (r < end) {
-        if (!chainable(r) || (!voice && !isLoop(r))) {
-          ++r;
-          continue;
-        }
-        uint32_t last = r, cost = 0, loops = 0, lastLoop = r;
-        std::set<std::pair<int, uint32_t>> live;  // global chains: values held across the loop (kMaxGlobalChainLive)
-        // TMM.6: a chain runs one frame count (an oversample region's regions chain only with each other).
-        for (uint32_t q = r; q < end && chainable(q) && segmentOf(q) == segmentOf(r) &&
-                             s_.regions[q].factor == s_.regions[r].factor;
-             ++q) {
-          const g::Region& reg = s_.regions[q];
-          const uint32_t c = runCost(reg.firstOp, reg.firstOp + reg.numOps);
-          if (q > r && cost + c > kMaxRunCost) break;
-          if (!voice) {
-            std::set<std::pair<int, uint32_t>> more = live;
-            for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
-              const auto opIns = s_.inputs(s_.ops[i]);
-              for (uint32_t k = 0; k < opIns.size(); ++k)
-                if (opIns[k].kind != g::Operand::Kind::None && isPattern(opIns[k]) && !prologueOnly(i, k))
-                  more.insert({static_cast<int>(opIns[k].kind), opIns[k].index});
-              if (s_.ops[i].state != g::kNone) more.insert({-1, s_.ops[i].state});
+      auto form = [&](uint32_t cap) {
+        std::vector<Chain> out;
+        uint32_t r = st.firstRegion;
+        while (r < end) {
+          if (!chainable(r) || (!voice && !isLoop(r))) {
+            ++r;
+            continue;
+          }
+          uint32_t last = r, cost = 0, loops = 0, lastLoop = r;
+          bool cut = false;
+          std::set<std::pair<int, uint32_t>> live;  // global chains: values held across the loop (kMaxGlobalChainLive)
+          // TMM.6: a chain runs one frame count (an oversample region's regions chain only with each other).
+          for (uint32_t q = r; q < end && chainable(q) && segmentOf(q) == segmentOf(r) &&
+                               s_.regions[q].factor == s_.regions[r].factor;
+               ++q) {
+            const g::Region& reg = s_.regions[q];
+            const uint32_t c = runCost(reg.firstOp, reg.firstOp + reg.numOps);
+            if (q > r && cost + c > cap) {
+              cut = true;
+              break;
             }
-            if (q > r && more.size() > kMaxGlobalChainLive) break;
-            live = std::move(more);
+            if (!voice) {
+              std::set<std::pair<int, uint32_t>> more = live;
+              for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i) {
+                const auto opIns = s_.inputs(s_.ops[i]);
+                for (uint32_t k = 0; k < opIns.size(); ++k)
+                  if (opIns[k].kind != g::Operand::Kind::None && isPattern(opIns[k]) && !prologueOnly(i, k))
+                    more.insert({static_cast<int>(opIns[k].kind), opIns[k].index});
+                if (s_.ops[i].state != g::kNone) more.insert({-1, s_.ops[i].state});
+              }
+              if (q > r && more.size() > kMaxGlobalChainLive) break;
+              live = std::move(more);
+            }
+            cost += c;
+            if (isLoop(q)) {
+              ++loops;
+              lastLoop = q;
+            }
+            last = q;
           }
-          cost += c;
-          if (isLoop(q)) {
-            ++loops;
-            lastLoop = q;
-          }
-          last = q;
+          // A global chain ends with its last loop (trailing Block regions stay vectorised over time); so does a
+          // voice chain cut by its cap (OP.5: they lead into the next chain's loop).
+          if ((!voice || cut) && loops > 0) last = lastLoop;
+          if (last > r && loops >= (voice ? 1u : 2u)) out.push_back({r, last, cost});
+          r = last + 1;
         }
-        if (!voice) last = lastLoop;  // a global chain ends with its last loop (trailing Block regions stay vectorised)
-        if (last > r && loops >= (voice ? 1u : 2u)) {
-          if (voice) chainCost_[sk] = std::max(chainCost_[sk], cost);
-          chainEnd_[r] = static_cast<int32_t>(last);
-          const int32_t id = next++;
-          for (uint32_t q = r; q <= last; ++q)
-            for (uint32_t i = s_.regions[q].firstOp; i < s_.regions[q].firstOp + s_.regions[q].numOps; ++i)
-              if (grp_[i] >= 0) grp_[i] = id;
+        return out;
+      };
+      std::vector<Chain> chains = form(kMaxRunCost);
+      uint32_t chainCap = kMaxRunCost;
+      // OP.5: a stage that could run voice pairs but for a chain above the pair cap (T4.12) is cut into chains below
+      // it, when its regions allow (a single region above the cap leaves the stage as it is: group by group). With
+      // the scheduler grouping a stage's inline regions, the chains are otherwise as long as the stage.
+      if (voice && pairsBut(sk)) {
+        const uint32_t cap = pairChainCap(st);
+        bool above = false, cuttable = true;
+        for (const Chain& ch : chains) {
+          above = above || ch.cost > cap;
+          for (uint32_t q = ch.first; q <= ch.last; ++q)
+            cuttable = cuttable && runCost(s_.regions[q].firstOp, s_.regions[q].firstOp + s_.regions[q].numOps) <= cap;
         }
-        r = last + 1;
+        if (above && cuttable) {
+          chains = form(cap);
+          chainCap = cap;
+        }
+      }
+      if (voice) joinEdges(st, chains, pairsBut(sk) ? std::min(chainCap, pairChainCap(st)) : chainCap, chainable);
+      for (const Chain& ch : chains) {
+        if (voice) chainCost_[sk] = std::max(chainCost_[sk], ch.cost);
+        chainEnd_[ch.first] = static_cast<int32_t>(ch.last);
+        const int32_t id = next++;
+        forChainOps(ch.first, ch.last, [&](uint32_t i) {
+          if (grp_[i] >= 0) grp_[i] = id;
+        });
       }
     }
     // Store elimination. Accesses per buffer in op order (an op's reads before its writes).
-    std::vector<bool> always(s_.buffers.size(), false);
+    // `always`: the solver reads and writes it in memory at any point. `host`: the host reads it after the stage
+    // (outputs; T4.5: probes), so what a group leaves in it is stored, but not a value the same group overwrites
+    // before anything else reads it (OP.5: the scheduler reuses buffers, and an output's buffer held the transients
+    // of a whole fused chain, stored every frame).
+    std::vector<bool> always(s_.buffers.size(), false), host(s_.buffers.size(), false);
     auto mark = [&](const g::Operand& o) {
       if (o.kind == g::Operand::Kind::Buffer && o.index < always.size()) always[o.index] = true;
     };
-    for (const g::OutputRef& o : s_.outputs) mark(o.value);
-    for (const g::ProbeRef& p : s_.probes) mark(p.value);  // T4.5: the host copies it after the stage
+    auto markHost = [&](const g::Operand& o) {
+      if (o.kind == g::Operand::Kind::Buffer && o.index < host.size()) host[o.index] = true;
+    };
+    for (const g::OutputRef& o : s_.outputs) markHost(o.value);
+    for (const g::ProbeRef& p : s_.probes) markHost(p.value);
     for (const g::SolveUnknown& u : s_.unknowns) {
       mark(u.value);
       mark(u.init);
@@ -522,9 +564,12 @@ private:
         if (!list[p].write) continue;
         const int32_t grp = grp_[list[p].op];
         if (grp < 0) continue;
-        bool needed = false;
+        bool needed = host[b];  // read by the host unless this group writes it again first
         for (size_t q = p + 1; q < list.size(); ++q) {
-          if (list[q].write) break;
+          if (list[q].write) {
+            if (grp_[list[q].op] == grp) needed = false;
+            break;
+          }
           if (grp_[list[q].op] != grp) {
             needed = true;
             break;
@@ -533,6 +578,77 @@ private:
         store_[list[p].operand] = needed;
       }
     }
+  }
+
+  struct Chain {
+    uint32_t first, last, cost;
+  };
+  // OP.5: a voice chain also takes the inline ops at the end of the Block region before it and at the start of the
+  // one after it (regions that hold kernel calls, so not chain members): the ops that lead into a per-sample loop
+  // and the ones that read it run in its loop over frames, where their work overlaps the loop's recurrence (an
+  // envelope's loop and the oscillator's phase after it; before, the phase was a loop of its own). A per-sample
+  // loop with no chainable neighbour becomes a chain of its own for them. Ops under a taken branch stay where
+  // their guard is decided. Within the chain's cap, like its regions.
+  template <class Chainable>
+  void joinEdges(const g::Stage& st, std::vector<Chain>& chains, uint32_t cap, Chainable&& chainable) {
+    const uint32_t end = st.firstRegion + st.numRegions;
+    std::vector<uint8_t> member(s_.regions.size(), 0);
+    for (const Chain& ch : chains)
+      for (uint32_t q = ch.first; q <= ch.last; ++q) member[q] = 1;
+    for (uint32_t r = st.firstRegion; r < end; ++r) {
+      const g::Region& reg = s_.regions[r];
+      if (!member[r] && reg.kind == g::RegionKind::Loop && chainable(r))
+        chains.push_back({r, r, runCost(reg.firstOp, reg.firstOp + reg.numOps)});
+    }
+    std::sort(chains.begin(), chains.end(), [](const Chain& a, const Chain& b) { return a.first < b.first; });
+    auto joins = [&](uint32_t i) { return inline_[i] && guardEff_[i] == g::kNone && !branchSelect(i); };
+    auto edge = [&](uint32_t q, uint16_t factor) {  // a Block region of this rate with a call in it
+      if (q < st.firstRegion || q >= end || member[q]) return false;
+      const g::Region& reg = s_.regions[q];
+      return reg.kind == g::RegionKind::Block && reg.factor == factor && reg.numOps > 0 && !chainable(q);
+    };
+    for (Chain& ch : chains) {
+      const uint16_t factor = s_.regions[ch.first].factor;
+      if (ch.first > st.firstRegion && edge(ch.first - 1, factor)) {
+        const g::Region& reg = s_.regions[ch.first - 1];
+        uint32_t k = 0, c = 0;  // as many of them as the cap allows, from the loop outwards
+        while (k < reg.numOps && joins(reg.firstOp + reg.numOps - 1 - k) &&
+               ch.cost + c + opCost(reg.firstOp + reg.numOps - 1 - k) <= cap)
+          c += opCost(reg.firstOp + reg.numOps - 1 - k++);
+        chainHead_[ch.first] = k;
+        skipTail_[ch.first - 1] = k;
+        ch.cost += c;
+      }
+      if (edge(ch.last + 1, factor)) {
+        const g::Region& reg = s_.regions[ch.last + 1];
+        uint32_t k = 0, c = 0;
+        while (k < reg.numOps && joins(reg.firstOp + k) && ch.cost + c + opCost(reg.firstOp + k) <= cap)
+          c += opCost(reg.firstOp + k++);
+        chainTail_[ch.first] = k;
+        skipHead_[ch.last + 1] = k;
+        ch.cost += c;
+      }
+    }
+    std::erase_if(chains, [&](const Chain& ch) { return ch.last == ch.first && !chainHead_[ch.first] && !chainTail_[ch.first]; });
+  }
+  // The ops of the chain that starts at region r0 and ends with r1, in order.
+  template <class Fn>
+  void forChainOps(uint32_t r0, uint32_t r1, Fn&& fn) const {
+    if (const uint32_t k = chainHead_[r0]) {
+      const g::Region& reg = s_.regions[r0 - 1];
+      for (uint32_t i = reg.firstOp + reg.numOps - k; i < reg.firstOp + reg.numOps; ++i) fn(i);
+    }
+    for (uint32_t q = r0; q <= r1; ++q)
+      for (uint32_t i = s_.regions[q].firstOp; i < s_.regions[q].firstOp + s_.regions[q].numOps; ++i) fn(i);
+    if (const uint32_t k = chainTail_[r0]) {
+      const g::Region& reg = s_.regions[r1 + 1];
+      for (uint32_t i = reg.firstOp; i < reg.firstOp + k; ++i) fn(i);
+    }
+  }
+  // The ops region r runs itself (a chain next to it may have taken its first or last inline ops).
+  std::pair<uint32_t, uint32_t> ownOps(uint32_t r) const noexcept {
+    const g::Region& reg = s_.regions[r];
+    return {reg.firstOp + skipHead_[r], reg.firstOp + reg.numOps - skipTail_[r]};
   }
 
   // ================================================================================================================
@@ -722,10 +838,14 @@ private:
     return chainEnd_[r] >= 0 ? static_cast<uint32_t>(chainEnd_[r]) : r;
   }
   bool unitReadsRamps(uint32_t r) const noexcept {
-    const uint32_t last = unitLast(r);
-    for (uint32_t q = r; q <= last; ++q)
-      for (uint32_t i = s_.regions[q].firstOp; i < s_.regions[q].firstOp + s_.regions[q].numOps; ++i)
-        if (opReadsRamps(i)) return true;
+    bool reads = false;
+    if ((voice_ || !memo_[r]) && chainEnd_[r] >= 0) {
+      forChainOps(r, static_cast<uint32_t>(chainEnd_[r]), [&](uint32_t i) { reads = reads || opReadsRamps(i); });
+      return reads;
+    }
+    const auto [a, b] = ownOps(r);
+    for (uint32_t i = a; i < b; ++i)
+      if (opReadsRamps(i)) return true;
     return false;
   }
 
@@ -741,7 +861,7 @@ private:
       }
       const uint32_t last = chainEnd_[r] >= 0 ? static_cast<uint32_t>(chainEnd_[r]) : r;
       auto body = [&] {
-        if (last > r) emitChain(r, last);
+        if (chainEnd_[r] >= 0) emitChain(r, last);
         else emitRegion(r);
       };
       if (!voice_ && r < s_.sleep.regions.size() && s_.sleep.regions[r].segment != g::kNone) emitSleeping(r, last, body);
@@ -1229,9 +1349,17 @@ private:
         return x;
       }
       case g::Operand::Kind::Param: return loadPattern(o, fr.w, fr.hoist);
-      case g::Operand::Kind::External:
+      case g::Operand::Kind::External: {
         if (isPattern(o)) return loadPattern(o, fr.w, fr.hoist);
-        return loadBlk(o, fr);
+        // OP.5: an engine block (voice.gate, a track input) is loaded once per evaluation too: nothing generated
+        // writes one, and a fused loop that reads the gate in every envelope op is throughput-bound.
+        if (!fr.map) return loadBlk(o, fr);
+        const uint32_t key = kExternalKey | o.index;
+        if (auto it = fr.map->find(key); it != fr.map->end()) return it->second;
+        Value* x = loadBlk(o, fr);
+        (*fr.map)[key] = x;
+        return x;
+      }
       default: return v.zero();
     }
   }
@@ -1887,7 +2015,8 @@ private:
     const unsigned lanes = voice_ ? vw_ : 1u;
     if (reg.kind == g::RegionKind::Block) {
       emitBranchStates(ri);
-      emitSlice(reg.firstOp, reg.firstOp + reg.numOps, c64(0), regionFrames(ri));
+      const auto [a, b] = ownOps(ri);
+      emitSlice(a, b, c64(0), regionFrames(ri));
       guardOn_.clear();
       branchAll_.clear();
       branchNone_.clear();
@@ -2038,6 +2167,11 @@ private:
     emitGainBranch(voice_ ? nullptr : emitRegionGainPrologues(r0, r1), [&] {
       forLoop(c64(0), regionFrames(r0), 1, [&](Value* t) {
         Map m;
+        const Frame edge{t, w, &m, true};
+        if (const uint32_t k = chainHead_[r0]) {
+          const g::Region& reg = s_.regions[r0 - 1];
+          for (uint32_t i = reg.firstOp + reg.numOps - k; i < reg.firstOp + reg.numOps; ++i) emitInline(i, edge);
+        }
         for (uint32_t r = r0; r <= r1; ++r) {
           const g::Region& reg = s_.regions[r];
           if (reg.kind == g::RegionKind::Block) {
@@ -2046,6 +2180,10 @@ private:
           } else {
             emitPerFrame(reg, t, w, m, true);
           }
+        }
+        if (const uint32_t k = chainTail_[r0]) {
+          const g::Region& reg = s_.regions[r1 + 1];
+          for (uint32_t i = reg.firstOp; i < reg.firstOp + k; ++i) emitInline(i, edge);
         }
       });
     });
@@ -2680,6 +2818,9 @@ private:
   std::vector<int32_t> grp_;
   std::vector<uint32_t> opRegion_;
   std::vector<int32_t> chainEnd_;  // per region: the last region of the chain it starts, or −1
+  // OP.5 (joinEdges): per chain start, the inline ops it takes from the end of the region before it and from the
+  // start of the region after it; per region, the ops a chain took from its start / end.
+  std::vector<uint32_t> chainHead_, chainTail_, skipHead_, skipTail_;
   std::vector<uint32_t> chainCost_;  // per stage: the cost of its largest chain (T4.12: pair functions)
   std::vector<uint8_t> memo_;        // per region: a memo Control region (Q126)
   std::vector<uint8_t> masked_;      // per region: a memo region run in param-mask runs (TX.vca-knob2)

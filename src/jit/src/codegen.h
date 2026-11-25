@@ -26,6 +26,17 @@
 // from the first to the last of two or more per-sample loops, cheap Block regions between them run scalar per frame,
 // one sleep segment per chain, and a cap on the values held across the loop (codegen.cpp kMaxGlobalChainLive) — so
 // one feedback loop after another (filter cascades, crossovers, L/R and M/S channels) overlap instead of adding up.
+//   OP.5: the scheduler puts a stage's inline items next to each other (schedule.h "Order"), so a voice's
+// independent recursions (the Operator's four envelopes) are one chain. A voice chain also takes the inline ops at
+// the end of the Block region before it and at the start of the one after it (regions that hold kernel calls, so
+// not members; ops under a taken uniform branch stay), and a per-sample loop without a chainable neighbour becomes
+// a chain for them: what leads into a loop and what reads it (the oscillator's phase next to the envelope) runs in
+// its loop over frames. A chain is throughput-bound once its recursions overlap, so nothing is gained past that:
+// a stage that could run voice pairs but for a chain above the pair cap (kMaxPairChainCost) is cut into chains
+// below it, and the ops joined at the edges stay within the cap too. GenResult::chainedOps counts a chain's ops.
+//   In one evaluation (a frame of a loop, a chunk of a run) a block is loaded once, engine blocks (voice.gate, an
+// input) included, and a buffer the host reads after the stage (an output, a probe) is stored only with the value
+// its group leaves in it: the scheduler reuses buffers, so an output's buffer also held a chain's transients.
 //
 //   Block regions and sub-blocked Loop regions ("slices" of frames):
 //     - runs of consecutive stateless element-wise ops (math, logic, mux/demux, select, sine, fast_ functions,
@@ -109,6 +120,7 @@ struct GenResult {
   std::vector<std::string> pairFunctions;   // per Schedule::stages entry: the two-group function, or empty
   uint32_t inlinedOps = 0;   // ops generated inline
   uint32_t calledOps = 0;    // ops that call a dsp kernel or runtime helper
+  uint32_t chainedOps = 0;   // ops of chains (regions fused into one loop over frames, with the ops joined at their edges)
 };
 
 Result<GenResult> generate(const graph::Schedule& s, const HostLayout& layout, PtrTable& tab, llvm::Module& m,

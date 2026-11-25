@@ -326,6 +326,7 @@ uint32_t opNodes(const Schedule& s) {
 // ---- structure: expected dumps --------------------------------------------------------------------------------
 
 TEST_CASE("schedule: a block-wise chain with in-place ops and a z1 outside any loop") {
+  // OP.5: a stage starts with its ready kernel calls (a global z1 is one), then the inline items stay together.
   CHECK(dumpOf(kChainA) == R"(schedule 'A': 1 stages, 1 regions, 5 ops; buffers: 2 block, 0 pattern; state: 64 B global, 0 B per voice group
 params:
   p0 'g' real = 0.5 [0..1]
@@ -334,13 +335,13 @@ externals:
 buffers: b0=blk1 b1=blk1
 stage 0 global
   region 0 block
-    #0 mul/1 (e0, ~p0) -> b0  mul#6
-    #1 mul/1 (b0, ~2) -> b0  mul#5
-    #2 tanh/1 (b0) -> b0  tanh#4
-    #3 z1/1 (e0) -> b1 [s0]  z1#8
-    #4 add/1 (b0, b1) -> b0  add#3
+    #0 z1/1 (e0) -> b0 [s0]  z1#8
+    #1 mul/1 (e0, ~p0) -> b1  mul#6
+    #2 mul/1 (b1, ~2) -> b1  mul#5
+    #3 tanh/1 (b1) -> b1  tanh#4
+    #4 add/1 (b1, b0) -> b1  add#3
 outputs:
-  out 'y' ch0 <- b0 (global)
+  out 'y' ch0 <- b1 (global)
 state global (64 B):
   s0 @0 +32 z1/1 z1#8 ch0
 )");
@@ -414,6 +415,48 @@ TEST_CASE("schedule: loops with the same sub-block share a region; each differen
   std::sort(subs.begin(), subs.end());
   // a and b (both z1: per sample) share one region; c (linear, 10) and d (cubic, 5 − 1) have their own.
   CHECK(subs == std::vector<uint32_t>{1, 4, 10});
+}
+
+// OP.5: among the ready items of a stage, the order stays with the form of the last one (inline code or a kernel
+// call, dsp::inlineForm), so independent per-sample recursions come together, where generated code runs them in one
+// loop, and the calls that only read them follow.
+TEST_CASE("schedule: a stage's inline items stay together: kernel calls between independent loops move behind them (OP.5)") {
+  Compiled c;
+  compile(c, R"(patch O {
+  in x : audio
+  out y : audio
+  a = z1(a * 0.5 + x)
+  b = z1(b * 0.25 + x)
+  c = z1(c * 0.125 + x)
+  y = tanh(a) + tanh(b) * 2 + tanh(c) * 3
+}
+)");
+  const Schedule& s = ok(c);
+  checkStructure(s, c.typed);
+  // tanh is exact (a block-wise call in a slice); the three recursions are one Loop region, before every call.
+  uint32_t loops = 0, lastLoopOp = 0, firstCall = kNone, flips = 0;
+  int prev = -1;
+  for (const Region& r : s.regions) {
+    if (r.kind == RegionKind::Loop) {
+      ++loops;
+      lastLoopOp = r.firstOp + r.numOps - 1;
+    }
+    if (r.kind == RegionKind::Control) continue;
+    for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) {
+      const bool call = r.kind == RegionKind::Block && dsp::inlineForm(s.ops[i].kernel) != dsp::InlineForm::Elementwise;
+      if (call && firstCall == kNone) firstCall = i;
+      if (prev >= 0 && (prev == 1) != call) ++flips;
+      prev = call ? 1 : 0;
+    }
+  }
+  CHECK(loops == 1);
+  REQUIRE(firstCall != kNone);
+  CHECK(lastLoopOp < firstCall);
+  CHECK(flips == 2);  // loops | tanh, tanh, tanh | the products and sums
+  // A voice stage's simple stateful atoms are inline there (a phasor), calls in a global stage.
+  CHECK(dsp::inlineForm(dsp::Atom::Phasor) == dsp::InlineForm::Stateful);
+  CHECK(dsp::inlineForm(dsp::Atom::Tanh) == dsp::InlineForm::Exact);
+  CHECK(dsp::inlineForm(dsp::Atom::Svf) == dsp::InlineForm::Call);
 }
 
 TEST_CASE("schedule: solve blocks (audio rate in a loop, param rate in the control region, previous-solution state)") {

@@ -195,6 +195,16 @@ namespace pq::graph {
   // engine voice-output reads at a stage end, a loop's next iteration) as keeping the value past that op;
   // ScheduleOptions::shareBuffers = false gives each value its own buffer (the replay checker, sched_replay.h, compares
   // the two). Loop sub-block bounds are evaluated in float32 like the runtime.
+  // OP.5 (schedule.h "Order"; `dsp::inlineForm` in pq/dsp/atoms.h is the one list of what generated code runs inline,
+  // read by the scheduler and by codegen): among the ready items of one (stage, class, factor) the order stays with the
+  // form of the last item taken (inline, frame by frame / a kernel call), and a stage starts with its ready calls. A
+  // stage's inline items then form as few groups as the dependencies allow, and the JIT runs a group as one loop over
+  // frames (codegen.h: a voice chain = its per-sample loops, the all-inline Block regions between them and the inline
+  // ops at the edges of the Block regions around it; cut at the pair cap so the stage keeps its two-group function):
+  // independent recursions overlap instead of each loop waiting on its own recurrence (Operator −25 %, default
+  // instrument −13 … −19 %, bench/RESULTS.md). Derived from the graph's dependencies and the atoms' forms only; the
+  // interpreter runs the same op order. `jit::CompileStats::chainedOps` counts the ops that run in chains (cache
+  // format 6).
   // TX.smooth (schedule.h "Param ramps"; QUESTIONS Q?-TX.smooth-a): every param is smooth when it changes, in every
   // device, by one mechanism at the param → audio boundary. After outputs() (values still virtual), insertRamps() finds
   // each Spl input of a Kernel op in a Block / Loop region (not a solve body) whose operand is a real pattern (Param,

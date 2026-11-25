@@ -91,6 +91,7 @@ struct CompileStats {
   uint32_t irInstructions = 0;  // after optimisation
   uint32_t inlinedOps = 0;      // schedule ops generated inline
   uint32_t calledOps = 0;       // schedule ops that call a dsp kernel or a runtime helper
+  uint32_t chainedOps = 0;      // inline ops that run in a chain: one loop over frames for several regions (OP.5)
   uint32_t pairedStages = 0;    // voice stages that got a two-group function (VoiceCode::Pairs*, T1b.2)
   uint64_t objectBytes = 0;     // size of the machine-code object(s) linked
   uint32_t objects = 0;         // machine-code objects linked: 2 for a module split by function (PF.4), else 0 or 1

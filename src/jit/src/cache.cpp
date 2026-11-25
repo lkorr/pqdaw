@@ -52,8 +52,8 @@ namespace g = pq::graph;
 
 // Entry format: bump kFormat whenever the payload layout or the meaning of a key field changes.
 constexpr char kMagic[8] = {'P', 'Q', 'J', 'I', 'T', 'C', 'C', 'H'};
-constexpr uint32_t kFormat = 5;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3); 4: objects (PF.4);
-                                 // 5: KernelArgs::laneMask (SM.14)
+constexpr uint32_t kFormat = 6;  // 2: pair functions (T1b.2); 3: no ramp-mode functions (PF.3); 4: objects (PF.4);
+                                 // 5: KernelArgs::laneMask (SM.14); 6: chainedOps (OP.5)
 constexpr uint32_t kHeaderBytes = 64;
 constexpr uint64_t kMaxPayload = uint64_t{256} << 20;
 constexpr const wchar_t* kExt = L".pqjit";
@@ -465,7 +465,7 @@ bool parsePayload(const uint8_t* p, size_t n, Entry& e) {
     if (!r.get(off)) return false;
   uint8_t probes = 0;
   if (!r.get(e.irHash.lo) || !r.get(e.irHash.hi) || !r.get(e.objectBytes) || !r.get(e.irInstructions) ||
-      !r.get(e.inlinedOps) || !r.get(e.calledOps) || !r.get(probes) || probes > 1)
+      !r.get(e.inlinedOps) || !r.get(e.calledOps) || !r.get(e.chainedOps) || !r.get(probes) || probes > 1)
     return false;
   e.stackProbes = probes != 0;
   // A schedule without stages has no code (and no object); a split module has one object per part (PF.4).
@@ -501,7 +501,7 @@ std::vector<uint8_t> payloadOf(const Entry& e) {
   s.put(static_cast<uint32_t>(e.fnOffsets.size()));
   for (uint64_t off : e.fnOffsets) s.put(off);
   s.put(e.irHash.lo), s.put(e.irHash.hi), s.put(e.objectBytes), s.put(e.irInstructions), s.put(e.inlinedOps);
-  s.put(e.calledOps), s.put(static_cast<uint8_t>(e.stackProbes));
+  s.put(e.calledOps), s.put(e.chainedOps), s.put(static_cast<uint8_t>(e.stackProbes));
   s.put(static_cast<uint32_t>(e.objects.size()));
   std::vector<uint8_t> out = s.bytes();
   for (const std::vector<uint8_t>& o : e.objects) {

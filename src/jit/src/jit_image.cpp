@@ -62,19 +62,6 @@ void JitImage::process(e::ProcessContext& ctx) noexcept {  // RT-safe
       });
 }
 
-bool inlineStateful(dsp::Atom a) noexcept {
-  switch (a) {
-    case dsp::Atom::Schmitt: case dsp::Atom::Rise: case dsp::Atom::Fall: case dsp::Atom::Change:
-    case dsp::Atom::SrFlipFlop: case dsp::Atom::DFlipFlop: case dsp::Atom::TFlipFlop: case dsp::Atom::Counter:
-    case dsp::Atom::ClockDiv: case dsp::Atom::Pulse: case dsp::Atom::Timer: case dsp::Atom::Z1:
-    case dsp::Atom::Z1Read: case dsp::Atom::Z1Write: case dsp::Atom::SampleHold: case dsp::Atom::Latch:
-    case dsp::Atom::Phasor: case dsp::Atom::SineHz:
-      return true;
-    default:
-      return false;
-  }
-}
-
 void finishPairs(JitImage& img, const g::Schedule& s) {
   std::vector<uint8_t> paired(s.stages.size(), 0);
   for (uint32_t k = 0; k < s.stages.size() && k < img.pairFns_.size(); ++k) paired[k] = img.pairFns_[k] != nullptr;
