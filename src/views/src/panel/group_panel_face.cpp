@@ -1102,6 +1102,11 @@ void PanelHost::wake() {
     voiceTimer_ = requestReadoutTimer();
 }
 
+void PanelHost::wakeVoices() {  // OP.2
+  if (voiceTimer_ != 0 || tree() == nullptr || !visible()) return;
+  if (face_->voices() != nullptr || face_->ticking() || face_->ghostsLive()) voiceTimer_ = requestReadoutTimer();
+}
+
 void PanelHost::transportChanged() {
   if (!visible()) return;
   if (face_->frameTick()) markDirty();

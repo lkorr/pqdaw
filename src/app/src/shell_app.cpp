@@ -776,7 +776,9 @@ void ShellApp::onFramePresented() {
   // TMM.5: voices that started while no face animated (an audition, a note while stopped) wake the faces.
   if (faceView_ != nullptr && faceVoices_->anyFresh()) {
     faceView_->wakeFaces();
-    if (faceChain_ != nullptr) faceChain_->wakeFaces();  // TMM.10
+    // TMM.10. OP.2: wakeVoices, not wakeFaces: while a note sounds some tap is fresh at every frame (a face polled at
+    // the readout rate, or one not shown at all), and wakeFaces damaged every panel each time: a frame per refresh.
+    if (faceChain_ != nullptr) faceChain_->wakeVoices();
   }
   if (frames_ != 1) return;
   std::printf("pqdaw: %s\n", firstFrameReport().c_str());

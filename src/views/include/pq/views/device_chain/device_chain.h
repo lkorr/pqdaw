@@ -138,6 +138,9 @@ public:
   std::function<VoiceTapReader*(doc::DeviceId device, std::string_view path)> faceVoices;
   // TMM.10: a face's reader may have become live (a note while nothing animated): the faces shown poll again.
   void wakeFaces();
+  // OP.2: only arms the faces' readout polls that are not running (panel::PanelHost::wakeVoices): no repaint. What the
+  // app calls after a presented frame while voice taps have unread records.
+  void wakeVoices();
   // A device's frame and a leaf's (or a rack's) framed panel (tests).
   ui::Widget* frameOf(doc::DeviceId device) const noexcept;
   panel::BlockFrame* panelOf(doc::DeviceId device) const noexcept;

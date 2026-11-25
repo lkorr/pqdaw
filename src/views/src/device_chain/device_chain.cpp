@@ -1249,6 +1249,12 @@ void DeviceChainView::wakeFaces() {
   for (panel::PanelHost* h : hs) h->wake();
 }
 
+void DeviceChainView::wakeVoices() {  // OP.2
+  std::vector<panel::PanelHost*> hs;
+  for (const auto& [id, f] : impl_->all) f->hosts(hs);
+  for (panel::PanelHost* h : hs) h->wakeVoices();
+}
+
 bool DeviceChainView::addDevice(const doc::DeviceInfo& info) {
   const doc::Track* t = impl_->track();
   if (t == nullptr) return false;

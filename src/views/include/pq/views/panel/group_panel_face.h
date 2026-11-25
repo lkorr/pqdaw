@@ -280,6 +280,10 @@ public:
   void notifyChanged();
   // GU.13: the face's voices may have become live (a note while nothing animated): it polls again.
   void wake();
+  // OP.2: the same without a repaint: arms the readout poll when it is not running (nothing while it is). For a caller
+  // that asks at every presented frame (the app, while any voice tap has unread records): wake() damages the whole
+  // host each time, which kept frames coming at the display's rate for as long as a note sounded.
+  void wakeVoices();
   // DT.1: the transport started or stopped: the face's frame ticks (a tempo slider) poll while it plays; nothing is
   // repainted unless a tick says so.
   void transportChanged();
