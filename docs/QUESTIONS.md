@@ -2879,7 +2879,15 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   construction, no SVML): the same speed class, every glide's double changes in the last ulps once.
 - Choice (provisional): A until the user picks; B is the cheap one (the atoms already rely on SVML being the same
   function at 1 and 8 lanes).
-- Status: open
+- Decided (user, 2026-11-24): bit exactness of the audio output is not required; bits may move, audible quality may
+  not. Done in OP.9, as neither B nor C exactly: a group without ops in the block walks its glides as rows (8 lanes
+  per frame, `VoiceEngine::renderGlideRows`), 2^x by an inline polynomial of its own (`glideExp2` in voices.cpp:
+  round, Taylor degree 10 as an Estrin tree, exponent add; < 3.1e-13 relative; the scalar form is the vector's lane
+  0, so the per-lane walk of a block with ops gives the same bits). SVML and the tuning kernel's Horner pair were
+  measured first (per lane, 4 frames per call: both ≈ 2× only, the 40-cycle Horner chain / the call bound the
+  overlap). Linear glides, every shape's cents and the recursions keep their bits; only the shaped Hz moved: 5 of
+  3.4 · 10^7 shaped glide points differ from the std::exp2 walk, by 1 float ulp (≤ 0.0002 cents); ends exact.
+- Status: decided (OP.9)
 
 ## Q?-OP.6-b · 2026-11-24 · OP.6 · What of OP.md F2 / F6 / F12 held, and what is left in OP.5's files
 - F6 held for cents → Hz only (Wavetable Synth −14 … −16 %, session −3.6 %). Not there: the default instrument has no

@@ -910,52 +910,8 @@ void VoiceEngine::resetLaneState(uint32_t lane) noexcept {  // RT-safe
   startMask_[lane >> 3] |= 1u << (lane & 7u);  // the image runs this group's ramps this block (VoiceGroupIO)
 }
 
-// Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides, gain ramps and fades. A constant
-// field equal (bit for bit) to the block's vector fill (`fill`: hz, cents, gate, gain) is already in place.
-void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
-  if (from >= to) return;
-  auto same = [&](float v, int k) { return std::bit_cast<uint32_t>(v) == fill[k]; };
-  const uint32_t g = lane >> 3, l = lane & 7u;
-  float* a = audioSig_.data() + static_cast<size_t>(g) * kAudioSignals * groupStride_;
-  float* hz = a;
-  float* cents = a + groupStride_;
-  if (rampLeft_[lane] == 0) {
-    const float h = static_cast<float>(hz_[lane]), c = static_cast<float>(cents_[lane]);
-    if (!same(h, 0))
-      for (uint32_t f = from; f < to; ++f) hz[f * 8 + l] = h;
-    if (!same(c, 1))
-      for (uint32_t f = from; f < to; ++f) cents[f * 8 + l] = c;
-  } else if (const RampShape shape = shaped_[lane].shape; shape != RampShape::Linear) {  // AP.3: one loop per shape
-    switch (shape) {
-      case RampShape::Exponential: renderShaped<RampShape::Exponential>(lane, from, to, hz + l, cents + l); break;
-      case RampShape::SCurve: renderShaped<RampShape::SCurve>(lane, from, to, hz + l, cents + l); break;
-      default: renderShaped<RampShape::Overshoot>(lane, from, to, hz + l, cents + l); break;
-    }
-  } else {
-    double h = hz_[lane], c = cents_[lane];
-    uint32_t left = rampLeft_[lane];
-    for (uint32_t f = from; f < to; ++f) {
-      hz[f * 8 + l] = static_cast<float>(h);
-      cents[f * 8 + l] = static_cast<float>(c);
-      if (left > 0) {
-        if (--left == 0) {
-          h = hzTarget_[lane];
-          c = centsTarget_[lane];
-        } else {
-          h *= hzMul_[lane];
-          c += centsStep_[lane];
-        }
-      }
-    }
-    hz_[lane] = h;
-    cents_[lane] = c;
-    rampLeft_[lane] = left;
-  }
-  renderLevel(lane, from, to, fill);
-}
-
-// The gate and gain part of renderSegment (from < to).
-void VoiceEngine::renderLevel(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
+// The gate and gain part of renderSegment (from < to); inlined into it (and into renderGroup).
+__forceinline void VoiceEngine::renderLevel(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
   auto same = [&](float v, int k) { return std::bit_cast<uint32_t>(v) == fill[k]; };
   const uint32_t g = lane >> 3, l = lane & 7u;
   float* gate = audioSig_.data() + (static_cast<size_t>(g) * kAudioSignals + 2) * groupStride_;
@@ -1004,6 +960,50 @@ void VoiceEngine::renderLevel(uint32_t lane, uint32_t from, uint32_t to, const u
   } else if (const float v = laneGain_[lane]; !same(v, 3)) {
     for (uint32_t f = from; f < to; ++f) gain[f * 8 + l] = v;
   }
+}
+
+// Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides, gain ramps and fades. A constant
+// field equal (bit for bit) to the block's vector fill (`fill`: hz, cents, gate, gain) is already in place.
+void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
+  if (from >= to) return;
+  auto same = [&](float v, int k) { return std::bit_cast<uint32_t>(v) == fill[k]; };
+  const uint32_t g = lane >> 3, l = lane & 7u;
+  float* a = audioSig_.data() + static_cast<size_t>(g) * kAudioSignals * groupStride_;
+  float* hz = a;
+  float* cents = a + groupStride_;
+  if (rampLeft_[lane] == 0) {
+    const float h = static_cast<float>(hz_[lane]), c = static_cast<float>(cents_[lane]);
+    if (!same(h, 0))
+      for (uint32_t f = from; f < to; ++f) hz[f * 8 + l] = h;
+    if (!same(c, 1))
+      for (uint32_t f = from; f < to; ++f) cents[f * 8 + l] = c;
+  } else if (const RampShape shape = shaped_[lane].shape; shape != RampShape::Linear) {  // AP.3: one loop per shape
+    switch (shape) {
+      case RampShape::Exponential: renderShaped<RampShape::Exponential>(lane, from, to, hz + l, cents + l); break;
+      case RampShape::SCurve: renderShaped<RampShape::SCurve>(lane, from, to, hz + l, cents + l); break;
+      default: renderShaped<RampShape::Overshoot>(lane, from, to, hz + l, cents + l); break;
+    }
+  } else {
+    double h = hz_[lane], c = cents_[lane];
+    uint32_t left = rampLeft_[lane];
+    for (uint32_t f = from; f < to; ++f) {
+      hz[f * 8 + l] = static_cast<float>(h);
+      cents[f * 8 + l] = static_cast<float>(c);
+      if (left > 0) {
+        if (--left == 0) {
+          h = hzTarget_[lane];
+          c = centsTarget_[lane];
+        } else {
+          h *= hzMul_[lane];
+          c += centsStep_[lane];
+        }
+      }
+    }
+    hz_[lane] = h;
+    cents_[lane] = c;
+    rampLeft_[lane] = left;
+  }
+  renderLevel(lane, from, to, fill);
 }
 
 // AP.3: a shaped glide (not Linear) over frames [from, to) of lane `lane` (hz / cents point at its lane column).
@@ -1288,8 +1288,10 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
   // when one of them was not such a constant last block, or holds other values (levelFrames_ / levelFill_).
   const bool levelConst = noOps && (gainRamps | fades) == 0;
   float* lf = levelFill_.data() + static_cast<size_t>(g) * 16;
-  const bool levelKept = levelConst && levelFrames_[g] >= frames && std::memcmp(lf, gv, sizeof gv) == 0 &&
-                         std::memcmp(lf + 8, av, sizeof av) == 0;
+  auto sameBits = [](const float* p, __m256 v) noexcept {
+    return _mm256_movemask_epi8(_mm256_cmpeq_epi32(_mm256_castps_si256(_mm256_loadu_ps(p)), _mm256_castps_si256(v))) == -1;
+  };
+  const bool levelKept = levelConst && levelFrames_[g] >= frames && sameBits(lf, gt) && sameBits(lf + 8, gn);
   if (!levelKept) {
     for (uint32_t f = 0; f < frames; ++f) {
       _mm256_store_ps(a + 2 * groupStride_ + f * 8, gt);
@@ -1297,9 +1299,12 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
     }
     if (!gainRows)
       for (uint32_t f = 0; f < frames; ++f) _mm256_store_ps(gain + f * 8, gn);
-    std::memcpy(lf, gv, sizeof gv);
-    std::memcpy(lf + 8, av, sizeof av);
-    levelFrames_[g] = levelConst ? frames : 0u;
+    levelFrames_[g] = 0;
+    if (levelConst) {
+      _mm256_storeu_ps(lf, gt);
+      _mm256_storeu_ps(lf + 8, gn);
+      levelFrames_[g] = frames;
+    }
   }
   if (pitchRows) {
     renderGlideRows(g, frames, a, a + groupStride_);
