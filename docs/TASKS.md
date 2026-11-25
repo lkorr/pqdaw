@@ -966,7 +966,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **OP.4 Engine housekeeping: voice-unit param pass, silent meters, idle note sources, master sum, disk poll** (plan F4, F7, F8) *(merged dac5be82; Q?-OP.4-a, -b; synth tracks −4 … −9 %, 64 silent tracks −49 %, disk thread 0.37 → 0.03 %; master-sum part not done)*
 - [ ] **OP.5 Voice stages: independent recursions in one loop** (plan F5; lane 1, after OP.3)
 - [x] **OP.6 Constant-input fast paths, vector glide shapes** (plan F6, F9) *(merged 9151c4f5; Q?-OP.6-a, -b; Wavetable Synth −14 … −16 %, session −3.6 %; scope FFT kept per size; shaped glides NOT done: exp2 bits, user decision; codegen-side items wait for OP.5)*
-- [ ] **OP.9 Shaped glides 8 at a time with a vector exp2 (bits may move; user 2026-11-24)** (Q?-OP.6-a; lane 2)
+- [x] **OP.9 Shaped glides 8 at a time with a vector exp2 (bits may move; user 2026-11-24)** (Q?-OP.6-a) *(merged b8621eb1; glides 3.2 – 4.2× cheaper, gain ramps 2×; ≤ 1 float ulp on 5 of 3.4 · 10^7 points; no hash moved)*
 - [ ] **OP.7 SVF sections interleaved** (plan F3; lane 1, after OP.5)
 - [ ] **OP.8 Re-run the audit tables; decide F10** (after all)
 
