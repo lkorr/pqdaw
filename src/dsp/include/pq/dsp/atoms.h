@@ -443,6 +443,19 @@ struct KernelInfo {
 
 const KernelInfo& kernelInfo(Atom a) noexcept;  // RT-safe
 
+// OP.5: how code generated for a schedule can run an atom's ops, frame by frame, without a kernel call. The JIT's
+// codegen generates exactly these inline (pq/jit/codegen.h) and the scheduler orders a stage by it (pq/graph/
+// schedule.h "Order"): one list, so the two cannot drift apart.
+enum class InlineForm : uint8_t {
+  Call,         // a kernel call per block (or per sub-block / frame of a loop)
+  Elementwise,  // stateless, one output per input frame: inline everywhere
+  Exact,        // element-wise through the CRT / SVML (exact transcendentals): inline in per-frame code only, a
+                // block-wise call in a slice (the call is the cost; inline it would spill every live register)
+  Stateful,     // the simple stateful atoms (one state vector carried from frame to frame): inline in per-frame
+                // code and in voice slices
+};
+InlineForm inlineForm(Atom a) noexcept;  // RT-safe
+
 // Looks up the kernel for `lanes` (1 or 8) and the Spl input mask (bit i = input i is a Spl pattern). Inputs
 // in KernelInfo::splRequired must have their bit set; for mux all inputs may be either (any mask). Returns
 // nullptr for an unsupported combination. RT-safe (table lookup), though callers normally do it off-thread.

@@ -75,9 +75,6 @@ struct HostLayout {
   uint32_t runSlot = 0xFFFFFFFFu, runSlotB = 0xFFFFFFFFu;
 };
 
-// Atoms whose voice ops codegen generates inline wherever they are (the "simple stateful" atoms, codegen.h).
-bool inlineStateful(dsp::Atom a) noexcept;
-
 // Whether buffer b is written in stage k by a voice-lane op (not a reducer's global accumulator) or as a solve
 // unknown: the stage's own voice values, which a pair function keeps per group (HostLayout::altOff).
 std::vector<uint8_t> stageLocalBuffers(const graph::Schedule& s, uint32_t stage);

@@ -1039,6 +1039,41 @@ private:
     return factor_[members(c).front()];
   }
 
+  // OP.5: how generated code runs an item's ops (dsp::inlineForm; pq/jit/codegen.h "Fused runs" and "Chains"): inline,
+  // frame by frame (a per-sample loop; a Block item of an element-wise atom, of a simple stateful atom in a voice
+  // stage, of a global gain whose target and time are patterns), or as a kernel call. Items without ops and Control
+  // items have none. Only the order depends on it: a wrong answer costs a split run, never a wrong result.
+  static constexpr uint8_t kFormNone = 0, kFormInline = 1, kFormCall = 2;
+  uint8_t formOf(uint32_t c) const {
+    if (sccClass_[c] == kItemFree || sccClass_[c] == kItemControl) return kFormNone;
+    if (sccClass_[c] == kItemLoop) return sccSub_[c] <= 1 ? kFormInline : kFormCall;
+    const NodeIndex n = members(c).front();
+    if (nk_[n] != NK::Op) return kFormNone;
+    const Node& nd = P().node(n);
+    if (nd.kind != NodeKind::Atom) return kFormCall;
+    const KernelMapping& m = kernelMapping(nd.atom);
+    if (m.lowering != Lowering::Kernel) return kFormCall;
+    switch (dsp::inlineForm(m.kernel)) {
+      case dsp::InlineForm::Elementwise: return kFormInline;
+      case dsp::InlineForm::Stateful: return poly_[n] == Poly::Voice ? kFormInline : kFormCall;
+      default: break;
+    }
+    if (poly_[n] == Poly::Global && (m.kernel == dsp::Atom::Gain || m.kernel == dsp::Atom::GainAdd)) {
+      // The JIT's inline gain: g and tau (the kernel inputs after x) are patterns.
+      const uint32_t kG = m.kernel == dsp::Atom::GainAdd ? 2u : 1u;
+      for (uint32_t i = 0; i < nd.numInputs && !m.args.empty(); ++i) {
+        const uint32_t ai = std::min<uint32_t>(i, static_cast<uint32_t>(m.args.size()) - 1);
+        if (m.args[ai].use != ArgUse::Input && m.args[ai].use != ArgUse::InputSeconds) continue;
+        const uint32_t k = m.args[ai].kernelInput + (i - ai);
+        if (k != kG && k != kG + 1) continue;
+        const NodeIndex u = driverNode(n, i);
+        if (u != kNone && rate_[u] > Rate::Param) return kFormCall;
+      }
+      return kFormInline;
+    }
+    return kFormCall;
+  }
+
   void order() {
     const uint32_t N = P().nodeCount();
     const auto numScc = static_cast<uint32_t>(sccBegin_.size() - 1);
@@ -1046,18 +1081,33 @@ private:
     for (NodeIndex u = 0; u < N; ++u)
       for (uint32_t e = succBegin_[u]; e < succBegin_[u + 1]; ++e)
         if (sccOf_[succ_[e].to] != sccOf_[u]) ++indeg[sccOf_[succ_[e].to]];
-    std::priority_queue<Ready, std::vector<Ready>, ReadyLess> ready;
+    // OP.5 (schedule.h "Order"): two queues, the items generated code runs inline and the kernel calls. Between two
+    // ready items of one (stage, class, factor) the order stays with the form of the last op item taken, so a
+    // stage's inline items come in as few groups as its dependencies allow.
+    std::priority_queue<Ready, std::vector<Ready>, ReadyLess> ready[2];
     uint32_t seq = 0;
+    std::vector<uint8_t> form(numScc, kFormNone);
+    for (uint32_t c = 0; c < numScc; ++c) form[c] = formOf(c);
     auto push = [&](uint32_t c) {
-      ready.push({sccStage_[c], std::min(sccClass_[c], kItemBlock), sccFactor(c), seq++, c});
+      ready[form[c] == kFormCall ? 1 : 0].push({sccStage_[c], std::min(sccClass_[c], kItemBlock), sccFactor(c), seq++, c});
     };
     for (uint32_t c = numScc; c-- > 0;)
       if (indeg[c] == 0) push(c);
     sccOrder_.clear();
     sccOrder_.reserve(numScc);
-    while (!ready.empty()) {
-      const uint32_t c = ready.top().scc;
-      ready.pop();
+    uint8_t cur = kFormNone;
+    while (!ready[0].empty() || !ready[1].empty()) {
+      uint32_t q = ready[0].empty() ? 1u : 0u;
+      if (!ready[0].empty() && !ready[1].empty()) {
+        const Ready& a = ready[0].top();
+        const Ready& b = ready[1].top();
+        if (a.stage != b.stage || a.cls != b.cls || a.factor != b.factor) q = ReadyLess{}(a, b) ? 1u : 0u;
+        else if (form[a.scc] == kFormNone || cur == kFormNone) q = a.seq > b.seq ? 0u : 1u;  // as one queue would
+        else q = cur == kFormCall ? 1u : 0u;
+      }
+      const uint32_t c = ready[q].top().scc;
+      ready[q].pop();
+      if (form[c] != kFormNone) cur = form[c];
       sccOrder_.push_back(c);
       for (NodeIndex u : members(c))
         for (uint32_t e = succBegin_[u]; e < succBegin_[u + 1]; ++e) {

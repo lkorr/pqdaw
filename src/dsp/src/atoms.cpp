@@ -188,6 +188,30 @@ uint32_t mixSeed(uint32_t seed, uint32_t lane) noexcept {
 
 const KernelInfo& kernelInfo(Atom a) noexcept { return kInfo[static_cast<uint32_t>(a)]; }
 
+InlineForm inlineForm(Atom a) noexcept {
+  switch (a) {
+    case Atom::Add: case Atom::Sub: case Atom::Mul: case Atom::Div: case Atom::Min: case Atom::Max: case Atom::Mod:
+    case Atom::PowFast: case Atom::CentsToHzFast: case Atom::HzToCentsFast: case Atom::Neg: case Atom::Abs:
+    case Atom::Sign: case Atom::Floor: case Atom::Frac: case Atom::Sqrt: case Atom::SqrtFast: case Atom::ExpFast:
+    case Atom::LogFast: case Atom::SinFast: case Atom::TanFast: case Atom::TanhFast: case Atom::DbToGainFast:
+    case Atom::GainToDbFast: case Atom::Const: case Atom::Clip: case Atom::Lerp: case Atom::Select: case Atom::MulAdd:
+    case Atom::And: case Atom::Or: case Atom::Xor: case Atom::Nand: case Atom::Nor: case Atom::Not: case Atom::Gt:
+    case Atom::Lt: case Atom::Ge: case Atom::Le: case Atom::Eq: case Atom::Ne: case Atom::GateToReal: case Atom::Mux:
+    case Atom::Demux: case Atom::SinePhase: case Atom::Atan2:
+      return InlineForm::Elementwise;
+    case Atom::Pow: case Atom::CentsToHz: case Atom::HzToCents: case Atom::Exp: case Atom::Log: case Atom::Sin:
+    case Atom::Tan: case Atom::Tanh: case Atom::DbToGain: case Atom::GainToDb:
+      return InlineForm::Exact;
+    case Atom::Schmitt: case Atom::Rise: case Atom::Fall: case Atom::Change: case Atom::SrFlipFlop:
+    case Atom::DFlipFlop: case Atom::TFlipFlop: case Atom::Counter: case Atom::ClockDiv: case Atom::Pulse:
+    case Atom::Timer: case Atom::Z1: case Atom::Z1Read: case Atom::Z1Write: case Atom::SampleHold: case Atom::Latch:
+    case Atom::Phasor: case Atom::SineHz:
+      return InlineForm::Stateful;
+    default:
+      return InlineForm::Call;
+  }
+}
+
 KernelFn findKernel(Atom a, uint32_t lanes, uint32_t splMask) noexcept {
   if (static_cast<uint32_t>(a) >= kAtomCount) return nullptr;
   const KernelInfo& info = kernelInfo(a);
