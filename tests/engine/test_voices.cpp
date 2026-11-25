@@ -1987,3 +1987,233 @@ TEST_CASE("voices (AP.11): an arp's Into / Out Time as a % of the note, past 100
     }
   }
 }
+
+// ---- OP.9: a group's glides walked as rows (8 lanes per frame), 2^x by an inline polynomial --------------------------
+
+namespace {
+
+// The glide walk as it was before OP.9, one voice, one frame per step(): the scalar reference (std::exp2 / the
+// per-sample recursions of the Linear and Exponential shapes).
+struct ScalarGlideRef {
+  struct G {
+    int64_t t;
+    uint32_t len;
+    float target;
+    int8_t bend;
+  };
+  std::vector<G> glides;
+  size_t next = 0;
+  eng::RampShape shape = eng::RampShape::Linear;
+  double ref = 440.0;
+  double h = 0.0, c = 0.0, target = 0.0, tc = 0.0;
+  double mul = 1.0, step = 0.0, c0 = 0.0, dc = 0.0, hz0 = 0.0, a = 0.0, em = 1.0, ex = 1.0;
+  uint32_t len = 0, left = 0;
+  float scale = 1.0f;  // the glide's size in cents (the tolerance of its cents)
+  bool gliding = false, landed = false;
+
+  void start(float hz) {
+    h = hz;
+    c = 1200.0 * std::log2(static_cast<double>(hz) / ref);
+  }
+  // The values of frame t (hz, cents); `gliding`: inside a glide; `landed`: the first frame on the target.
+  std::pair<float, float> step1(int64_t t) {
+    landed = false;
+    if (next < glides.size() && glides[next].t == t) {
+      const G& g = glides[next++];
+      target = g.target;
+      tc = 1200.0 * std::log2(target / ref);
+      len = left = g.len;
+      scale = static_cast<float>(std::max({1.0, std::fabs(c), std::fabs(tc)}));
+      const double r = static_cast<double>(len);
+      if (shape == eng::RampShape::Linear) {
+        mul = std::pow(target / h, 1.0 / r);
+        step = (tc - c) / r;
+      } else {
+        c0 = c;
+        dc = tc - c0;
+        hz0 = h;
+        if (shape == eng::RampShape::Exponential) {
+          const double k = static_cast<double>(g.bend) / 16.0;
+          a = 1.0 / (1.0 - std::exp(-k));
+          em = std::exp(-k / r);
+          ex = 1.0;
+        } else {
+          a = eng::rampOvershootA(g.bend);
+        }
+      }
+    }
+    const std::pair<float, float> v{static_cast<float>(h), static_cast<float>(c)};
+    gliding = left > 0;
+    if (left > 0) {
+      if (--left == 0) {
+        h = target;
+        c = tc;
+        landed = true;  // (of the next frame)
+      } else if (shape == eng::RampShape::Linear) {
+        h *= mul;
+        c += step;
+      } else {
+        double s;
+        if (shape == eng::RampShape::Exponential) {
+          ex *= em;
+          s = (1.0 - ex) * a;
+        } else {
+          const double u = static_cast<double>(len - left) / static_cast<double>(len);
+          s = shape == eng::RampShape::SCurve ? eng::rampSCurve(u) : eng::rampOvershoot(u, a);
+        }
+        c = c0 + dc * s;
+        h = hz0 * std::exp2(dc / 1200.0 * s);
+      }
+    }
+    return v;
+  }
+};
+
+}  // namespace
+
+// The requirement of OP.9 (Q?-OP.6-a, decided: bits may move, pitch may not): every float32 Hz of a glide within
+// 1 ulp of the scalar walk, over the audible range, every shape and bend, glide lengths 1 … 20000 frames, glides
+// replaced mid-way, ops at every frame of a block; the frame after a glide exactly the target. Only 2^x changed:
+// a Linear glide (no 2^x) and every shape's cents keep their bits.
+TEST_CASE("voices (OP.9): vector glides within 1 float ulp of the scalar walk, 10^7 points per shape; exact ends" *
+          doctest::test_suite("slow")) {
+  constexpr uint32_t kVoices = 64, kFrames = 176000, kBlockFrames = 64;
+  for (const eng::RampShape s : {eng::RampShape::Linear, eng::RampShape::Exponential, eng::RampShape::SCurve,
+                                 eng::RampShape::Overshoot}) {
+    CAPTURE(static_cast<int>(s));
+    VoiceConfig cfg;
+    cfg.maxVoices = kVoices;
+    Rig r(kProbe, cfg, eng::voiceGroupsFor(kVoices), kBlockFrames);
+    uint32_t rng = 12345u + static_cast<uint32_t>(s);
+    auto rnd = [&] {
+      rng = rng * 1664525u + 1013904223u;
+      return rng >> 8;  // 24 bits
+    };
+    auto audible = [&] { return static_cast<float>(16.0 * std::exp2(rnd() / 16777216.0 * std::log2(20000.0 / 16.0))); };
+    std::vector<ScalarGlideRef> refs(kVoices);
+    std::vector<Ev> evs;
+    for (uint32_t v = 0; v < kVoices; ++v) {
+      ScalarGlideRef& g = refs[v];
+      g.shape = s;
+      g.ref = cfg.referenceHz;
+      const float hz0 = audible();
+      g.start(hz0);
+      evs.push_back(on(0, v + 1, hz0));
+      for (int64_t t = 1 + rnd() % 64; t < kFrames;) {
+        const uint32_t len = rnd() % 2 ? 1 + rnd() % 300 : 300 + rnd() % 19700;
+        int8_t bend = static_cast<int8_t>(static_cast<int>(rnd() % 255) - 127);
+        if (bend == 0) bend = 1;  // (Exponential with bend 0 is the Linear walk)
+        g.glides.push_back({t, len, audible(), bend});
+        // One glide in eight is replaced before it ends; the others hold 0 … 69 frames on their target.
+        t += rnd() % 8 == 0 ? 1 + rnd() % len : len + rnd() % 70;
+      }
+      for (const auto& gl : g.glides) evs.push_back(shaped(gl.t, v + 1, gl.target, gl.len, s, gl.bend));
+    }
+    std::stable_sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
+
+    std::vector<uint32_t> lane(kVoices, 0);
+    uint64_t points = 0, differing = 0, tooFar = 0, centsOff = 0, badEnds = 0, ends = 0;  // (centsOff: any bit)
+    uint32_t maxUlp = 0;
+    double maxCents = 0.0;
+    r.run(kFrames, kBlockFrames, evs, [&](int64_t time, uint32_t n) {
+      if (time == 0)
+        for (uint32_t v = 0; v < kVoices; ++v) lane[v] = r.ve.laneOf(v + 1);
+      for (uint32_t v = 0; v < kVoices; ++v) {
+        const uint32_t g = lane[v] >> 3, l = lane[v] & 7u;
+        const float* hz = r.ve.signal(g, eng::VoiceSignal::Hz);
+        const float* cents = r.ve.signal(g, eng::VoiceSignal::Cents);
+        ScalarGlideRef& ref = refs[v];
+        for (uint32_t f = 0; f < n; ++f) {
+          const bool wasLanded = ref.landed;
+          const auto [eh, ec] = ref.step1(time + f);
+          const float ah = hz[f * 8 + l], ac = cents[f * 8 + l];
+          if (!ref.gliding) {  // held: the note's pitch (after a glide: its target) bit for bit
+            ends += wasLanded;
+            if (std::bit_cast<uint32_t>(ah) != std::bit_cast<uint32_t>(eh) ||
+                std::bit_cast<uint32_t>(ac) != std::bit_cast<uint32_t>(ec))
+              ++badEnds;
+            continue;
+          }
+          ++points;
+          const int64_t d = static_cast<int64_t>(std::bit_cast<uint32_t>(ah)) - static_cast<int64_t>(std::bit_cast<uint32_t>(eh));
+          const uint32_t ulp = static_cast<uint32_t>(d < 0 ? -d : d);
+          differing += ulp != 0;
+          tooFar += ulp > 1;
+          maxUlp = std::max(maxUlp, ulp);
+          maxCents = std::max(maxCents, std::fabs(1200.0 * std::log2(static_cast<double>(ah) / static_cast<double>(eh))));
+          centsOff += std::bit_cast<uint32_t>(ac) != std::bit_cast<uint32_t>(ec);
+        }
+      }
+    });
+    CHECK(r.rtViolations == 0);
+    CHECK(points >= 10'000'000u);
+    CHECK(ends > 1000);
+    CHECK(tooFar == 0);
+    CHECK(maxUlp <= 1);
+    if (s == eng::RampShape::Linear) CHECK(differing == 0);
+    CHECK(centsOff == 0);
+    CHECK(badEnds == 0);
+    MESSAGE("shape " << static_cast<int>(s) << ": " << points << " glide points, " << differing
+                     << " differ from the scalar walk by 1 float ulp (max " << maxUlp << " ulp, " << maxCents
+                     << " cents); " << ends << " glide ends exact");
+  }
+}
+
+// The rows walk (a group without ops in the block) and the per-lane walk (a block with ops) give a frame the same
+// bits: one group with every shape at once, lanes that hold, glides ending at different frames and replaced
+// mid-way, gain ramps beside them, a steal-free release — at block sizes 1 / 32 / 37 / 64 / 512.
+TEST_CASE("voices (OP.9): mixed shapes, held lanes and gain ramps in one group — the same bits at every block size") {
+  std::vector<Ev> evs;
+  for (uint32_t v = 0; v < 7; ++v) evs.push_back(on(3 + v, v + 1, 110.0f * (v + 1)));
+  const eng::RampShape sh[] = {eng::RampShape::Linear, eng::RampShape::Exponential, eng::RampShape::SCurve,
+                               eng::RampShape::Overshoot};
+  for (uint32_t v = 0; v < 6; ++v)  // voice 7 holds
+    evs.push_back(shaped(40 + 13 * v, v + 1, 97.0f * (7 - v), 150 + 211 * v, sh[v % 4], static_cast<int8_t>(90 - 40 * static_cast<int>(v))));
+  evs.push_back({70, eng::noteGain(0, 2, 0.25f, 400)});
+  evs.push_back({90, eng::noteGain(0, 7, 0.6f, 1000)});
+  evs.push_back(shaped(500, 3, 880.0f, 300, eng::RampShape::Overshoot, 30));  // replaces voice 3's S-curve mid-way
+  evs.push_back(shaped(650, 1, 55.0f, 64, eng::RampShape::Exponential, -80));
+  evs.push_back({900, eng::noteGain(0, 2, 1.0f, 129)});
+  evs.push_back(shaped(1300, 6, 440.0f, 1, eng::RampShape::SCurve, 0));
+  std::stable_sort(evs.begin(), evs.end(), [](const Ev& a, const Ev& b) { return a.t < b.t; });
+  std::vector<float> ref;
+  for (const uint32_t block : {64u, 1u, 32u, 37u, 512u}) {
+    CAPTURE(block);
+    VoiceConfig cfg;
+    Rig r(kProbe, cfg, 1, 512);
+    std::vector<float> got;
+    r.run(1700, block, evs, [&](int64_t, uint32_t n) {
+      for (const float* p : {r.ve.signal(0, eng::VoiceSignal::Hz), r.ve.signal(0, eng::VoiceSignal::Cents), r.ve.gain(0)})
+        got.insert(got.end(), p, p + static_cast<size_t>(n) * 8);
+    });
+    CHECK(r.rtViolations == 0);
+    // Per frame: hz row, cents row, gain row.
+    std::vector<float> perFrame;
+    perFrame.reserve(got.size());
+    size_t at = 0;
+    for (uint32_t done = 0; done < 1700;) {
+      const uint32_t n = std::min(block, 1700 - done);
+      for (uint32_t f = 0; f < n; ++f)
+        for (uint32_t k = 0; k < 3; ++k)
+          perFrame.insert(perFrame.end(), got.begin() + at + (k * n + f) * 8, got.begin() + at + (k * n + f) * 8 + 8);
+      at += static_cast<size_t>(n) * 24;
+      done += n;
+    }
+    if (ref.empty()) {
+      ref = perFrame;
+      // The glides and gain ramps are there: voice 1's lane moves, voice 7's holds its pitch, voice 2's gain ramps.
+      const uint32_t l1 = r.ve.laneOf(1) & 7u, l7 = r.ve.laneOf(7) & 7u, l2 = r.ve.laneOf(2) & 7u;
+      CHECK(ref[100 * 24 + l1] != ref[101 * 24 + l1]);
+      CHECK(ref[100 * 24 + l7] == 770.0f);
+      CHECK(ref[1600 * 24 + l7] == 770.0f);
+      CHECK(ref[1600 * 24 + l1] == 55.0f);
+      CHECK(ref[200 * 24 + 16 + l2] < ref[100 * 24 + 16 + l2]);
+      CHECK(ref[1600 * 24 + 16 + l2] == 1.0f);
+    } else {
+      size_t bad = 0;
+      // From frame 10: before its onset a lane reads hz 0 inside its first block and the free lane's values before it.
+      for (size_t i = 10 * 24; i < ref.size(); ++i) bad += std::bit_cast<uint32_t>(ref[i]) != std::bit_cast<uint32_t>(perFrame[i]);
+      CHECK(bad == 0);
+    }
+  }
+}
