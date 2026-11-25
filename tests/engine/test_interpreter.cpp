@@ -383,9 +383,10 @@ TEST_CASE("ImageRunner on NullDevice: device → CallbackRunner → BlockAdapter
 
 
 // OP.5: voice_sum and a voice send add each frame's eight lanes with horizontalSum's additions, in that order:
-// ((v0 + v4) + (v2 + v6)) + ((v1 + v5) + (v3 + v7)), then into the accumulator. The kernels now do eight frames per
-// step; every bit must be the per-frame sum's (the scalar reference below), for any frame count, lane mask and gain.
-TEST_CASE("special ops: voice_sum and send sum eight frames at a time with the per-frame sum's bits (OP.5)") {
+// ((v0 + v4) + (v2 + v6)) + ((v1 + v5) + (v3 + v7)), then into the accumulator: pinned here against a scalar
+// reference for any frame count, lane mask and gain. (An eight-frames-per-step form with the same additions was
+// built and measured in OP.5: bit-identical, and no faster in any scenario, so the kernels stay per frame.)
+TEST_CASE("special ops: voice_sum and send add a frame's lanes in horizontalSum's order, bit for bit (OP.5)") {
   pq::DenormalGuard dg;
   uint32_t rng = 0x9E3779B9u;
   auto next = [&] {
