@@ -13,6 +13,7 @@
 #include "pq/core/alloc_trap.h"
 #include "pq/core/denormal_guard.h"
 #include "pq/engine/block_adapter.h"
+#include "pq/engine/image_host.h"
 #include "pq/engine/image_runner.h"
 #include "pq/engine/interpreter.h"
 #include "pq/engine/null_device.h"
@@ -380,3 +381,74 @@ TEST_CASE("ImageRunner on NullDevice: device → CallbackRunner → BlockAdapter
   dev.close();
 }
 
+
+// OP.5: voice_sum and a voice send add each frame's eight lanes with horizontalSum's additions, in that order:
+// ((v0 + v4) + (v2 + v6)) + ((v1 + v5) + (v3 + v7)), then into the accumulator. The kernels now do eight frames per
+// step; every bit must be the per-frame sum's (the scalar reference below), for any frame count, lane mask and gain.
+TEST_CASE("special ops: voice_sum and send sum eight frames at a time with the per-frame sum's bits (OP.5)") {
+  pq::DenormalGuard dg;
+  uint32_t rng = 0x9E3779B9u;
+  auto next = [&] {
+    rng ^= rng << 13, rng ^= rng >> 17, rng ^= rng << 5;
+    return rng;
+  };
+  auto value = [&] {  // magnitudes far apart, so the order of the additions shows in the last bits
+    const float m = static_cast<float>(next() >> 8) * (1.0f / 16777216.0f) * 2.0f - 1.0f;
+    return std::ldexp(m, static_cast<int>(next() % 24) - 12);
+  };
+  constexpr uint32_t kMax = 131;
+  alignas(32) static float in[kMax * 8], gain[kMax * 8];
+  static float acc0[kMax], got[kMax], bus[kMax];
+  for (const uint32_t frames : {0u, 1u, 7u, 8u, 9u, 16u, 37u, 64u, 127u, kMax})
+    for (const uint32_t mask : {0xFFu, 0x01u, 0xA5u, 0x80u, 0x7Eu})
+      for (int withGain = 0; withGain < 2; ++withGain) {
+        for (uint32_t i = 0; i < frames * 8; ++i) {
+          in[i] = value();
+          gain[i] = next() % 5 == 0 ? 0.0f : static_cast<float>(next() >> 8) * (1.0f / 16777216.0f);
+        }
+        for (uint32_t f = 0; f < frames; ++f) acc0[f] = next() % 3 == 0 ? 0.0f : value();
+        std::vector<float> want(acc0, acc0 + frames);
+        for (uint32_t f = 0; f < frames; ++f) {
+          float v[8];
+          for (uint32_t l = 0; l < 8; ++l) {
+            const bool on = ((mask >> l) & 1u) != 0 && (!withGain || gain[f * 8 + l] != 0.0f);
+            v[l] = on ? in[f * 8 + l] : 0.0f;
+            if (withGain) v[l] *= gain[f * 8 + l];
+          }
+          volatile float a = v[0] + v[4], b = v[1] + v[5], c = v[2] + v[6], d = v[3] + v[7];
+          volatile float ac = a + c, bd = b + d;
+          volatile float s = ac + bd;
+          want[f] = want[f] + s;
+        }
+        pq::engine::host::RunCtx rc;
+        rc.laneMask = mask;
+        rc.gain = withGain ? gain : nullptr;
+        float* busCh[1] = {bus};
+        const pq::engine::SendBus sb{busCh, 1};
+        rc.sends = &sb;
+        rc.numSends = 1;
+        pq::engine::host::ReduceInfo ri;
+        ri.run = &rc;
+        pq::engine::host::SendInfo si;
+        si.run = &rc;
+        si.lanes = 8;
+        const float* ins[1] = {in};
+        float* outs[1] = {got};
+        pq::dsp::KernelArgs a;
+        a.in = ins;
+        a.out = outs;
+        a.frames = frames;
+        a.numIn = 1;
+        a.numOut = 1;
+        std::memcpy(got, acc0, frames * sizeof(float));
+        a.state = &ri;
+        pq::engine::host::reduceKernel(a);
+        INFO("frames " << frames << ", mask " << mask << ", gain " << withGain);
+        CHECK((frames == 0 || std::memcmp(got, want.data(), frames * sizeof(float)) == 0));
+        std::memcpy(bus, acc0, frames * sizeof(float));
+        a.state = &si;
+        a.numOut = 0;
+        pq::engine::host::sendKernel(a);
+        CHECK((frames == 0 || std::memcmp(bus, want.data(), frames * sizeof(float)) == 0));
+      }
+}

@@ -40,6 +40,27 @@ inline float horizontalSum(__m256 v) noexcept {  // RT-safe
   return _mm_cvtss_f32(s);
 }
 
+// OP.5: dst[f] += horizontalSum(row(f)) for f in [0, frames), eight frames at a time with horizontalSum's own
+// additions, so every bit stays: frames k and k + 4 share a register (their low halves, their high halves: the first
+// addition), then movehl and movehdup as in-lane shuffles, and the eight sums are gathered into one vector that is
+// added to dst. Per frame it was a chain of scalar extracts and a scalar load-add-store (2 – 6 % of a synth's block).
+template <class Row>
+inline void addHorizontalSums(float* dst, uint32_t frames, Row&& row) noexcept {  // RT-safe
+  uint32_t f = 0;
+  for (; f + 8 <= frames; f += 8) {
+    __m256 q[4];
+    for (uint32_t k = 0; k < 4; ++k) {
+      const __m256 a = row(f + k), b = row(f + k + 4);
+      __m256 s = _mm256_add_ps(_mm256_permute2f128_ps(a, b, 0x20), _mm256_permute2f128_ps(a, b, 0x31));
+      s = _mm256_add_ps(s, _mm256_permute_ps(s, _MM_SHUFFLE(3, 2, 3, 2)));
+      q[k] = _mm256_add_ps(s, _mm256_movehdup_ps(s));  // element 0 of each half: frame f + k, frame f + k + 4
+    }
+    const __m256 sums = _mm256_shuffle_ps(_mm256_unpacklo_ps(q[0], q[1]), _mm256_unpacklo_ps(q[2], q[3]), _MM_SHUFFLE(1, 0, 1, 0));
+    _mm256_storeu_ps(dst + f, _mm256_add_ps(_mm256_loadu_ps(dst + f), sums));
+  }
+  for (; f < frames; ++f) dst[f] += horizontalSum(row(f));
+}
+
 inline __m256 laneMaskVector(uint32_t mask) noexcept {  // RT-safe: bit v → lane v all ones
   const __m256i bits = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
   const __m256i m = _mm256_and_si256(_mm256_set1_epi32(static_cast<int32_t>(mask)), bits);
@@ -165,14 +186,14 @@ void reduceKernel(const dsp::KernelArgs& a) noexcept {  // RT-safe
     const __m256 m = laneMaskVector(mask);
     if (gain != nullptr) {  // select(gain ≠ 0, x, 0) · gain: a pre-onset / idle lane's NaN never gets in
       const __m256 z = _mm256_setzero_ps();
-      for (uint32_t f = 0; f < a.frames; ++f) {
+      addHorizontalSums(out, a.frames, [&](uint32_t f) noexcept {
         const __m256 gv = _mm256_load_ps(gain + f * 8);
         const __m256 x = _mm256_and_ps(_mm256_loadu_ps(in + f * inStride), _mm256_and_ps(m, _mm256_cmp_ps(gv, z, _CMP_NEQ_OQ)));
-        out[f] += horizontalSum(_mm256_mul_ps(x, gv));
-      }
+        return _mm256_mul_ps(x, gv);
+      });
       return;
     }
-    for (uint32_t f = 0; f < a.frames; ++f) out[f] += horizontalSum(_mm256_and_ps(_mm256_loadu_ps(in + f * inStride), m));
+    addHorizontalSums(out, a.frames, [&](uint32_t f) noexcept { return _mm256_and_ps(_mm256_loadu_ps(in + f * inStride), m); });
     return;
   }
   if (gain != nullptr && ri.mode == ReduceMode::Last) {  // the last voice only from its onset (gain ≠ 0)
@@ -205,14 +226,14 @@ void sendKernel(const dsp::KernelArgs& a) noexcept {  // RT-safe
   const uint32_t stride = si.inPattern ? 0u : 8u;
   if (rc.gain != nullptr) {  // as voice_sum: select(gain ≠ 0, x, 0) · gain
     const __m256 z = _mm256_setzero_ps();
-    for (uint32_t f = 0; f < a.frames; ++f) {
+    addHorizontalSums(dst, a.frames, [&](uint32_t f) noexcept {
       const __m256 gv = _mm256_load_ps(rc.gain + f * 8);
       const __m256 x = _mm256_and_ps(_mm256_loadu_ps(in + f * stride), _mm256_and_ps(m, _mm256_cmp_ps(gv, z, _CMP_NEQ_OQ)));
-      dst[f] += horizontalSum(_mm256_mul_ps(x, gv));
-    }
+      return _mm256_mul_ps(x, gv);
+    });
     return;
   }
-  for (uint32_t f = 0; f < a.frames; ++f) dst[f] += horizontalSum(_mm256_and_ps(_mm256_loadu_ps(in + f * stride), m));
+  addHorizontalSums(dst, a.frames, [&](uint32_t f) noexcept { return _mm256_and_ps(_mm256_loadu_ps(in + f * stride), m); });
 }
 
 // ---- operands, resources ----------------------------------------------------------------------------------------
