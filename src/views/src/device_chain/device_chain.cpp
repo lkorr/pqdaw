@@ -2094,7 +2094,7 @@ void DeviceChainView::refreshRings() {
   // Poll while a modulated knob is shown and the source runs (and once after it stops: the rings fall still).
   ModulationSource* src = ctx_.modulationSource();
   const bool want = src != nullptr && !m.ringTargets.empty() && (src->modulationLive() || m.ringsLit);
-  if (want && m.ringTimer == 0) m.ringTimer = requestTimer(1.0 / 30.0);
+  if (want && m.ringTimer == 0) m.ringTimer = requestReadoutTimer();
   if (!want && m.ringTimer != 0) {
     cancelTimer(m.ringTimer);
     m.ringTimer = 0;

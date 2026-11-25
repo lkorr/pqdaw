@@ -222,6 +222,7 @@
 #include "pq/engine/project_compile.h"
 #include "pq/engine/sequence.h"
 #include "pq/app/freeze_service.h"
+#include "pq/app/meter_ballistics.h"
 #include "pq/app/recording.h"
 #include "pq/media/sample_pool.h"
 #include "pq/meta/table_builder.h"
@@ -717,12 +718,6 @@ private:
     std::vector<SeqClipKey> clips;  // per played clip, aligned with seqDescs_[slot].clips
     uint32_t slot = 0;              // its description is seqDescs_[slot]
   };
-  struct MeterState {
-    float peakDb[2] = {-200.0f, -200.0f};
-    float holdDb[2] = {-200.0f, -200.0f};
-    double holdUntil[2] = {0.0, 0.0};
-    bool clip[2] = {false, false};
-  };
 
   explicit ProjectLink(const LinkConfig& config);
   Status init(const doc::Snapshot& initial);
@@ -1123,7 +1118,7 @@ private:
   views::TransportLoop loop_{};  // the last loop sent (re-sent to a rebuilt engine)
   bool loopSent_ = false;
   uint64_t reportSeq_ = 0;
-  std::unordered_map<uint32_t, MeterState> meters_;
+  std::unordered_map<uint32_t, MeterBallistics> meters_;
   struct LevelAcc {
     float peak[2] = {0.0f, 0.0f};
     double msTime[2] = {0.0, 0.0};  // Σ mean square × seconds
@@ -1158,7 +1153,6 @@ private:
   bool cutReset_ = false;             // … or a Reset (the running compile's new cuts are not kept)
   CutSet cutPosted_;                  // what the attached views were last given
   std::vector<doc::WireId> wiresReported_;  // delayed / refused wires the status line last named
-  double lastMeterRead_ = 0.0;
   bool metersLit_ = false;  // a meter read last time is above its floor (live() keeps the views polling)
   // KB.3 (signalActivity / signalLive): activity_ is bumped by any thread; the rest belongs to the UI thread's live().
   bool signalLive(bool lit) const noexcept;

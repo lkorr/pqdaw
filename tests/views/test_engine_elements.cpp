@@ -390,7 +390,8 @@ TEST_CASE("render: module-noise-panel (2x) — the display, the chips, the knobs
   d.tree().layoutNow();
   REQUIRE(d.enableGpu().ok());
   REQUIRE(d.render().ok());  // the first paint starts the panel's voice timer (polled while the reader is live)
-  for (int i = 0; i < 90; ++i) d.advance(1.0 / 60.0);
+  // OP.2: the panel polls on the readout grid (30 Hz here; it was a 1/60 s timer): 2.5 s for the walk's 60 readings.
+  for (int i = 0; i < 180; ++i) d.advance(1.0 / 60.0);
   CHECK(walk.reads == walk.maxReads);  // the panel polled the engine's voices while they moved
   auto img = d.render();
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));

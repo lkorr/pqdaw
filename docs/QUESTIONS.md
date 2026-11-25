@@ -2812,7 +2812,10 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - Options: A. everything at the display's rate (after OP.1). B. meters, panel faces and analysers at 30 Hz, playhead
   and gestures at the display's rate. C. a preference (30 / 60 / display), default B.
 - Choice (provisional): A until answered (OP.1 only); OP.2's rate cap waits for the answer.
-- Status: open
+- Status: decided (user, 2026-11-24): C with two rates. Meters, visualiser faces and analysers at 30 Hz by default,
+  60 Hz as a setting (Preferences → Display); the playhead and whatever is dragged stay at the display's rate. Done in
+  OP.2: one readout grid in the widget tree (`pq/ui/readout_clock.h`), a whole number of refresh periods per tick (at
+  100 Hz: every 3rd pass = 33.3 Hz, or every 2nd = 50 Hz for the 60 Hz setting).
 
 ## Q?-OP.0-b · 2026-11-24 · OP.0 · Engine block larger than 64 frames
 - Context: back to back, a session costs 7.4 % of a core at 64 frames, 6.6 % at 128, 5.7 % at 256 (per-block overhead

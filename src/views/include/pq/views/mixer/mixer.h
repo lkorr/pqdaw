@@ -29,7 +29,8 @@
 // wheel popover for the track); a right-click opens the assignment menu (Inherit / a main tuning / MOS Wheel…).
 //
 // Meters: PQ Meter-style ui::Meter per strip, fed from a plain-data MeterSource (the app implements it over the
-// engine's taps, T3.17). The views poll it on a timer (kMeterPollSeconds) only while it reports live(): one batched
+// engine's taps, T3.17). The views poll it on the tree's readout grid (OP.2: Widget::requestReadoutTimer, 30 Hz by
+// default) only while it reports live(): one batched
 // read for every strip, and a meter repaints only when a drawn pixel changes, so a stopped project costs nothing.
 //
 // Solo semantics for the sound live in pq/document/audibility.h (effectiveAudible), shared with T3.17's lowering.
@@ -91,7 +92,6 @@ inline constexpr float kLine = 20.0f;               // one header line
 inline constexpr float kBoxTop = 3.0f;              // box offset inside a line
 inline constexpr float kBox = 14.0f;                // box height
 inline constexpr float kStripWidth = 80.0f;         // a mixer-view strip
-inline constexpr double kMeterPollSeconds = 1.0 / 30.0;
 }  // namespace mixer_metrics
 
 // ---- value mapping ---------------------------------------------------------------------------------------------------

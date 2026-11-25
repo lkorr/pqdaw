@@ -116,6 +116,7 @@ inline constexpr uint32_t kFreeze = 1u << 24;         // FZ.3: a frozen track's 
 inline constexpr uint32_t kMacro = 1u << 25;          // T8.1: macro mode (on / off, layer, cursor, anchor, composition)
 inline constexpr uint32_t kPanelFolds = 1u << 26;     // SM.9: a group panel's fold section opened or folded (view state)
 inline constexpr uint32_t kNotePreview = 1u << 27;    // AP.7: a roll preview arrived, or the preview switch flipped
+inline constexpr uint32_t kPrefs = 1u << 28;          // OP.2: the view preferences changed (ViewContext::setViewPrefs)
 }  // namespace view_change
 
 // FZ.3 (docs/plans/RB.md FZ.3): what the views show of a frozen track's render (the playback link's FreezeStatus,
@@ -227,6 +228,11 @@ struct ViewPrefs {
   doc::MidiExportMode midiExportMode = doc::MidiExportMode::Mpe;
   // T8.1 (Preferences → MIDI → Macro mode): the macro-mode key preset, the stem of a file in assets/macro.
   std::string macroPreset = "trainer";
+  // OP.2 (Preferences → Display): how often meters, visualiser faces, analysers, modulation rings and cable glow are
+  // redrawn, Hz: 30 or 60 (ui::UiTree::setReadoutRate; the Shell applies it to its tree at once). The playhead and
+  // whatever is being dragged stay at the display's rate.
+  uint32_t readoutHz = 30;
+  static constexpr uint32_t kReadoutRates[] = {30, 60};
   bool operator==(const ViewPrefs&) const = default;
 };
 

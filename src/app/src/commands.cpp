@@ -268,12 +268,30 @@ struct WindowApp {
     if (pacer.wait()) lastPass = now();
   }
 
+  // OP.2 (pq/ui/readout_clock.h): the tree's readout grid follows what the frames are paced by: the pacer's passes
+  // (their period and the last one's time), or the display's period alone when the frames are paced by time.
+  void alignReadouts() {
+    const double passPeriod = pacer.available() ? pacer.period() : 0.0;
+    if (pacedByTime(passPeriod, displayPeriod)) ui->setReadoutRefresh(displayPeriod, -1.0);
+    else ui->setReadoutRefresh(passPeriod, lastPass);
+  }
+  // With only readouts animating, no frame waits for a pass (each comes periods after the last), so the pass time the
+  // grid is aligned to grows old. After a frame, when it is older than this, one pass is waited for (at most one
+  // refresh period, a kernel wait): the grid stays on the passes however long only meters move.
+  static constexpr double kReadoutPassMaxAge = 5.0;
+  void refreshPassForReadouts() {
+    if (!ui || !pacer.available() || pacedByTime(pacer.period(), displayPeriod)) return;
+    if (!std::isfinite(ui->nextWakeTime()) || (lastPass >= 0.0 && now() - lastPass < kReadoutPassMaxAge)) return;
+    waitForPass();
+  }
+
   // Runs the tree's timers/frame requests/layout and turns its damage into a frame request.
   void updateUi() {
     if (!ui) return;
     uint32_t w = 0, h = 0;
     window->pixelSize(w, h);
     if (w && h) ui->setViewport(w, h, scale);
+    alignReadouts();
     ui->update(now());
     applyCursor(ui->cursor());  // a layout or state change can move what is under a still pointer
     takeUiDamage();
@@ -659,7 +677,11 @@ void pump(WindowApp& app) {
 bool paceIfAnotherFrameDue(WindowApp& app) {
   pump(app);
   app.updateUi();
-  if (app.quit || (!app.frameDue() && !(app.ui && app.ui->needsFrame()))) return false;
+  if (app.quit) return false;
+  if (!app.frameDue() && !(app.ui && app.ui->needsFrame())) {
+    app.refreshPassForReadouts();  // OP.2
+    return false;
+  }
   app.waitForPass();  // one frame per compositor pass, without a driver vsync spin
   return true;
 }

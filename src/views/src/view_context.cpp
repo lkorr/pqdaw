@@ -1519,6 +1519,7 @@ void ViewContext::setViewPrefs(const ViewPrefs& p) {
   viewPrefs_ = p;
   if (preset) (void)macro_->usePreset(viewPrefs_.macroPreset);  // T8.1
   if (viewPrefsListener_) viewPrefsListener_(viewPrefs_);
+  notify(view_change::kPrefs);  // OP.2
 }
 
 // --- actions --------------------------------------------------------------------------------------------

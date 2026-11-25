@@ -543,6 +543,71 @@ TEST_CASE("mixer: meters poll the MeterSource only while it is live, in one batc
   f.mixer->setMeterSource(nullptr);
 }
 
+// OP.2: meters are readouts: polled on the tree's readout grid. With nothing else animating, the tree draws at most
+// `rate` frames per second however fine the loop's clock is, the meters in the headers and the automation followers
+// share those frames, and the rate follows the Display preference at once.
+namespace {
+class MovingMeters final : public MeterSource {
+public:
+  bool live() const noexcept override { return true; }
+  void read(std::span<const doc::TrackId> ids, std::span<ui::MeterLevels> out) noexcept override {
+    ++reads;
+    for (size_t i = 0; i < ids.size() && i < out.size(); ++i) {
+      ui::MeterLevels l;
+      // Another level at every read, far enough apart to move a pixel: every poll repaints.
+      l.rmsDb[0] = l.rmsDb[1] = -40.0f + static_cast<float>((reads * 7 + i * 3) % 30);
+      l.peakDb[0] = l.peakDb[1] = l.rmsDb[0] + 6.0f;
+      out[i] = l;
+    }
+  }
+  uint64_t reads = 0;
+};
+}  // namespace
+
+TEST_CASE("mixer (OP.2): with only meters animating, the tree draws at most the readout rate; the setting applies live") {
+  Fixture f;
+  MovingMeters src;
+  f.mixer->setMeterSource(&src);
+  f.d.setFrameRate(1000.0);  // the loop's clock: 1 ms steps (a frame whenever something is damaged)
+  f.d.advance(0.3);
+  auto run = [&](double seconds) {
+    const uint64_t frames = f.d.framesDrawn(), reads = src.reads;
+    f.d.advance(seconds);
+    CHECK(src.reads - reads == f.d.framesDrawn() - frames);  // one batched read per frame, every one drawn
+    return f.d.framesDrawn() - frames;
+  };
+  CHECK(f.d.tree().readoutRate() == 30.0);
+  uint64_t n = run(2.0);
+  CHECK(n <= 61);
+  CHECK(n >= 59);
+  // The mixer view's strips instead of the headers': the same grid.
+  CHECK(f.d.press("Ctrl+Alt+M") == KeyResult::Action);
+  f.d.advance(0.3);
+  n = run(2.0);
+  CHECK(n <= 61);
+  CHECK(n >= 59);
+  // 60 Hz, live.
+  ViewPrefs p = f.ctx.viewPrefs();
+  p.readoutHz = 60;
+  f.ctx.setViewPrefs(p);
+  CHECK(f.d.tree().readoutRate() == 60.0);
+  f.d.advance(0.3);
+  n = run(2.0);
+  CHECK(n <= 121);
+  CHECK(n >= 119);
+  p.readoutHz = 30;
+  f.ctx.setViewPrefs(p);
+  f.d.advance(0.3);
+  n = run(2.0);
+  CHECK(n <= 61);
+  CHECK(n >= 59);
+  f.mixer->setMeterSource(nullptr);
+  f.d.advance(0.2);
+  const uint64_t idle = f.d.framesDrawn();
+  f.d.advance(1.0);
+  CHECK(f.d.framesDrawn() == idle);  // idle: no frames
+}
+
 // KB.3: the meters stop polling while the engine sleeps; a key or a MIDI note while stopped (no transport change) makes
 // the link post view_change::kSignal (ViewContext::signalWaking), and the poll runs again until the source goes quiet.
 TEST_CASE("mixer (KB.3): a signal wake while stopped re-arms the stopped meter poll; quiet again, it stops") {

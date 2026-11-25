@@ -12,7 +12,7 @@
 //             Redone when the document or the overrides change (view_change::kAutomation), never per frame.
 //   valueAt   the envelope at the playhead (pq/core/automation_curve.h), in the lane's units: a device param's knob
 //             position (GU.1), dB for volume / sends, −1 … 1 for pan.
-//   poll      a 30 Hz timer on the view, armed only while a following control is shown and the transport plays (a
+//   poll      a readout timer (OP.2) on the view, armed only while a following control is shown and the transport plays (a
 //             located playhead while stopped arrives as view_change::kTransport); idle otherwise.
 //
 // What a view does with the values is its own: it shows them on its controls (PanelTarget::showPosition,
@@ -44,8 +44,6 @@ public:
     bool mapped = false;      // a macro-mapped device param: its control is left to the macro
     bool follows() const noexcept { return !overridden && !mapped; }
   };
-
-  static constexpr double kPollSeconds = 1.0 / 30.0;
 
   // Forgets the targets (keeps the storage).
   void clear() noexcept { targets_.clear(); }

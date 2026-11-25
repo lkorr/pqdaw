@@ -2914,7 +2914,7 @@ void ProjectPatchView::pollReadout() {
     }
   }
   canvas_->markDirty();
-  if (live) readoutTimer_ = requestTimer(1.0 / 30.0);
+  if (live) readoutTimer_ = requestReadoutTimer();
 }
 
 }  // namespace pq::views::project_patch

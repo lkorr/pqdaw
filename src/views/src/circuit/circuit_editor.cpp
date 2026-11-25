@@ -1034,7 +1034,6 @@ ui::InfoText CircuitEditor::info() const {
 namespace {
 constexpr double kDwellSeconds = 0.15;  // the pointer rests on a wire this long before it is probed
 constexpr double kGraceSeconds = 1.5;   // a probe stays compiled this long after the pointer left its wire
-constexpr double kPollSeconds = 1.0 / 30.0;
 constexpr uint32_t kMaxLedProbes = 64;
 constexpr uint32_t kScopeFrames = 1024;  // the readout's mini-scope: ≈ 21 ms at 48 kHz
 }  // namespace
@@ -1231,7 +1230,7 @@ void CircuitEditor::clearProbeDisplay() {
 
 void CircuitEditor::ensurePoll() {
   const bool want = doc_->playing() && (!ledWires_.empty() || overlay_.readout);
-  if (want && !pollTimer_) pollTimer_ = requestTimer(kPollSeconds);
+  if (want && !pollTimer_) pollTimer_ = requestReadoutTimer();
 }
 
 void CircuitEditor::pollProbes() {

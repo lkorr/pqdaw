@@ -12,6 +12,7 @@
 //       "sampleRate": 48000, "bufferFrames": 64, "outputChannels": 2   (inputs: what the tracks use, T6.7b)
 //     },
 //     "views": { "circuitShowInactive": false,           (T4.15: views::ViewPrefs)
+//                "readoutHz": 30 | 60,                   (OP.2: meters and visualisers, Preferences → Display)
 //                "export": { "tracks": "master" | "allTracks" | "selected", "range": "song" | "loop" | "timeSelection",
 //                            "includeReturnsMaster": false, "renderAsLoop": false, "format": "wav",
 //                            "sampleRate": 0 (the engine's), "bits": "pcm16" | "pcm24" | "float32",

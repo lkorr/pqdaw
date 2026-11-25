@@ -1099,14 +1099,14 @@ void PanelHost::wake() {
   (void)face_->frameTick();   // DT.1 (the dirty mark above repaints it anyway)
   (void)face_->pollGhosts();  // bug-mod-ghost (likewise)
   if (voiceTimer_ == 0 && (face_->voices() != nullptr || face_->ticking() || face_->ghostsLive()) && tree() != nullptr)
-    voiceTimer_ = requestTimer(1.0 / 60.0);
+    voiceTimer_ = requestReadoutTimer();
 }
 
 void PanelHost::transportChanged() {
   if (!visible()) return;
   if (face_->frameTick()) markDirty();
   ghostTick();
-  if (voiceTimer_ == 0 && (face_->ticking() || face_->ghostsLive()) && tree() != nullptr) voiceTimer_ = requestTimer(1.0 / 60.0);
+  if (voiceTimer_ == 0 && (face_->ticking() || face_->ghostsLive()) && tree() != nullptr) voiceTimer_ = requestReadoutTimer();
 }
 
 // bug-mod-ghost: a ghost that moved repaints only the controls whose ghost moved (a group panel: notifyChanged's live
@@ -1132,7 +1132,7 @@ void PanelHost::onTimer(uint32_t id) {
   ghostTick();                          // bug-mod-ghost
   if (v != nullptr && face_->pollVoices()) markDirty();
   if ((v != nullptr && (v->live() || face_->animating())) || face_->ticking() || face_->ghostsLive())
-    voiceTimer_ = requestTimer(1.0 / 60.0);
+    voiceTimer_ = requestReadoutTimer();
 }
 
 ui::FaceTransform PanelHost::transform() const noexcept {
@@ -1227,7 +1227,7 @@ void PanelHost::paint(ui::PaintContext& ctx) {
   if (voiceTimer_ == 0)
     if (VoiceTapReader* v = face_->voices();
         (v != nullptr && (v->live() || face_->animating())) || face_->ticking() || face_->ghostsLive())
-      voiceTimer_ = requestTimer(1.0 / 60.0);
+      voiceTimer_ = requestReadoutTimer();
 }
 
 void PanelHost::onFrame(double /*now*/) {

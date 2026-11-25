@@ -41,6 +41,7 @@
 #include "pq/ui/drag.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/input.h"
+#include "pq/ui/readout_clock.h"
 #include "pq/ui/ui_scale.h"
 
 namespace pq::ui {
@@ -309,6 +310,11 @@ public:
   void requestFrame();
   // onTimer(id) is called once at or after now + delaySeconds (the frame loop sleeps until then).
   uint32_t requestTimer(double delaySeconds);
+  // OP.2: onTimer(id) at the tree's next readout tick (pq/ui/readout_clock.h). For widgets that only SHOW live audio
+  // data (meters, visualiser faces, analysers, modulation rings, cable glow): every one of them is polled in the same
+  // frames, at the readout rate (30 Hz by default, a setting), instead of each at its own period and phase. Not for
+  // playheads, gestures or open / hover animations: those keep requestFrame / requestTimer. 0 outside a tree.
+  uint32_t requestReadoutTimer();
   void cancelTimer(uint32_t id) noexcept;
 
   // --- overridables ---
@@ -529,6 +535,18 @@ public:
   bool needsFrame() const noexcept;
   // Earliest pending timer (s), or +infinity. The loop may sleep until then when !needsFrame().
   double nextWakeTime() const noexcept;
+  // --- OP.2: the readout grid (pq/ui/readout_clock.h; Widget::requestReadoutTimer) ---
+  // The target rate of the readouts (Hz; 30 by default). Applies from each readout's next poll on.
+  void setReadoutRate(double hz) noexcept;
+  double readoutRate() const noexcept { return readoutHz_; }
+  // From the frame loop, before update(): the refresh period the frames are paced by (<= 0: unknown) and when a
+  // compositor pass last returned (< 0: unknown), on update()'s clock. The grid's period becomes a whole number of
+  // refresh periods and its ticks follow the passes. Never called (tests): the grid runs free at 1 / rate.
+  void setReadoutRefresh(double refreshPeriod, double pass) noexcept;
+  const ReadoutGrid& readoutGrid() const noexcept { return readoutGrid_; }
+  // When a readout asking now is polled next. A tree drawn inside another's widget (TreeHost) uses the outer tree's
+  // grid: one phase for everything in the window.
+  double nextReadoutTick() const noexcept;
   // TX.panel-faces: a widget asked for a frame or layout is pending (needsFrame without the damage).
   bool framesRequested() const noexcept { return !frameRequests_.empty() || layoutPending_; }
   // Draws the whole tree into `dl` (already reset to width()×height()) and clears the damage.
@@ -725,6 +743,9 @@ private:
   std::vector<Timer> timerWork_;
   uint32_t nextTimerId_ = 1;
   double now_ = 0;
+  double readoutHz_ = kReadoutHzDefault;  // OP.2
+  double readoutRefresh_ = 0.0;
+  ReadoutGrid readoutGrid_{};
 
   struct Bound {
     uint64_t key;  // scope << 48 | mods << 32 | key

@@ -256,7 +256,7 @@ doc::Panel inspectorPanel(doc::DeviceId group, float width, bool polyphony);
 
 // A widget that hosts one Face fitted into its rect (aspect kept, centred, whole device px at its origin), routing pointer
 // events, keys and text to it as the canvas does, preparing it at its scale in onFrame (its tiles). A panel repaints when
-// its document changes (notifyChanged); its voices are polled at ≤ 60 Hz only while its reader is live or it animates
+// its document changes (notifyChanged); its voices are polled at the readout rate (OP.2) only while its reader is live or it animates
 // (idle: no timer; wake() looks again). GU.13: its controls take the DEVICE-PANEL GESTURES (FacePointer::valueGestures:
 // the wheel, a run of notches one undo step ended kWheelRunSeconds after the last; the keys after a press) and its
 // popups are drawn over it. The Device view's frames (a group's panel, its inspector, a leaf's: block_frame.h) and the

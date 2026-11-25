@@ -66,6 +66,12 @@
 //
 // AS.1: Saving → Autosave is ViewPrefs::autosave (pq/app/autosave.h).
 //
+// OP.2: a Display tab (with a ViewContext): ViewPrefs::readoutHz, how often meters and visualisers are redrawn (two
+// cells, one lit; applied at once: the Shell sets its tree's readout rate):
+//
+//   │ Display │ Animation                                                        │
+//   │         │   Meter & Visualiser Rate   [30 Hz][60 Hz]                       │
+//
 // Browse… and Add Folder… open the folder picker (FileDialogs::chooseFolder). The location applies at once
 // (Library::changeUserLibrary: the browser's User Library place re-points and re-indexes; saves go there) and the app
 // keeps it in the settings file; the Samples Folder likewise (Library::changeSamplesFolder; shown: the default
@@ -319,7 +325,8 @@ public:
 
   // T5.x-library-prefs: the tabs (0 Audio, 1 Library, 2 MIDI: T6.4) and the Library tab's controls (null without a
   // context).
-  enum class Tab : uint8_t { Audio, Library, Midi, Warp, Record };  // Warp: T6.8, Record: T6.7b (with a context)
+  // Warp: T6.8, Record: T6.7b, Display: OP.2 (with a context)
+  enum class Tab : uint8_t { Audio, Library, Midi, Warp, Record, Display };
   void showTab(Tab t);
   Tab tab() const noexcept { return tab_; }
   ui::Button* browseUserLibrary() const noexcept { return browse_; }
@@ -341,6 +348,8 @@ public:
   // T6.7b: the Record tab's offset box (ms; null without a context).
   ui::DragBox* recordOffsetBox() const noexcept { return recordOffset_; }
   ui::Toggle* autosaveToggle() const noexcept { return autosave_; }  // AS.1
+  // OP.2: the Display tab's rate cells, one per ViewPrefs::kReadoutRates (30 Hz, 60 Hz; null without a context).
+  ui::Toggle* readoutRateCell(size_t i) const noexcept { return i < 2 ? readoutRate_[i] : nullptr; }
   ui::Dropdown* macroPresetChooser() const noexcept { return macroPreset_; }  // T8.1 (the MIDI tab)
   // The selected row of the Places list (-1 none).
   int32_t selectedFolder() const noexcept;
@@ -362,6 +371,8 @@ private:
   void updateWarp();
   void buildRecordTab(ui::Widget& body);  // T6.7b
   void updateRecord();
+  void buildDisplayTab(ui::Widget& body);  // OP.2
+  void updateDisplay();
 
   AudioPrefsPort& port_;
   AudioSettings shown_;
@@ -395,6 +406,9 @@ private:
   ui::Widget* recordPage_ = nullptr;
   ui::DragBox* recordOffset_ = nullptr;
   ui::Toggle* autosave_ = nullptr;  // AS.1
+  ui::Label* displayTab_ = nullptr;  // OP.2
+  ui::Widget* displayPage_ = nullptr;
+  ui::Toggle* readoutRate_[2] = {nullptr, nullptr};
   ui::Dropdown* macroPreset_ = nullptr;      // T8.1: macro mode's key preset (ViewPrefs::macroPreset)
   std::vector<std::string> macroPresets_;    // the ids in assets/macro, as listed
   ViewContext::Subscription librarySub_;

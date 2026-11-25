@@ -399,14 +399,18 @@ TEST_CASE("wavetable face: taps reach the dots within one displayed frame; voice
   for (int i = 0; i < 10; ++i) d.step();
   MetaFace& f = canvas.faceAt(0);
   CHECK_FALSE(canvas.animatingFaces());
-  // A voice starts: the next timer tick (one displayed frame) shows its newest phase.
+  // A voice starts: the next readout tick (OP.2: one displayed readout frame; it was a 1/60 s timer) shows its newest
+  // phase.
   voices.setVoices({{3, 2.0, 0.25, 0.4}});
   canvas.wakeFaces();
   double t = d.now();
-  voices.advance(1.0 / 60.0);
+  const double tick = d.tree().nextReadoutTick() - t;
+  CHECK(tick > 0.0);
+  CHECK(tick <= 1.0 / 30.0);
+  voices.advance(tick);
   const float expect = static_cast<float>(voices.voicesNow()[0].phase);
-  t += 1.0 / 60.0 + 1e-4;
-  gClock += 1.0 / 60.0;
+  t += tick + 1e-4;
+  gClock += tick;
   d.tree().update(t);
   REQUIRE(f.sounding().size() == 1u);
   CHECK(f.sounding()[0].phase == doctest::Approx(expect));
