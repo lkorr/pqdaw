@@ -201,8 +201,8 @@ namespace pq::graph {
   // stage's inline items then form as few groups as the dependencies allow, and the JIT runs a group as one loop over
   // frames (codegen.h: a voice chain = its per-sample loops, the all-inline Block regions between them and the inline
   // ops at the edges of the Block regions around it; cut at the pair cap so the stage keeps its two-group function):
-  // independent recursions overlap instead of each loop waiting on its own recurrence (Operator −22 %, default
-  // instrument −15 %, bench/RESULTS.md). Derived from the graph's dependencies and the atoms' forms only; the
+  // independent recursions overlap instead of each loop waiting on its own recurrence (Operator −25 %, default
+  // instrument −13 … −19 %, bench/RESULTS.md). Derived from the graph's dependencies and the atoms' forms only; the
   // interpreter runs the same op order. `jit::CompileStats::chainedOps` counts the ops that run in chains (cache
   // format 6).
   // TX.smooth (schedule.h "Param ramps"; QUESTIONS Q?-TX.smooth-a): every param is smooth when it changes, in every

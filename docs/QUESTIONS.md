@@ -2913,3 +2913,28 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - F2 (a) held: the site is `ScopeTracker::fftOf`, through the frame's retry on a third of the window when nothing is
   pitched (two padded lengths per frame); bench/RESULTS.md.
 - Status: note
+
+## Q?-OP.5-a · 2026-11-24 · OP.5 · What the fusion left, and the extras that were not done
+- Context: OP.5's order rule is greedy (stay with the form of the last item, calls first at a stage's start); it has no
+  lookahead. A call that needs one inline value (`delay(gate_to_real(gate))`) still splits a stage's inline items in
+  two, where "that value, the call, then everything inline" would not. Not seen in the Operator, the default
+  instrument or the Wavetable Synth.
+- The Operator's fused envelope chain is throughput-bound (177 instructions per frame for four envelopes). What would
+  shrink it is in the patch, not in the loop structure: each envelope has its own `rise(gate)` and its own selects on
+  the gate (common subexpressions across module instances: the optimiser, with stateful CSE for `rise`), and F10
+  (envelopes at a fixed point still run) now takes most of what is left.
+- Extras offered with the bit-exactness change, measured or estimated, NOT done:
+  A. `reduceKernel` as an eight-frame sum: built bit-identical, measured 0 ± 1 % in every synth row, reverted.
+  B. Phasor Hz → increment hoisted for a block-constant Hz: in these instruments Hz is a block (the tuning kernel's
+     output times a ratio), so "constant" is a run-time property: a compare with the previous frame and a branch
+     inside the fused chain's body. The default instrument's phasor now runs in the envelope's shadow (0 to gain); in
+     the Operator it is ≈ 40 of the 300 cost units of a throughput-bound chain: ≤ 1.5 % of the unit. A float
+     increment would be cheaper still but breaks the exact pitch ratios (rule 3).
+  C. Reuse slots for the stateless `runtime.cpp` helpers: a per-call-site slot in the host layout; 1 – 2 % of the
+     session by OP.6's profile. Not started.
+  D. The master / bus sum skipping silent inputs (Q?-OP.4-a): an n-ary sum op in the schedule and both backends for
+     ≈ 0.1 % of a core at 64 tracks. Not started.
+- Options: 1. leave all four. 2. C as its own small task after OP.7 (same files). 3. the cross-instance CSE as an
+  optimiser task (it also helps every multi-envelope patch on the interpreter).
+- Choice (provisional): 1 now; 3 is the one with a real return.
+- Status: open
