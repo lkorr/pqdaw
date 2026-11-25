@@ -416,6 +416,48 @@ TEST_CASE("schedule: loops with the same sub-block share a region; each differen
   CHECK(subs == std::vector<uint32_t>{1, 4, 10});
 }
 
+// OP.5: among the ready items of a stage, the order stays with the form of the last one (inline code or a kernel
+// call, dsp::inlineForm), so independent per-sample recursions come together, where generated code runs them in one
+// loop, and the calls that only read them follow.
+TEST_CASE("schedule: a stage's inline items stay together: kernel calls between independent loops move behind them (OP.5)") {
+  Compiled c;
+  compile(c, R"(patch O {
+  in x : audio
+  out y : audio
+  a = z1(a * 0.5 + x)
+  b = z1(b * 0.25 + x)
+  c = z1(c * 0.125 + x)
+  y = tanh(a) + tanh(b) * 2 + tanh(c) * 3
+}
+)");
+  const Schedule& s = ok(c);
+  checkStructure(s, c.typed);
+  // tanh is exact (a block-wise call in a slice); the three recursions are one Loop region, before every call.
+  uint32_t loops = 0, lastLoopOp = 0, firstCall = kNone, flips = 0;
+  int prev = -1;
+  for (const Region& r : s.regions) {
+    if (r.kind == RegionKind::Loop) {
+      ++loops;
+      lastLoopOp = r.firstOp + r.numOps - 1;
+    }
+    if (r.kind == RegionKind::Control) continue;
+    for (uint32_t i = r.firstOp; i < r.firstOp + r.numOps; ++i) {
+      const bool call = r.kind == RegionKind::Block && dsp::inlineForm(s.ops[i].kernel) != dsp::InlineForm::Elementwise;
+      if (call && firstCall == kNone) firstCall = i;
+      if (prev >= 0 && (prev == 1) != call) ++flips;
+      prev = call ? 1 : 0;
+    }
+  }
+  CHECK(loops == 1);
+  REQUIRE(firstCall != kNone);
+  CHECK(lastLoopOp < firstCall);
+  CHECK(flips == 2);  // loops | tanh, tanh, tanh | the products and sums
+  // A voice stage's simple stateful atoms are inline there (a phasor), calls in a global stage.
+  CHECK(dsp::inlineForm(dsp::Atom::Phasor) == dsp::InlineForm::Stateful);
+  CHECK(dsp::inlineForm(dsp::Atom::Tanh) == dsp::InlineForm::Exact);
+  CHECK(dsp::inlineForm(dsp::Atom::Svf) == dsp::InlineForm::Call);
+}
+
 TEST_CASE("schedule: solve blocks (audio rate in a loop, param rate in the control region, previous-solution state)") {
   CHECK(dumpOf(kDiode) == R"(schedule 'D': 1 stages, 1 regions, 4 ops; buffers: 2 block, 0 pattern; state: 0 B global, 0 B per voice group
 params:

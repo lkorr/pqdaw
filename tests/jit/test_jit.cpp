@@ -517,6 +517,49 @@ TEST_CASE("jit: the scalar-lane baseline refuses a voice that calls kernels; a p
   CHECK(cs.maxVsInterp == 0.0);
 }
 
+// OP.5: the scheduler puts a voice stage's independent recursions (envelopes: a Block lead-in and a per-sample loop
+// each) next to each other and their kernel calls behind them, so they chain into one loop over frames. Thirty of
+// them are one chain above the pair cap (T4.12): it is cut into chains below it, and the stage keeps its pair
+// function. The gate (an engine block every envelope reads) is loaded once per frame, and the output's buffer, which
+// held transients before, is stored once: all with the interpreter's bits.
+TEST_CASE("jit: a voice stage's independent recursions chain across the calls that read them; a long chain is cut at the pair cap (OP.5)") {
+  std::string text = "patch Envs {\n  param rate = 0.01 [0.001..0.5]\n  out y : audio voice\n  g = gate_to_real(voice.gate)\n";
+  std::string sum = "0";
+  for (int k = 1; k <= 30; ++k) {
+    const std::string n = std::to_string(k);
+    text += "  t" + n + " = g * " + std::to_string(0.5 + 0.01 * k) + "\n";
+    text += "  e" + n + " = z1(e" + n + " + (t" + n + " - e" + n + ") * rate)\n";
+    sum += " + tanh(e" + n + " * 2)";  // an exact transcendental: a kernel call per block
+  }
+  text += "  y = (" + sum + ") * sine(phasor(voice.hz)) * 0.05\n}\n";
+  const Compiled c = compileText(text);
+  // The schedule: no call between the first and the last per-sample loop.
+  uint32_t firstLoop = pq::graph::kNone, lastLoop = 0, callsBetween = 0;
+  for (uint32_t r = 0; r < c.sched.regions.size(); ++r)
+    if (c.sched.regions[r].kind == pq::graph::RegionKind::Loop) {
+      if (firstLoop == pq::graph::kNone) firstLoop = r;
+      lastLoop = r;
+    }
+  REQUIRE(firstLoop != pq::graph::kNone);
+  for (uint32_t r = firstLoop; r <= lastLoop; ++r) {
+    const pq::graph::Region& reg = c.sched.regions[r];
+    for (uint32_t i = reg.firstOp; i < reg.firstOp + reg.numOps; ++i)
+      callsBetween += c.sched.ops[i].kind == OpKind::Kernel && c.sched.ops[i].kernel == pq::dsp::Atom::Tanh;
+  }
+  CHECK(callsBetween == 0);
+  jit::CompileStats st;
+  REQUIRE(compiler().compile(c.sched, {}, &st).ok());
+  CHECK(st.pairedStages == 1);
+  CHECK_FALSE(st.stackProbes);
+  CorpusStats cs;
+  for (jit::VoiceCode vc : {jit::VoiceCode::Auto, jit::VoiceCode::Groups, jit::VoiceCode::Pairs256}) {
+    jit::CompileOptions jo;
+    jo.voiceCode = vc;
+    for (uint32_t voices : {1u, 8u, 19u}) checkPatch(c, voices, 0, jo, cs, true, kBlocks, std::size(kBlocks));
+  }
+  CHECK(cs.maxVsInterp == 0.0);
+}
+
 TEST_CASE("jit: VoiceEngine-driven FmVoice / echo / probe (note traffic, steals, voice moves) match the interpreter") {
   std::vector<std::string> skipped;
   std::vector<Compiled> patches = compileFile(fs::path(PQ_TEST_DATA_DIR) / "graph" / "cases" / "fm_voice.pqp", 48000.0, skipped);
