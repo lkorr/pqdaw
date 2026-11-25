@@ -560,6 +560,49 @@ TEST_CASE("jit: a voice stage's independent recursions chain across the calls th
   CHECK(cs.maxVsInterp == 0.0);
 }
 
+// OP.5: a stage starts with the kernel calls that are ready, so what leads into a per-sample loop (an oscillator's
+// phase that reads a call) and what reads the loop are inline ops next to it, in Block regions that also hold calls.
+// The loop's chain takes those ops (codegen.h "Chains"): they run in its loop over frames.
+TEST_CASE("jit: a per-sample loop takes the inline ops before and after it out of Block regions with calls (OP.5)") {
+  const Compiled c = compileText(R"(patch Edge {
+  param rate = 0.01 [0.001..0.5]
+  out y : audio voice
+  g  = gate_to_real(voice.gate)
+  d  = delay(voice.hz, 1ms, 2ms)
+  ph = phasor(voice.hz + d * 0.001)
+  e  = z1(e + (g - e) * rate)
+  a  = e * (ph * 2 - 1)
+  y  = tanh(a * 3) * 0.3
+})");
+  uint32_t loopOps = 0, loops = 0;
+  for (const pq::graph::Region& reg : c.sched.regions)
+    if (reg.kind == pq::graph::RegionKind::Loop) {
+      ++loops;
+      loopOps += reg.numOps;
+      // The regions around the loop are not all inline: the delay line before it, tanh after it.
+      const pq::graph::Region& before = *(&reg - 1);
+      const pq::graph::Region& after = *(&reg + 1);
+      CHECK(before.kind == pq::graph::RegionKind::Block);
+      CHECK(after.kind == pq::graph::RegionKind::Block);
+    }
+  REQUIRE(loops == 1);
+  jit::CompileStats st;
+  REQUIRE(compiler().compile(c.sched, {}, &st).ok());
+  MESSAGE("Edge: " << st.inlinedOps << " inline ops, " << st.chainedOps << " in the chain, " << loopOps << " in the loop, "
+                   << st.calledOps << " calls");
+  // Everything inline but the product after tanh.
+  CHECK(st.chainedOps == st.inlinedOps - 1);
+  CHECK(st.chainedOps >= loopOps + 6);
+  CHECK(st.pairedStages == 1);
+  CorpusStats cs;
+  for (jit::VoiceCode vc : {jit::VoiceCode::Auto, jit::VoiceCode::Groups, jit::VoiceCode::Pairs256}) {
+    jit::CompileOptions jo;
+    jo.voiceCode = vc;
+    for (uint32_t voices : {1u, 8u, 19u}) checkPatch(c, voices, 0, jo, cs, true, kBlocks, std::size(kBlocks));
+  }
+  CHECK(cs.maxVsInterp == 0.0);
+}
+
 TEST_CASE("jit: VoiceEngine-driven FmVoice / echo / probe (note traffic, steals, voice moves) match the interpreter") {
   std::vector<std::string> skipped;
   std::vector<Compiled> patches = compileFile(fs::path(PQ_TEST_DATA_DIR) / "graph" / "cases" / "fm_voice.pqp", 48000.0, skipped);

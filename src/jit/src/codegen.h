@@ -109,6 +109,7 @@ struct GenResult {
   std::vector<std::string> pairFunctions;   // per Schedule::stages entry: the two-group function, or empty
   uint32_t inlinedOps = 0;   // ops generated inline
   uint32_t calledOps = 0;    // ops that call a dsp kernel or runtime helper
+  uint32_t chainedOps = 0;   // ops of chains (regions fused into one loop over frames, with the ops joined at their edges)
 };
 
 Result<GenResult> generate(const graph::Schedule& s, const HostLayout& layout, PtrTable& tab, llvm::Module& m,

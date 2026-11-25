@@ -147,7 +147,7 @@ struct SharedCode {
   uint64_t objectBytes = 0;
   uint32_t objects = 0;
   bool stackProbes = false;
-  uint32_t irInstructions = 0, inlinedOps = 0, calledOps = 0;
+  uint32_t irInstructions = 0, inlinedOps = 0, calledOps = 0, chainedOps = 0;
   SharedCode() = default;
   SharedCode(const SharedCode&) = delete;
   SharedCode& operator=(const SharedCode&) = delete;
@@ -577,6 +577,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
     st.irInstructions = code->irInstructions;
     st.inlinedOps = code->inlinedOps;
     st.calledOps = code->calledOps;
+    st.chainedOps = code->chainedOps;
     st.pairedStages = code->pairedStages;
     if (source != Source::Compiled) st.cacheMs = msSince(tc);
     st.totalMs = msSince(t0);
@@ -708,6 +709,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
       code->irInstructions = e.irInstructions;
       code->inlinedOps = e.inlinedOps;
       code->calledOps = e.calledOps;
+      code->chainedOps = e.chainedOps;
       std::lock_guard lock(s.mutex);
       s.codes[key] = code;
       return code;
@@ -756,6 +758,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
   st.codegenMs = msSince(t1);
   st.inlinedOps = gen->inlinedOps;
   st.calledOps = gen->calledOps;
+  st.chainedOps = gen->chainedOps;
   Key irHash;
   if (cc.verify) {
     std::string text;
@@ -982,6 +985,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
   code->irInstructions = st.irInstructions;
   code->inlinedOps = st.inlinedOps;
   code->calledOps = st.calledOps;
+  code->chainedOps = st.chainedOps;
 
   tc = clock::now();
   if (store) {
@@ -995,6 +999,7 @@ Result<std::unique_ptr<engine::ProgramImage>> Compiler::compileImpl(const graph:
     e.irInstructions = code->irInstructions;
     e.inlinedOps = code->inlinedOps;
     e.calledOps = code->calledOps;
+    e.chainedOps = code->chainedOps;
     e.stackProbes = code->stackProbes;
     e.objects = std::move(stored);
     const uint64_t written = detail::writeEntry(cc.dir, key, e);

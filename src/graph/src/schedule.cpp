@@ -1095,14 +1095,22 @@ private:
       if (indeg[c] == 0) push(c);
     sccOrder_.clear();
     sccOrder_.reserve(numScc);
-    uint8_t cur = kFormNone;
+    uint8_t cur = kFormCall;
+    int32_t curStage = -2;
     while (!ready[0].empty() || !ready[1].empty()) {
       uint32_t q = ready[0].empty() ? 1u : 0u;
+      const int32_t stage = ready[0].empty()   ? ready[1].top().stage
+                            : ready[1].empty() ? ready[0].top().stage
+                                               : std::min(ready[0].top().stage, ready[1].top().stage);
+      if (stage != curStage) {  // a stage starts with the calls that are ready: what they give, every inline item can read
+        curStage = stage;
+        cur = kFormCall;
+      }
       if (!ready[0].empty() && !ready[1].empty()) {
         const Ready& a = ready[0].top();
         const Ready& b = ready[1].top();
         if (a.stage != b.stage || a.cls != b.cls || a.factor != b.factor) q = ReadyLess{}(a, b) ? 1u : 0u;
-        else if (form[a.scc] == kFormNone || cur == kFormNone) q = a.seq > b.seq ? 0u : 1u;  // as one queue would
+        else if (form[a.scc] == kFormNone) q = a.seq > b.seq ? 0u : 1u;  // as one queue would
         else q = cur == kFormCall ? 1u : 0u;
       }
       const uint32_t c = ready[q].top().scc;

@@ -56,7 +56,7 @@ struct Entry {
   std::vector<uint64_t> fnOffsets;  // pointer-table slots hostSlots… as offsets from BinaryIdentity::base
   Key irHash;                       // hash of the generated IR (zero: not recorded)
   uint64_t objectBytes = 0;
-  uint32_t irInstructions = 0, inlinedOps = 0, calledOps = 0;
+  uint32_t irInstructions = 0, inlinedOps = 0, calledOps = 0, chainedOps = 0;
   bool stackProbes = false;
   std::vector<std::vector<uint8_t>> objects;  // the COFF object(s): PF.4, one per part of a split module
 };

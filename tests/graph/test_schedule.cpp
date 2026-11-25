@@ -326,6 +326,7 @@ uint32_t opNodes(const Schedule& s) {
 // ---- structure: expected dumps --------------------------------------------------------------------------------
 
 TEST_CASE("schedule: a block-wise chain with in-place ops and a z1 outside any loop") {
+  // OP.5: a stage starts with its ready kernel calls (a global z1 is one), then the inline items stay together.
   CHECK(dumpOf(kChainA) == R"(schedule 'A': 1 stages, 1 regions, 5 ops; buffers: 2 block, 0 pattern; state: 64 B global, 0 B per voice group
 params:
   p0 'g' real = 0.5 [0..1]
@@ -334,13 +335,13 @@ externals:
 buffers: b0=blk1 b1=blk1
 stage 0 global
   region 0 block
-    #0 mul/1 (e0, ~p0) -> b0  mul#6
-    #1 mul/1 (b0, ~2) -> b0  mul#5
-    #2 tanh/1 (b0) -> b0  tanh#4
-    #3 z1/1 (e0) -> b1 [s0]  z1#8
-    #4 add/1 (b0, b1) -> b0  add#3
+    #0 z1/1 (e0) -> b0 [s0]  z1#8
+    #1 mul/1 (e0, ~p0) -> b1  mul#6
+    #2 mul/1 (b1, ~2) -> b1  mul#5
+    #3 tanh/1 (b1) -> b1  tanh#4
+    #4 add/1 (b1, b0) -> b1  add#3
 outputs:
-  out 'y' ch0 <- b0 (global)
+  out 'y' ch0 <- b1 (global)
 state global (64 B):
   s0 @0 +32 z1/1 z1#8 ch0
 )");
