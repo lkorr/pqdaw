@@ -719,8 +719,8 @@ void PreferencesWindow::buildDisplayTab(Widget& body) {
     readoutRate_[i] = &r.add<Toggle>(i == 0 ? "rate-30" : "rate-60", i == 0 ? "30 Hz" : "60 Hz");
     readoutRate_[i]->setWidth(Length::fixed(56));
     readoutRate_[i]->setInfo("Meter & Visualiser Rate",
-                             "How often meters, visualisers, analysers and modulation rings are redrawn. 30 Hz costs "
-                             "about half the CPU of 60 Hz while the song plays. The playhead and anything you drag "
+                             "How often meters, visualisers, analysers and modulation rings are redrawn. 30 Hz uses "
+                             "less CPU while the song plays. The playhead and anything you drag "
                              "always move at the display's rate.");
     readoutRate_[i]->onToggle = [this, hz](bool) {
       ViewPrefs p = ctx_->viewPrefs();

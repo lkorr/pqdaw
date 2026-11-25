@@ -2477,3 +2477,7 @@ Per display (how it was drawn → what was wrong → what changed):
   waveform-lod re-recorded, each compared with the old one).
 - Seen there, not mine: a scripted `quit` with unsaved edits waits for ever in the native Save dialog; one run ended
   with an access violation after `discard` + `quit` (not reproduced in three more runs).
+
+## 2026-11-24 · OP.2 · meters and visualisers at 30 Hz (task/OP.2-animation-rate) 👁
+- Meters, visualiser faces, analysers, modulation rings and cable glow redraw on one shared 30 Hz tick (33.3 Hz on a 100 Hz display); Preferences → Display → Meter & Visualiser Rate: 30 Hz | 60 Hz (50 Hz on a 100 Hz display). The playhead and drags stay at the display's rate.
+- Look at: are the scopes / spectrum fluid enough at 30 Hz? Do meters fall as before? Not looked at live beyond frame counting.
