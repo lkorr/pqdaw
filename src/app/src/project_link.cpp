@@ -3051,27 +3051,21 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
   // (it restarts the accumulation only when it runs again), which froze the meters lit (T3.17-fix1, M3 review L13).
   if (engine_->asleep())
     for (engine::BusLevel& l : levels) l.peak[0] = l.peak[1] = l.meanSquare[0] = l.meanSquare[1] = 0.0f;
+  // OP.2 (pq/app/meter_ballistics.h): fall and hold by time, each meter on its own clock, so the reading is the same
+  // at any poll rate and for a track read by several readers.
   const double now = nowSeconds();
-  const double dt = std::clamp(now - lastMeterRead_, 0.0, 1.0);
-  lastMeterRead_ = now;
-  constexpr float kFallDbPerSecond = 26.0f;  // PQ Meter-like release of the peak bar
-  constexpr double kHoldSeconds = 1.5;
   bool lit = false;
   for (size_t i = 0; i < n; ++i) {
     ui::MeterLevels m;
-    MeterState& st = meters_[ids[i].value];
+    MeterBallistics& st = meters_[ids[i].value];
     const engine::BusLevel& l = levels[i];
+    const double dt = st.advance(now);
     m.channels = 2;
     for (int c = 0; c < 2; ++c) {
-      const float pk = l.channels > c ? dbFromLinear(l.peak[c], false) : -200.0f;
+      const float pk = l.channels > c ? dbFromLinear(l.peak[c], false) : MeterBallistics::kSilenceDb;
       const float rms = l.channels > c ? dbFromLinear(l.meanSquare[c], true) : -200.0f;
-      st.peakDb[c] = std::max(pk, st.peakDb[c] - kFallDbPerSecond * static_cast<float>(dt));
-      if (pk >= st.holdDb[c] || now >= st.holdUntil[c]) {
-        st.holdDb[c] = pk;
-        st.holdUntil[c] = now + kHoldSeconds;
-      }
-      if (l.channels > c && l.peak[c] >= 1.0f) st.clip[c] = true;  // latched until resetClip (a click), as in Live
-      m.peakDb[c] = st.peakDb[c] < -199.0f ? -200.0f : st.peakDb[c];
+      st.step(c, pk, l.channels > c && l.peak[c] >= 1.0f, now, dt);
+      m.peakDb[c] = st.shownPeakDb(c);
       m.rmsDb[c] = rms;
       m.holdDb[c] = st.holdDb[c];
       m.clip[c] = st.clip[c];

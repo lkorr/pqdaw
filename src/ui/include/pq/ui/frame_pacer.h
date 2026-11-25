@@ -55,9 +55,13 @@ struct FrameWait {
   Kind kind = Kind::None;
   double seconds = 0.0;  // Sleep: for how long
 };
+// TIMED (true) or SYNCED: whether frames are paced by the display's period instead of the pacer's passes.
+constexpr bool pacedByTime(double passPeriod, double displayPeriod) noexcept {
+  return !(passPeriod > 0.0) || displayPeriod >= kSlowerDisplay * passPeriod;
+}
 constexpr FrameWait frameWait(double now, double lastFrame, double lastPass, double passPeriod,
                               double displayPeriod) noexcept {
-  const bool timed = !(passPeriod > 0.0) || displayPeriod >= kSlowerDisplay * passPeriod;
+  const bool timed = pacedByTime(passPeriod, displayPeriod);
   if (!timed) return {waitForPassBeforeFrame(now, lastFrame, lastPass, passPeriod) ? FrameWait::Kind::Pass : FrameWait::Kind::None, 0.0};
   if (!(displayPeriod > 0.0) || lastFrame < 0.0 || !(now - lastFrame < displayPeriod)) return {};
   return {FrameWait::Kind::Sleep, lastFrame + displayPeriod - now};

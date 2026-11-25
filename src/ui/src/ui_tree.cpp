@@ -338,6 +338,26 @@ double UiTree::nextWakeTime() const noexcept {
   return t;
 }
 
+// --- OP.2: the readout grid ---
+
+void UiTree::setReadoutRate(double hz) noexcept {
+  if (!(hz > 0.0) || hz == readoutHz_) return;
+  readoutHz_ = hz;
+  readoutGrid_ = ui::readoutGrid(readoutGrid_, readoutHz_, readoutRefresh_, -1.0);
+}
+
+void UiTree::setReadoutRefresh(double refreshPeriod, double pass) noexcept {
+  readoutRefresh_ = refreshPeriod > 0.0 ? refreshPeriod : 0.0;
+  readoutGrid_ = ui::readoutGrid(readoutGrid_, readoutHz_, readoutRefresh_, pass);
+}
+
+double UiTree::nextReadoutTick() const noexcept {
+  if (host_ != nullptr)
+    if (const Widget* w = host_->hostWidget(); w != nullptr && w->tree() != nullptr && w->tree() != this)
+      return w->tree()->nextReadoutTick();
+  return ui::nextReadoutTick(readoutGrid_, now_);
+}
+
 void UiTree::paint(DrawList& dl, const PaintResources& res, double now) {
   paint(dl, res, now, {0, 0, static_cast<int32_t>(width_), static_cast<int32_t>(height_)});
 }

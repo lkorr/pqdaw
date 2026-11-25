@@ -256,7 +256,7 @@ doc::Panel inspectorPanel(doc::DeviceId group, float width, bool polyphony);
 
 // A widget that hosts one Face fitted into its rect (aspect kept, centred, whole device px at its origin), routing pointer
 // events, keys and text to it as the canvas does, preparing it at its scale in onFrame (its tiles). A panel repaints when
-// its document changes (notifyChanged); its voices are polled at ≤ 60 Hz only while its reader is live or it animates
+// its document changes (notifyChanged); its voices are polled at the readout rate (OP.2) only while its reader is live or it animates
 // (idle: no timer; wake() looks again). GU.13: its controls take the DEVICE-PANEL GESTURES (FacePointer::valueGestures:
 // the wheel, a run of notches one undo step ended kWheelRunSeconds after the last; the keys after a press) and its
 // popups are drawn over it. The Device view's frames (a group's panel, its inspector, a leaf's: block_frame.h) and the
@@ -280,6 +280,10 @@ public:
   void notifyChanged();
   // GU.13: the face's voices may have become live (a note while nothing animated): it polls again.
   void wake();
+  // OP.2: the same without a repaint: arms the readout poll when it is not running (nothing while it is). For a caller
+  // that asks at every presented frame (the app, while any voice tap has unread records): wake() damages the whole
+  // host each time, which kept frames coming at the display's rate for as long as a note sounded.
+  void wakeVoices();
   // DT.1: the transport started or stopped: the face's frame ticks (a tempo slider) poll while it plays; nothing is
   // repainted unless a tick says so.
   void transportChanged();

@@ -222,6 +222,14 @@ uint32_t Widget::requestTimer(double delaySeconds) {
   return id;
 }
 
+uint32_t Widget::requestReadoutTimer() {  // OP.2
+  if (!tree_) return 0;
+  const uint32_t id = tree_->nextTimerId_++;
+  tree_->timers_.push_back({tree_->nextReadoutTick(), this, id});
+  if (tree_->host_) tree_->host_->treeNeedsUpdate();
+  return id;
+}
+
 void Widget::cancelTimer(uint32_t id) noexcept {
   if (!tree_) return;
   auto& t = tree_->timers_;

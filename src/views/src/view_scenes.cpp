@@ -553,6 +553,7 @@ Status setupPrefsTab(Shell& shell, PreferencesWindow::Tab tab, const char* scene
 }
 Status setupWarpPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Warp, "warp-prefs"); }
 Status setupRecordPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Record, "record-prefs"); }
+Status setupDisplayPrefs(Shell& shell) { return setupPrefsTab(shell, PreferencesWindow::Tab::Display, "display-prefs"); }  // OP.2
 
 // EX.2: the Export Audio window over a scripted port: All Individual Tracks, Song, 24-bit TPDF, normalized, a fixed
 // folder (the golden must not show the machine's paths). Over a project with clips (the goldens pass the arrangement
@@ -4399,6 +4400,7 @@ constexpr SceneEntry kScenes[] = {
     {"midi-prefs", 1280, 800, setupMidiPrefs},
     {"warp-prefs", 1280, 800, setupWarpPrefs},
     {"record-prefs", 1280, 800, setupRecordPrefs},
+    {"display-prefs", 1280, 800, setupDisplayPrefs},
     {"export-audio", 1280, 800, setupExportAudio},
     {"menu-bar", 1280, 800, setupMenuBar},
     {"tunings-panel", 1280, 800, setupTuningsPanel},

@@ -1249,6 +1249,12 @@ void DeviceChainView::wakeFaces() {
   for (panel::PanelHost* h : hs) h->wake();
 }
 
+void DeviceChainView::wakeVoices() {  // OP.2
+  std::vector<panel::PanelHost*> hs;
+  for (const auto& [id, f] : impl_->all) f->hosts(hs);
+  for (panel::PanelHost* h : hs) h->wakeVoices();
+}
+
 bool DeviceChainView::addDevice(const doc::DeviceInfo& info) {
   const doc::Track* t = impl_->track();
   if (t == nullptr) return false;
@@ -2094,7 +2100,7 @@ void DeviceChainView::refreshRings() {
   // Poll while a modulated knob is shown and the source runs (and once after it stops: the rings fall still).
   ModulationSource* src = ctx_.modulationSource();
   const bool want = src != nullptr && !m.ringTargets.empty() && (src->modulationLive() || m.ringsLit);
-  if (want && m.ringTimer == 0) m.ringTimer = requestTimer(1.0 / 30.0);
+  if (want && m.ringTimer == 0) m.ringTimer = requestReadoutTimer();
   if (!want && m.ringTimer != 0) {
     cancelTimer(m.ringTimer);
     m.ringTimer = 0;

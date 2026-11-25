@@ -47,7 +47,7 @@ double AutomationFollow::valueAt(const Target& t, double tick, double own) noexc
 }
 
 void AutomationFollow::poll(ui::Widget& w, bool want) {
-  if (want && timer_ == 0) timer_ = w.requestTimer(kPollSeconds);
+  if (want && timer_ == 0) timer_ = w.requestReadoutTimer();
   if (!want && timer_ != 0) {
     w.cancelTimer(timer_);
     timer_ = 0;

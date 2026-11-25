@@ -585,7 +585,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     for (Hosted& h : faces) showFace(h, false);
   }
 
-  // At most 60 Hz while a visible face's reader is live: new voice records damage that face's live rects only.
+  // On the readout grid (OP.2) while a visible face's reader is live: new voice records damage that face's live rects only.
   void pollFaces() {
     if (!facesShown || !scene) return;
     bool live = false;
@@ -620,7 +620,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       }
       live = live || (rd != nullptr && (rd->live() || h.face->animating()));
     }
-    if (live && faceTimer == 0 && tr != nullptr) faceTimer = self.requestTimer(kFaceFrameSeconds);
+    if (live && faceTimer == 0 && tr != nullptr) faceTimer = self.requestReadoutTimer();
   }
 
   // Draws every visible face: static layers from tiles (or directly), then jacks and the live layer.
@@ -699,7 +699,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       }
       wantTimer = wantTimer || f.ticking() || f.ghostsLive() || (f.voices() != nullptr && (f.voices()->live() || f.animating()));
     }
-    if (wantTimer && faceTimer == 0) faceTimer = self.requestTimer(kFaceFrameSeconds);
+    if (wantTimer && faceTimer == 0) faceTimer = self.requestReadoutTimer();
   }
 
   // Builds the visible faces' missing static-layer tiles at the current scale. True when it built any.
@@ -917,6 +917,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     return false;
   }
   uint32_t glowTimer = 0;
+  double glowLast = -1.0;  // OP.2: the tree time of the last glow poll (−1: none since it stopped)
   bool glowWasLive = false;           // the last poll saw the sources live (one more poll after they stop)
   std::vector<uint32_t> glowWires;    // poll scratch
   std::vector<float> glowLevels;
@@ -1434,7 +1435,7 @@ struct CircuitCanvas::Impl final : FaceHost {
       if (!w->visible()) return false;
     return self.tree() != nullptr && !self.rect().empty();
   }
-  // ≤ 30 Hz while the sources are live (and once after): the visible cables' levels, smoothed; glowing cables repaint
+  // On the readout grid (OP.2) while the sources are live (and once after): the visible cables' levels, smoothed; glowing cables repaint
   // (their light flows), silent ones do not; nothing visible to light: no poll.
   void pollCables() {
     ++stats.cableGlowPolls;
@@ -1452,6 +1453,11 @@ struct CircuitCanvas::Impl final : FaceHost {
       }
     }
     glowLevels.assign(glowWires.size(), 0.0f);
+    // OP.2: the release is per second, not per poll (×0.78 every 1/30 s as before: the same fall at 30 and 60 Hz).
+    const double glowNow = self.tree() != nullptr ? self.tree()->now() : 0.0;
+    const double glowDt = glowLast < 0.0 ? 1.0 / 30.0 : std::clamp(glowNow - glowLast, 0.0, 0.25);
+    glowLast = glowNow;
+    const float release = static_cast<float>(std::pow(0.78, glowDt * 30.0));
     if (!glowWires.empty() && (live || glowWasLive)) self.cableLevels(glowWires, glowLevels);
     bool glowing = false;
     size_t k = 0;
@@ -1460,14 +1466,15 @@ struct CircuitCanvas::Impl final : FaceHost {
       float target = 0.0f;
       if (k < glowWires.size() && glowWires[k] == c.wire) target = std::clamp(glowLevels[k++], 0.0f, 1.0f);
       const float before = c.glow;
-      c.glow = target >= c.glow ? target : c.glow * 0.78f;  // fast attack, ≈ 130 ms release
+      c.glow = target >= c.glow ? target : c.glow * release;  // fast attack, ≈ 130 ms release
       if (c.glow < 0.01f) c.glow = 0.0f;
       if (c.glow > 0.0f || before > 0.0f) damageCable(i);
       glowing = glowing || c.glow > 0.0f;
     }
     const bool again = visible && (live || glowing);
     glowWasLive = live;
-    if (again && glowTimer == 0) glowTimer = self.requestTimer(kCableGlowSeconds);
+    if (!again) glowLast = -1.0;
+    if (again && glowTimer == 0) glowTimer = self.requestReadoutTimer();
   }
 
   // ---- hit testing ----
@@ -3140,12 +3147,12 @@ void CircuitCanvas::onFrame(double now) {
 
 void CircuitCanvas::onTimer(uint32_t id) {
   Impl& m = *impl_;
-  if (id == m.faceTimer && id != 0) {  // TMM.4: the faces' <= 60 Hz poll
+  if (id == m.faceTimer && id != 0) {  // TMM.4: the faces' readout poll (OP.2)
     m.faceTimer = 0;
     m.pollFaces();
     return;
   }
-  if (id == m.glowTimer && id != 0) {  // TX.cables: the glow's ≤ 30 Hz poll
+  if (id == m.glowTimer && id != 0) {  // TX.cables: the glow's readout poll (OP.2)
     m.glowTimer = 0;
     m.pollCables();
     return;

@@ -111,8 +111,10 @@ Result<std::unique_ptr<Shell>> Shell::create(UiTree& tree, ViewContext& ctx, con
     impl->tunings->setVisible(ctx.tuningsVisible());
   };
   applyLayout();
+  tree.setReadoutRate(static_cast<double>(ctx.viewPrefs().readoutHz));  // OP.2
   m.layoutSub = ctx.observe([applyLayout, &tree, &ctx](uint32_t what) {
     if (what & view_change::kLayout) applyLayout();
+    if (what & view_change::kPrefs) tree.setReadoutRate(static_cast<double>(ctx.viewPrefs().readoutHz));  // OP.2: live
     // T8.1: macro mode takes the computer keyboard's place as the tree's key listener while it is on.
     if (what & view_change::kMacro) {
       ui::KeyListener* want = ctx.macro().on() ? static_cast<ui::KeyListener*>(&ctx.macro()) : &ctx.computerKeyboard();

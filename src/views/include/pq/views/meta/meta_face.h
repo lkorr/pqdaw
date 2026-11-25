@@ -17,7 +17,7 @@
 //
 // VoiceTapReader is the narrow views-side interface the faces consume (TMM.4 builds against it before TMM.2's
 // pq/core/voice_tap.h exists): per voice slot the newest sampled phase plus the block's sampled phases since the last
-// read; `live()` says whether anything may still be written (the host polls at ≤ 60 Hz only while a visible face's
+// read; `live()` says whether anything may still be written (the host polls on the readout grid, OP.2, only while a visible face's
 // reader is live: idle costs nothing). TMM.2's reader adapts to it.
 //
 // UI thread only.
@@ -359,9 +359,9 @@ public:
   // The host has no room around the face (a Device-view panel clips to its body): the floating panel opens over the
   // face itself, inside worldSize.
   virtual void setPopupOverFace(bool /*on*/) {}
-  // The face-local rects that change while voices sound (the host damages only these, ≤ 60 Hz).
+  // The face-local rects that change while voices sound (the host damages only these, at the readout rate).
   virtual void liveRects(std::vector<ui::Rect>& out) const = 0;
-  // Whether the live layer moves now (a voice sounds): the host keeps its ≤ 60 Hz repaint going.
+  // Whether the live layer moves now (a voice sounds): the host keeps its readout-rate repaint going.
   virtual bool animating() const noexcept { return false; }
   // The voice reader the face shows (null: none) and its poll (true: what the face shows changed).
   virtual VoiceTapReader* voices() const noexcept { return nullptr; }
@@ -371,7 +371,7 @@ public:
   virtual bool pollVoices() { return false; }
   // DT.1: FRAME TICKS for what follows the transport without a voice reader (a tempo slider's markings follow the tempo
   // at the playhead). The host calls frameTick() on each visible face when it wakes (kTransport, kSignal) and at its
-  // ≤ 60 Hz poll while ticking() — a compare per element, true: the live layer changed (the host damages liveRects).
+  // readout poll (OP.2) while ticking() — a compare per element, true: the live layer changed (the host damages liveRects).
   virtual bool frameTick() { return false; }
   virtual bool ticking() const noexcept { return false; }
   // ---- bug-mod-ghost: the MODULATION GHOSTS (pq/views/live_modulation.h) ----

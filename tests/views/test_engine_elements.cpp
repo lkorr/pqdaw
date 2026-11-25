@@ -390,11 +390,72 @@ TEST_CASE("render: module-noise-panel (2x) — the display, the chips, the knobs
   d.tree().layoutNow();
   REQUIRE(d.enableGpu().ok());
   REQUIRE(d.render().ok());  // the first paint starts the panel's voice timer (polled while the reader is live)
-  for (int i = 0; i < 90; ++i) d.advance(1.0 / 60.0);
+  // OP.2: the panel polls on the readout grid (30 Hz here; it was a 1/60 s timer): 2.5 s for the walk's 60 readings.
+  for (int i = 0; i < 180; ++i) d.advance(1.0 / 60.0);
   CHECK(walk.reads == walk.maxReads);  // the panel polled the engine's voices while they moved
   auto img = d.render();
   REQUIRE_MESSAGE(img.ok(), (img.ok() ? "" : img.error().message));
   checkImage("module-noise-panel-sync-trace", *img);
+  d.tree().setRoot(std::make_unique<Widget>());
+}
+
+// OP.2: the app asks the Device view's panels to look at their voices after EVERY presented frame while a voice tap has
+// unread records (ShellApp::onFramePresented → DeviceChainView::wakeVoices → PanelHost::wakeVoices). That must not
+// itself cause a frame: with a moving trace the panel draws at the readout rate (it drew at the display's rate when
+// the call was wake(), which damages the whole host), and a tap that stands still draws nothing.
+TEST_CASE("panel host (OP.2): a voice wake after every frame keeps a live panel at the readout rate, an idle one idle") {
+  FakeTransport port;
+  ViewContext ctx{port};
+  ctx.setDeviceLibrary(&devLib());
+  const doc::EngineRoles r = buildNoise(ctx.store());
+  WalkVoices walk;
+  walk.maxReads = 1000000;
+  ctx.setFaceVoices([&walk](doc::DeviceId, std::string_view) -> VoiceTapReader* { return &walk; });
+  const doc::PanelPtr p = doc::findDevice(*ctx.doc(), r.group).device->panel;
+  TestDriver d(static_cast<uint32_t>(p->width * 2.0f), static_cast<uint32_t>(p->height * 2.0f), 2.0f);
+  panel::PanelHost* host = nullptr;
+  auto face = std::make_unique<panel::GroupPanelFace>(panel::docPanelSource(ctx, r.group),
+                                                      panel::makeDocPanelTarget(ctx, r.group, [&host]() -> Widget* { return host; }));
+  host = &d.setRoot<panel::PanelHost>("panel", std::move(face));
+  d.tree().layoutNow();
+  REQUIRE(d.step());      // the first frame
+  host->wakeVoices();     // (the app's call after it)
+  // The frame loop at 1 ms steps; after each drawn frame, the app's call.
+  auto run = [&](double seconds) {
+    uint64_t frames = 0;
+    const double end = d.now() + seconds;
+    while (d.now() < end) {
+      d.setFrameRate(1000.0);
+      const uint64_t before = d.framesDrawn();
+      d.advance(0.001);
+      if (d.framesDrawn() != before) {
+        ++frames;
+        host->wakeVoices();
+      }
+    }
+    return frames;
+  };
+  (void)run(0.3);
+  const uint32_t reads = walk.reads;
+  uint64_t n = run(2.0);
+  CHECK(n >= 59);
+  CHECK(n <= 61);  // 30 Hz: the readout rate
+  CHECK(walk.reads - reads == n);  // one poll per frame, each drawn
+  d.tree().setReadoutRate(60.0);
+  (void)run(0.3);
+  n = run(2.0);
+  CHECK(n >= 119);
+  CHECK(n <= 121);
+  d.tree().setReadoutRate(30.0);
+  // The tap stands still (no new records, not live): the poll stops, and waking it draws nothing.
+  walk.maxReads = walk.reads;
+  (void)run(0.5);
+  const uint64_t still = d.framesDrawn();
+  for (int i = 0; i < 500; ++i) {
+    host->wakeVoices();
+    d.advance(0.001);
+  }
+  CHECK(d.framesDrawn() == still);
   d.tree().setRoot(std::make_unique<Widget>());
 }
 

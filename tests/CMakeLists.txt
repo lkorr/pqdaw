@@ -91,6 +91,7 @@ pq_add_test(pq_tests_ui PERF
     ui/test_radial_menu.cpp  # MX.1: the radial (bubble) menu through real dispatch, goldens
     ui/test_chord_lock.cpp  # T7.16b: Ctrl+CapsLock leaves the OS lock as it was (the restoring tap's events dropped)
     ui/test_frame_pacer.cpp  # OP.1: one present per compositor pass (the pacing decision, a model of the loop)
+    ui/test_readout_clock.cpp  # OP.2: the readout grid (shared phase, pass alignment), readout timers in a tree
     ui/thread_cpu.cpp
   DEPS pq_ui pq_ui_scenes)
 target_compile_definitions(pq_tests_ui PRIVATE PQ_ASSETS_DIR=pq_build_source_assets_dir)
@@ -109,6 +110,7 @@ pq_add_test(pq_tests_app
     app/test_autosave.cpp  # AS.1: the autosave policy on a test clock, its files, discard on save / new, the worker
     app/test_export_service.cpp  # EX.2: the Export Audio port (a tiny export on the worker, cancel, request mapping, settings)
     app/test_clip_midi_export.cpp  # MF.3: MIDI clips dragged out as .mid files (dragOutClips: the mode, free names, refusals)
+    app/test_meter_ballistics.cpp  # OP.2: peak fall / hold / clip by time (the same at 30 and 60 Hz polls); readoutHz in the settings file
   DEPS pq_app pq_ui)
 
 # T3.17: project lowering and the playback link (golden render of tests/app/fixtures/playback, compile-count hooks,

@@ -157,7 +157,7 @@ void MixerView::setMeterSource(MeterSource* source) {
 
 void MixerView::wakeMeters() {
   if (meterTimer_ || !ctl_->source) return;
-  if (ctl_->pollMeters()) meterTimer_ = requestTimer(mm::kMeterPollSeconds);
+  if (ctl_->pollMeters()) meterTimer_ = requestReadoutTimer();
 }
 
 bool MixerView::pollMeters() { return ctl_->pollMeters(); }
@@ -165,7 +165,7 @@ bool MixerView::pollMeters() { return ctl_->pollMeters(); }
 void MixerView::onTimer(uint32_t id) {
   if (id != meterTimer_) return;
   meterTimer_ = 0;
-  if (ctl_->pollMeters()) meterTimer_ = requestTimer(mm::kMeterPollSeconds);
+  if (ctl_->pollMeters()) meterTimer_ = requestReadoutTimer();
 }
 
 

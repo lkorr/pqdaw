@@ -264,6 +264,10 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
     recordTab_ = &recTab;
     recTab.setInfo("Record", "The record latency offset: moves recorded audio to line up with what was played.");
     recTab.onSelect = [this] { showTab(Tab::Record); };
+    auto& dispTab = tabs.add<TabLabel>("display", "Display");  // OP.2
+    displayTab_ = &dispTab;
+    dispTab.setInfo("Display", "How often meters and visualisers are redrawn.");
+    dispTab.onSelect = [this] { showTab(Tab::Display); };
   }
   tabs.selected = &audioTab;
 
@@ -448,6 +452,7 @@ PreferencesWindow::PreferencesWindow(AudioPrefsPort& port, ViewContext* ctx)
   buildMidiTab(body);  // T6.4
   if (ctx_) buildWarpTab(body);  // T6.8
   if (ctx_) buildRecordTab(body);  // T6.7b
+  if (ctx_) buildDisplayTab(body);  // OP.2
 
   port_.setListener([alive = alive_, this] {
     if (*alive) refresh();
@@ -576,18 +581,22 @@ void PreferencesWindow::showTab(Tab t) {
   if (t == Tab::Library && !libraryPage_) return;
   if (t == Tab::Warp && !warpPage_) return;
   if (t == Tab::Record && !recordPage_) return;
+  if (t == Tab::Display && !displayPage_) return;
   tab_ = t;
   audioPage_->setVisible(t == Tab::Audio);
   if (libraryPage_) libraryPage_->setVisible(t == Tab::Library);
   midiPage_->setVisible(t == Tab::Midi);
   if (warpPage_) warpPage_->setVisible(t == Tab::Warp);
   if (recordPage_) recordPage_->setVisible(t == Tab::Record);
+  if (displayPage_) displayPage_->setVisible(t == Tab::Display);
+  if (t == Tab::Display) updateDisplay();
   if (t == Tab::Midi) updateMidi();
   auto* tabs = static_cast<TabColumn*>(tabs_);
   tabs->selected = t == Tab::Audio     ? static_cast<const Widget*>(audioTab_)
                    : t == Tab::Library ? static_cast<const Widget*>(libraryTab_)
                    : t == Tab::Warp    ? static_cast<const Widget*>(warpTab_)
                    : t == Tab::Record  ? static_cast<const Widget*>(recordTab_)
+                   : t == Tab::Display ? static_cast<const Widget*>(displayTab_)
                                        : static_cast<const Widget*>(midiTab_);
   tabs->markDirty();
 }
@@ -690,6 +699,42 @@ void PreferencesWindow::updateRecord() {
   if (!ctx_ || !recordOffset_) return;
   if (!recordOffset_->inGesture()) recordOffset_->setValue(ctx_->viewPrefs().recordOffsetMs);
   if (autosave_) autosave_->setOn(ctx_->viewPrefs().autosave);
+}
+
+// ---- OP.2: the Display tab -------------------------------------------------------------------------------------------
+// ViewPrefs::readoutHz: two cells, exactly one lit (a click on the lit one changes nothing).
+
+void PreferencesWindow::buildDisplayTab(Widget& body) {
+  auto& page = body.add<Widget>("display");
+  displayPage_ = &page;
+  page.setLayout(LayoutKind::Column);
+  page.setGap(5);
+  page.setVisible(false);
+  section(page, "animation-section", "Animation");
+  auto& r = row(page, "readout-rate", "Meter & Visualiser Rate");
+  r.setGap(0);
+  r.child(0).setWidth(Length::fixed(form::kLabelWidth + 8.0f));  // (the row's usual gap, kept before the cells)
+  for (size_t i = 0; i < 2; ++i) {
+    const uint32_t hz = ViewPrefs::kReadoutRates[i];
+    readoutRate_[i] = &r.add<Toggle>(i == 0 ? "rate-30" : "rate-60", i == 0 ? "30 Hz" : "60 Hz");
+    readoutRate_[i]->setWidth(Length::fixed(56));
+    readoutRate_[i]->setInfo("Meter & Visualiser Rate",
+                             "How often meters, visualisers, analysers and modulation rings are redrawn. 30 Hz uses "
+                             "less CPU while the song plays. The playhead and anything you drag "
+                             "always move at the display's rate.");
+    readoutRate_[i]->onToggle = [this, hz](bool) {
+      ViewPrefs p = ctx_->viewPrefs();
+      p.readoutHz = hz;
+      ctx_->setViewPrefs(p);
+      updateDisplay();
+    };
+  }
+  updateDisplay();
+}
+
+void PreferencesWindow::updateDisplay() {
+  if (!ctx_ || !readoutRate_[0]) return;
+  for (size_t i = 0; i < 2; ++i) readoutRate_[i]->setOn(ctx_->viewPrefs().readoutHz == ViewPrefs::kReadoutRates[i]);
 }
 
 // ---- T6.4: the MIDI tab ----------------------------------------------------------------------------------------------

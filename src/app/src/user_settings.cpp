@@ -241,6 +241,10 @@ views::ViewPrefs loadViewPrefs(const std::string& path) {
   if (const auto f = it->find("recordOffsetMs"); f != it->end() && f->is_number())
     prefs.recordOffsetMs = std::clamp(f->get<float>(), -views::ViewPrefs::kMaxRecordOffsetMs, views::ViewPrefs::kMaxRecordOffsetMs);
   if (const auto f = it->find("autosave"); f != it->end() && f->is_boolean()) prefs.autosave = f->get<bool>();  // AS.1
+  // OP.2: Preferences → Display (30 or 60; anything else keeps the default).
+  if (const auto f = it->find("readoutHz"); f != it->end() && f->is_number_integer())
+    for (const uint32_t hz : views::ViewPrefs::kReadoutRates)
+      if (f->get<int64_t>() == static_cast<int64_t>(hz)) prefs.readoutHz = hz;
   if (const auto f = it->find("export"); f != it->end() && f->is_object()) prefs.exportAudio = exportPrefsOf(*f);  // EX.2
   if (const auto f = it->find("midiExportMode"); f != it->end() && f->is_string()) {  // MF.3
     const std::string m = f->get<std::string>();
@@ -267,6 +271,7 @@ Status saveViewPrefs(const std::string& path, const views::ViewPrefs& prefs) {
   v["export"] = exportPrefsJson(prefs.exportAudio);  // EX.2
   v["midiExportMode"] = std::string(doc::kMidiExportModeNames[static_cast<size_t>(prefs.midiExportMode)]);  // MF.3
   v["macroPreset"] = prefs.macroPreset;  // T8.1
+  v["readoutHz"] = prefs.readoutHz;      // OP.2
   return saveSection(path, "views", std::move(v));
 }
 

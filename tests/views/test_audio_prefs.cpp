@@ -2,7 +2,8 @@
 // and WASAPI endpoints): Ctrl+, opens and closes it (disabled without a port); every chooser applies its choice at
 // once (one apply per choice, the right AudioSettings); ASIO shows one device + Hardware Setup, WASAPI input and
 // output devices; a device that is not connected stays visible; the readouts follow the port; a closed window leaves
-// no timers (it costs nothing); the goldens audio-prefs / audio-prefs-wasapi, library-, midi-, warp-, record-prefs.
+// no timers (it costs nothing); the goldens audio-prefs / audio-prefs-wasapi, library-, midi-, warp-, record-,
+// display-prefs.
 #include <doctest/doctest.h>
 
 #include <limits>
@@ -324,3 +325,49 @@ TEST_CASE("render: midi-prefs (the MIDI tab: a port on, one off, one not connect
 TEST_CASE("render: warp-prefs (the Warp tab at its defaults) matches the golden image") { checkGolden("warp-prefs"); }
 
 TEST_CASE("render: record-prefs (the Record tab at its defaults) matches the golden image") { checkGolden("record-prefs"); }
+
+TEST_CASE("render: display-prefs (OP.2: the Display tab at its defaults) matches the golden image") { checkGolden("display-prefs"); }
+
+// OP.2: Preferences → Display → Meter & Visualiser Rate, through real dispatch: two cells, one lit; a click sets
+// ViewPrefs::readoutHz and the tree's readout rate at once (no restart); the lit cell stays lit when clicked.
+TEST_CASE("prefs (OP.2): the Display tab's rate cells set the readout rate of the tree at once") {
+  Prefs p;
+  CHECK(p.ctx.viewPrefs().readoutHz == 30);
+  CHECK(p.d.tree().readoutRate() == 30.0);
+  uint32_t heard = 0;
+  p.ctx.setViewPrefsListener([&](const ViewPrefs& v) { heard = v.readoutHz; });  // (the app saves the file here)
+  PreferencesWindow& w = p.open();
+  w.showTab(PreferencesWindow::Tab::Display);
+  CHECK(w.tab() == PreferencesWindow::Tab::Display);
+  p.d.step();
+  REQUIRE(w.readoutRateCell(0) != nullptr);
+  REQUIRE(w.readoutRateCell(1) != nullptr);
+  CHECK(w.readoutRateCell(0)->on());
+  CHECK_FALSE(w.readoutRateCell(1)->on());
+  auto click = [&](size_t i) {
+    const IRect r = w.readoutRateCell(i)->rect();
+    REQUIRE_FALSE(r.empty());
+    p.d.click({static_cast<float>(r.x + r.w / 2), static_cast<float>(r.y + r.h / 2)});
+  };
+  click(1);
+  CHECK(p.ctx.viewPrefs().readoutHz == 60);
+  CHECK(heard == 60);
+  CHECK(p.d.tree().readoutRate() == 60.0);
+  CHECK_FALSE(w.readoutRateCell(0)->on());
+  CHECK(w.readoutRateCell(1)->on());
+  click(1);  // the lit cell: nothing changes, it stays lit
+  CHECK(p.ctx.viewPrefs().readoutHz == 60);
+  CHECK(w.readoutRateCell(1)->on());
+  CHECK_FALSE(w.readoutRateCell(0)->on());
+  click(0);
+  CHECK(p.ctx.viewPrefs().readoutHz == 30);
+  CHECK(heard == 30);
+  CHECK(p.d.tree().readoutRate() == 30.0);
+  CHECK(w.readoutRateCell(0)->on());
+  CHECK_FALSE(w.readoutRateCell(1)->on());
+  // A rate set elsewhere (the settings file at startup) reaches the tree too.
+  ViewPrefs v = p.ctx.viewPrefs();
+  v.readoutHz = 60;
+  p.ctx.setViewPrefs(v);
+  CHECK(p.d.tree().readoutRate() == 60.0);
+}

@@ -30,7 +30,7 @@
 // with the symbol tiles after a zoom settles, stretched meanwhile); its jacks and live layer are geometry each frame.
 // Pointer events over a face's control go to the face in face-local world units (a drag at zoom 0.05 works as at 3);
 // over its frame they select / move / open the node as for any block. While a bound VoiceTapReader is live and its face
-// visible, a ≤ 60 Hz timer polls the readers and damages only the faces' live rects; otherwise nothing runs.
+// visible, a readout timer (OP.2) polls the readers and damages only the faces' live rects; otherwise nothing runs.
 // TX.panel-faces: the same path hosts device panels (SceneFace::panel, made by panelMaker: pq/views/devices/
 // panel_face.h) — any views::Face; a face with its own clock wakes the canvas (FaceHost::faceNeedsUpdate, Face::nextWake)
 // and is laid out again once a zoom settles (Face::prepare).
@@ -42,7 +42,7 @@
 // settle). Frames run only while a cable is awake; idle = none. A cable over a face whose control the pointer is on is
 // drawn at kCableFade, and a press there goes to the control unless it is on a cable's end (its plug). Far: the rest
 // shapes in the cached chunks, thin and in one colour, no motion, no glow. Glow: the host's cableLevels (0 … 1 per cable)
-// polled at ≤ kCableGlowSeconds⁻¹ only while cableSignalLive() (and once after) and only for visible cables; a glowing
+// polled on the readout grid (OP.2: ui::Widget::requestReadoutTimer) only while cableSignalLive() (and once after) and only for visible cables; a glowing
 // cable is lit around (additive) with light flowing along it from source to target. Silent: no polls, no repaints.
 //
 // UI thread only.
@@ -188,7 +188,7 @@ public:
   bool faceVisible(uint32_t node) const noexcept;
   // A reader may have become live (a note, the transport): poll the faces now and keep animating while one is live.
   void wakeFaces();
-  bool animatingFaces() const noexcept;  // the ≤ 60 Hz face timer is armed
+  bool animatingFaces() const noexcept;  // the face readout timer is armed
   // TMM.7: a key for the face the last press went to (a keyframe's Delete); true: consumed. onKey calls it first;
   // hosts that handle keys before CircuitCanvas::onKey (the project view's Delete) call it before theirs.
   bool faceKey(const ui::KeyEvent& e);
@@ -198,14 +198,12 @@ public:
   // SM.10: the canvas is going off the screen (its view hidden): every face hears setShown(false). (A face on screen
   // again hears setShown(true) at the next paint or poll.)
   void hideFaces();
-  static constexpr double kFaceFrameSeconds = 1.0 / 60.0;
   // TX.block-drag: a face on a node scaled below this (SceneNode::scale: a block shrunk to a miniature) is drawn but has
   // no controls — presses, hover and wire drops there are the block's (select, move, open), so a tiny block can be
   // grabbed. Zoom never changes it (a face far out keeps its controls, as before).
   static constexpr float kFaceMiniatureScale = 0.25f;
 
   // ---- TX.cables ----
-  static constexpr double kCableGlowSeconds = 1.0 / 30.0;
   static constexpr float kCableFade = 0.3f;
   // Off (tests, goldens): cables jump to their rest shapes at once; on (default): they swing and settle.
   void setCablesAnimated(bool on);
@@ -270,7 +268,7 @@ public:
   std::function<bool()> cableSignalLive;
   void wakeCables();
   float cableGlow(uint32_t wire) const noexcept;
-  bool cableGlowPolling() const noexcept;  // the ≤ 30 Hz glow timer is armed
+  bool cableGlowPolling() const noexcept;  // the glow readout timer is armed
 
   // ---- TX.orbit-ports (pq/views/circuit/orbit.h) ----
   // A scene pin with ScenePin::orbit is drawn on its node's outline (SceneNode::outline) where it is NOW: the scene's
