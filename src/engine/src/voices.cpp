@@ -2,7 +2,8 @@
 //   1. allocate()   events in time order → lane decisions (logical state) + LaneOps {frame, lane, kind, event}
 //   2. LaneOps bucketed per lane (stable counting sort); lanes that start this block get their state reset
 //   3. renderGroup()  only for groups whose signals change: a vector fill of every lane's start-of-block values,
-//                     then per lane with ops / glides / gain ramps / fades a scalar walk of its segments between op frames
+//                     then per lane with ops / glides / gain ramps / fades a scalar walk of its segments between op frames; OP.9:
+//                     a group without ops this block walks its glides and gain ramps as rows (8 lanes per frame)
 //   4. image->process with the voice table (groups with no voice are skipped by the image)
 //   5. mixOutputs() / measure()  Σ select(gain ≠ 0, out) · gain per voice `out` slot; per-lane peaks of the
 //                     monitored outs (lanes with gain ≠ 0)
@@ -42,6 +43,155 @@ inline float unitVelocity(float v) noexcept {  // RT-safe
 // A note gain as the lane sees it (T7.1): linear, finite and ≥ 0; anything else → 0.
 inline float cleanGain(float v) noexcept {  // RT-safe
   return v > 0.0f && v <= std::numeric_limits<float>::max() ? v : 0.0f;
+}
+
+// ---- OP.9: glides ---------------------------------------------------------------------------------------------------
+// 2^x for the shaped glides (hz = hz0 · 2^(k · s)), four doubles at a time, inline: no table, no call, no branch,
+// each lane's arithmetic independent of the others. Finite |x| < 1000 (glideK bounds k; s is within −1 … 2).
+//   t = x + 1.5·2^52 rounds x to the nearest integer n (in t's low mantissa bits);  f = x − n, |f| ≤ 0.5
+//   2^f = Taylor series of e^(f ln 2) to degree 10, as an Estrin tree (depth 4 FMAs: the frames of a glide are
+//         independent, so the length of this chain is what bounds how many of them the CPU overlaps)
+//   · 2^n: n added to the exponent field.
+// Error: truncation < 3.1e-13 relative (at f = −0.5; ≈ 1e-16 at |f| = 0.25) + rounding ≈ 1e-15. A float32 Hz has
+// 6e-8 … 1.2e-7 relative per ulp, so against a correctly rounded 2^x the float lands on the neighbouring value in
+// fewer than 1 of 10^5 samples and never further (measured against the std::exp2 walk this replaced: 5 of
+// 3.4 · 10^7 shaped glide points, tests/engine/test_voices.cpp "OP.9"). Exact for integer x (f = 0: every FMA returns 1).
+// The scalar form is the vector's lane 0, so the per-lane walk (renderShaped) and the rows give the same bits.
+inline __m256d glideExp2(__m256d x) noexcept {  // RT-safe
+  static constexpr double kC[11] = {1.0,  // ln2^i / i!
+                                    0.69314718055994530942,
+                                    0.24022650695910071233,
+                                    0.05550410866482157995,
+                                    0.00961812910762847716,
+                                    0.00133335581464284434,
+                                    0.00015403530393381609,
+                                    0.00001525273380405984,
+                                    0.00000132154867901443,
+                                    0.00000010178086009240,
+                                    0.00000000705491162080};
+  const __m256d magic = _mm256_set1_pd(6755399441055744.0);  // 1.5 · 2^52
+  const __m256d t = _mm256_add_pd(x, magic);
+  const __m256d f = _mm256_sub_pd(x, _mm256_sub_pd(t, magic));
+  const __m256d f2 = _mm256_mul_pd(f, f), f4 = _mm256_mul_pd(f2, f2), f8 = _mm256_mul_pd(f4, f4);
+  auto pair = [f](int i) noexcept { return _mm256_fmadd_pd(_mm256_set1_pd(kC[i + 1]), f, _mm256_set1_pd(kC[i])); };
+  const __m256d b0 = _mm256_fmadd_pd(pair(2), f2, pair(0));                      // c0 … c3
+  const __m256d b1 = _mm256_fmadd_pd(pair(6), f2, pair(4));                      // c4 … c7
+  const __m256d b2 = _mm256_fmadd_pd(_mm256_set1_pd(kC[10]), f2, pair(8));       // c8 … c10
+  const __m256d p = _mm256_fmadd_pd(b2, f8, _mm256_fmadd_pd(b1, f4, b0));
+  const __m256i e = _mm256_slli_epi64(_mm256_castpd_si256(t), 52);  // n (mod 2^12) at the exponent field
+  return _mm256_castsi256_pd(_mm256_add_epi64(_mm256_castpd_si256(p), e));
+}
+inline double glideExp2(double x) noexcept { return _mm256_cvtsd_f64(glideExp2(_mm256_set1_pd(x))); }  // RT-safe
+
+// The octaves of a shaped glide, dc / 1200, kept finite and within ±512 (a target of 0 Hz, inf or NaN would make
+// it −inf / NaN: glideExp2 wants a finite argument). Every glide between two float32 Hz values is inside.
+inline double glideK(double dc) noexcept {  // RT-safe
+  const double k = dc / 1200.0;
+  return k >= -512.0 && k <= 512.0 ? k : (k > 512.0 ? 512.0 : (k < -512.0 ? -512.0 : 0.0));
+}
+
+// Eight lanes (one voice group) of glide state and constants for a run of frames, as two halves of four doubles.
+// A lane without a glide holds: its constants are chosen so that every formula returns its value unchanged
+// (m = 1, step = 0; hz0 = its Hz with k = 0, c0 = its cents with dc = 0, inv = 0, e = em = 1, a = 0), bit for bit —
+// h · 1 and h · 2^0 are exact, and c + 0 is exact because a lane's cents are never −0 (a log2, sums and c0 + dc · s
+// of such values: none gives −0).
+struct alignas(32) GlideLanes {
+  double h[8], c[8];            // state: the values of the next frame
+  double m[8], st[8];           // Linear: hz · m, cents + st per frame
+  double c0[8], dc[8], hz0[8], k[8], a[8], inv[8], j[8], ex[8], em[8];  // shaped (renderShaped's names; inv = 1 / len)
+  double isLin[8], isExp[8], isOver[8], isShaped[8];  // all-ones where the lane has that shape (mixed groups)
+};
+
+inline void storeRow(float* p, __m256d lo, __m256d hi) noexcept {  // RT-safe; eight doubles → one row of floats
+  _mm256_store_ps(p, _mm256_set_m128(_mm256_cvtpd_ps(hi), _mm256_cvtpd_ps(lo)));
+}
+
+// s of the next frame for four lanes of shape S (j, and Exponential's e, advance): renderShaped's operations.
+template <RampShape S>
+__forceinline __m256d glideS(const GlideLanes& L, int q, __m256d& j, __m256d& ex) noexcept {  // RT-safe
+  const __m256d one = _mm256_set1_pd(1.0);
+  if constexpr (S == RampShape::Exponential) {
+    ex = _mm256_mul_pd(ex, _mm256_load_pd(L.em + q));
+    return _mm256_mul_pd(_mm256_sub_pd(one, ex), _mm256_load_pd(L.a + q));
+  } else {
+    j = _mm256_add_pd(j, one);
+    const __m256d u = _mm256_mul_pd(j, _mm256_load_pd(L.inv + q));
+    if constexpr (S == RampShape::SCurve) {  // rampSCurve: u · u · (3 − 2u)
+      return _mm256_mul_pd(_mm256_mul_pd(u, u), _mm256_sub_pd(_mm256_set1_pd(3.0), _mm256_mul_pd(_mm256_set1_pd(2.0), u)));
+    } else {  // rampOvershoot: 1 + (a + 1) · x · x · x + a · x · x
+      const __m256d a = _mm256_load_pd(L.a + q), x = _mm256_sub_pd(u, one);
+      const __m256d x3 = _mm256_mul_pd(_mm256_mul_pd(_mm256_mul_pd(_mm256_add_pd(a, one), x), x), x);
+      return _mm256_add_pd(_mm256_add_pd(one, x3), _mm256_mul_pd(_mm256_mul_pd(a, x), x));
+    }
+  }
+}
+
+// n frames of rows for a group whose gliding lanes all have shape S. The row of a frame is the state before
+// advancing (as renderSegment writes it).
+template <RampShape S>
+void glideRows(GlideLanes& L, float* hz, float* cents, uint32_t n) noexcept {  // RT-safe
+  __m256d h0 = _mm256_load_pd(L.h), h1 = _mm256_load_pd(L.h + 4), c0 = _mm256_load_pd(L.c), c1 = _mm256_load_pd(L.c + 4);
+  if constexpr (S == RampShape::Linear) {
+    const __m256d m0 = _mm256_load_pd(L.m), m1 = _mm256_load_pd(L.m + 4);
+    const __m256d s0 = _mm256_load_pd(L.st), s1 = _mm256_load_pd(L.st + 4);
+    for (uint32_t i = 0; i < n; ++i, hz += 8, cents += 8) {
+      storeRow(hz, h0, h1);
+      storeRow(cents, c0, c1);
+      h0 = _mm256_mul_pd(h0, m0);
+      h1 = _mm256_mul_pd(h1, m1);
+      c0 = _mm256_add_pd(c0, s0);
+      c1 = _mm256_add_pd(c1, s1);
+    }
+  } else {
+    __m256d j0 = _mm256_load_pd(L.j), j1 = _mm256_load_pd(L.j + 4), e0 = _mm256_load_pd(L.ex), e1 = _mm256_load_pd(L.ex + 4);
+    for (uint32_t i = 0; i < n; ++i, hz += 8, cents += 8) {
+      storeRow(hz, h0, h1);
+      storeRow(cents, c0, c1);
+      const __m256d sa = glideS<S>(L, 0, j0, e0), sb = glideS<S>(L, 4, j1, e1);
+      c0 = _mm256_add_pd(_mm256_load_pd(L.c0), _mm256_mul_pd(_mm256_load_pd(L.dc), sa));
+      c1 = _mm256_add_pd(_mm256_load_pd(L.c0 + 4), _mm256_mul_pd(_mm256_load_pd(L.dc + 4), sb));
+      h0 = _mm256_mul_pd(_mm256_load_pd(L.hz0), glideExp2(_mm256_mul_pd(_mm256_load_pd(L.k), sa)));
+      h1 = _mm256_mul_pd(_mm256_load_pd(L.hz0 + 4), glideExp2(_mm256_mul_pd(_mm256_load_pd(L.k + 4), sb)));
+    }
+    _mm256_store_pd(L.j, j0);
+    _mm256_store_pd(L.j + 4, j1);
+    _mm256_store_pd(L.ex, e0);
+    _mm256_store_pd(L.ex + 4, e1);
+  }
+  _mm256_store_pd(L.h, h0);
+  _mm256_store_pd(L.h + 4, h1);
+  _mm256_store_pd(L.c, c0);
+  _mm256_store_pd(L.c + 4, c1);
+}
+
+// The same for a group whose lanes glide with different shapes: every shape's formula over all eight lanes, each
+// lane taking its own (the others' results are finite and dropped).
+void glideRowsMixed(GlideLanes& L, float* hz, float* cents, uint32_t n) noexcept {  // RT-safe
+  __m256d h[2] = {_mm256_load_pd(L.h), _mm256_load_pd(L.h + 4)}, c[2] = {_mm256_load_pd(L.c), _mm256_load_pd(L.c + 4)};
+  __m256d j[2] = {_mm256_load_pd(L.j), _mm256_load_pd(L.j + 4)}, ex[2] = {_mm256_load_pd(L.ex), _mm256_load_pd(L.ex + 4)};
+  for (uint32_t i = 0; i < n; ++i, hz += 8, cents += 8) {
+    storeRow(hz, h[0], h[1]);
+    storeRow(cents, c[0], c[1]);
+    for (int q = 0; q < 2; ++q) {
+      const int o = q * 4;
+      const __m256d lin = _mm256_load_pd(L.isLin + o), shaped = _mm256_load_pd(L.isShaped + o);
+      __m256d jS = j[q], unused = ex[q];
+      __m256d s = glideS<RampShape::SCurve>(L, o, jS, unused);
+      s = _mm256_blendv_pd(s, glideS<RampShape::Overshoot>(L, o, j[q], unused), _mm256_load_pd(L.isOver + o));
+      s = _mm256_blendv_pd(s, glideS<RampShape::Exponential>(L, o, unused, ex[q]), _mm256_load_pd(L.isExp + o));
+      const __m256d cs = _mm256_add_pd(_mm256_load_pd(L.c0 + o), _mm256_mul_pd(_mm256_load_pd(L.dc + o), s));
+      const __m256d hs = _mm256_mul_pd(_mm256_load_pd(L.hz0 + o), glideExp2(_mm256_mul_pd(_mm256_load_pd(L.k + o), s)));
+      const __m256d cl = _mm256_add_pd(c[q], _mm256_load_pd(L.st + o)), hl = _mm256_mul_pd(h[q], _mm256_load_pd(L.m + o));
+      c[q] = _mm256_blendv_pd(_mm256_blendv_pd(c[q], cl, lin), cs, shaped);
+      h[q] = _mm256_blendv_pd(_mm256_blendv_pd(h[q], hl, lin), hs, shaped);
+    }
+  }
+  for (int q = 0; q < 2; ++q) {
+    _mm256_store_pd(L.h + q * 4, h[q]);
+    _mm256_store_pd(L.c + q * 4, c[q]);
+    _mm256_store_pd(L.j + q * 4, j[q]);
+    _mm256_store_pd(L.ex + q * 4, ex[q]);
+  }
 }
 
 inline float horizontalSum(__m256 v) noexcept {  // RT-safe
@@ -314,6 +464,8 @@ Status VoiceEngine::prepareLanes(const ImageInterface& io, const VoiceConfig& co
   onsetDegree_.assign(lanes_, std::numeric_limits<float>::quiet_NaN());
   onsetKey_.assign(lanes_, -1.0f);
   validFrames_.assign(groups_, 0);
+  levelFrames_.assign(groups_, 0);
+  levelFill_.assign(static_cast<size_t>(groups_) * 16, 0.0f);
   groupDirty_.assign(groups_, 0);
   carryDirty_.assign(groups_, 1);
   groupCount_.assign(groups_, 0);
@@ -758,49 +910,12 @@ void VoiceEngine::resetLaneState(uint32_t lane) noexcept {  // RT-safe
   startMask_[lane >> 3] |= 1u << (lane & 7u);  // the image runs this group's ramps this block (VoiceGroupIO)
 }
 
-// Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides, gain ramps and fades. A constant
-// field equal (bit for bit) to the block's vector fill (`fill`: hz, cents, gate, gain) is already in place.
-void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
-  if (from >= to) return;
+// The gate and gain part of renderSegment (from < to); inlined into it (and into renderGroup).
+__forceinline void VoiceEngine::renderLevel(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
   auto same = [&](float v, int k) { return std::bit_cast<uint32_t>(v) == fill[k]; };
   const uint32_t g = lane >> 3, l = lane & 7u;
-  float* a = audioSig_.data() + static_cast<size_t>(g) * kAudioSignals * groupStride_;
-  float* hz = a;
-  float* cents = a + groupStride_;
-  float* gate = a + 2 * groupStride_;
+  float* gate = audioSig_.data() + (static_cast<size_t>(g) * kAudioSignals + 2) * groupStride_;
   float* gain = gainBuf_.data() + static_cast<size_t>(g) * groupStride_;
-  if (rampLeft_[lane] == 0) {
-    const float h = static_cast<float>(hz_[lane]), c = static_cast<float>(cents_[lane]);
-    if (!same(h, 0))
-      for (uint32_t f = from; f < to; ++f) hz[f * 8 + l] = h;
-    if (!same(c, 1))
-      for (uint32_t f = from; f < to; ++f) cents[f * 8 + l] = c;
-  } else if (const RampShape shape = shaped_[lane].shape; shape != RampShape::Linear) {  // AP.3: one loop per shape
-    switch (shape) {
-      case RampShape::Exponential: renderShaped<RampShape::Exponential>(lane, from, to, hz + l, cents + l); break;
-      case RampShape::SCurve: renderShaped<RampShape::SCurve>(lane, from, to, hz + l, cents + l); break;
-      default: renderShaped<RampShape::Overshoot>(lane, from, to, hz + l, cents + l); break;
-    }
-  } else {
-    double h = hz_[lane], c = cents_[lane];
-    uint32_t left = rampLeft_[lane];
-    for (uint32_t f = from; f < to; ++f) {
-      hz[f * 8 + l] = static_cast<float>(h);
-      cents[f * 8 + l] = static_cast<float>(c);
-      if (left > 0) {
-        if (--left == 0) {
-          h = hzTarget_[lane];
-          c = centsTarget_[lane];
-        } else {
-          h *= hzMul_[lane];
-          c += centsStep_[lane];
-        }
-      }
-    }
-    hz_[lane] = h;
-    cents_[lane] = c;
-    rampLeft_[lane] = left;
-  }
   const float gm = gateMask_[lane];
   if (!same(gm, 2))
     for (uint32_t f = from; f < to; ++f) gate[f * 8 + l] = gm;
@@ -847,14 +962,60 @@ void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const
   }
 }
 
+// Writes lane `lane`'s hz, cents, gate and gain for frames [from, to), advancing glides, gain ramps and fades. A constant
+// field equal (bit for bit) to the block's vector fill (`fill`: hz, cents, gate, gain) is already in place.
+void VoiceEngine::renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept {  // RT-safe
+  if (from >= to) return;
+  auto same = [&](float v, int k) { return std::bit_cast<uint32_t>(v) == fill[k]; };
+  const uint32_t g = lane >> 3, l = lane & 7u;
+  float* a = audioSig_.data() + static_cast<size_t>(g) * kAudioSignals * groupStride_;
+  float* hz = a;
+  float* cents = a + groupStride_;
+  if (rampLeft_[lane] == 0) {
+    const float h = static_cast<float>(hz_[lane]), c = static_cast<float>(cents_[lane]);
+    if (!same(h, 0))
+      for (uint32_t f = from; f < to; ++f) hz[f * 8 + l] = h;
+    if (!same(c, 1))
+      for (uint32_t f = from; f < to; ++f) cents[f * 8 + l] = c;
+  } else if (const RampShape shape = shaped_[lane].shape; shape != RampShape::Linear) {  // AP.3: one loop per shape
+    switch (shape) {
+      case RampShape::Exponential: renderShaped<RampShape::Exponential>(lane, from, to, hz + l, cents + l); break;
+      case RampShape::SCurve: renderShaped<RampShape::SCurve>(lane, from, to, hz + l, cents + l); break;
+      default: renderShaped<RampShape::Overshoot>(lane, from, to, hz + l, cents + l); break;
+    }
+  } else {
+    double h = hz_[lane], c = cents_[lane];
+    uint32_t left = rampLeft_[lane];
+    for (uint32_t f = from; f < to; ++f) {
+      hz[f * 8 + l] = static_cast<float>(h);
+      cents[f * 8 + l] = static_cast<float>(c);
+      if (left > 0) {
+        if (--left == 0) {
+          h = hzTarget_[lane];
+          c = centsTarget_[lane];
+        } else {
+          h *= hzMul_[lane];
+          c += centsStep_[lane];
+        }
+      }
+    }
+    hz_[lane] = h;
+    cents_[lane] = c;
+    rampLeft_[lane] = left;
+  }
+  renderLevel(lane, from, to, fill);
+}
+
 // AP.3: a shaped glide (not Linear) over frames [from, to) of lane `lane` (hz / cents point at its lane column).
 // The value written at a frame is the one before advancing, as in the linear walk: frame `frame` of the Pitch event
-// reads c0, frame + len the target exactly.
+// reads c0, frame + len the target exactly. OP.9: this per-lane walk renders the blocks in which the group has ops;
+// the others go through renderGlideRows, the same operations on eight lanes (2^x: glideExp2 in both, so a frame
+// has the same bits whichever walk renders it).
 template <RampShape S>
 void VoiceEngine::renderShaped(uint32_t lane, uint32_t from, uint32_t to, float* hz, float* cents) noexcept {  // RT-safe
   ShapedRamp& r = shaped_[lane];
   // Locals: MSVC assumes the float stores may alias every member, so nothing it reads per sample lives in memory.
-  const double c0 = r.c0, dc = r.dc, hz0 = r.hz0, a = r.a, em = r.em, k1200 = r.dc / 1200.0;
+  const double c0 = r.c0, dc = r.dc, hz0 = r.hz0, a = r.a, em = r.em, k1200 = glideK(r.dc);
   const double invLen = 1.0 / static_cast<double>(r.len);
   const uint32_t len = r.len;
   double h = hz_[lane], c = cents_[lane], ex = r.e;
@@ -874,7 +1035,7 @@ void VoiceEngine::renderShaped(uint32_t lane, uint32_t from, uint32_t to, float*
       else s = rampOvershoot(u, a);
     }
     c = c0 + dc * s;
-    h = hz0 * std::exp2(k1200 * s);
+    h = hz0 * glideExp2(k1200 * s);
   }
   if (f < to && left == 1) {  // the last glide frame; the target exactly from the next one on
     hz[f * 8] = static_cast<float>(h);
@@ -893,6 +1054,106 @@ void VoiceEngine::renderShaped(uint32_t lane, uint32_t from, uint32_t to, float*
   hz_[lane] = h;
   cents_[lane] = c;
   rampLeft_[lane] = left;
+}
+
+// OP.9: the glides of group g over the whole block as rows: 8 lanes per frame (two vectors of doubles) and one
+// aligned store per signal and frame, instead of a walk and a strided store per lane. For a group WITHOUT ops this
+// block (renderGroup); the lanes that hold are constants in the same rows. Each lane's arithmetic is
+// renderSegment's / renderShaped's, operation for operation, so a frame has the same bits whichever walk renders
+// it, at any block size; the target exactly after a glide's last frame.
+void VoiceEngine::renderGlideRows(uint32_t g, uint32_t frames, float* hz, float* cents) noexcept {  // RT-safe
+  const uint32_t l0 = g * 8;
+  const double on = std::bit_cast<double>(~uint64_t{0});
+  for (uint32_t f = 0; f < frames;) {
+    // A run: up to the first glide end in the group (then that lane holds its target and the rest go on).
+    GlideLanes L;
+    uint32_t n = frames - f, shapes = 0;
+    for (uint32_t l = 0; l < 8; ++l) {
+      const uint32_t lane = l0 + l, left = rampLeft_[lane];
+      const ShapedRamp& r = shaped_[lane];
+      const bool lin = left != 0 && r.shape == RampShape::Linear, shaped = left != 0 && !lin;
+      const bool expo = shaped && r.shape == RampShape::Exponential;
+      L.h[l] = hz_[lane];
+      L.c[l] = cents_[lane];
+      L.m[l] = lin ? hzMul_[lane] : 1.0;
+      L.st[l] = lin ? centsStep_[lane] : 0.0;
+      L.c0[l] = shaped ? r.c0 : cents_[lane];
+      L.dc[l] = shaped ? r.dc : 0.0;
+      L.hz0[l] = shaped ? r.hz0 : hz_[lane];
+      L.k[l] = shaped ? glideK(r.dc) : 0.0;
+      L.a[l] = shaped ? r.a : 0.0;
+      L.inv[l] = shaped ? 1.0 / static_cast<double>(r.len) : 0.0;
+      L.j[l] = shaped ? static_cast<double>(r.len - left) : 0.0;
+      L.ex[l] = expo ? r.e : 1.0;
+      L.em[l] = expo ? r.em : 1.0;
+      L.isLin[l] = lin ? on : 0.0;
+      L.isExp[l] = expo ? on : 0.0;
+      L.isOver[l] = shaped && r.shape == RampShape::Overshoot ? on : 0.0;
+      L.isShaped[l] = shaped ? on : 0.0;
+      if (left != 0) {
+        n = std::min(n, left);
+        shapes |= 1u << static_cast<uint32_t>(r.shape);
+      }
+    }
+    float* ph = hz + static_cast<size_t>(f) * 8;
+    float* pc = cents + static_cast<size_t>(f) * 8;
+    switch (shapes) {  // one loop per shape (no per-sample switch); a holding group: the Linear loop with m = 1
+      case 0:
+      case 1u << static_cast<uint32_t>(RampShape::Linear): glideRows<RampShape::Linear>(L, ph, pc, n); break;
+      case 1u << static_cast<uint32_t>(RampShape::Exponential): glideRows<RampShape::Exponential>(L, ph, pc, n); break;
+      case 1u << static_cast<uint32_t>(RampShape::SCurve): glideRows<RampShape::SCurve>(L, ph, pc, n); break;
+      case 1u << static_cast<uint32_t>(RampShape::Overshoot): glideRows<RampShape::Overshoot>(L, ph, pc, n); break;
+      default: glideRowsMixed(L, ph, pc, n); break;
+    }
+    for (uint32_t l = 0; l < 8; ++l) {
+      const uint32_t lane = l0 + l, left = rampLeft_[lane];
+      if (left == 0) continue;
+      if (left == n) {  // its last glide frame is written: the target from the next one on
+        hz_[lane] = hzTarget_[lane];
+        cents_[lane] = centsTarget_[lane];
+      } else {
+        hz_[lane] = L.h[l];
+        cents_[lane] = L.c[l];
+        if (shaped_[lane].shape == RampShape::Exponential) shaped_[lane].e = L.ex[l];
+      }
+      rampLeft_[lane] = left - n;
+    }
+    f += n;
+  }
+}
+
+// OP.9: likewise the note-gain ramps of a group without ops and without a steal fade (renderLevel's walk
+// `ng += step`, the target at the end; a lane that holds reads its lane gain: + 0 is exact, a gain is never −0).
+void VoiceEngine::renderGainRows(uint32_t g, uint32_t frames, float* gain) noexcept {  // RT-safe
+  const uint32_t l0 = g * 8;
+  for (uint32_t f = 0; f < frames;) {
+    alignas(32) double ng[8], step[8];
+    uint32_t n = frames - f;
+    for (uint32_t l = 0; l < 8; ++l) {
+      const uint32_t lane = l0 + l, left = gainRampLeft_[lane];
+      ng[l] = left != 0 ? noteGain_[lane] : static_cast<double>(laneGain_[lane]);
+      step[l] = left != 0 ? gainStep_[lane] : 0.0;
+      if (left != 0) n = std::min(n, left);
+    }
+    __m256d v0 = _mm256_load_pd(ng), v1 = _mm256_load_pd(ng + 4);
+    const __m256d s0 = _mm256_load_pd(step), s1 = _mm256_load_pd(step + 4);
+    float* p = gain + static_cast<size_t>(f) * 8;
+    for (uint32_t i = 0; i < n; ++i, p += 8) {
+      storeRow(p, v0, v1);
+      v0 = _mm256_add_pd(v0, s0);
+      v1 = _mm256_add_pd(v1, s1);
+    }
+    _mm256_store_pd(ng, v0);
+    _mm256_store_pd(ng + 4, v1);
+    for (uint32_t l = 0; l < 8; ++l) {
+      const uint32_t lane = l0 + l, left = gainRampLeft_[lane];
+      if (left == 0) continue;
+      noteGain_[lane] = left == n ? static_cast<double>(gainTarget_[lane]) : ng[l];
+      gainRampLeft_[lane] = left - n;
+      laneGain_[lane] = static_cast<float>(noteGain_[lane]);
+    }
+    f += n;
+  }
 }
 
 void VoiceEngine::applyOp(const LaneOp& op, bool writeTrigger) noexcept {  // RT-safe
@@ -1012,21 +1273,64 @@ void VoiceEngine::renderGroup(uint32_t g, uint32_t frames) noexcept {  // RT-saf
   }
   const __m256 h = _mm256_load_ps(hv), c = _mm256_load_ps(cv), gt = _mm256_load_ps(gv), gn = _mm256_load_ps(av);
   const __m256 z = _mm256_setzero_ps();
-  for (uint32_t f = 0; f < frames; ++f) {
-    _mm256_store_ps(a + f * 8, h);
-    _mm256_store_ps(a + groupStride_ + f * 8, c);
-    _mm256_store_ps(a + 2 * groupStride_ + f * 8, gt);
-    _mm256_store_ps(a + 3 * groupStride_ + f * 8, z);
-    _mm256_store_ps(gain + f * 8, gn);
+  // OP.9: without ops in the block, the group's glides and note-gain ramps are walked as rows (8 lanes per frame)
+  // and write every frame of their signals themselves. (A steal fade keeps the gain per lane: its table.)
+  uint32_t glides = 0, gainRamps = 0, fades = 0;
+  for (uint32_t l = 0; l < 8; ++l) {
+    glides |= rampLeft_[l0 + l];
+    gainRamps |= gainRampLeft_[l0 + l];
+    fades |= fadeLeft_[l0 + l];
   }
+  const bool noOps = opBegin_[l0] == opBegin_[l0 + 8];
+  const bool pitchRows = noOps && glides != 0, gainRows = noOps && gainRamps != 0 && fades == 0;
+  // The gate, trigger and gain rows are constants (gate and gain the lanes' values, trigger 0) over a block without
+  // ops, gain ramps and fades. A group that only glides keeps them from block to block: they are written again only
+  // when one of them was not such a constant last block, or holds other values (levelFrames_ / levelFill_).
+  const bool levelConst = noOps && (gainRamps | fades) == 0;
+  float* lf = levelFill_.data() + static_cast<size_t>(g) * 16;
+  auto sameBits = [](const float* p, __m256 v) noexcept {
+    return _mm256_movemask_epi8(_mm256_cmpeq_epi32(_mm256_castps_si256(_mm256_loadu_ps(p)), _mm256_castps_si256(v))) == -1;
+  };
+  const bool levelKept = levelConst && levelFrames_[g] >= frames && sameBits(lf, gt) && sameBits(lf + 8, gn);
+  if (!levelKept) {
+    for (uint32_t f = 0; f < frames; ++f) {
+      _mm256_store_ps(a + 2 * groupStride_ + f * 8, gt);
+      _mm256_store_ps(a + 3 * groupStride_ + f * 8, z);
+    }
+    if (!gainRows)
+      for (uint32_t f = 0; f < frames; ++f) _mm256_store_ps(gain + f * 8, gn);
+    levelFrames_[g] = 0;
+    if (levelConst) {
+      _mm256_storeu_ps(lf, gt);
+      _mm256_storeu_ps(lf + 8, gn);
+      levelFrames_[g] = frames;
+    }
+  }
+  if (pitchRows) {
+    renderGlideRows(g, frames, a, a + groupStride_);
+  } else {
+    for (uint32_t f = 0; f < frames; ++f) {
+      _mm256_store_ps(a + f * 8, h);
+      _mm256_store_ps(a + groupStride_ + f * 8, c);
+    }
+  }
+  if (gainRows) renderGainRows(g, frames, gain);
   // 2. Lanes with ops, glides, gain ramps or fades: segments between their op frames.
-  bool changing = false;
+  bool changing = pitchRows || gainRows;
   for (uint32_t l = 0; l < 8; ++l) {
     const uint32_t lane = l0 + l;
     const uint32_t b = opBegin_[lane], e = opBegin_[lane + 1];
     const bool still = (rampLeft_[lane] | fadeLeft_[lane] | gainRampLeft_[lane]) == 0;
     if (b == e && still) continue;
     changing = true;
+    if (noOps) {  // its glide and (without a fade in the group) its gain ramp were walked in the rows above
+      if (!gainRows && (fadeLeft_[lane] | gainRampLeft_[lane]) != 0) {
+        const uint32_t fl[4] = {std::bit_cast<uint32_t>(hv[l]), std::bit_cast<uint32_t>(cv[l]),
+                                std::bit_cast<uint32_t>(gv[l]), std::bit_cast<uint32_t>(av[l])};
+        renderLevel(lane, 0, frames, fl);
+      }
+      continue;
+    }
     // Before its first op a lane without a glide, gain ramp or fade holds its start-of-block values: already written.
     uint32_t cursor = b < e && still ? sortedOps_[b].frame : 0u;
     const uint32_t fill[4] = {std::bit_cast<uint32_t>(hv[l]), std::bit_cast<uint32_t>(cv[l]),
@@ -1428,6 +1732,7 @@ void VoiceEngine::process(ProcessContext& ctx, ProcessContext* fadeCtx) noexcept
   for (uint32_t g = 0; g < groups_; ++g) {
     if (laneMask_[g] == 0 && !groupDirty_[g]) {
       validFrames_[g] = 0;  // not run: its buffers are irrelevant until a voice starts (which makes it dirty)
+      levelFrames_[g] = 0;
     } else if (groupDirty_[g] || validFrames_[g] < frames) {
       renderGroup(g, frames);
     }
@@ -1501,6 +1806,7 @@ void VoiceEngine::skipBlock(const EventList* events, uint32_t frames) noexcept {
   for (uint32_t g = 0; g < groups_; ++g) {
     carryDirty_[g] = 1;
     validFrames_[g] = 0;
+    levelFrames_[g] = 0;
   }
   endVoices(frames, false);
   moveUsed_ = 0;

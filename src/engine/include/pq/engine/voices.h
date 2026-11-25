@@ -293,6 +293,10 @@ private:
   // Rendering (per lane, signal buffers).
   void renderGroup(uint32_t g, uint32_t frames) noexcept;
   void renderSegment(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept;
+  void renderLevel(uint32_t lane, uint32_t from, uint32_t to, const uint32_t* fill) noexcept;
+  // OP.9: a group without ops in the block: its glides / its note-gain ramps as rows (8 lanes per frame).
+  void renderGlideRows(uint32_t g, uint32_t frames, float* hz, float* cents) noexcept;
+  void renderGainRows(uint32_t g, uint32_t frames, float* gain) noexcept;
   template <RampShape S>
   void renderShaped(uint32_t lane, uint32_t from, uint32_t to, float* hz, float* cents) noexcept;
   void applyOp(const LaneOp& op, bool writeTrigger = true) noexcept;
@@ -326,6 +330,10 @@ private:
   AlignedBuffer<float> gainBuf_;    // per group: groupStride_
   std::vector<const float*> sigPtr_;  // [g · kVoiceSignalCount + s]
   std::vector<uint32_t> validFrames_; // per group: frames for which the buffers hold the steady state
+  // OP.9: per group, frames for which its gate / trigger / gain rows hold constants (trigger 0), and those of gate
+  // and gain (8 + 8 floats): a group that only glides does not write them again.
+  std::vector<uint32_t> levelFrames_;
+  std::vector<float> levelFill_;
   std::vector<uint8_t> groupDirty_;   // per group: re-render this block
   std::vector<uint8_t> carryDirty_;   // per group: re-render next block (pulses, onsets, fades, glides)
   std::vector<uint16_t> groupCount_;  // per group: non-free lanes
