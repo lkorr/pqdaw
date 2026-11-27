@@ -380,7 +380,9 @@ ui::Rect ArrangementView::clipMenuButtonRect(const doc::ClipRef& ref) const noex
   return {b.c.x - b.r, b.c.y - b.r, b.c.x + b.r, b.c.y + b.r};
 }
 
-ui::RadialMenu* ArrangementView::openClipMenu(const doc::ClipRef& ref, bool animate) { return editor_->openClipMenu(ref, animate); }
+ui::RadialMenu* ArrangementView::openClipMenu(const doc::ClipRef& ref, bool animate, float atX) {
+  return editor_->openClipMenu(ref, animate, atX);
+}
 ui::RadialMenu* ArrangementView::clipMenu() const noexcept { return editor_->clipMenu(); }
 
 ArrangementView::ClipHover ArrangementView::clipHover() const noexcept {

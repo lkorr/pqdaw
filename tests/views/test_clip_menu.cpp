@@ -1,15 +1,19 @@
-// SX.2: the radial clip menu (pq/views/audio_clip/clip_menu.h) on the audio fixture (tests/views/fixtures/audio):
-// the button on a selected audio clip, Ctrl+Space and the context menu's "Clip Menu…" open it (real dispatch: window →
-// arrangement → overlay → menu); its controls edit the clip, one undo step each (knob drag, slider drag, Alt-drag =
-// the fade curve, typed transpose, unit chips, warp chips and a mode's sub-ring, toggles); disabled where the mode
-// ignores a control; the document changing under it refreshes it; the clip deleted / undone away closes it. Parity: every
-// control of the clip panel (AudioClipView's cards) has a menu counterpart that makes the identical clip. Goldens: the
-// button on a selected clip (arrangement-audio), the menu on an Off clip and on a Beats clip with its sub-ring open.
+// SX.2 / SX.5: the clip menu (pq/views/audio_clip/clip_menu.h: a compact popup in bands around the clip) on the audio
+// fixture (tests/views/fixtures/audio): the button on a selected audio clip, Ctrl+Space and the context menu's
+// "Clip Menu…" open it around the clip, centred on the press (real dispatch: window → arrangement → overlay → menu); its
+// controls edit the clip, one undo step each (knob drags, typed transpose, unit chips, warp chips with the chosen mode's
+// settings row, toggles, :2); disabled where the mode ignores a control; the document changing under it refreshes it;
+// the clip deleted / undone away closes it; clips near the window's top / bottom and narrow clips keep it on screen and
+// off the clip. Parity: every control of the clip panel (AudioClipView's cards) but Gain and the fades (the clip's own
+// handles) has a menu counterpart that makes the identical clip. Goldens: the button on a selected clip
+// (arrangement-audio), the menu on an Off clip and on a Beats clip (its settings row).
 
 #include <doctest/doctest.h>
 
+#include <cmath>
 #include <functional>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -105,6 +109,26 @@ struct Fixture {
     REQUIRE_MESSAGE(i >= 0, "no item " << key);
     return i;
   }
+  // The open menu hugs the clip: its bands clear of the clip's visible box, inside the window.
+  void checkAround(const doc::ClipRef& r) {
+    RadialMenu& m = menu();
+    const IRect box = arr->clipRect(r);
+    const IRect win = d.root()->rect();
+    for (int32_t b = 0; b < 2; ++b) {
+      const IRect band = m.bandRect(b);
+      if (band.empty()) continue;
+      CHECK(band.x >= win.x);
+      CHECK(band.y >= win.y);
+      CHECK(band.right() <= win.right());
+      CHECK(band.bottom() <= win.bottom());
+      const bool clear = band.bottom() <= box.y || band.y >= box.bottom() || band.right() <= box.x || band.x >= box.right();
+      CHECK_MESSAGE(clear, "band " << b << " covers the clip");
+    }
+    CHECK(m.bounds().x >= 0);
+    CHECK(m.bounds().y >= 0);
+    CHECK(m.bounds().right() <= win.right());
+    CHECK(m.bounds().bottom() <= win.bottom());
+  }
   void dispatch(const doc::ops::EditResult& e) {
     REQUIRE(e.ok());
     REQUIRE(ctx.store().dispatch(e->command).ok());
@@ -136,15 +160,17 @@ TEST_CASE("clip menu (SX.2, real dispatch): the button on a selected audio clip,
   CHECK(f.history() == h0);
   CHECK(f.arr->selection().clips.size() == 1);
   f.settle();
-  CHECK(m.centreText().find("beat") != std::string::npos);
-  CHECK(m.centreText().find("Off") != std::string::npos);
-  // Centred on the clip's visible part, moved to keep the rings on screen.
+  // Bands around the clip, centred on the button (where it was clicked), never over the clip, on screen.
   const IRect box = f.arr->clipRect(beat);
-  CHECK(m.centre().x >= static_cast<float>(box.x) + 0.5f * static_cast<float>(box.w) - 1.0f);
-  CHECK(m.bounds().x >= 0);
-  CHECK(m.bounds().y >= 0);
-  CHECK(m.bounds().right() <= 1280);
-  CHECK(m.bounds().bottom() <= 800);
+  CHECK(m.bands());
+  f.checkAround(beat);
+  for (int32_t k = 0; k < 2; ++k) {  // centred on the press, unless clamped at the window's edge
+    const IRect band = m.bandRect(k);
+    CHECK((std::abs(0.5f * static_cast<float>(band.x + band.right()) - b.x) <= 1.0f || band.x <= 5));
+  }
+  CHECK(m.find("gain") < 0);  // the clip's handles edit gain and the fades
+  CHECK(m.find("fade-in") < 0);
+  CHECK(m.find("fade-out") < 0);
   CHECK(f.d.press("Escape") != KeyResult::Unhandled);
   f.d.step();
   CHECK(f.arr->clipMenu() == nullptr);
@@ -154,6 +180,7 @@ TEST_CASE("clip menu (SX.2, real dispatch): the button on a selected audio clip,
   CHECK(f.d.press("Ctrl+Space") == KeyResult::Action);
   REQUIRE(f.arr->clipMenu() != nullptr);
   f.settle();
+  f.checkAround(beat);
   f.d.press("Escape");
   f.d.step();
   CHECK(f.arr->clipMenu() == nullptr);
@@ -178,6 +205,11 @@ TEST_CASE("clip menu (SX.2, real dispatch): the button on a selected audio clip,
   f.d.step();
   REQUIRE(f.arr->clipMenu() != nullptr);
   f.settle();
+  f.checkAround(beat);
+  {  // centred on the right-click (clamped on screen)
+    const IRect band = f.menu().bandRect(1);
+    CHECK((std::abs(0.5f * static_cast<float>(band.x + band.right()) - rc.x) <= 1.0f || band.x <= 8));
+  }
   f.d.press("Escape");
   f.d.step();
 
@@ -197,8 +229,8 @@ TEST_CASE("clip menu (SX.2, real dispatch): the button on a selected audio clip,
   CHECK(f.arr->clipMenuButtonRect(beat).x1 <= f.arr->clipMenuButtonRect(beat).x0);
 }
 
-TEST_CASE("clip menu (SX.2, real dispatch): its controls edit the clip, one undo step each; disabled where the mode ignores "
-          "them; refreshed under it; closed when the clip goes") {
+TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, one undo step each; the chosen mode's "
+          "settings row; disabled where the mode ignores them; refreshed under it; closed when the clip goes") {
   Fixture f;
   const doc::ClipRef beat = f.clip("Drums", 0), vox = f.clip("Vox", 0);
   f.d.click(f.title(beat, kBar / 4));
@@ -206,24 +238,40 @@ TEST_CASE("clip menu (SX.2, real dispatch): its controls edit the clip, one undo
   f.settle();
   RadialMenu& m = f.menu();
 
-  // Off: transpose and detune apply, the tempo controls do not.
+  // Off: transpose and detune apply, the tempo controls do not; no settings row.
   CHECK(m.enabledOf(f.item("transpose")));
   CHECK(m.enabledOf(f.item("detune")));
   CHECK_FALSE(m.enabledOf(f.item("bpm")));
   CHECK_FALSE(m.enabledOf(f.item("loop")));
   CHECK_FALSE(m.enabledOf(f.item("tempo/:2")));
+  for (const char* k : {"preserve/1/8", "beats-env", "tones-grain", "flux", "formants"}) CHECK_FALSE(m.shown(f.item(k)));
+  // Above the clip: the seven modes in one row; below: Transpose, its units, Detune, Reverse, BPM, :2 / ×2, Loop.
+  const IRect box = f.arr->clipRect(beat);
+  const float modeY = f.at("warp/Off").y;
+  for (const char* k : {"warp/Off", "warp/Re-Pitch", "warp-stretch/Beats", "warp-stretch/Tones", "warp-stretch/Texture",
+                        "warp-stretch/Complex", "warp-stretch/Pro"}) {
+    CHECK(f.at(k).y == doctest::Approx(modeY));
+    CHECK(f.at(k).y < static_cast<float>(box.y));
+  }
+  float x = -1e9f;
+  for (const char* k : {"transpose", "unit/stp", "unit/\xC2\xA2", "unit/n/d", "detune", "reverse", "bpm", "tempo/:2", "loop"}) {
+    const Vec2 p = f.at(k);
+    CHECK_MESSAGE(p.y > static_cast<float>(box.bottom()), k);
+    CHECK_MESSAGE(p.x > x, k);
+    x = p.x;
+  }
 
-  // Gain: a drag up on the knob (one undo step), undone in one.
+  // Detune: a drag up on the knob (one undo step), undone in one; the menu stays open and follows.
   size_t h = f.history();
-  const Vec2 g = f.at("gain");
+  const Vec2 g = f.at("detune");
   f.d.drag(g, {g.x, g.y - 40.0f}, 5);
-  CHECK(f.get(beat).gainDb > 1.0f);
+  CHECK(f.get(beat).detuneCents > 1.0f);
   CHECK(f.history() == h + 1);
-  CHECK(f.arr->clipMenu() == &m);  // the menu stays open
+  CHECK(f.arr->clipMenu() == &m);
   CHECK(f.ctx.store().undo());
-  CHECK(f.get(beat).gainDb == 0.0f);
+  CHECK(f.get(beat).detuneCents == 0.0f);
   f.d.step();
-  CHECK(m.valueOf(f.item("gain")) == 0.0);  // refreshed under it
+  CHECK(m.valueOf(f.item("detune")) == 0.0);  // refreshed under it
 
   // Reverse: a click on the toggle.
   h = f.history();
@@ -231,21 +279,6 @@ TEST_CASE("clip menu (SX.2, real dispatch): its controls edit the clip, one undo
   CHECK(f.get(beat).reverse);
   CHECK(f.history() == h + 1);
   CHECK(m.litOf(f.item("reverse")));
-
-  // Fade In: a drag along the slider; Alt-drag up: the curve (the handles' law); each one undo step.
-  h = f.history();
-  const int32_t fi = f.item("fade-in");
-  const Vec2 s0 = m.sliderStart(fi), s1 = m.sliderEnd(fi);
-  f.d.drag({s0.x + 1.0f, s0.y}, {s0.x + 0.25f * (s1.x - s0.x), s0.y}, 5);
-  CHECK(f.get(beat).fadeIn.length > 0);
-  CHECK(f.history() == h + 1);
-  const Vec2 fc = f.at("fade-in");
-  const float curve0 = f.get(beat).fadeIn.curve;
-  const Ticks len0 = f.get(beat).fadeIn.length;
-  f.d.drag(fc, {fc.x, fc.y - 40.0f}, 4, mod::kAlt);
-  CHECK(f.get(beat).fadeIn.curve > curve0 + 0.1f);
-  CHECK(f.get(beat).fadeIn.length == len0);
-  CHECK(f.history() == h + 2);
 
   // Transpose: typed "5/4" (exact ratio), then the ¢ chip re-expresses it in cents, the same pitch.
   h = f.history();
@@ -271,32 +304,51 @@ TEST_CASE("clip menu (SX.2, real dispatch): its controls edit the clip, one undo
   CHECK(f.get(beat).transpose.steps > 4);
   CHECK(f.history() == h + 1);
 
-  // Warp: Beats from the right-hand chips (the BPM seeded as the panel does), its sub-ring: Preserve 1/8.
+  // Warp: Beats (the BPM seeded as the panel does); its settings row appears directly above the modes: Preserve 1/8.
   h = f.history();
-  f.d.move(f.at("warp-stretch/Beats"));
+  f.d.move(f.at("warp-stretch/Tones"));  // hovering a mode opens nothing
+  CHECK_FALSE(m.shown(f.item("tones-grain")));
   f.d.click(f.at("warp-stretch/Beats"));
   CHECK(f.get(beat).warp == doc::AudioWarp::Beats);
   CHECK(f.history() == h + 1);
   CHECK(m.enabledOf(f.item("bpm")));
-  CHECK(m.enabledOf(f.item("beats-env")));
-  CHECK_FALSE(m.enabledOf(f.item("flux")));
-  CHECK(m.centreText().find("Beats") != std::string::npos);
-  f.d.move(f.at("warp-stretch/Beats"));
+  CHECK(m.shown(f.item("beats-env")));
+  CHECK_FALSE(m.shown(f.item("flux")));
+  CHECK(f.at("preserve/1/8").y < f.at("warp-stretch/Beats").y);
+  CHECK(f.at("transient-loop/No Loop").y < f.at("warp-stretch/Beats").y);
   f.d.click(f.at("preserve/1/8"));
   CHECK(f.get(beat).warpParams.beatsGranulation == kPpq / 2);
   CHECK(f.history() == h + 2);
-  // :2 halves the source tempo; Loop turns the loop on.
+  // :2 halves the source tempo; Loop turns the loop on (both on the lower band, no sub-ring).
   const double bpm = f.get(beat).sourceBpm;
-  f.d.move(f.at("Tempo"));  // its sub-ring: BPM, :2 / x2, Loop
   f.d.click(f.at("tempo/:2"));
   CHECK(f.get(beat).sourceBpm == doctest::Approx(bpm / 2.0));
   f.d.click(f.at("loop"));
   CHECK(f.get(beat).loop.enabled);
   CHECK(f.history() == h + 4);
+  // Texture: its row swaps in (Grain, Flux); a slider drag there is one step; Complex: no row.
+  f.d.click(f.at("warp-stretch/Texture"));
+  CHECK(f.get(beat).warp == doc::AudioWarp::Texture);
+  CHECK_FALSE(m.shown(f.item("preserve/1/8")));
+  REQUIRE(m.shown(f.item("flux")));
+  CHECK(m.shown(f.item("texture-grain")));
+  h = f.history();
+  const int32_t fx = f.item("flux");
+  const Vec2 s0 = m.sliderStart(fx), s1 = m.sliderEnd(fx);
+  f.d.drag({s0.x + 1.0f, s0.y}, {s0.x + 0.5f * (s1.x - s0.x), s0.y}, 5);
+  CHECK(f.get(beat).warpParams.flux > 10.0f);
+  CHECK(f.history() == h + 1);
+  f.d.click(f.at("warp-stretch/Complex"));
+  for (const char* k : {"preserve/1/8", "beats-env", "tones-grain", "flux", "texture-grain", "formants"}) CHECK_FALSE(m.shown(f.item(k)));
+  f.checkAround(beat);
 
-  // The document changes under the menu (another view's edit): the values follow.
-  f.dispatch(doc::ops::setAudioClipGain(*f.ctx.doc(), std::span<const doc::ClipRef>(&beat, 1), -12.0f));
-  CHECK(m.valueOf(f.item("gain")) == doctest::Approx(-12.0));
+  // The document changes under the menu (another view's edit): the values follow; undo brings Texture's row back.
+  f.dispatch(doc::ops::setAudioClipDetune(*f.ctx.doc(), std::span<const doc::ClipRef>(&beat, 1), -12.0f));
+  CHECK(m.valueOf(f.item("detune")) == doctest::Approx(-12.0));
+  CHECK(f.ctx.store().undo());
+  CHECK(f.ctx.store().undo());
+  CHECK(f.get(beat).warp == doc::AudioWarp::Texture);
+  CHECK(m.shown(f.item("flux")));
 
   // The clip deleted under it: the menu closes (no dangling pointer); undo brings the clip back, the menu stays shut.
   REQUIRE(f.arr->deleteSelection());
@@ -324,6 +376,46 @@ TEST_CASE("clip menu (SX.2, real dispatch): its controls edit the clip, one undo
   f.d.click({5.0f, 5.0f});
   f.d.step();
   CHECK(f.arr->clipMenu() == nullptr);
+}
+
+TEST_CASE("clip menu (SX.5): clips near the window's top / bottom and narrow clips: on screen, never over the clip") {
+  SUBCASE("the first track at the top of a short window") {
+    Fixture f(1280, 520);
+    const doc::ClipRef beat = f.clip("Drums", 0);
+    f.d.click(f.title(beat, kBar / 4));
+    REQUIRE(f.arr->openClipMenu(beat, false) != nullptr);
+    f.d.tree().layoutNow();
+    f.d.step();
+    f.checkAround(beat);
+  }
+  SUBCASE("the last audio track, scrolled to the bottom of a short window") {
+    Fixture f(1280, 420);
+    const doc::ClipRef vox = f.clip("Vox", 0);
+    f.arr->scrollToY(1 << 20);
+    f.d.tree().layoutNow();
+    f.d.step();
+    f.d.click(f.title(vox, kBar / 4));
+    REQUIRE(f.arr->openClipMenu(vox, false) != nullptr);
+    f.d.tree().layoutNow();
+    f.d.step();
+    f.checkAround(vox);
+  }
+  SUBCASE("a narrow clip (zoomed out): the bands are wider than it, on screen") {
+    Fixture f;
+    const doc::ClipRef beat = f.clip("Drums", 0);
+    f.d.click(f.title(beat, kBar / 4));
+    f.arr->setTimeView(-0.05 * static_cast<double>(kBar), 24.0 / static_cast<double>(kBar));
+    f.d.tree().layoutNow();
+    f.d.step();
+    f.d.tree().setFocus(f.arr);
+    REQUIRE(f.d.press("Ctrl+Space") == KeyResult::Action);  // no button on a narrow clip: the shortcut
+    f.d.step();
+    f.checkAround(beat);
+    const IRect box = f.arr->clipRect(beat);
+    const IRect band = f.menu().bandRect(1);
+    CHECK(band.w > box.w);
+    CHECK(band.x >= 0);
+  }
 }
 
 // ---- parity: every clip panel control has a menu counterpart making the identical clip -------------------------------
@@ -359,8 +451,8 @@ struct Case {
 
 }  // namespace
 
-TEST_CASE("clip menu (SX.2): parity — every control of the clip panel has a menu counterpart that makes the identical "
-          "clip through the same op") {
+TEST_CASE("clip menu (SX.2 / SX.5): parity — every control of the clip panel but Gain and the fades has a menu counterpart "
+          "that makes the identical clip through the same op") {
   Fixture f(1280, 900);
   const doc::ClipRef beat = f.clip("Drums", 0);
   f.ctx.setDetailVisible(true);
@@ -371,15 +463,15 @@ TEST_CASE("clip menu (SX.2): parity — every control of the clip panel has a me
   AudioClipView& v = *vp;
   REQUIRE(v.hasClip());
   const std::vector<RadialItem> items = clipMenuItems(f.ctx, beat);
+  for (const char* k : {"gain", "fade-in", "fade-out"}) CHECK(findItem(items, k) == nullptr);
 
   using W = doc::AudioWarp;
   std::map<std::string, Case> cases;
   cases["clip/transpose"] = {W::Off, [](AudioClipView& view, Widget&) { (void)view.setTranspose(std::string_view("5/4")); }, "transpose", 0.0, "5/4"};
   cases["clip/detune"] = {W::Off, {}, "detune", 12.0};
-  cases["clip/gain"] = {W::Off, {}, "gain", -6.5};
   cases["clip/side/reverse"] = {W::Off, {}, "reverse", 1.0};
-  cases["clip/side/fade-in"] = {W::Off, {}, "fade-in", 250.0};
-  cases["clip/side/fade-out"] = {W::Off, {}, "fade-out", 300.0};
+  // SX.5: not in the menu: the clip's own handles edit gain and the fades.
+  const std::set<std::string> excluded = {"clip/gain", "clip/side/fade-in", "clip/side/fade-out"};
   const char* modes[] = {"off", "repitch", "beats", "tones", "texture", "complex", "pro"};
   for (int i = 0; i < 7; ++i)
     cases[std::string(i < 4 ? "warp/modes-1/" : "warp/modes-2/") + modes[i]] = {i == 0 ? W::Beats : W::Off, {}, "warp", static_cast<double>(i)};
@@ -409,7 +501,7 @@ TEST_CASE("clip menu (SX.2): parity — every control of the clip panel has a me
   Widget* props = v.box().find("props");
   REQUIRE(props != nullptr);
   collectControls(*props, "", controls);
-  CHECK(controls.size() == cases.size());
+  CHECK(controls.size() == cases.size() + excluded.size());
 
   auto setWarp = [&](W w) {
     const doc::AudioClip& c = f.get(beat);
@@ -464,6 +556,7 @@ TEST_CASE("clip menu (SX.2): parity — every control of the clip panel has a me
     while (f.history() > h) REQUIRE(f.ctx.store().undo());
   };
   for (const auto& [path, w] : controls) {
+    if (excluded.count(path) != 0) continue;
     const auto it = cases.find(path);
     if (it == cases.end()) {
       FAIL_CHECK("the clip panel's control " << path << " has no clip menu counterpart in this test");
@@ -502,4 +595,4 @@ void checkGolden(const char* scene) {
 
 TEST_CASE("render: clip-menu-off (the clip menu on an Off clip) matches the golden") { checkGolden("clip-menu-off"); }
 
-TEST_CASE("render: clip-menu-beats (a Beats clip, its settings' sub-ring open) matches the golden") { checkGolden("clip-menu-beats"); }
+TEST_CASE("render: clip-menu-beats (a Beats clip, its settings row above the modes) matches the golden") { checkGolden("clip-menu-beats"); }

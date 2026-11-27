@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <span>
@@ -652,10 +653,11 @@ public:
   void selectAll();
   bool hasClipboard() const noexcept { return !clipboard_.clips.empty(); }
   ui::Menu* openContextMenu(ui::Vec2 at);
-  // SX.2: the radial clip menu (pq/views/audio_clip/clip_menu.h) of audio clip `ref`, centred on its visible part on
-  // the current surface (another one open closes first); the selection is left as it is. nullptr: not an audio clip on
-  // a row. clipMenuTarget: the clip Ctrl+Space opens it for (the first selected audio clip; invalid: none).
-  ui::RadialMenu* openClipMenu(const doc::ClipRef& ref, bool animate = true);
+  // SX.2 / SX.5: the clip menu (pq/views/audio_clip/clip_menu.h) of audio clip `ref`, around its visible part on the
+  // current surface, centred on x `atX` (device px; NaN: the visible part's centre; another one open closes first); the
+  // selection is left as it is. nullptr: not an audio clip on a row. clipMenuTarget: the clip Ctrl+Space opens it for
+  // (the first selected audio clip; invalid: none).
+  ui::RadialMenu* openClipMenu(const doc::ClipRef& ref, bool animate = true, float atX = std::numeric_limits<float>::quiet_NaN());
   ui::RadialMenu* clipMenu() const noexcept { return clipMenu_ ? *clipMenu_ : nullptr; }
   doc::ClipRef clipMenuTarget() const;
 

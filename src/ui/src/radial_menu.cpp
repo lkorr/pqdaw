@@ -30,6 +30,8 @@ constexpr float kTagH = 18.0f;
 constexpr float kKnobR = 2.0f * kMinLeafR;  // a knob's disc
 constexpr float kSliderHH = 18.0f;          // a slider capsule's half height
 constexpr float kSliderMinHW = 52.0f, kSliderMaxHW = 96.0f;
+constexpr float kBandPillHH = 12.0f;  // SX.5 bands: a chip / toggle / leaf pill's half height
+constexpr float kBandKnobR = 32.0f;   // a knob's disc in a band (at least)
 constexpr double kOpenSeconds = 0.12;
 constexpr double kWheelGestureSeconds = 0.4;
 constexpr float kPi = std::numbers::pi_v<float>;
@@ -216,6 +218,11 @@ RadialMenu::RadialMenu(std::vector<RadialItem> items, Vec2 anchor, RadialMenuOpt
   }
   if (!options_.animate) progress_ = 1.0f;
   else progress_ = 0.0f;
+  bands_ = options_.layout == RadialLayout::Bands;
+  if (bands_) {
+    rows_.reserve(nodes_.size());
+    rowNodes_.reserve(nodes_.size());
+  }
   readValues();  // values are read at open
 }
 
@@ -301,6 +308,13 @@ RadialMenu* openRadialMenu(Widget& from, const IRect& anchor, std::vector<Radial
   o.takeFocus = true;
   o.onClosed = std::move(options.onClosed);
   options.onClosed = nullptr;
+  if (options.layout == RadialLayout::Bands) {  // SX.5: the bands hug the anchor, centred on bandX (mapped like it)
+    options.around = a;
+    if (!std::isnan(options.bandX)) {
+      const IRect x = OverlayLayer::anchorRect(from, {static_cast<int32_t>(std::floor(options.bandX)), anchor.y, 1, 1});
+      options.bandX = static_cast<float>(x.x) + 0.5f * static_cast<float>(x.w);
+    }
+  }
   auto m = std::make_unique<RadialMenu>(std::move(items), c, std::move(options), layer->uniqueName("radial-menu"));
   auto& menu = static_cast<RadialMenu&>(layer->open(std::move(m), std::move(o)));
   if (menu.openProgress() < 1.0f) menu.requestFrame();
@@ -414,6 +428,24 @@ void RadialMenu::measure() {
     const float ring = ringR_[std::min(n.depth, kMaxDepth - 1)];
     if (n.kind == RadialKind::Knob) n.hw = n.hh = std::max(n.hw, std::ceil(1.25f * ring));  // always the larger disc
     else if (n.kind != RadialKind::Slider) n.hw = n.hh = ring;
+  }
+  if (bands_) {
+    // SX.5: pills sized to their label (or glyph), knobs a smaller disc that still fits the label; sliders as on a ring.
+    const float hh = s.exact(kBandPillHH);
+    for (Node& n : nodes_) {
+      if (n.kind == RadialKind::Slider) continue;
+      if (n.kind == RadialKind::Knob) {
+        // The label is drawn 1.6 r wide with the text's padding.
+        n.hw = n.hh = std::clamp(std::ceil((static_cast<float>(n.labelW) + s.exact(kPad) + s.exact(2.0f)) / 1.6f),
+                                 s.exact(kBandKnobR), s.exact(kKnobR));
+        continue;
+      }
+      n.labelFont = body;
+      n.labelW = static_cast<int32_t>(width(body, n.label));
+      const float w = n.glyph.empty() ? static_cast<float>(n.labelW) : width(n.glyphFont, n.glyph);
+      n.hh = hh;
+      n.hw = std::max(hh, std::ceil(0.5f * w + pad + 0.3f * hh));
+    }
   }
   centreR_ = s.exact(kCentreR);
   gap_ = s.exact(kGap);
@@ -640,6 +672,149 @@ void RadialMenu::layoutRing0() {
   ringExt_[0] = rx;
 }
 
+// --- bands (SX.5) ---------------------------------------------------------------------------------------
+
+bool RadialMenu::expanded(int32_t node) const noexcept {
+  const Node& n = nodes_[static_cast<size_t>(node)];
+  if (n.count == 0) return false;
+  if (n.kind == RadialKind::Chip) return litOf(node);  // the chosen mode's settings
+  if (n.kind != RadialKind::Item) return false;
+  return n.depth < openDepth_ && n.depth < kMaxDepth && path_[n.depth] == node;  // an open category
+}
+
+void RadialMenu::layoutBands() {
+  const IRect vp = rect();
+  const UiScale s = tree()->uiScale();
+  const float edge = s.exact(kEdge), pad = gap_, gapIn = 0.5f * gap_, gapOut = 1.5f * gap_;
+  rows_.clear();
+  rowNodes_.clear();
+  auto measureRow = [&](Row& r) {
+    r.w = 0.0f;
+    r.h = 0.0f;
+    for (int32_t k = 0; k < r.count; ++k) {
+      const Node& n = nodes_[static_cast<size_t>(rowNodes_[static_cast<size_t>(r.first + k)])];
+      r.w += 2.0f * n.hw;
+      r.h = std::max(r.h, 2.0f * n.hh);
+      if (k > 0) {
+        const Node& p = nodes_[static_cast<size_t>(rowNodes_[static_cast<size_t>(r.first + k - 1)])];
+        r.w += p.group >= 0 && p.group == n.group ? gapIn : gapOut;
+      }
+    }
+  };
+  // A row, then (directly outward) the rows of its expanded items' children, depth first.
+  auto emitChildren = [&](auto& self, size_t row) -> void {
+    const Row r = rows_[row];
+    for (int32_t k = 0; k < r.count; ++k) {
+      const int32_t node = rowNodes_[static_cast<size_t>(r.first + k)];
+      if (!expanded(node)) continue;
+      const Node& n = nodes_[static_cast<size_t>(node)];
+      Row c{r.band, static_cast<int32_t>(rowNodes_.size()), n.count, 0.0f, 0.0f};
+      for (int32_t i = 0; i < n.count; ++i) rowNodes_.push_back(n.first + i);
+      measureRow(c);
+      rows_.push_back(c);
+      self(self, rows_.size() - 1);
+    }
+  };
+  auto bandOf = [&](int32_t i) { return nodes_[static_cast<size_t>(i)].place.side == RadialPlace::Side::Top ? 0 : 1; };
+  auto rowOf = [&](int32_t i) { return std::max<int32_t>(0, nodes_[static_cast<size_t>(i)].place.row); };
+  for (int32_t band = 0; band < 2; ++band) {
+    int32_t maxRow = -1;
+    for (int32_t i = 0; i < rootCount_; ++i)
+      if (bandOf(i) == band) maxRow = std::max(maxRow, rowOf(i));
+    for (int32_t row = 0; row <= maxRow; ++row) {
+      Row r{band, static_cast<int32_t>(rowNodes_.size()), 0, 0.0f, 0.0f};
+      for (int32_t i = 0; i < rootCount_; ++i)
+        if (bandOf(i) == band && rowOf(i) == row) rowNodes_.push_back(i);
+      r.count = static_cast<int32_t>(rowNodes_.size()) - r.first;
+      if (r.count == 0) continue;
+      measureRow(r);
+      rows_.push_back(r);
+      emitChildren(emitChildren, rows_.size() - 1);
+    }
+  }
+  float bw[2] = {0.0f, 0.0f}, bh[2] = {0.0f, 0.0f};
+  int32_t nr[2] = {0, 0};
+  for (const Row& r : rows_) {
+    bw[r.band] = std::max(bw[r.band], r.w);
+    bh[r.band] += r.h + (nr[r.band] > 0 ? gap_ : 0.0f);
+    ++nr[r.band];
+  }
+  for (int32_t b = 0; b < 2; ++b)
+    if (nr[b] > 0) {
+      bw[b] += 2.0f * pad;
+      bh[b] += 2.0f * pad;
+    }
+
+  // The rectangle hugged (on screen), the x the bands centre on.
+  IRect A = intersect(options_.around, vp);
+  if (A.empty()) A = {static_cast<int32_t>(std::lround(anchor_.x)), static_cast<int32_t>(std::lround(anchor_.y)), 0, 0};
+  const float X = std::isnan(options_.bandX) ? static_cast<float>(A.x) + 0.5f * static_cast<float>(A.w) : options_.bandX;
+  centre_ = {static_cast<float>(A.x) + 0.5f * static_cast<float>(A.w), static_cast<float>(A.y) + 0.5f * static_cast<float>(A.h)};
+  haloR_ = 0.0f;
+
+  // Sides: a band that does not fit its own side goes outward beyond the other side's band when both fit there.
+  const float spaceAbove = static_cast<float>(A.y - vp.y) - edge - gap_;
+  const float spaceBelow = static_cast<float>(vp.bottom() - A.bottom()) - edge - gap_;
+  bool above[2] = {true, false};
+  bandFlipped_[0] = bandFlipped_[1] = false;
+  if (nr[0] > 0 && bh[0] > spaceAbove && bh[1] + (nr[1] > 0 ? gap_ : 0.0f) + bh[0] <= spaceBelow) above[0] = false;
+  else if (nr[1] > 0 && bh[1] > spaceBelow && bh[0] + (nr[0] > 0 ? gap_ : 0.0f) + bh[1] <= spaceAbove) above[1] = true;
+  bandFlipped_[0] = !above[0];
+  bandFlipped_[1] = above[1];
+  float upEdge = static_cast<float>(A.y) - gap_, downEdge = static_cast<float>(A.bottom()) + gap_;
+  float y0[2] = {0.0f, 0.0f}, x0[2] = {0.0f, 0.0f};
+  auto clampAxis = [](float v, float lo, float hi) { return lo <= hi ? std::clamp(v, lo, hi) : lo; };
+  // Nearest the rectangle first: on top the "above" band, below the "below" band; a flipped one beyond.
+  const int32_t order[2][2] = {{0, 1}, {1, 0}};
+  for (int32_t side = 0; side < 2; ++side)
+    for (const int32_t b : order[side]) {
+      if (nr[b] == 0 || above[b] != (side == 0)) continue;
+      if (side == 0) {
+        y0[b] = upEdge - bh[b];
+        upEdge = y0[b] - gap_;
+      } else {
+        y0[b] = downEdge;
+        downEdge += bh[b] + gap_;
+      }
+    }
+  for (int32_t b = 0; b < 2; ++b) {
+    bandRect_[b] = {};
+    if (nr[b] == 0) continue;
+    y0[b] = clampAxis(y0[b], static_cast<float>(vp.y) + edge, static_cast<float>(vp.bottom()) - edge - bh[b]);
+    x0[b] = clampAxis(X - 0.5f * bw[b], static_cast<float>(vp.x) + edge, static_cast<float>(vp.right()) - edge - bw[b]);
+    y0[b] = std::round(y0[b]);
+    x0[b] = std::round(x0[b]);
+    bandRect_[b] = {static_cast<int32_t>(x0[b]), static_cast<int32_t>(y0[b]), static_cast<int32_t>(std::ceil(bw[b])),
+                    static_cast<int32_t>(std::ceil(bh[b]))};
+  }
+
+  // Rows outward from the rectangle's side (row 0 nearest), each centred in its band.
+  float cursor[2] = {above[0] ? y0[0] + bh[0] - pad : y0[0] + pad, above[1] ? y0[1] + bh[1] - pad : y0[1] + pad};
+  for (const Row& r : rows_) {
+    const int32_t b = r.band;
+    float cy;
+    if (above[b]) {
+      cy = cursor[b] - 0.5f * r.h;
+      cursor[b] -= r.h + gap_;
+    } else {
+      cy = cursor[b] + 0.5f * r.h;
+      cursor[b] += r.h + gap_;
+    }
+    float x = x0[b] + 0.5f * (bw[b] - r.w);
+    for (int32_t k = 0; k < r.count; ++k) {
+      const int32_t node = rowNodes_[static_cast<size_t>(r.first + k)];
+      const Node& n = nodes_[static_cast<size_t>(node)];
+      if (k > 0) {
+        const Node& p = nodes_[static_cast<size_t>(rowNodes_[static_cast<size_t>(r.first + k - 1)])];
+        x += p.group >= 0 && p.group == n.group ? gapIn : gapOut;
+      }
+      bubbleOf_[static_cast<size_t>(node)] = static_cast<int32_t>(bubbles_.size());
+      bubbles_.push_back({{x + n.hw, cy}, n.hh, node, n.depth, n.hw});
+      x += 2.0f * n.hw;
+    }
+  }
+}
+
 void RadialMenu::relayout() {
   const IRect old = bbox_;
   const IRect vp = rect();
@@ -654,68 +829,73 @@ void RadialMenu::relayout() {
     return;
   }
   const UiScale s = tree()->uiScale();
-
-  // Ring 0: a full ring around the centre, the first item at the top, clockwise (pinned items where they are pinned).
-  layoutRing0();
-  const float R0 = ringRadius_[0];
-  const float m = R0 + ringExt_[0] + s.exact(kEdge);
   auto clampAxis = [](float v, float lo, float hi) { return lo <= hi ? std::clamp(v, lo, hi) : 0.5f * (lo + hi); };
-  centre_ = {clampAxis(anchor_.x, static_cast<float>(vp.x) + m, static_cast<float>(vp.right()) - m),
-             clampAxis(anchor_.y, static_cast<float>(vp.y) + m, static_cast<float>(vp.bottom()) - m)};
-  for (const Slot& sl : slots_) {
-    float a = sl.angle - 0.5f * sl.tw / R0;  // a run's items side by side, clockwise
-    for (int32_t k = 0; k < sl.count; ++k) {
-      const int32_t i = sl.first + k;
-      const float w = (2.0f * tangentExt(i, sl.angle) + gap_) / R0;
-      const float ai = sl.count == 1 ? sl.angle : a + 0.5f * w;
-      a += w;
-      const Node& n = nodes_[static_cast<size_t>(i)];
-      bubbleOf_[static_cast<size_t>(i)] = static_cast<int32_t>(bubbles_.size());
-      bubbles_.push_back({{centre_.x + R0 * std::cos(ai), centre_.y + R0 * std::sin(ai)}, n.hh, i, 0, n.hw});
-    }
-  }
-
-  auto angleOf = [&](int32_t node) {
-    const Vec2 p = bubbles_[static_cast<size_t>(bubbleOf_[static_cast<size_t>(node)])].c;
-    return std::atan2(p.y - centre_.y, p.x - centre_.x);
-  };
-  if (filter_.empty()) {
-    // Rings 1..openDepth_: each an arc outward from the item open on the ring inside it, clear of that ring's
-    // bubbles in its direction (a knob beside the parent is larger than the parent).
-    for (int32_t k = 1; k <= openDepth_ && k < kMaxDepth; ++k) {
-      const int32_t parent = path_[k - 1];
-      const Node& p = nodes_[static_cast<size_t>(parent)];
-      const float base = angleOf(parent);
-      float rx = 0.0f, tw = 0.0f;
-      for (int32_t c = 0; c < p.count; ++c) {
-        rx = std::max(rx, radialExt(p.first + c, base));
-        tw += 2.0f * tangentExt(p.first + c, base) + gap_;
-      }
-      const float Rin = ringRadius_[k - 1];
-      float inner = radialExt(parent, base);
-      const float half = 0.5f * tw / std::max(Rin + inner + gap_ + rx, 1.0f);
-      for (const Bubble& b : bubbles_) {
-        if (b.ring != k - 1 || b.node == parent) continue;
-        float d = std::abs(std::atan2(b.c.y - centre_.y, b.c.x - centre_.x) - base);
-        if (d > kPi) d = 2.0f * kPi - d;
-        const float bw = tangentExt(b.node, base) / std::max(Rin, 1.0f);
-        if (d < half + bw) inner = std::max(inner, radialExt(b.node, base));
-      }
-      float R = Rin + inner + gap_ + rx;
-      R = std::max(R, tw / (2.0f * kPi));  // a full ring at most
-      ringRadius_[k] = R;
-      ringExt_[k] = rx;
-      placeArc(k, p.first, p.count, base, R, 0.0f);
-    }
+  if (bands_) {
+    layoutBands();  // SX.5
   } else {
-    // The results: one ring outside ring 0, best first, centred at the top.
-    const float r = resultR_;
-    const float R = R0 + ringExt_[0] + gap_ + r;
-    ringRadius_[kMaxDepth] = R;
-    const int32_t capacity = std::max(1, static_cast<int32_t>(std::floor(2.0f * kPi * R / (2.0f * r + gap_))));
-    shownResults_ = std::min(static_cast<int32_t>(results_.size()), capacity);
-    resHi_ = std::clamp(resHi_, 0, std::max(0, shownResults_ - 1));
-    if (shownResults_ > 0) placeArc(-1, 0, shownResults_, -0.5f * kPi, R, r);
+    // Ring 0: a full ring around the centre, the first item at the top, clockwise (pinned items where they are pinned).
+    layoutRing0();
+    const float R0 = ringRadius_[0];
+    const float m = R0 + ringExt_[0] + s.exact(kEdge);
+    centre_ = {clampAxis(anchor_.x, static_cast<float>(vp.x) + m, static_cast<float>(vp.right()) - m),
+               clampAxis(anchor_.y, static_cast<float>(vp.y) + m, static_cast<float>(vp.bottom()) - m)};
+    for (const Slot& sl : slots_) {
+      float a = sl.angle - 0.5f * sl.tw / R0;  // a run's items side by side, clockwise
+      for (int32_t k = 0; k < sl.count; ++k) {
+        const int32_t i = sl.first + k;
+        const float w = (2.0f * tangentExt(i, sl.angle) + gap_) / R0;
+        const float ai = sl.count == 1 ? sl.angle : a + 0.5f * w;
+        a += w;
+        const Node& n = nodes_[static_cast<size_t>(i)];
+        bubbleOf_[static_cast<size_t>(i)] = static_cast<int32_t>(bubbles_.size());
+        bubbles_.push_back({{centre_.x + R0 * std::cos(ai), centre_.y + R0 * std::sin(ai)}, n.hh, i, 0, n.hw});
+      }
+    }
+
+    auto angleOf = [&](int32_t node) {
+      const Vec2 p = bubbles_[static_cast<size_t>(bubbleOf_[static_cast<size_t>(node)])].c;
+      return std::atan2(p.y - centre_.y, p.x - centre_.x);
+    };
+    if (filter_.empty()) {
+      // Rings 1..openDepth_: each an arc outward from the item open on the ring inside it, clear of that ring's
+      // bubbles in its direction (a knob beside the parent is larger than the parent).
+      for (int32_t k = 1; k <= openDepth_ && k < kMaxDepth; ++k) {
+        const int32_t parent = path_[k - 1];
+        const Node& p = nodes_[static_cast<size_t>(parent)];
+        const float base = angleOf(parent);
+        float rx = 0.0f, tw = 0.0f;
+        for (int32_t c = 0; c < p.count; ++c) {
+          rx = std::max(rx, radialExt(p.first + c, base));
+          tw += 2.0f * tangentExt(p.first + c, base) + gap_;
+        }
+        const float Rin = ringRadius_[k - 1];
+        float inner = radialExt(parent, base);
+        const float half = 0.5f * tw / std::max(Rin + inner + gap_ + rx, 1.0f);
+        for (const Bubble& b : bubbles_) {
+          if (b.ring != k - 1 || b.node == parent) continue;
+          float d = std::abs(std::atan2(b.c.y - centre_.y, b.c.x - centre_.x) - base);
+          if (d > kPi) d = 2.0f * kPi - d;
+          const float bw = tangentExt(b.node, base) / std::max(Rin, 1.0f);
+          if (d < half + bw) inner = std::max(inner, radialExt(b.node, base));
+        }
+        float R = Rin + inner + gap_ + rx;
+        R = std::max(R, tw / (2.0f * kPi));  // a full ring at most
+        ringRadius_[k] = R;
+        ringExt_[k] = rx;
+        placeArc(k, p.first, p.count, base, R, 0.0f);
+      }
+    } else {
+      // The results: one ring outside ring 0, best first, centred at the top.
+      const float r = resultR_;
+      const float R = R0 + ringExt_[0] + gap_ + r;
+      ringRadius_[kMaxDepth] = R;
+      const int32_t capacity = std::max(1, static_cast<int32_t>(std::floor(2.0f * kPi * R / (2.0f * r + gap_))));
+      shownResults_ = std::min(static_cast<int32_t>(results_.size()), capacity);
+      resHi_ = std::clamp(resHi_, 0, std::max(0, shownResults_ - 1));
+      if (shownResults_ > 0) placeArc(-1, 0, shownResults_, -0.5f * kPi, R, r);
+    }
+    // The halo behind ring 0 (it groups the categories and calms what is under them).
+    haloR_ = R0 + ringExt_[0] + gap_;
   }
 
   // The highlighted leaf's name, outside its bubble when the bubble shows a glyph (or cuts the label).
@@ -742,9 +922,9 @@ void RadialMenu::relayout() {
     }
   }
 
-  // The halo behind ring 0 (it groups the categories and calms what is under them) and the painted bounds.
-  haloR_ = R0 + ringExt_[0] + gap_;
-  IRect box = discRect(centre_, haloR_);
+  // The painted bounds: the halo (rings) or the bands' panels, every bubble.
+  IRect box = bands_ ? unite(bandRect_[0], bandRect_[1]) : discRect(centre_, haloR_);
+  if (bands_) box = {box.x, box.y, box.w, box.h + s.px(2) + 1};  // the panels' drop shadow
   const float shadow = s.exact(2.0f) + 1.0f, mark = s.exact(4.0f);  // drop shadow below, the current item's ring
   for (const Bubble& b : bubbles_) box = unite(box, boxRect({b.c.x, b.c.y + shadow}, b.hw + mark, b.r + mark));
   if (tagNode_ >= 0) box = unite(box, {tag_.x - 1, tag_.y - 1, tag_.w + 2, tag_.h + s.px(2) + 3});
@@ -856,12 +1036,15 @@ const RadialBinding* RadialMenu::bindingOf(int32_t node) const noexcept {
 
 void RadialMenu::readValues() {
   if (closed_) return;
+  bool rowsChanged = false;  // bands: a chip with children lit / unlit (its row shows / hides)
   for (size_t i = 0; i < nodes_.size(); ++i) {
     Node& n = nodes_[i];
     if (n.kind == RadialKind::Item || n.binding < 0) continue;
     const RadialBinding& b = *bindings_[static_cast<size_t>(n.binding)];
     n.enabled = !b.enabled || b.enabled();
     const double v = b.get ? b.get() : 0.0;
+    if (bands_ && n.kind == RadialKind::Chip && n.count > 0)
+      rowsChanged = rowsChanged || (std::lround(v) == n.chipValue) != (std::lround(n.value) == n.chipValue);
     if (n.kind == RadialKind::Knob || n.kind == RadialKind::Slider) {
       if (v != n.value || n.valueText.empty()) {
         n.value = v;
@@ -878,6 +1061,7 @@ void RadialMenu::readValues() {
       if (scaleAt_ > 0.0f) measureCentre();
     }
   }
+  if (rowsChanged && tree() && !laidOutFor_.empty()) relayout();
   damage(bbox_);
 }
 
@@ -966,6 +1150,29 @@ void RadialMenu::resetControl(int32_t node) {
   if (!n.resettable) return;
   setControl(node, n.spec.def);
   endGesture();
+}
+
+bool RadialMenu::activate(int32_t node) {
+  const Node& n = nodes_[static_cast<size_t>(node)];
+  if (!isControl(node) || !n.enabled) return false;
+  if (n.kind == RadialKind::Knob || n.kind == RadialKind::Slider) {
+    beginTypeIn(node);
+  } else {
+    setControl(node, n.kind == RadialKind::Toggle ? (n.value != 0.0 ? 0.0 : 1.0) : static_cast<double>(n.chipValue));
+    endGesture();
+  }
+  return true;
+}
+
+void RadialMenu::bandStep(int32_t dir) {
+  const int32_t n = static_cast<int32_t>(bubbles_.size());
+  if (n == 0) return;
+  const int32_t at = hi_ >= 0 ? bubbleOf_[static_cast<size_t>(hi_)] : -1;
+  const int32_t i = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
+  const Bubble& b = bubbles_[static_cast<size_t>(i)];
+  focusRing_ = b.ring;
+  hi_ = b.node;
+  relayout();
 }
 
 void RadialMenu::beginTypeIn(int32_t node) {
@@ -1063,6 +1270,11 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
         setAlt(drag_, dragRaw_);
         return true;
       }
+      if (drag_ >= 0 && !shown(drag_)) {  // bands: its row went away under it (the document changed)
+        drag_ = -1;
+        endGesture();
+        return true;
+      }
       if (drag_ >= 0) {  // a knob / slider drag owns the pointer: nothing else reacts, its ring stays open
         Node& n = nodes_[static_cast<size_t>(drag_)];
         const double span = n.spec.max - n.spec.min, lo = std::min(n.spec.min, n.spec.max), hi = std::max(n.spec.min, n.spec.max);
@@ -1105,6 +1317,10 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
         return true;
       }
       const int32_t b = bubbleAt(e.pos);
+      if (b < 0 && bands_) {
+        for (const IRect& r : bandRect_)
+          if (r.contains(e.pos)) return true;  // a band's panel between its items: nothing
+      }
       if (b < 0) {  // a press that misses every bubble: an outside click
         close();
         return true;
@@ -1231,6 +1447,32 @@ bool RadialMenu::onKey(const KeyEvent& e) {
     finishWheel();
     endGesture();  // the edit so far stays (one undo step); Esc then goes on as usual
   }
+  if (bands_) {  // SX.5: the arrows walk the shown items in layout order; Enter acts; Esc closes
+    switch (e.key) {
+      case key::kDown:
+      case key::kRight: bandStep(1); return true;
+      case key::kUp:
+      case key::kLeft: bandStep(-1); return true;
+      case key::kReturn: {
+        if (e.repeat) return true;
+        if (hi_ < 0 || !shown(hi_)) {
+          bandStep(1);
+          return true;
+        }
+        const Node& n = nodes_[static_cast<size_t>(hi_)];
+        if (isControl(hi_)) {
+          if (n.enabled) activate(hi_);
+        } else if (n.count == 0) {
+          pick(hi_);
+        } else {
+          setHighlight(n.depth, hi_);  // a category: its row opens
+        }
+        return true;
+      }
+      case key::kEscape: close(); return true;
+      default: return true;
+    }
+  }
   if (!filter_.empty()) {
     switch (e.key) {
       case key::kDown:
@@ -1279,18 +1521,9 @@ bool RadialMenu::onKey(const KeyEvent& e) {
       }
       const Node& n = nodes_[static_cast<size_t>(hi_)];
       if (e.key == key::kReturn && isControl(hi_) && n.enabled) {
-        if (n.kind == RadialKind::Knob || n.kind == RadialKind::Slider) {
-          beginTypeIn(hi_);
-          return true;
-        }
-        if (n.kind == RadialKind::Toggle) {
-          setControl(hi_, n.value != 0.0 ? 0.0 : 1.0);
-          endGesture();
-          return true;
-        }
-        setControl(hi_, static_cast<double>(n.chipValue));  // a chip: chosen; with a ring, Enter also goes in
-        endGesture();
-        if (closed_ || nodes_[static_cast<size_t>(hi_)].count == 0) return true;
+        const RadialKind kind = n.kind;
+        activate(hi_);  // a chip: chosen; with a ring, Enter also goes in
+        if (kind != RadialKind::Chip || closed_ || nodes_[static_cast<size_t>(hi_)].count == 0) return true;
       }
       if (n.count == 0) {
         if (e.key == key::kReturn) pick(hi_);
@@ -1325,6 +1558,7 @@ bool RadialMenu::onText(const TextEvent& e) {
     damage(bbox_);
     return true;
   }
+  if (bands_) return true;  // bands hold controls: no filtering
   filter_.append(t);
   updateFilter();
   return true;
@@ -1355,7 +1589,21 @@ void RadialMenu::paint(PaintContext& ctx) {
   const int32_t hiNode = highlighted();
   const bool filtering = !filter_.empty();
 
-  dl.addCircleFilled(centre_, haloR_ * grow, mulAlpha(th->menu.shadow, a));
+  if (!bands_) {
+    dl.addCircleFilled(centre_, haloR_ * grow, mulAlpha(th->menu.shadow, a));
+  } else {
+    // SX.5: each band on a popup panel (grown about the hugged rectangle's centre like the items).
+    const float rad = s.exact(th->radius.menu);
+    for (const IRect& br : bandRect_) {
+      if (br.empty()) continue;
+      const Vec2 p0 = at({static_cast<float>(br.x), static_cast<float>(br.y)});
+      const Vec2 p1 = at({static_cast<float>(br.right()), static_cast<float>(br.bottom())});
+      const Rect box{p0.x, p0.y, p1.x, p1.y};
+      dl.addRoundedRectFilled({box.x0, box.y0 + s.exact(2.0f), box.x1, box.y1 + s.exact(2.0f)}, rad, mulAlpha(th->menu.shadow, a));
+      dl.addRoundedRectFilled(box, rad, mulAlpha(th->menu.fill, a));
+      dl.addRoundedRectStroke(box, rad, mulAlpha(th->menu.border, a), s.exact(1.0f));
+    }
+  }
 
   auto text = [&](FontId font, Vec2 c, float r, std::string_view str, Rgba col) {
     if (font == kNoFont || !ctx.res.text || str.empty()) return;
@@ -1389,10 +1637,14 @@ void RadialMenu::paint(PaintContext& ctx) {
     dl.popClip();
   };
 
-  // The centre: the typed text, else the opener's centre text, else the current item's glyph.
-  dl.addCircleFilled(centre_, centreR_ * sizeK, mulAlpha(th->control.fill, a));
-  dl.addCircleStroke(centre_, centreR_ * sizeK, mulAlpha(filtering ? th->accent.focus : th->menu.border, a), s.exact(1.0f));
-  if (filtering) {
+  // The centre: the typed text, else the opener's centre text, else the current item's glyph (rings only).
+  if (!bands_) {
+    dl.addCircleFilled(centre_, centreR_ * sizeK, mulAlpha(th->control.fill, a));
+    dl.addCircleStroke(centre_, centreR_ * sizeK, mulAlpha(filtering ? th->accent.focus : th->menu.border, a), s.exact(1.0f));
+  }
+  if (bands_) {
+    // no centre: the bands hug what they edit
+  } else if (filtering) {
     if (f) text(f->title, centre_, centreR_, filter_, mulAlpha(th->accent.primary, a));
   } else if (!centreText_.empty() && f) {
     const std::string_view all = centreText_;
@@ -1412,7 +1664,7 @@ void RadialMenu::paint(PaintContext& ctx) {
   }
 
   // A thin spoke from each open item to the ring it opened (the path reads at a glance).
-  if (!filtering)
+  if (!filtering && !bands_)
     for (int32_t k = 0; k < openDepth_; ++k) {
       const int32_t from = k == 0 ? -1 : path_[k - 1];
       const Vec2 c0 = from < 0 ? centre_ : at(centreOf(from));
@@ -1426,7 +1678,8 @@ void RadialMenu::paint(PaintContext& ctx) {
     const Vec2 c = at(b.c);
     const float r = b.r * sizeK;
     const bool isHi = b.node == hiNode;
-    const bool onPath = !filtering && b.ring >= 0 && b.ring < openDepth_ && path_[b.ring] == b.node;
+    const bool onPath = !filtering && b.ring >= 0 && b.ring < openDepth_ && path_[b.ring] == b.node &&
+                        (!bands_ || n.kind == RadialKind::Item);  // bands: an open category (a lit chip shows lit)
     const bool dim = (filtering && b.ring >= 0 && !hasMatch(b.node)) || (isControl(b.node) && !n.enabled);
     const bool lit = filtering && b.ring >= 0 && hasMatch(b.node);
     const float ca = a * (isControl(b.node) && !n.enabled ? 0.6f : 1.0f);
@@ -1499,15 +1752,29 @@ void RadialMenu::paint(PaintContext& ctx) {
     Rgba fill = isHi ? th->selection.fill : onPath ? th->surface.raised : n.count > 0 ? th->surface.panel : th->menu.fill;
     if (on) fill = !n.enabled ? lerp(th->accent.primary, th->control.fillDisabled, 0.65f) : isHi ? detail::hoverOf(th->accent.primary) : th->accent.primary;
     if (dim) fill = mulAlpha(fill, 0.55f);
-    dl.addCircleFilled({c.x, c.y + s.exact(2.0f)}, r, mulAlpha(th->menu.shadow, ca * (dim ? 0.5f : 1.0f)));
-    dl.addCircleFilled(c, r, mulAlpha(fill, ca));
-    if (onPath || lit) dl.addCircleStroke(c, r - s.exact(0.75f), mulAlpha(on ? th->text.onAccent : th->accent.primary, ca), s.exact(1.5f));
-    else dl.addCircleStroke(c, r, mulAlpha(isHi && on ? th->accent.focus : th->menu.border, ca), s.exact(1.0f));
-    if (b.node == current_) dl.addCircleStroke(c, r + s.exact(2.5f), mulAlpha(th->accent.primary, a), s.exact(1.5f));
+    const Rgba edgeCol = onPath || lit ? (on ? th->text.onAccent : th->accent.primary) : isHi && on ? th->accent.focus : th->menu.border;
+    const float edgeW = s.exact(onPath || lit ? 1.5f : 1.0f), edgeIn = onPath || lit ? s.exact(0.75f) : 0.0f;
+    if (b.hw > b.r + 0.01f) {  // SX.5: a pill (bands)
+      const float hw = b.hw * sizeK;
+      const Rect box{c.x - hw, c.y - r, c.x + hw, c.y + r};
+      dl.addRoundedRectFilled({box.x0, box.y0 + s.exact(2.0f), box.x1, box.y1 + s.exact(2.0f)}, r,
+                              mulAlpha(th->menu.shadow, ca * (dim ? 0.5f : 1.0f)));
+      dl.addRoundedRectFilled(box, r, mulAlpha(fill, ca));
+      dl.addRoundedRectStroke({box.x0 + edgeIn, box.y0 + edgeIn, box.x1 - edgeIn, box.y1 - edgeIn}, r - edgeIn, mulAlpha(edgeCol, ca), edgeW);
+      if (b.node == current_) {
+        const float o = s.exact(2.5f);
+        dl.addRoundedRectStroke({box.x0 - o, box.y0 - o, box.x1 + o, box.y1 + o}, r + o, mulAlpha(th->accent.primary, a), s.exact(1.5f));
+      }
+    } else {
+      dl.addCircleFilled({c.x, c.y + s.exact(2.0f)}, r, mulAlpha(th->menu.shadow, ca * (dim ? 0.5f : 1.0f)));
+      dl.addCircleFilled(c, r, mulAlpha(fill, ca));
+      dl.addCircleStroke(c, r - edgeIn, mulAlpha(edgeCol, ca), edgeW);
+      if (b.node == current_) dl.addCircleStroke(c, r + s.exact(2.5f), mulAlpha(th->accent.primary, a), s.exact(1.5f));
+    }
     const Rgba ink = on ? (n.enabled ? th->text.onAccent : th->control.fillDisabled)
                         : isHi ? th->selection.text : dim ? th->text.disabled : th->text.primary;
     const bool g = !n.glyph.empty();
-    text(g ? n.glyphFont : n.labelFont, c, b.r, g ? std::string_view(n.glyph) : std::string_view(n.label), mulAlpha(ink, ca));
+    text(g ? n.glyphFont : n.labelFont, c, b.hw, g ? std::string_view(n.glyph) : std::string_view(n.label), mulAlpha(ink, ca));
   }
 
   // The highlighted leaf's name.
