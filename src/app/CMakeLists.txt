@@ -36,6 +36,7 @@ pq_add_module(pq_app
     src/os_drop.cpp
     src/os_drag.cpp
     src/clip_export.cpp
+    src/clip_waves.cpp  # SX.4: the rendered waveforms' source
     src/preview_service.cpp
     src/tone_service.cpp
     src/bug_reporter.cpp

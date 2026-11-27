@@ -18,6 +18,7 @@
 #include "pq/views/note_preview.h"
 #include "pq/views/shell/shell.h"
 #include "pq/views/view_context.h"
+#include "pq/views/waveforms.h"
 
 namespace pq::views {
 
@@ -30,6 +31,9 @@ void viewSceneDefaultSize(std::string_view scene, uint32_t& width, uint32_t& hei
 // app::notePreviewSource: the real offline render); such a scene fails without one. Process-wide; set before
 // building scenes (pqdaw --screenshot, the app's golden tests).
 void setSceneNotePreviewSource(NotePreviewFn fn);
+// SX.4: the clip renderer every scene's waveform cache gets (the app's app::sceneClipWaveSource: time-stretch clips drawn
+// from their render, as in the app; none: from their source). Process-wide, as above.
+void setSceneClipWaveSource(ClipWaveFn fn);
 
 // T4.2: scenes over a patch file (`circuit`, `circuit-svf`, `circuit-svf-core`): the circuit viewer on that file.
 bool isPatchScene(std::string_view scene) noexcept;

@@ -243,6 +243,25 @@ std::string stdlibDir();
 // into it).
 Result<std::unique_ptr<doc::DeviceLibrary>> loadDeviceLibrary(const std::string& stdlib = stdlibDir());
 
+// T5.12 / SX.4: how one audio clip renders alone (ProjectLink::renderClip; the arrangement's rendered waveforms,
+// pq/app/clip_waves.h). `envelope` false: the clip's content only — warp, transpose, detune, reverse, markers, the mode's
+// settings — without its gain, fades, crossfade and edge declicks (the waveform multiplies those in at draw time), and a
+// deactivated clip renders as if active. `cancel` is polled per engine block (true: an error, nothing returned).
+struct ClipRenderSettings {
+  double sampleRate = 48000.0;
+  uint32_t blockFrames = 64;       // the engine block (blocks are aligned to it from song sample 0, as in playback)
+  double lookaheadSeconds = 0.5;   // LinkConfig::clipLookaheadSeconds
+  bool edgeDeclick = true;         // LinkConfig::edgeDeclick
+  bool envelope = true;
+  const std::atomic<bool>* cancel = nullptr;
+};
+// The clip `ref` of `p` through a private clip player (the engine's code, offline) over `pool` (thread-safe; the sample
+// is loaded into it, streamed reads waited for; a Beats-at-transients clip whose onsets are not analysed yet is analysed
+// here). `samplePath`: the sample's absolute path (resolved by the caller). Frames of the clip's body at the settings'
+// rate, one channel per channel of the sample (at most 2). Any thread but the audio thread.
+Result<std::vector<std::vector<float>>> renderClipAlone(const doc::Project& p, doc::ClipRef ref, const std::string& samplePath,
+                                                        media::SamplePool& pool, const ClipRenderSettings& settings);
+
 struct LinkConfig {
   double sampleRate = 48000.0;
   uint32_t blockFrames = 64;      // the engine's image block
@@ -432,7 +451,15 @@ public:
   // rate, one channel per channel of the sample (at most 2). Blocks are aligned to the engine block from song sample 0,
   // as in a render of the project, so the frames equal what the clip's track plays when it is alone in the project.
   // Any thread except the audio thread (the link's pool is thread-safe; nothing of the playing engine is touched).
-  Result<std::vector<std::vector<float>>> renderClip(const doc::Project& p, doc::ClipRef clip);
+  // SX.4: `o.envelope` false renders the content only (ClipRenderSettings above); `o.cancel` stops it.
+  struct ClipRenderOptions {
+    bool envelope = true;
+    const std::atomic<bool>* cancel = nullptr;
+  };
+  Result<std::vector<std::vector<float>>> renderClip(const doc::Project& p, doc::ClipRef clip, const ClipRenderOptions& o);
+  Result<std::vector<std::vector<float>>> renderClip(const doc::Project& p, doc::ClipRef clip) { return renderClip(p, clip, ClipRenderOptions{}); }
+  // SX.4: the settings renderClip renders with (the engine's rate, block, look-ahead, declick).
+  ClipRenderSettings clipRenderSettings() const noexcept;
   // FZ.4 (consolidate on audio): what audio track `track`'s clip player plays over [from, to) — its played clips (main
   // lane or audition take) with gains, fades, crossfades, warp and the edge declicks; no devices, no mixer — through a
   // private clip player (the engine's code, offline, its samples loaded into the pool and streamed reads waited for),

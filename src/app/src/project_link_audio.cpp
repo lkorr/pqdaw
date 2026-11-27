@@ -824,36 +824,76 @@ void ProjectLink::reportDisk() {
   if (ctx_ != nullptr) ctx_->setStatus(m);
 }
 
-Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Project& p, doc::ClipRef ref) {
+Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Project& p, doc::ClipRef ref, const ClipRenderOptions& o) {
+  if (pool_ == nullptr) return Error{ErrorCode::Unsupported, "renderClip: no sample pool", {}};
+  const doc::Track* t = doc::findTrackPtr(p, ref.track);
+  const int32_t ci = t != nullptr ? doc::findClipIndex(*t, ref.clip) : -1;
+  std::string file;
+  if (ci >= 0 && t->clips[static_cast<size_t>(ci)].audio) file = samplePathOf(p, t->clips[static_cast<size_t>(ci)].audio->sample);
+  ClipRenderSettings s = clipRenderSettings();
+  s.envelope = o.envelope;
+  s.cancel = o.cancel;
+  return renderClipAlone(p, ref, file, *pool_, s);
+}
+
+ClipRenderSettings ProjectLink::clipRenderSettings() const noexcept {
+  ClipRenderSettings s;
+  s.sampleRate = cfg_.sampleRate;
+  s.blockFrames = cfg_.blockFrames;
+  s.lookaheadSeconds = cfg_.clipLookaheadSeconds;
+  s.edgeDeclick = cfg_.edgeDeclick;
+  return s;
+}
+
+Result<std::vector<std::vector<float>>> renderClipAlone(const doc::Project& p, doc::ClipRef ref, const std::string& file,
+                                                        media::SamplePool& pool, const ClipRenderSettings& cfg) {
   const std::optional<doc::TrackPath> path = doc::findTrack(p, ref.track);
   if (!path) return Error{ErrorCode::NotFound, "renderClip: no such track", {}};
   const doc::Track& t = doc::trackAt(p, *path);
   const int32_t ci = doc::findClipIndex(t, ref.clip);
   if (ci < 0 || !t.clips[static_cast<size_t>(ci)].audio) return Error{ErrorCode::InvalidArgument, "renderClip: not an audio clip", {}};
   const doc::AudioClip& clip = *t.clips[static_cast<size_t>(ci)].audio;
-  const std::string file = samplePathOf(p, clip.sample);
   if (file.empty()) return Error{ErrorCode::NotFound, "the clip's sample is missing", {}};
-  if (pool_ == nullptr) return Error{ErrorCode::Unsupported, "renderClip: no sample pool", {}};
-  auto sample = pool_->load(pathFromUtf8(file));
+  auto sample = pool.load(pathFromUtf8(file));
   if (!sample) return std::move(sample).error();
   // The track's lowering of this clip (its tuning resolves a Steps transpose), alone: no crossfade.
   const doc::AudioTrackDesc desc = doc::lowerAudioTrack(p, *path);
-  const doc::AudioClipDesc* d = nullptr;
+  const doc::AudioClipDesc* found = nullptr;
   for (const doc::AudioClipDesc& c : desc.clips)
-    if (c.id == clip.id) d = &c;
-  if (d == nullptr) return Error{ErrorCode::NotFound, "renderClip: the clip did not lower", {}};
+    if (c.id == clip.id) found = &c;
+  if (found == nullptr) return Error{ErrorCode::NotFound, "renderClip: the clip did not lower", {}};
+  doc::AudioClipDesc d = *found;
+  if (!cfg.envelope) {  // SX.4: the content only (the waveform multiplies the envelope in at draw time)
+    d.gain = 1.0f;
+    d.fadeIn = d.fadeOut = 0;
+    d.declick = false;
+    d.playable = true;  // a deactivated clip is drawn too
+  }
   engine::AudioTrackDesc one;
   one.id = t.id.value;
-  media::TransientsPtr tr = wantsTransients(*d) ? media::transientCache().find((*sample)->contentHash(), (*sample)->view().frames)
-                                                : nullptr;
-  one.clips.push_back(toEngine(*d, 0, d->playable, tr != nullptr ? std::span<const double>(tr->onsets) : std::span<const double>()));
+  // Beats at transients: the sample's onsets (analysed here when the loader has not yet: this runs off the UI thread).
+  media::TransientsPtr tr;
+  if (wantsTransients(d)) {
+    const media::SampleRef& sr = *sample;
+    tr = media::transientCache().find(sr->contentHash(), sr->view().frames);
+    if (tr == nullptr) {
+      media::TransientRequest q;
+      q.path = sr->path();
+      q.contentHash = sr->contentHash();
+      q.frames = sr->view().frames;
+      const media::SampleView view = sr->view();
+      if (!view.streamed()) q.resident = &view;
+      if (auto got = media::loadOrDetectTransients(q, cfg.cancel)) tr = std::move(*got);
+    }
+  }
+  one.clips.push_back(toEngine(d, 0, d.playable, tr != nullptr ? std::span<const double>(tr->onsets) : std::span<const double>()));
   one.clips.back().crossfadeIn = 0;
   std::vector<engine::ClipSample> samples(1);
   samples[0].pooled = *sample;
   const uint32_t channels = std::min<uint32_t>(2, std::max<uint32_t>(1, (*sample)->view().channels));
   engine::AudioBuildOptions bo;
-  bo.sampleRate = cfg_.sampleRate;
-  bo.edgeDeclick = cfg_.edgeDeclick;
+  bo.sampleRate = cfg.sampleRate;
+  bo.edgeDeclick = cfg.edgeDeclick && cfg.envelope;
   auto img = engine::AudioSequenceImage::build(std::span<const engine::AudioTrackDesc>(&one, 1), std::move(samples),
                                                p.timeline->tempoMap, bo);
   if (!img) return std::move(img).error();
@@ -862,30 +902,34 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
   const engine::AudioSequenceImage::Clip& c = image.clips(0)[0];
   const SampleTime s0 = c.bodyStart, s1 = c.bodyEnd;
   // From the engine block at or before the look-ahead (the voice exists before the clip starts, as in playback).
-  const uint32_t block = cfg_.blockFrames;
-  const auto ahead = static_cast<SampleTime>(std::ceil(cfg_.clipLookaheadSeconds * cfg_.sampleRate));
+  const uint32_t block = std::max<uint32_t>(1, cfg.blockFrames);
+  const auto ahead = static_cast<SampleTime>(std::ceil(cfg.lookaheadSeconds * cfg.sampleRate));
   SampleTime s = std::max<SampleTime>(0, s0 - ahead);
   s -= s % block;
   engine::ClipPlayerConfig pc;
   pc.slots = 1;
   pc.maxBlockFrames = block;
-  pc.sampleRate = cfg_.sampleRate;
+  pc.sampleRate = cfg.sampleRate;
   pc.maxVoices = 8;
   pc.streamBuffers = 2;
-  pc.streams = &pool_->streams();
-  pc.lookaheadSeconds = cfg_.clipLookaheadSeconds;
+  pc.streams = &pool.streams();
+  pc.lookaheadSeconds = cfg.lookaheadSeconds;
   // T6.5: one clip (a Complex one and its fade-out after a swap at most); none for the other modes (L15).
   const bool complex = pq::dsp::warpComplex(c.warp);
   pc.stretchVoices = complex && channels == 2 ? 2u : 0u;
   pc.stretchMonoVoices = complex && channels == 1 ? 2u : 0u;
   pc.stretchCapacity = 0;
   engine::ClipPlayer player(pc);
-  player.setStreamFill(&waitFill, pool_.get());
-  const bool wasEngaged = engaged_;
-  engageDisk(true);
+  player.setStreamFill(&waitFill, &pool);
+  pool.engage();  // refcounted: the playing link's engagement is not touched (any thread)
   std::vector<std::vector<float>> out(channels, std::vector<float>(static_cast<size_t>(std::max<SampleTime>(0, s1 - s0)), 0.0f));
   bool first = true;
+  bool cancelled = false;
   while (s < s1) {
+    if (cfg.cancel != nullptr && cfg.cancel->load(std::memory_order_relaxed)) {
+      cancelled = true;
+      break;
+    }
     const auto n = static_cast<uint32_t>(std::min<SampleTime>(block, s1 - s));
     player.beginBlock(n);
     if (first) {
@@ -895,7 +939,7 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
     }
     player.play(0, s, n);
     player.endBlock();
-    if (player.active()[0] != 0) {
+    if (player.active()[0] != 0 && s + n > s0) {
       const SampleTime a = std::max(s, s0);
       for (uint32_t ch = 0; ch < channels; ++ch) {
         const float* src = player.channels()[ch];
@@ -904,7 +948,8 @@ Result<std::vector<std::vector<float>>> ProjectLink::renderClip(const doc::Proje
     }
     s += n;
   }
-  engageDisk(wasEngaged);
+  pool.disengage();
+  if (cancelled) return Error{ErrorCode::Unknown, "renderClip: cancelled", {}};
   return out;
 }
 

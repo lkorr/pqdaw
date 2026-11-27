@@ -174,6 +174,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_eq_link.cpp  # EQ.4b: the EQ displays in the app wiring (the curve after the circuit opens / closes the EQ; the link's lowering)
     app/test_drop_playback.cpp  # T5.7: a dropped file plays at once (the hover preloads it into the pool)
     app/test_clip_export.cpp  # T5.12: clips rendered for drag-out (== the solo render, WAV files; 60-s clip in perf)
+    app/test_clip_waves.cpp  # SX.4: rendered waveforms (no envelope == the clip player's, cached wave, golden, perf 4-min Beats / Pro)
     app/test_warp_link.cpp  # T6.3: warp modes through the link (Tones in 31-EDO steps, Complex as Tones, Beats transients analysed and cached)
     app/test_device_automation.cpp  # T4.18: device / macro / chain / wire lanes reach the DSP, click-free, idle when stopped
     app/test_sampler_link.cpp  # SM.2: the Sampler's sample through the link (pin, publish, data edits, missing files); SM.5 its stretchers; SM.6 its grain tap
@@ -215,6 +216,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_band_wave_display.cpp  # VZ.6: the feed's band / wave stages, the Band Levels and Waveform faces, scenes
     views/test_bug_report.cpp  # T5.x-bugreport: report.md round trip, the writer, the input ring, the pointer crop
     views/test_samples_ui.cpp  # T5.8: missing samples, relink, Collect All and Save through the ViewContext
+    views/test_rendered_waves.cpp  # SX.4: rendered clip waveforms (key, sync, thread: debounce / cancel / stale / swap, budget, shutdown)
     views/test_waveforms.cpp  # T5.5: the views' waveform overviews (sync / worker + poster, caches, windows)
     views/test_shell.cpp
     views/test_shell_affordances.cpp  # T4.16a: cursors of the shell, headers, mixer, tunings, prefs, MOS wheel; wheel; typed tempo

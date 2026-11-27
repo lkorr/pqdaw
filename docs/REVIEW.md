@@ -2519,3 +2519,12 @@ Per display (how it was drawn → what was wrong → what changed):
   next to the warp Off). Disabled where the panel greys / hides (mode settings outside their mode).
 - Look at: the button's glyph (a disc with four dots); the ring is still ~480 px across and moves away from a clip
   near the window's corner. Seen live in a pqdaw I launched (open, Gain drag, Beats sub-ring).
+
+## 2026-11-27 · SX.4 · time-stretch clips draw their rendered audio (task/SX.4-rendered-warp) 👁
+- Beats / Tones / Texture / Complex / Complex Pro clips in the arrangement (and the project patch view's lanes) are now
+  drawn from their actual render (warp, transpose, markers, the mode's settings), so Beats + transpose shows its
+  re-triggered slices; Off and Re-Pitch keep the source peaks. Gain and fades stay live on top (no re-render).
+- After an edit the render follows ~150 ms after you stop (background thread); meanwhile the previous render (or the
+  source) is shown with a dashed amber line along the bottom of the clip body.
+- Look at: golden `arrangement-audio-rendered` (Beats +7 st beside its Off copy). In the app: change a Beats clip's
+  transpose and watch the swap; is the dashed "rendering" line subtle enough / visible enough?

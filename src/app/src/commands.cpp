@@ -37,6 +37,7 @@
 #include "pq/ui/widget.h"
 #include "pq/ui/window.h"
 #include "pq/views/view_scenes.h"
+#include "pq/app/clip_waves.h"
 #include "pq/app/bug_reporter.h"
 #include "pq/app/pipeline_cache.h"
 #include "pq/app/note_stage_render.h"
@@ -66,6 +67,7 @@ int runScreenshot(const CliOptions& o) {
     else std::fprintf(stderr, "pqdaw: device library: %s\n", lib.error().message.c_str());
   }
   if (view) views::setSceneNotePreviewSource(notePreviewSource());  // AP.8b: the arp preview scene's real render
+  if (view) views::setSceneClipWaveSource(sceneClipWaveSource());  // SX.4: warped clips drawn from their render
   auto img = view ? views::renderViewScene(o.scene, o.project, w, h, scale, {}, devices.get())
                   : renderSceneImage(o.scene, w, h, {}, scale);
   if (!img) {

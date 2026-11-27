@@ -43,6 +43,7 @@ struct Waveforms::Inbox {
 Waveforms::Waveforms(ViewContext& ctx) : ctx_(ctx), inbox_(std::make_shared<Inbox>()) { inbox_->owner = this; }
 
 Waveforms::~Waveforms() {
+  stopRenders();  // SX.4: a running render cancelled, its thread joined
   {
     std::lock_guard<std::mutex> l(inbox_->m);
     inbox_->owner = nullptr;
@@ -331,6 +332,7 @@ void Waveforms::samplesResolved() {
 }
 
 void Waveforms::clear() {
+  clearRenders();  // SX.4
   entries_.clear();
   windowBytes_ = 0;
   ++generation_;

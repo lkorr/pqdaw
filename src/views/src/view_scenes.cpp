@@ -829,6 +829,10 @@ NotePreviewFn& sceneNoteSource() {
   static NotePreviewFn fn;
   return fn;
 }
+ClipWaveFn& sceneClipWaves() {  // SX.4
+  static ClipWaveFn fn;
+  return fn;
+}
 }  // namespace
 
 // A chord (C E G, a whole bar, then E G B) on a track with an Arpeggiator (its defaults): its generated notes drawn as
@@ -1588,6 +1592,33 @@ Status setupClipMenu(Shell& shell, bool beats) {
     (void)m->onPointer(e);
     shell.tree().layoutNow();
   }
+  return Ok{};
+}
+
+// SX.4: rendered waveforms (tests/views/fixtures/audio; needs the app's clip renderer, setSceneClipWaveSource): Drums'
+// first clip Beats +7 st, drawn from its render (the slices re-triggered at the pitch: the glitched shape) beside its Off
+// copy (the second clip: the same file from its start, -6 dB, crossfaded in), zoomed in to show both.
+Status setupArrangementAudioRendered(Shell& shell) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  ViewContext& ctx = shell.context();
+  if (!ctx.waveforms().hasClipRenderer())
+    return Error{ErrorCode::Unsupported, "arrangement-audio-rendered: needs the app's clip renderer (setSceneClipWaveSource)", {}};
+  a->setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), 560.0 / static_cast<double>(kTicksPerWhole));
+  doc::ClipRef c0{};
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && t.clips.size() >= 2) c0 = {t.id, t.clips[0].id};
+  });
+  if (!c0.clip.valid()) return Error{ErrorCode::NotFound, "arrangement-audio-rendered: needs the audio fixture", {}};
+  auto apply = [&](const doc::ops::EditResult& e) -> Status {
+    if (!e) return e.error();
+    return ctx.store().dispatch(e->command);
+  };
+  if (Status st = apply(doc::ops::setAudioClipWarp(*ctx.doc(), std::span<const doc::ClipRef>(&c0, 1), doc::AudioWarp::Beats, 120.0)); !st) return st;
+  doc::AudioTranspose tr;
+  tr.cents = 700.0;
+  if (Status st = apply(doc::ops::setAudioClipTranspose(*ctx.doc(), std::span<const doc::ClipRef>(&c0, 1), tr)); !st) return st;
+  shell.tree().layoutNow();
   return Ok{};
 }
 
@@ -4590,6 +4621,7 @@ constexpr SceneEntry kScenes[] = {
     {"arrangement-audio-warp", 1280, 800, setupArrangementAudioWarp},  // SX.3: the same --project
     {"clip-menu-off", 1280, 800, [](Shell& s) { return setupClipMenu(s, false); }},  // SX.2: the same --project
     {"clip-menu-beats", 1280, 800, [](Shell& s) { return setupClipMenu(s, true); }},  // SX.2
+    {"arrangement-audio-rendered", 1280, 800, setupArrangementAudioRendered},  // SX.4: the same --project (+ the clip renderer)
     {"arrangement-takes", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, false); }},  // T6.10: the same --project
     {"arrangement-comp", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, true); }},    // T6.10
     {"audio-clip-warp-beats", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, false); }},   // T6.8: the same --project
@@ -4653,6 +4685,7 @@ Result<ui::Image> renderViewScene(std::string_view scene, std::string_view proje
   if (!projectDir.empty() && !patchScene)
     if (Status s = ctx.openProject(projectDir); !s) return std::move(s).error();
   ctx.setStatus({});
+  if (sceneClipWaves()) ctx.waveforms().setClipRenderer(sceneClipWaves());  // SX.4: as the app draws warped clips
 
   auto gpu = ui::GpuContext::create(options);
   if (!gpu) return std::move(gpu).error();
@@ -4765,5 +4798,8 @@ std::shared_ptr<const library::Index> browserDemoIndex(std::string_view samplesD
 
 // AP.8b (review L14): the scenes' note-device renderer (view_scenes.h).
 void setSceneNotePreviewSource(NotePreviewFn fn) { sceneNoteSource() = std::move(fn); }
+
+// SX.4: the scenes' clip renderer (view_scenes.h).
+void setSceneClipWaveSource(ClipWaveFn fn) { sceneClipWaves() = std::move(fn); }
 
 }  // namespace pq::views

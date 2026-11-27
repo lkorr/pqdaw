@@ -331,8 +331,10 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
         // only ever drew the overview).
         const double cx0d = std::round(static_cast<double>(body.x0) + (static_cast<double>(c.start()) - origin) * k);
         const arrangement::AudioEnvelope env = arrangement::laneAudioEnvelope(*model, arow, t->clips, ci, p.timeline->tempoMap);
+        // SX.4: a time-stretch clip from its rendered audio (the arrangement's cache).
+        const arrangement::WaveSource src = arrangement::clipWaveSource(view.context().waveforms(), model->shown, t->id, L, nullptr);
         (void)arrangement::paintClipWaveform(dl, view.context().waveforms(), *ov, ac, L, env, p.timeline->tempoMap, k, cx0d, vx0, vx1, by0,
-                                             by1, noteCol, std::max(1.0f, us));
+                                             by1, noteCol, std::max(1.0f, us), src);
       }
     }
   }
