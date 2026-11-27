@@ -7,7 +7,6 @@ set(PQ_VIEWS_ARRANGEMENT_SOURCES
   src/arrangement/automation_follow.cpp  # TL.6: automated controls follow the playhead (Device and band views)
   src/arrangement/automation_paint.cpp
   src/arrangement/automation_tiles.cpp
-  src/arrangement/clip_button.cpp  # SX.2: the clip-menu button on a selected audio clip
   src/arrangement/editing.cpp
   src/arrangement/file_drop.cpp
   src/arrangement/lanes.cpp

@@ -1,12 +1,14 @@
-// SX.2 / SX.5: the clip menu (pq/views/audio_clip/clip_menu.h: a compact popup in bands around the clip) on the audio
-// fixture (tests/views/fixtures/audio): the button on a selected audio clip, Ctrl+Space and the context menu's
-// "Clip Menu…" open it around the clip, centred on the press (real dispatch: window → arrangement → overlay → menu); its
-// controls edit the clip, one undo step each (knob drags, typed transpose, unit chips, warp chips with the chosen mode's
-// settings row, toggles, :2); disabled where the mode ignores a control; the document changing under it refreshes it;
-// the clip deleted / undone away closes it; clips near the window's top / bottom and narrow clips keep it on screen and
-// off the clip. Parity: every control of the clip panel (AudioClipView's cards) but Gain and the fades (the clip's own
-// handles) has a menu counterpart that makes the identical clip. Goldens: the button on a selected clip
-// (arrangement-audio), the menu on an Off clip and on a Beats clip (its settings row).
+// SX.2 / SX.5 / SX.6: the clip popup (pq/views/audio_clip/clip_menu.h: a compact modeless popup in bands around the
+// clip) on the audio fixture (tests/views/fixtures/audio). It is there whenever the selection is exactly one audio clip
+// (real dispatch: window -> arrangement -> overlay -> menu), centred on the press, follows the clip (time scroll, its
+// move), hides during a drag and comes back after, closes on any other selection or the clip deleted; presses beside it
+// reach the arrangement and keys it does not use go there (Delete, the arrows), only a typed entry takes the keyboard;
+// Esc dismisses it until the selection changes, Ctrl+Space toggles it. Its controls edit the clip, one undo step each
+// (knob drags, typed transpose, unit chips, warp chips with the chosen mode's settings row, toggles, :2); disabled where
+// the mode ignores a control; the document changing under it refreshes it; clips near the window's top / bottom and
+// narrow clips keep it on screen and off the clip. Parity: every control of the clip panel (AudioClipView's cards) but
+// Gain and the fades (the clip's own handles) has a menu counterpart that makes the identical clip. Goldens: the popup
+// on an Off clip and on a Beats clip (its settings row).
 
 #include <doctest/doctest.h>
 
@@ -81,10 +83,28 @@ struct Fixture {
     const IRect box = arr->clipRect(r);
     return {arr->xOfTick(static_cast<double>(get(r).start + dt)) + 0.5f, static_cast<float>(box.y + 7)};
   }
-  Vec2 button(const doc::ClipRef& r) {
-    const Rect b = arr->clipMenuButtonRect(r);
-    REQUIRE(b.x1 > b.x0);
-    return {0.5f * (b.x0 + b.x1), 0.5f * (b.y0 + b.y1)};
+  // Whether `p` is on the popup (its band panels): a press there is the popup's.
+  bool onPopup(Vec2 p) {
+    RadialMenu* m = arr->clipMenu();
+    if (!m || !m->visible()) return false;
+    for (int32_t b = 0; b < 2; ++b)
+      if (m->bandRect(b).contains(p)) return true;
+    return false;
+  }
+  // A point on clip `r`'s title strip in the lanes' view and off the popup (a press there is the arrangement's).
+  Vec2 freeTitle(const doc::ClipRef& r) {
+    const IRect lv = arr->lanesViewport();
+    for (Ticks dt = kBar / 8; dt < get(r).length; dt += kBar / 8) {
+      const Vec2 p = title(r, dt);
+      if (p.x > static_cast<float>(lv.x) + 8.0f && p.x < static_cast<float>(lv.right()) - 8.0f && !onPopup(p)) return p;
+    }
+    FAIL("no free spot on the clip's title");
+    return {};
+  }
+  // The centre x of the popup's band `b`.
+  float bandCentre(int32_t b) {
+    const IRect r = menu().bandRect(b);
+    return 0.5f * static_cast<float>(r.x + r.right());
   }
   void settle() {
     d.advance(0.3);  // the open animation
@@ -137,96 +157,220 @@ struct Fixture {
 
 }  // namespace
 
-TEST_CASE("clip menu (SX.2, real dispatch): the button on a selected audio clip, Ctrl+Space and the context menu open it; "
-          "narrow or unselected clips have no button") {
+TEST_CASE("clip popup (SX.6, real dispatch): shown whenever one audio clip is selected; follows the clip, hides during a "
+          "drag, closes on another selection; modeless; Esc / Ctrl+Space") {
   Fixture f;
-  const doc::ClipRef beat = f.clip("Drums", 0), keys = f.clip("Keys", 0);
-  // Unselected: no button.
-  CHECK(f.arr->clipMenuButtonRect(beat).x1 <= f.arr->clipMenuButtonRect(beat).x0);
-  f.d.click(f.title(beat, kBar / 4));
-  REQUIRE(f.arr->selection().clips.size() == 1);
+  const doc::ClipRef beat = f.clip("Drums", 0), vox = f.clip("Vox", 0), keys = f.clip("Keys", 0);
+  CHECK(f.arr->clipMenu() == nullptr);
+
+  // A click on an audio clip selects it and the popup is there, centred on the press, never over the clip, on screen.
   const size_t h0 = f.history();
   const doc::Snapshot before = f.ctx.doc();
-  const Vec2 b = f.button(beat);
-  f.d.move(b);
-  CHECK(f.d.tree().cursor() == Cursor::Pointer);
-  CHECK(f.arr->clipHover().zone == 6);
-  // A press on it opens the menu (no move, no edit; the selection stays).
-  f.d.down(b);
-  f.d.move({b.x - 30.0f, b.y});  // the pointer now belongs to the menu: the clip does not move
-  f.d.up({b.x - 30.0f, b.y});
-  RadialMenu& m = f.menu();
+  const Vec2 p0 = f.title(beat, kBar / 4);
+  f.d.click(p0);
+  REQUIRE(f.arr->selection().clips.size() == 1);
+  REQUIRE(f.arr->clipMenu() != nullptr);
+  CHECK(f.arr->clipPopupShown());
   CHECK(f.ctx.doc() == before);
   CHECK(f.history() == h0);
-  CHECK(f.arr->selection().clips.size() == 1);
   f.settle();
-  // Bands around the clip, centred on the button (where it was clicked), never over the clip, on screen.
-  const IRect box = f.arr->clipRect(beat);
+  RadialMenu& m = f.menu();
   CHECK(m.bands());
   f.checkAround(beat);
-  for (int32_t k = 0; k < 2; ++k) {  // centred on the press, unless clamped at the window's edge
-    const IRect band = m.bandRect(k);
-    CHECK((std::abs(0.5f * static_cast<float>(band.x + band.right()) - b.x) <= 1.0f || band.x <= 5));
-  }
+  for (int32_t k = 0; k < 2; ++k)  // centred on the press, unless clamped at the window's edge
+    CHECK((std::abs(f.bandCentre(k) - p0.x) <= 1.0f || m.bandRect(k).x <= 5));
   CHECK(m.find("gain") < 0);  // the clip's handles edit gain and the fades
   CHECK(m.find("fade-in") < 0);
   CHECK(m.find("fade-out") < 0);
-  CHECK(f.d.press("Escape") != KeyResult::Unhandled);
-  f.d.step();
-  CHECK(f.arr->clipMenu() == nullptr);
-
-  // Ctrl+Space: the selected audio clip's menu.
-  f.d.tree().setFocus(f.arr);
-  CHECK(f.d.press("Ctrl+Space") == KeyResult::Action);
-  REQUIRE(f.arr->clipMenu() != nullptr);
-  f.settle();
-  f.checkAround(beat);
-  f.d.press("Escape");
-  f.d.step();
-  CHECK(f.arr->clipMenu() == nullptr);
-
-  // The context menu's entry ("Clip Menu…", Ctrl+Space) on the clip under the pointer.
-  const Vec2 rc{f.arr->xOfTick(static_cast<double>(kBar) * 0.5), static_cast<float>(box.bottom() - 8)};
-  f.d.click(rc, mod::kNone, PointerButton::Right);
-  f.d.step();
-  f.d.tree().layoutNow();
-  OverlayLayer* layer = OverlayLayer::of(*f.arr);
-  REQUIRE(layer != nullptr);
-  auto* cm = dynamic_cast<Menu*>(layer->top());
-  REQUIRE(cm != nullptr);
-  int32_t entry = -1;
-  for (size_t i = 0; i < cm->items().size(); ++i)
-    if (cm->items()[i].label == "Clip Menu\xE2\x80\xA6") entry = static_cast<int32_t>(i);
-  REQUIRE(entry >= 0);
-  CHECK(cm->items()[static_cast<size_t>(entry)].enabled);
-  CHECK(cm->items()[static_cast<size_t>(entry)].shortcut == "Ctrl+Space");
-  const IRect er = cm->itemRect(entry);
-  f.d.click({static_cast<float>(er.x + er.w / 2), static_cast<float>(er.y + er.h / 2)});
-  f.d.step();
-  REQUIRE(f.arr->clipMenu() != nullptr);
-  f.settle();
-  f.checkAround(beat);
-  {  // centred on the right-click (clamped on screen)
-    const IRect band = f.menu().bandRect(1);
-    CHECK((std::abs(0.5f * static_cast<float>(band.x + band.right()) - rc.x) <= 1.0f || band.x <= 8));
+  CHECK_FALSE(m.focused());  // the keyboard stays with the arrangement
+  // No button: the title's right end is a plain title / edge part.
+  {
+    const IRect box = f.arr->clipRect(beat);
+    f.d.move({static_cast<float>(std::min(box.right(), f.arr->lanesViewport().right())) - 14.0f, static_cast<float>(box.y + 7)});
+    CHECK(f.d.tree().cursor() != Cursor::Pointer);
+    CHECK(f.arr->clipHover().zone != 6);
   }
-  f.d.press("Escape");
-  f.d.step();
 
-  // A MIDI clip has no button (and Ctrl+Space with only it selected does nothing).
-  const IRect kb = f.arr->clipRect(keys);
-  f.d.click({static_cast<float>(kb.x + kb.w / 4), static_cast<float>(kb.y + 7)});
+  // A press beside it goes to the arrangement as if it were not there: on Vox's title it selects Vox, whose popup it is now.
+  const Vec2 pv = f.freeTitle(vox);
+  f.d.click(pv);
   REQUIRE(f.arr->selection().clips.size() == 1);
-  CHECK(f.arr->clipMenuButtonRect(keys).x1 <= f.arr->clipMenuButtonRect(keys).x0);
+  CHECK(f.arr->selection().clips[0].clip == vox.clip);
+  REQUIRE(f.arr->clipMenu() != nullptr);
+  f.settle();
+  f.checkAround(vox);
+  for (int32_t k = 0; k < 2; ++k)
+    CHECK((std::abs(f.bandCentre(k) - pv.x) <= 1.0f || f.menu().bandRect(k).x <= 5 ||
+           f.menu().bandRect(k).right() >= f.d.root()->rect().right() - 5));
+
+  // It follows the clip: scrolled in time, the bands move with it (still centred on the same place in the clip).
+  {
+    const float c0 = f.bandCentre(0), x0 = f.arr->xOfTick(static_cast<double>(kBar));
+    const double origin = f.arr->originTick();
+    f.arr->setTimeView(origin + 0.1 * static_cast<double>(kBar), kPxPerBar / static_cast<double>(kBar));
+    f.d.step();
+    const float dx = f.arr->xOfTick(static_cast<double>(kBar)) - x0;
+    REQUIRE(dx < -20.0f);
+    CHECK(f.bandCentre(0) == doctest::Approx(c0 + dx).epsilon(0.01));
+    f.checkAround(vox);
+    f.arr->setTimeView(origin, kPxPerBar / static_cast<double>(kBar));
+    f.d.step();
+  }
+
+  // A drag hides it; on release it is back, around the moved clip.
+  {
+    const Ticks s0 = f.get(vox).start;
+    const Vec2 a = pv, b{a.x - 0.5f * static_cast<float>(kPxPerBar), a.y};
+    f.d.down(a);
+    CHECK(f.arr->clipPopupShown());  // a press alone does not hide it
+    f.d.move({a.x - 20.0f, a.y});
+    f.d.move({a.x - 80.0f, a.y});
+    CHECK(f.arr->clipMenu() != nullptr);
+    CHECK_FALSE(f.arr->clipPopupShown());
+    f.d.move(b);
+    f.d.up(b);
+    REQUIRE(f.get(vox).start < s0);
+    REQUIRE(f.arr->clipMenu() != nullptr);
+    CHECK(f.arr->clipPopupShown());
+    f.d.step();
+    f.checkAround(vox);
+    REQUIRE(f.ctx.store().undo());
+    f.d.step();
+    f.checkAround(vox);  // undone: back where the clip is
+  }
+
+  // A press on the popup's panel is the popup's (the selection stays).
+  {
+    const IRect band = f.menu().bandRect(1);
+    f.d.click({static_cast<float>(band.x) + 3.0f, static_cast<float>(band.y) + 3.0f});
+    CHECK(f.arr->selection().clips.size() == 1);
+    CHECK(f.arr->clipPopupShown());
+  }
+
+  // Keys it does not use reach the arrangement: Right nudges the clip (the popup follows), Delete deletes it (and the
+  // popup closes); undo.
+  {
+    f.d.tree().setFocus(f.arr);
+    const Ticks s0 = f.get(vox).start;
+    CHECK(f.d.press("Right") == KeyResult::Action);
+    CHECK(f.get(vox).start > s0);
+    f.d.step();
+    f.checkAround(vox);
+    REQUIRE(f.ctx.store().undo());
+    CHECK(f.d.press("Delete") == KeyResult::Action);
+    CHECK(f.find(vox) == nullptr);
+    f.d.step();
+    CHECK(f.arr->clipMenu() == nullptr);
+    REQUIRE(f.ctx.store().undo());
+    f.d.step();
+  }
+
+  // Esc dismisses it (the selection stays); a second Esc deselects. Ctrl+Space toggles it.
+  f.d.click(f.title(beat, kBar / 4));
+  f.d.tree().setFocus(f.arr);
+  REQUIRE(f.arr->clipPopupShown());
+  CHECK(f.d.press("Escape") == KeyResult::Action);
+  f.d.step();
+  CHECK(f.arr->clipMenu() == nullptr);
+  CHECK(f.arr->selection().clips.size() == 1);
+  CHECK(f.d.press("Ctrl+Space") == KeyResult::Action);
+  REQUIRE(f.arr->clipPopupShown());
+  f.settle();
+  f.checkAround(beat);
+  CHECK(f.d.press("Ctrl+Space") == KeyResult::Action);
+  f.d.step();
+  CHECK(f.arr->clipMenu() == nullptr);
+  CHECK(f.d.press("Ctrl+Space") == KeyResult::Action);
+  CHECK(f.arr->clipPopupShown());
+  CHECK(f.d.press("Escape") == KeyResult::Action);
+  CHECK(f.d.press("Escape") == KeyResult::Action);
+  CHECK(f.arr->selection().clips.empty());
+  CHECK(f.arr->clipMenu() == nullptr);
+  // A dismissal lasts until the selection changes: selected again, it is back.
+  f.d.click(f.title(beat, kBar / 4));
+  CHECK(f.arr->clipPopupShown());
+
+  // A click on empty lane space: gone.
+  {
+    const IRect kb = f.arr->clipRect(keys);
+    const Vec2 empty{f.arr->xOfTick(3.0 * static_cast<double>(kBar)), static_cast<float>(kb.y + kb.h / 2)};
+    REQUIRE_FALSE(f.onPopup(empty));
+    f.d.click(empty);
+    CHECK(f.arr->selection().clips.empty());
+    CHECK(f.arr->clipMenu() == nullptr);
+  }
+
+  // Several clips selected: none; one again (Ctrl-click takes the other off): back.
+  f.d.click(f.title(beat, kBar / 4));
+  REQUIRE(f.arr->clipMenu() != nullptr);
+  const Vec2 pv2 = f.freeTitle(vox);
+  f.d.click(pv2, mod::kCtrl);
+  REQUIRE(f.arr->selection().clips.size() == 2);
+  CHECK(f.arr->clipMenu() == nullptr);
+  f.d.tree().setFocus(f.arr);
   CHECK(f.d.press("Ctrl+Space") != KeyResult::Action);
   CHECK(f.arr->clipMenu() == nullptr);
+  f.d.click(pv2, mod::kCtrl);
+  REQUIRE(f.arr->selection().clips.size() == 1);
+  CHECK(f.arr->clipPopupShown());
 
-  // Narrow (zoomed out: the clip under 3 buttons wide): no button, and a press there is a plain title press.
+  // A MIDI clip: none (and Ctrl+Space does nothing). (Vox's popup covers Keys' clip: Esc hides it first.)
+  {
+    CHECK(f.d.press("Escape") == KeyResult::Action);
+    const IRect kb = f.arr->clipRect(keys);
+    Vec2 pk{static_cast<float>(kb.x + 8), static_cast<float>(kb.y + 7)};
+    while (f.onPopup(pk) && pk.x < static_cast<float>(kb.right() - 8)) pk.x += 16.0f;
+    REQUIRE_FALSE(f.onPopup(pk));
+    f.d.click(pk);
+    REQUIRE(f.arr->selection().clips.size() == 1);
+    CHECK(f.arr->clipMenu() == nullptr);
+    CHECK(f.d.press("Ctrl+Space") != KeyResult::Action);
+    CHECK(f.arr->clipMenu() == nullptr);
+  }
+
+  // The context menu has no "Clip Menu…" entry any more.
+  {
+    f.d.click(f.title(beat, kBar / 4));
+    const IRect box = f.arr->clipRect(beat);
+    f.d.click({f.arr->xOfTick(static_cast<double>(kBar) * 0.5), static_cast<float>(box.bottom() - 8)}, mod::kNone, PointerButton::Right);
+    f.d.step();
+    OverlayLayer* layer = OverlayLayer::of(*f.arr);
+    REQUIRE(layer != nullptr);
+    auto* cm = dynamic_cast<Menu*>(layer->top());
+    REQUIRE(cm != nullptr);
+    for (const MenuItem& it : cm->items()) CHECK(it.label.find("Clip Menu") == std::string::npos);
+    f.d.press("Escape");
+    f.d.step();
+  }
+}
+
+TEST_CASE("clip popup (SX.6): a typed entry takes the keyboard and gives it back; a press elsewhere commits it") {
+  Fixture f;
+  const doc::ClipRef beat = f.clip("Drums", 0);
   f.d.click(f.title(beat, kBar / 4));
-  f.arr->setTimeView(-0.05 * static_cast<double>(kBar), 24.0 / static_cast<double>(kBar));
-  f.d.tree().layoutNow();
-  f.d.step();
-  CHECK(f.arr->clipMenuButtonRect(beat).x1 <= f.arr->clipMenuButtonRect(beat).x0);
+  f.settle();
+  RadialMenu& m = f.menu();
+  Widget* had = f.d.tree().focus();
+  REQUIRE(had != nullptr);
+  CHECK(had != &m);
+  f.d.doubleClick(f.at("transpose"));
+  REQUIRE(m.typingIn() == f.item("transpose"));
+  CHECK(m.focused());
+  f.d.type("5/4");
+  CHECK(f.d.press("Enter") != KeyResult::Unhandled);
+  CHECK(f.get(beat).transpose.ratio == tuning::Rational(5, 4));
+  CHECK(m.typingIn() < 0);
+  CHECK(f.d.tree().focus() == had);  // back to the arrangement: its keys work again
+  // Opened again, then a press on the arrangement: the entry commits there, the press does what it does.
+  f.d.doubleClick(f.at("transpose"));
+  REQUIRE(m.typingIn() >= 0);
+  f.d.type("3/2");
+  const doc::ClipRef vox = f.clip("Vox", 0);
+  const Vec2 pv = f.freeTitle(vox);
+  f.d.click(pv);
+  CHECK(f.get(beat).transpose.ratio == tuning::Rational(3, 2));
+  CHECK(f.arr->selection().clips.size() == 1);
+  CHECK(f.arr->selection().clips[0].clip == vox.clip);
 }
 
 TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, one undo step each; the chosen mode's "
@@ -234,7 +378,6 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   Fixture f;
   const doc::ClipRef beat = f.clip("Drums", 0), vox = f.clip("Vox", 0);
   f.d.click(f.title(beat, kBar / 4));
-  f.d.click(f.button(beat));
   f.settle();
   RadialMenu& m = f.menu();
 
@@ -350,7 +493,7 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   CHECK(f.get(beat).warp == doc::AudioWarp::Texture);
   CHECK(m.shown(f.item("flux")));
 
-  // The clip deleted under it: the menu closes (no dangling pointer); undo brings the clip back, the menu stays shut.
+  // The clip deleted under it: the menu closes (no dangling pointer); undo brings the clip back.
   REQUIRE(f.arr->deleteSelection());
   f.d.step();
   CHECK(f.arr->clipMenu() == nullptr);
@@ -360,8 +503,7 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   f.d.step();
 
   // Re-Pitch (Vox): transpose and detune disabled, as in the panel.
-  f.d.click(f.title(vox, kBar / 4));
-  f.d.click(f.button(vox));
+  f.d.click(f.freeTitle(vox));
   f.settle();
   RadialMenu& mv = f.menu();
   CHECK_FALSE(mv.enabledOf(f.item("transpose")));
@@ -372,10 +514,10 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   const Vec2 vt = f.at("transpose");
   f.d.drag(vt, {vt.x, vt.y - 30.0f}, 4);
   CHECK(f.history() == h);
-  // A click outside closes it.
+  // A click outside the arrangement leaves it: the selection decides.
   f.d.click({5.0f, 5.0f});
   f.d.step();
-  CHECK(f.arr->clipMenu() == nullptr);
+  CHECK(f.arr->clipMenu() == &mv);
 }
 
 TEST_CASE("clip menu (SX.5): clips near the window's top / bottom and narrow clips: on screen, never over the clip") {
@@ -383,9 +525,8 @@ TEST_CASE("clip menu (SX.5): clips near the window's top / bottom and narrow cli
     Fixture f(1280, 520);
     const doc::ClipRef beat = f.clip("Drums", 0);
     f.d.click(f.title(beat, kBar / 4));
-    REQUIRE(f.arr->openClipMenu(beat, false) != nullptr);
-    f.d.tree().layoutNow();
-    f.d.step();
+    REQUIRE(f.arr->clipMenu() != nullptr);
+    f.settle();
     f.checkAround(beat);
   }
   SUBCASE("the last audio track, scrolled to the bottom of a short window") {
@@ -394,10 +535,9 @@ TEST_CASE("clip menu (SX.5): clips near the window's top / bottom and narrow cli
     f.arr->scrollToY(1 << 20);
     f.d.tree().layoutNow();
     f.d.step();
-    f.d.click(f.title(vox, kBar / 4));
-    REQUIRE(f.arr->openClipMenu(vox, false) != nullptr);
-    f.d.tree().layoutNow();
-    f.d.step();
+    f.d.click(f.freeTitle(vox));
+    REQUIRE(f.arr->clipMenu() != nullptr);
+    f.settle();
     f.checkAround(vox);
   }
   SUBCASE("a narrow clip (zoomed out): the bands are wider than it, on screen") {
@@ -407,8 +547,7 @@ TEST_CASE("clip menu (SX.5): clips near the window's top / bottom and narrow cli
     f.arr->setTimeView(-0.05 * static_cast<double>(kBar), 24.0 / static_cast<double>(kBar));
     f.d.tree().layoutNow();
     f.d.step();
-    f.d.tree().setFocus(f.arr);
-    REQUIRE(f.d.press("Ctrl+Space") == KeyResult::Action);  // no button on a narrow clip: the shortcut
+    REQUIRE(f.arr->clipPopupShown());  // it follows the zoom
     f.d.step();
     f.checkAround(beat);
     const IRect box = f.arr->clipRect(beat);

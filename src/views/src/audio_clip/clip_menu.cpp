@@ -299,6 +299,7 @@ ui::RadialMenu* openClipMenu(ViewContext& ctx, ui::Widget& from, const ui::IRect
   o.animate = animate;
   o.layout = ui::RadialLayout::Bands;
   o.bandX = atX;
+  o.modeless = true;  // SX.6: presses beside it and keys reach the arrangement
   o.valid = [s] { return s->clip() != nullptr; };
   o.onClosed = [s, user = std::move(onClosed)] {
     s->menu = nullptr;

@@ -183,7 +183,8 @@ RadialItem RadialItem::chips(std::string key, std::vector<RadialChoice> choices,
 RadialMenu::RadialMenu(std::vector<RadialItem> items, Vec2 anchor, RadialMenuOptions options, std::string name)
     : Widget(std::move(name)), anchor_(anchor), options_(std::move(options)) {
   setLayout(LayoutKind::Custom);
-  setFocusable(true);
+  setFocusable(!options_.modeless);  // SX.6: a press on a modeless menu leaves the focus where it is
+  setKeepsFocus(options_.modeless);
   setAcceptsTextInput(true);
   setCursor(Cursor::Arrow);
   flatten(items);
@@ -296,24 +297,50 @@ void RadialMenu::flatten(std::vector<RadialItem>& items) {
   }
 }
 
+namespace {
+
+// `bandX` (a device x in `from`'s tree; NaN stays NaN) where the overlay layer's tree shows it, on the row of `anchor`.
+float mapBandX(const Widget& from, const IRect& anchor, float bandX) noexcept {
+  if (std::isnan(bandX)) return bandX;
+  const IRect x = OverlayLayer::anchorRect(from, {static_cast<int32_t>(std::floor(bandX)), anchor.y, 1, 1});
+  return static_cast<float>(x.x) + 0.5f * static_cast<float>(x.w);
+}
+
+Vec2 centreOfRect(const IRect& a) noexcept {
+  return {static_cast<float>(a.x) + 0.5f * static_cast<float>(a.w), static_cast<float>(a.y) + 0.5f * static_cast<float>(a.h)};
+}
+
+// Whether `w` is in `t` (a linear walk: only when a typed entry of a modeless menu ends, never touching a destroyed one).
+bool inTree(const UiTree& t, const Widget* w) {
+  const Widget* root = t.root();
+  if (!w || !root) return false;
+  std::vector<const Widget*> stack{root};
+  while (!stack.empty()) {
+    const Widget* x = stack.back();
+    stack.pop_back();
+    if (x == w) return true;
+    for (size_t i = 0; i < x->childCount(); ++i) stack.push_back(&x->child(i));
+  }
+  return false;
+}
+
+}  // namespace
+
 RadialMenu* openRadialMenu(Widget& from, const IRect& anchor, std::vector<RadialItem> items, RadialMenuOptions options) {
   OverlayLayer* layer = OverlayLayer::of(from);
   if (!layer) return nullptr;
   const IRect a = OverlayLayer::anchorRect(from, anchor);
-  const Vec2 c{static_cast<float>(a.x) + 0.5f * static_cast<float>(a.w), static_cast<float>(a.y) + 0.5f * static_cast<float>(a.h)};
+  const Vec2 c = centreOfRect(a);
   OverlayOptions o;
   o.anchor = layer->rect();
-  o.placement = Placement::Free;  // the menu covers the layer: it takes every press itself
-  o.dismissOnOutsideClick = true;
-  o.takeFocus = true;
+  o.placement = Placement::Free;  // the menu covers the layer: it takes every press itself (modeless: only its own parts)
+  o.dismissOnOutsideClick = !options.modeless;
+  o.takeFocus = !options.modeless;
   o.onClosed = std::move(options.onClosed);
   options.onClosed = nullptr;
   if (options.layout == RadialLayout::Bands) {  // SX.5: the bands hug the anchor, centred on bandX (mapped like it)
     options.around = a;
-    if (!std::isnan(options.bandX)) {
-      const IRect x = OverlayLayer::anchorRect(from, {static_cast<int32_t>(std::floor(options.bandX)), anchor.y, 1, 1});
-      options.bandX = static_cast<float>(x.x) + 0.5f * static_cast<float>(x.w);
-    }
+    options.bandX = mapBandX(from, anchor, options.bandX);
   }
   auto m = std::make_unique<RadialMenu>(std::move(items), c, std::move(options), layer->uniqueName("radial-menu"));
   auto& menu = static_cast<RadialMenu&>(layer->open(std::move(m), std::move(o)));
@@ -1009,6 +1036,36 @@ int32_t RadialMenu::bubbleAt(Vec2 p) const noexcept {
   return -1;
 }
 
+void RadialMenu::moveAround(const Widget& from, const IRect& anchor, float atX) {
+  if (closed_ || options_.layout != RadialLayout::Bands) return;
+  const IRect a = OverlayLayer::anchorRect(from, anchor);
+  const float x = mapBandX(from, anchor, atX);
+  const bool sameX = std::isnan(x) ? std::isnan(options_.bandX) : x == options_.bandX;
+  if (a == options_.around && sameX) return;
+  options_.around = a;
+  options_.bandX = x;
+  anchor_ = centreOfRect(a);
+  if (tree() && !laidOutFor_.empty()) relayout();  // damages the old and the new bounds
+}
+
+bool RadialMenu::hitsAt(Vec2 p) const noexcept {
+  if (!options_.modeless) return true;
+  if (closed_) return false;
+  if (tree() && tree()->dragging()) return false;  // drag and drop (files, clips) reaches what is under it
+  if (bubbleAt(p) >= 0) return true;
+  if (bands_)
+    for (const IRect& r : bandRect_)
+      if (r.contains(p)) return true;
+  return false;
+}
+
+void RadialMenu::onHoverChanged(bool hovered) {
+  // Modeless: the pointer left for what is under it; nothing stays highlighted (a covering menu never loses it).
+  if (hovered || !options_.modeless || closed_ || hi_ < 0) return;
+  hi_ = -1;
+  relayout();
+}
+
 void RadialMenu::close() {
   if (closed_) return;
   finishAll(true);  // a running gesture ends (one undo step); a typed entry commits
@@ -1188,6 +1245,11 @@ void RadialMenu::beginTypeIn(int32_t node) {
   typeIn_.selectAll();
   typing_ = node;
   damage(bbox_);
+  if (options_.modeless && tree() && !focused()) {  // SX.6: the entry takes the keyboard while it is open
+    restoreFocus_ = tree()->focus();
+    setFocusable(true);
+    tree()->setFocus(this);
+  }
 }
 
 void RadialMenu::endTypeIn(bool commit) {
@@ -1195,6 +1257,12 @@ void RadialMenu::endTypeIn(bool commit) {
   const int32_t node = typing_;
   typing_ = -1;
   damage(bbox_);
+  if (options_.modeless && focused() && tree()) {  // SX.6: the keyboard back to where it was (if that still exists)
+    Widget* r = restoreFocus_;
+    restoreFocus_ = nullptr;
+    setFocusable(false);
+    tree()->setFocus(inTree(*tree(), r) ? r : nullptr);
+  }
   if (!commit) return;
   const Node& n = nodes_[static_cast<size_t>(node)];
   const RadialBinding* b = bindingOf(node);
@@ -1242,6 +1310,8 @@ void RadialMenu::onTimer(uint32_t id) {
 }
 
 void RadialMenu::onFocusChanged(bool focused) {
+  if (!focused) restoreFocus_ = nullptr;  // focus went elsewhere: an entry ending now gives nothing back
+  if (!focused && options_.modeless) setFocusable(false);
   if (!focused) finishAll(true);  // the layer closed it (or focus was taken): nothing stays half done
 }
 
@@ -1313,7 +1383,7 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
       if (typing_ >= 0) endTypeIn(true);  // a press anywhere commits the typed entry
       if (closed_) return true;
       if (e.button != PointerButton::Left) {
-        close();
+        if (!options_.modeless) close();  // modeless: the opener closes it
         return true;
       }
       const int32_t b = bubbleAt(e.pos);
@@ -1321,8 +1391,8 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
         for (const IRect& r : bandRect_)
           if (r.contains(e.pos)) return true;  // a band's panel between its items: nothing
       }
-      if (b < 0) {  // a press that misses every bubble: an outside click
-        close();
+      if (b < 0) {  // a press that misses every bubble: an outside click (modeless: it never gets one)
+        if (!options_.modeless) close();
         return true;
       }
       const Bubble& bb = bubbles_[static_cast<size_t>(b)];
@@ -1426,6 +1496,7 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
 }
 
 bool RadialMenu::onKey(const KeyEvent& e) {
+  if (options_.modeless && typing_ < 0) return false;  // SX.6: keys belong to the focused widget under it
   if (!e.down) return true;
   ensureLayout();
   if (closed_) return true;
@@ -1548,6 +1619,7 @@ bool RadialMenu::onKey(const KeyEvent& e) {
 }
 
 bool RadialMenu::onText(const TextEvent& e) {
+  if (options_.modeless && typing_ < 0) return false;
   if (closed_) return true;
   const std::string_view t = e.text();
   for (const char c : t)

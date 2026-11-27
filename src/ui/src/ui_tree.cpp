@@ -498,7 +498,7 @@ Widget* UiTree::hitRec(Widget& w, Vec2 p) const noexcept {
   if (!w.visible() || !w.rect_.contains(p)) return nullptr;
   for (size_t i = w.children_.size(); i-- > 0;)  // last child is on top
     if (Widget* h = hitRec(*w.children_[i], p)) return h;
-  return w.hittable() ? &w : nullptr;
+  return w.hittable() && w.hitsAt(p) ? &w : nullptr;
 }
 
 Widget* UiTree::hitTest(Vec2 p) const noexcept { return root_ ? hitRec(*root_, p) : nullptr; }
@@ -623,8 +623,8 @@ bool UiTree::dispatchPointer(const PointerEvent& e) {
   Widget* target = hovered_;
   if (e.type == PointerType::Down) {
     Widget* f = target;
-    while (f && !canFocus(*f)) f = f->parent_;
-    setFocus(f);
+    while (f && !canFocus(*f) && !f->keepsFocus()) f = f->parent_;
+    if (!f || !f->keepsFocus() || canFocus(*f)) setFocus(f);
   }
   return bubblePointer(target, e);
 }

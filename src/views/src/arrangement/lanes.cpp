@@ -493,6 +493,7 @@ bool LaneCanvas::onPointer(const PointerEvent& e) {
     // T4.16b: the hover highlight follows the pointer between gestures (a press clears it; after a release it shows
     // what the next press would grab).
     if (e.type == PointerType::Move || e.type == PointerType::Up) updateHover();
+    view_.editor().dragStateChanged();  // SX.6: the clip popup hides while a drag runs, and comes back after it
     return handled;
   }
   if (e.mods & mod::kCtrl) {
@@ -514,6 +515,7 @@ void LaneCanvas::onCaptureLost() {
   view_.comper().abortDrag();
   view_.editor().abortDrag();
   view_.automation().abortDrag();
+  view_.editor().dragStateChanged();
 }
 
 void LaneCanvas::onHoverChanged(bool hovered) {
