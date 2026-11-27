@@ -2493,6 +2493,7 @@ Per display (how it was drawn → what was wrong → what changed):
   growing the ring. Sub-ring bubbles keep MX.1's one size per depth.
 - Look at: ring 0 is large with three knobs (≈ 420 px across for 11 items); is the knob size (2× a leaf bubble) right?
   Not seen in the app: nothing opens a control menu until SX.2 (headless goldens only).
+
 ## 2026-11-27 · SX.3 · the waveform shows what plays (task/SX.3-waveform-truth) 👁
 - Audio clips in the arrangement (and the project patch lane windows) draw their waveform multiplied by the clip's
   gain, fades (their curves) and crossfades, by the clip player's own law; the grey fade shading is gone (curve line and
