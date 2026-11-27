@@ -280,39 +280,34 @@ void ValueControl::setSpec(ValueSpec spec) {
   markDirty();
 }
 
-void ValueControl::refreshText() {
-  if (formatter) {
-    text_ = formatter(value_);
-    return;
-  }
-  double v = value_;
-  const double half = 0.5 * std::pow(10.0, -spec_.decimals);
+std::string formatValue(double v, const ValueSpec& spec) {
+  const double half = 0.5 * std::pow(10.0, -spec.decimals);
   if (std::fabs(v) < half) v = 0.0;  // no "-0.00"
   char buf[64];
-  std::snprintf(buf, sizeof buf, "%.*f", std::clamp(spec_.decimals, 0, 9), v);
-  text_ = buf;
-  if (!spec_.unit.empty()) {
-    text_ += ' ';
-    text_ += spec_.unit;
+  std::snprintf(buf, sizeof buf, "%.*f", std::clamp(spec.decimals, 0, 9), v);
+  std::string text = buf;
+  if (!spec.unit.empty()) {
+    text += ' ';
+    text += spec.unit;
   }
+  return text;
 }
 
-std::optional<double> ValueControl::parse(std::string_view s) const {
-  if (parser) return parser(s);
+std::optional<double> parseValue(std::string_view s, const ValueSpec& spec) {
   auto trim = [](std::string_view x) {
-    while (!x.empty() && (x.front() == ' ' || x.front() == '\t')) x.remove_prefix(1);
-    while (!x.empty() && (x.back() == ' ' || x.back() == '\t')) x.remove_suffix(1);
+    while (!x.empty() && (x.front() == ' ' || x.front() == '	')) x.remove_prefix(1);
+    while (!x.empty() && (x.back() == ' ' || x.back() == '	')) x.remove_suffix(1);
     return x;
   };
   s = trim(s);
-  if (!spec_.unit.empty() && s.size() >= spec_.unit.size()) {
-    const std::string_view tail = s.substr(s.size() - spec_.unit.size());
+  if (!spec.unit.empty() && s.size() >= spec.unit.size()) {
+    const std::string_view tail = s.substr(s.size() - spec.unit.size());
     bool same = true;
     for (size_t i = 0; i < tail.size(); ++i) {
       const auto lower = [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; };
-      same = same && lower(tail[i]) == lower(spec_.unit[i]);
+      same = same && lower(tail[i]) == lower(spec.unit[i]);
     }
-    if (same) s = trim(s.substr(0, s.size() - spec_.unit.size()));
+    if (same) s = trim(s.substr(0, s.size() - spec.unit.size()));
   }
   if (s.empty()) return std::nullopt;
   if (s.front() == '+') s.remove_prefix(1);
@@ -320,6 +315,14 @@ std::optional<double> ValueControl::parse(std::string_view s) const {
   const auto r = std::from_chars(s.data(), s.data() + s.size(), v);
   if (r.ec != std::errc{} || r.ptr != s.data() + s.size()) return std::nullopt;
   return v;
+}
+
+void ValueControl::refreshText() {
+  text_ = formatter ? formatter(value_) : formatValue(value_, spec_);
+}
+
+std::optional<double> ValueControl::parse(std::string_view s) const {
+  return parser ? parser(s) : parseValue(s, spec_);
 }
 
 double ValueControl::keyStep() const noexcept {

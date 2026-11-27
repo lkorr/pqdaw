@@ -210,6 +210,11 @@ struct ValueSpec {
   std::string unit;           // default formatter: appended after a space ("dB", "Hz", "%")
 };
 
+// The value controls' default display text (fixed `decimals`, then " unit") and type-in parser (a decimal number,
+// optionally followed by the unit, case-insensitive; a leading '+' is allowed). Shared with ui::RadialMenu's controls.
+std::string formatValue(double v, const ValueSpec& spec);
+std::optional<double> parseValue(std::string_view text, const ValueSpec& spec);
+
 // Shared value model, gestures and keys of DragBox, Fader and Knob. Keys when focused: Up/Down (+Shift: fine)
 // step, Delete / Backspace = default (Live's "Delete returns a parameter to its default").
 // Mouse wheel over the control (T4.16a; Knob / Fader / DragBox call handleWheel, subclasses with their own onPointer

@@ -2481,3 +2481,15 @@ Per display (how it was drawn → what was wrong → what changed):
 ## 2026-11-24 · OP.2 · meters and visualisers at 30 Hz (task/OP.2-animation-rate) 👁
 - Meters, visualiser faces, analysers, modulation rings and cable glow redraw on one shared 30 Hz tick (33.3 Hz on a 100 Hz display); Preferences → Display → Meter & Visualiser Rate: 30 Hz | 60 Hz (50 Hz on a 100 Hz display). The playhead and drags stay at the display's rate.
 - Look at: are the scopes / spectrum fluid enough at 30 Hz? Do meters fall as before? Not looked at live beyond frame counting.
+
+## 2026-11-27 · SX.1 · the radial menu hosts controls (task/SX.1-radial-controls) 👁
+- `ui::RadialMenu` items can now be knobs, sliders, chip groups and toggles that edit a value and keep the menu open
+  (pick leaves still pick and close). Goldens `tests/ui/golden/radial-controls*.png` (1x, 2x): a clip-like menu with
+  Gain / Detune knobs pinned on top (Detune disabled), mode chips left and right (Beats chosen, its sub-ring open with
+  a Grain slider and Preserve chips), a Transpose knob pinned below, Reverse on, a Fade In slider; and the Transpose
+  knob's typed entry.
+- Decided: knob double-click = typed entry (the plan says so; the panels' knobs reset on double-click), Alt-click
+  resets; a slider's double-click resets. Pins are preferred angles: a crowded side spreads its neighbours rather than
+  growing the ring. Sub-ring bubbles keep MX.1's one size per depth.
+- Look at: ring 0 is large with three knobs (≈ 420 px across for 11 items); is the knob size (2× a leaf bubble) right?
+  Not seen in the app: nothing opens a control menu until SX.2 (headless goldens only).
