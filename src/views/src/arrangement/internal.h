@@ -159,9 +159,10 @@ struct AudioTile {
   int32_t bodyH = 0;
   uint64_t built = 0;  // the overview's builtFrames when rendered
   AudioEnvelope env;
+  const void* src = nullptr;  // SX.4: the overview it was rasterised from (the sample's, or a rendered waveform's)
   PreviewTile::State state = PreviewTile::State::None;
-  bool matches(double k2, int32_t bodyH2, uint64_t built2, const AudioEnvelope& env2) const noexcept {
-    return k == k2 && bodyH == bodyH2 && built == built2 && env == env2;
+  bool matches(double k2, int32_t bodyH2, uint64_t built2, const AudioEnvelope& env2, const void* src2) const noexcept {
+    return k == k2 && bodyH == bodyH2 && built == built2 && env == env2 && src == src2;
   }
 };
 
@@ -177,7 +178,8 @@ struct AudioLayout {
   double fpt = 0.0;                 // warped: source frames per content tick (the implied segment)
   double fptMin = 0.0;              // warped: the least slope of the warp law (its markers' segments, or fpt)
   double startSec = 0.0;            // Off: tau(start)
-  bool constantTempo = true;        // Off: one tempo over the whole song (the clip is one linear piece)
+  bool constantTempo = true;        // one tempo over the whole song (an Off or rendered clip is one linear piece)
+  uint64_t renderKey = 0;           // SX.4: views::clipRenderKey (0: drawn from the source: Off, Re-Pitch)
   uint64_t lastUsed = 0;
   AudioTile tile;
 };
@@ -267,6 +269,41 @@ void forEachAudioPiece(const doc::AudioClip& c, const AudioLayout& L, const Temp
   });
 }
 
+// SX.4: where a clip's waveform is drawn from: its sample's overview mapped through the clip (forEachAudioPiece), or its
+// rendered audio (Waveforms::rendered; frame j = song sample ticksToSamples(start) + j: forEachRenderedPiece).
+struct WaveSource {
+  const RenderedWave* rendered = nullptr;
+  const doc::Snapshot* doc = nullptr;  // the snapshot it was looked up in (a deep zoom's re-render of dropped frames)
+  doc::ClipRef ref;
+};
+
+// SX.4: the pieces of a rendered clip's waveform (frames at `rate` from its start) meeting clip-local [xFrom, xTo): one
+// under a single tempo, else pieces of 32 px whose ends are exact (the tempo map). Never mirrored (the render is).
+template <class F>
+void forEachRenderedPiece(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, double rate, double k, double xFrom,
+                          double xTo, F&& f) {
+  const double W = static_cast<double>(c.length) * k;
+  xFrom = std::max(0.0, xFrom);
+  xTo = std::min(W, xTo);
+  if (!(xTo > xFrom) || !(k > 0.0)) return;
+  const auto s0 = static_cast<double>(tm.ticksToSamples(c.start, rate));
+  auto at = [&](double x) {
+    const double tick = static_cast<double>(c.start) + x / k;
+    const double t0 = std::floor(tick);
+    const double a = tm.ticksToSeconds(static_cast<Ticks>(t0)), b = tm.ticksToSeconds(static_cast<Ticks>(t0) + 1);
+    return (a + (b - a) * (tick - t0)) * rate - s0;
+  };
+  if (L.constantTempo) {
+    f(AudioPiece{xFrom, xTo, at(xFrom), at(xTo), false});
+    return;
+  }
+  constexpr double kStep = 32.0;
+  for (double xa = std::floor(xFrom / kStep) * kStep; xa < xTo; xa += kStep) {
+    const double a = std::max(xa, xFrom), b = std::min(xa + kStep, xTo);
+    f(AudioPiece{a, b, at(a), at(b), false});
+  }
+}
+
 // WF.1: the waveform of clip `c` (layout L, device px per tick k) drawn directly over the device columns [vx0, vx1),
 // its left edge at device x `cx0` (a double: at deep zoom it is far outside the view): its linear pieces through
 // ui::drawWaveform, scaled by the clip gain; below the overview's resolution the samples under the columns (a window
@@ -276,10 +313,14 @@ struct ClipWaveStats {
   uint32_t columns = 0, dots = 0;
   bool approx = false, samples = false, curve = false;
 };
-// SX.3: multiplied by the clip's envelope `env` (its fades and crossfades) per device column, at draw time.
+// SX.3: multiplied by the clip's envelope `env` (its fades and crossfades) per device column, at draw time. SX.4: from
+// `src.rendered` when set (`ov` is then not read), else the sample's overview `ov` mapped through the clip.
 ClipWaveStats paintClipWaveform(ui::DrawList& dl, Waveforms& waveforms, const media::WaveformOverview& ov, const doc::AudioClip& c,
                                 const AudioLayout& L, const AudioEnvelope& env, const TempoMap& tm, double k, double cx0, float vx0,
-                                float vx1, float by0, float by1, ui::Rgba col, float lineWidth);
+                                float vx1, float by0, float by1, ui::Rgba col, float lineWidth, const WaveSource& src = {});
+// SX.4: the source a clip in a lane (`row`'s track) is drawn from now: its rendered waveform (or an older render while a
+// new one renders, `rendering` set) for a time-stretch clip whose renderer is installed, else its sample.
+WaveSource clipWaveSource(Waveforms& waveforms, const doc::Snapshot& shown, doc::TrackId track, const AudioLayout& L, bool* rendering);
 
 // Fade lengths in device px as the clip player plays them (clamped: the fade-in first, then the fade-out).
 struct AudioFadesPx {

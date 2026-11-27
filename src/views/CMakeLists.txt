@@ -31,6 +31,7 @@ set(PQ_VIEWS_SOURCES
   src/computer_keyboard.cpp
   src/view_scenes.cpp
   src/waveforms.cpp
+  src/rendered_waves.cpp  # SX.4: rendered clip waveforms (the render thread, the cache)
   src/sample_analysis.cpp
   src/file_probes.cpp
   src/note_preview.cpp  # AP.7: the roll preview's worker

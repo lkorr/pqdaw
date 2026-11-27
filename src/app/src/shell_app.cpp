@@ -2,6 +2,7 @@
 
 #include "pq/app/midi_input.h"
 #include "pq/app/note_stage_render.h"
+#include "pq/app/clip_waves.h"
 #include "pq/views/note_preview.h"
 
 #include <algorithm>
@@ -289,6 +290,8 @@ Result<std::unique_ptr<ShellApp>> ShellApp::create(ui::UiTree& tree, SDL_Window*
       app->ctx_->notePreviews().setSource(app::notePreviewSource(), [lk] {  // AP.8b: read with every request
         return views::NoteRenderConfig{lk->sampleRate(), lk->chanceSeed(), lk->config().blockFrames};
       });
+      // SX.4: time-stretch clips drawn from their render (the link's pool and settings, on the waveform cache's thread).
+      app->ctx_->waveforms().setClipRenderer(app::clipWaveSource(*lk), [lk] { return app::clipWaveConfig(*lk); });
     }
     if (!o.project.empty()) std::printf("pqdaw: project sequences and params to the engine in %.1f ms (units compile on the worker)\n", msSinceMainEntry() - t1);
     if (views::MixerView* mixer = views::findMixer(*app->shell_)) mixer->setMeterSource(app->link_.get());
@@ -460,6 +463,7 @@ ShellApp::~ShellApp() {
   if (ctx_) ctx_->setExportPort(nullptr);
   if (ctx_) ctx_->setRenderEditPort(nullptr);
   renderEdits_.reset();  // FZ.4: a running render is cancelled (its files deleted) and its thread joined
+  if (ctx_) ctx_->waveforms().setClipRenderer({});  // SX.4: a running clip render cancelled, its thread joined (it uses the link)
   export_.reset();  // EX.2: a running export is cancelled (its temp files deleted) and its thread joined
   if (ctx_) ctx_->setDeviceLibrary(nullptr);  // the link owns it
   if (ctx_) ctx_->setModulationSource(nullptr);

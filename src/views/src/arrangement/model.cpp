@@ -257,7 +257,6 @@ AudioLayout makeAudioLayout(const doc::Project& p, doc::TrackId track, const doc
   if (clip->warp == doc::AudioWarp::Off) {
     if (const std::optional<doc::TrackPath> path = doc::findTrack(p, track)) L.ratio = doc::audioRateRatio(p, *path, *clip);
     L.startSec = p.timeline->tempoMap.ticksToSeconds(clip->start);
-    L.constantTempo = p.timeline->tempo.size() == 1;
   } else {
     L.fpt = doc::framesPerContentTick(L.rate, clip->sourceBpm);
     // SX.3: the finest detail the marker law reads at (the level of detail of the whole clip).
@@ -268,6 +267,8 @@ AudioLayout makeAudioLayout(const doc::Project& p, doc::TrackId track, const doc
     }
     if (!(L.fptMin > 0.0 && L.fptMin < 1e300)) L.fptMin = L.fpt;
   }
+  L.constantTempo = p.timeline->tempo.size() == 1;
+  L.renderKey = clipRenderKey(p, track, *clip);  // SX.4 (0 for Off and Re-Pitch)
   return L;
 }
 
