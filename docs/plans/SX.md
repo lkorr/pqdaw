@@ -86,3 +86,23 @@ Extend the general radial menu (not clip-specific) so an item can be a CONTROL, 
 - Tests: rendered waveform == offline render of the clip (frames, without envelope); cache key changes on each param;
   cancellation; edits during a render. Golden: a Beats clip transposed +7 st (glitched shape) next to its Off copy.
   Live check in the worker's own instance. REVIEW entry.
+
+## SX.5 Clip menu as a compact popup around the clip (ui + views) 👁 · w1 (user 2026-11-27, after seeing SX.2)
+User: "gain and the fade ins can be removed (already on the clip itself). Instead of a complete circle that grows to
+fill half the screen, condense it around the clip, above and below: more rectangular, warp mode options on top,
+transpose stuff below; a clean popup only surrounding the clip, around where it was clicked."
+- **Remove** Gain, Fade In, Fade Out from the clip menu (the clip's handles edit them). The parity test covers the
+  panel's other controls.
+- **Layout**: two bands hugging the clip's rectangle (clamped on screen, centred horizontally on the click x):
+  ABOVE: the 7 warp-mode chips in one row (Off · Re-Pitch | Beats · Tones · Texture · Complex · Pro), and directly
+  above that, the selected time-stretch mode's settings row (Beats: Preserve chips, Transient Loop chips, Envelope;
+  Tones: Grain; Texture: Grain, Flux; Pro: Formants, Envelope; nothing for Off / Re-Pitch / Complex) — no hover
+  sub-rings. BELOW: Transpose (knob/value + stp / ¢ / n/d), Detune, Reverse, then BPM (:2 / ×2, typed) and Loop.
+  Compact: widths about the clip's / the controls' natural size, not a ring; no part covers the clip itself.
+- **Implementation**: reuse SX.1's control items and bindings (same `RadialBinding`, chips / knob / slider / toggle
+  painting and gestures), as a band layout of the same general ui menu or a sibling general ui widget sharing them
+  — no clip-specific code in ui, no duplicated control code. If the radial ring layout then has no caller besides
+  Math / panel menus, keep it for them.
+- Tests: real dispatch (button, Ctrl+Space, context entry), each control one undo step, mode switch shows the right
+  settings row, clip near the window top / bottom (bands flip / clamp, never off screen), narrow clip. Goldens:
+  re-record clip-menu-off / -beats (look at each).
