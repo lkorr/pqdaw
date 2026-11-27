@@ -106,3 +106,18 @@ transpose stuff below; a clean popup only surrounding the clip, around where it 
 - Tests: real dispatch (button, Ctrl+Space, context entry), each control one undo step, mode switch shows the right
   settings row, clip near the window top / bottom (bands flip / clamp, never off screen), narrow clip. Goldens:
   re-record clip-menu-off / -beats (look at each).
+
+## SX.6 The clip popup shows whenever one audio clip is selected; no button (views) 👁 · w1 (user 2026-11-27)
+User: "make it so the popup is there if you select a clip, not just if you press the tiny button; remove the button."
+- Delete the title-strip button (paint, hit zone, tests, goldens) and the "Clip Menu…" context entry.
+- The popup opens when the selection becomes exactly one audio clip (click, Tab/arrow selection, undo restoring it),
+  centred on the press x (else the clip's visible centre), and follows the clip (scroll, zoom, track height, the clip
+  moving). Hidden while any drag runs (move, resize, fade / gain handle, range, rubber band, loop / marker edits) and
+  shown again after it ends if the selection is still that one clip. Closed when the selection changes (several
+  clips, a note clip, nothing) or the clip is deleted.
+- Non-modal: a press outside the popup goes to the arrangement as if the popup weren't there (no swallowed click);
+  keys the popup doesn't use (Delete, Ctrl+C / D, arrows on clips, Space play) go to the arrangement; only a typed
+  entry in a popup control takes the keyboard. Esc hides it until the selection changes; Ctrl+Space toggles it.
+- Tests (real dispatch): select → shown; click another clip → moves to it; drag → hidden, release → shown; click
+  empty → gone; press through outside it hits the clip underneath; Delete with it shown deletes the clip; Esc /
+  Ctrl+Space; multi-select → none. Goldens: re-record those the button was in (look at each).
