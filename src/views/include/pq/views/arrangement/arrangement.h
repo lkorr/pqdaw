@@ -469,6 +469,11 @@ public:
   // an audio clip on a row, or too small for handles). ClipHover::zone is 3 / 4 / 5 over them.
   enum class AudioHandle : uint8_t { FadeIn, FadeOut, Gain };
   ui::Rect audioHandleRect(const doc::ClipRef& clip, AudioHandle which) const noexcept;
+  // SX.3 (tests): the factor an audio clip on a row draws its waveform with at (fractional) tick t — the clip gain times
+  // its fades and crossfades, the clip player's law — and the source frame drawn there (its warp markers' law), NaN
+  // when it is not an audio clip on a row or t is outside it.
+  double audioEnvelopeAt(const doc::ClipRef& clip, double t) const;
+  double audioDrawnFrameAt(const doc::ClipRef& clip, double t) const;
   // T4.16b: the clip part highlighted under the pointer (the one a press would grab): zone −1 / +1 an edge, 0 the
   // title strip; an invalid clip when none.
   struct ClipHover {

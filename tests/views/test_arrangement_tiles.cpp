@@ -7,10 +7,12 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iterator>
 #include <memory>
 #include <ostream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -478,6 +480,90 @@ TEST_CASE("render: audio clips — partial repaints equal a full repaint; tiles 
   if (diff.pixelsOverTolerance > 64) {
     (void)writePng("audio.tiles.png", a);
     (void)writePng("audio.direct.png", b);
+  }
+  CHECK_MESSAGE(diff.pixelsOverTolerance <= 64, diff.pixelsOverTolerance << " px differ");
+  (void)rig.drawFull(*rig.partial, rig.res);
+  CHECK(rig.gpu->validationErrorCount() == 0);
+}
+
+// SX.3: the waveform is drawn through the clip's envelope (fades, crossfades). A fade-handle drag builds no waveform tile
+// per frame (the dragged clip draws directly, the envelope applied per column), one when it is released; tiles drawn
+// with an envelope match the direct path. Logs the frame cost of the drag against the same edits outside a drag (a
+// tile rebuilt every frame: how a drag ran before SX.3).
+TEST_CASE("render (SX.3): a fade drag builds no tile per frame, one on release; envelope tiles match direct drawing") {
+  Rig rig(1280, 800, 1.0f, "audio");
+  rig.install();
+  ArrangementView& arr = *rig.arr;
+  arr.setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), 120.0 / static_cast<double>(kTicksPerWhole));
+  const auto& st = arr.stats();
+  doc::ClipRef first{};
+  doc::forEachTrack(*rig.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && !t.clips.empty()) first = {t.id, t.clips[0].id};
+  });
+  REQUIRE(first.clip.valid());
+  arr.selectClips(std::span<const doc::ClipRef>(&first, 1), false);
+  rig.settle();
+  (void)rig.drawFull(*rig.partial, rig.res);
+  CHECK(st.tilesDrawn > 0);
+  const Rect hr = arr.audioHandleRect(first, ArrangementView::AudioHandle::FadeIn);
+  REQUIRE(hr.x1 > hr.x0);
+  PointerEvent e;
+  e.type = PointerType::Move;
+  e.pos = {0.5f * (hr.x0 + hr.x1), 0.5f * (hr.y0 + hr.y1)};
+  rig.tree.dispatchPointer(e);
+  rig.frame();
+  e.type = PointerType::Down;
+  e.button = PointerButton::Left;
+  e.clickCount = 1;
+  rig.tree.dispatchPointer(e);
+  rig.frame();
+  const uint64_t built0 = st.tilesBuilt;
+  const auto wallUs = [] { return std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+  std::vector<double> drag, edits;
+  e.type = PointerType::Move;
+  for (int i = 0; i < 24; ++i) {
+    e.pos.x += 2.0f;
+    rig.tree.dispatchPointer(e);
+    const double t0 = wallUs();
+    rig.frame();
+    drag.push_back(wallUs() - t0);
+  }
+  CHECK(st.tilesBuilt == built0);
+  CHECK(arr.stats().wavesDirect > 0);
+  rig.comparePartial("sx3-dragging");
+  e.type = PointerType::Up;
+  rig.tree.dispatchPointer(e);
+  rig.settle();
+  CHECK(st.tilesBuilt > built0);
+  CHECK(st.tilesBuilt <= built0 + 2);
+  (void)rig.drawFull(*rig.partial, rig.res);  // the next paint draws the new tile
+  CHECK(st.tilesMissing == 0);
+  // The same kind of edit outside a drag, one per frame: each frame rebuilds the clip's tile.
+  for (int i = 0; i < 24; ++i) {
+    const doc::Track* t = doc::findTrackPtr(*rig.ctx.doc(), first.track);
+    const doc::AudioClip& c = *t->clips[static_cast<size_t>(doc::findClipIndex(*t, first.clip))].audio;
+    auto r = doc::ops::setAudioClipFades(*rig.ctx.doc(), first, {c.fadeIn.length + kTicksPerWhole / 120, c.fadeIn.curve}, c.fadeOut);
+    REQUIRE(r.ok());
+    REQUIRE(rig.ctx.store().dispatch(r->command).ok());
+    const double t0 = wallUs();
+    rig.frame();
+    rig.frame();  // (the build-only frame and the repaint)
+    edits.push_back(wallUs() - t0);
+  }
+  rig.settle();
+  std::sort(drag.begin(), drag.end());
+  std::sort(edits.begin(), edits.end());
+  MESSAGE("SX.3 fade drag frame (direct, envelope per column): median " << drag[drag.size() / 2] << " us; an edit outside a "
+          "drag (tile rebuilt): median " << edits[edits.size() / 2] << " us");
+  // Tiles against direct drawing, with fades and the crossfade on the waveform.
+  const Image a = rig.drawFull(*rig.full, rig.res);
+  CHECK(arr.stats().tilesDrawn > 0);
+  const Image b = rig.drawFull(*rig.partial, rig.resNoTiles);
+  CHECK(arr.stats().tilesDrawn == 0);
+  const ImageDiff diff = compareImages(a, b, 2);
+  if (diff.pixelsOverTolerance > 64) {
+    (void)writePng("sx3.tiles.png", a);
+    (void)writePng("sx3.direct.png", b);
   }
   CHECK_MESSAGE(diff.pixelsOverTolerance <= 64, diff.pixelsOverTolerance << " px differ");
   (void)rig.drawFull(*rig.partial, rig.res);

@@ -261,7 +261,7 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
         if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) arrangement::flushTiles(lp);  // overlapping: the earlier one complete
         const int hover = hoverRow && slot.id == hp.ref.clip ? hp.zone : arrangement::kNoHover;
         if (slot.audio) arrangement::paintAudioClip(lp, arow, slot.audio, {slot.audio->start, slot.audio->length, 0}, top, bottom, trackOn,
-                                                    ed->selected(slot.id), hover);
+                                                    ed->selected(slot.id), hover, t->clips, j);
         else arrangement::paintClip(lp, arow, slot.clip, top, bottom, trackOn, {slot.clip->start, slot.clip->length, slot.clip->contentStart},
                                     ed->selected(slot.id), hover);
       }
@@ -286,7 +286,7 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
           int32_t ri = 0;
           arrangement::ClipGeom g;
           if (!ed->preview(dc, ri, g) || ri != row) continue;
-          if (dc.clip.audio) arrangement::paintAudioClip(lp, arow, dc.clip.audio, g, top, bottom, trackOn, true, arrangement::kNoHover);
+          if (dc.clip.audio) arrangement::paintAudioClip(lp, arow, dc.clip.audio, g, top, bottom, trackOn, true, arrangement::kNoHover, {}, 0);
           else arrangement::paintClip(lp, arow, dc.clip.clip, top, bottom, trackOn, g, true);
           arrangement::flushTiles(lp);
         }
@@ -330,8 +330,9 @@ void paintLanes(ui::PaintContext& ctx, const ProjectCanvas& canvas, ProjectPatch
         // WF.1: the arrangement's own direct draw (the samples below the overview's resolution; was a copy of it that
         // only ever drew the overview).
         const double cx0d = std::round(static_cast<double>(body.x0) + (static_cast<double>(c.start()) - origin) * k);
-        (void)arrangement::paintClipWaveform(dl, view.context().waveforms(), *ov, ac, L, p.timeline->tempoMap, k, cx0d, vx0, vx1, by0, by1,
-                                             noteCol, std::max(1.0f, us));
+        const arrangement::AudioEnvelope env = arrangement::laneAudioEnvelope(*model, arow, t->clips, ci, p.timeline->tempoMap);
+        (void)arrangement::paintClipWaveform(dl, view.context().waveforms(), *ov, ac, L, env, p.timeline->tempoMap, k, cx0d, vx0, vx1, by0,
+                                             by1, noteCol, std::max(1.0f, us));
       }
     }
   }

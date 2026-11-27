@@ -2493,3 +2493,13 @@ Per display (how it was drawn → what was wrong → what changed):
   growing the ring. Sub-ring bubbles keep MX.1's one size per depth.
 - Look at: ring 0 is large with three knobs (≈ 420 px across for 11 items); is the knob size (2× a leaf bubble) right?
   Not seen in the app: nothing opens a control menu until SX.2 (headless goldens only).
+## 2026-11-27 · SX.3 · the waveform shows what plays (task/SX.3-waveform-truth) 👁
+- Audio clips in the arrangement (and the project patch lane windows) draw their waveform multiplied by the clip's
+  gain, fades (their curves) and crossfades, by the clip player's own law; the grey fade shading is gone (curve line and
+  handles stay). A fade-out a crossfade replaces is no longer drawn (it never played).
+- Warp markers now bend the arrangement's waveform as they do in the clip view.
+- The small grey badge text is replaced by a tag: "WARP · Beats  +3 st" (amber), "RE-PITCH" (teal), an Off clip's
+  "+7 st  Rev" / "REV" (violet), on a dark pill; nothing on a 1:1 clip; a corner mark when it does not fit. The gain
+  dB readout is gone from the title (the waveform shows it; see Q?-SX.3-a).
+- Look at: goldens `arrangement-audio-warp` (new), `arrangement-audio`, `arrangement-takes`. Is the tag legible enough
+  at the default height, and are the colours distinct from the clip colours? Not looked at live.

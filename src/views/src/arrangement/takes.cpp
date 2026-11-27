@@ -280,7 +280,8 @@ void Comper::paint(LanePaint& lp, int32_t localTop, int32_t localBottom) {
       if (j > 0 && ix.start[j] < ix.maxEnd[j - 1]) flushTiles(lp);
       ++m.stats.takeClipsPainted;
       if (slot.audio) {
-        paintAudioClip(lp, row, slot.audio, {slot.audio->start, slot.audio->length, 0}, y0 + 1.0f, y1 - 1.0f, active, false, kNoHover);
+        paintAudioClip(lp, row, slot.audio, {slot.audio->start, slot.audio->length, 0}, y0 + 1.0f, y1 - 1.0f, active, false, kNoHover,
+                       lane.clips, j);
         continue;
       }
       paintClip(lp, row, slot.clip, y0 + 1.0f, y1 - 1.0f, active, {slot.clip->start, slot.clip->length, slot.clip->contentStart}, false);

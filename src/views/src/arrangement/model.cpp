@@ -260,6 +260,13 @@ AudioLayout makeAudioLayout(const doc::Project& p, doc::TrackId track, const doc
     L.constantTempo = p.timeline->tempo.size() == 1;
   } else {
     L.fpt = doc::framesPerContentTick(L.rate, clip->sourceBpm);
+    // SX.3: the finest detail the marker law reads at (the level of detail of the whole clip).
+    L.fptMin = clip->markers.size() >= 2 ? 1e300 : L.fpt;
+    for (size_t i = 1; i < clip->markers.size(); ++i) {
+      const doc::WarpMarker &a = clip->markers[i - 1], &b = clip->markers[i];
+      if (b.content > a.content) L.fptMin = std::min(L.fptMin, (b.sourceFrame - a.sourceFrame) / static_cast<double>(b.content - a.content));
+    }
+    if (!(L.fptMin > 0.0 && L.fptMin < 1e300)) L.fptMin = L.fpt;
   }
   return L;
 }

@@ -2941,3 +2941,10 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   optimiser task (it also helps every multi-envelope patch on the interpreter).
 - Choice (provisional): 1 now; 3 is the one with a real return.
 - Status: open
+
+## Q?-SX.3-a · 2026-11-27 · SX.3 · The clip gain's dB readout left the title strip
+- Context: the plan replaces the small badge text (mode, BPM, transpose, Rev, gain dB) with the warped tag. The tag
+  carries the mode and the pitch details; the source BPM and the gain dB had no place in it.
+- Options: (a) drop both (the waveform's height shows the gain; the clip panel shows both numbers); (b) keep the gain dB
+  as plain text left of the tag; (c) show it only while the gain handle is hovered / dragged.
+- Choice: (a), the most reversible; (c) would be the natural follow-up if the number is missed.

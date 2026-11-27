@@ -615,6 +615,71 @@ TEST_CASE("render: waveform-lod matches the golden image") {
 // WF.2: release, the three builds interleaved (bench/RESULTS.md): 27.5 / 48 (0.5 frames per px) / 71 (40) us before
 // WF.1, 59.5 / 81 / 112 at WF.1, 56 / 81.5 / 111.5 now (and 97 at 0.05). The bounds stay (they leave room for a machine
 // that is building something else, where every figure is about 1.5 times these).
+// SX.3: the per-column envelope (an audio clip's fades and crossfades) scales each column exactly as `gain` would: a
+// constant envelope draws what the same gain draws, in the strips and the raster, at the overview and the sample levels;
+// a step draws each side as its gain alone does; columns outside the array take its nearest end.
+TEST_CASE("waveform (SX.3): a per-column envelope scales each column as the gain would") {
+  for (const double fpp : {700.0, 40.0, 0.3}) {
+    Synth s(uint64_t{1} << 18, 2);
+    std::vector<float> x[2];
+    WaveformData wd = s.wd;
+    if (fpp < 512.0) {
+      for (uint32_t c = 0; c < 2; ++c) {
+        x[c].resize(s.frames);
+        for (size_t i = 0; i < x[c].size(); ++i) x[c][i] = std::sin(static_cast<float>(i) * (c ? 0.2f : 0.013f)) * 0.9f;
+        wd.samples.channel[c] = x[c].data();
+      }
+      wd.samples.frames = static_cast<int64_t>(s.frames);
+    }
+    constexpr uint32_t W = 300, H = 80;
+    WaveformDraw d;
+    d.frame0 = 1000.0;
+    d.frame1 = d.frame0 + fpp * 280.0;
+    d.rect = {10, 0, 290, 80};
+    d.gain = 0.5f;
+    std::vector<uint8_t> a(static_cast<size_t>(W) * H, 0), b(a.size(), 0);
+    (void)rasterWaveform(wd, d, a.data(), W, H, W);
+    DrawList dl;
+    dl.reset(W, H);
+    (void)drawWaveform(dl, wd, d);
+    const auto ga = raster(dl, W, H);
+    // The same 0.5 as an envelope over a window narrower than the rect (its ends extend).
+    std::vector<float> env(100, 0.5f);
+    WaveformDraw e = d;
+    e.gain = 1.0f;
+    e.envelope = env.data();
+    e.envelopeX0 = 100;
+    e.envelopeCount = static_cast<uint32_t>(env.size());
+    (void)rasterWaveform(wd, e, b.data(), W, H, W);
+    dl.reset(W, H);
+    (void)drawWaveform(dl, wd, e);
+    const auto gb = raster(dl, W, H);
+    CAPTURE(fpp);
+    CHECK(a == b);
+    CHECK(ga == gb);
+    // A step (1 left of x = 150, 0.3 from it): each side draws exactly what its gain alone draws, away from the step.
+    std::vector<float> step(W);
+    for (uint32_t i = 0; i < W; ++i) step[i] = i < 150 ? 1.0f : 0.3f;
+    WaveformDraw r = d;
+    r.envelope = step.data();
+    r.envelopeX0 = 0;
+    r.envelopeCount = W;
+    std::fill(b.begin(), b.end(), uint8_t{0});
+    (void)rasterWaveform(wd, r, b.data(), W, H, W);
+    for (const float g : {1.0f, 0.3f}) {
+      WaveformDraw u = d;
+      u.gain = d.gain * g;
+      std::fill(a.begin(), a.end(), uint8_t{0});
+      (void)rasterWaveform(wd, u, a.data(), W, H, W);
+      int differ = 0;
+      for (uint32_t col = g == 1.0f ? 12u : 155u; col < (g == 1.0f ? 145u : 288u); ++col)
+        for (uint32_t y = 0; y < H; ++y) differ += std::abs(a[y * W + col] - b[y * W + col]) > 2 ? 1 : 0;  // (float rounding)
+      CAPTURE(g);
+      CHECK(differ == 0);
+    }
+  }
+}
+
 TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample level <= 160 us)" * doctest::test_suite("perf")) {
   Synth s(10ull * 60 * 48000, 2);
   DrawList dl;
@@ -632,6 +697,23 @@ TEST_CASE("waveform (perf): drawing a 2560-px stereo clip takes <= 90 us (sample
   std::sort(us.begin(), us.end());
   MESSAGE("2560-px stereo waveform: median " << us[100] << " us, p99 " << us[198] << " us");
   CHECK(us[100] <= 90.0);
+  {  // SX.3: with a per-column envelope over every column (a clip that fades all along)
+    std::vector<float> env(2560);
+    for (size_t i = 0; i < env.size(); ++i) env[i] = static_cast<float>(i) / 2560.0f;
+    WaveformDraw e = d;
+    e.envelope = env.data();
+    e.envelopeCount = static_cast<uint32_t>(env.size());
+    std::vector<double> te;
+    for (int i = 0; i < 200; ++i) {
+      dl.reset(2560, 80);
+      const double t0 = pq::test::threadCpuUs();
+      (void)drawWaveform(dl, s.wd, e);
+      te.push_back(pq::test::threadCpuUs() - t0);
+    }
+    std::sort(te.begin(), te.end());
+    MESSAGE("2560-px stereo waveform with an envelope: median " << te[100] << " us");
+    CHECK(te[100] <= 90.0);
+  }
   // M5 review M5: the sample-level path too (deep zoom: 0.5 and 40 frames per px from a sample window). It reads
   // the samples themselves (40 frames per px: 800 KiB of floats), so its bound is twice the overview path's.
   std::vector<float> x[2];

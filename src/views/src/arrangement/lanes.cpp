@@ -1127,7 +1127,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
       const int hover = hoverRow && slot.id == hp.ref.clip ? hp.zone : kNoHover;
       if (slot.audio) {  // T5.6: waveform, fades, crossfade, handles
         paintAudioClip(lp, *it, slot.audio, {slot.audio->start, slot.audio->length, 0}, y0 + 1.0f, y1 - 1.0f, active,
-                       ed.selected(slot.id), hover);
+                       ed.selected(slot.id), hover, t.clips, j);
         continue;
       }
       const doc::ClipPtr& clip = slot.clip;
@@ -1204,7 +1204,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
     const ArrangementRow& row = rows[static_cast<size_t>(ri)];
     const float y0 = static_cast<float>(r.y + row.y), y1 = static_cast<float>(r.y + row.y + row.h);
     if (y1 <= static_cast<float>(c.y) || y0 >= static_cast<float>(c.bottom())) continue;
-    if (dc.clip.audio) paintAudioClip(lp, row, dc.clip.audio, g, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), true, kNoHover);
+    if (dc.clip.audio) paintAudioClip(lp, row, dc.clip.audio, g, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), true, kNoHover, {}, 0);
     else paintClip(lp, row, dc.clip.clip, y0 + 1.0f, y1 - 1.0f, rowActive(rows, row), g, true);
     flushTiles(lp);  // drag previews overlap other clips: each one complete before the next
   }

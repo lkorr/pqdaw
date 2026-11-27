@@ -4,6 +4,7 @@
 // clips with their waveforms, fades, crossfades and handles).
 
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "internal.h"
@@ -80,10 +81,14 @@ void paintClipBorder(LanePaint& lp, const ClipCols& cc, float top, float bottom,
 void paintClip(LanePaint& lp, const ArrangementRow& row, const doc::ClipPtr& clipPtr, float top, float bottom, bool trackActive,
                const ClipGeom& g, bool selected, int hover = kNoHover);
 
-// T5.6 (audio_paint.cpp): an audio clip at geometry `g` (its own bounds, or a drag preview's). Returns true when its
-// waveform was queued as a tile (its overlays then wait for flushTiles).
+// T5.6 (audio_paint.cpp): an audio clip at geometry `g` (its own bounds, or a drag preview's), slot `index` of `lane`
+// (SX.3: its neighbours there shape its envelope: crossfades). Its waveform may be queued as a tile (its overlays then
+// wait for flushTiles).
 void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioClipPtr& clip, const ClipGeom& g, float top,
-                    float bottom, bool trackActive, bool selected, int hover);
+                    float bottom, bool trackActive, bool selected, int hover, std::span<const doc::ClipSlot> lane, size_t index);
+// SX.3: the envelope of the audio clip in slot `index` of `lane` (row `row`), its neighbours' layouts from `m`.
+AudioEnvelope laneAudioEnvelope(Model& m, const ArrangementRow& row, std::span<const doc::ClipSlot> lane, size_t index,
+                                const TempoMap& tm);
 // The crossfade X of an audio clip whose own columns are outside the painted part (the X reaches half its length into
 // the previous clip: a partial repaint of that clip must draw it again).
 // `marked`: the clip is selected or hovered (the X shows; otherwise only the window's light shading).

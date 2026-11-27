@@ -13,6 +13,8 @@
 // (pq/core/clip_time.h: start marker, loop) and content tick c to source frame warpFrameAt(c): through its warp markers,
 // else c * framesPerContentTick(rate, sourceBpm); reverse mirrors the offset (o -> length - o).
 
+#include <algorithm>
+#include <cmath>
 #include <span>
 #include <utility>
 
@@ -33,6 +35,12 @@ Ticks offClipLength(const TempoMap& tempo, Ticks start, double seconds) noexcept
 AudioClip syncedClip(const Timeline& timeline, AudioClip c);
 // A track subtree with every warp-Off clip synced to `timeline` (the same pointer when nothing changes; clips re-sorted).
 TrackPtr syncedTrack(const Timeline& timeline, const TrackPtr& t);
+
+// SX.3: the linear gain of a clip gain in dB, as lowered (the floor is silence, clamped to kMaxClipGainDb): the
+// lowering and the arrangement's waveform drawing use it.
+inline float audioClipGain(float gainDb) noexcept {
+  return gainDb <= kMinClipGainDb ? 0.0f : std::pow(10.0f, std::min(gainDb, kMaxClipGainDb) / 20.0f);
+}
 
 // Source frames per content tick of a warped clip's implied segment (the sample's rate at sourceBpm).
 double framesPerContentTick(double rate, double sourceBpm) noexcept;

@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "pq/core/clip_envelope.h"
 #include "pq/core/clip_time.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/clip_time.h"
@@ -125,15 +126,41 @@ struct Preview {
   PreviewTile tile;                        // the last tile rendered for it (T3.8-fix1)
 };
 
-// T5.6: an audio clip's waveform tile (as PreviewTile, keyed also by how much of the overview was built).
+// SX.3: an audio clip's static envelope in arrangement ticks, as the clip player plays it (pq/core/clip_envelope.h is the
+// law; audio_sequence.cpp builds the same windows in song samples from the lowering, doc::lowerAudioTrack): the clip
+// gain, the fades clamped to the clip (fade-in first) or the 2 ms edge declick where a fade is shorter, the crossfade
+// with the left neighbour centred on the boundary (it replaces this clip's fade-in, and the neighbour's fade-out),
+// equal gain when the two clips continue one source law across it, else equal power.
+struct AudioEnvelope {
+  float gain = 1.0f;
+  double bodyStart = 0, bodyEnd = 1;
+  double inEnd = 0, outStart = 1;
+  float inCurve = 0.0f, outCurve = 0.0f;
+  double xinStart = 0, xinEnd = 0, xoutStart = 0, xoutEnd = 0;
+  bool xinLinear = false, xoutLinear = false;
+  // The gain at (fractional) tick t (the waveform's amplitude factor there).
+  double at(double t) const noexcept { return static_cast<double>(gain) * clipEnvelopeShape(*this, t, 0.0); }
+  // Whether the shape is 1 all over the tick span [a, b) (only `gain` applies there).
+  bool flatOver(double a, double b) const noexcept {
+    const auto meets = [&](double w0, double w1) { return w1 > w0 && w0 < b && w1 > a; };
+    return !meets(bodyStart, inEnd) && !meets(outStart, bodyEnd) && !meets(xinStart, xinEnd) && !meets(xoutStart, xoutEnd);
+  }
+  friend bool operator==(const AudioEnvelope&, const AudioEnvelope&) = default;
+};
+
+// T5.6: an audio clip's waveform tile (as PreviewTile, keyed also by how much of the overview was built; SX.3: and by
+// the envelope it was rasterised with, which a neighbour's crossfade changes without changing the clip).
 struct AudioTile {
   ui::TileAtlas::Tile tile;
   double k = 0.0;
   int32_t width = 0;
   int32_t bodyH = 0;
   uint64_t built = 0;  // the overview's builtFrames when rendered
+  AudioEnvelope env;
   PreviewTile::State state = PreviewTile::State::None;
-  bool matches(double k2, int32_t bodyH2, uint64_t built2) const noexcept { return k == k2 && bodyH == bodyH2 && built == built2; }
+  bool matches(double k2, int32_t bodyH2, uint64_t built2, const AudioEnvelope& env2) const noexcept {
+    return k == k2 && bodyH == bodyH2 && built == built2 && env == env2;
+  }
 };
 
 // T5.6: how an audio clip's arrangement span maps to source frames, resolved once per clip snapshot and tempo map
@@ -145,7 +172,8 @@ struct AudioLayout {
   int64_t frames = 1;
   uint32_t channels = 1;
   double ratio = 1.0;               // Off: transpose x detune speed ratio
-  double fpt = 0.0;                 // RePitch: source frames per content tick
+  double fpt = 0.0;                 // warped: source frames per content tick (the implied segment)
+  double fptMin = 0.0;              // warped: the least slope of the warp law (its markers' segments, or fpt)
   double startSec = 0.0;            // Off: tau(start)
   bool constantTempo = true;        // Off: one tempo over the whole song (the clip is one linear piece)
   uint64_t lastUsed = 0;
@@ -154,10 +182,22 @@ struct AudioLayout {
 // The layout of `clip` on `track` (no cache: drag previews, the clip view).
 AudioLayout makeAudioLayout(const doc::Project& p, doc::TrackId track, const doc::AudioClipPtr& clip);
 
-// Linear gain of a clip gain in dB (the floor is silence, as the clip player plays it).
-inline float clipGainLinear(float db) noexcept {
-  return db <= doc::kMinClipGainDb ? 0.0f : static_cast<float>(std::pow(10.0, static_cast<double>(db) / 20.0));
-}
+// Linear gain of a clip gain in dB (the floor is silence), as the lowering computes it (doc::audioClipGain).
+inline float clipGainLinear(float db) noexcept { return doc::audioClipGain(db); }
+
+// SX.3: the clips beside clip slot j of a lane (sorted by start) that its envelope depends on: the slot before (a
+// crossfade in) and the slot after (its crossfade in is this clip's crossfade out), with their layouts.
+struct AudioNeighbours {
+  const doc::AudioClip* prev = nullptr;
+  const AudioLayout* prevL = nullptr;
+  const doc::AudioClip* next = nullptr;
+  const AudioLayout* nextL = nullptr;
+};
+// The envelope of clip `c` (layout L) between its neighbours (none: a drag preview, no crossfade).
+AudioEnvelope audioEnvelope(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, const AudioNeighbours& n);
+// The source frame clip `c` (layout L) reads at (fractional) arrangement tick t, its law continued past its ends (as the
+// clip player's during a crossfade).
+double audioSourceFrameAt(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, double t);
 
 // One linear piece of an audio clip's waveform: clip-local device px [xa, xb) show source frames [fa, fb) (mirrored,
 // fb at xa, when reverse).
@@ -168,8 +208,9 @@ struct AudioPiece {
 };
 
 // Calls f(const AudioPiece&) for the pieces of clip `c` (layout L, device px per tick k) meeting the clip-local window
-// [xFrom, xTo). Off: one piece under a single tempo, else pieces of 32 px whose ends are exact (the tempo map); RePitch:
-// one per pass over the content (the loop), mirrored for a reversed clip.
+// [xFrom, xTo). Off: one piece under a single tempo, else pieces of 32 px whose ends are exact (the tempo map); warped:
+// one per pass over the content (the loop) and warp-marker segment (SX.3: the law doc::warpFrameAt, as the clip view
+// draws it), mirrored for a reversed clip.
 template <class F>
 void forEachAudioPiece(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, double k, double xFrom, double xTo, F&& f) {
   const double W = static_cast<double>(c.length) * k;
@@ -201,12 +242,26 @@ void forEachAudioPiece(const doc::AudioClip& c, const AudioLayout& L, const Temp
   // RePitch: content ticks to frames; the window mirrored for a reversed clip.
   const double a = c.reverse ? W - xTo : xFrom, b = c.reverse ? W - xFrom : xTo;
   const Ticks from = c.start + static_cast<Ticks>(std::floor(a / k)), to = c.start + static_cast<Ticks>(std::ceil(b / k)) + 1;
+  const std::span<const doc::WarpMarker> mk = c.markers;
   forEachClipSegment(c.start, c.length, c.contentStart, doc::contentLoop(c), from, to, [&](const ClipSegment& seg) {
-    const double xa = static_cast<double>(seg.at - c.start) * k;
-    const double xb = xa + static_cast<double>(seg.contentTo - seg.contentFrom) * k;
-    const double fa = static_cast<double>(seg.contentFrom) * L.fpt, fb = static_cast<double>(seg.contentTo) * L.fpt;
-    if (!c.reverse) f(AudioPiece{xa, xb, fa, fb, false});
-    else f(AudioPiece{W - xb, W - xa, fa, fb, true});
+    const double x0 = static_cast<double>(seg.at - c.start) * k;
+    const auto emit = [&](double ca, double cb) {
+      const double xa = x0 + (ca - static_cast<double>(seg.contentFrom)) * k, xb = x0 + (cb - static_cast<double>(seg.contentFrom)) * k;
+      const double fa = doc::warpFrameAt(mk, L.fpt, ca), fb = doc::warpFrameAt(mk, L.fpt, cb);
+      if (!c.reverse) f(AudioPiece{xa, xb, fa, fb, false});
+      else f(AudioPiece{W - xb, W - xa, fa, fb, true});
+    };
+    double a = static_cast<double>(seg.contentFrom);
+    const auto b = static_cast<double>(seg.contentTo);
+    if (mk.size() >= 2) {  // the law bends at every marker strictly inside the pass
+      auto it = std::upper_bound(mk.begin(), mk.end(), seg.contentFrom,
+                                 [](Ticks v, const doc::WarpMarker& m) noexcept { return v < m.content; });
+      for (; it != mk.end() && it->content < seg.contentTo; ++it) {
+        emit(a, static_cast<double>(it->content));
+        a = static_cast<double>(it->content);
+      }
+    }
+    emit(a, b);
   });
 }
 
@@ -219,9 +274,10 @@ struct ClipWaveStats {
   uint32_t columns = 0, dots = 0;
   bool approx = false, samples = false, curve = false;
 };
+// SX.3: multiplied by the clip's envelope `env` (its fades and crossfades) per device column, at draw time.
 ClipWaveStats paintClipWaveform(ui::DrawList& dl, Waveforms& waveforms, const media::WaveformOverview& ov, const doc::AudioClip& c,
-                                const AudioLayout& L, const TempoMap& tm, double k, double cx0, float vx0, float vx1, float by0,
-                                float by1, ui::Rgba col, float lineWidth);
+                                const AudioLayout& L, const AudioEnvelope& env, const TempoMap& tm, double k, double cx0, float vx0,
+                                float vx1, float by0, float by1, ui::Rgba col, float lineWidth);
 
 // Fade lengths in device px as the clip player plays them (clamped: the fade-in first, then the fade-out).
 struct AudioFadesPx {
