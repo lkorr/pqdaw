@@ -476,14 +476,16 @@ public:
   // when it is not an audio clip on a row or t is outside it.
   double audioEnvelopeAt(const doc::ClipRef& clip, double t) const;
   double audioDrawnFrameAt(const doc::ClipRef& clip, double t) const;
-  // SX.2: the clip-menu button of a selected audio clip (title strip, right end), device px (empty: not selected, not
-  // audio, or too narrow); a press there opens the clip menu (pq/views/audio_clip/clip_menu.h) around the clip, as
-  // Ctrl+Space and the clip context menu's "Clip Menu…" do. openClipMenu: that menu for `clip`, centred on x `atX`
-  // (device px; NaN: the clip's visible centre; nullptr: not an audio clip on a row); clipMenu: the open one, else
-  // nullptr.
-  ui::Rect clipMenuButtonRect(const doc::ClipRef& clip) const noexcept;
-  ui::RadialMenu* openClipMenu(const doc::ClipRef& clip, bool animate = true, float atX = std::numeric_limits<float>::quiet_NaN());
+  // SX.6: the clip popup (pq/views/audio_clip/clip_menu.h): open while the selection is exactly one audio clip, around
+  // it, centred on where it was pressed; it follows the clip, hides while a drag runs and while the clip is out of view,
+  // and is modeless (presses beside it and keys reach the arrangement). Esc dismisses it until the selected clips change
+  // (dismissClipPopup: false when it was not shown), Ctrl+Space (arrangement.clipMenu) toggles it. clipMenu: the open
+  // popup (hidden or shown), else nullptr; clipPopupShown: open and shown.
   ui::RadialMenu* clipMenu() const noexcept;
+  bool clipPopupShown() const noexcept;
+  bool dismissClipPopup();
+  // SX.6: a ruler loop / locator drag runs (the clip popup hides meanwhile).
+  bool rulerEditing() const noexcept;
   // T4.16b: the clip part highlighted under the pointer (the one a press would grab): zone −1 / +1 an edge, 0 the
   // title strip; an invalid clip when none.
   struct ClipHover {

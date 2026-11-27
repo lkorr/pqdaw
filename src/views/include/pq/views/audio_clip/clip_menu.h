@@ -2,10 +2,12 @@
 
 // SX.2 / SX.5: the clip menu (ui::RadialMenu laid out as bands, pq/ui/radial_menu.h): the audio clip panel's controls
 // (AudioClipView's Clip / Warp / mode cards) in a compact popup hugging the clip in the arrangement, through the same
-// edits (pq/views/audio_clip/clip_edits.h). Gain and the fades are not here: the clip's own handles edit them. Opened
-// from the button on a selected audio clip, Ctrl+Space or the clip's context menu "Clip Menu…" (arrangement/editing.cpp),
-// centred on the x it was opened at; it never covers the clip (a band that does not fit above / below goes to the other
-// side, else it is clamped on screen).
+// edits (pq/views/audio_clip/clip_edits.h). Gain and the fades are not here: the clip's own handles edit them. SX.6: the
+// arrangement shows it whenever the selection is exactly one audio clip (arrangement/editing.cpp syncClipPopup: it
+// follows the clip, hides during drags, Esc / Ctrl+Space dismiss it), centred on the x it was opened at; it never covers
+// the clip (a band that does not fit above / below goes to the other side, else it is clamped on screen). Modeless
+// (RadialMenuOptions::modeless): a press beside it reaches the arrangement, keys go to the arrangement unless a typed
+// entry is open.
 //
 //   above   the warp modes in one row: Off, Re-Pitch | Beats, Tones, Texture, Complex, Pro (one choice: a shared
 //           binding); directly above them the chosen mode's settings: Beats Preserve chips, Transient Loop chips

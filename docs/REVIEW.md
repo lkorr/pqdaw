@@ -2540,3 +2540,14 @@ Per display (how it was drawn → what was wrong → what changed):
 - Look at: the lower strip is ~550 px wide (wider than a short clip; clamped at the window's left edge in the goldens) —
   splitting it into two rows (Transpose · Detune · Reverse / BPM · :2 ×2 · Loop) is a one-line change per item
   (`RadialPlace::below(1)`) if you prefer it taller and narrower. Seen live in a pqdaw I launched (button → popup).
+
+## 2026-11-27 · SX.6 · the clip popup shows whenever one audio clip is selected (task/SX.6-popup-on-select) 👁
+- No button and no "Clip Menu…" context entry: select exactly one audio clip (click, arrows, Tab…) and the popup is
+  there, centred on where you clicked it, and it follows the clip (scroll, zoom, track height, moving it). It hides while
+  any drag runs (move, resize, fade / gain handles, range, automation, ruler loop / locator) and comes back on release;
+  it closes for several clips, a MIDI clip, nothing, or the clip deleted.
+- Modeless: a click beside it does what it would do without it (no swallowed click); Delete, Ctrl+C / D, the arrows,
+  Space go to the arrangement. Only a typed entry (double-click Transpose / BPM) takes the keyboard, and gives it back.
+  Esc hides it until the selection changes (a second Esc deselects); Ctrl+Space toggles it.
+- Look at: whether it showing on every single-clip click feels busy over neighbouring tracks (it covers parts of the
+  rows above / below the clip; Esc or Ctrl+Space hide it).

@@ -148,7 +148,9 @@ TEST_CASE("arrangement audio: clips draw waveforms (or the missing overlay); the
   auto* roll = dynamic_cast<ClipView*>(f.d.find("main/body/bottom/detail/clip/clip-view"));
   REQUIRE(roll != nullptr);
   CHECK_FALSE(roll->visible());
-  // A MIDI clip: the piano roll again.
+  // A MIDI clip: the piano roll again. (SX.6: the clip popup covers Keys' clip; Esc hides it first.)
+  CHECK(f.arr->clipPopupShown());
+  CHECK(f.d.press("Escape") == KeyResult::Action);
   const IRect keys = f.arr->clipRect(f.clip("Keys", 0));
   f.d.click({static_cast<float>(keys.x + 20), static_cast<float>(keys.y + 7)});
   CHECK(roll->visible());
@@ -533,6 +535,7 @@ TEST_CASE("arrangement audio (BR.E): 0 over a partial range splits at its edges 
   CHECK(f.track("Keys").clips.size() == 1);
 
   // Whole clips selected (a click, no range): the whole clip, as before.
+  if (f.arr->clipPopupShown()) CHECK(f.d.press("Escape") == KeyResult::Action);  // SX.6: the first Esc hides the clip popup
   CHECK(f.d.press("Escape") == KeyResult::Action);  // (a click on a clip inside the range would keep the range)
   f.d.click(f.title(f.clip("Drums", 1), kBar / 8));
   REQUIRE_FALSE(f.arr->selection().range);

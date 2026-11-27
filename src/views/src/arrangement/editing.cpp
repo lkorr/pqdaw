@@ -171,34 +171,88 @@ Editor::Editor(ArrangementView& view) : view_(view), ctx_(view.context()) {}
 Editor::~Editor() {
   // SX.2: the clip menu ends its gesture and lets go of the document while the views still exist.
   if (ui::RadialMenu* m = clipMenu()) m->close();
+  if (hookTree_) hookTree_->removeObserver(&layoutHook_);
 }
 
-// --- the radial clip menu (SX.2) ----------------------------------------------------------------------------
+// --- the clip popup (SX.2 / SX.5 / SX.6) --------------------------------------------------------------------
 
-doc::ClipRef Editor::clipMenuTarget() const {
-  for (const doc::ClipRef& r : sel_.clips)
-    if (clip_edits::findAudioClip(*ctx_.doc(), r)) return r;
-  return {};
+doc::ClipRef Editor::popupTarget() const {
+  if (sel_.clips.size() != 1 || !clip_edits::findAudioClip(*ctx_.doc(), sel_.clips.front())) return {};
+  return sel_.clips.front();
 }
 
-ui::RadialMenu* Editor::openClipMenu(const doc::ClipRef& ref, bool animate, float atX) {
-  if (!clip_edits::findAudioClip(*ctx_.doc(), ref)) return nullptr;
-  if (ui::RadialMenu* m = clipMenu()) m->close();
+bool Editor::popupHiddenByDrag() const noexcept {
+  return (drag_.kind != DragKind::None && drag_.moved) || view_.automation().dragging() || view_.comper().dragging() ||
+         view_.rulerEditing();
+}
+
+bool Editor::clipPopupShown() const noexcept {
+  const ui::RadialMenu* m = clipMenu();
+  return m != nullptr && m->visible();
+}
+
+void Editor::dragStateChanged() {
+  if (popupHiddenByDrag() != popupDragHidden_) syncClipPopup();
+}
+
+bool Editor::dismissClipPopup() {
+  if (!clipPopupShown()) return false;
+  popupDismissed_ = true;
+  syncClipPopup();
+  return true;
+}
+
+void Editor::toggleClipPopup() {
+  if (!popupTarget().clip.valid()) return;
+  popupDismissed_ = clipPopupShown();
+  syncClipPopup();
+}
+
+void Editor::syncClipPopup() {
+  ui::RadialMenu* m = clipMenu();
+  const doc::ClipRef ref = popupTarget();
+  UiTree* tr = view_.tree();
+  if (!ref.clip.valid() || popupDismissed_ || !tr || !view_.visible()) {
+    popupDragHidden_ = false;
+    if (m) m->close();
+    return;
+  }
+  popupDragHidden_ = popupHiddenByDrag();
+  if (m && !(clipMenuRef_.clip == ref.clip && clipMenuRef_.track == ref.track)) {  // another clip: its own popup
+    m->close();
+    m = nullptr;
+  }
+  if (hookTree_ != tr) {  // vertical scroll, track heights, the window: the popup follows after every layout
+    if (hookTree_) hookTree_->removeObserver(&layoutHook_);
+    hookTree_ = tr;
+    tr->addObserver(&layoutHook_);
+  }
+  // Where: the clip's part in the lanes' view, centred on the press (as a time in the clip: it follows the clip).
   EditSurface& s = view_.surfaces().current();
   const int32_t row = rowOf(ref.track);
   const doc::ClipSlot* c = findClip(*ctx_.doc(), ref);
-  if (row < 0 || !c) return nullptr;
-  // Around the clip's visible part, centred on atX (the press; NaN: the visible part's centre).
-  const IRect box = clipBox(s, row, c->start(), c->end());
-  const IRect lane = s.rowLaneRect(row);
-  const int32_t x0 = std::max(box.x, lane.x), x1 = std::min(box.right(), lane.right());
-  const IRect anchor = x1 > x0 ? IRect{x0, box.y, x1 - x0, box.h} : box;
+  IRect anchor{};
+  if (row >= 0 && c) anchor = intersect(clipBox(s, row, c->start(), c->end()), s.viewport());
+  if (anchor.empty() || popupDragHidden_) {  // out of view (scrolled away, a folded group) or a drag runs: hidden
+    if (m && m->visible()) m->setVisible(false);
+    return;
+  }
+  float x = std::numeric_limits<float>::quiet_NaN();
+  if (popupPress_.clip == ref.clip && popupPress_.track == ref.track) {
+    const float px = static_cast<float>(s.axis(row).x(static_cast<double>(c->start()) + popupPressDt_));
+    x = std::clamp(px, static_cast<float>(anchor.x), static_cast<float>(anchor.right()));
+  }
+  if (m) {
+    m->moveAround(s.widget(), anchor, x);
+    if (!m->visible()) m->setVisible(true);
+    return;
+  }
   auto flag = std::make_shared<ui::RadialMenu*>(nullptr);
-  ui::RadialMenu* m = views::openClipMenu(ctx_, s.widget(), anchor, ref, atX, [flag] { *flag = nullptr; }, animate);
-  if (!m) return nullptr;
+  m = views::openClipMenu(ctx_, s.widget(), anchor, ref, x, [flag] { *flag = nullptr; }, true);
+  if (!m) return;
   *flag = m;
   clipMenu_ = std::move(flag);
-  return m;
+  clipMenuRef_ = ref;
 }
 
 Grid Editor::grid() const noexcept { return Grid(ctx_.grid(), view_.shown()->timeline->sigMap, geo().gridPxPerTick()); }
@@ -252,12 +306,6 @@ Editor::Hit Editor::hitTest(Vec2 p) const {
     h.ref = {t.id, t.clips[j].id};
     const float edge = std::min(static_cast<float>(s.px(kEdgeGrab)), std::floor((x1 - x0) / 4.0f));
     const float titleB = top + static_cast<float>(g.clipTitleHeight(h.row));
-    // SX.2: a selected audio clip's menu button takes the press before the handles, the edges and the title.
-    if (t.clips[j].audio && p.y < titleB && selected(h.ref.clip) &&
-        clipMenuButton(x0, x1, static_cast<float>(lane.x), static_cast<float>(lane.right()), top, titleB, s.factor).contains(p)) {
-      h.zone = kZoneMenu;
-      return h;
-    }
     // T5.6: an audio clip's handles (fades, gain) at the top of its body take the press before the edges.
     if (const doc::AudioClipPtr& ac = t.clips[j].audio; ac && p.y >= titleB && ctx_.sampleAvailable(ac->sample)) {
       const AudioHandleRects hr = audioHandles(*ac, x0, x1, titleB, bottom - 1.0f, ax.k, s.factor);
@@ -314,6 +362,11 @@ void Editor::setSelection(Selection s, bool showInClipView) {
   view_.setTimeSelection(sel_.time && sel_.time->end > sel_.time->start ? sel_.time : std::nullopt);
   if (showInClipView && !sel_.clips.empty()) ctx_.setDetailClip(sel_.clips.front());
   ctx_.setSelectedTrack(sel_.tracks.empty() ? doc::TrackId{} : sel_.tracks.front());
+  // SX.6: the clip popup follows the selection (Esc's dismissal lasts until the selected clips change).
+  if (!std::equal(old.clips.begin(), old.clips.end(), sel_.clips.begin(), sel_.clips.end(),
+                  [](const doc::ClipRef& a, const doc::ClipRef& b) { return a.clip == b.clip && a.track == b.track; }))
+    popupDismissed_ = false;
+  syncClipPopup();
 }
 
 // [t0, t1] covering the time selection (or insert marker) and every selected clip. False when there is neither.
@@ -382,6 +435,7 @@ void Editor::afterDocumentChange(const doc::StoreEvent& e) {
     ids_.clear();
     trackIds_.clear();
     view_.setTimeSelection(std::nullopt);
+    syncClipPopup();
     return;
   }
   if (drag_.kind == DragKind::Move || drag_.kind == DragKind::Resize) drag_ = {};  // the clips changed under it
@@ -400,6 +454,7 @@ void Editor::afterDocumentChange(const doc::StoreEvent& e) {
     if (s.clips.empty() && s.tracks.empty()) s.time.reset();
     setSelection(std::move(s), false);
   }
+  syncClipPopup();  // SX.6: the clip moved, resized or went (and its popup with it)
 }
 
 void Editor::selectTrack(doc::TrackId id, Mods mods) {
@@ -570,7 +625,6 @@ Cursor Editor::cursorAt(Vec2 p) const {
   const Hit h = hitTest(p);
   if (!h.clip) return Cursor::Arrow;  // empty lane space: a drag selects time
   if (frozenTrack(h.ref.track)) return Cursor::Arrow;  // FZ.3: nothing to drag on a frozen track's clip
-  if (h.zone == kZoneMenu) return Cursor::Pointer;  // SX.2
   if (h.zone == 0) return Cursor::Move;
   if (h.zone == kZoneGain) return Cursor::ResizeNS;
   if (h.zone == kZoneFadeIn || h.zone == kZoneFadeOut) return Cursor::ResizeEW;
@@ -658,16 +712,15 @@ void Editor::press(const PointerEvent& e) {
   const Hit h = hitTest(e.pos);
   drag_.pressRow = h.row;
   const bool toggle = (e.mods & mod::kCtrl) != 0, add = (e.mods & mod::kShift) != 0;
+  // SX.6: the clip popup centres on where its clip was pressed (a time in the clip, so it follows the clip).
+  if (h.clip) {
+    popupPress_ = h.ref;
+    popupPressDt_ = geo().axis(h.row).tick(e.pos.x) - static_cast<double>(h.clip->start());
+  }
 
   if (e.button == PointerButton::Right) {
     if (h.clip && !selected(h.ref.clip)) setSelection(selectionOfClips({h.ref}), true);
     (void)openContextMenu(e.pos);
-    return;
-  }
-
-  // SX.2: the menu button of a selected audio clip opens the clip menu there (the selection stays).
-  if (h.clip && h.zone == kZoneMenu && e.button == PointerButton::Left) {
-    (void)openClipMenu(h.ref, true, e.pos.x);
     return;
   }
 
@@ -1694,15 +1747,6 @@ Menu* Editor::openContextMenu(Vec2 at) {
   items.push_back(action("Loop Selection", "arrangement.loopSelection", "Ctrl+L"));
   items.push_back(action("Deactivate / Activate", "arrangement.toggleActive", "0"));
   items.push_back(action("Reverse", "arrangement.reverse", "R"));
-  {  // SX.2: the clip menu of the clip under the pointer (at the press), else of the first selected audio clip
-    const Hit h = hitTest(at);
-    const bool under = h.clip && h.clip->audio;
-    const doc::ClipRef ref = under ? h.ref : clipMenuTarget();
-    const float x = under ? at.x : std::numeric_limits<float>::quiet_NaN();
-    MenuItem m = MenuItem::item("Clip Menu\xE2\x80\xA6", [this, ref, x] { (void)openClipMenu(ref, true, x); }, "Ctrl+Space");
-    m.enabled = ref.clip.valid();
-    items.push_back(std::move(m));
-  }
   items.push_back(exportMidiItem());  // MF.3
   items.push_back(MenuItem::sep());
   freezeItems(items);  // FZ.3: the selected clips' tracks

@@ -171,6 +171,12 @@ struct RadialMenuOptions {
   RadialLayout layout = RadialLayout::Rings;
   IRect around{};
   float bandX = std::numeric_limits<float>::quiet_NaN();
+  // SX.6: a modeless popup (the arrangement's clip popup). It hit-tests only on its bubbles and band panels: a press
+  // anywhere else (and any drag-and-drop) reaches what is under it, as if it were not there (no outside-click close); a
+  // press on it leaves the focus where it is (Widget::keepsFocus); it takes no focus, so keys
+  // go to the focused widget, except while a typed entry is open (the entry takes the focus and gives it back). A right
+  // press on it does nothing. The opener decides when it closes (close(); Esc is the opener's key too).
+  bool modeless = false;
 };
 
 class RadialMenu : public Widget {
@@ -229,6 +235,11 @@ public:
   // Re-reads every value, enabled state and the centre text; closes the menu when options.valid() is false.
   void refresh();
 
+  // SX.6 bands: hug `anchor` (a rect in `from`'s tree, mapped as openRadialMenu maps its anchor) centred on x `atX`
+  // (from's px; NaN: the rectangle's centre): the opener moves the menu with what it hugs. Relays out (and damages) only
+  // when that changed.
+  void moveAround(const Widget& from, const IRect& anchor, float atX = std::numeric_limits<float>::quiet_NaN());
+
   // Picks a leaf: closes the menu, then onPick. Ignored for items with children and for controls.
   void pick(int32_t item);
   void close();
@@ -242,6 +253,8 @@ public:
   void onTimer(uint32_t id) override;
   void onFocusChanged(bool focused) override;
   void onCaptureLost() override;
+  void onHoverChanged(bool hovered) override;
+  bool hitsAt(Vec2 p) const noexcept override;
   ISize contentExtent(ISize viewport) const override { return viewport; }
 
 private:
@@ -349,6 +362,7 @@ private:
   TextBuffer typeIn_;
   std::string centreText_;
   bool closed_ = false;
+  Widget* restoreFocus_ = nullptr;  // modeless: what had the focus before a typed entry took it
 
   // measured (device px)
   float ringR_[kMaxDepth]{};    // bubble radius per depth

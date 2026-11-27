@@ -270,10 +270,18 @@ public:
   void setEnabled(bool e);
   bool focusable() const noexcept { return has(kFocusable); }
   void setFocusable(bool f) noexcept { set(kFocusable, f); }
+  // SX.6: a press on this (non-focusable) widget or inside it leaves the focus where it is, instead of moving it to the
+  // nearest focusable ancestor (or nowhere): a modeless popup whose keys belong to the widget under it.
+  bool keepsFocus() const noexcept { return has(kKeepsFocus); }
+  void setKeepsFocus(bool k) noexcept { set(kKeepsFocus, k); }
   // Hittable widgets can be the target of pointer events; non-hittable ones let the pointer through to
   // whatever is below them (their children are still hit-tested). Default: true.
   bool hittable() const noexcept { return has(kHittable); }
   void setHittable(bool h) noexcept { set(kHittable, h); }
+  // Whether a pointer at `p` (inside the rect) hits this hittable widget itself (SX.6). Default: anywhere in its rect;
+  // a widget with see-through parts (a modeless popup's gaps) returns false there and the pointer reaches what is
+  // below it. Called by hit testing: must not allocate.
+  virtual bool hitsAt(Vec2 /*p*/) const noexcept { return true; }
   bool clipsChildren() const noexcept { return has(kClipChildren); }
   void setClipChildren(bool c) noexcept { set(kClipChildren, c); }
   // A text-entry widget: while it has focus it receives TextEvents and swallows printable keys (they never
@@ -373,6 +381,7 @@ protected:
     kDescendantDirty = 1u << 10, // some descendant has kArrangeDirty
     kFrameRequested = 1u << 11,
     kFrozen = 1u << 12,          // layout scratch (flex clamping)
+    kKeepsFocus = 1u << 13,      // a press on it leaves the focus where it is (SX.6)
   };
   bool has(uint32_t f) const noexcept { return (flags_ & f) != 0; }
   void set(uint32_t f, bool on) noexcept { flags_ = on ? (flags_ | f) : (flags_ & ~f); }

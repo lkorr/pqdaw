@@ -359,32 +359,6 @@ inline AudioHandleRects audioHandles(const doc::AudioClip& c, float cx0, float c
   return h;
 }
 
-// SX.2: the clip-menu button of a SELECTED audio clip (another hit zone: a press opens the radial clip menu,
-// pq/views/audio_clip/clip_menu.h): a disc at the right end of the title strip [top, titleB) of the clip's columns
-// [cx0, cx1) seen within [vx0, vx1) (the lane's visible columns: a long clip keeps it in view), inset from the edge so
-// the right edge's trim grab stays beside it. Hidden when that visible part is narrower than 3× the button or the
-// title strip is too thin.
-inline constexpr int kZoneMenu = 6;
-struct ClipMenuButton {
-  ui::Vec2 c{};
-  float r = 0.0f;
-  bool show = false;
-  bool contains(ui::Vec2 p) const noexcept {
-    const float dx = p.x - c.x, dy = p.y - c.y;
-    return show && dx * dx + dy * dy <= (r + 1.0f) * (r + 1.0f);
-  }
-};
-inline ClipMenuButton clipMenuButton(float cx0, float cx1, float vx0, float vx1, float top, float titleB, float scale) noexcept {
-  ClipMenuButton b;
-  const float h = titleB - top;
-  b.r = std::floor(0.5f * h) - std::max(1.0f, std::round(scale));
-  const float x0 = std::max(cx0, vx0), x1 = std::min(cx1, vx1);
-  if (b.r < 3.0f || x1 - x0 < 6.0f * b.r) return b;
-  b.show = true;
-  b.c = {std::round(x1 - std::round(4.0f * scale) - b.r), top + 0.5f * h};
-  return b;
-}
-
 class Model {
 public:
   doc::Snapshot shown;
@@ -653,13 +627,22 @@ public:
   void selectAll();
   bool hasClipboard() const noexcept { return !clipboard_.clips.empty(); }
   ui::Menu* openContextMenu(ui::Vec2 at);
-  // SX.2 / SX.5: the clip menu (pq/views/audio_clip/clip_menu.h) of audio clip `ref`, around its visible part on the
-  // current surface, centred on x `atX` (device px; NaN: the visible part's centre; another one open closes first); the
-  // selection is left as it is. nullptr: not an audio clip on a row. clipMenuTarget: the clip Ctrl+Space opens it for
-  // (the first selected audio clip; invalid: none).
-  ui::RadialMenu* openClipMenu(const doc::ClipRef& ref, bool animate = true, float atX = std::numeric_limits<float>::quiet_NaN());
+  // SX.6: the clip popup (pq/views/audio_clip/clip_menu.h, a modeless ui::RadialMenu): open while the selection is
+  // exactly one audio clip (popupTarget; invalid: none), around that clip's part in the current surface's view, centred
+  // on where the clip was pressed (a time in the clip; else the part's centre). syncClipPopup puts it right and runs on
+  // every selection, document and time-window change and after every layout (vertical scroll, track heights): it
+  // follows the clip; it is hidden while the clip is out of view and while a drag runs (popupHiddenByDrag: an editor
+  // drag once it moved, an automation or take gesture, a ruler loop / locator edit; dragStateChanged, from the pointer
+  // paths, syncs when that flips) and closed for any other selection. dismissClipPopup (Esc: true when it was shown)
+  // closes it until the selected clips change; toggleClipPopup (Ctrl+Space) dismisses / brings it back. clipMenu: the
+  // open popup, else nullptr.
+  doc::ClipRef popupTarget() const;
+  void syncClipPopup();
+  void dragStateChanged();
+  bool clipPopupShown() const noexcept;
+  bool dismissClipPopup();
+  void toggleClipPopup();
   ui::RadialMenu* clipMenu() const noexcept { return clipMenu_ ? *clipMenu_ : nullptr; }
-  doc::ClipRef clipMenuTarget() const;
 
   // --- tracks (T3.10, tracks.cpp) ---
   bool newTrack(doc::TrackKind kind);
@@ -720,7 +703,7 @@ private:
     int32_t row = -1;
     doc::ClipRef ref{};
     const doc::ClipSlot* clip = nullptr;
-    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body; T5.6 audio: kZoneFadeIn / FadeOut / Gain; SX.2 kZoneMenu
+    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body; T5.6 audio: kZoneFadeIn / FadeOut / Gain
   };
   Hit hitTest(ui::Vec2 p) const;
   void setHover(HoverPart h);
@@ -780,6 +763,20 @@ private:
   Clipboard clipboard_;
   std::optional<TickRange> lastPaste_;  // the range the last paste selected (pasting again goes after it)
   std::shared_ptr<ui::RadialMenu*> clipMenu_;  // SX.2: the open clip menu (its onClosed clears it), else null
+  // SX.6: the clip popup's state.
+  bool popupHiddenByDrag() const noexcept;
+  struct LayoutHook final : ui::TreeObserver {
+    Editor& ed;
+    explicit LayoutHook(Editor& e) : ed(e) {}
+    void onLayout() override { ed.syncClipPopup(); }
+  };
+  doc::ClipRef clipMenuRef_{};      // the clip the open popup edits
+  doc::ClipRef popupPress_{};       // the clip last pressed, and where in it (ticks from its start)
+  double popupPressDt_ = 0.0;
+  bool popupDismissed_ = false;     // Esc / Ctrl+Space, until the selected clips change
+  bool popupDragHidden_ = false;    // popupHiddenByDrag at the last sync
+  LayoutHook layoutHook_{*this};
+  ui::UiTree* hookTree_ = nullptr;  // the tree layoutHook_ observes
 };
 
 // The return tracks and the master, pinned under the scrolling rows (T3.10): their lanes (BottomLanes, child 0) and
@@ -959,6 +956,9 @@ public:
   ui::Cursor cursorAt(ui::Vec2 p) const override;
   // Esc: drops a brace / locator drag (true when one ran).
   bool cancelDrag();
+  // SX.6: a loop brace / locator drag runs (not a zoom / scrub); the arrangement's ruler tells its clip popup when that
+  // starts or ends (it hides meanwhile).
+  bool editing() const noexcept { return pressed_ && dragging_ && grab_.grab != Grab::Zoom; }
   // What a press at `p` grabs.
   // LoopNew (T4.17): a drag in the loop row off the brace draws a new loop (both ends on the grid; the loop switches on).
   enum class Grab : uint8_t { Zoom, LoopStart, LoopEnd, Loop, Locator, LoopNew };
@@ -996,7 +996,9 @@ private:
   double tickAt(float x) const { return ax_->origin() + (static_cast<double>(x) - static_cast<double>(ax_->x0())) / ax_->devicePxPerTick(); }
   // The rect it draws and hits in: its own, or (TL.4) the strip it is painted into / pressed in now.
   const ui::IRect& area() const noexcept { return strip_.empty() ? rect() : strip_; }
+  bool pointerImpl(const ui::PointerEvent& e);
   std::unique_ptr<RulerAxis> ax_;
+  ArrangementView* view_ = nullptr;  // SX.6: the arrangement's own ruler (its clip popup); null for the others
   bool compact_ = false;
   ui::IRect strip_{};
   Hit grab_{};

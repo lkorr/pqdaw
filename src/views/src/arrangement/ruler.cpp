@@ -60,7 +60,7 @@ private:
 
 }  // namespace
 
-Ruler::Ruler(ArrangementView& view) : Ruler(std::make_unique<ArrangementAxis>(view)) {}
+Ruler::Ruler(ArrangementView& view) : Ruler(std::make_unique<ArrangementAxis>(view)) { view_ = &view; }
 
 Ruler::Ruler(std::unique_ptr<RulerAxis> axis, std::string name) : Control(std::move(name)), ax_(std::move(axis)) {
   setInfo("Beat Time Ruler",
@@ -148,12 +148,13 @@ Cursor Ruler::cursorAt(Vec2 p) const {
 }
 
 bool Ruler::cancelDrag() {
-  const bool was = pressed_ && dragging_ && grab_.grab != Grab::Zoom;
+  const bool was = editing();
   pressed_ = dragging_ = scrubbing_ = false;
   grab_ = {};
   dt_ = 0;
   newLo_ = newHi_ = 0;
   if (was) markDirty();
+  if (was && view_) view_->editor().dragStateChanged();  // SX.6
   return was;
 }
 
@@ -376,6 +377,13 @@ void Ruler::paint(PaintContext& ctx) {
 }
 
 bool Ruler::onPointer(const PointerEvent& e) {
+  const bool was = editing();
+  const bool r = pointerImpl(e);
+  if (view_ && editing() != was) view_->editor().dragStateChanged();  // SX.6: the clip popup hides while it runs
+  return r;
+}
+
+bool Ruler::pointerImpl(const PointerEvent& e) {
   const float scale = tree() ? tree()->scale() : 1.0f;
   // TL.1: off the lanes' x range a press, the wheel and the hover belong to what is under the ruler.
   if (!pressed_ && !inRange(e.pos.x)) return false;
