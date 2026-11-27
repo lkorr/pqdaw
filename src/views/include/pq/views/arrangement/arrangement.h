@@ -125,6 +125,7 @@
 #include "pq/document/model.h"
 #include "pq/ui/controls.h"
 #include "pq/ui/overlay.h"
+#include "pq/ui/radial_menu.h"
 #include "pq/ui/widget.h"
 #include "pq/views/arrangement/automation.h"
 #include "pq/views/sample_drop.h"
@@ -474,6 +475,13 @@ public:
   // when it is not an audio clip on a row or t is outside it.
   double audioEnvelopeAt(const doc::ClipRef& clip, double t) const;
   double audioDrawnFrameAt(const doc::ClipRef& clip, double t) const;
+  // SX.2: the clip-menu button of a selected audio clip (title strip, right end), device px (empty: not selected, not
+  // audio, or too narrow); a press there opens the radial clip menu (pq/views/audio_clip/clip_menu.h), as Ctrl+Space
+  // and the clip context menu's "Clip Menu…" do. openClipMenu: that menu for `clip` (nullptr: not an audio clip on a
+  // row); clipMenu: the open one, else nullptr.
+  ui::Rect clipMenuButtonRect(const doc::ClipRef& clip) const noexcept;
+  ui::RadialMenu* openClipMenu(const doc::ClipRef& clip, bool animate = true);
+  ui::RadialMenu* clipMenu() const noexcept;
   // T4.16b: the clip part highlighted under the pointer (the one a press would grab): zone −1 / +1 an edge, 0 the
   // title strip; an invalid clip when none.
   struct ClipHover {

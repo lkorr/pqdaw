@@ -21,6 +21,7 @@
 #include "pq/ui/overlay.h"
 #include "pq/ui/waveform.h"
 #include "pq/views/audio_clip/clip_controls.h"
+#include "pq/views/audio_clip/clip_edits.h"
 #include "pq/views/sample_analysis.h"
 #include "pq/views/waveforms.h"
 
@@ -187,7 +188,6 @@ constexpr double kEnvelopeSeconds = 0.025;  // AC.look: the waveform body's wind
 // from kSignalFramesPerPx down, cross-faded between (nothing pops). The deepest zoom: kMaxPxPerSample px per sample.
 constexpr double kBodyFramesPerPx = 16.0, kSignalFramesPerPx = 8.0;
 constexpr double kMaxPxPerSample = 64.0;
-constexpr double kConfident = 0.6;       // a detected tempo the warp commands trust (plan: auto-warp threshold)
 }  // namespace
 
 // An Off clip shows its whole file on a frame axis; a warped one its content on a content-tick axis
@@ -1518,7 +1518,6 @@ bool AudioClipView::onKey(const KeyEvent& e) {
 }
 
 namespace {
-constexpr Ticks kGrans[] = {0, kPpq, kPpq / 2, kPpq / 4, kPpq / 8};  // Preserve: Transients, 1/4, 1/8, 1/16, 1/32
 constexpr float kKnobH = 84.0f;      // logical px: label, dial, readout
 constexpr float kClipKnobH = 96.0f;  // the Clip card's (the transpose dial the largest)
 }  // namespace
@@ -1572,14 +1571,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   clipCard.setLayout(LayoutKind::Row);
   clipCard.setGap(4);
   clipCard.setHeight(Length::fixed(audio_clip::Section::kTitleH + kClipKnobH + 7));
-  ValueSpec ts;
-  ts.min = -doc::kMaxTransposeCents;
-  ts.max = doc::kMaxTransposeCents;
-  ts.def = 0.0;
-  ts.dragPixels = 768.0;  // ~8 px per 100 c
-  ts.fineFactor = 0.1;
-  ts.decimals = 1;
-  ts.unit = "\xC2\xA2";
+  const ValueSpec ts = clip_edits::transposeSpec();
   transpose_ = &clipCard.add<audio_clip::TransposeKnob>(*this, ts);
   transpose_->setWidth(Length::fixed(100));
   transpose_->setHeight(Length::fixed(kClipKnobH));
@@ -1588,39 +1580,15 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
                                    "cents, +7st for semitones, 5/4 for an exact ratio (double-click or start typing). Every "
                                    "warp mode but Re-Pitch (which follows the tempo).");
   bindGesture(*transpose_, "Transpose", [this](double) { (void)setTranspose(transpose_->pending); });
-  ValueSpec ds;
-  ds.min = -doc::kMaxDetuneCents;
-  ds.max = doc::kMaxDetuneCents;
-  ds.def = 0.0;
-  ds.dragPixels = 300.0;
-  ds.keyStep = 1.0;
-  ds.decimals = 0;
-  ds.unit = "\xC2\xA2";
+  const ValueSpec ds = clip_edits::detuneSpec();
   detune_ = &knob(clipCard, "detune", "Detune", ds, 54, kClipKnobH);
-  detune_->formatter = [](double v) {
-    char b[32];
-    if (std::round(v) == 0.0) std::snprintf(b, sizeof b, "0 \xC2\xA2");
-    else std::snprintf(b, sizeof b, "%+.0f \xC2\xA2", v);
-    return std::string(b);
-  };
+  detune_->formatter = clip_edits::formatDetune;
   detune_->setSpec(ds);
   detune_->setInfo("Detune", "Fine pitch in cents (±50). Every warp mode but Re-Pitch.");
   bindGesture(*detune_, "Clip Detune", [this](double v) { (void)setDetune(static_cast<float>(v)); });
-  ValueSpec gs;
-  gs.min = doc::kMinClipGainDb;
-  gs.max = doc::kMaxClipGainDb;
-  gs.def = 0.0;
-  gs.dragPixels = 400.0;
-  gs.keyStep = 0.5;
-  gs.decimals = 1;
-  gs.unit = "dB";
+  const ValueSpec gs = clip_edits::gainSpec();
   gain_ = &knob(clipCard, "gain", "Gain", gs, 54, kClipKnobH);
-  gain_->formatter = [](double v) {
-    if (v <= doc::kMinClipGainDb) return std::string("-inf dB");
-    char b[32];
-    std::snprintf(b, sizeof b, "%.1f dB", v);
-    return std::string(b);
-  };
+  gain_->formatter = clip_edits::formatGain;
   gain_->setSpec(gs);
   gain_->setInfo("Clip Gain", "The clip's gain (−inf … +24 dB).");
   bindGesture(*gain_, "Clip Gain", [this](double v) { (void)setGain(static_cast<float>(v)); });
@@ -1635,14 +1603,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
     reverse_->onPress = [this] {
       if (clip_) (void)setReverse(!clip_->reverse);
     };
-    ValueSpec fs;
-    fs.min = 0.0;
-    fs.max = 60000.0;  // refresh: the clip's length (a fade cannot be longer), so the fill is the fade's share of it
-    fs.def = 0.0;
-    fs.dragPixels = 200.0;
-    fs.keyStep = 1.0;
-    fs.decimals = 0;
-    fs.unit = "ms";
+    const ValueSpec fs = clip_edits::fadeSpec(60000.0);  // refresh: the clip's length
     fadeIn_ = &side.add<FillBox>("fade-in", "Fade In", fs, true);
     fadeIn_->setHeight(Length::fixed(20));
     fadeIn_->setInfo("Fade In", "The fade at the clip start in milliseconds (or drag its handle in the arrangement); the fill "
@@ -1677,13 +1638,7 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
     }
     // Row 2 has 4 cells' worth (1 + 1 + 2): the grid's columns line up with row 1.
     Widget& tempo = row(warpCard, "tempo");
-    ValueSpec bs;
-    bs.min = 20.0;
-    bs.max = 999.0;
-    bs.def = 120.0;
-    bs.dragPixels = 1000.0;
-    bs.keyStep = 1.0;
-    bs.decimals = 2;
+    const ValueSpec bs = clip_edits::bpmSpec();
     bpm_ = &tempo.add<FillBox>("bpm", "BPM", bs, false);
     bpm_->setWidth(Length::flex(2));
     bpm_->setInfo("Source Tempo", "The tempo the file was recorded at (its tempo tag or name, else its detected tempo, else its "
@@ -1728,25 +1683,25 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
     };
     caption(*beatsCol_, "preserve-label", "Preserve");
     Widget& pr = row(*beatsCol_, "preserve");
-    static constexpr const char* kPreserve[][2] = {{"transients", "Trans"}, {"1-4", "1/4"}, {"1-8", "1/8"}, {"1-16", "1/16"}, {"1-32", "1/32"}};
+    static constexpr const char* kPreserve[] = {"transients", "1-4", "1-8", "1-16", "1-32"};
     for (size_t i = 0; i < 5; ++i) {
-      Chip& c = chip(pr, kPreserve[i][0], kPreserve[i][1]);
+      Chip& c = chip(pr, kPreserve[i], clip_edits::kGranulationLabels[i]);
       c.setWidth(Length::flex(i == 0 ? 1.3f : 1.0f));
       c.setInfo("Preserve", "Beats: where the sample is cut into slices — at its transients (Trans), or on a grid of its "
                             "beats.");
       c.onPress = [this, i] {
         if (!clip_) return;
         doc::WarpParams p = clip_->warpParams;
-        p.beatsGranulation = kGrans[i];
+        p.beatsGranulation = clip_edits::kGranulations[i];
         (void)setWarpParams(p);
       };
       preserve_[i] = &c;
     }
     caption(*beatsCol_, "loop-label", "Transient Loop");
     Widget& lr = row(*beatsCol_, "beats-loop");
-    static constexpr const char* kLoops[][2] = {{"off", "Off"}, {"forward", "\xE2\x86\x92"}, {"back-fwd", "\xE2\x86\x94"}};
+    static constexpr const char* kLoops[] = {"off", "forward", "back-fwd"};
     for (size_t i = 0; i < 3; ++i) {
-      Chip& c = chip(lr, kLoops[i][0], kLoops[i][1]);
+      Chip& c = chip(lr, kLoops[i], clip_edits::kBeatsLoopLabels[i]);
       c.setWidth(Length::flex(1));
       c.setInfo("Transient Loop Mode", "Beats, slowed down: what a slice does when it ends before the next one — stop (Off), "
                                        "loop forward (→), or loop back and forth (↔).");
@@ -1759,45 +1714,19 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
       beatsLoop_[i] = &c;
     }
   }
-  ValueSpec pct;
-  pct.min = 0.0;
-  pct.max = 100.0;
-  pct.def = 100.0;
-  pct.dragPixels = 300.0;
-  pct.keyStep = 1.0;
-  pct.decimals = 0;
-  pct.unit = "%";
-  beatsEnv_ = &knob(*mode_, "beats-env", "Envelope", pct, 64);
+  beatsEnv_ = &knob(*mode_, "beats-env", "Envelope", clip_edits::beatsEnvelopeSpec(), 64);
   beatsEnv_->setInfo("Transient Envelope", "Beats: how long each slice holds before it fades (100: the whole gap).");
   paramGesture(*beatsEnv_, "Warp Settings", [](doc::WarpParams& p, double v) { p.beatsEnvelope = static_cast<float>(v); });
-  ValueSpec gr;
-  gr.min = doc::kMinGrainMs;
-  gr.max = doc::kMaxGrainMs;
-  gr.def = 30.0;
-  gr.dragPixels = 400.0;
-  gr.keyStep = 1.0;
-  gr.decimals = 0;
-  gr.unit = "ms";
-  grain_ = &knob(*mode_, "grain", "Grain Size", gr, 72);
+  grain_ = &knob(*mode_, "grain", "Grain Size", clip_edits::grainSpec(), 72);
   grain_->setInfo("Grain Size", "Tones / Texture: the length of the grains (short: tighter timing; long: smoother pitch).");
   paramGesture(*grain_, "Warp Settings", [](doc::WarpParams& p, double v) { p.grainSizeMs = static_cast<float>(v); });
-  ValueSpec fx = pct;
-  fx.def = 0.0;
-  flux_ = &knob(*mode_, "flux", "Flux", fx, 72);
+  flux_ = &knob(*mode_, "flux", "Flux", clip_edits::fluxSpec(), 72);
   flux_->setInfo("Flux", "Texture: randomness of the grains' positions.");
   paramGesture(*flux_, "Warp Settings", [](doc::WarpParams& p, double v) { p.flux = static_cast<float>(v); });
-  formants_ = &knob(*mode_, "formants", "Formants", pct, 72);
+  formants_ = &knob(*mode_, "formants", "Formants", clip_edits::formantsSpec(), 72);
   formants_->setInfo("Formants", "Complex Pro: how much the formants (a voice's character) stay put when transposed.");
   paramGesture(*formants_, "Warp Settings", [](doc::WarpParams& p, double v) { p.formants = static_cast<float>(v); });
-  ValueSpec eo;
-  eo.min = doc::kMinWarpEnvelope;
-  eo.max = doc::kMaxWarpEnvelope;
-  eo.def = 128.0;
-  eo.dragPixels = 400.0;
-  eo.keyStep = 1.0;
-  eo.decimals = 0;
-  eo.unit = "bins";  // M6 review L19: a count, not Beats' "Envelope" percentage
-  envOrder_ = &knob(*mode_, "env-order", "Envelope", eo, 72);
+  envOrder_ = &knob(*mode_, "env-order", "Envelope", clip_edits::envelopeOrderSpec(), 72);
   envOrder_->setInfo("Envelope", "Complex Pro: the detail of the spectral envelope the formants follow, in frequency bins "
                                  "(low: smooth).");
   paramGesture(*envOrder_, "Warp Settings", [](doc::WarpParams& p, double v) { p.envelope = static_cast<float>(v); });
@@ -1873,10 +1802,7 @@ void AudioClipView::refresh() {
     format_->setText(fmt);
   }
   // AC.look: the clip's tuning (the transpose knob's steps; a Steps transpose resolves in it).
-  tuning_.reset();
-  if (const std::optional<doc::TrackPath> tp = doc::findTrack(*cur, ref_.track))
-    if (const doc::TuningDef* def = doc::audioClipTuning(*cur, *tp, a))
-      if (Result<tuning::Tuning> t = doc::buildTuning(*def)) tuning_ = std::move(*t);
+  tuning_ = clip_edits::clipTuning(*cur, ref_);
   const double cents = transposeCents(a.transpose);
   if (!transpose_->inGesture()) transpose_->setValue(cents);
   transpose_->setReadout(transposeReadout(a.transpose, cents));
@@ -1914,9 +1840,7 @@ void AudioClipView::refresh() {
     invalidateArrange();
   }
   {
-    int32_t gi = 3;  // an unknown granulation reads as 1/16
-    for (int32_t i = 0; i < 5; ++i)
-      if (kGrans[i] == wp.beatsGranulation) gi = i;
+    const int32_t gi = clip_edits::granulationIndex(wp.beatsGranulation);
     for (int32_t i = 0; i < 5; ++i) preserve_[i]->setOn(i == gi);
   }
   for (size_t i = 0; i < 3; ++i) beatsLoop_[i]->setOn(static_cast<size_t>(wp.beatsLoop) == i);
@@ -1925,112 +1849,23 @@ void AudioClipView::refresh() {
   if (!flux_->inGesture()) flux_->setValue(wp.flux);
   if (!formants_->inGesture()) formants_->setValue(wp.formants);
   if (!envOrder_->inGesture()) envOrder_->setValue(wp.envelope);
-  const TempoMap& tm = cur->timeline->tempoMap;
-  const double t0 = tm.ticksToSeconds(a.start), t1 = tm.ticksToSeconds(a.start + a.length);
   // The fades' boxes range over the clip's length (what a fade can be), so their fill is the fade's share of the clip.
-  const double clipMs = std::max(1.0, std::floor((t1 - t0) * 1000.0));
+  const clip_edits::FadesMs fm = clip_edits::fadesMs(*cur, a);
   for (audio_clip::FillBox* b : {fadeIn_, fadeOut_})
-    if (!b->inGesture() && b->spec().max != clipMs) {
-      ValueSpec fs = b->spec();
-      fs.max = clipMs;
-      b->setSpec(fs);
-    }
-  const Ticks fi = std::clamp<Ticks>(a.fadeIn.length, 0, a.length), fo = std::clamp<Ticks>(a.fadeOut.length, 0, a.length - fi);
-  if (!fadeIn_->inGesture()) fadeIn_->setValue(std::round((tm.ticksToSeconds(a.start + fi) - t0) * 1000.0));
-  if (!fadeOut_->inGesture()) fadeOut_->setValue(std::round((t1 - tm.ticksToSeconds(a.start + a.length - fo)) * 1000.0));
+    if (!b->inGesture() && b->spec().max != fm.clipMs) b->setSpec(clip_edits::fadeSpec(fm.clipMs));
+  if (!fadeIn_->inGesture()) fadeIn_->setValue(fm.in);
+  if (!fadeOut_->inGesture()) fadeOut_->setValue(fm.out);
   box_->markDirty();
   display_->markDirty();
 }
 
-double AudioClipView::transposeCents(const doc::AudioTranspose& t) const {
-  if (t.unit == doc::TransposeUnit::Steps) {
-    if (tuning_) return doc::transposeCents(t, &*tuning_);
-    return 100.0 * static_cast<double>(t.steps);  // no tuning resolves: semitones
-  }
-  return doc::transposeCents(t, nullptr);
-}
+double AudioClipView::transposeCents(const doc::AudioTranspose& t) const { return clip_edits::transposeCents(tuning_, t); }
 
-namespace {
-doc::AudioTranspose stepsOf(int64_t n) {
-  doc::AudioTranspose t;
-  t.unit = doc::TransposeUnit::Steps;
-  t.steps = static_cast<int32_t>(std::clamp<int64_t>(n, -doc::kMaxTransposeSteps, doc::kMaxTransposeSteps));
-  return t;
-}
-}  // namespace
-
-// The clip's tuning's degree n in cents above degree 0, its degrees per period and the period in cents (no tuning:
-// 12-EDO semitones).
-static double stepCentsOf(const std::optional<tuning::Tuning>& tun, int64_t n) {
-  if (!tun) return 100.0 * static_cast<double>(n);
-  return doc::transposeCents(stepsOf(n), &*tun);
-}
-
-doc::AudioTranspose AudioClipView::nearestStep(double cents) const {
-  const int64_t dpe = tuning_ ? std::max<int64_t>(1, doc::degreesPerEquave(*tuning_)) : 12;
-  const double period = stepCentsOf(tuning_, dpe);
-  const double mean = period > 0.0 ? period / static_cast<double>(dpe) : 100.0;
-  const auto n0 = static_cast<int64_t>(std::llround(cents / mean));
-  int64_t best = n0;
-  double bd = 1e300;
-  const int64_t reach = std::min<int64_t>(64, dpe / 2 + 2);  // an uneven scale's degree sits within half a period
-  for (int64_t n = n0 - reach; n <= n0 + reach; ++n) {
-    const double d = std::abs(stepCentsOf(tuning_, n) - cents);
-    if (d < bd - 1e-9) {
-      bd = d;
-      best = n;
-    }
-  }
-  return stepsOf(best);
-}
+doc::AudioTranspose AudioClipView::nearestStep(double cents) const { return clip_edits::nearestStep(tuning_, cents); }
 
 std::optional<doc::AudioTranspose> AudioClipView::steppedTranspose(int dir, bool octave, int count) const {
-  if (!clip_ || dir == 0 || count <= 0) return std::nullopt;
-  const doc::AudioTranspose cur = clip_->transpose;
-  const int64_t dpe = tuning_ ? std::max<int64_t>(1, doc::degreesPerEquave(*tuning_)) : 12;
-  const int64_t sign = dir > 0 ? 1 : -1;
-  doc::AudioTranspose t = cur;
-  if (octave) {
-    // AC.fix: an octave (2/1, 12 semitones) whatever the tuning, the unit kept where it can be: Steps ± the degrees
-    // per equave when the equave is the octave, else cents; a Ratio × or ÷ 2 (cents if that overflows).
-    constexpr double kOctave = 1200.0;
-    const double octaves = static_cast<double>(sign * count);
-    switch (cur.unit) {
-      case doc::TransposeUnit::Steps:
-        if (std::abs(stepCentsOf(tuning_, dpe) - kOctave) < 1e-6) {
-          t = stepsOf(static_cast<int64_t>(cur.steps) + sign * count * dpe);
-        } else {
-          t = doc::AudioTranspose{};
-          t.cents = transposeCents(cur) + octaves * kOctave;
-        }
-        break;
-      case doc::TransposeUnit::Cents: t.cents = cur.cents + octaves * kOctave; break;
-      case doc::TransposeUnit::Ratio: {
-        std::optional<tuning::Rational> r = cur.ratio;
-        for (int i = 0; r && i < count; ++i) r = sign > 0 ? tuning::mul(*r, tuning::Rational(2)) : tuning::div(*r, tuning::Rational(2));
-        if (r) {
-          t.ratio = *r;
-        } else {
-          t = doc::AudioTranspose{};
-          t.cents = transposeCents(cur) + octaves * kOctave;
-        }
-        break;
-      }
-    }
-  } else if (cur.unit == doc::TransposeUnit::Steps) {
-    t = stepsOf(static_cast<int64_t>(cur.steps) + sign * count);
-  } else {
-    // The next degree strictly above (below) the current pitch, then count − 1 more.
-    const double c = transposeCents(cur);
-    int64_t n = nearestStep(c).steps;
-    for (int guard = 0; guard < 4096 && (sign > 0 ? stepCentsOf(tuning_, n) <= c + 1e-6 : stepCentsOf(tuning_, n) >= c - 1e-6); ++guard)
-      n += sign;
-    for (int guard = 0; guard < 4096 && (sign > 0 ? stepCentsOf(tuning_, n - 1) > c + 1e-6 : stepCentsOf(tuning_, n + 1) < c - 1e-6); ++guard)
-      n -= sign;
-    t = stepsOf(n + sign * (count - 1));
-  }
-  if (std::abs(transposeCents(t)) > doc::kMaxTransposeCents + 1e-6) return std::nullopt;
-  return t;
+  if (!clip_) return std::nullopt;
+  return clip_edits::steppedTranspose(tuning_, clip_->transpose, dir, octave, count);
 }
 
 bool AudioClipView::dispatch(const doc::ops::EditResult& e, std::string_view what) {
@@ -2046,95 +1881,19 @@ bool AudioClipView::dispatch(const doc::ops::EditResult& e, std::string_view wha
   return true;
 }
 
-bool AudioClipView::setGain(float db) {
-  if (!clip_ || db == clip_->gainDb) return false;
-  return dispatch(doc::ops::setAudioClipGain(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), db), "Clip Gain");
-}
-
-bool AudioClipView::setTranspose(std::string_view text) {
-  if (!clip_) return false;
-  const std::optional<doc::AudioTranspose> t = parseTranspose(text);
-  if (!t) {
-    ctx_.setStatus("Transpose: type 7 (steps), 386.3c (cents), +7st (semitones) or 5/4 (a ratio)");
-    return false;
-  }
-  return setTranspose(*t);
-}
-
-bool AudioClipView::setTranspose(const doc::AudioTranspose& t) {
-  if (!clip_ || t == clip_->transpose) return false;
-  return dispatch(doc::ops::setAudioClipTranspose(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), t), "Transpose");
-}
-
-bool AudioClipView::setDetune(float cents) {
-  if (!clip_ || cents == clip_->detuneCents) return false;
-  return dispatch(doc::ops::setAudioClipDetune(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), cents), "Detune");
-}
-
-bool AudioClipView::setReverse(bool on) {
-  if (!clip_ || on == clip_->reverse) return false;
-  return dispatch(doc::ops::setAudioClipsReverse(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), on), "Reverse");
-}
-
-double AudioClipView::detectedBpm() {
-  if (!clip_) return 0.0;
-  const SampleAnalysisResult* an = ctx_.sampleAnalysis().get(clip_->sample);
-  if (!an || !an->tempo || an->tempo->estimate.confidence < audio_clip::kConfident) return 0.0;
-  return an->tempo->estimate.bpm;
-}
-
-bool AudioClipView::setWarp(doc::AudioWarp warp) {
-  if (!clip_ || warp == clip_->warp) return false;
-  double bpm = clip_->sourceBpm;
-  if (!doc::isWarped(clip_->warp) && doc::isWarped(warp)) {  // from Off: seed the source tempo
-    const doc::SampleRef* s = doc::findSample(*ctx_.doc(), clip_->sample);
-    const double detected = fileBpm_ >= kMinBpm && fileBpm_ <= kMaxBpm ? 0.0 : detectedBpm();
-    bpm = sourceBpmFor(detected > 0.0 ? detected : fileBpm_, s ? static_cast<double>(s->frames) / std::max(1.0, s->rate) : 0.0);
-  }
-  return dispatch(doc::ops::setAudioClipWarp(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), warp, bpm), "Warp");
-}
-
-bool AudioClipView::setSourceBpm(double bpm) {
-  if (!clip_ || !doc::isWarped(clip_->warp) || bpm == clip_->sourceBpm) return false;
-  return dispatch(doc::ops::setAudioClipWarp(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), clip_->warp, bpm),
-                  "Clip Tempo");
-}
-
-bool AudioClipView::scaleSourceBpm(double factor) {
-  if (!clip_ || !doc::isWarped(clip_->warp)) return false;
-  const double bpm = clip_->sourceBpm * factor;
-  if (bpm < kMinBpm || bpm > kMaxBpm) return false;
-  return setSourceBpm(bpm);
-}
-
-bool AudioClipView::setLoopEnabled(bool on) {
-  if (!clip_ || !doc::isWarped(clip_->warp) || on == clip_->loop.enabled) return false;
-  doc::ClipLoop l = clip_->loop;
-  l.enabled = on;
-  if (l.end <= l.start) {  // a fresh loop: the clip's own span of content
-    l.start = clip_->contentStart;
-    l.end = clip_->contentStart + clip_->length;
-  }
-  return dispatch(doc::ops::setAudioClipLoop(*ctx_.doc(), ref_, l), "Loop");
-}
-
-bool AudioClipView::setFadesMs(double inMs, double outMs) {
-  if (!clip_) return false;
-  const doc::AudioClip& a = *clip_;
-  const TempoMap& tm = ctx_.doc()->timeline->tempoMap;
-  const double t0 = tm.ticksToSeconds(a.start), t1 = tm.ticksToSeconds(a.start + a.length);
-  doc::AudioFade fi = a.fadeIn, fo = a.fadeOut;
-  fi.length = std::clamp<Ticks>(static_cast<Ticks>(std::llround(tm.secondsToTicks(t0 + std::max(0.0, inMs) / 1000.0))) - a.start, 0, a.length);
-  fo.length = std::clamp<Ticks>(a.start + a.length - static_cast<Ticks>(std::llround(tm.secondsToTicks(t1 - std::max(0.0, outMs) / 1000.0))),
-                                0, a.length);
-  if (fi == a.fadeIn && fo == a.fadeOut) return false;
-  return dispatch(doc::ops::setAudioClipFades(*ctx_.doc(), ref_, fi, fo), "Clip Fade");
-}
-
-bool AudioClipView::setWarpParams(const doc::WarpParams& p) {
-  if (!clip_ || p == clip_->warpParams) return false;
-  return dispatch(doc::ops::setAudioClipWarpParams(*ctx_.doc(), std::span<const doc::ClipRef>(&ref_, 1), p), "Warp Settings");
-}
+// The edits: the clip menu's too (clip_edits.h), on the clip shown.
+bool AudioClipView::setGain(float db) { return clip_ && clip_edits::setGain(ctx_, ref_, db); }
+bool AudioClipView::setTranspose(std::string_view text) { return clip_ && clip_edits::setTransposeText(ctx_, ref_, text); }
+bool AudioClipView::setTranspose(const doc::AudioTranspose& t) { return clip_ && clip_edits::setTranspose(ctx_, ref_, t); }
+bool AudioClipView::setDetune(float cents) { return clip_ && clip_edits::setDetune(ctx_, ref_, cents); }
+bool AudioClipView::setReverse(bool on) { return clip_ && clip_edits::setReverse(ctx_, ref_, on); }
+double AudioClipView::detectedBpm() { return clip_ ? clip_edits::detectedTempo(ctx_, *clip_) : 0.0; }
+bool AudioClipView::setWarp(doc::AudioWarp warp) { return clip_ && clip_edits::setWarp(ctx_, ref_, warp, fileBpm_); }
+bool AudioClipView::setSourceBpm(double bpm) { return clip_ && clip_edits::setSourceBpm(ctx_, ref_, bpm); }
+bool AudioClipView::scaleSourceBpm(double factor) { return clip_ && clip_edits::scaleSourceBpm(ctx_, ref_, factor); }
+bool AudioClipView::setLoopEnabled(bool on) { return clip_ && clip_edits::setLoopEnabled(ctx_, ref_, on); }
+bool AudioClipView::setFadesMs(double inMs, double outMs) { return clip_ && clip_edits::setFadesMs(ctx_, ref_, inMs, outMs); }
+bool AudioClipView::setWarpParams(const doc::WarpParams& p) { return clip_ && clip_edits::setWarpParams(ctx_, ref_, p); }
 
 bool AudioClipView::warpFromHere(Ticks content) {
   if (!clip_ || !doc::isWarped(clip_->warp)) return false;

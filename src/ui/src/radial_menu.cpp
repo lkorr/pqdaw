@@ -896,7 +896,7 @@ void RadialMenu::setControl(int32_t node, double v) {
   if (n.kind == RadialKind::Knob || n.kind == RadialKind::Slider) v = clampQuantise(n.spec, v);
   if (v == n.value || n.binding < 0) return;
   const std::shared_ptr<const RadialBinding> keep = bindings_[static_cast<size_t>(n.binding)];  // held across the calls
-  if (gesture_ != node) {
+  if (gesture_ != node || gestureAlt_) {
     endGesture();
     if (closed_) return;
     gesture_ = node;
@@ -908,14 +908,39 @@ void RadialMenu::setControl(int32_t node, double v) {
   readValues();  // other controls may follow (a mode enables its parameters)
 }
 
+void RadialMenu::setAlt(int32_t node, double v) {
+  if (closed_ || node < 0) return;
+  const Node& n = nodes_[static_cast<size_t>(node)];
+  if (n.binding < 0) return;
+  const std::shared_ptr<const RadialBinding> keep = bindings_[static_cast<size_t>(n.binding)];  // held across the calls
+  if (!keep->alt) return;
+  const RadialBinding& a = *keep->alt;
+  v = clampQuantise(keep->altSpec, v);
+  if (a.get && a.get() == v) return;
+  if (gesture_ != node || !gestureAlt_) {
+    endGesture();
+    if (closed_) return;
+    gesture_ = node;
+    gestureAlt_ = true;
+    if (a.begin) a.begin();
+    if (closed_) return;
+  }
+  if (a.set) a.set(v);
+  if (closed_) return;
+  readValues();
+}
+
 void RadialMenu::endGesture() {
   if (gesture_ < 0) return;
   const int32_t node = gesture_;
+  const bool alt = gestureAlt_;
   gesture_ = -1;
+  gestureAlt_ = false;
   const int32_t bi = nodes_[static_cast<size_t>(node)].binding;
   if (bi >= 0) {
     const std::shared_ptr<const RadialBinding> keep = bindings_[static_cast<size_t>(bi)];
-    if (keep->end) keep->end();
+    const RadialBinding* b = alt ? keep->alt.get() : keep.get();
+    if (b && b->end) b->end();
   }
   if (!closed_) readValues();
 }
@@ -931,6 +956,7 @@ void RadialMenu::finishWheel() {
 void RadialMenu::finishAll(bool commitTyping) {
   if (typing_ >= 0) endTypeIn(commitTyping);
   drag_ = -1;
+  dragAlt_ = false;
   finishWheel();
   endGesture();
 }
@@ -1014,6 +1040,7 @@ void RadialMenu::onFocusChanged(bool focused) {
 
 void RadialMenu::onCaptureLost() {
   drag_ = -1;
+  dragAlt_ = false;
   pressed_ = -1;
   endGesture();
 }
@@ -1025,6 +1052,17 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
   if (closed_) return true;
   switch (e.type) {
     case PointerType::Move: {
+      if (drag_ >= 0 && dragAlt_) {  // SX.2: an Alt-drag edits the alt value, vertically
+        const RadialBinding* b = bindingOf(drag_);
+        const ValueSpec& as = b->altSpec;
+        const double lo = std::min(as.min, as.max), hi = std::max(as.min, as.max);
+        const double perPx = (as.max - as.min) / std::max(1.0, static_cast<double>(tree()->uiScale().exact(static_cast<float>(as.dragPixels))));
+        const double fine = (e.mods & mod::kShift) ? as.fineFactor : 1.0;
+        dragRaw_ = std::clamp(dragRaw_ + static_cast<double>(dragLast_.y - e.pos.y) * perPx * fine, lo, hi);
+        dragLast_ = e.pos;
+        setAlt(drag_, dragRaw_);
+        return true;
+      }
       if (drag_ >= 0) {  // a knob / slider drag owns the pointer: nothing else reacts, its ring stays open
         Node& n = nodes_[static_cast<size_t>(drag_)];
         const double span = n.spec.max - n.spec.min, lo = std::min(n.spec.min, n.spec.max), hi = std::max(n.spec.min, n.spec.max);
@@ -1079,6 +1117,13 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
         if (ring >= 0 && hi_ != node && filter_.empty()) setHighlight(ring, node);
         if (n.kind == RadialKind::Knob || n.kind == RadialKind::Slider) {
           if ((e.mods & mod::kAlt) != 0) {
+            if (const RadialBinding* ab = bindingOf(node); ab && ab->alt) {  // SX.2: Alt-drag edits the alt value
+              drag_ = node;
+              dragAlt_ = true;
+              dragLast_ = e.pos;
+              dragRaw_ = ab->alt->get ? ab->alt->get() : 0.0;
+              return true;
+            }
             resetControl(node);
             return true;
           }
@@ -1088,6 +1133,7 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
             return true;
           }
           drag_ = node;
+          dragAlt_ = false;
           dragLast_ = e.pos;
           dragRaw_ = n.value;
           if (n.kind == RadialKind::Slider && (e.mods & mod::kShift) == 0) {
@@ -1113,6 +1159,7 @@ bool RadialMenu::onPointer(const PointerEvent& e) {
       if (e.button != PointerButton::Left) return true;
       if (drag_ >= 0) {
         drag_ = -1;
+        dragAlt_ = false;
         pressed_ = -1;
         endGesture();
         return true;
@@ -1180,6 +1227,7 @@ bool RadialMenu::onKey(const KeyEvent& e) {
   }
   if (e.key == key::kEscape && (drag_ >= 0 || gesture_ >= 0 || wheel_ >= 0)) {
     drag_ = -1;
+    dragAlt_ = false;
     finishWheel();
     endGesture();  // the edit so far stays (one undo step); Esc then goes on as usual
   }

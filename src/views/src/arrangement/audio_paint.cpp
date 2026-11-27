@@ -365,11 +365,12 @@ ClipTag clipTag(const doc::AudioClip& c) {
 }
 
 // The tag, right-aligned in the title strip where it fits beside the start of the name (else its mode alone); else (a
-// short clip) a corner mark in the tag's colour at the title strip's right end.
-void paintClipTag(LanePaint& lp, const ClipCols& cc, float top, float titleB, const ClipTag& tag) {
+// short clip) a corner mark in the tag's colour at the title strip's right end. SX.2: left of a selected clip's menu
+// button.
+void paintClipTag(LanePaint& lp, const ClipCols& cc, float top, float titleB, const ClipTag& tag, bool selected) {
   if (!tag.shown() || titleB - top < 4.0f) return;
   DrawList& dl = lp.ctx.dl;
-  const float right = std::min(cc.cx1, static_cast<float>(lp.r.right()));
+  const float right = clipTitleRight(lp, cc, top, titleB, selected);
   const float h = titleB - top;
   const float pad = static_cast<float>(lp.ctx.scale.px(4.0f));
   if (lp.font != kNoFont && lp.ctx.res.text) {
@@ -492,7 +493,9 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   const Rgba colour = active ? rgbOf(own.colour) : inactiveColour();
   const float titleB = paintClipChrome(lp, cc, top, bottom, colour, own.name);
 
-  if (available) paintClipTag(lp, cc, top, titleB, clipTag(own));
+  if (available) paintClipTag(lp, cc, top, titleB, clipTag(own), selected);
+
+  if (selected) paintClipMenuButton(lp, cc, top, titleB, colour, hover == kZoneMenu);  // SX.2
 
   const float by0 = titleB, by1 = bottom - 1.0f;
   const int32_t bodyH = static_cast<int32_t>(by1 - by0);

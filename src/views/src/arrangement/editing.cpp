@@ -18,7 +18,10 @@
 #include "pq/views/render_edit_port.h"
 #include "pq/document/audio_clip.h"
 #include "pq/document/commands.h"
+#include "pq/ui/radial_menu.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/audio_clip/clip_edits.h"
+#include "pq/views/audio_clip/clip_menu.h"
 #include "pq/views/browser/library_load.h"
 #include "pq/views/midi_export.h"
 
@@ -165,6 +168,39 @@ void collectMidi(const doc::Track& t, std::vector<doc::TrackId>& out, bool audio
 
 Editor::Editor(ArrangementView& view) : view_(view), ctx_(view.context()) {}
 
+Editor::~Editor() {
+  // SX.2: the clip menu ends its gesture and lets go of the document while the views still exist.
+  if (ui::RadialMenu* m = clipMenu()) m->close();
+}
+
+// --- the radial clip menu (SX.2) ----------------------------------------------------------------------------
+
+doc::ClipRef Editor::clipMenuTarget() const {
+  for (const doc::ClipRef& r : sel_.clips)
+    if (clip_edits::findAudioClip(*ctx_.doc(), r)) return r;
+  return {};
+}
+
+ui::RadialMenu* Editor::openClipMenu(const doc::ClipRef& ref, bool animate) {
+  if (!clip_edits::findAudioClip(*ctx_.doc(), ref)) return nullptr;
+  if (ui::RadialMenu* m = clipMenu()) m->close();
+  EditSurface& s = view_.surfaces().current();
+  const int32_t row = rowOf(ref.track);
+  const doc::ClipSlot* c = findClip(*ctx_.doc(), ref);
+  if (row < 0 || !c) return nullptr;
+  // Centred on the clip's visible part (the menu keeps its rings on screen).
+  const IRect box = clipBox(s, row, c->start(), c->end());
+  const IRect lane = s.rowLaneRect(row);
+  const int32_t x0 = std::max(box.x, lane.x), x1 = std::min(box.right(), lane.right());
+  const IRect anchor = x1 > x0 ? IRect{x0, box.y, x1 - x0, box.h} : box;
+  auto flag = std::make_shared<ui::RadialMenu*>(nullptr);
+  ui::RadialMenu* m = views::openClipMenu(ctx_, s.widget(), anchor, ref, [flag] { *flag = nullptr; }, animate);
+  if (!m) return nullptr;
+  *flag = m;
+  clipMenu_ = std::move(flag);
+  return m;
+}
+
 Grid Editor::grid() const noexcept { return Grid(ctx_.grid(), view_.shown()->timeline->sigMap, geo().gridPxPerTick()); }
 
 Ticks Editor::snapTick(Ticks t) const noexcept { return grid().snap(t); }
@@ -216,6 +252,12 @@ Editor::Hit Editor::hitTest(Vec2 p) const {
     h.ref = {t.id, t.clips[j].id};
     const float edge = std::min(static_cast<float>(s.px(kEdgeGrab)), std::floor((x1 - x0) / 4.0f));
     const float titleB = top + static_cast<float>(g.clipTitleHeight(h.row));
+    // SX.2: a selected audio clip's menu button takes the press before the handles, the edges and the title.
+    if (t.clips[j].audio && p.y < titleB && selected(h.ref.clip) &&
+        clipMenuButton(x0, x1, static_cast<float>(lane.x), static_cast<float>(lane.right()), top, titleB, s.factor).contains(p)) {
+      h.zone = kZoneMenu;
+      return h;
+    }
     // T5.6: an audio clip's handles (fades, gain) at the top of its body take the press before the edges.
     if (const doc::AudioClipPtr& ac = t.clips[j].audio; ac && p.y >= titleB && ctx_.sampleAvailable(ac->sample)) {
       const AudioHandleRects hr = audioHandles(*ac, x0, x1, titleB, bottom - 1.0f, ax.k, s.factor);
@@ -528,6 +570,7 @@ Cursor Editor::cursorAt(Vec2 p) const {
   const Hit h = hitTest(p);
   if (!h.clip) return Cursor::Arrow;  // empty lane space: a drag selects time
   if (frozenTrack(h.ref.track)) return Cursor::Arrow;  // FZ.3: nothing to drag on a frozen track's clip
+  if (h.zone == kZoneMenu) return Cursor::Pointer;  // SX.2
   if (h.zone == 0) return Cursor::Move;
   if (h.zone == kZoneGain) return Cursor::ResizeNS;
   if (h.zone == kZoneFadeIn || h.zone == kZoneFadeOut) return Cursor::ResizeEW;
@@ -619,6 +662,12 @@ void Editor::press(const PointerEvent& e) {
   if (e.button == PointerButton::Right) {
     if (h.clip && !selected(h.ref.clip)) setSelection(selectionOfClips({h.ref}), true);
     (void)openContextMenu(e.pos);
+    return;
+  }
+
+  // SX.2: the menu button of a selected audio clip opens the radial clip menu (the selection stays).
+  if (h.clip && h.zone == kZoneMenu && e.button == PointerButton::Left) {
+    (void)openClipMenu(h.ref);
     return;
   }
 
@@ -1645,6 +1694,13 @@ Menu* Editor::openContextMenu(Vec2 at) {
   items.push_back(action("Loop Selection", "arrangement.loopSelection", "Ctrl+L"));
   items.push_back(action("Deactivate / Activate", "arrangement.toggleActive", "0"));
   items.push_back(action("Reverse", "arrangement.reverse", "R"));
+  {  // SX.2: the radial clip menu of the clip under the pointer (else the first selected audio clip)
+    const Hit h = hitTest(at);
+    const doc::ClipRef ref = h.clip && h.clip->audio ? h.ref : clipMenuTarget();
+    MenuItem m = MenuItem::item("Clip Menu\xE2\x80\xA6", [this, ref] { (void)openClipMenu(ref); }, "Ctrl+Space");
+    m.enabled = ref.clip.valid();
+    items.push_back(std::move(m));
+  }
   items.push_back(exportMidiItem());  // MF.3
   items.push_back(MenuItem::sep());
   freezeItems(items);  // FZ.3: the selected clips' tracks
