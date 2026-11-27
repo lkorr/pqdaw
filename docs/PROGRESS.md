@@ -1506,3 +1506,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 
 ## 2026-11-24 · OP wrap-up (user: wrap up)
 - OP.7 stopped (usage limit): only an unmeasured prototype bench, on origin/task/OP.7-svf-interleave. OP.8 (re-run the audit tables) not done. Open: F10 settled envelopes, direct `drawWaveform` 2.0×, Q?-OP.3-a tap stall, interpreter bench rows (OP.5).
+
+## 2026-11-27 · SX.1 · task/SX.1-radial-controls (merged 6208fc97)
+- Did: ui::RadialMenu items can be controls that keep the menu open (knob, slider, chips, toggle; get/set/begin/end/format/parse/enabled bindings), outer-ring items pinned to a side / angle, wheel nudge, Alt-click reset, typed entry on knobs (double-click / Enter), refresh() + valid(); ui::formatValue / parseValue shared with the panel knobs; ARCHITECTURE radial section.
+- Verified: pq_tests_ui default tier 244 cases pass (11 new control cases through real dispatch; MX.1 goldens unchanged); pqdaw compiles. New goldens radial-controls(+@2x), radial-controls-typing(+@2x).
+- Perf / CPU-efficiency check: values read at open / after own edits / refresh only; layout rebuilt on state change into storage reserved at open; alloc-trap test: no allocation per frame.
+- Notes/blockers: knob double-click = typed entry here (panel knobs reset on double-click); 11 items with 3 knobs ≈ 420 px across. Not seen live (no opener until SX.2).

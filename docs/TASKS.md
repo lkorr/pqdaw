@@ -977,7 +977,7 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **AR.4 Step lanes get room (Transpose grid, lane menu) + panel pass** 👁 (plan AR.4; after AR.1) *(merged 59e5a418; Q?-AR.4-a; 9 arp goldens re-recorded, 1 new)*
 
 ### SX: direct sample manipulation (docs/plans/SX.md; user 2026-11-27, plan approved)
-- [ ] **SX.1 Radial menu hosts controls (knobs, sliders, chips, toggles; side placement)** 👁 (plan SX.1; lane w1)
+- [x] **SX.1 Radial menu hosts controls (knobs, sliders, chips, toggles; side placement)** 👁 (plan SX.1; lane w1) *(merged 6208fc97)*
 - [ ] **SX.2 Clip menu: button on the selected clip opens the radial clip menu (clip-panel parity)** 👁 (plan SX.2; w1, after SX.1)
 - [ ] **SX.3 The waveform shows what plays: fades / gain / crossfades on the amplitude, warp markers, warped tag** 👁 (plan SX.3; lane w2)
 - [ ] **SX.4 Time-stretch clips draw their rendered audio (async, cached, envelope at draw time)** 👁 (plan SX.4; w2, after SX.3)
