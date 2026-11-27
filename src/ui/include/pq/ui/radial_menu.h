@@ -32,7 +32,7 @@
 //   toggle  a bubble lit while on; a click flips it
 // Knob / slider: the wheel nudges by spec.keyStep (Shift: fine; a run of notches is one gesture that ends 0.4 s after
 // the last notch, when the pointer leaves the control, on a press or on close); Alt-click resets to spec.def unless
-// the item is not `resettable`. Every edit runs begin() before its first set() and end() once after its last: one
+// the item is not `resettable` — or, when the binding has an `alt` value (SX.2), an Alt-drag edits that. Every edit runs begin() before its first set() and end() once after its last: one
 // gesture = one undo step for the opener (a click that changes nothing runs neither). While a knob / slider is dragged
 // nothing else reacts to the pointer (its ring stays open even when the pointer leaves it). Closing the menu (Esc, a
 // press outside, a pick, the layer closing it) ends a running gesture first; an open typed entry commits.
@@ -93,6 +93,10 @@ struct RadialBinding {
   std::function<std::string(double)> format;                      // knob / slider text (default: ui::formatValue)
   std::function<std::optional<double>(std::string_view)> parse;  // typed entry (default: ui::parseValue)
   std::function<bool()> enabled;                                  // unset: always enabled
+  // SX.2: a knob / slider's second value, edited by an Alt-drag (vertical, altSpec.dragPixels sweep its range; Shift:
+  // fine) instead of the Alt-click reset — a fade's curve beside its length. Its own begin / end: one gesture.
+  std::shared_ptr<const RadialBinding> alt;
+  ValueSpec altSpec;
 };
 
 struct RadialItem;
@@ -272,6 +276,7 @@ private:
   const RadialBinding* bindingOf(int32_t node) const noexcept;
   void readValues();                        // get() / enabled() / format of every control, the centre text
   void setControl(int32_t node, double v);  // clamps, starts the gesture, set(), re-reads
+  void setAlt(int32_t node, double v);      // the same for the binding's alt value (SX.2)
   void endGesture();
   void finishWheel();
   void finishAll(bool commitTyping);  // ends the drag, the wheel run and the gesture; commits / cancels a typed entry
@@ -302,6 +307,7 @@ private:
   int32_t shownResults_ = 0;
   // controls
   int32_t drag_ = -1, gesture_ = -1, typing_ = -1, wheel_ = -1;
+  bool dragAlt_ = false, gestureAlt_ = false;  // SX.2: the drag / gesture edits the binding's alt value
   uint32_t wheelTimer_ = 0;
   double dragRaw_ = 0.0, wheelRaw_ = 0.0;
   Vec2 dragLast_{0, 0};

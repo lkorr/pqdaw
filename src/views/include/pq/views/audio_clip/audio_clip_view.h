@@ -50,6 +50,8 @@
 //   right-click   Warp From Here (at the marker or point: markers after it go, the source reads at the detected tempo
 //              from there), Warp as N-Bar Loop (N the power of two nearest the detected tempo, else 120 BPM), Delete
 //              Warp Marker.  ops::warpFromHere / warpAsLoop (an Off clip warps in the "Default warp mode" preference)
+// SX.2: the Clip / Warp / mode cards' edits, specs and readouts are pq/views/audio_clip/clip_edits.h, shared with the
+// radial clip menu (pq/views/audio_clip/clip_menu.h), which offers every one of these controls around the clip.
 //
 // UI thread only.
 

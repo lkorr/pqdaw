@@ -1555,6 +1555,42 @@ Status setupArrangementAudioWarp(Shell& shell) {
   return Ok{};
 }
 
+// SX.2: the radial clip menu on the first Drums clip (selected, the arrangement-audio zoom), open without the animation.
+// `beats`: the clip warped to Beats first and the pointer over the Beats chip (its settings' sub-ring open).
+Status setupClipMenu(Shell& shell, bool beats) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  ViewContext& ctx = shell.context();
+  a->setTimeView(-0.1 * static_cast<double>(kTicksPerWhole), 210.0 / static_cast<double>(kTicksPerWhole));
+  doc::ClipRef ref{};
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && !t.clips.empty() && !ref.clip.valid()) ref = {t.id, t.clips[0].id};
+  });
+  if (!ref.clip.valid()) return Error{ErrorCode::NotFound, "clip-menu: needs the audio fixture", {}};
+  if (beats) {
+    auto e = doc::ops::setAudioClipWarp(*ctx.doc(), std::span<const doc::ClipRef>(&ref, 1), doc::AudioWarp::Beats, 120.0);
+    if (!e) return e.error();
+    if (Status st = ctx.store().dispatch(e->command); !st) return st;
+  }
+  a->selectClips(std::span<const doc::ClipRef>(&ref, 1), false);
+  shell.tree().layoutNow();
+  ui::RadialMenu* m = a->openClipMenu(ref, false);
+  if (!m) return Error{ErrorCode::NotFound, "clip-menu: the menu did not open", {}};
+  shell.tree().layoutNow();
+  if (beats) {
+    ui::PointerEvent e;
+    e.type = ui::PointerType::Move;
+    e.pos = {0.0f, 0.0f};
+    (void)m->onPointer(e);  // lays the rings out
+    const int32_t chip = m->find("warp-stretch/Beats");
+    if (chip < 0) return Error{ErrorCode::NotFound, "clip-menu: no Beats chip", {}};
+    e.pos = m->centreOf(chip);
+    (void)m->onPointer(e);
+    shell.tree().layoutNow();
+  }
+  return Ok{};
+}
+
 // T6.10: take lanes on the audio fixture (tests/views/fixtures/audio): a new audio track "Takes" with three takes of
 // beat.wav (each 1.6 s from bar 1.25, reading 8000 frames further in than the one above) and two note takes on Keys.
 // `comp`: four regions comped from the three audio takes (the last the comp selection's neighbour), half a bar of the
@@ -4552,6 +4588,8 @@ constexpr SceneEntry kScenes[] = {
     {"arrangement-audio", 1280, 800, setupArrangementAudio},  // T5.6: --project tests/views/fixtures/audio
     {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
     {"arrangement-audio-warp", 1280, 800, setupArrangementAudioWarp},  // SX.3: the same --project
+    {"clip-menu-off", 1280, 800, [](Shell& s) { return setupClipMenu(s, false); }},  // SX.2: the same --project
+    {"clip-menu-beats", 1280, 800, [](Shell& s) { return setupClipMenu(s, true); }},  // SX.2
     {"arrangement-takes", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, false); }},  // T6.10: the same --project
     {"arrangement-comp", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, true); }},    // T6.10
     {"audio-clip-warp-beats", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, false); }},   // T6.8: the same --project

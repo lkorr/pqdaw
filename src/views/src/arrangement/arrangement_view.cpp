@@ -27,7 +27,7 @@ constexpr std::string_view kActionIds[] = {
     "arrangement.selectAll", "arrangement.copy", "arrangement.cut", "arrangement.paste", "arrangement.duplicate",
     "arrangement.delete", "arrangement.split", "arrangement.consolidate", "arrangement.loopSelection",
     "arrangement.insertMidiClip", "arrangement.insertTime", "arrangement.duplicateTime", "arrangement.deleteTime",
-    "arrangement.toggleActive", "arrangement.reverse",
+    "arrangement.toggleActive", "arrangement.reverse", "arrangement.clipMenu",
     // T3.x-fix-look: arrow keys
     "arrangement.markerLeft", "arrangement.markerRight", "arrangement.trackUp", "arrangement.trackDown",
     "arrangement.markerHome", "arrangement.markerEnd", "arrangement.pointsUpFine", "arrangement.pointsDownFine",
@@ -182,6 +182,9 @@ void ArrangementView::registerActions() {
   edit("arrangement.toggleActive", [ed] { (void)ed->toggleActive(); },
        [ed] { return !ed->selection().clips.empty() || !ed->selection().tracks.empty(); });
   edit("arrangement.reverse", [ed] { (void)ed->reverseSelection(); }, clipsOrRange);  // BR.E: R
+  // SX.2: Ctrl+Space: the radial clip menu of the first selected audio clip.
+  edit("arrangement.clipMenu", [ed] { (void)ed->openClipMenu(ed->clipMenuTarget()); },
+       [ed] { return ed->clipMenuTarget().clip.valid(); });
   // T3.10 tracks. Ctrl+Shift+T / Ctrl+Alt+T are global chords (Live inserts tracks from anywhere).
   auto hasTracks = [ed] { return !ed->selection().tracks.empty(); };
   edit("track.newMidi", [ed] { (void)ed->newTrack(doc::TrackKind::Midi); }, {});
@@ -355,6 +358,30 @@ double ArrangementView::audioDrawnFrameAt(const doc::ClipRef& ref, double t) con
   });
   return out;
 }
+
+ui::Rect ArrangementView::clipMenuButtonRect(const doc::ClipRef& ref) const noexcept {
+  int32_t row = -1;
+  for (size_t i = 0; i < model_->rows.size(); ++i)
+    if (model_->rows[i].id == ref.track) row = static_cast<int32_t>(i);
+  if (row < 0 || !editor_->selected(ref.clip)) return {};
+  const doc::Track& t = *model_->rows[static_cast<size_t>(row)].track;
+  const int32_t i = doc::findClipIndex(t, ref.clip);
+  if (i < 0 || !t.clips[static_cast<size_t>(i)].audio) return {};
+  const doc::AudioClip& a = *t.clips[static_cast<size_t>(i)].audio;
+  const UiScale s = tree() ? tree()->uiScale() : UiScale{};
+  const IRect lane = rowLaneRect(row);
+  const float x0 = std::round(xOfTick(static_cast<double>(a.start)));
+  const float x1 = std::max(x0 + 1.0f, std::round(xOfTick(static_cast<double>(a.start + a.length))));
+  const float top = static_cast<float>(lane.y + 1), bottom = static_cast<float>(lane.bottom() - 1);
+  const float titleB = std::min(bottom, top + static_cast<float>(s.px(arrangement_metrics::kClipTitleHeight)));
+  const arrangement::ClipMenuButton b =
+      arrangement::clipMenuButton(x0, x1, static_cast<float>(lane.x), static_cast<float>(lane.right()), top, titleB, s.factor);
+  if (!b.show) return {};
+  return {b.c.x - b.r, b.c.y - b.r, b.c.x + b.r, b.c.y + b.r};
+}
+
+ui::RadialMenu* ArrangementView::openClipMenu(const doc::ClipRef& ref, bool animate) { return editor_->openClipMenu(ref, animate); }
+ui::RadialMenu* ArrangementView::clipMenu() const noexcept { return editor_->clipMenu(); }
 
 ArrangementView::ClipHover ArrangementView::clipHover() const noexcept {
   const arrangement::Editor::HoverPart& h = editor_->hoverPart();

@@ -1,4 +1,6 @@
-# The audio Clip View (T5.6; AC.look: its box controls).
+# The audio Clip View (T5.6; AC.look: its box controls; SX.2: the shared edits and the radial clip menu).
 set(PQ_VIEWS_AUDIO_CLIP_SOURCES
   src/audio_clip/audio_clip_view.cpp
-  src/audio_clip/clip_controls.cpp)
+  src/audio_clip/clip_controls.cpp
+  src/audio_clip/clip_edits.cpp
+  src/audio_clip/clip_menu.cpp)

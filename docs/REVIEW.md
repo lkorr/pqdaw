@@ -2504,3 +2504,18 @@ Per display (how it was drawn → what was wrong → what changed):
   dB readout is gone from the title (the waveform shows it; see Q?-SX.3-a).
 - Look at: goldens `arrangement-audio-warp` (new), `arrangement-audio`, `arrangement-takes`. Is the tag legible enough
   at the default height, and are the colours distinct from the clip colours? Not looked at live.
+
+## 2026-11-27 · SX.2 · the clip menu (task/SX.2-clip-menu) 👁
+- A selected audio clip shows a small round button at the right end of its title strip (hidden when the clip is
+  under ~36 px); a press opens the radial clip menu around the clip. Also Ctrl+Space (first selected audio clip) and
+  the clip context menu's "Clip Menu…". Goldens: `arrangement-audio` (the button), `clip-menu-off`, `clip-menu-beats`
+  (Beats' sub-ring open); SX.3's tag (and its corner mark) now ends left of the button on a selected clip.
+- Layout: Gain / Detune on top, Transpose below with stp / ¢ / n/d unit chips, Off / Re-Pitch left, Beats … Pro right
+  (each opens its settings), Fade In / Out sliders (Alt-drag: curve), Reverse, and a Tempo bubble whose sub-ring holds
+  BPM, :2 / ×2 and Loop — moved off ring 0 to keep the menu compact (it was ~720 px across with them).
+- Decided: the menu edits the clicked clip only (the panel's rule), also with several clips selected. The unit chips
+  re-express the transpose (¢ exact; stp the nearest degree; n/d the nearest ratio with denominator ≤ 32); a knob drag
+  in n/d snaps to ratios with denominator ≤ 16. "No Loop" replaces the panel's "Off" in Beats' sub-ring (it sat
+  next to the warp Off). Disabled where the panel greys / hides (mode settings outside their mode).
+- Look at: the button's glyph (a disc with four dots); the ring is still ~480 px across and moves away from a clip
+  near the window's corner. Seen live in a pqdaw I launched (open, Gain drag, Beats sub-ring).

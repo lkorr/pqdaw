@@ -75,6 +75,11 @@ float paintClipChrome(LanePaint& lp, const ClipCols& cc, float top, float bottom
 inline constexpr int kNoHover = -2;
 void paintClipBorder(LanePaint& lp, const ClipCols& cc, float top, float bottom, float titleB, bool selected, int hover,
                      bool deferred);
+// SX.2 (clip_button.cpp): the clip-menu button of a selected audio clip at the right end of its title strip
+// [top, titleB) (internal.h clipMenuButton), lit while `hovered` (zone kZoneMenu).
+void paintClipMenuButton(LanePaint& lp, const ClipCols& cc, float top, float titleB, ui::Rgba colour, bool hovered);
+// Where right-aligned title text must end: the clip's (visible) right edge, or the menu button's left when it shows.
+float clipTitleRight(const LanePaint& lp, const ClipCols& cc, float top, float titleB, bool selected);
 
 // A note clip at geometry `g` (its own bounds, or a drag preview's): chrome, note preview, border (selected outline,
 // hover highlight; lanes.cpp). TX.lane-edit: the lane windows draw their clips with it.

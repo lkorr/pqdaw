@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -23,6 +24,7 @@
 #include "pq/ui/theme.h"
 #include "pq/ui/draw_list.h"
 #include "pq/ui/tile_atlas.h"
+#include "pq/ui/radial_menu.h"
 #include "pq/ui/widget.h"
 #include "pq/media/waveform.h"
 #include "pq/views/waveforms.h"
@@ -315,6 +317,32 @@ inline AudioHandleRects audioHandles(const doc::AudioClip& c, float cx0, float c
   return h;
 }
 
+// SX.2: the clip-menu button of a SELECTED audio clip (another hit zone: a press opens the radial clip menu,
+// pq/views/audio_clip/clip_menu.h): a disc at the right end of the title strip [top, titleB) of the clip's columns
+// [cx0, cx1) seen within [vx0, vx1) (the lane's visible columns: a long clip keeps it in view), inset from the edge so
+// the right edge's trim grab stays beside it. Hidden when that visible part is narrower than 3× the button or the
+// title strip is too thin.
+inline constexpr int kZoneMenu = 6;
+struct ClipMenuButton {
+  ui::Vec2 c{};
+  float r = 0.0f;
+  bool show = false;
+  bool contains(ui::Vec2 p) const noexcept {
+    const float dx = p.x - c.x, dy = p.y - c.y;
+    return show && dx * dx + dy * dy <= (r + 1.0f) * (r + 1.0f);
+  }
+};
+inline ClipMenuButton clipMenuButton(float cx0, float cx1, float vx0, float vx1, float top, float titleB, float scale) noexcept {
+  ClipMenuButton b;
+  const float h = titleB - top;
+  b.r = std::floor(0.5f * h) - std::max(1.0f, std::round(scale));
+  const float x0 = std::max(cx0, vx0), x1 = std::min(cx1, vx1);
+  if (b.r < 3.0f || x1 - x0 < 6.0f * b.r) return b;
+  b.show = true;
+  b.c = {std::round(x1 - std::round(4.0f * scale) - b.r), top + 0.5f * h};
+  return b;
+}
+
 class Model {
 public:
   doc::Snapshot shown;
@@ -487,6 +515,7 @@ struct Clipboard {
 class Editor {
 public:
   explicit Editor(ArrangementView& view);
+  ~Editor();
 
   // --- selection ---
   const ArrangementView::Selection& selection() const noexcept { return sel_; }
@@ -582,6 +611,12 @@ public:
   void selectAll();
   bool hasClipboard() const noexcept { return !clipboard_.clips.empty(); }
   ui::Menu* openContextMenu(ui::Vec2 at);
+  // SX.2: the radial clip menu (pq/views/audio_clip/clip_menu.h) of audio clip `ref`, centred on its visible part on
+  // the current surface (another one open closes first); the selection is left as it is. nullptr: not an audio clip on
+  // a row. clipMenuTarget: the clip Ctrl+Space opens it for (the first selected audio clip; invalid: none).
+  ui::RadialMenu* openClipMenu(const doc::ClipRef& ref, bool animate = true);
+  ui::RadialMenu* clipMenu() const noexcept { return clipMenu_ ? *clipMenu_ : nullptr; }
+  doc::ClipRef clipMenuTarget() const;
 
   // --- tracks (T3.10, tracks.cpp) ---
   bool newTrack(doc::TrackKind kind);
@@ -642,7 +677,7 @@ private:
     int32_t row = -1;
     doc::ClipRef ref{};
     const doc::ClipSlot* clip = nullptr;
-    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body; T5.6 audio: kZoneFadeIn / FadeOut / Gain
+    int zone = 0;  // −1 left edge, +1 right edge, 0 title strip, 2 body; T5.6 audio: kZoneFadeIn / FadeOut / Gain; SX.2 kZoneMenu
   };
   Hit hitTest(ui::Vec2 p) const;
   void setHover(HoverPart h);
@@ -701,6 +736,7 @@ private:
   HoverPart hover_;
   Clipboard clipboard_;
   std::optional<TickRange> lastPaste_;  // the range the last paste selected (pasting again goes after it)
+  std::shared_ptr<ui::RadialMenu*> clipMenu_;  // SX.2: the open clip menu (its onClosed clears it), else null
 };
 
 // The return tracks and the master, pinned under the scrolling rows (T3.10): their lanes (BottomLanes, child 0) and
