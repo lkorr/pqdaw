@@ -55,7 +55,7 @@ AudioTrackDesc lowerAudioTrack(const Project& p, const TrackPath& path, const Au
       d.pitchRatio = audioPitchRatio(p, path, c);
       d.warpParams = c.warpParams;
     }
-    d.gain = c.gainDb <= kMinClipGainDb ? 0.0f : std::pow(10.0f, std::min(c.gainDb, kMaxClipGainDb) / 20.0f);
+    d.gain = audioClipGain(c.gainDb);
     d.fadeIn = std::clamp<Ticks>(c.fadeIn.length, 0, d.length);
     d.fadeOut = std::clamp<Ticks>(c.fadeOut.length, 0, d.length - d.fadeIn);
     d.fadeInCurve = std::clamp(c.fadeIn.curve, -1.0f, 1.0f);

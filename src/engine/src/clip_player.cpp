@@ -8,6 +8,7 @@
 #include <numbers>
 
 #include "pq/core/automation_curve.h"
+#include "pq/core/clip_envelope.h"
 #include "pq/dsp/resample.h"
 #include "pq/dsp/warp.h"
 
@@ -67,22 +68,10 @@ bool sameLaw(const AudioSequenceImage& ia, const AudioSequenceImage::Clip& a, co
          (!a.reverse || a.length == b.length) && ia.repitchOffset(a, s) == ib.repitchOffset(b, s);
 }
 
-// The static envelope's shape at song sample t (without the clip gain). RT-safe.
+// The static envelope's shape at song sample t (without the clip gain): the shared law (pq/core/clip_envelope.h; the
+// arrangement draws the waveform with it), a crossfade sampled at the sample's centre. RT-safe.
 float staticShape(const AudioSequenceImage::Clip& c, SampleTime t) noexcept {
-  double g = 1.0;
-  if (t >= c.bodyStart && t < c.inEnd)
-    g *= automationShape(static_cast<double>(t - c.bodyStart) / static_cast<double>(c.inEnd - c.bodyStart), c.inCurve);
-  if (t >= c.outStart && t < c.bodyEnd)
-    g *= 1.0 - automationShape(static_cast<double>(t - c.outStart) / static_cast<double>(c.bodyEnd - c.outStart), c.outCurve);
-  if (t >= c.xinStart && t < c.xinEnd) {
-    const double u = (static_cast<double>(t - c.xinStart) + 0.5) / static_cast<double>(c.xinEnd - c.xinStart);
-    g *= c.xinLinear ? u : std::sin(0.5 * std::numbers::pi * u);
-  }
-  if (t >= c.xoutStart && t < c.xoutEnd) {
-    const double u = (static_cast<double>(t - c.xoutStart) + 0.5) / static_cast<double>(c.xoutEnd - c.xoutStart);
-    g *= c.xoutLinear ? 1.0 - u : std::cos(0.5 * std::numbers::pi * u);
-  }
-  return static_cast<float>(g);
+  return static_cast<float>(clipEnvelopeShape(c, t, 0.5));
 }
 
 // RePitch content positions are linear on a fixed grid of kRePitchGrid song samples (M5 review M3): each cell

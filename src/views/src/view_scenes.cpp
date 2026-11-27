@@ -1509,6 +1509,52 @@ Status setupArrangementAudio(Shell& shell) {
   return Ok{};
 }
 
+// SX.3: what the waveform shows (tests/views/fixtures/audio): Drums' first clip Beats +3 st (amber "WARP · Beats  +3 st"),
+// the second Complex Pro with three markers, the middle one moved (its waveform bent by them), the reversed +7 st clip
+// split a sixteenth after its start (the short piece: a corner mark); the vox clip (RE-PITCH) with a fade-in of curve
+// -1 and a fade-out of curve +1 shaping its waveform. Nothing selected.
+Status setupArrangementAudioWarp(Shell& shell) {
+  ArrangementView* a = arrangementOf(shell);
+  if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
+  a->setTimeView(-0.1 * static_cast<double>(kTicksPerWhole), 210.0 / static_cast<double>(kTicksPerWhole));
+  ViewContext& ctx = shell.context();
+  doc::ClipRef c0{}, c1{}, c2{}, vox{};
+  doc::forEachTrack(*ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && t.clips.size() >= 3) {
+      c0 = {t.id, t.clips[0].id};
+      c1 = {t.id, t.clips[1].id};
+      c2 = {t.id, t.clips[2].id};
+    }
+    if (t.name == "Vox" && !t.clips.empty()) vox = {t.id, t.clips[0].id};
+  });
+  if (!c2.clip.valid() || !vox.clip.valid()) return Error{ErrorCode::NotFound, "arrangement-audio-warp: needs the audio fixture", {}};
+  auto apply = [&](const doc::ops::EditResult& e) -> Status {
+    if (!e) return e.error();
+    return ctx.store().dispatch(e->command);
+  };
+  auto clip = [&](const doc::ClipRef& r) -> const doc::AudioClip& {
+    const doc::Track* t = doc::findTrackPtr(*ctx.doc(), r.track);
+    return *t->clips[static_cast<size_t>(doc::findClipIndex(*t, r.clip))].audio;
+  };
+  if (Status st = apply(doc::ops::setAudioClipWarp(*ctx.doc(), std::span<const doc::ClipRef>(&c0, 1), doc::AudioWarp::Beats, 120.0)); !st) return st;
+  doc::AudioTranspose tr;
+  tr.cents = 300.0;
+  if (Status st = apply(doc::ops::setAudioClipTranspose(*ctx.doc(), std::span<const doc::ClipRef>(&c0, 1), tr)); !st) return st;
+  if (Status st = apply(doc::ops::setAudioClipWarp(*ctx.doc(), std::span<const doc::ClipRef>(&c1, 1), doc::AudioWarp::ComplexPro, 120.0)); !st)
+    return st;
+  const Ticks m0 = clip(c1).contentStart;
+  for (const Ticks t : {m0 + kPpq, m0 + 2 * kPpq, m0 + 3 * kPpq})
+    if (Status st = apply(doc::ops::addWarpMarker(*ctx.doc(), c1, t)); !st) return st;
+  if (Status st = apply(doc::ops::moveWarpMarker(*ctx.doc(), c1, 1, m0 + 2 * kPpq + kPpq / 2)); !st) return st;
+  const Ticks cut = clip(c2).start + kTicksPerWhole / 16;
+  if (Status st = apply(doc::ops::splitClips(*ctx.doc(), ctx.store().ids(), std::span<const doc::ClipRef>(&c2, 1), std::span<const Ticks>(&cut, 1)));
+      !st)
+    return st;
+  if (Status st = apply(doc::ops::setAudioClipFades(*ctx.doc(), vox, {kTicksPerWhole / 2, -1.0f}, {kTicksPerWhole / 2, 1.0f})); !st) return st;
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // T6.10: take lanes on the audio fixture (tests/views/fixtures/audio): a new audio track "Takes" with three takes of
 // beat.wav (each 1.6 s from bar 1.25, reading 8000 frames further in than the one above) and two note takes on Keys.
 // `comp`: four regions comped from the three audio takes (the last the comp selection's neighbour), half a bar of the
@@ -4505,6 +4551,7 @@ constexpr SceneEntry kScenes[] = {
     {"pianoroll-hover", 1280, 800, setupPianoRollHover},      // T4.16b: --project tests/views/fixtures/pianoroll-12edo
     {"arrangement-audio", 1280, 800, setupArrangementAudio},  // T5.6: --project tests/views/fixtures/audio
     {"clip-view-audio", 1280, 800, setupClipViewAudio},        // T5.6: the same --project
+    {"arrangement-audio-warp", 1280, 800, setupArrangementAudioWarp},  // SX.3: the same --project
     {"arrangement-takes", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, false); }},  // T6.10: the same --project
     {"arrangement-comp", 1280, 800, [](Shell& s) { return setupArrangementTakes(s, true); }},    // T6.10
     {"audio-clip-warp-beats", 1280, 800, [](Shell& s) { return setupAudioClipWarp(s, false); }},   // T6.8: the same --project

@@ -60,6 +60,7 @@
 // starts it early, one with the next clip lets it play on (the source laws simply continue).
 //
 // ---- Envelope (one product per output frame, fused into the resampler's output pass) ------------------------------
+//   (the law is pq/core/clip_envelope.h, shared with the arrangement's waveform drawing: SX.3)
 //   gain                                  linear (0 = silence: the clip renders nothing)
 //   × fade in   over [S0, S0 + F_in)      the automation curve law (Q39, pq/core/automation_curve.h) from 0 to 1
 //   × fade out  over [S1 − F_out, S1)     the same law from 1 to 0
@@ -88,6 +89,7 @@
 #include <utility>
 #include <vector>
 
+#include "pq/core/clip_envelope.h"
 #include "pq/core/clip_time.h"
 #include "pq/core/result.h"
 #include "pq/core/time.h"
@@ -161,7 +163,7 @@ struct AudioTrackDesc {
 struct AudioBuildOptions {
   double sampleRate = 48000.0;  // the engine rate (the timeline's)
   bool edgeDeclick = true;      // linear fades of declickSeconds at clip edges without a longer fade or a crossfade
-  double declickSeconds = 0.002;
+  double declickSeconds = kClipEdgeDeclickSeconds;  // pq/core/clip_envelope.h (the views draw the same)
 };
 
 class AudioSequenceImage {

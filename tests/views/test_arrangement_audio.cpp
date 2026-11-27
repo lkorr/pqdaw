@@ -9,12 +9,18 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <numbers>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "../ui/golden_check.h"
 #include "../ui/thread_cpu.h"
 #include "audio_fixture.h"
+#include "pq/core/clip_envelope.h"
 #include "pq/document/audio_clip.h"
+#include "pq/document/audio_sequence.h"
+#include "pq/document/edit_ops.h"
 #include "pq/ui/image.h"
 #include "pq/ui/test_driver.h"
 #include "pq/ui/tile_atlas.h"
@@ -672,6 +678,137 @@ TEST_CASE("render: arrangement-audio (waveforms, fades, crossfade, gain, reverse
 }
 
 TEST_CASE("render: clip-view-audio (the audio clip view on a Re-Pitch clip) matches the golden") { checkGolden("clip-view-audio"); }
+
+TEST_CASE("render: arrangement-audio-warp (SX.3: warped tags, a marker clip, a corner mark, fade curves on the waveform) "
+          "matches the golden") {
+  checkGolden("arrangement-audio-warp");
+}
+
+// ---- SX.3: the waveform shows what plays ----------------------------------------------------------------------------
+
+namespace {
+
+// The gain the clip player applies at tick t to lowered clip i of `tr` (doc::lowerAudioTrack: its clamped fades and
+// crossfade), from the shared curves (pq/core/clip_envelope.h): the crossfade windows centred on the boundary, equal
+// power unless `linear`, replacing the fade on their side; elsewhere the fade or, where it is shorter than 2 ms, the
+// linear edge declick.
+double loweredGain(const doc::AudioTrackDesc& tr, size_t i, const TempoMap& tm, double t, bool linear) {
+  const doc::AudioClipDesc& d = tr.clips[i];
+  const double s0 = static_cast<double>(d.start), s1 = static_cast<double>(d.start + d.length);
+  const double dIn = d.declick ? tm.secondsToTicks(tm.ticksToSeconds(d.start) + kClipEdgeDeclickSeconds) - s0 : 0.0;
+  const double dOut = d.declick ? s1 - tm.secondsToTicks(tm.ticksToSeconds(d.start + d.length) - kClipEdgeDeclickSeconds) : 0.0;
+  double g = d.gain;
+  if (d.crossfadeIn > 0) {
+    const double a = s0 - static_cast<double>(d.crossfadeIn / 2), b = a + static_cast<double>(d.crossfadeIn);
+    if (t >= a && t < b) g *= clipCrossfadeInShape((t - a) / (b - a), linear);
+  } else {
+    const bool declick = static_cast<double>(d.fadeIn) < dIn;
+    const double f = declick ? dIn : static_cast<double>(d.fadeIn);
+    if (t < s0 + f) g *= clipFadeInShape((t - s0) / f, declick ? 0.0 : d.fadeInCurve);
+  }
+  if (i + 1 < tr.clips.size() && tr.clips[i + 1].crossfadeIn > 0) {
+    const doc::AudioClipDesc& n = tr.clips[i + 1];
+    const double a = static_cast<double>(n.start) - static_cast<double>(n.crossfadeIn / 2), b = a + static_cast<double>(n.crossfadeIn);
+    if (t >= a && t < b) g *= clipCrossfadeOutShape((t - a) / (b - a), linear);
+  } else {
+    const bool declick = static_cast<double>(d.fadeOut) < dOut;
+    const double f = declick ? dOut : static_cast<double>(d.fadeOut);
+    if (t >= s1 - f) g *= clipFadeOutShape((t - (s1 - f)) / f, declick ? 0.0 : d.fadeOutCurve);
+  }
+  return g;
+}
+
+// Every clip of track `name` drawn with the lowered gain: 400 ticks across each clip plus its edges' neighbourhoods.
+void checkEnvelopes(Fixture& f, std::string_view name, bool linear) {
+  const doc::Track& t = f.track(name);
+  const std::optional<doc::TrackPath> path = doc::findTrack(*f.ctx.doc(), t.id);
+  REQUIRE(path.has_value());
+  const doc::AudioTrackDesc tr = doc::lowerAudioTrack(*f.ctx.doc(), *path);
+  REQUIRE(tr.clips.size() == t.clips.size());
+  const TempoMap& tm = f.ctx.doc()->timeline->tempoMap;
+  f.d.step();  // (the view shows this snapshot)
+  for (size_t i = 0; i < tr.clips.size(); ++i) {
+    const doc::AudioClipDesc& d = tr.clips[i];
+    const doc::ClipRef ref{t.id, t.clips[i].id};
+    std::vector<double> ts;
+    for (int k = 0; k < 400; ++k) ts.push_back(static_cast<double>(d.start) + static_cast<double>(d.length) * (k + 0.37) / 400.0);
+    for (const double e : {1.0, 300.0, 900.0, 5000.0, 30000.0, 60000.0}) {
+      ts.push_back(static_cast<double>(d.start) + e);
+      ts.push_back(static_cast<double>(d.start + d.length) - e);
+    }
+    for (const double x : ts) {
+      CAPTURE(i);
+      CAPTURE(x);
+      CHECK(f.arr->audioEnvelopeAt(ref, x) == doctest::Approx(loweredGain(tr, i, tm, x, linear)).epsilon(1e-6));
+    }
+  }
+}
+
+}  // namespace
+
+TEST_CASE("arrangement audio (SX.3): the waveform is drawn with the lowered clip's gain law — fades (curves -1 / 0 / 1), "
+          "the edge declick, crossfades (equal power; equal gain across a split)") {
+  Fixture f;
+  const doc::ClipRef beat = f.clip("Drums", 0), beat2 = f.clip("Drums", 1);
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE(e.ok());
+    REQUIRE(f.ctx.store().dispatch(e->command).ok());
+  };
+  // The fixture: a fade-in, a fade-out the crossfade into the -6 dB second clip replaces, a reversed clip (declicks).
+  checkEnvelopes(f, "Drums", false);
+  CHECK(f.arr->audioEnvelopeAt(beat2, static_cast<double>(f.get(beat2).start)) ==
+        doctest::Approx(doc::audioClipGain(-6.0f) * std::sin(0.25 * std::numbers::pi)));
+  // Without the crossfade the fade-out plays; each curve.
+  run(doc::ops::setAudioClipCrossfade(*f.ctx.doc(), beat2, 0));
+  for (const float curve : {-1.0f, 0.0f, 1.0f}) {
+    run(doc::ops::setAudioClipFades(*f.ctx.doc(), beat, {kBar / 4, curve}, {kBar / 3, curve}));
+    CAPTURE(curve);
+    checkEnvelopes(f, "Drums", false);
+  }
+  // Half way through a linear fade-in: half the gain.
+  run(doc::ops::setAudioClipFades(*f.ctx.doc(), beat, {kBar / 4, 0.0f}, {}));
+  f.d.step();
+  CHECK(f.arr->audioEnvelopeAt(beat, static_cast<double>(kBar / 8)) == doctest::Approx(0.5));
+  // A split crossfaded back together continues one source law: equal gain (half each at the boundary, not 0.707).
+  const Ticks at = kBar / 2;
+  run(doc::ops::splitClips(*f.ctx.doc(), f.ctx.store().ids(), std::span<const doc::ClipRef>(&beat, 1), std::span<const Ticks>(&at, 1)));
+  const doc::ClipRef right = f.clip("Drums", 1);
+  REQUIRE(f.get(right).start == at);
+  run(doc::ops::setAudioClipCrossfade(*f.ctx.doc(), right, kBar / 8));
+  checkEnvelopes(f, "Drums", true);
+  f.d.step();
+  CHECK(f.arr->audioEnvelopeAt(right, static_cast<double>(at)) == doctest::Approx(0.5));
+  CHECK(f.arr->audioEnvelopeAt(beat, static_cast<double>(at) - 1e-3) == doctest::Approx(0.5).epsilon(1e-6));
+}
+
+TEST_CASE("arrangement audio (SX.3): a warped clip's waveform follows its warp markers, as the clip view maps them") {
+  Fixture f;
+  const doc::ClipRef beat = f.clip("Drums", 0);
+  auto run = [&](const doc::ops::EditResult& e) {
+    REQUIRE(e.ok());
+    REQUIRE(f.ctx.store().dispatch(e->command).ok());
+  };
+  run(doc::ops::setAudioClipWarp(*f.ctx.doc(), std::span<const doc::ClipRef>(&beat, 1), doc::AudioWarp::ComplexPro, 120.0));
+  const Ticks c0 = f.get(beat).contentStart;
+  for (const Ticks t : {c0 + kPpq, c0 + 2 * kPpq, c0 + 3 * kPpq}) run(doc::ops::addWarpMarker(*f.ctx.doc(), beat, t));
+  run(doc::ops::moveWarpMarker(*f.ctx.doc(), beat, 1, c0 + 2 * kPpq + kPpq / 2));
+  f.d.step();
+  const doc::AudioClip& c = f.get(beat);
+  const doc::SampleRef* s = doc::findSample(*f.ctx.doc(), c.sample);
+  REQUIRE(s != nullptr);
+  const double fpt = doc::framesPerContentTick(s->rate, c.sourceBpm);
+  double bent = 0.0;
+  for (int k = 0; k < 200; ++k) {
+    const double t = static_cast<double>(c.start) + static_cast<double>(c.length) * (k + 0.5) / 200.0;
+    const double content = static_cast<double>(c.contentStart) + (t - static_cast<double>(c.start));
+    // The clip view's mapping (AudioClipView::frameOf): doc::warpFrameAt through the markers.
+    const double want = doc::warpFrameAt(c, s->rate, content);
+    CAPTURE(t);
+    CHECK(f.arr->audioDrawnFrameAt(beat, t) == doctest::Approx(want).epsilon(1e-9));
+    bent = std::max(bent, std::abs(want - content * fpt));
+  }
+  CHECK(bent > 1000.0);  // the markers moved the audio (the one-slope mapping was off by this much)
+}
 
 // ---- WF.1: zoom to the samples ---------------------------------------------------------------------------------------
 

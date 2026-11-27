@@ -1,6 +1,8 @@
 // Audio clips in the arrangement (T5.6): the waveform (from the sample's overview, pq/views/waveforms.h, drawn by
-// ui::drawWaveform: scaled by the clip gain, mirrored when reversed), fade curves, the crossfade X, badges (transpose,
-// detune, warp, reverse, gain), handles (fades, gain) and the hatched "missing" body.
+// ui::drawWaveform: SX.3: multiplied by the clip's envelope — gain, fades, crossfades, the clip player's law — and
+// mapped through its warp markers; mirrored when reversed), fade curves, the crossfade X, the processing tag (SX.3:
+// "WARP · Beats +3 st", "RE-PITCH", ...; a corner mark on a short clip), handles (fades, gain) and the hatched
+// "missing" body.
 //
 // The waveform of a clip is cached like a note preview (T3.8-fix1): rasterised once per (clip snapshot, device px per
 // tick, body height, overview progress) into the renderer's TileAtlas and drawn as one quad afterwards; tiles are built
@@ -11,11 +13,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <span>
 #include <string>
+#include <vector>
 
 #include "../common/waveform_data.h"
 #include "lane_paint.h"
-#include "pq/core/automation_curve.h"
+#include "pq/core/clip_envelope.h"
 #include "pq/core/clip_time.h"
 #include "pq/document/audio_clip.h"
 #include "pq/ui/lines.h"
@@ -29,9 +33,10 @@ namespace am = arrangement_metrics;
 
 namespace {
 
-// Source frames per device px at the clip start (the level of detail; exact for constant tempo and RePitch).
+// Source frames per device px at the clip start (the level of detail; exact for constant tempo and RePitch). Warped:
+// the warp law's least slope (its finest detail).
 double framesPerPx(const AudioLayout& L, const doc::AudioClip& c, const TempoMap& tm, double k) noexcept {
-  if (c.warp == doc::AudioWarp::RePitch) return L.fpt / k;
+  if (doc::isWarped(c.warp)) return L.fptMin / k;
   const double secPerTick = tm.ticksToSeconds(c.start + kPpq) - tm.ticksToSeconds(c.start);
   return L.rate * L.ratio * secPerTick / static_cast<double>(kPpq) / k;
 }
@@ -45,12 +50,37 @@ int32_t localWidth(Ticks length, double k) noexcept {
   return std::max<int32_t>(1, static_cast<int32_t>(std::clamp(std::floor(static_cast<double>(length) * k + 0.5), 1.0, 1073741824.0)));
 }
 
+// SX.3: a clip's envelope over device columns [x0, x0 + n) (g null: flat, only the clip gain applies there).
+struct ColumnEnvelope {
+  const float* g = nullptr;
+  int32_t x0 = 0;
+  uint32_t n = 0;
+};
+
+// The envelope's shape at the centres of device columns [ca, cb) of a clip whose left edge is at device x `cx0` (a
+// whole px), into a scratch array; flat over them: none (the clip gain is WaveformDraw::gain either way). UI thread.
+ColumnEnvelope columnEnvelope(const AudioEnvelope& env, double cx0, double k, double ca, double cb) {
+  ColumnEnvelope out;
+  if (!(cb > ca) || !(k > 0.0)) return out;
+  const double t0 = env.bodyStart + (ca - cx0) / k, t1 = env.bodyStart + (cb - cx0) / k;
+  if (env.flatOver(t0, t1)) return out;
+  static std::vector<float> scratch;  // (the UI thread's; grows to the widest clip drawn)
+  const auto n = static_cast<size_t>(cb - ca);
+  if (scratch.size() < n) scratch.resize(n);
+  for (size_t i = 0; i < n; ++i)
+    scratch[i] = static_cast<float>(clipEnvelopeShape(env, env.bodyStart + (ca + static_cast<double>(i) + 0.5 - cx0) / k, 0.0));
+  out.g = scratch.data();
+  out.x0 = static_cast<int32_t>(ca);
+  out.n = static_cast<uint32_t>(n);
+  return out;
+}
+
 // The draw of one linear piece (clip-local px [xa, xb) showing source frames [fa, fb), mirrored when reversed) with
 // the clip's left edge at x `x0` (WF.1: a double — at deep zoom a clip's left edge is far outside float's whole
 // pixels, and the columns must not move by the rounding). Columns are the whole px whose centre lies in the piece.
 // False: no column.
 bool pieceDraw(const AudioPiece& p, double x0, float by0, float by1, float gain, Rgba col, float lo, float hi, float lineWidth,
-               WaveformDraw& d) {
+               const ColumnEnvelope& env, WaveformDraw& d) {
   const double ia = std::ceil(p.xa - 0.5), ib = std::ceil(p.xb - 0.5);
   if (ib <= ia || !(p.fb > p.fa)) return false;
   const double s = (p.fb - p.fa) / (p.xb - p.xa);
@@ -68,16 +98,120 @@ bool pieceDraw(const AudioPiece& p, double x0, float by0, float by1, float gain,
   d.clipX0 = lo;
   d.clipX1 = hi;
   d.lineWidth = lineWidth;
+  d.envelope = env.g;
+  d.envelopeX0 = env.x0;
+  d.envelopeCount = env.n;
   return true;
 }
 
 }  // namespace
 
+double audioSourceFrameAt(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, double t) {
+  if (c.warp == doc::AudioWarp::Off) {
+    const double t0 = std::floor(t);
+    const double s0 = tm.ticksToSeconds(static_cast<Ticks>(t0)), s1 = tm.ticksToSeconds(static_cast<Ticks>(t0) + 1);
+    const double x = s0 + (s1 - s0) * (t - t0) - L.startSec;
+    return c.contentStartFrame + (c.reverse ? c.seconds - x : x) * L.rate * L.ratio;
+  }
+  const double x = t - static_cast<double>(c.start);
+  const auto len = static_cast<double>(std::max<Ticks>(c.length, 1));
+  double pos = static_cast<double>(c.contentStart) + (c.reverse ? len - x : x);
+  const ContentLoop loop = doc::contentLoop(c);
+  if (contentLooped(loop) && pos >= static_cast<double>(loop.end)) {
+    const auto span = static_cast<double>(loop.end - loop.start);
+    pos = static_cast<double>(loop.start) + std::fmod(pos - static_cast<double>(loop.end), span);
+  }
+  return doc::warpFrameAt(c.markers, L.fpt, pos);
+}
+
+namespace {
+
+// The crossfade window of clip `c` with the clip before it in its lane (as doc::lowerAudioTrack keeps it: the neighbour
+// reaches c's start and is not covered by it; at most either clip's length), centred on the boundary. False: none.
+bool crossfadeWindow(const doc::AudioClip& c, const doc::AudioClip* prev, double& a, double& b) noexcept {
+  if (c.crossfadeIn <= 0 || prev == nullptr || prev->start >= c.start || doc::clipEnd(*prev) < c.start) return false;
+  const Ticks xf = std::min({c.crossfadeIn, std::max<Ticks>(c.length, 1), std::max<Ticks>(c.start - prev->start, 1)});
+  const Ticks half = xf / 2;
+  a = static_cast<double>(c.start - half);
+  b = static_cast<double>(c.start + xf - half);
+  return true;
+}
+
+// Whether two adjacent clips continue one source law across [a, b) (a split crossfaded back together): equal gain.
+bool sameLaw(const doc::AudioClip& p, const AudioLayout& pl, const doc::AudioClip& c, const AudioLayout& cl, const TempoMap& tm,
+             double a, double b) {
+  if (p.sample != c.sample || p.warp != c.warp || p.reverse != c.reverse) return false;
+  for (const double t : {a, 0.5 * (a + b), b})
+    if (!(std::abs(audioSourceFrameAt(p, pl, tm, t) - audioSourceFrameAt(c, cl, tm, t)) <= 1e-3)) return false;
+  return true;
+}
+
+}  // namespace
+
+AudioEnvelope audioEnvelope(const doc::AudioClip& c, const AudioLayout& L, const TempoMap& tm, const AudioNeighbours& n) {
+  AudioEnvelope e;
+  e.gain = clipGainLinear(c.gainDb);
+  const Ticks len = std::max<Ticks>(c.length, 1);
+  e.bodyStart = static_cast<double>(c.start);
+  e.bodyEnd = static_cast<double>(c.start + len);
+  const double body = static_cast<double>(len);
+  // The edge declicks in ticks (2 ms of song time at each edge).
+  double dIn = 0.0, dOut = 0.0;
+  if (!c.noEdgeFade) {
+    const double s0 = tm.ticksToSeconds(c.start), s1 = tm.ticksToSeconds(c.start + len);
+    dIn = tm.secondsToTicks(s0 + kClipEdgeDeclickSeconds) - e.bodyStart;
+    dOut = e.bodyEnd - tm.secondsToTicks(std::max(s0, s1 - kClipEdgeDeclickSeconds));
+  }
+  const Ticks fi = std::clamp<Ticks>(c.fadeIn.length, 0, len);
+  const Ticks fo = std::clamp<Ticks>(c.fadeOut.length, 0, len - fi);
+  if (crossfadeWindow(c, n.prev, e.xinStart, e.xinEnd)) {
+    e.inEnd = e.bodyStart;  // the crossfade replaces the fade-in and the declick
+    e.xinLinear = n.prevL != nullptr && sameLaw(*n.prev, *n.prevL, c, L, tm, e.xinStart, e.xinEnd);
+  } else {
+    double f = static_cast<double>(fi);
+    e.inCurve = std::clamp(c.fadeIn.curve, -1.0f, 1.0f);
+    if (f < dIn) {
+      f = dIn;
+      e.inCurve = 0.0f;
+    }
+    e.inEnd = e.bodyStart + std::clamp(f, 0.0, body);
+  }
+  if (n.next != nullptr && crossfadeWindow(*n.next, &c, e.xoutStart, e.xoutEnd)) {
+    e.outStart = e.bodyEnd;  // the crossfade replaces the fade-out and the declick
+    e.xoutLinear = n.nextL != nullptr && sameLaw(c, L, *n.next, *n.nextL, tm, e.xoutStart, e.xoutEnd);
+  } else {
+    double f = static_cast<double>(fo);
+    e.outCurve = std::clamp(c.fadeOut.curve, -1.0f, 1.0f);
+    if (f < dOut) {
+      f = dOut;
+      e.outCurve = 0.0f;
+    }
+    e.outStart = e.bodyEnd - std::clamp(f, 0.0, body);
+  }
+  return e;
+}
+
+AudioEnvelope laneAudioEnvelope(Model& m, const ArrangementRow& row, std::span<const doc::ClipSlot> lane, size_t index,
+                                const TempoMap& tm) {
+  if (index >= lane.size() || !lane[index].audio) return {};
+  const doc::AudioClipPtr& c = lane[index].audio;
+  AudioNeighbours n;
+  if (index > 0 && lane[index - 1].audio && c->crossfadeIn > 0) {
+    n.prev = lane[index - 1].audio.get();
+    n.prevL = &m.audioLayout(row, lane[index - 1].audio);
+  }
+  if (index + 1 < lane.size() && lane[index + 1].audio && lane[index + 1].audio->crossfadeIn > 0) {
+    n.next = lane[index + 1].audio.get();
+    n.nextL = &m.audioLayout(row, lane[index + 1].audio);
+  }
+  return audioEnvelope(*c, m.audioLayout(row, c), tm, n);
+}
+
 // WF.1: one direct draw of a clip's waveform for every view that shows one (the arrangement's lanes, the project patch
 // view's lane windows): see internal.h.
 ClipWaveStats paintClipWaveform(ui::DrawList& dl, Waveforms& waveforms, const media::WaveformOverview& ov, const doc::AudioClip& c,
-                                const AudioLayout& L, const TempoMap& tm, double k, double cx0, float vx0, float vx1, float by0,
-                                float by1, ui::Rgba col, float lineWidth) {
+                                const AudioLayout& L, const AudioEnvelope& env, const TempoMap& tm, double k, double cx0, float vx0,
+                                float vx1, float by0, float by1, ui::Rgba col, float lineWidth) {
   ClipWaveStats out;
   WaveformLevel lv[kMaxOverviewLevels];
   WaveformData data = waveformData(ov, nullptr, lv);
@@ -93,10 +227,13 @@ ClipWaveStats paintClipWaveform(ui::DrawList& dl, Waveforms& waveforms, const me
                                                          static_cast<int64_t>(std::ceil(f1)) + ui::kWaveformSampleMargin))
         data = waveformData(ov, w, lv);
   }
-  const float gain = clipGainLinear(c.gainDb);
+  // SX.3: the envelope over the visible columns (one neighbour either side), applied by drawWaveform per column.
+  const double ca = std::floor(std::max(static_cast<double>(vx0), cx0)) - 1.0;
+  const double cb = std::ceil(std::min(static_cast<double>(vx1), cx0 + static_cast<double>(c.length) * k)) + 1.0;
+  const ColumnEnvelope ce = columnEnvelope(env, cx0, k, ca, cb);
   forEachAudioPiece(c, L, tm, k, lo, hi, [&](const AudioPiece& p) {
     WaveformDraw d;
-    if (!pieceDraw(p, cx0, by0, by1, gain, col, vx0, vx1, lineWidth, d)) return;
+    if (!pieceDraw(p, cx0, by0, by1, env.gain, col, vx0, vx1, lineWidth, ce, d)) return;
     const WaveformStats st = drawWaveform(dl, data, d);
     out.columns += st.columns;
     out.approx = out.approx || st.approx;
@@ -123,8 +260,8 @@ void queueAudioTile(LanePaint& lp, const TileAtlas& tiles, const AudioTile& t, f
 }
 
 // Rasterises the clip's waveform at (k, bodyH) into a new tile. False when the atlas has no room this frame.
-bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const media::WaveformOverview& ov, double k, int32_t bodyH, Model& m,
-                    float lineWidth) {
+bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const AudioEnvelope& env, const media::WaveformOverview& ov, double k,
+                    int32_t bodyH, Model& m, float lineWidth) {
   const doc::AudioClip& c = *L.clip;
   AudioTile& t = L.tile;
   const int32_t width = localWidth(c.length, k);
@@ -133,6 +270,7 @@ bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const media::WaveformOverv
   t.width = width;
   t.bodyH = bodyH;
   t.built = ov.builtFrames();
+  t.env = env;
   TileAtlas::Tile tile;
   if (!tiles.allocate(static_cast<uint32_t>(width), static_cast<uint32_t>(bodyH), tile)) {
     t.state = PreviewTile::State::Failed;
@@ -143,10 +281,12 @@ bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const media::WaveformOverv
   const WaveformData data = waveformData(ov, nullptr, lv);
   uint8_t* dst = tiles.write(tile);
   const uint32_t pitch = TileAtlas::rowPitch(tile);
-  // The strips' coverage written directly (ui::rasterWaveform: the pixels drawWaveform covers, without triangles).
+  // The strips' coverage written directly (ui::rasterWaveform: the pixels drawWaveform covers, without triangles),
+  // SX.3: through the envelope (the tile is keyed by it).
+  const ColumnEnvelope ce = columnEnvelope(env, 0.0, k, -1.0, static_cast<double>(width) + 1.0);
   forEachAudioPiece(c, L, *L.tempo, k, 0.0, static_cast<double>(width), [&](const AudioPiece& p) {
     WaveformDraw d;
-    if (pieceDraw(p, 0.0, 0.0f, static_cast<float>(bodyH), clipGainLinear(c.gainDb), rgba(255, 255, 255), -3e38f, 3e38f, lineWidth, d))
+    if (pieceDraw(p, 0.0, 0.0f, static_cast<float>(bodyH), env.gain, rgba(255, 255, 255), -3e38f, 3e38f, lineWidth, ce, d))
       (void)rasterWaveform(data, d, dst + pitch + 1, static_cast<uint32_t>(width), static_cast<uint32_t>(bodyH), pitch);
   });
   t.tile = tile;
@@ -155,20 +295,25 @@ bool buildAudioTile(TileAtlas& tiles, AudioLayout& L, const media::WaveformOverv
   return true;
 }
 
-// The badge text of a clip: the warp mode and source tempo (T6.8), transpose / detune (every mode but Re-Pitch),
-// reverse, gain.
-std::string badgeText(const doc::AudioClip& c) {
-  std::string s;
+// SX.3: the processing tag of a clip (none for a clip that plays its file 1:1: Off, no transpose / detune / reverse): the
+// mode in capitals ("WARP · Beats", "RE-PITCH") and the details beside it ("+3 st", "-12 c", "Rev"), in the mode's
+// colour (time-stretch amber, Re-Pitch teal) on a dark pill (legible on every clip colour); an Off clip resampled by its
+// transpose or reversed: the details alone ("+7 st  Rev", "REV") in violet.
+struct ClipTag {
+  std::string mode, detail;
+  Rgba colour = 0;
+  bool shown() const noexcept { return !mode.empty(); }
+};
+
+constexpr Rgba kTagPill = rgba(18, 18, 22, 225);
+
+ClipTag clipTag(const doc::AudioClip& c) {
+  ClipTag t;
   char buf[48];
-  auto add = [&](const char* t) {
-    if (!s.empty()) s += "  ";
-    s += t;
+  auto add = [&](const char* x) {
+    if (!t.detail.empty()) t.detail += "  ";
+    t.detail += x;
   };
-  if (doc::isWarped(c.warp)) {  // T6.8: the mode and the source tempo ("RP 120", "Beats 120", ...)
-    static constexpr const char* kShort[] = {"", "RP", "Beats", "Tones", "Texture", "Complex", "Pro"};
-    std::snprintf(buf, sizeof buf, "%s %.0f", kShort[static_cast<size_t>(c.warp)], c.sourceBpm);
-    add(buf);
-  }
   if (doc::warpTransposes(c.warp)) {  // Off and the time-stretch modes play the transpose
     switch (c.transpose.unit) {
       case doc::TransposeUnit::Cents:
@@ -198,17 +343,61 @@ std::string badgeText(const doc::AudioClip& c) {
       add(buf);
     }
   }
+  const bool pitched = !t.detail.empty();
   if (c.reverse) add("Rev");
-  if (c.gainDb != 0.0f) {
-    if (c.gainDb <= doc::kMinClipGainDb) std::snprintf(buf, sizeof buf, "-inf dB");
-    else std::snprintf(buf, sizeof buf, "%+.1f dB", static_cast<double>(c.gainDb));
-    add(buf);
+  if (dsp::warpStretches(c.warp)) {
+    static constexpr const char* kMode[] = {"", "", "Beats", "Tones", "Texture", "Complex", "Pro"};
+    t.mode = std::string("WARP \xC2\xB7 ") + kMode[static_cast<size_t>(c.warp)];
+    t.colour = rgba(255, 184, 72);
+  } else if (c.warp == doc::AudioWarp::RePitch) {
+    t.mode = "RE-PITCH";
+    t.colour = rgba(96, 216, 232);
+  } else if (pitched) {
+    t.mode = std::move(t.detail);
+    t.detail.clear();
+    t.colour = rgba(200, 168, 255);
+  } else if (c.reverse) {
+    t.mode = "REV";
+    t.detail.clear();
+    t.colour = rgba(200, 168, 255);
   }
-  return s;
+  return t;
 }
 
-// Fade shading + curve (fade-in from the left edge, fade-out to the right edge), the crossfade X and the handles, into
-// `o` (the overlay list).
+// The tag, right-aligned in the title strip where it fits beside the start of the name (else its mode alone); else (a
+// short clip) a corner mark in the tag's colour at the title strip's right end.
+void paintClipTag(LanePaint& lp, const ClipCols& cc, float top, float titleB, const ClipTag& tag) {
+  if (!tag.shown() || titleB - top < 4.0f) return;
+  DrawList& dl = lp.ctx.dl;
+  const float right = std::min(cc.cx1, static_cast<float>(lp.r.right()));
+  const float h = titleB - top;
+  const float pad = static_cast<float>(lp.ctx.scale.px(4.0f));
+  if (lp.font != kNoFont && lp.ctx.res.text) {
+    TextSystem& ts = *lp.ctx.res.text;
+    for (const bool full : {true, false}) {
+      if (full == tag.detail.empty()) continue;  // (no details: the mode once)
+      const TextRun run = ts.shape(lp.font, full ? tag.mode + "  " + tag.detail : tag.mode);
+      const float w = static_cast<float>(run.advance) + 2.0f * pad;
+      const float x0 = std::floor(right - 2.0f - w);
+      if (x0 >= cc.cx0 + static_cast<float>(lp.ctx.scale.px(40.0f)) && x0 >= static_cast<float>(lp.r.x) &&
+          x0 + w <= static_cast<float>(lp.c.right()) + pad) {
+        const Rect pill{x0, top + 1.0f, x0 + w, titleB - 1.0f};
+        dl.addRoundedRectFilled(pill, std::min(3.0f * lp.ctx.scale.factor, 0.5f * (pill.y1 - pill.y0)), kTagPill);
+        TextSystem::drawRun(dl, run, {x0 + pad, top + static_cast<float>(lp.baselineOff)}, tag.colour);
+        return;
+      }
+    }
+  }
+  // The corner mark: a right triangle in the strip's top-right corner, the tag's colour inside a dark one.
+  const float m = std::min({h, std::round(0.75f * h), cc.cx1 - cc.cx0 - 1.0f});
+  if (m < 3.0f || right <= cc.cx0 + m) return;
+  dl.addTriangleFilled({right - m, top}, {right, top}, {right, top + m}, kTagPill);
+  const float in = std::max(1.0f, std::round(0.2f * m));
+  dl.addTriangleFilled({right - m + 2.4f * in, top + in}, {right - in, top + in}, {right - in, top + m - 2.4f * in}, tag.colour);
+}
+
+// Fade curves (fade-in from the left edge, fade-out to the right edge; SX.3: the waveform itself is faded, so no shading),
+// the crossfade X and the handles, into `o` (the overlay list).
 // A clip whose file is missing: a dark body with light diagonal hatching (it reads as "nothing here" at any width) and
 // "Missing" in white, centred, where it fits (M5 review UI 1: the red badge on the title strip was 1.39:1).
 void paintMissingBody(LanePaint& lp, const ClipCols& cc, float by0, float by1) {
@@ -243,8 +432,8 @@ void paintMissingBody(LanePaint& lp, const ClipCols& cc, float by0, float by1) {
 }
 
 // M5 review UI 3: fade curves and the crossfade X in a dark shade of the clip colour (they were opaque white over the
-// waveform), the faded part a translucent darkening; the X only while the clip is selected or hovered (the window is
-// shaded lightly otherwise, so a crossfade stays visible).
+// waveform); the X only while the clip is selected or hovered (the window is shaded lightly otherwise, so a crossfade
+// stays visible). SX.3: the fades' darkening went (the waveform shows the fade).
 Rgba fadeLineColour(Rgba clip) { return withAlpha(lerp(clip, rgba(0, 0, 0), 0.62f), 235); }
 
 void crossfadeMarks(DrawList& o, float xa, float xb, float by0, float by1, Rgba line, float lw, bool x) {
@@ -255,10 +444,9 @@ void crossfadeMarks(DrawList& o, float xa, float xb, float by0, float by1, Rgba 
   smoothPolyline(o, b, 2, line, lw);
 }
 
-void paintOverlays(DrawList& o, LanePaint& lp, const doc::AudioClip& c, const ClipCols& cc, float by0, float by1, bool handles,
-                   int hover, Rgba colour) {
+void paintOverlays(DrawList& o, LanePaint& lp, const doc::AudioClip& c, const AudioEnvelope& env, const ClipCols& cc, float by0,
+                   float by1, bool handles, int hover, Rgba colour) {
   const float scale = lp.ctx.scale.factor;
-  const Rgba shade = rgba(0, 0, 0, 64);
   const Rgba line = fadeLineColour(colour);
   const float lw = std::max(1.0f, std::round(scale));
   const AudioFadesPx f = audioFadesPx(c, lp.k);
@@ -268,31 +456,13 @@ void paintOverlays(DrawList& o, LanePaint& lp, const doc::AudioClip& c, const Cl
     const int n = std::clamp(static_cast<int>(w / 3.0f), 2, 64);
     for (int i = 0; i <= n; ++i) {
       const double x = static_cast<double>(i) / n;
-      const double g = in ? automationShape(x, curve) : 1.0 - automationShape(x, curve);
+      const double g = in ? clipFadeInShape(x, curve) : clipFadeOutShape(x, curve);
       pts[i] = {x0 + w * static_cast<float>(x), by1 - static_cast<float>(g) * (by1 - by0)};
-    }
-    // Shade above the curve: one quad per segment, between the top of the body and the curve.
-    const DrawList::PrimSpan sp = o.primReserveSpan(6 * static_cast<uint32_t>(n), 4 * static_cast<uint32_t>(n));
-    const Vec2 uv = o.whiteUv();
-    for (int i = 0; i < n; ++i) {
-      Vertex* v = sp.v + 4 * i;
-      v[0] = {{pts[i].x, by0}, uv, shade};
-      v[1] = {{pts[i + 1].x, by0}, uv, shade};
-      v[2] = {pts[i + 1], uv, shade};
-      v[3] = {pts[i], uv, shade};
-      uint32_t* ix = sp.i + 6 * i;
-      const uint32_t b = sp.base + 4 * static_cast<uint32_t>(i);
-      ix[0] = b;
-      ix[1] = b + 1;
-      ix[2] = b + 2;
-      ix[3] = b;
-      ix[4] = b + 2;
-      ix[5] = b + 3;
     }
     smoothPolyline(o, pts, static_cast<uint32_t>(n + 1), line, lw);
   };
   if (c.crossfadeIn == 0) fade(cc.cx0, f.in, c.fadeIn.curve, true);
-  fade(cc.cx1 - f.out, f.out, c.fadeOut.curve, false);
+  if (!(env.xoutEnd > env.xoutStart)) fade(cc.cx1 - f.out, f.out, c.fadeOut.curve, false);  // (a crossfade out replaces it)
   if (c.crossfadeIn > 0) {  // centred on the boundary (both clips' parts of the window)
     const float xa = cc.cx0 - static_cast<float>(static_cast<double>(c.crossfadeIn / 2) * lp.k);
     const float xb = cc.cx0 + static_cast<float>(static_cast<double>(c.crossfadeIn - c.crossfadeIn / 2) * lp.k);
@@ -310,7 +480,7 @@ void paintOverlays(DrawList& o, LanePaint& lp, const doc::AudioClip& c, const Cl
 }  // namespace
 
 void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioClipPtr& clipPtr, const ClipGeom& g, float top,
-                    float bottom, bool trackActive, bool selected, int hover) {
+                    float bottom, bool trackActive, bool selected, int hover, std::span<const doc::ClipSlot> lane, size_t index) {
   const doc::AudioClip& own = *clipPtr;
   ClipCols cc;
   if (!clipColumns(lp, g.start, g.length, cc)) return;
@@ -322,20 +492,7 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   const Rgba colour = active ? rgbOf(own.colour) : inactiveColour();
   const float titleB = paintClipChrome(lp, cc, top, bottom, colour, own.name);
 
-  // Badges, right-aligned in the title strip when they fit beside the name.
-  if (lp.font != kNoFont && lp.ctx.res.text && available) {
-    const std::string b = badgeText(own);
-    if (!b.empty()) {
-      TextSystem& ts = *lp.ctx.res.text;
-      const TextRun run = ts.shape(lp.font, b);
-      const float pad = static_cast<float>(lp.ctx.scale.px(4.0f));
-      const float x = std::min(cc.cx1, static_cast<float>(lp.r.right())) - pad - static_cast<float>(run.advance);
-      if (x >= cc.cx0 + static_cast<float>(lp.ctx.scale.px(40.0f)) && x >= static_cast<float>(lp.r.x) &&
-          x + static_cast<float>(run.advance) <= static_cast<float>(lp.c.right()) + pad)
-        TextSystem::drawRun(dl, run, {std::floor(x), top + static_cast<float>(lp.baselineOff)},
-                            withAlpha(lp.m.clipTextColour(lp.th, colour), 170));
-    }
-  }
+  if (available) paintClipTag(lp, cc, top, titleB, clipTag(own));
 
   const float by0 = titleB, by1 = bottom - 1.0f;
   const int32_t bodyH = static_cast<int32_t>(by1 - by0);
@@ -361,6 +518,13 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
     L = &tmp;
   }
   const doc::AudioClip& c = *L->clip;
+  // SX.3: its envelope (a drag preview: its own fades, no crossfade); while a fade or gain handle is dragged no tile is
+  // built (the dragged clip and its crossfade partner draw directly, the envelope applied per column; one tile on
+  // release).
+  const bool inLane = ownContent && index < lane.size() && lane[index].audio == clipPtr;
+  const AudioEnvelope env = inLane ? laneAudioEnvelope(lp.m, row, lane, index, *L->tempo) : audioEnvelope(c, *L, *L->tempo, {});
+  const DragKind dk = lp.arrangementLanes ? lp.view.editor().dragKind() : DragKind::None;
+  const bool envelopeDrag = dk == DragKind::Fade || dk == DragKind::Gain;
   const Rgba waveCol = clipNoteColour(colour);
   bool deferred = false;
   const media::WaveformOverview* ov = ctx.waveforms().overview(own.sample);
@@ -376,17 +540,19 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
     if (tiles && ownContent && !sampleLevel && wantsAudioTile(*tiles, width, bodyH)) {
       AudioTile& t = base.tile;
       const bool ready = t.state == PreviewTile::State::Ready && tiles->valid(t.tile);
-      if (t.matches(lp.k, bodyH, ov->builtFrames()) && ready) {
+      if (t.matches(lp.k, bodyH, ov->builtFrames(), env) && ready) {
         queueAudioTile(lp, *tiles, t, cc.cx0, cc.vx0, cc.vx1, by0, bodyH, waveCol);
         tiles->touch(t.tile.page);
         ++lp.m.stats.tilesDrawn;
         deferred = true;
         direct = false;
-      } else if (!(t.matches(lp.k, bodyH, ov->builtFrames()) && t.state == PreviewTile::State::Failed)) {
-        ++lp.m.stats.tilesMissing;
-        lp.m.tilesMissing = true;
-        if (lp.zooming()) lp.m.tilesAfterZoom = true;
-        if (ready && t.bodyH == bodyH) {  // the previous zoom's tile, stretched, until onFrame has built this one
+      } else if (!(t.matches(lp.k, bodyH, ov->builtFrames(), env) && t.state == PreviewTile::State::Failed)) {
+        if (!envelopeDrag) {
+          ++lp.m.stats.tilesMissing;
+          lp.m.tilesMissing = true;
+          if (lp.zooming()) lp.m.tilesAfterZoom = true;
+        }
+        if (ready && t.bodyH == bodyH && t.env == env) {  // the previous zoom's tile, stretched, until onFrame has built this one
           queueAudioTile(lp, *tiles, t, cc.cx0, cc.vx0, cc.vx1, by0, bodyH, waveCol);
           tiles->touch(t.tile.page);
           ++lp.m.stats.tilesStale;
@@ -400,8 +566,8 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
       // Only the visible columns; at deep zoom the samples themselves (a window read in the background meanwhile).
       // WF.1: the clip's left edge in double (cc.cx0 is a float: whole pixels only up to 2^24).
       const double cx0 = std::round(static_cast<double>(lp.r.x) + (static_cast<double>(g.start) - lp.origin) * lp.k);
-      const ClipWaveStats st = paintClipWaveform(dl, ctx.waveforms(), *ov, c, *L, *L->tempo, lp.k, cx0, cc.vx0, cc.vx1, by0, by1, waveCol,
-                                                 std::max(1.0f, lp.ctx.scale.factor));
+      const ClipWaveStats st = paintClipWaveform(dl, ctx.waveforms(), *ov, c, *L, env, *L->tempo, lp.k, cx0, cc.vx0, cc.vx1, by0, by1,
+                                                 waveCol, std::max(1.0f, lp.ctx.scale.factor));
       lp.m.stats.waveColumns += st.columns;
       lp.m.stats.waveSampleDraws += st.samples ? 1 : 0;
       lp.m.stats.waveCurveDraws += st.curve ? 1 : 0;
@@ -412,7 +578,7 @@ void paintAudioClip(LanePaint& lp, const ArrangementRow& row, const doc::AudioCl
   }
   paintClipBorder(lp, cc, top, bottom, titleB, selected, hover >= -1 && hover <= 1 ? hover : kNoHover, deferred);
   const bool handles = selected || hover != kNoHover;
-  paintOverlays(lp.m.overlay, lp, c, cc, by0, by1, handles, hover, colour);
+  paintOverlays(lp.m.overlay, lp, c, env, cc, by0, by1, handles, hover, colour);
 }
 
 void paintAudioCrossfade(LanePaint& lp, const doc::AudioClip& c, float top, float bottom, bool marked) {
@@ -433,6 +599,8 @@ bool buildAudioTiles(LaneCanvas& canvas, ArrangementView& view, TileAtlas& tiles
   const IRect r = canvas.rect();
   const IRect c = intersect(r, visible);
   if (c.empty() || !m.shown) return true;
+  // SX.3: none while a fade or gain handle is dragged (those clips draw directly; the release repaints and builds).
+  if (const DragKind dk = view.editor().dragKind(); dk == DragKind::Fade || dk == DragKind::Gain) return true;
   const UiScale s = canvas.tree() ? canvas.tree()->uiScale() : UiScale{};
   const double k = view.devicePxPerTick();
   const double origin = view.originTick();
@@ -473,15 +641,16 @@ bool buildAudioTiles(LaneCanvas& canvas, ArrangementView& view, TileAtlas& tiles
       if (!wantsAudioTile(tiles, width, bodyH)) continue;
       WaveformLevel lv[kMaxOverviewLevels];
       if (waveformLevelFor(waveformData(*ov, nullptr, lv), framesPerPx(L, *clip, *L.tempo, k)) < 0) continue;
+      const AudioEnvelope env = laneAudioEnvelope(m, *it, *st.clips, j, *L.tempo);
       const AudioTile& at = L.tile;
-      if (at.matches(k, bodyH, ov->builtFrames()) &&
+      if (at.matches(k, bodyH, ov->builtFrames(), env) &&
           (at.state == PreviewTile::State::Failed || (at.state == PreviewTile::State::Ready && tiles.valid(at.tile)))) {
         if (at.state == PreviewTile::State::Ready) tiles.touch(at.tile.page);
         continue;
       }
       const size_t area = static_cast<size_t>(width + 2) * static_cast<size_t>(bodyH + 2);
       if (builtOne && texels + area > am::kTileBuildTexelsPerFrame) return false;
-      (void)buildAudioTile(tiles, L, *ov, k, bodyH, m, std::max(1.0f, s.factor));
+      (void)buildAudioTile(tiles, L, env, *ov, k, bodyH, m, std::max(1.0f, s.factor));
       texels += area;
       builtOne = true;
     }

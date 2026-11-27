@@ -6,6 +6,7 @@
 
 #include "../common/drag.h"
 #include "internal.h"
+#include "lane_paint.h"
 #include "pq/document/edit_ops.h"
 #include "pq/views/shell/shell.h"
 
@@ -312,6 +313,47 @@ Rect ArrangementView::audioHandleRect(const doc::ClipRef& ref, AudioHandle which
   const arrangement::AudioHandleRects h = arrangement::audioHandles(a, x0, x1, titleB, bottom - 1.0f, devicePxPerTick(), s.factor);
   if (!h.show) return {};
   return which == AudioHandle::FadeIn ? h.fadeIn : which == AudioHandle::FadeOut ? h.fadeOut : h.gain;
+}
+
+namespace {
+// The row and slot of an audio clip (false: not an audio clip on a row).
+bool audioSlot(const arrangement::Model& m, const doc::ClipRef& ref, size_t& row, size_t& slot) {
+  for (size_t i = 0; i < m.rows.size(); ++i) {
+    if (m.rows[i].id != ref.track || m.rows[i].group) continue;
+    const int32_t j = doc::findClipIndex(*m.rows[i].track, ref.clip);
+    if (j < 0 || !m.rows[i].track->clips[static_cast<size_t>(j)].audio) return false;
+    row = i;
+    slot = static_cast<size_t>(j);
+    return true;
+  }
+  return false;
+}
+}  // namespace
+
+double ArrangementView::audioEnvelopeAt(const doc::ClipRef& ref, double t) const {
+  size_t row = 0, slot = 0;
+  if (!model_->shown || !audioSlot(*model_, ref, row, slot)) return std::nan("");
+  const ArrangementRow& r = model_->rows[row];
+  const doc::AudioClip& c = *r.track->clips[slot].audio;
+  if (t < static_cast<double>(c.start) || t >= static_cast<double>(doc::clipEnd(c))) return std::nan("");
+  return arrangement::laneAudioEnvelope(*model_, r, r.track->clips, slot, model_->shown->timeline->tempoMap).at(t);
+}
+
+double ArrangementView::audioDrawnFrameAt(const doc::ClipRef& ref, double t) const {
+  size_t row = 0, slot = 0;
+  if (!model_->shown || !audioSlot(*model_, ref, row, slot)) return std::nan("");
+  const ArrangementRow& r = model_->rows[row];
+  const doc::AudioClipPtr& c = r.track->clips[slot].audio;
+  const arrangement::AudioLayout& L = model_->audioLayout(r, c);
+  // The piece over a narrow window around t at a fine scale (1 px per tick), interpolated as drawWaveform reads it.
+  const double k = 1.0, x = (t - static_cast<double>(c->start)) * k;
+  double out = std::nan("");
+  arrangement::forEachAudioPiece(*c, L, *L.tempo, k, x - 0.5, x + 0.5, [&](const arrangement::AudioPiece& p) {
+    if (x < p.xa || x >= p.xb || !(p.xb > p.xa)) return;
+    const double u = (x - p.xa) / (p.xb - p.xa);
+    out = !p.reverse ? p.fa + (p.fb - p.fa) * u : p.fb - (p.fb - p.fa) * u;
+  });
+  return out;
 }
 
 ArrangementView::ClipHover ArrangementView::clipHover() const noexcept {

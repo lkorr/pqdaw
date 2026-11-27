@@ -446,6 +446,23 @@ Prep prepare(const WaveformData& data, const WaveformDraw& d, const ClipRect& cl
       }
     }
   }
+  // SX.3: the caller's per-column envelope multiplies each column's range (before the moiré fill, so it sees the
+  // ranges as drawn); empty columns stay empty.
+  if (d.envelope != nullptr && d.envelopeCount > 0) {
+    const auto base = static_cast<int64_t>(std::floor(d.rect.x0)) + e0 - d.envelopeX0;
+    const auto last = static_cast<int64_t>(d.envelopeCount) - 1;
+    for (size_t i = 0; i < ncolE; ++i) {
+      const float g = d.envelope[std::clamp<int64_t>(base + static_cast<int64_t>(i), 0, last)];
+      for (uint32_t ch = 0; ch < channels; ++ch) {
+        float& l = s.lo[ch * stride + 1 + i];
+        float& h = s.hi[ch * stride + 1 + i];
+        if (l <= h) {
+          l *= g;
+          h *= g;
+        }
+      }
+    }
+  }
   // (every regime, so nothing pops at 2 frames per px; from 0.5 frames per px down no cycle is that short)
   if (fpp > 0.5)
     for (uint32_t ch = 0; ch < channels; ++ch) fillAliased(s.lo.data() + ch * stride + 1, s.hi.data() + ch * stride + 1, ncolE, s);
@@ -726,6 +743,12 @@ Dots dotsOf(const WaveformData& data, const WaveformDraw& d, const Prep& pr) noe
 inline float dotX(const WaveformDraw& d, const Prep& pr, double frame) noexcept {
   return d.rect.x0 + static_cast<float>((!d.reverse ? frame - d.frame0 : d.frame1 - frame) / pr.fpp);
 }
+// SX.3: the envelope's gain at device x (1 without one).
+inline float envelopeAt(const WaveformDraw& d, float x) noexcept {
+  if (d.envelope == nullptr || d.envelopeCount == 0) return 1.0f;
+  const auto i = static_cast<int64_t>(std::floor(static_cast<double>(x))) - d.envelopeX0;
+  return d.envelope[std::clamp<int64_t>(i, 0, static_cast<int64_t>(d.envelopeCount) - 1)];
+}
 
 }  // namespace
 
@@ -749,8 +772,9 @@ WaveformStats drawWaveform(DrawList& dl, const WaveformData& data, const Wavefor
       const Rgba col = mulAlpha(d.colour, dots.alpha);
       const float* x = data.samples.channel[ch];
       for (int64_t j = dots.j0; j < dots.j1; ++j) {
-        const float y = std::clamp(L.centre - x[j] * L.half, L.y0, L.y1);
-        dl.addCircleFilled({dotX(d, pr, static_cast<double>(data.samples.frame0 + j)), y}, dots.radius, col);
+        const float dx = dotX(d, pr, static_cast<double>(data.samples.frame0 + j));
+        const float y = std::clamp(L.centre - x[j] * envelopeAt(d, dx) * L.half, L.y0, L.y1);
+        dl.addCircleFilled({dx, y}, dots.radius, col);
       }
       if (ch == 0) st.dots = static_cast<uint32_t>(dots.j1 - dots.j0);
     }
@@ -859,7 +883,7 @@ WaveformStats rasterWaveform(const WaveformData& data, const WaveformDraw& d, ui
       const float r = dots.radius;
       for (int64_t j = dots.j0; j < dots.j1; ++j) {
         const float cx = dotX(d, pr, static_cast<double>(data.samples.frame0 + j));
-        const float cy = std::clamp(L.centre - xs[j] * L.half, L.y0, L.y1);
+        const float cy = std::clamp(L.centre - xs[j] * envelopeAt(d, cx) * L.half, L.y0, L.y1);
         const int32_t xa = std::max(0, static_cast<int32_t>(std::floor(cx - r - 1.0f))), xb = std::min(W, static_cast<int32_t>(std::ceil(cx + r + 1.0f)));
         const int32_t ya = std::max(0, static_cast<int32_t>(std::floor(cy - r - 1.0f))), yb = std::min(H, static_cast<int32_t>(std::ceil(cy + r + 1.0f)));
         for (int32_t y = ya; y < yb; ++y)

@@ -4,7 +4,7 @@
 // (pq/media/waveform.h; ui does not depend on media, so the overview arrives as the plain views below) and, below the
 // finest level, its samples, drawn into a DrawList or written into a coverage image.
 //
-//   drawWaveform(dl, data, {frame0, frame1, rect, gain, reverse, colour, lineWidth})
+//   drawWaveform(dl, data, {frame0, frame1, rect, gain, reverse, colour, lineWidth, envelope})
 //
 // draws source frames [frame0, frame1) across `rect` (left to right; mirrored when `reverse`). Columns are whole
 // device px from rect.x0 (an integer, as clip edges are); only the columns inside the draw list's current clip rect (and
@@ -100,6 +100,12 @@ struct WaveformDraw {
   bool merge = false;
   // WF.1: no dots on the samples (a caller that draws the same frames twice, e.g. a dim copy under a lit one).
   bool dots = true;
+  // SX.3: a gain per device column, applied at draw time over the peaks / samples (an audio clip's fades and
+  // crossfades: pq/core/clip_envelope.h), on top of `gain`: the column at device x (whole px) takes
+  // envelope[x − envelopeX0], clamped to the array's ends. Null: none. The caller keeps it alive for the call.
+  const float* envelope = nullptr;
+  int32_t envelopeX0 = 0;
+  uint32_t envelopeCount = 0;
 };
 
 struct WaveformStats {
