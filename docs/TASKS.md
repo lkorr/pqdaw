@@ -978,6 +978,6 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ### SX: direct sample manipulation (docs/plans/SX.md; user 2026-11-27, plan approved)
 - [x] **SX.1 Radial menu hosts controls (knobs, sliders, chips, toggles; side placement)** 👁 (plan SX.1; lane w1) *(merged 6208fc97)*
-- [ ] **SX.2 Clip menu: button on the selected clip opens the radial clip menu (clip-panel parity)** 👁 (plan SX.2; w1, after SX.1)
+- [x] **SX.2 Clip menu: button on the selected clip opens the radial clip menu (clip-panel parity)** 👁 (plan SX.2; w1, after SX.1) *(merged c057c065)*
 - [x] **SX.3 The waveform shows what plays: fades / gain / crossfades on the amplitude, warp markers, warped tag** 👁 (plan SX.3; lane w2) *(merged 49657666)*
 - [ ] **SX.4 Time-stretch clips draw their rendered audio (async, cached, envelope at draw time)** 👁 (plan SX.4; w2, after SX.3)
