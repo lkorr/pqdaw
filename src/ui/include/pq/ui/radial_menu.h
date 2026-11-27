@@ -43,6 +43,18 @@
 // left, in order (with no pins: spread from the top, clockwise, as before). Sub-rings are arcs outward from their
 // parent and ignore pins. Typing filters pick leaves only.
 //
+// SX.5 bands (RadialMenuOptions::layout = Bands): the same items, controls, bindings, gestures and painting, laid out as
+// compact rows hugging a rectangle (`around`: what the menu must not cover, e.g. a clip) instead of rings: the items
+// placed RadialPlace::above(row) form rows above it (row 0 nearest), every other item rows below it (below(row); Auto /
+// Left / Right: below, row 0). Each row is centred on options.bandX, its items side by side in order (a chip group's
+// chips close together, a wider gap between slots); a band (all rows of one side) sits on a panel. A chip that is lit and
+// has children shows them as a row directly outward from its row (the chosen mode's settings beside the modes: no hover
+// sub-rings); a category's children show the same way while it is open (hover / click). A band that does not fit its
+// side goes to the other side (outward beyond that side's band) when both fit there; otherwise it is clamped inside the
+// window. Chips, toggles and leaves are pills sized to their label, knobs a smaller disc. Keys: arrows move through
+// the shown items in layout order, Enter acts (types a knob / slider value, chooses a chip, flips a toggle, picks a
+// leaf, opens a category), Esc closes; typing does not filter. A press on a band's panel between items is consumed.
+//
 // Look: theme tokens only (menu, surface, selection, accent, control, text); glyphs in SceneFonts::symbol (18 SemiBold)
 // when they fit the bubble, else the theme's title font; a leaf's name shows in a tag outside its bubble while it is
 // highlighted. A 120 ms open animation (rings grow from 70 %, fade in); there is no reduced-motion setting yet
@@ -55,6 +67,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -75,11 +88,15 @@ struct RadialPlace {
   enum class Side : uint8_t { Auto, Top, Right, Bottom, Left, Angle };
   Side side = Side::Auto;
   float degrees = 0.0f;  // Side::Angle: clockwise from the top
+  int8_t row = 0;        // SX.5 bands: the row within its band (0 nearest the `around` rect); rings ignore it
   static RadialPlace top() noexcept { return {Side::Top, 0.0f}; }
   static RadialPlace right() noexcept { return {Side::Right, 0.0f}; }
   static RadialPlace bottom() noexcept { return {Side::Bottom, 0.0f}; }
   static RadialPlace left() noexcept { return {Side::Left, 0.0f}; }
   static RadialPlace angle(float degreesClockwiseFromTop) noexcept { return {Side::Angle, degreesClockwiseFromTop}; }
+  // SX.5: top / bottom with a band row (rings: pinned top / bottom).
+  static RadialPlace above(int8_t row = 0) noexcept { return {Side::Top, 0.0f, row}; }
+  static RadialPlace below(int8_t row = 0) noexcept { return {Side::Bottom, 0.0f, row}; }
   bool pinned() const noexcept { return side != Side::Auto; }
   float degreesFromTop() const noexcept;  // Top 0, Right 90, Bottom 180, Left 270, Angle: degrees
 };
@@ -135,6 +152,9 @@ struct RadialItem {
                           RadialPlace place = {});
 };
 
+// How the items are laid out (SX.5): rings around the anchor, or bands hugging a rectangle.
+enum class RadialLayout : uint8_t { Rings, Bands };
+
 struct RadialMenuOptions {
   std::string current;                          // key of the current leaf: opened to and marked ("" none)
   std::function<void(std::string_view key)> onPick;  // after the menu closed
@@ -145,6 +165,12 @@ struct RadialMenuOptions {
   std::function<std::string()> centreText;
   // SX.1: read with the values (refresh()); false closes the menu (what it edits is gone).
   std::function<bool()> valid;
+  // SX.5: Bands: `around` is the rectangle the bands hug and never cover (while the window allows), `bandX` the x they
+  // are centred on (NaN: the rectangle's centre). Device px in the overlay layer's tree; openRadialMenu sets `around`
+  // to its anchor and maps `bandX` from the opener's tree.
+  RadialLayout layout = RadialLayout::Rings;
+  IRect around{};
+  float bandX = std::numeric_limits<float>::quiet_NaN();
 };
 
 class RadialMenu : public Widget {
@@ -178,6 +204,11 @@ public:
   int32_t resultCount() const noexcept { return shownResults_; }
   int32_t result(int32_t i) const noexcept { return results_[static_cast<size_t>(i)].node; }
   IRect bounds() const noexcept { return bbox_; }  // what the menu paints (device px)
+  // SX.5 bands: whether the menu is laid out as bands, and a band's panel (0 the items placed above, 1 the others;
+  // device px, empty when it has no rows) and whether it was moved to the other side.
+  bool bands() const noexcept { return bands_; }
+  IRect bandRect(int32_t band) const noexcept { return bandRect_[band]; }
+  bool bandFlipped(int32_t band) const noexcept { return bandFlipped_[band]; }
   // Opening animation progress 0..1.
   float openProgress() const noexcept { return progress_; }
 
@@ -269,6 +300,10 @@ private:
   // (radius r); else the nodes node0 .. node0 + n − 1 with their own sizes.
   void placeArc(int32_t ring, int32_t node0, int32_t n, float baseAngle, float R, float r);
   void layoutRing0();
+  void layoutBands();                                  // SX.5
+  bool expanded(int32_t node) const noexcept;          // bands: its children show as a row
+  bool activate(int32_t node);                         // Enter on a control / chip / toggle (false: not a control)
+  void bandStep(int32_t dir);                          // bands: the arrows
   float tangentExt(int32_t node, float a) const noexcept;
   float radialExt(int32_t node, float a) const noexcept;
   bool isControl(int32_t node) const noexcept { return nodes_[static_cast<size_t>(node)].kind != RadialKind::Item; }
@@ -335,6 +370,18 @@ private:
   float haloR_ = 0.0f;
   IRect tag_{};  // the highlighted leaf's name tag
   int32_t tagNode_ = -1;
+
+  // bands (SX.5)
+  struct Row {
+    int32_t band, first, count;  // band 0 above, 1 below; rowNodes_[first .. first + count)
+    float w, h;
+  };
+  bool bands_ = false;
+  float bandX_ = 0.0f;
+  std::vector<Row> rows_;            // reserved at open
+  std::vector<int32_t> rowNodes_;    // reserved at open
+  IRect bandRect_[2]{};
+  bool bandFlipped_[2]{};
 
   // animation
   double openedAt_ = -1.0;

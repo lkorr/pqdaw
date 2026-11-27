@@ -181,20 +181,20 @@ doc::ClipRef Editor::clipMenuTarget() const {
   return {};
 }
 
-ui::RadialMenu* Editor::openClipMenu(const doc::ClipRef& ref, bool animate) {
+ui::RadialMenu* Editor::openClipMenu(const doc::ClipRef& ref, bool animate, float atX) {
   if (!clip_edits::findAudioClip(*ctx_.doc(), ref)) return nullptr;
   if (ui::RadialMenu* m = clipMenu()) m->close();
   EditSurface& s = view_.surfaces().current();
   const int32_t row = rowOf(ref.track);
   const doc::ClipSlot* c = findClip(*ctx_.doc(), ref);
   if (row < 0 || !c) return nullptr;
-  // Centred on the clip's visible part (the menu keeps its rings on screen).
+  // Around the clip's visible part, centred on atX (the press; NaN: the visible part's centre).
   const IRect box = clipBox(s, row, c->start(), c->end());
   const IRect lane = s.rowLaneRect(row);
   const int32_t x0 = std::max(box.x, lane.x), x1 = std::min(box.right(), lane.right());
   const IRect anchor = x1 > x0 ? IRect{x0, box.y, x1 - x0, box.h} : box;
   auto flag = std::make_shared<ui::RadialMenu*>(nullptr);
-  ui::RadialMenu* m = views::openClipMenu(ctx_, s.widget(), anchor, ref, [flag] { *flag = nullptr; }, animate);
+  ui::RadialMenu* m = views::openClipMenu(ctx_, s.widget(), anchor, ref, atX, [flag] { *flag = nullptr; }, animate);
   if (!m) return nullptr;
   *flag = m;
   clipMenu_ = std::move(flag);
@@ -665,9 +665,9 @@ void Editor::press(const PointerEvent& e) {
     return;
   }
 
-  // SX.2: the menu button of a selected audio clip opens the radial clip menu (the selection stays).
+  // SX.2: the menu button of a selected audio clip opens the clip menu there (the selection stays).
   if (h.clip && h.zone == kZoneMenu && e.button == PointerButton::Left) {
-    (void)openClipMenu(h.ref);
+    (void)openClipMenu(h.ref, true, e.pos.x);
     return;
   }
 
@@ -1694,10 +1694,12 @@ Menu* Editor::openContextMenu(Vec2 at) {
   items.push_back(action("Loop Selection", "arrangement.loopSelection", "Ctrl+L"));
   items.push_back(action("Deactivate / Activate", "arrangement.toggleActive", "0"));
   items.push_back(action("Reverse", "arrangement.reverse", "R"));
-  {  // SX.2: the radial clip menu of the clip under the pointer (else the first selected audio clip)
+  {  // SX.2: the clip menu of the clip under the pointer (at the press), else of the first selected audio clip
     const Hit h = hitTest(at);
-    const doc::ClipRef ref = h.clip && h.clip->audio ? h.ref : clipMenuTarget();
-    MenuItem m = MenuItem::item("Clip Menu\xE2\x80\xA6", [this, ref] { (void)openClipMenu(ref); }, "Ctrl+Space");
+    const bool under = h.clip && h.clip->audio;
+    const doc::ClipRef ref = under ? h.ref : clipMenuTarget();
+    const float x = under ? at.x : std::numeric_limits<float>::quiet_NaN();
+    MenuItem m = MenuItem::item("Clip Menu\xE2\x80\xA6", [this, ref, x] { (void)openClipMenu(ref, true, x); }, "Ctrl+Space");
     m.enabled = ref.clip.valid();
     items.push_back(std::move(m));
   }

@@ -2528,3 +2528,15 @@ Per display (how it was drawn → what was wrong → what changed):
   source) is shown with a dashed amber line along the bottom of the clip body.
 - Look at: golden `arrangement-audio-rendered` (Beats +7 st beside its Off copy). In the app: change a Beats clip's
   transpose and watch the swap; is the dashed "rendering" line subtle enough / visible enough?
+## SX.5 · Clip menu as a compact popup around the clip (👁)
+- The clip menu is now two bands hugging the clip (never over it), centred on where it was opened (the button / the
+  right-click; Ctrl+Space: the clip's visible centre), each on a menu panel. Above: the warp modes in one row
+  (Off · Re-Pitch | Beats · Tones · Texture · Complex · Pro) and directly above them the chosen mode's settings (no hover
+  sub-rings). Below: Transpose (+ stp / ¢ / n/d), Detune, Reverse, BPM, :2 / ×2, Loop in one strip. Gain and the fades
+  are gone (the clip's handles edit them). Goldens re-recorded: `clip-menu-off`, `clip-menu-beats`.
+- How: a general `RadialLayout::Bands` of the same `ui::RadialMenu` (same controls, bindings, gestures, painting;
+  chips / toggles become label-sized pills, knobs a ≥ 32 px disc). Math and panel radial menus keep the rings (their
+  goldens unchanged). A band that does not fit its side moves beyond the other band; otherwise clamped on screen.
+- Look at: the lower strip is ~550 px wide (wider than a short clip; clamped at the window's left edge in the goldens) —
+  splitting it into two rows (Transpose · Detune · Reverse / BPM · :2 ×2 · Loop) is a one-line change per item
+  (`RadialPlace::below(1)`) if you prefer it taller and narrower. Seen live in a pqdaw I launched (button → popup).

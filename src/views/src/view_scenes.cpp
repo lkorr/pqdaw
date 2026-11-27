@@ -1559,8 +1559,8 @@ Status setupArrangementAudioWarp(Shell& shell) {
   return Ok{};
 }
 
-// SX.2: the radial clip menu on the first Drums clip (selected, the arrangement-audio zoom), open without the animation.
-// `beats`: the clip warped to Beats first and the pointer over the Beats chip (its settings' sub-ring open).
+// SX.2 / SX.5: the clip menu on the first Drums clip (selected, the arrangement-audio zoom), opened at its button as a
+// click there does, without the animation. `beats`: the clip warped to Beats first (its settings row above the modes).
 Status setupClipMenu(Shell& shell, bool beats) {
   ArrangementView* a = arrangementOf(shell);
   if (!a) return Error{ErrorCode::NotFound, "arrangement view not installed", {}};
@@ -1578,20 +1578,11 @@ Status setupClipMenu(Shell& shell, bool beats) {
   }
   a->selectClips(std::span<const doc::ClipRef>(&ref, 1), false);
   shell.tree().layoutNow();
-  ui::RadialMenu* m = a->openClipMenu(ref, false);
+  const ui::Rect b = a->clipMenuButtonRect(ref);
+  if (b.x1 <= b.x0) return Error{ErrorCode::NotFound, "clip-menu: no menu button", {}};
+  ui::RadialMenu* m = a->openClipMenu(ref, false, 0.5f * (b.x0 + b.x1));
   if (!m) return Error{ErrorCode::NotFound, "clip-menu: the menu did not open", {}};
   shell.tree().layoutNow();
-  if (beats) {
-    ui::PointerEvent e;
-    e.type = ui::PointerType::Move;
-    e.pos = {0.0f, 0.0f};
-    (void)m->onPointer(e);  // lays the rings out
-    const int32_t chip = m->find("warp-stretch/Beats");
-    if (chip < 0) return Error{ErrorCode::NotFound, "clip-menu: no Beats chip", {}};
-    e.pos = m->centreOf(chip);
-    (void)m->onPointer(e);
-    shell.tree().layoutNow();
-  }
   return Ok{};
 }
 
