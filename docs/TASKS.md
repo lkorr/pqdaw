@@ -981,4 +981,4 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SX.2 Clip menu: button on the selected clip opens the radial clip menu (clip-panel parity)** 👁 (plan SX.2; w1, after SX.1) *(merged c057c065)*
 - [x] **SX.3 The waveform shows what plays: fades / gain / crossfades on the amplitude, warp markers, warped tag** 👁 (plan SX.3; lane w2) *(merged 49657666)*
 - [x] **SX.4 Time-stretch clips draw their rendered audio (async, cached, envelope at draw time)** 👁 (plan SX.4; w2, after SX.3) *(merged 695bd1e5)*
-- [ ] **SX.5 Clip menu as a compact popup around the clip (modes above, transpose below; no gain / fades)** 👁 (plan SX.5; w1)
+- [x] **SX.5 Clip menu as a compact popup around the clip (modes above, transpose below; no gain / fades)** 👁 (plan SX.5; w1) *(merged 64cc2a02)*

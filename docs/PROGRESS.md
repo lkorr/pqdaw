@@ -1530,3 +1530,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views, _app, _audio, _playback default + slow after the rebase (views SIGSEGV once, known flake, re-run pass); new tests: cached frames == no-envelope render bit for bit, key per param, cancel / mid-render edit / swap / undo / budget / shutdown. New golden arrangement-audio-rendered. Live check in the worker's own instance.
 - Perf / CPU-efficiency check (release, loaded machine, 4-min stereo +7 st): Beats 754 + 91 ms, Complex Pro 10.8 s + 0.4 s; swap 0.002 ms + one tile; nothing renders idle; fade edits never re-render.
 - Notes/blockers: not progressive (mid-clip start would move the stretch grid); take-lane clips stay on source peaks; renders > 128 MB of frames keep only the overview.
+
+## 2026-11-27 · SX.5 · task/SX.5-clip-popup (merged 64cc2a02)
+- Did: the clip menu is a compact two-band popup hugging the clip at the press x (`RadialLayout::Bands` on the same ui::RadialMenu: same items / bindings / gestures; `RadialPlace::above/below(row)`): above = 7 warp chips + the chosen mode's settings row, below = Transpose + units, Detune, Reverse, BPM, :2 / ×2, Loop; Gain and fades removed; bands flip / clamp at window edges; Math / panel menus keep the rings.
+- Verified: after the rebase pq_tests_views default 1087 cases, pq_tests_ui default 251 pass; new test_radial_bands.cpp (6 cases incl. alloc trap), test_clip_menu updated (parity excludes gain / fades, checks absence); goldens clip-menu-off / -beats re-recorded, ring goldens unchanged. Live check in the worker's own instance.
+- Perf / CPU-efficiency check: layout once per open / hover / lit-chip change into storage reserved at open; paint allocates nothing; idle nothing.
+- Notes/blockers: the lower band is ≈ 550 px wide (tempo items could go to a second row: `below(1)`); RadialBinding::alt now unused by the clip menu (kept as a tested general control feature).
