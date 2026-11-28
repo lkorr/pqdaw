@@ -991,3 +991,4 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **RT.1 Document: `Wire::recordInput`, `setAudioFrom` / `audioFromOf`, loop + kind checks, schema 23** (plan RT.1; w1) *(merged b75310a7)*
 - [x] **RT.2 Lowering + engine + recording: Audio In into monitor mix, PDC, Resampling without self, internal capture** (plan RT.2; w1) *(merged 124b1912)*
 - [x] **RT.3 UI: Audio From / channel choosers, circuit Audio In terminal, shared menu** 👁 (plan RT.3; w2) *(merged 336b6e12)*
+- [x] **RT.4 Track header condensed: volume + pan and the input under the name, default height 68** 👁 (user 2026-11-28; w1) *(merged 8afd9057)*

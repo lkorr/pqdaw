@@ -1592,3 +1592,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: -Affected 38/39 before the merge (playback_s1 stale goldens re-recorded, then passed); after merging RT.2: pq_tests_views default 1/1, pq_tests_playback 4/4. 99 goldens re-recorded (90 stopped line, 4 sampler-panel-gran, 7 MOS), each diff checked.
 - Perf / CPU-efficiency check: UI only; grain schedule rebuilt on parameter change only; the stopped line follows transport notifications (no timer). Kernel untouched.
 - Notes/blockers: the 10-minute wavetable freeze not reproduced live (cause shown by test); Q?-BR.J-a (what the MOS reset resets).
+
+## 2026-11-28 · RT.4 · task/RT.4-header-layout (merged 8afd9057)
+- Did: arrangement header: vol + pan under the name, then Audio From + channel (audio) or the tuning chip (MIDI/group); right column toggles / output / Monitor (kHeaderSideWidth 110); default track height 48→68, returns 20→40, header 290→280; setHeaderMixerWidth → setHeaderSideWidth.
+- Verified: pq_tests_views 1080/1080 (one known GPU SIGSEGV re-run); pq_tests_app 53/53; pq_tests_playback golden cases 9/9 after re-recording arrangement-audio-rendered + pianoroll-arp-preview (orchestrator, looked at both); pqdaw compiles. 131 goldens moved (header layout; most others by the wider lanes' ruler).
+- Perf / CPU-efficiency check: layout only, nothing per frame.
+- Notes/blockers: Q?-RT.4-a (A mode's chooser takes the input/chip line). An automation partial-vs-full repaint check is 1 px / 1 step off at height 68 (passes at 64; fixture kept at 64), untraced.
