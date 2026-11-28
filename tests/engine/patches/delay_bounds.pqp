@@ -1,0 +1,138 @@
+// FD.1 probes (pq/graph/schedule.h "Loop", pq/graph/value_range.h): feedback loops whose sub-block comes from the
+// interval analysis of a delay time and from the cut choice. Each must render the same bits at every block size —
+// at block 1 every loop runs per sample, so that is the comparison with the per-sample schedule — and on both
+// backends (tests/engine/delay_bounds_probes.h). Times are a few milliseconds so that a block of 1024 holds several
+// sub-blocks; `size` and `time` default to their range minimum (the tap exactly as old as the bound).
+
+// An 8-lane FDN on one width-8 delay line: per-lane times through a pack (scaled by a param), add / sub butterflies
+// (an unnormalised Hadamard), a loop gain, and a short per-lane stage delay behind the matrix (0.1 … 0.4 ms: they
+// run fused inside the sub-block; the main taps are the cuts).
+patch FdnPack8 {
+  param g = 0.45 [0..0.5]
+  param size = 1 [1..2]
+  out y : audio stereo
+  src = noise() * 0.1
+  d = delay((m0, m1, m2, m3, m4, m5, m6, m7), (3.1ms, 3.7ms, 4.3ms, 5.3ms, 5.9ms, 6.1ms, 7.1ms, 7.9ms) * size, 50ms)
+  a0 = d[0] + d[1]
+  a1 = d[0] - d[1]
+  a2 = d[2] + d[3]
+  a3 = d[2] - d[3]
+  a4 = d[4] + d[5]
+  a5 = d[4] - d[5]
+  a6 = d[6] + d[7]
+  a7 = d[6] - d[7]
+  b0 = a0 + a2
+  b1 = a1 + a3
+  b2 = a0 - a2
+  b3 = a1 - a3
+  b4 = a4 + a6
+  b5 = a5 + a7
+  b6 = a4 - a6
+  b7 = a5 - a7
+  c0 = b0 + b4
+  c1 = b1 + b5
+  c2 = b2 + b6
+  c3 = b3 + b7
+  c4 = b0 - b4
+  c5 = b1 - b5
+  c6 = b2 - b6
+  c7 = b3 - b7
+  st = delay((c0, c1, c2, c3, c4, c5, c6, c7), (0.1ms, 0.15ms, 0.2ms, 0.22ms, 0.27ms, 0.3ms, 0.35ms, 0.4ms), 2ms)
+  k = g * 0.35355339
+  m0 = src + st[0] * k
+  m1 = src + st[1] * k
+  m2 = src + st[2] * k
+  m3 = src + st[3] * k
+  m4 = src + st[4] * k
+  m5 = src + st[5] * k
+  m6 = src + st[6] * k
+  m7 = src + st[7] * k
+  y = (d[0] + d[2] + d[4] + d[6], d[1] + d[3] + d[5] + d[7])
+}
+
+// The same network on 8 mono delay lines, packed afterwards (a pack of 8 delays), without stage delays.
+patch Fdn8 {
+  param g = 0.45 [0..0.5]
+  param size = 1 [1..2]
+  out y : audio ch(8)
+  src = noise() * 0.1
+  d0 = delay(m0, 3.1ms * size, 50ms)
+  d1 = delay(m1, 3.7ms * size, 50ms)
+  d2 = delay(m2, 4.3ms * size, 50ms)
+  d3 = delay(m3, 5.3ms * size, 50ms)
+  d4 = delay(m4, 5.9ms * size, 50ms)
+  d5 = delay(m5, 6.1ms * size, 50ms)
+  d6 = delay(m6, 7.1ms * size, 50ms)
+  d7 = delay(m7, 7.9ms * size, 50ms)
+  d = (d0, d1, d2, d3, d4, d5, d6, d7)
+  a0 = d[0] + d[1]
+  a1 = d[0] - d[1]
+  a2 = d[2] + d[3]
+  a3 = d[2] - d[3]
+  a4 = d[4] + d[5]
+  a5 = d[4] - d[5]
+  a6 = d[6] + d[7]
+  a7 = d[6] - d[7]
+  b0 = a0 + a2
+  b1 = a1 + a3
+  b2 = a0 - a2
+  b3 = a1 - a3
+  b4 = a4 + a6
+  b5 = a5 + a7
+  b6 = a4 - a6
+  b7 = a5 - a7
+  k = g * 0.35355339
+  m0 = src + (b0 + b4) * k
+  m1 = src + (b1 + b5) * k
+  m2 = src + (b2 + b6) * k
+  m3 = src + (b3 + b7) * k
+  m4 = src + (b0 - b4) * k
+  m5 = src + (b1 - b5) * k
+  m6 = src + (b2 - b6) * k
+  m7 = src + (b3 - b7) * k
+  y = d
+}
+
+// A modulated tap: time · (1 + 0.01 · sine).
+patch ModTap {
+  param time = 4ms [4ms..20ms]
+  out y : audio
+  src = noise() * 0.1
+  d = delay_cubic(src + 0.6 * d, time * (1 + 0.01 * sine_hz(3)), 100ms)
+  y = d
+}
+
+// The Delay Tap's time expression with a floor: lerp(ms, sync, mode), a glided read (delay_fade).
+patch LerpTap {
+  param time = 3ms [3ms..50ms]
+  param sync = 0.5 [0..1]
+  param mode = 0 [0..1]
+  out y : audio
+  src = noise() * 0.1
+  synced = min(max(sync * 20ms, 5ms), 50ms)
+  d = delay_fade(src + 0.6 * d, lerp(time, synced, mode), 100ms)
+  y = d
+}
+
+// Two rings through one node: the 2 ms tap is on a ring of its own (a cut), the 20-sample delay only behind the 9 ms
+// tap (fused); plus an allpass tap on the output (a second loop region, ⌊d − 0.5⌋).
+patch ShortLong {
+  param t = 2ms [2ms..10ms]
+  out y : audio
+  src = noise() * 0.1
+  m = src + 0.4 * a + 0.4 * c
+  a = delay(m, t, 100ms)
+  b = delay(m, 9ms, 100ms)
+  c = delay(b, 20smp, 64smp)
+  ap = delay_allpass(m + 0.5 * ap, 1.0105ms, 10ms)
+  y = m + ap
+}
+
+// Per-lane times on a stereo line, one of them a param at its minimum.
+patch PerLane {
+  param t = 2.5ms [2.5ms..10ms]
+  out y : audio stereo
+  src = (noise() * 0.1, noise(seed: 3) * 0.1)
+  d = delay(src + 0.5 * d, (t, 3.3ms), 100ms)
+  y = d
+}

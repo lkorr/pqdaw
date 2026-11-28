@@ -3026,3 +3026,36 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   its audio; (c) refuse the move.
 - Choice: (a). Nothing that played before stops playing, nothing is mixed into the In, and it is one undo step away.
 - Status: open
+
+## Q?-FD.1-a · The Delay Tap's own loop cannot sub-block on a compile-time bound
+- Context: FD.1 bounds a delay's time by interval analysis (pq/graph/value_range.h) and the loop runs in sub-blocks
+  of the smallest bound. The Delay Tap's time is `lerp(Time, min(beats · 60 / bpm, 5), Mode)`: Time's range is
+  0 … 5 s (`delayTimeCurve`, and "the minimum is 1 sample" is tested behaviour: Time at 0 is a 1-sample loop), and the
+  sync time divides by the tempo (an engine source, no range). Its true lower bound is 0, so its loop stays per sample
+  whatever the knob shows; the plan's "an existing Delay Tap → VCA loop now sub-blocks" cannot hold on any sound
+  compile-time analysis. The same goes for every module whose time knob reaches 0, and for a DRIVEN control (a `curve`
+  atom: its range is run-time data of its CurveSlot, a range drag never recompiles). What does sub-block now: times
+  from literals and from params / expressions whose range has a floor (10 ms → 479 frames), per lane through pack.
+- Options: (a) leave it: per sample, as before; (b) a floor in the module (Time from 1 ms: 47-frame sub-blocks at
+  best, and the 1-sample comb is gone); (c) a RUN-TIME bound: the schedule lists, per cut delay line of a loop, the
+  operand its time is read from; before the loop the backend takes the smallest time of this block (a pattern, or the
+  min over a block / ramp buffer) and, for delay_fade, its glide head from the state, and runs the loop in sub-blocks
+  of min(that age, frames). Needs: the time computed outside the loop (true for a knob), a dsp query for delay_fade's
+  youngest head, the interpreter's loop taking the sub-block per block (small), and in the JIT both forms of such a
+  region — the inline per-frame code for a small bound and slices of kernel calls otherwise — with the choice per
+  block (it cannot join a chain); (d) the FD modules declare useful minimums (Spread's min ≥ 1 ms or so, a Matrix
+  stage's delays are short and never cut anyway), which FD.1 already turns into sub-blocks.
+- Choice: (a) for the Delay Tap in FD.1 (no behaviour change), and (d) is free for FD.3 / FD.6. (c) is the only way a
+  250 ms echo on a 0 … 5 s knob runs block-wise; it is a backend change (schedule + interpreter + JIT), proposed as
+  its own task.
+- Status: open
+
+## Q?-FD.1-b · The `curve` atom has no compile-time range
+- Context: the plan lists "the curve atom's output range" among the bounds. A driven control's curve reads its points,
+  bends AND range from its CurveSlot at run time (pq/dsp/curve.h: only the curve's class recompiles), so a range known
+  at compile time can be dragged away under a running program; the scheduler also has no access to the slots.
+- Options: (a) unknown (per sample); (b) the lowering passes each slot's range (ScheduleOptions) and a range edit
+  recompiles the unit; the kernel's output would also need a clamp to exactly [min, max] (its segments are computed
+  in float: fma(b, expm1(c·x), a) can pass an end by a rounding).
+- Choice: (a). Never optimistic; (b) only matters together with Q?-FD.1-a (a driven Time whose range has a floor).
+- Status: open

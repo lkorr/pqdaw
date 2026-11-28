@@ -15,6 +15,12 @@
 // + sine sub into a TPT SVF low-pass), fm_voice, and the M1 review's proto-Operator (4 FM operators, 4 ADSRs, SVF,
 // LFO; docs/reviews/M1/probes/proto_operator.pqp) as the SPEC §13 calibration row. Compile time: 100- and 1000-step mixed chains (element-wise, z1, a one-pole loop every 10 steps) at
 // O1/O2/O3, and the 100-step chain and the M1 review's 1200-input mux at every machine-code level.
+// FD.1 (`fd1/`, run with the filter "fd1"): feedback loops whose sub-block comes from the interval analysis of the
+// delay time and the cut choice (pq/graph/schedule.h "Loop"), each scheduled per sample (ScheduleOptions::
+// maxLoopSubBlock = 1: what every one of these was before FD.1, their times being a lerp, a product with a sine or a
+// pack) and sub-blocked, on both backends: tap_lerp (a Delay-Tap-like echo: delay_fade, time = lerp(ms, sync, mode),
+// floor 10 ms, through a gain), tap_mod (time · (1 + 0.01 · sine)), fdn8 / fdn16 (one width-N delay line, a pack of N
+// times · size, add / sub butterflies, a loop gain), fdn8_stages (plus a 3 … 17-sample stage delay per lane).
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -39,7 +45,7 @@ namespace {
 constexpr uint32_t kBlock = 64;
 std::string gFilter;  // run only benchmarks whose name contains this (first argument; "--compile": compile times only)
 
-g::Schedule scheduleOf(const std::string& text) {
+g::Schedule scheduleOf(const std::string& text, const g::ScheduleOptions& so = {}) {
   auto parsed = g::parse(text, "bench.pqp");
   if (!parsed) {
     std::fprintf(stderr, "%s\n", parsed.error().message.c_str());
@@ -55,7 +61,7 @@ g::Schedule scheduleOf(const std::string& text) {
   oo.sampleRate = 48000.0;
   auto opt = g::optimise(std::move(typed.value()), oo);
   if (!opt) std::exit(3);
-  auto s = g::schedule(opt.value());
+  auto s = g::schedule(opt.value(), so);
   if (!s) {
     std::fprintf(stderr, "%s\n", s.error().message.c_str());
     std::exit(4);
@@ -209,6 +215,100 @@ void runBench(const char* name, const std::string& text, uint32_t voices, uint32
   std::printf("      speed-up %.1fx; compile %.1f ms (IR %.1f, opt %.1f, machine code %.1f); %u ops inline, %u called\n",
               si.medianNs / sj.medianNs, cs.totalMs, cs.codegenMs, cs.optimiseMs, cs.machineCodeMs, cs.inlinedOps, cs.calledOps);
 }
+
+// FD.1: one patch, per sample and sub-blocked, interpreter and JIT.
+void runFd1(const char* name, const std::string& text) {
+  if (!gFilter.empty() && (std::string("fd1/") + name).find(gFilter) == std::string::npos) return;
+  double ns[2][2] = {};
+  uint32_t sub[2] = {};
+  for (int mode = 0; mode < 2; ++mode) {
+    g::ScheduleOptions so;
+    so.maxLoopSubBlock = mode == 0 ? 1u : 0u;
+    const g::Schedule sched = scheduleOf(text, so);
+    for (const g::Region& r : sched.regions)
+      if (r.kind == g::RegionKind::Loop) sub[mode] = r.subBlock;
+    e::InterpretOptions eo;
+    eo.maxBlockFrames = kBlock;
+    auto interp = e::buildInterpreted(sched, eo);
+    if (!interp) std::exit(5);
+    jit::CompileOptions jo;
+    jo.maxBlockFrames = kBlock;
+    auto img = compiler().compile(sched, jo);
+    if (!img) {
+      std::fprintf(stderr, "%s\n", img.error().message.c_str());
+      std::exit(7);
+    }
+    const bench::Stats si = runImage(**interp, 0);
+    const bench::Stats sj = runImage(**img, 0);
+    ns[mode][0] = si.medianNs, ns[mode][1] = sj.medianNs;
+    char label[160];
+    const char* how = mode == 0 ? "per-sample" : "sub-blocked";
+    std::snprintf(label, sizeof label, "interp/fd1/%s %s (sub-block %u, %zu ops)", name, how, sub[mode], sched.ops.size());
+    bench::report(label, {si.medianNs, si.minNs}, "ns/sample");
+    std::snprintf(label, sizeof label, "jit/fd1/%s %s (sub-block %u)", name, how, sub[mode]);
+    bench::report(label, {sj.medianNs, sj.minNs}, "ns/sample");
+  }
+  std::printf("      sub-blocked vs per-sample: interpreter %.1fx, JIT %.1fx\n", ns[0][0] / ns[1][0], ns[0][1] / ns[1][1]);
+}
+
+// An N-lane feedback delay network on one width-N delay line (N a power of two ≤ 16): a pack of N times scaled by
+// `size`, log2(N) add / sub butterfly stages, a loop gain; `stages`: a short stage delay per lane behind the matrix.
+std::string fdn(int n, bool stages) {
+  const double ms[16] = {29.7, 37.1, 41.1, 43.7, 53.3, 59.9, 61.3, 67.1, 71.9, 73.3, 79.1, 83.9, 89.3, 97.7, 101.9, 107.3};
+  auto id = [](const std::string& p, int i) { return p + std::to_string(i); };
+  std::string t = "patch Fdn {\n  in x : audio\n  param g = 0.4 [0..0.5]\n  param size = 1 [1..4]\n  out y : audio\n";
+  std::string times, fb, st, stIn;
+  for (int i = 0; i < n; ++i) {
+    times += (i ? ", " : "") + std::to_string(ms[i]) + "ms";
+    fb += (i ? ", " : "") + id("m", i);
+  }
+  t += "  d = delay((" + fb + "), (" + times + ") * size, 0.5s)\n";
+  for (int i = 0; i < n; ++i) t += "  " + id("h0_", i) + " = d[" + std::to_string(i) + "]\n";
+  int stage = 0;
+  for (int span = 1; span < n; span *= 2, ++stage) {
+    const std::string in = "h" + std::to_string(stage) + "_", out = "h" + std::to_string(stage + 1) + "_";
+    for (int i = 0; i < n; ++i)
+      t += "  " + id(out, i) + " = " +
+           ((i / span) % 2 == 0 ? id(in, i) + " + " + id(in, i + span) : id(in, i - span) + " - " + id(in, i)) + "\n";
+  }
+  const std::string last = "h" + std::to_string(stage) + "_";
+  if (stages) {
+    for (int i = 0; i < n; ++i) {
+      stIn += (i ? ", " : "") + id(last, i);
+      st += (i ? ", " : "") + std::to_string((3 + 2 * i) / 48.0) + "ms";
+    }
+    t += "  st = delay((" + stIn + "), (" + st + "), 2ms)\n";
+  }
+  t += "  k = g * " + std::to_string(1.0 / std::sqrt(static_cast<double>(n))) + "\n";
+  for (int i = 0; i < n; ++i)
+    t += "  " + id("m", i) + " = x + " + (stages ? "st[" + std::to_string(i) + "]" : id(last, i)) + " * k\n";
+  t += "  y = h0_0";
+  for (int i = 1; i < n; ++i) t += " + " + id("h0_", i);
+  return t + "\n}\n";
+}
+
+const char* const kTapLerp = R"(patch Tap {
+  in x : audio
+  param time = 250ms [10ms..5s]
+  param sync = 0.5 [0..1]
+  param mode = 0 [0..1]
+  param fb = 0.5 [0..0.95]
+  out y : audio
+  synced = min(max(sync * 2, 20ms), 5)
+  d = delay_fade(x + gain(d, fb), lerp(time, synced, mode), 5s)
+  y = d
+}
+)";
+
+const char* const kTapMod = R"(patch Tap {
+  in x : audio
+  param time = 30ms [10ms..1s]
+  param fb = 0.5 [0..0.95]
+  out y : audio
+  d = delay_cubic(x + fb * d, time * (1 + 0.01 * sine_hz(3)), 2s)
+  y = d
+}
+)";
 
 std::string chain32(bool fast) {
   std::string t = "patch Chain {\n  in x : audio\n  out y : audio\n  a0 = x\n";
@@ -480,6 +580,12 @@ int main(int argc, char** argv) {
         runBench(("oversample x" + std::to_string(n) + " voice osc+tanh x8").c_str(), voice(n), 8, 1);
       }
     }
+    // FD.1: delay bounds and the cut choice.
+    runFd1("tap_lerp", kTapLerp);
+    runFd1("tap_mod", kTapMod);
+    runFd1("fdn8", fdn(8, false));
+    runFd1("fdn16", fdn(16, false));
+    runFd1("fdn8_stages", fdn(8, true));
     // T1b.2: the voice codes.
     for (uint32_t voices : {8u, 64u}) {
       runVoiceCodes("osc_filter", kOscFilter, voices);

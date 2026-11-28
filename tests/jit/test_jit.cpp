@@ -18,6 +18,7 @@
 
 #include "../engine/interp_harness.h"
 #include "../engine/kernel_probes.h"
+#include "../engine/delay_bounds_probes.h"
 #include "../engine/liveness_probes.h"
 #include "../engine/newton_probes.h"
 #include "../engine/project_fixture.h"
@@ -1292,6 +1293,16 @@ TEST_CASE("jit: M1 review kernel edge probes (delay size, sample_read rates and 
     INFO(name);
     CHECK(liveness_probes::bitEqual(interp.streams, kernel_probes::run(c, 4096, 64, jitBuilder()).streams));
   }
+}
+
+TEST_CASE("jit: FD.1 delay-bound probes: the same bits at every block size, and the interpreter's") {
+  delay_bounds_probes::check(jitBuilder());
+  for (const Compiled& c : delay_bounds_probes::probes())
+    for (int paramSet : {0, 1}) {
+      INFO(c.name << " params " << paramSet);
+      CHECK(liveness_probes::bitEqual(delay_bounds_probes::run(c, paramSet, 4096, 64, {}).streams,
+                                      delay_bounds_probes::run(c, paramSet, 4096, 64, jitBuilder()).streams));
+    }
 }
 
 TEST_CASE("jit: M1 review liveness probes (solve operands, voice outputs, stereo feedback delay, delay sub-block)") {
