@@ -21,6 +21,7 @@ patch Midi46 {
 
   export post = gain(d88, (_n11 * _n27, _n13 * _n27), _n5)
   export pre = gain(d88, (_n11 * _n20, _n13 * _n20), _n5)
+  export meter = gain(d88, (_n11 * _n9, _n13 * _n9), _n5)
 
 }
 
@@ -34,7 +35,7 @@ patch meta_envelope__d88__bff0a4420ef73aa5 {
   param rcurve = 0 [-1..1] @label("Release curve")
   param amount = 1 [0..1] @label("Amount")
   in in : audio global
-  out out : audio global mono
+  out out : audio global
 
   _n1 = false
   rate = sr
