@@ -20,6 +20,7 @@ pq_add_module(pq_graph
     src/structure.cpp
     src/schedule.cpp
     src/schedule_dump.cpp
+    src/value_range.cpp
     src/sleep_plan.cpp
     src/inspect.cpp
     src/project.cpp

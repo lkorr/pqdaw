@@ -9,11 +9,15 @@
 //    its unknowns (the solution depends on the equations). Edges into DELAYED inputs (PortSpec::delayed: z1.x,
 //    delay*.x, phasor.hz, sine_hz.hz, sample_read rate) are marked.
 // 2. Tarjan SCCs. A strongly connected component with more than one node (or a self-loop) is feedback. Inside it:
-//    - edges into z1.x / delay*.x are CUT: the node becomes a split pair (z1:read … z1:write, delay*:read …
+//    - edges into z1.x / delay*.x can be CUT: the node becomes a split pair (z1:read … z1:write, delay*:read …
 //      delay:write, pq/dsp/atoms.h); the read runs where the node would, the write at the end of the iteration.
-//      Exception (T1b.3): when cutting the delay lines alone already leaves the SCC acyclic (and it has no solve
-//      block), its z1s are not split: they run as ordinary kernels inside the loop, so a loop whose every cycle
-//      passes through a delay line keeps its sub-blocks (e.g. an FIR of z1 taps inside a comb's feedback);
+//      WHICH are cut (FD.1): every cycle needs a cut, and the loop's sub-block is the smallest guaranteed tap age
+//      among its cut delay lines, so with T the largest age such that cutting every delay line of age ≥ T leaves the
+//      SCC acyclic, exactly those are cut. Delay lines shorter than T and the z1s are not split: they run as ordinary
+//      fused kernels inside the loop, in dependency order (an FDN whose main taps are tens of milliseconds and whose
+//      diffuser stages are a few samples runs in sub-blocks of its shortest MAIN tap; T1b.3: an FIR of z1 taps
+//      inside a comb's feedback keeps the comb's sub-blocks). When the delay lines alone cannot break every cycle
+//      (a z1 on a cycle of its own), or the SCC holds a solve block, everything is cut and the loop runs per sample;
 //    - what is left without the solve edges must be acyclic. Otherwise the cycle has no delay: an error (text,
 //      located at a node of the cycle) or, with ScheduleOptions::visualMode, a z1 is inserted on one of its wires
 //      and a warning is recorded (Schedule::warnings, insertedDelays). A cycle whose only delay is a delayed input
@@ -37,15 +41,21 @@
 //                 are 8-float patterns, kernel.h), then
 //      Block    — acyclic audio ops, block-wise, and
 //      Loop     — feedback SCCs and audio-rate solve blocks: for (t = 0; t < frames; t += subBlock) run the region's
-//                 ops on frames t … t + subBlock − 1. subBlock = 1 (per sample) unless every cut in the loop is a
-//                 delay line whose delay has a constant lower bound D, in which case subBlock = the smallest whole
-//                 number of samples that every tap is old (linear ⌊D⌋, cubic ⌊D⌋ − 1, allpass ⌊D − 0.5⌋): a 250 ms
-//                 echo then runs in sub-blocks of 12000 frames, i.e. block-wise. Lower bounds are evaluated in
-//                 float32 with the runtime's operations (a double bound can round above the runtime value and
-//                 make the tap read an unwritten frame). Lower bounds come from literals,
-//                 `sr`, products/sums of non-negative bounds, max, x − literal (T1b.3) and, with
-//                 ScheduleOptions::trustParamRanges, the
-//                 declared range minimum of a param (the engine must clamp params to their ranges).
+//                 ops on frames t … t + subBlock − 1. subBlock = 1 (per sample) with a cut z1 or a solve; else the
+//                 smallest guaranteed age of the taps its cut delay lines read: with D a lower bound of a delay
+//                 line's time in samples, linear ⌊D⌋, cubic ⌊D⌋ − 1, allpass ⌊D − 0.5⌋ (each at least 1: no bound is
+//                 per sample). A 250 ms echo then runs in sub-blocks of 12000 frames, i.e. block-wise.
+//                 FD.1: D is the low end of the time's value range (pq/graph/value_range.h), an interval analysis
+//                 of the expression that feeds the time input: literals, `sr`, a param's declared range (with
+//                 ScheduleOptions::trustParamRanges: the engine must clamp params to their ranges), add / sub / mul /
+//                 div / neg / abs / min / max / clip / muladd / lerp / select, the bounded sources (phasor, sine,
+//                 sine_hz, noise, noise_step, tanh, sin), per channel through pack / channel (a pack of N times is N
+//                 bounds, the loop takes the smallest). Evaluated in float32 with the runtime's operations, never
+//                 optimistic (a double bound can round above the runtime value and make the tap read a frame the
+//                 sub-block has not written yet). What has no compile-time range leaves the delay per sample: an
+//                 engine source (transport.bpm), a `curve` (its range is run-time data), a range that reaches 0 —
+//                 so a time knob that goes down to 0 s (the Delay Tap's) cannot sub-block its loop on this analysis,
+//                 whatever its current value.
 //    Order. Within a stage and class, ready SCCs are taken depth-first (most recently readied first), so a value is
 //    read soon after it is written and few buffers are live; consecutive loops with the same subBlock share one
 //    region. OP.5: between a ready item that generated code runs inline, frame by frame (dsp::inlineForm: a
@@ -504,7 +514,10 @@ void planSleep(Schedule& s);
 struct ScheduleOptions {
   double sampleRate = 48000.0;          // > 0: sizes delay rings, values `sr`, converts delay `max`
   bool visualMode = false;              // delay-free cycle: insert z1 + warning instead of an error
-  bool trustParamRanges = true;         // param range minimums bound delay times (loop sub-blocks)
+  bool trustParamRanges = true;         // param ranges bound delay times (loop sub-blocks; pq/graph/value_range.h)
+  // FD.1: > 0 caps every loop's sub-block and every delay line's tap age. 1: every loop runs per sample, cut as if no
+  // delay time had a bound (references and A/B measurements of the sub-blocked schedule).
+  uint32_t maxLoopSubBlock = 0;
   const StateLayout* previous = nullptr;  // keep the offsets of unchanged state (hot swap, T1.9)
   // false: every value gets its own buffer and nothing runs in place (buffer index = value identity). Everything
   // else is identical to the shared schedule, op for op. For checkers (tests/graph/sched_replay.h) and debugging.

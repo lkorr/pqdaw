@@ -8,6 +8,7 @@
 
 #include "interp_harness.h"
 #include "kernel_probes.h"
+#include "delay_bounds_probes.h"
 #include "liveness_probes.h"
 #include "newton_probes.h"
 #include "pq/core/alloc_trap.h"
@@ -100,6 +101,10 @@ TEST_CASE("interpreter: every patch in tests/graph/cases and tests/engine/patche
 
 TEST_CASE("interpreter: M1 review liveness probes (solve operands, voice outputs, stereo feedback delay, delay sub-block)") {
   liveness_probes::check({});
+}
+
+TEST_CASE("interpreter: FD.1 delay-bound probes (FDN, modulated / lerp / per-lane taps, long and short delays): the same bits at every block size") {
+  delay_bounds_probes::check({});
 }
 
 TEST_CASE("interpreter: M1 review kernel edge probes (delay size, sample_read rates and loops, mod, timer, NaN hz, fast_sin)") {

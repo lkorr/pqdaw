@@ -183,8 +183,13 @@ namespace pq::graph {
   Result<TypedPatch> optimise(TypedPatch, const OptimiseOptions& = {}, OptimiseStats* = nullptr);
   // pq/graph/schedule.h (T1.5). Tarjan SCCs on wires + implicit equation→unknown edges of solve blocks; feedback SCCs
   // become Loop regions with z1/delay split into read (in place) + write (loop end), run per sample or, when every
-  // cut is a delay line with a constant lower bound, in sub-blocks of the shortest tap age (T1b.3: z1s are not cut
-  // when cutting the delay lines alone breaks every cycle, so they keep the sub-blocks); a delay-free cycle is an
+  // cut is a delay line whose time has a lower bound, in sub-blocks of the shortest cut tap age. FD.1: the bound is
+  // the low end of the time's value range (pq/graph/value_range.h: interval analysis in float32 with the runtime's
+  // operations — literals, sr, param ranges, add/sub/mul/div/neg/abs/min/max/clip/muladd/lerp/select, bounded sources
+  // (phasor, sine, noise, noise_step, tanh), per channel through pack/channel; unknown = per sample, never
+  // optimistic); the cuts are the delay lines of age ≥ T, T the largest age whose cuts break every cycle, so shorter
+  // delay lines and z1s (T1b.3) run fused inside the sub-block; ScheduleOptions::maxLoopSubBlock caps it (1: the
+  // per-sample reference). A delay-free cycle is an
   // error (text) or gets a z1 + warning (ScheduleOptions::visualMode, Schedule::rewritten). Stages alternate global
   // (even, lanes 1) / voice (odd, lanes 8, run per voice group); a stage = Control region (param/const ops once per
   // block on 8-float patterns, param-rate solves) + Block/Loop regions. Global audio read by voice ops is broadcast;
