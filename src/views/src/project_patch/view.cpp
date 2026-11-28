@@ -593,8 +593,9 @@ void ProjectPatchView::rebuild() {
   // GU.11: only a group has an inside (it opens as its capsule: closedGroups_); no block expands to a scene of its own.
   std::vector<ExpandedSize> sizes;
   std::vector<InnerScene> inner;
+  // A group gone from the document keeps its open / closed state here (bandExpanded_, closedGroups_): ids are never
+  // reused, and an undo brings it back with the same id, as the user left it (not opened: it is not new to seenGroups_).
   if (!sameDoc) {
-    std::erase_if(bandExpanded_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
     if (openBand_.valid() && doc::findTrackPtr(*snap, openBand_) == nullptr) openBand_ = {};
     if (focus_.valid() && doc::findDevice(*snap, focus_).device == nullptr) focus_ = {};
   }
@@ -609,7 +610,6 @@ void ProjectPatchView::rebuild() {
   // AP.9: a device whose type supplies its panel is drawn as it (as a closed group is: typePanelOf).
   if (!sameDoc) std::erase_if(typePanels_, [&](const auto& e) { return doc::findDevice(*snap, doc::DeviceId{e.first}).device == nullptr; });
   opt.typePanel = [this](const doc::Device& d) { return typePanelOf(d); };
-  if (!sameDoc) std::erase_if(closedGroups_, [&](doc::DeviceId d) { return doc::findDevice(*snap, d).device == nullptr; });
   // GU.5b: groups seen for the first time start closed when they have a panel (seenGroups_).
   if (!sameDoc) doc::forEachTrack(*snap, [&](const doc::Track& t, const doc::Track*) {
     for (const doc::DevicePtr& d : t.devices) {
