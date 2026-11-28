@@ -6,14 +6,14 @@
 //     control is per lane
 //   - Unpack → Pack is the identity (bit for bit)
 //   - a feedback loop on the lane cable (Lanes → Delay Tap → VCA × 0.5 → back) decays 1, 0.5, 0.25 per lane time
-//   - VCA, EQ Band, Math and a Delay Tap on a lane cable are those modules per lane: Lanes 4 → … → Merge 4 of a stereo
-//     signal is √2 × the stereo chain
+//   - VCA, EQ Band, EQ, Math and a Delay Tap on a lane cable are those modules per lane: Lanes 4 → … → Merge 4 of a
+//     stereo signal is √2 × the stereo chain
 //   - a switched-off block on a lane cable passes every lane
 //   - the refusals: a lane cable into the mixer, into a module that is stereo by nature (Utility), into a native
 //     engine's input (Envelope) and a Merge whose N is not the cable's are CUT with a readable reason; the rest of the
 //     project plays
-//   - a stereo signal into a control still gives its left channel (the rule before lanes), and a mono Noise broadcast
-//     onto a lane cable compiles
+//   - a stereo signal into a control still gives its left channel (the rule before lanes); the JIT renders the 8-lane
+//     path as the interpreter does
 // Each case is a group on an audio track (its blocks pasted as the node menu pastes them).
 #include <doctest/doctest.h>
 
@@ -204,11 +204,11 @@ struct Song {
 struct Player {
   std::unique_ptr<app::ProjectLink> link;
   int64_t t = 0;
-  explicit Player(const Snapshot& s) {
+  explicit Player(const Snapshot& s, bool jit = false) {
     app::LinkConfig c;
     c.compileThread = false;
     c.sleepAfterMs = 0.0f;
-    c.jit = false;
+    c.jit = jit;
     c.idleUnits = false;
     c.sampleRate = kRate;
     auto l = app::ProjectLink::create(c, s);
@@ -237,8 +237,8 @@ struct Rendered {
   std::string error;                       // the link's last error
   std::vector<std::string> cut;            // per asked wire: its refusal ("" = not cut)
 };
-Rendered render(Song& s, uint32_t blocks, std::vector<WireId> ask = {}) {
-  Player p(s.store.current());
+Rendered render(Song& s, uint32_t blocks, std::vector<WireId> ask = {}, bool jit = false) {
+  Player p(s.store.current(), jit);
   Rendered out;
   p.run(blocks, out.L, out.R);
   out.error = p.link->lastError();
@@ -326,6 +326,14 @@ TEST_CASE("lanes: 8 impulses through one Delay Tap with 8 per-lane times land at
     if (!near) rest = std::max({rest, static_cast<double>(std::fabs(r.L[n])), static_cast<double>(std::fabs(r.R[n]))});
   }
   CHECK(rest < 2e-3);
+  // The JIT renders the lane path as the interpreter does.
+  const Rendered j = render(s, 90, {}, true);
+  CHECK(j.error.empty());
+  double diff = 0.0;
+  for (size_t n = 0; n < r.L.size(); ++n)
+    diff = std::max({diff, std::fabs(static_cast<double>(j.L[n]) - r.L[n]), std::fabs(static_cast<double>(j.R[n]) - r.R[n])});
+  MESSAGE("8 lanes, interpreter vs JIT: max |diff| = " << diff);
+  CHECK(diff < 1e-6);
 }
 
 TEST_CASE("lanes: a lane cable into the mixer is cut with a reason that says to merge; the project still plays") {
@@ -478,8 +486,8 @@ TEST_CASE("lanes: a feedback loop on the lane cable (Lanes -> Delay Tap -> VCA x
 
 namespace {
 
-// VCA x 2 -> EQ Band (low pass 2 kHz) -> Math (x 0.5 typed) -> Delay Tap (240 samples) after (`in`, `port`): the last
-// block and its output port.
+// VCA x 2 -> EQ Band (low pass 2 kHz) -> EQ (Stereo mode) -> Math (x 0.5 typed) -> Delay Tap (240 samples) after
+// (`in`, `port`): the last block and its output port.
 std::pair<DeviceId, std::string> moduleChain(Circuit& c, DeviceId in, std::string_view port) {
   VcaOptions vo;
   vo.inGroup = c.group;
@@ -495,20 +503,27 @@ std::pair<DeviceId, std::string> moduleChain(Circuit& c, DeviceId in, std::strin
   const DeviceId bandGroup = band.devices.front()->id;
   c.take(std::move(band));
   c.wire(vr.group, kMainPort, bandGroup, kMainPort);
+  // The EQ (Stereo mode: four bands in series and its output gain).
+  StockModuleOptions qo;
+  qo.inGroup = c.group;
+  BlockSet eq = eqBlocks(c.ids, qo);
+  const DeviceId eqGroup = eq.devices.front()->id;
+  c.take(std::move(eq));
+  c.wire(bandGroup, kMainPort, eqGroup, kMainPort);
   MathOptions mo;
   mo.inGroup = c.group;
   mo.op = "mul";
   mo.b = 0.5;
   MathRoles mr;
   c.take(mathBlocks(c.ids, mo, &mr));
-  c.wire(bandGroup, kMainPort, mr.group, kMainPort);
+  c.wire(eqGroup, kMainPort, mr.group, kMainPort);
   const DelayTapRoles tap = c.delayTap(mr.group, kMainPort, 240.0 / kRate);
   return {tap.group, std::string(kMainPort)};
 }
 
 }  // namespace
 
-TEST_CASE("lanes: VCA, EQ Band, Math and Delay Tap on a lane cable are those modules per lane") {
+TEST_CASE("lanes: VCA, EQ Band, EQ, Math and Delay Tap on a lane cable are those modules per lane") {
   Rendered got[2];
   for (const bool lanes : {false, true}) {
     Song s;

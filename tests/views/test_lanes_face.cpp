@@ -6,7 +6,8 @@
 //     Lanes' output onto Merge's input is a LANE CABLE: its edge and its scene wire carry the lane count (the canvas
 //     draws the ribbon and the badge from it), the lane wire between the jacks does not.
 //   - GOLDENS: lanes-face-lanes / -merge / -unpack / -pack (8 lanes) and lanes-face-unpack16, and lanes-cable (the patch
-//     view: Lanes → Delay Tap → Merge on a track, the lane cables as ribbons with their "8", the merged cable plain).
+//     view: Lanes → Delay Tap → Merge → VCA as free blocks, the lane cables as ribbons with their "8", the merged cable
+//     plain).
 #include <doctest/doctest.h>
 
 #include <algorithm>
@@ -337,19 +338,34 @@ TEST_CASE("render: the lane modules' faces match their goldens") {
 
 TEST_CASE("render: lanes-cable — lane cables are ribbons with their lane count, the merged cable is plain") {
   Ui u;
-  doc::DocumentStore& st = u.ctx.store();
-  const doc::DeviceId fan = test_blocks::addModule(st, u.track, "lanes", 0);
-  const doc::DeviceId tap = test_blocks::addModule(st, u.track, "delay_tap", 1);
-  const doc::DeviceId merge = test_blocks::addModule(st, u.track, "merge", 2);
-  for (const doc::DeviceId g : {fan, tap, merge}) u.view().setGroupOpen(g, false);
+  // Free blocks a cable's length apart (placed as the node menu places them), cabled Lanes → Delay Tap → Merge → VCA.
+  const doc::DeviceId fan = u.place(u.spot(0, 0), "lanes", "Lanes");
+  const doc::DeviceId tap = u.place(u.spot(1, 0), "delay tap", "Delay Tap");
+  const doc::DeviceId merge = u.place(u.spot(2, 0), "merge", "Merge");
+  const doc::DeviceId vca = u.place(u.spot(3, 0), "vca", "VCA");
+  auto cable = [&](doc::DeviceId from, doc::DeviceId to) {
+    doc::Wire w;
+    w.id = u.ctx.store().ids().wire();
+    w.from = from;
+    w.to = to;
+    REQUIRE(u.ctx.store().dispatch(doc::AddWire{w}).ok());
+    return w.id;
+  };
+  const doc::WireId a = cable(fan, tap), b = cable(tap, merge), c = cable(merge, vca);
   u.view().sync();
-  u.frame();
-  const doc::MainPath path = doc::mainPath(*u.ctx.doc(), *doc::findTrackPtr(*u.ctx.doc(), u.track));
-  REQUIRE(path.links.size() == 4);
-  CHECK(u.edgeLanes(path.links[0]) == 0);  // the track's signal into Lanes
-  CHECK(u.edgeLanes(path.links[1]) == 8);
-  CHECK(u.edgeLanes(path.links[2]) == 8);
-  CHECK(u.edgeLanes(path.links[3]) == 0);  // merged
+  {
+    const Node& n = u.node(fan);
+    circuit::CircuitCanvas::View v;
+    v.zoom = 1.25;
+    v.x = n.x - 60.0;
+    v.y = n.y - 160.0;
+    u.view().canvas().setView(v);
+    u.d.tree().layoutNow();
+    u.d.step();
+  }
+  CHECK(u.edgeLanes(a) == 8);
+  CHECK(u.edgeLanes(b) == 8);
+  CHECK(u.edgeLanes(c) == 0);  // merged: an ordinary cable
   const double t0 = u.d.now();
   while (u.d.now() - t0 < 5.0 && (u.view().canvas().cablesMoving() || u.d.tree().needsFrame())) u.d.advance(1.0 / 144.0);
   REQUIRE(u.d.enableGpu().ok());
