@@ -155,6 +155,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_group_oversample.cpp  # TX.group-oversample: oversampled groups (linear == 1x spectrum, tanh aliasing, nesting, per voice, response == impulse, the setting)
     app/test_sidechain_link.cpp  # DY.2: a latent Kick cabled into Bass's input arrives aligned (Bass nulls), the total reported
     app/test_delay_tap.cpp  # DT.1: the Delay Tap renders (impulse at the time, half samples, stereo, sync at the tempo, a VCA feedback loop, a glide)
+    app/test_lanes.cpp  # FD.2: lane cables render (8 per-lane delays after Merge, wide wires into controls, Unpack → Pack, a feedback loop, the refusals)
     app/test_eq_render.cpp  # EQ.3: a band == a plain svf bit for bit per type; the EQ's L/R and M/S == Stereo with equal chains; chain B costs nothing in Stereo
     app/test_compressor_module.cpp  # DY.4: the Compressor (static curve vs the formula, attack / release, lookahead latency, a sidechain ducking a pad; interp == JIT)
     app/test_math_module.cpp  # MX.2: every Math op vs its reference through the trace tap (interp + JIT), oversample region, (perf) off-screen cost
@@ -261,6 +262,7 @@ pq_add_test(pq_tests_views PERF  # T4.13: the project patch view's wall-clock ch
     views/test_nested_groups_view.cpp  # GU.2: capsules in capsules, the instrument group's look, nest / unnest, copy / paste, group presets from the node menu (real dispatch), golden
     views/test_group_panels.cpp  # GU.3: element goldens, a group drawn as its panel (circuit, Device view + inspector), every element edit through real dispatch
     views/test_math_face.cpp  # MX.3: the Math face (op circle → radial menu → op swap, typed values, visibility, one tap consumer) by real dispatch, goldens
+    views/test_lanes_face.cpp  # FD.2: the lane modules placed by Tab / Enter, the N chip, lane jacks and a lane cable by real dispatch; face and cable goldens
     views/test_module_faces.cpp  # GU.5b: the modules' old faces from rich elements (dial markers as curve points), an opened group as a circuit, goldens
     views/test_cable_source.cpp  # DY.2: the cablesource picker by real dispatch (pick / clear = one step; a hand-drawn cable shows)
     views/test_delay_tap_face.cpp  # DT.1: the Delay Tap's tempo slider (gravity, magnet, ms / note switch, sync steps) by real dispatch, goldens
@@ -566,6 +568,7 @@ pq_add_test(pq_tests_document
     document/test_group_transfer.cpp  # DY.3: a group's static In -> Out curve (exact vs scalar, z1 -> none, knobs re-read)
     document/test_delay_tap.cpp  # DT.1: the Delay Tap's time law, note values, its group
     document/test_math_module.cpp  # MX.2: the Math module (ops table, roles, op swap one undo step + save / load, the trace tap's lowering)
+    document/test_lanes.cpp  # FD.2: lane cables (the lane modules, laneWidths' estimate and bound groups, setLaneCount, the lowering's rules, the refusal words)
     document/test_eq_modules.cpp  # EQ.3: the band and EQ modules (roles, const inputs), their ops (one undo step, save / load), the EQ's response matrix
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
     document/test_cut_wires.cpp  # WI.2: a cut wire lowers as the project without it (Refused / Type), a cut main link breaks the path, wire ends

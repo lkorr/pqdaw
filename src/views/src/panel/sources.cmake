@@ -10,6 +10,7 @@ set(PQ_VIEWS_PANEL_SOURCES
   src/panel/transfer_element.cpp  # DY.3: the static transfer curve display
   src/panel/trace_element.cpp  # MX.3: the trace scope (a scope of several signals on one tap)
   src/panel/math_element.cpp  # MX.3: the Math module's op circle
+  src/panel/lane_element.cpp  # FD.2: the lane modules' N chip
   src/panel/arp_elements.cpp  # AP.6: the arpeggiator panel's step lanes, pattern view, glide shape, presets
   src/panel/tempo_slider.cpp  # DT.1: the tempo-marked time slider (the Delay Tap's face)
   src/panel/cable_source.cpp  # DY.2: the cable source picker (a sidechain's source track)

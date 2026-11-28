@@ -47,6 +47,9 @@ struct WireStyle {
   bool modulation = false;  // an audio-rate signal into a parameter: dashed
   bool notes = false;       // TMM.13-fix2 (M10): the note source's (notes into a chain, its outputs' wires): wireNotes
   bool error = false;       // WI.2: cut from the compile (a type error blamed on it): the theme's error colour
+  // FD.2 (pq/document/lanes.h): a LANE CABLE — its signal is this many channels wide (> 2); 0: not one. Drawn as a
+  // wide ribbon (three grooves along it) with its lane count on a badge beside the flow arrow; a trace twice as thick.
+  uint8_t lanes = 0;
   bool operator==(const WireStyle&) const = default;
 };
 

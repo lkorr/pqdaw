@@ -21,8 +21,9 @@
 // Rules:
 //   - A declared port type is an UPPER BOUND for what flows into it: atom inputs (e.g. delay `max` is const), the
 //     `in`s of a callee, the root's `out`s. Exceeding a rate or width bound, or a real into a bool bound, is an error,
-//     reported at the node's source position. Callee `param`s are modulation targets and accept any rate and poly
-//     (a modulation wire raises the parameter's path to audio rate); their kind and width bounds still apply.
+//     reported at the node's source position. Callee `param`s are modulation targets and accept any rate, poly and
+//     (FD.2) width (a modulation wire raises the parameter's path to audio rate; one of N channels makes the
+//     parameter per channel, as an element-wise input does); their kind bound still applies.
 //   - A node's output rate is the max of its input rates; stateful atoms (z1, phasor, delay …) output audio, and
 //     sources output their declared rate (voice.velocity param, sr const …).
 //   - A node is per-voice if any input is (or it is a voice.* source). A voice signal into a GLOBAL bound (the
@@ -175,7 +176,9 @@ struct TypedPatch {
 // rate for a rate error), while the node's cut path equals the consumer's; the first node whose cut path differs is
 // the source. `consumer` is the refusing input's node, cut. A walk that never leaves the consumer's node (the value
 // is made there: a pack, a stateful atom's audio rate) finds no edge; a root `in` the engine connects with a bad type
-// has one blame with an empty `source` (the value comes from outside the patch).
+// has one blame with an empty `source` (the value comes from outside the patch). FD.2: two widths meeting at an
+// element-wise atom ("width mismatch: A and B meet at …") blame the edges that brought every width but the atom's
+// first wide input's (input order), found the same way from each such input.
 struct TypeBlame {
   std::vector<NodeId> consumer, source;
 };
@@ -185,8 +188,8 @@ struct InferResult {
   TypedPatch typed;                     // complete only when diagnostics is empty
   std::vector<Diagnostic> diagnostics;  // located at the root patch node (the call site for errors inside callees)
   // WI.1: with InferOptions::blameDepth > 0, parallel to diagnostics: per diagnostic its blamed edges (at most
-  // kMaxBlamesPerDiagnostic; empty for everything but the bound errors of the final check and a root input's
-  // connection). Empty when blameDepth is 0 or inference succeeded.
+  // kMaxBlamesPerDiagnostic; empty for everything but the bound errors of the final check, a root input's
+  // connection and (FD.2) widths meeting at an atom). Empty when blameDepth is 0 or inference succeeded.
   std::vector<std::vector<TypeBlame>> blames;
   // Per InferOptions::probes entry: the flat output port of typed.patch carrying that value (kNone: no such node or
   // output, or unconnected). T4.5.

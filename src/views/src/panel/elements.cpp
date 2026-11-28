@@ -1649,6 +1649,7 @@ void registerGeneric() {
     registerCableSource(reg);  // DY.2
     registerTransferElement(reg);  // DY.3
     registerMathElement(reg);  // MX.3
+    registerLaneElement(reg);  // FD.2
     registerArpElements(reg);  // AP.6
   });
 }

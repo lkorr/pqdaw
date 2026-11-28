@@ -300,7 +300,8 @@ bool rackValueSetting(std::string_view name) noexcept {
 bool rackGroupSetting(std::string_view name) noexcept {
   return name == kRoleSetting || name == kChainOnSetting || name == kChainSoloSetting || name == kKeyUnitSetting ||
          name == kBandChainSetting || name == kBandSoloSetting || name == kSoloRestoreSetting ||  // EQ.3 (modules.h)
-         name == kMathOpSetting || name == kMathRoleSetting;                                      // MX.2 (modules.h)
+         name == kMathOpSetting || name == kMathRoleSetting ||                                    // MX.2 (modules.h)
+         name == kLaneModuleSetting || name == kLaneCountSetting;                                 // FD.2 (modules.h)
 }
 
 ZoneRange zoneRange(ZoneKind kind, KeyZoneUnit unit) noexcept {

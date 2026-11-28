@@ -52,7 +52,8 @@ enum class ModuleKind : uint8_t {
   BandLevels, Waveform,                    // VZ.6
   Waterfall, StereoSpectrogram,             // VZ.7: the 3D analysers
   Math,                                     // MX.2
-  Sampler                                   // SM.3
+  Sampler,                                  // SM.3
+  Lanes, Merge, Unpack, Pack                // FD.2: lane cables
 };
 struct ModuleInfo {
   ModuleKind kind;
@@ -556,6 +557,66 @@ struct MathInfo {
   const MathOpInfo* op = nullptr;  // the stored op (null: the setting names none)
 };
 std::optional<MathInfo> mathInfo(const Project& p, DeviceId group);
+
+// ---- FD.2: lane cables — Lanes, Merge, Unpack, Pack (docs/plans/FD.md "Design", "FD.2"; lanes.h; lower.h "Lane cables") --
+// A LANE CABLE is a cable N channels wide (N = 2, 4, 8, 16 in total, not per ear): every block on it runs once per lane
+// (one Delay Tap = N delay lines, one EQ Band = N filters; the compiler schedules one op per channel, state per
+// channel), and a lane cable into a control makes that control per lane. Four groups of `pack` / `channel` atom blocks
+// (aliases: no op of their own is scheduled) make and end one:
+//   Lanes    stereo → N lanes: L to the even lanes, R to the odd ones (a mono input to all): channel(In, 0),
+//            channel(In, 1) packed, then doubled (pack(s, s)) up to N. Costs nothing.
+//   Merge    N lanes → stereo: the even lanes summed to L, the odd ones to R, each × 1 / √(N / 2) (N incoherent lanes
+//            keep their power; Lanes → Merge is × √(N / 2), N = 2: the identity). N − 2 adds and 2 multiplies a sample.
+//   Unpack   a lane cable → N mono outputs (channel(In, i)): N output jacks on its face. Costs nothing.
+//   Pack     N mono inputs → a lane cable: N input jacks on its face (each takes the first channel of what is plugged
+//            in, so the cable is exactly N wide), packed pairwise. Costs nothing.
+// N is the group's setting kLaneCountSetting (which module it is: kLaneModuleSetting); the face's N chip (the views'
+// "lanecount" element on that setting) runs ops::setLaneCount, which rebuilds the inside (edit_ops.h "FD.2"). A Merge or
+// an Unpack whose N differs from its cable's, like a lane cable into Lanes, is refused at the module's input (lanes.h
+// LaneWidths::bound: they read In channel by channel): the cable is cut and says so.
+// Faces: Lanes / Merge 120 × 46 (the name, the N chip); Unpack / Pack 152 wide (the name, the chip, the main jack — In
+// for Unpack, Out for Pack — and the lane jacks eight to a row, numbered). Lane i's jack is panel element
+// kLaneJackBase + i, bound to lane i's block: ops::setLaneCount keeps the blocks (and so the cables) of the lanes that
+// stay.
+enum class LaneModule : uint8_t { None = 0, Lanes, Merge, Unpack, Pack };
+inline constexpr std::string_view kLaneModuleSetting = "laneModule", kLaneCountSetting = "lanes";
+inline constexpr uint32_t kLaneCounts[] = {2, 4, 8, 16};
+inline constexpr uint32_t kDefaultLaneCount = 8, kMaxLaneCount = 16;
+inline constexpr uint32_t kLaneJackBase = 100;  // the panel element id of lane 0's jack (Unpack, Pack)
+inline constexpr uint32_t kLaneChipElement = 3; // … of the N chip
+constexpr bool laneCountValid(uint32_t n) noexcept { return n == 2 || n == 4 || n == 8 || n == 16; }
+std::string_view laneModuleName(LaneModule m) noexcept;  // "Lanes", "Merge", "Unpack", "Pack"
+// Merge's gain on each ear: 1 / √(N / 2).
+double laneMergeGain(uint32_t lanes) noexcept;
+struct LaneModuleRoles {
+  DeviceId group;
+  // Unpack: lane i's channel block (its output "out" is lane i); Pack: lane i's input block (its input "x"). Else empty.
+  std::vector<DeviceId> lane;
+  std::vector<DeviceId> inner;  // every other block inside
+};
+struct LaneModuleOptions {
+  DeviceId id;       // the group's (invalid: a fresh one)
+  DeviceId inGroup;  // the group it sits in, or none
+  std::string name;  // "" = the module's name
+  uint32_t lanes = kDefaultLaneCount;  // 2, 4, 8 or 16 (anything else: 8)
+  bool active = true;
+};
+BlockSet laneModuleBlocks(IdSource& ids, LaneModule kind, const LaneModuleOptions& o = {}, LaneModuleRoles* roles = nullptr);
+// The inside of lane module `kind` in group `group` for `lanes` lanes: its blocks and wires (no group device). `keep`:
+// lane blocks that exist already (Unpack / Pack: the first min(keep.size(), lanes) lanes use them, made and wired
+// before; only the missing ones are made). What laneModuleBlocks and ops::setLaneCount place.
+BlockSet laneModuleInside(IdSource& ids, LaneModule kind, DeviceId group, uint32_t lanes, std::span<const DeviceId> keep = {},
+                          LaneModuleRoles* roles = nullptr);
+// Its face (`laneBlocks`: Unpack / Pack's lane blocks, `lanes` of them).
+Panel laneModulePanel(LaneModule kind, DeviceId group, uint32_t lanes, std::span<const DeviceId> laneBlocks);
+// The lane module `group` is (by its settings), nullopt: not one. `lane`: the blocks its panel's lane jacks name, in
+// lane order, as far as they are still its members; `inner`: its other members.
+struct LaneModuleInfo {
+  LaneModule kind = LaneModule::None;
+  uint32_t lanes = 0;
+  LaneModuleRoles roles;
+};
+std::optional<LaneModuleInfo> laneModuleInfo(const Project& p, DeviceId group);
 
 // A module's default group preset with ids from 1 (the group first): what spawning it pastes (ops::pasteBlocks gives
 // fresh ids).

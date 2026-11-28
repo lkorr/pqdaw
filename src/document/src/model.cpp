@@ -291,13 +291,33 @@ std::string_view valuePatchText() noexcept {
 }
 
 std::string_view groupPatchText() noexcept {
-  // TX.groups: the In terminal is an output (`input` = x), the Out terminal an input (`output` → y). y is declared stereo
-  // (an upper bound: a mono sum stays mono), so the chain after a group never packs an already stereo signal.
+  // TX.groups: the In terminal is an output (`input` = x), the Out terminal an input (`output` → y). FD.2: no port
+  // declares a width — a lane cable (any N) passes a group as a stereo or mono signal does; the chain after a group
+  // treats what leaves it as "may be stereo" (lower.cpp chainWidthAfter), so it never packs an already stereo signal.
   return "patch Group {\n"
          "  in    x      : audio global\n"
          "  in    output : audio global\n"
-         "  out   y      : audio global stereo\n"
+         "  out   y      : audio global\n"
          "  out   input  : audio global\n"
+         "  y = output\n"
+         "  input = x\n"
+         "}\n";
+}
+
+std::string groupInWidthPatchName(uint16_t width, bool voice) {
+  return std::string(voice ? "GroupVoiceIn" : "GroupIn") + std::to_string(width);
+}
+
+std::string groupInWidthPatchText(uint16_t width, bool voice) {
+  // FD.2: Group (GroupVoice) whose main input is BOUND to `width` channels: a cable of another width into it (but mono,
+  // which broadcasts) is a width error of the compiler, blamed on that cable.
+  const std::string poly = voice ? "" : " global";
+  const std::string w = width == 2 ? std::string("stereo") : "ch(" + std::to_string(width) + ")";
+  return "patch " + groupInWidthPatchName(width, voice) + " {\n"
+         "  in    x      : audio" + poly + " " + w + "\n"
+         "  in    output : audio" + poly + "\n"
+         "  out   y      : audio" + poly + "\n"
+         "  out   input  : audio" + poly + "\n"
          "  y = output\n"
          "  input = x\n"
          "}\n";
@@ -308,7 +328,7 @@ std::string_view groupVoicePatchText() noexcept {
   return "patch GroupVoice {\n"
          "  in    x      : audio\n"
          "  in    output : audio\n"
-         "  out   y      : audio stereo\n"
+         "  out   y      : audio\n"
          "  out   input  : audio\n"
          "  y = output\n"
          "  input = x\n"
@@ -321,7 +341,7 @@ std::string_view groupNotesPatchText() noexcept {
   // pitch), `phase` the phase (phasor(voice.hz), 0 at note-on). An unread output costs nothing (the compiler drops it).
   return "patch GroupNotes {\n"
          "  in    output : audio\n"
-         "  out   y      : audio stereo\n"
+         "  out   y      : audio\n"
          "  out   input  : audio mono\n"
          "  out   phase  : audio mono\n"
          "  y = output\n"

@@ -203,6 +203,9 @@ Result<std::unique_ptr<DeviceLibrary>> loadDeviceLibrary(std::string_view stdlib
   lib->library_.add(groupPatch());
   lib->library_.add(groupVoicePatch());
   lib->library_.add(groupNotesPatch());
+  for (const uint16_t w : {uint16_t{2}, uint16_t{4}, uint16_t{8}, uint16_t{16}})  // FD.2: the usual input-bound variants (others join a lowering's own library)
+    for (const bool voice : {false, true}) lib->library_.add(groupInWidthPatch(w, voice));
+  lib->library_.add(stereoOnlyPatch());
   // GU.2: the value block and every atom block (built once per process; a lowering then needs no library of its own).
   lib->library_.add(valuePatch());
   for (const graph::AtomSignature& s : graph::AtomRegistry::builtin().all())
@@ -274,6 +277,48 @@ const graph::Patch& groupNotesPatch() {
   static const graph::PatchFile f = parseGroupVariant(groupNotesPatchText());
   static const graph::Patch& p = groupVariant(f, "GroupNotes");
   return p;
+}
+
+namespace {
+// FD.2: the input-bound variants, made on first use (unique_ptr: a file's address stays put when the map rehashes).
+struct InWidthPatches {
+  std::mutex m;
+  std::unordered_map<uint32_t, std::unique_ptr<graph::PatchFile>> made;  // (width << 1 | voice)
+};
+InWidthPatches& inWidthPatches() {
+  static InWidthPatches x;
+  return x;
+}
+}  // namespace
+
+const graph::Patch& groupInWidthPatch(uint16_t width, bool voice) {
+  width = std::clamp<uint16_t>(width, 2, graph::kMaxWidth);
+  InWidthPatches& x = inWidthPatches();
+  std::lock_guard lock(x.m);
+  auto it = x.made.find((static_cast<uint32_t>(width) << 1) | (voice ? 1u : 0u));
+  if (it == x.made.end())
+    it = x.made.emplace((static_cast<uint32_t>(width) << 1) | (voice ? 1u : 0u),
+                        std::make_unique<graph::PatchFile>(parseGroupVariant(groupInWidthPatchText(width, voice)))).first;
+  return groupVariant(*it->second, groupInWidthPatchName(width, voice));
+}
+
+const graph::Patch& stereoOnlyPatch() {
+  static const graph::PatchFile f = parseGroupVariant("patch StereoOnly {\n"
+                                                      "  in    x : audio stereo\n"
+                                                      "  out   y : audio\n"
+                                                      "  y = x\n"
+                                                      "}\n");
+  static const graph::Patch& p = groupVariant(f, "StereoOnly");
+  return p;
+}
+
+bool isGroupPatch(const graph::Patch& p) noexcept {
+  if (&p == &groupPatch() || &p == &groupVoicePatch() || &p == &groupNotesPatch()) return true;
+  InWidthPatches& x = inWidthPatches();
+  std::lock_guard lock(x.m);
+  for (const auto& [key, file] : x.made)
+    if (file->find(p.name()) == &p) return true;
+  return false;
 }
 
 // ---- GU.2: atom blocks and value blocks -------------------------------------------------------------------------

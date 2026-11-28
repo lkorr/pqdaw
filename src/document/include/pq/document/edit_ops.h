@@ -1080,4 +1080,12 @@ EditResult setBandSolo(const Project& p, DeviceId band, bool solo);
 // blocks. The same op again rebuilds it (a hand-edited circuit restored).
 EditResult setMathOp(const Project& p, IdSource& ids, DeviceId math, std::string_view key);
 
+// ---- FD.2: lane cables (pq/document/modules.h "lane cables"; docs/plans/FD.md) -------------------------------------
+// The lane count of lane module `module` (a Lanes, Merge, Unpack or Pack group: laneModuleInfo) set to `lanes` (2, 4,
+// 8, 16): its inside rebuilt for that N (laneModuleInside), kLaneCountSetting and its panel set — one undo step, a
+// structural change (one recompile). Unpack's / Pack's lane blocks of the lanes that stay are kept, so the cables on
+// their jacks stay; the cables of the lanes that go go with them. The cables on the module's own In and Out stay.
+// The same N again rebuilds it (a hand-edited inside restored). Edit::devices: the new blocks.
+EditResult setLaneCount(const Project& p, IdSource& ids, DeviceId module, uint32_t lanes);
+
 }  // namespace pq::doc::ops

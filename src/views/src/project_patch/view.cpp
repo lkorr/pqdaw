@@ -16,6 +16,7 @@
 #include <unordered_map>
 #include "pq/views/browser/library_load.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/lanes.h"
 #include "pq/document/modules.h"
 #include "pq/views/browser/library.h"
 #include "pq/ui/overlay.h"
@@ -700,6 +701,10 @@ void ProjectPatchView::rebuild() {
         e.status = doc::WireStatus::Refused;
         e.typeError = true;
       }
+  // FD.2: the lane cables (the document's estimate: nothing without a pack block).
+  if (const doc::LaneWidths lanes = doc::laneWidths(*snap); !lanes.empty())
+    for (Edge& e : patch_.edges)
+      if (e.wire.valid()) e.lanes = static_cast<uint8_t>(std::min<uint16_t>(lanes.of(e.wire), 255));
   tracksOf_ = nullptr;  // bandTrack's table follows the new bands
   // TL.2: the sub-lanes under their bands' lanes, top to bottom in the order shown (a band without a lane has none).
   subLanes_.clear();
@@ -2838,6 +2843,9 @@ void ProjectPatchView::pollReadout() {
     case EdgeKind::Chain:
       readout_.title = from.name + ": " + patch_.nodes[e.from].title + " \xE2\x86\x92 " + patch_.nodes[e.to].title;
       readout_.value = "audio";
+      if (e.lanes != 0) readout_.value += ", " + std::to_string(e.lanes) + " lanes";  // FD.2
+      if (const std::string* err = e.typeError ? ctx_.wireError(e.wire) : nullptr)  // (a cut link: the compiler's reason)
+        readout_.value += ", not played: " + *err;
       break;
     case EdgeKind::Route:
       readout_.title = from.name + " \xE2\x86\x92 " + to.name;
@@ -2891,6 +2899,7 @@ void ProjectPatchView::pollReadout() {
         static constexpr const char* kReducers[] = {"sum", "last", "highest", "lowest", "loudest"};
         readout_.value += std::string(" \xC2\xB7 per voice (into a global param: ") + kReducers[static_cast<size_t>(w->reducer)] + ")";
       }
+      if (e.lanes != 0) readout_.value += ", " + std::to_string(e.lanes) + " lanes";  // FD.2
       if (e.delayed) readout_.value += ", z\xE2\x81\xBB\xC2\xB9";
       if (e.status == doc::WireStatus::Inactive) readout_.value += ", inactive";
       if (const std::string* err = e.typeError ? ctx_.wireError(e.wire) : nullptr)  // WI.2: the compiler's message

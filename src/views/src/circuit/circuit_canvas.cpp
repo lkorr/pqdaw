@@ -938,6 +938,7 @@ struct CircuitCanvas::Impl final : FaceHost {
     float flip = 1.0f;  // the normals' sign: the highlight on the cable's upper side
     float glow = 0.0f;  // 0 … 1 (the loose cable: none)
     bool poly = false, sel = false, hov = false;
+    uint8_t lanes = 0;  // FD.2: a lane cable's lane count (WireStyle::lanes)
   };
   std::vector<CableDraw> cdraw;
   std::vector<Vec2> cpts, cnrm;
@@ -2053,6 +2054,9 @@ void crispSegment(ui::DrawList& dl, Vec2 a, Vec2 b, Rgba col, float t) {
 }
 
 // BR.wires: a flow arrowhead centred on `at`, pointing along `dir` (unit), `hw` px to each side of the wire.
+// FD.2: a lane cable's tube against an ordinary cable's (WireStyle::lanes).
+constexpr float kLaneCableWidth = 1.7f;
+
 void flowArrow(ui::DrawList& dl, Vec2 at, Vec2 dir, float hw, Rgba col) {
   const float l = 1.7f * hw;
   const Vec2 tip{at.x + dir.x * 0.5f * l, at.y + dir.y * 0.5f * l}, base{at.x - dir.x * 0.5f * l, at.y - dir.y * 0.5f * l};
@@ -2279,6 +2283,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     d.col = colourOf(ws, c.wire < wireLit.size() && wireLit[c.wire]);
     d.glow = c.glow;
     d.poly = ws.poly;
+    d.lanes = ws.lanes;
     d.alpha = sw.inactive && !d.sel && !d.hov ? kInactiveAlpha : 1.0f;
     if (fadeOn && bx.x1 >= fade.x0 && bx.x0 <= fade.x1 && bx.y1 >= fade.y0 && bx.y0 <= fade.y1)
       for (const Point2 q : P)
@@ -2289,6 +2294,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
     const float ka = nodeScale(c.fromNode), kb = nodeScale(c.toNode);
     d.w = tubeOf(std::min(ka, kb));
+    if (d.lanes != 0) d.w *= kLaneCableWidth;  // FD.2: a ribbon (its plugs stay a cable's)
     d.plugA = plugOf(ka);
     d.plugB = plugOf(kb);
     cdraw.push_back(d);
@@ -2304,6 +2310,7 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
     d.count = static_cast<uint32_t>(cpts.size()) - d.first;
     d.col = colourOf(l.style, false);
     d.poly = l.style.poly;
+    d.lanes = l.style.lanes;
     d.sel = l.snap;
     d.flip = P.back().x < P.front().x ? -1.0f : 1.0f;
     d.w = d.plugA = d.plugB = w;
@@ -2378,6 +2385,14 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
         const Rgba c3[3] = {ui::withAlpha(gr, 0), gr, ui::withAlpha(gr, 0)};
         ribbon(dl, p, nr, d.count, o, c3, 3);
       }
+      if (d.lanes != 0 && d.w >= 4.0f) {  // FD.2: a lane cable: a flat ribbon (three grooves between its strands)
+        const Rgba gr = ui::mulAlpha(ui::scaleRgb(d.col, 0.35f), d.alpha);
+        for (const float at : {-0.5f, 0.0f, 0.5f}) {
+          const float o[3] = {(at + 0.13f) * hw, at * hw, (at - 0.13f) * hw};
+          const Rgba c3[3] = {ui::withAlpha(gr, 0), gr, ui::withAlpha(gr, 0)};
+          ribbon(dl, p, nr, d.count, o, c3, 3);
+        }
+      }
       // BR.wires: a flow arrow halfway along the rope (source → target), on its tangent there.
       if (const float* arc = carc.data() + d.first; d.count >= 2 && arc[d.count - 1] >= 12.0f * (0.5f * d.w + 2.5f * us)) {
         const float half = 0.5f * arc[d.count - 1];
@@ -2387,6 +2402,32 @@ void CircuitCanvas::Impl::paintCables(ui::PaintContext& ctx, Point2 w0, Point2 w
         const float dx = p[k].x - p[k - 1].x, dy = p[k].y - p[k - 1].y, l = std::sqrt(dx * dx + dy * dy);
         if (l > 1e-4f)
           flowArrow(dl, {p[k - 1].x + dx * f, p[k - 1].y + dy * f}, {dx / l, dy / l}, 0.5f * d.w + 2.5f * us, ui::mulAlpha(d.col, d.alpha));
+      }
+      // FD.2: a lane cable's lane count on a badge, a third of the way along (clear of the arrow), when the rope is
+      // long enough to carry it.
+      if (d.lanes != 0 && d.w >= 4.0f && d.count >= 2 && ctx.res.text != nullptr && ctx.res.uiFonts != nullptr) {
+        const float* arc = carc.data() + d.first;
+        ui::TextSystem& ts = *ctx.res.text;
+        const ui::FontId font = ctx.res.uiFonts->small;
+        const float px = static_cast<float>(ts.metrics(font).pixelSize);
+        char buf[8];
+        std::snprintf(buf, sizeof buf, "%u", static_cast<unsigned>(d.lanes));
+        const ui::TextRun run = ts.shape(font, buf);
+        const float bw = static_cast<float>(run.advance) + 8.0f * us, bh = px + 3.0f * us;
+        if (arc[d.count - 1] >= 5.0f * bw) {
+          const float at = arc[d.count - 1] / 3.0f;
+          uint32_t k = 1;
+          while (k + 1 < d.count && arc[k] < at) ++k;
+          const float seg = arc[k] - arc[k - 1], f = seg > 1e-6f ? (at - arc[k - 1]) / seg : 0.0f;
+          const Vec2 q{std::round(p[k - 1].x + (p[k].x - p[k - 1].x) * f), std::round(p[k - 1].y + (p[k].y - p[k - 1].y) * f)};
+          const ui::Rect r{q.x - std::round(0.5f * bw), q.y - std::round(0.5f * bh), q.x - std::round(0.5f * bw) + std::round(bw),
+                           q.y - std::round(0.5f * bh) + std::round(bh)};
+          dl.addRoundedRectFilled(r, 0.5f * bh, ui::mulAlpha(ui::scaleRgb(d.col, 0.22f), d.alpha));
+          dl.addRoundedRectStroke(r, 0.5f * bh, ui::mulAlpha(d.col, d.alpha), std::max(1.0f, us));
+          const float cap = std::round(0.727f * px);
+          ui::TextSystem::drawRun(dl, run, {std::round(0.5f * (r.x0 + r.x1) - 0.5f * static_cast<float>(run.advance)), std::round(q.y + cap * 0.5f)},
+                                  ui::mulAlpha(C.symbolText, d.alpha));
+        }
       }
       const float chord = std::hypot(p[d.count - 1].x - p[0].x, p[d.count - 1].y - p[0].y);
       const float plugK = std::clamp(chord / (3.5f * (d.plugA + d.plugB)), 0.3f, 1.0f);
@@ -2737,7 +2778,8 @@ void CircuitCanvas::paint(ui::PaintContext& ctx) {
       const SceneWire& sw = sc.wires[w];
       if (sw.cable) continue;  // TX.cables: drawn over the blocks (paintCables)
       const WireStyle& ws = sw.style;
-      const float t = (!ws.boolean && ws.rate == WireRate::Audio) ? thick : thin;
+      // (FD.2: a lane cable's trace is twice an audio wire's.)
+      const float t = ws.lanes != 0 ? 2.0f * thick : (!ws.boolean && ws.rate == WireRate::Audio) ? thick : thin;
       const Rgba col = wireColour(w);
       m.pts.clear();
       for (uint32_t i = 0; i < sw.pointCount; ++i) {
@@ -3394,6 +3436,7 @@ ui::InfoText CircuitCanvas::info() const {
     m.infoBody = ws.boolean ? "bool" : "real";
     m.infoBody += ws.rate == WireRate::Const ? ", const" : (ws.rate == WireRate::Param ? ", param rate" : ", audio rate");
     if (ws.poly) m.infoBody += ", per voice";
+    if (ws.lanes != 0) m.infoBody += ", " + std::to_string(ws.lanes) + " lanes";  // FD.2
     if (ws.modulation) m.infoBody += ", modulating a parameter";
     return {m.infoTitle, m.infoBody};
   }
