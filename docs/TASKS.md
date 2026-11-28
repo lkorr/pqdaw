@@ -992,3 +992,11 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **RT.2 Lowering + engine + recording: Audio In into monitor mix, PDC, Resampling without self, internal capture** (plan RT.2; w1) *(merged 124b1912)*
 - [x] **RT.3 UI: Audio From / channel choosers, circuit Audio In terminal, shared menu** 👁 (plan RT.3; w2) *(merged 336b6e12)*
 - [x] **RT.4 Track header condensed: volume + pan and the input under the name, default height 68** 👁 (user 2026-11-28; w1) *(merged 8afd9057)*
+
+## FD: lane cables, Spread, Matrix — build your own reverb (user 2026-11-28; plan: docs/plans/FD.md; SPEC §15 "lanes and the matrix"; design approved by the user 2026-11-28)
+- [ ] **FD.1 Scheduler: delay bounds by interval analysis, cut choice; FDN / Delay Tap loops run in sub-blocks** (plan FD.1)
+- [ ] **FD.2 Width N through the document: lane cables, Lanes / Merge, Unpack / Pack, wide wires into params, mixer refusal** 👁 (plan FD.2)
+- [ ] **FD.3 Spread: a value per lane (Even / Random / Scatter), tick face** 👁 (plan FD.3; after FD.2)
+- [ ] **FD.4 Matrix (Mix, Stages as an openable group, Guard) + Math op Soft Clip** 👁 (plan FD.4; after FD.2)
+- [ ] **FD.5 Lane mask on modules** 👁 (plan FD.5; after FD.3 / FD.4)
+- [ ] **FD.6 Reverb group preset + panel, Room / Hall / Plate; CPU and RT60 measured** 👁 (plan FD.6; last)
