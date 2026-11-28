@@ -13,6 +13,7 @@
 
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
+#include "pq/document/instrument_groups.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
@@ -354,4 +355,88 @@ TEST_CASE("main path: the lowering — a broken path is silent, the mixer sums t
   CHECK(made);
   for (const WireState& s : lowered(d.doc()).wires)
     if (s.id == crossEdit->wires.at(0)) CHECK(s.status == WireStatus::Lowered);
+}
+
+// BR.K (bug 2026-11-28_00-43-14): a block crossing a group's boundary keeps its signal path through the group's ports.
+// A Sampler right before the default instrument joins it at its head (the group's In feeds it, it feeds what the In
+// fed); taken out again it plays before the group — the notes into it, its audio into the group (an audio group now,
+// derived from what reaches it), the group's In into what it fed (its Phase Accumulator). The Envelope at the group's tail leaves after it and
+// joins back at the tail. Each the exact inverse of the other; one undo step each.
+TEST_CASE("BR.K into / out of a group at its head or tail: the wires go through the group's ports") {
+  Doc d;
+  auto has = [&](DeviceId from, std::string_view port, DeviceId to, std::string_view param) {
+    const WireList& ws = wiresOf(d.doc());
+    return std::any_of(ws.begin(), ws.end(), [&](const Wire& w) {
+      return !w.fromNoteSource() && w.from == from && w.port == port && !w.toMixer() && w.to == to && w.param == param;
+    });
+  };
+  auto notesInto = [&](DeviceId to) {
+    const WireList& ws = wiresOf(d.doc());
+    return std::count_if(ws.begin(), ws.end(), [&](const Wire& w) { return w.fromNoteSource() && !w.toMixer() && w.to == to; });
+  };
+  auto direct = [&](DeviceId g, const char* name) {
+    for (const DevicePtr& x : d.track(d.keys).devices)
+      if (x->group == g && x->name == name) return x->id;
+    return DeviceId{};
+  };
+  // In → Phase Accumulator → Wavetable → Envelope → Out: `head` what the In feeds.
+  DeviceId head;
+  std::string in;  // the input of it the In feeds
+  for (const Wire& w : wiresOf(d.doc()))
+    if (!w.fromNoteSource() && w.from == d.inst && w.port == kGroupInPort && !w.toMixer()) head = w.to, in = w.param;
+  const DeviceId env = direct(d.inst, "Envelope");
+  REQUIRE(head.valid());
+  REQUIRE(env.valid());
+  REQUIRE(has(d.inst, kGroupInPort, head, in));
+  REQUIRE(has(env, kMainPort, d.inst, kGroupOutPort));
+  // The Sampler at the notes, before the instrument.
+  // (Off the path, then spliced in at slot 0: an instrument added at the notes would replace the default one.)
+  const DeviceId smp = d.edit(ops::addDevice(d.doc(), d.store.ids(), d.keys, std::string(kModuleItemPrefix) + "sampler",
+                                             DeviceKind::AudioEffect, ops::kOffPath)).devices.at(0);
+  d.edit(ops::insertOnPath(d.doc(), d.store.ids(), smp, 0));
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Sampler", "Basic Synth"});
+  CHECK(isInstrumentGroup(d.doc(), smp));
+  CHECK_FALSE(isInstrumentGroup(d.doc(), d.inst));
+  // Into the group: at its head (the bug's shot 1).
+  d.edit(ops::setDeviceGroup(d.doc(), d.store.ids(), &library(), smp, d.inst));
+  CHECK(findDevice(d.doc(), smp).device->group == d.inst);
+  CHECK(notesInto(d.inst) == 1);
+  CHECK(notesInto(smp) == 0);
+  CHECK(has(d.inst, kGroupInPort, smp, kMainPort));
+  CHECK(has(smp, kMainPort, head, in));
+  CHECK_FALSE(has(d.inst, kGroupInPort, head, in));
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Basic Synth"});
+  CHECK(isInstrumentGroup(d.doc(), d.inst));
+  // Take Out of Group (the bug: the wires crossed into the Wavetable's ports): it plays before the group again.
+  d.edit(ops::setDeviceGroup(d.doc(), d.store.ids(), &library(), smp, {}));
+  CHECK_FALSE(findDevice(d.doc(), smp).device->group.valid());
+  CHECK(notesInto(smp) == 1);
+  CHECK(notesInto(d.inst) == 0);
+  CHECK(has(smp, kMainPort, d.inst, kMainPort));
+  CHECK(has(d.inst, kGroupInPort, head, in));
+  CHECK_FALSE(has(smp, kMainPort, head, in));
+  CHECK_FALSE(has(d.inst, kGroupInPort, smp, kMainPort));
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Sampler", "Basic Synth"});
+  CHECK(d.complete(d.keys));
+  CHECK(isInstrumentGroup(d.doc(), smp));
+  CHECK_FALSE(isInstrumentGroup(d.doc(), d.inst));  // its input is audio now: an audio group
+  // The tail: the Envelope out plays after the group, and back in at the tail. `pre`: what feeds it (the Wavetable).
+  DeviceId pre;
+  for (const Wire& w : wiresOf(d.doc()))
+    if (!w.fromNoteSource() && !w.toMixer() && w.to == env && w.param.empty()) pre = w.from;
+  REQUIRE(pre.valid());
+  d.edit(ops::setDeviceGroup(d.doc(), d.store.ids(), &library(), env, {}));
+  CHECK(has(pre, kMainPort, d.inst, kGroupOutPort));
+  CHECK(has(d.inst, kMainPort, env, kMainPort));
+  CHECK_FALSE(has(env, kMainPort, d.inst, kGroupOutPort));
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Sampler", "Basic Synth", "Envelope"});
+  CHECK(d.complete(d.keys));
+  d.edit(ops::setDeviceGroup(d.doc(), d.store.ids(), &library(), env, d.inst));
+  CHECK(has(pre, kMainPort, env, kMainPort));
+  CHECK(has(env, kMainPort, d.inst, kGroupOutPort));
+  CHECK_FALSE(has(pre, kMainPort, d.inst, kGroupOutPort));
+  CHECK(d.path(d.keys) == std::vector<std::string>{"Sampler", "Basic Synth"});
+  CHECK(d.complete(d.keys));
+  // Every wire lowers (or is inactive): none left crossing into a port it cannot reach.
+  for (const WireState& s : lowered(d.doc()).wires) CHECK((s.status == WireStatus::Lowered || s.status == WireStatus::Inactive));
 }
