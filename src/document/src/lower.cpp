@@ -83,6 +83,16 @@ struct Plan {
   // GU.f4: the value blocks that lower as literals (lowersAsLiteral; only computed with a callee library).
   std::unordered_set<uint32_t> literal;
   bool isLiteral(DeviceId d) const noexcept { return literal.count(d.value) != 0; }
+  // RT.2 (lower.h "Audio In"): each audio track's Audio In cable (Cables::audioIns), by the recording track's id.
+  std::unordered_map<uint32_t, const Wire*> audioIn;
+  const Wire* audioInOf(const Track& t) const noexcept {
+    const auto it = audioIn.find(t.id.value);
+    return it != audioIn.end() ? it->second : nullptr;
+  }
+  // RT.2: whether audio track `t` has an Audio In (Ext. In or a cable): its patch has the monitor gate.
+  bool hasAudioIn(const Track& t) const noexcept {
+    return t.kind == TrackKind::Audio && (!t.mixer.audioIn.none() || audioInOf(t) != nullptr);
+  }
 };
 
 using TableOf = std::function<uint32_t(TuningId, const TuningDef&)>;
@@ -115,6 +125,9 @@ struct Cables {
   // IG.1-2 (pq/document/instrument_groups.h): the voice contexts — the instrument groups —
   // of the project as lowered (its wires as these Cables hold them: main ports named).
   VoiceContexts contexts;
+  // RT.2 (lower.h "Audio In"): the Audio In cables (Wire::recordInput), main ports named, in id order. They are not in
+  // `q` (nothing but planWires and the audio tracks' sources read them: an Audio In is no block input, no mixer input).
+  WireList audioIns;
   const Flow* flowOf(const Track& t) const noexcept {
     const auto it = flows.find(t.id.value);
     return it != flows.end() ? &it->second : nullptr;
@@ -181,9 +194,9 @@ Project withGroupsOff(const Project& p) {
   return q;
 }
 
-// RT.1 (pq/document/audio_in.h): `p` without its Audio In cables (Wire::recordInput; a mixer-out start goes nowhere
-// else), or none when it has none. Until RT.2 lowers them the lowering reads the project without them: no node, no
-// export, no unit merge, the same graph as before the cable was drawn.
+// RT.1 / RT.2 (pq/document/audio_in.h): `p` without its Audio In cables (Wire::recordInput; a mixer-out start goes
+// nowhere else), or none when it has none. The rest of the lowering reads the project without them; cablesOf keeps
+// them apart (Cables::audioIns) for planWires and the recording tracks (lower.h "Audio In").
 std::optional<Project> withoutAudioIns(const Project& p) {
   const WireList& wl = wiresOf(p);
   if (std::none_of(wl.begin(), wl.end(), [](const Wire& w) { return w.toRecordInput(); })) return std::nullopt;
@@ -198,7 +211,7 @@ std::optional<Project> withoutAudioIns(const Project& p) {
 
 std::shared_ptr<const Cables> cablesOf(const Project& p0, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
   auto c = std::make_shared<Cables>();
-  std::optional<Project> plain = withoutAudioIns(p0);  // RT.1 (a copy only when it has an Audio In cable)
+  std::optional<Project> plain = withoutAudioIns(p0);  // RT.2: kept apart below (a copy only when it has one)
   const Project& p = plain ? *plain : p0;
   c->notes = dissolveNoteDevices(p);
   if (c->notes.any) c->base = withoutNoteDevices(p, c->notes);
@@ -216,6 +229,14 @@ std::shared_ptr<const Cables> cablesOf(const Project& p0, const graph::PatchLibr
     c->flows.emplace(t.id.value, std::move(f));
   });
   std::sort(c->links.begin(), c->links.end());
+  if (plain)  // RT.2: the Audio In cables, a device's main output named (a frozen or missing source: lowered Inactive)
+    for (const Wire& w : wiresOf(p0)) {
+      if (!w.toRecordInput()) continue;
+      Wire x = w;
+      if (x.port.empty() && x.from.valid())
+        if (const Device* d = findDevice(b, x.from).device) x.port = lowerPortsOf(*d, lib, devices).out;
+      c->audioIns.push_back(std::move(x));
+    }
   const WireList& wires = wiresOf(b);
   if (wires.empty()) return c;
   WireList rest;
@@ -856,6 +877,8 @@ Plan plan(const Project& p, const TableOf* tableOf, const Callees* lib) {
   for (uint32_t s = 0; s < mainCount; ++s) addSends(s);
   for (uint32_t s = mainCount; s < n; ++s)
     if (pl.nodes[s].kind == Kind::Return) addSends(s);
+  if (lib != nullptr && lib->cables != nullptr)  // RT.2
+    for (const Wire& w : lib->cables->audioIns) pl.audioIn.emplace(w.recordInput.value, &w);
   return pl;
 }
 
@@ -883,6 +906,7 @@ enum Fixed : uint32_t {
   kStCross, kStL, kStR, kStSwap, kStGain, kStSum,
   // T6.1: an audio track's input and its monitor gate (x = clips·(1 − monitor) + track.in·monitor)
   kMonitor = 124, kTrackIn, kMonNot, kMonClips, kMonSum,
+  kTrackInSlot = 129, kAudioInRec,  // RT.2: track.in's slot; `export rec` (an Audio In cable's signal, for the recorder)
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -1562,6 +1586,10 @@ struct LWire {
   // AP.2b: the target is a note device's runtime param (lower.h "Note devices"): toNode is past the plan's nodes; the
   // source is exported as m<wire> (a bus the note stage reads one block late), nothing is wired at a target.
   bool toNoteStage = false;
+  // RT.2 (lower.h "Audio In"): the target is track toNode's AUDIO IN (toDev / toPin unused; `input` set): the source is
+  // exported as m<wire> with every channel (summed voices), an audio route (graph::WireKind::Audio, compensated) into the
+  // recording track's `in m<wire>`. Not in WirePlan::into: the recording track's patch reads it from Plan::audioIn.
+  bool toRecord = false;
 };
 // DY.2: a wire from another track into a signal input (lower.h "Sidechains"): graph::WireKind::Sidechain, every channel.
 bool crossSidechain(const LWire& w) noexcept { return w.fromNode != w.toNode && w.signalIn && !w.toMixer; }
@@ -1644,7 +1672,8 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
       if (devs[n][k].remote)
         if (const auto it = where.find(devs[n][k].device->id.value); it != where.end())
           wp.remotes.push_back(WirePlan::Remote{it->second.first, it->second.second, n, k});
-  if (wires.empty() && wp.remotes.empty()) return wp;
+  const WireList* audioIns = lib != nullptr && lib->cables != nullptr ? &lib->cables->audioIns : nullptr;  // RT.2
+  if (wires.empty() && wp.remotes.empty() && (audioIns == nullptr || audioIns->empty())) return wp;
   auto isInstrumentNode = [&](uint32_t n) { return pl.nodes[n].kind == Kind::Midi && devs[n].voices; };
   // AP.2b: the wires into note devices' runtime params (note_devices.h NoteDissolve::params).
   const std::vector<WireId>* noteParams =
@@ -2238,7 +2267,67 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
     wp.states.push_back(st);
     wp.wires.push_back(lw);
   }
-  if (anyChain) {  // back to id order (lower.h: sums into one input follow it, after the chain links)
+  // RT.2 (lower.h "Audio In"): the Audio In cables. A start at a block or a track's own signal is an LWire (toRecord: its
+  // source exported as m<wire>, every channel, voices summed); a start at a mixer's output is the track's `post` export
+  // (Lowered here, wired by lower()); the master's (Resampling) is lower()'s too. A cable whose source or recording track
+  // is not lowered (inactive, frozen away) is Inactive: the Audio In reads silence. Loops are refused by the document
+  // (audio_in.h "Loops"); one the planner still sees is delayed like any cross-track wire.
+  bool anyAudioIn = false;
+  if (audioIns != nullptr)
+    for (const Wire& w : *audioIns) {
+      anyAudioIn = true;
+      WireState st{w.id, WireStatus::Lowered};
+      const auto t = nodeOfTrack.find(w.recordInput.value);
+      const bool recording = t != nodeOfTrack.end() && pl.nodes[t->second].kind == Kind::Audio;
+      LWire lw;
+      lw.wire = &w;
+      lw.reducer = WireReducer::Sum;
+      if (w.fromMixerOut()) {
+        if (!recording || nodeOfTrack.count(w.mixerOut.value) == 0) st.status = WireStatus::Inactive;
+        wp.states.push_back(st);
+        continue;
+      }
+      if (w.fromNoteSource()) {
+        const auto a = nodeOfTrack.find(w.noteSource.value);
+        if (!recording || a == nodeOfTrack.end() || pl.nodes[a->second].kind == Kind::Midi || !w.port.empty()) {
+          st.status = a != nodeOfTrack.end() && recording ? WireStatus::Invalid : WireStatus::Inactive;
+          wp.states.push_back(st);
+          continue;
+        }
+        lw.fromTrack = true;
+        lw.fromNode = a->second;
+        lw.fromDev = graph::kNone;
+      } else {
+        const auto a = where.find(w.from.value);
+        if (!recording || a == where.end()) {
+          st.status = WireStatus::Inactive;
+          wp.states.push_back(st);
+          continue;
+        }
+        std::tie(lw.fromNode, lw.fromDev) = a->second;
+        const LDev& sd = devs[lw.fromNode][lw.fromDev];
+        const uint32_t sp = signalOutput(*sd.callee, w.port);
+        if (sp == graph::kNone || (sd.bypass && sp != 0)) {
+          st.status = WireStatus::Invalid;
+          wp.states.push_back(st);
+          continue;
+        }
+        lw.fromPort = static_cast<uint16_t>(sp);
+        lw.reduce = sd.voice || (isContextGroup(sd) && sp != 0);
+      }
+      lw.toNode = t->second;
+      lw.toDev = graph::kNone;
+      lw.toRecord = lw.input = true;
+      const uint32_t from = lw.fromTrack ? nodeBase[lw.fromNode] : devOut(lw.fromNode, lw.fromDev, lw.fromPort);
+      const uint32_t to = nodeBase[lw.toNode];  // the recording track's source (its monitor mix)
+      if (lw.fromNode != lw.toNode) tadj[lw.fromNode].push_back(lw.toNode);
+      lw.delayed = reach(adj, to, seen, from);
+      if (lw.delayed) st.status = WireStatus::Delayed;
+      else adj[from].push_back(to);
+      wp.states.push_back(st);
+      wp.wires.push_back(lw);
+    }
+  if (anyChain || anyAudioIn) {  // back to id order (lower.h: sums into one input follow it, after the chain links)
     std::stable_sort(wp.states.begin(), wp.states.end(), [](const WireState& a, const WireState& b) { return a.id < b.id; });
     std::stable_sort(wp.wires.begin(), wp.wires.end(), [](const LWire& a, const LWire& b) { return a.wire->id < b.wire->id; });
   }
@@ -2246,7 +2335,7 @@ WirePlan planWires(const Project& p, const Plan& pl, const std::vector<TrackDevs
   wp.outOf.resize(pl.nodes.size());
   for (uint32_t i = 0; i < wp.wires.size(); ++i) {
     const LWire& w = wp.wires[i];
-    if (w.toNode < wp.into.size()) wp.into[w.toNode].push_back(i);
+    if (w.toNode < wp.into.size() && !w.toRecord) wp.into[w.toNode].push_back(i);  // (RT.2: read from Plan::audioIn)
     if (w.fromNode < wp.outOf.size()) wp.outOf[w.fromNode].push_back(i);
   }
   return wp;
@@ -2758,7 +2847,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     auto from = [&] { return outOf(b, w.fromDev, w.fromPort); };
     if (w.fromTrack) {  // TX.all-free: the track's own signal (every channel into an input, else its first)
       // (DY.2: into another track only into its mixer or a signal input — a sidechain; a param's `_add` takes the first)
-      const bool all = w.input && (w.fromNode == w.toNode || w.toMixer || w.signalIn);
+      const bool all = w.input && (w.fromNode == w.toNode || w.toMixer || w.toRecord || w.signalIn);
       s = all ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
       // Into a meta module's input: its mid, as from any wide source (below); a track's silent source (a return no send
       // reaches: the constant 0) is mono already. (Across tracks the target's patch takes the mid: `arriving`.)
@@ -2773,8 +2862,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       else s = ir.atom(w.notes->atom, {}, wid(w, kWNote));
       if (w.notes->boolean) s = ir.atom("gate_to_real", {s}, wid(w, kWNoteReal));
       if (w.phase) s = ir.atom("phasor", {s}, wid(w, kWNotePhase));  // TX.all-free-fix1: the note's phase
-    } else if (w.toMixer || crossSidechain(w)) {
-      s = from();  // TX.all-free-fix1: into another track's mixer (DY.2: or a signal input there): every channel
+    } else if (w.toMixer || w.toRecord || crossSidechain(w)) {
+      s = from();  // TX.all-free-fix1: into another track's mixer (DY.2: or a signal input there; RT.2: an Audio In): every channel
     } else if (w.input && w.fromNode == w.toNode) {
       s = from();  // TX.patching: into an input on its own track, every channel
       // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
@@ -3424,10 +3513,23 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
     }
     // T6.1: with an input, the monitor gate crossfades the clips and the input (runtime param "<id>:monitor", smoothed
     // like every mixer gain: switching is click-free, a settled gate costs a multiply-add per sample and channel).
-    if (!n.track->mixer.audioIn.none() && !mix.sourceOff) {
+    // RT.2 (lower.h "Audio In"): the input is the Audio In's signal — Ext. In: `trackInput` of the track's input slot (its
+    // clip slot: one per track, so the tracks of one unit each have their own); a cable: `in m<wire>`, the source's
+    // export (a mixer out: its `post`; Resampling: the master without this track), also exported as `rec` (the
+    // recorder's capture point: what the take records, before the gate).
+    if (pl.hasAudioIn(*n.track) && !mix.sourceOff) {
       const PortRef mon = ir.param("monitor", 0.0, 0.0, 1.0, kMonitor);
       const PortRef time = ir.konst(static_cast<double>(o.smoothingMs) * 1e-3, kCTime);
-      const PortRef in = ir.atom("track.in", {}, kTrackIn);
+      PortRef in;
+      if (const Wire* cable = pl.audioInOf(*n.track)) {
+        constexpr graph::PortType kRoute = graph::portType(graph::Kind::Infer, graph::Rate::Audio, graph::Poly::Global, graph::kWidthInfer);
+        in = ir.input("m" + std::to_string(cable->id.value), ir.konst(0.0, kC0),
+                      nodeIdFor(NodeRole::Wire, cable->id.value, kWIn), kRoute);
+        ir.exportPort("rec", in, kAudioInRec);
+      } else {
+        const double slot = clipSlot != graph::kNone ? static_cast<double>(clipSlot) : 0.0;
+        in = ir.atom("trackInput", {ir.konst(slot, kTrackInSlot)}, kTrackIn);
+      }
       if (clipSlot != graph::kNone) {
         const PortRef clips = ir.atom("gain", {x, ir.atom("sub", {ir.konst(1.0, kC1), mon}, kMonNot), time}, kMonClips);
         x = ir.atom("gain_add", {clips, in, mon, time}, kMonSum);
@@ -3606,7 +3708,7 @@ void addParams(const Plan& pl, uint32_t index, const AudibilityMap& aud, std::ve
     add("sendGate", a == nullptr || a->sends ? 1.0f : 0.0f, std::nullopt);
     add("mute", t.mixer.mute ? 1.0f : 0.0f, ParamRef::track(ParamKind::TrackMute, t.id));
   }
-  if (n.kind == Kind::Audio && !t.mixer.audioIn.none())  // T6.1: the monitor gate (its ref: the monitor switch)
+  if (pl.hasAudioIn(t))  // T6.1 / RT.2: the monitor gate (its ref: the monitor switch)
     add("monitor", monitorGate(t.mixer), ParamRef::track(ParamKind::TrackMonitor, t.id));
   if (n.kind == Kind::Return)
     for (const SendLink& l : pl.sends) {
@@ -4134,9 +4236,7 @@ Result<LoweredProject> lower(const Project& doc, const LowerOptions& o, const Lo
   // FZ.1 (lower.h "Frozen tracks"): the frozen tracks with a render, lowered from it (a copy only when one has).
   Frozen fz;
   std::optional<Project> frozenDoc;
-  // RT.1: the project without its Audio In cables (withoutAudioIns: RT.2 lowers them).
-  std::optional<Project> plain = withoutAudioIns(uncut ? *uncut : doc);
-  const Project& in = plain ? *plain : uncut ? *uncut : doc;
+  const Project& in = uncut ? *uncut : doc;  // (RT.2: its Audio In cables are cablesOf's: Cables::audioIns)
   if (o.frozenSlotOf) frozenDoc = frozenProject(in, o, fz);
   const Project& p = frozenDoc ? *frozenDoc : in;
   // TX.all-free: the main paths, and the project as lowered (its other wires by name; lower.h "The main path").
@@ -4164,6 +4264,7 @@ out.wires = withLinks(wp.states, *cables, pl);
   }
   out.frozenKeep = std::move(fz.keep);
   std::vector<uint32_t> ownTaps;  // FZ.2: the captureOwn tracks' graph indices (`export own` gets a bus)
+  std::vector<uint32_t> recTaps;  // RT.2: the audio tracks recording from a cable (`export rec` gets a bus)
   std::unordered_map<uint32_t, std::shared_ptr<const LoweredPatch>> prev;  // track id → its previous patch
   if (previous != nullptr)
     for (size_t j = 0; j < previous->trackIds.size(); ++j) prev.emplace(previous->trackIds[j].value, previous->patches[j]);
@@ -4210,8 +4311,9 @@ out.wires = withLinks(wp.states, *cables, pl);
     pt.maxVoices = polyphony;  // T4.12-fix1 / IG.1-2: the voice contexts' voice count (0: the link's default)
     pt.steal = steal;          // IG.1-2: an instrument group's stealing (−1: the link's)
     if (voices && pt.eventSlot == graph::kNone) out.withoutSlot.push_back(n.track->id);
-    if (n.kind == Kind::Audio && !mix.sourceOff && !n.track->mixer.audioIn.none())  // T6.1
-      out.audioInputs.push_back(AudioInputBinding{n.track->id, n.track->mixer.audioIn});
+    if (n.kind == Kind::Audio && !mix.sourceOff && !n.track->mixer.audioIn.none())  // T6.1 (RT.2: its slot)
+      out.audioInputs.push_back(AudioInputBinding{n.track->id, n.track->mixer.audioIn, clipSlot != graph::kNone ? clipSlot : 0u});
+    if (n.kind == Kind::Audio && !mix.sourceOff && pl.audioInOf(*n.track) != nullptr) recTaps.push_back(i);  // RT.2
     out.graph.tracks.push_back(std::move(pt));
     if (mix.captureOwn) ownTaps.push_back(i);
     addParams(pl, i, aud, out.params, lib, wp, devs[i]);
@@ -4229,8 +4331,12 @@ out.wires = withLinks(wp.states, *cables, pl);
   }
   // T4.7: cross-track wires (the partition merges their units, unless that would join two instruments: a bus), then
   // the modulation taps (buses the views meter).
+  // RT.2: whether graph track i's patch reads its Audio In cable (a frozen recording track's does not).
+  auto readsCable = [&](uint32_t i) { return std::find(recTaps.begin(), recTaps.end(), i) != recTaps.end(); };
   for (const LWire& w : wp.wires)
-    if (w.toNoteStage) {  // AP.2b: a bus of its own (no reader in the graph), its value read by the note stage
+    if (w.toRecord && !readsCable(w.toNode)) {
+      continue;
+    } else if (w.toNoteStage) {  // AP.2b: a bus of its own (no reader in the graph), its value read by the note stage
       const std::string m = "m" + std::to_string(w.wire->id.value);
       out.graph.taps.push_back({w.fromNode, m});
       out.noteMods.push_back(LoweredNoteMod{w.wire->id, w.fromNode, m});
@@ -4238,7 +4344,8 @@ out.wires = withLinks(wp.states, *cables, pl);
       const std::string m = "m" + std::to_string(w.wire->id.value);
       // (TX.all-free-fix1: a cable into another track's mixer is an audio route, as a send is)
       // (DY.2: into another track's signal input a sidechain — compensated like audio; into a param modulation)
-      out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, w.toMixer ? W::Audio : crossSidechain(w) ? W::Sidechain : W::Modulation});
+      // (RT.2: into an Audio In an audio route too: compensated, no unit merge)
+      out.graph.wires.push_back({{w.fromNode, m}, {w.toNode, m}, w.toMixer || w.toRecord ? W::Audio : crossSidechain(w) ? W::Sidechain : W::Modulation});
     }
   // IG.1-2 (lower.h "Voice contexts"): a voice context lowered in its source's patch sends its output to the placeholder
   // on its home's path (an audio route, like a send).
@@ -4250,6 +4357,79 @@ out.wires = withLinks(wp.states, *cables, pl);
   for (const ModulationTap& t : out.taps) out.graph.taps.push_back({t.track, t.port});
   // FZ.2: the freeze render's capture points are buses too ("<id>:own": renderPass captures them).
   for (const uint32_t i : ownTaps) out.graph.taps.push_back({i, "own"});
+  // RT.2 (lower.h "Audio In"): the Audio In cables from a mixer's output read that track's `post` export; the recording
+  // tracks' capture points are buses ("<id>:rec": the recorder's internal sources).
+  for (const Wire& w : cables->audioIns) {
+    if (!w.fromMixerOut() || w.mixerOut == p.master->id) continue;  // (Resampling: below)
+    const auto to = pl.indexOf.find(w.recordInput.value), from = pl.indexOf.find(w.mixerOut.value);
+    if (to == pl.indexOf.end() || from == pl.indexOf.end() || !readsCable(to->second)) continue;
+    out.graph.wires.push_back({{from->second, "post"}, {to->second, "m" + std::to_string(w.id.value)}, W::Audio});
+  }
+  // Resampling (lower.h "Audio In"): the master as it would be without the recording track B. Every group on B's output
+  // route and the master are lowered again as SHADOW graph tracks (the same patch, the same params, each reading what
+  // its original reads except what came from B's route: the previous shadow instead), and B reads the master's
+  // shadow's `out`. Only while a track resamples; B reaching no master: the master's own `out` (B adds nothing to it).
+  out.ownTracks = static_cast<uint32_t>(out.graph.tracks.size());
+  std::unordered_map<uint32_t, uint32_t> sourceOf;  // recording graph track → the graph track its source is in
+  for (const LWire& w : wp.wires)
+    if (w.toRecord && readsCable(w.toNode)) sourceOf[w.toNode] = w.fromNode;
+  for (const Wire& w : cables->audioIns) {
+    const auto to = pl.indexOf.find(w.recordInput.value);
+    if (to == pl.indexOf.end() || !readsCable(to->second)) continue;
+    const uint32_t b = to->second;
+    const std::string m = "m" + std::to_string(w.id.value);
+    if (w.fromMixerOut() && w.mixerOut != p.master->id) {
+      if (const auto f = pl.indexOf.find(w.mixerOut.value); f != pl.indexOf.end()) sourceOf[b] = f->second;
+      continue;
+    }
+    if (!w.fromMixerOut()) continue;
+    std::vector<uint32_t> route;  // B's output route: the groups, then the master
+    for (uint32_t k = pl.dest[b]; k != graph::kNone && route.size() <= pl.nodes.size(); k = pl.dest[k]) route.push_back(k);
+    if (route.empty() || route.back() != pl.master) {
+      out.graph.wires.push_back({{pl.master, "out"}, {b, m}, W::Audio});
+      sourceOf[b] = pl.master;
+      continue;
+    }
+    const size_t wires = out.graph.wires.size();
+    uint32_t before = b;  // the route node before this one (B, then the previous shadow's original)
+    uint32_t prevShadow = graph::kNone;
+    for (size_t k = 0; k < route.size(); ++k) {
+      const uint32_t n = route[k];
+      const auto s = static_cast<uint32_t>(out.graph.tracks.size());
+      graph::ProjectTrack st = out.graph.tracks[n];
+      st.id = kShadowTrackBase | (pl.nodes[b].track->id.value << 6 & 0x3FFFFFC0u) | static_cast<uint32_t>(k & 63);
+      st.name += " (resampled by " + pl.nodes[b].track->name + ")";
+      out.graph.tracks.push_back(std::move(st));
+      out.patches.push_back(out.patches[n]);
+      out.trackIds.push_back(out.trackIds[n]);
+      for (size_t i = 0; i < wires; ++i) {  // what n reads, without B's route (the previous shadow's out instead)
+        graph::ProjectWire x = out.graph.wires[i];
+        if (x.to.track != n) continue;
+        if (x.from.track == before && x.from.port == "out" && x.to.port == "in") {
+          if (prevShadow == graph::kNone) continue;
+          x.from.track = prevShadow;
+        }
+        x.to.track = s;
+        out.graph.wires.push_back(std::move(x));
+      }
+      const size_t params = out.params.size();
+      for (size_t i = 0; i < params; ++i)
+        if (out.params[i].track == n) {
+          LoweredParam dup = out.params[i];
+          dup.track = s;
+          out.params.push_back(std::move(dup));
+        }
+      before = n;
+      prevShadow = s;
+    }
+    out.graph.wires.push_back({{prevShadow, "out"}, {b, m}, W::Audio});
+    sourceOf[b] = prevShadow;
+  }
+  for (const uint32_t i : recTaps) {
+    out.graph.taps.push_back({i, "rec"});
+    const auto it = sourceOf.find(i);
+    out.audioInTaps.push_back({pl.nodes[i].track->id, i, it != sourceOf.end() ? it->second : graph::kNone});
+  }
   out.graph.output = {pl.master, "out"};
   // GU.1: without the link's slots the lowering numbered its driven controls' slots itself: it owns them (the graph
   // carries them to whoever compiles it).

@@ -831,12 +831,16 @@ private:
   struct LatencyJob {
     engine::CompensationPlan plan;
     std::vector<uint32_t> shift;
-    std::vector<engine::UnitInput> inputs;  // T6.7: per unit, its track input
+    std::vector<std::vector<engine::UnitInput>> inputs;  // T6.7: per unit, its track inputs (RT.2: one per member)
+    std::vector<std::pair<uint32_t, uint32_t>> sourceOffsets;  // RT.2: (internal source, capture offset frames)
   };
   // `lp`: the lowering the compiler just built (its trackIds name the partition's tracks: Track Delay, T6.6).
   LatencyJob planLatency(const doc::LoweredProject& lp);  // compile path (compileMutex_), after the build
   Status applyLatency(const LatencyJob& job);    // compile path, after the publishes it belongs to
   void takeLatencyShifts();                      // UI thread: republishes automation when the shifts changed
+  // RT.2: the internal capture sources' offsets into the recording service (kept: the first compile runs before it).
+  void applySourceOffsets(std::vector<std::pair<uint32_t, uint32_t>> offsets);
+  std::vector<std::pair<uint32_t, uint32_t>> sourceOffsets_;  // compile path (init before the worker)
   // T6.6 (project_link_latency.cpp), UI thread: the metronome's settings (RecordSettings) into the engine, and the
   // tracks' Track Delay: when one changed, the compile path plans again without a compile (latencyReplan_, picked up
   // by drainDeferred).
@@ -1270,7 +1274,7 @@ private:
   std::string unsavedBase() const;                                // this run's folder of untitled folders
   bool insideUnsaved(const std::filesystem::path& p) const;       // lexically inside unsavedRoot()
   void syncRecordInputs(const doc::Project& p, bool force);       // UI thread
-  std::vector<engine::UnitInput> unitInputs(const doc::LoweredProject& lp) const;  // compile path (compileMutex_)
+  std::vector<std::vector<engine::UnitInput>> unitInputs(const doc::LoweredProject& lp) const;  // compile path (compileMutex_)
   bool drainReports();     // UI thread: the engine's transport reports into report_ (true: a new one)
   void pollRecording();    // UI thread (playhead())
   void finishRecording();  // UI thread: the session's commit

@@ -270,6 +270,11 @@ TEST_CASE("RT.3 circuit: a cable dragged from a mixer's out or a block's output 
   CHECK(v.patch().edges[u.audioInEdge(v, u.vox)].from == u.mixerNode(v, u.drums));
   CHECK(v.patch().edges[u.audioInEdge(v, u.vox)].cable);
   CHECK(audio_from::sourceLabel(u.ctx, u.from(u.vox)) == "Drums | Mixer");
+  // RT.2: lowered — drawn as its route (Drums' `post` into Vox's m<wire>), not dim.
+  REQUIRE(v.lowered() != nullptr);
+  CHECK(v.patch().edges[u.audioInEdge(v, u.vox)].status == doc::WireStatus::Lowered);
+  CHECK(v.patch().edges[u.audioInEdge(v, u.vox)].graphWire != kNone);
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");
   // A block's output: the same Audio In, the old cable replaced (one source, one step).
   const uint32_t tn = v.patch().nodeOf(u.tanh);
   REQUIRE(tn != kNone);
@@ -281,6 +286,20 @@ TEST_CASE("RT.3 circuit: a cable dragged from a mixer's out or a block's output 
   CHECK(u.audioInWires() == 1);
   CHECK(u.history() == h0 + 2);
   CHECK(audio_from::sourceLabel(u.ctx, u.from(u.vox)) == "Drums | " + title);
+  CHECK(checkAgainstGraph(v.patch(), *u.ctx.doc(), *v.lowered()) == "");  // RT.2: the source's m<wire> route
+  // RT.2: Resampling (the master's shadow; drawn from the master's mixer).
+  REQUIRE(audio_from::set(u.ctx, u.vox, doc::AudioFrom::resampling()));
+  u.d.tree().layoutNow();
+  u.d.step();
+  {
+    ProjectPatchView& vr = u.patch();
+    REQUIRE(vr.lowered() != nullptr);
+    CHECK(vr.lowered()->ownTracks < vr.lowered()->graph.tracks.size());
+    CHECK(checkAgainstGraph(vr.patch(), *u.ctx.doc(), *vr.lowered()) == "");
+  }
+  REQUIRE(audio_from::set(u.ctx, u.vox, doc::AudioFrom::output(doc::Wire{.from = u.tanh})));
+  u.d.tree().layoutNow();
+  u.d.step();
   // The arrangement header's choosers read it (the same model, two views).
   v.setShown(false, false);
   MixerStrip& h = u.headerStrip(u.vox);

@@ -44,6 +44,19 @@ ProjectLink::LatencyJob ProjectLink::planLatency(const doc::LoweredProject& lp) 
   const std::vector<engine::UnitLatency> lat = compiler_->latencies();
   job.plan = engine::planCompensation(layout, lat, offset);
   job.inputs = unitInputs(lp);  // T6.7: the units' track inputs
+  // RT.2 (recorder.h "Capture"): a track recording a cable captures its Audio In at its unit's arrival A_u — the delay
+  // its bus input gets — plus, when its source is in the same unit (no bus between them), the member's shift T(t): the
+  // song time the signal stands for, with no device latency.
+  for (const doc::LoweredProject::AudioInTap& t : lp.audioInTaps) {
+    if (t.track >= part.unitOf.size() || part.unitOf[t.track] >= job.plan.arrival.size()) continue;
+    const uint32_t u = part.unitOf[t.track];
+    double a = job.plan.arrival[u];
+    if (t.source < part.unitOf.size() && part.unitOf[t.source] == u && u < lat.size())
+      for (const auto& [id, shift] : lat[u].trackShift)
+        if (id == t.id.value) a += shift;
+    const uint32_t slot = slotForTrack(t.id);
+    if (slot != kNoSlot) job.sourceOffsets.emplace_back(slot, static_cast<uint32_t>(std::max(0L, std::lround(a))));
+  }
   // A param's lane is shifted by its track's S(t) = A_u + T(t) (T6.2b: T > 0 in a merged unit whose member waits for a
   // later sidechain inside it; latency_plan.h). A project param several tracks read (a tuning's generator: one lane, one
   // tap for every tuning node) takes the smallest of their shifts (QUESTIONS Q?-T6.2b-a).
@@ -73,6 +86,7 @@ Status ProjectLink::applyLatency(const LatencyJob& job) {  // compile path (comp
   engine::ProjectProgram* program = engine_->program();
   if (program == nullptr) return Ok{};
   program->setUnitInputs(job.inputs);  // T6.7
+  applySourceOffsets(job.sourceOffsets);  // RT.2
   {
     std::lock_guard lock(mutex_);  // T6.6: the strips' readouts
     busLatency_ = job.plan.busLatency;
@@ -119,6 +133,12 @@ Status ProjectLink::applyLatency(const LatencyJob& job) {  // compile path (comp
     }
   }
   return Ok{};
+}
+
+void ProjectLink::applySourceOffsets(std::vector<std::pair<uint32_t, uint32_t>> offsets) {  // compile path / init
+  if (recording_)
+    for (const auto& [source, frames] : offsets) recording_->setSourceOffset(source, frames);
+  sourceOffsets_ = std::move(offsets);
 }
 
 void ProjectLink::takeLatencyShifts() {  // UI thread

@@ -132,20 +132,21 @@ TEST_CASE("recording: arm and monitor are Params on MIDI and audio tracks; an au
     FAIL("audio track not lowered");
     return 0u;
   };
-  CHECK(patchText(*plain->patches[indexOf(*plain)]).find("track.in") == std::string::npos);
+  CHECK(patchText(*plain->patches[indexOf(*plain)]).find("trackInput") == std::string::npos);
   CHECK(plain->audioInputs.empty());
 
-  // An input: one structural step; the patch reads track.in through the gate.
+  // An input: one structural step; the patch reads its input slot (RT.2: trackInput of its clip slot) through the gate.
   REQUIRE(r.store.dispatch(SetTrackAudioInput{r.audio, AudioInput{2, 2}}).ok());
   CHECK(r.store.lastChanges().structural());
   auto in = lower(r.doc(), lo, &*plain);
   REQUIRE(in.ok());
   const uint32_t gi = indexOf(*in);
   const std::string text = patchText(*in->patches[gi]);
-  CHECK(text.find("track.in") != std::string::npos);
+  CHECK(text.find("trackInput(2)") != std::string::npos);
   REQUIRE(in->audioInputs.size() == 1);
   CHECK(in->audioInputs[0].track == r.audio);
   CHECK(in->audioInputs[0].input == AudioInput{2, 2});
+  CHECK(in->audioInputs[0].slot == 2);  // RT.2: its clip slot
   const std::string path = std::string(PQ_TEST_DATA_DIR) + "/document/fixtures/lowering/audio-track-input.pqp";
   if (updateGoldens()) {
     std::filesystem::create_directories(std::filesystem::path(path).parent_path());

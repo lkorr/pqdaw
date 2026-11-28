@@ -1432,7 +1432,8 @@ private:
                   e.rate = t.rate;
                   e.poly = t.poly;
                   e.node = n;
-                  if (atomSignature(nd.atom).name == "clipPlayer") {  // T5.4: which clip slot the engine plays here
+                  // T5.4: which clip slot the engine plays here; RT.2: which input slot a trackInput reads.
+                  if (const std::string_view an = atomSignature(nd.atom).name; an == "clipPlayer" || an == "trackInput") {
                     double slot = 0.0;
                     Unit su = Unit::None;
                     if (constInputQuiet(n, 0, slot, su) && slot >= 0.0 && slot < 4294967295.0)

@@ -5,12 +5,15 @@
 // (and the punch = the loop) every pass gets the frames played at its end that arrive after the wrap; overflow drops
 // whole pieces (counted, the segment says so) and never blocks; M6 review M7: the device latency is frozen per session; Record `here`, RecordOff and Stop; the monitor gates
 // (In / Off / Auto with the transport); RtScope on the audio side. M6 review M8: a WAV past its RIFF limit becomes RF64.
+// RT.2: internal capture sources (a track recording a cable) beside device channels, each at its own offset.
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <string>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "pq/core/alloc_trap.h"
@@ -32,11 +35,21 @@ constexpr double kSr = 48000.0;
 // Input channel c at engine frame n: distinct, exactly representable values (bit-exact checks).
 float source(uint32_t c, int64_t n) { return (c == 0 ? 1.0f : -1.0f) * static_cast<float>(n % 65536) * (1.0f / 65536.0f); }
 
+// RT.2: internal source `s`, channel c at engine frame n (distinct from the inputs: bit-exact checks).
+float internal(uint32_t s, uint32_t c, int64_t n) {
+  return static_cast<float>(s + 1) * 0.125f + (c == 0 ? 0.5f : -0.5f) * static_cast<float>(n % 65536) * (1.0f / 65536.0f);
+}
+
 struct Rig {
   e::Timeline tl;
   e::Recorder rec;
   std::vector<std::vector<float>> in;  // per channel, one block
+  std::vector<std::vector<float>> src;  // RT.2: internal sources 0 … 3, 2 channels each, the block just run
   int64_t time = 0;
+  static const float* readSource(void* self, uint32_t source, uint16_t c) noexcept {
+    auto& r = *static_cast<Rig*>(self);
+    return source < 4 && c < 2 ? r.src[2 * source + c].data() : nullptr;
+  }
   explicit Rig(uint32_t maxBlock = 1024) : tl([&] {
     e::TimelineConfig c;
     c.sampleRate = kSr;
@@ -51,16 +64,22 @@ struct Rig {
     const float* ch[2] = {in[0].data(), in[1].data()};
     std::vector<float> o(frames);
     float* out[1] = {o.data()};
+    src.assign(8, std::vector<float>(frames));
+    for (uint32_t s = 0; s < 4; ++s)
+      for (uint32_t c = 0; c < 2; ++c)
+        for (uint32_t f = 0; f < frames; ++f) src[2 * s + c][f] = internal(s, c, time + f);
     const e::AudioBlock b{ch, 2, out, 1, frames, time};
     if (rt) {
       pq::RtScope scope;
       rec.beginBlock(b);
       tl.process(time, frames);
       rec.capture(tl, time, frames, pdc);
+      rec.captureSources(tl, time, frames, pdc);  // RT.2: after the units
     } else {
       rec.beginBlock(b);
       tl.process(time, frames);
       rec.capture(tl, time, frames, pdc);
+      rec.captureSources(tl, time, frames, pdc);
     }
     time += frames;
   }
@@ -196,6 +215,57 @@ TEST_CASE("T6.7 recorder: the punch keeps what was played in [in, out), captured
       CHECK(last == 72000 - 1);
       CHECK(n == 48000);
     }
+  }
+}
+
+TEST_CASE("RT.2 recorder: internal sources beside device channels, each read at its own offset, every ring on the same "
+          "played song samples (offset above, below and equal to the device's; sources alone), RtScope") {
+  struct Case {
+    bool device;
+    uint32_t src0, src1;  // the two sources' offsets (frames)
+  };
+  for (const Case c : {Case{true, 1000, 0}, Case{true, 100, 256}, Case{true, 256, 3000}, Case{false, 480, 0}}) {
+    CAPTURE(c.device);
+    CAPTURE(c.src0);
+    CAPTURE(c.src1);
+    Rig r;
+    r.rec.setSourceReader(&Rig::readSource, &r);
+    const uint16_t chans[2] = {0, 1};
+    const uint32_t srcs[2] = {1, 3};
+    auto set = std::make_shared<e::CaptureSet>(std::span<const uint16_t>(chans, c.device ? 2u : 0u), srcs, 1u << 18, 9);
+    REQUIRE(set->rings() == (c.device ? 6u : 4u));
+    CHECK(set->indexOfSource(3, 1) == (c.device ? 5 : 3));
+    CHECK(set->indexOfSource(2, 0) == -1);
+    set->setSourceOffset(0, c.src0);
+    set->setSourceOffset(1, c.src1);
+    r.rec.setCapture(set);
+    r.rec.setDeviceLatency(128, 128);  // the device channels: 256
+    r.block(64, 0, false);
+    r.tl.apply(cmd(e::TransportCommandKind::Record, 0));
+    const int64_t start = r.time;
+    for (int i = 0; i < 60; ++i) r.block(777);  // RtScope inside
+    const uint32_t dev = c.device ? 2u : 0u;
+    const int64_t session = std::max<int64_t>({c.device ? 256 : 0, c.src0, c.src1});
+    e::CaptureSegment s;
+    std::vector<float> x;
+    int64_t n = 0, nextSong = 0;
+    while (r.rec.popSegment(s)) {
+      if (s.kind == e::CaptureSegment::Run) continue;
+      REQUIRE(s.dropped == 0);
+      std::vector<std::vector<float>> got(set->rings(), std::vector<float>(s.frames));
+      for (size_t k = 0; k < set->rings(); ++k) REQUIRE(set->ring(k).pop(got[k].data(), s.frames));
+      for (uint32_t i = 0; i < s.frames; ++i, ++n) {
+        const int64_t played = s.engineTime + i;
+        REQUIRE(s.songSample + i == nextSong++);
+        REQUIRE(s.songSample + i == played - start);
+        for (uint32_t ch = 0; ch < dev; ++ch) REQUIRE(got[ch][i] == source(ch, played + 256));
+        for (uint32_t ch = 0; ch < 2; ++ch) {
+          REQUIRE(got[dev + ch][i] == internal(1, ch, played + c.src0));
+          REQUIRE(got[dev + 2 + ch][i] == internal(3, ch, played + c.src1));
+        }
+      }
+    }
+    CHECK(n == 60 * 777 - session);  // the session's offset: the largest of its rings'
   }
 }
 
