@@ -717,13 +717,15 @@ void MosCircle::ensureGeometry() const {
   g.stepDown = box(sx + sw - 2.0f * mcc::kModeBtnW - mcc::kModeLabelW, by, mcc::kModeBtnW, mcc::kModeBtnH);
   g.parentArrow = {X(8.0f + mcc::kArrowR), Y(cyL - r + 4.0f)};
   g.childArrow = {X(W - 8.0f - mcc::kArrowR), Y(cyL - r + 4.0f)};
-  // The all-intervals toggle in the bottom-right corner; the MODMOS reset button under the centre.
+  // The all-intervals toggle in the bottom-right corner; BR.J (bug 2026-11-27_16-16-48: "we need a reset button when you
+  // mess up your mos circle intervals"): the reset in the bottom-left one, always there (it was a small "x reset" among
+  // the centre's labels, shown only while altered: easy to miss), live while the MODMOS alters a degree.
   const PaintResources* res = tree() ? tree()->resources() : nullptr;
   const bool text = res && res->text && res->uiFonts;
   const float allW = (text ? s.toLogical(static_cast<float>(res->text->measure(res->uiFonts->small, "all intervals"))) : 70.0f) + 20.0f;
   g.allIntervals = box(W - allW - 6.0f, H - 17.0f - 5.0f, allW, 17.0f);
-  const float resetW = (text ? s.toLogical(static_cast<float>(res->text->measure(res->uiFonts->small, "\xC3\x97 reset"))) : 40.0f) + 12.0f;
-  g.reset = box(cxL - resetW / 2.0f, cyL + 0.25f * r, resetW, 17.0f);
+  const float resetW = (text ? s.toLogical(static_cast<float>(res->text->measure(res->uiFonts->small, "reset intervals"))) : 76.0f) + 12.0f;
+  g.reset = box(6.0f, H - 17.0f - 5.0f, resetW, 17.0f);
 }
 
 const MosCircle::Geometry& MosCircle::geometry() const {
@@ -1582,9 +1584,6 @@ void MosCircle::paint(PaintContext& ctx) {
       const float cap = 0.727f * static_cast<float>(ts->metrics(fSmall).pixelSize);
       TextSystem::drawRun(dl, run, {std::round(C.x - static_cast<float>(run.advance) / 2.0f), std::round(C.y + rad * 0.12f + cap / 2.0f)}, T.modmos);
     }
-    paint::box(dl, g.reset, s.exact(3.0f), T.button, T.modmos);
-    centred(fSmall, "\xC3\x97 reset", static_cast<float>(g.reset.x) + static_cast<float>(g.reset.w) / 2.0f,
-            static_cast<float>(g.reset.y) + static_cast<float>(g.reset.h) / 2.0f, T.modmos);
   }
 
   // --- JI markers: ticks for all, labels for the simple ones that do not collide ---
@@ -1618,6 +1617,10 @@ void MosCircle::paint(PaintContext& ctx) {
 
   // --- "all intervals" toggle ---
   {
+    // BR.J: the reset, live (the MODMOS colour) while a degree is altered, dim otherwise.
+    paint::box(dl, g.reset, s.exact(3.0f), T.button, m.hasModmos ? T.modmos : T.buttonBorder);
+    centred(fSmall, "reset intervals", static_cast<float>(g.reset.x) + static_cast<float>(g.reset.w) / 2.0f,
+            static_cast<float>(g.reset.y) + static_cast<float>(g.reset.h) / 2.0f, m.hasModmos ? T.modmos : setAlpha(T.buttonText, 0.4f));
     const IRect b = g.allIntervals;
     paint::box(dl, b, s.exact(3.0f), showAll_ ? setAlpha(T.allIntervals, 0.22f) : T.button, showAll_ ? T.allIntervals : T.buttonBorder);
     const Vec2 sw{static_cast<float>(b.x) + s.exact(8.0f), static_cast<float>(b.y) + static_cast<float>(b.h) / 2.0f};

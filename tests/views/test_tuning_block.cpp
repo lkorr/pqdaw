@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 #include <memory>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <vector>
@@ -493,6 +494,75 @@ TEST_CASE("tuning block: the circle's hardness drag edits the track's tuning liv
   const Ui::Link l2 = u.notesLink("Keys");
   REQUIRE(l2.out != kNone);
   CHECK(u.pp().nodes[u.pp().edges[l2.out].to].device == path.blocks[0]->id);
+}
+
+// BR.J (bug 2026-11-27_16-16-48: "we need a reset button when you mess up your mos circle intervals"): on the block's
+// circle (real dispatch on the canvas), the reset button in its bottom-left corner is always there; with no degree
+// altered a press on it does nothing; after a dot drag (one undo step) it brings back the MOS's own degrees — the
+// generator, mode and region as they are — in one more undo step, which undo takes back.
+TEST_CASE("tuning block (BR.J): the circle's reset button clears the altered intervals in one undo step") {
+  Ui u;
+  const doc::TrackId keys = u.track("Keys");
+  u.view().setTuningOpen(keys, true);
+  u.frame("Keys");
+  u.d.step();
+  Face* f = u.tuningFace("Keys");
+  REQUIRE(f != nullptr);
+  MosCircle* c = tuningFaceCircle(*f);
+  REQUIRE(c != nullptr);
+  const Node& t = u.pp().nodes[u.band("Keys").tuning];
+  const Vec2 o = u.dev(t.x, t.y);
+  auto onCanvas = [&](Vec2 p) { return Vec2{std::round(o.x) + p.x, std::round(o.y) + p.y}; };
+  const MosCircle::Geometry& g = c->geometry();
+  auto mid = [](const IRect& r) { return Vec2{static_cast<float>(r.x) + 0.5f * static_cast<float>(r.w), static_cast<float>(r.y) + 0.5f * static_cast<float>(r.h)}; };
+  // Bottom-left, inside the circle's widget, clear of the all-intervals toggle.
+  CHECK(g.reset.x < g.allIntervals.x);
+  CHECK(g.reset.right() < g.allIntervals.x);
+  CHECK(g.reset.bottom() == g.allIntervals.bottom());
+  // Make it a MOS (the hardness slider from equalized to L/s = 2), then nothing to reset: a press changes nothing.
+  const float sy = static_cast<float>(g.slider.y) + static_cast<float>(g.slider.h) * 0.5f;
+  u.d.drag(onCanvas({c->sliderXOfHardness(1.0), sy}), onCanvas({c->sliderXOfHardness(2.0), sy}), 3);
+  u.d.step();
+  const doc::TuningDef* def = targetTuning(*u.ctx.doc(), TuningTarget::forTrack(keys));
+  REQUIRE(def != nullptr);
+  REQUIRE(def->mos() != nullptr);
+  const tuning::MosParams base = *def->mos();
+  CHECK_FALSE(tuning::hasModmos(base.modmos));
+  const size_t h0 = u.history();
+  u.d.click(onCanvas(mid(g.reset)));
+  u.d.step();
+  CHECK(u.history() == h0);
+  // A degree dragged a chroma down: altered, one undo step.
+  REQUIRE(c->degreeCount() >= 4);
+  const double dp = c->selection()->period * c->selection()->periodsPerEquave;
+  const double from = c->displayPitches()[3];
+  auto atCents = [&](double cents) {
+    const double a = cents / dp * 2.0 * std::numbers::pi - std::numbers::pi / 2.0;
+    return onCanvas({g.centre.x + static_cast<float>(std::cos(a)) * g.radius * 0.8f, g.centre.y + static_cast<float>(std::sin(a)) * g.radius * 0.8f});
+  };
+  u.d.down(onCanvas(c->dotPos(3)));
+  u.d.move(atCents(from - 40.0));
+  u.d.move(atCents(from - 0.9 * (from - c->displayPitches()[2])));
+  u.d.up(atCents(from - 0.9 * (from - c->displayPitches()[2])));
+  u.d.step();
+  CHECK(u.history() == h0 + 1);
+  def = targetTuning(*u.ctx.doc(), TuningTarget::forTrack(keys));
+  REQUIRE(def->mos() != nullptr);
+  REQUIRE(tuning::hasModmos(def->mos()->modmos));
+  const doc::Snapshot altered = u.ctx.doc();
+  // Reset: the MOS's own degrees again (generator, mode, region untouched), one undo step.
+  u.d.click(onCanvas(mid(g.reset)));
+  u.d.step();
+  CHECK(u.history() == h0 + 2);
+  def = targetTuning(*u.ctx.doc(), TuningTarget::forTrack(keys));
+  REQUIRE(def->mos() != nullptr);
+  CHECK_FALSE(tuning::hasModmos(def->mos()->modmos));
+  CHECK(def->mos()->generator == base.generator);
+  CHECK(def->mos()->rotation == base.rotation);
+  CHECK(def->mos()->n == base.n);
+  CHECK_FALSE(tuning::hasModmos(c->modmos()));
+  REQUIRE(u.ctx.undo());
+  CHECK(u.ctx.doc() == altered);
 }
 
 TEST_CASE("tuning block: the circle's slider crosses equalized into the sister MOS live (bug-mos-sister), one undo step; Esc cancels") {

@@ -14,6 +14,7 @@
 //                 │ s ─── ● ─── L │  degree cents outside        with cents, the tonic in red, JI markers inside
 //                  ╲  L    │    L ╱                              (n/d, n, d < 20), MODMOS alterations (# / b)
 //                    ╰────────╯              [all intervals]
+//      [reset intervals]                                       BR.J: always there, live while MODMOS alters
 //
 // Input: the MOS from the chart (setSelection: key, region, generator, mode rotation) and the MODMOS alterations
 // (setModmos). Output: plain values through onChange(selection, modmos, gesture) — Live while the hardness slider or
