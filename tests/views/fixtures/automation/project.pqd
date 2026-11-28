@@ -952,8 +952,8 @@
   ],
   "view": {
     "tracks": [
-      {"id": 5, "folded": false, "height": 56},
-      {"id": 173, "folded": false, "height": 56}
+      {"id": 5, "folded": false, "height": 64},
+      {"id": 173, "folded": false, "height": 64}
     ],
     "lanes": []
   }

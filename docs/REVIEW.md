@@ -2591,3 +2591,11 @@ Per display (how it was drawn → what was wrong → what changed):
   `project-patch-tuning*`.
 - Look at: whether the stopped line should be dimmer than the playing one, and whether "reset intervals" should also
   reset the generator / mode (Q?-BR.J-a).
+
+## RT.4 · condensed track header (2026-11-28)
+- Volume + pan now sit under the track name; an audio track's Audio From + channel under them, a MIDI track's /
+  group's tuning chip there instead. Toggles, output and Monitor are in the right column; sends from the 4th line.
+- New tracks are 68 px tall (three lines show); returns default to 40 px (title + volume / pan). The header is 280
+  px wide (was 290); the title bar is wider (170 px at the top level).
+- In automation mode (A) the parameter chooser takes the input / chip line.
+- Look at: tests/views/golden/tracks-audio-in.png, tracks-mixer.png, automation-mode-over-clips.png.

@@ -772,10 +772,10 @@ void ArrangementView::setHeaderWidth(float logicalPx) {
   markDirty();
 }
 
-void ArrangementView::setHeaderMixerWidth(float logicalPx) {
+void ArrangementView::setHeaderSideWidth(float logicalPx) {
   logicalPx = std::max(0.0f, logicalPx);
-  if (logicalPx == mixerWidth_) return;
-  mixerWidth_ = logicalPx;
+  if (logicalPx == sideWidth_) return;
+  sideWidth_ = logicalPx;
   for (auto* list : {&headers_, &bottomHeaders_})
     for (TrackHeader* h : *list) {
       h->invalidateArrange();

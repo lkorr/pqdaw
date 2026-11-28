@@ -80,9 +80,9 @@ inline void buildMixerProject(doc::DocumentStore& store) {
   clip(store, lead, 4, 7, "Hook", mel);
 
   doc::ViewState& v = store.view();
-  v.tracks[drums].height = 64;  // three lines: sends shown
-  v.tracks[piano].height = 64;
-  v.tracks[lead].height = 64;
+  v.tracks[drums].height = 84;  // four lines: sends shown (RT.4: from line 3)
+  v.tracks[piano].height = 84;
+  v.tracks[lead].height = 84;
   v.tracks[keys].height = 44;
   v.tracks[reverb].height = 40;
   v.tracks[store.current()->master->id].height = 40;

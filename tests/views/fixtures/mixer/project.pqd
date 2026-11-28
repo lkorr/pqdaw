@@ -797,9 +797,9 @@
   "view": {
     "tracks": [
       {"id": 2, "folded": false, "height": 40},
-      {"id": 5, "folded": false, "height": 64},
-      {"id": 89, "folded": false, "height": 64},
-      {"id": 173, "folded": false, "height": 64},
+      {"id": 5, "folded": false, "height": 84},
+      {"id": 89, "folded": false, "height": 84},
+      {"id": 173, "folded": false, "height": 84},
       {"id": 215, "folded": false, "height": 44},
       {"id": 217, "folded": false, "height": 40}
     ],

@@ -3004,3 +3004,14 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - Choice: (a), moved into a permanent "reset intervals" button in the bottom-left corner. It is the most reversible
   option, and the generator and mode are the user's own choices, not "intervals".
 - Status: open
+
+## Q?-RT.4-a · Where automation mode's parameter chooser goes in the condensed header
+- Context: RT.4 put volume + pan on the name column's line 1 and an audio track's Audio From + channel (a MIDI
+  track's / group's tuning chip) on line 2. The automation-mode parameter chooser used to sit under the chip.
+- Options: (a) the chooser takes the name column's line 2 while automation mode is on (the chip / input choosers
+  hide; Monitor stays); (b) it goes on line 3 and the sends move down a line in automation mode; (c) it replaces
+  volume + pan.
+- Choice: (a). Volume and pan stay visible (the user's point), the change only lasts while A is on, and it is one
+  branch in TrackHeader::arrange plus MixerStrip::setInputLineHidden. Related: returns now default to two lines (40
+  px, was one) so their volume stays visible under the name.
+- Status: open

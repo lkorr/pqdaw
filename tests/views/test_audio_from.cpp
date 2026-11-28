@@ -254,6 +254,90 @@ TEST_CASE("RT.3 mixer strip: Audio From lists Ext. In / Resampling / No Input / 
   CHECK(Ui::itemOf(u.clickOpen(s2.audioChannel()), "3/4 (not available)") >= 0);
 }
 
+TEST_CASE("RT.4 arrangement header: volume and pan under the name, Audio From under them at the default height (real "
+          "dispatch); a two-line row hides the input line; automation mode's chooser takes it") {
+  Ui u;
+  auto* a = dynamic_cast<ArrangementView*>(u.shell->slot(ShellSlot::TrackArea).find("arrangement"));
+  REQUIRE(a != nullptr);
+  namespace am = arrangement_metrics;
+  REQUIRE(a->trackHeight(u.lost) == am::kTrackHeight);  // Lost has no height of its own: the default
+  MixerStrip& s = u.headerStrip(u.lost);
+  TrackHeader& h = *a->header(u.lost);
+  const IRect title = h.titleRect();
+  const int32_t line = static_cast<int32_t>(mixer_metrics::kLine);  // scale 1
+  auto lineOf = [&](const Widget* w) { return (w->rect().y - h.rect().y) / line; };
+  auto inNameColumn = [&](const Widget* w) { return w->rect().x >= title.x && w->rect().right() <= title.right(); };
+  // Line 1: volume + pan side by side in the name column; line 2: Audio From + channel (Drums: shown below), Monitor
+  // and the output in the side column, the toggles beside the title.
+  for (Widget* w : {static_cast<Widget*>(s.volume()), static_cast<Widget*>(s.pan()), static_cast<Widget*>(s.audioIn()),
+                    static_cast<Widget*>(s.monitor()), static_cast<Widget*>(s.output()), static_cast<Widget*>(s.activator())}) {
+    REQUIRE(w != nullptr);
+    CHECK(w->visible());
+  }
+  CHECK(lineOf(s.volume()) == 1);
+  CHECK(lineOf(s.pan()) == 1);
+  CHECK(s.pan()->rect().x > s.volume()->rect().right());
+  CHECK(inNameColumn(s.volume()));
+  CHECK(inNameColumn(s.pan()));
+  CHECK(lineOf(s.audioIn()) == 2);
+  CHECK(inNameColumn(s.audioIn()));
+  CHECK(lineOf(s.activator()) == 0);
+  CHECK(lineOf(s.output()) == 1);
+  CHECK(lineOf(s.monitor()) == 2);
+  CHECK(s.activator()->rect().x >= title.right());
+  CHECK(s.output()->rect().x >= title.right());
+  CHECK(s.monitor()->rect().x >= title.right());
+
+  // A drag up on the volume box raises the volume: one undo step.
+  const float vol0 = doc::findTrackPtr(*u.ctx.doc(), u.lost)->mixer.volumeDb;
+  size_t h0 = u.history();
+  const Vec2 vc = Ui::centre(*s.volume());
+  u.d.drag(vc, {vc.x, vc.y - 30.0f}, 10);
+  CHECK(doc::findTrackPtr(*u.ctx.doc(), u.lost)->mixer.volumeDb > vol0);
+  CHECK(u.history() == h0 + 1);
+  // The title over the strip still takes its clicks: it selects the track.
+  u.d.click({static_cast<float>(title.x + 30), static_cast<float>(title.y + title.h / 2)});
+  CHECK(a->selection().tracks == std::vector<doc::TrackId>{u.lost});
+  // Audio From on line 2 opens its menu; picking Drums is one step and the channel appears beside it.
+  h0 = u.history();
+  u.choose(u.clickOpen(s.audioIn()), "Drums");
+  CHECK(u.from(u.lost).kind == doc::AudioFromKind::Output);
+  CHECK(u.history() == h0 + 1);
+  u.d.tree().layoutNow();
+  CHECK(chooserText(s.audioIn()) == "Drums");
+  REQUIRE(s.audioChannel()->visible());
+  CHECK(lineOf(s.audioChannel()) == 2);
+  CHECK(s.audioChannel()->rect().x > s.audioIn()->rect().right());
+  CHECK(inNameColumn(s.audioChannel()));
+
+  // Automation mode: the parameter chooser takes the name column's line 2; the input choosers give way (Monitor stays).
+  u.d.tree().setFocus(a);
+  REQUIRE(u.d.press("A") == KeyResult::Action);
+  u.d.tree().layoutNow();
+  CHECK(h.paramChooser().visible());
+  CHECK((h.paramChooser().rect().y - h.rect().y) / line == 2);
+  CHECK_FALSE(s.audioIn()->visible());
+  CHECK_FALSE(s.audioChannel()->visible());
+  CHECK(s.monitor()->visible());
+  REQUIRE(u.d.press("A") == KeyResult::Action);
+  u.d.tree().layoutNow();
+  CHECK(s.audioIn()->visible());
+  CHECK(s.audioChannel()->visible());
+
+  // Dragging the header's bottom edge up to two lines hides the input line (and Monitor); volume, pan and the output
+  // stay.
+  const Vec2 edge{static_cast<float>(title.x + 30), static_cast<float>(h.rect().bottom() - 2)};
+  u.d.drag(edge, {edge.x, edge.y - (am::kTrackHeight - 2.0f * am::kHeaderLine)}, 6);
+  u.d.tree().layoutNow();
+  CHECK(a->trackHeight(u.lost) == doctest::Approx(2.0f * am::kHeaderLine));
+  CHECK(s.volume()->visible());
+  CHECK(s.pan()->visible());
+  CHECK(s.output()->visible());
+  CHECK_FALSE(s.audioIn()->visible());
+  CHECK_FALSE(s.audioChannel()->visible());
+  CHECK_FALSE(s.monitor()->visible());
+}
+
 TEST_CASE("RT.3 circuit: a cable dragged from a mixer's out or a block's output onto an Audio In is its source; the "
           "arrangement's choosers read it back as <Track> | <block>") {
   Ui u;

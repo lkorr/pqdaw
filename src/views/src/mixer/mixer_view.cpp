@@ -7,6 +7,7 @@
 #include "internal.h"
 #include "pq/ui/theme.h"
 #include "pq/views/arrangement/arrangement.h"
+#include "pq/views/arrangement/automation.h"
 #include "pq/views/shell/shell.h"
 
 namespace pq::views {
@@ -196,12 +197,13 @@ MixerView& installMixer(Shell& shell) {
   if (ArrangementView* arr = arrangementIn(shell.slot(ShellSlot::TrackArea))) {
     ctl->selectedTracks = [arr] { return arr->selection().tracks; };
     ctl->selectTrack = [arr](doc::TrackId id, Mods m) { arr->selectTrack(id, m); };
-    arr->setHeaderMixerWidth(mm::kHeaderMixerWidth);
+    arr->setHeaderSideWidth(mm::kHeaderSideWidth);
     arr->setHeaderDecorator([ctl, arr](TrackHeader& h, const ArrangementRow& row) {
       Widget& sec = h.mixerSection();
       MixerStrip* s = sec.childCount() ? static_cast<MixerStrip*>(&sec.child(0))
                                        : &sec.add<MixerStrip>("strip", ctl, StripLayout::Header);
       s->bind(*arr->shown(), *row.track);
+      s->setInputLineHidden(arr->automation().mode());  // RT.4: the parameter chooser takes the input line
       mixer::bindHeaderChip(h.chipSection(), ctl, *arr->shown(), *row.track);
     });
   }

@@ -3,16 +3,19 @@
 // Track mixer (T3.10, SPEC §9.3): the mixer section of the arrangement's track headers and the basic mixer view
 // (Ctrl+Alt+M), both built from one widget, MixerStrip, in two layouts.
 //
-// Header layout (Live 12's arrangement header, right of the name strip; logical px, one 20 px line per row height):
-//   line 0  [ volume box ] ║ [ activator (track number) ] [ S ] [ arm ● | Pre/Post ]   ▌meter
-//   line 1  [ pan          ] ║ [ output routing ▾ ]                                    ▌
-//   line 2+ [ A send ][ B send ][ C send ] …                                             ▌
-// RT.3: an audio track's input section comes before its sends (lines 2 and 3; the sends from line 4):
-//   line 2  [ Audio From ▾ ] ║ [ channel ▾ ]   (No Input / Resampling: no channel)
-//   line 3                    ║ [ Monitor ▾ ]
-// The tuning chip sits under the track name (TrackHeader::chipSection: the name column's second line, which Live
-// leaves empty). Lines that do not fit the row height are hidden (Live shows more of the mixer as a track grows). Groups have no
-// arm, returns show their letter and a Pre/Post switch instead, the master has volume, pan and its meter only.
+// Header layout (RT.4; logical px, one 20 px line per row height; Live 12's arrangement header, condensed): the strip
+// covers the header right of the group stripes; the name column holds the title (the header's) and the controls
+// under it, the side column (kHeaderSideWidth, at the right edge) the toggles, routing and the meter:
+//   line 0  [ 2 Audio (title)          ] ║ [ activator ][ S ][ arm ● | Pre/Post ]  ▌meter
+//   line 1  [ volume ][ pan ]            ║ [ output routing ▾ ]                     ▌
+//   line 2  [ Audio From ▾ ][ channel ▾ ] ║ [ Monitor ▾ ]                             ▌   (audio tracks)
+//           [ tuning chip ]                                                            (MIDI tracks and groups)
+//   line 3+ [ A send ][ B send ][ C send ] …                                           ▌   (returns: from line 2)
+// The tuning chip is the header's (TrackHeader::chipSection); in automation mode the header's parameter chooser takes
+// the name column's line 2 (setInputLineHidden). No Input / Resampling show no channel. Lines that do not fit the row
+// height are hidden from the bottom (Live shows more of the mixer as a track grows; the default track height shows
+// lines 0-2). Groups have no arm, returns show their letter and a Pre/Post switch instead, the master has volume,
+// pan and its meter only.
 //
 // Mixer view (ShellSlot::Mixer, toggled with Ctrl+Alt+M; it takes the track area while shown): one vertical strip
 // per visible track (members of folded groups hidden, like the arrangement), then the returns, the master pinned at
@@ -91,7 +94,7 @@ private:
 };
 
 namespace mixer_metrics {
-inline constexpr float kHeaderMixerWidth = 180.0f;  // the header's mixer section (ArrangementView::setHeaderMixerWidth)
+inline constexpr float kHeaderSideWidth = 110.0f;  // the header's side column (ArrangementView::setHeaderSideWidth)
 inline constexpr float kLine = 20.0f;               // one header line
 inline constexpr float kBoxTop = 3.0f;              // box offset inside a line
 inline constexpr float kBox = 14.0f;                // box height
@@ -161,6 +164,9 @@ public:
   ui::Control* tuningChip() const noexcept { return chip_; }
   ui::Meter* meter() const noexcept { return meter_; }
   const std::string& title() const noexcept { return title_; }
+  // RT.4 (header layout): hides the name column's input line (an audio track's Audio From and channel) while the
+  // arrangement's automation-mode parameter chooser takes it (set by installMixer's header decorator).
+  void setInputLineHidden(bool hidden);
 
   void arrange(ui::LayoutPass& pass) override;
   void paint(ui::PaintContext& ctx) override;
@@ -202,6 +208,7 @@ private:
   ui::Control* audioIn_ = nullptr;       // T6.7; RT.3: Audio From
   ui::Control* audioChannel_ = nullptr;  // RT.3
   bool audioChannelShown_ = true;
+  bool inputLineHidden_ = false;  // RT.4
   ui::DragBox* delay_ = nullptr;  // T6.6
   ui::Label* latency_ = nullptr;
   double latencyShown_ = -1.0;

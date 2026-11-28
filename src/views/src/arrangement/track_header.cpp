@@ -1,6 +1,6 @@
 // Track headers (T3.8 display, T3.10 interaction): group stripes and indent, a title bar in the track colour with the
-// name and, for groups, the fold triangle; the mixer section (T3.10's MixerStrip, added by installMixer) on the
-// right. A click selects the track, the bottom edge resizes the row, right-click opens the track menu, Ctrl+R renames
+// name and, for groups, the fold triangle; the mixer section (T3.10's MixerStrip, added by installMixer) over the
+// rest (RT.4: volume / pan and the input line in the name column under the title, the side column at the right). A click selects the track, the bottom edge resizes the row, right-click opens the track menu, Ctrl+R renames
 // the title in place.
 
 #include <algorithm>
@@ -21,8 +21,10 @@ TrackHeader::TrackHeader(std::string name, ArrangementView& view) : Control(std:
   mixer_ = &add<Widget>("mixer");
   mixer_->setLayout(LayoutKind::Row);
   mixer_->setVisible(false);
+  mixer_->setHittable(false);  // RT.4: it covers the title bar; its controls are hit, its empty parts are the header's
   chip_ = &add<Widget>("chip");
   chip_->setLayout(LayoutKind::Stack);
+  chip_->setHittable(false);  // RT.4: empty on an audio track, over its Audio From (the chip itself is hit)
   // T3.15: automation-mode parameter chooser and the lanes toggle (hidden until needed).
   chooser_ = &add<arrangement::ParamChooser>(view);
   chooser_->setVisible(false);
@@ -136,7 +138,7 @@ IRect TrackHeader::titleRect() const noexcept {
   const IRect r = rect();
   const UiScale s = tree() ? tree()->uiScale() : UiScale{};
   const int32_t indent = s.px(am::kGroupIndent * static_cast<float>(depth_));
-  const int32_t mix = mixer_->visible() ? s.px(view_.headerMixerWidth()) : 0;
+  const int32_t mix = mixer_->visible() ? s.px(view_.headerSideWidth()) : 0;
   const int32_t h = std::min(std::max(0, r.h - 1), s.px(am::kTitleHeight));
   return {r.x + indent, r.y, std::max(0, r.w - indent - mix), h};
 }
@@ -144,30 +146,28 @@ IRect TrackHeader::titleRect() const noexcept {
 void TrackHeader::arrange(LayoutPass& pass) {
   const IRect r = rect();
   const UiScale s(pass.scale());
-  const float mixW = view_.headerMixerWidth();
-  if (mixer_->visible() != (mixW > 0.0f)) mixer_->setVisible(mixW > 0.0f);
+  const float sideW = view_.headerSideWidth();
+  if (mixer_->visible() != (sideW > 0.0f)) mixer_->setVisible(sideW > 0.0f);
   const IRect t = titleRect();
   if (fold_->visible()) pass.place(*fold_, {t.x, t.y, std::min(t.w, s.px(18.0f)), t.h});
   if (lanesToggle_->visible()) pass.place(*lanesToggle_, {t.right() - std::min(t.w, s.px(16.0f)), t.y, std::min(t.w, s.px(16.0f)), t.h});
-  if (mixer_->visible()) {
-    const int32_t mw = std::min(r.w, s.px(mixW));
-    pass.place(*mixer_, {r.right() - mw, r.y, mw, std::max(0, r.h - 1)});
-  }
-  // The chip section: the name column's second line (Live leaves it empty), when the row is tall enough.
-  const int32_t cy = t.bottom() + s.px(3.0f), ch = s.px(am::kChipHeight);
-  const int32_t cx = t.x + (fold_->visible() ? s.px(18.0f) : s.px(6.0f));
-  const int32_t cw = std::max(0, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx));
-  // T3.15: in automation mode the parameter chooser goes under the chip, or takes the chip's line when the row has
-  // room for only one of them (Live's header shows its choosers there).
+  // RT.4: the mixer section spans the header right of the group stripes (the strip leaves the title's area empty).
+  if (mixer_->visible()) pass.place(*mixer_, {t.x, r.y, std::max(0, r.right() - t.x), std::max(0, r.h - 1)});
+  // The chip section: the name column's third line (under volume / pan; an audio track has its input there), at the
+  // mixer's name-column inset, when the row is tall enough.
+  const int32_t cy = r.y + s.px(2.0f * am::kHeaderLine + 3.0f), ch = s.px(am::kChipHeight);
+  const int32_t cx = t.x + s.px(4.0f);
+  const int32_t cw = std::max(0, std::min(s.px(am::kChipWidth), t.right() - s.px(2.0f) - cx));
+  // T3.15: in automation mode the parameter chooser takes that line (Live's header shows its choosers in the name
+  // column); RT.4: the chip, or an audio track's input choosers (MixerStrip::setInputLineHidden), give way to it.
   const int32_t qh = s.px(automation_metrics::kChooserHeight);
-  const bool lineFits = cy + ch <= r.bottom() - 1 && t.w > s.px(12.0f);
+  const bool lineFits = cy + ch <= r.bottom() - 1 && cw > s.px(12.0f);
   const bool chooser = chooserWanted_ && lineFits;
-  const bool both = chooser && cy + ch + s.px(3.0f) + qh <= r.bottom() - 1;
-  const bool chipFits = lineFits && (!chooser || both);
+  const bool chipFits = lineFits && !chooser;
   if (chip_->visible() != chipFits) chip_->setVisible(chipFits);
   if (chipFits) pass.place(*chip_, {cx, cy, cw, ch});
   if (chooser_->visible() != chooser) chooser_->setVisible(chooser);
-  if (chooser) pass.place(*chooser_, {cx, both ? cy + ch + s.px(3.0f) : cy, std::max(cw, std::min(s.px(am::kChipWidth), t.right() - s.px(4.0f) - cx)), qh});
+  if (chooser) pass.place(*chooser_, {cx, cy, std::max(0, t.right() - s.px(2.0f) - cx), qh});
   if (rename_) {
     const int32_t padL = fold_->visible() ? s.px(18.0f) : s.px(2.0f);
     pass.place(*rename_, {t.x + padL, t.y + 1, std::max(0, t.w - padL - s.px(2.0f)), std::max(0, t.h - 2)});
