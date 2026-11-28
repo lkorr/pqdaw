@@ -986,3 +986,8 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 
 ## GV: Granular visuals (user 2026-11-27: grain diagrams, controls by what they shape; Position must scrub)
 - [x] **GV.1 Grain lens + grain stream, Granular section regrouped, Position scrubs live** 👁 *(merged 1e7e63f5)*
+
+## RT: Record from a track / Audio In (user 2026-11-27; plan: docs/plans/RT.md; design approved by the user 2026-11-27)
+- [ ] **RT.1 Document: `Wire::recordInput`, `setAudioFrom` / `audioFromOf`, loop + kind checks, schema 23** (plan RT.1; w1)
+- [ ] **RT.2 Lowering + engine + recording: Audio In into monitor mix, PDC, Resampling without self, internal capture** (plan RT.2; after RT.1)
+- [ ] **RT.3 UI: Audio From / channel choosers, circuit Audio In terminal, shared menu** 👁 (plan RT.3; after RT.1)
