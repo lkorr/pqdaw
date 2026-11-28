@@ -2551,3 +2551,17 @@ Per display (how it was drawn → what was wrong → what changed):
   Esc hides it until the selection changes (a second Esc deselects); Ctrl+Space toggles it.
 - Look at: whether it showing on every single-clip click feels busy over neighbouring tracks (it covers parts of the
   rows above / below the clip; Esc or Ctrl+Space hide it).
+
+## 2026-11-27 · GV.1 · Granular: grain lens, grain stream, controls under what they shape (task/GV.1-grain-visuals) 👁
+- Gran mode's settings now read top to bottom as *where* → *what one grain is* → *how grains flow*: Source knobs
+  (Position, Scan, ± Time, Freeze; Gain at the right) act on the region drawn in the waveform above (which now shows a
+  Scan arrow / a Freeze pin, and is as wide as a grain really reads: size × pitch ratio).
+- Grain lens: one grain — its window in amber, the actual sample at Position inside it, multiplied by the window.
+  Transpose up and the wave packs tighter (it reads more sample into the same length). The five shapes are glyph cells
+  in its corner. Drag sideways = size, up / down = transpose. Size / Transpose / Detune sit right under it.
+- Grain stream: the grains over time exactly as the engine spawns them — spacing (Density, or one per period in
+  Classic), height = pitch (harmonic ratios, pitch spray), colour = pan (blue left, amber right), dashed = skipped
+  because all Grains were busy ("46% skipped" in the corner). Below it the windows' sum: flat = smooth, dips = gaps.
+  Drag sideways = density, up / down = pitch spray. Density / ± Pitch / ± Pan sit under it.
+- Position now scrubs while a note plays (it used to be read only at the note's start).
+- Look at: whether Gain belongs in the Source row; the stream's busyness with big harmonic lists.

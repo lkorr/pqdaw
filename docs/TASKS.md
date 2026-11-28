@@ -983,3 +983,6 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **SX.4 Time-stretch clips draw their rendered audio (async, cached, envelope at draw time)** 👁 (plan SX.4; w2, after SX.3) *(merged 695bd1e5)*
 - [x] **SX.5 Clip menu as a compact popup around the clip (modes above, transpose below; no gain / fades)** 👁 (plan SX.5; w1) *(merged 64cc2a02)*
 - [x] **SX.6 Clip popup shows whenever one audio clip is selected; button removed** 👁 (plan SX.6; w1) *(merged 25349d3f)*
+
+## GV: Granular visuals (user 2026-11-27: grain diagrams, controls by what they shape; Position must scrub)
+- [x] **GV.1 Grain lens + grain stream, Granular section regrouped, Position scrubs live** 👁 *(merged 1e7e63f5)*
