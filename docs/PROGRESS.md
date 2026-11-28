@@ -1554,3 +1554,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_document -tc=SM*,SMU* 6/6 (new: Sampler first in an Instrument Rack chain runs per note and lowers; a free Sampler fed by a notes cable from another MIDI track is an instrument group of that track); pq_tests_views meta devices / node menu / browser / sampler 83/83 (new: one "Sampler" in the Device menu, no metaModuleTypes lists it). -Affected before the rebase: 23/24 (playback_s2 passed on re-run alone). After the rebase the full document / views exes each failed one load / driver flake (wavetable save+load 20 ms timing at 21-34 ms under ~20 concurrent compiler processes; NVIDIA SIGSEGV in a different render test each run).
 - Perf / CPU-efficiency check: menu building only (one table scan per type); no RT code.
 - Notes/blockers: the Device view still offers bare Wavetable / Envelope / analysers as chain Meta Modules (deliberate: test_meta_devices relies on a Wavetable after a Phase Accumulator continuing its voices).
+
+## 2026-11-27 · RT.1 · task/RT.1-audio-in-doc (merged b75310a7)
+- Did: `Wire::recordInput` (audio track Audio In) + `Wire::mixerOut` start; `AudioFrom` / `audioFromOf` / `ops::setAudioFrom` / `AudioInSources` in `pq/document/audio_in.h`; self / loop / not-audio refusals (after structural edits and on load); schema 23; ARCHITECTURE Recording model + Cross-device wiring.
+- Verified: test_audio_in 6/6 (398 assertions); -Affected 43/46 — two wall-clock checks pass alone (loaded machine), views fixture byte-compare fixed in ce6a4c42.
+- Perf / CPU-efficiency check: no cable → one wire pass, no lowering copy; menu filter computes its loop set once per menu.
+- Notes/blockers: lowering ignores Audio In cables until RT.2 (`withoutAudioIns`); Q?-RT.1-a (sends at −∞ don't count for loops; Resampling refused if the track reaches master other than by its output; mixerOut is its own field).
