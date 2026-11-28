@@ -325,7 +325,7 @@ TEST_CASE("arrangement audio: fade handles (length, Alt curve, Esc), crossfade p
   CHECK(f.history() == h + 3);
 }
 
-TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, start marker and loop brace drags") {
+TEST_CASE("audio clip view: transpose entry, gain, warp (from its shape), reverse, start marker and loop brace drags") {
   Fixture f(1280, 900);
   if (auto* body = dynamic_cast<Splitter*>(f.d.find("main/body"))) body->setPosition(420.0f);
   const doc::ClipRef vox = f.clip("Vox", 0), rev = f.clip("Drums", 2);
@@ -394,8 +394,9 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(f.get(vox).gainDb > -3.0f);
   CHECK(f.history() == h + 1);
 
-  // The loop brace's end, dragged right: the loop grows (1/16 notes), one undo step. (Switching warps left the loop
-  // off: on again first.)
+  // The loop brace's end, dragged left: the loop shrinks (1/16 notes), one undo step. (Switching warps left the loop
+  // off: on again first. WB: warped from its shape the clip plays the whole file, so its end is the file's: no room
+  // to the right.)
   CHECK(v.setLoopEnabled(true));
   h = f.history();
   const doc::AudioClip& a = f.get(vox);
@@ -404,9 +405,9 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   const double fpt = doc::framesPerContentTick(s->rate, a.sourceBpm);
   const Ticks end0 = a.loop.end;
   const IRect ru = v.rulerRect();
-  const float ex = v.xOfFrame(static_cast<double>(end0) * fpt);
-  f.d.drag({ex, static_cast<float>(ru.y + ru.h / 2)}, {ex + 60.0f, static_cast<float>(ru.y + ru.h / 2)}, 6);
-  CHECK(f.get(vox).loop.end > end0);
+  const float ex = std::min(v.xOfFrame(static_cast<double>(end0) * fpt), static_cast<float>(ru.right() - 2));  // at the file's end: the ruler's edge
+  f.d.drag({ex, static_cast<float>(ru.y + ru.h / 2)}, {ex - 60.0f, static_cast<float>(ru.y + ru.h / 2)}, 6);
+  CHECK(f.get(vox).loop.end < end0);
   CHECK(f.get(vox).loop.end % (kPpq / 4) == 0);
   CHECK(f.history() == h + 1);
 
