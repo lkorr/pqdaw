@@ -2826,12 +2826,13 @@ std::string tapPort(DeviceId device, std::string_view param) {
   return "tap_d" + std::to_string(device.value) + "_" + std::string(param);
 }
 
-// BR.K (2026-11-28_00-42-09): whether a wide signal reaches meta device `d`'s inputs as its mid (l + r) / 2: only a
-// meta module whose first output is declared mono (Noise's clock). One whose outputs take their width from what it reads
-// (Envelope, Wavetable, the analysers: OutputSpec kWidthInfer) processes every channel, so a stereo Sampler stays stereo
-// through the rest of an instrument group. Read from the callee's declaration: nothing per type.
+// BR.K (2026-11-28_00-42-09): whether a wide signal reaches meta device `d`'s inputs as its mid (l + r) / 2: a meta
+// module whose first output has a FIXED width (Noise: mono; the Sampler: stereo, its inputs control values). One whose
+// outputs take their width from what it reads (Envelope, Wavetable, the analysers: OutputSpec kWidthInfer) processes
+// every channel, so a stereo Sampler stays stereo through the rest of an instrument group. Read from the callee's
+// declaration: nothing per type.
 bool takesMid(const LDev& d) noexcept {
-  return isMetaDevice(*d.device) && !d.bypass && d.callee != nullptr && declaredOutWidth(*d.callee, 0) == graph::kWidthMono;
+  return isMetaDevice(*d.device) && !d.bypass && d.callee != nullptr && declaredOutWidth(*d.callee, 0) != graph::kWidthInfer;
 }
 
 // A param whose value the track patch builds (instead of leaving the call's pin unconnected): a modulated param
@@ -2882,7 +2883,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       s = from();  // TX.all-free-fix1: into another track's mixer (DY.2: or a signal input there; RT.2: an Audio In): every channel
     } else if (w.input && w.fromNode == w.toNode) {
       s = from();  // TX.patching: into an input on its own track, every channel
-      // TX.groups: a meta module with a mono output takes a signal of more channels (or of a width only inference
+      // TX.groups: a meta module with a fixed-width output takes a signal of more channels (or of a width only inference
       // knows: a group's In terminal) as the mid (l + r) / 2 — the chain's rule (effectCall; BR.K: takesMid). On a
       // mono signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
       // (TX.groups-fix1: not into a switched-off device's pass-through, which passes every channel on.)

@@ -711,7 +711,8 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
     if (text)
       for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
         const Node& n = pp.nodes[i];
-        if (!mine(n) || !shownNode(n)) continue;
+        // (An opened capsule's main ports are its terminals' sockets: drawn once, there.)
+        if (!mine(n) || !shownNode(n) || (n.group && n.groupOpen)) continue;
         for (uint32_t side = 0; side < 2; ++side) {
           const std::vector<Port>& ports = side == 0 ? n.inputs : n.outputs;
           for (uint32_t k = 0; k < ports.size(); ++k) {

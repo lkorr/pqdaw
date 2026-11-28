@@ -179,7 +179,7 @@ TEST_CASE("idle units: silent units are skipped, bit-exactly; events, params and
 // H1: the mixer's own cost does not grow per sample with the returns: a closed send is a settled gain_add at 0.
 TEST_CASE("lowering: the mixer is gain / gain_add at block rate; a return holds one gain_add per sender") {
   playback_fixture::Fixture f;
-  // The patches: Lead's has three gain stages (out, post, pre); Echo's one gain_add per sending track.
+  // The patches: Lead's has four gain stages (out, post, pre, meter); Echo's one gain_add per sending track.
   auto lib = app::loadDeviceLibrary();
   REQUIRE(lib.ok());
   LowerOptions lo;
@@ -198,7 +198,7 @@ TEST_CASE("lowering: the mixer is gain / gain_add at block rate; a return holds 
       }
     return n;
   };
-  CHECK(count(f.lead, "gain") == 3);
+  CHECK(count(f.lead, "gain") == 4);  // out, post, pre and (BR.K) meter: the stage before the mute / solo gate
   CHECK(count(f.lead, "z1") == 0);  // no per-sample smoothing loop any more
   CHECK(count(f.echo, "gain_add") == 4);  // Lead, Grp, Mos, Muted
   CHECK(count(f.master, "gain") == 1);

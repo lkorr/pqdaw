@@ -7,18 +7,18 @@ patch Audio6 {
   out out : real audio global stereo
 
   d8 = Group(clipPlayer(3), d79)
-  d9 = Value(_n118)
-  d10 = Value(_n118)
-  d11 = Value(_n118)
+  d9 = Value(_n123)
+  d10 = Value(_n123)
+  d11 = Value(_n123)
   d12 = Value()
-  d13 = Value(_n118)
+  d13 = Value(_n123)
   d14 = Value()
-  d15 = Value(_n118)
+  d15 = Value(_n123)
   d16 = Value()
   d17 = Value()
-  d18 = Value(_n118)
+  d18 = Value(_n123)
   d19 = Value(1)
-  d20 = Value(_n118)
+  d20 = Value(_n123)
   d21 = Value(0.5)
   d22 = Atom_mul(d9, d21)
   _n17 = -0
@@ -89,10 +89,11 @@ patch Audio6 {
   _n100 = _n98 ? sendGate : _n83
   _n101 = _n89 * (_n98 ? gate : _n83)
   _n107 = _n89 * _n100
-  _n118 = 0
+  _n123 = 0
   out = gain(d8, (_n91 * _n101, _n93 * _n101), _n85)
 
   export post = gain(d8, (_n91 * _n107, _n93 * _n107), _n85)
   export pre = gain(d8, (_n91 * _n100, _n93 * _n100), _n85)
+  export meter = gain(d8, (_n91 * _n89, _n93 * _n89), _n85)
 
 }
