@@ -693,8 +693,11 @@ EditResult spliceIntoWire(const Project& p, IdSource& ids, const DeviceLibrary* 
 // The circuit's "Take Off Path": each device of a main path leaves it (as moveOnPath does where it was: its main sources
 // joined to its main targets) and stays as a block with its other wires. Devices off the path are skipped.
 EditResult takeOffPath(const Project& p, IdSource& ids, const DeviceLibrary* lib, std::span<const DeviceId> devices);
-// A block into group `group` (invalid: out of its group; SetDeviceGroup): a block of the main path leaves it first
-// (joined there: takeOffPath). One step.
+// A block into group `group` (invalid: out of every group; SetDeviceGroup). BR.K: its signal path goes through the
+// group's ports — out of a group at its head (its main input reads the In) it plays before the group, at its tail
+// (it feeds the Out) after it, elsewhere its neighbours inside are joined; into a group right before / after it, the
+// exact inverse; otherwise a block of the main path leaves it first (joined there: takeOffPath). Out of nested groups
+// one level at a time. Other wires keep their ends. One step.
 EditResult setDeviceGroup(const Project& p, IdSource& ids, const DeviceLibrary* lib, DeviceId device, DeviceId group);
 
 // ---- Devices (T4.1; QUESTIONS Q129) -----------------------------------------------------------------------
