@@ -32,7 +32,7 @@ constexpr std::array<SettingSpec, 3> kSettings = {{
     {"warpMode", "Warp mode", 0.0, 0.0, 2.0, 3},
     {"os", "Oversampling", 0.0, 0.0, 4.0, 5},  // TMM.8: 0 auto, 1 … 4 = ×2 / ×4 / ×8 / ×16
 }};
-constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
+constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthInfer}}};  // BR.K: per channel of `x`, `pos`
 
 // Body node ids (stable: the reading atom's state key is the call path plus its id).
 enum : uint32_t {

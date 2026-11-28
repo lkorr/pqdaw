@@ -706,6 +706,28 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         paint::box(dl, box, 3.0f * us, th.circuit.costBg, th.circuit.cost);
         paint::text(ctx, ctx.res.uiFonts->small, box, "z\xE2\x81\xBB\xC2\xB9", th.circuit.cost, ui::TextAlign::Center);
       }
+    // BR.K: a tiny "!" beside a group's port where audio stops (Port::deadEnd, from the model): above the pin, on the
+    // side its cables would leave (inputs left of it, outputs right).
+    if (text)
+      for (uint32_t i = 0; i < pp.nodes.size(); ++i) {
+        const Node& n = pp.nodes[i];
+        // (An opened capsule's main ports are its terminals' sockets: drawn once, there.)
+        if (!mine(n) || !shownNode(n) || (n.group && n.groupOpen)) continue;
+        for (uint32_t side = 0; side < 2; ++side) {
+          const std::vector<Port>& ports = side == 0 ? n.inputs : n.outputs;
+          for (uint32_t k = 0; k < ports.size(); ++k) {
+            if (!ports[k].deadEnd) continue;
+            const Vec2 c = toDevice(portWorld(i, k, side == 0));
+            const int32_t bw = static_cast<int32_t>(std::round(10.0f * us)), bh = static_cast<int32_t>(std::round(12.0f * us));
+            const int32_t gap = static_cast<int32_t>(std::round(3.0f * us));
+            const int32_t x0 = side == 0 ? static_cast<int32_t>(c.x) - bw - gap : static_cast<int32_t>(c.x) + gap;
+            const ui::IRect box{x0, static_cast<int32_t>(c.y) - bh - gap, bw, bh};
+            if (!overlaps(box.toRect(), clip)) continue;
+            paint::box(dl, box, 2.0f * us, th.circuit.costBg, th.code.warning);
+            paint::text(ctx, ctx.res.uiFonts->small, box, "!", th.code.warning, ui::TextAlign::Center);
+          }
+        }
+      }
   }
 
   // CPU cost labels (Show CPU Cost): ns per sample above each device block's right end.
@@ -3279,6 +3301,14 @@ ui::InfoText ProjectCanvas::info() const {
               "instrument's or a meta module's input), from a chip for a note output (Hz, gate, velocity: per voice, onto any "
               "parameter); the cable leaves the lane where it was drawn from."};
     return {infoTitle_, "The track's audio: drag up from the lane's top edge for a cable of its clips' audio."};
+  }
+  // BR.K: a group's dead-end port (Port::deadEnd) says why it is marked.
+  if (const PinHit p = pinAt(pointer_); p.valid() && drag_ == Drag::None) {
+    const ProjectPatch& pp = view_.patch();
+    const Node& n = pp.nodes[p.node];
+    const std::vector<Port>& ports = p.input ? n.inputs : n.outputs;
+    if (p.port < ports.size() && ports[p.port].deadEnd)
+      return {"Dead end", (n.kind == NodeKind::Terminal ? !p.input : p.input) ? kDeadEndInputText : kDeadEndOutputText};
   }
   if (hovered().kind != circuit::CanvasHit::Kind::None) return CircuitCanvas::info();  // the node, pin or wire under the pointer
   return {"Project Patch",

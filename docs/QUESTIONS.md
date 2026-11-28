@@ -3014,4 +3014,15 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - Choice: (a). Volume and pan stay visible (the user's point), the change only lasts while A is on, and it is one
   branch in TrackHeader::arrange plus MixerStrip::setInputLineHidden. Related: returns now default to two lines (40
   px, was one) so their volume stays visible under the name.
+
+## Q?-BR.K-a · Out of a group at its head when other blocks read the group's In too
+- Context: bug 2026-11-28_00-43-14. Taking a block out of a group now keeps its signal path through the group's ports
+  (edit_paths.cpp setDeviceGroup): at the group's head it moves before the group (the group's sources feed it, it feeds
+  the group's main input, and what it fed inside reads the group's In). When other blocks inside also read the group's
+  In (e.g. an LFO or a second oscillator reading the notes), moving the sources away would starve them, and one In
+  cannot carry both the notes and the block's audio.
+- Options: (a) the block reads what the In carried, directly; the group keeps its sources; what the block fed inside
+  keeps the wire straight from it (it crosses the boundary); (b) put it in series anyway and let the other readers read
+  its audio; (c) refuse the move.
+- Choice: (a). Nothing that played before stops playing, nothing is mixed into the In, and it is one undo step away.
 - Status: open

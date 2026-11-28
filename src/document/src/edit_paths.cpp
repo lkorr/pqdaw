@@ -264,6 +264,217 @@ EditResult takeOffPath(const Project& p, IdSource& ids, const DeviceLibrary* lib
   return e;
 }
 
+namespace {
+
+// BR.K (bug 2026-11-28_00-43-14): a block crossing a group's boundary keeps its signal path, routed through the group's
+// ports. The rule reads only wires and main ports (nothing per block type):
+//   out of g, at its head   (its main input reads g's In, and nothing else reads that In): g's sources feed it, it
+//                           feeds g's main input, and what it fed inside reads g's In: it now plays BEFORE g. A Sampler
+//                           leaving an instrument group takes the notes and g gets its audio (g's kind follows its input:
+//                           an audio group, no longer polyphonic);
+//   out of g, at its tail   (its main output feeds g's Out, and nothing else does): what fed it feeds g's Out, g's main
+//                           output feeds it, and it feeds what g fed: it now plays AFTER g;
+//   out of g, elsewhere     its main neighbours inside are joined (as a block leaving a path); it leaves unwired there;
+//   into g, right before it (its main output feeds only g's main input, its only source): the exact inverse of "out at
+//                           its head"; into g, right after it (g's main output feeds only it, its only source): of "out
+//                           at its tail"; otherwise a block of the main path leaves it first (joined there).
+// Any other wire (a modulation, a second reader of g's In) keeps its ends: a wire may cross a boundary. When g's In has
+// other readers too, a block leaving at the head reads what g's In carried, directly (QUESTIONS Q?-BR.K-a).
+
+// Whether `x` is inside group `g` (at any depth).
+bool within(const Project& p, DeviceId x, DeviceId g) {
+  for (const Device* d = findDevice(p, x).device; d != nullptr && d->group.valid(); d = findDevice(p, d->group).device)
+    if (d->group == g) return true;
+  return false;
+}
+bool fromDevice(const Wire& w) { return !w.fromNoteSource() && !w.fromMixerOut(); }
+bool toDevice(const Wire& w) { return !w.toMixer() && !w.toRecordInput(); }
+bool readsGroupIn(const Wire& w, DeviceId g) { return fromDevice(w) && w.from == g && w.port == kGroupInPort; }
+bool feedsGroupOut(const Wire& w, DeviceId g) { return toDevice(w) && w.to == g && w.param == kGroupOutPort; }
+bool intoMain(const Wire& w, DeviceId d, const MainPorts& mp) {
+  return toDevice(w) && w.to == d && (w.param.empty() || (!mp.in.empty() && w.param == mp.in));
+}
+bool outOfMain(const Wire& w, DeviceId d, const MainPorts& mp) {
+  return fromDevice(w) && w.from == d && (w.port.empty() || (!mp.out.empty() && w.port == mp.out));
+}
+bool intoGroupMain(const Wire& w, DeviceId g) { return toDevice(w) && w.to == g && w.param.empty(); }
+bool outOfGroupMain(const Wire& w, DeviceId g) { return fromDevice(w) && w.from == g && w.port.empty(); }
+// Inside g, or g itself (its Out terminal from inside, its In terminal).
+bool inOrIs(const Project& p, DeviceId x, DeviceId g) { return x == g || within(p, x, g); }
+
+// `w` again with a fresh id (its law, amount, reducer and flags kept; new ends set by the caller).
+Wire again(IdSource& ids, const Wire& w) {
+  Wire x = w;
+  x.id = ids.wire();
+  return x;
+}
+void setFrom(Wire& w, DeviceId d, std::string_view port) {
+  w.from = d;
+  w.noteSource = {};
+  w.mixerOut = {};
+  w.port = std::string(port);
+  w.tap.reset();
+}
+void setFrom(Wire& w, const Wire& source) {
+  w.from = source.from;
+  w.noteSource = source.noteSource;
+  w.mixerOut = source.mixerOut;
+  w.port = source.port;
+  w.tap = source.tap;
+}
+void setTo(Wire& w, DeviceId d, std::string_view param) {
+  w.to = d;
+  w.mixer = {};
+  w.recordInput = {};
+  w.param = std::string(param);
+}
+
+struct Rewire {
+  std::vector<WireId> remove;
+  std::vector<Wire> add;
+};
+Status applyRewire(Steps& k, const Rewire& r) {
+  for (const WireId w : r.remove)
+    if (findWire(k.doc(), w) != nullptr) PQ_DOC_TRY(k.add(RemoveWire{w}));
+  for (const Wire& w : r.add)
+    if (!hasEnds(k.doc(), w)) PQ_DOC_TRY(k.add(AddWire{w}));
+  return ok();
+}
+
+// `d` (a member of g) leaves g for g's own group.
+Status leaveGroup(Steps& k, IdSource& ids, const DeviceLibrary* lib, DeviceId d, DeviceId g) {
+  const Project& p = k.doc();
+  const Device* dev = findDevice(p, d).device;
+  const Device* grp = findDevice(p, g).device;
+  if (dev == nullptr || grp == nullptr) return notFound("device not found");
+  const DeviceId outer = grp->group;
+  const MainPorts mp = mainPortsOf(*dev, lib);
+  const WireList& ws = wiresOf(p);
+  bool head = false, otherReader = false, tail = false, otherFeeder = false;
+  for (const Wire& w : ws) {
+    if (readsGroupIn(w, g)) {
+      if (intoMain(w, d, mp)) head = true;
+      else if (!(toDevice(w) && w.to == d)) otherReader = true;
+    }
+    if (feedsGroupOut(w, g)) (outOfMain(w, d, mp) ? tail : otherFeeder) = true;
+  }
+  Rewire r;
+  if (head) {
+    std::vector<const Wire*> sources;  // into g's main input
+    for (const Wire& w : ws)
+      if (intoGroupMain(w, g)) sources.push_back(&w);
+    for (const Wire& w : ws) {  // d reads what g's In carried (every input of d that read it)
+      if (!readsGroupIn(w, g) || !toDevice(w) || w.to != d) continue;
+      r.remove.push_back(w.id);
+      for (const Wire* s : sources) {
+        Wire x = again(ids, w);
+        setFrom(x, *s);
+        r.add.push_back(x);
+      }
+    }
+    if (!otherReader) {  // d plays before g: g's sources are d's now, d feeds g, what d fed inside reads g's In
+      for (const Wire* s : sources) r.remove.push_back(s->id);
+      for (const Wire& w : ws) {
+        if (!outOfMain(w, d, mp) || !toDevice(w) || !inOrIs(p, w.to, g)) continue;
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setFrom(x, g, kGroupInPort);
+        r.add.push_back(x);
+      }
+      r.add.push_back(mainLink(ids, End{d, {}}, End{g, {}}));
+    }
+  } else if (tail && !otherFeeder) {  // d plays after g: what fed it feeds g's Out, g feeds it, it feeds what g fed
+    for (const Wire& w : ws) {
+      if (feedsGroupOut(w, g) && outOfMain(w, d, mp)) r.remove.push_back(w.id);
+      if (intoMain(w, d, mp) && fromDevice(w) && inOrIs(p, w.from, g)) {
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setTo(x, g, kGroupOutPort);
+        r.add.push_back(x);
+      }
+      if (outOfGroupMain(w, g)) {
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setFrom(x, d, kMainPort);
+        r.add.push_back(x);
+      }
+    }
+    r.add.push_back(mainLink(ids, End{g, {}}, End{d, {}}));
+  } else {
+    // In the middle of g's series: its main neighbours inside are joined; its other wires keep their ends.
+    bool inside = false;
+    for (const Wire& w : ws)
+      if ((intoMain(w, d, mp) && fromDevice(w) && inOrIs(p, w.from, g)) || (outOfMain(w, d, mp) && toDevice(w) && inOrIs(p, w.to, g)))
+        inside = true;
+    if (inside) PQ_DOC_TRY(detach(k, ids, lib, d));
+  }
+  PQ_DOC_TRY(k.add(SetDeviceGroup{d, outer}));
+  return applyRewire(k, r);
+}
+
+// `d` (beside g: in the same group) joins g right before or after it. False (nothing done): it is neither.
+Result<bool> joinAtEnd(Steps& k, IdSource& ids, const DeviceLibrary* lib, DeviceId d, DeviceId g) {
+  const Project& p = k.doc();
+  const Device* dev = findDevice(p, d).device;
+  if (dev == nullptr) return notFound("device not found");
+  const MainPorts mp = mainPortsOf(*dev, lib);
+  const WireList& ws = wiresOf(p);
+  auto count = [&](auto pred) { return std::count_if(ws.begin(), ws.end(), pred); };
+  const auto dToG = [&](const Wire& w) { return outOfMain(w, d, mp) && intoGroupMain(w, g); };
+  const auto gToD = [&](const Wire& w) { return outOfGroupMain(w, g) && intoMain(w, d, mp); };
+  Rewire r;
+  if (count(dToG) == 1 && count([&](const Wire& w) { return outOfMain(w, d, mp); }) == 1 &&
+      count([&](const Wire& w) { return intoGroupMain(w, g); }) == 1) {
+    // Before g: its sources feed g, g's In feeds it, it feeds what g's In fed (the inverse of leaving at the head).
+    for (const Wire& w : ws) {
+      if (dToG(w)) r.remove.push_back(w.id);
+      if (intoMain(w, d, mp)) {
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setTo(x, g, kMainPort);
+        r.add.push_back(x);
+      }
+      if (readsGroupIn(w, g)) {
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setFrom(x, d, kMainPort);
+        r.add.push_back(x);
+      }
+    }
+    Wire link = mainLink(ids, End{g, {}}, End{d, {}});
+    link.port = std::string(kGroupInPort);
+    r.add.push_back(link);
+  } else if (count(gToD) == 1 && count([&](const Wire& w) { return intoMain(w, d, mp); }) == 1 &&
+             count([&](const Wire& w) { return outOfGroupMain(w, g); }) == 1) {
+    // After g: what fed g's Out feeds it, it feeds g's Out, g feeds what it fed (the inverse of leaving at the tail).
+    for (const Wire& w : ws) {
+      if (gToD(w)) r.remove.push_back(w.id);
+      if (feedsGroupOut(w, g)) {
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setTo(x, d, kMainPort);
+        r.add.push_back(x);
+      }
+      if (outOfMain(w, d, mp)) {
+        r.remove.push_back(w.id);
+        Wire x = again(ids, w);
+        setFrom(x, g, kMainPort);
+        r.add.push_back(x);
+      }
+    }
+    Wire link = mainLink(ids, End{d, {}}, End{g, {}});
+    link.param = std::string(kGroupOutPort);
+    r.add.push_back(link);
+  } else {
+    return false;
+  }
+  PQ_DOC_TRY(k.add(SetDeviceGroup{d, g}));
+  PQ_DOC_TRY(applyRewire(k, r));
+  return true;
+}
+
+}  // namespace
+
 EditResult setDeviceGroup(const Project& p, IdSource& ids, const DeviceLibrary* lib, DeviceId device, DeviceId group) {
   const DeviceLoc l = findDevice(p, device);
   if (l.device == nullptr) return notFound("device not found");
@@ -271,9 +482,25 @@ EditResult setDeviceGroup(const Project& p, IdSource& ids, const DeviceLibrary* 
   e.devices.push_back(device);
   if (l.device->group == group) return e;
   Steps k(p);
-  // A block of the main path leaves it first (a group has no order inside; its neighbours are joined).
-  if (group.valid() && mainPath(p, *l.track).contains(device)) PQ_DOC_TRY(detach(k, ids, lib, device));
-  PQ_DOC_TRY(k.add(SetDeviceGroup{device, group}));
+  // BR.K: out of its groups one level at a time (each boundary crossed through that group's ports) while `group` is not
+  // around it: up to `group`, or out of every group.
+  for (const Device* d = l.device; d != nullptr && d->group.valid() && d->group != group && !within(k.doc(), group, d->group);
+       d = findDevice(k.doc(), device).device)
+    PQ_DOC_TRY(leaveGroup(k, ids, lib, device, d->group));
+  if (const Device* d = findDevice(k.doc(), device).device; d != nullptr && d->group != group) {
+    bool joined = false;
+    if (const Device* g = group.valid() ? findDevice(k.doc(), group).device : nullptr; g != nullptr && g->group == d->group) {
+      Result<bool> j = joinAtEnd(k, ids, lib, device, group);
+      if (!j) return std::move(j).error();
+      joined = *j;
+    }
+    if (!joined) {
+      // A block of the main path leaves it first (a group has no order inside; its neighbours are joined).
+      if (group.valid() && mainPath(k.doc(), *findDevice(k.doc(), device).track).contains(device))
+        PQ_DOC_TRY(detach(k, ids, lib, device));
+      PQ_DOC_TRY(k.add(SetDeviceGroup{device, group}));
+    }
+  }
   batchOf(e).commands = std::move(k.commands);
   return e;
 }

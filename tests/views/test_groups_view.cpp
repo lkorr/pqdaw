@@ -795,3 +795,76 @@ void golden(const char* name) {
 TEST_CASE("render: project-patch-group matches the golden image") { golden("project-patch-group"); }
 // The Device view of Keys: the synth, then the group whose panel is the circuit of its contents.
 TEST_CASE("render: device-group-panel matches the golden image") { golden("device-group-panel"); }
+
+// BR.K (user 2026-11-28: "a tiny ! marker wherever audio doesn't output to anything"): a group's In while audio reaches
+// its main input and nothing reads the In, its Out while something feeds it and nothing reads the group's output, are
+// marked (Port::deadEnd: the capsule's port and its terminal's), explained on hover; the marks follow the wires.
+TEST_CASE("groups view (BR.K): a group's In / Out where the audio stops is marked, and the mark follows the wires") {
+  Ui u;
+  u.show();
+  const doc::DeviceId sel[2] = {u.ids.sat, u.ids.util};
+  REQUIRE(u.view().groupDevices(sel));
+  u.d.step();
+  const doc::DeviceId g = u.groupOf(u.ids.sat);
+  REQUIRE(g.valid());
+  u.view().focusBand(u.ids.bass, false);
+  u.d.tree().layoutNow();
+  auto marks = [&](bool& in, bool& out) {
+    const Node& c = u.pp().nodes[u.node(g)];
+    REQUIRE(c.groupIn != kNone);
+    REQUIRE(c.groupOut != kNone);
+    const bool inTerm = u.pp().nodes[c.groupIn].outputs.at(0).deadEnd, outTerm = u.pp().nodes[c.groupOut].inputs.at(0).deadEnd;
+    CHECK(c.inputs.at(0).deadEnd == inTerm);  // the capsule's port and its terminal's agree
+    CHECK(c.outputs.at(0).deadEnd == outTerm);
+    in = inTerm, out = outTerm;
+  };
+  auto dispatch = [&](const doc::ops::EditResult& e) {
+    REQUIRE_MESSAGE(e.ok(), (e.ok() ? std::string() : e.error().message));
+    REQUIRE(u.ctx.store().dispatch(e->command).ok());
+    u.d.step();
+  };
+  auto wireOf = [&](auto pred) {
+    for (const doc::Wire& w : doc::wiresOf(*u.ctx.doc()))
+      if (pred(w)) return w.id;
+    return doc::WireId{};
+  };
+  bool in = true, out = true;
+  marks(in, out);
+  CHECK_FALSE(in);  // the Basic Synth's audio → In → Saturator → Utility → Out → the mixer
+  CHECK_FALSE(out);
+  // Nothing reads the In: the synth's audio stops at it.
+  const doc::WireId inner = wireOf([&](const doc::Wire& w) { return !w.fromNoteSource() && w.from == g && w.port == doc::kGroupInPort; });
+  REQUIRE(inner.valid());
+  dispatch(doc::ops::deleteWires(*u.ctx.doc(), std::vector<doc::WireId>{inner}));
+  marks(in, out);
+  CHECK(in);
+  CHECK_FALSE(out);
+  {  // hovering the In terminal's socket says why
+    const Node& c = u.pp().nodes[u.node(g)];
+    u.d.move(u.outPin(c.groupIn));
+    u.d.step();
+    const ui::InfoText t = u.view().canvas().info();
+    CHECK(t.title == "Dead end");
+    CHECK(t.body == kDeadEndInputText);
+  }
+  // Read again: the mark goes.
+  REQUIRE(u.view().connect(g, std::string(doc::kGroupInPort), u.ids.sat, ""));
+  u.d.step();
+  marks(in, out);
+  CHECK_FALSE(in);
+  // Nothing reads the group's output (its link into the mixer cut): the audio stops at Out.
+  const doc::WireId toMixer = wireOf([&](const doc::Wire& w) { return !w.fromNoteSource() && w.from == g && w.port.empty(); });
+  REQUIRE(toMixer.valid());
+  dispatch(doc::ops::deleteWires(*u.ctx.doc(), std::vector<doc::WireId>{toMixer}));
+  marks(in, out);
+  CHECK_FALSE(in);
+  CHECK(out);
+  // Closed, an unread output is a block's unwired output (visible as such): no mark; its In mark is the block's.
+  u.view().setGroupOpen(g, false);
+  u.d.step();
+  CHECK_FALSE(u.pp().nodes[u.node(g)].outputs.at(0).deadEnd);
+  // A device's own unwired ports are never marked (the Utility's output, now feeding nothing outside).
+  for (const Node& n : u.pp().nodes)
+    if (!n.group && n.kind == NodeKind::Device)
+      for (const Port& p : n.outputs) CHECK_FALSE(p.deadEnd);
+}

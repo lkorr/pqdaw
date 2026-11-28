@@ -590,8 +590,8 @@ TEST_CASE("meta devices: meta → meta → module chains (two Wavetables in a ro
       {"envelope", "wavetable", "envelope", "wavetable", "utility"},
       {"wavetable", "wavetable", "utility"},
       {"envelope", "envelope", "wavetable", "saturator"},
-      // A meta device after a stereo module (ChainAudio): the stereo signal reaches a module whose outputs are
-      // mono — the report's state (a Wavetable after a stock device, deleted before the shot). Lowered as the mid.
+      // A meta device after a stereo module (ChainAudio) — the report's state (a Wavetable after a stock device,
+      // deleted before the shot). BR.K: the Wavetable and the Envelope read it per channel (their `out` inferred).
       {"envelope", "wavetable", "utility", "wavetable"},
       {"envelope", "wavetable", "saturator", "wavetable", "utility"},
       {"envelope", "wavetable", "utility", "envelope", "utility"},

@@ -17,18 +17,18 @@ patch Midi4 {
   d52 = Group(voice_sum(d245 * _n14), d123)
   d46 = meta_envelope__d46__144b834b85bddc1f()
   d49 = meta_wavetable__d49__88b3f5e4926dcb56(d46)
-  d53 = Value(_n136)
-  d54 = Value(_n136)
-  d55 = Value(_n136)
+  d53 = Value(_n141)
+  d54 = Value(_n141)
+  d55 = Value(_n141)
   d56 = Value()
-  d57 = Value(_n136)
+  d57 = Value(_n141)
   d58 = Value()
-  d59 = Value(_n136)
+  d59 = Value(_n141)
   d60 = Value()
   d61 = Value()
-  d62 = Value(_n136)
+  d62 = Value(_n141)
   d63 = Value(1)
-  d64 = Value(_n136)
+  d64 = Value(_n141)
   d65 = Value(0.5)
   d66 = Atom_mul(d53, d65)
   _n36 = -0
@@ -97,12 +97,13 @@ patch Midi4 {
   _n118 = _n116 ? sendGate : _n0
   _n119 = _n107 * (_n116 ? gate : _n0)
   _n125 = _n107 * _n118
-  _n136 = 0
+  _n141 = 0
   done = !_n11 && _n14 <= _n0
   out = gain(d52, (_n109 * _n119, _n111 * _n119), _n103)
 
   export post = gain(d52, (_n109 * _n125, _n111 * _n125), _n103)
   export pre = gain(d52, (_n109 * _n118, _n111 * _n118), _n103)
+  export meter = gain(d52, (_n109 * _n107, _n111 * _n107), _n103)
 
 }
 
@@ -114,7 +115,7 @@ patch meta_wavetable__d49__88b3f5e4926dcb56 {
   param sync = 0 [0..1] @label("Sync")
   in x : audio = -0
   in pos : audio = -0
-  out out : audio mono
+  out out : audio
 
   out = wavetable_pos(frac(x + phase), clip(position + pos, 0, 1), 197)
 

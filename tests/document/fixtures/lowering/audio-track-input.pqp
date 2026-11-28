@@ -22,5 +22,6 @@ patch Audio46 {
 
   export post = gain(_n9, (_n18 * _n34, _n20 * _n34), _n3)
   export pre = gain(_n9, (_n18 * _n27, _n20 * _n27), _n3)
+  export meter = gain(_n9, (_n18 * _n16, _n20 * _n16), _n3)
 
 }

@@ -907,6 +907,7 @@ enum Fixed : uint32_t {
   // T6.1: an audio track's input and its monitor gate (x = clips·(1 − monitor) + track.in·monitor)
   kMonitor = 124, kTrackIn, kMonNot, kMonClips, kMonSum,
   kTrackInSlot = 129, kAudioInRec,  // RT.2: track.in's slot; `export rec` (an Audio In cable's signal, for the recorder)
+  kMeter = 131, kMeterL, kMeterR, kMeterPack, kMeterGain,  // BR.K: `export meter` (the output stage before its gate)
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -1069,6 +1070,10 @@ void gainStages(Ir& ir, Kind kind, PanMode mode, PortRef x, float smoothingMs) {
   ir.output("out", kStereo, stage(ir.atom("mul", {vg, go}, kGOut), kOutL, kOutR, kOutPack, kOutGain), kOut);
   ir.exportPort("post", stage(ir.atom("mul", {vg, so}, kGPost), kPostL, kPostR, kPostPack, kPostGain), kPost);
   ir.exportPort("pre", stage(so, kPreL, kPreR, kPrePack, kPreGain), kPre);
+  // BR.K (2026-11-28_00-39-05): what the track's meter reads: the output stage without the mute / solo gate, so a
+  // muted or solo-muted track still shows what it plays (Live's meters move on a muted track). One more smoothed
+  // stereo gain per track per block (the gate cannot be divided back out of a closed `out`).
+  ir.exportPort("meter", stage(vg, kMeterL, kMeterR, kMeterPack, kMeterGain), kMeter);
 }
 
 std::string patchName(const Node& n) {
@@ -2490,9 +2495,10 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   const uint32_t id = d.device->id.value;
   if (x.node != graph::kNone && width == graph::kWidthMono && inWidth == graph::kWidthStereo)  // a mono signal into a stereo input
     x = b.ir.atom("pack", {x, x}, nodeIdFor(NodeRole::Device, id, 1), 2);
-  // A stereo signal into a chain meta device (ChainAudio: its chain input takes any width, its outputs are mono — a
-  // stereo signal would reach a mono `out` inside its expansion, which the compiler refuses: bug report
-  // 2026-11-01_12-15-15, a Wavetable after Utility): the mid, (l + r) / 2. Mono signals pass as before.
+  // A stereo signal into a chain meta device whose output is declared mono (ChainAudio: its chain input takes any
+  // width — a stereo signal would reach a mono `out` inside its expansion, which the compiler refuses: bug report
+  // 2026-11-01_12-15-15): the mid, (l + r) / 2. Mono signals pass as before. (BR.K: the Envelope and the Wavetable
+  // declare their `out` of the inferred width: a stereo signal passes them per channel; outW is then kWidthInfer.)
   if (x.node != graph::kNone && haveIn && width == graph::kWidthStereo && inWidth == graph::kWidthInfer && outW == graph::kWidthMono &&
       isMetaDevice(*d.device)) {
     const PortRef l = b.ir.atom("channel", {x, b.c0()}, nodeIdFor(NodeRole::Device, id, 2));
@@ -2698,7 +2704,10 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
     const uint32_t o = doneOutput(*d.callee);
     if (o != graph::kNone && t != nullptr && t->voiceEnd) end.dones.emplace_back(last, static_cast<uint16_t>(o));
     else ended = false;
-    if (outWidth(*d.callee) == graph::kWidthStereo) width = graph::kWidthStereo;
+    // BR.K: an output of the inferred width (an Envelope after a stereo Sampler) may be stereo: counted as stereo (the
+    // safe side: a mono signal taken for stereo only skips a pack, and its mid is itself; a stereo one taken for mono
+    // would be packed to four channels).
+    if (outWidth(*d.callee) != graph::kWidthMono) width = graph::kWidthStereo;
   }
   if (!ended) {
     end.dones.clear();
@@ -2817,6 +2826,15 @@ std::string tapPort(DeviceId device, std::string_view param) {
   return "tap_d" + std::to_string(device.value) + "_" + std::string(param);
 }
 
+// BR.K (2026-11-28_00-42-09): whether a wide signal reaches meta device `d`'s inputs as its mid (l + r) / 2: a meta
+// module whose first output has a FIXED width (Noise: mono; the Sampler: stereo, its inputs control values). One whose
+// outputs take their width from what it reads (Envelope, Wavetable, the analysers: OutputSpec kWidthInfer) processes
+// every channel, so a stereo Sampler stays stereo through the rest of an instrument group. Read from the callee's
+// declaration: nothing per type.
+bool takesMid(const LDev& d) noexcept {
+  return isMetaDevice(*d.device) && !d.bypass && d.callee != nullptr && declaredOutWidth(*d.callee, 0) != graph::kWidthInfer;
+}
+
 // A param whose value the track patch builds (instead of leaving the call's pin unconnected): a modulated param
 // (T4.7) or an automated one (GU.1).
 struct Site {
@@ -2851,8 +2869,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       s = all ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
       // Into a meta module's input: its mid, as from any wide source (below); a track's silent source (a return no send
       // reaches: the constant 0) is mono already. (Across tracks the target's patch takes the mid: `arriving`.)
-      if (w.input && !w.toMixer && w.fromNode == w.toNode && isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass &&
-          !(b.sourceX == b.c0())) {
+      if (w.input && !w.toMixer && w.fromNode == w.toNode && takesMid(td[w.toDev]) && !(b.sourceX == b.c0())) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -2866,12 +2883,11 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       s = from();  // TX.all-free-fix1: into another track's mixer (DY.2: or a signal input there; RT.2: an Audio In): every channel
     } else if (w.input && w.fromNode == w.toNode) {
       s = from();  // TX.patching: into an input on its own track, every channel
-      // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
-      // a group's In terminal) reaches its input as the mid (l + r) / 2 — the chain's rule (effectCall). On a mono
-      // signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
+      // TX.groups: a meta module with a fixed-width output takes a signal of more channels (or of a width only inference
+      // knows: a group's In terminal) as the mid (l + r) / 2 — the chain's rule (effectCall; BR.K: takesMid). On a
+      // mono signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
       // (TX.groups-fix1: not into a switched-off device's pass-through, which passes every channel on.)
-      if (isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass &&
-          declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
+      if (takesMid(td[w.toDev]) && declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -2905,7 +2921,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       src = source(w);
     } else if (crossSidechain(w)) {
       src = ir.input("m" + id, b.c0(), wid(w, kWIn), kRoute);
-      if (isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass) {
+      if (takesMid(td[w.toDev])) {
         const PortRef l = ir.atom("channel", {src, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {src, b.c1()}, wid(w, kWMidR));
         src = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -4425,6 +4441,8 @@ out.wires = withLinks(wp.states, *cables, pl);
     out.graph.wires.push_back({{prevShadow, "out"}, {b, m}, W::Audio});
     sourceOf[b] = prevShadow;
   }
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i)  // BR.K: every gated track's meter point (gainStages)
+    if (pl.nodes[i].kind != Kind::Master) out.graph.taps.push_back({i, "meter"});
   for (const uint32_t i : recTaps) {
     out.graph.taps.push_back({i, "rec"});
     const auto it = sourceOf.find(i);

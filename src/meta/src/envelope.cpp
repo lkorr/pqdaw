@@ -24,7 +24,7 @@ constexpr std::array<ParamSpec, kEnvParams> kParams = {{
     {"rcurve", "Release curve", 0.0, -1.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
     {"amount", "Amount", 1.0, 0.0, 1.0, graph::Unit::None, dsp::CurvePreset::Linear, 0.0, false, false},
 }};
-constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthMono}}};
+constexpr std::array<OutputSpec, 1> kOutputs = {{{"out", graph::kWidthInfer}}};  // BR.K: per channel of `in`
 
 // Body node ids. The stateful nodes (whose state keys must survive every re-expansion) have fixed ids; every other
 // node takes the next id from kSeq in build order (the body has no settings, so the order is the same in every

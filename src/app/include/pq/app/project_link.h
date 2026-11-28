@@ -851,6 +851,7 @@ private:
     bool topology = false;
     engine::TopologyBuild topo;                      // topology
     std::unordered_map<uint32_t, uint32_t> meterMap;  // topology: track id → bus of its `out`
+    std::unordered_map<uint32_t, uint32_t> levelMap;  // topology (BR.K): track id → the bus its meter reads
     std::unordered_map<std::string, uint32_t> tapMap;  // topology (T4.7): "<device id>:<param>" → its tap bus
     std::vector<engine::UnitUpdate> units;           // otherwise: the changed units' images, in order
     // M4 review M3 (topology): schedules of continued heavy units whose JIT image replaces the interpreted one in
@@ -1021,6 +1022,8 @@ private:
   std::unordered_map<uint32_t, uint32_t> trackSlots_;  // track id → event slot
   std::vector<uint32_t> freeSlots_;               // FIFO: the least recently freed first
   std::unordered_map<uint32_t, uint32_t> meterBus_;    // track id → bus index of its `out` in the published layout
+  // BR.K: track id → the bus its meter reads (its `meter` export: before the mute / solo gate; the master's `out`).
+  std::unordered_map<uint32_t, uint32_t> levelBus_;
   std::unordered_map<std::string, uint32_t> tapBus_;  // T4.7: "<device id>:<param>" → its tap bus (published layout)
   uint64_t layoutSerial_ = 0;                         // bumped with every new bus map (readLevels drops its pending)
   uint32_t nextParam_ = 0, nextSlot_ = 0;

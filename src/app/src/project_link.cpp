@@ -596,6 +596,7 @@ Status ProjectLink::setSampleRate(double rate) {
   {
     std::lock_guard lock(mutex_);
     meterBus_.clear();  // the new program's layout is published by compileNow
+    levelBus_.clear();
     tapBus_.clear();
     ++layoutSerial_;
     frozenReady_.clear();  // FZ.2: every render is at the old rate (re-keyed below: live until re-rendered)
@@ -1690,6 +1691,7 @@ Status ProjectLink::drainDeferred(bool& drained) {
       auto info = program->publishTopology(d.topo.layout, std::move(d.topo.units));
       if (!info.ok()) return fail(info.error());
       meterBus_ = std::move(d.meterMap);
+      levelBus_ = std::move(d.levelMap);
       tapBus_ = std::move(d.tapMap);
       pendingLatency_.reset();  // T6.2: made for the layout this one replaces (d.latency follows)
       planStale_ = true;        // M6 review L6: sent even when it equals the last one by indices (those were the old layout's)
@@ -2397,6 +2399,18 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     }
     return m;
   };
+  // BR.K: what each track's meter reads: its `meter` export (the output stage before the mute / solo gate: a muted or
+  // solo-muted track still meters what it plays), the master's `out` (it has no gate).
+  auto levelMap = [&](const engine::ProjectLayout& layout) {
+    std::unordered_map<uint32_t, uint32_t> m;
+    for (uint32_t b = 0; b < layout.busKey.size(); ++b)
+      if (const std::string& k = layout.busKey[b]; k.size() > 6 && k.ends_with(":meter"))
+        m[static_cast<uint32_t>(std::strtoul(k.c_str(), nullptr, 10))] = b;
+    for (uint32_t b = 0; b < layout.busKey.size(); ++b)
+      if (const std::string& k = layout.busKey[b]; k.size() > 4 && k.ends_with(":out"))
+        m.try_emplace(static_cast<uint32_t>(std::strtoul(k.c_str(), nullptr, 10)), b);
+    return m;
+  };
   // T4.7: the modulation taps ("<track id>:tap_d<device id>_<param>") → "<device id>:<param>".
   auto tapMap = [&](const engine::ProjectLayout& layout) {
     std::unordered_map<std::string, uint32_t> m;
@@ -2410,7 +2424,8 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
   auto metered = [&](engine::ProjectLayout& layout) {
     layout.busMetered.assign(layout.busKey.size(), 0);
     for (size_t b = 0; b < layout.busKey.size(); ++b)
-      layout.busMetered[b] = layout.busKey[b].ends_with(":out") || layout.busKey[b].find(":tap_d") != std::string::npos ? 1 : 0;
+      layout.busMetered[b] = layout.busKey[b].ends_with(":meter") || layout.busKey[b].find(":tap_d") != std::string::npos ? 1 : 0;
+    for (const auto& [id, b] : levelMap(layout)) layout.busMetered[b] = 1;  // BR.K: the master's `out`
     // AP.2b: the cables into note-device params: their buses' values, at the index the note chains map.
     layout.busValue.clear();
     for (const doc::LoweredNoteMod& m : lp.noteMods) {
@@ -2474,6 +2489,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     {
       std::lock_guard lock(mutex_);
       meterBus_ = meterMap(b.value().layout);
+      levelBus_ = levelMap(b.value().layout);
       tapBus_ = tapMap(b.value().layout);
       ++layoutSerial_;
     }
@@ -2497,6 +2513,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
       compiledUnits = tb.value().compiled;
       d.topology = true;
       d.meterMap = meterMap(tb.value().layout);
+      d.levelMap = levelMap(tb.value().layout);
       d.tapMap = tapMap(tb.value().layout);
       d.topo = std::move(tb.value());
       // M4 review M3: a rebuilt unit that continues an earlier one (the same member tracks) which plays a JIT image
@@ -2969,7 +2986,7 @@ void ProjectLink::readLevels(int who, std::span<const uint32_t> buses, std::span
       levelsSerial_ = layoutSerial_;
     }
     // Every metered bus at once: the program restarts all of them at each read.
-    for (const auto& [id, b] : meterBus_) all.push_back(b);
+    for (const auto& [id, b] : levelBus_) all.push_back(b);
     for (const auto& [key, b] : tapBus_) all.push_back(b);
     levels.resize(all.size());
     if (program != nullptr) program->readMeters(all, levels);
@@ -3058,7 +3075,7 @@ void ProjectLink::read(std::span<const doc::TrackId> ids, std::span<ui::MeterLev
   {
     std::lock_guard lock(mutex_);
     for (size_t i = 0; i < n; ++i)
-      if (auto it = meterBus_.find(ids[i].value); it != meterBus_.end()) buses[i] = it->second;
+      if (auto it = levelBus_.find(ids[i].value); it != levelBus_.end()) buses[i] = it->second;
   }
   readLevels(0, buses, levels);
   // Asleep, nothing runs and every bus is silent; the program's published levels are those of the last block it ran
