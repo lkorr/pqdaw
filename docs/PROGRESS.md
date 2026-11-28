@@ -1566,3 +1566,17 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views default tier 1073/1073 (one known unrelated SIGSEGV re-run); test_audio_from through real window/menu events; pqdaw compiles.
 - Perf / CPU-efficiency check: UI thread only; menu filter built once per opening.
 - Notes/blockers: Audio In cables drawn dim until RT.2. Goldens: new project-patch-audio-in, mixer-audio-in, tracks-audio-in; 19 re-recorded (No Input header line, lane chip). Q?-RT.3-a/b.
+
+## 2026-11-27 · WB · task/WB-warp-button (merged)
+- Did: the clip popup's and panel's "Off" chip is a Warp toggle (lit while warped; on: ViewPrefs::defaultWarpMode). ops::setWarpMode from Off warps the clip from its shape: source BPM = the tempo at which its ticks read the source at the speed it plays (mean tempo over the clip / the Off varispeed ratio), old markers dropped; clip_edits::setWarp goes through it (file-tag / detection / bar-guess seeding removed with sourceBpmFor, fileTempo). Reverse removed from the popup (R and the panel keep it).
+- Verified: pq_tests_document WB test (every mode reads the same source frame within 0.1 frame over the clip, ±700 ¢ transpose; Off round trip); pq_tests_views clip / warp / menu / group tests 135/135 after the merge with RT.3, BL and UD. -Affected run killed twice by low memory: the earlier pass showed only goldens + load-timing failures (eq / wavetable / project_patch / samples_ui), playback_s2 passed on re-run. Goldens re-recorded: clip-menu-off / -beats, clip-view-audio, audio-clip-warp-beats / -markers / -short.
+- Perf / CPU-efficiency check: UI edit path only; one tempo-map lookup per warp edit.
+- Notes/blockers: a clip spanning tempo changes keeps its ends exactly, the middle approximately (no markers synthesised). Not checked live.
+
+## 2026-11-27 · BL · task/BL-beats-loop-clicks (merged)
+- Did: Beats loop passes from the second fold on no longer replay one slice up to 4096× (huge level, clicks): next / prev slice pass step the slice index + fold (SlicePass::slice / fold) instead of re-locating the unfolded fractional bound (transient slices) by float. ARCHITECTURE clip-player paragraph updated.
+- Verified: new test (4 passes; grid / transients; Forward / Back-Forth / Off; Envelope 60; loop start > 0; reverse) failed before (pass 2 peak 33.97 vs 0.76), passes after; pq_tests_timeline 1/1 after the merge. -Affected -Slow and the ship pq_bench_dsp link NOT run (killed by low memory twice).
+- Perf / CPU-efficiency check: one binary search at the loop end per pass; the runaway re-render is gone.
+
+## 2026-11-27 · UD · task/UD-undo-keeps-closed (merged)
+- Did: a deleted group restored by undo keeps its open / closed state in the circuit view (deleted ids no longer erased from closedGroups_ / bandExpanded_). Verified by its session: new real-dispatch test, group panels 11/11; here group tests pass after the merge.
