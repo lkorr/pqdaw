@@ -54,6 +54,13 @@ uint32_t ProjectPatch::nodeOf(doc::DeviceId d) const noexcept {
 }
 
 namespace {
+// RT.2: the graph tracks that are the plan's own (past them: Resampling shadows; a hand-built lowering has none).
+size_t ownTracksOf(const pq::doc::LoweredProject& low) noexcept {
+  return low.ownTracks != 0 ? low.ownTracks : low.graph.tracks.size();
+}
+}  // namespace
+
+namespace {
 
 float roundUp4(float v) noexcept { return std::ceil(v / 4.0f) * 4.0f; }
 float textW(std::string_view s) noexcept { return 6.0f * static_cast<float>(s.size()); }  // ≈ the 11-px UI font
@@ -214,7 +221,8 @@ struct Builder {
     if (derived->indexed) return;  // PF.2: the same snapshot and lowering as the last build
     derived->indexed = true;
     doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) { trackById.emplace(t.id.value, &t); });
-    for (size_t i = 0; i < low.trackIds.size(); ++i) graphIndex[low.trackIds[i].value] = static_cast<uint32_t>(i);
+    for (size_t i = 0; i < low.trackIds.size() && i < ownTracksOf(low); ++i)  // (RT.2: not a shadow)
+      graphIndex[low.trackIds[i].value] = static_cast<uint32_t>(i);
     for (size_t i = 0; i < p.returns.size(); ++i) returnIndex[p.returns[i]->id.value] = i;
     for (const doc::WireState& s : low.wires) wireStatus[s.id.value] = s.status;
     {
@@ -248,6 +256,11 @@ struct Builder {
       if ((gw.kind == graph::WireKind::Modulation || gw.kind == graph::WireKind::Sidechain) && gw.from.port.size() > 1 &&
           gw.from.port[0] == 'm')
         modGraphWire[static_cast<uint32_t>(std::stoul(gw.from.port.substr(1)))] = static_cast<uint32_t>(gi);
+      // RT.2 (lower.h "Audio In"): an Audio In cable is an audio route into the recording track's `in m<wire>` — from
+      // the source's m<wire>, a mixer's `post`, or (Resampling) the master's shadow's `out`: keyed by its target port.
+      else if (gw.kind == graph::WireKind::Audio && gw.to.track < ownTracksOf(low) && gw.to.port.size() > 1 &&
+               gw.to.port[0] == 'm' && gw.to.port.find_first_not_of("0123456789", 1) == std::string::npos)
+        modGraphWire[static_cast<uint32_t>(std::stoul(gw.to.port.substr(1)))] = static_cast<uint32_t>(gi);
     }
   }
 
@@ -1074,6 +1087,7 @@ struct Builder {
       for (const graph::ProjectWire& gw : low.graph.wires) {
         if (gw.kind != graph::WireKind::Audio || gw.from.track != gt) continue;
         if (gw.from.port != "post" && gw.from.port != "pre") continue;
+        if (gw.to.port.empty() || gw.to.port[0] != 's') continue;  // RT.2: a mixer out onto an Audio In (no send)
         const doc::TrackId ret = low.trackIds[gw.to.track];
         const auto ri = returnIndex.find(ret.value);
         sends.emplace_back(ri == returnIndex.end() ? 0 : ri->second, "s" + std::to_string(ret.value));
@@ -2529,10 +2543,14 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     if (g.tracks[b.graphTrack].id != b.track.value) return "band " + b.name + ": not its graph track's id";
     if (g.tracks[b.graphTrack].role != b.role) return "band " + b.name + ": role differs";
   }
-  for (uint32_t t = 0; t < g.tracks.size(); ++t)
+  for (uint32_t t = 0; t < ownTracksOf(low) && t < g.tracks.size(); ++t)
     if (bandOfGraph[t] == kNone) return "graph track " + g.tracks[t].name + " has no band";
+  // RT.2: a Resampling shadow (lower.h "Audio In") is drawn as the track it repeats (its band; no blocks of its own).
+  for (auto t = static_cast<uint32_t>(ownTracksOf(low)); t < g.tracks.size(); ++t)
+    for (uint32_t o = 0; o < ownTracksOf(low); ++o)
+      if (low.trackIds[o] == low.trackIds[t]) bandOfGraph[t] = bandOfGraph[o];
   // Devices ↔ calls.
-  for (uint32_t t = 0; t < g.tracks.size(); ++t) {
+  for (uint32_t t = 0; t < ownTracksOf(low) && t < g.tracks.size(); ++t) {
     const graph::Patch& tp = *g.tracks[t].patch;
     const Band& b = pp.bands[bandOfGraph[t]];
     // TX.groups: an opened group's members are blocks of the band too (inside its capsule).
@@ -2618,12 +2636,17 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     const graph::ProjectWire& gw = g.wires[w];
     const std::string what = "graph wire " + g.tracks[gw.from.track].name + "." + gw.from.port + " → " +
                              g.tracks[gw.to.track].name + "." + gw.to.port;
+    if (gw.to.track >= ownTracksOf(low)) continue;  // RT.2: what a Resampling shadow reads (its original's wires, again)
     if (edgeOfWire[w] == kNone) return what + " is not drawn";
     const Edge& e = joined[edgeOfWire[w]];
     const Node& a = pp.nodes[e.from];
     const Node& b = pp.nodes[e.to];
     if (a.band != bandOfGraph[gw.from.track] || b.band != bandOfGraph[gw.to.track]) return what + ": drawn between other bands";
-    if (b.kind == NodeKind::AudioIn) continue;  // RT.3: an Audio In cable (lowered by RT.2's recording read)
+    if (b.kind == NodeKind::AudioIn) {  // RT.2: an Audio In cable: the audio route into the recording track's m<wire>
+      if (gw.kind != graph::WireKind::Audio || gw.to.port != "m" + std::to_string(e.wire.value))
+        return what + ": not the Audio In cable's route";
+      continue;
+    }
     if (gw.kind == graph::WireKind::Audio && gw.from.port == "out" && gw.to.port == "in") {
       if (e.kind != EdgeKind::Route || a.kind != NodeKind::Mixer || a.outputs[e.fromPort].name != "out" || b.kind != NodeKind::Sum)
         return what + ": not a route from the mixer into the Σ";
@@ -2646,7 +2669,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     if (e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) return "a route / send edge without a graph wire";
     const bool lowered = e.kind != EdgeKind::Modulation || e.status == doc::WireStatus::Lowered || e.status == doc::WireStatus::Delayed;
     if (!lowered) continue;  // an inactive / refused wire: drawn dim, not in the graph
-    if (b.kind == NodeKind::AudioIn) continue;  // RT.3: an Audio In cable (its read is the recording link's, RT.2)
+    if (b.kind == NodeKind::AudioIn) continue;  // RT.2: a lowered one into a frozen recording track (no route) only
     if (a.band != b.band) return "an edge across bands without a graph wire";
     if (e.kind == EdgeKind::Modulation) {
       const Band& band = pp.bands[a.band];

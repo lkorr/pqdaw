@@ -107,12 +107,15 @@
 // A project without latency publishes no plan (CompensationPlan::none()): no line exists and a unit's only cost is
 // one pointer compare per block (output bit-identical to a program that never heard of PDC).
 //
-// ---- Track inputs (T6.7) ---------------------------------------------------------------------------------------------
-// setUnitInputs (non-RT, for the last published layout) binds each unit's `track.in` (ProcessContext::trackIn, 2
-// channels) to device input channels of the blocks process() is given (AudioBlock::in): `channels` = 1 reads channel
-// `first` on both, 2 reads `first`, `first + 1`; 0 (the default) or a channel the device does not have reads silence.
-// A binding is one relaxed atomic word per unit (no compile: the channels are not part of the image). A unit with a
-// bound input that the device has is never idle (its input is live audio).
+// ---- Track inputs (T6.7; RT.2) ----------------------------------------------------------------------------------------
+// setUnitInputs (non-RT, for the last published layout) binds INPUT SLOTS of units to device input channels of the
+// blocks process() is given (AudioBlock::in). A track's `trackInput(slot)` reads its slot's pair (ProcessContext::
+// trackIn: 2 pointers per slot, slots < max(ProjectConfig::numClipSlots, 1); `track.in` is slot 0): `channels` = 1
+// reads channel `first` on both, 2 reads `first`, `first + 1`; an unbound slot or a channel the device does not have
+// reads silence. RT.2: a unit holds up to kMaxUnitInputs bindings (the tracks of a merged unit each have their own
+// slot: the lowering uses the track's clip slot); one relaxed atomic word each (no compile: the channels are not part
+// of the image). The pointers of a unit's slots are set just before it runs and cleared after (a slot is only ever
+// read by its own unit). A unit with a bound input that the device has is never idle (its input is live audio).
 
 #include <array>
 #include <atomic>
@@ -173,6 +176,10 @@ struct ProjectLayout {
   // read at their next block start (lower.h "Note devices": a cable into a note device's param, one block late).
   // The index is the publisher's, stable across topologies.
   std::vector<uint32_t> busValue;
+  // RT.2 (optional: empty, or one per bus): a RECORD SOURCE index (< max(ProjectConfig::numClipSlots, 1): the recording
+  // track's clip slot) or kNoBusValue: what recordSource(index, c) reads (the recorder's internal capture sources,
+  // recorder.h). The index is the publisher's, stable across topologies.
+  std::vector<uint32_t> busRecord;
 };
 inline constexpr uint32_t kMaxBusValues = 1024;
 inline constexpr uint32_t kNoBusValue = 0xFFFFFFFFu;
@@ -215,6 +222,11 @@ struct ProjectConfig {
   uint32_t maxPendingPerUnit = 4;  // packets published but not yet current, per unit (rounded up to a power of two)
   float silenceDb = -90.0f;        // SwapMode::Auto: unit outputs at or below this are silent
   BlockHook hook;                  // per image block, before any unit: transport + project params
+  // RT.2: per image block, after every unit ran (the recorder's internal sources read the buses then). RT-safe.
+  struct AfterUnits {
+    void (*fn)(void* user, int64_t sampleTime, uint32_t frames) noexcept = nullptr;
+    void* user = nullptr;
+  } afterUnits;
   uint32_t numProjectParams = 0;
   std::vector<EventSource> eventSources;  // indexed by UnitLayout::eventSlot
   uint32_t eventCapacity = 1024;          // note events per unit per image block
@@ -269,12 +281,14 @@ struct TopologyInfo {
 
 struct CompensationPlan;  // pq/engine/latency_plan.h
 
-// T6.7: a unit's track input (see "Track inputs").
+// T6.7: a track input of a unit (see "Track inputs").
 struct UnitInput {
+  uint32_t slot = 0;     // RT.2: the input slot its track reads (trackInput's constant)
   uint16_t first = 0;
-  uint8_t channels = 0;  // 0: none, 1: mono (both track.in channels), 2: stereo
+  uint8_t channels = 0;  // 0: none, 1: mono (both channels of the slot), 2: stereo
   friend bool operator==(const UnitInput&, const UnitInput&) = default;
 };
+inline constexpr uint32_t kMaxUnitInputs = 8;  // RT.2: bindings per unit (more are ignored: silence)
 
 class ProjectProgram {
 public:
@@ -303,8 +317,8 @@ public:
   // 2^26 frames (InvalidArgument), too many plans pending (Overflow: retry after a block).
   Status setCompensation(const CompensationPlan& plan);
   // T6.7 (see "Track inputs"). Non-RT (serialised with publish). `perUnit` is parallel to the last published layout's
-  // units (shorter: the rest get none).
-  void setUnitInputs(std::span<const UnitInput> perUnit);
+  // units (shorter: the rest get none); each unit's first kMaxUnitInputs bindings with channels > 0 are kept.
+  void setUnitInputs(std::span<const std::vector<UnitInput>> perUnit);
   // The plan's total (CompensationPlan::total) of the last setCompensation: how late the output is. Any thread.
   uint32_t outputLatency() const noexcept { return outputLatency_.load(std::memory_order_acquire); }
   // Audio thread (tests): a delay line of the current plan reads unit `unit`'s input bus `bus` (of the topology it runs).
@@ -360,6 +374,9 @@ public:
   TransportSnapshot& transport() noexcept { return transport_; }
   // The last block's values (frames floats) of a bus of the topology the audio thread runs.
   const float* bus(uint32_t b, uint16_t channel) const noexcept;
+  // RT.2: channel `channel` of the bus that ProjectLayout::busRecord gives record source `source` in the topology the
+  // audio thread runs (a mono bus: its channel 0 on both), or null. RT-safe.
+  const float* recordSource(uint32_t source, uint16_t channel) const noexcept;
   uint32_t numBuses() const noexcept;  // of the topology the audio thread runs
   const ProgramImage* current(uint32_t unit) const noexcept;
   bool crossfading(uint32_t unit) const noexcept;
@@ -399,6 +416,8 @@ private:
   struct Compensation;
   ProjectProgram(const ProjectConfig& config, ProjectLayout layout);
   static void onBlock(void* self, const AudioBlock& b) noexcept { static_cast<ProjectProgram*>(self)->process(b); }
+  void clearTrackIn(const Unit& U) noexcept;  // RT.2: its slots' input pointers back to null. RT-safe
+  void recordsOf(Topology& t, const ProjectLayout& layout) const;  // RT.2: t.records from layout.busRecord
 
   // Non-RT (mutex_ held).
   Result<std::unique_ptr<Packet>> makePacket(const Unit& U, uint32_t unitIndex, const ProjectLayout& layout,
@@ -484,6 +503,8 @@ private:
   // PF.4b: the units' ProcessContext (audio thread): what every unit shares is set once per block (process()), the
   // rest per unit (runUnit), instead of a fresh context per unit.
   ProcessContext unitCtx_;
+  // RT.2: the input slots' channel pointers (2 per slot; ProcessContext::trackIn), set per unit while it runs.
+  std::vector<const float*> trackIn_;
   ProjectStats stats_;
   std::vector<CaptureTap> capture_;                 // EX.1 (set while process() does not run)
   uint32_t captureAt_ = 0;

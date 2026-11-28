@@ -46,7 +46,8 @@ namespace pq::app {
 struct RecordingTrack {
   doc::TrackId track;
   bool audio = false;
-  doc::AudioInput input;         // audio: the device channels
+  doc::AudioInput input;         // audio: the device channels (RT.2: an internal source's file: {0, 2})
+  uint32_t source = 0xFFFFFFFFu; // RT.2: audio from a cable: its internal capture source (CaptureSet::sources)
   std::filesystem::path path;    // audio: the WAV written
   int64_t frames = 0;            // audio, in the result: the frames its file holds (a write error stops it early)
   uint32_t slot = 0xFFFFFFFFu;   // MIDI: the track's event slot (its live notes)
@@ -120,10 +121,14 @@ public:
   void setWriterThread(bool on);
   // UI thread: the engine whose recorder is drained (a sample-rate change makes a new one). Not during a session.
   void bind(engine::Engine* e);
-  // UI thread: the device input channels the armed audio tracks use (sorted, distinct). A changed set gets new rings
-  // (allocated here, handed to the recorder) unless a session runs (then at its end); an empty one keeps the rings
-  // (nothing is captured without a session).
-  void prepareChannels(std::vector<uint16_t> channels);
+  // UI thread: the device input channels the armed audio tracks use (sorted, distinct) and (RT.2) the internal capture
+  // sources of the armed tracks recording a cable (sorted, distinct). A changed set gets new rings (allocated here,
+  // handed to the recorder) unless a session runs (then at its end); an empty one keeps the rings (nothing is captured
+  // without a session).
+  void prepareChannels(std::vector<uint16_t> channels, std::vector<uint32_t> sources = {});
+  // RT.2, any thread: internal source `source`'s capture offset (frames: its recording track's graph latency
+  // compensation), kept for the sets made later too.
+  void setSourceOffset(uint32_t source, uint32_t frames);
   // UI thread: starts a session (before the Record command is posted): opens the audio tracks' files (`dir` is
   // created), turns the engine's note tap on. Errors: a session already runs, a file that cannot be created.
   Status begin(std::vector<RecordingTrack> tracks, double sampleRate);
@@ -169,6 +174,10 @@ private:
   engine::Engine* engine_ = nullptr;
   std::vector<uint16_t> channels_;
   std::vector<uint16_t> wantChannels_;
+  std::vector<uint32_t> sources_, wantSources_;  // RT.2
+  std::mutex offsetMutex_;                       // RT.2: offsets_ and offsetSet_ (never held across I/O)
+  std::vector<std::pair<uint32_t, uint32_t>> offsets_;  // (source, frames)
+  std::shared_ptr<engine::CaptureSet> offsetSet_;
   uint32_t nextSerial_ = 1;
   bool active_ = false;  // UI thread's view
   uint32_t liveSession_ = 0;

@@ -220,18 +220,43 @@ void RecordingService::bind(engine::Engine* e) {  // UI thread
   if (engine_ != nullptr && set_) engine_->recorder().setCapture(set_);
 }
 
-void RecordingService::prepareChannels(std::vector<uint16_t> channels) {  // UI thread
+void RecordingService::prepareChannels(std::vector<uint16_t> channels, std::vector<uint32_t> sources) {  // UI thread
   wantChannels_ = channels;
-  if (channels.empty() || channels == channels_ || active_ || engine_ == nullptr) return;
+  wantSources_ = sources;
+  if ((channels.empty() && sources.empty()) || (channels == channels_ && sources == sources_) || active_ ||
+      engine_ == nullptr)
+    return;
   const double rate = engine_->config().sampleRate;
-  auto set = std::make_shared<engine::CaptureSet>(channels, static_cast<uint32_t>(std::ceil(kRingSeconds * rate)),
+  auto set = std::make_shared<engine::CaptureSet>(channels, sources, static_cast<uint32_t>(std::ceil(kRingSeconds * rate)),
                                                   nextSerial_++);
+  {
+    std::lock_guard lock(offsetMutex_);  // RT.2: the sources' offsets as last planned
+    for (size_t j = 0; j < sources.size(); ++j)
+      for (const auto& [s, f] : offsets_)
+        if (s == sources[j]) set->setSourceOffset(j, f);
+    offsetSet_ = set;
+  }
   {
     std::lock_guard lock(ioMutex_);
     set_ = set;
   }
   channels_ = std::move(channels);
+  sources_ = std::move(sources);
   engine_->recorder().setCapture(std::move(set));
+}
+
+void RecordingService::setSourceOffset(uint32_t source, uint32_t frames) {  // any thread
+  std::lock_guard lock(offsetMutex_);
+  bool found = false;
+  for (auto& [s, f] : offsets_)
+    if (s == source) {
+      f = frames;
+      found = true;
+    }
+  if (!found) offsets_.emplace_back(source, frames);
+  if (offsetSet_)
+    for (size_t j = 0; j < offsetSet_->sources().size(); ++j)
+      if (offsetSet_->sources()[j] == source) offsetSet_->setSourceOffset(j, frames);
 }
 
 Status RecordingService::begin(std::vector<RecordingTrack> tracks, double sampleRate) {  // UI thread
@@ -259,8 +284,10 @@ Status RecordingService::begin(std::vector<RecordingTrack> tracks, double sample
         writers_.clear();
         return st;
       }
-      for (uint32_t c = 0; c < ch; ++c)
-        w->ringIndex.push_back(set_ ? set_->indexOf(static_cast<uint16_t>(t.input.firstChannel + c)) : -1);
+      for (uint32_t c = 0; c < ch; ++c)  // (RT.2: an internal source's rings)
+        w->ringIndex.push_back(!set_ ? -1
+                               : t.source != 0xFFFFFFFFu ? set_->indexOfSource(t.source, static_cast<uint16_t>(c))
+                                                         : set_->indexOf(static_cast<uint16_t>(t.input.firstChannel + c)));
       w->track = t;
       audioTracks.push_back(t.track);
       writers_.push_back(std::move(w));
@@ -332,7 +359,7 @@ void RecordingService::addRun(const engine::CaptureSegment& s) {  // ioMutex_ he
 void RecordingService::writeFrames(bool fromRings, uint32_t stride, uint32_t from, uint32_t n) {  // ioMutex_ held
   if (n == 0) return;
   if (zeros_.size() < n) zeros_.assign(n, 0.0f);
-  const size_t nch = set_ ? set_->channels().size() : 0;
+  const size_t nch = set_ ? set_->rings() : 0;
   for (size_t i = 0; i < writers_.size(); ++i) {
     Writer& w = *writers_[i];
     const float* chans[2] = {zeros_.data(), zeros_.data()};
@@ -424,7 +451,7 @@ bool RecordingService::pumpLocked() {  // ioMutex_ held
     const uint32_t n = s.frames;
     const bool inRings = n != 0 && s.dropped == 0 && set_ && s.captureSet == set_->serial();
     if (inRings) {  // take the frames off the rings whatever happens to them
-      const size_t nch = set_->channels().size();
+      const size_t nch = set_->rings();
       if (scratch_.size() < nch * n) scratch_.resize(nch * n);
       for (size_t c = 0; c < nch; ++c) (void)set_->ring(c).pop(scratch_.data() + c * n, n);
     }
@@ -475,7 +502,8 @@ RecordingResult RecordingService::finish() {  // UI thread
     errorsTaken_ = errors_.size();
   }
   active_ = false;
-  if (wantChannels_ != channels_) prepareChannels(wantChannels_);  // a change that waited for the session's end
+  if (wantChannels_ != channels_ || wantSources_ != sources_)  // a change that waited for the session's end
+    prepareChannels(wantChannels_, wantSources_);
   return r;
 }
 

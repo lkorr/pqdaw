@@ -210,6 +210,7 @@ constexpr PortSpec pReduceOut[] = {{"out", kGlobalAny}};
 constexpr PortSpec pMulAdd[] = {{"a", kR}, {"b", kR}, {"c", kR}};
 constexpr PortSpec pSend[] = {{"x", kR}, {"bus", kRConst}};
 constexpr PortSpec pClipPlayer[] = {{"clip", kRConst}};
+constexpr PortSpec pTrackInput[] = {{"slot", kRConst}};
 // Tuning as a signal (T2.6, SPEC §3.3; pq/dsp/tuning_table.h). `table` names the tuning table resource.
 constexpr PortSpec pTuningHz[] = {{"degree", kR},
                                   {"equave", kR, true, 0.0f},
@@ -478,7 +479,9 @@ const AtomSignature kAtoms[] = {
      "bpm from the reset"},
     {"granular", C::Sample, pGranular, pSampleReadOut, sizeof(dsp::GranularState), kStateful, 0, {},
      "stereo granulator over the sample: Classic / Loop / Cloud grains with sprays, shapes, freeze and harmonic ratios"},
-    {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input"},
+    {"track.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the track's input (trackInput(0))"},
+    {"trackInput", C::Io, pTrackInput, pGlobalAudioN, 0, 0, 0, {},
+     "the device input channels bound to input slot `slot` (RT.2: one slot per audio track, its clip slot)"},
     {"sidechain.in", C::Io, kNoPorts, pGlobalAudioN, 0, 0, 0, {}, "the device's sidechain input"},
     {"send", C::Io, pSend, kNoPorts, 0, kSideEffect | kBroadcast, 0, {}, "add x into bus"},
     {"voice_tap", C::Io, pVoiceTap, kNoPorts, sizeof(dsp::VoiceTapState), kStateful | kSideEffect, 0, {},

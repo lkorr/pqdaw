@@ -1,7 +1,7 @@
 // RT.1 (docs/plans/RT.md; pq/document/audio_in.h): an audio track's Audio In — one wire end (Wire::recordInput), its
 // source as a value (AudioFrom: None / Ext / Output / Resampling), the one-step replace (ops::setAudioFrom, ops::connect
-// onto it), the loop and kind refusals (and the menus' filter AudioInSources), save / load (schema 23), and the
-// lowering ignoring the cable until RT.2.
+// onto it), the loop and kind refusals (and the menus' filter AudioInSources), save / load (schema 23), and (RT.2) how
+// the lowering wires the cable.
 #include <doctest/doctest.h>
 
 #include <memory>
@@ -310,17 +310,103 @@ TEST_CASE("RT.1 the loader checks the Audio In rules; a mixer's output goes only
   CHECK_FALSE(d.store.dispatch(AddWire{w}).ok());
 }
 
-TEST_CASE("RT.1 the lowering ignores an Audio In cable until RT.2 (the same patches; no crash)") {
+TEST_CASE("RT.2 the lowering: an Audio In cable is an audio route into the recording track's monitor mix and its `rec` "
+          "capture bus; a mixer out reads `post`; Resampling reads the master's shadow without the recording track") {
   Doc d;
+  auto graphIndex = [](const LoweredProject& lp, TrackId t) {
+    for (uint32_t i = 0; i < lp.ownTracks; ++i)
+      if (lp.trackIds[i] == t) return i;
+    FAIL("track not lowered");
+    return 0u;
+  };
+  auto wireInto = [](const LoweredProject& lp, uint32_t to, const std::string& port) -> const pq::graph::ProjectWire* {
+    for (const pq::graph::ProjectWire& w : lp.graph.wires)
+      if (w.to.track == to && w.to.port == port) return &w;
+    return nullptr;
+  };
+  auto stateOf = [](const std::vector<WireState>& states, WireId w) {
+    for (const WireState& s : states)
+      if (s.id == w) return s.status;
+    return WireStatus::Invalid;
+  };
   const LoweredProject before = d.lowered();
+  CHECK(before.audioInTaps.empty());
+  CHECK(before.ownTracks == before.graph.tracks.size());
+  // A block's output: Src exports it as m<wire>, Rec reads it (an audio route: compensated, no merge) through the gate.
   d.set(AudioFrom::output(device(d.tanh)));
-  const LoweredProject after = d.lowered();
-  REQUIRE(before.patches.size() == after.patches.size());
-  for (size_t i = 0; i < before.patches.size(); ++i) CHECK(patchText(*before.patches[i]) == patchText(*after.patches[i]));
-  CHECK(before.graph.wires.size() == after.graph.wires.size());
-  CHECK_NOTHROW((void)lowerParams(d.doc(), false, library()));
-  CHECK_NOTHROW((void)wireStates(d.doc(), library()));
+  const Wire* w = audioInWireOf(d.doc(), d.rec);
+  REQUIRE(w != nullptr);
+  const std::string m = "m" + std::to_string(w->id.value);
+  const LoweredProject lp = d.lowered();
+  const uint32_t src = graphIndex(lp, d.src), rec = graphIndex(lp, d.rec);
+  const std::string recText = patchText(*lp.patches[rec]);
+  CHECK(recText.find("in " + m) != std::string::npos);
+  CHECK(recText.find("export rec = " + m) != std::string::npos);
+  CHECK(recText.find("monitor") != std::string::npos);
+  CHECK(patchText(*lp.patches[src]).find("export " + m) != std::string::npos);
+  const pq::graph::ProjectWire* route = wireInto(lp, rec, m);
+  REQUIRE(route != nullptr);
+  CHECK(route->from.track == src);
+  CHECK(route->kind == pq::graph::WireKind::Audio);
+  REQUIRE(lp.audioInTaps.size() == 1);
+  CHECK(lp.audioInTaps[0].id == d.rec);
+  CHECK(lp.audioInTaps[0].track == rec);
+  CHECK(lp.audioInTaps[0].source == src);
+  bool tapped = false;
+  for (const pq::graph::ProjectPort& t : lp.graph.taps) tapped = tapped || (t.track == rec && t.port == "rec");
+  CHECK(tapped);
+  CHECK(lp.audioInputs.empty());  // (no Ext. In)
+  CHECK(stateOf(lp.wires, w->id) == WireStatus::Lowered);
+  CHECK(stateOf(wireStates(d.doc(), library()), w->id) == WireStatus::Lowered);
+  bool gate = false;
+  for (const LoweredParam& q : lowerParams(d.doc(), false, library()))
+    gate = gate || q.key == std::to_string(d.rec.value) + ":monitor";
+  CHECK(gate);
+  // The track's own signal (its source: Pre FX): Src's sourceX, every channel.
+  d.set(AudioFrom::output(source(d.src)));
+  CHECK(wireInto(d.lowered(), rec, "m" + std::to_string(audioInWireOf(d.doc(), d.rec)->id.value)) != nullptr);
+  // A mixer's output (Post Mixer): the track's `post` export.
+  d.set(AudioFrom::output(mixerOut(d.src)));
+  {
+    const LoweredProject mx = d.lowered();
+    const pq::graph::ProjectWire* x = wireInto(mx, rec, "m" + std::to_string(audioInWireOf(d.doc(), d.rec)->id.value));
+    REQUIRE(x != nullptr);
+    CHECK(x->from.track == src);
+    CHECK(x->from.port == "post");
+    CHECK(mx.ownTracks == mx.graph.tracks.size());
+  }
+  // Resampling: the master again (a shadow, the same patch and params) reading everything but Rec; Rec reads its out.
   d.set(AudioFrom::resampling());
-  const LoweredProject resampled = d.lowered();
-  for (size_t i = 0; i < before.patches.size(); ++i) CHECK(patchText(*before.patches[i]) == patchText(*resampled.patches[i]));
+  {
+    const LoweredProject rs = d.lowered();
+    const uint32_t master = graphIndex(rs, d.master());
+    REQUIRE(rs.graph.tracks.size() == rs.ownTracks + 1);
+    const uint32_t shadow = rs.ownTracks;
+    CHECK(rs.trackIds[shadow] == d.master());
+    CHECK(rs.patches[shadow] == rs.patches[master]);
+    CHECK(rs.graph.tracks[shadow].id >= kShadowTrackBase);
+    const pq::graph::ProjectWire* x = wireInto(rs, rec, "m" + std::to_string(audioInWireOf(d.doc(), d.rec)->id.value));
+    REQUIRE(x != nullptr);
+    CHECK(x->from.track == shadow);
+    CHECK(x->from.port == "out");
+    size_t into = 0, intoMaster = 0;
+    for (const pq::graph::ProjectWire& g : rs.graph.wires) {
+      if (g.to.track == master) ++intoMaster;
+      if (g.to.track != shadow) continue;
+      ++into;
+      CHECK(g.from.track != rec);
+    }
+    CHECK(into + 1 == intoMaster);  // everything the master reads but Rec
+    size_t params = 0, shadowParams = 0;
+    for (const LoweredParam& q : rs.params) {
+      params += q.track == master ? 1u : 0u;
+      shadowParams += q.track == shadow ? 1u : 0u;
+    }
+    CHECK(params == shadowParams);
+  }
+  // None again: the same patches as before the first cable.
+  d.set(AudioFrom::none());
+  const LoweredProject after = d.lowered();
+  REQUIRE(after.patches.size() == before.patches.size());
+  for (size_t i = 0; i < before.patches.size(); ++i) CHECK(patchText(*before.patches[i]) == patchText(*after.patches[i]));
 }

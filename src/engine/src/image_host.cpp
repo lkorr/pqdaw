@@ -710,6 +710,10 @@ bool ImageHost::externals(const g::Schedule& s) {
         else if (name == "transport.barPhase") r.src = Src::TransportBarPhase;
         else if (name == "transport.playing") r.src = Src::TransportPlaying;
         else if (name == "track.in") r.src = Src::TrackIn;
+        else if (name == "trackInput") {  // RT.2: input slot `clip`'s pair (ProcessContext::trackIn: 2 per slot)
+          r.src = ex.channel < 2 ? Src::TrackIn : Src::Silence;
+          r.index = ex.clip * 2 + ex.channel;
+        }
         else if (name == "sidechain.in") r.src = Src::Sidechain;
         else if (name == "clipPlayer") {  // T5.4: the clip slot's audio, rendered by the timeline's clip player
           r.src = ex.channel < kClipChannels ? Src::Clip : Src::Silence;

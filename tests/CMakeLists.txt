@@ -167,6 +167,7 @@ pq_add_test(pq_tests_playback PERF SHARDS 4  # T5.12: the 60-s clip render (perf
     app/test_live_input.cpp  # T6.4: live MIDI input (live == drawn bit for bit in Keys / Hz across tunings, routes, keyboard, MIDI service)
     app/test_metronome_link.cpp  # T6.6: Track Delay ±480 through the link, a delay edit compiles nothing, metronome settings, Record counts in
     app/test_recording_link.cpp  # T6.7: recording through the link (audio bit-exact + latency placement, loop takes, punch, Keys / Hz notes, overdub)
+    app/test_audio_in_link.cpp  # RT.2: recording from a track (a device, a mixer out, a source, a rack chain, Resampling; monitor; merged Ext. Ins)
     app/test_capture_link.cpp  # T6.9: Capture MIDI through the link (playing ±1 ms, stopped 97 BPM loop, Keys / Hz identities, Ctrl+Shift+C by key dispatch)
     app/test_audio_playback.cpp  # T5.4: audio clips through the link (golden audio-clips, streaming, idle units, edits)
     app/test_automation_record.cpp  # AR.1: automation recording by real dispatch (a Generator drag writes its lane; one undo step with the take; Automation Arm off)
@@ -421,7 +422,7 @@ pq_add_test(pq_tests_timeline
     engine/test_warp.cpp  # T6.3: warp markers, Beats, Tones, Texture (tempo / pitch accuracy, block / streaming identity, RtScope)
     engine/test_live_input.cpp  # T6.4: live note input (routing, stamps → frames, held notes, bend, 10k ev/s)
     engine/test_metronome.cpp  # T6.6: metronome beats (ramps, signatures, PDC), count-in, the click pair, offline
-    engine/test_recorder.cpp  # T6.7: the recorder (capture bit-exact with song time, punch + latency, overflow, monitor gates), crash-safe WAV
+    engine/test_recorder.cpp  # T6.7: the recorder (capture bit-exact with song time, punch + latency, overflow, monitor gates), crash-safe WAV; RT.2 internal sources
   DEPS pq_engine pq_doc)
 
 # T1.10: golden offline renders (tests/golden: patches, committed WAVs, the absolute + spectral comparison helper) on
@@ -568,7 +569,7 @@ pq_add_test(pq_tests_document
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
     document/test_cut_wires.cpp  # WI.2: a cut wire lowers as the project without it (Refused / Type), a cut main link breaks the path, wire ends
     document/test_lower_incremental.cpp  # PF.6: the lowering given the previous one equals a fresh one after each edit; untouched tracks keep their patches
-    document/test_audio_in.cpp  # RT.1: Audio In (record from a track): AudioFrom kinds round-trip, one-step replace, loop / kind refusals, lowering ignores it
+    document/test_audio_in.cpp  # RT.1: Audio In (record from a track): AudioFrom kinds round-trip, one-step replace, loop / kind refusals; RT.2: its lowering
     document/test_sidechain.cpp  # DY.2: cross-track cables into signal inputs are Sidechain (params Modulation); cable sources, one-step picks
     document/test_frozen.cpp  # FZ.1: frozen tracks (file, SetTrackFrozen, the apply guard, the lowering from a render slot, captureOwn)
     document/test_midi_file.cpp  # MF.1: SMF reader / writer (running status, sysex, RMID, errors, fuzz, 10 MB), notes (pairing, RPN / MPE bends, MTS, sustain)

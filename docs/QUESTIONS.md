@@ -2981,6 +2981,19 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   wire.
 - Status: open
 
+## Q?-RT.2-a · 2026-11-27 · RT.2 · How an Audio In cable reaches the engine; what Resampling and the capture offset are
+- Context: the plan says "read like the DY.2 sidechain" (WireKind::Sidechain merges the two tracks into one unit), "a
+  second master sum" for Resampling, and "offset = graph latency compensation only".
+- Options: wire kind — (a) Sidechain (merge A and B), (b) Audio (a bus like a send: compensated the same, no merge).
+  Resampling — (a) the master's input sum without B, before the master's devices, (b) the master again without B: every
+  group on B's route and the master lowered as SHADOW graph tracks (same patch and params) reading all but B's route.
+  Offset — (a) B's unit arrival A_u, (b) A_u + T(B) always.
+- Choice: kind (b) (no unit merge, so recording never couples compiles; both are latency-compensated). Resampling (b):
+  exactly Live's "Main output minus the recording track", master devices included; costs a second master (and route
+  group) chain only while a track resamples, and raises the output latency by the master chain's own latency then.
+  Offset: A_u, plus T(B) only when the source is in B's unit (no bus between them). Takes from a cable are stereo files
+  (a mono source duplicated), named "From <track>" / "Resampling".
+
 ## Q?-BR.J-a · What the MOS circle's reset resets
 - Context: bug 2026-11-27_16-16-48 asked for a reset button "when you mess up your mos circle intervals". The circle
   already had a "× reset" for MODMOS alterations, but it was small, sat among the centre's labels, and only appeared

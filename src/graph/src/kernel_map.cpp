@@ -136,6 +136,7 @@ constexpr NoKernel kNoKernel[] = {
      "consumed by infer(): rebinds voice.hz / voice.cents inside the subcircuits of its patch (T2.6)"},
     {"transport.", Lowering::Engine, "read from the transport snapshot in ProcessContext"},
     {"track.in", Lowering::Engine, "the track's input buffers"},
+    {"trackInput", Lowering::Engine, "the input buffers bound to a slot"},
     {"sidechain.in", Lowering::Engine, "the device's sidechain buffers"},
     {"send", Lowering::Engine, "accumulates into a bus buffer owned by the engine"},
     {"clipPlayer", Lowering::Engine, "native warp-engine playback (SPEC §9.4), engine-owned state"},

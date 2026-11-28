@@ -40,15 +40,28 @@ bool FloatRing::pop(float* out, uint32_t n) noexcept {  // RT-safe
 }
 
 CaptureSet::CaptureSet(std::span<const uint16_t> channels, uint32_t ringFrames, uint32_t serial)
-    : channels_(channels.begin(), channels.end()), serial_(serial) {
+    : CaptureSet(channels, {}, ringFrames, serial) {}
+
+CaptureSet::CaptureSet(std::span<const uint16_t> channels, std::span<const uint32_t> sources, uint32_t ringFrames,
+                       uint32_t serial)
+    : channels_(channels.begin(), channels.end()), sources_(sources.begin(), sources.end()), serial_(serial) {
   const uint32_t cap = std::bit_ceil(std::max(ringFrames, 1024u));
-  rings_.reserve(channels_.size());
-  for (size_t i = 0; i < channels_.size(); ++i) rings_.push_back(std::make_unique<FloatRing>(cap));
+  const size_t n = channels_.size() + 2 * sources_.size();
+  rings_.reserve(n);
+  for (size_t i = 0; i < n; ++i) rings_.push_back(std::make_unique<FloatRing>(cap));
+  offsets_ = std::make_unique<std::atomic<uint32_t>[]>(std::max<size_t>(sources_.size(), 1));
+  if (!sources_.empty()) history_ = AlignedBuffer<float>(n * kHistoryFrames);  // RT.2 (zeros)
 }
 
 int32_t CaptureSet::indexOf(uint16_t ch) const noexcept {
   for (size_t i = 0; i < channels_.size(); ++i)
     if (channels_[i] == ch) return static_cast<int32_t>(i);
+  return -1;
+}
+
+int32_t CaptureSet::indexOfSource(uint32_t source, uint16_t c) const noexcept {
+  for (size_t j = 0; j < sources_.size(); ++j)
+    if (sources_[j] == source && c < 2) return static_cast<int32_t>(channels_.size() + 2 * j + c);
   return -1;
 }
 
@@ -105,11 +118,29 @@ void Recorder::pushPiece(CaptureSet* set, int64_t engine, int64_t song, int64_t 
     return;
   }
   const std::span<const uint16_t> chans = set->channels();
+  const size_t rings = set->rings();
   bool room = true;
-  for (size_t i = 0; i < chans.size() && room; ++i) room = set->ring(i).space() >= s.frames;
-  if (room) {
+  for (size_t i = 0; i < rings && room; ++i) room = set->ring(i).space() >= s.frames;
+  if (room && set->sources().empty()) {
     const int64_t at = engine + off;  // captured now: inside this device block
     for (size_t i = 0; i < chans.size(); ++i) (void)set->ring(i).push(input(chans[i], at), s.frames);
+    bump(stats_.capturedFrames, s.frames);
+  } else if (room) {
+    // RT.2: every ring from its history, at the engine time its own offset puts the played frames.
+    constexpr int64_t kH = CaptureSet::kHistoryFrames;
+    for (size_t i = 0; i < rings; ++i) {
+      const int64_t at = engine + ringOffset(*set, i, off);
+      const float* h = set->history(i);
+      FloatRing& r = set->ring(i);
+      if (off - ringOffset(*set, i, off) + blockFrames_ > kH) {  // further back than the history holds: silence
+        (void)r.push(nullptr, s.frames);
+        continue;
+      }
+      const auto from = static_cast<uint32_t>(at & (kH - 1));
+      const uint32_t first = std::min<uint32_t>(s.frames, static_cast<uint32_t>(kH) - from);
+      (void)r.push(h + from, first);
+      if (first < s.frames) (void)r.push(h, s.frames - first);
+    }
     bump(stats_.capturedFrames, s.frames);
   } else {
     s.dropped = s.frames;
@@ -132,6 +163,7 @@ void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32
     // a repeat in the file) where one constant offset for the whole file is what the commit assumes.
     sessionIn_ = inLatency_.load(std::memory_order_relaxed);
     sessionOut_ = outLatency_.load(std::memory_order_relaxed);
+    sessionSrcFrozen_ = false;  // RT.2: the sources' offsets are taken at the session's first captureSources
   }
   // The runs: the session's time map, and the played history (contiguous runs merged).
   for (const TransportRun& r : tl.runs()) {
@@ -156,9 +188,60 @@ void Recorder::capture(const Timeline& tl, int64_t time, uint32_t frames, uint32
       playedCount_ = std::min(playedCount_ + 1, kPlayedRuns);  // full: the oldest goes
     }
   }
-  // This block's input frames, on what was played `off` frames earlier (M6 review M6: across a wrap too).
+  // This block's input frames, on what was played `off` frames earlier (M6 review M6: across a wrap too). RT.2: a set
+  // with internal sources places after the units (captureSources).
   CaptureSet* set = capture_.ptr.load(std::memory_order_acquire);
+  if (set != nullptr && !set->sources().empty()) return;
   const int64_t off = std::max<int64_t>(0, int64_t{sessionIn_} + sessionOut_ + pdc + manual_.load(std::memory_order_relaxed));
+  place(tl, set, time, frames, off, session);
+}
+
+int64_t Recorder::ringOffset(const CaptureSet& set, size_t i, int64_t off) const noexcept {  // RT-safe
+  const size_t nch = set.channels().size();
+  if (i < nch) return devOff_;
+  (void)off;
+  const size_t j = (i - nch) / 2;
+  return j < kMaxSources ? int64_t{sessionSrc_[j]} : 0;
+}
+
+void Recorder::captureSources(const Timeline& tl, int64_t time, uint32_t frames, uint32_t pdc) noexcept {  // RT-safe
+  if (!tl.recording()) return;
+  CaptureSet* set = capture_.ptr.load(std::memory_order_acquire);
+  if (set == nullptr || set->sources().empty()) return;
+  const std::span<const uint16_t> chans = set->channels();
+  const std::span<const uint32_t> srcs = set->sources();
+  if (!sessionSrcFrozen_) {  // M6 review M7's rule for the sources too: the offsets of the session's start
+    for (size_t j = 0; j < srcs.size() && j < kMaxSources; ++j) sessionSrc_[j] = set->sourceOffset(j);
+    sessionSrcFrozen_ = true;
+  }
+  // Every ring's frames of this image block into its history (engine time modulo its size).
+  constexpr uint32_t kH = CaptureSet::kHistoryFrames;
+  auto keep = [&](size_t ring, const float* x) noexcept {
+    float* h = set->history(ring);
+    const auto at = static_cast<uint32_t>(time & (kH - 1));
+    const uint32_t first = std::min(frames, kH - at);
+    if (x != nullptr) {
+      std::memcpy(h + at, x, sizeof(float) * first);
+      std::memcpy(h, x + first, sizeof(float) * (frames - first));
+    } else {
+      std::memset(h + at, 0, sizeof(float) * first);
+      std::memset(h, 0, sizeof(float) * (frames - first));
+    }
+  };
+  for (size_t i = 0; i < chans.size(); ++i) keep(i, input(chans[i], time));
+  for (size_t j = 0; j < srcs.size(); ++j)
+    for (uint16_t c = 0; c < 2; ++c)
+      keep(chans.size() + 2 * j + c, sourceFn_ != nullptr ? sourceFn_(sourceUser_, srcs[j], c) : nullptr);
+  // One session offset: the largest of the rings' (each ring is read back at its own).
+  devOff_ = std::max<int64_t>(0, int64_t{sessionIn_} + sessionOut_ + pdc + manual_.load(std::memory_order_relaxed));
+  blockFrames_ = frames;
+  int64_t off = chans.empty() ? 0 : devOff_;
+  for (size_t j = 0; j < srcs.size() && j < kMaxSources; ++j) off = std::max<int64_t>(off, sessionSrc_[j]);
+  place(tl, set, time, frames, off, tl.recordSession());
+}
+
+void Recorder::place(const Timeline& tl, CaptureSet* set, int64_t time, uint32_t frames, int64_t off,
+                     uint32_t session) noexcept {  // RT-safe
   const int64_t from = std::max(time - off, attributed_);
   const int64_t to = time + static_cast<int64_t>(frames) - off;
   attributed_ = std::max(attributed_, to);
