@@ -11,8 +11,11 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <array>
 #include <memory>
 #include <numbers>
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -271,6 +274,43 @@ TEST_CASE("wavetable face model: dense frames follow the builder's rules; the ba
     CHECK(top.frame(0)[i] == doctest::Approx(std::sin(12.0 * std::numbers::pi * plain.frame(0)[i])).epsilon(1e-5).scale(1.0));
   // A louder-than-full-scale bake is drawn to fit.
   CHECK(f.gain() <= 1.0f);
+}
+
+// BR.J (bug 2026-11-27_17-57-03: "after ~10 minutes the wavetable visuals stop updating when knobs move"): every knob
+// move publishes a new table of one size, so once the allocator recycles blocks (minutes into a session) a new table
+// lands where an old one lay. The heard key (the canvas's tile key) must still be new: fast-forwarded here by
+// placing table after table at the same few addresses, as a long session's allocator does.
+TEST_CASE("wavetable face model (BR.J): a heard table at a recycled address still has a new key — no stale tiles") {
+  const dsp::FrameTableLayout L = dsp::frameTableLayout(48000.0).value();
+  std::array<std::optional<dsp::FrameTable>, 3> blocks;  // three "heap blocks", reused in turn
+  auto place = [&](size_t block, float level) {
+    blocks[block] = dsp::FrameTable::allocate(L, 1).value();
+    float* row = blocks[block]->mutableRow(0, 0);
+    const int32_t n = static_cast<int32_t>(L.length[0]), g = static_cast<int32_t>(dsp::kFrameTableGuard);
+    for (int32_t i = -g; i < n + g; ++i)  // the row and its wrapped guards
+      row[i] = level * static_cast<float>(std::sin(2.0 * std::numbers::pi * ((i + n) % n) / n));
+    // The aliasing constructor: a pointer to the block that owns nothing (the block outlives the Heard's use).
+    return std::shared_ptr<const dsp::FrameTable>(std::shared_ptr<void>{}, &*blocks[block]);
+  };
+  wt::Heard h;
+  std::set<uint64_t> seen;
+  float prev = 0.0f;
+  for (uint32_t step = 0; step < 600; ++step) {  // a long drag: 600 tables over 3 addresses
+    const size_t block = step % blocks.size();
+    std::shared_ptr<const dsp::FrameTable> t = place(block, 0.1f + 0.001f * static_cast<float>(step));
+    REQUIRE(t.get() == &*blocks[block]);
+    CHECK(h.update(std::move(t), 0, {}));
+    CHECK(seen.insert(h.key()).second);  // never a key an earlier table had
+    // What is drawn is this table's frame (a new key drops the thumbnails): louder every step.
+    const float peak = h.frame(0)[wt::kPoints / 4];
+    CHECK(peak > prev);
+    prev = peak;
+  }
+  // The same table, level and controls again: nothing changed, the key stays.
+  const uint64_t k = h.key();
+  std::shared_ptr<const dsp::FrameTable> same(std::shared_ptr<void>{}, h.table());
+  CHECK_FALSE(h.update(same, 0, {}));
+  CHECK(h.key() == k);
 }
 
 TEST_CASE("wavetable face model: the source cycle at a keyframe is that keyframe; between, the reader's frame blend") {

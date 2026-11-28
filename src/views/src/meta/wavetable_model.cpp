@@ -3,6 +3,7 @@
 #include "wavetable_model.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <numbers>
@@ -470,10 +471,12 @@ bool Heard::update(std::shared_ptr<const dsp::FrameTable> table, uint32_t level,
   thumbDone_.assign(frames_, 0);
   sharp_.assign(frames_, {});
   gain_ = -1.0f;  // computed when first asked for (draw mode never asks)
-  uint64_t h = mix(0x51ED270B27C2D1A5ull, reinterpret_cast<uintptr_t>(table_.get()));
-  h = mix(h, level_);
-  h = fnv(h, &live_, sizeof live_);
-  key_ = h | 1u;
+  // BR.J (bug 2026-11-27_17-57-03): the key is a process-wide serial, never the table's address. Every knob move
+  // publishes a new table of the same size; once the allocator recycles freed tables' blocks (minutes into a
+  // session), an address-derived key repeated an earlier one, and the canvas's tile cache (keyed by it) answered with
+  // that old picture: the stacked frames stopped following the knobs. A serial never repeats.
+  static std::atomic<uint64_t> serial{0};
+  key_ = mix(0x51ED270B27C2D1A5ull, serial.fetch_add(1, std::memory_order_relaxed) + 1) | 1u;
   return true;
 }
 
