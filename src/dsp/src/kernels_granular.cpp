@@ -274,7 +274,7 @@ struct GranularK {
           if (other)
             for (uint32_t q = 0; q < kGrainsMax; ++q) st.len[q][lane] = 0;  // grains of another sample stop
           v.t = 0;
-          v.pos = toFixed(p.startF + p.position * (p.endF - p.startF));
+          v.pos = 0;  // (GV.1: the distance scanned; P is Position's point plus it)
           v.next = 0.0;
           v.count = 0;
           v.harm = 0;
@@ -293,6 +293,8 @@ struct GranularK {
         const SampleLevelView& lv0 = e->level[0];
         const int64_t s32 = toFixed(p.startF), e32 = toFixed(p.endF);
         const int64_t scanStep = p.freeze ? 0 : toFixed(p.scan * static_cast<double>(e->rateScale));
+        // GV.1: Position is read every run, so moving it while a note plays scrubs (the scanned distance rides on it).
+        const int64_t anchor = toFixed(p.startF + p.position * (p.endF - p.startF));
         if (v.active != 0 && lv0.length > 0) {
           // Spawns in [t, t + m): slots whose grain ended at or before this grid cell's start are free.
           const int64_t cell = v.t - v.t % kGrainGrid;
@@ -331,7 +333,7 @@ struct GranularK {
             }
             if (p.sprayPitch > 0.0) rate *= std::exp2(rnd(2) * p.sprayPitch / 12.0);
             rate = std::clamp(rate, 1.0 / 64.0, 64.0);
-            const int64_t P = wrapPos(v.pos + static_cast<int64_t>(off) * scanStep, s32, e32);
+            const int64_t P = wrapPos(anchor + v.pos + static_cast<int64_t>(off) * scanStep, s32, e32);
             const double start = static_cast<double>(P) / 4294967296.0 + rnd(1) * p.sprayTime * e->fileRate;
             const uint32_t L = mipLevelFor(rate, e->levels);
             const double sc = std::ldexp(1.0, -static_cast<int>(L));
@@ -379,7 +381,7 @@ struct GranularK {
             renderBatch(st, lane, q0, include, e->level[L], e->channels > 1, shape, m, l, r);
           }
         }
-        const float at = lv0.length > 0 ? static_cast<float>(static_cast<double>(v.pos) / 4294967296.0 / lv0.length) : 0.0f;
+        const float at = lv0.length > 0 ? static_cast<float>(static_cast<double>(wrapPos(anchor + v.pos, s32, e32)) / 4294967296.0 / lv0.length) : 0.0f;
         for (uint32_t i = 0; i < m; ++i) {
           const uint32_t o = (f + i) * W + lane;
           a.out[0][o] = l[i];
@@ -388,7 +390,8 @@ struct GranularK {
           a.out[3][o] = v.active != 0 ? at : 0.0f;
         }
         if (v.active != 0) {
-          v.pos = wrapPos(v.pos + static_cast<int64_t>(m) * scanStep, s32, e32);
+          const int64_t len = e32 - s32;  // (the scanned distance kept within one region length: P wraps the same)
+          v.pos = len > 0 ? (v.pos + static_cast<int64_t>(m) * scanStep) % len : 0;
           v.t += m;
         }
         f = f1;

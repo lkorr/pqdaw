@@ -2601,6 +2601,7 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   // Sample: gain, transpose, detune; Classic: the loop cells and (looping, not stretching) its fade; One-Shot / Slice: the fades and
   // how a note plays it (Trigger: to the end; Gate: while held).
   header("Sample", true);
+  panel.elements.back().when = Visibility{r.tabs, {0.0, 1.0, 2.0}, {}, false};  // (GV.1: Gran has its own pitch and level)
   {
     const float t = y;
     panel.elements.push_back(knob("gain", "Gain", 6, t));
@@ -2639,39 +2640,57 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   panel.elements.back().when = Visibility{r.tabs, {2.0}, {}, false};
   panel.elements.push_back(element(id++, "sampleslice", 6, y + 2, 328, 30, dataBinding(r.engine)));
   y += 36.0f;
-  // SM.13, Granular (Gran mode only): the grain mode cells, the window shape (a radial menu), the grains per voice,
-  // Freeze, Harmonic grains; the knobs Position, Scan, Size, Spray (time), Pitch and Pan spray, Density (Loop / Cloud:
-  // Classic spawns one grain per period); the harmonic list (`sampleharm`: n/d chips, the data's `harmonics`).
+  // SM.13, Granular (Gran mode only). GV.1: grouped by what each control shapes, the controls under the picture of it —
+  //   Source (where grains read: the grain region on the waveform above): Position, Scan, Spray (time), Freeze; Gain;
+  //   the grain mode cells (Classic | Loop | Cloud), the grains per voice, Harmonic grains;
+  //   the GRAIN LENS (`grainlens`: one grain, its window over the sample it reads at the pitch, the shape cells) with
+  //   Size, Transpose, Detune under it; the GRAIN STREAM (`grainstream`: the grains over time, their overlap) with
+  //   Density (Loop / Cloud: Classic spawns one grain per period), pitch and pan spray under it;
+  //   the harmonic list (`sampleharm`: n/d chips, the data's `harmonics`).
   header("Granular", true);
   panel.elements.back().when = Visibility{r.tabs, {3.0}, {}, false};
   {
     const float t = y;
-    const uint32_t gm = id++;
-    panel.elements.push_back(text("Grain Mode", 6, t + 4, 80, 10));
-    panel.elements.push_back(cells(gm, "granMode", "Classic|Loop|Cloud", 6, t + 14, 120));
-    PanelElement sh = element(id++, "menu", 132, t + 4, 62, 26, settingBinding(r.engine, "shape"));
-    sh.setField(styleText("items", "Hann|Tukey|Gauss|Triangle|Exp"));
-    sh.setField(styleText("label", "Shape"));
-    sh.setField(styleText("look", "radial"));
-    panel.elements.push_back(std::move(sh));
-    PanelElement gr = element(id++, "number", 200, t + 4, 38, 26, settingBinding(r.engine, "grains"));
-    gr.setField(styleText("label", "Grains"));
-    panel.elements.push_back(std::move(gr));
-    for (const auto& [x, w, bind, what] : {std::tuple{244.0f, 40.0f, controlBinding(r.engine, "freeze"), "Freeze"},
-                                           std::tuple{288.0f, 46.0f, settingBinding(r.engine, "harmonic"), "Harmonic"}}) {
-      PanelElement on = element(id++, "toggle", x, t + 14, w, 16, bind);
+    const auto knobAt = [&](const char* param, const char* label, float x, float top, float w) {
+      PanelElement e = knob(param, label, x, top);
+      e.w = w;
+      return e;
+    };
+    // Source.
+    PanelElement src = text("Source \xC2\xB7 where the grains read (the region above)", 6, t, 200, 10, 6.0);
+    panel.elements.push_back(std::move(src));
+    panel.elements.push_back(knob("grainPosition", "Position", 6, t + 10));
+    panel.elements.push_back(knob("scan", "Scan", 52, t + 10));
+    panel.elements.push_back(knob("sprayTime", "\xC2\xB1 Time", 98, t + 10));
+    const auto button = [&](Binding bind, const char* what, float x, float top, float w) {
+      PanelElement on = element(id++, "toggle", x, top, w, 16, std::move(bind));
       on.setField(styleText("look", "button"));
       on.setField(styleText("text", what));
-      panel.elements.push_back(std::move(on));
-    }
-    const float k = t + 34;
-    panel.elements.push_back(knob("grainPosition", "Position", 6, k));
-    panel.elements.push_back(knob("scan", "Scan", 52, k));
-    panel.elements.push_back(knob("grainSize", "Size", 98, k));
-    panel.elements.push_back(knob("sprayTime", "Spray", 144, k));
-    panel.elements.push_back(knob("sprayPitch", "Pitch", 190, k));
-    panel.elements.push_back(knob("sprayPan", "Pan", 236, k));
-    panel.elements.push_back(when(knob("density", "Density", 282, k), gm, {1.0, 2.0}));
+      return on;
+    };
+    panel.elements.push_back(button(controlBinding(r.engine, "freeze"), "Freeze", 150, t + 26, 44));
+    panel.elements.push_back(knob("gain", "Gain", 288, t + 10));
+    // The grain mode, the grains per voice, Harmonic grains.
+    const float m = t + 70;
+    const uint32_t gm = id++;
+    PanelElement gr = element(id++, "number", 6, m, 62, 16, settingBinding(r.engine, "grains"));
+    gr.setField(styleText("label", "-"));
+    gr.setField(styleText("suffix", " grains"));
+    gr.setField(styleNumber("size", 7.5));
+    panel.elements.push_back(std::move(gr));
+    panel.elements.push_back(button(settingBinding(r.engine, "harmonic"), "Harmonic", 72, m, 74));
+    panel.elements.push_back(cells(gm, "granMode", "Classic|Loop|Cloud", 152, m, 182));
+    // The lens and the stream, the knobs that shape each under it (each knob centred in a third of its picture).
+    const float d = m + 20;
+    panel.elements.push_back(element(id++, "grainlens", 6, d, 140, 96, dataBinding(r.engine)));
+    panel.elements.push_back(element(id++, "grainstream", 152, d, 182, 96, dataBinding(r.engine)));
+    const float k = d + 100;
+    panel.elements.push_back(knobAt("grainSize", "Size", 6, k, 46));
+    panel.elements.push_back(knobAt("transpose", "Transpose", 53, k, 46));
+    panel.elements.push_back(knobAt("detune", "Detune", 100, k, 46));
+    panel.elements.push_back(when(knobAt("density", "Density", 159, k, 46), gm, {1.0, 2.0}));
+    panel.elements.push_back(knobAt("sprayPitch", "\xC2\xB1 Pitch", 220, k, 46));
+    panel.elements.push_back(knobAt("sprayPan", "\xC2\xB1 Pan", 281, k, 46));
     panel.elements.push_back(element(id++, "sampleharm", 6, k + 60, 328, 24, dataBinding(r.engine)));
     y = k + 88.0f;
   }

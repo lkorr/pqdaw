@@ -188,14 +188,16 @@ BlockSet wavetableSynthBlocks(IdSource& ids, DeviceId inGroup = {}, WavetableSyn
 // PANEL (SM.11 / SM.17, kSamplerPanelW wide). Beside the oval: the mode row (kSamplerModes, the engine's mode), the root
 // field and the Warp row (the warp mode as a radial menu — in Slice mode the cells Off | Re-Pitch, a stored stretch
 // mode showing as Off — and the sample's BPM while it warps; none in Gran mode). Under it the waveform editor
-// (`sampleedit`), then the fold sections Sample (gain, transpose, detune; Classic: loop cells, loop fade; One-Shot /
-// Slice: fades, Trigger | Gate), Warp (only while Beats / Tones / Texture / Complex Pro is chosen outside Slice and
-// Gran: that mode's controls), Slices (Slice mode only), SM.13 Granular (Gran mode only: grain mode cells, shape,
-// grains, Freeze, Harmonic, the Position … Density knobs, the harmonic n/d chips `sampleharm`), Envelope, Filter, LFO
+// (`sampleedit`), then the fold sections Sample (not in Gran mode: gain, transpose, detune; Classic: loop cells, loop
+// fade; One-Shot / Slice: fades, Trigger | Gate), Warp (only while Beats / Tones / Texture / Complex Pro is chosen
+// outside Slice and Gran: that mode's controls), Slices (Slice mode only), SM.13 Granular (Gran mode only; GV.1 grouped
+// by what each control shapes: Source — Position, Scan, Spray, Freeze, and Gain; the grain mode cells, the grains,
+// Harmonic; the grain lens `grainlens` (the shape cells in it) over Size, Transpose, Detune; the grain stream
+// `grainstream` over Density, pitch and pan spray; the harmonic n/d chips `sampleharm`), Envelope, Filter, LFO
 // (their panels embedded, GU.6; the Filter and LFO on / off switches beside their headers, bound to their activators:
 // kActiveSetting). Sample and the mode's own section are open by default, the embedded three folded. SM.13: in Gran
 // mode the closed face's mini knobs are Position · Size · Density. SM.17: a choice of 2 – 3 values is cells (`tabs`),
-// of 5 or more a radial menu (`menu`, look "radial").
+// of 5 or more a radial menu (`menu`, look "radial"; GV.1: the grain shape is its five window glyphs in the lens).
 struct SamplerRoles {
   DeviceId group, engine, key, amp;  // the group, meta:sampler, the voice.key block, the amp (mul)
   DeviceId filter, filterFrequency;        // the EQ band group and its Frequency value block

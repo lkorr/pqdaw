@@ -57,6 +57,8 @@ struct Params {
   double root = 261.63, ratio = 1.0, start = 0.1, end = 0.9, position = 0.2, scan = 1.0, size = 0.05, density = 40.0;
   double sprayTime = 0.0, sprayPitch = 0.0, sprayPan = 0.0, freeze = 0.0;
   double shape = 0.0, mode = 1.0, grains = 16.0, harmonic = 0.0;
+  double movedPosition = -1.0;  // GV.1: from the first call at or after frame movedAt, Position is this (< 0: never)
+  size_t movedAt = 0;
 };
 
 // Calls the kernel over `frames` in calls of `block`: hz(t) per sample, a trigger at each of `triggers`.
@@ -93,6 +95,8 @@ Run run(const Src& src, const Params& p, uint32_t lanes, uint32_t lane, size_t f
   DenormalGuard dg;
   for (size_t t0 = 0; t0 < frames; t0 += block) {
     const auto n = static_cast<uint32_t>(std::min<size_t>(block, frames - t0));
+    if (p.movedPosition >= 0.0 && t0 >= p.movedAt)
+      for (uint32_t k = 0; k < 8; ++k) in[6][k] = static_cast<float>(p.movedPosition);
     for (uint32_t i = 0; i < n; ++i)
       for (uint32_t k = 0; k < L; ++k) {
         const bool on = k == lane && std::find(triggers.begin(), triggers.end(), t0 + i) != triggers.end();
@@ -284,6 +288,24 @@ TEST_CASE("SM.6 granular: repeatable across call lengths and lane layouts; silen
   // No trigger at all: silent.
   const Run none = run(src, p, 1, 0, 4000, 64, hz, {});
   for (const float x : none.l) CHECK(x == 0.0f);
+}
+
+TEST_CASE("GV.1 granular: Position moved while a note plays scrubs at once; the scanned distance rides on it") {
+  Src src(60000, 48000.0);
+  Params p;  // Start 0.1, End 0.9: the region is 48 000 frames from frame 6 000
+  p.scan = 0.5;
+  p.movedPosition = 0.7;
+  p.movedAt = 12000;  // (the first call from there: frame 12 032 in calls of 64)
+  auto hz = [](size_t) { return 261.63; };
+  const Run o = run(src, p, 1, 0, 20000, 64, hz, {5});
+  const auto expect = [](double position, size_t t) { return (6000.0 + position * 48000.0 + 0.5 * static_cast<double>(t - 5)) / 60000.0; };
+  // (pos is reported once per run of the grid: within 64 frames of scanning)
+  CHECK(o.pos[11990] == doctest::Approx(expect(0.2, 11990)).epsilon(0.002));
+  CHECK(o.pos[12100] == doctest::Approx(expect(0.7, 12100)).epsilon(0.002));
+  CHECK(o.pos[19990] == doctest::Approx(expect(0.7, 19990)).epsilon(0.002));
+  // Unmoved, the same note keeps reading from 0.2.
+  p.movedPosition = -1.0;
+  CHECK(run(src, p, 1, 0, 20000, 64, hz, {5}).pos[12100] == doctest::Approx(expect(0.2, 12100)).epsilon(0.002));
 }
 
 TEST_CASE("SM.6 granular: the grain tap — nothing without a reader; with one, the live grains per call") {
