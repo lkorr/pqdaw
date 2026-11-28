@@ -1580,3 +1580,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 
 ## 2026-11-27 · UD · task/UD-undo-keeps-closed (merged)
 - Did: a deleted group restored by undo keeps its open / closed state in the circuit view (deleted ids no longer erased from closedGroups_ / bandExpanded_). Verified by its session: new real-dispatch test, group panels 11/11; here group tests pass after the merge.
+
+## 2026-11-28 · RT.2 · task/RT.2-audio-in-engine (merged 124b1912)
+- Did: Audio In cables lowered as latency-compensated Audio wires (no unit merge) into B's monitor mix; Resampling via shadow master/route tracks without B; B exports `rec`; recorder captures internal sources (busRecord, afterUnits hook; offset = graph latency); Ext. In per clip slot, so merged units keep several inputs; circuit draws Audio In cables normally and checkAgainstGraph maps them.
+- Verified: RT.2 link tests 4/4 under RtScope (device take == source ≤1e-6, one frame off fails; mixer out follows volume; Resampling excludes B; monitor Off/In/Auto); -Affected -Slow 86/90 (graph fixed; one views + JI timing flake pass alone; core alloc-trap demo deliberate); ship pq_bench_dsp links.
+- Perf / CPU-efficiency check: no cable → no new work; a cable → one bus + one export; Resampling → a second master chain only while used; capture = one memcpy + ring push per block.
+- Notes/blockers: Q?-RT.2-a. Max 8 Ext. In bindings per merged unit. views perf checks (project-patch 64-track frame 7 ms vs 2, S-drag 13 ms vs 8.3, wavetable 16 faces) fail on pre-RT main too — not RT.2.
