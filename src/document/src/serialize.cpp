@@ -652,7 +652,10 @@ private:
       w_.beginObject(false);
       w_.key("id");
       w_.integer(wr.id.value);
-      if (wr.fromNoteSource()) {  // TMM.10-fix2 (schema 12): the note source of a track, instead of a device
+      if (wr.fromMixerOut()) {  // RT.1 (schema 23): a track's mixer output, instead of a device
+        w_.key("mixerOut");
+        w_.integer(wr.mixerOut.value);
+      } else if (wr.fromNoteSource()) {  // TMM.10-fix2 (schema 12): the note source of a track, instead of a device
         w_.key("notes");
         w_.integer(wr.noteSource.value);
       } else {
@@ -661,7 +664,10 @@ private:
       }
       w_.key("port");
       w_.string(PathSeg(&el, "port"), wr.port);
-      if (wr.toMixer()) {  // TX.all-free (schema 17): into a track's mixer ("param" is "")
+      if (wr.toRecordInput()) {  // RT.1 (schema 23): onto an audio track's Audio In ("param" is "")
+        w_.key("audioIn");
+        w_.integer(wr.recordInput.value);
+      } else if (wr.toMixer()) {  // TX.all-free (schema 17): into a track's mixer ("param" is "")
         w_.key("mixer");
         w_.integer(wr.mixer.value);
       } else {
@@ -2532,8 +2538,10 @@ private:
       // adds in its target's units and has no amount.
       // TX.groups-fix1 (schema 15): "chain": true for a grouped series' chain link.
       // TX.all-free (schema 17): "mixer" (a track's mixer input) instead of "to"; "port" / "param" "" are main ports.
-      static constexpr std::string_view K[] = {"id",     "from",    "port",  "to",  "param",
-                                               "amount", "reducer", "notes", "law", "chain", "mixer", "single", "tap"};
+      // RT.1 (schema 23): "audioIn" (an audio track's Audio In) instead of "to"; "mixerOut" (a track's mixer output)
+      // instead of "from".
+      static constexpr std::string_view K[] = {"id",     "from",    "port",  "to",  "param",   "amount",  "reducer", "notes",
+                                               "law",    "chain",   "mixer", "single", "tap", "audioIn", "mixerOut"};
       Wire w;
       Members m(r_, el, K);
       for (int k; (k = m.next()) >= 0;) {
@@ -2552,15 +2560,19 @@ private:
           case 10: w.mixer = TrackId{ref(f)}; break;
           case 11: w.single = r_.readBool(f); break;  // IG.1-2 (schema 19)
           case 12: w.tap = r_.readFloat(f); break;    // TL.1 (checkWire: a source wire's, finite)
+          case 13: w.recordInput = TrackId{ref(f)}; break;  // RT.1 (schema 23)
+          case 14: w.mixerOut = TrackId{ref(f)}; break;     // RT.1 (schema 23)
         }
       }
-      if (m.has(1) && m.has(7)) json::fail(el, "a wire has either \"from\" (a device) or \"notes\" (a note source)");
-      if (m.has(3) && m.has(10)) json::fail(el, "a wire has either \"to\" (a device) or \"mixer\" (a track's mixer)");
+      if (int{m.has(1)} + int{m.has(7)} + int{m.has(14)} > 1)
+        json::fail(el, "a wire has one of \"from\" (a device), \"notes\" (a note source), \"mixerOut\" (a mixer's output)");
+      if (int{m.has(3)} + int{m.has(10)} + int{m.has(13)} > 1)
+        json::fail(el, "a wire has one of \"to\" (a device), \"mixer\" (a track's mixer), \"audioIn\" (an Audio In)");
       m.require({0, 2, 4});
-      if (!m.has(10)) m.require({3});
+      if (!m.has(10) && !m.has(13)) m.require({3});
       if (w.travels()) m.require({5});
       else if (m.has(5)) json::fail(el, "a wire that adds in its target's units has no \"amount\"");
-      if (!m.has(7)) m.require({1});
+      if (!m.has(7) && !m.has(14)) m.require({1});
       check(el, detail::checkWire(w));
       if (!v.empty() && !(v.back().id < w.id)) r_.failValue(PathSeg(&el, "id"), "wires must be sorted by id");
       v.push_back(std::move(w));
@@ -3624,7 +3636,9 @@ private:
     const WireList& wl = wiresOf(p);
     for (size_t i = 0; i < wl.size(); ++i) {
       const PathSeg el(&wiresAt, i);
-      if (wl[i].fromNoteSource()) {  // TMM.10-fix2
+      if (wl[i].fromMixerOut()) {  // RT.1
+        if (findTrackPtr(p, wl[i].mixerOut) == nullptr) json::fail(PathSeg(&el, "mixerOut"), "no track with this id");
+      } else if (wl[i].fromNoteSource()) {  // TMM.10-fix2
         const Track* t = findTrackPtr(p, wl[i].noteSource);
         if (t == nullptr) json::fail(PathSeg(&el, "notes"), "no track with this id");
         // TX.all-free: port "" is any track's own signal; the note outputs are a MIDI track's.
@@ -3633,7 +3647,9 @@ private:
       } else if (!findDevice(p, wl[i].from).track) {
         json::fail(PathSeg(&el, "from"), "no device with this id");
       }
-      if (wl[i].toMixer()) {  // TX.all-free
+      if (wl[i].toRecordInput()) {  // RT.1
+        if (findTrackPtr(p, wl[i].recordInput) == nullptr) json::fail(PathSeg(&el, "audioIn"), "no track with this id");
+      } else if (wl[i].toMixer()) {  // TX.all-free
         if (findTrackPtr(p, wl[i].mixer) == nullptr) json::fail(PathSeg(&el, "mixer"), "no track with this id");
       } else if (!findDevice(p, wl[i].to).track) {
         json::fail(PathSeg(&el, "to"), "no device with this id");
@@ -3643,6 +3659,8 @@ private:
         if (wl[j].sameEnds(wl[i]))
           json::fail(el, "these two ports are already wired (wire " + std::to_string(wl[j].id.value) + ")");
     }
+    // RT.1 (audio_in.h): every Audio In on an audio track, one source, audio, no loop.
+    if (Status s = detail::checkAudioIns(p); !s) json::fail(wiresAt, s.error().message);
 
     std::sort(ids_.begin(), ids_.end());
     const auto dup = std::adjacent_find(ids_.begin(), ids_.end());
@@ -4523,6 +4541,12 @@ Status migrateAddRecording(nlohmann::json& doc) {
   return Ok{};
 }
 
+// 22 → 23 (RT.1): nothing to change (Audio In cables are new).
+Status migrateAddAudioIn(nlohmann::json& doc) {
+  if (!doc.is_object()) return Error{ErrorCode::InvalidArgument, "not an object", {}};
+  return Ok{};
+}
+
 constexpr Migration kBuiltinMigrations[] = {
     {1, migrateTicksPpq27720To221760},
     {2, migrateDefaultInstrumentToChain},
@@ -4545,6 +4569,7 @@ constexpr Migration kBuiltinMigrations[] = {
     {19, migrateKnobPositions},
     {20, migrateAddPanels},
     {21, migrateAddRecording},
+    {22, migrateAddAudioIn},
 };
 static_assert(std::size(kBuiltinMigrations) == static_cast<size_t>(kSchemaVersion - 1),
               "one built-in migration per schema step");

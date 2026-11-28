@@ -2948,3 +2948,16 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
 - Options: (a) drop both (the waveform's height shows the gain; the clip panel shows both numbers); (b) keep the gain dB
   as plain text left of the tag; (c) show it only while the gain handle is hovered / dragged.
 - Choice: (a), the most reversible; (c) would be the natural follow-up if the number is missed.
+
+## Q?-RT.1-a · 2026-11-27 · RT.1 · What counts as "B feeds" for the Audio From loop rule; how a mixer-out start is stored
+- Context: the plan refuses a source B feeds "through outputs, sends, cables or B's group". Every track implicitly sends
+  to every return at −∞ (only non-default sends are stored), and Resampling is "the master minus B's own bus". The
+  model also had no wire start for a mixer's output (Post Mixer / Resampling).
+- Options: sends — (a) every implicit send feeds (no track could record a return), (b) only stored sends feed, with
+  the check re-run when a send level changes. Resampling — (a) always allowed, (b) refused when B reaches the master
+  other than through its own output route (a stored send, a cable, another track's Audio In). Mixer out — (a) a
+  reserved port on `Wire::noteSource`, (b) its own field `Wire::mixerOut`.
+- Choice: sends (b) (matches the lowering's "a send that closes a loop is lowered only while stored"; turning such a
+  send up from −∞ is then refused with "Audio From would create a loop"); Resampling (b); mixer out (b), allowed only
+  onto an Audio In. Group membership is followed through outputs (a child routed past its group does not feed it).
+- Status: open

@@ -6,10 +6,12 @@
 #include <cmath>
 #include <string>
 
+#include "pq/document/audio_in.h"
 #include "pq/document/devices.h"
 #include "pq/document/meta.h"
 #include "pq/document/note_devices.h"
 #include "pq/document/racks.h"
+#include "pq/document/wire_types.h"
 #include "pq/meta/registry.h"
 
 namespace pq::doc::detail {
@@ -644,14 +646,23 @@ Status checkDeviceMeta(const Device& d) {
 
 Status checkWire(const Wire& w) {
   if (!w.id.valid()) return invalid("wire has no id");
-  if (w.fromNoteSource()) {  // TMM.10-fix2: a track's note source (no device), one of its note outputs
+  if (w.fromMixerOut()) {  // RT.1: a track's mixer output, only onto an Audio In (model.h "Modulation wires")
+    if (w.from.valid() || w.fromNoteSource()) return invalid("a wire from a mixer's output has no other source");
+    if (!w.port.empty()) return invalid("a mixer has one output (no port)");
+    if (!w.toRecordInput()) return invalid("a cable from a mixer's output goes onto an Audio In");
+  } else if (w.fromNoteSource()) {  // TMM.10-fix2: a track's note source (no device), one of its note outputs
     if (w.from.valid()) return invalid("a wire from a note source has no source device");
     // TX.all-free: kMainPort is the track's own signal (any track kind; main_path.h).
     if (!w.port.empty() && findNoteOutput(w.port) == nullptr) return invalid("the note source has no output '" + w.port + "'");
   } else if (!w.from.valid()) {
     return invalid("wire end has no device");
   }
-  if (w.toMixer()) {  // TX.all-free: into a track's mixer input (model.h "Modulation wires")
+  if (w.toRecordInput()) {  // RT.1: onto an audio track's Audio In (model.h "Modulation wires")
+    if (w.to.valid() || w.toMixer()) return invalid("a wire onto an Audio In has no other target");
+    if (!w.param.empty()) return invalid("an Audio In is one input (no param)");
+    if (w.travels()) return invalid("a wire onto an Audio In adds (no travel law)");
+    if (w.chain) return invalid("a chain link joins devices (a grouped series' link)");
+  } else if (w.toMixer()) {  // TX.all-free: into a track's mixer input (model.h "Modulation wires")
     if (w.to.valid()) return invalid("a wire into a mixer has no target device");
     if (!w.param.empty()) return invalid("a wire into a mixer enters its one input (no param)");
     if (w.travels()) return invalid("a wire into a mixer adds (no travel law)");
@@ -724,6 +735,93 @@ Status checkRouting(const Project& p) {
       if (at == h.id || steps > hops.size()) return invalid("routing would create a cycle");
       at = nextOf(at);
     }
+  }
+  return ok();
+}
+
+// ---- RT.1: Audio In (audio_in.h "Loops") ---------------------------------------------------------------------------
+
+AudioFeeds::AudioFeeds(const Project& p) {
+  master = p.master ? p.master->id.value : 0;
+  forEachTrack(p, [&](const Track& t, const Track* parent) {
+    for (const DevicePtr& d : t.devices) deviceTrack.emplace(d->id.value, t.id.value);
+    if (t.kind != TrackKind::Master) {
+      uint32_t next = 0;
+      switch (t.mixer.output.kind) {
+        case OutputKind::Default: next = parent ? parent->id.value : master; break;
+        case OutputKind::Master: next = master; break;
+        case OutputKind::Track: next = t.mixer.output.track.value; break;
+        case OutputKind::None: break;
+      }
+      if (next != 0) output.emplace(t.id.value, next);
+    }
+    if (trackHasSends(t.kind))
+      for (const Send& sd : t.mixer.sends) others[t.id.value].push_back(sd.target.value);
+  });
+  for (const Wire& w : wiresOf(p)) {
+    const uint32_t a = sourceTrack(w), b = targetTrack(w);
+    if (a != 0 && b != 0 && a != b) others[a].push_back(b);
+  }
+}
+
+uint32_t AudioFeeds::sourceTrack(const Wire& w) const noexcept {
+  if (w.fromMixerOut()) return w.mixerOut.value;
+  if (w.fromNoteSource()) return w.noteSource.value;
+  const auto it = deviceTrack.find(w.from.value);
+  return it != deviceTrack.end() ? it->second : 0;
+}
+
+uint32_t AudioFeeds::targetTrack(const Wire& w) const noexcept {
+  if (w.toRecordInput()) return w.recordInput.value;
+  if (w.toMixer()) return w.mixer.value;
+  const auto it = deviceTrack.find(w.to.value);
+  return it != deviceTrack.end() ? it->second : 0;
+}
+
+std::vector<uint32_t> AudioFeeds::fedBy(uint32_t track, bool ownOutput) const {
+  std::vector<uint32_t> seen{track}, todo{track};
+  auto visit = [&](uint32_t t) {
+    if (std::find(seen.begin(), seen.end(), t) != seen.end()) return;
+    seen.push_back(t);
+    todo.push_back(t);
+  };
+  while (!todo.empty()) {
+    const uint32_t t = todo.back();
+    todo.pop_back();
+    if (ownOutput || t != track)
+      if (const auto o = output.find(t); o != output.end()) visit(o->second);
+    if (const auto x = others.find(t); x != others.end())
+      for (const uint32_t n : x->second) visit(n);
+  }
+  std::sort(seen.begin(), seen.end());
+  return seen;
+}
+
+std::string_view audioInLoop(const AudioFeeds& f, uint32_t track, const Wire& start) {
+  const uint32_t s = f.sourceTrack(start);
+  if (s == 0) return {};  // (a missing source is refused on its own)
+  const bool resampling = start.fromMixerOut() && s == f.master;
+  if (s == track && !resampling) return kAudioInSelf;
+  const std::vector<uint32_t> fed = f.fedBy(track, !resampling);
+  return std::binary_search(fed.begin(), fed.end(), s) ? kAudioInLoop : std::string_view{};
+}
+
+Status checkAudioIns(const Project& p) {
+  const WireList& wl = wiresOf(p);
+  if (std::none_of(wl.begin(), wl.end(), [](const Wire& w) { return w.toRecordInput(); })) return ok();
+  const AudioFeeds f(p);
+  std::vector<uint32_t> fed;  // the Audio Ins seen
+  for (const Wire& w : wl) {
+    if (!w.toRecordInput()) continue;
+    const Track* t = findTrackPtr(p, w.recordInput);
+    if (t == nullptr) return invalid("an Audio In's track is not in the project");
+    if (t->kind != TrackKind::Audio) return invalid(std::string(kAudioInTrack));
+    if (!t->mixer.audioIn.none() || std::find(fed.begin(), fed.end(), t->id.value) != fed.end())
+      return invalid(std::string(kAudioInOneSource));
+    fed.push_back(t->id.value);
+    if (w.fromMixerOut() && findTrackPtr(p, w.mixerOut) == nullptr) return invalid("an Audio In's source track is not in the project");
+    if (!carriesAudio(p, w, nullptr)) return invalid(std::string(kAudioInNotAudio));
+    if (const std::string_view why = audioInLoop(f, t->id.value, w); !why.empty()) return invalid(std::string(why));
   }
   return ok();
 }

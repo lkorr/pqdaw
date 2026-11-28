@@ -28,7 +28,7 @@ namespace pq::doc {
 
 class DeviceLibrary;
 
-enum class WireClash : uint8_t { None, RealIntoBool, EventMismatch, NotesInput, NotesOutput };
+enum class WireClash : uint8_t { None, RealIntoBool, EventMismatch, NotesInput, NotesOutput, NotAudio };
 
 // AR.1 (docs/plans/AR.md "AR.1"; note_devices.h declaredMainSignals): THE NOTES RULE, by the DECLARED main signals of
 // the two ends (library-free):
@@ -45,7 +45,15 @@ enum class WireClash : uint8_t { None, RealIntoBool, EventMismatch, NotesInput, 
 WireClash notesWireClash(const Project& p, const Wire& w);
 
 // The notes rule, then (with `lib`; null: nothing more is declared) the declared port types.
+// RT.1 (audio_in.h): a cable onto an Audio In (Wire::recordInput) is NotAudio unless carriesAudio — in both functions.
 WireClash declaredWireClash(const Project& p, const Wire& w, const DeviceLibrary* lib);
+
+// RT.1 (audio_in.h): whether the START of `w` (its from + port, note source + port, or mixer out) may be an Audio In's
+// source: audio by what is declared. Refused: a MIDI track's own signal (notes) or its note outputs, a device's main
+// output declared Notes (a note device), a value block (a control), and an output DECLARED bool, const-, param- or
+// event-rate — atom blocks' library-free (devices.h builtinBlockPatch), every other device's with `lib`. A missing
+// device is no audio. Anything undeclared (a group's inferred `y`, a meta module without `lib`) is allowed.
+bool carriesAudio(const Project& p, const Wire& w, const DeviceLibrary* lib);
 // The status line's explanation ("" for None).
 std::string_view wireClashText(WireClash c) noexcept;
 

@@ -110,7 +110,10 @@ namespace pq::doc {
 // TU.3 (no version bump, no conversion: there are no user projects): a tuning assignment is "inherit" or {"main": id}
 // (private tunings are gone: a file holding {"private": …} does not load); the project's "defaultTuning" (a tuning id)
 // is written only when it is not the first tuning (absent: the first).
-inline constexpr int32_t kSchemaVersion = 22;
+// 23 = Audio In (RT.1, docs/plans/RT.md; audio_in.h): a wire may end at "audioIn": <audio track> (its record / monitor
+// input) instead of "to", and start at "mixerOut": <track> (its mixer output; the master's = Resampling) instead of
+// "from"; the loader checks one source per Audio In, audio, no loop. No migration (22 → 23 changes nothing).
+inline constexpr int32_t kSchemaVersion = 23;
 inline constexpr std::string_view kProjectFileName = "project.pqd";
 
 // One migration step: rewrites a document of schema version `from` into version `from + 1` in place. The loader

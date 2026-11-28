@@ -567,6 +567,7 @@ pq_add_test(pq_tests_document
     document/test_panels.cpp  # GU.3: group panels (rules, SetGroupPanel + builders, final pass on delete / move out, save / load, paste remap, presets)
     document/test_cut_wires.cpp  # WI.2: a cut wire lowers as the project without it (Refused / Type), a cut main link breaks the path, wire ends
     document/test_lower_incremental.cpp  # PF.6: the lowering given the previous one equals a fresh one after each edit; untouched tracks keep their patches
+    document/test_audio_in.cpp  # RT.1: Audio In (record from a track): AudioFrom kinds round-trip, one-step replace, loop / kind refusals, lowering ignores it
     document/test_sidechain.cpp  # DY.2: cross-track cables into signal inputs are Sidechain (params Modulation); cable sources, one-step picks
     document/test_frozen.cpp  # FZ.1: frozen tracks (file, SetTrackFrozen, the apply guard, the lowering from a render slot, captureOwn)
     document/test_midi_file.cpp  # MF.1: SMF reader / writer (running status, sysex, RMID, errors, fuzz, 10 MB), notes (pairing, RPN / MPE bends, MTS, sustain)

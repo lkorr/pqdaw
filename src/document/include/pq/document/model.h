@@ -1018,6 +1018,15 @@ DevicePtr makeGroup(DeviceId id);              // TX.groups: an empty group devi
 //                "velocity" only on a MIDI track).
 //   MIXER        `mixer` valid (`to` invalid, `param` kMainPort): the track's mixer input (its volume, pan, sends,
 //                routing). Only from a device of that track or its own source.
+// RT.1 (docs/plans/RT.md; pq/document/audio_in.h): two more ends, for recording from a track (Live's "Audio From"):
+//   AUDIO IN     `recordInput` valid (`to` invalid, `mixer` invalid, `param` kMainPort): an AUDIO track's record and
+//                monitor input. At most one wire into it, and none while the track's Mixer::audioIn (Ext. In) is set:
+//                ONE SOURCE. It starts at any audio output in the project (a device's / group's / rack chain's output, a
+//                track's own signal, a MIXER OUT); never at notes or a control ("Audio In takes audio"), never on its
+//                own track or at anything its track feeds ("Audio From would create a loop"; the final pass of every
+//                command, audio_in.h "Loops").
+//   MIXER OUT    `mixerOut` valid (`from`, `noteSource` invalid, `port` kMainPort): a track's mixer output (after
+//                volume, pan, mute; Live's Post Mixer); the master's is Resampling. Only into an Audio In.
 // The audio path is the wiring; the lowering compiles it (lower.h "The main path"); a track with no path to its mixer is
 // silent.
 inline constexpr std::string_view kMainPort = "";
@@ -1051,17 +1060,21 @@ struct Wire {
   // project patch view's band lane) at this x: world units from the band's left edge (band-local, so it travels with the
   // band). None: TL.7 the lane's left end. View only — never lowered, a Meta change (SetWireTap).
   std::optional<float> tap;  // |tap| ≤ kMaxWireTap
+  TrackId recordInput;       // RT.1: valid: the target is this audio track's Audio In (see above)
+  TrackId mixerOut;          // RT.1: valid: the source is this track's mixer output (see above)
   bool travels() const noexcept { return law == WireLaw::Travel; }
   bool adds() const noexcept { return law != WireLaw::Travel; }  // Add or Units: no amount
   bool fromNoteSource() const noexcept { return noteSource.valid(); }
   bool toMixer() const noexcept { return mixer.valid(); }
+  bool toRecordInput() const noexcept { return recordInput.valid(); }  // RT.1
+  bool fromMixerOut() const noexcept { return mixerOut.valid(); }       // RT.1
   // TX.all-free: a wire between two main ports (a device's or the source's main output, a device's main input or the
   // mixer): a link of the main path when it lies on it (main_path.h).
   bool mainLink() const noexcept { return port.empty() && param.empty(); }
   // Whether two wires join the same two ports (a second such wire is refused).
   bool sameEnds(const Wire& o) const noexcept {
     return from == o.from && noteSource == o.noteSource && port == o.port && to == o.to && param == o.param &&
-           mixer == o.mixer;
+           mixer == o.mixer && recordInput == o.recordInput && mixerOut == o.mixerOut;
   }
   friend bool operator==(const Wire&, const Wire&) = default;
 };
