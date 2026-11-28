@@ -397,7 +397,7 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // mixer; graph::WireKind::Audio between the tracks. SIDECHAINS (DY.2; SPEC §8, §15): a cable from another track (a
 // block's output, or the track's own signal: a wire from its source with port "", any non-MIDI track) into a block's
 // SIGNAL input (an `in` of its callee that is not a param nor a param's `_add`) is graph::WireKind::Sidechain: every
-// channel leaves as `export m<wire>` and arrives as `in m<wire>` (width inferred; into a meta module's input its mid),
+// channel leaves as `export m<wire>` and arrives as `in m<wire>` (width inferred; into a mono-output meta module's input its mid),
 // the partition merges the tracks (graph/project.h) and the compiler compensates it like audio (pq/engine
 // latency_plan.h: the reader's sources play as late as the latent input). A cable into a param (or `_add`) stays
 // graph::WireKind::Modulation, its first channel, never delayed (SPEC §15 2026-10-24). TX.cross-track (SPEC §15 2026-11-03 "tracks are not walls"): one that
@@ -445,8 +445,10 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // there would receive; nothing for a free group), its Out terminal the input `output` (the Add law: the sum of the
 // wires into it); every wire, inside the capsule or across its edge, is an ordinary wire, so a grouped series is the
 // same graph as the series with the chain's links as wires: tests/app/test_groups.cpp renders both bit for bit
-// (interpreter and JIT). A wide signal (or one whose width only inference knows: the In terminal) into a meta module's
-// input arrives as its mid (l + r) / 2, as the chain gives it (effectCall); on a mono signal that is the signal itself.
+// (interpreter and JIT). A wide signal (or one whose width only inference knows: the In terminal) into the input of a
+// meta module whose `out` is declared mono (Noise) arrives as its mid (l + r) / 2, as the chain gives it (effectCall);
+// on a mono signal that is the signal itself. BR.K: the others (Envelope, Wavetable, the analysers: `out` of the
+// inferred width) process every channel, so a stereo Sampler stays stereo through an instrument group.
 // NZ.1: an UNFED group — a free one (off its track's path; not an instrument group, which its notes play) with no wire
 // into its main input, or only wires from the In of a group that is itself unfed — carries nothing at its In (a group on
 // the path is fed by the path, wired or not): a wire from that In into a native engine's input is Inactive (planWires), so the input

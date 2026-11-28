@@ -11,6 +11,7 @@
 //              to Out plays the engine-alone output
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -56,8 +57,9 @@ struct Song {
   TrackId track;
   DeviceId group, engine, envelope, filter, filterFrequency, amp;
   SampleId sample;
+  // BR.K: `after` meta types (e.g. "meta:wavetable") put in series between the Amp and the group's Out.
   Song(const char* name, bool bare, const std::vector<std::vector<float>>& channels, double rootHz,
-       std::vector<float> slices = {}) : dir(fs::temp_directory_path() / name) {
+       std::vector<float> slices = {}, std::vector<std::string> after = {}) : dir(fs::temp_directory_path() / name) {
     std::error_code ec;
     fs::remove_all(dir, ec);
     fs::create_directories(dir);
@@ -83,7 +85,40 @@ struct Song {
     sample = s.id;
     {
       IdSource local;
-      const ops::EditResult e = ops::pasteBlocksAtNotes(*store.current(), store.ids(), track, samplerBlocks(local));
+      BlockSet set = samplerBlocks(local);
+      if (!after.empty()) {
+        const DeviceId g = set.devices.front()->id;
+        DeviceId ampId;
+        for (const DevicePtr& d : set.devices)
+          if (d->group == g && d->name == "Amp") ampId = d->id;
+        auto out = std::find_if(set.wires.begin(), set.wires.end(), [&](const Wire& w) { return w.from == ampId && w.to == g; });
+        REQUIRE(out != set.wires.end());
+        DeviceId prev = ampId;
+        std::string prevPort = out->port;
+        set.wires.erase(out);
+        for (const std::string& patch : after) {
+          auto d = std::make_shared<Device>(*makeDevice(local.device(), patch, DeviceKind::AudioEffect));
+          d->group = g;
+          Wire w;
+          w.id = local.wire();
+          w.from = prev;
+          w.port = prevPort;
+          w.to = d->id;
+          w.param = patch == "meta:wavetable" ? "x" : "in";
+          set.wires.push_back(w);
+          prev = d->id;
+          prevPort = "out";
+          set.devices.push_back(std::move(d));
+        }
+        Wire w;
+        w.id = local.wire();
+        w.from = prev;
+        w.port = prevPort;
+        w.to = g;
+        w.param = std::string(kGroupOutPort);
+        set.wires.push_back(w);
+      }
+      const ops::EditResult e = ops::pasteBlocksAtNotes(*store.current(), store.ids(), track, set);
       run(store, e);
       group = e->devices.at(0);
       forEachDevice(*store.current(), [&](const Device& d, const Track&) {
@@ -94,6 +129,11 @@ struct Song {
       });
       forEachDevice(*store.current(), [&](const Device& d, const Track&) {
         if (d.group == filter && bandRole(d) == BandRole::Frequency) filterFrequency = d.id;
+      });
+      REQUIRE(envelope.valid());
+      envelope = DeviceId{};  // the Sampler's own (in its Envelope block), not one put `after`
+      forEachDevice(*store.current(), [&](const Device& d, const Track&) {
+        if (d.patch == "meta:envelope" && d.group != group) envelope = d.id;
       });
       REQUIRE(envelope.valid());
       REQUIRE(filterFrequency.valid());
@@ -348,5 +388,32 @@ TEST_CASE("SM.12 Slice to Notes: the written clip plays the sample's rhythm (ons
         break;
       }
     CHECK(std::llabs(found - expect) <= 1);
+  }
+}
+
+// BR.K (bug 2026-11-28_00-42-09: "the pan knob on the sampler in this instrument group doesnt acutally pan anything"):
+// the Sampler's stereo output went through meta modules whose `out` was declared mono, so each took the mid (l + r) / 2
+// and everything after was mono. The Envelope (a VCA) and the Wavetable (read per channel of its phase) now take their
+// output's width from what they read: a stereo sample (R = ½ L) stays stereo through them to the track's output.
+TEST_CASE("BR.K a stereo Sampler stays stereo through an Envelope and a Wavetable in its instrument group") {
+  const size_t frames = at(2.0);
+  const std::vector<std::vector<float>> ch = {sine(440.0, 0.5, frames), sine(440.0, 0.25, frames)};
+  {
+    Song g("pq_brk_env", false, ch, 440.0, {}, {"meta:envelope"});
+    g.notes({{9, 0, 1}});
+    const auto o = g.render(0.5);
+    CHECK(rms(o[0], 0.1, 0.45) > 0.01);
+    // The VCA scales both channels alike: the sample's own balance at the track's output.
+    CHECK(rms(o[1], 0.1, 0.45) == doctest::Approx(0.5 * rms(o[0], 0.1, 0.45)).epsilon(1e-3));
+  }
+  {
+    Song g("pq_brk_wt", false, ch, 440.0, {}, {"meta:wavetable", "meta:envelope"});  // the bug's chain
+    g.notes({{9, 0, 1}});
+    const auto o = g.render(0.5);
+    const auto oj = g.render(0.5, true);  // the JIT plays a stereo Wavetable as the interpreter does
+    for (int c = 0; c < 2; ++c) CHECK(maxDiff(oj[c], o[c], 1.0, 0.0, 0.5) < 1e-6);
+    CHECK(rms(o[0], 0.1, 0.45) > 0.01);
+    CHECK(rms(o[1], 0.1, 0.45) > 0.01);
+    CHECK(maxDiff(o[0], o[1], 1.0, 0.1, 0.45) > 0.01);  // L != R: two phases read, not their mid
   }
 }

@@ -2495,9 +2495,10 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   const uint32_t id = d.device->id.value;
   if (x.node != graph::kNone && width == graph::kWidthMono && inWidth == graph::kWidthStereo)  // a mono signal into a stereo input
     x = b.ir.atom("pack", {x, x}, nodeIdFor(NodeRole::Device, id, 1), 2);
-  // A stereo signal into a chain meta device (ChainAudio: its chain input takes any width, its outputs are mono — a
-  // stereo signal would reach a mono `out` inside its expansion, which the compiler refuses: bug report
-  // 2026-11-01_12-15-15, a Wavetable after Utility): the mid, (l + r) / 2. Mono signals pass as before.
+  // A stereo signal into a chain meta device whose output is declared mono (ChainAudio: its chain input takes any
+  // width — a stereo signal would reach a mono `out` inside its expansion, which the compiler refuses: bug report
+  // 2026-11-01_12-15-15): the mid, (l + r) / 2. Mono signals pass as before. (BR.K: the Envelope and the Wavetable
+  // declare their `out` of the inferred width: a stereo signal passes them per channel; outW is then kWidthInfer.)
   if (x.node != graph::kNone && haveIn && width == graph::kWidthStereo && inWidth == graph::kWidthInfer && outW == graph::kWidthMono &&
       isMetaDevice(*d.device)) {
     const PortRef l = b.ir.atom("channel", {x, b.c0()}, nodeIdFor(NodeRole::Device, id, 2));
@@ -2703,7 +2704,10 @@ PortRef playGroup(Build& b, uint32_t k, uint16_t& width) {
     const uint32_t o = doneOutput(*d.callee);
     if (o != graph::kNone && t != nullptr && t->voiceEnd) end.dones.emplace_back(last, static_cast<uint16_t>(o));
     else ended = false;
-    if (outWidth(*d.callee) == graph::kWidthStereo) width = graph::kWidthStereo;
+    // BR.K: an output of the inferred width (an Envelope after a stereo Sampler) may be stereo: counted as stereo (the
+    // safe side: a mono signal taken for stereo only skips a pack, and its mid is itself; a stereo one taken for mono
+    // would be packed to four channels).
+    if (outWidth(*d.callee) != graph::kWidthMono) width = graph::kWidthStereo;
   }
   if (!ended) {
     end.dones.clear();
@@ -2822,6 +2826,14 @@ std::string tapPort(DeviceId device, std::string_view param) {
   return "tap_d" + std::to_string(device.value) + "_" + std::string(param);
 }
 
+// BR.K (2026-11-28_00-42-09): whether a wide signal reaches meta device `d`'s inputs as its mid (l + r) / 2: only a
+// meta module whose first output is declared mono (Noise's clock). One whose outputs take their width from what it reads
+// (Envelope, Wavetable, the analysers: OutputSpec kWidthInfer) processes every channel, so a stereo Sampler stays stereo
+// through the rest of an instrument group. Read from the callee's declaration: nothing per type.
+bool takesMid(const LDev& d) noexcept {
+  return isMetaDevice(*d.device) && !d.bypass && d.callee != nullptr && declaredOutWidth(*d.callee, 0) == graph::kWidthMono;
+}
+
 // A param whose value the track patch builds (instead of leaving the call's pin unconnected): a modulated param
 // (T4.7) or an automated one (GU.1).
 struct Site {
@@ -2856,8 +2868,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       s = all ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
       // Into a meta module's input: its mid, as from any wide source (below); a track's silent source (a return no send
       // reaches: the constant 0) is mono already. (Across tracks the target's patch takes the mid: `arriving`.)
-      if (w.input && !w.toMixer && w.fromNode == w.toNode && isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass &&
-          !(b.sourceX == b.c0())) {
+      if (w.input && !w.toMixer && w.fromNode == w.toNode && takesMid(td[w.toDev]) && !(b.sourceX == b.c0())) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -2871,12 +2882,11 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       s = from();  // TX.all-free-fix1: into another track's mixer (DY.2: or a signal input there; RT.2: an Audio In): every channel
     } else if (w.input && w.fromNode == w.toNode) {
       s = from();  // TX.patching: into an input on its own track, every channel
-      // TX.groups: a meta module's outputs are mono, so a signal of more channels (or of a width only inference knows:
-      // a group's In terminal) reaches its input as the mid (l + r) / 2 — the chain's rule (effectCall). On a mono
-      // signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
+      // TX.groups: a meta module with a mono output takes a signal of more channels (or of a width only inference
+      // knows: a group's In terminal) as the mid (l + r) / 2 — the chain's rule (effectCall; BR.K: takesMid). On a
+      // mono signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
       // (TX.groups-fix1: not into a switched-off device's pass-through, which passes every channel on.)
-      if (isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass &&
-          declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
+      if (takesMid(td[w.toDev]) && declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -2910,7 +2920,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       src = source(w);
     } else if (crossSidechain(w)) {
       src = ir.input("m" + id, b.c0(), wid(w, kWIn), kRoute);
-      if (isMetaDevice(*td[w.toDev].device) && !td[w.toDev].bypass) {
+      if (takesMid(td[w.toDev])) {
         const PortRef l = ir.atom("channel", {src, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {src, b.c1()}, wid(w, kWMidR));
         src = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
