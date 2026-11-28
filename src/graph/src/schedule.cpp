@@ -20,6 +20,7 @@
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <optional>
 #include <functional>
 #include <queue>
 #include <string>
@@ -28,6 +29,7 @@
 
 #include "pq/dsp/svf_design.h"
 #include "pq/graph/kernel_map.h"
+#include "pq/graph/value_range.h"
 
 namespace pq::graph {
 
@@ -724,55 +726,119 @@ private:
     }
   }
 
-  // Which z1 / delay-line nodes of each feedback SCC are split (read … write). T1b.3: when cutting only the delay
-  // lines already leaves the SCC acyclic, its z1s stay ordinary (fused) kernels inside the loop: every cycle then
-  // passes through a delay line, so the loop runs in sub-blocks of the delay's lower bound instead of per sample
-  // (a z1 on such a cycle only adds age). E.g. a comb whose loop holds an FIR made of z1 taps. SCCs with solve
-  // blocks, or with a cycle made of z1s alone, split everything as before.
+  // ---- cuts (FD.1) ---------------------------------------------------------------------------------------------
+  // Which z1 / delay-line nodes of each feedback SCC are split (read … write): the CUTS. Every cycle must pass through
+  // a cut, and the loop's sub-block is the smallest guaranteed tap age among its cut delay lines (1 with a cut z1), so
+  // the cuts are chosen to make that as large as the graph allows: with T the largest age such that cutting every
+  // delay line of age ≥ T leaves the SCC acyclic, exactly those are cut. Shorter delay lines (a diffuser's stage delays
+  // of a few samples beside the main taps of an FDN) and the z1s (T1b.3: an FIR of z1 taps inside a comb's feedback)
+  // then run as ordinary fused kernels inside the loop, in dependency order, and the loop runs in sub-blocks of T.
+  // When no set of delay lines alone breaks every cycle (a z1 on a cycle of its own, a one-pole in the feedback), or
+  // with a solve block in the SCC, everything is cut and the loop runs per sample.
   bool isZ1(NodeIndex n) const noexcept {
     const Node& nd = P().node(n);
     return nd.kind == NodeKind::Atom && kernelMapping(nd.atom).lowering == Lowering::Kernel &&
            kernelMapping(nd.atom).kernel == dsp::Atom::Z1;
   }
-  bool acyclicCuttingDelayLinesOnly(uint32_t c) {
-    bool anyDelayCut = false;
+
+  // The guaranteed age, in frames, of the newest tap a delay line reads (≥ 1): what a loop cut there can run as one
+  // sub-block. From the range of its time input (pq/graph/value_range.h: float32, the runtime's operations, never
+  // optimistic), per channel, the smallest; evaluated exactly as the read kernel does (pq/dsp kernels_memory.cpp
+  // delayTap: d = min(max(time, minimum), max frames); linear newest tap = ⌊d⌋, cubic ⌊d⌋ − 1 from 2 samples and
+  // ⌊d⌋ = 1 below (its linear read), allpass ⌊d⌋ − 1 when the fraction is below 0.5, else ⌊d⌋). delay_fade reads as
+  // cubic, with every head between values its time took (a glide) or at one (a fade's old head): the same bound.
+  uint32_t tapAge(NodeIndex m) {
+    const dsp::Atom k = kernelMapping(P().node(m).atom).kernel;
+    const bool cubic = k == dsp::Atom::DelayCubic || k == dsp::Atom::DelayFade;
+    const float minD = k == dsp::Atom::DelayAllpass ? 1.5f : 1.0f;
+    const float maxD = static_cast<float>(maxDelayFramesOf(m));
+    uint32_t best = kMaxSubBlock;
+    for (uint32_t ch = 0; ch < width_[m]; ++ch) {
+      const float lb = ranges_->input(m, 1, ch).lo;
+      float d = std::isfinite(lb) ? std::max(lb, minD) : minD;
+      d = std::min(d, maxD);
+      const float fl = std::floor(d);
+      const float age = k == dsp::Atom::DelayLinear ? fl
+                        : cubic                     ? (fl >= 2.0f ? fl - 1.0f : fl)
+                                                    : (d - fl < 0.5f ? fl - 1.0f : fl);
+      const uint32_t a = !(age >= 1.0f) ? 1u : age > static_cast<float>(kMaxSubBlock) ? kMaxSubBlock
+                                                                                      : static_cast<uint32_t>(age);
+      best = std::min(best, a);
+    }
+    if (opt_.maxLoopSubBlock > 0) best = std::min(best, opt_.maxLoopSubBlock);
+    return best;
+  }
+
+  // Whether SCC c is acyclic once the split inputs of its nodes with cutKey_ ≥ threshold are removed.
+  bool acyclicCutting(uint32_t c, uint32_t threshold) {
+    auto kept = [&](const Edge& e) {
+      return sccOf_[e.to] == c && !(e.flag == kEdgeSplit && cutKey_[e.to] >= threshold);
+    };
+    for (NodeIndex m : members(c)) itemDeg_[m] = 0;
     for (NodeIndex m : members(c))
-      if (nk_[m] == NK::Unknown || nk_[m] == NK::Equation) return false;
-    auto kept = [&](const Edge& e) { return sccOf_[e.to] == c && (e.flag != kEdgeSplit || isZ1(e.to)); };
-    std::vector<uint32_t> deg(P().nodeCount(), 0);
+      for (uint32_t e = succBegin_[m]; e < succBegin_[m + 1]; ++e)
+        if (kept(succ_[e])) ++itemDeg_[succ_[e].to];
+    std::vector<NodeIndex>& ready = cutReady_;
+    ready.clear();
     for (NodeIndex m : members(c))
-      for (uint32_t e = succBegin_[m]; e < succBegin_[m + 1]; ++e) {
-        const Edge& ed = succ_[e];
-        if (kept(ed)) ++deg[ed.to];
-        else if (sccOf_[ed.to] == c) anyDelayCut = true;
-      }
-    if (!anyDelayCut) return false;
-    std::vector<NodeIndex> ready;
-    for (NodeIndex m : members(c))
-      if (deg[m] == 0) ready.push_back(m);
+      if (itemDeg_[m] == 0) ready.push_back(m);
     size_t done = 0;
     while (!ready.empty()) {
       const NodeIndex m = ready.back();
       ready.pop_back();
       ++done;
       for (uint32_t e = succBegin_[m]; e < succBegin_[m + 1]; ++e)
-        if (kept(succ_[e]) && --deg[succ_[e].to] == 0) ready.push_back(succ_[e].to);
+        if (kept(succ_[e]) && --itemDeg_[succ_[e].to] == 0) ready.push_back(succ_[e].to);
     }
     return done == members(c).size();
   }
+
   void markSplits() {
-    split_.assign(P().nodeCount(), 0);
+    const uint32_t N = P().nodeCount();
+    split_.assign(N, 0);
+    // cutKey_: a z1 is 0, a delay line its tap age (≥ 1), for the nodes with a split input inside their feedback SCC.
+    cutKey_.assign(N, 0);
+    itemDeg_.assign(N + solves_.size(), 0);
+    ValueRangeOptions ro;
+    ro.sampleRate = opt_.sampleRate;
+    ro.trustParamRanges = opt_.trustParamRanges;
+    ranges_.emplace(*tp_, adj_, ro);
     const auto numScc = static_cast<uint32_t>(sccBegin_.size() - 1);
-    std::vector<uint8_t> delayOnly(numScc, 0);
-    for (uint32_t c = 0; c < numScc; ++c)
-      if (cyclic_[c]) delayOnly[c] = acyclicCuttingDelayLinesOnly(c) ? 1 : 0;
-    for (NodeIndex u = 0; u < P().nodeCount(); ++u)
-      for (uint32_t e = succBegin_[u]; e < succBegin_[u + 1]; ++e) {
-        const Edge& ed = succ_[e];
-        if (ed.flag == kEdgeSplit && sccOf_[u] == sccOf_[ed.to] && cyclic_[sccOf_[u]] &&
-            !(delayOnly[sccOf_[u]] && isZ1(ed.to)))
-          split_[ed.to] = 1;
+    std::vector<NodeIndex> cand;
+    std::vector<uint32_t> keys;
+    for (uint32_t c = 0; c < numScc; ++c) {
+      if (!cyclic_[c]) continue;
+      cand.clear();
+      bool solve = false;
+      for (NodeIndex m : members(c)) {
+        if (nk_[m] == NK::Unknown || nk_[m] == NK::Equation) solve = true;
+        for (uint32_t e = succBegin_[m]; e < succBegin_[m + 1]; ++e) {
+          const Edge& ed = succ_[e];
+          if (ed.flag != kEdgeSplit || sccOf_[ed.to] != c || split_[ed.to]) continue;
+          split_[ed.to] = 1;  // every candidate; the ones below the threshold are cleared again
+          cand.push_back(ed.to);
+        }
       }
+      for (NodeIndex m : cand) cutKey_[m] = isZ1(m) ? 0u : tapAge(m);
+      uint32_t threshold = 0;
+      if (!solve && !cand.empty()) {
+        keys.clear();
+        for (NodeIndex m : cand) keys.push_back(cutKey_[m]);
+        std::sort(keys.begin(), keys.end(), std::greater<>());
+        keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+        // Cutting more (a lower threshold) never closes a cycle: the first threshold, largest first, that is acyclic.
+        // The last one (every candidate) is: checkCycles left no delay-free cycle.
+        size_t lo = 0, hi = keys.size() - 1;
+        while (lo < hi) {
+          const size_t mid = lo + (hi - lo) / 2;
+          if (acyclicCutting(c, keys[mid])) hi = mid;
+          else lo = mid + 1;
+        }
+        threshold = keys[lo];
+      }
+      for (NodeIndex m : cand)
+        if (cutKey_[m] < threshold) split_[m] = 0;
+    }
   }
 
   // ---- solve blocks ---------------------------------------------------------------------------------------
@@ -911,106 +977,15 @@ private:
     }
   }
 
-  // Lower bound of an output's value (−inf if unknown), for delay times (samples). Computed in float32 with the
-  // runtime's operations (constants and `sr` are float constants, params are clamped to float(rangeMin), mul/add
-  // round to nearest, muladd is an fma), so it is the smallest value the program can actually produce: a bound in
-  // double could round above it (M1 review M10: 20.75 ms · 48 kHz = 996 in double, 995.99994 at runtime). An add
-  // of a product may be contracted into an fma by the JIT; both roundings are considered.
-  float lowerBound(NodeIndex n, int depth) const {
-    constexpr float kUnknown = -std::numeric_limits<float>::infinity();
-    if (depth > 16) return kUnknown;
-    const Node& nd = P().node(n);
-    switch (nd.kind) {
-      case NodeKind::Const: return static_cast<float>(P().constant(n).value());
-      case NodeKind::Param: {
-        const ParamDecl& d = P().paramDecl(n);
-        return opt_.trustParamRanges && d.kind == Kind::Real && d.hasRange ? static_cast<float>(d.rangeMin.value())
-                                                                          : kUnknown;
-      }
-      case NodeKind::Atom: break;
-      default: return kUnknown;
-    }
-    const std::string_view name = atomSignature(nd.atom).name;
-    if (name == "sr") return static_cast<float>(opt_.sampleRate * factor_[n]);
-    auto driver = [&](uint32_t i) -> NodeIndex {
-      const WireIndex w = adj_.driver[P().flatInput(n, i)];
-      return w == kNone ? kNone : P().wire(w).from.node;
-    };
-    auto in = [&](uint32_t i) -> float {
-      const NodeIndex d = driver(i);
-      if (d == kNone) {
-        const AtomSignature& sig = atomSignature(nd.atom);
-        return static_cast<float>(sig.inputs[specIndex(sig, i)].defaultValue);
-      }
-      return lowerBound(d, depth + 1);
-    };
-    if (name == "mul") {
-      const float a = in(0), b = in(1);
-      return a >= 0 && b >= 0 ? a * b : kUnknown;
-    }
-    if (name == "add") {
-      const float a = in(0), b = in(1);
-      float r = a + b;
-      // The fma a contracted mul + add would compute instead (non-negative factors only, as for mul).
-      for (uint32_t i = 0; i < 2; ++i) {
-        const NodeIndex d = driver(i);
-        if (d == kNone || P().node(d).kind != NodeKind::Atom || atomSignature(P().node(d).atom).name != "mul") continue;
-        auto din = [&](uint32_t j) -> float {
-          const WireIndex w = adj_.driver[P().flatInput(d, j)];
-          if (w == kNone) {
-            const AtomSignature& sig = atomSignature(P().node(d).atom);
-            return static_cast<float>(sig.inputs[specIndex(sig, j)].defaultValue);
-          }
-          return lowerBound(P().wire(w).from.node, depth + 2);
-        };
-        const float x = din(0), y = din(1);
-        if (x >= 0 && y >= 0) r = std::min(r, std::fma(x, y, i == 0 ? b : a));
-      }
-      return std::isnan(r) ? kUnknown : r;
-    }
-    if (name == "max") return std::max(in(0), in(1));
-    // a − constant (T1b.3: `time − 1/sr`): the runtime's float subtraction is monotonic in a.
-    if (name == "sub") {
-      const NodeIndex d = driver(1);
-      if (d == kNone || P().node(d).kind != NodeKind::Const) return kUnknown;
-      const float r = in(0) - static_cast<float>(P().constant(d).value());
-      return std::isnan(r) ? kUnknown : r;
-    }
-    if (name == "muladd") {
-      const float a = in(0), b = in(1), c = in(2);
-      const float r = std::fma(a, b, c);
-      return a >= 0 && b >= 0 && !std::isnan(r) ? r : kUnknown;
-    }
-    return kUnknown;
-  }
-
   // Frames per loop iteration: 1 with any split z1 or a solve; else the smallest guaranteed tap age of the split
-  // delay lines, evaluated exactly as the read kernel does in float32 (pq/dsp kernels_memory.cpp delayTap:
-  // d = min(max(time, minimum), max frames); linear newest tap = ⌊d⌋, cubic ⌊d⌋ − 1 from 2 samples and ⌊d⌋ = 1
-  // below (its linear read), allpass ⌊d⌋ − 1 when the fraction is below 0.5, else ⌊d⌋). delay_fade reads as cubic,
-  // with every head between values its time took (a glide) or at one (a fade's old head): the same bound.
+  // delay lines (tapAge; markSplits chose the cuts so that this is as large as the graph allows).
   uint32_t subBlockOf(uint32_t c) const {
     uint32_t sub = kMaxSubBlock;
     for (NodeIndex m : members(c)) {
       if (nk_[m] == NK::Unknown || nk_[m] == NK::Equation) return 1;
       if (!split_[m]) continue;
-      const Node& nd = P().node(m);
-      const dsp::Atom k = kernelMapping(nd.atom).kernel;
-      if (k == dsp::Atom::Z1) return 1;
-      const WireIndex tw = adj_.driver[P().flatInput(m, 1)];
-      float lb = -std::numeric_limits<float>::infinity();
-      if (tw != kNone) lb = lowerBound(P().wire(tw).from.node, 0);
-      const bool cubic = k == dsp::Atom::DelayCubic || k == dsp::Atom::DelayFade;
-      const float minD = k == dsp::Atom::DelayAllpass ? 1.5f : 1.0f;
-      float d = std::isfinite(lb) ? std::max(lb, minD) : minD;
-      d = std::min(d, static_cast<float>(maxDelayFramesOf(m)));
-      const float fl = std::floor(d);
-      const float age = k == dsp::Atom::DelayLinear ? fl
-                        : cubic                     ? (fl >= 2.0f ? fl - 1.0f : fl)
-                                                    : (d - fl < 0.5f ? fl - 1.0f : fl);
-      const uint32_t a = !(age >= 1.0f) ? 1u : age > static_cast<float>(kMaxSubBlock) ? kMaxSubBlock
-                                                                                      : static_cast<uint32_t>(age);
-      sub = std::min(sub, a);
+      if (cutKey_[m] == 0) return 1;  // a z1
+      sub = std::min(sub, cutKey_[m]);
     }
     return sub == kMaxSubBlock ? 1 : sub;
   }
@@ -1142,7 +1117,7 @@ private:
   }
 
   // Kahn over the members of cyclic SCC c on same-sample edges (split and solve edges removed; the input edge of an
-  // unsplit z1 is an ordinary dependency), solve bodies
+  // unsplit z1 or delay line is an ordinary dependency), solve bodies
   // contracted to one item; then each body in its own Kahn order (its unknowns first). Min node index first.
   void internalOrder(uint32_t c) {
     const uint32_t N = P().nodeCount();
@@ -1159,7 +1134,7 @@ private:
     auto kahn = [&](bool withDelayed) {
       auto inLoop = [&](const Edge& e) {
         return sccOf_[e.to] == c && (e.flag == kEdgeNormal || (withDelayed && e.flag == kEdgeDelayed) ||
-                                     (e.flag == kEdgeSplit && !split_[e.to]));  // an unsplit z1 (markSplits)
+                                     (e.flag == kEdgeSplit && !split_[e.to]));  // an unsplit z1 / delay line (markSplits)
       };
       for (uint32_t it : items) itemDeg_[it] = 0;
       for (NodeIndex m : members(c))
@@ -3055,6 +3030,9 @@ private:
   std::vector<Rate> rate_;
   std::vector<uint16_t> width_;
   std::vector<uint8_t> reducer_, stateful_, split_, color_, ctl_;
+  std::optional<ValueRanges> ranges_;  // FD.1: of the final patch (markSplits)
+  std::vector<uint32_t> cutKey_;       // FD.1 (markSplits): per cut candidate, 0 (a z1) or its delay line's tap age
+  std::vector<NodeIndex> cutReady_;
   // TMM.6: per node the oversample factor it runs at, and whether it is a rate converter (kConvUp: oversample_up /
   // _phase / _hold, output at its region's rate; kConvDown: oversample_down / _any, output at the base rate).
   std::vector<uint16_t> factor_;

@@ -367,6 +367,7 @@ pq_add_test(pq_tests_graph PERF
     graph/test_structure.cpp  # T4.15: structural constants, switched-off branches
     graph/test_oversample.cpp  # TMM.6: the oversample(n) region: text, checks, converters, schedule
     graph/test_static_transfer.cpp  # DY.3: static transfer curves of memoryless circuits (exact vs scalar, stateful -> none)
+    graph/test_delay_bounds.cpp  # FD.1: value ranges, delay bounds, the cut choice, loop sub-blocks vs the per-sample oracle
   DEPS pq_graph)
 
 # engine: block adapter, NullDevice (cadence, buffer sizes, RtScope on the callback path), RtAudio backend checks,
