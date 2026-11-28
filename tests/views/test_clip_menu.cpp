@@ -388,16 +388,19 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   CHECK_FALSE(m.enabledOf(f.item("loop")));
   CHECK_FALSE(m.enabledOf(f.item("tempo/:2")));
   for (const char* k : {"preserve/1/8", "beats-env", "tones-grain", "flux", "formants"}) CHECK_FALSE(m.shown(f.item(k)));
-  // Above the clip: the seven modes in one row; below: Transpose, its units, Detune, Reverse, BPM, :2 / ×2, Loop.
+  // Above the clip: Warp and the six modes in one row (none lit: Off); below: Transpose, its units, Detune, BPM, :2 /
+  // ×2, Loop. No Reverse (WB: R and the panel).
   const IRect box = f.arr->clipRect(beat);
-  const float modeY = f.at("warp/Off").y;
-  for (const char* k : {"warp/Off", "warp/Re-Pitch", "warp-stretch/Beats", "warp-stretch/Tones", "warp-stretch/Texture",
+  const float modeY = f.at("warped").y;
+  CHECK_FALSE(m.litOf(f.item("warped")));
+  CHECK(m.find("reverse") < 0);
+  for (const char* k : {"warped", "warp/Re-Pitch", "warp-stretch/Beats", "warp-stretch/Tones", "warp-stretch/Texture",
                         "warp-stretch/Complex", "warp-stretch/Pro"}) {
     CHECK(f.at(k).y == doctest::Approx(modeY));
     CHECK(f.at(k).y < static_cast<float>(box.y));
   }
   float x = -1e9f;
-  for (const char* k : {"transpose", "unit/stp", "unit/\xC2\xA2", "unit/n/d", "detune", "reverse", "bpm", "tempo/:2", "loop"}) {
+  for (const char* k : {"transpose", "unit/stp", "unit/\xC2\xA2", "unit/n/d", "detune", "bpm", "tempo/:2", "loop"}) {
     const Vec2 p = f.at(k);
     CHECK_MESSAGE(p.y > static_cast<float>(box.bottom()), k);
     CHECK_MESSAGE(p.x > x, k);
@@ -415,13 +418,6 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   CHECK(f.get(beat).detuneCents == 0.0f);
   f.d.step();
   CHECK(m.valueOf(f.item("detune")) == 0.0);  // refreshed under it
-
-  // Reverse: a click on the toggle.
-  h = f.history();
-  f.d.click(f.at("reverse"));
-  CHECK(f.get(beat).reverse);
-  CHECK(f.history() == h + 1);
-  CHECK(m.litOf(f.item("reverse")));
 
   // Transpose: typed "5/4" (exact ratio), then the ¢ chip re-expresses it in cents, the same pitch.
   h = f.history();
@@ -447,7 +443,24 @@ TEST_CASE("clip menu (SX.2 / SX.5, real dispatch): its controls edit the clip, o
   CHECK(f.get(beat).transpose.steps > 4);
   CHECK(f.history() == h + 1);
 
-  // Warp: Beats (the BPM seeded as the panel does); its settings row appears directly above the modes: Preserve 1/8.
+  // Warp (WB): the toggle warps the clip in the default mode from the shape it has (same span, same source frame at its
+  // start, read at the speed it played: at the song's tempo the source BPM is that tempo), one step; again: Off.
+  h = f.history();
+  const doc::AudioClip unwarped = f.get(beat);
+  f.d.click(f.at("warped"));
+  REQUIRE(f.get(beat).warp == f.ctx.viewPrefs().defaultWarpMode);
+  CHECK(m.litOf(f.item("warped")));
+  CHECK(f.get(beat).start == unwarped.start);
+  CHECK(f.get(beat).length == unwarped.length);
+  CHECK(f.get(beat).markers.empty());
+  CHECK(f.history() == h + 1);
+  f.d.click(f.at("warped"));
+  CHECK(f.get(beat).warp == doc::AudioWarp::Off);
+  CHECK(f.get(beat).seconds == doctest::Approx(unwarped.seconds));
+  CHECK(f.get(beat).contentStartFrame == doctest::Approx(unwarped.contentStartFrame));
+  CHECK(f.history() == h + 2);
+
+  // Warp: Beats (from Off, from its shape as the toggle); its settings row appears directly above the modes: Preserve 1/8.
   h = f.history();
   f.d.move(f.at("warp-stretch/Tones"));  // hovering a mode opens nothing
   CHECK_FALSE(m.shown(f.item("tones-grain")));
@@ -590,7 +603,7 @@ struct Case {
 
 }  // namespace
 
-TEST_CASE("clip menu (SX.2 / SX.5): parity — every control of the clip panel but Gain and the fades has a menu counterpart "
+TEST_CASE("clip menu (SX.2 / SX.5): parity — every control of the clip panel but Gain, the fades and Reverse has a menu counterpart "
           "that makes the identical clip through the same op") {
   Fixture f(1280, 900);
   const doc::ClipRef beat = f.clip("Drums", 0);
@@ -608,12 +621,12 @@ TEST_CASE("clip menu (SX.2 / SX.5): parity — every control of the clip panel b
   std::map<std::string, Case> cases;
   cases["clip/transpose"] = {W::Off, [](AudioClipView& view, Widget&) { (void)view.setTranspose(std::string_view("5/4")); }, "transpose", 0.0, "5/4"};
   cases["clip/detune"] = {W::Off, {}, "detune", 12.0};
-  cases["clip/side/reverse"] = {W::Off, {}, "reverse", 1.0};
-  // SX.5: not in the menu: the clip's own handles edit gain and the fades.
-  const std::set<std::string> excluded = {"clip/gain", "clip/side/fade-in", "clip/side/fade-out"};
-  const char* modes[] = {"off", "repitch", "beats", "tones", "texture", "complex", "pro"};
-  for (int i = 0; i < 7; ++i)
-    cases[std::string(i < 4 ? "warp/modes-1/" : "warp/modes-2/") + modes[i]] = {i == 0 ? W::Beats : W::Off, {}, "warp", static_cast<double>(i)};
+  // SX.5: not in the menu: the clip's own handles edit gain and the fades; WB: Reverse (R) neither.
+  const std::set<std::string> excluded = {"clip/gain", "clip/side/fade-in", "clip/side/fade-out", "clip/side/reverse"};
+  const char* modes[] = {"warp", "repitch", "beats", "tones", "texture", "complex", "pro"};
+  cases["warp/modes-1/warp"] = {W::Off, {}, "warped", 1.0};  // WB: the Warp toggle
+  for (int i = 1; i < 7; ++i)
+    cases[std::string(i < 4 ? "warp/modes-1/" : "warp/modes-2/") + modes[i]] = {W::Off, {}, "warp", static_cast<double>(i)};
   cases["warp/tempo/bpm"] = {W::Beats, {}, "bpm", 96.0};
   cases["warp/tempo/halve"] = {W::Beats, {}, "tempo", 0.0};
   cases["warp/tempo/double"] = {W::Beats, {}, "tempo", 1.0};

@@ -136,14 +136,6 @@ std::string transposeReadout(const doc::AudioTranspose& t, double cents) {
   return buf;
 }
 
-double sourceBpmFor(double fileBpm, double durationSeconds) {
-  if (fileBpm >= kMinBpm && fileBpm <= kMaxBpm) return fileBpm;
-  if (!(durationSeconds > 0.0)) return 120.0;
-  // Bars of 4/4 at 120 BPM (2 s each), rounded to a whole number (at least one); the tempo that makes it exact.
-  const double bars = std::max(1.0, std::round(durationSeconds / 2.0));
-  return std::clamp(bars * 4.0 * 60.0 / durationSeconds, kMinBpm, kMaxBpm);
-}
-
 int32_t loopBarsFor(double seconds, double bpm, double beatsPerBar) {
   if (!(seconds > 0.0) || !(beatsPerBar > 0.0)) return 1;
   const auto tempoOf = [&](int32_t bars) { return bars * beatsPerBar * 60.0 / seconds; };
@@ -1622,18 +1614,23 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
   warpCard.setGap(4);
   warpCard.setHeight(Length::fixed(audio_clip::Section::kTitleH + 3 * 20 + 2 * 4 + 7));
   {
-    static constexpr const char* kChipNames[] = {"off", "repitch", "beats", "tones", "texture", "complex", "pro"};
+    static constexpr const char* kChipNames[] = {"warp", "repitch", "beats", "tones", "texture", "complex", "pro"};
     Widget& m1 = row(warpCard, "modes-1");
     Widget& m2 = row(warpCard, "modes-2");
     for (size_t i = 0; i < std::size(kChipNames); ++i) {
-      Chip& c = chip(i < 4 ? m1 : m2, kChipNames[i], kWarpModeNames[i]);
+      Chip& c = chip(i < 4 ? m1 : m2, kChipNames[i], i == 0 ? "Warp" : kWarpModeNames[i]);
       c.setWidth(Length::flex(i == 6 ? 2.0f : 1.0f));
-      c.setInfo("Warp", "Off: the file's own speed, its duration in seconds. Re-Pitch: follows the song tempo like a tape "
+      c.setInfo("Warp", "Warp (lit while warped): on, the clip is warped in the default mode (Preferences) from the shape it "
+                        "has, so it sounds the same until it is edited or the tempo changes; off, it plays at the file's own "
+                        "speed, its duration in seconds. A mode chosen on an unwarped clip warps it the same way. Re-Pitch: follows the song tempo like a tape "
                         "(speed and pitch together). Beats: slices at transients or the grid, for drums. Tones: grains "
                         "that keep a single pitched voice (monophonic) exactly in tune; chords drift, use Complex. Texture: "
                         "grains with randomness, for pads and noise. Complex: a phase vocoder for whole mixes. Complex "
                         "Pro: Complex keeping the formants (voices).");
-      c.onPress = [this, i] { (void)setWarp(static_cast<doc::AudioWarp>(i)); };
+      c.onPress = [this, i] {
+        if (i == 0) (void)(clip_ && clip_edits::setWarped(ctx_, ref_, !doc::isWarped(clip_->warp)));
+        else (void)setWarp(static_cast<doc::AudioWarp>(i));
+      };
       warp_[i] = &c;
     }
     // Row 2 has 4 cells' worth (1 + 1 + 2): the grid's columns line up with row 1.
@@ -1641,8 +1638,9 @@ AudioClipView::AudioClipView(ViewContext& ctx) : Widget("audio-clip-view"), ctx_
     const ValueSpec bs = clip_edits::bpmSpec();
     bpm_ = &tempo.add<FillBox>("bpm", "BPM", bs, false);
     bpm_->setWidth(Length::flex(2));
-    bpm_->setInfo("Source Tempo", "The tempo the file was recorded at (its tempo tag or name, else its detected tempo, else its "
-                                  "length). Warp markers override it between them.");
+    bpm_->setInfo("Source Tempo", "The tempo the source plays at its own speed. Warping an unwarped clip sets it so the clip "
+                                  "sounds as it did; set it to the file's real tempo to make the clip follow the song. "
+                                  "Warp markers override it between them.");
     bindGesture(*bpm_, "Clip Tempo", [this](double v) { (void)setSourceBpm(v); });
     halve_ = &chip(tempo, "halve", ":2");
     halve_->setWidth(Length::flex(0.5f));
@@ -1775,15 +1773,13 @@ void AudioClipView::refresh() {
   const doc::AudioClip& a = *clip_;
   const doc::SampleRef* s = doc::findSample(*cur, a.sample);
   const std::string path = ctx_.samplePath(a.sample);
-  if (path != probedPath_) {  // headers only (≤ a few reads), once per file: bits, tempo tag
+  if (path != probedPath_) {  // headers only (≤ a few reads), once per file: bits, container
     probedPath_ = path;
     bits_ = 0;
-    fileBpm_ = 0.0;
     container_.clear();
     if (!path.empty())
       if (Result<media::SampleInfo> info = media::probe(utf8Path(path))) {
         bits_ = info->bitsPerSample;
-        fileBpm_ = info->bpm;
         container_ = std::string(media::containerName(info->container));
       }
   }
@@ -1809,7 +1805,8 @@ void AudioClipView::refresh() {
   if (!gain_->inGesture()) gain_->setValue(a.gainDb);
   if (!detune_->inGesture()) detune_->setValue(a.detuneCents);
   reverse_->setOn(a.reverse);
-  for (size_t i = 0; i < std::size(warp_); ++i) warp_[i]->setOn(static_cast<size_t>(a.warp) == i);
+  warp_[0]->setOn(doc::isWarped(a.warp));
+  for (size_t i = 1; i < std::size(warp_); ++i) warp_[i]->setOn(static_cast<size_t>(a.warp) == i);
   if (!bpm_->inGesture()) bpm_->setValue(a.sourceBpm);
   loop_->setOn(a.loop.enabled);
   const bool warped = doc::isWarped(a.warp);
@@ -1888,7 +1885,7 @@ bool AudioClipView::setTranspose(const doc::AudioTranspose& t) { return clip_ &&
 bool AudioClipView::setDetune(float cents) { return clip_ && clip_edits::setDetune(ctx_, ref_, cents); }
 bool AudioClipView::setReverse(bool on) { return clip_ && clip_edits::setReverse(ctx_, ref_, on); }
 double AudioClipView::detectedBpm() { return clip_ ? clip_edits::detectedTempo(ctx_, *clip_) : 0.0; }
-bool AudioClipView::setWarp(doc::AudioWarp warp) { return clip_ && clip_edits::setWarp(ctx_, ref_, warp, fileBpm_); }
+bool AudioClipView::setWarp(doc::AudioWarp warp) { return clip_ && clip_edits::setWarp(ctx_, ref_, warp); }
 bool AudioClipView::setSourceBpm(double bpm) { return clip_ && clip_edits::setSourceBpm(ctx_, ref_, bpm); }
 bool AudioClipView::scaleSourceBpm(double factor) { return clip_ && clip_edits::scaleSourceBpm(ctx_, ref_, factor); }
 bool AudioClipView::setLoopEnabled(bool on) { return clip_ && clip_edits::setLoopEnabled(ctx_, ref_, on); }

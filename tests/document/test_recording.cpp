@@ -399,8 +399,45 @@ TEST_CASE("recording: warp markers — adding pins the frame playing now (nothin
   // Warped → Off keeps the start marker's frame through the markers.
   commit(r.store, ops::setWarpMode(r.doc(), one, AudioWarp::Off));
   CHECK(clip().contentStartFrame == doctest::Approx(warpFrameAt(beats, 48000.0, static_cast<double>(beats.contentStart))));
-  CHECK(clip().markers.size() == 2);  // kept for the next warped life
+  CHECK(clip().markers.size() == 2);  // kept while Off (unused)
   CHECK_FALSE(ops::moveWarpMarker(r.doc(), c, 0, 0).ok());
+  // WB: warped again it starts from the shape it has now: the old markers dropped.
+  commit(r.store, ops::setWarpMode(r.doc(), one, AudioWarp::Tones));
+  CHECK(clip().markers.empty());
+}
+
+TEST_CASE("recording: WB — warping an Off clip changes nothing that plays: every mode reads the same source frame at "
+          "every moment (the varispeed of a transpose included), with the same span") {
+  Rec r;
+  const AudioClip a0 = r.audioClip(kBar, 1.9, 1000.0);
+  REQUIRE(r.store.dispatch(AddClip{r.audio, nullptr, std::make_shared<const AudioClip>(a0)}).ok());
+  const ClipRef c{r.audio, a0.id};
+  const std::span<const ClipRef> one(&c, 1);
+  auto clip = [&]() -> const AudioClip& { return *r.track(r.audio).clips.at(0).audio; };
+  const TempoMap& tm = r.doc().timeline->tempoMap;
+  for (const double cents : {0.0, 700.0}) {
+    CAPTURE(cents);
+    commit(r.store, ops::setAudioClipTranspose(r.doc(), one, AudioTranspose{TransposeUnit::Cents, cents, 0, {1}}));
+    const AudioClip off = clip();
+    REQUIRE(off.warp == AudioWarp::Off);
+    const AudioTrackDesc before = r.lowered(r.audio);
+    const double t0 = tm.ticksToSeconds(off.start), t1 = tm.ticksToSeconds(clipEnd(off));
+    for (uint8_t w = 1; w <= static_cast<uint8_t>(kLastAudioWarp); ++w) {
+      CAPTURE(static_cast<int>(w));
+      commit(r.store, ops::setWarpMode(r.doc(), one, static_cast<AudioWarp>(w)));
+      CHECK(clip().start == off.start);
+      CHECK(clip().length == off.length);
+      const AudioTrackDesc after = r.lowered(r.audio);
+      for (int i = 0; i < 200; ++i) {
+        const double tau = t0 + (t1 - t0) * (i + 0.5) / 200.0;
+        // Within the start marker's rounding to a whole content tick (≈ 0.1 frame at 120 BPM).
+        CHECK(std::abs(*frameAt(after, tm, tau) - *frameAt(before, tm, tau)) < 0.1);
+      }
+      commit(r.store, ops::setWarpMode(r.doc(), one, AudioWarp::Off));
+      CHECK(clip().seconds == doctest::Approx(off.seconds).epsilon(1e-9));
+      CHECK(std::abs(clip().contentStartFrame - off.contentStartFrame) < 0.1);  // the same tick rounding
+    }
+  }
 }
 
 TEST_CASE("recording: T6.8 warp commands — slide keeps the content tick, Warp From Here, Warp as N-Bar Loop, auto-warp; "

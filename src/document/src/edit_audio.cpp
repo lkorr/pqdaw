@@ -179,8 +179,20 @@ Status needWarped(const AudioClip& c) {
 
 EditResult setWarpMode(const Project& p, std::span<const ClipRef> clips, AudioWarp warp) {
   if (static_cast<uint8_t>(warp) > static_cast<uint8_t>(kLastAudioWarp)) return invalid("unknown warp mode");
-  return editAudioClips(p, clips, "Clip Warp", [&](const ClipFound&, AudioClip& c) {
-    c = withWarp(*p.timeline, c, warp, c.sourceBpm, sampleRate(p, c.sample));
+  return editAudioClips(p, clips, "Clip Warp", [&](const ClipFound& f, AudioClip& c) {
+    double bpm = c.sourceBpm;
+    if (!isWarped(c.warp) && isWarped(warp)) {
+      // From Off: warped from the shape it has. The source tempo is the one at which the clip's ticks read the source
+      // at the speed it plays now (its frames over its length: the mean tempo over the clip over the varispeed ratio),
+      // and the markers of an earlier warped life are dropped, so the clip keeps its placement, duration and audio.
+      const TempoMap& m = p.timeline->tempoMap;
+      const double ticks = m.secondsToTicks(m.ticksToSeconds(c.start) + c.seconds) - static_cast<double>(c.start);
+      const double played = c.seconds * audioRateRatio(p, f.path, c);  // source seconds the clip plays
+      if (played > 0.0 && ticks > 0.0)
+        bpm = std::clamp(60.0 * ticks / (played * static_cast<double>(kPpq)), kMinBpm, kMaxBpm);
+      c.markers.clear();
+    }
+    c = withWarp(*p.timeline, c, warp, bpm, sampleRate(p, c.sample));
     return ok();
   });
 }

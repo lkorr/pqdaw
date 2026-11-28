@@ -5,12 +5,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <filesystem>
 #include <span>
 
 #include "pq/document/audio_clip.h"
 #include "pq/document/pitch_resolve.h"
-#include "pq/media/probe.h"
 #include "pq/views/audio_clip/audio_clip_view.h"
 #include "pq/views/sample_analysis.h"
 
@@ -71,14 +69,6 @@ std::optional<tuning::Tuning> clipTuning(const doc::Project& p, const doc::ClipR
     if (const doc::TuningDef* def = doc::audioClipTuning(p, *tp, *c))
       if (Result<tuning::Tuning> t = doc::buildTuning(*def)) return std::move(*t);
   return std::nullopt;
-}
-
-double fileTempo(ViewContext& ctx, const doc::AudioClip& c) {
-  const std::string path = ctx.samplePath(c.sample);
-  if (path.empty()) return 0.0;
-  const std::u8string u8(path.begin(), path.end());
-  if (Result<media::SampleInfo> info = media::probe(std::filesystem::path(u8))) return info->bpm;
-  return 0.0;
 }
 
 double detectedTempo(ViewContext& ctx, const doc::AudioClip& c) {
@@ -243,16 +233,16 @@ bool setReverse(ViewContext& ctx, const doc::ClipRef& ref, bool on) {
   return dispatch(ctx, doc::ops::setAudioClipsReverse(*ctx.doc(), one(ref), on), "Reverse");
 }
 
-bool setWarp(ViewContext& ctx, const doc::ClipRef& ref, doc::AudioWarp warp, double fileBpm) {
+bool setWarp(ViewContext& ctx, const doc::ClipRef& ref, doc::AudioWarp warp) {
   const doc::AudioClip* c = findAudioClip(*ctx.doc(), ref);
   if (!c || warp == c->warp) return false;
-  double bpm = c->sourceBpm;
-  if (!doc::isWarped(c->warp) && doc::isWarped(warp)) {  // from Off: seed the source tempo
-    const doc::SampleRef* s = doc::findSample(*ctx.doc(), c->sample);
-    const double detected = fileBpm >= kMinBpm && fileBpm <= kMaxBpm ? 0.0 : detectedTempo(ctx, *c);
-    bpm = sourceBpmFor(detected > 0.0 ? detected : fileBpm, s ? static_cast<double>(s->frames) / std::max(1.0, s->rate) : 0.0);
-  }
-  return dispatch(ctx, doc::ops::setAudioClipWarp(*ctx.doc(), one(ref), warp, bpm), "Warp");
+  return dispatch(ctx, doc::ops::setWarpMode(*ctx.doc(), one(ref), warp), "Warp");
+}
+
+bool setWarped(ViewContext& ctx, const doc::ClipRef& ref, bool on) {
+  const doc::AudioClip* c = findAudioClip(*ctx.doc(), ref);
+  if (!c || on == doc::isWarped(c->warp)) return false;
+  return setWarp(ctx, ref, on ? ctx.viewPrefs().defaultWarpMode : doc::AudioWarp::Off);
 }
 
 bool setSourceBpm(ViewContext& ctx, const doc::ClipRef& ref, double bpm) {

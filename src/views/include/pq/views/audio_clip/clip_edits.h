@@ -26,9 +26,7 @@ namespace pq::views::clip_edits {
 const doc::AudioClip* findAudioClip(const doc::Project& p, const doc::ClipRef& ref) noexcept;
 // The tuning a Steps transpose of the clip resolves in (nullopt: none resolves; steps are then semitones).
 std::optional<tuning::Tuning> clipTuning(const doc::Project& p, const doc::ClipRef& ref);
-// The file's tempo tag (acid chunk / name; 0: none). Probes the file's headers: once per open, not per frame.
-double fileTempo(ViewContext& ctx, const doc::AudioClip& c);
-// The sample's detected tempo when confident (>= 0.6), else 0 (what the warp commands and the Off → warped seed use).
+// The sample's detected tempo when confident (>= 0.6), else 0 (what Warp as Loop's bar count uses).
 double detectedTempo(ViewContext& ctx, const doc::AudioClip& c);
 
 // --- transpose in the clip's tuning ---
@@ -54,9 +52,10 @@ bool setTranspose(ViewContext& ctx, const doc::ClipRef& ref, const doc::AudioTra
 bool setTransposeText(ViewContext& ctx, const doc::ClipRef& ref, std::string_view text);
 bool setDetune(ViewContext& ctx, const doc::ClipRef& ref, float cents);
 bool setReverse(ViewContext& ctx, const doc::ClipRef& ref, bool on);
-// From Off the source tempo is seeded: the file's tempo tag (`fileBpm`) or name, else the detected tempo, else the
-// length as whole 4/4 bars (sourceBpmFor).
-bool setWarp(ViewContext& ctx, const doc::ClipRef& ref, doc::AudioWarp warp, double fileBpm);
+// ops::setWarpMode: from Off the clip is warped from the shape it has (it sounds the same until it is edited or the
+// tempo changes). setWarped: the Warp toggle — on: ViewPrefs::defaultWarpMode, off: Off.
+bool setWarp(ViewContext& ctx, const doc::ClipRef& ref, doc::AudioWarp warp);
+bool setWarped(ViewContext& ctx, const doc::ClipRef& ref, bool on);
 bool setSourceBpm(ViewContext& ctx, const doc::ClipRef& ref, double bpm);  // warped clips only
 bool scaleSourceBpm(ViewContext& ctx, const doc::ClipRef& ref, double factor);  // :2 / ×2 (kept within kMinBpm … kMaxBpm)
 bool setLoopEnabled(ViewContext& ctx, const doc::ClipRef& ref, bool on);  // warped clips only; a fresh loop spans the clip

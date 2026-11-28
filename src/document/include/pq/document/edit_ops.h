@@ -213,9 +213,10 @@ EditResult setAudioClipFades(const Project& p, ClipRef clip, AudioFade fadeIn, A
 EditResult setAudioClipCrossfade(const Project& p, ClipRef clip, Ticks length);
 // A warped clip's loop brace in content ticks (warp Off clips have none: InvalidArgument).
 EditResult setAudioClipLoop(const Project& p, ClipRef clip, ClipLoop loop);
-// T6.1: the warp mode (model.h AudioWarp), each clip keeping its source BPM, its song-time placement and the audio at
-// its start (audio_clip.h withWarp: Off ↔ warped converts the start marker through the markers; between warped modes
-// only the mode changes). One step for all the clips.
+// T6.1: the warp mode (model.h AudioWarp), each clip keeping its song-time placement and the audio at its start
+// (audio_clip.h withWarp; between warped modes only the mode changes). From Off a clip is warped from the shape it has:
+// the source BPM is chosen so it plays at the speed it played (its duration, any varispeed transpose included; exact
+// under a constant tempo, the mean tempo over the clip otherwise) and old warp markers are dropped. One step for all.
 EditResult setWarpMode(const Project& p, std::span<const ClipRef> clips, AudioWarp warp);
 // T6.1: the time-stretch modes' settings (InvalidArgument out of range: model.h WarpParams).
 EditResult setAudioClipWarpParams(const Project& p, std::span<const ClipRef> clips, WarpParams params);

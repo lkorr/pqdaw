@@ -89,7 +89,7 @@ struct Fixture {
   }
   // The warp chip of a mode.
   void pick(std::string_view mode) {
-    static constexpr const char* kPaths[][2] = {{"Off", "warp/modes-1/off"},         {"Re-Pitch", "warp/modes-1/repitch"},
+    static constexpr const char* kPaths[][2] = {{"Warp", "warp/modes-1/warp"},         {"Re-Pitch", "warp/modes-1/repitch"},
                                                 {"Beats", "warp/modes-1/beats"},     {"Tones", "warp/modes-1/tones"},
                                                 {"Texture", "warp/modes-2/texture"}, {"Complex", "warp/modes-2/complex"},
                                                 {"Complex Pro", "warp/modes-2/pro"}};
@@ -139,27 +139,27 @@ struct Fixture {
 
 TEST_CASE("audio clip warp: the warp chips' seven modes, each mode's card, its settings one undo step each, :2 / x2") {
   Fixture f;
-  static constexpr const char* kChips[] = {"warp/modes-1/off",     "warp/modes-1/repitch", "warp/modes-1/beats", "warp/modes-1/tones",
+  static constexpr const char* kChips[] = {"warp/modes-1/warp",    "warp/modes-1/repitch", "warp/modes-1/beats", "warp/modes-1/tones",
                                            "warp/modes-2/texture", "warp/modes-2/complex", "warp/modes-2/pro"};
   for (size_t i = 0; i < std::size(kChips); ++i) {
     audio_clip::Chip* c = f.chipAt(kChips[i]);
     REQUIRE(c != nullptr);
-    CHECK(c->text() == kWarpModeNames[i]);
-    CHECK(c->on() == (i == 0));  // Off lit
+    CHECK(c->text() == (i == 0 ? std::string("Warp") : std::string(kWarpModeNames[i])));
+    CHECK_FALSE(c->on());  // Off: Warp dark, no mode lit
   }
   CHECK(f.clip().warp == doc::AudioWarp::Off);
   CHECK_FALSE(f.shown("mode"));  // Off has no settings: no mode card
   CHECK(f.box("clip/transpose")->enabled());
 
-  // Beats by its chip: one step; the tempo seeded from the detection (beat.wav has no tag: its kicks, 120 BPM); its
-  // card (titled Beats) with Preserve, Transient Loop and Envelope; the chip lit, Off dark.
+  // Beats by its chip: one step; warped from its shape (WB: the source BPM is the song's tempo, so it plays at the speed
+  // it played); its card (titled Beats) with Preserve, Transient Loop and Envelope; the chip lit, and Warp.
   size_t h = f.history();
   f.pick("Beats");
   CHECK(f.clip().warp == doc::AudioWarp::Beats);
-  CHECK(std::abs(f.clip().sourceBpm - 120.0) < 0.5);
+  CHECK(f.clip().sourceBpm == doctest::Approx(f.ctx.doc()->timeline->tempoMap.bpmAt(f.clip().start)));
   CHECK(f.history() == h + 1);
   CHECK(f.chipAt("warp/modes-1/beats")->on());
-  CHECK_FALSE(f.chipAt("warp/modes-1/off")->on());
+  CHECK(f.chipAt("warp/modes-1/warp")->on());  // WB: lit while warped
   CHECK(f.shown("mode/beats/preserve"));
   CHECK(f.shown("mode/beats/beats-loop"));
   CHECK(f.shown("mode/beats-env"));
@@ -228,7 +228,9 @@ TEST_CASE("audio clip warp: the warp chips' seven modes, each mode's card, its s
   f.chip("warp/tempo/loop");
   CHECK(f.clip().loop.enabled == !looped);
   CHECK(f.chipAt("warp/tempo/loop")->on() == !looped);
-  f.pick("Off");
+  f.pick("Warp");  // the toggle: off again
+  CHECK(f.clip().warp == doc::AudioWarp::Off);
+  CHECK_FALSE(f.chipAt("warp/modes-1/warp")->on());
   CHECK_FALSE(f.box("warp/tempo/halve")->enabled());
   CHECK_FALSE(f.box("warp/tempo/bpm")->enabled());
 }

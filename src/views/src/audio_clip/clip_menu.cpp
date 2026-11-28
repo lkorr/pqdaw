@@ -21,13 +21,12 @@ using ui::RadialPlace;
 namespace {
 
 // What the bindings share while the menu is open: the clip it edits, its tuning (re-read on every document change),
-// the file's tempo tag (probed once), the exact transpose a typed entry parsed (until the gesture ends).
+// the exact transpose a typed entry parsed (until the gesture ends).
 struct MenuState {
   MenuState(ViewContext& c, const doc::ClipRef& r) : ctx(c), ref(r) {}
   ViewContext& ctx;
   doc::ClipRef ref;
   std::optional<tuning::Tuning> tuning;
-  double fileBpm = 0.0;
   std::optional<doc::AudioTranspose> typed;
   ui::RadialMenu* menu = nullptr;
   ViewContext::Subscription sub;
@@ -78,20 +77,29 @@ std::vector<RadialItem> buildItems(const StatePtr& s) {
     };
   };
 
-  // ---- above: the warp modes in one row (Off, Re-Pitch | the time-stretch modes); the chosen one's settings above it
+  // ---- above: Warp and the warp modes in one row (Warp, Re-Pitch | the time-stretch modes); the chosen one's settings
+  // above it
+  {
+    RadialBinding b;
+    b.get = [s] {
+      const doc::AudioClip* c = s->clip();
+      return c && doc::isWarped(c->warp) ? 1.0 : 0.0;
+    };
+    b.set = [s](double v) { (void)ce::setWarped(s->ctx, s->ref, v != 0.0); };
+    items.push_back(RadialItem::toggle("warped", "Warp", std::move(b), RadialPlace::above()));
+  }
   auto warp = std::make_shared<RadialBinding>();
   warp->get = [s] {
     const doc::AudioClip* c = s->clip();
     return c ? static_cast<double>(c->warp) : 0.0;
   };
-  warp->set = [s](double v) { (void)ce::setWarp(s->ctx, s->ref, static_cast<doc::AudioWarp>(static_cast<int>(v)), s->fileBpm); };
+  warp->set = [s](double v) { (void)ce::setWarp(s->ctx, s->ref, static_cast<doc::AudioWarp>(static_cast<int>(v))); };
   auto mode = [](doc::AudioWarp w, std::vector<RadialItem> children = {}) {
     const auto i = static_cast<size_t>(w);
     return RadialChoice{i == 6 ? std::string("Pro") : std::string(kWarpModeNames[i]), static_cast<int32_t>(i), std::move(children)};
   };
   {
     std::vector<RadialChoice> tape;
-    tape.push_back(mode(doc::AudioWarp::Off));
     tape.push_back(mode(doc::AudioWarp::RePitch));
     items.push_back(RadialItem::chips("warp", std::move(tape), warp, RadialPlace::above()));
   }
@@ -158,7 +166,7 @@ std::vector<RadialItem> buildItems(const StatePtr& s) {
     items.push_back(RadialItem::chips("warp-stretch", std::move(stretch), warp, RadialPlace::above()));
   }
 
-  // ---- below: Transpose and its unit, Detune, Reverse
+  // ---- below: Transpose and its unit, Detune
   {
     RadialBinding b;
     b.get = [s] {
@@ -234,15 +242,6 @@ std::vector<RadialItem> buildItems(const StatePtr& s) {
     items.push_back(RadialItem::knob("detune", "Detune", ce::detuneSpec(), std::move(b), RadialPlace::below()));
   }
 
-  {
-    RadialBinding b;
-    b.get = [s] {
-      const doc::AudioClip* c = s->clip();
-      return c && c->reverse ? 1.0 : 0.0;
-    };
-    b.set = [s](double v) { (void)ce::setReverse(s->ctx, s->ref, v != 0.0); };
-    items.push_back(RadialItem::toggle("reverse", "Reverse", std::move(b), RadialPlace::below()));
-  }
   // ---- then the tempo: the BPM knob (typed on double-click), :2 / ×2 (momentary: nothing lit), Loop
   {
     RadialBinding b;
@@ -283,7 +282,6 @@ std::vector<RadialItem> buildItems(const StatePtr& s) {
 StatePtr makeState(ViewContext& ctx, const doc::ClipRef& ref) {
   auto s = std::make_shared<MenuState>(ctx, ref);
   s->tuning = ce::clipTuning(*ctx.doc(), ref);
-  if (const doc::AudioClip* c = s->clip()) s->fileBpm = ce::fileTempo(ctx, *c);
   return s;
 }
 

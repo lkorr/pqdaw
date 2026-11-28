@@ -357,8 +357,6 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(transposeReadout(*parseTranspose("-700c"), -700.0) == "-7 st");
   CHECK(transposeReadout(*parseTranspose("386.3c"), 386.3) == "+386.3 \xC2\xA2");
   CHECK(transposeReadout(doc::AudioTranspose{}, 0.0) == "0 st");
-  CHECK(sourceBpmFor(0.0, 1.5) == doctest::Approx(160.0));  // one bar of 4/4 in 1.5 s
-  CHECK(sourceBpmFor(98.0, 1.5) == 98.0);
   // M6 review M11: Warp as N-Bar Loop's count in the clip's signature, any whole number with a detected tempo.
   CHECK(loopBarsFor(4.0, 0.0) == 2);             // no detection: the power of two nearest 120 BPM (2 bars of 4/4)
   CHECK(loopBarsFor(6.0, 120.0) == 3);           // 3 bars of 4/4 at 120: no longer forced to 2 or 4
@@ -378,8 +376,14 @@ TEST_CASE("audio clip view: transpose entry, gain, warp (BPM seeded), reverse, s
   CHECK(v.setReverse(true));
   CHECK(v.clip()->reverse);
   CHECK(f.history() == h + 4);
+  // WB: warped from the shape it has: the Off clip played 3/2 fast (its transpose is a varispeed), so Re-Pitch reads
+  // the source at the same speed (the source BPM = the tempo / 1.5); the same span, start and source frame.
+  const doc::AudioClip off = f.get(vox);
+  const double tempo = f.ctx.doc()->timeline->tempoMap.bpmAt(off.start);
   CHECK(v.setWarp(doc::AudioWarp::RePitch));
-  CHECK(v.clip()->sourceBpm == doctest::Approx(160.0));  // vox.wav: 1.5 s, no tempo tag → one bar
+  CHECK(v.clip()->sourceBpm == doctest::Approx(tempo / 1.5));
+  CHECK(v.clip()->start == off.start);
+  CHECK(v.clip()->length == off.length);
   CHECK(f.history() == h + 5);
 
   // The gain knob: a drag is one undo step.

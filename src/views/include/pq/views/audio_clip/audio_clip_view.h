@@ -6,7 +6,7 @@
 //
 //   audio-box (left): the name strip, file, rate · bits · channels · s, then three cards (audio_clip/clip_controls.h)
 //     Clip   Transpose (the big knob), Detune, Gain knobs; Reverse chip, Fade In / Fade Out fill boxes
-//     Warp   the seven modes as a chip grid; BPM box with :2 and ×2 chips; Loop chip
+//     Warp   the Warp toggle and the six modes as a chip grid; BPM box with :2 and ×2 chips; Loop chip
 //     <mode> the warp mode's settings (Beats / Tones / Texture / Complex Pro; hidden for the others)
 //   sample (right): the loop strip (start marker, loop brace), the time ruler (bar.beat of the content for warped clips,
 //     seconds of the file for Off), the warp strip (warped: the markers, each segment's speed), the waveform (filled:
@@ -30,9 +30,9 @@
 //   Reverse    lit chip                                    ops::setAudioClipsReverse
 //   Fade In / Fade Out  fill boxes, ms at the clip's tempo; the fill is the fade's share of the clip
 //              ops::setAudioClipFades
-//   Warp       chips Off / Re-Pitch / Beats / Tones / Texture / Complex / Complex Pro. From Off the BPM is seeded from
-//              the file's tempo tag or name, else its detected tempo (confidence >= 0.6), else its length as a whole
-//              number of 4/4 bars (sourceBpmFor)          ops::setAudioClipWarp
+//   Warp       lit toggle (warped or not; on: ViewPrefs::defaultWarpMode), then chips Re-Pitch / Beats / Tones /
+//              Texture / Complex / Complex Pro. From Off the clip is warped from the shape it has: the BPM is the one
+//              at which it plays at the speed it played (it sounds the same)   ops::setWarpMode
 //   BPM, :2 ×2 the source tempo (halved / doubled)         ops::setAudioClipWarp
 //   Loop       lit chip                                    ops::setAudioClipLoop
 //   mode card  Beats: Preserve chips (Trans, 1/4 … 1/32), Transient Loop chips (Off, → forward, ↔ back and forth),
@@ -86,9 +86,6 @@ class CardFlow;
 // "7" → 7 steps, "700c" / "700 ¢" → cents, "+7st" → 700 cents, "3/2" → ratio; nullopt for anything else.
 std::optional<doc::AudioTranspose> parseTranspose(std::string_view text);
 std::string formatTranspose(const doc::AudioTranspose& t);
-// The source tempo a clip switching to Re-Pitch starts from: the file's tempo (acid chunk, file name) when known,
-// else the tempo at which the file's duration is a whole number of 4/4 bars (the nearest to 120 BPM).
-double sourceBpmFor(double fileBpm, double durationSeconds);
 // T6.8: the bars of "Warp as N-Bar Loop" for a region of `seconds`: the power of two (1 … 64) whose tempo is nearest
 // (in octaves) to `bpm` (> 0: the detected tempo), else to 120 BPM.
 // The bar count "Warp as N-Bar Loop" uses for `seconds` of source in bars of `beatsPerBar` quarter notes (M6 review
@@ -181,10 +178,9 @@ private:
   doc::AudioClipPtr clip_;
   doc::Snapshot snap_;
   ViewContext::Subscription docSub_, viewSub_;
-  // Probe of the clip's file (bits, tempo tag), cached per resolved path.
+  // Probe of the clip's file (bits, container), cached per resolved path.
   std::string probedPath_;
   uint16_t bits_ = 0;
-  double fileBpm_ = 0.0;
   std::string container_;
 
   ui::Widget* box_ = nullptr;
