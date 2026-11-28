@@ -11,8 +11,9 @@
 //                   track's notes: 1), a mixer's output (2)
 //   pack block      the sum of its inputs' widths (an unwired input: 1)
 //   channel block   1
-//   a native engine its outputs' declared widths (meta::OutputSpec: the Wavetable, Envelope and Noise mono, the Sampler
-//                   stereo), or — an analyser, which passes its input on — what reaches it
+//   a native engine its first output's declared width (meta::OutputSpec: Noise mono, the Sampler stereo), or — the
+//                   Wavetable, the Envelope and the analysers, whose output takes its width from what they read
+//                   (they run per channel) — the widest thing that reaches it
 //   any other atom block   the widest thing wired into it (atoms broadcast); nothing wired: 1
 //   a value block   the widest LANE CABLE wired into its control from its own track (the control is then per lane), else
 //                   1: a mono or stereo cable, and any cable from another track, gives the control its first channel
@@ -50,10 +51,11 @@ struct LaneWidths {
   // some of its channels being read silently. A group has an input width when EVERY cable out of its In terminal ends
   //   - on a `channel` block (it reads In channel by channel: N = its highest index + 1 — the Utility's L and R: 2;
   //     Lanes: 2; a Merge / Unpack of N lanes: N), or
-  //   - on an input of a native engine whose output width is declared (the Wavetable, Envelope, Noise, Sampler: they
-  //     take a mono or stereo signal: 2),
+  //   - on an input of a native engine whose output width is declared (Noise, the Sampler: they take a mono or stereo
+  //     signal: 2),
   // and that N is ≥ 2; it is bound when what reaches its main input is wider than mono and not N wide. (A group that
-  // also passes In on — an EQ in every mode, a Compressor — has none: lanes pass.)
+  // also passes In on — an EQ in every mode, a Compressor —, or whose engine runs per channel — the Wavetable's and
+  // the Envelope's modules —, has none: lanes pass.)
   std::vector<std::pair<DeviceId, uint16_t>> bound;
   uint16_t boundOf(DeviceId group) const noexcept;  // N, or 0: not bound
   bool empty() const noexcept { return wide.empty() && bound.empty(); }

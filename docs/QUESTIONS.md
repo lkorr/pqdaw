@@ -3045,12 +3045,13 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   the lowering text goldens (every Utility lowered as another callee), so I derived it instead: a group is bound to the
   width it takes when every cable out of its In ends on a `channel` block or a declared-width engine
   (`LaneWidths::bound`), and only while a cable of another width reaches it. That covers the Utility (pan, width, mid /
-  side), Lanes, a Merge / Unpack of another N and the engine modules (Wavetable, Envelope, Noise, Sampler) with no
-  per-module rule, and leaves every stereo project's IR as it was.
+  side), Lanes, a Merge / Unpack of another N and the fixed-width engines' modules (Noise, the Sampler; since BR.K the
+  Wavetable and the Envelope run per channel, so per lane) with no per-module rule, and leaves every stereo project's
+  IR as it was.
 - Not refused, and wrong on a lane cable: an EQ in L/R or M/S mode and the Compressor's / Limiter's detector read the
   first two lanes (they also pass In on, so the rule does not bind them; the Limiter then does not limit lanes 2 …).
-  Noise (and every native engine) is one mono instance: broadcast onto a lane cable it is the same noise on every lane —
-  a per-lane Noise needs a seed per channel inside the engine (a kernel change, out of FD.2's scope).
+  Noise is one mono instance: broadcast onto a lane cable it is the same noise on every lane — a per-lane Noise needs
+  a seed per channel inside the engine (a kernel change, out of FD.2's scope).
 - Options for those: (1) a "stereo only" setting on those three modules (document change, their fixtures re-recorded);
   (2) build their detectors per lane (Limiter: max over all lanes); (3) leave. Choice: 3 for now — nothing in FD.3 – FD.6
   puts them on a lane cable; (1) is a two-line change in `LaneWidths::bound` when wanted.

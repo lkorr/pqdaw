@@ -9,9 +9,10 @@
 //   - VCA, EQ Band, EQ, Math and a Delay Tap on a lane cable are those modules per lane: Lanes 4 → … → Merge 4 of a
 //     stereo signal is √2 × the stereo chain
 //   - a switched-off block on a lane cable passes every lane
-//   - the refusals: a lane cable into the mixer, into a module that is stereo by nature (Utility), into a native
-//     engine's input (Envelope) and a Merge whose N is not the cable's are CUT with a readable reason; the rest of the
-//     project plays
+//   - the refusals: a lane cable into the mixer, into a module that is stereo by nature (Utility), into a fixed-width
+//     native engine's input (Noise) and a Merge whose N is not the cable's are CUT with a readable reason; the rest of
+//     the project plays
+//   - the Envelope (an engine that runs per channel) on a lane cable is an envelope per lane
 //   - a stereo signal into a control still gives its left channel (the rule before lanes); the JIT renders the 8-lane
 //     path as the interpreter does
 // Each case is a group on an audio track (its blocks pasted as the node menu pastes them).
@@ -555,6 +556,44 @@ TEST_CASE("lanes: VCA, EQ Band, EQ, Math and Delay Tap on a lane cable are those
   CHECK(worst < 1e-6);
 }
 
+TEST_CASE("lanes: the Envelope module on a lane cable runs per lane (its engine takes its width from what it reads)") {
+  const Base b0 = base();
+  Rendered got[2];
+  for (const bool lanes : {false, true}) {
+    Song s;
+    IdSource ids;
+    Circuit c(ids);
+    const DeviceId src = c.stereo(c.konst(1.0), -0.5);
+    EngineModuleOptions o;
+    o.inGroup = c.group;
+    EngineRoles er;
+    c.take(engineModuleBlocks(ids, ModuleKind::Envelope, o, &er));
+    WireId in;
+    if (lanes) {
+      in = c.wire(c.lanes(LaneModule::Lanes, 4, src).group, kMainPort, er.group, kMainPort);
+      c.out(c.lanes(LaneModule::Merge, 4, er.group, kMainPort).group, kMainPort);
+    } else {
+      in = c.wire(src, "out", er.group, kMainPort);
+      c.out(er.group, kMainPort);
+    }
+    s.place(c.set);
+    CHECK((laneWidths(*s.store.current()).of(s.idOf(in)) == 4) == lanes);
+    got[lanes ? 1 : 0] = render(s, 80, {s.idOf(in)});
+    CAPTURE(got[lanes ? 1 : 0].error);
+    CHECK(got[lanes ? 1 : 0].error.empty());
+    CHECK(got[lanes ? 1 : 0].cut[0].empty());
+  }
+  (void)b0;
+  // Two lanes an ear x 1/sqrt 2: sqrt 2 x the stereo envelope, sample by sample.
+  const double k = 2.0 * laneMergeGain(4);
+  double worst = 0.0;
+  for (size_t i = 0; i < got[0].L.size(); ++i) {
+    worst = std::max(worst, std::fabs(static_cast<double>(got[1].L[i]) - k * got[0].L[i]));
+    worst = std::max(worst, std::fabs(static_cast<double>(got[1].R[i]) - k * got[0].R[i]));
+  }
+  CHECK(worst < 1e-6);
+}
+
 TEST_CASE("lanes: a switched-off module on a lane cable passes every lane") {
   const Base b0 = base();
   Song s;
@@ -598,7 +637,7 @@ TEST_CASE("lanes: stereo-only and mismatched consumers refuse a lane cable with 
     CHECK(r.cut[0] == "8 lanes into a stereo input: merge the lanes first (a Merge module)");
     CHECK(peak(r.L) == 0.0);
   }
-  SUBCASE("a native engine module (the Envelope: mono)") {
+  SUBCASE("a fixed-width native engine's module (Noise: mono)") {
     Song s;
     IdSource ids;
     Circuit c(ids);
@@ -606,7 +645,7 @@ TEST_CASE("lanes: stereo-only and mismatched consumers refuse a lane cable with 
     EngineModuleOptions o;
     o.inGroup = c.group;
     EngineRoles er;
-    c.take(engineModuleBlocks(ids, ModuleKind::Envelope, o, &er));
+    c.take(engineModuleBlocks(ids, ModuleKind::Noise, o, &er));
     const WireId in = c.wire(lanes.group, kMainPort, er.group, kMainPort);
     c.out(er.group, kMainPort);
     s.place(c.set);
@@ -615,14 +654,14 @@ TEST_CASE("lanes: stereo-only and mismatched consumers refuse a lane cable with 
     CHECK(r.error.empty());
     CHECK(r.cut[0] == "4 lanes into a stereo input: merge the lanes first (a Merge module)");
   }
-  SUBCASE("a bare engine block's input") {
+  SUBCASE("a bare fixed-width engine block's input") {
     Song s;
     IdSource ids;
     Circuit c(ids);
     const LaneModuleRoles lanes = c.lanes(LaneModule::Lanes, 4, c.impulse());
     const DeviceId env = ids.device();
     {
-      auto d = std::make_shared<Device>(*makeDevice(env, std::string(kMetaDevicePrefix) + "envelope", DeviceKind::AudioEffect));
+      auto d = std::make_shared<Device>(*makeDevice(env, std::string(kMetaDevicePrefix) + "noise", DeviceKind::AudioEffect));
       d->group = c.group;
       c.set.devices.push_back(std::move(d));
     }

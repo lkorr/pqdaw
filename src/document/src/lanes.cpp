@@ -132,15 +132,13 @@ LaneWidths laneWidths(const Project& p) {
         x.rule = Rule::Join;
         x.control = true;
       } else if (isMetaDevice(d)) {
-        // A native engine: its declared outputs, or (every output's width inferred: an analyser) what reaches it.
+        // A native engine: its first output's declared width (the lowering's takesMid rule: Noise, the Sampler), or —
+        // inferred: the Wavetable, the Envelope, the analysers run per channel — what reaches it.
         const meta::Type* type = meta::findType(metaDeviceType(d));
+        const bool inferred = type != nullptr && !type->outputs.empty() && type->outputs.front().width == graph::kWidthInfer;
         uint16_t w = 0;
-        bool inferred = type != nullptr && !type->outputs.empty();
         if (type != nullptr)
-          for (const meta::OutputSpec& o : type->outputs) {
-            inferred = inferred && o.width == graph::kWidthInfer;
-            w = std::max(w, o.width);
-          }
+          for (const meta::OutputSpec& o : type->outputs) w = std::max(w, o.width);
         if (!inferred) {
           x.rule = Rule::Fixed;
           x.out = std::max<uint16_t>(w, 1);

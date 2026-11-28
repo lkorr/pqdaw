@@ -520,13 +520,14 @@ struct WireState {
 //               the first lane. A mono or stereo cable gives its first channel as before, and across tracks a wire
 //               into a control always does (a control's m<wire> bus is one channel). (graph: a callee `param` bound at
 //               the call takes any width, infer.h.)
-//   ENGINES     no mid: a lane cable into a native engine's input (the chain's or a wire's) arrives as it is; the
-//               engine's declared (mono / stereo) output refuses it, blamed on that cable.
+//   ENGINES     no mid: a lane cable into the input of a native engine with a fixed-width output (Noise, the Sampler:
+//               takesMid; the chain's link or a wire) arrives as it is, and that output refuses it, blamed on the cable.
+//               (The Wavetable, the Envelope and the analysers take their width from what they read: per lane.)
 //   MIXERS      a lane cable into a mixer — the main path's last link, a cable from a block, one from another track —
 //               goes through `StereoOnly` (devices.h: `in x : audio stereo; out y = x`; flattened: no op) before the
 //               mixer's sum, with a WireEnd on that call: the compiler's width error names exactly that cable.
 //   GROUPS      a group that reads its In terminal channel by channel, or only through engines (lanes.h
-//               LaneWidths::bound: the Utility, Lanes, a Merge / Unpack of another N, an engine's module), plays Group /
+//               LaneWidths::bound: the Utility, Lanes, a Merge / Unpack of another N, the Noise module), plays Group /
 //               GroupVoice with its main input bound to the width it takes (devices.h groupInWidthPatch) while a cable
 //               of another width reaches it: refused at the group's own input, where the user sees it.
 // Every refusal is the cut-wire path below: the cable is cut, drawn in the error colour, and says why in the document's
@@ -536,8 +537,8 @@ struct WireState {
 // A switched-off block's pass__ patch declares no width either; the chain's width bookkeeping treats what leaves it and
 // a group as "may be stereo", as while they declared it (lower.cpp chainWidthAfter).
 // NOT COVERED (QUESTIONS Q?-FD.2-b): an EQ in L/R or M/S mode and a Compressor's / Limiter's detector read the first two
-// lanes of a lane cable (they also pass In on, so nothing binds them); a native engine is one instance (a Noise
-// broadcast onto a lane cable is the same noise on every lane); across tracks a control gets a lane cable's first lane.
+// lanes of a lane cable (they also pass In on, so nothing binds them); Noise is one mono instance (broadcast onto a
+// lane cable it is the same noise on every lane); across tracks a control gets a lane cable's first lane.
 // ---- Cut wires (WI.2; docs/plans/RB.md D1) --------------------------------------------------------------------------
 // A wire whose signal the compiler refused (type inference blamed it: graph::TypeBlame, engine::UnitTypeFailure) is CUT
 // by the playback link: compile state, not document state. A cut wire (LowerOptions::cutWires) is lowered as if it were

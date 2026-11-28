@@ -4,7 +4,7 @@
 //               laneModuleInfo; spawned through `module:<key>` at 8 lanes
 //   estimate    laneWidths: nothing without a pack block; pack sums, channel is 1, atoms and groups pass the widest
 //               cable on, a lane cable into a control makes it per lane (a stereo one does not, nor one from another
-//               track), an engine's declared width, an analyser passes; a feedback loop converges; a stereo loop
+//               track), a fixed-width engine's width, the Envelope and an analyser pass; a feedback loop converges; a stereo loop
 //               through a pack (a Utility's output into its own Gain) stays stereo; the bound groups
 //   N           setLaneCount is one undo step that round-trips save / load, keeps the lane blocks (and cables) of the
 //               lanes that stay and the module's own cables, rebuilds the rest; refusals
@@ -315,18 +315,24 @@ TEST_CASE("FD.2 laneWidths: nothing without a pack block; lanes pass atoms, grou
     CHECK(lw.of(packed) == 4);
     CHECK(lw.of(sum) == 12);
   }
-  // A native engine's output is what it declares (the Envelope: mono); an analyser passes its input on.
-  const DeviceId env = d.module("envelope"), scope = d.module("oscilloscope"), sink3 = d.atom("neg"), sink4 = d.atom("neg");
+  // A fixed-width native engine's output is what it declares (Noise: mono); the Envelope and an analyser take their
+  // width from what they read: the lanes pass.
+  const DeviceId noise = d.module("noise"), env = d.module("envelope"), scope = d.module("oscilloscope");
+  const DeviceId sink3 = d.atom("neg"), sink4 = d.atom("neg"), sink5 = d.atom("neg");
+  d.wire(fan, kMainPort, noise, kMainPort);
   d.wire(fan, kMainPort, env, kMainPort);
   d.wire(fan, kMainPort, scope, kMainPort);
-  const WireId fromEnv = d.wire(env, kMainPort, sink3, "x");
+  const WireId fromNoise = d.wire(noise, kMainPort, sink3, "x");
   const WireId fromScope = d.wire(scope, kMainPort, sink4, "x");
+  const WireId fromEnv = d.wire(env, kMainPort, sink5, "x");
   {
     const LaneWidths lw = laneWidths(d.doc());
-    CHECK(lw.of(fromEnv) == 0);
+    CHECK(lw.of(fromNoise) == 0);
     CHECK(lw.of(fromScope) == 8);
-    // The Envelope module's In ends on its engine alone: a lane cable into it binds it to stereo.
-    CHECK(lw.boundOf(env) == 2);
+    CHECK(lw.of(fromEnv) == 8);
+    // The Noise module's In ends on its engine alone: a lane cable into it binds it to stereo.
+    CHECK(lw.boundOf(noise) == 2);
+    CHECK(lw.boundOf(env) == 0);
     CHECK(lw.boundOf(scope) == 0);
     CHECK(lw.boundOf(vca) == 0);
     CHECK(lw.boundOf(merge) == 0);  // 8 lanes into a Merge 8

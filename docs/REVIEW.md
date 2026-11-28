@@ -2619,8 +2619,7 @@ Per display (how it was drawn → what was wrong → what changed):
   different values cabled into the tap's Time.
 - A lane cable is drawn as a wide ribbon with its lane count on a small badge. Goldens: `lanes-cable`,
   `lanes-face-lanes`, `-merge`, `-unpack`, `-pack`, `-unpack16`.
-- A lane cable into a mixer, a Utility, a Wavetable / Envelope / Noise / Sampler, or into a Merge / Unpack set to another
-  N turns red; hover it for the reason ("8 lanes into a stereo input: merge the lanes first"). A stereo cable and a lane
+- A lane cable into a mixer, a Utility, a Noise / Sampler, or into a Merge / Unpack set to another N turns red; hover it for the reason ("8 lanes into a stereo input: merge the lanes first"). A stereo cable and a lane
   cable into one block: the second one turns red.
 - Look at: whether the ribbon + badge read at your usual zoom (the badge hides on short cables); the faces' size and
   the chip; Unpack / Pack at 16 (two rows of jacks). Known gaps (Q?-FD.2-b): an EQ in L/R or M/S mode and the
