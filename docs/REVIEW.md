@@ -2576,3 +2576,18 @@ Per display (how it was drawn → what was wrong → what changed):
   Drag any audio output onto it, a mixer's out too; click it for the same menu. Golden: `project-patch-audio-in`.
 - Look at: the chip's size at normal zoom (small: lane-chip height); the header's sends moving down two lines on audio
   tracks (Q?-RT.3-a); the cable is dim until RT.2 lowers it.
+
+## BR.J · bug batch 2026-11-27 (👁)
+- Arrangement, stopped: the playhead line now stays in the lanes where the transport rests (where playback stopped or
+  a click put it), as the clip view's roll already did. Before, a click on a clip moved the transport, but only the
+  ruler's triangle showed it, and the clip popup covered that. 88 goldens re-recorded (a 1 px line at tick 0).
+- Warped clips: the "WARP · Beats  +12 stp" tag (and a missing clip's "Missing") no longer leaves fragments behind the
+  moving playhead. Test: partial repaints equal full ones.
+- Sampler › Granular › Stream: the plot no longer re-zooms in steps (it jumped 250 → 100 ms at 35 Hz). The span is
+  at least 250 ms (Loop / Cloud) and grows smoothly below 14 Hz, so the label shows odd values ("183 ms"). The grains
+  and their skips are now the kernel's own. Goldens: `sampler-panel-gran(-stream)(-2x)`.
+- MOS circle: "reset intervals" is now a permanent button in the bottom-left corner. It is dim until a degree is
+  altered, then clears the alterations in one undo step. Goldens: `mos-circle-*`, `mos-wheel-popover*`,
+  `project-patch-tuning*`.
+- Look at: whether the stopped line should be dimmer than the playing one, and whether "reset intervals" should also
+  reset the generator / mode (Q?-BR.J-a).

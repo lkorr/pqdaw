@@ -2980,3 +2980,14 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   at its place before "Mixer". Until RT.2 lowers Audio In cables they are drawn dim (not lowered), like any unlowered
   wire.
 - Status: open
+
+## Q?-BR.J-a · What the MOS circle's reset resets
+- Context: bug 2026-11-27_16-16-48 asked for a reset button "when you mess up your mos circle intervals". The circle
+  already had a "× reset" for MODMOS alterations, but it was small, sat among the centre's labels, and only appeared
+  while something was altered.
+- Options: (a) reset clears the MODMOS alterations only: the MOS's own degrees, with generator, mode and region kept;
+  (b) it also returns the mode to rotation 0; (c) it also sets the generator to a default hardness, e.g. L/s = 2;
+  (d) it restores the tuning as it was when the face or wheel opened (the popover's Revert already does this).
+- Choice: (a), moved into a permanent "reset intervals" button in the bottom-left corner. It is the most reversible
+  option, and the generator and mode are the user's own choices, not "intervals".
+- Status: open
