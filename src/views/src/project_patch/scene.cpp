@@ -64,7 +64,8 @@ SymbolSpec specOf(const Node& n) {
       s.symbol = n.inputs.empty() ? Symbol::Input : Symbol::Output;
       inStub = outStub = 0.0f;
       break;
-    case NodeKind::Input:  // BR.patch-io: a band's input socket (no body)
+    case NodeKind::Input:    // BR.patch-io: a band's input socket (no body)
+    case NodeKind::AudioIn:  // RT.3: an Audio In terminal (its socket; the canvas draws its chip)
       s.symbol = Symbol::Input;
       inStub = outStub = 0.0f;
       break;
@@ -144,6 +145,7 @@ uint64_t nodeIdentity(const ProjectPatch& pp, uint32_t i) noexcept {
     case NodeKind::Output: return (6ull << 60) | track;
     case NodeKind::Input: return (7ull << 60) | track;
     case NodeKind::Tuning: return (8ull << 60) | track;
+    case NodeKind::AudioIn: return (9ull << 60) | track;  // RT.3
   }
   return 0;
 }
@@ -202,7 +204,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
     sn.scale = n.scale;  // TX.resize: its face or panel drawn at it
     // TL.1: a lane is no block (the view draws it; its cables leave its top edge), a folded band's blocks are hidden.
     // BR.patch-io: frame sockets and a band's input socket are no blocks either: only their pins, drawn as sockets.
-    const bool socket = n.kind == NodeKind::Terminal || n.kind == NodeKind::Input;
+    const bool socket = n.kind == NodeKind::Terminal || n.kind == NodeKind::Input || n.kind == NodeKind::AudioIn;  // RT.3
     const bool hidden = n.kind == NodeKind::Lane || n.folded || socket;
     sn.hidden = hidden;
     sc.hiddenNodes += hidden ? 1u : 0u;
@@ -222,7 +224,9 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         if (!pins[k].label.empty()) pin.label = addString(pins[k].label);
         if (hidden && !(socket && !n.folded)) pin.visible = false;  // TL.1
         // BR.patch-io: drawn as a module's port — the In side and a band's input as an input (a ring), Out as an output.
-        if (socket) pin.socket = n.kind == NodeKind::Input || !n.outputs.empty() ? circuit::ScenePin::kSocketIn : circuit::ScenePin::kSocketOut;
+        if (socket)
+          pin.socket = n.kind == NodeKind::Input || n.kind == NodeKind::AudioIn || !n.outputs.empty() ? circuit::ScenePin::kSocketIn
+                                                                                                      : circuit::ScenePin::kSocketOut;
         // BR.tuning-block: a tuning block's notes come up into its bottom edge.
         if (side == 0 && n.kind == NodeKind::Tuning) {
           const Point2 at = inputEntry(n, k);
@@ -330,6 +334,7 @@ ProjectScene buildProjectScene(const ProjectPatch& pp, std::span<const InnerScen
         break;
       case NodeKind::Sum:
       case NodeKind::Input:
+      case NodeKind::AudioIn:  // RT.3: the canvas draws its chip
       case NodeKind::Tuning: title.node = UINT32_MAX; break;  // the symbol says it (an input socket: hidden; a tuning block: its face)
     }
     if (title.node != UINT32_MAX) sc.labels.push_back(title);

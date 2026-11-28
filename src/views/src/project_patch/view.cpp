@@ -25,6 +25,7 @@
 #include "pq/views/devices/knob_curve_menu.h"
 #include "pq/views/device_chain/wiring.h"
 #include "pq/views/mixer/mixer.h"
+#include "pq/views/mixer/audio_from.h"
 #include "pq/views/mos_wheel/mos_wheel.h"
 #include "pq/views/panel/panel_window.h"
 #include "pq/views/project_patch/project_patch_view.h"
@@ -2434,6 +2435,12 @@ bool ProjectPatchView::deleteCable(uint32_t edge) {
 }
 
 // ---- menus ----------------------------------------------------------------------------------------------------------
+
+ui::Menu* ProjectPatchView::openAudioInMenu(uint32_t node, Vec2 at) {
+  if (node >= patch_.nodes.size() || patch_.nodes[node].kind != NodeKind::AudioIn || patch_.nodes[node].band >= patch_.bands.size())
+    return nullptr;
+  return ui::openContextMenu(*canvas_, at, audio_from::menu(ctx_, patch_.bands[patch_.nodes[node].band].track));
+}
 
 ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
   if (band >= patch_.bands.size()) return nullptr;

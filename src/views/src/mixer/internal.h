@@ -50,7 +50,8 @@ public:
   void openChannelMenu(ui::Widget& chooser, doc::TrackId id);
   void openNoteInputMenu(ui::Widget& chooser, doc::TrackId id);
   void openMonitorMenu(ui::Widget& chooser, doc::TrackId id);
-  void openAudioInMenu(ui::Widget& chooser, doc::TrackId id);  // T6.7
+  void openAudioInMenu(ui::Widget& chooser, doc::TrackId id);       // T6.7; RT.3: Audio From
+  void openAudioChannelMenu(ui::Widget& chooser, doc::TrackId id);  // RT.3
 
   // --- M6 review L21: the mixer view's shared rows, so send / pan / volume line up across track, group, return and
   // master strips (a strip leaves the cells it has no control for empty). Set by MixerView::sync.
@@ -138,8 +139,6 @@ std::string midiInLabel(const doc::MidiInput& in);
 std::string channelLabel(const doc::MidiInput& in);
 std::string noteInputLabel(const doc::NoteInput& in);
 std::string monitorLabel(doc::MonitorMode m);
-// T6.7: an audio track's input ("No Input", "In 3", "In 1/2").
-std::string audioInLabel(const doc::AudioInput& in);
 // T3.14's tuning chip for a track (a left click opens the MOS wheel for the track's named tuning; TU.3: the right-click
 // menu, choosing a tuning / Inherit / New Tuning, is TuningChip's).
 class TrackTuningChip : public TuningChip {

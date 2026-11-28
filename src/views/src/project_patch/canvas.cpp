@@ -8,6 +8,7 @@
 
 #include "../common/drag.h"
 #include "../common/paint.h"
+#include "pq/document/audio_in.h"
 #include "pq/document/edit_ops.h"
 #include "pq/ui/theme.h"
 #include "internal.h"
@@ -59,6 +60,33 @@ static bool insideNode(const ProjectPatch& pp, uint32_t n, uint32_t cap) noexcep
        c = pp.nodes[c].capsule, ++guard)
     if (c == cap) return true;
   return false;
+}
+
+// RT.3: the start of a cable drawn from output pin `from` onto an Audio In (a block's output, a group member's through
+// its "<port>@<id>", a track's source, a mixer's out); nullopt: a pin no Audio In cable starts at (a send pin).
+static std::optional<doc::Wire> audioInStart(const ProjectPatch& pp, const ProjectCanvas::PinHit& from) {
+  if (!from.valid() || from.input || from.node >= pp.nodes.size()) return std::nullopt;
+  const Node& a = pp.nodes[from.node];
+  if (from.port >= a.outputs.size() || a.band >= pp.bands.size()) return std::nullopt;
+  doc::Wire w;
+  const std::string& port = a.outputs[from.port].name;
+  if (a.kind == NodeKind::Mixer) {
+    if (port != "out") return std::nullopt;
+    w.mixerOut = pp.bands[a.band].track;
+  } else if (a.kind == NodeKind::Lane || a.kind == NodeKind::Sum) {
+    w.noteSource = pp.bands[a.band].track;
+    if (from.port != 0) w.port = port;
+  } else if (a.kind == NodeKind::Device || a.kind == NodeKind::Terminal) {
+    w.from = a.device;
+    w.port = port;
+    if (const size_t at = w.port.rfind('@'); at != std::string::npos && a.group) {
+      w.from = doc::DeviceId{static_cast<uint32_t>(std::stoul(w.port.substr(at + 1)))};
+      w.port.resize(at);
+    }
+  } else {
+    return std::nullopt;
+  }
+  return w;
 }
 
 // TX.patching: the port of node `n`'s input pin `i` a wire dropped on it targets, or null. TX.all-free: an instrument's
@@ -205,7 +233,7 @@ uint32_t ProjectCanvas::nodeAt(Vec2 d) const {
   const float minW = kMinHitPx * (tree() ? tree()->scale() : 1.0f) / std::max(deviceScale(), 1e-6f);
   for (uint32_t i = static_cast<uint32_t>(pp.nodes.size()); i-- > 0;) {
     const Node& n = pp.nodes[i];
-    if (!shownNode(n) || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input) continue;  // TL.1; BR.patch-io: sockets only
+    if (!shownNode(n) || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input || n.kind == NodeKind::AudioIn) continue;  // TL.1; BR.patch-io: sockets only (RT.3: audioInAt)
     float x0 = n.x, x1 = n.x + n.w, y0 = n.y, y1 = n.y + n.h;
     if (n.kind == NodeKind::Device) {
       if (n.w < minW) x0 = n.x + (n.w - minW) * 0.5f, x1 = x0 + minW;
@@ -224,6 +252,23 @@ uint32_t ProjectCanvas::wireDropAt(Vec2 d) const {
   if (n == kNone) return kNone;
   const Node& nd = view_.patch().nodes[n];
   return nd.kind == NodeKind::Device && nd.group && nd.groupOpen ? kNone : n;  // (its contents are hit before it)
+}
+
+uint32_t ProjectCanvas::audioInAt(Vec2 d) const {
+  const ProjectPatch& pp = view_.patch();
+  if (pp.scoped || view_.embedded()) return kNone;
+  const graph::Point2 w = toWorld(d);
+  const float reach = 4.0f * (tree() ? tree()->scale() : 1.0f) / std::max(deviceScale(), 1e-6f);
+  for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+    const Band& b = pp.bands[bi];
+    if (b.audioIn == kNone || bandLifted(bi)) continue;
+    const Node& n = pp.nodes[b.audioIn];
+    if (n.folded) continue;
+    const float dy = bandNow(bi).y1 - (b.y + b.h);  // (a band being dragged: where it is drawn)
+    // Its chip, and its socket's ring at the chip's left edge.
+    if (w.x >= n.x - 2.0f * reach && w.x <= n.x + n.w + reach && w.y >= n.y + dy - reach && w.y <= n.y + dy + n.h + reach) return b.audioIn;
+  }
+  return kNone;
 }
 
 uint32_t ProjectCanvas::bandAt(Vec2 d) const {
@@ -610,7 +655,8 @@ void ProjectCanvas::paintNodeOverlay(ui::PaintContext& ctx) {
         const Node& n = pp.nodes[i];
         if (i < ps.sceneNode.size() && ps.sceneNode[i] == kNone) continue;  // opened: its frame has the title
         if (!mine(n) || !shownNode(n)) continue;
-        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input) continue;  // the symbol says it
+        if (n.kind == NodeKind::Sum || n.kind == NodeKind::Output || n.kind == NodeKind::Terminal || n.kind == NodeKind::Input ||
+            n.kind == NodeKind::AudioIn) continue;  // the symbol says it
         // TMM.4: a face is label-free; TX.panel-faces: a panel has its title; TX.mixer-look: so has a mixer's face.
         if (n.face != nullptr || n.groupPanel || n.kind == NodeKind::Mixer) continue;  // GU.3: a group's panel
         if (n.symbol) continue;  // GU.5b: an atom block's symbol says what it is
@@ -919,6 +965,15 @@ bool ProjectCanvas::onPointer(const ui::PointerEvent& e) {
   // TL.1: a face over a lane (a block, or its open popup reaching down over it) keeps the pointer.
   const bool overFace = drag_ == Drag::None && e.type != ui::PointerType::Wheel && faceTakes(e.pos);
   if (overFace && e.type == ui::PointerType::Down) laneFocus_ = false;  // a press elsewhere: the canvas's keys again
+  // RT.3: a press on an Audio In terminal's chip opens its Audio From menu (a cable is drawn onto it from an output).
+  if (!overFace && drag_ == Drag::None && e.type == ui::PointerType::Down &&
+      (e.button == ui::PointerButton::Left || e.button == ui::PointerButton::Right) && !(e.mods & ui::mod::kAlt))
+    if (const uint32_t ai = audioInAt(e.pos); ai != kNone) {
+      if (tree()) tree()->setFocus(this);
+      (void)v.openAudioInMenu(ai, e.pos);
+      swallowUp_ = true;
+      return true;
+    }
   if (!overFace && laneEdgePointer(e)) return true;  // TL.1: a lane's edges (resize, cable taps), the fold, the time wheel
   if (!overFace && laneRulerPointer(e)) return true;  // TL.4: a lane's scrub ruler (under its top edge)
   if (!overFace && lanePointer(e)) return true;  // TX.lane-edit: a lane is the arrangement's editing surface
@@ -1427,6 +1482,15 @@ const char* ProjectCanvas::wireRefusal(Vec2 pos) const {
   const ProjectPatch& pp = view_.patch();
   if (!from_.valid() || from_.node >= pp.nodes.size()) return nullptr;
   const Node& a = pp.nodes[from_.node];
+  // RT.3: onto an Audio In — the document's rules (doc::AudioInSources: audio only, not itself, no loop).
+  if (const uint32_t ai = audioInAt(pos); ai != kNone && !from_.input) {
+    const std::optional<doc::Wire> start = audioInStart(pp, from_);
+    if (!start) return "Send: drop it on its return's input";
+    const doc::TrackId track = pp.bands[pp.nodes[ai].band].track;
+    const std::string_view why = doc::AudioInSources(*view_.context().doc(), track, view_.context().deviceLibrary())
+                                     .refusal(doc::AudioFrom::output(*start));
+    return why.empty() ? nullptr : why.data();  // (its texts are literals)
+  }
   // TX.patching (SPEC §15 2026-11-01 "free patching in the circuit"): any output of a device (its main output too) or a
   // note output goes onto any parameter or input of any device. TX.all-free: a track's own signal (its source's main
   // output) and any main output onto a main input or the track's mixer: the cables the main path is made of.
@@ -1680,6 +1744,14 @@ void ProjectCanvas::finishWire(Vec2 pos) {
   }
   const Node& a = pp.nodes[from_.node];
   const Band& fromBand = pp.bands[a.band];
+  // RT.3: onto an Audio In: that track's Audio From (one source: a cable there before is replaced, one undo step).
+  if (const uint32_t ai = audioInAt(pos); ai != kNone) {
+    if (std::optional<doc::Wire> w = audioInStart(pp, from_)) {
+      w->recordInput = pp.bands[pp.nodes[ai].band].track;
+      (void)v.connectEnds(std::move(*w));
+    }
+    return;
+  }
   // TX.node-menu: an output's cable released on empty space: the node menu (nodes with an input first); the node arrives
   // wired from that output.
   if ((a.kind == NodeKind::Device || a.kind == NodeKind::Terminal || isTrackSource(a)) && wireDropAt(pos) == kNone && !pinAt(pos).valid() &&
@@ -3344,6 +3416,31 @@ void ProjectCanvas::paintLanePorts(ui::PaintContext& ctx) {
         dl.addRoundedRectFilled(cr, 2.0f * us, ui::lerp(th.circuit.background, notes, hot ? 0.45f : 0.22f));
         dl.addRoundedRectStroke(cr, 2.0f * us, ui::mulAlpha(notes, hot ? 1.0f : 0.7f), std::max(1.0f, std::round(us)));
         paint::text(ctx, ctx.res.uiFonts->small, toIRect(cr), kLanePortLabels[port], th.circuit.symbolText, ui::TextAlign::Center);
+      }
+    }
+  // RT.3: an audio lane's Audio In terminal: "Audio In" (its socket's ring at its left edge: the scene's pin) and its
+  // source's chip (Ext. In 1/2 / No Input; nothing while a cable is drawn into it).
+  if (chips)
+    for (uint32_t bi = 0; bi < pp.bands.size(); ++bi) {
+      const Band& b = pp.bands[bi];
+      if (b.audioIn == kNone || bandLifted(bi) || pp.nodes[b.audioIn].folded) continue;
+      const Node& n = pp.nodes[b.audioIn];
+      const float dy = bandNow(bi).y1 - (b.y + b.h);
+      const Rect cr = snapRect(deviceRect(n.x + kAudioInRing, n.y + dy, n.w - kAudioInRing, n.h));
+      if (!overlaps(cr, clip)) continue;
+      const bool hot = drag_ == Drag::None && audioInAt(pointer_) == b.audioIn;
+      const Rgba audio = th.circuit.wireAudio;
+      dl.addRoundedRectFilled(cr, 2.0f * us, ui::lerp(th.circuit.background, audio, hot ? 0.40f : 0.20f));
+      dl.addRoundedRectStroke(cr, 2.0f * us, ui::mulAlpha(audio, hot ? 1.0f : 0.7f), std::max(1.0f, std::round(us)));
+      const std::string& source = n.inputs[0].label;
+      const float labelW = std::round(audioInLabelW() * deviceScale());
+      const Rect lr{cr.x0, cr.y0, source.empty() ? cr.x1 : std::min(cr.x1, cr.x0 + labelW), cr.y1};
+      paint::text(ctx, ctx.res.uiFonts->small, toIRect(lr), kAudioInLabel, th.circuit.symbolText, ui::TextAlign::Center);
+      if (!source.empty() && lr.x1 + 2.0f * us < cr.x1) {
+        const float inset = std::max(1.0f, std::round(2.0f * us));
+        const Rect sr{lr.x1, cr.y0 + inset, cr.x1 - inset, cr.y1 - inset};
+        dl.addRoundedRectFilled(sr, 2.0f * us, ui::lerp(th.circuit.background, audio, 0.45f));
+        paint::text(ctx, ctx.res.uiFonts->small, toIRect(sr), source, th.circuit.symbolText, ui::TextAlign::Center);
       }
     }
   // The sockets: a short notch on the edge where each lane cable leaves it (the cable's plug sits there). One pass.

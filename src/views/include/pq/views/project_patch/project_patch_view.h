@@ -289,6 +289,9 @@ public:
   LaneEdgeHit laneEdgeAt(ui::Vec2 device) const;
   // TL.1: a MIDI lane's port chips (project_patch.h lanePortChip: world rect of output `port`).
   LaneRect lanePortChip(uint32_t band, uint32_t port) const;
+  // RT.3: the Audio In terminal (model node, NodeKind::AudioIn) whose chip or socket is under a device point; kNone: none.
+  // A cable released there is its source; a press there (left or right) opens its Audio From menu.
+  uint32_t audioInAt(ui::Vec2 device) const;
   static constexpr float kLaneEdgePx = 4.0f;  // logical px either side of a lane's edge that grab it
   // TL.1: a band's fold triangle in its title strip (world rect).
   static LaneRect foldButtonRect(const Band& b) noexcept;
@@ -1078,6 +1081,9 @@ public:
   ui::Menu* openBandMenu(uint32_t band, ui::Vec2 at);
   ui::Menu* openNodeMenu(uint32_t node, ui::Vec2 at);
   ui::Menu* openWireMenu(uint32_t edge, ui::Vec2 at);
+  // RT.3: an Audio In terminal's menu (model node `node`): Audio From and its channels (pq/views/mixer/audio_from.h, the
+  // arrangement's and the mixer's menus).
+  ui::Menu* openAudioInMenu(uint32_t node, ui::Vec2 at);
   // The params of block `toNode` a wire from `from`.`port` (or, `notes` valid, from that track's note output `port`)
   // can drive; choosing one connects it.
   ui::Menu* openParamMenu(doc::DeviceId from, const std::string& port, uint32_t toNode, ui::Vec2 at, doc::TrackId notes = {});
