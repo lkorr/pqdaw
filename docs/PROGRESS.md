@@ -1598,3 +1598,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: pq_tests_views 1080/1080 (one known GPU SIGSEGV re-run); pq_tests_app 53/53; pq_tests_playback golden cases 9/9 after re-recording arrangement-audio-rendered + pianoroll-arp-preview (orchestrator, looked at both); pqdaw compiles. 131 goldens moved (header layout; most others by the wider lanes' ruler).
 - Perf / CPU-efficiency check: layout only, nothing per frame.
 - Notes/blockers: Q?-RT.4-a (A mode's chooser takes the input/chip line). An automation partial-vs-full repaint check is 1 px / 1 step off at height 68 (passes at 64; fixture kept at 64), untraced.
+
+## 2026-11-28 · BR.K · task/BR.K-bugs-1128 (merged e062affa)
+- Did: 00-39-05 tracks export `meter` (volume/pan, before the mute/solo gate), mixer meters read it (muted tracks meter too); 00-42-09 the stereo loss was Envelope/Wavetable taking the mid of any stereo input — they now process every channel of their inferred width (mid kept for fixed-width outputs: Noise, Sampler control inputs); 00-43-14 setDeviceGroup rewires through the group's ports (out at head: sources → block → group In → what the block fed; tail/inverse/nested), ARCHITECTURE Groups updated; dead-end "!" on a group In/Out that receives audio nobody reads (Port::deadEnd at model build, hover text).
+- Verified: worker -Affected -Slow 56/59 then the 3 fixed (SM.8 regression fixed; gain-stage count + 2 goldens expected) and re-run; after merging onto RT.4: -Affected 34/34. ship pq_bench_dsp links.
+- Perf / CPU-efficiency check: +1 smoothed stereo gain per non-master track per block; Envelope/Wavetable ~2× only when the input is really stereo; dead-end flags computed on patch change, not per frame.
+- Notes/blockers: Q?-BR.K-a (block leaving at a group's head while others read the In). Goldens: lower_chain_envelope, lower_meta_voice_run, audio-track(-input).pqp, project-module-circuits.png.
