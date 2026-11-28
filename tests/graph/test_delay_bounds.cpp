@@ -536,7 +536,7 @@ TEST_CASE("delay bounds: a bound exactly at the sub-block edge — one frame mor
   CHECK(loopSubs(f.sched.schedule) == std::vector<uint32_t>{47});
 }
 
-TEST_CASE("delay bounds: the cut choice — long taps cut, short delays and z1s fused inside the sub-block") {
+TEST_CASE("delay bounds: the cut choice — long taps cut, short delays fused inside the sub-block") {
   // One loop through a long tap and a short stage delay in series: cutting the long one breaks the cycle, so the
   // 5-sample delay runs fused inside sub-blocks of 480 (cutting both, as before FD.1, gave sub-blocks of 5).
   Built a;
