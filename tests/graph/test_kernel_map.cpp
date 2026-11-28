@@ -102,7 +102,7 @@ TEST_CASE("kernel map: the atoms without a kernel are exactly the structural, en
   for (AtomId id = 0; id < reg.size(); ++id)
     if (kernelMapping(id).lowering != Lowering::Kernel) elsewhere.insert(std::string(reg.get(id).name));
   const std::set<std::string> expected = {
-      "channel", "pack", "sr", "track.in", "sidechain.in", "send", "clipPlayer",
+      "channel", "pack", "sr", "track.in", "trackInput", "sidechain.in", "send", "clipPlayer",
       "voice.hz", "voice.cents", "voice.gate", "voice.trigger", "voice.velocity", "voice.release", "voice.ratio",
       "voice.harmonic", "voice.unisonCount", "voice.index", "voice.degree", "voice.equave",
       "voice.tuning",  // T2.6-fix3
