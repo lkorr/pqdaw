@@ -320,6 +320,10 @@ private:
   Reader& passReader(Voice& v, const SlicePass& p, SampleTime s) noexcept;
   void claimSlice(Voice& v, const media::SampleView& view, const SlicePass& current, SampleTime runEnd) noexcept;
   static SlicePass passFromU(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, double u) noexcept;
+  static SlicePass passOf(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, int64_t fold, int64_t j) noexcept;
+  // The pass of the slice after / before p in content (stepping its index and fold).
+  static SlicePass passAbove(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p) noexcept;
+  static SlicePass passBelow(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p) noexcept;
   static SlicePass passAt(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, SampleTime s) noexcept;
   static SlicePass nextPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p) noexcept;
   static bool prevPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p,

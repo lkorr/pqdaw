@@ -1153,12 +1153,6 @@ std::optional<ClipPlayer::StreamStart> ClipPlayer::streamStart(const AudioSequen
 
 // ---- T6.3: the time-stretch modes (audio_sequence.h "Beats, Tones, Texture") -------------------------------------------
 
-namespace {
-
-constexpr double kContentEps = 1e-6;  // ticks: "just before" a slice boundary
-
-}  // namespace
-
 const float* ClipPlayer::stretchEnvelope(Voice& v, SampleTime s, uint32_t n) noexcept {  // RT-safe
   const AudioSequenceImage::Clip& c = *v.clip;
   const bool flat = s >= c.flatStart && s + n <= c.flatEnd && v.inLen == 0 && v.state != State::Releasing && v.rampLen == 0;
@@ -1276,17 +1270,27 @@ void ClipPlayer::renderStretch(Voice& v, uint32_t frame, SampleTime s, uint32_t 
 
 ClipPlayer::SlicePass ClipPlayer::passFromU(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
                                             double u) noexcept {  // RT-safe
-  constexpr double kInf = std::numeric_limits<double>::infinity();
-  const double cs = static_cast<double>(c.contentStart), len = static_cast<double>(c.length);
   const double span = c.looped ? static_cast<double>(c.loop.end - c.loop.start) : 0.0;
   // Forward passes are [entry, exit), reverse ones (entry, exit] (their first sample is the exit).
   const int64_t m = c.reverse ? c.law.foldsBelow(u) : c.law.folds(u);
   const double q = u - static_cast<double>(m) * span;
+  const std::span<const double> B = img.sliceContent(c);
+  const int64_t j = (c.reverse ? std::lower_bound(B.begin(), B.end(), q) : std::upper_bound(B.begin(), B.end(), q)) - B.begin() - 1;
+  return passOf(img, c, m, j);
+}
+
+// Slice j (its content [B[j], B[j + 1]), −1: before B[0]) in loop fold m.
+ClipPlayer::SlicePass ClipPlayer::passOf(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, int64_t m,
+                                         int64_t j) noexcept {  // RT-safe
+  constexpr double kInf = std::numeric_limits<double>::infinity();
+  const double cs = static_cast<double>(c.contentStart), len = static_cast<double>(c.length);
+  const double span = c.looped ? static_cast<double>(c.loop.end - c.loop.start) : 0.0;
   const std::span<const double> B = img.sliceContent(c), Fr = img.sliceFrame(c);
   const auto S = static_cast<int64_t>(B.size());
-  const int64_t j = (c.reverse ? std::lower_bound(B.begin(), B.end(), q) : std::upper_bound(B.begin(), B.end(), q)) - B.begin() - 1;
   const double shift = static_cast<double>(m) * span;
   SlicePass p;
+  p.slice = j;
+  p.fold = m;
   // The forward-time bounds in this pass (unfolded), clamped to the clip's content.
   double entryU = j >= 0 ? B[static_cast<size_t>(j)] + shift : -kInf;
   double Fentry = j >= 0 ? Fr[static_cast<size_t>(j)] : 0.0;
@@ -1336,15 +1340,40 @@ ClipPlayer::SlicePass ClipPlayer::passFromU(const AudioSequenceImage& img, const
   return p;
 }
 
+// BL: the neighbouring slices by index, never by re-locating the unfolded content bound (u − m·span rounds: from the
+// second fold on, a bound could land a hair below its boundary and find the same slice again, so the renderer played
+// it over and over). Looped, the last boundary is the loop's end, the slice from the loop's start follows it.
+namespace {
+int64_t loopStartSlice(const std::span<const double> B, const AudioSequenceImage::Clip& c) noexcept {  // RT-safe
+  return std::upper_bound(B.begin(), B.end(), static_cast<double>(c.loop.start)) - B.begin() - 1;
+}
+}  // namespace
+
+ClipPlayer::SlicePass ClipPlayer::passAbove(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
+                                            const SlicePass& p) noexcept {  // RT-safe
+  const std::span<const double> B = img.sliceContent(c);
+  const auto S = static_cast<int64_t>(B.size());
+  if (c.looped && p.slice + 1 >= S - 1) return passOf(img, c, p.fold + 1, loopStartSlice(B, c));
+  return passOf(img, c, p.fold, std::min(p.slice + 1, S - 1));
+}
+
+ClipPlayer::SlicePass ClipPlayer::passBelow(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
+                                            const SlicePass& p) noexcept {  // RT-safe
+  const std::span<const double> B = img.sliceContent(c);
+  const auto S = static_cast<int64_t>(B.size());
+  if (c.looped && p.fold > 0 && p.slice <= loopStartSlice(B, c)) return passOf(img, c, p.fold - 1, S - 2);
+  return passOf(img, c, p.fold, std::max<int64_t>(p.slice - 1, -1));
+}
+
 ClipPlayer::SlicePass ClipPlayer::nextPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c,
                                            const SlicePass& p) noexcept {  // RT-safe
-  return passFromU(img, c, c.reverse ? p.entryU : p.exitU);
+  return c.reverse ? passBelow(img, c, p) : passAbove(img, c, p);
 }
 
 bool ClipPlayer::prevPass(const AudioSequenceImage& img, const AudioSequenceImage::Clip& c, const SlicePass& p,
                           SlicePass* out) noexcept {  // RT-safe
   if (!p.fadeIn) return false;
-  *out = passFromU(img, c, c.reverse ? p.exitU + kContentEps : p.entryU - kContentEps);
+  *out = c.reverse ? passAbove(img, c, p) : passBelow(img, c, p);
   return out->T < p.T;
 }
 
