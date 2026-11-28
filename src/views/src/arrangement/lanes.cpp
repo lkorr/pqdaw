@@ -1230,7 +1230,7 @@ void LaneCanvas::paint(PaintContext& ctx) {
 
   // 4. The editing overlay (T3.9), then the playhead on top.
   if (view_.onPaintOverlay) view_.onPaintOverlay(ctx);
-  if (const auto& ph = view_.playhead()) {
+  if (const auto& ph = view_.playhead() ? view_.playhead() : view_.stoppedLine()) {  // BR.J: stopped, where it rests
     const float x = std::floor(lp.X(static_cast<double>(*ph)));
     const float w = static_cast<float>(std::max(1, ctx.scale.px(1.0f)));
     if (x + w > cx0 && x < cx1) dl.addRectFilled({x, static_cast<float>(c.y), x + w, static_cast<float>(c.bottom())}, th.arrangement.playhead);
@@ -1338,7 +1338,7 @@ void BottomLanes::paint(PaintContext& ctx) {
     if (y1 > static_cast<float>(c.y) && y1 - 1.0f < static_cast<float>(c.bottom())) dl.addRectFilled({cx0, y1 - 1.0f, cx1, y1}, th.arrangement.separator);
   }
   view_.automation().paintPinned(ctx, r);  // T3.15
-  if (const auto& ph = view_.playhead()) {
+  if (const auto& ph = view_.playhead() ? view_.playhead() : view_.stoppedLine()) {  // BR.J: stopped, where it rests
     const float x = std::floor(lp.X(static_cast<double>(*ph)));
     const float w = static_cast<float>(std::max(1, ctx.scale.px(1.0f)));
     if (x + w > cx0 && x < cx1) dl.addRectFilled({x, static_cast<float>(c.y), x + w, static_cast<float>(c.bottom())}, th.arrangement.playhead);

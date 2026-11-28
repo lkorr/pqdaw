@@ -157,6 +157,81 @@ TEST_CASE("arrangement audio: clips draw waveforms (or the missing overlay); the
   CHECK_FALSE(f.view().visible());
 }
 
+// BR.J (bug 2026-11-27_18-05-14: "when clicking on top of a sample it selects it but doesn't move the playhead there"):
+// the click did locate the transport, but stopped the arrangement drew no playhead, and the ruler's start-marker triangle
+// was under the clip popup (SX.6) — nothing on screen moved. A click on an audio clip — its body or its title strip,
+// selected (its popup open) or not — puts the start marker and the playhead at the clicked time, and the lanes now
+// draw the stopped playhead there (as the roll does, bug-paused-playhead); while playing the start marker moves
+// (SPEC §15 2026-11-08, TL.4: playback goes on). A drag still moves the clip; Ctrl+click still only selects.
+TEST_CASE("arrangement audio (BR.J, real dispatch): a press on an audio clip moves the start marker / playhead there; drags, Ctrl+click and the popup still work") {
+  Fixture f;
+  GridSpec g = f.ctx.grid();
+  g.mode = GridMode::Fixed;
+  g.fixedExp = 3;  // 1/8
+  g.off = false;
+  g.snap = true;
+  f.ctx.setGrid(g);
+  const Ticks eighth = kBar / 8;
+  const doc::ClipRef beat = f.clip("Drums", 0), second = f.clip("Drums", 1);
+  auto expect = [&](Ticks at, const char* what) {
+    CAPTURE(what);
+    CHECK(f.ctx.startMarker() == at);
+    CHECK(f.port.playhead().tick == at);
+    // The lanes show it: stopped, the playhead's line stays where the transport rests (the ruler's start-marker
+    // triangle is under the clip popup, which opens above the selected clip).
+    CHECK(f.arr->stoppedLine() == std::optional<Ticks>(at));
+  };
+  // Stopped. The body of an unselected clip, then of the now selected one (its popup open), then its title strip.
+  f.d.click(f.body(beat, 3 * eighth));
+  f.d.step();
+  CHECK(f.arr->clipSelected(beat.clip));
+  CHECK(f.arr->clipPopupShown());
+  expect(f.get(beat).start + 3 * eighth, "body, unselected");
+  f.d.click(f.body(beat, 5 * eighth));
+  f.d.step();
+  expect(f.get(beat).start + 5 * eighth, "body, selected");
+  f.d.click(f.title(beat, 2 * eighth));
+  f.d.step();
+  expect(f.get(beat).start + 2 * eighth, "title, selected");
+  CHECK(f.arr->clipPopupShown());  // one audio clip selected: its popup stays
+  f.d.click(f.title(second, 1 * eighth));
+  f.d.step();
+  CHECK(f.arr->clipSelected(second.clip));
+  expect(f.get(second).start + eighth, "title, unselected");
+  // Playing: the start marker moves to the click, playback goes on (TL.4).
+  f.ctx.playFrom(0);
+  f.d.step();
+  REQUIRE(f.port.playhead().playing);
+  CHECK_FALSE(f.arr->stoppedLine().has_value());  // playing: the moving playhead instead
+  f.d.click(f.body(second, 2 * eighth));
+  f.d.step();
+  CHECK(f.port.playhead().playing);
+  CHECK(f.ctx.startMarker() == f.get(second).start + 2 * eighth);
+  f.d.click(f.title(beat, 6 * eighth));
+  f.d.step();
+  CHECK(f.port.playhead().playing);
+  CHECK(f.ctx.startMarker() == f.get(beat).start + 6 * eighth);
+  f.ctx.stopButton();
+  f.d.step();
+  CHECK(f.arr->stoppedLine() == std::optional<Ticks>(f.port.playhead().tick));  // where playback stopped
+  // A drag by the title moves the clip (one undo step) and leaves the start marker where the press put it.
+  const Ticks s0 = f.get(beat).start;
+  const size_t h = f.history();
+  const Vec2 a = f.title(beat, eighth);
+  f.d.drag(a, {a.x + static_cast<float>(kPxPerBar / 4), a.y});
+  f.d.step();
+  CHECK(f.get(beat).start == s0 + kBar / 4);
+  CHECK(f.history() == h + 1);
+  // Ctrl+click adds a clip to the selection without moving anything; both stay selected.
+  const Ticks marker = f.ctx.startMarker();
+  f.d.click(f.title(second, eighth), mod::kCtrl);
+  f.d.step();
+  CHECK(f.arr->clipSelected(beat.clip));
+  CHECK(f.arr->clipSelected(second.clip));
+  CHECK(f.ctx.startMarker() == marker);
+  CHECK_FALSE(f.arr->clipPopupShown());  // two clips: no popup
+}
+
 TEST_CASE("arrangement audio: move, Alt-copy, across audio tracks, not onto MIDI; each one undo step") {
   Fixture f;
   const doc::ClipRef rev = f.clip("Drums", 2);  // "beat rev" at bar 2.5

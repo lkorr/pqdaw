@@ -536,6 +536,9 @@ public:
   // ---- transport ---------------------------------------------------------------------------------------------
   // The playhead tick last read from the port while playing (nullopt when stopped).
   const std::optional<Ticks>& playhead() const noexcept { return playhead_; }
+  // BR.J (bug 2026-11-27_18-05-14): stopped, the line stays where the transport is — where playback stopped or a click
+  // placed it (as the roll's, bug-paused-playhead); nullopt while playing (playhead() then).
+  const std::optional<Ticks>& stoppedLine() const noexcept { return stoppedAt_; }
   // T6.7: the running recording session as the lanes draw it (TransportPort::recordingOverlay, read with the playhead
   // while recording; its regions on the recorded tracks' rows, without touching the document).
   const RecordingOverlay& recording() const noexcept { return recording_; }
@@ -670,6 +673,7 @@ private:
   };
   std::vector<SavedView> zoomStack_;
   std::optional<Ticks> playhead_;
+  std::optional<Ticks> stoppedAt_;  // BR.J
   uint32_t playheadTimer_ = 0;
   // BR.E follow: playback just started (a page may bring the playhead into view); a page held back by a gesture (it
   // comes when the gesture ends, unless the user changed the view meanwhile); the view change being follow's own.

@@ -1135,6 +1135,14 @@ void ArrangementView::refreshTransport() {
   ++model_->stats.playheadReads;
   const PlayheadSnapshot ph = ctx_.transport().playhead();
   if (ph.recording || recording_.active) readRecording();  // T6.7: a session starting or ending
+  // BR.J: the stopped line where the transport rests (read here, on every transport notification: a click placing
+  // the start marker locates first), none while playing.
+  const std::optional<Ticks> rest = ph.playing ? std::nullopt : std::optional<Ticks>(std::max<Ticks>(0, ph.tick));
+  if (rest != stoppedAt_) {
+    if (stoppedAt_) damagePlayheadColumn(*stoppedAt_);
+    stoppedAt_ = rest;
+    if (stoppedAt_) damagePlayheadColumn(*stoppedAt_);
+  }
   if (ph.playing) {
     if (!playhead_) followStart_ = true;  // BR.E: starting playback may page to the playhead
     if (!playhead_ || *playhead_ != ph.tick) {
