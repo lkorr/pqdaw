@@ -486,6 +486,57 @@ TEST_CASE("render: audio clips — partial repaints equal a full repaint; tiles 
   CHECK(rig.gpu->validationErrorCount() == 0);
 }
 
+// BR.J (bug 2026-11-27_18-01-03: "weird artifact on 'beats warp' thing when playhead moves over it"): the processing
+// tag ("WARP · Beats  +12 stp", right-aligned in the title strip) chose its layout by the columns being repainted, so
+// the playhead's damage strips drew a shorter tag (or the corner mark) at other places than a full repaint: pieces of
+// both were left behind the playhead. Its movement must never change the tag: partial frames equal full repaints.
+TEST_CASE("render (BR.J): the playhead crossing a warped clip's tag leaves the tag as a full repaint draws it") {
+  Rig rig(1280, 800, 1.0f, "audio");
+  rig.install();
+  ArrangementView& arr = *rig.arr;
+  // 600 px a bar: the first Drums clip (a bar) wide enough for the whole tag; the "missing" clip's label too.
+  arr.setTimeView(-0.05 * static_cast<double>(kTicksPerWhole), 600.0 / static_cast<double>(kTicksPerWhole));
+  doc::ClipRef first{};
+  Ticks start = 0, end = 0;
+  doc::forEachTrack(*rig.ctx.doc(), [&](const doc::Track& t, const doc::Track*) {
+    if (t.name == "Drums" && !t.clips.empty()) {
+      first = {t.id, t.clips[0].id};
+      start = t.clips[0].start();
+      end = t.clips[0].end();
+    }
+  });
+  REQUIRE(first.clip.valid());
+  doc::DocumentStore& st = rig.ctx.store();
+  auto w = doc::ops::setAudioClipWarp(*st.current(), std::span<const doc::ClipRef>(&first, 1), doc::AudioWarp::Beats);
+  REQUIRE(w.ok());
+  REQUIRE(st.dispatch(w->command).ok());
+  doc::AudioTranspose up;
+  up.unit = doc::TransposeUnit::Steps;
+  up.steps = 12;
+  auto tr = doc::ops::setAudioClipTranspose(*st.current(), std::span<const doc::ClipRef>(&first, 1), up);
+  REQUIRE(tr.ok());
+  REQUIRE(st.dispatch(tr->command).ok());
+  rig.settle();
+  (void)rig.drawFull(*rig.partial, rig.res);
+  rig.comparePartial("br-j-tag-before");
+  rig.ctx.playFrom(start);
+  const uint64_t before = rig.partialFrames;
+  const Ticks step = kPpq / 48;  // ~3 px a frame at this zoom
+  int checkpoint = 0;
+  for (Ticks t = start; t <= end + kPpq; t += step) {
+    rig.port.setPlayheadTick(t);
+    rig.frame();
+    if (t >= end - 4 * kPpq + checkpoint * kPpq) {  // through the clip's last bar, where the tag sits
+      ++checkpoint;
+      rig.comparePartial("br-j-tag-" + std::to_string(checkpoint));
+    }
+  }
+  CHECK(rig.partialFrames - before > 30);  // the playhead's strips, not full repaints
+  CHECK(checkpoint >= 4);
+  CHECK(arr.clipRect(first).w >= 500);  // (the tag drawn in full, not the corner mark)
+  CHECK(rig.gpu->validationErrorCount() == 0);
+}
+
 // SX.3: the waveform is drawn through the clip's envelope (fades, crossfades). A fade-handle drag builds no waveform tile
 // per frame (the dragged clip draws directly, the envelope applied per column), one when it is released; tiles drawn
 // with an envelope match the direct path. Logs the frame cost of the drag against the same edits outside a drag (a

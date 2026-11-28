@@ -396,8 +396,9 @@ ClipTag clipTag(const doc::AudioClip& c) {
   return t;
 }
 
-// The tag, right-aligned in the title strip where it fits beside the start of the name (else its mode alone); else (a
-// short clip) a corner mark in the tag's colour at the title strip's right end.
+// The tag, right-aligned in the title strip (at the clip's or the canvas's right edge, whichever is nearer) where it fits
+// beside the start of the name (else its mode alone); else (a short clip) a corner mark in the tag's colour at the title
+// strip's right end.
 void paintClipTag(LanePaint& lp, const ClipCols& cc, float top, float titleB, const ClipTag& tag) {
   if (!tag.shown() || titleB - top < 4.0f) return;
   DrawList& dl = lp.ctx.dl;
@@ -411,8 +412,10 @@ void paintClipTag(LanePaint& lp, const ClipCols& cc, float top, float titleB, co
       const TextRun run = ts.shape(lp.font, full ? tag.mode + "  " + tag.detail : tag.mode);
       const float w = static_cast<float>(run.advance) + 2.0f * pad;
       const float x0 = std::floor(right - 2.0f - w);
-      if (x0 >= cc.cx0 + static_cast<float>(lp.ctx.scale.px(40.0f)) && x0 >= static_cast<float>(lp.r.x) &&
-          x0 + w <= static_cast<float>(lp.c.right()) + pad) {
+      // BR.J (bug 2026-11-27_18-01-03): the layout depends on the clip and the canvas only, never on the columns being
+      // repainted (lp.c): it tested the pill's end against them, so the playhead's damage strips drew the short tag or
+      // the corner mark where a full repaint drew the whole tag, and pieces of each stayed behind the playhead.
+      if (x0 >= cc.cx0 + static_cast<float>(lp.ctx.scale.px(40.0f)) && x0 >= static_cast<float>(lp.r.x)) {
         const Rect pill{x0, top + 1.0f, x0 + w, titleB - 1.0f};
         dl.addRoundedRectFilled(pill, std::min(3.0f * lp.ctx.scale.factor, 0.5f * (pill.y1 - pill.y0)), kTagPill);
         TextSystem::drawRun(dl, run, {x0 + pad, top + static_cast<float>(lp.baselineOff)}, tag.colour);
@@ -450,7 +453,9 @@ void paintMissingBody(LanePaint& lp, const ClipCols& cc, float by0, float by1) {
   if (lp.font != kNoFont && lp.ctx.res.text && h >= static_cast<float>(lp.ctx.scale.px(12.0f))) {
     TextSystem& ts = *lp.ctx.res.text;
     const TextRun run = ts.shape(lp.font, "Missing");
-    const float vis0 = std::max(cc.vx0, cc.cx0), vis1 = std::min(cc.vx1, cc.cx1);
+    // BR.J: centred in the clip's part of the canvas (lp.r), not of the columns being repainted (cc.vx*: the playhead's
+    // damage strips drew the label at their own centres).
+    const float vis0 = std::max(cc.cx0, static_cast<float>(lp.r.x)), vis1 = std::min(cc.cx1, static_cast<float>(lp.r.right()));
     const float pad = static_cast<float>(lp.ctx.scale.px(4.0f));
     if (vis1 - vis0 >= static_cast<float>(run.advance) + 2.0f * pad) {
       const float x = std::floor(0.5f * (vis0 + vis1 - static_cast<float>(run.advance)));
