@@ -1604,3 +1604,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: worker -Affected -Slow 56/59 then the 3 fixed (SM.8 regression fixed; gain-stage count + 2 goldens expected) and re-run; after merging onto RT.4: -Affected 34/34. ship pq_bench_dsp links.
 - Perf / CPU-efficiency check: +1 smoothed stereo gain per non-master track per block; Envelope/Wavetable ~2× only when the input is really stereo; dead-end flags computed on patch change, not per frame.
 - Notes/blockers: Q?-BR.K-a (block leaving at a group's head while others read the In). Goldens: lower_chain_envelope, lower_meta_voice_run, audio-track(-input).pqp, project-module-circuits.png.
+
+## 2026-11-28 · FD.1 · task/FD.1-delay-bounds (merged 33207ce2)
+- Did: `lowerBound` → a float32 [lo, hi] interval analysis of delay times (pq/graph/value_range.h: consts, sr, ranged params, add / sub / mul / div / min / max / clip / muladd / lerp / select, phasor / sine / noise / noise_step / tanh, per channel through pack / channel); `markSplits` cuts only delays with tap age ≥ T (the largest age that still breaks every cycle), shorter delays and z1s run fused in the sub-block; `ScheduleOptions::maxLoopSubBlock`.
+- Verified: worker -Affected -Slow 88/90 (pq_tests_views SIGSEGV + pq_tests_library timing under load, both pass alone); tests/graph/test_delay_bounds.cpp 14 cases bit-identical to the per-sample schedule, mutation check (tap age + 1 fails renders); interpreter == JIT at blocks 1 / 37 / 64 / 1024, RtScope clean; ship pq_bench_dsp + pq_bench_jit link.
+- Perf / CPU-efficiency check: ship JIT ns/sample per sample → sub-blocked: tap_lerp 26.9 → 6.13, tap_mod 11.7 → 6.94, fdn8 65.1 → 19.8, fdn16 139.4 → 39.2, fdn8_stages 122.0 → 25.0 (interpreter up to 14×).
+- Notes/blockers: the stock Delay Tap's own loop still runs per sample (its time can reach 0; needs a run-time bound, FD.1b / Q?-FD.1-a); the `curve` atom's range is run-time data (Q?-FD.1-b). No goldens moved.

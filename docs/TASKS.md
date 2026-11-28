@@ -995,7 +995,8 @@ Two lanes, ≤ 2 workers; phase order in the plan's Schedule. Two note-input mod
 - [x] **RT.4 Track header condensed: volume + pan and the input under the name, default height 68** 👁 (user 2026-11-28; w1) *(merged 8afd9057)*
 
 ## FD: lane cables, Spread, Matrix — build your own reverb (user 2026-11-28; plan: docs/plans/FD.md; SPEC §15 "lanes and the matrix"; design approved by the user 2026-11-28)
-- [ ] **FD.1 Scheduler: delay bounds by interval analysis, cut choice; FDN / Delay Tap loops run in sub-blocks** (plan FD.1)
+- [x] **FD.1 Scheduler: delay bounds by interval analysis, cut choice; FDN loops run in sub-blocks** (plan FD.1) *(merged 33207ce2; value_range.h interval analysis incl. pack / channel and bounded sources; only delays with tap age ≥ T are cut, short ones fuse inside the sub-block; ship JIT fdn8 65.1 → 19.8, fdn16 139.4 → 39.2, fdn8 + stages 122 → 25.0 ns/sample; NOT done: the stock Delay Tap's own loop stays per sample (Time reaches 0, sync divides by bpm: true bound 0), the `curve` atom has no compile-time range; Q?-FD.1-a, Q?-FD.1-b)*
+- [ ] **FD.1b Run-time delay bound per block, so a Delay Tap loop sub-blocks whenever its current time allows** (Q?-FD.1-a: schedule + interpreter + JIT, both region forms, a `delay_fade` head query). Not scheduled; FD.6 gets sub-blocks by giving its tap times a non-zero floor.
 - [ ] **FD.2 Width N through the document: lane cables, Lanes / Merge, Unpack / Pack, wide wires into params, mixer refusal** 👁 (plan FD.2)
 - [ ] **FD.3 Spread: a value per lane (Even / Random / Scatter), tick face** 👁 (plan FD.3; after FD.2)
 - [ ] **FD.4 Matrix (Mix, Stages as an openable group, Guard) + Math op Soft Clip** 👁 (plan FD.4; after FD.2)
