@@ -3026,3 +3026,43 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   its audio; (c) refuse the move.
 - Choice: (a). Nothing that played before stops playing, nothing is mixed into the In, and it is one undo step away.
 - Status: open
+
+## Q?-FD.2-a · 2026-11-28 · FD.2 · A cable into a control: a lane cable is per lane, a stereo cable still gives its left
+- Context: the plan lists "a wire into a param carries channel 0 only" as a stereo assumption to remove ("a width-N
+  wire into a param makes that param per-lane"). With N = 2 that would change every existing stereo → control cable:
+  the control and all it feeds become stereo, and a Utility's output fed back into its own Gain becomes a 4-channel
+  error (tests/app/test_groups.cpp "groups-fix1: a feedback loop…" failed that way). The plan also says stereo
+  behaviour must not move.
+- Options: (A) every channel, always. (B) a lane cable (wider than stereo) carries every lane; a mono / stereo cable its
+  first channel as before. (C) a per-wire switch.
+- Choice: B. The lowering decides before inference, from the document's estimate (`lanes.h laneWidths`). A 2-lane
+  cable (Lanes at N = 2) is a stereo cable in every respect. Across tracks a cable into a control carries its first lane
+  (a control's bus is one channel). Reversible: A is one condition in `lowerSites` and one in `laneWidths`.
+
+## Q?-FD.2-b · 2026-11-28 · FD.2 · What refuses a lane cable, and what does not yet
+- Context: "stereo-only consumers refuse width > 2 with a readable reason". The mixer does (a `StereoOnly` bound per lane
+  cable into it). For modules I first put a setting on the stereo-by-nature groups; it moved two project fixtures and
+  the lowering text goldens (every Utility lowered as another callee), so I derived it instead: a group is bound to the
+  width it takes when every cable out of its In ends on a `channel` block or a declared-width engine
+  (`LaneWidths::bound`), and only while a cable of another width reaches it. That covers the Utility (pan, width, mid /
+  side), Lanes, a Merge / Unpack of another N and the engine modules (Wavetable, Envelope, Noise, Sampler) with no
+  per-module rule, and leaves every stereo project's IR as it was.
+- Not refused, and wrong on a lane cable: an EQ in L/R or M/S mode and the Compressor's / Limiter's detector read the
+  first two lanes (they also pass In on, so the rule does not bind them; the Limiter then does not limit lanes 2 …).
+  Noise (and every native engine) is one mono instance: broadcast onto a lane cable it is the same noise on every lane —
+  a per-lane Noise needs a seed per channel inside the engine (a kernel change, out of FD.2's scope).
+- Options for those: (1) a "stereo only" setting on those three modules (document change, their fixtures re-recorded);
+  (2) build their detectors per lane (Limiter: max over all lanes); (3) leave. Choice: 3 for now — nothing in FD.3 – FD.6
+  puts them on a lane cable; (1) is a two-line change in `LaneWidths::bound` when wanted.
+
+## Q?-FD.2-c · 2026-11-28 · FD.2 · graph: a bound param takes any width; two widths at an atom are blamed
+- Context: `infer.cpp` bound a callee `param` connected at a call to mono (why the lowering took channel 0), so no
+  control could be per lane. And two widths meeting at an element-wise atom had no blame: a stereo cable and an 8-lane
+  cable into one Math module failed the whole unit (silence, a status line) instead of cutting a cable.
+- Options: keep the mono bound and lower a lane-driven value block as another patch (an `in` instead of a `param`); or
+  drop the bound.
+- Choice: dropped (infer.h rules): a signal of N channels into a param makes it per channel, as into any element-wise
+  input — one rule for every module. In the patch language `f(cutoff: stereoSignal)` now makes the callee stereo where
+  it was a width error. The meet error is blamed on the edges that brought every width but the atom's first wide
+  input's (input order), only with `InferOptions::blameDepth > 0` (the link's compile): the cable that brought the
+  second width is cut and says "8 lanes and a stereo signal meet here".

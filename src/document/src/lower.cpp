@@ -21,6 +21,7 @@
 #include "pq/document/audibility.h"
 #include "pq/document/devices.h"
 #include "pq/document/instrument_groups.h"
+#include "pq/document/lanes.h"
 #include "pq/document/main_path.h"
 #include "pq/document/note_devices.h"
 #include "pq/document/panel.h"
@@ -128,6 +129,9 @@ struct Cables {
   // RT.2 (lower.h "Audio In"): the Audio In cables (Wire::recordInput), main ports named, in id order. They are not in
   // `q` (nothing but planWires and the audio tracks' sources read them: an Audio In is no block input, no mixer input).
   WireList audioIns;
+  // FD.2 (pq/document/lanes.h; lower.h "Lane cables"): the wires estimated wider than stereo (by wire id; empty without
+  // a pack block).
+  LaneWidths lanes;
   const Flow* flowOf(const Track& t) const noexcept {
     const auto it = flows.find(t.id.value);
     return it != flows.end() ? &it->second : nullptr;
@@ -239,6 +243,7 @@ std::shared_ptr<const Cables> cablesOf(const Project& p0, const graph::PatchLibr
     }
   const WireList& wires = wiresOf(b);
   if (wires.empty()) return c;
+  c->lanes = laneWidths(b);  // FD.2
   WireList rest;
   rest.reserve(wires.size());
   // PF.6: every device by id once (findDevice per device walks the whole project).
@@ -326,8 +331,11 @@ struct Callees {
   // GU.2: a group nested inside an instrument group that runs per note passes its signals per voice (GroupVoice).
   const graph::Patch& groupCallee(const Device& d) const noexcept {
     if (blockContext(d.id) != nullptr) return groupNotesPatch();
-    if (memberContext(d.id) != nullptr && runsPerNote(d.id)) return groupVoicePatch();
-    return groupPatch();
+    // FD.2 (lanes.h LaneWidths::bound): a cable its inside cannot take reaches it: its main input bound, so the compiler
+    // refuses that cable.
+    const uint16_t in = cables != nullptr ? cables->lanes.boundOf(d.id) : uint16_t{0};
+    if (memberContext(d.id) != nullptr && runsPerNote(d.id)) return in != 0 ? groupInWidthPatch(in, true) : groupVoicePatch();
+    return in != 0 ? groupInWidthPatch(in, false) : groupPatch();
   }
   const graph::Patch* find(const Device& d) const noexcept {
     if (lib == nullptr) return nullptr;
@@ -671,8 +679,9 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
           u.meta = std::make_shared<MetaPatches>();
           u.meta->prelude = meta::prelude();
         }
+        // (FD.2: any width — a switched-off block on a lane cable passes every lane.)
         constexpr graph::PortType kPass = graph::portType(graph::Kind::Real, graph::Rate::Audio, graph::Poly::Infer,
-                                                          graph::kWidthStereo);
+                                                          graph::kWidthInfer);
         graph::Patch bp(name);
         const NodeIndex i = bp.addInput(in, kPass);
         const NodeIndex o = bp.addOutput(out, kPass);
@@ -714,6 +723,27 @@ UserCallees makeCallees(const Project& p, std::shared_ptr<const Cables> cables, 
     if (voice) u.combined->add(groupVoicePatch());
     if (notes) u.combined->add(groupNotesPatch());
     u.callees.lib = u.combined.get();
+  }
+  // FD.2: the input-bound group variants in use (lanes.h LaneWidths::bound) and, with a lane cable in the project, the
+  // mixers' StereoOnly bound, when the base lacks them (a DeviceLibrary holds the usual ones).
+  if (combined && cables != nullptr && !cables->lanes.empty()) {
+    std::vector<const graph::Patch*> want;
+    if (groups && !cables->lanes.bound.empty())
+      forEachDevice(p, [&](const Device& d, const Track&) {
+        if (!isGroupDevice(d) || cables->lanes.boundOf(d.id) == 0) return;
+        const graph::Patch& c = u.callees.groupCallee(d);
+        if (std::find(want.begin(), want.end(), &c) == want.end()) want.push_back(&c);
+      });
+    if (!cables->lanes.wide.empty()) want.push_back(&stereoOnlyPatch());
+    for (const graph::Patch* c : want) {
+      if ((u.combined ? u.combined.get() : base)->find(c->name()) == c) continue;
+      if (!u.combined) {
+        u.combined = std::make_shared<graph::PatchLibrary>();
+        u.combined->addAll(*base);
+      }
+      u.combined->add(*c);
+      u.callees.lib = u.combined.get();
+    }
   }
   // GU.2: atom and value blocks' patches join the callee library when the base lacks them (a DeviceLibrary holds them
   // all: no copy then).
@@ -2429,11 +2459,26 @@ struct Build {
   std::vector<WireEnd>* wireEnds = nullptr;
   uint32_t graphTrack = 0;
   const MainPath* path = nullptr;
+  // FD.2 (lower.h "Lane cables"): whether wire `w` is a lane cable (estimated wider than stereo: pq/document/lanes.h).
+  bool laneCable(WireId w) const noexcept;
   void wireEnd(WireId w, PortRef from, NodeIndex to, uint32_t entity) {
     if (wireEnds != nullptr && w.valid() && from.node != graph::kNone && to != graph::kNone)
       wireEnds->push_back(WireEnd{w, graphTrack, ir.idOf(from.node).value, ir.idOf(to).value, entity});
   }
 };
+
+bool Build::laneCable(WireId w) const noexcept {
+  return lib != nullptr && lib->cables != nullptr && !lib->cables->lanes.empty() && lib->cables->lanes.of(w) != 0;
+}
+// FD.2 (lower.h "Lane cables"): `x`, what lane cable `w` brings to a mixer, through StereoOnly (node: the wire's kWMid
+// slot, unused there): the compiler refuses the lanes at exactly this edge, so the wire it blames — and the link cuts —
+// is `w`, not whatever the mixer's sum would have named. No op: the call is flattened.
+PortRef stereoOnly(Build& b, PortRef x, WireId w) {
+  const NodeIndex c = b.ir.call(graph::subcircuitSignature(stereoOnlyPatch()), nodeIdFor(NodeRole::Wire, w.value, 13 /* kWMid */));
+  b.ir.patch().connect(x, PortRef{c, 0});
+  b.wireEnd(w, x, c, w.value);
+  return PortRef{c, 0};
+}
 
 constexpr graph::PortType kVoiceDone = graph::portType(graph::Kind::Bool, graph::Rate::Infer, graph::Poly::Voice, 1);
 // A voice context's `done` (kPending: it has none): the track's own output when it is the only one, else one term of
@@ -2471,6 +2516,14 @@ PortRef outOf(Build& b, uint32_t k, uint16_t port) {
   return PortRef{b.calls[k], port};
 }
 
+// FD.2: the width a chain goes on with after callee `c`'s first `out` of declared width `w`. A group's `y` and a
+// switched-off block's pass-through declare none (a lane cable passes them: any width), yet the chain treats what
+// leaves them as "may be stereo", as while they were declared stereo: never packed again into a stereo input.
+uint16_t chainWidthAfter(const graph::Patch& c, uint16_t w) noexcept {
+  if (w != graph::kWidthInfer) return w;
+  return isGroupPatch(c) || c.name().starts_with("pass__") ? graph::kWidthStereo : w;
+}
+
 // One audio effect of a chain (a call), wired after `x` (declared width `width`).
 PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   const LDev& d = b.td[k];
@@ -2489,10 +2542,16 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
       ++ordinal;
     } else if (nd.kind == graph::NodeKind::Output && !haveOut) {
       haveOut = true;
-      outW = d.callee->inputType(v, 0).width;
+      outW = chainWidthAfter(*d.callee, d.callee->inputType(v, 0).width);
     }
   }
   const uint32_t id = d.device->id.value;
+  // FD.2 (lower.h "Lane cables"): the main-path link into this block is a lane cable: no mid (inference refuses the
+  // lanes at the engine's mono output: the cable is cut with its reason, never silently reduced to two lanes).
+  bool lanes = false;
+  if (b.path != nullptr)
+    if (const int32_t i = b.path->indexOf(d.device->id); i >= 0 && static_cast<size_t>(i) < b.path->links.size())
+      lanes = b.laneCable(b.path->links[static_cast<size_t>(i)]);
   if (x.node != graph::kNone && width == graph::kWidthMono && inWidth == graph::kWidthStereo)  // a mono signal into a stereo input
     x = b.ir.atom("pack", {x, x}, nodeIdFor(NodeRole::Device, id, 1), 2);
   // A stereo signal into a chain meta device whose output is declared mono (ChainAudio: its chain input takes any
@@ -2500,7 +2559,7 @@ PortRef effectCall(Build& b, uint32_t k, PortRef x, uint16_t& width) {
   // 2026-11-01_12-15-15): the mid, (l + r) / 2. Mono signals pass as before. (BR.K: the Envelope and the Wavetable
   // declare their `out` of the inferred width: a stereo signal passes them per channel; outW is then kWidthInfer.)
   if (x.node != graph::kNone && haveIn && width == graph::kWidthStereo && inWidth == graph::kWidthInfer && outW == graph::kWidthMono &&
-      isMetaDevice(*d.device)) {
+      isMetaDevice(*d.device) && !lanes) {
     const PortRef l = b.ir.atom("channel", {x, b.c0()}, nodeIdFor(NodeRole::Device, id, 2));
     const PortRef r = b.ir.atom("channel", {x, b.c1()}, nodeIdFor(NodeRole::Device, id, 3));
     x = b.ir.atom("mul", {b.ir.atom("add", {l, r}, nodeIdFor(NodeRole::Device, id, 4)), b.ir.konst(0.5, kCHalf)},
@@ -2570,7 +2629,7 @@ PortRef chainOf(Build& b, std::span<const uint32_t> list, size_t first, PortRef 
 // The width of a callee's first `out`.
 uint16_t outWidth(const graph::Patch& callee) noexcept {
   for (graph::NodeIndex v = 0; v < callee.nodeCount(); ++v)
-    if (callee.node(v).kind == graph::NodeKind::Output) return callee.inputType(v, 0).width;
+    if (callee.node(v).kind == graph::NodeKind::Output) return chainWidthAfter(callee, callee.inputType(v, 0).width);
   return graph::kWidthInfer;
 }
 
@@ -2798,9 +2857,10 @@ enum WireK : uint32_t {
 };
 // A driven param's nodes (keyed by its first wire: kWTarget + k; GU.1: a site no wire reaches by its lowest automation
 // lane (an entity id like a wire's: NodeRole::Wire, kWTarget + k)): the knob, the sum, the curve atom and the stages
-// after it. (The unused slots keep the other nodes' ids.)
+// after it. (The unused slots keep the other nodes' ids.) FD.2: kT(U)UpLane / kT(U)DownLane are the tap's first lane of
+// a control a lane cable drives (lower.h "Lane cables").
 enum TargetK : uint32_t {
-  kTKnob, kTPosA, kTPosB, kTCurve, kTAdd, kTClip, kTMapA, kTMapB, kTConv, kTRoundAdd, kTFloor,
+  kTKnob, kTUpLane, kTDownLane, kTCurve, kTAdd, kTClip, kTUUpLane, kTUDownLane, kTConv, kTRoundAdd, kTFloor,
   kTUpSub, kTUpMax, kTDownSub, kTDownMax, kTPack, kTExport,
   kTRoundMul, kTRoundStep,
   kTVoice,  // bug-mod-ghost: the position tap's voice_last (per voice: the newest voice's; a global value: an alias)
@@ -2810,6 +2870,7 @@ enum TargetK : uint32_t {
   kTUVoice,  // bug-mod-ghost: the stage tap's voice_last
 };
 static_assert(static_cast<uint32_t>(kWTarget) + static_cast<uint32_t>(kTUVoice) < kWireNodeSlots, "a wire's nodes fit its NodeRole::Wire slots");
+static_assert(kWMid == 13, "stereoOnly (above) names the slot by number");
 
 std::string_view reducerAtom(WireReducer r) noexcept {
   switch (r) {
@@ -2869,7 +2930,8 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       s = all ? b.sourceX : ir.atom("channel", {b.sourceX, b.c0()}, wid(w, kWChannel));
       // Into a meta module's input: its mid, as from any wide source (below); a track's silent source (a return no send
       // reaches: the constant 0) is mono already. (Across tracks the target's patch takes the mid: `arriving`.)
-      if (w.input && !w.toMixer && w.fromNode == w.toNode && takesMid(td[w.toDev]) && !(b.sourceX == b.c0())) {
+      if (w.input && !w.toMixer && w.fromNode == w.toNode && takesMid(td[w.toDev]) && !(b.sourceX == b.c0()) &&
+          !b.laneCable(w.wire->id)) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -2887,11 +2949,17 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       // knows: a group's In terminal) as the mid (l + r) / 2 — the chain's rule (effectCall; BR.K: takesMid). On a
       // mono signal the mid is the signal itself, bit for bit (x + x is exact, × 0.5 too).
       // (TX.groups-fix1: not into a switched-off device's pass-through, which passes every channel on.)
-      if (takesMid(td[w.toDev]) && declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
+      // FD.2 (lower.h "Lane cables"): not a lane cable — its lanes reach the engine as they are, and inference refuses
+      // them at its fixed-width output (the cable is cut with its reason).
+      if (takesMid(td[w.toDev]) && !b.laneCable(w.wire->id) && declaredOutWidth(*td[w.fromDev].callee, w.fromPort) != graph::kWidthMono) {
         const PortRef l = ir.atom("channel", {s, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {s, b.c1()}, wid(w, kWMidR));
         s = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
       }
+    } else if (w.fromNode == w.toNode && b.laneCable(w.wire->id)) {
+      // FD.2 (lower.h "Lane cables"): a lane cable into a control on its own track: every lane (the control is per lane;
+      // across tracks the wire carries its first lane, as a stereo one its left).
+      s = from();
     } else {
       s = ir.atom("channel", {from(), b.c0()}, wid(w, kWChannel));
     }
@@ -2921,7 +2989,7 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
       src = source(w);
     } else if (crossSidechain(w)) {
       src = ir.input("m" + id, b.c0(), wid(w, kWIn), kRoute);
-      if (takesMid(td[w.toDev])) {
+      if (takesMid(td[w.toDev]) && !b.laneCable(w.wire->id)) {
         const PortRef l = ir.atom("channel", {src, b.c0()}, wid(w, kWMidL));
         const PortRef r = ir.atom("channel", {src, b.c1()}, wid(w, kWMidR));
         src = ir.atom("mul", {ir.atom("add", {l, r}, wid(w, kWMidAdd)), ir.konst(0.5, kCHalf)}, wid(w, kWMid));
@@ -3069,6 +3137,9 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     // Stages 2 and 3: value = clamp(centre + Σ signals, lo, hi), rounded to `step` (step 1: floor(x + 0.5), T4.7's
     // rounding); the tap is how far up / down the wires moved it (zero exactly when they do not move it).
     PortRef v;
+    // FD.2 (lower.h "Lane cables"): a lane cable drives the control: its value is per lane (every atom below broadcasts).
+    const bool laned = std::any_of(sites[si].wires.begin(), sites[si].wires.end(),
+                                   [&](const LWire* w) { return w->fromNode == w->toNode && b.laneCable(w->wire->id); });
     auto addStage = [&](const std::vector<const LWire*>& list, double lo, double hi, bool clamp, double step,
                         bool tapIt, ModulationTap::Domain domain) {
       auto tid = [&](uint32_t k) { return wid(*list.front(), kWTarget + k); };
@@ -3090,8 +3161,13 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
         x = ir.atom("mul", {q, ir.literal(step)}, tid(kTRoundMul));
       }
       if (tapIt) {
-        const PortRef up = ir.atom("max", {ir.atom("sub", {x, centre}, tid(kTUUpSub)), b.c0()}, tid(kTUUpMax));
-        const PortRef down = ir.atom("max", {ir.atom("sub", {centre, x}, tid(kTUDownSub)), b.c0()}, tid(kTUDownMax));
+        // FD.2: on a per-lane control the ring shows the first lane (the tap is two channels: up, down).
+        PortRef du = ir.atom("sub", {x, centre}, tid(kTUUpSub));
+        if (laned) du = ir.atom("channel", {du, b.c0()}, tid(kTUUpLane));
+        const PortRef up = ir.atom("max", {du, b.c0()}, tid(kTUUpMax));
+        PortRef dd = ir.atom("sub", {centre, x}, tid(kTUDownSub));
+        if (laned) dd = ir.atom("channel", {dd, b.c0()}, tid(kTUDownLane));
+        const PortRef down = ir.atom("max", {dd, b.c0()}, tid(kTUDownMax));
         const std::string port = tapPort(d.device->id, name);
         // bug-mod-ghost: per voice the newest voice's (voice_last; on a global value an alias), not the sum over them.
         const PortRef packed = ir.atom("pack", {up, down}, tid(kTUPack), 2);
@@ -3143,8 +3219,12 @@ void lowerSites(Build& b, uint32_t node, uint32_t track, const WirePlan& wp, std
     const bool convertLater = !added.empty() && curve.output != dsp::CurveOutput::None;
     v = ir.atom("curve", {p, ir.literal(convertLater ? 0.0 : 1.0), ir.literal(static_cast<double>(slot))}, sid(kTCurve));
     if (!wires.empty() && added.empty() && units.empty()) {  // the tap in position (the views clamp the ring)
-      const PortRef up = ir.atom("max", {ir.atom("sub", {p, pk}, sid(kTUpSub)), b.c0()}, sid(kTUpMax));
-      const PortRef down = ir.atom("max", {ir.atom("sub", {pk, p}, sid(kTDownSub)), b.c0()}, sid(kTDownMax));
+      PortRef du = ir.atom("sub", {p, pk}, sid(kTUpSub));  // (FD.2: a per-lane control's first lane)
+      if (laned) du = ir.atom("channel", {du, b.c0()}, sid(kTUpLane));
+      const PortRef up = ir.atom("max", {du, b.c0()}, sid(kTUpMax));
+      PortRef dd = ir.atom("sub", {pk, p}, sid(kTDownSub));
+      if (laned) dd = ir.atom("channel", {dd, b.c0()}, sid(kTDownLane));
+      const PortRef down = ir.atom("max", {dd, b.c0()}, sid(kTDownMax));
       const std::string port = tapPort(d.device->id, name);
       const PortRef packed = ir.atom("pack", {up, down}, sid(kTPack), 2);
       ir.exportPort(port, ir.atom("voice_last", {packed}, sid(kTVoice)), sid(kTExport));  // bug-mod-ghost (as above)
@@ -3621,6 +3701,10 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
   // track's own signal; through a z1 when it closes a loop). Nothing: silence.
   {
     PortRef y = devs.complete ? x : kPending;
+    // FD.2: the path ends in a lane cable: refused at the mixer (the link into it is cut, with its reason).
+    if (y.node != graph::kNone && mix.frozenSlot == graph::kNone && b.path != nullptr && b.path->complete && !b.path->links.empty() &&
+        b.laneCable(b.path->links.back()))
+      y = stereoOnly(b, y, b.path->links.back());
     // FZ.1: a frozen track's own contribution is its render (its own mixer cables were left out with its blocks).
     if (mix.frozenSlot != graph::kNone)
       y = ir.atom("clipPlayer", {ir.konst(static_cast<double>(mix.frozenSlot), kFrozenSlot)}, kFrozenPlayer);
@@ -3640,6 +3724,7 @@ Result<graph::Patch> buildPatch(const Plan& pl, uint32_t index, const LowerOptio
           if (src.node == graph::kNone) continue;
           if (w.reduce) src = ir.atom(reducerAtom(w.reducer), {src}, wid(kWReduce));
         }
+        if (b.laneCable(w.wire->id)) src = stereoOnly(b, src, w.wire->id);  // FD.2: a lane cable into the mixer: refused
         if (w.delayed) src = ir.atom("z1", {src}, wid(kWDelay));
         y = y.node == graph::kNone ? src : ir.atom("add", {y, src}, wid(kWSum));
       }

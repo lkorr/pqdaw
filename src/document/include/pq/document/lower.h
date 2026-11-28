@@ -316,7 +316,8 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 //   knob = param d<id>__<name> (the device's param, now a root param of the track patch: the same key and value as
 //          an unmodulated param, dev<id>:<name>);  pk = its knob position (param rate: once per block)
 //   s    = Σ w<wire>·src_i  (w<wire> = the wire's amount, a param "wire<id>:amount"; src = the source export's first
-//          channel, reduced over voices by the wire's reducer when a voice signal meets a global target, through a z1
+//          channel — FD.2: of a lane cable on its own track every lane, "Lane cables" below —, reduced over voices by
+//          the wire's reducer when a voice signal meets a global target, through a z1
 //          when delayed, arriving as the root `in m<wire>` / leaving as the root `export m<wire>` across tracks)
 //   p    = clip(pk + s, 0, 1);  value = lo + p·(hi − lo)  (Linear)  or  lo·e^(p·ln(hi/lo))  (Log: @curve(exp), dB
 //          gains with a positive floor), rounded for @steps params → the device's param pin
@@ -423,7 +424,8 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // value is the value). A free device nothing reads is dropped by the compiler (its face's voice tap keeps a meta one).
 // TX.groups-fix1: a SWITCHED-OFF free device passes what reaches its chain input (a meta module's chain input, else its
 // first non-const `in`) to its main output (its first `out`), as the chain passes a switched-off device by — called as
-// `pass__<in>__<out>` (in → out, any poly, up to stereo: no state, nothing computed; LDev::bypass), only while a wire
+// `pass__<in>__<out>` (in → out, any poly, any width — FD.2: on a lane cable it passes every lane —: no state, nothing
+// computed; LDev::bypass), only while a wire
 // reads that output. Its other ports' wires are Inactive (it plays nothing else), and so is it without a chain input
 // (unplugged) or an output. Before fix1 a switched-off free device was silent: a project with a wire both into its chain
 // input and out of its main output now hears the pass-through (QUESTIONS Q?-TX.groups-fix1-a).
@@ -449,6 +451,8 @@ uint32_t nodeIdFor(NodeRole role, uint32_t entity, uint32_t k) noexcept;
 // meta module whose `out` has a fixed width (Noise, the Sampler) arrives as its mid (l + r) / 2, as the chain gives it (effectCall);
 // on a mono signal that is the signal itself. BR.K: the others (Envelope, Wavetable, the analysers: `out` of the
 // inferred width) process every channel, so a stereo Sampler stays stereo through an instrument group.
+// (FD.2: no port of the group patches declares a width, so a lane cable passes a group; a lane cable gets no mid — it
+// reaches the engine as it is and a fixed-width one refuses it: "Lane cables" below.)
 // NZ.1: an UNFED group — a free one (off its track's path; not an instrument group, which its notes play) with no wire
 // into its main input, or only wires from the In of a group that is itself unfed — carries nothing at its In (a group on
 // the path is fed by the path, wired or not): a wire from that In into a native engine's input is Inactive (planWires), so the input
@@ -503,6 +507,37 @@ struct WireState {
   WireRefusal reason = WireRefusal::None;  // Refused only
   friend bool operator==(const WireState&, const WireState&) = default;
 };
+// ---- Lane cables (FD.2; docs/plans/FD.md; pq/document/lanes.h) -----------------------------------------------------
+// A LANE CABLE is a cable wider than stereo (N = 4, 8, 16 … channels: `pack` blocks make one — the Lanes and Pack
+// modules, modules.h). The compiler runs every block on it once per channel (state per channel), so the lowering has
+// only to let the lanes through and to say no where they cannot go. Widths are the compiler's (graph::infer, after the
+// lowering); the lowering reads the document's estimate (lanes.h laneWidths, kept with the main paths: nothing without
+// a pack block) and differs from the stereo rules above in four places only — a project without lane cables lowers to
+// the IR it always did:
+//   CONTROLS    a lane cable into a control ON ITS OWN TRACK carries every lane (no `channel(…, 0)`): the control's
+//               site (the position sum, the curve atom, the add / units stages: all element-wise) is per lane, and so is
+//               everything the control feeds — in every wire law. Its modulation tap (two channels: up, down) reads
+//               the first lane. A mono or stereo cable gives its first channel as before, and across tracks a wire
+//               into a control always does (a control's m<wire> bus is one channel). (graph: a callee `param` bound at
+//               the call takes any width, infer.h.)
+//   ENGINES     no mid: a lane cable into a native engine's input (the chain's or a wire's) arrives as it is; the
+//               engine's declared (mono / stereo) output refuses it, blamed on that cable.
+//   MIXERS      a lane cable into a mixer — the main path's last link, a cable from a block, one from another track —
+//               goes through `StereoOnly` (devices.h: `in x : audio stereo; out y = x`; flattened: no op) before the
+//               mixer's sum, with a WireEnd on that call: the compiler's width error names exactly that cable.
+//   GROUPS      a group that reads its In terminal channel by channel, or only through engines (lanes.h
+//               LaneWidths::bound: the Utility, Lanes, a Merge / Unpack of another N, an engine's module), plays Group /
+//               GroupVoice with its main input bound to the width it takes (devices.h groupInWidthPatch) while a cable
+//               of another width reaches it: refused at the group's own input, where the user sees it.
+// Every refusal is the cut-wire path below: the cable is cut, drawn in the error colour, and says why in the document's
+// words (lanes.h laneRefusal: "8 lanes into a stereo input: merge the lanes first (a Merge module)"). Two widths meeting
+// at one block ("8 lanes and a stereo signal meet here") are blamed by the compiler too (infer.h TypeBlame): the cable
+// that brought the second width is cut.
+// A switched-off block's pass__ patch declares no width either; the chain's width bookkeeping treats what leaves it and
+// a group as "may be stereo", as while they declared it (lower.cpp chainWidthAfter).
+// NOT COVERED (QUESTIONS Q?-FD.2-b): an EQ in L/R or M/S mode and a Compressor's / Limiter's detector read the first two
+// lanes of a lane cable (they also pass In on, so nothing binds them); a native engine is one instance (a Noise
+// broadcast onto a lane cable is the same noise on every lane); across tracks a control gets a lane cable's first lane.
 // ---- Cut wires (WI.2; docs/plans/RB.md D1) --------------------------------------------------------------------------
 // A wire whose signal the compiler refused (type inference blamed it: graph::TypeBlame, engine::UnitTypeFailure) is CUT
 // by the playback link: compile state, not document state. A cut wire (LowerOptions::cutWires) is lowered as if it were
@@ -514,7 +549,8 @@ struct WireState {
 // output the connection reads (the source device's output, the wire's own last node, or the sum several wires into one
 // input share), `to` the node it feeds (the target device's call). `entity`: the NodeRole::Wire entity whose nodes carry
 // the wire's value at its target — its own id, or for a wire into a param the site's (its first wire's id: kWTarget
-// slots), so a blame on a site node maps to every wire of that param.
+// slots), so a blame on a site node maps to every wire of that param. FD.2: a lane cable into a mixer has one on its
+// StereoOnly call ("Lane cables" above).
 struct WireEnd {
   WireId wire;
   uint32_t track = 0;          // index into graph.tracks of the patch holding the connection

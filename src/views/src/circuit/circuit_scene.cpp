@@ -213,6 +213,9 @@ std::vector<WireStyle> wireStyles(const graph::Patch& p) {
     ws.boolean = s.kind == graph::Kind::Bool;
     ws.rate = s.rate;
     ws.poly = s.poly;
+    // FD.2: a source declared wider than stereo is a lane cable (a patch's own text: `out y : audio ch(8)`).
+    if (const uint16_t width = p.outputType(wr.from.node, wr.from.port).width; width > graph::kWidthStereo)
+      ws.lanes = static_cast<uint8_t>(std::min<uint16_t>(width, 255));
     if (p.node(wr.to.node).kind == NodeKind::Subcircuit) {
       const graph::PortType in = p.inputType(wr.to.node, wr.to.port);
       ws.modulation = in.rate == graph::Rate::Param && p.inputOptional(wr.to.node, wr.to.port) && s.rate == WireRate::Audio;

@@ -438,8 +438,9 @@ private:
             f = newNode(FKind::Param, ii, n, 0, 1);
             outDecl_[fnodes_[f].firstOut] = P.outputType(n, 0);
           } else {
-            // Bound at the call site: a modulation target. Any rate and poly; kind and width are bounded.
-            f = newIdentity(ii, n, NodeKind::Param, portType(P.paramDecl(n).kind, Rate::Infer, Poly::Infer, kWidthMono));
+            // Bound at the call site: a modulation target. Any rate, poly and (FD.2) width — a signal of N channels
+            // makes the parameter per channel, as any element-wise input; its kind is bounded.
+            f = newIdentity(ii, n, NodeKind::Param, portType(P.paramDecl(n).kind, Rate::Infer, Poly::Infer, kWidthInfer));
           }
           break;
         }
@@ -716,8 +717,10 @@ private:
       if (pack) {
         packWidth += std::max<uint32_t>(t.width, 1);
       } else if (!joinWidth(width, t.width)) {
+        const size_t before = diags_.size();
         reportNode(f, ErrorCode::Type, "width mismatch: " + widthText(width) + " and " + widthText(t.width) +
                                            " meet at " + describe(fn.inst, fn.src) + " (only mono broadcasts)");
+        if (opt_.blameDepth > 0 && diags_.size() > before) meets_.emplace_back(f, before);  // FD.2: blamed in check()
       }
       if (inBound_[p].kind == Kind::Infer) joinKind(kind, t.kind);  // a bool meeting a real converts (emit)
     }
@@ -911,6 +914,25 @@ private:
     const auto nf = static_cast<uint32_t>(fnodes_.size());
     const AtomRegistry& reg = AtomRegistry::builtin();
     const auto channelAtom = reg.find("channel");
+    // FD.2: two widths meeting at an element-wise atom (evalAtom's error) are blamed on the edges that brought every
+    // width but the first one (in input order), as a bound error is: the atom takes its first wide input's width.
+    for (const auto& [f, diag] : meets_) {
+      const FNode& fn = fnodes_[f];
+      uint16_t first = kWidthMono;
+      for (uint32_t i = 0; i < fn.nIn; ++i) {
+        const uint32_t p = fn.firstIn + i;
+        if (inDrv_[p] == kNone) continue;
+        const uint16_t w = outT_[inDrv_[p]].width;
+        if (w <= kWidthMono) continue;
+        if (first == kWidthMono) {
+          first = w;
+        } else if (w != first) {
+          PortType bound = inBound_[p];
+          bound.width = first;
+          blame(f, p, Offence::Width, bound, diag);
+        }
+      }
+    }
     for (uint32_t f = 0; f < nf; ++f) {
       const FNode& fn = fnodes_[f];
       if (fn.kind == FKind::Atom) {
@@ -999,9 +1021,9 @@ private:
   // Fills blames_.back() for the error at in-port p of FNode f (TypeBlame in infer.h): upstream from p's driver
   // through the nodes inside the consumer's cut path, along inputs that carry the offence; each node outside it is a
   // source. Bounded by a visited set (each FNode once) and kMaxBlamesPerDiagnostic.
-  void blame(uint32_t f, uint32_t p, Offence off, const PortType& bound) {
+  void blame(uint32_t f, uint32_t p, Offence off, const PortType& bound, size_t diag = SIZE_MAX) {
     const FNode& fn = fnodes_[f];
-    std::vector<TypeBlame>& out = blames_.back();
+    std::vector<TypeBlame>& out = diag < blames_.size() ? blames_[diag] : blames_.back();
     const std::vector<NodeId> consumer = blamePath(fn.inst, fn.src);
     const PortType bad = outT_[inDrv_[p]];
     std::unordered_set<uint32_t> seen;
@@ -1485,6 +1507,7 @@ private:
   const InferOptions& opt_;
   std::vector<Diagnostic> diags_;
   std::vector<std::vector<TypeBlame>> blames_;  // WI.1: parallel to diags_ when InferOptions::blameDepth > 0
+  std::vector<std::pair<uint32_t, size_t>> meets_;  // FD.2: (atom FNode, its diagnostic): two widths met there
   std::unordered_map<const Patch*, CalleeInfo> callees_;
   std::vector<Inst> insts_;
   std::vector<const Patch*> active_;  // instantiation stack (recursion check)

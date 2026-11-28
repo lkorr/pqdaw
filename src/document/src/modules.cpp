@@ -24,7 +24,7 @@ namespace pq::doc {
 
 namespace {
 
-constexpr std::array<ModuleInfo, 30> kModules = {{
+constexpr std::array<ModuleInfo, 34> kModules = {{
     {ModuleKind::PhaseAccumulator, "phase_acc", "Phase Accumulator",
      "A phase ramp 0 … 1 at its frequency (plus the note's Hz in an instrument group), transposed by its pitch, offset by "
      "its phase, scaled by its amplitude: hz + freq → × 2^(pitch/1200) → phasor → + phase → frac → × amp. Feed it into a "
@@ -123,6 +123,17 @@ constexpr std::array<ModuleInfo, 30> kModules = {{
      "Plays one sample per note: Classic (looped while held), One-Shot or Slice (a slice per key from C1), at the note's "
      "pitch over the sample's root. A filter, an envelope and an LFO after it; open it to see and rewire the circuit.",
      true},
+    // FD.2: lane cables (docs/plans/FD.md).
+    {ModuleKind::Lanes, "lanes", "Lanes",
+     "Fans a stereo signal out to a lane cable of N lanes (2, 4, 8 or 16): left to the even lanes, right to the odd "
+     "ones, a mono signal to all. Every module on a lane cable runs once per lane (one Delay Tap is N delay lines)."},
+    {ModuleKind::Merge, "merge", "Merge",
+     "Sums a lane cable back to stereo: the even lanes to the left, the odd ones to the right, scaled so N lanes keep "
+     "their power. A lane cable must be merged before it reaches a mixer."},
+    {ModuleKind::Unpack, "unpack", "Unpack",
+     "Splits a lane cable into its N lanes, one mono output each, to patch them one by one."},
+    {ModuleKind::Pack, "lane_pack", "Pack",
+     "Joins N mono inputs into one lane cable (each input's first channel is one lane)."},
 }};
 
 struct Builder {
@@ -183,6 +194,7 @@ dsp::Curve withUnit(dsp::Curve c, dsp::CurveUnit u) {
   c.unit = u;
   return c;
 }
+
 
 }  // namespace
 
@@ -379,7 +391,11 @@ std::string_view moduleEngineType(ModuleKind k) noexcept {
     case ModuleKind::Compressor:
     case ModuleKind::Limiter:
     case ModuleKind::Math:
-    case ModuleKind::Sampler: break;
+    case ModuleKind::Sampler:
+    case ModuleKind::Lanes:
+    case ModuleKind::Merge:
+    case ModuleKind::Unpack:
+    case ModuleKind::Pack: break;
   }
   return {};
 }
@@ -560,7 +576,11 @@ Panel enginePanel(ModuleKind k, DeviceId engine) {
     case ModuleKind::Compressor:
     case ModuleKind::Limiter:
     case ModuleKind::Math:
-    case ModuleKind::Sampler: break;
+    case ModuleKind::Sampler:
+    case ModuleKind::Lanes:
+    case ModuleKind::Merge:
+    case ModuleKind::Unpack:
+    case ModuleKind::Pack: break;
   }
   return p;
 }
@@ -731,6 +751,10 @@ BlockSet moduleBlocks(ModuleKind k) {
   if (k == ModuleKind::Limiter) return limiterBlocks(ids);
   if (k == ModuleKind::Math) return mathBlocks(ids);
   if (k == ModuleKind::Sampler) return samplerBlocks(ids);
+  if (k == ModuleKind::Lanes) return laneModuleBlocks(ids, LaneModule::Lanes);
+  if (k == ModuleKind::Merge) return laneModuleBlocks(ids, LaneModule::Merge);
+  if (k == ModuleKind::Unpack) return laneModuleBlocks(ids, LaneModule::Unpack);
+  if (k == ModuleKind::Pack) return laneModuleBlocks(ids, LaneModule::Pack);
   return engineModuleBlocks(ids, k);
 }
 
@@ -2722,6 +2746,179 @@ BlockSet samplerBlocks(IdSource& ids, const SamplerOptions& o, SamplerRoles* rol
   }
   if (roles != nullptr) *roles = r;
   return out;
+}
+
+// ---- FD.2: lane cables — Lanes, Merge, Unpack, Pack (modules.h "lane cables") -----------------------------------------
+
+std::string_view laneModuleName(LaneModule m) noexcept {
+  switch (m) {
+    case LaneModule::Lanes: return "Lanes";
+    case LaneModule::Merge: return "Merge";
+    case LaneModule::Unpack: return "Unpack";
+    case LaneModule::Pack: return "Pack";
+    case LaneModule::None: break;
+  }
+  return {};
+}
+
+double laneMergeGain(uint32_t lanes) noexcept { return 1.0 / std::sqrt(std::max(1.0, static_cast<double>(lanes) * 0.5)); }
+
+BlockSet laneModuleInside(IdSource& ids, LaneModule kind, DeviceId group, uint32_t lanes, std::span<const DeviceId> keep,
+                          LaneModuleRoles* roles) {
+  if (!laneCountValid(lanes)) lanes = kDefaultLaneCount;
+  Kit k(ids, group);
+  LaneModuleRoles r;
+  r.group = group;
+  auto channel = [&](std::string name, const Sig& x, uint32_t index) {
+    const DeviceId c = k.block("channel", std::move(name), {{"x", x}});
+    if (index != 0) k.setting(c, "index", static_cast<double>(index));
+    return c;
+  };
+  auto out = [](DeviceId d) { return Sig{d, "out"}; };
+  switch (kind) {
+    case LaneModule::Lanes: {
+      // L and R (a mono input: both), side by side, then doubled: L R L R … — L on the even lanes, R on the odd ones.
+      Sig s = k.op("pack", "2 lanes", {{"in0", out(channel("L", k.in(), 0))}, {"in1", out(channel("R", k.in(), 1))}});
+      for (uint32_t n = 4; n <= lanes; n *= 2) s = k.op("pack", std::to_string(n) + " lanes", {{"in0", s}, {"in1", s}});
+      k.out(s);
+      break;
+    }
+    case LaneModule::Merge: {
+      Sig ear[2];
+      for (uint32_t i = 0; i < lanes; ++i) {
+        const Sig c = out(channel("lane " + std::to_string(i + 1), k.in(), i));
+        Sig& e = ear[i & 1u];
+        e = i < 2 ? c : k.op("add", i & 1u ? "R +" : "L +", {{"a", e}, {"b", c}});
+      }
+      if (lanes > 2) {  // (N = 2: × 1)
+        const Sig g = k.k(laneMergeGain(lanes));
+        ear[0] = k.op("mul", "L", {{"a", ear[0]}, {"b", g}});
+        ear[1] = k.op("mul", "R", {{"a", ear[1]}, {"b", g}});
+      }
+      k.out(k.op("pack", "stereo", {{"in0", ear[0]}, {"in1", ear[1]}}));
+      break;
+    }
+    case LaneModule::Unpack:
+      for (uint32_t i = 0; i < lanes; ++i)
+        r.lane.push_back(i < keep.size() ? keep[i] : channel(std::to_string(i + 1), k.in(), i));
+      break;
+    case LaneModule::Pack: {
+      // Each input's first channel (a stereo cable plugged in gives its left: the cable out is exactly N wide), packed
+      // pairwise up to the one lane cable.
+      std::vector<Sig> level;
+      for (uint32_t i = 0; i < lanes; ++i) {
+        r.lane.push_back(i < keep.size() ? keep[i] : k.b.atom("channel", std::to_string(i + 1)));
+        level.push_back(out(r.lane.back()));
+      }
+      for (uint32_t width = 2; level.size() > 1; width *= 2) {
+        std::vector<Sig> next;
+        for (size_t i = 0; i + 1 < level.size(); i += 2)
+          next.push_back(k.op("pack", std::to_string(width) + " lanes", {{"in0", level[i]}, {"in1", level[i + 1]}}));
+        level = std::move(next);
+      }
+      k.out(level.front());
+      break;
+    }
+    case LaneModule::None: break;
+  }
+  BlockSet set;
+  for (DevicePtr& d : k.b.set.devices) {
+    if (std::find(r.lane.begin(), r.lane.end(), d->id) == r.lane.end()) r.inner.push_back(d->id);
+    set.devices.push_back(std::move(d));
+  }
+  set.wires = std::move(k.b.set.wires);
+  std::sort(set.wires.begin(), set.wires.end(), [](const Wire& x, const Wire& y) { return x.id < y.id; });
+  if (roles != nullptr) *roles = std::move(r);
+  return set;
+}
+
+Panel laneModulePanel(LaneModule kind, DeviceId group, uint32_t lanes, std::span<const DeviceId> laneBlocks) {
+  const bool jacks = kind == LaneModule::Unpack || kind == LaneModule::Pack;
+  Panel p;
+  auto chip = [&](float x, float y, float w) {
+    return element(kLaneChipElement, "lanecount", x, y, w, 14, settingBinding(group, std::string(kLaneCountSetting)));
+  };
+  const std::string name(laneModuleName(kind));
+  if (!jacks) {
+    p.width = 120.0f;
+    p.height = 46.0f;
+    p.elements.push_back(plate(p.width, p.height, 8.0));
+    p.elements.push_back(caption(2, 10, 7, 100, 12, name.c_str()));
+    p.elements.push_back(chip(10, 25, 100));
+    return p;
+  }
+  constexpr float kPitch = 17.0f, kRow = 24.0f;
+  constexpr uint32_t kPerRow = 8;
+  const uint32_t rows = (std::max(lanes, 1u) + kPerRow - 1) / kPerRow;
+  p.width = 16.0f + kPitch * kPerRow;
+  p.height = 30.0f + kRow * static_cast<float>(rows);
+  p.elements.push_back(plate(p.width, p.height, 8.0));
+  // The main jack (Unpack: the lane cable in, top left; Pack: the lane cable out, top right), the name, the chip.
+  const bool unpack = kind == LaneModule::Unpack;
+  const float jackX = unpack ? 8.0f : p.width - 18.0f;
+  p.elements.push_back(element(4, "jack", jackX, 7, 10, 10, unpack ? inputBinding(group) : signalBinding(group, "y")));
+  p.elements.push_back(caption(2, unpack ? 22.0f : 8.0f, 6, 44, 12, name.c_str()));
+  p.elements.push_back(chip(unpack ? p.width - 8.0f - 76.0f : 54.0f, 5, 76));
+  for (uint32_t i = 0; i < lanes && i < laneBlocks.size(); ++i) {
+    const float cx = 8.0f + kPitch * (static_cast<float>(i % kPerRow) + 0.5f);
+    const float cy = 36.0f + kRow * static_cast<float>(i / kPerRow);
+    p.elements.push_back(element(kLaneJackBase + i, "jack", cx - 5, cy - 5, 10, 10,
+                                 unpack ? signalBinding(laneBlocks[i], "out") : inputBinding(laneBlocks[i], "x")));
+    p.elements.push_back(
+        styled(caption(kLaneJackBase + kMaxLaneCount + i, cx - 8, cy + 6, 16, 9, std::to_string(i + 1).c_str()), {styleText("align", "centre")}));
+  }
+  return p;
+}
+
+BlockSet laneModuleBlocks(IdSource& ids, LaneModule kind, const LaneModuleOptions& o, LaneModuleRoles* roles) {
+  const uint32_t lanes = laneCountValid(o.lanes) ? o.lanes : kDefaultLaneCount;
+  const DeviceId group = o.id.valid() ? o.id : ids.device();
+  LaneModuleRoles r;
+  BlockSet inside = laneModuleInside(ids, kind, group, lanes, {}, &r);
+  DevicePtr g = groupDevice(group, o.inGroup, o.name.empty() ? std::string(laneModuleName(kind)) : o.name, o.active,
+                            laneModulePanel(kind, group, lanes, r.lane));
+  auto gd = std::make_shared<Device>(*g);
+  gd->settings.push_back(DeviceValue{std::string(kLaneModuleSetting), static_cast<double>(kind)});
+  gd->settings.push_back(DeviceValue{std::string(kLaneCountSetting), static_cast<double>(lanes)});
+  std::sort(gd->settings.begin(), gd->settings.end(), [](const DeviceValue& x, const DeviceValue& y) { return x.name < y.name; });
+  BlockSet out;
+  out.devices.push_back(std::move(gd));
+  for (DevicePtr& d : inside.devices) out.devices.push_back(std::move(d));
+  out.wires = std::move(inside.wires);
+  if (roles != nullptr) *roles = std::move(r);
+  return out;
+}
+
+std::optional<LaneModuleInfo> laneModuleInfo(const Project& p, DeviceId group) {
+  const DeviceLoc loc = findDevice(p, group);
+  if (loc.device == nullptr || !isGroupDevice(*loc.device)) return std::nullopt;
+  const DeviceValue* kind = loc.device->setting(kLaneModuleSetting);
+  const DeviceValue* count = loc.device->setting(kLaneCountSetting);
+  if (kind == nullptr || count == nullptr || !(kind->value >= 1.0 && kind->value <= 4.0) || kind->value != std::floor(kind->value))
+    return std::nullopt;
+  LaneModuleInfo info;
+  info.kind = static_cast<LaneModule>(static_cast<uint8_t>(kind->value));
+  info.lanes = count->value >= 1.0 && count->value <= kMaxLaneCount ? static_cast<uint32_t>(count->value) : 0u;
+  info.roles.group = group;
+  const std::vector<const Device*> members = groupMembers(loc.track->devices, group);
+  auto member = [&](DeviceId d) {
+    return std::any_of(members.begin(), members.end(), [&](const Device* m) { return m->id == d; });
+  };
+  // The lane blocks: what the panel's lane jacks name, lane 0 first, up to the first lane without one.
+  if (loc.device->hasPanel() && (info.kind == LaneModule::Unpack || info.kind == LaneModule::Pack))
+    for (uint32_t i = 0; i < kMaxLaneCount; ++i) {
+      const PanelElement* jack = nullptr;
+      for (const PanelElement& e : loc.device->panel->elements)
+        if (e.id == kLaneJackBase + i && e.kind == "jack") jack = &e;
+      const Binding* b = jack != nullptr ? jack->binding(0) : nullptr;
+      if (b == nullptr || !member(b->device) ||
+          std::find(info.roles.lane.begin(), info.roles.lane.end(), b->device) != info.roles.lane.end())
+        break;
+      info.roles.lane.push_back(b->device);
+    }
+  for (const Device* m : members)
+    if (std::find(info.roles.lane.begin(), info.roles.lane.end(), m->id) == info.roles.lane.end()) info.roles.inner.push_back(m->id);
+  return info;
 }
 
 }  // namespace pq::doc

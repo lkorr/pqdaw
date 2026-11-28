@@ -2612,3 +2612,16 @@ Per display (how it was drawn → what was wrong → what changed):
   here." No goldens moved (none of the scenes has such a dead end).
 - Look at: the "!" placement and size at your usual zoom; whether explicitly muted tracks should keep metering (they do
   now, as in Live); Q?-BR.K-a (a block leaving at the head while other blocks also read the group's In).
+## FD.2 · lane cables: Lanes / Merge / Unpack / Pack (2026-11-28) (👁)
+- Circuit, Tab: four new modules. **Lanes** fans a stereo signal out to 2 / 4 / 8 / 16 lanes (the chip on its face),
+  **Merge** sums them back to stereo, **Unpack** gives each lane its own output jack, **Pack** takes one input jack per
+  lane. Anything between Lanes and Merge runs once per lane: try Lanes 8 → Delay Tap → Merge with a Pack of eight
+  different values cabled into the tap's Time.
+- A lane cable is drawn as a wide ribbon with its lane count on a small badge. Goldens: `lanes-cable`,
+  `lanes-face-lanes`, `-merge`, `-unpack`, `-pack`, `-unpack16`.
+- A lane cable into a mixer, a Utility, a Wavetable / Envelope / Noise / Sampler, or into a Merge / Unpack set to another
+  N turns red; hover it for the reason ("8 lanes into a stereo input: merge the lanes first"). A stereo cable and a lane
+  cable into one block: the second one turns red.
+- Look at: whether the ribbon + badge read at your usual zoom (the badge hides on short cables); the faces' size and
+  the chip; Unpack / Pack at 16 (two rows of jacks). Known gaps (Q?-FD.2-b): an EQ in L/R or M/S mode and the
+  Compressor / Limiter read only the first two lanes; Noise on a lane cable is the same noise on every lane.

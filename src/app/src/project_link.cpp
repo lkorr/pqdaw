@@ -24,6 +24,7 @@
 #include "pq/document/audibility.h"
 #include "pq/document/clip_time.h"
 #include "pq/document/meta.h"
+#include "pq/document/lanes.h"
 #include "pq/document/lower.h"
 #include "pq/dsp/frame_table_build.h"
 #include "pq/dsp/sampler_stretch.h"
@@ -2187,6 +2188,9 @@ bool ProjectLink::cutBlamed(const doc::Project& p, const doc::LoweredProject& lp
     any = true;
   }
   std::vector<doc::WireId> ws;
+  // FD.2: the failures that name a wire's own edge first (pass 0), then those found by a blamed node's entity (pass 1):
+  // a lane cable refused at a mixer's bound keeps that reason, whatever its lanes also upset further on (the sum).
+  for (const int pass : {0, 1})
   for (size_t i = 0; i < fails.size(); ++i) {
     const engine::UnitTypeFailure& f = fails[i];
     bool repeat = false;  // a cascade names one edge many times
@@ -2196,6 +2200,7 @@ bool ProjectLink::cutBlamed(const doc::Project& p, const doc::LoweredProject& lp
     ws.clear();
     for (const doc::WireEnd& e : lp.wireEnds)
       if (e.track == f.track && e.from == f.source && e.to == f.consumer) ws.push_back(e.wire);
+    if (ws.empty() != (pass == 1)) continue;
     for (const uint32_t node : {f.source, f.consumer}) {
       uint32_t entity = 0, slot = 0;
       if (!ws.empty() || !doc::nodeEntity(node, entity, slot)) continue;
@@ -2208,7 +2213,9 @@ bool ProjectLink::cutBlamed(const doc::Project& p, const doc::LoweredProject& lp
       const doc::Wire* x = doc::findWire(p, w);
       if (x == nullptr || cut.count(w.value) != 0) continue;
       CutWire c;
-      c.message = cleaned(f.message);
+      // FD.2: a lane cable's width error in the document's words ("8 lanes into a stereo input: merge the lanes first").
+      c.message = doc::laneRefusal(f.message);
+      if (c.message.empty()) c.message = cleaned(f.message);
       c.from = x->fromNoteSource() ? x->noteSource : trackOf(x->from);
       c.to = x->toMixer() ? x->mixer : trackOf(x->to);
       cut.emplace(w.value, std::move(c));

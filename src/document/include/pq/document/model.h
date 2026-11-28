@@ -865,6 +865,12 @@ std::string_view groupPatchText() noexcept;
 // TX.groups-fix1: what a group plays where voices reach it (devices.h groupVoicePatch / groupNotesPatch).
 std::string_view groupVoicePatchText() noexcept;
 std::string_view groupNotesPatchText() noexcept;
+// FD.2 (docs/plans/FD.md; lower.h "Lane cables"; lanes.h LaneWidths::bound): Group (GroupVoice) with its main input
+// BOUND to `width` channels ("GroupIn<N>", per voice "GroupVoiceIn<N>"; devices.h groupInWidthPatch): what the lowering
+// has a group play when a cable reaches it that its inside cannot take, so the compiler refuses that cable — cut, with
+// its reason — instead of some of its channels being read.
+std::string groupInWidthPatchName(uint16_t width, bool voice);
+std::string groupInWidthPatchText(uint16_t width, bool voice);
 // The members of group `group` in `list` (list order): its own (Device::group == group), not theirs.
 std::vector<const Device*> groupMembers(const std::vector<DevicePtr>& list, DeviceId group);
 // GU.2: nesting. The deepest a group may sit (a member of a group of a group … : depth 1 is a top-level group's member).

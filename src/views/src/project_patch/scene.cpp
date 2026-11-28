@@ -103,6 +103,7 @@ WireStyle styleOf(const Edge& e) {
   WireStyle w;
   w.rate = WireRate::Audio;
   w.error = e.typeError;  // WI.2
+  w.lanes = e.lanes;      // FD.2
   switch (e.kind) {
     case EdgeKind::Notes:
       w.poly = true;

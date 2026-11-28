@@ -97,6 +97,15 @@ const DeviceInfo& groupDeviceInfo();
 // group's chain stage; the views and the edit builders see groupPatch() (the same terminal names).
 const graph::Patch& groupVoicePatch();
 const graph::Patch& groupNotesPatch();
+// FD.2 (model.h groupInWidthPatchText): Group (`voice`: GroupVoice) with its main input bound to `width` channels (2 …
+// graph::kMaxWidth, clamped), named groupInWidthPatchName: made on first use, one per width for the process
+// (thread-safe; a fixed address).
+const graph::Patch& groupInWidthPatch(uint16_t width, bool voice);
+// Whether `p` is one of the patches a group plays (Group, GroupVoice, GroupNotes, an input-bound variant).
+bool isGroupPatch(const graph::Patch& p) noexcept;
+// FD.2 (lower.h "Lane cables"): `patch StereoOnly { in x : audio stereo; out y = x }` — the bound the lowering puts on a
+// lane cable that reaches a mixer (nothing is computed: the compiler flattens the call; it only refuses the lanes).
+const graph::Patch& stereoOnlyPatch();
 
 // ---- GU.2: atom blocks and value blocks (model.h "Atom blocks and value blocks") ----------------------------------
 // Which atoms may be a block of their own: not compiler-internal, not a voice source (they need a voice context), no

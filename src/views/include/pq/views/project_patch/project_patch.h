@@ -298,6 +298,9 @@ struct Edge {
   // WI.2: the playback link cut the wire from its compile (ViewContext::wireError; status Refused): drawn in the error
   // colour, the message in its readout. Any kind with a wire (a cut main-path link is a Chain edge).
   bool typeError = false;
+  // FD.2 (pq/document/lanes.h): the wire is a lane cable of this many lanes (> 2: the document's estimate); 0: not one.
+  // Drawn as a ribbon with its count (circuit::WireStyle::lanes), said in its readout.
+  uint8_t lanes = 0;
   bool silent = false;                  // Send: its level is −∞ (lowered, plays nothing); BR.patch-io: an input not monitored
   bool delayed = false;                 // an automatic 1-sample delay (a delayed send or wire)
   bool pre = false;                     // Send: pre-fader

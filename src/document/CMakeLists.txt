@@ -47,6 +47,8 @@ pq_add_module(pq_doc
     src/note_pattern.cpp  # AP.10: the resolved pattern of a note device (engine sketchArp over its values)
     src/audio_in.cpp  # RT.1: Audio In (record from a track): AudioFrom, the menus' filter, setAudioFrom
     src/wire_types.cpp  # WI.3: declared-type clashes a wiring gesture refuses
+    src/lanes.cpp  # FD.2: lane cables (the estimated width of every wire)
+    src/edit_lanes.cpp  # FD.2: the lane modules' N (Lanes, Merge, Unpack, Pack rebuilt)
     src/instrument_groups.cpp
     src/audibility.cpp
     src/lower.cpp
