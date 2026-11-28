@@ -593,6 +593,35 @@ TEST_CASE("group panels: a deleted block takes its elements off the face (undo b
     }
 }
 
+TEST_CASE("group panels: a closed group deleted (Delete) and undone (Ctrl+Z) comes back closed, as its panel; an open "
+          "one comes back open — real key dispatch") {
+  Ui u;
+  const auto delUndo = [&](bool key) {
+    if (key) {
+      const uint32_t sn = u.view().scene().sceneNode[u.view().patch().nodeOf(u.ids.group)];
+      u.view().canvas().select(std::vector<uint32_t>{sn}, {});
+      u.d.tree().setFocus(&u.view().canvas());
+      CHECK(u.d.press("Delete") != KeyResult::Unhandled);
+    } else {
+      REQUIRE(u.ctx.store().dispatch(doc::ops::deleteDevices(*u.ctx.doc(), std::vector<doc::DeviceId>{u.ids.group})->command).ok());
+      u.d.tree().setFocus(&u.view().canvas());
+    }
+    u.d.step();
+    REQUIRE(doc::findDevice(*u.ctx.doc(), u.ids.group).device == nullptr);
+    CHECK(u.d.press("Ctrl+Z") != KeyResult::Unhandled);
+    u.d.step();
+    REQUIRE(doc::findDevice(*u.ctx.doc(), u.ids.group).device != nullptr);
+  };
+  REQUIRE_FALSE(u.view().groupOpen(u.ids.group));
+  delUndo(true);
+  CHECK_FALSE(u.view().groupOpen(u.ids.group));  // was: opened, its circuit and wires spilled out
+  CHECK(u.node().groupPanel);
+  u.view().setGroupOpen(u.ids.group, true);
+  u.d.step();
+  delUndo(false);  // (an opened capsule: deleted through the store)
+  CHECK(u.view().groupOpen(u.ids.group));
+}
+
 TEST_CASE("group panels: the Device view shows the instrument group's panel with its inspector; the inspector's mono "
           "toggle is one step and one structural change — real pointer dispatch") {
   Ui u;
