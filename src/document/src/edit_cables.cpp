@@ -58,11 +58,13 @@ std::vector<CableSource> cableSources(const Project& p, TrackId except) {
 }
 
 bool sameSourceEnd(const Wire& a, const Wire& b) noexcept {
-  return a.noteSource == b.noteSource && (a.fromNoteSource() || a.from == b.from) && a.port == b.port;
+  return a.noteSource == b.noteSource && a.mixerOut == b.mixerOut && (a.fromNoteSource() || a.from == b.from) &&
+         a.port == b.port;
 }
 
 const Track* sourceTrackOf(const Project& p, const Wire& w) noexcept {
   if (w.fromNoteSource()) return findTrackPtr(p, w.noteSource);
+  if (w.fromMixerOut()) return findTrackPtr(p, w.mixerOut);  // RT.1
   return findDevice(p, w.from).track;
 }
 

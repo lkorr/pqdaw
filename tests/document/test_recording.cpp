@@ -661,7 +661,7 @@ TEST_CASE("recording: save -> load is deep-equal with every new field set, byte-
   REQUIRE(auditioned.valid());
   auto text = serializeProject(p);
   REQUIRE_MESSAGE(text.ok(), (text.ok() ? std::string() : text.error().message));
-  CHECK(text->find("\"schemaVersion\": 22") != std::string::npos);
+  CHECK(text->find("\"schemaVersion\": 23") != std::string::npos);
   auto back = parseProject(*text);
   REQUIRE_MESSAGE(back.ok(), (back.ok() ? std::string() : back.error().message));
   CHECK(*back->project == p);

@@ -311,7 +311,8 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
                              builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
                              builtinMigrations()[15], builtinMigrations()[16], builtinMigrations()[17],
-                             builtinMigrations()[18], builtinMigrations()[19], builtinMigrations()[20]};
+                             builtinMigrations()[18], builtinMigrations()[19], builtinMigrations()[20],
+                             builtinMigrations()[21]};
   const std::string old = schema0Text();
   SUBCASE("an old file is migrated, then decoded") {
     Result<LoadedProject> r = parseProject(old, LoadOptions{table, "old.pqd"});
@@ -338,14 +339,14 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
   }
   SUBCASE("a newer file is refused") {
     std::string newer = readFile(fixturePath("minimal/project.pqd"));
-    const size_t at = newer.find("\"schemaVersion\": 22");
+    const size_t at = newer.find("\"schemaVersion\": 23");
     REQUIRE(at != std::string::npos);
-    newer.replace(at, 19, "\"schemaVersion\": 23");
+    newer.replace(at, 19, "\"schemaVersion\": 24");
     Result<LoadedProject> r = parseProject(newer);
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().code == pq::ErrorCode::Unsupported);
     CHECK(r.error().message ==
-          "$.schemaVersion: the project was saved by a newer pqdaw (schema 23; this build reads up to 22)");
+          "$.schemaVersion: the project was saved by a newer pqdaw (schema 24; this build reads up to 23)");
   }
   SUBCASE("a migration's output is validated like any file") {
     const Migration broken[] = {{0, [](nlohmann::json& d) -> pq::Status {
@@ -360,7 +361,8 @@ TEST_CASE("serialize: migration hook table (n -> n+1)") {
                              builtinMigrations()[9], builtinMigrations()[10], builtinMigrations()[11],
                              builtinMigrations()[12], builtinMigrations()[13], builtinMigrations()[14],
                              builtinMigrations()[15], builtinMigrations()[16], builtinMigrations()[17],
-                             builtinMigrations()[18], builtinMigrations()[19], builtinMigrations()[20]};
+                             builtinMigrations()[18], builtinMigrations()[19], builtinMigrations()[20],
+                             builtinMigrations()[21]};
     Result<LoadedProject> r = parseProject(old, LoadOptions{broken, {}});
     REQUIRE_FALSE(r.ok());
     CHECK(r.error().message.rfind("$.timeline.tempo: ", 0) == 0);
@@ -435,7 +437,7 @@ TEST_CASE("serialize: wires from a note source (schema 12) round-trip and are va
     Result<std::string> text = serializeProject(f.doc(), f.store.view());
     REQUIRE(text.ok());
     std::string old = *text;
-    old.replace(old.find("\"schemaVersion\": 22"), 19, "\"schemaVersion\": 11");
+    old.replace(old.find("\"schemaVersion\": 23"), 19, "\"schemaVersion\": 11");
     Result<LoadedProject> r = parseProject(old);
     REQUIRE_MESSAGE(r.ok(), (r.ok() ? std::string() : r.error().message));
     CHECK(r->fileSchemaVersion == 11);

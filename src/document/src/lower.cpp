@@ -181,11 +181,29 @@ Project withGroupsOff(const Project& p) {
   return q;
 }
 
-std::shared_ptr<const Cables> cablesOf(const Project& p, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
+// RT.1 (pq/document/audio_in.h): `p` without its Audio In cables (Wire::recordInput; a mixer-out start goes nowhere
+// else), or none when it has none. Until RT.2 lowers them the lowering reads the project without them: no node, no
+// export, no unit merge, the same graph as before the cable was drawn.
+std::optional<Project> withoutAudioIns(const Project& p) {
+  const WireList& wl = wiresOf(p);
+  if (std::none_of(wl.begin(), wl.end(), [](const Wire& w) { return w.toRecordInput(); })) return std::nullopt;
+  WireList rest;
+  rest.reserve(wl.size());
+  for (const Wire& w : wl)
+    if (!w.toRecordInput()) rest.push_back(w);
+  Project q = p;
+  q.wires = rest.empty() ? nullptr : std::make_shared<const WireList>(std::move(rest));
+  return q;
+}
+
+std::shared_ptr<const Cables> cablesOf(const Project& p0, const graph::PatchLibrary* lib, const DeviceLibrary* devices) {
   auto c = std::make_shared<Cables>();
+  std::optional<Project> plain = withoutAudioIns(p0);  // RT.1 (a copy only when it has an Audio In cable)
+  const Project& p = plain ? *plain : p0;
   c->notes = dissolveNoteDevices(p);
   if (c->notes.any) c->base = withoutNoteDevices(p, c->notes);
-  const Project& b = c->notes.any ? c->base : p;  // AP.2: the project as its note devices leave it
+  else if (plain) c->base = std::move(*plain);
+  const Project& b = c->notes.any || plain ? c->base : p;  // AP.2: the project as its note devices leave it
   c->q = withGroupsOff(b);
   const MainLinks mainLinks(b);  // one pass over the wires for every track's path
   forEachTrack(c->q, [&](const Track& t, const Track*) {  // (q's tracks: GU.11 a switched-off group's blocks are off)
@@ -4116,8 +4134,11 @@ Result<LoweredProject> lower(const Project& doc, const LowerOptions& o, const Lo
   // FZ.1 (lower.h "Frozen tracks"): the frozen tracks with a render, lowered from it (a copy only when one has).
   Frozen fz;
   std::optional<Project> frozenDoc;
-  if (o.frozenSlotOf) frozenDoc = frozenProject(uncut ? *uncut : doc, o, fz);
-  const Project& p = frozenDoc ? *frozenDoc : uncut ? *uncut : doc;
+  // RT.1: the project without its Audio In cables (withoutAudioIns: RT.2 lowers them).
+  std::optional<Project> plain = withoutAudioIns(uncut ? *uncut : doc);
+  const Project& in = plain ? *plain : uncut ? *uncut : doc;
+  if (o.frozenSlotOf) frozenDoc = frozenProject(in, o, fz);
+  const Project& p = frozenDoc ? *frozenDoc : in;
   // TX.all-free: the main paths, and the project as lowered (its other wires by name; lower.h "The main path").
 std::shared_ptr<const Cables> cables = cablesOf(p, o.library, o.devices);
   const Project& q = cables->q;

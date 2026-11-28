@@ -15,6 +15,7 @@
 
 #include "pq/document/samples.h"
 #include "pq/document/audio_clip.h"
+#include "pq/document/audio_in.h"
 #include "pq/document/commands.h"
 #include "pq/document/lower.h"
 #include "pq/document/pitch_resolve.h"
@@ -22,6 +23,7 @@
 #include "pq/meta/registry.h"
 #include "checks.h"
 #include "pq/document/racks.h"
+#include "pq/document/wire_types.h"
 #include "pq/tuning/mos_regions.h"
 
 namespace pq::doc {
@@ -548,6 +550,8 @@ Res apply_(const Snapshot& s, const SetTrackAudioInput& c, ChangeSet& cs) {
   m.audioIn = c.input;
   PQ_DOC_TRY(checkRecordInputs(loc->track->kind, m));
   if (loc->track->mixer.audioIn == c.input) return s;
+  // RT.1 (audio_in.h): one source — Ext. In or the cable onto the Audio In (ops::setAudioFrom replaces it).
+  if (!c.input.none() && audioInWireOf(*s, c.track) != nullptr) return invalid(std::string(kAudioInOneSource));
   return editTrack(s, loc->path, cs, kChangeStructural, [&](Track& t) { t.mixer.audioIn = c.input; return ok(); });
 }
 
@@ -2230,7 +2234,9 @@ void dropWiresOf(Project& np, const std::vector<DeviceId>& gone, ChangeSet& cs, 
   auto touches = [&](const Wire& w) {
     return std::binary_search(gone.begin(), gone.end(), w.from) || std::binary_search(gone.begin(), gone.end(), w.to) ||
            (w.fromNoteSource() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.noteSource)) ||
-           (w.toMixer() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.mixer));  // TX.all-free
+           (w.toMixer() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.mixer)) ||  // TX.all-free
+           (w.toRecordInput() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.recordInput)) ||  // RT.1
+           (w.fromMixerOut() && std::binary_search(goneTracks.begin(), goneTracks.end(), w.mixerOut));
   };
   if (std::none_of(np.wires->begin(), np.wires->end(), touches)) return;
   WireList keep;
@@ -2252,7 +2258,10 @@ Res withWires(const Snapshot& s, WireList list, ChangeSet& cs, ChangeFlag flag, 
 Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
   PQ_DOC_TRY(checkWire(c.wire));
   const Track* sourceTrack = nullptr;
-  if (c.wire.fromNoteSource()) {  // TMM.10-fix2: a MIDI track's note source; TX.all-free: any track's own signal
+  if (c.wire.fromMixerOut()) {  // RT.1: a track's mixer output (checkWire: only onto an Audio In)
+    sourceTrack = findTrackPtr(*s, c.wire.mixerOut);
+    if (sourceTrack == nullptr) return notFound("wire source track not found");
+  } else if (c.wire.fromNoteSource()) {  // TMM.10-fix2: a MIDI track's note source; TX.all-free: any track's own signal
     sourceTrack = findTrackPtr(*s, c.wire.noteSource);
     if (sourceTrack == nullptr) return notFound("wire source track not found");
     if (!c.wire.port.empty() && sourceTrack->kind != TrackKind::Midi) return invalid("only a MIDI track has a note source");
@@ -2260,7 +2269,13 @@ Res apply_(const Snapshot& s, const AddWire& c, ChangeSet& cs) {
     sourceTrack = findDevice(*s, c.wire.from).track;
     if (sourceTrack == nullptr) return notFound("wire source device not found");
   }
-  if (c.wire.toMixer()) {  // TX.all-free: a track's mixer input, from blocks and track sources
+  if (c.wire.toRecordInput()) {  // RT.1 (audio_in.h): an audio track's Audio In, one source; loops: apply's final pass
+    const Track* t = findTrackPtr(*s, c.wire.recordInput);
+    if (t == nullptr) return notFound("wire target track not found");
+    if (t->kind != TrackKind::Audio) return invalid(std::string(kAudioInTrack));
+    if (!t->mixer.audioIn.none() || audioInWireOf(*s, t->id) != nullptr) return invalid(std::string(kAudioInOneSource));
+    if (!carriesAudio(*s, c.wire, nullptr)) return invalid(std::string(kAudioInNotAudio));
+  } else if (c.wire.toMixer()) {  // TX.all-free: a track's mixer input, from blocks and track sources
     const Track* t = findTrackPtr(*s, c.wire.mixer);
     if (t == nullptr) return notFound("wire target track not found");
     // TX.all-free-fix1: another track's blocks or source too (a send-like route; the lowering refuses a cycle).
@@ -2704,6 +2719,12 @@ Result<Snapshot> apply(const Snapshot& s, const Command& c, ChangeSet& changes) 
   // FZ.1 (model.h "Frozen tracks"; D4): one rule after the whole command, its follow-ups included.
   if (cur != s && frozenConflict(*s, *cur).valid())
     return Error{ErrorCode::InvalidArgument, std::string(kFrozenRefusal), {}};
+  // RT.1 (audio_in.h "Loops"): no edit closes a loop through an Audio In — a reroute, a cable, a moved device, a send
+  // (stored once turned up: a Param change). Free while the project has no Audio In cable.
+  if (cur != s && (changes.structural() || std::any_of(changes.params.begin(), changes.params.end(), [](const ParamRef& r) {
+                     return r.kind == ParamKind::TrackSend;
+                   })))
+    PQ_DOC_TRY(checkAudioIns(*cur));
   return cur;
 }
 

@@ -893,7 +893,8 @@ EditResult connectWire(const Project& p, IdSource& ids, DeviceId from, std::stri
 EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::string port, DeviceId to, std::string param);
 // TX.all-free: a wire with the ends of `ends` (a device's port or a track's source — kMainPort its own signal, else a
 // note output —; a device's param / input or a track's mixer; model.h "Modulation wires"), adding (WireLaw::Add). The
-// views pass canonicalWire's ends, so a cable between two main ports is a main link.
+// views pass canonicalWire's ends, so a cable between two main ports is a main link. RT.1: onto an audio track's Audio
+// In (Wire::recordInput) it is ops::setAudioFrom (audio_in.h): the cable replaces the old source in one step.
 EditResult connect(const Project& p, IdSource& ids, Wire ends);
 // TX.patching: a wire under the legacy knob-travel law (WireLaw::Travel, `amount` its depth, clamped to [−1, 1]) — what
 // a schema ≤ 12 file's wires load as. The views never offer it; tests and tools that rebuild such a project use it.

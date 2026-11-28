@@ -5,6 +5,8 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "pq/core/result.h"
@@ -109,5 +111,28 @@ Status checkDeviceMeta(const Device& d);
 Status checkWire(const Wire& w);
 // Rejects routing cycles (outputs followed from every track must end at the master or a track with no output).
 Status checkRouting(const Project& p);
+
+// ---- RT.1: Audio In (pq/document/audio_in.h "Loops") ------------------------------------------------------------------
+// Which tracks a track's sound reaches, built once per project: a track FEEDS the track its output goes to (Default: its
+// parent group or the master), the returns of its STORED sends (a send at its default, −∞ post-fader, is not stored and
+// is lowered only while stored when it would close a loop: lower.h conditionalSendsKey), and the track at the other end
+// of every cable that leaves it (into a block, a mixer or an Audio In of another track). Not RT code.
+struct AudioFeeds {
+  explicit AudioFeeds(const Project& p);
+  uint32_t master = 0;                                          // the master's id (0: none)
+  std::unordered_map<uint32_t, uint32_t> deviceTrack;           // device id → its track's id
+  std::unordered_map<uint32_t, uint32_t> output;                // track id → where its output goes (absent: nowhere)
+  std::unordered_map<uint32_t, std::vector<uint32_t>> others;   // track id → the other tracks it feeds (sends, cables)
+  uint32_t sourceTrack(const Wire& w) const noexcept;  // the track of a wire's start (0: none)
+  uint32_t targetTrack(const Wire& w) const noexcept;  // the track of a wire's end (0: none)
+  // Every track `track` feeds, transitively, itself included (sorted). `ownOutput` false: its own output route is left
+  // out (Resampling reads the master built without the recording track's bus).
+  std::vector<uint32_t> fedBy(uint32_t track, bool ownOutput) const;
+};
+// Why a cable from `start` onto audio track `track`'s Audio In would loop: kAudioInSelf, kAudioInLoop, or "".
+std::string_view audioInLoop(const AudioFeeds& f, uint32_t track, const Wire& start);
+// Every Audio In of the project: on an audio track, one source (one cable, or Ext. In), audio (library-free:
+// wire_types.h carriesAudio), no loop. Cheap when the project has no Audio In cable (one pass over the wires).
+Status checkAudioIns(const Project& p);
 
 }  // namespace pq::doc::detail

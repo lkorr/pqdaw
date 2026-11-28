@@ -45,6 +45,7 @@ pq_add_module(pq_doc
     src/note_flatten.cpp  # AP.7: Flatten to clip (the generated notes of a track's note devices)
     src/note_devices.cpp  # AP.2: note devices (the arpeggiator): its params from pq/engine/arp.h's table
     src/note_pattern.cpp  # AP.10: the resolved pattern of a note device (engine sketchArp over its values)
+    src/audio_in.cpp  # RT.1: Audio In (record from a track): AudioFrom, the menus' filter, setAudioFrom
     src/wire_types.cpp  # WI.3: declared-type clashes a wiring gesture refuses
     src/instrument_groups.cpp
     src/audibility.cpp

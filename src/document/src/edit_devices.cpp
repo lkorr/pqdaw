@@ -7,6 +7,7 @@
 
 #include "edit_common.h"
 #include "edit_paths.h"
+#include "pq/document/audio_in.h"
 #include "pq/document/devices.h"
 #include "pq/document/lower.h"
 #include "pq/document/main_path.h"
@@ -580,6 +581,9 @@ EditResult connectNoteWire(const Project& p, IdSource& ids, TrackId track, std::
 }
 
 EditResult connect(const Project& p, IdSource& ids, Wire ends) {  // TX.all-free
+  // RT.1 (audio_in.h): onto an Audio In, the cable REPLACES its source (one step, the same refusals as the menu).
+  if (ends.toRecordInput()) return setAudioFrom(p, ids, ends.recordInput, AudioFrom::output(ends));
+  if (ends.fromMixerOut()) return invalid("a cable from a mixer's output goes onto an Audio In");
   if (ends.fromNoteSource()) {
     const Track* t = findTrackPtr(p, ends.noteSource);
     if (t == nullptr) return notFound("wire source track not found");

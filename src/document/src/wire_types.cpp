@@ -67,7 +67,34 @@ std::optional<PortType> targetType(const Project& p, const Wire& w, const Device
 
 }  // namespace
 
+bool carriesAudio(const Project& p, const Wire& w, const DeviceLibrary* lib) {
+  if (w.fromMixerOut()) return w.port.empty() && findTrackPtr(p, w.mixerOut) != nullptr;
+  if (w.fromNoteSource()) {
+    const Track* t = findTrackPtr(p, w.noteSource);
+    return t != nullptr && t->kind != TrackKind::Midi && w.port.empty();
+  }
+  const Device* d = findDevice(p, w.from).device;
+  if (d == nullptr || isValueDevice(*d)) return false;
+  const std::string name = w.port.empty() ? mainPortsOf(*d, lib).out : w.port;
+  if ((w.port.empty() || name == mainPortsOf(*d, nullptr).out) && declaredMainSignals(*d).out == ChainSignal::Notes)
+    return false;
+  const graph::Patch* callee = builtinBlockPatch(*d);
+  if (callee == nullptr && lib != nullptr) callee = lib->patchOf(*d);
+  if (callee == nullptr || name.empty()) return true;
+  for (NodeIndex v = 0; v < callee->nodeCount(); ++v) {
+    const graph::Node& n = callee->node(v);
+    if ((n.kind == graph::NodeKind::Output || n.kind == graph::NodeKind::Export) && n.numInputs > 0 &&
+        callee->nodeName(v) == name) {
+      const PortType t = callee->inputType(v, 0);
+      if (t.kind == Kind::Bool) return false;
+      return t.rate == Rate::Infer || t.rate == Rate::Audio;
+    }
+  }
+  return true;
+}
+
 WireClash notesWireClash(const Project& p, const Wire& w) {
+  if (w.toRecordInput()) return carriesAudio(p, w, nullptr) ? WireClash::None : WireClash::NotAudio;  // RT.1
   const Device* from = w.fromNoteSource() ? nullptr : findDevice(p, w.from).device;
   const Device* to = w.toMixer() ? nullptr : findDevice(p, w.to).device;
   const MainSignals fs = from != nullptr ? declaredMainSignals(*from) : MainSignals{};
@@ -97,6 +124,7 @@ WireClash notesWireClash(const Project& p, const Wire& w) {
 
 WireClash declaredWireClash(const Project& p, const Wire& w, const DeviceLibrary* lib) {
   if (const WireClash c = notesWireClash(p, w); c != WireClash::None) return c;
+  if (w.toRecordInput()) return carriesAudio(p, w, lib) ? WireClash::None : WireClash::NotAudio;  // RT.1
   if (lib == nullptr) return WireClash::None;
   const std::optional<PortType> src = sourceType(p, w, *lib);
   if (!src) return WireClash::None;
@@ -117,6 +145,7 @@ std::string_view wireClashText(WireClash c) noexcept {
     case WireClash::EventMismatch: return "Wire: an event output only drives an event input, and an event input takes only events";
     case WireClash::NotesInput:
       return "Wire: a notes input takes only a notes cable (a MIDI track's notes, or a note effect's output)";
+    case WireClash::NotAudio: return "Wire: Audio In takes audio (a block's audio output, a track's source or its mixer's output)";
     case WireClash::NotesOutput:
       return "Wire: a notes output goes only into a main input that takes notes (an instrument, a rack, a module, a note effect)";
   }
