@@ -95,6 +95,8 @@ struct WarpSlicePass {
   double F = 0.0;             // source frame at T
   double L = 0.0;             // natural length in source frames (+inf: to the clip's end)
   double entryU = 0.0, exitU = 0.0;  // the host's bounds of the slice (the clip: unfolded content; WarpVoice: beats)
+  int64_t slice = 0, fold = 0;  // the clip: the slice's index (−1: before the first boundary) and its loop fold; the
+                                // next / previous pass steps these exactly (never back through the unfolded content)
   int dir = 1;
   bool fadeIn = true;         // false: the first pass (none before it)
   bool terminal = false;      // the content's end: renders nothing

@@ -1668,3 +1668,84 @@ TEST_CASE("SM.16: the clip player and the Sampler's Complex voice drive the same
   CHECK(audio == 0);
   CHECK(peak > 0.1f);
 }
+
+// BL: a looped Beats clip plays every loop pass like the first (user report: from the second pass on every slice was
+// far louder and clicked). A 1-bar drum loop (a hit every eighth) looped over the whole bar, 4 passes at 90 / 150 BPM:
+// each pass's RMS and peak within 1 % of pass 1's, its largest sample-to-sample step no larger than pass 1's (+5 %).
+TEST_CASE("BL: a looped Beats clip plays every loop pass like the first (level, peaks, no clicks; reverse too)") {
+  const e::ClipSample loop = makeSample(kHitFrames * 8, 1, [](uint32_t, int64_t i) { return drum(i); });
+  const std::vector<float> src = [&] {
+    std::vector<float> v(static_cast<size_t>(kHitFrames * 8));
+    for (size_t i = 0; i < v.size(); ++i) v[i] = drum(static_cast<int64_t>(i));
+    return v;
+  }();
+  const float* ch = src.data();
+  const std::vector<double> onsets = pq::media::detectTransients(&ch, 1, static_cast<int64_t>(src.size()), 48000);
+  struct Case {
+    double bpm;
+    Ticks granulation;
+    pq::dsp::WarpSliceLoop loopMode;
+    float envelope;
+    Ticks loopStart;
+    bool reverse = false;
+  };
+  const Ticks bar = kPpq * 4;
+  for (const Case k : {Case{90.0, kPpq / 4, pq::dsp::WarpSliceLoop::Forward, 100.0f, 0},
+                       Case{150.0, kPpq / 4, pq::dsp::WarpSliceLoop::Forward, 100.0f, 0},
+                       Case{90.0, 0, pq::dsp::WarpSliceLoop::Forward, 100.0f, 0},
+                       Case{90.0, 0, pq::dsp::WarpSliceLoop::BackForward, 100.0f, 0},
+                       Case{90.0, 0, pq::dsp::WarpSliceLoop::Off, 100.0f, 0},
+                       Case{90.0, 0, pq::dsp::WarpSliceLoop::Forward, 60.0f, 0},
+                       Case{90.0, kPpq / 4, pq::dsp::WarpSliceLoop::Forward, 100.0f, kPpq},
+                       Case{90.0, 0, pq::dsp::WarpSliceLoop::Forward, 100.0f, 0, true},
+                       Case{150.0, 0, pq::dsp::WarpSliceLoop::BackForward, 60.0f, 0, true}}) {
+    CAPTURE(k.bpm);
+    CAPTURE(k.granulation);
+    CAPTURE(static_cast<int>(k.loopMode));
+    CAPTURE(k.envelope);
+    CAPTURE(k.loopStart);
+    CAPTURE(k.reverse);
+    Rig rig(256);
+    rig.tempo({{0, k.bpm, pq::TempoCurve::Step}});
+    const Ticks span = bar - k.loopStart;
+    const int passes = 4;
+    e::AudioClipDesc c = warped(pq::dsp::AudioWarp::Beats, 1, 0, k.loopStart + span * passes, 120.0);
+    c.stretch.granulation = k.granulation;
+    c.stretch.sliceLoop = k.loopMode;
+    c.stretch.envelope = k.envelope;
+    c.transients = onsets;
+    c.loop = {true, k.loopStart, bar};
+    c.reverse = k.reverse;
+    rig.audio({{1, {c}}}, {loop});
+    rig.play(0);
+    const SampleTime end = rig.map.ticksToSamples(c.length, kSr);
+    const std::vector<float> out = rig.render(static_cast<uint64_t>(end));
+    struct Stat {
+      double rms = 0.0;
+      float peak = 0.0f, step = 0.0f;
+    };
+    std::vector<Stat> st;
+    for (int p = 0; p < passes; ++p) {
+      // Each pass, skipping 5 ms at both ends (the wrap's own crossfade belongs to neither).
+      const SampleTime a = rig.map.ticksToSamples(k.loopStart + span * p, kSr) + 240;
+      const SampleTime b = rig.map.ticksToSamples(k.loopStart + span * (p + 1), kSr) - 240;
+      Stat s;
+      s.rms = rmsOf(out, static_cast<size_t>(a), static_cast<size_t>(b));
+      for (SampleTime t = a; t < b; ++t) {
+        s.peak = std::max(s.peak, std::abs(out[static_cast<size_t>(t)]));
+        s.step = std::max(s.step, std::abs(out[static_cast<size_t>(t)] - out[static_cast<size_t>(t - 1)]));
+      }
+      MESSAGE("pass ", p, ": rms ", s.rms, " peak ", s.peak, " max step ", s.step);
+      st.push_back(s);
+    }
+    // (With a loop start past the content start, pass 0 also plays the content before the loop: compare from pass 1.)
+    const Stat ref = st[k.loopStart > 0 ? 1 : 0];
+    REQUIRE(ref.rms > 0.01);
+    for (int p = 1; p < passes; ++p) {
+      CAPTURE(p);
+      CHECK(std::abs(st[static_cast<size_t>(p)].rms / ref.rms - 1.0) <= 0.01);
+      CHECK(std::abs(st[static_cast<size_t>(p)].peak / ref.peak - 1.0f) <= 0.01f);
+      CHECK(st[static_cast<size_t>(p)].step <= ref.step * 1.05f);
+    }
+  }
+}
