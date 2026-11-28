@@ -84,6 +84,25 @@
 //             that crosses a voice sum — out of a group (or through a single-signal cable) and back into per-note
 //             blocks — or that would put two instrument tracks into one unit is Refused (VoiceLoop: IG.3).
 //
+// ---- Audio In (RT.2; docs/plans/RT.md, pq/document/audio_in.h) ---------------------------------------------------------
+// An audio track B's Audio In cable (Wire::recordInput; cablesOf keeps them apart from every other wire) lowers as an
+// AUDIO ROUTE into B's monitor mix (Signal flow: Audio): B's patch reads `in m<wire>` (every channel) where Ext. In reads
+// `trackInput`, and exports it again as `rec` — a bus ("<B>:rec", ProjectGraph::taps) the recorder captures
+// (LoweredProject::audioInTaps; recorder.h "Capture"). The source:
+//   a block's output     the source track's patch exports it as m<wire> (every channel, voices summed): a planned wire
+//                        (planWires, LWire::toRecord; its state as any wire's)
+//   a track's own signal the same from its source (`sourceX`: clips / input, sums, sends; Live's Pre FX)
+//   a mixer out          the track's `post` export (after volume, pan, mute; not solo: Live's Post Mixer)
+//   the master (Resampling)
+//                        the master WITHOUT B: every group on B's output route and the master are lowered again as a
+//                        SHADOW graph track (LoweredProject::ownTracks: the same patch and params, its own id), each
+//                        reading what its original reads except B's route (the previous shadow's out instead), and B
+//                        reads the master's shadow's `out`. B reaching no master reads the master's own `out`.
+// Every such wire is graph::WireKind::Audio: a bus between units (no merge), latency-compensated like a send, so B's
+// input arrives at its unit's arrival A_u — the song time the recorder places it at (no device latency). Nothing is
+// lowered (no node, no bus, no shadow) without an Audio In cable; a cable whose source is not lowered is Inactive (B's
+// input reads 0). Loops are the document's to refuse (audio_in.h "Loops").
+//
 // ---- Signal flow --------------------------------------------------------------------------------------------------
 //   MIDI track    its instrument (the first device, normally BasicSynth, the M3 default instrument,
 //                 stdlib/instruments/basic_synth.pqp; QUESTIONS Q15 A) → voice_sum → its audio effects = x (mono, or
@@ -101,10 +120,12 @@
 //                 (SetTrackPanMode recompiles that track; the exports stay, so nothing else does).
 //   Audio         (T5.3) x = clipPlayer(clip: <slot>) (LowerOptions::clipSlotOf; global stereo audio: the engine's player of
 //                 that slot's audio sequence, audio_sequence.h; a mono sample is duplicated). T6.1: with an input
-//                 (Mixer::audioIn) x = gain(clips, 1 − monitor) + gain(track.in, monitor), `monitor` a runtime param
-//                 "<id>:monitor" (monitorGate; ParamRef TrackMonitor), both gains smoothed (click-free); the engine binds
-//                 the input's device channels to `track.in` (LoweredProject::audioInputs; a mono input is duplicated).
-//                 Without an input no `track.in`, no gate: nothing is paid. Then → its audio effects →
+//                 (Mixer::audioIn) x = gain(clips, 1 − monitor) + gain(input, monitor), `monitor` a runtime param
+//                 "<id>:monitor" (monitorGate; ParamRef TrackMonitor), both gains smoothed (click-free); RT.2: `input`
+//                 is the track's AUDIO IN ("Audio In" below) — Ext. In: `trackInput(slot)`, the slot the engine binds
+//                 the device channels to (the track's clip slot; LoweredProject::audioInputs; a mono input is
+//                 duplicated); a cable: its source's signal. Without an Audio In no input, no gate: nothing is paid.
+//                 Then → its audio effects →
 //                 its pan law and the same three stages as a MIDI track (sends, groups, solo, mute and
 //                 audibility as for MIDI tracks). Its role is graph::TrackRole::Audio (no voices, no event slot). The
 //                 clips themselves are not in the graph: an audio clip edit (gain, fades, transpose, reverse, warp,
@@ -558,10 +579,13 @@ struct DelayedSend {
   TrackId from, to;
 };
 
-// T6.1: an audio track whose patch reads `track.in`, and the device input channels the engine binds to it (T6.7).
+inline constexpr uint32_t kShadowTrackBase = 0x40000000u;  // RT.2: LoweredProject::ownTracks
+// T6.1: an audio track whose patch reads its Ext. In (`trackInput`), and the device input channels the engine binds to it
+// (T6.7).
 struct AudioInputBinding {
   TrackId track;
   AudioInput input;
+  uint32_t slot = 0;  // RT.2: its `trackInput` slot (the track's clip slot; 0 without one)
 };
 // The value of an audio track's monitor gate "<id>:monitor" (lower.h "Signal flow": Audio): In 1, Off 0, Auto the arm.
 // T6.7's engine refines Auto with the transport (armed and stopped or recording).
@@ -581,7 +605,19 @@ struct LoweredProject {
   std::vector<ModulationTap> taps;                            // T4.7: one per modulated param (also graph.taps)
   std::vector<LoweredNoteMod> noteMods;                       // AP.2b: one per lowered cable into a note-device param
   std::vector<CurveSite> curves;                              // GU.1: one per driven control (its `curve` atom's slot)
-  std::vector<AudioInputBinding> audioInputs;                 // T6.1: the audio tracks reading `track.in`
+  std::vector<AudioInputBinding> audioInputs;                 // T6.1: the audio tracks reading `trackInput`
+  // RT.2 (lower.h "Audio In"): the audio tracks recording a cable — bus "<id>:rec" of graph track `track` — and the
+  // graph track its source is lowered in (a Resampling shadow for Resampling; graph::kNone: an Inactive cable).
+  struct AudioInTap {
+    TrackId id;
+    uint32_t track = 0;
+    uint32_t source = 0xFFFFFFFFu;
+  };
+  std::vector<AudioInTap> audioInTaps;
+  // RT.2: graph tracks [ownTracks, size) are Resampling SHADOWS (a group / the master on the recording track's route,
+  // again, without it: "Audio In" above): trackIds names the track each repeats, patches holds the same patch, its
+  // ProjectTrack id is kShadowTrackBase | (recording track id << 6) | route position.
+  uint32_t ownTracks = 0;
   std::vector<DeviceId> frozenKeep;  // FZ.1: blocks of frozen tracks lowered from their slot that still run (by id)
   // The combined library graph.library points into when the lowering added patches of its own (the native engines'
   // expansions, block patches LowerOptions::library lacks); null: graph.library is LowerOptions::library.

@@ -53,6 +53,7 @@ Engine::Engine(const EngineConfig& config)
   live_ = std::make_unique<LiveInput>(lc, cfg_.livePorts);
   metronome_ = std::make_unique<Metronome>(cfg_.sampleRate);
   recorder_ = std::make_unique<Recorder>();
+  recorder_->setSourceReader(&Engine::readSource, this);  // RT.2
   timelineHook_ = timeline_->blockHook();
   for (uint32_t k = 0; k < cfg_.maxSlots; ++k) slots_.push_back({this, k});
   paramRings_.push_back(std::make_unique<ParamRing>(std::bit_ceil(std::max(cfg_.paramRing, 2u))));
@@ -90,6 +91,7 @@ ProjectConfig Engine::projectConfig() noexcept {
   pc.maxBlockFrames = cfg_.blockFrames;
   pc.numOut = cfg_.numOut;
   pc.hook = {&Engine::onHook, this, &hookWrites_};  // T6.6: the timeline's hook + the metronome; T6.7: + the recorder
+  pc.afterUnits = {&Engine::onAfterUnits, this};      // RT.2: the recorder's internal sources
   pc.numProjectParams = cfg_.numProjectParams;
   pc.idleUnits = cfg_.idleUnits;
   pc.clipIn = timeline_->clipPlayer().channels();  // T5.4
@@ -287,6 +289,16 @@ void Engine::onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSn
   if (!song && runs.front().kind != TransportRun::CountIn) return;  // off, no count-in: nothing to click
   e.metronome_->schedule(sampleTime, runs, e.timeline_->tempoImage(), e.timeline_->countIn(), e.cfg_.sampleRate,
                          e.program_ ? e.program_->outputLatency() : 0u, song);
+}
+
+void Engine::onAfterUnits(void* self, int64_t sampleTime, uint32_t frames) noexcept {  // RT-safe
+  Engine& e = *static_cast<Engine*>(self);
+  if (e.timeline_->recording()) e.recorder_->captureSources(*e.timeline_, sampleTime, frames, e.program_ ? e.program_->outputLatency() : 0u);
+}
+
+const float* Engine::readSource(void* self, uint32_t source, uint16_t channel) noexcept {  // RT-safe
+  const Engine& e = *static_cast<const Engine*>(self);
+  return e.program_ ? e.program_->recordSource(source, channel) : nullptr;
 }
 
 void Engine::mixClicks(const AudioBlock& block) noexcept {  // RT-safe

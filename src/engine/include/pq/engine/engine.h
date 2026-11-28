@@ -264,6 +264,8 @@ private:
   static void onSlot(void* slot, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;
   void probe(EventProbe& p, const EventList& l, int64_t sampleTime) noexcept;  // AP.7
   void runStages(NoteStageChain& chain, int64_t sampleTime, uint32_t frames, EventBuffer& out) noexcept;  // AP.1
+  static void onAfterUnits(void* self, int64_t sampleTime, uint32_t frames) noexcept;            // RT.2
+  static const float* readSource(void* self, uint32_t source, uint16_t channel) noexcept;        // RT.2
   static void onHook(void* self, int64_t sampleTime, uint32_t frames, TransportSnapshot& transport,
                      std::span<float> params) noexcept;  // T6.6: the timeline's hook, then the metronome
   void mixClicks(const AudioBlock& block) noexcept;     // T6.6

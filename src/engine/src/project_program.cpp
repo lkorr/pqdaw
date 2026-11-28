@@ -199,8 +199,9 @@ struct ProjectProgram::Unit {  // (128-aligned: its ring)
   uint64_t compSeq = 0;
   uint32_t fadePos = 0, fadeLen = 0;
   uint32_t quietBlocks = 0;  // consecutive blocks with silent inputs, no voice, no event and unchanged params
-  // T6.7: its track input (setUnitInputs): first | channels << 16 (0: none).
-  std::atomic<uint32_t> input{0};
+  // T6.7 / RT.2: its track inputs (setUnitInputs): slot << 32 | channels << 16 | first, the first `inputs` of them.
+  std::atomic<uint32_t> inputs{0};
+  std::array<std::atomic<uint64_t>, kMaxUnitInputs> input{};
   bool idle = false;         // skipped last block (its bus channels are zero)
   // T1.x-silence: what its image reported after the last block it ran (ProcessContext::dormant / tailsDone).
   bool dormant = false;
@@ -279,6 +280,7 @@ struct ProjectProgram::Topology {
   // only this list, never BusStore::metered, which a later publishTopology() rewrites (M3 review L12).
   std::vector<BusStore*> metered;
   std::vector<std::pair<BusStore*, uint32_t>> values;  // AP.2b: (bus, bus value index), ProjectLayout::busValue
+  std::vector<BusStore*> records;                      // RT.2: per record source, its bus (ProjectLayout::busRecord)
 };
 
 namespace {
@@ -357,6 +359,7 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
   cfg_.maxBlockFrames = std::max(cfg_.maxBlockFrames, 1u);
   stride_ = (cfg_.maxBlockFrames + 15u) & ~15u;
   zeros_ = AlignedBuffer<float>(stride_);
+  trackIn_.assign(2 * static_cast<size_t>(std::max(cfg_.numClipSlots, 1u)), nullptr);  // RT.2
   {
     auto b = std::make_unique<ParamBlock>();
     b->size = cfg_.numProjectParams;
@@ -396,6 +399,7 @@ ProjectProgram::ProjectProgram(const ProjectConfig& config, ProjectLayout layout
     if (meteredBus(layout_, b)) t->metered.push_back(stores_[b].get());
   for (size_t b = 0; b < layout_.busValue.size() && b < t->stores.size(); ++b)  // AP.2b
     if (layout_.busValue[b] < kMaxBusValues) t->values.emplace_back(t->stores[b].get(), layout_.busValue[b]);
+  recordsOf(*t, layout_);  // RT.2
   t->output = layout_.outputBus != kNoBus ? stores_[layout_.outputBus].get() : nullptr;
   topoInflight_.push_back(t);
   topo_ = t;
@@ -765,6 +769,7 @@ Result<TopologyInfo> ProjectProgram::publishTopology(ProjectLayout layout, std::
             for (const auto& x : stores_)
               if (x.get() == s) t->extra.push_back(x);
         }
+  recordsOf(*t, layout);  // RT.2
   t->output = layout.outputBus != kNoBus ? stores[layout.outputBus].get() : nullptr;
   t->seq = nextTopoSeq_;
   // M6 review L7: the running plan, for this topology, without the lines that read a bus no image of their unit reads
@@ -956,12 +961,27 @@ bool ProjectProgram::topologyPending() const {
   return !topoInflight_.empty() && topoInflight_.back()->seq > topoCurrent_.load(std::memory_order_acquire);
 }
 
-void ProjectProgram::setUnitInputs(std::span<const UnitInput> perUnit) {  // non-RT
+void ProjectProgram::setUnitInputs(std::span<const std::vector<UnitInput>> perUnit) {  // non-RT
   std::lock_guard lock(mutex_);
   for (size_t u = 0; u < units_.size(); ++u) {
-    const UnitInput in = u < perUnit.size() ? perUnit[u] : UnitInput{};
-    const uint32_t word = in.channels == 0 ? 0u : (uint32_t{in.first} | uint32_t{std::min<uint8_t>(in.channels, 2)} << 16);
-    units_[u]->input.store(word, std::memory_order_relaxed);
+    Unit& U = *units_[u];
+    uint32_t n = 0;
+    if (u < perUnit.size())
+      for (const UnitInput& in : perUnit[u]) {
+        if (in.channels == 0 || in.slot >= trackIn_.size() / 2 || n == kMaxUnitInputs) continue;
+        const uint64_t word = uint64_t{in.first} | uint64_t{std::min<uint8_t>(in.channels, 2)} << 16 | uint64_t{in.slot} << 32;
+        U.input[n++].store(word, std::memory_order_relaxed);
+      }
+    for (uint32_t k = n; k < kMaxUnitInputs; ++k) U.input[k].store(0, std::memory_order_relaxed);
+    U.inputs.store(n, std::memory_order_relaxed);
+  }
+}
+
+void ProjectProgram::clearTrackIn(const Unit& U) noexcept {  // RT-safe
+  const uint32_t inputs = U.inputs.load(std::memory_order_relaxed);
+  for (uint32_t k = 0; k < inputs && k < kMaxUnitInputs; ++k) {
+    const auto slot = static_cast<size_t>(U.input[k].load(std::memory_order_relaxed) >> 32);
+    if (2 * slot + 1 < trackIn_.size()) trackIn_[2 * slot] = trackIn_[2 * slot + 1] = nullptr;
   }
 }
 
@@ -1183,6 +1203,20 @@ const UnitStats& ProjectProgram::unitStats(uint32_t unit) const noexcept { retur
 
 const float* ProjectProgram::bus(uint32_t b, uint16_t channel) const noexcept {  // RT-safe
   return topo_->stores[b]->channel(channel);
+}
+
+void ProjectProgram::recordsOf(Topology& t, const ProjectLayout& layout) const {  // non-RT (RT.2)
+  if (layout.busRecord.empty()) return;
+  t.records.assign(std::max(cfg_.numClipSlots, 1u), nullptr);
+  for (size_t b = 0; b < layout.busRecord.size() && b < t.stores.size(); ++b)
+    if (layout.busRecord[b] < t.records.size()) t.records[layout.busRecord[b]] = t.stores[b].get();
+}
+
+const float* ProjectProgram::recordSource(uint32_t source, uint16_t channel) const noexcept {  // RT-safe
+  const Topology* t = topo_;
+  if (t == nullptr || source >= t->records.size() || t->records[source] == nullptr) return nullptr;
+  BusStore* b = t->records[source];
+  return b->channel(std::min<uint16_t>(channel, static_cast<uint16_t>(b->width - 1)));
 }
 
 uint32_t ProjectProgram::numBuses() const noexcept { return static_cast<uint32_t>(topo_->stores.size()); }  // RT-safe
@@ -1541,16 +1575,22 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
     mapLines(*p);
     if (old != nullptr) mapLines(*old);
   }
-  // T6.7: the unit's track input (device channels of this block; null: silence).
-  const float* trackIn[2] = {nullptr, nullptr};
-  if (const uint32_t inp = U.input.load(std::memory_order_relaxed); inp != 0 && blockIn_ != nullptr) {
-    const uint32_t first = inp & 0xFFFFu, n = inp >> 16;
-    for (uint32_t c = 0; c < 2; ++c) {
-      const uint32_t ch = first + std::min(c, n - 1);
-      trackIn[c] = ch < blockNumIn_ && blockIn_[ch] != nullptr ? blockIn_[ch] + blockInOff_ : nullptr;
+  // T6.7 / RT.2: the unit's track inputs (device channels of this block; null: silence), into its slots' pointers
+  // (process() clears them again once it ran: clearTrackIn).
+  bool liveInput = false;
+  if (const uint32_t inputs = U.inputs.load(std::memory_order_relaxed); inputs != 0 && blockIn_ != nullptr)
+    for (uint32_t k = 0; k < inputs && k < kMaxUnitInputs; ++k) {
+      const uint64_t inp = U.input[k].load(std::memory_order_relaxed);
+      const auto first = static_cast<uint32_t>(inp & 0xFFFFu), n = static_cast<uint32_t>(inp >> 16 & 0x3u);
+      const auto slot = static_cast<size_t>(inp >> 32);
+      if (n == 0 || 2 * slot + 1 >= trackIn_.size()) continue;
+      for (uint32_t c = 0; c < 2; ++c) {
+        const uint32_t ch = first + std::min(c, n - 1);
+        const float* x = ch < blockNumIn_ && blockIn_[ch] != nullptr ? blockIn_[ch] + blockInOff_ : nullptr;
+        trackIn_[2 * slot + c] = x;
+        liveInput = liveInput || x != nullptr;
+      }
     }
-  }
-  const bool liveInput = trackIn[0] != nullptr || trackIn[1] != nullptr;
   // Whether a bus (through its delay line, if one runs) reads silent for this unit.
   auto silentVia = [](const BusStore* b, const DelayLine* l) noexcept {
     return l != nullptr && l->active ? l->outSilent : b->silent;
@@ -1666,7 +1706,7 @@ bool ProjectProgram::runUnit(Unit& U, const Slot& s, uint32_t frames, int64_t ti
   // in every block it is given, so the image's previous block is this packet's previous run, as for any other unit.
   ctx.paramsUnchanged = paramsSame;
   ctx.clipIn = clipLines ? ce->clipIn.data() : cfg_.clipIn;  // T5.4 (T6.2b: delayed)
-  ctx.trackIn = trackIn;  // T6.7
+  ctx.trackIn = trackIn_.data();  // T6.7 / RT.2
   ctx.events = nullptr;
   ctx.voices = nullptr;
   ctx.tailsDone = false;
@@ -1741,7 +1781,7 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
     unitCtx_.sampleTime = time;
     unitCtx_.transport = transport_;
     unitCtx_.numClipSlots = cfg_.clipIn != nullptr ? cfg_.numClipSlots : 0u;
-    unitCtx_.numTrackIn = 2;
+    unitCtx_.numTrackIn = static_cast<uint32_t>(trackIn_.size());
     Topology& t = *topo_;
     uint32_t fading = 0;
     for (size_t i = 0; i < t.order.size(); ++i) {
@@ -1758,7 +1798,9 @@ void ProjectProgram::process(const AudioBlock& block) noexcept {  // RT-safe
         ++stats_.zombieRuns;
       }
       fading += runUnit(*s.unit, s, n, time) ? 1u : 0u;
+      clearTrackIn(*s.unit);  // RT.2
     }
+    if (cfg_.afterUnits.fn != nullptr) cfg_.afterUnits.fn(cfg_.afterUnits.user, time, n);  // RT.2: the recorder
     for (const CaptureTap& tap : capture_) {  // EX.1: offline bus capture
       BusStore* b = tap.bus < t.stores.size() ? t.stores[tap.bus].get() : nullptr;
       for (uint16_t c = 0; c < tap.width; ++c) {

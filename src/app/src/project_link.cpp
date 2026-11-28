@@ -478,6 +478,7 @@ Status ProjectLink::init(const doc::Snapshot& initial) {
   }
   recording_ = std::make_unique<RecordingService>();  // T6.7 (its own writer thread: M6 review M9)
   recording_->bind(engine_.get());
+  applySourceOffsets(sourceOffsets_);  // RT.2: the first compile's (it ran before the service existed)
   syncRecordInputs(*current_, true);
   publishAudio(*current_);
   publishAutomation(*current_);
@@ -2420,6 +2421,18 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
           layout.busValue[b] = busValueIndex(m.wire);
         }
     }
+    // RT.2: the recording tracks' capture buses ("<id>:rec"), each the internal source of its track's clip slot.
+    layout.busRecord.clear();
+    for (const doc::LoweredProject::AudioInTap& t : lp.audioInTaps) {
+      const uint32_t slot = slotForTrack(t.id);
+      if (slot == kNoSlot) continue;
+      const std::string key = std::to_string(t.id.value) + ":rec";
+      for (size_t b = 0; b < layout.busKey.size(); ++b)
+        if (layout.busKey[b] == key) {
+          if (layout.busRecord.empty()) layout.busRecord.assign(layout.busKey.size(), engine::kNoBusValue);
+          layout.busRecord[b] = slot;
+        }
+    }
   };
   // Publishing: in order, after whatever earlier compiles left deferred (drainDeferred waits, bounded, for the
   // audio thread to take earlier images / topologies, because a refused publish would destroy the image; when the
@@ -2445,6 +2458,7 @@ Status ProjectLink::compileNow(const doc::Snapshot& s, uint64_t serial) {
     {  // T6.2: the first plan (a new program: nothing sent before)
       LatencyJob job = planLatency(lp);
       prog.value()->setUnitInputs(job.inputs);  // T6.7
+      applySourceOffsets(job.sourceOffsets);  // RT.2
       lastPlan_.reset();
       planStale_ = false;
       pendingLatency_.reset();

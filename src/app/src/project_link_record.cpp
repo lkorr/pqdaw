@@ -17,6 +17,7 @@
 #include <windows.h>
 
 #include "pq/app/project_link.h"
+#include "pq/document/audio_in.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/input_map.h"
 #include "pq/document/samples.h"
@@ -185,26 +186,45 @@ void ProjectLink::setRecordOffsetMs(double ms) {  // UI thread
   if (engine_) engine_->recorder().setManualOffset(static_cast<int32_t>(std::lround(recordOffsetMs_ * cfg_.sampleRate / 1000.0)));
 }
 
-std::vector<engine::UnitInput> ProjectLink::unitInputs(const doc::LoweredProject& lp) const {  // compile path
+std::vector<std::vector<engine::UnitInput>> ProjectLink::unitInputs(const doc::LoweredProject& lp) const {  // compile path
+  // RT.2: every audio track's Ext. In is a binding of its own slot in its unit (two merged tracks keep both).
   const graph::ProjectPartition& part = compiler_->partition();
-  std::vector<engine::UnitInput> in(part.units.size());
+  std::vector<std::vector<engine::UnitInput>> in(part.units.size());
   for (const doc::AudioInputBinding& b : lp.audioInputs)
     for (uint32_t i = 0; i < lp.trackIds.size() && i < part.unitOf.size(); ++i) {
       if (lp.trackIds[i] != b.track) continue;
       const uint32_t u = part.unitOf[i];
-      if (u < in.size() && in[u].channels == 0) in[u] = {b.input.firstChannel, b.input.channels};
+      if (u < in.size()) in[u].push_back({b.slot, b.input.firstChannel, b.input.channels});
+      break;
     }
   return in;
 }
 
 void ProjectLink::syncRecordInputs(const doc::Project& p, bool force) {  // UI thread
-  // The monitor gates of the audio tracks with an input, and the channels the armed ones record.
+  // The monitor gates of the audio tracks with an input (RT.2: Ext. In or a cable), the channels the armed ones record
+  // and the internal sources (their clip slots) of the armed ones recording a cable.
   auto img = std::make_shared<engine::MonitorImage>();
   std::vector<uint64_t> key;
   std::vector<uint16_t> channels;
+  std::vector<uint32_t> sources;
   uint32_t used = 0;  // T6.7b
   doc::forEachTrack(p, [&](const doc::Track& t, const doc::Track*) {
-    if (t.kind != doc::TrackKind::Audio || t.mixer.audioIn.none()) return;
+    if (t.kind != doc::TrackKind::Audio) return;
+    const bool cable = t.mixer.audioIn.none() && doc::audioInWireOf(p, t.id) != nullptr;
+    if (t.mixer.audioIn.none() && !cable) return;
+    if (cable) {
+      const uint32_t param = paramSlot(std::to_string(t.id.value) + ":monitor");
+      if (param == kNoSlot) return;
+      engine::MonitorEntry e;
+      e.param = param;
+      e.mode = static_cast<engine::MonitorEntry::Mode>(t.mixer.monitor);
+      e.armed = t.mixer.arm;
+      e.clipSlot = slotForTrack(t.id);
+      img->entries.push_back(e);
+      key.insert(key.end(), {param, static_cast<uint64_t>(e.mode), e.armed ? 1u : 0u, e.clipSlot});
+      if (t.mixer.arm && t.active && e.clipSlot != kNoSlot) sources.push_back(e.clipSlot);
+      return;
+    }
     used = std::max<uint32_t>(used, uint32_t{t.mixer.audioIn.firstChannel} + t.mixer.audioIn.channels);
     const uint32_t param = paramSlot(std::to_string(t.id.value) + ":monitor");
     if (param == kNoSlot) return;
@@ -226,7 +246,9 @@ void ProjectLink::syncRecordInputs(const doc::Project& p, bool force) {  // UI t
   }
   std::sort(channels.begin(), channels.end());
   channels.erase(std::unique(channels.begin(), channels.end()), channels.end());
-  recording_->prepareChannels(std::move(channels));
+  std::sort(sources.begin(), sources.end());
+  sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+  recording_->prepareChannels(std::move(channels), std::move(sources));
   engine_->recorder().collect(engine_->audioStopped());
   if (used != inputsUsed_) {  // T6.7b: the device manager opens what the tracks use
     inputsUsed_ = used;
@@ -259,10 +281,21 @@ void ProjectLink::record(Ticks from) {  // UI thread
     if (!armed(t) || !t.active) return;  // KB.1: the auto-armed MIDI track records too (Live)
     RecordingTrack rt;
     rt.track = t.id;
-    if (t.kind == doc::TrackKind::Audio && !t.mixer.audioIn.none()) {
+    // RT.2: recording a cable (an internal source: the track's clip slot), a stereo file named after its source.
+    const doc::Wire* cable = t.kind == doc::TrackKind::Audio && t.mixer.audioIn.none() ? doc::audioInWireOf(*current_, t.id) : nullptr;
+    const uint32_t source = cable != nullptr ? slotForTrack(t.id) : kNoSlot;
+    if (t.kind == doc::TrackKind::Audio && (!t.mixer.audioIn.none() || source != kNoSlot)) {
       rt.audio = true;
-      rt.input = t.mixer.audioIn;
-      const std::string base = safeName(t.name) + " " + when + " " + inputLabel(t.mixer.audioIn);
+      rt.input = source != kNoSlot ? doc::AudioInput{0, 2} : t.mixer.audioIn;
+      rt.source = source != kNoSlot ? source : 0xFFFFFFFFu;
+      std::string label = source != kNoSlot ? std::string("Resampling") : inputLabel(t.mixer.audioIn);
+      if (source != kNoSlot && !(cable->fromMixerOut() && current_->master && cable->mixerOut == current_->master->id)) {
+        const doc::Track* ft = cable->fromMixerOut()     ? doc::findTrackPtr(*current_, cable->mixerOut)
+                               : cable->fromNoteSource() ? doc::findTrackPtr(*current_, cable->noteSource)
+                                                         : doc::findDevice(*current_, cable->from).track;
+        label = "From " + (ft != nullptr ? ft->name : std::string("a track"));
+      }
+      const std::string base = safeName(t.name) + " " + when + " " + label;
       std::filesystem::path path = dir / u8path(base + ".wav");
       std::error_code ec;
       for (int n = 2; std::filesystem::exists(path, ec) || std::find(taken.begin(), taken.end(), path) != taken.end(); ++n)

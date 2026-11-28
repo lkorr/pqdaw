@@ -197,7 +197,7 @@ private:
             const External& x = s_.externals[o.index];
             const std::string_view name = x.source == External::Source::Engine ? atomSignature(x.atom).name : "";
             const bool src = x.poly == Poly::Global && (x.source == External::Source::RootInput || name == "track.in" ||
-                                                        name == "sidechain.in" || name == "clipPlayer");
+                                                        name == "trackInput" || name == "sidechain.in" || name == "clipPlayer");
             if (src) {
               in.kind = InKind::Source;
               in.index = oi;
