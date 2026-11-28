@@ -110,6 +110,8 @@
 //                   out  = gain(x, (pl·g, pr·g)),  g  = vg · gate · m         (pl, pr: the track's pan law, below)
 //                   post = gain(x, (pl·s, pr·s)),  s  = vg · sendGate · m     (export: what post-fader sends read)
 //                   pre  = gain(x, (pl·q, pr·q)),  q  = sendGate · m          (export: what pre-fader sends read)
+//                   meter = gain(x, (pl·vg, pr·vg))                          (export, a tap: what its meter reads;
+//                                                                              BR.K: a muted or solo-muted track meters)
 //                 vg = volume ≤ −70 dB ? 0 : 10^(volume/20); m = mute < 0.5 (the activator, a param: its lane plays).
 //                 Pan law (TX.pan-laws, Mixer::panMode, the same on every kind of track, model.h PanMode for the
 //                 gains): Balance pl = min(1, 1 − pan), pr = min(1, 1 + pan); Constant Power θ = (pan + 1)·π/4,

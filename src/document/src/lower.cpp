@@ -907,6 +907,7 @@ enum Fixed : uint32_t {
   // T6.1: an audio track's input and its monitor gate (x = clips·(1 − monitor) + track.in·monitor)
   kMonitor = 124, kTrackIn, kMonNot, kMonClips, kMonSum,
   kTrackInSlot = 129, kAudioInRec,  // RT.2: track.in's slot; `export rec` (an Audio In cable's signal, for the recorder)
+  kMeter = 131, kMeterL, kMeterR, kMeterPack, kMeterGain,  // BR.K: `export meter` (the output stage before its gate)
   kLiteralPool = 256,  // T4.1: device setting literals take ids kLiteralPool … kEntityNodeBase − 1 (per track)
 };
 // Per entity (nodeIdFor): a tuning node's nodes, a send's nodes.
@@ -1069,6 +1070,10 @@ void gainStages(Ir& ir, Kind kind, PanMode mode, PortRef x, float smoothingMs) {
   ir.output("out", kStereo, stage(ir.atom("mul", {vg, go}, kGOut), kOutL, kOutR, kOutPack, kOutGain), kOut);
   ir.exportPort("post", stage(ir.atom("mul", {vg, so}, kGPost), kPostL, kPostR, kPostPack, kPostGain), kPost);
   ir.exportPort("pre", stage(so, kPreL, kPreR, kPrePack, kPreGain), kPre);
+  // BR.K (2026-11-28_00-39-05): what the track's meter reads: the output stage without the mute / solo gate, so a
+  // muted or solo-muted track still shows what it plays (Live's meters move on a muted track). One more smoothed
+  // stereo gain per track per block (the gate cannot be divided back out of a closed `out`).
+  ir.exportPort("meter", stage(vg, kMeterL, kMeterR, kMeterPack, kMeterGain), kMeter);
 }
 
 std::string patchName(const Node& n) {
@@ -4425,6 +4430,8 @@ out.wires = withLinks(wp.states, *cables, pl);
     out.graph.wires.push_back({{prevShadow, "out"}, {b, m}, W::Audio});
     sourceOf[b] = prevShadow;
   }
+  for (uint32_t i = 0; i < pl.nodes.size(); ++i)  // BR.K: every gated track's meter point (gainStages)
+    if (pl.nodes[i].kind != Kind::Master) out.graph.taps.push_back({i, "meter"});
   for (const uint32_t i : recTaps) {
     out.graph.taps.push_back({i, "rec"});
     const auto it = sourceOf.find(i);

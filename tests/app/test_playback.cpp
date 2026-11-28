@@ -395,7 +395,8 @@ TEST_CASE("NullDevice end to end: open the fixture, Space, after 1 s the playhea
   CHECK(seconds <= end + 1e-9);
   CHECK(end - seconds <= 256.0 / 48000.0 + 1e-9);  // within one device block of where the audio is
   CHECK(link->live());
-  // Meters: Lead was heard, the muted track was not.
+  // Meters: Lead was heard; the muted track still meters what it plays (BR.K: a meter reads the output stage before
+  // the mute / solo gate, as Live's do; that it is not heard is "solo and mute renders match effectiveAudible").
   std::vector<TrackId> ids;
   forEachTrack(*ctx.doc(), [&](const Track& t, const Track*) { ids.push_back(t.id); });
   std::vector<ui::MeterLevels> levels(ids.size());
@@ -404,7 +405,7 @@ TEST_CASE("NullDevice end to end: open the fixture, Space, after 1 s the playhea
   for (size_t i = 0; i < ids.size(); ++i) {
     const Track* t = findTrackPtr(*ctx.doc(), ids[i]);
     if (t->name == "Lead") heard = levels[i].peakDb[0] > -40.0f;
-    if (t->name == "Muted") CHECK(levels[i].peakDb[0] < -150.0f);
+    if (t->name == "Muted") CHECK(levels[i].peakDb[0] > -60.0f);
   }
   CHECK(heard);
   // Stop: the engine falls asleep after its idle time and costs nothing per block while asleep.

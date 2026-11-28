@@ -235,6 +235,22 @@ TEST_CASE("meters keep being polled after a stop until they have fallen (L13)" *
   CHECK_FALSE(lv[0].clip[0]);
 }
 
+// BR.K (2026-11-28_00-39-05): a track muted by another track's solo still meters what it plays (the meter reads its
+// output stage before the gate). That it is not heard: test_playback.cpp "solo and mute renders match effectiveAudible".
+TEST_CASE("meters: a solo-muted track still meters what it plays (BR.K)") {
+  playback_fixture::Fixture f;
+  REQUIRE(f.store.dispatch(SetTrackSolo{f.mos, true}).ok());
+  auto link = makeLink(f.snap(), 250.0f);
+  Driver d{*link};
+  link->play(0);
+  d.run(200);
+  std::vector<TrackId> ids{f.lead, f.mos};
+  std::vector<ui::MeterLevels> lv(2);
+  link->read(ids, lv);
+  CHECK(lv[0].peakDb[0] > -60.0f);  // Lead: solo-muted, still metered
+  CHECK(lv[1].peakDb[0] > -60.0f);  // Mos: soloed
+}
+
 // M4 review M5: a latched clip lamp kept live() true, so the views' 30 Hz meter poll never stopped after any 0 dBFS peak
 // (until the lamp was clicked). The lamp now stays latched without keeping the poll alive.
 TEST_CASE("meters: a latched clip lamp does not keep the meter poll alive (M4 review M5)" * doctest::test_suite("slow")) {
