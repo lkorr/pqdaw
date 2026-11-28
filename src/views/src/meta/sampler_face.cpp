@@ -55,11 +55,13 @@
 #include <cstdlib>
 #include <numbers>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
 #include "../common/waveform_data.h"
 #include "faces.h"
+#include "pq/dsp/granular.h"
 #include "pq/dsp/warp_voice.h"
 #include "pq/media/waveform.h"
 #include "pq/meta/sampler.h"
@@ -111,12 +113,28 @@ Rect sliceCell(int k) noexcept {
   const float w = 200.0f / 4.0f;
   return {0.5f + w * static_cast<float>(k), kSliceRowY0, w * static_cast<float>(k + 1) - 1.5f, kSliceRowY1};
 }
+// GV.1: the grain lens (`grainlens`, 140 × 96: one grain, its window over the source it reads, the shape cells) and the
+// grain stream (`grainstream`, 182 × 96: the grains over output time, the overlap under them).
+constexpr Rect kLens{0.0f, 440.0f, 140.0f, 536.0f};
+constexpr Rect kLensPlot{4.0f, 454.0f, 136.0f, 525.0f};
+constexpr float kShapeCellW = 14.0f, kShapeCellGap = 1.5f, kShapeY0 = 442.0f, kShapeY1 = 451.0f;
+constexpr const char* kShapeNames[5] = {"Hann", "Tukey", "Gauss", "Triangle", "Exp"};  // (dsp::GrainShape order)
+Rect shapeCell(int i) noexcept {
+  const float x0 = kLens.x1 - 4.0f - 5.0f * kShapeCellW - 4.0f * kShapeCellGap + static_cast<float>(i) * (kShapeCellW + kShapeCellGap);
+  return {x0, kShapeY0, x0 + kShapeCellW, kShapeY1};
+}
+constexpr Rect kStream{0.0f, 550.0f, 182.0f, 646.0f};
+constexpr Rect kStreamPlot{4.0f, 564.0f, 178.0f, 624.0f};
+constexpr Rect kSumStrip{4.0f, 626.0f, 178.0f, 643.0f};
+constexpr int kLensCols = 128, kStreamCols = 174;
+constexpr size_t kStreamMax = 4096;  // grains simulated at most (a schematic: the rest of the span is left as it is)
 constexpr Rect kRootText{0.5f, 330.5f, 82.0f, 345.5f}, kRootHz{84.0f, 330.5f, 101.0f, 345.5f}, kRootId{103.0f, 330.5f, 119.5f, 345.5f};
 enum EditPart : int32_t {
   kPStart = 0, kPEnd, kPLoopStart, kPLoopEnd, kPLoop, kPWave, kPRuler, kPRootText, kPRootHz, kPRootId,
   kPEditor = 10,  // SM.17: the editor where nothing is (its presses are the editor's: they never move the block)
   kPSliceBy0 = 20, kPSliceAmount = 24, kPSliceNotes = 25,  // SM.12 (kPSliceBy0 + the drawn cell)
   kPGrain = 30, kPGrainSize = 31, kPHarmAdd = 32,          // SM.13: the grain region (body, right edge), + a ratio
+  kPLens = 33, kPStream = 34, kPShape0 = 35,               // GV.1: the lens (size / pitch), the stream, shape cell i
   kPHarm0 = 40, kPHarmX0 = 70,                              // SM.13: ratio chip i (its text, its ×)
   kPSlice0 = 1000, kPMarker0 = 100000,
 };
@@ -252,6 +270,8 @@ public:
     if (!env.ghost && meetsClip(p, kRoot)) paintRoot(p, th);
     if (!env.ghost && meetsClip(p, kSlicing)) paintSlicing(p, th);
     if (!env.ghost && meetsClip(p, kHarm)) paintHarm(p, th);  // SM.13
+    if (!env.ghost && meetsClip(p, kLens)) paintLens(p, th);  // GV.1
+    if (!env.ghost && meetsClip(p, kStream)) paintStream(p, th);
   }
 
   void liveRects(std::vector<Rect>& out) const override { out.push_back({kWell.x0 - 6.0f, kWell.y0 - 4.0f, kWell.x1 + 6.0f, kWell.y1 + 4.0f}); }
@@ -265,6 +285,12 @@ public:
     }
     if (within(kEditor, l)) return editorPart(l, ppu);
     if (within(kHarm, l)) return harmPart(l);  // SM.13
+    if (within(kLens, l)) {  // GV.1
+      for (int i = 0; i < 5; ++i)
+        if (within(shapeCell(i), l)) return kPShape0 + i;
+      return within(kLensPlot, l) ? kPLens : kFrame;
+    }
+    if (within(kStream, l)) return within({kStreamPlot.x0, kStreamPlot.y0, kStreamPlot.x1, kSumStrip.y1}, l) ? kPStream : kFrame;
     if (within(kRoot, l)) return within(kRootHz, l) ? kPRootHz : within(kRootId, l) ? kPRootId : kPRootText;
     if (within(kSlicing, l)) {  // SM.12
       for (int k = 0; k < 4; ++k)
@@ -308,6 +334,8 @@ public:
     if (part == kPStart || part == kPEnd || part == kPLoopStart || part == kPLoopEnd || part >= kPSlice0) return ui::Cursor::ResizeEW;
     if (part == kPLoop || part == kPGrain) return ui::Cursor::Move;
     if (part == kPGrainSize) return ui::Cursor::ResizeEW;
+    if (part == kPLens || part == kPStream) return ui::Cursor::Move;  // GV.1: sideways and up / down are two controls
+    if (part >= kPShape0 && part < kPShape0 + 5) return ui::Cursor::Pointer;
     if (part >= kPHarm0 && part < kPHarm0 + static_cast<int32_t>(kHarmMax)) return ui::Cursor::Text;
     if (part == kPHarmAdd || (part >= kPHarmX0 && part < kPHarmX0 + static_cast<int32_t>(kHarmMax))) return ui::Cursor::Pointer;
     if (part == kPSliceAmount) return ui::Cursor::ResizeNS;
@@ -372,9 +400,25 @@ public:
         return;
       case kPRootId: title = "Root as Identity"; body = "Show the root as the nearest pitch of the track's tuning and its cents."; return;
       case kPGrain: title = "Grain Position"; body = "Drag: where in Start \xE2\x80\xA6 End the grains read (Position)."; return;
-      case kPGrainSize: title = "Grain Size"; body = "Drag: how long each grain is."; return;
+      case kPGrainSize: title = "Grain Size"; body = "Drag: how much of the sample a grain reads (its length \xC3\x97 its pitch ratio)."; return;
+      case kPLens:
+        title = "Grain";
+        body = "One grain: its window (the shape) over the sample it reads at Position, at the played pitch \xE2\x80\x94 higher pitch "
+               "reads more of the sample into the same length. Drag sideways: the grain size; up / down: transpose (semitones).";
+        return;
+      case kPStream:
+        title = "Grain Stream";
+        body = "The grains over time as one voice plays them: their spacing (Density; Classic: one per period of the pitch), length "
+               "and window, height by pitch (spray and harmonic ratios), colour by pan (blue left, amber right); dashed: skipped "
+               "(the voice's grains are all busy). Below: how much they overlap. Drag sideways: Density; up / down: pitch spray.";
+        return;
       case kPHarmAdd: title = "Add Ratio"; body = "Click: add the next whole-number ratio to the list."; return;
       default: break;
+    }
+    if (part >= kPShape0 && part < kPShape0 + 5) {  // GV.1
+      title = std::string("Grain Shape: ") + kShapeNames[part - kPShape0];
+      body = "Click: each grain fades in and out along this window.";
+      return;
     }
     if (part >= kPSliceBy0 && part < kPSliceBy0 + 4) {
       title = std::string("Slice by ") + kSliceByNames[kSliceCellOrder[part - kPSliceBy0]];
@@ -640,10 +684,12 @@ private:
   // A handle of the editor is dragged with the pointer past the editor's side: the view scrolls under it.
   bool edgeScrolling() const noexcept {
     return drag_ != kNone && drag_ != kPRuler && drag_ != kPSliceAmount && drag_ != kPGrain && drag_ != kPGrainSize &&
+           drag_ != kPLens && drag_ != kPStream &&
            (dragX_ < kEdX0 || dragX_ > kEdX1) && viewB_ - viewA_ < 1.0;
   }
-  // Where the grains read: [a, b) of the sample (Position in Start … End, one grain size wide) and the spray time either
-  // side (fractions of the sample; the sizes need its length: unknown, the region is a hairline).
+  // Where the grains read: [a, b) of the sample (Position in Start … End; GV.1: the grain size × the pitch ratio wide, what
+  // a grain at the root reads) and the spray time either side (fractions of the sample; the sizes need its length:
+  // unknown, the region is a hairline).
   struct GrainSpan {
     double a = 0.0, b = 0.0, spray = 0.0, seconds = 0.0;
   };
@@ -653,6 +699,14 @@ private:
   void paintGrainRegion(ui::FacePainter& p, const ui::Theme& th, const Lane& lane, float y0, float y1) const;
   void paintGrains(ui::FacePainter& p, const ui::Theme& th, const Lane& lane, float y0, float y1, float k) const;
   bool pollGrains();
+  // GV.1: the grain lens and the stream.
+  double pitchRatio() const;  // transpose and detune as a rate (a note at the root reads at it)
+  void paintLens(ui::FacePainter& p, const ui::Theme& th);
+  void paintStream(ui::FacePainter& p, const ui::Theme& th);
+  void lensColumns();
+  void simulateStream();
+  void fillBand(ui::FacePainter& p, std::span<const Vec2> top, std::span<const Vec2> bottom, Rgba col);
+  void shapeGlyph(ui::FacePainter& p, const Rect& r, int shape, float thickness, Rgba col);
   // The ratio list ((n, d) pairs: the data's, else the default), the chips' part at l, their paint, a typed ratio.
   std::vector<std::pair<uint32_t, uint32_t>> harmonics() const;
   void writeHarmonics(const std::vector<std::pair<uint32_t, uint32_t>>& h);
@@ -665,6 +719,31 @@ private:
   void dragTo(float x);
 
   std::vector<Shown> shown_v_;
+  // GV.1: the lens's source columns (min / max of the frames each column reads, the sample's own value where a column is
+  // less than two frames) and the stream's grains, both rebuilt only when what they are drawn from changes.
+  struct LensCache {
+    uint64_t key = 0;
+    bool exact = false, line = false;  // read from the samples (else the overview); one value per column
+    float peak = 0.0f;
+    std::array<float, kLensCols> lo{}, hi{};
+  } lens_;
+  struct StreamGrain {
+    float t, semis, pan;
+    bool skipped;
+  };
+  struct StreamCache {
+    uint64_t key = 0;
+    double span = 0.1, size = 0.08, rate = 30.0;  // seconds across the plot, the grain length, onsets per second
+    float range = 12.0f, overlap = 0.0f, dropped = 0.0f, sumPeak = 1.0f;
+    std::vector<StreamGrain> grains;
+    std::array<float, kStreamCols> sum{};
+  } stream_;
+  std::vector<Vec2> top_, bottom_, scratch_;  // (reserved once: paint allocates nothing after the first)
+  std::vector<Rgba> meshCols_;
+  std::vector<uint32_t> meshIdx_;
+  Vec2 gvPress_{0.0f, 0.0f};   // GV.1: a lens / stream drag: where it began (device px), the values then, its axis
+  double gvA_ = 0.0, gvB_ = 0.0;
+  int gvAxis_ = 0;             // 0: not yet chosen, 1: sideways, 2: up / down
   std::vector<FaceGrain> grainBuf_;  // SM.13: the live grains of the last poll (grainCount_ of them)
   uint32_t grainCount_ = 0;
   bool dragWell_ = false;            // SM.13: the grain drag began on the closed well (its lane), else on the editor
@@ -828,7 +907,30 @@ bool SamplerFace::onPointer(const FacePointer& e) {
     if (drag_ == kPGrain) {
       if (w > 0.0) t.set(meta::kSmpGrainPosition, std::clamp((u - grainGrab_ - s) / w, 0.0, 1.0));
     } else if (sp.seconds > 0.0) {
-      t.set(meta::kSmpGrainSize, std::clamp((u - sp.a) * sp.seconds, 0.005, 1.0));
+      t.set(meta::kSmpGrainSize, std::clamp((u - sp.a) * sp.seconds / pitchRatio(), 0.005, 1.0));
+    }
+    return true;
+  }
+  if (e.kind == K::Move && (drag_ == kPLens || drag_ == kPStream)) {  // GV.1: the axis the drag first moves along
+    const float s = std::max(0.1f, e.uiScale);
+    const float dx = (e.device.x - gvPress_.x) / s, dy = (gvPress_.y - e.device.y) / s;
+    const bool classic = std::lround(t.setting(meta::kSmpGranMode)) == 0;  // (Classic has no density: up / down only)
+    if (gvAxis_ == 0 && std::max(std::fabs(dx), std::fabs(dy)) >= 4.0f)
+      gvAxis_ = std::fabs(dx) > std::fabs(dy) && !(drag_ == kPStream && classic) ? 1 : 2;
+    if (gvAxis_ == 0) return true;
+    const bool fine = (e.mods & ui::mod::kShift) != 0;
+    if (drag_ == kPLens && gvAxis_ == 1) {
+      t.set(meta::kSmpGrainSize, std::clamp(gvA_ * std::exp(static_cast<double>(dx) / (fine ? 600.0 : 120.0)), 0.005, 1.0));
+      t.set(meta::kSmpTranspose, gvB_);
+    } else if (drag_ == kPLens) {
+      t.set(meta::kSmpGrainSize, gvA_);
+      t.set(meta::kSmpTranspose, std::clamp(std::round(gvB_ + static_cast<double>(dy) / (fine ? 24.0 : 8.0)), -48.0, 48.0));
+    } else if (gvAxis_ == 1) {
+      t.set(meta::kSmpDensity, std::clamp(gvA_ * std::exp(static_cast<double>(dx) / (fine ? 600.0 : 120.0)), 1.0, 400.0));
+      t.set(meta::kSmpSprayPitch, gvB_);
+    } else {
+      t.set(meta::kSmpDensity, gvA_);
+      t.set(meta::kSmpSprayPitch, std::clamp(std::round((gvB_ + static_cast<double>(dy) / (fine ? 50.0 : 10.0)) * 10.0) / 10.0, 0.0, 24.0));
     }
     return true;
   }
@@ -872,6 +974,19 @@ bool SamplerFace::onPointer(const FacePointer& e) {
     grainGrab_ = lane.u(e.local.x) - grainSpan().a;
     drag_ = part;
     t.begin(part == kPGrain ? "Grain Position" : "Grain Size");
+    return true;
+  }
+  if (part == kPLens || part == kPStream) {  // GV.1: one undo step per drag (both of its params, whichever moved)
+    drag_ = part;
+    gvPress_ = e.device;
+    gvAxis_ = 0;
+    gvA_ = t.value(part == kPLens ? meta::kSmpGrainSize : meta::kSmpDensity);
+    gvB_ = t.value(part == kPLens ? meta::kSmpTranspose : meta::kSmpSprayPitch);
+    t.begin(part == kPLens ? "Grain Size / Pitch" : "Density / Pitch Spray");
+    return true;
+  }
+  if (part >= kPShape0 && part < kPShape0 + 5) {  // GV.1: the window (a setting: one undo step)
+    if (std::lround(t.setting(meta::kSmpShape)) != part - kPShape0) t.setSetting(meta::kSmpShape, static_cast<double>(part - kPShape0));
     return true;
   }
   if (part >= kPHarm0 && part < kPHarm0 + static_cast<int32_t>(kHarmMax)) {  // type a ratio in its place
@@ -1327,6 +1442,27 @@ void SamplerFace::paintEditor(ui::FacePainter& p, const ui::Theme& th, double no
   if (g.mode == SamplerMode::Granular) {
     const GrainSpan sp = grainSpan();
     if (sp.b + sp.spray >= viewA_ && sp.a - sp.spray <= viewB_) paintGrainRegion(p, th, editorLane(), kWaveY0 + 0.5f, kWaveY1 - 0.5f);
+    // GV.1: where Position travels while a note plays — Scan as an arrow over one second of playing (inside Start … End),
+    // Freeze as a pin at the region.
+    if (sp.seconds > 0.0 && edIn(sp.a)) {
+      const float xa = edX(sp.a), y = kWaveY1 - 7.0f;
+      const double scan = target().value(meta::kSmpScan);
+      if (target().value(meta::kSmpFreeze) >= 0.5) {
+        p.line({xa, y - 3.0f}, {xa, y + 4.0f}, 1.0f, th.face.handle);
+        p.disc({xa, y - 4.0f}, 2.0f, th.face.value);
+        p.textAligned({xa + 4.0f, y - 4.0f}, "frozen", 5.5f, th.face.value, 0.0f);
+      } else if (std::fabs(scan) > 1e-3) {
+        const double ub = std::clamp(sp.a + scan / sp.seconds, std::min(g.start, g.end), std::max(g.start, g.end));
+        const float xb = edX(ub), dir = scan > 0.0 ? 1.0f : -1.0f;
+        if (std::fabs(xb - xa) >= 3.0f) {
+          p.line({xa, y}, {xb - dir * 2.5f, y}, 1.0f, ui::mulAlpha(th.face.handle, 0.9f));
+          p.triangle({xb, y}, {xb - dir * 4.0f, y - 2.5f}, {xb - dir * 4.0f, y + 2.5f}, th.face.handle);
+          char sb[32];
+          std::snprintf(sb, sizeof sb, "scan %.2f\xC3\x97", scan);
+          p.text({(xa + xb) * 0.5f, y - 5.0f}, sb, 5.5f, ui::mulAlpha(th.face.handle, 0.9f));
+        }
+      }
+    }
     paintGrains(p, th, editorLane(), kWaveY0 + 2.0f, kWaveY1 - 2.0f, 1.4f);
   }
   // The voices' playheads (0 … 1 of the sample).
@@ -1372,7 +1508,7 @@ SamplerFace::GrainSpan SamplerFace::grainSpan() const {
   const media::WaveformOverview* o = smp_.overview;
   sp.seconds = o != nullptr && o->sampleRate() > 0 && o->frames() > 0 ? static_cast<double>(o->frames()) / o->sampleRate() : 0.0;
   if (sp.seconds > 0.0) {
-    sp.b = std::min(1.0, sp.a + t.value(meta::kSmpGrainSize) / sp.seconds);
+    sp.b = std::min(1.0, sp.a + t.value(meta::kSmpGrainSize) * pitchRatio() / sp.seconds);
     sp.spray = t.value(meta::kSmpSprayTime) / sp.seconds;
   } else {
     sp.b = sp.a;
@@ -1442,6 +1578,375 @@ bool SamplerFace::pollGrains() {
   for (size_t i = 0; i < std::min<size_t>(grainCount_, head.size()); ++i)
     if (grainBuf_[i].position != head[i].position || grainBuf_[i].amplitude != head[i].amplitude) return true;
   return false;
+}
+
+// ---- GV.1: the grain lens and the grain stream ------------------------------------------------------------------------
+// LENS: one grain as a note at the root plays it — the window (the shape's own table, dsp::grainShapeTable) drawn as an
+// outline in the accent, and inside it the sample from Position on, as many frames as the grain reads (its size × the
+// pitch ratio: higher reads more of the sample into the same length, so the wave inside packs tighter), multiplied by
+// the window column by column (min / max per column from the overview, or from the samples once a column covers fewer
+// than 256 frames: the curve itself below two frames a column). Above it the five shapes as glyph cells.
+// STREAM: the grains over output time as the kernel spawns them (pq/dsp/granular.h: Loop every 1 / Density, Cloud's
+// Poisson onsets, Classic one per period of the root; a spawn finding all the voice's Grains busy is skipped, drawn
+// dashed; the harmonic ratios taken in turn by the grains that play; the pitch and pan spray drawn with the kernel's
+// counter hash, a fixed seed): each grain its window, its height by its pitch (octave lines), its colour by its pan; the
+// span steps (10 ms … 8 s) so a few grains always show. Under it the sum of the windows (the overlap: gaps where
+// Density × Size < 1, a flat line where the shape overlap-adds evenly).
+// CPU: both are rebuilt only when what they read changes (a key of those values); a paint draws the cached columns /
+// grains into member storage reserved once.
+
+double SamplerFace::pitchRatio() const {
+  const MetaTarget& t = target();
+  return std::exp2((t.value(meta::kSmpTranspose) * 100.0 + t.value(meta::kSmpDetune)) / 1200.0);
+}
+
+// A filled band between two polylines of the same length (top[i] over bottom[i]), one mesh.
+void SamplerFace::fillBand(ui::FacePainter& p, std::span<const Vec2> top, std::span<const Vec2> bottom, Rgba col) {
+  const size_t n = std::min(top.size(), bottom.size());
+  if (n < 2) return;
+  scratch_.clear();
+  scratch_.insert(scratch_.end(), top.begin(), top.begin() + static_cast<std::ptrdiff_t>(n));
+  scratch_.insert(scratch_.end(), bottom.begin(), bottom.begin() + static_cast<std::ptrdiff_t>(n));
+  meshCols_.assign(2 * n, col);
+  meshIdx_.clear();
+  for (uint32_t i = 0; i + 1 < n; ++i) {
+    const auto a = i, b = i + 1, c = static_cast<uint32_t>(n) + i, d = static_cast<uint32_t>(n) + i + 1;
+    meshIdx_.insert(meshIdx_.end(), {a, b, d, a, d, c});
+  }
+  p.mesh(scratch_, meshCols_, meshIdx_);
+}
+
+void SamplerFace::shapeGlyph(ui::FacePainter& p, const Rect& r, int shape, float thickness, Rgba col) {
+  const float* w = dsp::grainShapeTable(static_cast<dsp::GrainShape>(std::clamp(shape, 0, 4)));
+  constexpr int kN = 16;
+  scratch_.clear();
+  for (int i = 0; i <= kN; ++i) {
+    const float x = static_cast<float>(i) / kN;
+    scratch_.push_back({r.x0 + x * (r.x1 - r.x0), r.y1 - w[static_cast<size_t>(std::lround(x * dsp::kGrainShapePoints))] * (r.y1 - r.y0)});
+  }
+  p.polyline(scratch_, thickness, col);
+}
+
+void SamplerFace::lensColumns() {
+  const MetaTarget& t = target();
+  refresh();
+  const media::WaveformOverview* o = smp_.overview;
+  const GrainSpan sp = grainSpan();
+  const double frames = o != nullptr ? static_cast<double>(o->frames()) : 0.0;
+  const double f0 = sp.a * frames, span = t.value(meta::kSmpGrainSize) * pitchRatio() * (o != nullptr ? o->sampleRate() : 0.0);
+  uint64_t key = 0x4C454E53ull;  // "LENS"
+  auto mixIn = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ull; };
+  mixIn(smp_.sample);
+  mixIn(std::bit_cast<uint64_t>(f0));
+  mixIn(std::bit_cast<uint64_t>(span));
+  mixIn(smp_.built);
+  mixIn(t.overviewRevision());
+  mixIn(reinterpret_cast<uintptr_t>(o));
+  key |= 1u;
+  if (key == lens_.key) return;
+  lens_.key = key;
+  lens_.peak = 0.0f;
+  lens_.exact = lens_.line = false;
+  lens_.lo.fill(0.0f);
+  lens_.hi.fill(0.0f);
+  if (o == nullptr || smp_.built == 0 || !(span > 0.0) || o->levelCount() == 0) return;
+  const double per = span / kLensCols;
+  const uint32_t chans = std::max(1u, o->channels());
+  const media::SampleWindow* w = nullptr;
+  if (per < static_cast<double>(media::kOverviewBucketFrames))
+    w = t.sampleWindow(smp_.sample, static_cast<int64_t>(std::floor(f0)) - 2, static_cast<int64_t>(std::ceil(f0 + span)) + 2);
+  if (w != nullptr && w->frames > 0 && w->channels > 0) {
+    lens_.exact = true;
+    lens_.line = per < 2.0;
+    const auto at = [&](int64_t f, uint32_t c) {  // (outside the window or the file: silence)
+      const int64_t i = f - w->frame0;
+      return i >= 0 && i < w->frames ? w->channel(c)[i] : 0.0f;
+    };
+    for (int c = 0; c < kLensCols; ++c) {
+      const double a = f0 + per * c, b = a + per;
+      if (lens_.line) {  // the curve: the channels' mean, linear between frames, at the column's centre
+        const double fc = (a + b) * 0.5;
+        const auto i = static_cast<int64_t>(std::floor(fc));
+        const auto fr = static_cast<float>(fc - static_cast<double>(i));
+        float v = 0.0f;
+        for (uint32_t ch = 0; ch < w->channels; ++ch) v += at(i, ch) + (at(i + 1, ch) - at(i, ch)) * fr;
+        lens_.lo[c] = lens_.hi[c] = v / static_cast<float>(w->channels);
+        continue;
+      }
+      float lo = 3.0e38f, hi = -3.0e38f;
+      for (auto f = static_cast<int64_t>(std::floor(a)); f < static_cast<int64_t>(std::ceil(b)); ++f)
+        for (uint32_t ch = 0; ch < w->channels; ++ch) {
+          lo = std::min(lo, at(f, ch));
+          hi = std::max(hi, at(f, ch));
+        }
+      lens_.lo[c] = lo <= hi ? lo : 0.0f;
+      lens_.hi[c] = lo <= hi ? hi : 0.0f;
+    }
+  } else {  // the overview's finest level (the samples are asked for and drawn when they arrive)
+    const double bf = static_cast<double>(media::kOverviewBucketFrames);
+    const auto valid = static_cast<int64_t>(o->validBuckets(0));
+    for (int c = 0; c < kLensCols; ++c) {
+      const double a = f0 + per * c, b = a + per;
+      const auto i0 = static_cast<int64_t>(std::floor(a / bf));
+      const int64_t i1 = std::max(i0 + 1, static_cast<int64_t>(std::ceil(b / bf)));
+      int lo = 32767, hi = -32768;
+      for (int64_t i = std::max<int64_t>(i0, 0); i < std::min(i1, valid); ++i)
+        for (uint32_t ch = 0; ch < chans; ++ch) {
+          const int16_t* mm = o->minMax(0, ch);
+          lo = std::min<int>(lo, mm[2 * i]);
+          hi = std::max<int>(hi, mm[2 * i + 1]);
+        }
+      lens_.lo[c] = lo <= hi ? static_cast<float>(lo) / 32767.0f : 0.0f;
+      lens_.hi[c] = lo <= hi ? static_cast<float>(hi) / 32767.0f : 0.0f;
+    }
+  }
+  for (int c = 0; c < kLensCols; ++c) lens_.peak = std::max({lens_.peak, std::fabs(lens_.lo[c]), std::fabs(lens_.hi[c])});
+}
+
+void SamplerFace::paintLens(ui::FacePainter& p, const ui::Theme& th) {
+  const MetaTarget& t = target();
+  lensColumns();
+  const int shape = std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpShape))), 0, 4);
+  const float* w = dsp::grainShapeTable(static_cast<dsp::GrainShape>(shape));
+  const float capY = (kShapeY0 + kShapeY1) * 0.5f;
+  p.textAligned({kLens.x0 + 4.0f, capY}, "Grain", 6.5f, ui::mulAlpha(th.face.ink, 0.95f), 0.0f);
+  p.textAligned({kLens.x0 + 25.0f, capY}, kShapeNames[shape], 6.0f, th.face.value, 0.0f);
+  for (int i = 0; i < 5; ++i) {  // the shape cells
+    const Rect r = shapeCell(i);
+    const bool on = i == shape, hot = hovered_ == kPShape0 + i;
+    p.roundedRect(r, 2.0f, on ? th.face.value : hot ? th.face.hover : ui::mulAlpha(th.face.track, 0.85f));
+    shapeGlyph(p, {r.x0 + 2.0f, r.y0 + 1.6f, r.x1 - 2.0f, r.y1 - 1.4f}, i, on ? 0.9f : 0.7f,
+               on ? th.face.body : ui::mulAlpha(th.face.ink, hot ? 1.0f : 0.8f));
+  }
+  const bool hot = hovered_ == kPLens || drag_ == kPLens;
+  p.roundedRect(kLensPlot, 4.0f, ui::mulAlpha(th.face.track, hot ? 1.0f : 0.85f));
+  const float x0 = kLensPlot.x0 + 3.0f, x1 = kLensPlot.x1 - 3.0f, mid = (kLensPlot.y0 + kLensPlot.y1) * 0.5f;
+  const float half = (kLensPlot.y1 - kLensPlot.y0) * 0.5f - 3.0f;
+  p.line({x0, mid}, {x1, mid}, 0.5f, ui::mulAlpha(th.face.ink, 0.3f));
+  const auto winAt = [&](float u) { return w[static_cast<size_t>(std::lround(std::clamp(u, 0.0f, 1.0f) * dsp::kGrainShapePoints))]; };
+  // The window's area, faint; the sample inside it × the window; the window's outline over both.
+  top_.clear();
+  bottom_.clear();
+  for (int i = 0; i <= kLensCols; ++i) {
+    const float u = static_cast<float>(i) / kLensCols, x = x0 + u * (x1 - x0), v = winAt(u) * half;
+    top_.push_back({x, mid - v});
+    bottom_.push_back({x, mid + v});
+  }
+  fillBand(p, top_, bottom_, ui::mulAlpha(th.face.value, 0.09f));
+  if (lens_.peak > 0.0f) {
+    const float gain = std::min(4.0f, 0.95f / lens_.peak) * half;  // (a quiet passage still shows its shape)
+    top_.clear();
+    bottom_.clear();
+    for (int c = 0; c < kLensCols; ++c) {
+      const float u = (static_cast<float>(c) + 0.5f) / kLensCols, x = x0 + u * (x1 - x0), wv = winAt(u) * gain;
+      if (lens_.line) {
+        top_.push_back({x, mid - lens_.hi[c] * wv});
+        continue;
+      }
+      // (at least a hairline: a column of silence still reads as the grain's floor)
+      top_.push_back({x, std::min(mid - lens_.hi[c] * wv, mid - 0.25f)});
+      bottom_.push_back({x, std::max(mid - lens_.lo[c] * wv, mid + 0.25f)});
+    }
+    if (lens_.line)
+      p.polyline(top_, 1.0f, th.face.signal);
+    else
+      fillBand(p, top_, bottom_, ui::mulAlpha(th.face.signal, 0.9f));
+  } else {
+    p.text({(x0 + x1) * 0.5f, mid}, smp_.sample == 0 ? "no sample" : "reading \xE2\x80\xA6", 6.0f, ui::mulAlpha(th.face.ink, 0.6f));
+  }
+  top_.clear();
+  bottom_.clear();
+  for (int i = 0; i <= kLensCols; i += 2) {
+    const float u = static_cast<float>(i) / kLensCols, x = x0 + u * (x1 - x0), v = winAt(u) * half;
+    top_.push_back({x, mid - v});
+    bottom_.push_back({x, mid + v});
+  }
+  p.polyline(top_, hot ? 1.1f : 0.85f, ui::mulAlpha(th.face.value, 0.95f));
+  p.polyline(bottom_, hot ? 1.1f : 0.85f, ui::mulAlpha(th.face.value, 0.6f));
+  if (hot && drag_ != kPLens)
+    p.text({(x0 + x1) * 0.5f, kLensPlot.y0 + 5.0f}, "drag \xE2\x86\x94 size   \xE2\x86\x95 pitch", 5.5f, ui::mulAlpha(th.face.ink, 0.9f));
+  // Under it: the grain's length; what it reads of the sample at this pitch.
+  const double size = t.value(meta::kSmpGrainSize), ratio = pitchRatio();
+  char b[64];
+  std::snprintf(b, sizeof b, size < 0.1 ? "%.1f ms" : "%.0f ms", size * 1000.0);
+  const float textY = (kLensPlot.y1 + kLens.y1) * 0.5f;
+  p.textAligned({x0, textY}, b, 6.0f, ui::mulAlpha(th.face.ink, 0.95f), 0.0f);
+  const double semis = 12.0 * std::log2(ratio);
+  if (std::fabs(semis) < 0.005)
+    std::snprintf(b, sizeof b, "reads %.0f ms", size * ratio * 1000.0);
+  else
+    std::snprintf(b, sizeof b, "%+.2f st \xC2\xB7 reads %.0f ms", semis, size * ratio * 1000.0);
+  p.textAligned({x1, textY}, b, 5.5f, std::fabs(semis) < 0.005 ? ui::mulAlpha(th.face.ink, 0.8f) : th.face.value, 1.0f);
+}
+
+void SamplerFace::simulateStream() {
+  const MetaTarget& t = target();
+  const int mode = std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpGranMode))), 0, 2);  // Classic, Loop, Cloud
+  const double size = std::clamp(t.value(meta::kSmpGrainSize), 0.005, 1.0), density = std::clamp(t.value(meta::kSmpDensity), 1.0, 400.0);
+  const double root = std::clamp(t.value(meta::kSmpRoot), 8.0, 20000.0);
+  const auto grains = static_cast<uint32_t>(std::clamp(std::lround(t.setting(meta::kSmpGrains)), 1L, 32L));
+  const bool harmonic = std::lround(t.setting(meta::kSmpHarmonic)) != 0;
+  const double sprayPitch = std::max(0.0, t.value(meta::kSmpSprayPitch)), sprayPan = std::clamp(t.value(meta::kSmpSprayPan), 0.0, 1.0);
+  const double shape = t.setting(meta::kSmpShape);
+  const meta::DataPtr data = t.data();
+  uint64_t key = 0x5354524Dull;  // "STRM"
+  auto mixIn = [&key](uint64_t v) { key = (key ^ v) * 0x100000001B3ull; };
+  for (const double v : {static_cast<double>(mode), size, density, root, static_cast<double>(grains), harmonic ? 1.0 : 0.0, sprayPitch, sprayPan, shape})
+    mixIn(std::bit_cast<uint64_t>(v));
+  mixIn(reinterpret_cast<uintptr_t>(data.get()));
+  key |= 1u;
+  if (key == stream_.key) return;
+  stream_.key = key;
+  const double period = mode == 0 ? 1.0 / root : 1.0 / density;
+  stream_.size = size;
+  stream_.rate = 1.0 / period;
+  stream_.span = 8.0;
+  for (const double s : {0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0})
+    if (s >= 2.5 * size && s >= 3.5 * period) {
+      stream_.span = s;
+      break;
+    }
+  const auto h = harmonics();
+  double most = 0.0;
+  if (harmonic)
+    for (const auto& [n, d] : h) most = std::max(most, std::fabs(12.0 * std::log2(static_cast<double>(n) / d)));
+  stream_.range = static_cast<float>(std::max(12.0, std::ceil((most + sprayPitch) / 12.0 - 1e-9) * 12.0));
+  // The kernel's spawn law from 2 grain lengths before the plot (so it starts in its steady state).
+  constexpr uint32_t kSeed = 0x5EEDu;
+  stream_.grains.clear();
+  if (stream_.grains.capacity() < kStreamMax) stream_.grains.reserve(kStreamMax);
+  std::array<double, 32> ends{};  // the playing grains' ends (at most Grains of them)
+  uint32_t playing = 0, harm = 0, shown = 0, skipped = 0;
+  double at = -2.0 * size;
+  for (uint32_t k = 0; at < stream_.span && stream_.grains.size() < kStreamMax; ++k) {
+    const auto rnd = [&](uint32_t d) { return 2.0 * static_cast<double>(dsp::grainUniform(kSeed, 0, k, d)) - 1.0; };
+    double interval = period;
+    if (mode == 2) interval *= -std::log(1.0 - 0.999999 * static_cast<double>(dsp::grainUniform(kSeed, 0, k, 0)));
+    uint32_t live = 0;
+    for (uint32_t j = 0; j < playing; ++j)
+      if (ends[j] > at) ends[live++] = ends[j];
+    playing = live;
+    StreamGrain g{static_cast<float>(at), 0.0f, 0.0f, playing >= grains};
+    if (!g.skipped) {
+      ends[playing++] = at + size;
+      if (harmonic && !h.empty()) {
+        const auto& [n, d] = h[harm++ % h.size()];
+        g.semis = static_cast<float>(12.0 * std::log2(static_cast<double>(n) / d));
+      }
+    }
+    if (sprayPitch > 0.0) g.semis += static_cast<float>(rnd(2) * sprayPitch);
+    if (sprayPan > 0.0) g.pan = static_cast<float>(rnd(3) * sprayPan);
+    if (at + size > 0.0) stream_.grains.push_back(g);
+    if (at >= 0.0) {
+      ++shown;
+      skipped += g.skipped ? 1u : 0u;
+    }
+    at += std::max(interval, 1.0 / 192000.0);
+  }
+  stream_.dropped = shown > 0 ? static_cast<float>(skipped) / static_cast<float>(shown) : 0.0f;
+  stream_.overlap = static_cast<float>(size / period);
+  // The windows' sum per column (the grains that play).
+  const float* w = dsp::grainShapeTable(static_cast<dsp::GrainShape>(std::clamp(static_cast<int>(std::lround(shape)), 0, 4)));
+  stream_.sum.fill(0.0f);
+  const double colT = stream_.span / kStreamCols;
+  for (const StreamGrain& g : stream_.grains) {
+    if (g.skipped) continue;
+    const int c0 = std::max(0, static_cast<int>(std::ceil(g.t / colT - 0.5)));
+    const int c1 = std::min(kStreamCols - 1, static_cast<int>(std::floor((g.t + size) / colT - 0.5)));
+    for (int c = c0; c <= c1; ++c) {
+      const double u = ((c + 0.5) * colT - g.t) / size;
+      stream_.sum[c] += w[static_cast<size_t>(std::lround(std::clamp(u, 0.0, 1.0) * dsp::kGrainShapePoints))];
+    }
+  }
+  stream_.sumPeak = std::max(1.0f, *std::max_element(stream_.sum.begin(), stream_.sum.end()));
+}
+
+void SamplerFace::paintStream(ui::FacePainter& p, const ui::Theme& th) {
+  const MetaTarget& t = target();
+  simulateStream();
+  const int mode = std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpGranMode))), 0, 2);
+  const float capY = kStream.y0 + 6.0f;
+  char b[96];
+  if (mode == 0)
+    std::snprintf(b, sizeof b, "one per period (%.1f Hz)", stream_.rate);
+  else
+    std::snprintf(b, sizeof b, mode == 1 ? "%.1f per second" : "~%.1f per second, random", stream_.rate);
+  p.textAligned({kStream.x0 + 4.0f, capY}, "Stream", 6.5f, ui::mulAlpha(th.face.ink, 0.95f), 0.0f);
+  p.textAligned({kStream.x0 + 29.0f, capY}, b, 5.5f, ui::mulAlpha(th.face.ink, 0.8f), 0.0f);
+  if (stream_.dropped > 0.005f)
+    std::snprintf(b, sizeof b, "%.0f%% skipped", 100.0 * stream_.dropped);
+  else
+    std::snprintf(b, sizeof b, "%.1f\xC3\x97 overlap", static_cast<double>(stream_.overlap));
+  p.textAligned({kStream.x1 - 4.0f, capY}, b, 5.5f, stream_.dropped > 0.005f ? th.face.value : ui::mulAlpha(th.face.ink, 0.8f), 1.0f);
+  const bool hot = hovered_ == kPStream || drag_ == kPStream;
+  p.roundedRect(kStreamPlot, 4.0f, ui::mulAlpha(th.face.track, hot ? 1.0f : 0.85f));
+  p.roundedRect(kSumStrip, 3.0f, ui::mulAlpha(th.face.track, 0.55f));
+  const float x0 = kStreamPlot.x0 + 2.0f, x1 = kStreamPlot.x1 - 2.0f, mid = (kStreamPlot.y0 + kStreamPlot.y1) * 0.5f;
+  const float half = (kStreamPlot.y1 - kStreamPlot.y0) * 0.5f - 2.0f;
+  const auto xAt = [&](double s) { return x0 + static_cast<float>(s / stream_.span) * (x1 - x0); };
+  // Octaves (the middle: the played pitch), the time in tenths of the span.
+  const int octaves = static_cast<int>(stream_.range / 12.0f);
+  for (int o = -octaves; o <= octaves; ++o) {
+    const float y = mid - static_cast<float>(o) * 12.0f / stream_.range * (half - 6.0f);
+    p.line({x0, y}, {x1, y}, o == 0 ? 0.6f : 0.4f, ui::mulAlpha(th.face.ink, o == 0 ? 0.35f : 0.18f));
+  }
+  for (int i = 1; i < 10; ++i) {
+    const float x = x0 + static_cast<float>(i) / 10.0f * (x1 - x0);
+    p.line({x, kStreamPlot.y1 - 2.5f}, {x, kStreamPlot.y1 - 0.5f}, 0.4f, ui::mulAlpha(th.face.ink, 0.4f));
+  }
+  const ui::FaceTransform& tf = p.transform();
+  ui::DrawList& dl = p.drawList();
+  dl.pushClip({tf.origin.x + kStreamPlot.x0 * tf.scale, tf.origin.y + kStreamPlot.y0 * tf.scale, tf.origin.x + kStreamPlot.x1 * tf.scale,
+               tf.origin.y + kStreamPlot.y1 * tf.scale});
+  const float* w = dsp::grainShapeTable(static_cast<dsp::GrainShape>(std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpShape))), 0, 4)));
+  const float hh = std::min(10.0f, half * 0.4f);
+  // Each grain: its window as a packet around its pitch; the skipped dashed, under the rest.
+  for (const bool pass : {true, false})
+    for (const StreamGrain& g : stream_.grains) {
+      if (g.skipped != pass) continue;
+      const float gx0 = xAt(g.t), gx1 = xAt(g.t + stream_.size);
+      if (gx1 < kStreamPlot.x0 || gx0 > kStreamPlot.x1) continue;
+      const float yc = mid - std::clamp(g.semis / stream_.range, -1.0f, 1.0f) * (half - 6.0f);
+      const int n = std::clamp(static_cast<int>((gx1 - gx0) / 1.5f), 6, 32);
+      top_.clear();
+      bottom_.clear();
+      for (int i = 0; i <= n; ++i) {
+        const float u = static_cast<float>(i) / static_cast<float>(n);
+        const float v = w[static_cast<size_t>(std::lround(u * dsp::kGrainShapePoints))] * hh;
+        top_.push_back({gx0 + u * (gx1 - gx0), yc - v});
+        bottom_.push_back({gx0 + u * (gx1 - gx0), yc + v});
+      }
+      if (g.skipped) {
+        p.dashed(top_, 0.5f, 1.2f, 1.2f, ui::mulAlpha(th.face.ink, 0.55f));
+        continue;
+      }
+      const Rgba c = g.pan >= 0.0f ? ui::lerp(th.face.signal, th.face.value, g.pan) : ui::lerp(th.face.signal, th.face.glow, -g.pan);
+      fillBand(p, top_, bottom_, ui::mulAlpha(c, 0.2f));
+      p.polyline(top_, 0.6f, ui::mulAlpha(c, 0.95f));
+      p.polyline(bottom_, 0.6f, ui::mulAlpha(c, 0.5f));
+    }
+  dl.popClip();
+  std::snprintf(b, sizeof b, stream_.span < 1.0 ? "%.0f ms" : "%.0f s", stream_.span < 1.0 ? stream_.span * 1000.0 : stream_.span);
+  p.textAligned({x1 - 1.0f, kStreamPlot.y1 - 5.0f}, b, 5.0f, ui::mulAlpha(th.face.ink, 0.75f), 1.0f);
+  if (stream_.range > 12.0f) {
+    std::snprintf(b, sizeof b, "\xC2\xB1%.0f st", static_cast<double>(stream_.range));
+    p.textAligned({x0 + 1.0f, kStreamPlot.y1 - 5.0f}, b, 5.0f, ui::mulAlpha(th.face.ink, 0.75f), 0.0f);
+  }
+  if (hot && drag_ != kPStream)
+    p.text({(x0 + x1) * 0.5f, kStreamPlot.y0 + 5.0f}, mode == 0 ? "drag \xE2\x86\x95 pitch spray" : "drag \xE2\x86\x94 density   \xE2\x86\x95 pitch spray", 5.5f,
+           ui::mulAlpha(th.face.ink, 0.9f));
+  // The overlap: the windows' sum, scaled to its peak (a dashed line where it is 1, when it reaches past that).
+  const float sx0 = kSumStrip.x0 + 2.0f, sx1 = kSumStrip.x1 - 2.0f, base = kSumStrip.y1 - 1.5f, room = kSumStrip.y1 - kSumStrip.y0 - 3.0f;
+  top_.clear();
+  for (int c = 0; c < kStreamCols; ++c)
+    top_.push_back({sx0 + (static_cast<float>(c) + 0.5f) / kStreamCols * (sx1 - sx0), base - stream_.sum[c] / stream_.sumPeak * room});
+  p.fillUnder(top_, base, ui::mulAlpha(th.face.value, 0.45f), ui::mulAlpha(th.face.value, 0.08f));
+  p.polyline(top_, 0.7f, ui::mulAlpha(th.face.value, 0.9f));
+  if (stream_.sumPeak > 1.05f) {
+    const float y = base - room / stream_.sumPeak;
+    const Vec2 one[2] = {{sx0, y}, {sx1, y}};
+    p.dashed(one, 0.4f, 1.5f, 1.5f, ui::mulAlpha(th.face.ink, 0.5f));
+  }
 }
 
 std::vector<std::pair<uint32_t, uint32_t>> SamplerFace::harmonics() const {

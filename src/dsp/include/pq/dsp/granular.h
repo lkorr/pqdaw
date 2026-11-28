@@ -5,7 +5,8 @@
 //
 // ---- One voice (a lane) ----------------------------------------------------------------------------------------------
 // From a trigger (a high reset) on, the voice's position P moves through [start, end) by `scan` × the file's own speed
-// per output sample (wrapping; Freeze holds it), and grains spawn at its sample times t_k:
+// per output sample (wrapping; Freeze holds it), and grains spawn at its sample times t_k. GV.1: P is Position's point
+// (read every run: moving Position while a note plays scrubs) plus the distance scanned since the trigger:
 //   Classic   t_{k+1} = t_k + sr / hz(t_k) (pitch-synchronous), read at the transpose ratio (the source's own pitch ×
 //             ratio: the grain size is the formant)
 //   Loop      t_{k+1} = t_k + sr / density, read at hz / root × ratio
@@ -58,7 +59,7 @@ inline float grainUniform(uint32_t seed, uint32_t voice, uint32_t grain, uint32_
 // A lane's voice (the words before the grain arrays: atom_state.h GranularState).
 struct GranVoice {
   int64_t t = 0;        // samples since the trigger (of the next frame)
-  int64_t pos = 0;      // P: 32.32 level-0 source frames
+  int64_t pos = 0;      // GV.1: the distance scanned since the trigger (32.32 level-0 frames, within one region length)
   double next = 0.0;    // the next spawn time (samples since the trigger)
   uint32_t count = 0;   // grains spawned since the trigger
   uint32_t harm = 0;    // the next harmonic ratio

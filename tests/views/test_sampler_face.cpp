@@ -767,7 +767,7 @@ TEST_CASE("render: sampler-face-grains / sampler-panel-gran (SM.13: Gran mode, t
       checkImage("sampler-face-grains" + sfx, s.render());
     }
     {
-      Standalone s(scale, true, {{0, 0.0, 0.4}}, doc::kSamplerPanelW, 520.0f);
+      Standalone s(scale, true, {{0, 0.0, 0.4}}, doc::kSamplerPanelW, 580.0f);
       doc::DocumentStore& st = s.ctx.store();
       granularState(st, s.ids.engine);
       setSetting(st, s.ids.engine, "harmonic", 1.0);
@@ -777,6 +777,24 @@ TEST_CASE("render: sampler-face-grains / sampler-panel-gran (SM.13: Gran mode, t
       s.voices.setGrains(stillGrains(0.33));
       (void)s.face().sync();
       checkImage("sampler-panel-gran" + sfx, s.render());
+    }
+    {  // GV.1: transposed up a fifth, Cloud, a Gauss window, pitch and pan spray, harmonic ratios, too few grains (skips)
+      Standalone s(scale, true, {{0, 0.0, 0.4}}, doc::kSamplerPanelW, 580.0f);
+      doc::DocumentStore& st = s.ctx.store();
+      granularState(st, s.ids.engine);
+      setSetting(st, s.ids.engine, "granMode", 2.0);
+      setSetting(st, s.ids.engine, "shape", 2.0);
+      setSetting(st, s.ids.engine, "grains", 4.0);
+      setSetting(st, s.ids.engine, "harmonic", 1.0);
+      setValue(st, s.ids.engine, "transpose", 7.0);
+      setValue(st, s.ids.engine, "density", 60.0);
+      setValue(st, s.ids.engine, "sprayPitch", 3.0);
+      setValue(st, s.ids.engine, "sprayPan", 0.8);
+      setValue(st, s.ids.engine, "scan", -0.25);
+      for (const char* title : {"Settings", "Granular"})
+        st.view().panelWindows[s.ids.group.value].setFoldOpen(elementOf(*st.current(), s.ids.group, "fold", title)->id, true);
+      (void)s.face().sync();
+      checkImage("sampler-panel-gran-stream" + sfx, s.render());
     }
   }
 }
@@ -887,6 +905,63 @@ TEST_CASE("sampler granular (SM.13, real dispatch): the grain region drags Posit
   CHECK(u.cursor() == h + 1);
   CHECK(u.value(meta::kSmpGrainPosition) == doctest::Approx(0.25).epsilon(0.04));
   CHECK(u.node().panelRound);  // (a drag never toggles the settings)
+}
+
+TEST_CASE("sampler granular (GV.1, real dispatch): the grain lens drags the grain size (sideways) and the transpose (up / "
+          "down), the stream the density and the pitch spray, each drag one undo step on one axis; the shape cells pick the "
+          "window; the Sample section gives way to the Granular one") {
+  Expanded u;
+  clickMode(u, 3);
+  REQUIRE(u.ctx.waveforms().overview(u.ids.sample) != nullptr);
+  CHECK_FALSE(u.shownEl(u.idOf("fold", "Sample")));
+  const uint32_t lens = u.idOf("grainlens"), stream = u.idOf("grainstream");
+  REQUIRE(u.shownEl(lens));
+  REQUIRE(u.shownEl(stream));
+  // Sideways right: a larger grain, the transpose untouched (the axis is the first one moved along).
+  size_t h = u.cursor();
+  const double size0 = u.value(meta::kSmpGrainSize);
+  Vec2 c = u.at(lens, 0.5f, 0.55f);
+  u.d.drag(c, {c.x + 80.0f, c.y + 6.0f}, 8);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpGrainSize) > size0 * 1.5);
+  CHECK(u.value(meta::kSmpTranspose) == 0.0);
+  // Up: whole semitones higher, the size as it was.
+  h = u.cursor();
+  const double size1 = u.value(meta::kSmpGrainSize);
+  u.d.drag(c, {c.x + 3.0f, c.y - 40.0f}, 8);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpGrainSize) == size1);
+  CHECK(u.value(meta::kSmpTranspose) >= 3.0);
+  CHECK(u.value(meta::kSmpTranspose) == std::round(u.value(meta::kSmpTranspose)));
+  // The Gauss cell (third of five at the lens's top right).
+  u.d.click(u.at(lens, (60.0f + 2.0f * 15.5f + 7.0f) / 140.0f, 6.5f / 96.0f));
+  u.d.step();
+  CHECK(std::lround(engineOf(*u.ctx.doc(), u.ids.engine).setting("shape")->value) == 2);
+  // The stream: sideways left a lower density; up more pitch spray.
+  h = u.cursor();
+  const double density0 = u.value(meta::kSmpDensity);
+  c = u.at(stream, 0.5f, 0.4f);
+  u.d.drag(c, {c.x - 80.0f, c.y}, 8);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpDensity) < density0 * 0.7);
+  CHECK(u.value(meta::kSmpSprayPitch) == 0.0);
+  h = u.cursor();
+  u.d.drag(c, {c.x, c.y - 50.0f}, 8);
+  u.d.step();
+  CHECK(u.cursor() == h + 1);
+  CHECK(u.value(meta::kSmpSprayPitch) >= 3.0);
+  REQUIRE(u.ctx.store().undo());  // (the drag back whole)
+  CHECK(u.value(meta::kSmpSprayPitch) == 0.0);
+  // Classic (one grain per period: no density): a sideways drag moves nothing but the pitch spray's axis.
+  setSetting(u.ctx.store(), u.ids.engine, "granMode", 0.0);
+  u.d.step();
+  const double density1 = u.value(meta::kSmpDensity);
+  u.d.drag(c, {c.x + 80.0f, c.y}, 8);
+  u.d.step();
+  CHECK(u.value(meta::kSmpDensity) == density1);
 }
 
 TEST_CASE("sampler granular (SM.13, real dispatch): ratio chips — + adds the next whole number, × removes, a click types "
@@ -1268,7 +1343,7 @@ TEST_CASE("sampler panel (SM.17): no drop-down list is left — every choice is 
       for (const char* n : {"Transpose", "Filter", "Volume", "Position", "Size", "Density"})
         if (e.text("text", "") == n && e.y < doc::kSamplerFaceH) ++names;
   }
-  CHECK(radial == 2);  // Warp, grain Shape
+  CHECK(radial == 1);  // Warp (GV.1: the grain Shape is five window glyphs in the grain lens, one click each)
   CHECK(names == 6);
   for (const char* setting : {"loop", "trigger", "beatsLoop", "granMode"}) CHECK(boundElement(*u.ctx.doc(), u.ids.group, "tabs", setting) != 0);
 }
