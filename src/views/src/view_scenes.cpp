@@ -38,6 +38,8 @@
 #include "pq/views/fake_transport.h"
 #include "pq/views/meta/face_targets.h"
 #include "meta/faces.h"  // TX.spectrogram: the face's analysis request (gramRequest)
+#include "pq/document/audio_in.h"
+#include "pq/views/mixer/audio_from.h"
 #include "pq/views/mixer/mixer.h"
 #include "pq/views/piano_roll/clip_view.h"
 #include "piano_roll/roll_state.h"
@@ -2537,6 +2539,65 @@ Status setupProjectPatchLanes(Shell& shell) {
   return Ok{};
 }
 
+// RT.3 (--project tests/views/fixtures/audio): Audio From set up — Drums hears Ext. In 1/2, Vox records Drums' mixer
+// output (a cable from its mixer's out onto Vox's Audio In; Live's Post Mixer), Lost has No Input.
+Status setupAudioFrom(Shell& shell) {
+  ViewContext& ctx = shell.context();
+  const doc::Track* drums = namedTrack(*ctx.doc(), "Drums");
+  const doc::Track* vox = namedTrack(*ctx.doc(), "Vox");
+  if (drums == nullptr || vox == nullptr) return Error{ErrorCode::NotFound, "audio-in scenes: no Drums / Vox (needs the audio fixture)", {}};
+  const doc::TrackId d = drums->id, v = vox->id;
+  if (!audio_from::set(ctx, d, doc::AudioFrom::extIn(doc::AudioInput{0, 2}))) return Error{ErrorCode::Unknown, "audio-in scenes: Ext. In refused", {}};
+  doc::Wire mx;
+  mx.mixerOut = d;
+  if (!audio_from::set(ctx, v, doc::AudioFrom::output(mx))) return Error{ErrorCode::Unknown, "audio-in scenes: Drums | Mixer refused", {}};
+  return Ok{};
+}
+
+// RT.3: the circuit's Audio In terminals: Drums' chip reads Ext. In 1/2, a cable hangs from Drums' mixer out down to
+// Vox's Audio In (its chip bare: a cable is its source).
+Status setupProjectPatchAudioIn(Shell& shell) {
+  if (Status s = setupAudioFrom(shell); !s) return s;
+  ViewContext& ctx = shell.context();
+  project_patch::ProjectPatchView* v = findProjectPatch(shell);
+  if (v == nullptr) return Error{ErrorCode::NotFound, "project-patch-audio-in: the view is not installed", {}};
+  shell.tree().layoutNow();
+  v->setShown(true, false);
+  closeModules(*v);
+  shell.tree().layoutNow();
+  v->setLaneTime(0.0, static_cast<double>(ctx.doc()->timeline->sigMap.barToTicks(8)));
+  const project_patch::ProjectPatch& pp = v->patch();
+  const uint32_t b = pp.bandOf(namedTrack(*ctx.doc(), "Drums")->id);
+  if (b == project_patch::kNone) return Error{ErrorCode::NotFound, "project-patch-audio-in: no Drums band", {}};
+  circuit::CircuitCanvas::View view;
+  view.zoom = 1.0;
+  view.x = static_cast<double>(pp.laneX0) - 40.0;
+  view.y = static_cast<double>(pp.bands[b].y) - 44.0;
+  v->canvas().setView(view);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// RT.3: the mixer view's input sections (Drums: Ext. In over 1/2; Vox: Drums over Mixer; Lost: No Input, no channel).
+Status setupMixerAudioIn(Shell& shell) {
+  if (Status s = setupAudioFrom(shell); !s) return s;
+  MixerView* mixer = findMixer(shell);
+  if (mixer == nullptr) return Error{ErrorCode::NotFound, "mixer-audio-in: the mixer is not installed", {}};
+  mixer->setShown(true);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
+// RT.3: the arrangement headers' input sections (Vox tall enough for its Monitor line).
+Status setupTracksAudioIn(Shell& shell) {
+  if (Status s = setupAudioFrom(shell); !s) return s;
+  ArrangementView* a = arrangementOf(shell);
+  if (a == nullptr) return Error{ErrorCode::NotFound, "tracks-audio-in: the arrangement is not installed", {}};
+  a->setTrackHeight(namedTrack(*shell.context().doc(), "Vox")->id, 100.0f);
+  shell.tree().layoutNow();
+  return Ok{};
+}
+
 // TX.lane-edit: the band lanes as an editing surface (the sketch project): a time selection dragged over Keys and Pad
 // (bar 2 … 3.5: it selects the clips it touches, outlined, the windows lighter), and automation mode with Pad's volume
 // automated (a ramp and a curved fall) drawn over its clips, a breakpoint selected; the arrangement's painters throughout.
@@ -4558,7 +4619,10 @@ constexpr SceneEntry kScenes[] = {
     {"project-patch-arp", 1280, 800, setupProjectPatchArp},  // AP.9
     {"project-patch-zoom", 1280, 800, setupProjectPatchZoom},     // T5.x-circuit-chain
     {"project-circuit-device", 1280, 800, setupProjectCircuitDevice},  // T5.x-one-circuit
-    {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},        // T5.x-one-circuit: --project tests/views/fixtures/audio
+    {"project-patch-lanes", 1280, 800, setupProjectPatchLanes},
+    {"project-patch-audio-in", 1280, 800, setupProjectPatchAudioIn},  // RT.3: --project tests/views/fixtures/audio
+    {"mixer-audio-in", 1280, 800, setupMixerAudioIn},                 // RT.3 (the audio fixture)
+    {"tracks-audio-in", 1280, 800, setupTracksAudioIn},               // RT.3 (the audio fixture)        // T5.x-one-circuit: --project tests/views/fixtures/audio
     {"project-patch-lane-edit", 1280, 800, setupProjectPatchLaneEdit},  // TX.lane-edit: a range and automation in the windows
     {"project-patch-auto-wire", 1280, 800, setupProjectPatchAutoWire},  // TL.3: the automation wire
     {"project-meta-faces", 1280, 800, setupProjectMetaFaces},          // TMM.4

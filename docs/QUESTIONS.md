@@ -2961,3 +2961,22 @@ Context: docs/plans/WF.md "WF.2". Choices made where the plan left room (all rev
   send up from −∞ is then refused with "Audio From would create a loop"); Resampling (b); mixer out (b), allowed only
   onto an Audio In. Group membership is followed through outputs (a child routed past its group does not feed it).
 - Status: open
+
+## Q?-RT.3-a · Where the audio track's input section sits in the arrangement header
+- Context: plan RT.3 puts Audio From / channel / Monitor in the arrangement header "when tall enough with In/Out shown";
+  pqdaw has no In/Out toggle and the header strip is 180 px of fixed lines (volume / activator; pan / output; sends).
+- Options: (a) lines 2-3 (Audio From | channel, then Monitor), sends from line 4 on audio tracks; (b) after the sends;
+  (c) an In/Out toggle that adds a column, as in Live.
+- Choice: (a): record-from is the quick path the user asked for, so it shows at the default height; lines that do not
+  fit are hidden as before. Cost: an audio track's sends sit two lines lower than a MIDI track's.
+- Status: open
+
+## Q?-RT.3-b · Labels and defaults in the Audio From choosers
+- Context: Live's Pre FX / Post FX / Post Mixer are, by the RT decisions, plain outputs: the source, a block, the mixer.
+- Choice: the source reads "Clips" (audio track) / "Input" (group, return); a block its name (a rack chain
+  "<Rack> | <Chain>", the rack named "Audio Effect Rack" / "Instrument Rack": racks have no name of their own); the mixer
+  "Mixer". Picking Ext. In starts at 1/2 (1 when the device has one input). Picking a track starts at its last block
+  before the mixer, else its source, else its mixer. A cable from a block off the main path reads back and is listed
+  at its place before "Mixer". Until RT.2 lowers Audio In cables they are drawn dim (not lowered), like any unlowered
+  wire.
+- Status: open

@@ -7,6 +7,9 @@
 //   line 0  [ volume box ] ║ [ activator (track number) ] [ S ] [ arm ● | Pre/Post ]   ▌meter
 //   line 1  [ pan          ] ║ [ output routing ▾ ]                                    ▌
 //   line 2+ [ A send ][ B send ][ C send ] …                                             ▌
+// RT.3: an audio track's input section comes before its sends (lines 2 and 3; the sends from line 4):
+//   line 2  [ Audio From ▾ ] ║ [ channel ▾ ]   (No Input / Resampling: no channel)
+//   line 3                    ║ [ Monitor ▾ ]
 // The tuning chip sits under the track name (TrackHeader::chipSection: the name column's second line, which Live
 // leaves empty). Lines that do not fit the row height are hidden (Live shows more of the mixer as a track grows). Groups have no
 // arm, returns show their letter and a Pre/Post switch instead, the master has volume, pan and its meter only.
@@ -15,7 +18,8 @@
 // per visible track (members of folded groups hidden, like the arrangement), then the returns, the master pinned at
 // the right. Strip: name in the track colour, output, tuning, sends, pan, volume box, fader + meter, activator,
 // solo, arm. T6.4: a MIDI track's strip starts with its input section: MIDI From (All Ins / a port / the Computer
-// Keyboard / No Input), the channel and the note input (Keys / Hz, with the key map), Monitor (In / Auto / Off).
+// Keyboard / No Input), the channel and the note input (Keys / Hz, with the key map), Monitor (In / Auto / Off). RT.3: an
+// audio track's strip starts with Audio From, its channel and Monitor (pq/views/mixer/audio_from.h).
 //
 // Automation (T3.15): an automated control carries a small red marker in its corner (grey while the automation is
 // overridden by a hand-made change, ViewContext::automationOverridden), as in Live.
@@ -138,7 +142,10 @@ public:
   ui::Control* output() const noexcept { return output_; }
   // T6.4: a MIDI track's input section (mixer view only; null otherwise).
   ui::Control* midiIn() const noexcept { return midiIn_; }
-  ui::Control* audioIn() const noexcept { return audioIn_; }  // T6.7: an audio track's input chooser
+  // RT.3 (both layouts): an audio track's Audio From chooser and the channel chooser under it (pq/views/mixer/audio_from.h;
+  // the channel hidden for No Input and Resampling), then Monitor.
+  ui::Control* audioIn() const noexcept { return audioIn_; }
+  ui::Control* audioChannel() const noexcept { return audioChannel_; }
   ui::Control* midiChannel() const noexcept { return channel_; }
   ui::Control* noteInput() const noexcept { return noteInput_; }
   ui::Control* monitor() const noexcept { return monitor_; }
@@ -192,7 +199,9 @@ private:
   std::vector<SendBox> sends_;
   ui::Control* output_ = nullptr;
   ui::Control *midiIn_ = nullptr, *channel_ = nullptr, *noteInput_ = nullptr, *monitor_ = nullptr;  // T6.4
-  ui::Control* audioIn_ = nullptr;  // T6.7
+  ui::Control* audioIn_ = nullptr;       // T6.7; RT.3: Audio From
+  ui::Control* audioChannel_ = nullptr;  // RT.3
+  bool audioChannelShown_ = true;
   ui::DragBox* delay_ = nullptr;  // T6.6
   ui::Label* latency_ = nullptr;
   double latencyShown_ = -1.0;

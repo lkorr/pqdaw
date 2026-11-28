@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include "pq/document/audio_in.h"
 #include "pq/document/instrument_groups.h"
 #include "pq/document/main_path.h"
 #include "pq/document/meta.h"
@@ -19,6 +20,7 @@
 #include "pq/graph/patch_file.h"
 #include "pq/meta/registry.h"
 #include "pq/views/meta/meta_face.h"
+#include "pq/views/mixer/audio_from.h"
 #include "pq/views/panel/group_panel_face.h"
 
 namespace pq::views::project_patch {
@@ -1173,6 +1175,22 @@ struct Builder {
         s.outputs.push_back({"in", ""});
         out.bands[bi].input = addNode(std::move(s));
       }
+      // RT.3: an audio track's Audio In terminal (over its lane's top-left; placeLanes), its source chip as its label.
+      if (t.kind == doc::TrackKind::Audio) {
+        const doc::AudioFrom from = doc::audioFromOf(p, t.id);
+        Node s;
+        s.kind = NodeKind::AudioIn;
+        s.band = bi;
+        s.title = std::string(kAudioInLabel);
+        Port in{"audio in", ""};
+        if (from.kind == doc::AudioFromKind::None) in.label = "No Input";
+        else if (from.kind == doc::AudioFromKind::Ext) in.label = "Ext. In " + audio_from::extChannels(from.ext);
+        in.y = kLaneChipH * 0.5f;
+        s.inputs.push_back(std::move(in));
+        s.h = kLaneChipH;
+        s.w = audioInChipW(s.inputs[0].label);
+        out.bands[bi].audioIn = addNode(std::move(s));
+      }
       // BR.tuning-block: a MIDI track's tuning block (a view of its tuning: no device), closed or opened to its wheel.
       if (t.kind == doc::TrackKind::Midi) {
         bool open = false, wheel = false;
@@ -1336,7 +1354,13 @@ struct Builder {
       uint32_t a = kNone;
       int32_t fromPort = -1;
       bool fromMidi = false;
-      if (w.fromNoteSource()) {
+      if (w.fromMixerOut()) {  // RT.3: a mixer's out onto an Audio In
+        const uint32_t sb = bandOf(w.mixerOut);
+        if (sb != kNone && out.bands[sb].mixer != kNone) {
+          a = out.bands[sb].mixer;
+          fromPort = out.nodes[a].output("out");
+        }
+      } else if (w.fromNoteSource()) {
         const uint32_t sb = bandOf(w.noteSource);
         if (sb != kNone && out.bands[sb].source != kNone) {
           a = out.bands[sb].source;
@@ -1352,7 +1376,13 @@ struct Builder {
       }
       uint32_t b = kNone;
       int32_t toPort = -1;
-      if (w.toMixer()) {
+      if (w.toRecordInput()) {  // RT.3: an audio band's Audio In terminal
+        const uint32_t tb = bandOf(w.recordInput);
+        if (tb != kNone && out.bands[tb].audioIn != kNone) {
+          b = out.bands[tb].audioIn;
+          toPort = 0;
+        }
+      } else if (w.toMixer()) {
         const uint32_t tb = bandOf(w.mixer);
         if (tb != kNone && out.bands[tb].mixer != kNone) {
           b = out.bands[tb].mixer;
@@ -1413,6 +1443,11 @@ struct Builder {
         k = EdgeKind::Notes;
       else if (series && out.nodes[a].kind == NodeKind::Terminal) k = EdgeKind::Notes;
       else if (sameBand && e.graphWire == kNone && ((mainFrom && mainTo) || w.toMixer() || (w.fromNoteSource() && mainFrom))) k = EdgeKind::Chain;
+      if (w.toRecordInput()) {  // RT.3: an audio cable into an Audio In (summed audio: never per voice)
+        k = EdgeKind::Modulation;
+        e.voice = false;
+        e.input = true;
+      }
       crossingEdges(k, a, fromPort, b, toPort, w, std::move(e));
     }
     inputEdges();
@@ -1986,6 +2021,11 @@ struct Builder {
         Node& n = out.nodes[b.source];
         n.x = x0, n.y = b.laneY, n.w = x1 - x0, n.h = b.laneH;
       }
+      if (b.audioIn != kNone) {  // RT.3: over the lane's top-left
+        Node& n = out.nodes[b.audioIn];
+        const LaneRect c = audioInChip(out, b, n.inputs[0].label);
+        n.x = c.x0, n.y = c.y0, n.w = c.x1 - c.x0, n.h = c.y1 - c.y0;
+      }
     }
   }
 
@@ -2038,7 +2078,7 @@ struct Builder {
       return ex.from != ey.from ? ex.from < ey.from : ex.fromPort < ey.fromPort;
     });
     uint32_t lane = kNone, k = 0;
-    float x0 = 0.0f;
+    float x0 = 0.0f, xIn = 0.0f;
     for (const uint32_t i : order) {
       Edge& e = out.edges[i];
       if (e.from != lane) {
@@ -2047,8 +2087,12 @@ struct Builder {
         const Band& b = out.bands[out.nodes[lane].band];
         for (size_t port = 0; port < std::size(kLanePortLabels); ++port)
           if (const LaneRect c = lanePortChip(out, b, port); c.x1 > c.x0) x0 = std::max(x0, c.x1 + kTapLeft);
+        // RT.3: a cable up from an audio lane's top edge starts right of its Audio In chip (one drawn into the band's
+        // input socket leaves the lane's left end: route()).
+        xIn = x0;
+        if (b.audioIn != kNone) xIn = std::max(x0, out.nodes[b.audioIn].x + out.nodes[b.audioIn].w + kTapLeft);
       }
-      const float x = x0 + kTapSpread * static_cast<float>(k++);
+      const float x = (e.drawnTo == kNone ? xIn : x0) + kTapSpread * static_cast<float>(k++);
       e.tapX = std::clamp(x, out.laneX0 + 4.0f, std::max(out.laneX0 + 4.0f, out.laneX1 - 4.0f));
     }
   }
@@ -2579,6 +2623,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     const Node& a = pp.nodes[e.from];
     const Node& b = pp.nodes[e.to];
     if (a.band != bandOfGraph[gw.from.track] || b.band != bandOfGraph[gw.to.track]) return what + ": drawn between other bands";
+    if (b.kind == NodeKind::AudioIn) continue;  // RT.3: an Audio In cable (lowered by RT.2's recording read)
     if (gw.kind == graph::WireKind::Audio && gw.from.port == "out" && gw.to.port == "in") {
       if (e.kind != EdgeKind::Route || a.kind != NodeKind::Mixer || a.outputs[e.fromPort].name != "out" || b.kind != NodeKind::Sum)
         return what + ": not a route from the mixer into the Σ";
@@ -2601,6 +2646,7 @@ std::string checkAgainstGraph(const ProjectPatch& pp, const doc::Project& projec
     if (e.kind == EdgeKind::Route || e.kind == EdgeKind::Send) return "a route / send edge without a graph wire";
     const bool lowered = e.kind != EdgeKind::Modulation || e.status == doc::WireStatus::Lowered || e.status == doc::WireStatus::Delayed;
     if (!lowered) continue;  // an inactive / refused wire: drawn dim, not in the graph
+    if (b.kind == NodeKind::AudioIn) continue;  // RT.3: an Audio In cable (its read is the recording link's, RT.2)
     if (a.band != b.band) return "an edge across bands without a graph wire";
     if (e.kind == EdgeKind::Modulation) {
       const Band& band = pp.bands[a.band];

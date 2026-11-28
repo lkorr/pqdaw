@@ -110,7 +110,12 @@ inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 // drawn into it and its recording input track.in; a cable into where its clip signal enters its chain) or a summing band's bus input (its routes and sends end there; a
 // cable on into its Σ). Zero-size, one output "in".
 // BR.tuning-block: Tuning = a MIDI band's tuning block (see "tuning" above; Band::tuning).
-enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input, Tuning };
+// RT.3 (docs/plans/RT.md "The circuit view"): AudioIn = an audio band's Audio In terminal (Band::audioIn): its record /
+// monitor input, a chip over the left end of its lane's top edge ("Audio In" and its source: "Ext. In 1/2", "No Input",
+// "Resampling", nothing while a cable is drawn into it; audioInChip) with one input pin, a socket at the chip's left
+// edge. A cable dropped on it (from any audio output: a block's, a track's source, a MIXER's out) is the track's Audio
+// From (doc::Wire::recordInput; one source: it replaces the old one). Its port's label is the chip's source text.
+enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input, Tuning, AudioIn };
 
 struct Port {
   std::string name;   // the graph port (`in`, `out`, an export, a param, `notes`, a note output, "s<id>" for a send)
@@ -268,8 +273,9 @@ enum class EdgeKind : uint8_t { Notes, Chain, Route, Send, Modulation };
 // and free wires, a group's frame sockets, a band's input socket — is a hanging cable straight from its source port to its target port (a param
 // whose control shows: onto the control); the bus structure stays orthogonal traces: route / send into a Σ and a
 // mixer's output (the master's mixer into Out).
+// RT.3: a Modulation edge out of a mixer is a cable from its out onto an Audio In (Wire::mixerOut): a cable too.
 inline bool isCable(EdgeKind k, NodeKind from) noexcept {
-  return k != EdgeKind::Route && k != EdgeKind::Send && from != NodeKind::Mixer;
+  return k == EdgeKind::Modulation || (k != EdgeKind::Route && k != EdgeKind::Send && from != NodeKind::Mixer);
 }
 
 struct Edge {
@@ -327,6 +333,7 @@ struct Band {
   uint32_t source = kNone, mixer = kNone, output = kNone;  // node indices (source: the Lane, or the Σ)
   uint32_t input = kNone;  // BR.patch-io: its input socket on its left edge (NodeKind::Input; kNone: none)
   uint32_t tuning = kNone;  // BR.tuning-block: a MIDI band's tuning block (NodeKind::Tuning; kNone: none)
+  uint32_t audioIn = kNone;  // RT.3: an audio band's Audio In terminal (NodeKind::AudioIn; kNone: none)
   std::vector<uint32_t> devices;                           // node indices (its blocks, list order)
   float y = 0, h = 0;          // world: the band's strip
   float x0 = 0, x1 = 0;        // world: its strip from the indent to the end of its chain
@@ -535,6 +542,22 @@ inline LaneRect lanePortChip(const ProjectPatch& pp, const Band& b, size_t port)
   for (size_t i = 0; i < port; ++i) x += lanePortChipW(i) + kLaneChipGap;
   if (x + lanePortChipW(port) > pp.laneX1) return {};
   return {x, b.laneY - kLaneChipH - 1.0f, x + lanePortChipW(port), b.laneY - 1.0f};
+}
+
+// RT.3: an audio band's Audio In terminal over the left end of its lane's top edge (where a MIDI lane has its port
+// chips): "Audio In", then its source chip when there is one (`source`: Port::label of its input). World units.
+// The node's rect starts at its socket (x0); the chip's body starts kAudioInRing right of it (room for the ring).
+inline constexpr std::string_view kAudioInLabel = "Audio In";
+inline constexpr float kAudioInPad = 5.0f, kAudioInCharW = 6.0f, kAudioInRing = 7.0f;
+inline float audioInLabelW() noexcept { return kAudioInCharW * static_cast<float>(kAudioInLabel.size()) + 2.0f * kAudioInPad; }
+inline float audioInChipW(std::string_view source) noexcept {
+  const float label = kAudioInRing + audioInLabelW();
+  return source.empty() ? label : label + kAudioInCharW * static_cast<float>(source.size()) + 2.0f * kAudioInPad;
+}
+inline LaneRect audioInChip(const ProjectPatch& pp, const Band& b, std::string_view source) noexcept {
+  if (b.kind != doc::TrackKind::Audio || b.laneH <= 0.0f) return {};
+  const float x = pp.laneX0 + kLaneChipLeft;
+  return {x, b.laneY - kLaneChipH - 1.0f, std::min(x + audioInChipW(source), pp.laneX1), b.laneY - 1.0f};
 }
 
 // The y offset of pin `i` (an input, or an output) from its node's top: the main pin (0) at the band's spine, the rest

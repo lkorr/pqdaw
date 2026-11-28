@@ -2565,3 +2565,14 @@ Per display (how it was drawn → what was wrong → what changed):
   Drag sideways = density, up / down = pitch spray. Density / ± Pitch / ± Pan sit under it.
 - Position now scrubs while a note plays (it used to be read only at the note's start).
 - Look at: whether Gain belongs in the Source row; the stream's busyness with big harmonic lists.
+
+## RT.3 · Audio From (record from a track): choosers and the circuit's Audio In (👁)
+- Mixer view (Ctrl+Alt+M), an audio track: Audio From (Ext. In / Resampling / No Input / the other tracks with their
+  colour) over the channel (Ext. In: 1, 2, 1/2 …; a track: Clips, its devices, rack chains, Mixer), then Monitor.
+  Golden: `mixer-audio-in`.
+- Arrangement header, an audio track: Audio From | channel on its third line, Monitor on the fourth (sends below).
+  Golden: `tracks-audio-in`. Many arrangement goldens now show "No Input" there.
+- Circuit: each audio lane has an "Audio In" chip at its top-left (Ext. In 1/2 / No Input; bare when a cable feeds it).
+  Drag any audio output onto it, a mixer's out too; click it for the same menu. Golden: `project-patch-audio-in`.
+- Look at: the chip's size at normal zoom (small: lane-chip height); the header's sends moving down two lines on audio
+  tracks (Q?-RT.3-a); the cable is dim until RT.2 lowers it.

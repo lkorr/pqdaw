@@ -1,6 +1,6 @@
-// T6.7: the views' side of recording, through real dispatch — an audio strip's input chooser (none, mono inputs, stereo
-// pairs; channels the device lacks marked; one structural undo step) and its arm button; the arrangement's live
-// recording overlay (read with the playhead while recording, painted over the rows, dropped when the session ends).
+// T6.7: the views' side of recording, through real dispatch — an audio strip's input choosers (RT.3: Audio From, then
+// Ext. In's channels: mono inputs, stereo pairs; channels the device lacks marked; one structural undo step each) and
+// its arm button; the arrangement's live recording overlay (read with the playhead while recording, painted over the rows, dropped when the session ends).
 // M6 review L13: a crashed run's takes offered at start (Open as Project / Show in Explorer / Discard / Later).
 #include <doctest/doctest.h>
 
@@ -89,22 +89,28 @@ TEST_CASE("T6.7 mixer view: an audio strip's input chooser (mono, stereo pairs, 
   REQUIRE(s->audioIn() != nullptr);
   REQUIRE(s->monitor() != nullptr);
   CHECK(s->midiIn() == nullptr);
+  // RT.3: Audio From (Ext. In / Resampling / No Input / tracks) over the channel chooser (pq/views/mixer/audio_from.h).
   const size_t h0 = f.ctx.store().history().cursor();
   Menu* m = f.openMenu(s->audioIn());
-  CHECK(m->items()[0].label == "No Input");
-  CHECK(m->items()[0].checked);
-  (void)f.itemOf(m, "In 4");
-  CHECK_FALSE(m->items()[static_cast<size_t>(f.itemOf(m, "In 4"))].label.ends_with("(not available)"));
-  m->choose(f.itemOf(m, "In 3/4"));
+  CHECK(m->items()[static_cast<size_t>(f.itemOf(m, "No Input"))].checked);
+  m->choose(f.itemOf(m, "Ext. In"));
   f.d.step();
-  CHECK(f.track(f.audio).mixer.audioIn == doc::AudioInput{2, 2});
+  CHECK(f.track(f.audio).mixer.audioIn == doc::AudioInput{0, 2});  // Ext. In starts at 1/2
+  f.d.tree().layoutNow();  // (the channel chooser shows now)
   CHECK(f.ctx.store().history().cursor() == h0 + 1);
   CHECK(f.ctx.store().history().entries().back().changes.structural());  // the track's patch reads track.in now
+  m = f.openMenu(s->audioChannel());
+  (void)f.itemOf(m, "4");
+  CHECK_FALSE(m->items()[static_cast<size_t>(f.itemOf(m, "4"))].label.ends_with("(not available)"));
+  m->choose(f.itemOf(m, "3/4"));
+  f.d.step();
+  CHECK(f.track(f.audio).mixer.audioIn == doc::AudioInput{2, 2});
+  CHECK(f.ctx.store().history().cursor() == h0 + 2);
   // Fewer device inputs: the chosen pair is still offered, marked.
   f.port.inputs = 2;
-  m = f.openMenu(s->audioIn());
-  CHECK(f.itemOf(m, "In 3/4 (not available)") >= 0);
-  m->choose(f.itemOf(m, "In 1"));
+  m = f.openMenu(s->audioChannel());
+  CHECK(f.itemOf(m, "3/4 (not available)") >= 0);
+  m->choose(f.itemOf(m, "1"));
   f.d.step();
   CHECK(f.track(f.audio).mixer.audioIn == doc::AudioInput{0, 1});
   // The arm button arms the audio track (Live: audio tracks record too).
