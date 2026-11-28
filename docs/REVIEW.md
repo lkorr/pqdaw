@@ -2599,3 +2599,16 @@ Per display (how it was drawn → what was wrong → what changed):
   px wide (was 290); the title bar is wider (170 px at the top level).
 - In automation mode (A) the parameter chooser takes the input / chip line.
 - Look at: tests/views/golden/tracks-audio-in.png, tracks-mixer.png, automation-mode-over-clips.png.
+
+## 2026-11-28 · BR.K · task/BR.K-bugs-1128 (bug batch: meters under solo, stereo in instrument groups, Out of Group, dead-end marker)
+- Mixer meters: a track muted by another track's solo (or muted itself) still shows what it plays; you just don't hear
+  it. Same as Live.
+- A Sampler's pan spray (any stereo signal) now stays stereo through the Envelope and Wavetable in an instrument group.
+- Take Out of Group / dragging a block out of a group keeps the topology: a block at the group's head moves before the
+  group (notes → Sampler → the group, which becomes an audio group); at its tail it moves after the group. Dragging it
+  back in right before / after the group restores the old wiring.
+- Project patch: a tiny amber "!" next to a group's In when audio arrives there but nothing inside reads it, and next to
+  its Out (opened group) when nothing reads the group's output. Hover: "Nothing reads this input — the audio stops
+  here." No goldens moved (none of the scenes has such a dead end).
+- Look at: the "!" placement and size at your usual zoom; whether explicitly muted tracks should keep metering (they do
+  now, as in Live); Q?-BR.K-a (a block leaving at the head while other blocks also read the group's In).

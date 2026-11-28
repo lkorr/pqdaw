@@ -2521,10 +2521,61 @@ struct Builder {
 
 }  // namespace
 
+namespace {
+
+// BR.K: the groups' dead-end ports (Port::deadEnd), from the document's wires: one pass over them, then one over the
+// nodes (O(wires + nodes), with the model, never per frame).
+void markDeadEnds(ProjectPatch& pp, const doc::Project& project) {
+  struct Flags {
+    bool audioIn = false, inRead = false, outFed = false, outRead = false;
+  };
+  std::unordered_map<uint32_t, Flags> groups;
+  for (const Node& n : pp.nodes)
+    if (n.group && n.kind == NodeKind::Device) groups.emplace(n.device.value, Flags{});
+  if (groups.empty()) return;
+  auto flags = [&](doc::DeviceId d) -> Flags* {
+    const auto it = groups.find(d.value);
+    return it != groups.end() ? &it->second : nullptr;
+  };
+  for (const doc::Wire& w : doc::wiresOf(project)) {
+    const bool fromDevice = !w.fromNoteSource() && !w.fromMixerOut();
+    if (fromDevice)
+      if (Flags* f = flags(w.from)) {
+        if (w.port == doc::kGroupInPort) f->inRead = true;
+        else if (w.port.empty()) f->outRead = true;
+      }
+    if (w.toMixer() || w.toRecordInput()) continue;
+    Flags* f = flags(w.to);
+    if (f == nullptr) continue;
+    if (w.param == doc::kGroupOutPort) f->outFed = true;
+    if (!w.param.empty()) continue;
+    // Audio into its main input: not the notes (a track's note source, a note device's notes).
+    if (w.fromNoteSource()) continue;
+    if (fromDevice)
+      if (const doc::Device* src = doc::findDevice(project, w.from).device; src != nullptr && doc::isNoteDevice(*src)) continue;
+    f->audioIn = true;
+  }
+  for (Node& n : pp.nodes) {
+    const Flags* f = (n.group && n.kind == NodeKind::Device) || n.kind == NodeKind::Terminal ? flags(n.device) : nullptr;
+    if (f == nullptr) continue;
+    const bool in = f->audioIn && !f->inRead, out = f->outFed && !f->outRead;
+    if (n.kind == NodeKind::Terminal) {
+      if (!n.outputs.empty()) n.outputs[0].deadEnd = in;  // In: its port is the group's In
+      if (!n.inputs.empty()) n.inputs[0].deadEnd = out;   // Out
+      continue;
+    }
+    if (!n.inputs.empty()) n.inputs[0].deadEnd = in;
+    if (!n.outputs.empty()) n.outputs[0].deadEnd = out && n.groupOpen;  // closed: an unwired output shows as one
+  }
+}
+
+}  // namespace
+
 ProjectPatch buildProjectPatch(const doc::Project& project, const doc::LoweredProject& lowered,
                                const doc::DeviceLibrary* devices, const LayoutOptions& options) {
   Builder b{project, lowered, devices, options};
   b.run();
+  markDeadEnds(b.out, project);
   return std::move(b.out);
 }
 

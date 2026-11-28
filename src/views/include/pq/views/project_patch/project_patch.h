@@ -115,6 +115,9 @@ inline constexpr uint32_t kNone = 0xFFFFFFFFu;
 // "Resampling", nothing while a cable is drawn into it; audioInChip) with one input pin, a socket at the chip's left
 // edge. A cable dropped on it (from any audio output: a block's, a track's source, a MIXER's out) is the track's Audio
 // From (doc::Wire::recordInput; one source: it replaces the old one). Its port's label is the chip's source text.
+// BR.K: the hover text of a dead-end port (Port::deadEnd).
+inline constexpr std::string_view kDeadEndInputText = "Nothing reads this input \xE2\x80\x94 the audio stops here.";
+inline constexpr std::string_view kDeadEndOutputText = "Nothing reads this output \xE2\x80\x94 the audio stops here.";
 enum class NodeKind : uint8_t { Lane, Sum, Device, Mixer, Output, Terminal, Input, Tuning, AudioIn };
 
 struct Port {
@@ -145,6 +148,13 @@ struct Port {
   // no orbit.
   bool jack = false;
   float jx = 0, jy = 0;
+  // BR.K (user 2026-11-28: "a tiny ! marker wherever audio doesn't output to anything"): a group's pass-through port
+  // where audio stops — its In (the capsule's main input and its In terminal's port) while audio arrives at the group's
+  // main input and no wire reads its In; its Out (the In terminal's twin and an opened capsule's main output) while
+  // something feeds Out and nothing reads the group's main output. Derived from the document's wires when the model is
+  // built (markDeadEnds), drawn as a small "!" next to the pin, explained on hover. Never a device's own port: a device
+  // consumes its inputs, and its unwired output shows as such.
+  bool deadEnd = false;
 };
 
 struct Node {
