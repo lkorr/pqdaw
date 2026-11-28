@@ -302,3 +302,62 @@ TEST_CASE("SM.12 sliceToNotes: a clip at the marker, a note per slice on keys 36
   CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), g, 0).ok());
   CHECK_FALSE(ops::sliceToNotes(d.doc(), d.store.ids(), d.dev(engine).group == g ? DeviceId{999999} : g, 0).ok());
 }
+
+// SMU: one Sampler — the module is the `sampler` engine's module (the catalogues offer it in the engine's place), and
+// it plays the notes wherever they reach it: first in an Instrument Rack's chain, or through a notes cable from another
+// MIDI track into a free Sampler (both: an instrument group's member / an instrument group, and the project lowers).
+TEST_CASE("SMU one Sampler: the engine's module; in an Instrument Rack chain and fed by a notes cable it plays notes") {
+  CHECK(moduleOfEngine("sampler") == findModule("sampler"));
+  auto lowers = [](const Project& p) {
+    for (const WireState& s : wireStates(p, library())) CHECK((s.status == WireStatus::Lowered || s.status == WireStatus::Inactive));
+    LowerOptions lo;
+    lo.library = &library().library();
+    lo.devices = &library();
+    lo.clipSlotOf = [](TrackId) { return 0u; };
+    lo.metaSlotOf = [](DeviceId, std::string_view, uint32_t) { return 3u; };
+    auto low = lower(p, lo);
+    REQUIRE_MESSAGE(low.ok(), (low.ok() ? std::string() : low.error().message));
+  };
+  auto engineIn = [](const Project& p, DeviceId group) {
+    DeviceId e;
+    forEachDevice(p, [&](const Device& x, const Track&) {
+      if (x.patch == "meta:sampler" && x.group == group) e = x.id;
+    });
+    return e;
+  };
+  SUBCASE("first in an Instrument Rack's chain") {
+    Doc d;
+    d.clearHead();
+    const DeviceId chain = d.edit(ops::addRack(d.doc(), d.store.ids(), d.track, true, 0)).devices.at(0);
+    d.edit(ops::addToChain(d.doc(), d.store.ids(), chain, "module:sampler", DeviceKind::Instrument));
+    DeviceId g;
+    forEachDevice(d.doc(), [&](const Device& x, const Track&) {
+      if (x.group == chain && x.name == "Sampler") g = x.id;
+    });
+    REQUIRE(g.valid());
+    const DeviceId engine = engineIn(d.doc(), g);
+    REQUIRE(engine.valid());
+    const VoiceContexts vc = voiceContexts(d.doc());
+    REQUIRE(vc.blockOf(chain) != nullptr);  // the chain takes the track's notes
+    CHECK(vc.blockOf(chain)->source == d.track);
+    CHECK(vc.memberOf(g) == vc.blockOf(chain));  // the Sampler (and its engine) run per note of them
+    CHECK(vc.of(engine) == vc.blockOf(chain));
+    lowers(d.doc());
+  }
+  SUBCASE("a free Sampler on another MIDI track, played by a notes cable") {
+    Doc d;
+    const TrackId other = d.edit(ops::createTrack(d.doc(), d.store.ids(), TrackKind::Midi, {}, "B")).tracks.at(0);
+    const DeviceId g = test_blocks::addModule(d.store, other, "sampler", ops::kOffPath);
+    CHECK_FALSE(isInstrumentGroup(d.doc(), g));  // unwired: no notes reach it
+    Wire notes;
+    notes.noteSource = d.track;
+    notes.to = g;
+    notes.law = WireLaw::Add;
+    d.edit(ops::connect(d.doc(), d.store.ids(), notes));
+    const VoiceContexts vc = voiceContexts(d.doc());
+    REQUIRE(vc.blockOf(g) != nullptr);
+    CHECK(vc.blockOf(g)->source == d.track);  // A's notes play it
+    CHECK(vc.of(engineIn(d.doc(), g)) == vc.blockOf(g));
+    lowers(d.doc());
+  }
+}
