@@ -1560,3 +1560,9 @@ Entries up to 2026-11-06 are in docs/archive/PROGRESS-2026-10-20_to_11-06.md.
 - Verified: test_audio_in 6/6 (398 assertions); -Affected 43/46 — two wall-clock checks pass alone (loaded machine), views fixture byte-compare fixed in ce6a4c42.
 - Perf / CPU-efficiency check: no cable → one wire pass, no lowering copy; menu filter computes its loop set once per menu.
 - Notes/blockers: lowering ignores Audio In cables until RT.2 (`withoutAudioIns`); Q?-RT.1-a (sends at −∞ don't count for loops; Resampling refused if the track reaches master other than by its output; mixerOut is its own field).
+
+## 2026-11-27 · RT.3 · task/RT.3-audio-in-ui (merged 336b6e12)
+- Did: Audio From + channel choosers in the mixer strip and arrangement header; circuit Audio In terminal (chip Ext. In / No Input, any audio output incl. a mixer out drags onto it, refusals on hover/release); one menu builder (views/mixer/audio_from.h) for all three, edits via ops::setAudioFrom.
+- Verified: pq_tests_views default tier 1073/1073 (one known unrelated SIGSEGV re-run); test_audio_from through real window/menu events; pqdaw compiles.
+- Perf / CPU-efficiency check: UI thread only; menu filter built once per opening.
+- Notes/blockers: Audio In cables drawn dim until RT.2. Goldens: new project-patch-audio-in, mixer-audio-in, tracks-audio-in; 19 re-recorded (No Input header line, lane chip). Q?-RT.3-a/b.
