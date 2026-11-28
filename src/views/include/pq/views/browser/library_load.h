@@ -49,7 +49,9 @@ std::string deviceDisplayName(const ViewContext& ctx, std::string_view patch);
 
 // TMM.10: the meta-module types offered as chain devices (those with a face that may be a chain device), in
 // registration order: the "Meta Modules" of the device menus and the browser.
-// GU.7: `project` — where modules can be spawned (a track's circuit): without the engines a module is built around.
+// GU.7: `project` — where every module is offered (a track's circuit, the browser, the band menu): without the engines
+// a module is built around (doc::moduleOfEngine). SMU: never an engine whose module is an instrument (the Sampler): the
+// Device view lists that module with the instruments, so one Sampler everywhere.
 std::vector<const meta::Type*> metaModuleTypes(bool project = false);
 
 // A new built-in item with its default preset (Library::defaultPreset) when the User Library has one. Returns the new

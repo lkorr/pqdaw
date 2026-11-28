@@ -2454,7 +2454,7 @@ ui::Menu* ProjectPatchView::openBandMenu(uint32_t band, Vec2 at) {
     ui::MenuItem head = ui::MenuItem::item("Meta Modules");
     head.enabled = false;
     add.push_back(std::move(head));
-    for (const meta::Type* t : metaModuleTypes()) {
+    for (const meta::Type* t : metaModuleTypes(true)) {
       const doc::TrackId track = b.track;
       const std::string patch = std::string(doc::kMetaDevicePrefix) + std::string(t->id);
       ui::MenuItem it = ui::MenuItem::item("   " + std::string(t->name), [this, track, patch] { (void)addDevice(track, patch); });

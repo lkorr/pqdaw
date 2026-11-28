@@ -388,6 +388,9 @@ const ModuleInfo* moduleOfEngine(std::string_view typeId) noexcept {
   if (typeId.empty()) return nullptr;
   for (const ModuleInfo& m : kModules)
     if (moduleEngineType(m.kind) == typeId) return &m;
+  // SMU: the Sampler is a group of its own around `meta:sampler` (samplerBlocks), not an engine module, but it is that
+  // engine's module all the same: the catalogues offer it in the engine's place (one Sampler).
+  if (typeId == "sampler") return findModule("sampler");
   return nullptr;
 }
 

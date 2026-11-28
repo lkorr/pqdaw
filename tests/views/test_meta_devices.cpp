@@ -394,6 +394,10 @@ TEST_CASE("meta devices (views): the device menu's Meta Modules — the kind fol
   const std::vector<const meta::Type*> types = metaModuleTypes();
   CHECK(std::find(types.begin(), types.end(), &meta::wavetableType()) != types.end());
   for (const meta::Type* x : types) CHECK(x->id != "phase_acc");
+  // SMU: one Sampler — the module (with the instruments); its engine is no Meta Module of its own anywhere.
+  CHECK(std::count_if(menu.begin(), menu.end(), [](const MenuItem& m) { return m.label == "   Sampler"; }) == 1);
+  for (const bool project : {false, true})
+    for (const meta::Type* x : metaModuleTypes(project)) CHECK(x->id != "sampler");
 }
 
 

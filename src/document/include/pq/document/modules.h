@@ -138,7 +138,8 @@ struct EngineModuleOptions {
 };
 // The engine type of an engine module ("wavetable" …), "" for the Phase Accumulator and the VCA.
 std::string_view moduleEngineType(ModuleKind k) noexcept;
-// The module built around engine type `typeId` (null: none).
+// The module built around engine type `typeId` (null: none): an engine module, or the Sampler for "sampler". The
+// catalogues offer it instead of the bare engine (which stays a circuit block inside groups).
 const ModuleInfo* moduleOfEngine(std::string_view typeId) noexcept;
 BlockSet engineModuleBlocks(IdSource& ids, ModuleKind k, const EngineModuleOptions& o = {}, EngineRoles* roles = nullptr);
 // The module's panel bound to engine block `engine` (the Phase Accumulator and the VCA: an empty panel).

@@ -94,7 +94,8 @@ LibraryItem libraryItemOf(std::string_view path) noexcept {
 std::vector<const meta::Type*> metaModuleTypes(bool project) {
   std::vector<const meta::Type*> out;
   for (const meta::Type* t : meta::types())
-    if (hasFace(*t) && !(project && doc::moduleOfEngine(t->id) != nullptr)) out.push_back(t);  // TMM.10-fix1: every type is a chain device anywhere
+    if (const doc::ModuleInfo* m = doc::moduleOfEngine(t->id); hasFace(*t) && !(m != nullptr && (project || m->instrument)))
+      out.push_back(t);  // TMM.10-fix1: every type is a chain device anywhere
   return out;
 }
 
