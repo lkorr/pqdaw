@@ -311,6 +311,7 @@ bool MixerController::updateLatencyRow() {
 MixerStrip::MixerStrip(std::string name, std::shared_ptr<MixerController> controller, StripLayout layout)
     : Widget(std::move(name)), ctl_(std::move(controller)), layout_(layout) {
   setLayout(LayoutKind::Custom);
+  if (layout_ == StripLayout::Header) setHittable(false);  // RT.4: it covers the header's title (mixer.h)
   ctl_->addStrip(this);
 }
 
@@ -651,42 +652,67 @@ void MixerStrip::arrange(LayoutPass& pass) {
   else arrangeVertical(pass);
 }
 
-// Header columns (logical px): A = 4..68 (volume; pan below), the separator 70..72, B = 74..162
-// (activator 74..112, S 114..132, arm / Pre-Post 134..162; output below), the meter 166..174.
+// RT.4 header (logical px; the strip spans the header right of the group stripes, sides as in mixer.h's comment):
+// the name column from the left (line 0 is the header's title; line 1 volume 4..68 and pan 72..136; line 2 an
+// audio track's Audio From 4..68 and channel 72..160, or the header's tuning chip; sends from line 3, three per
+// line at 54 px), each box clipped to end 2 px before the side column; the side column the last kHeaderSideWidth px
+// (its separator 0..2; activator 4..42, S 44..62, arm / Pre-Post 64..92; output on line 1, Monitor on line 2; the
+// meter 96..104, full height).
 void MixerStrip::arrangeHeader(LayoutPass& pass) {
   const IRect r = rect();
+  const UiScale s(pass.scale());
   const float L = mm::kLine, T = mm::kBoxTop, B = mm::kBox;
-  put(pass, volume_, r, 4, T, 64, B);
-  put(pass, activator_, r, 74, T, 38, B);
-  put(pass, solo_, r, 114, T, 18, B);
-  put(pass, arm_, r, 134, T, 28, B);
-  put(pass, post_, r, 134, T, 28, B);
-  if (kind_ == doc::TrackKind::Master) {
-    put(pass, pan_, r, 74, T, 38, B);  // the master's pan sits where the others have their activator
-  } else {
-    put(pass, pan_, r, 4, L + T, 64, B);
-    put(pass, output_, r, 74, L + T, 88, B);
-  }
-  // RT.3: an audio track's input section under the output (Live's In/Out): Audio From over the channel, then Monitor;
-  // the sends after it. Lines that do not fit the row height are hidden, as the rest.
-  float sendLine = 2.0f;
+  const int32_t side = std::max(0, r.w - s.px(mm::kHeaderSideWidth));  // device px from r.x
+  const int32_t nameRight = std::max(0, side - s.px(2.0f));
+  // Places `w` at logical (x, y, width, height) from device-px column origin `x0`, its right edge at most `right`;
+  // hidden when it does not fit the row height or the column.
+  auto at = [&](Widget* w, int32_t x0, int32_t right, float x, float y, float width, float height) {
+    if (!w) return;
+    const int32_t px0 = x0 + s.px(x), px1 = std::min(x0 + s.px(x + width), right);
+    const bool fits = s.px(y + height) <= r.h && px1 - px0 >= s.px(12.0f);
+    if (w->visible() != fits) w->setVisible(fits);
+    if (!fits) return;
+    const int32_t y0 = r.y + s.px(y);
+    pass.place(*w, {r.x + px0, y0, px1 - px0, r.y + s.px(y + height) - y0});
+  };
+  auto name = [&](Widget* w, float x, float y, float width) { at(w, 0, nameRight, x, y, width, B); };
+  auto right = [&](Widget* w, float x, float y, float width) { at(w, side, r.w, x, y, width, B); };
+  right(activator_, 4, T, 38);
+  right(solo_, 44, T, 18);
+  right(arm_, 64, T, 28);
+  right(post_, 64, T, 28);
+  name(volume_, 4, L + T, 64);
+  name(pan_, 72, L + T, 64);
+  right(output_, 4, L + T, 88);
+  // RT.3: an audio track's input section (Live's In/Out): Audio From and its channel on the name column's line 2,
+  // Monitor beside them. RT.4: the automation-mode parameter chooser takes that name-column line (inputLineHidden_).
+  float sendLine = kind_ == doc::TrackKind::Return ? 2.0f : 3.0f;  // MIDI / group: the tuning chip's line first
   if (audioIn_) {
-    put(pass, audioIn_, r, 4, 2 * L + T, 64, B);
-    put(pass, audioChannel_, r, 74, 2 * L + T, 88, B);
-    if (audioChannel_ && !audioChannelShown_) audioChannel_->setVisible(false);
-    put(pass, monitor_, r, 74, 3 * L + T, 88, B);
-    sendLine = 4.0f;
+    if (inputLineHidden_) {
+      audioIn_->setVisible(false);
+      if (audioChannel_) audioChannel_->setVisible(false);
+    } else {
+      name(audioIn_, 4, 2 * L + T, 64);
+      name(audioChannel_, 72, 2 * L + T, 88);
+      if (audioChannel_ && !audioChannelShown_) audioChannel_->setVisible(false);
+    }
+    right(monitor_, 4, 2 * L + T, 88);
   }
   for (size_t i = 0; i < sends_.size(); ++i) {
     const auto line = sendLine + static_cast<float>(i / 3);
-    put(pass, sends_[i].box, r, 4 + 54.0f * static_cast<float>(i % 3), line * L + T, 50, B);
+    name(sends_[i].box, 4 + 54.0f * static_cast<float>(i % 3), line * L + T, 50);
   }
   if (meter_) {
-    const UiScale s(pass.scale());
     const int32_t top = s.px(T), h = std::max(s.px(B), r.h - 2 * top);
     if (!meter_->visible()) meter_->setVisible(true);
-    pass.place(*meter_, {r.x + s.px(166), r.y + top, s.px(174) - s.px(166), h});
+    pass.place(*meter_, {r.x + side + s.px(96), r.y + top, s.px(104) - s.px(96), h});
   }
+}
+
+void MixerStrip::setInputLineHidden(bool hidden) {
+  if (hidden == inputLineHidden_) return;
+  inputLineHidden_ = hidden;
+  if (layout_ == StripLayout::Header && audioIn_) invalidateArrange();
 }
 
 // Vertical strip (logical px, width kStripWidth): title 0..20, output, tuning, sends, pan, volume, then fader + meter
@@ -756,8 +782,8 @@ void MixerStrip::paint(PaintContext& ctx) {
   if (r.empty()) return;
   DrawList& dl = ctx.dl;
   if (layout_ == StripLayout::Header) {
-    // The separator column between the volume and the activator (Live's dark rule), full height.
-    const int32_t x0 = r.x + ctx.scale.px(70.0f), x1 = r.x + ctx.scale.px(72.0f);
+    // The separator before the side column (Live's dark rule), full height.
+    const int32_t x0 = r.x + std::max(0, r.w - ctx.scale.px(mm::kHeaderSideWidth)), x1 = x0 + ctx.scale.px(2.0f);
     dl.addRectFilled(IRect{x0, r.y, std::max(1, x1 - x0), r.h}.toRect(), m.separator);
     if (meter_ && meter_->visible()) dl.addRectFilled(meter_->rect().toRect(), m.meterWell);
     return;

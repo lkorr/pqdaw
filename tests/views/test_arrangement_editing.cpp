@@ -102,6 +102,9 @@ struct Fixture {
     return {arr->xOfTick(static_cast<double>(get(r).start + dt)) + 0.5f, static_cast<float>(lane.bottom() - 8)};
   }
   Vec2 lane(std::string_view rowName, Ticks t) {
+    // RT.4: the default row is three header lines tall, so the lower rows can start below the view: scroll to it.
+    arr->revealRow(row(rowName));
+    d.tree().layoutNow();
     const IRect lane = arr->rowLaneRect(row(rowName));
     return {arr->xOfTick(static_cast<double>(t)) + 0.5f, static_cast<float>(lane.bottom() - 8)};
   }

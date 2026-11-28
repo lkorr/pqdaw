@@ -121,8 +121,8 @@ inline void buildAutomationProject(doc::DocumentStore& store) {
   shape(store, lead, gate, 4.0, 8.0, doc::ops::ShapeKind::Square, 0.0, 1.0, 4);
 
   doc::ViewState& v = store.view();
-  v.tracks[drums].height = 56;
-  v.tracks[lead].height = 56;
+  v.tracks[drums].height = 64;  // RT.4: three lines, the parameter chooser on the third
+  v.tracks[lead].height = 64;
 }
 
 // Benchmark project: `tracks` MIDI tracks, one 32-bar clip each, a volume lane of `points` breakpoints over 64 bars

@@ -86,8 +86,8 @@
 //   T3.9  (editing, done): selection() / setSelection(), timeSelection()/setTimeSelection() (Z zooms to it),
 //         rows()/rowAt()/tickAtX()/xOfTick() for hit testing, `onPaintOverlay` (drawn after the editing overlay),
 //         the "arrangement" key scope and ActionRegistry::set for its actions.
-//   T3.10 (headers, mixer): TrackHeader::mixerSection() (a Row host at the header's right, sized by
-//         setHeaderMixerWidth), setHeaderDecorator() (called whenever a header is bound to a track: add or update
+//   T3.10 (headers, mixer): TrackHeader::mixerSection() (a Row host over the header; RT.4: the title stops at the
+//         side column, setHeaderSideWidth), setHeaderDecorator() (called whenever a header is bound to a track: add or update
 //         controls), setHeaderWidth(), heights from the store's ViewState (TrackView::height, logical px).
 //   T3.15 (automation lanes): automation() (pq/views/arrangement/automation.h), laneRows() / laneRect() (lanes under
 //         their track: ArrangementRow::lanesH), the header's paramChooser() / lanesToggle(), A = automation mode.
@@ -163,17 +163,21 @@ inline constexpr float kRulerHeight = 40.0f;      // numbers 17 + loop brace 11 
 inline constexpr float kRulerNumberRow = 17.0f;
 inline constexpr float kRulerLoopRow = 11.0f;
 inline constexpr float kTimeRulerHeight = 18.0f;  // min:sec ruler under the tracks (Live)
-inline constexpr float kHeaderWidth = 290.0f;     // name strip + mixer section, as in Live 12
-inline constexpr float kHeaderMixerWidth = 180.0f;  // T3.10's mixer section (pq/views/mixer/mixer.h)
-inline constexpr float kTrackHeight = 48.0f;      // default lane height (ViewState height 0)
+// RT.4: the header is a name column (title, then the mixer's volume + pan and the input line under it) and the
+// mixer's side column at the right (toggles, output, Monitor, meter; pq/views/mixer/mixer.h). 280 fits the name
+// column's widest line (Audio From + channel: 162 px) with one group level of indent to spare.
+inline constexpr float kHeaderWidth = 280.0f;
+inline constexpr float kHeaderSideWidth = 110.0f;  // T3.10 / RT.4: the mixer's side column (the title ends there)
+inline constexpr float kHeaderLine = 20.0f;        // one header line (= mixer_metrics::kLine)
+inline constexpr float kTrackHeight = 68.0f;       // default lane height (ViewState height 0): three header lines
 inline constexpr float kMinTrackHeight = 20.0f;
 inline constexpr float kMaxTrackHeight = 480.0f;
-inline constexpr float kReturnTrackHeight = 20.0f;  // default return row (Live: one line)
+inline constexpr float kReturnTrackHeight = 40.0f;  // default return row: title + volume / pan (RT.4; was one line)
 inline constexpr float kMasterTrackHeight = 40.0f;  // default master row
 inline constexpr float kBottomGap = 4.0f;           // divider between the tracks and the returns / master
 inline constexpr float kBottomMaxFraction = 0.5f;   // the pinned rows take at most this share of the track area
 inline constexpr float kResizeGrab = 3.0f;          // logical px at a header's bottom edge that resize the row
-inline constexpr float kChipWidth = 96.0f;          // the header's chip section (tuning chip), under the title
+inline constexpr float kChipWidth = 96.0f;          // the header's chip section (tuning chip): name column, line 2
 inline constexpr float kChipHeight = 14.0f;
 inline constexpr float kTitleHeight = 20.0f;      // track header title bar
 inline constexpr float kClipTitleHeight = 14.0f;  // clip title strip
@@ -258,11 +262,14 @@ public:
   void bind(const ArrangementRow& row, std::span<const ArrangementRow> rows);
   doc::TrackId trackId() const noexcept { return id_; }
   const doc::Track* track() const noexcept { return track_; }
-  // T3.10's controls go here: a Row host placed at the header's right edge, full height, sized by
-  // ArrangementView::setHeaderMixerWidth (0 = hidden).
+  // T3.10's controls go here: a Row host covering the header right of the group stripes, full height (RT.4: the
+  // mixer lays out the name column under the title and the side column, ArrangementView::setHeaderSideWidth wide,
+  // at the right edge; side width 0 = hidden). Not hittable itself: the title bar and fold triangle under it stay
+  // reachable.
   ui::Widget& mixerSection() const noexcept { return *mixer_; }
-  // T3.10 / T3.14: a Stack host under the title (the name column's second line, kChipWidth wide, kChipHeight high),
-  // for the tuning chip; hidden while the row is too low for it.
+  // T3.10 / T3.14: a Stack host in the name column's third line (RT.4; lines 0 and 1 are the title and volume /
+  // pan; kChipWidth wide, kChipHeight high), for the tuning chip; hidden while the row is too low for it or while
+  // the automation-mode parameter chooser takes that line.
   ui::Widget& chipSection() const noexcept { return *chip_; }
   // The fold toggle (groups only; hidden otherwise).
   ui::Control& foldButton() const noexcept { return *fold_; }
@@ -402,12 +409,13 @@ public:
   // A row's height in logical px (ViewState, not undoable; Q26), clamped to [kMinTrackHeight, kMaxTrackHeight].
   void setTrackHeight(doc::TrackId id, float logicalPx);
   float trackHeight(doc::TrackId id) const noexcept;
-  // T3.10: header width and the width of each header's mixer section (logical px), and a hook run whenever a
-  // header is bound to a track (create or update its controls there).
+  // T3.10: header width and the width of each header's mixer side column (logical px; RT.4: the title bar ends
+  // there, 0 = no mixer section), and a hook run whenever a header is bound to a track (create or update its
+  // controls there).
   void setHeaderWidth(float logicalPx);
   float headerWidth() const noexcept { return headerWidth_; }
-  void setHeaderMixerWidth(float logicalPx);
-  float headerMixerWidth() const noexcept { return mixerWidth_; }
+  void setHeaderSideWidth(float logicalPx);
+  float headerSideWidth() const noexcept { return sideWidth_; }
   using HeaderDecorator = std::function<void(TrackHeader&, const ArrangementRow&)>;
   void setHeaderDecorator(HeaderDecorator d);
   // T3.9: drawn by the lanes after the clips and before the playhead (selection, drag ghosts). Device px, inside
@@ -665,7 +673,7 @@ private:
   float axisScale_ = 1.0f;
   std::optional<double> pinnedPpt_;
   float headerWidth_ = arrangement_metrics::kHeaderWidth;
-  float mixerWidth_ = arrangement_metrics::kHeaderMixerWidth;
+  float sideWidth_ = arrangement_metrics::kHeaderSideWidth;
   float rowsScale_ = 0.0f;  // UI scale the rows' device px were computed at
   std::optional<TickRange> timeSelection_;
   struct SavedView {

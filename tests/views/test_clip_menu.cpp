@@ -542,10 +542,13 @@ TEST_CASE("clip menu (SX.5): clips near the window's top / bottom and narrow cli
     f.settle();
     f.checkAround(beat);
   }
-  SUBCASE("the last audio track, scrolled to the bottom of a short window") {
+  SUBCASE("an audio track scrolled to the bottom of a short window") {
     Fixture f(1280, 420);
     const doc::ClipRef vox = f.clip("Vox", 0);
-    f.arr->scrollToY(1 << 20);
+    // RT.4: the rows under Vox are taller now (three header lines), so scrolling to the end would take it out of
+    // view: scroll so its row ends at the bottom of the view.
+    for (const ArrangementRow& row : f.arr->rows())
+      if (row.id == vox.track) f.arr->scrollToY(row.y + row.h - f.arr->lanesViewport().h);
     f.d.tree().layoutNow();
     f.d.step();
     f.d.click(f.freeTitle(vox));

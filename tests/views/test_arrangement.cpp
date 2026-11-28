@@ -97,7 +97,7 @@ TEST_CASE("arrangement: installed in the track area, rows follow the track tree"
   CHECK(rows[6].group);
   CHECK(rows[6].folded);
   CHECK(rows[0].h == 60);  // ViewState height (logical px at scale 1)
-  CHECK(rows[1].h == 48);
+  CHECK(rows[1].h == static_cast<int32_t>(arrangement_metrics::kTrackHeight));  // the default (RT.4: three lines)
   CHECK(rows[1].y == 60);
   // Headers are widgets with stable paths; the lanes are one widget.
   auto* h = dynamic_cast<TrackHeader*>(f.d.find(std::string(kTracks) + "/track[2]"));
