@@ -61,6 +61,7 @@
 
 #include "../common/waveform_data.h"
 #include "faces.h"
+#include "pq/dsp/grain_schedule.h"
 #include "pq/dsp/granular.h"
 #include "pq/dsp/warp_voice.h"
 #include "pq/media/waveform.h"
@@ -440,6 +441,12 @@ public:
 
   // (tests) the playheads shown and the waveform's columns; SM.13: the grains shown
   size_t playheads() const noexcept { return shown_v_.size(); }
+  void stream(SamplerFaceStream& out) const {  // BR.J (tests)
+    out.span = stream_.span;
+    out.size = stream_.size;
+    out.grains.clear();
+    for (const StreamGrain& g : stream_.grains) out.grains.push_back({g.t, g.skipped});
+  }
   size_t grainDots() const noexcept { return grainCount_; }
   // WF.1 (tests): the editor's view and what the last paints drew.
   void wave(SamplerFaceWave& out) const noexcept {
@@ -1782,7 +1789,7 @@ void SamplerFace::paintLens(ui::FacePainter& p, const ui::Theme& th) {
 void SamplerFace::simulateStream() {
   const MetaTarget& t = target();
   const int mode = std::clamp(static_cast<int>(std::lround(t.setting(meta::kSmpGranMode))), 0, 2);  // Classic, Loop, Cloud
-  const double size = std::clamp(t.value(meta::kSmpGrainSize), 0.005, 1.0), density = std::clamp(t.value(meta::kSmpDensity), 1.0, 400.0);
+  const double size = std::clamp(t.value(meta::kSmpGrainSize), 0.001, 4.0), density = std::clamp(t.value(meta::kSmpDensity), 0.01, 4000.0);
   const double root = std::clamp(t.value(meta::kSmpRoot), 8.0, 20000.0);
   const auto grains = static_cast<uint32_t>(std::clamp(std::lround(t.setting(meta::kSmpGrains)), 1L, 32L));
   const bool harmonic = std::lround(t.setting(meta::kSmpHarmonic)) != 0;
@@ -1798,53 +1805,51 @@ void SamplerFace::simulateStream() {
   if (key == stream_.key) return;
   stream_.key = key;
   const double period = mode == 0 ? 1.0 / root : 1.0 / density;
-  stream_.size = size;
+  // BR.J (bug 2026-11-27_21-16-56): the grains are the kernel's (dsp::grainSchedule: whole-sample onsets, lengths in
+  // samples, slots freed on the kernel's grid cells) at 48 kHz, and the span is continuous: it was snapped to round
+  // steps chosen by density too, so the plot re-zoomed 2–2.5× at 35, 70, 140 … Hz. Loop / Cloud: at least 250 ms, so
+  // above 14 Hz a density change only packs the grains tighter at one zoom; Classic (one grain per period): 3.5 periods.
+  // Either way at least 2.5 grain lengths.
+  constexpr double kSr = 48000.0;
+  dsp::GrainSpawnLaw law;
+  law.mode = static_cast<dsp::GranularMode>(mode);
+  law.density = density;
+  law.size = size;
+  law.grains = grains;
+  law.sr = kSr;
+  law.seed = 0x5EEDu;
+  const double len = static_cast<double>(std::clamp<int64_t>(std::llround(std::clamp(size, 0.001, 4.0) * kSr), 2, int64_t{1} << 24)) / kSr;
+  stream_.size = len;
   stream_.rate = 1.0 / period;
-  stream_.span = 8.0;
-  for (const double s : {0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 4.0, 8.0})
-    if (s >= 2.5 * size && s >= 3.5 * period) {
-      stream_.span = s;
-      break;
-    }
+  stream_.span = std::max({mode == 0 ? 0.0 : 0.25, 2.5 * len, 3.5 * period});
   const auto h = harmonics();
   double most = 0.0;
   if (harmonic)
     for (const auto& [n, d] : h) most = std::max(most, std::fabs(12.0 * std::log2(static_cast<double>(n) / d)));
   stream_.range = static_cast<float>(std::max(12.0, std::ceil((most + sprayPitch) / 12.0 - 1e-9) * 12.0));
-  // The kernel's spawn law from 2 grain lengths before the plot (so it starts in its steady state).
-  constexpr uint32_t kSeed = 0x5EEDu;
+  // The kernel's grains from its trigger, shown from 2 grain lengths on (its steady state).
   stream_.grains.clear();
   if (stream_.grains.capacity() < kStreamMax) stream_.grains.reserve(kStreamMax);
-  std::array<double, 32> ends{};  // the playing grains' ends (at most Grains of them)
-  uint32_t playing = 0, harm = 0, shown = 0, skipped = 0;
-  double at = -2.0 * size;
-  for (uint32_t k = 0; at < stream_.span && stream_.grains.size() < kStreamMax; ++k) {
-    const auto rnd = [&](uint32_t d) { return 2.0 * static_cast<double>(dsp::grainUniform(kSeed, 0, k, d)) - 1.0; };
-    double interval = period;
-    if (mode == 2) interval *= -std::log(1.0 - 0.999999 * static_cast<double>(dsp::grainUniform(kSeed, 0, k, 0)));
-    uint32_t live = 0;
-    for (uint32_t j = 0; j < playing; ++j)
-      if (ends[j] > at) ends[live++] = ends[j];
-    playing = live;
-    StreamGrain g{static_cast<float>(at), 0.0f, 0.0f, playing >= grains};
-    if (!g.skipped) {
-      ends[playing++] = at + size;
-      if (harmonic && !h.empty()) {
-        const auto& [n, d] = h[harm++ % h.size()];
-        g.semis = static_cast<float>(12.0 * std::log2(static_cast<double>(n) / d));
-      }
+  const auto from = static_cast<int64_t>(std::ceil(2.0 * len * kSr));
+  const auto to = from + static_cast<int64_t>(std::ceil(stream_.span * kSr));
+  uint32_t harm = 0, shown = 0, skipped = 0;
+  (void)dsp::grainSchedule(law, to, [root](int64_t) { return root; }, [&](const dsp::GrainSpawn& sp) {
+    const auto rnd = [&](uint32_t d) { return 2.0 * static_cast<double>(dsp::grainUniform(law.seed, 0, sp.k, d)) - 1.0; };
+    StreamGrain g{static_cast<float>(static_cast<double>(sp.start - from) / kSr), 0.0f, 0.0f, sp.skipped()};
+    if (!g.skipped && harmonic && !h.empty()) {
+      const auto& [n, d] = h[harm++ % h.size()];
+      g.semis = static_cast<float>(12.0 * std::log2(static_cast<double>(n) / d));
     }
     if (sprayPitch > 0.0) g.semis += static_cast<float>(rnd(2) * sprayPitch);
     if (sprayPan > 0.0) g.pan = static_cast<float>(rnd(3) * sprayPan);
-    if (at + size > 0.0) stream_.grains.push_back(g);
-    if (at >= 0.0) {
+    if (sp.start + sp.len > from && stream_.grains.size() < kStreamMax) stream_.grains.push_back(g);
+    if (sp.start >= from) {
       ++shown;
       skipped += g.skipped ? 1u : 0u;
     }
-    at += std::max(interval, 1.0 / 192000.0);
-  }
+  });
   stream_.dropped = shown > 0 ? static_cast<float>(skipped) / static_cast<float>(shown) : 0.0f;
-  stream_.overlap = static_cast<float>(size / period);
+  stream_.overlap = static_cast<float>(len / period);
   // The windows' sum per column (the grains that play).
   const float* w = dsp::grainShapeTable(static_cast<dsp::GrainShape>(std::clamp(static_cast<int>(std::lround(shape)), 0, 4)));
   stream_.sum.fill(0.0f);
@@ -1852,9 +1857,9 @@ void SamplerFace::simulateStream() {
   for (const StreamGrain& g : stream_.grains) {
     if (g.skipped) continue;
     const int c0 = std::max(0, static_cast<int>(std::ceil(g.t / colT - 0.5)));
-    const int c1 = std::min(kStreamCols - 1, static_cast<int>(std::floor((g.t + size) / colT - 0.5)));
+    const int c1 = std::min(kStreamCols - 1, static_cast<int>(std::floor((g.t + len) / colT - 0.5)));
     for (int c = c0; c <= c1; ++c) {
-      const double u = ((c + 0.5) * colT - g.t) / size;
+      const double u = ((c + 0.5) * colT - g.t) / len;
       stream_.sum[c] += w[static_cast<size_t>(std::lround(std::clamp(u, 0.0, 1.0) * dsp::kGrainShapePoints))];
     }
   }
@@ -1926,7 +1931,7 @@ void SamplerFace::paintStream(ui::FacePainter& p, const ui::Theme& th) {
       p.polyline(bottom_, 0.6f, ui::mulAlpha(c, 0.5f));
     }
   dl.popClip();
-  std::snprintf(b, sizeof b, stream_.span < 1.0 ? "%.0f ms" : "%.0f s", stream_.span < 1.0 ? stream_.span * 1000.0 : stream_.span);
+  std::snprintf(b, sizeof b, stream_.span < 1.0 ? "%.0f ms" : "%.2g s", stream_.span < 1.0 ? stream_.span * 1000.0 : stream_.span);
   p.textAligned({x1 - 1.0f, kStreamPlot.y1 - 5.0f}, b, 5.0f, ui::mulAlpha(th.face.ink, 0.75f), 1.0f);
   if (stream_.range > 12.0f) {
     std::snprintf(b, sizeof b, "\xC2\xB1%.0f st", static_cast<double>(stream_.range));
@@ -2137,6 +2142,13 @@ bool samplerFaceWave(const MetaFace& f, SamplerFaceWave& out) {
   const auto* s = dynamic_cast<const SamplerFace*>(&f);
   if (s == nullptr) return false;
   s->wave(out);
+  return true;
+}
+
+bool samplerFaceStream(const MetaFace& f, SamplerFaceStream& out) {
+  const auto* s = dynamic_cast<const SamplerFace*>(&f);
+  if (s == nullptr) return false;
+  s->stream(out);
   return true;
 }
 

@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pq/ui/waveform.h"
@@ -41,6 +42,13 @@ struct SamplerFaceWave {
   ui::WaveformStats well, editor;
 };
 bool samplerFaceWave(const MetaFace& f, SamplerFaceWave& out);
+// BR.J (tests): the Granular grainstream as its last paint computed it — the span (seconds across the plot), a grain's
+// length, each grain's onset (seconds from the plot's left edge) and whether the kernel skips it. False: not a Sampler.
+struct SamplerFaceStream {
+  double span = 0.0, size = 0.0;
+  std::vector<std::pair<float, bool>> grains;
+};
+bool samplerFaceStream(const MetaFace& f, SamplerFaceStream& out);
 // NZ.1: the Noise face's tint of a colour (dB/oct): brown −6, pink −3, white 0, blue +3, violet +6, blended between.
 ui::Rgba noiseColourTint(double colour) noexcept;
 

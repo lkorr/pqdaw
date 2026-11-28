@@ -23,6 +23,7 @@
 #include "../ui/golden_check.h"
 #include "pq/core/grain_tap.h"
 #include "pq/core/voice_tap.h"
+#include "pq/dsp/grain_schedule.h"
 #include "pq/document/devices.h"
 #include "pq/document/edit_ops.h"
 #include "pq/document/main_path.h"
@@ -962,6 +963,78 @@ TEST_CASE("sampler granular (GV.1, real dispatch): the grain lens drags the grai
   u.d.drag(c, {c.x + 80.0f, c.y}, 8);
   u.d.step();
   CHECK(u.value(meta::kSmpDensity) == density1);
+}
+
+// BR.J (bug 2026-11-27_21-16-56: "when i adjust density to go above 35 Hz the display changes discretely"): the
+// grainstream is the kernel's grains — onsets, lengths and skips from the shared spawn law (dsp::grainSchedule, which
+// tests/dsp/test_granular.cpp ties to the kernel) — at one zoom while Density moves: 34 → 36 Hz (the old span snapped
+// 250 → 100 ms at 35 Hz) only packs the grains tighter, and across a Density sweep the span never jumps.
+TEST_CASE("sampler granular (BR.J): the grainstream keeps its zoom across 35 Hz and draws the kernel's grains and skips") {
+  Expanded u;
+  clickMode(u, 3);
+  const uint32_t streamId = u.idOf("grainstream");
+  REQUIRE(u.shownEl(streamId));
+  auto shown = [&] {
+    u.d.step();
+    panel::GroupPanelFace& f = u.face();
+    const int32_t i = f.indexOf(streamId);
+    REQUIRE(i >= 0);
+    const doc::Binding* b = f.element(static_cast<size_t>(i)).desc().binding(0);
+    REQUIRE(b != nullptr);
+    const std::shared_ptr<MetaFace> face = f.target().engineFace(*b, "", nullptr);
+    REQUIRE(face != nullptr);
+    SamplerFaceStream s;
+    REQUIRE(samplerFaceStream(*face, s));
+    return s;
+  };
+  doc::DocumentStore& st = u.ctx.store();
+  setValue(st, u.ids.engine, "grainSize", 0.0103);  // the report's ~10 ms grains
+  setSetting(st, u.ids.engine, "grains", 4.0);
+  setValue(st, u.ids.engine, "density", 34.0);
+  const SamplerFaceStream below = shown();
+  setValue(st, u.ids.engine, "density", 36.0);
+  const SamplerFaceStream above = shown();
+  CHECK(below.span == doctest::Approx(0.25));
+  CHECK(above.span == below.span);  // one zoom: no 2.5× jump at 35 Hz
+  REQUIRE(below.grains.size() >= 3);
+  REQUIRE(above.grains.size() >= 3);
+  CHECK(above.grains[2].first - above.grains[1].first < below.grains[2].first - below.grains[1].first);  // tighter
+  // A sweep 1 … 400 Hz: the span changes continuously (≤ 2.1 % between 2 % density steps), never in steps.
+  double prevSpan = 0.0;
+  for (double hz = 1.0; hz <= 400.0; hz *= 1.02) {
+    setValue(st, u.ids.engine, "density", hz);
+    const double span = shown().span;
+    if (prevSpan > 0.0) CHECK(std::fabs(span / prevSpan - 1.0) < 0.021);
+    prevSpan = span;
+  }
+  // The grains drawn are the kernel's: near the cap (4 slots, 10.3 ms grains at 380 Hz: 3.9 overlapping) whole-sample
+  // onsets and grid-cell slots decide the skips; the face shows exactly the schedule's, from 2 grain lengths on.
+  setValue(st, u.ids.engine, "density", 380.0);
+  const SamplerFaceStream cap = shown();
+  dsp::GrainSpawnLaw law;
+  law.mode = dsp::GranularMode::Loop;
+  law.density = u.value(meta::kSmpDensity);
+  law.size = u.value(meta::kSmpGrainSize);
+  law.grains = 4;
+  law.sr = 48000.0;
+  law.seed = 0x5EEDu;
+  const auto len = static_cast<int64_t>(std::llround(law.size * law.sr));
+  const int64_t from = static_cast<int64_t>(std::ceil(2.0 * static_cast<double>(len))), to = from + static_cast<int64_t>(std::ceil(cap.span * law.sr));
+  std::vector<std::pair<float, bool>> want;
+  uint32_t skips = 0;
+  (void)dsp::grainSchedule(law, to, [](int64_t) { return 261.63; }, [&](const dsp::GrainSpawn& g) {
+    if (g.start + g.len <= from) return;
+    want.push_back({static_cast<float>(static_cast<double>(g.start - from) / law.sr), g.skipped()});
+    skips += g.skipped() ? 1u : 0u;
+  });
+  CHECK(skips > 0);
+  CHECK(cap.size == doctest::Approx(static_cast<double>(len) / law.sr));
+  REQUIRE(cap.grains.size() == want.size());
+  for (size_t i = 0; i < want.size(); ++i) {
+    CAPTURE(i);
+    CHECK(cap.grains[i].first == want[i].first);
+    CHECK(cap.grains[i].second == want[i].second);
+  }
 }
 
 TEST_CASE("sampler granular (SM.13, real dispatch): ratio chips — + adds the next whole number, × removes, a click types "

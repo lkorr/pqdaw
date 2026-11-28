@@ -19,6 +19,7 @@
 #include "pq/core/grain_tap.h"
 #include "pq/dsp/atom_state.h"
 #include "pq/dsp/atoms.h"
+#include "pq/dsp/grain_schedule.h"
 #include "pq/dsp/granular.h"
 #include "pq/dsp/resample.h"
 #include "pq/dsp/sample_slot.h"
@@ -165,29 +166,32 @@ void reference(const Src& src, const Params& pIn, uint32_t voiceSlot, size_t fra
   std::vector<RefGrain> slots(static_cast<size_t>(p.grains));
   std::vector<bool> used(slots.size(), false);
   int64_t pos = fx(startF + p.position * (endF - startF));
-  double next = 0.0;
-  uint32_t count = 0, harm = 0;
+  uint32_t harm = 0;
   const uint32_t defH[] = {1, 1, 2, 1, 3, 2, 3, 1, 4, 1, 5, 1};
   L.assign(frames, 0.0);
   R.assign(frames, 0.0);
+  // BR.J: the onsets, lengths and slots from the shared spawn law (pq/dsp/grain_schedule.h): this model matching the
+  // kernel's output is what ties that law to the kernel (the Sampler face draws its grainstream from it).
+  auto hzOf = [&](int64_t t) { return std::max(static_cast<double>(static_cast<float>(hzAt(static_cast<size_t>(t)))), 1.0); };
+  std::vector<GrainSpawn> spawns;
+  GrainSpawnLaw law;
+  law.mode = mode;
+  law.density = p.density;
+  law.size = p.size;
+  law.grains = static_cast<uint32_t>(p.grains);
+  law.sr = kSr;
+  law.seed = 1234;
+  law.voiceSlot = voiceSlot;
+  (void)grainSchedule(law, static_cast<int64_t>(frames), hzOf, [&](const GrainSpawn& g) { spawns.push_back(g); });
+  size_t nextSpawn = 0;
   for (int64_t t = 0; t < static_cast<int64_t>(frames); ++t) {
-    while (next < static_cast<double>(t + 1)) {  // a spawn at this sample
-      const int64_t ts = std::max<int64_t>(static_cast<int64_t>(std::ceil(next)), t);
-      if (ts != t) break;
-      const uint32_t k = count++;
+    for (; nextSpawn < spawns.size() && spawns[nextSpawn].start == t; ++nextSpawn) {  // the spawns at this sample
+      const GrainSpawn& sp = spawns[nextSpawn];
+      if (sp.skipped()) continue;
+      const uint32_t k = sp.k;
       auto rnd = [&](uint32_t d) { return 2.0 * static_cast<double>(grainUniform(1234, voiceSlot, k, d)) - 1.0; };
-      const double hz = std::max(static_cast<double>(static_cast<float>(hzAt(static_cast<size_t>(t)))), 1.0);
-      double interval = mode == GranularMode::Classic ? kSr / hz : kSr / p.density;
-      if (mode == GranularMode::Cloud) interval *= -std::log(1.0 - 0.999999 * static_cast<double>(grainUniform(1234, voiceSlot, k, 0)));
-      next = static_cast<double>(ts) + std::max(interval, 1.0);
-      const int64_t cell = t - t % kGrainGrid;
-      size_t q = slots.size();
-      for (size_t j = 0; j < slots.size(); ++j)
-        if (!used[j] || slots[j].start + slots[j].len <= cell) {
-          q = j;
-          break;
-        }
-      if (q == slots.size()) continue;
+      const double hz = hzOf(t);
+      const size_t q = sp.slot;
       double rate = (mode == GranularMode::Classic ? p.ratio : hz / p.root * p.ratio) * e.rateScale;
       if (p.harmonic >= 0.5) {
         const uint32_t nh = e.harmonicCount > 0 ? e.harmonicCount : 6u;
@@ -205,7 +209,7 @@ void reference(const Src& src, const Params& pIn, uint32_t voiceSlot, size_t fra
       g.pos = fx(st * sc);
       g.step = fx(rate * sc);
       g.start = t;
-      g.len = std::max<int64_t>(2, std::llround(std::clamp(p.size, 0.001, 4.0) * kSr));
+      g.len = sp.len;
       const double pan = p.sprayPan > 0 ? rnd(3) * p.sprayPan : 0.0;
       const double th = (pan + 1.0) * std::numbers::pi / 4.0;
       g.gl = static_cast<float>(std::cos(th) * std::numbers::sqrt2);
@@ -262,6 +266,40 @@ TEST_CASE("SM.6 granular: Classic / Loop / Cloud with sprays, shapes and harmoni
     double peak = 0;
     for (double x : rl) peak = std::max(peak, std::abs(x));
     CHECK(peak > 0.1);
+  }
+}
+
+// BR.J (bug 2026-11-27_21-16-56: the grainstream display drifted from the kernel): the shared spawn law
+// (pq/dsp/grain_schedule.h, which the face draws) where it matters most — at the slot cap, where whole-sample onsets and
+// grid-cell slot freeing decide which spawns are skipped. The kernel's output must equal the model spawning by it.
+TEST_CASE("BR.J granular: at the grain cap the kernel skips exactly the spawns the shared schedule skips") {
+  Src src(48000, 48000.0);
+  struct Case {
+    double mode, grains, size, density;
+  };
+  for (const Case c : {Case{1.0, 2.0, 0.05, 41.3}, Case{1.0, 4.0, 0.0101, 400.0}, Case{2.0, 3.0, 0.05, 70.0}, Case{0.0, 1.0, 0.004, 0.0}}) {
+    CAPTURE(c.mode);
+    CAPTURE(c.density);
+    Params p;
+    p.mode = c.mode, p.grains = c.grains, p.size = c.size, p.density = c.density > 0.0 ? c.density : 30.0;
+    auto hz = [](size_t t) { return 300.0 + 40.0 * std::sin(static_cast<double>(t) * 2e-4); };
+    std::vector<double> rl, rr;
+    reference(src, p, 0, 24000, hz, rl, rr);
+    for (const uint32_t block : {64u, 37u}) {
+      const Run k = run(src, p, 1, 0, 24000, block, hz, {0});
+      CHECK(worstDiff(k.l, rl) < 2e-5);
+      CHECK(worstDiff(k.r, rr) < 2e-5);
+    }
+    // The case is at the cap: some spawns skipped, most not.
+    const Params q = rounded(p);
+    GrainSpawnLaw law;
+    law.mode = static_cast<GranularMode>(static_cast<int>(q.mode));
+    law.density = q.density, law.size = q.size, law.grains = static_cast<uint32_t>(q.grains), law.seed = 1234;
+    uint32_t n = 0;
+    const uint32_t skipped = grainSchedule(law, 24000, [&](int64_t t) { return static_cast<double>(static_cast<float>(hz(static_cast<size_t>(t)))); },
+                                           [&](const GrainSpawn&) { ++n; });
+    CHECK(skipped > 0);
+    CHECK(skipped < n);
   }
 }
 
